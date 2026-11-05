@@ -450,7 +450,7 @@ C15 无 `[ ]` 复选框条目；平台差异说明见 §5（不计入 228 条）
 
 | ID | Feature | Upstream evidence | Rust implementation | Status | Test | Result | Limitation |
 |---|---|---|---|---|---|---|---|
-| UI-SET-000 | Settings 可搜索、可导航的设置布局（B7 引言） | U-AUDIT / 需求 B7 | main.slint 单卡片设置面板（主题/字号/回滚），无导航/搜索 | not_started | 人工：⚙ 打开后仅见 3 组控件 | 未实现 | 无分类导航/搜索/深链接 |
+| UI-SET-000 | Settings 可搜索、可导航的设置布局（B7 引言） | U-AUDIT / 需求 B7 | 设置面板：6 分类导航 + 搜索框（`settings_search` 目录匹配 + 结果浮层点击跳转分类） | partial | 单测 `settings_search_matches_labels_and_keywords`；真机：输入 copy → `settings filter hits=1`，点结果 → `settings goto cat=1`（.logs/settings-search-jump.png） | 分类导航 + 搜索可用 | 搜索基于 10 条精选目录而非全部控件；无高亮/无键盘上下选择 |
 | PLAT-001 | Ubuntu X11/Wayland：全局快捷键、窗口定位、边缘停靠能力检测与降级 | U-AUDIT / 需求 C15 | X11 路径已验证（XTest/XDamage/X11 图标）；Wayland 无能力检测/回退代码；无 GPU 自动 winit-software | partial | phase0 X11 记录；无 Wayland 验收 | X11 可用；Wayland 未验证 | Wayland 全局快捷键/定位/停靠均未实现；无运行时能力探测 |
 | PLAT-002 | Windows 后续：PowerShell/WSL/Git Bash/Cygwin/MSYS2/Cmder/CMD/Clink 等 | U-AUDIT / 需求 C15 | 无实现 | unsupported | 无 | 明确排除（Ubuntu 第一阶段） | 不在当前交付范围；不得伪造支持 |
 | PLAT-003 | macOS 后续：Vibrancy、Keychain、平台 Shell/键盘 | U-AUDIT / 需求 C15 | 无实现 | unsupported | 无 | 明确排除（Ubuntu 第一阶段） | 不在当前交付范围 |

@@ -227,3 +227,18 @@ cargo bench -p rusttabby-core --bench pty_throughput
 - **教训**：右键菜单行位置是 `click_y + 18 + 30*i`，且菜单 x 会被夹到
   `min(x, 宽-160)`；按固定坐标点分屏会点错行，前两次只拆出 2 pane。
 - **门禁**：PASS，ready 45.7 ms / first_damage 46.8 ms；app 89 / core 66 / conformance 11。
+
+### 2026-11-05 · 第 28 轮：设置搜索
+
+- **实现**：设置面板标题栏加搜索框；`SETTINGS_CATALOG`（10 条，含关键词）+
+  大小写不敏感子串匹配；结果浮层覆盖内容、点条目跳转对应分类并清空查询。
+- **真机**：`XMODIFIERS=@im=none` 启动后，点搜索框输入 `copy` →
+  `[ui] settings filter q="cop" hits=1` / `q="copy" hits=1`；点结果 →
+  `[ui] settings goto cat=1`，Terminal 分类展示（.logs/settings-search-jump.png）。
+- **教训 1**：默认环境有中文输入法，XTest 键入会被合成候选词（截图里出现候选窗口），
+  自动化脚本必须 `XMODIFIERS=@im=none` 才能输入 ASCII。
+- **教训 2**：Slint 里浮层要声明在内容**之后**才会画在上面；声明在布局前面会被
+  分类页盖住（搜索浮层曾半透明透出主题网格）。
+- **教训 3**：`TextInput.text` 必须双向绑定 `<=>`，否则 Rust 清空查询后输入框仍留旧文字，
+  与占位符重叠。
+

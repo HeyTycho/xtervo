@@ -393,6 +393,10 @@ export component MainWindow inherits Window {
     /// 设置分类：0=Appearance 1=Terminal 2=Window 3=Config File
     in-out property <int> settings-category: 0;
     in-out property <string> settings-path: "";
+    in-out property <string> settings-query: "";
+    in property <[string]> settings-results: [];
+    callback settings-filter(string);
+    callback settings-open-result(int);
     in property <[string]> hotkey-items: [];
     in property <string> hotkey-summary: "";
     in property <[string]> plugin-items: [];
@@ -1968,6 +1972,39 @@ export component MainWindow inherits Window {
                         font-weight: 600;
                         vertical-alignment: center;
                     }
+
+                    // 设置搜索：输入即过滤（结果浮层覆盖分类内容）
+                    Rectangle {
+                        height: 24px;
+                        horizontal-stretch: 1;
+                        border-radius: 4px;
+                        background: Palette.colors.bg;
+                        border-width: 1px;
+                        border-color: Palette.colors.border;
+
+                        Text {
+                            x: 6px;
+                            width: parent.width - 12px;
+                            height: parent.height;
+                            text: "Search settings…";
+                            color: Palette.colors.muted;
+                            font-size: 11px;
+                            vertical-alignment: center;
+                            visible: root.settings-query == "";
+                        }
+
+                        TextInput {
+                            x: 6px;
+                            width: parent.width - 12px;
+                            height: parent.height;
+                            text <=> root.settings-query;
+                            single-line: true;
+                            color: Palette.colors.text;
+                            font-size: 11px;
+                            vertical-alignment: center;
+                            edited => { root.settings-filter(self.text); }
+                        }
+                    }
                 }
 
                 Rectangle {
@@ -2316,6 +2353,53 @@ export component MainWindow inherits Window {
                     }
                 }
             }
+
+            if root.settings-query != "" : Rectangle {
+                x: 18px;
+                y: 86px;
+                width: 384px;
+                height: 300px;
+                background: Palette.colors.raise;
+                border-radius: 8px;
+                border-width: 1px;
+                border-color: Palette.colors.border;
+                drop-shadow-blur: 16px;
+                drop-shadow-offset-y: 6px;
+                drop-shadow-color: #000000b0;
+
+                VerticalLayout {
+                    padding: 8px;
+                    spacing: 2px;
+
+                    Text {
+                        height: 22px;
+                        text: "\{root.settings-results.length} matches — click to open";
+                        color: Palette.colors.muted;
+                        font-size: 10px;
+                    }
+
+                    for item[i] in root.settings-results : Rectangle {
+                        height: 24px;
+                        border-radius: 4px;
+                        background: res-hit.has-hover ? Palette.colors.hover : transparent;
+
+                        Text {
+                            x: 6px;
+                            width: parent.width - 12px;
+                            text: item;
+                            color: Palette.colors.text;
+                            font-size: 11px;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+
+                        res-hit := TouchArea {
+                            clicked => { root.settings-open-result(i); }
+                        }
+                    }
+                }
+            }
+
         }
     }
 
