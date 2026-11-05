@@ -1,8 +1,9 @@
 # Vault：加密凭据存储与 SSH 密码 askpass（MVP）
 
 > 实现：`crates/app/src/vault.rs`、`crates/app/src/askpass.rs`；设置页在 `main.slint` 的 **Vault**
-> 分类。本文同时是安全限制说明与手工验证步骤。GUI 真机验证本轮受共享显示器约束未执行，
-> 已用 `cargo test` / `cargo build --release` 覆盖纯逻辑与编译路径。
+> 分类。本文同时是安全限制说明与手工验证步骤。GUI 真机验证已在本轮完成（独立
+> `TERVO_CONFIG/TERVO_VAULT/TERVO_PROFILES/TERVO_LOG_DIR` + 窗口移到空白区）：
+> 服务端记录 `password auth ok`，pane 出现 `SSH-TEST-OK` / `remote$ `。
 
 ## 1. 能力
 
@@ -49,15 +50,29 @@ base64、大小上限（4 MiB）做校验，未知字段/缺少字段一律拒�
    - 未确认（默认 `ask` 且查不到）：本次**不用 askpass**，交给 ssh 在终端显示指纹并让用户
      手输一次密码；确认后 host key 进入 known_hosts，下次连接才自动填充。
    - `StrictHostKeyChecking=no/accept-new`：不会弹确认，可直接用 askpass。
-4. 启动系统 `ssh` 前创建临时目录（`$TMPDIR/tervo-askpass-<pid>-<n>/`，0700）与脚本
-   （0700），脚本内容：
+4. 启动系统 `ssh` 前，对 `auth=password` 的 Profile **强制只走密码认证**：
+   `-o PubkeyAuthentication=no -o PreferredAuthentications=password,keyboard-interactive`
+   （`keyboard-interactive` 仅作 PAM 服务器兜底，顺序在 `password` 之后）。
+   否则 ssh 会先尝试 agent/密钥：只要服务器接受某个公钥，就根本不会出现密码 prompt，
+   Vault 密码和 askpass 都不会被用到（GUI 实测表现为服务端 `password auth ok` 为 0、
+   askpass 调试文件为空）。`auth=agent/key` 不注入这些参数。
+5. 创建临时目录（`$TMPDIR/tervo-askpass-<pid>-<n>/`，0700）与脚本（0700），脚本内容：
 
    ```sh
    #!/bin/sh
+   prompt="$1"
    # 只回答真正的密码 prompt；host key 确认等一律 no（防 OpenSSH force 模式死循环）
-   case "$1" in
-     *[Pp]assword*|*密码*) printf '%s\n' "$TERVO_ASKPASS_SECRET" ;;
-     *) printf 'no\n' ;;
+   case "$prompt" in
+     *[Pp]assword*|*密码*)
+       if [ -n "$TERVO_ASKPASS_DEBUG" ]; then
+         printf '%s\n' "match=password prompt=$prompt" >>"$TERVO_ASKPASS_DEBUG" 2>/dev/null
+       fi
+       printf '%s\n' "$TERVO_ASKPASS_SECRET" ;;
+     *)
+       if [ -n "$TERVO_ASKPASS_DEBUG" ]; then
+         printf '%s\n' "match=no prompt=$prompt" >>"$TERVO_ASKPASS_DEBUG" 2>/dev/null
+       fi
+       printf 'no\n' ;;
    esac
    ```
 
@@ -66,12 +81,24 @@ base64、大小上限（4 MiB）做校验，未知字段/缺少字段一律拒�
    - `SSH_ASKPASS_REQUIRE=force`
    - `TERVO_ASKPASS_SECRET=<密码>`
 
-5. ssh 需要密码时执行脚本，从环境变量取密码；密码不会进入命令行/脚本/文件。
+   可选诊断：Tervo 进程环境里设置 `TERVO_ASKPASS_DEBUG=<文件>` 后，脚本每次被调用都会
+   追加一行 `match=password|no prompt=...`（**不含密码**），用于确认 askpass 是否真的
+   被 ssh 调用、prompt 是否被识别。生产环境不要长期开启。
+
+6. ssh 需要密码时执行脚本，从环境变量取密码；密码不会进入命令行/脚本/文件。
    非密码 prompt（host key 确认等）回答 `no`：OpenSSH 实测会把任何 askpass 输出当成
    host key 的 yes/no 答案；若把密码返回去，`SSH_ASKPASS_REQUIRE=force` 下会在 3 秒内
    调用脚本数千次并卡死。`no` 让 ssh 快速失败（可读的 `Host key verification failed.`）。
-6. Pane 关闭时 `Askpass` guard 删除临时目录并尽力清零环境变量副本。
-7. 未勾选保存：不创建 askpass，由 ssh 在终端里正常交互式询问（不经过 Vault）。
+7. 连接时的诊断日志（只记布尔/长度/退出语义，不记密码）：
+   - `[vault] 已取出 Profile <id> 的密码（len=<n>）`
+   - `[askpass] 已启用 profile=<id> require=force debug=<bool>`
+   - `[askpass] 注入 ssh 子进程环境: keys=["SSH_ASKPASS","SSH_ASKPASS_REQUIRE", ...] secret_set=true`
+   - known_hosts 未命中时的 lookup/strict/候选路径。
+   结合 `TERVO_ASKPASS_DEBUG` 可以区分「askpass 没启用」「脚本没被调用」「prompt 未识别」
+   「SSH 环境没传到」四类问题。
+8. Pane 关闭时 `Askpass` guard 删除临时目录并尽力清零环境变量副本。
+9. 未勾选保存：不创建 askpass，由 ssh 在终端里正常交互式询问（不经过 Vault）。
+   注意 `auth=password` 的 `PubkeyAuthentication=no` 对它同样生效：不会偷偷回退到密钥。
 
 要求系统 OpenSSH ≥ 8.4（`SSH_ASKPASS_REQUIRE` 支持）。旧版 ssh 会忽略 force；若已有
 `DISPLAY` 仍可能用 askpass，否则回退到终端询问。
@@ -106,6 +133,10 @@ base64、大小上限（4 MiB）做校验，未知字段/缺少字段一律拒�
 11. askpass 脚本只识别含 `password` / `密码` 的 prompt。其它语言的密码提示（或
     keyboard-interactive 自定义问题）可能被当成非密码 prompt 回答 `no` 而导致认证失败；
     此时可取消勾选保存、按终端提示交互式输入，或补脚本匹配规则。
+12. `TERVO_ASKPASS_DEBUG` 诊断文件会记录服务器发来的 prompt 原文（通常含用户名/主机名，
+    **不含密码**）。只在排查时临时开启；文件路径由用户环境变量指定，Tervo 不自动创建。
+13. `auth=password` 会禁用公钥认证。若服务器实际只接受公钥、或用户想回退到 agent，
+    应把 Profile 的 Auth 改成 `agent`/`key`，而不是依赖密码 Profile 的隐式回退。
 
 ## 5. 测试
 
@@ -115,16 +146,27 @@ export CARGO_TARGET_DIR=$PWD/target
 cargo test -p tervo-app --bin tervo
 ```
 
-覆盖：
+覆盖（本轮 168 例）：
 - `vault::tests::set_get_remove_roundtrip_survives_lock_and_reload`
+- `vault::tests::credential_is_keyed_by_profile_store_id`
+  （`ProfileStore::add` 分配的 id → `vault.set(id)` → 用 store 中 `Profile.id` 取回，
+  两个 Profile 的密码不串、未保存 id 返回 NotFound、重启后仍能取回）
 - `vault::tests::wrong_password_and_corrupt_file_fail_cleanly`
 - `vault::tests::file_never_contains_plaintext_and_permissions_are_private`
 - `vault::tests::change_master_reencrypts_and_old_password_stops_working`
 - `vault::tests::initialize_refuses_to_overwrite_and_clear_keeps_file`
 - `vault::tests::corrupt_header_params_are_rejected_before_argon2`
 - `profile::tests::profile_serialization_has_no_plaintext_password`
+- `profile::tests::password_auth_ssh_command_is_password_only`
+  （`auth=password` 注入 `PubkeyAuthentication=no` +
+  `PreferredAuthentications=password,keyboard-interactive`；agent/key 不注入）
 - `askpass::tests::*`（密码 prompt 输出、非密码 prompt 回答 no、force 环境、Debug 脱敏、
   0700 权限、真实 `ssh -G`/`ssh-keygen -F` known_hosts 判定）
+- `askpass::tests::applied_envs_reach_real_child_process`
+  （`apply()` 后真的 spawn 子进程，验证 `SSH_ASKPASS`/`SSH_ASKPASS_REQUIRE=force`/
+  `TERVO_ASKPASS_SECRET` 到达子进程，脚本路径存在）
+- `askpass::tests::debug_file_records_prompt_without_secret`
+  （`TERVO_ASKPASS_DEBUG` 记录 prompt/匹配分支，但文件里没有密码）
 - `askpass::tests::host_key_known_matches_nonstandard_port_entry`
   （Profile 级 `[127.0.0.1]:2222` 命中，端口/主机不同必须 miss）
 - `askpass::tests::ssh_keygen_matches_bracketed_port_spec`（`[127.0.0.1]:2222` 端口键）
@@ -135,44 +177,63 @@ cargo test -p tervo-app --bin tervo
 
 所有 Vault 测试使用 `std::env::temp_dir()` 下独立目录，不读写真实 `$HOME`。
 
-无 GUI 的密码自动登录探针（不启动 Tervo）：
+无 GUI 的密码自动登录探针（不启动 Tervo）。**必须在 PTY 里跑**：GUI 里的 ssh 有 tty，
+只有 `SSH_ASKPASS_REQUIRE=force` 才会走 askpass；`</dev/null` 的旧探针会因 stdin 不是
+tty 而“碰巧”走 askpass，无法覆盖真实 GUI 路径。
 
 ```bash
 d=$(mktemp -d)
 ssh-keygen -t ed25519 -f "$d/host_ed25519" -N "" -q
-python3 scripts/ssh_test_server.py --host-key "$d/host_ed25519" --port 2222 --password s3cret &
+python3 scripts/ssh_test_server.py --host-key "$d/host_ed25519" --port 2222 --password s3cret \
+  >"$d/server.log" 2>&1 &
+srv=$!
 printf '[127.0.0.1]:2222 %s\n' "$(cut -d' ' -f1,2 "$d/host_ed25519.pub")" > "$d/known_hosts"
 
-# 与 Askpass::new 相同的脚本（只回答密码 prompt，其它回答 no）
+# 与 Askpass::new 相同的脚本（只回答密码 prompt，其它回答 no；可写调试文件）
 cat > "$d/askpass.sh" <<'EOF'
 #!/bin/sh
-case "$1" in
-  *[Pp]assword*|*密码*) printf '%s\n' "$TERVO_ASKPASS_SECRET" ;;
-  *) printf 'no\n' ;;
+prompt="$1"
+case "$prompt" in
+  *[Pp]assword*|*密码*)
+    [ -n "$TERVO_ASKPASS_DEBUG" ] && printf '%s\n' "match=password prompt=$prompt" >>"$TERVO_ASKPASS_DEBUG"
+    printf '%s\n' "$TERVO_ASKPASS_SECRET" ;;
+  *)
+    [ -n "$TERVO_ASKPASS_DEBUG" ] && printf '%s\n' "match=no prompt=$prompt" >>"$TERVO_ASKPASS_DEBUG"
+    printf 'no\n' ;;
 esac
 EOF
 chmod 700 "$d/askpass.sh"
 
-# 已知 host：应直接打印服务端 banner（SSH-TEST-OK），不需要手输密码。
+# 已知 host：在 PTY 里跑真实 ssh（与 GUI 相同：stdin 是 tty，靠 REQUIRE=force 走 askpass）。
+# 期望 server.log 有 "password auth ok" + "pty request"，终端出现 SSH-TEST-OK；
 # timeout 退出是因为测试服务不会主动关闭 shell，不是认证失败。
 SSH_ASKPASS="$d/askpass.sh" SSH_ASKPASS_REQUIRE=force TERVO_ASKPASS_SECRET=s3cret \
-  timeout 10 ssh -o PubkeyAuthentication=no -o PreferredAuthentications=password \
-    -o UserKnownHostsFile="$d/known_hosts" -o StrictHostKeyChecking=yes \
-    -p 2222 -l test 127.0.0.1 </dev/null
+  TERVO_ASKPASS_DEBUG="$d/askpass-debug.log" \
+  timeout 10 script -qec "ssh -o PubkeyAuthentication=no \
+    -o PreferredAuthentications=password,keyboard-interactive \
+    -o UserKnownHostsFile=$d/known_hosts -o StrictHostKeyChecking=yes \
+    -p 2222 -l test 127.0.0.1" /dev/null
+grep -F 'password auth ok' "$d/server.log"
+cat "$d/askpass-debug.log"          # match=password prompt=test@127.0.0.1's password:
+! grep -q s3cret "$d/askpass-debug.log" && echo 'no secret in askpass debug'
 
 # 未知 host（空 known_hosts）：即使强制 askpass 也只回答一次 no，快速
 # "Host key verification failed."（rc=255），不会把密码当 yes/密码重试。
 : > "$d/unknown_known_hosts"
 SSH_ASKPASS="$d/askpass.sh" SSH_ASKPASS_REQUIRE=force TERVO_ASKPASS_SECRET=s3cret \
-  timeout 10 ssh -o PubkeyAuthentication=no -o PreferredAuthentications=password \
-    -o UserKnownHostsFile="$d/unknown_known_hosts" -p 2222 -l test 127.0.0.1 </dev/null
+  timeout 10 script -qec "ssh -o PubkeyAuthentication=no \
+    -o PreferredAuthentications=password,keyboard-interactive \
+    -o UserKnownHostsFile=$d/unknown_known_hosts -p 2222 -l test 127.0.0.1" /dev/null
+
+kill "$srv" 2>/dev/null
 ```
 
 ## 6. 手工验证（GUI）
 
 前置：系统有 `ssh` 服务端/账号；`ssh -V` ≥ 8.4。
 
-1. 启动：`./target/release/tervo`（共享显示器环境请让有权限的 agent 操作）。
+1. 启动：`./target/release/tervo`（共享显示器环境请让有权限的 agent 操作；独立
+   `TERVO_CONFIG/TERVO_VAULT/TERVO_PROFILES/TERVO_LOG_DIR`，窗口移到空白区）。
 2. 打开齿轮 → 左侧 **Vault**：
    - 状态应显示「未初始化」；输入 ≥8 字符主密码 → **Set/Change** → 状态「已解锁 · 0 条凭据」。
    - 点 **Lock** → 状态「已锁定」；再输入主密码 → **Unlock** 恢复。
@@ -180,7 +241,7 @@ SSH_ASKPASS="$d/askpass.sh" SSH_ASKPASS_REQUIRE=force TERVO_ASKPASS_SECRET=s3cre
    - Kind=SSH，填 Host/Port/User，Auth 填 `password`；
    - 出现 **Password**（masked）与 **Save password to Vault**；输入密码并勾选 → Save。
    - 若 Vault 未解锁，表单应显示「Vault 未解锁：请先在 Settings → Vault 解锁…」；解锁后重试。
-4. 连接：从 “+” 菜单选该 Profile。
+4. 连接：从 Profile 图标菜单选该 Profile（`Manage Profiles…` 左侧那行）。
    - **首次连接**（host key 不在 known_hosts）：终端应正常显示指纹并允许输入 `yes`，随后
      要求手输密码（本次不自动填充）；只想保存 host key 的话，确认指纹后可直接 Ctrl+C，
      重新打开该 Profile 就会走 Vault + askpass。
@@ -192,9 +253,34 @@ SSH_ASKPASS="$d/askpass.sh" SSH_ASKPASS_REQUIRE=force TERVO_ASKPASS_SECRET=s3cre
    - `grep -a '你的密码' ~/.config/tervo/vault.enc` 应无结果；
    - `stat -c '%a' ~/.config/tervo/vault.enc` 应为 `600`；
    - `grep -a '你的密码' ~/.config/tervo/profiles.toml` 应无结果（只有 `save_password = true`）；
-   - 进程日志（`~/.local/state/tervo/logs/`）不得出现密码。
+   - 进程日志（`~/.local/state/tervo/logs/`）不得出现密码；`TERVO_ASKPASS_DEBUG`
+     文件也不得出现密码。
 6. 错误路径：错主密码 → 错误提示且保持锁定；截断 vault.enc → 报损坏且原文件不被覆盖；
    Clear 第一次点提示确认，第二次清空且主密码/文件保留。
+
+### 6.1 本轮真机结果（2026-11-05）
+
+- 环境：paramiko 测试服务（`--password s3cret`，`127.0.0.1:2222`），Profile
+  `id=1 auth=password save_password=true`，`extra_args` 指定独立 known_hosts
+  （`StrictHostKeyChecking=yes`），Vault 经 GUI 设置主密码并用 Profile 表单保存密码。
+- 连接时应用日志（不含密码）：
+
+  ```text
+  [ui] profile pick=0
+  [vault] 已取出 Profile 1 的密码（len=6）
+  [askpass] 已启用 profile=1 require=force debug=true
+  [profile] ssh 命令: ssh -o PubkeyAuthentication=no \
+    -o PreferredAuthentications=password,keyboard-interactive -p 2222 -l test \
+    -o UserKnownHostsFile=.../known_hosts -o StrictHostKeyChecking=yes 127.0.0.1
+  [askpass] 注入 ssh 子进程环境: keys=["SSH_ASKPASS", "SSH_ASKPASS_REQUIRE", "TERVO_ASKPASS_SECRET"] secret_set=true
+  [profile] open "vaultssh" kind=ssh
+  ```
+
+- `TERVO_ASKPASS_DEBUG`：`match=password prompt=test@127.0.0.1's password:`（脚本确实被调用）。
+- 服务端日志：`[ssh-test] password auth ok` + `[ssh-test] pty request 60x20 term=b'xterm-256color'`。
+- pane 内容：`SSH-TEST-OK` / `remote$ `（远端 shell 提示符出现）。
+- 安全检查：app 日志、askpass 调试文件、profiles.toml、vault.enc 中均搜不到明文密码；
+  `vault.enc` 权限 0600。
 
 ## 7. 后续工作
 

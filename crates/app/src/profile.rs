@@ -128,12 +128,22 @@ impl Default for Profile {
 impl Profile {
     /// SSH 启动命令：用系统 `ssh` 客户端跑在 PTY 里（原生 russh 引擎后续再做）。
     ///
-    /// 参数顺序：`[-i key] -p port [-l user] host`，与 OpenSSH 用法一致。
+    /// 参数顺序：`[-i key] [-o password-only...] -p port [-l user] host`，与 OpenSSH 用法一致。
     pub fn ssh_command(&self) -> (String, Vec<String>) {
         let mut args = Vec::new();
         if self.auth == "key" && !self.key_path.trim().is_empty() {
             args.push("-i".to_string());
             args.push(self.key_path.trim().to_string());
+        }
+        if self.auth == "password" {
+            // auth=password 的语义是「只用密码」：不能让 agent/密钥先认证成功，否则
+            // Vault 密码与 askpass 永远不会被触发（服务器接受任意公钥时表现为
+            // 服务端看不到 password auth、askpass 从未被调用）。
+            // keyboard-interactive 放在 password 之后，兼容只提供 PAM kbd-int 的服务器。
+            args.push("-o".to_string());
+            args.push("PubkeyAuthentication=no".to_string());
+            args.push("-o".to_string());
+            args.push("PreferredAuthentications=password,keyboard-interactive".to_string());
         }
         args.push("-p".to_string());
         args.push(self.port.max(1).to_string());
@@ -509,6 +519,46 @@ shell = "/bin/sh"
             with_extra.ssh_command().1,
             vec!["-p", "22", "-l", "u", "-o", "UserKnownHostsFile=/tmp/kh", "h"]
         );
+    }
+
+    #[test]
+    fn password_auth_ssh_command_is_password_only() {
+        let p = Profile {
+            kind: "ssh".into(),
+            host: "127.0.0.1".into(),
+            port: 2222,
+            user: "test".into(),
+            auth: "password".into(),
+            save_password: true,
+            extra_args: vec!["-o".into(), "UserKnownHostsFile=/tmp/kh".into()],
+            ..Profile::default()
+        };
+        let (prog, args) = p.ssh_command();
+        assert_eq!(prog, "ssh");
+        assert_eq!(
+            args,
+            vec![
+                "-o",
+                "PubkeyAuthentication=no",
+                "-o",
+                "PreferredAuthentications=password,keyboard-interactive",
+                "-p",
+                "2222",
+                "-l",
+                "test",
+                "-o",
+                "UserKnownHostsFile=/tmp/kh",
+                "127.0.0.1",
+            ],
+            "auth=password 必须禁用公钥、只走密码（kbd-int 兜底）"
+        );
+        // 其它认证方式不应被注入。
+        for auth in ["agent", "key"] {
+            let other = Profile { auth: auth.into(), ..p.clone() };
+            let args = other.ssh_command().1;
+            assert!(!args.iter().any(|a| a == "PubkeyAuthentication=no"), "auth={auth}");
+            assert!(!args.iter().any(|a| a.starts_with("PreferredAuthentications=")), "auth={auth}");
+        }
     }
 
     #[test]
