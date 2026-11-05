@@ -45,6 +45,13 @@ pub struct Config {
     pub right_click_paste: bool,
     /// TabBar 位置："top" | "bottom"。
     pub tabbar_position: String,
+    // ---- Quake mode ----
+    /// 启用后 F12（可配置）全局显示/隐藏下拉终端。
+    pub quake_enabled: bool,
+    pub quake_hotkey: String,
+    /// 屏宽/屏高比例（顶部居中）。
+    pub quake_width: f32,
+    pub quake_height: f32,
     /// 关闭 Tab/Pane 时对会话的处理："end" 结束进程 | "background" 保留后台可重连。
     pub close_action: String,
     /// 本版本不认识的键，原样保留（前向兼容）。
@@ -69,6 +76,10 @@ impl Default for Config {
             confirm_multiline_paste: true,
             right_click_paste: false,
             tabbar_position: "top".to_string(),
+            quake_enabled: false,
+            quake_hotkey: "F12".to_string(),
+            quake_width: 0.7,
+            quake_height: 0.5,
             close_action: "end".to_string(),
             extra: toml::Table::new(),
         }
@@ -205,6 +216,8 @@ mod tests {
         assert!(c.copy_on_select, "默认拖选自动复制");
         assert!(c.confirm_multiline_paste, "默认多行粘贴要确认");
         assert!(!c.right_click_paste, "默认右键弹菜单而不是粘贴");
+        assert!(!c.quake_enabled, "Quake 默认关闭");
+        assert_eq!(c.quake_hotkey, "F12");
         assert_eq!(c.tabbar_position, "top", "默认 TabBar 在上");
         assert_eq!(c.close_action, "end", "默认关闭即结束会话");
         assert_eq!(c.version, SCHEMA_VERSION);

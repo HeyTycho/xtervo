@@ -275,6 +275,8 @@ export component MainWindow inherits Window {
     in property <int> menu-pane: -1;
 
     callback key-input(string, bool, bool, bool);
+    // 右键事件到达 UI 层的追踪（日志排查用）
+    callback input-trace(string, int, length, length);
     /// 拖动分屏分隔条：index + 内容区坐标
     callback divider-dragged(int, length, length);
     /// 无边框窗口拖边缩放：0=左上 1=上 2=右上 3=右 4=右下 5=下 6=左下 7=左
@@ -331,11 +333,13 @@ export component MainWindow inherits Window {
     in-out property <bool> cfg-confirm-close: true;
     in-out property <bool> cfg-confirm-paste: true;
     in-out property <bool> cfg-right-click-paste: false;
+    in-out property <bool> cfg-quake: false;
     in-out property <bool> broadcast: false;
     callback toggle-copy-on-select();
     callback toggle-confirm-close();
     callback toggle-confirm-paste();
     callback toggle-right-click-paste();
+    callback toggle-quake();
     // 多行粘贴确认
     in-out property <bool> paste-open: false;
     in-out property <string> paste-preview: "";
@@ -864,6 +868,10 @@ export component MainWindow inherits Window {
                         // 修饰键位：1=Shift 2=Alt 4=Ctrl，由 Rust 侧解码成 xterm 位掩码。
                         pointer-event(event) => {
                             if (event.kind == PointerEventKind.down) {
+                                if (event.button == PointerEventButton.right) {
+                                    root.input-trace("pane-down-right", p.id,
+                                        pane-hit.mouse-x, pane-hit.mouse-y);
+                                }
                                 if (event.button == PointerEventButton.left) {
                                     ime.focus();
                                     root.pane-clicked(p.id);
@@ -899,6 +907,10 @@ export component MainWindow inherits Window {
                                 }
                             }
                             if (event.kind == PointerEventKind.up) {
+                                if (event.button == PointerEventButton.right) {
+                                    root.input-trace("pane-up-right", p.id,
+                                        pane-hit.mouse-x, pane-hit.mouse-y);
+                                }
                                 if (event.button == PointerEventButton.left) {
                                     root.pane-mouse-up(p.id, pane-hit.mouse-x, pane-hit.mouse-y, 0,
                                         (event.modifiers.shift ? 1 : 0) + (event.modifiers.alt ? 2 : 0) + (event.modifiers.control ? 4 : 0));
@@ -1253,6 +1265,24 @@ export component MainWindow inherits Window {
         }
     }
 
+    // profiles-open 的遮罩：点外部（左右键都行）关闭
+    if root.profiles-open : Rectangle {
+        width: 100%;
+        height: 100%;
+        background: #00000040;
+
+        TouchArea {
+            pointer-event(event) => {
+                if (event.kind == PointerEventKind.down) {
+                    root.profiles-open = false;
+                    root.profiles-close();
+                    return EventResult.accept;
+                }
+                EventResult.reject
+            }
+        }
+    }
+
     if root.profiles-open : Rectangle {
         x: (root.width - 420px) / 2;
         y: (root.height - 320px) / 2;
@@ -1265,6 +1295,20 @@ export component MainWindow inherits Window {
         drop-shadow-blur: 24px;
         drop-shadow-offset-y: 8px;
         drop-shadow-color: #000000c0;
+
+        // 吃掉面板内空白处的点击，避免穿透到遮罩把面板关掉；
+        // 右键直接关闭面板（面板内没有右键菜单）。
+        TouchArea {
+            width: 100%;
+            height: 100%;
+            pointer-event(event) => {
+                if (event.kind == PointerEventKind.down
+                    && event.button == PointerEventButton.right) {
+                    root.profiles-open = false; root.profiles-close();
+                }
+                EventResult.accept
+            }
+        }
 
         Text {
             x: 16px; y: 12px;
@@ -1542,6 +1586,24 @@ export component MainWindow inherits Window {
         }
     }
 
+    // sftp-open 的遮罩：点外部（左右键都行）关闭
+    if root.sftp-open : Rectangle {
+        width: 100%;
+        height: 100%;
+        background: #00000040;
+
+        TouchArea {
+            pointer-event(event) => {
+                if (event.kind == PointerEventKind.down) {
+                    root.sftp-open = false;
+                    root.sftp-close();
+                    return EventResult.accept;
+                }
+                EventResult.reject
+            }
+        }
+    }
+
     if root.sftp-open : Rectangle {
         x: (root.width - 460px) / 2;
         y: (root.height - 460px) / 2;
@@ -1554,6 +1616,20 @@ export component MainWindow inherits Window {
         drop-shadow-blur: 24px;
         drop-shadow-offset-y: 8px;
         drop-shadow-color: #000000c0;
+
+        // 吃掉面板内空白处的点击，避免穿透到遮罩把面板关掉；
+        // 右键直接关闭面板（面板内没有右键菜单）。
+        TouchArea {
+            width: 100%;
+            height: 100%;
+            pointer-event(event) => {
+                if (event.kind == PointerEventKind.down
+                    && event.button == PointerEventButton.right) {
+                    root.sftp-open = false; root.sftp-close();
+                }
+                EventResult.accept
+            }
+        }
 
         Text {
             x: 16px; y: 10px;
@@ -1755,6 +1831,24 @@ export component MainWindow inherits Window {
         }
     }
 
+    // fwd-open 的遮罩：点外部（左右键都行）关闭
+    if root.fwd-open : Rectangle {
+        width: 100%;
+        height: 100%;
+        background: #00000040;
+
+        TouchArea {
+            pointer-event(event) => {
+                if (event.kind == PointerEventKind.down) {
+                    root.fwd-open = false;
+                    root.fwd-close();
+                    return EventResult.accept;
+                }
+                EventResult.reject
+            }
+        }
+    }
+
     if root.fwd-open : Rectangle {
         x: (root.width - 460px) / 2;
         y: (root.height - 400px) / 2;
@@ -1767,6 +1861,20 @@ export component MainWindow inherits Window {
         drop-shadow-blur: 24px;
         drop-shadow-offset-y: 8px;
         drop-shadow-color: #000000c0;
+
+        // 吃掉面板内空白处的点击，避免穿透到遮罩把面板关掉；
+        // 右键直接关闭面板（面板内没有右键菜单）。
+        TouchArea {
+            width: 100%;
+            height: 100%;
+            pointer-event(event) => {
+                if (event.kind == PointerEventKind.down
+                    && event.button == PointerEventButton.right) {
+                    root.fwd-open = false; root.fwd-close();
+                }
+                EventResult.accept
+            }
+        }
 
         Text {
             x: 16px; y: 10px;
@@ -1898,6 +2006,24 @@ export component MainWindow inherits Window {
         }
     }
 
+    // bg-open 的遮罩：点外部（左右键都行）关闭
+    if root.bg-open : Rectangle {
+        width: 100%;
+        height: 100%;
+        background: #00000040;
+
+        TouchArea {
+            pointer-event(event) => {
+                if (event.kind == PointerEventKind.down) {
+                    root.bg-open = false;
+                    root.bg-close();
+                    return EventResult.accept;
+                }
+                EventResult.reject
+            }
+        }
+    }
+
     if root.bg-open : Rectangle {
         x: (root.width - 380px) / 2;
         y: (root.height - 300px) / 2;
@@ -1910,6 +2036,20 @@ export component MainWindow inherits Window {
         drop-shadow-blur: 24px;
         drop-shadow-offset-y: 8px;
         drop-shadow-color: #000000c0;
+
+        // 吃掉面板内空白处的点击，避免穿透到遮罩把面板关掉；
+        // 右键直接关闭面板（面板内没有右键菜单）。
+        TouchArea {
+            width: 100%;
+            height: 100%;
+            pointer-event(event) => {
+                if (event.kind == PointerEventKind.down
+                    && event.button == PointerEventButton.right) {
+                    root.bg-open = false; root.bg-close();
+                }
+                EventResult.accept
+            }
+        }
 
         VerticalLayout {
             padding: 16px;
@@ -2295,7 +2435,14 @@ export component MainWindow inherits Window {
         background: #00000080;
 
         backdrop := TouchArea {
-            clicked => { root.settings-open = false; }
+            pointer-event(event) => {
+                if (event.kind == PointerEventKind.down) {
+                    root.settings-open = false;
+                    root.settings-toggled(false);
+                    return EventResult.accept;
+                }
+                EventResult.reject
+            }
         }
 
         // Tabby 式布局：左侧分类导航 + 右侧内容；顶部一条搜索栏。
@@ -2313,10 +2460,19 @@ export component MainWindow inherits Window {
             drop-shadow-offset-y: 10px;
             drop-shadow-color: #000000b8;
 
-            // 吃掉面板内部的空白点击，否则会穿透到 backdrop 把设置关掉
+            // 吃掉面板内部的空白点击，否则会穿透到 backdrop 把设置关掉；
+            // 右键直接关闭设置（设置页没有右键菜单）。
             TouchArea {
                 width: 100%;
                 height: 100%;
+                pointer-event(event) => {
+                    if (event.kind == PointerEventKind.down
+                        && event.button == PointerEventButton.right) {
+                        root.settings-open = false;
+                        root.settings-toggled(false);
+                    }
+                    EventResult.accept
+                }
             }
 
             // ---------------- 顶栏 ----------------
@@ -2603,10 +2759,23 @@ export component MainWindow inherits Window {
                         toggled => { root.tabbar-menu-action(6); }
                     }
 
+                    ToggleRow {
+                        label: "Quake mode (F12)";
+                        on: root.cfg-quake;
+                        toggled => { root.toggle-quake(); }
+                    }
+
+                    Text {
+                        text: "Quake：F12 全局呼出顶部下拉终端（屏宽 70% / 屏高 50%，X11；Wayland 无全局热键）。";
+                        color: Palette.colors.muted;
+                        font-size: 11px;
+                        wrap: word-wrap;
+                    }
+
                     Text {
                         text: "Tab Bar 位置即时生效并写入配置；关闭多个会话前的确认在 Terminal 分类里。";
                         color: Palette.colors.muted;
-                        font-size: 11px;
+                        font-size: 10px;
                         wrap: word-wrap;
                     }
                 }

@@ -198,3 +198,13 @@ Tervo 以 **GPL-3.0-only** 发布，全文见 [`LICENSE`](LICENSE)。
 项目曾用工作名 “Rust Tabby”，为避让 Tabby 的商标与品牌混淆，现更名为 **Tervo**
 （仓库目录名可以任意）。配置目录、环境变量、二进制名均已随之改为
 `~/.config/tervo`、`TERVO_*`、`tervo`；旧配置不会自动迁移，如需保留请手动复制。
+
+## 日志与诊断
+
+- 每次启动写日志：`~/.local/state/tervo/logs/tervo-<epoch>.log`（保留 8 个）；
+  `TERVO_LOG=0` 关闭，`TERVO_LOG_DIR` 改目录。
+- `tervo --diagnose` 打印环境、屏幕、活动窗口、其他 Tervo 实例窗口与最近日志。
+- 右键排查：日志里有 `[trace] pane-down-right` 表示事件到达 Tervo；没有则多半是别的窗口
+  （常见：旧的全屏 Tervo 实例）挡住了，详见 [`docs/LOGGING.md`](docs/LOGGING.md)。
+
+## 开发

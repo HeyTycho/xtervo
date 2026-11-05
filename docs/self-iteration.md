@@ -397,3 +397,25 @@ cargo bench -p tervo-core --bench pty_throughput
   （不纳入本项目主线）。
 - 限制：没有搜索/键盘上下选择；Profile 很多时菜单会裁剪（后续可加 Flickable）。
 
+### 2026-11-05 · Quake Mode + 可落盘日志/诊断 + 模态面板右键关闭
+
+- **Quake Mode（Tabby B10）**：X11 被动 grab `F12`（config `quake_hotkey`），热键线程
+  经 `invoke_from_event_loop` 调 `toggle_quake_inner`；顶部居中、屏宽 70%/屏高 50%，
+  `_NET_WM_STATE_ABOVE/STICKY` + 激活聚焦；设置 Window 页开关，命令
+  `view.toggle-quake`。
+  - 真机踩坑：`window.hide()` 会让 Slint 在“最后一个窗口隐藏”时退出事件循环，第二次
+    F12 后进程直接消失（日志停在 `[quake] hide`）。改为 `set_minimized(true)`，
+    F12 恢复，进程/PTY/热键都活着。
+  - 真机：5120x1440 屏 → 3584x720 at 768,0；Quake 内右键菜单、hide/show 后再右键都正常。
+- **日志/诊断**：新增 `logging.rs`，用 pipe+dup2 把 stderr（含 panic/backtrace）tee 到
+  `~/.local/state/tervo/logs/tervo-<epoch>.log`（保留 8 个；`TERVO_LOG=0` 关闭）；
+  新增 `tervo --diagnose`：环境、屏幕、指针、活动窗口、本进程/其他 Tervo 实例窗口、
+  最近 40 行日志。
+  - 右键追踪：pane 的 right down/up 加 `[trace]`；日志里没有 trace = 事件没到 Tervo。
+  - 实测发现宿主上有一个旧的 2560x1413 Tervo 窗口（pid 1062405）盖住新窗口；启动日志
+    现在会警告“另一个可见的 Tervo 窗口…可能挡住点击”。
+- **右键关闭模态面板**：设置/Profiles/SFTP/Forwards/Background 面板的遮罩改为**任意键**
+  按下即关闭；面板内右键也会关闭（面板内没有右键菜单）。注意：右键落在面板内的按钮
+  （ChoiceBtn 等）仍会被按钮的 TouchArea 吃掉，这是 Slint 命中顺序的预期行为。
+- 文档：`docs/LOGGING.md`、README 日志段、UI-QUAKE-001..005、UI-SET-011；app 95 测试。
+

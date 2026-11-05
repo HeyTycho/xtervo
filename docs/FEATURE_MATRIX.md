@@ -162,7 +162,7 @@
 | UI-SET-008 | Plugins：搜索、可用/已装、安装、卸载、启用、禁用、更新、详情、权限、目录 | U-AUDIT / 需求 B7 | 无实现 | not_started | 无 | 未实现 | 无插件系统/管理器 UI |
 | UI-SET-009 | SSH：Host Key、Agent 类型、X11 Display 等 | U-AUDIT / 需求 B7 | 无实现 | not_started | 无 | 未实现 | 无 SSH/设置页 |
 | UI-SET-010 | Vault：加密凭据容器、主密码、锁定/解锁、凭据管理 | U-AUDIT / 需求 B7 | 无实现 | not_started | 无 | 未实现 | 无 Vault/Keyring/凭据模型 |
-| UI-SET-011 | Window：窗口行为、TabBar 位置、Quake Mode | U-AUDIT / 需求 B7 | TabBar 菜单：Always on Top、Tab Bar Top/Bottom（持久化）；无独立 Window 设置页/Quake | partial | 真机：菜单切换置顶与 TabBar 位置，配置落盘 | 置顶 + TabBar 上/下可用 | 无 Window 分类设置页、无 Quake Mode、无左/右 TabBar |
+| UI-SET-011 | Window：窗口行为、TabBar 位置、Quake Mode | U-AUDIT / 需求 B7 | 设置 → Window：Tab Bar 位置、**Quake mode (F12)** 开关；TabBar 菜单保留 Always on Top/Tab Bar Top/Bottom；Quake 宽度/高度/热键在 config | partial | 真机：Window 页开关可切换并写 config；F12 行为与日志验证 | Window 页/Quake 开关可用 | 无 Quake 尺寸/热键的可视化编辑（需改 config） |
 | UI-SET-012 | Config File：路径、打开文件/目录、诊断（不显示 secret） | U-CONF / 需求 B7 | 设置面板 Config File 分类：显示 `Config::path()`、Open Folder（xdg-open）；文案声明不存密码/私钥 | partial | 真机：面板显示 `/tmp/set2.toml`；Open Folder 调用 xdg-open（沙箱内可能失败，会打日志） | 路径展示与打开目录可用 | 无配置诊断/语法检查；无“打开配置文件”按钮（只有目录）；secret 策略依赖 Vault（未实现） |
 | UI-SET-013 | 插件可动态注册设置页/项；卸载后配置清理或保留策略 | U-AUDIT / 需求 B7 | 无实现 | not_started | 无 | 未实现 | 无插件设置 API/生命周期策略 |
 | UI-SET-014 | 保存时机明确；保存失败/无效值/迁移错误提示 | U-AUDIT / 需求 B7 | config.rs 即时保存 + 原子写 + schema 迁移/备份；错误仅 eprintln；数值 clamp | partial | config.rs 7 例；代码走查：字号 8–32、回滚 500–100000 夹取；写失败仅 stderr | 即时保存/迁移/备份可用；无 UI 提示 | 保存/迁移/解析失败不弹 UI；无“恢复备份”入口；无效值只夹取不提示 |
@@ -204,11 +204,11 @@
 
 | ID | Feature | Upstream evidence | Rust implementation | Status | Test | Result | Limitation |
 |---|---|---|---|---|---|---|---|
-| UI-QUAKE-001 | 全局快捷键显示/隐藏终端窗口 | U-AUDIT / 需求 B10 | 无实现 | not_started | 无 | 未实现 | 无全局快捷键/Quake 状态机 |
-| UI-QUAKE-002 | 窗口按设置停靠屏幕边缘/指定位置（受 OS 限制） | U-AUDIT / 需求 B10 | 无实现 | not_started | 无 | 未实现 | 无窗口定位设置；Wayland 定位受限 |
-| UI-QUAKE-003 | 调整窗口高宽、自动隐藏/失焦隐藏（按上游核验） | U-AUDIT（行为待核） | 无实现 | not_started | 无 | 未实现 | 无 Quake 尺寸/失焦隐藏 |
-| UI-QUAKE-004 | Quake 下 Tab/Pane/Session 操作与普通窗口一致 | U-AUDIT / 需求 B10 | 无实现 | not_started | 无 | 未实现 | 无 Quake 模式 |
-| UI-QUAKE-005 | 快捷键冲突提示；Wayland 全局快捷键能力检测与回退 | U-AUDIT / 需求 B10 | 无实现 | not_started | 无 | 未实现 | 无全局快捷键/能力检测/回退说明 |
+| UI-QUAKE-001 | 全局快捷键显示/隐藏终端窗口 | U-AUDIT / 需求 B10 | X11 被动 grab（`quake::spawn_listener`，config `quake_hotkey`，支持 `Ctrl+Shift+F12` 语法）；热键线程 → `invoke_from_event_loop` → `toggle_quake_inner`；设置 Window 页开关 + 命令 `view.toggle-quake` | implemented | 真机：F12 → `[quake] show 3584x720 at 768,0`；再按 → `[quake] hide (minimized)`，进程存活；再按恢复（X11） | 全局热键可显示/隐藏，状态机正确 | 仅 X11；Wayland 无全局热键；失焦自动隐藏未做 |
+| UI-QUAKE-002 | 窗口按设置停靠屏幕边缘/指定位置（受 OS 限制） | U-AUDIT / 需求 B10 | `xconn::screen_size()` + `quake_width`/`quake_height`（默认 0.7/0.5）→ 顶部居中；`_NET_WM_STATE_ABOVE/STICKY` + `_NET_ACTIVE_WINDOW` 置顶聚焦 | implemented | 真机 5120x1440：Quake 3584x720 at 768,0，置顶后可正常右键/输入 | 顶部居中停靠可用 | 只有顶部居中；不记忆多显示器/指定 edge |
+| UI-QUAKE-003 | 调整窗口高宽、自动隐藏/失焦隐藏（按上游核验） | U-AUDIT（行为待核） | 高宽按屏幕比例配置；隐藏用 `set_minimized(true)`（**不能用 `hide()`**：Slint 最后一个窗口隐藏会退出事件循环，进程直接结束）；F12 恢复 | partial | 真机：F12 show → hide（WM_STATE=Iconic）→ show，进程 PID 不变；隐藏原因写进日志 | 尺寸/手动显隐可用 | 失焦自动隐藏、动画未做；比例只读配置（无设置项） |
+| UI-QUAKE-004 | Quake 下 Tab/Pane/Session 操作与普通窗口一致 | U-AUDIT / 需求 B10 | Quake 复用同一窗口/AppState，不切换模式；Tab、Pane、右键菜单、输入路径完全一致 | implemented | 真机：Quake 内右键 → `[trace] pane-down-right` + `[ui] right click pane=1`，菜单正常；hide/show 后再次右键同样有效 | Quake 内交互与普通窗口一致 | 无独立 Quake 会话/工作区 |
+| UI-QUAKE-005 | 快捷键冲突提示；Wayland 全局快捷键能力检测与回退 | U-AUDIT / 需求 B10 | `grab_key().check()` 失败（BadAccess）→ 日志“已被其他程序占用”；无 DISPLAY/Wayland 时 `connect()` 失败 → 日志；应用其它功能不受影响 | partial | 真机：正常注册 `[quake] 全局热键 F12 已注册`；错误路径为日志提示（无对话框） | 冲突/能力不足有日志可查 | 无 UI 冲突提示/自动改键；Wayland 无原生实现 |
 
 ### B11. 插件管理 UI（7 条）
 

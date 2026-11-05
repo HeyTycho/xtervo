@@ -32,6 +32,7 @@ fn main() {
             "tab" => "\t".to_string(),
             "f11" => "\u{F70E}".to_string(),
             "f2" => "\u{F705}".to_string(),
+            "f12" => "\u{F70F}".to_string(),
             "up" => "\u{F700}".to_string(),
             "down" => "\u{F701}".to_string(),
             "left" => "\u{F702}".to_string(),
@@ -62,6 +63,7 @@ fn main() {
             '\u{1b}' => 0xff1b,    // Escape
             '\u{F70E}' => 0xffc8,  // F11
             '\u{F705}' => 0xffbf,  // F2
+            '\u{F70F}' => 0xffc9,  // F12
             '\u{F700}' => 0xff52,  // Up
             '\u{F701}' => 0xff54,  // Down
             '\u{F702}' => 0xff51,  // Left
