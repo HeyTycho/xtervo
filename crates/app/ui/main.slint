@@ -783,8 +783,11 @@ export component MainWindow inherits Window {
                         if (self.preedit-text != "") {
                             return EventResult.reject;
                         }
-                        if (root.menu-open && event.text == "\u{1b}") {
+                        if (event.text == "\u{1b}" && (root.menu-open || root.tabmenu-open || root.tabctx-open)) {
                             root.menu-open = false;
+                            root.tabmenu-open = false;
+                            root.tabctx-open = false;
+                            root.menu-dismissed();
                             return EventResult.accept;
                         }
                         root.key-input(event.text, event.modifiers.control, event.modifiers.alt, event.modifiers.shift);
@@ -1022,6 +1025,26 @@ export component MainWindow inherits Window {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    // 点菜单外的任意位置关闭 TabBar / Tab 菜单（此前只能点菜单项，菜单会一直留着）。
+    // 这层放在两个菜单之前（下面），菜单项仍在最上层可点。
+    if root.tabmenu-open || root.tabctx-open : Rectangle {
+        width: 100%;
+        height: 100%;
+        background: transparent;
+
+        TouchArea {
+            pointer-event(event) => {
+                if (event.kind == PointerEventKind.down) {
+                    root.tabmenu-open = false;
+                    root.tabctx-open = false;
+                    root.menu-dismissed();
+                    return EventResult.accept;
+                }
+                EventResult.reject
             }
         }
     }
