@@ -173,6 +173,8 @@ struct AppState {
     hover_cell: Option<(PaneId, (u16, u16))>,
     resize: Option<WindowResize>,
     xresize: Option<ResizeCtx>,
+    /// X11 SHAPE 自适应圆角 worker；None = 未启动（X11 连接/线程失败，窗口保持直角）。
+    corners: Option<xconn::CornerShaper>,
     clipboard: Option<arboard::Clipboard>,
 }
 
@@ -2131,6 +2133,36 @@ fn request_close(st: &mut AppState) {
     let _ = slint::quit_event_loop();
 }
 
+/// 通知后台 worker 重算 X11 SHAPE 圆角。
+///
+/// Slint 的尺寸/`resized` 回调都是逻辑像素，worker 会乘 `scale_factor` 换成物理
+/// 像素并以 X11 `get_geometry` 为准；`state` 为 None 时查 `_NET_WM_STATE`，Some
+/// 表示调用方刚设置了最大化/全屏（避免 WM 属性更新滞后导致角落留缝）。
+fn request_window_corners(
+    st: &AppState,
+    logical: Option<(f32, f32)>,
+    state: Option<xconn::CornerState>,
+) {
+    let Some(shaper) = &st.corners else { return };
+    let window = st.ui.window();
+    let scale = window.scale_factor();
+    let (logical_width, logical_height) = match logical {
+        Some(size) => size,
+        None => {
+            // window.size() 是物理像素；除以 scale 还原逻辑尺寸，供 worker 兜底/日志。
+            let physical = window.size();
+            let scale = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
+            (physical.width as f32 / scale, physical.height as f32 / scale)
+        },
+    };
+    shaper.request(xconn::CornerRequest {
+        logical_width,
+        logical_height,
+        scale_factor: scale,
+        state,
+    });
+}
+
 /// F11 / --fullscreen：切换全屏。
 fn toggle_fullscreen(st: &AppState) {
     // 注意：本函数会被 handle_input / run_command 在 `with_app` 的借用内调用，
@@ -2138,6 +2170,12 @@ fn toggle_fullscreen(st: &AppState) {
     let win = st.ui.window();
     let next = !win.is_fullscreen();
     win.set_fullscreen(next);
+    // 全屏状态是调用方刚设置的，作为权威状态直接重算圆角（不依赖 WM 属性更新时序）。
+    request_window_corners(
+        st,
+        None,
+        Some(xconn::CornerState { maximized: win.is_maximized(), fullscreen: next }),
+    );
     eprintln!("[ui] fullscreen={next}");
 }
 
@@ -3586,6 +3624,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("[plugin] 跳过 {path}: {reason}");
     }
 
+    // 圆角 worker 只依赖 X11；连不上/没有 SHAPE 时记录日志并保持直角，不阻塞 UI。
+    let corners = match xconn::CornerShaper::spawn(&opts.title) {
+        Ok(shaper) => Some(shaper),
+        Err(e) => {
+            eprintln!("[corners] {e}");
+            None
+        },
+    };
+
     let state = Rc::new(RefCell::new(AppState {
         ui: ui.clone_strong(),
         ws: Workspace::new(),
@@ -3643,6 +3690,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         hover_cell: None,
         resize: None,
         xresize: None,
+        corners,
         clipboard: arboard::Clipboard::new().ok(),
         cfg: {
             let mut c = cfg.clone();
@@ -4729,6 +4777,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // 内置 `maximized` 属性与窗口状态双向同步，直接翻转即可
                 let target = !ui.window().is_maximized();
                 ui.window().set_maximized(target);
+                // 先按目标状态更新圆角，避免 WM 尚未写回 _NET_WM_STATE 时四角留缝。
+                with_app(|st| {
+                    request_window_corners(
+                        st,
+                        None,
+                        Some(xconn::CornerState {
+                            maximized: target,
+                            fullscreen: st.ui.window().is_fullscreen(),
+                        }),
+                    );
+                });
             }
         });
     }
@@ -4785,6 +4844,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     ui.on_resized(|w, h| {
         with_app(|st| {
+            // w/h 是 Slint 逻辑像素；worker 按 scale_factor 换算物理像素并节流去重。
+            request_window_corners(st, Some((w, h)), None);
             let w = w.max(1.0);
             let h = (h - TABBAR_H).max(1.0);
             if (st.content.w - w).abs() < 0.5 && (st.content.h - h).abs() < 0.5 {
@@ -4882,6 +4943,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ---- 首帧 ----
     ui.show()?;
+    // 启动/窗口 map 后先应用一次圆角；worker 会按 _NET_WM_PID 等本进程窗口出现。
+    with_app(|st| request_window_corners(st, None, None));
     {
         let wins = xconn::own_windows();
         if let Some(w) = wins.iter().find(|w| w.viewable && w.w > 100 && w.h > 100) {
@@ -4908,6 +4971,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     if opts.fullscreen {
         ui.window().set_fullscreen(true);
+        // 启动即全屏：直接按方角状态重算，避免首帧先画圆角再等 WM 属性更新。
+        with_app(|st| {
+            request_window_corners(
+                st,
+                None,
+                Some(xconn::CornerState { maximized: false, fullscreen: true }),
+            );
+        });
         eprintln!("[ui] fullscreen=true (--fullscreen)");
     }
 
