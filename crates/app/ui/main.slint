@@ -133,9 +133,41 @@ component MiniBtn inherits Rectangle {
     }
 }
 
+// 设置页里的动作按钮（Vault 等）
+component ActionBtn inherits Rectangle {
+    in property <string> label;
+    in property <bool> danger: false;
+    in property <length> font-size: 11px;
+    callback clicked();
+
+    height: 26px;
+    border-radius: 6px;
+    background: hit.has-hover
+        ? (root.danger ? Palette.colors.danger : Palette.colors.hover)
+        : Palette.colors.raise;
+    border-width: 1px;
+    border-color: root.danger ? Palette.colors.danger : Palette.colors.border;
+
+    hit := TouchArea {
+        clicked => { root.clicked(); }
+    }
+    Text {
+        text: root.label;
+        color: root.danger && hit.has-hover ? Palette.colors.accent-text : Palette.colors.text;
+        font-size: root.font-size;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        width: 100%;
+        height: 100%;
+        overflow: elide;
+    }
+}
+
 component FormRow inherits HorizontalLayout {
     in property <string> label;
     in-out property <string> text;
+    /// true = 密码输入（Slint 负责 masked 显示）
+    in property <bool> masked: false;
     spacing: 8px;
 
     Text {
@@ -159,6 +191,7 @@ component FormRow inherits HorizontalLayout {
             height: parent.height;
             text <=> root.text;
             single-line: true;
+            input-type: root.masked ? InputType.password : InputType.text;
             color: Palette.colors.text;
             font-size: 12px;
             vertical-alignment: center;
@@ -395,6 +428,9 @@ export component MainWindow inherits Window {
     in-out property <string> form-user: "";
     in-out property <string> form-auth: "";
     in-out property <string> form-key: "";
+    /// 仅 auth=password 时使用；不回填已有密码，空 = 保留 Vault 原值。
+    in-out property <string> form-password: "";
+    in-out property <bool> form-save-password: false;
     in-out property <string> form-extra: "";
     in-out property <string> form-forwards: "";
     /// -1 = 新建；>0 = 正在编辑的 Profile ID
@@ -470,7 +506,7 @@ export component MainWindow inherits Window {
     in property <string> auto-resolved: "";
     in property <[ThemeChoice]> theme-choices: [];
     /// 设置面板高度：主题数量变多时由 Rust 侧按行数下发。
-    /// 设置分类：0=Appearance 1=Terminal 2=Window 3=Config File
+    /// 设置分类：0=Appearance 1=Terminal 2=Window 3=Config 4=Hotkeys 5=Plugins 6=Vault
     in-out property <int> settings-category: 0;
     in-out property <string> settings-path: "";
     in-out property <string> settings-query: "";
@@ -493,6 +529,17 @@ export component MainWindow inherits Window {
     in property <string> plugin-summary: "";
     in property <string> plugin-dir: "";
     in-out property <string> config-status: "";
+    // Vault（加密凭据）
+    in-out property <string> vault-status: "";
+    in-out property <string> vault-path: "";
+    in-out property <int> vault-entries: 0;
+    in-out property <string> vault-password: "";
+    in-out property <string> vault-error: "";
+    in-out property <string> vault-notice: "";
+    callback vault-set-master();
+    callback vault-unlock();
+    callback vault-lock();
+    callback vault-clear();
     callback config-import-tabby();
     callback config-export-tabby();
     callback settings-open-path();
@@ -1593,9 +1640,9 @@ export component MainWindow inherits Window {
 
     if root.profile-form-open : Rectangle {
         x: (root.width - 440px) / 2;
-        y: (root.height - 380px) / 2;
+        y: (root.height - 480px) / 2;
         width: 440px;
-        height: 380px;
+        height: 480px;
         background: Palette.colors.raise;
         border-radius: 10px;
         border-width: 1px;
@@ -1657,13 +1704,26 @@ export component MainWindow inherits Window {
         }
 
         if root.form-kind == 1 : VerticalLayout {
-            x: 16px; y: 116px; width: 408px; height: 190px;
-            spacing: 6px;
+            x: 16px; y: 116px; width: 408px; height: 290px;
+            spacing: 5px;
             FormRow { label: "Host"; text <=> root.form-host; }
             FormRow { label: "Port"; text <=> root.form-port; }
             FormRow { label: "User"; text <=> root.form-user; }
             FormRow { label: "Auth"; text <=> root.form-auth; }
             FormRow { label: "Key"; text <=> root.form-key; }
+            if root.form-auth == "password" : VerticalLayout {
+                spacing: 5px;
+                FormRow {
+                    label: "Password";
+                    text <=> root.form-password;
+                    masked: true;
+                }
+                ToggleRow {
+                    label: "Save password to Vault";
+                    on: root.form-save-password;
+                    toggled => { root.form-save-password = !root.form-save-password; }
+                }
+            }
             FormRow { label: "Extra"; text <=> root.form-extra; }
             FormRow { label: "Forwards"; text <=> root.form-forwards; }
         }
@@ -1684,7 +1744,7 @@ export component MainWindow inherits Window {
 
         Text {
             x: 16px;
-            y: 308px;
+            y: 410px;
             width: 408px;
             text: root.form-error;
             color: Palette.colors.danger;
@@ -1693,7 +1753,7 @@ export component MainWindow inherits Window {
         }
 
         Rectangle {
-            x: 252px; y: 340px; width: 80px; height: 28px; border-radius: 6px;
+            x: 252px; y: 442px; width: 80px; height: 28px; border-radius: 6px;
             background: form-cancel-hit.has-hover ? Palette.colors.hover : Palette.colors.raise;
             border-width: 1px;
             border-color: Palette.colors.border;
@@ -2716,6 +2776,12 @@ export component MainWindow inherits Window {
                 active: root.settings-category == 5;
                 clicked => { root.settings-category = 5; root.settings-category-changed(5); }
             }
+            NavItem {
+                x: 18px; y: 268px; width: 118px;
+                label: "Vault";
+                active: root.settings-category == 6;
+                clicked => { root.settings-category = 6; root.settings-category-changed(6); }
+            }
 
             Text {
                 x: 18px;
@@ -3052,7 +3118,7 @@ export component MainWindow inherits Window {
                         wrap: word-wrap;
                     }
                     Text {
-                        text: "普通配置里不会出现密码或私钥；凭据将走系统 Keyring（Vault，未实现）。";
+                        text: "普通配置里不会出现密码或私钥；SSH 密码保存在本地加密 Vault（Settings → Vault）。";
                         color: Palette.colors.muted;
                         font-size: 10px;
                         wrap: word-wrap;
@@ -3253,6 +3319,82 @@ export component MainWindow inherits Window {
 
                     Text {
                         text: "只读取并展示 *.toml 清单；不加载、不执行插件代码（插件运行时未实现）。";
+                        color: Palette.colors.muted;
+                        font-size: 10px;
+                        wrap: word-wrap;
+                    }
+                }
+
+                if root.settings-category == 6 : VerticalLayout {
+                    width: 100%;
+                    spacing: 7px;
+
+                    Text {
+                        text: "状态：\{root.vault-status}";
+                        color: Palette.colors.text;
+                        font-size: 12px;
+                    }
+                    Text {
+                        text: root.vault-path;
+                        color: Palette.colors.muted;
+                        font-size: 10px;
+                        wrap: word-wrap;
+                    }
+
+                    FormRow {
+                        label: "Master";
+                        text <=> root.vault-password;
+                        masked: true;
+                    }
+
+                    HorizontalLayout {
+                        spacing: 6px;
+                        ActionBtn {
+                            width: 86px;
+                            label: "Set/Change";
+                            clicked => { root.vault-set-master(); }
+                        }
+                        ActionBtn {
+                            width: 66px;
+                            label: "Unlock";
+                            clicked => { root.vault-unlock(); }
+                        }
+                        ActionBtn {
+                            width: 56px;
+                            label: "Lock";
+                            clicked => { root.vault-lock(); }
+                        }
+                        ActionBtn {
+                            width: 60px;
+                            label: "Clear";
+                            danger: true;
+                            clicked => { root.vault-clear(); }
+                        }
+                    }
+
+                    Text {
+                        visible: root.vault-error != "";
+                        text: root.vault-error;
+                        color: Palette.colors.danger;
+                        font-size: 10px;
+                        wrap: word-wrap;
+                    }
+                    Text {
+                        visible: root.vault-notice != "";
+                        text: root.vault-notice;
+                        color: Palette.colors.muted;
+                        font-size: 10px;
+                        wrap: word-wrap;
+                    }
+
+                    Text {
+                        text: "主密码只用于 Argon2id 派生，不落盘/不写日志；vault.enc 为 0600、原子写。未初始化时点 Set/Change 创建；已解锁才能改主密码。Clear 需点两次。";
+                        color: Palette.colors.subtext;
+                        font-size: 10px;
+                        wrap: word-wrap;
+                    }
+                    Text {
+                        text: "SSH 密码认证：勾选保存的 Profile 解锁后用 askpass 自动登录；未勾选则 ssh 在终端里询问。MVP 限制：askpass 密码经子进程环境变量传递，同用户可经 /proc 观察，详见 docs/VAULT.md。";
                         color: Palette.colors.muted;
                         font-size: 10px;
                         wrap: word-wrap;

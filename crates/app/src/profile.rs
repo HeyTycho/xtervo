@@ -30,9 +30,11 @@ pub struct Profile {
     pub host: String,
     pub port: u16,
     pub user: String,
-    /// `agent` | `key` | `password`（密码走 Vault，暂未实现）。
+    /// `agent` | `key` | `password`（密码走 Vault，绝不写 profiles.toml）。
     pub auth: String,
     pub key_path: String,
+    /// `auth=password` 时是否把密码保存到 Vault（默认 false；明文密码永不落 profiles.toml）。
+    pub save_password: bool,
     /// 传给 ssh 的追加参数（如 -o UserKnownHostsFile=... / -o StrictHostKeyChecking=yes）。
     pub extra_args: Vec<String>,
     /// 本地端口转发，每项形如 `8080:localhost:80` → `ssh -L 8080:localhost:80`。
@@ -79,6 +81,7 @@ impl Default for Profile {
             user: String::new(),
             auth: "agent".to_string(),
             key_path: String::new(),
+            save_password: false,
             extra_args: Vec::new(),
             local_forwards: Vec::new(),
             serial_port: String::new(),
@@ -586,6 +589,32 @@ env = []
         assert!(text.contains("version = 2"), "{text}");
         assert!(text.contains("kind = \"local\""), "{text}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn profile_serialization_has_no_plaintext_password() {
+        // Profile 根本没有 password 字段；password 认证只持久化 save_password 标志。
+        let p = Profile {
+            kind: "ssh".into(),
+            host: "example.com".into(),
+            port: 22,
+            user: "yt".into(),
+            auth: "password".into(),
+            save_password: true,
+            ..Profile::default()
+        };
+        let text = toml::to_string_pretty(&p).unwrap();
+        assert!(!text.contains("hunter2"), "序列化结果不能含明文密码: {text}");
+        assert!(text.contains("save_password = true"), "{text}");
+        for line in text.lines() {
+            if let Some((key, _)) = line.split_once('=') {
+                assert_ne!(key.trim(), "password", "不允许出现 password 字段: {line}");
+            }
+        }
+        let back: Profile = toml::from_str(&text).unwrap();
+        assert_eq!(back.auth, "password");
+        assert!(back.save_password);
+        assert!(!Profile::default().save_password, "默认不保存密码");
     }
 
     #[test]
