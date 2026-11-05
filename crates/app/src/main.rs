@@ -151,6 +151,10 @@ struct AppState {
     plugin_model: Rc<VecModel<slint::SharedString>>,
     /// Delete 需要点两次确认（避免误删远端文件）
     sftp_delete_armed: bool,
+    /// 进行中的上传/下载；同一时间只允许一个。
+    sftp_transfer: Option<sftp::TransferJob>,
+    /// 传输状态机（进度事件在 poll_events 里消费后写入 UI）。
+    sftp_transfer_state: sftp::TransferState,
     /// Quake 模式窗口当前是否可见；以及进入 Quake 前的普通几何（退出时恢复）
     quake_visible: bool,
     quake_saved: Option<(slint::PhysicalPosition, slint::PhysicalSize)>,
@@ -1419,6 +1423,12 @@ fn open_sftp_panel(st: &mut AppState) {
         }
         .into(),
     );
+    // 面板可能在传输进行中被再次打开：以真实传输状态覆盖初始文案。
+    if st.sftp_transfer_state.is_active() {
+        let status = st.sftp_transfer_state.status_text();
+        st.ui.set_sftp_status(status.as_str().into());
+    }
+    sftp_show_transfer(st);
     st.ui.set_sftp_open(true);
     eprintln!("[sftp] 打开面板 profiles={}", st.sftp_profiles.len());
 }
@@ -1434,7 +1444,145 @@ fn sftp_set_status(st: &mut AppState, msg: &str) {
     eprintln!("[sftp] {msg}");
 }
 
+/// 把状态机快照写进 Slint 属性（进度区只在 Running 时显示）。
+fn sftp_show_transfer(st: &mut AppState) {
+    let active = st.sftp_transfer_state.is_active();
+    let current = st.sftp_transfer_state.current.clone();
+    let percent = st.sftp_transfer_state.percent_i32();
+    let detail = st.sftp_transfer_state.detail_text();
+    st.ui.set_sftp_transfer_active(active);
+    st.ui.set_sftp_transfer_name(current.as_str().into());
+    st.ui.set_sftp_transfer_percent(percent);
+    st.ui.set_sftp_transfer_detail(detail.as_str().into());
+}
+
+fn sftp_update_status(st: &mut AppState) {
+    let status = st.sftp_transfer_state.status_text();
+    if st.ui.get_sftp_status().as_str() != status.as_str() {
+        st.ui.set_sftp_status(status.as_str().into());
+    }
+}
+
+/// 启动一次后台传输；同一时间只允许一个任务。
+fn sftp_start_transfer(
+    st: &mut AppState,
+    direction: sftp::TransferDirection,
+    local: String,
+    remote: String,
+) {
+    if st.sftp_transfer.is_some() {
+        sftp_set_status(st, "已有传输进行中，先 Cancel 或等完成");
+        return;
+    }
+    let Some(target) = sftp_current_target(st) else {
+        sftp_set_status(st, "请选择 SSH Profile");
+        return;
+    };
+    // 下载始终 get -R（普通文件安全）；上传只有本地是目录才 put -R。
+    let recursive =
+        direction == sftp::TransferDirection::Upload && std::path::Path::new(&local).is_dir();
+    let request = sftp::TransferRequest {
+        direction,
+        target,
+        local: local.clone(),
+        remote: remote.clone(),
+        recursive,
+    };
+    match sftp::TransferJob::start(&request) {
+        Ok(job) => {
+            st.sftp_transfer = Some(job);
+            st.sftp_transfer_state =
+                sftp::TransferState::running(direction, local.clone(), remote.clone());
+            sftp_show_transfer(st);
+            let status = st.sftp_transfer_state.status_text();
+            sftp_set_status(st, &status);
+            eprintln!(
+                "[sftp] {} 开始 local={local:?} remote={remote:?} recursive={recursive}",
+                direction.verb()
+            );
+        },
+        Err(e) => sftp_set_status(st, &format!("{}失败: {e}", direction.verb())),
+    }
+}
+
+/// 由 400ms 的 poll_events 驱动：非阻塞收事件、更新 UI、终态回收线程。
+fn poll_sftp_transfer(st: &mut AppState) {
+    let Some(job) = st.sftp_transfer.as_ref() else {
+        return;
+    };
+    let mut events = Vec::new();
+    let mut disconnected = false;
+    loop {
+        match job.events.try_recv() {
+            Ok(event) => events.push(event),
+            Err(std::sync::mpsc::TryRecvError::Empty) => break,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                disconnected = true;
+                break;
+            },
+        }
+    }
+    for event in events {
+        st.sftp_transfer_state.apply(event);
+    }
+
+    let was_active = st.sftp_transfer_state.is_active();
+    if was_active && disconnected {
+        // 正常路径一定有 Finished；没有结束事件说明 worker 异常退出。
+        st.sftp_transfer_state.apply(sftp::TransferEvent::Finished {
+            cancelled: false,
+            error: Some("传输进程意外结束（没有收到结束事件）".into()),
+        });
+    }
+    if st.sftp_transfer_state.is_active() {
+        sftp_show_transfer(st);
+        sftp_update_status(st);
+        return;
+    }
+
+    let need_kill = was_active && disconnected;
+    if let Some(job) = st.sftp_transfer.take() {
+        if need_kill {
+            job.cancel();
+        }
+        job.join();
+    }
+    let status = st.sftp_transfer_state.status_text();
+    let phase = st.sftp_transfer_state.phase;
+    let upload_done = st.sftp_transfer_state.is_done_upload();
+    sftp_show_transfer(st);
+    sftp_set_status(st, &status);
+    eprintln!("[sftp] 传输结束 phase={phase:?}");
+    if upload_done {
+        // 上传完成后刷新远端列表，但保留“已上传”结果文案。
+        sftp_do_list(st);
+        sftp_set_status(st, &status);
+    }
+}
+
+fn sftp_cancel_transfer(st: &mut AppState) {
+    let Some(job) = st.sftp_transfer.as_ref() else {
+        sftp_set_status(st, "没有进行中的传输");
+        return;
+    };
+    job.cancel();
+    sftp_set_status(st, "正在取消传输…");
+}
+
+/// 传输进行中时阻止会并发起 sftp 子进程的面板操作。
+fn sftp_busy(st: &mut AppState) -> bool {
+    if st.sftp_transfer.is_some() {
+        sftp_set_status(st, "传输进行中，完成或取消后再操作");
+        true
+    } else {
+        false
+    }
+}
+
 fn sftp_do_list(st: &mut AppState) {
+    if sftp_busy(st) {
+        return;
+    }
     let Some(target) = sftp_current_target(st) else {
         sftp_set_status(st, "请选择 SSH Profile");
         return;
@@ -1473,10 +1621,13 @@ fn join_remote(dir: &str, name: &str) -> String {
 }
 
 fn sftp_do_download(st: &mut AppState) {
-    let Some(target) = sftp_current_target(st) else {
+    if sftp_busy(st) {
+        return;
+    }
+    if sftp_current_target(st).is_none() {
         sftp_set_status(st, "请选择 SSH Profile");
         return;
-    };
+    }
     let sel = st.ui.get_sftp_selected();
     let Some(item) = st.sftp_model.row_data(sel.max(0) as usize) else {
         sftp_set_status(st, "先在列表里选一条");
@@ -1484,33 +1635,30 @@ fn sftp_do_download(st: &mut AppState) {
     };
     let remote = remote_entry_path(&st.ui.get_sftp_remote(), &item);
     let local = st.ui.get_sftp_local().to_string();
-    match sftp::download(&target, &remote, &local) {
-        Ok(()) => sftp_set_status(st, &format!("已下载 {remote} → {local}")),
-        Err(e) => sftp_set_status(st, &format!("下载失败: {e}")),
-    }
+    sftp_start_transfer(st, sftp::TransferDirection::Download, local, remote);
 }
 
 fn sftp_do_upload(st: &mut AppState) {
-    let Some(target) = sftp_current_target(st) else {
+    if sftp_busy(st) {
+        return;
+    }
+    if sftp_current_target(st).is_none() {
         sftp_set_status(st, "请选择 SSH Profile");
         return;
-    };
+    }
     let local = st.ui.get_sftp_local().to_string();
     let name = std::path::Path::new(&local)
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "upload.bin".to_string());
     let remote = join_remote(&st.ui.get_sftp_remote(), &name);
-    match sftp::upload(&target, &local, &remote) {
-        Ok(()) => {
-            sftp_set_status(st, &format!("已上传 {local} → {remote}"));
-            sftp_do_list(st);
-        },
-        Err(e) => sftp_set_status(st, &format!("上传失败: {e}")),
-    }
+    sftp_start_transfer(st, sftp::TransferDirection::Upload, local, remote);
 }
 
 fn sftp_do_mkdir(st: &mut AppState) {
+    if sftp_busy(st) {
+        return;
+    }
     let Some(target) = sftp_current_target(st) else {
         sftp_set_status(st, "请选择 SSH Profile");
         return;
@@ -1531,6 +1679,9 @@ fn sftp_do_mkdir(st: &mut AppState) {
 }
 
 fn sftp_do_rename(st: &mut AppState) {
+    if sftp_busy(st) {
+        return;
+    }
     let Some(target) = sftp_current_target(st) else {
         sftp_set_status(st, "请选择 SSH Profile");
         return;
@@ -1558,6 +1709,9 @@ fn sftp_do_rename(st: &mut AppState) {
 }
 
 fn sftp_do_delete(st: &mut AppState) {
+    if sftp_busy(st) {
+        return;
+    }
     let Some(target) = sftp_current_target(st) else {
         sftp_set_status(st, "请选择 SSH Profile");
         return;
@@ -3199,6 +3353,8 @@ fn poll_events() {
         if titles_dirty || tabs_dirty {
             rebuild_tabs(st);
         }
+        // SFTP 传输进度：400ms 一次非阻塞收事件；终态时回收任务线程。
+        poll_sftp_transfer(st);
     });
 }
 
@@ -3387,13 +3543,13 @@ fn run_sftp_probe(args: &[String]) -> i32 {
         "list" => sftp::list(&target, remote).map(|items| items.join("\n")),
         "get" => {
             let local = args.get(2).map(String::as_str).unwrap_or("");
-            sftp::download(&target, remote, local).map(|_| String::new())
+            sftp_probe_transfer(&target, sftp::TransferDirection::Download, local, remote)
         },
         "put" => {
             // put <local> <remote>（与 cp 习惯一致；get 则是 <remote> <local>）
             let local = args.get(1).map(String::as_str).unwrap_or("");
             let remote = args.get(2).map(String::as_str).unwrap_or("");
-            sftp::upload(&target, local, remote).map(|_| String::new())
+            sftp_probe_transfer(&target, sftp::TransferDirection::Upload, local, remote)
         },
         other => {
             eprintln!("[sftp-probe] 未知操作 {other}");
@@ -3413,6 +3569,24 @@ fn run_sftp_probe(args: &[String]) -> i32 {
             1
         },
     }
+}
+
+fn sftp_probe_transfer(
+    target: &sftp::SftpTarget,
+    direction: sftp::TransferDirection,
+    local: &str,
+    remote: &str,
+) -> Result<String, String> {
+    let request = sftp::TransferRequest {
+        direction,
+        target: target.clone(),
+        local: local.to_string(),
+        remote: remote.to_string(),
+        recursive: direction == sftp::TransferDirection::Upload
+            && std::path::Path::new(local).is_dir(),
+    };
+    sftp::TransferJob::start(&request)?.wait()?;
+    Ok(String::new())
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -3628,6 +3802,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         plugins,
         plugin_model,
         sftp_delete_armed: false,
+        sftp_transfer: None,
+        sftp_transfer_state: sftp::TransferState::idle(),
         quake_visible: false,
         quake_saved: None,
         profile_menu_indices: Vec::new(),
@@ -4239,6 +4415,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     ui.on_sftp_upload(|| {
         with_app(|st| sftp_do_upload(st));
+    });
+
+    ui.on_sftp_cancel(|| {
+        with_app(|st| sftp_cancel_transfer(st));
     });
 
     ui.on_sftp_mkdir(|| {
