@@ -994,6 +994,31 @@ fn cell_at(rt: &PaneRuntime, x: f32, y: f32) -> (u16, u16) {
     (row.min(rows - 1) as u16, col.min(cols - 1) as u16)
 }
 
+/// 打开 pane 右键菜单；坐标是内容区坐标（Slint 侧负责夹取）。
+fn open_pane_menu(st: &mut AppState, id: PaneId, x: f32, y: f32) {
+    eprintln!("[ui] right click pane={id} at {x},{y}");
+    st.ui.set_menu_pane(id as i32);
+    st.ui.set_menu_x(x);
+    st.ui.set_menu_y(y);
+    st.ui.set_menu_open(true);
+}
+
+/// 点到矩形的最短距离平方（点在矩形内为 0）。
+fn dist2_to_rect(r: Rect, x: f32, y: f32) -> f32 {
+    let dx = (r.x - x).max(x - (r.x + r.w)).max(0.0);
+    let dy = (r.y - y).max(y - (r.y + r.h)).max(0.0);
+    dx * dx + dy * dy
+}
+
+/// 内容区坐标 → 最近的 pane。分隔线缝隙、窗口边缘的右键都靠它兜底。
+fn nearest_pane(rects: &[(PaneId, Rect)], x: f32, y: f32) -> Option<PaneId> {
+    rects
+        .iter()
+        .map(|(id, r)| (*id, dist2_to_rect(*r, x, y)))
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(id, _)| id)
+}
+
 /// Slint 修饰键位（1=Shift 2=Alt 4=Ctrl）→ 鼠标修饰键。
 fn mouse_mods(bits: i32) -> Modifiers {
     Modifiers { shift: bits & 1 != 0, alt: bits & 2 != 0, ctrl: bits & 4 != 0 }
@@ -1295,7 +1320,7 @@ fn parse_args(cfg: &Config) -> Options {
             "--scrollback" => o.scrollback = it.next().and_then(|v| v.parse().ok()).unwrap_or(o.scrollback),
             "--font-size" => o.font_size = it.next().and_then(|v| v.parse().ok()).unwrap_or(o.font_size),
             "--shell" => o.shell = it.next(),
-            "--latency" => o.latency = it.next().and_then(|v| v.parse().ok()),
+            "--latency" | "-l" => o.latency = it.next().and_then(|v| v.parse().ok()),
             "--fps" => o.fps = it.next().and_then(|v| v.parse().ok()),
             "--title" => o.title = it.next().unwrap_or(o.title),
             "--exit-after-first" => o.exit_after_first = true,
@@ -1376,6 +1401,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let t_font = t_start.elapsed();
 
     let ui = MainWindow::new()?;
+    // --title 以前只解析不使用，窗口标题永远硬编码；现在透传到 Slint 属性。
+    ui.set_window_title(opts.title.as_str().into());
     ui.window().set_size(slint::PhysicalSize::new(win_w as u32, win_h as u32));
 
     let pane_model = Rc::new(VecModel::<PaneView>::default());
@@ -1707,13 +1734,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     ui.on_pane_clicked(|id| focus_pane(id as u64));
 
+    ui.on_menu_dismissed(|| {
+        eprintln!("[ui] menu dismissed");
+    });
+
     ui.on_pane_right_clicked(|id, x, y| {
-        eprintln!("[ui] right click pane={id} at {x},{y}");
+        with_app(|st| open_pane_menu(st, id as u64, x, y));
+    });
+
+    // 分隔线/边缘发起的右键：按内容区坐标找最近的 pane。
+    ui.on_pane_right_clicked_at(|x, y| {
         with_app(|st| {
-            st.ui.set_menu_pane(id);
-            st.ui.set_menu_x(x);
-            st.ui.set_menu_y(y);
-            st.ui.set_menu_open(true);
+            let rects: Vec<(PaneId, Rect)> = {
+                let Some(tab) = st.ws.active_tab() else { return };
+                tab.panes()
+                    .into_iter()
+                    .filter_map(|id| st.panes.get(&id).map(|rt| (id, rt.rect)))
+                    .collect()
+            };
+            if let Some(id) = nearest_pane(&rects, x, y) {
+                open_pane_menu(st, id, x, y);
+            }
         });
     });
 
@@ -1905,11 +1946,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 窗口图标兜底：Slint 内置 icon 在本环境没有写进 _NET_WM_ICON
     {
         const ICON_RGBA: &[u8] = include_bytes!("../../../assets/icon-64.rgba");
+        let title_for_icon = opts.title.clone();
         std::thread::Builder::new().name("icon".into()).spawn(move || {
             // 等 Slint 完成首轮 window properties，避免被它的空 icon 覆盖
             std::thread::sleep(std::time::Duration::from_millis(800));
-            match xconn::set_window_icon(ICON_RGBA, 64) {
-                Ok(()) => eprintln!("[ui] _NET_WM_ICON 已设置"),
+            match xconn::set_window_icon(ICON_RGBA, 64, &title_for_icon) {
+                Ok(win) => eprintln!("[ui] _NET_WM_ICON 已设置 (win=0x{win:x})"),
                 Err(e) => eprintln!("[ui] 设置窗口图标失败: {e}"),
             }
         })?;
@@ -1920,7 +1962,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if opts.exit_after_first {
         std::thread::Builder::new().name("first-frame".into()).spawn(move || {
-            let Some(watcher) = DamageWatcher::start(TITLE, Duration::from_secs(30)) else {
+            let Some(watcher) = DamageWatcher::start(&opts.title, Duration::from_secs(30)) else {
                 println!("FIRST_DAMAGE unavailable");
                 let _ = slint::quit_event_loop();
                 return;
@@ -2158,6 +2200,23 @@ mod tests {
         assert!(!is_modifier_artifact("\u{1b}", false, false, false)); // Esc
         assert!(!is_modifier_artifact("\n", true, false, false)); // Ctrl+Enter
         assert!(!is_modifier_artifact("你", false, false, false));
+    }
+
+    #[test]
+    fn nearest_pane_handles_gaps_and_edges() {
+        let rects = vec![
+            (1u64, Rect::new(0.0, 0.0, 100.0, 100.0)),
+            (2u64, Rect::new(104.0, 0.0, 100.0, 100.0)),
+        ];
+        assert_eq!(nearest_pane(&rects, 50.0, 50.0), Some(1));
+        assert_eq!(nearest_pane(&rects, 150.0, 50.0), Some(2));
+        // 分隔线 4px 缝隙：按距离归到较近的一侧
+        assert_eq!(nearest_pane(&rects, 101.5, 50.0), Some(1));
+        assert_eq!(nearest_pane(&rects, 103.0, 50.0), Some(2));
+        // 窗口边缘/内容区之外也必须有归属
+        assert_eq!(nearest_pane(&rects, -20.0, 50.0), Some(1));
+        assert_eq!(nearest_pane(&rects, 500.0, 500.0), Some(2));
+        assert_eq!(nearest_pane(&[], 0.0, 0.0), None);
     }
 
     #[test]

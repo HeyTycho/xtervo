@@ -30,7 +30,7 @@
 |---|---|---|---|---|---|
 | ACT-001 | UI 壳/交互验收补测（不写新功能） | D 顺序第一；已有实现缺统一、可重复的验收证据，先锁基线防止后续改动回归 | `docs/UI_INTERACTION_MATRIX.md`、`docs/FEATURE_MATRIX.md`、`scripts/selfcheck.sh`、`.logs/ui-audit/` | 按 UI 矩阵 §9 完成 6 组验收；每项留截图/录屏；A1–A13 全部有结果；至少补 3 个自动断言（焦点/标签/分屏） | M |
 | ACT-002 | 完成上游 Tabby 审计（clone + SHA + 模块逐项） | 21 条 `needs_verification` 与 30+ 条待核语义阻塞 UI 决策；不审计只能猜 | `docs/TABBY_UPSTREAM_AUDIT.md`、`docs/FEATURE_MATRIX.md`、`docs/COMPATIBILITY_MATRIX.md` | 记录上游 SHA/日期；21 条全部有文件级证据并收敛状态；14 个代表插件至少确认仓库/维护状态 | M |
-| ACT-003 | Pane 焦点可视状态（接入 `PaneView.focused`） | 当前 `focused` 是死字段，4 pane 下无法判断输入归属；小改动直接提升可用性 | `crates/app/ui/main.slint`、`crates/app/src/main.rs`（`refresh_views`/`PaneView`） | 4 pane 下焦点 pane 有 1px accent 边框/标题条；点击/切 Tab/分屏后立即变化；截图对比；人工步骤入矩阵 | S |
+| ACT-003 ✅（2026-11-05 完成） | Pane 焦点可视状态（接入 `PaneView.focused`） | 当前 `focused` 是死字段，4 pane 下无法判断输入归属；小改动直接提升可用性 | `crates/app/ui/main.slint`、`crates/app/src/main.rs`（`refresh_views`/`PaneView`） | 4 pane 下焦点 pane 有 1px accent 边框/标题条；点击/切 Tab/分屏后立即变化；截图对比；人工步骤入矩阵 | S |
 | ACT-004 | Tab per-tab 右键菜单 + Close Others/Duplicate | 当前只有 TabBar 空白菜单，无法对单个 Tab 操作；B2-006/010 缺口 | `main.slint`、`main.rs`、`workspace.rs` | Tab 右键出现菜单；Close/Close Others/Duplicate 可用；仅 1 Tab 时 Close Others 禁用；Esc/点外关闭；人工+单测 | M |
 | ACT-005 | Tab 键盘导航 + 重命名 | 日常高频；B2-007/011；重命名触发方式依赖 ACT-002 结论 | `main.rs`（`handle_input`）、`main.slint`、`workspace.rs`、`session.rs` | Ctrl+Tab/Shift+Ctrl+Tab/Ctrl+1..9/最近 Tab 可用；F2 或双击进入内联编辑，Enter 保存/Esc 取消；标题进快照 | M |
 | ACT-006 | Tab 拖拽排序 + 拖出窗口策略 | B2-004 完全缺失；用户整理工作区只能重开 | `main.slint`、`main.rs`、`workspace.rs`、`session.rs` | 3 Tab 拖动后顺序变化并持久化；拖出按 ACT-002 结论执行（新窗口或明确 no-op 提示）；单测覆盖重排/越界 | M |
