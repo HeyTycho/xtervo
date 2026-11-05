@@ -581,8 +581,26 @@ fn open_profile_tab(st: &mut AppState, index: usize) {
             eprintln!("[profile] ssh 命令: {} {}", q.shell, q.args.join(" "));
             q
         },
+        "telnet" => {
+            let (prog, args) = p.telnet_command();
+            let mut q = p.clone();
+            q.shell = prog;
+            q.args = args;
+            q.cwd = None;
+            eprintln!("[profile] telnet 命令: {} {}", q.shell, q.args.join(" "));
+            q
+        },
+        "serial" => {
+            let (prog, args) = p.serial_command();
+            let mut q = p.clone();
+            q.shell = prog;
+            q.args = args;
+            q.cwd = None;
+            eprintln!("[profile] serial 命令: {} {}", q.shell, q.args.join(" "));
+            q
+        },
         other => {
-            eprintln!("[profile] {:?} kind={other} 的后端尚未实现（Serial/Telnet 待做）", p.name);
+            eprintln!("[profile] {:?} kind={other} 未知类型", p.name);
             return;
         },
     };

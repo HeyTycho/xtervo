@@ -98,7 +98,7 @@
 | UI-NAV-001 | Sidebar 显示/隐藏；宽度调整（若上游支持） | U-AUDIT（上游宽度行为待核） | 无实现 | not_started | 无 | 未实现 | 无 Sidebar；上游是否支持宽度调整待核 |
 | UI-NAV-002 | Sidebar/Toolbar 按钮、分组、顺序遵循上游；插件可扩展 | U-AUDIT / 需求 B4 | 无实现 | not_started | 无 | 未实现 | 无 Sidebar/Toolbar/插件入口 |
 | UI-NAV-003 | Connection Manager 入口始终易访问 | U-AUDIT / 需求 B4 | 无实现 | not_started | 无 | 未实现 | 无连接管理入口 |
-| UI-NAV-004 | Profile Selector：快速选 Shell/SSH/Serial/Telnet Profile | U-AUDIT / 需求 B4 | TabBar 菜单 Profiles 面板：列出 Profile 并点选开 Tab（Local 全量、SSH 走系统 ssh） | partial | 真机：Profiles 面板点 test-ssh → 新 Tab 并完成 SSH 登录（见 UI-SSH-001 证据） | Local/SSH 可选 | Serial/Telnet 后端未实现；无“新 Tab 直接选 Profile”入口（需先开面板） |
+| UI-NAV-004 | Profile Selector：快速选 Shell/SSH/Serial/Telnet Profile | U-AUDIT / 需求 B4 | TabBar 菜单 Profiles 面板：四类 Profile 点选开 Tab（Local 直接起 shell、SSH 系统 ssh、Telnet 系统 telnet、Serial socat） | partial | 真机：Local/SSH/Telnet/Serial 各开一个 Tab 均成功（见 SSH/Telnet/Serial 各行证据） | 四类 Profile 均可打开 | 无“新 Tab 直接选 Profile”入口（需先开面板）；无 Profile 搜索 |
 | UI-NAV-005 | Command Palette：模糊搜索命令/Profile/设置（按上游核验） | U-AUDIT（上游能力待核） | main.slint Palette 浮层 + main.rs `open_palette`/`refresh_palette`/`palette_accept`；`commands::Registry::search` 模糊搜索；TabBar 菜单与 Ctrl+Shift+P 入口 | partial | 真机：菜单 → `[ui] palette open items=10`；点第一条 → `[ui] run command tab.new` → `[ws] new tab: tabs=2` | 命令面板可用（19/21 命令已接线） | Profile/设置项未接入搜索；无键盘输入端到端验证（沙箱键盘注入不可用） |
 | UI-NAV-006 | Toolbar 插件按钮：图标、名称、提示、动作、禁用态 | U-AUDIT / 需求 B4 | 无实现 | not_started | 无 | 未实现 | 无插件系统/工具栏 |
 | UI-NAV-007 | 状态/通知区：连接、活动任务、进度、完成提醒 | U-AUDIT / 需求 B4 | 无状态区；仅 CoreEvent::Bell/Exited 事件存在但 UI 未消费 | not_started | 无 | 未实现 | 无状态栏/通知中心；Bell/Exited 被 `poll_events` 忽略 |
@@ -121,7 +121,7 @@
 | UI-PROF-009 | Profile 可绑定快捷键 | U-AUDIT / 需求 B5 | 无实现 | not_started | 无 | 未实现 | 无快捷键系统 |
 | UI-PROF-010 | Profile 创建/编辑按连接类型动态显示字段 | U-AUDIT / 需求 B5 | 无实现 | not_started | 无 | 未实现 | 无连接类型枚举/表单 |
 | UI-PROF-011 | SSH Profile 字段分组 General/Ports/Advanced/Ciphers/Login Scripts（以源码为准） | U-AUDIT（字段分组待核） | 无实现 | needs_verification | 待上游源码核实字段 | 未核实/未实现 | 无 SSH Profile UI |
-| UI-PROF-012 | Serial Profile：端口/波特率/数据位/校验/停止/流控/模式/换行 | U-AUDIT / 需求 B5 | 无实现 | not_started | 无 | 未实现 | 无 Serial 配置/UI |
+| UI-PROF-012 | Serial Profile：端口/波特率/数据位/校验/停止/流控/模式/换行 | U-AUDIT / 需求 B5 | Profile kind=serial：serial_port + baud；`serial_command()` 走 `socat -,raw,echo=0 <dev>,raw,echo=0,b<baud>` | partial | 真机：socat PTY 对 + 定时写 SERIAL-OK → Tab 显示连续 SERIAL-OK（.logs/serial-e2e.png） | 端口/波特率可用 | 无数据位/校验/停止位/流控/模式/换行设置；依赖系统 socat |
 | UI-PROF-013 | Local Shell Profile：命令、参数、起始目录、环境变量 | U-AUDIT / 需求 B5 | config.rs `shell`；main.rs `create_pane` 传 shell/args/cwd；PaneConfig.env 但 app 传 Vec::new() | partial | 人工：`--shell`/`-- args`/config.toml shell；env 未接线 | --shell 与 args 可用；cwd 仅恢复时用；无 Profile UI | env 字段未接线；无起始目录/标题/自定义选项 UI |
 
 ### B6. Terminal View 交互（14 条）
@@ -188,13 +188,13 @@
 
 | ID | Feature | Upstream evidence | Rust implementation | Status | Test | Result | Limitation |
 |---|---|---|---|---|---|---|---|
-| UI-SER-001 | Serial Profile 列表与保存配置 | U-AUDIT / 需求 B9 | 无实现 | not_started | 无 | 未实现 | 无 Serial Profile/列表 |
+| UI-SER-001 | Serial Profile 列表与保存配置 | U-AUDIT / 需求 B9 | Profiles 面板列出 Serial Profile（`[serial] 名称`）；表单 Serial 分组（设备/波特率）；落盘 profiles.toml | partial | 真机：面板显示 `[serial] test-serial` 并点开成功 | 列表/保存/打开可用 | 无连接状态/自动重连；无数据位等参数 |
 | UI-SER-002 | 串口参数编辑与设备列表刷新 | U-AUDIT / 需求 B9 | 无实现 | not_started | 无 | 未实现 | 无串口枚举/参数 UI |
 | UI-SER-003 | 输入模式：Text、Readline、逐字节/Hex（按上游定义核验） | U-AUDIT（上游定义待核） | 无实现 | needs_verification | 待上游核实输入模式定义 | 未核实/未实现 | 无 Serial 输入模式 |
 | UI-SER-004 | 输出模式：Text、Hexdump（按上游定义核验） | U-AUDIT（上游定义待核） | 无实现 | needs_verification | 待上游核实输出模式定义 | 未核实/未实现 | 无 Serial 输出模式 |
 | UI-SER-005 | Newline 转换策略选择 | U-AUDIT（上游策略待核） | 无实现 | needs_verification | 待上游核实换行策略 | 未核实/未实现 | 无 Serial 换行转换 |
 | UI-SER-006 | 自动重连开关、间隔、当前状态 | U-AUDIT / 需求 B9 | 无实现 | not_started | 无 | 未实现 | 无 Serial 连接/重连 |
-| UI-SER-007 | Telnet Profile、主机/端口、连接/断开、状态 | U-AUDIT / 需求 B9 | 无实现 | not_started | 无 | 未实现 | 无 Telnet 客户端/UI |
+| UI-SER-007 | Telnet Profile、主机/端口、连接/断开、状态 | U-AUDIT / 需求 B9 | Profile kind=telnet：host/port；`telnet_command()` 用系统 telnet 跑在 PTY；表单 Telnet 分组 | partial | 真机：本地 TCP 服务 → Tab 显示 `TELNET-OK` 与 `welcome$`（.logs/telnet-e2e.png） | Telnet 连接可用 | 无连接状态/断开按钮（关 Tab 即断开）；依赖系统 telnet；无 telnet 选项协商设置 |
 | UI-SER-008 | Zmodem 确认、进度、取消、结果通知 | U-AUDIT（上游支持范围待核） | 无实现 | needs_verification | 待上游核实 Zmodem 支持 | 未核实/未实现 | 无 Zmodem |
 
 ### B10. Quake Mode 与窗口操作（5 条）
