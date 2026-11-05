@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-/// 当前 Profile 结构版本。
-pub const VERSION: u32 = 1;
+/// 当前 Profile 结构版本（v2 引入 kind 与连接字段）。
+pub const VERSION: u32 = 2;
 
 /// 一个本地 Profile：决定新 Tab 用什么 shell / 参数 / 起始目录 / 环境变量。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -17,16 +17,97 @@ pub struct Profile {
     /// 稳定 ID（文件内唯一；删除后不复用）。
     pub id: u64,
     pub name: String,
+    /// `local` | `ssh` | `serial` | `telnet`（v1 没有该字段，迁移时补 local）。
+    pub kind: String,
+    // ---- local ----
     /// 空 = 用系统默认 shell。
     pub shell: String,
     pub args: Vec<String>,
     pub cwd: Option<String>,
     pub env: Vec<(String, String)>,
+    // ---- ssh / telnet ----
+    pub host: String,
+    pub port: u16,
+    pub user: String,
+    /// `agent` | `key` | `password`（密码走 Vault，暂未实现）。
+    pub auth: String,
+    pub key_path: String,
+    // ---- serial ----
+    pub serial_port: String,
+    pub baud: u32,
+}
+
+/// 支持的 Profile 类型（字符串值即配置里的 `kind`）。
+pub const KINDS: [&str; 4] = ["local", "ssh", "serial", "telnet"];
+
+pub fn default_kind() -> String {
+    "local".to_string()
 }
 
 impl Default for Profile {
     fn default() -> Self {
-        Self { id: 0, name: String::new(), shell: String::new(), args: Vec::new(), cwd: None, env: Vec::new() }
+        Self {
+            id: 0,
+            name: String::new(),
+            kind: default_kind(),
+            shell: String::new(),
+            args: Vec::new(),
+            cwd: None,
+            env: Vec::new(),
+            host: String::new(),
+            port: 22,
+            user: String::new(),
+            auth: "agent".to_string(),
+            key_path: String::new(),
+            serial_port: String::new(),
+            baud: 115200,
+        }
+    }
+}
+
+impl Profile {
+    /// 按类型校验必填项（本地 Profile 几乎不校验，SSH/Serial 必须有目标）。
+    pub fn validate(&self) -> Result<(), String> {
+        if !KINDS.contains(&self.kind.as_str()) {
+            return Err(format!("未知 Profile 类型: {}", self.kind));
+        }
+        match self.kind.as_str() {
+            "ssh" => {
+                if self.host.trim().is_empty() {
+                    return Err("SSH 主机不能为空".into());
+                }
+                if self.port == 0 {
+                    return Err("SSH 端口必须在 1-65535".into());
+                }
+                if self.user.trim().is_empty() {
+                    return Err("SSH 用户名不能为空".into());
+                }
+                if !["agent", "key", "password"].contains(&self.auth.as_str()) {
+                    return Err(format!("未知认证方式: {}", self.auth));
+                }
+                if self.auth == "key" && self.key_path.trim().is_empty() {
+                    return Err("选择 key 认证时必须填私钥路径".into());
+                }
+            },
+            "serial" => {
+                if self.serial_port.trim().is_empty() {
+                    return Err("串口设备不能为空".into());
+                }
+                if self.baud == 0 {
+                    return Err("波特率必须大于 0".into());
+                }
+            },
+            "telnet" => {
+                if self.host.trim().is_empty() {
+                    return Err("Telnet 主机不能为空".into());
+                }
+                if self.port == 0 {
+                    return Err("Telnet 端口必须在 1-65535".into());
+                }
+            },
+            _ => {},
+        }
+        Ok(())
     }
 }
 
@@ -78,7 +159,19 @@ impl ProfileStore {
             eprintln!("[profile] 文件版本 v{} 比程序新（v{VERSION}），忽略", store.version);
             return Self::default();
         }
-        // 旧版本迁移：目前只有 v1，先只保证 ID 连续
+        if store.version < VERSION {
+            // v1 没有 kind 字段：serde default 已补成 local，这里补版本并写回
+            for p in &mut store.profiles {
+                if !KINDS.contains(&p.kind.as_str()) {
+                    p.kind = default_kind();
+                }
+            }
+            store.version = VERSION;
+            store.fix_ids();
+            store.save_to(path);
+            eprintln!("[profile] 已迁移到 v{VERSION}");
+            return store;
+        }
         store.fix_ids();
         store
     }
@@ -120,6 +213,7 @@ impl ProfileStore {
         if self.profiles.iter().any(|p| p.name == name) {
             return Err(format!("已存在同名 Profile: {name}"));
         }
+        profile.validate()?;
         let id = self.next_id.max(1);
         self.next_id = id + 1;
         profile.id = id;
@@ -245,6 +339,68 @@ shell = "/bin/sh"
         let ids: std::collections::HashSet<u64> = s.profiles.iter().map(|p| p.id).collect();
         assert_eq!(ids.len(), 2, "重复 ID 应被修正");
         assert!(s.next_id > *ids.iter().max().unwrap());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn validate_by_kind() {
+        let mut ssh = Profile { name: "s".into(), kind: "ssh".into(), host: String::new(), user: String::new(), ..Profile::default() };
+        assert!(ssh.validate().unwrap_err().contains("主机"));
+        ssh.host = "example.com".into();
+        ssh.user = "yt".into();
+        ssh.port = 22;
+        assert!(ssh.validate().is_ok());
+        ssh.port = 0;
+        assert!(ssh.validate().is_err());
+        ssh.port = 2222;
+        ssh.auth = "key".into();
+        assert!(ssh.validate().unwrap_err().contains("私钥"));
+        ssh.key_path = "/home/yt/.ssh/id_ed25519".into();
+        assert!(ssh.validate().is_ok());
+
+        let mut serial = Profile { name: "c".into(), kind: "serial".into(), ..Profile::default() };
+        assert!(serial.validate().is_err());
+        serial.serial_port = "/dev/ttyUSB0".into();
+        assert!(serial.validate().is_ok());
+
+        let mut telnet = Profile { name: "t".into(), kind: "telnet".into(), ..Profile::default() };
+        assert!(telnet.validate().is_err());
+        telnet.host = "10.0.0.1".into();
+        assert!(telnet.validate().is_ok());
+
+        let mut bogus = Profile { name: "x".into(), ..Profile::default() };
+        bogus.kind = "carrier-pigeon".into();
+        assert!(bogus.validate().unwrap_err().contains("未知"));
+    }
+
+    #[test]
+    fn v1_file_is_migrated_and_written_back() {
+        let dir = tmpdir("v1");
+        let path = dir.join("profiles.toml");
+        // v1：没有 kind 字段
+        std::fs::write(
+            &path,
+            r#"
+version = 1
+next_id = 2
+
+[[profiles]]
+id = 1
+name = "old"
+shell = "/bin/sh"
+args = []
+cwd = "/tmp"
+env = []
+"#,
+        )
+        .unwrap();
+        let store = ProfileStore::load_from(&path);
+        assert_eq!(store.version, VERSION);
+        assert_eq!(store.profiles[0].kind, "local");
+        // 迁移已写回文件
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("version = 2"), "{text}");
+        assert!(text.contains("kind = \"local\""), "{text}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

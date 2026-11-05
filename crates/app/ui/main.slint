@@ -319,9 +319,18 @@ export component MainWindow inherits Window {
     // Profile 表单（新建）
     in-out property <bool> profile-form-open: false;
     in-out property <string> form-name: "";
+    /// 0=local 1=ssh 2=serial 3=telnet
+    in-out property <int> form-kind: 0;
     in-out property <string> form-shell: "";
     in-out property <string> form-args: "";
     in-out property <string> form-cwd: "";
+    in-out property <string> form-host: "";
+    in-out property <string> form-port: "";
+    in-out property <string> form-user: "";
+    in-out property <string> form-auth: "";
+    in-out property <string> form-key: "";
+    in-out property <string> form-serial-port: "";
+    in-out property <string> form-baud: "";
     in-out property <string> form-error: "";
     callback profile-form-save();
     callback profile-form-cancel();
@@ -1177,9 +1186,9 @@ export component MainWindow inherits Window {
 
     if root.profile-form-open : Rectangle {
         x: (root.width - 440px) / 2;
-        y: (root.height - 300px) / 2;
+        y: (root.height - 380px) / 2;
         width: 440px;
-        height: 300px;
+        height: 380px;
         background: Palette.colors.raise;
         border-radius: 10px;
         border-width: 1px;
@@ -1188,69 +1197,126 @@ export component MainWindow inherits Window {
         drop-shadow-offset-y: 8px;
         drop-shadow-color: #000000c0;
 
-        VerticalLayout {
-            padding: 16px;
-            spacing: 10px;
+        // 绝对定位：切换类型时字段数量变化，布局不会整体位移（否则自动化/点击都不稳）
+        Text {
+            x: 16px;
+            y: 14px;
+            text: "New Profile";
+            color: Palette.colors.text;
+            font-size: 15px;
+            font-weight: 600;
+        }
 
-            Text {
-                text: "New Local Profile";
-                color: Palette.colors.text;
-                font-size: 15px;
-                font-weight: 600;
+        HorizontalLayout {
+            x: 16px;
+            y: 44px;
+            width: 408px;
+            height: 24px;
+            spacing: 8px;
+
+            ChoiceBtn {
+                width: 92px; height: 24px; font-size: 11px;
+                label: "Local"; active: root.form-kind == 0;
+                clicked => { root.form-kind = 0; root.form-error = ""; }
             }
+            ChoiceBtn {
+                width: 92px; height: 24px; font-size: 11px;
+                label: "SSH"; active: root.form-kind == 1;
+                clicked => { root.form-kind = 1; root.form-error = ""; }
+            }
+            ChoiceBtn {
+                width: 92px; height: 24px; font-size: 11px;
+                label: "Serial"; active: root.form-kind == 2;
+                clicked => { root.form-kind = 2; root.form-error = ""; }
+            }
+            ChoiceBtn {
+                width: 92px; height: 24px; font-size: 11px;
+                label: "Telnet"; active: root.form-kind == 3;
+                clicked => { root.form-kind = 3; root.form-error = ""; }
+            }
+        }
 
-            FormRow { label: "Name"; text <=> root.form-name; }
+        FormRow {
+            x: 16px; y: 80px; width: 408px; height: 26px;
+            label: "Name"; text <=> root.form-name;
+        }
+
+        if root.form-kind == 0 : VerticalLayout {
+            x: 16px; y: 116px; width: 408px; height: 130px;
+            spacing: 12px;
             FormRow { label: "Shell"; text <=> root.form-shell; }
             FormRow { label: "Args"; text <=> root.form-args; }
             FormRow { label: "Cwd"; text <=> root.form-cwd; }
+        }
 
-            Text {
-                text: root.form-error;
-                color: Palette.colors.danger;
-                font-size: 11px;
-                wrap: word-wrap;
+        if root.form-kind == 1 : VerticalLayout {
+            x: 16px; y: 116px; width: 408px; height: 170px;
+            spacing: 8px;
+            FormRow { label: "Host"; text <=> root.form-host; }
+            FormRow { label: "Port"; text <=> root.form-port; }
+            FormRow { label: "User"; text <=> root.form-user; }
+            FormRow { label: "Auth"; text <=> root.form-auth; }
+            FormRow { label: "Key"; text <=> root.form-key; }
+        }
+
+        if root.form-kind == 2 : VerticalLayout {
+            x: 16px; y: 116px; width: 408px; height: 80px;
+            spacing: 12px;
+            FormRow { label: "Serial"; text <=> root.form-serial-port; }
+            FormRow { label: "Baud"; text <=> root.form-baud; }
+        }
+
+        if root.form-kind == 3 : VerticalLayout {
+            x: 16px; y: 116px; width: 408px; height: 80px;
+            spacing: 12px;
+            FormRow { label: "Host"; text <=> root.form-host; }
+            FormRow { label: "Port"; text <=> root.form-port; }
+        }
+
+        Text {
+            x: 16px;
+            y: 296px;
+            width: 408px;
+            text: root.form-error;
+            color: Palette.colors.danger;
+            font-size: 11px;
+            wrap: word-wrap;
+        }
+
+        Rectangle {
+            x: 252px; y: 330px; width: 80px; height: 28px; border-radius: 6px;
+            background: form-cancel-hit.has-hover ? Palette.colors.hover : Palette.colors.raise;
+            border-width: 1px;
+            border-color: Palette.colors.border;
+            form-cancel-hit := TouchArea {
+                clicked => { root.profile-form-open = false; root.profile-form-cancel(); }
             }
+            Text {
+                text: "Cancel";
+                color: Palette.colors.text;
+                font-size: 12px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                width: 100%;
+                height: 100%;
+            }
+        }
 
-            HorizontalLayout {
-                alignment: end;
-                spacing: 8px;
-
-                Rectangle {
-                    width: 80px; height: 28px; border-radius: 6px;
-                    background: form-cancel-hit.has-hover ? Palette.colors.hover : Palette.colors.raise;
-                    border-width: 1px;
-                    border-color: Palette.colors.border;
-                    form-cancel-hit := TouchArea {
-                        clicked => { root.profile-form-open = false; root.profile-form-cancel(); }
-                    }
-                    Text {
-                        text: "Cancel";
-                        color: Palette.colors.text;
-                        font-size: 12px;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                        width: 100%;
-                        height: 100%;
-                    }
-                }
-
-                Rectangle {
-                    width: 80px; height: 28px; border-radius: 6px;
-                    background: form-save-hit.has-hover ? Palette.colors.danger : Palette.colors.accent;
-                    form-save-hit := TouchArea {
-                        clicked => { root.profile-form-save(); }
-                    }
-                    Text {
-                        text: "Save";
-                        color: Palette.colors.accent-text;
-                        font-size: 12px;
-                        font-weight: 600;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                        width: 100%;
-                        height: 100%;
-                    }
-                }
+        Rectangle {
+            x: 340px; y: 330px; width: 80px; height: 28px; border-radius: 6px;
+            background: form-save-hit.has-hover ? Palette.colors.danger : Palette.colors.accent;
+            form-save-hit := TouchArea {
+                clicked => { root.profile-form-save(); }
+            }
+            Text {
+                text: "Save";
+                color: Palette.colors.accent-text;
+                font-size: 12px;
+                font-weight: 600;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                width: 100%;
+                height: 100%;
             }
         }
     }
