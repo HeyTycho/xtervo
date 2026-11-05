@@ -29,12 +29,15 @@ RUN_IME=1 ./scripts/selfcheck.sh  # 加中文 IME 冒烟（需要 X11 + fcitx/ib
 
 产出：
 
-- `.logs/selfcheck/<时间戳>/summary.json`：各测试套件通过数、启动耗时、二进制大小、IME 结果
+- `.logs/selfcheck/<时间戳>/summary.json`：各测试套件通过数、启动耗时、空闲 RSS、二进制大小、IME 结果
 - `.logs/selfcheck/history.jsonl`：每轮追加一行，可直接画趋势
-- 退出码非 0 = 有测试失败、启动预算超阈值、或测试数量异常减少（防“删测试过关”）
+- 退出码非 0 = 有测试失败、启动预算/空闲 RSS 超阈值、或测试数量异常减少（防“删测试过关”）
+- DISPLAY 不可用时启动预算与 RSS 段自动跳过，不因此判定失败
 
 基线门禁在 [`docs/selfcheck-baseline.json`](selfcheck-baseline.json)：
-`ready_ms_max` / `first_damage_ms_max` / 各套件最少用例数。
+`ready_ms_max` / `first_damage_ms_max` / `idle_rss_mb_max` / 各套件最少用例数。
+`idle_rss_mb_max` 按字体惰性加载后的实测值留约 35% 余量（实测 46–52 MB → 70 MB），
+防止 CJK 回退字体被重新变成启动时全量解析。
 
 ### 1. 度量（Measure）
 

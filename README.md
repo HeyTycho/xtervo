@@ -35,7 +35,8 @@
 |---|---|
 | `crates/core` | VT actor、PTY、帧快照、颜色表、bench 夹具 |
 | `crates/app` | Slint UI、字形 atlas、软件光栅化、X11 延迟探针 |
-| `scripts/` | 基准、启动/RSS、延迟/FPS、真机 GPU 验证 |
+| `scripts/` | 基准、启动/RSS、延迟/FPS、真机 GPU 验证、发布打包 |
+| `packaging/` | `.desktop` 入口与打包/安装说明 |
 | `docs/` | Phase 0 报告、UI Shell、Tabby 功能对照与主题机制调研 |
 
 ## 快速开始
@@ -50,6 +51,10 @@ cargo build --release -p rusttabby-app
 # 交互式：有 GPU 走 Skia；无 /dev/dri 会自动回退 winit-software
 ./target/release/rusttabby-app --cols 120 --rows 32
 
+# 发布打包：构建后只 strip dist/ 里的副本（开发二进制保留符号）
+./scripts/package.sh                  # → dist/rusttabby-app
+RUSTTABBY_DIST=/tmp/dist ./scripts/package.sh
+
 # 一键自检（构建 + 单测 + VT 契约 + 启动预算；RUN_IME=1 加中文冒烟）
 ./scripts/selfcheck.sh
 
@@ -59,6 +64,38 @@ cargo build --release -p rusttabby-app
 ```
 
 命令行参数：`--cols --rows --scrollback --font-size --shell --latency N --fps SECS --exit-after-first`。
+
+## 打包与安装
+
+两种二进制，用途不同：
+
+| 路径 | 用途 | 体积（本机实测） |
+|---|---|---|
+| `target/release/rusttabby-app` | 开发 / 性能分析：`debug = 1`，保留符号给 `perf` / flamegraph | 168.4 MB |
+| `dist/rusttabby-app`（`scripts/package.sh`） | 发布产物：复制后 `strip --strip-all` | 30.5 MB（-81.9%） |
+
+`scripts/package.sh` 只 strip 输出目录里的副本，`target/release` 原样保留；
+`scripts/install.sh` 同样先把安装副本放进临时目录 strip 再安装，默认 `~/.local`，
+不会改动开发二进制。
+
+```bash
+./scripts/package.sh                            # → dist/rusttabby-app（默认 40 MB 门禁）
+RUSTTABBY_DIST=/tmp/dist ./scripts/package.sh    # 自定义输出目录（相对仓库根）
+./scripts/package.sh /tmp/dist                   # 同上，位置参数
+SKIP_BUILD=1 ./scripts/package.sh                # 复用已有 release 二进制
+MAX_MB=30 ./scripts/package.sh                   # 自定义体积门禁
+
+PREFIX=/tmp/prefix ./scripts/install.sh          # 装到自定义 prefix（验证用）
+./scripts/install.sh --no-strip                  # 调试时安装带符号的副本
+```
+
+验证产物：
+
+```bash
+ls -l dist/ && file dist/rusttabby-app && ./dist/rusttabby-app --help
+```
+
+细节、环境变量与兼容性风险见 [`packaging/README.md`](packaging/README.md)。
 
 ## 已实现
 
@@ -76,7 +113,7 @@ cargo build --release -p rusttabby-app
 ## 日常使用
 
 ```bash
-./scripts/install.sh          # 装到 ~/.local（可执行文件 + 桌面项 + 图标）
+./scripts/install.sh          # 装到 ~/.local（strip 后安装；--no-strip 保留符号）
 rusttabby-app                 # 直接启动
 ```
 

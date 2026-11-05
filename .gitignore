@@ -1,3 +1,6 @@
 /target
 /.cargo
 /.logs
+# 发布打包产物（scripts/package.sh）
+/dist
+*.stripped
