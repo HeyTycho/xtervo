@@ -727,7 +727,6 @@ cargo bench -p tervo-core --bench pty_throughput
   `ssh-keygen` 不在 PATH 时保守返回 false。若 Profile Host 与 known_hosts 键完全一致
   （如 `127.0.0.1` + `[127.0.0.1]:2222`），旧实现本身也能命中；本次修复覆盖的是此前漏判的
   ssh 配置别名/HostKeyAlias/有效端口形态，并新增端口键的真实 `ssh-keygen -F` 回归测试。
-<<<<<<< HEAD
 
 ### 2026-11-05 · 插件事件钩子与「最近插件活动」
 
@@ -818,8 +817,6 @@ cargo bench -p tervo-core --bench pty_throughput
   路径看背景图铺满、文字仍清晰；拖 Opacity 看终端背景透出图片且松手后 config.toml
   出现 `background_opacity = 0.xx`；输入不存在路径看红字且背景不消失；把路径清空恢复
   纯色。
-||||||| a3d01c6
-=======
 
 ### 2026-11-05 · SFTP 传输进度与取消
 
@@ -852,4 +849,3 @@ cargo bench -p tervo-core --bench pty_throughput
   GUI 做真机截图走查。
 - **文档**：FEATURE_MATRIX UI-SSH-003/004/005 与 C4/SFTP-001..007 按实际实现改写，
   B8/C4 分节计数和总表（37/106/14/64/7、weighted 41.0%）同步。
->>>>>>> feat/sftpprogress
