@@ -127,6 +127,9 @@ struct AppState {
     plugin_model: Rc<VecModel<slint::SharedString>>,
     /// Delete 需要点两次确认（避免误删远端文件）
     sftp_delete_armed: bool,
+    /// “+” 下拉里各 Profile 在 store 中的下标（第 0 项是默认新 Tab）
+    newtab_profile_indices: Vec<usize>,
+    newtab_model: Rc<VecModel<slint::SharedString>>,
     /// 广播输入：开启后键入同时发给当前 Tab 的所有 pane
     broadcast: bool,
     /// 上次左键点击 (pane, 行, 列, 时间)：用于 400ms 内的双击选行
@@ -648,6 +651,26 @@ fn refresh_profiles(st: &mut AppState) {
         .map(|p| format!("[{}] {}", p.kind, p.name).into())
         .collect();
     st.profile_model.set_vec(items);
+}
+
+/// 构建 “+” 下拉：第一项默认新 Tab，其余是已保存 Profile。
+fn open_newtab_menu(st: &mut AppState) {
+    let mut items: Vec<slint::SharedString> = vec!["New Tab（默认 shell）".into()];
+    let mut indices = Vec::new();
+    for (i, p) in st.profiles.profiles.iter().enumerate() {
+        let kind = match p.kind.as_str() {
+            "ssh" => "SSH",
+            "serial" => "Serial",
+            "telnet" => "Telnet",
+            _ => "Local",
+        };
+        items.push(format!("{kind} · {}", p.name).into());
+        indices.push(i);
+    }
+    st.newtab_profile_indices = indices;
+    st.newtab_model.set_vec(items);
+    st.ui.set_newtab_open(true);
+    eprintln!("[ui] new tab menu profiles={}", st.newtab_profile_indices.len());
 }
 
 fn open_profiles_panel(st: &mut AppState) {
@@ -2684,6 +2707,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui.set_settings_results(ModelRc::from(settings_model.clone()));
     let fwd_model = Rc::new(VecModel::<slint::SharedString>::default());
     ui.set_fwd_items(ModelRc::from(fwd_model.clone()));
+    let newtab_model = Rc::new(VecModel::<slint::SharedString>::default());
+    ui.set_newtab_items(ModelRc::from(newtab_model.clone()));
     let state = Rc::new(RefCell::new(AppState {
         ui: ui.clone_strong(),
         ws: Workspace::new(),
@@ -2720,6 +2745,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         plugins: plugin::PluginStore::load(),
         plugin_model,
         sftp_delete_armed: false,
+        newtab_profile_indices: Vec::new(),
+        newtab_model,
         broadcast: false,
         last_click: None,
         closed_tabs: Vec::new(),
@@ -3581,6 +3608,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui.on_tab_clicked(|i| set_active_tab(i as usize));
     ui.on_tab_closed(|i| close_tab(i as usize));
     ui.on_new_tab(new_tab);
+
+    ui.on_newtab_menu(|| {
+        with_app(open_newtab_menu);
+    });
+
+    ui.on_newtab_pick(|index| {
+        with_app(|st| {
+            st.ui.set_newtab_open(false);
+            let index = index.max(0) as usize;
+            eprintln!("[ui] newtab pick={index}");
+            if index == 0 {
+                new_tab_inner(st);
+            } else if let Some(&profile_index) = st.newtab_profile_indices.get(index - 1) {
+                open_profile_tab(st, profile_index);
+            }
+        });
+    });
+
+    ui.on_newtab_manage(|| {
+        with_app(|st| {
+            st.ui.set_newtab_open(false);
+            open_profiles_panel(st);
+        });
+    });
 
     ui.on_resized(|w, h| {
         with_app(|st| {

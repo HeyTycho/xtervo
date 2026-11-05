@@ -297,6 +297,13 @@ export component MainWindow inherits Window {
     callback tab-clicked(int);
     callback tab-closed(int);
     callback new-tab();
+    // “+” 下拉：默认新 Tab + 各 Profile
+    in-out property <bool> newtab-open: false;
+    in-out property <length> newtab-x: 0px;
+    in property <[string]> newtab-items: [];
+    callback newtab-menu();
+    callback newtab-pick(int);
+    callback newtab-manage();
     callback resized(length, length);
     callback close-window();
     callback minimize-window();
@@ -654,7 +661,11 @@ export component MainWindow inherits Window {
                     background: new-hit.has-hover ? Palette.colors.raise : transparent;
 
                     new-hit := TouchArea {
-                        clicked => { root.new-tab(); }
+                        clicked => {
+                            root.newtab-x = self.absolute-position.x;
+                            root.newtab-open = true;
+                            root.newtab-menu();
+                        }
                     }
 
                     Text {
@@ -810,10 +821,11 @@ export component MainWindow inherits Window {
                         if (self.preedit-text != "") {
                             return EventResult.reject;
                         }
-                        if (event.text == "\u{1b}" && (root.menu-open || root.tabmenu-open || root.tabctx-open)) {
+                        if (event.text == "\u{1b}" && (root.menu-open || root.tabmenu-open || root.tabctx-open || root.newtab-open)) {
                             root.menu-open = false;
                             root.tabmenu-open = false;
                             root.tabctx-open = false;
+                            root.newtab-open = false;
                             root.menu-dismissed();
                             return EventResult.accept;
                         }
@@ -1056,6 +1068,61 @@ export component MainWindow inherits Window {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    // “+” 下拉菜单：点外部关闭
+    if root.newtab-open : Rectangle {
+        width: 100%;
+        height: 100%;
+        background: transparent;
+
+        TouchArea {
+            pointer-event(event) => {
+                if (event.kind == PointerEventKind.down) {
+                    root.newtab-open = false;
+                    root.menu-dismissed();
+                    return EventResult.accept;
+                }
+                EventResult.reject
+            }
+        }
+    }
+
+    if root.newtab-open : Rectangle {
+        x: Math.max(0px, Math.min(root.newtab-x, root.width - 220px));
+        y: root.tabbar-bottom
+            ? root.height - root.tabbar-height - self.height
+            : root.tabbar-height;
+        width: 220px;
+        height: Math.min(root.newtab-items.length * 28px + 40px, root.height - root.tabbar-height - 8px);
+        background: Palette.colors.raise;
+        border-radius: 8px;
+        border-width: 1px;
+        border-color: Palette.colors.border;
+        drop-shadow-blur: 20px;
+        drop-shadow-offset-y: 6px;
+        drop-shadow-color: #000000b0;
+        clip: true;
+
+        VerticalLayout {
+            padding: 4px;
+            spacing: 0px;
+
+            for item[i] in root.newtab-items : MenuRow {
+                label: item;
+                picked => { root.newtab-open = false; root.newtab-pick(i); }
+            }
+
+            Rectangle {
+                height: 1px;
+                background: Palette.colors.border;
+            }
+
+            MenuRow {
+                label: "Manage Profiles…";
+                picked => { root.newtab-open = false; root.newtab-manage(); }
             }
         }
     }
