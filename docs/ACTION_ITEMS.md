@@ -46,7 +46,7 @@
 | ID | 标题 | 为什么现在做 | 涉及文件 | 验收标准（可测） | 预估 |
 |---|---|---|---|---|---|
 | ACT-013 ◐（菜单 8 项已补；搜索大小写/正则/计数、缩放菜单待做） | 终端菜单/搜索/选择/缩放补齐 | B6-003/004/010/012；当前 5 项菜单、搜索无大小写/计数、无缩放 | `main.slint`、`main.rs`、`pane.rs` | 菜单含 Copy/Paste/Find/Clear/Select All/Split/Close；Ctrl+F 支持大小写/正则开关/计数；Ctrl+=/-/0 缩放并显示；人工 | M |
-| ACT-014 | 粘贴安全与可配置 | B6-005/006/007/008；多行直接执行有风险 | `main.rs`、`main.slint`、`config.rs` | 多行粘贴确认（可记住）；copy-on-select 开关；右键粘贴开关；bracketed paste 端到端测试 | M |
+| ACT-014 ◐（多行确认 + Copy on select 已完成；右键粘贴开关、bracketed 端到端待做） | 粘贴安全与可配置 | B6-005/006/007/008；多行直接执行有风险 | `main.rs`、`main.slint`、`config.rs` | 多行粘贴确认（可记住）；copy-on-select 开关；右键粘贴开关；bracketed paste 端到端测试 | M |
 | ACT-015 | 超链接 UI + Linkifier 接口（core 识别已完成） | TERM-012/B6-011；core 已有 `link.rs` 识别与 OSC 8 透出（94baefb/99d7895），只缺 hover/Ctrl+点击/插件接口，不应重写识别器 | `core/src/frame.rs`/`pane.rs`（hyperlink 元数据）、`main.rs`、新 `link.rs` | OSC 8/URL/IP/路径识别；Ctrl+点击打开；插件 linkifier 接口；路径存在性/远端提示；单测+人工 | L |
 | ACT-016 | 字体/主题完善（family/weight/line-height/ligatures/emoji/透明度回退） | C10/THEME-005/006、TERM-007/008；当前固定字体 | `glyph.rs`、`main.rs`、`config.rs`、`themes.rs` | 可选字体族/字重/行距/字距；连字开关；Nerd fallback；emoji 有/无提示；透明不支持时回退；截图 | L |
 | ACT-017 | 进度/通知/后台 Tab 标记 | C11；Bell/Exited 已有事件但用户不可见 | `pane.rs`、`main.rs`、`main.slint`、新 `notify.rs` | OSC 进度/命令完成检测（先 ACT-002 定协议）；Tab 进度/完成/失败标记；桌面通知权限失败提示；静音；人工 | L |

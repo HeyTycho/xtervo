@@ -107,6 +107,8 @@ struct AppState {
     palette_model: Rc<VecModel<slint::SharedString>>,
     palette_sel: usize,
     drag: Option<Drag>,
+    /// 等待用户确认的多行粘贴内容
+    pending_paste: Option<String>,
     /// 1003 悬停上报的上一格（按格去重，避免鼠标移动刷爆有界 ctrl 队列）。
     hover_cell: Option<(PaneId, (u16, u16))>,
     resize: Option<WindowResize>,
@@ -268,7 +270,7 @@ fn settings_height_for(count: usize, win_h: f32) -> f32 {
     // 主题区最多显示 4 行，更多靠 Flickable 滚动，面板高度不再继续增长。
     let rows = count.div_ceil(4).clamp(1, 4);
     // +92：设置面板新增两个开关行（Copy on select / Confirm close）+ 底部提示不被挤出面板
-    let h = 210.0 + rows as f32 * 30.0 + 92.0;
+    let h = 210.0 + rows as f32 * 30.0 + 122.0;
     h.min((win_h - 40.0).max(280.0))
 }
 
@@ -1241,30 +1243,60 @@ fn copy_current_selection(st: &mut AppState) {
     }
 }
 
-fn paste_into_focused(st: &mut AppState) {
-    let Some(text) = get_clipboard(st) else { return };
-    if text.is_empty() {
-        return;
+/// 剪贴板文本 → 终端输入：CRLF/CR 统一成 CR（终端回车）。
+fn normalize_paste(text: &str) -> String {
+    text.replace("\r\n", "\r").replace('\n', "\r")
+}
+
+/// 组装实际写入 PTY 的字节；bracketed 模式包上 200~/201~。
+fn paste_payload(normalized: &str, bracketed: bool) -> Vec<u8> {
+    if !bracketed {
+        return normalized.as_bytes().to_vec();
     }
-    // 终端需要 CR 作为回车
-    let normalized = text.replace("\r\n", "\r").replace('\n', "\r");
+    let mut payload = Vec::with_capacity(normalized.len() + 12);
+    payload.extend_from_slice(b"\x1b[200~");
+    payload.extend_from_slice(normalized.as_bytes());
+    payload.extend_from_slice(b"\x1b[201~");
+    payload
+}
+
+/// 多行粘贴是否需要先确认。
+fn needs_paste_confirm(text: &str, enabled: bool) -> bool {
+    enabled && text.contains('\n')
+}
+
+fn deliver_paste(st: &mut AppState, text: &str) {
+    let normalized = normalize_paste(text);
     let Some(focused) = st.ws.active_tab().map(|t| t.focused) else { return };
     let bracketed = st
         .panes
         .get(&focused)
         .map(|rt| rt.frame.mode & BRACKETED_PASTE != 0)
         .unwrap_or(false);
+    let payload = paste_payload(&normalized, bracketed);
+    eprintln!("[ui] paste bytes={} bracketed={bracketed}", payload.len());
     if let Some(rt) = st.panes.get_mut(&focused) {
-        if bracketed {
-            let mut payload = Vec::with_capacity(normalized.len() + 12);
-            payload.extend_from_slice(b"\x1b[200~");
-            payload.extend_from_slice(normalized.as_bytes());
-            payload.extend_from_slice(b"\x1b[201~");
-            rt.handle.input(&payload);
-        } else {
-            rt.handle.input(normalized.as_bytes());
-        }
+        rt.handle.input(&payload);
     }
+}
+
+fn paste_into_focused(st: &mut AppState) {
+    let Some(text) = get_clipboard(st) else { return };
+    if text.is_empty() {
+        return;
+    }
+    if needs_paste_confirm(&text, st.cfg.confirm_multiline_paste) {
+        let lines = text.lines().count();
+        let preview: String = text.lines().take(3).collect::<Vec<_>>().join("\n");
+        let preview = if lines > 3 { format!("{preview}\n…") } else { preview };
+        eprintln!("[ui] paste confirm lines={lines}");
+        st.pending_paste = Some(text);
+        st.ui.set_paste_lines(lines as i32);
+        st.ui.set_paste_preview(preview.as_str().into());
+        st.ui.set_paste_open(true);
+        return;
+    }
+    deliver_paste(st, &text);
 }
 
 fn update_search_bar(st: &mut AppState) {
@@ -1773,6 +1805,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         palette_model,
         palette_sel: 0,
         drag: None,
+        pending_paste: None,
         hover_cell: None,
         resize: None,
         xresize: None,
@@ -2153,6 +2186,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         with_app(|st| st.ui.set_rename_open(false));
     });
 
+    ui.on_paste_accept(|| {
+        with_app(|st| {
+            st.ui.set_paste_open(false);
+            if let Some(text) = st.pending_paste.take() {
+                deliver_paste(st, &text);
+            }
+        });
+    });
+
+    ui.on_paste_always(|| {
+        with_app(|st| {
+            st.cfg.confirm_multiline_paste = false;
+            st.ui.set_cfg_confirm_paste(false);
+            st.cfg.save();
+            st.ui.set_paste_open(false);
+            if let Some(text) = st.pending_paste.take() {
+                deliver_paste(st, &text);
+            }
+        });
+    });
+
+    ui.on_paste_cancel(|| {
+        with_app(|st| {
+            st.pending_paste = None;
+            st.ui.set_paste_open(false);
+        });
+    });
+
+    ui.on_toggle_confirm_paste(|| {
+        with_app(|st| {
+            st.cfg.confirm_multiline_paste = !st.cfg.confirm_multiline_paste;
+            st.ui.set_cfg_confirm_paste(st.cfg.confirm_multiline_paste);
+            st.cfg.save();
+            eprintln!("[ui] confirm_multiline_paste={}", st.cfg.confirm_multiline_paste);
+        });
+    });
+
     ui.on_settings_toggled(|open| {
         eprintln!("[ui] settings open={open}");
     });
@@ -2367,6 +2437,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     with_app(|st| {
         st.ui.set_cfg_copy_on_select(st.cfg.copy_on_select);
         st.ui.set_cfg_confirm_close(st.cfg.confirm_close);
+        st.ui.set_cfg_confirm_paste(st.cfg.confirm_multiline_paste);
     });
 
     // ---- 首个标签页 / 会话恢复 ----
@@ -2696,6 +2767,26 @@ mod tests {
         assert_eq!(normalize_clipboard_text(String::new()), None);
         // 中间空行要保留
         assert_eq!(normalize_clipboard_text("a\n\nb".into()), Some("a\n\nb".to_string()));
+    }
+
+    #[test]
+    fn paste_normalization_and_brackets() {
+        assert_eq!(normalize_paste("a\r\nb\nc"), "a\rb\rc");
+        assert_eq!(normalize_paste("plain"), "plain");
+        assert_eq!(paste_payload("x\ry", false), b"x\ry".to_vec());
+        let wrapped = paste_payload("x\ry", true);
+        assert_eq!(&wrapped[..6], b"\x1b[200~");
+        assert!(wrapped.ends_with(b"\x1b[201~"));
+        assert_eq!(wrapped.len(), "x\ry".len() + 12);
+    }
+
+    #[test]
+    fn paste_confirm_only_for_multiline_when_enabled() {
+        assert!(!needs_paste_confirm("one line", true));
+        assert!(needs_paste_confirm("a\nb", true));
+        assert!(!needs_paste_confirm("a\nb", false));
+        // 单独 \r 不算多行（单行回车粘贴不烦人）
+        assert!(!needs_paste_confirm("a\rb", true));
     }
 
     #[test]
