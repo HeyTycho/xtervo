@@ -727,3 +727,57 @@ cargo bench -p tervo-core --bench pty_throughput
   `ssh-keygen` 不在 PATH 时保守返回 false。若 Profile Host 与 known_hosts 键完全一致
   （如 `127.0.0.1` + `[127.0.0.1]:2222`），旧实现本身也能命中；本次修复覆盖的是此前漏判的
   ssh 配置别名/HostKeyAlias/有效端口形态，并新增端口键的真实 `ssh-keygen -F` 回归测试。
+
+### 2026-11-05 · 插件事件钩子与「最近插件活动」
+
+- **问题**：外部进程插件 API 只有命令触发，没有生命周期事件；命令结果只写日志，
+  设置页看不到最近输出；需求 C13/PLUG-001、PLUG-003 与 B11/UI-PLUG-005 的
+  “事件订阅/诊断信息”仍停在 partial。
+- **做法**（保持旧扁平清单与 api=1 命令协议不变）：
+  - `PackageManifest` 新增可选 `events: Vec<String>`；只接受
+    `startup` / `tab-open` / `tab-close`，重复/未知值让整份清单进 `skipped`；
+    旧扁平清单不读该字段，仍只展示。
+  - `PluginEvent` 枚举统一字符串与解析；`PluginStore::event_targets` 只返回
+    `enabled` 且声明了该事件的插件；`spawn_event` 每个插件一个后台线程，
+    返回已提交数，spawn 后立即返回，UI 不等待。
+  - stdin 协议统一为单行 JSON：命令 `{"event":"command","id","args"}`；
+    事件 `{"event":"startup|tab-open|tab-close","payload":{...}}`。
+  - payload 只带非敏感字段：`startup={}`；`tab-open={title,kind}`；
+    `tab-close={title}`。标题去控制字符/空白并截断 200 字符，kind 只允许短 ASCII
+    标识（异常回退 `local`）；不含 cwd/命令行/环境/凭据。
+  - 事件超时与命令一致（10s `EVENT_TIMEOUT`），失败/超时/spawn 失败只写
+    `[plugin]` 日志与活动列表，不影响命令/窗口主流程；禁用插件不触发。
+  - 主程序接线：应用状态就绪后、首个 Tab 创建前发 `startup`；本地/Profile/恢复/复制
+    Tab 打开后发 `tab-open`（含 kind）；关闭 Tab、关闭最后一个 Pane、Close Others 时
+    发 `tab-close`。最后 Tab 关闭会退出事件循环，该次事件是尽力而为。
+  - 新活动日志 `ActivityLog`（`Arc<Mutex<_>>`，容量 8，revision 递增）：
+    记录时间/插件/`command <id>` 或 `event <name>`/`exit=<code>`|`timeout`|
+    `signal`|`spawn-error`/输出首行；摘要取 stdout 首个非空行，否则 stderr，
+    复用 `activity::sanitize_notification_text` 去控制字符并截断 80 字符。
+  - Slint Plugins 页拆成 Installed + Recent plugin activity 两个列表（各 80/108px
+    可滚动）；`poll_events`（400ms）只在 revision 变化时 `set_vec` 刷新，
+    后台线程不直接碰 Slint model。完整 stdout/stderr 仍只写日志。
+- **测试**：`cargo test -p tervo-app --bin tervo` → **172 passed**（新增 8 例）：
+  `parses_event_subscriptions_and_rejects_unknown_or_duplicate`（事件清单/未知/重复）、
+  `event_payloads_carry_only_title_and_kind`（payload JSON/单行/截断/无敏感字段）、
+  `event_targets_respect_declaration_and_enabled`（未声明/禁用不触发）、
+  `spawn_event_sends_json_payload_to_declared_plugins_only`（临时 shell 脚本落盘验证
+  三种事件的 stdin JSON，未声明/禁用插件无文件）、
+  `execute_event_sends_event_json_and_reports_failure`（事件 stdin/非零退出/超时 kill）、
+  `event_failure_updates_activity_without_blocking`（失败只进活动）、
+  `activity_log_keeps_latest_and_sanitizes_summary`（容量/顺序/控制字符/截断/
+  stderr 回退/超时/signal/spawn-error）、
+  `spawn_command_records_activity_and_spawn_error`（命令成功与 entry 丢失）。
+  未启动 GUI。
+- **文档**：更新 [`PLUGIN_API.md`](PLUGIN_API.md)（events 字段/事件协议/payload/
+  最近活动/限制/手工验证）、FEATURE_MATRIX UI-PLUG-001/002/003/005/007 与
+  PLUG-001/002/003/005（测试数 172）。
+- **限制**：只有三个固定生命周期事件，无任意事件订阅/取消/去重/合并，也没有
+  pane 输出、命令完成等事件；事件无返回值，不能修改 Tab/终端状态；活动列表仅
+  最近 8 条内存摘要（重启清空、不可点击/复制，完整输出仍看日志）；关闭最后一个
+  Tab/窗口时 `tab-close` 尽力而为；同一插件并发触发不设上限；无持久日志面板；
+  未启动 GUI（共享显示器约束），设置页布局与事件真机走查待人工验证；未新增依赖。
+- **手工验证**：按 `docs/PLUGIN_API.md` §6 建带 `events` 的 `plugins/hello/`，
+  启动后看 `events.log` 的 startup/tab-open/tab-close JSON，新建/关闭 Tab，
+  在设置 → Plugins 看最近活动行；`exec sleep 30` 验证 timeout；`enabled=false`
+  重启后事件与命令都不再触发。
