@@ -8,12 +8,14 @@
 pub mod bench_support;
 pub mod event;
 pub mod frame;
+pub mod link;
 pub mod mouse;
 pub mod palette;
 pub mod pane;
 
 pub use event::{CoreEvent, EventSink, PaneStats, WakeSignal};
 pub use frame::{flags, CellData, CursorShape, CursorState, Frame, LineDamage, Span};
+pub use link::{Link, LinkKind};
 pub use mouse::{Modifiers, MouseAction, MouseButton, MouseEvent};
 pub use bench_support::TermSim;
 pub use palette::{Palette, PaletteSpec, Theme, UiColors};
