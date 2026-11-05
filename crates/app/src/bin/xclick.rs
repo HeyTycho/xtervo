@@ -59,7 +59,8 @@ fn main() {
     press_shift(true);
     xtest::fake_input(&conn, PRESS, button, x11rb::CURRENT_TIME, root, x, y, 0).expect("press");
     conn.flush().unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(60));
+    let hold = args.iter().any(|a| a == "hold");
+    std::thread::sleep(std::time::Duration::from_millis(if hold { 400 } else { 60 }));
 
     if drag {
         let x2: i16 = args.get(4).and_then(|v| v.parse().ok()).unwrap_or(x);

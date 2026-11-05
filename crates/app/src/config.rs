@@ -41,8 +41,12 @@ pub struct Config {
     pub copy_on_select: bool,
     /// 多行粘贴前确认（默认开）。
     pub confirm_multiline_paste: bool,
-    /// 右键直接粘贴（默认关；开启后右键不再弹菜单）。
+    /// 右键直接粘贴（旧字段，保留用于迁移；新配置用 `right_click`）。
     pub right_click_paste: bool,
+    /// Tabby 式右键模式：menu | paste | clipboard | off。
+    pub right_click: String,
+    /// 中键粘贴（Tabby 默认开）。
+    pub paste_on_middle_click: bool,
     /// TabBar 位置："top" | "bottom"。
     pub tabbar_position: String,
     // ---- Quake mode ----
@@ -75,6 +79,8 @@ impl Default for Config {
             copy_on_select: true,
             confirm_multiline_paste: true,
             right_click_paste: false,
+            right_click: "menu".to_string(),
+            paste_on_middle_click: true,
             tabbar_position: "top".to_string(),
             quake_enabled: false,
             quake_hotkey: "F12".to_string(),
@@ -97,6 +103,15 @@ impl Config {
                 PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into())).join(".config")
             });
         base.join("tervo").join("config.toml")
+    }
+
+    /// 生效的右键模式：旧配置 `right_click_paste=true` 且未显式选模式时按 paste 处理。
+    pub fn effective_right_click(&self) -> &str {
+        if self.right_click == "menu" && self.right_click_paste {
+            "paste"
+        } else {
+            &self.right_click
+        }
     }
 
     pub fn load() -> Self {
@@ -215,7 +230,15 @@ mod tests {
         assert!(c.confirm_close, "默认关闭多会话要确认");
         assert!(c.copy_on_select, "默认拖选自动复制");
         assert!(c.confirm_multiline_paste, "默认多行粘贴要确认");
-        assert!(!c.right_click_paste, "默认右键弹菜单而不是粘贴");
+        assert!(!c.right_click_paste, "兼容字段默认关闭");
+        assert_eq!(c.right_click, "menu");
+        assert_eq!(c.effective_right_click(), "menu");
+        let mut legacy = Config::default();
+        legacy.right_click_paste = true;
+        assert_eq!(legacy.effective_right_click(), "paste", "旧 right_click_paste 迁移为 paste");
+        legacy.right_click = "off".into();
+        assert_eq!(legacy.effective_right_click(), "off", "显式模式优先");
+        assert!(c.paste_on_middle_click);
         assert!(!c.quake_enabled, "Quake 默认关闭");
         assert_eq!(c.quake_hotkey, "F12");
         assert_eq!(c.tabbar_position, "top", "默认 TabBar 在上");

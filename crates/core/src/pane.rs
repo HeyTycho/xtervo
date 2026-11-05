@@ -167,6 +167,8 @@ enum Ctrl {
     SelectionClear,
     /// 选中当前视口全部内容。
     SelectAll,
+    /// 清除当前选区（复制后清除，Tabby 的行为）。
+    ClearSelection,
     /// 选中视口内某一行（双击选行）。
     SelectLine(i32),
     /// 清屏并清回滚（终端“Clear”语义）。
@@ -252,6 +254,11 @@ impl PaneHandle {
 
     pub fn selection_clear(&self) {
         let _ = self.ctrl_tx.send(Ctrl::SelectionClear);
+    }
+
+    /// 清除选区。
+    pub fn clear_selection(&self) {
+        let _ = self.ctrl_tx.send(Ctrl::ClearSelection);
     }
 
     /// 选中当前视口（不含回滚历史）。
@@ -764,6 +771,12 @@ impl Actor {
                 self.term.selection = Some(sel);
                 self.sel_anchor = Some(start);
                 // 选区高亮要立刻重绘
+                self.force_full = true;
+                self.wake.notify();
+                true
+            },
+            Ctrl::ClearSelection => {
+                self.term.selection = None;
                 self.force_full = true;
                 self.wake.notify();
                 true

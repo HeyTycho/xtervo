@@ -135,6 +135,8 @@ struct AppState {
     /// “+” 下拉里各 Profile 在 store 中的下标（第 0 项是默认新 Tab）
     newtab_profile_indices: Vec<usize>,
     newtab_model: Rc<VecModel<slint::SharedString>>,
+    /// 右键按下的 pane/时间/内容区坐标：paste/clipboard 模式用抬起时间判断长按。
+    right_down: Option<(PaneId, std::time::Instant, f32, f32)>,
     /// 广播输入：开启后键入同时发给当前 Tab 的所有 pane
     broadcast: bool,
     /// 上次左键点击 (pane, 行, 列, 时间)：用于 400ms 内的双击选行
@@ -2043,6 +2045,25 @@ fn copy_current_selection(st: &mut AppState) {
     }
 }
 
+/// Tabby 的 Clipboard 右键：有选区复制并清除，否则粘贴。
+fn copy_or_paste(st: &mut AppState) {
+    let Some(id) = st.ws.active_tab().map(|t| t.focused) else { return };
+    let text = st
+        .panes
+        .get(&id)
+        .and_then(|rt| rt.handle.copy_selection())
+        .and_then(normalize_clipboard_text);
+    if let Some(text) = text {
+        set_clipboard(st, &text);
+        if let Some(rt) = st.panes.get(&id) {
+            rt.handle.clear_selection();
+        }
+        eprintln!("[ui] right-click clipboard copy {} chars", text.chars().count());
+    } else {
+        paste_into_focused(st);
+    }
+}
+
 /// 剪贴板文本 → 终端输入：CRLF/CR 统一成 CR（终端回车）。
 fn normalize_paste(text: &str) -> String {
     text.replace("\r\n", "\r").replace('\n', "\r")
@@ -2859,6 +2880,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         quake_saved: None,
         newtab_profile_indices: Vec::new(),
         newtab_model,
+        right_down: None,
         broadcast: false,
         last_click: None,
         closed_tabs: Vec::new(),
@@ -3211,18 +3233,56 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     ui.on_pane_right_clicked(|id, x, y| {
         with_app(|st| {
-            if st.cfg.right_click_paste {
-                // 右键粘贴（PuTTY 风格）：先把焦点给被点的 pane，再粘贴。
-                // 鼠标上报模式下右键会先被转发给 PTY，不会走到这里（符合设计）。
-                let id = id as u64;
-                if let Some(idx) = st.ws.tab_of(id) {
-                    st.ws.tabs[idx].focused = id;
-                    refresh_views(st);
-                }
+            let id = id as u64;
+            if let Some(idx) = st.ws.tab_of(id) {
+                st.ws.tabs[idx].focused = id;
+                refresh_views(st);
+            }
+            let mode = st.cfg.effective_right_click().to_string();
+            st.right_down = Some((id, std::time::Instant::now(), x, y));
+            eprintln!("[ui] right-down pane={id} mode={mode}");
+            if mode == "menu" {
+                open_pane_menu(st, id, x, y);
+            }
+        });
+    });
+
+    // 右键抬起：paste/clipboard 用 250ms 区分短按（执行）与长按（弹菜单）。
+    ui.on_pane_right_up(|id, _x, _y| {
+        with_app(|st| {
+            let id = id as u64;
+            let Some((down_id, at, dx, dy)) = st.right_down.take() else { return };
+            if down_id != id {
+                return;
+            }
+            let mode = st.cfg.effective_right_click().to_string();
+            let short = at.elapsed() < Duration::from_millis(250);
+            match mode.as_str() {
+                "paste" => {
+                    if short {
+                        paste_into_focused(st);
+                    } else {
+                        open_pane_menu(st, id, dx, dy);
+                    }
+                },
+                "clipboard" => {
+                    if short {
+                        copy_or_paste(st);
+                    } else {
+                        open_pane_menu(st, id, dx, dy);
+                    }
+                },
+                _ => {},
+            }
+            eprintln!("[ui] right-up pane={id} mode={mode} short={short}");
+        });
+    });
+
+    ui.on_pane_middle_click(|_id| {
+        with_app(|st| {
+            if st.cfg.paste_on_middle_click {
                 paste_into_focused(st);
-                eprintln!("[ui] right-click paste pane={id}");
-            } else {
-                open_pane_menu(st, id as u64, x, y);
+                eprintln!("[ui] middle-click paste");
             }
         });
     });
@@ -3472,12 +3532,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     });
 
-    ui.on_toggle_right_click_paste(|| {
+    ui.on_set_right_click(|mode| {
         with_app(|st| {
-            st.cfg.right_click_paste = !st.cfg.right_click_paste;
-            st.ui.set_cfg_right_click_paste(st.cfg.right_click_paste);
+            let mode = mode.to_string();
+            if !["menu", "paste", "clipboard", "off"].contains(&mode.as_str()) {
+                return;
+            }
+            st.cfg.right_click = mode.clone();
+            // 旧字段统一折算到新字段，之后不再写回 true。
+            st.cfg.right_click_paste = false;
+            st.ui.set_cfg_right_click(mode.as_str().into());
             st.cfg.save();
-            eprintln!("[ui] right_click_paste={}", st.cfg.right_click_paste);
+            eprintln!("[ui] right_click={mode}");
+        });
+    });
+
+    ui.on_toggle_paste_middle(|| {
+        with_app(|st| {
+            st.cfg.paste_on_middle_click = !st.cfg.paste_on_middle_click;
+            st.ui.set_cfg_paste_middle(st.cfg.paste_on_middle_click);
+            st.cfg.save();
+            eprintln!("[ui] paste_on_middle_click={}", st.cfg.paste_on_middle_click);
         });
     });
 
@@ -3485,7 +3560,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         with_app(|st| {
             st.cfg.confirm_multiline_paste = !st.cfg.confirm_multiline_paste;
             st.ui.set_cfg_confirm_paste(st.cfg.confirm_multiline_paste);
-        st.ui.set_cfg_right_click_paste(st.cfg.right_click_paste);
+        st.ui.set_cfg_right_click(st.cfg.effective_right_click().into());
+        st.ui.set_cfg_paste_middle(st.cfg.paste_on_middle_click);
             st.cfg.save();
             eprintln!("[ui] confirm_multiline_paste={}", st.cfg.confirm_multiline_paste);
         });

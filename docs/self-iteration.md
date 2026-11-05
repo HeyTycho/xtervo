@@ -431,3 +431,17 @@ cargo bench -p tervo-core --bench pty_throughput
 - 真机：mouse-reporting pane 内普通右键 → `[ui] right click pane=1`，菜单出现
   （.logs/mouse-mode-right-menu.png）。
 
+### 2026-11-05 · 右键对齐 Tabby：四模式 + 长按 + 中键粘贴
+
+- 查 Tabby 源码（`tabby-terminal/src/api/baseTerminalTab.component.ts` / `config.ts`）：
+  默认 `rightClick: 'menu'`，另有 paste / clipboard / off；在 xterm 外层宿主拦截
+  mousedown/mouseup，paste/clipboard 以 250ms 区分短按/长按；contextmenu 永远 preventDefault；
+  鼠标上报的 TUI 也不会拿到右键。
+- 实现：config `right_click` + `paste_on_middle_click`；旧 `right_click_paste` 迁移为 paste；
+  Rust 记录 right-down 时间/坐标，抬起时短按执行、长按弹菜单；clipboard 有选区复制并
+  `Ctrl::ClearSelection` 清除，否则粘贴；中键按配置粘贴；Slint 在 pane 内始终本地处理
+  右键/中键（仅 Shift+右键转发给 TUI）。
+- 真机：paste 短按 → `paste bytes=11`，长按 → `right click pane=1`；clipboard 选区 →
+  `right-click clipboard copy 5 chars`；off → 无动作；middle → `middle-click paste`
+  （.logs/right-click-modes.png、settings-right-click-modes.png）。
+
