@@ -28,13 +28,13 @@ export CARGO_HOME=$PWD/.cargo
 
 | 指标 | 最近一次 | 说明 |
 |---|---|---|
-| ready | **45.7 ms** | 窗口可见 + 首帧提交 |
-| first_damage | **46.8 ms** | 首帧内容上屏 |
-| 空闲 RSS（1 pane） | **52.7 MB** | 含软件渲染缓冲与字体 atlas |
+| ready | **46.7 ms** | 窗口可见 + 首帧提交（最近一次验收 46.7，近期区间 42.8–48.6） |
+| first_damage | **47.4 ms** | 首帧内容上屏（近期区间 44.2–49.4） |
+| 空闲 RSS（1 pane） | **52.5 MB** | 含软件渲染缓冲与字体 atlas（近期 46–53） |
 | 空闲 RSS（4 pane） | **44 MB** | 拆分 4 个 pane 后测（shell 子进程另计） |
 | 空闲 CPU（4 pane） | **0.2–0.4 %** | 5 秒 `/proc/<pid>/stat` 增量 |
 | 开发二进制 | 183–192 MB | 带 `debug=1`，供 perf/flamegraph |
-| 发布产物（strip） | **32.2 MB** | `strip --strip-all`，体积缩减 82.4% |
+| 发布产物（strip） | **32.3 MB** | `strip --strip-all`，体积缩减 82.5% |
 
 48 次 selfcheck 历史趋势：前 10 次 ready 平均 **202.5 ms**，最近 10 次平均
 **54.1 ms**——主要是把 CJK 字体回退从启动时急切解析改成首次使用时惰性加载

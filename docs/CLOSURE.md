@@ -2,7 +2,7 @@
 
 > 数据来源：`docs/FEATURE_MATRIX.md`（228 条主条目 + 6 条附录）。
 > 统计脚本：`python3 scripts/matrix_stats.py`（同时检查 `implemented` 行是否带证据）。
-> 最后更新：2026-11-05（goal 第 27 轮审计）。
+> 最后更新：2026-11-05（goal 第 30 轮最终验收；交付摘要见 [`FINAL_REPORT.md`](FINAL_REPORT.md)）。
 
 ## 1. 口径
 
@@ -28,6 +28,7 @@
 | not_started | **105（46.1%）** |
 | unsupported | **7（3.1%）** |
 | 加权分 | **28.6%**（第 1 轮约 20.2%） |
+| 最终验收 | selfcheck PASS（ready 46.7ms / first 47.4ms / RSS 52.5MB）；app 90 / core 66 / conformance 11 |
 
 本轮审计修正了两条状态：`UI-TERM-006`（Copy-on-Select）补上开关与真机证据后升为
 `implemented`；`UI-TERM-001`（点击聚焦/IME）因缺少 IME 端到端证据降为 `partial`。
