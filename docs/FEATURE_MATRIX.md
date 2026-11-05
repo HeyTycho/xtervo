@@ -17,10 +17,10 @@
 | 范围 | 条目 | implemented | partial | in_progress | needs_verification | not_started | unsupported | 加权完成度 |
 |---|---|---|---|---|---|---|---|---|
 | B 部分（UI） | 110 | 25 | 56 | 0 | 5 | 23 | 1 | 48.2% |
-| C 部分（底层） | 118 | 12 | 42 | 0 | 9 | 49 | 6 | 28.0% |
-| B+C 合计 | 228 | 37 | 98 | 0 | 14 | 72 | 7 | 37.7% |
+| C 部分（底层） | 118 | 12 | 43 | 0 | 9 | 48 | 6 | 28.4% |
+| B+C 合计 | 228 | 37 | 99 | 0 | 14 | 71 | 7 | 37.9% |
 
-> 加权公式：`(implemented + 0.5×partial + 0.5×in_progress) / 条目总数`。`needs_verification / not_started / unsupported` 记 0。该数字是“功能条目覆盖度”，不是代码行数或工时完成度。本轮补 Vault 时用 `scripts/matrix_stats.py` 逐行复核并刷新了上表（旧审计快照数字已过期；脚本额外把 needs_verification 记 0.25，故其 weighted 输出略高）。2026-11-05 Profiles UX/插件 API/Tabby 导入/Vault SSH 修复合入后刷新；脚本 `matrix_stats.py` 当前输出 37/98/14/72/7、weighted 39.3%（脚本把 needs_verification 记 0.25，表中按原公式只计 implemented+0.5×partial = 37.7%）。
+> 加权公式：`(implemented + 0.5×partial + 0.5×in_progress) / 条目总数`。`needs_verification / not_started / unsupported` 记 0。该数字是“功能条目覆盖度”，不是代码行数或工时完成度。本轮补 Vault 时用 `scripts/matrix_stats.py` 逐行复核并刷新了上表（旧审计快照数字已过期；脚本额外把 needs_verification 记 0.25，故其 weighted 输出略高）。2026-11-05 Profiles UX/插件 API/Tabby 导入/Vault SSH 修复/背景图与终端透明度合入后刷新；脚本 `matrix_stats.py` 当前输出 37/99/14/71/7、weighted 39.5%（脚本把 needs_verification 记 0.25，表中按原公式只计 implemented+0.5×partial = 37.9%）。
 
 ## 2. 审计发现：现有实现/文档与需求不符（至少 3 条）
 
@@ -153,7 +153,7 @@
 | ID | Feature | Upstream evidence | Rust implementation | Status | Test | Result | Limitation |
 |---|---|---|---|---|---|---|---|
 | UI-SET-001 | Application：应用级行为、启动与默认行为 | U-AUDIT / 需求 B7 | 设置窗口改为 **Tabby 式左右分列**：左侧垂直导航（Appearance/Terminal/Window/Config/Hotkeys/Plugins/Vault）+ 右侧内容区 + 顶部搜索；面板居中于 TabBar 下方（520×440 上限，窗口小则收缩） | partial | 真机：Appearance/Terminal/Config 三页布局正确，搜索 `font` → 1 条 “Terminal · Font size” 覆盖右栏；截图 .logs/settings-2col*.png | 设置导航/内容分栏可用，搜索可用 | 无 Application 独立页；小窗口下内容可能被裁剪（未做页内滚动） |
-| UI-SET-002 | Appearance：外观、窗口风格、图标/字体、背景效果 | U-AUDIT / 需求 B7 | main.slint 设置面板仅有主题选择；主题含 UI chrome 配色 | partial | 人工：12 套主题 + Auto 可切换；无窗口风格/背景效果 | 主题外观可用 | 无窗口风格/图标/字体/背景/透明度设置 |
+| UI-SET-002 | Appearance：外观、窗口风格、图标/字体、背景效果 | U-AUDIT / 需求 B7 | main.slint Appearance：主题选择 + **Background image** 路径输入（空=关闭、× 清除、错误红字）+ **Opacity** 自绘滑块（20%–100%）；config.rs `background_image`/`background_opacity`（`~` 展开、只收普通文件、clamp 0.2–1.0、两位小数）；main.rs 回调即时应用/写盘，非法路径保留上一背景 | partial | config 背景 4 例（roundtrip/clamp 旧配置/路径/`~`）+ render.rs alpha 3 例；未启动 GUI（共享显示器约束） | 主题 + 背景图 + 终端默认背景透明度可在设置页即时调整；坏路径显示错误并回退 | 无窗口风格/图标/字体设置；无模糊/每主题独立背景；背景固定 cover（无 fit 选项）；未真机走查；小窗口内容可能裁剪 |
 | UI-SET-003 | Profiles & Connections：默认 Profile、列表、连接行为 | U-AUDIT / 需求 B7 | 无实现 | not_started | 无 | 未实现 | 无 Profile 设置页 |
 | UI-SET-004 | Terminal：行为、字体、滚动、复制粘贴、鼠标等 | U-AUDIT / 需求 B7 | main.slint 字号 ±、回滚 ±、Copy on select / Confirm close 开关（ToggleRow）；config.rs font_size/scrollback/copy_on_select/confirm_close | partial | 真机：开设置点开关 → `[ui] copy_on_select=false` 并写入配置；关闭后拖选 0 条剪贴板日志、开启后 1 条（复制 6 字节） | 字号/回滚/复制-关闭行为可调 | 无字体族/行距/鼠标/滚动行为设置；无设置搜索 |
 | UI-SET-005 | Color Scheme：选择、预览、导入/导出 | U-THEME / 需求 B7 | main.slint 主题网格 + Flickable；themes.rs ThemeRegistry 6 格式导入；`--import-tabby` 从 Tabby `terminal.colorScheme`/`lightColorScheme`/`customColorSchemes` 生成 `themes/tabby-<slug>.toml`（16 色 + fg/bg/cursor，UI chrome 自动推导） | partial | themes.rs 12 例；tabby_import.rs 主题相关 3 例（落盘/坏色值/重名后缀/短 hex/`ThemeRegistry::load` 回读）；人工 .logs/imported_settings4.png | 选择/导入可用；Tabby 配色可迁入并在设置页刷新 | 无独立预览；导出未实现；主题 selection/cursorAccent/selectionForeground 忽略，颜色仅 #RGB/#RRGGBB；未做文件监听式热重载 |
@@ -371,7 +371,7 @@
 
 ### C10. Themes / Color Schemes / Appearance（7 条）
 
-状态：partial=5，needs_verification=1，not_started=1。
+状态：partial=6，needs_verification=1，not_started=0。
 
 | ID | Feature | Upstream evidence | Rust implementation | Status | Test | Result | Limitation |
 |---|---|---|---|---|---|---|---|
@@ -380,7 +380,7 @@
 | THEME-003 | Base16 兼容 | U-THEME / 需求 C10 | themes.rs 支持 Xresources/kitty 等 16 色导入（Base16 常见载体）；无 base16 语义/元数据 | partial | `imports_xresources`、`imports_kitty` | 可消费 Base16 风格 16 色文件 | 无 Base16 命名/校验/调色板映射保证 |
 | THEME-004 | 内置 + 导入社区色彩方案；核实上游 150+ 数量 | U-THEME / 需求 C10 | 12 套内置；ThemeRegistry 扫描目录支持 iTerm2/WT/Alacritty/kitty/Xresources/YAML | partial | themes.rs 12 例；人工导入 .logs/imported_settings4.png | 内置 12 + 导入不限量 | 未内置 150+；上游当前数量未核实；改文件需重启 |
 | THEME-005 | 字体、fallback、ligatures、Powerline、Nerd Fonts、emoji | U-THEME / 需求 C10 | glyph.rs 固定 JetBrains Mono/DejaVu + CJK 回退；emoji 缺字形留空 | partial | glyph.rs 3 例；人工中文/粗体 | CJK fallback 可用 | 无自选字体/连字/Powerline/Nerd/彩色 emoji |
-| THEME-006 | 窗口背景/透明/模糊仅在平台支持时启用；不支持时回退 | U-THEME / 需求 C10 | 无透明/模糊代码；窗口背景为 Palette.colors.surface 纯色 | not_started | 无 | 未实现 | 无平台能力检测/回退；当前纯色背景 |
+| THEME-006 | 窗口背景/透明/模糊仅在平台支持时启用；不支持时回退 | U-THEME / 需求 C10 | config `background_image`（空=关；`~` 展开；只接受存在普通文件）+ `background_opacity`（0.2–1.0，写盘两位小数）；main.slint 窗口底层 Image（cover）+ 有图时内容区/pane 背景透明；render.rs 默认背景 alpha=opacity（直通 RGBA 交 Slint 混合），主题切换/字号重建保留透明度；设置页即时生效 | partial | config 单测（roundtrip/clamp/旧配置/路径校验/`~`）+ render.rs `background_alpha`/`default_background`/draw alpha；未启动 GUI | 纯色或背景图 + 终端默认背景透明可用；坏路径回退并提示 | 无模糊；窗口本身不透明（无桌面透传）；无每主题独立背景；未做 GPU/软件后端差异验证；只有默认背景透明（彩色 cell 背景、文字、光标保持不透明）；大图同步解码可能短暂卡顿 |
 | THEME-007 | 旧 Tabby CSS Theme 转 Slint 的兼容分级或 WebView 适配 | U-THEME / 需求 C10 | 无 CSS 解析/WebView；docs/tabby-themes.md 已说明 CSS 依赖 Angular DOM/Bootstrap | needs_verification | 待定兼容策略；无实现 | 未核实/未实现 | CSS 不能直接映射 Slint；可选 WebView 层未做，需分级 |
 
 ### C11. Progress / Notification / Smart Tabs（6 条）

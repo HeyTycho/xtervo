@@ -20,6 +20,28 @@ fn pack(c: u32) -> u32 {
     r | g << 8 | b << 16 | 0xff00_0000
 }
 
+/// 背景不透明度（0.2–1.0）→ 默认背景 alpha（0..=255）。
+///
+/// 纯函数，便于不启动 GUI 验证。与 `config::clamp_opacity` 的范围保持一致；
+/// 非有限值按不透明处理。终端帧是直通 alpha 的 RGBA，Slint 负责与背景图混合。
+pub fn background_alpha(opacity: f32) -> u32 {
+    let opacity = if opacity.is_finite() { opacity.clamp(0.2, 1.0) } else { 1.0 };
+    (opacity * 255.0).round().clamp(0.0, 255.0) as u32
+}
+
+/// 终端默认背景像素：主题 RGB 保持不变，只替换 alpha。
+#[inline]
+fn default_background(theme_bg: u32, opacity: f32) -> u32 {
+    (pack(theme_bg) & 0x00ff_ffff) | background_alpha(opacity) << 24
+}
+
+/// 只比较 RGB：默认背景带 opacity alpha，而 cell.bg 是不透明的主题色，
+/// 不能因为 alpha 不同就把整屏 cell 背景重新填成不透明。
+#[inline]
+fn same_rgb(a: u32, b: u32) -> bool {
+    a & 0x00ff_ffff == b & 0x00ff_ffff
+}
+
 /// 轻微 gamma 校正：暗底上的细笔画更实一些（a^(1/1.35)）。
 fn gamma_alpha(a: u32) -> u32 {
     use std::sync::OnceLock;
@@ -61,6 +83,8 @@ pub struct Renderer {
     fonts: Rc<FontSet>,
     glyphs: GlyphCache,
     default_bg: u32,
+    /// 当前终端背景不透明度（0.2–1.0），只影响默认背景像素 alpha。
+    opacity: f32,
     cursor_color: u32,
     force_full: bool,
     last_cursor: (u16, u16),
@@ -79,12 +103,14 @@ impl Renderer {
         rows: usize,
         theme_bg: u32,
         cursor_color: u32,
+        opacity: f32,
     ) -> Self {
         let cell_w = fonts.cell_w;
         let cell_h = fonts.cell_h;
         let width = cols * cell_w;
         let height = rows * cell_h;
-        let default_bg = pack(theme_bg);
+        let opacity = if opacity.is_finite() { opacity.clamp(0.2, 1.0) } else { 1.0 };
+        let default_bg = default_background(theme_bg, opacity);
         Self {
             cols,
             rows,
@@ -96,6 +122,7 @@ impl Renderer {
             fonts,
             glyphs: GlyphCache::default(),
             default_bg,
+            opacity,
             cursor_color: pack(cursor_color),
             force_full: true,
             last_cursor: (0, 0),
@@ -109,8 +136,19 @@ impl Renderer {
 
     /// 切换主题：更新默认背景与光标色，下一帧整屏重绘。
     pub fn set_theme(&mut self, theme_bg: u32, cursor_color: u32) {
-        self.default_bg = pack(theme_bg);
+        self.default_bg = default_background(theme_bg, self.opacity);
         self.cursor_color = pack(cursor_color);
+        self.pixels.fill(self.default_bg);
+        self.force_full = true;
+        self.last_selection = None;
+        self.last_search = None;
+    }
+
+    /// 调整终端默认背景 alpha；文字/光标/cell 彩色背景保持不透明。
+    pub fn set_opacity(&mut self, opacity: f32) {
+        let opacity = if opacity.is_finite() { opacity.clamp(0.2, 1.0) } else { 1.0 };
+        self.opacity = opacity;
+        self.default_bg = (self.default_bg & 0x00ff_ffff) | background_alpha(opacity) << 24;
         self.pixels.fill(self.default_bg);
         self.force_full = true;
         self.last_selection = None;
@@ -233,7 +271,7 @@ impl Renderer {
                 fg = pack(0x11111b);
             }
             let x0 = col * self.cell_w;
-            if bg != self.default_bg {
+            if !same_rgb(bg, self.default_bg) {
                 self.fill_rect(x0, y0, cell_px, self.cell_h, bg);
             }
             if cell.has(flags::HIDDEN) {
@@ -401,6 +439,59 @@ mod tests {
     }
 
     #[test]
+    fn background_alpha_clamps_and_rounds() {
+        assert_eq!(background_alpha(1.0), 255);
+        assert_eq!(background_alpha(0.5), 128);
+        assert_eq!(background_alpha(0.7), 179);
+        assert_eq!(background_alpha(0.2), 51);
+        // 非法/越界值按边界处理，绝不让背景完全透明。
+        assert_eq!(background_alpha(0.0), 51);
+        assert_eq!(background_alpha(1.9), 255);
+        assert_eq!(background_alpha(f32::NAN), 255);
+    }
+
+    #[test]
+    fn default_background_keeps_theme_rgb_and_sets_alpha() {
+        let theme_bg = 0x0012_3456;
+        let px = default_background(theme_bg, 0.5);
+        // 像素是内存序 RGBA（LE），低 24 位与 pack 的 RGB 布局一致。
+        assert_eq!(px & 0x00ff_ffff, pack(theme_bg) & 0x00ff_ffff, "默认背景 RGB 必须保持主题色");
+        assert_eq!(px >> 24, 128);
+        assert_eq!(default_background(theme_bg, 1.0) >> 24, 255);
+        assert_eq!(default_background(0x00ff_ffff, 0.5) & 0x00ff_ffff, 0x00ff_ffff);
+    }
+
+    #[test]
+    fn drawn_frame_applies_opacity_only_to_default_background() {
+        let Some(fonts) = FontSet::load(15.0) else { return };
+        let theme_bg = Theme::default().bg();
+        let mut renderer =
+            Renderer::new(Rc::new(fonts), 4, 2, theme_bg, Theme::default().cursor(), 0.5);
+        let mut frame = blank_frame(4, 2);
+        frame.full = true;
+        // row 1 / col 0：非默认 cell 背景应保持不透明。
+        frame.cells[4].bg = 0x0011_2233;
+        renderer.draw(&frame);
+
+        assert_eq!(renderer.pixels[0] >> 24, 128, "默认背景应带 50% alpha");
+        assert_eq!(
+            renderer.pixels[0] & 0x00ff_ffff,
+            pack(theme_bg) & 0x00ff_ffff,
+            "默认背景 RGB 不应改变"
+        );
+        // row 1 / col 0 的像素下标（像素缓冲按像素宽度索引，不是按 cell）。
+        let idx = renderer.cell_h * renderer.width;
+        assert_eq!(renderer.pixels[idx] >> 24, 255, "彩色 cell 背景不能跟着透明");
+        assert_eq!(
+            renderer.pixels[idx] & 0x00ff_ffff,
+            pack(0x0011_2233) & 0x00ff_ffff
+        );
+
+        renderer.set_opacity(0.2);
+        assert_eq!(renderer.default_bg >> 24, 51, "即时调整透明度后默认背景 alpha 更新");
+    }
+
+    #[test]
     fn wide_cjk_is_drawn_across_two_cells() {
         let Some(fonts) = FontSet::load(15.0) else {
             eprintln!("跳过：没有可用字体");
@@ -408,7 +499,14 @@ mod tests {
         };
         let cell_w = fonts.cell_w;
         let cell_h = fonts.cell_h;
-        let mut renderer = Renderer::new(Rc::new(fonts), 8, 1, Theme::default().bg(), Theme::default().cursor());
+        let mut renderer = Renderer::new(
+            Rc::new(fonts),
+            8,
+            1,
+            Theme::default().bg(),
+            Theme::default().cursor(),
+            1.0,
+        );
         let mut frame = blank_frame(8, 1);
         frame.full = true;
 
@@ -440,7 +538,14 @@ mod tests {
         let Some(fonts) = FontSet::load(15.0) else { return };
         let cell_w = fonts.cell_w;
         let cell_h = fonts.cell_h;
-        let mut renderer = Renderer::new(Rc::new(fonts), 8, 1, Theme::default().bg(), Theme::default().cursor());
+        let mut renderer = Renderer::new(
+            Rc::new(fonts),
+            8,
+            1,
+            Theme::default().bg(),
+            Theme::default().cursor(),
+            1.0,
+        );
         let mut frame = blank_frame(8, 1);
         frame.full = true;
         let mut c = CellData::default();
