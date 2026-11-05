@@ -16,11 +16,11 @@
 
 | 范围 | 条目 | implemented | partial | in_progress | needs_verification | not_started | unsupported | 加权完成度 |
 |---|---|---|---|---|---|---|---|---|
-| B 部分（UI） | 110 | 20 | 50 | 0 | 7 | 32 | 1 | 40.9% |
-| C 部分（底层） | 118 | 9 | 37 | 0 | 10 | 56 | 6 | 23.3% |
-| B+C 合计 | 228 | 29 | 87 | 0 | 17 | 88 | 7 | 31.8% |
+| B 部分（UI） | 110 | 25 | 53 | 0 | 5 | 26 | 1 | 46.8% |
+| C 部分（底层） | 118 | 12 | 38 | 0 | 9 | 53 | 6 | 26.3% |
+| B+C 合计 | 228 | 37 | 91 | 0 | 14 | 79 | 7 | 36.2% |
 
-> 加权公式：`(implemented + 0.5×partial + 0.5×in_progress) / 条目总数`。`needs_verification / not_started / unsupported` 记 0。该数字是“功能条目覆盖度”，不是代码行数或工时完成度。本轮补 Vault 时用 `scripts/matrix_stats.py` 逐行复核并刷新了上表（旧审计快照数字已过期；脚本额外把 needs_verification 记 0.25，故其 weighted 输出略高）。
+> 加权公式：`(implemented + 0.5×partial + 0.5×in_progress) / 条目总数`。`needs_verification / not_started / unsupported` 记 0。该数字是“功能条目覆盖度”，不是代码行数或工时完成度。本轮补 Vault 时用 `scripts/matrix_stats.py` 逐行复核并刷新了上表（旧审计快照数字已过期；脚本额外把 needs_verification 记 0.25，故其 weighted 输出略高）。2026-11-05 Profiles UX（搜索/默认/复制）合入后刷新了 B5 的 13 条；上表已按当前全部 228 行重新用 `scripts/matrix_stats.py` 核对（脚本会额外把 needs_verification 记 0.25，输出 37.7%）。
 
 ## 2. 审计发现：现有实现/文档与需求不符（至少 3 条）
 
@@ -32,7 +32,7 @@
 6. **鼠标 1002 拖动按钮编码错误**：`main.rs::on_pane_mouse_move` 在转发拖动时硬编码 `MouseButton::Left`；按住右键/中键拖动（1002）会被当成左键上报。鼠标上报文档只验证了左键/滚轮。
 7. **OSC 52 / 颜色查询 / 尺寸查询无响应**：`pane.rs` 的 `Listener::send_event` 对 `Event::ClipboardStore/Load`、`ColorRequest`、`TextAreaSizeRequest` 走 `_ => {}`；应用查询终端颜色/尺寸时拿不到回复。
 8. ~~**CLI 与实际不符**~~ 已修（2026-11-05）：`-l` 与 `--latency` 等价，`--title` 通过 `window-title` 属性真正写入窗口标题（OPS-006）。
-9. **稳定 ID 未全面落实**：需求 A3 要求 Tab/Pane/Session/Profile/Plugin 都用稳定 ID；`workspace::Tab` 只有 `Vec` 下标，`session::Snapshot` 无 ID，`PaneId` 是进程内自增（重启后重排），Profile/Plugin 尚无模型。
+9. **稳定 ID 未全面落实**：需求 A3 要求 Tab/Pane/Session/Profile/Plugin 都用稳定 ID；`workspace::Tab` 只有 `Vec` 下标，`session::Snapshot` 无 ID，`PaneId` 是进程内自增（重启后重排）；Profile 已有稳定 ID（profile.rs），Plugin 尚无模型。
 10. **Session 未独立于 Pane 生命周期**：需求 A3 要求 Session 独立；当前 `PaneHandle` 同时拥有 actor/PTY/child，关闭 Pane/Tab 即 Drop 并 kill 子进程，无法“仅关视图/保留后台 Session”。（2026-11-05 已补关闭确认，见 UI-WIN-008，仅缓解误关，未解决生命周期解耦）
 
 ## 3. B 部分：UI 页面、控件和用户操作
@@ -59,8 +59,8 @@
 
 | ID | Feature | Upstream evidence | Rust implementation | Status | Test | Result | Limitation |
 |---|---|---|---|---|---|---|---|
-| UI-TAB-001 | 新建 Tab：+、快捷键、命令面板、Profile Selector | U-AUDIT / 需求 B2 | main.rs `new_tab_inner`；Ctrl+T；`+` 按钮；Command Palette 执行 `tab.new` | partial | 真机：命令面板执行 `tab.new` → 新建 Tab | `+`/Ctrl+T/命令面板三条入口可用 | 无 Profile Selector |
-| UI-TAB-002 | 新建 Tab 下拉：Profile/连接类型、搜索、键盘选择 | U-AUDIT / 需求 B2 | TabBar “+” 直接新建默认 Tab；旁边独立 **Profile 图标（`>_`）** 打开菜单，只列已保存 Profile（Local/SSH/Serial/Telnet）+ Manage Profiles…；点外部/Esc 关闭 | partial | 真机：+ → tabs=2 且无菜单；Profile 图标 → `[ui] profile menu profiles=2`，菜单仅两个 Profile + Manage；选 local-a → `[ui] profile pick=0`，新 Tab 进入 shell（.logs/profile-menu.png / profile-menu-picked.png） | + 与 Profile 选择器分离，交互对齐 Tabby | 无搜索/键盘上下选择；菜单过长时裁剪不滚动 |
+| UI-TAB-001 | 新建 Tab：+、快捷键、命令面板、Profile Selector | U-AUDIT / 需求 B2 | main.rs `new_tab_with_default`（config `default_profile_id` 有效则用该 Profile，否则 `new_tab_inner`）；Ctrl+T、`+`、Command Palette `tab.new`、TabBar New Tab 共用 | partial | 既有真机：命令面板执行 `tab.new` → 新建 Tab；本轮单测 default_index/deleting_default；GUI 未启动 | 三条入口均支持默认 Profile，失效时回退 shell | 启动首 Tab/会话恢复不走默认 Profile；无 per-Profile 快捷键 |
+| UI-TAB-002 | 新建 Tab 下拉：Profile/连接类型、搜索、键盘选择 | U-AUDIT / 需求 B2 | TabBar “+” 新建 Tab（默认 Profile 有效时用它）；旁边独立 **Profile 图标（`>_`）** 打开菜单，只列已保存 Profile（Local/SSH/Serial/Telnet）+ Manage Profiles…；管理面板内有搜索框；点外部/Esc 关闭 | partial | 既有真机：+ → tabs=2 且无菜单；Profile 图标 → `[ui] profile menu profiles=2`，选 local-a → `[ui] profile pick=0`；本轮 GUI 未启动 | + 与 Profile 选择器分离；搜索在管理面板内 | Profile 菜单本身无搜索/键盘上下选择；菜单过长时裁剪不滚动 |
 | UI-TAB-003 | 单击 Tab 切换活动 Tab | U-AUDIT / 需求 B2 | main.slint tab-hit `tab-clicked`；main.rs `set_active_tab` | implemented | 人工：多 tab 单击切换；ui-shell §7 .logs/t4.png | 已有记录 | 仅左键；无中键关闭/双击重命名 |
 | UI-TAB-004 | 拖动 Tab 调整顺序；拖出窗口按上游行为处理 | U-AUDIT（拖出行为待核） | main.slint `drag-tab`/`drag-x` 拖拽状态；Rust `drag_target` + `workspace::move_tab`；顺序随会话快照持久化 | partial | 单测 `drag_target_maps_pointer_to_slot`、`move_tab_reorders_and_tracks_active`；真机拖 tab0→tab1 日志 `[ws] reorder tab 0 → 1`，点击/双击仍正常 | 拖动排序可用 | 拖出窗口未实现（上游语义亦未核实）；无拖拽视觉反馈 |
 | UI-TAB-005 | 关闭 Tab；区分仅关视图/结束 Session/后台保留 | U-AUDIT / 需求 B2 | main.rs `close_action`（end/background）：`detach_runtime` 移入后台池（不 Drop、子进程保留）；**Background Sessions 面板**列标题并可点选重连（`refresh_background`/`reattach_background`），菜单与 `session.reattach` 也可 | implemented | 真机：关 Tab → `[session] detach pane=1`，pid 不变；面板 `background panel items=1`，点条目 → `reattach pane=1`，同一 pid 复用（截图 .logs/bgpanel.png） | 结束/后台两条路径 + 会话列表重连可用 | 退出应用会一并结束后台会话；列表只显示标题与 pane id，无 cwd/运行时长 |
@@ -99,7 +99,7 @@
 | UI-NAV-001 | Sidebar 显示/隐藏；宽度调整（若上游支持） | U-AUDIT（上游宽度行为待核） | 无实现 | not_started | 无 | 未实现 | 无 Sidebar；上游是否支持宽度调整待核 |
 | UI-NAV-002 | Sidebar/Toolbar 按钮、分组、顺序遵循上游；插件可扩展 | U-AUDIT / 需求 B4 | 无实现 | not_started | 无 | 未实现 | 无 Sidebar/Toolbar/插件入口 |
 | UI-NAV-003 | Connection Manager 入口始终易访问 | U-AUDIT / 需求 B4 | 无实现 | not_started | 无 | 未实现 | 无连接管理入口 |
-| UI-NAV-004 | Profile Selector：快速选 Shell/SSH/Serial/Telnet Profile | U-AUDIT / 需求 B4 | TabBar 菜单 Profiles 面板：四类 Profile 点选开 Tab（Local 直接起 shell、SSH 系统 ssh、Telnet 系统 telnet、Serial socat） | partial | 真机：Local/SSH/Telnet/Serial 各开一个 Tab 均成功（见 SSH/Telnet/Serial 各行证据） | 四类 Profile 均可打开 | 无“新 Tab 直接选 Profile”入口（需先开面板）；无 Profile 搜索 |
+| UI-NAV-004 | Profile Selector：快速选 Shell/SSH/Serial/Telnet Profile | U-AUDIT / 需求 B4 | TabBar 独立 `>_` Profile 菜单（快速选 Profile 开新 Tab）+ Profiles 管理面板（搜索/星标默认/复制/编辑/删除）；Local/SSH/Telnet/Serial 四类可打开 | partial | 既有四类 Profile 真机打开记录；本轮搜索/默认/复制仅单测 + 编译，GUI 未启动 | 四类 Profile 可从菜单/面板打开 | Profile 菜单无搜索/键盘导航；启动首 Tab 不套用默认 Profile |
 | UI-NAV-005 | Command Palette：模糊搜索命令/Profile/设置（按上游核验） | U-AUDIT（上游能力待核） | main.slint Palette 浮层 + main.rs `open_palette`/`refresh_palette`/`palette_accept`；`commands::Registry::search` 模糊搜索；TabBar 菜单与 Ctrl+Shift+P 入口 | partial | 真机：菜单 → `[ui] palette open items=10`；点第一条 → `[ui] run command tab.new` → `[ws] new tab: tabs=2` | 命令面板可用（19/21 命令已接线） | Profile/设置项未接入搜索；无键盘输入端到端验证（沙箱键盘注入不可用） |
 | UI-NAV-006 | Toolbar 插件按钮：图标、名称、提示、动作、禁用态 | U-AUDIT / 需求 B4 | 无实现 | not_started | 无 | 未实现 | 无插件系统/工具栏 |
 | UI-NAV-007 | 状态/通知区：连接、活动任务、进度、完成提醒 | U-AUDIT / 需求 B4 | 无状态区；仅 CoreEvent::Bell/Exited 事件存在但 UI 未消费 | not_started | 无 | 未实现 | 无状态栏/通知中心；Bell/Exited 被 `poll_events` 忽略 |
@@ -107,23 +107,23 @@
 
 ### B5. Connection Manager / Profile 管理 UI（13 条）
 
-状态：partial=2，needs_verification=3，not_started=8。
+状态：implemented=5，partial=4，needs_verification=1，not_started=3。
 
 | ID | Feature | Upstream evidence | Rust implementation | Status | Test | Result | Limitation |
 |---|---|---|---|---|---|---|---|
-| UI-PROF-001 | Profile 列表与 Profile Groups/分组展示 | U-AUDIT / 需求 B5 | 无实现 | not_started | 无 | 未实现 | 无 Profile 数据模型/列表/分组 |
-| UI-PROF-002 | 搜索/过滤 Profile | U-AUDIT / 需求 B5 | 无实现 | not_started | 无 | 未实现 | 无 Profile UI |
-| UI-PROF-003 | 创建、编辑、保存、取消、删除 Profile | U-AUDIT / 需求 B5 | 无实现 | not_started | 无 | 未实现 | 无 Profile 编辑器/持久化 |
-| UI-PROF-004 | 复制 Profile、拖动排序、移动到分组、分组增删改（按原版核验） | U-AUDIT（原版行为待核） | 无实现 | needs_verification | 待上游核实分组操作 | 未核实/未实现 | 无 Profile/分组模型 |
-| UI-PROF-005 | 设置默认新 Tab Profile | U-AUDIT / 需求 B5 | 无实现 | not_started | 无 | 未实现 | 仅 config.shell 单一默认 shell |
-| UI-PROF-006 | 点击 Profile 连接；当前/新 Tab 打开（依上游） | U-AUDIT（打开位置待核） | 无实现 | needs_verification | 待上游核实打开位置 | 未核实/未实现 | 无 Profile 点击连接 |
-| UI-PROF-007 | 连接失败显示原因、重试、编辑入口 | U-AUDIT / 需求 B5 | 无实现 | not_started | 无 | 未实现 | spawn 失败只 eprintln；无连接错误 UI |
+| UI-PROF-001 | Profile 列表与 Profile Groups/分组展示 | U-AUDIT / 需求 B5 | profile.rs `ProfileStore`（profiles.toml 原子写、v1→v2 迁移、稳定 ID）；main.slint Profiles 面板列表（`[kind] name`、编辑/删除、搜索、复制、星标） | partial | profile.rs 单测 add/update/remove/roundtrip/ID 修复；GUI 未启动（共享显示器约束） | 列表与增删改可用；无分组 | 无 Profile Groups/分组、无拖拽排序；搜索/复制/默认见 002/004/005 |
+| UI-PROF-002 | 搜索/过滤 Profile | U-AUDIT / 需求 B5 | profile.rs `filter_indices`：按 name/host/kind 大小写不敏感子串匹配，空查询返回全部；main.slint 搜索框 + ×/Esc 清空；main.rs `refresh_profiles` 维护“过滤行 → store 下标”映射 | implemented | 单测 `filter_matches_name_host_kind_case_insensitively`；GUI 未启动，手工步骤见 self-iteration 2026-11-05 | 输入即过滤；点击打开正确 Profile；清空恢复 | 无模糊/拼音搜索；Profile 选择器菜单未接搜索（仅管理面板内） |
+| UI-PROF-003 | 创建、编辑、保存、取消、删除 Profile | U-AUDIT / 需求 B5 | Profile 表单（Local/SSH/Serial/Telnet 动态字段）+ `open_profile_form`/`edit_profile_form`/`save_profile_form`/`on_profile_delete`；保存先做 Vault 校验，再 `ProfileStore::add/update` + 原子落盘 | implemented | profile.rs 单测 add/update/remove/roundtrip；GUI 未启动 | 创建/编辑/保存/取消/删除闭环 | 删除无二次确认；无字段级实时校验 |
+| UI-PROF-004 | 复制 Profile、拖动排序、移动到分组、分组增删改（按原版核验） | U-AUDIT（原版行为待核） | 复制：`ProfileStore::duplicate` + `duplicate_name`（`(copy N)` 去重）+ `on_profile_duplicate`（新 ID、落盘）；面板行内 Dup 按钮 | partial | 单测 `duplicate_assigns_new_id_and_dedupes_copy_names`、`duplicate_name_helper_handles_existing_copies`；GUI 未启动 | 复制 Profile 可用 | 拖动排序/移动到分组/分组增删改未做；上游分组操作待核 |
+| UI-PROF-005 | 设置默认新 Tab Profile | U-AUDIT / 需求 B5 | config `default_profile_id: u64`（默认 0）；Profiles 面板行首星标 `on_profile_set_default` 写 config；`new_tab_with_default` 用于 + / Ctrl+T / 命令 `tab.new` / TabBar New Tab；ID 无效回退默认 shell，删除默认项回退 0 | implemented | 单测 `default_index_resolves_and_falls_back`、`default_profile_id_defaults_to_zero_and_survives_roundtrip`、`deleting_default_profile_falls_back_to_shell`；GUI 未启动 | 默认 Profile 设置与新 Tab 行为已接通 | 启动首 Tab/会话恢复不套用默认 Profile（避免启动即连 SSH）；无 GUI e2e |
+| UI-PROF-006 | 点击 Profile 连接；当前/新 Tab 打开（依上游） | U-AUDIT（打开位置待核） | 面板点行 → `on_profile_open` → 过滤映射 → `open_profile_tab(index)` 在**新 Tab** 打开；Local/SSH/Telnet/Serial 命令构造沿用既有实现 | implemented | 既有四类 Profile 真机打开记录（见 UI-NAV-004）；本轮映射层静态走查 + GUI 未启动 | 点击 Profile 在新 Tab 打开可用 | 打开位置固定新 Tab（上游语义待核）；连接失败仅日志（见 007） |
+| UI-PROF-007 | 连接失败显示原因、重试、编辑入口 | U-AUDIT / 需求 B5 | 无实现 | not_started | 无 | 未实现 | spawn 失败只 eprintln；无连接错误 UI/重试 |
 | UI-PROF-008 | 连接中 Profile 进度/状态；支持取消连接 | U-AUDIT / 需求 B5 | 无实现 | not_started | 无 | 未实现 | 无连接状态机/取消 |
-| UI-PROF-009 | Profile 可绑定快捷键 | U-AUDIT / 需求 B5 | 无实现 | not_started | 无 | 未实现 | 无快捷键系统 |
-| UI-PROF-010 | Profile 创建/编辑按连接类型动态显示字段 | U-AUDIT / 需求 B5 | 无实现 | not_started | 无 | 未实现 | 无连接类型枚举/表单 |
-| UI-PROF-011 | SSH Profile 字段分组 General/Ports/Advanced/Ciphers/Login Scripts（以源码为准） | U-AUDIT（字段分组待核） | 无实现 | needs_verification | 待上游源码核实字段 | 未核实/未实现 | 无 SSH Profile UI |
+| UI-PROF-009 | Profile 可绑定快捷键 | U-AUDIT / 需求 B5 | 无实现 | not_started | 无 | 未实现 | 快捷键表只覆盖命令，无 per-Profile 绑定 |
+| UI-PROF-010 | Profile 创建/编辑按连接类型动态显示字段 | U-AUDIT / 需求 B5 | main.slint 表单按 `form-kind` 显示 Local（Shell/Args/Cwd）、SSH（Host/Port/User/Auth/Key/Password/Extra/Forwards）、Serial、Telnet 字段 | implemented | GUI 未启动；字段切换逻辑静态走查 | 按类型动态显示字段可用 | SSH 字段未按 General/Ports/Advanced 分组（见 011） |
+| UI-PROF-011 | SSH Profile 字段分组 General/Ports/Advanced/Ciphers/Login Scripts（以源码为准） | U-AUDIT（字段分组待核） | 无实现 | needs_verification | 待上游源码核实字段 | 未核实/未实现 | 当前 SSH 字段为平铺表单；Ciphers/Login Scripts 未做 |
 | UI-PROF-012 | Serial Profile：端口/波特率/数据位/校验/停止/流控/模式/换行 | U-AUDIT / 需求 B5 | Profile kind=serial：serial_port + baud；`serial_command()` 走 `socat -,raw,echo=0 <dev>,raw,echo=0,b<baud>` | partial | 真机：socat PTY 对 + 定时写 SERIAL-OK → Tab 显示连续 SERIAL-OK（.logs/serial-e2e.png） | 端口/波特率可用 | 无数据位/校验/停止位/流控/模式/换行设置；依赖系统 socat |
-| UI-PROF-013 | Local Shell Profile：命令、参数、起始目录、环境变量 | U-AUDIT / 需求 B5 | config.rs `shell`；main.rs `create_pane` 传 shell/args/cwd；PaneConfig.env 但 app 传 Vec::new() | partial | 人工：`--shell`/`-- args`/config.toml shell；env 未接线 | --shell 与 args 可用；cwd 仅恢复时用；无 Profile UI | env 字段未接线；无起始目录/标题/自定义选项 UI |
+| UI-PROF-013 | Local Shell Profile：命令、参数、起始目录、环境变量 | U-AUDIT / 需求 B5 | profile.rs Profile 支持 shell/args/cwd/env；`create_pane` 以 Profile 优先；Profile 表单暴露 Shell/Args/Cwd | partial | 单测 roundtrip（shell/args/cwd/env 持久化）；GUI 未启动 | 命令/参数/起始目录可用；env 可从 profiles.toml 手写 | 表单无 env/自定义标题/字体等字段；无 UI 级 e2e |
 
 ### B6. Terminal View 交互（14 条）
 

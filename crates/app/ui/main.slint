@@ -86,6 +86,16 @@ export struct TabView {
     completed: bool,
 }
 
+/// Profiles 面板的一行：过滤/星标都在 Rust 侧算好，UI 只负责画。
+export struct ProfileRow {
+    /// Profile 稳定 ID（调试/未来扩展用）
+    id: int,
+    /// 形如 `[local] work`
+    label: string,
+    /// 是否为“新 Tab 默认 Profile”（行首星标）
+    is-default: bool,
+}
+
 component MenuRow inherits Rectangle {
     in property <string> label;
     callback picked();
@@ -410,10 +420,17 @@ export component MainWindow inherits Window {
     callback settings-toggled(bool);
     // Profiles（连接配置）
     in-out property <bool> profiles-open: false;
-    in property <[string]> profile-items: [];
+    in property <[ProfileRow]> profile-items: [];
+    /// 搜索框内容：输入即按 name/host/kind 过滤；清空恢复全部。
+    in-out property <string> profile-query: "";
+    /// 面板底部提示：新 Tab 默认使用的 Profile（或系统 shell）。
+    in property <string> profile-default-info: "";
     callback profile-open(int);
     callback profile-new();
     callback profile-delete(int);
+    callback profile-set-default(int);
+    callback profile-duplicate(int);
+    callback profile-filter(string);
     callback profiles-close();
     // Profile 表单（新建）
     in-out property <bool> profile-form-open: false;
@@ -1498,9 +1515,9 @@ export component MainWindow inherits Window {
 
     if root.profiles-open : Rectangle {
         x: (root.width - 420px) / 2;
-        y: (root.height - 320px) / 2;
+        y: (root.height - 404px) / 2;
         width: 420px;
-        height: 320px;
+        height: 404px;
         background: Palette.colors.raise;
         border-radius: 10px;
         border-width: 1px;
@@ -1524,105 +1541,250 @@ export component MainWindow inherits Window {
         }
 
         Text {
-            x: 16px; y: 12px;
+            x: 16px; y: 10px;
             text: "Profiles";
             color: Palette.colors.text;
             font-size: 15px;
             font-weight: 600;
         }
 
+        // 搜索框：输入即过滤，× 或 Esc 清空后恢复完整列表。
         Rectangle {
-            x: 16px; y: 40px;
-            width: 388px; height: 1px;
-            background: Palette.colors.border;
-        }
+            x: 16px; y: 38px;
+            width: 388px; height: 28px;
+            border-radius: 5px;
+            background: Palette.colors.bg;
+            border-width: 1px;
+            border-color: Palette.colors.border;
 
-        // 列表固定行高（34px 步进），行位置不随条目数量漂移
-        VerticalLayout {
-            x: 16px; y: 52px;
-            width: 388px; height: 196px;
-            spacing: 4px;
+            TextInput {
+                x: 8px;
+                width: parent.width - 40px;
+                height: parent.height;
+                text <=> root.profile-query;
+                single-line: true;
+                color: Palette.colors.text;
+                font-size: 11px;
+                vertical-alignment: center;
+                init => { self.focus(); }
+                edited => { root.profile-filter(self.text); }
+                key-pressed(event) => {
+                    if (event.text == "\u{1b}") {
+                        if (root.profile-query != "") {
+                            root.profile-query = "";
+                            root.profile-filter("");
+                        } else {
+                            root.profiles-open = false;
+                            root.profiles-close();
+                        }
+                        return EventResult.accept;
+                    }
+                    EventResult.reject
+                }
+            }
 
-            for item[i] in root.profile-items : Rectangle {
-                height: 30px;
+            // 占位提示放在 TextInput 之后（上层），空查询时可见。
+            Text {
+                x: 8px;
+                width: parent.width - 40px;
+                height: parent.height;
+                text: "Search name / host / kind…";
+                color: Palette.colors.muted;
+                font-size: 11px;
+                vertical-alignment: center;
+                visible: root.profile-query == "";
+            }
+
+            if root.profile-query != "" : Rectangle {
+                x: parent.width - 26px;
+                y: 4px;
+                width: 20px; height: 20px;
                 border-radius: 4px;
-                background: profile-pick-hit.has-hover ? Palette.colors.hover : transparent;
+                background: prof-search-clear.has-hover ? Palette.colors.hover : transparent;
 
                 Text {
-                    x: 8px;
-                    width: parent.width - 40px;
-                    text: item;
-                    color: Palette.colors.text;
-                    font-size: 12px;
+                    text: "×";
+                    color: Palette.colors.muted;
+                    font-size: 13px;
+                    horizontal-alignment: center;
                     vertical-alignment: center;
-                    overflow: elide;
+                    width: 100%;
+                    height: 100%;
                 }
 
-                profile-pick-hit := TouchArea {
-                    clicked => { root.profile-open(i); }
-                }
-
-                Rectangle {
-                    x: parent.width - 52px;
-                    y: 3px;
-                    width: 22px;
-                    height: 24px;
-                    border-radius: 4px;
-                    background: prof-edit-hit.has-hover ? Palette.colors.hover : transparent;
-
-                    Text {
-                        text: "✎";
-                        color: Palette.colors.muted;
-                        font-size: 13px;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                        width: 100%;
-                        height: 100%;
-                    }
-
-                    prof-edit-hit := TouchArea {
-                        clicked => { root.profile-edit(i); }
-                    }
-                }
-
-                Rectangle {
-                    x: parent.width - 26px;
-                    y: 3px;
-                    width: 22px;
-                    height: 24px;
-                    border-radius: 4px;
-                    background: prof-del-hit.has-hover ? Palette.colors.danger : transparent;
-
-                    Text {
-                        text: "×";
-                        color: prof-del-hit.has-hover ? Palette.colors.bg : Palette.colors.muted;
-                        font-size: 14px;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                        width: 100%;
-                        height: 100%;
-                    }
-
-                    prof-del-hit := TouchArea {
-                        clicked => { root.profile-delete(i); }
+                prof-search-clear := TouchArea {
+                    clicked => {
+                        root.profile-query = "";
+                        root.profile-filter("");
                     }
                 }
             }
         }
 
+        Rectangle {
+            x: 16px; y: 74px;
+            width: 388px; height: 1px;
+            background: Palette.colors.border;
+        }
+
+        // 列表放进 Flickable：过滤后仍可能超过一屏，滚动而不是撑破面板。
+        Flickable {
+            x: 16px; y: 84px;
+            width: 388px; height: 208px;
+            interactive: true;
+            content-width: self.width;
+            content-height: root.profile-items.length * 34px;
+
+            VerticalLayout {
+                width: parent.width;
+                spacing: 4px;
+
+                for item[i] in root.profile-items : Rectangle {
+                    height: 30px;
+                    border-radius: 4px;
+                    background: profile-pick-hit.has-hover ? Palette.colors.hover : transparent;
+
+                    Text {
+                        x: 30px;
+                        width: parent.width - 114px;
+                        text: item.label;
+                        color: Palette.colors.text;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+
+                    profile-pick-hit := TouchArea {
+                        clicked => { root.profile-open(i); }
+                    }
+
+                    // 星标：★ = 新 Tab 默认 Profile；点击切换/取消。
+                    Rectangle {
+                        x: 2px; y: 3px;
+                        width: 24px; height: 24px;
+                        border-radius: 4px;
+                        background: prof-star-hit.has-hover ? Palette.colors.hover : transparent;
+
+                        Text {
+                            text: item.is-default ? "★" : "☆";
+                            color: item.is-default ? Palette.colors.accent : Palette.colors.muted;
+                            font-size: 13px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                            width: 100%;
+                            height: 100%;
+                        }
+
+                        prof-star-hit := TouchArea {
+                            clicked => { root.profile-set-default(i); }
+                        }
+                    }
+
+                    // Duplicate：复制该行 Profile（名字自动 `(copy N)` 去重）。
+                    Rectangle {
+                        x: parent.width - 82px; y: 3px;
+                        width: 30px; height: 24px;
+                        border-radius: 4px;
+                        background: prof-dup-hit.has-hover ? Palette.colors.hover : transparent;
+
+                        Text {
+                            text: "Dup";
+                            color: Palette.colors.muted;
+                            font-size: 9px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                            width: 100%;
+                            height: 100%;
+                        }
+
+                        prof-dup-hit := TouchArea {
+                            clicked => { root.profile-duplicate(i); }
+                        }
+                    }
+
+                    Rectangle {
+                        x: parent.width - 52px;
+                        y: 3px;
+                        width: 22px;
+                        height: 24px;
+                        border-radius: 4px;
+                        background: prof-edit-hit.has-hover ? Palette.colors.hover : transparent;
+
+                        Text {
+                            text: "✎";
+                            color: Palette.colors.muted;
+                            font-size: 13px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                            width: 100%;
+                            height: 100%;
+                        }
+
+                        prof-edit-hit := TouchArea {
+                            clicked => { root.profile-edit(i); }
+                        }
+                    }
+
+                    Rectangle {
+                        x: parent.width - 26px;
+                        y: 3px;
+                        width: 22px;
+                        height: 24px;
+                        border-radius: 4px;
+                        background: prof-del-hit.has-hover ? Palette.colors.danger : transparent;
+
+                        Text {
+                            text: "×";
+                            color: prof-del-hit.has-hover ? Palette.colors.bg : Palette.colors.muted;
+                            font-size: 14px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                            width: 100%;
+                            height: 100%;
+                        }
+
+                        prof-del-hit := TouchArea {
+                            clicked => { root.profile-delete(i); }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 空列表提示区分「没有 Profile」与「搜索无命中」。
         Text {
-            x: 16px; y: 254px;
+            x: 16px; y: 150px;
             width: 388px;
-            text: root.profile-items.length == 0
-                ? "No profiles yet — click New Profile to create one"
-                : "Click a profile to open it in a new tab";
+            text: "No profiles yet — click New Profile to create one";
             color: Palette.colors.muted;
             font-size: 11px;
+            horizontal-alignment: center;
             wrap: word-wrap;
+            visible: root.profile-items.length == 0 && root.profile-query == "";
+        }
+
+        Text {
+            x: 16px; y: 150px;
+            width: 388px;
+            text: "No profiles match the search";
+            color: Palette.colors.muted;
+            font-size: 11px;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+            visible: root.profile-items.length == 0 && root.profile-query != "";
+        }
+
+        Text {
+            x: 16px; y: 297px;
+            width: 388px;
+            text: "Click to open · ★ default for new tabs · Dup = duplicate";
+            color: Palette.colors.muted;
+            font-size: 10px;
+            horizontal-alignment: center;
         }
 
         Rectangle {
-            x: 188px; y: 278px; width: 140px; height: 28px; border-radius: 6px;
+            x: 16px; y: 320px; width: 120px; height: 28px; border-radius: 6px;
             background: prof-save-hit.has-hover ? Palette.colors.hover : Palette.colors.raise;
             border-width: 1px;
             border-color: Palette.colors.border;
@@ -1641,7 +1803,7 @@ export component MainWindow inherits Window {
         }
 
         Rectangle {
-            x: 336px; y: 278px; width: 80px; height: 28px; border-radius: 6px;
+            x: 324px; y: 320px; width: 80px; height: 28px; border-radius: 6px;
             background: prof-close-hit.has-hover ? Palette.colors.hover : Palette.colors.raise;
             border-width: 1px;
             border-color: Palette.colors.border;
@@ -1657,6 +1819,17 @@ export component MainWindow inherits Window {
                 width: 100%;
                 height: 100%;
             }
+        }
+
+        // 新 Tab 默认行为提示（由 Rust 按 config.default_profile_id 解析后下发）。
+        Text {
+            x: 16px; y: 368px;
+            width: 388px;
+            text: root.profile-default-info;
+            color: Palette.colors.subtext;
+            font-size: 11px;
+            horizontal-alignment: center;
+            overflow: elide;
         }
     }
 

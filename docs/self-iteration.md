@@ -571,3 +571,53 @@ cargo bench -p tervo-core --bench pty_throughput
   `[ui] profile pick=0` 并进入 shell；截图 .logs/profile-menu.png / profile-menu-picked.png。
 - 旧记录中“+ 下拉”的描述已被本条取代。
 
+### 2026-11-05 · Profiles UX：搜索 / 默认 Profile / 复制（Tabby 对齐 MVP）
+
+- **问题**：Profiles 管理面板只能全量列出，Profile 多时难找；没有“新 Tab 默认 Profile”，
+  `+`/Ctrl+T/命令 `tab.new` 永远起系统 shell；复制只能手工重建；面板 420x320 加搜索/
+  更多操作后空间不够。FEATURE_MATRIX UI-PROF-002/005/006 等仍标 not_started。
+- **做法**：
+  - 搜索/过滤：`profile.rs::filter_indices(profiles, query)` 纯函数，按 `name`/`host`/`kind`
+    大小写不敏感子串匹配，空/全空白查询返回全部下标。面板加搜索框（输入即过滤、×/Esc
+    清空），Rust 侧 `profile_indices` 保存“可见行 → store 下标”，点击/编辑/删除/复制/
+    星标都经该映射，过滤后仍打开正确 Profile。
+  - 默认 Profile：`Config` 新增 `default_profile_id: u64`（默认 0，旧配置 serde default
+    自动补 0）；面板每行行首 `★/☆`，点击 `on_profile_set_default` 写 config（再点取消）；
+    `new_tab_with_default` 用于 `+`、Ctrl+T、命令 `tab.new`、TabBar New Tab：ID 有效时
+    调 `open_profile_tab`，0/失效 ID 回退 `new_tab_inner`（系统 shell）；删除默认 Profile
+    时 `clear_default_after_remove` 回退 0 并写盘。启动首 Tab/会话恢复保持原行为，避免
+    启动即连 SSH。
+  - 复制：`ProfileStore::duplicate` 全量克隆字段、`duplicate_name` 生成
+    `原名 (copy 1/2/…)` 去重、`add` 分配新 ID；`on_profile_duplicate` 保存 profiles.toml。
+    面板行内 `Dup` 按钮。
+  - 布局：面板 420x320 → 420x404，搜索框/可滚动列表（Flickable，6 行视口）/星标/
+    Dup/编辑/删除/底部默认提示；472 高窗口内上下留 34px，不溢出；关闭面板时把焦点还给
+    终端 IME 宿主（避免搜索框吃掉按键）。
+  - 文档：更新 FEATURE_MATRIX 的 UI-PROF-001..006/010/013、UI-NAV-004、UI-TAB-001/002
+    与 B/B+C 计数。
+- **测试**：`CARGO_HOME=.../.cargo CARGO_TARGET_DIR=$PWD/target cargo test -p tervo-app
+  --bin tervo` → **139 passed, 0 failed**（首次完整编译 1m00s）。新增/改写：
+  - `filter_matches_name_host_kind_case_insensitively`：name/host/kind、大小写不敏感、
+    空查询全量、无命中；
+  - `default_index_resolves_and_falls_back`：0/失效 ID 回退、删除默认项后解析失败；
+  - `deleting_default_profile_falls_back_to_shell`（config 回退 0）；
+  - `duplicate_assigns_new_id_and_dedupes_copy_names`（新 ID、`(copy N)`、字段复制、
+    profiles.toml 落盘读回）、`duplicate_name_helper_handles_existing_copies`、
+    `duplicate_missing_profile_is_rejected`；
+  - `config::default_profile_id_defaults_to_zero_and_survives_roundtrip` 与既有
+    config roundtrip/missing-fields 断言。
+- **限制/未做**：共享显示器约束下**未启动 GUI/xkey/xclick/xwin**，面板布局与新交互仅
+  编译 + 单测验证，未做截图/e2e；Profile 选择器（`>_` 菜单）本身仍无搜索/键盘导航；
+  无 Profile Groups/拖拽排序；启动首 Tab 不套用默认 Profile；删除仍无二次确认。
+- **手工验证步骤（合并后）**：
+  1. 用 `TERVO_CONFIG=/tmp/t/config.toml TERVO_PROFILES=/tmp/t/profiles.toml` 启动，建
+     2 个 Local + 1 个 SSH Profile。
+  2. 打开 Profiles 面板：输入 `SSH`/host 片段/名字大小写变体 → 列表即时缩小；点击结果
+     打开对应 Profile 的新 Tab；点 × 或 Esc → 恢复完整列表。
+  3. 点某行星标 → 行首变 ★、config.toml 出现 `default_profile_id = <id>`；关闭面板后
+     点 `+`/Ctrl+T/命令面板 `tab.new` → 新 Tab 用该 Profile；删除该 Profile → config
+     回退 `0`，再 `+` 起系统 shell；把 config 手改成不存在的 ID → 同样回退 shell。
+  4. 对一条 Profile 点 `Dup` → 出现 `name (copy 1)`；再点 → `(copy 2)`；重启后仍在
+     profiles.toml 中。
+  5. 窗口 540x472 下检查面板不溢出、列表超过 6 行可滚动、搜索框关闭后终端按键恢复。
+
