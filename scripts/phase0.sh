@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-only
 # Phase 0 完整性能采集：冷启动 / 空闲 RSS / 按键延迟 / 全屏 60FPS。
 #
 # 注意：本沙箱内没有 /dev/dri，Slint 的 Skia(OpenGL/WGPU) 后端拿不到 GPU 设备，
@@ -14,10 +15,10 @@ mkdir -p docs
 
 COLS="${COLS:-120}"
 ROWS="${ROWS:-32}"
-BIN=target/release/rusttabby-app
+BIN=target/release/tervo
 
 echo "== 构建 release =="
-cargo build --release -p rusttabby-app --bin rusttabby-app
+cargo build --release -p tervo-app --bin tervo
 
 echo "== 资源基线（cold start / idle RSS / idle CPU）=="
 python3 scripts/measure_startup.py --runs 5 --cols "$COLS" --rows "$ROWS" --backend "$SLINT_BACKEND" \

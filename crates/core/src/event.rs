@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 //! 跨线程事件与有界通道。
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};

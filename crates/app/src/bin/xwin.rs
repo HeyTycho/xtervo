@@ -1,6 +1,7 @@
+// SPDX-License-Identifier: GPL-3.0-only
 //! 调试小工具：按标题找到窗口，请求 WM 激活（_NET_ACTIVE_WINDOW），并可选移动位置。
 //!
-//! 用法：`xwin "Rust Tabby" [x y]`
+//! 用法：`xwin "Tervo" [x y]`
 //!
 //! 注意：这里**只做激活/移动**，绝不 `XKillClient`——按标题匹配可能命中 WM 自己的
 //! frame 窗口，断掉它会连带杀死窗口管理器（曾把 gnome-shell 干掉过一次）。
@@ -54,7 +55,7 @@ fn find_window(conn: &RustConnection, win: Window, title: &str, depth: usize) ->
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let title = args.get(1).cloned().unwrap_or_else(|| "Rust Tabby".into());
+    let title = args.get(1).cloned().unwrap_or_else(|| "Tervo".into());
     let (conn, screen_num) = xconn::connect().expect("connect X");
     let root = conn.setup().roots[screen_num].root;
 

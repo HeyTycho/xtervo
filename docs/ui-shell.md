@@ -55,11 +55,11 @@ Node = Leaf(PaneId)
 ## 4. 设置
 
 - 标签栏右上角 ⚙ 打开设置面板（半透明遮罩 + 居中卡片，点遮罩关闭）。
-- 三个可调项，全部即时写回 `~/.config/rusttabby/config.toml`（`RUSTTABBY_CONFIG` 可覆盖路径）：
+- 三个可调项，全部即时写回 `~/.config/tervo/config.toml`（`TERVO_CONFIG` 可覆盖路径）：
   - **主题**：12 套内置主题（默认 Auto）；**Auto（跟随系统）**深色映射 Yaru Dark、浅色映射 Yaru Light，
     选择后后台监听 `gsettings monitor org.gnome.desktop.interface color-scheme`，系统切换深浅色时自动重绘；
     也可用配置里的 `auto_dark` / `auto_light` 指定任意主题。改为具体主题即停止跟随。
-    `~/.config/rusttabby/themes/` 里的 iTerm2 / Windows Terminal / Alacritty / kitty / Xresources / YAML
+    `~/.config/tervo/themes/` 里的 iTerm2 / Windows Terminal / Alacritty / kitty / Xresources / YAML
     主题会追加到列表（界面 chrome 颜色由终端配色自动推导）。两者都会向所有 pane 的 actor 发 `SetTheme`，
     强制整屏重取并重绘。
   - **字号**：重建字体集与每个 pane 的渲染器，按新单元尺寸重排网格（`Term::resize`）。
@@ -73,7 +73,7 @@ Node = Leaf(PaneId)
 - 窗口/任务栏：Slint 的 `Window.icon` 在本环境写出的 `_NET_WM_ICON` 为空，因此应用启动后由
   `xconn::set_window_icon()` 直接写 `_NET_WM_ICON`（ARGB CARDINAL，64×64）。
   定位窗口用 `_NET_WM_PID == getpid()`，避免多实例时写错窗口。
-- 桌面项：`packaging/rusttabby.desktop`（`Icon=rusttabby`，安装说明见 README）。
+- 桌面项：`packaging/tervo.desktop`（`Icon=tervo`，安装说明见 README）。
 
 ## 6. 已知限制（下一轮）
 
@@ -96,7 +96,7 @@ Node = Leaf(PaneId)
 - 主题：`.logs/yaru_main.png`（默认 Auto → Yaru Dark）、`.logs/yaru_settings.png`（12 套主题网格）、
   `.logs/imported_settings4.png`（直接放入的 Dracula iTerm2/WT/kitty/Xresources 主题）。
 - 中文：`.logs/cjk2.png`（你好世界）、`.logs/bold.png`（粗体 + ANSI 色）、`scripts/check_ime.sh`（XIM 上屏冒烟）。
-- 自动化：`cargo test -p rusttabby-app`（36 个，含 CJK 宽字符/回退、主题检测、6 种导入格式）、
-  `cargo test -p rusttabby-core`（15 单测 + 9 集成 + 10 VT 语义契约）；`./scripts/selfcheck.sh` 一键复跑并记录基线。
+- 自动化：`cargo test -p tervo`（36 个，含 CJK 宽字符/回退、主题检测、6 种导入格式）、
+  `cargo test -p tervo-core`（15 单测 + 9 集成 + 10 VT 语义契约）；`./scripts/selfcheck.sh` 一键复跑并记录基线。
 - RSS（120×32，软件后端）：1 pane 49.1 MB / 3 pane 44.5 MB（多次测量在 42–49 MB 波动），子进程数 1 / 3 符合预期。
 - 启动：软件后端 + CJK 回退字体，READY 约 200 ms（字体加载约 160 ms）。

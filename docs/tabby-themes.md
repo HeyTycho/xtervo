@@ -1,8 +1,8 @@
-# Tabby 主题机制与 rusttabby 自定义主题方案
+# Tabby 主题机制与 tervo 自定义主题方案
 
-> 实现更新：rusttabby 现在可以直接加载 iTerm2 / Windows Terminal / Alacritty / kitty /
+> 实现更新：tervo 现在可以直接加载 iTerm2 / Windows Terminal / Alacritty / kitty /
 > Xresources / 简单 YAML 主题，使用说明见 [`themes.md`](themes.md)；本文第 3 节是最初的
-> rusttabby TOML 方案设计（已落地为“完整主题格式”，并增加了多格式导入与自动 UI 配色）。
+> tervo TOML 方案设计（已落地为“完整主题格式”，并增加了多格式导入与自动 UI 配色）。
 
 > 调研对象：Eugeny/tabby `master` 分支（2026-11 抓取）。标记约定：**[官方]** 官方 wiki / 源码 / typedoc；**[社区]** 第三方主题仓库或文章；**[推断]** 由实现推断，官方文档未明说。
 
@@ -72,9 +72,9 @@ class MySchemes extends TerminalColorSchemeProvider { async getSchemes () { retu
 - **UI chrome 是否跟随，取决于当前 UI 主题**：只有 `Theme.followsColorScheme === true` 时，`ThemesService` 才会从当前终端方案重新计算 `--theme-*`/`--bs-*` 变量；内置 `Follow the color scheme` 正是这样做的（[`theme.ts`](https://github.com/Eugeny/tabby/blob/master/tabby-core/src/theme.ts)）。插件 UI 主题（如 Hype）的 CSS 是固定写死的、不依赖 `--theme-*` 变量，所以切系统时通常只有终端配色变、标签栏/设置页不变；一个插件主题若主动设 `followsColorScheme = true` 并只用变量取色，也能跟随，但这不是默认行为。
 - **[社区] 常见做法**：主题仓库按 flavor 拆成多个独立方案，用户分别在 “Dark mode / Light mode” 两个页签里选；没有“主题内声明浅色对应项”的官方字段。网上“Tabby 不能跟随系统”的说法已过时，通常指插件 UI 主题不跟随，或指旧版本。
 
-## 3. 对本项目的建议：`~/.config/rusttabby/themes/*.toml`
+## 3. 对本项目的建议：`~/.config/tervo/themes/*.toml`
 
-沿用现有 `RUSTTABBY_CONFIG`/XDG 路径规则，主题目录默认取配置文件父目录下的 `themes/`，并允许 `RUSTTABBY_THEMES_DIR` 覆盖。一个文件 = 一个完整变体；可选 `pair` 指向同目录的另一个变体，形成 dark/light 对。主题是纯数据，不加载 JS/脚本。
+沿用现有 `TERVO_CONFIG`/XDG 路径规则，主题目录默认取配置文件父目录下的 `themes/`，并允许 `TERVO_THEMES_DIR` 覆盖。一个文件 = 一个完整变体；可选 `pair` 指向同目录的另一个变体，形成 dark/light 对。主题是纯数据，不加载 JS/脚本。
 
 ### 3.1 完整示例（`themes/my-dark.toml`）
 

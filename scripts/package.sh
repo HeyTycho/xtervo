@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-only
 # 发布打包：构建 release → 复制到输出目录 → strip → 体积门禁。
 #
-# 开发用的 target/release/rusttabby-app 带 debug=1、保留符号，供 perf/flamegraph；
+# 开发用的 target/release/tervo 带 debug=1、保留符号，供 perf/flamegraph；
 # 这里只处理复制出来的发布副本，绝不就地 strip 开发二进制。
 #
-#   ./scripts/package.sh                     # → dist/rusttabby-app
+#   ./scripts/package.sh                     # → dist/tervo
 #   ./scripts/package.sh /tmp/dist           # 位置参数指定输出目录
-#   RUSTTABBY_DIST=/tmp/dist ./scripts/package.sh
+#   TERVO_DIST=/tmp/dist ./scripts/package.sh
 #   SKIP_BUILD=1 ./scripts/package.sh        # 复用已有 release 二进制
 #
 # 环境变量：
-#   RUSTTABBY_DIST  输出目录（默认 dist；位置参数优先）
+#   TERVO_DIST  输出目录（默认 dist；位置参数优先）
 #   MAX_MB          发布产物体积上限，超过则失败（默认 40）
 #   SKIP_SMOKE      1 = 跳过 strip 后的 --help 冒烟（交叉编译时用）
 #   STRIP           strip 命令（默认自动探测 strip / llvm-strip）
@@ -20,9 +21,9 @@ cd "$(dirname "$0")/.."
 
 export CARGO_HOME="${CARGO_HOME:-$PWD/.cargo}"
 
-DIST="${1:-${RUSTTABBY_DIST:-dist}}"
-BIN=target/release/rusttabby-app
-OUT="$DIST/rusttabby-app"
+DIST="${1:-${TERVO_DIST:-dist}}"
+BIN=target/release/tervo
+OUT="$DIST/tervo"
 MAX_MB="${MAX_MB:-40}"
 
 die() { echo "!! $*" >&2; exit 1; }
@@ -36,7 +37,7 @@ usage() {
   -h, --help     显示本帮助
 
 环境变量:
-  RUSTTABBY_DIST 输出目录（默认 dist；位置参数优先）
+  TERVO_DIST 输出目录（默认 dist；位置参数优先）
   MAX_MB         产物体积上限（默认 40）
   SKIP_BUILD=1   复用已有 release 二进制
   SKIP_SMOKE=1   跳过 --help 冒烟（交叉编译时用）
@@ -61,9 +62,9 @@ DIST_DIR="$(readlink -m "$DIST")"
 
 if [[ "${SKIP_BUILD:-0}" != 1 ]]; then
     echo "== 构建 release（保留符号，供 perf/flamegraph）=="
-    cargo build --release -p rusttabby-app --bin rusttabby-app
+    cargo build --release -p tervo-app --bin tervo
 fi
-[[ -x "$BIN" ]] || die "找不到 $BIN；先 cargo build --release -p rusttabby-app"
+[[ -x "$BIN" ]] || die "找不到 $BIN；先 cargo build --release -p tervo"
 
 # strip 工具：$STRIP > strip > llvm-strip
 STRIP_BIN="${STRIP:-}"
@@ -90,7 +91,7 @@ echo "== strip 发布副本（$STRIP_BIN ${STRIP_ARGS[*]}）=="
 
 # 冒烟：--help 在初始化窗口前返回，不需要 DISPLAY；交叉编译产物无法本机运行，跳过。
 if [[ "${SKIP_SMOKE:-0}" != 1 ]]; then
-    echo "== 冒烟：rusttabby-app --help =="
+    echo "== 冒烟：tervo --help =="
     "$TMP" --help >/dev/null || die "strip 后二进制无法运行"
 fi
 

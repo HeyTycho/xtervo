@@ -15,7 +15,7 @@
 | A1 | 无边框窗口、品牌位、TabBar、─/□/❐/✕、拖空白区、双击最大化、8 向边缘缩放 | 已实现，人工截图记录 | 启动→拖窗→双击→最小化→任务栏恢复→最大化→拖四边/四角；留 6 张截图 | ACT-001 |
 | A2 | Tab 新建（+/Ctrl+T）、切换、关闭（×/Ctrl+W） | 已实现；关闭生命周期待 ACT-009 | 开 3 Tab→切换→逐个关→关最后一个退出；检查子进程消失 | ACT-001 |
 | A3 | 嵌套分屏、分隔线拖动（10%–90%）、Close Pane 回填、焦点转移 | 已实现，有单测/截图 | 右键 Split Right→Split Down→拖动到极限→关闭中间 pane→再分 4 pane | ACT-001 |
-| A4 | 鼠标上报 1000/1002/1003/1005/1006、Shift 绕过、滚轮 64/65 | 已有 16 例单测 + XTest；1002 右键拖动编码需小修（ACT-013） | `cargo test -p rusttabby-core --test mouse_report`；vim `:set mouse=a` 点击/滚轮/Shift 点击 | ACT-001、ACT-013 |
+| A4 | 鼠标上报 1000/1002/1003/1005/1006、Shift 绕过、滚轮 64/65 | 已有 16 例单测 + XTest；1002 右键拖动编码需小修（ACT-013） | `cargo test -p tervo-core --test mouse_report`；vim `:set mouse=a` 点击/滚轮/Shift 点击 | ACT-001、ACT-013 |
 | A5 | 拖选/跨行/反向选择/自动复制、Ctrl+Shift+C/V | 有 smoke 测试 + 人工记录 | 反向拖到行首复制；多行复制；粘贴到 `cat > /tmp/x` 比对 | ACT-001 |
 | A6 | 搜索（增量/高亮/Enter/Shift+Enter/Esc） | 有 smoke 测试 | Ctrl+F 搜 `200`→Enter/Shift+Enter→Esc；检查高亮清除 | ACT-001、ACT-013 |
 | A7 | 滚轮回滚、scrollback 配置、alternate screen | 有单测 + phase0 vim/htop 记录 | 普通 shell 滚历史；`vim` 滚轮翻页；改回滚后新 pane 生效 | ACT-001 |

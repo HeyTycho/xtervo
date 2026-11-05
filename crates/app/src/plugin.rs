@@ -1,6 +1,7 @@
+// SPDX-License-Identifier: GPL-3.0-only
 //! 插件清单（manifest）加载：**只做发现、校验、展示与启用状态，不加载/执行任何代码**。
 //!
-//! 目录：`~/.config/rusttabby/plugins/*.toml`（`RUSTTABBY_PLUGINS` 可覆盖，测试/多实例用）。
+//! 目录：`~/.config/tervo/plugins/*.toml`（`TERVO_PLUGINS` 可覆盖，测试/多实例用）。
 //! 真正的插件运行时（JS/沙箱/权限/API）尚未实现，本模块只保证：
 //! - 坏文件不会让程序崩溃，也不会覆盖用户文件；
 //! - 校验 ID/名称/版本，重复 ID 只保留第一个并告警；
@@ -73,7 +74,7 @@ pub struct PluginStore {
 
 impl PluginStore {
     pub fn dir() -> PathBuf {
-        if let Ok(p) = std::env::var("RUSTTABBY_PLUGINS") {
+        if let Ok(p) = std::env::var("TERVO_PLUGINS") {
             return PathBuf::from(p);
         }
         let base = std::env::var("XDG_CONFIG_HOME")
@@ -81,7 +82,7 @@ impl PluginStore {
             .unwrap_or_else(|_| {
                 PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into())).join(".config")
             });
-        base.join("rusttabby").join("plugins")
+        base.join("tervo").join("plugins")
     }
 
     pub fn load() -> Self {

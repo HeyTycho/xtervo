@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 //! Slint KeyEvent → PTY 字节序列。
 //!
 //! Slint 用私有区码点表示特殊键（见 i-slint-common/key_codes.rs），这里做一次映射。

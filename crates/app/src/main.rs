@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 mod commands;
 mod config;
 mod glyph;
@@ -22,7 +23,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use rusttabby_core::{
+use tervo_core::{
     spawn, CoreEvent, Frame, Modifiers, MouseAction, MouseButton, MouseEvent, PaneConfig,
     PaneHandle, Theme, UiColors,
 };
@@ -39,7 +40,7 @@ use crate::workspace::{Dir, Divider, PaneId, Rect, Tab, Workspace, SPLIT_GAP};
 
 /// 延迟探针使用的高辨识度字符（避免与 shell 提示符冲突）。
 const MARKER: char = 'z';
-const TITLE: &str = "Rust Tabby";
+const TITLE: &str = "Tervo";
 /// 必须与 ui/main.slint 里的 `tabbar-height` 保持一致。
 const TABBAR_H: f32 = 32.0;
 /// `TermMode::BRACKETED_PASTE`
@@ -2166,8 +2167,8 @@ fn parse_args(cfg: &Config) -> Options {
 
 fn print_help() {
     println!(
-        "Rust Tabby {}\n\n\
-用法: rusttabby-app [选项] [-- <shell 参数>...]\n\n\
+        "Tervo {}\n\n\
+用法: tervo [选项] [-- <shell 参数>...]\n\n\
 选项:\n  \
 --cols N            初始列数 (默认 120)\n  \
 --rows N            初始行数 (默认 32)\n  \
@@ -2184,14 +2185,14 @@ fn print_help() {
 --fullscreen        启动即全屏 (F11 切换)\n  \
 -h, --help          显示帮助\n\n\
 快捷键: Ctrl+T 新建标签 / Ctrl+W 关闭 / Ctrl+F 搜索 / Ctrl+Shift+C 复制 / Ctrl+Shift+V 粘贴\n\
-配置: ~/.config/rusttabby/config.toml (RUSTTABBY_CONFIG 可覆盖)\n\
-主题目录: ~/.config/rusttabby/themes (RUSTTABBY_THEMES_DIR 可覆盖；支持 iTerm2/WT/Alacritty/kitty/Xresources/YAML)",
+配置: ~/.config/tervo/config.toml (TERVO_CONFIG 可覆盖)\n\
+主题目录: ~/.config/tervo/themes (TERVO_THEMES_DIR 可覆盖；支持 iTerm2/WT/Alacritty/kitty/Xresources/YAML)",
         env!("CARGO_PKG_VERSION")
     );
 }
 
 /// 内部探针：不启动 UI，直接用第一个 SSH Profile 跑一次 SFTP 操作。
-/// 用法：`rusttabby-app --sftp-probe <list|get|put> <remote> [local]`
+/// 用法：`tervo --sftp-probe <list|get|put> <remote> [local]`
 fn run_sftp_probe(args: &[String]) -> i32 {
     let store = profile::ProfileStore::load();
     let Some(p) = store.profiles.iter().find(|p| p.kind == "ssh") else {
@@ -2364,9 +2365,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     APP.with(|c| *c.borrow_mut() = Some(state.clone()));
 
     // ---- 回调 ----
-    let keylog = std::env::var("RUSTTABBY_KEYLOG").is_ok();
-    // 鼠标链路排查：RUSTTABBY_MOUSELOG=1 打印「命中哪格 / 是否上报」。
-    let mouselog = std::env::var("RUSTTABBY_MOUSELOG").is_ok();
+    let keylog = std::env::var("TERVO_KEYLOG").is_ok();
+    // 鼠标链路排查：TERVO_MOUSELOG=1 打印「命中哪格 / 是否上报」。
+    let mouselog = std::env::var("TERVO_MOUSELOG").is_ok();
     ui.on_key_input(move |text, ctrl, alt, shift| {
         let text = text.to_string();
         if keylog {
@@ -3186,6 +3187,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let _ = slint::quit_event_loop();
                 return;
             };
+            // 监听建立后再强制重绘一帧：否则首帧可能早于 damage 选择，测到的是下一次
+            // damage（如光标/后续输出），first_damage 会被高估。
+            redraw_all();
             match watcher.recv_timeout(Duration::from_secs(30)) {
                 Some(_) => println!("FIRST_DAMAGE_US {}", t_start.elapsed().as_micros()),
                 None => println!("FIRST_DAMAGE timeout"),

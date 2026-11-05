@@ -1,10 +1,10 @@
 [Desktop Entry]
 Type=Application
-Name=Rust Tabby
+Name=Tervo
 GenericName=Terminal Emulator
 Comment=Native terminal emulator written in Rust + Slint
-Exec=rusttabby-app
-Icon=rusttabby
+Exec=tervo
+Icon=tervo
 Terminal=false
 Categories=System;TerminalEmulator;
 Keywords=terminal;shell;console;

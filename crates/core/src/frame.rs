@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 //! 帧/单元格快照：UI 侧主动拉取的最小数据面。
 //!
 //! 设计要点（Phase 0 验证项）：

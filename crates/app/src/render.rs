@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 //! 终端网格 → RGBA 像素缓冲的软件光栅化。
 //!
 //! Phase 0 目的：把「Slint + Skia 能否以 60 FPS 承载整屏终端帧」这件事量出来。
@@ -6,7 +7,7 @@
 
 use std::rc::Rc;
 
-use rusttabby_core::{flags, CellData, CursorShape, Frame, Span};
+use tervo_core::{flags, CellData, CursorShape, Frame, Span};
 
 use crate::glyph::{FontSet, GlyphCache, Style, ATLAS_W};
 
@@ -375,7 +376,7 @@ impl Renderer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rusttabby_core::Theme;
+    use tervo_core::Theme;
 
     fn ink(renderer: &Renderer, x0: usize, x1: usize, y0: usize, y1: usize) -> usize {
         let bg = renderer.default_bg;

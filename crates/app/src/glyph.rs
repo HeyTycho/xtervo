@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 //! 等宽字形图集：fontdue 光栅化 + 单通道 atlas 打包。
 //!
 //! 只在下一次出现新字符时栅格化，之后每帧只做 coverage 混合。
@@ -214,7 +215,7 @@ fn load_fallback() -> Option<Fallback> {
     for cand in FALLBACK_SETS {
         let t = std::time::Instant::now();
         let Some(regular) = load_font_at(cand.regular, cand.regular_index) else {
-            if std::env::var_os("RUSTTABBY_FONTLOG").is_some() {
+            if std::env::var_os("TERVO_FONTLOG").is_some() {
                 eprintln!("[font] 回退失败 {}#{} ({:?})", cand.regular, cand.regular_index, t.elapsed());
             }
             continue;
@@ -225,7 +226,7 @@ fn load_fallback() -> Option<Fallback> {
             load_font_at(cand.bold, cand.bold_index)
         };
         let path = format!("{}#{}", cand.regular, cand.regular_index);
-        if std::env::var_os("RUSTTABBY_FONTLOG").is_some() {
+        if std::env::var_os("TERVO_FONTLOG").is_some() {
             eprintln!("[font] 回退 {path} ({:?})", t.elapsed());
         }
         return Some(Fallback { faces: [Some(regular), bold] });

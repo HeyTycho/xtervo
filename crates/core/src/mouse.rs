@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 //! 鼠标上报编码（xterm 1000 / 1002 / 1003 + 1005 / 1006）。
 //!
 //! `alacritty_terminal` 只跟踪鼠标模式位（见 [`TermMode::MOUSE_MODE`]），

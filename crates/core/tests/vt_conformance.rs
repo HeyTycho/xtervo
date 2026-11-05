@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 //! VT 语义回归：真实 PTY + shell 输出 → Term → Frame，断言单元格/标志/模式。
 //!
 //! 这些用例是终端模拟器的“行为契约”，改动解析、调色板、宽字符、备用屏时必须保持。
@@ -6,7 +7,7 @@
 use std::time::{Duration, Instant};
 
 use alacritty_terminal::term::TermMode;
-use rusttabby_core::{flags, spawn, Frame, PaneConfig, PaneHandle};
+use tervo_core::{flags, spawn, Frame, PaneConfig, PaneHandle};
 
 fn run(script: &str) -> (PaneHandle, Box<Frame>) {
     let handle = spawn(PaneConfig {
@@ -174,7 +175,7 @@ fn title_event_and_grid_coexist() {
     assert_eq!(cell_text(&frame, 0, 0), "B");
     let mut got_title = false;
     while let Some(ev) = handle.try_event() {
-        if let rusttabby_core::CoreEvent::Title(t) = ev {
+        if let tervo_core::CoreEvent::Title(t) = ev {
             assert_eq!(t, "vt-conformance-title");
             got_title = true;
         }

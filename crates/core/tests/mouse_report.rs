@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 //! 鼠标上报契约：模式位 → xterm 鼠标序列。
 //!
 //! alacritty_terminal 只跟踪 1000/1002/1003/1005/1006 的模式位，**不生成**转义序列
@@ -7,8 +8,8 @@
 use std::time::{Duration, Instant};
 
 use alacritty_terminal::term::TermMode;
-use rusttabby_core::mouse::{self, Modifiers, MouseAction, MouseButton, MouseEvent};
-use rusttabby_core::{spawn, PaneConfig, PaneHandle};
+use tervo_core::mouse::{self, Modifiers, MouseAction, MouseButton, MouseEvent};
+use tervo_core::{spawn, PaneConfig, PaneHandle};
 
 fn ev(button: MouseButton, action: MouseAction, line: u16, col: u16) -> MouseEvent {
     MouseEvent { button, action, line, col, modifiers: Modifiers::default() }

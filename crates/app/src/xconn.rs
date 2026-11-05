@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 //! X11 连接辅助：沙箱里没有 `/tmp/.X11-unix`，只能走 **抽象命名空间** socket。
 //!
 //! std 的 `SocketAddr::from_abstract_name` 让我们不用 libc 就能连上；认证信息从

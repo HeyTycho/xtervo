@@ -1,7 +1,8 @@
-//! 主题注册表：内置主题 + `~/.config/rusttabby/themes/` 目录。
+// SPDX-License-Identifier: GPL-3.0-only
+//! 主题注册表：内置主题 + `~/.config/tervo/themes/` 目录。
 //!
-//! 支持直接丢现成主题文件进来（不用手写 rusttabby 格式）：
-//! - `*.toml`        rusttabby 完整主题（可带 `[ui]` + `pair`）或 Alacritty TOML
+//! 支持直接丢现成主题文件进来（不用手写 tervo 格式）：
+//! - `*.toml`        tervo 完整主题（可带 `[ui]` + `pair`）或 Alacritty TOML
 //! - `*.itermcolors` iTerm2 配色（XML plist）
 //! - `*.json`        Windows Terminal `schemes` 数组 / 单个 scheme 对象
 //! - `*.conf`        kitty 配色
@@ -9,12 +10,12 @@
 //! - `*.yaml` / `*.yml`  简单配色 YAML（Catppuccin / Rosé Pine 的 Tabby 片段）
 //!
 //! 导入格式只有 16 色 + fg/bg/cursor，界面 chrome 由 `UiColors::derive` 自动推导；
-//! 自定义 rusttabby 格式可以精确控制 11 个 UI 颜色并声明深浅 `pair`。
+//! 自定义 tervo 格式可以精确控制 11 个 UI 颜色并声明深浅 `pair`。
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use rusttabby_core::{Palette, PaletteSpec, Theme, UiColors};
+use tervo_core::{Palette, PaletteSpec, Theme, UiColors};
 use serde::Deserialize;
 
 pub const CUSTOM_PREFIX: &str = "custom:";
@@ -149,9 +150,9 @@ impl ThemeRegistry {
         })
     }
 
-    /// 主题目录：`RUSTTABBY_THEMES_DIR` > 配置文件同级的 `themes/`。
+    /// 主题目录：`TERVO_THEMES_DIR` > 配置文件同级的 `themes/`。
     pub fn default_dir() -> PathBuf {
-        if let Ok(dir) = std::env::var("RUSTTABBY_THEMES_DIR") {
+        if let Ok(dir) = std::env::var("TERVO_THEMES_DIR") {
             return PathBuf::from(dir);
         }
         crate::config::Config::path()
@@ -254,7 +255,7 @@ fn is_dark_bg(bg: u32) -> bool {
     0.299 * ch(16) + 0.587 * ch(8) + 0.114 * ch(0) < 0.5
 }
 
-// ---------------------------------------------------------------- rusttabby TOML
+// ---------------------------------------------------------------- tervo TOML
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -300,7 +301,7 @@ fn load_toml(text: &str, stem: &str, raw_stem: &str) -> Result<ThemeData, String
     }
     // 退回 Alacritty TOML
     let alt: AlacrittyFile = toml::from_str(text)
-        .map_err(|e| format!("既不是 rusttabby 主题也不是 Alacritty 配色: {e}"))?;
+        .map_err(|e| format!("既不是 tervo 主题也不是 Alacritty 配色: {e}"))?;
     Ok(imported(stem, Some(raw_stem.to_string()), alt.into_spec()?))
 }
 
@@ -1037,7 +1038,7 @@ white = "#a6adc8"
     #[test]
     fn loads_directory_and_reports_errors() {
         let dir = std::env::temp_dir().join(format!(
-            "rusttabby-themes-test-{}-{}",
+            "tervo-themes-test-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

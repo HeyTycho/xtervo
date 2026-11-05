@@ -1,8 +1,9 @@
+// SPDX-License-Identifier: GPL-3.0-only
 //! 端到端冒烟测试：真实 PTY + shell + actor + 拉取式快照。
 
 use std::time::{Duration, Instant};
 
-use rusttabby_core::{spawn, CoreEvent, Frame, PaneConfig, PaneHandle};
+use tervo_core::{spawn, CoreEvent, Frame, PaneConfig, PaneHandle};
 
 fn sh(script: &str) -> PaneConfig {
     PaneConfig {
@@ -100,7 +101,7 @@ fn title_event_is_delivered() {
 /// 洪峰下 UI 拉帧不得被长时间卡住（合并帧而非阻塞）。
 #[test]
 fn pull_latency_stays_bounded_under_flood() {
-    let handle = spawn(sh("yes RUSTTABBY-FLOOD")).expect("spawn");
+    let handle = spawn(sh("yes TERVO-FLOOD")).expect("spawn");
 
     let mut frame = handle.new_frame();
     // 先让它跑一会儿，制造积压
@@ -124,7 +125,7 @@ fn pull_latency_stays_bounded_under_flood() {
         "拉帧被洪峰卡住: 最差 {worst:?}"
     );
     assert!(
-        frame_text(&frame).contains("RUSTTABBY-FLOOD") || frame.rows > 0,
+        frame_text(&frame).contains("TERVO-FLOOD") || frame.rows > 0,
         "帧内容异常"
     );
 }
@@ -132,7 +133,7 @@ fn pull_latency_stays_bounded_under_flood() {
 #[test]
 fn cat_10mb_streams_through_pane() {
     use std::io::Write;
-    let path = std::env::temp_dir().join("rusttabby-smoke-cat.txt");
+    let path = std::env::temp_dir().join("tervo-smoke-cat.txt");
     {
         let mut f = std::fs::File::create(&path).unwrap();
         let line = b"The quick brown fox jumps over the lazy dog 0123456789\r\n";

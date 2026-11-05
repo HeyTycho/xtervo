@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-only
 """全屏重绘压力源：以固定帧率向终端输出整屏 ANSI 帧。
 
 用于 Phase 0 的 "vim/htop 全屏刷新 60 FPS" 等价压测：
