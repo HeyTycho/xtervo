@@ -1,12 +1,26 @@
 //! 用户配置：`~/.config/rusttabby/config.toml`（可用 `RUSTTABBY_CONFIG` 覆盖路径）。
+//!
+//! 两条硬约束（需求 C8）：
+//! - **版本化**：文件里带 `version`；旧文件（没有该字段）读入时视为 v0，
+//!   迁移前先备份成 `config.toml.v<旧版本>.bak`，再原子写回新版本。
+//! - **不丢未知字段**：其它工具/未来版本写进来的键通过 `extra` 原样保留，
+//!   避免一次读写就把用户配置洗掉。
+//!
+//! 解析失败时绝不覆盖原文件：宁可本次用默认值，也要把用户的坏文件留在原处给人看。
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+
+/// 当前配置结构版本。改动字段语义/结构时递增，并在 [`Config::migrate`] 里补迁移步骤。
+pub const SCHEMA_VERSION: u32 = 1;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
+    /// 配置结构版本；缺失（旧文件）= 0。
+    #[serde(default)]
+    pub version: u32,
     /// 主题 id（"auto" | "yaru-dark" | "catppuccin-mocha" | "custom:<stem>" ...）。
     /// 默认 `"auto"`：深色用 Yaru Dark，浅色用 Yaru Light；也可显式指定任意主题。
     pub theme: String,
@@ -20,11 +34,15 @@ pub struct Config {
     pub shell: Option<String>,
     pub cols: u16,
     pub rows: u16,
+    /// 本版本不认识的键，原样保留（前向兼容）。
+    #[serde(flatten)]
+    pub extra: toml::Table,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
+            version: SCHEMA_VERSION,
             theme: "auto".to_string(),
             auto_dark: None,
             auto_light: None,
@@ -33,6 +51,7 @@ impl Default for Config {
             shell: None,
             cols: 120,
             rows: 32,
+            extra: toml::Table::new(),
         }
     }
 }
@@ -51,32 +70,93 @@ impl Config {
     }
 
     pub fn load() -> Self {
-        let path = Self::path();
-        std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|s| toml::from_str(&s).ok())
-            .unwrap_or_default()
+        Self::load_from(&Self::path())
+    }
+
+    /// 读配置；旧版本先备份再迁移写回。解析失败返回默认值且**不动原文件**。
+    pub fn load_from(path: &Path) -> Self {
+        let Ok(text) = std::fs::read_to_string(path) else {
+            return Self::default();
+        };
+        let mut cfg: Config = match toml::from_str(&text) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("[config] {} 解析失败，本次用默认值（原文件未改动）: {e}", path.display());
+                return Self::default();
+            },
+        };
+
+        if cfg.version < SCHEMA_VERSION {
+            let from = cfg.version;
+            // 迁移前备份：出错还能人工回退
+            let backup = backup_path(path, from);
+            match std::fs::copy(path, &backup) {
+                Ok(_) => eprintln!("[config] 迁移 v{from} → v{SCHEMA_VERSION} 前已备份 {}", backup.display()),
+                Err(e) => eprintln!("[config] 备份失败（继续迁移）: {e}"),
+            }
+            cfg.migrate(from);
+            cfg.save_to(path);
+            eprintln!("[config] 已迁移到 v{SCHEMA_VERSION}");
+        }
+        cfg
     }
 
     pub fn save(&self) {
-        let path = Self::path();
+        self.save_to(&Self::path());
+    }
+
+    /// 原子写：先写临时文件再 rename，避免半截配置。
+    pub fn save_to(&self, path: &Path) {
         if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
+            if !dir.as_os_str().is_empty() {
+                let _ = std::fs::create_dir_all(dir);
+            }
         }
-        match toml::to_string_pretty(self) {
-            Ok(text) => {
-                if let Err(e) = std::fs::write(&path, text) {
-                    eprintln!("[config] 写入 {} 失败: {e}", path.display());
-                }
+        let text = match toml::to_string_pretty(self) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("[config] 序列化失败: {e}");
+                return;
             },
-            Err(e) => eprintln!("[config] 序列化失败: {e}"),
+        };
+        let tmp = path.with_extension("toml.tmp");
+        if let Err(e) = std::fs::write(&tmp, text) {
+            eprintln!("[config] 写入 {} 失败: {e}", tmp.display());
+            return;
+        }
+        if let Err(e) = std::fs::rename(&tmp, path) {
+            eprintln!("[config] 替换 {} 失败: {e}", path.display());
+            let _ = std::fs::remove_file(&tmp);
         }
     }
+
+    /// 逐步迁移到当前版本。新增版本时在这里追加分支，保证可以跨多个版本一次升上来。
+    fn migrate(&mut self, from: u32) {
+        let mut v = from;
+        // v0 → v1：仅打版本号（字段语义没有变化，历史文件本来就能读）。
+        if v == 0 {
+            v = 1;
+        }
+        self.version = SCHEMA_VERSION.max(v);
+    }
+}
+
+/// `config.toml` + v0 → `config.toml.v0.bak`。
+fn backup_path(path: &Path, from: u32) -> PathBuf {
+    let name = path.file_name().map(|s| s.to_string_lossy()).unwrap_or_default();
+    path.with_file_name(format!("{name}.v{from}.bak"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn tmpdir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("rt-cfg-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
 
     #[test]
     fn roundtrip() {
@@ -86,6 +166,7 @@ mod tests {
         assert_eq!(back.theme, "latte");
         assert!((back.font_size - 17.0).abs() < f32::EPSILON);
         assert_eq!(back.scrollback, cfg.scrollback);
+        assert_eq!(back.version, SCHEMA_VERSION);
     }
 
     #[test]
@@ -94,5 +175,87 @@ mod tests {
         assert_eq!(cfg.theme, "latte");
         assert_eq!(cfg.font_size, 15.0);
         assert_eq!(cfg.scrollback, 2000);
+        // 没有 version 的旧文件按 v0 读入
+        assert_eq!(cfg.version, 0);
+    }
+
+    #[test]
+    fn old_config_is_backed_up_and_migrated() {
+        let dir = tmpdir("migrate");
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "theme = \"nord\"\nfont_size = 13.0\n").unwrap();
+
+        let cfg = Config::load_from(&path);
+        assert_eq!(cfg.version, SCHEMA_VERSION);
+        assert_eq!(cfg.theme, "nord");
+        assert!((cfg.font_size - 13.0).abs() < f32::EPSILON);
+
+        // 备份保留原始内容
+        let backup = dir.join("config.toml.v0.bak");
+        let text = std::fs::read_to_string(&backup).expect("应生成迁移前备份");
+        assert!(text.contains("nord"));
+        assert!(!text.contains("version"));
+
+        // 迁移后的文件已是新版本，且没有临时文件残留
+        let migrated = std::fs::read_to_string(&path).unwrap();
+        assert!(migrated.contains("version = 1"), "{migrated}");
+        assert!(!dir.join("config.toml.tmp").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn current_version_is_not_backed_up_again() {
+        let dir = tmpdir("nobackup");
+        let path = dir.join("config.toml");
+        let cfg = Config { theme: "dracula".into(), ..Config::default() };
+        cfg.save_to(&path);
+
+        let again = Config::load_from(&path);
+        assert_eq!(again.theme, "dracula");
+        assert!(!dir.join("config.toml.v1.bak").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unknown_keys_survive_roundtrip() {
+        let dir = tmpdir("extra");
+        let path = dir.join("config.toml");
+        std::fs::write(
+            &path,
+            "version = 1\ntheme = \"nord\"\nfuture_option = 42\n[future_table]\nx = \"y\"\n",
+        )
+        .unwrap();
+
+        let cfg = Config::load_from(&path);
+        assert_eq!(cfg.extra.get("future_option").and_then(|v| v.as_integer()), Some(42));
+
+        cfg.save_to(&path);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("future_option = 42"), "{text}");
+        assert!(text.contains("future_table"), "{text}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn broken_toml_keeps_original_file() {
+        let dir = tmpdir("broken");
+        let path = dir.join("config.toml");
+        let broken = "theme = [unclosed\n";
+        std::fs::write(&path, broken).unwrap();
+
+        let cfg = Config::load_from(&path);
+        assert_eq!(cfg.theme, Config::default().theme);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), broken, "解析失败不能覆盖原文件");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_creates_nested_dirs() {
+        let dir = tmpdir("nested");
+        let path = dir.join("a/b/config.toml");
+        let cfg = Config::default();
+        cfg.save_to(&path);
+        assert!(path.exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
