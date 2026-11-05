@@ -75,7 +75,7 @@
 
 | ID | 标题 | 为什么现在做 | 涉及文件 | 验收标准（可测） | 预估 |
 |---|---|---|---|---|---|
-| ACT-026 | Config 导入/导出 + Tabby 配置迁移 + CLI/URI | C8-008/009、C14-004/006；迁移报告是交付项 | `config.rs`、新 `migrate_tabby.rs`、`main.rs` | 导入 Tabby `config.yaml`（profiles/hotkeys/theme 可映射）；不兼容字段报告；导出/备份/恢复；`--profile`/URI 启动；测试夹具 | L |
+| ACT-026 ◐（Profiles+fontSize 的 Tabby 导入/导出已通；hotkeys/themes/插件配置与 URI 启动待做） | Config 导入/导出 + Tabby 配置迁移 + CLI/URI | C8-008/009、C14-004/006；迁移报告是交付项 | `config.rs`、新 `migrate_tabby.rs`、`main.rs` | 导入 Tabby `config.yaml`（profiles/hotkeys/theme 可映射）；不兼容字段报告；导出/备份/恢复；`--profile`/URI 启动；测试夹具 | L |
 | ACT-027 | Vault/Keyring + secret 脱敏 | C12；SSH 前必须定凭据边界 | 新 `vault.rs`、`config.rs`、`ssh.rs` | Secret Service 存储/锁定；配置/日志脱敏测试（注入假密码不出现）；插件无权限读；文件权限 0600 | L |
 | ACT-028 | 插件 Host API（WIT/权限/生命周期/扩展点） | C13-001..006；先定 API 再引 runtime | 新 `crates/plugin`、`docs/plugin-api.md` | 版本化 API；6 类最小扩展点；权限声明/拒绝；WIT 定义；宿主崩溃隔离；契约测试 | L |
 | ACT-029 | 插件管理器 UI + 包扫描/签名/权限 | B11/C13-007/008 | `main.slint`、`main.rs`、新 `plugin_manager.rs` | 扫描 keyword/入口/版本；列表/安装/卸载/启停；签名/权限展示；Open Directory；崩溃诊断；人工+夹具 | L |

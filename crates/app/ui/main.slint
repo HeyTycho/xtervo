@@ -403,6 +403,9 @@ export component MainWindow inherits Window {
     in property <[string]> plugin-items: [];
     in property <string> plugin-summary: "";
     in property <string> plugin-dir: "";
+    in-out property <string> config-status: "";
+    callback config-import-tabby();
+    callback config-export-tabby();
     callback settings-open-path();
     in property <int> font-size: 15;
     in property <int> scrollback: 2000;
@@ -2248,6 +2251,7 @@ export component MainWindow inherits Window {
                     }
                     HorizontalLayout {
                         alignment: start;
+                        spacing: 6px;
                         Rectangle {
                             width: 110px; height: 28px; border-radius: 6px;
                             background: open-path-hit.has-hover ? Palette.colors.hover : Palette.colors.raise;
@@ -2266,6 +2270,48 @@ export component MainWindow inherits Window {
                                 height: 100%;
                             }
                         }
+                        Rectangle {
+                            width: 132px; height: 28px; border-radius: 6px;
+                            background: cfg-import-hit.has-hover ? Palette.colors.hover : Palette.colors.raise;
+                            border-width: 1px;
+                            border-color: Palette.colors.border;
+                            cfg-import-hit := TouchArea {
+                                clicked => { root.config-import-tabby(); }
+                            }
+                            Text {
+                                text: "Import Tabby";
+                                color: Palette.colors.text;
+                                font-size: 12px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                                width: 100%;
+                                height: 100%;
+                            }
+                        }
+                        Rectangle {
+                            width: 132px; height: 28px; border-radius: 6px;
+                            background: cfg-export-hit.has-hover ? Palette.colors.hover : Palette.colors.raise;
+                            border-width: 1px;
+                            border-color: Palette.colors.border;
+                            cfg-export-hit := TouchArea {
+                                clicked => { root.config-export-tabby(); }
+                            }
+                            Text {
+                                text: "Export Profiles";
+                                color: Palette.colors.text;
+                                font-size: 12px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                                width: 100%;
+                                height: 100%;
+                            }
+                        }
+                    }
+                    Text {
+                        text: root.config-status;
+                        color: Palette.colors.muted;
+                        font-size: 11px;
+                        wrap: word-wrap;
                     }
                     Text {
                         text: "普通配置里不会出现密码或私钥；凭据将走系统 Keyring（Vault，未实现）。";

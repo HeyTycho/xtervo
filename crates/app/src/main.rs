@@ -9,6 +9,7 @@ mod profile;
 mod render;
 mod session;
 mod sftp;
+mod tabby_import;
 mod themes;
 mod workspace;
 mod xconn;
@@ -280,6 +281,19 @@ fn slint_theme(c: &UiColors) -> ThemeColors {
         accent_text: color(c.accent_text),
         danger: color(c.danger),
     }
+}
+
+/// Tabby 的默认配置路径（可用 TERVO_TABBY_CONFIG 覆盖，便于测试/多实例）。
+fn tabby_config_path() -> std::path::PathBuf {
+    if let Ok(p) = std::env::var("TERVO_TABBY_CONFIG") {
+        return std::path::PathBuf::from(p);
+    }
+    let base = std::env::var("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into())).join(".config")
+        });
+    base.join("tabby").join("config.yaml")
 }
 
 /// 设置搜索索引：(分类下标, 展示名, 关键词)。
@@ -2190,6 +2204,8 @@ fn print_help() {
 --dump              连续打印帧内容 (调试)\n  \
 --restore           按上次快照恢复会话 (由 Restart 菜单调用)\n  \
 --fullscreen        启动即全屏 (F11 切换)\n  \
+--import-tabby PATH 无 UI：导入 Tabby config.yaml 后退出\n  \
+--export-tabby PATH 无 UI：导出 Profile 为 Tabby YAML 后退出\n  \
 -h, --help          显示帮助\n\n\
 快捷键: Ctrl+T 新建标签 / Ctrl+W 关闭 / Ctrl+F 搜索 / Ctrl+Shift+C 复制 / Ctrl+Shift+V 粘贴\n\
 配置: ~/.config/tervo/config.toml (TERVO_CONFIG 可覆盖)\n\
@@ -2257,6 +2273,48 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         print_help();
         return Ok(());
     }
+
+    // 无 UI 的 Tabby 配置迁移：在初始化窗口/后端之前处理，直接退出。
+    let arg_value = |flag: &str| -> Option<std::path::PathBuf> {
+        argv.iter().position(|a| a == flag).and_then(|i| argv.get(i + 1)).map(std::path::PathBuf::from)
+    };
+    if let Some(path) = arg_value("--export-tabby") {
+        let store = profile::ProfileStore::load();
+        let yaml = tabby_import::export_yaml(&store);
+        std::fs::write(&path, yaml)?;
+        println!("[tabby] 导出 {} 个 Profile → {}", store.profiles.len(), path.display());
+        return Ok(());
+    }
+    if let Some(path) = arg_value("--import-tabby") {
+        let text = std::fs::read_to_string(&path)?;
+        let mut store = profile::ProfileStore::load();
+        match tabby_import::import_yaml(&text, &mut store) {
+            Ok(report) => {
+                store.save();
+                println!(
+                    "[tabby] 导入 {} 个 Profile（重命名 {}，跳过 {}）",
+                    report.added,
+                    report.renamed,
+                    report.skipped.len()
+                );
+                for (name, why) in &report.skipped {
+                    eprintln!("  - 跳过 {name}: {why}");
+                }
+                if let Some(fs) = report.font_size {
+                    let mut cfg = Config::load();
+                    cfg.font_size = fs.clamp(8.0, 40.0);
+                    cfg.save();
+                    println!("  - 应用字号 {fs}px");
+                }
+                return Ok(());
+            },
+            Err(e) => {
+                eprintln!("[tabby] 导入失败: {e}");
+                std::process::exit(1);
+            },
+        }
+    }
+
     env_logger::init();
     // 无 GPU（沙箱/无 /dev/dri）时 Skia 能建窗口但拿不到可呈现的 surface，
     // 表现为“窗口存在但全黑”。用户显式设置 SLINT_BACKEND 时不干预。
@@ -2266,8 +2324,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::env::set_var("SLINT_BACKEND", "winit-software");
         eprintln!("[render] 未检测到 /dev/dri，自动使用 winit-software 后端");
     }
-    let cfg = Config::load();
+    let mut cfg = Config::load();
     let opts = parse_args(&cfg);
+
     // 内置 + 用户自定义主题；加载失败只记录，不阻塞启动。
     let registry = ThemeRegistry::load(&ThemeRegistry::default_dir());
     for err in &registry.errors {
@@ -2730,6 +2789,56 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     ui.on_rename_cancelled(|| {
         with_app(|st| st.ui.set_rename_open(false));
+    });
+
+    ui.on_config_import_tabby(|| {
+        with_app(|st| {
+            let path = tabby_config_path();
+            let status = match std::fs::read_to_string(&path) {
+                Ok(text) => match tabby_import::import_yaml(&text, &mut st.profiles) {
+                    Ok(report) => {
+                        st.profiles.save();
+                        refresh_profiles(st);
+                        if let Some(fs) = report.font_size {
+                            st.cfg.font_size = fs.clamp(8.0, 40.0);
+                            apply_font_size(st);
+                            st.cfg.save();
+                        }
+                        let mut msg = format!(
+                            "已从 {} 导入 {} 个 Profile（重命名 {}，跳过 {}）",
+                            path.display(),
+                            report.added,
+                            report.renamed,
+                            report.skipped.len()
+                        );
+                        if let Some((name, why)) = report.skipped.first() {
+                            msg.push_str(&format!("；首个跳过：{name}（{why}）"));
+                        }
+                        eprintln!("[tabby] {msg}");
+                        msg
+                    },
+                    Err(e) => format!("导入失败: {e}"),
+                },
+                Err(e) => format!("读不到 {}: {e}", path.display()),
+            };
+            st.ui.set_config_status(status.as_str().into());
+        });
+    });
+
+    ui.on_config_export_tabby(|| {
+        with_app(|st| {
+            let path = Config::path().with_file_name("tabby-profiles.yaml");
+            let yaml = tabby_import::export_yaml(&st.profiles);
+            let status = match std::fs::write(&path, yaml) {
+                Ok(()) => {
+                    let msg = format!("已导出 {} 个 Profile → {}", st.profiles.profiles.len(), path.display());
+                    eprintln!("[tabby] {msg}");
+                    msg
+                },
+                Err(e) => format!("导出失败: {e}"),
+            };
+            st.ui.set_config_status(status.as_str().into());
+        });
     });
 
     ui.on_sftp_list(|| {
