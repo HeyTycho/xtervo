@@ -276,6 +276,11 @@ export component MainWindow inherits Window {
     callback paste-always();
     callback paste-cancel();
     callback settings-toggled(bool);
+    // 后台会话列表
+    in-out property <bool> bg-open: false;
+    in property <[string]> background-items: [];
+    callback bg-reattach(int);
+    callback bg-close();
     // Command Palette
     in-out property <bool> palette-open: false;
     in-out property <string> palette-query: "";
@@ -391,7 +396,7 @@ export component MainWindow inherits Window {
                             root.tabbar-context(
                                 title-hit.mouse-x,
                                 // 菜单贴在 TabBar 所在的那一侧
-                                root.tabbar-bottom ? root.height - root.tabbar-height - 216px : root.tabbar-height,
+                                root.tabbar-bottom ? root.height - root.tabbar-height - 246px : root.tabbar-height,
                             );
                             return EventResult.accept;
                         }
@@ -899,7 +904,7 @@ export component MainWindow inherits Window {
         x: Math.min(root.tabmenu-x, root.width - 180px);
         y: root.tabmenu-y;
         width: 170px;
-        height: 246px;
+        height: 276px;
         background: Palette.colors.raise;
         border-radius: 8px;
         border-width: 1px;
@@ -938,8 +943,8 @@ export component MainWindow inherits Window {
                 picked => { root.tabmenu-open = false; root.tabbar-menu-action(6); }
             }
             MenuRow {
-                label: "Reattach Background Session";
-                picked => { root.tabmenu-open = false; root.tabbar-menu-action(7); }
+                label: "Background Sessions";
+                picked => { root.tabmenu-open = false; root.tabbar-menu-action(8); }
             }
             MenuRow {
                 label: "Close Window";
@@ -981,6 +986,89 @@ export component MainWindow inherits Window {
             MenuRow {
                 label: "Rename";
                 picked => { root.tabctx-open = false; root.tab-menu-action(root.tabctx-index, 3); }
+            }
+        }
+    }
+
+    if root.bg-open : Rectangle {
+        x: (root.width - 380px) / 2;
+        y: (root.height - 300px) / 2;
+        width: 380px;
+        height: 300px;
+        background: Palette.colors.raise;
+        border-radius: 10px;
+        border-width: 1px;
+        border-color: Palette.colors.border;
+        drop-shadow-blur: 24px;
+        drop-shadow-offset-y: 8px;
+        drop-shadow-color: #000000c0;
+
+        VerticalLayout {
+            padding: 16px;
+            spacing: 10px;
+
+            Text {
+                text: "Background Sessions";
+                color: Palette.colors.text;
+                font-size: 15px;
+                font-weight: 600;
+            }
+
+            Rectangle {
+                height: 1px;
+                horizontal-stretch: 1;
+                background: Palette.colors.border;
+            }
+
+            for item[i] in root.background-items : Rectangle {
+                height: 30px;
+                border-radius: 4px;
+                background: bg-hit.has-hover ? Palette.colors.hover : transparent;
+
+                Text {
+                    x: 8px;
+                    width: parent.width - 16px;
+                    text: item;
+                    color: Palette.colors.text;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+
+                bg-hit := TouchArea {
+                    clicked => { root.bg-reattach(i); }
+                }
+            }
+
+            Text {
+                text: root.background-items.length == 0
+                    ? "No background sessions"
+                    : "Click a session to reattach it in a new tab";
+                color: Palette.colors.muted;
+                font-size: 11px;
+                wrap: word-wrap;
+            }
+
+            HorizontalLayout {
+                alignment: end;
+                Rectangle {
+                    width: 80px; height: 28px; border-radius: 6px;
+                    background: bg-close-hit.has-hover ? Palette.colors.hover : Palette.colors.raise;
+                    border-width: 1px;
+                    border-color: Palette.colors.border;
+                    bg-close-hit := TouchArea {
+                        clicked => { root.bg-open = false; root.bg-close(); }
+                    }
+                    Text {
+                        text: "Close";
+                        color: Palette.colors.text;
+                        font-size: 12px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        width: 100%;
+                        height: 100%;
+                    }
+                }
             }
         }
     }

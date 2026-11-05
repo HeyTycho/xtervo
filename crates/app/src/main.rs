@@ -111,6 +111,7 @@ struct AppState {
     pending_paste: Option<String>,
     /// 后台会话：关 Tab/Pane 时按配置保留的运行时（不 drop，子进程继续跑）
     detached: Vec<(PaneId, PaneRuntime, String)>,
+    bg_model: Rc<VecModel<slint::SharedString>>,
     /// 1003 悬停上报的上一格（按格去重，避免鼠标移动刷爆有界 ctrl 队列）。
     hover_cell: Option<(PaneId, (u16, u16))>,
     resize: Option<WindowResize>,
@@ -523,21 +524,45 @@ fn detach_runtime(st: &mut AppState, id: PaneId) {
     let title = if rt.title.is_empty() { format!("session {id}") } else { rt.title.clone() };
     eprintln!("[session] detach pane={id} title={title:?}（子进程保留）");
     st.detached.push((id, rt, title));
+    refresh_background(st);
 }
 
-/// 把最近一个后台会话接回当前窗口（新 Tab）。
-fn reattach_last_background(st: &mut AppState) {
-    let Some((id, rt, title)) = st.detached.pop() else {
-        eprintln!("[session] 没有可重连的后台会话");
+/// 后台会话列表（标题 + 窗口内 cwd 提示不吃内存）。
+fn refresh_background(st: &mut AppState) {
+    let items: Vec<slint::SharedString> =
+        st.detached.iter().map(|(id, _, title)| format!("{title}   #{id}").into()).collect();
+    st.bg_model.set_vec(items);
+}
+
+fn open_background_panel(st: &mut AppState) {
+    refresh_background(st);
+    st.ui.set_bg_open(true);
+    eprintln!("[session] background panel items={}", st.detached.len());
+}
+
+/// 按索引把后台会话接回新 Tab。
+fn reattach_background(st: &mut AppState, index: usize) {
+    if index >= st.detached.len() {
         return;
-    };
+    }
+    let (id, rt, title) = st.detached.remove(index);
     st.panes.insert(id, rt);
     st.ws.tabs.push(Tab::single(id, title.clone()));
     st.ws.active = st.ws.tabs.len() - 1;
     refresh_views(st);
     rebuild_tabs(st);
     redraw_pane_inner(st, id);
+    refresh_background(st);
     eprintln!("[session] reattach pane={id} title={title:?}（剩余后台 {}）", st.detached.len());
+}
+
+/// 把最近一个后台会话接回当前窗口（新 Tab）。
+fn reattach_last_background(st: &mut AppState) {
+    if st.detached.is_empty() {
+        eprintln!("[session] 没有可重连的后台会话");
+        return;
+    }
+    reattach_background(st, st.detached.len() - 1);
 }
 
 fn close_tab_inner(st: &mut AppState, index: usize) {
@@ -1820,6 +1845,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let echo = Arc::new(AtomicUsize::new(0));
     let palette_model = Rc::new(VecModel::<slint::SharedString>::default());
     ui.set_palette_items(ModelRc::from(palette_model.clone()));
+    let bg_model = Rc::new(VecModel::<slint::SharedString>::default());
+    ui.set_background_items(ModelRc::from(bg_model.clone()));
     let state = Rc::new(RefCell::new(AppState {
         ui: ui.clone_strong(),
         ws: Workspace::new(),
@@ -1847,6 +1874,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         drag: None,
         pending_paste: None,
         detached: Vec::new(),
+        bg_model,
         hover_cell: None,
         resize: None,
         xresize: None,
@@ -2227,6 +2255,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         with_app(|st| st.ui.set_rename_open(false));
     });
 
+    ui.on_bg_reattach(|index| {
+        with_app(|st| reattach_background(st, index.max(0) as usize));
+    });
+
+    ui.on_bg_close(|| {});
+
     ui.on_paste_accept(|| {
         with_app(|st| {
             st.ui.set_paste_open(false);
@@ -2375,6 +2409,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             4 => restart_session(st),
             5 => open_palette(st),
             7 => reattach_last_background(st),
+            8 => open_background_panel(st),
             6 => {
                 st.cfg.tabbar_position =
                     if st.cfg.tabbar_position == "bottom" { "top".into() } else { "bottom".into() };
