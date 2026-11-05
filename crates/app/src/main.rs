@@ -527,6 +527,82 @@ fn close_tab(index: usize) {
     with_app(|st| close_tab_inner(st, index));
 }
 
+/// 只保留指定 Tab，其它 Tab 的 PTY 全部关掉。
+fn close_other_tabs(st: &mut AppState, keep: usize) {
+    if keep >= st.ws.tabs.len() {
+        return;
+    }
+    let dropped = st.ws.keep_only(keep);
+    eprintln!("[ws] close other tabs, keep={keep}, 关闭 {} 个 pane", dropped.len());
+    for id in dropped {
+        st.panes.remove(&id);
+    }
+    refresh_views(st);
+    rebuild_tabs(st);
+    redraw_visible(st);
+}
+
+/// 复制一个 Tab：布局、分屏比例、每个 pane 的 cwd 都照抄。
+fn duplicate_tab(st: &mut AppState, index: usize) {
+    let (title, focused, ids, tree) = {
+        let Some(src) = st.ws.tabs.get(index) else { return };
+        let Some(root) = src.root.as_ref() else { return };
+        let ids = root.panes();
+        let mut cwds = HashMap::with_capacity(ids.len());
+        for id in &ids {
+            let cwd = st
+                .panes
+                .get(id)
+                .and_then(|rt| rt.handle.pid())
+                .and_then(session::cwd_of);
+            cwds.insert(*id, cwd);
+        }
+        (src.title.clone(), src.focused, ids, session::Tree::from_node(root, &cwds))
+    };
+
+    let leaf_cwds = tree.leaf_cwds();
+    eprintln!("[ws] duplicate tab={index} panes={}", leaf_cwds.len());
+    let new_ids: Vec<PaneId> = (0..leaf_cwds.len()).map(|_| st.ws.alloc_id()).collect();
+    let Some(new_root) = tree.assign(&new_ids) else { return };
+    let (cols, rows) = cell_of(st.content, st.cell);
+
+    let mut created = Vec::with_capacity(new_ids.len());
+    for (i, cwd) in leaf_cwds.iter().enumerate() {
+        match create_pane(st, new_ids[i], cols, rows, cwd.as_ref().map(PathBuf::from)) {
+            Ok(rt) => {
+                st.panes.insert(new_ids[i], rt);
+                created.push(new_ids[i]);
+            },
+            Err(e) => {
+                eprintln!("[ws] 复制 Tab 时创建 pane 失败: {e}");
+                break;
+            },
+        }
+    }
+    if created.len() != new_ids.len() {
+        for id in &created {
+            st.panes.remove(id);
+        }
+        return;
+    }
+
+    let focused_idx = ids.iter().position(|id| *id == focused).unwrap_or(0);
+    let focused_new = new_ids.get(focused_idx).copied().unwrap_or(new_ids[0]);
+    st.ws.tabs.insert(
+        index + 1,
+        Tab {
+            title: format!("{title} (copy)"),
+            root: Some(new_root),
+            focused: focused_new,
+            grid: HashMap::new(),
+        },
+    );
+    st.ws.active = index + 1;
+    refresh_views(st);
+    rebuild_tabs(st);
+    redraw_visible(st);
+}
+
 fn close_pane_inner(st: &mut AppState, id: PaneId) {
     let Some(tab_index) = st.ws.tab_of(id) else { return };
     let emptied = st.ws.tabs[tab_index].remove(id);
@@ -769,14 +845,42 @@ fn focus_pane(id: PaneId) {
 }
 
 fn set_active_tab(index: usize) {
+    with_app(|st| set_active_tab_inner(st, index));
+}
+
+fn set_active_tab_inner(st: &mut AppState, index: usize) {
+    if index >= st.ws.tabs.len() || st.ws.active == index {
+        return;
+    }
+    st.ws.active = index;
+    refresh_views(st);
+    rebuild_tabs(st);
+    redraw_visible(st);
+}
+
+/// 相对切 Tab（循环）。`len > 0` 由调用方保证。
+fn next_tab_index(cur: usize, len: usize, delta: isize) -> usize {
+    let n = len as isize;
+    ((((cur as isize + delta) % n) + n) % n) as usize
+}
+
+fn switch_tab_relative(delta: isize) {
     with_app(|st| {
-        if index >= st.ws.tabs.len() || st.ws.active == index {
+        let len = st.ws.tabs.len();
+        if len < 2 {
             return;
         }
-        st.ws.active = index;
-        refresh_views(st);
-        rebuild_tabs(st);
-        redraw_visible(st);
+        let next = next_tab_index(st.ws.active, len, delta);
+        set_active_tab_inner(st, next);
+    });
+}
+
+/// Ctrl+1..9：跳到第 n 个 Tab（不存在则忽略）。
+fn switch_tab_number(n: usize) {
+    with_app(|st| {
+        if n >= 1 && n <= st.ws.tabs.len() {
+            set_active_tab_inner(st, n - 1);
+        }
     });
 }
 
@@ -1155,6 +1259,22 @@ fn handle_input(
         }
         return;
     }
+    // Tab 导航在任何输入状态下都生效（含搜索框开着时）
+    if ctrl && !alt {
+        if text == "\t" {
+            switch_tab_relative(if shift { -1 } else { 1 });
+            return;
+        }
+        if !shift {
+            if let Some(c) = text.chars().next() {
+                if ('1'..='9').contains(&c) {
+                    switch_tab_number(c as usize - '0' as usize);
+                    return;
+                }
+            }
+        }
+    }
+
     // 搜索框打开时，键盘归搜索框（Esc 关闭、Enter 下一个、Shift+Enter 上一个）
     if st.search_open {
         match text {
@@ -1775,6 +1895,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    ui.on_tab_context(|index, x| {
+        with_app(|st| {
+            st.ui.set_tabctx_index(index);
+            st.ui.set_tabctx_x(x);
+            st.ui.set_tabctx_open(true);
+        });
+    });
+
+    ui.on_tab_menu_action(|index, action| {
+        eprintln!("[ui] tab action={action} index={index}");
+        with_app(|st| {
+            let index = index.max(0) as usize;
+            match action {
+                0 => close_tab_inner(st, index),
+                1 => close_other_tabs(st, index),
+                2 => duplicate_tab(st, index),
+                _ => {},
+            }
+        });
+    });
+
     ui.on_tabbar_context(|x, y| {
         eprintln!("[ui] tabbar menu at {x},{y}");
         with_app(|st| {
@@ -2200,6 +2341,16 @@ mod tests {
         assert!(!is_modifier_artifact("\u{1b}", false, false, false)); // Esc
         assert!(!is_modifier_artifact("\n", true, false, false)); // Ctrl+Enter
         assert!(!is_modifier_artifact("你", false, false, false));
+    }
+
+    #[test]
+    fn tab_navigation_wraps() {
+        assert_eq!(next_tab_index(0, 3, 1), 1);
+        assert_eq!(next_tab_index(2, 3, 1), 0);
+        assert_eq!(next_tab_index(0, 3, -1), 2);
+        assert_eq!(next_tab_index(1, 3, -1), 0);
+        assert_eq!(next_tab_index(0, 1, 1), 0);
+        assert_eq!(next_tab_index(0, 9, -3), 6);
     }
 
     #[test]

@@ -63,12 +63,12 @@
 | UI-TAB-003 | 单击 Tab 切换活动 Tab | U-AUDIT / 需求 B2 | main.slint tab-hit `tab-clicked`；main.rs `set_active_tab` | implemented | 人工：多 tab 单击切换；ui-shell §7 .logs/t4.png | 已有记录 | 仅左键；无中键关闭/双击重命名 |
 | UI-TAB-004 | 拖动 Tab 调整顺序；拖出窗口按上游行为处理 | U-AUDIT（拖出行为待核） | 无实现 | not_started | 无 | 未实现 | Tab 是静态 for 模型，无拖拽状态；上游拖出语义未核实 |
 | UI-TAB-005 | 关闭 Tab；区分仅关视图/结束 Session/后台保留 | U-AUDIT / 需求 B2 | main.rs `close_tab_inner` Drop PaneHandle→kill PTY；Ctrl+W；tab × | partial | 人工：关闭 tab 后子进程退出；代码走查 `Drop for PaneHandle` | 只有“结束会话并关视图”一条路径 | 无生命周期策略、无确认、无后台保留 |
-| UI-TAB-006 | 关闭其他/指定 Tab；恢复最近关闭 Tab | U-AUDIT（上游菜单能力待核） | 无实现 | not_started | 无 | 未实现 | 无关闭其他/最近关闭缓存；上游是否提供待核 |
+| UI-TAB-006 | 关闭其他/指定 Tab；恢复最近关闭 Tab | U-AUDIT（上游菜单能力待核） | main.rs `close_other_tabs` + workspace `keep_only`；per-tab 菜单项 Close Others | partial | 单测 `keep_only_drops_other_tabs_and_reports_panes`；真机 `[ws] close other tabs, keep=0, 关闭 1 个 pane` | 关闭其他已可用；最近关闭未实现 | 无最近关闭栈；上游是否提供待核 |
 | UI-TAB-007 | 双击 Tab 或快捷键重命名（以源码触发方式为准） | U-AUDIT（触发方式待核） | 无实现 | needs_verification | 待上游核实触发方式 | 未核实/未实现 | 无重命名 UI/命令；双击当前无效 |
 | UI-TAB-008 | 标题跟随 Shell/SSH 远端标题；前缀/后缀/过滤 | U-AUDIT / 需求 B2 | pane.rs Listener Title→CoreEvent::Title；main.rs `poll_events` 400ms + `rebuild_tabs` | partial | `title_event_is_delivered`；人工 printf OSC 0/2；见 ui-shell §3 | 事件有测试；仅活动 tab 的首个 pane 标题写回 | 后台 tab/非首 pane 不更新；无 prefix/suffix/filter；无 SSH |
 | UI-TAB-009 | Tab 显示活动/连接/后台活动/进度/完成/失败；非仅颜色 | U-AUDIT / 需求 B2 | main.slint TabView{title,active} 底色/accent 线/字重；无连接/进度字段 | partial | 人工：多 tab 观察激活态；无连接/进度场景 | 活动态有底色+accent 线+字重（非仅颜色） | 无连接状态/进度/完成失败/后台活动；无图标/无障碍标签 |
-| UI-TAB-010 | Tab 右键菜单（按上游实际项目） | U-AUDIT（上游菜单项待核） | main.slint TabBar 空白 `title-hit` 右键→tabbar-context；main.rs `on_tabbar_context`/`on_tabbar_menu_action` | partial | 人工：TabBar 空白右键有 5 项；Tab 上右键无 per-tab 菜单 | 仅窗口级菜单可用；per-tab 菜单缺失 | 菜单=置顶/新建/设置/重启/关窗；无关闭/重命名/分屏/复制连接 |
-| UI-TAB-011 | Tab 键盘导航：上/下一个、序号跳转、最近 Tab | U-AUDIT / 需求 B2 | 无实现；`commands.rs` 定义 tab.next/prev（Ctrl+Tab/Shift+Ctrl+Tab），无分发 | not_started | 无 | 未实现 | 命令表占位未接线；无序号跳转/最近使用栈 |
+| UI-TAB-010 | Tab 右键菜单（按上游实际项目） | U-AUDIT（上游菜单项待核） | 窗口级菜单（置顶/新建/设置/重启/关窗）+ per-tab 菜单（Close/Close Others/Duplicate，`tab-menu-action`） | partial | 真机：右键 Tab → `[ui] tab action=2 index=0` → `[ws] duplicate tab=0 panes=1`；Close Others 关闭其它 pane | per-tab 菜单可用 | 无 Rename/Split/复制连接；上游完整项目待核 |
+| UI-TAB-011 | Tab 键盘导航：上/下一个、序号跳转、最近 Tab | U-AUDIT / 需求 B2 | main.rs `handle_input` 拦截 Ctrl+Tab / Ctrl+Shift+Tab / Ctrl+1..9 → `switch_tab_relative`/`switch_tab_number`；`next_tab_index` 循环 | partial | 单测 `tab_navigation_wraps`；键盘注入在本沙箱不可用，待真机人工验收 | 循环切换与序号跳转已实现 | 无“最近使用 Tab”栈；键盘端到端未在沙箱验证 |
 | UI-TAB-012 | 持久化 Tab 顺序、标题、Pane 布局与恢复信息 | U-AUDIT / 需求 B2 | session.rs Snapshot/TabSnapshot/Tree；main.rs `capture_snapshot`/`restore_session` | partial | session.rs 5 例；人工 Restart Session（self-iteration 第 3 轮） | 顺序/标题/树/ratio/cwd 可存；仅在手动重启时 | 无自动启动恢复；Tab 无独立稳定 ID（仅下标）；无运行中进程/历史 |
 
 ### B3. Split Pane / 分屏操作（11 条）

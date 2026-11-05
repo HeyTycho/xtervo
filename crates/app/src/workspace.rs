@@ -278,6 +278,27 @@ impl Workspace {
         self.tabs.get_mut(self.active)
     }
 
+    /// 只保留第 `index` 个 Tab；返回被丢弃 Tab 的 pane id（调用方负责关 PTY）。
+    pub fn keep_only(&mut self, index: usize) -> Vec<PaneId> {
+        if index >= self.tabs.len() {
+            return Vec::new();
+        }
+        let mut dropped = Vec::new();
+        let mut kept = None;
+        for (i, tab) in std::mem::take(&mut self.tabs).into_iter().enumerate() {
+            if i == index {
+                kept = Some(tab);
+            } else {
+                dropped.extend(tab.panes());
+            }
+        }
+        if let Some(tab) = kept {
+            self.tabs.push(tab);
+        }
+        self.active = 0;
+        dropped
+    }
+
     pub fn tab_of(&self, pane: PaneId) -> Option<usize> {
         self.tabs.iter().position(|t| t.root.as_ref().is_some_and(|r| r.contains(pane)))
     }
@@ -405,6 +426,27 @@ mod tests {
         // 路径不存在
         assert!(!Node::leaf(1).set_ratio(&[], 0.3));
         assert!(!node.set_ratio(&[true], 0.3));
+    }
+
+    #[test]
+    fn keep_only_drops_other_tabs_and_reports_panes() {
+        let mut ws = Workspace::new();
+        let a = ws.alloc_id();
+        let b = ws.alloc_id();
+        let c = ws.alloc_id();
+        ws.tabs.push(Tab::single(a, "a"));
+        ws.tabs.push(Tab::single(b, "b"));
+        ws.tabs.push(Tab::single(c, "c"));
+        ws.active = 2;
+
+        let dropped = ws.keep_only(1);
+        assert_eq!(dropped, vec![a, c]);
+        assert_eq!(ws.tabs.len(), 1);
+        assert_eq!(ws.tabs[0].panes(), vec![b]);
+        assert_eq!(ws.active, 0);
+        // 越界不 panic、也不改状态
+        assert!(ws.keep_only(5).is_empty());
+        assert_eq!(ws.tabs.len(), 1);
     }
 
     #[test]
