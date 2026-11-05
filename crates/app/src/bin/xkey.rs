@@ -49,7 +49,8 @@ fn main() {
     let reply = conn.get_keyboard_mapping(min, count).expect("mapping").reply().expect("reply");
     let per = reply.keysyms_per_keycode as usize;
 
-    let find = |ch: char| -> Option<u8> {
+    // 返回 (keycode, 是否需要 Shift)；冒号、大写字母等只在 level 1 上。
+    let find = |ch: char| -> Option<(u8, bool)> {
         let sym = match ch {
             '\n' | '\r' => 0xff0d, // Return
             '\t' => 0xff09,
@@ -63,8 +64,11 @@ fn main() {
             .keysyms
             .iter()
             .enumerate()
-            .find(|(i, s)| i % per == 0 && **s == sym)
-            .map(|(i, _)| min + (i / per) as u8)
+            .find(|(i, s)| **s == sym && (i % per) < 4)
+            .map(|(i, _)| {
+                let level = (i % per) as u32;
+                (min + (i / per) as u8, level > 0)
+            })
     };
     let ctrl_kc = reply
         .keysyms
@@ -97,26 +101,27 @@ fn main() {
         }
     }
     for ch in text.chars() {
-        let need_shift = ch.is_ascii_uppercase();
-        if need_shift {
+        let found = find(ch).or_else(|| find(ch.to_ascii_lowercase()));
+        let Some((kc, needs_shift)) = found else {
+            eprintln!("跳过不支持的字符: {ch:?}");
+            continue;
+        };
+        // --shift 已经按住时不再重复按。
+        let press_shift = needs_shift && !shift;
+        if press_shift {
             if let Some(kc) = shift_kc {
                 press(kc);
                 let _ = conn.flush();
                 std::thread::sleep(std::time::Duration::from_millis(6));
             }
         }
-        let found = find(ch).or_else(|| find(ch.to_ascii_lowercase()));
-        if let Some(kc) = found {
-            press(kc);
-            let _ = conn.flush();
-            std::thread::sleep(std::time::Duration::from_millis(25));
-            release(kc);
-            let _ = conn.flush();
-            std::thread::sleep(std::time::Duration::from_millis(25));
-        } else {
-            eprintln!("跳过不支持的字符: {ch:?}");
-        }
-        if need_shift {
+        press(kc);
+        let _ = conn.flush();
+        std::thread::sleep(std::time::Duration::from_millis(25));
+        release(kc);
+        let _ = conn.flush();
+        std::thread::sleep(std::time::Duration::from_millis(25));
+        if press_shift {
             if let Some(kc) = shift_kc {
                 release(kc);
                 let _ = conn.flush();
