@@ -148,7 +148,15 @@ static SCHEME_WATCH_STOPPED: AtomicBool = AtomicBool::new(false);
 
 fn with_app<R>(f: impl FnOnce(&mut AppState) -> R) -> Option<R> {
     let app = APP.with(|c| c.borrow().clone())?;
-    let mut st = app.borrow_mut();
+    // 防御性：正常路径不应重入；万一将来某个回调在借用期内又调 with_app，
+    // 这里降级为“忽略本次操作 + 报错”，而不是整个进程 panic。
+    let mut st = match app.try_borrow_mut() {
+        Ok(st) => st,
+        Err(_) => {
+            eprintln!("[app] with_app 重入（AppState 已被借用），忽略本次操作");
+            return None;
+        },
+    };
     Some(f(&mut st))
 }
 
@@ -1376,24 +1384,22 @@ fn next_tab_index(cur: usize, len: usize, delta: isize) -> usize {
     ((((cur as isize + delta) % n) + n) % n) as usize
 }
 
-fn switch_tab_relative(delta: isize) {
-    with_app(|st| {
-        let len = st.ws.tabs.len();
-        if len < 2 {
-            return;
-        }
-        let next = next_tab_index(st.ws.active, len, delta);
-        set_active_tab_inner(st, next);
-    });
+/// 注意：与 toggle_fullscreen 同理，本函数在 handle_input / run_command 的
+/// `with_app` 借用内被调用，内部不得再 with_app，否则二次借用 panic。
+fn switch_tab_relative(st: &mut AppState, delta: isize) {
+    let len = st.ws.tabs.len();
+    if len < 2 {
+        return;
+    }
+    let next = next_tab_index(st.ws.active, len, delta);
+    set_active_tab_inner(st, next);
 }
 
 /// Ctrl+1..9：跳到第 n 个 Tab（不存在则忽略）。
-fn switch_tab_number(n: usize) {
-    with_app(|st| {
-        if n >= 1 && n <= st.ws.tabs.len() {
-            set_active_tab_inner(st, n - 1);
-        }
-    });
+fn switch_tab_number(st: &mut AppState, n: usize) {
+    if n >= 1 && n <= st.ws.tabs.len() {
+        set_active_tab_inner(st, n - 1);
+    }
 }
 
 // ------------------------------------------------------------------- 布局
@@ -1796,8 +1802,8 @@ fn run_command(st: &mut AppState, id: &str) {
             rebuild_tabs(st);
         },
         "tab.close" => close_tab_inner(st, st.ws.active),
-        "tab.next" => switch_tab_relative(1),
-        "tab.prev" => switch_tab_relative(-1),
+        "tab.next" => switch_tab_relative(st, 1),
+        "tab.prev" => switch_tab_relative(st, -1),
         "tab.duplicate" => duplicate_tab(st, st.ws.active),
         "pane.split-right" => {
             if let Some(focused) = st.ws.active_tab().map(|t| t.focused) {
@@ -1936,21 +1942,22 @@ fn handle_input(
     }
 
     // F2：重命名当前 Tab（Slint 特殊键编码见 keys.rs）
+    // 已经在 with_app 的借用内，不能再 with_app（同 F11 的崩溃根因）。
     if text == "\u{F705}" {
-        with_app(|st| open_rename(st, st.ws.active));
+        open_rename(st, st.ws.active);
         return;
     }
 
     // Tab 导航在任何输入状态下都生效（含搜索框开着时）
     if ctrl && !alt {
         if text == "\t" {
-            switch_tab_relative(if shift { -1 } else { 1 });
+            switch_tab_relative(st, if shift { -1 } else { 1 });
             return;
         }
         if !shift {
             if let Some(c) = text.chars().next() {
                 if ('1'..='9').contains(&c) {
-                    switch_tab_number(c as usize - '0' as usize);
+                    switch_tab_number(st, c as usize - '0' as usize);
                     return;
                 }
             }
