@@ -344,15 +344,19 @@ export component MainWindow inherits Window {
     in-out property <bool> sftp-open: false;
     in property <[string]> sftp-profiles: [];
     in property <[string]> sftp-items: [];
-    in-out property <int> sftp-target: 0;
+    in-out property <int> sftp-profile: 0;
     in-out property <string> sftp-remote: "/";
     in-out property <string> sftp-local: "/tmp/tervo-sftp";
+    in-out property <string> sftp-target: "";
     in-out property <int> sftp-selected: -1;
     in-out property <string> sftp-status: "";
     callback sftp-list();
     callback sftp-pick(int);
     callback sftp-download();
     callback sftp-upload();
+    callback sftp-mkdir();
+    callback sftp-rename();
+    callback sftp-delete();
     callback sftp-close();
     // 后台会话列表
     in-out property <bool> bg-open: false;
@@ -444,7 +448,6 @@ export component MainWindow inherits Window {
             y: root.tabbar-bottom ? root.height - root.tabbar-height : 0px;
             width: 100%;
             height: root.tabbar-height;
-            min-width: 0px;
             clip: true;
             // 极轻的上下渐变 + 顶部高光，避免整条纯色的“塑料感”
             background: @linear-gradient(180deg, Palette.colors.surface 0%, Palette.colors.bg 100%);
@@ -1383,9 +1386,9 @@ export component MainWindow inherits Window {
 
     if root.sftp-open : Rectangle {
         x: (root.width - 460px) / 2;
-        y: (root.height - 420px) / 2;
+        y: (root.height - 460px) / 2;
         width: 460px;
-        height: 420px;
+        height: 460px;
         background: Palette.colors.raise;
         border-radius: 10px;
         border-width: 1px;
@@ -1395,7 +1398,7 @@ export component MainWindow inherits Window {
         drop-shadow-color: #000000c0;
 
         Text {
-            x: 16px; y: 12px;
+            x: 16px; y: 10px;
             text: "SFTP";
             color: Palette.colors.text;
             font-size: 15px;
@@ -1404,24 +1407,24 @@ export component MainWindow inherits Window {
 
         // SSH Profile 选择（只列 SSH 类型）
         HorizontalLayout {
-            x: 16px; y: 42px;
+            x: 16px; y: 38px;
             width: 428px; height: 24px;
             spacing: 8px;
             for p[i] in root.sftp-profiles : ChoiceBtn {
                 width: 120px; height: 24px; font-size: 11px;
                 label: p;
-                active: root.sftp-target == i;
-                clicked => { root.sftp-target = i; }
+                active: root.sftp-profile == i;
+                clicked => { root.sftp-profile = i; }
             }
         }
 
         FormRow {
-            x: 16px; y: 76px; width: 428px; height: 26px;
+            x: 16px; y: 72px; width: 428px; height: 26px;
             label: "Remote"; text <=> root.sftp-remote;
         }
 
         Rectangle {
-            x: 16px; y: 112px; width: 80px; height: 26px; border-radius: 5px;
+            x: 16px; y: 108px; width: 80px; height: 26px; border-radius: 5px;
             background: sftp-list-hit.has-hover ? Palette.colors.hover : Palette.colors.raise;
             border-width: 1px;
             border-color: Palette.colors.border;
@@ -1438,7 +1441,7 @@ export component MainWindow inherits Window {
         }
 
         Text {
-            x: 104px; y: 118px;
+            x: 104px; y: 114px;
             width: 340px;
             text: root.sftp-status;
             color: Palette.colors.muted;
@@ -1448,14 +1451,14 @@ export component MainWindow inherits Window {
 
         // 远端条目列表（固定行高 24px）
         Rectangle {
-            x: 16px; y: 146px; width: 428px; height: 200px;
+            x: 16px; y: 142px; width: 428px; height: 150px;
             background: Palette.colors.bg;
             border-radius: 6px;
             border-width: 1px;
             border-color: Palette.colors.border;
 
             VerticalLayout {
-                x: 2px; y: 2px; width: 424px; height: 196px;
+                x: 2px; y: 2px; width: 424px; height: 146px;
                 spacing: 0px;
 
                 for item[i] in root.sftp-items : Rectangle {
@@ -1482,12 +1485,17 @@ export component MainWindow inherits Window {
         }
 
         FormRow {
-            x: 16px; y: 356px; width: 428px; height: 26px;
+            x: 16px; y: 300px; width: 428px; height: 26px;
+            label: "Target"; text <=> root.sftp-target;
+        }
+
+        FormRow {
+            x: 16px; y: 332px; width: 428px; height: 26px;
             label: "Local"; text <=> root.sftp-local;
         }
 
         Rectangle {
-            x: 16px; y: 390px; width: 150px; height: 24px; border-radius: 5px;
+            x: 16px; y: 366px; width: 140px; height: 24px; border-radius: 5px;
             background: sftp-get-hit.has-hover ? Palette.colors.hover : Palette.colors.raise;
             border-width: 1px;
             border-color: Palette.colors.border;
@@ -1504,7 +1512,7 @@ export component MainWindow inherits Window {
         }
 
         Rectangle {
-            x: 174px; y: 390px; width: 90px; height: 24px; border-radius: 5px;
+            x: 162px; y: 366px; width: 90px; height: 24px; border-radius: 5px;
             background: sftp-put-hit.has-hover ? Palette.colors.hover : Palette.colors.raise;
             border-width: 1px;
             border-color: Palette.colors.border;
@@ -1521,7 +1529,58 @@ export component MainWindow inherits Window {
         }
 
         Rectangle {
-            x: 364px; y: 390px; width: 80px; height: 24px; border-radius: 5px;
+            x: 258px; y: 366px; width: 82px; height: 24px; border-radius: 5px;
+            background: sftp-mkdir-hit.has-hover ? Palette.colors.hover : Palette.colors.raise;
+            border-width: 1px;
+            border-color: Palette.colors.border;
+            sftp-mkdir-hit := TouchArea { clicked => { root.sftp-mkdir(); } }
+            Text {
+                text: "New Dir";
+                color: Palette.colors.text;
+                font-size: 11px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                width: 100%;
+                height: 100%;
+            }
+        }
+
+        Rectangle {
+            x: 346px; y: 366px; width: 82px; height: 24px; border-radius: 5px;
+            background: sftp-rename-hit.has-hover ? Palette.colors.hover : Palette.colors.raise;
+            border-width: 1px;
+            border-color: Palette.colors.border;
+            sftp-rename-hit := TouchArea { clicked => { root.sftp-rename(); } }
+            Text {
+                text: "Rename";
+                color: Palette.colors.text;
+                font-size: 11px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                width: 100%;
+                height: 100%;
+            }
+        }
+
+        Rectangle {
+            x: 16px; y: 400px; width: 82px; height: 24px; border-radius: 5px;
+            background: sftp-del-hit.has-hover ? Palette.colors.danger : Palette.colors.raise;
+            border-width: 1px;
+            border-color: Palette.colors.border;
+            sftp-del-hit := TouchArea { clicked => { root.sftp-delete(); } }
+            Text {
+                text: "Delete";
+                color: sftp-del-hit.has-hover ? Palette.colors.bg : Palette.colors.text;
+                font-size: 11px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                width: 100%;
+                height: 100%;
+            }
+        }
+
+        Rectangle {
+            x: 364px; y: 400px; width: 80px; height: 24px; border-radius: 5px;
             background: sftp-close-hit.has-hover ? Palette.colors.hover : Palette.colors.raise;
             border-width: 1px;
             border-color: Palette.colors.border;

@@ -311,3 +311,14 @@ cargo bench -p tervo-core --bench pty_throughput
 - **依赖**：只增加 `serde_yaml 0.9`（3 个传递 crate），符合“少依赖”原则。
 - **限制**：不导入 hotkeys/themes/插件配置；密码/私钥口令不进 Vault；报告只有计数 + 首个跳过原因。
 
+### 2026-11-05 · SFTP 建目录/重命名/删除
+
+- 面板新增 Target 输入 + New Dir / Rename / Delete；Delete 采用“再点一次确认”，
+  避免误删；目录删除先 `rm` 失败再 `rmdir`（不递归，安全）。
+- 修 `ls -1 /abs` 回显绝对路径导致拼成 `//probe.txt`：新增 `remote_entry_path`，
+  绝对路径直接用。
+- 测试服务脚本补 mkdir/rmdir/remove/rename（paramiko `SFTPServerInterface`）；
+  端到端：建目录 → newdir 出现；Rename 目录 → renamed.txt；Delete 文件两次确认后消失。
+- 注意：Slint 里 `sftp-target` 曾同时用作 Profile 下标和 Target 字符串，已拆成
+  `sftp-profile`（int）与 `sftp-target`（string），避免属性冲突。
+

@@ -100,6 +100,22 @@ pub fn upload(t: &SftpTarget, local: &str, remote: &str) -> Result<(), String> {
     t.run(&format!("put {local} {remote}\n")).map(|_| ())
 }
 
+pub fn mkdir(t: &SftpTarget, remote: &str) -> Result<(), String> {
+    t.run(&format!("mkdir {remote}\n")).map(|_| ())
+}
+
+pub fn rename(t: &SftpTarget, from: &str, to: &str) -> Result<(), String> {
+    t.run(&format!("rename {from} {to}\n")).map(|_| ())
+}
+
+/// 删除文件；如果是目录，`rm` 失败后回退 `rmdir`（非递归，避免误删整棵树）。
+pub fn remove(t: &SftpTarget, remote: &str) -> Result<(), String> {
+    match t.run(&format!("rm {remote}\n")) {
+        Ok(_) => Ok(()),
+        Err(first) => t.run(&format!("rmdir {remote}\n")).map(|_| ()).map_err(|_| first),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

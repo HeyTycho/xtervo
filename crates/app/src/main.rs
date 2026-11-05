@@ -125,6 +125,8 @@ struct AppState {
     hotkey_model: Rc<VecModel<slint::SharedString>>,
     plugins: plugin::PluginStore,
     plugin_model: Rc<VecModel<slint::SharedString>>,
+    /// Delete 需要点两次确认（避免误删远端文件）
+    sftp_delete_armed: bool,
     settings_result_cats: Vec<i32>,
     settings_model: Rc<VecModel<slint::SharedString>>,
     /// 1003 悬停上报的上一格（按格去重，避免鼠标移动刷爆有界 ctrl 队列）。
@@ -845,7 +847,7 @@ fn open_sftp_panel(st: &mut AppState) {
     let model = Rc::new(VecModel::from(names));
     st.ui.set_sftp_profiles(ModelRc::from(model));
     st.sftp_model.set_vec(Vec::<slint::SharedString>::new());
-    st.ui.set_sftp_target(0);
+    st.ui.set_sftp_profile(0);
     st.ui.set_sftp_selected(-1);
     st.ui.set_sftp_status(
         if st.sftp_profiles.is_empty() {
@@ -860,7 +862,7 @@ fn open_sftp_panel(st: &mut AppState) {
 }
 
 fn sftp_current_target(st: &AppState) -> Option<sftp::SftpTarget> {
-    let i = st.ui.get_sftp_target().max(0) as usize;
+    let i = st.ui.get_sftp_profile().max(0) as usize;
     let idx = *st.sftp_profiles.get(i)?;
     sftp::SftpTarget::from_profile(&st.profiles.profiles[idx]).ok()
 }
@@ -879,6 +881,7 @@ fn sftp_do_list(st: &mut AppState) {
     sftp_set_status(st, "列目录中…");
     match sftp::list(&target, &remote) {
         Ok(items) => {
+            st.sftp_delete_armed = false;
             let n = items.len();
             let names: Vec<slint::SharedString> = items.into_iter().map(|s| s.into()).collect();
             st.sftp_model.set_vec(names);
@@ -886,6 +889,15 @@ fn sftp_do_list(st: &mut AppState) {
             sftp_set_status(st, &format!("{n} 个条目"));
         },
         Err(e) => sftp_set_status(st, &format!("列目录失败: {e}")),
+    }
+}
+
+/// `ls -1 /abs` 有时回显绝对路径；别再把目录前缀拼一遍。
+fn remote_entry_path(dir: &str, item: &str) -> String {
+    if item.starts_with('/') {
+        item.to_string()
+    } else {
+        join_remote(dir, item)
     }
 }
 
@@ -908,7 +920,7 @@ fn sftp_do_download(st: &mut AppState) {
         sftp_set_status(st, "先在列表里选一条");
         return;
     };
-    let remote = join_remote(&st.ui.get_sftp_remote(), &item);
+    let remote = remote_entry_path(&st.ui.get_sftp_remote(), &item);
     let local = st.ui.get_sftp_local().to_string();
     match sftp::download(&target, &remote, &local) {
         Ok(()) => sftp_set_status(st, &format!("已下载 {remote} → {local}")),
@@ -933,6 +945,79 @@ fn sftp_do_upload(st: &mut AppState) {
             sftp_do_list(st);
         },
         Err(e) => sftp_set_status(st, &format!("上传失败: {e}")),
+    }
+}
+
+fn sftp_do_mkdir(st: &mut AppState) {
+    let Some(target) = sftp_current_target(st) else {
+        sftp_set_status(st, "请选择 SSH Profile");
+        return;
+    };
+    let name = st.ui.get_sftp_target().trim().to_string();
+    if name.is_empty() {
+        sftp_set_status(st, "先在 Target 里填目录名");
+        return;
+    }
+    let remote = join_remote(&st.ui.get_sftp_remote(), &name);
+    match sftp::mkdir(&target, &remote) {
+        Ok(()) => {
+            sftp_set_status(st, &format!("已创建 {remote}"));
+            sftp_do_list(st);
+        },
+        Err(e) => sftp_set_status(st, &format!("建目录失败: {e}")),
+    }
+}
+
+fn sftp_do_rename(st: &mut AppState) {
+    let Some(target) = sftp_current_target(st) else {
+        sftp_set_status(st, "请选择 SSH Profile");
+        return;
+    };
+    let sel = st.ui.get_sftp_selected();
+    let Some(item) = st.sftp_model.row_data(sel.max(0) as usize) else {
+        sftp_set_status(st, "先在列表里选一条");
+        return;
+    };
+    let name = st.ui.get_sftp_target().trim().to_string();
+    if name.is_empty() {
+        sftp_set_status(st, "先在 Target 里填新名字");
+        return;
+    }
+    let dir = st.ui.get_sftp_remote().to_string();
+    let from = remote_entry_path(&dir, &item);
+    let to = join_remote(&dir, &name);
+    match sftp::rename(&target, &from, &to) {
+        Ok(()) => {
+            sftp_set_status(st, &format!("已重命名 {from} → {to}"));
+            sftp_do_list(st);
+        },
+        Err(e) => sftp_set_status(st, &format!("重命名失败: {e}")),
+    }
+}
+
+fn sftp_do_delete(st: &mut AppState) {
+    let Some(target) = sftp_current_target(st) else {
+        sftp_set_status(st, "请选择 SSH Profile");
+        return;
+    };
+    let sel = st.ui.get_sftp_selected();
+    let Some(item) = st.sftp_model.row_data(sel.max(0) as usize) else {
+        sftp_set_status(st, "先在列表里选一条");
+        return;
+    };
+    let path = remote_entry_path(&st.ui.get_sftp_remote(), &item);
+    if !st.sftp_delete_armed {
+        st.sftp_delete_armed = true;
+        sftp_set_status(st, &format!("再点一次 Delete 确认删除 {path}"));
+        return;
+    }
+    st.sftp_delete_armed = false;
+    match sftp::remove(&target, &path) {
+        Ok(()) => {
+            sftp_set_status(st, &format!("已删除 {path}"));
+            sftp_do_list(st);
+        },
+        Err(e) => sftp_set_status(st, &format!("删除失败: {e}")),
     }
 }
 
@@ -2409,6 +2494,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         hotkey_model,
         plugins: plugin::PluginStore::load(),
         plugin_model,
+        sftp_delete_armed: false,
         settings_result_cats: Vec::new(),
         settings_model,
         hover_cell: None,
@@ -2846,7 +2932,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     ui.on_sftp_pick(|index| {
-        with_app(|st| st.ui.set_sftp_selected(index.max(0)));
+        with_app(|st| {
+            st.ui.set_sftp_selected(index.max(0));
+            st.sftp_delete_armed = false;
+        });
     });
 
     ui.on_sftp_download(|| {
@@ -2855,6 +2944,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     ui.on_sftp_upload(|| {
         with_app(|st| sftp_do_upload(st));
+    });
+
+    ui.on_sftp_mkdir(|| {
+        with_app(|st| sftp_do_mkdir(st));
+    });
+
+    ui.on_sftp_rename(|| {
+        with_app(|st| sftp_do_rename(st));
+    });
+
+    ui.on_sftp_delete(|| {
+        with_app(|st| sftp_do_delete(st));
     });
 
     ui.on_sftp_close(|| {});
