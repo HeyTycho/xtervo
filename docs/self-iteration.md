@@ -727,3 +727,39 @@ cargo bench -p tervo-core --bench pty_throughput
   `ssh-keygen` 不在 PATH 时保守返回 false。若 Profile Host 与 known_hosts 键完全一致
   （如 `127.0.0.1` + `[127.0.0.1]:2222`），旧实现本身也能命中；本次修复覆盖的是此前漏判的
   ssh 配置别名/HostKeyAlias/有效端口形态，并新增端口键的真实 `ssh-keygen -F` 回归测试。
+
+### 2026-11-05 · 窗口背景图 + 终端背景透明度（对齐 Tabby Appearance）
+
+- **问题**：`THEME-006`、`UI-SET-002` 只有主题配色，没有背景图/透明度；`config.rs` 也没有
+  对应字段。Tabby 的 Appearance 面板依赖背景图 + 终端不透明度，而 Tervo 的终端帧是软件
+  光栅化的 RGBA 缓冲，具备直接写 alpha 并用 Slint 混合的条件。
+- **做法**：
+  - `config.rs` 新增 `background_image: String`（默认空=关；`~/` 用 `$HOME` 展开；只接受
+    存在的普通文件）与 `background_opacity: f32`（默认 1.0，clamp 0.2–1.0，读入/写盘都
+    四舍五入到两位小数；手写 TOML 的整数 `= 1` 也接受）。旧配置缺字段走 serde default，
+    不升 schema（纯增量字段）。
+  - `render.rs` 新增纯函数 `background_alpha`/`default_background`：默认背景 RGB 不变、
+    alpha=opacity；`Renderer::new/set_theme/set_opacity` 都保留透明度。cell 背景改按 RGB
+    比较，避免“默认背景带 alpha 后整屏 cell 背景被重填为不透明”；文字/光标/彩色 cell
+    背景仍写 255，保证可读。RGBA 缓冲继续用 `Image::from_rgba8`（直通 alpha），由 Slint
+    与背景图混合。
+  - `main.slint` 在窗口根 `Rectangle` 最底层放 `Image { image-fit: cover }`；有有效背景图
+    时内容区与 pane 背景透明（否则保持 `Palette.colors.bg`），TabBar/设置面板保持不透明。
+    Appearance 页新增 Background image 路径输入（空=关闭、× 清除、非法红字）与自绘
+    Opacity 滑块（20%–100%）。
+  - `main.rs` 启动时校验/解码配置里的背景图（坏路径回退纯色并保留错误文案）；设置回调
+    即时应用：合法路径写盘、非法路径只提示并保留上一背景；滑块拖动只预览重绘、松手才
+    写配置，避免每帧原子写。
+- **测试**：`cargo test -p tervo-app --bin tervo` → **171 passed**（新增 7 例：opacity
+  clamp/两位小数、背景字段 roundtrip、旧配置默认、路径校验、`~` 展开、alpha 纯函数、
+  默认背景 alpha 与彩色 cell 背景不透明；不启动 GUI）。`scripts/matrix_stats.py` 复核
+  THEME-006 升为 partial 后为 37/99/14/71/7。
+- **限制**：无模糊、无桌面透传（窗口自身仍不透明，所以 opacity 只在与背景图叠加时可见）；
+  无每主题独立背景；背景固定 cover（无 contain/fill 选项）；未真机走查 GPU/软件后端下
+  Slint 的 alpha 混合差异；只有默认背景透明，文字/光标/彩色 cell 背景保持不透明；大图
+  同步解码可能短暂卡顿；图片经 Slint 缓存，同路径换文件需重启或改路径；相对路径按进程
+  cwd 解析。
+- **手工验证建议**（共享显示器约束下本轮未执行）：设置 → Appearance 输入一张 PNG 绝对
+  路径看背景图铺满、文字仍清晰；拖 Opacity 看终端背景透出图片且松手后 config.toml
+  出现 `background_opacity = 0.xx`；输入不存在路径看红字且背景不消失；把路径清空恢复
+  纯色。

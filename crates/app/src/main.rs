@@ -341,6 +341,8 @@ fn tabby_config_path() -> std::path::PathBuf {
 /// 设置搜索索引：(分类下标, 展示名, 关键词)。
 const SETTINGS_CATALOG: &[(i32, &str, &str)] = &[
     (0, "Theme / Color scheme", "theme color scheme appearance dark light"),
+    (0, "Background image", "background image wallpaper picture path 背景 壁纸"),
+    (0, "Background opacity", "background opacity transparency alpha 背景 透明 不透明度"),
     (1, "Font size", "font size text zoom"),
     (1, "Scrollback", "scrollback history lines"),
     (1, "Copy on select", "copy select clipboard"),
@@ -559,6 +561,43 @@ fn push_theme(st: &mut AppState, theme: &ThemeData) {
     redraw_visible(st);
 }
 
+/// 应用用户输入/配置里的背景图路径。空路径 = 关闭；非法路径/解码失败只返回错误，
+/// 不改变当前已生效的背景（设置页据此显示红字并回退到上一张图/纯色）。
+fn apply_background_image(st: &mut AppState, raw: &str) -> Result<(), String> {
+    match config::resolve_background_image(raw) {
+        Ok(None) => {
+            st.ui.set_has_background_image(false);
+            st.ui.set_background_image_error("".into());
+            Ok(())
+        },
+        Ok(Some(path)) => match slint::Image::load_from_path(&path) {
+            Ok(image) => {
+                st.ui.set_background_image(image);
+                st.ui.set_has_background_image(true);
+                st.ui.set_background_image_error("".into());
+                eprintln!("[theme] 背景图 {} 已加载", path.display());
+                Ok(())
+            },
+            Err(_) => Err(format!(
+                "无法解码图片（支持 PNG/JPEG/SVG）：{}",
+                path.display()
+            )),
+        },
+        Err(e) => Err(e),
+    }
+}
+
+/// 启动时把配置里的背景图/透明度下发给 UI；坏路径回退为纯色并在设置页留错误。
+fn init_background(st: &mut AppState) {
+    let raw = st.cfg.background_image.clone();
+    st.ui.set_background_image_path(raw.as_str().into());
+    st.ui.set_background_opacity(st.cfg.background_opacity);
+    if let Err(e) = apply_background_image(st, &raw) {
+        eprintln!("[theme] 背景图不可用，回退纯色背景: {e}");
+        st.ui.set_background_image_error(e.into());
+    }
+}
+
 /// 应用用户选择的主题（"auto" 或具体 id），并写回配置。
 fn apply_theme(st: &mut AppState, selected: &str) {
     let auto = is_auto_theme(selected);
@@ -761,8 +800,14 @@ fn create_pane(
     })?;
 
     let theme = &st.resolved_theme;
-    let mut renderer =
-        Renderer::new(st.fonts.clone(), cols, rows, theme.spec.bg, theme.spec.cursor);
+    let mut renderer = Renderer::new(
+        st.fonts.clone(),
+        cols,
+        rows,
+        theme.spec.bg,
+        theme.spec.cursor,
+        st.cfg.background_opacity,
+    );
     let mut frame = handle.new_frame();
     frame = handle.pull(frame);
     renderer.draw(&frame);
@@ -2430,7 +2475,14 @@ fn apply_font_size(st: &mut AppState) {
     let theme = st.resolved_theme.clone();
     for rt in st.panes.values_mut() {
         let (cols, rows) = rt.grid;
-        rt.renderer = Renderer::new(fonts.clone(), cols, rows, theme.spec.bg, theme.spec.cursor);
+        rt.renderer = Renderer::new(
+            fonts.clone(),
+            cols,
+            rows,
+            theme.spec.bg,
+            theme.spec.cursor,
+            st.cfg.background_opacity,
+        );
     }
     refresh_views(st);
     redraw_visible(st);
@@ -4691,6 +4743,59 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         with_app(|st| apply_theme(st, name.as_str()));
     });
 
+    // Appearance：背景图路径（空 = 关闭）。合法立即生效并写盘；非法显示错误、
+    // 保留上一张已生效背景（回退），不把坏路径写进配置。
+    ui.on_background_image_changed(|path| {
+        with_app(|st| {
+            let raw = path.trim().to_string();
+            if raw.is_empty() {
+                st.cfg.background_image.clear();
+                st.ui.set_background_image(slint::Image::default());
+                st.ui.set_has_background_image(false);
+                st.ui.set_background_image_error("".into());
+                st.cfg.save();
+                eprintln!("[theme] background_image 关闭");
+                return;
+            }
+            match apply_background_image(st, &raw) {
+                Ok(()) => {
+                    st.cfg.background_image = raw.clone();
+                    st.cfg.save();
+                    eprintln!("[theme] background_image={raw}");
+                },
+                Err(e) => {
+                    eprintln!("[theme] 背景图无效，保留当前背景: {e}");
+                    st.ui.set_background_image_error(e.into());
+                },
+            }
+        });
+    });
+
+    // 拖动时只预览（重绘终端帧），松手才写盘，避免每一帧都原子写 config.toml。
+    ui.on_background_opacity_preview(|value| {
+        with_app(|st| {
+            let value = config::clamp_opacity(value);
+            for rt in st.panes.values_mut() {
+                rt.renderer.set_opacity(value);
+            }
+            redraw_visible(st);
+        });
+    });
+
+    ui.on_background_opacity_changed(|value| {
+        with_app(|st| {
+            let value = config::clamp_opacity(value);
+            st.cfg.background_opacity = value;
+            st.ui.set_background_opacity(value);
+            for rt in st.panes.values_mut() {
+                rt.renderer.set_opacity(value);
+            }
+            redraw_visible(st);
+            st.cfg.save();
+            eprintln!("[theme] background_opacity={value:.2}");
+        });
+    });
+
     ui.on_bump_font_size(|delta| {
         with_app(|st| {
             let new = (st.cfg.font_size + delta as f32).clamp(8.0, 32.0);
@@ -4808,6 +4913,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         st.ui.set_cfg_desktop_notifications(st.cfg.desktop_notifications);
         st.ui.set_tabbar_bottom(st.cfg.tabbar_position == "bottom");
         st.ui.set_settings_path(Config::path().display().to_string().as_str().into());
+        init_background(st);
         refresh_hotkeys(st);
         refresh_vault_ui(st);
         let lines: Vec<slint::SharedString> =
