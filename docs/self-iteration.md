@@ -335,3 +335,14 @@ cargo bench -p tervo-core --bench pty_throughput
   提示“下次连接生效”。真机：加 `18080:127.0.0.1:9000` → profiles.toml 写入；删除后清空。
 - **测试工具**：xkey 之前只发 level-0 键，冒号/大写会丢；改为按 keysym level 自动按 Shift。
 
+### 2026-11-05 · TabBar/Tab 右键菜单无法自动关闭
+
+- **现象**：右键 TabBar 或某个 Tab 打开菜单后，只能点菜单项关闭；点外部一直留着。
+- **根因**：两个菜单（`tabmenu-open` / `tabctx-open`）只有菜单项里的 `= false`，
+  没有全窗口的“点外面关闭”层；pane 菜单有 backdrop，Tab 菜单漏了。
+- **修复**：新增覆盖全窗口的透明 TouchArea（放在菜单之前、菜单之下），任意键按下即关闭并
+  调用 `menu-dismissed`；Esc 也会关闭所有菜单（pane/TabBar/per-tab）。
+- **验证**：右键 TabBar → 菜单；点内容区 → `[ui] menu dismissed`，菜单消失；
+  per-tab 菜单同样（.logs/tabmenu-open.png / tabmenu-dismiss.png / tab-ctx-*.png）；
+  Esc 关闭计数也验证。
+
