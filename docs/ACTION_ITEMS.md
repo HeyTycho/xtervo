@@ -79,7 +79,7 @@
 | ACT-029 | 插件管理器 UI + 包扫描/签名/权限 | B11/C13-007/008 | `main.slint`、`main.rs`、新 `plugin_manager.rs` | 扫描 keyword/入口/版本；列表/安装/卸载/启停；签名/权限展示；Open Directory；崩溃诊断；人工+夹具 | L |
 | ACT-030 | 旧插件 Node sidecar + shim + 14 插件 fixtures | C13-009..013；兼容性报告必须按插件名 | 新 `plugin-sidecar/`、`fixtures/`、`docs/COMPATIBILITY_MATRIX.md` | sidecar 启停/超时/崩溃隔离；tabby-core/terminal/local 最小 shim；14 插件逐项等级+fixture；无 UI 插件不启 Node/WebView | L |
 | ACT-031 | 诊断/结构化日志/更新检查 | C14；出问题无法定位 | `main.rs`、新 `diagnostics.rs`、`scripts/` | 模块/session 关联日志；DNS/TCP/SSH 阶段；插件诊断；脱敏单测；版本/更新检查失败提示 | M |
-| ACT-032 | 性能/回归/打包验收 | A5/D2；4 pane RSS/CPU/60fps/高吞吐未验收 | `scripts/`、`docs/phase0-report.md`、`docs/selfcheck-baseline.json` | 4 pane RSS≤220MiB、空闲 CPU≤1%、P95≤50ms、60fps、50MiB/s 有界；CI 门禁；数据写文档 | M |
+| ACT-032 ◐（打包/安装/4-pane RSS/空闲 CPU 已验收；P95、吞吐、长时间稳定性待做） | 性能/回归/打包验收 | A5/D2；4 pane RSS/CPU/60fps/高吞吐未验收 | `scripts/`、`docs/phase0-report.md`、`docs/selfcheck-baseline.json` | 4 pane RSS≤220MiB、空闲 CPU≤1%、P95≤50ms、60fps、50MiB/s 有界；CI 门禁；数据写文档 | M |
 | ACT-033 | 文档/矩阵持续维护 + 验收截图库 | D2 交付项；避免再次出现“文档与代码不符” | 5 份 docs、`.logs/ui-audit/` | 每次功能变更同步矩阵；`implemented` 有测试/截图；上游证据有 SHA/路径；CI 校验矩阵计数 | S |
 
 ## 6. 依赖关系（先做什么，避免返工）
