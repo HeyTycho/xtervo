@@ -104,8 +104,16 @@ impl Askpass {
 
 /// 主机密钥是否已经可以让 ssh 不再提示确认。
 ///
-/// 用 `ssh -G` 取实际生效的 `stricthostkeychecking` / known_hosts 路径，再用
-/// `ssh-keygen -F` 查主机条目。无法判断时返回 `false`（保守：先让用户在终端确认）。
+/// 用 `ssh -G` 取实际生效的 `stricthostkeychecking` / `hostname` / `port` /
+/// `hostkeyalias` / known_hosts 路径，再用 `ssh-keygen -F` 查主机条目。
+/// 无法判断时返回 `false`（保守：先让用户在终端确认）。
+///
+/// 键的选择必须和 OpenSSH 自己的 `known_hosts` 查找一致，否则会出现
+/// “known_hosts 明明有条目、Tervo 仍判定未确认”：
+/// - 默认用 `ssh -G` 的 **`hostname`**（`Host` 别名经 `HostName` 解析后的真实主机），
+///   而不是 Profile 里填的别名；非 22 端口加 `[host]:port` 后缀。
+/// - 配了 `HostKeyAlias` 时，OpenSSH 直接拿 **别名原文** 查表（不附加 `[alias]:port`），
+///   已用真实 `ssh` 验证。
 ///
 /// 已知边界：`KnownHostsCommand` / `Match exec` 等动态配置、或 host 已存在但
 /// 服务器换了密钥类型（known_hosts 有 host 条目、没有对应 key 类型）时，可能误判
@@ -121,7 +129,10 @@ pub fn host_key_known(profile: &Profile) -> bool {
     gargs.extend(args);
     let mut strict = "ask".to_string();
     let mut files: Vec<PathBuf> = Vec::new();
+    // ssh -G 的输出是“实际生效的值”，默认值先按 Profile 填。
     let mut match_host = host.to_string();
+    let mut effective_port = profile.port;
+    let mut host_key_alias: Option<String> = None;
     if let Ok(out) = Command::new(&prog).args(&gargs).output() {
         if out.status.success() {
             for line in String::from_utf8_lossy(&out.stdout).lines() {
@@ -131,10 +142,19 @@ pub fn host_key_known(profile: &Profile) -> bool {
                     files.extend(split_ssh_paths(v));
                 } else if let Some(v) = line.strip_prefix("globalknownhostsfile ") {
                     files.extend(split_ssh_paths(v));
+                } else if let Some(v) = line.strip_prefix("hostname ") {
+                    let effective = v.trim();
+                    if !effective.is_empty() {
+                        match_host = effective.to_string();
+                    }
+                } else if let Some(v) = line.strip_prefix("port ") {
+                    if let Ok(p) = v.trim().parse::<u16>() {
+                        effective_port = p;
+                    }
                 } else if let Some(v) = line.strip_prefix("hostkeyalias ") {
                     let alias = v.trim();
                     if !alias.is_empty() {
-                        match_host = alias.to_string();
+                        host_key_alias = Some(alias.to_string());
                     }
                 }
             }
@@ -151,8 +171,19 @@ pub fn host_key_known(profile: &Profile) -> bool {
             files.push(ssh.join("known_hosts2"));
         }
     }
-    let spec = host_spec(&match_host, profile.port);
-    files.iter().any(|file| ssh_keygen_finds(file, &spec))
+    // HostKeyAlias 是 known_hosts 里原样的键（不套端口）；否则用解析后的 hostname。
+    let spec = match host_key_alias {
+        Some(alias) => alias,
+        None => host_spec(&match_host, effective_port),
+    };
+    let found = files.iter().any(|file| ssh_keygen_finds(file, &spec));
+    if !found {
+        // 只打印查找键与候选文件（不含密码），便于排查 known_hosts 写到了别处。
+        eprintln!(
+            "[askpass] known_hosts 未命中：lookup={spec} strict={strict} files={files:?}"
+        );
+    }
+    found
 }
 
 fn split_ssh_paths(value: &str) -> Vec<PathBuf> {
@@ -279,23 +310,49 @@ mod tests {
         assert!(!dir.exists(), "guard 释放后临时目录应删除");
     }
 
-    #[test]
-    fn host_key_known_uses_effective_known_hosts() {
-        // 依赖系统 ssh/ssh-keygen；缺失时跳过（不把环境依赖变成硬失败）。
-        if Command::new("ssh").arg("-V").output().is_err()
-            || Command::new("ssh-keygen").arg("-V").output().is_err()
-        {
-            return;
-        }
-        let dir = std::env::temp_dir().join(format!("tervo-askpass-test-{}", std::process::id()));
+    /// 测试用公钥；known_hosts 只按主机名匹配，不校验 key 内容。
+    const TEST_KEY: &str =
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKNQBVooZwwKkPSd6IMylF98NDRrI/y3pjbO8e0z53Vy";
+
+    /// 依赖系统 ssh/ssh-keygen；缺失时跳过（不把环境依赖变成硬失败）。
+    fn have_ssh_tools() -> bool {
+        Command::new("ssh").arg("-V").output().is_ok()
+            && Command::new("ssh-keygen").arg("-V").output().is_ok()
+    }
+
+    fn test_dir(label: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("tervo-askpass-test-{}-{label}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn write_known_hosts(path: &std::path::Path, entries: &[&str]) {
+        let body: String = entries.iter().map(|e| format!("{e}\n")).collect();
+        std::fs::write(path, body).unwrap();
+    }
+
+    /// 隔离用户真实 `~/.ssh/config` 的空配置。
+    fn empty_ssh_config(dir: &std::path::Path) -> PathBuf {
+        let path = dir.join("ssh_config");
+        std::fs::write(&path, "").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        path
+    }
+
+    #[test]
+    fn host_key_known_uses_effective_known_hosts() {
+        if !have_ssh_tools() {
+            return;
+        }
+        let dir = test_dir("effective");
         let kh = dir.join("known_hosts");
-        std::fs::write(
-            &kh,
-            "example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKNQBVooZwwKkPSd6IMylF98NDRrI/y3pjbO8e0z53Vy\n",
-        )
-        .unwrap();
+        write_known_hosts(&kh, &[&format!("example.com {TEST_KEY}")]);
         let base = Profile {
             kind: "ssh".into(),
             host: "example.com".into(),
@@ -324,6 +381,143 @@ mod tests {
             ..base
         };
         assert!(host_key_known(&auto), "accept-new 不会弹确认，可直接 askpass");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 非 22 端口：known_hosts 键是 `[host]:port`，与 ssh 实际查找一致。
+    #[test]
+    fn host_key_known_matches_nonstandard_port_entry() {
+        if !have_ssh_tools() {
+            return;
+        }
+        let dir = test_dir("port-2222");
+        let kh = dir.join("known_hosts");
+        write_known_hosts(&kh, &[&format!("[127.0.0.1]:2222 {TEST_KEY}")]);
+        let matches = Profile {
+            kind: "ssh".into(),
+            host: "127.0.0.1".into(),
+            port: 2222,
+            user: "test".into(),
+            auth: "password".into(),
+            extra_args: vec![
+                "-o".into(),
+                format!("UserKnownHostsFile={}", kh.display()),
+                "-o".into(),
+                "StrictHostKeyChecking=ask".into(),
+            ],
+            ..Profile::default()
+        };
+        assert!(host_key_known(&matches), "[host]:2222 条目应命中");
+        let wrong_port = Profile { port: 2223, ..matches.clone() };
+        assert!(!host_key_known(&wrong_port), "端口不同不能误判为已知");
+        let wrong_host = Profile { host: "127.0.0.2".into(), ..matches };
+        assert!(!host_key_known(&wrong_host), "主机不同不能误判为已知");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ssh_keygen_matches_bracketed_port_spec() {
+        if !have_ssh_tools() {
+            return;
+        }
+        let dir = test_dir("keygen-port");
+        let kh = dir.join("known_hosts");
+        write_known_hosts(&kh, &[&format!("[127.0.0.1]:2222 {TEST_KEY}")]);
+        assert!(
+            ssh_keygen_finds(&kh, &host_spec("127.0.0.1", 2222)),
+            "ssh-keygen -F 应命中 [127.0.0.1]:2222"
+        );
+        assert!(!ssh_keygen_finds(&kh, &host_spec("127.0.0.1", 22)), "端口必须参与匹配");
+        assert!(!ssh_keygen_finds(&kh, &host_spec("127.0.0.2", 2222)), "主机必须参与匹配");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `Host alias` + `HostName 127.0.0.1`：ssh 用解析后的主机名查 known_hosts，
+    /// 不能用 Profile 里的别名（旧实现会误判“未确认”）。
+    #[test]
+    fn host_key_known_uses_resolved_hostname_from_ssh_config() {
+        if !have_ssh_tools() {
+            return;
+        }
+        let dir = test_dir("hostname-alias");
+        let kh = dir.join("known_hosts");
+        write_known_hosts(&kh, &[&format!("[127.0.0.1]:2222 {TEST_KEY}")]);
+        let config = dir.join("ssh_config");
+        std::fs::write(
+            &config,
+            format!(
+                "Host vaultssh-alias\n  HostName 127.0.0.1\n  Port 2222\n  User test\n  \
+                 UserKnownHostsFile {}\n  StrictHostKeyChecking ask\n",
+                kh.display()
+            ),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let profile = Profile {
+            kind: "ssh".into(),
+            host: "vaultssh-alias".into(),
+            port: 2222,
+            user: "test".into(),
+            auth: "password".into(),
+            extra_args: vec!["-F".into(), config.display().to_string()],
+            ..Profile::default()
+        };
+        // 先确认 ssh 自己确实把 HostName 解析成了 127.0.0.1（测试前提）。
+        let out = Command::new("ssh")
+            .args(["-G", "-F"])
+            .arg(&config)
+            .arg("vaultssh-alias")
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        assert!(
+            String::from_utf8_lossy(&out.stdout).contains("hostname 127.0.0.1\n"),
+            "ssh -G 未解析 HostName：{}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        assert!(
+            host_key_known(&profile),
+            "known_hosts 键是解析后的 127.0.0.1，不应拿别名查表"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `HostKeyAlias=myalias`：known_hosts 键是别名原文，不附加 `[alias]:port`。
+    #[test]
+    fn host_key_known_uses_host_key_alias_verbatim() {
+        if !have_ssh_tools() {
+            return;
+        }
+        let dir = test_dir("host-key-alias");
+        let kh = dir.join("known_hosts");
+        write_known_hosts(&kh, &[&format!("myalias {TEST_KEY}")]);
+        let empty = empty_ssh_config(&dir);
+        let profile = Profile {
+            kind: "ssh".into(),
+            host: "127.0.0.1".into(),
+            port: 2222,
+            user: "test".into(),
+            auth: "password".into(),
+            extra_args: vec![
+                "-F".into(),
+                empty.display().to_string(),
+                "-o".into(),
+                "HostKeyAlias=myalias".into(),
+                "-o".into(),
+                format!("UserKnownHostsFile={}", kh.display()),
+                "-o".into(),
+                "StrictHostKeyChecking=ask".into(),
+            ],
+            ..Profile::default()
+        };
+        assert!(
+            host_key_known(&profile),
+            "HostKeyAlias 应使用别名原文查 known_hosts（不含端口后缀）"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -39,8 +39,13 @@ base64、大小上限（4 MiB）做校验，未知字段/缺少字段一律拒�
 
 1. Profile `auth=password` 且勾选保存：保存时 `vault.set(profile.id, password)`。
 2. 打开该 Profile：若 Vault 已锁定 → 设置页跳到 Vault 并提示先解锁；解密后取出密码。
-3. **先确认 host key**：用 `ssh -G` 取实际生效的 `stricthostkeychecking` 与
-   known_hosts 路径，再用 `ssh-keygen -F` 查主机条目。
+3. **先确认 host key**：用 `ssh -G` 取实际生效的 `stricthostkeychecking`、`hostname`、
+   `port`、`hostkeyalias` 与 known_hosts 路径，再用 `ssh-keygen -F` 查主机条目。
+   查找键必须与 OpenSSH 自己的 known_hosts 匹配一致：
+   - 默认用 `ssh -G` 的 **`hostname`**（`Host alias` 经 `HostName` 解析后的真实主机），
+     非 22 端口写成 `[host]:port`；直接用 Profile 里的别名会误判“未确认”。
+   - 配置了 `HostKeyAlias` 时，OpenSSH 使用**别名原文**查表（不附加 `[alias]:port`，
+     已用真实 ssh 验证）。
    - 未确认（默认 `ask` 且查不到）：本次**不用 askpass**，交给 ssh 在终端显示指纹并让用户
      手输一次密码；确认后 host key 进入 known_hosts，下次连接才自动填充。
    - `StrictHostKeyChecking=no/accept-new`：不会弹确认，可直接用 askpass。
@@ -93,6 +98,9 @@ base64、大小上限（4 MiB）做校验，未知字段/缺少字段一律拒�
    `umask` 影响）。
 10. 主机密钥校验仍完全交给系统 ssh（known_hosts），Tervo 没有额外 UI/告警。首次连接
     不会自动信任新 key：本次回退到终端确认；askpass 对 host key prompt 回答 `no`。
+    判定时按 `ssh -G` 解析后的 `hostname`/`port`（或 `HostKeyAlias` 原文）查 known_hosts，
+    与 ssh 的匹配规则一致；查不到仍返回“未知”，不会因为解析失败而放行。未命中时日志会打印
+    查找键与候选 known_hosts 路径（不含密码），便于排查条目写到了别的位置。
     known_hosts 判定是 best-effort：`KnownHostsCommand` 等动态配置、或 known_hosts 只有
     host 条目但服务器换了 key 类型时可能误判；最坏结果是快速失败，不会自动接受或死循环。
 11. askpass 脚本只识别含 `password` / `密码` 的 prompt。其它语言的密码提示（或
@@ -103,7 +111,7 @@ base64、大小上限（4 MiB）做校验，未知字段/缺少字段一律拒�
 
 ```bash
 export CARGO_HOME=/home/yt/AIworkspace/rusttabbyterminal/.cargo
-export CARGO_TARGET_DIR=/home/yt/AIworkspace/rusttabbyterminal/target
+export CARGO_TARGET_DIR=$PWD/target
 cargo test -p tervo-app --bin tervo
 ```
 
@@ -117,8 +125,48 @@ cargo test -p tervo-app --bin tervo
 - `profile::tests::profile_serialization_has_no_plaintext_password`
 - `askpass::tests::*`（密码 prompt 输出、非密码 prompt 回答 no、force 环境、Debug 脱敏、
   0700 权限、真实 `ssh -G`/`ssh-keygen -F` known_hosts 判定）
+- `askpass::tests::host_key_known_matches_nonstandard_port_entry`
+  （Profile 级 `[127.0.0.1]:2222` 命中，端口/主机不同必须 miss）
+- `askpass::tests::ssh_keygen_matches_bracketed_port_spec`（`[127.0.0.1]:2222` 端口键）
+- `askpass::tests::host_key_known_uses_resolved_hostname_from_ssh_config`
+  （`Host alias` + `HostName 127.0.0.1`：用解析后的主机名查表）
+- `askpass::tests::host_key_known_uses_host_key_alias_verbatim`
+  （`HostKeyAlias=myalias`：按别名原文，不附加端口）
 
 所有 Vault 测试使用 `std::env::temp_dir()` 下独立目录，不读写真实 `$HOME`。
+
+无 GUI 的密码自动登录探针（不启动 Tervo）：
+
+```bash
+d=$(mktemp -d)
+ssh-keygen -t ed25519 -f "$d/host_ed25519" -N "" -q
+python3 scripts/ssh_test_server.py --host-key "$d/host_ed25519" --port 2222 --password s3cret &
+printf '[127.0.0.1]:2222 %s\n' "$(cut -d' ' -f1,2 "$d/host_ed25519.pub")" > "$d/known_hosts"
+
+# 与 Askpass::new 相同的脚本（只回答密码 prompt，其它回答 no）
+cat > "$d/askpass.sh" <<'EOF'
+#!/bin/sh
+case "$1" in
+  *[Pp]assword*|*密码*) printf '%s\n' "$TERVO_ASKPASS_SECRET" ;;
+  *) printf 'no\n' ;;
+esac
+EOF
+chmod 700 "$d/askpass.sh"
+
+# 已知 host：应直接打印服务端 banner（SSH-TEST-OK），不需要手输密码。
+# timeout 退出是因为测试服务不会主动关闭 shell，不是认证失败。
+SSH_ASKPASS="$d/askpass.sh" SSH_ASKPASS_REQUIRE=force TERVO_ASKPASS_SECRET=s3cret \
+  timeout 10 ssh -o PubkeyAuthentication=no -o PreferredAuthentications=password \
+    -o UserKnownHostsFile="$d/known_hosts" -o StrictHostKeyChecking=yes \
+    -p 2222 -l test 127.0.0.1 </dev/null
+
+# 未知 host（空 known_hosts）：即使强制 askpass 也只回答一次 no，快速
+# "Host key verification failed."（rc=255），不会把密码当 yes/密码重试。
+: > "$d/unknown_known_hosts"
+SSH_ASKPASS="$d/askpass.sh" SSH_ASKPASS_REQUIRE=force TERVO_ASKPASS_SECRET=s3cret \
+  timeout 10 ssh -o PubkeyAuthentication=no -o PreferredAuthentications=password \
+    -o UserKnownHostsFile="$d/unknown_known_hosts" -p 2222 -l test 127.0.0.1 </dev/null
+```
 
 ## 6. 手工验证（GUI）
 
