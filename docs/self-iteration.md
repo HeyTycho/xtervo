@@ -357,3 +357,18 @@ cargo bench -p tervo-core --bench pty_throughput
 - **注意**：`restore_session` 改为复用 `restore_tab_snapshot`，避免两套恢复逻辑漂移。
 - 命令表新增 `tab.reopen-closed`（ctrl+shift+t），app 用例 95 全绿。
 
+### 2026-11-05 · 双击选行 + 右键粘贴 + 广播输入 + 方向键焦点
+
+- **双击选行**：Slint 1.18 的 TouchArea 没有 double-clicked，改为 Rust 侧 400ms/同格检测；
+  core 新增 `Ctrl::SelectLine`（行尾空白裁剪 + 强制全量重绘），core 测试 `select_line_selects_single_visible_line`；
+  真机双击第 1/2 行 → `double-click select line=1/2`，剪贴板 `bbb`/`ccc`，单击不复制。
+- **右键粘贴**：`right_click_paste` 配置 + 设置页 Terminal 开关；开启后 pane 右键聚焦并粘贴，
+  divider 右键仍开菜单；真机 `[ui] right-click paste` + `paste bytes=3`，cat 回显。
+- **方向键焦点**：`focus_pane_dir` 按方向投影取最近 pane；xkey 补 Up/Down/Left/Right 注入；
+  真机 3 pane 切换日志正确。
+- **广播输入**：右键菜单 Broadcast ON/OFF，键入发给当前 Tab 所有 pane；真机两 pane 同时执行
+  `echo BCAST` 并显示输出。限制：无危险命令确认，状态全局。
+- **X11 窗口定位**：`find_own_window` 改为在 PID 匹配窗口里取“可见且面积最大”，避免辅助窗口
+  （1x1）抢图标；测试环境里曾因此把图标写到短命窗口，自动化按日志 id 会 BadWindow。
+- 清理 `main` 的 unreachable 警告与 xconn 未用 import；app 用例 95 全绿。
+

@@ -167,6 +167,8 @@ enum Ctrl {
     SelectionClear,
     /// 选中当前视口全部内容。
     SelectAll,
+    /// 选中视口内某一行（双击选行）。
+    SelectLine(i32),
     /// 清屏并清回滚（终端“Clear”语义）。
     ClearScreen,
     /// 鼠标上报：终端启用 1000/1002/1003 时转成转义序列写进 PTY。
@@ -255,6 +257,11 @@ impl PaneHandle {
     /// 选中当前视口（不含回滚历史）。
     pub fn select_all(&self) {
         let _ = self.ctrl_tx.send(Ctrl::SelectAll);
+    }
+
+    /// 选中视口内第 `line` 行（双击选行；`line` 是视口坐标，0 = 顶行）。
+    pub fn select_line(&self, line: i32) {
+        let _ = self.ctrl_tx.send(Ctrl::SelectLine(line));
     }
 
     /// 清屏 + 清回滚；下一次拉帧强制整屏。
@@ -730,6 +737,37 @@ impl Actor {
                 }
                 true
             },
+            Ctrl::SelectLine(line) => {
+                let rows = self.term.screen_lines();
+                let cols = self.term.columns();
+                if line < 0 || line as usize >= rows || cols == 0 {
+                    return true;
+                }
+                let offset = self.term.grid().display_offset() as i32;
+                let grid_line = Line(line - offset);
+                // 行尾空白不纳入选区：从后往前找最后一个非空格。
+                let mut end_col = 0usize;
+                {
+                    let row = &self.term.grid()[grid_line];
+                    for c in 0..cols {
+                        if row[Column(c)].c != ' ' {
+                            end_col = c;
+                        }
+                    }
+                }
+                let start = Point::new(grid_line, Column(0));
+                let end = Point::new(grid_line, Column(end_col));
+                let mut sel = Selection::new(SelectionType::Simple, start, Side::Left);
+                if start != end {
+                    sel.update(end, Side::Right);
+                }
+                self.term.selection = Some(sel);
+                self.sel_anchor = Some(start);
+                // 选区高亮要立刻重绘
+                self.force_full = true;
+                self.wake.notify();
+                true
+            },
             Ctrl::SelectAll => {
                 let rows = self.term.screen_lines();
                 let cols = self.term.columns();
@@ -746,6 +784,7 @@ impl Actor {
                 }
                 self.term.selection = Some(sel);
                 self.sel_anchor = Some(start);
+                self.force_full = true;
                 self.wake.notify();
                 true
             },

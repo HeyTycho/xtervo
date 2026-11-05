@@ -468,3 +468,32 @@ fn clear_screen_wipes_content() {
     let frame = handle.pull(frame);
     assert!(!frame_text(&frame).contains("hello"), "清屏后不应再有旧内容");
 }
+
+#[test]
+fn select_line_selects_single_visible_line() {
+    let handle = spawn(PaneConfig {
+        cols: 30,
+        rows: 6,
+        scrollback: 100,
+        shell: Some("/bin/sh".to_string()),
+        args: vec!["-c".to_string(), "printf 'aaa\\nbbb\\n'; sleep 3".to_string()],
+        ..PaneConfig::default()
+    })
+    .expect("spawn");
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut frame = handle.new_frame();
+    loop {
+        frame = handle.pull(frame);
+        if frame_text(&frame).contains("bbb") {
+            break;
+        }
+        assert!(Instant::now() < deadline, "没有等到输出");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    handle.select_line(0);
+    let text = handle.copy_selection().expect("选行应有文本");
+    let line = text.trim_end();
+    assert_eq!(line, "aaa", "只应选中第一行: {text:?}");
+}
