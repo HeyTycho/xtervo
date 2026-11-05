@@ -267,7 +267,8 @@ fn theme_choices(reg: &ThemeRegistry) -> ModelRc<ThemeChoice> {
 fn settings_height_for(count: usize, win_h: f32) -> f32 {
     // 主题区最多显示 4 行，更多靠 Flickable 滚动，面板高度不再继续增长。
     let rows = count.div_ceil(4).clamp(1, 4);
-    let h = 210.0 + rows as f32 * 30.0;
+    // +92：设置面板新增两个开关行（Copy on select / Confirm close）+ 底部提示不被挤出面板
+    let h = 210.0 + rows as f32 * 30.0 + 92.0;
     h.min((win_h - 40.0).max(280.0))
 }
 
@@ -1925,6 +1926,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if !drag.moved {
                 return;
             }
+            // 关闭 Copy on select 时只保留高亮，不写剪贴板
+            if !st.cfg.copy_on_select {
+                return;
+            }
             let text = st
                 .panes
                 .get(&drag.pane)
@@ -2148,6 +2153,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         with_app(|st| st.ui.set_rename_open(false));
     });
 
+    ui.on_settings_toggled(|open| {
+        eprintln!("[ui] settings open={open}");
+    });
+
+    ui.on_toggle_copy_on_select(|| {
+        with_app(|st| {
+            st.cfg.copy_on_select = !st.cfg.copy_on_select;
+            st.ui.set_cfg_copy_on_select(st.cfg.copy_on_select);
+            st.cfg.save();
+            eprintln!("[ui] copy_on_select={}", st.cfg.copy_on_select);
+        });
+    });
+
+    ui.on_toggle_confirm_close(|| {
+        with_app(|st| {
+            st.cfg.confirm_close = !st.cfg.confirm_close;
+            st.ui.set_cfg_confirm_close(st.cfg.confirm_close);
+            st.cfg.save();
+            eprintln!("[ui] confirm_close={}", st.cfg.confirm_close);
+        });
+    });
+
     ui.on_palette_query_changed(|_q| {
         with_app(|st| refresh_palette(st));
     });
@@ -2335,6 +2362,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ---- OSC 标题轮询 ----
     let poll_timer = slint::Timer::default();
     poll_timer.start(slint::TimerMode::Repeated, Duration::from_millis(400), poll_events);
+
+    // 设置开关的初始状态
+    with_app(|st| {
+        st.ui.set_cfg_copy_on_select(st.cfg.copy_on_select);
+        st.ui.set_cfg_confirm_close(st.cfg.confirm_close);
+    });
 
     // ---- 首个标签页 / 会话恢复 ----
     let restored = with_app(|st| {

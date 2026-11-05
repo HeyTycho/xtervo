@@ -154,7 +154,7 @@
 | UI-SET-001 | Application：应用级行为、启动与默认行为 | U-AUDIT / 需求 B7 | 无实现 | not_started | 无 | 未实现 | 无应用级设置页 |
 | UI-SET-002 | Appearance：外观、窗口风格、图标/字体、背景效果 | U-AUDIT / 需求 B7 | main.slint 设置面板仅有主题选择；主题含 UI chrome 配色 | partial | 人工：12 套主题 + Auto 可切换；无窗口风格/背景效果 | 主题外观可用 | 无窗口风格/图标/字体/背景/透明度设置 |
 | UI-SET-003 | Profiles & Connections：默认 Profile、列表、连接行为 | U-AUDIT / 需求 B7 | 无实现 | not_started | 无 | 未实现 | 无 Profile 设置页 |
-| UI-SET-004 | Terminal：行为、字体、滚动、复制粘贴、鼠标等 | U-AUDIT / 需求 B7 | main.slint 字号 ±、回滚 ±；config.rs font_size/scrollback | partial | 人工：字号即时生效、回滚对新 pane 生效（ui-shell §4） | 字号/回滚可调 | 无复制粘贴/鼠标/滚动行为/字体族设置 |
+| UI-SET-004 | Terminal：行为、字体、滚动、复制粘贴、鼠标等 | U-AUDIT / 需求 B7 | main.slint 字号 ±、回滚 ±、Copy on select / Confirm close 开关（ToggleRow）；config.rs font_size/scrollback/copy_on_select/confirm_close | partial | 真机：开设置点开关 → `[ui] copy_on_select=false` 并写入配置；关闭后拖选 0 条剪贴板日志、开启后 1 条（复制 6 字节） | 字号/回滚/复制-关闭行为可调 | 无字体族/行距/鼠标/滚动行为设置；无设置搜索 |
 | UI-SET-005 | Color Scheme：选择、预览、导入/导出 | U-THEME / 需求 B7 | main.slint 主题网格 + Flickable；themes.rs ThemeRegistry 6 格式导入；无预览/导出 | partial | themes.rs 12 例（含 6 格式导入）；人工 .logs/imported_settings4.png | 选择/导入可用；无预览/导出 | 无独立预览；导出未实现；热重载未实现 |
 | UI-SET-006 | Config Sync：原版或插件提供时的兼容策略 | U-AUDIT / 需求 B7 | 无实现 | not_started | 无 | 未实现 | 无同步机制/策略 |
 | UI-SET-007 | Hotkeys：列表、搜索、录入、修改、清除、冲突提示、多段键 | U-AUDIT / 需求 B7 | 无实现 | not_started | 无 | 未实现 | 快捷键硬编码；无配置/录入/冲突检测 |
