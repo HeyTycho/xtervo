@@ -899,7 +899,7 @@ export component MainWindow inherits Window {
         x: Math.min(root.tabmenu-x, root.width - 180px);
         y: root.tabmenu-y;
         width: 170px;
-        height: 216px;
+        height: 246px;
         background: Palette.colors.raise;
         border-radius: 8px;
         border-width: 1px;
@@ -936,6 +936,10 @@ export component MainWindow inherits Window {
             MenuRow {
                 label: root.tabbar-bottom ? "Tab Bar: Bottom" : "Tab Bar: Top";
                 picked => { root.tabmenu-open = false; root.tabbar-menu-action(6); }
+            }
+            MenuRow {
+                label: "Reattach Background Session";
+                picked => { root.tabmenu-open = false; root.tabbar-menu-action(7); }
             }
             MenuRow {
                 label: "Close Window";
