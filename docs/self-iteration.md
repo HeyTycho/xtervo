@@ -386,3 +386,14 @@ cargo bench -p tervo-core --bench pty_throughput
 - **排查过程**：测试环境里有旧的 2560×1413 Tervo 窗口（宿主 PID 968901，非本会话）盖住屏幕
   导致点击被吞；改为按 `_NET_WM_PID` 选本进程窗口并 `xwin` 移到空白区，不杀用户窗口。
 
+### 2026-11-05 · “+” 下拉（Tabby 式新建 Tab 菜单）
+
+- TabBar 的 “+” 不再直接建默认 Tab，而是打开下拉：`New Tab（默认 shell）` +
+  已保存 Profile（按 kind 标注 Local/SSH/Serial/Telnet）+ `Manage Profiles…`。
+- 菜单锚定 “+” 的 `absolute-position`，点外部/Esc 关闭；选中后自动关菜单。
+- 真机（2 个 local Profile）：菜单项正确；点 local-a → `[ui] newtab pick=1`，
+  新 Tab 标题 `local-a`、shell 正常。截图 .logs/newtab-menu.png / newtab-profile-tab.png。
+- 说明：按用户要求只做 Tabby 主线的功能；此前试做的 `~/.ssh/config` 导入已撤回
+  （不纳入本项目主线）。
+- 限制：没有搜索/键盘上下选择；Profile 很多时菜单会裁剪（后续可加 Flickable）。
+
