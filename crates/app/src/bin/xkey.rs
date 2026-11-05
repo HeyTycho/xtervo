@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! 调试工具：XTest 注入按键。
 //!
-//! 用法：`xkey <text> [--ctrl] [--shift]`
+//! 用法：`xkey <text> [--ctrl] [--shift] [--alt]`
 //! 仅支持键盘映射 level 0 上的字符（小写字母、数字、常见符号）。
 
 use x11rb::connection::Connection;
@@ -45,6 +45,7 @@ fn main() {
     }
     let ctrl = args.iter().any(|a| a == "--ctrl");
     let shift = args.iter().any(|a| a == "--shift");
+    let alt = args.iter().any(|a| a == "--alt");
 
     let (conn, screen_num) = xconn::connect().expect("connect X");
     let setup = conn.setup();
@@ -80,6 +81,12 @@ fn main() {
                 (min + (i / per) as u8, level > 0)
             })
     };
+    let alt_kc = reply
+        .keysyms
+        .iter()
+        .enumerate()
+        .find(|(i, s)| i % per == 0 && **s == 0xffe9) // Alt_L
+        .map(|(i, _)| min + (i / per) as u8);
     let ctrl_kc = reply
         .keysyms
         .iter()
@@ -107,6 +114,11 @@ fn main() {
     }
     if shift {
         if let Some(kc) = shift_kc {
+            press(kc);
+        }
+    }
+    if alt {
+        if let Some(kc) = alt_kc {
             press(kc);
         }
     }
@@ -141,6 +153,11 @@ fn main() {
     }
     if shift {
         if let Some(kc) = shift_kc {
+            release(kc);
+        }
+    }
+    if alt {
+        if let Some(kc) = alt_kc {
             release(kc);
         }
     }
