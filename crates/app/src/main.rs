@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
+mod activity;
 mod commands;
 mod config;
 mod glyph;
@@ -27,8 +28,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tervo_core::{
-    spawn, CoreEvent, Frame, Modifiers, MouseAction, MouseButton, MouseEvent, PaneConfig,
-    PaneHandle, Theme, UiColors,
+    spawn, CoreEvent, Frame, Modifiers, MouseAction, MouseButton, MouseEvent, Notification,
+    PaneConfig, PaneHandle, ProgressState, Theme, UiColors,
 };
 use slint::{Model, ModelRc, VecModel};
 use x11rb::connection::Connection;
@@ -57,6 +58,10 @@ struct PaneRuntime {
     grid: (usize, usize),
     rect: Rect,
     title: String,
+    /// 进度 / 未读通知 / 完成标记，rebuild_tabs 时按 Tab 聚合。
+    activity: activity::PaneActivity,
+    /// 最近一条通知；切到该 Tab 时清空。
+    notification: Option<Notification>,
 }
 
 struct Drag {
@@ -608,6 +613,8 @@ fn create_pane(
         grid: (cols, rows),
         rect: Rect::new(0.0, 0.0, 0.0, 0.0),
         title: shell_name(&st.opts),
+        activity: activity::PaneActivity::default(),
+        notification: None,
     })
 }
 
@@ -1654,7 +1661,22 @@ fn set_active_tab_inner(st: &mut AppState, index: usize) {
         return;
     }
     st.ws.active = index;
+    // 获得焦点的 Tab：清除未读通知点 / 完成标记（Tabby 的 unread 语义）。
+    let ids = st.ws.tabs[index].panes();
+    let mut cleared = 0usize;
+    for id in ids {
+        let Some(rt) = st.panes.get_mut(&id) else { continue };
+        if rt.activity.attention || rt.activity.completed || rt.notification.is_some() {
+            rt.activity.attention = false;
+            rt.activity.completed = false;
+            rt.notification = None;
+            cleared += 1;
+        }
+    }
     eprintln!("[ws] active tab={index}");
+    if cleared > 0 {
+        eprintln!("[ui] tab focus tab={index} clear attention/notifications={cleared}");
+    }
     refresh_views(st);
     rebuild_tabs(st);
     redraw_visible(st);
@@ -1809,7 +1831,21 @@ fn rebuild_tabs(st: &mut AppState) {
         .tabs
         .iter()
         .enumerate()
-        .map(|(i, t)| TabView { title: t.title.clone().into(), active: i == active })
+        .map(|(i, t)| {
+            // 一个 Tab 可能有多个 pane：错误优先、进行中次之，通知/完成取并集。
+            let agg = activity::aggregate(
+                t.panes().iter().filter_map(|id| st.panes.get(id)).map(|rt| &rt.activity),
+            );
+            TabView {
+                title: t.title.clone().into(),
+                active: i == active,
+                progress_state: agg.progress.state as i32,
+                progress_ratio: activity::progress_ratio(agg.progress),
+                progress_label: activity::progress_label(agg.progress).into(),
+                attention: agg.attention,
+                completed: agg.completed,
+            }
+        })
         .collect();
     st.tab_model.set_vec(tabs);
 }
@@ -2484,35 +2520,141 @@ fn handle_input(
     }
 }
 
+/// 消费一个通知/Bell：非活动 Tab 置未读点并发桌面通知（若开启）。
+/// 返回是否改变了 Tab 上的未读标记。
+#[allow(clippy::too_many_arguments)]
+fn apply_notification(
+    rt: &mut PaneRuntime,
+    note: Notification,
+    id: PaneId,
+    tab: Option<usize>,
+    tab_title: &str,
+    is_active: bool,
+    desktop_notifications: bool,
+    is_bell: bool,
+) -> bool {
+    let (title, body) = activity::notification_content(tab_title, &note);
+    eprintln!(
+        "[ui] notification pane={id} tab={tab:?} active={is_active} bell={is_bell} \
+         title={title:?} body={body:?}"
+    );
+    rt.notification = Some(note);
+    if is_active {
+        // 当前正在看的 Tab：不产生未读点，也不弹桌面通知。
+        return false;
+    }
+    rt.activity.attention = true;
+    if desktop_notifications {
+        send_desktop_notification(&title, &body);
+    }
+    true
+}
+
+/// 桌面通知：参数直传 notify-send，不经过 shell；未安装/无 DBus 时静默失败。
+fn send_desktop_notification(title: &str, body: &str) {
+    let title = title.to_owned();
+    let body = body.to_owned();
+    // 通知可能很频繁，绝不能在 UI 线程里等 notify-send 退出。
+    let _ = std::thread::Builder::new().name("notify-send".into()).spawn(move || {
+        let _ = std::process::Command::new("notify-send")
+            .arg("--app-name=Tervo")
+            .arg("--")
+            .arg(&title)
+            .arg(&body)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    });
+}
+
 fn poll_events() {
     with_app(|st| {
-        let mut changed = false;
+        let active = st.ws.active;
+        let desktop_notifications = st.cfg.desktop_notifications;
+        let tab_titles: Vec<String> = st.ws.tabs.iter().map(|t| t.title.clone()).collect();
+        let pane_tab: HashMap<PaneId, usize> = st
+            .ws
+            .tabs
+            .iter()
+            .enumerate()
+            .flat_map(|(i, tab)| tab.panes().into_iter().map(move |id| (id, i)))
+            .collect();
+
+        let mut titles_dirty = false;
+        let mut tabs_dirty = false;
         let ids: Vec<PaneId> = st.panes.keys().copied().collect();
         for id in ids {
             let Some(rt) = st.panes.get_mut(&id) else { continue };
             let mut events = Vec::new();
             rt.handle.drain_events(&mut events);
+            let tab = pane_tab.get(&id).copied();
+            let tab_title =
+                tab.and_then(|i| tab_titles.get(i)).map(String::as_str).unwrap_or("Tervo");
+            let is_active = tab == Some(active);
             for ev in events {
-                if let CoreEvent::Title(t) = ev {
-                    if !t.is_empty() && rt.title != t {
-                        rt.title = t;
-                        changed = true;
-                    }
+                match ev {
+                    CoreEvent::Title(t) => {
+                        if !t.is_empty() && rt.title != t {
+                            rt.title = t;
+                            titles_dirty = true;
+                        }
+                    },
+                    CoreEvent::Progress(progress) => {
+                        let had_progress = rt.activity.progress.state != ProgressState::Clear;
+                        rt.activity.progress = progress;
+                        // 进度从“有”变为清除 = 完成；活动 Tab 不放完成标记，避免打扰。
+                        rt.activity.completed = progress.state == ProgressState::Clear
+                            && had_progress
+                            && !is_active;
+                        tabs_dirty = true;
+                        eprintln!(
+                            "[ui] tab progress pane={id} tab={tab:?} state={:?} percent={:?}",
+                            progress.state, progress.percent
+                        );
+                    },
+                    CoreEvent::Notification(note) => {
+                        tabs_dirty |= apply_notification(
+                            rt,
+                            note,
+                            id,
+                            tab,
+                            tab_title,
+                            is_active,
+                            desktop_notifications,
+                            false,
+                        );
+                    },
+                    CoreEvent::Bell => {
+                        tabs_dirty |= apply_notification(
+                            rt,
+                            activity::bell_notification(),
+                            id,
+                            tab,
+                            tab_title,
+                            is_active,
+                            desktop_notifications,
+                            true,
+                        );
+                    },
+                    CoreEvent::Cwd(cwd) => {
+                        eprintln!("[ui] cwd pane={id} tab={tab:?} path={cwd:?}");
+                    },
+                    CoreEvent::ResetTitle | CoreEvent::CursorBlinkChange | CoreEvent::Exited => {},
                 }
             }
         }
-        if changed {
-            let active = st.ws.active;
-            for (i, tab) in st.ws.tabs.iter_mut().enumerate() {
-                if i != active {
-                    continue;
-                }
+        if titles_dirty {
+            // 保持既有行为：只把活动 Tab 首个 pane 的标题写回 Tab。
+            if let Some(tab) = st.ws.tabs.get_mut(active) {
                 if let Some(first) = tab.panes().first() {
                     if let Some(rt) = st.panes.get(first) {
                         tab.title = rt.title.clone();
                     }
                 }
             }
+        }
+        if titles_dirty || tabs_dirty {
             rebuild_tabs(st);
         }
     });
@@ -3567,6 +3709,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     });
 
+    ui.on_toggle_desktop_notifications(|| {
+        with_app(|st| {
+            st.cfg.desktop_notifications = !st.cfg.desktop_notifications;
+            st.ui.set_cfg_desktop_notifications(st.cfg.desktop_notifications);
+            st.cfg.save();
+            eprintln!("[ui] desktop_notifications={}", st.cfg.desktop_notifications);
+        });
+    });
+
     ui.on_settings_open_path(|| {
         with_app(|_st| {
             let path = Config::path();
@@ -3879,6 +4030,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         st.ui.set_cfg_copy_on_select(st.cfg.copy_on_select);
         st.ui.set_cfg_confirm_close(st.cfg.confirm_close);
         st.ui.set_cfg_confirm_paste(st.cfg.confirm_multiline_paste);
+        st.ui.set_cfg_desktop_notifications(st.cfg.desktop_notifications);
         st.ui.set_tabbar_bottom(st.cfg.tabbar_position == "bottom");
         st.ui.set_settings_path(Config::path().display().to_string().as_str().into());
         let (summary, rows) = hotkey_items(&st.commands);
