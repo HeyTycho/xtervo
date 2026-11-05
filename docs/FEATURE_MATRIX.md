@@ -133,7 +133,7 @@
 | UI-TERM-001 | 点击终端获得输入焦点；切换不丢输入状态 | U-AUDIT / 需求 B6 | main.slint pane-hit down → `ime.focus()` + `pane-clicked`；main.rs `focus_pane` | implemented | 人工：点击不同 pane 输入；IME 候选跟随；ui-shell §3 | 已有记录 | 焦点视觉弱；无 focus in/out 上报 |
 | UI-TERM-002 | 鼠标拖选；跨行、反向、滚动自动扩展 | U-AUDIT / 需求 B6 | pane.rs `SelectionStart/Extend`+`sel_anchor`；main.rs `on_pane_mouse_down/move/up` | partial | `selection_copy_returns_text`、`backward_selection_includes_first_column`；人工 XTest 反向拖选 | 拖选/跨行/反向已有记录 | 无滚动自动扩展；无双击选词/三击选行/矩形选择 |
 | UI-TERM-003 | 复制、粘贴、全选、清屏、查找、滚到顶/底 | U-AUDIT / 需求 B6 | arboard；Ctrl+Shift+C/V；`copy_current_selection`/`paste_into_focused`；Ctrl+F；`on_pane_scrolled` | partial | 人工 Ctrl+Shift+C/V、Ctrl+F；`search_finds_and_scrolls` | 复制/粘贴/查找/滚轮可用 | 无全选/清屏/滚到顶底命令或菜单项 |
-| UI-TERM-004 | 右键菜单：复制/粘贴/查找/清屏/Profile/拆分等（按上游） | U-AUDIT（完整菜单待核） | main.slint 右键菜单 5 项；main.rs `on_menu_action`；分隔线/边缘右键经 `nearest_pane` 归到最近 pane；菜单点外自动关闭 | partial | 单测 `nearest_pane_handles_gaps_and_edges`；真机：分隔线右键 `[ui] right click pane=1 at 270,200`、点外 `[ui] menu dismissed` | Copy/Paste/Split Right/Split Down/Close Pane 可用；分隔线/缝隙右键不再被吞 | 无 Find/Clear/Profile；上游完整项目待核；鼠标上报模式下右键仍按设计转发给 PTY |
+| UI-TERM-004 | 右键菜单：复制/粘贴/查找/清屏/Profile/拆分等（按上游） | U-AUDIT（完整菜单待核） | main.slint 右键菜单 8 项（Copy/Paste/Split Right/Split Down/Close Pane/Find/Select All/Clear）；`on_menu_action` 分发 0–7 | partial | 真机：Select All → Copy 得到 `alpha\nbravo\ncharlie`；Clear 后同路径得到空白（已过滤） | 复制/粘贴/分屏/关闭/查找/全选/清屏均可用 | 无 Profile/缩放菜单项；上游完整项目待核；鼠标上报模式下右键仍按设计转发给 PTY |
 | UI-TERM-005 | 可配置右键粘贴（PuTTY 风格） | U-AUDIT / 需求 B6 | 无实现 | not_started | 无 | 未实现 | 无右键粘贴设置；右键固定弹菜单 |
 | UI-TERM-006 | 可配置 Copy-on-Select | U-AUDIT / 需求 B6 | main.rs `on_pane_mouse_up` 拖选结束自动 `set_clipboard`（无开关） | partial | 人工：拖选即复制；设置中无开关 | 始终开启 copy-on-select | 无法关闭；无设置项/配置字段 |
 | UI-TERM-007 | 多行粘贴确认/警告；记住用户选择 | U-AUDIT / 需求 B6 | main.rs `paste_into_focused` 直接发送规范化文本，无确认 | not_started | 无 | 未实现 | 多行/危险内容直接进 PTY；无“记住选择” |
@@ -364,7 +364,7 @@
 | KEY-002 | 自定义快捷键，支持单键与 multi-chord | U-AUDIT / 需求 C9 | `commands.rs::Shortcut::parse` 支持 1–2 段、ctrl/alt/shift/meta；无配置读写/录制 UI | partial | `shortcut_parse_and_format_roundtrip`；无自定义绑定测试 | 解析/格式化数据层已有记录 | 无用户配置/录制/持久化；快捷键仍取内置默认 |
 | KEY-003 | 冲突检测、重复快捷键处理、平台保留键处理 | U-AUDIT / 需求 C9 | `Registry::conflicts` + `bindings`；内置绑定断言无冲突；无平台保留键表 | partial | `conflict_detection`、`builtin_registry_is_consistent` | 冲突检测已有记录；无 UI/保留键处理 | 无冲突提示 UI；未处理桌面环境保留键；重复绑定策略仅报告 |
 | KEY-004 | Profile 绑定快捷键 | U-AUDIT / 需求 C9 | 无实现 | not_started | 无 | 未实现 | 无 Profile/快捷键 |
-| KEY-005 | 命令面板可搜索并执行命令 | U-AUDIT / 需求 C9 | `Registry::search` + main.rs Palette UI（Ctrl+Shift+P / TabBar 菜单）、上下选择、Enter/点击执行、`run_command` 分发 19 条 | implemented | 单测 `fuzzy_search_prefers_title_prefix`；真机点击执行 `tab.new` 成功 | 2026-11-05 实测通过 | `terminal.clear`/`terminal.select-all` 仍是占位；键盘路径未在沙箱验证 |
+| KEY-005 | 命令面板可搜索并执行命令 | U-AUDIT / 需求 C9 | `Registry::search` + Palette UI；`run_command` 分发 21/21 条（terminal.clear/select-all 已接 core） | implemented | 单测 `fuzzy_search_prefers_title_prefix`；真机点击执行 `tab.new` 成功；菜单 Select All/Clear 生效 | 2026-11-05 实测通过 | 键盘路径未在沙箱验证（注入不可用） |
 | KEY-006 | 插件可注册命令、快捷键、命令上下文 | U-AUDIT / 需求 C9 | 无实现 | not_started | 无 | 未实现 | 无插件 API |
 | KEY-007 | 快捷键配置可迁移并提供默认配置 | U-AUDIT / 需求 C9 | `builtin()` 提供默认快捷键；`Shortcut` 可序列化；无配置项/迁移逻辑 | partial | `builtin_registry_is_consistent`；无迁移测试 | 默认绑定已有记录；无迁移 | 无用户自定义配置/版本迁移；默认键未与 UI 分发统一 |
 

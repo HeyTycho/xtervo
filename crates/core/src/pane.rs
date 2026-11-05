@@ -31,7 +31,7 @@ use alacritty_terminal::index::{Direction, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::search::RegexSearch;
 use alacritty_terminal::term::{Config as TermConfig, Term, TermDamage, TermMode};
-use alacritty_terminal::vte::ansi::{Processor, Rgb};
+use alacritty_terminal::vte::ansi::{ClearMode, Handler, Processor, Rgb};
 use crossbeam_channel::{bounded, Receiver, Sender};
 use parking_lot::RwLock;
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtyPair, PtySize};
@@ -164,6 +164,10 @@ enum Ctrl {
     SelectionStart { line: u16, col: u16 },
     SelectionExtend { line: u16, col: u16 },
     SelectionClear,
+    /// 选中当前视口全部内容。
+    SelectAll,
+    /// 清屏并清回滚（终端“Clear”语义）。
+    ClearScreen,
     /// 鼠标上报：终端启用 1000/1002/1003 时转成转义序列写进 PTY。
     Mouse(MouseEvent),
     CopySelection(Sender<Option<String>>),
@@ -245,6 +249,16 @@ impl PaneHandle {
 
     pub fn selection_clear(&self) {
         let _ = self.ctrl_tx.send(Ctrl::SelectionClear);
+    }
+
+    /// 选中当前视口（不含回滚历史）。
+    pub fn select_all(&self) {
+        let _ = self.ctrl_tx.send(Ctrl::SelectAll);
+    }
+
+    /// 清屏 + 清回滚；下一次拉帧强制整屏。
+    pub fn clear_screen(&self) {
+        let _ = self.ctrl_tx.send(Ctrl::ClearScreen);
     }
 
     /// 取当前选区文本（阻塞等 actor 回复）。
@@ -713,6 +727,35 @@ impl Actor {
                 if let Some(bytes) = mouse::encode(ev, *self.term.mode()) {
                     self.write_input(&bytes);
                 }
+                true
+            },
+            Ctrl::SelectAll => {
+                let rows = self.term.screen_lines();
+                let cols = self.term.columns();
+                if rows == 0 || cols == 0 {
+                    return true;
+                }
+                // 视口坐标 → 网格坐标（滚动历史可见时 display_offset != 0）
+                let offset = self.term.grid().display_offset() as i32;
+                let start = Point::new(Line(-offset), Column(0));
+                let end = Point::new(Line(rows as i32 - 1 - offset), Column(cols - 1));
+                let mut sel = Selection::new(SelectionType::Simple, start, Side::Left);
+                if start != end {
+                    sel.update(end, Side::Right);
+                }
+                self.term.selection = Some(sel);
+                self.sel_anchor = Some(start);
+                self.wake.notify();
+                true
+            },
+            Ctrl::ClearScreen => {
+                // All = 清屏，Saved = 清回滚；两刀下去等价于终端里的 Clear
+                self.term.clear_screen(ClearMode::All);
+                self.term.clear_screen(ClearMode::Saved);
+                self.term.selection = None;
+                self.sel_anchor = None;
+                self.force_full = true;
+                self.wake.notify();
                 true
             },
             Ctrl::CopySelection(reply) => {
