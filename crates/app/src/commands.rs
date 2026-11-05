@@ -45,6 +45,8 @@ pub enum Category {
     View,
     Session,
     Settings,
+    /// 外部进程插件声明的命令（ID 由 `plugin.<name>.<id>` 命名空间隔离）。
+    Plugin,
 }
 
 impl Category {
@@ -57,6 +59,7 @@ impl Category {
             Self::View => "View",
             Self::Session => "Session",
             Self::Settings => "Settings",
+            Self::Plugin => "Plugins",
         }
     }
 }
@@ -272,6 +275,19 @@ impl Registry {
             }
             let bound = Chord::parse(&self.override_for(command.id, overrides)?.chord).ok()?;
             (bound != *chord && bound.is_bindable()).then_some(command.id)
+        })
+    }
+
+    /// 插件命令的默认快捷键：仅在输入层的内置硬编码快捷键都未命中时调用。
+    ///
+    /// 只认 `plugin.` 命名空间，内置命令永远不会从这里触发；插件键冲突时先注册者优先。
+    pub fn plugin_default_for_chord(&self, chord: &Chord) -> Option<&'static str> {
+        self.commands.iter().find_map(|command| {
+            if !command.id.starts_with("plugin.") {
+                return None;
+            }
+            let shortcut = command.default_shortcut.and_then(|s| Shortcut::parse(s).ok())?;
+            (shortcut.chords.len() == 1 && shortcut.chords[0] == *chord).then_some(command.id)
         })
     }
 
