@@ -278,6 +278,23 @@ impl Workspace {
         self.tabs.get_mut(self.active)
     }
 
+    /// 把第 `from` 个 Tab 移到 `to` 位置；越界或相同返回 false。
+    pub fn move_tab(&mut self, from: usize, to: usize) -> bool {
+        if from == to || from >= self.tabs.len() || to >= self.tabs.len() {
+            return false;
+        }
+        let tab = self.tabs.remove(from);
+        self.tabs.insert(to, tab);
+        if self.active == from {
+            self.active = to;
+        } else if from < self.active && self.active <= to {
+            self.active -= 1;
+        } else if to <= self.active && self.active < from {
+            self.active += 1;
+        }
+        true
+    }
+
     /// 只保留第 `index` 个 Tab；返回被丢弃 Tab 的 pane id（调用方负责关 PTY）。
     pub fn keep_only(&mut self, index: usize) -> Vec<PaneId> {
         if index >= self.tabs.len() {
@@ -426,6 +443,30 @@ mod tests {
         // 路径不存在
         assert!(!Node::leaf(1).set_ratio(&[], 0.3));
         assert!(!node.set_ratio(&[true], 0.3));
+    }
+
+    #[test]
+    fn move_tab_reorders_and_tracks_active() {
+        let mut ws = Workspace::new();
+        let ids: Vec<PaneId> = (0..4).map(|_| ws.alloc_id()).collect();
+        for (i, id) in ids.iter().enumerate() {
+            ws.tabs.push(Tab::single(*id, format!("t{i}")));
+        }
+        ws.active = 2;
+
+        // 0 → 3：其它 Tab 前移，active 跟着前移
+        assert!(ws.move_tab(0, 3));
+        assert_eq!(ws.tabs.iter().map(|t| t.title.as_str()).collect::<Vec<_>>(), vec!["t1", "t2", "t3", "t0"]);
+        assert_eq!(ws.active, 1);
+
+        // 3 → 0：后面的往后挪，active 回到 2
+        assert!(ws.move_tab(3, 0));
+        assert_eq!(ws.active, 2);
+
+        // 拖自己/越界不动
+        assert!(!ws.move_tab(1, 1));
+        assert!(!ws.move_tab(0, 9));
+        assert_eq!(ws.tabs.len(), 4);
     }
 
     #[test]

@@ -901,9 +901,20 @@ fn set_active_tab_inner(st: &mut AppState, index: usize) {
         return;
     }
     st.ws.active = index;
+    eprintln!("[ws] active tab={index}");
     refresh_views(st);
     rebuild_tabs(st);
     redraw_visible(st);
+}
+
+/// 拖拽落点：按平均槽位（padding-left 32px）把指针 x 换算成目标下标。
+fn drag_target(drag_x: f32, strip_w: f32, n: usize) -> usize {
+    if n == 0 {
+        return 0;
+    }
+    let slot = ((strip_w - 32.0) / n as f32).max(1.0);
+    let idx = ((drag_x - 32.0) / slot).floor().max(0.0) as usize;
+    idx.min(n - 1)
 }
 
 /// 相对切 Tab（循环）。`len > 0` 由调用方保证。
@@ -1981,6 +1992,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         with_app(|st| st.ui.set_rename_open(false));
     });
 
+    ui.on_tab_reorder(|from, drag_x, strip_w| {
+        with_app(|st| {
+            let n = st.ws.tabs.len();
+            if n < 2 || from < 0 {
+                return;
+            }
+            let from = from as usize;
+            if from >= n {
+                return;
+            }
+            let target = drag_target(drag_x, strip_w, n);
+            if target != from && st.ws.move_tab(from, target) {
+                eprintln!("[ws] reorder tab {from} → {target}");
+                rebuild_tabs(st);
+            }
+        });
+    });
+
     ui.on_tab_context(|index, x| {
         with_app(|st| {
             st.ui.set_tabctx_index(index);
@@ -2444,6 +2473,20 @@ mod tests {
         assert!(!is_modifier_artifact("\u{1b}", false, false, false)); // Esc
         assert!(!is_modifier_artifact("\n", true, false, false)); // Ctrl+Enter
         assert!(!is_modifier_artifact("你", false, false, false));
+    }
+
+    #[test]
+    fn drag_target_maps_pointer_to_slot() {
+        // 3 个 Tab：strip 宽 = padding 32 + 3*140 + 2*4
+        let strip = 32.0 + 3.0 * 140.0 + 2.0 * 4.0;
+        assert_eq!(drag_target(32.0, strip, 3), 0);
+        assert_eq!(drag_target(32.0 + 150.0, strip, 3), 1);
+        assert_eq!(drag_target(32.0 + 300.0, strip, 3), 2);
+        // 超出两端要夹住
+        assert_eq!(drag_target(-100.0, strip, 3), 0);
+        assert_eq!(drag_target(5000.0, strip, 3), 2);
+        // 单 Tab 永远 0
+        assert_eq!(drag_target(100.0, 100.0, 1), 0);
     }
 
     #[test]

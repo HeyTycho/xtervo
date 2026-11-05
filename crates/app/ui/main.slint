@@ -221,6 +221,11 @@ export component MainWindow inherits Window {
     callback tab-rename(int);
     callback rename-committed(int, string);
     callback rename-cancelled();
+    // Tab 拖拽排序：按下记起点，抬起按 x 落位
+    property <int> drag-tab: -1;
+    property <length> drag-x: 0px;
+    property <length> drag-start: 0px;
+    callback tab-reorder(int, length, length);
     // 单个 Tab 的右键菜单（窗口坐标）
     in-out property <bool> tabctx-open: false;
     in-out property <length> tabctx-x: 0px;
@@ -376,6 +381,26 @@ export component MainWindow inherits Window {
                             root.tab-rename(i);
                         }
                         pointer-event(event) => {
+                            // 左键拖动：记起点，抬起时把落点交给 Rust 算
+                            if (event.kind == PointerEventKind.down && event.button == PointerEventButton.left) {
+                                root.drag-tab = i;
+                                root.drag-x = self.mouse-x + parent.x;
+                                root.drag-start = root.drag-x;
+                                return EventResult.reject;   // 不抢按下，否则 clicked/双击会被吞
+                            }
+                            if (event.kind == PointerEventKind.move && root.drag-tab == i) {
+                                root.drag-x = self.mouse-x + parent.x;
+                                return EventResult.accept;
+                            }
+                            if (event.kind == PointerEventKind.up && root.drag-tab == i) {
+                                root.drag-tab = -1;
+                                // 只有真的拖动过才接管；否则放行给 clicked / double-clicked
+                                if (Math.abs(root.drag-x - root.drag-start) > 6px) {
+                                    root.tab-reorder(i, root.drag-x, tab-strip.preferred-width);
+                                    return EventResult.accept;
+                                }
+                                return EventResult.reject;
+                            }
                             if (event.button == PointerEventButton.right && event.kind == PointerEventKind.up) {
                                 // 菜单锚在 Tab 上沿：窗口 x ≈ tabbar 左内边距 + tab 偏移
                                 root.tab-context(i, 32px + parent.x);
