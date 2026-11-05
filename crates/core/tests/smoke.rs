@@ -369,3 +369,43 @@ fn backspace_erases_last_char() {
         std::thread::sleep(Duration::from_millis(5));
     }
 }
+
+#[test]
+fn osc_color_queries_get_replies() {
+    // 子进程问「调色板 1 号色 / 前景色」，终端必须按当前主题回 rgb: 串。
+    let dir = std::env::temp_dir().join(format!("rt-color-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let out = dir.join("reply.bin");
+    let _ = std::fs::remove_file(&out);
+
+    // 必须先 raw：查询应答里没有换行，规范模式下 cat 永远读不到。
+    let script = format!(
+        // 不能裸用 `timeout`：它会给 dd 新建进程组，非前台组读终端会被 SIGTTIN 挂起。
+        "stty raw -echo; (sleep 0.3; printf '\\033]4;1;?\\007'; sleep 0.2; printf '\\033]10;?\\007') & timeout --foreground 2 dd bs=1 count=64 of={} 2>/dev/null",
+        out.display()
+    );
+    let handle = spawn(PaneConfig {
+        cols: 40,
+        rows: 5,
+        scrollback: 10,
+        shell: Some("/bin/sh".to_string()),
+        args: vec!["-c".to_string(), script],
+        ..PaneConfig::default()
+    })
+    .expect("spawn");
+
+    // 两条应答是分两次到的（dd 会一直读到 64 字节或超时），所以按内容等齐再断言。
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut text = String::new();
+    while Instant::now() < deadline {
+        text = String::from_utf8_lossy(&std::fs::read(&out).unwrap_or_default()).into_owned();
+        if text.contains("]4;1;rgb:") && text.contains("]10;rgb:") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(text.contains("]4;1;rgb:"), "OSC 4 查询没答复: {text:?}");
+    assert!(text.contains("]10;rgb:"), "OSC 10 查询没答复: {text:?}");
+    drop(handle);
+    let _ = std::fs::remove_dir_all(&dir);
+}

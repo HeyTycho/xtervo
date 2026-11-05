@@ -623,6 +623,19 @@ impl Palette {
         }
     }
 
+    /// 按 xterm 颜色序号取色：0–255 索引色，256 前景、257 背景、258 光标色。
+    /// 用于 OSC 4/10/11/12 的查询应答。
+    #[inline]
+    pub fn at(&self, index: usize) -> Option<u32> {
+        match index {
+            0..=255 => Some(self.table[index]),
+            256 => Some(self.fg),
+            257 => Some(self.bg),
+            258 => Some(self.cursor),
+            _ => None,
+        }
+    }
+
     #[inline]
     pub fn table(&self) -> &[u32; COUNT] {
         &self.table
