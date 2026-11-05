@@ -209,6 +209,12 @@ export component MainWindow inherits Window {
     in-out property <bool> tabmenu-open: false;
     in-out property <length> tabmenu-x: 0px;
     in-out property <length> tabmenu-y: 32px;
+    // 单个 Tab 的右键菜单（窗口坐标）
+    in-out property <bool> tabctx-open: false;
+    in-out property <length> tabctx-x: 0px;
+    in-out property <int> tabctx-index: -1;
+    callback tab-context(int, length);
+    callback tab-menu-action(int, int);
     /// 绑定到 Window 内置的 always-on-top
     property <bool> pinned: false;
     callback bump-font-size(int);
@@ -334,7 +340,18 @@ export component MainWindow inherits Window {
                     }
 
                     tab-hit := TouchArea {
-                        clicked => { root.tab-clicked(i); }
+                        clicked => {
+                            root.tabctx-open = false;
+                            root.tab-clicked(i);
+                        }
+                        pointer-event(event) => {
+                            if (event.button == PointerEventButton.right && event.kind == PointerEventKind.up) {
+                                // 菜单锚在 Tab 上沿：窗口 x ≈ tabbar 左内边距 + tab 偏移
+                                root.tab-context(i, 32px + parent.x);
+                                return EventResult.accept;
+                            }
+                            EventResult.reject
+                        }
                     }
 
                     close-hit := TouchArea {
@@ -762,6 +779,38 @@ export component MainWindow inherits Window {
             MenuRow {
                 label: "Close Window";
                 picked => { root.tabmenu-open = false; root.tabbar-menu-action(3); }
+            }
+        }
+    }
+
+    if root.tabctx-open : Rectangle {
+        x: Math.max(0px, Math.min(root.tabctx-x, root.width - 180px));
+        y: root.tabbar-height;
+        width: 170px;
+        height: 96px;
+        background: Palette.colors.raise;
+        border-radius: 8px;
+        border-width: 1px;
+        border-color: Palette.colors.hover;
+        drop-shadow-blur: 18px;
+        drop-shadow-offset-y: 6px;
+        drop-shadow-color: #000000a8;
+
+        VerticalLayout {
+            padding: 4px;
+            spacing: 2px;
+
+            MenuRow {
+                label: "Close";
+                picked => { root.tabctx-open = false; root.tab-menu-action(root.tabctx-index, 0); }
+            }
+            MenuRow {
+                label: "Close Others";
+                picked => { root.tabctx-open = false; root.tab-menu-action(root.tabctx-index, 1); }
+            }
+            MenuRow {
+                label: "Duplicate";
+                picked => { root.tabctx-open = false; root.tab-menu-action(root.tabctx-index, 2); }
             }
         }
     }
