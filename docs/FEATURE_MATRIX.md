@@ -16,11 +16,11 @@
 
 | 范围 | 条目 | implemented | partial | in_progress | needs_verification | not_started | unsupported | 加权完成度 |
 |---|---|---|---|---|---|---|---|---|
-| B 部分（UI） | 110 | 25 | 53 | 0 | 5 | 26 | 1 | 46.8% |
-| C 部分（底层） | 118 | 12 | 38 | 0 | 9 | 53 | 6 | 26.3% |
-| B+C 合计 | 228 | 37 | 91 | 0 | 14 | 79 | 7 | 36.2% |
+| B 部分（UI） | 110 | 25 | 56 | 0 | 5 | 23 | 1 | 48.2% |
+| C 部分（底层） | 118 | 12 | 42 | 0 | 9 | 49 | 6 | 28.0% |
+| B+C 合计 | 228 | 37 | 98 | 0 | 14 | 72 | 7 | 37.7% |
 
-> 加权公式：`(implemented + 0.5×partial + 0.5×in_progress) / 条目总数`。`needs_verification / not_started / unsupported` 记 0。该数字是“功能条目覆盖度”，不是代码行数或工时完成度。本轮补 Vault 时用 `scripts/matrix_stats.py` 逐行复核并刷新了上表（旧审计快照数字已过期；脚本额外把 needs_verification 记 0.25，故其 weighted 输出略高）。2026-11-05 Profiles UX（搜索/默认/复制）合入后刷新了 B5 的 13 条；上表已按当前全部 228 行重新用 `scripts/matrix_stats.py` 核对（脚本会额外把 needs_verification 记 0.25，输出 37.7%）。
+> 加权公式：`(implemented + 0.5×partial + 0.5×in_progress) / 条目总数`。`needs_verification / not_started / unsupported` 记 0。该数字是“功能条目覆盖度”，不是代码行数或工时完成度。本轮补 Vault 时用 `scripts/matrix_stats.py` 逐行复核并刷新了上表（旧审计快照数字已过期；脚本额外把 needs_verification 记 0.25，故其 weighted 输出略高）。2026-11-05 Profiles UX/插件 API/Tabby 导入/Vault SSH 修复合入后刷新；脚本 `matrix_stats.py` 当前输出 37/98/14/72/7、weighted 39.3%（脚本把 needs_verification 记 0.25，表中按原公式只计 implemented+0.5×partial = 37.7%）。
 
 ## 2. 审计发现：现有实现/文档与需求不符（至少 3 条）
 

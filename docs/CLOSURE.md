@@ -1,4 +1,7 @@
 # 功能矩阵闭环报告
+> **更新提示（2026-11-05）**：下文是旧审计快照；当前主条目统计为 37 implemented / 98 partial /
+> 14 needs_verification / 72 not_started / 7 unsupported，app 164 / core 80 / conformance 11，
+> selfcheck PASS。请以 `docs/FEATURE_MATRIX.md` 与 `.logs/selfcheck/` 为准。
 
 > 数据来源：`docs/FEATURE_MATRIX.md`（228 条主条目 + 6 条附录）。
 > 统计脚本：`python3 scripts/matrix_stats.py`（同时检查 `implemented` 行是否带证据）。
