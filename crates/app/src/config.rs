@@ -13,6 +13,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::commands::{Chord, HotkeyOverride};
+
 /// 当前配置结构版本。改动字段语义/结构时递增，并在 [`Config::migrate`] 里补迁移步骤。
 pub const SCHEMA_VERSION: u32 = 1;
 
@@ -58,6 +60,10 @@ pub struct Config {
     pub quake_height: f32,
     /// 关闭 Tab/Pane 时对会话的处理："end" 结束进程 | "background" 保留后台可重连。
     pub close_action: String,
+    /// 用户自定义快捷键：`[[hotkeys]]` 表，命令 ID + 规范小写 chord。
+    /// 空 = 全部使用命令表默认绑定；旧配置没有该字段时按空处理。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hotkeys: Vec<HotkeyOverride>,
     /// 本版本不认识的键，原样保留（前向兼容）。
     #[serde(flatten)]
     pub extra: toml::Table,
@@ -87,6 +93,7 @@ impl Default for Config {
             quake_width: 0.7,
             quake_height: 0.5,
             close_action: "end".to_string(),
+            hotkeys: Vec::new(),
             extra: toml::Table::new(),
         }
     }
@@ -130,6 +137,12 @@ impl Config {
                 return Self::default();
             },
         };
+        // 手写配置也统一成规范小写 chord；非法项原样保留（分发时忽略）。
+        for over in &mut cfg.hotkeys {
+            if let Ok(chord) = Chord::parse(&over.chord) {
+                over.chord = chord.canonical();
+            }
+        }
 
         if cfg.version < SCHEMA_VERSION {
             let from = cfg.version;
@@ -324,5 +337,81 @@ mod tests {
         cfg.save_to(&path);
         assert!(path.exists());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn hotkeys_default_to_empty_and_old_config_loads() {
+        assert!(Config::default().hotkeys.is_empty());
+        // 旧配置没有 hotkeys 字段：serde(default) 兼容，不能解析失败。
+        let dir = tmpdir("hotkeys-old");
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "version = 1\ntheme = \"nord\"\n").unwrap();
+        let cfg = Config::load_from(&path);
+        assert_eq!(cfg.theme, "nord");
+        assert!(cfg.hotkeys.is_empty());
+
+        // 手写的大写 chord 读入时归一成小写规范格式。
+        std::fs::write(
+            &path,
+            "version = 1\n[[hotkeys]]\ncommand = \"tab.new\"\nchord = \"Ctrl + Shift + N\"\n",
+        )
+        .unwrap();
+        let cfg = Config::load_from(&path);
+        assert_eq!(cfg.hotkeys[0].chord, "ctrl+shift+n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn hotkeys_roundtrip_and_are_written_as_tables() {
+        let dir = tmpdir("hotkeys-roundtrip");
+        let path = dir.join("config.toml");
+        let cfg = Config {
+            hotkeys: vec![
+                HotkeyOverride { command: "tab.new".into(), chord: "ctrl+shift+n".into() },
+                HotkeyOverride { command: "terminal.paste".into(), chord: "ctrl+shift+v".into() },
+            ],
+            ..Config::default()
+        };
+        cfg.save_to(&path);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("[[hotkeys]]"), "{text}");
+        assert!(text.contains("command = \"tab.new\""), "{text}");
+        assert!(text.contains("chord = \"ctrl+shift+n\""), "{text}");
+
+        let back = Config::load_from(&path);
+        assert_eq!(back.hotkeys, cfg.hotkeys);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn hotkeys_and_unknown_keys_roundtrip_together() {
+        let dir = tmpdir("hotkeys-extra");
+        let path = dir.join("config.toml");
+        std::fs::write(
+            &path,
+            "version = 1\ntheme = \"nord\"\nfuture_option = 42\n\n[[hotkeys]]\ncommand = \"tab.new\"\nchord = \"ctrl+shift+n\"\n\n[future_table]\nx = \"y\"\n",
+        )
+        .unwrap();
+
+        let cfg = Config::load_from(&path);
+        assert_eq!(cfg.hotkeys.len(), 1);
+        assert_eq!(cfg.hotkeys[0].command, "tab.new");
+        assert_eq!(cfg.extra.get("future_option").and_then(|v| v.as_integer()), Some(42));
+
+        cfg.save_to(&path);
+        let again = Config::load_from(&path);
+        assert_eq!(again.hotkeys, cfg.hotkeys);
+        assert_eq!(again.extra.get("future_option").and_then(|v| v.as_integer()), Some(42));
+        assert_eq!(
+            again.extra.get("future_table").and_then(|v| v.as_table()),
+            cfg.extra.get("future_table").and_then(|v| v.as_table())
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn empty_hotkeys_are_omitted_from_toml() {
+        let text = toml::to_string_pretty(&Config::default()).unwrap();
+        assert!(!text.contains("hotkeys"), "{text}");
     }
 }

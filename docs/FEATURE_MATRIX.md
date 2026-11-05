@@ -158,7 +158,7 @@
 | UI-SET-004 | Terminal：行为、字体、滚动、复制粘贴、鼠标等 | U-AUDIT / 需求 B7 | main.slint 字号 ±、回滚 ±、Copy on select / Confirm close 开关（ToggleRow）；config.rs font_size/scrollback/copy_on_select/confirm_close | partial | 真机：开设置点开关 → `[ui] copy_on_select=false` 并写入配置；关闭后拖选 0 条剪贴板日志、开启后 1 条（复制 6 字节） | 字号/回滚/复制-关闭行为可调 | 无字体族/行距/鼠标/滚动行为设置；无设置搜索 |
 | UI-SET-005 | Color Scheme：选择、预览、导入/导出 | U-THEME / 需求 B7 | main.slint 主题网格 + Flickable；themes.rs ThemeRegistry 6 格式导入；无预览/导出 | partial | themes.rs 12 例（含 6 格式导入）；人工 .logs/imported_settings4.png | 选择/导入可用；无预览/导出 | 无独立预览；导出未实现；热重载未实现 |
 | UI-SET-006 | Config Sync：原版或插件提供时的兼容策略 | U-AUDIT / 需求 B7 | 无实现 | not_started | 无 | 未实现 | 无同步机制/策略 |
-| UI-SET-007 | Hotkeys：列表、搜索、录入、修改、清除、冲突提示、多段键 | U-AUDIT / 需求 B7 | 设置面板 Hotkeys 分类：命令表默认绑定列表（分类/标题/组合键）、冲突数、多段键 Display 支持 | partial | 单测 `hotkey_page_lists_bindings_and_conflicts`；真机截图 `.logs/settings-hotkeys.png`（22 commands · 16 bound · 0 conflicts） | 只读列表 + 冲突提示可用 | 无搜索/录入/修改/清除；未持久化自定义键；无键盘捕获（沙箱无法验证） |
+| UI-SET-007 | Hotkeys：列表、搜索、录入、修改、清除、冲突提示、多段键 | U-AUDIT / 需求 B7 | 设置 → Hotkeys：按分类/标题列出命令标题 + 生效 chord + CUSTOM 标记；Edit 录制下一组合键（`Ctrl/Shift/Alt`，Esc 取消，Backspace/Delete 恢复默认），写入 `config.hotkeys` 并即时保存；单项 Reset / Reset All；冲突拒绝保存并在行内标红 + 右上角冲突数；命令表 24 条，`Chord` 解析/规范化/冲突/生效绑定在 commands.rs | partial | 单测 `hotkey_page_lists_bindings_and_conflicts`、`chord_parse_canonical_and_invalid_input`、`override_conflict_detection_and_validation`、config hotkeys roundtrip/兼容 4 例；未启动 GUI（沙箱与其他 agent 共用显示器，约束只跑 cargo test/build） | 列表/录制/修改/清除/持久化/冲突提示可用；新建/修改后无需重启，分发立即生效 | 无 Hotkeys 搜索；多段键（Ctrl+K Ctrl+T）未支持录制/override；录制仅 Ctrl/Shift/Alt（key 回调无 Meta）；小窗口下固定列宽可能被裁剪 |
 | UI-SET-008 | Plugins：搜索、可用/已装、安装、卸载、启用、禁用、更新、详情、权限、目录 | U-AUDIT / 需求 B7 | 无实现 | not_started | 无 | 未实现 | 无插件系统/管理器 UI |
 | UI-SET-009 | SSH：Host Key、Agent 类型、X11 Display 等 | U-AUDIT / 需求 B7 | 无实现 | not_started | 无 | 未实现 | 无 SSH/设置页 |
 | UI-SET-010 | Vault：加密凭据容器、主密码、锁定/解锁、凭据管理 | U-AUDIT / 需求 B7 | 无实现 | not_started | 无 | 未实现 | 无 Vault/Keyring/凭据模型 |
@@ -357,17 +357,17 @@
 
 ### C9. Hotkeys / Commands（7 条）
 
-状态：implemented=1，partial=4，not_started=2。
+状态：implemented=2，partial=3，not_started=2。
 
 | ID | Feature | Upstream evidence | Rust implementation | Status | Test | Result | Limitation |
 |---|---|---|---|---|---|---|---|
-| KEY-001 | 所有核心操作都有可配置命令 ID | U-AUDIT / 需求 C9 | `commands.rs::builtin` 22 条稳定 ID + 默认快捷键；键盘分发：Ctrl+T/W/F、Ctrl+Shift+C/V/P/E/D/W、Ctrl+Tab/Shift+Tab、Ctrl+1–9、F11、F2；命令面板 21 条 | partial | 真机（XMODIFIERS=@im=none）：Ctrl+T、Ctrl+Shift+P/E/D、Ctrl+Tab、Ctrl+Shift+Tab、Ctrl+1/Ctrl+3、F11、F2 全部通过且无 panic；键入 `echo ACCEPT-OK` 正常 | 常用快捷键与命令面板可用（含本轮修复的 F11/F2/Tab 切换二次借用崩溃） | 分发仍硬编码，未从 Registry 统一；缩放（Ctrl+±/0）与部分命令无键盘入口；无用户改键 |
-| KEY-002 | 自定义快捷键，支持单键与 multi-chord | U-AUDIT / 需求 C9 | `commands.rs::Shortcut::parse` 支持 1–2 段、ctrl/alt/shift/meta；无配置读写/录制 UI | partial | `shortcut_parse_and_format_roundtrip`；无自定义绑定测试 | 解析/格式化数据层已有记录 | 无用户配置/录制/持久化；快捷键仍取内置默认 |
-| KEY-003 | 冲突检测、重复快捷键处理、平台保留键处理 | U-AUDIT / 需求 C9 | `Registry::conflicts` + `bindings`；内置绑定断言无冲突；无平台保留键表 | partial | `conflict_detection`、`builtin_registry_is_consistent` | 冲突检测已有记录；无 UI/保留键处理 | 无冲突提示 UI；未处理桌面环境保留键；重复绑定策略仅报告 |
+| KEY-001 | 所有核心操作都有可配置命令 ID | U-AUDIT / 需求 C9 | `commands.rs::builtin` 24 条稳定 ID + 默认快捷键；`handle_input` 在硬编码默认键前先按当前按键构造 chord 并匹配用户 override（只认表内命令），命中后 `run_command`；改键后旧默认键被吞掉；无 override 时硬编码路径行为不变 | partial | `chord_parse_canonical_and_invalid_input`、`dispatch_helpers_ignore_unknown_and_plain_keys`、`stale_default_is_suppressed_after_rebind`、`hotkey_page_lists_bindings_and_conflicts`；真机快捷键历史记录见上一版本 | 24 条命令均可用 override 改键并立即生效；默认路径无回归（逻辑走查 + 单测） | F2/Ctrl+1–9 等入口仍硬编码、无命令 ID；分发尚未完全由 Registry 驱动；平台保留键未处理 |
+| KEY-002 | 自定义快捷键，支持单键与 multi-chord | U-AUDIT / 需求 C9 | `config.hotkeys: Vec<HotkeyOverride>` + `Chord::parse/canonical/is_bindable`；快捷键页录制单段组合键（Ctrl/Shift/Alt + 键或 F1–F24），`set_override/clear_override` 持久化；`Shortcut::parse` 仍支持 1–2 段（默认值/显示），override 只接受单段 | partial | `shortcut_parse_and_format_roundtrip`、`chord_parse_canonical_and_invalid_input`、`override_lookup_and_effective_shortcut`、config `hotkeys_roundtrip_and_are_written_as_tables` | 单段自定义键可录制/持久化/生效；旧配置无 `hotkeys` 字段直接兼容 | multi-chord 只能解析/展示，不能录制或配置；Meta 不在 key 回调中；普通字符与 Shift-only 组合被拒绝以免抢占终端输入 |
+| KEY-003 | 冲突检测、重复快捷键处理、平台保留键处理 | U-AUDIT / 需求 C9 | `Registry::effective_conflicts` 把 override 计入生效绑定；保存前 `validate_override` 拒绝同 chord 绑不同命令；Hotkeys 页行内标红 + 右上角冲突数；无平台保留键表 | partial | `conflict_detection`、`effective_conflicts`/`validate_override` 相关单测、`hotkey_page_lists_bindings_and_conflicts` | 冲突检测覆盖默认键与 override，保存时拒绝并提示，页头汇总冲突数 | 未处理桌面环境保留键；手改 config 的重复绑定只报告/分发取最后一条，不自动修复 |
 | KEY-004 | Profile 绑定快捷键 | U-AUDIT / 需求 C9 | 无实现 | not_started | 无 | 未实现 | 无 Profile/快捷键 |
 | KEY-005 | 命令面板可搜索并执行命令 | U-AUDIT / 需求 C9 | `Registry::search` + Palette UI；`run_command` 分发 21/21 条（terminal.clear/select-all 已接 core） | implemented | 单测 `fuzzy_search_prefers_title_prefix`；真机点击执行 `tab.new` 成功；菜单 Select All/Clear 生效 | 2026-11-05 实测通过 | 键盘路径未在沙箱验证（注入不可用） |
 | KEY-006 | 插件可注册命令、快捷键、命令上下文 | U-AUDIT / 需求 C9 | 无实现 | not_started | 无 | 未实现 | 无插件 API |
-| KEY-007 | 快捷键配置可迁移并提供默认配置 | U-AUDIT / 需求 C9 | `builtin()` 提供默认快捷键；`Shortcut` 可序列化；无配置项/迁移逻辑 | partial | `builtin_registry_is_consistent`；无迁移测试 | 默认绑定已有记录；无迁移 | 无用户自定义配置/版本迁移；默认键未与 UI 分发统一 |
+| KEY-007 | 快捷键配置可迁移并提供默认配置 | U-AUDIT / 需求 C9 | `builtin()` 提供默认快捷键；`Config.hotkeys` 为可选 `[[hotkeys]]` 表（`#[serde(default)]`，空表不写盘），旧配置无需迁移；未知命令/非法 chord 在生效与分发时忽略 | implemented | `builtin_registry_is_consistent`、`hotkeys_default_to_empty_and_old_config_loads`、`hotkeys_roundtrip_and_are_written_as_tables`、`empty_hotkeys_are_omitted_from_toml` | 默认配置和自定义配置都能稳定 roundtrip；旧版 config.toml 直接加载 | 手改配置中的未知 id / 非法 chord 只跳过、无 UI 诊断；无配置导出/导入快捷键 |
 
 ### C10. Themes / Color Schemes / Appearance（7 条）
 
