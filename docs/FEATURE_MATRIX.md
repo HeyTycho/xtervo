@@ -344,7 +344,7 @@
 
 | ID | Feature | Upstream evidence | Rust implementation | Status | Test | Result | Limitation |
 |---|---|---|---|---|---|---|---|
-| SESS-001 | Shell/SSH/Serial/Telnet Profile 存储、编辑、分组 | U-AUDIT / 需求 C8 | 新增 `profile.rs`：Profile{id,name,shell,args,cwd,env} + ProfileStore（版本化/原子写/坏文件不覆盖/ID 修复）；Profiles 面板：Save Current Pane、点选开新 Tab | partial | 5 个单测（唯一名/ID、往返、坏文件、重复 ID 修复、删除不复用）；真机：保存 → `[profile] 保存 id=1`，文件含 cwd=/home/yt；点选 → `[profile] open "yt"` | Local Profile 的存储/打开可用 | 只建模 Local；无编辑表单/分组/导入导出；SSH/Serial/Telnet 字段未定义 |
+| SESS-001 | Shell/SSH/Serial/Telnet Profile 存储、编辑、分组 | U-AUDIT / 需求 C8 | `profile.rs`：Profile{id,name,shell,args,cwd,env} + ProfileStore（版本化/原子写/坏文件保护/ID 修复）；Profiles 面板：**新建表单**（预填 shell/cwd，校验错误回显）、点选开 Tab、行内 × 删除 | partial | 5 个单测 + 真机：新建表单预填 `shell=/usr/bin/zsh cwd=/home/yt` → 保存 id=1 落盘；点 × 删除 → 文件清空 | Local Profile 的增/删/打开可用 | 无“编辑已有”表单、无分组/导入导出；SSH/Serial/Telnet 字段未定义 |
 | SESS-002 | Profile 绑定快捷键；支持默认 Profile | U-AUDIT / 需求 C8 | 无实现 | not_started | 无 | 未实现 | 无快捷键/默认 Profile |
 | SESS-003 | Split Tab 布局保存为 Profile/Workspace | U-AUDIT / 需求 C8 | 无实现 | not_started | 无 | 未实现 | 只有匿名 Restart 快照 |
 | SESS-004 | 记住打开的 Tabs/Panes；下次启动恢复工作区 | U-AUDIT / 需求 C8 | session.rs Snapshot；main.rs `capture_snapshot`/`restore_session`（仅 `--restore`）；菜单 Restart Session | partial | session.rs 5 例；人工 Restart Session（self-iteration 第 3 轮） | 手动重启可还原布局/cwd | 启动默认不恢复；无崩溃恢复；无滚动历史/运行中进程 |

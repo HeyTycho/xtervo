@@ -580,39 +580,58 @@ fn open_profile_tab(st: &mut AppState, index: usize) {
     }
 }
 
-/// 把当前聚焦 pane 的 cwd 存成一个 Local Profile（先给个不冲突的名字）。
-fn save_current_profile(st: &mut AppState) {
-    let cwd = st
-        .ws
-        .active_tab()
-        .map(|t| t.focused)
-        .and_then(|id| st.panes.get(&id))
-        .and_then(|rt| rt.handle.pid())
-        .and_then(session::cwd_of);
-    let base = cwd
-        .as_deref()
-        .and_then(|p| std::path::Path::new(p).file_name().map(|n| n.to_string_lossy().to_string()))
-        .filter(|n| !n.is_empty())
-        .unwrap_or_else(|| "profile".to_string());
+/// 打开新建表单：预填一个不冲突的名字、当前 shell、聚焦 pane 的 cwd。
+fn open_profile_form(st: &mut AppState) {
+    let base = "profile".to_string();
     let mut name = base.clone();
     let mut n = 2;
     while st.profiles.profiles.iter().any(|p| p.name == name) {
         name = format!("{base}-{n}");
         n += 1;
     }
+    let shell = st.cfg.shell.clone().or_else(|| std::env::var("SHELL").ok()).unwrap_or_default();
+    let cwd = st
+        .ws
+        .active_tab()
+        .map(|t| t.focused)
+        .and_then(|id| st.panes.get(&id))
+        .and_then(|rt| rt.handle.pid())
+        .and_then(session::cwd_of)
+        .unwrap_or_default();
+    st.ui.set_form_name(name.as_str().into());
+    st.ui.set_form_shell(shell.as_str().into());
+    st.ui.set_form_args("".into());
+    st.ui.set_form_cwd(cwd.as_str().into());
+    st.ui.set_form_error("".into());
+    st.ui.set_profile_form_open(true);
+    eprintln!("[profile] 打开新建表单 name={name:?} shell={shell:?} cwd={cwd:?}");
+}
+
+fn save_profile_form(st: &mut AppState) {
+    let name = st.ui.get_form_name().to_string();
+    let shell = st.ui.get_form_shell().to_string();
+    let args: Vec<String> =
+        st.ui.get_form_args().split_whitespace().map(|s| s.to_string()).collect();
+    let cwd = st.ui.get_form_cwd().to_string();
     let p = profile::Profile {
         name,
-        shell: st.cfg.shell.clone().unwrap_or_default(),
-        cwd,
+        shell,
+        args,
+        cwd: (!cwd.trim().is_empty()).then(|| cwd.trim().to_string()),
         ..profile::Profile::default()
     };
     match st.profiles.add(p) {
         Ok(id) => {
             st.profiles.save();
             refresh_profiles(st);
-            eprintln!("[profile] 保存 id={id}（共 {} 个）", st.profiles.profiles.len());
+            st.ui.set_profile_form_open(false);
+            st.ui.set_form_error("".into());
+            eprintln!("[profile] 保存 id={id}（共 {}）", st.profiles.profiles.len());
         },
-        Err(e) => eprintln!("[profile] 保存失败: {e}"),
+        Err(e) => {
+            eprintln!("[profile] 表单校验失败: {e}");
+            st.ui.set_form_error(e.as_str().into());
+        },
     }
 }
 
@@ -2345,8 +2364,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         with_app(|st| open_profile_tab(st, index.max(0) as usize));
     });
 
-    ui.on_profile_save_current(|| {
-        with_app(|st| save_current_profile(st));
+    ui.on_profile_new(|| {
+        with_app(|st| open_profile_form(st));
+    });
+
+    ui.on_profile_form_save(|| {
+        with_app(|st| save_profile_form(st));
+    });
+
+    ui.on_profile_form_cancel(|| {
+        with_app(|st| st.ui.set_form_error("".into()));
+    });
+
+    ui.on_profile_delete(|index| {
+        with_app(|st| {
+            let idx = index.max(0) as usize;
+            if let Some(p) = st.profiles.profiles.get(idx).map(|p| p.id) {
+                if st.profiles.remove(p) {
+                    st.profiles.save();
+                    refresh_profiles(st);
+                    eprintln!("[profile] 删除 id={p}（剩 {}）", st.profiles.profiles.len());
+                }
+            }
+        });
     });
 
     ui.on_profiles_close(|| {});
