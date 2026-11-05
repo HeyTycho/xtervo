@@ -332,9 +332,18 @@ export component MainWindow inherits Window {
     changed width => { root.resized(root.width, root.height); }
     changed height => { root.resized(root.width, root.height); }
 
-    VerticalLayout {
+    // TabBar 位置可切（上/下）：用绝对定位而不是 VerticalLayout，
+    // 否则元素的布局顺序没法在运行时反转。
+    in-out property <bool> tabbar-bottom: false;
+
+    Rectangle {
+        width: 100%;
+        height: 100%;
+
         // ---------------- 标签栏 ----------------
         Rectangle {
+            y: root.tabbar-bottom ? root.height - root.tabbar-height : 0px;
+            width: 100%;
             height: root.tabbar-height;
             min-width: 0px;
             clip: true;
@@ -379,7 +388,11 @@ export component MainWindow inherits Window {
                     double-clicked => { root.toggle-maximize(); }
                     pointer-event(event) => {
                         if (event.button == PointerEventButton.right && event.kind == PointerEventKind.up) {
-                            root.tabbar-context(title-hit.mouse-x, root.tabbar-height);
+                            root.tabbar-context(
+                                title-hit.mouse-x,
+                                // 菜单贴在 TabBar 所在的那一侧
+                                root.tabbar-bottom ? root.height - root.tabbar-height - 216px : root.tabbar-height,
+                            );
                             return EventResult.accept;
                         }
                         EventResult.reject
@@ -622,6 +635,9 @@ export component MainWindow inherits Window {
 
         // ---------------- 分屏内容区 ----------------
         Rectangle {
+            y: root.tabbar-bottom ? 0px : root.tabbar-height;
+            width: 100%;
+            height: root.height - root.tabbar-height;
             background: Palette.colors.bg;
 
             // focus-on-click 必须关掉：否则点击 pane 时 FocusScope 会把焦点
@@ -883,7 +899,7 @@ export component MainWindow inherits Window {
         x: Math.min(root.tabmenu-x, root.width - 180px);
         y: root.tabmenu-y;
         width: 170px;
-        height: 186px;
+        height: 216px;
         background: Palette.colors.raise;
         border-radius: 8px;
         border-width: 1px;
@@ -918,6 +934,10 @@ export component MainWindow inherits Window {
                 picked => { root.tabmenu-open = false; root.tabbar-menu-action(5); }
             }
             MenuRow {
+                label: root.tabbar-bottom ? "Tab Bar: Bottom" : "Tab Bar: Top";
+                picked => { root.tabmenu-open = false; root.tabbar-menu-action(6); }
+            }
+            MenuRow {
                 label: "Close Window";
                 picked => { root.tabmenu-open = false; root.tabbar-menu-action(3); }
             }
@@ -926,7 +946,8 @@ export component MainWindow inherits Window {
 
     if root.tabctx-open : Rectangle {
         x: Math.max(0px, Math.min(root.tabctx-x, root.width - 180px));
-        y: root.tabbar-height;
+        // 菜单 126 高：TabBar 在上时贴其下沿，在下时贴其上沿
+        y: root.tabbar-bottom ? root.height - root.tabbar-height - 126px : root.tabbar-height;
         width: 170px;
         height: 126px;
         background: Palette.colors.raise;
