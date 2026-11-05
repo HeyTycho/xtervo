@@ -26,7 +26,7 @@
 1. **SSH/Serial 依赖“已锁定”不实**：`docs/tabby-parity.md` 写“依赖已锁定 russh / serialport”，但 `Cargo.toml`、`crates/*/Cargo.toml` 与 `Cargo.lock` 均无 `russh`、`serialport`、`tokio-serial`，也无相关模块。
 2. **会话恢复被写成 ✅ 过度**：`docs/tabby-parity.md` 称“重启后原样拉起”；实际只有菜单 `Restart Session` 或手动 `--restore` 才恢复布局+`cwd`，正常启动**不会**恢复，也不恢复运行中进程/滚动历史。C8-004 应为 `partial`。
 3. **Tab OSC 标题并非完整跟随**：`docs/tabby-parity.md` 标 ✅；`main.rs::poll_events` 只把**活动 Tab 的首个 pane**标题写回 `tab.title`，后台 Tab、非首 pane 不更新，且无前缀/后缀/过滤。B2-008 应为 `partial`。
-4. **全屏没有实现**：`docs/tabby-parity.md` 标“🟡 可用最大化替代”；代码无 `set_fullscreen`/全屏状态，`commands.rs` 仅有 `view.toggle-fullscreen` 占位命令（未接线），最大化不是全屏。B1-006 应为 `not_started`。
+4. ~~**全屏没有实现**~~ 已修（2026-11-05）：F11 与 `--fullscreen` 走 `Window::set_fullscreen`，实测 2560x1440 满屏，UI-WIN-006 升为 implemented。
 5. ~~**Pane 焦点没有视觉状态**~~ 已修（2026-11-05）：`main.slint` 按 `focused` 画 1px accent 边框，UI-PANE-004 升为 implemented。
 6. **鼠标 1002 拖动按钮编码错误**：`main.rs::on_pane_mouse_move` 在转发拖动时硬编码 `MouseButton::Left`；按住右键/中键拖动（1002）会被当成左键上报。鼠标上报文档只验证了左键/滚轮。
 7. **OSC 52 / 颜色查询 / 尺寸查询无响应**：`pane.rs` 的 `Listener::send_event` 对 `Event::ClipboardStore/Load`、`ColorRequest`、`TextAreaSizeRequest` 走 `_ => {}`；应用查询终端颜色/尺寸时拿不到回复。
@@ -47,7 +47,7 @@
 | UI-WIN-003 | 标题栏空白区拖动；按钮/Tab/输入区不误触发 | U-AUDIT / 需求 B1 | main.slint `WindowMoveArea` + `title-hit`；按钮/Tab 为后置 TouchArea | implemented | 人工：拖空白区移动窗口；拖按钮/Tab 不移动 | 已有记录（ui-shell §2） | 无自动化；依赖 Slint 命中顺序 |
 | UI-WIN-004 | 最大化/还原/最小化/关闭；双击标题栏 | U-AUDIT / 需求 B1 | main.rs `on_toggle_maximize`/`on_minimize_window`/`on_close_window`；main.slint 双击 title-hit | implemented | 人工：─/□/❐/✕ 与双击空白区；ui-shell §3 | 已有记录（ui-shell §3） | 关闭无确认；双击只在空白区，Tab 上双击无效 |
 | UI-WIN-005 | 窗口尺寸变化、DPI/Scale Factor、主题切换 | U-AUDIT / 需求 B1 | main.rs `on_resized`/`refresh_views`；main.slint 8 个 ResizeHandle；`push_theme` | partial | 人工：拖边缩放 + 切主题；DPI 未测（代码无 scale_factor 分支） | 缩放/主题已有记录；DPI/缩放因子未验证 | 物理像素假设；无 scale_factor 监听与跨屏 DPI 复测 |
-| UI-WIN-006 | 全屏模式及退出全屏 | U-AUDIT / 需求 B1 | 无实现；`commands.rs` 仅定义 `view.toggle-fullscreen`/F11，无 handler | not_started | 无 | 未实现 | 无全屏 API/状态；命令表占位未接线；最大化不能替代全屏 |
+| UI-WIN-006 | 全屏模式及退出全屏 | U-AUDIT / 需求 B1 | main.rs F11 → `Window::set_fullscreen` 切换；`--fullscreen` 启动参数 | implemented | 真机：`--fullscreen` 后 xwininfo = 2560x1440（单屏满屏，常规窗口 540x472）；日志 `[ui] fullscreen=true` | 2026-11-05 实测通过 | F11 键盘端到端未在沙箱验证（键盘注入不可用）；无多显示器策略 |
 | UI-WIN-007 | TabBar 位置可配置：上/下/左/右 | U-AUDIT（上游支持方向待核） | 无实现 | needs_verification | 待上游核实四向是否支持 | 未核实/未实现 | 当前固定顶部；上游方向能力未知 |
 | UI-WIN-008 | 关闭窗口前对活动任务/连接确认；不误杀应保留 Session | U-AUDIT / 需求 B1 | 无实现 | not_started | 无 | 未实现 | `on_close_window` 直接 quit；关最后一个 tab 也直接退出并 Drop 所有 PaneHandle |
 | UI-WIN-009 | 多窗口：新建窗口、Tab 在窗口间打开/移动 | U-AUDIT / 需求 B1 | 无实现 | not_started | 无 | 未实现 | 单进程单窗口；无窗口管理器/实例间 IPC |

@@ -862,6 +862,16 @@ fn focus_pane(id: PaneId) {
     });
 }
 
+/// F11 / --fullscreen：切换全屏。
+fn toggle_fullscreen() {
+    with_app(|st| {
+        let win = st.ui.window();
+        let next = !win.is_fullscreen();
+        win.set_fullscreen(next);
+        eprintln!("[ui] fullscreen={next}");
+    });
+}
+
 fn set_active_tab(index: usize) {
     with_app(|st| set_active_tab_inner(st, index));
 }
@@ -1277,6 +1287,12 @@ fn handle_input(
         }
         return;
     }
+    // F11：全屏切换
+    if text == "\u{F70E}" {
+        toggle_fullscreen();
+        return;
+    }
+
     // F2：重命名当前 Tab（Slint 特殊键编码见 keys.rs）
     if text == "\u{F705}" {
         with_app(|st| open_rename(st, st.ws.active));
@@ -1443,6 +1459,8 @@ struct Options {
     demo_splits: bool,
     /// 启动时按快照恢复会话（由「Restart Session」菜单拉起）。
     restore: bool,
+    /// 启动即全屏（F11 可切换）。
+    fullscreen: bool,
 }
 
 fn parse_args(cfg: &Config) -> Options {
@@ -1472,6 +1490,7 @@ fn parse_args(cfg: &Config) -> Options {
             "--frame-clock" => o.frame_clock = it.next().unwrap_or_else(|| "off".to_string()),
             "--demo-splits" => o.demo_splits = true,
             "--restore" => o.restore = true,
+            "--fullscreen" => o.fullscreen = true,
             "--" => {
                 o.args = it.by_ref().collect();
                 break;
@@ -1499,6 +1518,7 @@ fn print_help() {
 --exit-after-first  首帧后退出\n  \
 --dump              连续打印帧内容 (调试)\n  \
 --restore           按上次快照恢复会话 (由 Restart 菜单调用)\n  \
+--fullscreen        启动即全屏 (F11 切换)\n  \
 -h, --help          显示帮助\n\n\
 快捷键: Ctrl+T 新建标签 / Ctrl+W 关闭 / Ctrl+F 搜索 / Ctrl+Shift+C 复制 / Ctrl+Shift+V 粘贴\n\
 配置: ~/.config/rusttabby/config.toml (RUSTTABBY_CONFIG 可覆盖)\n\
@@ -2124,6 +2144,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ---- 首帧 ----
     ui.show()?;
+    if opts.fullscreen {
+        ui.window().set_fullscreen(true);
+        eprintln!("[ui] fullscreen=true (--fullscreen)");
+    }
 
     // Auto 主题：窗口显示后开始监听系统深浅色变化。
     if is_auto_theme(&theme_selection) {
