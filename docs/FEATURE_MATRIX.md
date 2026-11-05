@@ -16,11 +16,11 @@
 
 | 范围 | 条目 | implemented | partial | in_progress | needs_verification | not_started | unsupported | 加权完成度 |
 |---|---|---|---|---|---|---|---|---|
-| B 部分（UI） | 110 | 11 | 24 | 0 | 11 | 64 | 0 | 20.9% |
-| C 部分（底层） | 118 | 7 | 32 | 0 | 10 | 67 | 2 | 19.5% |
-| B+C 合计 | 228 | 18 | 56 | 0 | 21 | 131 | 2 | 20.2% |
+| B 部分（UI） | 110 | 20 | 50 | 0 | 7 | 32 | 1 | 40.9% |
+| C 部分（底层） | 118 | 9 | 37 | 0 | 10 | 56 | 6 | 23.3% |
+| B+C 合计 | 228 | 29 | 87 | 0 | 17 | 88 | 7 | 31.8% |
 
-> 加权公式：`(implemented + 0.5×partial + 0.5×in_progress) / 条目总数`。`needs_verification / not_started / unsupported` 记 0。该数字是“功能条目覆盖度”，不是代码行数或工时完成度。
+> 加权公式：`(implemented + 0.5×partial + 0.5×in_progress) / 条目总数`。`needs_verification / not_started / unsupported` 记 0。该数字是“功能条目覆盖度”，不是代码行数或工时完成度。本轮补 Vault 时用 `scripts/matrix_stats.py` 逐行复核并刷新了上表（旧审计快照数字已过期；脚本额外把 needs_verification 记 0.25，故其 weighted 输出略高）。
 
 ## 2. 审计发现：现有实现/文档与需求不符（至少 3 条）
 
@@ -148,11 +148,11 @@
 
 ### B7. Settings 设置页（14 条）
 
-状态：partial=8，not_started=6。
+状态：partial=9，not_started=5。
 
 | ID | Feature | Upstream evidence | Rust implementation | Status | Test | Result | Limitation |
 |---|---|---|---|---|---|---|---|
-| UI-SET-001 | Application：应用级行为、启动与默认行为 | U-AUDIT / 需求 B7 | 设置窗口改为 **Tabby 式左右分列**：左侧垂直导航（Appearance/Terminal/Window/Config/Hotkeys/Plugins）+ 右侧内容区 + 顶部搜索；面板居中于 TabBar 下方（520×440 上限，窗口小则收缩） | partial | 真机：Appearance/Terminal/Config 三页布局正确，搜索 `font` → 1 条 “Terminal · Font size” 覆盖右栏；截图 .logs/settings-2col*.png | 设置导航/内容分栏可用，搜索可用 | 无 Application 独立页；小窗口下内容可能被裁剪（未做页内滚动） |
+| UI-SET-001 | Application：应用级行为、启动与默认行为 | U-AUDIT / 需求 B7 | 设置窗口改为 **Tabby 式左右分列**：左侧垂直导航（Appearance/Terminal/Window/Config/Hotkeys/Plugins/Vault）+ 右侧内容区 + 顶部搜索；面板居中于 TabBar 下方（520×440 上限，窗口小则收缩） | partial | 真机：Appearance/Terminal/Config 三页布局正确，搜索 `font` → 1 条 “Terminal · Font size” 覆盖右栏；截图 .logs/settings-2col*.png | 设置导航/内容分栏可用，搜索可用 | 无 Application 独立页；小窗口下内容可能被裁剪（未做页内滚动） |
 | UI-SET-002 | Appearance：外观、窗口风格、图标/字体、背景效果 | U-AUDIT / 需求 B7 | main.slint 设置面板仅有主题选择；主题含 UI chrome 配色 | partial | 人工：12 套主题 + Auto 可切换；无窗口风格/背景效果 | 主题外观可用 | 无窗口风格/图标/字体/背景/透明度设置 |
 | UI-SET-003 | Profiles & Connections：默认 Profile、列表、连接行为 | U-AUDIT / 需求 B7 | 无实现 | not_started | 无 | 未实现 | 无 Profile 设置页 |
 | UI-SET-004 | Terminal：行为、字体、滚动、复制粘贴、鼠标等 | U-AUDIT / 需求 B7 | main.slint 字号 ±、回滚 ±、Copy on select / Confirm close 开关（ToggleRow）；config.rs font_size/scrollback/copy_on_select/confirm_close | partial | 真机：开设置点开关 → `[ui] copy_on_select=false` 并写入配置；关闭后拖选 0 条剪贴板日志、开启后 1 条（复制 6 字节） | 字号/回滚/复制-关闭行为可调 | 无字体族/行距/鼠标/滚动行为设置；无设置搜索 |
@@ -161,9 +161,9 @@
 | UI-SET-007 | Hotkeys：列表、搜索、录入、修改、清除、冲突提示、多段键 | U-AUDIT / 需求 B7 | 设置面板 Hotkeys 分类：命令表默认绑定列表（分类/标题/组合键）、冲突数、多段键 Display 支持 | partial | 单测 `hotkey_page_lists_bindings_and_conflicts`；真机截图 `.logs/settings-hotkeys.png`（22 commands · 16 bound · 0 conflicts） | 只读列表 + 冲突提示可用 | 无搜索/录入/修改/清除；未持久化自定义键；无键盘捕获（沙箱无法验证） |
 | UI-SET-008 | Plugins：搜索、可用/已装、安装、卸载、启用、禁用、更新、详情、权限、目录 | U-AUDIT / 需求 B7 | 无实现 | not_started | 无 | 未实现 | 无插件系统/管理器 UI |
 | UI-SET-009 | SSH：Host Key、Agent 类型、X11 Display 等 | U-AUDIT / 需求 B7 | 无实现 | not_started | 无 | 未实现 | 无 SSH/设置页 |
-| UI-SET-010 | Vault：加密凭据容器、主密码、锁定/解锁、凭据管理 | U-AUDIT / 需求 B7 | 无实现 | not_started | 无 | 未实现 | 无 Vault/Keyring/凭据模型 |
+| UI-SET-010 | Vault：加密凭据容器、主密码、锁定/解锁、凭据管理 | U-AUDIT / 需求 B7 | 设置左侧导航新增 **Vault** 页：状态/路径、Master 密码输入（masked）、Set/Change、Unlock、Lock、Clear（二次确认）、错误/提示；Profile 表单 `auth=password` 时显示密码输入与「Save password to Vault」；`vault.rs` 负责加密落盘 | partial | `vault.rs` 7 例 + `askpass.rs` 5 例 + `profile_serialization_has_no_plaintext_password`；`cargo test -p tervo-app --bin tervo` 108 passed；受共享显示器约束**未做 GUI 真机走查** | Vault 管理 UI 与 Profile 保存/读取路径已接通 | GUI 未真机验证；无空闲自动锁定/解锁弹窗；无凭据逐条列表与单独删除（随 Profile 取消勾选删除，锁定时暂留）；无 Keyring 后端 |
 | UI-SET-011 | Window：窗口行为、TabBar 位置、Quake Mode | U-AUDIT / 需求 B7 | 设置 → Window：Tab Bar 位置、**Quake mode (F12)** 开关；TabBar 菜单保留 Always on Top/Tab Bar Top/Bottom；Quake 宽度/高度/热键在 config | partial | 真机：Window 页开关可切换并写 config；F12 行为与日志验证 | Window 页/Quake 开关可用 | 无 Quake 尺寸/热键的可视化编辑（需改 config） |
-| UI-SET-012 | Config File：路径、打开文件/目录、诊断（不显示 secret） | U-CONF / 需求 B7 | 设置面板 Config File 分类：显示 `Config::path()`、Open Folder（xdg-open）；文案声明不存密码/私钥 | partial | 真机：面板显示 `/tmp/set2.toml`；Open Folder 调用 xdg-open（沙箱内可能失败，会打日志） | 路径展示与打开目录可用 | 无配置诊断/语法检查；无“打开配置文件”按钮（只有目录）；secret 策略依赖 Vault（未实现） |
+| UI-SET-012 | Config File：路径、打开文件/目录、诊断（不显示 secret） | U-CONF / 需求 B7 | 设置面板 Config File 分类：显示 `Config::path()`、Open Folder（xdg-open）；文案声明不存密码/私钥 | partial | 真机：面板显示 `/tmp/set2.toml`；Open Folder 调用 xdg-open（沙箱内可能失败，会打日志） | 路径展示与打开目录可用 | 无配置诊断/语法检查；无“打开配置文件”按钮（只有目录）；secret 策略已接 Vault（见 UI-SET-010）；配置文件本身仍未加密 |
 | UI-SET-013 | 插件可动态注册设置页/项；卸载后配置清理或保留策略 | U-AUDIT / 需求 B7 | 无实现 | not_started | 无 | 未实现 | 无插件设置 API/生命周期策略 |
 | UI-SET-014 | 保存时机明确；保存失败/无效值/迁移错误提示 | U-AUDIT / 需求 B7 | config.rs 即时保存 + 原子写 + schema 迁移/备份；错误仅 eprintln；数值 clamp | partial | config.rs 7 例；代码走查：字号 8–32、回滚 500–100000 夹取；写失败仅 stderr | 即时保存/迁移/备份可用；无 UI 提示 | 保存/迁移/解析失败不弹 UI；无“恢复备份”入口；无效值只夹取不提示 |
 
@@ -173,7 +173,7 @@
 
 | ID | Feature | Upstream evidence | Rust implementation | Status | Test | Result | Limitation |
 |---|---|---|---|---|---|---|---|
-| UI-SSH-001 | SSH Profile 编辑窗口分组清晰、密码/密钥安全提示 | U-AUDIT / 需求 B8 | Profile 表单 SSH 分组：Host/Port/User/Auth/Key/Extra；`ssh_command()` 用系统 ssh 客户端跑在 PTY；密码认证仅存 `auth=password`（Vault 未实现） | partial | 单测 `ssh_command_builds_openssh_args`；端到端：paramiko 服务端 + key 认证 → 面板点开后终端显示 `PARAMIKO-SSH-OK` 与远端提示符（.logs/ssh-e2e2.png） | SSH 连接（key/agent）可用 | 无内建 known_hosts 管理（依赖系统 ssh）；密码认证未接 Vault；原生 russh 引擎未做；未做跳板机/端口转发设置 |
+| UI-SSH-001 | SSH Profile 编辑窗口分组清晰、密码/密钥安全提示 | U-AUDIT / 需求 B8 | Profile 表单 SSH 分组：Host/Port/User/Auth/Key/Password/Extra；`auth=password` 时显示 masked 密码输入 +「Save password to Vault」；已保存密码经 Vault 取出后由临时 askpass 脚本（`SSH_ASKPASS_REQUIRE=force`）自动认证；askpass 只回答密码 prompt，host key 等确认回答 `no` 防死循环；首次连接（known_hosts 未命中）不用 askpass、由终端确认并手输一次；未勾选保存则完全由系统 ssh 交互式询问；`ssh_command()` 仍在 PTY 跑系统 ssh | partial | 单测 `ssh_command_builds_openssh_args`、`profile_serialization_has_no_plaintext_password`、`askpass.rs` 5 例（含真实 `ssh -G`/`ssh-keygen -F` known_hosts 判定与 prompt 过滤）；既有 paramiko key 认证端到端记录不变；受共享显示器约束**未做 password 链路 GUI 真机验证** | key/agent 可用；known_hosts 已确认的 host 可经 Vault+askpass 自动登录（代码路径） | askpass 密码经 ssh 子进程环境变量传递，同用户可经 `/proc/<pid>/environ` 观察（后续改 fd/pipe，见 `docs/VAULT.md`）；首次连接需终端手输；known_hosts 判定为 best-effort（动态 KnownHostsCommand/key 类型变化可能回退失败）；无内建 known_hosts 管理；无跳板机；原生 russh 未做 |
 | UI-SSH-002 | 首次主机密钥确认、变更告警、known_hosts 管理入口 | U-AUDIT / 需求 B8 | 交给系统 ssh：主机密钥确认/告警直接显示在终端里；Extra 参数可传 UserKnownHostsFile | partial | 端到端走 `-o StrictHostKeyChecking=yes` + 自定义 known_hosts 成功连接 | 借用系统 ssh 的完整校验流程 | 无应用内 known_hosts 管理 UI；无密钥变更专门告警面板 |
 | UI-SSH-003 | SFTP 面板/Tab：目录导航、上级、刷新、路径输入、列表、属性 | U-AUDIT / 需求 B8 | **SFTP 面板**（TabBar 菜单 → SFTP）：SSH Profile 选择、Remote 路径输入、List、条目列表点选；`sftp.rs` 走系统 `sftp -q -b -` | partial | 端到端：`scripts/ssh_test_server.py`（SFTP）→ 面板 List 显示 `1 个条目` / `/probe.txt`（.logs/sftp-panel.png） | 面板列目录/选择可用 | 无“上级/刷新/属性列”；同步阻塞调用（大目录会卡 UI）；无传输进度 |
 | UI-SSH-004 | SFTP 上传/下载/建目录/重命名/删除；危险确认 | U-AUDIT / 需求 B8 | 面板 Download/Upload/New Dir/Rename/Delete；`get`/`put`/`mkdir`/`rename`/`rm`（目录回退 `rmdir`）；Delete 需点两次确认；Target 输入框 | partial | 端到端（paramiko 服务）：建目录 → 远端出现 newdir；重命名 → 目录变 renamed.txt；Delete 第一次提示“再点一次”，第二次删除成功 | 上传/下载/建目录/重命名/删除可用（含两步删除确认） | 无进度/取消/重试；同步阻塞；不可递归删除目录树 |
@@ -398,16 +398,16 @@
 
 ### C12. Vault / Secrets / Security（6 条）
 
-状态：partial=1，not_started=5。
+状态：partial=5，not_started=1。
 
 | ID | Feature | Upstream evidence | Rust implementation | Status | Test | Result | Limitation |
 |---|---|---|---|---|---|---|---|
-| SEC-001 | 加密保存 SSH 密码、私钥口令及其他敏感配置 | U-AUDIT / 需求 C12 | 无实现 | not_started | 无 | 未实现 | 无 SSH/凭据存储 |
-| SEC-002 | Master Passphrase / Vault 解锁与锁定（按原版核验） | U-AUDIT / 需求 C12 | 无实现 | not_started | 无 | 未实现 | 无 Vault/主密码 |
-| SEC-003 | 优先 Linux Secret Service/Keyring；加密文件回退说明 KDF 风险 | U-AUDIT / 需求 C12 | 无实现 | not_started | 无 | 未实现 | 无 Keyring/加密文件后端 |
-| SEC-004 | 普通配置、日志、崩溃报告不得出现明文密码/私钥/token | U-AUDIT / 需求 C12 | 当前无 secret 字段；config.rs 只存主题/字号/回滚/shell；无结构化脱敏/崩溃报告 | partial | 代码走查：无凭据字段 | 当前配置不含凭据 | 无脱敏框架；未来接 SSH/Vault 时必须补；配置权限未显式 0600 |
-| SEC-005 | 插件默认不能读凭据；使用需 capability | U-AUDIT / 需求 C12 | 无实现 | not_started | 无 | 未实现 | 无插件系统/权限模型 |
-| SEC-006 | 主机密钥安全、文件权限、本地 IPC 权限检查 | U-AUDIT / 需求 C12 | 无实现 | not_started | 无 | 未实现 | 无 SSH/IPC；配置文件权限未收紧 |
+| SEC-001 | 加密保存 SSH 密码、私钥口令及其他敏感配置 | U-AUDIT / 需求 C12 | `vault.rs`：Argon2id(key) + ChaCha20-Poly1305 加密 `vault.enc`（magic/version/KDF 参数/salt/nonce/ciphertext，AAD 认证头部）；Profile `auth=password` + `save_password` 时保存/读取；私钥口令与其他 secret 未做 | partial | vault 7 例（roundtrip/错密码/损坏/无明文+0600/改主密码/参数上限/TERVO_VAULT 覆盖）；`profile_serialization_has_no_plaintext_password` | SSH 登录密码可加密保存并用于 askpass | 仅 SSH 登录密码；无私钥口令/keyring；解锁状态在进程内存，未 mlock/zeroize |
+| SEC-002 | Master Passphrase / Vault 解锁与锁定（按原版核验） | U-AUDIT / 需求 C12 | `vault.rs` 提供 initialize/unlock/lock/change_master；设置 → Vault 页可操作；启动默认锁定，锁定时 get/set/remove 返回错误；Clear 需二次确认 | partial | vault 单测覆盖锁定读写/改主密码/重开解锁；`cargo build --release` | 主密码解锁/锁定/改密可用 | UI 未真机验证；无空闲自动锁定、无解锁弹窗、无失败次数退避 |
+| SEC-003 | 优先 Linux Secret Service/Keyring；加密文件回退说明 KDF 风险 | U-AUDIT / 需求 C12 | 未接 Secret Service/Keyring；实现加密文件回退（Argon2id 19 MiB/t=2/p=1、salt 16B、ChaCha20-Poly1305、0600、原子写）；`docs/VAULT.md` 写明 KDF/内存/askpass 风险 | partial | vault 单测（含文件权限/无明文）；文档走查 | 无 Keyring 时加密文件后端可用 | 未优先/未实现 Keyring；无后端口抽象；加密文件仍是唯一后端 |
+| SEC-004 | 普通配置、日志、崩溃报告不得出现明文密码/私钥/token | U-AUDIT / 需求 C12 | config.rs/profiles.toml 均无 secret 字段；Profile 只存 `save_password` 标志；Vault 文件只含 base64 密文；日志只记 Profile id/kind、不打印密码；askpass 密码仅存在于 ssh 子进程环境 | partial | `file_never_contains_plaintext_and_permissions_are_private`、`profile_serialization_has_no_plaintext_password`；代码走查 | 普通配置/日志无明文凭据 | askpass 环境变量可被同用户经 `/proc/<pid>/environ` 观察；无结构化脱敏框架/崩溃报告；config/profiles 文件权限未统一 0600 |
+| SEC-005 | 插件默认不能读凭据；使用需 capability | U-AUDIT / 需求 C12 | 无实现 | not_started | 无 | 未实现 | 无插件运行时/权限模型 |
+| SEC-006 | 主机密钥安全、文件权限、本地 IPC 权限检查 | U-AUDIT / 需求 C12 | `vault.enc` 以 0600 创建并在原子替换前 chmod；临时 askpass 目录/脚本 0700 且 Drop 清理；主机密钥仍完全交系统 ssh；无本地 IPC | partial | vault 文件权限测试、askpass 目录/脚本权限测试 | vault 凭据文件与 askpass 临时文件权限已收紧 | 配置文件/profile 文件未显式 0600；无内建 known_hosts 管理/本地 IPC 权限检查 |
 
 ### C13. Plugin System 与旧插件兼容（13 条）
 

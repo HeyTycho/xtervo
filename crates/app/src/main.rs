@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
+mod askpass;
 mod commands;
 mod config;
 mod glyph;
@@ -13,6 +14,7 @@ mod session;
 mod sftp;
 mod tabby_import;
 mod themes;
+mod vault;
 mod workspace;
 mod xconn;
 
@@ -57,6 +59,8 @@ struct PaneRuntime {
     grid: (usize, usize),
     rect: Rect,
     title: String,
+    /// SSH 密码认证用的临时 askpass 脚本；随 pane 一起释放。
+    _askpass: Option<askpass::Askpass>,
 }
 
 struct Drag {
@@ -121,6 +125,10 @@ struct AppState {
     bg_model: Rc<VecModel<slint::SharedString>>,
     profiles: profile::ProfileStore,
     profile_model: Rc<VecModel<slint::SharedString>>,
+    /// 加密凭据容器：启动时锁定，需在设置 → Vault 里解锁。
+    vault: vault::Vault,
+    /// Clear vault 需要点两次确认。
+    vault_clear_armed: bool,
     /// SFTP 面板里可选的 SSH Profile 索引（打开面板时快照）
     sftp_profiles: Vec<usize>,
     sftp_model: Rc<VecModel<slint::SharedString>>,
@@ -328,6 +336,7 @@ const SETTINGS_CATALOG: &[(i32, &str, &str)] = &[
     (3, "Config file path", "config path file folder"),
     (4, "Hotkey bindings", "hotkey shortcut key binding"),
     (5, "Installed plugins", "plugin plugins installed list"),
+    (6, "Vault / master password", "vault master password credentials 凭据 解锁 锁定"),
 ];
 
 /// 设置搜索：大小写不敏感的子串匹配（名称或关键词），返回 (分类, 展示行)。
@@ -336,7 +345,7 @@ fn settings_search(query: &str) -> Vec<(i32, String)> {
     if q.is_empty() {
         return Vec::new();
     }
-    let cats = ["Appearance", "Terminal", "Window", "Config", "Hotkeys", "Plugins"];
+    let cats = ["Appearance", "Terminal", "Window", "Config", "Hotkeys", "Plugins", "Vault"];
     SETTINGS_CATALOG
         .iter()
         .filter(|(_, label, keywords)| {
@@ -554,6 +563,7 @@ fn create_pane(
     rows: usize,
     cwd: Option<PathBuf>,
     profile: Option<&profile::Profile>,
+    mut askpass: Option<askpass::Askpass>,
 ) -> std::io::Result<PaneRuntime> {
     // Profile 优先：它显式带 shell/args/env；否则沿用全局配置。
     let shell = profile
@@ -561,7 +571,10 @@ fn create_pane(
         .filter(|s| !s.is_empty())
         .or_else(|| st.cfg.shell.clone());
     let args = profile.map(|p| p.args.clone()).unwrap_or_else(|| st.opts.args.clone());
-    let env = profile.map(|p| p.env.clone()).unwrap_or_default();
+    let mut env = profile.map(|p| p.env.clone()).unwrap_or_default();
+    if let Some(a) = askpass.as_mut() {
+        a.apply(&mut env);
+    }
     let cwd = profile
         .and_then(|p| p.cwd.clone())
         .map(PathBuf::from)
@@ -608,13 +621,14 @@ fn create_pane(
         grid: (cols, rows),
         rect: Rect::new(0.0, 0.0, 0.0, 0.0),
         title: shell_name(&st.opts),
+        _askpass: askpass,
     })
 }
 
 fn new_tab_inner(st: &mut AppState) {
     let id = st.ws.alloc_id();
     let (cols, rows) = cell_of(st.content, st.cell);
-    match create_pane(st, id, cols, rows, None, None) {
+    match create_pane(st, id, cols, rows, None, None, None) {
         Ok(rt) => {
             st.next_title += 1;
             let n = st.next_title;
@@ -721,11 +735,29 @@ fn open_profiles_panel(st: &mut AppState) {
     eprintln!("[profile] panel items={}", st.profiles.profiles.len());
 }
 
+/// 设置 → Vault 页 + 可见提示（Vault 未解锁时不弹终端密码框）。
+fn prompt_vault_unlock(st: &mut AppState, msg: &str) {
+    refresh_vault_ui(st);
+    st.ui.set_settings_open(true);
+    st.ui.set_settings_category(6);
+    st.ui.set_vault_error(msg.into());
+    st.ui.set_vault_password("".into());
+    eprintln!("[vault] {msg}");
+}
+
+/// 回到 Profile 表单显示错误（例如 Vault 中没有该 Profile 的密码）。
+fn prompt_profile_password(st: &mut AppState, index: usize, msg: &str) {
+    edit_profile_form(st, index);
+    st.ui.set_form_error(msg.into());
+    eprintln!("[profile] {msg}");
+}
+
 /// 用 Profile 打开新 Tab（shell/args/env/cwd 全按 Profile）。
 fn open_profile_tab(st: &mut AppState, index: usize) {
     let Some(p) = st.profiles.profiles.get(index).cloned() else { return };
     // kind → 实际启动命令：local 直接用 Profile；ssh 用系统 ssh 客户端（PTY 里跑）；
     // serial/telnet 后端还没做，明确拒绝而不是假装能连。
+    let mut askpass = None;
     let spec = match p.kind.as_str() {
         "local" => p.clone(),
         "ssh" => {
@@ -734,6 +766,52 @@ fn open_profile_tab(st: &mut AppState, index: usize) {
             q.shell = prog;
             q.args = args;
             q.cwd = None;
+            // auth=password + 已勾选保存 → 从 Vault 取密码，用 askpass 喂给系统 ssh；
+            // 未勾选保存则交给 ssh 在终端里交互式询问（不经过 Vault，不落盘）。
+            if p.auth == "password" && p.save_password {
+                match st.vault.get(p.id) {
+                    Ok(password) => {
+                        if !askpass::host_key_known(&p) {
+                            // 首次连接：不用 askpass，交给 ssh 在终端里显示指纹/确认
+                            // 并让用户手输一次密码；之后 known_hosts 命中才自动填充。
+                            eprintln!(
+                                "[profile] 主机密钥未在 known_hosts 中确认：本次不启用 askpass，\
+                                 请在终端确认主机密钥并手动输入密码（下次连接可用 Vault）"
+                            );
+                        } else {
+                            match askpass::Askpass::new(&password) {
+                                Ok(a) => {
+                                    askpass = Some(a);
+                                },
+                                Err(e) => {
+                                    drop(password);
+                                    prompt_profile_password(
+                                        st,
+                                        index,
+                                        &format!("创建 ssh askpass 失败: {e}"),
+                                    );
+                                    return;
+                                },
+                            }
+                        }
+                    },
+                    Err(vault::VaultError::Locked | vault::VaultError::NotInitialized) => {
+                        prompt_vault_unlock(
+                            st,
+                            "Vault 已锁定：请先在 Vault 页解锁，再连接该 SSH Profile",
+                        );
+                        return;
+                    },
+                    Err(e) => {
+                        prompt_profile_password(
+                            st,
+                            index,
+                            &format!("{e}；请解锁 Vault 并重新保存密码"),
+                        );
+                        return;
+                    },
+                }
+            }
             eprintln!("[profile] ssh 命令: {} {}", q.shell, q.args.join(" "));
             q
         },
@@ -762,7 +840,7 @@ fn open_profile_tab(st: &mut AppState, index: usize) {
     };
     let id = st.ws.alloc_id();
     let (cols, rows) = cell_of(st.content, st.cell);
-    match create_pane(st, id, cols, rows, None, Some(&spec)) {
+    match create_pane(st, id, cols, rows, None, Some(&spec), askpass) {
         Ok(rt) => {
             st.panes.insert(id, rt);
             st.ws.tabs.push(Tab::single(id, p.name.clone()));
@@ -806,6 +884,8 @@ fn open_profile_form(st: &mut AppState) {
     st.ui.set_form_user(std::env::var("USER").unwrap_or_default().as_str().into());
     st.ui.set_form_auth("agent".into());
     st.ui.set_form_key("".into());
+    st.ui.set_form_password("".into());
+    st.ui.set_form_save_password(false);
     st.ui.set_form_extra("".into());
     st.ui.set_form_forwards("".into());
     st.ui.set_form_serial_port("/dev/ttyUSB0".into());
@@ -830,6 +910,9 @@ fn edit_profile_form(st: &mut AppState, index: usize) {
     st.ui.set_form_user(p.user.as_str().into());
     st.ui.set_form_auth(p.auth.as_str().into());
     st.ui.set_form_key(p.key_path.as_str().into());
+    // 密码绝不回填到 UI；勾选状态反映配置，真正密码只在 Vault 解锁时可写入。
+    st.ui.set_form_password("".into());
+    st.ui.set_form_save_password(p.save_password);
     st.ui.set_form_extra(p.extra_args.join(" ").as_str().into());
     st.ui.set_form_forwards(p.local_forwards.join(" ").as_str().into());
     st.ui.set_form_serial_port(p.serial_port.as_str().into());
@@ -873,6 +956,44 @@ fn save_profile_form(st: &mut AppState) {
             p.cwd = (!cwd.trim().is_empty()).then(|| cwd.trim().to_string());
         },
     }
+    // ---- Vault 密码：只在 auth=password 且勾选保存时处理 ----
+    let password = st.ui.get_form_password().to_string();
+    let save_checked = st.ui.get_form_save_password();
+    p.save_password = kind == "ssh" && p.auth == "password" && save_checked;
+    let save_password = p.save_password;
+    let previous_save =
+        if edit_id > 0 { st.profiles.get(edit_id as u64).map(|q| q.save_password).unwrap_or(false) } else { false };
+
+    // 先做 Vault 前置校验，任何错误都不改动 ProfileStore。
+    if p.save_password {
+        if !password.is_empty() {
+            if !st.vault.is_unlocked() {
+                let msg = match st.vault.status() {
+                    vault::VaultStatus::Uninitialized => {
+                        "Vault 未初始化：请先在 Settings → Vault 设置主密码，再保存密码"
+                    },
+                    _ => "Vault 未解锁：请先在 Settings → Vault 解锁，再保存密码",
+                };
+                st.ui.set_form_error(msg.into());
+                eprintln!("[profile] {msg}");
+                return;
+            }
+        } else if edit_id > 0 && previous_save {
+            // 编辑时留空 = 保留 Vault 里已有的密码；若已解锁则确认条目还在。
+            if st.vault.is_unlocked() && !matches!(st.vault.contains(edit_id as u64), Ok(true)) {
+                let msg = "Vault 中没有该 Profile 的密码，请输入新密码后保存";
+                st.ui.set_form_error(msg.into());
+                eprintln!("[profile] {msg}");
+                return;
+            }
+        } else {
+            let msg = "勾选「保存到 Vault」时必须输入密码";
+            st.ui.set_form_error(msg.into());
+            eprintln!("[profile] {msg}");
+            return;
+        }
+    }
+
     let result = if edit_id > 0 {
         st.profiles.update(edit_id as u64, p).map(|_| edit_id as u64)
     } else {
@@ -880,16 +1001,168 @@ fn save_profile_form(st: &mut AppState) {
     };
     match result {
         Ok(id) => {
+            let mut vault_write_error = None;
+            if save_password && !password.is_empty() {
+                if let Err(e) = st.vault.set(id, &password) {
+                    vault_write_error = Some(format!("密码写入 Vault 失败: {e}"));
+                }
+            } else if !save_password && previous_save {
+                // 取消勾选：解锁时同步删除旧凭据；锁定则只能先留着，等 Clear vault 清理。
+                match st.vault.remove(id) {
+                    Ok(_) => {},
+                    Err(vault::VaultError::Locked | vault::VaultError::NotInitialized) => {
+                        eprintln!("[vault] Vault 锁定，Profile {id} 的旧密码暂留（已被取消勾选，不再使用）");
+                    },
+                    Err(e) => eprintln!("[vault] 删除 Profile {id} 的密码失败: {e}"),
+                }
+            }
+            if let Some(err) = vault_write_error {
+                // Profile 已进内存：避免 save_password=true 却没有密码，回退标志并落盘。
+                if let Some(profile) = st.profiles.profiles.iter_mut().find(|q| q.id == id) {
+                    profile.save_password = false;
+                }
+                st.profiles.save();
+                refresh_profiles(st);
+                st.ui.set_form_save_password(false);
+                st.ui.set_form_error(err.as_str().into());
+                eprintln!("[profile] {err}（Profile 已保存，但未关联密码）");
+                return;
+            }
             st.profiles.save();
             refresh_profiles(st);
             st.ui.set_profile_form_open(false);
+            st.ui.set_form_password("".into());
+            st.ui.set_form_save_password(false);
             st.ui.set_form_error("".into());
+            refresh_vault_ui(st);
             eprintln!("[profile] 保存 id={id} kind={kind}（共 {}）", st.profiles.profiles.len());
         },
         Err(e) => {
             eprintln!("[profile] 表单校验失败: {e}");
             st.ui.set_form_error(e.as_str().into());
         },
+    }
+}
+
+// ------------------------------------------------------------ Vault（加密凭据）
+
+/// Vault 状态文字（不含任何秘密）。
+fn vault_status_text(v: &vault::Vault) -> String {
+    match v.status() {
+        vault::VaultStatus::Uninitialized => "未初始化：设置主密码后创建 vault.enc".into(),
+        vault::VaultStatus::Locked => "已锁定：输入主密码后点 Unlock".into(),
+        vault::VaultStatus::Unlocked => format!("已解锁 · {} 条凭据", v.entry_count()),
+    }
+}
+
+/// 刷新设置页 Vault 状态/路径/条数（不清空错误提示）。
+fn refresh_vault_ui(st: &mut AppState) {
+    let status = vault_status_text(&st.vault);
+    let path = st.vault.path().display().to_string();
+    let entries = st.vault.entry_count() as i32;
+    st.ui.set_vault_status(status.as_str().into());
+    st.ui.set_vault_path(path.as_str().into());
+    st.ui.set_vault_entries(entries);
+}
+
+/// 操作成功时的中性提示（不是错误）。
+fn vault_notice(st: &mut AppState, msg: impl Into<String>) {
+    st.ui.set_vault_notice(msg.into().as_str().into());
+    st.ui.set_vault_error("".into());
+}
+
+/// 操作失败提示；调用方保证 msg 不含秘密。
+fn vault_fail(st: &mut AppState, msg: impl Into<String>) {
+    let msg = msg.into();
+    st.ui.set_vault_error(msg.as_str().into());
+    st.ui.set_vault_notice("".into());
+    eprintln!("[vault] {msg}");
+}
+
+/// Set / Change master password：未初始化 → 创建；已解锁 → 用新密码重新加密；
+/// 已锁定 → 必须先解锁（避免绕过旧主密码）。
+fn vault_set_master_password(st: &mut AppState) {
+    st.vault_clear_armed = false;
+    let master = st.ui.get_vault_password().to_string();
+    if master.is_empty() {
+        vault_fail(st, "请输入主密码");
+        return;
+    }
+    match st.vault.status() {
+        vault::VaultStatus::Uninitialized => match st.vault.initialize(&master) {
+            Ok(()) => {
+                st.ui.set_vault_password("".into());
+                refresh_vault_ui(st);
+                vault_notice(st, "主密码已设置，Vault 已解锁（空 vault）");
+                eprintln!("[vault] 初始化完成");
+            },
+            Err(e) => vault_fail(st, e.to_string()),
+        },
+        vault::VaultStatus::Unlocked => match st.vault.change_master(&master) {
+            Ok(()) => {
+                st.ui.set_vault_password("".into());
+                refresh_vault_ui(st);
+                vault_notice(st, "主密码已更新；凭据已用新密钥重新加密");
+                eprintln!("[vault] 主密码已更新");
+            },
+            Err(e) => vault_fail(st, e.to_string()),
+        },
+        vault::VaultStatus::Locked => {
+            vault_fail(st, "Vault 已锁定：先用当前主密码解锁，再修改主密码");
+        },
+    }
+}
+
+fn vault_unlock(st: &mut AppState) {
+    st.vault_clear_armed = false;
+    let master = st.ui.get_vault_password().to_string();
+    if master.is_empty() {
+        vault_fail(st, "请输入主密码");
+        return;
+    }
+    match st.vault.unlock(&master) {
+        Ok(()) => {
+            st.ui.set_vault_password("".into());
+            refresh_vault_ui(st);
+            vault_notice(st, format!("已解锁 · {} 条凭据", st.vault.entry_count()));
+            eprintln!("[vault] 已解锁 entries={}", st.vault.entry_count());
+        },
+        Err(e) => {
+            // 密码本身不放进提示/日志。
+            refresh_vault_ui(st);
+            vault_fail(st, e.to_string());
+        },
+    }
+}
+
+fn vault_lock(st: &mut AppState) {
+    st.vault.lock();
+    st.ui.set_vault_password("".into());
+    st.vault_clear_armed = false;
+    refresh_vault_ui(st);
+    vault_notice(st, "已锁定：内存中的密钥/凭据已丢弃");
+    eprintln!("[vault] 已锁定");
+}
+
+fn vault_clear(st: &mut AppState) {
+    if !st.vault.is_unlocked() {
+        vault_fail(st, "Vault 未解锁，无法清空");
+        return;
+    }
+    if !st.vault_clear_armed {
+        st.vault_clear_armed = true;
+        let n = st.vault.entry_count();
+        vault_notice(st, format!("再次点击 Clear 确认清空 {n} 条凭据（主密码保留）"));
+        return;
+    }
+    st.vault_clear_armed = false;
+    match st.vault.clear() {
+        Ok(()) => {
+            refresh_vault_ui(st);
+            vault_notice(st, "已清空全部凭据（vault.enc 与主密码保留）");
+            eprintln!("[vault] 已清空全部凭据");
+        },
+        Err(e) => vault_fail(st, e.to_string()),
     }
 }
 
@@ -1287,7 +1560,7 @@ fn duplicate_tab(st: &mut AppState, index: usize) {
 
     let mut created = Vec::with_capacity(new_ids.len());
     for (i, cwd) in leaf_cwds.iter().enumerate() {
-        match create_pane(st, new_ids[i], cols, rows, cwd.as_ref().map(PathBuf::from), None) {
+        match create_pane(st, new_ids[i], cols, rows, cwd.as_ref().map(PathBuf::from), None, None) {
             Ok(rt) => {
                 st.panes.insert(new_ids[i], rt);
                 created.push(new_ids[i]);
@@ -1400,7 +1673,7 @@ fn restore_tab_snapshot(st: &mut AppState, tab_snap: &session::TabSnapshot) -> b
     };
     let mut created = 0;
     for (i, cwd) in cwds.iter().enumerate() {
-        match create_pane(st, ids[i], cols, rows, cwd.as_ref().map(PathBuf::from), None) {
+        match create_pane(st, ids[i], cols, rows, cwd.as_ref().map(PathBuf::from), None, None) {
             Ok(rt) => {
                 st.panes.insert(ids[i], rt);
                 created += 1;
@@ -1589,7 +1862,7 @@ fn split_pane_inner(st: &mut AppState, id: PaneId, dir: Dir) {
         Dir::Col => (cols, (rows / 2).max(3)),
     };
     let new_id = st.ws.alloc_id();
-    match create_pane(st, new_id, guess.0, guess.1, None, None) {
+    match create_pane(st, new_id, guess.0, guess.1, None, None, None) {
         Ok(rt) => {
             st.panes.insert(new_id, rt);
             st.ws.tabs[tab_index].split(id, dir, new_id);
@@ -2597,6 +2870,8 @@ fn print_diagnostics() {
     }
     println!("config={}", Config::path().display());
     println!("profiles={}", profile::ProfileStore::path().display());
+    let v = vault::Vault::open_default();
+    println!("vault={} status={}", v.path().display(), v.status().label());
     match logging::path() {
         Some(p) => println!("log={}", p.display()),
         None => println!("log=(disabled)"),
@@ -2870,6 +3145,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         bg_model,
         profiles: profile::ProfileStore::load(),
         profile_model,
+        vault: vault::Vault::open_default(),
+        vault_clear_armed: false,
         sftp_profiles: Vec::new(),
         sftp_model,
         hotkey_model,
@@ -3498,6 +3775,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     ui.on_profiles_close(|| {});
 
+    ui.on_vault_set_master(|| {
+        with_app(|st| vault_set_master_password(st));
+    });
+
+    ui.on_vault_unlock(|| {
+        with_app(|st| vault_unlock(st));
+    });
+
+    ui.on_vault_lock(|| {
+        with_app(|st| vault_lock(st));
+    });
+
+    ui.on_vault_clear(|| {
+        with_app(|st| vault_clear(st));
+    });
+
     ui.on_bg_reattach(|index| {
         with_app(|st| reattach_background(st, index.max(0) as usize));
     });
@@ -3580,6 +3873,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     ui.on_settings_category_changed(|c| {
+        with_app(|st| {
+            if c == 6 {
+                refresh_vault_ui(st);
+            } else {
+                st.vault_clear_armed = false;
+            }
+        });
         eprintln!("[ui] settings category={c}");
     });
 
@@ -3607,6 +3907,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     ui.on_settings_toggled(|open| {
+        with_app(|st| {
+            if open {
+                refresh_vault_ui(st);
+            } else {
+                st.vault_clear_armed = false;
+            }
+        });
         eprintln!("[ui] settings open={open}");
     });
 
@@ -3881,6 +4188,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         st.ui.set_cfg_confirm_paste(st.cfg.confirm_multiline_paste);
         st.ui.set_tabbar_bottom(st.cfg.tabbar_position == "bottom");
         st.ui.set_settings_path(Config::path().display().to_string().as_str().into());
+        refresh_vault_ui(st);
         let (summary, rows) = hotkey_items(&st.commands);
         st.hotkey_model
             .set_vec(rows.into_iter().map(slint::SharedString::from).collect::<Vec<_>>());
