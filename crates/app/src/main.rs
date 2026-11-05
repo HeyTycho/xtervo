@@ -3,6 +3,7 @@ mod config;
 mod glyph;
 mod keys;
 mod latency;
+mod plugin;
 mod profile;
 mod render;
 mod session;
@@ -120,6 +121,8 @@ struct AppState {
     sftp_profiles: Vec<usize>,
     sftp_model: Rc<VecModel<slint::SharedString>>,
     hotkey_model: Rc<VecModel<slint::SharedString>>,
+    plugins: plugin::PluginStore,
+    plugin_model: Rc<VecModel<slint::SharedString>>,
     /// 1003 悬停上报的上一格（按格去重，避免鼠标移动刷爆有界 ctrl 队列）。
     hover_cell: Option<(PaneId, (u16, u16))>,
     resize: Option<WindowResize>,
@@ -2250,6 +2253,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui.set_sftp_items(ModelRc::from(sftp_model.clone()));
     let hotkey_model = Rc::new(VecModel::<slint::SharedString>::default());
     ui.set_hotkey_items(ModelRc::from(hotkey_model.clone()));
+    let plugin_model = Rc::new(VecModel::<slint::SharedString>::default());
+    ui.set_plugin_items(ModelRc::from(plugin_model.clone()));
     let state = Rc::new(RefCell::new(AppState {
         ui: ui.clone_strong(),
         ws: Workspace::new(),
@@ -2283,6 +2288,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         sftp_profiles: Vec::new(),
         sftp_model,
         hotkey_model,
+        plugins: plugin::PluginStore::load(),
+        plugin_model,
         hover_cell: None,
         resize: None,
         xresize: None,
@@ -3003,6 +3010,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         st.hotkey_model
             .set_vec(rows.into_iter().map(slint::SharedString::from).collect::<Vec<_>>());
         st.ui.set_hotkey_summary(summary.as_str().into());
+        let lines: Vec<slint::SharedString> =
+            st.plugins.plugins.iter().map(|p| p.display_line().into()).collect();
+        st.plugin_model.set_vec(lines);
+        let summary = format!(
+            "{} plugins · {} enabled · {} skipped",
+            st.plugins.plugins.len(),
+            st.plugins.enabled_count(),
+            st.plugins.skipped.len()
+        );
+        st.ui.set_plugin_summary(summary.as_str().into());
+        st.ui.set_plugin_dir(plugin::PluginStore::dir().display().to_string().as_str().into());
+        eprintln!("[plugin] 发现 {} 个清单，跳过 {}", st.plugins.plugins.len(), st.plugins.skipped.len());
         eprintln!("[ui] 启动 tabbar_position={}", st.cfg.tabbar_position);
     });
 
