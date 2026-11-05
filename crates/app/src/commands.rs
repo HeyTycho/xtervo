@@ -261,7 +261,12 @@ impl std::fmt::Display for Chord {
         if self.mods.meta {
             f.write_str("Meta+")?;
         }
-        f.write_str(&self.key)
+        // 单字符键显示大写（Ctrl+T 而不是 Ctrl+t）；tab/f11/right 等保持原样
+        if self.key.chars().count() == 1 {
+            f.write_str(&self.key.to_uppercase())
+        } else {
+            f.write_str(&self.key)
+        }
     }
 }
 
@@ -346,7 +351,7 @@ mod tests {
         assert_eq!(s.chords.len(), 1);
         assert!(s.chords[0].mods.ctrl && s.chords[0].mods.shift);
         assert_eq!(s.chords[0].key, "p");
-        assert_eq!(s.to_string(), "Ctrl+Shift+p");
+        assert_eq!(s.to_string(), "Ctrl+Shift+P");
 
         let multi = Shortcut::parse("ctrl+k ctrl+t").unwrap();
         assert_eq!(multi.chords.len(), 2);

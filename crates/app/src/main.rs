@@ -119,6 +119,7 @@ struct AppState {
     /// SFTP 面板里可选的 SSH Profile 索引（打开面板时快照）
     sftp_profiles: Vec<usize>,
     sftp_model: Rc<VecModel<slint::SharedString>>,
+    hotkey_model: Rc<VecModel<slint::SharedString>>,
     /// 1003 悬停上报的上一格（按格去重，避免鼠标移动刷爆有界 ctrl 队列）。
     hover_cell: Option<(PaneId, (u16, u16))>,
     resize: Option<WindowResize>,
@@ -265,6 +266,31 @@ fn slint_theme(c: &UiColors) -> ThemeColors {
         accent_text: color(c.accent_text),
         danger: color(c.danger),
     }
+}
+
+/// 快捷键页数据：按分类/标题排序，格式 `[Category] Title — Ctrl+T`；返回 (摘要, 行)。
+fn hotkey_items(reg: &commands::Registry) -> (String, Vec<String>) {
+    let mut cmds: Vec<&commands::Command> = reg.all().iter().collect();
+    cmds.sort_by_key(|c| (c.category.label(), c.title));
+    let bound = cmds.iter().filter(|c| c.default_shortcut.is_some()).count();
+    let conflicts = reg.conflicts();
+    let summary = format!(
+        "{} commands · {bound} with default shortcut · {} conflicts",
+        cmds.len(),
+        conflicts.len()
+    );
+    let rows = cmds
+        .iter()
+        .map(|c| {
+            let key = c
+                .default_shortcut
+                .and_then(|s| commands::Shortcut::parse(s).ok())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "(none)".to_string());
+            format!("[{}] {} — {key}", c.category.label(), c.title)
+        })
+        .collect();
+    (summary, rows)
 }
 
 fn theme_choices(reg: &ThemeRegistry) -> ModelRc<ThemeChoice> {
@@ -2222,6 +2248,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui.set_profile_items(ModelRc::from(profile_model.clone()));
     let sftp_model = Rc::new(VecModel::<slint::SharedString>::default());
     ui.set_sftp_items(ModelRc::from(sftp_model.clone()));
+    let hotkey_model = Rc::new(VecModel::<slint::SharedString>::default());
+    ui.set_hotkey_items(ModelRc::from(hotkey_model.clone()));
     let state = Rc::new(RefCell::new(AppState {
         ui: ui.clone_strong(),
         ws: Workspace::new(),
@@ -2254,6 +2282,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         profile_model,
         sftp_profiles: Vec::new(),
         sftp_model,
+        hotkey_model,
         hover_cell: None,
         resize: None,
         xresize: None,
@@ -2970,6 +2999,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         st.ui.set_cfg_confirm_paste(st.cfg.confirm_multiline_paste);
         st.ui.set_tabbar_bottom(st.cfg.tabbar_position == "bottom");
         st.ui.set_settings_path(Config::path().display().to_string().as_str().into());
+        let (summary, rows) = hotkey_items(&st.commands);
+        st.hotkey_model
+            .set_vec(rows.into_iter().map(slint::SharedString::from).collect::<Vec<_>>());
+        st.ui.set_hotkey_summary(summary.as_str().into());
         eprintln!("[ui] 启动 tabbar_position={}", st.cfg.tabbar_position);
     });
 
@@ -3300,6 +3333,16 @@ mod tests {
         assert_eq!(normalize_clipboard_text(String::new()), None);
         // 中间空行要保留
         assert_eq!(normalize_clipboard_text("a\n\nb".into()), Some("a\n\nb".to_string()));
+    }
+
+    #[test]
+    fn hotkey_page_lists_bindings_and_conflicts() {
+        let reg = commands::builtin();
+        let (summary, rows) = hotkey_items(&reg);
+        assert!(summary.contains("conflicts"), "{summary}");
+        assert_eq!(rows.len(), reg.all().len());
+        assert!(rows.iter().any(|r| r.contains("New Tab") && r.contains("Ctrl+T")), "{rows:?}");
+        assert!(rows.iter().any(|r| r.contains("Duplicate Tab") && r.contains("(none)")));
     }
 
     #[test]
