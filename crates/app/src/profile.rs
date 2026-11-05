@@ -34,6 +34,8 @@ pub struct Profile {
     pub key_path: String,
     /// 传给 ssh 的追加参数（如 -o UserKnownHostsFile=... / -o StrictHostKeyChecking=yes）。
     pub extra_args: Vec<String>,
+    /// 本地端口转发，每项形如 `8080:localhost:80` → `ssh -L 8080:localhost:80`。
+    pub local_forwards: Vec<String>,
     // ---- serial ----
     pub serial_port: String,
     pub baud: u32,
@@ -62,6 +64,7 @@ impl Default for Profile {
             auth: "agent".to_string(),
             key_path: String::new(),
             extra_args: Vec::new(),
+            local_forwards: Vec::new(),
             serial_port: String::new(),
             baud: 115200,
         }
@@ -83,6 +86,10 @@ impl Profile {
         if !self.user.trim().is_empty() {
             args.push("-l".to_string());
             args.push(self.user.trim().to_string());
+        }
+        for f in &self.local_forwards {
+            args.push("-L".to_string());
+            args.push(f.clone());
         }
         args.extend(self.extra_args.iter().filter(|a| !a.trim().is_empty()).cloned());
         args.push(self.host.trim().to_string());
@@ -125,6 +132,15 @@ impl Profile {
                 }
                 if self.auth == "key" && self.key_path.trim().is_empty() {
                     return Err("选择 key 认证时必须填私钥路径".into());
+                }
+                for f in &self.local_forwards {
+                    let parts: Vec<&str> = f.split(':').collect();
+                    if parts.len() < 3 || parts.iter().any(|x| x.trim().is_empty()) {
+                        return Err(format!("端口转发格式应为 本地端口:主机:端口，实际: {f}"));
+                    }
+                    if parts[0].trim().parse::<u16>().map(|p| p == 0).unwrap_or(true) {
+                        return Err(format!("端口转发的本地端口无效: {f}"));
+                    }
                 }
             },
             "serial" => {
@@ -258,6 +274,23 @@ impl ProfileStore {
         profile.name = name;
         self.profiles.push(profile);
         Ok(id)
+    }
+
+    /// 更新已有 Profile（保留 ID；名字不能与其他 Profile 冲突）。
+    pub fn update(&mut self, id: u64, mut updated: Profile) -> Result<(), String> {
+        let name = updated.name.trim().to_string();
+        if name.is_empty() {
+            return Err("名字不能为空".into());
+        }
+        if self.profiles.iter().any(|p| p.id != id && p.name == name) {
+            return Err(format!("已存在同名 Profile: {name}"));
+        }
+        updated.id = id;
+        updated.name = name;
+        updated.validate()?;
+        let slot = self.profiles.iter_mut().find(|p| p.id == id).ok_or("Profile 不存在")?;
+        *slot = updated;
+        Ok(())
     }
 
     pub fn remove(&mut self, id: u64) -> bool {
@@ -411,6 +444,44 @@ shell = "/bin/sh"
             with_extra.ssh_command().1,
             vec!["-p", "22", "-l", "u", "-o", "UserKnownHostsFile=/tmp/kh", "h"]
         );
+    }
+
+    #[test]
+    fn update_keeps_id_and_rejects_duplicate_names() {
+        let mut s = ProfileStore::default();
+        let a = s.add(sample("a")).unwrap();
+        let b = s.add(sample("b")).unwrap();
+        let mut edited = sample("a2");
+        edited.shell = "/bin/zsh".into();
+        s.update(a, edited).unwrap();
+        assert_eq!(s.get(a).unwrap().name, "a2");
+        assert_eq!(s.get(a).unwrap().shell, "/bin/zsh");
+        // 改成别人的名字要拒绝
+        assert!(s.update(a, sample("b")).is_err());
+        // 空名拒绝
+        assert!(s.update(a, sample("  ")).is_err());
+        assert_eq!(s.profiles.len(), 2);
+        assert_eq!(s.get(b).unwrap().name, "b");
+    }
+
+    #[test]
+    fn ssh_forwards_become_dash_l_args() {
+        let p = Profile {
+            kind: "ssh".into(),
+            host: "h".into(),
+            port: 22,
+            user: "u".into(),
+            local_forwards: vec!["8080:localhost:80".into(), "5432:db.internal:5432".into()],
+            ..Profile::default()
+        };
+        assert_eq!(
+            p.ssh_command().1,
+            vec!["-p", "22", "-l", "u", "-L", "8080:localhost:80", "-L", "5432:db.internal:5432", "h"]
+        );
+        let bad = Profile { local_forwards: vec!["8080".into()], ..p.clone() };
+        assert!(bad.validate().unwrap_err().contains("端口转发"));
+        let bad_port = Profile { local_forwards: vec!["0:h:80".into()], ..p };
+        assert!(bad_port.validate().is_err());
     }
 
     #[test]

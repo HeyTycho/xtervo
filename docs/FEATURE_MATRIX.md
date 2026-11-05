@@ -177,7 +177,7 @@
 | UI-SSH-003 | SFTP 面板/Tab：目录导航、上级、刷新、路径输入、列表、属性 | U-AUDIT / 需求 B8 | 无实现 | not_started | 无 | 未实现 | 无 SFTP 传输层/UI |
 | UI-SSH-004 | SFTP 上传/下载/建目录/重命名/删除；危险确认 | U-AUDIT / 需求 B8 | 无实现 | not_started | 无 | 未实现 | 无 SFTP 操作 |
 | UI-SSH-005 | 传输进度、速度、已传/总大小、取消、失败重试 | U-AUDIT / 需求 B8 | 无实现 | not_started | 无 | 未实现 | 无传输任务模型/进度 UI |
-| UI-SSH-006 | Port Forward 管理：查看/添加/启停/删除，显示监听与目标 | U-AUDIT / 需求 B8 | 无实现 | not_started | 无 | 未实现 | 无端口转发 |
+| UI-SSH-006 | Port Forward 管理：查看/添加/启停/删除，显示监听与目标 | U-AUDIT / 需求 B8 | Profile `local_forwards`（`本地端口:主机:端口` 列表）→ `ssh -L` 参数；表单 SSH 组 Forwards 行 | partial | 单测 `ssh_forwards_become_dash_l_args`（含格式/端口校验） | 本地转发配置可下发 | 无独立管理面板/启停/状态；未做端到端转发验证（测试 SSH 服务未实现 direct-tcpip） |
 | UI-SSH-007 | Jump Host 配置入口与链路可视化/可读描述 | U-AUDIT / 需求 B8 | 无实现 | not_started | 无 | 未实现 | 无跳板机 |
 | UI-SSH-008 | Login Scripts 编辑器：命令/顺序/延时/等待提示符（按上游核验） | U-AUDIT（字段待核） | 无实现 | not_started | 无 | 未实现 | 无登录脚本 |
 | UI-SSH-009 | X11/Agent Forwarding 状态显示与失败提示 | U-AUDIT / 需求 B8 | 无实现 | not_started | 无 | 未实现 | 无 forwarding 状态 |
@@ -344,7 +344,7 @@
 
 | ID | Feature | Upstream evidence | Rust implementation | Status | Test | Result | Limitation |
 |---|---|---|---|---|---|---|---|
-| SESS-001 | Shell/SSH/Serial/Telnet Profile 存储、编辑、分组 | U-AUDIT / 需求 C8 | `profile.rs` v2：kind（local/ssh/serial/telnet）+ SSH(host/port/user/auth/key)/Serial(port/baud)/Telnet 字段；`validate()` 按类型校验；v1→v2 迁移自动写回；表单按 kind 切字段 | partial | 7 个单测（含按类型校验、v1 迁移写回）；真机：SSH 缺 host → 表单回显「SSH 主机不能为空」；切 Local 保存 id=1；v1 文件启动后 → `已迁移到 v2`，文件含 kind="local" | 模型/校验/迁移/新建/删除可用 | SSH/Serial/Telnet 只有配置模型，连接后端未实现；无编辑已有/分组/导入导出 |
+| SESS-001 | Shell/SSH/Serial/Telnet Profile 存储、编辑、分组 | U-AUDIT / 需求 C8 | `profile.rs` v2：四类 kind + 字段 + `validate()` + v1→v2 迁移；表单支持**新建/编辑**（行内 ✎ 回填、`)`update` 保留 ID）；行内 × 删除 | partial | 11 个单测；真机：新建（预填）→ 保存 id=1；点 ✎ → `编辑表单 id=1`、标题 Edit Profile、字段回填；保存 → `保存 id=1（共 1）`（update 未新增） | Profile 增/删/改/打开可用 | 无分组/导入导出/搜索；转发字段无专门管理 UI |
 | SESS-002 | Profile 绑定快捷键；支持默认 Profile | U-AUDIT / 需求 C8 | 无实现 | not_started | 无 | 未实现 | 无快捷键/默认 Profile |
 | SESS-003 | Split Tab 布局保存为 Profile/Workspace | U-AUDIT / 需求 C8 | 无实现 | not_started | 无 | 未实现 | 只有匿名 Restart 快照 |
 | SESS-004 | 记住打开的 Tabs/Panes；下次启动恢复工作区 | U-AUDIT / 需求 C8 | session.rs Snapshot；main.rs `capture_snapshot`/`restore_session`（仅 `--restore`）；菜单 Restart Session | partial | session.rs 5 例；人工 Restart Session（self-iteration 第 3 轮） | 手动重启可还原布局/cwd | 启动默认不恢复；无崩溃恢复；无滚动历史/运行中进程 |

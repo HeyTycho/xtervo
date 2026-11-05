@@ -57,7 +57,7 @@
 |---|---|---|---|---|---|
 | ACT-018 | Sidebar/Toolbar/Connection Manager/Profile Selector 壳 | B4/B5 入口；UI 壳先于 SSH | `main.slint`、`main.rs`、新 UI 模型 | Sidebar 显隐/宽度；Toolbar 按钮（真实动作或 disabled+原因）；Connection Manager 入口；Profile Selector 新 Tab 下拉；人工 | L |
 | ACT-019 ✅（2026-11-05：四类模型 + 按类型校验 + v1→v2 迁移 + 面板增删） | Profile 模型与存储 | B5/C8；SSH/Serial/Telnet 前置 | 新 `profile.rs`、`config.rs`、`session.rs` | Profile schema（type/name/params/group/hotkey/default）；增删改查/复制/分组/排序；迁移/校验；单测 | M |
-| ACT-020 ◐（Local 新建/删除表单已完成；编辑已有与 SSH/Serial 动态表单待做） | Profile 编辑 UI（动态表单） | B5-010..013；没有 UI 的 Profile 不可用 | `main.slint`、`main.rs`、`profile.rs` | 按类型显示字段；Local shell cwd/env/args/title；SSH General/Ports/Advanced/Ciphers/Login Scripts；Serial 参数；保存/取消/错误提示；人工 | L |
+| ACT-020 ✅（2026-11-05：四类动态表单 + 新建/编辑回填/删除） | Profile 编辑 UI（动态表单） | B5-010..013；没有 UI 的 Profile 不可用 | `main.slint`、`main.rs`、`profile.rs` | 按类型显示字段；Local shell cwd/env/args/title；SSH General/Ports/Advanced/Ciphers/Login Scripts；Serial 参数；保存/取消/错误提示；人工 | L |
 | ACT-021 | 多窗口 + Tab 跨窗口移动 | B1-009/B2-004；单窗口限制工作流 | `main.rs`、`main.slint`、`workspace.rs` | New Window；Tab 拖出成新窗口；窗口间移动；关闭一个窗口不影响另一个；人工+单测 | L |
 
 ## 4. P3：连接后端（需求 D6/D7）
