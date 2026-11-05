@@ -3,6 +3,7 @@ mod glyph;
 mod keys;
 mod latency;
 mod render;
+mod session;
 mod themes;
 mod workspace;
 mod xconn;
@@ -11,6 +12,7 @@ slint::include_modules!();
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -428,7 +430,13 @@ fn shell_name(opts: &Options) -> String {
         .unwrap_or_else(|| "shell".to_string())
 }
 
-fn create_pane(st: &AppState, id: PaneId, cols: usize, rows: usize) -> std::io::Result<PaneRuntime> {
+fn create_pane(
+    st: &AppState,
+    id: PaneId,
+    cols: usize,
+    rows: usize,
+    cwd: Option<PathBuf>,
+) -> std::io::Result<PaneRuntime> {
     let handle = spawn(PaneConfig {
         cols: cols as u16,
         rows: rows as u16,
@@ -436,7 +444,7 @@ fn create_pane(st: &AppState, id: PaneId, cols: usize, rows: usize) -> std::io::
         shell: st.cfg.shell.clone(),
         args: st.opts.args.clone(),
         palette: st.resolved_theme.palette(),
-        cwd: None,
+        cwd,
         env: Vec::new(),
     })?;
 
@@ -477,7 +485,7 @@ fn create_pane(st: &AppState, id: PaneId, cols: usize, rows: usize) -> std::io::
 fn new_tab_inner(st: &mut AppState) {
     let id = st.ws.alloc_id();
     let (cols, rows) = cell_of(st.content, st.cell);
-    match create_pane(st, id, cols, rows) {
+    match create_pane(st, id, cols, rows, None) {
         Ok(rt) => {
             st.next_title += 1;
             let n = st.next_title;
@@ -555,6 +563,174 @@ fn close_pane(id: PaneId) {
     with_app(|st| close_pane_inner(st, id));
 }
 
+// --------------------------------------------------------------- 会话快照
+
+/// 把当前布局 + 每个 pane 的 cwd 收成快照（不含屏幕内容）。
+fn capture_snapshot(st: &AppState) -> Option<session::Snapshot> {
+    if st.ws.tabs.is_empty() {
+        return None;
+    }
+    let (cols, rows) = cell_of(st.content, st.cell);
+    let mut tabs = Vec::with_capacity(st.ws.tabs.len());
+    for tab in &st.ws.tabs {
+        let root = tab.root.as_ref()?;
+        let ids = root.panes();
+        let mut cwds = HashMap::with_capacity(ids.len());
+        for id in &ids {
+            // cwd 从子进程的 /proc/<pid>/cwd 取，用户 cd 到哪就恢复到哪
+            let cwd = st
+                .panes
+                .get(id)
+                .and_then(|rt| rt.handle.pid())
+                .and_then(session::cwd_of);
+            cwds.insert(*id, cwd);
+        }
+        let focused = ids.iter().position(|id| *id == tab.focused).unwrap_or(0);
+        tabs.push(session::TabSnapshot {
+            title: tab.title.clone(),
+            focused,
+            tree: session::Tree::from_node(root, &cwds),
+        });
+    }
+    Some(session::Snapshot {
+        version: session::VERSION,
+        cols: cols as u16,
+        rows: rows as u16,
+        active: st.ws.active,
+        tabs,
+    })
+}
+
+/// 保存快照 → 拉起新进程（带 `--restore`）→ 退出当前进程。
+fn restart_session(st: &mut AppState) {
+    let Some(snap) = capture_snapshot(st) else {
+        eprintln!("[session] 没有可保存的布局，取消重启");
+        return;
+    };
+    match session::save(&snap) {
+        Ok(path) => {
+            let cwds: Vec<String> = snap
+                .tabs
+                .iter()
+                .flat_map(|t| t.tree.leaf_cwds())
+                .map(|c| c.unwrap_or_else(|| "?".into()))
+                .collect();
+            eprintln!(
+                "[session] 已保存 {}（{} 个标签 / {} 个 pane）cwd={cwds:?}",
+                path.display(),
+                snap.tabs.len(),
+                snap.tabs.iter().map(|t| t.tree.leaf_count()).sum::<usize>()
+            )
+        },
+        Err(e) => {
+            eprintln!("[session] 保存失败，取消重启: {e}");
+            return;
+        },
+    }
+
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("[session] 找不到自身可执行文件: {e}");
+            return;
+        },
+    };
+    let mut cmd = std::process::Command::new(exe);
+    cmd.arg("--restore")
+        .arg("--cols")
+        .arg(snap.cols.to_string())
+        .arg("--rows")
+        .arg(snap.rows.to_string())
+        .arg("--font-size")
+        .arg(st.opts.font_size.to_string())
+        .arg("--scrollback")
+        .arg(st.opts.scrollback.to_string());
+    if let Some(shell) = &st.opts.shell {
+        cmd.arg("--shell").arg(shell);
+    }
+    if !st.opts.args.is_empty() {
+        cmd.arg("--").args(&st.opts.args);
+    }
+    // 脱离旧进程的会话：旧窗口关掉 / 终端退出都不该把新实例一起带走。
+    #[cfg(unix)]
+    unsafe {
+        use std::os::unix::process::CommandExt;
+        cmd.pre_exec(|| {
+            libc::setsid();
+            Ok(())
+        });
+    }
+    match cmd.spawn() {
+        Ok(child) => {
+            eprintln!("[session] 已拉起新实例 pid={}，退出当前进程", child.id());
+            let _ = slint::quit_event_loop();
+        },
+        Err(e) => eprintln!("[session] 重启失败（保留当前窗口）: {e}"),
+    }
+}
+
+/// 按快照重建 tabs/panes；成功返回 true。
+fn restore_session(st: &mut AppState) -> bool {
+    let Some(snap) = session::load() else { return false };
+    if snap.tabs.is_empty() {
+        return false;
+    }
+
+    // 丢掉启动时建的默认 pane（Drop 会关掉它的 PTY）
+    st.ws.tabs.clear();
+    st.panes.clear();
+    st.pane_rows.clear();
+
+    let (cols, rows) = cell_of(st.content, st.cell);
+    for tab_snap in &snap.tabs {
+        let cwds = tab_snap.tree.leaf_cwds();
+        let ids: Vec<PaneId> = (0..cwds.len()).map(|_| st.ws.alloc_id()).collect();
+        let Some(root) = tab_snap.tree.assign(&ids) else {
+            eprintln!("[session] 布局与 pane 数量不符，跳过该标签");
+            continue;
+        };
+        let mut created = 0;
+        for (i, cwd) in cwds.iter().enumerate() {
+            match create_pane(st, ids[i], cols, rows, cwd.as_ref().map(PathBuf::from)) {
+                Ok(rt) => {
+                    st.panes.insert(ids[i], rt);
+                    created += 1;
+                },
+                Err(e) => {
+                    eprintln!("[session] pane 恢复失败: {e}");
+                    break;
+                },
+            }
+        }
+        if created != ids.len() {
+            // 半成品标签丢弃，避免留下没有 PTY 的叶子
+            for id in &ids {
+                st.panes.remove(id);
+            }
+            continue;
+        }
+        let focused = ids.get(tab_snap.focused).copied().unwrap_or(ids[0]);
+        st.ws.tabs.push(Tab {
+            title: tab_snap.title.clone(),
+            root: Some(root),
+            focused,
+            grid: HashMap::new(),
+        });
+    }
+
+    if st.ws.tabs.is_empty() {
+        return false;
+    }
+    st.ws.active = snap.active.min(st.ws.tabs.len() - 1);
+    st.next_title = st.ws.tabs.len();
+    refresh_views(st);
+    rebuild_tabs(st);
+    redraw_visible(st);
+    // 快照只消费一次：恢复成功就删掉，避免下次手动 --restore 又拉旧布局
+    session::clear();
+    true
+}
+
 fn split_pane_inner(st: &mut AppState, id: PaneId, dir: Dir) {
     eprintln!("[ws] split pane={id} dir={dir:?}");
     let Some(tab_index) = st.ws.tab_of(id) else { return };
@@ -564,7 +740,7 @@ fn split_pane_inner(st: &mut AppState, id: PaneId, dir: Dir) {
         Dir::Col => (cols, (rows / 2).max(3)),
     };
     let new_id = st.ws.alloc_id();
-    match create_pane(st, new_id, guess.0, guess.1) {
+    match create_pane(st, new_id, guess.0, guess.1, None) {
         Ok(rt) => {
             st.panes.insert(new_id, rt);
             st.ws.tabs[tab_index].split(id, dir, new_id);
@@ -1095,6 +1271,8 @@ struct Options {
     dump: bool,
     frame_clock: String,
     demo_splits: bool,
+    /// 启动时按快照恢复会话（由「Restart Session」菜单拉起）。
+    restore: bool,
 }
 
 fn parse_args(cfg: &Config) -> Options {
@@ -1123,6 +1301,7 @@ fn parse_args(cfg: &Config) -> Options {
             "--dump" => o.dump = true,
             "--frame-clock" => o.frame_clock = it.next().unwrap_or_else(|| "off".to_string()),
             "--demo-splits" => o.demo_splits = true,
+            "--restore" => o.restore = true,
             "--" => {
                 o.args = it.by_ref().collect();
                 break;
@@ -1149,6 +1328,7 @@ fn print_help() {
 --fps SECS          全屏帧率探针\n  \
 --exit-after-first  首帧后退出\n  \
 --dump              连续打印帧内容 (调试)\n  \
+--restore           按上次快照恢复会话 (由 Restart 菜单调用)\n  \
 -h, --help          显示帮助\n\n\
 快捷键: Ctrl+T 新建标签 / Ctrl+W 关闭 / Ctrl+F 搜索 / Ctrl+Shift+C 复制 / Ctrl+Shift+V 粘贴\n\
 配置: ~/.config/rusttabby/config.toml (RUSTTABBY_CONFIG 可覆盖)\n\
@@ -1554,6 +1734,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     ui.on_tabbar_context(|x, y| {
+        eprintln!("[ui] tabbar menu at {x},{y}");
         with_app(|st| {
             st.ui.set_tabmenu_x(x);
             st.ui.set_tabmenu_y(y);
@@ -1562,6 +1743,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     ui.on_tabbar_menu_action(|action| {
+        eprintln!("[ui] tabbar action={action}");
         with_app(|st| match action {
             0 => {}, // 置顶由 Slint 侧直接切换（绑定 Window.always-on-top）
             1 => {
@@ -1574,6 +1756,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             3 => {
                 let _ = slint::quit_event_loop();
             },
+            4 => restart_session(st),
             _ => {},
         });
     });
@@ -1662,11 +1845,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let poll_timer = slint::Timer::default();
     poll_timer.start(slint::TimerMode::Repeated, Duration::from_millis(400), poll_events);
 
-    // ---- 首个标签页 ----
-    with_app(|st| {
-        new_tab_inner(st);
+    // ---- 首个标签页 / 会话恢复 ----
+    let restored = with_app(|st| {
+        let restored = opts.restore && restore_session(st);
+        if !restored {
+            new_tab_inner(st);
+        }
         rebuild_tabs(st);
-    });
+        restored
+    })
+    .unwrap_or(false);
+    if restored {
+        let (tabs, panes) = with_app(|st| {
+            (st.ws.tabs.len(), st.ws.tabs.iter().map(|t| t.panes().len()).sum::<usize>())
+        })
+        .unwrap_or((0, 0));
+        eprintln!("[session] 已按快照恢复：{tabs} 个标签 / {panes} 个 pane");
+    }
 
     // ---- 可选：帧时钟 spike ----
     if opts.frame_clock != "off" {
@@ -1687,7 +1882,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // ---- 演示布局（调试用）----
-    if opts.demo_splits {
+    if opts.demo_splits && !restored {
         with_app(|st| {
             if let Some(tab) = st.ws.active_tab() {
                 let first = tab.focused;

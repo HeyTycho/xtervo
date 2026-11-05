@@ -3,5 +3,5 @@
   "first_damage_ms_max": 600,
   "min_core_tests": 16,
   "min_conformance_tests": 10,
-  "min_app_tests": 42
+  "min_app_tests": 47
 }

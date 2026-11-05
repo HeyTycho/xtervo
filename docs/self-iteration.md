@@ -164,3 +164,31 @@ cargo bench -p rusttabby-core --bench pty_throughput
 - **门禁**：`./scripts/selfcheck.sh` PASS；ready 204.9ms / first_damage 212.8ms。
 - **工程**：`git init` + 首次提交已完成；`.gitignore` 排除 `target/`、`.cargo/`、`.logs/`，
   仓库本体 1MB（不吞 16G 构建产物），后续每轮可回滚。
+
+### 2026-11-05 · 第 3 轮：会话快照 + 一键重启
+
+- **问题**：改完代码想验证只能整个进程重开，tab / 分屏 / cwd 全丢；`CoreEvent::Exited` 也没人处理，
+  shell 退出后 pane 就僵在那里。
+- **做法**：
+  - `crates/app/src/session.rs`：`Snapshot`（版本 / 网格 / active / tabs）→ 每个 tab 一棵
+    `Tree`（Leaf 带 cwd，Split 带 dir+ratio）。纯数据 + 纯函数，JSON 落盘用「临时文件 + rename」，
+    版本不符或半截文件一律当作没有快照。
+  - cwd 从子进程 `/proc/<pid>/cwd` 取，用户 cd 到哪就恢复到哪。
+  - 菜单「Restart Session」：存快照 → `setsid` 拉起自身（带 `--restore` 与当前
+    cols/rows/font-size/scrollback/shell/args）→ 退出旧进程；拉起成功才退出，失败保留窗口。
+  - 启动时 `--restore` 走 `restore_session`：清掉默认 pane，按树分配 id、逐个带 cwd 创建，
+    恢复 active/focused 后 refresh + redraw，最后消费掉快照。
+- **测试**：`session.rs` 5 例（树 ↔ JSON 往返含 ratio、id 数量校验、版本门禁 + 半截文件、
+  `/proc/self/cwd`、死 pid 不 panic）。
+- **真机验证**：
+  - 菜单重启：`已保存 … cwd=["/home/user", …]` → `已拉起新实例 pid=127` → 旧进程退出 →
+    新实例 `已按快照恢复：1 个标签 / 3 个 pane`，快照被消费，新实例 3 个 shell 全在。
+  - 手工快照（row 分屏，cwd=/usr 与 /etc）+ `--restore`：两个 pane 的 shell cwd 分别落到
+    /usr、/etc —— 证明恢复真的用了快照里的 cwd，而不是碰巧继承。
+  - 双标签快照（上下分屏 + 单 pane，active=1）：`已按快照恢复：2 个标签 / 3 个 pane`，
+    cwd 依次 /usr、/etc、/var。
+- **门禁**：PASS，ready 205.7ms / first_damage 207.1ms，app 47 / core 16 / conformance 10，
+  基线 42→47。
+- **经验**：GUI 自动化前先用 `xwin 0x<id> x y` 把窗口钉住，坐标从日志
+  `[ui] tabbar menu at x,y` 反推——窗口管理器会挪窗口，写死坐标会随机点空。
+- **遗留**：只存布局与 cwd，不存滚动历史/运行中程序；`Exited` 仍无 UI 提示，pane 退出后不会自动重启。
