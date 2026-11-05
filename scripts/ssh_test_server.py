@@ -150,10 +150,12 @@ class TestSftpIface(SFTPServerInterface):
 
 
 class TestServer(paramiko.ServerInterface):
-    def __init__(self):
+    def __init__(self, password=None):
         super().__init__()
         # 记录走 sftp subsystem 的通道，主循环不要再把它们当 shell 发 banner
         self.sftp_channels = set()
+        # 为 Vault/密码认证测试准备的固定密码；None 表示只允许公钥
+        self.password = password
 
     def check_channel_subsystem_request(self, channel, name):
         if name == "sftp":
@@ -164,8 +166,14 @@ class TestServer(paramiko.ServerInterface):
     def check_auth_publickey(self, username, key):
         return paramiko.AUTH_SUCCESSFUL if username == "test" else paramiko.AUTH_FAILED
 
+    def check_auth_password(self, username, password):
+        if self.password is not None and username == "test" and password == self.password:
+            print("[ssh-test] password auth ok", flush=True)
+            return paramiko.AUTH_SUCCESSFUL
+        return paramiko.AUTH_FAILED
+
     def get_allowed_auths(self, username):
-        return "publickey"
+        return "publickey,password" if self.password is not None else "publickey"
 
     def check_channel_request(self, kind, chanid):
         return paramiko.OPEN_SUCCEEDED
@@ -257,6 +265,7 @@ def main():
     ap.add_argument("--echo-port", type=int, default=9000)
     ap.add_argument("--host-key", required=True, help="ed25519 私钥文件路径")
     ap.add_argument("--sftp-root", default=SFTP_ROOT, help="SFTP 暴露的本地目录")
+    ap.add_argument("--password", default=None, help="启用密码认证并设置固定密码（Vault 测试用）")
     args = ap.parse_args()
 
     SFTP_ROOT = args.sftp_root
@@ -279,7 +288,7 @@ def main():
         transport.add_server_key(host_key)
         # 注册到 transport，默认的 check_channel_subsystem_request 会启动 handler
         transport.set_subsystem_handler("sftp", SFTPServer, TestSftpIface)
-        server = TestServer()
+        server = TestServer(password=args.password)
         try:
             transport.start_server(server=server)
         except paramiko.SSHException as e:
