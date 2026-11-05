@@ -116,6 +116,9 @@ struct AppState {
     bg_model: Rc<VecModel<slint::SharedString>>,
     profiles: profile::ProfileStore,
     profile_model: Rc<VecModel<slint::SharedString>>,
+    /// SFTP 面板里可选的 SSH Profile 索引（打开面板时快照）
+    sftp_profiles: Vec<usize>,
+    sftp_model: Rc<VecModel<slint::SharedString>>,
     /// 1003 悬停上报的上一格（按格去重，避免鼠标移动刷爆有界 ctrl 队列）。
     hover_cell: Option<(PaneId, (u16, u16))>,
     resize: Option<WindowResize>,
@@ -735,6 +738,117 @@ fn save_profile_form(st: &mut AppState) {
             eprintln!("[profile] 表单校验失败: {e}");
             st.ui.set_form_error(e.as_str().into());
         },
+    }
+}
+
+// ------------------------------------------------------------ SFTP 面板
+
+fn sftp_profile_indices(st: &AppState) -> Vec<usize> {
+    st.profiles
+        .profiles
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.kind == "ssh")
+        .map(|(i, _)| i)
+        .collect()
+}
+
+fn open_sftp_panel(st: &mut AppState) {
+    let indices = sftp_profile_indices(st);
+    let names: Vec<slint::SharedString> =
+        indices.iter().map(|i| st.profiles.profiles[*i].name.clone().into()).collect();
+    st.sftp_profiles = indices;
+    let model = Rc::new(VecModel::from(names));
+    st.ui.set_sftp_profiles(ModelRc::from(model));
+    st.sftp_model.set_vec(Vec::<slint::SharedString>::new());
+    st.ui.set_sftp_target(0);
+    st.ui.set_sftp_selected(-1);
+    st.ui.set_sftp_status(
+        if st.sftp_profiles.is_empty() {
+            "没有 SSH Profile，先到 Profiles 里建一个"
+        } else {
+            "选择 Profile，点 List"
+        }
+        .into(),
+    );
+    st.ui.set_sftp_open(true);
+    eprintln!("[sftp] 打开面板 profiles={}", st.sftp_profiles.len());
+}
+
+fn sftp_current_target(st: &AppState) -> Option<sftp::SftpTarget> {
+    let i = st.ui.get_sftp_target().max(0) as usize;
+    let idx = *st.sftp_profiles.get(i)?;
+    sftp::SftpTarget::from_profile(&st.profiles.profiles[idx]).ok()
+}
+
+fn sftp_set_status(st: &mut AppState, msg: &str) {
+    st.ui.set_sftp_status(msg.into());
+    eprintln!("[sftp] {msg}");
+}
+
+fn sftp_do_list(st: &mut AppState) {
+    let Some(target) = sftp_current_target(st) else {
+        sftp_set_status(st, "请选择 SSH Profile");
+        return;
+    };
+    let remote = st.ui.get_sftp_remote().to_string();
+    sftp_set_status(st, "列目录中…");
+    match sftp::list(&target, &remote) {
+        Ok(items) => {
+            let n = items.len();
+            let names: Vec<slint::SharedString> = items.into_iter().map(|s| s.into()).collect();
+            st.sftp_model.set_vec(names);
+            st.ui.set_sftp_selected(-1);
+            sftp_set_status(st, &format!("{n} 个条目"));
+        },
+        Err(e) => sftp_set_status(st, &format!("列目录失败: {e}")),
+    }
+}
+
+fn join_remote(dir: &str, name: &str) -> String {
+    let trimmed = dir.trim_end_matches('/');
+    if trimmed.is_empty() {
+        format!("/{name}")
+    } else {
+        format!("{trimmed}/{name}")
+    }
+}
+
+fn sftp_do_download(st: &mut AppState) {
+    let Some(target) = sftp_current_target(st) else {
+        sftp_set_status(st, "请选择 SSH Profile");
+        return;
+    };
+    let sel = st.ui.get_sftp_selected();
+    let Some(item) = st.sftp_model.row_data(sel.max(0) as usize) else {
+        sftp_set_status(st, "先在列表里选一条");
+        return;
+    };
+    let remote = join_remote(&st.ui.get_sftp_remote(), &item);
+    let local = st.ui.get_sftp_local().to_string();
+    match sftp::download(&target, &remote, &local) {
+        Ok(()) => sftp_set_status(st, &format!("已下载 {remote} → {local}")),
+        Err(e) => sftp_set_status(st, &format!("下载失败: {e}")),
+    }
+}
+
+fn sftp_do_upload(st: &mut AppState) {
+    let Some(target) = sftp_current_target(st) else {
+        sftp_set_status(st, "请选择 SSH Profile");
+        return;
+    };
+    let local = st.ui.get_sftp_local().to_string();
+    let name = std::path::Path::new(&local)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "upload.bin".to_string());
+    let remote = join_remote(&st.ui.get_sftp_remote(), &name);
+    match sftp::upload(&target, &local, &remote) {
+        Ok(()) => {
+            sftp_set_status(st, &format!("已上传 {local} → {remote}"));
+            sftp_do_list(st);
+        },
+        Err(e) => sftp_set_status(st, &format!("上传失败: {e}")),
     }
 }
 
@@ -2106,6 +2220,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui.set_background_items(ModelRc::from(bg_model.clone()));
     let profile_model = Rc::new(VecModel::<slint::SharedString>::default());
     ui.set_profile_items(ModelRc::from(profile_model.clone()));
+    let sftp_model = Rc::new(VecModel::<slint::SharedString>::default());
+    ui.set_sftp_items(ModelRc::from(sftp_model.clone()));
     let state = Rc::new(RefCell::new(AppState {
         ui: ui.clone_strong(),
         ws: Workspace::new(),
@@ -2136,6 +2252,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         bg_model,
         profiles: profile::ProfileStore::load(),
         profile_model,
+        sftp_profiles: Vec::new(),
+        sftp_model,
         hover_cell: None,
         resize: None,
         xresize: None,
@@ -2516,6 +2634,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         with_app(|st| st.ui.set_rename_open(false));
     });
 
+    ui.on_sftp_list(|| {
+        with_app(|st| sftp_do_list(st));
+    });
+
+    ui.on_sftp_pick(|index| {
+        with_app(|st| st.ui.set_sftp_selected(index.max(0)));
+    });
+
+    ui.on_sftp_download(|| {
+        with_app(|st| sftp_do_download(st));
+    });
+
+    ui.on_sftp_upload(|| {
+        with_app(|st| sftp_do_upload(st));
+    });
+
+    ui.on_sftp_close(|| {});
+
     ui.on_profile_open(|index| {
         with_app(|st| open_profile_tab(st, index.max(0) as usize));
     });
@@ -2719,6 +2855,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             7 => reattach_last_background(st),
             8 => open_background_panel(st),
             9 => open_profiles_panel(st),
+            10 => open_sftp_panel(st),
             6 => {
                 st.cfg.tabbar_position =
                     if st.cfg.tabbar_position == "bottom" { "top".into() } else { "bottom".into() };
@@ -3163,6 +3300,13 @@ mod tests {
         assert_eq!(normalize_clipboard_text(String::new()), None);
         // 中间空行要保留
         assert_eq!(normalize_clipboard_text("a\n\nb".into()), Some("a\n\nb".to_string()));
+    }
+
+    #[test]
+    fn remote_join_avoids_double_slashes() {
+        assert_eq!(join_remote("/", "a"), "/a");
+        assert_eq!(join_remote("/tmp", "a"), "/tmp/a");
+        assert_eq!(join_remote("/tmp/", "a"), "/tmp/a");
     }
 
     #[test]

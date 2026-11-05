@@ -339,6 +339,20 @@ export component MainWindow inherits Window {
     in-out property <string> form-error: "";
     callback profile-form-save();
     callback profile-form-cancel();
+    // SFTP 面板
+    in-out property <bool> sftp-open: false;
+    in property <[string]> sftp-profiles: [];
+    in property <[string]> sftp-items: [];
+    in-out property <int> sftp-target: 0;
+    in-out property <string> sftp-remote: "/";
+    in-out property <string> sftp-local: "/tmp/rusttabby-sftp";
+    in-out property <int> sftp-selected: -1;
+    in-out property <string> sftp-status: "";
+    callback sftp-list();
+    callback sftp-pick(int);
+    callback sftp-download();
+    callback sftp-upload();
+    callback sftp-close();
     // 后台会话列表
     in-out property <bool> bg-open: false;
     in property <[string]> background-items: [];
@@ -463,7 +477,7 @@ export component MainWindow inherits Window {
                             root.tabbar-context(
                                 title-hit.mouse-x,
                                 // 菜单贴在 TabBar 所在的那一侧
-                                root.tabbar-bottom ? root.height - root.tabbar-height - 276px : root.tabbar-height,
+                                root.tabbar-bottom ? root.height - root.tabbar-height - 306px : root.tabbar-height,
                             );
                             return EventResult.accept;
                         }
@@ -971,7 +985,7 @@ export component MainWindow inherits Window {
         x: Math.min(root.tabmenu-x, root.width - 180px);
         y: root.tabmenu-y;
         width: 170px;
-        height: 306px;
+        height: 336px;
         background: Palette.colors.raise;
         border-radius: 8px;
         border-width: 1px;
@@ -1016,6 +1030,10 @@ export component MainWindow inherits Window {
             MenuRow {
                 label: "Profiles";
                 picked => { root.tabmenu-open = false; root.tabbar-menu-action(9); }
+            }
+            MenuRow {
+                label: "SFTP";
+                picked => { root.tabmenu-open = false; root.tabbar-menu-action(10); }
             }
             MenuRow {
                 label: "Close Window";
@@ -1342,6 +1360,163 @@ export component MainWindow inherits Window {
                 color: Palette.colors.accent-text;
                 font-size: 12px;
                 font-weight: 600;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                width: 100%;
+                height: 100%;
+            }
+        }
+    }
+
+    if root.sftp-open : Rectangle {
+        x: (root.width - 460px) / 2;
+        y: (root.height - 420px) / 2;
+        width: 460px;
+        height: 420px;
+        background: Palette.colors.raise;
+        border-radius: 10px;
+        border-width: 1px;
+        border-color: Palette.colors.border;
+        drop-shadow-blur: 24px;
+        drop-shadow-offset-y: 8px;
+        drop-shadow-color: #000000c0;
+
+        Text {
+            x: 16px; y: 12px;
+            text: "SFTP";
+            color: Palette.colors.text;
+            font-size: 15px;
+            font-weight: 600;
+        }
+
+        // SSH Profile 选择（只列 SSH 类型）
+        HorizontalLayout {
+            x: 16px; y: 42px;
+            width: 428px; height: 24px;
+            spacing: 8px;
+            for p[i] in root.sftp-profiles : ChoiceBtn {
+                width: 120px; height: 24px; font-size: 11px;
+                label: p;
+                active: root.sftp-target == i;
+                clicked => { root.sftp-target = i; }
+            }
+        }
+
+        FormRow {
+            x: 16px; y: 76px; width: 428px; height: 26px;
+            label: "Remote"; text <=> root.sftp-remote;
+        }
+
+        Rectangle {
+            x: 16px; y: 112px; width: 80px; height: 26px; border-radius: 5px;
+            background: sftp-list-hit.has-hover ? Palette.colors.hover : Palette.colors.raise;
+            border-width: 1px;
+            border-color: Palette.colors.border;
+            sftp-list-hit := TouchArea { clicked => { root.sftp-list(); } }
+            Text {
+                text: "List";
+                color: Palette.colors.text;
+                font-size: 12px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                width: 100%;
+                height: 100%;
+            }
+        }
+
+        Text {
+            x: 104px; y: 118px;
+            width: 340px;
+            text: root.sftp-status;
+            color: Palette.colors.muted;
+            font-size: 11px;
+            overflow: elide;
+        }
+
+        // 远端条目列表（固定行高 24px）
+        Rectangle {
+            x: 16px; y: 146px; width: 428px; height: 200px;
+            background: Palette.colors.bg;
+            border-radius: 6px;
+            border-width: 1px;
+            border-color: Palette.colors.border;
+
+            VerticalLayout {
+                x: 2px; y: 2px; width: 424px; height: 196px;
+                spacing: 0px;
+
+                for item[i] in root.sftp-items : Rectangle {
+                    height: 24px;
+                    background: root.sftp-selected == i
+                        ? Palette.colors.hover
+                        : (row-hit.has-hover ? Palette.colors.surface : transparent);
+
+                    Text {
+                        x: 8px;
+                        width: parent.width - 16px;
+                        text: item;
+                        color: Palette.colors.text;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+
+                    row-hit := TouchArea {
+                        clicked => { root.sftp-pick(i); }
+                    }
+                }
+            }
+        }
+
+        FormRow {
+            x: 16px; y: 356px; width: 428px; height: 26px;
+            label: "Local"; text <=> root.sftp-local;
+        }
+
+        Rectangle {
+            x: 16px; y: 390px; width: 150px; height: 24px; border-radius: 5px;
+            background: sftp-get-hit.has-hover ? Palette.colors.hover : Palette.colors.raise;
+            border-width: 1px;
+            border-color: Palette.colors.border;
+            sftp-get-hit := TouchArea { clicked => { root.sftp-download(); } }
+            Text {
+                text: "Download selected";
+                color: Palette.colors.text;
+                font-size: 11px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                width: 100%;
+                height: 100%;
+            }
+        }
+
+        Rectangle {
+            x: 174px; y: 390px; width: 90px; height: 24px; border-radius: 5px;
+            background: sftp-put-hit.has-hover ? Palette.colors.hover : Palette.colors.raise;
+            border-width: 1px;
+            border-color: Palette.colors.border;
+            sftp-put-hit := TouchArea { clicked => { root.sftp-upload(); } }
+            Text {
+                text: "Upload";
+                color: Palette.colors.text;
+                font-size: 11px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                width: 100%;
+                height: 100%;
+            }
+        }
+
+        Rectangle {
+            x: 364px; y: 390px; width: 80px; height: 24px; border-radius: 5px;
+            background: sftp-close-hit.has-hover ? Palette.colors.hover : Palette.colors.raise;
+            border-width: 1px;
+            border-color: Palette.colors.border;
+            sftp-close-hit := TouchArea { clicked => { root.sftp-open = false; root.sftp-close(); } }
+            Text {
+                text: "Close";
+                color: Palette.colors.text;
+                font-size: 11px;
                 horizontal-alignment: center;
                 vertical-alignment: center;
                 width: 100%;
