@@ -149,6 +149,10 @@ struct AppState {
     hotkey_recording: Option<&'static str>,
     plugins: plugin::PluginStore,
     plugin_model: Rc<VecModel<slint::SharedString>>,
+    /// Plugins 设置页「最近插件活动」模型（新→旧）。
+    plugin_activity_model: Rc<VecModel<slint::SharedString>>,
+    /// 与 `PluginStore` 活动日志 revision 对齐，避免每 400ms 无谓刷新 Slint model。
+    plugin_activity_revision: u64,
     /// Delete 需要点两次确认（避免误删远端文件）
     sftp_delete_armed: bool,
     /// Quake 模式窗口当前是否可见；以及进入 Quake 前的普通几何（退出时恢复）
@@ -430,6 +434,45 @@ fn refresh_hotkeys(st: &mut AppState) {
         .map(|i| i as i32)
         .unwrap_or(-1);
     st.ui.set_hotkey_recording_row(recording);
+}
+
+/// 刷新 Plugins 设置页：已安装清单、统计、目录与最近活动。
+fn refresh_plugin_page(st: &mut AppState) {
+    let lines: Vec<slint::SharedString> =
+        st.plugins.display_lines().iter().map(|line| line.as_str().into()).collect();
+    st.plugin_model.set_vec(lines);
+    let summary = format!(
+        "{} plugins · {} enabled · {} commands · {} skipped",
+        st.plugins.total_count(),
+        st.plugins.enabled_count(),
+        st.plugins.enabled_command_count(),
+        st.plugins.skipped.len()
+    );
+    st.ui.set_plugin_summary(summary.as_str().into());
+    st.ui.set_plugin_dir(plugin::PluginStore::dir().display().to_string().as_str().into());
+    refresh_plugin_activity(st, true);
+}
+
+/// 活动列表变化时刷新 Slint model；`force` 用于首次填充。
+///
+/// 后台线程只往 `PluginStore` 的 ActivityLog push，UI 线程在 poll_events 里按
+/// revision 拉取，避免跨线程碰 Slint model。
+fn refresh_plugin_activity(st: &mut AppState, force: bool) {
+    let (revision, lines) = st.plugins.activity_snapshot();
+    if !force && revision == st.plugin_activity_revision {
+        return;
+    }
+    st.plugin_activity_revision = revision;
+    let rows: Vec<slint::SharedString> = lines.iter().map(|line| line.as_str().into()).collect();
+    st.plugin_activity_model.set_vec(rows);
+}
+
+/// 异步分发一个插件事件；spawn 失败/插件执行失败都只写日志与活动列表。
+fn dispatch_plugin_event(st: &mut AppState, event: plugin::PluginEvent, payload: serde_json::Value) {
+    let spawned = st.plugins.spawn_event(event, payload);
+    if spawned > 0 {
+        eprintln!("[plugin] 事件 {} 已提交后台执行（{} 个插件）", event.as_str(), spawned);
+    }
 }
 
 fn hotkey_title(reg: &commands::Registry, id: &str) -> String {
@@ -789,10 +832,12 @@ fn new_tab_inner(st: &mut AppState) {
         Ok(rt) => {
             st.next_title += 1;
             let n = st.next_title;
+            let title = format!("Terminal {n}");
             st.panes.insert(id, rt);
-            st.ws.tabs.push(Tab::single(id, format!("Terminal {n}")));
+            st.ws.tabs.push(Tab::single(id, title.clone()));
             eprintln!("[ws] new tab: tabs={}", st.ws.tabs.len());
             st.ws.active = st.ws.tabs.len() - 1;
+            dispatch_plugin_event(st, plugin::PluginEvent::TabOpen, plugin::tab_open_payload(&title, "local"));
             refresh_views(st);
             rebuild_tabs(st);
             redraw_pane_inner(st, id);
@@ -1064,11 +1109,13 @@ fn open_profile_tab(st: &mut AppState, index: usize) {
     let (cols, rows) = cell_of(st.content, st.cell);
     match create_pane(st, id, cols, rows, None, Some(&spec), askpass) {
         Ok(rt) => {
+            let tab_title = p.name.clone();
             st.panes.insert(id, rt);
-            st.ws.tabs.push(Tab::single(id, p.name.clone()));
+            st.ws.tabs.push(Tab::single(id, tab_title.clone()));
             st.ws.active = st.ws.tabs.len() - 1;
             st.ui.set_profiles_open(false);
             st.ui.invoke_focus_terminal();
+            dispatch_plugin_event(st, plugin::PluginEvent::TabOpen, plugin::tab_open_payload(&tab_title, &p.kind));
             refresh_views(st);
             rebuild_tabs(st);
             redraw_pane_inner(st, id);
@@ -1690,6 +1737,7 @@ fn close_tab_inner(st: &mut AppState, index: usize) {
     if index >= st.ws.tabs.len() {
         return;
     }
+    let tab_title = st.ws.tabs[index].title.clone();
     if let Some(snap) = snapshot_tab(st, index) {
         st.closed_tabs.push(snap);
         if st.closed_tabs.len() > 10 {
@@ -1705,6 +1753,7 @@ fn close_tab_inner(st: &mut AppState, index: usize) {
         }
     }
     st.ws.tabs.remove(index);
+    dispatch_plugin_event(st, plugin::PluginEvent::TabClose, plugin::tab_close_payload(&tab_title));
     if st.ws.tabs.is_empty() {
         let _ = slint::quit_event_loop();
         return;
@@ -1742,8 +1791,19 @@ fn close_other_tabs(st: &mut AppState, keep: usize) {
     if keep >= st.ws.tabs.len() {
         return;
     }
+    let closed_titles: Vec<String> = st
+        .ws
+        .tabs
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| *i != keep)
+        .map(|(_, tab)| tab.title.clone())
+        .collect();
     let dropped = st.ws.keep_only(keep);
     eprintln!("[ws] close other tabs, keep={keep}, 关闭 {} 个 pane", dropped.len());
+    for title in &closed_titles {
+        dispatch_plugin_event(st, plugin::PluginEvent::TabClose, plugin::tab_close_payload(title));
+    }
     let background = st.cfg.close_action == "background";
     for id in dropped {
         if background {
@@ -1803,16 +1863,18 @@ fn duplicate_tab(st: &mut AppState, index: usize) {
 
     let focused_idx = ids.iter().position(|id| *id == focused).unwrap_or(0);
     let focused_new = new_ids.get(focused_idx).copied().unwrap_or(new_ids[0]);
+    let new_title = format!("{title} (copy)");
     st.ws.tabs.insert(
         index + 1,
         Tab {
-            title: format!("{title} (copy)"),
+            title: new_title.clone(),
             root: Some(new_root),
             focused: focused_new,
             grid: HashMap::new(),
         },
     );
     st.ws.active = index + 1;
+    dispatch_plugin_event(st, plugin::PluginEvent::TabOpen, plugin::tab_open_payload(&new_title, "local"));
     refresh_views(st);
     rebuild_tabs(st);
     redraw_visible(st);
@@ -1820,6 +1882,7 @@ fn duplicate_tab(st: &mut AppState, index: usize) {
 
 fn close_pane_inner(st: &mut AppState, id: PaneId) {
     let Some(tab_index) = st.ws.tab_of(id) else { return };
+    let tab_title = st.ws.tabs[tab_index].title.clone();
     let emptied = st.ws.tabs[tab_index].remove(id);
     if st.cfg.close_action == "background" {
         detach_runtime(st, id);
@@ -1829,6 +1892,7 @@ fn close_pane_inner(st: &mut AppState, id: PaneId) {
     // pane_rows 只由 refresh_views 维护：在这里提前删会破坏「模型行数是否仍然对齐」的判断。
     if emptied {
         st.ws.tabs.remove(tab_index);
+        dispatch_plugin_event(st, plugin::PluginEvent::TabClose, plugin::tab_close_payload(&tab_title));
         if st.ws.tabs.is_empty() {
             let _ = slint::quit_event_loop();
             return;
@@ -1914,12 +1978,14 @@ fn restore_tab_snapshot(st: &mut AppState, tab_snap: &session::TabSnapshot) -> b
         return false;
     }
     let focused = ids.get(tab_snap.focused).copied().unwrap_or(ids[0]);
+    let tab_title = tab_snap.title.clone();
     st.ws.tabs.push(Tab {
-        title: tab_snap.title.clone(),
+        title: tab_title.clone(),
         root: Some(root),
         focused,
         grid: HashMap::new(),
     });
+    dispatch_plugin_event(st, plugin::PluginEvent::TabOpen, plugin::tab_open_payload(&tab_title, "local"));
     true
 }
 
@@ -3199,6 +3265,8 @@ fn poll_events() {
         if titles_dirty || tabs_dirty {
             rebuild_tabs(st);
         }
+        // 插件命令/事件在后台线程写活动日志；这里只按 revision 增量刷新设置页模型。
+        refresh_plugin_activity(st, false);
     });
 }
 
@@ -3564,6 +3632,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui.set_hotkey_rows(ModelRc::from(hotkey_model.clone()));
     let plugin_model = Rc::new(VecModel::<slint::SharedString>::default());
     ui.set_plugin_items(ModelRc::from(plugin_model.clone()));
+    let plugin_activity_model = Rc::new(VecModel::<slint::SharedString>::default());
+    ui.set_plugin_activity_items(ModelRc::from(plugin_activity_model.clone()));
     let settings_model = Rc::new(VecModel::<slint::SharedString>::default());
     ui.set_settings_results(ModelRc::from(settings_model.clone()));
     let fwd_model = Rc::new(VecModel::<slint::SharedString>::default());
@@ -3627,6 +3697,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         hotkey_recording: None,
         plugins,
         plugin_model,
+        plugin_activity_model,
+        plugin_activity_revision: 0,
         sftp_delete_armed: false,
         quake_visible: false,
         quake_saved: None,
@@ -4810,18 +4882,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         st.ui.set_settings_path(Config::path().display().to_string().as_str().into());
         refresh_hotkeys(st);
         refresh_vault_ui(st);
-        let lines: Vec<slint::SharedString> =
-            st.plugins.display_lines().iter().map(|line| line.as_str().into()).collect();
-        st.plugin_model.set_vec(lines);
-        let summary = format!(
-            "{} plugins · {} enabled · {} commands · {} skipped",
-            st.plugins.total_count(),
-            st.plugins.enabled_count(),
-            st.plugins.enabled_command_count(),
-            st.plugins.skipped.len()
-        );
-        st.ui.set_plugin_summary(summary.as_str().into());
-        st.ui.set_plugin_dir(plugin::PluginStore::dir().display().to_string().as_str().into());
+        refresh_plugin_page(st);
         eprintln!(
             "[plugin] 设置页 {} 个插件，{} 个启用，{} 条命令，跳过 {}",
             st.plugins.total_count(),
@@ -4830,6 +4891,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             st.plugins.skipped.len()
         );
         eprintln!("[ui] 启动 tabbar_position={}", st.cfg.tabbar_position);
+    });
+
+    // 启动事件：应用状态就绪后、首个 Tab 创建前后台分发；失败不影响主流程。
+    with_app(|st| {
+        dispatch_plugin_event(st, plugin::PluginEvent::Startup, plugin::startup_payload());
     });
 
     // ---- 首个标签页 / 会话恢复 ----
