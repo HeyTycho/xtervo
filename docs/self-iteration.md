@@ -213,3 +213,17 @@ cargo bench -p rusttabby-core --bench pty_throughput
 - **经验**：alacritty 的 `Side` 描述的是「格子边界」而不是拖动方向；跨端点的选区
   不要按方向固定传 side，按点的先后决定更稳。
 - **门禁**：PASS，ready 201.3ms / first_damage 202.2ms；app 47 / core 16 / conformance 10。
+
+### 2026-11-05 · 第 26 轮：打包/安装演练 + 4 pane 性能基线
+
+- **打包**：`SKIP_BUILD=1 ./scripts/package.sh /tmp/dist` → 183.4 MB（带符号）strip 到
+  **32.2 MB**（−82.4%），体积门禁 ≤40 MB 通过，strip 后 `--help` 冒烟通过。
+- **安装**：`PREFIX=/tmp/prefix ./scripts/install.sh` → `bin/rusttabby-app`（32.2 MB）+
+  `.desktop` + 图标；安装后的二进制 `--help` 正常。
+- **4 pane**：右键菜单做 2×2（3 条 `[ws] split`），应用 RSS **44 MB**、5 秒空闲 CPU
+  **0.2%**、子进程 5 个（4 shell + gsettings）。门禁要求 ≤220 MiB / ≤1%，均通过。
+- **历史趋势**：48 次 selfcheck，ready 前 10 次均值 202.5 ms → 最近 10 次 54.1 ms，
+  主要来自 CJK 字体回退惰性化。
+- **教训**：右键菜单行位置是 `click_y + 18 + 30*i`，且菜单 x 会被夹到
+  `min(x, 宽-160)`；按固定坐标点分屏会点错行，前两次只拆出 2 pane。
+- **门禁**：PASS，ready 45.7 ms / first_damage 46.8 ms；app 89 / core 66 / conformance 11。
