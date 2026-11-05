@@ -6,6 +6,40 @@ use std::sync::Arc;
 
 use crossbeam_channel::{bounded, Receiver, Sender, TrySendError};
 
+/// OSC 9;4 的进度状态（ConEmu / Windows Terminal 语义）。
+///
+/// 数值与协议里的 state 字段一致，UI 侧可直接转成 int。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ProgressState {
+    /// 0：清除进度。
+    #[default]
+    Clear,
+    /// 1：进行中（可能带 0..=100 的百分比）。
+    Normal,
+    /// 2：出错。
+    Error,
+    /// 3：不确定进度（没有百分比）。
+    Indeterminate,
+    /// 4：暂停。
+    Paused,
+}
+
+/// 一次进度更新。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Progress {
+    pub state: ProgressState,
+    /// 0..=100；`None` = 协议没给或给了非法/越界值。
+    pub percent: Option<u8>,
+}
+
+/// 终端主动发起的通知（OSC 9 / OSC 777 / BEL）。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Notification {
+    /// OSC 777 带标题；OSC 9 没有，留空由 UI 回退到 Tab 标题。
+    pub title: String,
+    pub body: String,
+}
+
 /// 从终端核心发往 UI 的语义事件。高频的「内容变了」不在此列：
 /// 它走 [`WakeSignal`]（容量 1，天然合并）。
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -13,6 +47,12 @@ pub enum CoreEvent {
     Title(String),
     ResetTitle,
     Bell,
+    /// OSC 9;4;[state];[percent]
+    Progress(Progress),
+    /// OSC 9;message / OSC 777;notify;title;body
+    Notification(Notification),
+    /// OSC 7;file://host/path（cwd）。MVP 只上报，不改变会话行为。
+    Cwd(String),
     /// PTY 读到 EOF / 子进程退出。
     Exited,
     CursorBlinkChange,

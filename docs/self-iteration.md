@@ -499,3 +499,21 @@ cargo bench -p tervo-core --bench pty_throughput
   `Ctrl+Shift+N` + `CUSTOM`，config.toml 出现 `[[hotkeys]]`；回终端按 `Ctrl+Shift+N`
   新开 Tab、按 `Ctrl+T` 不再开 Tab；再 Edit 一个已占用组合（如 `Ctrl+W`）应显示冲突错误；
   Reset 单项/Reset All 恢复默认；Esc 取消录制后终端输入正常。
+
+### 2026-11-05 · Tab 活动/进度/通知（OSC 9;4 / 9 / 777 + BEL）
+
+- **核心**：`alacritty_terminal` 0.26 的 vte `Handler` 没有 `osc_dispatch` 钩子（OSC 9/777
+  在 vte 内部直接丢弃），新增 `core/osc.rs` 流式状态机，在 actor `feed` 旁路扫描：
+  OSC 9;4 进度（0 清除/1 进行中/2 错误/3 不确定/4 暂停）、OSC 9 消息、OSC 777;notify、
+  BEL、OSC 7 cwd；支持 BEL/ST 终止与跨 PTY chunk；非法/越界/超长（16 KiB）忽略不 panic。
+  BEL 改由扫描器统一上报（避免与 alacritty `Event::Bell` 重复）。
+- **应用**：`PaneRuntime` 记录 progress/attention/notification；`poll_events` 消费并按 Tab
+  聚合（错误 > 进行中 > 暂停 > 不确定），TabView 显示底部进度条、百分比、错误“!”、
+  完成“✓”、未读“●”；切到该 Tab 清除未读/完成。非活动 Tab 的 OSC 9/777/BEL 走
+  `notify-send`（参数直传、不经 shell、清洗限长、命令缺失静默失败），配置
+  `desktop_notifications`（默认 true，Settings → Terminal）。
+- **测试**：core osc 12 例 + smoke `osc_progress_notification_and_bell_are_delivered`；
+  `cargo test -p tervo-core` 全绿（80：38 lib + 16 mouse_report + 15 smoke + 11 VT），
+  `cargo test -p tervo-app --bin tervo` 102 passed；`cargo build --release -p tervo-app` 通过。
+- **未做**：桌面通知点击跳转、命令完成自动检测/静音策略、OSC 633、不确定进度动画；
+  共享显示器约束下未启动 GUI，Tab 样式仅编译验证（手工步骤见报告）。

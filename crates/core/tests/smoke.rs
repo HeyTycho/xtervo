@@ -98,6 +98,52 @@ fn title_event_is_delivered() {
     }
 }
 
+#[test]
+fn osc_progress_notification_and_bell_are_delivered() {
+    // 一次 shell 脚本里依次发进度、OSC 9、OSC 777、BEL，验证 actor 旁路扫描真的接上了。
+    let handle = spawn(sh(concat!(
+        "printf '\\033]9;4;1;42\\007';",
+        "printf '\\033]9;hello\\007';",
+        "printf '\\033]777;notify;Build;done\\007';",
+        "printf '\\007'; sleep 0.5"
+    )))
+    .expect("spawn");
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut progress = None;
+    let mut notes = Vec::new();
+    let mut bell = false;
+    while Instant::now() < deadline {
+        while let Some(event) = handle.try_event() {
+            match event {
+                CoreEvent::Progress(p) => progress = Some(p),
+                CoreEvent::Notification(n) => notes.push(n),
+                CoreEvent::Bell => bell = true,
+                _ => {},
+            }
+        }
+        if progress.is_some() && notes.len() >= 2 && bell {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+
+    assert_eq!(
+        progress,
+        Some(tervo_core::Progress {
+            state: tervo_core::ProgressState::Normal,
+            percent: Some(42),
+        }),
+        "OSC 9;4 进度事件"
+    );
+    assert_eq!(notes.len(), 2, "OSC 9 + OSC 777 通知: {notes:?}");
+    assert_eq!(notes[0].title, "");
+    assert_eq!(notes[0].body, "hello");
+    assert_eq!(notes[1].title, "Build");
+    assert_eq!(notes[1].body, "done");
+    assert!(bell, "BEL 事件");
+}
+
 /// 洪峰下 UI 拉帧不得被长时间卡住（合并帧而非阻塞）。
 #[test]
 fn pull_latency_stays_bounded_under_flood() {
