@@ -36,7 +36,7 @@
 | ACT-006 | Tab 拖拽排序 + 拖出窗口策略 | B2-004 完全缺失；用户整理工作区只能重开 | `main.slint`、`main.rs`、`workspace.rs`、`session.rs` | 3 Tab 拖动后顺序变化并持久化；拖出按 ACT-002 结论执行（新窗口或明确 no-op 提示）；单测覆盖重排/越界 | M |
 | ACT-007 ◐（全屏已完成，TabBar 位置/DPI 待做） | 全屏 + TabBar 位置 + DPI/scale + Window 设置 | B1-005/006/007、UI-SET-011 成组缺口；影响所有用户 | `main.slint`、`main.rs`、`config.rs` | F11 全屏/退出；TabBar 四向（若上游确认）切换并持久化；scale factor 变化后 cell/布局正确；设置页可改；人工+截图 | M |
 | ACT-008 | Session 独立重构（Registry 与 Pane/Tab 解耦） | 需求 A3 硬约束；关闭生命周期/后台保留/断线重连/自动恢复的前置 | `pane.rs`、`main.rs`、新 `session_registry.rs`、`workspace.rs` | 关 Tab 不杀 Session（可 re-attach）；Session 有稳定 ID；3 个 pane 关/开不丢 shell；单测覆盖 detach/attach/reap | L |
-| ACT-009 | 关闭生命周期策略 + 关闭确认 | B1-008/B2-005；现在 ✕/Ctrl+W 直接杀进程，误关代价高 | `main.rs`、session registry、`config.rs`、`main.slint` | 设置可选“仅关视图/结束会话/后台保留”；关闭窗口/最后 Tab 有确认；取消不杀进程；三策略各有测试 | M |
+| ACT-009 ◐（确认已完成；生命周期策略待做） | 关闭生命周期策略 + 关闭确认 | B1-008/B2-005；现在 ✕/Ctrl+W 直接杀进程，误关代价高 | `main.rs`、session registry、`config.rs`、`main.slint` | 设置可选“仅关视图/结束会话/后台保留”；关闭窗口/最后 Tab 有确认；取消不杀进程；三策略各有测试 | M |
 | ACT-010 | Command Palette UI + 命令分发接线（命令表已完成） | B4-005/C9-001/005；`commands.rs` 已有 21 命令/快捷键解析/冲突检测/模糊搜索（8327e20），**不要重写**；缺 UI 与真实分发 | `commands.rs`、`main.rs`、`main.slint`、`config.rs` | Ctrl+Shift+P 打开面板，搜索/键盘选择/执行；main.rs 的 Ctrl+T/W/F/C/V 改走命令 ID；禁用态/上下文；命令绑定持久化；人工+单测 | L |
 | ACT-011 | Settings 框架：导航/搜索/分类/Config File | B7 引言+14 项；单卡片无法承载后续设置 | `main.slint`、`main.rs`、`config.rs` | 左侧分类（Application/Appearance/Terminal/Color Scheme/Hotkeys/Window/Config File…）；搜索过滤；Config File 显示路径/打开目录，不显示 secret；人工 | L |
 | ACT-012 | Hotkeys 设置页（录制/冲突/multi-chord） | C9-002/003/007；命令系统完成后必须让用户改键 | `main.slint`、`main.rs`、`commands.rs`、`config.rs` | 录制单键/两段键；冲突提示；清除/恢复默认；持久化；人工+单测 | M |

@@ -32,7 +32,7 @@
 7. **OSC 52 / 颜色查询 / 尺寸查询无响应**：`pane.rs` 的 `Listener::send_event` 对 `Event::ClipboardStore/Load`、`ColorRequest`、`TextAreaSizeRequest` 走 `_ => {}`；应用查询终端颜色/尺寸时拿不到回复。
 8. ~~**CLI 与实际不符**~~ 已修（2026-11-05）：`-l` 与 `--latency` 等价，`--title` 通过 `window-title` 属性真正写入窗口标题（OPS-006）。
 9. **稳定 ID 未全面落实**：需求 A3 要求 Tab/Pane/Session/Profile/Plugin 都用稳定 ID；`workspace::Tab` 只有 `Vec` 下标，`session::Snapshot` 无 ID，`PaneId` 是进程内自增（重启后重排），Profile/Plugin 尚无模型。
-10. **Session 未独立于 Pane 生命周期**：需求 A3 要求 Session 独立；当前 `PaneHandle` 同时拥有 actor/PTY/child，关闭 Pane/Tab 即 Drop 并 kill 子进程，无法“仅关视图/保留后台 Session”。
+10. **Session 未独立于 Pane 生命周期**：需求 A3 要求 Session 独立；当前 `PaneHandle` 同时拥有 actor/PTY/child，关闭 Pane/Tab 即 Drop 并 kill 子进程，无法“仅关视图/保留后台 Session”。（2026-11-05 已补关闭确认，见 UI-WIN-008，仅缓解误关，未解决生命周期解耦）
 
 ## 3. B 部分：UI 页面、控件和用户操作
 
@@ -42,14 +42,14 @@
 
 | ID | Feature | Upstream evidence | Rust implementation | Status | Test | Result | Limitation |
 |---|---|---|---|---|---|---|---|
-| UI-WIN-001 | 无系统装饰窗口，不显示传统标题栏 | U-AUDIT / 需求 B1 | main.slint `no-frame: true`；main.rs `MainWindow::new` + `set_size` | implemented | 人工：启动后窗口顶部直接是 TabBar；docs/ui-shell.md §2/§7 .logs/nf.png | 已有记录（2026-11-05）；本轮未复跑 | 依赖 winit/X11；Wayland 服务端装饰未验证 |
+| UI-WIN-001 | 无系统装饰窗口，不显示传统标题栏 | U-AUDIT / 需求 B1 | main.slint `no-frame: true`；main.rs `MainWindow::new` + `set_size` | implemented | 人工：启动后窗口顶部直接是 TabBar；docs/ui-shell.md §2/§7 .logs/nf.png；真机加 3 个 Tab 窗口宽度保持 540（Tab 条在 Flickable 里） | 已有记录（2026-11-05） | 依赖 winit/X11；Wayland 服务端装饰未验证 |
 | UI-WIN-002 | 顶部自绘 TitleBar/TabBar：图标、Tab、新建、窗口按钮 | U-AUDIT / 需求 B1 | main.slint TabBar Rectangle：品牌 Image、tabs、+、⚙、─/□/✕ | implemented | 人工：核对 5 类控件可见可点；.logs/t4.png | 已有记录（ui-shell §2/§7） | 按钮无 tooltip/accessible label；无系统菜单 |
 | UI-WIN-003 | 标题栏空白区拖动；按钮/Tab/输入区不误触发 | U-AUDIT / 需求 B1 | main.slint `WindowMoveArea` + `title-hit`；按钮/Tab 为后置 TouchArea | implemented | 人工：拖空白区移动窗口；拖按钮/Tab 不移动 | 已有记录（ui-shell §2） | 无自动化；依赖 Slint 命中顺序 |
 | UI-WIN-004 | 最大化/还原/最小化/关闭；双击标题栏 | U-AUDIT / 需求 B1 | main.rs `on_toggle_maximize`/`on_minimize_window`/`on_close_window`；main.slint 双击 title-hit | implemented | 人工：─/□/❐/✕ 与双击空白区；ui-shell §3 | 已有记录（ui-shell §3） | 关闭无确认；双击只在空白区，Tab 上双击无效 |
 | UI-WIN-005 | 窗口尺寸变化、DPI/Scale Factor、主题切换 | U-AUDIT / 需求 B1 | main.rs `on_resized`/`refresh_views`；main.slint 8 个 ResizeHandle；`push_theme` | partial | 人工：拖边缩放 + 切主题；DPI 未测（代码无 scale_factor 分支） | 缩放/主题已有记录；DPI/缩放因子未验证 | 物理像素假设；无 scale_factor 监听与跨屏 DPI 复测 |
 | UI-WIN-006 | 全屏模式及退出全屏 | U-AUDIT / 需求 B1 | main.rs F11 → `Window::set_fullscreen` 切换；`--fullscreen` 启动参数 | implemented | 真机：`--fullscreen` 后 xwininfo = 2560x1440（单屏满屏，常规窗口 540x472）；日志 `[ui] fullscreen=true` | 2026-11-05 实测通过 | F11 键盘端到端未在沙箱验证（键盘注入不可用）；无多显示器策略 |
 | UI-WIN-007 | TabBar 位置可配置：上/下/左/右 | U-AUDIT（上游支持方向待核） | 无实现 | needs_verification | 待上游核实四向是否支持 | 未核实/未实现 | 当前固定顶部；上游方向能力未知 |
-| UI-WIN-008 | 关闭窗口前对活动任务/连接确认；不误杀应保留 Session | U-AUDIT / 需求 B1 | 无实现 | not_started | 无 | 未实现 | `on_close_window` 直接 quit；关最后一个 tab 也直接退出并 Drop 所有 PaneHandle |
+| UI-WIN-008 | 关闭窗口前对活动任务/连接确认；不误杀应保留 Session | U-AUDIT / 需求 B1 | main.rs `request_close`/`needs_close_confirm` + main.slint 确认弹窗；config `confirm_close`（默认 true） | partial | 单测 `close_confirm_policy`；真机 2 tab 点 ✕ → `[ui] close confirm`；点 Cancel → `[ui] close cancelled` 且进程存活 | 多会话关闭有确认，Cancel 不杀进程 | 无“保留后台 Session/仅关视图”策略；单会话直接关（符合默认）；配置项尚无设置页入口 |
 | UI-WIN-009 | 多窗口：新建窗口、Tab 在窗口间打开/移动 | U-AUDIT / 需求 B1 | 无实现 | not_started | 无 | 未实现 | 单进程单窗口；无窗口管理器/实例间 IPC |
 
 ### B2. TabBar 操作（12 条）
