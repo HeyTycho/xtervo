@@ -181,3 +181,24 @@ fn title_event_and_grid_coexist() {
     }
     assert!(got_title, "OSC 0 标题事件没有送达");
 }
+
+#[test]
+fn osc8_hyperlink_is_exposed_in_frame() {
+    // OSC 8 ; params ; URI ST  文本  OSC 8 ; ; ST
+    // printf 里 \033 = ESC，\\ = 单个反斜杠（ST 的第二字节）
+    let script = "printf '\\033]8;;https://example.com/x\\033\\\\click\\033]8;;\\033\\\\\\r\\nEND'";
+    let (_, frame) = run(script);
+
+    // "click" 占第 0 行第 0..4 列，整段都应指向同一个 URI
+    for col in 0..5u16 {
+        assert_eq!(
+            frame.hyperlink_at(0, col as usize),
+            Some("https://example.com/x"),
+            "第 {col} 列应带上超链接"
+        );
+    }
+    // 链接结束后的格子不能再带上一个链接
+    assert_eq!(frame.hyperlink_at(0, 5), None);
+    // 没有链接的普通行也为 None
+    assert_eq!(frame.hyperlink_at(1, 0), None);
+}

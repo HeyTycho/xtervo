@@ -812,6 +812,7 @@ pub fn fill_frame<T: EventListener>(
         let grid = term.grid();
         if full {
             frame.damage.clear();
+            frame.reset_links();
             // 视口行 -> grid 行：display_offset > 0 时顶部是 Line(-offset)
             let origin = -(display_offset as i32);
             for row in 0..rows {
@@ -819,17 +820,28 @@ pub fn fill_frame<T: EventListener>(
                 let base = row * cols;
                 for col in 0..cols {
                     let cell = &grid[Point::new(line, Column(col))];
-                    frame.cells[base + col] = CellData::from_cell(cell, palette);
+                    let link = cell.hyperlink();
+                    frame.put(
+                        base + col,
+                        CellData::from_cell(cell, palette),
+                        link.as_ref().map(|h| h.uri()),
+                    );
                 }
             }
             frame.copied_cells = (rows * cols) as u32;
         } else {
-            for d in &frame.damage {
+            for i in 0..frame.damage.len() {
+                let d = frame.damage[i];
                 let line = Line(d.line as i32);
                 let base = d.line as usize * cols;
                 for col in d.left as usize..=d.right as usize {
                     let cell = &grid[Point::new(line, Column(col))];
-                    frame.cells[base + col] = CellData::from_cell(cell, palette);
+                    let link = cell.hyperlink();
+                    frame.put(
+                        base + col,
+                        CellData::from_cell(cell, palette),
+                        link.as_ref().map(|h| h.uri()),
+                    );
                 }
                 frame.copied_cells += d.right as u32 - d.left as u32 + 1;
             }

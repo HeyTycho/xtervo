@@ -5,6 +5,8 @@
 //! - 拉取时只拷贝 `Term::damage()` 报告的行段，不做整屏复制；
 //! - 颜色在此层解析为 RGB，UI 不再依赖 alacritty 的类型。
 
+use std::collections::HashMap;
+
 use alacritty_terminal::term::cell::Cell;
 use alacritty_terminal::vte::ansi::CursorShape as VteCursorShape;
 
@@ -37,12 +39,14 @@ pub struct CellData {
     /// 0x00RRGGBB
     pub bg: u32,
     pub flags: u16,
-    _pad: u16,
+    /// OSC 8 超链接在 [`Frame::hyperlinks`] 里的下标；0 = 无链接。
+    /// 复用原来的 padding，`CellData` 仍是 16 字节。
+    pub link: u16,
 }
 
 impl Default for CellData {
     fn default() -> Self {
-        Self { ch: ' ' as u32, fg: 0, bg: 0, flags: 0, _pad: 0 }
+        Self { ch: ' ' as u32, fg: 0, bg: 0, flags: 0, link: 0 }
     }
 }
 
@@ -64,7 +68,7 @@ impl CellData {
             fg: palette.resolve(cell.fg),
             bg: palette.resolve(cell.bg),
             flags: cell.flags.bits(),
-            _pad: 0,
+            link: 0,
         }
     }
 }
@@ -158,12 +162,18 @@ pub struct Frame {
     pub generation: u64,
     /// 本帧从 grid 拷贝的单元格数（性能计数器）。
     pub copied_cells: u32,
+    /// OSC 8 链接表：下标 0 是占位（无链接），1.. 为 URI。
+    /// 链接很少见，做成「单元格存 u16 索引 + 帧内字符串表」，避免每格塞 String。
+    pub hyperlinks: Vec<String>,
+    /// URI → 表下标，跨帧复用（partial 更新不会重建整表）。
+    link_index: HashMap<String, u16>,
 }
 
 impl Frame {
     pub fn new(cols: usize, rows: usize) -> Self {
         let mut f = Self { cols, rows, ..Default::default() };
         f.cells = vec![CellData::default(); cols * rows];
+        f.reset_links();
         f
     }
 
@@ -177,7 +187,50 @@ impl Frame {
         self.cells = vec![CellData::default(); cols * rows];
         self.damage.clear();
         self.full = true;
+        self.reset_links();
         true
+    }
+
+    /// 清空链接表并放回占位 0；整屏重取时调用。
+    pub fn reset_links(&mut self) {
+        self.hyperlinks.clear();
+        self.hyperlinks.push(String::new());
+        self.link_index.clear();
+    }
+
+    /// 登记一个 URI，返回表下标；0 表示放弃（表满）。
+    pub fn intern(&mut self, uri: &str) -> u16 {
+        if self.hyperlinks.is_empty() {
+            self.hyperlinks.push(String::new());
+        }
+        if let Some(&idx) = self.link_index.get(uri) {
+            return idx;
+        }
+        // 防止异常程序刷爆内存：表满后新链接一律降级为“无链接”
+        if self.hyperlinks.len() >= 4096 {
+            return 0;
+        }
+        let idx = self.hyperlinks.len() as u16;
+        self.hyperlinks.push(uri.to_string());
+        self.link_index.insert(uri.to_string(), idx);
+        idx
+    }
+
+    /// 写一个单元格，同时登记它的超链接（如果有）。
+    pub fn put(&mut self, index: usize, mut data: CellData, link: Option<&str>) {
+        if let Some(uri) = link {
+            data.link = self.intern(uri);
+        }
+        if let Some(slot) = self.cells.get_mut(index) {
+            *slot = data;
+        }
+    }
+
+    /// 取某格的超链接 URI。
+    #[inline]
+    pub fn hyperlink_at(&self, row: usize, col: usize) -> Option<&str> {
+        let idx = self.cell(row, col).link as usize;
+        (idx > 0).then(|| self.hyperlinks.get(idx)).flatten().map(|s| s.as_str())
     }
 
     #[inline]
@@ -219,5 +272,24 @@ mod tests {
     #[test]
     fn cell_data_is_16_bytes() {
         assert_eq!(std::mem::size_of::<CellData>(), 16);
+    }
+
+    #[test]
+    fn links_are_interned_and_deduped() {
+        let mut f = Frame::new(4, 2);
+        assert_eq!(f.hyperlinks.len(), 1, "占位 0 必须在");
+        let a = f.intern("https://a.example");
+        let b = f.intern("https://b.example");
+        assert_eq!(a, 1);
+        assert_eq!(b, 2);
+        assert_eq!(f.intern("https://a.example"), a, "同 URI 复用下标");
+
+        let mut cell = CellData::default();
+        f.put(0, cell, Some("https://a.example"));
+        cell.ch = 'x' as u32;
+        f.put(1, cell, None);
+        assert_eq!(f.hyperlink_at(0, 0), Some("https://a.example"));
+        assert_eq!(f.hyperlink_at(0, 1), None, "没链接的格子必须是 None");
+        assert_eq!(f.hyperlink_at(1, 0), None);
     }
 }
