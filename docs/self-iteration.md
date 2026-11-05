@@ -694,3 +694,36 @@ cargo bench -p tervo-core --bench pty_throughput
 - **手工验证**：按 `docs/PLUGIN_API.md` §6 建 `plugins/hello/{plugin.toml,run.sh}`，
   启动后看 `[plugin]` 注册日志与设置页；Palette 执行 → stdout/stderr/退出码日志；
   `exec sleep 30` → ~10s 超时 kill；`enabled=false` 重启后命令消失、设置页 disabled。
+
+### 2026-11-05 · 修复 Vault 密码 SSH 自动登录的 known_hosts 判定
+
+- **问题**：`auth=password` + `save_password` 时，host key 已在 known_hosts 中却仍记录
+  “主机密钥未在 known_hosts 中确认：本次不启用 askpass”，每次都要手动确认/输入密码。
+- **根因**：`askpass::host_key_known` 的 `ssh-keygen -F` 查找键与 OpenSSH 实际匹配规则不一致：
+  1. 没有使用 `ssh -G` 的 `hostname`：`~/.ssh/config` 里 `Host alias` + `HostName 127.0.0.1`
+     时，ssh 用解析后的 `127.0.0.1` 查 known_hosts，旧实现却用别名 `alias` 查；
+  2. `HostKeyAlias` 被拼成 `[alias]:port`，OpenSSH 实际用别名原文查表（已用 ssh 8.9 验证）；
+  3. 没有采用 `ssh -G` 的 `port`（虽然 `-p` 显式传入时通常一致）。
+  实测：`ssh-keygen -F '[vaultssh-alias]:2222'` miss、`-F '[127.0.0.1]:2222'` hit；
+  `-F '[myalias]:2222'` miss、`-F 'myalias'` hit。
+- **修复**：`host_key_known` 解析 `ssh -G` 的 `hostname`/`port`/`hostkeyalias`：
+  默认用 effective hostname + 端口构造 `host`/`[host]:port`；有 `HostKeyAlias` 时使用别名
+  原文；strict/known_hosts 路径解析与“未知 host 不使用 askpass”的保守策略不变。
+  未命中时日志打印 lookup 键、strict 与候选 known_hosts 路径（不含密码），便于判断条目是否
+  写到了应用进程看不到的位置。
+- **测试**：`cargo test -p tervo-app --bin tervo` → **136 passed**。新增 4 例：
+  `host_key_known_matches_nonstandard_port_entry`（Profile 级 `[127.0.0.1]:2222` 命中，
+  端口/主机不同必须 miss）、`ssh_keygen_matches_bracketed_port_spec`（真实 ssh-keygen
+  匹配 `[127.0.0.1]:2222`，且端口/主机不匹配时必须 miss）、
+  `host_key_known_uses_resolved_hostname_from_ssh_config`
+  （临时 ssh_config 的 Host/HostName 别名）、`host_key_known_uses_host_key_alias_verbatim`
+  （别名原文，不附加端口）；无 ssh/ssh-keygen 的环境自动 skip。
+  无 GUI 真实验证：paramiko 测试服务（`--password s3cret`）+ known_hosts 条目，直接以
+  `ssh` + `SSH_ASKPASS_REQUIRE=force` 登录成功（服务端 `password auth ok`，终端打印
+  `SSH-TEST-OK`）；未知 host 只触发一次 host key 确认、rc=255，无 askpass 密码泄露/重试；
+  askpass 日志与输出均无密码。
+- **限制**：GUI 仍受共享显示器约束未做 password 链路走查；`KnownHostsCommand` 等动态配置、
+  known_hosts 有 host 但服务器换 key 类型仍可能误判（askpass 的 `no` 兜底保证快速失败）；
+  `ssh-keygen` 不在 PATH 时保守返回 false。若 Profile Host 与 known_hosts 键完全一致
+  （如 `127.0.0.1` + `[127.0.0.1]:2222`），旧实现本身也能命中；本次修复覆盖的是此前漏判的
+  ssh 配置别名/HostKeyAlias/有效端口形态，并新增端口键的真实 `ssh-keygen -F` 回归测试。
