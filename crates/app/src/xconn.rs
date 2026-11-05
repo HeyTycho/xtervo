@@ -123,7 +123,10 @@ pub fn find_own_window(conn: &RustConnection, root: u32, title: &str) -> Option<
                 .and_then(|a| read_pid(conn, child, a.atom))
                 .is_some_and(|pid| pid == std::process::id());
             if pid_matches {
-                let title_matches = {
+                // 空标题：只按 PID 匹配（`--title` 自定义标题时用）。
+                let title_matches = if title.is_empty() {
+                    true
+                } else {
                     let wm_name = conn
                         .get_property(false, child, AtomEnum::WM_NAME, AtomEnum::ANY, 0, 1024)
                         .ok()
@@ -143,7 +146,7 @@ pub fn find_own_window(conn: &RustConnection, root: u32, title: &str) -> Option<
 }
 
 /// 设置 `_NET_WM_ICON`（ARGB CARDINAL 数组）。Slint 内置 icon 在部分环境为空，这里兜底。
-pub fn set_window_icon(rgba: &[u8], size: u16) -> Result<(), String> {
+pub fn set_window_icon(rgba: &[u8], size: u16, title: &str) -> Result<u32, String> {
     use x11rb::connection::Connection;
     use x11rb::protocol::xproto::{AtomEnum, ConnectionExt, PropMode};
     use x11rb::wrapper::ConnectionExt as _;
@@ -153,7 +156,7 @@ pub fn set_window_icon(rgba: &[u8], size: u16) -> Result<(), String> {
 
     let win = (0..50)
         .find_map(|_| {
-            let w = find_own_window(&conn, root, "Rust Tabby");
+            let w = find_own_window(&conn, root, title);
             if w.is_none() {
                 std::thread::sleep(std::time::Duration::from_millis(100));
             }
@@ -179,7 +182,7 @@ pub fn set_window_icon(rgba: &[u8], size: u16) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     eprintln!("[icon] 写入窗口 0x{win:x}，{} 个 CARDINAL", data.len());
     conn.flush().map_err(|e| e.to_string())?;
-    Ok(())
+    Ok(win)
 }
 
 /// 查询指针在 root 窗口上的绝对坐标（用于自绘拖边缩放）。

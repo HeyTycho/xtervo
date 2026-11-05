@@ -147,6 +147,10 @@ component ResizeHandle inherits TouchArea {
 
     pointer-event(event) => {
         if (event.kind == PointerEventKind.down) {
+            // 只允许左键发起窗口缩放；右键在窗口边缘不做任何事。
+            if (event.button != PointerEventButton.left) {
+                return EventResult.reject;
+            }
             root.begin(root.direction);
             return EventResult.accept;
         }
@@ -183,6 +187,10 @@ export component MainWindow inherits Window {
     callback ime-commit(string);
     callback pane-clicked(int);
     callback pane-right-clicked(int, length, length);
+    /// 菜单被点外部关闭（便于自动化验证）
+    callback menu-dismissed();
+    /// 由分隔线/边缘等非 pane 控件发起：按内容区坐标找最近的 pane 开菜单
+    callback pane-right-clicked-at(length, length);
     callback menu-action(int, int);
     callback pane-mouse-down(int, length, length, int, int);
     callback pane-mouse-move(int, length, length, int, int);
@@ -221,7 +229,10 @@ export component MainWindow inherits Window {
     in-out property <length> ime-x: 0px;
     in-out property <length> ime-y: 0px;
 
-    title: "Rust Tabby";
+    /// 窗口标题：CLI --title 覆盖；默认保持原品牌名。
+    in-out property <string> window-title: "Rust Tabby";
+
+    title: root.window-title;
     background: Palette.colors.surface;
     no-frame: true;
     always-on-top: root.pinned;
@@ -525,6 +536,9 @@ export component MainWindow inherits Window {
                     height: p.h;
                     background: Palette.colors.bg;
                     clip: true;
+                    // 多分屏时用 1px accent 边框标出输入焦点；单 pane 不画，避免常驻边框。
+                    border-width: (p.focused && root.panes.length > 1) ? 1px : 0px;
+                    border-color: Palette.colors.accent;
 
                     Image {
                         source: p.image;
@@ -612,11 +626,22 @@ export component MainWindow inherits Window {
                         width: d.vertical ? d.w + 4px : d.w;
                         height: d.vertical ? d.h : d.h + 4px;
                         mouse-cursor: d.vertical ? ew-resize : ns-resize;
+                        // 只接管左键拖拽。Slint 的 TouchArea 按下会无条件 grab，
+                        // 以前这里对任何按键都 accept，右键落在 4px 命中带里就被吞掉，
+                        // 表现为「有时候右键呼叫不出菜单」。
+                        property <bool> dragging: false;
                         pointer-event(event) => {
                             if (event.kind == PointerEventKind.down) {
-                                return EventResult.accept;
+                                if (event.button == PointerEventButton.left) {
+                                    self.dragging = true;
+                                    return EventResult.accept;
+                                }
+                                // 右键：占住这次按下，等 up 再开菜单（否则事件不会回落给 pane）
+                                return event.button == PointerEventButton.right
+                                    ? EventResult.accept
+                                    : EventResult.reject;
                             }
-                            if (event.kind == PointerEventKind.move && self.pressed) {
+                            if (event.kind == PointerEventKind.move && self.dragging) {
                                 root.divider-dragged(
                                     d.index,
                                     d.vertical ? d.x - 2px + self.mouse-x : d.x + self.mouse-x,
@@ -624,8 +649,33 @@ export component MainWindow inherits Window {
                                 );
                                 return EventResult.accept;
                             }
+                            if (event.kind == PointerEventKind.up) {
+                                self.dragging = false;
+                                if (event.button == PointerEventButton.right) {
+                                    root.pane-right-clicked-at(
+                                        d.vertical ? d.x - 2px + self.mouse-x : d.x + self.mouse-x,
+                                        d.vertical ? d.y + self.mouse-y : d.y - 2px + self.mouse-y,
+                                    );
+                                }
+                                return EventResult.accept;
+                            }
                             EventResult.reject
                         }
+                    }
+                }
+
+                // 菜单打开时，点菜单以外的任何地方都先关掉菜单（否则残留菜单会挡住后续右键）。
+                // 这层在 pane 之上、菜单之下：菜单项仍然可点。
+                if root.menu-open : TouchArea {
+                    width: 100%;
+                    height: 100%;
+                    pointer-event(event) => {
+                        if (event.kind == PointerEventKind.down) {
+                            root.menu-open = false;
+                            root.menu-dismissed();
+                            return EventResult.accept;
+                        }
+                        EventResult.reject
                     }
                 }
 

@@ -27,10 +27,10 @@
 2. **会话恢复被写成 ✅ 过度**：`docs/tabby-parity.md` 称“重启后原样拉起”；实际只有菜单 `Restart Session` 或手动 `--restore` 才恢复布局+`cwd`，正常启动**不会**恢复，也不恢复运行中进程/滚动历史。C8-004 应为 `partial`。
 3. **Tab OSC 标题并非完整跟随**：`docs/tabby-parity.md` 标 ✅；`main.rs::poll_events` 只把**活动 Tab 的首个 pane**标题写回 `tab.title`，后台 Tab、非首 pane 不更新，且无前缀/后缀/过滤。B2-008 应为 `partial`。
 4. **全屏没有实现**：`docs/tabby-parity.md` 标“🟡 可用最大化替代”；代码无 `set_fullscreen`/全屏状态，`commands.rs` 仅有 `view.toggle-fullscreen` 占位命令（未接线），最大化不是全屏。B1-006 应为 `not_started`。
-5. **Pane 焦点没有视觉状态**：`main.slint` 的 `PaneView.focused` 字段从未被引用（死字段）；`docs/ui-shell.md` 说“改用 1px 分隔线区分”，但分隔线不随焦点变化。B3-004 应为 `partial`。
+5. ~~**Pane 焦点没有视觉状态**~~ 已修（2026-11-05）：`main.slint` 按 `focused` 画 1px accent 边框，UI-PANE-004 升为 implemented。
 6. **鼠标 1002 拖动按钮编码错误**：`main.rs::on_pane_mouse_move` 在转发拖动时硬编码 `MouseButton::Left`；按住右键/中键拖动（1002）会被当成左键上报。鼠标上报文档只验证了左键/滚轮。
 7. **OSC 52 / 颜色查询 / 尺寸查询无响应**：`pane.rs` 的 `Listener::send_event` 对 `Event::ClipboardStore/Load`、`ColorRequest`、`TextAreaSizeRequest` 走 `_ => {}`；应用查询终端颜色/尺寸时拿不到回复。
-8. **CLI 与实际不符**：`--help` 写 `-l, --latency`，`parse_args` 只匹配 `--latency`；`--title` 被解析但 `main.slint` 的 `title` 硬编码 “Rust Tabby”，参数不生效（`docs/self-iteration.md` 第 1 轮遗留已提到）。
+8. ~~**CLI 与实际不符**~~ 已修（2026-11-05）：`-l` 与 `--latency` 等价，`--title` 通过 `window-title` 属性真正写入窗口标题（OPS-006）。
 9. **稳定 ID 未全面落实**：需求 A3 要求 Tab/Pane/Session/Profile/Plugin 都用稳定 ID；`workspace::Tab` 只有 `Vec` 下标，`session::Snapshot` 无 ID，`PaneId` 是进程内自增（重启后重排），Profile/Plugin 尚无模型。
 10. **Session 未独立于 Pane 生命周期**：需求 A3 要求 Session 独立；当前 `PaneHandle` 同时拥有 actor/PTY/child，关闭 Pane/Tab 即 Drop 并 kill 子进程，无法“仅关视图/保留后台 Session”。
 
@@ -80,7 +80,7 @@
 | UI-PANE-001 | 当前 Tab 新建水平/垂直分屏 | U-AUDIT / 需求 B3 | workspace.rs `Node::split`；main.rs `split_pane_inner`；右键 Split Right/Down | implemented | workspace `split_row_divides_width_with_gap`/`split_col_divides_height`；人工 .logs/m2.png | 已有记录 | 入口仅终端右键菜单；无快捷键 |
 | UI-PANE-002 | 任意层级嵌套分屏，不限于 2/4 | U-AUDIT / 需求 B3 | workspace.rs 递归 `Node` + `Tab::split`；`layout`/`dividers` 递归 | implemented | `nested_split_layout_is_contained`、`nested_dividers_have_paths`；3 pane 截图 | 已有记录（3 pane 嵌套） | 无深度上限；极深布局未压测 |
 | UI-PANE-003 | 分隔线拖动调比例；合理最小尺寸 | U-AUDIT / 需求 B3 | workspace.rs `layout`/`set_ratio`（0.1 夹取）；main.slint 分隔线 TouchArea；main.rs `on_divider_dragged` | implemented | `set_ratio_updates_layout_and_clamps`；人工 .logs/split_after.png | 已有记录 | 最小 10%；无双击复位/键盘调比例 |
-| UI-PANE-004 | 单击 Pane 聚焦；焦点有清晰视觉状态 | U-AUDIT / 需求 B3 | main.rs `focus_pane`；PaneView.focused 传给 Slint，但 main.slint 未引用该字段 | partial | 人工：点击后键盘归属正确；视觉上无焦点标记（代码走查） | 焦点逻辑可用；视觉状态缺失 | PaneView.focused 是死字段；分隔线不能表达 4+ pane 的焦点 |
+| UI-PANE-004 | 单击 Pane 聚焦；焦点有清晰视觉状态 | U-AUDIT / 需求 B3 | main.rs `focus_pane`；main.slint pane 边框按 `p.focused && root.panes.length > 1` 画 1px accent | implemented | 人工：`--demo-splits` 点击不同 pane，焦点边框跟随；单 pane 不画边框 | 2026-11-05 实测：点击切换后边框立即跟随（截图 .logs/act003-focus.xwd） | 边框宽度固定 1px；未做焦点 pane 标题条/高亮分隔线 |
 | UI-PANE-005 | 快捷键在相邻 Pane 间切换焦点 | U-AUDIT / 需求 B3 | 无实现；`commands.rs` 定义 `pane.focus-next`（Ctrl+Shift+Right），无分发 | not_started | 无 | 未实现 | 命令表占位未接线；无方向/相邻 pane 焦点算法 |
 | UI-PANE-006 | 关闭当前 Pane；最后一个 Pane 的产品定义 | U-AUDIT / 需求 B3 | main.rs `close_pane_inner`；workspace `Tab::remove`/`Node::remove`；右键 Close Pane | implemented | `remove_collapses_to_sibling`、`tab_focus_moves_after_removal`、幽灵分屏回归 | 已有记录（self-iteration 第 2 轮） | 最后一个 pane 直接删 tab/退应用；无空状态/确认 |
 | UI-PANE-007 | Pane 放大/还原（若上游提供），不改 Session 状态 | U-AUDIT（上游行为待核） | 无实现 | needs_verification | 待上游核实是否有 zoom | 未核实/未实现 | 无 pane zoom/maximize 布局状态 |
@@ -133,7 +133,7 @@
 | UI-TERM-001 | 点击终端获得输入焦点；切换不丢输入状态 | U-AUDIT / 需求 B6 | main.slint pane-hit down → `ime.focus()` + `pane-clicked`；main.rs `focus_pane` | implemented | 人工：点击不同 pane 输入；IME 候选跟随；ui-shell §3 | 已有记录 | 焦点视觉弱；无 focus in/out 上报 |
 | UI-TERM-002 | 鼠标拖选；跨行、反向、滚动自动扩展 | U-AUDIT / 需求 B6 | pane.rs `SelectionStart/Extend`+`sel_anchor`；main.rs `on_pane_mouse_down/move/up` | partial | `selection_copy_returns_text`、`backward_selection_includes_first_column`；人工 XTest 反向拖选 | 拖选/跨行/反向已有记录 | 无滚动自动扩展；无双击选词/三击选行/矩形选择 |
 | UI-TERM-003 | 复制、粘贴、全选、清屏、查找、滚到顶/底 | U-AUDIT / 需求 B6 | arboard；Ctrl+Shift+C/V；`copy_current_selection`/`paste_into_focused`；Ctrl+F；`on_pane_scrolled` | partial | 人工 Ctrl+Shift+C/V、Ctrl+F；`search_finds_and_scrolls` | 复制/粘贴/查找/滚轮可用 | 无全选/清屏/滚到顶底命令或菜单项 |
-| UI-TERM-004 | 右键菜单：复制/粘贴/查找/清屏/Profile/拆分等（按上游） | U-AUDIT（完整菜单待核） | main.slint 右键菜单 5 项；main.rs `on_menu_action` | partial | 人工右键 .logs/m1.png；代码走查菜单项 | Copy/Paste/Split Right/Split Down/Close Pane 可用 | 无 Find/Clear/Profile；上游完整项目待核；鼠标上报时右键不弹菜单 |
+| UI-TERM-004 | 右键菜单：复制/粘贴/查找/清屏/Profile/拆分等（按上游） | U-AUDIT（完整菜单待核） | main.slint 右键菜单 5 项；main.rs `on_menu_action`；分隔线/边缘右键经 `nearest_pane` 归到最近 pane；菜单点外自动关闭 | partial | 单测 `nearest_pane_handles_gaps_and_edges`；真机：分隔线右键 `[ui] right click pane=1 at 270,200`、点外 `[ui] menu dismissed` | Copy/Paste/Split Right/Split Down/Close Pane 可用；分隔线/缝隙右键不再被吞 | 无 Find/Clear/Profile；上游完整项目待核；鼠标上报模式下右键仍按设计转发给 PTY |
 | UI-TERM-005 | 可配置右键粘贴（PuTTY 风格） | U-AUDIT / 需求 B6 | 无实现 | not_started | 无 | 未实现 | 无右键粘贴设置；右键固定弹菜单 |
 | UI-TERM-006 | 可配置 Copy-on-Select | U-AUDIT / 需求 B6 | main.rs `on_pane_mouse_up` 拖选结束自动 `set_clipboard`（无开关） | partial | 人工：拖选即复制；设置中无开关 | 始终开启 copy-on-select | 无法关闭；无设置项/配置字段 |
 | UI-TERM-007 | 多行粘贴确认/警告；记住用户选择 | U-AUDIT / 需求 B6 | main.rs `paste_into_focused` 直接发送规范化文本，无确认 | not_started | 无 | 未实现 | 多行/危险内容直接进 PTY；无“记住选择” |
@@ -439,7 +439,7 @@
 | OPS-003 | 插件诊断：加载失败、API 版本冲突、权限拒绝、超时、崩溃 | U-AUDIT / 需求 C14 | 无实现 | not_started | 无 | 未实现 | 无插件系统/诊断 |
 | OPS-004 | 配置导入、导出、备份、恢复 | U-AUDIT / 需求 C14 | config.rs 迁移前 `config.toml.v<old>.bak` 备份 + 原子写；无导入/导出/恢复入口 | partial | config.rs `old_config_is_backed_up_and_migrated` | 迁移备份可用；导入导出/恢复缺失 | 只有迁移前自动备份；无用户主动备份/恢复/导出 |
 | OPS-005 | 版本信息、更新检查、更新失败反馈；Linux 包管理适配 | U-AUDIT / 需求 C14 | `--help` 打印 CARGO_PKG_VERSION；scripts/package.sh/install.sh；无更新检查 | partial | 人工 `--help`；打包脚本记录 | 版本信息/打包可用 | 无更新检查/失败反馈/自动更新策略 |
-| OPS-006 | CLI 参数与 URI/命令入口（如启动 Profile/新 Tab，按上游核验） | U-AUDIT / 需求 C14 | main.rs `parse_args`：--cols/rows/scrollback/font-size/shell/latency/fps/title/restore 等；无 URI/Profile | partial | 人工 `--help`；代码走查 | 基础 CLI 可用 | `-l` 帮助存在但未解析；`--title` 未写入窗口；无 URI/Profile 启动 |
+| OPS-006 | CLI 参数与 URI/命令入口（如启动 Profile/新 Tab，按上游核验） | U-AUDIT / 需求 C14 | main.rs `parse_args`：--cols/rows/scrollback/font-size/shell/latency(-l)/fps/title/restore 等；`window-title` 属性透传；无 URI/Profile | partial | 真机：`--title SELFTEST` → `xprop _NET_WM_NAME` 输出一致；`-l` 与 `--latency` 等价 | 2026-11-05 实测通过 | 无 URI/Profile 启动；无 --help 自动生成 |
 
 ### C15. 平台差异与明确排除项（0 条）
 
