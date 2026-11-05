@@ -287,6 +287,8 @@ export component MainWindow inherits Window {
     callback ime-commit(string);
     callback pane-clicked(int);
     callback pane-right-clicked(int, length, length);
+    callback pane-right-up(int, length, length);
+    callback pane-middle-click(int);
     /// 菜单被点外部关闭（便于自动化验证）
     callback menu-dismissed();
     /// 由分隔线/边缘等非 pane 控件发起：按内容区坐标找最近的 pane 开菜单
@@ -332,13 +334,15 @@ export component MainWindow inherits Window {
     in-out property <bool> cfg-copy-on-select: true;
     in-out property <bool> cfg-confirm-close: true;
     in-out property <bool> cfg-confirm-paste: true;
-    in-out property <bool> cfg-right-click-paste: false;
+    in-out property <string> cfg-right-click: "menu";
+    in-out property <bool> cfg-paste-middle: true;
     in-out property <bool> cfg-quake: false;
     in-out property <bool> broadcast: false;
     callback toggle-copy-on-select();
     callback toggle-confirm-close();
     callback toggle-confirm-paste();
-    callback toggle-right-click-paste();
+    callback set-right-click(string);
+    callback toggle-paste-middle();
     callback toggle-quake();
     // 多行粘贴确认
     in-out property <bool> paste-open: false;
@@ -880,12 +884,17 @@ export component MainWindow inherits Window {
                                         (event.modifiers.shift ? 1 : 0) + (event.modifiers.alt ? 2 : 0) + (event.modifiers.control ? 4 : 0));
                                     return EventResult.accept;
                                 }
-                                // 中键/右键只有在应用要求鼠标上报时才转发（否则右键留给菜单）
-                                // Tabby 语义：右键**始终**先开 Tervo 菜单（tmux/vim/Agent TUI 自己开了
-                                // 鼠标上报也不能吞掉右键菜单）。需要把右键交给应用时用 Shift+右键。
+                                // 中键：Tabby 语义，始终由 Tervo 处理（配置开启时粘贴），不转发给 TUI。
+                                if (event.button == PointerEventButton.middle) {
+                                    ime.focus();
+                                    root.pane-clicked(p.id);
+                                    root.pane-middle-click(p.id);
+                                    return EventResult.accept;
+                                }
+                                // 只剩 Shift+右键转发给 TUI；普通右键留给 Tervo 的菜单/粘贴模式。
                                 if (p.mouse-reporting
-                                    && ((event.button == PointerEventButton.right && event.modifiers.shift)
-                                        || event.button == PointerEventButton.middle)) {
+                                    && event.button == PointerEventButton.right
+                                    && event.modifiers.shift) {
                                     if (event.button == PointerEventButton.right) {
                                         root.input-trace("pane-right-forward", p.id,
                                             pane-hit.mouse-x, pane-hit.mouse-y);
@@ -925,19 +934,21 @@ export component MainWindow inherits Window {
                                         (event.modifiers.shift ? 1 : 0) + (event.modifiers.alt ? 2 : 0) + (event.modifiers.control ? 4 : 0));
                                     return EventResult.accept;
                                 }
+                                if (event.button == PointerEventButton.middle) {
+                                    return EventResult.accept;
+                                }
                                 if (p.mouse-reporting
-                                    && ((event.button == PointerEventButton.right && event.modifiers.shift)
-                                        || event.button == PointerEventButton.middle)) {
+                                    && event.button == PointerEventButton.right
+                                    && event.modifiers.shift) {
                                     root.pane-mouse-up(p.id, pane-hit.mouse-x, pane-hit.mouse-y,
                                         event.button == PointerEventButton.right ? 2 : 1,
                                         (event.modifiers.shift ? 1 : 0) + (event.modifiers.alt ? 2 : 0) + (event.modifiers.control ? 4 : 0));
                                     return EventResult.accept;
                                 }
                                 if (event.button == PointerEventButton.right) {
-                                    // 兜底：按下时若因其它元素拦截没开成，up 再补一次。
-                                    if (!root.menu-open) {
-                                        root.pane-right-clicked(p.id, p.x + pane-hit.mouse-x, p.y + pane-hit.mouse-y);
-                                    }
+                                    // 抬起交给 Rust：menu 模式在按下已弹菜单；paste/clipboard
+                                    // 用抬起时间判断短按/长按（<250ms 粘贴，否则弹菜单）。
+                                    root.pane-right-up(p.id, p.x + pane-hit.mouse-x, p.y + pane-hit.mouse-y);
                                     return EventResult.accept;
                                 }
                             }
@@ -2746,18 +2757,53 @@ export component MainWindow inherits Window {
                         toggled => { root.toggle-confirm-paste(); }
                     }
 
-                    ToggleRow {
-                        label: "Right-click pastes (PuTTY style)";
-                        on: root.cfg-right-click-paste;
-                        toggled => { root.toggle-right-click-paste(); }
+                    Text {
+                        text: "Right click";
+                        color: Palette.colors.subtext;
+                        font-size: 12px;
+                    }
+
+                    HorizontalLayout {
+                        spacing: 6px;
+                        ChoiceBtn {
+                            width: 72px; height: 24px; font-size: 10px;
+                            label: "Menu";
+                            active: root.cfg-right-click == "menu";
+                            clicked => { root.set-right-click("menu"); }
+                        }
+                        ChoiceBtn {
+                            width: 72px; height: 24px; font-size: 10px;
+                            label: "Paste";
+                            active: root.cfg-right-click == "paste";
+                            clicked => { root.set-right-click("paste"); }
+                        }
+                        ChoiceBtn {
+                            width: 82px; height: 24px; font-size: 10px;
+                            label: "Clipboard";
+                            active: root.cfg-right-click == "clipboard";
+                            clicked => { root.set-right-click("clipboard"); }
+                        }
+                        ChoiceBtn {
+                            width: 60px; height: 24px; font-size: 10px;
+                            label: "Off";
+                            active: root.cfg-right-click == "off";
+                            clicked => { root.set-right-click("off"); }
+                        }
                     }
 
                     Text {
-                        text: "字号即时生效；回滚行数对新建 pane 生效。";
+                        text: "Paste / Clipboard 短按立即执行，长按 250ms 出菜单；Clipboard 有选区时复制并清除，否则粘贴。";
                         color: Palette.colors.muted;
                         font-size: 10px;
                         wrap: word-wrap;
                     }
+
+                    ToggleRow {
+                        label: "Paste on middle-click";
+                        on: root.cfg-paste-middle;
+                        toggled => { root.toggle-paste-middle(); }
+                    }
+
                 }
 
                 if root.settings-category == 2 : VerticalLayout {
