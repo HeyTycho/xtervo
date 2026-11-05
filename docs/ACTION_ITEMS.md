@@ -1,5 +1,7 @@
 # 行动清单（ACTION_ITEMS）
 
+> 当前完成度与剩余差距的汇总见 [`CLOSURE.md`](CLOSURE.md)（228 条主条目：implemented 23 / partial 76 / needs_verification 17 / not_started 105 / unsupported 7，加权 28.6%）。
+
 > 生成日期：2026-11-05 ｜ 依据：[`FEATURE_MATRIX.md`](FEATURE_MATRIX.md)（228 条，20.2% 加权覆盖）、[`UI_INTERACTION_MATRIX.md`](UI_INTERACTION_MATRIX.md)、[`TABBY_UPSTREAM_AUDIT.md`](TABBY_UPSTREAM_AUDIT.md)、[`COMPATIBILITY_MATRIX.md`](COMPATIBILITY_MATRIX.md)。
 > 排序原则：需求 D 部分的实施顺序（UI 壳 → 工作区 → 终端 → 连接 → 设置/插件/平台），同层按“用户每天可感知 + 是否阻塞后续”排序。预估：S ≤ 0.5 天，M 1–3 天，L > 3 天（单人熟手）。
 > **P0 前 10 项以 UI 壳/工作区交互为主**（仅 ACT-002 是为解除 UI 行为待核而插入的上游审计）；连接、插件、安全排在后面。每项验收标准均可执行/可观察，不以“代码写完”作为完成。
