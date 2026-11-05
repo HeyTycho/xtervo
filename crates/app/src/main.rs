@@ -109,6 +109,8 @@ struct AppState {
     drag: Option<Drag>,
     /// 等待用户确认的多行粘贴内容
     pending_paste: Option<String>,
+    /// 后台会话：关 Tab/Pane 时按配置保留的运行时（不 drop，子进程继续跑）
+    detached: Vec<(PaneId, PaneRuntime, String)>,
     /// 1003 悬停上报的上一格（按格去重，避免鼠标移动刷爆有界 ctrl 队列）。
     hover_cell: Option<(PaneId, (u16, u16))>,
     resize: Option<WindowResize>,
@@ -515,12 +517,40 @@ fn new_tab() {
     with_app(new_tab_inner);
 }
 
+/// 关视图但保留会话：运行时挪到后台池，PaneHandle 不被 Drop，子进程继续跑。
+fn detach_runtime(st: &mut AppState, id: PaneId) {
+    let Some(rt) = st.panes.remove(&id) else { return };
+    let title = if rt.title.is_empty() { format!("session {id}") } else { rt.title.clone() };
+    eprintln!("[session] detach pane={id} title={title:?}（子进程保留）");
+    st.detached.push((id, rt, title));
+}
+
+/// 把最近一个后台会话接回当前窗口（新 Tab）。
+fn reattach_last_background(st: &mut AppState) {
+    let Some((id, rt, title)) = st.detached.pop() else {
+        eprintln!("[session] 没有可重连的后台会话");
+        return;
+    };
+    st.panes.insert(id, rt);
+    st.ws.tabs.push(Tab::single(id, title.clone()));
+    st.ws.active = st.ws.tabs.len() - 1;
+    refresh_views(st);
+    rebuild_tabs(st);
+    redraw_pane_inner(st, id);
+    eprintln!("[session] reattach pane={id} title={title:?}（剩余后台 {}）", st.detached.len());
+}
+
 fn close_tab_inner(st: &mut AppState, index: usize) {
     if index >= st.ws.tabs.len() {
         return;
     }
+    let background = st.cfg.close_action == "background";
     for id in st.ws.tabs[index].panes() {
-        st.panes.remove(&id); // Drop => 关闭 PTY / 结束 actor
+        if background {
+            detach_runtime(st, id);
+        } else {
+            st.panes.remove(&id); // Drop => 关闭 PTY / 结束 actor
+        }
     }
     st.ws.tabs.remove(index);
     if st.ws.tabs.is_empty() {
@@ -562,8 +592,13 @@ fn close_other_tabs(st: &mut AppState, keep: usize) {
     }
     let dropped = st.ws.keep_only(keep);
     eprintln!("[ws] close other tabs, keep={keep}, 关闭 {} 个 pane", dropped.len());
+    let background = st.cfg.close_action == "background";
     for id in dropped {
-        st.panes.remove(&id);
+        if background {
+            detach_runtime(st, id);
+        } else {
+            st.panes.remove(&id);
+        }
     }
     refresh_views(st);
     rebuild_tabs(st);
@@ -634,7 +669,11 @@ fn duplicate_tab(st: &mut AppState, index: usize) {
 fn close_pane_inner(st: &mut AppState, id: PaneId) {
     let Some(tab_index) = st.ws.tab_of(id) else { return };
     let emptied = st.ws.tabs[tab_index].remove(id);
-    st.panes.remove(&id);
+    if st.cfg.close_action == "background" {
+        detach_runtime(st, id);
+    } else {
+        st.panes.remove(&id);
+    }
     // pane_rows 只由 refresh_views 维护：在这里提前删会破坏「模型行数是否仍然对齐」的判断。
     if emptied {
         st.ws.tabs.remove(tab_index);
@@ -1418,6 +1457,7 @@ fn run_command(st: &mut AppState, id: &str) {
             st.cfg.save();
         },
         "session.restart" => restart_session(st),
+        "session.reattach" => reattach_last_background(st),
         "settings.open" => st.ui.set_settings_open(true),
         other => eprintln!("[ui] 未知命令 {other}"),
     }
@@ -1806,6 +1846,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         palette_sel: 0,
         drag: None,
         pending_paste: None,
+        detached: Vec::new(),
         hover_cell: None,
         resize: None,
         xresize: None,
@@ -2333,6 +2374,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
             4 => restart_session(st),
             5 => open_palette(st),
+            7 => reattach_last_background(st),
             6 => {
                 st.cfg.tabbar_position =
                     if st.cfg.tabbar_position == "bottom" { "top".into() } else { "bottom".into() };

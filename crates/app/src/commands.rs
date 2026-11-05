@@ -301,6 +301,7 @@ pub fn builtin() -> Registry {
         ("view.zoom-out", "Zoom Out", Category::View, Some("ctrl+minus")),
         ("view.zoom-reset", "Reset Zoom", Category::View, Some("ctrl+0")),
         ("session.restart", "Restart Session", Category::Session, None),
+        ("session.reattach", "Reattach Background Session", Category::Session, None),
         ("settings.open", "Open Settings", Category::Settings, None),
     ];
     for (id, title, category, shortcut) in cmds {

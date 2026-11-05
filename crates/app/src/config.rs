@@ -42,6 +42,8 @@ pub struct Config {
     pub confirm_multiline_paste: bool,
     /// TabBar 位置："top" | "bottom"。
     pub tabbar_position: String,
+    /// 关闭 Tab/Pane 时对会话的处理："end" 结束进程 | "background" 保留后台可重连。
+    pub close_action: String,
     /// 本版本不认识的键，原样保留（前向兼容）。
     #[serde(flatten)]
     pub extra: toml::Table,
@@ -63,6 +65,7 @@ impl Default for Config {
             copy_on_select: true,
             confirm_multiline_paste: true,
             tabbar_position: "top".to_string(),
+            close_action: "end".to_string(),
             extra: toml::Table::new(),
         }
     }
@@ -198,6 +201,7 @@ mod tests {
         assert!(c.copy_on_select, "默认拖选自动复制");
         assert!(c.confirm_multiline_paste, "默认多行粘贴要确认");
         assert_eq!(c.tabbar_position, "top", "默认 TabBar 在上");
+        assert_eq!(c.close_action, "end", "默认关闭即结束会话");
         assert_eq!(c.version, SCHEMA_VERSION);
     }
 
