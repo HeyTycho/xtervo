@@ -559,3 +559,15 @@ cargo bench -p tervo-core --bench pty_throughput
   - 私钥口令/其他 secret 未接 Vault；known_hosts 仍交系统 ssh。
 - **未做**：GUI 真机走查（共享显示器约束，未启动 GUI/xkey/xclick/xwin）；原生 russh；
   解锁弹窗；凭据列表 UI；Keyring。`cargo build --release -p tervo-app` 通过（见本次提交说明）。
+
+### 2026-11-05 · Profile 选择器改为独立图标（对齐 Tabby）
+
+- 用户指出 Tabby 的 Profile 不在 “+” 下拉里，而是单独入口。调整：
+  - “+” 恢复为**直接新建默认 Tab**（不再弹菜单）；
+  - 旁边新增独立 `>_` 图标，打开 Profile 菜单，菜单只包含已保存 Profile + `Manage Profiles…`；
+  - `newtab-*` 内部命名改为 `profilemenu-*`，pick 下标不再有“默认 Tab”偏移；
+  - 点外部/Esc 关闭、菜单跟随图标定位保持。
+- 真机：+ → tabs=2、无菜单；图标 → `[ui] profile menu profiles=2`；选 local-a →
+  `[ui] profile pick=0` 并进入 shell；截图 .logs/profile-menu.png / profile-menu-picked.png。
+- 旧记录中“+ 下拉”的描述已被本条取代。
+
