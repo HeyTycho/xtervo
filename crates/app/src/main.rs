@@ -550,8 +550,12 @@ fn refresh_background(st: &mut AppState) {
 }
 
 fn refresh_profiles(st: &mut AppState) {
-    let items: Vec<slint::SharedString> =
-        st.profiles.profiles.iter().map(|p| p.name.as_str().into()).collect();
+    let items: Vec<slint::SharedString> = st
+        .profiles
+        .profiles
+        .iter()
+        .map(|p| format!("[{}] {}", p.kind, p.name).into())
+        .collect();
     st.profile_model.set_vec(items);
 }
 
@@ -564,6 +568,10 @@ fn open_profiles_panel(st: &mut AppState) {
 /// 用 Profile 打开新 Tab（shell/args/env/cwd 全按 Profile）。
 fn open_profile_tab(st: &mut AppState, index: usize) {
     let Some(p) = st.profiles.profiles.get(index).cloned() else { return };
+    if p.kind != "local" {
+        eprintln!("[profile] {:?} kind={} 的后端尚未实现（SSH/Serial/Telnet 待做）", p.name, p.kind);
+        return;
+    }
     let id = st.ws.alloc_id();
     let (cols, rows) = cell_of(st.content, st.cell);
     match create_pane(st, id, cols, rows, None, Some(&p)) {
@@ -599,34 +607,58 @@ fn open_profile_form(st: &mut AppState) {
         .and_then(session::cwd_of)
         .unwrap_or_default();
     st.ui.set_form_name(name.as_str().into());
+    st.ui.set_form_kind(0);
     st.ui.set_form_shell(shell.as_str().into());
     st.ui.set_form_args("".into());
     st.ui.set_form_cwd(cwd.as_str().into());
+    st.ui.set_form_host("".into());
+    st.ui.set_form_port("22".into());
+    st.ui.set_form_user(std::env::var("USER").unwrap_or_default().as_str().into());
+    st.ui.set_form_auth("agent".into());
+    st.ui.set_form_key("".into());
+    st.ui.set_form_serial_port("/dev/ttyUSB0".into());
+    st.ui.set_form_baud("115200".into());
     st.ui.set_form_error("".into());
     st.ui.set_profile_form_open(true);
     eprintln!("[profile] 打开新建表单 name={name:?} shell={shell:?} cwd={cwd:?}");
 }
 
 fn save_profile_form(st: &mut AppState) {
+    let kind_idx = st.ui.get_form_kind().clamp(0, 3) as usize;
+    let kind = profile::KINDS[kind_idx];
     let name = st.ui.get_form_name().to_string();
-    let shell = st.ui.get_form_shell().to_string();
-    let args: Vec<String> =
-        st.ui.get_form_args().split_whitespace().map(|s| s.to_string()).collect();
-    let cwd = st.ui.get_form_cwd().to_string();
-    let p = profile::Profile {
-        name,
-        shell,
-        args,
-        cwd: (!cwd.trim().is_empty()).then(|| cwd.trim().to_string()),
-        ..profile::Profile::default()
-    };
+    let parse_port = |s: String| s.trim().parse::<u16>().unwrap_or(0);
+    let mut p = profile::Profile { name, kind: kind.to_string(), ..profile::Profile::default() };
+    match kind {
+        "ssh" => {
+            p.host = st.ui.get_form_host().to_string();
+            p.port = parse_port(st.ui.get_form_port().to_string());
+            p.user = st.ui.get_form_user().to_string();
+            p.auth = st.ui.get_form_auth().to_string();
+            p.key_path = st.ui.get_form_key().to_string();
+        },
+        "serial" => {
+            p.serial_port = st.ui.get_form_serial_port().to_string();
+            p.baud = st.ui.get_form_baud().trim().parse::<u32>().unwrap_or(0);
+        },
+        "telnet" => {
+            p.host = st.ui.get_form_host().to_string();
+            p.port = parse_port(st.ui.get_form_port().to_string());
+        },
+        _ => {
+            p.shell = st.ui.get_form_shell().to_string();
+            p.args = st.ui.get_form_args().split_whitespace().map(|s| s.to_string()).collect();
+            let cwd = st.ui.get_form_cwd().to_string();
+            p.cwd = (!cwd.trim().is_empty()).then(|| cwd.trim().to_string());
+        },
+    }
     match st.profiles.add(p) {
         Ok(id) => {
             st.profiles.save();
             refresh_profiles(st);
             st.ui.set_profile_form_open(false);
             st.ui.set_form_error("".into());
-            eprintln!("[profile] 保存 id={id}（共 {}）", st.profiles.profiles.len());
+            eprintln!("[profile] 保存 id={id} kind={kind}（共 {}）", st.profiles.profiles.len());
         },
         Err(e) => {
             eprintln!("[profile] 表单校验失败: {e}");
