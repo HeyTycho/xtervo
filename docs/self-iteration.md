@@ -471,3 +471,31 @@ cargo bench -p tervo-core --bench pty_throughput
   关掉 A，B 仍可输入；父进程日志有 `[ui] new window pid=`，新进程日志首部有
   `args=[..., "--window"]` 与 `[ui] new window process pid=`。
 
+### 2026-11-05 · 可编辑快捷键（录制/冲突/重置）
+
+- **目标**：Hotkeys 从只读列表升级为可编辑，对齐 Tabby 的单段键录制与冲突提示；
+  同时把快捷键分发从“只认硬编码”扩展到“先看用户 override”。
+- **配置**：`config.rs` 新增 `hotkeys: Vec<HotkeyOverride>`（`command` / `chord`），
+  `#[serde(default)]` 且空表不写盘，旧 `config.toml` 无需迁移；chord 统一存小写规范格式
+  （`ctrl+shift+t`、`f12`、`ctrl+=`；`+` 键写作 `ctrl++`）。
+- **数据层**：`commands.rs` 提供 `Chord::parse/canonical/is_bindable`、`Shortcut::canonical`
+  （保留 1–2 段解析）、`effective_shortcut`、`effective_conflicts`、`validate_override`、
+  `override_command_for_chord`、`suppressed_default`、`set_override/clear_override`；
+  非法键名/多主键/未知命令都返回可展示错误；普通字符与 Shift-only 组合被拒绝，避免抢终端输入。
+- **设置页**：右侧列表每行 = 命令标题 + 生效 chord + `CUSTOM` 标记 + Edit/Reset；
+  Edit 进入录制（`hotkey-recording-row` 高亮，状态栏提示 Esc 取消 / Backspace 恢复默认）；
+  冲突时保留录制并显示红色错误，右上角显示 `✓ no conflicts` / `⚠ N conflict(s)`，
+  另有 Reset All。录制走 `handle_input` 最前面的分支，所以录制中不会触发任何原快捷键或写入 PTY。
+- **分发**：`handle_input` 在 F11/搜索框/硬编码快捷键之前，把当前事件转成 chord：
+  命中 override → `run_command` 并 return；若按键是某命令已被改走的旧默认键 → 吞掉，
+  避免“改了 New Tab，Ctrl+T 仍然开 Tab”。没有 override 时完全走原路径。
+- **测试**：`cargo test -p tervo-app --bin tervo` → 108 passed / 0 failed。新增覆盖
+  chord 解析/规范化（含 `+`、别名、非法输入）、key event→chord、override 查找/生效绑定/
+  冲突/保存校验、旧默认键抑制、config hotkeys roundtrip/旧配置兼容、Hotkeys 行模型。
+- **限制**：无 Hotkeys 搜索；多段键（`Ctrl+K Ctrl+T`）未支持录制/override；录制只有
+  Ctrl/Shift/Alt（Slint `key-input` 回调未传 Meta）；小窗口下固定列宽可能被裁剪；
+  未启动 GUI（与其他 agent 共用显示器，本轮约束只跑 cargo test/build），真机录屏待人工验证。
+- **手工验证**：设置 → Hotkeys → New Tab 行点 Edit → 按 `Ctrl+Shift+N` → 行显示
+  `Ctrl+Shift+N` + `CUSTOM`，config.toml 出现 `[[hotkeys]]`；回终端按 `Ctrl+Shift+N`
+  新开 Tab、按 `Ctrl+T` 不再开 Tab；再 Edit 一个已占用组合（如 `Ctrl+W`）应显示冲突错误；
+  Reset 单项/Reset All 恢复默认；Esc 取消录制后终端输入正常。

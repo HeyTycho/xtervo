@@ -125,7 +125,11 @@ struct AppState {
     /// SFTP 面板里可选的 SSH Profile 索引（打开面板时快照）
     sftp_profiles: Vec<usize>,
     sftp_model: Rc<VecModel<slint::SharedString>>,
-    hotkey_model: Rc<VecModel<slint::SharedString>>,
+    hotkey_model: Rc<VecModel<HotkeyRow>>,
+    /// 与 hotkey_model 同序的命令 ID
+    hotkey_ids: Vec<&'static str>,
+    /// 正在录制的命令 ID；Some 时所有按键只用于录制
+    hotkey_recording: Option<&'static str>,
     plugins: plugin::PluginStore,
     plugin_model: Rc<VecModel<slint::SharedString>>,
     /// Delete 需要点两次确认（避免误删远端文件）
@@ -347,29 +351,170 @@ fn settings_search(query: &str) -> Vec<(i32, String)> {
         .collect()
 }
 
-/// 快捷键页数据：按分类/标题排序，格式 `[Category] Title — Ctrl+T`；返回 (摘要, 行)。
-fn hotkey_items(reg: &commands::Registry) -> (String, Vec<String>) {
+/// Hotkeys 页数据：按分类/标题排序，返回 (摘要, 行, 行对应的命令 ID)。
+fn hotkey_rows(
+    reg: &commands::Registry,
+    overrides: &[commands::HotkeyOverride],
+) -> (String, Vec<HotkeyRow>, Vec<&'static str>) {
+    let conflicts = reg.effective_conflicts(overrides);
     let mut cmds: Vec<&commands::Command> = reg.all().iter().collect();
     cmds.sort_by_key(|c| (c.category.label(), c.title));
-    let bound = cmds.iter().filter(|c| c.default_shortcut.is_some()).count();
-    let conflicts = reg.conflicts();
-    let summary = format!(
-        "{} commands · {bound} with default shortcut · {} conflicts",
-        cmds.len(),
-        conflicts.len()
-    );
-    let rows = cmds
+    let bound = cmds
+        .iter()
+        .filter(|c| reg.effective_shortcut(c.id, overrides).is_some())
+        .count();
+    let custom = cmds
+        .iter()
+        .filter(|c| {
+            reg.override_for(c.id, overrides)
+                .is_some_and(|o| commands::Chord::parse(&o.chord).is_ok())
+        })
+        .count();
+    let summary = format!("{} commands · {bound} bound · {custom} custom", cmds.len());
+    let rows: Vec<HotkeyRow> = cmds
         .iter()
         .map(|c| {
-            let key = c
-                .default_shortcut
-                .and_then(|s| commands::Shortcut::parse(s).ok())
+            let shortcut = reg.effective_shortcut(c.id, overrides);
+            let custom = reg
+                .override_for(c.id, overrides)
+                .is_some_and(|o| commands::Chord::parse(&o.chord).is_ok());
+            let conflict = shortcut
+                .as_ref()
+                .is_some_and(|s| conflicts.iter().any(|c| c.shortcut == *s));
+            let chord: slint::SharedString = shortcut
                 .map(|s| s.to_string())
-                .unwrap_or_else(|| "(none)".to_string());
-            format!("[{}] {} — {key}", c.category.label(), c.title)
+                .unwrap_or_else(|| "(none)".to_string())
+                .into();
+            HotkeyRow {
+                command: c.id.into(),
+                title: c.title.into(),
+                chord,
+                custom,
+                conflict,
+            }
         })
         .collect();
-    (summary, rows)
+    let ids = cmds.iter().map(|c| c.id).collect();
+    (summary, rows, ids)
+}
+
+/// 重新计算 Hotkeys 页（保存/重置后调用），并同步录制行状态。
+fn refresh_hotkeys(st: &mut AppState) {
+    let (summary, rows, ids) = hotkey_rows(&st.commands, &st.cfg.hotkeys);
+    st.hotkey_ids = ids;
+    st.hotkey_model.set_vec(rows);
+    st.ui.set_hotkey_summary(summary.as_str().into());
+    let conflicts = st.commands.effective_conflicts(&st.cfg.hotkeys).len();
+    st.ui.set_hotkey_conflict_count(conflicts as i32);
+    let recording = st
+        .hotkey_recording
+        .and_then(|id| st.hotkey_ids.iter().position(|x| *x == id))
+        .map(|i| i as i32)
+        .unwrap_or(-1);
+    st.ui.set_hotkey_recording_row(recording);
+}
+
+fn hotkey_title(reg: &commands::Registry, id: &str) -> String {
+    reg.get(id).map(|c| c.title.to_string()).unwrap_or_else(|| id.to_string())
+}
+
+/// 进入录制：先让终端 IME 宿主拿回焦点，否则按键会落在设置搜索框里。
+fn start_hotkey_edit(st: &mut AppState, index: i32) {
+    let Some(id) = st.hotkey_ids.get(index.max(0) as usize).copied() else { return };
+    let title = hotkey_title(&st.commands, id);
+    st.hotkey_recording = Some(id);
+    st.ui.set_hotkey_error("".into());
+    st.ui.set_hotkey_status(format!("录制「{title}」：按下新的组合键").into());
+    st.ui.set_hotkey_recording_row(index.max(0));
+    st.ui.invoke_focus_terminal();
+    eprintln!("[hotkey] record start {id}");
+}
+
+fn cancel_hotkey_edit(st: &mut AppState) {
+    if st.hotkey_recording.take().is_some() {
+        st.ui.set_hotkey_status("已取消录制".into());
+        eprintln!("[hotkey] record cancel");
+    }
+    st.ui.set_hotkey_error("".into());
+    st.ui.set_hotkey_recording_row(-1);
+    st.ui.invoke_focus_terminal();
+}
+
+fn reset_hotkey(st: &mut AppState, index: i32) {
+    let Some(id) = st.hotkey_ids.get(index.max(0) as usize).copied() else { return };
+    let title = hotkey_title(&st.commands, id);
+    let removed = commands::clear_override(&mut st.cfg.hotkeys, id);
+    if removed {
+        st.cfg.save();
+    }
+    if st.hotkey_recording == Some(id) {
+        st.hotkey_recording = None;
+        st.ui.invoke_focus_terminal();
+    }
+    st.ui.set_hotkey_error("".into());
+    st.ui.set_hotkey_status(format!("{title} 已恢复默认").into());
+    refresh_hotkeys(st);
+    eprintln!("[hotkey] reset {id} removed={removed}");
+}
+
+fn reset_all_hotkeys(st: &mut AppState) {
+    let count = st.cfg.hotkeys.len();
+    if count > 0 {
+        st.cfg.hotkeys.clear();
+        st.cfg.save();
+    }
+    st.hotkey_recording = None;
+    st.ui.set_hotkey_error("".into());
+    st.ui.set_hotkey_status(format!("已重置 {count} 条自定义快捷键").into());
+    st.ui.invoke_focus_terminal();
+    refresh_hotkeys(st);
+    eprintln!("[hotkey] reset all count={count}");
+}
+
+/// 录制中的按键：Esc 取消、Backspace/Delete 恢复默认，其余组合保存。
+///
+/// 冲突/非法组合只显示错误并保持录制，方便用户直接再按一个；不会触发任何命令。
+fn record_hotkey_key(st: &mut AppState, text: &str, ctrl: bool, alt: bool, shift: bool) {
+    let Some(id) = st.hotkey_recording else { return };
+    if !ctrl && !alt && !shift {
+        if text == "\u{1b}" {
+            cancel_hotkey_edit(st);
+            return;
+        }
+        if text == "\u{8}" || text == "\u{7f}" {
+            let title = hotkey_title(&st.commands, id);
+            let removed = commands::clear_override(&mut st.cfg.hotkeys, id);
+            if removed {
+                st.cfg.save();
+            }
+            st.hotkey_recording = None;
+            st.ui.set_hotkey_error("".into());
+            st.ui.set_hotkey_status(format!("{title} 已恢复默认").into());
+            refresh_hotkeys(st);
+            st.ui.invoke_focus_terminal();
+            eprintln!("[hotkey] record clear {id} removed={removed}");
+            return;
+        }
+    }
+    let Some(chord) = keys::chord_from_key_event(text, ctrl, alt, shift) else { return };
+    let canonical = chord.canonical();
+    match st.commands.validate_override(id, &canonical, &st.cfg.hotkeys) {
+        Ok(chord) => {
+            let title = hotkey_title(&st.commands, id);
+            commands::set_override(&mut st.cfg.hotkeys, id, &chord);
+            st.cfg.save();
+            st.hotkey_recording = None;
+            st.ui.set_hotkey_error("".into());
+            st.ui.set_hotkey_status(format!("{title} → {}（已保存）", chord).into());
+            refresh_hotkeys(st);
+            st.ui.invoke_focus_terminal();
+            eprintln!("[hotkey] saved {id} = {canonical}");
+        },
+        Err(err) => {
+            eprintln!("[hotkey] rejected {id} {canonical:?}: {err}");
+            st.ui.set_hotkey_error(err.into());
+        },
+    }
 }
 
 fn theme_choices(reg: &ThemeRegistry) -> ModelRc<ThemeChoice> {
@@ -2307,6 +2452,34 @@ fn handle_input(
         }
         return;
     }
+
+    // 快捷键录制优先于一切分发：录制中按键只用于录制，不能触发原快捷键或写入 PTY。
+    if st.hotkey_recording.is_some() {
+        record_hotkey_key(st, text, ctrl, alt, shift);
+        return;
+    }
+
+    // 用户 override 必须在硬编码默认键之前处理；命中即 return，避免同一按键触发两次。
+    // 配置为空时完全跳过，保证无自定义快捷键时按键路径零变化。
+    if !st.cfg.hotkeys.is_empty() {
+        if let Some(chord) = keys::chord_from_key_event(text, ctrl, alt, shift) {
+            if let Some(id) = st.commands.override_command_for_chord(&chord, &st.cfg.hotkeys) {
+                if keylog {
+                    eprintln!("[hotkey] override {id} ← {chord}");
+                }
+                run_command(st, id);
+                return;
+            }
+            // 该默认键已被用户改到别的组合：吞掉，避免旧硬编码行为残留。
+            if let Some(id) = st.commands.suppressed_default(&chord, &st.cfg.hotkeys) {
+                if keylog {
+                    eprintln!("[hotkey] suppressed old default {id} ← {chord}");
+                }
+                return;
+            }
+        }
+    }
+
     // F11：全屏切换
     if text == "\u{F70E}" {
         toggle_fullscreen(st);
@@ -2859,8 +3032,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui.set_profile_items(ModelRc::from(profile_model.clone()));
     let sftp_model = Rc::new(VecModel::<slint::SharedString>::default());
     ui.set_sftp_items(ModelRc::from(sftp_model.clone()));
-    let hotkey_model = Rc::new(VecModel::<slint::SharedString>::default());
-    ui.set_hotkey_items(ModelRc::from(hotkey_model.clone()));
+    let hotkey_model = Rc::new(VecModel::<HotkeyRow>::default());
+    ui.set_hotkey_rows(ModelRc::from(hotkey_model.clone()));
     let plugin_model = Rc::new(VecModel::<slint::SharedString>::default());
     ui.set_plugin_items(ModelRc::from(plugin_model.clone()));
     let settings_model = Rc::new(VecModel::<slint::SharedString>::default());
@@ -2902,6 +3075,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         sftp_profiles: Vec::new(),
         sftp_model,
         hotkey_model,
+        hotkey_ids: Vec::new(),
+        hotkey_recording: None,
         plugins: plugin::PluginStore::load(),
         plugin_model,
         sftp_delete_armed: false,
@@ -3610,6 +3785,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     ui.on_settings_category_changed(|c| {
         eprintln!("[ui] settings category={c}");
+        if c != 4 {
+            // 离开 Hotkeys 页时结束录制，避免在别的页面上吞键盘。
+            with_app(|st| {
+                if st.hotkey_recording.is_some() {
+                    cancel_hotkey_edit(st);
+                }
+            });
+        }
     });
 
     ui.on_settings_filter(|query| {
@@ -3637,6 +3820,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     ui.on_settings_toggled(|open| {
         eprintln!("[ui] settings open={open}");
+        with_app(|st| {
+            if !open {
+                // 关闭设置时退出录制，并确保终端重新拿到键盘焦点。
+                st.hotkey_recording = None;
+                st.ui.set_hotkey_recording_row(-1);
+                st.ui.set_hotkey_error("".into());
+                st.ui.invoke_focus_terminal();
+            }
+        });
+    });
+
+    ui.on_hotkey_start_edit(|index| {
+        with_app(|st| start_hotkey_edit(st, index));
+    });
+
+    ui.on_hotkey_cancel_edit(|| {
+        with_app(|st| cancel_hotkey_edit(st));
+    });
+
+    ui.on_hotkey_reset(|index| {
+        with_app(|st| reset_hotkey(st, index));
+    });
+
+    ui.on_hotkey_reset_all(|| {
+        with_app(|st| reset_all_hotkeys(st));
     });
 
     ui.on_toggle_copy_on_select(|| {
@@ -3911,10 +4119,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         st.ui.set_cfg_confirm_paste(st.cfg.confirm_multiline_paste);
         st.ui.set_tabbar_bottom(st.cfg.tabbar_position == "bottom");
         st.ui.set_settings_path(Config::path().display().to_string().as_str().into());
-        let (summary, rows) = hotkey_items(&st.commands);
-        st.hotkey_model
-            .set_vec(rows.into_iter().map(slint::SharedString::from).collect::<Vec<_>>());
-        st.ui.set_hotkey_summary(summary.as_str().into());
+        refresh_hotkeys(st);
         let lines: Vec<slint::SharedString> =
             st.plugins.plugins.iter().map(|p| p.display_line().into()).collect();
         st.plugin_model.set_vec(lines);
@@ -4302,11 +4507,34 @@ mod tests {
     #[test]
     fn hotkey_page_lists_bindings_and_conflicts() {
         let reg = commands::builtin();
-        let (summary, rows) = hotkey_items(&reg);
-        assert!(summary.contains("conflicts"), "{summary}");
+        let (summary, rows, ids) = hotkey_rows(&reg, &[]);
+        assert!(summary.contains("24 commands"), "{summary}");
         assert_eq!(rows.len(), reg.all().len());
-        assert!(rows.iter().any(|r| r.contains("New Tab") && r.contains("Ctrl+T")), "{rows:?}");
-        assert!(rows.iter().any(|r| r.contains("Duplicate Tab") && r.contains("(none)")));
+        assert_eq!(ids.len(), rows.len());
+        assert!(rows.iter().any(|r| r.title == "New Tab" && r.chord == "Ctrl+T" && !r.custom));
+        assert!(rows.iter().any(|r| r.title == "Duplicate Tab" && r.chord == "(none)"));
+        assert!(rows.iter().all(|r| !r.conflict));
+
+        // 自定义标记：override 后 chord 生效并标 custom
+        let mut overrides = vec![commands::HotkeyOverride {
+            command: "tab.new".into(),
+            chord: "ctrl+shift+n".into(),
+        }];
+        let (summary, rows, _) = hotkey_rows(&reg, &overrides);
+        assert!(summary.contains("1 custom"), "{summary}");
+        let row = rows.iter().find(|r| r.title == "New Tab").unwrap();
+        assert_eq!(row.chord, "Ctrl+Shift+N");
+        assert!(row.custom);
+
+        // 手工写入的冲突 override 会被计入行标记与冲突数
+        overrides.push(commands::HotkeyOverride {
+            command: "tab.close".into(),
+            chord: "ctrl+shift+n".into(),
+        });
+        let (summary, rows, _) = hotkey_rows(&reg, &overrides);
+        assert!(summary.contains("2 custom"), "{summary}");
+        assert_eq!(reg.effective_conflicts(&overrides).len(), 1);
+        assert_eq!(rows.iter().filter(|r| r.conflict).count(), 2);
     }
 
     #[test]
