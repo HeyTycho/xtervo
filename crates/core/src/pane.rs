@@ -40,6 +40,7 @@ use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtyPair, PtySiz
 use crate::event::{CoreEvent, EventSink, PaneStats, WakeSignal};
 use crate::frame::{CellData, CursorShape, CursorState, Frame, LineDamage, Span};
 use crate::mouse::{self, MouseEvent};
+use crate::osc::OscScanner;
 use crate::palette::Palette;
 
 const READ_CHUNK: usize = 32 * 1024;
@@ -98,7 +99,8 @@ impl EventListener for Listener {
         match event {
             Event::Title(title) => self.events.send(CoreEvent::Title(title)),
             Event::ResetTitle => self.events.send(CoreEvent::ResetTitle),
-            Event::Bell => self.events.send(CoreEvent::Bell),
+            // Bell 由 actor 里的 OscScanner 统一上报：alacritty 的 Event::Bell 与它
+            // 会重复，且 OSC 9/777 本来就不经过 vte 的 EventListener。
             Event::CursorBlinkingChange => self.events.send(CoreEvent::CursorBlinkChange),
             Event::PtyWrite(text) => {
                 if self.pty_write.try_send(text.into_bytes()).is_err() {
@@ -482,6 +484,7 @@ pub fn spawn(config: PaneConfig) -> std::io::Result<PaneHandle> {
     let actor = Actor {
         term,
         processor: Processor::new(),
+        osc: OscScanner::new(),
         input_rx,
         pty_rx,
         ctrl_rx,
@@ -551,6 +554,8 @@ fn selection_span<T: EventListener>(term: &Term<T>, rows: usize, offset: usize) 
 struct Actor {
     term: Term<Listener>,
     processor: Processor,
+    /// 通知/进度/OSC 7 扫描：alacritty 不暴露 OSC 9/777，需旁路扫原始字节。
+    osc: OscScanner,
     input_rx: Receiver<Vec<u8>>,
     pty_rx: Receiver<Vec<u8>>,
     ctrl_rx: Receiver<Ctrl>,
@@ -618,6 +623,12 @@ impl Actor {
     #[inline]
     fn feed(&mut self, bytes: &[u8]) {
         let start = Instant::now();
+        // 先扫通知类 OSC/BEL：这些序列 vte 内部不转发给 EventListener。
+        let mut notif_events = Vec::new();
+        self.osc.feed(bytes, &mut notif_events);
+        for event in notif_events {
+            self.events.send(event);
+        }
         self.processor.advance(&mut self.term, bytes);
         let nanos = start.elapsed().as_nanos() as u64;
         use std::sync::atomic::Ordering::Relaxed;

@@ -67,7 +67,7 @@
 | UI-TAB-006 | 关闭其他/指定 Tab；恢复最近关闭 Tab | U-AUDIT（上游菜单能力待核） | main.rs `close_other_tabs` + workspace `keep_only`；per-tab 菜单项 Close Others | partial | 单测 `keep_only_drops_other_tabs_and_reports_panes`；真机 `[ws] close other tabs, keep=0, 关闭 1 个 pane` | 关闭其他已可用；最近关闭未实现 | 无最近关闭栈；上游是否提供待核 |
 | UI-TAB-007 | 双击 Tab 或快捷键重命名（以源码触发方式为准） | U-AUDIT（上游触发方式待核） | main.slint 重命名浮层（TextInput，Enter 提交/Esc 取消）；main.rs F2 与双击入口、`sanitize_tab_title` 清洗 | partial | 单测 `tab_title_sanitizing`；真机双击 Tab → `[ui] rename tab=0 title=...` | 双击入口与浮层可用；F2/Enter/Esc 路径已编码 | 沙箱键盘注入不可用，Enter 提交未端到端验证；无重命名撤销 |
 | UI-TAB-008 | 标题跟随 Shell/SSH 远端标题；前缀/后缀/过滤 | U-AUDIT / 需求 B2 | pane.rs Listener Title→CoreEvent::Title；main.rs `poll_events` 400ms + `rebuild_tabs` | partial | `title_event_is_delivered`；人工 printf OSC 0/2；见 ui-shell §3 | 事件有测试；仅活动 tab 的首个 pane 标题写回 | 后台 tab/非首 pane 不更新；无 prefix/suffix/filter；无 SSH |
-| UI-TAB-009 | Tab 显示活动/连接/后台活动/进度/完成/失败；非仅颜色 | U-AUDIT / 需求 B2 | main.slint TabView{title,active} 底色/accent 线/字重；无连接/进度字段 | partial | 人工：多 tab 观察激活态；无连接/进度场景 | 活动态有底色+accent 线+字重（非仅颜色） | 无连接状态/进度/完成失败/后台活动；无图标/无障碍标签 |
+| UI-TAB-009 | Tab 显示活动/连接/后台活动/进度/完成/失败；非仅颜色 | U-AUDIT / 需求 B2 | main.slint TabView{title,active,progress-state,progress-ratio,progress-label,attention,completed}：Tab 底部进度条（错误红/暂停灰）、百分比/错误“!”/完成“✓”/未读“●”；切到该 Tab 清除 attention/完成 | partial | 单测 `activity::aggregate_*`、`progress_ratio_and_label`；核心 smoke `osc_progress_notification_and_bell_are_delivered`；app 102 测试通过 | 进度/完成/失败/未读活动已上 Tab；激活态仍有底色+accent 线+字重 | 无连接状态；不确定进度无动画；标记为字符而非无障碍标签；共享显示器未做 GUI 截图 |
 | UI-TAB-010 | Tab 右键菜单（按上游实际项目） | U-AUDIT（上游菜单项待核） | 窗口级菜单（置顶/新建/设置/重启/SFTP/转发/Profiles/关窗）+ per-tab 菜单（Rename/Close/Close Others/Duplicate）；**点击菜单外任意位置或 Esc 自动关闭** | partial | 真机：右键 Tab 菜单出现；点内容区 → `[ui] menu dismissed` 且菜单消失（.logs/tab-ctx-open.png / tab-ctx-dismiss.png）；窗口菜单同理（tabmenu-open/dismiss） | per-tab 与窗口菜单可用且可关闭 | 菜单项仍未覆盖上游全部（无 Split/复制连接等）；上游完整项目待核 |
 | UI-TAB-011 | Tab 键盘导航：上/下一个、序号跳转、最近 Tab | U-AUDIT / 需求 B2 | main.rs `handle_input` 拦截 Ctrl+Tab / Ctrl+Shift+Tab / Ctrl+1..9 → `switch_tab_relative`/`switch_tab_number`；`next_tab_index` 循环 | partial | 单测 `tab_navigation_wraps`；键盘注入在本沙箱不可用，待真机人工验收 | 循环切换与序号跳转已实现 | 无“最近使用 Tab”栈；键盘端到端未在沙箱验证 |
 | UI-TAB-012 | 持久化 Tab 顺序、标题、Pane 布局与恢复信息 | U-AUDIT / 需求 B2 | session.rs Snapshot/TabSnapshot/Tree；main.rs `capture_snapshot`/`restore_session` | partial | session.rs 5 例；人工 Restart Session（self-iteration 第 3 轮） | 顺序/标题/树/ratio/cwd 可存；仅在手动重启时 | 无自动启动恢复；Tab 无独立稳定 ID（仅下标）；无运行中进程/历史 |
@@ -385,15 +385,15 @@
 
 ### C11. Progress / Notification / Smart Tabs（6 条）
 
-状态：partial=1，needs_verification=1，not_started=4。
+状态：implemented=2，partial=3，not_started=1。
 
 | ID | Feature | Upstream evidence | Rust implementation | Status | Test | Result | Limitation |
 |---|---|---|---|---|---|---|---|
-| NOTIFY-001 | 检测终端进度信号（按上游实际协议审计） | U-AUDIT（上游协议待核） | 无实现 | needs_verification | 待审计上游进度协议/来源 | 未核实/未实现 | 无 OSC 9/777/633 等进度解析 |
-| NOTIFY-002 | Tab 显示进度或活动状态 | U-AUDIT / 需求 C11 | TabView 只有 title/active；无 progress 字段 | not_started | 无 | 未实现 | 无进度/活动状态 UI |
-| NOTIFY-003 | 进程/命令完成通知；通知策略与静音 | U-AUDIT / 需求 C11 | pane.rs 发 CoreEvent::Bell/Exited；main.rs `poll_events` 只消费 Title；无桌面通知 | partial | event.rs 单测；无 UI 消费 | 事件通道存在；用户不可见 | Bell/Exited 被忽略；无策略/静音/命令完成检测 |
-| NOTIFY-004 | 后台 Tab 有活动/完成时标记并可跳转 | U-AUDIT / 需求 C11 | 无实现 | not_started | 无 | 未实现 | 无后台活动标记/跳转 |
-| NOTIFY-005 | 桌面通知权限、失败、平台差异处理 | U-AUDIT / 需求 C11 | 无实现 | not_started | 无 | 未实现 | 无桌面通知集成 |
+| NOTIFY-001 | 检测终端进度信号（按上游实际协议审计） | U-AUDIT（上游协议待核） | `core/osc.rs` 流式 OscScanner（alacritty/vte Handler 无 osc_dispatch，actor feed 旁路扫描）：OSC 9;4 进度 0..4、OSC 9 消息、OSC 777;notify、BEL、OSC 7 cwd；跨 chunk/ST/BEL 终止 | implemented | core osc 模块 12 例（状态/缺百分比/坏值/超长/分片）；smoke `osc_progress_notification_and_bell_are_delivered` | 上述协议均可解析并转 CoreEvent；非法/越界/超长忽略，不 panic | 未支持 OSC 633；上游 Tabby 具体进度协议未核实；BEL 在 DCS/CSI 内不响 |
+| NOTIFY-002 | Tab 显示进度或活动状态 | U-AUDIT / 需求 C11 | `app/activity.rs` 按 Pane 聚合（错误>进行中>暂停>不确定）+ `main.slint` TabView 进度条/百分比/“!”/“✓”/“●” | implemented | `activity::aggregate_*`、`progress_ratio_and_label`；app 102 测试通过 | Tab 可见进度条、百分比、错误/完成/未读标记 | 不确定进度无动画；无连接状态/无障碍标签 |
+| NOTIFY-003 | 进程/命令完成通知；通知策略与静音 | U-AUDIT / 需求 C11 | pane.rs 发 Progress/Notification/Bell；main.rs `poll_events` 消费；非活动 Tab 调 `notify-send`；`desktop_notifications` 默认 true（Settings→Terminal） | partial | `sanitize_notification_text`、`notification_content`、config 默认值单测；smoke 事件测试 | OSC 9/777/BEL 桌面通知与 Tab 未读点可用；开关可关 | 无命令结束自动检测；无按事件静音/限流；BEL 通知可能偏吵 |
+| NOTIFY-004 | 后台 Tab 有活动/完成时标记并可跳转 | U-AUDIT / 需求 C11 | `set_active_tab_inner` 切 Tab 清除 attention/完成；未读点/完成标记由 TabView 显示；点 Tab 即可跳转 | partial | `aggregate_ors_attention_and_completion`；app 102 测试通过 | 后台 Tab 有未读/完成标记，切过去清除 | 无 smart-tab 列表/自动跳转；无“最近活动”排序 |
+| NOTIFY-005 | 桌面通知权限、失败、平台差异处理 | U-AUDIT / 需求 C11 | `notify-send` 参数直传（不经 shell、`--app-name=Tervo`、stdio 置空、后台线程回收）；命令不存在静默失败 | partial | `notification_content` 清洗/限长单测 | 有桌面通知集成与静默降级，配置可关 | 未检测 DBus/通知权限，无平台回退；无点击跳转 |
 | NOTIFY-006 | 插件可注册进度/通知提供者，不能伪造核心会话状态 | U-AUDIT / 需求 C11 | 无实现 | not_started | 无 | 未实现 | 无插件 API/通知总线 |
 
 ### C12. Vault / Secrets / Security（6 条）
