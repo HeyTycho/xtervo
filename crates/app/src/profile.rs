@@ -32,6 +32,8 @@ pub struct Profile {
     /// `agent` | `key` | `password`（密码走 Vault，暂未实现）。
     pub auth: String,
     pub key_path: String,
+    /// 传给 ssh 的追加参数（如 -o UserKnownHostsFile=... / -o StrictHostKeyChecking=yes）。
+    pub extra_args: Vec<String>,
     // ---- serial ----
     pub serial_port: String,
     pub baud: u32,
@@ -59,6 +61,7 @@ impl Default for Profile {
             user: String::new(),
             auth: "agent".to_string(),
             key_path: String::new(),
+            extra_args: Vec::new(),
             serial_port: String::new(),
             baud: 115200,
         }
@@ -66,6 +69,26 @@ impl Default for Profile {
 }
 
 impl Profile {
+    /// SSH 启动命令：用系统 `ssh` 客户端跑在 PTY 里（原生 russh 引擎后续再做）。
+    ///
+    /// 参数顺序：`[-i key] -p port [-l user] host`，与 OpenSSH 用法一致。
+    pub fn ssh_command(&self) -> (String, Vec<String>) {
+        let mut args = Vec::new();
+        if self.auth == "key" && !self.key_path.trim().is_empty() {
+            args.push("-i".to_string());
+            args.push(self.key_path.trim().to_string());
+        }
+        args.push("-p".to_string());
+        args.push(self.port.max(1).to_string());
+        if !self.user.trim().is_empty() {
+            args.push("-l".to_string());
+            args.push(self.user.trim().to_string());
+        }
+        args.extend(self.extra_args.iter().filter(|a| !a.trim().is_empty()).cloned());
+        args.push(self.host.trim().to_string());
+        ("ssh".to_string(), args)
+    }
+
     /// 按类型校验必填项（本地 Profile 几乎不校验，SSH/Serial 必须有目标）。
     pub fn validate(&self) -> Result<(), String> {
         if !KINDS.contains(&self.kind.as_str()) {
@@ -340,6 +363,39 @@ shell = "/bin/sh"
         assert_eq!(ids.len(), 2, "重复 ID 应被修正");
         assert!(s.next_id > *ids.iter().max().unwrap());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ssh_command_builds_openssh_args() {
+        let p = Profile {
+            kind: "ssh".into(),
+            host: "example.com".into(),
+            port: 2222,
+            user: "yt".into(),
+            auth: "key".into(),
+            key_path: "/home/yt/.ssh/id_ed25519".into(),
+            ..Profile::default()
+        };
+        let (prog, args) = p.ssh_command();
+        assert_eq!(prog, "ssh");
+        assert_eq!(args, vec!["-i", "/home/yt/.ssh/id_ed25519", "-p", "2222", "-l", "yt", "example.com"]);
+
+        let agent = Profile { kind: "ssh".into(), host: "h".into(), port: 22, user: "u".into(), auth: "agent".into(), ..Profile::default() };
+        assert_eq!(agent.ssh_command().1, vec!["-p", "22", "-l", "u", "h"]);
+
+        let with_extra = Profile {
+            kind: "ssh".into(),
+            host: "h".into(),
+            port: 22,
+            user: "u".into(),
+            auth: "agent".into(),
+            extra_args: vec!["-o".into(), "UserKnownHostsFile=/tmp/kh".into()],
+            ..Profile::default()
+        };
+        assert_eq!(
+            with_extra.ssh_command().1,
+            vec!["-p", "22", "-l", "u", "-o", "UserKnownHostsFile=/tmp/kh", "h"]
+        );
     }
 
     #[test]

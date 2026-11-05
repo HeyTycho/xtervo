@@ -568,21 +568,36 @@ fn open_profiles_panel(st: &mut AppState) {
 /// 用 Profile 打开新 Tab（shell/args/env/cwd 全按 Profile）。
 fn open_profile_tab(st: &mut AppState, index: usize) {
     let Some(p) = st.profiles.profiles.get(index).cloned() else { return };
-    if p.kind != "local" {
-        eprintln!("[profile] {:?} kind={} 的后端尚未实现（SSH/Serial/Telnet 待做）", p.name, p.kind);
-        return;
-    }
+    // kind → 实际启动命令：local 直接用 Profile；ssh 用系统 ssh 客户端（PTY 里跑）；
+    // serial/telnet 后端还没做，明确拒绝而不是假装能连。
+    let spec = match p.kind.as_str() {
+        "local" => p.clone(),
+        "ssh" => {
+            let (prog, args) = p.ssh_command();
+            let mut q = p.clone();
+            q.shell = prog;
+            q.args = args;
+            q.cwd = None;
+            eprintln!("[profile] ssh 命令: {} {}", q.shell, q.args.join(" "));
+            q
+        },
+        other => {
+            eprintln!("[profile] {:?} kind={other} 的后端尚未实现（Serial/Telnet 待做）", p.name);
+            return;
+        },
+    };
     let id = st.ws.alloc_id();
     let (cols, rows) = cell_of(st.content, st.cell);
-    match create_pane(st, id, cols, rows, None, Some(&p)) {
+    match create_pane(st, id, cols, rows, None, Some(&spec)) {
         Ok(rt) => {
             st.panes.insert(id, rt);
             st.ws.tabs.push(Tab::single(id, p.name.clone()));
             st.ws.active = st.ws.tabs.len() - 1;
+            st.ui.set_profiles_open(false);
             refresh_views(st);
             rebuild_tabs(st);
             redraw_pane_inner(st, id);
-            eprintln!("[profile] open {:?} (shell={:?} cwd={:?})", p.name, p.shell, p.cwd);
+            eprintln!("[profile] open {:?} kind={}", p.name, p.kind);
         },
         Err(e) => eprintln!("[profile] 打开 {:?} 失败: {e}", p.name),
     }
@@ -616,6 +631,7 @@ fn open_profile_form(st: &mut AppState) {
     st.ui.set_form_user(std::env::var("USER").unwrap_or_default().as_str().into());
     st.ui.set_form_auth("agent".into());
     st.ui.set_form_key("".into());
+    st.ui.set_form_extra("".into());
     st.ui.set_form_serial_port("/dev/ttyUSB0".into());
     st.ui.set_form_baud("115200".into());
     st.ui.set_form_error("".into());
@@ -636,6 +652,8 @@ fn save_profile_form(st: &mut AppState) {
             p.user = st.ui.get_form_user().to_string();
             p.auth = st.ui.get_form_auth().to_string();
             p.key_path = st.ui.get_form_key().to_string();
+            p.extra_args =
+                st.ui.get_form_extra().split_whitespace().map(|s| s.to_string()).collect();
         },
         "serial" => {
             p.serial_port = st.ui.get_form_serial_port().to_string();
