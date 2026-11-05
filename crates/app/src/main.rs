@@ -1336,13 +1336,13 @@ fn request_close(st: &mut AppState) {
 }
 
 /// F11 / --fullscreen：切换全屏。
-fn toggle_fullscreen() {
-    with_app(|st| {
-        let win = st.ui.window();
-        let next = !win.is_fullscreen();
-        win.set_fullscreen(next);
-        eprintln!("[ui] fullscreen={next}");
-    });
+fn toggle_fullscreen(st: &AppState) {
+    // 注意：本函数会被 handle_input / run_command 在 `with_app` 的借用内调用，
+    // 这里绝不能再 with_app，否则 RefCell 二次可变借用直接 panic（F11 崩溃根因）。
+    let win = st.ui.window();
+    let next = !win.is_fullscreen();
+    win.set_fullscreen(next);
+    eprintln!("[ui] fullscreen={next}");
 }
 
 fn set_active_tab(index: usize) {
@@ -1845,7 +1845,7 @@ fn run_command(st: &mut AppState, id: &str) {
             }
         },
         "view.command-palette" => open_palette(st),
-        "view.toggle-fullscreen" => toggle_fullscreen(),
+        "view.toggle-fullscreen" => toggle_fullscreen(st),
         "view.zoom-in" => {
             st.cfg.font_size = (st.cfg.font_size + 1.0).clamp(8.0, 40.0);
             apply_font_size(st);
@@ -1931,7 +1931,7 @@ fn handle_input(
     }
     // F11：全屏切换
     if text == "\u{F70E}" {
-        toggle_fullscreen();
+        toggle_fullscreen(st);
         return;
     }
 

@@ -278,3 +278,20 @@ cargo bench -p tervo-core --bench pty_throughput
 - **结果**：first_damage 85.7 ms（近期 60–140），属真实“窗口就绪→首帧”耗时；
   之前的 47 ms 是漏测后的偶然值。
 
+### 2026-11-05 · F11 全屏崩溃（RefCell 二次借用）
+
+- **现象**：运行中按 F11（或命令面板 `view.toggle-fullscreen`）直接 panic：
+  `thread 'main' panicked at crates/app/src/main.rs:151:22: RefCell already borrowed`，退出码 101；
+  `--fullscreen` 启动参数却正常。
+- **根因**：`on_key_input` 已经用 `with_app(|st| handle_input(st, …))` 持有 `AppState` 的可变借用，
+  `handle_input` 的 F11 分支又调用 `toggle_fullscreen()`，其内部再次 `with_app(...)` →
+  同一 `RefCell` 二次 `borrow_mut` → panic。命令面板路径同理（`palette_accept` 的
+  `with_app` 里调 `run_command`，`run_command` 再进 `toggle_fullscreen` 的 `with_app`）。
+  启动参数在 `ui.show()` 前后直接 `window().set_fullscreen(true)`，不经过 `with_app`，所以没炸。
+- **修复**：`toggle_fullscreen(st: &AppState)` 改为接收状态、内部不再 `with_app`；
+  `handle_input` 与 `run_command` 两个调用点传 `st`。
+- **验证**：F11 两次 → `[ui] fullscreen=true`（2560x1440）/`false`（540x472），无 panic；
+  xkey 新增 `--key f11`（keysym 0xffc8）供自动化。
+- **教训**：`with_app` 是“入口层”工具，任何已经拿到 `&mut AppState` 的函数都不得再调用它；
+  同类风险点排查见 `run_command` 分支（已逐一确认传参）。
+

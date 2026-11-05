@@ -30,6 +30,7 @@ fn main() {
             "enter" => "\n".to_string(),
             "escape" => "\u{1b}".to_string(),
             "tab" => "\t".to_string(),
+            "f11" => "\u{F70E}".to_string(),
             other => {
                 eprintln!("未知按键: {other}");
                 return;
@@ -53,6 +54,7 @@ fn main() {
             '\t' => 0xff09,
             '\u{8}' => 0xff08,     // BackSpace
             '\u{1b}' => 0xff1b,    // Escape
+            '\u{F70E}' => 0xffc8,  // F11
             _ => ch as u32,
         };
         reply
