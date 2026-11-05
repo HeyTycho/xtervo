@@ -446,6 +446,7 @@ pub fn spawn(config: PaneConfig) -> std::io::Result<PaneHandle> {
         events: listener.events.clone(),
         write_tx: write_tx.clone(),
         mode_bits: mode_bits.clone(),
+        sel_anchor: None,
         pty_closed: false,
         force_full: false,
         search_span: None,
@@ -515,6 +516,8 @@ struct Actor {
     write_tx: Sender<Vec<u8>>,
     /// 模式位快照，供 UI 无阻塞查询（见 [`PaneHandle::mode`]）。
     mode_bits: Arc<std::sync::atomic::AtomicU32>,
+    /// 选区锚点（网格坐标）；反向选择时用来保持两端 side 一致。
+    sel_anchor: Option<Point>,
     pty_closed: bool,
     force_full: bool,
     search_span: Option<Span>,
@@ -655,19 +658,30 @@ impl Actor {
             },
             Ctrl::SelectionStart { line, col } => {
                 let point = self.viewport_point(line, col);
+                self.sel_anchor = Some(point);
                 self.term.selection = Some(Selection::new(SelectionType::Simple, point, Side::Left));
                 self.wake.notify();
                 true
             },
             Ctrl::SelectionExtend { line, col } => {
                 let point = self.viewport_point(line, col);
-                if let Some(sel) = self.term.selection.as_mut() {
-                    sel.update(point, Side::Right);
+                let anchor = *self.sel_anchor.get_or_insert(point);
+                // 选区两端都用「包含该格」的 side：起点固定 Side::Left、终点固定 Side::Right，
+                // 谁先谁后由坐标决定。alacritty 的 to_range 在「起点是 Right / 终点是 Left」时
+                // 会把两端各内缩一格——若按拖动方向固定传 Right，反向拖选会同时丢掉行首和锚点格，
+                // 最左边的字母就永远选不上。
+                let (start, end) =
+                    if point <= anchor { (point, anchor) } else { (anchor, point) };
+                let mut sel = Selection::new(SelectionType::Simple, start, Side::Left);
+                if start != end {
+                    sel.update(end, Side::Right);
                 }
+                self.term.selection = Some(sel);
                 self.wake.notify();
                 true
             },
             Ctrl::SelectionClear => {
+                self.sel_anchor = None;
                 if self.term.selection.is_some() {
                     self.term.selection = None;
                     self.wake.notify();
