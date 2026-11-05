@@ -353,7 +353,7 @@
 | SESS-006 | 区分恢复 UI 布局、连接配置、真实运行进程；不混淆 | U-AUDIT / 需求 C8 | session.rs 只存树/ratio/cwd；docs/self-iteration 明示不存历史/进程 | partial | 代码走查；文档已声明边界 | 边界声明清楚，但只有布局+cwd | 无连接配置/进程恢复；重启会新起 shell |
 | SESS-007 | 断开连接后的重连策略与 Session 状态提示 | U-AUDIT / 需求 C8 | 无实现 | not_started | 无 | 未实现 | 无连接/Session 状态模型 |
 | SESS-008 | 配置格式版本化、迁移、导入、导出 | U-CONF / 需求 C8 | config.rs `SCHEMA_VERSION=1`、`load_from` 迁移前备份、`migrate`、原子写、`extra` 保留未知键；session.rs VERSION=1 + 原子写；无导入/导出 UI | partial | config.rs 7 例（迁移/备份/未知键/坏文件不覆盖/原子写）；session.rs 版本门禁 | 版本化/迁移/备份/原子写已有记录（b80e265） | 无导入/导出/恢复 UI；备份只在迁移时生成；无用户可见迁移报告 |
-| SESS-009 | 导入原 Tabby 配置：Profiles/快捷键/主题/插件配置，生成不兼容报告 | U-CONF / 需求 C8 | 无实现 | not_started | 无 | 未实现 | 无 Tabby config.yaml 解析/迁移报告 |
+| SESS-009 | 导入原 Tabby 配置：Profiles/快捷键/主题/插件配置，生成不兼容报告 | U-CONF / 需求 C8 | `tabby_import.rs`：解析 Tabby `config.yaml`，导入 local/ssh/serial/telnet Profiles + `terminal.fontSize`；未知类型/字段进报告；CLI `--import-tabby/--export-tabby` + 设置页按钮 | partial | 4 个单测（四类导入/重名/往返/坏 YAML）；真机 CLI：导入 3 跳过 1；设置页导入 2 个 + 字号 15px；导出 2 个 | Profiles 与字号可迁移，导出可回灌 | 不导入 hotkeys/themes/插件配置；报告只输出数量与首个跳过原因；密码等秘密字段不迁移 |
 
 ### C9. Hotkeys / Commands（7 条）
 

@@ -299,3 +299,15 @@ cargo bench -p tervo-core --bench pty_throughput
   - `with_app` 本身加防御：`try_borrow_mut` 失败时打印 `[app] with_app 重入` 并返回 `None`，
     避免未来再因一个回调把整个终端打崩。
 - **教训**：`with_app` 是“入口层”工具，任何已经拿到 `&mut AppState` 的函数都不得再调用它。
+
+### 2026-11-05 · Tabby config.yaml 导入/导出
+
+- **实现**：新增 `tabby_import.rs`（serde_yaml）：解析 `profiles`（local/ssh/serial/telnet）
+  与 `terminal.fontSize`，重名自动加 `(tabby n)`；未知类型进报告不静默丢；导出为 Tabby 兼容 YAML。
+- **入口**：CLI `--import-tabby PATH` / `--export-tabby PATH`（无 UI，迁移脚本可用）；
+  设置 → Config 页新增 Import Tabby / Export Profiles 按钮 + 状态行。
+- **真机**：CLI 导入 3 个（跳过 kubernetes，字号 16）；设置页导入 2 个 + 字号 15；
+  导出 2 个 → `/tmp/ui2/tabby-profiles.yaml`。
+- **依赖**：只增加 `serde_yaml 0.9`（3 个传递 crate），符合“少依赖”原则。
+- **限制**：不导入 hotkeys/themes/插件配置；密码/私钥口令不进 Vault；报告只有计数 + 首个跳过原因。
+
