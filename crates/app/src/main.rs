@@ -3335,7 +3335,7 @@ fn print_help() {
 --restore           按上次快照恢复会话 (由 Restart 菜单调用)\n  \
 --fullscreen        启动即全屏 (F11 切换)\n  \
 --window            内部：以新窗口子进程启动 (仅日志区分，不自动再建窗口)\n  \
---import-tabby PATH 无 UI：导入 Tabby config.yaml 后退出\n  \
+--import-tabby PATH 无 UI：导入 Tabby config.yaml（Profile/字号/快捷键/主题）后退出\n  \
 --export-tabby PATH 无 UI：导出 Profile 为 Tabby YAML 后退出\n  \
 --diagnose          打印环境/窗口/最近日志后退出（排查右键/焦点问题）\n  \
 -h, --help          显示帮助\n\n\
@@ -3426,22 +3426,52 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(path) = arg_value("--import-tabby") {
         let text = std::fs::read_to_string(&path)?;
         let mut store = profile::ProfileStore::load();
-        match tabby_import::import_yaml(&text, &mut store) {
+        let mut cfg = Config::load();
+        let themes_dir = ThemeRegistry::default_dir();
+        match tabby_import::import_yaml(&text, &mut store, &mut cfg, &themes_dir) {
             Ok(report) => {
                 store.save();
+                if let Some(fs) = report.font_size {
+                    cfg.font_size = fs.clamp(8.0, 40.0);
+                }
+                if report.font_size.is_some() || report.hotkeys_added > 0 {
+                    cfg.save();
+                }
                 println!(
-                    "[tabby] 导入 {} 个 Profile（重命名 {}，跳过 {}）",
+                    "[tabby] 导入 {} 个 Profile（重命名 {}，跳过 {}）；\
+                     快捷键 {} 条（未变 {}，未映射 {}，跳过 {}）；\
+                     主题 {} 个（重命名 {}，跳过 {}，目录 {}）",
                     report.added,
                     report.renamed,
-                    report.skipped.len()
+                    report.skipped.len(),
+                    report.hotkeys_added,
+                    report.hotkeys_unchanged,
+                    report.hotkeys_unmapped.len(),
+                    report.hotkeys_skipped.len(),
+                    report.themes_added,
+                    report.themes_renamed,
+                    report.themes_skipped.len(),
+                    themes_dir.display()
                 );
                 for (name, why) in &report.skipped {
-                    eprintln!("  - 跳过 {name}: {why}");
+                    eprintln!("  - 跳过 Profile {name}: {why}");
+                }
+                for (id, why) in &report.hotkeys_skipped {
+                    eprintln!("  - 跳过快捷键 {id}: {why}");
+                }
+                for id in &report.hotkeys_unmapped {
+                    eprintln!("  - 未映射快捷键 {id}");
+                }
+                if report.hotkeys_extra_ignored > 0 {
+                    println!(
+                        "  - 多候选键：另有 {} 条未采用（Tervo 每个命令只保留一条）",
+                        report.hotkeys_extra_ignored
+                    );
+                }
+                for (name, why) in &report.themes_skipped {
+                    eprintln!("  - 跳过主题 {name}: {why}");
                 }
                 if let Some(fs) = report.font_size {
-                    let mut cfg = Config::load();
-                    cfg.font_size = fs.clamp(8.0, 40.0);
-                    cfg.save();
                     println!("  - 应用字号 {fs}px");
                 }
                 return Ok(());
@@ -4069,25 +4099,65 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui.on_config_import_tabby(|| {
         with_app(|st| {
             let path = tabby_config_path();
+            let themes_dir = ThemeRegistry::default_dir();
             let status = match std::fs::read_to_string(&path) {
-                Ok(text) => match tabby_import::import_yaml(&text, &mut st.profiles) {
+                Ok(text) => match tabby_import::import_yaml(
+                    &text,
+                    &mut st.profiles,
+                    &mut st.cfg,
+                    &themes_dir,
+                ) {
                     Ok(report) => {
                         st.profiles.save();
                         refresh_profiles(st);
                         if let Some(fs) = report.font_size {
                             st.cfg.font_size = fs.clamp(8.0, 40.0);
                             apply_font_size(st);
+                        }
+                        if report.font_size.is_some() || report.hotkeys_added > 0 {
                             st.cfg.save();
                         }
+                        if report.hotkeys_added > 0 {
+                            refresh_hotkeys(st);
+                        }
+                        if report.themes_added > 0 {
+                            // 主题目录刚写入新文件：重新加载注册表并刷新设置页网格。
+                            st.registry = ThemeRegistry::load(&themes_dir);
+                            for err in &st.registry.errors {
+                                eprintln!("[theme] {err}");
+                            }
+                            st.ui.set_theme_choices(theme_choices(&st.registry));
+                        }
                         let mut msg = format!(
-                            "已从 {} 导入 {} 个 Profile（重命名 {}，跳过 {}）",
+                            "已从 {} 导入 {} 个 Profile、{} 条快捷键、{} 个主题\
+                             （Profile 跳过 {}，快捷键未映射 {} / 跳过 {}，主题跳过 {}）",
                             path.display(),
                             report.added,
-                            report.renamed,
-                            report.skipped.len()
+                            report.hotkeys_added,
+                            report.themes_added,
+                            report.skipped.len(),
+                            report.hotkeys_unmapped.len(),
+                            report.hotkeys_skipped.len(),
+                            report.themes_skipped.len()
                         );
-                        if let Some((name, why)) = report.skipped.first() {
-                            msg.push_str(&format!("；首个跳过：{name}（{why}）"));
+                        let first_skip = report
+                            .skipped
+                            .first()
+                            .map(|(name, why)| format!("{name}（{why}）"))
+                            .or_else(|| {
+                                report
+                                    .hotkeys_skipped
+                                    .first()
+                                    .map(|(id, why)| format!("{id}（{why}）"))
+                            })
+                            .or_else(|| {
+                                report
+                                    .themes_skipped
+                                    .first()
+                                    .map(|(name, why)| format!("{name}（{why}）"))
+                            });
+                        if let Some(skip) = first_skip {
+                            msg.push_str(&format!("；首个跳过：{skip}"));
                         }
                         eprintln!("[tabby] {msg}");
                         msg
