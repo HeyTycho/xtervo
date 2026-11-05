@@ -4508,7 +4508,7 @@ mod tests {
     fn hotkey_page_lists_bindings_and_conflicts() {
         let reg = commands::builtin();
         let (summary, rows, ids) = hotkey_rows(&reg, &[]);
-        assert!(summary.contains("24 commands"), "{summary}");
+        assert!(summary.contains("25 commands"), "{summary}");
         assert_eq!(rows.len(), reg.all().len());
         assert_eq!(ids.len(), rows.len());
         assert!(rows.iter().any(|r| r.title == "New Tab" && r.chord == "Ctrl+T" && !r.custom));
@@ -4518,18 +4518,18 @@ mod tests {
         // 自定义标记：override 后 chord 生效并标 custom
         let mut overrides = vec![commands::HotkeyOverride {
             command: "tab.new".into(),
-            chord: "ctrl+shift+n".into(),
+            chord: "ctrl+alt+n".into(),
         }];
         let (summary, rows, _) = hotkey_rows(&reg, &overrides);
         assert!(summary.contains("1 custom"), "{summary}");
         let row = rows.iter().find(|r| r.title == "New Tab").unwrap();
-        assert_eq!(row.chord, "Ctrl+Shift+N");
+        assert_eq!(row.chord, "Ctrl+Alt+N");
         assert!(row.custom);
 
         // 手工写入的冲突 override 会被计入行标记与冲突数
         overrides.push(commands::HotkeyOverride {
             command: "tab.close".into(),
-            chord: "ctrl+shift+n".into(),
+            chord: "ctrl+alt+n".into(),
         });
         let (summary, rows, _) = hotkey_rows(&reg, &overrides);
         assert!(summary.contains("2 custom"), "{summary}");

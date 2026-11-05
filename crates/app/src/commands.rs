@@ -843,11 +843,11 @@ mod tests {
         assert!(r.suppressed_default(&Chord::parse("ctrl+t").unwrap(), &[]).is_none());
 
         let mut overrides = Vec::new();
-        let chord = r.validate_override("tab.new", "ctrl+shift+n", &overrides).unwrap();
+        let chord = r.validate_override("tab.new", "ctrl+alt+n", &overrides).unwrap();
         set_override(&mut overrides, "tab.new", &chord);
 
         assert_eq!(
-            r.override_command_for_chord(&Chord::parse("ctrl+shift+n").unwrap(), &overrides),
+            r.override_command_for_chord(&Chord::parse("ctrl+alt+n").unwrap(), &overrides),
             Some("tab.new")
         );
         // 旧默认键被吞掉，避免 Ctrl+T 仍然新开 Tab
@@ -855,8 +855,8 @@ mod tests {
             r.suppressed_default(&Chord::parse("ctrl+t").unwrap(), &overrides),
             Some("tab.new")
         );
-        // 把别的命令绑到 ctrl+shift+n 会与 override 冲突
-        let err = r.validate_override("tab.close", "ctrl+shift+n", &overrides).unwrap_err();
+        // 把别的命令绑到 ctrl+alt+n 会与 override 冲突
+        let err = r.validate_override("tab.close", "ctrl+alt+n", &overrides).unwrap_err();
         assert!(err.contains("New Tab"), "{err}");
         assert!(r.effective_conflicts(&overrides).is_empty());
     }
