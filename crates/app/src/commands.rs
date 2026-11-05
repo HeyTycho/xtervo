@@ -304,6 +304,7 @@ pub fn builtin() -> Registry {
         ("terminal.select-all", "Select All", Category::Terminal, None),
         ("view.command-palette", "Command Palette", Category::View, Some("ctrl+shift+p")),
         ("view.toggle-fullscreen", "Toggle Fullscreen", Category::View, Some("f11")),
+        ("view.toggle-quake", "Toggle Quake Mode", Category::View, None),
         ("view.zoom-in", "Zoom In", Category::View, Some("ctrl+plus")),
         ("view.zoom-out", "Zoom Out", Category::View, Some("ctrl+minus")),
         ("view.zoom-reset", "Reset Zoom", Category::View, Some("ctrl+0")),

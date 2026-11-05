@@ -233,3 +233,289 @@ pub fn connect() -> Result<(RustConnection, usize), String> {
     }
     x11rb::connect(None).map_err(|e| format!("X11 连接失败: {e}"))
 }
+
+
+/// 屏幕（root）尺寸，用于 Quake 定位。
+pub fn screen_size() -> Option<(u32, u32)> {
+    use x11rb::connection::Connection;
+
+    let (conn, screen_num) = connect().ok()?;
+    let root = &conn.setup().roots[screen_num];
+    Some((root.width_in_pixels as u32, root.height_in_pixels as u32))
+}
+
+/// 把本进程的主窗口置顶（_NET_WM_STATE_ABOVE + STICKY）、激活并聚焦。
+/// Quake 显示时调用；找不到窗口时返回 None。
+pub fn activate_own_window(title: &str) -> Option<u32> {
+    use x11rb::connection::Connection;
+    use x11rb::protocol::xproto::{
+        ClientMessageEvent, ConfigureWindowAux, ConnectionExt as _, EventMask, InputFocus,
+        StackMode,
+    };
+
+    let (conn, screen_num) = connect().ok()?;
+    let root = conn.setup().roots[screen_num].root;
+    let win = find_own_window(&conn, root, title)?;
+
+    let state_atom = conn.intern_atom(false, b"_NET_WM_STATE").ok()?.reply().ok()?.atom;
+    for name in [b"_NET_WM_STATE_ABOVE".as_slice(), b"_NET_WM_STATE_STICKY".as_slice()] {
+        if let Some(atom) = conn.intern_atom(false, name).ok().and_then(|c| c.reply().ok()) {
+            let event = ClientMessageEvent::new(32, win, state_atom, [1, atom.atom, 0, 1, 0]);
+            let _ = conn.send_event(
+                false,
+                root,
+                EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY,
+                event,
+            );
+        }
+    }
+
+    if let Ok(cookie) = conn.intern_atom(false, b"_NET_ACTIVE_WINDOW") {
+        if let Ok(atom) = cookie.reply() {
+            let event =
+                ClientMessageEvent::new(32, win, atom.atom, [1, x11rb::CURRENT_TIME, 0, 0, 0]);
+            let _ = conn.send_event(
+                false,
+                root,
+                EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY,
+                event,
+            );
+        }
+    }
+    let _ = conn.set_input_focus(InputFocus::PARENT, win, x11rb::CURRENT_TIME);
+    let _ = conn.configure_window(
+        win,
+        &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE),
+    );
+    let _ = conn.flush();
+    Some(win)
+}
+
+/// 当前输入焦点窗口（_NET_ACTIVE_WINDOW），诊断用。
+pub fn active_window() -> Option<u32> {
+    use x11rb::connection::Connection;
+    use x11rb::protocol::xproto::ConnectionExt as _;
+
+    let (conn, screen_num) = connect().ok()?;
+    let root = conn.setup().roots[screen_num].root;
+    let atom = conn.intern_atom(false, b"_NET_ACTIVE_WINDOW").ok()?.reply().ok()?.atom;
+    let reply = conn
+        .get_property(false, root, atom, x11rb::protocol::xproto::AtomEnum::WINDOW, 0, 1)
+        .ok()?
+        .reply()
+        .ok()?;
+    reply.value32().and_then(|mut it| it.next())
+}
+
+/// 指针在 root 上的坐标，诊断用。
+pub fn pointer_position() -> Option<(i32, i32)> {
+    use x11rb::connection::Connection;
+    use x11rb::protocol::xproto::ConnectionExt as _;
+
+    let (conn, screen_num) = connect().ok()?;
+    let root = conn.setup().roots[screen_num].root;
+    let reply = conn.query_pointer(root).ok()?.reply().ok()?;
+    Some((reply.root_x as i32, reply.root_y as i32))
+}
+
+/// 本进程窗口的快照（诊断/日志用）。
+#[derive(Debug, Clone)]
+pub struct OwnWindow {
+    pub id: u32,
+    pub pid: u32,
+    pub title: String,
+    pub x: i32,
+    pub y: i32,
+    pub w: u32,
+    pub h: u32,
+    pub viewable: bool,
+}
+
+pub fn own_windows() -> Vec<OwnWindow> {
+    use x11rb::connection::Connection;
+    use x11rb::protocol::xproto::{AtomEnum, ConnectionExt as _};
+
+    let Ok((conn, screen_num)) = connect() else { return Vec::new() };
+    let root = conn.setup().roots[screen_num].root;
+    let pid = std::process::id();
+    let Some(pid_atom) = conn.intern_atom(false, b"_NET_WM_PID").ok().and_then(|c| c.reply().ok())
+    else {
+        return Vec::new();
+    };
+
+    fn title(conn: &RustConnection, win: u32) -> String {
+        use x11rb::protocol::xproto::{AtomEnum, ConnectionExt as _};
+        let net = conn
+            .intern_atom(false, b"_NET_WM_NAME")
+            .ok()
+            .and_then(|c| c.reply().ok())
+            .map(|a| a.atom);
+        for atom in [net, Some(AtomEnum::WM_NAME.into())].into_iter().flatten() {
+            if let Ok(reply) = conn.get_property(false, win, atom, AtomEnum::ANY, 0, 1024) {
+                if let Ok(r) = reply.reply() {
+                    if !r.value.is_empty() {
+                        return String::from_utf8_lossy(&r.value).to_string();
+                    }
+                }
+            }
+        }
+        String::new()
+    }
+
+    let mut out = Vec::new();
+    let mut stack = vec![root];
+    let mut visited = 0;
+    while let Some(win) = stack.pop() {
+        visited += 1;
+        if visited > 512 {
+            break;
+        }
+        let Ok(tree) = conn.query_tree(win).ok().and_then(|c| c.reply().ok()).ok_or(()) else {
+            continue;
+        };
+        for child in tree.children {
+            let matches = conn
+                .get_property(false, child, pid_atom.atom, AtomEnum::CARDINAL, 0, 1)
+                .ok()
+                .and_then(|c| c.reply().ok())
+                .and_then(|r| r.value32().and_then(|mut it| it.next()))
+                .is_some_and(|p| p == pid);
+            if matches {
+                let viewable = conn
+                    .get_window_attributes(child)
+                    .ok()
+                    .and_then(|c| c.reply().ok())
+                    .is_some_and(|a| {
+                        a.map_state == x11rb::protocol::xproto::MapState::VIEWABLE
+                    });
+                if let Some(g) = conn.get_geometry(child).ok().and_then(|c| c.reply().ok()) {
+                    let pos = conn
+                        .translate_coordinates(child, root, 0, 0)
+                        .ok()
+                        .and_then(|c| c.reply().ok());
+                    out.push(OwnWindow {
+                        id: child,
+                        pid,
+                        title: title(&conn, child),
+                        x: pos.as_ref().map(|p| p.dst_x as i32).unwrap_or(0),
+                        y: pos.as_ref().map(|p| p.dst_y as i32).unwrap_or(0),
+                        w: g.width as u32,
+                        h: g.height as u32,
+                        viewable,
+                    });
+                }
+            }
+            stack.push(child);
+        }
+    }
+    out
+}
+
+
+fn window_pid(conn: &RustConnection, win: u32) -> u32 {
+    use x11rb::protocol::xproto::{AtomEnum, ConnectionExt as _};
+    conn.intern_atom(false, b"_NET_WM_PID")
+        .ok()
+        .and_then(|c| c.reply().ok())
+        .and_then(|a| {
+            conn.get_property(false, win, a.atom, AtomEnum::CARDINAL, 0, 1)
+                .ok()
+                .and_then(|c| c.reply().ok())
+                .and_then(|r| r.value32().and_then(|mut it| it.next()))
+        })
+        .unwrap_or(0)
+}
+
+fn window_title(conn: &RustConnection, win: u32) -> String {
+    use x11rb::protocol::xproto::{AtomEnum, ConnectionExt as _};
+    let net = conn
+        .intern_atom(false, b"_NET_WM_NAME")
+        .ok()
+        .and_then(|c| c.reply().ok())
+        .map(|a| a.atom);
+    for atom in [net, Some(AtomEnum::WM_NAME.into())].into_iter().flatten() {
+        if let Ok(reply) = conn.get_property(false, win, atom, AtomEnum::ANY, 0, 1024) {
+            if let Ok(r) = reply.reply() {
+                if !r.value.is_empty() {
+                    return String::from_utf8_lossy(&r.value).to_string();
+                }
+            }
+        }
+    }
+    String::new()
+}
+
+fn window_class(conn: &RustConnection, win: u32) -> String {
+    use x11rb::protocol::xproto::{AtomEnum, ConnectionExt as _};
+    conn.get_property(false, win, AtomEnum::WM_CLASS, AtomEnum::STRING, 0, 256)
+        .ok()
+        .and_then(|c| c.reply().ok())
+        .map(|r| String::from_utf8_lossy(&r.value).replace('\0', " "))
+        .unwrap_or_default()
+}
+
+/// 按 id 取一个窗口的快照（不要求属于本进程）。
+pub fn window_snapshot(id: u32) -> Option<OwnWindow> {
+    use x11rb::connection::Connection;
+    use x11rb::protocol::xproto::ConnectionExt as _;
+
+    let (conn, _screen_num) = connect().ok()?;
+    let viewable = conn
+        .get_window_attributes(id)
+        .ok()
+        .and_then(|c| c.reply().ok())
+        .is_some_and(|a| a.map_state == x11rb::protocol::xproto::MapState::VIEWABLE);
+    let g = conn.get_geometry(id).ok()?.reply().ok()?;
+    let pos = conn.translate_coordinates(id, conn.setup().roots[0].root, 0, 0).ok()?.reply().ok();
+    Some(OwnWindow {
+        id,
+        pid: window_pid(&conn, id),
+        title: window_title(&conn, id),
+        x: pos.as_ref().map(|p| p.dst_x as i32).unwrap_or(0),
+        y: pos.as_ref().map(|p| p.dst_y as i32).unwrap_or(0),
+        w: g.width as u32,
+        h: g.height as u32,
+        viewable,
+    })
+}
+
+/// 扫描所有 Tervo 类窗口（包括**不是本进程**的旧实例），用于诊断“谁挡在前面”。
+pub fn tervo_windows() -> Vec<OwnWindow> {
+    use x11rb::connection::Connection;
+    use x11rb::protocol::xproto::ConnectionExt as _;
+
+    let Ok((conn, screen_num)) = connect() else { return Vec::new() };
+    let root = conn.setup().roots[screen_num].root;
+    let mut out = Vec::new();
+    let Ok(tree) = conn.query_tree(root).ok().and_then(|c| c.reply().ok()).ok_or(()) else {
+        return out;
+    };
+    for child in tree.children {
+        let class = window_class(&conn, child);
+        if !class.to_ascii_lowercase().contains("tervo") {
+            continue;
+        }
+        let viewable = conn
+            .get_window_attributes(child)
+            .ok()
+            .and_then(|c| c.reply().ok())
+            .is_some_and(|a| a.map_state == x11rb::protocol::xproto::MapState::VIEWABLE);
+        if let Some(g) = conn.get_geometry(child).ok().and_then(|c| c.reply().ok()) {
+            let pos = conn
+                .translate_coordinates(child, root, 0, 0)
+                .ok()
+                .and_then(|c| c.reply().ok());
+            out.push(OwnWindow {
+                id: child,
+                pid: window_pid(&conn, child),
+                title: window_title(&conn, child),
+                x: pos.as_ref().map(|p| p.dst_x as i32).unwrap_or(0),
+                y: pos.as_ref().map(|p| p.dst_y as i32).unwrap_or(0),
+                w: g.width as u32,
+                h: g.height as u32,
+                viewable,
+            });
+        }
+    }
+    out
+}

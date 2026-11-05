@@ -4,9 +4,11 @@ mod config;
 mod glyph;
 mod keys;
 mod latency;
+mod logging;
 mod plugin;
 mod profile;
 mod render;
+mod quake;
 mod session;
 mod sftp;
 mod tabby_import;
@@ -127,6 +129,9 @@ struct AppState {
     plugin_model: Rc<VecModel<slint::SharedString>>,
     /// Delete 需要点两次确认（避免误删远端文件）
     sftp_delete_armed: bool,
+    /// Quake 模式窗口当前是否可见；以及进入 Quake 前的普通几何（退出时恢复）
+    quake_visible: bool,
+    quake_saved: Option<(slint::PhysicalPosition, slint::PhysicalSize)>,
     /// “+” 下拉里各 Profile 在 store 中的下标（第 0 项是默认新 Tab）
     newtab_profile_indices: Vec<usize>,
     newtab_model: Rc<VecModel<slint::SharedString>>,
@@ -651,6 +656,41 @@ fn refresh_profiles(st: &mut AppState) {
         .map(|p| format!("[{}] {}", p.kind, p.name).into())
         .collect();
     st.profile_model.set_vec(items);
+}
+
+/// Quake Mode：F12 全局显示/隐藏顶部下拉终端。
+fn toggle_quake() {
+    with_app(toggle_quake_inner);
+}
+
+fn toggle_quake_inner(st: &mut AppState) {
+    if !st.cfg.quake_enabled {
+        eprintln!("[quake] 未启用（设置 → Window → Quake mode）");
+        return;
+    }
+    if st.quake_visible {
+        // 不能 hide()：Slint 在“最后一个窗口隐藏”时会退出事件循环，进程直接结束，
+        // 全局热键线程也随之消失（表现为第二次 F12 后整个 Tervo 没了）。
+        // 用最小化：窗口仍存在、事件循环/PTY/热键都活着；再由 F12 恢复。
+        st.ui.window().set_minimized(true);
+        st.quake_visible = false;
+        eprintln!("[quake] hide (minimized)");
+        return;
+    }
+    let (sw, sh) = crate::xconn::screen_size().unwrap_or((1920, 1080));
+    let w = ((sw as f32 * st.cfg.quake_width).round() as u32).clamp(320, sw);
+    let h = ((sh as f32 * st.cfg.quake_height).round() as u32).clamp(200, sh);
+    let x = (sw.saturating_sub(w) / 2) as i32;
+    if st.quake_saved.is_none() {
+        st.quake_saved = Some((st.ui.window().position(), st.ui.window().size()));
+    }
+    st.ui.window().set_minimized(false);
+    st.ui.window().set_size(slint::PhysicalSize::new(w, h));
+    st.ui.window().set_position(slint::PhysicalPosition::new(x, 0));
+    st.ui.window().show();
+    let _ = crate::xconn::activate_own_window("");
+    st.quake_visible = true;
+    eprintln!("[quake] show {w}x{h} at {x},0");
 }
 
 /// 构建 “+” 下拉：第一项默认新 Tab，其余是已保存 Profile。
@@ -2163,6 +2203,7 @@ fn run_command(st: &mut AppState, id: &str) {
         },
         "view.command-palette" => open_palette(st),
         "view.toggle-fullscreen" => toggle_fullscreen(st),
+        "view.toggle-quake" => toggle_quake_inner(st),
         "view.zoom-in" => zoom_font(st, 1.0),
         "view.zoom-out" => zoom_font(st, -1.0),
         "view.zoom-reset" => reset_font(st),
@@ -2517,6 +2558,68 @@ fn parse_args(cfg: &Config) -> Options {
     o
 }
 
+/// `tervo --diagnose`：不启动 UI，打印环境/窗口/最近日志，便于定位“右键没反应”。
+fn print_diagnostics() {
+    println!("Tervo {}", env!("CARGO_PKG_VERSION"));
+    println!("pid={}", std::process::id());
+    for key in [
+        "DISPLAY",
+        "WAYLAND_DISPLAY",
+        "XDG_SESSION_TYPE",
+        "XDG_CURRENT_DESKTOP",
+        "SLINT_BACKEND",
+        "TERM",
+        "TERVO_CONFIG",
+        "TERVO_PROFILES",
+    ] {
+        println!("{key}={:?}", std::env::var(key).ok());
+    }
+    println!("config={}", Config::path().display());
+    println!("profiles={}", profile::ProfileStore::path().display());
+    match logging::path() {
+        Some(p) => println!("log={}", p.display()),
+        None => println!("log=(disabled)"),
+    }
+    if let Some((w, h)) = xconn::screen_size() {
+        println!("screen={w}x{h}");
+    }
+    if let Some((x, y)) = xconn::pointer_position() {
+        println!("pointer={x},{y}");
+    }
+    match xconn::active_window() {
+        Some(id) => match xconn::window_snapshot(id) {
+            Some(w) => println!(
+                "active_window=0x{id:x} pid={} {}x{} at {},{} viewable={} title={:?}",
+                w.pid, w.w, w.h, w.x, w.y, w.viewable, w.title
+            ),
+            None => println!("active_window=0x{id:x} (无法读取属性)"),
+        },
+        None => println!("active_window=(unknown)"),
+    }
+    println!("own windows:");
+    for w in xconn::own_windows() {
+        println!(
+            "  0x{:x} pid={} {}x{} at {},{} viewable={} title={:?}",
+            w.id, w.pid, w.w, w.h, w.x, w.y, w.viewable, w.title
+        );
+    }
+    let others: Vec<_> =
+        xconn::tervo_windows().into_iter().filter(|w| w.pid != std::process::id()).collect();
+    if !others.is_empty() {
+        println!("⚠ 其他 Tervo 实例窗口（可能挡住点击）:");
+        for w in others {
+            println!(
+                "  0x{:x} pid={} {}x{} at {},{} viewable={} title={:?}",
+                w.id, w.pid, w.w, w.h, w.x, w.y, w.viewable, w.title
+            );
+        }
+    }
+    println!("recent log:");
+    for line in logging::tail(40) {
+        println!("  {line}");
+    }
+}
+
 fn print_help() {
     println!(
         "Tervo {}\n\n\
@@ -2537,6 +2640,7 @@ fn print_help() {
 --fullscreen        启动即全屏 (F11 切换)\n  \
 --import-tabby PATH 无 UI：导入 Tabby config.yaml 后退出\n  \
 --export-tabby PATH 无 UI：导出 Profile 为 Tabby YAML 后退出\n  \
+--diagnose          打印环境/窗口/最近日志后退出（排查右键/焦点问题）\n  \
 -h, --help          显示帮助\n\n\
 快捷键: Ctrl+T 新建标签 / Ctrl+W 关闭 / Ctrl+F 搜索 / Ctrl+Shift+C 复制 / Ctrl+Shift+V 粘贴\n\
 配置: ~/.config/tervo/config.toml (TERVO_CONFIG 可覆盖)\n\
@@ -2602,6 +2706,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     if std::env::args().any(|a| a == "-h" || a == "--help") {
         print_help();
+        return Ok(());
+    }
+
+    logging::init();
+    if argv.iter().any(|a| a == "--diagnose") {
+        print_diagnostics();
         return Ok(());
     }
 
@@ -2745,6 +2855,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         plugins: plugin::PluginStore::load(),
         plugin_model,
         sftp_delete_armed: false,
+        quake_visible: false,
+        quake_saved: None,
         newtab_profile_indices: Vec::new(),
         newtab_model,
         broadcast: false,
@@ -3077,6 +3189,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     ui.on_end_window_resize(|| {
         with_app(|st| st.resize = None);
+    });
+
+    ui.on_input_trace(|kind, id, x, y| {
+        with_app(|st| {
+            eprintln!(
+                "[trace] {kind} pane={id} at {x:.0},{y:.0} win_pos={:?} win_size={:?} content={:.0}x{:.0}",
+                st.ui.window().position(),
+                st.ui.window().size(),
+                st.content.w,
+                st.content.h
+            );
+        });
     });
 
     ui.on_pane_clicked(|id| focus_pane(id as u64));
@@ -3633,6 +3757,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     });
 
+    // Quake 全局热键：X11 被动 grab；Wayland 下会返回错误并只打日志。
+    if let Err(e) = quake::spawn_listener(&cfg.quake_hotkey, || {
+        let _ = slint::invoke_from_event_loop(toggle_quake);
+    }) {
+        eprintln!("[quake] {e}");
+    }
+    ui.set_cfg_quake(cfg.quake_enabled);
+
+    ui.on_toggle_quake(|| {
+        with_app(|st| {
+            st.cfg.quake_enabled = !st.cfg.quake_enabled;
+            st.ui.set_cfg_quake(st.cfg.quake_enabled);
+            if !st.cfg.quake_enabled && st.quake_visible {
+                if let Some((pos, size)) = st.quake_saved.take() {
+                    st.ui.window().set_size(size);
+                    st.ui.window().set_position(pos);
+                }
+                st.quake_visible = false;
+            }
+            st.cfg.save();
+            eprintln!("[ui] quake_enabled={}", st.cfg.quake_enabled);
+        });
+    });
+
     ui.on_resized(|w, h| {
         with_app(|st| {
             let w = w.max(1.0);
@@ -3726,6 +3874,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ---- 首帧 ----
     ui.show()?;
+    {
+        let wins = xconn::own_windows();
+        if let Some(w) = wins.iter().find(|w| w.viewable && w.w > 100 && w.h > 100) {
+            eprintln!(
+                "[ui] main window 0x{:x} at {},{} {}x{} (all own windows: {})",
+                w.id,
+                w.x,
+                w.y,
+                w.w,
+                w.h,
+                wins.len()
+            );
+        }
+        // 旧实例可能全屏盖住新窗口：日志里明确写出来，右键“没反应”时可直接判断。
+        for other in xconn::tervo_windows()
+            .into_iter()
+            .filter(|w| w.pid != std::process::id() && w.viewable)
+        {
+            eprintln!(
+                "[ui] 警告：另一个可见的 Tervo 窗口 0x{:x}（pid={}）{}x{} at {},{}，可能挡住点击",
+                other.id, other.pid, other.w, other.h, other.x, other.y
+            );
+        }
+    }
     if opts.fullscreen {
         ui.window().set_fullscreen(true);
         eprintln!("[ui] fullscreen=true (--fullscreen)");
