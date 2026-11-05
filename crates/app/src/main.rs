@@ -127,6 +127,8 @@ struct AppState {
     plugin_model: Rc<VecModel<slint::SharedString>>,
     /// Delete 需要点两次确认（避免误删远端文件）
     sftp_delete_armed: bool,
+    fwd_profile_indices: Vec<usize>,
+    fwd_model: Rc<VecModel<slint::SharedString>>,
     settings_result_cats: Vec<i32>,
     settings_model: Rc<VecModel<slint::SharedString>>,
     /// 1003 悬停上报的上一格（按格去重，避免鼠标移动刷爆有界 ctrl 队列）。
@@ -1019,6 +1021,78 @@ fn sftp_do_delete(st: &mut AppState) {
         },
         Err(e) => sftp_set_status(st, &format!("删除失败: {e}")),
     }
+}
+
+// ------------------------------------------------------- Port Forwards 面板
+
+fn refresh_forwards(st: &mut AppState) {
+    let idx = st.ui.get_fwd_profile().max(0) as usize;
+    let items: Vec<slint::SharedString> = st
+        .fwd_profile_indices
+        .get(idx)
+        .and_then(|i| st.profiles.profiles.get(*i))
+        .map(|p| p.local_forwards.iter().map(|f| f.as_str().into()).collect())
+        .unwrap_or_default();
+    st.fwd_model.set_vec(items);
+}
+
+fn open_forwards_panel(st: &mut AppState) {
+    let indices = sftp_profile_indices(st);
+    let names: Vec<slint::SharedString> =
+        indices.iter().map(|i| st.profiles.profiles[*i].name.clone().into()).collect();
+    st.fwd_profile_indices = indices;
+    let model = Rc::new(VecModel::from(names));
+    st.ui.set_fwd_profiles(ModelRc::from(model));
+    st.ui.set_fwd_profile(0);
+    st.ui.set_fwd_status(
+        if st.fwd_profile_indices.is_empty() {
+            "没有 SSH Profile，先到 Profiles 里建一个"
+        } else {
+            "规则写入 Profile，下次连接生效"
+        }
+        .into(),
+    );
+    refresh_forwards(st);
+    st.ui.set_fwd_open(true);
+    eprintln!("[fwd] 打开面板 profiles={}", st.fwd_profile_indices.len());
+}
+
+fn fwd_add(st: &mut AppState) {
+    let idx = st.ui.get_fwd_profile().max(0) as usize;
+    let Some(profile_index) = st.fwd_profile_indices.get(idx).copied() else {
+        st.ui.set_fwd_status("没有可用的 SSH Profile".into());
+        return;
+    };
+    let spec = st.ui.get_fwd_new().trim().to_string();
+    if let Err(e) = profile::validate_forward(&spec) {
+        st.ui.set_fwd_status(e.as_str().into());
+        return;
+    }
+    let Some(profile) = st.profiles.profiles.get_mut(profile_index) else { return };
+    if profile.local_forwards.iter().any(|f| f == &spec) {
+        st.ui.set_fwd_status("这条规则已存在".into());
+        return;
+    }
+    profile.local_forwards.push(spec.clone());
+    st.profiles.save();
+    st.ui.set_fwd_new("".into());
+    refresh_forwards(st);
+    st.ui.set_fwd_status(format!("已添加 -L {spec}（下次连接生效）").as_str().into());
+    eprintln!("[fwd] add {spec}");
+}
+
+fn fwd_delete(st: &mut AppState, index: usize) {
+    let idx = st.ui.get_fwd_profile().max(0) as usize;
+    let Some(profile_index) = st.fwd_profile_indices.get(idx).copied() else { return };
+    let Some(profile) = st.profiles.profiles.get_mut(profile_index) else { return };
+    if index >= profile.local_forwards.len() {
+        return;
+    }
+    let spec = profile.local_forwards.remove(index);
+    st.profiles.save();
+    refresh_forwards(st);
+    st.ui.set_fwd_status(format!("已删除 -L {spec}").as_str().into());
+    eprintln!("[fwd] delete {spec}");
 }
 
 fn open_background_panel(st: &mut AppState) {
@@ -2459,6 +2533,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui.set_plugin_items(ModelRc::from(plugin_model.clone()));
     let settings_model = Rc::new(VecModel::<slint::SharedString>::default());
     ui.set_settings_results(ModelRc::from(settings_model.clone()));
+    let fwd_model = Rc::new(VecModel::<slint::SharedString>::default());
+    ui.set_fwd_items(ModelRc::from(fwd_model.clone()));
     let state = Rc::new(RefCell::new(AppState {
         ui: ui.clone_strong(),
         ws: Workspace::new(),
@@ -2495,6 +2571,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         plugins: plugin::PluginStore::load(),
         plugin_model,
         sftp_delete_armed: false,
+        fwd_profile_indices: Vec::new(),
+        fwd_model,
         settings_result_cats: Vec::new(),
         settings_model,
         hover_cell: None,
@@ -2877,6 +2955,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         with_app(|st| st.ui.set_rename_open(false));
     });
 
+    ui.on_fwd_select(|index| {
+        with_app(|st| {
+            st.ui.set_fwd_profile(index.max(0));
+            refresh_forwards(st);
+        });
+    });
+
+    ui.on_fwd_add(|| {
+        with_app(|st| fwd_add(st));
+    });
+
+    ui.on_fwd_delete(|index| {
+        with_app(|st| fwd_delete(st, index.max(0) as usize));
+    });
+
+    ui.on_fwd_close(|| {});
+
     ui.on_config_import_tabby(|| {
         with_app(|st| {
             let path = tabby_config_path();
@@ -3187,6 +3282,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             8 => open_background_panel(st),
             9 => open_profiles_panel(st),
             10 => open_sftp_panel(st),
+            11 => open_forwards_panel(st),
             6 => {
                 st.cfg.tabbar_position =
                     if st.cfg.tabbar_position == "bottom" { "top".into() } else { "bottom".into() };

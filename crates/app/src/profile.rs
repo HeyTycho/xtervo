@@ -42,6 +42,21 @@ pub struct Profile {
     pub baud: u32,
 }
 
+/// 校验一条本地转发规格：`本地端口:主机:端口`，端口 1–65535。
+pub fn validate_forward(spec: &str) -> Result<(), String> {
+    let parts: Vec<&str> = spec.split(':').collect();
+    if parts.len() < 3 || parts.iter().any(|x| x.trim().is_empty()) {
+        return Err(format!("端口转发格式应为 本地端口:主机:端口，实际: {spec}"));
+    }
+    if parts[0].trim().parse::<u16>().map(|p| p == 0).unwrap_or(true) {
+        return Err(format!("端口转发的本地端口无效: {spec}"));
+    }
+    if parts[parts.len() - 1].trim().parse::<u16>().map(|p| p == 0).unwrap_or(true) {
+        return Err(format!("端口转发的目标端口无效: {spec}"));
+    }
+    Ok(())
+}
+
 /// 支持的 Profile 类型（字符串值即配置里的 `kind`）。
 pub const KINDS: [&str; 4] = ["local", "ssh", "serial", "telnet"];
 
@@ -135,13 +150,7 @@ impl Profile {
                     return Err("选择 key 认证时必须填私钥路径".into());
                 }
                 for f in &self.local_forwards {
-                    let parts: Vec<&str> = f.split(':').collect();
-                    if parts.len() < 3 || parts.iter().any(|x| x.trim().is_empty()) {
-                        return Err(format!("端口转发格式应为 本地端口:主机:端口，实际: {f}"));
-                    }
-                    if parts[0].trim().parse::<u16>().map(|p| p == 0).unwrap_or(true) {
-                        return Err(format!("端口转发的本地端口无效: {f}"));
-                    }
+                    validate_forward(f)?;
                 }
             },
             "serial" => {
@@ -463,6 +472,16 @@ shell = "/bin/sh"
         assert!(s.update(a, sample("  ")).is_err());
         assert_eq!(s.profiles.len(), 2);
         assert_eq!(s.get(b).unwrap().name, "b");
+    }
+
+    #[test]
+    fn forward_validation_helper() {
+        assert!(validate_forward("8080:localhost:80").is_ok());
+        assert!(validate_forward("8080:127.0.0.1:80").is_ok());
+        assert!(validate_forward("8080").is_err());
+        assert!(validate_forward("0:h:80").is_err());
+        assert!(validate_forward("8080:h:0").is_err());
+        assert!(validate_forward("8080::80").is_err());
     }
 
     #[test]

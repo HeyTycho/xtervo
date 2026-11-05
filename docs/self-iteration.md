@@ -322,3 +322,16 @@ cargo bench -p tervo-core --bench pty_throughput
 - 注意：Slint 里 `sftp-target` 曾同时用作 Profile 下标和 Target 字符串，已拆成
   `sftp-profile`（int）与 `sftp-target`（string），避免属性冲突。
 
+### 2026-11-05 · 右键菜单“有时候唤不出” + 转发管理面板
+
+- **现象**：右键有时不弹菜单；空闲时可复现率低，连续右键/高输出时更明显。
+- **根因**：菜单原先在 **mouse-up** 才打开，而 pane 的 right-down 返回 `reject`（Slint 不 grab），
+  后续 up 可能被其它元素/分隔线 4px 命中带吃掉；连续右键时第二次仅关掉旧菜单。
+- **修复**：右键 **按下即打开并 accept**，up 保留兜底；菜单已开时在外部右键会“关掉并在新位置重开”；
+  菜单夹取改用真实 150×246。
+- **验证**：空闲 8/8；100fps 输出下 12/12；连续右键 5/5 均重新显示（.logs/rightclick-consecutive.png）。
+  结论：刷新本身不会关掉菜单，之前是“依赖 up 事件”的设计在刷新/移动下不稳。
+- **转发管理面板**：Port Forwards 菜单 → 按 SSH Profile 列出/添加/删除 `-L` 规则并落盘，
+  提示“下次连接生效”。真机：加 `18080:127.0.0.1:9000` → profiles.toml 写入；删除后清空。
+- **测试工具**：xkey 之前只发 level-0 键，冒号/大写会丢；改为按 keysym level 自动按 Shift。
+
