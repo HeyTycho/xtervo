@@ -370,13 +370,6 @@ fn theme_choices(reg: &ThemeRegistry) -> ModelRc<ThemeChoice> {
 }
 
 /// 设置面板高度：12 套内置主题 3 行；每多一行加 30px。
-fn settings_height_for(count: usize, win_h: f32) -> f32 {
-    // 主题区最多显示 4 行，更多靠 Flickable 滚动，面板高度不再继续增长。
-    let rows = count.div_ceil(4).clamp(1, 4);
-    // +92：设置面板新增两个开关行（Copy on select / Confirm close）+ 底部提示不被挤出面板
-    let h = 210.0 + rows as f32 * 30.0 + 122.0;
-    h.min((win_h - 40.0).max(280.0))
-}
 
 /// 下发实际生效的主题（不改配置与选中项；auto 监听回调走这里）。
 fn push_theme(st: &mut AppState, theme: &ThemeData) {
@@ -3359,6 +3352,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     });
 
+    ui.on_settings_category_changed(|c| {
+        eprintln!("[ui] settings category={c}");
+    });
+
     ui.on_settings_filter(|query| {
         with_app(|st| {
             let q = query.to_string();
@@ -3529,9 +3526,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ui.set_theme_name(if auto { AUTO_THEME.into() } else { initial_theme.id.as_str().into() });
         ui.set_auto_resolved(if auto { initial_theme.label.as_str().into() } else { "".into() });
         ui.global::<Palette>().set_colors(slint_theme(&initial_theme.ui));
-        let count = state.borrow().registry.all().count();
         ui.set_theme_choices(theme_choices(&state.borrow().registry));
-        ui.set_settings_height(settings_height_for(count, win_h));
     }
     ui.set_font_size(state.borrow().cfg.font_size as i32);
     ui.set_scrollback(state.borrow().cfg.scrollback as i32);

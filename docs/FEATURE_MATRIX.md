@@ -152,7 +152,7 @@
 
 | ID | Feature | Upstream evidence | Rust implementation | Status | Test | Result | Limitation |
 |---|---|---|---|---|---|---|---|
-| UI-SET-001 | Application：应用级行为、启动与默认行为 | U-AUDIT / 需求 B7 | 设置面板改为分类页（Appearance/Terminal/Window/Config File），当前无独立 Application 分类 | partial | 真机：四个分类可切换（.logs/settings-cat-*.png） | 分类框架可用 | Application 分类内容（启动行为、默认项）未做 |
+| UI-SET-001 | Application：应用级行为、启动与默认行为 | U-AUDIT / 需求 B7 | 设置窗口改为 **Tabby 式左右分列**：左侧垂直导航（Appearance/Terminal/Window/Config/Hotkeys/Plugins）+ 右侧内容区 + 顶部搜索；面板居中于 TabBar 下方（520×440 上限，窗口小则收缩） | partial | 真机：Appearance/Terminal/Config 三页布局正确，搜索 `font` → 1 条 “Terminal · Font size” 覆盖右栏；截图 .logs/settings-2col*.png | 设置导航/内容分栏可用，搜索可用 | 无 Application 独立页；小窗口下内容可能被裁剪（未做页内滚动） |
 | UI-SET-002 | Appearance：外观、窗口风格、图标/字体、背景效果 | U-AUDIT / 需求 B7 | main.slint 设置面板仅有主题选择；主题含 UI chrome 配色 | partial | 人工：12 套主题 + Auto 可切换；无窗口风格/背景效果 | 主题外观可用 | 无窗口风格/图标/字体/背景/透明度设置 |
 | UI-SET-003 | Profiles & Connections：默认 Profile、列表、连接行为 | U-AUDIT / 需求 B7 | 无实现 | not_started | 无 | 未实现 | 无 Profile 设置页 |
 | UI-SET-004 | Terminal：行为、字体、滚动、复制粘贴、鼠标等 | U-AUDIT / 需求 B7 | main.slint 字号 ±、回滚 ±、Copy on select / Confirm close 开关（ToggleRow）；config.rs font_size/scrollback/copy_on_select/confirm_close | partial | 真机：开设置点开关 → `[ui] copy_on_select=false` 并写入配置；关闭后拖选 0 条剪贴板日志、开启后 1 条（复制 6 字节） | 字号/回滚/复制-关闭行为可调 | 无字体族/行距/鼠标/滚动行为设置；无设置搜索 |
