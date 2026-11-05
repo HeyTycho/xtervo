@@ -36,6 +36,8 @@ pub struct Config {
     pub rows: u16,
     /// 关闭窗口时若有多个会话，先弹确认（默认开）。
     pub confirm_close: bool,
+    /// 拖选后自动复制（默认开）。
+    pub copy_on_select: bool,
     /// 本版本不认识的键，原样保留（前向兼容）。
     #[serde(flatten)]
     pub extra: toml::Table,
@@ -54,6 +56,7 @@ impl Default for Config {
             cols: 120,
             rows: 32,
             confirm_close: true,
+            copy_on_select: true,
             extra: toml::Table::new(),
         }
     }
@@ -180,6 +183,14 @@ mod tests {
         assert_eq!(cfg.scrollback, 2000);
         // 没有 version 的旧文件按 v0 读入
         assert_eq!(cfg.version, 0);
+    }
+
+    #[test]
+    fn interactive_defaults() {
+        let c = Config::default();
+        assert!(c.confirm_close, "默认关闭多会话要确认");
+        assert!(c.copy_on_select, "默认拖选自动复制");
+        assert_eq!(c.version, SCHEMA_VERSION);
     }
 
     #[test]

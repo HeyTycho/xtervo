@@ -111,6 +111,46 @@ component MiniBtn inherits Rectangle {
     }
 }
 
+// 设置面板里的开关行
+component ToggleRow inherits Rectangle {
+    in property <string> label;
+    in property <bool> on;
+    callback toggled();
+
+    height: 26px;
+
+    Text {
+        x: 0px;
+        width: parent.width - 56px;
+        text: root.label;
+        color: Palette.colors.text;
+        font-size: 12px;
+        vertical-alignment: center;
+    }
+
+    Rectangle {
+        x: parent.width - 44px;
+        y: 4px;
+        width: 40px;
+        height: 18px;
+        border-radius: 9px;
+        background: root.on ? Palette.colors.accent : Palette.colors.hover;
+
+        Rectangle {
+            x: root.on ? parent.width - 16px : 2px;
+            y: 2px;
+            width: 14px;
+            height: 14px;
+            border-radius: 7px;
+            background: Palette.colors.bg;
+        }
+
+        TouchArea {
+            clicked => { root.toggled(); }
+        }
+    }
+}
+
 component ChoiceBtn inherits Rectangle {
     in property <string> label;
     in property <bool> active: false;
@@ -221,6 +261,12 @@ export component MainWindow inherits Window {
     callback tab-rename(int);
     callback rename-committed(int, string);
     callback rename-cancelled();
+    // 设置项开关状态（由 Rust 侧从 Config 下发）
+    in-out property <bool> cfg-copy-on-select: true;
+    in-out property <bool> cfg-confirm-close: true;
+    callback toggle-copy-on-select();
+    callback toggle-confirm-close();
+    callback settings-toggled(bool);
     // Command Palette
     in-out property <bool> palette-open: false;
     in-out property <string> palette-query: "";
@@ -468,7 +514,10 @@ export component MainWindow inherits Window {
             y: 4px;
             width: 28px;
             height: 24px;
-            clicked => { root.settings-open = !root.settings-open; }
+            clicked => {
+                root.settings-open = !root.settings-open;
+                root.settings-toggled(root.settings-open);
+            }
 
             Rectangle {
                 width: 100%;
@@ -1278,6 +1327,24 @@ export component MainWindow inherits Window {
                         label: "+";
                         clicked => { root.bump-scrollback(500); }
                     }
+                }
+
+                Rectangle {
+                    height: 1px;
+                    horizontal-stretch: 1;
+                    background: Palette.colors.border;
+                }
+
+                ToggleRow {
+                    label: "Copy on select（拖选自动复制）";
+                    on: root.cfg-copy-on-select;
+                    toggled => { root.toggle-copy-on-select(); }
+                }
+
+                ToggleRow {
+                    label: "Confirm before closing multiple sessions";
+                    on: root.cfg-confirm-close;
+                    toggled => { root.toggle-confirm-close(); }
                 }
 
                 Text {
