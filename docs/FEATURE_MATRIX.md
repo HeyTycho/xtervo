@@ -2,6 +2,7 @@
 
 > 审计日期：2026-11-05 ｜ 仓库：`/home/user/AIworkspace/rusttabbyterminal`（起始 HEAD `0ea6231`，复核到并发提交 `8327e20`） ｜ 审计方式：只读代码 + 既有文档 + 静态走查；**未执行 cargo build/test**（同仓另一 Agent 在构建）。
 > 上游网络不可用（2026-11-05，GitHub/docs.tabby.sh DNS 解析到非公网地址），上游行为未能复核；见 [`TABBY_UPSTREAM_AUDIT.md`](TABBY_UPSTREAM_AUDIT.md)。
+> 状态分布与闭环结论见 [`CLOSURE.md`](CLOSURE.md)；统计脚本 `python3 scripts/matrix_stats.py`。
 
 ## 0. 覆盖与状态口径
 
@@ -38,7 +39,7 @@
 
 ### B1. 主窗口与自绘标题栏（9 条）
 
-状态：implemented=4，partial=1，needs_verification=1，not_started=3。
+状态：implemented=5，partial=3，not_started=1。
 
 | ID | Feature | Upstream evidence | Rust implementation | Status | Test | Result | Limitation |
 |---|---|---|---|---|---|---|---|
@@ -49,12 +50,12 @@
 | UI-WIN-005 | 窗口尺寸变化、DPI/Scale Factor、主题切换 | U-AUDIT / 需求 B1 | main.rs `on_resized`/`refresh_views`；main.slint 8 个 ResizeHandle；`push_theme` | partial | 人工：拖边缩放 + 切主题；DPI 未测（代码无 scale_factor 分支） | 缩放/主题已有记录；DPI/缩放因子未验证 | 物理像素假设；无 scale_factor 监听与跨屏 DPI 复测 |
 | UI-WIN-006 | 全屏模式及退出全屏 | U-AUDIT / 需求 B1 | main.rs F11 → `Window::set_fullscreen` 切换；`--fullscreen` 启动参数 | implemented | 真机：`--fullscreen` 后 xwininfo = 2560x1440（单屏满屏，常规窗口 540x472）；日志 `[ui] fullscreen=true` | 2026-11-05 实测通过 | F11 键盘端到端未在沙箱验证（键盘注入不可用）；无多显示器策略 |
 | UI-WIN-007 | TabBar 位置可配置：上/下/左/右 | U-AUDIT（上游支持方向待核） | config `tabbar_position`（top/bottom）+ `tabbar-bottom` 属性；根布局改绝对定位；TabBar 菜单可切换并持久化 | partial | 真机：菜单切 bottom → `[ui] tabbar_position=bottom`，窗口底部出现 TabBar；重启日志 `启动 tabbar_position=bottom`；右键菜单锚在 TabBar 上方（y=224） | 上/下可用且持久化 | 左/右未实现（竖排 TabBar 需另做布局）；上游支持方向待核 |
-| UI-WIN-008 | 关闭窗口前对活动任务/连接确认；不误杀应保留 Session | U-AUDIT / 需求 B1 | main.rs `request_close`/`needs_close_confirm` + main.slint 确认弹窗；config `confirm_close`（默认 true） | partial | 单测 `close_confirm_policy`；真机 2 tab 点 ✕ → `[ui] close confirm`；点 Cancel → `[ui] close cancelled` 且进程存活 | 多会话关闭有确认，Cancel 不杀进程 | 无“保留后台 Session/仅关视图”策略；单会话直接关（符合默认）；配置项尚无设置页入口 |
+| UI-WIN-008 | 关闭窗口前对活动任务/连接确认；不误杀应保留 Session | U-AUDIT / 需求 B1 | `request_close`/`needs_close_confirm` + 确认弹窗；`confirm_close`（默认 true）；Tab/Pane 关闭支持 `close_action=background`（保留会话，见 UI-TAB-005） | partial | 单测 `close_confirm_policy`；真机关闭确认/Cancel；“关 Tab 保留会话”另有 pid 不变证据 | 关窗确认 + 会话保留策略均可用 | 退出应用仍会结束后台会话；确认弹窗未列出具体会话名；close_action 无设置页入口 |
 | UI-WIN-009 | 多窗口：新建窗口、Tab 在窗口间打开/移动 | U-AUDIT / 需求 B1 | 无实现 | not_started | 无 | 未实现 | 单进程单窗口；无窗口管理器/实例间 IPC |
 
 ### B2. TabBar 操作（12 条）
 
-状态：implemented=1，partial=6，needs_verification=1，not_started=4。
+状态：implemented=2，partial=9，not_started=1。
 
 | ID | Feature | Upstream evidence | Rust implementation | Status | Test | Result | Limitation |
 |---|---|---|---|---|---|---|---|
@@ -73,7 +74,7 @@
 
 ### B3. Split Pane / 分屏操作（11 条）
 
-状态：implemented=5，partial=2，needs_verification=1，not_started=3。
+状态：implemented=6，partial=1，needs_verification=1，not_started=3。
 
 | ID | Feature | Upstream evidence | Rust implementation | Status | Test | Result | Limitation |
 |---|---|---|---|---|---|---|---|
@@ -91,7 +92,7 @@
 
 ### B4. Sidebar、Toolbar 与连接入口（8 条）
 
-状态：needs_verification=1，not_started=7。
+状态：partial=2，not_started=6。
 
 | ID | Feature | Upstream evidence | Rust implementation | Status | Test | Result | Limitation |
 |---|---|---|---|---|---|---|---|
@@ -106,7 +107,7 @@
 
 ### B5. Connection Manager / Profile 管理 UI（13 条）
 
-状态：partial=1，needs_verification=3，not_started=9。
+状态：partial=2，needs_verification=3，not_started=8。
 
 | ID | Feature | Upstream evidence | Rust implementation | Status | Test | Result | Limitation |
 |---|---|---|---|---|---|---|---|
@@ -126,16 +127,16 @@
 
 ### B6. Terminal View 交互（14 条）
 
-状态：implemented=1，partial=9，not_started=4。
+状态：implemented=2，partial=9，not_started=3。
 
 | ID | Feature | Upstream evidence | Rust implementation | Status | Test | Result | Limitation |
 |---|---|---|---|---|---|---|---|
-| UI-TERM-001 | 点击终端获得输入焦点；切换不丢输入状态 | U-AUDIT / 需求 B6 | main.slint pane-hit down → `ime.focus()` + `pane-clicked`；main.rs `focus_pane` | implemented | 人工：点击不同 pane 输入；IME 候选跟随；ui-shell §3 | 已有记录 | 焦点视觉弱；无 focus in/out 上报 |
+| UI-TERM-001 | 点击终端获得输入焦点；切换不丢输入状态 | U-AUDIT / 需求 B6 | main.slint pane-hit down → `ime.focus()` + `pane-clicked`；main.rs `focus_pane`；焦点边框 | partial | 人工：点击不同 pane 焦点边框/日志切换；输入与 IME 未在沙箱验证（键盘注入不可用） | 焦点切换代码路径可用 | IME 候选跟随缺少端到端证据；focus in/out 未上报；焦点视觉较弱 |
 | UI-TERM-002 | 鼠标拖选；跨行、反向、滚动自动扩展 | U-AUDIT / 需求 B6 | pane.rs `SelectionStart/Extend`+`sel_anchor`；main.rs `on_pane_mouse_down/move/up` | partial | `selection_copy_returns_text`、`backward_selection_includes_first_column`；人工 XTest 反向拖选 | 拖选/跨行/反向已有记录 | 无滚动自动扩展；无双击选词/三击选行/矩形选择 |
 | UI-TERM-003 | 复制、粘贴、全选、清屏、查找、滚到顶/底 | U-AUDIT / 需求 B6 | arboard；Ctrl+Shift+C/V；`copy_current_selection`/`paste_into_focused`；Ctrl+F；菜单与命令含 Select All/Clear | partial | 真机 Select All/Clear；`search_finds_and_scrolls`；粘贴确认真机验证 | 复制/粘贴/查找/全选/清屏可用 | 滚到顶/底未做；粘贴无危险命令检测 |
 | UI-TERM-004 | 右键菜单：复制/粘贴/查找/清屏/Profile/拆分等（按上游） | U-AUDIT（完整菜单待核） | main.slint 右键菜单 8 项（Copy/Paste/Split Right/Split Down/Close Pane/Find/Select All/Clear）；`on_menu_action` 分发 0–7 | partial | 真机：Select All → Copy 得到 `alpha\nbravo\ncharlie`；Clear 后同路径得到空白（已过滤） | 复制/粘贴/分屏/关闭/查找/全选/清屏均可用 | 无 Profile/缩放菜单项；上游完整项目待核；鼠标上报模式下右键仍按设计转发给 PTY |
 | UI-TERM-005 | 可配置右键粘贴（PuTTY 风格） | U-AUDIT / 需求 B6 | 无实现 | not_started | 无 | 未实现 | 无右键粘贴设置；右键固定弹菜单 |
-| UI-TERM-006 | 可配置 Copy-on-Select | U-AUDIT / 需求 B6 | main.rs `on_pane_mouse_up` 拖选结束自动 `set_clipboard`（无开关） | partial | 人工：拖选即复制；设置中无开关 | 始终开启 copy-on-select | 无法关闭；无设置项/配置字段 |
+| UI-TERM-006 | 可配置 Copy-on-Select | U-AUDIT / 需求 B6 | config `copy_on_select` + 设置面板开关；`on_pane_mouse_up` 仅在开启时写剪贴板 | implemented | 真机：关闭后拖选 0 条 clipboard 日志，开启后 1 条（复制 6 字节）；config 默认断言 | 2026-11-05 实测通过 | 无每 profile 覆盖；设置项在 Terminal 分类（无搜索） |
 | UI-TERM-007 | 多行粘贴确认/警告；记住用户选择 | U-AUDIT / 需求 B6 | main.rs `needs_paste_confirm` + main.slint 粘贴确认浮层（Cancel / Always Allow / Paste）；config `confirm_multiline_paste` | implemented | 单测 `paste_confirm_only_for_multiline_when_enabled`；真机：多行粘贴 → `paste confirm lines=3`；Always Allow 后写配置且下次直发 | 2026-11-05 实测通过 | 只按“是否多行”判断，未做危险命令检测；预览只取前 3 行 |
 | UI-TERM-008 | Bracketed Paste 包裹并发送给支持的 Shell/TUI | U-AUDIT / 需求 B6 | main.rs `paste_payload(normalized, bracketed)` 统一组装；检查 `BRACKETED_PASTE` 模式位 | partial | 单测 `paste_normalization_and_brackets`（包裹字节/长度）；真机 `paste bytes=13 bracketed=false`（cat 未开模式） | 包裹与规范化有单测 | 缺“应用真的收到 200/201”的端到端验收；未测内容含 201 |
 | UI-TERM-009 | 滚动条/滚轮；alternate screen（vim/less）滚动正确 | U-AUDIT / 需求 B6 | main.rs `on_pane_scrolled`；pane.rs `Ctrl::Scroll`；alacritty alt screen | partial | `wheel_scrollback_shows_history`；人工 vim/htop（phase0 FPS 记录） | 回滚可用；alt screen 依赖 alacritty | 无可见滚动条；alt screen 滚轮行为未专项验收 |
@@ -147,7 +148,7 @@
 
 ### B7. Settings 设置页（14 条）
 
-状态：partial=5，not_started=9。
+状态：partial=8，not_started=6。
 
 | ID | Feature | Upstream evidence | Rust implementation | Status | Test | Result | Limitation |
 |---|---|---|---|---|---|---|---|
@@ -168,7 +169,7 @@
 
 ### B8. SSH / SFTP / Port Forward UI（9 条）
 
-状态：not_started=9。
+状态：partial=5，not_started=4。
 
 | ID | Feature | Upstream evidence | Rust implementation | Status | Test | Result | Limitation |
 |---|---|---|---|---|---|---|---|
@@ -184,7 +185,7 @@
 
 ### B9. Serial / Telnet UI（8 条）
 
-状态：needs_verification=4，not_started=4。
+状态：partial=2，needs_verification=3，not_started=2，unsupported=1。
 
 | ID | Feature | Upstream evidence | Rust implementation | Status | Test | Result | Limitation |
 |---|---|---|---|---|---|---|---|
@@ -211,7 +212,7 @@
 
 ### B11. 插件管理 UI（7 条）
 
-状态：not_started=7。
+状态：partial=3，not_started=4。
 
 | ID | Feature | Upstream evidence | Rust implementation | Status | Test | Result | Limitation |
 |---|---|---|---|---|---|---|---|
@@ -301,7 +302,7 @@
 
 ### C5. Zmodem（4 条）
 
-状态：not_started=4。
+状态：unsupported=4。
 
 | ID | Feature | Upstream evidence | Rust implementation | Status | Test | Result | Limitation |
 |---|---|---|---|---|---|---|---|
@@ -340,7 +341,7 @@
 
 ### C8. Profiles / Workspace / Session 持久化（9 条）
 
-状态：partial=3，not_started=6。
+状态：partial=4，not_started=5。
 
 | ID | Feature | Upstream evidence | Rust implementation | Status | Test | Result | Limitation |
 |---|---|---|---|---|---|---|---|
@@ -356,7 +357,7 @@
 
 ### C9. Hotkeys / Commands（7 条）
 
-状态：partial=5，not_started=2。
+状态：implemented=1，partial=4，not_started=2。
 
 | ID | Feature | Upstream evidence | Rust implementation | Status | Test | Result | Limitation |
 |---|---|---|---|---|---|---|---|
