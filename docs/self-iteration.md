@@ -445,3 +445,29 @@ cargo bench -p tervo-core --bench pty_throughput
   `right-click clipboard copy 5 chars`；off → 无动作；middle → `middle-click paste`
   （.logs/right-click-modes.png、settings-right-click-modes.png）。
 
+### 2026-11-05 · 多窗口 MVP（Ctrl+Shift+N 新建独立窗口）
+
+- **动机**：需求 B1 UI-WIN-009 要求多窗口。单进程多窗口需要重写 Tab 树/渲染/事件循环所有权，
+  本轮先交付可用的进程级 MVP（明确不引入单实例锁/共享内存/IPC）。
+- **实现**：新增 `crates/app/src/window.rs`；`window.new`（Category::Window，默认
+  `Ctrl+Shift+N`）→ `std::env::current_exe()` + `--window` 拉起新 Tervo 进程。
+  - `setsid()` 脱离父进程会话，父窗口关闭/Ctrl+C 不连带新窗口；
+  - stdin/stdout/stderr 接 `/dev/null`：新进程写自己的日志文件，避免混进父进程的
+    log tee 管道；
+  - `spawn()` 立即返回、不阻塞 UI；后台 reaper 线程 `wait`，避免父进程长期运行时留下僵尸；
+  - 只传 `--window`，不继承父进程的 `--restore/--shell/--cols` 等参数，避免子进程递归恢复/建窗。
+- **日志**：父进程 `[ui] new window pid=<pid>`，失败 `[ui] new window failed: <err>`（不 panic）；
+  子进程启动时 `[ui] new window process pid=<pid> (--window)`，仅用于区分。
+- **入口**：TabBar 右键菜单新增 New Window（第 13 项，菜单 396px = 13×28 + 12×2 + 8 正好）；
+  命令面板可搜到 New Window；`--help`/README 同步。
+- **测试**：`cargo test -p tervo-app --bin tervo` 全绿（新增 4 个不依赖 GUI 的用例：
+  命令注册/快捷键、spawn 命令行只带 `--window`、`--window` 不继承父参数）；
+  `cargo build --release -p tervo-app` 通过。未启动 GUI（共享显示器约束）。
+- **限制**：独立进程，Tab/Pane 不能跨窗口移动/拖拽；配置并发为原子写“最后写入者生效”；
+  关闭确认只覆盖当前窗口；每个窗口独立日志，`--diagnose` 默认只报告当前进程。
+- **手工验证（有显示器时）**：启动 release 版 → Ctrl+Shift+N（或右键 TabBar → New Window）
+  → 出现第二个窗口；`ps -o pid,ppid,sid,cmd -C tervo` 可见两个不同 pid、不同 sid；
+  两个窗口分别 `echo $$` 得到不同 shell pid；在 A 窗口 Ctrl+T 加 Tab，B 窗口 Tab 数不变；
+  关掉 A，B 仍可输入；父进程日志有 `[ui] new window pid=`，新进程日志首部有
+  `args=[..., "--window"]` 与 `[ui] new window process pid=`。
+

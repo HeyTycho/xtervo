@@ -1185,6 +1185,7 @@ export component MainWindow inherits Window {
         x: Math.min(root.tabmenu-x, root.width - 180px);
         y: root.tabmenu-y;
         width: 170px;
+        // 13 行：13×28 + 12×2 + 上下 padding 8 = 396（新增 New Window 行后正好占满）
         height: 396px;
         background: Palette.colors.raise;
         border-radius: 8px;
@@ -1205,6 +1206,10 @@ export component MainWindow inherits Window {
             MenuRow {
                 label: "New Tab";
                 picked => { root.tabmenu-open = false; root.tabbar-menu-action(1); }
+            }
+            MenuRow {
+                label: "New Window";
+                picked => { root.tabmenu-open = false; root.tabbar-menu-action(13); }
             }
             MenuRow {
                 label: "Settings";
