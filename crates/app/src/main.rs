@@ -1,3 +1,4 @@
+mod commands;
 mod config;
 mod glyph;
 mod keys;
