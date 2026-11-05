@@ -35,6 +35,9 @@ pub struct Config {
     /// 历史缓冲行数（对新 pane 生效）。
     pub scrollback: usize,
     pub shell: Option<String>,
+    /// 新 Tab（`+` / Ctrl+T / 命令 `tab.new`）默认使用的 Profile ID。
+    /// 0 = 未设置，使用系统默认 shell；ID 已失效时同样回退（不自动改写用户配置）。
+    pub default_profile_id: u64,
     pub cols: u16,
     pub rows: u16,
     /// 关闭窗口时若有多个会话，先弹确认（默认开）。
@@ -81,6 +84,7 @@ impl Default for Config {
             font_size: 15.0,
             scrollback: 2000,
             shell: None,
+            default_profile_id: 0,
             cols: 120,
             rows: 32,
             confirm_close: true,
@@ -221,13 +225,36 @@ mod tests {
 
     #[test]
     fn roundtrip() {
-        let cfg = Config { theme: "latte".into(), font_size: 17.0, ..Config::default() };
+        let cfg = Config {
+            theme: "latte".into(),
+            font_size: 17.0,
+            default_profile_id: 42,
+            ..Config::default()
+        };
         let text = toml::to_string_pretty(&cfg).unwrap();
         let back: Config = toml::from_str(&text).unwrap();
         assert_eq!(back.theme, "latte");
         assert!((back.font_size - 17.0).abs() < f32::EPSILON);
         assert_eq!(back.scrollback, cfg.scrollback);
+        assert_eq!(back.default_profile_id, 42);
         assert_eq!(back.version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn default_profile_id_defaults_to_zero_and_survives_roundtrip() {
+        assert_eq!(Config::default().default_profile_id, 0, "默认 Profile 默认未设置");
+        // 旧配置没有该字段：serde(default) 补 0，不能解析失败
+        let old: Config = toml::from_str("theme = \"nord\"\n").unwrap();
+        assert_eq!(old.default_profile_id, 0);
+        // 写盘再读回保持一致
+        let dir = tmpdir("default-profile");
+        let path = dir.join("config.toml");
+        let cfg = Config { default_profile_id: 7, ..Config::default() };
+        cfg.save_to(&path);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("default_profile_id = 7"), "{text}");
+        assert_eq!(Config::load_from(&path).default_profile_id, 7);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -236,6 +263,7 @@ mod tests {
         assert_eq!(cfg.theme, "latte");
         assert_eq!(cfg.font_size, 15.0);
         assert_eq!(cfg.scrollback, 2000);
+        assert_eq!(cfg.default_profile_id, 0, "旧配置缺 default_profile_id 时回退系统 shell");
         // 新增的桌面通知开关对旧配置也要默认开启
         assert!(cfg.desktop_notifications, "旧配置缺 desktop_notifications 时默认开");
         // 没有 version 的旧文件按 v0 读入

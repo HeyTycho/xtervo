@@ -66,6 +66,41 @@ pub fn default_kind() -> String {
     "local".to_string()
 }
 
+/// 按搜索框输入过滤 Profile，返回命中项在 store 里的原始下标（保持列表顺序）。
+///
+/// 规则：空查询（含全空白）返回全部；否则对 `name` / `host` / `kind` 做
+/// **大小写不敏感**的子串匹配。返回下标而不是克隆，面板点击时仍能定位到
+/// 唯一的 Profile（即使过滤后列表顺序/数量变化）。
+pub fn filter_indices(profiles: &[Profile], query: &str) -> Vec<usize> {
+    let needle = query.trim().to_lowercase();
+    if needle.is_empty() {
+        return (0..profiles.len()).collect();
+    }
+    profiles
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| {
+            p.name.to_lowercase().contains(&needle)
+                || p.host.to_lowercase().contains(&needle)
+                || p.kind.to_lowercase().contains(&needle)
+        })
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// 复制 Profile 时生成不冲突的名字：`原名 (copy 1)`、`原名 (copy 2)`……
+pub fn duplicate_name(base: &str, profiles: &[Profile]) -> String {
+    let base = base.trim();
+    let mut n = 1u64;
+    loop {
+        let candidate = format!("{base} (copy {n})");
+        if !profiles.iter().any(|p| p.name == candidate) {
+            return candidate;
+        }
+        n += 1;
+    }
+}
+
 impl Default for Profile {
     fn default() -> Self {
         Self {
@@ -314,6 +349,23 @@ impl ProfileStore {
 
     pub fn get(&self, id: u64) -> Option<&Profile> {
         self.profiles.iter().find(|p| p.id == id)
+    }
+
+    /// 解析默认 Profile 的 store 下标：`id == 0`（未设置）或 ID 已失效时返回 `None`，
+    /// 调用方据此回退到系统默认 shell（绝不因为坏配置拒绝开新 Tab）。
+    pub fn default_index(&self, id: u64) -> Option<usize> {
+        if id == 0 {
+            return None;
+        }
+        self.profiles.iter().position(|p| p.id == id)
+    }
+
+    /// 复制一条 Profile：字段全量克隆、名字按 `duplicate_name` 去重、ID 重新分配。
+    /// 调用方负责 `save()` 落盘。
+    pub fn duplicate(&mut self, id: u64) -> Result<u64, String> {
+        let mut copy = self.get(id).cloned().ok_or("Profile 不存在")?;
+        copy.name = duplicate_name(&copy.name, &self.profiles);
+        self.add(copy)
     }
 
     /// 把 ID 修正成唯一且 < next_id（手改文件后也不至于开新 Tab 全撞一个 ID）。
@@ -625,5 +677,89 @@ env = []
         assert!(!s.remove(a));
         let b = s.add(sample("b")).unwrap();
         assert_ne!(a, b, "删除后 ID 不该复用");
+    }
+
+    #[test]
+    fn filter_matches_name_host_kind_case_insensitively() {
+        let profiles = vec![
+            Profile { name: "Work".into(), ..Profile::default() },
+            Profile {
+                name: "Prod".into(),
+                kind: "ssh".into(),
+                host: "Example.COM".into(),
+                user: "yt".into(),
+                ..Profile::default()
+            },
+            Profile { name: "串口".into(), kind: "serial".into(), ..Profile::default() },
+        ];
+        // 名字大小写不敏感
+        assert_eq!(filter_indices(&profiles, "WORK"), vec![0]);
+        assert_eq!(filter_indices(&profiles, "work"), vec![0]);
+        // host 也参与匹配
+        assert_eq!(filter_indices(&profiles, "example"), vec![1]);
+        // kind 也参与匹配
+        assert_eq!(filter_indices(&profiles, "SSH"), vec![1]);
+        assert_eq!(filter_indices(&profiles, "串"), vec![2]);
+        // 空查询 / 全空白 = 恢复全部
+        assert_eq!(filter_indices(&profiles, ""), vec![0, 1, 2]);
+        assert_eq!(filter_indices(&profiles, "   "), vec![0, 1, 2]);
+        // 无命中
+        assert!(filter_indices(&profiles, "zzz").is_empty());
+    }
+
+    #[test]
+    fn default_index_resolves_and_falls_back() {
+        let mut s = ProfileStore::default();
+        let a = s.add(sample("a")).unwrap();
+        let b = s.add(sample("b")).unwrap();
+        assert_eq!(s.default_index(a), Some(0));
+        assert_eq!(s.default_index(b), Some(1));
+        // 0 = 未设置；失效 ID = 回退默认 shell，不 panic
+        assert_eq!(s.default_index(0), None);
+        assert_eq!(s.default_index(b + 99), None);
+        s.remove(a);
+        assert_eq!(s.default_index(a), None, "删除默认 Profile 后解析不到");
+        assert_eq!(s.default_index(b), Some(0));
+    }
+
+    #[test]
+    fn duplicate_assigns_new_id_and_dedupes_copy_names() {
+        let dir = tmpdir("duplicate");
+        let path = dir.join("profiles.toml");
+        let mut s = ProfileStore::default();
+        let a = s.add(Profile { name: "work".into(), shell: "/bin/zsh".into(), ..Profile::default() }).unwrap();
+        let d1 = s.duplicate(a).unwrap();
+        let d2 = s.duplicate(a).unwrap();
+        assert_ne!(a, d1);
+        assert_ne!(d1, d2);
+        assert_eq!(s.get(d1).unwrap().name, "work (copy 1)");
+        assert_eq!(s.get(d2).unwrap().name, "work (copy 2)");
+        // 字段全量复制，ID/名字除外
+        assert_eq!(s.get(d1).unwrap().shell, "/bin/zsh");
+        assert_eq!(s.get(d1).unwrap().kind, "local");
+        // 落盘后仍可读回
+        s.save_to(&path);
+        let back = ProfileStore::load_from(&path);
+        assert_eq!(back.profiles.len(), 3);
+        assert_eq!(back.get(d2).unwrap().name, "work (copy 2)");
+        assert!(back.next_id > d2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn duplicate_name_helper_handles_existing_copies() {
+        let existing = vec![
+            Profile { name: "work (copy 1)".into(), ..Profile::default() },
+            Profile { name: "work (copy 2)".into(), ..Profile::default() },
+        ];
+        assert_eq!(duplicate_name("work", &existing), "work (copy 3)");
+        assert_eq!(duplicate_name("  work  ", &[]), "work (copy 1)");
+    }
+
+    #[test]
+    fn duplicate_missing_profile_is_rejected() {
+        let mut s = ProfileStore::default();
+        assert!(s.duplicate(42).is_err());
+        assert!(s.profiles.is_empty());
     }
 }
