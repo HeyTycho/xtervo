@@ -393,6 +393,8 @@ export component MainWindow inherits Window {
     /// 设置分类：0=Appearance 1=Terminal 2=Window 3=Config File
     in-out property <int> settings-category: 0;
     in-out property <string> settings-path: "";
+    in property <[string]> hotkey-items: [];
+    in property <string> hotkey-summary: "";
     callback settings-open-path();
     in property <int> font-size: 15;
     in property <int> scrollback: 2000;
@@ -1972,30 +1974,36 @@ export component MainWindow inherits Window {
                 }
 
                 HorizontalLayout {
-                    spacing: 6px;
+                    spacing: 3px;
                     ChoiceBtn {
-                        width: 96px; height: 24px; font-size: 11px;
+                        width: 74px; height: 24px; font-size: 10px;
                         label: "Appearance";
                         active: root.settings-category == 0;
                         clicked => { root.settings-category = 0; }
                     }
                     ChoiceBtn {
-                        width: 96px; height: 24px; font-size: 11px;
+                        width: 74px; height: 24px; font-size: 10px;
                         label: "Terminal";
                         active: root.settings-category == 1;
                         clicked => { root.settings-category = 1; }
                     }
                     ChoiceBtn {
-                        width: 96px; height: 24px; font-size: 11px;
+                        width: 74px; height: 24px; font-size: 10px;
                         label: "Window";
                         active: root.settings-category == 2;
                         clicked => { root.settings-category = 2; }
                     }
                     ChoiceBtn {
-                        width: 96px; height: 24px; font-size: 11px;
-                        label: "Config File";
+                        width: 74px; height: 24px; font-size: 10px;
+                        label: "Config";
                         active: root.settings-category == 3;
                         clicked => { root.settings-category = 3; }
+                    }
+                    ChoiceBtn {
+                        width: 74px; height: 24px; font-size: 10px;
+                        label: "Hotkeys";
+                        active: root.settings-category == 4;
+                        clicked => { root.settings-category = 4; }
                     }
                 }
 
@@ -2208,6 +2216,42 @@ export component MainWindow inherits Window {
                         text: "普通配置里不会出现密码或私钥；凭据将走系统 Keyring（Vault，未实现）。";
                         color: Palette.colors.muted;
                         font-size: 11px;
+                        wrap: word-wrap;
+                    }
+                }
+
+                if root.settings-category == 4 : VerticalLayout {
+                    spacing: 8px;
+
+                    Text {
+                        text: root.hotkey-summary;
+                        color: Palette.colors.subtext;
+                        font-size: 11px;
+                    }
+
+                    Flickable {
+                        width: 100%;
+                        height: 236px;
+                        interactive: true;
+                        content-height: root.hotkey-items.length * 20px;
+
+                        VerticalLayout {
+                            width: parent.width;
+                            for item[i] in root.hotkey-items : Text {
+                                height: 20px;
+                                text: item;
+                                color: Palette.colors.text;
+                                font-size: 11px;
+                                vertical-alignment: center;
+                                overflow: elide;
+                            }
+                        }
+                    }
+
+                    Text {
+                        text: "快捷键编辑/录入尚未实现；当前展示命令表的默认绑定与冲突数。";
+                        color: Palette.colors.muted;
+                        font-size: 10px;
                         wrap: word-wrap;
                     }
                 }

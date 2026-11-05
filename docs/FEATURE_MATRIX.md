@@ -157,7 +157,7 @@
 | UI-SET-004 | Terminal：行为、字体、滚动、复制粘贴、鼠标等 | U-AUDIT / 需求 B7 | main.slint 字号 ±、回滚 ±、Copy on select / Confirm close 开关（ToggleRow）；config.rs font_size/scrollback/copy_on_select/confirm_close | partial | 真机：开设置点开关 → `[ui] copy_on_select=false` 并写入配置；关闭后拖选 0 条剪贴板日志、开启后 1 条（复制 6 字节） | 字号/回滚/复制-关闭行为可调 | 无字体族/行距/鼠标/滚动行为设置；无设置搜索 |
 | UI-SET-005 | Color Scheme：选择、预览、导入/导出 | U-THEME / 需求 B7 | main.slint 主题网格 + Flickable；themes.rs ThemeRegistry 6 格式导入；无预览/导出 | partial | themes.rs 12 例（含 6 格式导入）；人工 .logs/imported_settings4.png | 选择/导入可用；无预览/导出 | 无独立预览；导出未实现；热重载未实现 |
 | UI-SET-006 | Config Sync：原版或插件提供时的兼容策略 | U-AUDIT / 需求 B7 | 无实现 | not_started | 无 | 未实现 | 无同步机制/策略 |
-| UI-SET-007 | Hotkeys：列表、搜索、录入、修改、清除、冲突提示、多段键 | U-AUDIT / 需求 B7 | 无实现 | not_started | 无 | 未实现 | 快捷键硬编码；无配置/录入/冲突检测 |
+| UI-SET-007 | Hotkeys：列表、搜索、录入、修改、清除、冲突提示、多段键 | U-AUDIT / 需求 B7 | 设置面板 Hotkeys 分类：命令表默认绑定列表（分类/标题/组合键）、冲突数、多段键 Display 支持 | partial | 单测 `hotkey_page_lists_bindings_and_conflicts`；真机截图 `.logs/settings-hotkeys.png`（22 commands · 16 bound · 0 conflicts） | 只读列表 + 冲突提示可用 | 无搜索/录入/修改/清除；未持久化自定义键；无键盘捕获（沙箱无法验证） |
 | UI-SET-008 | Plugins：搜索、可用/已装、安装、卸载、启用、禁用、更新、详情、权限、目录 | U-AUDIT / 需求 B7 | 无实现 | not_started | 无 | 未实现 | 无插件系统/管理器 UI |
 | UI-SET-009 | SSH：Host Key、Agent 类型、X11 Display 等 | U-AUDIT / 需求 B7 | 无实现 | not_started | 无 | 未实现 | 无 SSH/设置页 |
 | UI-SET-010 | Vault：加密凭据容器、主密码、锁定/解锁、凭据管理 | U-AUDIT / 需求 B7 | 无实现 | not_started | 无 | 未实现 | 无 Vault/Keyring/凭据模型 |
@@ -195,7 +195,7 @@
 | UI-SER-005 | Newline 转换策略选择 | U-AUDIT（上游策略待核） | 无实现 | needs_verification | 待上游核实换行策略 | 未核实/未实现 | 无 Serial 换行转换 |
 | UI-SER-006 | 自动重连开关、间隔、当前状态 | U-AUDIT / 需求 B9 | 无实现 | not_started | 无 | 未实现 | 无 Serial 连接/重连 |
 | UI-SER-007 | Telnet Profile、主机/端口、连接/断开、状态 | U-AUDIT / 需求 B9 | Profile kind=telnet：host/port；`telnet_command()` 用系统 telnet 跑在 PTY；表单 Telnet 分组 | partial | 真机：本地 TCP 服务 → Tab 显示 `TELNET-OK` 与 `welcome$`（.logs/telnet-e2e.png） | Telnet 连接可用 | 无连接状态/断开按钮（关 Tab 即断开）；依赖系统 telnet；无 telnet 选项协商设置 |
-| UI-SER-008 | Zmodem 确认、进度、取消、结果通知 | U-AUDIT（上游支持范围待核） | 无实现 | needs_verification | 待上游核实 Zmodem 支持 | 未核实/未实现 | 无 Zmodem |
+| UI-SER-008 | Zmodem 确认、进度、取消、结果通知 | U-AUDIT（上游支持范围待核） | 无实现（本轮确认系统无 lrzsz/sz/rz，无法做 PTY 桥接验证） | unsupported | 环境探测：`which sz rz lrz lsz` 全空 | 明确不支持 | 需要内建 Zmodem 协议实现才能补；当前无计划 |
 
 ### B10. Quake Mode 与窗口操作（5 条）
 
@@ -305,10 +305,10 @@
 
 | ID | Feature | Upstream evidence | Rust implementation | Status | Test | Result | Limitation |
 |---|---|---|---|---|---|---|---|
-| ZMODEM-001 | SSH/Telnet/Serial 会话中的 Zmodem 发送/接收 | U-AUDIT / 需求 C5 | 无实现 | not_started | 无 | 未实现 | 无 SSH/Telnet/Serial 传输层 |
-| ZMODEM-002 | 识别 Zmodem 协议序列并切换传输，不误显示为终端文本 | U-AUDIT / 需求 C5 | 无实现 | not_started | 无 | 未实现 | 无流处理器/协议识别 |
-| ZMODEM-003 | 文件选择、保存位置、冲突处理、进度、取消、失败提示 | U-AUDIT / 需求 C5 | 无实现 | not_started | 无 | 未实现 | 无传输 UI |
-| ZMODEM-004 | 大文件与断线异常处理 | U-AUDIT / 需求 C5 | 无实现 | not_started | 无 | 未实现 | 无传输/恢复模型 |
+| ZMODEM-001 | SSH/Telnet/Serial 会话中的 Zmodem 发送/接收 | U-AUDIT / 需求 C5 | 无实现；系统无 `lrzsz`（sz/rz），也没有内建协议栈 | unsupported | 环境探测 `which sz rz lrz lsz` 均为空（2026-11-05） | 明确不支持 | 需内建 Zmodem 状态机 + 文件 UI；本轮记 unsupported 而不是假实现 |
+| ZMODEM-002 | 识别 Zmodem 协议序列并切换传输，不误显示为终端文本 | U-AUDIT / 需求 C5 | 无实现（无协议识别） | unsupported | 无 | 明确不支持 | 需在输出流里识别 `**\x18B00` 等序列，属内建 Zmodem 一部分 |
+| ZMODEM-003 | 文件选择、保存位置、冲突处理、进度、取消、失败提示 | U-AUDIT / 需求 C5 | 无实现 | unsupported | 无 | 明确不支持 | 依赖 ZMODEM-001 |
+| ZMODEM-004 | 大文件与断线异常处理 | U-AUDIT / 需求 C5 | 无实现 | unsupported | 无 | 明确不支持 | 依赖 ZMODEM-001 |
 
 ### C6. Serial Terminal（10 条）
 
