@@ -504,7 +504,7 @@ export component MainWindow inherits Window {
                             root.tabbar-context(
                                 title-hit.mouse-x,
                                 // 菜单贴在 TabBar 所在的那一侧
-                                root.tabbar-bottom ? root.height - root.tabbar-height - 336px : root.tabbar-height,
+                                root.tabbar-bottom ? root.height - root.tabbar-height - 366px : root.tabbar-height,
                             );
                             return EventResult.accept;
                         }
@@ -1053,7 +1053,7 @@ export component MainWindow inherits Window {
         x: Math.min(root.tabmenu-x, root.width - 180px);
         y: root.tabmenu-y;
         width: 170px;
-        height: 366px;
+        height: 396px;
         background: Palette.colors.raise;
         border-radius: 8px;
         border-width: 1px;
@@ -1106,6 +1106,10 @@ export component MainWindow inherits Window {
             MenuRow {
                 label: "Port Forwards";
                 picked => { root.tabmenu-open = false; root.tabbar-menu-action(11); }
+            }
+            MenuRow {
+                label: "Reopen Closed Tab";
+                picked => { root.tabmenu-open = false; root.tabbar-menu-action(12); }
             }
             MenuRow {
                 label: "Close Window";

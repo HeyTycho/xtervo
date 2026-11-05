@@ -346,3 +346,14 @@ cargo bench -p tervo-core --bench pty_throughput
   per-tab 菜单同样（.logs/tabmenu-open.png / tabmenu-dismiss.png / tab-ctx-*.png）；
   Esc 关闭计数也验证。
 
+### 2026-11-05 · 重开最近关闭的 Tab + 字号缩放快捷键
+
+- **重开 Tab**：关闭时抓 `TabSnapshot`（布局树 + 每个 pane 的 cwd），压入最多 10 个的
+  `closed_tabs`；Ctrl+Shift+T / 菜单 Reopen Closed Tab / 命令面板走同一个 `reopen_closed_tab`。
+  恢复逻辑与 `--restore` 共用 `restore_tab_snapshot`（新 shell、原布局与 cwd）。
+  真机：tab2 `cd /tmp` 关闭 → 重开 → `pwd` 输出 `/tmp`（.logs/reopen-tab.png）。
+- **字号缩放**：Ctrl+= / Ctrl+- / Ctrl+0 → `zoom_font`/`reset_font`，复用原命令面板实现；
+  真机字号 15→16→17→16→15，日志 `[ui] font_size=`。
+- **注意**：`restore_session` 改为复用 `restore_tab_snapshot`，避免两套恢复逻辑漂移。
+- 命令表新增 `tab.reopen-closed`（ctrl+shift+t），app 用例 95 全绿。
+

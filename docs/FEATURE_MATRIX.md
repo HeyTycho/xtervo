@@ -142,7 +142,7 @@
 | UI-TERM-009 | 滚动条/滚轮；alternate screen（vim/less）滚动正确 | U-AUDIT / 需求 B6 | main.rs `on_pane_scrolled`；pane.rs `Ctrl::Scroll`；alacritty alt screen | partial | `wheel_scrollback_shows_history`；人工 vim/htop（phase0 FPS 记录） | 回滚可用；alt screen 依赖 alacritty | 无可见滚动条；alt screen 滚轮行为未专项验收 |
 | UI-TERM-010 | 查找面板：关键词、大小写/正则、上/下一个、匹配计数 | U-AUDIT（上游选项待核） | main.rs `open_search`/`run_search`/`close_search`；pane.rs `search`（regex_escape 纯文本） | partial | `search_finds_and_scrolls`；人工 Ctrl+F、Enter/Shift+Enter | 增量纯文本搜索/高亮/上下跳转可用 | 无大小写/正则/匹配计数；搜索框不可鼠标聚焦/选中 |
 | UI-TERM-011 | 点击 URL/IP/文件路径执行动作；区分远端/本地路径 | U-AUDIT / 需求 B6 | core `link.rs::scan` 识别 URL/IPv4/路径；`frame.rs` OSC 8 链接表 + `CellData.link`；app 层尚未接 hover/Ctrl+点击 | partial | link.rs 7 例；`vt_conformance` OSC 8 用例；app 无链接交互测试 | core 识别/透出已有记录（94baefb/99d7895）；UI 动作缺失 | 无 hover 手型/Ctrl+点击/打开动作；远端/本地路径未区分；无插件 Linkifier |
-| UI-TERM-012 | 终端字体放大/缩小/重置；显示当前缩放 | U-AUDIT / 需求 B6 | 仅设置面板 ± 改全局字号（`on_bump_font_size`）；`commands.rs` 有 zoom-in/out/reset 占位，无分发 | not_started | 人工：设置面板可改字号；无 Ctrl+=/-/0 | 未实现（仅全局设置） | 命令表占位未接线；无 per-pane/临时缩放/缩放显示 |
+| UI-TERM-012 | 终端字体放大/缩小/重置；显示当前缩放 | U-AUDIT / 需求 B6 | 键盘 Ctrl+= / Ctrl+- / Ctrl+0 → `zoom_font`/`reset_font`；命令面板 zoom-in/out/reset 共用同一实现；字号持久化到 config | partial | 真机：Ctrl+= ×2 → `font_size=16/17`，Ctrl+- → 16，Ctrl+0 → 15（重置） | 快捷键/命令缩放可用且持久化 | 无屏内 zoom HUD（只在设置页/日志可见当前值）；行高按字体自动重排 |
 | UI-TERM-013 | 可配置终端上下文菜单与插件装饰器 | U-AUDIT / 需求 B6 | main.slint 菜单硬编码 5 项；无插件/装饰器接口 | not_started | 无 | 未实现 | 无菜单配置/插件扩展点 |
 | UI-TERM-014 | 内容变化不导致光标跳动、选区丢失或明显闪烁 | U-AUDIT / 需求 B6 | main.rs 拉帧 + render.rs 增量重绘；selection 存 Term，frame 携带 Span；比较 last_selection/search | partial | 静态审查；无视觉回归/录屏基线；未专项验收 | 代码路径合理；未验证 | 无自动化视觉回归；局部重绘/整屏切换边界未压测 |
 
@@ -349,7 +349,7 @@
 | SESS-002 | Profile 绑定快捷键；支持默认 Profile | U-AUDIT / 需求 C8 | 无实现 | not_started | 无 | 未实现 | 无快捷键/默认 Profile |
 | SESS-003 | Split Tab 布局保存为 Profile/Workspace | U-AUDIT / 需求 C8 | 无实现 | not_started | 无 | 未实现 | 只有匿名 Restart 快照 |
 | SESS-004 | 记住打开的 Tabs/Panes；下次启动恢复工作区 | U-AUDIT / 需求 C8 | session.rs Snapshot；main.rs `capture_snapshot`/`restore_session`（仅 `--restore`）；菜单 Restart Session | partial | session.rs 5 例；人工 Restart Session（self-iteration 第 3 轮） | 手动重启可还原布局/cwd | 启动默认不恢复；无崩溃恢复；无滚动历史/运行中进程 |
-| SESS-005 | 恢复最近关闭的 Tab | U-AUDIT / 需求 C8 | 无实现 | not_started | 无 | 未实现 | 关闭即丢；无最近关闭栈 |
+| SESS-005 | 恢复最近关闭的 Tab | U-AUDIT / 需求 C8 | 关闭时压入 `closed_tabs`（最多 10 个，存布局树 + 每个 pane 的 cwd）；Ctrl+Shift+T、TabBar 菜单 Reopen Closed Tab、命令面板共用 `reopen_closed_tab` | implemented | 真机：tab2 `cd /tmp` 后关闭 → Ctrl+Shift+T → `[ws] reopen closed tab`，新 tab `pwd` 显示 `/tmp`；菜单项同样验证（.logs/reopen-tab.png） | 最近关闭 Tab 可恢复布局与 cwd | 只恢复布局/cwd，不起回原进程；不恢复滚动历史；栈上限 10 |
 | SESS-006 | 区分恢复 UI 布局、连接配置、真实运行进程；不混淆 | U-AUDIT / 需求 C8 | session.rs 只存树/ratio/cwd；docs/self-iteration 明示不存历史/进程 | partial | 代码走查；文档已声明边界 | 边界声明清楚，但只有布局+cwd | 无连接配置/进程恢复；重启会新起 shell |
 | SESS-007 | 断开连接后的重连策略与 Session 状态提示 | U-AUDIT / 需求 C8 | 无实现 | not_started | 无 | 未实现 | 无连接/Session 状态模型 |
 | SESS-008 | 配置格式版本化、迁移、导入、导出 | U-CONF / 需求 C8 | config.rs `SCHEMA_VERSION=1`、`load_from` 迁移前备份、`migrate`、原子写、`extra` 保留未知键；session.rs VERSION=1 + 原子写；无导入/导出 UI | partial | config.rs 7 例（迁移/备份/未知键/坏文件不覆盖/原子写）；session.rs 版本门禁 | 版本化/迁移/备份/原子写已有记录（b80e265） | 无导入/导出/恢复 UI；备份只在迁移时生成；无用户可见迁移报告 |
