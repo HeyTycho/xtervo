@@ -4,5 +4,5 @@
   "idle_rss_mb_max": 70,
   "min_core_tests": 66,
   "min_conformance_tests": 11,
-  "min_app_tests": 77
+  "min_app_tests": 78
 }

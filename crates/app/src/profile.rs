@@ -89,6 +89,21 @@ impl Profile {
         ("ssh".to_string(), args)
     }
 
+    /// Telnet 启动命令（系统 telnet 客户端）。
+    pub fn telnet_command(&self) -> (String, Vec<String>) {
+        ("telnet".to_string(), vec![self.host.trim().to_string(), self.port.max(1).to_string()])
+    }
+
+    /// Serial 启动命令（socat 把 PTY 和串口设备桥起来；没有 socat 时启动会失败并提示）。
+    pub fn serial_command(&self) -> (String, Vec<String>) {
+        let dev = self.serial_port.trim();
+        let baud = self.baud.max(1);
+        (
+            "socat".to_string(),
+            vec!["-,raw,echo=0".to_string(), format!("{dev},raw,echo=0,b{baud}")],
+        )
+    }
+
     /// 按类型校验必填项（本地 Profile 几乎不校验，SSH/Serial 必须有目标）。
     pub fn validate(&self) -> Result<(), String> {
         if !KINDS.contains(&self.kind.as_str()) {
@@ -395,6 +410,28 @@ shell = "/bin/sh"
         assert_eq!(
             with_extra.ssh_command().1,
             vec!["-p", "22", "-l", "u", "-o", "UserKnownHostsFile=/tmp/kh", "h"]
+        );
+    }
+
+    #[test]
+    fn telnet_and_serial_commands() {
+        let t = Profile {
+            kind: "telnet".into(),
+            host: "10.0.0.1".into(),
+            port: 23,
+            ..Profile::default()
+        };
+        assert_eq!(t.telnet_command(), ("telnet".to_string(), vec!["10.0.0.1".to_string(), "23".to_string()]));
+
+        let s = Profile {
+            kind: "serial".into(),
+            serial_port: "/dev/ttyUSB0".into(),
+            baud: 115200,
+            ..Profile::default()
+        };
+        assert_eq!(
+            s.serial_command(),
+            ("socat".to_string(), vec!["-,raw,echo=0".to_string(), "/dev/ttyUSB0,raw,echo=0,b115200".to_string()])
         );
     }
 
