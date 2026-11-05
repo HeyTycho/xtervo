@@ -869,8 +869,9 @@ export component MainWindow inherits Window {
                         pointer-event(event) => {
                             if (event.kind == PointerEventKind.down) {
                                 if (event.button == PointerEventButton.right) {
-                                    root.input-trace("pane-down-right", p.id,
-                                        pane-hit.mouse-x, pane-hit.mouse-y);
+                                    root.input-trace(
+                                        event.modifiers.shift ? "pane-down-right-shift" : "pane-down-right",
+                                        p.id, pane-hit.mouse-x, pane-hit.mouse-y);
                                 }
                                 if (event.button == PointerEventButton.left) {
                                     ime.focus();
@@ -880,7 +881,15 @@ export component MainWindow inherits Window {
                                     return EventResult.accept;
                                 }
                                 // 中键/右键只有在应用要求鼠标上报时才转发（否则右键留给菜单）
-                                if (p.mouse-reporting && (event.button == PointerEventButton.right || event.button == PointerEventButton.middle)) {
+                                // Tabby 语义：右键**始终**先开 Tervo 菜单（tmux/vim/Agent TUI 自己开了
+                                // 鼠标上报也不能吞掉右键菜单）。需要把右键交给应用时用 Shift+右键。
+                                if (p.mouse-reporting
+                                    && ((event.button == PointerEventButton.right && event.modifiers.shift)
+                                        || event.button == PointerEventButton.middle)) {
+                                    if (event.button == PointerEventButton.right) {
+                                        root.input-trace("pane-right-forward", p.id,
+                                            pane-hit.mouse-x, pane-hit.mouse-y);
+                                    }
                                     ime.focus();
                                     root.pane-clicked(p.id);
                                     root.pane-mouse-down(p.id, pane-hit.mouse-x, pane-hit.mouse-y,
@@ -916,7 +925,9 @@ export component MainWindow inherits Window {
                                         (event.modifiers.shift ? 1 : 0) + (event.modifiers.alt ? 2 : 0) + (event.modifiers.control ? 4 : 0));
                                     return EventResult.accept;
                                 }
-                                if (p.mouse-reporting && (event.button == PointerEventButton.right || event.button == PointerEventButton.middle)) {
+                                if (p.mouse-reporting
+                                    && ((event.button == PointerEventButton.right && event.modifiers.shift)
+                                        || event.button == PointerEventButton.middle)) {
                                     root.pane-mouse-up(p.id, pane-hit.mouse-x, pane-hit.mouse-y,
                                         event.button == PointerEventButton.right ? 2 : 1,
                                         (event.modifiers.shift ? 1 : 0) + (event.modifiers.alt ? 2 : 0) + (event.modifiers.control ? 4 : 0));

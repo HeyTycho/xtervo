@@ -31,7 +31,10 @@ tervo --diagnose
 
    - **有 `[trace] pane-down-right`**：X11 事件到达了 Tervo；若菜单没出现，是 UI 路由/浮层状态问题（日志里会继续有 `settings open=` / `menu dismissed`）。
    - **没有 trace**：事件没到 Tervo。用 `--diagnose` 看 `active_window` 与“其他 Tervo 实例窗口”——常见原因是旧的全屏 Tervo 窗口盖住了新窗口，或点击落在别的应用（例如宿主终端/TUI）里。
-2. 启动日志会主动提示：
+2. 如果 pane 里跑着 tmux/vim/Claude Code 等**开启鼠标上报**的 TUI，旧版本会把右键转发给 TUI
+   （日志只有 `[trace] pane-down-right` 而没有 `[ui] right click pane=`）。当前版本已改为
+   **右键始终先开 Tervo 菜单**，Shift+右键才转发给 TUI。
+3. 启动日志会主动提示：
 
    ```
    [ui] 警告：另一个可见的 Tervo 窗口 0x…（pid=…）2560x1413 at 0,27，可能挡住点击
