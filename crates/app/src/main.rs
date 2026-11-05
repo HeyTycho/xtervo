@@ -127,6 +127,10 @@ struct AppState {
     plugin_model: Rc<VecModel<slint::SharedString>>,
     /// Delete 需要点两次确认（避免误删远端文件）
     sftp_delete_armed: bool,
+    /// 广播输入：开启后键入同时发给当前 Tab 的所有 pane
+    broadcast: bool,
+    /// 上次左键点击 (pane, 行, 列, 时间)：用于 400ms 内的双击选行
+    last_click: Option<(PaneId, i32, i32, std::time::Instant)>,
     /// 最近关闭的 Tab（最多 10 个），用于 Ctrl+Shift+T / 菜单重开
     closed_tabs: Vec<session::TabSnapshot>,
     fwd_profile_indices: Vec<usize>,
@@ -1869,6 +1873,44 @@ fn cell_at(rt: &PaneRuntime, x: f32, y: f32) -> (u16, u16) {
 }
 
 /// 打开 pane 右键菜单；坐标是内容区坐标（Slint 侧负责夹取）。
+/// Ctrl+Shift+方向键：按 pane 中心点的方向投影切焦点（同方向取最近）。
+fn focus_pane_dir(st: &mut AppState, dx: f32, dy: f32) {
+    let Some(tab) = st.ws.active_tab() else { return };
+    let ids = tab.panes();
+    if ids.len() < 2 {
+        return;
+    }
+    let cur = tab.focused;
+    let Some(cur_rect) = st.panes.get(&cur).map(|rt| rt.rect) else { return };
+    let (cx, cy) = (cur_rect.x + cur_rect.w / 2.0, cur_rect.y + cur_rect.h / 2.0);
+    let mut best: Option<(f32, PaneId)> = None;
+    for id in ids {
+        if id == cur {
+            continue;
+        }
+        let Some(r) = st.panes.get(&id).map(|rt| rt.rect) else { continue };
+        let (x, y) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
+        let (adx, ady) = (x - cx, y - cy);
+        let primary = adx * dx + ady * dy;
+        if primary <= 0.5 {
+            continue;
+        }
+        let lateral = (adx * dy).abs() + (ady * dx).abs();
+        let score = primary + lateral * 2.0;
+        if best.map_or(true, |(b, _)| score < b) {
+            best = Some((score, id));
+        }
+    }
+    if let Some((_, id)) = best {
+        if let Some(idx) = st.ws.tab_of(id) {
+            st.ws.tabs[idx].focused = id;
+        }
+        refresh_views(st);
+        redraw_visible(st);
+        eprintln!("[ws] focus pane={id} dir=({dx},{dy})");
+    }
+}
+
 fn open_pane_menu(st: &mut AppState, id: PaneId, x: f32, y: f32) {
     eprintln!("[ui] right click pane={id} at {x},{y}");
     st.ui.set_menu_pane(id as i32);
@@ -2270,6 +2312,22 @@ fn handle_input(
                 reopen_closed_tab(st);
                 return;
             },
+            "\u{F700}" => {
+                focus_pane_dir(st, 0.0, -1.0);
+                return;
+            },
+            "\u{F701}" => {
+                focus_pane_dir(st, 0.0, 1.0);
+                return;
+            },
+            "\u{F702}" => {
+                focus_pane_dir(st, -1.0, 0.0);
+                return;
+            },
+            "\u{F703}" => {
+                focus_pane_dir(st, 1.0, 0.0);
+                return;
+            },
             "+" => {
                 zoom_font(st, 1.0);
                 return;
@@ -2315,26 +2373,36 @@ fn handle_input(
     }
     let Some(tab) = st.ws.active_tab() else { return };
     let focused = tab.focused;
+    let targets: Vec<PaneId> = if st.broadcast && tab.panes().len() > 1 {
+        tab.panes()
+    } else {
+        vec![focused]
+    };
     let encoded = keys::encode(text, ctrl, alt);
-    match st.panes.get_mut(&focused) {
+    if st.broadcast && targets.len() > 1 && keylog {
+        eprintln!("[send] broadcast to {} panes", targets.len());
+    }
+    for target in targets {
+    match st.panes.get_mut(&target) {
         Some(rt) => {
             if let Some(bytes) = &encoded {
                 rt.handle.input(bytes);
                 if keylog {
-                    eprintln!("[send] pane={focused} bytes={bytes:?}");
+                    eprintln!("[send] pane={target} bytes={bytes:?}");
                 }
             } else if keylog {
-                eprintln!("[send] pane={focused} 未编码 text={text:?}");
+                eprintln!("[send] pane={target} 未编码 text={text:?}");
             }
         },
         None => {
             if keylog {
                 eprintln!(
-                    "[send] 找不到 pane {focused}（现有 {:?}）",
+                    "[send] 找不到 pane {target}（现有 {:?}）",
                     st.panes.keys().collect::<Vec<_>>()
                 );
             }
         },
+    }
     }
 }
 
@@ -2514,7 +2582,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let t_start = Instant::now();
     let argv: Vec<String> = std::env::args().collect();
     if let Some(pos) = argv.iter().position(|a| a == "--sftp-probe") {
-        return Ok(std::process::exit(run_sftp_probe(&argv[pos + 1..])));
+        std::process::exit(run_sftp_probe(&argv[pos + 1..]));
     }
     if std::env::args().any(|a| a == "-h" || a == "--help") {
         print_help();
@@ -2659,6 +2727,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         plugins: plugin::PluginStore::load(),
         plugin_model,
         sftp_delete_armed: false,
+        broadcast: false,
+        last_click: None,
         closed_tabs: Vec::new(),
         fwd_profile_indices: Vec::new(),
         fwd_model,
@@ -2815,6 +2885,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return;
             }
             if !drag.moved {
+                // 双击选行：同一 pane、同一格、400ms 内的第二次左键抬起。
+                let Some(rt) = st.panes.get(&id) else { return };
+                let (line_u, col_u) = cell_at(rt, x, y);
+                let (line, col) = (line_u as i32, col_u as i32);
+                let now = std::time::Instant::now();
+                let is_double = matches!(st.last_click, Some((p, l, c, t))
+                    if p == id && l == line && c == col && now.duration_since(t) < std::time::Duration::from_millis(400));
+                if is_double {
+                    st.last_click = None;
+                    if let Some(rt) = st.panes.get_mut(&id) {
+                        rt.handle.select_line(line);
+                    }
+                    eprintln!("[ui] double-click select line={line} pane={id}");
+                    if st.cfg.copy_on_select {
+                        copy_current_selection(st);
+                    }
+                    return;
+                }
+                st.last_click = Some((id, line, col, now));
                 return;
             }
             // 关闭 Copy on select 时只保留高亮，不写剪贴板
@@ -2977,7 +3066,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     ui.on_pane_right_clicked(|id, x, y| {
-        with_app(|st| open_pane_menu(st, id as u64, x, y));
+        with_app(|st| {
+            if st.cfg.right_click_paste {
+                // 右键粘贴（PuTTY 风格）：先把焦点给被点的 pane，再粘贴。
+                // 鼠标上报模式下右键会先被转发给 PTY，不会走到这里（符合设计）。
+                let id = id as u64;
+                if let Some(idx) = st.ws.tab_of(id) {
+                    st.ws.tabs[idx].focused = id;
+                    refresh_views(st);
+                }
+                paste_into_focused(st);
+                eprintln!("[ui] right-click paste pane={id}");
+            } else {
+                open_pane_menu(st, id as u64, x, y);
+            }
+        });
     });
 
     // 分隔线/边缘发起的右键：按内容区坐标找最近的 pane。
@@ -3017,6 +3120,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
             7 => {
                 with_app(|st| run_command(st, "terminal.clear"));
+            },
+            8 => {
+                with_app(|st| {
+                    st.broadcast = !st.broadcast;
+                    st.ui.set_broadcast(st.broadcast);
+                    let panes = st.ws.active_tab().map(|t| t.panes().len()).unwrap_or(0);
+                    if st.broadcast && panes < 2 {
+                        eprintln!("[ui] broadcast=on，但当前 Tab 只有 1 个 pane");
+                    } else {
+                        eprintln!("[ui] broadcast={} panes={panes}", st.broadcast);
+                    }
+                });
             },
             _ => {},
         }
@@ -3213,10 +3328,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     });
 
+    ui.on_toggle_right_click_paste(|| {
+        with_app(|st| {
+            st.cfg.right_click_paste = !st.cfg.right_click_paste;
+            st.ui.set_cfg_right_click_paste(st.cfg.right_click_paste);
+            st.cfg.save();
+            eprintln!("[ui] right_click_paste={}", st.cfg.right_click_paste);
+        });
+    });
+
     ui.on_toggle_confirm_paste(|| {
         with_app(|st| {
             st.cfg.confirm_multiline_paste = !st.cfg.confirm_multiline_paste;
             st.ui.set_cfg_confirm_paste(st.cfg.confirm_multiline_paste);
+        st.ui.set_cfg_right_click_paste(st.cfg.right_click_paste);
             st.cfg.save();
             eprintln!("[ui] confirm_multiline_paste={}", st.cfg.confirm_multiline_paste);
         });
@@ -3372,7 +3497,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             9 => open_profiles_panel(st),
             10 => open_sftp_panel(st),
             11 => open_forwards_panel(st),
-            12 => reopen_closed_tab(st),
             6 => {
                 st.cfg.tabbar_position =
                     if st.cfg.tabbar_position == "bottom" { "top".into() } else { "bottom".into() };

@@ -107,6 +107,9 @@ pub fn find_own_window(conn: &RustConnection, root: u32, title: &str) -> Option<
 
     let mut stack = vec![root];
     let mut visited = 0;
+    // 同一个进程可能还有隐藏的辅助窗口（输入法/临时窗口），只认**可见且面积最大**的那个，
+    // 否则会把图标写到 1x1 的窗口上，自动化按日志里的 win id 也会点到不存在的窗口。
+    let mut best: Option<(u32, u32)> = None; // (area, window)
     while let Some(win) = stack.pop() {
         visited += 1;
         if visited > 512 {
@@ -137,22 +140,41 @@ pub fn find_own_window(conn: &RustConnection, root: u32, title: &str) -> Option<
                     wm_name.contains(title)
                 };
                 if title_matches {
-                    return Some(child);
+                    let viewable = conn
+                        .get_window_attributes(child)
+                        .ok()
+                        .and_then(|c| c.reply().ok())
+                        .is_some_and(|a| a.map_state == x11rb::protocol::xproto::MapState::VIEWABLE);
+                    if viewable {
+                        if let Some(geo) =
+                            conn.get_geometry(child).ok().and_then(|c| c.reply().ok())
+                        {
+                            let area = geo.width as u32 * geo.height as u32;
+                            if best.is_none_or(|(a, _)| area > a) {
+                                best = Some((area, child));
+                            }
+                        }
+                    }
                 }
             }
             stack.push(child);
         }
+    }
+    if best.is_some() {
+        return best.map(|(_, w)| w);
     }
     None
 }
 
 /// 设置 `_NET_WM_ICON`（ARGB CARDINAL 数组）。Slint 内置 icon 在部分环境为空，这里兜底。
 pub fn set_window_icon(rgba: &[u8], size: u16, title: &str) -> Result<u32, String> {
-    use x11rb::connection::Connection;
     use x11rb::protocol::xproto::{AtomEnum, ConnectionExt, PropMode};
     use x11rb::wrapper::ConnectionExt as _;
 
     let (conn, screen_num) = connect()?;
+    #[allow(unused_imports)]
+    use x11rb::connection::Connection;
+
     let root = conn.setup().roots[screen_num].root;
 
     let win = (0..50)
