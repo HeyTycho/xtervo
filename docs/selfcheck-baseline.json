@@ -2,7 +2,7 @@
   "ready_ms_max": 450,
   "first_damage_ms_max": 600,
   "idle_rss_mb_max": 70,
-  "min_core_tests": 52,
-  "min_conformance_tests": 10,
+  "min_core_tests": 63,
+  "min_conformance_tests": 11,
   "min_app_tests": 48
 }
