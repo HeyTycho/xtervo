@@ -131,7 +131,7 @@
 
 | ID | Feature | Upstream evidence | Rust implementation | Status | Test | Result | Limitation |
 |---|---|---|---|---|---|---|---|
-| UI-TERM-001 | 点击终端获得输入焦点；切换不丢输入状态 | U-AUDIT / 需求 B6 | main.slint pane-hit down → `ime.focus()` + `pane-clicked`；main.rs `focus_pane`；焦点边框 | partial | 人工：点击不同 pane 焦点边框/日志切换；输入与 IME 未在沙箱验证（键盘注入不可用） | 焦点切换代码路径可用 | IME 候选跟随缺少端到端证据；focus in/out 未上报；焦点视觉较弱 |
+| UI-TERM-001 | 点击终端获得输入焦点；切换不丢输入状态 | U-AUDIT / 需求 B6 | pane-hit down → `ime.focus()` + `pane-clicked`；焦点边框 | partial | 真机（XMODIFIERS=@im=none）：点击 pane 键入 `echo ACCEPT-OK` + Enter → 输出正确（.logs/acceptance-keyboard.png） | 点击聚焦 + 键盘输入 + 快捷键可用 | IME 候选跟随仍未端到端验证（默认输入法会拦截 XTest）；focus in/out 未上报 |
 | UI-TERM-002 | 鼠标拖选；跨行、反向、滚动自动扩展 | U-AUDIT / 需求 B6 | pane.rs `SelectionStart/Extend`+`sel_anchor`；main.rs `on_pane_mouse_down/move/up` | partial | `selection_copy_returns_text`、`backward_selection_includes_first_column`；人工 XTest 反向拖选 | 拖选/跨行/反向已有记录 | 无滚动自动扩展；无双击选词/三击选行/矩形选择 |
 | UI-TERM-003 | 复制、粘贴、全选、清屏、查找、滚到顶/底 | U-AUDIT / 需求 B6 | arboard；Ctrl+Shift+C/V；`copy_current_selection`/`paste_into_focused`；Ctrl+F；菜单与命令含 Select All/Clear | partial | 真机 Select All/Clear；`search_finds_and_scrolls`；粘贴确认真机验证 | 复制/粘贴/查找/全选/清屏可用 | 滚到顶/底未做；粘贴无危险命令检测 |
 | UI-TERM-004 | 右键菜单：复制/粘贴/查找/清屏/Profile/拆分等（按上游） | U-AUDIT（完整菜单待核） | main.slint 右键菜单 8 项（Copy/Paste/Split Right/Split Down/Close Pane/Find/Select All/Clear）；`on_menu_action` 分发 0–7 | partial | 真机：Select All → Copy 得到 `alpha\nbravo\ncharlie`；Clear 后同路径得到空白（已过滤） | 复制/粘贴/分屏/关闭/查找/全选/清屏均可用 | 无 Profile/缩放菜单项；上游完整项目待核；鼠标上报模式下右键仍按设计转发给 PTY |
@@ -361,7 +361,7 @@
 
 | ID | Feature | Upstream evidence | Rust implementation | Status | Test | Result | Limitation |
 |---|---|---|---|---|---|---|---|
-| KEY-001 | 所有核心操作都有可配置命令 ID | U-AUDIT / 需求 C9 | `commands.rs::builtin` 21 条稳定 ID + 默认快捷键；`main.rs` 仅 `mod commands`，实际分发仍硬编码（Ctrl+T/W/F、Ctrl+Shift+C/V） | partial | `builtin_registry_is_consistent`；代码走查 main.rs 未使用 Registry | 命令表已落地（8327e20），未接线 | 未覆盖所有核心操作；无命令上下文/启用条件；快捷键仍硬编码 |
+| KEY-001 | 所有核心操作都有可配置命令 ID | U-AUDIT / 需求 C9 | `commands.rs::builtin` 22 条稳定 ID + 默认快捷键；键盘分发：Ctrl+T/W/F、Ctrl+Shift+C/V/P/E/D/W、Ctrl+Tab/Shift+Tab、Ctrl+1–9、F11、F2；命令面板 21 条 | partial | 真机（XMODIFIERS=@im=none）：Ctrl+T → tabs=2；Ctrl+Shift+P → palette open；Ctrl+Shift+E/D → `[ws] split`；键入 `echo ACCEPT-OK` → 终端显示输出 | 常用快捷键与命令面板可用 | 分发仍硬编码，未从 Registry 统一；缩放（Ctrl+±/0）与部分命令无键盘入口；无用户改键 |
 | KEY-002 | 自定义快捷键，支持单键与 multi-chord | U-AUDIT / 需求 C9 | `commands.rs::Shortcut::parse` 支持 1–2 段、ctrl/alt/shift/meta；无配置读写/录制 UI | partial | `shortcut_parse_and_format_roundtrip`；无自定义绑定测试 | 解析/格式化数据层已有记录 | 无用户配置/录制/持久化；快捷键仍取内置默认 |
 | KEY-003 | 冲突检测、重复快捷键处理、平台保留键处理 | U-AUDIT / 需求 C9 | `Registry::conflicts` + `bindings`；内置绑定断言无冲突；无平台保留键表 | partial | `conflict_detection`、`builtin_registry_is_consistent` | 冲突检测已有记录；无 UI/保留键处理 | 无冲突提示 UI；未处理桌面环境保留键；重复绑定策略仅报告 |
 | KEY-004 | Profile 绑定快捷键 | U-AUDIT / 需求 C9 | 无实现 | not_started | 无 | 未实现 | 无 Profile/快捷键 |

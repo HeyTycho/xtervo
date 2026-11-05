@@ -1999,6 +1999,24 @@ fn handle_input(
                 open_palette(st);
                 return;
             },
+            "e" => {
+                if let Some(focused) = st.ws.active_tab().map(|t| t.focused) {
+                    split_pane_inner(st, focused, Dir::Row);
+                }
+                return;
+            },
+            "d" => {
+                if let Some(focused) = st.ws.active_tab().map(|t| t.focused) {
+                    split_pane_inner(st, focused, Dir::Col);
+                }
+                return;
+            },
+            "w" => {
+                if let Some(focused) = st.ws.active_tab().map(|t| t.focused) {
+                    close_pane_inner(st, focused);
+                }
+                return;
+            },
             _ => {},
         }
     }
