@@ -16,11 +16,11 @@
 
 | 范围 | 条目 | implemented | partial | in_progress | needs_verification | not_started | unsupported | 加权完成度 |
 |---|---|---|---|---|---|---|---|---|
-| B 部分（UI） | 110 | 25 | 56 | 0 | 5 | 23 | 1 | 48.2% |
-| C 部分（底层） | 118 | 12 | 42 | 0 | 9 | 49 | 6 | 28.0% |
-| B+C 合计 | 228 | 37 | 98 | 0 | 14 | 72 | 7 | 37.7% |
+| B 部分（UI） | 110 | 25 | 57 | 0 | 5 | 22 | 1 | 48.6% |
+| C 部分（底层） | 118 | 12 | 49 | 0 | 9 | 42 | 6 | 30.9% |
+| B+C 合计 | 228 | 37 | 106 | 0 | 14 | 64 | 7 | 39.5% |
 
-> 加权公式：`(implemented + 0.5×partial + 0.5×in_progress) / 条目总数`。`needs_verification / not_started / unsupported` 记 0。该数字是“功能条目覆盖度”，不是代码行数或工时完成度。本轮补 Vault 时用 `scripts/matrix_stats.py` 逐行复核并刷新了上表（旧审计快照数字已过期；脚本额外把 needs_verification 记 0.25，故其 weighted 输出略高）。2026-11-05 Profiles UX/插件 API/Tabby 导入/Vault SSH 修复合入后刷新；脚本 `matrix_stats.py` 当前输出 37/98/14/72/7、weighted 39.3%（脚本把 needs_verification 记 0.25，表中按原公式只计 implemented+0.5×partial = 37.7%）。
+> 加权公式：`(implemented + 0.5×partial + 0.5×in_progress) / 条目总数`。`needs_verification / not_started / unsupported` 记 0。该数字是“功能条目覆盖度”，不是代码行数或工时完成度。本轮补 Vault 时用 `scripts/matrix_stats.py` 逐行复核并刷新了上表（旧审计快照数字已过期；脚本额外把 needs_verification 记 0.25，故其 weighted 输出略高）。2026-11-05 Profiles UX/插件 API/Tabby 导入/Vault SSH 修复/SFTP 进度与取消合入后刷新；脚本 `matrix_stats.py` 当前输出 37/106/14/64/7、weighted 41.0%（脚本把 needs_verification 记 0.25，表中按原公式只计 implemented+0.5×partial = 39.5%）。
 
 ## 2. 审计发现：现有实现/文档与需求不符（至少 3 条）
 
@@ -169,15 +169,15 @@
 
 ### B8. SSH / SFTP / Port Forward UI（9 条）
 
-状态：partial=5，not_started=4。
+状态：partial=6，not_started=3。
 
 | ID | Feature | Upstream evidence | Rust implementation | Status | Test | Result | Limitation |
 |---|---|---|---|---|---|---|---|
 | UI-SSH-001 | SSH Profile 编辑窗口分组清晰、密码/密钥安全提示 | U-AUDIT / 需求 B8 | Profile 表单 SSH 分组：Host/Port/User/Auth/Key/Password/Extra；`auth=password` 时显示 masked 密码输入 +「Save password to Vault」；已保存密码经 Vault 取出后由临时 askpass 脚本（`SSH_ASKPASS_REQUIRE=force`）自动认证；askpass 只回答密码 prompt，host key 等确认回答 `no` 防死循环；连接前按 `ssh -G` 的 `hostname`/`port`/`hostkeyalias` 查 known_hosts，命中才启用 askpass；首次连接（未命中）不用 askpass、由终端确认并手输一次；未勾选保存则完全由系统 ssh 交互式询问；`ssh_command()` 仍在 PTY 跑系统 ssh | partial | 单测 `ssh_command_builds_openssh_args`、`profile_serialization_has_no_plaintext_password`、`askpass.rs` 9 例（真实 `ssh -G`/`ssh-keygen -F` known_hosts 判定、`[host]:port` 键、Host/HostName 别名、HostKeyAlias 原文、prompt 过滤）；真实 ssh + askpass 无 GUI 自动登录通过（SSH-TEST-OK）；未知 host 仅一次确认后 rc=255、无密码重试；受共享显示器约束**未做 password 链路 GUI 真机验证** | key/agent 可用；known_hosts 已确认的 host 可经 Vault+askpass 自动登录（真实 ssh+askpass 无 GUI 验证） | askpass 密码经 ssh 子进程环境变量传递，同用户可经 `/proc/<pid>/environ` 观察（后续改 fd/pipe，见 `docs/VAULT.md`）；首次连接需终端手输；known_hosts 判定为 best-effort（动态 KnownHostsCommand/key 类型变化可能回退失败）；无内建 known_hosts 管理；无跳板机；原生 russh 未做 |
 | UI-SSH-002 | 首次主机密钥确认、变更告警、known_hosts 管理入口 | U-AUDIT / 需求 B8 | 交给系统 ssh：主机密钥确认/告警直接显示在终端里；Extra 参数可传 UserKnownHostsFile | partial | 端到端走 `-o StrictHostKeyChecking=yes` + 自定义 known_hosts 成功连接 | 借用系统 ssh 的完整校验流程 | 无应用内 known_hosts 管理 UI；无密钥变更专门告警面板 |
-| UI-SSH-003 | SFTP 面板/Tab：目录导航、上级、刷新、路径输入、列表、属性 | U-AUDIT / 需求 B8 | **SFTP 面板**（TabBar 菜单 → SFTP）：SSH Profile 选择、Remote 路径输入、List、条目列表点选；`sftp.rs` 走系统 `sftp -q -b -` | partial | 端到端：`scripts/ssh_test_server.py`（SFTP）→ 面板 List 显示 `1 个条目` / `/probe.txt`（.logs/sftp-panel.png） | 面板列目录/选择可用 | 无“上级/刷新/属性列”；同步阻塞调用（大目录会卡 UI）；无传输进度 |
-| UI-SSH-004 | SFTP 上传/下载/建目录/重命名/删除；危险确认 | U-AUDIT / 需求 B8 | 面板 Download/Upload/New Dir/Rename/Delete；`get`/`put`/`mkdir`/`rename`/`rm`（目录回退 `rmdir`）；Delete 需点两次确认；Target 输入框 | partial | 端到端（paramiko 服务）：建目录 → 远端出现 newdir；重命名 → 目录变 renamed.txt；Delete 第一次提示“再点一次”，第二次删除成功 | 上传/下载/建目录/重命名/删除可用（含两步删除确认） | 无进度/取消/重试；同步阻塞；不可递归删除目录树 |
-| UI-SSH-005 | 传输进度、速度、已传/总大小、取消、失败重试 | U-AUDIT / 需求 B8 | 无实现 | not_started | 无 | 未实现 | 无传输任务模型/进度 UI |
+| UI-SSH-003 | SFTP 面板/Tab：目录导航、上级、刷新、路径输入、列表、属性 | U-AUDIT / 需求 B8 | **SFTP 面板**（TabBar 菜单 → SFTP）：SSH Profile 选择、Remote 路径输入、List、条目列表点选；`sftp.rs` 走系统 `sftp -q -b -` | partial | 端到端：`scripts/ssh_test_server.py`（SFTP）→ 面板 List 显示 `1 个条目` / `/probe.txt`（.logs/sftp-panel.png）；`--sftp-probe list /` 真机（无 GUI）通过 | 面板列目录/选择可用 | 无“上级/刷新/属性列”；列目录仍同步阻塞（大目录会卡 UI）；传输已后台化（见 UI-SSH-004/005） |
+| UI-SSH-004 | SFTP 上传/下载/建目录/重命名/删除；危险确认 | U-AUDIT / 需求 B8 | 面板 Download/Upload/New Dir/Rename/Delete；上传/下载走后台 `TransferJob`（sftp batch 首行 `progress`；下载 `get -R`，上传目录 `put -R`，单文件 `put`）；mkdir/rename/rm（目录回退 `rmdir`）；Delete 需点两次确认 | partial | 单测 13 例（进度解析/状态机/临时 shell 脚本取消 kill/成功/stderr 失败）；`--sftp-probe` + paramiko 服务：文件与目录 get/put、1MiB 文件字节一致；既有端到端建目录/重命名/两步删除仍通过 | 上传/下载（含目录）后台执行且可取消；建目录/重命名/删除可用 | 无重试/覆盖确认/断点续传；取消会留下部分本地或远端文件；传输期间面板旧操作被禁用；Windows 取消只记录标志不 kill |
+| UI-SSH-005 | 传输进度、速度、已传/总大小、取消、失败重试 | U-AUDIT / 需求 B8 | `sftp.rs` 后台任务 + 双读线程按 `\r`/`\n` 切行；纯函数解析 `path 42% 1.2MB 3.4MB/s`；UI 显示当前文件、进度条/百分比或“不确定进度”、Cancel；400ms poll 收事件、单传输、终态 join 回收 | partial | 单测：进度解析 5、切行 1、状态机 3、batch 脚本 1、后台任务取消/成功/失败 3（共 13）；真实 sftp 的进度输出另用 pty 对照实测 | 有开始/当前文件/完成/失败/取消；sftp 若输出进度行则显示字节级百分比与速率 | **OpenSSH `progress` 表在 stdout 非 tty（本应用管道）不输出**，实测只有 prompt/命令回显，故面板通常为“不确定进度”，不是字节级；无总大小/剩余时间/失败重试；取消可能留下部分文件；Windows 不 kill |
 | UI-SSH-006 | Port Forward 管理：查看/添加/启停/删除，显示监听与目标 | U-AUDIT / 需求 B8 | 新增 **Port Forwards 面板**（TabBar 菜单）：按 SSH Profile 列出 `-L` 规则、输入 `本地端口:主机:端口` 添加、× 删除并写回 profiles.toml | partial | 单测 `forward_validation_helper` + `ssh_forwards_become_dash_l_args`；真机：面板添加 `18080:127.0.0.1:9000` → profiles.toml `local_forwards` 出现；删除后清空 | 规则查看/新增/删除可用（下次连接生效） | 无启停/状态/监听展示；仅 local（-L），无 -R/-D；已连接的会话需重连 |
 | UI-SSH-007 | Jump Host 配置入口与链路可视化/可读描述 | U-AUDIT / 需求 B8 | 无实现 | not_started | 无 | 未实现 | 无跳板机 |
 | UI-SSH-008 | Login Scripts 编辑器：命令/顺序/延时/等待提示符（按上游核验） | U-AUDIT（字段待核） | 无实现 | not_started | 无 | 未实现 | 无登录脚本 |
@@ -288,17 +288,17 @@
 
 ### C4. SFTP 与文件传输（7 条）
 
-状态：not_started=7。
+状态：partial=7。
 
 | ID | Feature | Upstream evidence | Rust implementation | Status | Test | Result | Limitation |
 |---|---|---|---|---|---|---|---|
-| SFTP-001 | 基于 SSH Channel 的 SFTP 会话 | U-AUDIT / 需求 C4 | 无实现 | not_started | 无 | 未实现 | 无 SSH/SFTP |
-| SFTP-002 | 远端文件列表、目录导航、文件元数据 | U-AUDIT / 需求 C4 | 无实现 | not_started | 无 | 未实现 | 无 SFTP UI/协议 |
-| SFTP-003 | 上传/下载、建目录、重命名、删除 | U-AUDIT / 需求 C4 | 无实现 | not_started | 无 | 未实现 | 无文件操作 |
-| SFTP-004 | 传输进度、速率、取消、失败重试 | U-AUDIT / 需求 C4 | 无实现 | not_started | 无 | 未实现 | 无传输任务模型 |
-| SFTP-005 | 大文件流式传输，不一次性读入内存 | U-AUDIT / 需求 C4 | 无实现 | not_started | 无 | 未实现 | 无 SFTP 流式通道 |
-| SFTP-006 | 独立 SFTP Tab/面板；插件实现也需原生等价能力 | U-AUDIT / 需求 C4 | 无实现 | not_started | 无 | 未实现 | 无 SFTP Tab/插件 |
-| SFTP-007 | 权限、覆盖确认、路径编码、断线中断处理 | U-AUDIT / 需求 C4 | 无实现 | not_started | 无 | 未实现 | 无权限/覆盖/编码/断线策略 |
+| SFTP-001 | 基于 SSH Channel 的 SFTP 会话 | U-AUDIT / 需求 C4 | 系统 `sftp -q -b -` 子进程复用 SSH Profile（key/port/extra args）；非内建 SSH Channel | partial | `--sftp-probe list/get/put` 对 `scripts/ssh_test_server.py`（paramiko）通过；无 GUI | 经系统 sftp 可建立会话并传文件 | 无内建 SFTP 协议栈；依赖系统 `sftp`；连接/认证行为沿用系统 ssh |
+| SFTP-002 | 远端文件列表、目录导航、文件元数据 | U-AUDIT / 需求 C4 | 面板 Remote 路径输入 + `ls -1` + 条目点选 | partial | e2e 面板列表 `1 个条目` / `/probe.txt`；probe list 通过 | 列表与路径输入可用 | 无上级/刷新按钮、无 mtime/权限/大小等元数据列；列目录同步阻塞 |
+| SFTP-003 | 上传/下载、建目录、重命名、删除 | U-AUDIT / 需求 C4 | Download/Upload 后台 `TransferJob`（`get -R` / `put [-R]`）；mkdir/rename/rm（目录回退 `rmdir`）；Delete 二次确认 | partial | probe：文件与目录 get/put、1MiB 文件字节一致；既有 e2e：建目录/重命名/两步删除 | 上传/下载（含目录）/建目录/重命名/删除可用 | 无覆盖确认/权限编辑/断点续传；目录删除非递归；取消可能留半成品 |
+| SFTP-004 | 传输进度、速率、取消、失败重试 | U-AUDIT / 需求 C4 | 后台任务发 `Progress`/`Finished` 事件；解析 `path 42% 1.2MB 3.4MB/s`；UI 当前文件 + 进度条 + Cancel（kill 子进程）；单传输；400ms 轮询 | partial | 单测 13 例：进度解析/多文件/`\r` 切行、状态机、临时 shell 脚本取消 kill/成功/stderr 失败；真实 sftp 进度另用 pty 对照 | 开始/当前文件/完成/失败/取消可用；有进度行时显示百分比/速率 | OpenSSH 进度表在非 tty 管道下不输出（实测），通常只能显示不确定进度；无失败重试/总大小/ETA；取消留部分文件；Windows 不 kill |
+| SFTP-005 | 大文件流式传输，不一次性读入内存 | U-AUDIT / 需求 C4 | 文件内容由系统 sftp 流式读写，应用只读 stdout/stderr 文本；目录 `get -R`/`put -R` | partial | probe 1MiB 文件（字节比对一致）与目录树 get/put 通过 | 应用进程不把文件读入内存 | 不是应用内流式通道；无缓冲区/限速/续传；未做 >1GiB 长稳实测 |
+| SFTP-006 | 独立 SFTP Tab/面板；插件实现也需原生等价能力 | U-AUDIT / 需求 C4 | 独立 SFTP 面板（TabBar 菜单 → SFTP），不占 Tab；含 profile 选择/路径/列表/文件操作/进度区 | partial | e2e 面板 `.logs/sftp-panel.png`；代码走查面板组件 | 面板可用 | 不是独立 Tab；无插件 API/原生等价能力 |
+| SFTP-007 | 权限、覆盖确认、路径编码、断线中断处理 | U-AUDIT / 需求 C4 | 权限由 SSH 用户/密钥决定；错误经 stderr 回显；Delete 二次确认；路径按 UTF-8 lossy 显示 | partial | 单测 stderr 失败信息；probe 错误路径/成功路径 | 错误展示与删除确认可用 | 无覆盖确认/权限编辑；路径编码只做 lossy；断线 = 传输失败，无重连/续传 |
 
 ### C5. Zmodem（4 条）
 

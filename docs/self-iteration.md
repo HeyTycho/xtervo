@@ -727,3 +727,35 @@ cargo bench -p tervo-core --bench pty_throughput
   `ssh-keygen` 不在 PATH 时保守返回 false。若 Profile Host 与 known_hosts 键完全一致
   （如 `127.0.0.1` + `[127.0.0.1]:2222`），旧实现本身也能命中；本次修复覆盖的是此前漏判的
   ssh 配置别名/HostKeyAlias/有效端口形态，并新增端口键的真实 `ssh-keygen -F` 回归测试。
+
+### 2026-11-05 · SFTP 传输进度与取消
+
+- **问题**：SFTP 面板的 Upload/Download 是同步 `sftp` 调用，大文件/目录期间 UI 卡住，
+  没有当前文件/进度/取消；FEATURE_MATRIX 的 UI-SSH-005、C4/SFTP-001..007 多数仍标
+  not_started（与已有的面板/文件操作实现不符）。
+- **做法**：
+  - `sftp.rs` 新增后台 `TransferJob`：`sftp -q -b -` + batch 脚本（首行 `progress`）；
+    下载统一 `get -R`（普通文件也已实测安全），上传目录 `put -R`、单文件 `put`；
+    stdout/stderr 各一个读线程，按 `\r`/`\n` 切行。
+  - 纯函数 `parse_progress_line` / `parse_progress_output`：从右往左找 `NN%`，
+    解析 `path 42% 1.2MB 3.4MB/s [ETA]`（支持文件名含空格、0/100%、KB/MB/GB）；
+    `TransferState` 状态机（Idle/Running/Done/Failed/Cancelled）负责 UI 文案/百分比。
+  - 取消：`Arc<Mutex<Child>>` + `AtomicBool`；UI 线程 `cancel()` 只置标志并（Unix）
+    kill，不等待；worker 每 40ms `try_wait` 回收，`Drop` 兜底 terminate+join；
+    `sftp_transfer` 单槽位保证同一时间只有一个传输，传输中其余 SFTP 操作在 Rust 层拒绝。
+  - UI：传输区显示当前文件 + 进度条/百分比（无进度行时“不确定进度”）+ Cancel；
+    传输中整面板加 shield，完成/失败/取消后自动恢复；400ms `poll_events` 非阻塞收事件；
+    上传成功后刷新列表并保留结果文案。
+- **测试**：`cargo test -p tervo-app --bin tervo` → **177 passed**（新增 13 例：
+  进度解析 5、`\r`/`\n` 切行 1、状态机 3、batch 脚本 1、临时 shell 脚本
+  取消 kill/成功/stderr 失败 3）。无 GUI 真实验证：`scripts/ssh_test_server.py`
+  （paramiko SFTP）+ `tervo --sftp-probe` → list、单文件 get/put、目录 get/put 均通过，
+  1MiB 下载与源文件 `cmp` 字节一致；另用 Python pty 对照确认 OpenSSH 进度行的真实格式与
+  “非 tty 不输出”的行为。
+- **限制**：OpenSSH 的 `progress` 表在 stdout 不是 tty（本应用是管道）时**不输出逐文件
+  进度**，实测管道下 stdout/stderr 都没有进度行，所以实际面板通常显示“不确定进度”，
+  不是字节级百分比；无总大小/ETA/失败重试/断点续传；取消可能留下部分本地或远端文件；
+  Windows 取消只记录标志不 kill；UI 进度刷新依赖 400ms 轮询；共享显示器约束下未启动
+  GUI 做真机截图走查。
+- **文档**：FEATURE_MATRIX UI-SSH-003/004/005 与 C4/SFTP-001..007 按实际实现改写，
+  B8/C4 分节计数和总表（37/106/14/64/7、weighted 41.0%）同步。
