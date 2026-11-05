@@ -3340,7 +3340,7 @@ export component MainWindow inherits Window {
                     }
 
                     Text {
-                        text: "只读取并展示 *.toml 清单；不加载、不执行插件代码（插件运行时未实现）。";
+                        text: "v1 插件 <name>/plugin.toml：启用后命令进入命令面板，执行是后台外部进程（10s 超时，输出只写日志）；旧 *.toml 仅展示。修改 enabled 后需重启。插件拥有当前用户全部权限，无沙箱。";
                         color: Palette.colors.muted;
                         font-size: 10px;
                         wrap: word-wrap;

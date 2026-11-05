@@ -2696,7 +2696,15 @@ fn run_command(st: &mut AppState, id: &str) {
         "session.restart" => restart_session(st),
         "session.reattach" => reattach_last_background(st),
         "settings.open" => st.ui.set_settings_open(true),
-        other => eprintln!("[ui] 未知命令 {other}"),
+        other => {
+            // 插件命令统一走 unknown 分支：spawn_command 只接受已启用插件声明的完整 ID，
+            // 在后台线程执行，UI 线程立即返回。
+            if st.plugins.spawn_command(other) {
+                eprintln!("[plugin] 已提交后台执行 {other}");
+            } else {
+                eprintln!("[ui] 未知命令 {other}");
+            }
+        },
     }
 }
 
@@ -2940,6 +2948,18 @@ fn handle_input(
                 return;
             },
             _ => {},
+        }
+    }
+
+    // 插件声明的默认快捷键：放在内置硬编码分发**之后**，内置键（Ctrl+T 等）永远优先，
+    // 插件只能使用内置未占用的组合；用户 override 已在更前面处理。
+    if let Some(chord) = keys::chord_from_key_event(text, ctrl, alt, shift) {
+        if let Some(id) = st.commands.plugin_default_for_chord(&chord) {
+            if keylog {
+                eprintln!("[plugin] 快捷键 {id} ← {chord}");
+            }
+            run_command(st, id);
+            return;
         }
     }
 
@@ -3459,6 +3479,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui.set_fwd_items(ModelRc::from(fwd_model.clone()));
     let profile_menu_model = Rc::new(VecModel::<slint::SharedString>::default());
     ui.set_profilemenu_items(ModelRc::from(profile_menu_model.clone()));
+
+    // 插件发现 + 命令注册：旧扁平清单只展示；v1 目录插件把启用命令合并进 Registry。
+    let plugins = plugin::PluginStore::load();
+    let mut command_registry = commands::builtin();
+    let plugin_command_count = plugin::register_plugins(&mut command_registry, &plugins);
+    eprintln!(
+        "[plugin] 发现 {} 个插件（{} 个可执行包），注册 {} 条命令，跳过 {}",
+        plugins.total_count(),
+        plugins.packages.len(),
+        plugin_command_count,
+        plugins.skipped.len()
+    );
+    for (path, reason) in &plugins.skipped {
+        eprintln!("[plugin] 跳过 {path}: {reason}");
+    }
+
     let state = Rc::new(RefCell::new(AppState {
         ui: ui.clone_strong(),
         ws: Workspace::new(),
@@ -3479,7 +3515,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         auto_watch_started: false,
         search_open: false,
         search_query: String::new(),
-        commands: commands::builtin(),
+        commands: command_registry,
         palette_ids: Vec::new(),
         palette_model,
         palette_sel: 0,
@@ -3496,7 +3532,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         hotkey_model,
         hotkey_ids: Vec::new(),
         hotkey_recording: None,
-        plugins: plugin::PluginStore::load(),
+        plugins,
         plugin_model,
         sftp_delete_armed: false,
         quake_visible: false,
@@ -4579,17 +4615,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         refresh_hotkeys(st);
         refresh_vault_ui(st);
         let lines: Vec<slint::SharedString> =
-            st.plugins.plugins.iter().map(|p| p.display_line().into()).collect();
+            st.plugins.display_lines().iter().map(|line| line.as_str().into()).collect();
         st.plugin_model.set_vec(lines);
         let summary = format!(
-            "{} plugins · {} enabled · {} skipped",
-            st.plugins.plugins.len(),
+            "{} plugins · {} enabled · {} commands · {} skipped",
+            st.plugins.total_count(),
             st.plugins.enabled_count(),
+            st.plugins.enabled_command_count(),
             st.plugins.skipped.len()
         );
         st.ui.set_plugin_summary(summary.as_str().into());
         st.ui.set_plugin_dir(plugin::PluginStore::dir().display().to_string().as_str().into());
-        eprintln!("[plugin] 发现 {} 个清单，跳过 {}", st.plugins.plugins.len(), st.plugins.skipped.len());
+        eprintln!(
+            "[plugin] 设置页 {} 个插件，{} 个启用，{} 条命令，跳过 {}",
+            st.plugins.total_count(),
+            st.plugins.enabled_count(),
+            st.plugins.enabled_command_count(),
+            st.plugins.skipped.len()
+        );
         eprintln!("[ui] 启动 tabbar_position={}", st.cfg.tabbar_position);
     });
 

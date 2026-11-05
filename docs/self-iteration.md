@@ -571,3 +571,34 @@ cargo bench -p tervo-core --bench pty_throughput
   `[ui] profile pick=0` 并进入 shell；截图 .logs/profile-menu.png / profile-menu-picked.png。
 - 旧记录中“+ 下拉”的描述已被本条取代。
 
+### 2026-11-05 · 外部进程插件 API MVP（命令注册/执行）
+
+- **问题**：`plugin.rs` 原来只扫描扁平 `~/.config/tervo/plugins/*.toml` 并展示，不加载/
+  不执行；命令面板只有静态 `commands::builtin()`；需求 C13/PLUG-001..005、B11/UI-PLUG 停在
+  not_started/partial。
+- **做法**（不替换旧格式，新增 v1 目录格式可执行）：
+  - `plugin.rs` 同时扫描旧扁平 `*.toml`（仍只展示、校验、统计）与
+    `<plugins>/<name>/plugin.toml`（v1：name/version/api=1/entry/enabled/description/commands）。
+  - v1 校验：重名插件跳过、命令 id 插件内唯一、api≠1 拒绝、entry 拒绝绝对路径/`..`/
+    符号链接逃逸且必须存在；command key 必须是单个可绑定组合。
+  - 命令注册扩展点 `plugin::register_plugins(&mut Registry, &PluginStore)`：启用插件的命令
+    以 `plugin.<name>.<id>`、标题 `(plugin: <name>)`、分类 `Plugins` 进入命令表；Palette
+    可搜/可执行，Hotkeys 页可见并支持 override；默认 key 在内置硬编码键之后分发。
+  - 执行走 `run_command` 的 unknown-id 分支 → `PluginStore::spawn_command` → 后台线程
+    spawn entry（cwd=插件目录，env `TERVO_PLUGIN_NAME/TERVO_PLUGIN_API`）；stdin 写一行
+    JSON `{"event":"command","id":"...","args":[]}` 后关闭；并发捕获 stdout/stderr（各
+    64 KiB）、10s 超时 kill，退出码/超时/输出只写 `[plugin]` 日志。UI 线程不等待。
+  - `enabled=false` 不注册命令、`spawn_command` 拒绝；设置页沿用模型显示
+    名称/版本/状态/api/命令数/说明，并更新底部说明为真实行为（含无沙箱警告）。
+- **测试**：`cargo test -p tervo-app --bin tervo` → **146 passed**（新增 14 例：旧+新共存、
+  v1 解析/字段/api/非法 entry/符号链接/重名/命令 id 重复/非法 key、命名空间注册与禁用、
+  外部 shell 脚本的 env/stdin JSON/stdout/stderr/cwd/退出码/超时 kill/spawn 错误）。
+- **文档**：新增 [`PLUGIN_API.md`](PLUGIN_API.md)（目录/清单/协议/权限/限制/手工验证）；
+  更新 FEATURE_MATRIX UI-PLUG-001..007、PLUG-001..006、SEC-005 与 B11/C13 计数。
+- **限制**：不做 Tabby/JS/WASM 兼容；无结果回传 UI、无常驻生命周期/事件/安装卸载/升级/
+  热重载；无权限模型/沙箱（插件=当前用户普通子进程）；超时固定 10s；未启动 GUI
+  （共享显示器约束），设置页与真机执行待人工走查。
+- **手工验证**：按 `docs/PLUGIN_API.md` §6 建 `plugins/hello/{plugin.toml,run.sh}`，
+  启动后看 `[plugin]` 注册日志与设置页；Palette 执行 → stdout/stderr/退出码日志；
+  `exec sleep 30` → ~10s 超时 kill；`enabled=false` 重启后命令消失、设置页 disabled。
+

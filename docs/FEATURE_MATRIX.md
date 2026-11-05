@@ -212,17 +212,17 @@
 
 ### B11. 插件管理 UI（7 条）
 
-状态：partial=3，not_started=4。
+状态：partial=6，not_started=1。
 
 | ID | Feature | Upstream evidence | Rust implementation | Status | Test | Result | Limitation |
 |---|---|---|---|---|---|---|---|
-| UI-PLUG-001 | Available/Installed 插件列表 | U-AUDIT / 需求 B11 | `plugin.rs` 扫描 `plugins/*.toml`；设置 Plugins 页列出已安装清单（enabled/disabled）；跳过坏文件并计数 | partial | 4 个单测（加载/跳过/重复/未知字段保留）；真机 `[plugin] 发现 2 个清单，跳过 1`，页面显示 `2 plugins · 1 enabled · 1 skipped`（.logs/settings-plugins.png） | 已安装（清单）列表可用 | 无“可用/商店”列表；无安装/卸载/升级 |
-| UI-PLUG-002 | 插件名称、说明、版本、作者、兼容 API、权限要求 | U-AUDIT / 需求 B11 | `PluginManifest{id,name,version,description,enabled,extra}`；未知字段原样保留 | partial | 单测 `unknown_fields_are_preserved`；页面显示 名称/版本/状态/说明 | 基础元数据可用 | 无 author/apiVersion/permissions 强类型字段与展示 |
-| UI-PLUG-003 | 搜索、安装、卸载、启用、禁用、升级、重启提示 | U-AUDIT / 需求 B11 | 仅读取 `enabled` 字段展示，不可切换 | not_started | 无 | 未实现 | 生命周期/搜索/升级全缺；启用状态只读 |
+| UI-PLUG-001 | Available/Installed 插件列表 | U-AUDIT / 需求 B11 | `plugin.rs` 兼容两种清单：旧扁平 `plugins/*.toml`（只展示、不执行）+ v1 目录 `plugins/<name>/plugin.toml`（可执行，含 commands）；设置 Plugins 页列出已安装清单，统计 enabled/命令数/skipped，并逐条日志跳过原因 | partial | plugin 单测：旧清单加载/跳过/重复/未知字段、v1 加载/非法 entry/API/重名/禁用/命令注册；`cargo test -p tervo-app --bin tervo` 146 passed | 旧+新已安装清单与状态可用 | 无“可用/商店”列表；无安装/卸载/升级 |
+| UI-PLUG-002 | 插件名称、说明、版本、作者、兼容 API、权限要求 | U-AUDIT / 需求 B11 | 旧 `PluginManifest{id,name,version,description,enabled,extra}` 原样保留；新增 `PackageManifest{name,version,api,entry,enabled,description,commands}`；设置页行显示名称/版本/状态/API/命令数/说明 | partial | v1 字段校验单测；`display_line` 断言名称/版本/API/命令数；未启动 GUI | 名称/版本/兼容 API/状态/命令数可展示 | 无 author/permissions 强类型字段与展示；权限要求只在 docs/PLUGIN_API.md 说明 |
+| UI-PLUG-003 | 搜索、安装、卸载、启用、禁用、升级、重启提示 | U-AUDIT / 需求 B11 | manifest `enabled`（默认 true）控制是否注册命令/执行；禁用插件仍展示但不出现在 Palette，`spawn_command` 也拒绝；修改后需重启 | partial | `disabled_package_is_not_registered_or_executed`、`registers_namespaced_commands_and_skips_disabled` | 清单级启用/禁用可用 | 无 UI 开关/搜索/安装/卸载/升级；enabled 变更需重启 |
 | UI-PLUG-004 | 安装来源与签名/校验；安装前展示权限 | U-AUDIT / 需求 B11 | 无实现 | not_started | 无 | 未实现 | 无安装器/签名/权限 UI |
-| UI-PLUG-005 | 插件崩溃/超时/API 不兼容诊断信息 | U-AUDIT / 需求 B11 | 无实现 | not_started | 无 | 未实现 | 无插件运行时/诊断 |
+| UI-PLUG-005 | 插件崩溃/超时/API 不兼容诊断信息 | U-AUDIT / 需求 B11 | 外部进程隔离（插件崩溃不拖垮宿主）；stdout/stderr 捕获；10s 超时 kill；api≠1 / entry 非法在加载期跳过并逐条写原因；退出码/超时写 `[plugin]` 日志 | partial | `execute_times_out_and_kills`、`execute_reports_nonzero_exit_and_cwd`、`execute_reports_spawn_error_without_panic`、api/entry 跳过单测 | 崩溃隔离/超时/日志/API 版本检查有 MVP | 无升级/迁移/自动重启/结构化诊断面板；超时固定 10s，只写日志 |
 | UI-PLUG-006 | Open Plugins Directory | U-AUDIT / 需求 B11 | 设置页显示插件目录路径；未做打开按钮（可复制路径） | partial | 真机截图显示 `/tmp/pl` | 路径可见 | 无一键打开目录按钮 |
-| UI-PLUG-007 | 插件扩展 Toolbar/命令面板/Tab 菜单/终端菜单/设置/Provider/Middleware | U-AUDIT / 需求 B11 | 无实现 | not_started | 无 | 未实现 | 无扩展点 |
+| UI-PLUG-007 | 插件扩展 Toolbar/命令面板/Tab 菜单/终端菜单/设置/Provider/Middleware | U-AUDIT / 需求 B11 | v1 `[[commands]]` 注册进 Command Palette（完整 ID `plugin.<name>.<id>`，标题追加 `(plugin: <name>)`）；支持默认 `key` 与 Hotkeys override | partial | 命名空间注册/标题/默认键查找单测；`Registry::search` 走同一命令表 | 命令面板/快捷键扩展点可用 | Toolbar/Tab 菜单/终端菜单/设置/Provider/Middleware 等扩展点未实现 |
 
 ## 4. C 部分：底层功能点
 
@@ -406,21 +406,21 @@
 | SEC-002 | Master Passphrase / Vault 解锁与锁定（按原版核验） | U-AUDIT / 需求 C12 | `vault.rs` 提供 initialize/unlock/lock/change_master；设置 → Vault 页可操作；启动默认锁定，锁定时 get/set/remove 返回错误；Clear 需二次确认 | partial | vault 单测覆盖锁定读写/改主密码/重开解锁；`cargo build --release` | 主密码解锁/锁定/改密可用 | UI 未真机验证；无空闲自动锁定、无解锁弹窗、无失败次数退避 |
 | SEC-003 | 优先 Linux Secret Service/Keyring；加密文件回退说明 KDF 风险 | U-AUDIT / 需求 C12 | 未接 Secret Service/Keyring；实现加密文件回退（Argon2id 19 MiB/t=2/p=1、salt 16B、ChaCha20-Poly1305、0600、原子写）；`docs/VAULT.md` 写明 KDF/内存/askpass 风险 | partial | vault 单测（含文件权限/无明文）；文档走查 | 无 Keyring 时加密文件后端可用 | 未优先/未实现 Keyring；无后端口抽象；加密文件仍是唯一后端 |
 | SEC-004 | 普通配置、日志、崩溃报告不得出现明文密码/私钥/token | U-AUDIT / 需求 C12 | config.rs/profiles.toml 均无 secret 字段；Profile 只存 `save_password` 标志；Vault 文件只含 base64 密文；日志只记 Profile id/kind、不打印密码；askpass 密码仅存在于 ssh 子进程环境 | partial | `file_never_contains_plaintext_and_permissions_are_private`、`profile_serialization_has_no_plaintext_password`；代码走查 | 普通配置/日志无明文凭据 | askpass 环境变量可被同用户经 `/proc/<pid>/environ` 观察；无结构化脱敏框架/崩溃报告；config/profiles 文件权限未统一 0600 |
-| SEC-005 | 插件默认不能读凭据；使用需 capability | U-AUDIT / 需求 C12 | 无实现 | not_started | 无 | 未实现 | 无插件运行时/权限模型 |
+| SEC-005 | 插件默认不能读凭据；使用需 capability | U-AUDIT / 需求 C12 | 无实现；`docs/PLUGIN_API.md` 明确插件是普通子进程、拥有当前用户全部权限、无沙箱/无 capability，同用户可读 `~/.ssh`、config、日志与 `vault.enc` 密文 | not_started | 无 | 未实现 | 无插件运行时隔离/权限模型；MVP 插件 API 不是安全边界 |
 | SEC-006 | 主机密钥安全、文件权限、本地 IPC 权限检查 | U-AUDIT / 需求 C12 | `vault.enc` 以 0600 创建并在原子替换前 chmod；临时 askpass 目录/脚本 0700 且 Drop 清理；主机密钥仍完全交系统 ssh；无本地 IPC | partial | vault 文件权限测试、askpass 目录/脚本权限测试 | vault 凭据文件与 askpass 临时文件权限已收紧 | 配置文件/profile 文件未显式 0600；无内建 known_hosts 管理/本地 IPC 权限检查 |
 
 ### C13. Plugin System 与旧插件兼容（13 条）
 
-状态：needs_verification=1，not_started=12。
+状态：partial=4，not_started=8，needs_verification=1。
 
 | ID | Feature | Upstream evidence | Rust implementation | Status | Test | Result | Limitation |
 |---|---|---|---|---|---|---|---|
-| PLUG-001 | 稳定、版本化、具备生命周期的 Plugin API | U-PLUGIN / 需求 C13 | 无实现 | not_started | 无 | 未实现 | 无插件宿主/API；Cargo 无 wasmtime/abi 依赖 |
-| PLUG-002 | 扩展点：Commands/Hotkeys/Toolbar/Settings/Profile Providers/Tab 菜单/终端菜单/Decorator/Stream Processor/Middleware/Color Scheme/Linkifier | U-PLUGIN / 需求 C13 | 无实现 | not_started | 无 | 未实现 | 12 类扩展点均无接口 |
-| PLUG-003 | 注册/注销时管理资源、事件订阅、异步任务 | U-PLUGIN / 需求 C13 | 无实现 | not_started | 无 | 未实现 | 无插件生命周期 |
-| PLUG-004 | 权限声明：terminal/file/network/clipboard/secret/process 分权 | U-PLUGIN / 需求 C13 | 无实现 | not_started | 无 | 未实现 | 无权限模型 |
-| PLUG-005 | 插件崩溃隔离、超时、日志、升级与版本兼容检查 | U-PLUGIN / 需求 C13 | 无实现 | not_started | 无 | 未实现 | 无插件运行时/诊断 |
-| PLUG-006 | 新插件优先 WASM/WIT（先定义 Host API 再引 Runtime） | U-PLUGIN / 需求 C13 | 无实现 | not_started | 无 | 未实现 | 无 WIT/Host API/runtime 评估记录 |
+| PLUG-001 | 稳定、版本化、具备生命周期的 Plugin API | U-PLUGIN / 需求 C13 | `plugin.rs` 外部进程 MVP：v1 清单 `api=1`（不匹配即跳过）；命令经 stdin 单行 JSON `{"event":"command","id":"...","args":[]}` 下发；每次触发独立子进程，10s 超时 kill；退出码/输出只写日志 | partial | `execute_captures_env_protocol_and_streams`、api 校验、超时/退出码/禁用单测；`cargo test -p tervo-app --bin tervo` 146 passed | 版本化外部进程 API MVP 可用 | 不兼容 Tabby/JS；无常驻生命周期/卸载/事件/结果回传；api 只支持 1 |
+| PLUG-002 | 扩展点：Commands/Hotkeys/Toolbar/Settings/Profile Providers/Tab 菜单/终端菜单/Decorator/Stream Processor/Middleware/Color Scheme/Linkifier | U-PLUGIN / 需求 C13 | Commands + Hotkeys：`[[commands]]` → Command Palette（`plugin.<name>.<id>`）；清单 `key` 作为默认绑定（内置硬编码优先），Hotkeys 页可用 override 改键；其余扩展点无接口 | partial | 命名空间注册/标题来源/默认键查找/禁用单测 | 命令与快捷键扩展点可用 | 其余 10 类扩展点未实现 |
+| PLUG-003 | 注册/注销时管理资源、事件订阅、异步任务 | U-PLUGIN / 需求 C13 | 单次执行：后台线程 spawn 子进程 + stdout/stderr reader 线程，超时 kill 后 wait；无线程/进程泄漏路径；无注册/注销钩子、事件订阅、异步任务 API | partial | `execute_times_out_and_kills`、输出捕获/非零退出/spawn 错误不 panic | 单次执行的资源回收与超时可用 | 无常驻插件生命周期/注销/事件/异步任务 |
+| PLUG-004 | 权限声明：terminal/file/network/clipboard/secret/process 分权 | U-PLUGIN / 需求 C13 | 无实现；`docs/PLUGIN_API.md` 明确插件是普通子进程、拥有当前用户全部权限、无沙箱，未实现 capability 声明 | not_started | 无 | 未实现 | 无权限模型；不应把插件 API 当安全边界 |
+| PLUG-005 | 插件崩溃隔离、超时、日志、升级与版本兼容检查 | U-PLUGIN / 需求 C13 | 独立进程崩溃不影响宿主；10s 超时 kill；stdout/stderr 捕获（各 64 KiB）写 `[plugin]` 日志；api≠1/entry 非法在加载期跳过；版本兼容仅精确 `api=1` | partial | `execute_times_out_and_kills`、`execute_reports_nonzero_exit_and_cwd`、`execute_reports_spawn_error_without_panic`、api/entry 跳过单测 | 崩溃隔离/超时/日志/API 检查有 MVP | 无升级/迁移/自动重启/结构化诊断 UI；超时固定、无重试 |
+| PLUG-006 | 新插件优先 WASM/WIT（先定义 Host API 再引 Runtime） | U-PLUGIN / 需求 C13 | 本轮明确选择外部进程 MVP，不引入 WASM/WIT/Runtime；Host API 以 stdin JSON + env 的最小协议先行定义 | not_started | 无 | 未实现 WASM/WIT | 无 WIT/WASM runtime；`docs/PLUGIN_API.md` 记录该边界 |
 | PLUG-007 | 扫描原插件包与 API 使用情况；不承诺全量兼容 | U-PLUGIN / 需求 C13 | 无实现 | not_started | 无 | 未实现 | 无扫描器；未建立兼容分级 |
 | PLUG-008 | 识别 package.json `tabby-plugin` keyword、入口、依赖、版本 | U-PLUGIN / 需求 C13 | 无实现 | not_started | 无 | 未实现 | 无 package.json 解析；keyword 事实见 docs/tabby-themes.md |
 | PLUG-009 | Node.js sidecar 加载旧 JS/TS 插件，RPC 与 Rust Host 通信 | U-PLUGIN / 需求 C13 | 无实现 | not_started | 无 | 未实现 | 无 Node 依赖/sidecar/RPC |
