@@ -127,6 +127,8 @@ struct AppState {
     plugin_model: Rc<VecModel<slint::SharedString>>,
     /// Delete 需要点两次确认（避免误删远端文件）
     sftp_delete_armed: bool,
+    /// 最近关闭的 Tab（最多 10 个），用于 Ctrl+Shift+T / 菜单重开
+    closed_tabs: Vec<session::TabSnapshot>,
     fwd_profile_indices: Vec<usize>,
     fwd_model: Rc<VecModel<slint::SharedString>>,
     settings_result_cats: Vec<i32>,
@@ -1130,6 +1132,12 @@ fn close_tab_inner(st: &mut AppState, index: usize) {
     if index >= st.ws.tabs.len() {
         return;
     }
+    if let Some(snap) = snapshot_tab(st, index) {
+        st.closed_tabs.push(snap);
+        if st.closed_tabs.len() > 10 {
+            st.closed_tabs.remove(0);
+        }
+    }
     let background = st.cfg.close_action == "background";
     for id in st.ws.tabs[index].panes() {
         if background {
@@ -1296,6 +1304,88 @@ fn close_pane(id: PaneId) {
 // --------------------------------------------------------------- 会话快照
 
 /// 把当前布局 + 每个 pane 的 cwd 收成快照（不含屏幕内容）。
+/// 关闭 Tab 时抓一份布局/cwd 快照，供「重开最近关闭的 Tab」使用。
+/// 只存布局与 cwd，不保留进程（重开是新 shell）。
+fn snapshot_tab(st: &AppState, index: usize) -> Option<session::TabSnapshot> {
+    let tab = st.ws.tabs.get(index)?;
+    let root = tab.root.as_ref()?;
+    let ids = root.panes();
+    let mut cwds = HashMap::with_capacity(ids.len());
+    for id in &ids {
+        let cwd = st
+            .panes
+            .get(id)
+            .and_then(|rt| rt.handle.pid())
+            .and_then(session::cwd_of);
+        cwds.insert(*id, cwd);
+    }
+    let focused = ids.iter().position(|id| *id == tab.focused).unwrap_or(0);
+    Some(session::TabSnapshot {
+        title: tab.title.clone(),
+        focused,
+        tree: session::Tree::from_node(root, &cwds),
+    })
+}
+
+/// 按快照恢复一个 Tab（新 Pane、新 shell）；失败时清理半成品。
+fn restore_tab_snapshot(st: &mut AppState, tab_snap: &session::TabSnapshot) -> bool {
+    let (cols, rows) = cell_of(st.content, st.cell);
+    let cwds = tab_snap.tree.leaf_cwds();
+    let ids: Vec<PaneId> = (0..cwds.len()).map(|_| st.ws.alloc_id()).collect();
+    let Some(root) = tab_snap.tree.assign(&ids) else {
+        eprintln!("[session] 布局与 pane 数量不符，跳过该标签");
+        return false;
+    };
+    let mut created = 0;
+    for (i, cwd) in cwds.iter().enumerate() {
+        match create_pane(st, ids[i], cols, rows, cwd.as_ref().map(PathBuf::from), None) {
+            Ok(rt) => {
+                st.panes.insert(ids[i], rt);
+                created += 1;
+            },
+            Err(e) => {
+                eprintln!("[session] pane 恢复失败: {e}");
+                break;
+            },
+        }
+    }
+    if created != ids.len() {
+        for id in &ids {
+            st.panes.remove(id);
+        }
+        return false;
+    }
+    let focused = ids.get(tab_snap.focused).copied().unwrap_or(ids[0]);
+    st.ws.tabs.push(Tab {
+        title: tab_snap.title.clone(),
+        root: Some(root),
+        focused,
+        grid: HashMap::new(),
+    });
+    true
+}
+
+/// 重开最近关闭的 Tab（Ctrl+Shift+T / 菜单）。
+fn reopen_closed_tab(st: &mut AppState) {
+    let Some(snap) = st.closed_tabs.pop() else {
+        eprintln!("[ws] 没有可重开的 Tab");
+        return;
+    };
+    if !restore_tab_snapshot(st, &snap) {
+        eprintln!("[ws] 重开失败: {:?}", snap.title);
+        return;
+    }
+    st.ws.active = st.ws.tabs.len() - 1;
+    refresh_views(st);
+    rebuild_tabs(st);
+    redraw_visible(st);
+    eprintln!(
+        "[ws] reopen closed tab {:?}（剩余 {}）",
+        snap.title,
+        st.closed_tabs.len()
+    );
+}
+
 fn capture_snapshot(st: &AppState) -> Option<session::Snapshot> {
     if st.ws.tabs.is_empty() {
         return None;
@@ -1411,41 +1501,8 @@ fn restore_session(st: &mut AppState) -> bool {
     st.panes.clear();
     st.pane_rows.clear();
 
-    let (cols, rows) = cell_of(st.content, st.cell);
     for tab_snap in &snap.tabs {
-        let cwds = tab_snap.tree.leaf_cwds();
-        let ids: Vec<PaneId> = (0..cwds.len()).map(|_| st.ws.alloc_id()).collect();
-        let Some(root) = tab_snap.tree.assign(&ids) else {
-            eprintln!("[session] 布局与 pane 数量不符，跳过该标签");
-            continue;
-        };
-        let mut created = 0;
-        for (i, cwd) in cwds.iter().enumerate() {
-            match create_pane(st, ids[i], cols, rows, cwd.as_ref().map(PathBuf::from), None) {
-                Ok(rt) => {
-                    st.panes.insert(ids[i], rt);
-                    created += 1;
-                },
-                Err(e) => {
-                    eprintln!("[session] pane 恢复失败: {e}");
-                    break;
-                },
-            }
-        }
-        if created != ids.len() {
-            // 半成品标签丢弃，避免留下没有 PTY 的叶子
-            for id in &ids {
-                st.panes.remove(id);
-            }
-            continue;
-        }
-        let focused = ids.get(tab_snap.focused).copied().unwrap_or(ids[0]);
-        st.ws.tabs.push(Tab {
-            title: tab_snap.title.clone(),
-            root: Some(root),
-            focused,
-            grid: HashMap::new(),
-        });
+        restore_tab_snapshot(st, tab_snap);
     }
 
     if st.ws.tabs.is_empty() {
@@ -1752,6 +1809,28 @@ fn redraw_pane_inner(st: &mut AppState, id: PaneId) {
     rt.frame = frame;
 }
 
+/// 字号缩放（Ctrl+± / Ctrl+0 与命令面板共用）。
+fn zoom_font(st: &mut AppState, delta: f32) {
+    let next = (st.cfg.font_size + delta).clamp(8.0, 40.0);
+    if (next - st.cfg.font_size).abs() < f32::EPSILON {
+        return;
+    }
+    st.cfg.font_size = next;
+    apply_font_size(st);
+    st.cfg.save();
+    eprintln!("[ui] font_size={next}");
+}
+
+fn reset_font(st: &mut AppState) {
+    if (st.cfg.font_size - 15.0).abs() < f32::EPSILON {
+        return;
+    }
+    st.cfg.font_size = 15.0;
+    apply_font_size(st);
+    st.cfg.save();
+    eprintln!("[ui] font_size=15（重置）");
+}
+
 /// 字号变更：重建字体集与所有 pane 的渲染器，再按新网格重排。
 fn apply_font_size(st: &mut AppState) {
     let Some(fonts) = FontSet::load(st.cfg.font_size) else {
@@ -1978,6 +2057,7 @@ fn run_command(st: &mut AppState, id: &str) {
         "tab.next" => switch_tab_relative(st, 1),
         "tab.prev" => switch_tab_relative(st, -1),
         "tab.duplicate" => duplicate_tab(st, st.ws.active),
+        "tab.reopen-closed" => reopen_closed_tab(st),
         "pane.split-right" => {
             if let Some(focused) = st.ws.active_tab().map(|t| t.focused) {
                 split_pane_inner(st, focused, Dir::Row);
@@ -2025,21 +2105,9 @@ fn run_command(st: &mut AppState, id: &str) {
         },
         "view.command-palette" => open_palette(st),
         "view.toggle-fullscreen" => toggle_fullscreen(st),
-        "view.zoom-in" => {
-            st.cfg.font_size = (st.cfg.font_size + 1.0).clamp(8.0, 40.0);
-            apply_font_size(st);
-            st.cfg.save();
-        },
-        "view.zoom-out" => {
-            st.cfg.font_size = (st.cfg.font_size - 1.0).clamp(8.0, 40.0);
-            apply_font_size(st);
-            st.cfg.save();
-        },
-        "view.zoom-reset" => {
-            st.cfg.font_size = 15.0;
-            apply_font_size(st);
-            st.cfg.save();
-        },
+        "view.zoom-in" => zoom_font(st, 1.0),
+        "view.zoom-out" => zoom_font(st, -1.0),
+        "view.zoom-reset" => reset_font(st),
         "session.restart" => restart_session(st),
         "session.reattach" => reattach_last_background(st),
         "settings.open" => st.ui.set_settings_open(true),
@@ -2198,6 +2266,14 @@ fn handle_input(
                 }
                 return;
             },
+            "t" => {
+                reopen_closed_tab(st);
+                return;
+            },
+            "+" => {
+                zoom_font(st, 1.0);
+                return;
+            },
             _ => {},
         }
     }
@@ -2216,6 +2292,18 @@ fn handle_input(
             },
             "f" => {
                 open_search(st);
+                return;
+            },
+            "=" | "+" => {
+                zoom_font(st, 1.0);
+                return;
+            },
+            "-" => {
+                zoom_font(st, -1.0);
+                return;
+            },
+            "0" => {
+                reset_font(st);
                 return;
             },
             _ => {},
@@ -2571,6 +2659,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         plugins: plugin::PluginStore::load(),
         plugin_model,
         sftp_delete_armed: false,
+        closed_tabs: Vec::new(),
         fwd_profile_indices: Vec::new(),
         fwd_model,
         settings_result_cats: Vec::new(),
@@ -3283,6 +3372,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             9 => open_profiles_panel(st),
             10 => open_sftp_panel(st),
             11 => open_forwards_panel(st),
+            12 => reopen_closed_tab(st),
             6 => {
                 st.cfg.tabbar_position =
                     if st.cfg.tabbar_position == "bottom" { "top".into() } else { "bottom".into() };

@@ -292,6 +292,7 @@ pub fn builtin() -> Registry {
         ("tab.next", "Next Tab", Category::Workspace, Some("ctrl+tab")),
         ("tab.prev", "Previous Tab", Category::Workspace, Some("ctrl+shift+tab")),
         ("tab.duplicate", "Duplicate Tab", Category::Workspace, None),
+        ("tab.reopen-closed", "Reopen Closed Tab", Category::Workspace, Some("ctrl+shift+t")),
         ("pane.split-right", "Split Right", Category::Pane, Some("ctrl+shift+e")),
         ("pane.split-down", "Split Down", Category::Pane, Some("ctrl+shift+d")),
         ("pane.close", "Close Pane", Category::Pane, Some("ctrl+shift+w")),
