@@ -11,12 +11,91 @@
 
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::commands::{Chord, HotkeyOverride};
 
 /// 当前配置结构版本。改动字段语义/结构时递增，并在 [`Config::migrate`] 里补迁移步骤。
 pub const SCHEMA_VERSION: u32 = 1;
+
+/// 终端背景不透明度下限（再低文字/背景对比度不可控）。
+pub const MIN_BACKGROUND_OPACITY: f32 = 0.2;
+/// 终端背景不透明度上限。
+pub const MAX_BACKGROUND_OPACITY: f32 = 1.0;
+
+/// 夹取到 0.2–1.0 并四舍五入到两位小数；NaN/∞ 回退到 1.0。
+pub fn clamp_opacity(v: f32) -> f32 {
+    if !v.is_finite() {
+        return 1.0;
+    }
+    let v = v.clamp(MIN_BACKGROUND_OPACITY, MAX_BACKGROUND_OPACITY);
+    (v * 100.0).round() / 100.0
+}
+
+fn serialize_opacity<S>(value: &f32, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    // 用 f64 输出，避免 f32 二进制尾数被 TOML 序列化成 0.330000013...。
+    let rounded = (clamp_opacity(*value) as f64 * 100.0).round() / 100.0;
+    serializer.serialize_f64(rounded)
+}
+
+/// 手写 TOML 可能把 `background_opacity` 写成整数（如 `= 1`），两种都接受。
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum OpacityValue {
+    Float(f64),
+    Int(i64),
+}
+
+fn deserialize_opacity<'de, D>(deserializer: D) -> Result<f32, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = OpacityValue::deserialize(deserializer)?;
+    let value = match value {
+        OpacityValue::Float(v) => v as f32,
+        OpacityValue::Int(v) => v as f32,
+    };
+    Ok(clamp_opacity(value))
+}
+
+/// 展开 `~` / `~/...`；`~user` 不查 passwd，保持原样。
+pub fn expand_tilde_with_home(input: &str, home: &Path) -> PathBuf {
+    let input = input.trim();
+    if input == "~" {
+        return home.to_path_buf();
+    }
+    if let Some(rest) = input.strip_prefix("~/") {
+        return home.join(rest);
+    }
+    PathBuf::from(input)
+}
+
+/// 用 `$HOME` 展开 `~`；HOME 缺失时按当前目录处理。
+pub fn expand_tilde(input: &str) -> PathBuf {
+    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+    expand_tilde_with_home(input, &home)
+}
+
+/// 校验设置里的背景图路径：空 → `None`（关闭）；否则展开 `~` 后必须是
+/// **存在的普通文件**。目录、缺失文件、权限问题都返回可展示的错误文本。
+pub fn resolve_background_image(input: &str) -> Result<Option<PathBuf>, String> {
+    let input = input.trim();
+    if input.is_empty() {
+        return Ok(None);
+    }
+    let path = expand_tilde(input);
+    match std::fs::metadata(&path) {
+        Ok(meta) if meta.is_file() => Ok(Some(path)),
+        Ok(_) => Err(format!("不是普通文件：{}", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            Err(format!("文件不存在：{}", path.display()))
+        },
+        Err(e) => Err(format!("无法访问 {}：{e}", path.display())),
+    }
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
@@ -56,6 +135,12 @@ pub struct Config {
     pub tabbar_position: String,
     /// Tab 非活动时收到 OSC 9/777/BEL 是否调用 notify-send（默认开）。
     pub desktop_notifications: bool,
+    /// 窗口/终端背景图路径。空 = 关闭；`~` 在应用时展开。
+    /// 只有“存在的普通文件”才会生效（校验见 [`resolve_background_image`]）。
+    pub background_image: String,
+    /// 终端默认背景的不透明度（0.2–1.0，默认 1.0）。写入时四舍五入到两位小数。
+    #[serde(deserialize_with = "deserialize_opacity", serialize_with = "serialize_opacity")]
+    pub background_opacity: f32,
     // ---- Quake mode ----
     /// 启用后 F12（可配置）全局显示/隐藏下拉终端。
     pub quake_enabled: bool,
@@ -95,6 +180,8 @@ impl Default for Config {
             paste_on_middle_click: true,
             tabbar_position: "top".to_string(),
             desktop_notifications: true,
+            background_image: String::new(),
+            background_opacity: 1.0,
             quake_enabled: false,
             quake_hotkey: "F12".to_string(),
             quake_width: 0.7,
@@ -184,6 +271,8 @@ impl Config {
                 return;
             },
         };
+        // serde/toml 只保证数值精度，不保留末尾 0；这里把透明度一行固定成两位小数。
+        let text = format_opacity_line(text, self.background_opacity);
         let tmp = path.with_extension("toml.tmp");
         if let Err(e) = std::fs::write(&tmp, text) {
             eprintln!("[config] 写入 {} 失败: {e}", tmp.display());
@@ -212,6 +301,22 @@ fn backup_path(path: &Path, from: u32) -> PathBuf {
     path.with_file_name(format!("{name}.v{from}.bak"))
 }
 
+/// TOML 序列化出来的 `background_opacity` 行改成固定两位小数（如 `0.50`）。
+fn format_opacity_line(text: String, opacity: f32) -> String {
+    const KEY: &str = "background_opacity = ";
+    let formatted = format!("{KEY}{:.2}", clamp_opacity(opacity));
+    let mut out = String::with_capacity(text.len() + 1);
+    for line in text.lines() {
+        if line.starts_with(KEY) {
+            out.push_str(&formatted);
+        } else {
+            out.push_str(line);
+        }
+        out.push('\n');
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -229,6 +334,8 @@ mod tests {
             theme: "latte".into(),
             font_size: 17.0,
             default_profile_id: 42,
+            background_image: "~/wall.png".into(),
+            background_opacity: 0.55,
             ..Config::default()
         };
         let text = toml::to_string_pretty(&cfg).unwrap();
@@ -237,6 +344,8 @@ mod tests {
         assert!((back.font_size - 17.0).abs() < f32::EPSILON);
         assert_eq!(back.scrollback, cfg.scrollback);
         assert_eq!(back.default_profile_id, 42);
+        assert_eq!(back.background_image, "~/wall.png");
+        assert!((back.background_opacity - 0.55).abs() < f32::EPSILON);
         assert_eq!(back.version, SCHEMA_VERSION);
     }
 
@@ -266,8 +375,92 @@ mod tests {
         assert_eq!(cfg.default_profile_id, 0, "旧配置缺 default_profile_id 时回退系统 shell");
         // 新增的桌面通知开关对旧配置也要默认开启
         assert!(cfg.desktop_notifications, "旧配置缺 desktop_notifications 时默认开");
+        // 背景图/透明度对旧配置也必须兼容（默认关闭背景、不透明）
+        assert_eq!(cfg.background_image, "");
+        assert_eq!(cfg.background_opacity, 1.0);
         // 没有 version 的旧文件按 v0 读入
         assert_eq!(cfg.version, 0);
+    }
+
+    #[test]
+    fn background_opacity_clamps_and_rounds() {
+        assert!((clamp_opacity(0.0) - 0.2).abs() < f32::EPSILON);
+        assert!((clamp_opacity(0.199) - 0.2).abs() < f32::EPSILON);
+        assert!((clamp_opacity(0.333) - 0.33).abs() < f32::EPSILON);
+        assert!((clamp_opacity(0.999) - 1.0).abs() < f32::EPSILON);
+        assert!((clamp_opacity(1.5) - 1.0).abs() < f32::EPSILON);
+        assert!((clamp_opacity(f32::NAN) - 1.0).abs() < f32::EPSILON);
+        assert!((Config::default().background_opacity - 1.0).abs() < f32::EPSILON);
+
+        // 手写配置可超出范围 / 写成整数；读入时统一夹取、两位小数。
+        let cfg: Config = toml::from_str("version = 1\nbackground_opacity = 0.456\n").unwrap();
+        assert!((cfg.background_opacity - 0.46).abs() < 1e-6);
+        let cfg: Config = toml::from_str("version = 1\nbackground_opacity = 1\n").unwrap();
+        assert!((cfg.background_opacity - 1.0).abs() < f32::EPSILON);
+        let cfg: Config = toml::from_str("version = 1\nbackground_opacity = 0.05\n").unwrap();
+        assert!((cfg.background_opacity - 0.2).abs() < f32::EPSILON);
+        let cfg: Config = toml::from_str("version = 1\nbackground_opacity = 2.0\n").unwrap();
+        assert!((cfg.background_opacity - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn background_fields_roundtrip_and_persist_two_decimals() {
+        let dir = tmpdir("bg-roundtrip");
+        let path = dir.join("config.toml");
+        let cfg = Config {
+            background_image: "~/Pictures/wall.png".into(),
+            background_opacity: 0.333,
+            ..Config::default()
+        };
+        cfg.save_to(&path);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("background_image = \"~/Pictures/wall.png\""), "{text}");
+        assert!(text.contains("background_opacity = 0.33"), "{text}");
+        let back = Config::load_from(&path);
+        assert_eq!(back.background_image, "~/Pictures/wall.png");
+        assert!((back.background_opacity - 0.33).abs() < 1e-6);
+
+        // 末尾 0 也要保留：0.5 → "0.50"。
+        let path2 = dir.join("config2.toml");
+        Config { background_opacity: 0.5, ..Config::default() }.save_to(&path2);
+        let text2 = std::fs::read_to_string(&path2).unwrap();
+        assert!(text2.contains("background_opacity = 0.50"), "{text2}");
+        let back2 = Config::load_from(&path2);
+        assert!((back2.background_opacity - 0.5).abs() < f32::EPSILON);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn background_path_requires_existing_regular_file() {
+        let dir = tmpdir("bg-path");
+        let file = dir.join("wall.png");
+        std::fs::write(&file, b"not-really-a-png").unwrap();
+
+        assert_eq!(resolve_background_image("").unwrap(), None);
+        assert_eq!(resolve_background_image("   ").unwrap(), None);
+        assert_eq!(resolve_background_image(file.to_str().unwrap()).unwrap(), Some(file.clone()));
+        let err = resolve_background_image(dir.to_str().unwrap()).unwrap_err();
+        assert!(err.contains("不是普通文件"), "{err}");
+        let missing = dir.join("missing.png");
+        let err = resolve_background_image(missing.to_str().unwrap()).unwrap_err();
+        assert!(err.contains("不存在"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn tilde_expands_only_home_prefix() {
+        let home = Path::new("/home/tester");
+        assert_eq!(
+            expand_tilde_with_home("~/Pictures/wall.png", home),
+            home.join("Pictures/wall.png")
+        );
+        assert_eq!(expand_tilde_with_home("~", home), home.to_path_buf());
+        assert_eq!(
+            expand_tilde_with_home("~other/wall.png", home),
+            PathBuf::from("~other/wall.png")
+        );
+        assert_eq!(expand_tilde_with_home("/abs/wall.png", home), PathBuf::from("/abs/wall.png"));
+        assert_eq!(expand_tilde_with_home("  ~/a.png  ", home), home.join("a.png"));
     }
 
     #[test]
