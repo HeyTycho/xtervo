@@ -209,6 +209,13 @@ export component MainWindow inherits Window {
     in-out property <bool> tabmenu-open: false;
     in-out property <length> tabmenu-x: 0px;
     in-out property <length> tabmenu-y: 32px;
+    // Tab 重命名：内联输入框（Enter 提交 / Esc 取消）
+    in-out property <bool> rename-open: false;
+    in-out property <string> rename-text: "";
+    in-out property <int> rename-index: -1;
+    callback tab-rename(int);
+    callback rename-committed(int, string);
+    callback rename-cancelled();
     // 单个 Tab 的右键菜单（窗口坐标）
     in-out property <bool> tabctx-open: false;
     in-out property <length> tabctx-x: 0px;
@@ -343,6 +350,9 @@ export component MainWindow inherits Window {
                         clicked => {
                             root.tabctx-open = false;
                             root.tab-clicked(i);
+                        }
+                        double-clicked => {
+                            root.tab-rename(i);
                         }
                         pointer-event(event) => {
                             if (event.button == PointerEventButton.right && event.kind == PointerEventKind.up) {
@@ -811,6 +821,52 @@ export component MainWindow inherits Window {
             MenuRow {
                 label: "Duplicate";
                 picked => { root.tabctx-open = false; root.tab-menu-action(root.tabctx-index, 2); }
+            }
+        }
+    }
+
+    if root.rename-open : Rectangle {
+        x: 32px;
+        y: root.tabbar-height + 8px;
+        width: 260px;
+        height: 40px;
+        background: Palette.colors.raise;
+        border-radius: 6px;
+        border-width: 1px;
+        border-color: Palette.colors.accent;
+        drop-shadow-blur: 12px;
+        drop-shadow-offset-y: 4px;
+        drop-shadow-color: #000000a8;
+
+        Text {
+            x: 10px; y: 4px;
+            text: "Rename tab";
+            color: Palette.colors.muted;
+            font-size: 10px;
+        }
+
+        rename-input := TextInput {
+            x: 8px;
+            y: 16px;
+            width: parent.width - 16px;
+            height: parent.height - 20px;
+            text <=> root.rename-text;
+            single-line: true;
+            color: Palette.colors.text;
+            font-size: 13px;
+            init => { self.focus(); }
+            key-pressed(event) => {
+                if (event.text == "\u{a}" || event.text == "\u{d}") {
+                    root.rename-committed(root.rename-index, self.text);
+                    root.rename-open = false;
+                    return EventResult.accept;
+                }
+                if (event.text == "\u{1b}") {
+                    root.rename-cancelled();
+                    root.rename-open = false;
+                    return EventResult.accept;
+                }
+                EventResult.reject
             }
         }
     }

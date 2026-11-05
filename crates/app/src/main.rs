@@ -527,6 +527,24 @@ fn close_tab(index: usize) {
     with_app(|st| close_tab_inner(st, index));
 }
 
+/// 重命名输入清洗：去首尾空白、拒绝空标题、限制长度（避免把 TabBar 撑坏）。
+fn sanitize_tab_title(text: &str) -> Option<String> {
+    let t = text.trim();
+    if t.is_empty() || t.chars().count() > 120 {
+        return None;
+    }
+    Some(t.to_string())
+}
+
+fn open_rename(st: &mut AppState, index: usize) {
+    let Some(tab) = st.ws.tabs.get(index) else { return };
+    eprintln!("[ui] rename tab={index} title={:?}", tab.title);
+    st.ui.set_tabctx_open(false);
+    st.ui.set_rename_index(index as i32);
+    st.ui.set_rename_text(tab.title.as_str().into());
+    st.ui.set_rename_open(true);
+}
+
 /// 只保留指定 Tab，其它 Tab 的 PTY 全部关掉。
 fn close_other_tabs(st: &mut AppState, keep: usize) {
     if keep >= st.ws.tabs.len() {
@@ -1259,6 +1277,12 @@ fn handle_input(
         }
         return;
     }
+    // F2：重命名当前 Tab（Slint 特殊键编码见 keys.rs）
+    if text == "\u{F705}" {
+        with_app(|st| open_rename(st, st.ws.active));
+        return;
+    }
+
     // Tab 导航在任何输入状态下都生效（含搜索框开着时）
     if ctrl && !alt {
         if text == "\t" {
@@ -1895,6 +1919,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    ui.on_tab_rename(|index| {
+        with_app(|st| open_rename(st, index.max(0) as usize));
+    });
+
+    ui.on_rename_committed(|index, text| {
+        with_app(|st| {
+            let idx = index.max(0) as usize;
+            if let Some(title) = sanitize_tab_title(text.as_str()) {
+                if let Some(tab) = st.ws.tabs.get_mut(idx) {
+                    tab.title = title;
+                    eprintln!("[ws] rename tab={idx} → {:?}", tab.title);
+                }
+            }
+            st.ui.set_rename_open(false);
+            rebuild_tabs(st);
+        });
+    });
+
+    ui.on_rename_cancelled(|| {
+        with_app(|st| st.ui.set_rename_open(false));
+    });
+
     ui.on_tab_context(|index, x| {
         with_app(|st| {
             st.ui.set_tabctx_index(index);
@@ -2341,6 +2387,16 @@ mod tests {
         assert!(!is_modifier_artifact("\u{1b}", false, false, false)); // Esc
         assert!(!is_modifier_artifact("\n", true, false, false)); // Ctrl+Enter
         assert!(!is_modifier_artifact("你", false, false, false));
+    }
+
+    #[test]
+    fn tab_title_sanitizing() {
+        assert_eq!(sanitize_tab_title("  work  "), Some("work".to_string()));
+        assert_eq!(sanitize_tab_title("我的终端"), Some("我的终端".to_string()));
+        assert_eq!(sanitize_tab_title(""), None);
+        assert_eq!(sanitize_tab_title("   \t "), None);
+        assert_eq!(sanitize_tab_title(&"x".repeat(121)), None);
+        assert_eq!(sanitize_tab_title(&"x".repeat(120)), Some("x".repeat(120)));
     }
 
     #[test]
