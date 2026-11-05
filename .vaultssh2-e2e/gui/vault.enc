@@ -1,0 +1,8 @@
+TERVO-VAULT 1
+kdf=argon2id
+m=19456
+t=2
+p=1
+salt=PVJJOOVGEo/8CX+GitUlGA==
+nonce=QfBEY/GZqKa3di2r
+ciphertext=samUUw4HIpmZPLCGaqtZPUkmMXfXACnJIGdY9WXB

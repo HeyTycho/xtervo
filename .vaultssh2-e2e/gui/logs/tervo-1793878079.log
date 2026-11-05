@@ -1,0 +1,35 @@
+=== Tervo 0.1.0 started (epoch 1793878079) ===
+pid=2 args=Args { inner: ["./target/debug/tervo", "--title", "Tervo-vaultssh2-e2e", "--cols", "60", "--rows", "20", "--shell", "/bin/sh", "--", "-c", "sleep 120"] }
+DISPLAY=Some(":1")
+WAYLAND_DISPLAY=None
+XDG_SESSION_TYPE=Some("x11")
+XDG_CURRENT_DESKTOP=Some("ubuntu:GNOME")
+SLINT_BACKEND=None
+TERM=Some("dumb")
+SHELL=Some("/usr/bin/zsh")
+TERVO_CONFIG=Some("/home/yt/AIworkspace/rusttabbyterminal/.vaultssh2-e2e/gui/cfg.toml")
+TERVO_PROFILES=Some("/home/yt/AIworkspace/rusttabbyterminal/.vaultssh2-e2e/gui/profiles.toml")
+[log] 日志文件: /home/yt/AIworkspace/rusttabbyterminal/.vaultssh2-e2e/gui/logs/tervo-1793878079.log
+[render] 未检测到 /dev/dri，自动使用 winit-software 后端
+[plugin] 发现 0 个插件（0 个可执行包），注册 0 条命令，跳过 0
+[quake] F12 已被其他程序占用（X11 grab 失败）
+[plugin] 设置页 0 个插件，0 个启用，0 条命令，跳过 0
+[ui] 启动 tabbar_position=top
+[ws] new tab: tabs=1
+[ui] 警告：另一个可见的 Tervo 窗口 0x6e00005（pid=1321397）2560x1413 at 0,27，可能挡住点击
+[icon] 写入窗口 0x9000003，4098 个 CARDINAL
+[ui] _NET_WM_ICON 已设置 (win=0x9000003)
+[ui] settings open=true
+[ui] settings category=6
+[vault] 初始化完成
+[ui] settings open=false
+[ui] profile menu profiles=1
+[profile] panel items=1
+[profile] 编辑表单 id=1 name="vaultssh" kind=ssh
+[profile] 保存 id=1 kind=ssh（共 1）
+[profile] panel closed
+[ui] settings open=true
+[ui] settings category=3
+[ui] open config folder /home/yt/AIworkspace/rusttabbyterminal/.vaultssh2-e2e/gui
+[ui] settings category=4
+[ui] settings open=false
