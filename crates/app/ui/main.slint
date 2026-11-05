@@ -530,6 +530,11 @@ export component MainWindow inherits Window {
     in-out property <string> sftp-target: "";
     in-out property <int> sftp-selected: -1;
     in-out property <string> sftp-status: "";
+    // 传输进行中：显示当前文件 + 进度（-1 = 不确定）+ Cancel；操作按钮暂时禁用。
+    in-out property <bool> sftp-transfer-active: false;
+    in property <string> sftp-transfer-name: "";
+    in property <int> sftp-transfer-percent: -1;
+    in property <string> sftp-transfer-detail: "";
     callback sftp-list();
     callback sftp-pick(int);
     callback sftp-download();
@@ -537,6 +542,7 @@ export component MainWindow inherits Window {
     callback sftp-mkdir();
     callback sftp-rename();
     callback sftp-delete();
+    callback sftp-cancel();
     callback sftp-close();
     // Port Forwards 面板
     in-out property <bool> fwd-open: false;
@@ -2079,8 +2085,10 @@ export component MainWindow inherits Window {
         TouchArea {
             pointer-event(event) => {
                 if (event.kind == PointerEventKind.down) {
-                    root.sftp-open = false;
-                    root.sftp-close();
+                    if (!root.sftp-transfer-active) {
+                        root.sftp-open = false;
+                        root.sftp-close();
+                    }
                     return EventResult.accept;
                 }
                 EventResult.reject
@@ -2090,9 +2098,9 @@ export component MainWindow inherits Window {
 
     if root.sftp-open : Rectangle {
         x: (root.width - 460px) / 2;
-        y: (root.height - 460px) / 2;
+        y: (root.height - 490px) / 2;
         width: 460px;
-        height: 460px;
+        height: 490px;
         background: Palette.colors.raise;
         border-radius: 10px;
         border-width: 1px;
@@ -2108,7 +2116,8 @@ export component MainWindow inherits Window {
             height: 100%;
             pointer-event(event) => {
                 if (event.kind == PointerEventKind.down
-                    && event.button == PointerEventButton.right) {
+                    && event.button == PointerEventButton.right
+                    && !root.sftp-transfer-active) {
                     root.sftp-open = false; root.sftp-close();
                 }
                 EventResult.accept
@@ -2311,6 +2320,78 @@ export component MainWindow inherits Window {
                 vertical-alignment: center;
                 width: 100%;
                 height: 100%;
+            }
+        }
+
+        // 传输进行中：挡住面板内所有旧操作，只留下面的 Cancel。
+        // （取消/关闭由 Rust 侧再次校验，这里只是 UI 层防误触。）
+        if root.sftp-transfer-active : Rectangle {
+            width: 100%;
+            height: 100%;
+            background: #00000018;
+            TouchArea {
+                pointer-event(event) => { EventResult.accept }
+            }
+        }
+
+        // 传输进度：当前文件 + 百分比/不确定进度 + Cancel。
+        if root.sftp-transfer-active : Rectangle {
+            x: 16px; y: 430px; width: 428px; height: 44px;
+
+            Text {
+                x: 0; y: 0; width: 240px; height: 24px;
+                text: root.sftp-transfer-name;
+                color: Palette.colors.text;
+                font-size: 12px;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+
+            Text {
+                x: 244px; y: 0; width: 104px; height: 24px;
+                text: root.sftp-transfer-detail;
+                color: Palette.colors.muted;
+                font-size: 10px;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+
+            Rectangle {
+                x: 356px; y: 0; width: 72px; height: 24px; border-radius: 5px;
+                background: sftp-cancel-hit.has-hover ? Palette.colors.danger : Palette.colors.raise;
+                border-width: 1px;
+                border-color: Palette.colors.border;
+                sftp-cancel-hit := TouchArea { clicked => { root.sftp-cancel(); } }
+                Text {
+                    text: "Cancel";
+                    color: sftp-cancel-hit.has-hover ? Palette.colors.bg : Palette.colors.danger;
+                    font-size: 11px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    width: 100%;
+                    height: 100%;
+                }
+            }
+
+            Rectangle {
+                x: 0; y: 30px; width: 428px; height: 8px;
+                background: Palette.colors.bg;
+                border-radius: 4px;
+                border-width: 1px;
+                border-color: Palette.colors.border;
+
+                Rectangle {
+                    x: 1px; y: 1px;
+                    height: parent.height - 2px;
+                    width: root.sftp-transfer-percent < 0
+                        ? (parent.width - 2px) * 25 / 100
+                        : (parent.width - 2px) * root.sftp-transfer-percent / 100;
+                    background: root.sftp-transfer-percent < 0
+                        ? Palette.colors.muted
+                        : Palette.colors.accent;
+                    border-radius: 3px;
+                }
             }
         }
     }
