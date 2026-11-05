@@ -174,8 +174,8 @@
 |---|---|---|---|---|---|---|---|
 | UI-SSH-001 | SSH Profile 编辑窗口分组清晰、密码/密钥安全提示 | U-AUDIT / 需求 B8 | Profile 表单 SSH 分组：Host/Port/User/Auth/Key/Extra；`ssh_command()` 用系统 ssh 客户端跑在 PTY；密码认证仅存 `auth=password`（Vault 未实现） | partial | 单测 `ssh_command_builds_openssh_args`；端到端：paramiko 服务端 + key 认证 → 面板点开后终端显示 `PARAMIKO-SSH-OK` 与远端提示符（.logs/ssh-e2e2.png） | SSH 连接（key/agent）可用 | 无内建 known_hosts 管理（依赖系统 ssh）；密码认证未接 Vault；原生 russh 引擎未做；未做跳板机/端口转发设置 |
 | UI-SSH-002 | 首次主机密钥确认、变更告警、known_hosts 管理入口 | U-AUDIT / 需求 B8 | 交给系统 ssh：主机密钥确认/告警直接显示在终端里；Extra 参数可传 UserKnownHostsFile | partial | 端到端走 `-o StrictHostKeyChecking=yes` + 自定义 known_hosts 成功连接 | 借用系统 ssh 的完整校验流程 | 无应用内 known_hosts 管理 UI；无密钥变更专门告警面板 |
-| UI-SSH-003 | SFTP 面板/Tab：目录导航、上级、刷新、路径输入、列表、属性 | U-AUDIT / 需求 B8 | 无实现 | not_started | 无 | 未实现 | 无 SFTP 传输层/UI |
-| UI-SSH-004 | SFTP 上传/下载/建目录/重命名/删除；危险确认 | U-AUDIT / 需求 B8 | 无实现 | not_started | 无 | 未实现 | 无 SFTP 操作 |
+| UI-SSH-003 | SFTP 面板/Tab：目录导航、上级、刷新、路径输入、列表、属性 | U-AUDIT / 需求 B8 | `sftp.rs` 命令层：系统 `sftp -q -b -` + `ls -1`；`--sftp-probe list` 内部探针 | partial | 单测（参数/解析/校验）+ 端到端：`scripts/ssh_test_server.py`（含 SFTP）→ 探针 list 返回 `/probe.txt` | 远端列目录可用（命令层） | 无面板 UI/导航/属性列；无进度；未接应用到菜单 |
+| UI-SSH-004 | SFTP 上传/下载/建目录/重命名/删除；危险确认 | U-AUDIT / 需求 B8 | `sftp.rs` `download()`/`upload()`（`get`/`put` batch）；探针 `--sftp-probe get/put` | partial | 端到端：探针 get 得到 `script-sftp-ok`；put 后远端文件出现（另一轮 git 内实测） | 上传/下载命令层可用 | 无 UI/进度/取消/危险确认；mkdir/rename/rm 未封装 |
 | UI-SSH-005 | 传输进度、速度、已传/总大小、取消、失败重试 | U-AUDIT / 需求 B8 | 无实现 | not_started | 无 | 未实现 | 无传输任务模型/进度 UI |
 | UI-SSH-006 | Port Forward 管理：查看/添加/启停/删除，显示监听与目标 | U-AUDIT / 需求 B8 | Profile `local_forwards` → `ssh -L`；表单 Forwards 行；转发由 ssh 子进程持有（关 Tab 即停） | partial | 单测 `ssh_forwards_become_dash_l_args`；**端到端**：`scripts/ssh_test_server.py`（paramiko，含 direct-tcpip）→ `ss` 显示 19000 监听，`printf ping \| socat TCP:127.0.0.1:19000` 收到 `ECHO:ping` | 本地转发可用且验证通过 | 无应用内管理面板（增删改查/启停/监听与目标展示）；仅 local 转发（-L），无 -R/-D |
 | UI-SSH-007 | Jump Host 配置入口与链路可视化/可读描述 | U-AUDIT / 需求 B8 | 无实现 | not_started | 无 | 未实现 | 无跳板机 |
