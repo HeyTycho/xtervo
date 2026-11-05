@@ -797,7 +797,7 @@ export component MainWindow inherits Window {
         x: Math.max(0px, Math.min(root.tabctx-x, root.width - 180px));
         y: root.tabbar-height;
         width: 170px;
-        height: 96px;
+        height: 126px;
         background: Palette.colors.raise;
         border-radius: 8px;
         border-width: 1px;
@@ -821,6 +821,10 @@ export component MainWindow inherits Window {
             MenuRow {
                 label: "Duplicate";
                 picked => { root.tabctx-open = false; root.tab-menu-action(root.tabctx-index, 2); }
+            }
+            MenuRow {
+                label: "Rename";
+                picked => { root.tabctx-open = false; root.tab-menu-action(root.tabctx-index, 3); }
             }
         }
     }
