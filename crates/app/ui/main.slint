@@ -276,6 +276,12 @@ export component MainWindow inherits Window {
     callback paste-always();
     callback paste-cancel();
     callback settings-toggled(bool);
+    // Profiles（连接配置）
+    in-out property <bool> profiles-open: false;
+    in property <[string]> profile-items: [];
+    callback profile-open(int);
+    callback profile-save-current();
+    callback profiles-close();
     // 后台会话列表
     in-out property <bool> bg-open: false;
     in property <[string]> background-items: [];
@@ -400,7 +406,7 @@ export component MainWindow inherits Window {
                             root.tabbar-context(
                                 title-hit.mouse-x,
                                 // 菜单贴在 TabBar 所在的那一侧
-                                root.tabbar-bottom ? root.height - root.tabbar-height - 246px : root.tabbar-height,
+                                root.tabbar-bottom ? root.height - root.tabbar-height - 276px : root.tabbar-height,
                             );
                             return EventResult.accept;
                         }
@@ -416,8 +422,8 @@ export component MainWindow inherits Window {
                 width: parent.width - 140px;
                 height: parent.height;
                 interactive: false;
-                viewport-width: tab-strip.preferred-width;
-                viewport-height: parent.height;
+                content-width: tab-strip.preferred-width;
+                content-height: parent.height;
 
                 tab-strip := HorizontalLayout {
                 padding-left: 32px;
@@ -908,7 +914,7 @@ export component MainWindow inherits Window {
         x: Math.min(root.tabmenu-x, root.width - 180px);
         y: root.tabmenu-y;
         width: 170px;
-        height: 276px;
+        height: 306px;
         background: Palette.colors.raise;
         border-radius: 8px;
         border-width: 1px;
@@ -951,6 +957,10 @@ export component MainWindow inherits Window {
                 picked => { root.tabmenu-open = false; root.tabbar-menu-action(8); }
             }
             MenuRow {
+                label: "Profiles";
+                picked => { root.tabmenu-open = false; root.tabbar-menu-action(9); }
+            }
+            MenuRow {
                 label: "Close Window";
                 picked => { root.tabmenu-open = false; root.tabbar-menu-action(3); }
             }
@@ -990,6 +1000,110 @@ export component MainWindow inherits Window {
             MenuRow {
                 label: "Rename";
                 picked => { root.tabctx-open = false; root.tab-menu-action(root.tabctx-index, 3); }
+            }
+        }
+    }
+
+    if root.profiles-open : Rectangle {
+        x: (root.width - 420px) / 2;
+        y: (root.height - 320px) / 2;
+        width: 420px;
+        height: 320px;
+        background: Palette.colors.raise;
+        border-radius: 10px;
+        border-width: 1px;
+        border-color: Palette.colors.border;
+        drop-shadow-blur: 24px;
+        drop-shadow-offset-y: 8px;
+        drop-shadow-color: #000000c0;
+
+        VerticalLayout {
+            padding: 16px;
+            spacing: 10px;
+
+            Text {
+                text: "Profiles";
+                color: Palette.colors.text;
+                font-size: 15px;
+                font-weight: 600;
+            }
+
+            Rectangle {
+                height: 1px;
+                horizontal-stretch: 1;
+                background: Palette.colors.border;
+            }
+
+            for item[i] in root.profile-items : Rectangle {
+                height: 30px;
+                border-radius: 4px;
+                background: prof-hit.has-hover ? Palette.colors.hover : transparent;
+
+                Text {
+                    x: 8px;
+                    width: parent.width - 16px;
+                    text: item;
+                    color: Palette.colors.text;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+
+                prof-hit := TouchArea {
+                    clicked => { root.profile-open(i); }
+                }
+            }
+
+            Text {
+                text: root.profile-items.length == 0
+                    ? "No profiles yet — use \"Save Current Pane\" to create one"
+                    : "Click a profile to open it in a new tab";
+                color: Palette.colors.muted;
+                font-size: 11px;
+                wrap: word-wrap;
+            }
+
+            HorizontalLayout {
+                alignment: end;
+                spacing: 8px;
+
+                Rectangle {
+                    width: 140px; height: 28px; border-radius: 6px;
+                    background: prof-save-hit.has-hover ? Palette.colors.hover : Palette.colors.raise;
+                    border-width: 1px;
+                    border-color: Palette.colors.border;
+                    prof-save-hit := TouchArea {
+                        clicked => { root.profile-save-current(); }
+                    }
+                    Text {
+                        text: "Save Current Pane";
+                        color: Palette.colors.text;
+                        font-size: 12px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        width: 100%;
+                        height: 100%;
+                    }
+                }
+
+                Rectangle {
+                    width: 80px; height: 28px; border-radius: 6px;
+                    background: prof-close-hit.has-hover ? Palette.colors.hover : Palette.colors.raise;
+                    border-width: 1px;
+                    border-color: Palette.colors.border;
+                    prof-close-hit := TouchArea {
+                        clicked => { root.profiles-open = false; root.profiles-close(); }
+                    }
+                    Text {
+                        text: "Close";
+                        color: Palette.colors.text;
+                        font-size: 12px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        width: 100%;
+                        height: 100%;
+                    }
+                }
             }
         }
     }

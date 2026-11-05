@@ -3,6 +3,7 @@ mod config;
 mod glyph;
 mod keys;
 mod latency;
+mod profile;
 mod render;
 mod session;
 mod themes;
@@ -112,6 +113,8 @@ struct AppState {
     /// 后台会话：关 Tab/Pane 时按配置保留的运行时（不 drop，子进程继续跑）
     detached: Vec<(PaneId, PaneRuntime, String)>,
     bg_model: Rc<VecModel<slint::SharedString>>,
+    profiles: profile::ProfileStore,
+    profile_model: Rc<VecModel<slint::SharedString>>,
     /// 1003 悬停上报的上一格（按格去重，避免鼠标移动刷爆有界 ctrl 队列）。
     hover_cell: Option<(PaneId, (u16, u16))>,
     resize: Option<WindowResize>,
@@ -449,16 +452,28 @@ fn create_pane(
     cols: usize,
     rows: usize,
     cwd: Option<PathBuf>,
+    profile: Option<&profile::Profile>,
 ) -> std::io::Result<PaneRuntime> {
+    // Profile 优先：它显式带 shell/args/env；否则沿用全局配置。
+    let shell = profile
+        .map(|p| p.shell.clone())
+        .filter(|s| !s.is_empty())
+        .or_else(|| st.cfg.shell.clone());
+    let args = profile.map(|p| p.args.clone()).unwrap_or_else(|| st.opts.args.clone());
+    let env = profile.map(|p| p.env.clone()).unwrap_or_default();
+    let cwd = profile
+        .and_then(|p| p.cwd.clone())
+        .map(PathBuf::from)
+        .or(cwd);
     let handle = spawn(PaneConfig {
         cols: cols as u16,
         rows: rows as u16,
         scrollback: st.cfg.scrollback,
-        shell: st.cfg.shell.clone(),
-        args: st.opts.args.clone(),
+        shell,
+        args,
         palette: st.resolved_theme.palette(),
         cwd,
-        env: Vec::new(),
+        env,
     })?;
 
     let wake = handle.wake_receiver();
@@ -498,7 +513,7 @@ fn create_pane(
 fn new_tab_inner(st: &mut AppState) {
     let id = st.ws.alloc_id();
     let (cols, rows) = cell_of(st.content, st.cell);
-    match create_pane(st, id, cols, rows, None) {
+    match create_pane(st, id, cols, rows, None, None) {
         Ok(rt) => {
             st.next_title += 1;
             let n = st.next_title;
@@ -532,6 +547,73 @@ fn refresh_background(st: &mut AppState) {
     let items: Vec<slint::SharedString> =
         st.detached.iter().map(|(id, _, title)| format!("{title}   #{id}").into()).collect();
     st.bg_model.set_vec(items);
+}
+
+fn refresh_profiles(st: &mut AppState) {
+    let items: Vec<slint::SharedString> =
+        st.profiles.profiles.iter().map(|p| p.name.as_str().into()).collect();
+    st.profile_model.set_vec(items);
+}
+
+fn open_profiles_panel(st: &mut AppState) {
+    refresh_profiles(st);
+    st.ui.set_profiles_open(true);
+    eprintln!("[profile] panel items={}", st.profiles.profiles.len());
+}
+
+/// 用 Profile 打开新 Tab（shell/args/env/cwd 全按 Profile）。
+fn open_profile_tab(st: &mut AppState, index: usize) {
+    let Some(p) = st.profiles.profiles.get(index).cloned() else { return };
+    let id = st.ws.alloc_id();
+    let (cols, rows) = cell_of(st.content, st.cell);
+    match create_pane(st, id, cols, rows, None, Some(&p)) {
+        Ok(rt) => {
+            st.panes.insert(id, rt);
+            st.ws.tabs.push(Tab::single(id, p.name.clone()));
+            st.ws.active = st.ws.tabs.len() - 1;
+            refresh_views(st);
+            rebuild_tabs(st);
+            redraw_pane_inner(st, id);
+            eprintln!("[profile] open {:?} (shell={:?} cwd={:?})", p.name, p.shell, p.cwd);
+        },
+        Err(e) => eprintln!("[profile] 打开 {:?} 失败: {e}", p.name),
+    }
+}
+
+/// 把当前聚焦 pane 的 cwd 存成一个 Local Profile（先给个不冲突的名字）。
+fn save_current_profile(st: &mut AppState) {
+    let cwd = st
+        .ws
+        .active_tab()
+        .map(|t| t.focused)
+        .and_then(|id| st.panes.get(&id))
+        .and_then(|rt| rt.handle.pid())
+        .and_then(session::cwd_of);
+    let base = cwd
+        .as_deref()
+        .and_then(|p| std::path::Path::new(p).file_name().map(|n| n.to_string_lossy().to_string()))
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| "profile".to_string());
+    let mut name = base.clone();
+    let mut n = 2;
+    while st.profiles.profiles.iter().any(|p| p.name == name) {
+        name = format!("{base}-{n}");
+        n += 1;
+    }
+    let p = profile::Profile {
+        name,
+        shell: st.cfg.shell.clone().unwrap_or_default(),
+        cwd,
+        ..profile::Profile::default()
+    };
+    match st.profiles.add(p) {
+        Ok(id) => {
+            st.profiles.save();
+            refresh_profiles(st);
+            eprintln!("[profile] 保存 id={id}（共 {} 个）", st.profiles.profiles.len());
+        },
+        Err(e) => eprintln!("[profile] 保存失败: {e}"),
+    }
 }
 
 fn open_background_panel(st: &mut AppState) {
@@ -656,7 +738,7 @@ fn duplicate_tab(st: &mut AppState, index: usize) {
 
     let mut created = Vec::with_capacity(new_ids.len());
     for (i, cwd) in leaf_cwds.iter().enumerate() {
-        match create_pane(st, new_ids[i], cols, rows, cwd.as_ref().map(PathBuf::from)) {
+        match create_pane(st, new_ids[i], cols, rows, cwd.as_ref().map(PathBuf::from), None) {
             Ok(rt) => {
                 st.panes.insert(new_ids[i], rt);
                 created.push(new_ids[i]);
@@ -860,7 +942,7 @@ fn restore_session(st: &mut AppState) -> bool {
         };
         let mut created = 0;
         for (i, cwd) in cwds.iter().enumerate() {
-            match create_pane(st, ids[i], cols, rows, cwd.as_ref().map(PathBuf::from)) {
+            match create_pane(st, ids[i], cols, rows, cwd.as_ref().map(PathBuf::from), None) {
                 Ok(rt) => {
                     st.panes.insert(ids[i], rt);
                     created += 1;
@@ -909,7 +991,7 @@ fn split_pane_inner(st: &mut AppState, id: PaneId, dir: Dir) {
         Dir::Col => (cols, (rows / 2).max(3)),
     };
     let new_id = st.ws.alloc_id();
-    match create_pane(st, new_id, guess.0, guess.1, None) {
+    match create_pane(st, new_id, guess.0, guess.1, None, None) {
         Ok(rt) => {
             st.panes.insert(new_id, rt);
             st.ws.tabs[tab_index].split(id, dir, new_id);
@@ -1847,6 +1929,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui.set_palette_items(ModelRc::from(palette_model.clone()));
     let bg_model = Rc::new(VecModel::<slint::SharedString>::default());
     ui.set_background_items(ModelRc::from(bg_model.clone()));
+    let profile_model = Rc::new(VecModel::<slint::SharedString>::default());
+    ui.set_profile_items(ModelRc::from(profile_model.clone()));
     let state = Rc::new(RefCell::new(AppState {
         ui: ui.clone_strong(),
         ws: Workspace::new(),
@@ -1875,6 +1959,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         pending_paste: None,
         detached: Vec::new(),
         bg_model,
+        profiles: profile::ProfileStore::load(),
+        profile_model,
         hover_cell: None,
         resize: None,
         xresize: None,
@@ -2255,6 +2341,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         with_app(|st| st.ui.set_rename_open(false));
     });
 
+    ui.on_profile_open(|index| {
+        with_app(|st| open_profile_tab(st, index.max(0) as usize));
+    });
+
+    ui.on_profile_save_current(|| {
+        with_app(|st| save_current_profile(st));
+    });
+
+    ui.on_profiles_close(|| {});
+
     ui.on_bg_reattach(|index| {
         with_app(|st| reattach_background(st, index.max(0) as usize));
     });
@@ -2422,6 +2518,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             5 => open_palette(st),
             7 => reattach_last_background(st),
             8 => open_background_panel(st),
+            9 => open_profiles_panel(st),
             6 => {
                 st.cfg.tabbar_position =
                     if st.cfg.tabbar_position == "bottom" { "top".into() } else { "bottom".into() };

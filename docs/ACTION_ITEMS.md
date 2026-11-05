@@ -56,7 +56,7 @@
 | ID | 标题 | 为什么现在做 | 涉及文件 | 验收标准（可测） | 预估 |
 |---|---|---|---|---|---|
 | ACT-018 | Sidebar/Toolbar/Connection Manager/Profile Selector 壳 | B4/B5 入口；UI 壳先于 SSH | `main.slint`、`main.rs`、新 UI 模型 | Sidebar 显隐/宽度；Toolbar 按钮（真实动作或 disabled+原因）；Connection Manager 入口；Profile Selector 新 Tab 下拉；人工 | L |
-| ACT-019 | Profile 模型与存储 | B5/C8；SSH/Serial/Telnet 前置 | 新 `profile.rs`、`config.rs`、`session.rs` | Profile schema（type/name/params/group/hotkey/default）；增删改查/复制/分组/排序；迁移/校验；单测 | M |
+| ACT-019 ◐（Local Profile 模型/存储/面板已通；编辑表单与类型扩展待做） | Profile 模型与存储 | B5/C8；SSH/Serial/Telnet 前置 | 新 `profile.rs`、`config.rs`、`session.rs` | Profile schema（type/name/params/group/hotkey/default）；增删改查/复制/分组/排序；迁移/校验；单测 | M |
 | ACT-020 | Profile 编辑 UI（动态表单） | B5-010..013；没有 UI 的 Profile 不可用 | `main.slint`、`main.rs`、`profile.rs` | 按类型显示字段；Local shell cwd/env/args/title；SSH General/Ports/Advanced/Ciphers/Login Scripts；Serial 参数；保存/取消/错误提示；人工 | L |
 | ACT-021 | 多窗口 + Tab 跨窗口移动 | B1-009/B2-004；单窗口限制工作流 | `main.rs`、`main.slint`、`workspace.rs` | New Window；Tab 拖出成新窗口；窗口间移动；关闭一个窗口不影响另一个；人工+单测 | L |
 
