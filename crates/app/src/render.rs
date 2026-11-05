@@ -29,10 +29,17 @@ pub fn background_alpha(opacity: f32) -> u32 {
     (opacity * 255.0).round().clamp(0.0, 255.0) as u32
 }
 
-/// 终端默认背景像素：主题 RGB 保持不变，只替换 alpha。
+/// 终端默认背景像素：按 Slint 的 **premultiplied alpha** 约定同时缩放 RGB 与 alpha。
+/// 只改 alpha 会让 RGB 在混合时被额外叠加，背景图会变亮/发白。
 #[inline]
 fn default_background(theme_bg: u32, opacity: f32) -> u32 {
-    (pack(theme_bg) & 0x00ff_ffff) | background_alpha(opacity) << 24
+    let a = background_alpha(opacity);
+    let rgb = pack(theme_bg) & 0x00ff_ffff;
+    let scale = |shift: u32| {
+        let c = (rgb >> shift) & 0xff;
+        ((c * a + 127) / 255) & 0xff
+    };
+    scale(0) | scale(8) << 8 | scale(16) << 16 | a << 24
 }
 
 /// 只比较 RGB：默认背景带 opacity alpha，而 cell.bg 是不透明的主题色，
@@ -83,6 +90,8 @@ pub struct Renderer {
     fonts: Rc<FontSet>,
     glyphs: GlyphCache,
     default_bg: u32,
+    /// 主题原始背景（不透明），用于判断 cell 是否使用默认背景。
+    theme_bg: u32,
     /// 当前终端背景不透明度（0.2–1.0），只影响默认背景像素 alpha。
     opacity: f32,
     cursor_color: u32,
@@ -122,6 +131,7 @@ impl Renderer {
             fonts,
             glyphs: GlyphCache::default(),
             default_bg,
+            theme_bg: pack(theme_bg),
             opacity,
             cursor_color: pack(cursor_color),
             force_full: true,
@@ -136,6 +146,7 @@ impl Renderer {
 
     /// 切换主题：更新默认背景与光标色，下一帧整屏重绘。
     pub fn set_theme(&mut self, theme_bg: u32, cursor_color: u32) {
+        self.theme_bg = pack(theme_bg);
         self.default_bg = default_background(theme_bg, self.opacity);
         self.cursor_color = pack(cursor_color);
         self.pixels.fill(self.default_bg);
@@ -148,7 +159,7 @@ impl Renderer {
     pub fn set_opacity(&mut self, opacity: f32) {
         let opacity = if opacity.is_finite() { opacity.clamp(0.2, 1.0) } else { 1.0 };
         self.opacity = opacity;
-        self.default_bg = (self.default_bg & 0x00ff_ffff) | background_alpha(opacity) << 24;
+        self.default_bg = default_background(self.theme_bg, opacity);
         self.pixels.fill(self.default_bg);
         self.force_full = true;
         self.last_selection = None;
@@ -271,7 +282,7 @@ impl Renderer {
                 fg = pack(0x11111b);
             }
             let x0 = col * self.cell_w;
-            if !same_rgb(bg, self.default_bg) {
+            if !same_rgb(bg, self.theme_bg) {
                 self.fill_rect(x0, y0, cell_px, self.cell_h, bg);
             }
             if cell.has(flags::HIDDEN) {
@@ -455,10 +466,10 @@ mod tests {
         let theme_bg = 0x0012_3456;
         let px = default_background(theme_bg, 0.5);
         // 像素是内存序 RGBA（LE），低 24 位与 pack 的 RGB 布局一致。
-        assert_eq!(px & 0x00ff_ffff, pack(theme_bg) & 0x00ff_ffff, "默认背景 RGB 必须保持主题色");
         assert_eq!(px >> 24, 128);
+        assert_eq!(px & 0x00ff_ffff, 0x002b_1a09, "默认背景 RGB 必须按 alpha 预乘");
         assert_eq!(default_background(theme_bg, 1.0) >> 24, 255);
-        assert_eq!(default_background(0x00ff_ffff, 0.5) & 0x00ff_ffff, 0x00ff_ffff);
+        assert_eq!(default_background(0x00ff_ffff, 1.0) & 0x00ff_ffff, 0x00ff_ffff);
     }
 
     #[test]
@@ -473,11 +484,13 @@ mod tests {
         frame.cells[4].bg = 0x0011_2233;
         renderer.draw(&frame);
 
-        assert_eq!(renderer.pixels[0] >> 24, 128, "默认背景应带 50% alpha");
+        // 取不在光标 (0,0) 上的默认背景像素。
+        let bg_idx = renderer.cell_h * renderer.width + renderer.cell_w * 3;
+        assert_eq!(renderer.pixels[bg_idx] >> 24, 128, "默认背景应带 50% alpha");
         assert_eq!(
-            renderer.pixels[0] & 0x00ff_ffff,
-            pack(theme_bg) & 0x00ff_ffff,
-            "默认背景 RGB 不应改变"
+            renderer.pixels[bg_idx] & 0x00ff_ffff,
+            default_background(theme_bg, 0.5) & 0x00ff_ffff,
+            "默认背景 RGB 应按 alpha 预乘"
         );
         // row 1 / col 0 的像素下标（像素缓冲按像素宽度索引，不是按 cell）。
         let idx = renderer.cell_h * renderer.width;
