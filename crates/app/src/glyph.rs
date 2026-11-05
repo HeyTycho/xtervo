@@ -3,6 +3,7 @@
 //! 只在下一次出现新字符时栅格化，之后每帧只做 coverage 混合。
 
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
 use fontdue::{Font, FontSettings};
 
@@ -114,10 +115,19 @@ fn load_font_at(path: &str, collection_index: u32) -> Option<Font> {
     Font::from_bytes(bytes, settings).ok()
 }
 
+/// 惰性解析的 CJK 回退字体。
+///
+/// fontdue 解析字体时会按字形建表，wqy-microhei 这类 CJK 字体要占 170 MB 左右。
+/// 只显示 ASCII 的会话根本用不到它，所以推迟到主字体首次缺字时再解析。
+struct Fallback {
+    /// 0 = Regular，1 = Bold（字体本身没粗体时复用 Regular）
+    faces: [Option<Font>; 2],
+}
+
 pub struct FontSet {
     faces: [Font; 4],
-    /// CJK 回退：0 = Regular，1 = Bold（字体本身没粗体时复用 Regular）
-    fallback: [Option<Font>; 2],
+    /// CJK 回退：首次遇到主字体缺字时才解析；失败结果也缓存，避免逐字重试。
+    fallback: OnceLock<Option<Fallback>>,
     pub size: f32,
     pub cell_w: usize,
     pub cell_h: usize,
@@ -125,8 +135,6 @@ pub struct FontSet {
     pub baseline: i32,
     #[allow(dead_code)]
     pub font_path: String,
-    #[allow(dead_code)]
-    pub fallback_path: Option<String>,
 }
 
 impl FontSet {
@@ -145,17 +153,15 @@ impl FontSet {
             let cell_h = line.new_line_size.round().max(1.0) as usize + 2;
             let baseline = line.ascent.round() as i32 + 1;
 
-            let (fallback, fallback_path) = load_fallback();
-
+            // 回退字体按需加载：这里不解析 CJK 字体，只显示 ASCII 的会话省下约 170 MB。
             return Some(Self {
                 faces: [regular, bold, italic, bold_italic],
-                fallback,
+                fallback: OnceLock::new(),
                 size,
                 cell_w,
                 cell_h,
                 baseline,
                 font_path: cand.regular.to_string(),
-                fallback_path,
             });
         }
         None
@@ -167,15 +173,25 @@ impl FontSet {
         &self.faces[style.idx()]
     }
 
+    /// 取回退字体；第一次调用时才真正解析，失败结果同样缓存。
+    #[inline]
+    fn fallback(&self) -> &Option<Fallback> {
+        self.fallback.get_or_init(load_fallback)
+    }
+
     /// 优先主字体；主字体缺字（典型：中文）时退到 CJK 字体。
     pub fn face_for(&self, ch: char, style: Style) -> &Font {
         let primary = &self.faces[style.idx()];
         if primary.has_glyph(ch) {
             return primary;
         }
+        // 走到这里说明主字体确实缺字，此时才值得付出回退字体的解析开销。
+        let loaded = self.fallback();
         let slot = usize::from(matches!(style, Style::Bold | Style::BoldItalic));
         // 回退字体没有粗体（例如 Micro Hei）时用常规体顶替，绝不能退回主字体画 tofu。
-        let fallback = self.fallback[slot].as_ref().or(self.fallback[0].as_ref());
+        let fallback = loaded
+            .as_ref()
+            .and_then(|fb| fb.faces[slot].as_ref().or(fb.faces[0].as_ref()));
         match fallback {
             Some(f) if f.has_glyph(ch) => f,
             _ => primary,
@@ -184,12 +200,17 @@ impl FontSet {
 
     /// 主字体 + 回退字体里是否有该字符（用于跳过 emoji 等完全缺失的字形）。
     pub fn has_glyph(&self, ch: char) -> bool {
-        self.faces.iter().any(|f| f.has_glyph(ch))
-            || self.fallback.iter().flatten().any(|f| f.has_glyph(ch))
+        if self.faces.iter().any(|f| f.has_glyph(ch)) {
+            return true;
+        }
+        // 只有主字体缺字（即真的需要回退）才触碰回退槽位；ASCII 会话因此完全不加载 CJK 字体。
+        self.fallback()
+            .as_ref()
+            .is_some_and(|fb| fb.faces.iter().flatten().any(|f| f.has_glyph(ch)))
     }
 }
 
-fn load_fallback() -> ([Option<Font>; 2], Option<String>) {
+fn load_fallback() -> Option<Fallback> {
     for cand in FALLBACK_SETS {
         let t = std::time::Instant::now();
         let Some(regular) = load_font_at(cand.regular, cand.regular_index) else {
@@ -207,9 +228,9 @@ fn load_fallback() -> ([Option<Font>; 2], Option<String>) {
         if std::env::var_os("RUSTTABBY_FONTLOG").is_some() {
             eprintln!("[font] 回退 {path} ({:?})", t.elapsed());
         }
-        return ([Some(regular), bold], Some(path));
+        return Some(Fallback { faces: [Some(regular), bold] });
     }
-    ([None, None], None)
+    None
 }
 
 pub struct GlyphCache {
@@ -335,5 +356,23 @@ mod tests {
         let g = cache.get(&fonts, 'M', Style::Regular).unwrap();
         // cell 宽就是按 'M' 的步进算的
         assert_eq!(g.advance as usize, fonts.cell_w);
+    }
+
+    #[test]
+    fn fallback_is_lazy() {
+        let Some(fonts) = FontSet::load(15.0) else { return };
+        // 加载主字体时不该解析 CJK 回退字体。
+        assert!(fonts.fallback.get().is_none(), "FontSet::load 不应加载回退字体");
+
+        // ASCII 的查询和栅格化只走主字体，同样不能触发回退加载。
+        assert!(fonts.has_glyph('A'));
+        let mut cache = GlyphCache::default();
+        assert!(cache.get(&fonts, 'A', Style::Regular).is_some());
+        assert!(fonts.fallback.get().is_none(), "ASCII 渲染不应触发回退加载");
+
+        // 主字体缺中文时才真正加载回退字体（若系统没有 CJK 字体则跳过）。
+        if fonts.has_glyph('你') {
+            assert!(fonts.fallback.get().is_some(), "缺字时应按需加载回退字体");
+        }
     }
 }

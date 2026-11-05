@@ -4,6 +4,7 @@
 用法：
     python3 scripts/measure_startup.py --runs 5
     python3 scripts/measure_startup.py --rss-only
+    python3 scripts/measure_startup.py --rss-only --bin target/debug/rusttabby-app
 
 冷启动定义：spawn 进程 → X11 Damage 事件首次到达（像素真的进了 X server）。
 应用内部同时打印 FIRST_DAMAGE_US（main 入口起算），两者之差就是 exec/动态链接开销。
@@ -54,12 +55,12 @@ def children_rss_kb(pid: int) -> int:
     return total
 
 
-def measure_cold_start(runs: int, env: dict, extra: list) -> dict:
+def measure_cold_start(bin_path: str, runs: int, env: dict, extra: list) -> dict:
     wall, internal = [], []
     for _ in range(runs):
         t0 = time.monotonic_ns()
         p = subprocess.Popen(
-            [BIN] + extra,
+            [bin_path] + extra,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             text=True,
@@ -87,8 +88,8 @@ def measure_cold_start(runs: int, env: dict, extra: list) -> dict:
     }
 
 
-def measure_idle(env: dict, extra: list, settle_s: float, window_s: float) -> dict:
-    p = subprocess.Popen([BIN] + extra, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
+def measure_idle(bin_path: str, env: dict, extra: list, settle_s: float, window_s: float) -> dict:
+    p = subprocess.Popen([bin_path] + extra, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
     time.sleep(settle_s)
     rss = read_vm_rss_kb(p.pid)
     kids = children_rss_kb(p.pid)
@@ -116,6 +117,7 @@ def main() -> int:
     ap.add_argument("--rows", type=int, default=32)
     ap.add_argument("--scrollback", type=int, default=2000)
     ap.add_argument("--backend", default="winit-software")
+    ap.add_argument("--bin", default=BIN)
     ap.add_argument("--rss-only", action="store_true")
     args = ap.parse_args()
 
@@ -129,8 +131,8 @@ def main() -> int:
 
     out = {"backend": args.backend, "grid": f"{args.cols}x{args.rows}"}
     if not args.rss_only:
-        out.update(measure_cold_start(args.runs, env, extra + ["--exit-after-first"]))
-    out.update(measure_idle(env, extra, 4.0, 3.0))
+        out.update(measure_cold_start(args.bin, args.runs, env, extra + ["--exit-after-first"]))
+    out.update(measure_idle(args.bin, env, extra, 4.0, 3.0))
     print(json.dumps(out, ensure_ascii=False))
     return 0
 
