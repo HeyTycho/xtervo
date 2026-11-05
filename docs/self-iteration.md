@@ -727,3 +727,63 @@ cargo bench -p tervo-core --bench pty_throughput
   `ssh-keygen` 不在 PATH 时保守返回 false。若 Profile Host 与 known_hosts 键完全一致
   （如 `127.0.0.1` + `[127.0.0.1]:2222`），旧实现本身也能命中；本次修复覆盖的是此前漏判的
   ssh 配置别名/HostKeyAlias/有效端口形态，并新增端口键的真实 `ssh-keygen -F` 回归测试。
+
+### 2026-11-05 · 修复 Vault 密码 SSH 自动登录的 askpass 链路（GUI 真机验证）
+
+- **问题**：Profile `auth=password` + `save_password`、Vault 已解锁并有密码，GUI 连接
+  仍失败：服务端 `password auth ok` 次数 0，pane 显示
+  `client_loop: send disconnect: Broken pipe`，应用日志只有 `[ui] profile pick=0` /
+  `[profile] ssh 命令`，没有任何 askpass 启用/失败记录。
+- **根因（三处叠加）**：
+  1. **公钥认证抢在密码前**：`Profile::ssh_command()` 对 `auth=password` 没有限制认证方式，
+     ssh 默认先试 agent/密钥。测试服务对 `user=test` 接受任意公钥（key 认证测试需要），
+     本机 agent 又有 key，于是认证以 publickey 成功，密码 prompt 根本不出现，
+     Vault/askpass 自然从未被调用；服务端也不会记录 `password auth ok`。
+  2. **测试服务 PTY 回调签名错误**：`scripts/ssh_test_server.py` 的
+     `check_channel_pty_request(self, term, width, height, pw, ph, modes)` 与 paramiko 2.x
+     的 `(self, channel, term, width, height, pixelwidth, pixelheight, modes)` 不一致。
+     任何请求 PTY 的连接（Tervo 在 PTY 里跑 ssh）即使认证成功也会在 shell 请求前抛
+     `TypeError` 断链，客户端表现为 `client_loop: send disconnect: Broken pipe`。
+     它把真正的认证结果掩盖了，看起来像密码失败。
+  3. **成功路径没有诊断**：askpass 创建/注入成功时没有任何日志，脚本也不留调用痕迹，
+     无法区分“没启用 askpass”“脚本没被调用”“prompt 没识别”“env 没传到”。
+- **修复**：
+  - `Profile::ssh_command()`：`auth=password` 时注入
+    `-o PubkeyAuthentication=no -o PreferredAuthentications=password,keyboard-interactive`
+    （kbd-int 在 password 之后兜底 PAM 服务器；agent/key 不变）。GUI 日志会打印完整 ssh 命令。
+  - 诊断（只记布尔/长度，不记密码）：`[vault] 已取出 Profile <id> 的密码（len=n）`、
+    `[askpass] 已启用 profile=<id> require=force debug=<bool>`、
+    `[askpass] 注入 ssh 子进程环境: keys=[...] secret_set=true`。
+  - 新增 opt-in `TERVO_ASKPASS_DEBUG=<file>`：askpass 脚本每次被调用追加
+    `match=password|no prompt=...`（**绝不写密码**），用于确认调用与 prompt 识别。
+  - `ssh_test_server.py` 修正 PTY 回调签名（补 `channel`/`pixelwidth`/`pixelheight`），
+    并记录 `pty request WxH`；PTY 连接现在能进 shell。另对“未知 host/超时在握手前断开”
+    容错：`start_server` 的 `EOFError/OSError` 只关闭当前 transport，不再让测试服务进程
+    整体退出（否则一次未知 host 探针就会杀死后续 e2e 的服务端）。
+- **测试**：`cargo test -p tervo-app --bin tervo` → **168 passed**。新增 4 例：
+  `vault::tests::credential_is_keyed_by_profile_store_id`（ProfileStore 分配 id → vault.set
+  → 用 store 中 Profile.id 取回；两 Profile 不串、未保存 id NotFound、重启后仍可取）、
+  `profile::tests::password_auth_ssh_command_is_password_only`（password 注入两种 -o，
+  agent/key 不注入）、`askpass::tests::applied_envs_reach_real_child_process`
+  （apply 后真 spawn 子进程验证 3 个环境变量与脚本存在）、
+  `askpass::tests::debug_file_records_prompt_without_secret`
+  （诊断文件记录 prompt/匹配分支且不含密码）。
+- **真机 GUI 验证**（独立 `TERVO_CONFIG/TERVO_VAULT/TERVO_PROFILES/TERVO_LOG_DIR`，
+  窗口移到空白区 3400,800，60x20=540x472，只 kill 自己 PID；paramiko 服务
+  `--password s3cret` @127.0.0.1:2222，known_hosts 由 Profile `extra_args` 指定）：
+  GUI 设置 Vault 主密码 → Profile 表单保存密码 → 关闭设置 → Profile 图标 → `SSH · vaultssh`
+  行连接。应用日志出现 `[ui] profile pick=0`、`[vault] ... len=6`、`[askpass] 已启用 ...
+  require=force debug=true`、`[askpass] 注入 ... secret_set=true`；askpass 调试文件
+  `match=password prompt=test@127.0.0.1's password:`；服务端
+  `[ssh-test] password auth ok` + `[ssh-test] pty request 60x20 term=b'xterm-256color'`；
+  pane 出现 `SSH-TEST-OK` / `remote$ `。app 日志、askpass 调试文件、profiles.toml、
+  vault.enc 均无明文密码，vault.enc 0600。
+- **无 GUI PTY 探针**：`script -qec` 里用与 app 相同的 ssh 参数 + askpass env，真实 ssh
+  登录成功（`SSH-TEST-OK`，服务端 `password auth ok`）；未知 host 仍只回答 `no`、rc=255。
+  旧文档探针用 `</dev/null`，stdin 非 tty 会“碰巧”走 askpass，覆盖不到 GUI 的 force 路径，
+  已在 `docs/VAULT.md` §5 改为 PTY 探针。
+- **限制**：系统 OpenSSH < 8.4 不支持 `SSH_ASKPASS_REQUIRE=force`；askpass 只识别含
+  `password`/`密码` 的 prompt（其它语言/keyboard-interactive 自定义问题仍可能失败）；
+  `TERVO_ASKPASS_DEBUG` 会记录服务器 prompt 原文（无密码）仅供排查；密码仍经 ssh 子进程
+  环境变量传递（`/proc/<pid>/environ` 可观察）；首次连接仍回退终端确认 host key。
+  `auth=password` 现在明确不回退公钥（需要公钥请改 Profile Auth）。

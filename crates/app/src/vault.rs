@@ -605,6 +605,51 @@ mod tests {
     }
 
     #[test]
+    fn credential_is_keyed_by_profile_store_id() {
+        // 连接链路：ProfileStore::add 分配 id → vault.set(id) → open_profile_tab 用
+        // store 里 Profile.id 取密码。这里把这条链固定住，防止 id 错位导致取不到密码。
+        use crate::profile::{Profile, ProfileStore};
+        let dir = tmpdir("profile-id");
+        let path = dir.join("vault.enc");
+        let mut v = Vault::new(&path);
+        v.initialize(master()).unwrap();
+
+        let mut store = ProfileStore::default();
+        let base = Profile {
+            kind: "ssh".into(),
+            host: "127.0.0.1".into(),
+            port: 2222,
+            user: "test".into(),
+            auth: "password".into(),
+            save_password: true,
+            ..Profile::default()
+        };
+        let first = store.add(Profile { name: "first".into(), ..base.clone() }).unwrap();
+        let second = store.add(Profile { name: "second".into(), ..base }).unwrap();
+        assert_ne!(first, second, "每个 Profile 必须拿到独立 id");
+        v.set(first, secret()).unwrap();
+        v.set(second, "second-password").unwrap();
+
+        let first_profile = store.get(first).unwrap();
+        let second_profile = store.get(second).unwrap();
+        assert_eq!(first_profile.id, first);
+        assert_eq!(v.get(first_profile.id).unwrap(), secret());
+        assert_eq!(v.get(second_profile.id).unwrap(), "second-password");
+        assert_eq!(
+            v.get(second + 1).unwrap_err(),
+            VaultError::NotFound(second + 1),
+            "未保存的 id 不能误取到别人的密码"
+        );
+
+        // 重新打开 vault（模拟重启）后仍按同一 id 取到同一密码。
+        drop(v);
+        let mut reopened = Vault::new(&path);
+        reopened.unlock(master()).unwrap();
+        assert_eq!(reopened.get(first_profile.id).unwrap(), secret());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn set_get_remove_roundtrip_survives_lock_and_reload() {
         let dir = tmpdir("roundtrip");
         let path = dir.join("vault.enc");

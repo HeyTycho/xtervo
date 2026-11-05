@@ -178,7 +178,12 @@ class TestServer(paramiko.ServerInterface):
     def check_channel_request(self, kind, chanid):
         return paramiko.OPEN_SUCCEEDED
 
-    def check_channel_pty_request(self, term, width, height, pw, ph, modes):
+    def check_channel_pty_request(self, channel, term, width, height, pixelwidth, pixelheight, modes):
+        # paramiko 2.x 的签名是 (channel, term, width, height, pixelwidth,
+        # pixelheight, modes)。旧实现少了 channel、参数个数也不对，任何请求 PTY
+        # 的连接（Tervo 在 PTY 里跑 ssh）都会在认证成功后抛 TypeError 断链，
+        # 客户端表现为 "client_loop: send disconnect: Broken pipe"。
+        print(f"[ssh-test] pty request {width}x{height} term={term}", flush=True)
         return True
 
     def check_channel_shell_request(self, channel):
@@ -293,6 +298,14 @@ def main():
             transport.start_server(server=server)
         except paramiko.SSHException as e:
             print(f"[ssh-test] handshake failed: {e}", flush=True)
+            transport.close()
+            continue
+        except (EOFError, OSError) as e:
+            # 客户端可能在 host key 确认/认证前直接断开（未知 host、超时 kill、
+            # e2e 连点取消）；paramiko 会把 EOF 抛到 start_server。测试服务应继续
+            # 接受下一个连接，而不是整个进程退出。
+            print(f"[ssh-test] handshake aborted: {type(e).__name__}", flush=True)
+            transport.close()
             continue
         kept = []  # 必须保住 Channel 引用，否则会被 GC 关闭
         while True:
