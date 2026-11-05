@@ -110,7 +110,9 @@ ls -l dist/ && file dist/tervo && ./dist/tervo --help
 - 右键菜单分屏（左右 / 上下）、关闭 pane、焦点切换、窗口缩放重排。
 - 每个 pane 独立 shell；关闭时自动回收 PTY 与线程。
 - 无边框窗口自带 `─` 最小化、`□/❐` 最大化/还原、`✕` 关闭；拖标签栏移动窗口，双击标题栏最大化。
-- 快捷键：`Ctrl+T` 新建标签、`Ctrl+W` 关闭标签。
+- 快捷键：`Ctrl+T` 新建标签、`Ctrl+Shift+N` 新建窗口、`Ctrl+W` 关闭标签。
+- 多窗口（MVP）：`Ctrl+Shift+N` / 标签栏右键 → New Window / 命令面板 `New Window`
+  会拉起一个独立的 Tervo 进程，各自拥有 Tab/PTY；窗口互不影响，Tab 暂不能跨窗口移动。
 - 设置面板（⚙）：12 套内置主题 + `Auto`（跟随系统深/浅色，默认 Yaru Dark/Light）、字号、回滚行数；
   也支持把 iTerm2 / Windows Terminal / Alacritty / kitty / Xresources 主题直接放进 `themes/` 目录。
 - Tabby 功能对照见 [`docs/tabby-parity.md`](docs/tabby-parity.md)；
@@ -127,6 +129,7 @@ tervo                 # 直接启动
 | 操作 | 方式 |
 |---|---|
 | 新建 / 关闭标签 | `Ctrl+T` / `Ctrl+W`，或标签栏 `+` / `×` |
+| 新建窗口 | `Ctrl+Shift+N`，或标签栏右键 → New Window（独立进程，关闭互不影响） |
 | 分屏 | 右键 pane → Split Right / Split Down |
 | 关闭 pane | 右键 → Close Pane；关掉最后一个 pane 退出应用 |
 | 复制 | 鼠标拖选（松手自动复制）或 `Ctrl+Shift+C`，或右键 → Copy |
