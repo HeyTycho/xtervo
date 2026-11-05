@@ -115,7 +115,7 @@ XTest 注入 ──X server──► winit ──► Slint key 回调 ──► 
 
 ```bash
 export CARGO_HOME=$PWD/.cargo          # 沙箱内 ~/.cargo 只读
-cargo test -p rusttabby-core           # 15 个测试
+cargo test -p tervo-core           # 15 个测试
 ./scripts/bench.sh                     # criterion
 ./scripts/phase0.sh                    # 启动/RSS/延迟/FPS 全套
 SLINT_BACKEND=winit-skia ./scripts/run_gpu_validation.sh   # 真机 GPU
@@ -124,5 +124,5 @@ SLINT_BACKEND=winit-skia ./scripts/run_gpu_validation.sh   # 真机 GPU
 运行交互式终端：
 
 ```bash
-SLINT_BACKEND=winit-software ./target/release/rusttabby-app --cols 120 --rows 32
+SLINT_BACKEND=winit-software ./target/release/tervo --cols 120 --rows 32
 ```

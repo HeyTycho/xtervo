@@ -47,7 +47,7 @@ RUN_IME=1 ./scripts/selfcheck.sh  # 加中文 IME 冒烟（需要 X11 + fcitx/ib
 | 按键 → 上屏延迟 | `--latency N` + `docs/latency-*.json` | 改渲染/输入时 |
 | 全屏 FPS | `--fps SECS` / `scripts/stress_fullscreen.py` | 改渲染时 |
 | 空闲 RSS / CPU | `scripts/measure_startup.py --rss-only` | 每周/改核心时 |
-| VT 解析吞吐 | `cargo bench -p rusttabby-core --bench pty_throughput` | 改解析/帧时 |
+| VT 解析吞吐 | `cargo bench -p tervo-core --bench pty_throughput` | 改解析/帧时 |
 | 二进制大小 | `selfcheck.sh` 自动记录 | 每轮 |
 
 原则：**没有基线数据的“优化”不算优化**；没有 before/after 的 PR 不进。
@@ -110,8 +110,8 @@ RUN_IME=1 ./scripts/selfcheck.sh  # 加中文 IME 冒烟（需要 X11 + fcitx/ib
 # 每轮开始前/后各跑一次，比较 history.jsonl
 ./scripts/selfcheck.sh
 # 有明确优化目标时再跑重基准
-cargo bench -p rusttabby-core --bench pty_throughput
-./target/release/rusttabby-app --latency 200
+cargo bench -p tervo-core --bench pty_throughput
+./target/release/tervo --latency 200
 ```
 
 只要这条闭环在，终端模拟器就可以持续“自我迭代”，且每次改进都有证据、有回归保护。
@@ -146,7 +146,7 @@ cargo bench -p rusttabby-core --bench pty_throughput
   - 沙箱里 `/tmp` 每次 bash 调用都会重建：GUI 验证脚本必须和启动写在**同一条命令**里，否则
     `--shell /bin/sh -- /tmp/xxx.sh` 指向不存在的文件，pane 静默退出、模式位当然不生效。
   - 同名窗口会误导 `xwin`：现已支持 `xwin 0x<id> x y` 按 id 激活/移动（id 从 app 日志的
-    `[icon] 写入窗口 0x...` 取）；排查鼠标链路用 `RUSTTABBY_MOUSELOG=1`，会打印命中的格与是否上报。
+    `[icon] 写入窗口 0x...` 取）；排查鼠标链路用 `TERVO_MOUSELOG=1`，会打印命中的格与是否上报。
 - **遗留**：1003 悬停只按格去重、未做时间节流；`--title` 参数目前没真正写到窗口标题（顺手记下，下轮处理）。
 
 ### 2026-11-05 · 第 2 轮：关闭分屏后布局不恢复（幽灵分屏）
@@ -218,7 +218,7 @@ cargo bench -p rusttabby-core --bench pty_throughput
 
 - **打包**：`SKIP_BUILD=1 ./scripts/package.sh /tmp/dist` → 183.4 MB（带符号）strip 到
   **32.2 MB**（−82.4%），体积门禁 ≤40 MB 通过，strip 后 `--help` 冒烟通过。
-- **安装**：`PREFIX=/tmp/prefix ./scripts/install.sh` → `bin/rusttabby-app`（32.2 MB）+
+- **安装**：`PREFIX=/tmp/prefix ./scripts/install.sh` → `bin/tervo`（32.2 MB）+
   `.desktop` + 图标；安装后的二进制 `--help` 正常。
 - **4 pane**：右键菜单做 2×2（3 条 `[ws] split`），应用 RSS **44 MB**、5 秒空闲 CPU
   **0.2%**、子进程 5 个（4 shell + gsettings）。门禁要求 ≤220 MiB / ≤1%，均通过。
@@ -253,4 +253,28 @@ cargo bench -p rusttabby-core --bench pty_throughput
   更新 `CLOSURE.md` / `PERFORMANCE.md` 的最终数字。
 - **结论**：能日常使用的 Slint/X11 终端工作区，但不是官方 Tabby 的完整替代；
   剩余大头（内建 SSH/SFTP、Vault、插件运行时、Quake、连接管理器 UI）未闭环。
+
+### 2026-11-05 · 更名 Tervo + 许可证合规
+
+- **更名**：`rusttabby-*` → `tervo-*`（crate），二进制 `tervo`，配置 `~/.config/tervo`，
+  环境变量 `TERVO_*`，桌面项 `tervo.desktop`；文档/脚本同步。
+- **许可证**：Slint 1.18 是 `GPL-3.0-only`/商业/royalty-free 三选一，本项目选 GPL，
+  因此整体定为 **GPL-3.0-only**；新增 `LICENSE`、`THIRD_PARTY_NOTICES.md`
+  （369 个运行时 crate / 198 份许可证文本）、`docs/LICENSING.md`。
+- **商标风险**：原图标为“猫+终端窗口红绿灯”，与 Tabby 吉祥物高度相似，存在混淆风险；
+  已替换为由 `scripts/gen_icon.py` 生成的原创几何 “T” 标记（无猫/无红绿灯），
+  并在 README 加独立项目声明与更名说明。
+- **可复现**：`python3 scripts/gen_third_party_notices.py` 重新生成依赖声明；
+  `install.sh` 把 LICENSE/THIRD_PARTY_NOTICES/LICENSING 安装到 `share/doc/tervo/`。
+- **验证**：selfcheck PASS；打包 32.1 MB（≤40 MB）；安装后 `tervo --help` 正常；
+  标题栏显示新图标（`.logs/tervo-brand.png`）。
+
+### 2026-11-05 · 修正 first_damage 测量口径
+
+- **现象**：更名后 selfcheck 的 first_damage 从 ~47 ms 稳定变成 ~155 ms，ready 不变。
+- **诊断**：`DamageWatcher` 在首帧之后才建立；找窗口用 100 ms 轮询，首帧早于监听时
+  会漏掉，只能等下一次 damage，数值被高估成 100 ms 的整数倍 + 下一帧。
+- **修复**：轮询改 5 ms；监听建立后强制 `redraw_all()` 再等 damage。
+- **结果**：first_damage 85.7 ms（近期 60–140），属真实“窗口就绪→首帧”耗时；
+  之前的 47 ms 是漏测后的偶然值。
 

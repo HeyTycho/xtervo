@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 //! 会话快照：把 tabs / 分屏树 / 每个 pane 的工作目录存盘，重启后原样拉起。
 //!
 //! 只存**布局与 cwd**，不存屏幕内容：历史由 shell / TUI 自己恢复，
@@ -138,16 +139,16 @@ impl Tree {
     }
 }
 
-/// 快照文件路径：`RUSTTABBY_SESSION` 优先（测试/多实例用），否则 XDG 状态目录。
+/// 快照文件路径：`TERVO_SESSION` 优先（测试/多实例用），否则 XDG 状态目录。
 pub fn snapshot_path() -> PathBuf {
-    if let Some(p) = std::env::var_os("RUSTTABBY_SESSION") {
+    if let Some(p) = std::env::var_os("TERVO_SESSION") {
         return PathBuf::from(p);
     }
     let base = std::env::var_os("XDG_STATE_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/state")))
         .unwrap_or_else(|| PathBuf::from("/tmp"));
-    base.join("rusttabby").join("session.json")
+    base.join("tervo").join("session.json")
 }
 
 pub fn save(snap: &Snapshot) -> io::Result<PathBuf> {

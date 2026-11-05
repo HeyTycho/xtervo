@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 //! 颜色解析：把 alacritty 的 `Color` 解析成 0x00RRGGBB。
 //!
 //! 索引表完全按 alacritty 的 `Colors`（269 项）语义排布：

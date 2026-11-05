@@ -1,6 +1,6 @@
-# Rust Tabby 功能矩阵（FEATURE_MATRIX）
+# Tervo 功能矩阵（FEATURE_MATRIX）
 
-> 审计日期：2026-11-05 ｜ 仓库：`/home/yt/AIworkspace/rusttabbyterminal`（起始 HEAD `0ea6231`，复核到并发提交 `8327e20`） ｜ 审计方式：只读代码 + 既有文档 + 静态走查；**未执行 cargo build/test**（同仓另一 Agent 在构建）。
+> 审计日期：2026-11-05 ｜ 仓库：`/home/yt/AIworkspace/tervoterminal`（起始 HEAD `0ea6231`，复核到并发提交 `8327e20`） ｜ 审计方式：只读代码 + 既有文档 + 静态走查；**未执行 cargo build/test**（同仓另一 Agent 在构建）。
 > 上游网络不可用（2026-11-05，GitHub/docs.tabby.sh DNS 解析到非公网地址），上游行为未能复核；见 [`TABBY_UPSTREAM_AUDIT.md`](TABBY_UPSTREAM_AUDIT.md)。
 > 状态分布与闭环结论见 [`CLOSURE.md`](CLOSURE.md)；统计脚本 `python3 scripts/matrix_stats.py`。
 
@@ -176,7 +176,7 @@
 | UI-SSH-001 | SSH Profile 编辑窗口分组清晰、密码/密钥安全提示 | U-AUDIT / 需求 B8 | Profile 表单 SSH 分组：Host/Port/User/Auth/Key/Extra；`ssh_command()` 用系统 ssh 客户端跑在 PTY；密码认证仅存 `auth=password`（Vault 未实现） | partial | 单测 `ssh_command_builds_openssh_args`；端到端：paramiko 服务端 + key 认证 → 面板点开后终端显示 `PARAMIKO-SSH-OK` 与远端提示符（.logs/ssh-e2e2.png） | SSH 连接（key/agent）可用 | 无内建 known_hosts 管理（依赖系统 ssh）；密码认证未接 Vault；原生 russh 引擎未做；未做跳板机/端口转发设置 |
 | UI-SSH-002 | 首次主机密钥确认、变更告警、known_hosts 管理入口 | U-AUDIT / 需求 B8 | 交给系统 ssh：主机密钥确认/告警直接显示在终端里；Extra 参数可传 UserKnownHostsFile | partial | 端到端走 `-o StrictHostKeyChecking=yes` + 自定义 known_hosts 成功连接 | 借用系统 ssh 的完整校验流程 | 无应用内 known_hosts 管理 UI；无密钥变更专门告警面板 |
 | UI-SSH-003 | SFTP 面板/Tab：目录导航、上级、刷新、路径输入、列表、属性 | U-AUDIT / 需求 B8 | **SFTP 面板**（TabBar 菜单 → SFTP）：SSH Profile 选择、Remote 路径输入、List、条目列表点选；`sftp.rs` 走系统 `sftp -q -b -` | partial | 端到端：`scripts/ssh_test_server.py`（SFTP）→ 面板 List 显示 `1 个条目` / `/probe.txt`（.logs/sftp-panel.png） | 面板列目录/选择可用 | 无“上级/刷新/属性列”；同步阻塞调用（大目录会卡 UI）；无传输进度 |
-| UI-SSH-004 | SFTP 上传/下载/建目录/重命名/删除；危险确认 | U-AUDIT / 需求 B8 | 面板 Download selected / Upload：`get`/`put` batch；Local 路径输入；操作结果写状态行 | partial | 端到端：下载 → 本地内容 `sftp-panel-ok`；上传 → 远端出现 `rusttabby-sftp` | 上传/下载可用 | 无进度/取消/危险确认；mkdir/rename/rm 未封装；同步阻塞 |
+| UI-SSH-004 | SFTP 上传/下载/建目录/重命名/删除；危险确认 | U-AUDIT / 需求 B8 | 面板 Download selected / Upload：`get`/`put` batch；Local 路径输入；操作结果写状态行 | partial | 端到端：下载 → 本地内容 `sftp-panel-ok`；上传 → 远端出现 `tervo-sftp` | 上传/下载可用 | 无进度/取消/危险确认；mkdir/rename/rm 未封装；同步阻塞 |
 | UI-SSH-005 | 传输进度、速度、已传/总大小、取消、失败重试 | U-AUDIT / 需求 B8 | 无实现 | not_started | 无 | 未实现 | 无传输任务模型/进度 UI |
 | UI-SSH-006 | Port Forward 管理：查看/添加/启停/删除，显示监听与目标 | U-AUDIT / 需求 B8 | Profile `local_forwards` → `ssh -L`；表单 Forwards 行；转发由 ssh 子进程持有（关 Tab 即停） | partial | 单测 `ssh_forwards_become_dash_l_args`；**端到端**：`scripts/ssh_test_server.py`（paramiko，含 direct-tcpip）→ `ss` 显示 19000 监听，`printf ping \| socat TCP:127.0.0.1:19000` 收到 `ECHO:ping` | 本地转发可用且验证通过 | 无应用内管理面板（增删改查/启停/监听与目标展示）；仅 local 转发（-L），无 -R/-D |
 | UI-SSH-007 | Jump Host 配置入口与链路可视化/可读描述 | U-AUDIT / 需求 B8 | 无实现 | not_started | 无 | 未实现 | 无跳板机 |
@@ -232,7 +232,7 @@
 
 | ID | Feature | Upstream evidence | Rust implementation | Status | Test | Result | Limitation |
 |---|---|---|---|---|---|---|---|
-| TERM-001 | VT220 基础兼容及 Tabby 实际使用的 xterm/ANSI 扩展；兼容测试集验证 | U-XTERM / 需求 C1 | alacritty_terminal 0.26 `Term` + `vte::ansi::Processor`；crates/core/tests/vt_conformance.rs 10 例 | partial | `cargo test -p rusttabby-core`（已有记录 10 条 conformance）；无 vttest/esctest 全套 | 基础 SGR/光标/宽字符/备用屏有契约测试 | 未跑完整 VT220/xterm 套件；与 Tabby 实际序列集未差分 |
+| TERM-001 | VT220 基础兼容及 Tabby 实际使用的 xterm/ANSI 扩展；兼容测试集验证 | U-XTERM / 需求 C1 | alacritty_terminal 0.26 `Term` + `vte::ansi::Processor`；crates/core/tests/vt_conformance.rs 10 例 | partial | `cargo test -p tervo-core`（已有记录 10 条 conformance）；无 vttest/esctest 全套 | 基础 SGR/光标/宽字符/备用屏有契约测试 | 未跑完整 VT220/xterm 套件；与 Tabby 实际序列集未差分 |
 | TERM-002 | CSI/ESC/OSC/DCS 解析；不完整序列、分包、非法、超长序列 | U-XTERM / 需求 C1 | vte Processor 处理分包/不完整；pane.rs `feed` 按 32 KiB 读块喂入；无 DCS/OSC 业务分发 | partial | vt_conformance 覆盖常见 CSI/OSC 标题；无 fuzz/超长/非法输入回归 | 常见序列可解析；异常输入未系统验证 | 无 fuzz 目标；DCS 只被解析器吞掉，无业务处理；超长序列未测 |
 | TERM-003 | 光标移动、擦除、插入/删除字符行、滚屏、滚动区域、制表位、自动换行 | U-XTERM / 需求 C1 | alacritty_terminal 实现；`cursor_move_and_erase_line`、`autowrap_moves_to_next_line`、`clear_screen_and_home` | partial | 3 条专项契约 + alacritty 上游实现；IL/DL/滚动区域/制表位无本项目测试 | 光标/擦除/自动换行已验证 | 插入删除行、滚动区域、制表位未专项验收；依赖 alacritty 行为 |
 | TERM-004 | 主/备用屏幕切换；vim/less/tmux 等全屏 TUI | U-XTERM / 需求 C1 | alacritty `TermMode::ALT_SCREEN`；`alternate_screen_mode_roundtrip`；人工 vim/htop | implemented | `alternate_screen_mode_roundtrip`；phase0 vim/htop 55–58 FPS 记录 | 已有记录 | tmux/less 未逐项验收；备用屏滚轮行为未专项测 |

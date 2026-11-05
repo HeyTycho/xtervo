@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-only
 # 在**真机（有 GPU）**上验证 Slint Skia 后端的关键指标。
 #
 # 为什么需要单独跑：开发沙箱没有 /dev/dri，Skia 的 wgpu/GL 上下文创建后拿不到
@@ -15,8 +16,8 @@ export CARGO_HOME="${CARGO_HOME:-$PWD/.cargo}"
 export SLINT_BACKEND=winit-skia
 mkdir -p docs
 
-BIN=target/release/rusttabby-app
-cargo build --release -p rusttabby-app --bin rusttabby-app
+BIN=target/release/tervo
+cargo build --release -p tervo-app --bin tervo
 
 echo "== GPU 后端冒烟：能否在 5s 内产生第一次 Damage =="
 if ! timeout 30 "$BIN" --cols 120 --rows 32 --exit-after-first 2>/dev/null | tee docs/gpu-first-frame.txt | grep -q "FIRST_DAMAGE_US"; then

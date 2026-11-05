@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 //! 输入延迟测量：X11 XTest 注入真实按键 + 应用内渲染打点。
 //!
 //! 测量链路（不含合成器扫描输出）：
@@ -74,7 +75,7 @@ impl Injector {
             if Instant::now() > deadline {
                 return None;
             }
-            std::thread::sleep(Duration::from_millis(100));
+            std::thread::sleep(Duration::from_millis(5));
         }
     }
 
@@ -245,7 +246,7 @@ impl DamageWatcher {
             if Instant::now() > deadline {
                 return None;
             }
-            std::thread::sleep(Duration::from_millis(100));
+            std::thread::sleep(Duration::from_millis(5));
         };
         conn.damage_query_version(1, 1).ok()?.reply().ok()?;
         let damage_id = conn.generate_id().ok()?;

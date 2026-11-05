@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-only
 """统计 docs/FEATURE_MATRIX.md 的状态分布，并检查 implemented 行是否有证据。
 
 用法：python3 scripts/matrix_stats.py [--list-implemented]

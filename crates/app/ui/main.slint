@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 // 界面 chrome 配色：由 Rust 侧按当前主题写入。
 export struct ThemeColors {
     bg: color,
@@ -345,7 +346,7 @@ export component MainWindow inherits Window {
     in property <[string]> sftp-items: [];
     in-out property <int> sftp-target: 0;
     in-out property <string> sftp-remote: "/";
-    in-out property <string> sftp-local: "/tmp/rusttabby-sftp";
+    in-out property <string> sftp-local: "/tmp/tervo-sftp";
     in-out property <int> sftp-selected: -1;
     in-out property <string> sftp-status: "";
     callback sftp-list();
@@ -413,7 +414,7 @@ export component MainWindow inherits Window {
     in-out property <length> ime-y: 0px;
 
     /// 窗口标题：CLI --title 覆盖；默认保持原品牌名。
-    in-out property <string> window-title: "Rust Tabby";
+    in-out property <string> window-title: "Tervo";
 
     title: root.window-title;
     // 不让内容（长 Tab 标题/很多 Tab）决定窗口最小宽度：否则加 Tab 会把窗口撑大。
@@ -1784,7 +1785,7 @@ export component MainWindow inherits Window {
             spacing: 10px;
 
             Text {
-                text: "Close Rust Tabby?";
+                text: "Close Tervo?";
                 color: Palette.colors.text;
                 font-size: 15px;
                 font-weight: 600;

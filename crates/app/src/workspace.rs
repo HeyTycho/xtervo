@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 //! 应用层的分屏树与布局计算。
 //!
 //! 刻意不依赖 Slint / core：纯逻辑、可单测。

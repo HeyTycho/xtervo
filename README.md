@@ -1,9 +1,16 @@
-# Rust Tabby
+# Tervo
 
-用 Rust + Slint 重写的原生终端模拟器，目标替代 Tabby（Electron），并显著降低内存与输入延迟。
+用 Rust + Slint 写的原生终端模拟器，目标是提供 Tabby（Electron）的常用工作流，
+同时显著降低内存与输入延迟。
+
+> **独立项目声明**：Tervo 是独立开源项目，与 Tabby / Terminus 的作者及项目**无任何隶属、
+> 赞助或背书关系**。“Tabby”是其权利人的商标，本项目仅作功能对比与兼容性说明时提及。
+> 本项目不含 Tabby 的代码或美术资源；图标为原创几何标记（生成脚本见 `scripts/gen_icon.py`）。
 
 > 当前进度：Phase 0（可行性验证）已完成（[报告](docs/phase0-report.md)）；
 > Phase 1 功能线进行中：标签页 / 分屏 / 右键菜单已可用（[UI Shell 文档](docs/ui-shell.md)）。
+> 功能覆盖与已知差距见 [`docs/FEATURE_MATRIX.md`](docs/FEATURE_MATRIX.md) 与
+> [`docs/CLOSURE.md`](docs/CLOSURE.md)。
 
 ## 架构（已冻结）
 
@@ -45,15 +52,15 @@
 # 沙箱/CI 内 ~/.cargo 只读时
 export CARGO_HOME=$PWD/.cargo
 
-cargo test -p rusttabby-core
-cargo build --release -p rusttabby-app
+cargo test -p tervo-core
+cargo build --release -p tervo-app
 
 # 交互式：有 GPU 走 Skia；无 /dev/dri 会自动回退 winit-software
-./target/release/rusttabby-app --cols 120 --rows 32
+./target/release/tervo --cols 120 --rows 32
 
 # 发布打包：构建后只 strip dist/ 里的副本（开发二进制保留符号）
-./scripts/package.sh                  # → dist/rusttabby-app
-RUSTTABBY_DIST=/tmp/dist ./scripts/package.sh
+./scripts/package.sh                  # → dist/tervo
+TERVO_DIST=/tmp/dist ./scripts/package.sh
 
 # 一键自检（构建 + 单测 + VT 契约 + 启动预算；RUN_IME=1 加中文冒烟）
 ./scripts/selfcheck.sh
@@ -71,16 +78,16 @@ RUSTTABBY_DIST=/tmp/dist ./scripts/package.sh
 
 | 路径 | 用途 | 体积（本机实测） |
 |---|---|---|
-| `target/release/rusttabby-app` | 开发 / 性能分析：`debug = 1`，保留符号给 `perf` / flamegraph | 168.4 MB |
-| `dist/rusttabby-app`（`scripts/package.sh`） | 发布产物：复制后 `strip --strip-all` | 30.5 MB（-81.9%） |
+| `target/release/tervo` | 开发 / 性能分析：`debug = 1`，保留符号给 `perf` / flamegraph | 168.4 MB |
+| `dist/tervo`（`scripts/package.sh`） | 发布产物：复制后 `strip --strip-all` | 30.5 MB（-81.9%） |
 
 `scripts/package.sh` 只 strip 输出目录里的副本，`target/release` 原样保留；
 `scripts/install.sh` 同样先把安装副本放进临时目录 strip 再安装，默认 `~/.local`，
 不会改动开发二进制。
 
 ```bash
-./scripts/package.sh                            # → dist/rusttabby-app（默认 40 MB 门禁）
-RUSTTABBY_DIST=/tmp/dist ./scripts/package.sh    # 自定义输出目录（相对仓库根）
+./scripts/package.sh                            # → dist/tervo（默认 40 MB 门禁）
+TERVO_DIST=/tmp/dist ./scripts/package.sh    # 自定义输出目录（相对仓库根）
 ./scripts/package.sh /tmp/dist                   # 同上，位置参数
 SKIP_BUILD=1 ./scripts/package.sh                # 复用已有 release 二进制
 MAX_MB=30 ./scripts/package.sh                   # 自定义体积门禁
@@ -92,7 +99,7 @@ PREFIX=/tmp/prefix ./scripts/install.sh          # 装到自定义 prefix（验�
 验证产物：
 
 ```bash
-ls -l dist/ && file dist/rusttabby-app && ./dist/rusttabby-app --help
+ls -l dist/ && file dist/tervo && ./dist/tervo --help
 ```
 
 细节、环境变量与兼容性风险见 [`packaging/README.md`](packaging/README.md)。
@@ -114,7 +121,7 @@ ls -l dist/ && file dist/rusttabby-app && ./dist/rusttabby-app --help
 
 ```bash
 ./scripts/install.sh          # 装到 ~/.local（strip 后安装；--no-strip 保留符号）
-rusttabby-app                 # 直接启动
+tervo                 # 直接启动
 ```
 
 | 操作 | 方式 |
@@ -133,10 +140,10 @@ rusttabby-app                 # 直接启动
 | 设置 | 标签栏 ⚙：主题 / 字号 / 回滚行数 |
 | 移动窗口 | 拖标签栏；双击标签栏最大化/还原 |
 
-配置：`~/.config/rusttabby/config.toml`（`RUSTTABBY_CONFIG` 可覆盖）。
+配置：`~/.config/tervo/config.toml`（`TERVO_CONFIG` 可覆盖）。
 
 默认 `theme = "auto"`：跟随系统浅色/深色（深色 → Yaru Dark，浅色 → Yaru Light），也可以显式选任意主题。
-把现成配色文件丢进 `~/.config/rusttabby/themes/` 即可在设置面板里选择，支持 iTerm2 `.itermcolors`、
+把现成配色文件丢进 `~/.config/tervo/themes/` 即可在设置面板里选择，支持 iTerm2 `.itermcolors`、
 Windows Terminal `.json`、Alacritty `.toml`、kitty `.conf`、Xresources，以及 Catppuccin/Rosé Pine 的 YAML 片段；
 详见 [`docs/themes.md`](docs/themes.md)。
 
@@ -144,8 +151,8 @@ Windows Terminal `.json`、Alacritty `.toml`、kitty `.conf`、Xresources，以�
 
 ```bash
 # 安装桌面项与图标（hicolor 目录）
-install -Dm644 packaging/rusttabby.desktop ~/.local/share/applications/rusttabby.desktop
-install -Dm644 assets/icon.png ~/.local/share/icons/hicolor/256x256/apps/rusttabby.png
+install -Dm644 packaging/tervo.desktop ~/.local/share/applications/tervo.desktop
+install -Dm644 assets/icon.png ~/.local/share/icons/hicolor/256x256/apps/tervo.png
 update-desktop-database ~/.local/share/applications 2>/dev/null || true
 ```
 
@@ -163,3 +170,31 @@ update-desktop-database ~/.local/share/applications 2>/dev/null || true
 - IME 走 winit 的 XIM（fcitx5 / ibus）；Wayland、GTK/Qt 的 IM module、macOS 输入法尚未验证。
 - 主题跟随系统依赖 GNOME `gsettings`；非 GNOME 环境会回退 `gtk-theme` / `COLORFGBG` 做一次性检测。
 - 自定义主题仍在启动时扫描，改主题文件后需要重启（热重载尚未实现）。
+
+## 许可证
+
+Tervo 以 **GPL-3.0-only** 发布，全文见 [`LICENSE`](LICENSE)。
+
+选择 GPL-3.0 的原因：UI 依赖 **Slint 1.18**，其许可证为
+`GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0`；
+本项目使用其中的 GPL-3.0 选项，因此整体按 GPL-3.0-only 分发。若你需要宽松/闭源许可，
+需要向 Slint GmbH 购买商业或 royalty-free 许可，本项目无法转授。
+
+其余依赖均为宽松许可（MIT / Apache-2.0 / Zlib / BSD），与 GPL-3.0 兼容；
+完整依赖清单与随附许可证文本见 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)；
+合规细节、依赖兼容性与分发检查清单见 [`docs/LICENSING.md`](docs/LICENSING.md)。
+
+## 商标与第三方声明
+
+- “Tabby”“Terminus”是其各自权利人的商标。本项目仅在做功能对照、兼容性说明时
+  以**指名方式**提及，不暗示任何关联或背书。
+- 项目名称、图标、界面均为原创；图标由 `scripts/gen_icon.py` 程序化生成。
+- 内置配色方案（Tokyo Night、Dracula、Solarized、Yaru 等）为社区调色板，
+  名称可能属于各自作者；仓库只包含颜色数值，不含对方代码或美术资源。
+- 导入第三方主题文件时，请自行确认该主题的许可证；Tervo 不随附这些文件。
+
+## 改名说明
+
+项目曾用工作名 “Rust Tabby”，为避让 Tabby 的商标与品牌混淆，现更名为 **Tervo**
+（仓库目录名可以任意）。配置目录、环境变量、二进制名均已随之改为
+`~/.config/tervo`、`TERVO_*`、`tervo`；旧配置不会自动迁移，如需保留请手动复制。

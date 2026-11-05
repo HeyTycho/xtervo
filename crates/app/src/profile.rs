@@ -1,7 +1,8 @@
+// SPDX-License-Identifier: GPL-3.0-only
 //! 连接 Profile：名字 + 启动方式（当前只做 Local，SSH/Serial/Telnet 后续扩展）。
 //!
 //! 与 `config.rs` 同款策略：版本化、原子写、解析失败不覆盖用户文件。
-//! 存到 `~/.config/rusttabby/profiles.toml`（`RUSTTABBY_PROFILES` 可覆盖，便于测试/多实例）。
+//! 存到 `~/.config/tervo/profiles.toml`（`TERVO_PROFILES` 可覆盖，便于测试/多实例）。
 
 use std::path::{Path, PathBuf};
 
@@ -183,7 +184,7 @@ impl Default for ProfileStore {
 
 impl ProfileStore {
     pub fn path() -> PathBuf {
-        if let Ok(p) = std::env::var("RUSTTABBY_PROFILES") {
+        if let Ok(p) = std::env::var("TERVO_PROFILES") {
             return PathBuf::from(p);
         }
         let base = std::env::var("XDG_CONFIG_HOME")
@@ -191,7 +192,7 @@ impl ProfileStore {
             .unwrap_or_else(|_| {
                 PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into())).join(".config")
             });
-        base.join("rusttabby").join("profiles.toml")
+        base.join("tervo").join("profiles.toml")
     }
 
     pub fn load() -> Self {

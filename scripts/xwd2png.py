@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-only
 """把 xwd 截图转成 PNG，便于人工/Agent 做视觉验收（无需 ImageMagick）。
 
 用法：

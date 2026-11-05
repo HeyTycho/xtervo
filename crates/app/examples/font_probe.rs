@@ -1,5 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-only
 //! 字体加载耗时探针（release 下运行）。
-//! cargo run --release -p rusttabby-app --example font_probe
+//! cargo run --release -p tervo --example font_probe
 
 use fontdue::{Font, FontSettings};
 use std::time::Instant;

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 //! 调试工具：XTest 注入鼠标事件。
 //!
 //! 用法：

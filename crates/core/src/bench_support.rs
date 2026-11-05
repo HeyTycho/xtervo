@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 //! 无 PTY 的终端仿真夹具：用于解析吞吐基准与单元测试。
 //!
 //! 生产路径不经过这里——真实 pane 永远走 actor 线程。它只是把

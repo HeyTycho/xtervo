@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 //! 调试工具：XTest 注入按键。
 //!
 //! 用法：`xkey <text> [--ctrl] [--shift]`

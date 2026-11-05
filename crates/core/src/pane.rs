@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 //! 单 pane 的 PTY 会话与终端 actor。
 //!
 //! 线程模型（严格对应冻结架构）：

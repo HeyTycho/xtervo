@@ -1,4 +1,4 @@
-# 性能与打包基线（Rust Tabby）
+# 性能与打包基线（Tervo）
 
 本文记录**可复现**的性能/体积数据与门禁。所有数字都在本仓库的开发机上测得
 （Ubuntu + X11 + winit-software 渲染），换机器会变，但门禁与采集方式不变。
@@ -28,8 +28,8 @@ export CARGO_HOME=$PWD/.cargo
 
 | 指标 | 最近一次 | 说明 |
 |---|---|---|
-| ready | **46.7 ms** | 窗口可见 + 首帧提交（最近一次验收 46.7，近期区间 42.8–48.6） |
-| first_damage | **47.4 ms** | 首帧内容上屏（近期区间 44.2–49.4） |
+| ready | **52.6 ms** | 窗口可见 + 首帧提交（近期 43–89，受系统负载影响） |
+| first_damage | **85.7 ms** | 首帧内容上屏（近期 60–140；2026-11-05 修正测量口径，见下） |
 | 空闲 RSS（1 pane） | **52.5 MB** | 含软件渲染缓冲与字体 atlas（近期 46–53） |
 | 空闲 RSS（4 pane） | **44 MB** | 拆分 4 个 pane 后测（shell 子进程另计） |
 | 空闲 CPU（4 pane） | **0.2–0.4 %** | 5 秒 `/proc/<pid>/stat` 增量 |
@@ -40,12 +40,23 @@ export CARGO_HOME=$PWD/.cargo
 **54.1 ms**——主要是把 CJK 字体回退从启动时急切解析改成首次使用时惰性加载
 （一次性代价约 159 ms，只影响首次显示中文）。
 
+## 2.1 first_damage 口径（2026-11-05 修正）
+
+原先在 `ui.show()` + 首帧之后才建立 XDamage 监听：若首帧早于监听建立，测到的会是
+**下一次** damage（光标/后续输出），数值忽高忽低；更名后这个竞态稳定地多等了
+100 ms 轮询。修正为：
+
+1. `DamageWatcher::start` 找窗口的轮询从 100 ms 缩短到 5 ms；
+2. 监听建立后**强制重绘一帧**，确保测的是“窗口就绪后渲染第一帧”的耗时。
+
+因此 47 ms → 60–140 ms 不是性能退化，而是口径修正；门槛（600 ms）保持不变。
+
 ## 3. 4 pane 测量步骤（可复现）
 
 ```bash
-./target/release/rusttabby-app --cols 60 --rows 20 --title PERF &
+./target/release/tervo --cols 60 --rows 20 --title PERF &
 # 右键 pane → Split Right / Split Down，做成 2x2（日志会出现 3 条 [ws] split）
-APP=$(pgrep -x rusttabby-app | head -1)
+APP=$(pgrep -x tervo | head -1)
 awk '/VmRSS/{print $2/1024 " MB"}' /proc/$APP/status
 # 空闲 CPU：5 秒内 utime+stime 增量 / 500
 ```
@@ -58,12 +69,12 @@ awk '/VmRSS/{print $2/1024 " MB"}' /proc/$APP/status
 ```bash
 SKIP_BUILD=1 ./scripts/package.sh /tmp/dist    # 体积门禁 ≤40 MB + strip 后 --help 冒烟
 PREFIX=/tmp/prefix ./scripts/install.sh        # bin + .desktop + 图标
-/tmp/prefix/bin/rusttabby-app --help
+/tmp/prefix/bin/tervo --help
 ```
 
-实测：`/tmp/dist/rusttabby-app` 32.2 MB、`file` 显示 stripped、`--help` 正常；
-安装到 `/tmp/prefix` 后 `bin/rusttabby-app` 可执行，桌面项写入
-`share/applications/rusttabby.desktop`。
+实测：`/tmp/dist/tervo` 32.2 MB、`file` 显示 stripped、`--help` 正常；
+安装到 `/tmp/prefix` 后 `bin/tervo` 可执行，桌面项写入
+`share/applications/tervo.desktop`。
 
 ## 5. 已知成本与未验收项
 

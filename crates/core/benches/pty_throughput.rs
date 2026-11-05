@@ -1,6 +1,7 @@
+// SPDX-License-Identifier: GPL-3.0-only
 //! Phase 0 性能基准。
 //!
-//! 运行：`./scripts/bench.sh`（或 `cargo bench -p rusttabby-core`）
+//! 运行：`./scripts/bench.sh`（或 `cargo bench -p tervo-core`）
 //!
 //! 覆盖三组：
 //! 1. `parse/*`  —— VT 解析吞吐（纯 CPU，不含 PTY）
@@ -15,10 +16,10 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion, Throughput};
-use rusttabby_core::{spawn, CoreEvent, Frame, PaneConfig, TermSim};
+use tervo_core::{spawn, CoreEvent, Frame, PaneConfig, TermSim};
 
 const MIB: usize = 1024 * 1024;
-const EOF_MARKER: &str = "RUSTTABBY-EOF-MARKER";
+const EOF_MARKER: &str = "TERVO-EOF-MARKER";
 
 fn plain_payload(size: usize) -> Vec<u8> {
     let line = b"The quick brown fox jumps over the lazy dog 0123456789\r\n";
@@ -118,7 +119,7 @@ fn bench_frame_pull(c: &mut Criterion) {
 // ------------------------------------------------------------------ e2e
 
 fn make_cat_file() -> PathBuf {
-    let path = std::env::temp_dir().join("rusttabby-cat-10mb.txt");
+    let path = std::env::temp_dir().join("tervo-cat-10mb.txt");
     if let Ok(md) = std::fs::metadata(&path) {
         if md.len() > 10 * MIB as u64 {
             return path;

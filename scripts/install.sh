@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# 安装 Rust Tabby 到 $PREFIX（默认 ~/.local），附带 .desktop 与图标。
+# SPDX-License-Identifier: GPL-3.0-only
+# 安装 Tervo 到 $PREFIX（默认 ~/.local），附带 .desktop 与图标。
 #
 #   ./scripts/install.sh                  # 装到 ~/.local（默认安装 strip 后的副本）
 #   PREFIX=/tmp/prefix ./scripts/install.sh
@@ -7,13 +8,13 @@
 #   ./scripts/install.sh --no-strip       # 保留符号（调试用）
 #   PREFIX=/usr/local sudo -E ./scripts/install.sh
 #
-# 注意：target/release/rusttabby-app 是开发二进制（debug=1，保留符号，供
+# 注意：target/release/tervo 是开发二进制（debug=1，保留符号，供
 # perf/flamegraph）；安装时先复制到临时目录再 strip，开发二进制保持原样。
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 PREFIX="${PREFIX:-$HOME/.local}"
-DO_STRIP="${RUSTTABBY_STRIP:-1}"
+DO_STRIP="${TERVO_STRIP:-1}"
 case "$DO_STRIP" in
     1 | true | yes | on) DO_STRIP=1 ;;
     *) DO_STRIP=0 ;;
@@ -29,7 +30,7 @@ usage() {
 
 环境变量:
   PREFIX          安装根目录
-  RUSTTABBY_STRIP 设为 0 等同于 --no-strip
+  TERVO_STRIP 设为 0 等同于 --no-strip
   STRIP           strip 命令（默认自动探测 strip / llvm-strip）
   STRIP_FLAGS     strip 参数（默认 --strip-all）
 EOF
@@ -65,16 +66,16 @@ done
 human() { awk -v b="$1" 'BEGIN { printf "%.1f MB", b / 1048576 }'; }
 size_of() { wc -c < "$1" | tr -d '[:space:]'; }
 
-BIN=target/release/rusttabby-app
+BIN=target/release/tervo
 if [[ ! -x "$BIN" ]]; then
     echo "== 构建 release =="
-    CARGO_HOME="${CARGO_HOME:-$PWD/.cargo}" cargo build --release -p rusttabby-app --bin rusttabby-app
+    CARGO_HOME="${CARGO_HOME:-$PWD/.cargo}" cargo build --release -p tervo-app --bin tervo
 fi
 
 # 在临时目录里处理安装副本：开发二进制不动，strip 失败也只影响本次安装。
-STAGE="$(mktemp -d "${TMPDIR:-/tmp}/rusttabby-install.XXXXXX")"
+STAGE="$(mktemp -d "${TMPDIR:-/tmp}/tervo-install.XXXXXX")"
 trap 'rm -rf "$STAGE"' EXIT
-STAGED="$STAGE/rusttabby-app"
+STAGED="$STAGE/tervo"
 BEFORE="$(size_of "$BIN")"
 AFTER="$BEFORE"
 install -m755 "$BIN" "$STAGED"
@@ -110,19 +111,23 @@ if ((AFTER < BEFORE)); then
 fi
 
 echo "== 安装到 $PREFIX（$SIZE_NOTE）=="
-install -Dm755 "$STAGED" "$PREFIX/bin/rusttabby-app"
-install -Dm644 packaging/rusttabby.desktop "$PREFIX/share/applications/rusttabby.desktop"
-install -Dm644 assets/icon.png "$PREFIX/share/icons/hicolor/512x512/apps/rusttabby.png"
-install -Dm644 assets/icon.png "$PREFIX/share/icons/hicolor/256x256/apps/rusttabby.png"
+install -Dm755 "$STAGED" "$PREFIX/bin/tervo"
+install -Dm644 packaging/tervo.desktop "$PREFIX/share/applications/tervo.desktop"
+install -Dm644 assets/icon.png "$PREFIX/share/icons/hicolor/512x512/apps/tervo.png"
+install -Dm644 assets/icon.png "$PREFIX/share/icons/hicolor/256x256/apps/tervo.png"
+install -Dm644 LICENSE "$PREFIX/share/doc/tervo/LICENSE"
+install -Dm644 THIRD_PARTY_NOTICES.md "$PREFIX/share/doc/tervo/THIRD_PARTY_NOTICES.md"
+install -Dm644 docs/LICENSING.md "$PREFIX/share/doc/tervo/LICENSING.md"
 
 update-desktop-database "$PREFIX/share/applications" 2>/dev/null || true
 gtk-update-icon-cache -f -t "$PREFIX/share/icons/hicolor" 2>/dev/null || true
 
 echo
 echo "已安装："
-echo "  可执行文件  $PREFIX/bin/rusttabby-app（$SIZE_NOTE）"
-echo "  桌面项      $PREFIX/share/applications/rusttabby.desktop"
-echo "  图标        $PREFIX/share/icons/hicolor/*/apps/rusttabby.png"
+echo "  可执行文件  $PREFIX/bin/tervo（$SIZE_NOTE）"
+echo "  桌面项      $PREFIX/share/applications/tervo.desktop"
+echo "  图标        $PREFIX/share/icons/hicolor/*/apps/tervo.png"
+echo "  许可证      $PREFIX/share/doc/tervo/LICENSE"
 echo
-echo "直接运行： rusttabby-app"
+echo "直接运行： tervo"
 echo "（确保 $PREFIX/bin 在 PATH 中）"

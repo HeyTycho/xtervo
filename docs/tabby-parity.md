@@ -60,7 +60,7 @@
 | 功能 | 状态 | 说明 |
 |---|---|---|
 | 设置界面 | ✅ | 主题 / 字号 / 回滚行数 |
-| 配置文件持久化 | ✅ | `~/.config/rusttabby/config.toml`（可 `RUSTTABBY_CONFIG` 覆盖） |
+| 配置文件持久化 | ✅ | `~/.config/tervo/config.toml`（可 `TERVO_CONFIG` 覆盖） |
 | 配置热加载 | 🟡 | 启动时读取，运行中改动即时写回 |
 | Profile（shell/args/env/cwd） | 🟡 | 仅 shell 可配 |
 | 快捷键自定义 | ⬜ | |

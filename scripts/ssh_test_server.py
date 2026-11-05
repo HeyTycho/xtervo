@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-only
 """最小 SSH 测试服务：key 认证 + shell + direct-tcpip（端口转发），用于本机端到端验收。
 
 依赖：python3-paramiko（Ubuntu 自带包即可）。

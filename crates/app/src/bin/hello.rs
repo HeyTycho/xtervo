@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 slint::slint! {
     export component Main inherits Window {
         title: "Slint Hello";

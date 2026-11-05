@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 //! SFTP 命令层：调用系统 `sftp`（batch 模式）完成列目录 / 上传 / 下载。
 //!
 //! 不做交互式 sftp：每次操作拼一段 batch 脚本，走 `sftp -q -b -`，

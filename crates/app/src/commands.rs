@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 //! 命令注册表：所有用户可见操作都有稳定 ID。
 //!
 //! 菜单、快捷键、Command Palette、插件都从这张表取命令；UI 只负责展示与触发，

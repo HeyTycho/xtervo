@@ -1,4 +1,4 @@
-# Rust Tabby UI 交互矩阵（UI_INTERACTION_MATRIX）
+# Tervo UI 交互矩阵（UI_INTERACTION_MATRIX）
 
 > 审计日期：2026-11-05 ｜ 起始 HEAD `0ea6231`，复核到并发提交 `8327e20` ｜ 依据：`crates/app/ui/main.slint`、`crates/app/src/main.rs`、`workspace.rs`、`pane.rs` 的实际代码。
 > 本轮只读审计，未启动 GUI、未执行构建。表中“当前行为”均可在上述文件定位；“期望行为”来自需求 B 部分，上游未核实处标 `待核`。

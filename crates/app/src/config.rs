@@ -1,4 +1,5 @@
-//! 用户配置：`~/.config/rusttabby/config.toml`（可用 `RUSTTABBY_CONFIG` 覆盖路径）。
+// SPDX-License-Identifier: GPL-3.0-only
+//! 用户配置：`~/.config/tervo/config.toml`（可用 `TERVO_CONFIG` 覆盖路径）。
 //!
 //! 两条硬约束（需求 C8）：
 //! - **版本化**：文件里带 `version`；旧文件（没有该字段）读入时视为 v0，
@@ -73,7 +74,7 @@ impl Default for Config {
 
 impl Config {
     pub fn path() -> PathBuf {
-        if let Ok(p) = std::env::var("RUSTTABBY_CONFIG") {
+        if let Ok(p) = std::env::var("TERVO_CONFIG") {
             return PathBuf::from(p);
         }
         let base = std::env::var("XDG_CONFIG_HOME")
@@ -81,7 +82,7 @@ impl Config {
             .unwrap_or_else(|_| {
                 PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into())).join(".config")
             });
-        base.join("rusttabby").join("config.toml")
+        base.join("tervo").join("config.toml")
     }
 
     pub fn load() -> Self {

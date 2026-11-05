@@ -7,7 +7,7 @@ warning: unused import: `alacritty_terminal::grid::Dimensions`
   |
   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
 
-warning: `rusttabby-core` (lib) generated 1 warning (run `cargo fix --lib -p rusttabby-core` to apply 1 suggestion)
+warning: `tervo-core` (lib) generated 1 warning (run `cargo fix --lib -p tervo-core` to apply 1 suggestion)
     Finished `bench` profile [optimized + debuginfo] target(s) in 0.12s
      Running benches/pty_throughput.rs (target/release/deps/pty_throughput-7093418c756a7fd4)
 Gnuplot not found, using plotters backend
@@ -57,7 +57,7 @@ Found 7 outliers among 50 measurements (14.00%)
   2 (4.00%) high mild
   1 (2.00%) high severe
 
-payload: /tmp/rusttabby-cat-10mb.txt
+payload: /tmp/tervo-cat-10mb.txt
 Benchmarking e2e/cat_10mb_until_visible
 Benchmarking e2e/cat_10mb_until_visible: Warming up for 3.0000 s
   cat 10MB 端到端: 97.738754ms
