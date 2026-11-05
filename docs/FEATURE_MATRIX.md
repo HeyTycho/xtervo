@@ -215,12 +215,12 @@
 
 | ID | Feature | Upstream evidence | Rust implementation | Status | Test | Result | Limitation |
 |---|---|---|---|---|---|---|---|
-| UI-PLUG-001 | Available/Installed 插件列表 | U-AUDIT / 需求 B11 | 无实现 | not_started | 无 | 未实现 | 无插件宿主/列表 |
-| UI-PLUG-002 | 插件名称、说明、版本、作者、兼容 API、权限要求 | U-AUDIT / 需求 B11 | 无实现 | not_started | 无 | 未实现 | 无插件元数据模型 |
-| UI-PLUG-003 | 搜索、安装、卸载、启用、禁用、升级、重启提示 | U-AUDIT / 需求 B11 | 无实现 | not_started | 无 | 未实现 | 无插件生命周期 |
+| UI-PLUG-001 | Available/Installed 插件列表 | U-AUDIT / 需求 B11 | `plugin.rs` 扫描 `plugins/*.toml`；设置 Plugins 页列出已安装清单（enabled/disabled）；跳过坏文件并计数 | partial | 4 个单测（加载/跳过/重复/未知字段保留）；真机 `[plugin] 发现 2 个清单，跳过 1`，页面显示 `2 plugins · 1 enabled · 1 skipped`（.logs/settings-plugins.png） | 已安装（清单）列表可用 | 无“可用/商店”列表；无安装/卸载/升级 |
+| UI-PLUG-002 | 插件名称、说明、版本、作者、兼容 API、权限要求 | U-AUDIT / 需求 B11 | `PluginManifest{id,name,version,description,enabled,extra}`；未知字段原样保留 | partial | 单测 `unknown_fields_are_preserved`；页面显示 名称/版本/状态/说明 | 基础元数据可用 | 无 author/apiVersion/permissions 强类型字段与展示 |
+| UI-PLUG-003 | 搜索、安装、卸载、启用、禁用、升级、重启提示 | U-AUDIT / 需求 B11 | 仅读取 `enabled` 字段展示，不可切换 | not_started | 无 | 未实现 | 生命周期/搜索/升级全缺；启用状态只读 |
 | UI-PLUG-004 | 安装来源与签名/校验；安装前展示权限 | U-AUDIT / 需求 B11 | 无实现 | not_started | 无 | 未实现 | 无安装器/签名/权限 UI |
 | UI-PLUG-005 | 插件崩溃/超时/API 不兼容诊断信息 | U-AUDIT / 需求 B11 | 无实现 | not_started | 无 | 未实现 | 无插件运行时/诊断 |
-| UI-PLUG-006 | Open Plugins Directory | U-AUDIT / 需求 B11 | 无实现 | not_started | 无 | 未实现 | 无插件目录 |
+| UI-PLUG-006 | Open Plugins Directory | U-AUDIT / 需求 B11 | 设置页显示插件目录路径；未做打开按钮（可复制路径） | partial | 真机截图显示 `/tmp/pl` | 路径可见 | 无一键打开目录按钮 |
 | UI-PLUG-007 | 插件扩展 Toolbar/命令面板/Tab 菜单/终端菜单/设置/Provider/Middleware | U-AUDIT / 需求 B11 | 无实现 | not_started | 无 | 未实现 | 无扩展点 |
 
 ## 4. C 部分：底层功能点
