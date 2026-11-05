@@ -36,6 +36,17 @@ export struct ThemeChoice {
     label: string,
 }
 
+/// 设置 → Hotkeys 的一行：命令标题 + 当前生效 chord + 状态。
+export struct HotkeyRow {
+    command: string,
+    title: string,
+    chord: string,
+    /// 有用户 override（不再是默认绑定）
+    custom: bool,
+    /// 当前生效 chord 与其他命令冲突
+    conflict: bool,
+}
+
 export struct DividerView {
     index: int,
     x: length,
@@ -455,8 +466,17 @@ export component MainWindow inherits Window {
     callback settings-filter(string);
     callback settings-open-result(int);
     callback settings-category-changed(int);
-    in property <[string]> hotkey-items: [];
     in property <string> hotkey-summary: "";
+    in property <[HotkeyRow]> hotkey-rows: [];
+    /// 正在录制的行下标；-1 = 未录制
+    in-out property <int> hotkey-recording-row: -1;
+    in property <int> hotkey-conflict-count: 0;
+    in-out property <string> hotkey-error: "";
+    in-out property <string> hotkey-status: "";
+    callback hotkey-start-edit(int);
+    callback hotkey-cancel-edit();
+    callback hotkey-reset(int);
+    callback hotkey-reset-all();
     in property <[string]> plugin-items: [];
     in property <string> plugin-summary: "";
     in property <string> plugin-dir: "";
@@ -464,6 +484,10 @@ export component MainWindow inherits Window {
     callback config-import-tabby();
     callback config-export-tabby();
     callback settings-open-path();
+    /// 录制结束/关闭设置后把键盘焦点还给终端 IME 宿主，否则按键会丢失。
+    public function focus-terminal() {
+        ime.focus();
+    }
     in property <int> font-size: 15;
     in property <int> scrollback: 2000;
     in-out property <bool> search-open: false;
@@ -2933,36 +2957,154 @@ export component MainWindow inherits Window {
                     width: 100%;
                     spacing: 6px;
 
+                    // 右上角：冲突数汇总 + 全部重置
+                    HorizontalLayout {
+                        height: 20px;
+                        spacing: 8px;
+
+                        Text {
+                            text: root.hotkey-summary;
+                            color: Palette.colors.subtext;
+                            font-size: 10px;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                            overflow: elide;
+                        }
+
+                        Text {
+                            text: root.hotkey-conflict-count > 0
+                                ? "⚠ \{root.hotkey-conflict-count} conflict(s)"
+                                : "✓ no conflicts";
+                            color: root.hotkey-conflict-count > 0
+                                ? Palette.colors.danger
+                                : Palette.colors.muted;
+                            font-size: 10px;
+                            vertical-alignment: center;
+                        }
+
+                        ChoiceBtn {
+                            width: 72px;
+                            height: 20px;
+                            font-size: 9px;
+                            label: "Reset All";
+                            clicked => { root.hotkey-reset-all(); }
+                        }
+                    }
+
                     Text {
-                        text: root.hotkey-summary;
-                        color: Palette.colors.subtext;
+                        text: root.hotkey-recording-row >= 0
+                            ? "Recording: press Ctrl/Alt/Shift + key · Esc cancel · Backspace reset"
+                            : "Click Edit, then press a key combination. Esc cancels; Backspace restores the default.";
+                        color: root.hotkey-recording-row >= 0
+                            ? Palette.colors.accent
+                            : Palette.colors.muted;
                         font-size: 10px;
                         wrap: word-wrap;
                     }
 
                     Flickable {
                         width: 100%;
-                        height: 290px;
+                        height: 220px;
                         interactive: true;
-                        content-height: root.hotkey-items.length * 20px;
+                        content-height: root.hotkey-rows.length * 28px;
 
                         VerticalLayout {
                             width: parent.width;
-                            for item[i] in root.hotkey-items : Text {
-                                height: 20px;
-                                text: item;
-                                color: Palette.colors.text;
-                                font-size: 11px;
-                                vertical-alignment: center;
-                                overflow: elide;
+                            spacing: 2px;
+
+                            for row[i] in root.hotkey-rows : Rectangle {
+                                height: 26px;
+                                border-radius: 4px;
+                                background: i == root.hotkey-recording-row
+                                    ? Palette.colors.hover
+                                    : transparent;
+
+                                Text {
+                                    x: 2px;
+                                    y: 2px;
+                                    width: parent.width - 206px;
+                                    height: parent.height - 4px;
+                                    text: row.title;
+                                    color: Palette.colors.text;
+                                    font-size: 11px;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                }
+
+                                Text {
+                                    x: parent.width - 202px;
+                                    y: 1px;
+                                    width: 102px;
+                                    height: 13px;
+                                    text: i == root.hotkey-recording-row ? "Press keys…" : row.chord;
+                                    color: i == root.hotkey-recording-row
+                                        ? Palette.colors.accent
+                                        : (row.conflict ? Palette.colors.danger : Palette.colors.subtext);
+                                    font-size: 10px;
+                                    horizontal-alignment: right;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                }
+
+                                Text {
+                                    x: parent.width - 202px;
+                                    y: 15px;
+                                    width: 102px;
+                                    height: 10px;
+                                    text: row.conflict ? "CONFLICT" : (row.custom ? "CUSTOM" : "");
+                                    color: row.conflict ? Palette.colors.danger : Palette.colors.accent;
+                                    font-size: 7px;
+                                    horizontal-alignment: right;
+                                    vertical-alignment: center;
+                                }
+
+                                ChoiceBtn {
+                                    x: parent.width - 94px;
+                                    y: 4px;
+                                    width: 42px;
+                                    height: 18px;
+                                    font-size: 9px;
+                                    label: i == root.hotkey-recording-row ? "Cancel" : "Edit";
+                                    active: i == root.hotkey-recording-row;
+                                    clicked => {
+                                        if (i == root.hotkey-recording-row) {
+                                            root.hotkey-cancel-edit();
+                                        } else {
+                                            root.hotkey-start-edit(i);
+                                        }
+                                    }
+                                }
+
+                                ChoiceBtn {
+                                    x: parent.width - 48px;
+                                    y: 4px;
+                                    width: 46px;
+                                    height: 18px;
+                                    font-size: 9px;
+                                    label: "Reset";
+                                    clicked => { root.hotkey-reset(i); }
+                                }
                             }
                         }
                     }
 
-                    Text {
-                        text: "快捷键编辑/录入尚未实现；当前展示命令表的默认绑定与冲突数。";
+                    if root.hotkey-error != "" : Text {
+                        text: root.hotkey-error;
+                        color: Palette.colors.danger;
+                        font-size: 10px;
+                        wrap: word-wrap;
+                    }
+                    if root.hotkey-error == "" && root.hotkey-status != "" : Text {
+                        text: root.hotkey-status;
                         color: Palette.colors.muted;
                         font-size: 10px;
+                        wrap: word-wrap;
+                    }
+
+                    Text {
+                        text: "单段组合键：Ctrl/Alt/Meta + 键，或 F1–F24。冲突的组合拒绝保存；多段键（Ctrl+K Ctrl+T）暂不支持。";
+                        color: Palette.colors.muted;
+                        font-size: 9px;
                         wrap: word-wrap;
                     }
                 }
