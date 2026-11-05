@@ -522,7 +522,7 @@ fn close_pane_inner(st: &mut AppState, id: PaneId) {
     let Some(tab_index) = st.ws.tab_of(id) else { return };
     let emptied = st.ws.tabs[tab_index].remove(id);
     st.panes.remove(&id);
-    st.pane_rows.remove(&id);
+    // pane_rows 只由 refresh_views 维护：在这里提前删会破坏「模型行数是否仍然对齐」的判断。
     if emptied {
         st.ws.tabs.remove(tab_index);
         if st.ws.tabs.is_empty() {
@@ -534,6 +534,21 @@ fn close_pane_inner(st: &mut AppState, id: PaneId) {
     }
     refresh_views(st);
     redraw_visible(st);
+    // 关窗排查：pane 数、模型行数、剩余 pane 的实际矩形，三者必须自洽。
+    let panes = st.ws.active_tab().map(|t| t.panes().len()).unwrap_or(0);
+    let rects: Vec<(PaneId, Rect)> = {
+        let mut out = Vec::new();
+        if let Some(tab) = st.ws.active_tab() {
+            if let Some(root) = &tab.root {
+                root.layout(st.content, &mut out);
+            }
+        }
+        out
+    };
+    eprintln!(
+        "[ws] close pane={id} emptied={emptied} panes={panes} model_rows={} rects={rects:?}",
+        st.pane_model.row_count()
+    );
 }
 
 fn close_pane(id: PaneId) {
@@ -635,8 +650,12 @@ fn refresh_views(st: &mut AppState) {
 
     // 拖拽/窗口缩放时布局顺序不变，用 set_row_data 避免重建 TouchArea，
     // 否则拖分隔条时按下状态会在每一帧被重置。
-    let same_order = st.pane_rows.len() == rects.len()
-        && rects.iter().enumerate().all(|(i, (id, _))| st.pane_rows.get(id) == Some(&i));
+    //
+    // 判断依据必须包含**模型实际行数**：关掉右侧/下方 pane 时，`close_pane` 会先把
+    // 它从 `pane_rows` 删掉，若只看 map 长度就会误判「顺序没变」，set_row_data 只覆盖
+    // 前 N 行，被关掉那个 pane 的视图留在模型里变成一块不再刷新的幽灵分屏。
+    let order: Vec<PaneId> = rects.iter().map(|(id, _)| *id).collect();
+    let same_order = rows_can_update_in_place(st.pane_model.row_count(), &st.pane_rows, &order);
     if same_order {
         for (i, (id, rect)) in rects.iter().enumerate() {
             if let Some(view) = make_view(id, rect) {
@@ -677,6 +696,19 @@ fn refresh_views(st: &mut AppState) {
     } else {
         st.divider_model.set_vec(views);
     }
+}
+
+/// `pane_model` 能否原地更新：模型行数等于布局数量，且每行 id 顺序一致。
+///
+/// 只比较 `pane_rows` 长度是不够的：`close_pane_inner` 会先把被关的 pane 从
+/// `pane_rows` 删掉，此时 map 长度已和布局一致，但模型里还留着旧行，
+/// `set_row_data` 只会覆盖前几行，被关掉的 pane 就成了一块不再刷新的「幽灵分屏」。
+fn rows_can_update_in_place(
+    model_rows: usize,
+    rows: &HashMap<PaneId, usize>,
+    order: &[PaneId],
+) -> bool {
+    model_rows == order.len() && order.iter().enumerate().all(|(i, id)| rows.get(id) == Some(&i))
 }
 
 fn rebuild_tabs(st: &mut AppState) {
@@ -1950,5 +1982,25 @@ mod tests {
         assert_eq!(mouse_button(2), MouseButton::Right);
         // 未知编码按左键兜底，绝不丢事件
         assert_eq!(mouse_button(99), MouseButton::Left);
+    }
+
+    #[test]
+    fn closing_last_pane_must_not_update_rows_in_place() {
+        let mut rows: HashMap<PaneId, usize> = HashMap::new();
+        rows.insert(1, 0);
+        rows.insert(2, 1);
+        // close_pane 会先把被关的 pane 从 pane_rows 删掉，而模型此刻仍是 2 行。
+        rows.remove(&2);
+        // 只比较 pane_rows.len() 会误判成「顺序没变」，于是 2 号 pane 的视图留在模型里，
+        // 右侧/下方出现一块不再更新的「幽灵分屏」，剩下的 pane 也没有真正铺满。
+        assert!(!rows_can_update_in_place(2, &rows, &[1]));
+
+        // 真正干净的状态才允许原地更新
+        assert!(rows_can_update_in_place(1, &rows, &[1]));
+        // 顺序变化（例如关掉左侧，右侧顶到第 0 行）同样必须重建
+        rows.insert(3, 0);
+        rows.insert(4, 1);
+        assert!(!rows_can_update_in_place(2, &rows, &[4, 3]));
+        assert!(rows_can_update_in_place(2, &rows, &[3, 4]));
     }
 }

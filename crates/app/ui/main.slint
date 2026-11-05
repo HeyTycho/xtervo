@@ -631,8 +631,10 @@ export component MainWindow inherits Window {
 
                 // ---------------- 右键菜单 ----------------
                 if root.menu-open : Rectangle {
-                    x: Math.min(root.menu-x, root.width - 160px);
-                    y: Math.min(root.menu-y, root.height - 170px);
+                    // 菜单坐标系是内容区（顶部被 tabbar 占掉 32px），夹取必须按内容区高度算：
+                    // 否则「Close Pane」那行会落到窗口之外，右键靠下时根本点不到关闭。
+                    x: Math.max(0px, Math.min(root.menu-x, root.width - 160px));
+                    y: Math.max(0px, Math.min(root.menu-y, root.height - root.tabbar-height - 170px));
                     width: 150px;
                     height: 156px;
                     background: Palette.colors.raise;

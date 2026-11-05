@@ -145,3 +145,22 @@ cargo bench -p rusttabby-core --bench pty_throughput
   - 同名窗口会误导 `xwin`：现已支持 `xwin 0x<id> x y` 按 id 激活/移动（id 从 app 日志的
     `[icon] 写入窗口 0x...` 取）；排查鼠标链路用 `RUSTTABBY_MOUSELOG=1`，会打印命中的格与是否上报。
 - **遗留**：1003 悬停只按格去重、未做时间节流；`--title` 参数目前没真正写到窗口标题（顺手记下，下轮处理）。
+
+### 2026-11-05 · 第 2 轮：关闭分屏后布局不恢复（幽灵分屏）
+
+- **现象**：右键 Close Pane 关掉右侧/下方 pane 后，剩余 pane 没有铺满，被关掉的位置还留着一块
+  不再刷新的画面，也不再接收输入。
+- **诊断**：`close_pane_inner` 先把 id 从 `pane_rows` 删掉，`refresh_views` 再用
+  `pane_rows.len() == rects.len()` 判断能否原地更新。两者此时已经相等，于是走 `set_row_data`
+  分支——但 `pane_model` 还多一行，旧行永远留在模型里。
+- **复现（before/after 同坐标，`--demo-splits` + 30 行窗口，右键第 3 个 pane → Close Pane）**：
+  - before：`[ws] close ... panes=2 model_rows=3` —— 模型比实际多一行（幽灵分屏）。
+  - after：`[ws] close ... panes=2 model_rows=2` —— 模型与布局一致。
+- **附带修复**：右键菜单的夹取用了 `root.height`，但菜单坐标系是内容区（比窗口少一个 tabbar 的 32px），
+  12 行窗口里「Close Pane」整行落到窗口外，右键靠下时点不到（实测点到的是 Split Down）。
+  改为按内容区高度夹取后，同坐标正常命中 `action=2`。
+- **测试**：新增 `closing_last_pane_must_not_update_rows_in_place`（先红后绿），把
+  「模型行数必须等于布局数量」钉成不变量；app 用例 41→42，基线同步抬高。
+- **门禁**：`./scripts/selfcheck.sh` PASS；ready 204.9ms / first_damage 212.8ms。
+- **工程**：`git init` + 首次提交已完成；`.gitignore` 排除 `target/`、`.cargo/`、`.logs/`，
+  仓库本体 1MB（不吞 16G 构建产物），后续每轮可回滚。
