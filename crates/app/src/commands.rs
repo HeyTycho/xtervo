@@ -39,6 +39,7 @@ pub struct Shortcut {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Category {
     Workspace,
+    Window,
     Pane,
     Terminal,
     View,
@@ -50,6 +51,7 @@ impl Category {
     pub fn label(self) -> &'static str {
         match self {
             Self::Workspace => "Workspace",
+            Self::Window => "Window",
             Self::Pane => "Pane",
             Self::Terminal => "Terminal",
             Self::View => "View",
@@ -287,6 +289,7 @@ fn normalize_key(key: &str) -> String {
 pub fn builtin() -> Registry {
     let mut r = Registry::new();
     let cmds = [
+        ("window.new", "New Window", Category::Window, Some("ctrl+shift+n")),
         ("tab.new", "New Tab", Category::Workspace, Some("ctrl+t")),
         ("tab.close", "Close Tab", Category::Workspace, Some("ctrl+w")),
         ("tab.next", "Next Tab", Category::Workspace, Some("ctrl+tab")),
@@ -339,6 +342,19 @@ mod tests {
                 Shortcut::parse(s).unwrap_or_else(|e| panic!("{} 的快捷键 {s} 解析失败: {e}", c.id));
             }
         }
+    }
+
+    #[test]
+    fn window_new_is_registered_with_default_shortcut() {
+        let r = builtin();
+        let cmd = r.get("window.new").expect("window.new 必须注册");
+        assert_eq!(cmd.title, "New Window");
+        assert_eq!(cmd.category, Category::Window);
+        assert_eq!(cmd.category.label(), "Window");
+        let sc = Shortcut::parse(cmd.default_shortcut.expect("默认快捷键")).unwrap();
+        assert!(sc.chords[0].mods.ctrl && sc.chords[0].mods.shift);
+        assert_eq!(sc.chords[0].key, "n");
+        assert!(r.conflicts().is_empty());
     }
 
     #[test]

@@ -39,7 +39,7 @@
 
 ### B1. 主窗口与自绘标题栏（9 条）
 
-状态：implemented=5，partial=3，not_started=1。
+状态：implemented=5，partial=4，not_started=0。
 
 | ID | Feature | Upstream evidence | Rust implementation | Status | Test | Result | Limitation |
 |---|---|---|---|---|---|---|---|
@@ -51,7 +51,7 @@
 | UI-WIN-006 | 全屏切换（F11/快捷键/命令） | U-AUDIT / 需求 B1 | `handle_input` F11 → `toggle_fullscreen(st)`；命令面板 `view.toggle-fullscreen` 同一实现；`--fullscreen` 启动参数 | implemented | 真机：F11 → `[ui] fullscreen=true`（2560x1440），再按 → `false`（540x472），无 panic；`--fullscreen` 启动验证过 | 2026-11-05 实测通过 | 全屏切换依赖 WM；Wayland 下由合成器决定 |
 | UI-WIN-007 | TabBar 位置可配置：上/下/左/右 | U-AUDIT（上游支持方向待核） | config `tabbar_position`（top/bottom）+ `tabbar-bottom` 属性；根布局改绝对定位；TabBar 菜单可切换并持久化 | partial | 真机：菜单切 bottom → `[ui] tabbar_position=bottom`，窗口底部出现 TabBar；重启日志 `启动 tabbar_position=bottom`；右键菜单锚在 TabBar 上方（y=224） | 上/下可用且持久化 | 左/右未实现（竖排 TabBar 需另做布局）；上游支持方向待核 |
 | UI-WIN-008 | 关闭窗口前对活动任务/连接确认；不误杀应保留 Session | U-AUDIT / 需求 B1 | `request_close`/`needs_close_confirm` + 确认弹窗；`confirm_close`（默认 true）；Tab/Pane 关闭支持 `close_action=background`（保留会话，见 UI-TAB-005） | partial | 单测 `close_confirm_policy`；真机关闭确认/Cancel；“关 Tab 保留会话”另有 pid 不变证据 | 关窗确认 + 会话保留策略均可用 | 退出应用仍会结束后台会话；确认弹窗未列出具体会话名；close_action 无设置页入口 |
-| UI-WIN-009 | 多窗口：新建窗口、Tab 在窗口间打开/移动 | U-AUDIT / 需求 B1 | 无实现 | not_started | 无 | 未实现 | 单进程单窗口；无窗口管理器/实例间 IPC |
+| UI-WIN-009 | 多窗口：新建窗口、Tab 在窗口间打开/移动 | U-AUDIT / 需求 B1 | commands.rs `window.new`（Ctrl+Shift+N，Category::Window）；main.rs `new_window` → window.rs `spawn_new_window`（current_exe + `--window`、setsid 脱离、不 wait）；TabBar 右键菜单 New Window；命令面板同一 ID | partial | 单测 `window_new_is_registered_with_default_shortcut`、`command_is_self_with_only_window_marker`、`window_flag_marks_child_process_without_parent_args`；真机双窗口步骤见 self-iteration 记录（未在本轮执行，遵守共享显示器约束） | 新建独立窗口可从快捷键/菜单/命令面板触发，子进程带 `--window` 日志标记 | 独立进程而非单进程多窗口：Tab/Pane 不能跨窗口移动或拖拽；无单实例锁/跨进程 IPC；配置并发保存为“最后写入者生效”；关闭确认只覆盖当前窗口 |
 
 ### B2. TabBar 操作（12 条）
 

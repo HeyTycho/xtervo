@@ -13,6 +13,7 @@ mod session;
 mod sftp;
 mod tabby_import;
 mod themes;
+mod window;
 mod workspace;
 mod xconn;
 
@@ -632,6 +633,15 @@ fn new_tab_inner(st: &mut AppState) {
 
 fn new_tab() {
     with_app(new_tab_inner);
+}
+
+/// 新建窗口 = 拉起一个独立的 Tervo 进程（MVP，无单实例锁/IPC）。
+/// 在 `with_app` 借用内调用也安全：不碰 AppState，只 spawn 并写日志。
+fn new_window() {
+    match window::spawn_new_window() {
+        Ok(pid) => eprintln!("[ui] new window pid={pid}"),
+        Err(e) => eprintln!("[ui] new window failed: {e}"),
+    }
 }
 
 /// 关视图但保留会话：运行时挪到后台池，PaneHandle 不被 Drop，子进程继续跑。
@@ -2168,6 +2178,7 @@ fn palette_accept(st: &mut AppState) {
 /// 执行一条命令。ID 与 `commands::builtin()` 一一对应。
 fn run_command(st: &mut AppState, id: &str) {
     match id {
+        "window.new" => new_window(),
         "tab.new" => {
             new_tab_inner(st);
             rebuild_tabs(st);
@@ -2368,6 +2379,10 @@ fn handle_input(
                 open_palette(st);
                 return;
             },
+            "n" => {
+                new_window();
+                return;
+            },
             "e" => {
                 if let Some(focused) = st.ws.active_tab().map(|t| t.focused) {
                     split_pane_inner(st, focused, Dir::Row);
@@ -2539,9 +2554,16 @@ struct Options {
     restore: bool,
     /// 启动即全屏（F11 可切换）。
     fullscreen: bool,
+    /// 由 `window.new` 拉起的子窗口进程；仅用于日志区分，不触发自动建窗。
+    window: bool,
 }
 
 fn parse_args(cfg: &Config) -> Options {
+    parse_args_from(cfg, std::env::args().skip(1))
+}
+
+/// 参数解析主体；与 `std::env::args()` 解耦，便于单测 `--window` 语义。
+fn parse_args_from(cfg: &Config, args: impl IntoIterator<Item = String>) -> Options {
     let mut o = Options {
         cols: cfg.cols,
         rows: cfg.rows,
@@ -2552,7 +2574,7 @@ fn parse_args(cfg: &Config) -> Options {
         frame_clock: "off".to_string(),
         ..Options::default()
     };
-    let mut it = std::env::args().skip(1);
+    let mut it = args.into_iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--cols" => o.cols = it.next().and_then(|v| v.parse().ok()).unwrap_or(o.cols),
@@ -2569,6 +2591,8 @@ fn parse_args(cfg: &Config) -> Options {
             "--demo-splits" => o.demo_splits = true,
             "--restore" => o.restore = true,
             "--fullscreen" => o.fullscreen = true,
+            // 仅标记“本进程是新窗口子进程”，供日志区分；不触发任何自动建窗。
+            window::WINDOW_FLAG => o.window = true,
             "--" => {
                 o.args = it.by_ref().collect();
                 break;
@@ -2659,11 +2683,12 @@ fn print_help() {
 --dump              连续打印帧内容 (调试)\n  \
 --restore           按上次快照恢复会话 (由 Restart 菜单调用)\n  \
 --fullscreen        启动即全屏 (F11 切换)\n  \
+--window            内部：以新窗口子进程启动 (仅日志区分，不自动再建窗口)\n  \
 --import-tabby PATH 无 UI：导入 Tabby config.yaml 后退出\n  \
 --export-tabby PATH 无 UI：导出 Profile 为 Tabby YAML 后退出\n  \
 --diagnose          打印环境/窗口/最近日志后退出（排查右键/焦点问题）\n  \
 -h, --help          显示帮助\n\n\
-快捷键: Ctrl+T 新建标签 / Ctrl+W 关闭 / Ctrl+F 搜索 / Ctrl+Shift+C 复制 / Ctrl+Shift+V 粘贴\n\
+快捷键: Ctrl+T 新建标签 / Ctrl+Shift+N 新建窗口 / Ctrl+W 关闭 / Ctrl+F 搜索 / Ctrl+Shift+C 复制 / Ctrl+Shift+V 粘贴\n\
 配置: ~/.config/tervo/config.toml (TERVO_CONFIG 可覆盖)\n\
 主题目录: ~/.config/tervo/themes (TERVO_THEMES_DIR 可覆盖；支持 iTerm2/WT/Alacritty/kitty/Xresources/YAML)",
         env!("CARGO_PKG_VERSION")
@@ -2788,6 +2813,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let mut cfg = Config::load();
     let opts = parse_args(&cfg);
+    if opts.window {
+        // 子窗口进程：仅日志区分。这里刻意不做任何“再建窗口”的动作，避免递归启动。
+        eprintln!("[ui] new window process pid={} (--window)", std::process::id());
+    }
 
     // 内置 + 用户自定义主题；加载失败只记录，不阻塞启动。
     let registry = ThemeRegistry::load(&ThemeRegistry::default_dir());
@@ -3708,6 +3737,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 new_tab_inner(st);
                 rebuild_tabs(st);
             },
+            13 => new_window(),
             2 => {
                 st.ui.set_settings_open(true);
             },
@@ -4406,5 +4436,21 @@ mod tests {
         rows.insert(4, 1);
         assert!(!rows_can_update_in_place(2, &rows, &[4, 3]));
         assert!(rows_can_update_in_place(2, &rows, &[3, 4]));
+    }
+
+    #[test]
+    fn window_flag_marks_child_process_without_parent_args() {
+        let cfg = Config::default();
+        let opts = parse_args_from(&cfg, ["--window".to_string()]);
+        assert!(opts.window);
+        // 新窗口进程不能继承父进程的一次性参数（否则 --restore 会在子进程里再恢复一次布局）
+        assert!(opts.args.is_empty());
+        assert!(!opts.restore);
+        assert!(!opts.fullscreen);
+        assert_eq!(opts.shell, cfg.shell);
+        // 正常启动不带标记
+        assert!(!parse_args_from(&cfg, Vec::new()).window);
+        // 与 spawn 侧常量一致
+        assert_eq!(window::WINDOW_FLAG, "--window");
     }
 }
