@@ -1224,11 +1224,18 @@ fn get_clipboard(st: &mut AppState) -> Option<String> {
     st.clipboard.as_mut().and_then(|cb| cb.get_text().ok())
 }
 
+/// 复制前归一化：去掉行尾多余换行（全选时后面一堆空行不该进剪贴板），
+/// 但保留行内空格与中间空行；全空白结果直接丢弃。
+fn normalize_clipboard_text(text: String) -> Option<String> {
+    let t = text.trim_end_matches(['\r', '\n']);
+    (!t.is_empty()).then(|| t.to_string())
+}
+
 fn copy_current_selection(st: &mut AppState) {
     let focused = st.ws.active_tab().map(|t| t.focused);
     let Some(id) = focused else { return };
-    let text = st.panes.get(&id).and_then(|rt| rt.handle.copy_selection());
-    if let Some(text) = text.filter(|t| !t.is_empty()) {
+    let text = st.panes.get(&id).and_then(|rt| rt.handle.copy_selection()).and_then(normalize_clipboard_text);
+    if let Some(text) = text {
         set_clipboard(st, &text);
     }
 }
@@ -1346,8 +1353,19 @@ fn run_command(st: &mut AppState, id: &str) {
         "terminal.copy" => copy_current_selection(st),
         "terminal.paste" => paste_into_focused(st),
         "terminal.find" => open_search(st),
-        "terminal.clear" | "terminal.select-all" => {
-            eprintln!("[ui] command {id} 尚未实现（matrix 记为 not_started）");
+        "terminal.select-all" => {
+            if let Some(focused) = st.ws.active_tab().map(|t| t.focused) {
+                if let Some(rt) = st.panes.get(&focused) {
+                    rt.handle.select_all();
+                }
+            }
+        },
+        "terminal.clear" => {
+            if let Some(focused) = st.ws.active_tab().map(|t| t.focused) {
+                if let Some(rt) = st.panes.get(&focused) {
+                    rt.handle.clear_screen();
+                }
+            }
         },
         "view.command-palette" => open_palette(st),
         "view.toggle-fullscreen" => toggle_fullscreen(),
@@ -1907,8 +1925,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if !drag.moved {
                 return;
             }
-            let text = st.panes.get(&drag.pane).and_then(|rt| rt.handle.copy_selection());
-            if let Some(text) = text.filter(|t| !t.is_empty()) {
+            let text = st
+                .panes
+                .get(&drag.pane)
+                .and_then(|rt| rt.handle.copy_selection())
+                .and_then(normalize_clipboard_text);
+            if let Some(text) = text {
                 set_clipboard(st, &text);
             }
         });
@@ -2090,6 +2112,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
             4 => {
                 with_app(paste_into_focused);
+            },
+            5 => {
+                with_app(|st| run_command(st, "terminal.find"));
+            },
+            6 => {
+                with_app(|st| run_command(st, "terminal.select-all"));
+            },
+            7 => {
+                with_app(|st| run_command(st, "terminal.clear"));
             },
             _ => {},
         }
@@ -2622,6 +2653,16 @@ mod tests {
         assert!(!is_modifier_artifact("\u{1b}", false, false, false)); // Esc
         assert!(!is_modifier_artifact("\n", true, false, false)); // Ctrl+Enter
         assert!(!is_modifier_artifact("你", false, false, false));
+    }
+
+    #[test]
+    fn selection_normalization_trims_trailing_blank_lines() {
+        assert_eq!(normalize_clipboard_text("a\nb\n\n\n".into()), Some("a\nb".to_string()));
+        assert_eq!(normalize_clipboard_text("a\nb  ".into()), Some("a\nb  ".to_string()));
+        assert_eq!(normalize_clipboard_text("\n\n\n".into()), None);
+        assert_eq!(normalize_clipboard_text(String::new()), None);
+        // 中间空行要保留
+        assert_eq!(normalize_clipboard_text("a\n\nb".into()), Some("a\n\nb".to_string()));
     }
 
     #[test]

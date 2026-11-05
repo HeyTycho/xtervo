@@ -409,3 +409,61 @@ fn osc_color_queries_get_replies() {
     drop(handle);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn select_all_copies_visible_screen() {
+    let handle = spawn(PaneConfig {
+        cols: 40,
+        rows: 6,
+        scrollback: 100,
+        shell: Some("/bin/sh".to_string()),
+        args: vec!["-c".to_string(), "printf 'alpha\\nbravo\\ncharlie\\n'; sleep 3".to_string()],
+        ..PaneConfig::default()
+    })
+    .expect("spawn");
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut frame = handle.new_frame();
+    loop {
+        frame = handle.pull(frame);
+        if frame_text(&frame).contains("charlie") {
+            break;
+        }
+        assert!(Instant::now() < deadline, "没有等到输出");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    handle.select_all();
+    let text = handle.copy_selection().expect("全选应有文本");
+    assert!(text.contains("alpha"), "{text:?}");
+    assert!(text.contains("charlie"), "{text:?}");
+}
+
+#[test]
+fn clear_screen_wipes_content() {
+    let handle = spawn(PaneConfig {
+        cols: 40,
+        rows: 6,
+        scrollback: 100,
+        shell: Some("/bin/sh".to_string()),
+        args: vec!["-c".to_string(), "printf 'hello\\n'; sleep 3".to_string()],
+        ..PaneConfig::default()
+    })
+    .expect("spawn");
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut frame = handle.new_frame();
+    loop {
+        frame = handle.pull(frame);
+        if frame_text(&frame).contains("hello") {
+            break;
+        }
+        assert!(Instant::now() < deadline, "没有等到输出");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    // Ctrl 通道 FIFO：清屏先于这次拉帧被处理
+    handle.clear_screen();
+    let frame = handle.pull(frame);
+    assert!(!frame_text(&frame).contains("hello"), "清屏后不应再有旧内容");
+}
