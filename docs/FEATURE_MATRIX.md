@@ -58,7 +58,7 @@
 
 | ID | Feature | Upstream evidence | Rust implementation | Status | Test | Result | Limitation |
 |---|---|---|---|---|---|---|---|
-| UI-TAB-001 | 新建 Tab：+、快捷键、命令面板、Profile Selector | U-AUDIT / 需求 B2 | main.rs `new_tab_inner`；Ctrl+T `handle_input`；main.slint `+`→`on_new_tab` | partial | 人工：`+` 与 Ctrl+T 各建一个 tab；命令面板/Profile Selector 不存在 | 两条入口可用；其余入口缺失 | 仅 + 与 Ctrl+T；无 Profile 选择与命令面板 |
+| UI-TAB-001 | 新建 Tab：+、快捷键、命令面板、Profile Selector | U-AUDIT / 需求 B2 | main.rs `new_tab_inner`；Ctrl+T；`+` 按钮；Command Palette 执行 `tab.new` | partial | 真机：命令面板执行 `tab.new` → 新建 Tab | `+`/Ctrl+T/命令面板三条入口可用 | 无 Profile Selector |
 | UI-TAB-002 | 新建 Tab 下拉：Profile/连接类型、搜索、键盘选择 | U-AUDIT / 需求 B2 | 无实现 | not_started | 无 | 未实现 | 无下拉/搜索/键盘选择 |
 | UI-TAB-003 | 单击 Tab 切换活动 Tab | U-AUDIT / 需求 B2 | main.slint tab-hit `tab-clicked`；main.rs `set_active_tab` | implemented | 人工：多 tab 单击切换；ui-shell §7 .logs/t4.png | 已有记录 | 仅左键；无中键关闭/双击重命名 |
 | UI-TAB-004 | 拖动 Tab 调整顺序；拖出窗口按上游行为处理 | U-AUDIT（拖出行为待核） | main.slint `drag-tab`/`drag-x` 拖拽状态；Rust `drag_target` + `workspace::move_tab`；顺序随会话快照持久化 | partial | 单测 `drag_target_maps_pointer_to_slot`、`move_tab_reorders_and_tracks_active`；真机拖 tab0→tab1 日志 `[ws] reorder tab 0 → 1`，点击/双击仍正常 | 拖动排序可用 | 拖出窗口未实现（上游语义亦未核实）；无拖拽视觉反馈 |
@@ -99,7 +99,7 @@
 | UI-NAV-002 | Sidebar/Toolbar 按钮、分组、顺序遵循上游；插件可扩展 | U-AUDIT / 需求 B4 | 无实现 | not_started | 无 | 未实现 | 无 Sidebar/Toolbar/插件入口 |
 | UI-NAV-003 | Connection Manager 入口始终易访问 | U-AUDIT / 需求 B4 | 无实现 | not_started | 无 | 未实现 | 无连接管理入口 |
 | UI-NAV-004 | Profile Selector：快速选 Shell/SSH/Serial/Telnet Profile | U-AUDIT / 需求 B4 | 无实现 | not_started | 无 | 未实现 | 新 tab 固定用 cfg.shell/$SHELL |
-| UI-NAV-005 | Command Palette：模糊搜索命令/Profile/设置（按上游核验） | U-AUDIT（上游能力待核） | 无实现 | needs_verification | 待上游核实是否有命令面板 | 未核实/未实现 | 无命令注册表/模糊搜索；上游能力待核 |
+| UI-NAV-005 | Command Palette：模糊搜索命令/Profile/设置（按上游核验） | U-AUDIT（上游能力待核） | main.slint Palette 浮层 + main.rs `open_palette`/`refresh_palette`/`palette_accept`；`commands::Registry::search` 模糊搜索；TabBar 菜单与 Ctrl+Shift+P 入口 | partial | 真机：菜单 → `[ui] palette open items=10`；点第一条 → `[ui] run command tab.new` → `[ws] new tab: tabs=2` | 命令面板可用（19/21 命令已接线） | Profile/设置项未接入搜索；无键盘输入端到端验证（沙箱键盘注入不可用） |
 | UI-NAV-006 | Toolbar 插件按钮：图标、名称、提示、动作、禁用态 | U-AUDIT / 需求 B4 | 无实现 | not_started | 无 | 未实现 | 无插件系统/工具栏 |
 | UI-NAV-007 | 状态/通知区：连接、活动任务、进度、完成提醒 | U-AUDIT / 需求 B4 | 无状态区；仅 CoreEvent::Bell/Exited 事件存在但 UI 未消费 | not_started | 无 | 未实现 | 无状态栏/通知中心；Bell/Exited 被 `poll_events` 忽略 |
 | UI-NAV-008 | 所有图标 Tooltip/Accessible Label；禁用/加载/错误态清楚 | U-AUDIT / 需求 B4 | main.slint MiniBtn/窗口按钮只画 Text 字形，无 tooltip/accessible-label/disabled 态 | not_started | 人工：悬停按钮无提示；屏幕阅读器未测 | 未实现 | ⚙/─/□/❐/✕/+ 均无标签；无禁用/加载/错误态 |
@@ -364,7 +364,7 @@
 | KEY-002 | 自定义快捷键，支持单键与 multi-chord | U-AUDIT / 需求 C9 | `commands.rs::Shortcut::parse` 支持 1–2 段、ctrl/alt/shift/meta；无配置读写/录制 UI | partial | `shortcut_parse_and_format_roundtrip`；无自定义绑定测试 | 解析/格式化数据层已有记录 | 无用户配置/录制/持久化；快捷键仍取内置默认 |
 | KEY-003 | 冲突检测、重复快捷键处理、平台保留键处理 | U-AUDIT / 需求 C9 | `Registry::conflicts` + `bindings`；内置绑定断言无冲突；无平台保留键表 | partial | `conflict_detection`、`builtin_registry_is_consistent` | 冲突检测已有记录；无 UI/保留键处理 | 无冲突提示 UI；未处理桌面环境保留键；重复绑定策略仅报告 |
 | KEY-004 | Profile 绑定快捷键 | U-AUDIT / 需求 C9 | 无实现 | not_started | 无 | 未实现 | 无 Profile/快捷键 |
-| KEY-005 | 命令面板可搜索并执行命令 | U-AUDIT / 需求 C9 | `Registry::search` 模糊搜索（标题/ID 子序列）；`view.command-palette` 命令定义；无 Palette UI/执行 | partial | `fuzzy_search_prefers_title_prefix`；无 UI 测试 | 搜索数据层已有记录；面板缺失 | 无 Ctrl+Shift+P 面板/键盘选择/执行接线 |
+| KEY-005 | 命令面板可搜索并执行命令 | U-AUDIT / 需求 C9 | `Registry::search` + main.rs Palette UI（Ctrl+Shift+P / TabBar 菜单）、上下选择、Enter/点击执行、`run_command` 分发 19 条 | implemented | 单测 `fuzzy_search_prefers_title_prefix`；真机点击执行 `tab.new` 成功 | 2026-11-05 实测通过 | `terminal.clear`/`terminal.select-all` 仍是占位；键盘路径未在沙箱验证 |
 | KEY-006 | 插件可注册命令、快捷键、命令上下文 | U-AUDIT / 需求 C9 | 无实现 | not_started | 无 | 未实现 | 无插件 API |
 | KEY-007 | 快捷键配置可迁移并提供默认配置 | U-AUDIT / 需求 C9 | `builtin()` 提供默认快捷键；`Shortcut` 可序列化；无配置项/迁移逻辑 | partial | `builtin_registry_is_consistent`；无迁移测试 | 默认绑定已有记录；无迁移 | 无用户自定义配置/版本迁移；默认键未与 UI 分发统一 |
 

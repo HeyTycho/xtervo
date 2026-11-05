@@ -221,6 +221,16 @@ export component MainWindow inherits Window {
     callback tab-rename(int);
     callback rename-committed(int, string);
     callback rename-cancelled();
+    // Command Palette
+    in-out property <bool> palette-open: false;
+    in-out property <string> palette-query: "";
+    in property <[string]> palette-items: [];
+    in-out property <int> palette-selected: 0;
+    callback palette-query-changed(string);
+    callback palette-move(int);
+    callback palette-accept();
+    callback palette-cancel();
+    callback palette-pick(int);
     // Tab 拖拽排序：按下记起点，抬起按 x 落位
     property <int> drag-tab: -1;
     property <length> drag-x: 0px;
@@ -803,7 +813,7 @@ export component MainWindow inherits Window {
         x: Math.min(root.tabmenu-x, root.width - 180px);
         y: root.tabmenu-y;
         width: 170px;
-        height: 156px;
+        height: 186px;
         background: Palette.colors.raise;
         border-radius: 8px;
         border-width: 1px;
@@ -832,6 +842,10 @@ export component MainWindow inherits Window {
                 // 存布局 + cwd，重启进程后按快照恢复（不丢分屏）
                 label: "Restart Session";
                 picked => { root.tabmenu-open = false; root.tabbar-menu-action(4); }
+            }
+            MenuRow {
+                label: "Command Palette";
+                picked => { root.tabmenu-open = false; root.tabbar-menu-action(5); }
             }
             MenuRow {
                 label: "Close Window";
@@ -872,6 +886,62 @@ export component MainWindow inherits Window {
             MenuRow {
                 label: "Rename";
                 picked => { root.tabctx-open = false; root.tab-menu-action(root.tabctx-index, 3); }
+            }
+        }
+    }
+
+    if root.palette-open : Rectangle {
+        x: (root.width - 420px) / 2;
+        y: 56px;
+        width: 420px;
+        height: 348px;
+        background: Palette.colors.raise;
+        border-radius: 10px;
+        border-width: 1px;
+        border-color: Palette.colors.border;
+        drop-shadow-blur: 24px;
+        drop-shadow-offset-y: 8px;
+        drop-shadow-color: #000000c0;
+
+        VerticalLayout {
+            padding: 10px;
+            spacing: 6px;
+
+            TextInput {
+                height: 30px;
+                text <=> root.palette-query;
+                single-line: true;
+                color: Palette.colors.text;
+                font-size: 14px;
+                init => { self.focus(); }
+                edited => { root.palette-query-changed(self.text); }
+                key-pressed(event) => {
+                    if (event.text == "\u{1b}") { root.palette-cancel(); return EventResult.accept; }
+                    if (event.text == "\u{F700}") { root.palette-move(-1); return EventResult.accept; }
+                    if (event.text == "\u{F701}") { root.palette-move(1); return EventResult.accept; }
+                    if (event.text == "\u{a}" || event.text == "\u{d}") { root.palette-accept(); return EventResult.accept; }
+                    EventResult.reject
+                }
+            }
+
+            for item[i] in root.palette-items : Rectangle {
+                height: 26px;
+                border-radius: 4px;
+                background: i == root.palette-selected ? Palette.colors.accent : transparent;
+
+                Text {
+                    x: 8px;
+                    text: item;
+                    color: i == root.palette-selected ? Palette.colors.accent-text : Palette.colors.text;
+                    font-size: 13px;
+                    vertical-alignment: center;
+                    width: parent.width - 16px;
+                    overflow: elide;
+                }
+
+                TouchArea {
+                    clicked => { root.palette-selected = i; root.palette-pick(i); }
+                }
             }
         }
     }

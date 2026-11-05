@@ -100,6 +100,12 @@ struct AppState {
     auto_watch_started: bool,
     search_open: bool,
     search_query: String,
+    /// 命令表（Command Palette / 快捷键分发共用）
+    commands: commands::Registry,
+    /// Palette 当前展示项对应的命令 ID（与 palette_model 同序）
+    palette_ids: Vec<&'static str>,
+    palette_model: Rc<VecModel<slint::SharedString>>,
+    palette_sel: usize,
     drag: Option<Drag>,
     /// 1003 悬停上报的上一格（按格去重，避免鼠标移动刷爆有界 ctrl 队列）。
     hover_cell: Option<(PaneId, (u16, u16))>,
@@ -1257,6 +1263,115 @@ fn update_search_bar(st: &mut AppState) {
     st.ui.set_search_query(st.search_query.as_str().into());
 }
 
+// ------------------------------------------------------------ Command Palette
+
+/// 按当前输入刷新结果列表（最多 10 条）。
+fn refresh_palette(st: &mut AppState) {
+    let query = st.ui.get_palette_query().to_string();
+    let hits: Vec<&commands::Command> = st.commands.search(&query).into_iter().take(10).collect();
+    let items: Vec<slint::SharedString> = hits.iter().map(|c| c.title.into()).collect();
+    st.palette_ids = hits.iter().map(|c| c.id).collect();
+    st.palette_sel = 0;
+    st.palette_model.set_vec(items);
+    st.ui.set_palette_selected(0);
+}
+
+fn open_palette(st: &mut AppState) {
+    st.ui.set_palette_query("".into());
+    st.ui.set_palette_open(true);
+    refresh_palette(st);
+    eprintln!("[ui] palette open items={}", st.palette_ids.len());
+}
+
+fn palette_move(st: &mut AppState, delta: i32) {
+    let n = st.palette_ids.len();
+    if n == 0 {
+        return;
+    }
+    let cur = st.ui.get_palette_selected().max(0) as isize;
+    let next = (((cur + delta as isize) % n as isize) + n as isize) % n as isize;
+    st.ui.set_palette_selected(next as i32);
+    st.palette_sel = next as usize;
+}
+
+fn palette_accept(st: &mut AppState) {
+    let idx = st.ui.get_palette_selected().max(0) as usize;
+    let id = st.palette_ids.get(idx).copied();
+    st.ui.set_palette_open(false);
+    if let Some(id) = id {
+        eprintln!("[ui] run command {id}");
+        run_command(st, id);
+    }
+}
+
+/// 执行一条命令。ID 与 `commands::builtin()` 一一对应。
+fn run_command(st: &mut AppState, id: &str) {
+    match id {
+        "tab.new" => {
+            new_tab_inner(st);
+            rebuild_tabs(st);
+        },
+        "tab.close" => close_tab_inner(st, st.ws.active),
+        "tab.next" => switch_tab_relative(1),
+        "tab.prev" => switch_tab_relative(-1),
+        "tab.duplicate" => duplicate_tab(st, st.ws.active),
+        "pane.split-right" => {
+            if let Some(focused) = st.ws.active_tab().map(|t| t.focused) {
+                split_pane_inner(st, focused, Dir::Row);
+            }
+        },
+        "pane.split-down" => {
+            if let Some(focused) = st.ws.active_tab().map(|t| t.focused) {
+                split_pane_inner(st, focused, Dir::Col);
+            }
+        },
+        "pane.close" => {
+            if let Some(focused) = st.ws.active_tab().map(|t| t.focused) {
+                close_pane_inner(st, focused);
+            }
+        },
+        "pane.focus-next" => {
+            let (panes, focused) = match st.ws.active_tab() {
+                Some(t) => (t.panes(), t.focused),
+                None => return,
+            };
+            if panes.len() > 1 {
+                let cur = panes.iter().position(|p| *p == focused).unwrap_or(0);
+                let next = panes[(cur + 1) % panes.len()];
+                let idx = st.ws.active;
+                st.ws.tabs[idx].focused = next;
+                refresh_views(st);
+            }
+        },
+        "terminal.copy" => copy_current_selection(st),
+        "terminal.paste" => paste_into_focused(st),
+        "terminal.find" => open_search(st),
+        "terminal.clear" | "terminal.select-all" => {
+            eprintln!("[ui] command {id} 尚未实现（matrix 记为 not_started）");
+        },
+        "view.command-palette" => open_palette(st),
+        "view.toggle-fullscreen" => toggle_fullscreen(),
+        "view.zoom-in" => {
+            st.cfg.font_size = (st.cfg.font_size + 1.0).clamp(8.0, 40.0);
+            apply_font_size(st);
+            st.cfg.save();
+        },
+        "view.zoom-out" => {
+            st.cfg.font_size = (st.cfg.font_size - 1.0).clamp(8.0, 40.0);
+            apply_font_size(st);
+            st.cfg.save();
+        },
+        "view.zoom-reset" => {
+            st.cfg.font_size = 15.0;
+            apply_font_size(st);
+            st.cfg.save();
+        },
+        "session.restart" => restart_session(st),
+        "settings.open" => st.ui.set_settings_open(true),
+        other => eprintln!("[ui] 未知命令 {other}"),
+    }
+}
+
 fn open_search(st: &mut AppState) {
     st.search_open = true;
     st.ui.set_search_open(true);
@@ -1383,6 +1498,10 @@ fn handle_input(
             },
             "v" => {
                 paste_into_focused(st);
+                return;
+            },
+            "p" => {
+                open_palette(st);
                 return;
             },
             _ => {},
@@ -1608,6 +1727,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui.set_dividers(ModelRc::from(divider_model.clone()));
 
     let echo = Arc::new(AtomicUsize::new(0));
+    let palette_model = Rc::new(VecModel::<slint::SharedString>::default());
+    ui.set_palette_items(ModelRc::from(palette_model.clone()));
     let state = Rc::new(RefCell::new(AppState {
         ui: ui.clone_strong(),
         ws: Workspace::new(),
@@ -1628,6 +1749,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         auto_watch_started: false,
         search_open: false,
         search_query: String::new(),
+        commands: commands::builtin(),
+        palette_ids: Vec::new(),
+        palette_model,
+        palette_sel: 0,
         drag: None,
         hover_cell: None,
         resize: None,
@@ -1992,6 +2117,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         with_app(|st| st.ui.set_rename_open(false));
     });
 
+    ui.on_palette_query_changed(|_q| {
+        with_app(|st| refresh_palette(st));
+    });
+
+    ui.on_palette_move(|delta| {
+        with_app(|st| palette_move(st, delta));
+    });
+
+    ui.on_palette_accept(|| {
+        with_app(|st| palette_accept(st));
+    });
+
+    ui.on_palette_cancel(|| {
+        with_app(|st| st.ui.set_palette_open(false));
+    });
+
+    ui.on_palette_pick(|index| {
+        with_app(|st| {
+            st.ui.set_palette_selected(index.max(0));
+            palette_accept(st);
+        });
+    });
+
     ui.on_tab_reorder(|from, drag_x, strip_w| {
         with_app(|st| {
             let n = st.ws.tabs.len();
@@ -2056,6 +2204,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let _ = slint::quit_event_loop();
             },
             4 => restart_session(st),
+            5 => open_palette(st),
             _ => {},
         });
     });
