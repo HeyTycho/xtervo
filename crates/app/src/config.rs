@@ -51,6 +51,8 @@ pub struct Config {
     pub paste_on_middle_click: bool,
     /// TabBar 位置："top" | "bottom"。
     pub tabbar_position: String,
+    /// Tab 非活动时收到 OSC 9/777/BEL 是否调用 notify-send（默认开）。
+    pub desktop_notifications: bool,
     // ---- Quake mode ----
     /// 启用后 F12（可配置）全局显示/隐藏下拉终端。
     pub quake_enabled: bool,
@@ -88,6 +90,7 @@ impl Default for Config {
             right_click: "menu".to_string(),
             paste_on_middle_click: true,
             tabbar_position: "top".to_string(),
+            desktop_notifications: true,
             quake_enabled: false,
             quake_hotkey: "F12".to_string(),
             quake_width: 0.7,
@@ -233,6 +236,8 @@ mod tests {
         assert_eq!(cfg.theme, "latte");
         assert_eq!(cfg.font_size, 15.0);
         assert_eq!(cfg.scrollback, 2000);
+        // 新增的桌面通知开关对旧配置也要默认开启
+        assert!(cfg.desktop_notifications, "旧配置缺 desktop_notifications 时默认开");
         // 没有 version 的旧文件按 v0 读入
         assert_eq!(cfg.version, 0);
     }
@@ -255,6 +260,7 @@ mod tests {
         assert!(!c.quake_enabled, "Quake 默认关闭");
         assert_eq!(c.quake_hotkey, "F12");
         assert_eq!(c.tabbar_position, "top", "默认 TabBar 在上");
+        assert!(c.desktop_notifications, "默认允许桌面通知");
         assert_eq!(c.close_action, "end", "默认关闭即结束会话");
         assert_eq!(c.version, SCHEMA_VERSION);
     }
