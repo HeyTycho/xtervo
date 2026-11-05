@@ -242,3 +242,15 @@ cargo bench -p rusttabby-core --bench pty_throughput
 - **教训 3**：`TextInput.text` 必须双向绑定 `<=>`，否则 Rust 清空查询后输入框仍留旧文字，
   与占位符重叠。
 
+### 2026-11-05 · 第 30 轮：最终验收与交付
+
+- **验收**：selfcheck PASS（ready 46.7 ms / first 47.4 ms / RSS 52.5 MB）；app 90 /
+  core 66 / conformance 11；打包 193 MB → 32.3 MB stripped（−82.5%，≤40 MB 门禁）；
+  安装到 `/tmp/final-prefix` 后 `--help` 正常。
+- **矩阵**：228 条，implemented 23 / partial 76 / needs_verification 17 /
+  not_started 105 / unsupported 7，加权 28.6%。
+- **交付文档**：新增 `docs/FINAL_REPORT.md`（能做什么、证据、限制、如何继续），
+  更新 `CLOSURE.md` / `PERFORMANCE.md` 的最终数字。
+- **结论**：能日常使用的 Slint/X11 终端工作区，但不是官方 Tabby 的完整替代；
+  剩余大头（内建 SSH/SFTP、Vault、插件运行时、Quake、连接管理器 UI）未闭环。
+
