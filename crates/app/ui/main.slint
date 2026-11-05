@@ -313,6 +313,10 @@ export component MainWindow inherits Window {
     in property <[ThemeChoice]> theme-choices: [];
     /// 设置面板高度：主题数量变多时由 Rust 侧按行数下发。
     in property <length> settings-height: 300px;
+    /// 设置分类：0=Appearance 1=Terminal 2=Window 3=Config File
+    in-out property <int> settings-category: 0;
+    in-out property <string> settings-path: "";
+    callback settings-open-path();
     in property <int> font-size: 15;
     in property <int> scrollback: 2000;
     in-out property <bool> search-open: false;
@@ -1403,6 +1407,12 @@ export component MainWindow inherits Window {
             drop-shadow-offset-y: 10px;
             drop-shadow-color: #000000b8;
 
+            // 吃掉面板内部的空白点击，否则会穿透到 backdrop 把设置关掉
+            TouchArea {
+                width: 100%;
+                height: 100%;
+            }
+
             VerticalLayout {
                 padding: 18px;
                 spacing: 14px;
@@ -1429,6 +1439,37 @@ export component MainWindow inherits Window {
                     horizontal-stretch: 1;
                     background: Palette.colors.border;
                 }
+
+                HorizontalLayout {
+                    spacing: 6px;
+                    ChoiceBtn {
+                        width: 96px; height: 24px; font-size: 11px;
+                        label: "Appearance";
+                        active: root.settings-category == 0;
+                        clicked => { root.settings-category = 0; }
+                    }
+                    ChoiceBtn {
+                        width: 96px; height: 24px; font-size: 11px;
+                        label: "Terminal";
+                        active: root.settings-category == 1;
+                        clicked => { root.settings-category = 1; }
+                    }
+                    ChoiceBtn {
+                        width: 96px; height: 24px; font-size: 11px;
+                        label: "Window";
+                        active: root.settings-category == 2;
+                        clicked => { root.settings-category = 2; }
+                    }
+                    ChoiceBtn {
+                        width: 96px; height: 24px; font-size: 11px;
+                        label: "Config File";
+                        active: root.settings-category == 3;
+                        clicked => { root.settings-category = 3; }
+                    }
+                }
+
+                if root.settings-category == 0 : VerticalLayout {
+                    spacing: 10px;
 
                 HorizontalLayout {
                     spacing: 8px;
@@ -1489,6 +1530,10 @@ export component MainWindow inherits Window {
                         }
                     }
                 }
+                }
+
+                if root.settings-category == 1 : VerticalLayout {
+                    spacing: 14px;
 
                 HorizontalLayout {
                     spacing: 8px;
@@ -1573,6 +1618,67 @@ export component MainWindow inherits Window {
                     color: Palette.colors.muted;
                     font-size: 11px;
                     wrap: word-wrap;
+                }
+                }
+
+                if root.settings-category == 2 : VerticalLayout {
+                    spacing: 14px;
+
+                    ToggleRow {
+                        label: "Tab Bar at bottom";
+                        on: root.tabbar-bottom;
+                        toggled => { root.tabbar-menu-action(6); }
+                    }
+
+                    Text {
+                        text: "Tab Bar 位置即时生效并写入配置；关闭多个会话前的确认在 Terminal 分类里。";
+                        color: Palette.colors.muted;
+                        font-size: 11px;
+                        wrap: word-wrap;
+                    }
+                }
+
+                if root.settings-category == 3 : VerticalLayout {
+                    spacing: 12px;
+
+                    Text {
+                        text: "Config file";
+                        color: Palette.colors.subtext;
+                        font-size: 12px;
+                    }
+                    Text {
+                        text: root.settings-path;
+                        color: Palette.colors.text;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                    }
+                    HorizontalLayout {
+                        alignment: start;
+                        Rectangle {
+                            width: 110px; height: 28px; border-radius: 6px;
+                            background: open-path-hit.has-hover ? Palette.colors.hover : Palette.colors.raise;
+                            border-width: 1px;
+                            border-color: Palette.colors.border;
+                            open-path-hit := TouchArea {
+                                clicked => { root.settings-open-path(); }
+                            }
+                            Text {
+                                text: "Open Folder";
+                                color: Palette.colors.text;
+                                font-size: 12px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                                width: 100%;
+                                height: 100%;
+                            }
+                        }
+                    }
+                    Text {
+                        text: "普通配置里不会出现密码或私钥；凭据将走系统 Keyring（Vault，未实现）。";
+                        color: Palette.colors.muted;
+                        font-size: 11px;
+                        wrap: word-wrap;
+                    }
                 }
             }
         }

@@ -151,7 +151,7 @@
 
 | ID | Feature | Upstream evidence | Rust implementation | Status | Test | Result | Limitation |
 |---|---|---|---|---|---|---|---|
-| UI-SET-001 | Application：应用级行为、启动与默认行为 | U-AUDIT / 需求 B7 | 无实现 | not_started | 无 | 未实现 | 无应用级设置页 |
+| UI-SET-001 | Application：应用级行为、启动与默认行为 | U-AUDIT / 需求 B7 | 设置面板改为分类页（Appearance/Terminal/Window/Config File），当前无独立 Application 分类 | partial | 真机：四个分类可切换（.logs/settings-cat-*.png） | 分类框架可用 | Application 分类内容（启动行为、默认项）未做 |
 | UI-SET-002 | Appearance：外观、窗口风格、图标/字体、背景效果 | U-AUDIT / 需求 B7 | main.slint 设置面板仅有主题选择；主题含 UI chrome 配色 | partial | 人工：12 套主题 + Auto 可切换；无窗口风格/背景效果 | 主题外观可用 | 无窗口风格/图标/字体/背景/透明度设置 |
 | UI-SET-003 | Profiles & Connections：默认 Profile、列表、连接行为 | U-AUDIT / 需求 B7 | 无实现 | not_started | 无 | 未实现 | 无 Profile 设置页 |
 | UI-SET-004 | Terminal：行为、字体、滚动、复制粘贴、鼠标等 | U-AUDIT / 需求 B7 | main.slint 字号 ±、回滚 ±、Copy on select / Confirm close 开关（ToggleRow）；config.rs font_size/scrollback/copy_on_select/confirm_close | partial | 真机：开设置点开关 → `[ui] copy_on_select=false` 并写入配置；关闭后拖选 0 条剪贴板日志、开启后 1 条（复制 6 字节） | 字号/回滚/复制-关闭行为可调 | 无字体族/行距/鼠标/滚动行为设置；无设置搜索 |
@@ -162,7 +162,7 @@
 | UI-SET-009 | SSH：Host Key、Agent 类型、X11 Display 等 | U-AUDIT / 需求 B7 | 无实现 | not_started | 无 | 未实现 | 无 SSH/设置页 |
 | UI-SET-010 | Vault：加密凭据容器、主密码、锁定/解锁、凭据管理 | U-AUDIT / 需求 B7 | 无实现 | not_started | 无 | 未实现 | 无 Vault/Keyring/凭据模型 |
 | UI-SET-011 | Window：窗口行为、TabBar 位置、Quake Mode | U-AUDIT / 需求 B7 | TabBar 菜单：Always on Top、Tab Bar Top/Bottom（持久化）；无独立 Window 设置页/Quake | partial | 真机：菜单切换置顶与 TabBar 位置，配置落盘 | 置顶 + TabBar 上/下可用 | 无 Window 分类设置页、无 Quake Mode、无左/右 TabBar |
-| UI-SET-012 | Config File：路径、打开文件/目录、诊断（不显示 secret） | U-CONF / 需求 B7 | 无实现 | not_started | 无 | 未实现 | 无配置路径/打开/诊断 UI |
+| UI-SET-012 | Config File：路径、打开文件/目录、诊断（不显示 secret） | U-CONF / 需求 B7 | 设置面板 Config File 分类：显示 `Config::path()`、Open Folder（xdg-open）；文案声明不存密码/私钥 | partial | 真机：面板显示 `/tmp/set2.toml`；Open Folder 调用 xdg-open（沙箱内可能失败，会打日志） | 路径展示与打开目录可用 | 无配置诊断/语法检查；无“打开配置文件”按钮（只有目录）；secret 策略依赖 Vault（未实现） |
 | UI-SET-013 | 插件可动态注册设置页/项；卸载后配置清理或保留策略 | U-AUDIT / 需求 B7 | 无实现 | not_started | 无 | 未实现 | 无插件设置 API/生命周期策略 |
 | UI-SET-014 | 保存时机明确；保存失败/无效值/迁移错误提示 | U-AUDIT / 需求 B7 | config.rs 即时保存 + 原子写 + schema 迁移/备份；错误仅 eprintln；数值 clamp | partial | config.rs 7 例；代码走查：字号 8–32、回滚 500–100000 夹取；写失败仅 stderr | 即时保存/迁移/备份可用；无 UI 提示 | 保存/迁移/解析失败不弹 UI；无“恢复备份”入口；无效值只夹取不提示 |
 

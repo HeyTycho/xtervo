@@ -2298,6 +2298,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     });
 
+    ui.on_settings_open_path(|| {
+        with_app(|_st| {
+            let path = Config::path();
+            let dir = path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| path.clone());
+            eprintln!("[ui] open config folder {}", dir.display());
+            match std::process::Command::new("xdg-open").arg(&dir).spawn() {
+                Ok(_) => {},
+                Err(e) => eprintln!("[ui] 打开配置目录失败: {e}"),
+            }
+        });
+    });
+
     ui.on_settings_toggled(|open| {
         eprintln!("[ui] settings open={open}");
     });
@@ -2523,6 +2535,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         st.ui.set_cfg_confirm_close(st.cfg.confirm_close);
         st.ui.set_cfg_confirm_paste(st.cfg.confirm_multiline_paste);
         st.ui.set_tabbar_bottom(st.cfg.tabbar_position == "bottom");
+        st.ui.set_settings_path(Config::path().display().to_string().as_str().into());
         eprintln!("[ui] 启动 tabbar_position={}", st.cfg.tabbar_position);
     });
 
