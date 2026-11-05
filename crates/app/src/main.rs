@@ -2333,6 +2333,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
             4 => restart_session(st),
             5 => open_palette(st),
+            6 => {
+                st.cfg.tabbar_position =
+                    if st.cfg.tabbar_position == "bottom" { "top".into() } else { "bottom".into() };
+                st.ui.set_tabbar_bottom(st.cfg.tabbar_position == "bottom");
+                st.cfg.save();
+                eprintln!("[ui] tabbar_position={}", st.cfg.tabbar_position);
+            },
             _ => {},
         });
     });
@@ -2438,6 +2445,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         st.ui.set_cfg_copy_on_select(st.cfg.copy_on_select);
         st.ui.set_cfg_confirm_close(st.cfg.confirm_close);
         st.ui.set_cfg_confirm_paste(st.cfg.confirm_multiline_paste);
+        st.ui.set_tabbar_bottom(st.cfg.tabbar_position == "bottom");
+        eprintln!("[ui] 启动 tabbar_position={}", st.cfg.tabbar_position);
     });
 
     // ---- 首个标签页 / 会话恢复 ----

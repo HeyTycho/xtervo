@@ -40,6 +40,8 @@ pub struct Config {
     pub copy_on_select: bool,
     /// 多行粘贴前确认（默认开）。
     pub confirm_multiline_paste: bool,
+    /// TabBar 位置："top" | "bottom"。
+    pub tabbar_position: String,
     /// 本版本不认识的键，原样保留（前向兼容）。
     #[serde(flatten)]
     pub extra: toml::Table,
@@ -60,6 +62,7 @@ impl Default for Config {
             confirm_close: true,
             copy_on_select: true,
             confirm_multiline_paste: true,
+            tabbar_position: "top".to_string(),
             extra: toml::Table::new(),
         }
     }
@@ -194,6 +197,7 @@ mod tests {
         assert!(c.confirm_close, "默认关闭多会话要确认");
         assert!(c.copy_on_select, "默认拖选自动复制");
         assert!(c.confirm_multiline_paste, "默认多行粘贴要确认");
+        assert_eq!(c.tabbar_position, "top", "默认 TabBar 在上");
         assert_eq!(c.version, SCHEMA_VERSION);
     }
 

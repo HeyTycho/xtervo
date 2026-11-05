@@ -48,7 +48,7 @@
 | UI-WIN-004 | 最大化/还原/最小化/关闭；双击标题栏 | U-AUDIT / 需求 B1 | main.rs `on_toggle_maximize`/`on_minimize_window`/`on_close_window`；main.slint 双击 title-hit | implemented | 人工：─/□/❐/✕ 与双击空白区；ui-shell §3 | 已有记录（ui-shell §3） | 关闭无确认；双击只在空白区，Tab 上双击无效 |
 | UI-WIN-005 | 窗口尺寸变化、DPI/Scale Factor、主题切换 | U-AUDIT / 需求 B1 | main.rs `on_resized`/`refresh_views`；main.slint 8 个 ResizeHandle；`push_theme` | partial | 人工：拖边缩放 + 切主题；DPI 未测（代码无 scale_factor 分支） | 缩放/主题已有记录；DPI/缩放因子未验证 | 物理像素假设；无 scale_factor 监听与跨屏 DPI 复测 |
 | UI-WIN-006 | 全屏模式及退出全屏 | U-AUDIT / 需求 B1 | main.rs F11 → `Window::set_fullscreen` 切换；`--fullscreen` 启动参数 | implemented | 真机：`--fullscreen` 后 xwininfo = 2560x1440（单屏满屏，常规窗口 540x472）；日志 `[ui] fullscreen=true` | 2026-11-05 实测通过 | F11 键盘端到端未在沙箱验证（键盘注入不可用）；无多显示器策略 |
-| UI-WIN-007 | TabBar 位置可配置：上/下/左/右 | U-AUDIT（上游支持方向待核） | 无实现 | needs_verification | 待上游核实四向是否支持 | 未核实/未实现 | 当前固定顶部；上游方向能力未知 |
+| UI-WIN-007 | TabBar 位置可配置：上/下/左/右 | U-AUDIT（上游支持方向待核） | config `tabbar_position`（top/bottom）+ `tabbar-bottom` 属性；根布局改绝对定位；TabBar 菜单可切换并持久化 | partial | 真机：菜单切 bottom → `[ui] tabbar_position=bottom`，窗口底部出现 TabBar；重启日志 `启动 tabbar_position=bottom`；右键菜单锚在 TabBar 上方（y=224） | 上/下可用且持久化 | 左/右未实现（竖排 TabBar 需另做布局）；上游支持方向待核 |
 | UI-WIN-008 | 关闭窗口前对活动任务/连接确认；不误杀应保留 Session | U-AUDIT / 需求 B1 | main.rs `request_close`/`needs_close_confirm` + main.slint 确认弹窗；config `confirm_close`（默认 true） | partial | 单测 `close_confirm_policy`；真机 2 tab 点 ✕ → `[ui] close confirm`；点 Cancel → `[ui] close cancelled` 且进程存活 | 多会话关闭有确认，Cancel 不杀进程 | 无“保留后台 Session/仅关视图”策略；单会话直接关（符合默认）；配置项尚无设置页入口 |
 | UI-WIN-009 | 多窗口：新建窗口、Tab 在窗口间打开/移动 | U-AUDIT / 需求 B1 | 无实现 | not_started | 无 | 未实现 | 单进程单窗口；无窗口管理器/实例间 IPC |
 
@@ -161,7 +161,7 @@
 | UI-SET-008 | Plugins：搜索、可用/已装、安装、卸载、启用、禁用、更新、详情、权限、目录 | U-AUDIT / 需求 B7 | 无实现 | not_started | 无 | 未实现 | 无插件系统/管理器 UI |
 | UI-SET-009 | SSH：Host Key、Agent 类型、X11 Display 等 | U-AUDIT / 需求 B7 | 无实现 | not_started | 无 | 未实现 | 无 SSH/设置页 |
 | UI-SET-010 | Vault：加密凭据容器、主密码、锁定/解锁、凭据管理 | U-AUDIT / 需求 B7 | 无实现 | not_started | 无 | 未实现 | 无 Vault/Keyring/凭据模型 |
-| UI-SET-011 | Window：窗口行为、TabBar 位置、Quake Mode | U-AUDIT / 需求 B7 | main.slint TabBar 菜单有 Always on Top；无设置页/位置/Quake | partial | 人工：TabBar 右键切换置顶 | 仅置顶可用 | 无 TabBar 位置/Quake/窗口行为设置 |
+| UI-SET-011 | Window：窗口行为、TabBar 位置、Quake Mode | U-AUDIT / 需求 B7 | TabBar 菜单：Always on Top、Tab Bar Top/Bottom（持久化）；无独立 Window 设置页/Quake | partial | 真机：菜单切换置顶与 TabBar 位置，配置落盘 | 置顶 + TabBar 上/下可用 | 无 Window 分类设置页、无 Quake Mode、无左/右 TabBar |
 | UI-SET-012 | Config File：路径、打开文件/目录、诊断（不显示 secret） | U-CONF / 需求 B7 | 无实现 | not_started | 无 | 未实现 | 无配置路径/打开/诊断 UI |
 | UI-SET-013 | 插件可动态注册设置页/项；卸载后配置清理或保留策略 | U-AUDIT / 需求 B7 | 无实现 | not_started | 无 | 未实现 | 无插件设置 API/生命周期策略 |
 | UI-SET-014 | 保存时机明确；保存失败/无效值/迁移错误提示 | U-AUDIT / 需求 B7 | config.rs 即时保存 + 原子写 + schema 迁移/备份；错误仅 eprintln；数值 clamp | partial | config.rs 7 例；代码走查：字号 8–32、回滚 500–100000 夹取；写失败仅 stderr | 即时保存/迁移/备份可用；无 UI 提示 | 保存/迁移/解析失败不弹 UI；无“恢复备份”入口；无效值只夹取不提示 |
