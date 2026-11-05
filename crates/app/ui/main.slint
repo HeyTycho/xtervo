@@ -329,6 +329,7 @@ export component MainWindow inherits Window {
     in-out property <string> form-user: "";
     in-out property <string> form-auth: "";
     in-out property <string> form-key: "";
+    in-out property <string> form-extra: "";
     in-out property <string> form-serial-port: "";
     in-out property <string> form-baud: "";
     in-out property <string> form-error: "";
@@ -1250,13 +1251,14 @@ export component MainWindow inherits Window {
         }
 
         if root.form-kind == 1 : VerticalLayout {
-            x: 16px; y: 116px; width: 408px; height: 170px;
+            x: 16px; y: 116px; width: 408px; height: 204px;
             spacing: 8px;
             FormRow { label: "Host"; text <=> root.form-host; }
             FormRow { label: "Port"; text <=> root.form-port; }
             FormRow { label: "User"; text <=> root.form-user; }
             FormRow { label: "Auth"; text <=> root.form-auth; }
             FormRow { label: "Key"; text <=> root.form-key; }
+            FormRow { label: "Extra"; text <=> root.form-extra; }
         }
 
         if root.form-kind == 2 : VerticalLayout {

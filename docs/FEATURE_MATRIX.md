@@ -98,7 +98,7 @@
 | UI-NAV-001 | Sidebar 显示/隐藏；宽度调整（若上游支持） | U-AUDIT（上游宽度行为待核） | 无实现 | not_started | 无 | 未实现 | 无 Sidebar；上游是否支持宽度调整待核 |
 | UI-NAV-002 | Sidebar/Toolbar 按钮、分组、顺序遵循上游；插件可扩展 | U-AUDIT / 需求 B4 | 无实现 | not_started | 无 | 未实现 | 无 Sidebar/Toolbar/插件入口 |
 | UI-NAV-003 | Connection Manager 入口始终易访问 | U-AUDIT / 需求 B4 | 无实现 | not_started | 无 | 未实现 | 无连接管理入口 |
-| UI-NAV-004 | Profile Selector：快速选 Shell/SSH/Serial/Telnet Profile | U-AUDIT / 需求 B4 | 无实现 | not_started | 无 | 未实现 | 新 tab 固定用 cfg.shell/$SHELL |
+| UI-NAV-004 | Profile Selector：快速选 Shell/SSH/Serial/Telnet Profile | U-AUDIT / 需求 B4 | TabBar 菜单 Profiles 面板：列出 Profile 并点选开 Tab（Local 全量、SSH 走系统 ssh） | partial | 真机：Profiles 面板点 test-ssh → 新 Tab 并完成 SSH 登录（见 UI-SSH-001 证据） | Local/SSH 可选 | Serial/Telnet 后端未实现；无“新 Tab 直接选 Profile”入口（需先开面板） |
 | UI-NAV-005 | Command Palette：模糊搜索命令/Profile/设置（按上游核验） | U-AUDIT（上游能力待核） | main.slint Palette 浮层 + main.rs `open_palette`/`refresh_palette`/`palette_accept`；`commands::Registry::search` 模糊搜索；TabBar 菜单与 Ctrl+Shift+P 入口 | partial | 真机：菜单 → `[ui] palette open items=10`；点第一条 → `[ui] run command tab.new` → `[ws] new tab: tabs=2` | 命令面板可用（19/21 命令已接线） | Profile/设置项未接入搜索；无键盘输入端到端验证（沙箱键盘注入不可用） |
 | UI-NAV-006 | Toolbar 插件按钮：图标、名称、提示、动作、禁用态 | U-AUDIT / 需求 B4 | 无实现 | not_started | 无 | 未实现 | 无插件系统/工具栏 |
 | UI-NAV-007 | 状态/通知区：连接、活动任务、进度、完成提醒 | U-AUDIT / 需求 B4 | 无状态区；仅 CoreEvent::Bell/Exited 事件存在但 UI 未消费 | not_started | 无 | 未实现 | 无状态栏/通知中心；Bell/Exited 被 `poll_events` 忽略 |
@@ -172,8 +172,8 @@
 
 | ID | Feature | Upstream evidence | Rust implementation | Status | Test | Result | Limitation |
 |---|---|---|---|---|---|---|---|
-| UI-SSH-001 | SSH Profile 编辑窗口分组清晰、密码/密钥安全提示 | U-AUDIT / 需求 B8 | 无实现 | not_started | 无 | 未实现 | 无 SSH Profile UI |
-| UI-SSH-002 | 首次主机密钥确认、变更告警、known_hosts 管理入口 | U-AUDIT / 需求 B8 | 无实现 | not_started | 无 | 未实现 | 无 SSH/known_hosts 实现 |
+| UI-SSH-001 | SSH Profile 编辑窗口分组清晰、密码/密钥安全提示 | U-AUDIT / 需求 B8 | Profile 表单 SSH 分组：Host/Port/User/Auth/Key/Extra；`ssh_command()` 用系统 ssh 客户端跑在 PTY；密码认证仅存 `auth=password`（Vault 未实现） | partial | 单测 `ssh_command_builds_openssh_args`；端到端：paramiko 服务端 + key 认证 → 面板点开后终端显示 `PARAMIKO-SSH-OK` 与远端提示符（.logs/ssh-e2e2.png） | SSH 连接（key/agent）可用 | 无内建 known_hosts 管理（依赖系统 ssh）；密码认证未接 Vault；原生 russh 引擎未做；未做跳板机/端口转发设置 |
+| UI-SSH-002 | 首次主机密钥确认、变更告警、known_hosts 管理入口 | U-AUDIT / 需求 B8 | 交给系统 ssh：主机密钥确认/告警直接显示在终端里；Extra 参数可传 UserKnownHostsFile | partial | 端到端走 `-o StrictHostKeyChecking=yes` + 自定义 known_hosts 成功连接 | 借用系统 ssh 的完整校验流程 | 无应用内 known_hosts 管理 UI；无密钥变更专门告警面板 |
 | UI-SSH-003 | SFTP 面板/Tab：目录导航、上级、刷新、路径输入、列表、属性 | U-AUDIT / 需求 B8 | 无实现 | not_started | 无 | 未实现 | 无 SFTP 传输层/UI |
 | UI-SSH-004 | SFTP 上传/下载/建目录/重命名/删除；危险确认 | U-AUDIT / 需求 B8 | 无实现 | not_started | 无 | 未实现 | 无 SFTP 操作 |
 | UI-SSH-005 | 传输进度、速度、已传/总大小、取消、失败重试 | U-AUDIT / 需求 B8 | 无实现 | not_started | 无 | 未实现 | 无传输任务模型/进度 UI |
