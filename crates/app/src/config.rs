@@ -34,6 +34,8 @@ pub struct Config {
     pub shell: Option<String>,
     pub cols: u16,
     pub rows: u16,
+    /// 关闭窗口时若有多个会话，先弹确认（默认开）。
+    pub confirm_close: bool,
     /// 本版本不认识的键，原样保留（前向兼容）。
     #[serde(flatten)]
     pub extra: toml::Table,
@@ -51,6 +53,7 @@ impl Default for Config {
             shell: None,
             cols: 120,
             rows: 32,
+            confirm_close: true,
             extra: toml::Table::new(),
         }
     }

@@ -492,6 +492,7 @@ fn new_tab_inner(st: &mut AppState) {
             let n = st.next_title;
             st.panes.insert(id, rt);
             st.ws.tabs.push(Tab::single(id, format!("Terminal {n}")));
+            eprintln!("[ws] new tab: tabs={}", st.ws.tabs.len());
             st.ws.active = st.ws.tabs.len() - 1;
             refresh_views(st);
             rebuild_tabs(st);
@@ -860,6 +861,25 @@ fn focus_pane(id: PaneId) {
         st.ws.tabs[idx].focused = id;
         refresh_views(st);
     });
+}
+
+/// 关闭前是否需要确认：开着开关且不止一个会话时弹窗，避免误关杀掉一堆 shell。
+fn needs_close_confirm(tabs: usize, panes: usize, enabled: bool) -> bool {
+    enabled && (tabs > 1 || panes > 1)
+}
+
+fn request_close(st: &mut AppState) {
+    let tabs = st.ws.tabs.len();
+    let panes: usize = st.ws.tabs.iter().map(|t| t.panes().len()).sum();
+    eprintln!("[ui] close requested: tabs={tabs} panes={panes} confirm={}", st.cfg.confirm_close);
+    if needs_close_confirm(tabs, panes, st.cfg.confirm_close) {
+        let text = format!("将结束 {tabs} 个标签、{panes} 个终端会话，子进程会被终止。");
+        eprintln!("[ui] close confirm: tabs={tabs} panes={panes}");
+        st.ui.set_confirm_text(text.as_str().into());
+        st.ui.set_confirm_open(true);
+        return;
+    }
+    let _ = slint::quit_event_loop();
 }
 
 /// F11 / --fullscreen：切换全屏。
@@ -2012,7 +2032,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     ui.on_close_window(|| {
-        let _ = slint::quit_event_loop();
+        with_app(|st| request_close(st));
+    });
+
+    ui.on_confirm_accept(|| {
+        with_app(|st| {
+            st.ui.set_confirm_open(false);
+            let _ = slint::quit_event_loop();
+        });
+    });
+
+    ui.on_confirm_cancel(|| {
+        eprintln!("[ui] close cancelled");
+        with_app(|st| st.ui.set_confirm_open(false));
     });
 
     {
@@ -2412,6 +2444,17 @@ mod tests {
         assert!(!is_modifier_artifact("\u{1b}", false, false, false)); // Esc
         assert!(!is_modifier_artifact("\n", true, false, false)); // Ctrl+Enter
         assert!(!is_modifier_artifact("你", false, false, false));
+    }
+
+    #[test]
+    fn close_confirm_policy() {
+        // 单标签单 pane：直接关，不打扰
+        assert!(!needs_close_confirm(1, 1, true));
+        // 多标签或多 pane：确认
+        assert!(needs_close_confirm(2, 2, true));
+        assert!(needs_close_confirm(1, 3, true));
+        // 用户在配置里关掉确认
+        assert!(!needs_close_confirm(5, 9, false));
     }
 
     #[test]
