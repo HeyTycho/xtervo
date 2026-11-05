@@ -545,6 +545,8 @@ export component MainWindow inherits Window {
     in property <[string]> plugin-items: [];
     in property <string> plugin-summary: "";
     in property <string> plugin-dir: "";
+    // 最近插件命令/事件活动（新→旧，最多 8 条；只读展示）
+    in property <[string]> plugin-activity-items: [];
     in-out property <string> config-status: "";
     // Vault（加密凭据）
     in-out property <string> vault-status: "";
@@ -3478,7 +3480,7 @@ export component MainWindow inherits Window {
 
                 if root.settings-category == 5 : VerticalLayout {
                     width: 100%;
-                    spacing: 6px;
+                    spacing: 5px;
 
                     Text {
                         text: root.plugin-summary;
@@ -3486,11 +3488,18 @@ export component MainWindow inherits Window {
                         font-size: 10px;
                     }
 
+                    Text {
+                        text: "Installed";
+                        color: Palette.colors.muted;
+                        font-size: 10px;
+                        font-weight: 600;
+                    }
+
                     Flickable {
                         width: 100%;
-                        height: 250px;
+                        height: 80px;
                         interactive: true;
-                        content-height: root.plugin-items.length * 20px;
+                        content-height: Math.max(root.plugin-items.length * 20px, 80px);
 
                         VerticalLayout {
                             width: parent.width;
@@ -3506,16 +3515,51 @@ export component MainWindow inherits Window {
                     }
 
                     Text {
-                        text: root.plugin-dir;
+                        text: "Recent plugin activity";
                         color: Palette.colors.muted;
                         font-size: 10px;
+                        font-weight: 600;
+                    }
+
+                    if root.plugin-activity-items.length == 0 : Text {
+                        height: 18px;
+                        text: "No plugin activity yet — run a plugin command or open a tab with an event plugin installed.";
+                        color: Palette.colors.muted;
+                        font-size: 9px;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+
+                    Flickable {
+                        width: 100%;
+                        height: 108px;
+                        interactive: true;
+                        content-height: Math.max(root.plugin-activity-items.length * 18px, 108px);
+
+                        VerticalLayout {
+                            width: parent.width;
+                            for item[i] in root.plugin-activity-items : Text {
+                                height: 18px;
+                                text: item;
+                                color: Palette.colors.text;
+                                font-size: 10px;
+                                vertical-alignment: center;
+                                overflow: elide;
+                            }
+                        }
+                    }
+
+                    Text {
+                        text: root.plugin-dir;
+                        color: Palette.colors.muted;
+                        font-size: 9px;
                         wrap: word-wrap;
                     }
 
                     Text {
-                        text: "v1 插件 <name>/plugin.toml：启用后命令进入命令面板，执行是后台外部进程（10s 超时，输出只写日志）；旧 *.toml 仅展示。修改 enabled 后需重启。插件拥有当前用户全部权限，无沙箱。";
+                        text: "v1 插件 <name>/plugin.toml：命令进 Palette；events 声明 startup/tab-open/tab-close 后于对应时机后台执行。命令与事件都是外部进程（10s 超时），完整输出只写日志，最近 8 条摘要见上方列表。旧 *.toml 仅展示。修改 enabled 后需重启。插件拥有当前用户全部权限，无沙箱。";
                         color: Palette.colors.muted;
-                        font-size: 10px;
+                        font-size: 9px;
                         wrap: word-wrap;
                     }
                 }
