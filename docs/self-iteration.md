@@ -292,6 +292,10 @@ cargo bench -p tervo-core --bench pty_throughput
   `handle_input` 与 `run_command` 两个调用点传 `st`。
 - **验证**：F11 两次 → `[ui] fullscreen=true`（2560x1440）/`false`（540x472），无 panic；
   xkey 新增 `--key f11`（keysym 0xffc8）供自动化。
-- **教训**：`with_app` 是“入口层”工具，任何已经拿到 `&mut AppState` 的函数都不得再调用它；
-  同类风险点排查见 `run_command` 分支（已逐一确认传参）。
-
+- **同类排查（本轮一并修复）**：
+  - `switch_tab_relative` / `switch_tab_number`：Ctrl+Tab、Ctrl+1–9、Palette 的 Next/Previous Tab
+    都会二次借用（实测 Ctrl+Tab 直接 panic），改为接收 `&mut AppState`；
+  - `handle_input` 的 F2 分支：`with_app(|st| open_rename(...))` 同样二次借用，改为 `open_rename(st, ...)`；
+  - `with_app` 本身加防御：`try_borrow_mut` 失败时打印 `[app] with_app 重入` 并返回 `None`，
+    避免未来再因一个回调把整个终端打崩。
+- **教训**：`with_app` 是“入口层”工具，任何已经拿到 `&mut AppState` 的函数都不得再调用它。

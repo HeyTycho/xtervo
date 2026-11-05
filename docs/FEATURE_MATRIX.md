@@ -361,7 +361,7 @@
 
 | ID | Feature | Upstream evidence | Rust implementation | Status | Test | Result | Limitation |
 |---|---|---|---|---|---|---|---|
-| KEY-001 | 所有核心操作都有可配置命令 ID | U-AUDIT / 需求 C9 | `commands.rs::builtin` 22 条稳定 ID + 默认快捷键；键盘分发：Ctrl+T/W/F、Ctrl+Shift+C/V/P/E/D/W、Ctrl+Tab/Shift+Tab、Ctrl+1–9、F11、F2；命令面板 21 条 | partial | 真机（XMODIFIERS=@im=none）：Ctrl+T → tabs=2；Ctrl+Shift+P → palette open；Ctrl+Shift+E/D → `[ws] split`；键入 `echo ACCEPT-OK` → 终端显示输出 | 常用快捷键与命令面板可用 | 分发仍硬编码，未从 Registry 统一；缩放（Ctrl+±/0）与部分命令无键盘入口；无用户改键 |
+| KEY-001 | 所有核心操作都有可配置命令 ID | U-AUDIT / 需求 C9 | `commands.rs::builtin` 22 条稳定 ID + 默认快捷键；键盘分发：Ctrl+T/W/F、Ctrl+Shift+C/V/P/E/D/W、Ctrl+Tab/Shift+Tab、Ctrl+1–9、F11、F2；命令面板 21 条 | partial | 真机（XMODIFIERS=@im=none）：Ctrl+T、Ctrl+Shift+P/E/D、Ctrl+Tab、Ctrl+Shift+Tab、Ctrl+1/Ctrl+3、F11、F2 全部通过且无 panic；键入 `echo ACCEPT-OK` 正常 | 常用快捷键与命令面板可用（含本轮修复的 F11/F2/Tab 切换二次借用崩溃） | 分发仍硬编码，未从 Registry 统一；缩放（Ctrl+±/0）与部分命令无键盘入口；无用户改键 |
 | KEY-002 | 自定义快捷键，支持单键与 multi-chord | U-AUDIT / 需求 C9 | `commands.rs::Shortcut::parse` 支持 1–2 段、ctrl/alt/shift/meta；无配置读写/录制 UI | partial | `shortcut_parse_and_format_roundtrip`；无自定义绑定测试 | 解析/格式化数据层已有记录 | 无用户配置/录制/持久化；快捷键仍取内置默认 |
 | KEY-003 | 冲突检测、重复快捷键处理、平台保留键处理 | U-AUDIT / 需求 C9 | `Registry::conflicts` + `bindings`；内置绑定断言无冲突；无平台保留键表 | partial | `conflict_detection`、`builtin_registry_is_consistent` | 冲突检测已有记录；无 UI/保留键处理 | 无冲突提示 UI；未处理桌面环境保留键；重复绑定策略仅报告 |
 | KEY-004 | Profile 绑定快捷键 | U-AUDIT / 需求 C9 | 无实现 | not_started | 无 | 未实现 | 无 Profile/快捷键 |
