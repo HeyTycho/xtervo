@@ -909,3 +909,46 @@ cargo bench -p tervo-core --bench pty_throughput
   `TERVO_ASKPASS_DEBUG` 会记录服务器 prompt 原文（无密码）仅供排查；密码仍经 ssh 子进程
   环境变量传递（`/proc/<pid>/environ` 可观察）；首次连接仍回退终端确认 host key。
   `auth=password` 现在明确不回退公钥（需要公钥请改 Profile Auth）。
+
+### 2026-11-05 · 自适应窗口圆角（X11 SHAPE）
+
+- **目标**：`no-frame` 主窗口去掉系统装饰后四角是直角；给普通窗口加 12px 自适应圆角，
+  最大化/全屏保持方角（避免桌面缝隙）；多窗口实例各自独立、互不串窗。
+- **实现**：`crates/app/Cargo.toml` 的 x11rb 增加 `shape` feature（无新增 crate）。
+  `xconn.rs` 新增 `CornerShaper` 后台线程 + `apply_rounded_corners`：
+  复用 `find_own_window` 按 `_NET_WM_PID` 找到本进程主窗口（启动时 100ms×50 重试，
+  多实例不会改到别人的窗口），建 depth=1 Pixmap 并整体填白，再按 4 个角逐行涂黑色
+  矩形抠出半径 r 的 1/4 圆，`shape::mask(SO::SET, SK::BOUNDING/CLIP, ...)`，再用
+  `shape::rectangles(SK::INPUT)` 把输入区域保持为整窗矩形（避免 BOUNDING 顺带改变
+  四角拖拽/按钮命中），flush 后释放 pixmap/GC。任何失败只打 `[corners]` 日志，
+  不影响窗口/终端（不 panic）。
+- **半径**：`corner_radius(w,h,max,full) = if max||full { 0 } else { min(12, w/2, h/2) }`，
+  w/h 是 **X11 物理像素**。Slint `resized` 回调给逻辑像素，`CornerRequest` 带
+  `ui.window().scale_factor()`；worker 优先 `get_geometry` 取物理尺寸（X11 窗口没有
+  逻辑像素），`physical_extent` 的“逻辑 × scale”只作 geometry 查询失败兜底与日志
+  （1x：540→540；2x：540→1080；非法 scale 回退 1.0）。
+- **状态**：resize 请求查 `_NET_WM_STATE` 的 `MAXIMIZED_HORZ`+`VERT` / `FULLSCREEN`；
+  最大化/全屏按钮、F11、`--fullscreen` 额外传“刚设置的权威状态”，不等 WM 属性更新，
+  避免同尺寸切换时角落留缝。
+- **节流/去重**：`resized` 只做 channel send；worker 合并到最新请求，按
+  `(win,w,h,radius)` 去重，最快 50ms 一次（≤20 次 SHAPE/s），拖拽 resize 不阻塞 UI。
+- **测试**：`cargo test -p tervo-app --bin tervo` → **172 passed**。新增 8 例（均不依赖
+  X server/GUI）：`corner_radius_is_zero_when_maximized_or_fullscreen`、
+  `corner_radius_caps_and_adapts_to_small_windows`、`physical_extent_honours_scale_factor`、
+  `radius_uses_physical_pixels_not_logical`、`corner_inset_matches_circle_rows`、
+  `corner_inset_is_monotonic`、`mask_rects_mirror_all_four_corners`、
+  `mask_rects_clamp_radius_and_skip_degenerate_windows`。
+- **限制**：X11 SHAPE 只接受 1-bit 掩码，**边缘没有抗锯齿**（半径 12 时逐行 1px 阶梯）；
+  Wayland/服务器无 SHAPE 扩展时只记日志、窗口保持直角；INPUT 显式保持整窗矩形，
+  因此不提供“圆角外点击穿透”；resize 节流间隔内新长出的右/下边缘可能短暂被旧 shape 裁剪；
+  半径上限固定 12 物理像素，未做 2x 屏视觉加倍或用户配置项。
+- **手工验证（有显示器时；本轮遵守共享显示器约束未启动 GUI/xkey/xclick/xwin）**：
+  1. 启动后看日志 `[corners] X11 SHAPE 1.1 可用` 与
+     `[corners] win=0x... WxH radius=12 (logical ... × scale ...)`；四角透出桌面。
+  2. 拖右/下边放大：日志尺寸递增、radius 保持 12；停止拖拽后角落为圆角。
+  3. 点最大化：日志 `max=true` 且 `radius=0`，四角贴合屏幕；还原后 `radius=12`。
+  4. F11 / `--fullscreen`：`[ui] fullscreen=true` 后 `radius=0`；退出全屏恢复 12。
+  5. 2x DPI（如 `WINIT_X11_SCALE_FACTOR=2`）：日志 `logical ... × scale 2 ≈ ...
+     physical`，geometry 与物理尺寸一致，radius 仍是 12 物理像素。
+  6. 双实例（Ctrl+Shift+N）：两窗口日志的 win id/pid 不同，各自四角都圆、互不串窗。
+  7. 极窄窗口（宽/高 ≤24px）：radius 随短边降到 `min(w,h)/2`，无越界/负尺寸矩形。
