@@ -1,0 +1,1954 @@
+mod config;
+mod glyph;
+mod keys;
+mod latency;
+mod render;
+mod themes;
+mod workspace;
+mod xconn;
+
+slint::include_modules!();
+
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use rusttabby_core::{
+    spawn, CoreEvent, Frame, Modifiers, MouseAction, MouseButton, MouseEvent, PaneConfig,
+    PaneHandle, Theme, UiColors,
+};
+use slint::{Model, ModelRc, VecModel};
+use x11rb::connection::Connection;
+use x11rb::rust_connection::RustConnection;
+
+use crate::config::Config;
+use crate::glyph::FontSet;
+use crate::latency::{DamageWatcher, Injector, LatencyStats};
+use crate::render::Renderer;
+use crate::themes::{resolve_auto, ThemeData, ThemeRegistry, Variant};
+use crate::workspace::{Dir, Divider, PaneId, Rect, Tab, Workspace, SPLIT_GAP};
+
+/// 延迟探针使用的高辨识度字符（避免与 shell 提示符冲突）。
+const MARKER: char = 'z';
+const TITLE: &str = "Rust Tabby";
+/// 必须与 ui/main.slint 里的 `tabbar-height` 保持一致。
+const TABBAR_H: f32 = 32.0;
+/// `TermMode::BRACKETED_PASTE`
+const BRACKETED_PASTE: u32 = 1 << 4;
+
+struct PaneRuntime {
+    handle: PaneHandle,
+    renderer: Renderer,
+    frame: Box<Frame>,
+    image: slint::Image,
+    grid: (usize, usize),
+    rect: Rect,
+    title: String,
+}
+
+struct Drag {
+    pane: PaneId,
+    start: (f32, f32),
+    moved: bool,
+    cell: (u16, u16),
+    /// true = 事件已转发给 PTY（终端在鼠标上报模式），本地上屏不再做选词。
+    mouse: bool,
+}
+
+/// 自绘拖边缩放：按 root 坐标差值直接改窗口大小/位置。
+#[derive(Clone, Copy)]
+struct WindowResize {
+    dir: i32,
+    pointer: (i32, i32),
+    pos: (i32, i32),
+    size: (u32, u32),
+}
+
+struct ResizeCtx {
+    conn: RustConnection,
+    root: u32,
+}
+
+struct AppState {
+    ui: MainWindow,
+    ws: Workspace,
+    panes: HashMap<PaneId, PaneRuntime>,
+    pane_model: Rc<VecModel<PaneView>>,
+    tab_model: Rc<VecModel<TabView>>,
+    pane_rows: HashMap<PaneId, usize>,
+    divider_model: Rc<VecModel<DividerView>>,
+    /// 与 divider_model 同序的几何/路径信息，拖拽时用。
+    divider_infos: Vec<Divider>,
+    fonts: Rc<FontSet>,
+    cell: (usize, usize),
+    echo: Arc<AtomicUsize>,
+    opts: Options,
+    content: Rect,
+    next_title: usize,
+    cfg: Config,
+    /// 当前实际生效的主题（`cfg.theme == "auto"` 时是解析后的结果）。
+    resolved_theme: ThemeData,
+    /// 内置 + `themes/*.toml` 自定义主题。
+    registry: ThemeRegistry,
+    /// 是否已启动过系统配色监听线程（避免重复 spawn）。
+    auto_watch_started: bool,
+    search_open: bool,
+    search_query: String,
+    drag: Option<Drag>,
+    /// 1003 悬停上报的上一格（按格去重，避免鼠标移动刷爆有界 ctrl 队列）。
+    hover_cell: Option<(PaneId, (u16, u16))>,
+    resize: Option<WindowResize>,
+    xresize: Option<ResizeCtx>,
+    clipboard: Option<arboard::Clipboard>,
+}
+
+thread_local! {
+    static APP: RefCell<Option<Rc<RefCell<AppState>>>> = const { RefCell::new(None) };
+}
+
+/// 应用内管线打点：key 回调 → 帧交到 Slint（不含 winit 帧节流与上屏）。
+static LAST_KEY: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
+static PIPE_SAMPLES: std::sync::Mutex<Vec<Duration>> = std::sync::Mutex::new(Vec::new());
+static PIPE_ON: AtomicBool = AtomicBool::new(false);
+/// 跟随系统的 `gsettings monitor` 子进程；退出事件循环时 kill，避免留下孤儿进程。
+static SCHEME_WATCH_CHILD: std::sync::Mutex<Option<std::process::Child>> =
+    std::sync::Mutex::new(None);
+static SCHEME_WATCH_STOPPED: AtomicBool = AtomicBool::new(false);
+
+fn with_app<R>(f: impl FnOnce(&mut AppState) -> R) -> Option<R> {
+    let app = APP.with(|c| c.borrow().clone())?;
+    let mut st = app.borrow_mut();
+    Some(f(&mut st))
+}
+
+// ------------------------------------------------------------------ 主题
+
+/// 配置里的 `theme = "auto"`：跟随系统深/浅色。
+const AUTO_THEME: &str = "auto";
+
+fn is_auto_theme(selected: &str) -> bool {
+    selected.trim().eq_ignore_ascii_case(AUTO_THEME)
+}
+
+/// 把系统检测输出解析成「是否深色」（纯函数，便于单测）。
+///
+/// 优先级：GNOME `color-scheme` → `gtk-theme` → `COLORFGBG` → 默认深色。
+fn scheme_from_outputs(color_scheme: &str, gtk_theme: &str, colorfgbg: Option<&str>) -> bool {
+    if let Some(is_dark) = scheme_from_color_scheme(color_scheme) {
+        return is_dark;
+    }
+    if let Some(is_dark) = scheme_from_gtk_theme(gtk_theme) {
+        return is_dark;
+    }
+    colorfgbg.and_then(scheme_from_colorfgbg).unwrap_or(true)
+}
+
+fn scheme_from_color_scheme(output: &str) -> Option<bool> {
+    let value = output.trim().to_ascii_lowercase();
+    if value.contains("prefer-dark") {
+        Some(true)
+    } else if value.contains("prefer-light") || value.contains("default") {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+fn scheme_from_gtk_theme(output: &str) -> Option<bool> {
+    let value = output.trim().to_ascii_lowercase();
+    if value.contains("dark") {
+        Some(true)
+    } else if value.contains("light") {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// `COLORFGBG` 形如 `15;0`（前景;背景），最后一段是背景 ANSI 索引；
+/// 0-6 与 8 视为深色，7/9-15 视为浅色。
+fn scheme_from_colorfgbg(value: &str) -> Option<bool> {
+    let last = value.rsplit(';').next()?.trim();
+    let index: u8 = last.parse().ok()?;
+    Some(index <= 6 || index == 8)
+}
+
+fn gsettings_get(key: &str) -> Option<String> {
+    let output = std::process::Command::new("gsettings")
+        .args(["get", "org.gnome.desktop.interface", key])
+        .output()
+        .ok()?;
+    output.status.success().then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// 检测系统当前是否深色。gsettings 不可用（非 GNOME/无 dconf）时逐级回退。
+fn detect_system_dark() -> bool {
+    let color_scheme = gsettings_get("color-scheme").unwrap_or_default();
+    let gtk_theme = if scheme_from_color_scheme(&color_scheme).is_some() {
+        String::new()
+    } else {
+        gsettings_get("gtk-theme").unwrap_or_default()
+    };
+    let colorfgbg = std::env::var("COLORFGBG").ok();
+    scheme_from_outputs(&color_scheme, &gtk_theme, colorfgbg.as_deref())
+}
+
+/// 把配置里的选择解析成实际生效的主题。
+/// - `auto`：按系统深浅 + `auto_dark`/`auto_light`（可被 pair 补齐）
+/// - 具体 id：找不到就回退内置默认（不改写配置）
+fn resolve_theme(
+    reg: &ThemeRegistry,
+    selected: &str,
+    auto_dark: Option<&str>,
+    auto_light: Option<&str>,
+) -> ThemeData {
+    if is_auto_theme(selected) {
+        let want = if detect_system_dark() { Variant::Dark } else { Variant::Light };
+        resolve_auto(reg, want, auto_dark, auto_light)
+    } else {
+        reg.get(selected).cloned().unwrap_or_else(|| reg.dark_default().clone())
+    }
+}
+
+/// 启动时把配置里的选择归一化成设置面板能高亮的 id（兼容旧的 mocha/latte 别名）。
+fn normalize_selection(reg: &ThemeRegistry, selected: &str) -> String {
+    if is_auto_theme(selected) {
+        return AUTO_THEME.to_string();
+    }
+    if reg.get(selected).is_some() {
+        return selected.to_string();
+    }
+    let alias = Theme::from_name(selected).id();
+    if reg.get(alias).is_some() {
+        return alias.to_string();
+    }
+    reg.dark_default().id.clone()
+}
+
+/// core 的 0xRRGGBB → Slint color，并映射成界面全局配色。
+fn slint_theme(c: &UiColors) -> ThemeColors {
+    let color = |v: u32| slint::Color::from_rgb_u8((v >> 16) as u8, (v >> 8) as u8, v as u8);
+    ThemeColors {
+        bg: color(c.bg),
+        surface: color(c.surface),
+        raise: color(c.raise),
+        hover: color(c.hover),
+        border: color(c.border),
+        text: color(c.text),
+        subtext: color(c.subtext),
+        muted: color(c.muted),
+        accent: color(c.accent),
+        accent_text: color(c.accent_text),
+        danger: color(c.danger),
+    }
+}
+
+fn theme_choices(reg: &ThemeRegistry) -> ModelRc<ThemeChoice> {
+    let choices: Vec<ThemeChoice> = reg
+        .all()
+        .map(|t| ThemeChoice { id: t.id.as_str().into(), label: t.label.as_str().into() })
+        .collect();
+    ModelRc::from(Rc::new(VecModel::from(choices)))
+}
+
+/// 设置面板高度：12 套内置主题 3 行；每多一行加 30px。
+fn settings_height_for(count: usize, win_h: f32) -> f32 {
+    // 主题区最多显示 4 行，更多靠 Flickable 滚动，面板高度不再继续增长。
+    let rows = count.div_ceil(4).clamp(1, 4);
+    let h = 210.0 + rows as f32 * 30.0;
+    h.min((win_h - 40.0).max(280.0))
+}
+
+/// 下发实际生效的主题（不改配置与选中项；auto 监听回调走这里）。
+fn push_theme(st: &mut AppState, theme: &ThemeData) {
+    st.resolved_theme = theme.clone();
+    let auto = is_auto_theme(&st.cfg.theme);
+    st.ui.set_auto_resolved(if auto { theme.label.as_str().into() } else { "".into() });
+    st.ui.global::<Palette>().set_colors(slint_theme(&theme.ui));
+    let palette = theme.palette();
+    for rt in st.panes.values_mut() {
+        rt.renderer.set_theme(theme.spec.bg, theme.spec.cursor);
+        rt.handle.set_theme(palette.clone());
+    }
+    redraw_visible(st);
+}
+
+/// 应用用户选择的主题（"auto" 或具体 id），并写回配置。
+fn apply_theme(st: &mut AppState, selected: &str) {
+    let auto = is_auto_theme(selected);
+    if auto {
+        st.cfg.theme = AUTO_THEME.to_string();
+    } else if let Some(found) = st.registry.get(selected) {
+        st.cfg.theme = found.id.clone();
+    } else {
+        eprintln!("[theme] 未知主题 {selected:?}，保持当前配置");
+        return;
+    }
+    let theme = resolve_theme(
+        &st.registry,
+        &st.cfg.theme,
+        st.cfg.auto_dark.as_deref(),
+        st.cfg.auto_light.as_deref(),
+    );
+    st.ui.set_theme_name(if auto { AUTO_THEME.into() } else { theme.id.as_str().into() });
+    push_theme(st, &theme);
+    st.cfg.save();
+    if auto {
+        ensure_auto_watcher(st);
+    }
+}
+
+/// 启动一次 `gsettings monitor` 监听；启动失败（非 GNOME、无 gsettings）就静默放弃。
+fn ensure_auto_watcher(st: &mut AppState) {
+    if st.auto_watch_started {
+        return;
+    }
+    st.auto_watch_started = true;
+    let spawned = std::thread::Builder::new()
+        .name("theme-watch".into())
+        .spawn(watch_system_scheme);
+    if spawned.is_err() {
+        eprintln!("[theme] 系统配色监听线程启动失败，Auto 仅在启动/切换时检测一次");
+    }
+}
+
+/// 结束 `gsettings monitor` 子进程（可重复调用）。
+fn stop_auto_watcher() {
+    SCHEME_WATCH_STOPPED.store(true, Ordering::Release);
+    if let Ok(mut slot) = SCHEME_WATCH_CHILD.lock() {
+        if let Some(mut child) = slot.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+/// 后台逐行读取 `gsettings monitor ... color-scheme`，变化时回到 UI 线程更新主题。
+/// 不持有 AppState；monitor 启动失败或管道关闭时线程直接结束。
+fn watch_system_scheme() {
+    use std::io::{BufRead, BufReader};
+    use std::os::unix::process::CommandExt;
+    use std::process::{Command, Stdio};
+
+    let mut cmd = Command::new("gsettings");
+    cmd.args(["monitor", "org.gnome.desktop.interface", "color-scheme"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    // 父进程被 SIGTERM/SIGKILL 直接带走时，内核替我们杀掉 monitor，避免残留孤儿。
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+            Ok(())
+        });
+    }
+    let mut child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(_) => return,
+    };
+    let Some(stdout) = child.stdout.take() else { return };
+    // 子进程句柄交给全局槽位，主线程退出事件循环时可以统一 kill。
+    // 与 stop_auto_watcher 用同一把锁，避免「刚启动就退出」时漏杀。
+    if let Ok(mut slot) = SCHEME_WATCH_CHILD.lock() {
+        if SCHEME_WATCH_STOPPED.load(Ordering::Acquire) {
+            drop(slot);
+            let _ = child.kill();
+            let _ = child.wait();
+            return;
+        }
+        *slot = Some(child);
+    } else {
+        return;
+    }
+    let mut lines = BufReader::new(stdout).lines();
+    while let Some(Ok(_line)) = lines.next() {
+        let notified = slint::invoke_from_event_loop(|| {
+            with_app(|st| {
+                // 用户已切到具体主题：停止跟随。
+                if !is_auto_theme(&st.cfg.theme) {
+                    return;
+                }
+                let theme = resolve_theme(
+                    &st.registry,
+                    AUTO_THEME,
+                    st.cfg.auto_dark.as_deref(),
+                    st.cfg.auto_light.as_deref(),
+                );
+                if st.resolved_theme.id != theme.id {
+                    push_theme(st, &theme);
+                }
+            });
+        });
+        if notified.is_err() {
+            break;
+        }
+    }
+    stop_auto_watcher();
+}
+
+fn ensure_resize_conn(st: &mut AppState) {
+    if st.xresize.is_some() {
+        return;
+    }
+    if let Ok((conn, screen_num)) = crate::xconn::connect() {
+        if let Some(root) = conn.setup().roots.get(screen_num).map(|s| s.root) {
+            st.xresize = Some(ResizeCtx { conn, root });
+        }
+    }
+}
+
+fn resize_pointer(st: &AppState) -> Option<(i32, i32)> {
+    st.xresize
+        .as_ref()
+        .and_then(|ctx| crate::xconn::query_pointer(&ctx.conn, ctx.root))
+}
+
+fn count_marker(frame: &Frame, marker: char) -> usize {
+    let row = frame.cursor.line as usize;
+    if row >= frame.rows {
+        return 0;
+    }
+    frame.row(row).iter().filter(|c| c.char() == marker).count()
+}
+
+fn cell_of(rect: Rect, cell: (usize, usize)) -> (usize, usize) {
+    let cols = ((rect.w / cell.0 as f32).floor() as usize).max(10);
+    let rows = ((rect.h / cell.1 as f32).floor() as usize).max(3);
+    (cols, rows)
+}
+
+// ---------------------------------------------------------------- 生命周期
+
+fn shell_name(opts: &Options) -> String {
+    let path = opts.shell.clone().or_else(|| std::env::var("SHELL").ok());
+    path.as_deref()
+        .and_then(|s| std::path::Path::new(s).file_name().map(|f| f.to_string_lossy().to_string()))
+        .unwrap_or_else(|| "shell".to_string())
+}
+
+fn create_pane(st: &AppState, id: PaneId, cols: usize, rows: usize) -> std::io::Result<PaneRuntime> {
+    let handle = spawn(PaneConfig {
+        cols: cols as u16,
+        rows: rows as u16,
+        scrollback: st.cfg.scrollback,
+        shell: st.cfg.shell.clone(),
+        args: st.opts.args.clone(),
+        palette: st.resolved_theme.palette(),
+        cwd: None,
+        env: Vec::new(),
+    })?;
+
+    let wake = handle.wake_receiver();
+    let pending = Arc::new(AtomicBool::new(false));
+    std::thread::Builder::new().name(format!("wake-{id}")).spawn(move || {
+        while wake.recv().is_ok() {
+            if pending.swap(true, Ordering::AcqRel) {
+                continue;
+            }
+            let pending = pending.clone();
+            let _ = slint::invoke_from_event_loop(move || {
+                pending.store(false, Ordering::Release);
+                redraw_pane(id);
+            });
+        }
+    })?;
+
+    let theme = &st.resolved_theme;
+    let mut renderer =
+        Renderer::new(st.fonts.clone(), cols, rows, theme.spec.bg, theme.spec.cursor);
+    let mut frame = handle.new_frame();
+    frame = handle.pull(frame);
+    renderer.draw(&frame);
+    let image = renderer.image();
+
+    Ok(PaneRuntime {
+        handle,
+        renderer,
+        frame,
+        image,
+        grid: (cols, rows),
+        rect: Rect::new(0.0, 0.0, 0.0, 0.0),
+        title: shell_name(&st.opts),
+    })
+}
+
+fn new_tab_inner(st: &mut AppState) {
+    let id = st.ws.alloc_id();
+    let (cols, rows) = cell_of(st.content, st.cell);
+    match create_pane(st, id, cols, rows) {
+        Ok(rt) => {
+            st.next_title += 1;
+            let n = st.next_title;
+            st.panes.insert(id, rt);
+            st.ws.tabs.push(Tab::single(id, format!("Terminal {n}")));
+            st.ws.active = st.ws.tabs.len() - 1;
+            refresh_views(st);
+            rebuild_tabs(st);
+            redraw_pane_inner(st, id);
+        },
+        Err(e) => eprintln!("创建 pane 失败: {e}"),
+    }
+}
+
+fn new_tab() {
+    with_app(new_tab_inner);
+}
+
+fn close_tab_inner(st: &mut AppState, index: usize) {
+    if index >= st.ws.tabs.len() {
+        return;
+    }
+    for id in st.ws.tabs[index].panes() {
+        st.panes.remove(&id); // Drop => 关闭 PTY / 结束 actor
+    }
+    st.ws.tabs.remove(index);
+    if st.ws.tabs.is_empty() {
+        let _ = slint::quit_event_loop();
+        return;
+    }
+    st.ws.active = st.ws.active.min(st.ws.tabs.len() - 1);
+    refresh_views(st);
+    rebuild_tabs(st);
+    redraw_visible(st);
+}
+
+fn close_tab(index: usize) {
+    with_app(|st| close_tab_inner(st, index));
+}
+
+fn close_pane_inner(st: &mut AppState, id: PaneId) {
+    let Some(tab_index) = st.ws.tab_of(id) else { return };
+    let emptied = st.ws.tabs[tab_index].remove(id);
+    st.panes.remove(&id);
+    st.pane_rows.remove(&id);
+    if emptied {
+        st.ws.tabs.remove(tab_index);
+        if st.ws.tabs.is_empty() {
+            let _ = slint::quit_event_loop();
+            return;
+        }
+        st.ws.active = st.ws.active.min(st.ws.tabs.len() - 1);
+        rebuild_tabs(st);
+    }
+    refresh_views(st);
+    redraw_visible(st);
+}
+
+fn close_pane(id: PaneId) {
+    with_app(|st| close_pane_inner(st, id));
+}
+
+fn split_pane_inner(st: &mut AppState, id: PaneId, dir: Dir) {
+    eprintln!("[ws] split pane={id} dir={dir:?}");
+    let Some(tab_index) = st.ws.tab_of(id) else { return };
+    let Some((cols, rows)) = st.panes.get(&id).map(|r| r.grid) else { return };
+    let guess = match dir {
+        Dir::Row => ((cols / 2).max(10), rows),
+        Dir::Col => (cols, (rows / 2).max(3)),
+    };
+    let new_id = st.ws.alloc_id();
+    match create_pane(st, new_id, guess.0, guess.1) {
+        Ok(rt) => {
+            st.panes.insert(new_id, rt);
+            st.ws.tabs[tab_index].split(id, dir, new_id);
+            st.ws.tabs[tab_index].focused = new_id;
+            refresh_views(st);
+            redraw_visible(st);
+        },
+        Err(e) => eprintln!("分屏失败: {e}"),
+    }
+}
+
+fn split_pane(id: PaneId, dir: Dir) {
+    with_app(|st| split_pane_inner(st, id, dir));
+}
+
+fn focus_pane(id: PaneId) {
+    with_app(|st| {
+        let Some(idx) = st.ws.tab_of(id) else { return };
+        if st.ws.tabs[idx].focused == id {
+            return;
+        }
+        st.ws.tabs[idx].focused = id;
+        refresh_views(st);
+    });
+}
+
+fn set_active_tab(index: usize) {
+    with_app(|st| {
+        if index >= st.ws.tabs.len() || st.ws.active == index {
+            return;
+        }
+        st.ws.active = index;
+        refresh_views(st);
+        rebuild_tabs(st);
+        redraw_visible(st);
+    });
+}
+
+// ------------------------------------------------------------------- 布局
+
+/// 重新计算布局：必要时 resize 各 pane 的网格，并刷新 Slint 模型。
+fn refresh_views(st: &mut AppState) {
+    if st.content.w < 1.0 || st.content.h < 1.0 {
+        return;
+    }
+    let (rects, focused, dividers) = {
+        let Some(tab) = st.ws.active_tab() else { return };
+        let mut rects: Vec<(PaneId, Rect)> = Vec::new();
+        let mut dividers: Vec<Divider> = Vec::new();
+        if let Some(root) = &tab.root {
+            root.layout(st.content, &mut rects);
+            root.dividers(st.content, &mut dividers);
+        }
+        (rects, tab.focused, dividers)
+    };
+
+    for (id, rect) in &rects {
+        if let Some(rt) = st.panes.get_mut(id) {
+            let (cols, rows) = cell_of(*rect, st.cell);
+            rt.rect = *rect;
+            if rt.grid != (cols, rows) {
+                rt.renderer.resize_grid(cols, rows);
+                rt.handle.resize(cols as u16, rows as u16);
+                rt.grid = (cols, rows);
+            }
+        }
+    }
+
+    let make_view = |id: &PaneId, rect: &Rect| -> Option<PaneView> {
+        st.panes.get(id).map(|rt| PaneView {
+            id: *id as i32,
+            image: rt.image.clone(),
+            x: rect.x,
+            y: rect.y,
+            w: rect.w,
+            h: rect.h,
+            focused: *id == focused,
+            iw: rt.renderer.width as f32,
+            ih: rt.renderer.height as f32,
+            mouse_reporting: rt.handle.wants_mouse(),
+        })
+    };
+
+    // 拖拽/窗口缩放时布局顺序不变，用 set_row_data 避免重建 TouchArea，
+    // 否则拖分隔条时按下状态会在每一帧被重置。
+    let same_order = st.pane_rows.len() == rects.len()
+        && rects.iter().enumerate().all(|(i, (id, _))| st.pane_rows.get(id) == Some(&i));
+    if same_order {
+        for (i, (id, rect)) in rects.iter().enumerate() {
+            if let Some(view) = make_view(id, rect) {
+                st.pane_model.set_row_data(i, view);
+            }
+        }
+    } else {
+        st.pane_rows.clear();
+        let mut views = Vec::with_capacity(rects.len());
+        for (i, (id, rect)) in rects.iter().enumerate() {
+            if let Some(view) = make_view(id, rect) {
+                st.pane_rows.insert(*id, i);
+                views.push(view);
+            }
+        }
+        st.pane_model.set_vec(views);
+    }
+
+    // 分隔条模型 + 拖拽几何
+    st.divider_infos = dividers;
+    let views: Vec<DividerView> = st
+        .divider_infos
+        .iter()
+        .enumerate()
+        .map(|(i, d)| DividerView {
+            index: i as i32,
+            x: d.rect.x,
+            y: d.rect.y,
+            w: d.rect.w,
+            h: d.rect.h,
+            vertical: d.dir == Dir::Row,
+        })
+        .collect();
+    if st.divider_model.row_count() == views.len() {
+        for (i, view) in views.into_iter().enumerate() {
+            st.divider_model.set_row_data(i, view);
+        }
+    } else {
+        st.divider_model.set_vec(views);
+    }
+}
+
+fn rebuild_tabs(st: &mut AppState) {
+    let active = st.ws.active;
+    let tabs: Vec<TabView> = st
+        .ws
+        .tabs
+        .iter()
+        .enumerate()
+        .map(|(i, t)| TabView { title: t.title.clone().into(), active: i == active })
+        .collect();
+    st.tab_model.set_vec(tabs);
+}
+
+/// 重绘当前可见的 pane（切换 tab / 布局变化后）。
+fn redraw_visible(st: &mut AppState) {
+    let ids: Vec<PaneId> = {
+        let Some(tab) = st.ws.active_tab() else { return };
+        tab.panes()
+    };
+    for id in ids {
+        redraw_pane_inner(st, id);
+    }
+}
+
+// ------------------------------------------------------------------- 渲染
+
+fn redraw_pane(id: PaneId) {
+    if PIPE_ON.load(Ordering::Relaxed) {
+        if let Some(t) = LAST_KEY.lock().unwrap().take() {
+            PIPE_SAMPLES.lock().unwrap().push(t.elapsed());
+        }
+    }
+    with_app(|st| redraw_pane_inner(st, id));
+}
+
+fn redraw_pane_inner(st: &mut AppState, id: PaneId) {
+    let focused = st.ws.active_tab().map(|t| t.focused) == Some(id);
+    let Some(rt) = st.panes.get_mut(&id) else { return };
+    let frame = rt.handle.pull(std::mem::take(&mut rt.frame));
+    rt.renderer.draw(&frame);
+    rt.image = rt.renderer.image();
+
+    if focused {
+        st.echo.store(count_marker(&frame, MARKER), Ordering::Release);
+        // IME 候选窗跟着光标走：把聚焦 pane 的光标格换算成内容区像素坐标。
+        let px = rt.rect.x + frame.cursor.col as f32 * rt.renderer.cell_w as f32;
+        let py = rt.rect.y + frame.cursor.line as f32 * rt.renderer.cell_h as f32;
+        st.ui.set_ime_x(px);
+        st.ui.set_ime_y(py);
+    }
+
+    if let Some(&row) = st.pane_rows.get(&id) {
+        let rect = rt.rect;
+        let view = PaneView {
+            id: id as i32,
+            image: rt.image.clone(),
+            x: rect.x,
+            y: rect.y,
+            w: rect.w,
+            h: rect.h,
+            focused,
+            iw: rt.renderer.width as f32,
+            ih: rt.renderer.height as f32,
+            mouse_reporting: rt.handle.wants_mouse(),
+        };
+        st.pane_model.set_row_data(row, view);
+    }
+    rt.frame = frame;
+}
+
+/// 字号变更：重建字体集与所有 pane 的渲染器，再按新网格重排。
+fn apply_font_size(st: &mut AppState) {
+    let Some(fonts) = FontSet::load(st.cfg.font_size) else {
+        eprintln!("[config] 字体加载失败，字号变更忽略");
+        return;
+    };
+    let fonts = Rc::new(fonts);
+    st.cell = (fonts.cell_w, fonts.cell_h);
+    st.fonts = fonts.clone();
+    let theme = st.resolved_theme.clone();
+    for rt in st.panes.values_mut() {
+        let (cols, rows) = rt.grid;
+        rt.renderer = Renderer::new(fonts.clone(), cols, rows, theme.spec.bg, theme.spec.cursor);
+    }
+    refresh_views(st);
+    redraw_visible(st);
+}
+
+fn redraw_all() {
+    let ids: Vec<PaneId> = with_app(|st| st.panes.keys().copied().collect()).unwrap_or_default();
+    for id in ids {
+        redraw_pane(id);
+    }
+}
+
+// --------------------------------------------------------------- 选择/搜索
+
+fn cell_at(rt: &PaneRuntime, x: f32, y: f32) -> (u16, u16) {
+    let cw = rt.renderer.cell_w.max(1) as f32;
+    let ch = rt.renderer.cell_h.max(1) as f32;
+    let col = (x / cw).floor().max(0.0) as usize;
+    let row = (y / ch).floor().max(0.0) as usize;
+    let cols = rt.grid.0.max(1);
+    let rows = rt.grid.1.max(1);
+    (row.min(rows - 1) as u16, col.min(cols - 1) as u16)
+}
+
+/// Slint 修饰键位（1=Shift 2=Alt 4=Ctrl）→ 鼠标修饰键。
+fn mouse_mods(bits: i32) -> Modifiers {
+    Modifiers { shift: bits & 1 != 0, alt: bits & 2 != 0, ctrl: bits & 4 != 0 }
+}
+
+/// Slint 按键号（0=左 1=中 2=右）→ 上报按键。
+fn mouse_button(code: i32) -> MouseButton {
+    match code {
+        1 => MouseButton::Middle,
+        2 => MouseButton::Right,
+        _ => MouseButton::Left,
+    }
+}
+
+fn set_clipboard(st: &mut AppState, text: &str) {
+    eprintln!("[clipboard] 复制 {} 字节: {:?}", text.len(), text.chars().take(40).collect::<String>());
+    if st.clipboard.is_none() {
+        st.clipboard = arboard::Clipboard::new().ok();
+    }
+    match &mut st.clipboard {
+        Some(cb) => {
+            if let Err(e) = cb.set_text(text.to_string()) {
+                eprintln!("[clipboard] 写入失败: {e}");
+            }
+        },
+        None => eprintln!("[clipboard] 不可用"),
+    }
+}
+
+fn get_clipboard(st: &mut AppState) -> Option<String> {
+    if st.clipboard.is_none() {
+        st.clipboard = arboard::Clipboard::new().ok();
+    }
+    st.clipboard.as_mut().and_then(|cb| cb.get_text().ok())
+}
+
+fn copy_current_selection(st: &mut AppState) {
+    let focused = st.ws.active_tab().map(|t| t.focused);
+    let Some(id) = focused else { return };
+    let text = st.panes.get(&id).and_then(|rt| rt.handle.copy_selection());
+    if let Some(text) = text.filter(|t| !t.is_empty()) {
+        set_clipboard(st, &text);
+    }
+}
+
+fn paste_into_focused(st: &mut AppState) {
+    let Some(text) = get_clipboard(st) else { return };
+    if text.is_empty() {
+        return;
+    }
+    // 终端需要 CR 作为回车
+    let normalized = text.replace("\r\n", "\r").replace('\n', "\r");
+    let Some(focused) = st.ws.active_tab().map(|t| t.focused) else { return };
+    let bracketed = st
+        .panes
+        .get(&focused)
+        .map(|rt| rt.frame.mode & BRACKETED_PASTE != 0)
+        .unwrap_or(false);
+    if let Some(rt) = st.panes.get_mut(&focused) {
+        if bracketed {
+            let mut payload = Vec::with_capacity(normalized.len() + 12);
+            payload.extend_from_slice(b"\x1b[200~");
+            payload.extend_from_slice(normalized.as_bytes());
+            payload.extend_from_slice(b"\x1b[201~");
+            rt.handle.input(&payload);
+        } else {
+            rt.handle.input(normalized.as_bytes());
+        }
+    }
+}
+
+fn update_search_bar(st: &mut AppState) {
+    st.ui.set_search_query(st.search_query.as_str().into());
+}
+
+fn open_search(st: &mut AppState) {
+    st.search_open = true;
+    st.ui.set_search_open(true);
+    st.ui.set_search_status("".into());
+    update_search_bar(st);
+}
+
+fn close_search(st: &mut AppState) {
+    st.search_open = false;
+    st.ui.set_search_open(false);
+    st.ui.set_search_status("".into());
+    let ids: Vec<PaneId> = st.panes.keys().copied().collect();
+    for id in ids {
+        if let Some(rt) = st.panes.get(&id) {
+            rt.handle.search_clear();
+        }
+    }
+    redraw_visible(st);
+}
+
+fn run_search(st: &mut AppState, forward: bool) {
+    let query = st.search_query.clone();
+    if query.is_empty() {
+        return;
+    }
+    let Some(focused) = st.ws.active_tab().map(|t| t.focused) else { return };
+    let hit = st.panes.get(&focused).and_then(|rt| rt.handle.search(&query, forward));
+    st.ui.set_search_status(if hit.is_some() { "".into() } else { "no match".into() });
+    redraw_visible(st);
+}
+
+// ------------------------------------------------------------------- 事件
+
+/// Slint/winit 在 X11 下会把修饰键**本身**也当成 key-pressed 上报：
+/// Ctrl→U+0011、Shift→U+0010、Alt→U+0012。这些不是用户输入，必须丢掉，
+/// 否则终端会莫名收到 0x11/0x10（Ctrl+Q 的真实按键会另发一条 "q" 事件）。
+fn is_modifier_artifact(text: &str, ctrl: bool, alt: bool, shift: bool) -> bool {
+    match text {
+        "\u{11}" => ctrl,
+        "\u{12}" => alt,
+        "\u{10}" => shift,
+        _ => false,
+    }
+}
+
+/// 统一的输入分发：物理按键与 IME 上屏都走这里。
+/// `ctrl/alt/shift` 对 IME 提交恒为 false，避免把中文误判成快捷键。
+fn handle_input(
+    st: &mut AppState,
+    text: &str,
+    ctrl: bool,
+    alt: bool,
+    shift: bool,
+    keylog: bool,
+) {
+    if is_modifier_artifact(text, ctrl, alt, shift) {
+        if keylog {
+            eprintln!("[key] 忽略修饰键伪事件 {text:?}");
+        }
+        return;
+    }
+    // 搜索框打开时，键盘归搜索框（Esc 关闭、Enter 下一个、Shift+Enter 上一个）
+    if st.search_open {
+        match text {
+            "\u{1b}" => {
+                close_search(st);
+                return;
+            },
+            "\n" | "\r" => {
+                run_search(st, !shift);
+                return;
+            },
+            "\u{8}" | "\u{7f}" => {
+                st.search_query.pop();
+                update_search_bar(st);
+                if !st.search_query.is_empty() {
+                    run_search(st, true);
+                }
+                return;
+            },
+            _ => {},
+        }
+        if !ctrl && !alt && !text.is_empty() {
+            st.search_query.push_str(text);
+            update_search_bar(st);
+            run_search(st, true);
+        }
+        return;
+    }
+
+    if ctrl && shift {
+        match text.to_ascii_lowercase().as_str() {
+            "c" => {
+                copy_current_selection(st);
+                return;
+            },
+            "v" => {
+                paste_into_focused(st);
+                return;
+            },
+            _ => {},
+        }
+    }
+
+    if ctrl {
+        match text {
+            "t" => {
+                new_tab_inner(st);
+                rebuild_tabs(st);
+                return;
+            },
+            "w" => {
+                let idx = st.ws.active;
+                close_tab_inner(st, idx);
+                return;
+            },
+            "f" => {
+                open_search(st);
+                return;
+            },
+            _ => {},
+        }
+    }
+
+    if PIPE_ON.load(Ordering::Relaxed) {
+        *LAST_KEY.lock().unwrap() = Some(Instant::now());
+    }
+    let Some(tab) = st.ws.active_tab() else { return };
+    let focused = tab.focused;
+    let encoded = keys::encode(text, ctrl, alt);
+    match st.panes.get_mut(&focused) {
+        Some(rt) => {
+            if let Some(bytes) = &encoded {
+                rt.handle.input(bytes);
+                if keylog {
+                    eprintln!("[send] pane={focused} bytes={bytes:?}");
+                }
+            } else if keylog {
+                eprintln!("[send] pane={focused} 未编码 text={text:?}");
+            }
+        },
+        None => {
+            if keylog {
+                eprintln!(
+                    "[send] 找不到 pane {focused}（现有 {:?}）",
+                    st.panes.keys().collect::<Vec<_>>()
+                );
+            }
+        },
+    }
+}
+
+fn poll_events() {
+    with_app(|st| {
+        let mut changed = false;
+        let ids: Vec<PaneId> = st.panes.keys().copied().collect();
+        for id in ids {
+            let Some(rt) = st.panes.get_mut(&id) else { continue };
+            let mut events = Vec::new();
+            rt.handle.drain_events(&mut events);
+            for ev in events {
+                if let CoreEvent::Title(t) = ev {
+                    if !t.is_empty() && rt.title != t {
+                        rt.title = t;
+                        changed = true;
+                    }
+                }
+            }
+        }
+        if changed {
+            let active = st.ws.active;
+            for (i, tab) in st.ws.tabs.iter_mut().enumerate() {
+                if i != active {
+                    continue;
+                }
+                if let Some(first) = tab.panes().first() {
+                    if let Some(rt) = st.panes.get(first) {
+                        tab.title = rt.title.clone();
+                    }
+                }
+            }
+            rebuild_tabs(st);
+        }
+    });
+}
+
+// -------------------------------------------------------------------- 入口
+
+#[derive(Default, Clone, Debug)]
+struct Options {
+    cols: u16,
+    rows: u16,
+    scrollback: usize,
+    font_size: f32,
+    shell: Option<String>,
+    args: Vec<String>,
+    latency: Option<usize>,
+    fps: Option<f64>,
+    title: String,
+    exit_after_first: bool,
+    dump: bool,
+    frame_clock: String,
+    demo_splits: bool,
+}
+
+fn parse_args(cfg: &Config) -> Options {
+    let mut o = Options {
+        cols: cfg.cols,
+        rows: cfg.rows,
+        scrollback: cfg.scrollback,
+        font_size: cfg.font_size,
+        shell: cfg.shell.clone(),
+        title: TITLE.to_string(),
+        frame_clock: "off".to_string(),
+        ..Options::default()
+    };
+    let mut it = std::env::args().skip(1);
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--cols" => o.cols = it.next().and_then(|v| v.parse().ok()).unwrap_or(o.cols),
+            "--rows" => o.rows = it.next().and_then(|v| v.parse().ok()).unwrap_or(o.rows),
+            "--scrollback" => o.scrollback = it.next().and_then(|v| v.parse().ok()).unwrap_or(o.scrollback),
+            "--font-size" => o.font_size = it.next().and_then(|v| v.parse().ok()).unwrap_or(o.font_size),
+            "--shell" => o.shell = it.next(),
+            "--latency" => o.latency = it.next().and_then(|v| v.parse().ok()),
+            "--fps" => o.fps = it.next().and_then(|v| v.parse().ok()),
+            "--title" => o.title = it.next().unwrap_or(o.title),
+            "--exit-after-first" => o.exit_after_first = true,
+            "--dump" => o.dump = true,
+            "--frame-clock" => o.frame_clock = it.next().unwrap_or_else(|| "off".to_string()),
+            "--demo-splits" => o.demo_splits = true,
+            "--" => {
+                o.args = it.by_ref().collect();
+                break;
+            },
+            other => o.args.push(other.to_string()),
+        }
+    }
+    o
+}
+
+fn print_help() {
+    println!(
+        "Rust Tabby {}\n\n\
+用法: rusttabby-app [选项] [-- <shell 参数>...]\n\n\
+选项:\n  \
+--cols N            初始列数 (默认 120)\n  \
+--rows N            初始行数 (默认 32)\n  \
+--scrollback N      历史缓冲行数 (默认 2000)\n  \
+--font-size F       字号 (默认 15)\n  \
+--shell PATH        指定 shell\n  \
+--title TEXT        窗口标题\n  \
+--frame-clock MODE  帧时钟实验项\n  \
+-l, --latency N     按键延迟探针\n  \
+--fps SECS          全屏帧率探针\n  \
+--exit-after-first  首帧后退出\n  \
+--dump              连续打印帧内容 (调试)\n  \
+-h, --help          显示帮助\n\n\
+快捷键: Ctrl+T 新建标签 / Ctrl+W 关闭 / Ctrl+F 搜索 / Ctrl+Shift+C 复制 / Ctrl+Shift+V 粘贴\n\
+配置: ~/.config/rusttabby/config.toml (RUSTTABBY_CONFIG 可覆盖)\n\
+主题目录: ~/.config/rusttabby/themes (RUSTTABBY_THEMES_DIR 可覆盖；支持 iTerm2/WT/Alacritty/kitty/Xresources/YAML)",
+        env!("CARGO_PKG_VERSION")
+    );
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let t_start = Instant::now();
+    if std::env::args().any(|a| a == "-h" || a == "--help") {
+        print_help();
+        return Ok(());
+    }
+    env_logger::init();
+    // 无 GPU（沙箱/无 /dev/dri）时 Skia 能建窗口但拿不到可呈现的 surface，
+    // 表现为“窗口存在但全黑”。用户显式设置 SLINT_BACKEND 时不干预。
+    if std::env::var_os("SLINT_BACKEND").is_none()
+        && !std::path::Path::new("/dev/dri").exists()
+    {
+        std::env::set_var("SLINT_BACKEND", "winit-software");
+        eprintln!("[render] 未检测到 /dev/dri，自动使用 winit-software 后端");
+    }
+    let cfg = Config::load();
+    let opts = parse_args(&cfg);
+    // 内置 + 用户自定义主题；加载失败只记录，不阻塞启动。
+    let registry = ThemeRegistry::load(&ThemeRegistry::default_dir());
+    for err in &registry.errors {
+        eprintln!("[theme] {err}");
+    }
+    let theme_selection = normalize_selection(&registry, &cfg.theme);
+    let initial_theme = resolve_theme(
+        &registry,
+        &theme_selection,
+        cfg.auto_dark.as_deref(),
+        cfg.auto_light.as_deref(),
+    );
+
+    let fonts = Rc::new(FontSet::load(opts.font_size).ok_or("找不到等宽字体")?);
+    let cell = (fonts.cell_w, fonts.cell_h);
+    let win_w = opts.cols as f32 * cell.0 as f32;
+    let win_h = opts.rows as f32 * cell.1 as f32 + TABBAR_H;
+    let content = Rect::new(0.0, 0.0, win_w, win_h - TABBAR_H);
+    let t_font = t_start.elapsed();
+
+    let ui = MainWindow::new()?;
+    ui.window().set_size(slint::PhysicalSize::new(win_w as u32, win_h as u32));
+
+    let pane_model = Rc::new(VecModel::<PaneView>::default());
+    let tab_model = Rc::new(VecModel::<TabView>::default());
+    let divider_model = Rc::new(VecModel::<DividerView>::default());
+    ui.set_panes(ModelRc::from(pane_model.clone()));
+    ui.set_tabs(ModelRc::from(tab_model.clone()));
+    ui.set_dividers(ModelRc::from(divider_model.clone()));
+
+    let echo = Arc::new(AtomicUsize::new(0));
+    let state = Rc::new(RefCell::new(AppState {
+        ui: ui.clone_strong(),
+        ws: Workspace::new(),
+        panes: HashMap::new(),
+        pane_model,
+        tab_model,
+        pane_rows: HashMap::new(),
+        divider_model: divider_model.clone(),
+        divider_infos: Vec::new(),
+        fonts,
+        cell,
+        echo: echo.clone(),
+        opts: opts.clone(),
+        content,
+        next_title: 0,
+        resolved_theme: initial_theme.clone(),
+        registry,
+        auto_watch_started: false,
+        search_open: false,
+        search_query: String::new(),
+        drag: None,
+        hover_cell: None,
+        resize: None,
+        xresize: None,
+        clipboard: arboard::Clipboard::new().ok(),
+        cfg: {
+            let mut c = cfg.clone();
+            c.theme = theme_selection.clone();
+            c.cols = opts.cols;
+            c.rows = opts.rows;
+            c.font_size = opts.font_size;
+            c.scrollback = opts.scrollback;
+            if opts.shell.is_some() {
+                c.shell = opts.shell.clone();
+            }
+            c
+        },
+    }));
+    APP.with(|c| *c.borrow_mut() = Some(state.clone()));
+
+    // ---- 回调 ----
+    let keylog = std::env::var("RUSTTABBY_KEYLOG").is_ok();
+    // 鼠标链路排查：RUSTTABBY_MOUSELOG=1 打印「命中哪格 / 是否上报」。
+    let mouselog = std::env::var("RUSTTABBY_MOUSELOG").is_ok();
+    ui.on_key_input(move |text, ctrl, alt, shift| {
+        let text = text.to_string();
+        if keylog {
+            eprintln!("[key] {:?} ctrl={ctrl} alt={alt} shift={shift}", text);
+        }
+        with_app(|st| handle_input(st, &text, ctrl, alt, shift, keylog));
+    });
+
+    // IME 上屏（中文/emoji）单独走一条路：没有修饰键语义，也不能触发 Ctrl 快捷键。
+    ui.on_ime_commit(move |text| {
+        let text = text.to_string();
+        if keylog {
+            eprintln!("[ime] {:?}", text);
+        }
+        with_app(|st| handle_input(st, &text, false, false, false, keylog));
+    });
+
+    ui.on_pane_mouse_down(move |id, x, y, button, mods| {
+        let id = id as u64;
+        with_app(|st| {
+            let Some(rt) = st.panes.get(&id) else { return };
+            let cell = cell_at(rt, x, y);
+            let modifiers = mouse_mods(mods);
+            // Shift 是「绕过鼠标上报、改成本地选词」的惯例逃生门（xterm/gnome-terminal 同款）。
+            let reporting = rt.handle.wants_mouse() && !modifiers.shift;
+            if mouselog {
+                eprintln!(
+                    "[mouse] down pane={id} cell={cell:?} button={button} mods={mods} \
+                     wants={} reporting={reporting}",
+                    rt.handle.wants_mouse()
+                );
+            }
+            if reporting {
+                // 两套状态不能并存：进终端鼠标模式就清掉本地选区。
+                rt.handle.selection_clear();
+                rt.handle.mouse(MouseEvent {
+                    button: mouse_button(button),
+                    action: MouseAction::Press,
+                    line: cell.0,
+                    col: cell.1,
+                    modifiers,
+                });
+            } else {
+                rt.handle.selection_start(cell.0, cell.1);
+            }
+            st.drag = Some(Drag { pane: id, start: (x, y), moved: false, cell, mouse: reporting });
+        });
+    });
+
+    ui.on_pane_mouse_move(|id, x, y, _button, mods| {
+        let id = id as u64;
+        with_app(|st| {
+            let modifiers = mouse_mods(mods);
+
+            if st.drag.is_some() {
+                let (cell, forwarding) = {
+                    let Some(drag) = st.drag.as_mut() else { return };
+                    if drag.pane != id {
+                        return;
+                    }
+                    if (x - drag.start.0).abs() > 4.0 || (y - drag.start.1).abs() > 4.0 {
+                        drag.moved = true;
+                    }
+                    let Some(rt) = st.panes.get(&id) else { return };
+                    let cell = cell_at(rt, x, y);
+                    if drag.cell == cell {
+                        return;
+                    }
+                    drag.cell = cell;
+                    (cell, drag.mouse)
+                };
+                if forwarding {
+                    if let Some(rt) = st.panes.get(&id) {
+                        rt.handle.mouse(MouseEvent {
+                            button: MouseButton::Left,
+                            action: MouseAction::Motion,
+                            line: cell.0,
+                            col: cell.1,
+                            modifiers,
+                        });
+                    }
+                } else {
+                    if let Some(rt) = st.panes.get(&id) {
+                        rt.handle.selection_extend(cell.0, cell.1);
+                    }
+                    redraw_pane_inner(st, id);
+                }
+                return;
+            }
+
+            // 无按键悬停（1003）：只有声明 MOUSE_MOTION 的应用需要，按格去重防刷屏。
+            let Some(rt) = st.panes.get(&id) else { return };
+            if !rt.handle.wants_motion() {
+                return;
+            }
+            let cell = cell_at(rt, x, y);
+            if st.hover_cell == Some((id, cell)) {
+                return;
+            }
+            st.hover_cell = Some((id, cell));
+            rt.handle.mouse(MouseEvent {
+                button: MouseButton::None,
+                action: MouseAction::Motion,
+                line: cell.0,
+                col: cell.1,
+                modifiers,
+            });
+        });
+    });
+
+    ui.on_pane_mouse_up(|id, x, y, button, mods| {
+        let id = id as u64;
+        with_app(|st| {
+            let Some(drag) = st.drag.take() else { return };
+            if drag.mouse {
+                if let Some(rt) = st.panes.get(&id) {
+                    let cell = cell_at(rt, x, y);
+                    rt.handle.mouse(MouseEvent {
+                        button: mouse_button(button),
+                        action: MouseAction::Release,
+                        line: cell.0,
+                        col: cell.1,
+                        modifiers: mouse_mods(mods),
+                    });
+                }
+                return;
+            }
+            if !drag.moved {
+                return;
+            }
+            let text = st.panes.get(&drag.pane).and_then(|rt| rt.handle.copy_selection());
+            if let Some(text) = text.filter(|t| !t.is_empty()) {
+                set_clipboard(st, &text);
+            }
+        });
+    });
+
+    ui.on_pane_scrolled(|id, dy, x, y, mods| {
+        let id = id as u64;
+        with_app(|st| {
+            let Some(rt) = st.panes.get(&id) else { return };
+            let modifiers = mouse_mods(mods);
+
+            // 终端要鼠标：滚轮变成 64/65 上报（tmux 翻页、vim 滚动才生效）。
+            if rt.handle.wants_mouse() && !modifiers.shift {
+                let cell = cell_at(rt, x, y);
+                let button =
+                    if dy > 0.0 { MouseButton::WheelUp } else { MouseButton::WheelDown };
+                rt.handle.mouse(MouseEvent {
+                    button,
+                    action: MouseAction::Press,
+                    line: cell.0,
+                    col: cell.1,
+                    modifiers,
+                });
+                return;
+            }
+
+            let ch = rt.renderer.cell_h.max(1) as f32;
+            let mut lines = (dy / ch).round();
+            if lines.abs() < 1.0 {
+                lines = dy.signum();
+            }
+            if lines == 0.0 {
+                return;
+            }
+            // 约定：delta-y > 0 表示向上滚（回看历史）
+            rt.handle.scroll(lines as i32);
+        });
+    });
+
+    ui.on_divider_dragged(|index, x, y| {
+        with_app(|st| {
+            let Some(info) = st.divider_infos.get(index as usize).cloned() else { return };
+            let usable = match info.dir {
+                Dir::Row => info.parent.w - SPLIT_GAP,
+                Dir::Col => info.parent.h - SPLIT_GAP,
+            };
+            if usable <= 1.0 {
+                return;
+            }
+            let ratio = match info.dir {
+                Dir::Row => (x - info.parent.x) / usable,
+                Dir::Col => (y - info.parent.y) / usable,
+            };
+            let changed = {
+                let Some(tab) = st.ws.active_tab_mut() else { return };
+                let Some(root) = tab.root.as_mut() else { return };
+                root.set_ratio(&info.path, ratio)
+            };
+            if changed {
+                refresh_views(st);
+                redraw_visible(st);
+            }
+        });
+    });
+
+    ui.on_start_window_resize(|dir| {
+        with_app(|st| {
+            ensure_resize_conn(st);
+            let Some(pointer) = resize_pointer(st) else { return };
+            let pos = st.ui.window().position();
+            let size = st.ui.window().size();
+            st.resize = Some(WindowResize {
+                dir,
+                pointer,
+                pos: (pos.x, pos.y),
+                size: (size.width, size.height),
+            });
+        });
+    });
+
+    ui.on_window_resize_drag(|| {
+        with_app(|st| {
+            let Some(r) = st.resize else { return };
+            let Some((px, py)) = resize_pointer(st) else { return };
+            let dx = px - r.pointer.0;
+            let dy = py - r.pointer.1;
+
+            let left = matches!(r.dir, 0 | 6 | 7);
+            let right = matches!(r.dir, 2 | 3 | 4);
+            let top = matches!(r.dir, 0 | 1 | 2);
+            let bottom = matches!(r.dir, 4 | 5 | 6);
+
+            let mut x = r.pos.0;
+            let mut y = r.pos.1;
+            let mut w = r.size.0 as i32;
+            let mut h = r.size.1 as i32;
+            if left {
+                x += dx;
+                w -= dx;
+            }
+            if right {
+                w += dx;
+            }
+            if top {
+                y += dy;
+                h -= dy;
+            }
+            if bottom {
+                h += dy;
+            }
+
+            const MIN_W: i32 = 320;
+            const MIN_H: i32 = 200;
+            if w < MIN_W {
+                if left {
+                    x -= MIN_W - w;
+                }
+                w = MIN_W;
+            }
+            if h < MIN_H {
+                if top {
+                    y -= MIN_H - h;
+                }
+                h = MIN_H;
+            }
+
+            let want = slint::PhysicalSize::new(w as u32, h as u32);
+            if st.ui.window().size() != want {
+                st.ui.window().set_size(want);
+            }
+            if left || top {
+                let want = slint::PhysicalPosition::new(x, y);
+                if st.ui.window().position() != want {
+                    st.ui.window().set_position(want);
+                }
+            }
+        });
+    });
+
+    ui.on_end_window_resize(|| {
+        with_app(|st| st.resize = None);
+    });
+
+    ui.on_pane_clicked(|id| focus_pane(id as u64));
+
+    ui.on_pane_right_clicked(|id, x, y| {
+        eprintln!("[ui] right click pane={id} at {x},{y}");
+        with_app(|st| {
+            st.ui.set_menu_pane(id);
+            st.ui.set_menu_x(x);
+            st.ui.set_menu_y(y);
+            st.ui.set_menu_open(true);
+        });
+    });
+
+    ui.on_menu_action(|id, action| {
+        eprintln!("[ui] menu action pane={id} action={action}");
+        let id = id as u64;
+        match action {
+            0 => split_pane(id, Dir::Row),
+            1 => split_pane(id, Dir::Col),
+            2 => close_pane(id),
+            3 => {
+                with_app(copy_current_selection);
+            },
+            4 => {
+                with_app(paste_into_focused);
+            },
+            _ => {},
+        }
+    });
+
+    ui.on_tabbar_context(|x, y| {
+        with_app(|st| {
+            st.ui.set_tabmenu_x(x);
+            st.ui.set_tabmenu_y(y);
+            st.ui.set_tabmenu_open(true);
+        });
+    });
+
+    ui.on_tabbar_menu_action(|action| {
+        with_app(|st| match action {
+            0 => {}, // 置顶由 Slint 侧直接切换（绑定 Window.always-on-top）
+            1 => {
+                new_tab_inner(st);
+                rebuild_tabs(st);
+            },
+            2 => {
+                st.ui.set_settings_open(true);
+            },
+            3 => {
+                let _ = slint::quit_event_loop();
+            },
+            _ => {},
+        });
+    });
+
+    ui.on_close_window(|| {
+        let _ = slint::quit_event_loop();
+    });
+
+    {
+        let auto = is_auto_theme(&theme_selection);
+        ui.set_theme_name(if auto { AUTO_THEME.into() } else { initial_theme.id.as_str().into() });
+        ui.set_auto_resolved(if auto { initial_theme.label.as_str().into() } else { "".into() });
+        ui.global::<Palette>().set_colors(slint_theme(&initial_theme.ui));
+        let count = state.borrow().registry.all().count();
+        ui.set_theme_choices(theme_choices(&state.borrow().registry));
+        ui.set_settings_height(settings_height_for(count, win_h));
+    }
+    ui.set_font_size(state.borrow().cfg.font_size as i32);
+    ui.set_scrollback(state.borrow().cfg.scrollback as i32);
+
+    ui.on_set_theme(|name| {
+        eprintln!("[theme] 选择 -> {name}");
+        with_app(|st| apply_theme(st, name.as_str()));
+    });
+
+    ui.on_bump_font_size(|delta| {
+        with_app(|st| {
+            let new = (st.cfg.font_size + delta as f32).clamp(8.0, 32.0);
+            if (new - st.cfg.font_size).abs() < 0.1 {
+                return;
+            }
+            st.cfg.font_size = new;
+            st.ui.set_font_size(new as i32);
+            st.cfg.save();
+            apply_font_size(st);
+        });
+    });
+
+    ui.on_bump_scrollback(|delta| {
+        with_app(|st| {
+            let new = (st.cfg.scrollback as i64 + delta as i64).clamp(500, 100_000) as usize;
+            st.cfg.scrollback = new;
+            st.ui.set_scrollback(new as i32);
+            st.cfg.save();
+        });
+    });
+
+    {
+        let weak = ui.as_weak();
+        ui.on_minimize_window(move || {
+            if let Some(ui) = weak.upgrade() {
+                ui.window().set_minimized(true);
+            }
+        });
+    }
+
+    {
+        let weak = ui.as_weak();
+        ui.on_toggle_maximize(move || {
+            if let Some(ui) = weak.upgrade() {
+                // 内置 `maximized` 属性与窗口状态双向同步，直接翻转即可
+                let target = !ui.window().is_maximized();
+                ui.window().set_maximized(target);
+            }
+        });
+    }
+
+    ui.on_tab_clicked(|i| set_active_tab(i as usize));
+    ui.on_tab_closed(|i| close_tab(i as usize));
+    ui.on_new_tab(new_tab);
+
+    ui.on_resized(|w, h| {
+        with_app(|st| {
+            let w = w.max(1.0);
+            let h = (h - TABBAR_H).max(1.0);
+            if (st.content.w - w).abs() < 0.5 && (st.content.h - h).abs() < 0.5 {
+                return;
+            }
+            st.content = Rect::new(0.0, 0.0, w, h);
+            refresh_views(st);
+            redraw_visible(st);
+        });
+    });
+
+    // ---- OSC 标题轮询 ----
+    let poll_timer = slint::Timer::default();
+    poll_timer.start(slint::TimerMode::Repeated, Duration::from_millis(400), poll_events);
+
+    // ---- 首个标签页 ----
+    with_app(|st| {
+        new_tab_inner(st);
+        rebuild_tabs(st);
+    });
+
+    // ---- 可选：帧时钟 spike ----
+    if opts.frame_clock != "off" {
+        let interval = match opts.frame_clock.as_str() {
+            "timer0" => Duration::from_micros(200),
+            "timer1000" => Duration::from_micros(1000),
+            "timer2000" => Duration::from_micros(2000),
+            _ => Duration::from_micros(1000),
+        };
+        let weak = ui.as_weak();
+        let timer = slint::Timer::default();
+        timer.start(slint::TimerMode::Repeated, interval, move || {
+            if let Some(ui) = weak.upgrade() {
+                ui.window().request_redraw();
+            }
+        });
+        std::mem::forget(timer);
+    }
+
+    // ---- 演示布局（调试用）----
+    if opts.demo_splits {
+        with_app(|st| {
+            if let Some(tab) = st.ws.active_tab() {
+                let first = tab.focused;
+                split_pane_inner(st, first, Dir::Row);
+                let second = st.ws.active_tab().map(|t| t.focused).unwrap_or(first);
+                split_pane_inner(st, second, Dir::Col);
+            }
+        });
+    }
+
+    // ---- 首帧 ----
+    ui.show()?;
+
+    // Auto 主题：窗口显示后开始监听系统深浅色变化。
+    if is_auto_theme(&theme_selection) {
+        with_app(ensure_auto_watcher);
+    }
+
+    // 窗口图标兜底：Slint 内置 icon 在本环境没有写进 _NET_WM_ICON
+    {
+        const ICON_RGBA: &[u8] = include_bytes!("../../../assets/icon-64.rgba");
+        std::thread::Builder::new().name("icon".into()).spawn(move || {
+            // 等 Slint 完成首轮 window properties，避免被它的空 icon 覆盖
+            std::thread::sleep(std::time::Duration::from_millis(800));
+            match xconn::set_window_icon(ICON_RGBA, 64) {
+                Ok(()) => eprintln!("[ui] _NET_WM_ICON 已设置"),
+                Err(e) => eprintln!("[ui] 设置窗口图标失败: {e}"),
+            }
+        })?;
+    }
+
+    redraw_all();
+    let t_show = t_start.elapsed();
+
+    if opts.exit_after_first {
+        std::thread::Builder::new().name("first-frame".into()).spawn(move || {
+            let Some(watcher) = DamageWatcher::start(TITLE, Duration::from_secs(30)) else {
+                println!("FIRST_DAMAGE unavailable");
+                let _ = slint::quit_event_loop();
+                return;
+            };
+            match watcher.recv_timeout(Duration::from_secs(30)) {
+                Some(_) => println!("FIRST_DAMAGE_US {}", t_start.elapsed().as_micros()),
+                None => println!("FIRST_DAMAGE timeout"),
+            }
+            use std::io::Write;
+            let _ = std::io::stdout().flush();
+            let _ = slint::quit_event_loop();
+        })?;
+    }
+
+    {
+        use std::io::Write;
+        println!(
+            "READY TIMING font_us={} show_us={} total_us={} cell={}x{}",
+            t_font.as_micros(),
+            t_show.as_micros(),
+            t_start.elapsed().as_micros(),
+            cell.0,
+            cell.1,
+        );
+        let _ = std::io::stdout().flush();
+    }
+
+    if opts.dump {
+        std::thread::Builder::new().name("dump".into()).spawn(|| {
+            for i in 0..40 {
+                std::thread::sleep(Duration::from_millis(250));
+                // thread_local 的 APP 只在 UI 线程可见，必须切回事件循环
+                let _ = slint::invoke_from_event_loop(move || {
+                    with_app(|st| {
+                        let Some(focused) = st.ws.active_tab().map(|t| t.focused) else { return };
+                        let Some(rt) = st.panes.get(&focused) else { return };
+                        let frame = &rt.frame;
+                        println!(
+                            "DUMP#{i} grid={}x{} offset={} cursor=({},{}) pid={:?} bytes={} pulls={}",
+                            frame.cols, frame.rows, frame.display_offset, frame.cursor.line,
+                            frame.cursor.col, rt.handle.pid(),
+                            rt.handle.stats.bytes_parsed.load(Ordering::Relaxed),
+                            rt.handle.stats.pulls.load(Ordering::Relaxed)
+                        );
+                        for row in 0..frame.rows.min(4) {
+                            let line: String = frame.row(row).iter().map(|c| c.char()).collect();
+                            println!("  [{row:02}] {:?}", line.trim_end());
+                        }
+                    });
+                });
+            }
+            std::thread::sleep(Duration::from_millis(300));
+            let _ = slint::quit_event_loop();
+        })?;
+    }
+
+    if let Some(n) = opts.latency {
+        let echo = echo.clone();
+        std::thread::Builder::new()
+            .name("latency-probe".into())
+            .spawn(move || run_latency_probe(n, echo, TITLE.to_string()))?;
+    }
+    if let Some(secs) = opts.fps {
+        std::thread::Builder::new()
+            .name("fps-probe".into())
+            .spawn(move || run_fps_probe(secs, TITLE.to_string()))?;
+    }
+
+    let _keepalive = (poll_timer, state);
+    let run_result = slint::run_event_loop();
+    stop_auto_watcher();
+    run_result?;
+    Ok(())
+}
+
+// ------------------------------------------------------------------- 探针
+
+fn run_latency_probe(n: usize, echo: Arc<AtomicUsize>, title: String) {
+    const WARMUP: usize = 20;
+
+    let Some(mut inj) = Injector::connect(&title, Duration::from_secs(15)) else {
+        println!("{{\"mode\":\"latency\",\"error\":\"x11_inject_unavailable\"}}");
+        let _ = slint::quit_event_loop();
+        return;
+    };
+    let Some(watcher) = DamageWatcher::start(&title, Duration::from_secs(15)) else {
+        println!("{{\"mode\":\"latency\",\"error\":\"xdamage_unavailable\"}}");
+        let _ = slint::quit_event_loop();
+        return;
+    };
+
+    PIPE_ON.store(true, Ordering::Relaxed);
+    inj.focus();
+    std::thread::sleep(Duration::from_millis(400));
+    watcher.drain();
+
+    let mut samples = Vec::with_capacity(n);
+    let mut timeouts = 0usize;
+
+    for i in 0..n {
+        inj.ctrl_u();
+        wait_echo(&watcher, &echo, 0, Duration::from_millis(500));
+        watcher.drain();
+
+        let Some(t0) = inj.tap_char(MARKER) else { break };
+        match wait_echo(&watcher, &echo, 1, Duration::from_millis(1500)) {
+            Some(t) => {
+                if i >= WARMUP {
+                    samples.push(t.duration_since(t0));
+                }
+            },
+            None => timeouts += 1,
+        }
+        std::thread::sleep(Duration::from_millis(6));
+    }
+
+    PIPE_ON.store(false, Ordering::Relaxed);
+    let stats = LatencyStats::from_samples(&samples);
+    let pipe: Vec<Duration> = PIPE_SAMPLES.lock().unwrap().drain(..).collect();
+    let pstats = LatencyStats::from_samples(&pipe);
+    println!(
+        "{}",
+        stats.to_json(&format!(
+            ",\"mode\":\"latency\",\"timeouts\":{timeouts},\"pipe_median_us\":{:.1},\"pipe_p99_us\":{:.1},\"pipe_n\":{}",
+            pstats.median_us, pstats.p99_us, pstats.n
+        ))
+    );
+    let _ = slint::quit_event_loop();
+}
+
+fn wait_echo(watcher: &DamageWatcher, echo: &AtomicUsize, target: usize, timeout: Duration) -> Option<Instant> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return None;
+        }
+        let t = watcher.recv_timeout(left)?;
+        if echo.load(Ordering::Acquire) >= target {
+            return Some(t);
+        }
+    }
+}
+
+fn run_fps_probe(secs: f64, title: String) {
+    let Some(watcher) = DamageWatcher::start(&title, Duration::from_secs(15)) else {
+        println!("{{\"mode\":\"fps\",\"error\":\"xdamage_unavailable\"}}");
+        let _ = slint::quit_event_loop();
+        return;
+    };
+    std::thread::sleep(Duration::from_secs(2));
+    watcher.drain();
+
+    let start = Instant::now();
+    let mut stamps: Vec<Instant> = Vec::new();
+    while start.elapsed() < Duration::from_secs_f64(secs) {
+        if let Some(t) = watcher.recv_timeout(Duration::from_millis(500)) {
+            stamps.push(t);
+        }
+    }
+    let intervals: Vec<Duration> = stamps.windows(2).map(|w| w[1] - w[0]).collect();
+    let stats = LatencyStats::from_samples(&intervals);
+    let fps = if stats.mean_us > 0.0 { 1e6 / stats.mean_us } else { 0.0 };
+    println!(
+        "{{\"mode\":\"fps\",\"frames\":{},\"fps\":{:.1},\"interval_median_ms\":{:.2},\"interval_p99_ms\":{:.2},\"interval_max_ms\":{:.2}}}",
+        stamps.len().saturating_sub(1),
+        fps,
+        stats.median_us / 1000.0,
+        stats.p99_us / 1000.0,
+        stats.max_us / 1000.0
+    );
+    let _ = slint::quit_event_loop();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn color_scheme_has_priority() {
+        // color-scheme 有明确答案时，忽略 gtk-theme 与 COLORFGBG。
+        assert!(scheme_from_outputs("'prefer-dark'", "'Yaru'", Some("0;15")));
+        assert!(!scheme_from_outputs("'prefer-light'", "'Yaru-dark'", Some("15;0")));
+        assert!(!scheme_from_outputs("'default'", "'Yaru-dark'", Some("15;0")));
+    }
+
+    #[test]
+    fn gtk_theme_is_second_fallback() {
+        assert!(scheme_from_outputs("", "'Yaru-dark'", Some("0;15")));
+        assert!(!scheme_from_outputs("", "'Yaru-light'", Some("15;0")));
+        assert!(!scheme_from_outputs("", "'Adwaita'", Some("0;15")));
+    }
+
+    #[test]
+    fn colorfgbg_is_last_fallback() {
+        assert!(scheme_from_outputs("", "", Some("15;0")));
+        assert!(scheme_from_outputs("", "", Some("15;6")));
+        assert!(scheme_from_outputs("", "", Some("15;8")));
+        assert!(!scheme_from_outputs("", "", Some("0;7")));
+        assert!(!scheme_from_outputs("", "", Some("0;15")));
+        // 只看最后一段
+        assert!(scheme_from_outputs("", "", Some("0;15;2")));
+    }
+
+    #[test]
+    fn malformed_outputs_default_to_dark() {
+        assert!(scheme_from_outputs("", "", None));
+        assert!(scheme_from_outputs("", "", Some("bogus")));
+        assert!(scheme_from_outputs("garbage", "Adwaita", None));
+    }
+
+    #[test]
+    fn auto_defaults_to_yaru() {
+        let reg = ThemeRegistry::from_parts(
+            Theme::ALL.iter().copied().map(crate::themes::builtin).collect(),
+            Vec::new(),
+        );
+        assert_eq!(resolve_auto(&reg, Variant::Dark, None, None).id, "yaru-dark");
+        assert_eq!(resolve_auto(&reg, Variant::Light, None, None).id, "yaru-light");
+        assert!(is_auto_theme("auto"));
+        assert!(is_auto_theme(" AUTO "));
+        assert!(!is_auto_theme("tokyo-night"));
+    }
+
+    #[test]
+    fn modifier_only_events_are_filtered() {
+        // Slint 的修饰键伪事件
+        assert!(is_modifier_artifact("\u{11}", true, false, false));
+        assert!(is_modifier_artifact("\u{10}", false, false, true));
+        assert!(is_modifier_artifact("\u{12}", false, true, false));
+        assert!(is_modifier_artifact("\u{11}", true, true, true));
+        // 真实按键不能被误杀
+        assert!(!is_modifier_artifact("q", true, false, false));
+        assert!(!is_modifier_artifact("\u{10}", true, false, false)); // Ctrl+P
+        assert!(!is_modifier_artifact("\u{1b}", false, false, false)); // Esc
+        assert!(!is_modifier_artifact("\n", true, false, false)); // Ctrl+Enter
+        assert!(!is_modifier_artifact("你", false, false, false));
+    }
+
+    #[test]
+    fn mouse_modifier_bits_decode() {
+        // Slint 位：1=Shift 2=Alt 4=Ctrl
+        assert_eq!(mouse_mods(0), Modifiers::default());
+        assert!(mouse_mods(1).shift);
+        assert!(mouse_mods(2).alt);
+        assert!(mouse_mods(4).ctrl);
+        let all = mouse_mods(7);
+        assert!(all.shift && all.alt && all.ctrl);
+    }
+
+    #[test]
+    fn mouse_button_codes_map() {
+        assert_eq!(mouse_button(0), MouseButton::Left);
+        assert_eq!(mouse_button(1), MouseButton::Middle);
+        assert_eq!(mouse_button(2), MouseButton::Right);
+        // 未知编码按左键兜底，绝不丢事件
+        assert_eq!(mouse_button(99), MouseButton::Left);
+    }
+}

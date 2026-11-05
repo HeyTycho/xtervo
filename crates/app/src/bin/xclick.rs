@@ -1,0 +1,58 @@
+//! 调试工具：XTest 注入鼠标事件。
+//!
+//! 用法：
+//!   `xclick <x> <y> [button]`           单击
+//!   `xclick <x> <y> drag <x2> <y2>`     按下->移动->松开（拖选）
+
+use x11rb::connection::Connection;
+use x11rb::protocol::xtest;
+use x11rb::wrapper::ConnectionExt as _;
+
+#[path = "../xconn.rs"]
+mod xconn;
+
+const MOTION: u8 = 6;
+const PRESS: u8 = 4;
+const RELEASE: u8 = 5;
+
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    let x: i16 = args.get(1).and_then(|v| v.parse().ok()).unwrap_or(0);
+    let y: i16 = args.get(2).and_then(|v| v.parse().ok()).unwrap_or(0);
+    let button: u8 = args.get(3).and_then(|v| v.parse().ok()).unwrap_or(1);
+
+    let (conn, screen_num) = xconn::connect().expect("connect X");
+    let root = conn.setup().roots[screen_num].root;
+
+    let drag = args.get(3).map(|s| s == "drag").unwrap_or(false);
+
+    xtest::fake_input(&conn, MOTION, 0, x11rb::CURRENT_TIME, root, x, y, 0).expect("motion");
+    conn.flush().unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(40));
+
+    xtest::fake_input(&conn, PRESS, button, x11rb::CURRENT_TIME, root, x, y, 0).expect("press");
+    conn.flush().unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(60));
+
+    if drag {
+        let x2: i16 = args.get(4).and_then(|v| v.parse().ok()).unwrap_or(x);
+        let y2: i16 = args.get(5).and_then(|v| v.parse().ok()).unwrap_or(y);
+        let steps = 8;
+        for i in 1..=steps {
+            let mx = x + (x2 - x) * i / steps;
+            let my = y + (y2 - y) * i / steps;
+            xtest::fake_input(&conn, MOTION, 0, x11rb::CURRENT_TIME, root, mx, my, 0).expect("motion");
+            conn.flush().unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(16));
+        }
+        xtest::fake_input(&conn, RELEASE, button, x11rb::CURRENT_TIME, root, x2, y2, 0)
+            .expect("release");
+    } else {
+        xtest::fake_input(&conn, RELEASE, button, x11rb::CURRENT_TIME, root, x, y, 0)
+            .expect("release");
+    }
+    // 等服务器处理完 release 再退出，避免鼠标按键卡在按下状态。
+    let _ = conn.sync();
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    println!("click {x},{y} button={button} drag={drag} root=0x{root:x}");
+}

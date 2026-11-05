@@ -1,0 +1,350 @@
+    Blocking waiting for file lock on package cache
+warning: unused import: `alacritty_terminal::grid::Dimensions`
+ --> crates/core/src/bench_support.rs:7:5
+  |
+7 | use alacritty_terminal::grid::Dimensions;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `rusttabby-core` (lib) generated 1 warning (run `cargo fix --lib -p rusttabby-core` to apply 1 suggestion)
+    Finished `bench` profile [optimized + debuginfo] target(s) in 0.12s
+     Running benches/pty_throughput.rs (target/release/deps/pty_throughput-7093418c756a7fd4)
+Gnuplot not found, using plotters backend
+Benchmarking parse/plain_10mb
+Benchmarking parse/plain_10mb: Warming up for 3.0000 s
+Benchmarking parse/plain_10mb: Collecting 20 samples in estimated 5.3062 s (100 iterations)
+Benchmarking parse/plain_10mb: Analyzing
+parse/plain_10mb        time:   [50.563 ms 51.165 ms 51.851 ms]
+                        thrpt:  [192.86 MiB/s 195.44 MiB/s 197.77 MiB/s]
+                 change:
+                        time:   [−12.384% −11.336% −10.084%] (p = 0.00 < 0.05)
+                        thrpt:  [+11.215% +12.785% +14.134%]
+                        Performance has improved.
+Found 2 outliers among 20 measurements (10.00%)
+  2 (10.00%) high mild
+Benchmarking parse/sgr_10mb
+Benchmarking parse/sgr_10mb: Warming up for 3.0000 s
+Benchmarking parse/sgr_10mb: Collecting 20 samples in estimated 5.0083 s (100 iterations)
+Benchmarking parse/sgr_10mb: Analyzing
+parse/sgr_10mb          time:   [49.314 ms 49.579 ms 49.881 ms]
+                        thrpt:  [200.48 MiB/s 201.70 MiB/s 202.78 MiB/s]
+                 change:
+                        time:   [−15.120% −13.552% −12.264%] (p = 0.00 < 0.05)
+                        thrpt:  [+13.979% +15.677% +17.813%]
+                        Performance has improved.
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high mild
+
+Benchmarking frame_pull/full_200x50
+Benchmarking frame_pull/full_200x50: Warming up for 3.0000 s
+Benchmarking frame_pull/full_200x50: Collecting 50 samples in estimated 5.1014 s (18k iterations)
+Benchmarking frame_pull/full_200x50: Analyzing
+frame_pull/full_200x50  time:   [52.874 µs 54.712 µs 56.425 µs]
+                        change: [−30.314% −21.447% −11.414%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Benchmarking frame_pull/dirty_single_line
+Benchmarking frame_pull/dirty_single_line: Warming up for 3.0000 s
+Benchmarking frame_pull/dirty_single_line: Collecting 50 samples in estimated 5.0011 s (315k iterations)
+Benchmarking frame_pull/dirty_single_line: Analyzing
+frame_pull/dirty_single_line
+                        time:   [15.906 µs 15.938 µs 15.977 µs]
+                        change: [−10.819% −9.9985% −9.1640%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 7 outliers among 50 measurements (14.00%)
+  3 (6.00%) low severe
+  1 (2.00%) low mild
+  2 (4.00%) high mild
+  1 (2.00%) high severe
+
+payload: /tmp/rusttabby-cat-10mb.txt
+Benchmarking e2e/cat_10mb_until_visible
+Benchmarking e2e/cat_10mb_until_visible: Warming up for 3.0000 s
+  cat 10MB 端到端: 97.738754ms
+  cat 10MB 端到端: 95.764788ms
+  cat 10MB 端到端: 89.192221ms
+  cat 10MB 端到端: 84.567579ms
+  cat 10MB 端到端: 85.60315ms
+  cat 10MB 端到端: 89.102749ms
+  cat 10MB 端到端: 88.976421ms
+  cat 10MB 端到端: 83.881015ms
+  cat 10MB 端到端: 93.165914ms
+  cat 10MB 端到端: 89.991384ms
+  cat 10MB 端到端: 87.859961ms
+  cat 10MB 端到端: 89.920402ms
+  cat 10MB 端到端: 95.381476ms
+  cat 10MB 端到端: 96.687582ms
+  cat 10MB 端到端: 87.968511ms
+  cat 10MB 端到端: 84.126714ms
+  cat 10MB 端到端: 91.535177ms
+  cat 10MB 端到端: 90.382437ms
+  cat 10MB 端到端: 86.362049ms
+  cat 10MB 端到端: 81.50714ms
+  cat 10MB 端到端: 107.119121ms
+  cat 10MB 端到端: 100.775522ms
+  cat 10MB 端到端: 88.234518ms
+  cat 10MB 端到端: 97.360484ms
+  cat 10MB 端到端: 88.675033ms
+  cat 10MB 端到端: 99.94362ms
+  cat 10MB 端到端: 107.538616ms
+  cat 10MB 端到端: 90.957966ms
+  cat 10MB 端到端: 92.20294ms
+  cat 10MB 端到端: 88.313954ms
+  cat 10MB 端到端: 107.035317ms
+  cat 10MB 端到端: 94.972849ms
+  cat 10MB 端到端: 98.822216ms
+  cat 10MB 端到端: 88.015152ms
+  cat 10MB 端到端: 94.449352ms
+  cat 10MB 端到端: 101.232108ms
+  cat 10MB 端到端: 86.257213ms
+  cat 10MB 端到端: 104.471039ms
+  cat 10MB 端到端: 85.514658ms
+  cat 10MB 端到端: 98.196614ms
+  cat 10MB 端到端: 87.144633ms
+  cat 10MB 端到端: 86.612542ms
+  cat 10MB 端到端: 105.354119ms
+  cat 10MB 端到端: 108.863694ms
+  cat 10MB 端到端: 101.489617ms
+  cat 10MB 端到端: 94.166747ms
+  cat 10MB 端到端: 87.401809ms
+  cat 10MB 端到端: 93.078881ms
+  cat 10MB 端到端: 90.59793ms
+  cat 10MB 端到端: 106.096301ms
+  cat 10MB 端到端: 101.22272ms
+  cat 10MB 端到端: 89.888211ms
+  cat 10MB 端到端: 89.178772ms
+  cat 10MB 端到端: 98.915361ms
+  cat 10MB 端到端: 103.326332ms
+  cat 10MB 端到端: 97.831257ms
+  cat 10MB 端到端: 93.006753ms
+  cat 10MB 端到端: 94.588807ms
+  cat 10MB 端到端: 107.403624ms
+  cat 10MB 端到端: 92.220106ms
+  cat 10MB 端到端: 84.251956ms
+  cat 10MB 端到端: 89.753228ms
+  cat 10MB 端到端: 93.915788ms
+Benchmarking e2e/cat_10mb_until_visible: Collecting 10 samples in estimated 20.810 s (220 iterations)
+  cat 10MB 端到端: 91.874631ms
+  cat 10MB 端到端: 91.989936ms
+  cat 10MB 端到端: 104.281979ms
+  cat 10MB 端到端: 90.236124ms
+  cat 10MB 端到端: 89.013703ms
+  cat 10MB 端到端: 89.618162ms
+  cat 10MB 端到端: 98.290505ms
+  cat 10MB 端到端: 89.077277ms
+  cat 10MB 端到端: 87.665839ms
+  cat 10MB 端到端: 89.145365ms
+  cat 10MB 端到端: 117.680879ms
+  cat 10MB 端到端: 85.596359ms
+  cat 10MB 端到端: 93.040818ms
+  cat 10MB 端到端: 88.506115ms
+  cat 10MB 端到端: 108.966649ms
+  cat 10MB 端到端: 94.557675ms
+  cat 10MB 端到端: 93.67802ms
+  cat 10MB 端到端: 87.721909ms
+  cat 10MB 端到端: 103.989091ms
+  cat 10MB 端到端: 104.638061ms
+  cat 10MB 端到端: 88.085752ms
+  cat 10MB 端到端: 115.982979ms
+  cat 10MB 端到端: 87.591157ms
+  cat 10MB 端到端: 102.113115ms
+  cat 10MB 端到端: 97.093559ms
+  cat 10MB 端到端: 100.002001ms
+  cat 10MB 端到端: 113.896398ms
+  cat 10MB 端到端: 82.631498ms
+  cat 10MB 端到端: 87.946992ms
+  cat 10MB 端到端: 100.234418ms
+  cat 10MB 端到端: 106.198775ms
+  cat 10MB 端到端: 103.414455ms
+  cat 10MB 端到端: 92.116424ms
+  cat 10MB 端到端: 92.975148ms
+  cat 10MB 端到端: 91.127775ms
+  cat 10MB 端到端: 88.430743ms
+  cat 10MB 端到端: 95.668795ms
+  cat 10MB 端到端: 94.345865ms
+  cat 10MB 端到端: 93.601805ms
+  cat 10MB 端到端: 90.783133ms
+  cat 10MB 端到端: 119.707981ms
+  cat 10MB 端到端: 81.7942ms
+  cat 10MB 端到端: 88.322445ms
+  cat 10MB 端到端: 87.548378ms
+  cat 10MB 端到端: 98.427425ms
+  cat 10MB 端到端: 93.887498ms
+  cat 10MB 端到端: 96.648603ms
+  cat 10MB 端到端: 87.895863ms
+  cat 10MB 端到端: 100.738472ms
+  cat 10MB 端到端: 96.300334ms
+  cat 10MB 端到端: 97.008289ms
+  cat 10MB 端到端: 89.778039ms
+  cat 10MB 端到端: 87.282149ms
+  cat 10MB 端到端: 90.182922ms
+  cat 10MB 端到端: 117.6719ms
+  cat 10MB 端到端: 89.189484ms
+  cat 10MB 端到端: 101.575856ms
+  cat 10MB 端到端: 109.489814ms
+  cat 10MB 端到端: 83.840499ms
+  cat 10MB 端到端: 81.594645ms
+  cat 10MB 端到端: 94.543702ms
+  cat 10MB 端到端: 95.220758ms
+  cat 10MB 端到端: 92.725837ms
+  cat 10MB 端到端: 83.132036ms
+  cat 10MB 端到端: 96.311171ms
+  cat 10MB 端到端: 92.339561ms
+  cat 10MB 端到端: 89.852432ms
+  cat 10MB 端到端: 100.598083ms
+  cat 10MB 端到端: 86.240786ms
+  cat 10MB 端到端: 98.144486ms
+  cat 10MB 端到端: 102.30764ms
+  cat 10MB 端到端: 95.532802ms
+  cat 10MB 端到端: 102.475959ms
+  cat 10MB 端到端: 89.462294ms
+  cat 10MB 端到端: 95.258856ms
+  cat 10MB 端到端: 101.818624ms
+  cat 10MB 端到端: 104.705638ms
+  cat 10MB 端到端: 90.342049ms
+  cat 10MB 端到端: 106.416836ms
+  cat 10MB 端到端: 115.574161ms
+  cat 10MB 端到端: 105.42683ms
+  cat 10MB 端到端: 98.801112ms
+  cat 10MB 端到端: 91.134569ms
+  cat 10MB 端到端: 95.354464ms
+  cat 10MB 端到端: 110.82577ms
+  cat 10MB 端到端: 91.207161ms
+  cat 10MB 端到端: 97.754582ms
+  cat 10MB 端到端: 99.271618ms
+  cat 10MB 端到端: 97.137457ms
+  cat 10MB 端到端: 105.224914ms
+  cat 10MB 端到端: 94.788609ms
+  cat 10MB 端到端: 91.796513ms
+  cat 10MB 端到端: 99.922052ms
+  cat 10MB 端到端: 95.251984ms
+  cat 10MB 端到端: 86.452616ms
+  cat 10MB 端到端: 101.76742ms
+  cat 10MB 端到端: 105.371762ms
+  cat 10MB 端到端: 95.193219ms
+  cat 10MB 端到端: 87.485269ms
+  cat 10MB 端到端: 90.78315ms
+  cat 10MB 端到端: 109.142608ms
+  cat 10MB 端到端: 91.353738ms
+  cat 10MB 端到端: 100.665369ms
+  cat 10MB 端到端: 96.829236ms
+  cat 10MB 端到端: 87.105994ms
+  cat 10MB 端到端: 97.83903ms
+  cat 10MB 端到端: 102.552807ms
+  cat 10MB 端到端: 87.514906ms
+  cat 10MB 端到端: 116.840888ms
+  cat 10MB 端到端: 87.216489ms
+  cat 10MB 端到端: 103.728818ms
+  cat 10MB 端到端: 90.172512ms
+  cat 10MB 端到端: 92.444955ms
+  cat 10MB 端到端: 105.462819ms
+  cat 10MB 端到端: 89.193562ms
+  cat 10MB 端到端: 100.900018ms
+  cat 10MB 端到端: 83.816198ms
+  cat 10MB 端到端: 110.227898ms
+  cat 10MB 端到端: 98.950138ms
+  cat 10MB 端到端: 100.149099ms
+  cat 10MB 端到端: 103.923292ms
+  cat 10MB 端到端: 94.739703ms
+  cat 10MB 端到端: 96.716884ms
+  cat 10MB 端到端: 98.023111ms
+  cat 10MB 端到端: 103.647841ms
+  cat 10MB 端到端: 106.553259ms
+  cat 10MB 端到端: 104.739423ms
+  cat 10MB 端到端: 95.84835ms
+  cat 10MB 端到端: 97.75759ms
+  cat 10MB 端到端: 90.491435ms
+  cat 10MB 端到端: 88.394017ms
+  cat 10MB 端到端: 105.4128ms
+  cat 10MB 端到端: 87.042494ms
+  cat 10MB 端到端: 91.609767ms
+  cat 10MB 端到端: 92.361174ms
+  cat 10MB 端到端: 87.003536ms
+  cat 10MB 端到端: 94.624152ms
+  cat 10MB 端到端: 92.335003ms
+  cat 10MB 端到端: 104.236647ms
+  cat 10MB 端到端: 102.637372ms
+  cat 10MB 端到端: 101.643404ms
+  cat 10MB 端到端: 94.811933ms
+  cat 10MB 端到端: 98.568114ms
+  cat 10MB 端到端: 102.308246ms
+  cat 10MB 端到端: 99.029076ms
+  cat 10MB 端到端: 95.572014ms
+  cat 10MB 端到端: 98.048967ms
+  cat 10MB 端到端: 90.666435ms
+  cat 10MB 端到端: 107.405468ms
+  cat 10MB 端到端: 89.906192ms
+  cat 10MB 端到端: 90.622606ms
+  cat 10MB 端到端: 97.118812ms
+  cat 10MB 端到端: 86.332196ms
+  cat 10MB 端到端: 97.441872ms
+  cat 10MB 端到端: 83.833778ms
+  cat 10MB 端到端: 104.407731ms
+  cat 10MB 端到端: 100.463685ms
+  cat 10MB 端到端: 100.971483ms
+  cat 10MB 端到端: 91.091828ms
+  cat 10MB 端到端: 103.809017ms
+  cat 10MB 端到端: 108.771557ms
+  cat 10MB 端到端: 93.402523ms
+  cat 10MB 端到端: 102.876013ms
+  cat 10MB 端到端: 82.660925ms
+  cat 10MB 端到端: 98.551399ms
+  cat 10MB 端到端: 97.90771ms
+  cat 10MB 端到端: 96.556845ms
+  cat 10MB 端到端: 102.650298ms
+  cat 10MB 端到端: 97.500348ms
+  cat 10MB 端到端: 99.524646ms
+  cat 10MB 端到端: 85.247746ms
+  cat 10MB 端到端: 106.374099ms
+  cat 10MB 端到端: 101.650651ms
+  cat 10MB 端到端: 93.339376ms
+  cat 10MB 端到端: 106.934476ms
+  cat 10MB 端到端: 91.848749ms
+  cat 10MB 端到端: 102.268069ms
+  cat 10MB 端到端: 101.483509ms
+  cat 10MB 端到端: 90.570196ms
+  cat 10MB 端到端: 87.34977ms
+  cat 10MB 端到端: 92.160207ms
+  cat 10MB 端到端: 81.603714ms
+  cat 10MB 端到端: 86.142257ms
+  cat 10MB 端到端: 108.383065ms
+  cat 10MB 端到端: 104.302568ms
+  cat 10MB 端到端: 101.594333ms
+  cat 10MB 端到端: 101.02846ms
+  cat 10MB 端到端: 101.065726ms
+  cat 10MB 端到端: 96.38276ms
+  cat 10MB 端到端: 81.160606ms
+  cat 10MB 端到端: 94.464407ms
+  cat 10MB 端到端: 89.699443ms
+  cat 10MB 端到端: 83.840036ms
+  cat 10MB 端到端: 89.988045ms
+  cat 10MB 端到端: 98.808699ms
+  cat 10MB 端到端: 99.846591ms
+  cat 10MB 端到端: 94.948864ms
+  cat 10MB 端到端: 101.741702ms
+  cat 10MB 端到端: 92.674064ms
+  cat 10MB 端到端: 98.207278ms
+  cat 10MB 端到端: 100.077704ms
+  cat 10MB 端到端: 83.630471ms
+  cat 10MB 端到端: 105.773478ms
+  cat 10MB 端到端: 94.408925ms
+  cat 10MB 端到端: 85.348757ms
+  cat 10MB 端到端: 89.149627ms
+  cat 10MB 端到端: 92.226264ms
+  cat 10MB 端到端: 87.657698ms
+  cat 10MB 端到端: 84.594531ms
+  cat 10MB 端到端: 84.113271ms
+  cat 10MB 端到端: 98.253012ms
+  cat 10MB 端到端: 85.8306ms
+  cat 10MB 端到端: 81.918338ms
+  cat 10MB 端到端: 96.331104ms
+  cat 10MB 端到端: 106.674132ms
+  cat 10MB 端到端: 91.316288ms
+  cat 10MB 端到端: 85.936577ms
+  cat 10MB 端到端: 102.776537ms
+  cat 10MB 端到端: 101.737414ms
+  cat 10MB 端到端: 89.484967ms
+Benchmarking e2e/cat_10mb_until_visible: Analyzing
+e2e/cat_10mb_until_visible
+                        time:   [94.921 ms 96.625 ms 98.160 ms]
+

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Rust Tabby
+GenericName=Terminal Emulator
+Comment=Native terminal emulator written in Rust + Slint
+Exec=rusttabby-app
+Icon=rusttabby
+Terminal=false
+Categories=System;TerminalEmulator;
+Keywords=terminal;shell;console;

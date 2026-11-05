@@ -1,0 +1,992 @@
+// 界面 chrome 配色：由 Rust 侧按当前主题写入。
+export struct ThemeColors {
+    bg: color,
+    surface: color,
+    raise: color,
+    hover: color,
+    border: color,
+    text: color,
+    subtext: color,
+    muted: color,
+    accent: color,
+    accent-text: color,
+    danger: color,
+}
+
+// 默认值 = Tokyo Night（与 core::Theme 的默认主题保持一致）。
+export global Palette {
+    in-out property <ThemeColors> colors: {
+        bg: #1a1b26,
+        surface: #16161e,
+        raise: #24283b,
+        hover: #292e42,
+        border: #3b4261,
+        text: #c0caf5,
+        subtext: #a9b1d6,
+        muted: #565f89,
+        accent: #7aa2f7,
+        accent-text: #1a1b26,
+        danger: #f7768e,
+    };
+}
+
+export struct ThemeChoice {
+    id: string,
+    label: string,
+}
+
+export struct DividerView {
+    index: int,
+    x: length,
+    y: length,
+    w: length,
+    h: length,
+    /// true = 左右分屏（竖线，拖 x）；false = 上下分屏（横线，拖 y）
+    vertical: bool,
+}
+
+export struct PaneView {
+    id: int,
+    image: image,
+    x: length,
+    y: length,
+    w: length,
+    h: length,
+    focused: bool,
+    iw: length,
+    ih: length,
+    /// 终端启用了鼠标上报（1000/1002/1003）：中键/右键/滚轮要转发给 PTY。
+    mouse-reporting: bool,
+}
+
+export struct TabView {
+    title: string,
+    active: bool,
+}
+
+component MenuRow inherits Rectangle {
+    in property <string> label;
+    callback picked();
+
+    height: 28px;
+    border-radius: 4px;
+    background: hit.has-hover ? Palette.colors.hover : transparent;
+
+    hit := TouchArea {
+        clicked => { root.picked(); }
+    }
+
+    Text {
+        x: 10px;
+        text: root.label;
+        color: Palette.colors.text;
+        font-size: 12px;
+        vertical-alignment: center;
+        width: parent.width - 12px;
+    }
+}
+
+component MiniBtn inherits Rectangle {
+    in property <string> label;
+    callback clicked();
+
+    width: 26px;
+    height: 26px;
+    border-radius: 6px;
+    background: hit.has-hover ? Palette.colors.hover : Palette.colors.raise;
+    border-width: 1px;
+    border-color: Palette.colors.border;
+
+    hit := TouchArea {
+        clicked => { root.clicked(); }
+    }
+    Text {
+        text: root.label;
+        color: Palette.colors.text;
+        font-size: 13px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        width: 100%;
+        height: 100%;
+    }
+}
+
+component ChoiceBtn inherits Rectangle {
+    in property <string> label;
+    in property <bool> active: false;
+    in property <length> font-size: 12px;
+    callback clicked();
+
+    width: 76px;
+    height: 26px;
+    border-radius: 6px;
+    background: root.active ? Palette.colors.accent : (hit.has-hover ? Palette.colors.hover : Palette.colors.raise);
+    border-width: 1px;
+    border-color: root.active ? Palette.colors.accent : Palette.colors.border;
+
+    hit := TouchArea {
+        clicked => { root.clicked(); }
+    }
+    Text {
+        text: root.label;
+        color: root.active ? Palette.colors.accent-text : Palette.colors.text;
+        font-size: root.font-size;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        width: 100%;
+        height: 100%;
+        overflow: elide;
+    }
+}
+
+component ResizeHandle inherits TouchArea {
+    in property <int> direction: 0;
+    callback begin(int);
+    callback drag();
+    callback stop();
+
+    pointer-event(event) => {
+        if (event.kind == PointerEventKind.down) {
+            root.begin(root.direction);
+            return EventResult.accept;
+        }
+        if (event.kind == PointerEventKind.move && self.pressed) {
+            root.drag();
+            return EventResult.accept;
+        }
+        if (event.kind == PointerEventKind.up) {
+            root.stop();
+            return EventResult.accept;
+        }
+        EventResult.reject
+    }
+}
+
+export component MainWindow inherits Window {
+    in property <[PaneView]> panes;
+    in property <[DividerView]> dividers;
+    in property <[TabView]> tabs;
+    in property <length> tabbar-height: 32px;
+    in-out property <bool> menu-open: false;
+    in property <length> menu-x: 0px;
+    in property <length> menu-y: 0px;
+    in property <int> menu-pane: -1;
+
+    callback key-input(string, bool, bool, bool);
+    /// 拖动分屏分隔条：index + 内容区坐标
+    callback divider-dragged(int, length, length);
+    /// 无边框窗口拖边缩放：0=左上 1=上 2=右上 3=右 4=右下 5=下 6=左下 7=左
+    callback start-window-resize(int);
+    callback window-resize-drag();
+    callback end-window-resize();
+    /// IME 上屏（无修饰键语义），与物理按键分开，避免中文触发 Ctrl 快捷键。
+    callback ime-commit(string);
+    callback pane-clicked(int);
+    callback pane-right-clicked(int, length, length);
+    callback menu-action(int, int);
+    callback pane-mouse-down(int, length, length, int, int);
+    callback pane-mouse-move(int, length, length, int, int);
+    callback pane-mouse-up(int, length, length, int, int);
+    callback pane-scrolled(int, length, length, length, int);
+    callback tab-clicked(int);
+    callback tab-closed(int);
+    callback new-tab();
+    callback resized(length, length);
+    callback close-window();
+    callback minimize-window();
+    callback toggle-maximize();
+    callback set-theme(string);
+    callback tabbar-context(length, length);
+    callback tabbar-menu-action(int);
+    in-out property <bool> tabmenu-open: false;
+    in-out property <length> tabmenu-x: 0px;
+    in-out property <length> tabmenu-y: 32px;
+    /// 绑定到 Window 内置的 always-on-top
+    property <bool> pinned: false;
+    callback bump-font-size(int);
+    callback bump-scrollback(int);
+    in-out property <bool> settings-open: false;
+    in property <string> theme-name: "auto";
+    /// Auto 主题当前解析到的主题短名（如 "Yaru Dark"）；非 auto 时为空。
+    in property <string> auto-resolved: "";
+    in property <[ThemeChoice]> theme-choices: [];
+    /// 设置面板高度：主题数量变多时由 Rust 侧按行数下发。
+    in property <length> settings-height: 300px;
+    in property <int> font-size: 15;
+    in property <int> scrollback: 2000;
+    in-out property <bool> search-open: false;
+    in-out property <string> search-query: "";
+    in property <string> search-status: "";
+    /// IME 候选窗锚点：聚焦 pane 光标的像素位置（内容区坐标，由 Rust 侧更新）。
+    in-out property <length> ime-x: 0px;
+    in-out property <length> ime-y: 0px;
+
+    title: "Rust Tabby";
+    background: Palette.colors.surface;
+    no-frame: true;
+    always-on-top: root.pinned;
+    icon: @image-url("../../../assets/icon.png");
+
+    changed width => { root.resized(root.width, root.height); }
+    changed height => { root.resized(root.width, root.height); }
+
+    VerticalLayout {
+        // ---------------- 标签栏 ----------------
+        Rectangle {
+            height: root.tabbar-height;
+            // 极轻的上下渐变 + 顶部高光，避免整条纯色的“塑料感”
+            background: @linear-gradient(180deg, Palette.colors.surface 0%, Palette.colors.bg 100%);
+            horizontal-stretch: 0;
+
+            Rectangle {
+                y: 0px;
+                width: 100%;
+                height: 1px;
+                background: #ffffff0d;
+            }
+
+            // 底部分隔线
+            Rectangle {
+                y: parent.height - 1px;
+                width: 100%;
+                height: 1px;
+                background: Palette.colors.border;
+            }
+
+            // 品牌图标
+            Image {
+                x: 8px;
+                y: 6px;
+                width: 18px;
+                height: 18px;
+                source: @image-url("../../../assets/icon-small.png");
+                image-fit: contain;
+            }
+
+            // 没有原生标题栏：整条标签栏空白处可拖动窗口
+            WindowMoveArea {
+                width: 100%;
+                height: 100%;
+
+                // 双击标题栏 = 最大化 / 还原；右键 = 标签栏菜单（置顶等）
+                title-hit := TouchArea {
+                    width: 100%;
+                    height: 100%;
+                    double-clicked => { root.toggle-maximize(); }
+                    pointer-event(event) => {
+                        if (event.button == PointerEventButton.right && event.kind == PointerEventKind.up) {
+                            root.tabbar-context(title-hit.mouse-x, root.tabbar-height);
+                            return EventResult.accept;
+                        }
+                        EventResult.reject
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                padding-left: 32px;
+                padding-right: 140px;
+                padding-top: 4px;
+                spacing: 4px;
+                alignment: start;
+
+                for tab[i] in root.tabs : Rectangle {
+                    height: 22px;
+                    width: Math.max(96px, tab-area.preferred-width + 36px);
+                    border-radius: 6px;
+                    background: tab.active
+                        ? Palette.colors.bg
+                        : (tab-hit.has-hover ? Palette.colors.raise : transparent);
+                    border-width: 1px;
+                    border-color: tab.active ? Palette.colors.border : transparent;
+
+                    // 激活态底部的强调线（Yaru 橙 / 主题 accent）
+                    Rectangle {
+                        visible: tab.active;
+                        x: 8px;
+                        y: parent.height - 2px;
+                        width: parent.width - 16px;
+                        height: 2px;
+                        border-radius: 1px;
+                        background: Palette.colors.accent;
+                    }
+
+                    tab-area := Text {
+                        x: 8px;
+                        width: parent.width - 34px;
+                        text: tab.title;
+                        color: tab.active ? Palette.colors.text : Palette.colors.muted;
+                        font-size: 12px;
+                        font-weight: tab.active ? 600 : 400;
+                        overflow: elide;
+                        vertical-alignment: center;
+                    }
+
+                    tab-hit := TouchArea {
+                        clicked => { root.tab-clicked(i); }
+                    }
+
+                    close-hit := TouchArea {
+                        x: parent.width - 22px;
+                        y: 1px;
+                        width: 20px;
+                        height: 20px;
+                        clicked => { root.tab-closed(i); }
+
+                        Text {
+                            text: "×";
+                            color: close-hit.has-hover ? Palette.colors.danger : Palette.colors.muted;
+                            font-size: 14px;
+                            vertical-alignment: center;
+                            horizontal-alignment: center;
+                            width: 100%;
+                            height: 100%;
+                        }
+                    }
+                }
+
+                Rectangle {
+                    height: 22px;
+                    width: 24px;
+                    border-radius: 5px;
+                    background: new-hit.has-hover ? Palette.colors.raise : transparent;
+
+                    new-hit := TouchArea {
+                        clicked => { root.new-tab(); }
+                    }
+
+                    Text {
+                        text: "+";
+                        color: Palette.colors.text;
+                        font-size: 16px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        width: 100%;
+                        height: 100%;
+                    }
+                }
+            }
+
+        // 设置
+        win-gear := TouchArea {
+            x: parent.width - 132px;
+            y: 4px;
+            width: 28px;
+            height: 24px;
+            clicked => { root.settings-open = !root.settings-open; }
+
+            Rectangle {
+                width: 100%;
+                height: 100%;
+                border-radius: 5px;
+                background: win-gear.has-hover ? Palette.colors.hover : Palette.colors.raise;
+                Text {
+                    text: "⚙";
+                    color: Palette.colors.text;
+                    font-size: 12px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    width: 100%;
+                    height: 100%;
+                }
+            }
+        }
+
+        // 窗口按钮（无边框后必须自带）
+        win-min := TouchArea {
+            x: parent.width - 100px;
+            y: 4px;
+            width: 28px;
+            height: 24px;
+            clicked => { root.minimize-window(); }
+
+            Rectangle {
+                width: 100%;
+                height: 100%;
+                border-radius: 5px;
+                background: win-min.has-hover ? Palette.colors.hover : Palette.colors.raise;
+                Text {
+                    text: "─";
+                    color: Palette.colors.text;
+                    font-size: 12px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    width: 100%;
+                    height: 100%;
+                }
+            }
+        }
+
+        win-max := TouchArea {
+            x: parent.width - 68px;
+            y: 4px;
+            width: 28px;
+            height: 24px;
+            clicked => { root.toggle-maximize(); }
+
+            Rectangle {
+                width: 100%;
+                height: 100%;
+                border-radius: 5px;
+                background: win-max.has-hover ? Palette.colors.hover : Palette.colors.raise;
+                Text {
+                    text: root.maximized ? "❐" : "□";
+                    color: Palette.colors.text;
+                    font-size: 11px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    width: 100%;
+                    height: 100%;
+                }
+            }
+        }
+
+        win-close := TouchArea {
+            x: parent.width - 36px;
+            y: 4px;
+            width: 28px;
+            height: 24px;
+            clicked => { root.close-window(); }
+
+            Rectangle {
+                width: 100%;
+                height: 100%;
+                border-radius: 5px;
+                background: win-close.has-hover ? Palette.colors.danger : Palette.colors.raise;
+
+                Text {
+                    text: "✕";
+                    color: win-close.has-hover ? Palette.colors.bg : Palette.colors.text;
+                    font-size: 12px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    width: 100%;
+                    height: 100%;
+                }
+            }
+        }
+        }
+
+        // ---------------- 分屏内容区 ----------------
+        Rectangle {
+            background: Palette.colors.bg;
+
+            // focus-on-click 必须关掉：否则点击 pane 时 FocusScope 会把焦点
+            // 从下面的 TextInput 抢走，输入法（以及所有按键）立刻失效。
+            fs := FocusScope {
+                width: 100%;
+                height: 100%;
+                focus-on-click: false;
+
+                // 隐藏的 IME 宿主。Slint 里只有 TextInput 会向 winit 申请输入法
+                // 上下文（XIM/fcitx/ibus），中文上屏经由 edited 转发给 PTY。
+                // 放在 pane 之前，保证鼠标事件仍由 pane 的 TouchArea 接收。
+                ime := TextInput {
+                    x: root.ime-x;
+                    y: root.ime-y;
+                    width: 2px;
+                    height: 2px;
+                    text: "";
+                    single-line: true;
+                    color: transparent;
+                    selection-foreground-color: transparent;
+                    selection-background-color: transparent;
+                    text-cursor-width: 0px;
+                    init => { self.focus(); }
+
+                    key-pressed(event) => {
+                        // 拼音组合中：回车=上屏候选、退格=删拼音、Esc=取消，
+                        // 这些键归输入法，一个字节都不能写进 PTY
+                        //（这正是之前“回车没用 / 键盘像失灵”的根源）。
+                        if (self.preedit-text != "") {
+                            return EventResult.reject;
+                        }
+                        if (root.menu-open && event.text == "\u{1b}") {
+                            root.menu-open = false;
+                            return EventResult.accept;
+                        }
+                        root.key-input(event.text, event.modifiers.control, event.modifiers.alt, event.modifiers.shift);
+                        EventResult.accept
+                    }
+
+                    // 输入法提交（中文、emoji 等）；TextInput 的 text 只当提交缓冲区用。
+                    edited => {
+                        if (self.text != "") {
+                            root.ime-commit(self.text);
+                            self.text = "";
+                        }
+                    }
+                }
+
+                for p in root.panes : Rectangle {
+                    x: p.x;
+                    y: p.y;
+                    width: p.w;
+                    height: p.h;
+                    background: Palette.colors.bg;
+                    clip: true;
+
+                    Image {
+                        source: p.image;
+                        // 1:1 像素显示，右侧/底部余量露出 pane 背景（与终端同色）
+                        width: p.iw;
+                        height: p.ih;
+                    }
+
+                    pane-hit := TouchArea {
+                        // 修饰键位：1=Shift 2=Alt 4=Ctrl，由 Rust 侧解码成 xterm 位掩码。
+                        pointer-event(event) => {
+                            if (event.kind == PointerEventKind.down) {
+                                if (event.button == PointerEventButton.left) {
+                                    ime.focus();
+                                    root.pane-clicked(p.id);
+                                    root.pane-mouse-down(p.id, pane-hit.mouse-x, pane-hit.mouse-y, 0,
+                                        (event.modifiers.shift ? 1 : 0) + (event.modifiers.alt ? 2 : 0) + (event.modifiers.control ? 4 : 0));
+                                    return EventResult.accept;
+                                }
+                                // 中键/右键只有在应用要求鼠标上报时才转发（否则右键留给菜单）
+                                if (p.mouse-reporting && (event.button == PointerEventButton.right || event.button == PointerEventButton.middle)) {
+                                    ime.focus();
+                                    root.pane-clicked(p.id);
+                                    root.pane-mouse-down(p.id, pane-hit.mouse-x, pane-hit.mouse-y,
+                                        event.button == PointerEventButton.right ? 2 : 1,
+                                        (event.modifiers.shift ? 1 : 0) + (event.modifiers.alt ? 2 : 0) + (event.modifiers.control ? 4 : 0));
+                                    return EventResult.accept;
+                                }
+                            }
+                            if (event.kind == PointerEventKind.move) {
+                                // 按住拖动 + 1003 悬停都走这里；是否真的上报由 Rust 按模式位过滤。
+                                if (pane-hit.pressed || p.mouse-reporting) {
+                                    root.pane-mouse-move(p.id, pane-hit.mouse-x, pane-hit.mouse-y, 0,
+                                        (event.modifiers.shift ? 1 : 0) + (event.modifiers.alt ? 2 : 0) + (event.modifiers.control ? 4 : 0));
+                                    return EventResult.accept;
+                                }
+                            }
+                            if (event.kind == PointerEventKind.up) {
+                                if (event.button == PointerEventButton.left) {
+                                    root.pane-mouse-up(p.id, pane-hit.mouse-x, pane-hit.mouse-y, 0,
+                                        (event.modifiers.shift ? 1 : 0) + (event.modifiers.alt ? 2 : 0) + (event.modifiers.control ? 4 : 0));
+                                    return EventResult.accept;
+                                }
+                                if (p.mouse-reporting && (event.button == PointerEventButton.right || event.button == PointerEventButton.middle)) {
+                                    root.pane-mouse-up(p.id, pane-hit.mouse-x, pane-hit.mouse-y,
+                                        event.button == PointerEventButton.right ? 2 : 1,
+                                        (event.modifiers.shift ? 1 : 0) + (event.modifiers.alt ? 2 : 0) + (event.modifiers.control ? 4 : 0));
+                                    return EventResult.accept;
+                                }
+                                if (event.button == PointerEventButton.right) {
+                                    root.pane-right-clicked(p.id, p.x + pane-hit.mouse-x, p.y + pane-hit.mouse-y);
+                                    return EventResult.accept;
+                                }
+                            }
+                            EventResult.reject
+                        }
+                        scroll-event(event) => {
+                            // 1000/1002/1003 下滚轮要上交给应用（tmux/vim 翻页），否则本地回滚。
+                            root.pane-scrolled(p.id, event.delta-y, pane-hit.mouse-x, pane-hit.mouse-y,
+                                (event.modifiers.shift ? 1 : 0) + (event.modifiers.alt ? 2 : 0) + (event.modifiers.control ? 4 : 0));
+                            EventResult.accept
+                        }
+                    }
+                }
+
+                // ---------------- 分屏分隔线（可拖拽调整比例） ----------------
+                for d in root.dividers : Rectangle {
+                    x: d.x;
+                    y: d.y;
+                    width: d.w;
+                    height: d.h;
+
+                    Rectangle {
+                        x: d.vertical ? (parent.width - 1px) / 2 : 0px;
+                        y: d.vertical ? 0px : (parent.height - 1px) / 2;
+                        width: d.vertical ? 1px : parent.width;
+                        height: d.vertical ? parent.height : 1px;
+                        background: Palette.colors.border;
+                    }
+
+                    TouchArea {
+                        // 命中区比 1px 线宽 4px，方便抓取
+                        x: d.vertical ? -2px : 0px;
+                        y: d.vertical ? 0px : -2px;
+                        width: d.vertical ? d.w + 4px : d.w;
+                        height: d.vertical ? d.h : d.h + 4px;
+                        mouse-cursor: d.vertical ? ew-resize : ns-resize;
+                        pointer-event(event) => {
+                            if (event.kind == PointerEventKind.down) {
+                                return EventResult.accept;
+                            }
+                            if (event.kind == PointerEventKind.move && self.pressed) {
+                                root.divider-dragged(
+                                    d.index,
+                                    d.vertical ? d.x - 2px + self.mouse-x : d.x + self.mouse-x,
+                                    d.vertical ? d.y + self.mouse-y : d.y - 2px + self.mouse-y,
+                                );
+                                return EventResult.accept;
+                            }
+                            EventResult.reject
+                        }
+                    }
+                }
+
+                // ---------------- 右键菜单 ----------------
+                if root.menu-open : Rectangle {
+                    x: Math.min(root.menu-x, root.width - 160px);
+                    y: Math.min(root.menu-y, root.height - 170px);
+                    width: 150px;
+                    height: 156px;
+                    background: Palette.colors.raise;
+                    border-radius: 8px;
+                    border-width: 1px;
+                    border-color: Palette.colors.hover;
+                    drop-shadow-blur: 18px;
+                    drop-shadow-offset-y: 6px;
+                    drop-shadow-color: #000000a8;
+
+                    VerticalLayout {
+                        padding: 4px;
+                        spacing: 2px;
+
+                        MenuRow {
+                            label: "Copy";
+                            picked => { root.menu-open = false; root.menu-action(root.menu-pane, 3); }
+                        }
+                        MenuRow {
+                            label: "Paste";
+                            picked => { root.menu-open = false; root.menu-action(root.menu-pane, 4); }
+                        }
+                        MenuRow {
+                            label: "Split Right";
+                            picked => { root.menu-open = false; root.menu-action(root.menu-pane, 0); }
+                        }
+                        MenuRow {
+                            label: "Split Down";
+                            picked => { root.menu-open = false; root.menu-action(root.menu-pane, 1); }
+                        }
+                        MenuRow {
+                            label: "Close Pane";
+                            picked => { root.menu-open = false; root.menu-action(root.menu-pane, 2); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if root.tabmenu-open : Rectangle {
+        x: Math.min(root.tabmenu-x, root.width - 180px);
+        y: root.tabmenu-y;
+        width: 170px;
+        height: 120px;
+        background: Palette.colors.raise;
+        border-radius: 8px;
+        border-width: 1px;
+        border-color: Palette.colors.hover;
+        drop-shadow-blur: 18px;
+        drop-shadow-offset-y: 6px;
+        drop-shadow-color: #000000a8;
+
+        VerticalLayout {
+            padding: 4px;
+            spacing: 2px;
+
+            MenuRow {
+                label: root.pinned ? "Always on Top  ✓" : "Always on Top";
+                picked => { root.tabmenu-open = false; root.pinned = !root.pinned; }
+            }
+            MenuRow {
+                label: "New Tab";
+                picked => { root.tabmenu-open = false; root.tabbar-menu-action(1); }
+            }
+            MenuRow {
+                label: "Settings";
+                picked => { root.tabmenu-open = false; root.tabbar-menu-action(2); }
+            }
+            MenuRow {
+                label: "Close Window";
+                picked => { root.tabmenu-open = false; root.tabbar-menu-action(3); }
+            }
+        }
+    }
+
+    if root.search-open : Rectangle {
+        x: root.width - 328px;
+        y: root.tabbar-height + 8px;
+        width: 300px;
+        height: 34px;
+        background: Palette.colors.raise;
+        border-radius: 8px;
+        border-width: 1px;
+        border-color: Palette.colors.accent;
+        drop-shadow-blur: 14px;
+        drop-shadow-offset-y: 4px;
+        drop-shadow-color: #00000090;
+
+        HorizontalLayout {
+            padding-left: 10px;
+            padding-right: 10px;
+            spacing: 8px;
+
+            Text {
+                text: "🔍";
+                color: Palette.colors.subtext;
+                font-size: 12px;
+                vertical-alignment: center;
+            }
+            Text {
+                text: root.search-query == "" ? "Search…" : root.search-query;
+                color: root.search-query == "" ? Palette.colors.muted : Palette.colors.text;
+                font-size: 13px;
+                vertical-alignment: center;
+                overflow: elide;
+                horizontal-stretch: 1;
+            }
+            Text {
+                text: root.search-status;
+                color: Palette.colors.danger;
+                font-size: 11px;
+                vertical-alignment: center;
+            }
+        }
+    }
+
+    if root.settings-open : Rectangle {
+        width: 100%;
+        height: 100%;
+        background: #00000080;
+
+        backdrop := TouchArea {
+            clicked => { root.settings-open = false; }
+        }
+
+        Rectangle {
+            width: 420px;
+            height: root.settings-height;
+            x: (root.width - self.width) / 2;
+            y: (root.height - self.height) / 2;
+            background: @linear-gradient(180deg, Palette.colors.raise 0%, Palette.colors.surface 100%);
+            border-radius: 12px;
+            border-width: 1px;
+            border-color: Palette.colors.border;
+            drop-shadow-blur: 30px;
+            drop-shadow-offset-y: 10px;
+            drop-shadow-color: #000000b8;
+
+            VerticalLayout {
+                padding: 18px;
+                spacing: 14px;
+
+                HorizontalLayout {
+                    spacing: 10px;
+                    Image {
+                        width: 22px;
+                        height: 22px;
+                        source: @image-url("../../../assets/icon-small.png");
+                        image-fit: contain;
+                    }
+                    Text {
+                        text: "Settings";
+                        color: Palette.colors.text;
+                        font-size: 16px;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                    }
+                }
+
+                Rectangle {
+                    height: 1px;
+                    horizontal-stretch: 1;
+                    background: Palette.colors.border;
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text {
+                        text: "Theme";
+                        color: Palette.colors.subtext;
+                        width: 76px;
+                        font-size: 12px;
+                        vertical-alignment: top;
+                    }
+                    VerticalLayout {
+                        spacing: 6px;
+
+                        // Auto：跟随系统深/浅色（深色 → Yaru Dark，浅色 → Yaru Light）
+                        HorizontalLayout {
+                            spacing: 8px;
+                            ChoiceBtn {
+                                width: 150px;
+                                height: 24px;
+                                font-size: 11px;
+                                label: "Auto（跟随系统）";
+                                active: root.theme-name == "auto";
+                                clicked => { root.set-theme("auto"); }
+                            }
+                            Text {
+                                text: root.auto-resolved == "" ? "" : "Auto → \{root.auto-resolved}";
+                                color: Palette.colors.subtext;
+                                font-size: 11px;
+                                vertical-alignment: center;
+                                overflow: elide;
+                                horizontal-stretch: 1;
+                            }
+                        }
+
+                        // 主题可能上百套（直接 copy iTerm2 主题目录），固定最多 4 行，
+                        // 超出部分用滚轮/拖动滚动。
+                        Flickable {
+                            width: 100%;
+                            height: Math.min(120px, Math.max(30px, self.content-height));
+                            content-width: self.width;
+                            content-height: Math.ceil(root.theme-choices.length / 4) * 30px - 6px;
+                            interactive: true;
+
+                            GridLayout {
+                                width: 100%;
+                                spacing: 6px;
+                                for choice[i] in root.theme-choices : ChoiceBtn {
+                                    row: Math.floor(i / 4);
+                                    col: Math.mod(i, 4);
+                                    width: 70px;
+                                    height: 24px;
+                                    font-size: 11px;
+                                    label: choice.label;
+                                    active: root.theme-name == choice.id;
+                                    clicked => { root.set-theme(choice.id); }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text {
+                        text: "Font size";
+                        color: Palette.colors.subtext;
+                        width: 88px;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                    }
+                    MiniBtn {
+                        label: "−";
+                        clicked => { root.bump-font-size(-1); }
+                    }
+                    Text {
+                        text: "\{root.font-size}px";
+                        color: Palette.colors.text;
+                        width: 52px;
+                        font-size: 12px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    MiniBtn {
+                        label: "+";
+                        clicked => { root.bump-font-size(1); }
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text {
+                        text: "Scrollback";
+                        color: Palette.colors.subtext;
+                        width: 88px;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                    }
+                    MiniBtn {
+                        label: "−";
+                        clicked => { root.bump-scrollback(-500); }
+                    }
+                    Text {
+                        text: "\{root.scrollback}";
+                        color: Palette.colors.text;
+                        width: 52px;
+                        font-size: 12px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    MiniBtn {
+                        label: "+";
+                        clicked => { root.bump-scrollback(500); }
+                    }
+                }
+
+                Text {
+                    text: "字号即时生效；回滚行数对新建 pane 生效。";
+                    color: Palette.colors.muted;
+                    font-size: 11px;
+                    wrap: word-wrap;
+                }
+            }
+        }
+    }
+
+    // ---------------- 无边框窗口拖边/拖角缩放 ----------------
+    // 自绘命中区：直接改窗口 size/position，不依赖 WM 的 moveresize。
+    ResizeHandle {
+        x: 0px; y: 6px; width: 5px; height: root.height - 12px;
+        direction: 7;
+        mouse-cursor: ew-resize;
+        begin(d) => { root.start-window-resize(d); }
+        drag => { root.window-resize-drag(); }
+        stop => { root.end-window-resize(); }
+    }
+    ResizeHandle {
+        x: root.width - 5px; y: 6px; width: 5px; height: root.height - 12px;
+        direction: 3;
+        mouse-cursor: ew-resize;
+        begin(d) => { root.start-window-resize(d); }
+        drag => { root.window-resize-drag(); }
+        stop => { root.end-window-resize(); }
+    }
+    ResizeHandle {
+        x: 6px; y: 0px; width: root.width - 12px; height: 5px;
+        direction: 1;
+        mouse-cursor: ns-resize;
+        begin(d) => { root.start-window-resize(d); }
+        drag => { root.window-resize-drag(); }
+        stop => { root.end-window-resize(); }
+    }
+    ResizeHandle {
+        x: 6px; y: root.height - 5px; width: root.width - 12px; height: 5px;
+        direction: 5;
+        mouse-cursor: ns-resize;
+        begin(d) => { root.start-window-resize(d); }
+        drag => { root.window-resize-drag(); }
+        stop => { root.end-window-resize(); }
+    }
+    ResizeHandle {
+        x: 0px; y: 0px; width: 8px; height: 8px;
+        direction: 0;
+        mouse-cursor: nwse-resize;
+        begin(d) => { root.start-window-resize(d); }
+        drag => { root.window-resize-drag(); }
+        stop => { root.end-window-resize(); }
+    }
+    ResizeHandle {
+        x: root.width - 8px; y: 0px; width: 8px; height: 8px;
+        direction: 2;
+        mouse-cursor: nesw-resize;
+        begin(d) => { root.start-window-resize(d); }
+        drag => { root.window-resize-drag(); }
+        stop => { root.end-window-resize(); }
+    }
+    ResizeHandle {
+        x: 0px; y: root.height - 8px; width: 8px; height: 8px;
+        direction: 6;
+        mouse-cursor: nesw-resize;
+        begin(d) => { root.start-window-resize(d); }
+        drag => { root.window-resize-drag(); }
+        stop => { root.end-window-resize(); }
+    }
+    ResizeHandle {
+        x: root.width - 8px; y: root.height - 8px; width: 8px; height: 8px;
+        direction: 4;
+        mouse-cursor: nwse-resize;
+        begin(d) => { root.start-window-resize(d); }
+        drag => { root.window-resize-drag(); }
+        stop => { root.end-window-resize(); }
+    }
+}

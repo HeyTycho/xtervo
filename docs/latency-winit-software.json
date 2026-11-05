@@ -1,0 +1,1 @@
+{"n":180,"min_us":10788.6,"mean_us":16060.6,"median_us":16159.5,"p95_us":17526.2,"p99_us":18260.9,"max_us":18533.4,"mode":"latency","timeouts":0,"pipe_median_us":39.8,"pipe_p99_us":202.5,"pipe_n":598}

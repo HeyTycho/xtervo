@@ -1,0 +1,1 @@
+{"backend": "winit-software", "grid": "120x32", "runs": 6, "cold_start_ms": 184.2, "cold_start_min_ms": 175.8, "cold_start_max_ms": 202.1, "internal_first_frame_ms": 181.2, "idle_rss_mb": 42.2, "shell_child_rss_mb": 7.7, "idle_cpu_pct": 0.0}
