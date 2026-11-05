@@ -621,3 +621,45 @@ cargo bench -p tervo-core --bench pty_throughput
      profiles.toml 中。
   5. 窗口 540x472 下检查面板不溢出、列表超过 6 行可滚动、搜索框关闭后终端按键恢复。
 
+### 2026-11-05 · Tabby hotkeys/主题导入（SESS-009 / UI-SET-005）
+
+- **问题**：`--import-tabby` 只迁移 Profiles + `terminal.fontSize`，Tabby 用户的改键与
+  终端配色仍要手抄；SESS-009 / UI-SET-005 因此停在 partial。
+- **上游依据（不靠猜）**：sparse clone `Eugeny/tabby` master
+  commit `467ce8e`（2026-10-06，`tabby-core` 1.0.231-nightly.0，配置 `version: 1`，
+  `LATEST_VERSION = 1`）：
+  - `hotkeys` 为 command id → `string | string[] | (string|string[])[]`；`profile` /
+    `profile-selectors` / `group-selectors` 是对象分支，运行时由
+    `getHotkeysConfigRecursive` 拼成 `profile.<name>` 等动态 id
+    （`tabby-core/src/services/hotkeys.service.ts`）；默认键见
+    `tabby-core/src/configDefaults.{linux,macos,windows}.yaml` 与 `tabby-terminal/src/config.ts`；
+    command id 来自 `tabby-core/src/hotkeys.ts`、`tabby-terminal/src/hotkeys.ts`、
+    `tabby-local/src/hotkeys.ts`（`new-tab`）、`tabby-settings/src/hotkeys.ts`（`settings`）。
+  - `terminal.colorScheme` / `lightColorScheme` 存**完整对象**；`customColorSchemes` 是数组；
+    `TerminalColorScheme = { name, foreground, background, cursor, colors[16],
+    selection?, selectionForeground?, cursorAccent? }`
+    （`tabby-core/src/api/theme.ts`、`tabby-terminal/src/config.ts`）。
+- **做法**：
+  - `tabby_import.rs` 的 `import_yaml` 增加 `&mut Config` 与 themes_dir；`ImportReport`
+    增加 hotkeys/themes 的新增、未变、未映射、跳过、重命名字段。
+  - 21 条语义明确映射（`TABBY_HOTKEY_MAP`）：`new-tab`/`close-tab`/`next-tab`/`previous-tab`/
+    `duplicate-tab`/`reopen-tab`、`split-right`/`split-bottom`/`close-pane`/`pane-nav-next`、
+    `copy`/`paste`/`search`/`clear`/`select-all`、`command-selector`/`toggle-fullscreen`/
+    `zoom-in`/`zoom-out`/`reset-zoom`/`settings`。
+  - chord：兼容 `-` 与 macOS 默认里混入的 `+` 分隔；`Ctrl/Shift/Alt/Super/⌘/⌥/Win` 别名；
+    `Ctrl--` 字面减号；统一走 `Chord::parse` + `canonical()`。只收可绑定单段键；
+    冲突/非法/空绑定/多段键跳过并记录原因；已有自定义绑定不覆盖；一个命令多个候选键只取
+    第一个可用者，其余计数忽略。
+  - 主题：校验 name/fg/bg/cursor/16 色，`UiColors::derive` 生成 11 个 UI 色后写出完整
+    Tervo TOML；同内容去重、同名文件加 `-2` 后缀、绝不覆盖；坏色值/缺字段/非 16 色跳过。
+  - CLI 与设置页均显示新增/未映射/跳过数量及首个原因；设置页导入后重载 `ThemeRegistry`
+    并刷新 hotkey 列表。
+- **测试**：`cargo test -p tervo-app --bin tervo` → **139 passed**。`tabby_import.rs` 共
+  11 例（新增 7 例：映射表一致性、chord 归一化、映射+未映射+非法、冲突+空绑定+多段键、
+  主题落盘+重名后缀、坏色值、短 hex/深浅 variant），全部使用临时目录；生成的主题再用
+  `ThemeRegistry::load` 回读验证。
+- **限制**：hotkeys 只覆盖语义明确子集；每个命令只能一条单段 override，Tabby 的
+  multi-chord 与 `[]`（显式取消默认键）无法表达；主题只取 16 色 + fg/bg/cursor，忽略
+  selection/selectionForeground/cursorAccent，不支持 named/rgba 颜色；不导入插件配置、
+  UI 主题 CSS、密码；受共享显示器约束未启动 GUI 真机走查。schema 依据上述 commit，
+  Tabby 后续版本需重新核对。

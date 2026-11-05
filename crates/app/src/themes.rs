@@ -250,7 +250,7 @@ fn imported(stem: &str, label: Option<String>, spec: PaletteSpec) -> ThemeData {
     }
 }
 
-fn is_dark_bg(bg: u32) -> bool {
+pub(crate) fn is_dark_bg(bg: u32) -> bool {
     let ch = |s: u32| ((bg >> s) & 0xff) as f32 / 255.0;
     0.299 * ch(16) + 0.587 * ch(8) + 0.114 * ch(0) < 0.5
 }
@@ -705,7 +705,7 @@ fn load_simple_yaml(text: &str, stem: &str, raw_stem: &str) -> Result<ThemeData,
 // ---------------------------------------------------------------- 公共工具
 
 /// 文件名 → 主题 id：小写、非字母数字折叠成 `-`，截断 64 字符。
-fn slugify(s: &str) -> Option<String> {
+pub(crate) fn slugify(s: &str) -> Option<String> {
     let mut out = String::new();
     let mut dash = false;
     for c in s.trim().chars() {
