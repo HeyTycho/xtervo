@@ -815,6 +815,15 @@ fn create_pane(
     let mut env = profile.map(|p| p.env.clone()).unwrap_or_default();
     if let Some(a) = askpass.as_mut() {
         a.apply(&mut env);
+        // 只记变量名与“是否非空”，不记密码；用于确认 env 真的进入 ssh 子进程。
+        let keys: Vec<&str> = env
+            .iter()
+            .map(|(k, _)| k.as_str())
+            .filter(|k| k.starts_with("SSH_ASKPASS") || *k == askpass::SECRET_ENV)
+            .collect();
+        let secret_set =
+            env.iter().any(|(k, v)| k.as_str() == askpass::SECRET_ENV && !v.is_empty());
+        eprintln!("[askpass] 注入 ssh 子进程环境: keys={keys:?} secret_set={secret_set}");
     }
     let cwd = profile
         .and_then(|p| p.cwd.clone())
@@ -1087,6 +1096,12 @@ fn open_profile_tab(st: &mut AppState, index: usize) {
             if p.auth == "password" && p.save_password {
                 match st.vault.get(p.id) {
                     Ok(password) => {
+                        // 只记布尔/长度，绝不记密码本身。
+                        eprintln!(
+                            "[vault] 已取出 Profile {} 的密码（len={}）",
+                            p.id,
+                            password.len()
+                        );
                         if !askpass::host_key_known(&p) {
                             // 首次连接：不用 askpass，交给 ssh 在终端里显示指纹/确认
                             // 并让用户手输一次密码；之后 known_hosts 命中才自动填充。
@@ -1097,6 +1112,11 @@ fn open_profile_tab(st: &mut AppState, index: usize) {
                         } else {
                             match askpass::Askpass::new(&password) {
                                 Ok(a) => {
+                                    eprintln!(
+                                        "[askpass] 已启用 profile={} require=force debug={}",
+                                        p.id,
+                                        askpass::debug_enabled()
+                                    );
                                     askpass = Some(a);
                                 },
                                 Err(e) => {

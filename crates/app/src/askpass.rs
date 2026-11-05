@@ -5,6 +5,9 @@
 //! - `SSH_ASKPASS` → 临时脚本（0700，随机目录，脚本本身不含密码）
 //! - `SSH_ASKPASS_REQUIRE=force` → 即使 stdin 是 tty 也走 askpass
 //! - `TERVO_ASKPASS_SECRET` → 密码，只存在于 **ssh 子进程**的环境里
+//! - `TERVO_ASKPASS_DEBUG`（可选，Tervo 进程的环境变量）→ 脚本每被调用一次就
+//!   追加一行 prompt/匹配结果到该文件；**不写密码**，仅用于排查 askpass 是否
+//!   被调用、prompt 长什么样。文件由用户显式指定，默认不写。
 //!
 //! 临时脚本**只对密码提示**输出 `TERVO_ASKPASS_SECRET`；主机密钥确认等其它
 //! prompt 一律回答 `no`。这是为了避免 OpenSSH 在 `SSH_ASKPASS_REQUIRE=force`
@@ -35,6 +38,15 @@ use crate::profile::Profile;
 
 /// 传给 ssh 子进程的密码环境变量名（敏感；不要打印）。
 pub const SECRET_ENV: &str = "TERVO_ASKPASS_SECRET";
+
+/// 可选的 askpass 调用诊断文件（用户从 Tervo 进程环境显式指定才生效）。
+/// 脚本只写 prompt 与匹配结果，绝不写密码。
+pub const DEBUG_ENV: &str = "TERVO_ASKPASS_DEBUG";
+
+/// askpass 诊断是否启用（供启动日志提示；不打印路径以外的东西）。
+pub fn debug_enabled() -> bool {
+    std::env::var_os(DEBUG_ENV).map(|v| !v.is_empty()).unwrap_or(false)
+}
 
 /// 一个活着的 askpass 配置。`Drop` 时删除临时目录（脚本）。
 pub struct Askpass {
@@ -69,9 +81,25 @@ impl Askpass {
         let mut file = opts.open(&script)?;
         // 脚本不含秘密；只对密码 prompt 输出密码，其它确认（host key 等）回答 no，
         // 避免 ssh 在 force 模式下把密码当 yes/no 反复重试。
-        file.write_all(
-            b"#!/bin/sh\ncase \"$1\" in\n  *[Pp]assword*|*\xe5\xaf\x86\xe7\xa0\x81*) printf '%s\\n' \"$TERVO_ASKPASS_SECRET\" ;;\n  *) printf 'no\\n' ;;\nesac\n",
-        )?;
+        // TERVO_ASKPASS_DEBUG 是可选诊断：只记 prompt/匹配结果，绝不写密码。
+        let body = r#"#!/bin/sh
+prompt="$1"
+case "$prompt" in
+  *[Pp]assword*|*密码*)
+    if [ -n "$TERVO_ASKPASS_DEBUG" ]; then
+      printf '%s\n' "match=password prompt=$prompt" >>"$TERVO_ASKPASS_DEBUG" 2>/dev/null
+    fi
+    printf '%s\n' "$TERVO_ASKPASS_SECRET"
+    ;;
+  *)
+    if [ -n "$TERVO_ASKPASS_DEBUG" ]; then
+      printf '%s\n' "match=no prompt=$prompt" >>"$TERVO_ASKPASS_DEBUG" 2>/dev/null
+    fi
+    printf 'no\n'
+    ;;
+esac
+"#;
+        file.write_all(body.as_bytes())?;
         file.sync_all()?;
         drop(file);
         #[cfg(unix)]
@@ -252,6 +280,7 @@ mod tests {
             .arg(ask.script_path())
             .arg(prompt)
             .env(SECRET_ENV, secret)
+            .env_remove(DEBUG_ENV)
             .output()
             .unwrap();
         assert!(out.status.success(), "stderr={:?}", String::from_utf8_lossy(&out.stderr));
@@ -286,6 +315,64 @@ mod tests {
             assert_eq!(got, "no\n", "prompt={prompt:?} 应回答 no");
             assert!(!got.contains(password));
         }
+    }
+
+    /// 可选诊断文件：记录脚本是否被调用、prompt 与匹配分支，但绝不记录密码。
+    #[test]
+    fn debug_file_records_prompt_without_secret() {
+        let dir = test_dir("debug-file");
+        let debug = dir.join("askpass-debug.log");
+        let password = "s3cret-debug";
+        let ask = Askpass::new(password).unwrap();
+        let run = |prompt: &str| {
+            let out = std::process::Command::new("sh")
+                .arg(ask.script_path())
+                .arg(prompt)
+                .env(SECRET_ENV, password)
+                .env(DEBUG_ENV, &debug)
+                .output()
+                .unwrap();
+            assert!(out.status.success());
+            String::from_utf8(out.stdout).unwrap()
+        };
+        assert_eq!(run("test@127.0.0.1's password: "), format!("{password}\n"));
+        assert_eq!(
+            run("Are you sure you want to continue connecting (yes/no/[fingerprint])? "),
+            "no\n"
+        );
+        let log = std::fs::read_to_string(&debug).unwrap();
+        assert!(log.contains("match=password prompt=test@127.0.0.1's password:"), "log={log:?}");
+        assert!(log.contains("match=no prompt=Are you sure"), "log={log:?}");
+        assert!(!log.contains(password), "诊断文件不能出现密码: {log:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 环境变量必须真正到达子进程（而不仅是 apply 到 Vec）。
+    #[test]
+    fn applied_envs_reach_real_child_process() {
+        let mut ask = Askpass::new("child-secret").unwrap();
+        let script = ask.script_path();
+        let mut env = Vec::new();
+        ask.apply(&mut env);
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg(
+            "printf '%s\\n%s\\n%s\\n' \"$SSH_ASKPASS\" \"$SSH_ASKPASS_REQUIRE\" \"$TERVO_ASKPASS_SECRET\"",
+        );
+        // 清掉父进程可能已有的同名变量，只保留 apply 注入的值。
+        for key in ["SSH_ASKPASS", "SSH_ASKPASS_REQUIRE", SECRET_ENV] {
+            cmd.env_remove(key);
+        }
+        for (k, v) in &env {
+            cmd.env(k, v);
+        }
+        let out = cmd.output().unwrap();
+        assert!(out.status.success(), "stderr={:?}", String::from_utf8_lossy(&out.stderr));
+        let text = String::from_utf8(out.stdout).unwrap();
+        let script_path = script.to_string_lossy().into_owned();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines, vec![script_path.as_str(), "force", "child-secret"]);
+        assert!(script.is_file(), "SSH_ASKPASS 指向的脚本必须存在: {}", script.display());
+        let _ = std::fs::remove_dir_all(ask.dir.clone());
     }
 
     #[test]
