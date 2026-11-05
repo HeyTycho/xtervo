@@ -192,3 +192,21 @@ cargo bench -p rusttabby-core --bench pty_throughput
 - **经验**：GUI 自动化前先用 `xwin 0x<id> x y` 把窗口钉住，坐标从日志
   `[ui] tabbar menu at x,y` 反推——窗口管理器会挪窗口，写死坐标会随机点空。
 - **遗留**：只存布局与 cwd，不存滚动历史/运行中程序；`Exited` 仍无 UI 提示，pane 退出后不会自动重启。
+
+### 2026-11-05 · 第 4 轮：反向拖选选不到最左边字母
+
+- **现象**：从右往左左键拖选，行首字母选不上；拖得越靠左，丢的字符越多。
+- **诊断**：`alacritty_terminal::selection::to_range` 对 Simple 选区有两条内缩规则——
+  起点是 `Side::Right` 时 `start.column += 1`，终点是 `Side::Left` 时 `end.column -= 1`。
+  我们按下时固定 `Side::Left`、扩展时固定 `Side::Right`：正向拖选两头恰好正确，
+  **反向拖选**点序交换后，左端变成 Right（+1，丢掉第 0 列）、右端变成 Left（−1，丢掉锚点格），
+  于是 `start(5) → extend(0)` 复制出 `"bcde"` 而不是 `"abcdef"`。
+- **修复**：actor 记住选区锚点，扩展时把两点排序后**重建**选区：起点固定 `Side::Left`、
+  终点固定 `Side::Right`，与拖动方向无关（`crates/core/src/pane.rs` 的 `sel_anchor`）。
+- **测试**：`backward_selection_includes_first_column`（先红后绿）——`start(0,5) → extend(0,0)`
+  断言 `"abcdef"`，再 `→ extend(0,2)` 断言 `"cdef"`。
+- **真机验证**：XTest 拖拽（9×22 格，内容 `abcdef`）：右→左拖到第 0 列，日志
+  `[clipboard] 复制 6 字节: "abcdef"`；拖到第 3 列 → `"def"`。
+- **经验**：alacritty 的 `Side` 描述的是「格子边界」而不是拖动方向；跨端点的选区
+  不要按方向固定传 side，按点的先后决定更稳。
+- **门禁**：PASS，ready 201.3ms / first_damage 202.2ms；app 47 / core 16 / conformance 10。

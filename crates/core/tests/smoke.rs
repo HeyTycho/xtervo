@@ -263,6 +263,43 @@ fn selection_copy_returns_text() {
 }
 
 #[test]
+fn backward_selection_includes_first_column() {
+    let handle = spawn(PaneConfig {
+        cols: 40,
+        rows: 6,
+        scrollback: 100,
+        shell: Some("/bin/sh".to_string()),
+        args: vec!["-c".to_string(), "printf 'abcdef\\n'; sleep 3".to_string()],
+        ..PaneConfig::default()
+    })
+    .expect("spawn");
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut frame = handle.new_frame();
+    loop {
+        frame = handle.pull(frame);
+        if frame_text(&frame).contains("abcdef") {
+            break;
+        }
+        assert!(Instant::now() < deadline, "没有等到输出");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    // 从右往左拖：锚点在第 5 列，拖到第 0 列——最左边的 'a' 必须被选上。
+    // 旧实现把两端各减一格（起点 Right + 终点 Left），得到 "bcde"。
+    handle.selection_start(0, 5);
+    handle.selection_extend(0, 0);
+    let text = handle.copy_selection().expect("应有选区文本");
+    assert_eq!(text, "abcdef", "反向拖到行首: {text:?}");
+
+    // 反向拖到中间：只覆盖 2..=5，锚点格也要包含，且不能把左边多余字符带进来。
+    handle.selection_start(0, 5);
+    handle.selection_extend(0, 2);
+    let text = handle.copy_selection().expect("应有选区文本");
+    assert_eq!(text, "cdef", "反向拖到中间: {text:?}");
+}
+
+#[test]
 fn search_finds_and_scrolls() {
     let handle = spawn_seq_pane();
     let mut frame = handle.new_frame();
