@@ -31,8 +31,9 @@ use alacritty_terminal::index::{Direction, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::search::RegexSearch;
 use alacritty_terminal::term::{Config as TermConfig, Term, TermDamage, TermMode};
-use alacritty_terminal::vte::ansi::Processor;
+use alacritty_terminal::vte::ansi::{Processor, Rgb};
 use crossbeam_channel::{bounded, Receiver, Sender};
+use parking_lot::RwLock;
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtyPair, PtySize};
 
 use crate::event::{CoreEvent, EventSink, PaneStats, WakeSignal};
@@ -87,6 +88,8 @@ struct Listener {
     events: EventSink,
     pty_write: Sender<Vec<u8>>,
     write_dropped: Arc<std::sync::atomic::AtomicU64>,
+    /// 当前调色板：OSC 4/10/11/12 查询要按主题回真实颜色。
+    palette: Arc<RwLock<Palette>>,
 }
 
 impl EventListener for Listener {
@@ -104,6 +107,20 @@ impl EventListener for Listener {
             },
             Event::Exit | Event::ChildExit(_) => self.events.send(CoreEvent::Exited),
             Event::Wakeup => self.wake.notify(),
+            // OSC 4/10/11/12 查询：把当前主题颜色按 xterm 格式回写给 PTY。
+            Event::ColorRequest(index, format) => {
+                let palette = self.palette.read();
+                let Some(rgb) = palette.at(index) else { return };
+                let reply = format(Rgb {
+                    r: (rgb >> 16) as u8,
+                    g: (rgb >> 8) as u8,
+                    b: rgb as u8,
+                });
+                if self.pty_write.try_send(reply.into_bytes()).is_err() {
+                    self.write_dropped
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+            },
             _ => {},
         }
     }
@@ -380,11 +397,13 @@ pub fn spawn(config: PaneConfig) -> std::io::Result<PaneHandle> {
     let stats = Arc::new(PaneStats::default());
     let write_dropped = Arc::new(std::sync::atomic::AtomicU64::new(0));
 
+    let shared_palette = Arc::new(RwLock::new(config.palette.clone()));
     let listener = Listener {
         wake: wake_signal,
         events: events_sink,
         pty_write: write_tx.clone(),
         write_dropped: write_dropped.clone(),
+        palette: shared_palette.clone(),
     };
 
     // ---- PTY 读线程：只 read + 有界 send ----
@@ -427,7 +446,7 @@ pub fn spawn(config: PaneConfig) -> std::io::Result<PaneHandle> {
         ..TermConfig::default()
     };
     let term = Term::new(term_config, &size, listener.clone());
-    let palette = config.palette.clone();
+    let palette = shared_palette.clone();
     let stats_actor = stats.clone();
     let mode_bits = Arc::new(std::sync::atomic::AtomicU32::new(term.mode().bits()));
 
@@ -507,7 +526,7 @@ struct Actor {
     pty_rx: Receiver<Vec<u8>>,
     ctrl_rx: Receiver<Ctrl>,
     pull_tx: Sender<Box<Frame>>,
-    palette: Palette,
+    palette: Arc<RwLock<Palette>>,
     stats: Arc<PaneStats>,
     master: Box<dyn MasterPty + Send>,
     size: GridSize,
@@ -712,7 +731,7 @@ impl Actor {
                 true
             },
             Ctrl::SetTheme(palette) => {
-                self.palette = palette;
+                *self.palette.write() = palette;
                 self.force_full = true;
                 self.wake.notify();
                 true
@@ -747,7 +766,7 @@ impl Actor {
     fn fill(&mut self, frame: &mut Frame) {
         use std::sync::atomic::Ordering::Relaxed;
         let start = Instant::now();
-        fill_frame(&mut self.term, frame, &self.palette, self.force_full, self.search_span);
+        fill_frame(&mut self.term, frame, &self.palette.read(), self.force_full, self.search_span);
         self.force_full = false;
         let nanos = start.elapsed().as_nanos() as u64;
         self.stats.pulls.fetch_add(1, Relaxed);
