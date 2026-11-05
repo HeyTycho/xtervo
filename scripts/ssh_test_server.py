@@ -24,16 +24,106 @@
 脚本会同时起一个 9000 端口的 ECHO 服务，转发目标就是它。
 """
 import argparse
+import os
 import socket
 import threading
 import time
 
 import paramiko
+from paramiko import SFTPAttributes, SFTPHandle, SFTP_OK, SFTP_NO_SUCH_FILE, SFTPServer, SFTPServerInterface
 
 DESTINATIONS = {}
+SFTP_ROOT = "/tmp/rt-ssh/root"
+
+
+class TestSftpHandle(SFTPHandle):
+    def __init__(self, f):
+        self.f = f
+
+    def read(self, offset, length):
+        self.f.seek(offset)
+        return self.f.read(length)
+
+    def write(self, offset, data):
+        self.f.seek(offset)
+        self.f.write(data)
+        self.f.flush()
+        return SFTP_OK
+
+    def stat(self):
+        import os
+
+        return SFTPAttributes.from_stat(os.fstat(self.f.fileno()))
+
+    def close(self):
+        self.f.close()
+        return SFTP_OK
+
+
+class TestSftpIface(SFTPServerInterface):
+    """把远端路径映射到本地 SFTP_ROOT，够跑通列表/上传/下载。"""
+
+    def _path(self, path):
+        import os
+
+        p = os.path.normpath(os.path.join(SFTP_ROOT, path.lstrip("/")))
+        return p if p.startswith(SFTP_ROOT) else SFTP_ROOT
+
+    def canonicalize(self, path):
+        return path
+
+    def list_folder(self, path):
+        import os
+
+        try:
+            names = sorted(os.listdir(self._path(path)))
+        except OSError:
+            return SFTP_NO_SUCH_FILE
+        out = []
+        for n in names:
+            a = SFTPAttributes.from_stat(os.stat(os.path.join(self._path(path), n)))
+            a.filename = n
+            out.append(a)
+        return out
+
+    def stat(self, path):
+        import os
+
+        try:
+            return SFTPAttributes.from_stat(os.stat(self._path(path)))
+        except OSError:
+            return SFTP_NO_SUCH_FILE
+
+    def lstat(self, path):
+        return self.stat(path)
+
+    def open(self, path, flags, attr):
+        import os
+
+        p = self._path(path)
+        if flags & (os.O_WRONLY | os.O_RDWR):
+            mode = "ab" if flags & os.O_APPEND else "wb"
+        else:
+            mode = "rb"
+        try:
+            f = open(p, mode)
+        except OSError:
+            return SFTP_NO_SUCH_FILE
+        return TestSftpHandle(f)
 
 
 class TestServer(paramiko.ServerInterface):
+    def __init__(self):
+        super().__init__()
+        # 记录走 sftp subsystem 的通道，主循环不要再把它们当 shell 发 banner
+        self.sftp_channels = set()
+
+    def check_channel_subsystem_request(self, channel, name):
+        if name == "sftp":
+            self.sftp_channels.add(channel.get_id())
+            return super().check_channel_subsystem_request(channel, name)
+        return False
+
     def check_auth_publickey(self, username, key):
         return paramiko.AUTH_SUCCESSFUL if username == "test" else paramiko.AUTH_FAILED
 
@@ -124,11 +214,16 @@ def echo_server(port):
 
 
 def main():
+    global SFTP_ROOT
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=2222)
     ap.add_argument("--echo-port", type=int, default=9000)
     ap.add_argument("--host-key", required=True, help="ed25519 私钥文件路径")
+    ap.add_argument("--sftp-root", default=SFTP_ROOT, help="SFTP 暴露的本地目录")
     args = ap.parse_args()
+
+    SFTP_ROOT = args.sftp_root
+    os.makedirs(SFTP_ROOT, exist_ok=True)
 
     host_key = paramiko.Ed25519Key(filename=args.host_key)
     print(f"[ssh-test] host key: ssh-ed25519 {host_key.get_base64()}", flush=True)
@@ -145,21 +240,26 @@ def main():
         conn, _ = sock.accept()
         transport = paramiko.Transport(conn)
         transport.add_server_key(host_key)
+        # 注册到 transport，默认的 check_channel_subsystem_request 会启动 handler
+        transport.set_subsystem_handler("sftp", SFTPServer, TestSftpIface)
+        server = TestServer()
         try:
-            transport.start_server(server=TestServer())
+            transport.start_server(server=server)
         except paramiko.SSHException as e:
             print(f"[ssh-test] handshake failed: {e}", flush=True)
             continue
+        kept = []  # 必须保住 Channel 引用，否则会被 GC 关闭
         while True:
             chan = transport.accept(0.5)
             if chan is None:
                 if not transport.is_active():
                     break
                 continue
+            kept.append(chan)
             cid = chan.get_id()
             if cid in DESTINATIONS:
                 threading.Thread(target=bridge, args=(chan, *DESTINATIONS[cid]), daemon=True).start()
-            else:
+            elif cid not in server.sftp_channels:
                 threading.Thread(target=serve_shell, args=(chan,), daemon=True).start()
 
 

@@ -6,6 +6,7 @@ mod latency;
 mod profile;
 mod render;
 mod session;
+mod sftp;
 mod themes;
 mod workspace;
 mod xconn;
@@ -1996,8 +1997,61 @@ fn print_help() {
     );
 }
 
+/// 内部探针：不启动 UI，直接用第一个 SSH Profile 跑一次 SFTP 操作。
+/// 用法：`rusttabby-app --sftp-probe <list|get|put> <remote> [local]`
+fn run_sftp_probe(args: &[String]) -> i32 {
+    let store = profile::ProfileStore::load();
+    let Some(p) = store.profiles.iter().find(|p| p.kind == "ssh") else {
+        eprintln!("[sftp-probe] 没有 SSH Profile");
+        return 2;
+    };
+    let target = match sftp::SftpTarget::from_profile(p) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("[sftp-probe] {e}");
+            return 2;
+        },
+    };
+    let op = args.first().map(String::as_str).unwrap_or("");
+    let remote = args.get(1).map(String::as_str).unwrap_or(".");
+    let result = match op {
+        "list" => sftp::list(&target, remote).map(|items| items.join("\n")),
+        "get" => {
+            let local = args.get(2).map(String::as_str).unwrap_or("");
+            sftp::download(&target, remote, local).map(|_| String::new())
+        },
+        "put" => {
+            // put <local> <remote>（与 cp 习惯一致；get 则是 <remote> <local>）
+            let local = args.get(1).map(String::as_str).unwrap_or("");
+            let remote = args.get(2).map(String::as_str).unwrap_or("");
+            sftp::upload(&target, local, remote).map(|_| String::new())
+        },
+        other => {
+            eprintln!("[sftp-probe] 未知操作 {other}");
+            return 2;
+        },
+    };
+    match result {
+        Ok(out) => {
+            if !out.is_empty() {
+                println!("{out}");
+            }
+            println!("[sftp-probe] ok {op}");
+            0
+        },
+        Err(e) => {
+            eprintln!("[sftp-probe] {e}");
+            1
+        },
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let t_start = Instant::now();
+    let argv: Vec<String> = std::env::args().collect();
+    if let Some(pos) = argv.iter().position(|a| a == "--sftp-probe") {
+        return Ok(std::process::exit(run_sftp_probe(&argv[pos + 1..])));
+    }
     if std::env::args().any(|a| a == "-h" || a == "--help") {
         print_help();
         return Ok(());
