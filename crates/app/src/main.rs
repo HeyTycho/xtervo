@@ -1977,6 +1977,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 0 => close_tab_inner(st, index),
                 1 => close_other_tabs(st, index),
                 2 => duplicate_tab(st, index),
+                3 => open_rename(st, index),
                 _ => {},
             }
         });
