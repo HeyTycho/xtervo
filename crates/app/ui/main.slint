@@ -330,6 +330,10 @@ export component MainWindow inherits Window {
     in-out property <string> form-auth: "";
     in-out property <string> form-key: "";
     in-out property <string> form-extra: "";
+    in-out property <string> form-forwards: "";
+    /// -1 = 新建；>0 = 正在编辑的 Profile ID
+    in-out property <int> form-edit-id: -1;
+    callback profile-edit(int);
     in-out property <string> form-serial-port: "";
     in-out property <string> form-baud: "";
     in-out property <string> form-error: "";
@@ -1110,6 +1114,29 @@ export component MainWindow inherits Window {
                 }
 
                 Rectangle {
+                    x: parent.width - 52px;
+                    y: 3px;
+                    width: 22px;
+                    height: 24px;
+                    border-radius: 4px;
+                    background: prof-edit-hit.has-hover ? Palette.colors.hover : transparent;
+
+                    Text {
+                        text: "✎";
+                        color: Palette.colors.muted;
+                        font-size: 13px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        width: 100%;
+                        height: 100%;
+                    }
+
+                    prof-edit-hit := TouchArea {
+                        clicked => { root.profile-edit(i); }
+                    }
+                }
+
+                Rectangle {
                     x: parent.width - 26px;
                     y: 3px;
                     width: 22px;
@@ -1201,7 +1228,7 @@ export component MainWindow inherits Window {
         Text {
             x: 16px;
             y: 14px;
-            text: "New Profile";
+            text: root.form-edit-id < 0 ? "New Profile" : "Edit Profile";
             color: Palette.colors.text;
             font-size: 15px;
             font-weight: 600;
@@ -1250,14 +1277,15 @@ export component MainWindow inherits Window {
         }
 
         if root.form-kind == 1 : VerticalLayout {
-            x: 16px; y: 116px; width: 408px; height: 204px;
-            spacing: 8px;
+            x: 16px; y: 116px; width: 408px; height: 190px;
+            spacing: 6px;
             FormRow { label: "Host"; text <=> root.form-host; }
             FormRow { label: "Port"; text <=> root.form-port; }
             FormRow { label: "User"; text <=> root.form-user; }
             FormRow { label: "Auth"; text <=> root.form-auth; }
             FormRow { label: "Key"; text <=> root.form-key; }
             FormRow { label: "Extra"; text <=> root.form-extra; }
+            FormRow { label: "Forwards"; text <=> root.form-forwards; }
         }
 
         if root.form-kind == 2 : VerticalLayout {
@@ -1276,7 +1304,7 @@ export component MainWindow inherits Window {
 
         Text {
             x: 16px;
-            y: 296px;
+            y: 308px;
             width: 408px;
             text: root.form-error;
             color: Palette.colors.danger;
@@ -1285,7 +1313,7 @@ export component MainWindow inherits Window {
         }
 
         Rectangle {
-            x: 252px; y: 330px; width: 80px; height: 28px; border-radius: 6px;
+            x: 252px; y: 340px; width: 80px; height: 28px; border-radius: 6px;
             background: form-cancel-hit.has-hover ? Palette.colors.hover : Palette.colors.raise;
             border-width: 1px;
             border-color: Palette.colors.border;
@@ -1304,7 +1332,7 @@ export component MainWindow inherits Window {
         }
 
         Rectangle {
-            x: 340px; y: 330px; width: 80px; height: 28px; border-radius: 6px;
+            x: 340px; y: 340px; width: 80px; height: 28px; border-radius: 6px;
             background: form-save-hit.has-hover ? Palette.colors.danger : Palette.colors.accent;
             form-save-hit := TouchArea {
                 clicked => { root.profile-form-save(); }

@@ -639,6 +639,7 @@ fn open_profile_form(st: &mut AppState) {
         .and_then(|rt| rt.handle.pid())
         .and_then(session::cwd_of)
         .unwrap_or_default();
+    st.ui.set_form_edit_id(-1);
     st.ui.set_form_name(name.as_str().into());
     st.ui.set_form_kind(0);
     st.ui.set_form_shell(shell.as_str().into());
@@ -650,6 +651,7 @@ fn open_profile_form(st: &mut AppState) {
     st.ui.set_form_auth("agent".into());
     st.ui.set_form_key("".into());
     st.ui.set_form_extra("".into());
+    st.ui.set_form_forwards("".into());
     st.ui.set_form_serial_port("/dev/ttyUSB0".into());
     st.ui.set_form_baud("115200".into());
     st.ui.set_form_error("".into());
@@ -657,11 +659,36 @@ fn open_profile_form(st: &mut AppState) {
     eprintln!("[profile] 打开新建表单 name={name:?} shell={shell:?} cwd={cwd:?}");
 }
 
+/// 打开编辑表单：回填已有 Profile 的所有字段。
+fn edit_profile_form(st: &mut AppState, index: usize) {
+    let Some(p) = st.profiles.profiles.get(index).cloned() else { return };
+    let kind_idx = profile::KINDS.iter().position(|k| *k == p.kind).unwrap_or(0);
+    st.ui.set_form_edit_id(p.id as i32);
+    st.ui.set_form_name(p.name.as_str().into());
+    st.ui.set_form_kind(kind_idx as i32);
+    st.ui.set_form_shell(p.shell.as_str().into());
+    st.ui.set_form_args(p.args.join(" ").as_str().into());
+    st.ui.set_form_cwd(p.cwd.clone().unwrap_or_default().as_str().into());
+    st.ui.set_form_host(p.host.as_str().into());
+    st.ui.set_form_port(p.port.to_string().as_str().into());
+    st.ui.set_form_user(p.user.as_str().into());
+    st.ui.set_form_auth(p.auth.as_str().into());
+    st.ui.set_form_key(p.key_path.as_str().into());
+    st.ui.set_form_extra(p.extra_args.join(" ").as_str().into());
+    st.ui.set_form_forwards(p.local_forwards.join(" ").as_str().into());
+    st.ui.set_form_serial_port(p.serial_port.as_str().into());
+    st.ui.set_form_baud(p.baud.to_string().as_str().into());
+    st.ui.set_form_error("".into());
+    st.ui.set_profile_form_open(true);
+    eprintln!("[profile] 编辑表单 id={} name={:?} kind={}", p.id, p.name, p.kind);
+}
+
 fn save_profile_form(st: &mut AppState) {
     let kind_idx = st.ui.get_form_kind().clamp(0, 3) as usize;
     let kind = profile::KINDS[kind_idx];
     let name = st.ui.get_form_name().to_string();
     let parse_port = |s: String| s.trim().parse::<u16>().unwrap_or(0);
+    let edit_id = st.ui.get_form_edit_id();
     let mut p = profile::Profile { name, kind: kind.to_string(), ..profile::Profile::default() };
     match kind {
         "ssh" => {
@@ -672,6 +699,8 @@ fn save_profile_form(st: &mut AppState) {
             p.key_path = st.ui.get_form_key().to_string();
             p.extra_args =
                 st.ui.get_form_extra().split_whitespace().map(|s| s.to_string()).collect();
+            p.local_forwards =
+                st.ui.get_form_forwards().split_whitespace().map(|s| s.to_string()).collect();
         },
         "serial" => {
             p.serial_port = st.ui.get_form_serial_port().to_string();
@@ -688,7 +717,12 @@ fn save_profile_form(st: &mut AppState) {
             p.cwd = (!cwd.trim().is_empty()).then(|| cwd.trim().to_string());
         },
     }
-    match st.profiles.add(p) {
+    let result = if edit_id > 0 {
+        st.profiles.update(edit_id as u64, p).map(|_| edit_id as u64)
+    } else {
+        st.profiles.add(p)
+    };
+    match result {
         Ok(id) => {
             st.profiles.save();
             refresh_profiles(st);
@@ -2434,6 +2468,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     ui.on_profile_new(|| {
         with_app(|st| open_profile_form(st));
+    });
+
+    ui.on_profile_edit(|index| {
+        with_app(|st| edit_profile_form(st, index.max(0) as usize));
     });
 
     ui.on_profile_form_save(|| {
