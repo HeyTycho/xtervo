@@ -688,7 +688,9 @@ pub fn apply_rounded_corners(
     let radius = radius.min(width as u32 / 2).min(height as u32 / 2);
 
     let pixmap = conn.generate_id().map_err(|e| format!("申请 Pixmap id 失败: {e}"))?;
-    conn.create_pixmap(1, window, pixmap, width, height)
+    conn.create_pixmap(1, pixmap, window, width, height)
+        .map_err(|e| format!("创建 depth=1 Pixmap 请求失败: {e}"))?
+        .check()
         .map_err(|e| format!("创建 depth=1 Pixmap 失败: {e}"))?;
     let gc = match conn.generate_id() {
         Ok(gc) => gc,
@@ -697,7 +699,14 @@ pub fn apply_rounded_corners(
             return Err(format!("申请 GC id 失败: {e}"));
         },
     };
-    if let Err(e) = conn.create_gc(gc, pixmap, &CreateGCAux::new().foreground(1u32)) {
+    let gc_cookie = match conn.create_gc(gc, pixmap, &CreateGCAux::new().foreground(1u32)) {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = conn.free_pixmap(pixmap);
+            return Err(format!("创建 GC 请求失败: {e}"));
+        },
+    };
+    if let Err(e) = gc_cookie.check() {
         let _ = conn.free_pixmap(pixmap);
         return Err(format!("创建 GC 失败: {e}"));
     }
