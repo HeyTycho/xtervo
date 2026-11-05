@@ -264,8 +264,17 @@ export component MainWindow inherits Window {
     // 设置项开关状态（由 Rust 侧从 Config 下发）
     in-out property <bool> cfg-copy-on-select: true;
     in-out property <bool> cfg-confirm-close: true;
+    in-out property <bool> cfg-confirm-paste: true;
     callback toggle-copy-on-select();
     callback toggle-confirm-close();
+    callback toggle-confirm-paste();
+    // 多行粘贴确认
+    in-out property <bool> paste-open: false;
+    in-out property <string> paste-preview: "";
+    in-out property <int> paste-lines: 0;
+    callback paste-accept();
+    callback paste-always();
+    callback paste-cancel();
     callback settings-toggled(bool);
     // Command Palette
     in-out property <bool> palette-open: false;
@@ -1007,6 +1016,99 @@ export component MainWindow inherits Window {
         }
     }
 
+    if root.paste-open : Rectangle {
+        x: (root.width - 420px) / 2;
+        y: (root.height - 200px) / 2;
+        width: 420px;
+        height: 200px;
+        background: Palette.colors.raise;
+        border-radius: 10px;
+        border-width: 1px;
+        border-color: Palette.colors.border;
+        drop-shadow-blur: 24px;
+        drop-shadow-offset-y: 8px;
+        drop-shadow-color: #000000c0;
+
+        VerticalLayout {
+            padding: 16px;
+            spacing: 10px;
+
+            Text {
+                text: "Paste \{root.paste-lines} lines?";
+                color: Palette.colors.text;
+                font-size: 15px;
+                font-weight: 600;
+            }
+            Text {
+                text: root.paste-preview;
+                color: Palette.colors.subtext;
+                font-size: 12px;
+                wrap: word-wrap;
+            }
+
+            HorizontalLayout {
+                alignment: end;
+                spacing: 8px;
+
+                Rectangle {
+                    width: 84px; height: 28px; border-radius: 6px;
+                    background: paste-cancel-hit.has-hover ? Palette.colors.hover : Palette.colors.raise;
+                    border-width: 1px;
+                    border-color: Palette.colors.border;
+                    paste-cancel-hit := TouchArea {
+                        clicked => { root.paste-open = false; root.paste-cancel(); }
+                    }
+                    Text {
+                        text: "Cancel";
+                        color: Palette.colors.text;
+                        font-size: 12px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        width: 100%;
+                        height: 100%;
+                    }
+                }
+
+                Rectangle {
+                    width: 110px; height: 28px; border-radius: 6px;
+                    background: paste-always-hit.has-hover ? Palette.colors.hover : Palette.colors.raise;
+                    border-width: 1px;
+                    border-color: Palette.colors.border;
+                    paste-always-hit := TouchArea {
+                        clicked => { root.paste-open = false; root.paste-always(); }
+                    }
+                    Text {
+                        text: "Always Allow";
+                        color: Palette.colors.text;
+                        font-size: 12px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        width: 100%;
+                        height: 100%;
+                    }
+                }
+
+                Rectangle {
+                    width: 84px; height: 28px; border-radius: 6px;
+                    background: paste-ok-hit.has-hover ? Palette.colors.danger : Palette.colors.accent;
+                    paste-ok-hit := TouchArea {
+                        clicked => { root.paste-open = false; root.paste-accept(); }
+                    }
+                    Text {
+                        text: "Paste";
+                        color: Palette.colors.accent-text;
+                        font-size: 12px;
+                        font-weight: 600;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        width: 100%;
+                        height: 100%;
+                    }
+                }
+            }
+        }
+    }
+
     if root.confirm-open : Rectangle {
         x: (root.width - 340px) / 2;
         y: (root.height - 150px) / 2;
@@ -1345,6 +1447,12 @@ export component MainWindow inherits Window {
                     label: "Confirm before closing multiple sessions";
                     on: root.cfg-confirm-close;
                     toggled => { root.toggle-confirm-close(); }
+                }
+
+                ToggleRow {
+                    label: "Confirm multi-line paste";
+                    on: root.cfg-confirm-paste;
+                    toggled => { root.toggle-confirm-paste(); }
                 }
 
                 Text {

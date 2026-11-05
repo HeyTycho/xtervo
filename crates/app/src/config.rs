@@ -38,6 +38,8 @@ pub struct Config {
     pub confirm_close: bool,
     /// 拖选后自动复制（默认开）。
     pub copy_on_select: bool,
+    /// 多行粘贴前确认（默认开）。
+    pub confirm_multiline_paste: bool,
     /// 本版本不认识的键，原样保留（前向兼容）。
     #[serde(flatten)]
     pub extra: toml::Table,
@@ -57,6 +59,7 @@ impl Default for Config {
             rows: 32,
             confirm_close: true,
             copy_on_select: true,
+            confirm_multiline_paste: true,
             extra: toml::Table::new(),
         }
     }
@@ -190,6 +193,7 @@ mod tests {
         let c = Config::default();
         assert!(c.confirm_close, "默认关闭多会话要确认");
         assert!(c.copy_on_select, "默认拖选自动复制");
+        assert!(c.confirm_multiline_paste, "默认多行粘贴要确认");
         assert_eq!(c.version, SCHEMA_VERSION);
     }
 
