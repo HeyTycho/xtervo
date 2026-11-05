@@ -27,6 +27,9 @@ x11rb = { version = "0.14", features = ["xtest", "damage"] }
 # 仅用于给 gsettings monitor 子进程设 PDEATHSIG，避免父进程被 SIGTERM 后留孤儿
 libc = "0.2"
 serde_yaml = "0.9"
+chacha20poly1305 = "0.10.1"
+argon2 = "0.5.3"
+base64 = "0.22.1"
 
 [build-dependencies]
 slint-build = { version = "1.18", default-features = false, features = ["compat-1-18"] }

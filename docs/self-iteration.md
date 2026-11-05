@@ -445,3 +445,45 @@ cargo bench -p tervo-core --bench pty_throughput
   `right-click clipboard copy 5 chars`；off → 无动作；middle → `middle-click paste`
   （.logs/right-click-modes.png、settings-right-click-modes.png）。
 
+
+### 2026-11-05 · Vault 加密凭据 + SSH 密码 askpass（MVP）
+
+- **问题**：SSH `auth=password` 只有名字，密码没有安全存放/自动填充路径；设置页也没有
+  凭据管理入口。需求 C12/SEC-001..006、B7/UI-SET-010、B8/UI-SSH-001 都停在 not_started。
+- **做法**：
+  - 新增 `crates/app/src/vault.rs`：`vault.enc`（magic/version + Argon2id 参数 + salt +
+    nonce + ChaCha20-Poly1305 密文，头部作 AAD）；`initialize/unlock/lock/change_master/
+    set/get/remove/clear`，锁定时读写报错；文件 0600、临时文件 + rename 原子写；解析器对
+    版本/字段/参数范围/长度/base64 做严格校验，坏文件原样保留。
+  - 新增 `crates/app/src/askpass.rs`：0700 临时目录 + 0700 脚本，
+    `SSH_ASKPASS_REQUIRE=force`，密码只进 ssh 子进程环境；guard Drop 清目录/尽力清内存。
+  - Profile 增加 `save_password: bool`（默认 false，无 password 字段）；表单 `auth=password`
+    显示 masked 密码 + 保存勾选；保存路径先校验 Vault 解锁，再写 Profile/Vault；取消勾选
+    时解锁则同步删除旧凭据。
+  - 设置左侧导航新增 Vault 页（状态/路径、Set/Change、Unlock、Lock、Clear 二次确认、
+    错误/提示）；启动时默认锁定；连接已保存密码但 Vault 锁定时跳到该页提示解锁。
+  - 文档：新增 [`VAULT.md`](VAULT.md)，更新 FEATURE_MATRIX 的 SEC-001..006、UI-SET-010、
+    UI-SSH-001 与 B7/C12 计数。
+- **测试**：`cargo test -p tervo-app --bin tervo` → **108 passed**。新增 vault 7 例
+  （roundtrip/锁定读写、错密码+损坏/截断/空文件、无明文+0600、改主密码、拒覆盖+Clear、
+  恶意 KDF 参数上限、TERVO_VAULT 覆盖）、askpass 5 例（密码 prompt 原样输出/非密码 prompt 回答 no/force 环境/Debug 脱敏与 0700/真实 ssh+ssh-keygen 的 known_hosts 判定）、
+  Profile 序列化无明文密码 1 例。全部使用临时目录，不碰真实 `$HOME`（`TERVO_VAULT` 路径用例走纯函数，不改进程环境）。
+- **踩坑（重要）**：最初脚本对任何 askpass prompt 都输出密码。本地用 paramiko 测试服务 +
+  `SSH_ASKPASS_REQUIRE=force` 做无 GUI 探针时，OpenSSH 把密码当成 host key 确认的
+  yes/no 答案，3 秒内调用 askpass **5044 次**并卡死。修复：
+  - 脚本识别 prompt：只有含 `password`/`密码` 才输出密码，其余（host key 确认等）回答 `no`，
+    ssh 快速失败（实测 rc=255，无循环）；
+  - 连接前用 `ssh -G` 取实际 `stricthostkeychecking` 与 known_hosts 路径，再用
+    `ssh-keygen -F` 判断 host key 是否已确认；未确认则本次不用 askpass，交给终端显示指纹/
+    手输一次密码，known_hosts 命中后下次才自动填充；`accept-new`/`no` 不弹确认，可直接 askpass。
+  - 仍然存在的边界：动态 `KnownHostsCommand`、host 在 known_hosts 但服务器换了 key 类型时
+    可能误判；此时脚本的 `no` 兜底保证快速失败而不是死循环/泄露密码。
+- **安全限制（已写入 docs/VAULT.md）**：
+  - askpass 密码仍经子进程环境变量传递，同用户可经 `/proc/<ssh-pid>/environ` 观察；
+    后续应改继承 fd/pipe。注意 portable-pty 的 `pre_exec` 会关闭所有 `fd > 2`，需要
+    fd 白名单或 Unix socket 方案。
+  - 解锁后的主密码/密码在进程内存，未 mlock/完整 zeroize；无空闲自动锁定；无 Keyring；
+    锁定时取消勾选无法立即删除旧密文（Clear 或下次解锁后处理）。
+  - 私钥口令/其他 secret 未接 Vault；known_hosts 仍交系统 ssh。
+- **未做**：GUI 真机走查（共享显示器约束，未启动 GUI/xkey/xclick/xwin）；原生 russh；
+  解锁弹窗；凭据列表 UI；Keyring。`cargo build --release -p tervo-app` 通过（见本次提交说明）。
