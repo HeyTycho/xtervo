@@ -68,7 +68,7 @@
 |---|---|---|---|---|---|
 | ACT-022 | SSH 垂直切片（连接/认证/known_hosts） | C3 核心；安全认证/known_hosts 必须原生 | 新 `ssh.rs`、`pane.rs` transport、`config.rs` | 连接/断开/超时；密码/密钥/agent；known_hosts 首次确认/变更告警；错误可见；本地 sshd 集成测试 | L |
 | ACT-023 | SSH 进阶：jump/proxy/forward/X11/login scripts/config import | C3-006..014 | `ssh.rs`、`profile.rs`、`main.slint` | ProxyJump 两跳；local/remote/SOCKS 转发；agent/X11 状态；login scripts；ssh_config 映射；集成测试 | L |
-| ACT-024 ◐（SFTP 面板列表/上传/下载已通；转发管理面板、mk/rm/rename、进度待做） | SFTP + Port Forwarding UI | C4/B8 | 新 `sftp.rs`、`main.slint`、`main.rs` | 目录导航/上传下载/进度/取消；转发规则增删启停；危险操作确认；集成测试 | L |
+| ACT-024 ◐（SFTP 列表/上传/下载/建目录/重命名/删除已通；转发管理面板、进度/取消待做） | SFTP + Port Forwarding UI | C4/B8 | 新 `sftp.rs`、`main.slint`、`main.rs` | 目录导航/上传下载/进度/取消；转发规则增删启停；危险操作确认；集成测试 | L |
 | ACT-025 | Serial/Telnet/Zmodem | C6/C7/C5 | 新 `serial.rs`/`telnet.rs`/`zmodem.rs`、`profile.rs` | 串口枚举/参数/输入输出模式/重连；Telnet IAC；Zmodem 识别/进度/取消；硬件/本地回环测试 | L |
 
 ## 5. P4：安全/插件/运维（需求 D8–D10）

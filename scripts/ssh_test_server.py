@@ -98,6 +98,42 @@ class TestSftpIface(SFTPServerInterface):
     def lstat(self, path):
         return self.stat(path)
 
+    def mkdir(self, path, attr):
+        import os
+
+        try:
+            os.mkdir(self._path(path))
+        except OSError as e:
+            return paramiko.SFTPServer.convert_errno(e.errno)
+        return SFTP_OK
+
+    def rmdir(self, path):
+        import os
+
+        try:
+            os.rmdir(self._path(path))
+        except OSError as e:
+            return paramiko.SFTPServer.convert_errno(e.errno)
+        return SFTP_OK
+
+    def remove(self, path):
+        import os
+
+        try:
+            os.unlink(self._path(path))
+        except OSError as e:
+            return paramiko.SFTPServer.convert_errno(e.errno)
+        return SFTP_OK
+
+    def rename(self, oldpath, newpath):
+        import os
+
+        try:
+            os.replace(self._path(oldpath), self._path(newpath))
+        except OSError as e:
+            return paramiko.SFTPServer.convert_errno(e.errno)
+        return SFTP_OK
+
     def open(self, path, flags, attr):
         import os
 
