@@ -123,6 +123,8 @@ struct AppState {
     hotkey_model: Rc<VecModel<slint::SharedString>>,
     plugins: plugin::PluginStore,
     plugin_model: Rc<VecModel<slint::SharedString>>,
+    settings_result_cats: Vec<i32>,
+    settings_model: Rc<VecModel<slint::SharedString>>,
     /// 1003 悬停上报的上一格（按格去重，避免鼠标移动刷爆有界 ctrl 队列）。
     hover_cell: Option<(PaneId, (u16, u16))>,
     resize: Option<WindowResize>,
@@ -269,6 +271,36 @@ fn slint_theme(c: &UiColors) -> ThemeColors {
         accent_text: color(c.accent_text),
         danger: color(c.danger),
     }
+}
+
+/// 设置搜索索引：(分类下标, 展示名, 关键词)。
+const SETTINGS_CATALOG: &[(i32, &str, &str)] = &[
+    (0, "Theme / Color scheme", "theme color scheme appearance dark light"),
+    (1, "Font size", "font size text zoom"),
+    (1, "Scrollback", "scrollback history lines"),
+    (1, "Copy on select", "copy select clipboard"),
+    (1, "Confirm before closing", "confirm close window exit"),
+    (1, "Confirm multi-line paste", "paste multiline confirm"),
+    (2, "Tab bar at bottom", "tab bar position bottom top"),
+    (3, "Config file path", "config path file folder"),
+    (4, "Hotkey bindings", "hotkey shortcut key binding"),
+    (5, "Installed plugins", "plugin plugins installed list"),
+];
+
+/// 设置搜索：大小写不敏感的子串匹配（名称或关键词），返回 (分类, 展示行)。
+fn settings_search(query: &str) -> Vec<(i32, String)> {
+    let q = query.trim().to_lowercase();
+    if q.is_empty() {
+        return Vec::new();
+    }
+    let cats = ["Appearance", "Terminal", "Window", "Config", "Hotkeys", "Plugins"];
+    SETTINGS_CATALOG
+        .iter()
+        .filter(|(_, label, keywords)| {
+            label.to_lowercase().contains(&q) || keywords.to_lowercase().contains(&q)
+        })
+        .map(|(cat, label, _)| (*cat, format!("{} · {label}", cats[*cat as usize])))
+        .collect()
 }
 
 /// 快捷键页数据：按分类/标题排序，格式 `[Category] Title — Ctrl+T`；返回 (摘要, 行)。
@@ -2255,6 +2287,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui.set_hotkey_items(ModelRc::from(hotkey_model.clone()));
     let plugin_model = Rc::new(VecModel::<slint::SharedString>::default());
     ui.set_plugin_items(ModelRc::from(plugin_model.clone()));
+    let settings_model = Rc::new(VecModel::<slint::SharedString>::default());
+    ui.set_settings_results(ModelRc::from(settings_model.clone()));
     let state = Rc::new(RefCell::new(AppState {
         ui: ui.clone_strong(),
         ws: Workspace::new(),
@@ -2290,6 +2324,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         hotkey_model,
         plugins: plugin::PluginStore::load(),
         plugin_model,
+        settings_result_cats: Vec::new(),
+        settings_model,
         hover_cell: None,
         resize: None,
         xresize: None,
@@ -2775,6 +2811,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Ok(_) => {},
                 Err(e) => eprintln!("[ui] 打开配置目录失败: {e}"),
             }
+        });
+    });
+
+    ui.on_settings_filter(|query| {
+        with_app(|st| {
+            let q = query.to_string();
+            st.ui.set_settings_query(q.as_str().into());
+            let hits = settings_search(&q);
+            st.settings_result_cats = hits.iter().map(|(c, _)| *c).collect();
+            st.settings_model
+                .set_vec(hits.into_iter().map(|(_, line)| line.into()).collect::<Vec<_>>());
+            eprintln!("[ui] settings filter q={q:?} hits={}", st.settings_result_cats.len());
+        });
+    });
+
+    ui.on_settings_open_result(|index| {
+        with_app(|st| {
+            if let Some(cat) = st.settings_result_cats.get(index.max(0) as usize) {
+                st.ui.set_settings_category(*cat);
+                eprintln!("[ui] settings goto cat={cat}");
+            }
+            st.ui.set_settings_query("".into());
+            st.settings_model.set_vec(Vec::<slint::SharedString>::new());
         });
     });
 
@@ -3352,6 +3411,19 @@ mod tests {
         assert_eq!(normalize_clipboard_text(String::new()), None);
         // 中间空行要保留
         assert_eq!(normalize_clipboard_text("a\n\nb".into()), Some("a\n\nb".to_string()));
+    }
+
+    #[test]
+    fn settings_search_matches_labels_and_keywords() {
+        let hits = settings_search("font");
+        assert!(hits.iter().any(|(cat, line)| *cat == 1 && line.contains("Font size")), "{hits:?}");
+        assert!(settings_search("copy").iter().any(|(_, l)| l.contains("Copy on select")));
+        assert!(settings_search("  theme  ").iter().any(|(cat, _)| *cat == 0));
+        assert!(settings_search("zzzz").is_empty());
+        assert!(settings_search("").is_empty());
+        // 结果按目录顺序返回
+        let cats: Vec<i32> = settings_search("e").iter().map(|(c, _)| *c).collect();
+        assert!(cats.windows(2).all(|w| w[0] <= w[1]), "{cats:?}");
     }
 
     #[test]
