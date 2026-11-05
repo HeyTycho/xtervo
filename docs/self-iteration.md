@@ -419,3 +419,15 @@ cargo bench -p tervo-core --bench pty_throughput
   （ChoiceBtn 等）仍会被按钮的 TouchArea 吃掉，这是 Slint 命中顺序的预期行为。
 - 文档：`docs/LOGGING.md`、README 日志段、UI-QUAKE-001..005、UI-SET-011；app 95 测试。
 
+### 2026-11-05 · 右键在 Agent TUI pane 里失效（鼠标上报）
+
+- **现场日志**（用户 17:33 实例 pid 1270604，`~/.local/state/tervo/logs/tervo-1793871518.log`）：
+  `pane-down-right` 12 次，只有 1 次 `right click pane=`（新开的 pane 2），pane 1 的 11 次
+  只有 trace、没有菜单。截图显示 pane 1 跑的是 deepseek-flash/Claude Code TUI。
+- **原因**：该 TUI 发送 `ESC[?1000h ESC[?1006h` 开启 SGR 鼠标上报；旧逻辑在 mouse-reporting
+  时把右键转发给 PTY，所以 Tervo 不弹菜单。不是 dshtui 冲突，也不是窗口被挡。
+- **修复**：改为 Tabby 语义——右键**始终**先开 Tervo 菜单（不再被 TUI 吞掉），Shift+右键才
+  转发给 TUI；中键仍转发。trace 保留 `pane-right-forward` 仅用于 Shift 转发路径。
+- 真机：mouse-reporting pane 内普通右键 → `[ui] right click pane=1`，菜单出现
+  （.logs/mouse-mode-right-menu.png）。
+

@@ -6,6 +6,7 @@
 //!   `xclick <x> <y> drag <x2> <y2>`     按下->移动->松开（拖选）
 
 use x11rb::connection::Connection;
+use x11rb::protocol::xproto::ConnectionExt as _;
 use x11rb::protocol::xtest;
 use x11rb::wrapper::ConnectionExt as _;
 
@@ -25,12 +26,37 @@ fn main() {
     let (conn, screen_num) = xconn::connect().expect("connect X");
     let root = conn.setup().roots[screen_num].root;
 
+    let shift = args.iter().any(|a| a == "shift");
+    let shift_kc = if shift {
+        let setup = conn.setup();
+        let min = setup.min_keycode;
+        let count = setup.max_keycode.saturating_sub(min).saturating_add(1);
+        let reply = conn.get_keyboard_mapping(min, count).unwrap().reply().unwrap();
+        let per = reply.keysyms_per_keycode as usize;
+        reply
+            .keysyms
+            .iter()
+            .position(|s| *s == 0xffe1) // Shift_L
+            .map(|i| min + (i / per) as u8)
+    } else {
+        None
+    };
+    eprintln!("xclick: shift={shift} shift_kc={shift_kc:?}");
+    let press_shift = |on: bool| {
+        if let Some(kc) = shift_kc {
+            let _ = xtest::fake_input(&conn, if on { PRESS } else { RELEASE }, kc, x11rb::CURRENT_TIME, root, x, y, 0);
+            let _ = conn.flush();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    };
+
     let drag = args.get(3).map(|s| s == "drag").unwrap_or(false);
 
     xtest::fake_input(&conn, MOTION, 0, x11rb::CURRENT_TIME, root, x, y, 0).expect("motion");
     conn.flush().unwrap();
     std::thread::sleep(std::time::Duration::from_millis(40));
 
+    press_shift(true);
     xtest::fake_input(&conn, PRESS, button, x11rb::CURRENT_TIME, root, x, y, 0).expect("press");
     conn.flush().unwrap();
     std::thread::sleep(std::time::Duration::from_millis(60));
@@ -54,6 +80,7 @@ fn main() {
     }
     // 等服务器处理完 release 再退出，避免鼠标按键卡在按下状态。
     let _ = conn.sync();
+    press_shift(false);
     std::thread::sleep(std::time::Duration::from_millis(20));
     println!("click {x},{y} button={button} drag={drag} root=0x{root:x}");
 }
