@@ -210,7 +210,6 @@ pub fn set_window_icon(rgba: &[u8], size: u16, title: &str) -> Result<u32, Strin
 
 /// 查询指针在 root 窗口上的绝对坐标（用于自绘拖边缩放）。
 pub fn query_pointer(conn: &RustConnection, root: u32) -> Option<(i32, i32)> {
-    use x11rb::connection::Connection;
     use x11rb::protocol::xproto::ConnectionExt;
     let reply = conn.query_pointer(root).ok()?.reply().ok()?;
     Some((reply.root_x as i32, reply.root_y as i32))

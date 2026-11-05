@@ -372,3 +372,17 @@ cargo bench -p tervo-core --bench pty_throughput
   （1x1）抢图标；测试环境里曾因此把图标写到短命窗口，自动化按日志 id 会 BadWindow。
 - 清理 `main` 的 unreachable 警告与 xconn 未用 import；app 用例 95 全绿。
 
+### 2026-11-05 · 设置改成 Tabby 式左右分列
+
+- **布局**：窗口级设置面板由“两行分类按钮 + 下方内容”改为左侧垂直导航 + 右侧内容 + 顶部搜索；
+  面板 520×440（随窗口收缩），居中在 TabBar 下方，不再盖住 TabBar/窗口按钮。
+- **导航**：新增 NavItem 组件（左对齐、active 高亮），6 个分类；分类切换会打
+  `[ui] settings category=N` 便于自动化。
+- **页面适配**：Appearance 主题网格 4 列降为 66px；Terminal 保留字号/回滚/4 个开关；
+  Config 按钮缩到 96/108/112；Hotkeys/Plugins 列表高度按右栏调整；搜索覆盖右栏。
+- **真机验证**：Appearance/Terminal/Config 截图；Terminal 页右键粘贴开关点击 →
+  `[ui] right_click_paste=true`；搜索 `font` → “Terminal · Font size”。
+  截图：.logs/settings-2col.png / -terminal.png / -config.png / -search.png。
+- **排查过程**：测试环境里有旧的 2560×1413 Tervo 窗口（宿主 PID 968901，非本会话）盖住屏幕
+  导致点击被吞；改为按 `_NET_WM_PID` 选本进程窗口并 `xwin` 移到空白区，不杀用户窗口。
+

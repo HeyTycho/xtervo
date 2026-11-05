@@ -213,6 +213,30 @@ component ChoiceBtn inherits Rectangle {
     }
 }
 
+component NavItem inherits Rectangle {
+    in property <string> label;
+    in property <bool> active: false;
+    callback clicked();
+
+    height: 30px;
+    border-radius: 6px;
+    background: root.active ? Palette.colors.accent : (hit.has-hover ? Palette.colors.hover : transparent);
+
+    hit := TouchArea {
+        clicked => { root.clicked(); }
+    }
+    Text {
+        x: 10px;
+        width: parent.width - 20px;
+        height: parent.height;
+        text: root.label;
+        color: root.active ? Palette.colors.accent-text : Palette.colors.text;
+        font-size: 12px;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+}
+
 component ResizeHandle inherits TouchArea {
     in property <int> direction: 0;
     callback begin(int);
@@ -408,7 +432,6 @@ export component MainWindow inherits Window {
     in property <string> auto-resolved: "";
     in property <[ThemeChoice]> theme-choices: [];
     /// 设置面板高度：主题数量变多时由 Rust 侧按行数下发。
-    in property <length> settings-height: 300px;
     /// 设置分类：0=Appearance 1=Terminal 2=Window 3=Config File
     in-out property <int> settings-category: 0;
     in-out property <string> settings-path: "";
@@ -416,6 +439,7 @@ export component MainWindow inherits Window {
     in property <[string]> settings-results: [];
     callback settings-filter(string);
     callback settings-open-result(int);
+    callback settings-category-changed(int);
     in property <[string]> hotkey-items: [];
     in property <string> hotkey-summary: "";
     in property <[string]> plugin-items: [];
@@ -2207,11 +2231,13 @@ export component MainWindow inherits Window {
             clicked => { root.settings-open = false; }
         }
 
+        // Tabby 式布局：左侧分类导航 + 右侧内容；顶部一条搜索栏。
         Rectangle {
-            width: 420px;
-            height: root.settings-height;
+            width: Math.min(520px, root.width - 12px);
+            // 居中在 TabBar 下方的内容区，避免盖住 TabBar/窗口按钮。
+            height: Math.min(440px, root.height - root.tabbar-height - 12px);
             x: (root.width - self.width) / 2;
-            y: (root.height - self.height) / 2;
+            y: root.tabbar-height + (root.height - root.tabbar-height - self.height) / 2;
             background: @linear-gradient(180deg, Palette.colors.raise 0%, Palette.colors.surface 100%);
             border-radius: 12px;
             border-width: 1px;
@@ -2226,274 +2252,282 @@ export component MainWindow inherits Window {
                 height: 100%;
             }
 
-            VerticalLayout {
-                padding: 18px;
-                spacing: 14px;
+            // ---------------- 顶栏 ----------------
+            HorizontalLayout {
+                x: 18px; y: 12px;
+                width: parent.width - 36px;
+                height: 26px;
+                spacing: 10px;
 
-                HorizontalLayout {
-                    spacing: 10px;
-                    Image {
-                        width: 22px;
-                        height: 22px;
-                        source: @image-url("../../../assets/icon-small.png");
-                        image-fit: contain;
-                    }
-                    Text {
-                        text: "Settings";
-                        color: Palette.colors.text;
-                        font-size: 16px;
-                        font-weight: 600;
-                        vertical-alignment: center;
-                    }
-
-                    // 设置搜索：输入即过滤（结果浮层覆盖分类内容）
-                    Rectangle {
-                        height: 24px;
-                        horizontal-stretch: 1;
-                        border-radius: 4px;
-                        background: Palette.colors.bg;
-                        border-width: 1px;
-                        border-color: Palette.colors.border;
-
-                        Text {
-                            x: 6px;
-                            width: parent.width - 12px;
-                            height: parent.height;
-                            text: "Search settings…";
-                            color: Palette.colors.muted;
-                            font-size: 11px;
-                            vertical-alignment: center;
-                            visible: root.settings-query == "";
-                        }
-
-                        TextInput {
-                            x: 6px;
-                            width: parent.width - 12px;
-                            height: parent.height;
-                            text <=> root.settings-query;
-                            single-line: true;
-                            color: Palette.colors.text;
-                            font-size: 11px;
-                            vertical-alignment: center;
-                            edited => { root.settings-filter(self.text); }
-                        }
-                    }
+                Image {
+                    width: 22px;
+                    height: 22px;
+                    source: @image-url("../../../assets/icon-small.png");
+                    image-fit: contain;
                 }
-
+                Text {
+                    text: "Settings";
+                    color: Palette.colors.text;
+                    font-size: 16px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
                 Rectangle {
-                    height: 1px;
+                    height: 24px;
                     horizontal-stretch: 1;
-                    background: Palette.colors.border;
-                }
+                    border-radius: 4px;
+                    background: Palette.colors.bg;
+                    border-width: 1px;
+                    border-color: Palette.colors.border;
 
-                VerticalLayout {
-                    spacing: 4px;
-
-                    HorizontalLayout {
-                        spacing: 6px;
-                        ChoiceBtn {
-                            width: 96px; height: 24px; font-size: 10px;
-                            label: "Appearance";
-                            active: root.settings-category == 0;
-                            clicked => { root.settings-category = 0; }
-                        }
-                        ChoiceBtn {
-                            width: 96px; height: 24px; font-size: 10px;
-                            label: "Terminal";
-                            active: root.settings-category == 1;
-                            clicked => { root.settings-category = 1; }
-                        }
-                        ChoiceBtn {
-                            width: 96px; height: 24px; font-size: 10px;
-                            label: "Window";
-                            active: root.settings-category == 2;
-                            clicked => { root.settings-category = 2; }
-                        }
+                    Text {
+                        x: 6px;
+                        width: parent.width - 12px;
+                        height: parent.height;
+                        text: "Search settings…";
+                        color: Palette.colors.muted;
+                        font-size: 11px;
+                        vertical-alignment: center;
+                        visible: root.settings-query == "";
                     }
 
-                    HorizontalLayout {
-                        spacing: 6px;
-                        ChoiceBtn {
-                            width: 96px; height: 24px; font-size: 10px;
-                            label: "Config";
-                            active: root.settings-category == 3;
-                            clicked => { root.settings-category = 3; }
-                        }
-                        ChoiceBtn {
-                            width: 96px; height: 24px; font-size: 10px;
-                            label: "Hotkeys";
-                            active: root.settings-category == 4;
-                            clicked => { root.settings-category = 4; }
-                        }
-                        ChoiceBtn {
-                            width: 96px; height: 24px; font-size: 10px;
-                            label: "Plugins";
-                            active: root.settings-category == 5;
-                            clicked => { root.settings-category = 5; }
-                        }
+                    TextInput {
+                        x: 6px;
+                        width: parent.width - 12px;
+                        height: parent.height;
+                        text <=> root.settings-query;
+                        single-line: true;
+                        color: Palette.colors.text;
+                        font-size: 11px;
+                        vertical-alignment: center;
+                        edited => { root.settings-filter(self.text); }
                     }
                 }
+            }
+
+            Rectangle {
+                x: 18px; y: 50px;
+                width: parent.width - 36px;
+                height: 1px;
+                background: Palette.colors.border;
+            }
+
+            // ---------------- 左导航 ----------------
+            NavItem {
+                x: 18px; y: 64px; width: 118px;
+                label: "Appearance";
+                active: root.settings-category == 0;
+                clicked => { root.settings-category = 0; root.settings-category-changed(0); }
+            }
+            NavItem {
+                x: 18px; y: 98px; width: 118px;
+                label: "Terminal";
+                active: root.settings-category == 1;
+                clicked => { root.settings-category = 1; root.settings-category-changed(1); }
+            }
+            NavItem {
+                x: 18px; y: 132px; width: 118px;
+                label: "Window";
+                active: root.settings-category == 2;
+                clicked => { root.settings-category = 2; root.settings-category-changed(2); }
+            }
+            NavItem {
+                x: 18px; y: 166px; width: 118px;
+                label: "Config";
+                active: root.settings-category == 3;
+                clicked => { root.settings-category = 3; root.settings-category-changed(3); }
+            }
+            NavItem {
+                x: 18px; y: 200px; width: 118px;
+                label: "Hotkeys";
+                active: root.settings-category == 4;
+                clicked => { root.settings-category = 4; root.settings-category-changed(4); }
+            }
+            NavItem {
+                x: 18px; y: 234px; width: 118px;
+                label: "Plugins";
+                active: root.settings-category == 5;
+                clicked => { root.settings-category = 5; root.settings-category-changed(5); }
+            }
+
+            Text {
+                x: 18px;
+                y: parent.height - 28px;
+                width: 118px;
+                text: "Tervo";
+                color: Palette.colors.muted;
+                font-size: 10px;
+                vertical-alignment: center;
+            }
+
+            // ---------------- 右侧内容 ----------------
+            Rectangle {
+                x: 146px; y: 64px;
+                width: parent.width - 164px;
+                height: parent.height - 80px;
+                clip: true;
 
                 if root.settings-category == 0 : VerticalLayout {
+                    width: 100%;
                     spacing: 10px;
 
-                HorizontalLayout {
-                    spacing: 8px;
-                    Text {
-                        text: "Theme";
-                        color: Palette.colors.subtext;
-                        width: 76px;
-                        font-size: 12px;
-                        vertical-alignment: top;
-                    }
-                    VerticalLayout {
-                        spacing: 6px;
-
-                        // Auto：跟随系统深/浅色（深色 → Yaru Dark，浅色 → Yaru Light）
-                        HorizontalLayout {
-                            spacing: 8px;
-                            ChoiceBtn {
-                                width: 150px;
-                                height: 24px;
-                                font-size: 11px;
-                                label: "Auto（跟随系统）";
-                                active: root.theme-name == "auto";
-                                clicked => { root.set-theme("auto"); }
-                            }
-                            Text {
-                                text: root.auto-resolved == "" ? "" : "Auto → \{root.auto-resolved}";
-                                color: Palette.colors.subtext;
-                                font-size: 11px;
-                                vertical-alignment: center;
-                                overflow: elide;
-                                horizontal-stretch: 1;
-                            }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text {
+                            text: "Theme";
+                            color: Palette.colors.subtext;
+                            width: 52px;
+                            font-size: 12px;
+                            vertical-alignment: top;
                         }
+                        VerticalLayout {
+                            spacing: 6px;
+                            horizontal-stretch: 1;
 
-                        // 主题可能上百套（直接 copy iTerm2 主题目录），固定最多 4 行，
-                        // 超出部分用滚轮/拖动滚动。
-                        Flickable {
-                            width: 100%;
-                            height: Math.min(120px, Math.max(30px, self.content-height));
-                            content-width: self.width;
-                            content-height: Math.ceil(root.theme-choices.length / 4) * 30px - 6px;
-                            interactive: true;
-
-                            GridLayout {
-                                width: 100%;
+                            HorizontalLayout {
                                 spacing: 6px;
-                                for choice[i] in root.theme-choices : ChoiceBtn {
-                                    row: Math.floor(i / 4);
-                                    col: Math.mod(i, 4);
-                                    width: 70px;
+                                ChoiceBtn {
+                                    width: 136px;
                                     height: 24px;
+                                    font-size: 10px;
+                                    label: "Auto（跟随系统）";
+                                    active: root.theme-name == "auto";
+                                    clicked => { root.set-theme("auto"); }
+                                }
+                                Text {
+                                    text: root.auto-resolved == "" ? "" : "→ \{root.auto-resolved}";
+                                    color: Palette.colors.subtext;
                                     font-size: 11px;
-                                    label: choice.label;
-                                    active: root.theme-name == choice.id;
-                                    clicked => { root.set-theme(choice.id); }
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                    horizontal-stretch: 1;
+                                }
+                            }
+
+                            Flickable {
+                                width: 100%;
+                                height: 150px;
+                                content-width: self.width;
+                                content-height: Math.ceil(root.theme-choices.length / 4) * 30px - 6px;
+                                interactive: true;
+
+                                GridLayout {
+                                    width: 100%;
+                                    spacing: 6px;
+                                    for choice[i] in root.theme-choices : ChoiceBtn {
+                                        row: Math.floor(i / 4);
+                                        col: Math.mod(i, 4);
+                                        width: 66px;
+                                        height: 24px;
+                                        font-size: 10px;
+                                        label: choice.label;
+                                        active: root.theme-name == choice.id;
+                                        clicked => { root.set-theme(choice.id); }
+                                    }
                                 }
                             }
                         }
                     }
                 }
-                }
 
                 if root.settings-category == 1 : VerticalLayout {
-                    spacing: 14px;
+                    width: 100%;
+                    spacing: 12px;
 
-                HorizontalLayout {
-                    spacing: 8px;
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text {
+                            text: "Font size";
+                            color: Palette.colors.subtext;
+                            width: 76px;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                        }
+                        MiniBtn {
+                            label: "−";
+                            clicked => { root.bump-font-size(-1); }
+                        }
+                        Text {
+                            text: "\{root.font-size}px";
+                            color: Palette.colors.text;
+                            width: 52px;
+                            font-size: 12px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                        MiniBtn {
+                            label: "+";
+                            clicked => { root.bump-font-size(1); }
+                        }
+                    }
+
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text {
+                            text: "Scrollback";
+                            color: Palette.colors.subtext;
+                            width: 76px;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                        }
+                        MiniBtn {
+                            label: "−";
+                            clicked => { root.bump-scrollback(-500); }
+                        }
+                        Text {
+                            text: "\{root.scrollback}";
+                            color: Palette.colors.text;
+                            width: 52px;
+                            font-size: 12px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                        MiniBtn {
+                            label: "+";
+                            clicked => { root.bump-scrollback(500); }
+                        }
+                    }
+
+                    Rectangle {
+                        height: 1px;
+                        horizontal-stretch: 1;
+                        background: Palette.colors.border;
+                    }
+
+                    ToggleRow {
+                        label: "Copy on select（拖选自动复制）";
+                        on: root.cfg-copy-on-select;
+                        toggled => { root.toggle-copy-on-select(); }
+                    }
+
+                    ToggleRow {
+                        label: "Confirm before closing multiple sessions";
+                        on: root.cfg-confirm-close;
+                        toggled => { root.toggle-confirm-close(); }
+                    }
+
+                    ToggleRow {
+                        label: "Confirm multi-line paste";
+                        on: root.cfg-confirm-paste;
+                        toggled => { root.toggle-confirm-paste(); }
+                    }
+
+                    ToggleRow {
+                        label: "Right-click pastes (PuTTY style)";
+                        on: root.cfg-right-click-paste;
+                        toggled => { root.toggle-right-click-paste(); }
+                    }
+
                     Text {
-                        text: "Font size";
-                        color: Palette.colors.subtext;
-                        width: 88px;
-                        font-size: 12px;
-                        vertical-alignment: center;
+                        text: "字号即时生效；回滚行数对新建 pane 生效。";
+                        color: Palette.colors.muted;
+                        font-size: 10px;
+                        wrap: word-wrap;
                     }
-                    MiniBtn {
-                        label: "−";
-                        clicked => { root.bump-font-size(-1); }
-                    }
-                    Text {
-                        text: "\{root.font-size}px";
-                        color: Palette.colors.text;
-                        width: 52px;
-                        font-size: 12px;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
-                    MiniBtn {
-                        label: "+";
-                        clicked => { root.bump-font-size(1); }
-                    }
-                }
-
-                HorizontalLayout {
-                    spacing: 8px;
-                    Text {
-                        text: "Scrollback";
-                        color: Palette.colors.subtext;
-                        width: 88px;
-                        font-size: 12px;
-                        vertical-alignment: center;
-                    }
-                    MiniBtn {
-                        label: "−";
-                        clicked => { root.bump-scrollback(-500); }
-                    }
-                    Text {
-                        text: "\{root.scrollback}";
-                        color: Palette.colors.text;
-                        width: 52px;
-                        font-size: 12px;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
-                    MiniBtn {
-                        label: "+";
-                        clicked => { root.bump-scrollback(500); }
-                    }
-                }
-
-                Rectangle {
-                    height: 1px;
-                    horizontal-stretch: 1;
-                    background: Palette.colors.border;
-                }
-
-                ToggleRow {
-                    label: "Copy on select（拖选自动复制）";
-                    on: root.cfg-copy-on-select;
-                    toggled => { root.toggle-copy-on-select(); }
-                }
-
-                ToggleRow {
-                    label: "Confirm before closing multiple sessions";
-                    on: root.cfg-confirm-close;
-                    toggled => { root.toggle-confirm-close(); }
-                }
-
-                ToggleRow {
-                    label: "Confirm multi-line paste";
-                    on: root.cfg-confirm-paste;
-                    toggled => { root.toggle-confirm-paste(); }
-                }
-
-                ToggleRow {
-                    label: "Right-click pastes (PuTTY style)";
-                    on: root.cfg-right-click-paste;
-                    toggled => { root.toggle-right-click-paste(); }
-                }
-
-                Text {
-                    text: "字号即时生效；回滚行数对新建 pane 生效。";
-                    color: Palette.colors.muted;
-                    font-size: 11px;
-                    wrap: word-wrap;
-                }
                 }
 
                 if root.settings-category == 2 : VerticalLayout {
+                    width: 100%;
                     spacing: 14px;
 
                     ToggleRow {
@@ -2511,7 +2545,8 @@ export component MainWindow inherits Window {
                 }
 
                 if root.settings-category == 3 : VerticalLayout {
-                    spacing: 12px;
+                    width: 100%;
+                    spacing: 10px;
 
                     Text {
                         text: "Config file";
@@ -2521,14 +2556,14 @@ export component MainWindow inherits Window {
                     Text {
                         text: root.settings-path;
                         color: Palette.colors.text;
-                        font-size: 12px;
+                        font-size: 11px;
                         wrap: word-wrap;
                     }
                     HorizontalLayout {
                         alignment: start;
-                        spacing: 6px;
+                        spacing: 4px;
                         Rectangle {
-                            width: 110px; height: 28px; border-radius: 6px;
+                            width: 96px; height: 26px; border-radius: 6px;
                             background: open-path-hit.has-hover ? Palette.colors.hover : Palette.colors.raise;
                             border-width: 1px;
                             border-color: Palette.colors.border;
@@ -2538,7 +2573,7 @@ export component MainWindow inherits Window {
                             Text {
                                 text: "Open Folder";
                                 color: Palette.colors.text;
-                                font-size: 12px;
+                                font-size: 11px;
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
                                 width: 100%;
@@ -2546,7 +2581,7 @@ export component MainWindow inherits Window {
                             }
                         }
                         Rectangle {
-                            width: 132px; height: 28px; border-radius: 6px;
+                            width: 108px; height: 26px; border-radius: 6px;
                             background: cfg-import-hit.has-hover ? Palette.colors.hover : Palette.colors.raise;
                             border-width: 1px;
                             border-color: Palette.colors.border;
@@ -2556,7 +2591,7 @@ export component MainWindow inherits Window {
                             Text {
                                 text: "Import Tabby";
                                 color: Palette.colors.text;
-                                font-size: 12px;
+                                font-size: 11px;
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
                                 width: 100%;
@@ -2564,7 +2599,7 @@ export component MainWindow inherits Window {
                             }
                         }
                         Rectangle {
-                            width: 132px; height: 28px; border-radius: 6px;
+                            width: 112px; height: 26px; border-radius: 6px;
                             background: cfg-export-hit.has-hover ? Palette.colors.hover : Palette.colors.raise;
                             border-width: 1px;
                             border-color: Palette.colors.border;
@@ -2574,7 +2609,7 @@ export component MainWindow inherits Window {
                             Text {
                                 text: "Export Profiles";
                                 color: Palette.colors.text;
-                                font-size: 12px;
+                                font-size: 11px;
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
                                 width: 100%;
@@ -2585,29 +2620,31 @@ export component MainWindow inherits Window {
                     Text {
                         text: root.config-status;
                         color: Palette.colors.muted;
-                        font-size: 11px;
+                        font-size: 10px;
                         wrap: word-wrap;
                     }
                     Text {
                         text: "普通配置里不会出现密码或私钥；凭据将走系统 Keyring（Vault，未实现）。";
                         color: Palette.colors.muted;
-                        font-size: 11px;
+                        font-size: 10px;
                         wrap: word-wrap;
                     }
                 }
 
                 if root.settings-category == 4 : VerticalLayout {
-                    spacing: 8px;
+                    width: 100%;
+                    spacing: 6px;
 
                     Text {
                         text: root.hotkey-summary;
                         color: Palette.colors.subtext;
-                        font-size: 11px;
+                        font-size: 10px;
+                        wrap: word-wrap;
                     }
 
                     Flickable {
                         width: 100%;
-                        height: 236px;
+                        height: 290px;
                         interactive: true;
                         content-height: root.hotkey-items.length * 20px;
 
@@ -2633,17 +2670,18 @@ export component MainWindow inherits Window {
                 }
 
                 if root.settings-category == 5 : VerticalLayout {
-                    spacing: 8px;
+                    width: 100%;
+                    spacing: 6px;
 
                     Text {
                         text: root.plugin-summary;
                         color: Palette.colors.subtext;
-                        font-size: 11px;
+                        font-size: 10px;
                     }
 
                     Flickable {
                         width: 100%;
-                        height: 210px;
+                        height: 250px;
                         interactive: true;
                         content-height: root.plugin-items.length * 20px;
 
@@ -2676,11 +2714,12 @@ export component MainWindow inherits Window {
                 }
             }
 
+            // 搜索结果：覆盖右内容区
             if root.settings-query != "" : Rectangle {
-                x: 18px;
-                y: 86px;
-                width: 384px;
-                height: 300px;
+                x: 146px;
+                y: 64px;
+                width: parent.width - 164px;
+                height: parent.height - 80px;
                 background: Palette.colors.raise;
                 border-radius: 8px;
                 border-width: 1px;
