@@ -130,7 +130,11 @@ struct AppState {
     detached: Vec<(PaneId, PaneRuntime, String)>,
     bg_model: Rc<VecModel<slint::SharedString>>,
     profiles: profile::ProfileStore,
-    profile_model: Rc<VecModel<slint::SharedString>>,
+    profile_model: Rc<VecModel<ProfileRow>>,
+    /// 过滤后各列表行在 `profiles.profiles` 中的原始下标（点击/编辑/删除按此映射）。
+    profile_indices: Vec<usize>,
+    /// Profiles 面板搜索框当前内容（空 = 显示全部）。
+    profile_query: String,
     /// 加密凭据容器：启动时锁定，需在设置 → Vault 里解锁。
     vault: vault::Vault,
     /// Clear vault 需要点两次确认。
@@ -798,7 +802,7 @@ fn new_tab_inner(st: &mut AppState) {
 }
 
 fn new_tab() {
-    with_app(new_tab_inner);
+    with_app(new_tab_with_default);
 }
 
 /// 新建窗口 = 拉起一个独立的 Tervo 进程（MVP，无单实例锁/IPC）。
@@ -826,14 +830,67 @@ fn refresh_background(st: &mut AppState) {
     st.bg_model.set_vec(items);
 }
 
+/// 刷新 Profiles 面板：按搜索词过滤，并记录每个可见行对应的 store 下标。
+///
+/// 列表模型只带展示字段；所有操作回调用 `profile_indices` 映射回真实 Profile，
+/// 避免过滤后 “点第 0 行却打开第 0 个 store 项” 的错位。
 fn refresh_profiles(st: &mut AppState) {
-    let items: Vec<slint::SharedString> = st
-        .profiles
-        .profiles
+    let default_id = st.cfg.default_profile_id;
+    let indices = profile::filter_indices(&st.profiles.profiles, &st.profile_query);
+    let items: Vec<ProfileRow> = indices
         .iter()
-        .map(|p| format!("[{}] {}", p.kind, p.name).into())
+        .filter_map(|&i| {
+            let p = st.profiles.profiles.get(i)?;
+            Some(ProfileRow {
+                id: p.id as i32,
+                label: format!("[{}] {}", p.kind, p.name).into(),
+                is_default: default_id != 0 && p.id == default_id,
+            })
+        })
         .collect();
+    let default_info = match st.profiles.default_index(default_id) {
+        Some(i) => format!("New tab default: {}", st.profiles.profiles[i].name),
+        None => "New tab default: system shell".to_string(),
+    };
+    st.profile_indices = indices;
     st.profile_model.set_vec(items);
+    st.ui.set_profile_default_info(default_info.as_str().into());
+}
+
+/// 默认 Profile 的 store 下标；未设置 / ID 已失效时返回 None（回退默认 shell）。
+fn default_profile_index(st: &AppState) -> Option<usize> {
+    st.profiles.default_index(st.cfg.default_profile_id)
+}
+
+/// 面板行号 → store 下标。过滤/删除后行号可能失效，越界一律忽略。
+fn profile_row_to_store(st: &AppState, row: i32) -> Option<usize> {
+    st.profile_indices.get(row.max(0) as usize).copied()
+}
+
+/// 新建 Tab：默认 Profile 有效时用它打开，否则保持原来的默认 shell 行为。
+///
+/// 只用于用户主动新建（+ / Ctrl+T / 命令 tab.new / TabBar 菜单）；
+/// 启动首 Tab 与“重启会话”仍走各自的路径，避免默认 SSH Profile 在启动时自动连接。
+fn new_tab_with_default(st: &mut AppState) {
+    match default_profile_index(st) {
+        Some(index) => {
+            let id = st.profiles.profiles[index].id;
+            eprintln!("[profile] 新 Tab 使用默认 Profile id={id} index={index}");
+            open_profile_tab(st, index);
+        },
+        None => new_tab_inner(st),
+    }
+}
+
+/// 删除 Profile 后清理默认指向：删的正是默认项时回退 0（系统 shell）。
+/// 返回是否发生回退，调用方据此决定是否写盘。
+fn clear_default_after_remove(cfg: &mut Config, removed_id: u64) -> bool {
+    if removed_id != 0 && cfg.default_profile_id == removed_id {
+        cfg.default_profile_id = 0;
+        true
+    } else {
+        false
+    }
 }
 
 /// Quake Mode：F12 全局显示/隐藏顶部下拉终端。
@@ -892,9 +949,12 @@ fn open_profile_menu(st: &mut AppState) {
 }
 
 fn open_profiles_panel(st: &mut AppState) {
+    // 每次打开都回到完整列表：搜索词不跨面板生命周期残留。
+    st.profile_query.clear();
+    st.ui.set_profile_query("".into());
     refresh_profiles(st);
     st.ui.set_profiles_open(true);
-    eprintln!("[profile] panel items={}", st.profiles.profiles.len());
+    eprintln!("[profile] panel items={}", st.profile_indices.len());
 }
 
 /// 设置 → Vault 页 + 可见提示（Vault 未解锁时不弹终端密码框）。
@@ -1008,6 +1068,7 @@ fn open_profile_tab(st: &mut AppState, index: usize) {
             st.ws.tabs.push(Tab::single(id, p.name.clone()));
             st.ws.active = st.ws.tabs.len() - 1;
             st.ui.set_profiles_open(false);
+            st.ui.invoke_focus_terminal();
             refresh_views(st);
             rebuild_tabs(st);
             redraw_pane_inner(st, id);
@@ -2634,7 +2695,7 @@ fn run_command(st: &mut AppState, id: &str) {
     match id {
         "window.new" => new_window(),
         "tab.new" => {
-            new_tab_inner(st);
+            new_tab_with_default(st);
             rebuild_tabs(st);
         },
         "tab.close" => close_tab_inner(st, st.ws.active),
@@ -2914,7 +2975,7 @@ fn handle_input(
     if ctrl {
         match text {
             "t" => {
-                new_tab_inner(st);
+                new_tab_with_default(st);
                 rebuild_tabs(st);
                 return;
             },
@@ -3445,7 +3506,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui.set_palette_items(ModelRc::from(palette_model.clone()));
     let bg_model = Rc::new(VecModel::<slint::SharedString>::default());
     ui.set_background_items(ModelRc::from(bg_model.clone()));
-    let profile_model = Rc::new(VecModel::<slint::SharedString>::default());
+    let profile_model = Rc::new(VecModel::<ProfileRow>::default());
     ui.set_profile_items(ModelRc::from(profile_model.clone()));
     let sftp_model = Rc::new(VecModel::<slint::SharedString>::default());
     ui.set_sftp_items(ModelRc::from(sftp_model.clone()));
@@ -3489,6 +3550,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         bg_model,
         profiles: profile::ProfileStore::load(),
         profile_model,
+        profile_indices: Vec::new(),
+        profile_query: String::new(),
         vault: vault::Vault::open_default(),
         vault_clear_armed: false,
         sftp_profiles: Vec::new(),
@@ -4087,7 +4150,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui.on_sftp_close(|| {});
 
     ui.on_profile_open(|index| {
-        with_app(|st| open_profile_tab(st, index.max(0) as usize));
+        with_app(|st| {
+            if let Some(store_index) = profile_row_to_store(st, index) {
+                open_profile_tab(st, store_index);
+            }
+        });
     });
 
     ui.on_profile_new(|| {
@@ -4095,7 +4162,55 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     ui.on_profile_edit(|index| {
-        with_app(|st| edit_profile_form(st, index.max(0) as usize));
+        with_app(|st| {
+            if let Some(store_index) = profile_row_to_store(st, index) {
+                edit_profile_form(st, store_index);
+            }
+        });
+    });
+
+    ui.on_profile_filter(|query| {
+        with_app(|st| {
+            st.profile_query = query.to_string();
+            refresh_profiles(st);
+            eprintln!("[profile] filter={:?} items={}", st.profile_query, st.profile_indices.len());
+        });
+    });
+
+    // 星标：点已默认的项 = 取消默认（回退系统 shell）；点其他项 = 切换默认。
+    ui.on_profile_set_default(|index| {
+        with_app(|st| {
+            let Some(store_index) = profile_row_to_store(st, index) else { return };
+            let Some(id) = st.profiles.profiles.get(store_index).map(|p| p.id) else { return };
+            st.cfg.default_profile_id = if st.cfg.default_profile_id == id { 0 } else { id };
+            st.cfg.save();
+            refresh_profiles(st);
+            if st.cfg.default_profile_id == 0 {
+                eprintln!("[profile] 已清除默认 Profile（新 Tab 用系统 shell）");
+            } else {
+                eprintln!("[profile] 默认 Profile id={id} name={:?}",
+                    st.profiles.profiles.get(store_index).map(|p| p.name.as_str()).unwrap_or(""));
+            }
+        });
+    });
+
+    ui.on_profile_duplicate(|index| {
+        with_app(|st| {
+            let Some(store_index) = profile_row_to_store(st, index) else { return };
+            let Some(source_id) = st.profiles.profiles.get(store_index).map(|p| p.id) else { return };
+            match st.profiles.duplicate(source_id) {
+                Ok(id) => {
+                    st.profiles.save();
+                    refresh_profiles(st);
+                    eprintln!(
+                        "[profile] 复制 id={source_id} → id={id} name={:?}（共 {}）",
+                        st.profiles.get(id).map(|p| p.name.as_str()).unwrap_or(""),
+                        st.profiles.profiles.len()
+                    );
+                },
+                Err(e) => eprintln!("[profile] 复制 id={source_id} 失败: {e}"),
+            }
+        });
     });
 
     ui.on_profile_form_save(|| {
@@ -4108,18 +4223,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     ui.on_profile_delete(|index| {
         with_app(|st| {
-            let idx = index.max(0) as usize;
-            if let Some(p) = st.profiles.profiles.get(idx).map(|p| p.id) {
-                if st.profiles.remove(p) {
-                    st.profiles.save();
-                    refresh_profiles(st);
-                    eprintln!("[profile] 删除 id={p}（剩 {}）", st.profiles.profiles.len());
+            let Some(store_index) = profile_row_to_store(st, index) else { return };
+            let Some(p) = st.profiles.profiles.get(store_index).map(|p| p.id) else { return };
+            if st.profiles.remove(p) {
+                // 删除的是默认项时必须回退 0，否则新 Tab 会一直解析失败。
+                let cleared = clear_default_after_remove(&mut st.cfg, p);
+                st.profiles.save();
+                if cleared {
+                    st.cfg.save();
+                    eprintln!("[profile] 默认 Profile id={p} 已删除，回退系统 shell");
                 }
+                refresh_profiles(st);
+                eprintln!("[profile] 删除 id={p}（剩 {}）", st.profiles.profiles.len());
             }
         });
     });
 
-    ui.on_profiles_close(|| {});
+    // 面板内控件（搜索框）拿过焦点；关闭后必须还给终端 IME 宿主，否则按键丢失。
+    ui.on_profiles_close(|| {
+        with_app(|st| {
+            st.ui.invoke_focus_terminal();
+            eprintln!("[profile] panel closed");
+        });
+    });
 
     ui.on_vault_set_master(|| {
         with_app(|st| vault_set_master_password(st));
@@ -4400,7 +4526,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         with_app(|st| match action {
             0 => {}, // 置顶由 Slint 侧直接切换（绑定 Window.always-on-top）
             1 => {
-                new_tab_inner(st);
+                new_tab_with_default(st);
                 rebuild_tabs(st);
             },
             13 => new_window(),
@@ -5122,6 +5248,19 @@ mod tests {
         rows.insert(4, 1);
         assert!(!rows_can_update_in_place(2, &rows, &[4, 3]));
         assert!(rows_can_update_in_place(2, &rows, &[3, 4]));
+    }
+
+    #[test]
+    fn deleting_default_profile_falls_back_to_shell() {
+        let mut cfg = Config { default_profile_id: 7, ..Config::default() };
+        // 删别的 Profile：默认保持不变
+        assert!(!clear_default_after_remove(&mut cfg, 8));
+        assert_eq!(cfg.default_profile_id, 7);
+        // 删默认 Profile：回退 0（+ / Ctrl+T 走系统 shell）
+        assert!(clear_default_after_remove(&mut cfg, 7));
+        assert_eq!(cfg.default_profile_id, 0);
+        // id=0 不可能是“默认 Profile”，不能误触发写盘
+        assert!(!clear_default_after_remove(&mut cfg, 0));
     }
 
     #[test]
