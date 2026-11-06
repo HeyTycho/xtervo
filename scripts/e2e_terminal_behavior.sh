@@ -290,7 +290,7 @@ sleep 0.5
 shot settings_terminal_scroll
 
 # Audible bell（底部 Bell 卡片第二行 switch，window 1025,350）
-"$XCLICK" "$((ABS_X + 1025))" "$((ABS_Y + 350))" >/dev/null
+"$XCLICK" "$((ABS_X + 1025))" "$((ABS_Y + 311))" >/dev/null
 sleep 0.4
 grep -Fq 'audible_bell = true' "$OUT/settings.toml" || { echo "设置页没有写入 audible_bell" >&2; exit 1; }
 grep -q '\[ui\] audible_bell=true' "$OUT/app_settings.log" || { echo "设置页没有触发 audible_bell 回调" >&2; exit 1; }
