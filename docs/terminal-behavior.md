@@ -24,8 +24,9 @@
   - X11 连接懒建立、成功后在 UI 线程复用；失败清空，下次 BEL 重试。
   - 无 X11（无 `DISPLAY`）且 stderr 是终端时，写一个 BEL 字节，让启动 Tervo
     的终端模拟器响铃；两者都失败则静默并记日志。
-- 同一轮 400ms 轮询里到达的多个 BEL 合并成一次响铃（避免 BEL 风暴刷爆 X server），
-  日志：`[bell] audible count=N backend=ok|unavailable`。
+- 同一轮事件处理里到达的多个 BEL 合并成一次响铃（避免 BEL 风暴刷爆 X server）；
+  BEL 走 CoreEvent 事件唤醒立即处理，400ms timer 只兜底，日志：
+  `[bell] ts_ms=... audible count=N backend=ok|unavailable`。
 - 局限：X11 bell 是否真的出声取决于桌面设置（headless Xvfb 下只有请求成功，
   没有声音）；无音量/音色/每 Tab 静音配置；Wayland 下若没有 XWayland 只能走
   stderr 终端回退。
