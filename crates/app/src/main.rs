@@ -201,6 +201,10 @@ struct AppState {
     sftp_transfer: Option<sftp::TransferJob>,
     /// 传输状态机（进度事件在 poll_events 里消费后写入 UI）。
     sftp_transfer_state: sftp::TransferState,
+    /// 进行中的远端元数据操作（list/mkdir/rename/delete）；后台线程 + 10s 硬超时。
+    sftp_op: Option<sftp::SftpOpJob>,
+    /// 仅在有元数据操作时运行的 100ms poll：结果/超时尽快写回 UI（不影响 400ms 主轮询）。
+    sftp_op_timer: slint::Timer,
     /// Quake 模式窗口当前是否可见；以及进入 Quake 前的普通几何（退出时恢复）
     quake_visible: bool,
     quake_saved: Option<(slint::PhysicalPosition, slint::PhysicalSize)>,
@@ -2502,14 +2506,32 @@ fn sftp_cancel_transfer(st: &mut AppState) {
     sftp_set_status(st, "正在取消传输…");
 }
 
-/// 传输进行中时阻止会并发起 sftp 子进程的面板操作。
+/// 有 SFTP 子进程/后台操作在进行时阻止并发面板操作。
 fn sftp_busy(st: &mut AppState) -> bool {
-    if st.sftp_transfer.is_some() {
+    if st.sftp_op.is_some() {
+        sftp_set_status(st, "远端操作进行中，请稍候（10s 超时）");
+        true
+    } else if st.sftp_transfer.is_some() {
         sftp_set_status(st, "传输进行中，完成或取消后再操作");
         true
     } else {
         false
     }
+}
+
+/// 启动元数据后台任务：只 spawn 线程，Slint 回调立即返回，UI 不冻结。
+fn sftp_start_op(st: &mut AppState, command: sftp::SftpCommand, status: &str) {
+    eprintln!("[sftp] 后台操作开始: {command:?}（timeout=10s）");
+    sftp_set_status(st, status);
+    st.sftp_op = Some(sftp::SftpOpJob::start(command));
+    // 操作期间 100ms 收一次结果；完成/失败即 stop，空闲时零开销。
+    st.sftp_op_timer.start(
+        slint::TimerMode::Repeated,
+        Duration::from_millis(100),
+        || {
+            with_app(|st| poll_sftp_op(st));
+        },
+    );
 }
 
 fn sftp_do_list(st: &mut AppState) {
@@ -2521,18 +2543,11 @@ fn sftp_do_list(st: &mut AppState) {
         return;
     };
     let remote = st.ui.get_sftp_remote().to_string();
-    sftp_set_status(st, "列目录中…");
-    match sftp::list(&target, &remote) {
-        Ok(items) => {
-            st.sftp_delete_armed = false;
-            let n = items.len();
-            let names: Vec<slint::SharedString> = items.into_iter().map(|s| s.into()).collect();
-            st.sftp_model.set_vec(names);
-            st.ui.set_sftp_selected(-1);
-            sftp_set_status(st, &format!("{n} 个条目"));
-        }
-        Err(e) => sftp_set_status(st, &format!("列目录失败: {e}")),
-    }
+    sftp_start_op(
+        st,
+        sftp::SftpCommand::List { target, remote },
+        "列目录中…（后台）",
+    );
 }
 
 /// `ls -1 /abs` 有时回显绝对路径；别再把目录前缀拼一遍。
@@ -2602,13 +2617,11 @@ fn sftp_do_mkdir(st: &mut AppState) {
         return;
     }
     let remote = join_remote(&st.ui.get_sftp_remote(), &name);
-    match sftp::mkdir(&target, &remote) {
-        Ok(()) => {
-            sftp_set_status(st, &format!("已创建 {remote}"));
-            sftp_do_list(st);
-        }
-        Err(e) => sftp_set_status(st, &format!("建目录失败: {e}")),
-    }
+    sftp_start_op(
+        st,
+        sftp::SftpCommand::Mkdir { target, remote },
+        "建目录中…（后台）",
+    );
 }
 
 fn sftp_do_rename(st: &mut AppState) {
@@ -2632,13 +2645,11 @@ fn sftp_do_rename(st: &mut AppState) {
     let dir = st.ui.get_sftp_remote().to_string();
     let from = remote_entry_path(&dir, &item);
     let to = join_remote(&dir, &name);
-    match sftp::rename(&target, &from, &to) {
-        Ok(()) => {
-            sftp_set_status(st, &format!("已重命名 {from} → {to}"));
-            sftp_do_list(st);
-        }
-        Err(e) => sftp_set_status(st, &format!("重命名失败: {e}")),
-    }
+    sftp_start_op(
+        st,
+        sftp::SftpCommand::Rename { target, from, to },
+        "重命名中…（后台）",
+    );
 }
 
 fn sftp_do_delete(st: &mut AppState) {
@@ -2661,12 +2672,71 @@ fn sftp_do_delete(st: &mut AppState) {
         return;
     }
     st.sftp_delete_armed = false;
-    match sftp::remove(&target, &path) {
-        Ok(()) => {
+    sftp_start_op(
+        st,
+        sftp::SftpCommand::Remove { target, remote: path },
+        "删除中…（后台）",
+    );
+}
+
+/// 400ms poll：非阻塞收后台元数据结果；收到后清空 job 并更新列表/状态。
+fn poll_sftp_op(st: &mut AppState) {
+    let event = st.sftp_op.as_ref().map(|job| job.try_recv());
+    match event {
+        Some(Ok(outcome)) => {
+            st.sftp_op = None;
+            st.sftp_op_timer.stop();
+            eprintln!("[sftp] 后台操作完成: {}", outcome.describe());
+            apply_sftp_outcome(st, outcome);
+        },
+        Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => {
+            st.sftp_op = None;
+            st.sftp_op_timer.stop();
+            eprintln!("[sftp] 后台操作异常结束（worker 没有发出结果）");
+            sftp_set_status(st, "远端操作异常结束（没有结果）");
+        },
+        Some(Err(std::sync::mpsc::TryRecvError::Empty)) => {},
+        None => {
+            // 没有 job 时 timer 不应继续跑（防御性：避免异常路径留下空转）。
+            st.sftp_op_timer.stop();
+        },
+    }
+}
+
+fn apply_sftp_outcome(st: &mut AppState, outcome: sftp::SftpOutcome) {
+    match outcome {
+        sftp::SftpOutcome::List { items: Ok(items), .. } => {
+            st.sftp_delete_armed = false;
+            let n = items.len();
+            let names: Vec<slint::SharedString> = items.into_iter().map(|s| s.into()).collect();
+            st.sftp_model.set_vec(names);
+            st.ui.set_sftp_selected(-1);
+            sftp_set_status(st, &format!("{n} 个条目"));
+        },
+        sftp::SftpOutcome::List { items: Err(e), .. } => {
+            sftp_set_status(st, &format!("列目录失败: {e}"));
+        },
+        sftp::SftpOutcome::Mkdir { remote, result: Ok(()) } => {
+            sftp_set_status(st, &format!("已创建 {remote}"));
+            sftp_do_list(st);
+        },
+        sftp::SftpOutcome::Mkdir { result: Err(e), .. } => {
+            sftp_set_status(st, &format!("建目录失败: {e}"));
+        },
+        sftp::SftpOutcome::Rename { from, to, result: Ok(()) } => {
+            sftp_set_status(st, &format!("已重命名 {from} → {to}"));
+            sftp_do_list(st);
+        },
+        sftp::SftpOutcome::Rename { result: Err(e), .. } => {
+            sftp_set_status(st, &format!("重命名失败: {e}"));
+        },
+        sftp::SftpOutcome::Remove { path, result: Ok(()) } => {
             sftp_set_status(st, &format!("已删除 {path}"));
             sftp_do_list(st);
-        }
-        Err(e) => sftp_set_status(st, &format!("删除失败: {e}")),
+        },
+        sftp::SftpOutcome::Remove { result: Err(e), .. } => {
+            sftp_set_status(st, &format!("删除失败: {e}"));
+        },
     }
 }
 
@@ -4173,6 +4243,11 @@ fn redraw_pane_inner(st: &mut AppState, id: PaneId) {
         return;
     };
     let frame = rt.handle.pull(std::mem::take(&mut rt.frame));
+    if frame.skipped {
+        // actor 忙/异常：保留上一帧画面，不重绘；下一次 pull 会 force_full 补全。
+        rt.frame = frame;
+        return;
+    }
     rt.cursor = (frame.cursor.line as usize, frame.cursor.col as usize);
     // 光标不进帧缓冲：用独立 overlay，闪烁时只换 visible。
     rt.renderer.draw_without_cursor(&frame);
@@ -5876,6 +5951,8 @@ fn poll_events() {
         refresh_plugin_activity(st, false);
         // SFTP 传输进度：400ms 一次非阻塞收事件；终态时回收任务线程。
         poll_sftp_transfer(st);
+        // SFTP 元数据命令后台结果（list/mkdir/rename/delete）。
+        poll_sftp_op(st);
         (audible_bell, bell_count)
     })
     .unwrap_or((false, 0));
@@ -6559,6 +6636,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         sftp_delete_armed: false,
         sftp_transfer: None,
         sftp_transfer_state: sftp::TransferState::idle(),
+        sftp_op: None,
+        sftp_op_timer: slint::Timer::default(),
         quake_visible: false,
         quake_saved: None,
         profile_menu_indices: Vec::new(),
