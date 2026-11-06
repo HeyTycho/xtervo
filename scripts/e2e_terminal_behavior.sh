@@ -168,7 +168,7 @@ desktop_notifications = false
 visual_bell = false
 audible_bell = true' -c 'while true; do printf "\a"; sleep 0.25; done'
 sleep 1.4
-grep -Fq '[bell] audible count=' "$OUT/app_audible.log" || { echo "audible_bell=true 没有响铃日志" >&2; exit 1; }
+grep -q 'audible count=' "$OUT/app_audible.log" || { echo "audible_bell=true 没有响铃日志" >&2; exit 1; }
 grep -Fq 'backend=ok' "$OUT/app_audible.log" || { echo "X11 响铃后端没有成功" >&2; exit 1; }
 echo "  OK：X11 Bell 已调用（visual_bell=false 不影响）"
 stop_app

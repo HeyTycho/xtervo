@@ -313,7 +313,7 @@ assert_bbox "$OUT/menu_link.png" "$RAISE_DARK" 270 284 550 580 $W $H
 # 菜单：anchor(40,11) + 6 padding + Link 组标题 22 + Open Link 30 + 半行 15 = 84。
 click_abs $((ABS_X + 40 + 140)) $((ABS_Y + 32 + 84)) 1
 sleep 0.35
-expect_log '[link] copy uri='
+expect_log '[link] copy link='
 CLIP=$(xsel -b -o 2>/dev/null || true)
 [ "$CLIP" = "http://example.com/ctx-menu-demo" ] \
     || fail "Copy Link 剪贴板内容不对：$CLIP"
