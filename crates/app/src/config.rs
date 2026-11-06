@@ -14,9 +14,48 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::commands::{Chord, HotkeyOverride};
+use crate::keys::{BackspaceBinding, DeleteBinding, KeyBindings};
 
 /// 当前配置结构版本。改动字段语义/结构时递增，并在 [`Config::migrate`] 里补迁移步骤。
 pub const SCHEMA_VERSION: u32 = 1;
+
+/// `scrollback_unlimited = true` 时实际使用的安全上限。
+///
+/// alacritty 的历史缓冲是**预分配**的：100,000 行 × 120 列 × 16 B ≈ 192 MB
+/// （每多一个 pane 就再占一份）。真正无限会在长时间输出后 OOM，所以这里
+/// 给一个明确的上限，并在设置页展示风险。
+pub const UNLIMITED_SCROLLBACK_LINES: usize = 100_000;
+
+/// 右侧 overlay 滚动条策略（对应 GNOME Terminal 的 scrollbar-policy）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ScrollbarPolicy {
+    /// 始终显示；没有历史时 thumb 占满轨道（表示无可滚动内容）。
+    Always,
+    /// 只有存在 scrollback 时才显示（默认）。
+    #[default]
+    Auto,
+    /// 永不显示。
+    Never,
+}
+
+impl ScrollbarPolicy {
+    /// 解析配置字符串；大小写/空白不敏感，未知值回退默认 `auto`。
+    pub fn from_config(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "always" => Self::Always,
+            "never" => Self::Never,
+            _ => Self::Auto,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Always => "always",
+            Self::Auto => "auto",
+            Self::Never => "never",
+        }
+    }
+}
 
 /// 终端背景不透明度下限：0 = 完全透出背景图，默认不透明时保持主题底色。
 pub const MIN_BACKGROUND_OPACITY: f32 = 0.0;
@@ -178,6 +217,24 @@ pub struct Config {
     pub desktop_notifications: bool,
     /// 活动 pane 收到 BEL 时是否闪一下边框（视觉铃，默认开）。
     pub visual_bell: bool,
+    /// BEL 时是否调用系统响铃（audible bell，默认关，避免突然响铃）。
+    ///
+    /// 与 `visual_bell` 独立：可以只响、只闪、都开或都关。
+    pub audible_bell: bool,
+    /// 用户上滚查看历史时，新输出是否强制回到底部（默认 false = 不抢视图）。
+    pub scroll_on_output: bool,
+    /// 按键后是否回到底部（默认 true）。
+    pub scroll_on_keystroke: bool,
+    /// 忽略 `scrollback` 数值，使用 [`UNLIMITED_SCROLLBACK_LINES`] 安全上限。
+    /// 只对之后新建的 pane 生效（历史缓冲大小不能在会话中安全扩容）。
+    pub scrollback_unlimited: bool,
+    /// 右侧 overlay 滚动条策略："always" | "auto" | "never"（默认 auto）。
+    pub scrollbar_policy: String,
+    /// Backspace 编码："ascii-delete"（0x7f，默认）| "control-h"（0x08）。
+    pub backspace_binding: String,
+    /// Delete 编码："delete-sequence"（ESC [3~，默认）| "ascii-del"（0x7f）|
+    /// "control-h"（0x08）。
+    pub delete_binding: String,
     /// 窗口/终端背景图路径。空 = 关闭；`~` 在应用时展开。
     /// 只有“存在的普通文件”才会生效（校验见 [`resolve_background_image`]）。
     pub background_image: String,
@@ -230,6 +287,13 @@ impl Default for Config {
             tabbar_position: "top".to_string(),
             desktop_notifications: true,
             visual_bell: true,
+            audible_bell: false,
+            scroll_on_output: false,
+            scroll_on_keystroke: true,
+            scrollback_unlimited: false,
+            scrollbar_policy: "auto".to_string(),
+            backspace_binding: "ascii-delete".to_string(),
+            delete_binding: "delete-sequence".to_string(),
             background_image: String::new(),
             background_opacity: 1.0,
             background_dim: DEFAULT_BACKGROUND_DIM,
@@ -270,6 +334,28 @@ impl Config {
     /// 未知值仍按默认 allow，避免写错一个词就让功能整体失效。
     pub fn osc52_allowed(&self) -> bool {
         !self.osc52.trim().eq_ignore_ascii_case("deny")
+    }
+
+    /// 实际下发给新 pane 的 scrollback 行数：开启无限滚动时使用安全上限。
+    pub fn effective_scrollback(&self) -> usize {
+        if self.scrollback_unlimited {
+            UNLIMITED_SCROLLBACK_LINES
+        } else {
+            self.scrollback
+        }
+    }
+
+    /// 解析后的滚动条策略；未知值按 `auto`。
+    pub fn scrollbar_policy(&self) -> ScrollbarPolicy {
+        ScrollbarPolicy::from_config(&self.scrollbar_policy)
+    }
+
+    /// 当前 Backspace/Delete 编码配置（每次按键读取，改设置立即生效）。
+    pub fn key_bindings(&self) -> KeyBindings {
+        KeyBindings {
+            backspace: BackspaceBinding::from_config(&self.backspace_binding),
+            delete: DeleteBinding::from_config(&self.delete_binding),
+        }
     }
 
     pub fn load() -> Self {
@@ -439,6 +525,13 @@ mod tests {
         // 新增的桌面通知/视觉铃开关对旧配置也要默认开启
         assert!(cfg.desktop_notifications, "旧配置缺 desktop_notifications 时默认开");
         assert!(cfg.visual_bell, "旧配置缺 visual_bell 时默认为视觉铃");
+        // 终端行为新增项：响铃默认关、输出不抢滚动、按键回底、滚动条 auto、GNOME 默认编码
+        assert!(!cfg.audible_bell, "旧配置缺 audible_bell 时默认不响铃");
+        assert!(!cfg.scroll_on_output);
+        assert!(cfg.scroll_on_keystroke);
+        assert!(!cfg.scrollback_unlimited);
+        assert_eq!(cfg.scrollbar_policy(), ScrollbarPolicy::Auto);
+        assert_eq!(cfg.key_bindings(), KeyBindings::default());
         // 背景图/透明度对旧配置也必须兼容（默认关闭背景、不透明）
         assert_eq!(cfg.background_image, "");
         assert_eq!(cfg.background_opacity, 1.0);
@@ -572,10 +665,75 @@ mod tests {
         assert_eq!(c.tabbar_position, "top", "默认 TabBar 在上");
         assert!(c.desktop_notifications, "默认允许桌面通知");
         assert!(c.visual_bell, "默认开启视觉铃");
+        assert!(!c.audible_bell, "audible bell 默认关闭，避免突然响铃");
+        assert!(!c.scroll_on_output, "输出默认不抢用户上滚的视图");
+        assert!(c.scroll_on_keystroke, "按键默认回到底部（GNOME 默认）");
+        assert!(!c.scrollback_unlimited, "默认使用固定 scrollback");
+        assert_eq!(c.effective_scrollback(), 2000);
+        assert_eq!(c.scrollbar_policy, "auto");
+        assert_eq!(c.scrollbar_policy(), ScrollbarPolicy::Auto);
+        assert_eq!(c.backspace_binding, "ascii-delete", "GNOME 默认 Backspace = 0x7f");
+        assert_eq!(c.delete_binding, "delete-sequence", "GNOME 默认 Delete = ESC [3~");
+        assert_eq!(c.key_bindings().backspace, BackspaceBinding::AsciiDelete);
+        assert_eq!(c.key_bindings().delete, DeleteBinding::DeleteSequence);
         assert_eq!(c.close_action, "end", "默认关闭即结束会话");
         assert_eq!(c.osc52, "allow", "OSC 52 默认放行");
         assert!(c.osc52_allowed());
         assert_eq!(c.version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn terminal_behavior_config_parsing_and_roundtrip() {
+        // 滚动条策略：三档 + 未知值回退 auto + 大小写/空白不敏感。
+        assert_eq!(ScrollbarPolicy::from_config("always"), ScrollbarPolicy::Always);
+        assert_eq!(ScrollbarPolicy::from_config(" NEVER "), ScrollbarPolicy::Never);
+        assert_eq!(ScrollbarPolicy::from_config("auto"), ScrollbarPolicy::Auto);
+        assert_eq!(ScrollbarPolicy::from_config(""), ScrollbarPolicy::Auto);
+        assert_eq!(ScrollbarPolicy::from_config("bogus"), ScrollbarPolicy::Auto);
+        assert_eq!(ScrollbarPolicy::Always.as_str(), "always");
+
+        let cfg: Config = toml::from_str(
+            "version = 1\n\
+             audible_bell = true\n\
+             scroll_on_output = true\n\
+             scroll_on_keystroke = false\n\
+             scrollback_unlimited = true\n\
+             scrollbar_policy = \"never\"\n\
+             backspace_binding = \"control-h\"\n\
+             delete_binding = \"ascii-del\"\n",
+        )
+        .unwrap();
+        assert!(cfg.audible_bell);
+        assert!(cfg.scroll_on_output);
+        assert!(!cfg.scroll_on_keystroke);
+        assert!(cfg.scrollback_unlimited);
+        assert_eq!(cfg.effective_scrollback(), UNLIMITED_SCROLLBACK_LINES, "unlimited 必须有明确安全上限");
+        assert_eq!(UNLIMITED_SCROLLBACK_LINES, 100_000);
+        assert_eq!(cfg.scrollbar_policy(), ScrollbarPolicy::Never);
+        assert_eq!(cfg.key_bindings().backspace, BackspaceBinding::ControlH);
+        assert_eq!(cfg.key_bindings().delete, DeleteBinding::AsciiDel);
+
+        let dir = tmpdir("terminal-behavior");
+        let path = dir.join("config.toml");
+        cfg.save_to(&path);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("audible_bell = true"), "{text}");
+        assert!(text.contains("scroll_on_output = true"), "{text}");
+        assert!(text.contains("scrollbar_policy = \"never\""), "{text}");
+        assert!(text.contains("backspace_binding = \"control-h\""), "{text}");
+        let back = Config::load_from(&path);
+        assert!(back.audible_bell);
+        assert!(back.scroll_on_output);
+        assert!(!back.scroll_on_keystroke);
+        assert_eq!(back.scrollbar_policy(), ScrollbarPolicy::Never);
+        assert_eq!(back.key_bindings(), cfg.key_bindings());
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // 固定 scrollback 时忽略 unlimited 上限，保持用户配置的数值。
+        let fixed = Config { scrollback: 1234, ..Config::default() };
+        assert_eq!(fixed.effective_scrollback(), 1234);
+        let unlimited = Config { scrollback: 10, scrollback_unlimited: true, ..Config::default() };
+        assert_eq!(unlimited.effective_scrollback(), UNLIMITED_SCROLLBACK_LINES);
     }
 
     #[test]

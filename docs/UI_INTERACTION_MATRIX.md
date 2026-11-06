@@ -107,6 +107,11 @@
 | 主题网格 | 左键单击 | `for choice in theme-choices`，4 列，Flickable 滚动 | 选择、预览、导入/导出 | 12 内置+导入可用；无预览/导出 | 点击主题即时换色；滚动列表 |
 | 字号 −/+ | 左键单击 | `bump-font-size(-1/+1)`，8–32，重建字体/渲染器，即时保存 | 字号调整并显示 | 已实现 | 点击 ± 观察字号/配置 |
 | 回滚 −/+ | 左键单击 | `bump-scrollback(-500/+500)`，500–100000，保存；只对新 pane 生效 | 回滚行数可配 | 已实现（对新 pane） | 改后新开 pane 的缓冲变化 |
+| Unlimited scrollback | 左键单击 ToggleRow | 写 `scrollback_unlimited`；true 时新 pane 用 100,000 行安全上限；点 +/- 自动关回固定值 | 无限/有界可配并提示内存 | 已实现（对新 pane） | 设置页点击后 config + 日志；Xvfb :118 e2e |
+| 可听铃 / 视觉铃 | 左键单击 ToggleRow | 独立写 `audible_bell`/`visual_bell`；可听铃默认关，BEL 时 X11 Bell | 两个独立开关 | 已实现 | Xvfb :118 BEL → `[bell] audible backend=ok` |
+| Scroll on output / keystroke | 左键单击 ToggleRow | 写配置；output 立即更新所有 pane 的 actor，keystroke 每次按键读取 | 上滚不抢/按键回底 | 已实现 | core smoke + 设置页写盘断言 |
+| Scrollbar policy | 左键单击 ChoiceBtn | `always`/`auto`/`never`，立即刷新所有 pane overlay | 滚动条三档 | 已实现 | Xvfb :118 像素检测 213/213 vs 0 |
+| Backspace / Delete binding | 左键单击 ChoiceBtn | 写 `backspace_binding`/`delete_binding`；每次按键读取编码 | 编码可配、默认 GNOME | 已实现 | XTest keylog 字节断言 |
 | 设置关闭 | Esc | 无处理 | Esc 关闭 | 缺失 | 设置打开按 Esc，仍打开 |
 | 设置键盘导航 | Tab/方向键 | 无 | 可键盘操作 | 缺失 | Tab 键无焦点移动 |
 | 设置搜索 | 输入 | 无 | 可搜索设置项 | 缺失 | 无搜索框 |

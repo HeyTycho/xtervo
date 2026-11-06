@@ -298,6 +298,137 @@ fn wheel_scrollback_shows_history() {
     assert_eq!(handle.scroll_position().offset, 0);
 }
 
+/// 等 actor 的非阻塞滚动快照满足条件；不依赖拉帧（拉帧只影响渲染）。
+fn wait_scroll<F: Fn() -> bool>(handle: &PaneHandle, pred: F, what: &str) {
+    let deadline = Instant::now() + Duration::from_secs(8);
+    while !pred() {
+        assert!(Instant::now() < deadline, "等待超时: {what}（当前 {:?}）", handle.scroll_position());
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// 两批输出之间用 `read` 暂停，测试可确定性地在上滚后触发第二批输出。
+fn spawn_scroll_policy_pane(scroll_on_output: bool) -> PaneHandle {
+    spawn(PaneConfig {
+        cols: 40,
+        rows: 6,
+        scrollback: 500,
+        shell: Some("/bin/sh".to_string()),
+        args: vec![
+            "-c".to_string(),
+            "seq 1 20; printf 'READY\\n'; read x; seq 21 60; sleep 3".to_string(),
+        ],
+        scroll_on_output,
+        ..PaneConfig::default()
+    })
+    .expect("spawn scroll policy pane")
+}
+
+/// 等到 READY 出现后上滚，返回上滚前的 history。
+fn scroll_up_after_ready(handle: &PaneHandle) -> usize {
+    let mut frame = handle.new_frame();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        frame = handle.pull(frame);
+        if frame_text(&frame).contains("READY") {
+            break;
+        }
+        assert!(Instant::now() < deadline, "没等到 READY 输出");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let base = handle.scroll_position().history;
+    assert!(base > 0, "READY 后应有历史: {base}");
+    handle.scroll(5);
+    wait_scroll(handle, || handle.scroll_position().offset > 0, "滚轮上滚");
+    handle.scroll_position().history
+}
+
+/// 等第二批输出基本结束：history 达到阈值后连续 3 次采样不再增长。
+fn wait_output_settled(handle: &PaneHandle, min_history: usize) {
+    wait_scroll(handle, || handle.scroll_position().history >= min_history, "第二批输出");
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut last = handle.scroll_position().history;
+    let mut stable = 0;
+    while stable < 3 {
+        assert!(Instant::now() < deadline, "输出迟迟不稳定（history={last}）");
+        std::thread::sleep(Duration::from_millis(20));
+        let now = handle.scroll_position().history;
+        if now == last {
+            stable += 1;
+        } else {
+            last = now;
+            stable = 0;
+        }
+    }
+}
+
+#[test]
+fn scroll_on_output_false_keeps_user_history_view() {
+    let handle = spawn_scroll_policy_pane(false);
+    let base = scroll_up_after_ready(&handle);
+    let before = handle.scroll_position();
+    assert!(before.offset > 0);
+
+    // 放行第二批输出；用户仍停在原历史位置，新输出不能抢回底部。
+    handle.input(b"\n");
+    wait_output_settled(&handle, base + 35);
+
+    let frame = handle.pull(handle.new_frame());
+    let pos = handle.scroll_position();
+    assert!(pos.offset > 0, "scroll_on_output=false 时视图被新输出抢回底部: {pos:?}");
+    assert!(frame.display_offset > 0, "帧 offset 也应保持: {}", frame.display_offset);
+    assert!(
+        !frame_text(&frame).contains("60"),
+        "上滚后不应直接看到最新输出：\n{}",
+        frame_text(&frame)
+    );
+}
+
+#[test]
+fn scroll_on_output_true_follows_new_output() {
+    let handle = spawn_scroll_policy_pane(true);
+    let base = scroll_up_after_ready(&handle);
+    assert!(handle.scroll_position().offset > 0);
+
+    handle.input(b"\n");
+    wait_output_settled(&handle, base + 35);
+
+    let frame = handle.pull(handle.new_frame());
+    assert_eq!(frame.display_offset, 0, "scroll_on_output=true 应回到底部");
+    assert_eq!(handle.scroll_position().offset, 0);
+    assert!(frame_text(&frame).contains("60"), "应看到最新输出：\n{}", frame_text(&frame));
+}
+
+#[test]
+fn scroll_to_bottom_resets_offset_after_keyboard_navigation() {
+    let handle = spawn_scroll_policy_pane(false);
+    scroll_up_after_ready(&handle);
+    assert!(handle.scroll_position().offset > 0);
+
+    handle.scroll_to_bottom();
+    wait_scroll(&handle, || handle.scroll_position().offset == 0, "scroll_to_bottom");
+    let frame = handle.pull(handle.new_frame());
+    assert_eq!(frame.display_offset, 0);
+}
+
+#[test]
+fn set_scroll_on_output_takes_effect_on_existing_pane() {
+    // spawn 时关闭；用户上滚后再从设置页打开，第二批输出应把视图拉回底部。
+    let handle = spawn_scroll_policy_pane(false);
+    let base = scroll_up_after_ready(&handle);
+    assert!(handle.scroll_position().offset > 0);
+
+    handle.set_scroll_on_output(true);
+    // Pull 排在 SetScrollOnOutput 之后，返回时 actor 已处理开关（异步无阻塞）。
+    let _ = handle.pull(handle.new_frame());
+    handle.input(b"\n");
+    wait_output_settled(&handle, base + 35);
+
+    let frame = handle.pull(handle.new_frame());
+    assert_eq!(frame.display_offset, 0, "运行时开启后输出应回到底部");
+    assert!(frame_text(&frame).contains("60"), "应看到最新输出：\n{}", frame_text(&frame));
+}
+
 #[test]
 fn scroll_position_tracks_resize_without_blocking() {
     let mut handle = spawn(PaneConfig {
