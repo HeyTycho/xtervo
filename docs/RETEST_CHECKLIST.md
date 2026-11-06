@@ -6,12 +6,13 @@
 ## 0. 版本信息（最终填写）
 
 ```text
-commit:
-release binary:
-stripped binary:
-构建时间:
-测试结果:
-e2e:
+commit:    8823311fdc99
+release:   dist/tervo-stripped（40.4 MB，sha256 e55bacd3…ed076765）
+tar.gz:    dist/tervo-0.1.0-linux-x86_64.tar.gz（sha256 8c990b6e…af32573）
+deb:       dist/tervo_0.1.0-1_amd64.deb（sha256 7bc4bd34…62fc00）
+built:     2026-11-06T19:26:31Z（SOURCE_DATE_EPOCH）
+测试:      app 369 passed / 1 ignored；workspace 全绿
+e2e:       15 个脚本全 PASS（SSH/SFTP、插件、设置、图片、键盘、事件、渲染、P0、URL/右键等）
 ```
 
 ## 1. 必测：中文输入法（最高优先）
@@ -144,6 +145,16 @@ e2e:
 - [ ] 插件崩溃/超时被禁用，不拖死终端
 - [ ] 权限未声明的能力被拒绝
 
+## 9.5 已知内存限制（必须知情）
+
+- 极端 22 Tab + 3 split（4 pane）+ 图片/emoji/搜索/resize 的 30m soak：
+  RSS 752→962 MiB（+209.6 MiB，+6.59 MiB/min），曲线在首轮字体/缓存填充后明显趋平；
+  无 panic/OOM，线程/FD 稳定。
+- 这是“22 Tab 极端压力”下的高水位；普通 1–4 Tab 空闲/flood 稳定。
+- 已做：emoji 首帧回退字体 850→135MiB、scrollback 全局预算、glibc arena trim；
+  未完全达到 15m/30m 的 96MiB 门禁，未声称 24h PASS。
+- 如你复测发现日常 Tab 数下 RSS 持续上涨/卡顿，请记录 Tab 数、操作、`/proc/<pid>/status` 采样。
+
 ## 10. 已知限制（不要求修复）
 
 - fcitx XIM 候选窗位置在部分输入法下仍受 winit/XIM 限制；dsh Btw 侧栏需先点击 composer 锚点
@@ -160,6 +171,6 @@ e2e:
 ```text
 复测人：
 日期：
-结论：通过 / 有条件通过 / 阻塞项
+结论：通过 / 有条件通过 / 阻塞项（当前建议：功能有条件通过，内存限制知情）
 备注：
 ```
