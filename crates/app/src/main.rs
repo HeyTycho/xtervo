@@ -32,8 +32,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tervo_core::{
-    spawn, CoreEvent, Frame, Modifiers, MouseAction, MouseButton, MouseEvent, Notification,
-    PaneConfig, PaneHandle, ProgressState, Theme, UiColors,
+    link::is_allowed_uri, spawn, CoreEvent, Frame, Modifiers, MouseAction, MouseButton, MouseEvent,
+    Notification, PaneConfig, PaneHandle, ProgressState, Theme, UiColors,
 };
 use slint::winit_030::{winit, WinitWindowAccessor};
 use slint::{Model, ModelRc, VecModel};
@@ -82,6 +82,8 @@ struct Drag {
     cell: (u16, u16),
     /// true = 事件已转发给 PTY（终端在鼠标上报模式），本地上屏不再做选词。
     mouse: bool,
+    /// Ctrl+左键：不开选区，抬起时解析并打开链接。
+    link: bool,
 }
 
 /// 自绘拖边缩放：按 root 坐标差值直接改窗口大小/位置。
@@ -179,6 +181,8 @@ struct AppState {
     profile_menu_model: Rc<VecModel<slint::SharedString>>,
     /// 右键按下的 pane/时间/内容区坐标：paste/clipboard 模式用抬起时间判断长按。
     right_down: Option<(PaneId, std::time::Instant, f32, f32)>,
+    /// 打开右键菜单时命中的链接（空 = 当前格没有可打开链接）。
+    menu_link: String,
     /// 广播输入：开启后键入同时发给当前 Tab 的所有 pane
     broadcast: bool,
     /// 上次左键点击 (pane, 行, 列, 时间)：用于 400ms 内的双击选行
@@ -3266,7 +3270,23 @@ fn focus_pane_dir(st: &mut AppState, dx: f32, dy: f32) {
 }
 
 fn open_pane_menu(st: &mut AppState, id: PaneId, x: f32, y: f32) {
-    eprintln!("[ui] right click pane={id} at {x},{y}");
+    // 菜单打开时顺带解析“右键那一格”的链接：OSC 8 优先、普通 URL 兜底。
+    // x/y 是内容区坐标，pane rect 也是内容区坐标；超出 pane 时不给链接。
+    let link = st
+        .panes
+        .get(&id)
+        .and_then(|rt| {
+            let (px, py) = (x - rt.rect.x, y - rt.rect.y);
+            if px < 0.0 || py < 0.0 || px >= rt.rect.w || py >= rt.rect.h {
+                return None;
+            }
+            let (row, col) = cell_at(rt, px, py);
+            frame_link_at(&rt.frame, row, col)
+        })
+        .unwrap_or_default();
+    eprintln!("[ui] right click pane={id} at {x},{y} link={}", !link.is_empty());
+    st.menu_link = link.clone();
+    st.ui.set_menu_link(link.as_str().into());
     st.ui.set_menu_pane(id as i32);
     st.ui.set_menu_x(x);
     st.ui.set_menu_y(y);
@@ -3301,6 +3321,90 @@ fn mouse_button(code: i32) -> MouseButton {
         2 => MouseButton::Right,
         _ => MouseButton::Left,
     }
+}
+
+/// 从一帧的某格解析可打开链接：**OSC 8 优先**，普通 URL 兜底。
+///
+/// 不安全的 OSC 8 scheme（`javascript:` / `data:` 等）只记日志，不阻止同格
+/// 可见文本里的普通 URL 兜底——否则恶意 OSC 8 可以“劫持”一个可见的 http 链接。
+fn frame_link_at(frame: &Frame, row: u16, col: u16) -> Option<String> {
+    let (row, col) = (row as usize, col as usize);
+    if let Some(uri) = frame.hyperlink_at(row, col) {
+        if is_allowed_uri(uri) {
+            return Some(uri.to_string());
+        }
+        eprintln!("[link] 拒绝不安全的 OSC 8 URI: {uri:?}（cell={row},{col}）");
+    }
+    let uri = frame.url_at(row, col)?;
+    if is_allowed_uri(&uri) {
+        Some(uri)
+    } else {
+        eprintln!("[link] 拒绝不安全的 URL: {uri:?}（cell={row},{col}）");
+        None
+    }
+}
+
+/// 在 UI 线程外跑 `xdg-open`，失败时把原因写日志并显示短暂浮层。
+///
+/// - 用 arg 传 URI，绝不拼 shell，天然避免命令注入；
+/// - stdin/stdout 丢弃，stderr 截断后反馈；
+/// - `xdg-open` 进程失败（非 0 退出）也算失败，不能只看 spawn 是否成功。
+fn open_link_uri(uri: &str) {
+    if !is_allowed_uri(uri) {
+        eprintln!("[link] 拒绝打开不安全的 URI: {uri:?}");
+        return;
+    }
+    let target = uri.to_string();
+    eprintln!("[link] open uri={target:?}");
+    let thread_target = target.clone();
+    let spawned = std::thread::Builder::new().name("xdg-open".into()).spawn(move || {
+        let target = thread_target;
+        let result = std::process::Command::new("xdg-open")
+            .arg(&target)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .output();
+        match result {
+            Ok(out) if out.status.success() => {
+                eprintln!("[link] xdg-open ok uri={target:?}");
+            },
+            Ok(out) => {
+                let detail: String =
+                    String::from_utf8_lossy(&out.stderr).trim().chars().take(300).collect();
+                let msg = if detail.is_empty() {
+                    format!("打开链接失败：xdg-open {}", out.status)
+                } else {
+                    format!("打开链接失败：xdg-open {} — {detail}", out.status)
+                };
+                eprintln!("[link] {msg} uri={target:?}");
+                show_link_status(msg);
+            },
+            Err(e) => {
+                let msg = format!("打开链接失败：无法运行 xdg-open（{e}）");
+                eprintln!("[link] {msg} uri={target:?}");
+                show_link_status(msg);
+            },
+        }
+    });
+    if let Err(e) = spawned {
+        let msg = format!("打开链接失败：无法创建 xdg-open 线程（{e}）");
+        eprintln!("[link] {msg} uri={target:?}");
+        show_link_status(msg);
+    }
+}
+
+/// 底部短暂状态浮层；4 秒后自动清空。调用方可在任意线程（内部切回 UI 线程）。
+fn show_link_status(msg: String) {
+    let _ = slint::invoke_from_event_loop(move || {
+        with_app(|st| {
+            st.ui.set_link_status(msg.as_str().into());
+            let ui = st.ui.clone_strong();
+            slint::Timer::single_shot(Duration::from_secs(4), move || {
+                ui.set_link_status("".into());
+            });
+        });
+    });
 }
 
 fn set_clipboard(st: &mut AppState, text: &str) {
@@ -4652,6 +4756,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         profile_menu_indices: Vec::new(),
         profile_menu_model,
         right_down: None,
+        menu_link: String::new(),
         broadcast: false,
         last_click: None,
         closed_tabs: Vec::new(),
@@ -4731,6 +4836,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     rt.handle.wants_mouse()
                 );
             }
+            // Ctrl+左键只在“非鼠标上报”时是打开链接；上报模式仍把 Ctrl 位传给 TUI。
+            let link = !reporting && modifiers.ctrl;
             if reporting {
                 // 两套状态不能并存：进终端鼠标模式就清掉本地选区。
                 rt.handle.selection_clear();
@@ -4741,10 +4848,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     col: cell.1,
                     modifiers,
                 });
-            } else {
+            } else if !link {
                 rt.handle.selection_start(cell.0, cell.1);
             }
-            st.drag = Some(Drag { pane: id, start: (x, y), moved: false, cell, mouse: reporting });
+            st.drag = Some(Drag {
+                pane: id,
+                start: (x, y),
+                moved: false,
+                cell,
+                mouse: reporting,
+                link,
+            });
         });
     });
 
@@ -4754,7 +4868,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let modifiers = mouse_mods(mods);
 
             if st.drag.is_some() {
-                let (cell, forwarding) = {
+                let (cell, forwarding, link) = {
                     let Some(drag) = st.drag.as_mut() else { return };
                     if drag.pane != id {
                         return;
@@ -4768,8 +4882,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         return;
                     }
                     drag.cell = cell;
-                    (cell, drag.mouse)
+                    (cell, drag.mouse, drag.link)
                 };
+                if link {
+                    // Ctrl 拖拽不扩选；抬起时是否打开链接由 moved 决定。
+                    return;
+                }
                 if forwarding {
                     if let Some(rt) = st.panes.get(&id) {
                         rt.handle.mouse(MouseEvent {
@@ -4809,10 +4927,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     });
 
-    ui.on_pane_mouse_up(|id, x, y, button, mods| {
+    ui.on_pane_mouse_up(move |id, x, y, button, mods| {
         let id = id as u64;
         with_app(|st| {
             let Some(drag) = st.drag.take() else { return };
+            if drag.link {
+                // Ctrl+点击（没有明显拖动）才打开；拖动过就当作取消。
+                if !drag.moved && button == 0 {
+                    let Some(rt) = st.panes.get(&id) else { return };
+                    let (row, col) = cell_at(rt, x, y);
+                    match frame_link_at(&rt.frame, row, col) {
+                        Some(uri) => {
+                            eprintln!("[link] ctrl+click pane={id} cell={row},{col} uri={uri:?}");
+                            open_link_uri(&uri);
+                        },
+                        None => {
+                            if mouselog {
+                                eprintln!("[link] ctrl+click pane={id} cell={row},{col} 无链接");
+                            }
+                        },
+                    }
+                }
+                return;
+            }
             if drag.mouse {
                 if let Some(rt) = st.panes.get(&id) {
                     let cell = cell_at(rt, x, y);
@@ -5185,6 +5322,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         eprintln!("[ui] broadcast=on，但当前 Tab 只有 1 个 pane");
                     } else {
                         eprintln!("[ui] broadcast={} panes={panes}", st.broadcast);
+                    }
+                });
+            },
+            9 => {
+                with_app(|st| {
+                    let uri = st.menu_link.clone();
+                    if uri.is_empty() {
+                        eprintln!("[link] Open Link：当前菜单没有链接");
+                    } else {
+                        open_link_uri(&uri);
+                    }
+                });
+            },
+            10 => {
+                with_app(|st| {
+                    let uri = st.menu_link.clone();
+                    if !uri.is_empty() {
+                        eprintln!("[link] copy uri={uri:?}");
+                        set_clipboard(st, &uri);
                     }
                 });
             },
@@ -6767,6 +6923,52 @@ mod tests {
         assert_eq!(cfg.default_profile_id, 0);
         // id=0 不可能是“默认 Profile”，不能误触发写盘
         assert!(!clear_default_after_remove(&mut cfg, 0));
+    }
+
+    fn put_frame_text(frame: &mut Frame, text: &str) {
+        for (col, ch) in text.chars().enumerate() {
+            let mut cell = tervo_core::CellData::default();
+            cell.ch = ch as u32;
+            frame.put(col, cell, None);
+        }
+    }
+
+    #[test]
+    fn frame_link_prefers_osc8_over_plain_url() {
+        let mut f = Frame::new(40, 1);
+        put_frame_text(&mut f, "https://plain.example/x");
+        let mut first = tervo_core::CellData::default();
+        first.ch = 'h' as u32;
+        f.put(0, first, Some("https://osc.example/x"));
+
+        assert_eq!(frame_link_at(&f, 0, 0).as_deref(), Some("https://osc.example/x"));
+        // 同行的普通 URL 只在没有 OSC 8 的格子上兜底。
+        assert_eq!(frame_link_at(&f, 0, 3).as_deref(), Some("https://plain.example/x"));
+    }
+
+    #[test]
+    fn unsafe_osc8_is_rejected_and_plain_url_still_wins() {
+        let mut f = Frame::new(40, 1);
+        put_frame_text(&mut f, "https://plain.example/x");
+        let mut first = tervo_core::CellData::default();
+        first.ch = 'h' as u32;
+        f.put(0, first, Some("javascript:alert(1)"));
+
+        // 恶意 OSC 8 不得阻止同格可见 http URL 的兜底。
+        assert_eq!(frame_link_at(&f, 0, 0).as_deref(), Some("https://plain.example/x"));
+    }
+
+    #[test]
+    fn frame_link_rejects_unsafe_only_and_out_of_bounds() {
+        let mut f = Frame::new(20, 1);
+        put_frame_text(&mut f, "hello");
+        let mut first = tervo_core::CellData::default();
+        first.ch = 'h' as u32;
+        f.put(0, first, Some("data:text/html,<script>alert(1)</script>"));
+        assert_eq!(frame_link_at(&f, 0, 0), None);
+        assert_eq!(frame_link_at(&f, 0, 9), None);
+        assert_eq!(frame_link_at(&f, 5, 0), None, "越界行应该是 None");
+        assert_eq!(frame_link_at(&f, 0, 99), None, "越界列应该是 None");
     }
 
     #[test]
