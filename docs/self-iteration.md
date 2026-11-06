@@ -952,3 +952,18 @@ cargo bench -p tervo-core --bench pty_throughput
      physical`，geometry 与物理尺寸一致，radius 仍是 12 物理像素。
   6. 双实例（Ctrl+Shift+N）：两窗口日志的 win id/pid 不同，各自四角都圆、互不串窗。
   7. 极窄窗口（宽/高 ≤24px）：radius 随短边降到 `min(w,h)/2`，无越界/负尺寸矩形。
+
+### 2026-11-06 · Tab 自动收缩 + 最左侧 Tab 搜索 + GUI 测试隔离
+
+- **Tab 自动收缩**：按窗口宽度/Tab 数计算 `tab-width-cap`（40–180px），Tab 宽度
+  `max(40px, min(cap, 标题宽度+36px))`；Tab 较少时按标题，多 Tab 时均分并逐步收窄，
+  低于 68px 隐藏 close（hover/激活仍可关），120ms `animate width` 过渡。
+  `+` / Profile 按钮移到 Flickable 外固定右侧，Tab 过多时中间区域可横向滚动，不再把按钮挤走。
+- **Tab 搜索**：TabBar 最左侧新增 `⌕` 按钮（Chrome 风格）；浮层输入过滤当前窗口所有 Tab
+  （标题 + pane 标题），↑/↓ 选择、Enter 跳转、Esc/点外部关闭；命令面板可搜 “Search Tabs”，
+  注册 `tab.search`（Ctrl+Shift+A）。
+- **GUI e2e 隔离**：`scripts/e2e_lib.sh` 默认启动 Xephyr 虚拟显示器（`:99`，
+  `-no-host-grab`），所有 xkey/xclick/xwin/xwd 只作用于虚拟屏，不再占用用户的 :1 键鼠。
+- 测试：`cargo test -p tervo-app --bin tervo` → 204 passed；Xephyr 真机：10 Tab 自动收缩、
+  `[ui] tab search open items=10`、pick=4；截图 `.logs/tabs-autoshrink.png`、`.logs/tab-search.png`。
+- 同时修复插件/SFTP 测试在刚写完临时脚本时的 ETXTBSY（exec 重试 5 次）。

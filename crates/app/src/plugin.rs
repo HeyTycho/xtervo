@@ -953,15 +953,29 @@ fn execute_message(
     message: &str,
     timeout: Duration,
 ) -> Result<ExecutionReport, String> {
-    let mut child = ProcessCommand::new(entry)
-        .current_dir(plugin_dir)
-        .env("TERVO_PLUGIN_NAME", plugin_name)
-        .env("TERVO_PLUGIN_API", PLUGIN_API_VERSION.to_string())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("无法启动 {}: {e}", entry.display()))?;
+    // 刚写完的 entry 在部分文件系统上会短暂 ETXTBSY；重试几次比把测试/插件判死更稳。
+    let mut child = None;
+    for attempt in 0..5 {
+        let spawned = ProcessCommand::new(entry)
+            .current_dir(plugin_dir)
+            .env("TERVO_PLUGIN_NAME", plugin_name)
+            .env("TERVO_PLUGIN_API", PLUGIN_API_VERSION.to_string())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn();
+        match spawned {
+            Ok(spawned_child) => {
+                child = Some(spawned_child);
+                break;
+            },
+            Err(e) if e.raw_os_error() == Some(26) && attempt < 4 => {
+                std::thread::sleep(Duration::from_millis(20));
+            },
+            Err(e) => return Err(format!("无法启动 {}: {e}", entry.display())),
+        }
+    }
+    let mut child = child.ok_or_else(|| format!("无法启动 {}: 重试后仍失败", entry.display()))?;
 
     if let Some(mut stdin) = child.stdin.take() {
         // 写失败（插件提前退出）不是宿主错误；后续按退出码记录。
