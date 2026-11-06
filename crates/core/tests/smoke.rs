@@ -554,6 +554,8 @@ fn search_finds_and_scrolls() {
     // "7" 在输出的很前面，需要滚上去
     let hit = handle.search("77", true).expect("应能找到 77");
     assert!(hit.line < 12);
+    // 计数同样来自 alacritty grid：seq 1..200 里 "77" 出现在 77 与 177。
+    assert_eq!((hit.index, hit.total), (1, 2), "命中计数应为 1/2: {hit:?}");
     let frame = handle.pull(handle.new_frame());
     let text = frame_text(&frame);
     assert!(text.contains("77"), "滚动后应看到命中: {text}");
@@ -774,10 +776,12 @@ fn search_supports_case_and_regex_options() {
 
     // 关闭 Match case：大小写不敏感。
     handle.search_clear();
-    assert!(
-        handle.search_with("ALPHA", true, nocase).expect("valid plain query").is_some(),
-        "Match case 关闭时 ALPHA 应命中"
-    );
+    let hit = handle
+        .search_with("ALPHA", true, nocase)
+        .expect("valid plain query")
+        .expect("Match case 关闭时 ALPHA 应命中");
+    assert_eq!(hit.total, 2, "Alpha/alpha 应计 2 个匹配: {hit:?}");
+    assert!((1..=2).contains(&hit.index), "index 应在 1..=2: {hit:?}");
 
     // 纯文本模式下 "." 是字面量；regex 模式下才是通配符。
     handle.search_clear();
@@ -801,6 +805,76 @@ fn search_supports_case_and_regex_options() {
     assert!(err.contains("invalid regex"), "{err}");
     frame = handle.pull(frame);
     assert!(frame.search.is_none(), "非法 regex 不应保留旧高亮");
+}
+
+#[test]
+fn search_reports_match_index_and_total_across_scrollback() {
+    let handle = spawn(PaneConfig {
+        cols: 40,
+        rows: 6,
+        scrollback: 200,
+        shell: Some("/bin/sh".to_string()),
+        args: vec![
+            "-c".to_string(),
+            "printf 'foo foo\\nbar foo\\n'; sleep 3".to_string(),
+        ],
+        ..PaneConfig::default()
+    })
+    .expect("spawn");
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut frame = handle.new_frame();
+    loop {
+        frame = handle.pull(frame);
+        if frame_text(&frame).contains("bar foo") {
+            break;
+        }
+        assert!(Instant::now() < deadline, "没有等到输出");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    // 光标停在最后的空行；向前搜索会先绕回第一行的 "foo"。
+    handle.search_clear();
+    let opts = SearchOptions::default();
+    let first = handle
+        .search_with("foo", true, opts)
+        .expect("valid plain query")
+        .expect("应命中 foo");
+    assert_eq!((first.index, first.total), (1, 3), "首个命中应为 1/3: {first:?}");
+    let second = handle
+        .search_with("foo", true, opts)
+        .expect("valid plain query")
+        .expect("应命中第二个 foo");
+    assert_eq!((second.index, second.total), (2, 3), "第二个命中应为 2/3: {second:?}");
+    let third = handle
+        .search_with("foo", true, opts)
+        .expect("valid plain query")
+        .expect("应命中第三个 foo");
+    assert_eq!((third.index, third.total), (3, 3), "第三个命中应为 3/3: {third:?}");
+    let wrapped = handle
+        .search_with("foo", true, opts)
+        .expect("valid plain query")
+        .expect("继续向前应绕回首个 foo");
+    assert_eq!((wrapped.index, wrapped.total), (1, 3), "绕回后应为 1/3: {wrapped:?}");
+
+    // 反向：从 1/3 往回走应回到 3/3。
+    let back = handle
+        .search_with("foo", false, opts)
+        .expect("valid plain query")
+        .expect("Shift+Enter 应命中上一个");
+    assert_eq!((back.index, back.total), (3, 3), "反向应回到 3/3: {back:?}");
+
+    // 无命中时 UI 显示 0/0；core 返回 None（由 UI 层格式化）。
+    assert!(handle.search("no-such-token", true).is_none());
+
+    // 同行多次匹配也要逐个计数："foo foo" 4 个 o，"bar foo" 2 个 o。
+    handle.search_clear();
+    let o = handle
+        .search_with("o", true, opts)
+        .expect("valid plain query")
+        .expect("应命中 o");
+    assert_eq!(o.total, 6, "o 的总数应为 6: {o:?}");
+    handle.search_clear();
 }
 
 #[test]
