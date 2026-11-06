@@ -1330,3 +1330,13 @@ cargo bench -p tervo-core --bench pty_throughput
   `[ime] spot pane=1 cell=4,79 win=711,120`。
 - 限制：输入法是否遵守 spot 仍取决于 fcitx/ibus；dsh 真机需用户复测。
 
+### 2026-11-06 · dsh Btw 侧栏 IME spot：点击锚点兜底
+
+- 实证：dsh `/btw` 的 BtwComposer 只画反色 caret（Text inverse），**不调用
+  useDeclaredCursor、不移动硬件终端光标**；所以硬件 cursor 始终在左侧 chat 输入框。
+  任何跟踪硬件 cursor 的终端都无法知道右侧 composer 的位置。
+- 兼容：mouse-reporting TUI 内左键点击时，记录点击格作为 IME 候选锚点；50ms IME
+  同步优先用该锚点，直到切换 pane/Tab 或点击别处。实际 dsh：点击右侧 composer 后
+  `[ime] spot` 从 x=54 变 x=846。
+- 普通 shell/非 mouse-reporting 不受影响；不改变 TUI 自动 focus 逻辑。
+

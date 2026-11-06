@@ -200,6 +200,9 @@ struct AppState {
     window_focused: bool,
     /// 上次同步给输入法的光标/预编辑；None 表示尚未发送。
     ime_spot: Option<(i32, i32, String)>,
+    /// mouse-reporting TUI（dsh 侧栏等）不移动硬件光标时，用最近一次点击的格子
+    /// 作为 IME 候选锚点；否则输入法只能停在左侧 chat 光标。
+    ime_override: Option<(PaneId, (u16, u16))>,
     /// 本次边/角拖动已交给 WM/compositor（winit drag_resize）。
     /// true 时 drag 回调不再每帧 query_pointer + set_size；若 150ms 内 WM 没有
     /// 产生尺寸变化，drag 回调会解除它并回退自绘，保证 resize 不会“按了没反应”。
@@ -2771,6 +2774,7 @@ fn set_active_tab_inner(st: &mut AppState, index: usize) {
         return;
     }
     st.ws.active = index;
+    st.ime_override = None;
     // 获得焦点的 Tab：清除未读通知点 / 完成标记（Tabby 的 unread 语义）。
     let ids = st.ws.tabs[index].panes();
     let mut cleared = 0usize;
@@ -3087,8 +3091,19 @@ fn update_ime_spot(st: &mut AppState) {
     let Some(tab) = st.ws.active_tab() else { return };
     let focused = tab.focused;
     let Some(rt) = st.panes.get(&focused) else { return };
-    let (line, col) = rt.handle.cursor_pos();
-    let (line, col) = (line as usize, col as usize);
+    if !rt.handle.wants_mouse() {
+        st.ime_override = None;
+    }
+    let mouse_anchor = st
+        .ime_override
+        .filter(|(pid, _)| *pid == focused)
+        .map(|(_, cell)| cell);
+    let (line, col) = mouse_anchor
+        .map(|(l, c)| (l as usize, c as usize))
+        .unwrap_or_else(|| {
+            let (l, c) = rt.handle.cursor_pos();
+            (l as usize, c as usize)
+        });
     let cw = rt.renderer.cell_w.max(1) as f32;
     let ch = rt.renderer.cell_h.max(1) as f32;
     let x = rt.rect.x + col as f32 * cw;
@@ -4769,6 +4784,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         resize: None,
         window_focused: true,
         ime_spot: None,
+        ime_override: None,
         wm_resize: false,
         wm_release_pending: false,
         xresize: None,
@@ -4825,11 +4841,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui.on_pane_mouse_down(move |id, x, y, button, mods| {
         let id = id as u64;
         with_app(|st| {
-            let Some(rt) = st.panes.get(&id) else { return };
-            let cell = cell_at(rt, x, y);
+            let (cell, wants_mouse) = {
+                let Some(rt) = st.panes.get(&id) else { return };
+                (cell_at(rt, x, y), rt.handle.wants_mouse())
+            };
             let modifiers = mouse_mods(mods);
             // Shift 是「绕过鼠标上报、改成本地选词」的惯例逃生门（xterm/gnome-terminal 同款）。
-            let reporting = rt.handle.wants_mouse() && !modifiers.shift;
+            let reporting = wants_mouse && !modifiers.shift;
+            if button == 0 && reporting {
+                // dsh 的 Btw 侧栏 composer 只画反色 caret，不移动硬件光标；
+                // 记住点击格，IME 候选才会贴到右侧输入框。
+                st.ime_override = Some((id, cell));
+                update_ime_spot(st);
+            }
+            let Some(rt) = st.panes.get(&id) else { return };
             if mouselog {
                 eprintln!(
                     "[mouse] down pane={id} cell={cell:?} button={button} mods={mods} \
