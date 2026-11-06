@@ -3083,7 +3083,8 @@ fn update_ime_spot(st: &mut AppState) {
     let Some(tab) = st.ws.active_tab() else { return };
     let focused = tab.focused;
     let Some(rt) = st.panes.get(&focused) else { return };
-    let (line, col) = rt.cursor;
+    let (line, col) = rt.handle.cursor_pos();
+    let (line, col) = (line as usize, col as usize);
     let cw = rt.renderer.cell_w.max(1) as f32;
     let ch = rt.renderer.cell_h.max(1) as f32;
     let x = rt.rect.x + col as f32 * cw;
@@ -6099,7 +6100,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // DECSET 1004：窗口焦点变化及时同步给 TUI（100ms 足够，避免 400ms 轮询延迟）。
     let focus_timer = slint::Timer::default();
-    focus_timer.start(slint::TimerMode::Repeated, Duration::from_millis(100), || {
+    focus_timer.start(slint::TimerMode::Repeated, Duration::from_millis(50), || {
         let win = with_app(|st| {
             st.ui
                 .window()
@@ -6107,7 +6108,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .unwrap_or(true)
         })
         .unwrap_or(true);
-        with_app(|st| sync_terminal_focus(st, win));
+        with_app(|st| {
+            sync_terminal_focus(st, win);
+            // dsh 侧栏可能只移动终端光标、不产生内容重绘；独立轮询光标，
+            // 不能只等 redraw_visible 才更新 IME spot。
+            update_ime_spot(st);
+        });
     });
 
     // 设置开关的初始状态

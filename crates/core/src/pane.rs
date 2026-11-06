@@ -196,6 +196,8 @@ pub struct PaneHandle {
     /// actor 每次喂数据后刷新的模式位快照：UI 需要在**不阻塞**的前提下判断
     /// 当前是否处于鼠标上报模式（决定「转发」还是「本地选词」）。
     mode_bits: Arc<std::sync::atomic::AtomicU32>,
+    /// 当前终端光标（行 u32 << 32 | 列），actor 每次解析后刷新；不依赖重绘。
+    cursor_bits: Arc<std::sync::atomic::AtomicU64>,
     child: Box<dyn portable_pty::Child + Send + Sync>,
     #[allow(dead_code)]
     threads: Vec<JoinHandle<()>>,
@@ -228,6 +230,12 @@ impl PaneHandle {
         TermMode::from_bits_truncate(
             self.mode_bits.load(std::sync::atomic::Ordering::Relaxed),
         )
+    }
+
+    /// 当前终端光标 (行, 列)，不阻塞；actor 刷新。
+    pub fn cursor_pos(&self) -> (u16, u16) {
+        let bits = self.cursor_bits.load(std::sync::atomic::Ordering::Relaxed);
+        ((bits >> 32) as u16, bits as u16)
     }
 
     /// 终端是否要求接收鼠标事件（1000/1002/1003）。
@@ -499,6 +507,10 @@ pub fn spawn(config: PaneConfig) -> std::io::Result<PaneHandle> {
     let palette = shared_palette.clone();
     let stats_actor = stats.clone();
     let mode_bits = Arc::new(std::sync::atomic::AtomicU32::new(term.mode().bits()));
+    let c0 = term.grid().cursor.point;
+    let cursor_bits = Arc::new(std::sync::atomic::AtomicU64::new(
+        ((c0.line.0 as u64) << 32) | (c0.column.0 as u64 & 0xffff),
+    ));
 
     let actor = Actor {
         term,
@@ -516,6 +528,7 @@ pub fn spawn(config: PaneConfig) -> std::io::Result<PaneHandle> {
         events: listener.events.clone(),
         write_tx: write_tx.clone(),
         mode_bits: mode_bits.clone(),
+        cursor_bits: cursor_bits.clone(),
         sel_anchor: None,
         pty_closed: false,
         force_full: false,
@@ -533,6 +546,7 @@ pub fn spawn(config: PaneConfig) -> std::io::Result<PaneHandle> {
         wake_rx,
         stats,
         mode_bits,
+        cursor_bits,
         child,
         threads: vec![reader_thread, writer_thread, actor_thread],
         grid: size,
@@ -588,6 +602,8 @@ struct Actor {
     write_tx: Sender<Vec<u8>>,
     /// 模式位快照，供 UI 无阻塞查询（见 [`PaneHandle::mode`]）。
     mode_bits: Arc<std::sync::atomic::AtomicU32>,
+    /// 光标快照，供 IME/焦点同步（不依赖 UI 拉帧）。
+    cursor_bits: Arc<std::sync::atomic::AtomicU64>,
     /// 选区锚点（网格坐标）；反向选择时用来保持两端 side 一致。
     sel_anchor: Option<Point>,
     pty_closed: bool,
@@ -628,6 +644,7 @@ impl Actor {
                     },
                 }
             }
+            self.store_cursor();
         }
     }
 
@@ -637,6 +654,15 @@ impl Actor {
             // 有界队列满：按键不能丢，退化为阻塞发送
             let _ = self.write_tx.send(bytes.to_vec());
         }
+    }
+
+    #[inline]
+    fn store_cursor(&self) {
+        let c = self.term.grid().cursor.point;
+        self.cursor_bits.store(
+            ((c.line.0 as u64) << 32) | (c.column.0 as u64 & 0xffff),
+            std::sync::atomic::Ordering::Relaxed,
+        );
     }
 
     #[inline]
@@ -658,6 +684,7 @@ impl Actor {
         // 鼠标模式（1000/1002/1003）常随 TUI 启动一起打开，UI 需要马上看到，
         // 不能等下一次拉帧，所以每次解析后刷新快照。
         self.mode_bits.store(self.term.mode().bits(), Relaxed);
+        self.store_cursor();
     }
 
     fn viewport_point(&self, line: u16, col: u16) -> Point {
