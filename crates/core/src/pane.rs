@@ -25,7 +25,7 @@
 use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -45,6 +45,7 @@ use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtyPair, PtySiz
 
 use crate::event::{ClipboardSelection, CoreEvent, EventSink, PaneStats, WakeSignal};
 use crate::frame::{CellData, CursorShape, CursorState, Frame, InlineImage, LineDamage, Span};
+use crate::keyboard::{KeyboardAction, KeyboardFlags, KeyboardScanner};
 use crate::mouse::{self, MouseEvent};
 use crate::osc::OscScanner;
 use crate::palette::Palette;
@@ -381,6 +382,11 @@ pub struct PaneConfig {
     /// false（默认）时用户上滚查看历史，新输出只增长历史、不抢视图；
     /// true 时每次收到输出都把视口拉回底部。
     pub scroll_on_output: bool,
+    /// 启用 kitty keyboard protocol / xterm modifyOtherKeys 的解析与增强编码。
+    ///
+    /// false（配置 `keyboard_protocol = "off"`）时：不响应 `CSI ? u`、不统计
+    /// modifyOtherKeys、UI 也只会走与旧版本完全一致的字节编码。
+    pub keyboard_protocol: bool,
     /// 启用 Sixel 内联图片（解析/解码/渲染 + DA1 宣告参数 4）。
     pub sixel: bool,
     /// Sixel 图片是否跟随滚动历史（默认 true）；false 时锚定在创建时的屏幕行。
@@ -403,6 +409,7 @@ impl Default for PaneConfig {
             env: Vec::new(),
             palette: Palette::default(),
             scroll_on_output: false,
+            keyboard_protocol: true,
             sixel: true,
             sixel_scrolling: true,
             cell_height: 16,
@@ -473,6 +480,10 @@ pub struct PaneHandle {
     /// actor 每次喂数据后刷新的模式位快照：UI 需要在**不阻塞**的前提下判断
     /// 当前是否处于鼠标上报模式（决定「转发」还是「本地选词」）。
     mode_bits: Arc<std::sync::atomic::AtomicU32>,
+    /// actor 旁路扫描 `CSI > 4 ; n m` 后刷新的 xterm modifyOtherKeys 等级。
+    modify_other_keys: Arc<std::sync::atomic::AtomicU8>,
+    /// actor 维护的 kitty flags 快照（main/alternate screen 各自独立）。
+    keyboard_flags: Arc<std::sync::atomic::AtomicU8>,
     /// 当前终端光标（行 u32 << 32 | 列），actor 每次解析后刷新；不依赖重绘。
     cursor_bits: Arc<std::sync::atomic::AtomicU64>,
     /// 滚动位置快照（打包 offset/history），见 [`PaneHandle::scroll_position`]。
@@ -643,9 +654,25 @@ impl PaneHandle {
 
     /// 是否启用了 kitty keyboard protocol 的 CSI-u 编码。
     pub fn wants_kitty_keyboard(&self) -> bool {
-        self.mode().intersects(
-            TermMode::DISAMBIGUATE_ESC_CODES | TermMode::REPORT_ALL_KEYS_AS_ESC,
+        self.keyboard_flags().intersects(
+            KeyboardFlags::DISAMBIGUATE_ESC_CODES | KeyboardFlags::REPORT_ALL_KEYS_AS_ESC,
         )
+    }
+
+    /// 当前 kitty progressive enhancement flags（无锁快照）。
+    ///
+    /// 只包含本终端实际实现的 5 个 bit；由 actor 的 [`KeyboardScanner`] 维护，
+    /// 包含 main/alternate screen 各自的 set/push/pop 状态。
+    pub fn keyboard_flags(&self) -> KeyboardFlags {
+        KeyboardFlags::from_bits_truncate(self.keyboard_flags.load(Ordering::Relaxed))
+    }
+
+    /// 当前 xterm modifyOtherKeys 等级（0 = 关闭，1/2/3）。
+    ///
+    /// 由 actor 旁路扫描 `CSI > 4 ; n m` 维护；配置
+    /// `keyboard_protocol = "off"` 时恒为 0。
+    pub fn modify_other_keys(&self) -> u8 {
+        self.modify_other_keys.load(Ordering::Relaxed)
     }
 
     /// 上报一次鼠标事件。未启用鼠标模式 / Read Only 的 pane 自动忽略。
@@ -1004,6 +1031,10 @@ pub fn spawn(config: PaneConfig) -> std::io::Result<PaneHandle> {
     // ---- actor 线程 ----
     let term_config = TermConfig {
         scrolling_history: config.scrollback,
+        // alacritty 0.26 的 kitty 键盘栈在“set 不 push 后 query / set-push-pop”
+        // 两处不符合 kitty 规范，因此由 core 的 KeyboardScanner 维护状态；
+        // 这里关掉 alacritty 的实现，避免重复回包。
+        kitty_keyboard: false,
         // OSC 52 由 core 的 OscScanner 统一处理（带 1 MiB 上限并转成 CoreEvent）；
         // 关掉 alacritty 内建实现，避免同一条序列被写两次。
         osc52: Osc52::Disabled,
@@ -1013,6 +1044,8 @@ pub fn spawn(config: PaneConfig) -> std::io::Result<PaneHandle> {
     let palette = shared_palette.clone();
     let stats_actor = stats.clone();
     let mode_bits = Arc::new(std::sync::atomic::AtomicU32::new(term.mode().bits()));
+    let keyboard_flags = Arc::new(AtomicU8::new(0));
+    let modify_other_keys = Arc::new(AtomicU8::new(0));
     let c0 = term.grid().cursor.point;
     let cursor_bits = Arc::new(std::sync::atomic::AtomicU64::new(
         ((c0.line.0 as u64) << 32) | (c0.column.0 as u64 & 0xffff),
@@ -1027,6 +1060,7 @@ pub fn spawn(config: PaneConfig) -> std::io::Result<PaneHandle> {
         term,
         processor: Processor::new(),
         osc: OscScanner::new(),
+        keyboard: KeyboardScanner::new(config.keyboard_protocol),
         sixel: SixelFilter::new(),
         sixel_enabled: sixel_enabled.clone(),
         sixel_scrolling: config.sixel_scrolling,
@@ -1045,6 +1079,8 @@ pub fn spawn(config: PaneConfig) -> std::io::Result<PaneHandle> {
         events: listener.events.clone(),
         write_queue: write_queue.clone(),
         mode_bits: mode_bits.clone(),
+        modify_other_keys: modify_other_keys.clone(),
+        keyboard_flags: keyboard_flags.clone(),
         cursor_bits: cursor_bits.clone(),
         scroll: scroll.clone(),
         read_only: read_only.clone(),
@@ -1067,6 +1103,8 @@ pub fn spawn(config: PaneConfig) -> std::io::Result<PaneHandle> {
         wake_rx,
         stats,
         mode_bits,
+        modify_other_keys,
+        keyboard_flags,
         cursor_bits,
         scroll,
         read_only,
@@ -1186,6 +1224,8 @@ struct Actor {
     processor: Processor,
     /// 通知/进度/OSC 7 扫描：alacritty 不暴露 OSC 9/777，需旁路扫原始字节。
     osc: OscScanner,
+    /// kitty flags 栈 + xterm modifyOtherKeys 扫描（alacritty 栈语义不完整）。
+    keyboard: KeyboardScanner,
     /// Sixel DCS 过滤器：把图片字节从 vte 输入里摘掉。
     sixel: SixelFilter,
     /// 与 Listener 共享的开关（DA1 判定 + 是否解码/渲染图片）。
@@ -1214,6 +1254,10 @@ struct Actor {
     write_queue: Arc<WriteQueue>,
     /// 模式位快照，供 UI 无阻塞查询（见 [`PaneHandle::mode`]）。
     mode_bits: Arc<std::sync::atomic::AtomicU32>,
+    /// modifyOtherKeys 等级快照（0 关闭；见 [`PaneHandle::modify_other_keys`]）。
+    modify_other_keys: Arc<AtomicU8>,
+    /// kitty flags 快照（含 main/alternate screen 栈；见 [`PaneHandle::keyboard_flags`]）。
+    keyboard_flags: Arc<AtomicU8>,
     /// 光标快照，供 IME/焦点同步（不依赖 UI 拉帧）。
     cursor_bits: Arc<std::sync::atomic::AtomicU64>,
     /// 滚动位置快照（打包 offset/history），供 UI 无阻塞查询。
@@ -1513,6 +1557,32 @@ impl Actor {
         }
     }
 
+    /// 旁路扫描键盘协议 CSI；只在真正交给 vte 的字节上调用。
+    ///
+    /// - kitty set/push/pop/query：core 自己维护 current flags + 屏幕栈；
+    /// - xterm XTMODKEYS：alacritty 的 vte Handler 只有空实现，core 自己记状态。
+    fn scan_keyboard_modes(&mut self, bytes: &[u8]) -> Vec<KeyboardAction> {
+        let mut actions = Vec::new();
+        self.keyboard.feed(bytes, &mut actions);
+        actions
+    }
+
+    /// 应用扫描器的状态更新/回包。回包在 vte 之后写，和旧实现一样保持输入
+    /// 响应顺序：同一批字节里的 query 能立即得到答案。
+    fn apply_keyboard_actions(&mut self, actions: Vec<KeyboardAction>) {
+        for action in actions {
+            match action {
+                KeyboardAction::SetKeyboardFlags(flags) => {
+                    self.keyboard_flags.store(flags, Ordering::Relaxed);
+                },
+                KeyboardAction::SetModifyOtherKeys(level) => {
+                    self.modify_other_keys.store(level, Ordering::Relaxed);
+                },
+                KeyboardAction::Reply(reply) => self.write_input(&reply),
+            }
+        }
+    }
+
     #[inline]
     fn store_cursor(&self) {
         let c = self.term.grid().cursor.point;
@@ -1561,7 +1631,9 @@ impl Actor {
                         for event in notif_events {
                             self.events.send(event);
                         }
+                        let keyboard_actions = self.scan_keyboard_modes(&chunk);
                         self.processor.advance(&mut self.term, &chunk);
+                        self.apply_keyboard_actions(keyboard_actions);
                     },
                     SixelEvent::Image(image) => {
                         self.add_image(image);
@@ -1583,7 +1655,9 @@ impl Actor {
             for event in notif_events {
                 self.events.send(event);
             }
+            let keyboard_actions = self.scan_keyboard_modes(bytes);
             self.processor.advance(&mut self.term, bytes);
+            self.apply_keyboard_actions(keyboard_actions);
         }
 
         if changed {
@@ -1734,7 +1808,11 @@ impl Actor {
         self.images.clear();
         self.force_full = true;
         self.refresh_zerowidth = false;
+        // RIS 同样复位 kitty 键盘栈与 xterm modifyOtherKeys。
+        self.keyboard.reset();
         use std::sync::atomic::Ordering::Relaxed;
+        self.keyboard_flags.store(0, Relaxed);
+        self.modify_other_keys.store(0, Relaxed);
         self.mode_bits.store(self.term.mode().bits(), Relaxed);
         self.store_cursor();
         self.sync_scroll();

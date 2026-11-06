@@ -1469,7 +1469,9 @@ export component MainWindow inherits Window {
             : Math.max(6px,
                 Math.min(root.menu-y, root.height - root.tabbar-height - root.menu-view-h - 6px)));
 
-    callback key-input(string, bool, bool, bool);
+    callback key-input(string, bool, bool, bool, bool, bool);
+    // press/release 配对：只有 kitty REPORT_EVENT_TYPES 且 press 进过 PTY 才回放。
+    callback key-release(string, bool, bool, bool, bool);
     // 右键事件到达 UI 层的追踪（日志排查用）
     callback input-trace(string, int, length, length);
     /// 拖动分屏分隔条：index + 内容区坐标
@@ -2633,7 +2635,17 @@ export component MainWindow inherits Window {
                             root.menu-dismissed();
                             return EventResult.accept;
                         }
-                        root.key-input(event.text, event.modifiers.control, event.modifiers.alt, event.modifiers.shift);
+                        root.key-input(event.text, event.modifiers.control, event.modifiers.alt, event.modifiers.shift, event.modifiers.meta, event.repeat);
+                        EventResult.accept
+                    }
+
+                    // 只有应用请求了 kitty REPORT_EVENT_TYPES 才会真正写 PTY；
+                    // Rust 侧用 press 登记表过滤快捷键/搜索框，普通 shell 零变化。
+                    key-released(event) => {
+                        if (self.preedit-text != "") {
+                            return EventResult.reject;
+                        }
+                        root.key-release(event.text, event.modifiers.control, event.modifiers.alt, event.modifiers.shift, event.modifiers.meta);
                         EventResult.accept
                     }
 
