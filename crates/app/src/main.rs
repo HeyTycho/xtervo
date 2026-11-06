@@ -220,6 +220,12 @@ struct AppState {
     fwd_profile_indices: Vec<usize>,
     fwd_model: Rc<VecModel<slint::SharedString>>,
     settings_result_cats: Vec<i32>,
+    /// 与搜索结果同序的卡片锚点（用于点击结果后滚动/高亮具体设置分组）。
+    settings_result_sections: Vec<&'static str>,
+    /// 每次跳转自增，Slint 侧 `changed` 触发滚动（同锚点重复点击也能再滚一次）。
+    settings_jump_token: i32,
+    /// 布局完成后再补一次 token：搜索结果首次下发时卡片 y 可能还没算出来。
+    settings_jump_timer: slint::Timer,
     settings_model: Rc<VecModel<slint::SharedString>>,
     /// 1003 悬停上报的上一格（按格去重，避免鼠标移动刷爆有界 ctrl 队列）。
     hover_cell: Option<(PaneId, (u16, u16))>,
@@ -450,101 +456,78 @@ fn tabby_config_path() -> std::path::PathBuf {
     base.join("tabby").join("config.yaml")
 }
 
-/// 设置搜索索引：(分类下标, 展示名, 关键词)。
-const SETTINGS_CATALOG: &[(i32, &str, &str)] = &[
-    (
-        0,
-        "Theme / Color scheme",
-        "theme color scheme appearance dark light",
-    ),
-    (
-        0,
-        "Background image",
-        "background image wallpaper picture path 背景 壁纸",
-    ),
-    (
-        0,
-        "Background opacity",
-        "background opacity transparency alpha 背景 透明 不透明度",
-    ),
-    (
-        0,
-        "Cursor shape",
-        "cursor shape block underline ibeam beam 光标 形状",
-    ),
-    (0, "Cursor blink", "cursor blink on off system 光标 闪烁"),
-    (0, "Cursor color", "cursor color colour text 光标 颜色"),
-    (0, "Bold is bright", "bold bright ansi color 粗体 亮色"),
-    (0, "Bold color", "bold color same as fg 粗体 颜色"),
-    (1, "Font size", "font size text zoom"),
-    (1, "Scrollback", "scrollback history lines"),
-    (1, "Copy on select", "copy select clipboard"),
-    (1, "Confirm before closing", "confirm close window exit"),
-    (1, "Confirm multi-line paste", "paste multiline confirm"),
-    (1, "Visual bell", "visual bell BEL flash border 视觉铃"),
-    (
-        1,
-        "Audible bell",
-        "audible bell BEL beep sound system 响铃 声音",
-    ),
-    (
-        1,
-        "Scroll on output",
-        "scroll output follow bottom 输出 跟随 滚动",
-    ),
-    (
-        1,
-        "Scroll on keystroke",
-        "scroll keystroke keyboard bottom 按键 回底 滚动",
-    ),
-    (
-        1,
-        "Unlimited scrollback",
-        "unlimited scrollback history cap memory 无限 历史 内存",
-    ),
-    (
-        1,
-        "Scrollbar policy",
-        "scrollbar always auto never policy 滚动条",
-    ),
-    (
-        1,
-        "Backspace / Delete binding",
-        "backspace delete ascii del control-h key encoding 退格 删除 编码",
-    ),
-    (2, "Tab bar at bottom", "tab bar position bottom top"),
-    (3, "Config file path", "config path file folder"),
-    (4, "Hotkey bindings", "hotkey shortcut key binding"),
-    (5, "Installed plugins", "plugin plugins installed list"),
-    (
-        6,
-        "Vault / master password",
-        "vault master password credentials 凭据 解锁 锁定",
-    ),
+/// 设置分类显示名；下标就是 Slint 侧的 `settings-category`。
+/// 0=Appearance 1=Terminal 2=Window 3=Advanced 4=Keys 5=Plugins 6=Vault 7=Profiles。
+const SETTINGS_CATS: [&str; 8] =
+    ["Appearance", "Terminal", "Window", "Advanced", "Keys", "Plugins", "Vault", "Profiles"];
+
+/// 设置搜索索引：(分类下标, 卡片锚点, 展示名, 关键词)。
+/// 锚点用于搜索结果点击后把内容滚到对应卡片并高亮；卡片 id 在 Slint 侧同名。
+const SETTINGS_CATALOG: &[(i32, &str, &str, &str)] = &[
+    (0, "theme", "Theme / Color scheme", "theme color scheme appearance dark light 主题 配色"),
+    (0, "background", "Background image", "background image wallpaper picture path 背景 壁纸"),
+    (0, "background", "Background opacity", "background opacity transparency alpha 背景 透明 不透明度"),
+    (0, "background", "Background dim", "background dim mask overlay 背景 遮罩 压暗"),
+    (0, "cursor", "Cursor shape", "cursor shape block underline ibeam beam 光标 形状"),
+    (0, "cursor", "Cursor blink", "cursor blink on off system 光标 闪烁"),
+    (0, "cursor", "Cursor color", "cursor color colour text 光标 颜色"),
+    (0, "bold", "Bold is bright", "bold bright ansi color 粗体 亮色"),
+    (0, "bold", "Bold color", "bold color same as fg 粗体 颜色"),
+    (1, "text", "Font size", "font size text zoom 字号"),
+    (1, "scrollback", "Scrollback", "scrollback history lines 回滚 历史"),
+    (1, "scrollback", "Unlimited scrollback", "unlimited scrollback history cap memory 无限 历史 内存"),
+    (1, "behavior", "Copy on select", "copy select clipboard 复制 选区"),
+    (1, "behavior", "Confirm before closing", "confirm close window exit 确认 关闭"),
+    (1, "behavior", "Confirm multi-line paste", "paste multiline confirm 粘贴 确认"),
+    (1, "behavior", "Right click", "right click menu paste clipboard 右键"),
+    (1, "behavior", "Paste on middle-click", "middle click paste 中键 粘贴"),
+    (1, "behavior", "Desktop notifications", "desktop notification notify-send 通知"),
+    (1, "bell", "Visual bell", "visual bell BEL flash border 视觉铃"),
+    (1, "bell", "Audible bell", "audible bell BEL beep sound system 响铃 声音"),
+    (1, "scroll", "Scroll on output", "scroll output follow bottom 输出 跟随 滚动"),
+    (1, "scroll", "Scroll on keystroke", "scroll keystroke keyboard bottom 按键 回底 滚动"),
+    (1, "scrollbar", "Scrollbar policy", "scrollbar always auto never policy 滚动条"),
+    (1, "images", "Sixel inline images", "sixel image inline graphics 图片"),
+    (1, "keys", "Backspace / Delete binding", "backspace delete ascii del control-h key encoding 退格 删除 编码"),
+    (2, "window", "Tab bar at bottom", "tab bar position bottom top 标签栏"),
+    (2, "window", "Quake mode", "quake drop down hotkey F12 下拉"),
+    (3, "config", "Config file path", "config path file folder 配置 路径"),
+    (3, "config", "Import / export", "import export tabby profiles 导入 导出"),
+    (4, "hotkeys", "Hotkey bindings", "hotkey shortcut key binding 快捷键"),
+    (5, "plugins", "Installed plugins", "plugin plugins installed list 插件"),
+    (6, "vault", "Vault / master password", "vault master password credentials 凭据 解锁 锁定"),
+    (7, "profiles", "Profiles", "profile connection ssh serial telnet 连接 配置"),
 ];
 
-/// 设置搜索：大小写不敏感的子串匹配（名称或关键词），返回 (分类, 展示行)。
-fn settings_search(query: &str) -> Vec<(i32, String)> {
+/// 一条设置搜索命中：分类、卡片锚点、展示行（分类 · 名称）。
+struct SettingsHit {
+    cat: i32,
+    section: &'static str,
+    line: String,
+}
+
+/// 设置搜索：大小写不敏感的子串匹配（名称或关键词）。
+fn settings_search_hits(query: &str) -> Vec<SettingsHit> {
     let q = query.trim().to_lowercase();
     if q.is_empty() {
         return Vec::new();
     }
-    let cats = [
-        "Appearance",
-        "Terminal",
-        "Window",
-        "Config",
-        "Hotkeys",
-        "Plugins",
-        "Vault",
-    ];
     SETTINGS_CATALOG
         .iter()
-        .filter(|(_, label, keywords)| {
+        .filter(|(_, _, label, keywords)| {
             label.to_lowercase().contains(&q) || keywords.to_lowercase().contains(&q)
         })
-        .map(|(cat, label, _)| (*cat, format!("{} · {label}", cats[*cat as usize])))
+        .map(|(cat, section, label, _)| SettingsHit {
+            cat: *cat,
+            section,
+            line: format!("{} · {label}", SETTINGS_CATS[*cat as usize]),
+        })
         .collect()
+}
+
+/// 兼容单测/旧调用：只返回 (分类, 展示行)。
+fn settings_search(query: &str) -> Vec<(i32, String)> {
+    settings_search_hits(query).into_iter().map(|h| (h.cat, h.line)).collect()
 }
 
 /// Hotkeys 页数据：按分类/标题排序，返回 (摘要, 行, 行对应的命令 ID)。
@@ -814,10 +797,11 @@ fn pane_palette(st: &AppState) -> TermPalette {
 fn push_theme(st: &mut AppState, theme: &ThemeData) {
     st.resolved_theme = theme.clone();
     let auto = is_auto_theme(&st.cfg.theme);
-    st.ui.set_auto_resolved(if auto {
-        theme.label.as_str().into()
+    st.ui.set_auto_resolved(if auto { theme.label.as_str().into() } else { "".into() });
+    st.ui.set_theme_display(if auto {
+        format!("Auto · {}", theme.label).into()
     } else {
-        "".into()
+        theme.label.as_str().into()
     });
     st.ui.global::<Palette>().set_colors(slint_theme(&theme.ui));
     let palette = pane_palette(st);
@@ -1827,6 +1811,17 @@ fn open_profiles_panel(st: &mut AppState) {
     eprintln!("[profile] panel items={}", st.profile_indices.len());
 }
 
+/// 关闭叠在设置页之上的模态（Profiles/Profile 表单）后恢复键盘焦点：
+/// 设置页还开着就回设置 FocusScope（Esc 仍能关设置），否则回终端 IME。
+fn refocus_after_modal(st: &mut AppState) {
+    if st.ui.get_settings_open() {
+        let next = st.ui.get_settings_refocus_token().wrapping_add(1);
+        st.ui.set_settings_refocus_token(next);
+    } else {
+        st.ui.invoke_focus_terminal();
+    }
+}
+
 /// 设置 → Vault 页 + 可见提示（Vault 未解锁时不弹终端密码框）。
 fn prompt_vault_unlock(st: &mut AppState, msg: &str) {
     refresh_vault_ui(st);
@@ -1952,6 +1947,12 @@ fn open_profile_tab(st: &mut AppState, index: usize) {
             st.ws.tabs.push(Tab::single(id, tab_title.clone()));
             st.ws.active = st.ws.tabs.len() - 1;
             st.ui.set_profiles_open(false);
+            // 从设置页的 Profiles 列表直接开 Tab 时，顺手退出设置页，
+            // 否则新终端被设置页盖住，看起来像“没反应”。
+            st.ui.set_settings_open(false);
+            st.ui.set_settings_theme_open(false);
+            st.ui.set_settings_query("".into());
+            st.ui.set_settings_focus("".into());
             st.ui.invoke_focus_terminal();
             dispatch_plugin_event(
                 st,
@@ -2188,11 +2189,9 @@ fn save_profile_form(st: &mut AppState) {
             st.ui.set_form_save_password(false);
             st.ui.set_form_error("".into());
             refresh_vault_ui(st);
-            eprintln!(
-                "[profile] 保存 id={id} kind={kind}（共 {}）",
-                st.profiles.profiles.len()
-            );
-        }
+            refocus_after_modal(st);
+            eprintln!("[profile] 保存 id={id} kind={kind}（共 {}）", st.profiles.profiles.len());
+        },
         Err(e) => {
             eprintln!("[profile] 表单校验失败: {e}");
             st.ui.set_form_error(e.as_str().into());
@@ -6434,8 +6433,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     render_probe::install(&ui.window(), &requested_backend, backend_fell_back);
     // --title 以前只解析不使用，窗口标题永远硬编码；现在透传到 Slint 属性。
     ui.set_window_title(opts.title.as_str().into());
-    ui.window()
-        .set_size(slint::PhysicalSize::new(win_w as u32, win_h as u32));
+    // 回退开关：TERVO_SETTINGS_LEGACY=1 时设置页退回居中 modal（同一套控件，
+    // 只是不再占用 Tab/内容区）。默认走新的 Settings Tab。
+    let settings_legacy = std::env::var("TERVO_SETTINGS_LEGACY")
+        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false);
+    ui.set_settings_legacy(settings_legacy);
+    eprintln!("[ui] settings ui={}", if settings_legacy { "legacy-modal" } else { "tab" });
+    ui.window().set_size(slint::PhysicalSize::new(win_w as u32, win_h as u32));
 
     let pane_model = Rc::new(VecModel::<PaneView>::default());
     let tab_model = Rc::new(VecModel::<TabView>::default());
@@ -6566,6 +6571,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         fwd_profile_indices: Vec::new(),
         fwd_model,
         settings_result_cats: Vec::new(),
+        settings_result_sections: Vec::new(),
+        settings_jump_token: 0,
+        settings_jump_timer: slint::Timer::default(),
         settings_model,
         hover_cell: None,
         resize: None,
@@ -7495,7 +7503,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     ui.on_profile_form_cancel(|| {
-        with_app(|st| st.ui.set_form_error("".into()));
+        with_app(|st| {
+            st.ui.set_form_error("".into());
+            refocus_after_modal(st);
+        });
     });
 
     ui.on_profile_delete(|index| {
@@ -7520,10 +7531,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     });
 
-    // 面板内控件（搜索框）拿过焦点；关闭后必须还给终端 IME 宿主，否则按键丢失。
+    // 面板内控件（搜索框）拿过焦点；关闭后必须还给设置 FocusScope 或终端 IME，
+    // 否则 Esc/按键全丢（设置页叠在下面时尤其明显）。
     ui.on_profiles_close(|| {
         with_app(|st| {
-            st.ui.invoke_focus_terminal();
+            refocus_after_modal(st);
             eprintln!("[profile] panel closed");
         });
     });
@@ -7785,6 +7797,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 st.vault_clear_armed = false;
             }
+            // Profiles 分类直接读 profile-model；每次进入都刷新（含搜索清空）。
+            if c == 7 {
+                refresh_profiles(st);
+            }
         });
         eprintln!("[ui] settings category={c}");
         if c != 4 {
@@ -7801,28 +7817,51 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         with_app(|st| {
             let q = query.to_string();
             st.ui.set_settings_query(q.as_str().into());
-            let hits = settings_search(&q);
-            st.settings_result_cats = hits.iter().map(|(c, _)| *c).collect();
-            st.settings_model.set_vec(
-                hits.into_iter()
-                    .map(|(_, line)| line.into())
-                    .collect::<Vec<_>>(),
-            );
-            eprintln!(
-                "[ui] settings filter q={q:?} hits={}",
-                st.settings_result_cats.len()
-            );
+            let hits = settings_search_hits(&q);
+            st.settings_result_cats = hits.iter().map(|h| h.cat).collect();
+            st.settings_result_sections = hits.iter().map(|h| h.section).collect();
+            st.settings_model
+                .set_vec(hits.into_iter().map(|h| h.line.into()).collect::<Vec<_>>());
+            eprintln!("[ui] settings filter q={q:?} hits={}", st.settings_result_cats.len());
         });
     });
 
     ui.on_settings_open_result(|index| {
         with_app(|st| {
-            if let Some(cat) = st.settings_result_cats.get(index.max(0) as usize) {
+            let idx = index.max(0) as usize;
+            if let Some(cat) = st.settings_result_cats.get(idx) {
                 st.ui.set_settings_category(*cat);
                 eprintln!("[ui] settings goto cat={cat}");
             }
+            if let Some(section) = st.settings_result_sections.get(idx) {
+                // 先下发锚点再自增 token，保证 Slint 的 changed 处理器看到新锚点。
+                st.ui.set_settings_focus((*section).into());
+                st.settings_jump_token = st.settings_jump_token.wrapping_add(1);
+                st.ui.set_settings_jump_token(st.settings_jump_token);
+                // 首次下发的同一轮 Fluent 布局里卡片 y 可能还是 0；80ms 后
+                // 再 bump 一次 token，让 Slint 在布局完成后再滚一次（幂等）。
+                let weak = st.ui.as_weak();
+                st.settings_jump_timer.start(
+                    slint::TimerMode::SingleShot,
+                    Duration::from_millis(80),
+                    move || {
+                        if let Some(ui) = weak.upgrade() {
+                            let next = ui.get_settings_jump_token().wrapping_add(1);
+                            ui.set_settings_jump_token(next);
+                        }
+                    },
+                );
+                eprintln!("[ui] settings jump section={section}");
+            }
             st.ui.set_settings_query("".into());
             st.settings_model.set_vec(Vec::<slint::SharedString>::new());
+        });
+    });
+
+    ui.on_settings_manage_profiles(|| {
+        with_app(|st| {
+            refresh_profiles(st);
+            open_profiles_panel(st);
         });
     });
 
@@ -7837,8 +7876,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         with_app(|st| {
             if open {
                 refresh_vault_ui(st);
+                if st.ui.get_settings_category() == 7 {
+                    refresh_profiles(st);
+                }
+                st.ui.set_settings_focus("".into());
             } else {
                 st.vault_clear_armed = false;
+                st.ui.set_settings_focus("".into());
             }
         });
         eprintln!("[ui] settings open={open}");
@@ -8056,18 +8100,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     {
         let auto = is_auto_theme(&theme_selection);
-        ui.set_theme_name(if auto {
-            AUTO_THEME.into()
+        ui.set_theme_name(if auto { AUTO_THEME.into() } else { initial_theme.id.as_str().into() });
+        ui.set_auto_resolved(if auto { initial_theme.label.as_str().into() } else { "".into() });
+        ui.set_theme_display(if auto {
+            format!("Auto · {}", initial_theme.label).into()
         } else {
-            initial_theme.id.as_str().into()
-        });
-        ui.set_auto_resolved(if auto {
             initial_theme.label.as_str().into()
-        } else {
-            "".into()
         });
-        ui.global::<Palette>()
-            .set_colors(slint_theme(&initial_theme.ui));
+        ui.global::<Palette>().set_colors(slint_theme(&initial_theme.ui));
         ui.set_theme_choices(theme_choices(&state.borrow().registry));
     }
     ui.set_font_size(state.borrow().cfg.font_size as i32);
@@ -9219,6 +9259,34 @@ mod tests {
                 "query={query:?} 应命中 {label}: {hits:?}"
             );
         }
+    }
+
+    #[test]
+    fn settings_search_hits_carry_jump_sections_and_new_categories() {
+        let sixel = settings_search_hits("sixel");
+        assert!(
+            sixel.iter().any(|h| h.cat == 1 && h.section == "images"),
+            "sixel 应跳到 Terminal/Images: {:?}",
+            sixel.iter().map(|h| (h.cat, h.section)).collect::<Vec<_>>()
+        );
+        let backspace = settings_search_hits("backspace");
+        assert!(backspace.iter().any(|h| h.cat == 1 && h.section == "keys"));
+        let profiles = settings_search_hits("profile");
+        assert!(profiles.iter().any(|h| h.cat == 7 && h.section == "profiles"));
+        let advanced = settings_search_hits("import");
+        assert!(advanced.iter().any(|h| h.cat == 3 && h.section == "config"));
+        // 每个分类都必须有索引项，侧栏不会出现空页。
+        for cat in 0..SETTINGS_CATS.len() as i32 {
+            assert!(
+                SETTINGS_CATALOG.iter().any(|(c, _, _, _)| *c == cat),
+                "settings 分类 {cat} 没有任何搜索索引项"
+            );
+        }
+        assert!(SETTINGS_CATALOG.iter().all(|(cat, section, _, _)| {
+            *cat >= 0
+                && (*cat as usize) < SETTINGS_CATS.len()
+                && !section.is_empty()
+        }));
     }
 
     #[test]

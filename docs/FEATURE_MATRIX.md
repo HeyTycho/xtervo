@@ -7,6 +7,9 @@
 > （implemented=7 / partial=10 / not_started=1），证据见 [`terminal-menu-find.md`](terminal-menu-find.md)。
 > 2026-11-06 增补（`feat/sixel`）：Sixel 内联图片（UI-TERM-020 / TERM-020），B/C 各 +1 条 partial；
 > 证据见本文件对应行与 [`self-iteration.md`](self-iteration.md)。
+> 2026-11-06 增补（`feat/settings-ui`）：设置改为无 PTY 的 **Settings Tab**（可回退 legacy modal），
+> 8 个分组图标分类、主题下拉、分段选择器/switch/stepper/slider、搜索跳卡片；Profiles 内嵌列表与
+> Plugins 页使 UI-SET-003/008 从 not_started 升为 partial，B7 状态计数已同步。
 
 ## 0. 覆盖与状态口径
 
@@ -20,11 +23,11 @@
 
 | 范围 | 条目 | implemented | partial | in_progress | needs_verification | not_started | unsupported | 加权完成度 |
 |---|---|---|---|---|---|---|---|---|
-| B 部分（UI） | 111 | 25 | 58 | 0 | 5 | 22 | 1 | 48.6% |
+| B 部分（UI） | 111 | 25 | 60 | 0 | 5 | 20 | 1 | 49.5% |
 | C 部分（底层） | 119 | 12 | 51 | 0 | 9 | 41 | 6 | 31.5% |
-| B+C 合计 | 230 | 37 | 109 | 0 | 14 | 63 | 7 | 39.8% |
+| B+C 合计 | 230 | 37 | 111 | 0 | 14 | 61 | 7 | 40.2% |
 
-> 加权公式：`(implemented + 0.5×partial + 0.5×in_progress) / 条目总数`。`needs_verification / not_started / unsupported` 记 0。该数字是“功能条目覆盖度”，不是代码行数或工时完成度。本轮补 Vault 时用 `scripts/matrix_stats.py` 逐行复核并刷新了上表（旧审计快照数字已过期；脚本额外把 needs_verification 记 0.25，故其 weighted 输出略高）。2026-11-05 Profiles UX/插件 API/Tabby 导入/Vault SSH 修复/SFTP 进度与取消/自适应窗口圆角合入后刷新；脚本 `matrix_stats.py` 当前输出 37/107/14/63/7、weighted 41.2%（脚本把 needs_verification 记 0.25，表中按原公式只计 implemented+0.5×partial = 39.7%）。
+> 加权公式：`(implemented + 0.5×partial + 0.5×in_progress) / 条目总数`。`needs_verification / not_started / unsupported` 记 0。该数字是“功能条目覆盖度”，不是代码行数或工时完成度。2026-11-05 Profiles UX/插件 API/Tabby 导入/Vault SSH 修复/SFTP 进度与取消/自适应窗口圆角合入后刷新；2026-11-06 设置页更新把 UI-SET-003/008 升为 partial，表中按 implemented+0.5×partial 计为 40.2%。`scripts/matrix_stats.py` 的 weighted 口径把 needs_verification 记 0.25，输出会略高于表中公式。
 
 ## 2. 审计发现：现有实现/文档与需求不符（至少 3 条）
 
@@ -159,22 +162,22 @@
 
 ### B7. Settings 设置页（14 条）
 
-状态：partial=9，not_started=5。
+状态：partial=11，not_started=3（2026-11-06：UI-SET-003/008 升 partial）。
 
 | ID | Feature | Upstream evidence | Rust implementation | Status | Test | Result | Limitation |
 |---|---|---|---|---|---|---|---|
-| UI-SET-001 | Application：应用级行为、启动与默认行为 | U-AUDIT / 需求 B7 | 设置窗口改为 **Tabby 式左右分列**：左侧垂直导航（Appearance/Terminal/Window/Config/Hotkeys/Plugins/Vault）+ 右侧内容区 + 顶部搜索；面板居中于 TabBar 下方（520×520 上限，窗口小则收缩） | partial | 真机：Appearance/Terminal/Config 三页布局正确，搜索 `font` → 1 条 “Terminal · Font size” 覆盖右栏；截图 .logs/settings-2col*.png | 设置导航/内容分栏可用，搜索可用 | 无 Application 独立页；Appearance 已做页内滚动，其它分类小窗口下仍可能裁剪 |
-| UI-SET-002 | Appearance：外观、窗口风格、图标/字体、背景效果、光标/粗体 | U-AUDIT / 需求 B7 | main.slint Appearance（页内 Flickable 滚动）：主题选择 + **Background image** 路径输入（合法即预览、Enter/失焦提交、× 清除、非法红字）+ **Dim** 滑块（0–80%，默认 60%）+ **Opacity** 滑块（0–100%，显示百分比）；新增 **Cursor**（Block/Underline/I-beam、Blink System/On/Off、光标色/光标文字色）+ **Bold**（bold-is-bright、bold-color-same-as-fg、bold color）；config.rs 新增 `cursor_shape`/`cursor_blink`/`cursor_color`/`cursor_text_color`/`bold_is_bright`（默认 true）/`bold_color`/`bold_color_same_as_fg`（默认 true），serde default + 读入归一（非法颜色/形状/闪烁回退并提示），v0/v1 additive 字段不 bump schema；main.rs 即时应用：形状/颜色只重生成 cell overlay，闪烁用 530ms UI Timer 切 overlay visible、不重绘终端帧；粗体重建 Palette 后重取整帧 | partial | `cargo test -p tervo-app --bin tervo` 241 passed（新增 config 外观 6 例 + render 光标 6 例）；`cargo test -p tervo-core` 70 lib + 46 integration（bold-is-bright / bold-color / CursorShape 名）；Xvfb :117 `scripts/cursor_style_shot.sh` 截图 block/underline/ibeam、blink on/off、bold-is-bright on/off；设置页滚动截图 + 点击 Block/Blink Off 即时生效日志与落盘；空闲 3s 内 `[render]` 行增量 0（闪烁不触发整帧重绘） | 光标形状/闪烁/颜色与粗体亮色均可在设置页即时调整并持久化；闪烁不影响终端帧；坏颜色/坏别名回退 | 无窗口风格/图标/字体族设置；无模糊/每主题独立背景；背景固定 cover；`system` 闪烁当前等同 on（未读 gsettings）；应用 DECSCUSR 的 underline/beam/hollow 优先；frame=Block 时用配置形状（无法区分显式 block）；颜色输入只接受 #RGB/#RRGGBB；未验证真 GPU |
-| UI-SET-003 | Profiles & Connections：默认 Profile、列表、连接行为 | U-AUDIT / 需求 B7 | 无实现 | not_started | 无 | 未实现 | 无 Profile 设置页 |
-| UI-SET-004 | Terminal：行为、字体、滚动、复制粘贴、鼠标等 | U-AUDIT / 需求 B7 | main.slint Terminal 分类改为 Flickable：字号 ±、回滚 ±、Unlimited scrollback、Copy on select / Confirm close / Confirm paste、右键模式、中键粘贴、桌面通知、Visual/Audible bell、Scroll on output/keystroke、Scrollbar Always/Auto/Never、Backspace/Delete 编码 ChoiceBtn；config.rs 对应字段 + 解析/回退；设置搜索索引同步 6 条 | partial | 235 app tests（基线 229）；Xvfb :118 设置页点击 Unlimited/Audible/Scroll output/Scrollbar/Backspace/Delete 均断言 config 写入 + `[ui]` 回调日志；截图 `.logs/term-behavior/settings_terminal_{top,mid,scroll}.png` | 字号/回滚/复制/滚动/响铃/滚动条/按键编码可调；Terminal 页内容可滚动；设置即时生效 | 无字体族/行距/鼠标设置；无 Application 独立页；Unlimited 只对新 pane 生效；小窗口需滚动 |
-| UI-SET-005 | Color Scheme：选择、预览、导入/导出 | U-THEME / 需求 B7 | main.slint 主题网格 + Flickable；themes.rs ThemeRegistry 6 格式导入；`--import-tabby` 从 Tabby `terminal.colorScheme`/`lightColorScheme`/`customColorSchemes` 生成 `themes/tabby-<slug>.toml`（16 色 + fg/bg/cursor，UI chrome 自动推导） | partial | themes.rs 12 例；tabby_import.rs 主题相关 3 例（落盘/坏色值/重名后缀/短 hex/`ThemeRegistry::load` 回读）；人工 .logs/imported_settings4.png | 选择/导入可用；Tabby 配色可迁入并在设置页刷新 | 无独立预览；导出未实现；主题 selection/cursorAccent/selectionForeground 忽略，颜色仅 #RGB/#RRGGBB；未做文件监听式热重载 |
+| UI-SET-001 | Application：应用级行为、启动与默认行为 | U-AUDIT / 需求 B7 | **Settings Tab**（默认）：不创建 PTY、不进 `workspace::Tab`；TabBar 显示可关闭齿轮 Tab，内容区整页；`Esc` / Tab × / 页头 × / 点终端 Tab 关闭，关闭后 IME 焦点归还。左侧 3 组 8 分类（Appearance/Terminal/Window/Keys/Profiles/Plugins/Vault/Advanced）+ 手绘线性图标；顶部搜索按 `SETTINGS_CATALOG` 索引，点击结果切分类并用 jump token 滚到/高亮卡片。`TERVO_SETTINGS_LEGACY=1` 回退居中 modal（同一套控件）。 | partial | 263 app tests；Xvfb :124 `scripts/settings_ui_shots.sh` 覆盖 open/分类/下拉/搜索跳转/关闭/700×500/480×360/legacy；read-shell 焦点泄漏测试（设置内输入未写 PTY，关闭后可输入）；底部 TabBar 与 Yaru Light 截图走查 | 设置 Tab 导航/搜索/关闭/回退/小窗口均可用，且不污染 workspace/PTY | 非真正 `workspace::Tab`（刻意避免改 PTY/会话模型）；无字体族/行距；搜索到卡片而非单控件；无完整 Tab 键焦点遍历 |
+| UI-SET-002 | Appearance：外观、窗口风格、图标/字体、背景效果、光标/粗体 | U-AUDIT / 需求 B7 | 卡片式 Appearance：Theme 下拉框（`theme-display` 显示 Auto 解析结果）+ Auto 开关；Background image 路径（合法预览、Enter/失焦提交、× 清除、非法红字）+ Dim/Opacity 滑杆；Cursor Shape/Blink 分段选择器 + Color/Text color 输入；Bold 开关 + Bold color。回调/配置字段与旧 modal 完全一致，全部 hot apply。 | partial | 263 app tests；Xvfb :124 截图 settings_open/dropdown；切 Yaru Light 即时换色；e2e 设置写入断言沿用旧回调 | 主题/背景/光标/粗体全部保留并改为下拉/分段/开关/滑杆 | 无窗口风格/图标/字体族；无每主题独立背景；背景固定 cover；颜色仅 #RGB/#RRGGBB |
+| UI-SET-003 | Profiles & Connections：默认 Profile、列表、连接行为 | U-AUDIT / 需求 B7 | Settings → Profiles：内嵌 `profile-items` 列表（点击打开、★ 默认、Edit、× 删除、New Profile），并在设置页上方叠加现有 Profiles 全面板（搜索/Dup/Close）。点列表项开 Tab 时自动退出设置页。 | partial | 263 app tests；Xvfb :124 截图 settings_profiles；Manage 模态/关闭后 Esc 重聚焦设置页走查 | 设置内可查看/新建/编辑/删除/默认/打开 Profile；完整面板保留 | 内嵌列表无搜索/复制（仍走 Manage 全面板）；无分组/拖拽排序 |
+| UI-SET-004 | Terminal：行为、字体、滚动、复制粘贴、鼠标等 | U-AUDIT / 需求 B7 | 卡片式 Terminal：字号/回滚 Stepper、Unlimited scrollback switch、Scrolling（output/keystroke switch + Scrollbar 分段）、Behavior（Copy/Confirm/Right click 分段/中键/通知）、Bell（Visual/Audible）、Images（Sixel/滚动）、Key encoding（Backspace/Delete 分段）。所有旧回调与 config 字段不变，搜索索引扩到 8 个 section。 | partial | `cargo test -p tervo-app` **263 passed**；Xvfb :124 e2e 断言 Unlimited/Scrollbar Always/Scroll on output/Audible/Backspace/Delete 的 config 与 `[ui]` 日志；截图 settings_terminal_*；搜索 sixel → Images 跳转 | 旧 Terminal 设置全部保留且即时生效；Sixel Images 段纳入分组卡片与新 e2e 坐标 | 无字体族/行距/鼠标设置；Unlimited 只对新 pane；小窗口需滚动 |
+| UI-SET-005 | Color Scheme：选择、预览、导入/导出 | U-THEME / 需求 B7 | Theme 改为下拉框（12 内置 + Auto），选中即时写 config 并重取所有 pane 调色板；themes.rs ThemeRegistry 6 格式导入；`--import-tabby` 生成 tabby 主题。 | partial | themes.rs 12 例；263 app tests；Xvfb :124 dropdown 截图 + Yaru Light 实时切换 | 选择/导入可用并即时应用 | 无独立预览/导出；selection/cursorAccent 等忽略；无文件监听热重载 |
 | UI-SET-006 | Config Sync：原版或插件提供时的兼容策略 | U-AUDIT / 需求 B7 | 无实现 | not_started | 无 | 未实现 | 无同步机制/策略 |
-| UI-SET-007 | Hotkeys：列表、搜索、录入、修改、清除、冲突提示、多段键 | U-AUDIT / 需求 B7 | 设置 → Hotkeys：按分类/标题列出命令标题 + 生效 chord + CUSTOM 标记；Edit 录制下一组合键（`Ctrl/Shift/Alt`，Esc 取消，Backspace/Delete 恢复默认），写入 `config.hotkeys` 并即时保存；单项 Reset / Reset All；冲突拒绝保存并在行内标红 + 右上角冲突数；命令表 24 条，`Chord` 解析/规范化/冲突/生效绑定在 commands.rs | partial | 单测 `hotkey_page_lists_bindings_and_conflicts`、`chord_parse_canonical_and_invalid_input`、`override_conflict_detection_and_validation`、config hotkeys roundtrip/兼容 4 例；未启动 GUI（沙箱与其他 agent 共用显示器，约束只跑 cargo test/build） | 列表/录制/修改/清除/持久化/冲突提示可用；新建/修改后无需重启，分发立即生效 | 无 Hotkeys 搜索；多段键（Ctrl+K Ctrl+T）未支持录制/override；录制仅 Ctrl/Shift/Alt（key 回调无 Meta）；小窗口下固定列宽可能被裁剪 |
-| UI-SET-008 | Plugins：搜索、可用/已装、安装、卸载、启用、禁用、更新、详情、权限、目录 | U-AUDIT / 需求 B7 | 无实现 | not_started | 无 | 未实现 | 无插件系统/管理器 UI |
+| UI-SET-007 | Hotkeys：列表、搜索、录入、修改、清除、冲突提示、多段键 | U-AUDIT / 需求 B7 | Settings → Keys：30 命令列表 + 生效 chord/CUSTOM/CONFLICT，Edit 录制（Ctrl/Shift/Alt，Esc 取消，Backspace 默认），单项/全部重置，冲突拒绝；全局设置搜索可命中 Hotkey bindings。 | partial | 263 app tests；Xvfb :124 Keys 页截图；旧 hotkey 单测全通过 | 列表/录制/持久化/冲突提示可用，并归入 Keys 分类 | 无多段键；录制无 Meta；固定行宽在小窗口可能压缩 chord 文本 |
+| UI-SET-008 | Plugins：搜索、可用/已装、安装、卸载、启用、禁用、更新、详情、权限、目录 | U-AUDIT / 需求 B7 | Settings → Plugins：summary、Installed 列表、最近 8 条活动、插件目录、权限/超时文案；插件发现/命令注册在 Rust 侧。 | partial | 263 app tests；Xvfb :124 Plugins 页截图；plugin.rs 单测全通过 | 已装列表/活动/目录/权限说明可查看 | 无安装/卸载/启用切换/更新/详情页；改 enabled 仍需重启 |
 | UI-SET-009 | SSH：Host Key、Agent 类型、X11 Display 等 | U-AUDIT / 需求 B7 | 无实现 | not_started | 无 | 未实现 | 无 SSH/设置页 |
-| UI-SET-010 | Vault：加密凭据容器、主密码、锁定/解锁、凭据管理 | U-AUDIT / 需求 B7 | 设置左侧导航新增 **Vault** 页：状态/路径、Master 密码输入（masked）、Set/Change、Unlock、Lock、Clear（二次确认）、错误/提示；Profile 表单 `auth=password` 时显示密码输入与「Save password to Vault」；`vault.rs` 负责加密落盘 | partial | `vault.rs` 8 例 + `askpass.rs` 11 例 + `profile_serialization_has_no_plaintext_password`；`cargo test -p tervo-app --bin tervo` 168 passed；**GUI 真机走查完成**（设置主密码 → Profile 保存密码 → 断开重连自动填充，服务端 `password auth ok`） | Vault 管理 UI 与 Profile 保存/读取路径已接通（GUI 真机验证） | 无空闲自动锁定/解锁弹窗；无凭据逐条列表与单独删除（随 Profile 取消勾选删除，锁定时暂留）；无 Keyring 后端；密码仍经 ssh 子进程环境变量传递 |
-| UI-SET-011 | Window：窗口行为、TabBar 位置、Quake Mode | U-AUDIT / 需求 B7 | 设置 → Window：Tab Bar 位置、**Quake mode (F12)** 开关；TabBar 菜单保留 Always on Top/Tab Bar Top/Bottom；Quake 宽度/高度/热键在 config | partial | 真机：Window 页开关可切换并写 config；F12 行为与日志验证 | Window 页/Quake 开关可用 | 无 Quake 尺寸/热键的可视化编辑（需改 config） |
-| UI-SET-012 | Config File：路径、打开文件/目录、诊断（不显示 secret） | U-CONF / 需求 B7 | 设置面板 Config File 分类：显示 `Config::path()`、Open Folder（xdg-open）；文案声明不存密码/私钥 | partial | 真机：面板显示 `/tmp/set2.toml`；Open Folder 调用 xdg-open（沙箱内可能失败，会打日志） | 路径展示与打开目录可用 | 无配置诊断/语法检查；无“打开配置文件”按钮（只有目录）；secret 策略已接 Vault（见 UI-SET-010）；配置文件本身仍未加密 |
+| UI-SET-010 | Vault：加密凭据容器、主密码、锁定/解锁、凭据管理 | U-AUDIT / 需求 B7 | Settings → Vault 卡片：状态/路径、Master 密码 masked 输入、Set/Change、Unlock、Lock、Clear（二次确认）、错误/提示；Profile 表单 auth=password 可保存/读取。 | partial | vault.rs 8 例 + askpass 11 例；263 app tests；Xvfb :124 Vault 页截图 | Vault 管理 UI 保留并适配卡片布局 | 无空闲自动锁定/弹窗；无凭据逐条列表；密码仍经 askpass 环境变量 |
+| UI-SET-011 | Window：窗口行为、TabBar 位置、Quake Mode | U-AUDIT / 需求 B7 | Settings → Window：Tab Bar at bottom、Quake mode (F12) switch + 说明；TabBar 菜单保留置顶/位置。底部 TabBar 下设置页仍占满上方内容区。 | partial | 263 app tests；Xvfb :124 底部 TabBar 截图走查；Window 页截图 | Window/Quake 开关保留；TabBar 上/下布局都不盖内容 | 无 Quake 尺寸/热键可视化编辑 |
+| UI-SET-012 | Config File：路径、打开文件/目录、诊断（不显示 secret） | U-CONF / 需求 B7 | Settings → Advanced：path 展示、Open Folder、Import Tabby、Export Profiles、config-status、secret 策略说明；另展示 Settings UI 当前模式与 legacy 开关提示。 | partial | 263 app tests；Xvfb :124 Advanced 页截图；Open Folder 仍调 xdg-open（失败只打日志） | 原 Config 功能全部迁入 Advanced 卡片 | 无配置诊断/语法检查；只有目录没有“打开文件”；无恢复备份入口 |
 | UI-SET-013 | 插件可动态注册设置页/项；卸载后配置清理或保留策略 | U-AUDIT / 需求 B7 | 无实现 | not_started | 无 | 未实现 | 无插件设置 API/生命周期策略 |
 | UI-SET-014 | 保存时机明确；保存失败/无效值/迁移错误提示 | U-AUDIT / 需求 B7 | config.rs 即时保存 + 原子写 + schema 迁移/备份；错误仅 eprintln；数值 clamp | partial | config.rs 7 例；代码走查：字号 8–32、回滚 500–100000 夹取；写失败仅 stderr | 即时保存/迁移/备份可用；无 UI 提示 | 保存/迁移/解析失败不弹 UI；无“恢复备份”入口；无效值只夹取不提示 |
 
