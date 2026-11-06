@@ -372,15 +372,12 @@ impl Frame {
         (idx > 0).then(|| self.hyperlinks.get(idx)).flatten().map(|s| s.as_str())
     }
 
-    /// 取某格上的普通 URL（行内文本识别，不支持 OSC 8；调用方应先查
-    /// [`Frame::hyperlink_at`]，让显式超链接优先）。
+    /// 取某格上的行内链接（URL / IPv4[:port] / 本地路径）。
     ///
-    /// 返回的是新分配的 URI 字符串，只在点击时调用。列号是**显示列**
-    /// （与鼠标命中格一致），内部按单元格重建文本并记录“显示列 → 字符下标”：
-    /// - 宽字符占一列文本、两列网格；右半 spacer 映射回同一字符；
-    /// - 组合字符由 alacritty 存在单元格的 `zerowidth` 里，不占列，故不会错位；
-    /// - 中文、全角标点等宽字符不会让 URL 列号偏移。
-    pub fn url_at(&self, row: usize, col: usize) -> Option<String> {
+    /// 与 [`Frame::url_at`] 共用同一套显示列映射（宽字符/组合字符不会错位）；
+    /// 不包含 OSC 8，调用方应先查 [`Frame::hyperlink_at`] 让显式超链接优先。
+    /// 返回 `(类型, 文本)`，是否允许打开由 app 的白名单/落地策略决定。
+    pub fn link_at(&self, row: usize, col: usize) -> Option<(LinkKind, String)> {
         if row >= self.rows || col >= self.cols {
             return None;
         }
@@ -390,11 +387,22 @@ impl Frame {
             return None;
         }
         scan(&text).into_iter().find_map(|link| {
-            (link.kind == LinkKind::Url
-                && link.start as u32 <= char_idx
-                && char_idx <= link.end as u32)
-                .then_some(link.text)
+            (link.start as u32 <= char_idx && char_idx <= link.end as u32)
+                .then_some((link.kind, link.text))
         })
+    }
+
+    /// 取某格上的普通 URL（行内文本识别，不支持 OSC 8；调用方应先查
+    /// [`Frame::hyperlink_at`]，让显式超链接优先）。
+    ///
+    /// 返回的是新分配的 URI 字符串，只在点击时调用。列号是**显示列**
+    /// （与鼠标命中格一致），内部按单元格重建文本并记录“显示列 → 字符下标”：
+    /// - 宽字符占一列文本、两列网格；右半 spacer 映射回同一字符；
+    /// - 组合字符由 alacritty 存在单元格的 `zerowidth` 里，不占列，故不会错位；
+    /// - 中文、全角标点等宽字符不会让 URL 列号偏移。
+    pub fn url_at(&self, row: usize, col: usize) -> Option<String> {
+        self.link_at(row, col)
+            .and_then(|(kind, text)| (kind == LinkKind::Url).then_some(text))
     }
 
     /// 按显示列重建一行文本，并返回 `显示列 -> 文本字符下标`。
@@ -519,6 +527,66 @@ mod tests {
         put_text(&mut f, 0, 3, "https://example.com/x");
         assert_eq!(f.url_at(0, 3).as_deref(), Some("https://example.com/x"));
         assert_eq!(f.url_at(0, 4).as_deref(), Some("https://example.com/x"));
+    }
+
+    #[test]
+    fn link_at_returns_url_ipv4_and_path_for_app_side_filtering() {
+        let mut f = Frame::new(64, 3);
+        put_text(&mut f, 0, 0, "open /tmp/a.txt");
+        put_text(&mut f, 1, 0, "http://127.0.0.1:8080/health");
+        put_text(&mut f, 2, 0, "127.0.0.1:8080");
+
+        assert_eq!(
+            f.link_at(0, 7),
+            Some((LinkKind::Path, "/tmp/a.txt".to_string()))
+        );
+        assert_eq!(f.url_at(0, 7), None, "url_at 仍只返回 URL");
+        assert_eq!(
+            f.link_at(1, 2),
+            Some((LinkKind::Url, "http://127.0.0.1:8080/health".to_string()))
+        );
+        // 裸 IP:port 仍是可识别链接，但是否打开由 app 决定（不强制打开）。
+        assert_eq!(
+            f.link_at(2, 2),
+            Some((LinkKind::Ipv4, "127.0.0.1:8080".to_string()))
+        );
+        assert_eq!(f.link_at(0, 0), None);
+        assert_eq!(f.link_at(3, 0), None, "越界行必须是 None");
+        assert_eq!(f.link_at(0, 64), None, "越界列必须是 None");
+    }
+
+    #[test]
+    fn link_at_maps_path_columns_across_wide_and_combining_chars() {
+        // 显示列：中=0/1、空格=2、e(+组合重音)=3、空格=4，路径从 5 开始。
+        // 路径自身还含中文（路/径占两列），点右半边 spacer 也必须命中。
+        let mut f = Frame::new(40, 1);
+        put_text(&mut f, 0, 0, "中");
+        f.cells[0].flags = flags::WIDE_CHAR;
+        f.cells[1].ch = ' ' as u32;
+        f.cells[1].flags = flags::WIDE_CHAR_SPACER;
+        put_text(&mut f, 0, 2, " e ");
+        let base = f.cell(0, 3).clone();
+        f.put_zerowidth(3, base, None, &['\u{0301}']);
+        let end = put_text(&mut f, 0, 5, "/tmp/");
+        put_text(&mut f, 0, end, "路");
+        f.cells[end].flags = flags::WIDE_CHAR;
+        f.cells[end + 1].ch = ' ' as u32;
+        f.cells[end + 1].flags = flags::WIDE_CHAR_SPACER;
+        put_text(&mut f, 0, end + 2, "径");
+        f.cells[end + 2].flags = flags::WIDE_CHAR;
+        f.cells[end + 3].ch = ' ' as u32;
+        f.cells[end + 3].flags = flags::WIDE_CHAR_SPACER;
+        put_text(&mut f, 0, end + 4, "/a.txt");
+
+        let want = Some((LinkKind::Path, "/tmp/路径/a.txt".to_string()));
+        assert_eq!(f.link_at(0, 5), want, "路径起点");
+        assert_eq!(f.link_at(0, 7), want, "ASCII 路径段");
+        assert_eq!(f.link_at(0, end), want, "路径里的中文左半边");
+        assert_eq!(f.link_at(0, end + 1), want, "路径里的中文右半边 spacer");
+        assert_eq!(f.link_at(0, end + 2), want, "第二个中文字符");
+        assert_eq!(f.url_at(0, end), None, "url_at 不返回路径");
+        assert_eq!(f.link_at(0, 0), None, "中文前缀不是路径");
+        assert_eq!(f.link_at(0, 2), None, "空格不是路径");
     }
 
     #[test]
