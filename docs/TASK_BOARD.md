@@ -1,6 +1,6 @@
 # Tervo 任务看板
 
-> 最后更新：2026-11-06 19:55  
+> 最后更新：2026-11-06 20:05  
 > 规则：每个任务开始/完成/阻塞都要更新本文件；记录 worktree、branch、commit、测试/截图、限制。  
 > 当前 master：`a82ac52`（Settings Tab 持久化）；当前 release：`target/release/tervo` 19:07。
 
@@ -33,7 +33,7 @@
 | ID | 任务 | 状态 | worktree / branch | 说明 |
 |---|---|---|---|---|
 | P1-01 | 完整键盘协议：Kitty query/set/push/pop、alternate/event types、modifyOtherKeys、release/repeat | running | `.worktrees/keyboard-protocol` / `feat/keyboard-protocol` | P0 已稳，恢复；已有未提交 `core/src/keyboard.rs` |
-| P1-02 | 搜索匹配计数 + 鼠标可编辑搜索框 | running | `.worktrees/search-ux` / `feat/search-ux` | P0 已稳，恢复 |
+| P1-02 | 搜索匹配计数 + 鼠标可编辑搜索框 | done | `.worktrees/search-ux` / `feat/search-ux` | commit `2ac8943`；合 master；`.logs/search-ux/` | app 282；search e2e PASS；term_menu PASS |
 | P1-03 | URL hover 手型 + 本地文件路径 Ctrl+click | running | `.worktrees/url-paths` / `feat/url-paths` | P0 已稳，恢复 |
 | P1-04 | 每 Profile 字体/颜色/命令/登录 shell/默认尺寸/word chars | queued | 待建 | 依赖 P0 设置 UI merged |
 | P1-05 | Codex P1：copy/search/save 500ms UI 阻塞 | queued | 待建 | 与 P0-05 同源，可并入 P0 hardening |
@@ -107,3 +107,4 @@
 |---|---|
 | 2026-11-06 19:15 | 建立看板；P0-01..04 完成；P0-05/06 running；P1 冻结；周末大块排期 |
 | 2026-11-06 19:55 | P0-05/06/07 done（474 tests，6 e2e，release 19:51）；P1-01/02/03/10 恢复；WM resize 首次偶发、重跑 PASS 记录 |
+| 2026-11-06 20:05 | P1-02 搜索 UX 合入（282 tests，search e2e PASS）；注意 e2e 必须重建 target/debug |
