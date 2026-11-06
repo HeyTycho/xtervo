@@ -1,6 +1,6 @@
 # Tervo 任务看板
 
-> 最后更新：2026-11-06 21:00  
+> 最后更新：2026-11-06 21:40  
 > 规则：每个任务开始/完成/阻塞都要更新本文件；记录 worktree、branch、commit、测试/截图、限制。  
 > 当前 master：`a82ac52`（Settings Tab 持久化）；当前 release：`target/release/tervo` 19:07。
 
@@ -38,7 +38,7 @@
 | P1-04 | 每 Profile 字体/颜色/命令/登录 shell/默认尺寸/word chars | running | `.worktrees/profile-session` / `feat/profile-session` | W-01 合并；Profile 外观+会话恢复审计 |
 | P1-05 | Codex P1：copy/search/save 500ms UI 阻塞 | queued | 待建 | 与 P0-05 同源，可并入 P0 hardening |
 | P1-06 | Codex P1：渲染 damage 路径失效、每帧全屏重绘 | running | `.worktrees/render-damage` / `feat/render-damage` | 双缓冲脏行复制；单行 `full=false rows=1` 验收 |
-| P1-07 | Codex P1：400ms CoreEvent 轮询 → wake 桥接 | running | `.worktrees/event-wake` / `feat/event-wake` | 语义事件 <50ms；空闲 CPU 不退化 |
+| P1-07 | Codex P1：400ms CoreEvent 轮询 → wake 桥接 | done | `.worktrees/event-wake` / `feat/event-wake` | commit `16b5135`；合 master；app 300/core 518 tests；Xvfb :138 e2e PASS：标题 0–1ms/Bell 1ms/OSC52 1ms/插件 3ms/SFTP 28ms；空闲 CPU 不退化；`.logs/event-wake/` | 400ms 兜底保留 |
 | P1-08 | Codex P1：Vault Argon2 KDF 移出 UI 线程 | queued | 待建 | 解锁期间 UI 不停顿 |
 | P1-09 | Codex P1：`main.rs` 拆分 + `with_app` 重入不丢操作 | queued | 待建 | 大重构，分小步 |
 | P1-10 | 右键菜单美化：字号加大、分类分组、图标/分隔线、窄窗不溢出 | done | `.worktrees/context-menu` / `feat/context-menu` | commit `bddf0ef`；合 master `3e5c270`；`.logs/context-menu/` | context-menu e2e PASS；term_menu PASS；字号/分组/窄窗/右下翻转截图 |
@@ -110,3 +110,4 @@
 | 2026-11-06 20:05 | P1-02 搜索 UX 合入（282 tests，search e2e PASS）；注意 e2e 必须重建 target/debug |
 | 2026-11-06 20:20 | P1-10 右键菜单合入（3e5c270）；context-menu + term_menu e2e PASS；开始 W-01 |
 | 2026-11-06 21:00 | P1-01 键盘协议合入（1a55f09，514 tests）；P1-06 damage/P1-07 event-wake 开跑 |
+| 2026-11-06 21:40 | P1-07 事件唤醒完成并提交（16b5135，feat/event-wake，未合 master）：语义事件/插件/SFTP 结果即时唤醒，400ms 兜底保留；Xvfb :138 e2e PASS；待父任务合入 |
