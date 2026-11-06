@@ -55,7 +55,7 @@
 | W-03 | iTerm2 IIP 图片 | running | `.worktrees/iip-image` / `feat/iip-image` | OSC 1337 File PNG/JPEG；复用 Sixel overlay；默认开可关 | 真实图片/滚动/resize/关闭 |
 | W-04 | 插件系统 V1 | running | `.worktrees/plugin-v1` / `feat/plugin-v1` | 外部进程 manifest/权限 + Command/Status/Theme V1；不含任意 UI | 4 个真实插件；崩溃/超时/禁用 |
 | W-05 | 打包/自动更新/崩溃报告 | done | `.worktrees/packaging` / `feat/packaging` | commit `2ac3ac6`；合 master `585fd21`；327 tests；packaging 71 项 PASS；`dist/` tar/deb/sha | tar/deb/install/rollback/deb smoke；自动更新/崩溃报告明确未做 |
-| W-06 | Wayland 原生 spike | queued | text-input-v3 IME、剪贴板、DnD、resize、全局快捷键 | 只 spike/报告，不承诺合并 |
+| W-06 | Wayland 原生 spike | running | `.worktrees/wayland-spike` / `feat/wayland-spike` | 支持矩阵/阻塞/分阶段；只读实验，不硬塞 | `docs/WAYLAND_SPIKE.md` |
 | W-07 | 24h 稳定性 soak | queued | 输出洪峰、Sixel 大图、emoji cache、多 Tab/多窗口内存 | 无崩溃/无持续内存增长；报告 |
 | W-08 | 全量 e2e/回归矩阵 | queued | 现有 5 e2e + 新功能 e2e + 性能门禁 | 全部绿；写入 selfcheck |
 | DOC-01 | 最终人工复测清单 | queued | `docs/RETEST_CHECKLIST.md`：IME/GPU/设置/右键/图片/剪贴板/SSH/SFTP/Profile/插件/打包 | 交付前填好步骤、预期、日志/截图、已知限制 |
