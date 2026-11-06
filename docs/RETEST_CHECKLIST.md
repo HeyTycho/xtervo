@@ -6,10 +6,10 @@
 ## 0. 版本信息（最终填写）
 
 ```text
-commit:    8823311fdc99
-release:   dist/tervo-stripped（40.4 MB，sha256 e55bacd3…ed076765）
-tar.gz:    dist/tervo-0.1.0-linux-x86_64.tar.gz（sha256 8c990b6e…af32573）
-deb:       dist/tervo_0.1.0-1_amd64.deb（sha256 7bc4bd34…62fc00）
+commit:    28521aa5a0a5
+release:   dist/tervo-stripped（40.4 MB，sha256 46812448…5fd71d1）
+tar.gz:    dist/tervo-0.1.0-linux-x86_64.tar.gz（sha256 bb4d91e8…27717fd0）
+deb:       dist/tervo_0.1.0-1_amd64.deb（sha256 b715762d…381e9478）
 built:     2026-11-06T19:26:31Z（SOURCE_DATE_EPOCH）
 测试:      app 369 passed / 1 ignored；workspace 全绿
 e2e:       15 个脚本全 PASS（SSH/SFTP、插件、设置、图片、键盘、事件、渲染、P0、URL/右键等）
