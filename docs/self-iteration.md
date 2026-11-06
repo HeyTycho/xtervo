@@ -1406,3 +1406,48 @@ cargo bench -p tervo-core --bench pty_throughput
   约 49–51ms，与基线持平（热路径未加逐格零宽检查）。
 - 限制：ZWJ 家族仍是 3 个 emoji / 6 格（alacritty 按码位计宽，不做 grapheme
   cluster 合并）；组合音标无 GPOS，用墨迹居中近似；内置字体路径偏 Debian/Ubuntu。
+
+### 2026-11-06 · 光标形状/闪烁/颜色 + bold-is-bright（feat/cursor-style）
+
+- **目标**：补齐 GNOME Terminal 基础外观项，不改 GPU/resize/背景/Tab 布局/IME。
+- **配置（app/config.rs）**：新增 `cursor_shape`（block/underline/ibeam）、
+  `cursor_blink`（system/on/off）、`cursor_color`/`cursor_text_color`（空 = 主题）、
+  `bold_is_bright`（默认 true）、`bold_color`、`bold_color_same_as_fg`（默认 true）。
+  全部走 serde default，旧 v0/v1 配置缺字段自动补齐；读入时归一形状/闪烁/颜色，
+  非法颜色清空并打日志。字段是 additive，不 bump schema（避免每次启动重写用户
+  配置）；v0→v1 迁移写回时自动带出 GNOME 默认值，已有测试覆盖。
+- **粗体（core/palette.rs + frame.rs）**：`Palette` 增加粗体策略；
+  `CellData::from_cell` 按 BOLD 解析：`bold-is-bright` 把 ANSI 0–7/Named
+  Black..White 映射到 8–15（默认前景不换色，避免 Catppuccin 的 `bright_fg`
+  反而更暗）；`bold-color-same-as-fg=false` 且配置 `bold_color` 时，默认前景色
+  的粗体文字使用自定义色，显式 ANSI 色不受影响。`CursorShape::from_name`
+  接受 block/underline/ibeam 及 beam/bar 别名。
+- **渲染（app/render.rs）**：`draw_cursor` 支持形状/颜色/光标文字色/闪烁相位；
+  block 的字符改用不透明主题背景（不再复用可能带 opacity alpha 的 default_bg）。
+  新增 `draw_without_cursor` + `cursor_overlay`：光标不再画进终端帧，改为生成
+  cell 大小的小图（block 整格；underline/beam 透明背景 + 线），由 Slint 叠在
+  `pane.image` 上。app 的 530ms UI Timer 只切 `cursor-visible`，不拉帧、不重绘、
+  不重传整屏纹理；`cursor_shape/color` 改动也只重生成这张小图。
+- **设置页（main.slint）**：Appearance 增加 Cursor（形状/闪烁/颜色/文字色）与
+  Bold（bold-is-bright、same-as-fg、bold color）。Appearance 内容改成页内
+  Flickable（`content-height: appearance-pane.preferred-height`），小窗口下可滚动；
+  回调即时写配置并应用。粗体改动通过 `PaneHandle::set_theme` 重建调色板并重取整帧。
+- **测试**：基线 `cargo test -p tervo-app --bin tervo` 229 → **241 passed**
+  （新增 config 外观默认/旧配置/颜色解析/形状闪烁归一/roundtrip 6 例，render
+  光标形状区域/颜色覆盖/闪烁 off/overlay 透明/DECSCUSR 优先 6 例）；`cargo test -p tervo-core`
+  70 lib + 46 integration（新增 bold-is-bright/bold-color/CursorShape 名 3 例）。
+- **截图（headless Xvfb :117，`scripts/cursor_style_shot.sh`）**：
+  `.logs/cursor-style/block-blink-on.png`、`block-blink-off.png`、
+  `block-config-off.png`、`underline-blink-on.png`、`ibeam-blink-on.png`、
+  `bold-is-bright-on.png`、`bold-is-bright-off.png`；设置页
+  `.logs/cursor-style/settings.png` 与滚动后的 `settings-scrolled.png`。
+  点击设置页 Block / Blink Off 的日志 `[appearance] cursor_shape=block`、
+  `cursor_blink=off` 并写回 config（`.logs/cursor-style/live.toml`）。
+- **闪烁不整帧重绘的证据**：`TERVO_RENDER_PROFILE=1` 下空闲 3s，
+  `[render]` 行增量 = 0；同时 0.28s 间隔连拍 6 张，光标红色像素在
+  0/166/0/0/166/0 之间切换，说明只切 overlay 可见性。测试钩子
+  `TERVO_CURSOR_BLINK_PHASE=on|off` 可冻结相位用于截图。
+- **限制**：`system` 闪烁当前等同 `on`（未读 gsettings `cursor-blink`）；
+  DECSCUSR 的 underline/beam/hollow 优先于配置；frame=Block 时用配置形状（无法
+  区分“显式 block”和默认 block），与 GNOME 的“配置只是默认值”仍有细微差别；颜色只接受 #RGB/#RRGGBB；无窗口失焦暂停闪烁；只验证 Xvfb/llvmpipe，
+  未验证真 GPU；设置页其它分类仍是固定高度。

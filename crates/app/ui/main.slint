@@ -67,6 +67,14 @@ export struct PaneView {
     focused: bool,
     iw: length,
     ih: length,
+    /// 光标 overlay（cell 大小的小图）；终端帧本身不画光标。
+    cursor-image: image,
+    cursor-x: length,
+    cursor-y: length,
+    cursor-w: length,
+    cursor-h: length,
+    /// 闪烁相位 + 终端 SHOW_CURSOR 合并后的可见性。
+    cursor-visible: bool,
     /// 终端启用了鼠标上报（1000/1002/1003）：中键/右键/滚轮要转发给 PTY。
     mouse-reporting: bool,
     /// scrollback 超出视口时显示右侧 overlay 滚动条。
@@ -525,6 +533,21 @@ export component MainWindow inherits Window {
     in-out property <bool> cfg-desktop-notifications: true;
     in-out property <bool> cfg-visual-bell: true;
     in-out property <bool> cfg-quake: false;
+    // GNOME Terminal 外观：光标（形状/闪烁/颜色）+ 粗体
+    in-out property <string> cfg-cursor-shape: "block";
+    in-out property <string> cfg-cursor-blink: "system";
+    in-out property <string> cfg-cursor-color: "";
+    in-out property <string> cfg-cursor-text-color: "";
+    in-out property <bool> cfg-bold-is-bright: true;
+    in-out property <string> cfg-bold-color: "";
+    in-out property <bool> cfg-bold-color-same-as-fg: true;
+    callback set-cursor-shape(string);
+    callback set-cursor-blink(string);
+    callback cursor-color-changed(string);
+    callback cursor-text-color-changed(string);
+    callback toggle-bold-is-bright();
+    callback bold-color-changed(string);
+    callback toggle-bold-color-same-as-fg();
     in-out property <bool> broadcast: false;
     callback toggle-copy-on-select();
     callback toggle-confirm-close();
@@ -1492,6 +1515,15 @@ export component MainWindow inherits Window {
                             width: 100%;
                             height: 100%;
                         }
+                    }
+
+                    // 光标单独成层：闪烁只切 visible，不重绘/重传整屏终端帧。
+                    if p.cursor-visible : Image {
+                        source: p.cursor-image;
+                        x: p.cursor-x;
+                        y: p.cursor-y;
+                        width: p.cursor-w;
+                        height: p.cursor-h;
                     }
 
                     pane-hit := TouchArea {
@@ -3779,7 +3811,16 @@ export component MainWindow inherits Window {
                 height: parent.height - 80px;
                 clip: true;
 
-                if root.settings-category == 0 : VerticalLayout {
+                if root.settings-category == 0 : Flickable {
+                    width: 100%;
+                    height: 100%;
+                    content-width: self.width;
+                    content-height: appearance-pane.preferred-height;
+                    interactive: true;
+
+                // Appearance 项较多（主题/背景/光标/粗体），小窗口下整体纵向滚动，
+                // 不再靠裁剪或压暗其它控件来腾空间。
+                appearance-pane := VerticalLayout {
                     width: 100%;
                     spacing: 10px;
 
@@ -4008,6 +4049,254 @@ export component MainWindow inherits Window {
                         font-size: 10px;
                         wrap: word-wrap;
                     }
+
+                    Rectangle {
+                        height: 1px;
+                        horizontal-stretch: 1;
+                        background: Palette.colors.border;
+                    }
+
+                    // ---- GNOME Terminal 光标外观 ----
+                    Text {
+                        text: "Cursor";
+                        color: Palette.colors.subtext;
+                        font-size: 12px;
+                        font-weight: 600;
+                    }
+
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Text {
+                            text: "Shape";
+                            color: Palette.colors.subtext;
+                            width: 52px;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                        }
+                        ChoiceBtn {
+                            width: 68px; height: 24px; font-size: 10px;
+                            label: "Block";
+                            active: root.cfg-cursor-shape == "block";
+                            clicked => { root.set-cursor-shape("block"); }
+                        }
+                        ChoiceBtn {
+                            width: 82px; height: 24px; font-size: 10px;
+                            label: "Underline";
+                            active: root.cfg-cursor-shape == "underline";
+                            clicked => { root.set-cursor-shape("underline"); }
+                        }
+                        ChoiceBtn {
+                            width: 68px; height: 24px; font-size: 10px;
+                            label: "I-beam";
+                            active: root.cfg-cursor-shape == "ibeam";
+                            clicked => { root.set-cursor-shape("ibeam"); }
+                        }
+                    }
+
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Text {
+                            text: "Blink";
+                            color: Palette.colors.subtext;
+                            width: 52px;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                        }
+                        ChoiceBtn {
+                            width: 68px; height: 24px; font-size: 10px;
+                            label: "System";
+                            active: root.cfg-cursor-blink == "system";
+                            clicked => { root.set-cursor-blink("system"); }
+                        }
+                        ChoiceBtn {
+                            width: 58px; height: 24px; font-size: 10px;
+                            label: "On";
+                            active: root.cfg-cursor-blink == "on";
+                            clicked => { root.set-cursor-blink("on"); }
+                        }
+                        ChoiceBtn {
+                            width: 58px; height: 24px; font-size: 10px;
+                            label: "Off";
+                            active: root.cfg-cursor-blink == "off";
+                            clicked => { root.set-cursor-blink("off"); }
+                        }
+                    }
+
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Text {
+                            text: "Color";
+                            color: Palette.colors.subtext;
+                            width: 52px;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                        }
+                        Rectangle {
+                            height: 24px;
+                            horizontal-stretch: 1;
+                            border-radius: 4px;
+                            background: Palette.colors.bg;
+                            border-width: 1px;
+                            border-color: Palette.colors.border;
+
+                            Text {
+                                x: 7px;
+                                width: parent.width - 14px;
+                                height: parent.height;
+                                text: "空 = 主题光标色";
+                                color: Palette.colors.muted;
+                                font-size: 10px;
+                                vertical-alignment: center;
+                                visible: root.cfg-cursor-color == "";
+                            }
+                            TextInput {
+                                x: 7px;
+                                width: parent.width - 14px;
+                                height: parent.height;
+                                text <=> root.cfg-cursor-color;
+                                single-line: true;
+                                color: Palette.colors.text;
+                                font-size: 11px;
+                                vertical-alignment: center;
+                                edited => { root.cursor-color-changed(self.text); }
+                            }
+                        }
+                        MiniBtn {
+                            label: "×";
+                            clicked => { root.cfg-cursor-color = ""; root.cursor-color-changed(""); }
+                        }
+                    }
+
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Text {
+                            text: "Text";
+                            color: Palette.colors.subtext;
+                            width: 52px;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                        }
+                        Rectangle {
+                            height: 24px;
+                            horizontal-stretch: 1;
+                            border-radius: 4px;
+                            background: Palette.colors.bg;
+                            border-width: 1px;
+                            border-color: Palette.colors.border;
+
+                            Text {
+                                x: 7px;
+                                width: parent.width - 14px;
+                                height: parent.height;
+                                text: "空 = 主题背景（块状光标反色）";
+                                color: Palette.colors.muted;
+                                font-size: 10px;
+                                vertical-alignment: center;
+                                visible: root.cfg-cursor-text-color == "";
+                            }
+                            TextInput {
+                                x: 7px;
+                                width: parent.width - 14px;
+                                height: parent.height;
+                                text <=> root.cfg-cursor-text-color;
+                                single-line: true;
+                                color: Palette.colors.text;
+                                font-size: 11px;
+                                vertical-alignment: center;
+                                edited => { root.cursor-text-color-changed(self.text); }
+                            }
+                        }
+                        MiniBtn {
+                            label: "×";
+                            clicked => { root.cfg-cursor-text-color = ""; root.cursor-text-color-changed(""); }
+                        }
+                    }
+
+                    Text {
+                        text: "形状/颜色即时生效；闪烁只切换光标 overlay，不重绘终端整屏。";
+                        color: Palette.colors.muted;
+                        font-size: 10px;
+                        wrap: word-wrap;
+                    }
+
+                    Rectangle {
+                        height: 1px;
+                        horizontal-stretch: 1;
+                        background: Palette.colors.border;
+                    }
+
+                    // ---- 粗体 ----
+                    Text {
+                        text: "Bold";
+                        color: Palette.colors.subtext;
+                        font-size: 12px;
+                        font-weight: 600;
+                    }
+
+                    ToggleRow {
+                        label: "Bold is bright（粗体 ANSI 0–7 用亮色）";
+                        on: root.cfg-bold-is-bright;
+                        toggled => { root.toggle-bold-is-bright(); }
+                    }
+
+                    ToggleRow {
+                        label: "Bold color same as foreground";
+                        on: root.cfg-bold-color-same-as-fg;
+                        toggled => { root.toggle-bold-color-same-as-fg(); }
+                    }
+
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Text {
+                            text: "Color";
+                            color: Palette.colors.subtext;
+                            width: 52px;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                        }
+                        Rectangle {
+                            height: 24px;
+                            horizontal-stretch: 1;
+                            border-radius: 4px;
+                            background: Palette.colors.bg;
+                            border-width: 1px;
+                            border-color: Palette.colors.border;
+
+                            Text {
+                                x: 7px;
+                                width: parent.width - 14px;
+                                height: parent.height;
+                                text: "空 = 用普通前景色";
+                                color: Palette.colors.muted;
+                                font-size: 10px;
+                                vertical-alignment: center;
+                                visible: root.cfg-bold-color == "";
+                            }
+                            TextInput {
+                                x: 7px;
+                                width: parent.width - 14px;
+                                height: parent.height;
+                                text <=> root.cfg-bold-color;
+                                single-line: true;
+                                color: Palette.colors.text;
+                                font-size: 11px;
+                                vertical-alignment: center;
+                                edited => { root.bold-color-changed(self.text); }
+                            }
+                        }
+                        MiniBtn {
+                            label: "×";
+                            clicked => { root.cfg-bold-color = ""; root.bold-color-changed(""); }
+                        }
+                    }
+
+                    Text {
+                        text: "关闭 same-as-fg 后，默认前景色的粗体文字使用上面的颜色；显式 ANSI 色不受影响。";
+                        color: Palette.colors.muted;
+                        font-size: 10px;
+                        wrap: word-wrap;
+                    }
+                }
                 }
 
                 if root.settings-category == 1 : VerticalLayout {
