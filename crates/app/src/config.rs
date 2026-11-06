@@ -176,6 +176,8 @@ pub struct Config {
     pub tabbar_position: String,
     /// Tab 非活动时收到 OSC 9/777/BEL 是否调用 notify-send（默认开）。
     pub desktop_notifications: bool,
+    /// 活动 pane 收到 BEL 时是否闪一下边框（视觉铃，默认开）。
+    pub visual_bell: bool,
     /// 窗口/终端背景图路径。空 = 关闭；`~` 在应用时展开。
     /// 只有“存在的普通文件”才会生效（校验见 [`resolve_background_image`]）。
     pub background_image: String,
@@ -227,6 +229,7 @@ impl Default for Config {
             paste_on_middle_click: true,
             tabbar_position: "top".to_string(),
             desktop_notifications: true,
+            visual_bell: true,
             background_image: String::new(),
             background_opacity: 1.0,
             background_dim: DEFAULT_BACKGROUND_DIM,
@@ -433,8 +436,9 @@ mod tests {
         assert_eq!(cfg.font_size, 15.0);
         assert_eq!(cfg.scrollback, 2000);
         assert_eq!(cfg.default_profile_id, 0, "旧配置缺 default_profile_id 时回退系统 shell");
-        // 新增的桌面通知开关对旧配置也要默认开启
+        // 新增的桌面通知/视觉铃开关对旧配置也要默认开启
         assert!(cfg.desktop_notifications, "旧配置缺 desktop_notifications 时默认开");
+        assert!(cfg.visual_bell, "旧配置缺 visual_bell 时默认为视觉铃");
         // 背景图/透明度对旧配置也必须兼容（默认关闭背景、不透明）
         assert_eq!(cfg.background_image, "");
         assert_eq!(cfg.background_opacity, 1.0);
@@ -567,6 +571,7 @@ mod tests {
         assert_eq!(c.quake_hotkey, "F12");
         assert_eq!(c.tabbar_position, "top", "默认 TabBar 在上");
         assert!(c.desktop_notifications, "默认允许桌面通知");
+        assert!(c.visual_bell, "默认开启视觉铃");
         assert_eq!(c.close_action, "end", "默认关闭即结束会话");
         assert_eq!(c.osc52, "allow", "OSC 52 默认放行");
         assert!(c.osc52_allowed());

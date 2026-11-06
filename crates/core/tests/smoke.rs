@@ -256,6 +256,15 @@ fn wheel_scrollback_shows_history() {
     let bottom = frame_text(&frame);
     assert!(bottom.contains("200"));
 
+    // 非阻塞滚动位置查询：底部 offset=0，history 已有内容，rows 与视口一致。
+    let pos = handle.scroll_position();
+    assert_eq!(pos.offset, 0, "新输出后应在底部");
+    assert_eq!(pos.rows, 12);
+    assert!(pos.history > 0, "seq 200 后应有 scrollback: {pos:?}");
+    assert!(pos.scrollable());
+    assert_eq!(pos.total(), pos.history + pos.rows);
+    assert!(pos.thumb(0.08).is_some());
+
     // 向上滚 5 行
     handle.scroll(5);
     let mut frame2 = handle.new_frame();
@@ -272,6 +281,57 @@ fn wheel_scrollback_shows_history() {
     frame3 = handle.pull(frame3);
     assert_eq!(frame3.display_offset, 0);
     assert!(frame_text(&frame3).contains("200"));
+
+    // 绝对位置滚动（滚动条拖拽路径）：滚到顶/中间/底，位置查询必须同步。
+    let history = handle.scroll_position().history;
+    handle.scroll_to(history);
+    let _ = handle.pull(handle.new_frame());
+    assert_eq!(handle.scroll_position().offset, history, "scroll_to 顶部");
+    handle.scroll_to(3);
+    let _ = handle.pull(handle.new_frame());
+    assert_eq!(handle.scroll_position().offset, 3, "scroll_to 绝对位置");
+    handle.scroll_to(usize::MAX);
+    let _ = handle.pull(handle.new_frame());
+    assert_eq!(handle.scroll_position().offset, history, "越界夹到顶部");
+    handle.scroll_to(0);
+    let _ = handle.pull(handle.new_frame());
+    assert_eq!(handle.scroll_position().offset, 0);
+}
+
+#[test]
+fn scroll_position_tracks_resize_without_blocking() {
+    let mut handle = spawn(PaneConfig {
+        cols: 60,
+        rows: 12,
+        scrollback: 1000,
+        shell: Some("/bin/sh".to_string()),
+        args: vec!["-c".to_string(), "seq 1 100; sleep 3".to_string()],
+        ..PaneConfig::default()
+    })
+    .expect("spawn");
+
+    // 等输出 + 拉一帧，确保 actor 已发布快照。
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut frame = handle.new_frame();
+    loop {
+        frame = handle.pull(frame);
+        if frame_text(&frame).contains("100") {
+            break;
+        }
+        assert!(Instant::now() < deadline, "没有等到输出");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let pos = handle.scroll_position();
+    assert_eq!(pos.rows, 12);
+    assert!(pos.history > 0);
+
+    // resize 后 rows 立即跟上（UI 侧 grid 同步），actor 处理完 pull 后 history 一致。
+    handle.resize(80, 6);
+    let _ = handle.pull(handle.new_frame());
+    let resized = handle.scroll_position();
+    assert_eq!(resized.rows, 6);
+    assert!(resized.history > 0, "resize 不应清掉 scrollback: {resized:?}");
+    assert!(resized.scrollable());
 }
 
 #[test]
