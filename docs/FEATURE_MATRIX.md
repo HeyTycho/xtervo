@@ -11,6 +11,8 @@
 > （本节只改该行，未重算文件顶部历史总量），证据见 [`terminal-menu-find.md`](terminal-menu-find.md)。
 > 2026-11-06 增补（`feat/sixel`）：Sixel 内联图片（UI-TERM-020 / TERM-020），B/C 各 +1 条 partial；
 > 证据见本文件对应行与 [`self-iteration.md`](self-iteration.md)。
+> 2026-11-06 增补（`feat/iip-image`）：iTerm2 IIP 内联图片（OSC 1337 File，UI-TERM-021），
+> C1 增至 17 条（partial=11）；与 Sixel 独立开关、共用 overlay/滚动/resize 机制，不新增 DA1。
 > 2026-11-06 增补（`feat/settings-ui`）：设置改为无 PTY 的 **Settings Tab**（可回退 legacy modal），
 > 8 个分组图标分类、主题下拉、分段选择器/switch/stepper/slider、搜索跳卡片；Profiles 内嵌列表与
 > Plugins 页使 UI-SET-003/008 从 not_started 升为 partial，B7 状态计数已同步。
@@ -261,13 +263,14 @@
 
 ## 4. C 部分：底层功能点
 
-### C1. Terminal Emulator 核心（16 条）
+### C1. Terminal Emulator 核心（17 条）
 
-状态：implemented=5，partial=10，not_started=1。
+状态：implemented=5，partial=11，not_started=1。
 
 | ID | Feature | Upstream evidence | Rust implementation | Status | Test | Result | Limitation |
 |---|---|---|---|---|---|---|---|
-| UI-TERM-020 | Sixel 内联图片默认开启、可配置关闭、滚动/resize 锚定、不参与文本/选区 | U-AUDIT / 需求 C1 | core `sixel.rs` 流式 DCS 过滤 + Sixel→RGBA 解码（RGB/HLS/透明/重复/raster/25 MiB/16 MP 上限）；`PaneHandle::set_sixel/set_sixel_scrolling`；app `sync_inline_images` 把可见图片按 cell 锚点同步到 Slint `PaneImage` overlay（按 core id 缓存 RGBA，仅图片/锚点变化时重建）；设置页 Terminal → Images 两个开关与上限提示；关闭立即清图且 DA1 去参数 4 | partial | core 88 lib（含跨 chunk/非法/超限/DA1/滚动锚点）+ tests/sixel 6 例（真实 PTY 跨 32 KiB chunk、BEL、CSI 2J、清屏、滚动锚点、DA1 on/off）；app 249 passed；Xvfb :120 `.logs/sixel/01-two-images.png`、`02-scrolled.png`、`04-back-to-image.png`、`05-resized.png`、`13-settings-sixel-off.png`、`14-terminal-after-sixel-off.png`、DA1 `15-da1-sixel-on.png`/`16-da1-sixel-off.png`（`1b5b3f36323b343b393b323263` vs `1b5b3f3663`） | Sixel 默认开、设置页即时开关、DA1 宣告、滚动/resize/切 Tab 位置正确；图片不进选区；dsh-tui 可启动 | iTerm2 IIP 未实现且不宣告；dsh 启动到 onboarding，未验证真实图片消息；TUI 局部 ECH 擦除不追踪；scrollback 淘汰最旧行时锚点可能偏移；Sixel 无部分透明；仅 Xvfb/llvmpipe |
+| UI-TERM-020 | Sixel 内联图片默认开启、可配置关闭、滚动/resize 锚定、不参与文本/选区 | U-AUDIT / 需求 C1 | core `sixel.rs` 流式 DCS 过滤 + Sixel→RGBA 解码（RGB/HLS/透明/重复/raster/25 MiB/16 MP 上限）；`PaneHandle::set_sixel/set_sixel_scrolling`；app `sync_inline_images` 把可见图片按 cell 锚点同步到 Slint `PaneImage` overlay（按 core id 缓存 RGBA，仅图片/锚点变化时重建）；设置页 Terminal → Images 两个开关与上限提示；关闭立即清图且 DA1 去参数 4 | partial | core 88 lib（含跨 chunk/非法/超限/DA1/滚动锚点）+ tests/sixel 6 例（真实 PTY 跨 32 KiB chunk、BEL、CSI 2J、清屏、滚动锚点、DA1 on/off）；app 249 passed；Xvfb :120 `.logs/sixel/01-two-images.png`、`02-scrolled.png`、`04-back-to-image.png`、`05-resized.png`、`13-settings-sixel-off.png`、`14-terminal-after-sixel-off.png`、DA1 `15-da1-sixel-on.png`/`16-da1-sixel-off.png`（`1b5b3f36323b343b393b323263` vs `1b5b3f3663`） | Sixel 默认开、设置页即时开关、DA1 宣告、滚动/resize/切 Tab 位置正确；图片不进选区；dsh-tui 可启动 | dsh 启动到 onboarding，未验证真实图片消息；TUI 局部 ECH 擦除不追踪；scrollback 淘汰最旧行时锚点可能偏移；Sixel 无部分透明；仅 Xvfb/llvmpipe |
+| UI-TERM-021 | iTerm2 IIP 内联图片（OSC 1337 File）默认开启、可配置关闭、滚动/resize/切 Tab 锚定、不参与文本/选区 | U-AUDIT / 需求 C1 | core `iip.rs` 流式过滤 `ESC ] 1337;File=...:BASE64`（BEL/ST/C1 ST 终止、跨 chunk），严格 base64（20 MiB）+ PNG/JPEG 解码（`png` + 轻量 `zune-jpeg`，16 MP / 单边 16384），支持 `inline=1`/`name`/`width`/`height`（cell、`px`、`auto`）/`preserveAspectRatio`；actor 复用 Sixel 的 `ImageStore`/`InlineImage` overlay/滚动/resize 预算，`PaneHandle::set_iip` 只清 IIP 图片（Sixel/DA1 不变）；app 复用 `sync_inline_images` 与按 core id 的 RGBA 缓存；设置页 Terminal → Images 增加 IIP 开关与 20 MB/16 MP 提示 | partial | core 124 lib（IIP 15 例：跨 chunk、非法/非规范 base64、超限文件/参数、宽高 cell/px/auto/preserveAspectRatio、PNG/JPEG、截断/畸形图片、关闭时只吞不解码、畸形 ESC；Sixel/OSC52 回归全绿；core 全量 194 例）；app 326 passed / 1 ignored（基线 326）；Xvfb :140 真实 OSC 1337：`.logs/iip/00-bottom.png`、`01-images-visible.png`、`01b-scrolled-back.png`、`02-resized.png`、`03-after-tab-switch.png`、`04-iip-off.png`、`settings-02-images-card.png`（PNG 640x200 auto + JPEG 24x8 cells） | 两种格式与 `width/height` 三态可用；滚动/resize/切 Tab 锚点正确；关闭立即清图且不再解码；图片不进文本/选区；DA1 与 Sixel 图片不受 IIP 开关影响 | 不做动画/文件下载（`inline=0` 或缺少 `inline=1` 被忽略）；IIP 与 iTerm2 一致不占用光标行，客户端需自行换行留位；scrollback 淘汰最旧行时锚点可能偏移；大图解码在 actor 线程内完成（未做后台解码/内存峰值压测）；仅 Xvfb/llvmpipe 验证 |
 | TERM-001 | VT220 基础兼容及 Tabby 实际使用的 xterm/ANSI 扩展；兼容测试集验证 | U-XTERM / 需求 C1 | alacritty_terminal 0.26 `Term` + `vte::ansi::Processor`；crates/core/tests/vt_conformance.rs 10 例 | partial | `cargo test -p tervo-core`（已有记录 10 条 conformance）；无 vttest/esctest 全套 | 基础 SGR/光标/宽字符/备用屏有契约测试 | 未跑完整 VT220/xterm 套件；与 Tabby 实际序列集未差分 |
 | TERM-002 | CSI/ESC/OSC/DCS 解析；不完整序列、分包、非法、超长序列 | U-XTERM / 需求 C1 | vte Processor 处理分包/不完整；pane.rs `feed` 按 32 KiB 读块喂入；无 DCS/OSC 业务分发 | partial | vt_conformance 覆盖常见 CSI/OSC 标题；无 fuzz/超长/非法输入回归 | 常见序列可解析；异常输入未系统验证 | 无 fuzz 目标；DCS 只被解析器吞掉，无业务处理；超长序列未测 |
 | TERM-003 | 光标移动、擦除、插入/删除字符行、滚屏、滚动区域、制表位、自动换行 | U-XTERM / 需求 C1 | alacritty_terminal 实现；`cursor_move_and_erase_line`、`autowrap_moves_to_next_line`、`clear_screen_and_home` | partial | 3 条专项契约 + alacritty 上游实现；IL/DL/滚动区域/制表位无本项目测试 | 光标/擦除/自动换行已验证 | 插入删除行、滚动区域、制表位未专项验收；依赖 alacritty 行为 |
@@ -497,7 +500,7 @@ C15 无 `[ ]` 复选框条目；平台差异说明见 §5（不计入 228 条）
 | PLAT-003 | macOS 后续：Vibrancy、Keychain、平台 Shell/键盘 | U-AUDIT / 需求 C15 | 无实现 | unsupported | 无 | 明确排除（Ubuntu 第一阶段） | 不在当前交付范围 |
 | PLAT-004 | Tabby Web App/self-hosted 不混入桌面版完成度 | U-AUDIT / 需求 C15 | 无实现 | unsupported | 无 | 明确排除 | 无 Web 版目标/代码 |
 | PLAT-005 | Tabby 不是 Shell 本身；通过 PTY 启动系统 Shell | U-AUDIT / 需求 C15 | pane.rs `spawn` 用 portable-pty 启动 $SHELL/config.shell；不实现 Bash/Zsh | implemented | smoke PTY 测试；人工启动 bash/zsh | 已按此边界实现 | 无内置 shell/补全；依赖系统 shell |
-| TERM-020 | DCS/Sixel 业务解析：跨 chunk、BEL 终止、非法/超限丢图、DA1 能力宣告 | U-AUDIT / 需求 C1 | `core/sixel.rs` 独立状态机过滤 `ESC P ... q ... ST/BEL/C1 ST`，跨 chunk 保留 ESC/DCS 头；非 Sixel DCS 原样交还 vte；解码支持 RGB/HLS、透明、`!Pn`、raster attributes，原始 25 MiB / 16 MP / 单边 16384 上限；DA1 回应在 Listener 精确替换为 `CSI ?62;4;9;22c`，关闭/二级 DA 不改写 | partial | core 单测 18 例 + PTY 集成 6 例；DA1 真机截图 on/off；dsh-tui 启动截图 + 用 dsh 自己的 `selectTerminalImageProtocol([62,4,9,22])` 输出 `sixel` | 常见 Sixel 编码器输出可解码；BEL 终止不会污染解析器；超限/畸形只丢图；dsh 的 DA1 选择路径成立 | 未实现 HLS 以外的其它色彩空间差异/调色板重映射；未做 fuzz；未验证超大真图内存峰值；iTerm2 IIP 未实现 |
+| TERM-020 | DCS/Sixel 业务解析：跨 chunk、BEL 终止、非法/超限丢图、DA1 能力宣告 | U-AUDIT / 需求 C1 | `core/sixel.rs` 独立状态机过滤 `ESC P ... q ... ST/BEL/C1 ST`，跨 chunk 保留 ESC/DCS 头；非 Sixel DCS 原样交还 vte；解码支持 RGB/HLS、透明、`!Pn`、raster attributes，原始 25 MiB / 16 MP / 单边 16384 上限；DA1 回应在 Listener 精确替换为 `CSI ?62;4;9;22c`，关闭/二级 DA 不改写 | partial | core 单测 18 例 + PTY 集成 6 例；DA1 真机截图 on/off；dsh-tui 启动截图 + 用 dsh 自己的 `selectTerminalImageProtocol([62,4,9,22])` 输出 `sixel` | 常见 Sixel 编码器输出可解码；BEL 终止不会污染解析器；超限/畸形只丢图；dsh 的 DA1 选择路径成立 | 未实现 HLS 以外的其它色彩空间差异/调色板重映射；未做 fuzz；未验证超大真图内存峰值（IIP 见 UI-TERM-021） |
 
 ## 6. 维护规则
 

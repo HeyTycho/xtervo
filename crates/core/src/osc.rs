@@ -298,10 +298,23 @@ fn base64_value(b: u8) -> Option<u8> {
 /// 标准 base64 解码；支持带或不带 `=` 补位，但拒绝非法字符、错误长度与
 /// 中间补位。解码结果超过 [`MAX_CLIPBOARD_BYTES`] 时返回 None。
 fn decode_base64(input: &[u8]) -> Option<Vec<u8>> {
+    decode_base64_bounded(input, MAX_CLIPBOARD_BYTES, false)
+}
+
+/// 带输出上限的严格 base64 解码；OSC 52 与 iTerm2 IIP 共用。
+///
+/// `canonical = true` 时额外拒绝补位字节里非零的“尾部未用位”（IIP 要求严格
+/// 解码）；OSC 52 保持宽松，兼容历史上外部工具发出的非规范补位。
+pub(crate) fn decode_base64_bounded(
+    input: &[u8],
+    max_bytes: usize,
+    canonical: bool,
+) -> Option<Vec<u8>> {
     if input.is_empty() {
         return Some(Vec::new());
     }
-    if input.len() > MAX_OSC52_ENCODED_BYTES {
+    let max_encoded = 4 * max_bytes.div_ceil(3);
+    if input.len() > max_encoded {
         return None;
     }
     let mut end = input.len();
@@ -342,18 +355,24 @@ fn decode_base64(input: &[u8]) -> Option<Vec<u8>> {
         2 => {
             let a = base64_value(input[i])?;
             let b = base64_value(input[i + 1])?;
+            if canonical && b & 0x0f != 0 {
+                return None;
+            }
             out.push((a << 2) | (b >> 4));
         },
         3 => {
             let a = base64_value(input[i])?;
             let b = base64_value(input[i + 1])?;
             let c = base64_value(input[i + 2])?;
+            if canonical && c & 0x03 != 0 {
+                return None;
+            }
             out.push((a << 2) | (b >> 4));
             out.push((b << 4) | (c >> 2));
         },
         _ => return None,
     }
-    if out.len() > MAX_CLIPBOARD_BYTES {
+    if out.len() > max_bytes {
         return None;
     }
     Some(out)
