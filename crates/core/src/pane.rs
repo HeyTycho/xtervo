@@ -440,6 +440,8 @@ enum Ctrl {
     SetSixel(bool),
     /// 运行时切换 Sixel 图片是否随滚动历史移动。
     SetSixelScrolling(bool),
+    /// 按全局内存预算动态调整本 pane 的 scrollback 行数。
+    SetScrollback(usize),
     /// 运行时开关 iTerm2 IIP；关闭时清除已有 IIP 图片（不影响 Sixel）。
     SetIip(bool),
     /// 字号变化后更新 cell 像素尺寸（IIP cell 尺寸换算 + 图片可见性判断）。
@@ -622,6 +624,11 @@ impl PaneHandle {
     /// 运行时切换 Sixel 图片是否跟随滚动历史（异步）。
     pub fn set_sixel_scrolling(&self, scrolling: bool) {
         self.send_ctrl(Ctrl::SetSixelScrolling(scrolling));
+    }
+
+    /// 按全局预算动态调整 scrollback 行数（只缩容时立即释放旧行；扩容不恢复已丢历史）。
+    pub fn set_scrollback(&self, lines: usize) {
+        self.send_ctrl(Ctrl::SetScrollback(lines));
     }
 
     /// 运行时开关 iTerm2 IIP（异步）。关闭后 actor 不再解码 IIP，并清除
@@ -1092,7 +1099,7 @@ pub fn spawn(config: PaneConfig) -> std::io::Result<PaneHandle> {
         osc52: Osc52::Disabled,
         ..TermConfig::default()
     };
-    let term = Term::new(term_config, &size, listener.clone());
+    let term = Term::new(term_config.clone(), &size, listener.clone());
     let palette = shared_palette.clone();
     let stats_actor = stats.clone();
     let mode_bits = Arc::new(std::sync::atomic::AtomicU32::new(term.mode().bits()));
@@ -1112,6 +1119,7 @@ pub fn spawn(config: PaneConfig) -> std::io::Result<PaneHandle> {
 
     let actor = Actor {
         term,
+        term_config,
         processor: Processor::new(),
         osc: OscScanner::new(),
         keyboard: KeyboardScanner::new(config.keyboard_protocol),
@@ -1278,6 +1286,8 @@ fn selection_span<T: EventListener>(term: &Term<T>, rows: usize, offset: usize) 
 
 struct Actor {
     term: Term<Listener>,
+    /// 当前生效的 alacritty 配置（动态 scrollback 预算用）。
+    term_config: TermConfig,
     processor: Processor,
     /// 通知/进度/OSC 7 扫描：alacritty 不暴露 OSC 9/777，需旁路扫原始字节。
     osc: OscScanner,
@@ -2065,6 +2075,16 @@ impl Actor {
                 let offset = self.term.grid().display_offset();
                 self.images.set_scrolling(scrolling, history, offset);
                 self.wake.notify();
+                true
+            },
+            Ctrl::SetScrollback(lines) => {
+                let lines = lines.clamp(1, 1_000_000);
+                if self.term_config.scrolling_history != lines {
+                    self.term_config.scrolling_history = lines;
+                    self.term.set_options(self.term_config.clone());
+                    self.force_full = true;
+                    self.wake.notify();
+                }
                 true
             },
             Ctrl::SetIip(enabled) => {

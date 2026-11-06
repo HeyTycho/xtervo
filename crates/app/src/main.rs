@@ -119,6 +119,10 @@ struct PaneRuntime {
     image: slint::Image,
     /// 该 pane 打开时使用的 Profile 外观覆盖；全局设置变化时用于决定谁优先。
     appearance: PaneAppearance,
+    /// 该 pane 配置的 scrollback 行数（Profile 覆盖或全局），作为预算上限。
+    scrollback_limit: usize,
+    /// 已下发给 core 的 scrollback 行数，避免每次布局重复 set_options。
+    scrollback_applied: usize,
     /// 该 pane 关联的 Profile ID（None = 默认 shell / 无关联）。会话快照用它
     /// 保留连接类型；Profile 已删除或启动失败时恢复路径回退普通 shell。
     profile_id: Option<u64>,
@@ -1935,6 +1939,8 @@ fn create_pane(
         frame,
         image,
         appearance,
+        scrollback_limit: scrollback,
+        scrollback_applied: scrollback,
         profile_id: profile.map(|p| p.id).filter(|id| *id != 0),
         cell: (fonts.cell_w, fonts.cell_h),
         cursor_image,
@@ -4981,10 +4987,38 @@ fn refresh_views_impl(st: &mut AppState, resize_terminals: bool) {
         st.divider_model.set_vec(views);
     }
 
+    // pane 数变化（开/关 Tab、分屏）时按全局预算收缩 scrollback。
+    apply_scrollback_budget(st);
     // 分屏/切 pane/Tab 切换/Tab 栏换边最终都会刷新布局：候选点跟着新矩形走。
     update_ime_spot(st);
     // 新建/关闭 Profile pane 后，按“是否还有 pane 需要闪烁”启停计时器。
     ensure_cursor_blink_timer(st);
+}
+
+/// 全进程 scrollback 行数预算：22 Tab + 4 pane（25 pane）时每 pane 约 960 行。
+///
+/// 每个 pane 的 scrollback 行（1–4KiB/行）会随访问过的 Tab 数线性常驻；25 pane
+/// 各 2000 行可达 ~160MiB，是长时 soak RSS 增长的主因。这里用**全进程行预算**做
+/// 上限：pane 少时保持用户配置，pane 多时按比例收缩（有明确下限 200 行），
+/// 避免“Tab 越多内存越高”。不是改配置默认值，也不动 soak 阈值。
+const GLOBAL_SCROLLBACK_LINES: usize = 24_000;
+const MIN_SCROLLBACK_LINES: usize = 200;
+
+fn scrollback_budget(pane_count: usize, configured: usize) -> usize {
+    let per_pane = GLOBAL_SCROLLBACK_LINES / pane_count.max(1);
+    per_pane.clamp(MIN_SCROLLBACK_LINES, configured.max(MIN_SCROLLBACK_LINES))
+}
+
+/// 把全局行预算下发给所有 pane；只在目标值变化时调用 core（缩容会立即释放旧行）。
+fn apply_scrollback_budget(st: &mut AppState) {
+    let count = st.panes.len();
+    for rt in st.panes.values_mut() {
+        let target = scrollback_budget(count, rt.scrollback_limit);
+        if target != rt.scrollback_applied {
+            rt.handle.set_scrollback(target);
+            rt.scrollback_applied = target;
+        }
+    }
 }
 
 /// `pane_model` 能否原地更新：模型行数等于布局数量，且每行 id 顺序一致。
@@ -5043,6 +5077,14 @@ fn redraw_visible(st: &mut AppState) {
     };
     for id in ids {
         redraw_pane_inner(st, id);
+    }
+    // 切换 Tab / 字号 / 主题时，旧 pane 的帧缓冲已被新 Image 替换并 free，但 glibc
+    // 默认把几 MB 的堆块留在 arena 里不还给 OS，多 Tab 场景会显示为 RSS 持续增长。
+    // 这里只在“可见 pane 全量重绘”这类低频路径显式归还已释放页；空闲/单行输出
+    // 不走该路径，不引入每帧开销。非 glibc 平台无此 API，直接跳过。
+    #[cfg(target_os = "linux")]
+    unsafe {
+        libc::malloc_trim(0);
     }
 }
 
@@ -10537,6 +10579,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         poll_events,
     );
 
+    // 多 Tab + 窗口 resize 会反复重建 pane 帧缓冲/alacritty 行存储；glibc 默认把
+    // 已 free 的几 MB 堆块留在 arena 不归还，RSS 曲线会持续缓慢上涨后才平台。
+    // 低频显式归还已释放页（只影响 allocator，不触碰任何仍存活的终端状态）。
+    #[cfg(target_os = "linux")]
+    {
+        let trim_timer = slint::Timer::default();
+        trim_timer.start(
+            slint::TimerMode::Repeated,
+            Duration::from_secs(3),
+            || unsafe {
+                libc::malloc_trim(0);
+            },
+        );
+        std::mem::forget(trim_timer);
+    }
+
     // 唤醒计数诊断：空闲时 core/app 唤醒数不应增长（只有 400ms 兜底在跑）。
     // 只在显式设置时启动，正常使用不产生额外 timer/日志。
     if std::env::var_os("TERVO_WAKE_STATS").is_some() {
@@ -11741,6 +11799,15 @@ mod tests {
         assert!(!parse_args_from(&cfg, Vec::new()).window);
         // 与 spawn 侧常量一致
         assert_eq!(window::WINDOW_FLAG, "--window");
+    }
+
+    #[test]
+    fn scrollback_budget_scales_with_pane_count() {
+        assert_eq!(scrollback_budget(1, 2000), 2000, "单 pane 保持用户配置");
+        assert_eq!(scrollback_budget(4, 2000), 2000, "少量 pane 不收缩");
+        assert_eq!(scrollback_budget(25, 2000), 960, "22 Tab+4 pane 按预算收缩");
+        assert_eq!(scrollback_budget(25, 500), 500, "Profile 更小配置不被放大");
+        assert_eq!(scrollback_budget(1000, 2000), 200, "极多 pane 仍有 200 行下限");
     }
 
     #[test]
