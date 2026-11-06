@@ -271,6 +271,10 @@ pub struct Config {
     pub scroll_on_output: bool,
     /// 按键后是否回到底部（默认 true）。
     pub scroll_on_keystroke: bool,
+    /// Sixel 内联图片（默认开）。关闭后不解析/渲染图片，DA1 不再宣告参数 4。
+    pub sixel: bool,
+    /// Sixel 图片是否跟随滚动历史移动（默认 true）；false 时固定在创建时的屏幕行。
+    pub sixel_scrolling: bool,
     /// 忽略 `scrollback` 数值，使用 [`UNLIMITED_SCROLLBACK_LINES`] 安全上限。
     /// 只对之后新建的 pane 生效（历史缓冲大小不能在会话中安全扩容）。
     pub scrollback_unlimited: bool,
@@ -353,6 +357,8 @@ impl Default for Config {
             audible_bell: false,
             scroll_on_output: false,
             scroll_on_keystroke: true,
+            sixel: true,
+            sixel_scrolling: true,
             scrollback_unlimited: false,
             scrollbar_policy: "auto".to_string(),
             backspace_binding: "ascii-delete".to_string(),
@@ -823,6 +829,8 @@ mod tests {
              scroll_on_output = true\n\
              scroll_on_keystroke = false\n\
              scrollback_unlimited = true\n\
+             sixel = false\n\
+             sixel_scrolling = false\n\
              scrollbar_policy = \"never\"\n\
              backspace_binding = \"control-h\"\n\
              delete_binding = \"ascii-del\"\n",
@@ -832,6 +840,8 @@ mod tests {
         assert!(cfg.scroll_on_output);
         assert!(!cfg.scroll_on_keystroke);
         assert!(cfg.scrollback_unlimited);
+        assert!(!cfg.sixel);
+        assert!(!cfg.sixel_scrolling);
         assert_eq!(cfg.effective_scrollback(), UNLIMITED_SCROLLBACK_LINES, "unlimited 必须有明确安全上限");
         assert_eq!(UNLIMITED_SCROLLBACK_LINES, 100_000);
         assert_eq!(cfg.scrollbar_policy(), ScrollbarPolicy::Never);
@@ -844,11 +854,14 @@ mod tests {
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("audible_bell = true"), "{text}");
         assert!(text.contains("scroll_on_output = true"), "{text}");
+        assert!(text.contains("sixel = false"), "{text}");
         assert!(text.contains("scrollbar_policy = \"never\""), "{text}");
         assert!(text.contains("backspace_binding = \"control-h\""), "{text}");
         let back = Config::load_from(&path);
         assert!(back.audible_bell);
         assert!(back.scroll_on_output);
+        assert!(!back.sixel);
+        assert!(!back.sixel_scrolling);
         assert!(!back.scroll_on_keystroke);
         assert_eq!(back.scrollbar_policy(), ScrollbarPolicy::Never);
         assert_eq!(back.key_bindings(), cfg.key_bindings());

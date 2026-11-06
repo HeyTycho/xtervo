@@ -18,8 +18,10 @@
 //! - UI 事件走容量 1 的唤醒通道，输出洪峰只会被合并，不会堆积；
 //! - 帧数据由 UI 侧持有 `Box<Frame>` 往返复用，稳态零分配。
 
+use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::Instant;
@@ -38,10 +40,11 @@ use parking_lot::RwLock;
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtyPair, PtySize};
 
 use crate::event::{ClipboardSelection, CoreEvent, EventSink, PaneStats, WakeSignal};
-use crate::frame::{CellData, CursorShape, CursorState, Frame, LineDamage, Span};
+use crate::frame::{CellData, CursorShape, CursorState, Frame, InlineImage, LineDamage, Span};
 use crate::mouse::{self, MouseEvent};
 use crate::osc::OscScanner;
 use crate::palette::Palette;
+use crate::sixel::{rewrite_da1, SixelEvent, SixelFilter, SixelImage};
 
 const READ_CHUNK: usize = 32 * 1024;
 const PTY_QUEUE_CHUNKS: usize = 64;
@@ -195,6 +198,8 @@ struct Listener {
     write_dropped: Arc<std::sync::atomic::AtomicU64>,
     /// 当前调色板：OSC 4/10/11/12 查询要按主题回真实颜色。
     palette: Arc<RwLock<Palette>>,
+    /// Sixel 开关：开启时把 alacritty 的 Primary DA 回应加上参数 4。
+    sixel: Arc<AtomicBool>,
 }
 
 impl EventListener for Listener {
@@ -205,7 +210,13 @@ impl EventListener for Listener {
             // Bell 由 actor 里的 OscScanner 统一上报：alacritty 的 Event::Bell 与它
             // 会重复，且 OSC 9/777 本来就不经过 vte 的 EventListener。
             Event::CursorBlinkingChange => self.events.send(CoreEvent::CursorBlinkChange),
-            Event::PtyWrite(text) => {
+            Event::PtyWrite(mut text) => {
+                // alacritty 固定回 `CSI ?6c`。开启 Sixel 时替换为带参数 4 的
+                // Primary DA（dsh-tui 等程序据此自动选择 Sixel）；关闭时原样
+                // 回 `?6c`，绝不宣告 Sixel，也不触碰二级 DA。
+                if let Some(da1) = rewrite_da1(&text, self.sixel.load(Ordering::Relaxed)) {
+                    text = da1;
+                }
                 if self.pty_write.try_send(text.into_bytes()).is_err() {
                     self.write_dropped
                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -249,6 +260,12 @@ pub struct PaneConfig {
     /// false（默认）时用户上滚查看历史，新输出只增长历史、不抢视图；
     /// true 时每次收到输出都把视口拉回底部。
     pub scroll_on_output: bool,
+    /// 启用 Sixel 内联图片（解析/解码/渲染 + DA1 宣告参数 4）。
+    pub sixel: bool,
+    /// Sixel 图片是否跟随滚动历史（默认 true）；false 时锚定在创建时的屏幕行。
+    pub sixel_scrolling: bool,
+    /// 终端 cell 像素高度：只用于判断图片是否仍与视口相交（不影响锚点）。
+    pub cell_height: u16,
 }
 
 impl Default for PaneConfig {
@@ -265,6 +282,9 @@ impl Default for PaneConfig {
             env: Vec::new(),
             palette: Palette::default(),
             scroll_on_output: false,
+            sixel: true,
+            sixel_scrolling: true,
+            cell_height: 16,
         }
     }
 }
@@ -277,6 +297,10 @@ enum Ctrl {
     ScrollTo(usize),
     /// 运行时切换 scroll-on-output（设置页改动立即生效）。
     SetScrollOnOutput(bool),
+    /// 运行时开关 Sixel（设置页改动立即生效）；关闭时清除已有图片。
+    SetSixel(bool),
+    /// 运行时切换 Sixel 图片是否随滚动历史移动。
+    SetSixelScrolling(bool),
     SelectionStart { line: u16, col: u16 },
     SelectionExtend { line: u16, col: u16 },
     SelectionClear,
@@ -389,6 +413,17 @@ impl PaneHandle {
     /// 运行时切换「输出即回底」策略（异步投递，不阻塞 UI）。
     pub fn set_scroll_on_output(&self, enabled: bool) {
         let _ = self.ctrl_tx.send(Ctrl::SetScrollOnOutput(enabled));
+    }
+
+    /// 运行时开关 Sixel（异步）。关闭后 actor 不再解码/渲染图片，并清除已有图；
+    /// 同时 Listener 的 DA1 回应不再包含参数 4。
+    pub fn set_sixel(&self, enabled: bool) {
+        let _ = self.ctrl_tx.send(Ctrl::SetSixel(enabled));
+    }
+
+    /// 运行时切换 Sixel 图片是否跟随滚动历史（异步）。
+    pub fn set_sixel_scrolling(&self, scrolling: bool) {
+        let _ = self.ctrl_tx.send(Ctrl::SetSixelScrolling(scrolling));
     }
 
     /// 非阻塞滚动位置查询：只读 actor 维护的原子快照。
@@ -688,12 +723,14 @@ pub fn spawn(config: PaneConfig) -> std::io::Result<PaneHandle> {
     let write_dropped = Arc::new(std::sync::atomic::AtomicU64::new(0));
 
     let shared_palette = Arc::new(RwLock::new(config.palette.clone()));
+    let sixel_enabled = Arc::new(AtomicBool::new(config.sixel));
     let listener = Listener {
         wake: wake_signal,
         events: events_sink,
         pty_write: write_tx.clone(),
         write_dropped: write_dropped.clone(),
         palette: shared_palette.clone(),
+        sixel: sixel_enabled.clone(),
     };
 
     // ---- PTY 读线程：只 read + 有界 send ----
@@ -756,6 +793,12 @@ pub fn spawn(config: PaneConfig) -> std::io::Result<PaneHandle> {
         term,
         processor: Processor::new(),
         osc: OscScanner::new(),
+        sixel: SixelFilter::new(),
+        sixel_enabled: sixel_enabled.clone(),
+        sixel_scrolling: config.sixel_scrolling,
+        cell_height: config.cell_height.max(1),
+        images: ImageStore::default(),
+        image_clear: ImageClearScanner::default(),
         input_rx,
         pty_rx,
         ctrl_rx,
@@ -849,6 +892,18 @@ struct Actor {
     processor: Processor,
     /// 通知/进度/OSC 7 扫描：alacritty 不暴露 OSC 9/777，需旁路扫原始字节。
     osc: OscScanner,
+    /// Sixel DCS 过滤器：把图片字节从 vte 输入里摘掉。
+    sixel: SixelFilter,
+    /// 与 Listener 共享的开关（DA1 判定 + 是否解码/渲染图片）。
+    sixel_enabled: Arc<AtomicBool>,
+    /// 图片是否跟随滚动历史。
+    sixel_scrolling: bool,
+    /// 终端 cell 像素高度（判断图片是否与视口相交）。
+    cell_height: u16,
+    /// 已解码的 Sixel 图片（按创建顺序，超出预算淘汰最旧）。
+    images: ImageStore,
+    /// 清屏/备用屏切换检测：这些序列让 alacritty 清屏，图片也必须一起清。
+    image_clear: ImageClearScanner,
     input_rx: Receiver<Vec<u8>>,
     pty_rx: Receiver<Vec<u8>>,
     ctrl_rx: Receiver<Ctrl>,
@@ -879,6 +934,220 @@ struct Actor {
     scroll_on_output: bool,
 }
 
+/// 单图 + 全部图片的像素预算：UI 侧缓存 Slint Image 还会再占一份，所以这里
+/// 限制得比“单图 16 MP（64 MiB）”宽不了多少。
+const MAX_STORED_IMAGES: usize = 64;
+const MAX_STORED_IMAGE_BYTES: usize = 64 * 1024 * 1024;
+
+/// 会清空整屏/切换备用屏、因而必须清除内联图片的转义序列。
+///
+/// 只做“清空所有图片”的粗粒度处理（Escape 2J/3J、进入/离开备用屏、RIS）：
+/// 足以保证 `clear` / TUI 重绘不会留下旧图；局部 ECH 擦除不做像素级追踪。
+const IMAGE_CLEAR_SEQUENCES: [&[u8]; 8] = [
+    b"\x1b[2J",
+    b"\x1b[3J",
+    b"\x1b[?1049h",
+    b"\x1b[?1049l",
+    b"\x1b[?1047h",
+    b"\x1b[?1047l",
+    b"\x1b[?47h",
+    b"\x1b[?47l",
+];
+
+/// 跨 chunk 检测清屏序列；最多保留 8 字节尾巴，不复制整块 PTY 数据。
+#[derive(Default)]
+struct ImageClearScanner {
+    tail: Vec<u8>,
+}
+
+impl ImageClearScanner {
+    fn feed(&mut self, bytes: &[u8]) -> bool {
+        let mut hit = false;
+        for pattern in IMAGE_CLEAR_SEQUENCES {
+            // 跨边界：tail 的后缀 + bytes 的前缀。
+            let tail_need = pattern.len().saturating_sub(1).min(self.tail.len());
+            if tail_need > 0 && bytes.len() + tail_need >= pattern.len() {
+                let tail_start = self.tail.len() - tail_need;
+                let mut matched = true;
+                for (i, want) in pattern.iter().enumerate() {
+                    let got = if i < tail_need {
+                        self.tail[tail_start + i]
+                    } else {
+                        let bi = i - tail_need;
+                        if bi >= bytes.len() {
+                            matched = false;
+                            break;
+                        }
+                        bytes[bi]
+                    };
+                    if got != *want {
+                        matched = false;
+                        break;
+                    }
+                }
+                if matched {
+                    hit = true;
+                }
+            }
+            // 同一 chunk 内。
+            if !hit && bytes.len() >= pattern.len() {
+                hit = bytes.windows(pattern.len()).any(|w| w == pattern);
+            }
+            if hit {
+                break;
+            }
+        }
+        // 保留末尾 7 字节（最长 pattern 8 字节，跨边界最多需要 7）。
+        let keep = 7.min(bytes.len());
+        if keep > 0 {
+            self.tail.clear();
+            self.tail.extend_from_slice(&bytes[bytes.len() - keep..]);
+        }
+        hit
+    }
+}
+
+/// actor 内保存的一张已解码 Sixel 图片。
+struct StoredImage {
+    id: u64,
+    /// 绝对行号 = grid 行 + 当时的 history_size；滚动/resize 时保持不变
+    ///（scrollback 满后淘汰最旧行会让它偏移，见模块文档中的说明）。
+    abs_line: i64,
+    /// `sixel_scrolling=false` 时使用：创建时的视口行，滚动时固定在屏幕上。
+    fixed_row: Option<i32>,
+    col: u16,
+    width: u32,
+    height: u32,
+    data: Arc<[u8]>,
+    bytes: usize,
+}
+
+#[derive(Default)]
+struct ImageStore {
+    images: VecDeque<StoredImage>,
+    bytes: usize,
+    next_id: u64,
+}
+
+impl ImageStore {
+    fn clear(&mut self) {
+        self.images.clear();
+        self.bytes = 0;
+    }
+
+    /// 锚定到光标处的图片。`cursor.line` 是 alacritty grid 坐标（视口底行为
+    /// `screen_lines-1`，历史为负）。
+    #[allow(clippy::too_many_arguments)]
+    fn push(
+        &mut self,
+        image: SixelImage,
+        cursor: Point,
+        history: usize,
+        display_offset: usize,
+        scrolling: bool,
+        cols: usize,
+    ) {
+        let expected = image.width as usize * image.height as usize * 4;
+        if image.width == 0
+            || image.height == 0
+            || image.rgba.len() != expected
+            || expected > MAX_STORED_IMAGE_BYTES
+        {
+            return;
+        }
+        let bytes = image.rgba.len();
+        // 按创建顺序淘汰最旧图片，给新图腾预算。
+        while !self.images.is_empty()
+            && (self.images.len() >= MAX_STORED_IMAGES
+                || self.bytes.saturating_add(bytes) > MAX_STORED_IMAGE_BYTES)
+        {
+            if let Some(old) = self.images.pop_front() {
+                self.bytes = self.bytes.saturating_sub(old.bytes);
+            }
+        }
+        if self.bytes.saturating_add(bytes) > MAX_STORED_IMAGE_BYTES {
+            return;
+        }
+        let col = if cols == 0 { 0 } else { (cursor.column.0).min(cols - 1) as u16 };
+        let abs_line = cursor.line.0 as i64 + history as i64;
+        let fixed_row = if scrolling {
+            None
+        } else {
+            Some(cursor.line.0.saturating_add(display_offset as i32))
+        };
+        self.next_id = self.next_id.wrapping_add(1);
+        self.bytes += bytes;
+        self.images.push_back(StoredImage {
+            id: self.next_id,
+            abs_line,
+            fixed_row,
+            col,
+            width: image.width,
+            height: image.height,
+            data: Arc::from(image.rgba.into_boxed_slice()),
+            bytes,
+        });
+    }
+
+    /// 运行时切换“图片跟随滚动”。已有图片换算锚点，避免下次滚动时跳一下。
+    fn set_scrolling(&mut self, scrolling: bool, history: usize, display_offset: usize) {
+        let hist = history as i64;
+        let off = display_offset as i64;
+        for image in &mut self.images {
+            if scrolling {
+                if let Some(row) = image.fixed_row.take() {
+                    image.abs_line = row as i64 - off + hist;
+                }
+            } else if image.fixed_row.is_none() {
+                let row = image.abs_line - hist + off;
+                image.fixed_row = Some(row.clamp(i32::MIN as i64, i32::MAX as i64) as i32);
+            }
+        }
+    }
+
+    fn place(
+        &self,
+        history: usize,
+        display_offset: usize,
+        rows: usize,
+        cols: usize,
+        cell_height: u16,
+        out: &mut Vec<InlineImage>,
+    ) {
+        if rows == 0 || cols == 0 {
+            return;
+        }
+        let hist = history as i64;
+        let off = display_offset as i64;
+        let screen_rows = rows as i64;
+        let cell_h = cell_height.max(1) as i64;
+        for image in &self.images {
+            let row = match image.fixed_row {
+                Some(row) => row as i64,
+                None => image.abs_line - hist + off,
+            };
+            if row >= screen_rows {
+                continue;
+            }
+            let cell_rows = (image.height as i64 + cell_h - 1) / cell_h;
+            if row + cell_rows.max(1) <= 0 {
+                continue;
+            }
+            if image.col as usize >= cols {
+                continue;
+            }
+            out.push(InlineImage {
+                id: image.id,
+                row: row.clamp(i32::MIN as i64, i32::MAX as i64) as i32,
+                col: image.col,
+                width: image.width,
+                height: image.height,
+                data: image.data.clone(),
+            });
+        }
+    }
+}
+
 impl Actor {
     fn run(mut self) {
         let input = self.input_rx.clone();
@@ -907,7 +1176,9 @@ impl Actor {
                         Err(_) => break,
                     },
                     recv(pty) -> msg => match msg {
-                        Ok(b) => { self.feed(&b); self.wake.notify(); },
+                        // Sixel payload 分块到达时 feed 返回 false：没有新内容，
+                        // 不应为每 32 KiB 图片数据触发一次整帧重绘。
+                        Ok(b) => { if self.feed(&b) { self.wake.notify(); } },
                         Err(_) => self.pty_closed = true,
                     },
                 }
@@ -951,9 +1222,11 @@ impl Actor {
         );
     }
 
-    #[inline]
-    fn feed(&mut self, bytes: &[u8]) {
+    /// 解析一批 PTY 字节。返回 false 表示这批字节全是 Sixel 中间数据、
+    /// 没有产生可见变化，调用方无需唤醒 UI。
+    fn feed(&mut self, bytes: &[u8]) -> bool {
         let start = Instant::now();
+        use std::sync::atomic::Ordering::Relaxed;
         // 组合音标/ZWJ/VS 是零宽字符，alacritty 把它们挂到前一个格子上但**不标
         // damage**（见 Term::input 的 width == 0 分支）。如果它们单独成批到达，
         // 按脏行拉帧会永远看不到；这里检测到零宽码位就下一帧整屏重取。
@@ -962,30 +1235,98 @@ impl Actor {
             // 组合字符不产生 damage，必须整帧重取并扫描零宽表，才能发现它挂到哪一格。
             self.refresh_zerowidth = true;
         }
-        // 先扫通知类 OSC/BEL：这些序列 vte 内部不转发给 EventListener。
-        let mut notif_events = Vec::new();
-        self.osc.feed(bytes, &mut notif_events);
-        for event in notif_events {
-            self.events.send(event);
+
+        // 先摘出 Sixel DCS：既避免图片字节进入网格，也避免 BEL 终止的
+        // DCS 让 vte 卡在字符串状态吞掉后续输出。
+        let decode = self.sixel_enabled.load(Ordering::Relaxed);
+        let filtered = self.sixel.feed(bytes, decode);
+        let mut parsed = 0usize;
+        let mut changed = false;
+        if let Some(events) = filtered {
+            for event in events {
+                match event {
+                    SixelEvent::Pass(chunk) => {
+                        if chunk.is_empty() {
+                            continue;
+                        }
+                        changed = true;
+                        parsed += chunk.len();
+                        if self.image_clear.feed(&chunk) {
+                            self.images.clear();
+                        }
+                        // 通知扫描也只看真正交给 vte 的字节：Sixel payload
+                        // 已被剔除，其中的 BEL 不会被误判成铃声。
+                        let mut notif_events = Vec::new();
+                        self.osc.feed(&chunk, &mut notif_events);
+                        for event in notif_events {
+                            self.events.send(event);
+                        }
+                        self.processor.advance(&mut self.term, &chunk);
+                    },
+                    SixelEvent::Image(image) => {
+                        self.add_image(image);
+                        // 图片把字节流分成两段，清屏序列不可能跨过它。
+                        self.image_clear.tail.clear();
+                        changed = true;
+                    },
+                }
+            }
+        } else {
+            changed = true;
+            parsed = bytes.len();
+            if self.image_clear.feed(bytes) {
+                self.images.clear();
+            }
+            // 先扫通知类 OSC/BEL：这些序列 vte 内部不转发给 EventListener。
+            let mut notif_events = Vec::new();
+            self.osc.feed(bytes, &mut notif_events);
+            for event in notif_events {
+                self.events.send(event);
+            }
+            self.processor.advance(&mut self.term, bytes);
         }
-        self.processor.advance(&mut self.term, bytes);
-        // GNOME scroll-on-output：开启时任何输出都把视口拉回最新（即使已开启
-        // scroll_on_output 的用户明确选择“输出即跟随”）。默认 false 时交给
-        // alacritty：用户上滚后 `Grid::scroll_up` 会递增 display_offset，视图
-        // 保持在原内容上，不会被新行抢走。
-        if self.scroll_on_output {
-            self.term.scroll_display(Scroll::Bottom);
+
+        if changed {
+            // GNOME scroll-on-output：开启时任何输出都把视口拉回最新（即使已开启
+            // scroll_on_output 的用户明确选择“输出即跟随”）。默认 false 时交给
+            // alacritty：用户上滚后 `Grid::scroll_up` 会递增 display_offset，视图
+            // 保持在原内容上，不会被新行抢走。
+            if self.scroll_on_output {
+                self.term.scroll_display(Scroll::Bottom);
+            }
+            // 鼠标模式（1000/1002/1003）常随 TUI 启动一起打开，UI 需要马上看到，
+            // 不能等下一次拉帧，所以每次解析后刷新快照。
+            self.mode_bits.store(self.term.mode().bits(), Relaxed);
+            self.store_cursor();
         }
         let nanos = start.elapsed().as_nanos() as u64;
-        use std::sync::atomic::Ordering::Relaxed;
-        self.stats.bytes_parsed.fetch_add(bytes.len() as u64, Relaxed);
+        self.stats.bytes_parsed.fetch_add(parsed as u64, Relaxed);
         self.stats.parse_nanos.fetch_add(nanos, Relaxed);
         self.stats.parse_batches.fetch_add(1, Relaxed);
-        self.stats.wakeups.fetch_add(1, Relaxed);
-        // 鼠标模式（1000/1002/1003）常随 TUI 启动一起打开，UI 需要马上看到，
-        // 不能等下一次拉帧，所以每次解析后刷新快照。
-        self.mode_bits.store(self.term.mode().bits(), Relaxed);
-        self.store_cursor();
+        if changed {
+            self.stats.wakeups.fetch_add(1, Relaxed);
+        }
+        changed
+    }
+
+    /// 把一张 Sixel 图片锚定到**当前**光标（可能刚解析完同一 chunk 里图片
+    /// 之前的位置控制序列，因此必须逐个事件读取，不能等整批结束）。
+    fn add_image(&mut self, image: SixelImage) {
+        if !self.sixel_enabled.load(Ordering::Relaxed) {
+            return;
+        }
+        let cursor = self.term.grid().cursor.point;
+        let history = self.term.grid().history_size();
+        let display_offset = self.term.grid().display_offset();
+        let cols = self.term.columns();
+        self.images.push(
+            image,
+            cursor,
+            history,
+            display_offset,
+            self.sixel_scrolling,
+            cols,
+        );
     }
 
     fn viewport_point(&self, line: u16, col: u16) -> Point {
@@ -1079,6 +1420,7 @@ impl Actor {
         self.term.selection = None;
         self.sel_anchor = None;
         self.search_span = None;
+        self.images.clear();
         self.force_full = true;
         self.refresh_zerowidth = false;
         use std::sync::atomic::Ordering::Relaxed;
@@ -1131,6 +1473,23 @@ impl Actor {
             },
             Ctrl::SetScrollOnOutput(enabled) => {
                 self.scroll_on_output = enabled;
+                true
+            },
+            Ctrl::SetSixel(enabled) => {
+                self.sixel_enabled.store(enabled, Ordering::Relaxed);
+                if !enabled {
+                    // 关闭后已有图片立即清除；下一帧 UI 收到空列表。
+                    self.images.clear();
+                }
+                self.wake.notify();
+                true
+            },
+            Ctrl::SetSixelScrolling(scrolling) => {
+                self.sixel_scrolling = scrolling;
+                let history = self.term.grid().history_size();
+                let offset = self.term.grid().display_offset();
+                self.images.set_scrolling(scrolling, history, offset);
+                self.wake.notify();
                 true
             },
             Ctrl::SelectionStart { line, col } => {
@@ -1236,6 +1595,7 @@ impl Actor {
                 self.term.clear_screen(ClearMode::Saved);
                 self.term.selection = None;
                 self.sel_anchor = None;
+                self.images.clear();
                 self.force_full = true;
                 self.wake.notify();
                 true
@@ -1313,10 +1673,31 @@ impl Actor {
         );
         self.force_full = false;
         self.refresh_zerowidth = false;
+        self.fill_images(frame);
         let nanos = start.elapsed().as_nanos() as u64;
         self.stats.pulls.fetch_add(1, Relaxed);
         self.stats.fill_nanos.fetch_add(nanos, Relaxed);
         self.stats.cells_copied.fetch_add(frame.copied_cells as u64, Relaxed);
+    }
+
+    /// 按当前滚动位置把图片锚点换算成视口行，写进帧。
+    fn fill_images(&mut self, frame: &mut Frame) {
+        frame.images.clear();
+        if !self.sixel_enabled.load(Ordering::Relaxed) {
+            return;
+        }
+        let history = self.term.grid().history_size();
+        let display_offset = self.term.grid().display_offset();
+        let rows = self.term.screen_lines();
+        let cols = self.term.columns();
+        self.images.place(
+            history,
+            display_offset,
+            rows,
+            cols,
+            self.cell_height,
+            &mut frame.images,
+        );
     }
 }
 
@@ -1490,6 +1871,82 @@ pub fn fill_frame<T: EventListener>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_image(w: u32, h: u32) -> SixelImage {
+        SixelImage { width: w, height: h, rgba: vec![255; w as usize * h as usize * 4] }
+    }
+
+    #[test]
+    fn image_anchor_follows_scrolling_history() {
+        let mut store = ImageStore::default();
+        // 光标在视口第 5 行、历史已有 100 行 → 绝对行 105。
+        store.push(
+            test_image(16, 16),
+            Point::new(Line(5), Column(10)),
+            100,
+            0,
+            true,
+            80,
+        );
+        let mut out = Vec::new();
+        store.place(100, 0, 24, 80, 16, &mut out);
+        assert_eq!(out.len(), 1);
+        assert_eq!((out[0].row, out[0].col), (5, 10));
+
+        // 向上滚 10 行：图片跟着内容下移 10 行（仍在视口内）。
+        out.clear();
+        store.place(100, 10, 24, 80, 16, &mut out);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].row, 15);
+
+        // 又输出 10 行：历史 110，图片内容上移到视口 -5 行（图片高 1 个 cell，
+        // 完全在视口上方 → 不发给 UI，但保留以便滚回去）。
+        out.clear();
+        store.place(110, 0, 24, 80, 16, &mut out);
+        assert!(out.is_empty());
+        store.place(110, 10, 24, 80, 16, &mut out);
+        assert_eq!(out[0].row, 5);
+    }
+
+    #[test]
+    fn image_anchor_fixed_mode_does_not_move_on_scroll() {
+        let mut store = ImageStore::default();
+        store.push(
+            test_image(16, 16),
+            Point::new(Line(5), Column(2)),
+            100,
+            0,
+            false,
+            80,
+        );
+        let mut out = Vec::new();
+        store.place(100, 0, 24, 80, 16, &mut out);
+        assert_eq!(out[0].row, 5);
+        out.clear();
+        store.place(100, 12, 24, 80, 16, &mut out);
+        assert_eq!(out[0].row, 5, "sixel_scrolling=false 时锚定屏幕行");
+
+        // 切换回滚动模式后，按当前视图换算绝对行。
+        store.set_scrolling(true, 100, 12);
+        out.clear();
+        store.place(100, 12, 24, 80, 16, &mut out);
+        assert_eq!(out[0].row, 5);
+        out.clear();
+        store.place(100, 0, 24, 80, 16, &mut out);
+        assert!(out.is_empty(), "图片已完全滚出视口上方");
+    }
+
+    #[test]
+    fn image_store_clears_and_drops_empty() {
+        let mut store = ImageStore::default();
+        store.push(test_image(16, 16), Point::new(Line(0), Column(0)), 0, 0, true, 80);
+        store.push(test_image(0, 16), Point::new(Line(0), Column(0)), 0, 0, true, 80);
+        assert_eq!(store.images.len(), 1);
+        assert!(store.bytes > 0);
+        store.clear();
+        assert!(store.images.is_empty());
+        assert_eq!(store.bytes, 0);
+    }
 
     #[test]
     fn scroll_position_pack_roundtrip() {

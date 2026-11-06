@@ -57,6 +57,15 @@ export struct DividerView {
     vertical: bool,
 }
 
+/// 终端 pane 上的一张内联图片（Sixel）：pane 内像素坐标，独立 Image overlay。
+export struct PaneImage {
+    image: image,
+    x: length,
+    y: length,
+    w: length,
+    h: length,
+}
+
 export struct PaneView {
     id: int,
     image: image,
@@ -87,6 +96,9 @@ export struct PaneView {
     bell-flash: bool,
     /// 终端处于 Read Only：键盘/粘贴不写 PTY，pane 角标提示。
     read-only: bool,
+    /// Sixel 图片 overlay（按创建顺序，后创建的画在上面）。图片不进终端
+    /// cell 文本/选区，也不触发终端帧重绘。
+    images: [PaneImage],
 }
 
 export struct TabView {
@@ -535,6 +547,10 @@ export component MainWindow inherits Window {
     in-out property <bool> cfg-audible-bell: false;
     in-out property <bool> cfg-scroll-output: false;
     in-out property <bool> cfg-scroll-keystroke: true;
+    /// Sixel 内联图片（默认开）；关闭后 DA1 不再宣告、已有图片清除。
+    in-out property <bool> cfg-sixel: true;
+    /// Sixel 图片是否随滚动历史移动（默认开）。
+    in-out property <bool> cfg-sixel-scrolling: true;
     in-out property <bool> cfg-scrollback-unlimited: false;
     /// "always" | "auto" | "never"
     in-out property <string> cfg-scrollbar-policy: "auto";
@@ -569,6 +585,8 @@ export component MainWindow inherits Window {
     callback toggle-audible-bell();
     callback toggle-scroll-output();
     callback toggle-scroll-keystroke();
+    callback toggle-sixel();
+    callback toggle-sixel-scrolling();
     callback toggle-scrollback-unlimited();
     callback set-scrollbar-policy(string);
     callback set-backspace-binding(string);
@@ -1509,6 +1527,16 @@ export component MainWindow inherits Window {
                         // 始终 1:1；拖动时由 16ms 节流的实时重排保证字符清晰，不拉伸。
                         width: p.iw;
                         height: p.ih;
+                    }
+
+                    // Sixel overlay：独立图片层，绝对定位；pane 的 clip 负责裁掉
+                    // 滚出视口/超出网格的部分。图片不进终端帧、不参与选区。
+                    for pic in p.images : Image {
+                        source: pic.image;
+                        x: pic.x;
+                        y: pic.y;
+                        width: pic.w;
+                        height: pic.h;
                     }
 
                     // Read Only 角标：不拦截鼠标事件，选区/滚动照常工作。
@@ -4563,6 +4591,38 @@ export component MainWindow inherits Window {
 
                         Text {
                             text: "Always 无历史时 thumb 占满轨道；Auto 有 scrollback 才显示；Never 始终隐藏。右侧 overlay 滚动条。";
+                            color: Palette.colors.muted;
+                            font-size: 10px;
+                            wrap: word-wrap;
+                        }
+
+                        Rectangle {
+                            height: 1px;
+                            horizontal-stretch: 1;
+                            background: Palette.colors.border;
+                        }
+
+                        Text {
+                            text: "Images";
+                            color: Palette.colors.subtext;
+                            font-size: 12px;
+                            font-weight: 600;
+                        }
+
+                        ToggleRow {
+                            label: "Sixel inline images（默认开）";
+                            on: root.cfg-sixel;
+                            toggled => { root.toggle-sixel(); }
+                        }
+
+                        ToggleRow {
+                            label: "Sixel 图片随滚动历史移动";
+                            on: root.cfg-sixel-scrolling;
+                            toggled => { root.toggle-sixel-scrolling(); }
+                        }
+
+                        Text {
+                            text: "单条 Sixel 原始数据上限 25 MB、单图 16 MP；图片作为独立 overlay 绘制，不进 cell 文本/选区。关闭后 Primary DA 不再包含参数 4，已有图片立即清除。";
                             color: Palette.colors.muted;
                             font-size: 10px;
                             wrap: word-wrap;
