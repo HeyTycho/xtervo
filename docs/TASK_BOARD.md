@@ -1,6 +1,6 @@
 # Tervo 任务看板
 
-> 最后更新：2026-11-06 20:05  
+> 最后更新：2026-11-06 20:20  
 > 规则：每个任务开始/完成/阻塞都要更新本文件；记录 worktree、branch、commit、测试/截图、限制。  
 > 当前 master：`a82ac52`（Settings Tab 持久化）；当前 release：`target/release/tervo` 19:07。
 
@@ -41,7 +41,7 @@
 | P1-07 | Codex P1：400ms CoreEvent 轮询 → wake 桥接 | queued | 待建 | 目标语义事件 <50ms，空闲 CPU 不退化 |
 | P1-08 | Codex P1：Vault Argon2 KDF 移出 UI 线程 | queued | 待建 | 解锁期间 UI 不停顿 |
 | P1-09 | Codex P1：`main.rs` 拆分 + `with_app` 重入不丢操作 | queued | 待建 | 大重构，分小步 |
-| P1-10 | 右键菜单美化：字号加大、分类分组、图标/分隔线、窄窗不溢出 | done | `.worktrees/context-menu` / `feat/context-menu` | commit `feat(ui): 右键菜单字号/分类/美化`；app 281 tests；Xvfb :135 7 张截图 + bbox 断言；term_menu e2e 全 PASS；限制：短窗需滚动、无菜单内键盘导航 |
+| P1-10 | 右键菜单美化：字号加大、分类分组、图标/分隔线、窄窗不溢出 | done | `.worktrees/context-menu` / `feat/context-menu` | commit `bddf0ef`；合 master `3e5c270`；`.logs/context-menu/` | context-menu e2e PASS；term_menu PASS；字号/分组/窄窗/右下翻转截图 |
 
 ## 4. 周末大块任务
 
@@ -108,3 +108,4 @@
 | 2026-11-06 19:15 | 建立看板；P0-01..04 完成；P0-05/06 running；P1 冻结；周末大块排期 |
 | 2026-11-06 19:55 | P0-05/06/07 done（474 tests，6 e2e，release 19:51）；P1-01/02/03/10 恢复；WM resize 首次偶发、重跑 PASS 记录 |
 | 2026-11-06 20:05 | P1-02 搜索 UX 合入（282 tests，search e2e PASS）；注意 e2e 必须重建 target/debug |
+| 2026-11-06 20:20 | P1-10 右键菜单合入（3e5c270）；context-menu + term_menu e2e PASS；开始 W-01 |
