@@ -1451,3 +1451,61 @@ cargo bench -p tervo-core --bench pty_throughput
   DECSCUSR 的 underline/beam/hollow 优先于配置；frame=Block 时用配置形状（无法
   区分“显式 block”和默认 block），与 GNOME 的“配置只是默认值”仍有细微差别；颜色只接受 #RGB/#RRGGBB；无窗口失焦暂停闪烁；只验证 Xvfb/llvmpipe，
   未验证真 GPU；设置页其它分类仍是固定高度。
+
+### 2026-11-06 · IME 稳定性加固（feat/ime-hardening）
+
+- **范围**：只动候选点同步与修饰键/点击锚点，不碰 Sixel/emoji/GPU/resize 行为/Tab/字体，不新增依赖。
+- **候选点去重键**（`ImeSpotKey`）：从 `(i32,i32)` 扩为
+  `pane + 逻辑毫点坐标/尺寸 + 物理像素 + DPR 千分比 + 是否点击锚点`。
+  纯函数 `ime_spot_key` 负责换算（`rect + cell*cell_size`，纵向再加
+  tabbar 偏移），单测覆盖 dsh 实测格 `(37,94)` / cell 9x22 / tabbar 32 →
+  `win=846,846`，tabbar 在底部 → y=814，DPR 1.25 → 物理 1058/11x28，
+  pane/锚点/光标格变化都会产生不同键。
+- **DPR/窗口坐标**：继续向 winit 传 `LogicalPosition/LogicalSize`（winit 在
+  X11 内部按 `scale_factor` 转物理像素），去重键同时记录物理值与 DPR：
+  只改缩放不改逻辑坐标时也会重发，不会被误判为“没动”。
+- **强制重发**（`ime_spot_dirty`）：pane 切换、Tab 切换、布局刷新
+  （`refresh_views`）、resize、窗口重新获得焦点、DPR 变化、点击锚点更新时置脏；
+  即使坐标与上次完全相同也重新 `set_ime_cursor_area`。只有真的交给 winit
+  （窗口已创建）才清脏，启动早期不会吞掉首次下发。
+- **窗口事件**：复用已有的 `on_winit_window_event`（Slint 只允许一个 filter，
+  因此并入文件拖放桥接，改名 `install_native_window_events`），处理
+  `Focused(true)` 与 `ScaleFactorChanged`；50ms 轮询仍作为后备。
+- **点击锚点**：抽出 `ime_click_anchor(button, wants_mouse, shift)`，仅
+  mouse-reporting TUI 的普通左键记录锚点；Shift+左键本地选择、右键、中键、
+  普通 shell 都不锚定。TUI 关闭鼠标上报时清锚点并重发硬件光标位置。
+- **Shift 过滤**：`is_modifier_artifact` 已覆盖 Shift_L `U+0010` / Shift_R
+  `U+0015`（含 ctrl=true 的组合前缀）；新增左右 Shift 回归测试，确认真实
+  Ctrl+U（text="u"）不被误杀。日志可看到 `[key] "\u{10}"/"\u{15}"` 后紧跟
+  `[key] 忽略修饰键伪事件`，PTY 无 0x10/0x15。
+- **测试**：`cargo test -p tervo-app --bin tervo` 249 → **253 passed**
+  （新增 IME 坐标/DPR/pane 去重 2 例、点击锚点 1 例、左右 Shift 1 例）；
+  `cargo test -p tervo-core` **70 lib + 53 integration** 全通过（未改 core）。
+- **真实 dsh 验收（Xvfb :122，1080x912，cell 9x22）**：把 `~/.dsh` 复制到
+  `/tmp` 可写 HOME，`DSH_HOME` 指向副本、`onboarding.json` 置
+  `completed=true`、假 API key 仅用于进入会话；`dsh --profile dsh-tui` 在
+  Tervo 内启动，先提交 `hello` 建立会话，再 `/btw test` 打开右侧 BtwComposer。
+  点击右侧 composer 前后：
+  - 点击前硬件光标 `[ime] spot pane=1 cell=35,6 win=54.0,802.0 ... anchor=false`
+    （左侧 chat 输入框）；
+  - 点击后 `[mouse] down pane=1 cell=(37, 94) button=0 mods=0 wants=true reporting=true`
+    与 `[ime] spot pane=1 cell=37,94 win=846.0,846.0 phys=846,846 scale=1.000 anchor=true`；
+  - 在右侧 composer 输入 `abc`，再注入 Shift_L/Shift_R 后输入 `xyz`，
+    截图仍为 `abcxyz`（若 Shift_R 漏进 PTY 会变成 Ctrl+U 清空）；
+  - 仅改窗口宽度（1080→1000→1080，候选坐标不变）后 spot 日志行数 24→26；
+    焦点切到 root 再回窗口后 26→28：证明 resize/focus 的 dirty 重发生效，
+    不会因坐标去重而停在旧位置。
+- **普通 shell 验收**：独立 Tervo 实例 `--shell /bin/sh`，注入 `echo A` +
+  Shift_L/Shift_R + `CCEPT` + Enter，XTest 发送的字节为 `[65][67][67][69][80][84][13]`，
+  Shift 伪字符均被忽略，PTY 无 0x10/0x15；点击普通终端后
+  `[ime] spot ... anchor=false`，不会误用点击锚点。
+- **截图/证据**：`.logs/ime-hardening/dsh-btw-panel.png`（右侧 btw 面板）、
+  `dsh-btw-after-click.png`（点击后）、`dsh-after-shifts.png`（`abcxyz`
+  保留）、`shell-shift.png`（`/bin/sh` 输出 ACCEPT）。验收脚本为临时的
+  `.ime-test/run_dsh_btw.sh`（未提交、已删除；依赖本机 dsh/Node 与 CP 配置）。
+- **残余限制**：Xvfb 中没有 fcitx5/ibus 守护进程，无法断言真实中文候选窗的
+  像素位置，只能验证 spot/键序列/composer 行为；DPR 路径只有纯函数单测，
+  未在缩放 Xvfb 上跑 dsh；pane 切换是通用 `focus_pane`/`refresh_views` 路径，
+  dsh 单 pane 场景未做分屏 e2e；**没有**引入 fcitx5 DBus 方案（本机无
+  fcitx5，且会引入异步 DBus 依赖/新故障面）；若将来要做，必须独立
+  feature flag + 默认 fallback + 单独 commit，不能默认开启，不能 unsafe。
