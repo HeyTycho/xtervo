@@ -10,7 +10,10 @@ use std::rc::Rc;
 
 use tervo_core::{flags, CellData, CursorShape, Frame, Span};
 
-use crate::glyph::{FontSet, GlyphCache, Style, ATLAS_W};
+use crate::glyph::{
+    is_zero_width_control, placeholder_kind, FontSet, Glyph, GlyphCache, PlaceholderKind, Style,
+    ATLAS_W,
+};
 
 /// 0x00RRGGBB -> 内存序 RGBA(u32, LE) = r | g<<8 | b<<16 | a<<24
 #[inline]
@@ -285,13 +288,19 @@ impl Renderer {
         pixels[start..end].fill(bg);
     }
 
-    /// `span` = 占用的 cell 数（CJK 宽字符为 2）；字形在 span 内居中。
-    fn blit(&mut self, x: i32, baseline: i32, ch: char, style: Style, color: u32, span: usize) {
-        let Some(g) = self.glyphs.get(&self.fonts, ch, style) else { return };
-        let total = (span * self.cell_w) as i32;
-        let pad = ((total - g.advance as i32) / 2).max(0);
-        let gx = x + pad + g.left as i32;
-        let gy = baseline + g.top as i32;
+    /// 把一个已定位的字形位图混合进帧缓冲；横向严格裁剪到 `[clip_x0, clip_x1)`。
+    ///
+    /// 裁剪是“渲染不撑破网格”的最后一道保险：即使字体步进异常、或网格把 emoji
+    /// 标成 1 格，字形也只会出现在自己的单元格里。
+    fn blit_bitmap(
+        &mut self,
+        gx: i32,
+        gy: i32,
+        g: Glyph,
+        color: u32,
+        clip_x0: i32,
+        clip_x1: i32,
+    ) {
         if gx >= self.width as i32 || gy >= self.height as i32 {
             return;
         }
@@ -309,13 +318,98 @@ impl Renderer {
             let arow = (g.y as usize + row) * ATLAS_W + g.x as usize;
             for col in 0..w {
                 let dx = gx + col as i32;
-                if dx < 0 || dx >= width as i32 || atlas[arow + col] == 0 {
+                if dx < clip_x0 || dx >= clip_x1 || dx < 0 || dx >= width as i32 {
                     continue;
                 }
                 let a = atlas[arow + col] as u32;
+                if a == 0 {
+                    continue;
+                }
                 let idx = drow + dx as usize;
                 pixels[idx] = blend(color, pixels[idx], a);
             }
+        }
+    }
+
+    /// `span` = 占用的 cell 数（CJK 宽字符为 2）；字形在 span 内居中。
+    ///
+    /// 返回字形墨迹的水平中心，供组合音标对齐；完全画不出来（缺字/彩色位图
+    /// emoji）时返回 `None`，调用方决定是否画占位框。
+    fn blit(
+        &mut self,
+        x: i32,
+        baseline: i32,
+        ch: char,
+        style: Style,
+        color: u32,
+        span: usize,
+    ) -> Option<i32> {
+        let g = self.glyphs.get(&self.fonts, ch, style, span)?;
+        let total = (span * self.cell_w) as i32;
+        let pad = ((total - g.advance as i32) / 2).max(0);
+        let gx = x + pad + g.left as i32;
+        let gy = baseline + g.top as i32;
+        self.blit_bitmap(gx, gy, g, color, x, x + total);
+        Some(gx + g.w as i32 / 2)
+    }
+
+    /// 组合音标/ZWJ/变体选择符：零宽，叠在基字形上，不占新格。
+    ///
+    /// fontdue 没有 GPOS mark attachment，不能直接按字体锚点定位；这里把标记
+    /// 位图的水平中心对齐基字形的墨迹中心。ZWJ/VS 等控制符没有可见字形，跳过。
+    fn blit_marks(
+        &mut self,
+        x0: i32,
+        baseline: i32,
+        center_x: i32,
+        marks: &[char],
+        style: Style,
+        color: u32,
+        span: usize,
+    ) {
+        let total = (span * self.cell_w) as i32;
+        for &mark in marks {
+            if is_zero_width_control(mark) {
+                continue;
+            }
+            let Some(g) = self.glyphs.get(&self.fonts, mark, style, span) else { continue };
+            let gx = center_x - g.w as i32 / 2;
+            let gy = baseline + g.top as i32;
+            // 组合标记也裁剪在基字形占的 span 内，避免重音压到相邻格。
+            self.blit_bitmap(gx, gy, g, color, x0, x0 + total);
+        }
+    }
+
+    /// 字体链完全画不出来时的明确占位：1px 空框（严格在 span 内）。
+    ///
+    /// 这不是字体的 .notdef tofu，而是“已识别但当前后端画不了”的主动标记：
+    /// emoji 画中心点，Nerd Font/私用区图标画竖条，便于和真实字形区分。
+    fn draw_placeholder(
+        &mut self,
+        x0: usize,
+        y0: usize,
+        w: usize,
+        color: u32,
+        kind: PlaceholderKind,
+    ) {
+        let h = self.cell_h;
+        if w < 4 || h < 4 {
+            self.fill_rect(x0, y0 + h / 2, w, 1, color);
+            return;
+        }
+        // 上下边 + 左右边，缩进 1px 留出格间距。
+        self.fill_rect(x0 + 1, y0 + 2, w - 2, 1, color);
+        self.fill_rect(x0 + 1, y0 + h - 3, w - 2, 1, color);
+        self.fill_rect(x0 + 1, y0 + 2, 1, h - 4, color);
+        self.fill_rect(x0 + w - 2, y0 + 2, 1, h - 4, color);
+        match kind {
+            PlaceholderKind::Emoji => {
+                self.fill_rect(x0 + w / 2 - 1, y0 + h / 2 - 1, 2, 2, color);
+            },
+            PlaceholderKind::Icon => {
+                self.fill_rect(x0 + w / 2, y0 + h / 2 - 3, 1, 6, color);
+                self.fill_rect(x0 + w / 2, y0 + h / 2 - 3, 3, 1, color);
+            },
         }
     }
 
@@ -368,8 +462,30 @@ impl Renderer {
                 continue;
             }
             let ch = cell.char();
+            let style = Self::style_of(cell);
+            let marks = if frame.has_zerowidth() {
+                frame.zerowidth_at(row, col)
+            } else {
+                &[][..]
+            };
             if ch != ' ' {
-                self.blit(x0 as i32, baseline, ch, Self::style_of(cell), fg, span);
+                match self.blit(x0 as i32, baseline, ch, style, fg, span) {
+                    Some(center) => {
+                        if !marks.is_empty() {
+                            self.blit_marks(x0 as i32, baseline, center, marks, style, fg, span);
+                        }
+                    },
+                    // 回退链完全画不出来：emoji/PUA 图标画明确占位框，其它缺字留空。
+                    None => {
+                        if let Some(kind) = placeholder_kind(ch) {
+                            self.draw_placeholder(x0, y0, cell_px, fg, kind);
+                        }
+                    },
+                }
+            } else if !marks.is_empty() {
+                // 空格上挂了组合音标（行首等边角情况）：居中叠在空格上。
+                let center = x0 as i32 + cell_px as i32 / 2;
+                self.blit_marks(x0 as i32, baseline, center, marks, style, fg, span);
             }
             if cell.has(flags::UNDERLINE_MASK) {
                 let uy = y0 + self.cell_h - 2;
@@ -412,7 +528,28 @@ impl Renderer {
                     let ch = cell.char();
                     if ch != ' ' {
                         let baseline = y0 as i32 + self.fonts.baseline;
-                        self.blit(x0 as i32, baseline, ch, Style::Regular, self.default_bg, span);
+                        let marks = frame.zerowidth_at(row, col);
+                        match self.blit(x0 as i32, baseline, ch, Style::Regular, self.default_bg, span)
+                        {
+                            Some(center) => {
+                                if !marks.is_empty() {
+                                    self.blit_marks(
+                                        x0 as i32,
+                                        baseline,
+                                        center,
+                                        marks,
+                                        Style::Regular,
+                                        self.default_bg,
+                                        span,
+                                    );
+                                }
+                            },
+                            None => {
+                                if let Some(kind) = placeholder_kind(ch) {
+                                    self.draw_placeholder(x0, y0, cell_px, self.default_bg, kind);
+                                }
+                            },
+                        }
                     }
                 }
             },
@@ -712,6 +849,156 @@ mod tests {
             ink(&renderer, 2 * cell_w, 3 * cell_w, 0, renderer.cell_h) > 10,
             "切换 buffer 后 B 未画出"
         );
+    }
+
+    #[test]
+    fn combining_mark_is_overlaid_inside_base_cell() {
+        let Some(fonts) = FontSet::load(15.0) else { return };
+        let cell_w = fonts.cell_w;
+        let cell_h = fonts.cell_h;
+        let mut renderer = Renderer::new(
+            Rc::new(fonts),
+            8,
+            1,
+            Theme::default().bg(),
+            Theme::default().cursor(),
+            1.0,
+        );
+        let mut cell = CellData::default();
+        cell.ch = 'x' as u32;
+        cell.fg = 0x00ffffff;
+        cell.bg = Theme::default().bg();
+
+        let mut frame = blank_frame(8, 1);
+        frame.full = true;
+        frame.put_zerowidth(0, cell, None, &['\u{301}']);
+        renderer.draw(&frame);
+        let with_mark = ink(&renderer, 0, cell_w, 0, cell_h);
+        assert!(with_mark > 0, "基字形没画出来");
+        assert_eq!(
+            ink(&renderer, cell_w, 8 * cell_w, 0, cell_h),
+            0,
+            "组合音标溢出到了下一格"
+        );
+
+        // 对照：没有组合音标时墨水量应更少，证明重音真的叠上去了。
+        let mut plain = blank_frame(8, 1);
+        plain.full = true;
+        plain.cells[0] = cell;
+        renderer.draw(&plain);
+        let without = ink(&renderer, 0, cell_w, 0, cell_h);
+        assert!(without > 0);
+        assert!(
+            with_mark > without,
+            "组合音标没有叠加: with={with_mark} without={without}"
+        );
+    }
+
+    #[test]
+    fn missing_private_use_icon_draws_placeholder_inside_cell() {
+        let Some(fonts) = FontSet::load(15.0) else { return };
+        let cell_w = fonts.cell_w;
+        let cell_h = fonts.cell_h;
+        let mut renderer = Renderer::new(
+            Rc::new(fonts),
+            4,
+            1,
+            Theme::default().bg(),
+            Theme::default().cursor(),
+            1.0,
+        );
+        // 从常见 Nerd Font 图标码位里挑一个当前字体链确实画不出来的。
+        let mut missing = None;
+        for ch in ['\u{F121}', '\u{E709}', '\u{E796}', '\u{F000}'] {
+            if renderer.glyphs.get(&renderer.fonts, ch, Style::Regular, 1).is_none() {
+                missing = Some(ch);
+                break;
+            }
+        }
+        let Some(ch) = missing else {
+            eprintln!("跳过：系统已安装覆盖这些图标的 Nerd Font");
+            return;
+        };
+        let mut cell = CellData::default();
+        cell.ch = ch as u32;
+        cell.fg = 0x00ffffff;
+        cell.bg = Theme::default().bg();
+        let mut frame = blank_frame(4, 1);
+        frame.full = true;
+        frame.put(0, cell, None);
+        renderer.draw(&frame);
+
+        assert!(
+            ink(&renderer, 0, cell_w, 0, cell_h) > 0,
+            "缺失的 Nerd 图标应画明确占位框，而不是空白"
+        );
+        assert_eq!(
+            ink(&renderer, cell_w, 4 * cell_w, 0, cell_h),
+            0,
+            "占位框溢出到相邻格"
+        );
+    }
+
+    #[test]
+    fn zwj_family_keeps_every_component_inside_grid() {
+        let Some(fonts) = FontSet::load(15.0) else { return };
+        let cell_w = fonts.cell_w;
+        let cell_h = fonts.cell_h;
+        let mut renderer = Renderer::new(
+            Rc::new(fonts),
+            8,
+            1,
+            Theme::default().bg(),
+            Theme::default().cursor(),
+            1.0,
+        );
+        let mut frame = blank_frame(8, 1);
+        frame.full = true;
+        for (col, ch) in [(0usize, '👨'), (2, '👩'), (4, '👧')] {
+            let mut wide = CellData::default();
+            wide.ch = ch as u32;
+            wide.fg = 0x00ffffff;
+            wide.bg = Theme::default().bg();
+            wide.flags = flags::WIDE_CHAR;
+            // ZWJ 零宽，挂在每个 emoji 的格子上，不额外占格。
+            frame.put_zerowidth(col, wide, None, &['\u{200D}']);
+            let mut spacer = CellData::default();
+            spacer.flags = flags::WIDE_CHAR_SPACER;
+            frame.put(col + 1, spacer, None);
+        }
+        renderer.draw(&frame);
+
+        // 3 个 emoji 网格 = 6 格；无论回退到单色字体还是占位框，都必须有可见内容，
+        // 且不能越过第 6 格。
+        assert!(ink(&renderer, 0, 6 * cell_w, 0, cell_h) > 0, "ZWJ 家族没有可见字形");
+        assert_eq!(ink(&renderer, 6 * cell_w, 8 * cell_w, 0, cell_h), 0, "ZWJ 渲染撑破网格");
+    }
+
+    #[test]
+    fn emoji_forced_narrow_does_not_bleed_into_neighbor() {
+        let Some(fonts) = FontSet::load(15.0) else { return };
+        let cell_w = fonts.cell_w;
+        let cell_h = fonts.cell_h;
+        let mut renderer = Renderer::new(
+            Rc::new(fonts),
+            4,
+            1,
+            Theme::default().bg(),
+            Theme::default().cursor(),
+            1.0,
+        );
+        // 人为把 emoji 放进 1 格（正常网格不会这样，但异常/损坏的帧不能画穿网格）：
+        // 要么缩到 cell_w，要么画占位框，都不能溢到第 2 格。
+        let mut cell = CellData::default();
+        cell.ch = '😀' as u32;
+        cell.fg = 0x00ffffff;
+        cell.bg = Theme::default().bg();
+        let mut frame = blank_frame(4, 1);
+        frame.full = true;
+        frame.put(0, cell, None);
+        renderer.draw(&frame);
+        assert!(ink(&renderer, 0, cell_w, 0, cell_h) > 0);
+        assert_eq!(ink(&renderer, cell_w, 4 * cell_w, 0, cell_h), 0, "1 格 emoji 撑破网格");
     }
 
     #[test]
