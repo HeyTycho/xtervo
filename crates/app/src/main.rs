@@ -35,7 +35,7 @@ use tervo_core::{
     spawn, CoreEvent, Frame, Modifiers, MouseAction, MouseButton, MouseEvent, Notification,
     PaneConfig, PaneHandle, ProgressState, Theme, UiColors,
 };
-use slint::winit_030::{winit, WinitWindowAccessor};
+use slint::winit_030::{winit, EventResult, WinitWindowAccessor};
 use slint::{Model, ModelRc, VecModel};
 use x11rb::connection::Connection;
 use x11rb::rust_connection::RustConnection;
@@ -54,6 +54,10 @@ const TITLE: &str = "Tervo";
 const TABBAR_H: f32 = 32.0;
 /// `TermMode::BRACKETED_PASTE`
 const BRACKETED_PASTE: u32 = 1 << 4;
+/// 视觉铃边框闪一下的时长；到期由 30ms timer 清除。
+const BELL_FLASH_MS: u64 = 180;
+/// 滚动条 thumb 的最小像素高度（长 scrollback 时仍可抓取）。
+const SCROLLBAR_MIN_THUMB_PX: f32 = 24.0;
 
 struct PaneRuntime {
     handle: PaneHandle,
@@ -71,6 +75,8 @@ struct PaneRuntime {
     activity: activity::PaneActivity,
     /// 最近一条通知；切到该 Tab 时清空。
     notification: Option<Notification>,
+    /// 视觉铃闪烁到期时间；Some = 正在闪。由 `tick_bell_flash` 清除。
+    bell_until: Option<Instant>,
     /// SSH 密码认证用的临时 askpass 脚本；随 pane 一起释放。
     _askpass: Option<askpass::Askpass>,
 }
@@ -220,6 +226,8 @@ struct AppState {
     resize_redraw: slint::Timer,
     /// 停止拖动 200ms 后恢复背景图并做最终重绘。
     resize_finalize: slint::Timer,
+    /// 视觉铃到期清除（30ms 重复；没有闪烁时停止）。
+    bell_timer: slint::Timer,
     resize_in_progress: bool,
     /// 最近一次 resize apply 的最大耗时（profile 汇总）。
     resize_max_apply_us: f64,
@@ -406,6 +414,7 @@ const SETTINGS_CATALOG: &[(i32, &str, &str)] = &[
     (1, "Copy on select", "copy select clipboard"),
     (1, "Confirm before closing", "confirm close window exit"),
     (1, "Confirm multi-line paste", "paste multiline confirm"),
+    (1, "Visual bell", "visual bell BEL flash border 视觉铃"),
     (2, "Tab bar at bottom", "tab bar position bottom top"),
     (3, "Config file path", "config path file folder"),
     (4, "Hotkey bindings", "hotkey shortcut key binding"),
@@ -1117,6 +1126,7 @@ fn create_pane(
         title: shell_name(&st.opts),
         activity: activity::PaneActivity::default(),
         notification: None,
+        bell_until: None,
         _askpass: askpass,
     })
 }
@@ -2909,6 +2919,43 @@ fn schedule_resize_finalize(st: &mut AppState) {
 
 // ------------------------------------------------------------------- 布局
 
+/// PaneRuntime → Slint 视图。滚动条几何在这里一次算好，Slint 只负责画，
+/// 避免在 UI 线程上做 clamp/浮点分支。
+fn pane_view(id: PaneId, rt: &PaneRuntime, focused: bool) -> PaneView {
+    let pos = rt.handle.scroll_position();
+    let track_h = rt.renderer.height.max(1) as f32;
+    let min_thumb = (SCROLLBAR_MIN_THUMB_PX / track_h).clamp(0.0, 1.0);
+    let (thumb_y, thumb_h) = match pos.thumb(min_thumb) {
+        Some((top, height)) => (top * track_h, height * track_h),
+        None => (0.0, 0.0),
+    };
+    PaneView {
+        id: id as i32,
+        image: rt.image.clone(),
+        x: rt.rect.x,
+        y: rt.rect.y,
+        w: rt.rect.w,
+        h: rt.rect.h,
+        focused,
+        iw: rt.renderer.width as f32,
+        ih: rt.renderer.height as f32,
+        mouse_reporting: rt.handle.wants_mouse(),
+        scrollbar_visible: pos.scrollable(),
+        scrollbar_thumb_y: thumb_y,
+        scrollbar_thumb_h: thumb_h,
+        scrollbar_track_h: track_h,
+        bell_flash: rt.bell_until.is_some(),
+    }
+}
+
+/// 刷新一个 pane 在模型里的视图（滚动条/铃/尺寸），不拉帧不重绘。
+fn refresh_pane_view(st: &mut AppState, id: PaneId) {
+    let Some(&row) = st.pane_rows.get(&id) else { return };
+    let focused = st.ws.active_tab().map(|t| t.focused) == Some(id);
+    let Some(rt) = st.panes.get(&id) else { return };
+    st.pane_model.set_row_data(row, pane_view(id, rt, focused));
+}
+
 /// 重新计算布局：必要时 resize 各 pane 的网格，并刷新 Slint 模型。
 fn refresh_views(st: &mut AppState) {
     refresh_views_impl(st, true);
@@ -2947,17 +2994,13 @@ fn refresh_views_impl(st: &mut AppState, resize_terminals: bool) {
     }
 
     let make_view = |id: &PaneId, rect: &Rect| -> Option<PaneView> {
-        st.panes.get(id).map(|rt| PaneView {
-            id: *id as i32,
-            image: rt.image.clone(),
-            x: rect.x,
-            y: rect.y,
-            w: rect.w,
-            h: rect.h,
-            focused: *id == focused,
-            iw: rt.renderer.width as f32,
-            ih: rt.renderer.height as f32,
-            mouse_reporting: rt.handle.wants_mouse(),
+        st.panes.get(id).map(|rt| {
+            let mut view = pane_view(*id, rt, *id == focused);
+            view.x = rect.x;
+            view.y = rect.y;
+            view.w = rect.w;
+            view.h = rect.h;
+            view
         })
     };
 
@@ -3136,20 +3179,7 @@ fn redraw_pane_inner(st: &mut AppState, id: PaneId) {
     }
 
     if let Some(&row) = st.pane_rows.get(&id) {
-        let rect = rt.rect;
-        let view = PaneView {
-            id: id as i32,
-            image: rt.image.clone(),
-            x: rect.x,
-            y: rect.y,
-            w: rect.w,
-            h: rect.h,
-            focused,
-            iw: rt.renderer.width as f32,
-            ih: rt.renderer.height as f32,
-            mouse_reporting: rt.handle.wants_mouse(),
-        };
-        st.pane_model.set_row_data(row, view);
+        st.pane_model.set_row_data(row, pane_view(id, rt, focused));
     }
     rt.frame = frame;
     if focused {
@@ -3395,6 +3425,125 @@ fn deliver_paste(st: &mut AppState, text: &str) {
     if let Some(rt) = st.panes.get_mut(&focused) {
         rt.handle.input(&payload);
     }
+}
+
+/// shell 单引号转义：除单引号外的字符全部按字面保留（`$`、空格、`;` 等都不展开）。
+///
+/// 只做「送进 shell 行编辑器不产生语法/展开」这一层；不做危险命令过滤——
+/// bracketed paste 只插入文本，不会自动回车执行。
+fn shell_escape_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 2);
+    out.push('\'');
+    for ch in text.chars() {
+        if ch == '\'' {
+            out.push_str("'\\''");
+        } else {
+            out.push(ch);
+        }
+    }
+    out.push('\'');
+    out
+}
+
+/// 拖放路径 → shell 命令行文本：逐个单引号转义、空格分隔、末尾留一个空格。
+fn drop_paths_text(paths: &[PathBuf]) -> String {
+    let mut out = String::new();
+    for (i, path) in paths.iter().enumerate() {
+        if i > 0 {
+            out.push(' ');
+        }
+        out.push_str(&shell_escape_text(&path.to_string_lossy()));
+    }
+    if !out.is_empty() {
+        out.push(' ');
+    }
+    out
+}
+
+/// 把拖入的文件/目录插入目标 pane：尊重 bracketed paste 模式，末尾带空格。
+fn drop_files_into_pane(id: PaneId, paths: &[PathBuf]) {
+    with_app(|st| {
+        let Some(rt) = st.panes.get(&id) else { return };
+        let bracketed = rt.frame.mode & BRACKETED_PASTE != 0;
+        let text = drop_paths_text(paths);
+        let payload = paste_payload(&text, bracketed);
+        eprintln!(
+            "[ui] drop pane={id} files={} bracketed={bracketed} bytes={}",
+            paths.len(),
+            payload.len()
+        );
+        rt.handle.input(&payload);
+    });
+}
+
+/// 指针当前落在哪个 pane（物理 root 坐标 → 窗口逻辑坐标 → 最近 pane）。
+///
+/// Slint 1.18 的 winit 后端不把 winit 的 `DroppedFile`/`HoveredFile` 转成
+/// `DataTransfer`，拿不到 DropEvent 里的位置；这里直接查 X11 root 指针，
+/// 再换算到 Slint 逻辑坐标。非 X11（Wayland）返回 None。
+fn drop_target_at(win: &winit::window::Window) -> Option<PaneId> {
+    if !winit_window_is_x11(win) {
+        return None;
+    }
+    let (conn, screen) = crate::xconn::connect().ok()?;
+    let root = conn.setup().roots.get(screen)?.root;
+    let (rx, ry) = crate::xconn::query_pointer(&conn, root)?;
+    let inner = win.inner_position().ok()?;
+    let scale = win.scale_factor() as f32;
+    let x = (rx - inner.x) as f32 / scale;
+    let y = (ry - inner.y) as f32 / scale;
+    with_app(|st| {
+        let tab = st.ws.active_tab()?;
+        let rects: Vec<(PaneId, Rect)> = tab
+            .panes()
+            .into_iter()
+            .filter_map(|id| st.panes.get(&id).map(|rt| (id, rt.rect)))
+            .collect();
+        nearest_pane(&rects, x, y)
+    })
+    .flatten()
+}
+
+/// 原生文件拖放桥接：winit 的 X11 后端已经完成 XDND 协商并给出本地路径，
+/// 但 Slint 1.18 winit 后端没有把它送进 DropArea。这里直接消费
+/// `HoveredFile`/`DroppedFile`，复用与 DropArea 相同的插入路径。
+fn install_native_file_drop(ui: &MainWindow) {
+    let weak = ui.as_weak();
+    ui.window().on_winit_window_event(move |win, event| {
+        match event {
+            winit::event::WindowEvent::HoveredFile(_) => {
+                let target = win.with_winit_window(drop_target_at).flatten();
+                if let Some(ui) = weak.upgrade() {
+                    ui.set_drop_hover_pane(target.map(|id| id as i32).unwrap_or(-1));
+                }
+                eprintln!("[ui] native drag hover pane={target:?}");
+            },
+            winit::event::WindowEvent::HoveredFileCancelled => {
+                if let Some(ui) = weak.upgrade() {
+                    ui.set_drop_hover_pane(-1);
+                }
+                eprintln!("[ui] native drag cancelled");
+            },
+            winit::event::WindowEvent::DroppedFile(path) => {
+                let target = win.with_winit_window(drop_target_at).flatten().or_else(|| {
+                    with_app(|st| st.ws.active_tab().map(|t| t.focused)).flatten()
+                });
+                if let Some(ui) = weak.upgrade() {
+                    ui.set_drop_hover_pane(-1);
+                }
+                let Some(id) = target else {
+                    eprintln!("[ui] native drop 无目标 pane，忽略 {}", path.display());
+                    return EventResult::Propagate;
+                };
+                eprintln!("[ui] native drop pane={id} path={}", path.display());
+                drop_files_into_pane(id, std::slice::from_ref(path));
+                // 拖到哪个 pane 就聚焦哪个，随后输入落到刚插入的路径上。
+                focus_pane(id);
+            },
+            _ => {},
+        }
+        EventResult::Propagate
+    });
 }
 
 fn paste_into_focused(st: &mut AppState) {
@@ -3974,6 +4123,7 @@ fn poll_events() {
     with_app(|st| {
         let active = st.ws.active;
         let desktop_notifications = st.cfg.desktop_notifications;
+        let visual_bell = st.cfg.visual_bell;
         let tab_titles: Vec<String> = st.ws.tabs.iter().map(|t| t.title.clone()).collect();
         let pane_tab: HashMap<PaneId, usize> = st
             .ws
@@ -3985,6 +4135,7 @@ fn poll_events() {
 
         let mut titles_dirty = false;
         let mut tabs_dirty = false;
+        let mut bell_panes: Vec<PaneId> = Vec::new();
         let ids: Vec<PaneId> = st.panes.keys().copied().collect();
         for id in ids {
             let Some(rt) = st.panes.get_mut(&id) else { continue };
@@ -4038,6 +4189,10 @@ fn poll_events() {
                             desktop_notifications,
                             true,
                         );
+                        // 视觉铃只闪当前活动 pane；非活动 Tab 仍走未读点/桌面通知。
+                        if is_active && visual_bell {
+                            bell_panes.push(id);
+                        }
                     },
                     CoreEvent::Cwd(cwd) => {
                         eprintln!("[ui] cwd pane={id} tab={tab:?} path={cwd:?}");
@@ -4059,6 +4214,9 @@ fn poll_events() {
         if titles_dirty || tabs_dirty {
             rebuild_tabs(st);
         }
+        for id in bell_panes {
+            flash_bell(st, id);
+        }
         // 插件命令/事件在后台线程写活动日志；这里只按 revision 增量刷新设置页模型。
         refresh_plugin_activity(st, false);
         // SFTP 传输进度：400ms 一次非阻塞收事件；终态时回收任务线程。
@@ -4066,7 +4224,45 @@ fn poll_events() {
     });
 }
 
-// -------------------------------------------------------------------- 入口
+/// 活动 pane 收到 BEL：闪一下边框（`visual_bell = false` 时完全不做）。
+///
+/// 只更新视图属性，不重新拉帧/不 overlay 终端内容；重绘由 Slint 的
+/// border/opacity 动画驱动。
+fn flash_bell(st: &mut AppState, id: PaneId) {
+    if !st.cfg.visual_bell {
+        return;
+    }
+    let Some(rt) = st.panes.get_mut(&id) else { return };
+    rt.bell_until = Some(Instant::now() + Duration::from_millis(BELL_FLASH_MS));
+    refresh_pane_view(st, id);
+    // 已经在跑就重置计时；到期没有新的闪烁时 tick 会 stop。
+    st.bell_timer.start(slint::TimerMode::Repeated, Duration::from_millis(30), tick_bell_flash);
+}
+
+/// 清除到期的视觉铃闪烁；全部清完就停掉 30ms timer，空闲时零开销。
+fn tick_bell_flash() {
+    with_app(|st| {
+        let now = Instant::now();
+        let expired: Vec<PaneId> = st
+            .panes
+            .iter()
+            .filter(|(_, rt)| rt.bell_until.is_some_and(|until| now >= until))
+            .map(|(id, _)| *id)
+            .collect();
+        let still_flashing = st
+            .panes
+            .values()
+            .any(|rt| rt.bell_until.is_some_and(|until| now < until));
+        for id in expired {
+            let Some(rt) = st.panes.get_mut(&id) else { continue };
+            rt.bell_until = None;
+            refresh_pane_view(st, id);
+        }
+        if !still_flashing {
+            st.bell_timer.stop();
+        }
+    });
+}
 
 #[derive(Default, Clone, Debug)]
 struct Options {
@@ -4676,6 +4872,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         resize_redraw_scheduled: false,
         resize_redraw: slint::Timer::default(),
         resize_finalize: slint::Timer::default(),
+        bell_timer: slint::Timer::default(),
         resize_in_progress: false,
         resize_max_apply_us: 0.0,
         corners,
@@ -4895,6 +5092,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // 约定：delta-y > 0 表示向上滚（回看历史）
             rt.handle.scroll(lines as i32);
         });
+    });
+
+    ui.on_pane_scrollbar(|id, fraction| {
+        let id = id as u64;
+        with_app(|st| {
+            let Some(rt) = st.panes.get(&id) else { return };
+            let pos = rt.handle.scroll_position();
+            let track_px = rt.renderer.height.max(1) as f32;
+            let min_thumb = (SCROLLBAR_MIN_THUMB_PX / track_px).clamp(0.0, 1.0);
+            let offset = pos.offset_for_track_fraction(fraction, min_thumb);
+            eprintln!(
+                "[ui] scrollbar pane={id} fraction={fraction:.3} offset={offset} history={} rows={}",
+                pos.history, pos.rows
+            );
+            rt.handle.scroll_to(offset);
+        });
+    });
+
+    // 拖放只接受文件/目录；其他 payload（纯文本/图片）不抢，交回平台。
+    ui.on_can_drop_files(|data| data.has_file_paths());
+    ui.on_files_dropped(|id, data| {
+        let paths: Vec<PathBuf> = match data.file_paths() {
+            Ok(paths) => paths.map(|p| p.to_path_buf()).collect(),
+            Err(e) => {
+                eprintln!("[ui] drop 无法读取文件列表: {e:?}");
+                return;
+            },
+        };
+        if paths.is_empty() {
+            return;
+        }
+        drop_files_into_pane(id as u64, &paths);
     });
 
     ui.on_divider_dragged(|index, x, y| {
@@ -5551,6 +5780,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     });
 
+    ui.on_toggle_visual_bell(|| {
+        with_app(|st| {
+            st.cfg.visual_bell = !st.cfg.visual_bell;
+            st.ui.set_cfg_visual_bell(st.cfg.visual_bell);
+            if !st.cfg.visual_bell {
+                // 关掉时立即清掉所有进行中的闪烁，避免残留边框。
+                for rt in st.panes.values_mut() {
+                    rt.bell_until = None;
+                }
+                st.bell_timer.stop();
+                let ids: Vec<PaneId> = st.pane_rows.keys().copied().collect();
+                for id in ids {
+                    refresh_pane_view(st, id);
+                }
+            }
+            st.cfg.save();
+            eprintln!("[ui] visual_bell={}", st.cfg.visual_bell);
+        });
+    });
+
     ui.on_settings_open_path(|| {
         with_app(|_st| {
             let path = Config::path();
@@ -6116,6 +6365,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         st.ui.set_cfg_confirm_close(st.cfg.confirm_close);
         st.ui.set_cfg_confirm_paste(st.cfg.confirm_multiline_paste);
         st.ui.set_cfg_desktop_notifications(st.cfg.desktop_notifications);
+        st.ui.set_cfg_visual_bell(st.cfg.visual_bell);
         st.ui.set_tabbar_bottom(st.cfg.tabbar_position == "bottom");
         st.ui.set_settings_path(Config::path().display().to_string().as_str().into());
         init_background(st);
@@ -6191,6 +6441,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ---- 首帧 ----
     ui.show()?;
+    // Slint 1.18 的 winit 后端不投递外部文件拖放，用 winit 事件桥接补齐。
+    install_native_file_drop(&ui);
     // GPU 自检兜底：Skia 软件 surface 会“窗口正常但全黑”，而 Slint 的
     // set_rendering_notifier 在 software surface 上不会给出 NativeOpenGL/WGPU
     // 回调。给 GPU 首帧 1s 初始化时间，仍无 GPU API 就 exec 回退软件后端。
@@ -6783,5 +7035,42 @@ mod tests {
         assert!(!parse_args_from(&cfg, Vec::new()).window);
         // 与 spawn 侧常量一致
         assert_eq!(window::WINDOW_FLAG, "--window");
+    }
+
+    #[test]
+    fn drop_paths_are_shell_escaped_literally() {
+        assert_eq!(drop_paths_text(&[PathBuf::from("/tmp/plain")]), "'/tmp/plain' ");
+        assert_eq!(drop_paths_text(&[PathBuf::from("/tmp/a b")]), "'/tmp/a b' ");
+        // 单引号在单引号字符串里写成 '\''，shell 解析后仍是字面单引号。
+        assert_eq!(drop_paths_text(&[PathBuf::from("/tmp/it's")]), "'/tmp/it'\\''s' ");
+        assert_eq!(
+            drop_paths_text(&[PathBuf::from("/tmp/x"), PathBuf::from("目录")]),
+            "'/tmp/x' '目录' "
+        );
+        assert_eq!(drop_paths_text(&[]), "");
+
+        // 常见 shell 元字符必须被引号包住，不能被展开/执行。
+        for raw in ["$HOME", "a;rm -rf /", "`id`", "$(id)", "*", "~", "\\", "\""] {
+            assert_eq!(shell_escape_text(raw), format!("'{raw}'"));
+        }
+        assert_eq!(shell_escape_text(""), "''");
+    }
+
+    #[test]
+    fn drop_payload_is_bracketed_with_trailing_space() {
+        let paths = [PathBuf::from("/tmp/a b"), PathBuf::from("/tmp/c")];
+        let text = drop_paths_text(&paths);
+        assert_eq!(text, "'/tmp/a b' '/tmp/c' ");
+        assert!(text.ends_with(' '), "末尾必须有空格: {text:?}");
+        assert!(!text.contains('\n'));
+
+        // 启用 bracketed paste 时包 200~/201~，光标不会把路径当命令执行。
+        let bracketed = paste_payload(&text, true);
+        assert!(bracketed.starts_with(b"\x1b[200~"));
+        assert!(bracketed.ends_with(b"\x1b[201~"));
+        assert_eq!(&bracketed[6..bracketed.len() - 6], text.as_bytes());
+
+        // 未启用时退化为纯文本（由 shell 自己处理行编辑）。
+        assert_eq!(paste_payload(&text, false), text.as_bytes());
     }
 }
