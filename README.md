@@ -76,39 +76,60 @@ TERVO_DIST=/tmp/dist ./scripts/package.sh
 ./scripts/phase0.sh
 ```
 
-命令行参数：`--cols --rows --scrollback --font-size --shell --latency N --fps SECS --exit-after-first`。
+命令行参数：`--cols --rows --scrollback --font-size --shell --latency N --fps SECS --exit-after-first`；`--version`/`-V` 打印版本、git commit 与构建时间。
 
 ## 打包与安装
 
-两种二进制，用途不同：
+`scripts/package.sh` 产出可复现的发布包（同 commit、同工具链、clean worktree
+下重复执行字节一致）：
 
-| 路径 | 用途 | 体积（本机实测） |
-|---|---|---|
-| `target/release/tervo` | 开发 / 性能分析：`debug = 1`，保留符号给 `perf` / flamegraph | 168.4 MB |
-| `dist/tervo`（`scripts/package.sh`） | 发布产物：复制后 `strip --strip-all` | 30.5 MB（-81.9%） |
+| 产物 | 说明 |
+|---|---|
+| `dist/tervo-stripped` | strip 后的发布二进制（`dist/tervo` 为兼容软链） |
+| `dist/tervo-stripped.sha256` / `dist/SHA256SUMS` | SHA-256 校验和 |
+| `dist/tervo-<version>-linux-<arch>.tar.gz` | 二进制 + `install.sh` + LICENSE/README/THIRD_PARTY_NOTICES/LICENSING + desktop/图标/BUILD-INFO |
+| `dist/tervo_<version>-1_<arch>.deb` | 含 Depends/desktop/图标/文档，可直接 `dpkg-deb -x` 或 `apt install ./…deb` |
 
-`scripts/package.sh` 只 strip 输出目录里的副本，`target/release` 原样保留；
-`scripts/install.sh` 同样先把安装副本放进临时目录 strip 再安装，默认 `~/.local`，
-不会改动开发二进制。
-
-```bash
-./scripts/package.sh                            # → dist/tervo（默认 40 MB 门禁）
-TERVO_DIST=/tmp/dist ./scripts/package.sh    # 自定义输出目录（相对仓库根）
-./scripts/package.sh /tmp/dist                   # 同上，位置参数
-SKIP_BUILD=1 ./scripts/package.sh                # 复用已有 release 二进制
-MAX_MB=30 ./scripts/package.sh                   # 自定义体积门禁
-
-PREFIX=/tmp/prefix ./scripts/install.sh          # 装到自定义 prefix（验证用）
-./scripts/install.sh --no-strip                  # 调试时安装带符号的副本
-```
-
-验证产物：
+`target/release/tervo` 仍保留符号供 `perf`/flamegraph；`scripts/package.sh` 只
+strip 输出目录里的副本，`target/release` 原样保留。
 
 ```bash
-ls -l dist/ && file dist/tervo && ./dist/tervo --help
+./scripts/package.sh                            # → dist/（默认 40 MiB 门禁）
+TERVO_DIST=/tmp/dist ./scripts/package.sh       # 自定义输出目录（相对仓库根）
+./scripts/package.sh /tmp/dist                  # 同上，位置参数
+SKIP_BUILD=1 ./scripts/package.sh               # 复用已有 release 二进制
+SKIP_DEB=1 ./scripts/package.sh                 # 只出 tar.gz/二进制
+MAX_MB=42 ./scripts/package.sh                  # 自定义体积门禁
+ALLOW_DIRTY=1 ./scripts/package.sh              # 允许未提交修改（产物标 dirty）
+
+PREFIX=/tmp/prefix ./scripts/install.sh         # 装到自定义 prefix（验证用）
+./scripts/install.sh --no-strip                 # 调试时安装带符号的副本
+$PREFIX/lib/tervo/install.sh --rollback --prefix $PREFIX
+$PREFIX/lib/tervo/install.sh --uninstall --prefix $PREFIX
 ```
 
-细节、环境变量与兼容性风险见 [`packaging/README.md`](packaging/README.md)。
+安装/升级只替换程序文件，配置与 Profile 不动；升级自动保留
+`$PREFIX/lib/tervo/previous/tervo`，`--rollback` 可来回切换；
+`--uninstall` 保留 `~/.config/tervo`。版本信息：
+
+```bash
+./dist/tervo-stripped --version
+# Tervo 0.1.0
+# commit:  4ae1886e8c39
+# built:   2026-11-06T14:07:47Z
+# target:  x86_64-unknown-linux-gnu
+```
+
+验证产物与安装/升级/回滚/卸载：
+
+```bash
+./scripts/test_packaging.sh                     # 打包 + 干净 prefix 安装 + Xvfb smoke + 升级/回滚/卸载
+ls -l dist/ && file dist/tervo-stripped && ./dist/tervo-stripped --help
+```
+
+可复现细节、安装路径、迁移备份、`.deb` 字段、测试覆盖与**未完成项**
+（自动更新/崩溃报告/AppImage/签名确实没有实现）见
+[`packaging/README.md`](packaging/README.md)。
 
 ## 已实现
 
@@ -318,6 +339,9 @@ update-desktop-database ~/.local/share/applications 2>/dev/null || true
   恢复为普通 shell 并保留 Tab 标题/布局/cwd。
 - Profile 外观覆盖是 per-pane 的“pin”：Profile 显式设置后，全局字号/主题/光标改动不会
   刷新该 pane；清空 Profile 对应字段后新开 Tab 即回到继承。
+- 打包/发布：自动更新、崩溃报告/上传、AppImage/Flatpak/Snap、发布签名与 APT 仓库
+  本轮均未实现，也没有对应按钮；升级靠新 tar 的 `install.sh` 或新 `.deb`，回滚用
+  `install.sh --rollback`。详见 [`packaging/README.md`](packaging/README.md)。
 
 ## 许可证
 
