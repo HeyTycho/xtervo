@@ -194,6 +194,8 @@ struct AppState {
     resize: Option<WindowResize>,
     /// 窗口是否聚焦（100ms 轮询 winit），用于 DECSET 1004 focus 上报。
     window_focused: bool,
+    /// 上次同步给输入法的光标/预编辑；None 表示尚未发送。
+    ime_spot: Option<(i32, i32, String)>,
     /// 本次边/角拖动已交给 WM/compositor（winit drag_resize）。
     /// true 时 drag 回调不再每帧 query_pointer + set_size；若 150ms 内 WM 没有
     /// 产生尺寸变化，drag 回调会解除它并回退自绘，保证 resize 不会“按了没反应”。
@@ -2784,6 +2786,7 @@ fn set_active_tab_inner(st: &mut AppState, index: usize) {
     refresh_views(st);
     rebuild_tabs(st);
     redraw_visible(st);
+    update_ime_spot(st);
     let win = st.window_focused;
     sync_terminal_focus(st, win);
 }
@@ -3069,10 +3072,49 @@ fn redraw_pane(id: PaneId) {
     with_app(|st| redraw_pane_inner(st, id));
 }
 
+/// 把聚焦 pane 的终端光标同步给输入法候选窗。
+///
+/// Slint 只在 TextInput 文本变化时发 IME Update，移动隐藏 TextInput 不会更新
+/// preedit spot；这里直接调用同版本 i-slint-core 的 InputMethodRequest，使用
+/// **窗口坐标**（内容区 + tabbar 偏移），并带上当前 preedit 以保留组合。
+fn update_ime_spot(st: &mut AppState) {
+    use slint::winit_030::winit::dpi::{LogicalPosition, LogicalSize};
+
+    let Some(tab) = st.ws.active_tab() else { return };
+    let focused = tab.focused;
+    let Some(rt) = st.panes.get(&focused) else { return };
+    let (line, col) = rt.cursor;
+    let cw = rt.renderer.cell_w.max(1) as f32;
+    let ch = rt.renderer.cell_h.max(1) as f32;
+    let x = rt.rect.x + col as f32 * cw;
+    let y = rt.rect.y + line as f32 * ch;
+    let content_y = if st.cfg.tabbar_position == "bottom" { 0.0 } else { TABBAR_H };
+    let key = (x.round() as i32, (content_y + y).round() as i32);
+    if st.ime_spot.as_ref().map(|(a, b, _)| (*a, *b)) == Some(key) {
+        return;
+    }
+    st.ime_spot = Some((key.0, key.1, String::new()));
+
+    // 隐藏 TextInput 继续跟随内容坐标；真正的候选窗位置由 winit 直接设置。
+    st.ui.set_ime_x(x);
+    st.ui.set_ime_y(y);
+    let pos = LogicalPosition::new(x as f64, (content_y + y) as f64);
+    let size = LogicalSize::new(cw as f64, ch as f64);
+    let _ = st
+        .ui
+        .window()
+        .with_winit_window(|window| window.set_ime_cursor_area(pos, size));
+    if std::env::var_os("TERVO_IME_LOG").is_some() {
+        eprintln!("[ime] spot pane={focused} cell={line},{col} win={x:.1},{:.1}", content_y + y);
+    }
+}
+
+
 fn redraw_pane_inner(st: &mut AppState, id: PaneId) {
     let focused = st.ws.active_tab().map(|t| t.focused) == Some(id);
     let Some(rt) = st.panes.get_mut(&id) else { return };
     let frame = rt.handle.pull(std::mem::take(&mut rt.frame));
+    rt.cursor = (frame.cursor.line as usize, frame.cursor.col as usize);
     rt.renderer.draw(&frame);
     rt.image = rt.renderer.image();
     if render_profile() {
@@ -3091,11 +3133,6 @@ fn redraw_pane_inner(st: &mut AppState, id: PaneId) {
 
     if focused {
         st.echo.store(count_marker(&frame, MARKER), Ordering::Release);
-        // IME 候选窗跟着光标走：把聚焦 pane 的光标格换算成内容区像素坐标。
-        let px = rt.rect.x + frame.cursor.col as f32 * rt.renderer.cell_w as f32;
-        let py = rt.rect.y + frame.cursor.line as f32 * rt.renderer.cell_h as f32;
-        st.ui.set_ime_x(px);
-        st.ui.set_ime_y(py);
     }
 
     if let Some(&row) = st.pane_rows.get(&id) {
@@ -3115,6 +3152,9 @@ fn redraw_pane_inner(st: &mut AppState, id: PaneId) {
         st.pane_model.set_row_data(row, view);
     }
     rt.frame = frame;
+    if focused {
+        update_ime_spot(st);
+    }
 }
 
 /// 字号缩放（Ctrl+± / Ctrl+0 与命令面板共用）。
@@ -4622,6 +4662,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         hover_cell: None,
         resize: None,
         window_focused: true,
+        ime_spot: None,
         wm_resize: false,
         wm_release_pending: false,
         xresize: None,
