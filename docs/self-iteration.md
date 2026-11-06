@@ -1668,3 +1668,61 @@ cargo bench -p tervo-core --bench pty_throughput
     密钥状态迁移需要单独设计 worker/状态机，属于可选项，未为赶 P0 冒险改接口。
   - 未改默认值/UI 布局/P1（keyboard/search/url/settings/Sixel/emoji/GPU/resize）；
     真实 50 MiB/s 零丢字节压测与远端大目录（>10s）实测未做。
+
+### 2026-11-06 · P1 链接体验：URL/OSC 8 hover 手型 + 本地路径 Ctrl+click（feat/url-paths）
+
+- **范围**：只做 P1-03（URL hover 手型、本地文件路径 Ctrl+click、失败提示），保留 OSC 8 优先/
+  http(s)/file 白名单/右键 Open·Copy Link/普通 Ctrl+click 选词与 TUI 鼠标上报语义。不碰设置 UI、
+  搜索、键盘协议、Sixel、emoji、GPU、resize；worktree `.worktrees/url-paths`（`feat/url-paths`，
+  基于 master `9ffee39`），按要求**不合 master**。提交信息：`feat(link): hover 手型 + 本地路径`。
+- **识别层（core）**：
+  - `link.rs` 保留 URL / IPv4[:port] / 路径三类识别；路径起点边界收紧为**行首/空白/开括号/引号**，
+    避免把 `--prefix=/usr`、`PATH=/bin:/usr/bin`、`user@host:/tmp$` 提示符里的斜杠当成可点路径；
+    `key=https://…` 这类 URL 仍可命中。`http://IP:port` 作为 URL 正常识别；裸 IP:port 仍只标记
+    `LinkKind::Ipv4`，UI 不打开（防误判）。
+  - `frame.rs` 新增 `Frame::link_at(row,col) -> Option<(LinkKind,String)>`，与 `url_at` 共用
+    “显示列 → 文本字符下标”映射：宽字符右半 spacer 回退到左半边，组合字符在 `zerowidth` 表里
+    不占列，因此路径/URL 后接中文或重音不会错位；`url_at` 仍只返回 URL，旧调用/测试不变。
+- **hover 手型（不重绘终端）**：
+  - Slint `pane-hit` 的 move 事件调用新 `pane-hover(p.id,x,y)`；Rust 用 `link_hover_cell` 按格去重，
+    只有换格才重建行文本/扫描链接，且只有“悬停链接 ↔ 非链接”状态变化时才 `set_row_data` 更新
+    `PaneView.link-hover` 并 `winit::Window::set_cursor(Pointer/Default)`。同格移动、空白间移动
+    完全不改模型/不拉终端帧；Slint 侧 `mouse-cursor: p.link-hover ? pointer : default` 让指针状态
+    与元素 hover 生命周期一致。`changed has-hover` → `pane-unhover` 在指针离开 pane 时清手型，
+    避免残留到 TabBar/设置页。
+  - 手型覆盖：OSC 8（白名单 scheme）、行内 http/https/file URL、本地路径；裸 IP 不显示。
+    远端 Profile（ssh/telnet/serial）的**路径**不显示手型也不本地打开；URL/OSC 8 不受影响。
+  - 日志：`[link] hover pane=1 cell=r,c kind=uri|path text=...`、`[link] hover end ...`、
+    `[link] cursor=pointer|default`，便于 e2e/排障。
+- **本地路径打开**：
+  - `~` 只展开 `$HOME`（不执行 shell、不支持 `~user`）；相对路径以 pane shell 的
+    `/proc/<pid>/cwd` 为基准（取不到回退 Tervo 进程 cwd），避免 `cd` 后点 `./a` 打开错目录。
+  - 打开前 `metadata` + `access(2)`：不存在/父目录无权限/文件不可读/目录不可读或不可搜索
+    都只写日志 + 底部浮层，**不 spawn xdg-open**；打开时 `Command::new("xdg-open").arg(path)`
+    单参数传绝对路径，绝不拼 shell。`file://` URL 仍走原白名单 URI 路径，不做本地存在性检查。
+  - 右键菜单的 Open Link / Copy Link 现在同时支持 URL 与路径（Copy 复制展示文本；Open 走同一
+    校验/远端策略）；TUI 鼠标上报下 Ctrl+click 仍原样转发给应用，未改变 xterm 语义。
+- **测试**：
+  - `cargo test -p tervo-app --bin tervo`：**284 passed**（基线 281；新增裸 IP 不打开/路径解析/
+    不存在与权限 3 例，并更新 OSC 8 优先/不安全 scheme 测试走 `frame_target_at`）。
+  - `cargo test -p tervo-core`：**94 lib + 63 integration** 全绿（新增 link 路径边界/`http://IP:port`
+    2 例、frame `link_at` 宽字符/组合字符列映射 2 例）。
+  - `scripts/e2e_url_paths.sh`（Xvfb **:128**，140x24，winit-software，fake xdg-open）PASS：
+    URL hover 日志 + XFixes 光标图 **16x16 X（hash 8d4475…）→ 24x24 手型（hash ae9be6…）→
+    移开恢复 24x24 箭头（hash 85f60f…）**；hover/离开前后 `[render] pane=` 日志 **0→0**
+    （未触发终端帧重绘）；OSC 8 命中 `https://osc.example/x`；裸 IP:port
+    不切手型；Ctrl+click 真实文件 → fake xdg-open 收到绝对路径；不存在/无权限路径分别提示
+    `路径不存在` / `无权限读取路径` 且 xdg-open 调用数不变；右键路径 Open Link 再打开一次、
+    右键 URL 仍出现 Open/Copy Link。截图 `.logs/url-paths/`：`hover_url.png`（x11grab 叠加手型）、
+    `path_missing_toast.png`、`path_deny_toast.png`、`menu_path.png`、`menu_url.png`、
+    `cursor_pointer.png`/`cursor_default.png`、`app.log`、`xdg-open.log`。
+- **限制/风险**：
+  - 路径识别要求前置空白/开括号/引号：带空格路径、`~user`、grep 式 `/tmp/a:12` 不识别；
+    行尾标点会被 `trim_end` 去掉（路径本身以 `.`/`,` 结尾时可能被截）。
+  - 裸 IP:port 仍被识别为 `Ipv4` 但设计上不打开；只有带 scheme 的 `http://IP:port` 可点。
+  - 远端判定按 pane 创建时的 Profile：SSH/telnet/serial pane 不本地开路径；split/duplicate 出来的
+    pane 是本地 shell，按本地处理。无插件 Linkifier、长 URL 折行不拼接。
+  - TUI 鼠标上报模式仍把 Ctrl+click 转发给 TUI（保持既有行为）；hover 手型仅作提示，
+    实际打开仍走 Shift+右键菜单 Open Link。Wayland 下 `set_cursor` 未做专项验收。
+  - 悬停状态在鼠标移动时更新；若终端内容在指针静止时变化，手型可能保持到下一次移动/离开。
+    未做 URL 下划线/高亮，只切系统指针。

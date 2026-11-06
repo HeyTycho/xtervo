@@ -96,6 +96,9 @@ export struct PaneView {
     bell-flash: bool,
     /// 终端处于 Read Only：键盘/粘贴不写 PTY，pane 角标提示。
     read-only: bool,
+    /// 鼠标悬停在可点击链接（URL/OSC 8/路径）上：TouchArea 用 pointer 手型。
+    /// 由 Rust 按格扫描后在悬停状态变化时更新，不触发终端帧重绘。
+    link-hover: bool,
     /// Sixel 图片 overlay（按创建顺序，后创建的画在上面）。图片不进终端
     /// cell 文本/选区，也不触发终端帧重绘。
     images: [PaneImage],
@@ -1057,6 +1060,10 @@ export component MainWindow inherits Window {
     callback pane-mouse-down(int, length, length, int, int);
     callback pane-mouse-move(int, length, length, int, int);
     callback pane-mouse-up(int, length, length, int, int);
+    /// 无按键悬停：只有换格时 Rust 侧才扫描链接并切手型指针。
+    callback pane-hover(int, length, length);
+    /// 指针离开 pane 的 TouchArea：清掉 hover 手型，避免残留在其它控件上。
+    callback pane-unhover(int);
     callback pane-scrolled(int, length, length, length, int);
     /// 滚动条交互：pane id + track 归一化位置（0=顶部/最旧，1=底部/最新）。
     callback pane-scrollbar(int, float);
@@ -2282,6 +2289,14 @@ export component MainWindow inherits Window {
                     }
 
                     pane-hit := TouchArea {
+                        // 链接 hover：Rust 按格识别后写 p.link-hover；只在悬停状态变化时
+                        // 切换系统指针，不重绘终端帧。离开 TouchArea 时由 changed 清理。
+                        mouse-cursor: p.link-hover ? pointer : default;
+                        changed has-hover => {
+                            if (!pane-hit.has-hover) {
+                                root.pane-unhover(p.id);
+                            }
+                        }
                         // 修饰键位：1=Shift 2=Alt 4=Ctrl，由 Rust 侧解码成 xterm 位掩码。
                         pointer-event(event) => {
                             if (event.kind == PointerEventKind.down) {
@@ -2330,6 +2345,9 @@ export component MainWindow inherits Window {
                                 }
                             }
                             if (event.kind == PointerEventKind.move) {
+                                // 按键拖动/1003 上报之前先做无按键 hover 识别；Rust 按格去重，
+                                // 同一格内移动不会重复扫描。悬停状态变化只更新指针，不重绘终端。
+                                root.pane-hover(p.id, pane-hit.mouse-x, pane-hit.mouse-y);
                                 // 按住拖动 + 1003 悬停都走这里；是否真的上报由 Rust 按模式位过滤。
                                 if (pane-hit.pressed || p.mouse-reporting) {
                                     root.pane-mouse-move(p.id, pane-hit.mouse-x, pane-hit.mouse-y, 0,

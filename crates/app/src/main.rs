@@ -27,7 +27,8 @@ slint::include_modules!();
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::ffi::CString;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -36,9 +37,9 @@ use std::time::{Duration, Instant};
 use slint::winit_030::{winit, EventResult, WinitWindowAccessor};
 use slint::{Model, ModelRc, VecModel};
 use tervo_core::{
-    link::is_allowed_uri, spawn, ClipboardRequest, ClipboardSelection, CoreEvent, Frame, Modifiers,
-    MouseAction, MouseButton, MouseEvent, Notification, Palette as TermPalette, PaneConfig,
-    PaneHandle, ProgressState, ScrollPosition, SearchOptions, Theme, UiColors,
+    link::is_allowed_uri, spawn, ClipboardRequest, ClipboardSelection, CoreEvent, Frame, LinkKind,
+    Modifiers, MouseAction, MouseButton, MouseEvent, Notification, Palette as TermPalette,
+    PaneConfig, PaneHandle, ProgressState, ScrollPosition, SearchOptions, Theme, UiColors,
 };
 use x11rb::connection::Connection;
 use x11rb::rust_connection::RustConnection;
@@ -92,6 +93,11 @@ struct PaneRuntime {
     notification: Option<Notification>,
     /// 视觉铃闪烁到期时间；Some = 正在闪。由 `tick_bell_flash` 清除。
     bell_until: Option<Instant>,
+    /// 当前 pane 的进程是否通过 SSH/telnet/serial Profile 启动。
+    /// 远端会话里的路径不能交给本地 xdg-open，避免把远端路径当本地文件打开。
+    remote: bool,
+    /// 鼠标正悬停在可点击链接上（Slint mouse-cursor / 避免每帧重绘终端）。
+    link_hover: bool,
     /// SSH 密码认证用的临时 askpass 脚本；随 pane 一起释放。
     _askpass: Option<askpass::Askpass>,
 }
@@ -233,6 +239,8 @@ struct AppState {
     settings_model: Rc<VecModel<slint::SharedString>>,
     /// 1003 悬停上报的上一格（按格去重，避免鼠标移动刷爆有界 ctrl 队列）。
     hover_cell: Option<(PaneId, (u16, u16))>,
+    /// 链接 hover 的上一格（按格去重；只有换格才扫描行文本/改鼠标指针）。
+    link_hover_cell: Option<(PaneId, (u16, u16))>,
     resize: Option<WindowResize>,
     /// 窗口是否聚焦（100ms 轮询 winit），用于 DECSET 1004 focus 上报。
     window_focused: bool,
@@ -1516,6 +1524,8 @@ fn create_pane(
     mut askpass: Option<askpass::Askpass>,
 ) -> std::io::Result<PaneRuntime> {
     // Profile 优先：它显式带 shell/args/env；否则沿用全局配置。
+    // 远端 Profile（ssh/telnet/serial）里出现的路径属于远端文件系统，不能本地打开。
+    let remote = profile.is_some_and(|p| p.kind != "local");
     let shell = profile
         .map(|p| p.shell.clone())
         .filter(|s| !s.is_empty())
@@ -1616,6 +1626,8 @@ fn create_pane(
         activity: activity::PaneActivity::default(),
         notification: None,
         bell_until: None,
+        remote,
+        link_hover: false,
         _askpass: askpass,
     })
 }
@@ -3728,6 +3740,7 @@ fn pane_view(
         scrollbar_track_h: track_h,
         bell_flash: rt.bell_until.is_some(),
         read_only: rt.handle.read_only(),
+        link_hover: rt.link_hover,
         images: ModelRc::from(rt.inline_model.clone()),
     }
 }
@@ -4404,23 +4417,21 @@ fn focus_pane_dir(st: &mut AppState, dx: f32, dy: f32) {
 }
 
 fn open_pane_menu(st: &mut AppState, id: PaneId, x: f32, y: f32) {
-    // 菜单打开时顺带解析“右键那一格”的链接：OSC 8 优先、普通 URL 兜底。
+    // 菜单打开时顺带解析“右键那一格”的链接：OSC 8 优先、普通 URL/本地路径兜底。
     // x/y 是内容区坐标，pane rect 也是内容区坐标；超出 pane 时不给链接。
-    let link = st
-        .panes
-        .get(&id)
-        .and_then(|rt| {
-            let (px, py) = (x - rt.rect.x, y - rt.rect.y);
-            if px < 0.0 || py < 0.0 || px >= rt.rect.w || py >= rt.rect.h {
-                return None;
-            }
-            let (row, col) = cell_at(rt, px, py);
-            frame_link_at(&rt.frame, row, col)
-        })
-        .unwrap_or_default();
+    let target = st.panes.get(&id).and_then(|rt| {
+        let (px, py) = (x - rt.rect.x, y - rt.rect.y);
+        if px < 0.0 || py < 0.0 || px >= rt.rect.w || py >= rt.rect.h {
+            return None;
+        }
+        let (row, col) = cell_at(rt, px, py);
+        frame_target_at(&rt.frame, row, col)
+    });
+    let link = target.as_ref().map(|t| t.text().to_string()).unwrap_or_default();
     eprintln!(
-        "[ui] right click pane={id} at {x},{y} link={}",
-        !link.is_empty()
+        "[ui] right click pane={id} at {x},{y} link={} kind={:?}",
+        !link.is_empty(),
+        target.as_ref().map(LinkTarget::kind_label)
     );
     st.menu_link = link.clone();
     st.ui.set_menu_link(link.as_str().into());
@@ -4466,80 +4477,302 @@ fn mouse_button(code: i32) -> MouseButton {
     }
 }
 
-/// 从一帧的某格解析可打开链接：**OSC 8 优先**，普通 URL 兜底。
+/// 可打开目标：OSC 8 / 行内 URL 或**本地**文件路径。
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum LinkTarget {
+    Uri(String),
+    Path(String),
+}
+
+impl LinkTarget {
+    fn text(&self) -> &str {
+        match self {
+            Self::Uri(s) | Self::Path(s) => s,
+        }
+    }
+
+    fn is_path(&self) -> bool {
+        matches!(self, Self::Path(_))
+    }
+
+    fn kind_label(&self) -> &'static str {
+        match self {
+            Self::Uri(_) => "uri",
+            Self::Path(_) => "path",
+        }
+    }
+}
+
+/// 从一帧的某格解析可打开目标：**OSC 8 优先**，普通 URL/本地路径兜底。
+///
+/// 裸 IPv4[:port] 虽然能被识别，但这里不返回：没有 scheme 的 IP 很可能只是
+/// 日志/版本/时间戳，强行打开会误判（`http://IP:port` 已由 URL 分支覆盖）。
 ///
 /// 不安全的 OSC 8 scheme（`javascript:` / `data:` 等）只记日志，不阻止同格
 /// 可见文本里的普通 URL 兜底——否则恶意 OSC 8 可以“劫持”一个可见的 http 链接。
-fn frame_link_at(frame: &Frame, row: u16, col: u16) -> Option<String> {
+fn frame_target_at(frame: &Frame, row: u16, col: u16) -> Option<LinkTarget> {
     let (row, col) = (row as usize, col as usize);
     if let Some(uri) = frame.hyperlink_at(row, col) {
         if is_allowed_uri(uri) {
-            return Some(uri.to_string());
+            return Some(LinkTarget::Uri(uri.to_string()));
         }
         eprintln!("[link] 拒绝不安全的 OSC 8 URI: {uri:?}（cell={row},{col}）");
     }
-    let uri = frame.url_at(row, col)?;
-    if is_allowed_uri(&uri) {
-        Some(uri)
-    } else {
-        eprintln!("[link] 拒绝不安全的 URL: {uri:?}（cell={row},{col}）");
-        None
+    let (kind, text) = frame.link_at(row, col)?;
+    match kind {
+        LinkKind::Url => {
+            if is_allowed_uri(&text) {
+                Some(LinkTarget::Uri(text))
+            } else {
+                eprintln!("[link] 拒绝不安全的 URL: {text:?}（cell={row},{col}）");
+                None
+            }
+        }
+        LinkKind::Path => Some(LinkTarget::Path(text)),
+        LinkKind::Ipv4 => None,
+    }
+}
+
+/// hover 用：远端 pane 里的路径不提示可点（不会在本地打开），URL/OSC 8 仍可点。
+fn hover_target_at(frame: &Frame, row: u16, col: u16, remote: bool) -> Option<LinkTarget> {
+    let target = frame_target_at(frame, row, col)?;
+    (!(remote && target.is_path())).then_some(target)
+}
+
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+}
+
+/// 把行内路径文本解析成绝对路径；只为 `~` 展开 HOME，不执行任何 shell。
+///
+/// 相对路径以 pane 的 shell cwd 为基准（`/proc/<pid>/cwd`），不依赖 Tervo
+/// 进程自己的 cwd，避免 `cd /tmp` 后点 `./a` 打开到错误目录。
+fn resolve_local_path(
+    text: &str,
+    cwd: Option<&Path>,
+    home: Option<&Path>,
+) -> Result<PathBuf, String> {
+    if text.is_empty() {
+        return Err("路径为空".to_string());
+    }
+    if text.chars().any(|c| c.is_control() || c.is_whitespace() || c == '\0') {
+        return Err("路径含空白或控制字符".to_string());
+    }
+    if text == "~" {
+        return home.map(Path::to_path_buf).ok_or_else(|| "无法展开 ~：HOME 未设置".to_string());
+    }
+    if let Some(rest) = text.strip_prefix("~/") {
+        let home = home.ok_or_else(|| "无法展开 ~：HOME 未设置".to_string())?;
+        return Ok(home.join(rest));
+    }
+    let path = Path::new(text);
+    if path.is_absolute() {
+        return Ok(path.to_path_buf());
+    }
+    let cwd = cwd.ok_or_else(|| "无法确定当前 shell 目录".to_string())?;
+    Ok(cwd.join(path))
+}
+
+/// 打开前检查本地路径是否存在且可读；返回给用户的失败原因（不含路径）。
+///
+/// 用 `access(2)` 而不是尝试 `File::open`：后者对 FIFO/设备文件可能阻塞；
+/// 对目录要求 R_OK|X_OK，避免把“存在但不可读”的目录说成能打开。
+fn inspect_local_path(path: &Path) -> Result<(), String> {
+    use std::os::unix::ffi::OsStrExt;
+    let meta = std::fs::metadata(path).map_err(|e| match e.kind() {
+        std::io::ErrorKind::NotFound => "路径不存在".to_string(),
+        std::io::ErrorKind::PermissionDenied => "无权限访问路径".to_string(),
+        _ => format!("无法访问路径：{e}"),
+    })?;
+    // CString 失败只可能是路径里有 NUL；用安全错误而不是 panic。
+    let c_path =
+        CString::new(path.as_os_str().as_bytes()).map_err(|_| "路径含 NUL".to_string())?;
+    let mode = if meta.is_dir() { libc::R_OK | libc::X_OK } else { libc::R_OK };
+    if unsafe { libc::access(c_path.as_ptr(), mode) } != 0 {
+        let err = std::io::Error::last_os_error();
+        return Err(match err.kind() {
+            std::io::ErrorKind::PermissionDenied => "无权限读取路径".to_string(),
+            _ => format!("路径不可读：{err}"),
+        });
+    }
+    Ok(())
+}
+
+/// pane shell 的当前目录；拿不到时退回 Tervo 进程 cwd。
+fn pane_cwd(rt: &PaneRuntime) -> Option<PathBuf> {
+    rt.handle
+        .pid()
+        .and_then(session::cwd_of)
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_dir().ok())
+}
+
+/// 本地路径 Ctrl+click：先校验，再在后台用 `xdg-open <绝对路径>` 打开。
+///
+/// 校验失败（不存在/无权限/路径非法）只写日志 + 底部提示，**不** spawn
+/// xdg-open；打开时只传单个参数，绝不拼 shell。
+fn open_local_path(text: &str, cwd: Option<&Path>) {
+    let home = home_dir();
+    let resolved = match resolve_local_path(text, cwd, home.as_deref()) {
+        Ok(path) => path,
+        Err(e) => {
+            let msg = format!("无法打开路径 {text}：{e}");
+            eprintln!("[link] {msg}");
+            show_link_status(msg);
+            return;
+        },
+    };
+    if let Err(e) = inspect_local_path(&resolved) {
+        let msg = format!("无法打开路径 {}：{e}", resolved.display());
+        eprintln!("[link] {msg}");
+        show_link_status(msg);
+        return;
+    }
+    let shown = resolved.display().to_string();
+    eprintln!("[link] open path source={text:?} resolved={shown:?}");
+    open_with_xdg(resolved.into_os_string(), shown, "path");
+}
+
+/// 统一的可打开目标动作：URL 走白名单，本地路径做存在/权限检查，远端路径拒绝。
+fn open_target(target: &LinkTarget, cwd: Option<&Path>, remote: bool) {
+    match target {
+        LinkTarget::Uri(uri) => {
+            if !is_allowed_uri(uri) {
+                eprintln!("[link] 拒绝打开不安全的 URI: {uri:?}");
+                return;
+            }
+            let shown = uri.clone();
+            eprintln!("[link] open uri={shown:?}");
+            open_with_xdg(std::ffi::OsString::from(uri), shown, "uri");
+        },
+        LinkTarget::Path(path) => {
+            if remote {
+                let msg = format!("远程会话中的路径不会在本地打开：{path}");
+                eprintln!("[link] {msg}");
+                show_link_status(msg);
+                return;
+            }
+            open_local_path(path, cwd);
+        },
     }
 }
 
 /// 在 UI 线程外跑 `xdg-open`，失败时把原因写日志并显示短暂浮层。
 ///
-/// - 用 arg 传 URI，绝不拼 shell，天然避免命令注入；
+/// - 用 arg 传 URI/路径，绝不拼 shell，天然避免命令注入；
 /// - stdin/stdout 丢弃，stderr 截断后反馈；
 /// - `xdg-open` 进程失败（非 0 退出）也算失败，不能只看 spawn 是否成功。
-fn open_link_uri(uri: &str) {
-    if !is_allowed_uri(uri) {
-        eprintln!("[link] 拒绝打开不安全的 URI: {uri:?}");
-        return;
-    }
-    let target = uri.to_string();
-    eprintln!("[link] open uri={target:?}");
+fn open_with_xdg(target: std::ffi::OsString, shown: String, kind: &'static str) {
+    let fail_prefix = if kind == "path" { "打开路径失败" } else { "打开链接失败" };
     let thread_target = target.clone();
-    let spawned = std::thread::Builder::new()
-        .name("xdg-open".into())
-        .spawn(move || {
-            let target = thread_target;
-            let result = std::process::Command::new("xdg-open")
-                .arg(&target)
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::piped())
-                .output();
-            match result {
-                Ok(out) if out.status.success() => {
-                    eprintln!("[link] xdg-open ok uri={target:?}");
-                }
-                Ok(out) => {
-                    let detail: String = String::from_utf8_lossy(&out.stderr)
-                        .trim()
-                        .chars()
-                        .take(300)
-                        .collect();
-                    let msg = if detail.is_empty() {
-                        format!("打开链接失败：xdg-open {}", out.status)
-                    } else {
-                        format!("打开链接失败：xdg-open {} — {detail}", out.status)
-                    };
-                    eprintln!("[link] {msg} uri={target:?}");
-                    show_link_status(msg);
-                }
-                Err(e) => {
-                    let msg = format!("打开链接失败：无法运行 xdg-open（{e}）");
-                    eprintln!("[link] {msg} uri={target:?}");
-                    show_link_status(msg);
-                }
-            }
-        });
+    let thread_shown = shown.clone();
+    let spawned = std::thread::Builder::new().name("xdg-open".into()).spawn(move || {
+        let target = thread_target;
+        let shown = thread_shown;
+        let result = std::process::Command::new("xdg-open")
+            .arg(&target)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .output();
+        match result {
+            Ok(out) if out.status.success() => {
+                eprintln!("[link] xdg-open ok {kind}={shown:?}");
+            },
+            Ok(out) => {
+                let detail: String = String::from_utf8_lossy(&out.stderr)
+                    .trim()
+                    .chars()
+                    .take(300)
+                    .collect();
+                let msg = if detail.is_empty() {
+                    format!("{fail_prefix}：xdg-open {}", out.status)
+                } else {
+                    format!("{fail_prefix}：xdg-open {} — {detail}", out.status)
+                };
+                eprintln!("[link] {msg} {kind}={shown:?}");
+                show_link_status(msg);
+            },
+            Err(e) => {
+                let msg = format!("{fail_prefix}：无法运行 xdg-open（{e}）");
+                eprintln!("[link] {msg} {kind}={shown:?}");
+                show_link_status(msg);
+            },
+        }
+    });
     if let Err(e) = spawned {
-        let msg = format!("打开链接失败：无法创建 xdg-open 线程（{e}）");
-        eprintln!("[link] {msg} uri={target:?}");
+        let msg = format!("{fail_prefix}：无法创建 xdg-open 线程（{e}）");
+        eprintln!("[link] {msg} {kind}={shown:?}");
         show_link_status(msg);
     }
+}
+
+/// 只在悬停状态变化时切系统指针；不触发终端帧重绘。
+fn set_link_cursor(st: &AppState, hand: bool) {
+    use winit::window::CursorIcon;
+    let icon = if hand { CursorIcon::Pointer } else { CursorIcon::Default };
+    let _ = st.ui.window().with_winit_window(|w| w.set_cursor(icon));
+    eprintln!("[link] cursor={}", if hand { "pointer" } else { "default" });
+}
+
+/// 无按键悬停：换格时扫描一次当前格链接，状态变化才更新模型/系统指针。
+///
+/// 同一格内移动、以及从空白移动到空白都不会进入扫描；因此不会每帧重绘终端。
+fn update_link_hover(st: &mut AppState, id: PaneId, x: f32, y: f32) {
+    // 拖选/拖分隔条期间不切手型，避免和选择交互抢指针。
+    if st.drag.is_some() {
+        return;
+    }
+    let (cell, remote, was) = {
+        let Some(rt) = st.panes.get(&id) else { return };
+        (cell_at(rt, x, y), rt.remote, rt.link_hover)
+    };
+    if st.link_hover_cell == Some((id, cell)) {
+        return;
+    }
+    st.link_hover_cell = Some((id, cell));
+    let target = st
+        .panes
+        .get(&id)
+        .and_then(|rt| hover_target_at(&rt.frame, cell.0, cell.1, remote));
+    let hand = target.is_some();
+    if hand == was {
+        return;
+    }
+    if let Some(rt) = st.panes.get_mut(&id) {
+        rt.link_hover = hand;
+    }
+    refresh_pane_view(st, id);
+    set_link_cursor(st, hand);
+    match target {
+        Some(t) => eprintln!(
+            "[link] hover pane={id} cell={},{} kind={} text={:?}",
+            cell.0,
+            cell.1,
+            t.kind_label(),
+            t.text()
+        ),
+        None => eprintln!("[link] hover end pane={id} cell={},{}", cell.0, cell.1),
+    }
+}
+
+/// 指针离开 pane 的 TouchArea：清掉手型，避免残留到 TabBar/设置页。
+fn clear_link_hover(st: &mut AppState, id: PaneId) {
+    if st.link_hover_cell.is_some_and(|(pane, _)| pane == id) {
+        st.link_hover_cell = None;
+    }
+    let was = st.panes.get(&id).is_some_and(|rt| rt.link_hover);
+    if !was {
+        return;
+    }
+    if let Some(rt) = st.panes.get_mut(&id) {
+        rt.link_hover = false;
+    }
+    refresh_pane_view(st, id);
+    set_link_cursor(st, false);
+    eprintln!("[link] hover end pane={id} leave");
 }
 
 /// 底部短暂状态浮层；4 秒后自动清空。调用方可在任意线程（内部切回 UI 线程）。
@@ -6655,6 +6888,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         settings_jump_timer: slint::Timer::default(),
         settings_model,
         hover_cell: None,
+        link_hover_cell: None,
         resize: None,
         window_focused: true,
         ime_spot: None,
@@ -6837,6 +7071,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     });
 
+    // 链接 hover：只改指针/悬停状态，不拉帧不重绘终端。Rust 侧按格去重。
+    ui.on_pane_hover(|id, x, y| {
+        let id = id as u64;
+        with_app(|st| update_link_hover(st, id, x, y));
+    });
+    ui.on_pane_unhover(|id| {
+        let id = id as u64;
+        with_app(|st| clear_link_hover(st, id));
+    });
+
     ui.on_pane_mouse_up(move |id, x, y, button, mods| {
         let id = id as u64;
         with_app(|st| {
@@ -6844,16 +7088,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if drag.link {
                 // Ctrl+点击（没有明显拖动）才打开；拖动过就当作取消。
                 if !drag.moved && button == 0 {
-                    let Some(rt) = st.panes.get(&id) else { return };
-                    let (row, col) = cell_at(rt, x, y);
-                    match frame_link_at(&rt.frame, row, col) {
-                        Some(uri) => {
-                            eprintln!("[link] ctrl+click pane={id} cell={row},{col} uri={uri:?}");
-                            open_link_uri(&uri);
+                    let (target, remote, cwd, cell) = {
+                        let Some(rt) = st.panes.get(&id) else { return };
+                        let cell = cell_at(rt, x, y);
+                        (
+                            frame_target_at(&rt.frame, cell.0, cell.1),
+                            rt.remote,
+                            pane_cwd(rt),
+                            cell,
+                        )
+                    };
+                    match target {
+                        Some(target) => {
+                            eprintln!(
+                                "[link] ctrl+click pane={id} cell={},{} kind={} text={:?}",
+                                cell.0,
+                                cell.1,
+                                target.kind_label(),
+                                target.text()
+                            );
+                            open_target(&target, cwd.as_deref(), remote);
                         },
                         None => {
                             if mouselog {
-                                eprintln!("[link] ctrl+click pane={id} cell={row},{col} 无链接");
+                                eprintln!(
+                                    "[link] ctrl+click pane={id} cell={},{} 无链接",
+                                    cell.0, cell.1
+                                );
                             }
                         },
                     }
@@ -7284,20 +7545,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             9 => {
                 with_app(|st| {
-                    let uri = st.menu_link.clone();
-                    if uri.is_empty() {
+                    let text = st.menu_link.clone();
+                    if text.is_empty() {
                         eprintln!("[link] Open Link：当前菜单没有链接");
-                    } else {
-                        open_link_uri(&uri);
+                        return;
                     }
+                    // 菜单只保存展示文本；path 不会与 http(s)/file URI 混淆。
+                    let target = if is_allowed_uri(&text) {
+                        LinkTarget::Uri(text)
+                    } else {
+                        LinkTarget::Path(text)
+                    };
+                    let (cwd, remote) = match st.panes.get(&id) {
+                        Some(rt) => (pane_cwd(rt), rt.remote),
+                        None => (None, false),
+                    };
+                    eprintln!(
+                        "[link] menu open kind={} text={:?}",
+                        target.kind_label(),
+                        target.text()
+                    );
+                    open_target(&target, cwd.as_deref(), remote);
                 });
             }
             10 => {
                 with_app(|st| {
-                    let uri = st.menu_link.clone();
-                    if !uri.is_empty() {
-                        eprintln!("[link] copy uri={uri:?}");
-                        set_clipboard(st, &uri);
+                    let text = st.menu_link.clone();
+                    if !text.is_empty() {
+                        eprintln!("[link] copy link={text:?}");
+                        set_clipboard(st, &text);
                     }
                 });
             }
@@ -9633,7 +9909,7 @@ mod tests {
     }
 
     #[test]
-    fn frame_link_prefers_osc8_over_plain_url() {
+    fn frame_target_prefers_osc8_over_plain_url() {
         let mut f = Frame::new(40, 1);
         put_frame_text(&mut f, "https://plain.example/x");
         let mut first = tervo_core::CellData::default();
@@ -9641,13 +9917,13 @@ mod tests {
         f.put(0, first, Some("https://osc.example/x"));
 
         assert_eq!(
-            frame_link_at(&f, 0, 0).as_deref(),
-            Some("https://osc.example/x")
+            frame_target_at(&f, 0, 0),
+            Some(LinkTarget::Uri("https://osc.example/x".to_string()))
         );
         // 同行的普通 URL 只在没有 OSC 8 的格子上兜底。
         assert_eq!(
-            frame_link_at(&f, 0, 3).as_deref(),
-            Some("https://plain.example/x")
+            frame_target_at(&f, 0, 3),
+            Some(LinkTarget::Uri("https://plain.example/x".to_string()))
         );
     }
 
@@ -9661,22 +9937,107 @@ mod tests {
 
         // 恶意 OSC 8 不得阻止同格可见 http URL 的兜底。
         assert_eq!(
-            frame_link_at(&f, 0, 0).as_deref(),
-            Some("https://plain.example/x")
+            frame_target_at(&f, 0, 0),
+            Some(LinkTarget::Uri("https://plain.example/x".to_string()))
         );
     }
 
     #[test]
-    fn frame_link_rejects_unsafe_only_and_out_of_bounds() {
+    fn frame_target_rejects_unsafe_only_and_out_of_bounds() {
         let mut f = Frame::new(20, 1);
         put_frame_text(&mut f, "hello");
         let mut first = tervo_core::CellData::default();
         first.ch = 'h' as u32;
         f.put(0, first, Some("data:text/html,<script>alert(1)</script>"));
-        assert_eq!(frame_link_at(&f, 0, 0), None);
-        assert_eq!(frame_link_at(&f, 0, 9), None);
-        assert_eq!(frame_link_at(&f, 5, 0), None, "越界行应该是 None");
-        assert_eq!(frame_link_at(&f, 0, 99), None, "越界列应该是 None");
+        assert_eq!(frame_target_at(&f, 0, 0), None);
+        assert_eq!(frame_target_at(&f, 0, 9), None);
+        assert_eq!(frame_target_at(&f, 5, 0), None, "越界行应该是 None");
+        assert_eq!(frame_target_at(&f, 0, 99), None, "越界列应该是 None");
+    }
+
+    #[test]
+    fn frame_target_opens_paths_but_not_bare_ipv4() {
+        let mut f = Frame::new(64, 2);
+        put_frame_text(&mut f, "see /tmp/tervo-file.txt");
+        assert_eq!(
+            frame_target_at(&f, 0, 6),
+            Some(LinkTarget::Path("/tmp/tervo-file.txt".to_string()))
+        );
+        // hover 在远端 pane 不把路径伪装成可点；URL 不受影响。
+        assert_eq!(hover_target_at(&f, 0, 6, true), None);
+        assert_eq!(
+            hover_target_at(&f, 0, 6, false),
+            Some(LinkTarget::Path("/tmp/tervo-file.txt".to_string()))
+        );
+
+        let mut g = Frame::new(64, 2);
+        put_frame_text(&mut g, "127.0.0.1:8080");
+        assert_eq!(frame_target_at(&g, 0, 3), None, "裸 IP:port 不打开");
+        let mut h = Frame::new(64, 1);
+        put_frame_text(&mut h, "http://127.0.0.1:8080/health");
+        assert_eq!(
+            frame_target_at(&h, 0, 3),
+            Some(LinkTarget::Uri("http://127.0.0.1:8080/health".to_string()))
+        );
+    }
+
+    #[test]
+    fn local_path_resolution_expands_home_and_uses_shell_cwd() {
+        let home = PathBuf::from("/home/tervo");
+        let cwd = PathBuf::from("/work/project");
+        assert_eq!(
+            resolve_local_path("/var/log/syslog", Some(&cwd), Some(&home)).unwrap(),
+            PathBuf::from("/var/log/syslog")
+        );
+        assert_eq!(
+            resolve_local_path("~/notes/a.txt", Some(&cwd), Some(&home)).unwrap(),
+            home.join("notes/a.txt")
+        );
+        assert_eq!(
+            resolve_local_path("./target/app", Some(&cwd), Some(&home)).unwrap(),
+            cwd.join("./target/app")
+        );
+        assert_eq!(
+            resolve_local_path("../sibling", Some(&cwd), Some(&home)).unwrap(),
+            cwd.join("../sibling")
+        );
+        assert!(resolve_local_path("~/x", Some(&cwd), None)
+            .unwrap_err()
+            .contains("HOME"));
+        assert!(resolve_local_path("./x", None, Some(&home))
+            .unwrap_err()
+            .contains("shell 目录"));
+        assert!(resolve_local_path("/tmp/a b", Some(&cwd), Some(&home))
+            .unwrap_err()
+            .contains("空白"));
+    }
+
+    #[test]
+    fn local_path_inspection_reports_missing_and_permission_denied() {
+        let dir = std::env::temp_dir().join(format!("tervo-link-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+
+        let file = dir.join("ok.txt");
+        std::fs::write(&file, "ok").unwrap();
+        assert_eq!(inspect_local_path(&file), Ok(()));
+        assert_eq!(inspect_local_path(&dir), Ok(()));
+
+        let missing = dir.join("nope.txt");
+        assert!(inspect_local_path(&missing).unwrap_err().contains("不存在"));
+
+        // root 无视权限位，无法在 root 下构造 PermissionDenied；跳过该断言。
+        if unsafe { libc::geteuid() } != 0 {
+            use std::os::unix::fs::PermissionsExt;
+            let locked = dir.join("locked.txt");
+            std::fs::write(&locked, "secret").unwrap();
+            std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+            let err = inspect_local_path(&locked).unwrap_err();
+            assert!(err.contains("无权限"), "实际错误: {err}");
+            // 清理时先恢复权限，避免后续 remove_dir_all 失败。
+            std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
