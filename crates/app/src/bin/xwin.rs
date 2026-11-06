@@ -85,10 +85,15 @@ fn main() {
         args.get(2).and_then(|v| v.parse::<i32>().ok()),
         args.get(3).and_then(|v| v.parse::<i32>().ok()),
     ) {
-        let _ = conn.configure_window(
-            win,
-            &x11rb::protocol::xproto::ConfigureWindowAux::new().x(x).y(y),
-        );
+        let mut aux = x11rb::protocol::xproto::ConfigureWindowAux::new().x(x).y(y);
+        // 可选第 5/6 个参数：宽高（e2e 里模拟拖拽 resize）。
+        if let (Some(w), Some(h)) = (
+            args.get(4).and_then(|v| v.parse::<u32>().ok()),
+            args.get(5).and_then(|v| v.parse::<u32>().ok()),
+        ) {
+            aux = aux.width(w).height(h);
+        }
+        let _ = conn.configure_window(win, &aux);
     }
 
     let active = conn.intern_atom(false, b"_NET_ACTIVE_WINDOW").unwrap().reply().unwrap().atom;
