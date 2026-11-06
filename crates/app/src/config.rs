@@ -12,6 +12,7 @@
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use tervo_core::CursorShape;
 
 use crate::commands::{Chord, HotkeyOverride};
 
@@ -28,6 +29,51 @@ pub const MIN_BACKGROUND_DIM: f32 = 0.0;
 pub const MAX_BACKGROUND_DIM: f32 = 0.8;
 /// 默认遮罩 60%：白块被压到 ~102 灰，浅色终端文字仍能保持可读对比度。
 pub const DEFAULT_BACKGROUND_DIM: f32 = 0.6;
+
+/// 光标闪烁周期（毫秒），与 VTE/GNOME 的 ~530ms 对齐。
+pub const CURSOR_BLINK_MS: u64 = 530;
+
+/// 解析 `#RGB` / `#RRGGBB` / `RRGGBB`（大小写不敏感）为 0x00RRGGBB。
+/// 空串、长度不是 3/6、非法字符都返回 None。
+pub fn parse_hex_color(input: &str) -> Option<u32> {
+    let raw = input.trim().trim_start_matches('#');
+    let expanded = match raw.len() {
+        3 => raw
+            .chars()
+            .map(|c| {
+                let mut two = String::with_capacity(2);
+                two.push(c);
+                two.push(c);
+                two
+            })
+            .collect::<String>(),
+        6 => raw.to_string(),
+        _ => return None,
+    };
+    if !expanded.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    u32::from_str_radix(&expanded, 16).ok()
+}
+
+/// 把颜色输入规范成 `#rrggbb`；空 = 关闭（None），非法 = None。
+pub fn normalize_hex_color(input: &str) -> Option<String> {
+    parse_hex_color(input).map(|rgb| format!("#{rgb:06x}"))
+}
+
+/// 光标形状的规范值：block | underline | ibeam。未知/空回退 block。
+pub fn normalize_cursor_shape(input: &str) -> String {
+    CursorShape::from_name(input).config_name().to_string()
+}
+
+/// 光标闪烁的规范值：system | on | off。未知/空回退 system。
+pub fn normalize_cursor_blink(input: &str) -> String {
+    match input.trim().to_ascii_lowercase().as_str() {
+        "on" | "true" | "yes" | "1" => "on".to_string(),
+        "off" | "false" | "no" | "0" => "off".to_string(),
+        _ => "system".to_string(),
+    }
+}
 
 /// 夹取到 0.0–1.0 并四舍五入到两位小数；NaN/∞ 回退到 1.0。
 pub fn clamp_opacity(v: f32) -> f32 {
@@ -189,6 +235,23 @@ pub struct Config {
     /// 让浅色终端文字在纯白/亮色图片区域仍有可读对比度。
     #[serde(deserialize_with = "deserialize_dim", serialize_with = "serialize_dim")]
     pub background_dim: f32,
+    // ---- 光标 / 粗体（GNOME Terminal 基础外观）----
+    /// 光标形状：`block`（默认）| `underline` | `ibeam`。
+    /// 兼容 `beam`/`bar` 等别名；非法值读入时回退 block。
+    pub cursor_shape: String,
+    /// 光标闪烁：`system`（默认，当前等同 on）| `on` | `off`。
+    pub cursor_blink: String,
+    /// 光标颜色 `#RRGGBB`；空 = 使用主题光标色。
+    pub cursor_color: String,
+    /// 光标下字符颜色 `#RRGGBB`；空 = 使用主题背景色（块状光标反色）。
+    pub cursor_text_color: String,
+    /// 粗体使用亮色（GNOME `bold-is-bright`，默认 true）。
+    pub bold_is_bright: bool,
+    /// 粗体自定义颜色 `#RRGGBB`；空 = 不启用。
+    pub bold_color: String,
+    /// true = 粗体沿用普通前景色并忽略 `bold_color`（GNOME
+    /// `bold-color-same-as-fg`，默认 true）。
+    pub bold_color_same_as_fg: bool,
     // ---- Quake mode ----
     /// 启用后 F12（可配置）全局显示/隐藏下拉终端。
     pub quake_enabled: bool,
@@ -233,6 +296,13 @@ impl Default for Config {
             background_image: String::new(),
             background_opacity: 1.0,
             background_dim: DEFAULT_BACKGROUND_DIM,
+            cursor_shape: "block".to_string(),
+            cursor_blink: "system".to_string(),
+            cursor_color: String::new(),
+            cursor_text_color: String::new(),
+            bold_is_bright: true,
+            bold_color: String::new(),
+            bold_color_same_as_fg: true,
             quake_enabled: false,
             quake_hotkey: "F12".to_string(),
             quake_width: 0.7,
@@ -272,6 +342,41 @@ impl Config {
         !self.osc52.trim().eq_ignore_ascii_case("deny")
     }
 
+    /// 生效的光标形状。配置非法时回退 block（GNOME 默认）。
+    pub fn cursor_shape(&self) -> CursorShape {
+        CursorShape::from_name(&self.cursor_shape)
+    }
+
+    /// 光标是否闪烁。`off` 关闭；`on` / `system` 开启（GNOME 的系统默认是开）。
+    pub fn cursor_blinking(&self) -> bool {
+        !self.cursor_blink.trim().eq_ignore_ascii_case("off")
+    }
+
+    /// 光标颜色覆盖；空/非法 = None（主题色）。
+    pub fn cursor_color_rgb(&self) -> Option<u32> {
+        parse_hex_color(&self.cursor_color)
+    }
+
+    /// 光标下字符颜色覆盖；空/非法 = None（主题背景色）。
+    pub fn cursor_text_color_rgb(&self) -> Option<u32> {
+        parse_hex_color(&self.cursor_text_color)
+    }
+
+    /// 粗体自定义颜色；空/非法 = None。
+    pub fn bold_color_rgb(&self) -> Option<u32> {
+        parse_hex_color(&self.bold_color)
+    }
+
+    /// 把外观相关字段归一成规范值。新增字段都是 additive，不 bump
+    /// schema；旧配置（v0/v1）读入时靠这里 + serde default 补齐。
+    fn normalize_appearance(&mut self) {
+        self.cursor_shape = normalize_cursor_shape(&self.cursor_shape);
+        self.cursor_blink = normalize_cursor_blink(&self.cursor_blink);
+        normalize_color_field(&mut self.cursor_color, "cursor_color");
+        normalize_color_field(&mut self.cursor_text_color, "cursor_text_color");
+        normalize_color_field(&mut self.bold_color, "bold_color");
+    }
+
     pub fn load() -> Self {
         Self::load_from(&Self::path())
     }
@@ -294,6 +399,9 @@ impl Config {
                 over.chord = chord.canonical();
             }
         }
+        // 外观字段是 additive 的：旧配置缺字段走 serde default，手写别名/大小写
+        // 在这里归一；v1 不 bump schema（避免每次启动重写用户配置）。
+        cfg.normalize_appearance();
 
         if cfg.version < SCHEMA_VERSION {
             let from = cfg.version;
@@ -354,6 +462,23 @@ impl Config {
             v = 1;
         }
         self.version = SCHEMA_VERSION.max(v);
+    }
+}
+
+/// 归一化颜色字段：空保持空（跟随主题），合法值写成 `#rrggbb`，非法值清空并
+/// 在日志里提示一次——不让手写错误把光标/粗体颜色变成不可诊断的“没生效”。
+fn normalize_color_field(field: &mut String, key: &str) {
+    let raw = field.trim();
+    if raw.is_empty() {
+        field.clear();
+        return;
+    }
+    match normalize_hex_color(raw) {
+        Some(color) => *field = color,
+        None => {
+            eprintln!("[config] {key}={raw:?} 不是合法颜色，已回退为跟随主题");
+            field.clear();
+        },
     }
 }
 
@@ -619,6 +744,10 @@ mod tests {
         // 迁移后的文件已是新版本，且没有临时文件残留
         let migrated = std::fs::read_to_string(&path).unwrap();
         assert!(migrated.contains("version = 1"), "{migrated}");
+        // v0 没有外观字段：迁移写回时补上 GNOME 默认值。
+        assert!(migrated.contains("cursor_shape = \"block\""), "{migrated}");
+        assert!(migrated.contains("cursor_blink = \"system\""), "{migrated}");
+        assert!(migrated.contains("bold_is_bright = true"), "{migrated}");
         assert!(!dir.join("config.toml.tmp").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -753,5 +882,125 @@ mod tests {
     fn empty_hotkeys_are_omitted_from_toml() {
         let text = toml::to_string_pretty(&Config::default()).unwrap();
         assert!(!text.contains("hotkeys"), "{text}");
+    }
+
+    #[test]
+    fn appearance_defaults_match_gnome() {
+        let c = Config::default();
+        assert_eq!(c.cursor_shape, "block", "GNOME cursor-shape 默认 block");
+        assert_eq!(c.cursor_blink, "system", "GNOME cursor-blink 默认 system");
+        assert!(c.cursor_blinking(), "system 按开处理");
+        assert_eq!(c.cursor_shape(), tervo_core::CursorShape::Block);
+        assert!(c.cursor_color.is_empty(), "空 = 跟随主题");
+        assert!(c.cursor_text_color.is_empty(), "空 = 跟随主题背景");
+        assert!(c.bold_is_bright, "GNOME bold-is-bright 默认 true");
+        assert!(c.bold_color.is_empty());
+        assert!(c.bold_color_same_as_fg, "GNOME bold-color-same-as-fg 默认 true");
+        assert_eq!(c.cursor_color_rgb(), None);
+        assert_eq!(c.bold_color_rgb(), None);
+    }
+
+    #[test]
+    fn old_config_gets_appearance_defaults() {
+        // v1 之前的文件没有这些键：serde(default) + Config::default 必须补齐。
+        let cfg: Config =
+            toml::from_str("version = 1\ntheme = \"nord\"\nfont_size = 13.0\n").unwrap();
+        assert_eq!(cfg.theme, "nord");
+        assert_eq!(cfg.cursor_shape, "block");
+        assert_eq!(cfg.cursor_blink, "system");
+        assert!(cfg.bold_is_bright);
+        assert!(cfg.bold_color_same_as_fg);
+        // 没有 version 的 v0 文件同样按默认补齐。
+        let v0: Config = toml::from_str("theme = \"nord\"\n").unwrap();
+        assert_eq!(v0.cursor_shape, "block");
+        assert!(v0.bold_is_bright);
+    }
+
+    #[test]
+    fn hex_color_parses_short_long_and_rejects_garbage() {
+        assert_eq!(parse_hex_color("#ff0000"), Some(0x00ff_0000));
+        assert_eq!(parse_hex_color("FF8000"), Some(0x00ff_8000));
+        assert_eq!(parse_hex_color("#f80"), Some(0x00ff_8800));
+        assert_eq!(parse_hex_color("  #00ff00  "), Some(0x0000_ff00));
+        assert_eq!(parse_hex_color(""), None);
+        assert_eq!(parse_hex_color("#gg0000"), None);
+        assert_eq!(parse_hex_color("#ff00"), None);
+        assert_eq!(normalize_hex_color("#F80"), Some("#ff8800".into()));
+        assert_eq!(normalize_hex_color("nope"), None);
+    }
+
+    #[test]
+    fn cursor_shape_and_blink_config_normalize() {
+        let dir = tmpdir("cursor-shape-blink");
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "version = 1\ncursor_shape = \"I-Beam\"\ncursor_blink = \"OFF\"\n")
+            .unwrap();
+        let cfg = Config::load_from(&path);
+        assert_eq!(cfg.cursor_shape, "ibeam");
+        assert_eq!(cfg.cursor_shape(), tervo_core::CursorShape::Beam);
+        assert!(!cfg.cursor_blinking());
+        // on/system 都开；未知值按 system。
+        let cfg: Config = toml::from_str("version = 1\ncursor_blink = \"on\"\n").unwrap();
+        assert!(cfg.cursor_blinking());
+        assert_eq!(normalize_cursor_blink("nope"), "system");
+        assert_eq!(normalize_cursor_shape("underline"), "underline");
+        assert_eq!(normalize_cursor_shape("BAR"), "ibeam");
+        assert_eq!(normalize_cursor_shape("nope"), "block");
+        assert_eq!(normalize_cursor_shape(""), "block");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn appearance_colors_normalize_and_invalid_falls_back_to_theme() {
+        let dir = tmpdir("appearance-colors");
+        let path = dir.join("config.toml");
+        std::fs::write(
+            &path,
+            "version = 1\ncursor_shape = \"underline\"\ncursor_color = \"#F80\"\ncursor_text_color = \"#00ff00\"\nbold_color = \"not-a-color\"\n",
+        )
+        .unwrap();
+        let cfg = Config::load_from(&path);
+        assert_eq!(cfg.cursor_color, "#ff8800");
+        assert_eq!(cfg.cursor_text_color, "#00ff00");
+        assert_eq!(cfg.cursor_color_rgb(), Some(0x00ff_8800));
+        assert!(cfg.bold_color.is_empty(), "非法颜色回退主题/前景");
+        assert_eq!(cfg.bold_color_rgb(), None);
+        // load_from 只归一内存值，不因 additive 字段重写 v1 文件。
+        assert!(!dir.join("config.toml.v1.bak").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn appearance_roundtrip() {
+        let dir = tmpdir("appearance-roundtrip");
+        let path = dir.join("config.toml");
+        let cfg = Config {
+            cursor_shape: "ibeam".into(),
+            cursor_blink: "off".into(),
+            cursor_color: "#123456".into(),
+            cursor_text_color: "#abcdef".into(),
+            bold_is_bright: false,
+            bold_color: "#fedcba".into(),
+            bold_color_same_as_fg: false,
+            ..Config::default()
+        };
+        cfg.save_to(&path);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("cursor_shape = \"ibeam\""), "{text}");
+        assert!(text.contains("cursor_blink = \"off\""), "{text}");
+        assert!(text.contains("cursor_color = \"#123456\""), "{text}");
+        assert!(text.contains("cursor_text_color = \"#abcdef\""), "{text}");
+        assert!(text.contains("bold_is_bright = false"), "{text}");
+        assert!(text.contains("bold_color = \"#fedcba\""), "{text}");
+        assert!(text.contains("bold_color_same_as_fg = false"), "{text}");
+        let back = Config::load_from(&path);
+        assert_eq!(back.cursor_shape, "ibeam");
+        assert_eq!(back.cursor_blink, "off");
+        assert_eq!(back.cursor_color_rgb(), Some(0x0012_3456));
+        assert_eq!(back.cursor_text_color_rgb(), Some(0x00ab_cdef));
+        assert!(!back.bold_is_bright);
+        assert_eq!(back.bold_color_rgb(), Some(0x00fe_dcba));
+        assert!(!back.bold_color_same_as_fg);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
