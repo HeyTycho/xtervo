@@ -50,6 +50,16 @@ pub struct Profile {
     pub extra_args: Vec<String>,
     /// 本地端口转发，每项形如 `8080:localhost:80` → `ssh -L 8080:localhost:80`。
     pub local_forwards: Vec<String>,
+    /// 远程端口转发，每项形如 `8080:localhost:80` → `ssh -R 8080:localhost:80`。
+    pub remote_forwards: Vec<String>,
+    /// 动态转发（SOCKS），每项形如 `1080` / `127.0.0.1:1080` → `ssh -D ...`。
+    pub dynamic_forwards: Vec<String>,
+    /// ProxyJump（跳板机），原样传给 `ssh -J`（如 `user@jump:2222`）；空 = 直连。
+    ///
+    /// 只存跳板串，不存密码；跳板机的认证交给系统 ssh（agent/key/交互均可）。
+    pub proxy_jump: String,
+    /// 是否请求 ssh agent forwarding（`ssh -A`）。
+    pub agent_forward: bool,
     // ---- serial ----
     pub serial_port: String,
     pub baud: u32,
@@ -84,6 +94,58 @@ pub fn validate_forward(spec: &str) -> Result<(), String> {
 
 /// 支持的 Profile 类型（字符串值即配置里的 `kind`）。
 pub const KINDS: [&str; 4] = ["local", "ssh", "serial", "telnet"];
+
+/// 校验远程转发规格：`[绑定地址:]端口:主机:端口`，端口 1–65535。
+///
+/// 与本地转发的区别是允许 OpenSSH 的可选绑定地址（4 段）；
+/// 只做结构校验，主机名解析/权限错误交给 ssh 报。
+pub fn validate_remote_forward(spec: &str) -> Result<(), String> {
+    let parts: Vec<&str> = spec.split(':').collect();
+    if !(parts.len() == 3 || parts.len() == 4) || parts.iter().any(|x| x.trim().is_empty()) {
+        return Err(format!("远程转发格式应为 [绑定地址:]端口:主机:端口，实际: {spec}"));
+    }
+    let port_index = if parts.len() == 4 { 1 } else { 0 };
+    let hostport_index = parts.len() - 1;
+    if parts[port_index].trim().parse::<u16>().map(|p| p == 0).unwrap_or(true) {
+        return Err(format!("远程转发的本地端口无效: {spec}"));
+    }
+    if parts[hostport_index].trim().parse::<u16>().map(|p| p == 0).unwrap_or(true) {
+        return Err(format!("远程转发的目标端口无效: {spec}"));
+    }
+    Ok(())
+}
+
+/// 校验动态转发（SOCKS）规格：`[绑定地址:]端口`。
+pub fn validate_dynamic_forward(spec: &str) -> Result<(), String> {
+    let parts: Vec<&str> = spec.split(':').collect();
+    if !(parts.len() == 1 || parts.len() == 2) || parts.iter().any(|x| x.trim().is_empty()) {
+        return Err(format!("动态转发格式应为 [绑定地址:]端口，实际: {spec}"));
+    }
+    let port = parts[parts.len() - 1].trim();
+    if port.parse::<u16>().map(|p| p == 0).unwrap_or(true) {
+        return Err(format!("动态转发端口无效: {spec}"));
+    }
+    Ok(())
+}
+
+/// 校验 ProxyJump 串：非空、无空白、不能以 `-` 开头（防止被当成 ssh 选项）。
+///
+/// 用户/主机/端口的细节（`user@host:port`、IPv6、逗号多跳）交给 ssh 自己解析；
+/// 这里只拦住一定会破坏命令行的输入。
+pub fn validate_proxy_jump(spec: &str) -> Result<(), String> {
+    let spec = spec.trim();
+    if spec.is_empty() {
+        return Ok(());
+    }
+    if spec.chars().any(char::is_whitespace) {
+        return Err(format!("ProxyJump 不能包含空白: {spec}"));
+    }
+    if spec.starts_with('-') {
+        return Err(format!("ProxyJump 不能以 - 开头: {spec}"));
+    }
+    Ok(())
+}
+
 
 /// 光标形状是否是可识别的别名（与 [`CursorShape::from_name`] 的接受集合同步）。
 fn known_cursor_shape(name: &str) -> bool {
@@ -151,6 +213,10 @@ impl Default for Profile {
             save_password: false,
             extra_args: Vec::new(),
             local_forwards: Vec::new(),
+            remote_forwards: Vec::new(),
+            dynamic_forwards: Vec::new(),
+            proxy_jump: String::new(),
+            agent_forward: false,
             serial_port: String::new(),
             baud: 115200,
             font_size: None,
@@ -236,7 +302,8 @@ impl Profile {
 
     /// SSH 启动命令：用系统 `ssh` 客户端跑在 PTY 里（原生 russh 引擎后续再做）。
     ///
-    /// 参数顺序：`[-i key] [-o password-only...] -p port [-l user] host`，与 OpenSSH 用法一致。
+    /// 参数顺序：`[-i key] [-o password-only...] [-A] [-J jump] -p port [-l user]
+    /// [-L ...] [-R ...] [-D ...] [extra] host`，与 OpenSSH 用法一致。
     pub fn ssh_command(&self) -> (String, Vec<String>) {
         let mut args = Vec::new();
         if self.auth == "key" && !self.key_path.trim().is_empty() {
@@ -247,11 +314,22 @@ impl Profile {
             // auth=password 的语义是「只用密码」：不能让 agent/密钥先认证成功，否则
             // Vault 密码与 askpass 永远不会被触发（服务器接受任意公钥时表现为
             // 服务端看不到 password auth、askpass 从未被调用）。
-            // keyboard-interactive 放在 password 之后，兼容只提供 PAM kbd-int 的服务器。
+            // keyboard-interactive 放在 password 之后，兼容只提供 PAM kbd-int 的服务器；
+            // KbdInteractiveAuthentication 显式打开，避免用户 ssh_config 里关掉后
+            // 只提供 kbd-int 的服务器直接认证失败。
             args.push("-o".to_string());
             args.push("PubkeyAuthentication=no".to_string());
             args.push("-o".to_string());
             args.push("PreferredAuthentications=password,keyboard-interactive".to_string());
+            args.push("-o".to_string());
+            args.push("KbdInteractiveAuthentication=yes".to_string());
+        }
+        if self.agent_forward {
+            args.push("-A".to_string());
+        }
+        if !self.proxy_jump.trim().is_empty() {
+            args.push("-J".to_string());
+            args.push(self.proxy_jump.trim().to_string());
         }
         args.push("-p".to_string());
         args.push(self.port.max(1).to_string());
@@ -261,6 +339,14 @@ impl Profile {
         }
         for f in &self.local_forwards {
             args.push("-L".to_string());
+            args.push(f.clone());
+        }
+        for f in &self.remote_forwards {
+            args.push("-R".to_string());
+            args.push(f.clone());
+        }
+        for f in &self.dynamic_forwards {
+            args.push("-D".to_string());
             args.push(f.clone());
         }
         args.extend(self.extra_args.iter().filter(|a| !a.trim().is_empty()).cloned());
@@ -330,6 +416,13 @@ impl Profile {
                 for f in &self.local_forwards {
                     validate_forward(f)?;
                 }
+                for f in &self.remote_forwards {
+                    validate_remote_forward(f)?;
+                }
+                for f in &self.dynamic_forwards {
+                    validate_dynamic_forward(f)?;
+                }
+                validate_proxy_jump(&self.proxy_jump)?;
             },
             "serial" => {
                 if self.serial_port.trim().is_empty() {
@@ -856,6 +949,8 @@ shell = "/bin/sh"
                 "PubkeyAuthentication=no",
                 "-o",
                 "PreferredAuthentications=password,keyboard-interactive",
+                "-o",
+                "KbdInteractiveAuthentication=yes",
                 "-p",
                 "2222",
                 "-l",
@@ -924,8 +1019,136 @@ shell = "/bin/sh"
     }
 
     #[test]
-    fn telnet_and_serial_commands() {
-        let t = Profile {
+    fn ssh_remote_dynamic_forwards_and_proxy_jump_become_args() {
+        let p = Profile {
+            kind: "ssh".into(),
+            host: "target".into(),
+            port: 22,
+            user: "u".into(),
+            remote_forwards: vec!["8080:localhost:80".into()],
+            dynamic_forwards: vec!["1080".into(), "127.0.0.1:1081".into()],
+            proxy_jump: " jump@bastion:2222 ".into(),
+            agent_forward: true,
+            ..Profile::default()
+        };
+        assert_eq!(
+            p.ssh_command().1,
+            vec![
+                "-A",
+                "-J",
+                "jump@bastion:2222",
+                "-p",
+                "22",
+                "-l",
+                "u",
+                "-R",
+                "8080:localhost:80",
+                "-D",
+                "1080",
+                "-D",
+                "127.0.0.1:1081",
+                "target",
+            ]
+        );
+        assert!(p.validate().is_ok(), "合法的新转发/跳板字段应通过校验");
+
+        // 空字段保持旧命令完全不变（additive）。
+        let old = Profile {
+            kind: "ssh".into(),
+            host: "h".into(),
+            port: 22,
+            user: "u".into(),
+            ..Profile::default()
+        };
+        assert_eq!(old.ssh_command().1, vec!["-p", "22", "-l", "u", "h"]);
+    }
+
+    #[test]
+    fn new_ssh_field_validation_rejects_bad_specs() {
+        let base = Profile {
+            kind: "ssh".into(),
+            host: "h".into(),
+            port: 22,
+            user: "u".into(),
+            ..Profile::default()
+        };
+        for spec in ["8080:localhost:80", "127.0.0.1:8080:localhost:80"] {
+            let p = Profile { remote_forwards: vec![spec.into()], ..base.clone() };
+            assert!(p.validate().is_ok(), "remote {spec}");
+        }
+        for spec in ["", "8080", "0:localhost:80", "8080:localhost:0", "a:b"] {
+            let p = Profile { remote_forwards: vec![spec.into()], ..base.clone() };
+            assert!(p.validate().is_err(), "remote 应拒绝 {spec:?}");
+        }
+        for spec in ["1080", "127.0.0.1:1080"] {
+            let p = Profile { dynamic_forwards: vec![spec.into()], ..base.clone() };
+            assert!(p.validate().is_ok(), "dynamic {spec}");
+        }
+        for spec in ["", "0", "127.0.0.1", "a:b:c"] {
+            let p = Profile { dynamic_forwards: vec![spec.into()], ..base.clone() };
+            assert!(p.validate().is_err(), "dynamic 应拒绝 {spec:?}");
+        }
+        for spec in ["", "user@jump:2222", "jump,jump2", "::1"] {
+            let p = Profile { proxy_jump: spec.into(), ..base.clone() };
+            assert!(p.validate().is_ok(), "jump {spec:?}");
+        }
+        for spec in ["-oProxyCommand=evil", "jump host"] {
+            let p = Profile { proxy_jump: spec.into(), ..base.clone() };
+            assert!(p.validate().is_err(), "jump 应拒绝 {spec:?}");
+        }
+    }
+
+    #[test]
+    fn old_profiles_toml_without_new_ssh_fields_still_loads() {
+        let dir = tmpdir("additive-ssh");
+        let path = dir.join("profiles.toml");
+        // 模拟 v2 旧文件：没有 remote_forwards/dynamic_forwards/proxy_jump/agent_forward。
+        std::fs::write(
+            &path,
+            r#"
+version = 2
+next_id = 2
+
+[[profiles]]
+id = 1
+name = "old-ssh"
+kind = "ssh"
+host = "example.com"
+port = 2222
+user = "yt"
+auth = "key"
+key_path = "/home/yt/.ssh/id_ed25519"
+local_forwards = ["8080:localhost:80"]
+"#,
+        )
+        .unwrap();
+        let store = ProfileStore::load_from(&path);
+        let p = &store.profiles[0];
+        assert_eq!(p.name, "old-ssh");
+        assert!(p.remote_forwards.is_empty());
+        assert!(p.dynamic_forwards.is_empty());
+        assert!(p.proxy_jump.is_empty());
+        assert!(!p.agent_forward);
+        assert_eq!(
+            p.ssh_command().1,
+            vec![
+                "-i",
+                "/home/yt/.ssh/id_ed25519",
+                "-p",
+                "2222",
+                "-l",
+                "yt",
+                "-L",
+                "8080:localhost:80",
+                "example.com",
+            ],
+            "旧 profiles.toml 读入后命令保持不变"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn telnet_and_serial_commands() {        let t = Profile {
             kind: "telnet".into(),
             host: "10.0.0.1".into(),
             port: 23,

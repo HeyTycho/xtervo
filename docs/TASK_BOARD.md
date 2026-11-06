@@ -39,7 +39,7 @@
 | P1-05 | Codex P1：copy/search/save 500ms UI 阻塞 | queued | 待建 | 与 P0-05 同源，可并入 P0 hardening |
 | P1-06 | Codex P1：渲染 damage 路径失效、每帧全屏重绘 | done | `.worktrees/render-damage` / `feat/render-damage` | commit `8146aa7`；合 master `b8effd0`；单行 45.6×、连续按键 46.4×；Xvfb :137 e2e PASS；`.logs/render-damage/` | 逐像素等价；full/滚动 1.00× |
 | P1-07 | Codex P1：400ms CoreEvent 轮询 → wake 桥接 | done | `.worktrees/event-wake` / `feat/event-wake` | commit `16b5135`；合 master；app 300/core 518 tests；Xvfb :138 e2e PASS：标题 0–1ms/Bell 1ms/OSC52 1ms/插件 3ms/SFTP 28ms；空闲 CPU 不退化；`.logs/event-wake/` | 400ms 兜底保留 |
-| P1-08 | Codex P1：Vault Argon2 KDF 移出 UI 线程 | queued | 待建 | 解锁期间 UI 不停顿 |
+| P1-08 | Codex P1：Vault Argon2 KDF 移出 UI 线程 | done | `.worktrees/ssh-sftp` / `feat/ssh-sftp` | 后台 `VaultTask` + `WakeSignal`：initialize/unlock/change_master 全部不占 UI 线程；busy 状态可重绘、串行防重入、线程异常恢复；worker 主密码/AEAD 明文/`Unlocked` Drop 尽力清零；app 351 tests；Xvfb :139 busy/完成截图；解锁/改密码期间 UI 不停顿 |
 | P1-09 | Codex P1：`main.rs` 拆分 + `with_app` 重入不丢操作 | queued | 待建 | 大重构，分小步 |
 | P1-10 | 右键菜单美化：字号加大、分类分组、图标/分隔线、窄窗不溢出 | done | `.worktrees/context-menu` / `feat/context-menu` | commit `bddf0ef`；合 master `3e5c270`；`.logs/context-menu/` | context-menu e2e PASS；term_menu PASS；字号/分组/窄窗/右下翻转截图 |
 
@@ -51,7 +51,7 @@
 | ID | 大块 | 状态 | 范围 | 验收 |
 |---|---|---|---|---|
 | W-01 | Profiles + 会话恢复 | done | `.worktrees/profile-session` / `feat/profile-session` | 每 Profile 外观（font_size/theme/cursor_shape/cursor_blink/scrollback，additive v2，空=继承全局，Profile 显式 > 全局）；Settings→Profiles 表单共用 Appearance 区；session Snapshot 增加可选 profile_id，local Profile 恢复外观/shell/cwd，SSH/Serial/Telnet 不自动建连；`restore_session_on_startup`（默认 false）正常退出写快照，启动恢复 Tab/split/ratio/cwd/网格，失败回退新 Tab。验收：app 295 / workspace 489 tests；Xvfb :136 `scripts/e2e_profile_session.sh` PASS（表单/应用外观/3 Tab+split+cwd 重启恢复/损坏快照 fallback；截图 `.logs/profile-session/e2e/shots`） |
-| W-02 | SSH/SFTP/Vault 产品化 | queued | Jump host、端口转发、agent forwarding、known_hosts、重连、SFTP 队列/取消/权限 | 真实 SSH 测试；断网/超时；UI 不冻结 |
+| W-02 | SSH/SFTP/Vault 产品化 | done | `.worktrees/ssh-sftp` / `feat/ssh-sftp`（未合 master） | **SSH**：Profile 增加 `proxy_jump`/`remote_forwards`/`dynamic_forwards`/`agent_forward`（additive v2，旧 profiles.toml 兼容），表单可编辑，`ssh_command` 生成 `-J/-R/-D/-A`；`auth=password` 显式 kbd-interactive + askpass 识别本地化密码 prompt/排除 OTP；known_hosts 连接前后台预检（10s、可取消）：首次显示 SHA256 指纹、变更并列旧/新指纹，Trust/Update 才写 known_hosts（0600，`ssh-keygen -R` 先删旧条目），否则回退终端确认；SSH 退出状态横幅 + Reconnect（不自动循环重连）。**SFTP**：上传/下载队列（FIFO、Clear queue）、失败 Retry、chmod（八进制校验）、元数据 Cancel、传输 Cancel；`ConnectTimeout=10`+`ServerAliveInterval=5/CountMax=2`，元数据 10s 硬超时；全部后台不阻塞 UI。**Vault**：Argon2/初始化/改密码移出 UI 线程（P1-08）。验收：app 351、core smoke 25；`scripts/e2e_ssh_sftp_vault.sh` Xvfb :139 PASS（19 张截图：SSH 表单/known_hosts 首次+变更/退出横幅/重连/Vault busy+完成/SFTP 队列/取消/chmod/失败+retry）；真实 sshd 不可用，改用假 ssh/sftp/keyscan + 真实 ssh -G/ssh-keygen |
 | W-03 | iTerm2 IIP 图片 | queued | OSC 1337 File base64 PNG/JPEG；与 Sixel 并存 | dsh/真实终端图片；滚动/resize |
 | W-04 | 插件系统 V1 | queued | manifest/权限；Connection/Middleware/Observer/Command/Workspace/Integration；最小 UI 插槽；AOT | 4 个真实插件验证；崩溃/超时不拖终端 |
 | W-05 | 打包/自动更新/崩溃报告 | queued | .deb/AppImage/install 脚本、版本迁移、原子更新 | 干净机安装；升级/回滚 |
@@ -114,3 +114,4 @@
 | 2026-11-06 21:45 | P1-06 渲染 damage 恢复（feat/render-damage）：双缓冲行同步 + 真实 damage；单行/按键 rows=1、full_redraws 不增，release 45.6×/46.4×，full/滚动 1.00×；app 310 passed / workspace 527；Xvfb :137 5 张截图与 profile 断言 PASS；commit `8146aa7` |
 | 2026-11-06 22:10 | P1-04/W-01 Profile+会话恢复合入；app 326；P1-06/07 合入；e2e 日志断言修正；准备 P1 稳定 release |
 | 2026-11-06 21:35 | W-01 完成（feat/profile-session，未合 master）：每 Profile 外观 + session profile_id/可选启动自动恢复；app 295、workspace 489；Xvfb :136 e2e PASS；限制见 docs/self-iteration.md |
+| 2026-11-06 23:56 | W-02 + P1-08 完成（feat/ssh-sftp，未合 master）：SSH 跳板/远程+动态转发/agent forwarding/known_hosts 预检/重连；SFTP 队列/chmod/retry/cancel/10s 连接超时；Vault 后台 KDF。app 351、core smoke 25；Xvfb :139 e2e 19 张截图 PASS；限制见 docs/self-iteration.md |
