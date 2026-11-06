@@ -11,7 +11,7 @@ Tervo 默认把 stderr（包括 panic）同时写入按次启动的日志文件�
 | `TERVO_LOG_DIR` | 覆盖日志目录（测试/多实例） |
 | `TERVO_LOG=0` | 关闭文件日志（panic 仍打印到 stderr） |
 | `SLINT_BACKEND` | 显式指定后端：`winit-skia` / `winit-software`；不设时默认 GPU（无 `/dev/dri` 自动软件）。`winit-skia-wgpu` 可对比 Vulkan/wgpu 路径，`winit-skia-opengl` 强制 GL |
-| `TERVO_RENDER_PROFILE=1` | 打印每帧「pane 绘制 / Image 交接 / Skia 合成」耗时 |
+| `TERVO_RENDER_PROFILE=1` | 打印每帧「pane 绘制 / Image 交接 / Skia 合成」耗时；含 `full/rows/copy/full_redraws`（P1-06） |
 | `TERVO_RESIZE_PROFILE=1` | 打印 resize apply 次数/耗时、背景隐藏/恢复、resize 汇总 |
 | `TERVO_RESIZE_KEEP_BG=1` | 对比实验：resize 期间不隐藏大背景图 |
 | `TERVO_FORCE_GPU=1` | 测试用：无 `/dev/dri` 时也走默认 GPU/Skia 分支 |
@@ -56,6 +56,22 @@ tervo --diagnose
   初始化失败）。
 - 没有 `/dev/dri` 的 headless/CI 环境**不能验证 GPU**；测试脚本应显式设
   `SLINT_BACKEND=winit-skia`，并且不要把 llvmpipe 数字写成 NVIDIA 结论。
+
+### 渲染 damage profile
+
+`TERVO_RENDER_PROFILE=1` 时每个 pane 拉帧后打印一行（P1-06 起字段）：
+
+```
+[render] pane=1 grid=100x30 full=false rows=1 copy=0 full_redraws=1 damage_rows=1 draw=0.01ms image=0.00ms detach=false bytes=2376000
+```
+
+- `full`：**渲染器最终判定**是否整屏（首帧/resize/主题/滚动历史/大范围 damage）；
+- `rows`：本帧实际重绘的终端行数；单行输出/按键应为 1；
+- `copy`：双缓冲轮换时从旧 buffer 补齐的“上一帧脏行”数；整屏后首帧可能接近行数；
+- `full_redraws`：进程内累计整屏次数；连续按键不应增长；
+- `damage_rows`：core 报告的 `frame.damage` 条数（不含选区/搜索派生行）；
+- `detach=true`：目标 buffer 仍被 Slint 持有，触发了一次整块 CoW（正确但会变慢；
+  正常单帧节奏下应为 false）。
 
 ## 右键问题怎么读日志
 
