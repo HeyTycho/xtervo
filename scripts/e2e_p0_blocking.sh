@@ -122,9 +122,9 @@ menu_left=$(( menu_x < w - 180 ? menu_x : w - 180 ))
 sleep 0.4
 grep -q '\[sftp\] 打开面板' "$OUT/app.log" || fail "SFTP 面板没有打开"
 
-# 2) 面板居中（460x490）；点 List 按钮中心。
-panel_x=$(( (w - 460) / 2 ))
-panel_y=$(( (h - 490) / 2 ))
+# 2) W-02 后 SFTP 面板 480x610；点 List 按钮中心 (56,121)。
+panel_x=$(( (w - 480) / 2 ))
+panel_y=$(( (h - 610) / 2 < 8 ? 8 : (h - 610) / 2 ))
 "$XCLICK" $((ox + panel_x + 56)) $((oy + panel_y + 121)) 1 >/dev/null 2>&1
 
 for _ in $(seq 1 50); do
