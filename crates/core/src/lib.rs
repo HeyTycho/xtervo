@@ -9,6 +9,7 @@
 pub mod bench_support;
 pub mod event;
 pub mod frame;
+pub mod iip;
 pub mod keyboard;
 pub mod link;
 pub mod mouse;
@@ -34,3 +35,4 @@ pub use pane::{
     spawn, GridSize, PaneConfig, PaneHandle, ScrollPosition, SearchHit, SearchOptions,
 };
 pub use sixel::{SixelEvent, SixelFilter, SixelImage};
+pub use iip::{IipEvent, IipFilter, IipImage};
