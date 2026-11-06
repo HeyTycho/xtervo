@@ -77,6 +77,8 @@ export struct PaneView {
     scrollbar-track-h: length,
     /// 活动 pane 收到 BEL 时短暂闪烁边框。
     bell-flash: bool,
+    /// 终端处于 Read Only：键盘/粘贴不写 PTY，pane 角标提示。
+    read-only: bool,
 }
 
 export struct TabView {
@@ -405,6 +407,33 @@ component ResizeHandle inherits TouchArea {
     }
 }
 
+/// 查找栏开关：Match case / Match regex。
+component FindToggle inherits Rectangle {
+    in property <string> label;
+    in property <bool> active;
+    callback toggled();
+
+    width: 86px;
+    height: 20px;
+    border-radius: 4px;
+    background: active ? Palette.colors.accent : Palette.colors.hover;
+    border-width: 1px;
+    border-color: active ? Palette.colors.accent : Palette.colors.border;
+
+    hit := TouchArea {
+        clicked => { root.toggled(); }
+    }
+    Text {
+        text: root.label;
+        color: root.active ? Palette.colors.accent-text : Palette.colors.text;
+        font-size: 10px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        width: 100%;
+        height: 100%;
+    }
+}
+
 export component MainWindow inherits Window {
     in property <[PaneView]> panes;
     in property <[DividerView]> dividers;
@@ -420,9 +449,11 @@ export component MainWindow inherits Window {
     in property <int> menu-pane: -1;
     // 右键那格命中的链接（OSC 8 优先，普通 URL 兜底）；空 = 不显示 Open/Copy Link。
     in-out property <string> menu-link: "";
+    /// 右键目标 pane 当前是否 Read Only（菜单项标签由 Rust 在开菜单时写入）。
+    in property <bool> menu-read-only: false;
     // 链接打开失败等短暂提示（底部浮层，Rust 侧 4 秒后清空）。
     in-out property <string> link-status: "";
-    property <length> menu-height: root.menu-link != "" ? 340px : 276px;
+    property <length> menu-height: root.menu-link != "" ? 460px : 400px;
 
     callback key-input(string, bool, bool, bool);
     // 右键事件到达 UI 层的追踪（日志排查用）
@@ -751,6 +782,19 @@ export component MainWindow inherits Window {
     in-out property <bool> search-open: false;
     in-out property <string> search-query: "";
     in property <string> search-status: "";
+    in property <bool> search-match-case: false;
+    in property <bool> search-regex: false;
+    /// 非法 regex：搜索框描边变红，状态文字显示 invalid regex。
+    in property <bool> search-error: false;
+    callback search-toggle-case();
+    callback search-toggle-regex();
+
+    // Save Contents：Slint 1.18 没有原生文件对话框，这里用显式路径输入 + 错误提示。
+    in-out property <bool> save-open: false;
+    in-out property <string> save-path: "";
+    in-out property <string> save-status: "";
+    callback save-commit(string);
+    callback save-cancel();
     /// IME 候选窗锚点：聚焦 pane 光标的像素位置（内容区坐标，由 Rust 侧更新）。
     in-out property <length> ime-x: 0px;
     in-out property <length> ime-y: 0px;
@@ -1427,6 +1471,29 @@ export component MainWindow inherits Window {
                         height: p.ih;
                     }
 
+                    // Read Only 角标：不拦截鼠标事件，选区/滚动照常工作。
+                    if p.read-only : Rectangle {
+                        x: Math.max(6px, p.w - 76px);
+                        y: 6px;
+                        width: 68px;
+                        height: 18px;
+                        border-radius: 4px;
+                        background: Palette.colors.raise.with-alpha(0.92);
+                        border-width: 1px;
+                        border-color: Palette.colors.accent;
+
+                        Text {
+                            text: "READ ONLY";
+                            color: Palette.colors.accent;
+                            font-size: 9px;
+                            font-weight: 600;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                            width: 100%;
+                            height: 100%;
+                        }
+                    }
+
                     pane-hit := TouchArea {
                         // 修饰键位：1=Shift 2=Alt 4=Ctrl，由 Rust 侧解码成 xterm 位掩码。
                         pointer-event(event) => {
@@ -1759,6 +1826,22 @@ export component MainWindow inherits Window {
                         MenuRow {
                             label: "Clear";
                             picked => { root.menu-open = false; root.menu-action(root.menu-pane, 7); }
+                        }
+                        MenuRow {
+                            label: "Save Contents…";
+                            picked => { root.menu-open = false; root.menu-action(root.menu-pane, 14); }
+                        }
+                        MenuRow {
+                            label: root.menu-read-only ? "Read Only: ON" : "Read Only: OFF";
+                            picked => { root.menu-open = false; root.menu-action(root.menu-pane, 11); }
+                        }
+                        MenuRow {
+                            label: "Reset";
+                            picked => { root.menu-open = false; root.menu-action(root.menu-pane, 12); }
+                        }
+                        MenuRow {
+                            label: "Reset and Clear";
+                            picked => { root.menu-open = false; root.menu-action(root.menu-pane, 13); }
                         }
                         MenuRow {
                             label: root.broadcast ? "Broadcast Input: ON" : "Broadcast Input: OFF";
@@ -3462,42 +3545,68 @@ export component MainWindow inherits Window {
     }
 
     if root.search-open : Rectangle {
-        x: root.width - 328px;
+        x: root.width - 388px;
         y: root.tabbar-height + 8px;
-        width: 300px;
-        height: 34px;
+        width: 360px;
+        height: 62px;
         background: Palette.colors.raise;
         border-radius: 8px;
         border-width: 1px;
-        border-color: Palette.colors.accent;
+        border-color: root.search-error ? Palette.colors.danger : Palette.colors.accent;
         drop-shadow-blur: 14px;
         drop-shadow-offset-y: 4px;
         drop-shadow-color: #00000090;
 
-        HorizontalLayout {
-            padding-left: 10px;
-            padding-right: 10px;
-            spacing: 8px;
+        VerticalLayout {
+            padding: 7px;
+            spacing: 4px;
 
-            Text {
-                text: "🔍";
-                color: Palette.colors.subtext;
-                font-size: 12px;
-                vertical-alignment: center;
+            HorizontalLayout {
+                spacing: 8px;
+
+                Text {
+                    text: "🔍";
+                    color: Palette.colors.subtext;
+                    font-size: 12px;
+                    height: 18px;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: root.search-query == "" ? "Search…" : root.search-query;
+                    color: root.search-query == "" ? Palette.colors.muted : Palette.colors.text;
+                    font-size: 13px;
+                    height: 18px;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                }
             }
-            Text {
-                text: root.search-query == "" ? "Search…" : root.search-query;
-                color: root.search-query == "" ? Palette.colors.muted : Palette.colors.text;
-                font-size: 13px;
-                vertical-alignment: center;
-                overflow: elide;
-                horizontal-stretch: 1;
-            }
-            Text {
-                text: root.search-status;
-                color: Palette.colors.danger;
-                font-size: 11px;
-                vertical-alignment: center;
+
+            HorizontalLayout {
+                spacing: 6px;
+
+                FindToggle {
+                    label: "Match case";
+                    active: root.search-match-case;
+                    toggled => { root.search-toggle-case(); }
+                }
+                FindToggle {
+                    label: "Match regex";
+                    active: root.search-regex;
+                    toggled => { root.search-toggle-regex(); }
+                }
+                Rectangle {
+                    horizontal-stretch: 1;
+                    height: 1px;
+                    background: transparent;
+                }
+                Text {
+                    text: root.search-status;
+                    color: root.search-error ? Palette.colors.danger : Palette.colors.muted;
+                    font-size: 10px;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
             }
         }
     }
@@ -4542,6 +4651,133 @@ export component MainWindow inherits Window {
                 }
             }
 
+        }
+    }
+
+    // Save Contents：没有原生文件对话框，显式路径 + 错误提示的最小实现。
+    if root.save-open : Rectangle {
+        width: 100%;
+        height: 100%;
+        background: #00000080;
+
+        // 吃掉点击，避免穿透到终端误触；不点外部关闭（防误丢已输入路径）。
+        TouchArea {
+            width: 100%;
+            height: 100%;
+            pointer-event(event) => { EventResult.accept; }
+        }
+
+        Rectangle {
+            x: (root.width - self.width) / 2;
+            y: (root.height - self.height) / 2;
+            width: Math.min(560px, root.width - 24px);
+            height: 264px;
+            background: Palette.colors.raise;
+            border-radius: 10px;
+            border-width: 1px;
+            border-color: Palette.colors.border;
+            drop-shadow-blur: 24px;
+            drop-shadow-offset-y: 8px;
+            drop-shadow-color: #000000c0;
+
+            VerticalLayout {
+                padding: 16px;
+                spacing: 9px;
+
+                Text {
+                    text: "Save Contents";
+                    color: Palette.colors.text;
+                    font-size: 15px;
+                    font-weight: 600;
+                }
+                Text {
+                    text: "No native file dialog: enter an explicit path (~ is expanded).";
+                    color: Palette.colors.muted;
+                    font-size: 11px;
+                    wrap: word-wrap;
+                }
+                TextInput {
+                    height: 30px;
+                    text <=> root.save-path;
+                    single-line: true;
+                    color: Palette.colors.text;
+                    font-size: 13px;
+                    init => { self.focus(); }
+                    key-pressed(event) => {
+                        if (event.text == "\u{a}" || event.text == "\u{d}") {
+                            root.save-commit(self.text);
+                            return EventResult.accept;
+                        }
+                        if (event.text == "\u{1b}") {
+                            root.save-open = false;
+                            root.save-cancel();
+                            return EventResult.accept;
+                        }
+                        EventResult.reject
+                    }
+                }
+                Text {
+                    text: root.save-path;
+                    color: Palette.colors.subtext;
+                    font-size: 10px;
+                    wrap: word-wrap;
+                }
+                Text {
+                    text: root.save-status;
+                    color: Palette.colors.danger;
+                    font-size: 11px;
+                    wrap: word-wrap;
+                    visible: root.save-status != "";
+                }
+                Rectangle {
+                    horizontal-stretch: 1;
+                    height: 1px;
+                    background: transparent;
+                }
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: 8px;
+
+                    Rectangle {
+                        width: 88px; height: 28px; border-radius: 6px;
+                        background: save-cancel-hit.has-hover ? Palette.colors.hover : Palette.colors.raise;
+                        border-width: 1px;
+                        border-color: Palette.colors.border;
+                        save-cancel-hit := TouchArea {
+                            clicked => {
+                                root.save-open = false;
+                                root.save-cancel();
+                            }
+                        }
+                        Text {
+                            text: "Cancel";
+                            color: Palette.colors.text;
+                            font-size: 12px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                            width: 100%;
+                            height: 100%;
+                        }
+                    }
+                    Rectangle {
+                        width: 88px; height: 28px; border-radius: 6px;
+                        background: Palette.colors.accent;
+                        save-ok-hit := TouchArea {
+                            clicked => { root.save-commit(root.save-path); }
+                        }
+                        Text {
+                            text: "Save";
+                            color: Palette.colors.accent-text;
+                            font-size: 12px;
+                            font-weight: 600;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                            width: 100%;
+                            height: 100%;
+                        }
+                    }
+                }
+            }
         }
     }
 

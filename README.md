@@ -146,7 +146,10 @@ tervo                 # 直接启动
 | 复制 | 鼠标拖选（松手自动复制，同时写系统剪贴板与 X11 PRIMARY）或 `Ctrl+Shift+C`，或右键 → Copy |
 | 打开链接 | `Ctrl+左键点击` http/https/file 链接（OSC 8 优先）；右键 → Open Link / Copy Link |
 | 粘贴 | `Ctrl+Shift+V` 或右键 → Paste（多行会按终端 bracketed-paste 规则包起来）；中键优先粘 X11 PRIMARY，为空/不可读时回退普通剪贴板 |
-| 搜索 | `Ctrl+F`，输入即高亮下一个；`Enter` 下一个，`Shift+Enter` 上一个，`Esc` 关闭 |
+| 搜索 | `Ctrl+F`，输入即高亮下一个；`Enter` 下一个，`Shift+Enter` 上一个，`Esc` 关闭；搜索条内可切 `Match case` / `Match regex`（或 `Alt+C` / `Alt+R`），非法正则在条内报错 |
+| 只读终端 | 右键 → `Read Only` 开关；开启后 pane 右上角显示 `READ ONLY`，键盘/粘贴/鼠标上报不写 PTY，鼠标选择/滚动仍可用；关闭即恢复 |
+| 复位终端 | 右键 → `Reset` / `Reset and Clear`（命令面板同名）；会清屏并复位终端状态，不关闭 pane/会话 |
+| 保存内容 | 右键 → `Save Contents…`；输入明确路径（支持 `~`，默认 `$HOME/tervo-save-<epoch>.txt`），保存回滚+视口全部文本，失败在弹窗内报错 |
 | 中文输入 | fcitx5 / ibus（X11 XIM）：拼音候选窗跟随光标；组合中的回车/退格只作用于输入法，不会写入 shell |
 | 回滚历史 | 鼠标滚轮；或点击/拖动右侧滚动条（仅历史超出视口时显示） |
 | 拖放路径 | 从文件管理器拖文件/目录到 pane：插入 shell 转义路径 + 末尾空格（X11） |
