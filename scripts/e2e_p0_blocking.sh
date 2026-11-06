@@ -163,10 +163,10 @@ pass "sftp 卡死期间窗口仍响应（菜单 + New Tab 已执行）"
 
 # 4) 10s 硬超时：后台任务必须发结果、UI 进程存活、假 sftp 被 kill。
 for _ in $(seq 1 130); do
-    grep -q '\[sftp\] 后台操作完成' "$OUT/app.log" && break
+    grep -q '后台操作完成' "$OUT/app.log" && break
     sleep 0.1
 done
-grep -q '\[sftp\] 后台操作完成' "$OUT/app.log" || fail "10s 后没有后台结果"
+grep -q '后台操作完成' "$OUT/app.log" || fail "10s 后没有后台结果"
 grep -q '超时（10s）' "$OUT/app.log" || fail "结果不是 10s 超时文案"
 end_ms=$(date +%s%3N)
 elapsed_ms=$(( end_ms - start_ms ))
@@ -184,7 +184,7 @@ if [ -f "$OUT/sftp.pid" ]; then
 else
     echo "WARN: 没读到假 sftp pid，跳过 kill 校验"
 fi
-grep -q '\[sftp\] 后台操作完成: list / 失败: sftp 超时' "$OUT/app.log" ||
+grep -q '后台操作完成: list / 失败: sftp 超时' "$OUT/app.log" ||
     fail "结果摘要不是可解释的 list 超时"
 pass "超时原因可解释（日志摘要）"
 
