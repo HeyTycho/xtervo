@@ -1320,3 +1320,13 @@ cargo bench -p tervo-core --bench pty_throughput
 - 验证：右侧分屏聚焦后日志 `[ime] spot pane=2 ... win=407,32`，不再从 0 开始。
 - 限制：fcitx/ibus 是否遵守 XNSpotLocation 取决于输入法；若仍不跟随，需要输入法侧日志。
 
+### 2026-11-06 · IME spot 跟随“只移动光标不重绘”的 TUI
+
+- dsh 侧栏通过声明光标把终端光标停到右侧输入框，但可能不产生内容 damage；
+  Tervo 原来只在 redraw_visible 后更新 IME spot，候选窗就停在左/旧位置。
+- PaneHandle 增加原子 cursor（actor 每次解析/控制事件后刷新，不依赖 UI 拉帧）；
+  IME 用 50ms 定时器读取当前光标并调 winit `set_ime_cursor_area`，按坐标去重。
+- 验证：合成 TUI 发 `CSI 5;80H` 后不再输出，日志 50ms 内出现
+  `[ime] spot pane=1 cell=4,79 win=711,120`。
+- 限制：输入法是否遵守 spot 仍取决于 fcitx/ibus；dsh 真机需用户复测。
+
