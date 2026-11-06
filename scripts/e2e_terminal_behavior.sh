@@ -76,12 +76,19 @@ stop_app() {
     sleep 0.3
 }
 
-# start_app <tag> <config contents> <shell args...>
+# start_app <tag> <config contents> [--big] <shell args...>
+# --big = 120x32（1080x736）；设置页坐标测试需要稳定的大窗口。
 start_app() {
     local tag=$1 cfg=$2; shift 2
+    local cols=80 rows=20
+    if [ "${1:-}" = "--big" ]; then
+        cols=120
+        rows=32
+        shift
+    fi
     printf '%s\n' "$cfg" > "$OUT/$tag.toml"
     TERVO_CONFIG="$OUT/$tag.toml" TERVO_LOG_DIR="$OUT/logs" TERVO_KEYLOG=1 \
-        "$BIN" --cols 80 --rows 20 --shell /bin/sh -- "$@" >"$OUT/app_$tag.log" 2>&1 &
+        "$BIN" --cols "$cols" --rows "$rows" --shell /bin/sh -- "$@" >"$OUT/app_$tag.log" 2>&1 &
     APP_PID=$!
     WIN=""
     for _ in $(seq 1 120); do
@@ -221,73 +228,101 @@ stop_app
 echo "  OK：always 显示、auto 无历史隐藏、never 始终隐藏"
 
 # --------------------------------------------------------- 5. 设置页 Terminal 控件
-echo "== 5) 设置页 Terminal 控件 =="
+echo "== 5) 设置 Tab Terminal 控件 =="
+# 新设置页是完整 Settings Tab：固定 1080x736 窗口，坐标与响应式侧栏都可预测。
 start_app settings 'theme = "tokyo-night"
 font_size = 15
-confirm_close = false' -c 'sleep 600'
-sleep 0.4
+confirm_close = false' --big -c 'sleep 600'
+sleep 0.5
+[ "$W" = 1080 ] && [ "$H" = 736 ] || {
+    echo "设置页坐标基于 1080x736（cell 9x22 / 120x32），实际 ${W}x${H}；请检查字体回退" >&2
+    exit 2
+}
 # 齿轮：root 右上角 x = W-132+14，y = 4+12
 "$XWIN" Tervo >/dev/null 2>&1 || true
 "$XCLICK" "$((ABS_X + W - 118))" "$((ABS_Y + 16))" >/dev/null
-sleep 0.6
-DIALOG_W=$(( W - 12 < 520 ? W - 12 : 520 ))
-DIALOG_H=$(( H - 44 < 520 ? H - 44 : 520 ))
-DIALOG_X=$(( ABS_X + (W - DIALOG_W) / 2 ))
-DIALOG_Y=$(( ABS_Y + 32 + (H - 32 - DIALOG_H) / 2 ))
-# 左侧导航 Terminal：dialog 内 (18, 98)，高 30
-"$XCLICK" "$((DIALOG_X + 70))" "$((DIALOG_Y + 113))" >/dev/null
+sleep 0.8
+grep -q '\[ui\] settings open=true' "$OUT/app_settings.log" || { echo "齿轮没有打开设置" >&2; exit 1; }
+
+# 主题下拉：首屏 Appearance 的 Color scheme 触发区（window 620,198）
+"$XCLICK" "$((ABS_X + 620))" "$((ABS_Y + 198))" >/dev/null
 sleep 0.5
+shot settings_theme_dropdown
+
+# 左侧导航 Terminal（window 100,174）
+"$XCLICK" "$((ABS_X + 100))" "$((ABS_Y + 174))" >/dev/null
+sleep 0.6
 shot settings_terminal_top
 grep -q '\[ui\] settings category=1' "$OUT/app_settings.log" || { echo "没有切到 Terminal 设置分类" >&2; exit 1; }
 
-# Unlimited scrollback 开关（内容首屏 y≈76，toggle 中心在内容右侧）
-"$XCLICK" "$((DIALOG_X + 146 + 332))" "$((DIALOG_Y + 64 + 76 + 13))" >/dev/null
+# Unlimited scrollback 开关（首屏，switch 中心 window 1025,303）
+"$XCLICK" "$((ABS_X + 1025))" "$((ABS_Y + 303))" >/dev/null
 sleep 0.4
 grep -Fq 'scrollback_unlimited = true' "$OUT/settings.toml" || { echo "设置页没有写入 scrollback_unlimited" >&2; exit 1; }
 grep -q '\[ui\] scrollback_unlimited=true' "$OUT/app_settings.log" || { echo "设置页没有触发 unlimited 回调" >&2; exit 1; }
 shot settings_terminal_unlimited
 # 再点一次恢复固定值，避免影响后续断言
-"$XCLICK" "$((DIALOG_X + 146 + 332))" "$((DIALOG_Y + 64 + 76 + 13))" >/dev/null
+"$XCLICK" "$((ABS_X + 1025))" "$((ABS_Y + 303))" >/dev/null
 sleep 0.3
 grep -Fq 'scrollback_unlimited = false' "$OUT/settings.toml" || { echo "unlimited 开关没有恢复 false" >&2; exit 1; }
 
-# 内容区起点 (146, 64)；分两段滚动：中段露出铃/滚动开关，底段露出编码控件
-for _ in $(seq 1 3); do
-    "$XCLICK" "$((DIALOG_X + 300))" "$((DIALOG_Y + 300))" 5 >/dev/null
-    sleep 0.06
-done
+# Scrollbar Always（首屏 Scrolling 卡片，window 378,550）——Sixel Images 段之前
+# 的位置已经失效；新页把 scrollbar 放在第二张卡片，首屏即可点。
+"$XCLICK" "$((ABS_X + 378))" "$((ABS_Y + 550))" >/dev/null
 sleep 0.4
-shot settings_terminal_mid
-# 中段：Audible bell / Scroll on output 开关（window 坐标 + dialog 左上角）
-"$XCLICK" "$((DIALOG_X + 478))" "$((DIALOG_Y + 240))" >/dev/null
-sleep 0.3
-grep -Fq 'audible_bell = true' "$OUT/settings.toml" || { echo "设置页没有写入 audible_bell" >&2; exit 1; }
-grep -q '\[ui\] audible_bell=true' "$OUT/app_settings.log" || { echo "设置页没有触发 audible_bell 回调" >&2; exit 1; }
-"$XCLICK" "$((DIALOG_X + 478))" "$((DIALOG_Y + 356))" >/dev/null
-sleep 0.3
-grep -Fq 'scroll_on_output = true' "$OUT/settings.toml" || { echo "设置页没有写入 scroll_on_output" >&2; exit 1; }
-grep -q '\[ui\] scroll_on_output=true' "$OUT/app_settings.log" || { echo "设置页没有触发 scroll_on_output 回调" >&2; exit 1; }
-for _ in $(seq 1 5); do
-    "$XCLICK" "$((DIALOG_X + 300))" "$((DIALOG_Y + 300))" 5 >/dev/null
-    sleep 0.06
-done
-sleep 0.4
-shot settings_terminal_scroll
-
-# 滚到底后坐标稳定：Scrollbar Always / Backspace Control-H / Delete ASCII DEL
-"$XCLICK" "$((DIALOG_X + 187))" "$((DIALOG_Y + 156))" >/dev/null
-sleep 0.3
 grep -Fq 'scrollbar_policy = "always"' "$OUT/settings.toml" || { echo "设置页没有写入 scrollbar_policy=always" >&2; exit 1; }
 grep -q '\[ui\] scrollbar_policy=always' "$OUT/app_settings.log" || { echo "设置页没有触发 scrollbar_policy 回调" >&2; exit 1; }
 
-"$XCLICK" "$((DIALOG_X + 301))" "$((DIALOG_Y + 301))" >/dev/null
-sleep 0.3
+# Scroll on output（同一张 Scrolling 卡片，window 1025,430）
+"$XCLICK" "$((ABS_X + 1025))" "$((ABS_Y + 430))" >/dev/null
+sleep 0.4
+grep -Fq 'scroll_on_output = true' "$OUT/settings.toml" || { echo "设置页没有写入 scroll_on_output" >&2; exit 1; }
+grep -q '\[ui\] scroll_on_output=true' "$OUT/app_settings.log" || { echo "设置页没有触发 scroll_on_output 回调" >&2; exit 1; }
+shot settings_terminal_mid
+
+# 滚到底：Bell / Images / Key encoding 的相对位置固定
+"$XWIN" Tervo >/dev/null 2>&1 || true
+for _ in $(seq 1 12); do
+    "$XCLICK" "$((ABS_X + 600))" "$((ABS_Y + 400))" 5 >/dev/null
+    sleep 0.05
+done
+sleep 0.5
+shot settings_terminal_scroll
+
+# Audible bell（底部 Bell 卡片第二行 switch，window 1025,350）
+"$XCLICK" "$((ABS_X + 1025))" "$((ABS_Y + 350))" >/dev/null
+sleep 0.4
+grep -Fq 'audible_bell = true' "$OUT/settings.toml" || { echo "设置页没有写入 audible_bell" >&2; exit 1; }
+grep -q '\[ui\] audible_bell=true' "$OUT/app_settings.log" || { echo "设置页没有触发 audible_bell 回调" >&2; exit 1; }
+
+# Backspace Control-H / Delete ASCII DEL（底部 Key encoding 两个分段控件）
+"$XCLICK" "$((ABS_X + 855))" "$((ABS_Y + 593))" >/dev/null
+sleep 0.4
 grep -Fq 'backspace_binding = "control-h"' "$OUT/settings.toml" || { echo "设置页没有写入 backspace_binding" >&2; exit 1; }
-"$XCLICK" "$((DIALOG_X + 290))" "$((DIALOG_Y + 363))" >/dev/null
-sleep 0.3
+"$XCLICK" "$((ABS_X + 650))" "$((ABS_Y + 660))" >/dev/null
+sleep 0.4
 grep -Fq 'delete_binding = "ascii-del"' "$OUT/settings.toml" || { echo "设置页没有写入 delete_binding" >&2; exit 1; }
 
-echo "  OK：$OUT/settings_terminal_top.png / _mid.png / _scroll.png / _unlimited.png"
+# 搜索跳转：输入 sixel，点第一条结果，应切到 Terminal 并滚到 Images 卡片。
+"$XCLICK" "$((ABS_X + 800))" "$((ABS_Y + 56))" >/dev/null
+sleep 0.3
+"$XKEY" sixel >/dev/null 2>&1 || true
+sleep 0.6
+grep -q '\[ui\] settings filter q="sixel" hits=1' "$OUT/app_settings.log" || { echo "设置搜索没有命中 sixel" >&2; exit 1; }
+shot settings_search
+"$XCLICK" "$((ABS_X + 300))" "$((ABS_Y + 148))" >/dev/null
+sleep 0.9
+grep -q '\[ui\] settings goto cat=1' "$OUT/app_settings.log" || { echo "搜索结果没有跳到 Terminal" >&2; exit 1; }
+grep -q '\[ui\] settings jump section=images' "$OUT/app_settings.log" || { echo "搜索结果没有跳到 Images 卡片" >&2; exit 1; }
+shot settings_search_jump
+
+# Esc 关闭设置；Rust 侧应记录 open=false 并归还终端焦点。
+"$XKEY" --key escape >/dev/null 2>&1 || true
+sleep 0.6
+grep -q '\[ui\] settings open=false' "$OUT/app_settings.log" || { echo "Esc 没有关闭设置" >&2; exit 1; }
+shot settings_closed
+
+echo "  OK：$OUT/settings_terminal_top.png / _mid.png / _scroll.png / _unlimited.png / settings_theme_dropdown.png / settings_search_jump.png"
 stop_app
 
 echo "全部通过。截图/日志在 $OUT"

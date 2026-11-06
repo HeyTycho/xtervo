@@ -15,7 +15,7 @@
 | TitleBar 空白区 | 左键双击 | `title-hit.double-clicked → toggle-maximize()` | 双击最大化/还原（平台规范） | 已实现；仅空白区，Tab 上双击无效 | 双击空白区在最大化/还原间切换 |
 | TitleBar 空白区 | 右键 | `title-hit` 右键 → `tabbar-context(mouse-x, tabbar-height)` 打开窗口菜单 | 按上游提供窗口/TabBar 菜单 | 仅有窗口级 5 项菜单；Tab 上右键无 per-tab 菜单 | 空白右键出现菜单；Tab 上右键记录实际行为 |
 | 品牌图标 | 无 | 18×18 `Image`，不可点 | 可点/可拖/菜单（按上游） | 无交互；无 tooltip | 点击/右键图标记录无反应 |
-| 设置按钮 ⚙ | 左键单击 | `settings-open = !settings-open`；打开单卡片设置 | 打开可搜索/导航的设置页 | 只有 3 组设置，无导航/搜索 | 点击 ⚙ → 仅见主题/字号/回滚 |
+| 设置按钮 ⚙ | 左键单击 | `settings-open = !settings-open`；打开无 PTY 的 Settings Tab（或 `TERVO_SETTINGS_LEGACY=1` 的居中 modal） | 打开可搜索/导航的设置页 | 已实现：8 分类/分组/图标/搜索跳转/下拉/分段/开关 | 点击 ⚙ → 打开 Settings Tab，Esc/Tab ×/终端 Tab 关闭 |
 | 最小化 ─ | 左键单击 | `Window.set_minimized(true)` | 最小化，可从任务栏恢复 | 已实现 | 点击后窗口最小化 |
 | 最大化/还原 □/❐ | 左键单击 | `toggle-maximize()`；图标随 `Window.maximized` 切换 | 最大化/还原，图标同步 | 已实现 | 点击两次观察状态/图标 |
 | 关闭 ✕ | 左键单击 | `on_close_window` → `quit_event_loop` | 关闭；有活动任务时确认 | 直接退出，无确认，Drop 全部 PaneHandle 杀 PTY | 开 2 pane 点 ✕，确认无对话框且子进程退出 |
@@ -49,7 +49,7 @@
 | 菜单容器 | TabBar 空白右键 | `tabmenu-open`，x 夹取到窗口内，y=32；宽 170 高 156 | 可键盘导航、点外关闭、边界夹取 | y 未夹取，窗口矮时可能溢出；无键盘导航；点外不关闭 | 小窗口右键靠下，检查菜单是否超出 |
 | Always on Top | 左键单击 | `pinned = !pinned`，绑定 `Window.always-on-top`；带 ✓ | 置顶开关 | 已实现 | 点两次观察窗口层级/✓ |
 | New Tab | 左键单击 | `tabbar-menu-action(1)` → `new_tab_inner` | 新建 Tab | 已实现 | 点击后 Tab 数 +1 |
-| Settings | 左键单击 | `settings-open = true` | 打开设置 | 已实现 | 点击打开设置卡片 |
+| Settings | 左键单击 | `settings-open = true`；齿轮 Tab 进入 TabBar，内容区整页显示 | 打开设置 | 已实现 | 点击打开设置 Tab，不创建 PTY |
 | Restart Session | 左键单击 | `restart_session`：存快照→setsid 起新进程→退出旧进程 | 恢复工作区 | 仅手动重启；不恢复进程/历史 | 分屏+cd 后点击，新实例 tab/pane/cwd 一致 |
 | Close Window | 左键单击 | `quit_event_loop` | 关闭窗口（有确认） | 直接退出，无确认 | 点击后进程退出 |
 | 菜单键盘 | 方向键/Enter/Esc | 无键盘处理；Esc 仅对终端菜单 `menu-open` 生效 | 键盘可选/确认/关闭 | 缺失 | 打开菜单按方向键/Enter 无反应 |
@@ -106,24 +106,23 @@
 | 搜索框交互 | 鼠标 | 开关可点；查询文本本身不可点击定位/选择/复制 | 可编辑 | 仍缺失（沿用键盘路径） | 点击查询文本无光标 |
 | 匹配计数 | — | 无 | 如 3/17 | 缺失 | 无计数显示 |
 
-## 7. 设置面板
+## 7. 设置（Settings Tab）
 
 | 控件 | 触发方式 | 当前行为 | 期望行为 | 差异 | 验收方式 |
 |---|---|---|---|---|---|
-| 遮罩 | 左键单击 | `settings-open = false` | 点外关闭 | 已实现 | 点遮罩设置关闭 |
-| 卡片 | — | 420px 宽，高度按主题数计算（最多 4 行主题） | 可滚动/导航的设置页 | 单卡片、无分类导航/搜索 | 检查仅 3 组设置 |
-| Auto 主题 | 左键单击 | `set-theme("auto")`；显示 `Auto → <resolved>` | 跟随系统，可指定深浅主题 | 已实现；非 GNOME 回退有限 | 切换系统深浅色观察 |
-| 主题网格 | 左键单击 | `for choice in theme-choices`，4 列，Flickable 滚动 | 选择、预览、导入/导出 | 12 内置+导入可用；无预览/导出 | 点击主题即时换色；滚动列表 |
-| 字号 −/+ | 左键单击 | `bump-font-size(-1/+1)`，8–32，重建字体/渲染器，即时保存 | 字号调整并显示 | 已实现 | 点击 ± 观察字号/配置 |
-| 回滚 −/+ | 左键单击 | `bump-scrollback(-500/+500)`，500–100000，保存；只对新 pane 生效 | 回滚行数可配 | 已实现（对新 pane） | 改后新开 pane 的缓冲变化 |
-| Unlimited scrollback | 左键单击 ToggleRow | 写 `scrollback_unlimited`；true 时新 pane 用 100,000 行安全上限；点 +/- 自动关回固定值 | 无限/有界可配并提示内存 | 已实现（对新 pane） | 设置页点击后 config + 日志；Xvfb :118 e2e |
-| 可听铃 / 视觉铃 | 左键单击 ToggleRow | 独立写 `audible_bell`/`visual_bell`；可听铃默认关，BEL 时 X11 Bell | 两个独立开关 | 已实现 | Xvfb :118 BEL → `[bell] audible backend=ok` |
-| Scroll on output / keystroke | 左键单击 ToggleRow | 写配置；output 立即更新所有 pane 的 actor，keystroke 每次按键读取 | 上滚不抢/按键回底 | 已实现 | core smoke + 设置页写盘断言 |
-| Scrollbar policy | 左键单击 ChoiceBtn | `always`/`auto`/`never`，立即刷新所有 pane overlay | 滚动条三档 | 已实现 | Xvfb :118 像素检测 213/213 vs 0 |
-| Backspace / Delete binding | 左键单击 ChoiceBtn | 写 `backspace_binding`/`delete_binding`；每次按键读取编码 | 编码可配、默认 GNOME | 已实现 | XTest keylog 字节断言 |
-| 设置关闭 | Esc | 无处理 | Esc 关闭 | 缺失 | 设置打开按 Esc，仍打开 |
-| 设置键盘导航 | Tab/方向键 | 无 | 可键盘操作 | 缺失 | Tab 键无焦点移动 |
-| 设置搜索 | 输入 | 无 | 可搜索设置项 | 缺失 | 无搜索框 |
+| 打开 | 齿轮 ⚙ / 命令 `settings.open` | `settings-open = true`；TabBar 追加齿轮 Tab，内容区显示全页设置 | 打开设置且不创建 PTY | 已实现；命令面板/Vault 提示同样可打开 | `[ui] settings open=true`；`workspace` tabs 数不变 |
+| 关闭 | Esc / 页头 ✕ / 设置 Tab × / 点终端 Tab | `close-settings()` → `settings-toggled(false)`，归还 IME 焦点 | 四种入口都能关 | 已实现 | 四种入口后终端可继续输入（read-shell leak 测试） |
+| 分类 | 左侧 NavItem | 8 类分 3 组（PERSONALIZE/WORKSPACE/SYSTEM），线性图标，选中 accent 边条 | 分组 + 图标 + 二级分组 | 已实现 | 截图 `settings_open/terminal/profiles` |
+| 搜索 | 顶部输入 | 索引名称/关键词；点击结果切分类 + 滚动并高亮卡片 | 搜索并跳转分类/设置 | 已实现（跳到卡片级） | `settings filter q="sixel" hits=1` → `jump section=images` |
+| 主题 | 下拉框 | 12 内置 + Auto；选中即时换色；`theme-display` 显示 Auto 解析结果 | 下拉/分段而非一排 chip | 已实现；无独立预览 | 截图 `settings_dropdown`；切 Yaru Light 即时生效 |
+| 光标 / 滚动条 / 按键编码 | 分段选择器 | Block/Underline/I-beam、System/On/Off、Always/Auto/Never、Backspace/Delete 编码 | 分段选择器 | 已实现 | e2e 写 config + `[ui]` 回调日志 |
+| 布尔项 | switch | Bold is bright、bell、copy、scroll、sixel、TabBar、Quake 等全部保留 | switch | 已实现 | e2e Unlimited/Audible/Scroll output |
+| 数值项 | Stepper/Slider | 字号/回滚步进；背景 dim/opacity 滑杆 | slider/stepper | 已实现 | 截图 + 手动拖动；配置即时保存 |
+| Profiles | 侧栏 Profiles | 内嵌列表（打开/星标默认/编辑/删除/新建）+ Manage 全面板 | 设置内可管理 Profile | partial：完整搜索/复制仍在全面板 | 截图 `settings_profiles`；Manage 模态叠在设置页上 |
+| 设置 Tab 与终端 Tab | 点击终端 Tab | 关闭设置并切到该终端 Tab | 不污染 workspace | 已实现 | `[ui] settings open=false` + 继续输入 |
+| 回退 | 启动 `TERVO_SETTINGS_LEGACY=1` | 居中 820×620 modal，同一套控件，TabBar 不显示 Settings Tab | 新 UI 坏了仍能设置 | 已实现 | 截图 `settings_legacy`；日志 `settings ui=legacy-modal` |
+| 小窗口 | 拖角缩到 700×500 / 480×360 | 侧栏 156–164px、内容 Flickable、搜索框保留 | 小窗口可用 | 已实现（480×360 不裁剪分类名） | 截图 `settings_small/tiny` |
+| 键盘导航 | Tab/方向键 | 仅 Esc 处理；控件靠鼠标/搜索 | 完整键盘导航 | 缺失 | Tab 无遍历 |
 
 ## 8. 缺失控件（需求 B 部分要求，但 UI 中不存在）
 
@@ -150,5 +149,5 @@
 2. **Tab**：开 3 Tab→点击切换→Ctrl+T/W→后台 Tab 发 OSC 标题→右键 Tab/空白→尝试拖动/双击重命名。
 3. **分屏**：右键 Split Right→Split Down→拖分隔线到 10%/90%→点击各 pane 输入→Close Pane 到最后一个。
 4. **终端交互**：拖选/反向拖选→自动复制→Ctrl+Shift+C/V→Ctrl+F 搜索/Enter/Shift+Enter/Esc→滚轮回滚→vim 鼠标上报→Shift+点击绕过。
-5. **设置/主题**：⚙→切 Auto/主题→±字号/回滚→点遮罩关闭→Esc 验证（当前应不关闭）→改配置后重启验证持久化。
+5. **设置/主题**：⚙→Settings Tab→切分类/主题下拉→搜索 sixel 跳转→Esc 关闭→终端继续输入；`TERVO_SETTINGS_LEGACY=1` 重启验证居中 modal 回退。
 6. **回归记录**：每项保留 before/after 截图到 `.logs/ui-audit/`，与 `docs/FEATURE_MATRIX.md` 的 Test/Result 对应。

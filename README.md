@@ -131,7 +131,14 @@ ls -l dist/ && file dist/tervo && ./dist/tervo --help
 - 文件拖放（X11）：从文件管理器拖文件/目录到 pane，插入 shell 转义后的路径
   （bracketed paste + 末尾空格）；Slint `DropArea` 已接入，winit 1.18 后端不投递外部拖放，
   由 winit `HoveredFile`/`DroppedFile` 原生桥接补齐（详见 `docs/terminal-ui-basics.md`）。
-- 设置面板（⚙）：12 套内置主题 + `Auto`（跟随系统深/浅色，默认 Yaru Dark/Light）、字号、回滚行数、
+- 设置页（⚙）：默认是主窗口内的 **Settings Tab**——占满内容区、不创建 PTY、不进 workspace，
+  标签栏有可关闭的齿轮 Tab；`Esc`、标签 `×`、点任意终端 Tab 都能退出。
+  左侧按 PERSONALIZE / WORKSPACE / SYSTEM 分组的 8 个分类（Appearance / Terminal / Window /
+  Keys / Profiles / Plugins / Vault / Advanced），每类一个低对比度线性图标，选中态用主题 accent。
+  主题用下拉框，光标/滚动条/按键编码用分段选择器，开关/滑杆/步进器替代平铺 chip；顶部搜索的
+  结果会跳到对应分类并滚动/高亮具体设置卡片。兼容性回退：启动时设 `TERVO_SETTINGS_LEGACY=1`
+  可回到居中旧 modal（同一套控件，仅换呈现）。
+  12 套内置主题 + `Auto`（跟随系统深/浅色，默认 Yaru Dark/Light）、字号、回滚行数、
   滚动条策略、可听/视觉铃、滚动策略、Backspace/Delete 编码；
   也支持把 iTerm2 / Windows Terminal / Alacritty / kitty / Xresources 主题直接放进 `themes/` 目录。
 - Tabby 功能对照见 [`docs/tabby-parity.md`](docs/tabby-parity.md)；
@@ -164,7 +171,7 @@ tervo                 # 直接启动
 | 窗口置顶 | 右键标签栏空白处 → Always on Top |
 | 调整分屏 | 拖动 pane 之间的分隔线（左右/上下比例都可调） |
 | 缩放窗口 | 拖动窗口四边/四角（无边框窗口自绘命中区） |
-| 设置 | 标签栏 ⚙：主题 / 背景 / 光标形状·闪烁·颜色 / 粗体 / 字号 / 回滚行数 / 滚动条 / 响铃 / 滚动策略 / 按键编码 |
+| 设置 | 标签栏 ⚙ 打开 Settings Tab：分组分类（Appearance/Terminal/Window/Keys/Profiles/Plugins/Vault/Advanced）、主题下拉、搜索跳转；Esc / Tab × / 点终端 Tab 关闭。环境变量 `TERVO_SETTINGS_LEGACY=1` 回退居中 modal |
 | 移动窗口 | 拖标签栏；双击标签栏最大化/还原 |
 
 配置：`~/.config/tervo/config.toml`（`TERVO_CONFIG` 可覆盖）。
@@ -259,6 +266,8 @@ update-desktop-database ~/.local/share/applications 2>/dev/null || true
 - IME 走 winit 的 XIM（fcitx5 / ibus）；Wayland、GTK/Qt 的 IM module、macOS 输入法尚未验证。
 - 主题跟随系统依赖 GNOME `gsettings`；非 GNOME 环境会回退 `gtk-theme` / `COLORFGBG` 做一次性检测。
 - 自定义主题仍在启动时扫描，改主题文件后需要重启（热重载尚未实现）。
+- 设置页目前不含字体族/行距设置；搜索跳转定位到设置卡片而不是单个控件，键盘焦点遍历（Tab/方向键）
+  仍以鼠标点击/搜索为主。旧 modal 回退是同一套控件换呈现，并非保留 2026-11 之前的旧实现。
 
 ## 许可证
 
