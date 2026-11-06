@@ -1186,3 +1186,11 @@ cargo bench -p tervo-core --bench pty_throughput
   Openbox 540→840；无 WM 回退 540→701；输入/截图确认字符清晰；209 tests。
 - 限制：真实帧率仍取决于 Slint 合成/软件终端帧；这只是去掉重排洪泛，不等于 GPU。
 
+### 2026-11-06 · resize 右上角图标被裁：UI 布局不能延后
+
+- 现象：快速缩小时右上角设置/最小化/最大化/关闭按钮先消失再出现。根因是 UI 布局
+  被 16ms 合并推迟，缩小时按钮仍在旧宽度的右边界外，被新窗口裁掉一帧。
+- 修复：每个 configure 立即 `refresh_views_layout` + `request_redraw`，保证控件
+  当帧贴到新右边界；terminal grid/PTY/字符重绘仍每 16ms 合并，避免重排灌满 UI 线程。
+- 字符仍 1:1，无 resize-stretch。
+
