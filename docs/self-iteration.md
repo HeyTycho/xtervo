@@ -1771,3 +1771,69 @@ cargo bench -p tervo-core --bench pty_throughput
     实际打开仍走 Shift+右键菜单 Open Link。Wayland 下 `set_cursor` 未做专项验收。
   - 悬停状态在鼠标移动时更新；若终端内容在指针静止时变化，手型可能保持到下一次移动/离开。
     未做 URL 下划线/高亮，只切系统指针。
+
+### 2026-11-06 · 完整 Kitty / modifyOtherKeys 键盘协议（feat/keyboard-protocol）
+
+- **协议状态**：`core/keyboard.rs` 在把字节喂给 vte 的同时旁路解析
+  `CSI ? u` / `CSI = flags;mode u` / `CSI > flags u` / `CSI < n u`，维护 current
+  flags 与 main/alternate 两套独立栈；kitty query 只回本终端实际实现的 5 个
+  bit（disambiguate/event/alternate/report-all/associated-text）。同时保留
+  xterm XTMODKEYS：`CSI > 4 ; 1|2|3 m`、`CSI > 4 m`、`CSI ? 4 m`。
+- **为什么自己维护栈**：alacritty 0.26 的 `report_keyboard_mode()` 回的是键盘
+  栈顶，`CSI = 3 u`（set 不 push）后答 `?0u`；其 push 也不保存“push 前当前
+  flags”，set→push→pop 会丢状态。两处都与 kitty 规范不符，故关闭
+  `TermConfig.kitty_keyboard`，由 core 扫描器接管；主/备用屏仍按 47/1047/1049
+  切换各自栈。`keyboard_protocol = "off"` 时扫描器完全 inert（不回包、不编码）。
+- **编码（keys.rs）**：
+  - kitty `CSI unicode:alternate ; mods:event ; text u`；DISAMBIGUATE 只把
+    Esc / Ctrl+可打印 / Alt+可打印转成 CSI-u，单 Shift 仍发文本；REPORT_ALL
+    把包括 Enter/Tab/Backspace 在内所有键转 CSI-u；REPORT_EVENT_TYPES 的
+    press 省略事件类型，repeat=`:2`、release=`:3`；REPORT_ALTERNATE_KEYS 带
+    shifted key，REPORT_ASSOCIATED_TEXT 带文本。
+  - 特殊键用 kitty 规范序列：方向 `CSI 1;mod A/B/C/D`、Home/End `CSI 1;mod H/F`、
+    Insert/Delete/PageUp/PageDown `CSI 2/3/5/6;mod~`、F1–F12 按 kitty 表
+    （F3 为 `CSI 13;mod~`）、F13–F24 为 `CSI 57376..57387;mod u`。
+  - 修饰位：shift=1/alt=2/ctrl=4/super=8/caps=64/num=128，序列里 +1；Slint
+    的 meta 映射 super。caps/num lock 不在 Slint `KeyboardModifiers` 里，运行时
+    恒 0（编码与单测已覆盖这两个 bit）。
+  - modifyOtherKeys：可打印键 `CSI 27;mod;code~`；level 1 只处理 alt/meta，
+    level 2 所有修饰键，level 3 无修饰键也编码；功能键用 xterm 带修饰序列；
+    kitty flags 非空时 kitty 优先。`CSI > 4 m`（无 Pv）按常见应用意图当 level 2
+    （xterm 原语义是 reset，差异已写入矩阵）。
+- **release/repeat**：Slint 侧新增 `key-released(event)` 回调、`key-input` 透传
+  `event.repeat`。Rust 只在应用请求 REPORT_EVENT_TYPES 时回放 release，并用
+  per-pane held-key 登记表只发送“press 真的进过 PTY 且以转义序列发送”的键；
+  普通 shell、off、搜索框、快捷键录制中不产生任何 release 字节。纯文本键在
+  未开 REPORT_ALL_KEYS 时仍按 kitty 语义只发文本（不配对 release）。
+- **零行为变化**：`encode_key_event` 在 flags 为空且 modifyOtherKeys=0 时直接
+  调用旧 `encode_mode`；单测 `no_protocol_is_byte_identical_to_legacy` 对
+  字母/大写/控制字节/特殊键/中文/backspace/delete 逐字节比对。配置
+  `keyboard_protocol = "auto"|"off"`（默认 auto，未知值回 auto，旧配置缺字段
+  兼容），off 只在新 pane 生效。
+- **验证**：
+  - `cargo test -p tervo-app --bin tervo`：**297 passed**（master 基线 285 + keys 12 例）；
+    `cargo test -p tervo-core`：**177 passed**（107 lib + 6 keyboard_protocol
+    集成 + 既有 64），Xvfb 无关。
+  - `cargo test --workspace --locked`：**514 passed, 0 failed**。
+  - 伪 TUI（真实 PTY，`crates/core/tests/keyboard_protocol.rs`）：query 收
+    `ESC[?0u`；set/push/pop 收 `?3u/?7u/?3u`；备用屏独立 `?3u`，回主屏 `?1u`；
+    `CSI > 4;2m` + `?4m` 收 `ESC[>4;2m`；`keyboard_protocol=off` 一个字节都不回。
+  - Xvfb :123（`scripts/e2e_keyboard_protocol.sh`，不碰 :1/Xephyr/pkill）：
+    kitty 场景 Ctrl+A → `1b5b39373b3575`（`CSI 97;5u`）、release → `CSI 97;5:3u`，
+    Shift+Up → `CSI 1;2A`、release → `CSI 1;2:3A`；modifyOtherKeys 场景
+    Ctrl+A → `CSI 27;5;97~`；普通 shell/off 场景 Ctrl+A/b/Up 与旧字节
+    `01 62 1b5b41` 完全一致，且 query/modify 无回包。
+  - 真实 dsh-tui（Xvfb :123，`TERM=xterm-kitty`、DSH_HOME 指向 workspace 副本）：
+    app 日志 `flags=1`，Ctrl+Shift+J → `CSI 106;6u`、Shift+Enter → `CSI 13;2u`、
+    普通 `x` → `x`；dsh welcome guide 保持运行（截图
+    `.logs/dsh-kbd-final/shot.png`），说明真实 TUI 链路可用。
+- **未完成/限制**：
+  - base layout key（标准 PC-101 物理键）无法从 Slint `KeyEvent` 推导，只上报
+    shifted key；非 US 布局的 shifted 映射为 US 近似。
+  - caps/num lock 状态拿不到（winit/Slint 不暴露），运行时 bit 恒 0。
+  - 纯文本键 release 只在 REPORT_ALL_KEYS 下发送；未请求协议时 Shift+Tab 仍是
+    旧 `TAB` 字节（保持零行为变化）。
+  - `CSI > 4 m` 无值形式按 level 2 兼容处理（与 xterm reset 语义不同，已文档化）；
+    未实现 formatOtherKeys=1；modifyOtherKeys 的 F21–F24 用 CSI 42–45。
+  - 不支持 Wayland IME；键盘协议与硬编码 app 快捷键的优先级仍由现有分发决定
+    （Ctrl+Shift+字母会被 app 抢占）。
