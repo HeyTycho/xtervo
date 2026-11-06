@@ -195,6 +195,12 @@ struct AppState {
     /// pressed/grabbed；收到第一帧 WM resize 后补发一次 PointerReleased 清理状态。
     wm_release_pending: bool,
     xresize: Option<ResizeCtx>,
+    /// 窗口拖动 resize 的 fast path：只更新 pane 矩形并拉伸旧帧，140ms 停下后
+    /// 才 resize terminal grid / PTY / 软件重绘。
+    resizing: bool,
+    resize_gen: u64,
+    resize_events: u32,
+    resize_settle: slint::Timer,
     /// X11 SHAPE 自适应圆角 worker；None = 未启动（X11 连接/线程失败，窗口保持直角）。
     corners: Option<xconn::CornerShaper>,
     clipboard: Option<arboard::Clipboard>,
@@ -2767,6 +2773,15 @@ fn switch_tab_number(st: &mut AppState, n: usize) {
 
 /// 重新计算布局：必要时 resize 各 pane 的网格，并刷新 Slint 模型。
 fn refresh_views(st: &mut AppState) {
+    refresh_views_impl(st, true);
+}
+
+/// 拖动 resize 的快路径：只更新 pane 矩形，不 resize grid/PTY。
+fn refresh_views_layout(st: &mut AppState) {
+    refresh_views_impl(st, false);
+}
+
+fn refresh_views_impl(st: &mut AppState, resize_terminals: bool) {
     if st.content.w < 1.0 || st.content.h < 1.0 {
         return;
     }
@@ -2785,7 +2800,7 @@ fn refresh_views(st: &mut AppState) {
         if let Some(rt) = st.panes.get_mut(id) {
             let (cols, rows) = cell_of(*rect, st.cell);
             rt.rect = *rect;
-            if rt.grid != (cols, rows) {
+            if resize_terminals && rt.grid != (cols, rows) {
                 rt.renderer.resize_grid(cols, rows);
                 rt.handle.resize(cols as u16, rows as u16);
                 rt.grid = (cols, rows);
@@ -2899,6 +2914,9 @@ fn rebuild_tabs(st: &mut AppState) {
 
 /// 重绘当前可见的 pane（切换 tab / 布局变化后）。
 fn redraw_visible(st: &mut AppState) {
+    if st.resizing {
+        return;
+    }
     let ids: Vec<PaneId> = {
         let Some(tab) = st.ws.active_tab() else { return };
         tab.panes()
@@ -3003,6 +3021,9 @@ fn apply_font_size(st: &mut AppState) {
 }
 
 fn redraw_all() {
+    if with_app(|st| st.resizing).unwrap_or(false) {
+        return;
+    }
     let ids: Vec<PaneId> = with_app(|st| st.panes.keys().copied().collect()).unwrap_or_default();
     for id in ids {
         redraw_pane(id);
@@ -4345,6 +4366,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         wm_resize: false,
         wm_release_pending: false,
         xresize: None,
+        resizing: false,
+        resize_gen: 0,
+        resize_events: 0,
+        resize_settle: slint::Timer::default(),
         corners,
         clipboard: arboard::Clipboard::new().ok(),
         cfg: {
@@ -5660,8 +5685,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return;
             }
             st.content = Rect::new(0.0, 0.0, w, h);
-            refresh_views(st);
-            redraw_visible(st);
+            if !st.resizing {
+                st.resizing = true;
+                st.ui.set_resize_stretch(true);
+            }
+            st.resize_gen = st.resize_gen.wrapping_add(1);
+            st.resize_events = st.resize_events.saturating_add(1);
+            let gen = st.resize_gen;
+            // 拖动期间只布局，旧帧由 Slint 拉伸到新 pane 尺寸；140ms 没新 resize
+            // 才真正 resize_grid/PTY 并重绘，避免每个 configure 都做软件重排。
+            refresh_views_layout(st);
+            st.resize_settle.start(
+                slint::TimerMode::SingleShot,
+                Duration::from_millis(140),
+                move || {
+                    with_app(|st| {
+                        if st.resize_gen != gen {
+                            return;
+                        }
+                        st.resizing = false;
+                        st.ui.set_resize_stretch(false);
+                        eprintln!(
+                            "[ui] resize settle events={} content={:.0}x{:.0}",
+                            st.resize_events, st.content.w, st.content.h
+                        );
+                        st.resize_events = 0;
+                        refresh_views(st);
+                        redraw_visible(st);
+                    });
+                },
+            );
         });
     });
 
