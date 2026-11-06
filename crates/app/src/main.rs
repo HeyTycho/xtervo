@@ -3941,12 +3941,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // 圆角 worker 只依赖 X11；连不上/没有 SHAPE 时记录日志并保持直角，不阻塞 UI。
-    let corners = match xconn::CornerShaper::spawn(&opts.title) {
-        Ok(shaper) => Some(shaper),
-        Err(e) => {
-            eprintln!("[corners] {e}");
-            None
-        },
+    // 诊断开关：TERVO_NO_CORNERS=1 可完全关闭 SHAPE 圆角（排查合成器/拖拽问题）。
+    let corners = if std::env::var_os("TERVO_NO_CORNERS").is_some() {
+        None
+    } else {
+        match xconn::CornerShaper::spawn(&opts.title) {
+            Ok(shaper) => Some(shaper),
+            Err(e) => {
+                eprintln!("[corners] {e}");
+                None
+            },
+        }
     };
 
     let state = Rc::new(RefCell::new(AppState {

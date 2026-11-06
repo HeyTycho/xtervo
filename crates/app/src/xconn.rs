@@ -530,7 +530,6 @@ pub fn tervo_windows() -> Vec<OwnWindow> {
 const MAX_CORNER_RADIUS: u32 = 12;
 /// resize 期间两次 SHAPE 请求的最小间隔。Slint 每帧都会回调 `resized`，
 /// 不节流会向 X server 刷大量 CreatePixmap/ShapeMask 请求。
-const CORNER_APPLY_INTERVAL: Duration = Duration::from_millis(50);
 /// 启动时等待 Slint/winit 建窗、map 的重试次数与间隔（与 set_window_icon 一致）。
 const CORNER_STARTUP_RETRIES: usize = 50;
 const CORNER_STARTUP_RETRY_DELAY: Duration = Duration::from_millis(100);
@@ -906,11 +905,60 @@ fn run_corner_shaper(rx: Receiver<CornerRequest>, title: String) {
     let mut pending: Option<CornerRequest> = None;
     let mut last_request: Option<CornerRequest> = None;
     let mut last_applied: Option<(u32, u16, u16, u32)> = None;
-    let mut last_apply = Instant::now() - CORNER_APPLY_INTERVAL;
     let mut last_log: Option<(u16, u16, u32, Instant)> = None;
     let mut find_failure_logged = false;
+    // resize 期间保持方角，停下 SETTLE 后再补圆角：避免拖拽时每帧改 SHAPE。
+    let settle = Duration::from_millis(180);
+    let mut pending_round: Option<(u32, u16, u16, u32)> = None;
+    let mut last_resize_at = Instant::now();
+    let mut shape_cleared = false;
+    let mut last_clear_log = Instant::now() - Duration::from_secs(10);
 
     loop {
+        // 1) 有等待恢复的圆角：先方角拖拽，静止 180ms 后再应用掩码。
+        if let Some((win, width, height, radius)) = pending_round {
+            let elapsed = last_resize_at.elapsed();
+            if elapsed < settle {
+                match rx.recv_timeout(settle - elapsed) {
+                    Ok(newer) => {
+                        // 新尺寸到了：回到普通处理路径，重新 resolve/清方角。
+                        pending = Some(newer);
+                        pending_round = None;
+                        last_resize_at = Instant::now();
+                        continue;
+                    },
+                    Err(RecvTimeoutError::Timeout) => {},
+                    Err(RecvTimeoutError::Disconnected) => return,
+                }
+            }
+            let key = (win, width, height, radius);
+            match apply_rounded_corners(&conn, win, radius) {
+                Ok(()) => {
+                    last_applied = Some(key);
+                    shape_cleared = false;
+                    let should_log = last_log.is_none_or(|(lw, lh, lr, at)| {
+                        lw != width
+                            || lh != height
+                            || lr != radius
+                            || at.elapsed() >= Duration::from_secs(1)
+                    });
+                    if should_log {
+                        eprintln!(
+                            "[corners] win=0x{win:x} {width}x{height} radius={radius}（静止后恢复）"
+                        );
+                        last_log = Some((width, height, radius, Instant::now()));
+                    }
+                },
+                Err(e) => {
+                    eprintln!("[corners] 应用圆角失败 win=0x{win:x} {width}x{height} radius={radius}: {e}");
+                    last_applied = Some(key);
+                },
+            }
+            pending_round = None;
+            continue;
+        }
+
+        // 2) 取请求（启动阶段窗口可能晚 map，500ms 超时重试）。
         let mut request = match pending.take() {
             Some(request) => request,
             None => match rx.recv_timeout(if window.is_none() {
@@ -920,7 +968,6 @@ fn run_corner_shaper(rx: Receiver<CornerRequest>, title: String) {
             }) {
                 Ok(request) => request,
                 Err(RecvTimeoutError::Timeout) if window.is_none() => match last_request {
-                    // 启动时窗口可能晚于首个请求 map：带上次尺寸继续找。
                     Some(request) => request,
                     None => continue,
                 },
@@ -935,7 +982,6 @@ fn run_corner_shaper(rx: Receiver<CornerRequest>, title: String) {
 
         let Some((win, width, height)) = resolve_own_window(&conn, root, &title, &mut window)
         else {
-            // Wayland 会话下可能只有 XWayland、找不到本进程窗口：只提醒一次，避免刷日志。
             if !find_failure_logged {
                 eprintln!("[corners] 5s 内未找到本进程主窗口（X11/Wayland 后端？），圆角跳过");
                 find_failure_logged = true;
@@ -943,7 +989,6 @@ fn run_corner_shaper(rx: Receiver<CornerRequest>, title: String) {
             continue;
         };
         find_failure_logged = false;
-        // resolve 可能等了数秒；期间 Slint 可能已经改了尺寸，重新取最新请求。
         while let Ok(newer) = rx.try_recv() {
             request = newer;
             last_request = Some(newer);
@@ -965,59 +1010,46 @@ fn run_corner_shaper(rx: Receiver<CornerRequest>, title: String) {
             continue;
         }
 
-        // 节流：resize 回调每帧都来；等待期间若有新请求，直接进入下一轮取最新尺寸。
-        if last_apply.elapsed() < CORNER_APPLY_INTERVAL {
-            std::thread::sleep(CORNER_APPLY_INTERVAL - last_apply.elapsed());
-            let mut latest = None;
-            while let Ok(newer) = rx.try_recv() {
-                latest = Some(newer);
+        if radius == 0 {
+            // 最大化/全屏：立即清掉圆角掩码，窗口贴边。
+            if !shape_cleared {
+                if let Err(e) = clear_rounded_corners(&conn, win) {
+                    eprintln!("[corners] 清除圆角失败 win=0x{win:x}: {e}");
+                }
+                shape_cleared = true;
             }
-            if let Some(newer) = latest {
-                last_request = Some(newer);
-                pending = Some(newer);
-                continue;
-            }
+            last_applied = Some(key);
+            continue;
         }
 
-        match apply_rounded_corners(&conn, win, radius) {
-            Ok(()) => {
-                last_applied = Some(key);
-                last_apply = Instant::now();
-                let expected_width =
-                    physical_extent(request.logical_width, request.scale_factor);
-                let expected_height =
-                    physical_extent(request.logical_height, request.scale_factor);
-                let should_log = last_log.is_none_or(|(lw, lh, lr, at)| {
-                    lw != width
-                        || lh != height
-                        || lr != radius
-                        || at.elapsed() >= Duration::from_secs(1)
-                });
-                if should_log {
-                    eprintln!(
-                        "[corners] win=0x{win:x} {width}x{height} radius={radius} \
-                         (logical {}x{} × scale {} ≈ {}x{} physical) max={} full={}",
-                        request.logical_width,
-                        request.logical_height,
-                        request.scale_factor,
-                        expected_width,
-                        expected_height,
-                        state.maximized,
-                        state.fullscreen
-                    );
-                    last_log = Some((width, height, radius, Instant::now()));
-                }
-            },
-            Err(e) => {
-                // 只记录，不 panic；同一尺寸只尝试一次，等下一次 resize/状态变化再试。
-                eprintln!(
-                    "[corners] 应用圆角失败 win=0x{win:x} {width}x{height} radius={radius}: {e}"
-                );
-                last_applied = Some(key);
-                last_apply = Instant::now();
-            },
+        // 普通 resize：第一帧立即去掉掩码，拖拽期间保持方角；停止后补圆角。
+        if !shape_cleared {
+            if let Err(e) = clear_rounded_corners(&conn, win) {
+                eprintln!("[corners] 清除圆角失败 win=0x{win:x}: {e}");
+            }
+            shape_cleared = true;
+            if last_clear_log.elapsed() >= Duration::from_secs(1) {
+                eprintln!("[corners] resize 中：暂时取消圆角裁剪（停下后恢复）");
+                last_clear_log = Instant::now();
+            }
         }
+        pending_round = Some((win, width, height, radius));
+        last_resize_at = Instant::now();
     }
+}
+
+/// 去掉 BOUNDING/CLIP 掩码（窗口恢复矩形）；INPUT 不在这里改。
+fn clear_rounded_corners(conn: &RustConnection, window: u32) -> Result<(), String> {
+    use x11rb::protocol::shape::{self, SK, SO};
+    shape::mask(conn, SO::SET, SK::BOUNDING, window, 0, 0, 0u32)
+        .map_err(|e| e.to_string())?
+        .check()
+        .map_err(|e| format!("SHAPE BOUNDING clear: {e}"))?;
+    shape::mask(conn, SO::SET, SK::CLIP, window, 0, 0, 0u32)
+        .map_err(|e| e.to_string())?
+        .check()
+        .map_err(|e| format!("SHAPE CLIP clear: {e}"))?;
+    Ok(())
 }
 
 #[cfg(test)]
