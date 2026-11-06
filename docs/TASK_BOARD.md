@@ -1,6 +1,6 @@
 # Tervo 任务看板
 
-> 最后更新：2026-11-06 22:10  
+> 最后更新：2026-11-06 22:25  
 > 规则：每个任务开始/完成/阻塞都要更新本文件；记录 worktree、branch、commit、测试/截图、限制。  
 > 当前 master：`a82ac52`（Settings Tab 持久化）；当前 release：`target/release/tervo` 19:07。
 
@@ -39,7 +39,7 @@
 | P1-05 | Codex P1：copy/search/save 500ms UI 阻塞 | queued | 待建 | 与 P0-05 同源，可并入 P0 hardening |
 | P1-06 | Codex P1：渲染 damage 路径失效、每帧全屏重绘 | done | `.worktrees/render-damage` / `feat/render-damage` | commit `8146aa7`；合 master `b8effd0`；单行 45.6×、连续按键 46.4×；Xvfb :137 e2e PASS；`.logs/render-damage/` | 逐像素等价；full/滚动 1.00× |
 | P1-07 | Codex P1：400ms CoreEvent 轮询 → wake 桥接 | done | `.worktrees/event-wake` / `feat/event-wake` | commit `16b5135`；合 master；app 300/core 518 tests；Xvfb :138 e2e PASS：标题 0–1ms/Bell 1ms/OSC52 1ms/插件 3ms/SFTP 28ms；空闲 CPU 不退化；`.logs/event-wake/` | 400ms 兜底保留 |
-| P1-08 | Codex P1：Vault Argon2 KDF 移出 UI 线程 | queued | 待建 | 解锁期间 UI 不停顿 |
+| P1-08 | Codex P1：Vault Argon2 KDF 移出 UI 线程 | running | `.worktrees/ssh-sftp` / `feat/ssh-sftp` | 并入 W-02；解锁期间 UI 不停顿 |
 | P1-09 | Codex P1：`main.rs` 拆分 + `with_app` 重入不丢操作 | queued | 待建 | 大重构，分小步 |
 | P1-10 | 右键菜单美化：字号加大、分类分组、图标/分隔线、窄窗不溢出 | done | `.worktrees/context-menu` / `feat/context-menu` | commit `bddf0ef`；合 master `3e5c270`；`.logs/context-menu/` | context-menu e2e PASS；term_menu PASS；字号/分组/窄窗/右下翻转截图 |
 
@@ -51,10 +51,10 @@
 | ID | 大块 | 状态 | 范围 | 验收 |
 |---|---|---|---|---|
 | W-01 | Profiles + 会话恢复 | done | `.worktrees/profile-session` / `feat/profile-session` | 每 Profile 外观（font_size/theme/cursor_shape/cursor_blink/scrollback，additive v2，空=继承全局，Profile 显式 > 全局）；Settings→Profiles 表单共用 Appearance 区；session Snapshot 增加可选 profile_id，local Profile 恢复外观/shell/cwd，SSH/Serial/Telnet 不自动建连；`restore_session_on_startup`（默认 false）正常退出写快照，启动恢复 Tab/split/ratio/cwd/网格，失败回退新 Tab。验收：app 295 / workspace 489 tests；Xvfb :136 `scripts/e2e_profile_session.sh` PASS（表单/应用外观/3 Tab+split+cwd 重启恢复/损坏快照 fallback；截图 `.logs/profile-session/e2e/shots`） |
-| W-02 | SSH/SFTP/Vault 产品化 | queued | Jump host、端口转发、agent forwarding、known_hosts、重连、SFTP 队列/取消/权限 | 真实 SSH 测试；断网/超时；UI 不冻结 |
-| W-03 | iTerm2 IIP 图片 | queued | OSC 1337 File base64 PNG/JPEG；与 Sixel 并存 | dsh/真实终端图片；滚动/resize |
+| W-02 | SSH/SFTP/Vault 产品化 | running | `.worktrees/ssh-sftp` / `feat/ssh-sftp` | Jump/转发/known_hosts/SFTP 队列/Vault KDF；等 commit | 真实 SSH/超时/取消；基线 326 |
+| W-03 | iTerm2 IIP 图片 | running | `.worktrees/iip-image` / `feat/iip-image` | OSC 1337 File PNG/JPEG；复用 Sixel overlay；默认开可关 | 真实图片/滚动/resize/关闭 |
 | W-04 | 插件系统 V1 | queued | manifest/权限；Connection/Middleware/Observer/Command/Workspace/Integration；最小 UI 插槽；AOT | 4 个真实插件验证；崩溃/超时不拖终端 |
-| W-05 | 打包/自动更新/崩溃报告 | queued | .deb/AppImage/install 脚本、版本迁移、原子更新 | 干净机安装；升级/回滚 |
+| W-05 | 打包/自动更新/崩溃报告 | running | `.worktrees/packaging` / `feat/packaging` | tar/deb/install、版本/校验/升级回滚；不造假自动更新 | 干净目录安装/deb 解包/smoke/回滚 |
 | W-06 | Wayland 原生 spike | queued | text-input-v3 IME、剪贴板、DnD、resize、全局快捷键 | 只 spike/报告，不承诺合并 |
 | W-07 | 24h 稳定性 soak | queued | 输出洪峰、Sixel 大图、emoji cache、多 Tab/多窗口内存 | 无崩溃/无持续内存增长；报告 |
 | W-08 | 全量 e2e/回归矩阵 | queued | 现有 5 e2e + 新功能 e2e + 性能门禁 | 全部绿；写入 selfcheck |
@@ -113,4 +113,5 @@
 | 2026-11-06 21:40 | P1-07 事件唤醒完成并提交（16b5135，feat/event-wake，未合 master）：语义事件/插件/SFTP 结果即时唤醒，400ms 兜底保留；Xvfb :138 e2e PASS；待父任务合入 |
 | 2026-11-06 21:45 | P1-06 渲染 damage 恢复（feat/render-damage）：双缓冲行同步 + 真实 damage；单行/按键 rows=1、full_redraws 不增，release 45.6×/46.4×，full/滚动 1.00×；app 310 passed / workspace 527；Xvfb :137 5 张截图与 profile 断言 PASS；commit `8146aa7` |
 | 2026-11-06 22:10 | P1-04/W-01 Profile+会话恢复合入；app 326；P1-06/07 合入；e2e 日志断言修正；准备 P1 稳定 release |
+| 2026-11-06 22:25 | P1 稳定 release 构建 22:08（242M/51M，app 326）；W-02/W-03/W-05 三个周末大块开跑 |
 | 2026-11-06 21:35 | W-01 完成（feat/profile-session，未合 master）：每 Profile 外观 + session profile_id/可选启动自动恢复；app 295、workspace 489；Xvfb :136 e2e PASS；限制见 docs/self-iteration.md |
