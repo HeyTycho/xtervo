@@ -240,6 +240,25 @@ impl PaneHandle {
         self.mode().contains(TermMode::MOUSE_MOTION)
     }
 
+    /// 是否启用 DECSET 1004 focus in/out 上报。
+    pub fn wants_focus(&self) -> bool {
+        self.mode().contains(TermMode::FOCUS_IN_OUT)
+    }
+
+    /// 向 PTY 发送 focus in/out（仅当应用启用了 1004）。
+    pub fn focus_event(&self, focused: bool) {
+        if self.wants_focus() {
+            self.input(if focused { b"\x1b[I" } else { b"\x1b[O" });
+        }
+    }
+
+    /// 是否启用了 kitty keyboard protocol 的 CSI-u 编码。
+    pub fn wants_kitty_keyboard(&self) -> bool {
+        self.mode().intersects(
+            TermMode::DISAMBIGUATE_ESC_CODES | TermMode::REPORT_ALL_KEYS_AS_ESC,
+        )
+    }
+
     /// 上报一次鼠标事件。未启用鼠标模式的 pane 会自动忽略（actor 侧门禁）。
     pub fn mouse(&self, ev: MouseEvent) {
         let _ = self.ctrl_tx.send(Ctrl::Mouse(ev));

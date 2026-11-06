@@ -1300,3 +1300,13 @@ cargo bench -p tervo-core --bench pty_throughput
   非 mouse-reporting 的普通 shell 仍是普通右键开 Tervo 菜单。
 - 测试：伪 mouse-reporting TUI 收到 `<2;col;rowM/m`；非上报右键菜单不受影响。
 
+### 2026-11-06 · TUI 基础兼容：1004 focus + kitty CSI-u
+
+- 补 DECSET 1004：100ms 轮询 winit 窗口焦点，pane 焦点/窗口焦点变化时向启用
+  1004 的 PTY 发 `CSI I`/`CSI O`；模式刚启用也会补发当前状态。
+- 补 kitty keyboard protocol 的 CSI-u：alacritty TermMode 检测 DISAMBIGUATE/
+  REPORT_ALL_KEYS 后，带修饰的可打印键编码为 `CSI codepoint;mods u`；普通 shell
+  仍走旧控制字节，不改变日常行为。
+- 测试：合成 TUI 收到 `ESC[O`/`ESC[I`；214 app tests（新增 kitty 单测）。
+- 未做：modifyOtherKeys 全量、kitty event-types/release、OSC 52、URL 点击等。
+

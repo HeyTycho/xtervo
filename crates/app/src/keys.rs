@@ -121,6 +121,17 @@ fn key_name(text: &str) -> Option<String> {
 
 /// 返回要写入 PTY 的字节；None 表示忽略该键。
 pub fn encode(text: &str, ctrl: bool, alt: bool) -> Option<Vec<u8>> {
+    encode_mode(text, ctrl, alt, false, false)
+}
+
+/// 和 `encode` 相同，但支持 kitty keyboard protocol 的 CSI-u 编码。
+pub fn encode_mode(
+    text: &str,
+    ctrl: bool,
+    alt: bool,
+    shift: bool,
+    kitty: bool,
+) -> Option<Vec<u8>> {
     if text.is_empty() {
         return None;
     }
@@ -130,6 +141,18 @@ pub fn encode(text: &str, ctrl: bool, alt: bool) -> Option<Vec<u8>> {
             v.insert(0, 0x1b);
         }
         return Some(v);
+    }
+    // kitty keyboard protocol：可打印字符带修饰键时用 CSI u，避免 Ctrl+Shift
+    // 和 Ctrl 被压成同一个控制字节。无修饰的可打印文本仍保持原样。
+    if kitty {
+        let mut chars = text.chars();
+        if let (Some(c), None) = (chars.next(), chars.next()) {
+            if !c.is_control() && (ctrl || alt || shift) {
+                let cp = if c.is_ascii_alphabetic() { c.to_ascii_lowercase() as u32 } else { c as u32 };
+                let mods = 1 + (shift as u32) + ((alt as u32) << 1) + ((ctrl as u32) << 2);
+                return Some(format!("\x1b[{cp};{mods}u").into_bytes());
+            }
+        }
     }
     if ctrl {
         if let Some(ch) = text.chars().next() {
@@ -174,6 +197,16 @@ mod tests {
         // Alt 前缀不改变大小写：Slint 已给出带 shift 的文本
         assert_eq!(encode("A", false, true).unwrap(), b"\x1bA");
         assert_eq!(encode("\u{F700}", false, false).unwrap(), b"\x1b[A");
+    }
+
+    #[test]
+    fn kitty_keyboard_csi_u() {
+        assert_eq!(encode_mode("A", false, false, true, true).unwrap(), b"\x1b[97;2u");
+        assert_eq!(encode_mode("c", true, false, false, true).unwrap(), b"\x1b[99;5u");
+        assert_eq!(encode_mode("c", true, true, true, true).unwrap(), b"\x1b[99;8u");
+        assert_eq!(encode_mode("a", false, false, false, true).unwrap(), b"a");
+        // 非 kitty 模式保持旧控制字节
+        assert_eq!(encode_mode("c", true, false, false, false).unwrap(), vec![0x03]);
     }
 
     #[test]
