@@ -4106,6 +4106,12 @@ fn sftp_probe_transfer(
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Skia 在本机 resize 时会让事件循环排队，软件渲染反而更跟手；默认 software，
+    // 需要 GPU 合成时用 SLINT_BACKEND=winit-skia 覆盖。
+    if std::env::var_os("SLINT_BACKEND").is_none() {
+        std::env::set_var("SLINT_BACKEND", "winit-software");
+    }
+
     let t_start = Instant::now();
     let argv: Vec<String> = std::env::args().collect();
     if let Some(pos) = argv.iter().position(|a| a == "--sftp-probe") {
