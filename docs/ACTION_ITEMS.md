@@ -39,7 +39,7 @@
 | ACT-007 ◐（全屏 + 设置开关 + TabBar 上下位已完成；DPI 跟随与 Window 设置页待做） | 全屏 + TabBar 位置 + DPI/scale + Window 设置 | B1-005/006/007、UI-SET-011 成组缺口；影响所有用户 | `main.slint`、`main.rs`、`config.rs` | F11 全屏/退出；TabBar 四向（若上游确认）切换并持久化；scale factor 变化后 cell/布局正确；设置页可改；人工+截图 | M |
 | ACT-008 ◐（detach/reattach + 后台列表已通；独立 Registry 待做） | Session 独立重构（Registry 与 Pane/Tab 解耦） | 需求 A3 硬约束；关闭生命周期/后台保留/断线重连/自动恢复的前置 | `pane.rs`、`main.rs`、新 `session_registry.rs`、`workspace.rs` | 关 Tab 不杀 Session（可 re-attach）；Session 有稳定 ID；3 个 pane 关/开不丢 shell；单测覆盖 detach/attach/reap | L |
 | ACT-009 ◐（确认已完成；生命周期策略待做） | 关闭生命周期策略 + 关闭确认 | B1-008/B2-005；现在 ✕/Ctrl+W 直接杀进程，误关代价高 | `main.rs`、session registry、`config.rs`、`main.slint` | 设置可选“仅关视图/结束会话/后台保留”；关闭窗口/最后 Tab 有确认；取消不杀进程；三策略各有测试 | M |
-| ACT-010 | Command Palette UI + 命令分发接线（命令表已完成） | B4-005/C9-001/005；`commands.rs` 已有 21 命令/快捷键解析/冲突检测/模糊搜索（8327e20），**不要重写**；缺 UI 与真实分发 | `commands.rs`、`main.rs`、`main.slint`、`config.rs` | Ctrl+Shift+P 打开面板，搜索/键盘选择/执行；main.rs 的 Ctrl+T/W/F/C/V 改走命令 ID；禁用态/上下文；命令绑定持久化；人工+单测 | L |
+| ACT-010 | Command Palette UI + 命令分发接线（命令表已完成） | B4-005/C9-001/005；`commands.rs` 已有 30 命令/快捷键解析/冲突检测/模糊搜索（本轮补 read-only/reset/save-contents），**不要重写**；UI 与真实分发已完成 | `commands.rs`、`main.rs`、`main.slint`、`config.rs` | Ctrl+Shift+P 打开面板，搜索/键盘选择/执行；main.rs 的 Ctrl+T/W/F/C/V 改走命令 ID；禁用态/上下文；命令绑定持久化；人工+单测 | L |
 | ACT-011 ✅（2026-11-05：6 分类导航 + 搜索跳转 + Config File；保存失败提示仍未做） | Settings 框架：导航/搜索/分类/Config File | B7 引言+14 项；单卡片无法承载后续设置 | `main.slint`、`main.rs`、`config.rs` | 左侧分类（Application/Appearance/Terminal/Color Scheme/Hotkeys/Window/Config File…）；搜索过滤；Config File 显示路径/打开目录，不显示 secret；人工 | L |
 | ACT-012 | Hotkeys 设置页（录制/冲突/multi-chord） | C9-002/003/007；命令系统完成后必须让用户改键 | `main.slint`、`main.rs`、`commands.rs`、`config.rs` | 录制单键/两段键；冲突提示；清除/恢复默认；持久化；人工+单测 | M |
 
@@ -47,7 +47,7 @@
 
 | ID | 标题 | 为什么现在做 | 涉及文件 | 验收标准（可测） | 预估 |
 |---|---|---|---|---|---|
-| ACT-013 ◐（菜单 8 项 + 缩放快捷键已完成；搜索大小写/正则/计数、缩放 HUD 待做） | 终端菜单/搜索/选择/缩放补齐 | B6-003/004/010/012；当前 5 项菜单、搜索无大小写/计数、无缩放 | `main.slint`、`main.rs`、`pane.rs` | 菜单含 Copy/Paste/Find/Clear/Select All/Split/Close；Ctrl+F 支持大小写/正则开关/计数；Ctrl+=/-/0 缩放并显示；人工 | M |
+| ACT-013 ◐（菜单 13 项 + 搜索大小写/正则 + 缩放快捷键已完成；匹配计数、缩放 HUD 待做） | 终端菜单/搜索/选择/缩放补齐 | B6-003/004/010/012；菜单已 13 项、搜索已支持大小写/正则；匹配计数/缩放 HUD 待做 | `main.slint`、`main.rs`、`pane.rs` | 菜单含 Copy/Paste/Find/Clear/Select All/Split/Close；Ctrl+F 支持大小写/正则开关/计数；Ctrl+=/-/0 缩放并显示；人工 | M |
 | ACT-014 ◐（多行确认 + Copy on select 已完成；右键粘贴开关、bracketed 端到端待做） | 粘贴安全与可配置 | B6-005/006/007/008；多行直接执行有风险 | `main.rs`、`main.slint`、`config.rs` | 多行粘贴确认（可记住）；copy-on-select 开关；右键粘贴开关；bracketed paste 端到端测试 | M |
 | ACT-015 | 超链接 UI + Linkifier 接口（core 识别已完成） | TERM-012/B6-011；core 已有 `link.rs` 识别与 OSC 8 透出（94baefb/99d7895），只缺 hover/Ctrl+点击/插件接口，不应重写识别器 | `core/src/frame.rs`/`pane.rs`（hyperlink 元数据）、`main.rs`、新 `link.rs` | OSC 8/URL/IP/路径识别；Ctrl+点击打开；插件 linkifier 接口；路径存在性/远端提示；单测+人工 | L |
 | ACT-016 | 字体/主题完善（family/weight/line-height/ligatures/emoji/透明度回退） | C10/THEME-005/006、TERM-007/008；当前固定字体 | `glyph.rs`、`main.rs`、`config.rs`、`themes.rs` | 可选字体族/字重/行距/字距；连字开关；Nerd fallback；emoji 有/无提示；透明不支持时回退；截图 | L |

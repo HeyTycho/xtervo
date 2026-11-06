@@ -3,7 +3,7 @@
 
 use std::time::{Duration, Instant};
 
-use tervo_core::{spawn, CoreEvent, Frame, PaneConfig, PaneHandle};
+use tervo_core::{spawn, CoreEvent, Frame, PaneConfig, PaneHandle, SearchOptions};
 
 fn sh(script: &str) -> PaneConfig {
     PaneConfig {
@@ -602,4 +602,166 @@ fn select_line_selects_single_visible_line() {
     let text = handle.copy_selection().expect("选行应有文本");
     let line = text.trim_end();
     assert_eq!(line, "aaa", "只应选中第一行: {text:?}");
+}
+
+#[test]
+fn search_supports_case_and_regex_options() {
+    let handle = spawn(PaneConfig {
+        cols: 60,
+        rows: 8,
+        scrollback: 100,
+        shell: Some("/bin/sh".to_string()),
+        args: vec![
+            "-c".to_string(),
+            "printf 'Alpha alpha\\nabc123\\n'; sleep 3".to_string(),
+        ],
+        ..PaneConfig::default()
+    })
+    .expect("spawn");
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut frame = handle.new_frame();
+    loop {
+        frame = handle.pull(frame);
+        if frame_text(&frame).contains("abc123") {
+            break;
+        }
+        assert!(Instant::now() < deadline, "没有等到输出");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    let case = SearchOptions { match_case: true, regex: false };
+    let nocase = SearchOptions { match_case: false, regex: false };
+    let regex_case = SearchOptions { match_case: true, regex: true };
+
+    // 显式 Match case：大写查询不能命中 "Alpha"/"alpha"。
+    handle.search_clear();
+    assert!(
+        handle.search_with("ALPHA", true, case).expect("valid plain query").is_none(),
+        "Match case 开启时 ALPHA 不应命中 Alpha/alpha"
+    );
+
+    // 关闭 Match case：大小写不敏感。
+    handle.search_clear();
+    assert!(
+        handle.search_with("ALPHA", true, nocase).expect("valid plain query").is_some(),
+        "Match case 关闭时 ALPHA 应命中"
+    );
+
+    // 纯文本模式下 "." 是字面量；regex 模式下才是通配符。
+    handle.search_clear();
+    assert!(
+        handle.search_with("a.c", true, case).expect("valid plain query").is_none(),
+        "纯文本模式不应把 . 当通配符"
+    );
+    handle.search_clear();
+    let hit = handle
+        .search_with("a.c", true, regex_case)
+        .expect("valid regex")
+        .expect("regex 应命中 abc");
+    // 复用已有内容帧：命中在视口内不会触发滚屏，新帧只会拿到增量 damage。
+    frame = handle.pull(frame);
+    assert!(frame.search.is_some(), "命中应有高亮: {hit:?}");
+    assert!(frame_text(&frame).contains("abc123"));
+
+    // 非法 regex 必须返回错误（UI 显示），而不是伪装成 no match。
+    handle.search_clear();
+    let err = handle.search_with("[", true, regex_case).expect_err("非法 regex 应报错");
+    assert!(err.contains("invalid regex"), "{err}");
+    frame = handle.pull(frame);
+    assert!(frame.search.is_none(), "非法 regex 不应保留旧高亮");
+}
+
+#[test]
+fn read_only_blocks_input_and_restores() {
+    let handle = spawn(PaneConfig {
+        cols: 40,
+        rows: 8,
+        scrollback: 100,
+        shell: Some("/bin/sh".to_string()),
+        args: vec!["-c".to_string(), "cat; sleep 2".to_string()],
+        ..PaneConfig::default()
+    })
+    .expect("spawn");
+    // 等 shell 起来并建立 tty 行编辑。
+    std::thread::sleep(Duration::from_millis(150));
+
+    assert!(!handle.read_only());
+    handle.set_read_only(true);
+    assert!(handle.read_only());
+    assert!(!handle.try_input(b"nope\n"), "Read Only 时 try_input 必须拒绝");
+    handle.input(b"blocked\n");
+    std::thread::sleep(Duration::from_millis(150));
+    let frame = handle.pull(handle.new_frame());
+    assert!(!frame_text(&frame).contains("blocked"), "Read Only 不能写 PTY");
+
+    handle.set_read_only(false);
+    assert!(!handle.read_only());
+    handle.input(b"allowed\n");
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut frame = handle.new_frame();
+    loop {
+        frame = handle.pull(frame);
+        if frame_text(&frame).contains("allowed") {
+            break;
+        }
+        assert!(Instant::now() < deadline, "关闭 Read Only 后输入应恢复");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn reset_clears_state_and_contents_include_scrollback() {
+    let handle = spawn(PaneConfig {
+        cols: 40,
+        rows: 8,
+        scrollback: 100,
+        shell: Some("/bin/sh".to_string()),
+        args: vec!["-c".to_string(), "seq 1 40; cat; sleep 2".to_string()],
+        ..PaneConfig::default()
+    })
+    .expect("spawn");
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut frame = handle.new_frame();
+    loop {
+        frame = handle.pull(frame);
+        if frame_text(&frame).contains("40") {
+            break;
+        }
+        assert!(Instant::now() < deadline, "没有等到输出");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    // Save Contents 路径：contents() 要包含回滚历史，而不只是当前视口。
+    let contents = handle.contents().expect("contents 应有回复");
+    assert!(contents.starts_with("1\n"), "contents 应从最旧历史开始: {contents:?}");
+    assert!(contents.contains("40\n"), "contents 应包含末尾输出: {contents:?}");
+
+    // 先留一个搜索高亮，Reset 必须一并清掉。
+    let hit = handle.search("40", true).expect("应能找到 40");
+    assert!(hit.line < 8);
+    handle.reset();
+    let frame = handle.pull(handle.new_frame());
+    assert!(frame_text(&frame).trim().is_empty(), "Reset 后屏幕应为空: {frame:?}");
+    assert!(frame.search.is_none(), "Reset 应清除搜索高亮");
+    assert_eq!(handle.scroll_position().history, 0, "Reset 应清空回滚");
+    assert!(handle.contents().expect("contents 应有回复").is_empty());
+
+    // Reset 后输入仍可正常写入；再验证 Reset and Clear。
+    handle.input(b"after-reset\n");
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut frame = handle.new_frame();
+    loop {
+        frame = handle.pull(frame);
+        if frame_text(&frame).contains("after-reset") {
+            break;
+        }
+        assert!(Instant::now() < deadline, "Reset 后输入应恢复");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    handle.reset_and_clear();
+    let frame = handle.pull(handle.new_frame());
+    assert!(frame_text(&frame).trim().is_empty(), "Reset and Clear 后屏幕应为空");
+    assert_eq!(handle.scroll_position().history, 0);
 }
