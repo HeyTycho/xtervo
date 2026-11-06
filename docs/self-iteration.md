@@ -979,3 +979,10 @@ cargo bench -p tervo-core --bench pty_throughput
   Close Right 同；`.logs/tab-close-left.png` / `tab-close-right.png`。
 - 测试：`cargo test -p tervo-app --bin tervo` → 204 passed。
 
+### 2026-11-06 · 平台抽象与 GPU 路线文档
+
+- 新增 `docs/PLATFORM_GPU.md`：盘点 X11 耦合点（xconn/quake/自定义 resize/SHAPE），
+  定义 `Platform` 与 `FrameRenderer` 两个边界；GPU 分三阶段（持久 framebuffer + UI 合成、
+  GPU 终端光栅、Wayland）；明确软件回退与非目标。
+- 这是后续 Wayland/GPU 并行开发的接口约定，尚未在本轮改渲染实现。
+
