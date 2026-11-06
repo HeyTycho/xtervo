@@ -4476,6 +4476,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     ui.on_menu_dismissed(|| {
         eprintln!("[ui] menu dismissed");
+        // 右键菜单/遮罩会抢走 IME 焦点；关闭后必须还给终端，否则 TUI 无法输入。
+        with_app(|st| st.ui.invoke_focus_terminal());
     });
 
     ui.on_pane_right_clicked(|id, x, y| {
@@ -4490,6 +4492,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             eprintln!("[ui] right-down pane={id} mode={mode}");
             if mode == "menu" {
                 open_pane_menu(st, id, x, y);
+            } else if mode == "off" {
+                // off = 完全不拦截：TUI 需要右键时把 press 转发给 PTY。
+                if let Some(rt) = st.panes.get(&id) {
+                    if rt.handle.wants_mouse() {
+                        let cell = cell_at(rt, x, y);
+                        rt.handle.mouse(MouseEvent {
+                            button: MouseButton::Right,
+                            action: MouseAction::Press,
+                            line: cell.0,
+                            col: cell.1,
+                            modifiers: Modifiers::default(),
+                        });
+                    }
+                }
             }
         });
     });
@@ -4586,6 +4602,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
             _ => {},
         }
+        with_app(|st| st.ui.invoke_focus_terminal());
     });
 
     ui.on_tab_rename(|index| {
