@@ -152,7 +152,6 @@ tervo                 # 直接启动
 | 分屏 | 右键 pane → Split Right / Split Down |
 | 关闭 pane | 右键 → Close Pane；关掉最后一个 pane 退出应用 |
 | 复制 | 鼠标拖选（松手自动复制，同时写系统剪贴板与 X11 PRIMARY）或 `Ctrl+Shift+C`，或右键 → Copy |
-| 复制 | 鼠标拖选（松手自动复制，同时写系统剪贴板与 X11 PRIMARY）或 `Ctrl+Shift+C`，或右键 → Copy |
 | 打开链接 | `Ctrl+左键点击` http/https/file 链接（OSC 8 优先）；右键 → Open Link / Copy Link |
 | 粘贴 | `Ctrl+Shift+V` 或右键 → Paste（多行会按终端 bracketed-paste 规则包起来）；中键优先粘 X11 PRIMARY，为空/不可读时回退普通剪贴板 |
 | 搜索 | `Ctrl+F`，输入即高亮下一个；`Enter` 下一个，`Shift+Enter` 上一个，`Esc` 关闭；搜索条内可切 `Match case` / `Match regex`（或 `Alt+C` / `Alt+R`），非法正则在条内报错 |
@@ -165,13 +164,7 @@ tervo                 # 直接启动
 | 窗口置顶 | 右键标签栏空白处 → Always on Top |
 | 调整分屏 | 拖动 pane 之间的分隔线（左右/上下比例都可调） |
 | 缩放窗口 | 拖动窗口四边/四角（无边框窗口自绘命中区） |
-<<<<<<< HEAD
-| 设置 | 标签栏 ⚙：主题 / 背景 / 光标形状·闪烁·颜色 / 粗体 / 字号 / 回滚行数 |
-||||||| d8ac7f8
-| 设置 | 标签栏 ⚙：主题 / 字号 / 回滚行数 |
-=======
-| 设置 | 标签栏 ⚙：主题 / 字号 / 回滚 / 滚动条 / 响铃 / 滚动策略 / 按键编码 |
->>>>>>> feat/term-behavior
+| 设置 | 标签栏 ⚙：主题 / 背景 / 光标形状·闪烁·颜色 / 粗体 / 字号 / 回滚行数 / 滚动条 / 响铃 / 滚动策略 / 按键编码 |
 | 移动窗口 | 拖标签栏；双击标签栏最大化/还原 |
 
 配置：`~/.config/tervo/config.toml`（`TERVO_CONFIG` 可覆盖）。
