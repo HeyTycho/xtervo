@@ -91,7 +91,7 @@ else
     echo "提示：未找到仓库 .perf/openbox，继续无 WM 运行" >&2
 fi
 
-"$BIN" --cols 80 --rows 20 --title Tervo --shell /bin/sh -- "$OUT/shell.sh" >"$OUT/app.log" 2>&1 &
+"$BIN" --cols 80 --rows 24 --title Tervo --shell /bin/sh -- "$OUT/shell.sh" >"$OUT/app.log" 2>&1 &
 APP_PID=$!
 WIN=""
 for _ in $(seq 1 200); do
@@ -131,13 +131,24 @@ fail() {
 }
 expect_log() { grep -Fq -- "$1" "$OUT/app.log" || fail "日志缺少: $1"; }
 
-# 内容区坐标：窗口左侧 tabbar 高 32px。右键菜单从点击处向上/下翻转，
-# 因此选在内容区顶部附近（menu-height=400 < 内容区 440）避免翻转。
+# 内容区坐标：窗口左侧 tabbar 高 32px。菜单 490px 高，24 行窗口内容区 528px，
+# 在顶部附近右键时 12+490 < 528，不会翻转；改用 24 行是为了整张菜单都点得到。
 PANE_X=$((ABS_X + 300))
 PANE_Y_CONTENT=12
 PANE_Y=$((ABS_Y + 32 + PANE_Y_CONTENT))
-# 无链接时 13 行菜单：padding 4 + 行高 28 + spacing 2，第 i 行中心 = 18 + 30*i。
-menu_row_y() { echo $((PANE_Y + 18 + 30 * $1)); }
+# 无链接时 13 项：padding 6 + 分组标题 22（Clipboard/Pane/View/Session）+ 行高 30。
+# 项 index 0..12：Copy/Paste | SplitR/SplitD/Close/Broadcast | Find/SelectAll/Clear |
+# ReadOnly/Reset/ResetClear/Save；该项之前经过的分组标题数：
+# 0-1→1（Clipboard），2-5→2（+Pane），6-8→3（+View），9-12→4（+Session）。
+menu_row_y() {
+    local i=$1 groups
+    if [ "$i" -le 1 ]; then groups=1
+    elif [ "$i" -le 5 ]; then groups=2
+    elif [ "$i" -le 8 ]; then groups=3
+    else groups=4
+    fi
+    echo $((PANE_Y + 6 + 22 * groups + 30 * i + 15))
+}
 MENU_X=$((PANE_X + 50))
 open_menu() {
     click "$PANE_X" "$PANE_Y" 3
@@ -254,7 +265,8 @@ grep -Fq 'allowed' "$OUT/input.txt" || fail "关闭 Read Only 后键盘输入未
 shot readonly_off_after_input
 
 echo "== 3) Save Contents：菜单入口 / 显式默认路径 / 错误提示 =="
-menu_pick 8
+# Session 组最后一项（index 12）：ReadOnly 9 / Reset 10 / ResetClear 11 / Save 12。
+menu_pick 12
 sleep 0.4
 expect_log '[ui] save-contents open pane=1 path='
 shot save_dialog
