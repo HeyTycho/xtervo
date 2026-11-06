@@ -34,7 +34,7 @@
 |---|---|---|---|---|
 | P1-01 | 完整键盘协议：Kitty query/set/push/pop、alternate/event types、modifyOtherKeys、release/repeat | running | `.worktrees/keyboard-protocol` / `feat/keyboard-protocol` | P0 已稳，恢复；已有未提交 `core/src/keyboard.rs` |
 | P1-02 | 搜索匹配计数 + 鼠标可编辑搜索框 | done | `.worktrees/search-ux` / `feat/search-ux` | commit `2ac8943`；合 master；`.logs/search-ux/` | app 282；search e2e PASS；term_menu PASS |
-| P1-03 | URL hover 手型 + 本地文件路径 Ctrl+click | running | `.worktrees/url-paths` / `feat/url-paths` | P0 已稳，恢复 |
+| P1-03 | URL hover 手型 + 本地文件路径 Ctrl+click | done | `.worktrees/url-paths` / `feat/url-paths` | commit `ad63082`；合 master；app 284/core 94+63；Xvfb :128 PASS；`.logs/url-paths/` | URL/OSC8/路径/hover/失败提示全 PASS |
 | P1-04 | 每 Profile 字体/颜色/命令/登录 shell/默认尺寸/word chars | queued | 待建 | 依赖 P0 设置 UI merged |
 | P1-05 | Codex P1：copy/search/save 500ms UI 阻塞 | queued | 待建 | 与 P0-05 同源，可并入 P0 hardening |
 | P1-06 | Codex P1：渲染 damage 路径失效、每帧全屏重绘 | queued | 待建 | 先做双缓冲脏行复制，再评估持久纹理 |

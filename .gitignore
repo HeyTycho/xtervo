@@ -4,3 +4,6 @@
 # 发布打包产物（scripts/package.sh）
 /dist
 *.stripped
+
+# 多 worktree/agent 并行构建：独立 target 避免共享 target 的二进制互相覆盖
+/.target-*
