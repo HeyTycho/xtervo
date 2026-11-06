@@ -196,6 +196,11 @@ struct AppState {
     hotkey_ids: Vec<&'static str>,
     /// 正在录制的命令 ID；Some 时所有按键只用于录制
     hotkey_recording: Option<&'static str>,
+    /// kitty REPORT_EVENT_TYPES 下已经转发给各 pane 的按键身份。
+    ///
+    /// release 只回放这里登记过的键：快捷键/搜索框/录制中的按键 press 没进 PTY，
+    /// 对应 release 也绝不能进 PTY。普通 shell（未请求协议）永远为空。
+    held_keys: HashMap<PaneId, std::collections::HashSet<keys::KeyId>>,
     plugins: plugin::PluginStore,
     plugin_model: Rc<VecModel<slint::SharedString>>,
     /// Plugins 设置页「最近插件活动」模型（新→旧）。
@@ -1557,6 +1562,7 @@ fn create_pane(
         rows: rows as u16,
         scrollback: st.cfg.effective_scrollback(),
         scroll_on_output: st.cfg.scroll_on_output,
+        keyboard_protocol: st.cfg.keyboard_protocol_enabled(),
         sixel: st.cfg.sixel,
         sixel_scrolling: st.cfg.sixel_scrolling,
         cell_height: st.fonts.cell_h as u16,
@@ -5699,8 +5705,18 @@ fn key_scrolls_to_bottom(scroll_on_keystroke: bool, pos: ScrollPosition) -> bool
 }
 
 /// 统一的输入分发：物理按键与 IME 上屏都走这里。
-/// `ctrl/alt/shift` 对 IME 提交恒为 false，避免把中文误判成快捷键。
-fn handle_input(st: &mut AppState, text: &str, ctrl: bool, alt: bool, shift: bool, keylog: bool) {
+/// `ctrl/alt/shift/meta` 对 IME 提交恒为 false，避免把中文误判成快捷键。
+/// `kind` 区分 press/repeat；release 走 [`handle_key_release`]。
+fn handle_input(
+    st: &mut AppState,
+    text: &str,
+    ctrl: bool,
+    alt: bool,
+    shift: bool,
+    meta: bool,
+    kind: keys::KeyEventKind,
+    keylog: bool,
+) {
     if is_modifier_artifact(text, ctrl, alt, shift) {
         if keylog {
             eprintln!("[key] 忽略修饰键伪事件 {text:?}");
@@ -5943,23 +5959,50 @@ fn handle_input(st: &mut AppState, text: &str, ctrl: bool, alt: bool, shift: boo
     }
     let key_bindings = st.cfg.key_bindings();
     let scroll_on_keystroke = st.cfg.scroll_on_keystroke;
+    let held_keys = &mut st.held_keys;
+    let panes = &mut st.panes;
     for target in targets {
-        match st.panes.get_mut(&target) {
+        match panes.get_mut(&target) {
             Some(rt) => {
                 // UI 层先挡一次，避免编码/入队；core 的 input()/actor 仍有第二道门禁。
                 if rt.handle.read_only() {
                     eprintln!("[readonly] pane={target} 丢弃按键 text={text:?}");
                     continue;
                 }
-                let encoded = keys::encode_mode(
-                    text,
+                let mods = keys::KeyModifiers {
                     ctrl,
                     alt,
                     shift,
-                    rt.handle.wants_kitty_keyboard(),
+                    meta,
+                    ..keys::KeyModifiers::default()
+                };
+                let flags = rt.handle.keyboard_flags();
+                let modify_level =
+                    if flags.is_empty() { rt.handle.modify_other_keys() } else { 0 };
+                let encoded = keys::encode_key_event(
+                    text,
+                    mods,
+                    kind,
+                    flags,
+                    modify_level,
                     key_bindings,
                 );
                 if let Some(bytes) = &encoded {
+                    // 只有应用请求 REPORT_EVENT_TYPES、且这次 press/repeat 真的以
+                    // 转义序列进入 PTY，才登记 release；普通文本键没有 CSI-u press
+                    // 就不配对，避免产生孤立 release。
+                    if flags.contains(tervo_core::KeyboardFlags::REPORT_EVENT_TYPES)
+                        && kind != keys::KeyEventKind::Release
+                        && bytes.first() == Some(&0x1b)
+                    {
+                        if let Some(id) = keys::key_id(text) {
+                            let held = held_keys.entry(target).or_default();
+                            if held.len() >= 64 {
+                                held.clear();
+                            }
+                            held.insert(id);
+                        }
+                    }
                     rt.handle.input(bytes);
                     // GNOME scroll_on_keystroke：按键后回到底部。非阻塞读取原子快照，
                     // 只有确实上滚过才发异步滚动消息，避免每次按键都占 ctrl 队列。
@@ -5967,7 +6010,10 @@ fn handle_input(st: &mut AppState, text: &str, ctrl: bool, alt: bool, shift: boo
                         rt.handle.scroll_to_bottom();
                     }
                     if keylog {
-                        eprintln!("[send] pane={target} bytes={bytes:?}");
+                        eprintln!(
+                            "[send] pane={target} flags={:?} modify={modify_level} bytes={bytes:?}",
+                            flags.bits()
+                        );
                     }
                 } else if keylog {
                     eprintln!("[send] pane={target} 未编码 text={text:?}");
@@ -5977,9 +6023,76 @@ fn handle_input(st: &mut AppState, text: &str, ctrl: bool, alt: bool, shift: boo
                 if keylog {
                     eprintln!(
                         "[send] 找不到 pane {target}（现有 {:?}）",
-                        st.panes.keys().collect::<Vec<_>>()
+                        panes.keys().collect::<Vec<_>>()
                     );
                 }
+            }
+        }
+    }
+}
+
+/// 回放 kitty release：只发给「press 真的进过 PTY」的 pane。
+///
+/// 普通 shell / 未请求 REPORT_EVENT_TYPES / 搜索框独占键盘 / 录制快捷键时
+/// 全部静默丢弃，保证日常输入零行为变化。
+fn handle_key_release(
+    st: &mut AppState,
+    text: &str,
+    ctrl: bool,
+    alt: bool,
+    shift: bool,
+    meta: bool,
+    keylog: bool,
+) {
+    if is_modifier_artifact(text, ctrl, alt, shift) {
+        return;
+    }
+    if st.hotkey_recording.is_some() || st.search_open {
+        return;
+    }
+    let Some(tab) = st.ws.active_tab() else {
+        return;
+    };
+    let focused = tab.focused;
+    let targets: Vec<PaneId> = if st.broadcast && tab.panes().len() > 1 {
+        tab.panes()
+    } else {
+        vec![focused]
+    };
+    let mods =
+        keys::KeyModifiers { ctrl, alt, shift, meta, ..keys::KeyModifiers::default() };
+    let key_bindings = st.cfg.key_bindings();
+    let held_keys = &mut st.held_keys;
+    let panes = &mut st.panes;
+    for target in targets {
+        let Some(rt) = panes.get_mut(&target) else { continue };
+        if rt.handle.read_only() {
+            continue;
+        }
+        let Some(id) = keys::key_id(text) else { continue };
+        // 先消费登记：即使应用刚关掉协议，也不会留下永远等不到的 release。
+        let released = held_keys
+            .get_mut(&target)
+            .map(|held| held.remove(&id))
+            .unwrap_or(false);
+        if !released {
+            continue;
+        }
+        let flags = rt.handle.keyboard_flags();
+        if !flags.contains(tervo_core::KeyboardFlags::REPORT_EVENT_TYPES) {
+            continue;
+        }
+        if let Some(bytes) = keys::encode_key_event(
+            text,
+            mods,
+            keys::KeyEventKind::Release,
+            flags,
+            0,
+            key_bindings,
+        ) {
+            rt.handle.input(&bytes);
+            if keylog {
+                eprintln!("[send] pane={target} release bytes={bytes:?}");
             }
         }
     }
@@ -6889,6 +7002,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         hotkey_model,
         hotkey_ids: Vec::new(),
         hotkey_recording: None,
+        held_keys: HashMap::new(),
         plugins,
         plugin_model,
         plugin_activity_model,
@@ -6960,12 +7074,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let keylog = std::env::var("TERVO_KEYLOG").is_ok();
     // 鼠标链路排查：TERVO_MOUSELOG=1 打印「命中哪格 / 是否上报」。
     let mouselog = std::env::var("TERVO_MOUSELOG").is_ok();
-    ui.on_key_input(move |text, ctrl, alt, shift| {
+    ui.on_key_input(move |text, ctrl, alt, shift, meta, repeat| {
         let text = text.to_string();
         if keylog {
-            eprintln!("[key] {:?} ctrl={ctrl} alt={alt} shift={shift}", text);
+            eprintln!(
+                "[key] {:?} ctrl={ctrl} alt={alt} shift={shift} meta={meta} repeat={repeat}",
+                text
+            );
         }
-        with_app(|st| handle_input(st, &text, ctrl, alt, shift, keylog));
+        let kind = if repeat {
+            keys::KeyEventKind::Repeat
+        } else {
+            keys::KeyEventKind::Press
+        };
+        with_app(|st| handle_input(st, &text, ctrl, alt, shift, meta, kind, keylog));
+    });
+
+    // kitty release：只有应用请求 REPORT_EVENT_TYPES 且 press 进过 PTY 才回放。
+    ui.on_key_release(move |text, ctrl, alt, shift, meta| {
+        let text = text.to_string();
+        if keylog {
+            eprintln!(
+                "[key] release {:?} ctrl={ctrl} alt={alt} shift={shift} meta={meta}",
+                text
+            );
+        }
+        with_app(|st| handle_key_release(st, &text, ctrl, alt, shift, meta, keylog));
     });
 
     // IME 上屏（中文/emoji）单独走一条路：没有修饰键语义，也不能触发 Ctrl 快捷键。
@@ -6974,7 +7108,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if keylog {
             eprintln!("[ime] {:?}", text);
         }
-        with_app(|st| handle_input(st, &text, false, false, false, keylog));
+        with_app(|st| {
+            handle_input(
+                st,
+                &text,
+                false,
+                false,
+                false,
+                false,
+                keys::KeyEventKind::Press,
+                keylog,
+            )
+        });
     });
 
     ui.on_pane_mouse_down(move |id, x, y, button, mods| {
