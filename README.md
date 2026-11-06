@@ -244,7 +244,8 @@ update-desktop-database ~/.local/share/applications 2>/dev/null || true
   外部拖放；Wayland 下暂不保证。视觉铃尚未跟随系统 reduced motion。
 - 分屏比例、窗口位置/大小都在应用层维护，Wayland 下窗口 `set_position` 可能被合成器忽略。
 - 字体固定 JetBrains Mono（回退 DejaVu）；中文自动回退 WenQuanYi Micro Hei / Droid / Noto CJK，
-  暂不支持自选字体、连字，emoji 仍留空。
+  彩色 emoji 默认开启（Noto Color Emoji CBDT/CBLC/sbix，`TERVO_COLOR_EMOJI=0` 可关），
+  暂不支持自选字体、连字，COLR/SVG 彩色 emoji 仍会回落单色/占位。
 - IME 走 winit 的 XIM（fcitx5 / ibus）；Wayland、GTK/Qt 的 IM module、macOS 输入法尚未验证。
 - 主题跟随系统依赖 GNOME `gsettings`；非 GNOME 环境会回退 `gtk-theme` / `COLORFGBG` 做一次性检测。
 - 自定义主题仍在启动时扫描，改主题文件后需要重启（热重载尚未实现）。
