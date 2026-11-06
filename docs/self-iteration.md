@@ -986,3 +986,19 @@ cargo bench -p tervo-core --bench pty_throughput
   GPU 终端光栅、Wayland）；明确软件回退与非目标。
 - 这是后续 Wayland/GPU 并行开发的接口约定，尚未在本轮改渲染实现。
 
+### 2026-11-06 · resize 卡顿：交给 WM/compositor live resize
+
+- **根因**：Tervo 无边框窗口用自绘 ResizeHandle，每个 pointer move 同步
+  `query_pointer` + `Slint set_size/set_position`，触发整窗重排、pane grid resize、
+  renderer 缓冲重建/整帧重绘，软件后端下逐事件都做一次昂贵提交。
+  GNOME Terminal 走 GTK CSD + Mutter compositor live resize，应用只收 configure
+  事件，尺寸推进由 compositor 帧驱动，且 VTE 渲染走 GPU，所以顺滑。
+- **修复**：X11 边/角拖动优先发 EWMH `_NET_WM_MOVERESIZE`（direction 0..7 与
+  Slint ResizeHandle 一致，button=1/source=1），让 Mutter/KWin 接管指针 grab 和
+  live resize；应用侧 `wm_resize=true` 后不再每帧 set_size，只收 Slint resize。
+  先检查 `_NET_SUPPORTED` 是否包含该 atom；不支持时保留原自绘 fallback（Xephyr 无 WM）。
+  Wayland 后续对应 `xdg_toplevel.resize`，放入 `Platform` 抽象。
+- **验证**：`xprop -root _NET_SUPPORTED` 有 `_NET_WM_MOVERESIZE`；204 tests 通过；
+  Xephyr 无 WM 的 fallback 可启动。GNOME 实际拖拽待用户用 release 复测。
+- **限制**：WM 路径依赖 EWMH；无 WM/远程 X 仍走自绘；圆角 SHAPE 仍非原生。
+

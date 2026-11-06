@@ -9,7 +9,7 @@
 |---|---|---|
 | `xconn.rs` | screen/pointer、`_NET_ACTIVE_WINDOW`、`_NET_WM_PID`、`_NET_WM_STATE`、图标、XShape 圆角 | Wayland 无这些全局窗口属性 |
 | `quake.rs` | X11 passive grab（F12）、窗口查找 | Wayland 不允许全局 grab；需 compositor portal/快捷键协议 |
-| `main.rs` resize | `query_pointer` + `configure_window` 自定义边缘拖拽 | Wayland 由 compositor 驱动 resize，不能直接改坐标 |
+| `main.rs` resize | X11 优先 `_NET_WM_MOVERESIZE` 交 WM live resize；无 EWMH 时回退自绘 | Wayland 用 `xdg_toplevel.resize`，不能直接改坐标 |
 | `render.rs` | fontdue 软件光栅 + `SharedPixelBuffer` 上传 | 与平台无关，但每帧全量拷贝，GPU 收益被吃掉 |
 | `latency.rs` | XTest/XDamage 探针 | 仅测试工具，Wayland 需改用 compositor 帧回调 |
 
