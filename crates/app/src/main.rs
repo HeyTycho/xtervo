@@ -200,7 +200,11 @@ struct AppState {
     resizing: bool,
     resize_gen: u64,
     resize_events: u32,
-    resize_settle: slint::Timer,
+    resize_applied: u32,
+    resize_max_layout_us: u128,
+    resize_pending: Option<(f32, f32)>,
+    resize_apply_scheduled: bool,
+    resize_apply: slint::Timer,
     /// X11 SHAPE 自适应圆角 worker；None = 未启动（X11 连接/线程失败，窗口保持直角）。
     corners: Option<xconn::CornerShaper>,
     clipboard: Option<arboard::Clipboard>,
@@ -2914,9 +2918,6 @@ fn rebuild_tabs(st: &mut AppState) {
 
 /// 重绘当前可见的 pane（切换 tab / 布局变化后）。
 fn redraw_visible(st: &mut AppState) {
-    if st.resizing {
-        return;
-    }
     let ids: Vec<PaneId> = {
         let Some(tab) = st.ws.active_tab() else { return };
         tab.panes()
@@ -3021,9 +3022,6 @@ fn apply_font_size(st: &mut AppState) {
 }
 
 fn redraw_all() {
-    if with_app(|st| st.resizing).unwrap_or(false) {
-        return;
-    }
     let ids: Vec<PaneId> = with_app(|st| st.panes.keys().copied().collect()).unwrap_or_default();
     for id in ids {
         redraw_pane(id);
@@ -4369,7 +4367,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         resizing: false,
         resize_gen: 0,
         resize_events: 0,
-        resize_settle: slint::Timer::default(),
+        resize_applied: 0,
+        resize_max_layout_us: 0,
+        resize_pending: None,
+        resize_apply_scheduled: false,
+        resize_apply: slint::Timer::default(),
         corners,
         clipboard: arboard::Clipboard::new().ok(),
         cfg: {
@@ -5684,37 +5686,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if (st.content.w - w).abs() < 0.5 && (st.content.h - h).abs() < 0.5 {
                 return;
             }
-            st.content = Rect::new(0.0, 0.0, w, h);
-            if !st.resizing {
-                st.resizing = true;
-                st.ui.set_resize_stretch(true);
-            }
-            st.resize_gen = st.resize_gen.wrapping_add(1);
             st.resize_events = st.resize_events.saturating_add(1);
-            let gen = st.resize_gen;
-            // 拖动期间只布局，旧帧由 Slint 拉伸到新 pane 尺寸；140ms 没新 resize
-            // 才真正 resize_grid/PTY 并重绘，避免每个 configure 都做软件重排。
-            refresh_views_layout(st);
-            st.resize_settle.start(
-                slint::TimerMode::SingleShot,
-                Duration::from_millis(140),
-                move || {
-                    with_app(|st| {
-                        if st.resize_gen != gen {
-                            return;
-                        }
-                        st.resizing = false;
-                        st.ui.set_resize_stretch(false);
-                        eprintln!(
-                            "[ui] resize settle events={} content={:.0}x{:.0}",
-                            st.resize_events, st.content.w, st.content.h
-                        );
-                        st.resize_events = 0;
-                        refresh_views(st);
-                        redraw_visible(st);
-                    });
-                },
-            );
+            st.resize_pending = Some((w, h));
+            // 高速拖动时 configure 可能比帧率还密；16ms 只处理最新尺寸，但每帧都
+            // 真实 resize terminal grid + PTY + 重绘，字符保持 1:1，不再拉伸。
+            if !st.resize_apply_scheduled {
+                st.resize_apply_scheduled = true;
+                st.resize_apply.start(
+                    slint::TimerMode::SingleShot,
+                    Duration::from_millis(16),
+                    move || {
+                        with_app(|st| {
+                            st.resize_apply_scheduled = false;
+                            let Some((w, h)) = st.resize_pending.take() else { return };
+                            st.content = Rect::new(0.0, 0.0, w, h);
+                            let t0 = Instant::now();
+                            refresh_views(st);
+                            redraw_visible(st);
+                            if std::env::var_os("TERVO_RESIZE_PROFILE").is_some() {
+                                eprintln!(
+                                    "[ui] resize apply events={} cost={:.1}ms content={:.0}x{:.0}",
+                                    st.resize_events,
+                                    t0.elapsed().as_secs_f64() * 1000.0,
+                                    st.content.w,
+                                    st.content.h
+                                );
+                            }
+                            st.resize_events = 0;
+                        });
+                    },
+                );
+            }
         });
     });
 

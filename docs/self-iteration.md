@@ -1175,14 +1175,14 @@ cargo bench -p tervo-core --bench pty_throughput
   未做 CPU/帧率 profiler 采样；所有过渡都是一次性属性动画，没有常驻 Timer 或
   循环动画。本轮未改窗口 resize/max/min/背景图代码。
 
-### 2026-11-06 · resize 快路径：拖动只拉伸旧帧，停下再重排终端
+### 2026-11-06 · resize：16ms 合并 + 实时重排（不再拉伸字符）
 
-- 现象：winit 已接管 WM live resize，但每个 configure 仍执行 `renderer.resize_grid`
-  + `PaneHandle::resize`（PTY TIOCSWINSZ）+ 全 pane 软件重绘，仍卡顿。
-- 快路径：拖动期间只 `refresh_views_layout` 更新 pane 矩形，Slint 把旧帧拉伸到新
-  尺寸；140ms 无新 resize 才真正 resize grid/PTY 并 `redraw_visible`。`redraw_visible`
-  在 resizing 期间跳过，避免 PTY/poll 输出重复整帧重绘。
-- 验证：Openbox 右边缘/右下角 8 个 configure 事件 → 仅 1 次 settle；
-  同步验证无 WM 自绘回退 540→701；209 tests。
-- 限制：拖动期间终端文字是拉伸旧帧，停下才 reflow；这是有意的延迟，不是实时重排。
+- 现象：winit 已接管 WM live resize，但每个 configure 都 `resize_grid + PTY + 重绘`
+  会卡；先试过“拖动时拉伸旧帧、停下再重排”，但字符会变形再回弹，用户明确拒绝。
+- 最终：configure 先合并到 16ms，只保留最新尺寸；每次 apply 执行完整的
+  `refresh_views`（grid/PTY）与 `redraw_visible`，字符始终 1:1；不再有
+  `resize-stretch`。`TERVO_RESIZE_PROFILE=1` 可打印 apply 次数/耗时。
+- 验证：80 步/4ms 快速拖拽 → 约 30 次 apply，app 侧 reflow 0.5ms/次；
+  Openbox 540→840；无 WM 回退 540→701；输入/截图确认字符清晰；209 tests。
+- 限制：真实帧率仍取决于 Slint 合成/软件终端帧；这只是去掉重排洪泛，不等于 GPU。
 

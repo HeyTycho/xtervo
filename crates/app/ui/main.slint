@@ -607,8 +607,6 @@ export component MainWindow inherits Window {
     callback tab-menu-action(int, int);
     /// 绑定到 Window 内置的 always-on-top
     property <bool> pinned: false;
-    // 窗口拖动 resize 期间只拉伸旧帧，避免每帧 resize_grid/PTY/软件重绘造成卡顿。
-    in-out property <bool> resize-stretch: false;
     callback bump-font-size(int);
     callback bump-scrollback(int);
     in-out property <bool> settings-open: false;
@@ -1397,10 +1395,9 @@ export component MainWindow inherits Window {
                         // 窗口尺寸除不尽 cell 时会露出左侧/顶部一条未混合的原图。
                         x: 0px;
                         y: 0px;
-                        // 平时 1:1 像素显示；拖动 resize 时先拉伸旧帧，停下后再重排终端。
-                        width: root.resize-stretch ? p.w : p.iw;
-                        height: root.resize-stretch ? p.h : p.ih;
-                        image-fit: fill;
+                        // 始终 1:1；拖动时由 16ms 节流的实时重排保证字符清晰，不拉伸。
+                        width: p.iw;
+                        height: p.ih;
                     }
 
                     pane-hit := TouchArea {
