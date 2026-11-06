@@ -98,6 +98,99 @@ pub fn find_window(conn: &RustConnection, win: u32, title: &str, depth: usize) -
     None
 }
 
+/// 通过 EWMH `_NET_WM_STATE` 请求最大化/还原（不依赖 winit 的 set_maximized）。
+pub fn wm_set_maximized(title: &str, maximized: bool) -> Result<(), String> {
+    use x11rb::connection::Connection as _;
+    use x11rb::protocol::xproto::{ClientMessageEvent, ConnectionExt as _, EventMask};
+    let (conn, screen_num) = connect().map_err(|e| e.to_string())?;
+    let root = conn.setup().roots[screen_num].root;
+    let win = find_own_window(&conn, root, title).ok_or("找不到本进程窗口")?;
+    let atom = |name: &[u8]| -> Result<u32, String> {
+        conn.intern_atom(false, name)
+            .map_err(|e| e.to_string())?
+            .reply()
+            .map_err(|e| e.to_string())
+            .map(|r| r.atom)
+    };
+    let net_state = atom(b"_NET_WM_STATE")?;
+    let horz = atom(b"_NET_WM_STATE_MAXIMIZED_HORZ")?;
+    let vert = atom(b"_NET_WM_STATE_MAXIMIZED_VERT")?;
+    let action = if maximized { 1u32 } else { 0u32 }; // 1=add, 0=remove
+    let event = ClientMessageEvent::new(32, win, net_state, [action, horz, vert, 1, 0]);
+    conn.send_event(
+        false,
+        root,
+        EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY,
+        event,
+    )
+    .map_err(|e| e.to_string())?;
+    conn.flush().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// 查询窗口当前的 EWMH 最大化状态；拿不到返回 None。
+pub fn window_is_maximized(title: &str) -> Option<bool> {
+    use x11rb::connection::Connection as _;
+    use x11rb::protocol::xproto::{AtomEnum, ConnectionExt as _};
+    let (conn, screen_num) = connect().ok()?;
+    let root = conn.setup().roots[screen_num].root;
+    let win = find_own_window(&conn, root, title)?;
+    let net_state = conn
+        .intern_atom(false, b"_NET_WM_STATE")
+        .ok()?
+        .reply()
+        .ok()?
+        .atom;
+    let prop = conn
+        .get_property(false, win, net_state, AtomEnum::ATOM, 0, 64)
+        .ok()?
+        .reply()
+        .ok()?;
+    let horz = conn
+        .intern_atom(false, b"_NET_WM_STATE_MAXIMIZED_HORZ")
+        .ok()?
+        .reply()
+        .ok()?
+        .atom;
+    let vert = conn
+        .intern_atom(false, b"_NET_WM_STATE_MAXIMIZED_VERT")
+        .ok()?
+        .reply()
+        .ok()?
+        .atom;
+    let (mut h, mut v) = (false, false);
+    for atom in prop.value32()? {
+        if atom == horz { h = true; }
+        if atom == vert { v = true; }
+    }
+    Some(h && v)
+}
+
+/// 通过 ICCCM `WM_CHANGE_STATE` 请求最小化（IconicState=3）。
+pub fn wm_minimize(title: &str) -> Result<(), String> {
+    use x11rb::connection::Connection as _;
+    use x11rb::protocol::xproto::{ClientMessageEvent, ConnectionExt as _, EventMask};
+    let (conn, screen_num) = connect().map_err(|e| e.to_string())?;
+    let root = conn.setup().roots[screen_num].root;
+    let win = find_own_window(&conn, root, title).ok_or("找不到本进程窗口")?;
+    let wm_change = conn
+        .intern_atom(false, b"WM_CHANGE_STATE")
+        .map_err(|e| e.to_string())?
+        .reply()
+        .map_err(|e| e.to_string())?
+        .atom;
+    let event = ClientMessageEvent::new(32, win, wm_change, [3, 0, 0, 0, 0]);
+    conn.send_event(
+        false,
+        root,
+        EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY,
+        event,
+    )
+    .map_err(|e| e.to_string())?;
+    conn.flush().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// 立即清掉本进程窗口的 SHAPE（最大化/还原前调用，避免旧 mask 短暂裁掉新窗口）。
 pub fn clear_window_shape(title: &str) {
     use x11rb::connection::Connection as _;
