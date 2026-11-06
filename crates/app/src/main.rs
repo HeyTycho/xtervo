@@ -122,6 +122,10 @@ struct AppState {
     /// Palette 当前展示项对应的命令 ID（与 palette_model 同序）
     palette_ids: Vec<&'static str>,
     palette_model: Rc<VecModel<slint::SharedString>>,
+    /// Tab 搜索当前展示项对应的 ws.tabs 下标
+    tab_search_indices: Vec<usize>,
+    tab_search_model: Rc<VecModel<slint::SharedString>>,
+    tab_search_query: String,
     palette_sel: usize,
     drag: Option<Drag>,
     /// 等待用户确认的多行粘贴内容
@@ -2982,6 +2986,76 @@ fn update_search_bar(st: &mut AppState) {
 // ------------------------------------------------------------ Command Palette
 
 /// 按当前输入刷新结果列表（最多 10 条）。
+/// 过滤当前窗口的 Tab（标题 + 各 pane 标题），更新最左侧 Tab 搜索列表。
+fn refresh_tab_search(st: &mut AppState) {
+    let q = st.tab_search_query.trim().to_lowercase();
+    let mut items: Vec<slint::SharedString> = Vec::new();
+    let mut indices: Vec<usize> = Vec::new();
+    for (i, tab) in st.ws.tabs.iter().enumerate() {
+        let mut hay = tab.title.to_lowercase();
+        for pane in tab.panes() {
+            if let Some(rt) = st.panes.get(&pane) {
+                hay.push(' ');
+                hay.push_str(&rt.title.to_lowercase());
+            }
+        }
+        if q.is_empty() || hay.contains(&q) {
+            let label = if tab.panes().len() > 1 {
+                format!("{}  ·  {} panes", tab.title, tab.panes().len())
+            } else {
+                tab.title.clone()
+            };
+            items.push(label.into());
+            indices.push(i);
+        }
+    }
+    st.tab_search_indices = indices;
+    st.tab_search_model.set_vec(items);
+    st.ui.set_tabsearch_selected(0);
+}
+
+fn open_tab_search(st: &mut AppState) {
+    st.tab_search_query.clear();
+    st.ui.set_tabsearch_query("".into());
+    st.ui.set_tabsearch_open(true);
+    refresh_tab_search(st);
+    eprintln!("[ui] tab search open items={}", st.tab_search_indices.len());
+}
+
+fn close_tab_search(st: &mut AppState) {
+    st.ui.set_tabsearch_open(false);
+    st.ui.set_tabsearch_query("".into());
+    st.tab_search_query.clear();
+    st.ui.invoke_focus_terminal();
+}
+
+fn tab_search_move(st: &mut AppState, delta: i32) {
+    let n = st.tab_search_indices.len();
+    if n == 0 {
+        return;
+    }
+    let cur = st.ui.get_tabsearch_selected().max(0) as isize;
+    let next = (((cur + delta as isize) % n as isize) + n as isize) % n as isize;
+    st.ui.set_tabsearch_selected(next as i32);
+}
+
+fn tab_search_accept(st: &mut AppState) {
+    let idx = st.ui.get_tabsearch_selected().max(0) as usize;
+    tab_search_pick(st, idx);
+}
+
+fn tab_search_pick(st: &mut AppState, row: usize) {
+    let target = st.tab_search_indices.get(row).copied();
+    st.ui.set_tabsearch_open(false);
+    st.ui.set_tabsearch_query("".into());
+    st.tab_search_query.clear();
+    if let Some(index) = target {
+        eprintln!("[ui] tab search pick={index}");
+        set_active_tab_inner(st, index);
+        st.ui.invoke_focus_terminal();
+    }
+}
+
 fn refresh_palette(st: &mut AppState) {
     let query = st.ui.get_palette_query().to_string();
     let hits: Vec<&commands::Command> = st.commands.search(&query).into_iter().take(10).collect();
@@ -3258,6 +3332,10 @@ fn handle_input(
             },
             "p" => {
                 open_palette(st);
+                return;
+            },
+            "a" => {
+                open_tab_search(st);
                 return;
             },
             "n" => {
@@ -3906,6 +3984,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let echo = Arc::new(AtomicUsize::new(0));
     let palette_model = Rc::new(VecModel::<slint::SharedString>::default());
     ui.set_palette_items(ModelRc::from(palette_model.clone()));
+    let tab_search_model = Rc::new(VecModel::<slint::SharedString>::default());
+    ui.set_tabsearch_items(ModelRc::from(tab_search_model.clone()));
     let bg_model = Rc::new(VecModel::<slint::SharedString>::default());
     ui.set_background_items(ModelRc::from(bg_model.clone()));
     let profile_model = Rc::new(VecModel::<ProfileRow>::default());
@@ -3977,6 +4057,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         commands: command_registry,
         palette_ids: Vec::new(),
         palette_model,
+        tab_search_indices: Vec::new(),
+        tab_search_model,
+        tab_search_query: String::new(),
         palette_sel: 0,
         drag: None,
         pending_paste: None,
@@ -4932,6 +5015,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     });
 
+    ui.on_tabsearch_open_requested(|| {
+        let _ = with_app(open_tab_search);
+    });
+    ui.on_tabsearch_query_changed(|_q| {
+        with_app(|st| {
+            st.tab_search_query = st.ui.get_tabsearch_query().to_string();
+            refresh_tab_search(st);
+        });
+    });
+    ui.on_tabsearch_move(|delta| {
+        let _ = with_app(|st| tab_search_move(st, delta));
+    });
+    ui.on_tabsearch_accept(|| {
+        let _ = with_app(tab_search_accept);
+    });
+    ui.on_tabsearch_cancel(|| {
+        let _ = with_app(close_tab_search);
+    });
+    ui.on_tabsearch_pick(|row| {
+        let _ = with_app(|st| tab_search_pick(st, row.max(0) as usize));
+    });
+
     ui.on_palette_query_changed(|_q| {
         with_app(|st| refresh_palette(st));
     });
@@ -5653,7 +5758,7 @@ mod tests {
     fn hotkey_page_lists_bindings_and_conflicts() {
         let reg = commands::builtin();
         let (summary, rows, ids) = hotkey_rows(&reg, &[]);
-        assert!(summary.contains("25 commands"), "{summary}");
+        assert!(summary.contains("26 commands"), "{summary}");
         assert_eq!(rows.len(), reg.all().len());
         assert_eq!(ids.len(), rows.len());
         assert!(rows.iter().any(|r| r.title == "New Tab" && r.chord == "Ctrl+T" && !r.custom));

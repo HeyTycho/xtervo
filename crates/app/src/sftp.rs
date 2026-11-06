@@ -285,7 +285,21 @@ impl TransferJob {
     /// 启动任意子进程并喂一段脚本；抽出来便于用临时 shell 脚本测取消/状态机。
     pub fn spawn_with_script(mut command: Command, script: String) -> Result<Self, String> {
         command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
-        let mut child = command.spawn().map_err(|e| format!("启动子进程失败: {e}"))?;
+        // 临时脚本刚写完时可能 ETXTBSY（测试/某些文件系统）；重试几次。
+        let mut child = None;
+        for attempt in 0..5 {
+            match command.spawn() {
+                Ok(spawned) => {
+                    child = Some(spawned);
+                    break;
+                },
+                Err(e) if e.raw_os_error() == Some(26) && attempt < 4 => {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                },
+                Err(e) => return Err(format!("启动子进程失败: {e}")),
+            }
+        }
+        let mut child = child.ok_or_else(|| "启动子进程失败: 重试后仍失败".to_string())?;
         let stdin = child.stdin.take().ok_or_else(|| "无法接管子进程 stdin".to_string())?;
         let stdout = child.stdout.take().ok_or_else(|| "无法读取子进程 stdout".to_string())?;
         let stderr = child.stderr.take().ok_or_else(|| "无法读取子进程 stderr".to_string())?;

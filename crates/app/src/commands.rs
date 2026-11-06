@@ -555,6 +555,7 @@ pub fn builtin() -> Registry {
     let cmds = [
         ("window.new", "New Window", Category::Window, Some("ctrl+shift+n")),
         ("tab.new", "New Tab", Category::Workspace, Some("ctrl+t")),
+        ("tab.search", "Search Tabs", Category::Workspace, Some("ctrl+shift+a")),
         ("tab.close", "Close Tab", Category::Workspace, Some("ctrl+w")),
         ("tab.next", "Next Tab", Category::Workspace, Some("ctrl+tab")),
         ("tab.prev", "Previous Tab", Category::Workspace, Some("ctrl+shift+tab")),
