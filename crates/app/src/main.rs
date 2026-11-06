@@ -5688,8 +5688,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             st.resize_events = st.resize_events.saturating_add(1);
             st.resize_pending = Some((w, h));
-            // 高速拖动时 configure 可能比帧率还密；16ms 只处理最新尺寸，但每帧都
-            // 真实 resize terminal grid + PTY + 重绘，字符保持 1:1，不再拉伸。
+            // UI 布局必须每个 configure 立即更新：缩小时如果晚一帧，右上角按钮
+            // 还在旧宽度的右边界外，会被新窗口裁掉，下一帧才“吐出来”。
+            st.content = Rect::new(0.0, 0.0, w, h);
+            refresh_views_layout(st);
+            st.ui.window().request_redraw();
+            // terminal grid/PTY/字符重绘仍 16ms 合并，避免高速拖动把 UI 线程灌满。
             if !st.resize_apply_scheduled {
                 st.resize_apply_scheduled = true;
                 st.resize_apply.start(
