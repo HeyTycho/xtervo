@@ -1016,3 +1016,16 @@ cargo bench -p tervo-core --bench pty_throughput
   WM 行为验证。
 - 测试：`cargo test -p tervo-app --bin tervo` → 204 passed。
 
+### 2026-11-06 · 最大化/最小化修复：EWMH 请求 + 默认方角
+
+- 现象：最大化/最小化无效、右侧露桌面/涂抹背景。点击回调已触发；排除按钮命中后，
+  确认 SHAPE 的旧 BOUNDING mask 会裁掉 WM 放大后的区域，且 Slint/winit 的
+  `set_maximized/set_minimized` 在部分 X11 WM 下未落地。
+- 修复：`xconn::wm_set_maximized`（`_NET_WM_STATE` add/remove HORZ+VERT）、
+  `wm_minimize`（`WM_CHANGE_STATE` IconicState），仍保留 winit 作为回退；
+  `window_is_maximized` 读 EWMH 真实状态，避免 `is_maximized` 不同步导致只能放大不能还原；
+  SHAPE 圆角默认关闭（`TERVO_CORNERS=1` 才开），先保证 WM 行为正确；
+  show 后再同步一次 client 尺寸。
+- 测试：204 passed；headless Xvfb（不再 Xephyr）验证启动/点击；Openbox 测试中
+  回调可触发但 Openbox 不接受 EWMH maximize（测试 WM 限制），GNOME 待用户实测。
+

@@ -5332,7 +5332,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         let weak = ui.as_weak();
         ui.on_minimize_window(move || {
+            eprintln!("[ui] minimize window");
             if let Some(ui) = weak.upgrade() {
+                let title = with_app(|st| st.opts.title.clone()).unwrap_or_else(|| TITLE.into());
+                if let Err(e) = xconn::wm_minimize(&title) {
+                    eprintln!("[ui] WM minimize 失败，退回 winit: {e}");
+                }
                 ui.window().set_minimized(true);
             }
         });
@@ -5343,12 +5348,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ui.on_toggle_maximize(move || {
             if let Some(ui) = weak.upgrade() {
                 // 内置 `maximized` 属性与窗口状态双向同步，直接翻转即可
-                let target = !ui.window().is_maximized();
-                // 先同步清 SHAPE：否则旧 BOUNDING mask 在 WM 放大后会短暂/持续裁掉
-                // 新窗口区域（露桌面、右上角按钮点不到）。
                 let title = with_app(|st| st.opts.title.clone()).unwrap_or_else(|| TITLE.into());
+                // 以 EWMH 真实状态为准；winit 的 is_maximized 在部分 WM 下不更新。
+                let current = xconn::window_is_maximized(&title).unwrap_or_else(|| ui.window().is_maximized());
+                let target = !current;
+                eprintln!("[ui] toggle maximize target={target} current={current}");
                 xconn::clear_window_shape(&title);
-                ui.window().set_maximized(target);
+                // Slint/winit 在部分 X11 WM 下 set_maximized 不会落地；直接发 EWMH。
+                if let Err(e) = xconn::wm_set_maximized(&title, target) {
+                    eprintln!("[ui] WM maximize 失败，退回 winit: {e}");
+                    ui.window().set_maximized(target);
+                }
                 // 先按目标状态更新圆角，避免 WM 尚未写回 _NET_WM_STATE 时四角留缝。
                 with_app(|st| {
                     request_window_corners(
