@@ -114,6 +114,19 @@ pub fn normalize_cursor_blink(input: &str) -> String {
     }
 }
 
+/// 键盘协议的规范值：auto（默认）| off。未知/空回退 auto。
+pub fn normalize_keyboard_protocol(input: &str) -> String {
+    match input.trim().to_ascii_lowercase().as_str() {
+        "off" | "false" | "disabled" | "no" | "0" => "off".to_string(),
+        _ => "auto".to_string(),
+    }
+}
+
+/// `keyboard_protocol` 是否允许响应/编码增强。
+pub fn keyboard_protocol_enabled(value: &str) -> bool {
+    normalize_keyboard_protocol(value) != "off"
+}
+
 /// 夹取到 0.0–1.0 并四舍五入到两位小数；NaN/∞ 回退到 1.0。
 pub fn clamp_opacity(v: f32) -> f32 {
     if !v.is_finite() {
@@ -285,6 +298,9 @@ pub struct Config {
     /// Delete 编码："delete-sequence"（ESC [3~，默认）| "ascii-del"（0x7f）|
     /// "control-h"（0x08）。
     pub delete_binding: String,
+    /// 键盘协议："auto"（默认，响应 kitty/modifyOtherKeys query 并增强编码）|
+    /// "off"（不响应、不增强，字节与旧版完全一致）。只对新 pane 生效。
+    pub keyboard_protocol: String,
     /// 窗口/终端背景图路径。空 = 关闭；`~` 在应用时展开。
     /// 只有“存在的普通文件”才会生效（校验见 [`resolve_background_image`]）。
     pub background_image: String,
@@ -363,6 +379,7 @@ impl Default for Config {
             scrollbar_policy: "auto".to_string(),
             backspace_binding: "ascii-delete".to_string(),
             delete_binding: "delete-sequence".to_string(),
+            keyboard_protocol: "auto".to_string(),
             background_image: String::new(),
             background_opacity: 1.0,
             background_dim: DEFAULT_BACKGROUND_DIM,
@@ -442,6 +459,7 @@ impl Config {
     fn normalize_appearance(&mut self) {
         self.cursor_shape = normalize_cursor_shape(&self.cursor_shape);
         self.cursor_blink = normalize_cursor_blink(&self.cursor_blink);
+        self.keyboard_protocol = normalize_keyboard_protocol(&self.keyboard_protocol);
         normalize_color_field(&mut self.cursor_color, "cursor_color");
         normalize_color_field(&mut self.cursor_text_color, "cursor_text_color");
         normalize_color_field(&mut self.bold_color, "bold_color");
@@ -467,6 +485,11 @@ impl Config {
             backspace: BackspaceBinding::from_config(&self.backspace_binding),
             delete: DeleteBinding::from_config(&self.delete_binding),
         }
+    }
+
+    /// 键盘协议是否启用（每次创建 pane 时读取）。
+    pub fn keyboard_protocol_enabled(&self) -> bool {
+        keyboard_protocol_enabled(&self.keyboard_protocol)
     }
 
     pub fn load() -> Self {
@@ -815,12 +838,43 @@ mod tests {
         assert_eq!(c.scrollbar_policy(), ScrollbarPolicy::Auto);
         assert_eq!(c.backspace_binding, "ascii-delete", "GNOME 默认 Backspace = 0x7f");
         assert_eq!(c.delete_binding, "delete-sequence", "GNOME 默认 Delete = ESC [3~");
+        assert_eq!(c.keyboard_protocol, "auto", "默认响应应用的键盘协议 query");
+        assert!(c.keyboard_protocol_enabled());
         assert_eq!(c.key_bindings().backspace, BackspaceBinding::AsciiDelete);
         assert_eq!(c.key_bindings().delete, DeleteBinding::DeleteSequence);
         assert_eq!(c.close_action, "end", "默认关闭即结束会话");
         assert_eq!(c.osc52, "allow", "OSC 52 默认放行");
         assert!(c.osc52_allowed());
         assert_eq!(c.version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn keyboard_protocol_config_parsing_and_roundtrip() {
+        assert_eq!(normalize_keyboard_protocol("auto"), "auto");
+        assert_eq!(normalize_keyboard_protocol(" AUTO "), "auto");
+        assert_eq!(normalize_keyboard_protocol("off"), "off");
+        assert_eq!(normalize_keyboard_protocol(" false "), "off");
+        assert_eq!(normalize_keyboard_protocol("bogus"), "auto");
+        assert!(keyboard_protocol_enabled("auto"));
+        assert!(!keyboard_protocol_enabled("OFF"));
+
+        let cfg: Config = toml::from_str("version = 1\nkeyboard_protocol = \"off\"\n").unwrap();
+        assert_eq!(cfg.keyboard_protocol, "off");
+        assert!(!cfg.keyboard_protocol_enabled());
+
+        // 旧配置没有该字段时走 default = auto。
+        let old: Config = toml::from_str("version = 1\nfont_size = 13.0\n").unwrap();
+        assert_eq!(old.keyboard_protocol, "auto");
+
+        let dir = tmpdir("keyboard-protocol");
+        let path = dir.join("config.toml");
+        cfg.save_to(&path);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("keyboard_protocol = \"off\""), "{text}");
+        let back = Config::load_from(&path);
+        assert_eq!(back.keyboard_protocol, "off");
+        assert!(!back.keyboard_protocol_enabled());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

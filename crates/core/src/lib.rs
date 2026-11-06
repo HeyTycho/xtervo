@@ -9,6 +9,7 @@
 pub mod bench_support;
 pub mod event;
 pub mod frame;
+pub mod keyboard;
 pub mod link;
 pub mod mouse;
 pub mod osc;
@@ -23,6 +24,7 @@ pub use event::{
 pub use frame::{
     flags, CellData, CursorShape, CursorState, Frame, InlineImage, LineDamage, Span,
 };
+pub use keyboard::{KeyboardFlags, MODIFY_OTHER_KEYS_MAX_LEVEL};
 pub use link::{is_allowed_uri, Link, LinkKind};
 pub use mouse::{Modifiers, MouseAction, MouseButton, MouseEvent};
 pub use bench_support::TermSim;
