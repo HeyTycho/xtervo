@@ -369,6 +369,12 @@ impl Default for ProfileStore {
     }
 }
 
+/// `profiles.toml` + v1 → `profiles.toml.v1.bak`。
+fn backup_path(path: &Path, from: u32) -> PathBuf {
+    let name = path.file_name().map(|s| s.to_string_lossy()).unwrap_or_default();
+    path.with_file_name(format!("{name}.v{from}.bak"))
+}
+
 impl ProfileStore {
     pub fn path() -> PathBuf {
         if let Ok(p) = std::env::var("TERVO_PROFILES") {
@@ -402,6 +408,16 @@ impl ProfileStore {
             return Self::default();
         }
         if store.version < VERSION {
+            let from = store.version;
+            // 与 config.rs 一致：迁移前留一份原文件，回滚/排障时可直接恢复。
+            let backup = backup_path(path, from);
+            match std::fs::copy(path, &backup) {
+                Ok(_) => eprintln!(
+                    "[profile] 迁移 v{from} → v{VERSION} 前已备份 {}",
+                    backup.display()
+                ),
+                Err(e) => eprintln!("[profile] 备份失败（继续迁移）: {e}"),
+            }
             // v1 没有 kind 字段：serde default 已补成 local，这里补版本并写回
             for p in &mut store.profiles {
                 if !KINDS.contains(&p.kind.as_str()) {
@@ -1008,10 +1024,16 @@ env = []
         assert!(text.contains("version = 2"), "{text}");
         assert!(text.contains("kind = \"local\""), "{text}");
         assert!(!text.contains("font_size"), "None 不应写出外观键: {text}");
-        // 迁移后的文件还能再次正常读取
+        // 迁移前备份保留原始 v1 内容（回滚/排障用）
+        let backup = dir.join("profiles.toml.v1.bak");
+        let original = std::fs::read_to_string(&backup).expect("应生成迁移前备份");
+        assert!(original.contains("version = 1"), "{original}");
+        assert!(!original.contains("version = 2"), "{original}");
+        // 迁移后的文件还能再次正常读取，且不会重复备份
         let again = ProfileStore::load_from(&path);
         assert_eq!(again.profiles.len(), 1);
         assert_eq!(again.profiles[0].kind, "local");
+        assert!(!dir.join("profiles.toml.v2.bak").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
