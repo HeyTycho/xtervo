@@ -36,7 +36,7 @@ use alacritty_terminal::index::{Column, Line, Point};
 use alacritty_terminal::grid::Scroll;
 use alacritty_terminal::index::{Direction, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
-use alacritty_terminal::term::search::RegexSearch;
+use alacritty_terminal::term::search::{RegexIter, RegexSearch};
 use alacritty_terminal::term::{Config as TermConfig, Osc52, Term, TermDamage, TermMode};
 use alacritty_terminal::vte::ansi::{ClearMode, Handler, Processor, Rgb};
 use crossbeam_channel::{bounded, Receiver, SendTimeoutError, Sender, TrySendError};
@@ -71,11 +71,19 @@ const CTRL_REPLY_TIMEOUT: Duration = Duration::from_millis(200);
 const CTRL_SEND_TIMEOUT: Duration = Duration::from_millis(50);
 
 /// 搜索命中（视口坐标）。
+///
+/// `index`/`total` 来自 alacritty 的 `RegexSearch`/`RegexIter` 对整个
+/// scrollback + 视口的扫描，**不读 UI 帧**；计数与命中在同一次 actor
+/// 请求里完成，UI 不需要再拉帧/扫文本。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SearchHit {
     pub line: u16,
     pub start_col: u16,
     pub end_col: u16,
+    /// 当前命中在全部匹配中的 1-based 序号；无命中时为 0。
+    pub index: usize,
+    /// scrollback + 视口内的匹配总数；无命中时为 0。
+    pub total: usize,
 }
 
 /// 搜索选项：默认大小写不敏感、纯文本。
@@ -1098,6 +1106,64 @@ fn regex_escape(query: &str) -> String {
     out
 }
 
+/// 从命中起点/终点前进或后退一格，用于下一次搜索的 exclusive origin。
+///
+/// 正向搜索必须越过当前命中（+1 格），反向搜索必须退到命中起点前一格
+/// （-1 格）；否则 alacritty 的 `search_next` 会把当前命中再次算进来，
+/// Shift+Enter 会“原地不动”。越过最后/第一格时按 grid 环绕到另一端。
+fn step_search_point<T: EventListener>(term: &Term<T>, point: Point, forward: bool) -> Point {
+    let grid = term.grid();
+    let cols = term.columns();
+    let last_col = Column(cols.saturating_sub(1));
+    if forward {
+        if point.column.0 + 1 < cols {
+            Point::new(point.line, Column(point.column.0 + 1))
+        } else if point.line < grid.bottommost_line() {
+            Point::new(point.line + 1, Column(0))
+        } else {
+            Point::new(grid.topmost_line(), Column(0))
+        }
+    } else if point.column.0 > 0 {
+        Point::new(point.line, Column(point.column.0 - 1))
+    } else if point.line > grid.topmost_line() {
+        Point::new(point.line - 1, last_col)
+    } else {
+        Point::new(grid.bottommost_line(), last_col)
+    }
+}
+
+/// 用 alacritty `RegexIter` 扫描整个 grid（scrollback + 视口），返回
+/// `(当前命中 1-based 序号, 匹配总数)`。
+///
+/// 与 `Term::search_next` 共用同一套 regex/grid 语义，因此换行、宽字符、
+/// 大小写内联组的结果与高亮一致；不经过 `Frame`，也不在 UI 线程扫文本。
+/// `found` 一定来自同一 `term`+`regex` 的 `search_next`，正常都能在迭代中
+/// 找到；万一坐标未命中（例如极端并发滚动），序号回退为 1。
+fn count_search_matches<T: EventListener>(
+    term: &Term<T>,
+    regex: &mut RegexSearch,
+    found: &std::ops::RangeInclusive<Point>,
+) -> (usize, usize) {
+    let grid = term.grid();
+    let start = Point::new(grid.topmost_line(), Column(0));
+    let end = Point::new(
+        grid.bottommost_line(),
+        Column(term.columns().saturating_sub(1)),
+    );
+    let mut total = 0usize;
+    let mut index = 0usize;
+    for m in RegexIter::new(start, end, Direction::Right, term, regex) {
+        total += 1;
+        if index == 0 && m.start() == found.start() && m.end() == found.end() {
+            index = total;
+        }
+    }
+    if total > 0 && index == 0 {
+        index = 1;
+    }
+    (index, total)
+}
+
 fn selection_span<T: EventListener>(term: &Term<T>, rows: usize, offset: usize) -> Option<Span> {
     let range = term.selection.as_ref()?.to_range(term)?;
     let off = offset as i32;
@@ -1595,14 +1661,20 @@ impl Actor {
         let direction = if forward { Direction::Right } else { Direction::Left };
         let offset = self.term.grid().display_offset() as i32;
         let origin = match self.search_span {
-            Some(span) if forward => Point::new(
-                Line(span.end_line as i32 - offset),
-                Column(span.end_col as usize + 1),
-            ),
-            Some(span) => Point::new(
-                Line(span.start_line as i32 - offset),
-                Column(span.start_col as usize),
-            ),
+            Some(span) => {
+                let point = if forward {
+                    Point::new(
+                        Line(span.end_line as i32 - offset),
+                        Column(span.end_col as usize),
+                    )
+                } else {
+                    Point::new(
+                        Line(span.start_line as i32 - offset),
+                        Column(span.start_col as usize),
+                    )
+                };
+                step_search_point(&self.term, point, forward)
+            },
             None => self.term.grid().cursor.point,
         };
 
@@ -1611,6 +1683,9 @@ impl Actor {
         else {
             return Ok(None);
         };
+        // 计数与命中在同一次 actor 请求里做完：扫的是 alacritty grid，
+        // 不是 UI 帧；失败/空查询不会走到这里。
+        let (index, total) = count_search_matches(&self.term, &mut regex, &found);
         let (start, end) = (*found.start(), *found.end());
 
         // 命中不在视口内就滚动过去
@@ -1640,6 +1715,8 @@ impl Actor {
             line: span.start_line,
             start_col: span.start_col,
             end_col: span.end_col,
+            index,
+            total,
         }))
     }
 
