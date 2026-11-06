@@ -249,12 +249,19 @@ component ToggleRow inherits Rectangle {
     }
 }
 
-/// 设置页的透明度滑块：0.2–1.0。拖动时 preview（不落盘），松手 changed（保存）。
+/// 设置页的百分比滑块。拖动时 preview（不落盘），松手 changed（保存）。
+/// min/max 由调用方给：终端 opacity = 0–1，背景遮罩 = 0–0.8。
 component OpacitySlider inherits Rectangle {
     in-out property <float> value: 1.0;
+    in property <float> min: 0.0;
+    in property <float> max: 1.0;
     callback preview(float);
     callback changed(float);
 
+    property <float> ratio: {
+        let span = root.max - root.min;
+        span <= 0.0 ? 0.0 : Math.max(0.0, Math.min(1.0, (root.value - root.min) / span))
+    }
     height: 22px;
     background: transparent;
 
@@ -271,14 +278,14 @@ component OpacitySlider inherits Rectangle {
     Rectangle {
         x: 4px;
         y: (parent.height - 4px) / 2;
-        width: (parent.width - 8px) * Math.max(0.0, Math.min(1.0, (root.value - 0.2) / 0.8));
+        width: (parent.width - 8px) * root.ratio;
         height: 4px;
         border-radius: 2px;
         background: Palette.colors.accent;
     }
 
     Rectangle {
-        x: 4px + (parent.width - 8px) * Math.max(0.0, Math.min(1.0, (root.value - 0.2) / 0.8)) - 6px;
+        x: 4px + (parent.width - 8px) * root.ratio - 6px;
         y: (parent.height - 12px) / 2;
         width: 12px;
         height: 12px;
@@ -297,9 +304,9 @@ component OpacitySlider inherits Rectangle {
                 let track = (self.width - 8px) / 1px;
                 let x = (self.mouse-x - 4px) / 1px;
                 let t = track <= 0.0 ? 0.0 : Math.max(0.0, Math.min(1.0, x / track));
-                // 不直接写 root.value：父级用绑定把 main.background-opacity 流回来，
+                // 不直接写 root.value：父级用绑定把 main.* 流回来，
                 // 直接赋值会打断绑定导致外部（Rust）更新滑块时不同步。
-                root.preview(0.2 + t * 0.8);
+                root.preview(root.min + t * (root.max - root.min));
                 return EventResult.accept;
             }
             if (event.kind == PointerEventKind.up) {
@@ -606,11 +613,18 @@ export component MainWindow inherits Window {
     in property <bool> has-background-image: false;
     in-out property <string> background-image-path: "";
     in property <string> background-image-error: "";
-    /// 终端默认背景不透明度（0.2–1.0）；实际 alpha 由 Rust 渲染器写入像素。
+    /// 背景图之上的暗化遮罩（0.0–0.8，默认 0.6）：只压暗图片，不碰文字/面板。
+    in-out property <float> background-dim: 0.6;
+    /// 终端默认背景不透明度（0.0–1.0）：0 = 完全透出背景图，1 = 主题纯色。
+    /// 实际 alpha 由 Rust 渲染器写入帧缓冲；无图时 Rust 强制按 1.0 渲染。
     in-out property <float> background-opacity: 1.0;
     callback background-image-changed(string);
+    /// 回车/失焦提交：非法路径在这里报错（输入过程中不闪红字）。
+    callback background-image-commit(string);
     callback background-opacity-preview(float);
     callback background-opacity-changed(float);
+    callback background-dim-preview(float);
+    callback background-dim-changed(float);
     /// 设置面板高度：主题数量变多时由 Rust 侧按行数下发。
     /// 设置分类：0=Appearance 1=Terminal 2=Window 3=Config 4=Hotkeys 5=Plugins 6=Vault
     in-out property <int> settings-category: 0;
@@ -699,6 +713,16 @@ export component MainWindow inherits Window {
             height: 100%;
             source: root.background-image;
             image-fit: cover;
+        }
+
+        // 背景图之上的暗化遮罩：压在图片上、所有内容之下。纯黑半透明，
+        // 白块也会被压暗，浅色终端文字才有稳定可读的对比度。
+        Rectangle {
+            visible: root.has-background-image;
+            width: 100%;
+            height: 100%;
+            background: #000000;
+            opacity: root.background-dim;
         }
 
         // ---------------- 标签栏 ----------------
@@ -1201,9 +1225,29 @@ export component MainWindow inherits Window {
                     border-width: (p.focused && root.panes.length > 1) ? 1px : 0px;
                     border-color: Palette.colors.accent;
 
+                    // 网格像素宽高是 cell 的整数倍，pane 右侧/底部可能余下不到一格。
+                    // 这里用“主题底色 + 同样的 opacity”补齐，和终端默认背景的混合结果一致；
+                    // 不能给整块 pane 铺这个半透明色，否则帧图下会二次叠 alpha。
+                    if root.has-background-image : Rectangle {
+                        x: p.iw;
+                        width: p.w - p.iw;
+                        height: p.ih;
+                        background: Palette.colors.bg.with-alpha(root.background-opacity);
+                    }
+                    if root.has-background-image : Rectangle {
+                        y: p.ih;
+                        width: p.w;
+                        height: p.h - p.ih;
+                        background: Palette.colors.bg.with-alpha(root.background-opacity);
+                    }
+
                     Image {
                         source: p.image;
-                        // 1:1 像素显示，右侧/底部余量露出 pane 背景（与终端同色）
+                        // 必须显式钉在左上角：Slint 对未写 x/y 且小于父级的元素会居中，
+                        // 窗口尺寸除不尽 cell 时会露出左侧/顶部一条未混合的原图。
+                        x: 0px;
+                        y: 0px;
+                        // 1:1 像素显示，右侧/底部余量由上面的补条负责
                         width: p.iw;
                         height: p.ih;
                     }
@@ -3153,7 +3197,8 @@ export component MainWindow inherits Window {
         Rectangle {
             width: Math.min(520px, root.width - 12px);
             // 居中在 TabBar 下方的内容区，避免盖住 TabBar/窗口按钮。
-            height: Math.min(440px, root.height - root.tabbar-height - 12px);
+            // 520 高给 Appearance 的背景图/遮罩/透明度三组控件留出空间。
+            height: Math.min(520px, root.height - root.tabbar-height - 12px);
             x: (root.width - self.width) / 2;
             y: root.tabbar-height + (root.height - root.tabbar-height - self.height) / 2;
             background: @linear-gradient(180deg, Palette.colors.raise 0%, Palette.colors.surface 100%);
@@ -3408,7 +3453,14 @@ export component MainWindow inherits Window {
                                 color: Palette.colors.text;
                                 font-size: 11px;
                                 vertical-alignment: center;
+                                // 边打边预览合法路径；错误留到回车/失焦再报。
                                 edited => { root.background-image-changed(self.text); }
+                                accepted => { root.background-image-commit(self.text); }
+                                changed has-focus => {
+                                    if (!self.has-focus) {
+                                        root.background-image-commit(self.text);
+                                    }
+                                }
                             }
                         }
                         MiniBtn {
@@ -3435,6 +3487,48 @@ export component MainWindow inherits Window {
                         wrap: word-wrap;
                     }
 
+                    // 背景图暗化遮罩：0% 不压暗，80% 几乎全黑。只影响图片本身。
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text {
+                            text: "Dim";
+                            color: Palette.colors.subtext;
+                            width: 52px;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                        }
+                        OpacitySlider {
+                            height: 22px;
+                            horizontal-stretch: 1;
+                            value: root.background-dim;
+                            min: 0.0;
+                            max: 0.8;
+                            preview(v) => {
+                                root.background-dim = v;
+                                root.background-dim-preview(v);
+                            }
+                            changed(v) => {
+                                root.background-dim = v;
+                                root.background-dim-changed(v);
+                            }
+                        }
+                        Text {
+                            text: "\{Math.round(root.background-dim * 100)}%";
+                            color: Palette.colors.text;
+                            width: 42px;
+                            font-size: 12px;
+                            horizontal-alignment: right;
+                            vertical-alignment: center;
+                        }
+                    }
+                    Text {
+                        text: "遮罩只压暗背景图（默认 60%）；白块区域也能保证浅色终端文字可读。";
+                        color: Palette.colors.muted;
+                        font-size: 10px;
+                        wrap: word-wrap;
+                    }
+
+                    // 终端默认背景不透明度：0% 完全透出图片，100% 主题纯色。
                     HorizontalLayout {
                         spacing: 8px;
                         Text {
@@ -3448,6 +3542,8 @@ export component MainWindow inherits Window {
                             height: 22px;
                             horizontal-stretch: 1;
                             value: root.background-opacity;
+                            min: 0.0;
+                            max: 1.0;
                             preview(v) => {
                                 root.background-opacity = v;
                                 root.background-opacity-preview(v);
@@ -3467,8 +3563,14 @@ export component MainWindow inherits Window {
                         }
                     }
                     Text {
-                        text: "终端默认背景透明度 20%–100%；文字、光标与彩色 cell 背景保持不透明。";
-                        color: Palette.colors.muted;
+                        text: !root.has-background-image
+                            ? "未设置背景图时 Opacity 不生效，终端保持纯色不透明。"
+                            : (root.background-opacity >= 0.99
+                                ? "Opacity 100% 会完全遮住背景图；向左拖可让图片透出。"
+                                : "0% = 完全透出背景图，100% = 主题纯色；文字/光标/彩色 cell 始终不透明。");
+                        color: (root.has-background-image && root.background-opacity >= 0.99)
+                            ? Palette.colors.accent
+                            : Palette.colors.muted;
                         font-size: 10px;
                         wrap: word-wrap;
                     }
