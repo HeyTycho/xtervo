@@ -1668,3 +1668,48 @@ cargo bench -p tervo-core --bench pty_throughput
     密钥状态迁移需要单独设计 worker/状态机，属于可选项，未为赶 P0 冒险改接口。
   - 未改默认值/UI 布局/P1（keyboard/search/url/settings/Sixel/emoji/GPU/resize）；
     真实 50 MiB/s 零丢字节压测与远端大目录（>10s）实测未做。
+
+### 2026-11-06 · P1-10 终端右键菜单美化（feat/context-menu）
+
+- **范围**：只改 `crates/app/ui/main.slint` 的 pane 右键菜单视觉/信息架构，外加 e2e 脚本
+  与本文档；动作 ID、`menu-action` 回调、菜单打开/`menu-open` 状态、hit area、
+  outside-close、默认配置均未动。PTY/SFTP、Sixel/emoji、GPU/resize、IME、键盘协议未碰；
+  TabBar/Profile/Tab 菜单仍用原来的紧凑 `MenuRow`。
+- **信息架构**：13 项（命中链接时 15 项）分 5 组：Link（仅链接时）、Clipboard、Pane、
+  View、Session。Link 有链接时置顶，保证右键链接的第一动作仍是 Open/Copy Link；其余顺序
+  为 Copy/Paste → Split Right/Split Down/Close Pane/Broadcast → Find/Select All/Clear →
+  Read Only/Reset/Reset and Clear/Save Contents。所有 action id 0–14 保持原映射。
+- **视觉**：菜单项 14px/30px 行高（≥需求 13px/30px），分组标题 13px/22px semi-bold
+  次级色；菜单宽 280px 且随窗口夹取；16×16 手绘线性图标（复制/粘贴/分屏/关闭/广播/查找/
+  全选/清除/保存/只读/复位/链接），不依赖 emoji 字体。Copy/Paste/Split/Close/Find 显示
+  真实快捷键提示；Read Only ON / Broadcast ON 用 accent 淡底与图标高亮；Close Pane 悬停
+  用 danger 色。面板 raise 底 + border + 10px 圆角 + 阴影，全部取 `Palette` 当前主题色。
+- **定位/溢出**：优先右/下；放不下翻到左/上；再放不下才夹进内容区（右/下 8/6px 边距）。
+  菜单高 490px（链接 572px），内容区不够时 `menu-view-h = 内容区 - 12px`，用
+  `Flickable`（`interactive: false`，滚轮仍可滚动，点击立即交给菜单行）滚动，并在右侧
+  画 3px thumb；不再有整块菜单掉到窗口外。
+- **验证**（Xvfb :135，`scripts/e2e_context_menu.sh`）：
+  - `cargo test -p tervo-app --bin tervo`：**281 passed**（基线 281）。
+  - 暗色普通菜单面板 bbox 278×488 @ (301,45)，锚点=右键处；菜单外左键关闭日志
+    `[ui] menu dismissed`。
+  - 有选区：拖选前后区域像素 diff **2750**，选区高亮保留，菜单正常弹出。
+  - 链接菜单 278×570，Link 组置顶；点 Copy Link 日志 `[link] copy uri=...`，
+    `xsel -b` 剪贴板 = `http://example.com/ctx-menu-demo`（action 10 未变）。
+  - 480×360：菜单 278×314 夹在 (193,39)，右/下留边；滚轮 3 格后菜单区域像素 diff
+    **26118**，thumb 随内容移动。
+  - 864×700 靠右下 (804,608)：菜单翻到 (525,151)，不溢出。
+  - Solarized Light：菜单 278×488，组标题/快捷键提示/图标对比度可读。
+  - `scripts/e2e_term_menu.sh`：窗口改 24 行（内容区 528px），行坐标改为
+    `padding 6 + 分组标题 22×组数 + 30×index + 15`，Read Only index 9、Save index 12；
+    Read Only 切换/保存/Reset 全 PASS，`menu_open.png` 完整显示 13 项。
+- **截图**（`.logs/context-menu/`，gitignore）：`menu_normal.png`、`menu_selection.png`、
+  `menu_link.png`、`menu_narrow_480x360.png`、`menu_narrow_scrolled.png`、
+  `menu_bottom_right.png`、`menu_light.png`；`.logs/term-menu/menu_open.png` 为
+  720×560 的全菜单截图。
+- **限制**：
+  - 短窗口（内容区 < 502px）时菜单必须滚动；490/572px 高是为了同时保留全部动作，
+    没有做折叠分组或二级菜单。
+  - 菜单内没有键盘导航（与改动前一致）；本轮只保证现有 hit area/outside-close 不变。
+  - 现有 pane 菜单没有 per-item disabled 状态，UI 也拿不到“选区是否为空”；Copy 在
+    无选区时仍可点击（点击为无操作），未新增禁用逻辑。
+  - 菜单宽是 280px + 窗口夹取，不是逐字测量 preferred-width；极窄窗口用 elide。
