@@ -15,6 +15,17 @@ Tervo 默认把 stderr（包括 panic）同时写入按次启动的日志文件�
 | `TERVO_RESIZE_PROFILE=1` | 打印 resize apply 次数/耗时、背景隐藏/恢复、resize 汇总 |
 | `TERVO_RESIZE_KEEP_BG=1` | 对比实验：resize 期间不隐藏大背景图 |
 | `TERVO_FORCE_GPU=1` | 测试用：无 `/dev/dri` 时也走默认 GPU/Skia 分支 |
+| `TERVO_FALLBACK_FONTS` | `:` 分隔的额外回退字体（可带 `#face_index`），如用户目录的 Nerd Font；详见 [FONT_FALLBACK.md](FONT_FALLBACK.md) |
+| `TERVO_FONTLOG=1` | 打印每个回退字体的解析耗时/失败，排查缺字与首次出现中文/emoji 的卡顿 |
+
+## 字体/emoji 怎么读日志
+
+- 出现中文/emoji 的那一刻才会解析回退字体；`TERVO_FONTLOG=1` 会打印
+  `[font] 回退加载 <path> (<耗时>)` 或 `[font] 回退不可用 ...`。
+- 彩色 emoji（Noto Color Emoji）fontdue 取不到轮廓，画面显示**空框占位**而不是
+  tofu；这是已知限制，详见 [FONT_FALLBACK.md](FONT_FALLBACK.md)。
+- 纯 ASCII 会话不会加载任何回退字体；如果 `[font] 回退链` 在启动时就出现，
+  说明启动配置里有非 ASCII 字符或字体路径探测失败，需要附日志排查。
 
 ## 一键诊断
 

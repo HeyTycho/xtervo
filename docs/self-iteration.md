@@ -1320,3 +1320,26 @@ cargo bench -p tervo-core --bench pty_throughput
 - 验证：右侧分屏聚焦后日志 `[ime] spot pane=2 ... win=407,32`，不再从 0 开始。
 - 限制：fcitx/ibus 是否遵守 XNSpotLocation 取决于输入法；若仍不跟随，需要输入法侧日志。
 
+
+### 2026-11-06 · 字体 fallback：中文/emoji/宽字符/组合音标
+
+- 字体链按用途分组惰性加载：CJK（wqy-microhei → Droid → Noto CJK → zenhei）、
+  SYMBOL（Noto Sans Symbols 2 → DejaVu Sans）、EMOJI（Symbola → Noto Emoji）、
+  ICON（Nerd Font 常见路径 + `TERVO_FALLBACK_FONTS`）、COLOR（Noto Color Emoji）。
+  中文只碰 CJK 组；emoji 不会为了找字形解析 18 MB 的 Noto CJK。
+- 渲染层：缺字逐字体回退，字形步进超过 `span*cell_w` 时等比缩小，并横向裁剪到
+  该字符占的格子；组合音标（alacritty `Cell::zerowidth`）叠加到基字形墨迹中心，
+  ZWJ/VS 跳过不画。`CellData` 仍是 16 字节，零宽字符走 Frame 的 side table。
+- 修复后到的组合音标：alacritty 的零宽输入不产生 damage；检测到零宽码位时强制
+  整帧重取并扫描零宽表。零宽字符不常见，正常整屏拷贝保持无分支热路径。
+- fontdue 只有轮廓光栅化，Noto Color Emoji（CBDT/CBLC）与 Twemoji（COLR）画不出：
+  命中彩色字体后停止扫描，渲染明确占位框（emoji 中心点 / Nerd 图标竖条），
+  不崩溃、不画 tofu；彩色 emoji 支持列为已知限制。
+- 测试：`cargo test -p tervo-core` 47 lib / 89 total；app 222 passed（新增
+  core 宽字符/组合/ZWJ/截断 7 例、app 占位/叠加/裁剪 8 例）。
+- 截图：`.logs/font-emoji/before.png`、`after-default.png`、`after-nerd.png`；
+  重新生成用 `scripts/font_glyph_shot.sh`（Xvfb :116，仅 kill 自己的进程）。
+- 性能：200x50 同机 A/B：dirty 单行约 21µs→18µs，整屏约 101µs→85µs；10MB 解析
+  约 49–51ms，与基线持平（热路径未加逐格零宽检查）。
+- 限制：ZWJ 家族仍是 3 个 emoji / 6 格（alacritty 按码位计宽，不做 grapheme
+  cluster 合并）；组合音标无 GPOS，用墨迹居中近似；内置字体路径偏 Debian/Ubuntu。

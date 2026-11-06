@@ -12,6 +12,8 @@ tokio.workspace = true
 parking_lot.workspace = true
 crossbeam-channel.workspace = true
 log.workspace = true
+# 与 alacritty 相同的宽度表：识别零宽组合字符/ZWJ/变体选择符，按需整帧刷新。
+unicode-width.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true

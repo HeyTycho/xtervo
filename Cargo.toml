@@ -18,6 +18,8 @@ tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time", "m
 slint = { version = "1.18", default-features = false, features = ["std", "log", "backend-winit", "renderer-skia", "renderer-skia-opengl", "renderer-software", "compat-1-18", "unstable-winit-030"] }
 parking_lot = "0.12"
 crossbeam-channel = "0.5"
+# 与 alacritty 相同的 Unicode 宽度表：组合字符/emoji 宽度与零宽判定。
+unicode-width = "0.2"
 serde = { version = "1", features = ["derive"] }
 toml = "1"
 log = "0.4"
