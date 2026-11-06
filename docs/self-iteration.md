@@ -1174,3 +1174,15 @@ cargo bench -p tervo-core --bench pty_throughput
   Ctrl+Shift+A 的 `^A` 回退分支未单独注入（正常文本映射和命令面板已验证）。
   未做 CPU/帧率 profiler 采样；所有过渡都是一次性属性动画，没有常驻 Timer 或
   循环动画。本轮未改窗口 resize/max/min/背景图代码。
+
+### 2026-11-06 · resize 快路径：拖动只拉伸旧帧，停下再重排终端
+
+- 现象：winit 已接管 WM live resize，但每个 configure 仍执行 `renderer.resize_grid`
+  + `PaneHandle::resize`（PTY TIOCSWINSZ）+ 全 pane 软件重绘，仍卡顿。
+- 快路径：拖动期间只 `refresh_views_layout` 更新 pane 矩形，Slint 把旧帧拉伸到新
+  尺寸；140ms 无新 resize 才真正 resize grid/PTY 并 `redraw_visible`。`redraw_visible`
+  在 resizing 期间跳过，避免 PTY/poll 输出重复整帧重绘。
+- 验证：Openbox 右边缘/右下角 8 个 configure 事件 → 仅 1 次 settle；
+  同步验证无 WM 自绘回退 540→701；209 tests。
+- 限制：拖动期间终端文字是拉伸旧帧，停下才 reflow；这是有意的延迟，不是实时重排。
+
