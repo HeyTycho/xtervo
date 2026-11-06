@@ -1713,3 +1713,76 @@ cargo bench -p tervo-core --bench pty_throughput
   - 现有 pane 菜单没有 per-item disabled 状态，UI 也拿不到“选区是否为空”；Copy 在
     无选区时仍可点击（点击为无操作），未新增禁用逻辑。
   - 菜单宽是 280px + 窗口夹取，不是逐字测量 preferred-width；极窄窗口用 elide。
+
+### 2026-11-06 · W-01 每 Profile 外观 + 会话恢复（feat/profile-session）
+
+- **范围**：只动 Profile 外观/会话恢复链路；未改 P1 keyboard/url/search、Sixel/emoji/
+  GPU/resize/IME 架构，也未合并 master。
+- **Profile 外观（additive v2，不 bump 版本）**：`Profile` 新增可选
+  `font_size` / `theme` / `cursor_shape` / `cursor_blink` / `scrollback`。旧
+  `profiles.toml`（v1 无 kind、v2 无外观字段）读入时 serde default 补 `None`，
+  v1 迁移仍写回 `version = 2`；`None` 序列化时省略，不改变旧文件形状。读盘时对
+  手写值做归一（字号夹取 8–40、空串→None、scrollback 0→None），表单保存前校验
+  非法字号/光标别名/闪烁值。
+- **应用语义（明确优先级）**：**Profile 显式字段 > 全局 config**。打开 Profile
+  Tab 时按 Profile 创建该 pane 的渲染器/PTY/调色板；之后全局主题/字号/光标变化
+  仍作用于未覆盖的 pane，Profile 覆盖值保持不变（“pin”语义），不会在后台被
+  全局设置悄悄改掉。空 = 继承全局，打开后的 Tab 与普通 Tab 行为一致。
+  - 字号是 **per-pane**：`PaneAppearance` 记录覆盖，`RefreshViews` 用 pane 自己的
+    `cell` 算网格；`apply_font_size` 按不同 Profile 字号缓存 `FontSet`，只重建
+    对应 pane 的 Renderer，避免多 pane 共享一个全局字号。
+  - 主题只作用于该 pane 的终端内容（背景/调色板），不动应用 UI 主题；未知主题
+    id 记日志并回退当前全局主题。
+  - 光标形状/闪烁 per-pane；闪烁 `off` 时 overlay 恒亮，`on` 可在全局 off 时
+    单独唤醒计时器（`needs_cursor_blink`/`ensure_cursor_blink_timer`）。
+  - `scrollback` 在创建 `PaneConfig` 时下发；空则沿用全局（含 unlimited 语义）。
+- **表单**：Settings → Profiles → Edit/New 增加 “Appearance · empty = inherit
+  global” 区：Font / History / Cursor / Blink / Theme；local/serial/telnet 用
+  紧凑 440px 高表单，SSH 展开 password 时用 620px，避免与字段重叠。
+- **会话恢复审计结果**：
+  - 已有 `session.rs` snapshot/detach/restore 负责 Tab 顺序/标题/split 树/ratio/
+    active/focused/cwd；本轮补：`Tree::Leaf` 增加可选 `profile_id`（旧快照兼容），
+    local Profile 的 Tab 恢复时按 Profile 重建（外观/shell/cwd 优先级 = 快照 cwd >
+    Profile cwd），SSH/Serial/Telnet **不自动建连**（避免启动即连远端/Vault 弹窗），
+    回退普通 shell 并记录日志。
+  - 自动恢复开关 `restore_session_on_startup`（默认 false，Settings → Behavior）；
+    开启后正常退出（窗口关闭/最后一个 Tab）写快照，启动按快照网格/Tab/split/cwd
+    恢复；`--restore` 手动 Restart 语义保持不变。`restarting` 标记避免退出钩子与
+    Restart 子进程重复写快照。
+  - 恢复失败回退：快照损坏/版本不符/空 tabs/单个 Tab 创建 pane 失败都不阻塞启动；
+    `restore_session` 只在至少恢复一个 Tab 时返回 true，否则启动方建新 Tab。
+  - `duplicate_tab`/`reopen_closed_tab` 也携带 profile_id 与 cwd；关闭 Panel 后
+    profile tab 的行为与普通 tab 一致。
+- **测试**：
+  - `cargo test -p tervo-app --bin tervo`：**295 passed**（基线 282；新增 13：
+    Profile 外观 roundtrip/继承/迁移/校验/归一 6、session profile_id/旧快照/坏快照
+    fallback 4、app 级 PaneAppearance 映射/闪烁继承 2、config restore 开关 1）。
+  - `cargo test --workspace --offline`：**489 passed, 0 failed**（app 295 + core 90
+    + core 集成 64 + xclick/xdrop/xkey/xwin 40）。
+- **Xvfb :136 e2e**（`scripts/e2e_profile_session.sh`，全部 PASS）：
+  - `02-profile-form.png` / `02b-profile-form-ssh.png`：local 与 SSH（auth=password
+    展开 Password/Vault 行）表单均显示 Appearance 区且不重叠；把 History 从 5000
+    改为 6000 后 Save，脚本 grep `profiles.toml` 断言持久化成功；
+  - `03-profile-applied.png`：打开 pretty Profile 后 `pwd`=/home/user，字号 20
+    （cell 12x28 vs 全局 9x22）、Catppuccin Latte 浅色、underline/off 光标；
+  - `04-before-restart.png`：3 Tab，pretty Tab 左右 split；三处 cwd=/var、/etc、/usr；
+  - `05-restored.png` / `07/08-restored-split-*-pwd.png`：开启开关后正常退出，重启
+    恢复 3 Tab + split + cwd；left pane 仍是 Profile 浅色/大字号（pwd=/var），
+    right pane 全局深色（pwd=/etc），活动第三 Tab pwd=/usr；
+    像素断言 profile-left 亮度 241.7 / global-right 30.3；
+  - `09-fallback-newtab.png`：损坏 session.json 时自动恢复失败，新 Tab 启动；
+  - `10/11/12-settings-restore-*.png`：Settings 搜索 “restore session” 跳到
+    Behavior 卡片，开关 ON；点开关后 config 写回 false（脚本 grep 断言）。
+- **限制**：
+  - 快照只恢复布局/cwd/Profile 关联，不恢复 scrollback、屏幕内容或运行中进程；
+    “重启”仍是新 shell/新连接。
+  - `session.json` 全局只有一份；`--window` 子窗口进程跳过自动恢复/退出快照，
+    避免子窗口覆盖主窗口布局，因此多窗口布局不能分别恢复。
+  - 自动恢复只在**正常退出**写快照；崩溃/被 SIGKILL 不保证。无崩溃恢复守护。
+  - 非 local Profile 不会自动重连（产品决策，见 `restore_pane_launch`）。
+  - Profile 外观覆盖后，全局字号/主题/光标改动不会刷新该 pane（优先级已记录）；
+    如需让全局设置接管，把 Profile 对应字段清空后新开 Tab。
+  - Profile 表单尚无 env 编辑 UI（env 仍可从 profiles.toml 手写）；未知主题
+    保存不报错，打开时回退全局并记日志。
+  - 小窗口（<620px 高）SSH 表单仍可能超出底部；local/serial/telnet 已用 440px
+    紧凑表单，完整通用滚动表单未做。

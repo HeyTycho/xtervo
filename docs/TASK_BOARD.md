@@ -35,7 +35,7 @@
 | P1-01 | 完整键盘协议：Kitty query/set/push/pop、alternate/event types、modifyOtherKeys、release/repeat | running | `.worktrees/keyboard-protocol` / `feat/keyboard-protocol` | P0 已稳，恢复；已有未提交 `core/src/keyboard.rs` |
 | P1-02 | 搜索匹配计数 + 鼠标可编辑搜索框 | done | `.worktrees/search-ux` / `feat/search-ux` | commit `2ac8943`；合 master；`.logs/search-ux/` | app 282；search e2e PASS；term_menu PASS |
 | P1-03 | URL hover 手型 + 本地文件路径 Ctrl+click | running | `.worktrees/url-paths` / `feat/url-paths` | P0 已稳，恢复 |
-| P1-04 | 每 Profile 字体/颜色/命令/登录 shell/默认尺寸/word chars | queued | 待建 | 依赖 P0 设置 UI merged |
+| P1-04 | 每 Profile 字体/颜色/命令/登录 shell/默认尺寸/word chars | partial | `.worktrees/profile-session` / `feat/profile-session` | W-01 已完成 font_size/theme/cursor/scrollback（空=继承全局）；剩余 login shell/默认尺寸/word chars/命令覆盖策略 |
 | P1-05 | Codex P1：copy/search/save 500ms UI 阻塞 | queued | 待建 | 与 P0-05 同源，可并入 P0 hardening |
 | P1-06 | Codex P1：渲染 damage 路径失效、每帧全屏重绘 | queued | 待建 | 先做双缓冲脏行复制，再评估持久纹理 |
 | P1-07 | Codex P1：400ms CoreEvent 轮询 → wake 桥接 | queued | 待建 | 目标语义事件 <50ms，空闲 CPU 不退化 |
@@ -50,7 +50,7 @@
 
 | ID | 大块 | 状态 | 范围 | 验收 |
 |---|---|---|---|---|
-| W-01 | Profiles + 会话恢复 | queued | 每 Profile 外观/命令/env/login shell/默认尺寸；Tab/分屏/cwd/滚动恢复 | 重启恢复；Profile CRUD；e2e |
+| W-01 | Profiles + 会话恢复 | done | `.worktrees/profile-session` / `feat/profile-session` | 每 Profile 外观（font_size/theme/cursor_shape/cursor_blink/scrollback，additive v2，空=继承全局，Profile 显式 > 全局）；Settings→Profiles 表单共用 Appearance 区；session Snapshot 增加可选 profile_id，local Profile 恢复外观/shell/cwd，SSH/Serial/Telnet 不自动建连；`restore_session_on_startup`（默认 false）正常退出写快照，启动恢复 Tab/split/ratio/cwd/网格，失败回退新 Tab。验收：app 295 / workspace 489 tests；Xvfb :136 `scripts/e2e_profile_session.sh` PASS（表单/应用外观/3 Tab+split+cwd 重启恢复/损坏快照 fallback；截图 `.logs/profile-session/e2e/shots`） |
 | W-02 | SSH/SFTP/Vault 产品化 | queued | Jump host、端口转发、agent forwarding、known_hosts、重连、SFTP 队列/取消/权限 | 真实 SSH 测试；断网/超时；UI 不冻结 |
 | W-03 | iTerm2 IIP 图片 | queued | OSC 1337 File base64 PNG/JPEG；与 Sixel 并存 | dsh/真实终端图片；滚动/resize |
 | W-04 | 插件系统 V1 | queued | manifest/权限；Connection/Middleware/Observer/Command/Workspace/Integration；最小 UI 插槽；AOT | 4 个真实插件验证；崩溃/超时不拖终端 |
@@ -109,3 +109,4 @@
 | 2026-11-06 19:55 | P0-05/06/07 done（474 tests，6 e2e，release 19:51）；P1-01/02/03/10 恢复；WM resize 首次偶发、重跑 PASS 记录 |
 | 2026-11-06 20:05 | P1-02 搜索 UX 合入（282 tests，search e2e PASS）；注意 e2e 必须重建 target/debug |
 | 2026-11-06 20:20 | P1-10 右键菜单合入（3e5c270）；context-menu + term_menu e2e PASS；开始 W-01 |
+| 2026-11-06 21:35 | W-01 完成（feat/profile-session，未合 master）：每 Profile 外观 + session profile_id/可选启动自动恢复；app 295、workspace 489；Xvfb :136 e2e PASS；限制见 docs/self-iteration.md |
