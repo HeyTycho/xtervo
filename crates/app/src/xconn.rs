@@ -98,6 +98,20 @@ pub fn find_window(conn: &RustConnection, win: u32, title: &str, depth: usize) -
     None
 }
 
+/// 立即清掉本进程窗口的 SHAPE（最大化/还原前调用，避免旧 mask 短暂裁掉新窗口）。
+pub fn clear_window_shape(title: &str) {
+    use x11rb::connection::Connection as _;
+    use x11rb::protocol::xproto::ConnectionExt as _;
+    let Ok((conn, screen_num)) = connect() else { return };
+    let root = conn.setup().roots[screen_num].root;
+    let Some(win) = find_own_window(&conn, root, title) else { return };
+    if let Err(e) = clear_rounded_corners(&conn, win) {
+        eprintln!("[corners] 清理窗口 SHAPE 失败 win=0x{win:x}: {e}");
+    } else {
+        let _ = conn.flush();
+    }
+}
+
 /// WM 是否声明支持 `_NET_WM_MOVERESIZE`（GNOME/Mutter、KWin 等）。
 pub fn wm_supports_moveresize(conn: &RustConnection, root: u32) -> bool {
     use x11rb::protocol::xproto::{AtomEnum, ConnectionExt as _};
@@ -732,9 +746,7 @@ pub fn apply_rounded_corners(
 ) -> Result<(), String> {
     use x11rb::connection::Connection as _;
     use x11rb::protocol::shape::{self, SK, SO};
-    use x11rb::protocol::xproto::{
-        ChangeGCAux, ClipOrdering, ConnectionExt as _, CreateGCAux, Rectangle,
-    };
+    use x11rb::protocol::xproto::{ChangeGCAux, ConnectionExt as _, CreateGCAux, Rectangle};
 
     let geometry = conn
         .get_geometry(window)
@@ -794,26 +806,6 @@ pub fn apply_rounded_corners(
             .map_err(|e| format!("SHAPE CLIP 请求失败: {e}"))?
             .check()
             .map_err(|e| format!("SHAPE CLIP 失败: {e}"))?;
-        // 少数老服务器可能不支持 Shape 1.1 的 INPUT 区域；圆角（BOUNDING/CLIP）
-        // 已经生效，这里失败只提示一次，不把整次应用判失败。
-        static INPUT_WARNED: std::sync::Once = std::sync::Once::new();
-        if let Err(e) = shape::rectangles(
-            conn,
-            SO::SET,
-            SK::INPUT,
-            ClipOrdering::UNSORTED,
-            window,
-            0,
-            0,
-            &[Rectangle { x: 0, y: 0, width, height }],
-        )
-        .map_err(|e| e.to_string())
-        .and_then(|cookie| cookie.check().map_err(|e| e.to_string()))
-        {
-            INPUT_WARNED.call_once(|| {
-                eprintln!("[corners] 保持矩形 INPUT 失败（圆角仍生效）: {e}")
-            });
-        }
         Ok(())
     })();
 
@@ -934,6 +926,7 @@ impl CornerShaper {
 fn run_corner_shaper(rx: Receiver<CornerRequest>, title: String) {
     use x11rb::connection::Connection as _;
     use x11rb::protocol::shape;
+    use x11rb::protocol::xproto::ConnectionExt as _;
 
     let (conn, screen_num) = match connect() {
         Ok(value) => value,
@@ -1026,14 +1019,49 @@ fn run_corner_shaper(rx: Receiver<CornerRequest>, title: String) {
             None => match rx.recv_timeout(if window.is_none() {
                 Duration::from_millis(500)
             } else {
-                Duration::from_secs(3600)
+                // 兜底轮询：WM 在启动/最大化时可能改窗口尺寸但没有触发 Slint resized；
+                // 旧的 SHAPE mask 会把新窗口裁成小方块（露桌面、按钮点不到）。
+                Duration::from_millis(250)
             }) {
                 Ok(request) => request,
                 Err(RecvTimeoutError::Timeout) if window.is_none() => match last_request {
                     Some(request) => request,
                     None => continue,
                 },
-                Err(RecvTimeoutError::Timeout) => continue,
+                Err(RecvTimeoutError::Timeout) => {
+                    // 主动核对一次 X11 真实尺寸，mask 过期就重裁。
+                    if let Some(win) = window {
+                        let geometry = conn.get_geometry(win).ok().and_then(|c| c.reply().ok());
+                        if let Some(geometry) = geometry {
+                            let (w, h) = (geometry.width, geometry.height);
+                            let state = atoms
+                                .as_ref()
+                                .and_then(|atoms| query_window_state(&conn, win, atoms))
+                                .unwrap_or_else(|| CornerState {
+                                    maximized: w as u32 >= root_width
+                                        && h as u32 >= root_height,
+                                    fullscreen: false,
+                                });
+                            let radius = corner_radius(
+                                w as u32,
+                                h as u32,
+                                state.maximized,
+                                state.fullscreen,
+                            );
+                            let key = (win, w, h, radius);
+                            if last_applied != Some(key) {
+                                if radius == 0 {
+                                    let _ = clear_rounded_corners(&conn, win);
+                                    shape_cleared = true;
+                                } else if apply_rounded_corners(&conn, win, radius).is_ok() {
+                                    shape_cleared = false;
+                                }
+                                last_applied = Some(key);
+                            }
+                        }
+                    }
+                    continue;
+                },
                 Err(RecvTimeoutError::Disconnected) => return,
             },
         };
@@ -1111,6 +1139,11 @@ fn clear_rounded_corners(conn: &RustConnection, window: u32) -> Result<(), Strin
         .map_err(|e| e.to_string())?
         .check()
         .map_err(|e| format!("SHAPE CLIP clear: {e}"))?;
+    // 清掉旧版本为“四角可拖”设置的 INPUT 区域；否则窗口放大后新区域点不到。
+    shape::mask(conn, SO::SET, SK::INPUT, window, 0, 0, 0u32)
+        .map_err(|e| e.to_string())?
+        .check()
+        .map_err(|e| format!("SHAPE INPUT clear: {e}"))?;
     Ok(())
 }
 

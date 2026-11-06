@@ -4058,8 +4058,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // 圆角 worker 只依赖 X11；连不上/没有 SHAPE 时记录日志并保持直角，不阻塞 UI。
-    // 诊断开关：TERVO_NO_CORNERS=1 可完全关闭 SHAPE 圆角（排查合成器/拖拽问题）。
-    let corners = if std::env::var_os("TERVO_NO_CORNERS").is_some() {
+    // SHAPE 圆角与部分 WM 的 maximize/minimize/live-resize 组合会留下过期 mask
+    //（露桌面、右上角按钮点不到）。默认关闭；需要时用 TERVO_CORNERS=1 显式开启。
+    let corners = if std::env::var_os("TERVO_CORNERS").is_none()
+        || std::env::var_os("TERVO_NO_CORNERS").is_some()
+    {
+        eprintln!("[corners] 默认关闭（TERVO_CORNERS=1 可开启 SHAPE 圆角）");
         None
     } else {
         match xconn::CornerShaper::spawn(&opts.title) {
@@ -5340,6 +5344,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Some(ui) = weak.upgrade() {
                 // 内置 `maximized` 属性与窗口状态双向同步，直接翻转即可
                 let target = !ui.window().is_maximized();
+                // 先同步清 SHAPE：否则旧 BOUNDING mask 在 WM 放大后会短暂/持续裁掉
+                // 新窗口区域（露桌面、右上角按钮点不到）。
+                let title = with_app(|st| st.opts.title.clone()).unwrap_or_else(|| TITLE.into());
+                xconn::clear_window_shape(&title);
                 ui.window().set_maximized(target);
                 // 先按目标状态更新圆角，避免 WM 尚未写回 _NET_WM_STATE 时四角留缝。
                 with_app(|st| {
@@ -5502,6 +5510,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ---- 首帧 ----
     ui.show()?;
+    // 部分 WM（Openbox/GNOME 某些路径）在 map 时按 Slint preferred size 建 frame，
+    // 之后再 set_size 只改了 client，导致 frame/client 尺寸不一致、右侧露桌面/按钮点不到。
+    // show 后补一次，让 WM 收到明确的 resize 请求。
+    ui.window().set_size(slint::PhysicalSize::new(win_w as u32, win_h as u32));
     // 启动/窗口 map 后先应用一次圆角；worker 会按 _NET_WM_PID 等本进程窗口出现。
     with_app(|st| request_window_corners(st, None, None));
     {
