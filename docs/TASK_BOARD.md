@@ -56,7 +56,7 @@
 | W-04 | 插件系统 V1 | done（未合 master） | `.worktrees/plugin-v1` / `feat/plugin-v1` | commit 为分支头；外部进程 manifest（id/runtime/permissions/contributes）+ 常驻 process JSON Lines（2s 握手/10s 命令超时/重启上限 2/坏 JSON 禁用）+ Command（静态 args/返回文本浮层）+ Status（2s 轮询/底部状态栏/可点击 command）+ Theme Pack（TOML，可选）；旧 oneshot/旧扁平清单兼容；设置页显示 running/restarting/disabled 原因；UI 不新增复杂面板。测试 341 passed（基线 327）；fake Python/Node 插件覆盖命令/状态/崩溃/超时/坏 JSON/禁用；Xvfb :142 `scripts/e2e_plugin_v1.sh` PASS，截图 `.logs/plugin-v1/{command_result,status,plugins}.png` | 命令/状态/主题闭环；崩溃/超时/坏 JSON/坏 manifest 不拖死 Tervo；无沙箱（权限仅声明）、无安装/UI 开关/热重载，限制见 docs/PLUGIN_API.md |
 | W-05 | 打包/自动更新/崩溃报告 | done | `.worktrees/packaging` / `feat/packaging` | commit `2ac3ac6`；合 master `585fd21`；327 tests；packaging 71 项 PASS；`dist/` tar/deb/sha | tar/deb/install/rollback/deb smoke；自动更新/崩溃报告明确未做 |
 | W-06 | Wayland 原生 spike | done | `.worktrees/wayland-spike` / `feat/wayland-spike` | commit `f2e16e4`；合 master `e8ef824`；`docs/WAYLAND_SPIKE.md` 576 行；纯 Wayland/Xwayland headless 实测；DnD/全局快捷键/PRIMARY 硬阻断 | 只 spike，不承诺原生完整 |
-| W-07 | 24h 稳定性 soak | queued | 输出洪峰、Sixel 大图、emoji cache、多 Tab/多窗口内存 | 无崩溃/无持续内存增长；报告 |
+| W-07 | 长时稳定性 soak | done | `.worktrees/soak` / `feat/soak` | `scripts/soak.sh` + `docs/SOAK.md`；2m PASS（22 Tab/3 split/图片/emoji/复制/搜索/resize，无 panic/OOM）；15m **FAIL 内存门禁**：RSS 1610.7→1838.9 MiB（+228.2 MiB / +16.7 MiB/min，峰值 1844.1 MiB），首 burst 370→1310 MiB；`.logs/soak/` | 发现持续增长，已开内存专项；不声称 24h |
 | W-08 | 全量 e2e/回归矩阵 | queued | 现有 5 e2e + 新功能 e2e + 性能门禁 | 全部绿；写入 selfcheck |
 | DOC-01 | 最终人工复测清单 | queued | `docs/RETEST_CHECKLIST.md`：IME/GPU/设置/右键/图片/剪贴板/SSH/SFTP/Profile/插件/打包 | 交付前填好步骤、预期、日志/截图、已知限制 |
 
@@ -117,6 +117,7 @@
 | 2026-11-06 22:40 | W-05 打包合入（585fd21，327 tests，packaging 71 PASS）；W-04 插件 V1 开跑 |
 | 2026-11-06 23:15 | W-03 IIP 合入（b23476a，core 194/app 327）；W-02/W-04/W-06 继续 |
 | 2026-11-06 23:50 | W-06 Wayland spike 报告合入（e8ef824）；W-02/W-04/W-07 继续 |
+| 2026-11-07 00:23 | soak 脚本交付；2m PASS，15m FAIL 内存增长（+16.7MiB/min）；内存专项开跑 |
 | 2026-11-06 23:55 | W-04 插件 V1 完成（feat/plugin-v1，未合 master）：常驻 process 生命周期/命令结果/状态栏/Theme Pack/权限声明；app 341 passed（基线 327）；Xvfb :142 e2e PASS（command_result/status/plugins 截图）；限制见 PLUGIN_API.md §11 |
 | 2026-11-06 21:35 | W-01 完成（feat/profile-session，未合 master）：每 Profile 外观 + session profile_id/可选启动自动恢复；app 295、workspace 489；Xvfb :136 e2e PASS；限制见 docs/self-iteration.md |
 | 2026-11-06 23:56 | W-02 + P1-08 完成（feat/ssh-sftp，未合 master）：SSH 跳板/远程+动态转发/agent forwarding/known_hosts 预检/重连；SFTP 队列/chmod/retry/cancel/10s 连接超时；Vault 后台 KDF。app 351、core smoke 25；Xvfb :139 e2e 19 张截图 PASS；限制见 docs/self-iteration.md |
