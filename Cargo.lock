@@ -4651,6 +4651,8 @@ dependencies = [
  "fontdue",
  "libc",
  "log",
+ "owned_ttf_parser",
+ "png",
  "roxmltree",
  "serde",
  "serde_json",
