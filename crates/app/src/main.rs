@@ -34,6 +34,7 @@ use tervo_core::{
     spawn, CoreEvent, Frame, Modifiers, MouseAction, MouseButton, MouseEvent, Notification,
     PaneConfig, PaneHandle, ProgressState, Theme, UiColors,
 };
+use slint::winit_030::{winit, WinitWindowAccessor};
 use slint::{Model, ModelRc, VecModel};
 use x11rb::connection::Connection;
 use x11rb::rust_connection::RustConnection;
@@ -85,6 +86,8 @@ struct WindowResize {
     pointer: (i32, i32),
     pos: (i32, i32),
     size: (u32, u32),
+    /// 按下时刻；WM 路径用它给 WM 一个接管窗口，超时仍未改尺寸就回退。
+    since: Instant,
 }
 
 struct ResizeCtx {
@@ -184,6 +187,13 @@ struct AppState {
     /// 1003 悬停上报的上一格（按格去重，避免鼠标移动刷爆有界 ctrl 队列）。
     hover_cell: Option<(PaneId, (u16, u16))>,
     resize: Option<WindowResize>,
+    /// 本次边/角拖动已交给 WM/compositor（winit drag_resize）。
+    /// true 时 drag 回调不再每帧 query_pointer + set_size；若 150ms 内 WM 没有
+    /// 产生尺寸变化，drag 回调会解除它并回退自绘，保证 resize 不会“按了没反应”。
+    wm_resize: bool,
+    /// WM 接管后指针被它 grab，Slint 收不到真实 ButtonRelease，TouchArea 会一直
+    /// pressed/grabbed；收到第一帧 WM resize 后补发一次 PointerReleased 清理状态。
+    wm_release_pending: bool,
     xresize: Option<ResizeCtx>,
     /// X11 SHAPE 自适应圆角 worker；None = 未启动（X11 连接/线程失败，窗口保持直角）。
     corners: Option<xconn::CornerShaper>,
@@ -778,6 +788,116 @@ fn resize_pointer(st: &AppState) -> Option<(i32, i32)> {
     st.xresize
         .as_ref()
         .and_then(|ctx| crate::xconn::query_pointer(&ctx.conn, ctx.root))
+}
+
+/// Slint `ResizeHandle` 的 0..7 → winit `ResizeDirection`（两者同序）。
+fn winit_resize_direction(dir: i32) -> Option<winit::window::ResizeDirection> {
+    use winit::window::ResizeDirection;
+    Some(match dir {
+        0 => ResizeDirection::NorthWest,
+        1 => ResizeDirection::North,
+        2 => ResizeDirection::NorthEast,
+        3 => ResizeDirection::East,
+        4 => ResizeDirection::SouthEast,
+        5 => ResizeDirection::South,
+        6 => ResizeDirection::SouthWest,
+        7 => ResizeDirection::West,
+        _ => return None,
+    })
+}
+
+/// winit 当前窗口是否真的跑在 X11 后端。
+///
+/// Wayland 会话里通常同时有 `DISPLAY`（XWayland），`xconn` 也能连上；只看
+/// `xresize` 会把 Wayland 窗口误判成 X11，从而错误地跳过 `xdg_toplevel.resize`。
+fn winit_window_is_x11(window: &winit::window::Window) -> bool {
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    window
+        .window_handle()
+        .ok()
+        .is_some_and(|handle| {
+            matches!(
+                handle.as_raw(),
+                RawWindowHandle::Xlib(_) | RawWindowHandle::Xcb(_)
+            )
+        })
+}
+
+/// 尝试把一次边/角拖动交给 winit/合成器。
+///
+/// X11 上必须由 **winit 自己的连接**先 `XUngrabPointer` 再发 `_NET_WM_MOVERESIZE`：
+/// X server 只允许 grab 的持有者释放它，`xconn` 是另一个 client，跨连接 ungrab
+/// 不会生效（实测会导致 WM 完全接不到 resize）。Wayland 没有 xconn，直接走
+/// winit 的 `xdg_toplevel.resize`；只有 winit 实际使用 X11 后端时才先查
+/// `_NET_SUPPORTED`，避免 winit 先 ungrab 后无 WM 接手导致自绘也失效。
+///
+/// 返回 true 表示请求已交给 winit；调用方置 `wm_resize`，并在 drag 回调里用
+/// “是否还能收到指针 move + 是否已改尺寸”检测 WM 是否真的接管，未接管则回退自绘。
+fn start_wm_live_resize(st: &AppState, dir: i32) -> bool {
+    let Some(winit_dir) = winit_resize_direction(dir) else {
+        eprintln!("[ui] 非法 resize 方向 {dir}，回退自绘 resize");
+        return false;
+    };
+
+    // 只有 winit 实际使用 X11 后端时才做 EWMH 预检：没有 WM/不支持时**不能**
+    // 调用 winit drag_resize_window——winit 会先 XUngrabPointer，若没有 WM 接手，
+    // 后续 move 到窗外就收不到，自绘也会一起失效。Wayland（含 XWayland 同时存在
+    // DISPLAY 的会话）不查 X11 atom，直接走 winit 的 xdg_toplevel.resize。
+    let x11_window = st
+        .ui
+        .window()
+        .with_winit_window(winit_window_is_x11)
+        .unwrap_or(false);
+    if x11_window {
+        if let Some(ctx) = st.xresize.as_ref() {
+            if !xconn::wm_supports_moveresize(&ctx.conn, ctx.root) {
+                eprintln!("[ui] WM 未声明 _NET_WM_MOVERESIZE，回退自绘 resize");
+                return false;
+            }
+        }
+    }
+
+    let (started, source) =
+        match st.ui.window().with_winit_window(|window| window.drag_resize_window(winit_dir)) {
+            Some(Ok(())) => (true, "winit"),
+            Some(Err(err)) => {
+                eprintln!("[ui] winit drag_resize_window 失败，回退自绘 resize: {err}");
+                (false, "winit")
+            }
+            None => {
+                // 当前构建固定 winit 后端；只有未来换后端时才会走到这里。
+                let Some(ctx) = st.xresize.as_ref() else {
+                    eprintln!("[ui] 没有 winit 窗口，也没有 X11 连接，无法拖边 resize");
+                    return false;
+                };
+                let Some(window) = xconn::find_own_window(&ctx.conn, ctx.root, &st.opts.title)
+                else {
+                    eprintln!("[ui] 找不到本进程窗口，无法走 EWMH resize");
+                    return false;
+                };
+                match xconn::start_wm_resize(&ctx.conn, ctx.root, window, dir) {
+                    Ok(()) => {
+                        eprintln!(
+                            "[ui] xconn EWMH 兜底已发送；跨连接 ungrab 可能无效，仍保留自绘回退"
+                        );
+                        (true, "xconn-ewmh")
+                    }
+                    Err(err) => {
+                        eprintln!("[ui] xconn EWMH 兜底失败，回退自绘 resize: {err}");
+                        (false, "xconn-ewmh")
+                    }
+                }
+            }
+        };
+
+    // winit 路径在 X11/Wayland 都由后端保证支持；xconn 兜底在发送前已查 _NET_SUPPORTED。
+    let route = xconn::resize_route(true, started);
+    if route == xconn::ResizeRoute::Wm {
+        eprintln!("[ui] WM live resize dir={dir} source={source}");
+        true
+    } else {
+        false
+    }
 }
 
 fn count_marker(frame: &Frame, marker: char) -> usize {
@@ -4136,6 +4256,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         settings_model,
         hover_cell: None,
         resize: None,
+        wm_resize: false,
+        wm_release_pending: false,
         xresize: None,
         corners,
         clipboard: arboard::Clipboard::new().ok(),
@@ -4385,20 +4507,49 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui.on_start_window_resize(|dir| {
         with_app(|st| {
             ensure_resize_conn(st);
-            let Some(pointer) = resize_pointer(st) else { return };
-            let pos = st.ui.window().position();
-            let size = st.ui.window().size();
-            st.resize = Some(WindowResize {
-                dir,
-                pointer,
-                pos: (pos.x, pos.y),
-                size: (size.width, size.height),
-            });
+            st.wm_resize = false;
+            st.wm_release_pending = false;
+            // 先记录自绘起点。即使 WM 路径随后失败/没接管，drag 回调也能无缝回退，
+            // 不会出现“按了边角却完全拖不动”。
+            if let Some(pointer) = resize_pointer(st) {
+                let pos = st.ui.window().position();
+                let size = st.ui.window().size();
+                st.resize = Some(WindowResize {
+                    dir,
+                    pointer,
+                    pos: (pos.x, pos.y),
+                    size: (size.width, size.height),
+                    since: Instant::now(),
+                });
+            } else {
+                st.resize = None;
+            }
+            if start_wm_live_resize(st, dir) {
+                st.wm_resize = true;
+                return;
+            }
+            if st.resize.is_none() {
+                eprintln!("[ui] 自绘 resize 无法启动：X11 指针不可用");
+            } else {
+                eprintln!("[ui] 自绘 resize dir={dir}");
+            }
         });
     });
 
     ui.on_window_resize_drag(|| {
         with_app(|st| {
+            if st.wm_resize {
+                let Some(r) = st.resize else { return };
+                let now = st.ui.window().size();
+                let wm_acted = (now.width, now.height) != r.size;
+                // WM 可能仍在驱动 live resize，也可能只是比我们晚一帧。给它 150ms
+                // 或一次真实尺寸变化；两者都没有才判定没接管，回退自绘保证能拖。
+                if wm_acted || r.since.elapsed() < Duration::from_millis(150) {
+                    return;
+                }
+                eprintln!("[ui] WM live resize 未接管指针，回退自绘 resize");
+                st.wm_resize = false;
+            }
             let Some(r) = st.resize else { return };
             let Some((px, py)) = resize_pointer(st) else { return };
             let dx = px - r.pointer.0;
@@ -4457,7 +4608,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     ui.on_end_window_resize(|| {
-        with_app(|st| st.resize = None);
+        with_app(|st| {
+            st.wm_resize = false;
+            st.wm_release_pending = false;
+            st.resize = None;
+        });
     });
 
     ui.on_input_trace(|kind, id, x, y| {
@@ -5372,6 +5527,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     ui.on_resized(|w, h| {
         with_app(|st| {
+            // WM live resize 期间指针被 WM grab，winit/Slint 收不到真实 ButtonRelease；
+            // TouchArea 会一直保持 pressed/grabbed，后续点击会继续命中旧方向。
+            // 收到第一帧由 WM 驱动的 resize 后，异步补发一次 PointerReleased 清理状态。
+            if st.wm_resize && !st.wm_release_pending {
+                st.wm_release_pending = true;
+                let weak = st.ui.as_weak();
+                slint::Timer::single_shot(Duration::ZERO, move || {
+                    let Some(ui) = weak.upgrade() else { return };
+                    let still_wm =
+                        matches!(with_app(|st| st.wm_resize && st.wm_release_pending), Some(true));
+                    if still_wm {
+                        ui.window().dispatch_event(
+                            slint::platform::WindowEvent::PointerReleased {
+                                position: slint::LogicalPosition::new(0.0, 0.0),
+                                button: slint::platform::PointerEventButton::Left,
+                            },
+                        );
+                    }
+                });
+            }
             // w/h 是 Slint 逻辑像素；worker 按 scale_factor 换算物理像素并节流去重。
             request_window_corners(st, Some((w, h)), None);
             let w = w.max(1.0);
@@ -5935,6 +6110,28 @@ mod tests {
         assert_eq!(mouse_button(2), MouseButton::Right);
         // 未知编码按左键兜底，绝不丢事件
         assert_eq!(mouse_button(99), MouseButton::Left);
+    }
+
+    #[test]
+    fn winit_resize_direction_matches_slint_resize_handles() {
+        use slint::winit_030::winit::window::ResizeDirection;
+        // 0=左上 1=上 2=右上 3=右 4=右下 5=下 6=左下 7=左，与 EWMH 完全同序。
+        let expected = [
+            ResizeDirection::NorthWest,
+            ResizeDirection::North,
+            ResizeDirection::NorthEast,
+            ResizeDirection::East,
+            ResizeDirection::SouthEast,
+            ResizeDirection::South,
+            ResizeDirection::SouthWest,
+            ResizeDirection::West,
+        ];
+        for (dir, want) in expected.into_iter().enumerate() {
+            assert_eq!(winit_resize_direction(dir as i32), Some(want), "dir={dir}");
+        }
+        for invalid in [-2, -1, 8, 9, 100, i32::MIN, i32::MAX] {
+            assert_eq!(winit_resize_direction(invalid), None, "dir={invalid}");
+        }
     }
 
     #[test]

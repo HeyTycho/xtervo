@@ -9,7 +9,7 @@
 |---|---|---|
 | `xconn.rs` | screen/pointer、`_NET_ACTIVE_WINDOW`、`_NET_WM_PID`、`_NET_WM_STATE`、图标、XShape 圆角 | Wayland 无这些全局窗口属性 |
 | `quake.rs` | X11 passive grab（F12）、窗口查找 | Wayland 不允许全局 grab；需 compositor portal/快捷键协议 |
-| `main.rs` resize | X11 优先 `_NET_WM_MOVERESIZE` 交 WM live resize；无 EWMH 时回退自绘 | Wayland 用 `xdg_toplevel.resize`，不能直接改坐标 |
+| `main.rs` resize | winit accessor 调 `drag_resize_window`：X11 在 winit 自己的连接 ungrab 后发 `_NET_WM_MOVERESIZE`；不支持/无 WM 时回退自绘 | Wayland 用 `xdg_toplevel.resize`，不能直接改坐标 |
 | `render.rs` | fontdue 软件光栅 + `SharedPixelBuffer` 上传 | 与平台无关，但每帧全量拷贝，GPU 收益被吃掉 |
 | `latency.rs` | XTest/XDamage 探针 | 仅测试工具，Wayland 需改用 compositor 帧回调 |
 
@@ -36,7 +36,7 @@ main/AppState ──► trait FrameRenderer
 - `screen_size()`, `pointer_position()`
 - `own_windows()`, `active_window()`, `activate_window(id)`
 - `set_window_icon(...)`, `set_rounded_corners(win, radius)`（X11 SHAPE 默认关闭，实验开关；Wayland no-op）
-- `begin_resize(dir) / resize_drag() / end_resize()`（X11 自己改 geometry；Wayland 交给 compositor）
+- `begin_resize(dir) / resize_drag() / end_resize()`（winit accessor 交 compositor；无 WM/不支持时回退自绘 geometry）
 - `register_quake_hotkey(...)`（X11 grab；Wayland 走 portal / compositor 快捷键，失败则提示）
 - `diagnostics()`（平台相关窗口/焦点信息）
 

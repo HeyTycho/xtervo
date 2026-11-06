@@ -232,30 +232,81 @@ pub fn wm_supports_moveresize(conn: &RustConnection, root: u32) -> bool {
     prop.value32().is_some_and(|mut it| it.any(|a| a == target))
 }
 
-/// 请求 WM/compositor 接管一次 live resize（无边框窗口的边/角拖动）。
+/// 一次拖边缩放最终走哪条路径。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResizeRoute {
+    /// WM/compositor 接管指针与 live resize（GNOME Terminal 同路）。
+    Wm,
+    /// 现有自绘：每帧 `query_pointer` + `set_size`/`set_position`。
+    Manual,
+}
+
+/// Slint `ResizeHandle` → EWMH `_NET_WM_MOVERESIZE` direction。
 ///
-/// EWMH `_NET_WM_MOVERESIZE` 的 direction 与 Slint 的 0..7 完全一致：
-/// 0=左上 1=上 2=右上 3=右 4=右下 5=下 6=左下 7=左。
-/// 发送后指针由 WM grab，窗口尺寸由 WM 驱动，应用不再每帧 set_size。
+/// 两者都是 0..7：0=左上 1=上 2=右上 3=右 4=右下 5=下 6=左下 7=左。
+/// 非法值返回 None，调用方必须回退自绘，不能把拖动吞掉。
+pub fn ewmh_resize_direction(direction: i32) -> Option<u32> {
+    (0..=7).contains(&direction).then_some(direction as u32)
+}
+
+/// 只有“WM 声明支持 + 请求已交给 WM”才选 WM 路径；任何未知/失败都回退自绘。
+pub fn resize_route(wm_supported: bool, wm_started: bool) -> ResizeRoute {
+    if wm_supported && wm_started {
+        ResizeRoute::Wm
+    } else {
+        ResizeRoute::Manual
+    }
+}
+
+/// 裸 X11 兜底：查 root pointer、XUngrabPointer、flush，再发 EWMH
+/// `_NET_WM_MOVERESIZE`（button=1，source=application，direction 0..7）。
+///
+/// **重要限制**：X server 只允许“持有 grab 的 client”释放 grab。本函数用的是
+/// 独立的 `xconn` 连接，**释放不了** winit/Slint 在它们自己连接上因按下按钮而产生
+/// 的隐式指针 grab。因此正常路径必须走 `winit::Window::drag_resize_window`
+/// （winit 在自己的连接内先 ungrab 再发同一个 EWMH 消息）。本函数只作为非 winit
+/// 后端的兜底与协议单测对象；调用方无论成功与否都要保留自绘回退。
 pub fn start_wm_resize(
     conn: &RustConnection,
     root: u32,
     window: u32,
     direction: i32,
-    x_root: i32,
-    y_root: i32,
 ) -> Result<(), String> {
     use x11rb::connection::Connection;
     use x11rb::protocol::xproto::{ClientMessageEvent, ConnectionExt as _, EventMask};
+
+    if !wm_supports_moveresize(conn, root) {
+        return Err("WM 的 _NET_SUPPORTED 不含 _NET_WM_MOVERESIZE".to_string());
+    }
+    let dir = ewmh_resize_direction(direction)
+        .ok_or_else(|| format!("非法 resize 方向 {direction}"))?;
+
+    // EWMH 要 root 坐标；先查指针，避免 ungrab 后状态变化影响坐标。
+    let reply = conn
+        .query_pointer(root)
+        .map_err(|e| format!("query_pointer 失败: {e}"))?
+        .reply()
+        .map_err(|e| format!("query_pointer 失败: {e}"))?;
+    let (x_root, y_root) = (reply.root_x as i32, reply.root_y as i32);
+
+    // 先释放本连接持有的 grab，并 flush 保证 ungrab 先于 client message 到服务器。
+    conn.ungrab_pointer(x11rb::CURRENT_TIME)
+        .map_err(|e| format!("ungrab_pointer 失败: {e}"))?;
+    conn.flush().map_err(|e| format!("flush 失败: {e}"))?;
+
     let atom = conn
         .intern_atom(false, b"_NET_WM_MOVERESIZE")
         .map_err(|e| e.to_string())?
         .reply()
         .map_err(|e| e.to_string())?
         .atom;
-    let dir = direction.clamp(0, 7) as u32;
-    // data: x_root, y_root, direction, button, source indication(1=application)
-    let event = ClientMessageEvent::new(32, window, atom, [x_root as u32, y_root as u32, dir, 1, 1]);
+    // data: x_root, y_root, direction, button(1=left), source(1=application)
+    let event = ClientMessageEvent::new(
+        32,
+        window,
+        atom,
+        [x_root as u32, y_root as u32, dir, 1, 1],
+    );
     conn.send_event(
         false,
         root,
@@ -1243,6 +1294,27 @@ fn clear_rounded_corners(conn: &RustConnection, window: u32) -> Result<(), Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ewmh_resize_direction_matches_slint_resize_handles() {
+        // Slint ResizeHandle 的 8 个 direction 与 EWMH 完全同序，不能重排。
+        let names = ["左上", "上", "右上", "右", "右下", "下", "左下", "左"];
+        for (dir, name) in names.iter().enumerate() {
+            assert_eq!(ewmh_resize_direction(dir as i32), Some(dir as u32), "{name}");
+        }
+        for invalid in [-2, -1, 8, 9, 100, i32::MIN, i32::MAX] {
+            assert_eq!(ewmh_resize_direction(invalid), None, "dir={invalid}");
+        }
+    }
+
+    #[test]
+    fn resize_route_falls_back_unless_wm_really_started() {
+        // 只有“支持 + 已交给 WM”才允许停掉自绘；其余组合都保证还能拖。
+        assert_eq!(resize_route(true, true), ResizeRoute::Wm);
+        assert_eq!(resize_route(false, true), ResizeRoute::Manual);
+        assert_eq!(resize_route(true, false), ResizeRoute::Manual);
+        assert_eq!(resize_route(false, false), ResizeRoute::Manual);
+    }
 
     #[test]
     fn corner_radius_is_zero_when_maximized_or_fullscreen() {

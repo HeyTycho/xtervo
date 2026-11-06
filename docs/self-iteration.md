@@ -1029,3 +1029,42 @@ cargo bench -p tervo-core --bench pty_throughput
 - 测试：204 passed；headless Xvfb（不再 Xephyr）验证启动/点击；Openbox 测试中
   回调可触发但 Openbox 不接受 EWMH maximize（测试 WM 限制），GNOME 待用户实测。
 
+### 2026-11-06 · 无边框窗口 live resize：winit accessor + 跨连接 Ungrab 实证
+
+- **问题**：自绘 `ResizeHandle` 每帧 `query_pointer` + `set_size` 卡顿；之前只发 EWMH
+  `_NET_WM_MOVERESIZE` 不 ungrab，拖动完全无反应。
+- **关键实证**：X server 的 `XUngrabPointer` 只对“持有 grab 的那个 client”生效。用两个
+  Xlib 连接 + XTest 在 `:105`/Openbox 对照：按下后不 ungrab → 540x472 不变；由另一个
+  连接 ungrab → 仍不变；由**同一连接** ungrab 后再发 EWMH → 540→700。因此
+  winit/Slint 的隐式 grab 必须由 winit 自己的连接释放，`xconn` 跨连接 ungrab 无效
+  （这正是上次 EWMH 完全不能拖的根因）。
+- **实现**：workspace slint 启用 `unstable-winit-030`；`on_start_window_resize` 经
+  `WinitWindowAccessor::with_winit_window` 调 `winit::Window::drag_resize_window`，
+  winit 在自己的 X11 连接内先 `XUngrabPointer`、flush，再发 `_NET_WM_MOVERESIZE`
+  （button=1/source=1/direction 0..7）；Wayland 由 winit 转 `xdg_toplevel.resize`。
+  成功后 `wm_resize=true`，drag/end 不再每帧 `set_size`。仅当 winit **实际使用 X11
+  后端**时才先查 `_NET_SUPPORTED`（Wayland+XWayland 同时有 DISPLAY 时不会误判）：
+  不支持则直接走自绘（若先调 winit，它会 ungrab；无 WM 接手时窗外 move 全部丢失，
+  自绘也会失效）。WM 抢走指针后 Slint 收不到真实 ButtonRelease，故收到
+  第一帧 WM resize 后异步补发 `WindowEvent::PointerReleased` 清理 TouchArea
+  pressed/grabbed；若 150ms 内尺寸没变且还能收到 move，则回退自绘。
+  `xconn::start_wm_resize` 按需求实现（查 root pointer、ungrab、flush、EWMH），保留为
+  非 winit 后端兜底与协议单测对象，源码注明跨连接 ungrab 限制。
+- **真实验证**（`Xvfb :105 -screen 0 1280x800x24 -ac -nolisten tcp` + `.perf/openbox`）：
+  `xclick 908 400 drag 1068 400` → 540x472 → 700x472，日志
+  `[ui] WM live resize dir=3 source=winit`；右下角 700x472 → 800x572，`dir=4`；
+  下边 800x572 → 800x622，`dir=5`；全程无回退日志。截图
+  `.logs/resizepolish/wm-resize-final.png`（`/.logs` 已忽略）。可复现脚本：
+  `scripts/e2e_wm_resize.sh`（隔离 Xvfb/Openbox、只 kill 自己的 pid），同机
+  `:109` 实测输出 `PASS: WM live resize 540x472 -> 700x472 -> 800x572`。
+- **无 WM 回退**（`:108` Xvfb，无窗口管理器）：日志
+  `[ui] WM 未声明 _NET_WM_MOVERESIZE，回退自绘 resize` + `[ui] 自绘 resize dir=3`，
+  `xclick` 540x472→700x472；右下角 dir=4，700x472→800x572，证明 fallback 真可用。
+- **测试**：`cargo test -p tervo-app --bin tervo` → **207 passed**（新增方向映射 2 例 +
+  fallback 选择 1 例）。
+- **限制**：只在 Openbox 验证，Mutter/GNOME 与真实 GPU 合成器的流畅度仍需用户实测；
+  Wayland 路径走 winit `xdg_toplevel.resize`，未实测；若 WM 在 `_NET_SUPPORTED` 里声明
+  支持却实际不接管，winit 已 ungrab 后应用可能收不到窗外 move（150ms watchdog 只有在
+  还能收到 move 时才生效），此时仍需换回自绘/重新拖动；`unstable-winit-030` 是 Slint
+  不稳定 feature，升级时要复核；DPI 跨屏仍未复测。
+
