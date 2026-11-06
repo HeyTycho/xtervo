@@ -184,6 +184,8 @@ struct AppState {
     /// 1003 悬停上报的上一格（按格去重，避免鼠标移动刷爆有界 ctrl 队列）。
     hover_cell: Option<(PaneId, (u16, u16))>,
     resize: Option<WindowResize>,
+    /// 当前 resize 已交给 WM（_NET_WM_MOVERESIZE）；此时不再每帧 set_size。
+    wm_resize: bool,
     xresize: Option<ResizeCtx>,
     /// X11 SHAPE 自适应圆角 worker；None = 未启动（X11 连接/线程失败，窗口保持直角）。
     corners: Option<xconn::CornerShaper>,
@@ -4132,6 +4134,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         settings_model,
         hover_cell: None,
         resize: None,
+        wm_resize: false,
         xresize: None,
         corners,
         clipboard: arboard::Clipboard::new().ok(),
@@ -4381,6 +4384,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui.on_start_window_resize(|dir| {
         with_app(|st| {
             ensure_resize_conn(st);
+            st.wm_resize = false;
+            // 首选：把 live resize 交给 WM/compositor（GNOME Terminal 同路）。
+            let sent = {
+                let Some(ctx) = st.xresize.as_ref() else { return };
+                let Some((px, py)) = xconn::query_pointer(&ctx.conn, ctx.root) else {
+                    return;
+                };
+                if !xconn::wm_supports_moveresize(&ctx.conn, ctx.root) {
+                    false
+                } else {
+                    let win = xconn::find_own_window(&ctx.conn, ctx.root, &st.opts.title);
+                    match win {
+                        Some(win) => match xconn::start_wm_resize(
+                            &ctx.conn, ctx.root, win, dir, px, py,
+                        ) {
+                            Ok(()) => true,
+                            Err(e) => {
+                                eprintln!("[ui] _NET_WM_MOVERESIZE 失败，回退自绘 resize: {e}");
+                                false
+                            },
+                        },
+                        None => false,
+                    }
+                }
+            };
+            if sent {
+                st.wm_resize = true;
+                eprintln!("[ui] WM live resize dir={dir}");
+                return;
+            }
+            // 回退：无 EWMH moveresize 的 WM/Xephyr 下继续自绘。
             let Some(pointer) = resize_pointer(st) else { return };
             let pos = st.ui.window().position();
             let size = st.ui.window().size();
@@ -4395,6 +4429,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     ui.on_window_resize_drag(|| {
         with_app(|st| {
+            if st.wm_resize {
+                return;
+            }
             let Some(r) = st.resize else { return };
             let Some((px, py)) = resize_pointer(st) else { return };
             let dx = px - r.pointer.0;
@@ -4453,7 +4490,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     ui.on_end_window_resize(|| {
-        with_app(|st| st.resize = None);
+        with_app(|st| {
+            st.wm_resize = false;
+            st.resize = None;
+        });
     });
 
     ui.on_input_trace(|kind, id, x, y| {

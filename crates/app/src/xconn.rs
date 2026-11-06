@@ -98,6 +98,68 @@ pub fn find_window(conn: &RustConnection, win: u32, title: &str, depth: usize) -
     None
 }
 
+/// WM 是否声明支持 `_NET_WM_MOVERESIZE`（GNOME/Mutter、KWin 等）。
+pub fn wm_supports_moveresize(conn: &RustConnection, root: u32) -> bool {
+    use x11rb::protocol::xproto::{AtomEnum, ConnectionExt as _};
+    let atom = match conn.intern_atom(false, b"_NET_SUPPORTED") {
+        Ok(c) => match c.reply() {
+            Ok(r) => r.atom,
+            Err(_) => return false,
+        },
+        Err(_) => return false,
+    };
+    let prop = match conn.get_property(false, root, atom, AtomEnum::ATOM, 0, 1024) {
+        Ok(c) => match c.reply() {
+            Ok(r) => r,
+            Err(_) => return false,
+        },
+        Err(_) => return false,
+    };
+    let target = match conn.intern_atom(false, b"_NET_WM_MOVERESIZE") {
+        Ok(c) => match c.reply() {
+            Ok(r) => r.atom,
+            Err(_) => return false,
+        },
+        Err(_) => return false,
+    };
+    prop.value32().is_some_and(|mut it| it.any(|a| a == target))
+}
+
+/// 请求 WM/compositor 接管一次 live resize（无边框窗口的边/角拖动）。
+///
+/// EWMH `_NET_WM_MOVERESIZE` 的 direction 与 Slint 的 0..7 完全一致：
+/// 0=左上 1=上 2=右上 3=右 4=右下 5=下 6=左下 7=左。
+/// 发送后指针由 WM grab，窗口尺寸由 WM 驱动，应用不再每帧 set_size。
+pub fn start_wm_resize(
+    conn: &RustConnection,
+    root: u32,
+    window: u32,
+    direction: i32,
+    x_root: i32,
+    y_root: i32,
+) -> Result<(), String> {
+    use x11rb::connection::Connection;
+    use x11rb::protocol::xproto::{ClientMessageEvent, ConnectionExt as _, EventMask};
+    let atom = conn
+        .intern_atom(false, b"_NET_WM_MOVERESIZE")
+        .map_err(|e| e.to_string())?
+        .reply()
+        .map_err(|e| e.to_string())?
+        .atom;
+    let dir = direction.clamp(0, 7) as u32;
+    // data: x_root, y_root, direction, button, source indication(1=application)
+    let event = ClientMessageEvent::new(32, window, atom, [x_root as u32, y_root as u32, dir, 1, 1]);
+    conn.send_event(
+        false,
+        root,
+        EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY,
+        event,
+    )
+    .map_err(|e| e.to_string())?;
+    conn.flush().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// 找到属于当前进程的窗口（用 `_NET_WM_PID` 精确区分多实例）。
 pub fn find_own_window(conn: &RustConnection, root: u32, title: &str) -> Option<u32> {
     use x11rb::protocol::xproto::{AtomEnum, ConnectionExt};
