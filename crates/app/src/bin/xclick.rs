@@ -65,13 +65,14 @@ fn main() {
     if drag {
         let x2: i16 = args.get(4).and_then(|v| v.parse().ok()).unwrap_or(x);
         let y2: i16 = args.get(5).and_then(|v| v.parse().ok()).unwrap_or(y);
-        let steps = 8;
+        let steps: i16 = std::env::var("XCLICK_STEPS").ok().and_then(|v| v.parse().ok()).unwrap_or(8);
+        let interval: u64 = std::env::var("XCLICK_INTERVAL_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(16);
         for i in 1..=steps {
             let mx = x + (x2 - x) * i / steps;
             let my = y + (y2 - y) * i / steps;
             xtest::fake_input(&conn, MOTION, 0, x11rb::CURRENT_TIME, root, mx, my, 0).expect("motion");
             conn.flush().unwrap();
-            std::thread::sleep(std::time::Duration::from_millis(16));
+            std::thread::sleep(std::time::Duration::from_millis(interval));
         }
         xtest::fake_input(&conn, RELEASE, button, x11rb::CURRENT_TIME, root, x2, y2, 0)
             .expect("release");
