@@ -1289,3 +1289,14 @@ cargo bench -p tervo-core --bench pty_throughput
   - `xwd -id` 与 live resize 有竞态：窗口在 geometry 查询与 XGetImage 之间继续缩放时，
     会抓到“右侧黑边/错行条纹”的伪帧（软件后端同样有黑边，只是没有背景条纹）。按钮
     验证只用 geometries 前后一致的干净帧，不把伪帧当应用缺陷；真机肉眼复测仍需做。
+
+### 2026-11-06 · dsh-tui 分屏兼容：右键 contextmenu 优先给 TUI
+
+- dsh-tui 的“分屏”不是 Tervo 分 pane，而是单 PTY 内 Ink 渲染的右侧栏：
+  `sidePanel.splitEnabled` + `canSplit(columns>=93)` + ratio 0.68 + 1 列 divider。
+- 兼容缺口：dsh-tui 用 SGR button 2（右键 press）实现 ContextMenuEvent；Tervo 原先
+  在 mouse-reporting pane 里把普通右键拦成本地菜单，侧栏右键失效。
+- 修复：mouse-reporting 下普通右键转发给 TUI；Tervo 菜单改为 Shift+右键。
+  非 mouse-reporting 的普通 shell 仍是普通右键开 Tervo 菜单。
+- 测试：伪 mouse-reporting TUI 收到 `<2;col;rowM/m`；非上报右键菜单不受影响。
+

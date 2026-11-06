@@ -1426,21 +1426,21 @@ export component MainWindow inherits Window {
                                     root.pane-middle-click(p.id);
                                     return EventResult.accept;
                                 }
-                                // 只剩 Shift+右键转发给 TUI；普通右键留给 Tervo 的菜单/粘贴模式。
+                                // mouse-reporting TUI（dsh-tui/vim/tmux）普通右键先给 TUI：
+                                // dsh-tui 用 SGR button 2 的 contextmenu，如果这里拦成本地
+                                // 菜单，侧栏右键就会失效。Tervo 菜单改用 Shift+右键。
                                 if (p.mouse-reporting
                                     && event.button == PointerEventButton.right
-                                    && event.modifiers.shift) {
-                                    if (event.button == PointerEventButton.right) {
-                                        root.input-trace("pane-right-forward", p.id,
-                                            pane-hit.mouse-x, pane-hit.mouse-y);
-                                    }
+                                    && !event.modifiers.shift) {
+                                    root.input-trace("pane-right-forward", p.id,
+                                        pane-hit.mouse-x, pane-hit.mouse-y);
                                     ime.focus();
                                     root.pane-clicked(p.id);
-                                    root.pane-mouse-down(p.id, pane-hit.mouse-x, pane-hit.mouse-y,
-                                        event.button == PointerEventButton.right ? 2 : 1,
+                                    root.pane-mouse-down(p.id, pane-hit.mouse-x, pane-hit.mouse-y, 2,
                                         (event.modifiers.shift ? 1 : 0) + (event.modifiers.alt ? 2 : 0) + (event.modifiers.control ? 4 : 0));
                                     return EventResult.accept;
                                 }
+                                // Shift+右键（或非上报模式）打开 Tervo 菜单。
                                 // 非上报模式：右键在“按下”时开菜单并 accept。
                                 // 之前只在 up 开：down 被 reject 时 Slint 不保证把 up 再送给本 TouchArea，
                                 // 鼠标轻微移动/经过分隔线就会丢事件，表现为“有时候右键唤不出菜单”。
@@ -1474,9 +1474,8 @@ export component MainWindow inherits Window {
                                 }
                                 if (p.mouse-reporting
                                     && event.button == PointerEventButton.right
-                                    && event.modifiers.shift) {
-                                    root.pane-mouse-up(p.id, pane-hit.mouse-x, pane-hit.mouse-y,
-                                        event.button == PointerEventButton.right ? 2 : 1,
+                                    && !event.modifiers.shift) {
+                                    root.pane-mouse-up(p.id, pane-hit.mouse-x, pane-hit.mouse-y, 2,
                                         (event.modifiers.shift ? 1 : 0) + (event.modifiers.alt ? 2 : 0) + (event.modifiers.control ? 4 : 0));
                                     return EventResult.accept;
                                 }
