@@ -1,0 +1,433 @@
+# Tervo 插件系统：目标、运行时、能力类型与市场调研
+
+> 状态：设计稿（2026-11-06）  
+> 范围：终端插件/扩展系统，不包含普通主题文件的实现细节。  
+> 结论先行：**核心不做插件；高频用 Rust/WASM，低频用 sidecar，UI 用声明式插槽，绝不引入原生 dylib 插件。**
+
+## 1. 目标
+
+Tervo 的插件系统要满足四件事：
+
+1. **可扩展**：主题、命令、链接识别、图片协议、连接类型、状态栏等可以由第三方扩展。
+2. **不拖垮终端**：插件不能出现在 PTY/解析/渲染/IME 的热路径上；不得阻塞 UI。
+3. **可隔离**：插件崩溃、死循环、OOM 不能带崩终端；默认最小权限。
+4. **可长期维护**：不引入 Rust ABI/dylib 地狱，不让插件和 Tervo 编译器版本死绑。
+
+### 非目标
+
+- **不追求完整 Tabby/Electron npm 插件兼容**：Tabby 插件可以直接操作 Angular/Electron/xterm.js，Tervo 的 Rust/Slint 模型不同，只能做能力子集。
+- **不允许插件写任意 Slint UI**：插件通过宿主定义的 schema/slot 扩展 UI，避免 UI 与插件 ABI 耦合。
+- **不把终端核心插件化**：PTY、解析器、渲染、IME、键盘协议、选区、滚动继续内置 Rust。
+- **不做原生 `cdylib`/`dlopen` 插件**：ABI 不稳定、崩溃会带崩主进程、无法安全沙箱。
+- **不做每帧/每键跨进程调用**：高频能力必须在进程内或内置。
+
+## 2. 运行时架构
+
+```text
+┌──────────────────────────────────────────────┐
+│ Tervo Core（Rust）                            │
+│  PTY / alacritty / render / input / config   │
+│                                              │
+│  ┌──────────────┐   ┌────────────────────┐  │
+│  │ WASM Runtime │   │ Plugin Host API     │  │
+│  │ wasmtime     │←──│ commands/hooks/UI   │  │
+│  └──────┬───────┘   └─────────┬──────────┘  │
+│         │                     │             │
+└─────────┼─────────────────────┼─────────────┘
+          │                     │
+   ┌──────▼──────┐       ┌──────▼──────────┐
+   │ WASM 插件    │       │ 外部 sidecar     │
+   │ 高频/温路径  │       │ SSH/SFTP/迭代器  │
+   └─────────────┘       └─────────────────┘
+```
+
+### 2.1 三种插件形态
+
+| 形态 | 运行位置 | 适合 | 语言 | 性能 |
+|---|---|---|---|---|
+| **Declarative Pack** | 核心解析 | 主题、快捷键、Profile 片段、布局预设 | TOML/JSON | 无调用开销 |
+| **WASM Plugin** | wasmtime 沙箱 | linkifier、图像解码、协议过滤、命令、设置 schema | Rust、AssemblyScript、C/Zig | 接近原生 |
+| **Sidecar Plugin** | 独立进程 + JSON-RPC | SSH/SFTP、Docker/K8s、同步、自迭代 | Rust/Go/TS/Python | 冷路径，IPC 成本 |
+
+**禁止**：原生动态库插件。
+
+### 2.2 为什么 WASM 是主力
+
+- 进程内调用，避免 IPC 每次几十微秒；
+- 沙箱、fuel/内存上限、超时可配；
+- AOT 预编译后启动快；
+- 语言可扩展，Rust 优先，AssemblyScript 方便 JS 背景作者；
+- 崩溃隔离优于 native dylib。
+
+### 2.3 为什么 sidecar 只做冷路径
+
+- 每次 Unix socket 往返 + 序列化，适合命令/连接/文件操作，不适合每帧；
+- 独立进程崩溃不拖死终端；
+- 可复用现有 SSH/SFTP/Go/Python 生态；
+- 可用共享内存优化大块数据传输。
+
+## 3. 支持的插件类型
+
+### 3.1 V1：先做“低风险、可声明”
+
+| 类型 | 能力 | 形态 | 示例 |
+|---|---|---|---|
+| Theme Pack | 颜色、字体、光标、背景预设 | TOML | Tokyo Night、Tabby 主题导入 |
+| Keymap Pack | 快捷键覆盖 | TOML | Ctrl+Shift 组合 |
+| Profile Preset | shell/args/cwd/env/连接预设 | TOML | 开发环境模板 |
+| Command | 命令面板/快捷键动作 | WASM 或声明 | “清屏并重置”、 “复制当前路径” |
+| Linkifier | 从行文本识别链接/路径 | WASM | URL、issue、文件路径、自定义规则 |
+| Status Provider | 状态栏文本/图标/颜色 | WASM 返回值 | Git 分支、K8s context、AI 状态 |
+| Tab Badge | Tab 颜色/角标/tooltip | 宿主 schema | 构建状态、SSH 主机 |
+| Settings Schema | 设置页新增声明式字段 | TOML/WASM | 插件配置页 |
+| Context Menu Item | 右键菜单增加命令 | 声明 | “在浏览器打开” |
+
+V1 不开放：自定义 Slint 组件、任意面板、原生网络/文件访问。
+
+### 3.2 V2：受控的 UI 与协议扩展
+
+| 类型 | 能力 | 约束 |
+|---|---|---|
+| Image Decoder | Sixel/IIP/自定义图片格式解码 | 只输出 RGBA + 尺寸；placement 由核心做 |
+| Protocol Filter | OSC/DCS/CSI 扩展解析 | 只读/受限写；不能绕过白名单 |
+| Sidebar/Panel | 声明式面板 + 数据源 | 宿主提供布局/滚动/主题；插件不写 Slint |
+| Connection Transport | SSH/SFTP/串口/自定义 | sidecar + 权限声明 |
+| Profile Provider | 动态生成 Profile/凭据引用 | 不直接读 Vault 明文 |
+| Completion Provider | 命令补全 | 有超时/取消 |
+| Trigger/Automation | 输出匹配 → 动作 | 规则声明 + 受限动作 |
+
+V2 仍不开放：任意 UI 代码、直接 PTY 写、无限制文件/网络。
+
+### 3.3 V3：市场与兼容层
+
+- 签名插件市场、版本/平台分发、自动更新；
+- Tabby 插件**能力子集**兼容层（命令/主题/Profile/连接），不承诺 npm UI 插件；
+- 可选 WASM Component Model ABI；
+- 可选 native sidecar 市场（仍独立进程）。
+
+### 3.4 永远不做成插件
+
+- 终端解析器；
+- 渲染器/GPU/Sixel placement；
+- PTY/进程生命周期；
+- IME/键盘编码；
+- 鼠标/选区/滚动核心；
+- 安全边界（Vault 解锁、权限决定）。
+
+## 4. 插件 API 草案
+
+### 4.1 Manifest
+
+```toml
+[plugin]
+id = "dev.tervo.linkifier"
+name = "GitHub Linkifier"
+version = "0.1.0"
+api = 1
+runtime = "wasm"          # wasm | process
+entry = "plugin.wasm"
+description = "识别 GitHub issue/PR 链接"
+
+[permissions]
+clipboard = false
+network = false
+filesystem = "none"       # none | read-plugin | read-home | custom
+process = false
+credentials = "none"      # none | profile-ref
+
+[contributes]
+commands = ["open-issue"]
+linkifier = true
+settings = true
+status = false
+```
+
+### 4.2 Hooks
+
+插件只收到自己声明的事件：
+
+```text
+on_start(ctx)
+on_command(id, args)
+on_linkify(line_view, output_spans)
+on_status(ctx) -> StatusItem[]
+on_settings_schema() -> SettingsSchema
+on_output_filter(chunk) -> FilterResult   # V2，严格权限
+on_profile_provider(...)                   # V2 sidecar
+```
+
+### 4.3 热路径数据布局
+
+不要 JSON。WASM 线性内存传 offset/len：
+
+```rust
+#[repr(C)]
+struct BufferView { ptr: u32, len: u32, generation: u64 }
+
+#[repr(C)]
+struct Span { start: u32, end: u32, kind: u8 }
+```
+
+宿主预分配 output buffer，插件返回数量；宿主不把 `Vec<String>` 跨边界。
+
+### 4.4 UI 扩展
+
+V1/V2 只提供**声明式插槽**：
+
+- 设置页字段：string/bool/number/enum/path/color；
+- 状态栏 item：text/icon/tooltip/command；
+- Tab badge：color/text/tooltip；
+- 右键菜单 item；
+- 命令面板 item；
+- 侧栏 panel：列表/树/表单（V2）。
+
+插件返回数据，Slint 组件由宿主渲染；这样主题、DPR、可访问性、布局都统一。
+
+## 5. 性能契约
+
+### 5.1 调用分级
+
+| 路径 | 频率 | 允许的插件形态 | 预算 |
+|---|---|---|---|
+| 按键/输入 | 每键 | 不允许插件 | 0 |
+| 终端解析/渲染 | 每帧 | 不允许插件 | 0 |
+| Linkifier | 每 dirty line/帧 | WASM，批量 | p99 < 0.5ms/200 行 |
+| 图片解码 | 每图 | WASM worker | 不阻塞 UI |
+| 状态栏/Tab | 1–10Hz | WASM/声明 | < 0.1ms |
+| 命令/设置 | 用户操作 | WASM/sidecar | < 50ms |
+| SSH/SFTP/迭代 | 秒级 | sidecar | 不阻塞 UI |
+
+### 5.2 规则
+
+1. **UI 线程不等插件**：提交请求，应用上一帧结果；latest-wins。
+2. **批量**：整行/整屏传入，不逐 cell 调用。
+3. **零拷贝**：WASM 线性内存 offset/len；进程插件共享内存。
+4. **缓存**：行 hash/generation、图片 hash、设置 schema；负缓存。
+5. **AOT**：安装时预编译 `.cwasm`，启动直接 deserialize；缓存 key 含插件 hash、host API、wasmtime 版本、CPU/平台。
+6. **超时/降级**：单次超预算取消；连续超时自动禁用插件。
+7. **背压**：有界队列；只保留最新请求；丢弃过期 generation。
+8. **兴趣过滤**：只调用声明了 hook 的插件；支持 early-exit。
+9. **启动懒加载**：首屏不加载全部插件；空闲预热。
+10. **基准门禁**：每次插件 API 变更跑 criterion + 端到端延迟。
+
+### 5.3 不做的优化
+
+- 不为插件调用做“每帧 JIT”；
+- 不让插件直接操作 framebuffer；
+- 不让 sidecar 每键往返；
+- 不用 JSON 传每帧文本。
+
+## 6. 安全与分发
+
+| 风险 | 对策 |
+|---|---|
+| 恶意插件读凭据 | 权限声明 + Vault 引用，不传明文 |
+| 插件崩溃 | WASM 沙箱/sidecar 隔离；超时/重启 |
+| 插件死循环 | fuel/epoch 超时；强制取消 |
+| 插件 OOM | 线性内存上限；宿主预算 |
+| 插件篡改缓存 | hash + 签名；原子安装 |
+| 安装时执行代码 | 只 AOT 编译 WASM，不跑 build.rs |
+| 供应链 | 签名索引、版本锁定、可回滚 |
+
+安装流程：
+
+```text
+下载 .wasm / sidecar
+→ 校验 sha256 + 签名
+→ 检查 host API/平台
+→ wasmtime 预编译 .cwasm
+→ 原子写入缓存
+→ 注册 manifest
+```
+
+失败不能阻止 Tervo 启动；插件管理器显示禁用原因。
+
+## 7. 市场调研：终端插件都在做什么
+
+> 目的不是照抄，而是判断用户期待和 Tervo 的差异化。不同终端的插件模型差异很大。
+
+### 7.1 Tabby（Electron + xterm.js，npm 插件）
+
+Tabby 是最接近 Tervo 的对标：插件是 JS/TS 模块，可注册连接类型、命令、UI 组件、设置页、Profile 选项。
+
+典型能力：
+
+- **连接**：SSH、SFTP、串口、RDP、Docker、Kubernetes、端口转发；
+- **工作流**：Quick Commands、命令面板、登录脚本、post-connect actions；
+- **终端增强**：链接识别、命令跳转（jumper）、文本高亮、编码切换、剪贴板图片粘贴、Shift+Enter/反斜杠换行；
+- **UI**：主题、Tab 颜色/进度、状态栏、可拖拽快捷命令按钮；
+- **集成**：配置同步、Vault、AI/agent 状态、MCP 类连接。
+
+代表插件（npm/社区，名称仅作市场例子）：
+
+```text
+tabby-k8s
+tabby-clipboard-image
+tabby-encoding
+tabby-jumper
+tabby-advanced-highlight
+tabby-quick-cmds-buttons-modern
+tabby-post-connect-actions
+tabby-ssh-auth-socket
+tabby-ssh-keymap
+tabby-rdp（RDP helper）
+tabby-fit-screen
+```
+
+Tabby 的优势是 Electron 里什么都能做；代价是包体、内存、启动、原生集成弱。Tervo 不应该复制其运行时，而应复制**能力分类**。
+
+### 7.2 Hyper（Electron/JS）
+
+插件主要是 UI 和终端外观：
+
+```text
+主题、透明度、边框、Tab、搜索、cwd 同步、窗口 summon、保存窗口
+```
+
+说明“主题/外观/快捷操作”是插件市场的基础盘，但技术门槛低、可替代性强。
+
+### 7.3 iTerm2（macOS，Python API）
+
+不是 npm 市场，而是 Python 脚本/触发器：
+
+```text
+状态栏组件、触发器（输出匹配→动作）、自动 Profile 切换、
+shell integration、tmux 集成、图片协议、AppleScript 自动化
+```
+
+值得借鉴：**触发器/自动化**和 **shell integration** 是高频生产力功能，但需要稳定的输出事件 API。
+
+### 7.4 kitty（kittens，Python）
+
+kitty 的“插件”更像内置/外部 kitten：
+
+```text
+hints（URL/路径/哈希选择）
+icat（图片）
+clipboard
+ssh
+transfer（文件传输）
+broadcast（多 pane 同步输入）
+choose-files
+hyperlinked_grep
+themes
+```
+
+值得借鉴：**hints/链接选择、文件传输、广播输入** 是终端原生能力，不一定要做成第三方插件。
+
+### 7.5 Zellij（WASM 插件）
+
+Zellij 的 WASM 插件模型最接近 Tervo 想做的方向：
+
+```text
+status bar、tab bar、session manager、strider（文件浏览）、
+compact bar、配置/布局插件
+```
+
+权限/沙箱/版本化 ABI 是重点；说明 **WASM 插件做 UI 数据源是可行的**，但需要宿主提供组件模型。
+
+### 7.6 tmux / WezTerm（脚本生态）
+
+- **tmux**：TPM 插件，resurrect（会话恢复）、continuum、fzf、logging、copycat、yank；
+- **WezTerm**：Lua 配置/插件，resurrect、tabline、workspace、command palette、smart splits。
+
+说明：**会话恢复、命令面板、workspace、状态栏**是终端用户长期高频需求。
+
+### 7.7 没有插件市场的终端
+
+- Alacritty：无插件 API；
+- GNOME Terminal / Windows Terminal：无第三方代码插件；
+- Warp：workflows/themes，不是开放插件。
+
+这给 Tervo 的机会：**原生性能 + 受控插件 + 自迭代**，而不是再做一个 Electron 插件市场。
+
+### 7.8 市场功能归类
+
+| 类别 | 用户期待 | Tervo 策略 |
+|---|---|---|
+| 连接/传输 | SSH/SFTP/串口/RDP/Docker/K8s/端口转发 | sidecar 插件 + 核心连接 API |
+| 会话/工作区 | 恢复 Tab/分屏/cwd、workspace、session manager | 核心功能，不做插件 |
+| 生产力 | Quick Commands、命令面板、跳转、触发器、广播 | 核心 + 声明式/WASM |
+| 终端增强 | 链接、图片、编码、高亮、剪贴板图片 | 核心 + WASM |
+| 外观 | 主题、Tab 颜色、状态栏、透明度、背景 | 声明式 Pack |
+| 集成 | Git、AI/agent 状态、同步、MCP | 状态 provider/sidecar |
+| 自动化 | 登录脚本、post-connect、输出触发 | 声明式规则 + sidecar |
+| 自迭代 | 轮次、测试、截图、批准 | 外部 `tervo-iterate` |
+
+## 8. Tervo 分阶段路线
+
+### Phase A：P0 稳定后（V1）
+
+```text
+1. Plugin manifest + 权限声明
+2. Declarative: theme/keymap/profile/settings schema
+3. Command + context menu + status bar
+4. Linkifier WASM（批量 + 缓存 + 超时）
+5. AOT 预编译缓存
+```
+
+验收：插件崩溃/超时不影响输入；linkifier p99 达标；插件禁用可恢复。
+
+### Phase B：V2
+
+```text
+1. Image decoder WASM 接口（Sixel/IIP）
+2. Settings/status/tab 插槽完善
+3. Sidecar JSON-RPC + 共享内存
+4. SSH/SFTP/连接传输插件 API
+5. Trigger/automation 规则
+```
+
+验收：图片解码不阻塞 UI；sidecar 崩溃可重启；权限拒绝可解释。
+
+### Phase C：V3
+
+```text
+1. 签名市场/安装/更新/回滚
+2. Tabby 能力子集兼容
+3. 可选 WASM Component Model
+4. 性能/安全审计工具
+```
+
+### 自迭代插件
+
+`tervo-iterate` 是**外部 sidecar**，不是终端内插件：
+
+```text
+tervo-iterate
+  ├─ planner（只读 Codex/DSH）
+  ├─ worker（worktree）
+  ├─ verifier（不可变测试）
+  └─ release/rollback
+```
+
+Tervo 只提供可选 UI 插件显示轮次/测试/批准，不让 UI 进程改自己的二进制。
+
+## 9. 开放问题
+
+1. WASM Component Model 还是自定义 ABI？
+2. 是否支持 AssemblyScript 作为一等语言？
+3. 插件市场签名/托管由谁负责？
+4. Tabby 兼容层做到命令/主题/Profile 还是也做 UI？
+5. 是否允许插件声明自定义协议解析（安全边界）？
+6. 多插件链式 linkifier 的优先级/冲突规则？
+7. 插件 UI 插槽的版本化/废弃策略？
+
+## 10. 相关文档
+
+- [`FEATURE_MATRIX.md`](FEATURE_MATRIX.md)
+- [`self-iteration.md`](self-iteration.md)
+- [`STABILITY_REPORT.md`](STABILITY_REPORT.md)
+- [`tabby-parity.md`](tabby-parity.md)
+- [`themes.md`](themes.md)
+- [`LOGGING.md`](LOGGING.md)
+
+## 11. 参考
+
+- Tabby: <https://github.com/Eugeny/tabby>
+- Hyper: <https://github.com/vercel/hyper>
+- iTerm2 Python API: <https://iterm2.com/python-api/>
+- kitty kittens: <https://sw.kovidgoyal.net/kitty/kittens_intro/>
+- Zellij plugins: <https://zellij.dev/documentation/plugins>
+- tmux plugins: <https://github.com/tmux-plugins>
+- WezTerm: <https://wezterm.org/>

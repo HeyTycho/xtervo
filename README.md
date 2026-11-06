@@ -136,7 +136,8 @@ ls -l dist/ && file dist/tervo && ./dist/tervo --help
   也支持把 iTerm2 / Windows Terminal / Alacritty / kitty / Xresources 主题直接放进 `themes/` 目录。
 - Tabby 功能对照见 [`docs/tabby-parity.md`](docs/tabby-parity.md)；
   主题下载/自定义见 [`docs/themes.md`](docs/themes.md)，Tabby 主题机制调研见 [`docs/tabby-themes.md`](docs/tabby-themes.md)；
-  度量/诊断/改进/门禁闭环见 [`docs/self-iteration.md`](docs/self-iteration.md)。
+  度量/诊断/改进/门禁闭环见 [`docs/self-iteration.md`](docs/self-iteration.md)；
+  插件目标/运行时/能力类型/市场调研见 [`docs/PLUGIN_SYSTEM.md`](docs/PLUGIN_SYSTEM.md)。
 
 ## 日常使用
 
