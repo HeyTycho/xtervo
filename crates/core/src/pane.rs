@@ -664,6 +664,7 @@ pub fn spawn(config: PaneConfig) -> std::io::Result<PaneHandle> {
         sel_anchor: None,
         pty_closed: false,
         force_full: false,
+        refresh_zerowidth: false,
         search_span: None,
     };
     let actor_thread = thread::Builder::new()
@@ -743,6 +744,8 @@ struct Actor {
     sel_anchor: Option<Point>,
     pty_closed: bool,
     force_full: bool,
+    /// 零宽字符到达后要求下一次整帧重取时扫描组合字符（见 feed）。
+    refresh_zerowidth: bool,
     search_span: Option<Span>,
 }
 
@@ -818,6 +821,14 @@ impl Actor {
     #[inline]
     fn feed(&mut self, bytes: &[u8]) {
         let start = Instant::now();
+        // 组合音标/ZWJ/VS 是零宽字符，alacritty 把它们挂到前一个格子上但**不标
+        // damage**（见 Term::input 的 width == 0 分支）。如果它们单独成批到达，
+        // 按脏行拉帧会永远看不到；这里检测到零宽码位就下一帧整屏重取。
+        if has_zero_width_chars(bytes) {
+            self.force_full = true;
+            // 组合字符不产生 damage，必须整帧重取并扫描零宽表，才能发现它挂到哪一格。
+            self.refresh_zerowidth = true;
+        }
         // 先扫通知类 OSC/BEL：这些序列 vte 内部不转发给 EventListener。
         let mut notif_events = Vec::new();
         self.osc.feed(bytes, &mut notif_events);
@@ -1081,13 +1092,44 @@ impl Actor {
     fn fill(&mut self, frame: &mut Frame) {
         use std::sync::atomic::Ordering::Relaxed;
         let start = Instant::now();
-        fill_frame(&mut self.term, frame, &self.palette.read(), self.force_full, self.search_span);
+        fill_frame(
+            &mut self.term,
+            frame,
+            &self.palette.read(),
+            self.force_full,
+            self.search_span,
+            self.refresh_zerowidth,
+        );
         self.force_full = false;
+        self.refresh_zerowidth = false;
         let nanos = start.elapsed().as_nanos() as u64;
         self.stats.pulls.fetch_add(1, Relaxed);
         self.stats.fill_nanos.fetch_add(nanos, Relaxed);
         self.stats.cells_copied.fetch_add(frame.copied_cells as u64, Relaxed);
     }
+}
+
+/// 本批字节里是否有零宽码位（组合音标、ZWJ、变体选择符等）。
+///
+/// alacritty 的 `width() == 0` 分支只把字符挂到前一格，不产生 damage；调用方
+/// 据此强制一次整帧刷新，避免后到的组合字符丢失。宽度判定用与 alacritty 相同
+/// 的 unicode-width 表，避免两边对“零宽”的定义不一致。
+pub(crate) fn has_zero_width_chars(bytes: &[u8]) -> bool {
+    use unicode_width::UnicodeWidthChar;
+
+    if bytes.is_ascii() {
+        return false;
+    }
+    let text = match std::str::from_utf8(bytes) {
+        Ok(text) => text,
+        // 只有合法前缀能解码；PTY 在 UTF-8 中间切块时尾部的半个字符交给下一批，
+        // 这里不能因为“尾部不完整”就整帧刷新（否则大段中文输出每块都全刷）。
+        Err(e) => match std::str::from_utf8(&bytes[..e.valid_up_to()]) {
+            Ok(text) => text,
+            Err(_) => return false,
+        },
+    };
+    text.chars().any(|c| c.width() == Some(0))
 }
 
 /// 把 `Term` 的 damage 转成 UI 可消费的帧（actor 与 bench 共用）。
@@ -1097,9 +1139,14 @@ pub fn fill_frame<T: EventListener>(
     palette: &Palette,
     force_full: bool,
     search: Option<Span>,
+    refresh_zerowidth: bool,
 ) {
     let cols = term.columns();
     let rows = term.screen_lines();
+    // 组合字符是极少数：没有零宽输入、且帧里本来就没有记录时，整屏拷贝保持
+    // 无分支热路径（否则 200x50 整屏 pull 会慢一倍）。只有确实可能有组合字符时
+    // 才多读每格的 `Cell::zerowidth()`。
+    let had_zerowidth = frame.has_zerowidth();
     frame.ensure_size(cols, rows);
 
     frame.generation += 1;
@@ -1147,19 +1194,45 @@ pub fn fill_frame<T: EventListener>(
         if full {
             frame.damage.clear();
             frame.reset_links();
+            frame.clear_zerowidth();
             // 视口行 -> grid 行：display_offset > 0 时顶部是 Line(-offset)
             let origin = -(display_offset as i32);
-            for row in 0..rows {
-                let line = Line(row as i32 + origin);
-                let base = row * cols;
-                for col in 0..cols {
-                    let cell = &grid[Point::new(line, Column(col))];
-                    let link = cell.hyperlink();
-                    frame.put(
-                        base + col,
-                        CellData::from_cell(cell, palette),
-                        link.as_ref().map(|h| h.uri()),
-                    );
+            let scan_zerowidth = refresh_zerowidth || had_zerowidth;
+            if scan_zerowidth {
+                for row in 0..rows {
+                    let line = Line(row as i32 + origin);
+                    let base = row * cols;
+                    for col in 0..cols {
+                        let cell = &grid[Point::new(line, Column(col))];
+                        let data = CellData::from_cell(cell, palette);
+                        let link = cell.hyperlink();
+                        let zerowidth = cell.zerowidth().unwrap_or(&[]);
+                        if zerowidth.is_empty() {
+                            frame.put(base + col, data, link.as_ref().map(|h| h.uri()));
+                        } else {
+                            frame.put_zerowidth(
+                                base + col,
+                                data,
+                                link.as_ref().map(|h| h.uri()),
+                                zerowidth,
+                            );
+                        }
+                    }
+                }
+            } else {
+                // 热路径：与加入零宽支持前完全一致，避免为罕见组合字符拖慢整屏。
+                for row in 0..rows {
+                    let line = Line(row as i32 + origin);
+                    let base = row * cols;
+                    for col in 0..cols {
+                        let cell = &grid[Point::new(line, Column(col))];
+                        let link = cell.hyperlink();
+                        frame.put(
+                            base + col,
+                            CellData::from_cell(cell, palette),
+                            link.as_ref().map(|h| h.uri()),
+                        );
+                    }
                 }
             }
             frame.copied_cells = (rows * cols) as u32;
@@ -1170,12 +1243,19 @@ pub fn fill_frame<T: EventListener>(
                 let base = d.line as usize * cols;
                 for col in d.left as usize..=d.right as usize {
                     let cell = &grid[Point::new(line, Column(col))];
+                    let data = CellData::from_cell(cell, palette);
                     let link = cell.hyperlink();
-                    frame.put(
-                        base + col,
-                        CellData::from_cell(cell, palette),
-                        link.as_ref().map(|h| h.uri()),
-                    );
+                    let zerowidth = cell.zerowidth().unwrap_or(&[]);
+                    if zerowidth.is_empty() {
+                        frame.put(base + col, data, link.as_ref().map(|h| h.uri()));
+                    } else {
+                        frame.put_zerowidth(
+                            base + col,
+                            data,
+                            link.as_ref().map(|h| h.uri()),
+                            zerowidth,
+                        );
+                    }
                 }
                 frame.copied_cells += d.right as u32 - d.left as u32 + 1;
             }

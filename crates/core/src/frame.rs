@@ -169,6 +169,12 @@ pub struct Frame {
     pub hyperlinks: Vec<String>,
     /// URI → 表下标，跨帧复用（partial 更新不会重建整表）。
     link_index: HashMap<String, u16>,
+    /// 单元格下标 → 零宽码位（组合音标、ZWJ、变体选择符）。
+    ///
+    /// 这些码位在 alacritty 里挂在**前一个格子**上，不占新格。组合字符很少见，
+    /// 用独立 side table 而不是塞进 `CellData`，保持 16 字节单元格的 memcpy 成本；
+    /// 没有组合字符的 ASCII/CJK 会话完全不会触碰它。
+    zerowidth: HashMap<usize, Vec<char>>,
 }
 
 impl Frame {
@@ -190,6 +196,7 @@ impl Frame {
         self.damage.clear();
         self.full = true;
         self.reset_links();
+        self.zerowidth.clear();
         true
     }
 
@@ -198,6 +205,29 @@ impl Frame {
         self.hyperlinks.clear();
         self.hyperlinks.push(String::new());
         self.link_index.clear();
+    }
+
+    /// 清空零宽字符表；整屏重取前调用，避免已删除格子的组合字符残留。
+    pub fn clear_zerowidth(&mut self) {
+        self.zerowidth.clear();
+    }
+
+    /// 本帧是否有任何组合字符/ZWJ/变体选择符（渲染的逐格查找快速路径）。
+    #[inline]
+    pub fn has_zerowidth(&self) -> bool {
+        !self.zerowidth.is_empty()
+    }
+
+    /// 取某格挂着的零宽码位（组合音标、ZWJ、变体选择符）；没有则返回空切片。
+    #[inline]
+    pub fn zerowidth_at(&self, row: usize, col: usize) -> &[char] {
+        if self.zerowidth.is_empty() {
+            return &[];
+        }
+        self.zerowidth
+            .get(&(row * self.cols + col))
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
     }
 
     /// 登记一个 URI，返回表下标；0 表示放弃（表满）。
@@ -219,12 +249,46 @@ impl Frame {
     }
 
     /// 写一个单元格，同时登记它的超链接（如果有）。
+    ///
+    /// 这是整屏/脏行拷贝的最热路径：保持小函数并内联，零宽字符走单独的
+    /// [`Frame::put_zerowidth`]，避免为罕见的组合字符给每格加分支和 hash 操作。
+    #[inline]
     pub fn put(&mut self, index: usize, mut data: CellData, link: Option<&str>) {
         if let Some(uri) = link {
             data.link = self.intern(uri);
         }
         if let Some(slot) = self.cells.get_mut(index) {
             *slot = data;
+        }
+    }
+
+    /// 写一个带零宽字符（组合音标/ZWJ/VS）的单元格。
+    ///
+    /// partial 更新时若该格原本有组合字符而本次没有，必须把旧记录删掉，否则会画
+    /// 出幽灵重音；整屏路径先 `clear_zerowidth`，这里只做插入。
+    pub fn put_zerowidth(
+        &mut self,
+        index: usize,
+        data: CellData,
+        link: Option<&str>,
+        zerowidth: &[char],
+    ) {
+        self.put(index, data, link);
+        if zerowidth.is_empty() {
+            if !self.zerowidth.is_empty() {
+                self.zerowidth.remove(&index);
+            }
+            return;
+        }
+        match self.zerowidth.get_mut(&index) {
+            Some(existing) if existing.as_slice() == zerowidth => {},
+            Some(existing) => {
+                existing.clear();
+                existing.extend_from_slice(zerowidth);
+            },
+            None => {
+                self.zerowidth.insert(index, zerowidth.to_vec());
+            },
         }
     }
 
@@ -408,6 +472,30 @@ mod tests {
         f.put(1, spacer, None);
         assert_eq!(f.hyperlink_at(0, 0), Some("https://osc.example/中"));
         assert_eq!(f.hyperlink_at(0, 1), Some("https://osc.example/中"));
+    }
+
+    #[test]
+    fn zerowidth_marks_follow_their_base_cell() {
+        let mut f = Frame::new(4, 1);
+        let base = CellData { ch: 'e' as u32, ..CellData::default() };
+        f.put_zerowidth(0, base, None, &['\u{301}']);
+        assert_eq!(f.zerowidth_at(0, 0), &['\u{301}']);
+        assert!(f.zerowidth_at(0, 1).is_empty());
+        assert!(f.has_zerowidth());
+
+        // partial 更新把带重音的格子覆盖成普通字符时，旧重音必须消失。
+        f.put_zerowidth(0, base, None, &[]);
+        assert!(!f.has_zerowidth());
+        assert!(f.zerowidth_at(0, 0).is_empty());
+    }
+
+    #[test]
+    fn zerowidth_table_is_cleared_on_resize() {
+        let mut f = Frame::new(4, 1);
+        f.put_zerowidth(0, CellData::default(), None, &['\u{200D}']);
+        assert!(f.has_zerowidth());
+        f.ensure_size(8, 2);
+        assert!(!f.has_zerowidth(), "换尺寸后旧下标必须清空");
     }
 
     #[test]

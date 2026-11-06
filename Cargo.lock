@@ -4674,6 +4674,7 @@ dependencies = [
  "parking_lot",
  "portable-pty",
  "tokio",
+ "unicode-width",
 ]
 
 [[package]]
