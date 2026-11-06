@@ -1029,3 +1029,12 @@ cargo bench -p tervo-core --bench pty_throughput
 - 测试：204 passed；headless Xvfb（不再 Xephyr）验证启动/点击；Openbox 测试中
   回调可触发但 Openbox 不接受 EWMH maximize（测试 WM 限制），GNOME 待用户实测。
 
+### 2026-11-06 · mouse-reporting TUI 右键菜单焦点修复
+
+- 问题：在 dshtui 等开启鼠标上报的 TUI 里右键菜单关闭后 IME 焦点没有归还，
+  文本选择/键盘输入失效；`right_click=off` 时右键被吞掉，TUI 收不到。
+- 修复：`menu-dismissed` 与 `menu-action` 后调用 `invoke_focus_terminal()`；
+  `off` 模式把右键 Press/Release 作为 SGR 鼠标事件转发给 PTY（仅 mouse reporting 时）。
+- 验证：Xvfb + 自制 mouse-reporting TUI；右键开菜单→点外部关闭→输入 `abc`，
+  TUI 原始字节日志收到 `abc`。`right_click=off` 的转发路径已编译。
+
