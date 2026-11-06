@@ -244,6 +244,11 @@ pub struct PaneConfig {
     pub env: Vec<(String, String)>,
     /// 终端配色（内置主题或用户自定义主题都已归一化成 Palette）。
     pub palette: Palette,
+    /// 输出时是否始终跟随到最底部（GNOME `scroll-on-output`）。
+    ///
+    /// false（默认）时用户上滚查看历史，新输出只增长历史、不抢视图；
+    /// true 时每次收到输出都把视口拉回底部。
+    pub scroll_on_output: bool,
 }
 
 impl Default for PaneConfig {
@@ -259,6 +264,7 @@ impl Default for PaneConfig {
             cwd: None,
             env: Vec::new(),
             palette: Palette::default(),
+            scroll_on_output: false,
         }
     }
 }
@@ -269,6 +275,8 @@ enum Ctrl {
     Scroll(i32),
     /// 绝对滚动位置（0 = 底部）；滚动条点击/拖拽用。
     ScrollTo(usize),
+    /// 运行时切换 scroll-on-output（设置页改动立即生效）。
+    SetScrollOnOutput(bool),
     SelectionStart { line: u16, col: u16 },
     SelectionExtend { line: u16, col: u16 },
     SelectionClear,
@@ -368,6 +376,19 @@ impl PaneHandle {
     /// 读取新位置并在唤醒后重绘。
     pub fn scroll_to(&self, offset: usize) {
         let _ = self.ctrl_tx.send(Ctrl::ScrollTo(offset));
+    }
+
+    /// 回到底部（最新内容）；`scroll_on_keystroke` 的按键路径使用。
+    ///
+    /// 与 [`Self::scroll_to`] 一样只投递异步消息，不阻塞 UI；是否已经在底部
+    /// 由调用方读 [`Self::scroll_position`] 判断。
+    pub fn scroll_to_bottom(&self) {
+        let _ = self.ctrl_tx.send(Ctrl::ScrollTo(0));
+    }
+
+    /// 运行时切换「输出即回底」策略（异步投递，不阻塞 UI）。
+    pub fn set_scroll_on_output(&self, enabled: bool) {
+        let _ = self.ctrl_tx.send(Ctrl::SetScrollOnOutput(enabled));
     }
 
     /// 非阻塞滚动位置查询：只读 actor 维护的原子快照。
@@ -755,6 +776,7 @@ pub fn spawn(config: PaneConfig) -> std::io::Result<PaneHandle> {
         force_full: false,
         refresh_zerowidth: false,
         search_span: None,
+        scroll_on_output: config.scroll_on_output,
     };
     let actor_thread = thread::Builder::new()
         .name("term-actor".into())
@@ -853,6 +875,8 @@ struct Actor {
     /// 零宽字符到达后要求下一次整帧重取时扫描组合字符（见 feed）。
     refresh_zerowidth: bool,
     search_span: Option<Span>,
+    /// 收到输出后是否强制回到底部（GNOME scroll-on-output）。
+    scroll_on_output: bool,
 }
 
 impl Actor {
@@ -945,6 +969,13 @@ impl Actor {
             self.events.send(event);
         }
         self.processor.advance(&mut self.term, bytes);
+        // GNOME scroll-on-output：开启时任何输出都把视口拉回最新（即使已开启
+        // scroll_on_output 的用户明确选择“输出即跟随”）。默认 false 时交给
+        // alacritty：用户上滚后 `Grid::scroll_up` 会递增 display_offset，视图
+        // 保持在原内容上，不会被新行抢走。
+        if self.scroll_on_output {
+            self.term.scroll_display(Scroll::Bottom);
+        }
         let nanos = start.elapsed().as_nanos() as u64;
         use std::sync::atomic::Ordering::Relaxed;
         self.stats.bytes_parsed.fetch_add(bytes.len() as u64, Relaxed);
@@ -1096,6 +1127,10 @@ impl Actor {
                     self.term.scroll_display(Scroll::Delta(delta));
                     self.wake.notify();
                 }
+                true
+            },
+            Ctrl::SetScrollOnOutput(enabled) => {
+                self.scroll_on_output = enabled;
                 true
             },
             Ctrl::SelectionStart { line, col } => {

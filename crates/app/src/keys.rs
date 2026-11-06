@@ -15,14 +15,94 @@ const END: char = '\u{F72B}';
 const PAGE_UP: char = '\u{F72C}';
 const PAGE_DOWN: char = '\u{F72D}';
 
-fn special(text: &str) -> Option<&'static [u8]> {
+/// Backspace 键发给 PTY 的编码（GNOME Terminal 的 backspace-binding）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BackspaceBinding {
+    /// 0x7f（ASCII DEL）。GNOME 默认，也是过去的行为。
+    #[default]
+    AsciiDelete,
+    /// 0x08（Control-H）。
+    ControlH,
+}
+
+impl BackspaceBinding {
+    /// 解析配置字符串；大小写/空白不敏感，未知值回退默认。
+    pub fn from_config(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "control-h" => Self::ControlH,
+            _ => Self::AsciiDelete,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AsciiDelete => "ascii-delete",
+            Self::ControlH => "control-h",
+        }
+    }
+}
+
+/// Delete 键发给 PTY 的编码（GNOME Terminal 的 delete-binding）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DeleteBinding {
+    /// `ESC [ 3 ~`。GNOME 默认。
+    #[default]
+    DeleteSequence,
+    /// 0x7f（ASCII DEL）。
+    AsciiDel,
+    /// 0x08（Control-H）。
+    ControlH,
+}
+
+impl DeleteBinding {
+    /// 解析配置字符串；大小写/空白不敏感，未知值回退默认。
+    pub fn from_config(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "ascii-del" => Self::AsciiDel,
+            "control-h" => Self::ControlH,
+            _ => Self::DeleteSequence,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::DeleteSequence => "delete-sequence",
+            Self::AsciiDel => "ascii-del",
+            Self::ControlH => "control-h",
+        }
+    }
+}
+
+/// 一次按键编码所需的、可配置的特殊键映射。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct KeyBindings {
+    pub backspace: BackspaceBinding,
+    pub delete: DeleteBinding,
+}
+
+impl KeyBindings {
+    /// Delete 的字节序列。
+    #[inline]
+    fn delete_seq(self) -> &'static [u8] {
+        match self.delete {
+            DeleteBinding::DeleteSequence => b"\x1b[3~",
+            DeleteBinding::AsciiDel => &[0x7f],
+            DeleteBinding::ControlH => &[0x08],
+        }
+    }
+}
+
+fn special(text: &str, bindings: KeyBindings) -> Option<&'static [u8]> {
     let ch = text.chars().next()?;
     let seq: &'static [u8] = match ch {
-        '\u{0008}' => b"\x7f",          // Backspace
+        '\u{0008}' => match bindings.backspace {
+            BackspaceBinding::AsciiDelete => b"\x7f",
+            BackspaceBinding::ControlH => b"\x08",
+        },
         '\u{000a}' => b"\r",            // Enter
         '\u{0009}' => b"\t",            // Tab
         '\u{001b}' => b"\x1b",          // Escape
-        '\u{007f}' => b"\x1b[3~",       // Delete
+        '\u{007f}' => bindings.delete_seq(), // Delete
         INSERT => b"\x1b[2~",
         HOME => b"\x1b[H",
         END => b"\x1b[F",
@@ -121,21 +201,23 @@ fn key_name(text: &str) -> Option<String> {
 
 /// 返回要写入 PTY 的字节；None 表示忽略该键。
 pub fn encode(text: &str, ctrl: bool, alt: bool) -> Option<Vec<u8>> {
-    encode_mode(text, ctrl, alt, false, false)
+    encode_mode(text, ctrl, alt, false, false, KeyBindings::default())
 }
 
-/// 和 `encode` 相同，但支持 kitty keyboard protocol 的 CSI-u 编码。
+/// 和 `encode` 相同，但支持 kitty keyboard protocol 的 CSI-u 编码，
+/// 以及可配置的 Backspace/Delete 编码。
 pub fn encode_mode(
     text: &str,
     ctrl: bool,
     alt: bool,
     shift: bool,
     kitty: bool,
+    bindings: KeyBindings,
 ) -> Option<Vec<u8>> {
     if text.is_empty() {
         return None;
     }
-    if let Some(seq) = special(text) {
+    if let Some(seq) = special(text, bindings) {
         let mut v = seq.to_vec();
         if alt {
             v.insert(0, 0x1b);
@@ -201,12 +283,69 @@ mod tests {
 
     #[test]
     fn kitty_keyboard_csi_u() {
-        assert_eq!(encode_mode("A", false, false, true, true).unwrap(), b"\x1b[97;2u");
-        assert_eq!(encode_mode("c", true, false, false, true).unwrap(), b"\x1b[99;5u");
-        assert_eq!(encode_mode("c", true, true, true, true).unwrap(), b"\x1b[99;8u");
-        assert_eq!(encode_mode("a", false, false, false, true).unwrap(), b"a");
+        let b = KeyBindings::default();
+        assert_eq!(encode_mode("A", false, false, true, true, b).unwrap(), b"\x1b[97;2u");
+        assert_eq!(encode_mode("c", true, false, false, true, b).unwrap(), b"\x1b[99;5u");
+        assert_eq!(encode_mode("c", true, true, true, true, b).unwrap(), b"\x1b[99;8u");
+        assert_eq!(encode_mode("a", false, false, false, true, b).unwrap(), b"a");
         // 非 kitty 模式保持旧控制字节
-        assert_eq!(encode_mode("c", true, false, false, false).unwrap(), vec![0x03]);
+        assert_eq!(encode_mode("c", true, false, false, false, b).unwrap(), vec![0x03]);
+    }
+
+    #[test]
+    fn backspace_binding_controls_encoding() {
+        let ascii = KeyBindings::default();
+        assert_eq!(
+            encode_mode("\u{8}", false, false, false, false, ascii).unwrap(),
+            vec![0x7f],
+            "默认 ascii-delete → 0x7f"
+        );
+        let control_h =
+            KeyBindings { backspace: BackspaceBinding::ControlH, ..KeyBindings::default() };
+        assert_eq!(
+            encode_mode("\u{8}", false, false, false, false, control_h).unwrap(),
+            vec![0x08],
+            "control-h → 0x08"
+        );
+        // Alt 前缀保留，特殊键编码不被 kitty 模式改写。
+        assert_eq!(
+            encode_mode("\u{8}", false, true, false, false, control_h).unwrap(),
+            vec![0x1b, 0x08]
+        );
+        assert_eq!(
+            encode_mode("\u{8}", false, false, false, true, control_h).unwrap(),
+            vec![0x08]
+        );
+        // 配置字符串解析：大小写/空白不敏感，未知值回退默认。
+        assert_eq!(BackspaceBinding::from_config(" CONTROL-H "), BackspaceBinding::ControlH);
+        assert_eq!(BackspaceBinding::from_config("ascii-delete"), BackspaceBinding::AsciiDelete);
+        assert_eq!(BackspaceBinding::from_config("bogus"), BackspaceBinding::AsciiDelete);
+        assert_eq!(BackspaceBinding::from_config("control-h").as_str(), "control-h");
+    }
+
+    #[test]
+    fn delete_binding_controls_encoding() {
+        let default = KeyBindings::default();
+        assert_eq!(
+            encode_mode("\u{7f}", false, false, false, false, default).unwrap(),
+            b"\x1b[3~",
+            "默认 delete-sequence"
+        );
+        let ascii_del =
+            KeyBindings { delete: DeleteBinding::AsciiDel, ..KeyBindings::default() };
+        assert_eq!(encode_mode("\u{7f}", false, false, false, false, ascii_del).unwrap(), vec![0x7f]);
+        let control_h =
+            KeyBindings { delete: DeleteBinding::ControlH, ..KeyBindings::default() };
+        assert_eq!(encode_mode("\u{7f}", false, false, false, false, control_h).unwrap(), vec![0x08]);
+        assert_eq!(
+            encode_mode("\u{7f}", false, true, false, false, ascii_del).unwrap(),
+            vec![0x1b, 0x7f],
+            "Alt+Delete 仍带 ESC 前缀"
+        );
+        assert_eq!(DeleteBinding::from_config(" ASCII-DEL "), DeleteBinding::AsciiDel);
+        assert_eq!(DeleteBinding::from_config("control-h"), DeleteBinding::ControlH);
+        assert_eq!(DeleteBinding::from_config("bogus"), DeleteBinding::DeleteSequence);
+        assert_eq!(DeleteBinding::from_config("delete-sequence").as_str(), "delete-sequence");
     }
 
     #[test]
