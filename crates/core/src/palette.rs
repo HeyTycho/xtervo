@@ -565,6 +565,14 @@ pub struct Palette {
     pub fg: u32,
     pub bg: u32,
     pub cursor: u32,
+    /// 粗体使用亮色：ANSI 0–7 / Named Black..White → 对应 Bright 变体。
+    /// 默认开（与 GNOME Terminal `bold-is-bright` 一致）。
+    pub bold_is_bright: bool,
+    /// 自定义粗体颜色；None = 使用普通前景色。
+    pub bold_color: Option<u32>,
+    /// true = 忽略 `bold_color`，粗体仍用普通前景色（GNOME
+    /// `bold-color-same-as-fg`）。
+    pub bold_color_same_as_fg: bool,
 }
 
 impl Default for Palette {
@@ -598,7 +606,67 @@ impl Palette {
         }
         table[NamedColor::BrightForeground as usize] = c.bright_fg;
         table[NamedColor::DimForeground as usize] = c.dim_fg;
-        Self { table, fg: c.fg, bg: c.bg, cursor: c.cursor }
+        Self {
+            table,
+            fg: c.fg,
+            bg: c.bg,
+            cursor: c.cursor,
+            bold_is_bright: true,
+            bold_color: None,
+            bold_color_same_as_fg: true,
+        }
+    }
+
+    /// 覆盖粗体渲染策略（来自用户配置）。返回 self，便于链式构造。
+    #[must_use]
+    pub fn with_bold(
+        mut self,
+        bold_is_bright: bool,
+        bold_color: Option<u32>,
+        bold_color_same_as_fg: bool,
+    ) -> Self {
+        self.bold_is_bright = bold_is_bright;
+        self.bold_color = bold_color;
+        self.bold_color_same_as_fg = bold_color_same_as_fg;
+        self
+    }
+
+    /// 解析单元格前景色，按 `bold-is-bright` / `bold-color` 规则处理粗体。
+    ///
+    /// - `bold-color-same-as-fg = false` 且配置了 `bold-color` 时，**默认前景色**
+    ///   的粗体文字改用该颜色（显式 ANSI 色不受影响，和 VTE 一致）。
+    /// - `bold-is-bright = true` 时，ANSI 0–7 / Named Black..White 的粗体改用
+    ///   8–15 亮色。默认前景色不映射：内置主题的 `bright_fg` 并不保证更亮，
+    ///   强行替换会改变所有粗体正文的颜色。
+    pub fn resolve_fg(&self, color: Color, bold: bool) -> u32 {
+        if bold {
+            if !self.bold_color_same_as_fg {
+                if let (Some(bold_color), Color::Named(NamedColor::Foreground)) =
+                    (self.bold_color, color)
+                {
+                    return bold_color;
+                }
+            }
+            if self.bold_is_bright {
+                match color {
+                    // 只映射标准 8 色；默认前景色/Foreground 不在这里换色，
+                    // 否则所有粗体正文会跟着主题的 bright_fg（不保证更亮）改变。
+                    Color::Named(
+                        named @ (NamedColor::Black
+                        | NamedColor::Red
+                        | NamedColor::Green
+                        | NamedColor::Yellow
+                        | NamedColor::Blue
+                        | NamedColor::Magenta
+                        | NamedColor::Cyan
+                        | NamedColor::White),
+                    ) => return self.table[named.to_bright() as usize],
+                    Color::Indexed(i) if i < 8 => return self.table[i as usize + 8],
+                    _ => {},
+                }
+            }
+        }
+        self.resolve(color)
     }
 
     #[inline]
@@ -700,6 +768,65 @@ mod tests {
     fn legacy_theme_names_still_resolve() {
         assert_eq!(Palette::for_theme(Theme::from_name("mocha")).bg, 0x001e1e2e);
         assert_eq!(Palette::for_theme(Theme::from_name("latte")).bg, 0x00eff1f5);
+    }
+
+    #[test]
+    fn bold_is_bright_maps_only_ansi_0_to_7() {
+        let palette = Palette::for_theme(Theme::YaruDark);
+        let normal = palette.resolve(Color::Indexed(1));
+        let bright = palette.resolve(Color::Indexed(9));
+        assert_ne!(normal, bright, "测试主题的普通红/亮红应不同");
+        assert_eq!(
+            palette.resolve_fg(Color::Indexed(1), true),
+            bright,
+            "bold-is-bright 应把 ANSI 1 映射到 9"
+        );
+        assert_eq!(
+            palette.resolve_fg(Color::Indexed(1), false),
+            normal,
+            "非粗体保持普通色"
+        );
+        assert_eq!(
+            palette.resolve_fg(Color::Indexed(9), true),
+            bright,
+            "已经是亮色时不再上移"
+        );
+        // 默认前景色不映射：内置主题的 bright_fg 不保证更亮。
+        assert_eq!(
+            palette.resolve_fg(Color::Named(NamedColor::Foreground), true),
+            palette.fg
+        );
+        // 关闭 bold-is-bright 后完全按普通色解析。
+        let plain = Palette::for_theme(Theme::YaruDark).with_bold(false, None, true);
+        assert_eq!(plain.resolve_fg(Color::Indexed(1), true), normal);
+    }
+
+    #[test]
+    fn bold_color_only_applies_to_default_foreground_when_enabled() {
+        let bold = 0x0012_3456;
+        let palette =
+            Palette::for_theme(Theme::YaruDark).with_bold(true, Some(bold), false);
+        assert_eq!(
+            palette.resolve_fg(Color::Named(NamedColor::Foreground), true),
+            bold,
+            "bold-color-same-as-fg=false 时默认前景色粗体用自定义色"
+        );
+        // 显式 ANSI 色不受 bold_color 覆盖（仍走 bold-is-bright）。
+        assert_eq!(
+            palette.resolve_fg(Color::Indexed(1), true),
+            palette.resolve(Color::Indexed(9))
+        );
+        // same-as-fg=true 时忽略自定义色。
+        let same = Palette::for_theme(Theme::YaruDark).with_bold(true, Some(bold), true);
+        assert_eq!(
+            same.resolve_fg(Color::Named(NamedColor::Foreground), true),
+            same.fg
+        );
+        // 非粗体永远不用 bold_color。
+        assert_eq!(
+            palette.resolve_fg(Color::Named(NamedColor::Foreground), false),
+            palette.fg
+        );
     }
 
     #[test]

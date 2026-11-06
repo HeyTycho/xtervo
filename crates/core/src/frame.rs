@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 
-use alacritty_terminal::term::cell::Cell;
+use alacritty_terminal::term::cell::{Cell, Flags};
 use alacritty_terminal::vte::ansi::CursorShape as VteCursorShape;
 
 use crate::link::{scan, LinkKind};
@@ -67,7 +67,7 @@ impl CellData {
     pub fn from_cell(cell: &Cell, palette: &Palette) -> Self {
         Self {
             ch: cell.c as u32,
-            fg: palette.resolve(cell.fg),
+            fg: palette.resolve_fg(cell.fg, cell.flags.contains(Flags::BOLD)),
             bg: palette.resolve(cell.bg),
             flags: cell.flags.bits(),
             link: 0,
@@ -101,6 +101,32 @@ impl CursorShape {
             VteCursorShape::Beam => Self::Beam,
             VteCursorShape::HollowBlock => Self::HollowBlock,
             VteCursorShape::Hidden => Self::Hidden,
+        }
+    }
+
+    /// GNOME Terminal `cursor-shape` 配置值 → 形状。
+    /// 接受 `block` / `underline` / `ibeam`（也兼容 `beam`/`bar`、大小写与
+    /// `-`/`_`/空格分隔）；未知值回退 block，避免手写配置让光标消失。
+    pub fn from_name(name: &str) -> Self {
+        let key = name.trim().to_ascii_lowercase().replace(['_', ' '], "-");
+        match key.as_str() {
+            "underline" | "under-line" => Self::Underline,
+            "ibeam" | "i-beam" | "beam" | "bar" => Self::Beam,
+            "hollow-block" | "hollow" => Self::HollowBlock,
+            "hidden" | "none" => Self::Hidden,
+            // block + 空 + 未知：GNOME 默认 block。
+            _ => Self::Block,
+        }
+    }
+
+    /// 配置里使用的稳定名称（`CursorShape` 是运行时值，Hidden 不用于配置）。
+    pub fn config_name(self) -> &'static str {
+        match self {
+            Self::Block => "block",
+            Self::Underline => "underline",
+            Self::Beam => "ibeam",
+            Self::HollowBlock => "hollow-block",
+            Self::Hidden => "hidden",
         }
     }
 }
@@ -515,5 +541,25 @@ mod tests {
         assert_eq!(f.hyperlink_at(0, 0), Some("https://a.example"));
         assert_eq!(f.hyperlink_at(0, 1), None, "没链接的格子必须是 None");
         assert_eq!(f.hyperlink_at(1, 0), None);
+    }
+
+    #[test]
+    fn cursor_shape_config_names_roundtrip() {
+        assert_eq!(CursorShape::from_name("block"), CursorShape::Block);
+        assert_eq!(CursorShape::from_name("underline"), CursorShape::Underline);
+        assert_eq!(CursorShape::from_name("ibeam"), CursorShape::Beam);
+        assert_eq!(CursorShape::from_name("I-BEAM"), CursorShape::Beam);
+        assert_eq!(CursorShape::from_name("beam"), CursorShape::Beam);
+        assert_eq!(CursorShape::from_name(""), CursorShape::Block);
+        assert_eq!(CursorShape::from_name("nope"), CursorShape::Block);
+        for shape in [
+            CursorShape::Block,
+            CursorShape::Underline,
+            CursorShape::Beam,
+            CursorShape::HollowBlock,
+            CursorShape::Hidden,
+        ] {
+            assert_eq!(CursorShape::from_name(shape.config_name()), shape);
+        }
     }
 }

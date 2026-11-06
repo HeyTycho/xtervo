@@ -139,6 +139,29 @@ impl FrameBuffers {
     }
 }
 
+/// 光标在 pane 内的像素几何（overlay 与测试共用）。
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct CursorRect {
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    shape: CursorShape,
+}
+
+/// 光标 overlay：光标格大小的小图 + 在 pane 内的像素坐标。
+///
+/// 终端帧本身不画光标；Slint 把这张图叠在 `pane.image` 之上。闪烁只需切换
+/// `cursor-visible`，不需要重绘/重新上传整屏终端帧。
+#[derive(Clone, Debug)]
+pub struct CursorOverlay {
+    pub image: slint::Image,
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+}
+
 pub struct Renderer {
     pub cols: usize,
     pub rows: usize,
@@ -154,7 +177,16 @@ pub struct Renderer {
     theme_bg: u32,
     /// 当前终端背景不透明度（0.0–1.0），只影响默认背景像素 alpha。
     opacity: f32,
+    /// 主题光标色（0x00RRGGBB packed）；用户覆盖见 `cursor_color_override`。
     cursor_color: u32,
+    /// 用户配置的光标形状（覆盖 VTE 的 DECSCUSR；frame 显式 Hidden 仍隐藏）。
+    cursor_shape: CursorShape,
+    /// 用户配置的光标颜色；None = 主题光标色。
+    cursor_color_override: Option<u32>,
+    /// 用户配置的光标下文字颜色；None = 主题背景色。
+    cursor_text_color_override: Option<u32>,
+    /// 帧内光标闪烁相位（`draw` 用；app 的光标 overlay 由 UI timer 控制）。
+    cursor_blink_on: bool,
     force_full: bool,
     last_cursor: (u16, u16),
     last_selection: Option<Span>,
@@ -199,6 +231,10 @@ impl Renderer {
             theme_bg: pack(theme_bg),
             opacity,
             cursor_color: pack(cursor_color),
+            cursor_shape: CursorShape::Block,
+            cursor_color_override: None,
+            cursor_text_color_override: None,
+            cursor_blink_on: true,
             force_full: true,
             last_cursor: (0, 0),
             last_selection: None,
@@ -234,6 +270,60 @@ impl Renderer {
         self.last_search = None;
     }
 
+    /// 下发光标外观（形状/颜色/文字颜色）。返回是否发生变化；颜色为
+    /// 0x00RRGGBB，None = 跟随主题。
+    pub fn set_cursor_style(
+        &mut self,
+        shape: CursorShape,
+        color: Option<u32>,
+        text_color: Option<u32>,
+    ) -> bool {
+        let color = color.map(pack);
+        let text_color = text_color.map(pack);
+        let changed = self.cursor_shape != shape
+            || self.cursor_color_override != color
+            || self.cursor_text_color_override != text_color;
+        self.cursor_shape = shape;
+        self.cursor_color_override = color;
+        self.cursor_text_color_override = text_color;
+        changed
+    }
+
+    /// 帧内光标闪烁相位。app 使用独立 overlay 时不需要调用；保留给
+    /// `draw`/单测验证“闪烁 off 不画光标”。
+    #[allow(dead_code)]
+    pub fn set_cursor_blink_phase(&mut self, on: bool) {
+        self.cursor_blink_on = on;
+    }
+
+    /// 实际绘制用的光标形状：frame 显式 Hidden（或不可见）时返回 None。
+    ///
+    /// 应用通过 DECSCUSR 请求的 underline/beam/hollow 优先（vim 等 TUI 会切
+    /// 插入模式光标）；frame 的 Block 无法区分“默认”和“显式 block”，此时用
+    /// 用户配置的 `cursor_shape`。
+    fn effective_cursor_shape(&self, frame: &Frame) -> Option<CursorShape> {
+        if !frame.cursor.visible {
+            return None;
+        }
+        match frame.cursor.shape {
+            CursorShape::Hidden => None,
+            CursorShape::Block => Some(self.cursor_shape),
+            shape => Some(shape),
+        }
+    }
+
+    #[inline]
+    fn cursor_fg(&self) -> u32 {
+        self.cursor_color_override.unwrap_or(self.cursor_color)
+    }
+
+    #[inline]
+    fn cursor_text(&self) -> u32 {
+        // 块状光标下的字符用不透明主题背景反色，不能复用可能带 opacity alpha 的
+        // default_bg，否则文字会跟着背景一起半透明。
+        self.cursor_text_color_override.unwrap_or(self.theme_bg)
+    }
+
     #[allow(dead_code)]
     pub fn font_path(&self) -> &str {
         &self.fonts.font_path
@@ -267,13 +357,27 @@ impl Renderer {
     }
 
     fn fill_rect(&mut self, x: usize, y: usize, w: usize, h: usize, color: u32) {
-        if x >= self.width || y >= self.height {
+        let width = self.width;
+        let height = self.height;
+        Self::fill_rect_buf(self.buffer.pixels_mut(), width, height, x, y, w, h, color);
+    }
+
+    /// 在任意 RGBA 像素缓冲上填矩形；`fill_rect` 与光标 overlay 共用。
+    fn fill_rect_buf(
+        pixels: &mut [u32],
+        width: usize,
+        height: usize,
+        x: usize,
+        y: usize,
+        w: usize,
+        h: usize,
+        color: u32,
+    ) {
+        if w == 0 || h == 0 || x >= width || y >= height {
             return;
         }
-        let w = w.min(self.width - x);
-        let width = self.width;
-        let pixels = self.buffer.pixels_mut();
-        for row in y..(y + h).min(self.height) {
+        let w = w.min(width - x);
+        for row in y..(y + h).min(height) {
             let start = row * width + x;
             pixels[start..start + w].fill(color);
         }
@@ -301,14 +405,31 @@ impl Renderer {
         clip_x0: i32,
         clip_x1: i32,
     ) {
-        if gx >= self.width as i32 || gy >= self.height as i32 {
+        let width = self.width;
+        let height = self.height;
+        let atlas = self.glyphs.atlas();
+        let pixels = self.buffer.pixels_mut();
+        Self::blit_bitmap_buf(pixels, width, height, atlas, gx, gy, g, color, clip_x0, clip_x1);
+    }
+
+    /// 把字形位图混合进任意缓冲；`blit_bitmap` 与光标 overlay 共用。
+    #[allow(clippy::too_many_arguments)]
+    fn blit_bitmap_buf(
+        pixels: &mut [u32],
+        width: usize,
+        height: usize,
+        atlas: &[u8],
+        gx: i32,
+        gy: i32,
+        g: Glyph,
+        color: u32,
+        clip_x0: i32,
+        clip_x1: i32,
+    ) {
+        if gx >= width as i32 || gy >= height as i32 {
             return;
         }
         let (w, h) = (g.w as usize, g.h as usize);
-        let atlas = self.glyphs.atlas();
-        let width = self.width;
-        let height = self.height;
-        let pixels = self.buffer.pixels_mut();
         for row in 0..h {
             let dy = gy + row as i32;
             if dy < 0 || dy >= height as i32 {
@@ -380,6 +501,183 @@ impl Renderer {
         }
     }
 
+    /// 光标 overlay 专用：把字形画进一块小型临时缓冲（坐标以该缓冲为原点）。
+    #[allow(clippy::too_many_arguments)]
+    fn blit_into(
+        glyphs: &mut GlyphCache,
+        fonts: &FontSet,
+        cell_w: usize,
+        pixels: &mut [u32],
+        width: usize,
+        height: usize,
+        x: i32,
+        baseline: i32,
+        ch: char,
+        style: Style,
+        color: u32,
+        span: usize,
+    ) -> Option<i32> {
+        let g = glyphs.get(fonts, ch, style, span)?;
+        let total = (span * cell_w) as i32;
+        let pad = ((total - g.advance as i32) / 2).max(0);
+        let gx = x + pad + g.left as i32;
+        let gy = baseline + g.top as i32;
+        let atlas = glyphs.atlas();
+        Self::blit_bitmap_buf(pixels, width, height, atlas, gx, gy, g, color, x, x + total);
+        Some(gx + g.w as i32 / 2)
+    }
+
+    /// 光标 overlay 专用：组合音标叠加，坐标以 overlay 缓冲为原点。
+    #[allow(clippy::too_many_arguments)]
+    fn blit_marks_into(
+        glyphs: &mut GlyphCache,
+        fonts: &FontSet,
+        cell_w: usize,
+        pixels: &mut [u32],
+        width: usize,
+        height: usize,
+        x0: i32,
+        baseline: i32,
+        center_x: i32,
+        marks: &[char],
+        style: Style,
+        color: u32,
+        span: usize,
+    ) {
+        let total = (span * cell_w) as i32;
+        for &mark in marks {
+            if is_zero_width_control(mark) {
+                continue;
+            }
+            let Some(g) = glyphs.get(fonts, mark, style, span) else { continue };
+            let gx = center_x - g.w as i32 / 2;
+            let gy = baseline + g.top as i32;
+            let atlas = glyphs.atlas();
+            Self::blit_bitmap_buf(pixels, width, height, atlas, gx, gy, g, color, x0, x0 + total);
+        }
+    }
+
+    /// 在给定像素缓冲里画光标（block/underline/beam/hollow）。
+    ///
+    /// `x0`/`y0` 是光标格的左上角；帧内绘制时 `width`/`height` 是整屏尺寸，
+    /// overlay 绘制时是 cell 尺寸、`x0=y0=0`。坐标与裁剪逻辑完全共用。
+    #[allow(clippy::too_many_arguments)]
+    fn paint_cursor(
+        glyphs: &mut GlyphCache,
+        fonts: &FontSet,
+        cell_w: usize,
+        cell_h: usize,
+        pixels: &mut [u32],
+        width: usize,
+        height: usize,
+        x0: usize,
+        y0: usize,
+        span: usize,
+        shape: CursorShape,
+        cell: Option<CellData>,
+        marks: &[char],
+        color: u32,
+        text_color: u32,
+    ) {
+        let cell_px = span * cell_w;
+        let baseline = y0 as i32 + fonts.baseline;
+        match shape {
+            CursorShape::Block => {
+                Self::fill_rect_buf(
+                    pixels, width, height, x0, y0, cell_px, cell_h, color,
+                );
+                if let Some(cell) = cell {
+                    let ch = cell.char();
+                    if ch != ' ' {
+                        let style = Self::style_of(&cell);
+                        match Self::blit_into(
+                            glyphs,
+                            fonts,
+                            cell_w,
+                            pixels,
+                            width,
+                            height,
+                            x0 as i32,
+                            baseline,
+                            ch,
+                            style,
+                            text_color,
+                            span,
+                        ) {
+                            Some(center) if !marks.is_empty() => {
+                                Self::blit_marks_into(
+                                    glyphs,
+                                    fonts,
+                                    cell_w,
+                                    pixels,
+                                    width,
+                                    height,
+                                    x0 as i32,
+                                    baseline,
+                                    center,
+                                    marks,
+                                    style,
+                                    text_color,
+                                    span,
+                                );
+                            },
+                            Some(_) => {},
+                            None => {
+                                // 缺字：和普通渲染一样画占位框，保证 block 光标
+                                // 不会把“画不出的字符”变成纯色块。
+                                if let Some(kind) = placeholder_kind(ch) {
+                                    Self::draw_placeholder_buf(
+                                        pixels,
+                                        width,
+                                        height,
+                                        cell_h,
+                                        x0,
+                                        y0,
+                                        cell_px,
+                                        text_color,
+                                        kind,
+                                    );
+                                }
+                            },
+                        }
+                    }
+                }
+            },
+            CursorShape::Underline => {
+                let uy = y0 + cell_h.saturating_sub(2);
+                Self::fill_rect_buf(pixels, width, height, x0, uy, cell_px, 2, color);
+            },
+            CursorShape::Beam => {
+                Self::fill_rect_buf(pixels, width, height, x0, y0, 2, cell_h, color);
+            },
+            CursorShape::HollowBlock => {
+                Self::fill_rect_buf(pixels, width, height, x0, y0, cell_px, 1, color);
+                Self::fill_rect_buf(
+                    pixels,
+                    width,
+                    height,
+                    x0,
+                    y0 + cell_h.saturating_sub(1),
+                    cell_px,
+                    1,
+                    color,
+                );
+                Self::fill_rect_buf(pixels, width, height, x0, y0, 1, cell_h, color);
+                Self::fill_rect_buf(
+                    pixels,
+                    width,
+                    height,
+                    x0 + cell_px.saturating_sub(1),
+                    y0,
+                    1,
+                    cell_h,
+                    color,
+                );
+            },
+            CursorShape::Hidden => {},
+        }
+    }
+
     /// 字体链完全画不出来时的明确占位：1px 空框（严格在 span 内）。
     ///
     /// 这不是字体的 .notdef tofu，而是“已识别但当前后端画不了”的主动标记：
@@ -392,23 +690,76 @@ impl Renderer {
         color: u32,
         kind: PlaceholderKind,
     ) {
-        let h = self.cell_h;
+        let width = self.width;
+        let height = self.height;
+        Self::draw_placeholder_buf(
+            self.buffer.pixels_mut(),
+            width,
+            height,
+            self.cell_h,
+            x0,
+            y0,
+            w,
+            color,
+            kind,
+        );
+    }
+
+    /// 在任意缓冲上画缺字占位框（光标 overlay 也复用）。
+    fn draw_placeholder_buf(
+        pixels: &mut [u32],
+        width: usize,
+        height: usize,
+        h: usize,
+        x0: usize,
+        y0: usize,
+        w: usize,
+        color: u32,
+        kind: PlaceholderKind,
+    ) {
         if w < 4 || h < 4 {
-            self.fill_rect(x0, y0 + h / 2, w, 1, color);
+            Self::fill_rect_buf(pixels, width, height, x0, y0 + h / 2, w, 1, color);
             return;
         }
         // 上下边 + 左右边，缩进 1px 留出格间距。
-        self.fill_rect(x0 + 1, y0 + 2, w - 2, 1, color);
-        self.fill_rect(x0 + 1, y0 + h - 3, w - 2, 1, color);
-        self.fill_rect(x0 + 1, y0 + 2, 1, h - 4, color);
-        self.fill_rect(x0 + w - 2, y0 + 2, 1, h - 4, color);
+        Self::fill_rect_buf(pixels, width, height, x0 + 1, y0 + 2, w - 2, 1, color);
+        Self::fill_rect_buf(pixels, width, height, x0 + 1, y0 + h - 3, w - 2, 1, color);
+        Self::fill_rect_buf(pixels, width, height, x0 + 1, y0 + 2, 1, h - 4, color);
+        Self::fill_rect_buf(pixels, width, height, x0 + w - 2, y0 + 2, 1, h - 4, color);
         match kind {
             PlaceholderKind::Emoji => {
-                self.fill_rect(x0 + w / 2 - 1, y0 + h / 2 - 1, 2, 2, color);
+                Self::fill_rect_buf(
+                    pixels,
+                    width,
+                    height,
+                    x0 + w / 2 - 1,
+                    y0 + h / 2 - 1,
+                    2,
+                    2,
+                    color,
+                );
             },
             PlaceholderKind::Icon => {
-                self.fill_rect(x0 + w / 2, y0 + h / 2 - 3, 1, 6, color);
-                self.fill_rect(x0 + w / 2, y0 + h / 2 - 3, 3, 1, color);
+                Self::fill_rect_buf(
+                    pixels,
+                    width,
+                    height,
+                    x0 + w / 2,
+                    y0 + h / 2 - 3,
+                    1,
+                    6,
+                    color,
+                );
+                Self::fill_rect_buf(
+                    pixels,
+                    width,
+                    height,
+                    x0 + w / 2,
+                    y0 + h / 2 - 3,
+                    3,
+                    1,
+                    color,
+                );
             },
         }
     }
@@ -502,16 +853,13 @@ impl Renderer {
         self.last_draw_cells += self.cols as u32;
     }
 
-    fn draw_cursor(&mut self, frame: &Frame) {
-        if !frame.cursor.visible || frame.cursor.shape == CursorShape::Hidden {
-            return;
-        }
+    /// 光标格几何：`(row, col, span)`。不可见/Hidden/越界返回 None。
+    fn cursor_geometry(&self, frame: &Frame) -> Option<(usize, usize, usize)> {
+        self.effective_cursor_shape(frame)?;
         let (row, col) = (frame.cursor.line as usize, frame.cursor.col as usize);
         if row >= self.rows || col >= self.cols {
-            return;
+            return None;
         }
-        let x0 = col * self.cell_w;
-        let y0 = row * self.cell_h;
         let cell = frame.cells.get(row * frame.cols + col);
         let span = if cell.is_some_and(|c| {
             c.has(flags::WIDE_CHAR) || c.has(flags::WIDE_CHAR_SPACER)
@@ -520,57 +868,119 @@ impl Renderer {
         } else {
             1
         };
-        let cell_px = span * self.cell_w;
-        match frame.cursor.shape {
-            CursorShape::Block => {
-                self.fill_rect(x0, y0, cell_px, self.cell_h, self.cursor_color);
-                if let Some(cell) = cell {
-                    let ch = cell.char();
-                    if ch != ' ' {
-                        let baseline = y0 as i32 + self.fonts.baseline;
-                        let marks = frame.zerowidth_at(row, col);
-                        match self.blit(x0 as i32, baseline, ch, Style::Regular, self.default_bg, span)
-                        {
-                            Some(center) => {
-                                if !marks.is_empty() {
-                                    self.blit_marks(
-                                        x0 as i32,
-                                        baseline,
-                                        center,
-                                        marks,
-                                        Style::Regular,
-                                        self.default_bg,
-                                        span,
-                                    );
-                                }
-                            },
-                            None => {
-                                if let Some(kind) = placeholder_kind(ch) {
-                                    self.draw_placeholder(x0, y0, cell_px, self.default_bg, kind);
-                                }
-                            },
-                        }
-                    }
-                }
-            },
-            CursorShape::Underline => {
-                self.fill_rect(x0, y0 + self.cell_h - 2, cell_px, 2, self.cursor_color);
-            },
-            CursorShape::Beam => {
-                self.fill_rect(x0, y0, 2, self.cell_h, self.cursor_color);
-            },
-            CursorShape::HollowBlock => {
-                self.fill_rect(x0, y0, cell_px, 1, self.cursor_color);
-                self.fill_rect(x0, y0 + self.cell_h - 1, cell_px, 1, self.cursor_color);
-                self.fill_rect(x0, y0, 1, self.cell_h, self.cursor_color);
-                self.fill_rect(x0 + cell_px - 1, y0, 1, self.cell_h, self.cursor_color);
-            },
-            CursorShape::Hidden => {},
-        }
+        Some((row, col, span))
     }
 
-    /// 按 damage 增量重绘。
+    /// 把光标画进终端帧缓冲（`draw` 的兼容路径）。app 使用 `draw_without_cursor`
+    /// + [`Renderer::cursor_overlay`]，让闪烁只切换 Slint overlay 的可见性。
+    fn draw_cursor(&mut self, frame: &Frame) {
+        if !self.cursor_blink_on {
+            return;
+        }
+        let Some(shape) = self.effective_cursor_shape(frame) else { return };
+        let Some((row, col, span)) = self.cursor_geometry(frame) else { return };
+        let (x0, y0) = (col * self.cell_w, row * self.cell_h);
+        let cell = frame.cells.get(row * frame.cols + col).copied();
+        let marks = frame.zerowidth_at(row, col);
+        let (color, text_color) = (self.cursor_fg(), self.cursor_text());
+        let (width, height) = (self.width, self.height);
+        let pixels = self.buffer.pixels_mut();
+        Self::paint_cursor(
+            &mut self.glyphs,
+            &self.fonts,
+            self.cell_w,
+            self.cell_h,
+            pixels,
+            width,
+            height,
+            x0,
+            y0,
+            span,
+            shape,
+            cell,
+            marks,
+            color,
+            text_color,
+        );
+    }
+
+    /// 生成光标 overlay 的像素缓冲与几何；测试直接检查像素，`cursor_overlay`
+    /// 再包成 Slint Image。
+    fn cursor_buffer(
+        &mut self,
+        frame: &Frame,
+    ) -> Option<(slint::SharedPixelBuffer<slint::Rgba8Pixel>, CursorRect)> {
+        let shape = self.effective_cursor_shape(frame)?;
+        let (row, col, span) = self.cursor_geometry(frame)?;
+        let width = span * self.cell_w;
+        let height = self.cell_h;
+        let mut buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(
+            width as u32,
+            height as u32,
+        );
+        {
+            let pixels: &mut [u32] = bytemuck::cast_slice_mut(buffer.make_mut_bytes());
+            pixels.fill(0); // 透明：Slint 直接按 alpha 叠在终端帧上
+            let cell = frame.cells.get(row * frame.cols + col).copied();
+            let marks = frame.zerowidth_at(row, col);
+            let (color, text_color) = (self.cursor_fg(), self.cursor_text());
+            Self::paint_cursor(
+                &mut self.glyphs,
+                &self.fonts,
+                self.cell_w,
+                self.cell_h,
+                pixels,
+                width,
+                height,
+                0,
+                0,
+                span,
+                shape,
+                cell,
+                marks,
+                color,
+                text_color,
+            );
+        }
+        Some((
+            buffer,
+            CursorRect {
+                x: (col * self.cell_w) as f32,
+                y: (row * self.cell_h) as f32,
+                width: width as f32,
+                height: height as f32,
+                shape,
+            },
+        ))
+    }
+
+    /// 生成光标 overlay：只含光标所在格的小图（block 为整格，underline/beam
+    /// 其余像素透明）。闪烁由 UI 计时器切换 `visible`，不重绘终端帧。
+    pub fn cursor_overlay(&mut self, frame: &Frame) -> Option<CursorOverlay> {
+        let (buffer, rect) = self.cursor_buffer(frame)?;
+        Some(CursorOverlay {
+            image: slint::Image::from_rgba8(buffer),
+            x: rect.x,
+            y: rect.y,
+            width: rect.width,
+            height: rect.height,
+        })
+    }
+
+    /// 按 damage 增量重绘（带帧内光标）。app 走 `draw_without_cursor` + overlay；
+    /// 这个入口保留给无 overlay 的调用方/测试。
+    #[allow(dead_code)]
     pub fn draw(&mut self, frame: &Frame) {
+        self.draw_impl(frame, true);
+    }
+
+    /// 只画终端内容、不画光标；app 用独立的 Slint overlay 画光标，这样光标
+    /// 闪烁/移动不需要重新栅格化整屏，GPU 后端也只合成一个小图层。
+    pub fn draw_without_cursor(&mut self, frame: &Frame) {
+        self.draw_impl(frame, false);
+    }
+
+    fn draw_impl(&mut self, frame: &Frame, draw_cursor: bool) {
         let started = std::time::Instant::now();
         if frame.cols != self.cols || frame.rows != self.rows {
             self.resize_grid(frame.cols, frame.rows);
@@ -627,7 +1037,9 @@ impl Renderer {
                 }
             }
         }
-        self.draw_cursor(frame);
+        if draw_cursor {
+            self.draw_cursor(frame);
+        }
         self.last_cursor = (frame.cursor.line, frame.cursor.col);
         self.last_selection = frame.selection;
         self.last_search = frame.search;
@@ -1023,5 +1435,182 @@ mod tests {
         renderer.draw(&frame);
         assert!(ink(&renderer, 0, cell_w, 0, cell_h) > 10);
         assert_eq!(ink(&renderer, cell_w, 8 * cell_w, 0, cell_h), 0);
+    }
+
+    /// 建一个光标可见的帧，光标放在 (line,col)，该格保持空格。
+    fn cursor_frame(cols: usize, rows: usize, line: u16, col: u16) -> Frame {
+        let mut frame = blank_frame(cols, rows);
+        frame.full = true;
+        frame.cursor = tervo_core::CursorState {
+            line,
+            col,
+            shape: CursorShape::Block,
+            visible: true,
+        };
+        frame
+    }
+
+    fn pixel(renderer: &Renderer, x: usize, y: usize) -> u32 {
+        renderer.pixels()[y * renderer.width + x]
+    }
+
+    #[test]
+    fn cursor_shapes_paint_expected_regions() {
+        let Some(fonts) = FontSet::load(15.0) else { return };
+        let cell_w = fonts.cell_w;
+        let cell_h = fonts.cell_h;
+        let cursor = 0x00ff_0000;
+        let mut renderer = Renderer::new(
+            Rc::new(fonts),
+            4,
+            2,
+            Theme::default().bg(),
+            cursor,
+            1.0,
+        );
+        let frame = cursor_frame(4, 2, 1, 1);
+        let (x, y) = (cell_w, cell_h);
+        let red = pack(cursor);
+
+        // 默认 block：整格填充。
+        renderer.draw(&frame);
+        assert_eq!(pixel(&renderer, x, y), red, "block 左上未填");
+        assert_eq!(pixel(&renderer, x + cell_w - 1, y + cell_h - 1), red, "block 右下未填");
+
+        // underline：只画底部 2px。
+        renderer.set_cursor_style(CursorShape::Underline, None, None);
+        renderer.draw(&frame);
+        assert_eq!(pixel(&renderer, x, y + cell_h - 1), red, "underline 底线未画");
+        assert_eq!(pixel(&renderer, x, y + cell_h - 2), red, "underline 第二行未画");
+        assert_ne!(pixel(&renderer, x, y), red, "underline 不应填满整格");
+
+        // ibeam：只画左侧 2px。
+        renderer.set_cursor_style(CursorShape::Beam, None, None);
+        renderer.draw(&frame);
+        assert_eq!(pixel(&renderer, x, y), red, "ibeam 左列未画");
+        assert_eq!(pixel(&renderer, x + 1, y + cell_h - 1), red, "ibeam 第二列未画");
+        assert_ne!(pixel(&renderer, x + 2, y), red, "ibeam 不应填满整格");
+    }
+
+    #[test]
+    fn cursor_color_and_text_color_overrides_apply() {
+        let Some(fonts) = FontSet::load(15.0) else { return };
+        let cell_w = fonts.cell_w;
+        let cell_h = fonts.cell_h;
+        let mut renderer = Renderer::new(
+            Rc::new(fonts),
+            4,
+            1,
+            Theme::default().bg(),
+            0x00ff_0000,
+            1.0,
+        );
+        let mut frame = cursor_frame(4, 1, 0, 0);
+        let mut cell = CellData::default();
+        cell.ch = 'A' as u32;
+        cell.fg = 0x00ff_ffff;
+        cell.bg = Theme::default().bg();
+        frame.cells[0] = cell;
+        let cursor = 0x0000_ff00;
+        let text = 0x0000_00ff;
+        renderer.set_cursor_style(CursorShape::Block, Some(cursor), Some(text));
+        renderer.draw(&frame);
+        let count = |color: u32| {
+            (0..cell_w * cell_h)
+                .filter(|i| pixel(&renderer, i % cell_w, i / cell_w) == color)
+                .count()
+        };
+        assert!(count(pack(cursor)) > 20, "自定义光标色未生效");
+        assert!(count(pack(text)) > 0, "光标下文字颜色未生效");
+        assert_eq!(count(pack(0x00ff_0000)), 0, "主题光标色不应残留");
+    }
+
+    #[test]
+    fn app_requested_cursor_shape_wins_over_config_block_default() {
+        // vim 等 TUI 用 DECSCUSR 切 beam/underline；frame 的形状应优先于配置。
+        let Some(fonts) = FontSet::load(15.0) else { return };
+        let cell_h = fonts.cell_h;
+        let cursor = 0x00ff_0000;
+        let mut renderer =
+            Renderer::new(Rc::new(fonts), 4, 1, Theme::default().bg(), cursor, 1.0);
+        renderer.set_cursor_style(CursorShape::Beam, None, None);
+        let mut frame = cursor_frame(4, 1, 0, 0);
+        frame.cursor.shape = CursorShape::Underline;
+        renderer.draw(&frame);
+        let red = pack(cursor);
+        assert_eq!(pixel(&renderer, 0, cell_h - 1), red, "frame 的 underline 未生效");
+        assert_ne!(pixel(&renderer, 0, 0), red, "不应按配置画 beam");
+    }
+
+    #[test]
+    fn cursor_blink_off_does_not_draw_cursor_in_frame() {
+        let Some(fonts) = FontSet::load(15.0) else { return };
+        let cursor = 0x00ff_0000;
+        let mut renderer =
+            Renderer::new(Rc::new(fonts), 4, 1, Theme::default().bg(), cursor, 1.0);
+        let frame = cursor_frame(4, 1, 0, 1);
+        renderer.set_cursor_blink_phase(false);
+        renderer.draw(&frame);
+        assert!(
+            !renderer.pixels().iter().any(|p| *p == pack(cursor)),
+            "闪烁 off 时帧缓冲里仍有光标像素"
+        );
+        renderer.set_cursor_blink_phase(true);
+        renderer.draw(&frame);
+        assert!(
+            renderer.pixels().iter().any(|p| *p == pack(cursor)),
+            "闪烁 on 时未画光标"
+        );
+    }
+
+    #[test]
+    fn draw_without_cursor_keeps_frame_clean_but_overlay_works() {
+        let Some(fonts) = FontSet::load(15.0) else { return };
+        let cell_w = fonts.cell_w;
+        let cell_h = fonts.cell_h;
+        let cursor = 0x00ff_0000;
+        let mut renderer =
+            Renderer::new(Rc::new(fonts), 4, 2, Theme::default().bg(), cursor, 1.0);
+        let frame = cursor_frame(4, 2, 1, 2);
+        renderer.draw_without_cursor(&frame);
+        assert!(
+            !renderer.pixels().iter().any(|p| *p == pack(cursor)),
+            "终端帧不应包含光标"
+        );
+        let (buffer, rect) = renderer.cursor_buffer(&frame).expect("可见光标应有 overlay");
+        assert_eq!((rect.x, rect.y), ((2 * cell_w) as f32, cell_h as f32));
+        assert_eq!((rect.width, rect.height), (cell_w as f32, cell_h as f32));
+        let pixels: &[u32] = bytemuck::cast_slice(buffer.as_bytes());
+        let opaque = pixels.iter().filter(|p| *p >> 24 == 255).count();
+        assert_eq!(opaque, pixels.len(), "block overlay 应整格不透明");
+    }
+
+    #[test]
+    fn cursor_overlay_underline_and_beam_are_transparent_outside_line() {
+        let Some(fonts) = FontSet::load(15.0) else { return };
+        let cell_w = fonts.cell_w;
+        let cell_h = fonts.cell_h;
+        let cursor = 0x00ff_0000;
+        let mut renderer =
+            Renderer::new(Rc::new(fonts), 4, 1, Theme::default().bg(), cursor, 1.0);
+        let frame = cursor_frame(4, 1, 0, 0);
+        let red = pack(cursor);
+        let opaque = |buffer: &slint::SharedPixelBuffer<slint::Rgba8Pixel>| {
+            let pixels: &[u32] = bytemuck::cast_slice(buffer.as_bytes());
+            let rows: Vec<usize> = (0..cell_h)
+                .filter(|y| (0..cell_w).any(|x| pixels[y * cell_w + x] == red))
+                .collect();
+            (pixels.iter().filter(|p| *p >> 24 != 0).count(), rows)
+        };
+        renderer.set_cursor_style(CursorShape::Underline, None, None);
+        let (underline, _) = renderer.cursor_buffer(&frame).unwrap();
+        let (n, rows) = opaque(&underline);
+        assert_eq!(n, cell_w * 2, "underline overlay 只应有两行不透明");
+        assert_eq!(rows, vec![cell_h - 2, cell_h - 1], "underline 位置不对");
+
+        renderer.set_cursor_style(CursorShape::Beam, None, None);
+        let (beam, _) = renderer.cursor_buffer(&frame).unwrap();
+        let (n, _) = opaque(&beam);
+        assert_eq!(n, cell_h * 2, "beam overlay 只应有两列不透明");
     }
 }
