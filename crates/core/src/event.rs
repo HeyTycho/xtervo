@@ -87,7 +87,7 @@ pub enum CoreEvent {
 }
 
 /// 有界、可合并的唤醒信号：容量 1，重复唤醒直接丢弃。
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct WakeSignal {
     tx: Sender<()>,
 }
@@ -109,23 +109,59 @@ impl WakeSignal {
 }
 
 /// 语义事件出口：有界、非阻塞；满则丢弃并计数（绝不为 UI 阻塞终端）。
-#[derive(Clone)]
+///
+/// [`Self::new_with_wake`] 额外带一条容量 1 的唤醒通道：每次成功投递事件后
+/// 通知 UI，重复通知自动合并。事件本身仍走独立有界队列——唤醒只是“去看看”，
+/// 丢失/合并唤醒不会丢事件；URL 查询等异步结果也不会被提前消费。
+#[derive(Clone, Debug)]
 pub struct EventSink {
     tx: Sender<CoreEvent>,
     dropped: Arc<AtomicU64>,
+    wake: Option<WakeSignal>,
 }
 
 impl EventSink {
     pub fn new(capacity: usize) -> (Self, Receiver<CoreEvent>) {
         let (tx, rx) = bounded(capacity);
-        (Self { tx, dropped: Arc::new(AtomicU64::new(0)) }, rx)
+        (Self { tx, dropped: Arc::new(AtomicU64::new(0)), wake: None }, rx)
+    }
+
+    /// 带唤醒语义事件的出口：`(sink, events, wake)`。
+    ///
+    /// `wake` 容量 1，事件洪峰只会合并成一次通知；UI 收到唤醒后必须
+    /// **drain 到空**（见 `PaneHandle::drain_events`），不能只处理一条。
+    pub fn new_with_wake(
+        capacity: usize,
+    ) -> (Self, Receiver<CoreEvent>, Receiver<()>) {
+        let (wake, wake_rx) = WakeSignal::new();
+        let (tx, rx) = bounded(capacity);
+        (
+            Self { tx, dropped: Arc::new(AtomicU64::new(0)), wake: Some(wake) },
+            rx,
+            wake_rx,
+        )
     }
 
     #[inline]
     pub fn send(&self, event: CoreEvent) {
-        if let Err(TrySendError::Full(_)) = self.tx.try_send(event) {
-            self.dropped.fetch_add(1, Ordering::Relaxed);
+        match self.tx.try_send(event) {
+            Ok(()) => {
+                // 有界事件通道已收到事件；唤醒合并只决定 UI 何时来看，
+                // 不承载事件内容，因此洪峰下丢弃唤醒是安全的。
+                if let Some(wake) = &self.wake {
+                    wake.notify();
+                }
+            },
+            Err(TrySendError::Full(_)) => {
+                self.dropped.fetch_add(1, Ordering::Relaxed);
+            },
+            Err(TrySendError::Disconnected(_)) => {},
         }
+    }
+
+    /// 已因事件队列满而丢弃的事件数（诊断/压测用）。
+    pub fn dropped(&self) -> u64 {
+        self.dropped.load(Ordering::Relaxed)
     }
 }
 
@@ -223,5 +259,28 @@ mod tests {
         }
         assert_eq!(rx.try_recv(), Ok(CoreEvent::Bell));
         assert_eq!(sink.dropped.load(Ordering::Relaxed), 98);
+        assert_eq!(sink.dropped(), 98);
+    }
+
+    #[test]
+    fn event_sink_wake_coalesces_but_never_loses_events() {
+        // 事件洪峰：唤醒合并成 1 次，事件仍按容量逐个排队（满则计数丢弃）。
+        let (sink, events, wake) = EventSink::new_with_wake(256);
+        for _ in 0..1000 {
+            sink.send(CoreEvent::Bell);
+        }
+        assert!(wake.try_recv().is_ok(), "应至少有一次唤醒");
+        assert!(wake.try_recv().is_err(), "唤醒必须合并（容量 1）");
+        assert_eq!(sink.dropped(), 1000 - 256);
+        let mut drained = 0;
+        while events.try_recv().is_ok() {
+            drained += 1;
+        }
+        assert_eq!(drained, 256, "唤醒不能消费事件，drain 必须拿到全部事件");
+
+        // UI 清空事件后新事件必须再次唤醒（不能在“合并”里把最后一次唤醒吃掉）。
+        sink.send(CoreEvent::Bell);
+        assert!(wake.try_recv().is_ok());
+        assert_eq!(events.try_recv(), Ok(CoreEvent::Bell));
     }
 }

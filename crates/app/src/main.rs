@@ -40,7 +40,7 @@ use tervo_core::{
     link::is_allowed_uri, spawn, ClipboardRequest, ClipboardSelection, CoreEvent, Frame, LinkKind,
     Modifiers, MouseAction, MouseButton, MouseEvent, Notification, Palette as TermPalette,
     PaneConfig, PaneHandle, ProgressState, ScrollPosition, SearchHit, SearchOptions, Theme,
-    UiColors,
+    UiColors, WakeSignal,
 };
 use x11rb::connection::Connection;
 use x11rb::rust_connection::RustConnection;
@@ -202,6 +202,8 @@ struct AppState {
     /// 对应 release 也绝不能进 PTY。普通 shell（未请求协议）永远为空。
     held_keys: HashMap<PaneId, std::collections::HashSet<keys::KeyId>>,
     plugins: plugin::PluginStore,
+    /// 后台事件唤醒（插件活动/SFTP 结果共用，容量 1）：写入结果后通知 UI。
+    app_wake: WakeSignal,
     plugin_model: Rc<VecModel<slint::SharedString>>,
     /// Plugins 设置页「最近插件活动」模型（新→旧）。
     plugin_activity_model: Rc<VecModel<slint::SharedString>>,
@@ -313,6 +315,50 @@ static SCHEME_WATCH_STOPPED: AtomicBool = AtomicBool::new(false);
 fn render_profile() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var_os("TERVO_RENDER_PROFILE").is_some())
+}
+
+/// 事件唤醒 A/B 诊断开关：默认开启；`TERVO_EVENT_WAKE=0` 回到纯 400ms 轮询。
+///
+/// 只用于性能对比/排障，默认路径不读取额外配置；关闭后默认行为与旧版一致。
+fn event_wake_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| match std::env::var("TERVO_EVENT_WAKE") {
+        Ok(v) => !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "off"),
+        Err(_) => true,
+    })
+}
+
+/// 唤醒/轮询计数：`TERVO_WAKE_STATS=1` 时每 5s 打一行。
+///
+/// 空闲时 core/app 唤醒数应保持不变（没有事件就没有回调），400ms 兜底仍按
+/// 周期跑；这是“不是把轮询改快”的直接证据。
+static CORE_EVENT_WAKES: AtomicUsize = AtomicUsize::new(0);
+static APP_EVENT_WAKES: AtomicUsize = AtomicUsize::new(0);
+static PERIODIC_POLLS: AtomicUsize = AtomicUsize::new(0);
+
+/// 把后台唤醒信号桥接到 Slint 事件循环。
+///
+/// `rx` 是容量 1 的合并信号；`pending` 保证同一时刻最多排一个 UI 回调。
+/// `rx` 断开（AppState/所有发送端释放）后线程自行退出，不留后台空转。
+fn spawn_app_wake_bridge(rx: crossbeam_channel::Receiver<()>) {
+    let pending = Arc::new(AtomicBool::new(false));
+    let spawned = std::thread::Builder::new().name("app-wake".into()).spawn(move || {
+        while rx.recv().is_ok() {
+            if pending.swap(true, Ordering::AcqRel) {
+                continue;
+            }
+            let pending = pending.clone();
+            let _ = slint::invoke_from_event_loop(move || {
+                // 先清 pending 再处理：drain 期间到达的新事件还能再排一次回调；
+                // 处理函数只做非阻塞 try_recv / revision 去重，重复回调无副作用。
+                pending.store(false, Ordering::Release);
+                on_app_event_wake();
+            });
+        }
+    });
+    if let Err(e) = spawned {
+        eprintln!("[event] app wake 桥接线程启动失败: {e}");
+    }
 }
 
 fn with_app<R>(f: impl FnOnce(&mut AppState) -> R) -> Option<R> {
@@ -640,8 +686,9 @@ fn refresh_plugin_page(st: &mut AppState) {
 
 /// 活动列表变化时刷新 Slint model；`force` 用于首次填充。
 ///
-/// 后台线程只往 `PluginStore` 的 ActivityLog push，UI 线程在 poll_events 里按
-/// revision 拉取，避免跨线程碰 Slint model。
+/// 后台线程只往 `PluginStore` 的 ActivityLog push 并唤醒 UI；UI 线程按
+/// revision 拉取，避免跨线程碰 Slint model。400ms 兜底仍会调用（revision
+/// 未变时直接返回）。
 fn refresh_plugin_activity(st: &mut AppState, force: bool) {
     let (revision, lines) = st.plugins.activity_snapshot();
     if !force && revision == st.plugin_activity_revision {
@@ -649,7 +696,16 @@ fn refresh_plugin_activity(st: &mut AppState, force: bool) {
     }
     st.plugin_activity_revision = revision;
     let rows: Vec<slint::SharedString> = lines.iter().map(|line| line.as_str().into()).collect();
+    let row_count = rows.len();
     st.plugin_activity_model.set_vec(rows);
+    // rev=0 是首次空表填充，不打日志；有活动时记录 UI 实际刷新时间，
+    // 供 e2e 与插件自己的完成时间戳对差（目标 <50ms）。
+    if revision > 0 {
+        eprintln!(
+            "[ui] ts_ms={} plugin activity rev={revision} rows={row_count}",
+            logging::now_ms()
+        );
+    }
 }
 
 /// 异步分发一个插件事件；spawn 失败/插件执行失败都只写日志与活动列表。
@@ -1574,19 +1630,54 @@ fn create_pane(
     })?;
 
     let wake = handle.wake_receiver();
-    let pending = Arc::new(AtomicBool::new(false));
+    // 语义事件唤醒与内容拉帧唤醒分开：内容 wake 只重绘该 pane，事件 wake 走
+    // 标题/Bell/OSC52 的 UI 处理而且必须 drain 全部事件，两者不能互相冒充。
+    //
+    // A/B 诊断关闭时给一个永不触发的通道（保留 sender 在闭包内），行为回到
+    // 旧版纯 400ms 轮询；正常路径下 Slint 事件循环被 CoreEvent 立即叫醒。
+    let (event_wake, event_wake_keepalive) = if event_wake_enabled() {
+        (handle.event_wake_receiver(), None)
+    } else {
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        (rx, Some(tx))
+    };
+    let content_pending = Arc::new(AtomicBool::new(false));
+    let event_pending = Arc::new(AtomicBool::new(false));
     std::thread::Builder::new()
         .name(format!("wake-{id}"))
         .spawn(move || {
-            while wake.recv().is_ok() {
-                if pending.swap(true, Ordering::AcqRel) {
-                    continue;
+            let _event_wake_keepalive = event_wake_keepalive;
+            loop {
+                crossbeam_channel::select! {
+                    recv(wake) -> msg => {
+                        if msg.is_err() {
+                            break; // pane 句柄释放：内容与事件通道都会断开
+                        }
+                        if content_pending.swap(true, Ordering::AcqRel) {
+                            continue;
+                        }
+                        let pending = content_pending.clone();
+                        let _ = slint::invoke_from_event_loop(move || {
+                            pending.store(false, Ordering::Release);
+                            redraw_pane(id);
+                        });
+                    },
+                    recv(event_wake) -> msg => {
+                        if msg.is_err() {
+                            break;
+                        }
+                        if event_pending.swap(true, Ordering::AcqRel) {
+                            continue;
+                        }
+                        let pending = event_pending.clone();
+                        let _ = slint::invoke_from_event_loop(move || {
+                            // 先清 pending 再处理：drain 期间新到的事件还能再唤醒；
+                            // drain + revision 去重保证不会重复消费同一条事件。
+                            pending.store(false, Ordering::Release);
+                            on_core_event_wake();
+                        });
+                    },
                 }
-                let pending = pending.clone();
-                let _ = slint::invoke_from_event_loop(move || {
-                    pending.store(false, Ordering::Release);
-                    redraw_pane(id);
-                });
             }
         })?;
 
@@ -2444,7 +2535,7 @@ fn sftp_start_transfer(
         remote: remote.clone(),
         recursive,
     };
-    match sftp::TransferJob::start(&request) {
+    match sftp::TransferJob::start_woken(&request, st.app_wake.clone()) {
         Ok(job) => {
             st.sftp_transfer = Some(job);
             st.sftp_transfer_state =
@@ -2508,7 +2599,10 @@ fn poll_sftp_transfer(st: &mut AppState) {
     let upload_done = st.sftp_transfer_state.is_done_upload();
     sftp_show_transfer(st);
     sftp_set_status(st, &status);
-    eprintln!("[sftp] 传输结束 phase={phase:?}");
+    eprintln!(
+        "[sftp] ts_ms={} 传输结束 phase={phase:?}",
+        logging::now_ms()
+    );
     if upload_done {
         // 上传完成后刷新远端列表，但保留“已上传”结果文案。
         sftp_do_list(st);
@@ -2542,7 +2636,7 @@ fn sftp_busy(st: &mut AppState) -> bool {
 fn sftp_start_op(st: &mut AppState, command: sftp::SftpCommand, status: &str) {
     eprintln!("[sftp] 后台操作开始: {command:?}（timeout=10s）");
     sftp_set_status(st, status);
-    st.sftp_op = Some(sftp::SftpOpJob::start(command));
+    st.sftp_op = Some(sftp::SftpOpJob::start_woken(command, st.app_wake.clone()));
     // 操作期间 100ms 收一次结果；完成/失败即 stop，空闲时零开销。
     st.sftp_op_timer.start(
         slint::TimerMode::Repeated,
@@ -2705,7 +2799,11 @@ fn poll_sftp_op(st: &mut AppState) {
         Some(Ok(outcome)) => {
             st.sftp_op = None;
             st.sftp_op_timer.stop();
-            eprintln!("[sftp] 后台操作完成: {}", outcome.describe());
+            eprintln!(
+                "[sftp] ts_ms={} 后台操作完成: {}",
+                logging::now_ms(),
+                outcome.describe()
+            );
             apply_sftp_outcome(st, outcome);
         },
         Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => {
@@ -6158,9 +6256,10 @@ fn selection_label(selection: ClipboardSelection) -> &'static str {
 /// 消费 core 的 OSC 52 事件。`osc52 = "deny"` 时两个方向都拒绝
 /// （query 同样会泄漏本机剪贴板，不能只拦写入）。
 fn apply_osc52(st: &mut AppState, pane: PaneId, request: ClipboardRequest) {
+    let ts = logging::now_ms();
     if !st.cfg.osc52_allowed() {
         eprintln!(
-            "[clipboard] osc52 denied pane={pane} osc52={:?}",
+            "[clipboard] ts_ms={ts} osc52 denied pane={pane} osc52={:?}",
             st.cfg.osc52
         );
         return;
@@ -6168,7 +6267,7 @@ fn apply_osc52(st: &mut AppState, pane: PaneId, request: ClipboardRequest) {
     match request {
         ClipboardRequest::Store { selection, text } => {
             eprintln!(
-                "[clipboard] osc52 store pane={pane} selection={} bytes={}",
+                "[clipboard] ts_ms={ts} osc52 store pane={pane} selection={} bytes={}",
                 selection_label(selection),
                 text.len()
             );
@@ -6179,7 +6278,7 @@ fn apply_osc52(st: &mut AppState, pane: PaneId, request: ClipboardRequest) {
         }
         ClipboardRequest::Clear { selection } => {
             eprintln!(
-                "[clipboard] osc52 clear pane={pane} selection={}",
+                "[clipboard] ts_ms={ts} osc52 clear pane={pane} selection={}",
                 selection_label(selection)
             );
             match selection {
@@ -6193,13 +6292,13 @@ fn apply_osc52(st: &mut AppState, pane: PaneId, request: ClipboardRequest) {
                 ClipboardSelection::Primary => get_primary(st),
             };
             eprintln!(
-                "[clipboard] osc52 query pane={pane} selection={} bytes={}",
+                "[clipboard] ts_ms={ts} osc52 query pane={pane} selection={} bytes={}",
                 selection_label(selection),
                 text.as_ref().map_or(0, String::len)
             );
             if let (Some(text), Some(rt)) = (text, st.panes.get(&pane)) {
                 eprintln!(
-                    "[clipboard] osc52 reply pane={pane} selection={} bytes={}",
+                    "[clipboard] ts_ms={ts} osc52 reply pane={pane} selection={} bytes={}",
                     selection_label(selection),
                     text.len()
                 );
@@ -6209,136 +6308,186 @@ fn apply_osc52(st: &mut AppState, pane: PaneId, request: ClipboardRequest) {
     }
 }
 
-fn poll_events() {
-    let (audible_bell, bell_count) = with_app(|st| {
-        let active = st.ws.active;
-        let desktop_notifications = st.cfg.desktop_notifications;
-        let visual_bell = st.cfg.visual_bell;
-        let audible_bell = st.cfg.audible_bell;
-        let mut bell_count = 0u32;
-        let tab_titles: Vec<String> = st.ws.tabs.iter().map(|t| t.title.clone()).collect();
-        let pane_tab: HashMap<PaneId, usize> = st
-            .ws
-            .tabs
-            .iter()
-            .enumerate()
-            .flat_map(|(i, tab)| tab.panes().into_iter().map(move |id| (id, i)))
-            .collect();
+/// 处理已排队的 CoreEvent（标题/Bell/OSC52/通知/进度/Cwd）。
+///
+/// 事件唤醒与 400ms 兜底都调用它；每次 drain 到空，保证不丢、不重复。
+/// 返回 `(是否允许响铃, 本轮 BEL 数)`，响铃由调用方在释放 `AppState` 借用后执行。
+fn drain_core_events(st: &mut AppState) -> (bool, u32) {
+    let active = st.ws.active;
+    let desktop_notifications = st.cfg.desktop_notifications;
+    let visual_bell = st.cfg.visual_bell;
+    let audible_bell = st.cfg.audible_bell;
+    let mut bell_count = 0u32;
+    let tab_titles: Vec<String> = st.ws.tabs.iter().map(|t| t.title.clone()).collect();
+    let pane_tab: HashMap<PaneId, usize> = st
+        .ws
+        .tabs
+        .iter()
+        .enumerate()
+        .flat_map(|(i, tab)| tab.panes().into_iter().map(move |id| (id, i)))
+        .collect();
 
-        let mut titles_dirty = false;
-        let mut tabs_dirty = false;
-        // OSC 52 需要读写 st 的剪贴板状态，不能在内层 `rt` 可变借用期间处理；
-        // 先收集 (pane, request)，等 pane 遍历结束后统一消费。
-        let mut clipboard_events: Vec<(PaneId, ClipboardRequest)> = Vec::new();
-        let mut bell_panes: Vec<PaneId> = Vec::new();
-        let ids: Vec<PaneId> = st.panes.keys().copied().collect();
-        for id in ids {
-            let Some(rt) = st.panes.get_mut(&id) else {
-                continue;
-            };
-            let mut events = Vec::new();
-            rt.handle.drain_events(&mut events);
-            let tab = pane_tab.get(&id).copied();
-            let tab_title = tab
-                .and_then(|i| tab_titles.get(i))
-                .map(String::as_str)
-                .unwrap_or("Tervo");
-            let is_active = tab == Some(active);
-            for ev in events {
-                match ev {
-                    CoreEvent::Title(t) => {
-                        if !t.is_empty() && rt.title != t {
-                            rt.title = t;
-                            titles_dirty = true;
-                        }
-                    }
-                    CoreEvent::Progress(progress) => {
-                        let had_progress = rt.activity.progress.state != ProgressState::Clear;
-                        rt.activity.progress = progress;
-                        // 进度从“有”变为清除 = 完成；活动 Tab 不放完成标记，避免打扰。
-                        rt.activity.completed =
-                            progress.state == ProgressState::Clear && had_progress && !is_active;
-                        tabs_dirty = true;
+    let mut titles_dirty = false;
+    let mut tabs_dirty = false;
+    // OSC 52 需要读写 st 的剪贴板状态，不能在内层 `rt` 可变借用期间处理；
+    // 先收集 (pane, request)，等 pane 遍历结束后统一消费。
+    let mut clipboard_events: Vec<(PaneId, ClipboardRequest)> = Vec::new();
+    let mut bell_panes: Vec<PaneId> = Vec::new();
+    let ids: Vec<PaneId> = st.panes.keys().copied().collect();
+    for id in ids {
+        let Some(rt) = st.panes.get_mut(&id) else {
+            continue;
+        };
+        let mut events = Vec::new();
+        rt.handle.drain_events(&mut events);
+        let tab = pane_tab.get(&id).copied();
+        let tab_title = tab
+            .and_then(|i| tab_titles.get(i))
+            .map(String::as_str)
+            .unwrap_or("Tervo");
+        let is_active = tab == Some(active);
+        for ev in events {
+            match ev {
+                CoreEvent::Title(t) => {
+                    if !t.is_empty() && rt.title != t {
                         eprintln!(
-                            "[ui] tab progress pane={id} tab={tab:?} state={:?} percent={:?}",
-                            progress.state, progress.percent
+                            "[event] ts_ms={} pane={id} kind=title title={t:?}",
+                            logging::now_ms()
                         );
+                        rt.title = t;
+                        titles_dirty = true;
                     }
-                    CoreEvent::Notification(note) => {
-                        tabs_dirty |= apply_notification(
-                            rt,
-                            note,
-                            id,
-                            tab,
-                            tab_title,
-                            is_active,
-                            desktop_notifications,
-                            false,
-                        );
+                }
+                CoreEvent::Progress(progress) => {
+                    let had_progress = rt.activity.progress.state != ProgressState::Clear;
+                    rt.activity.progress = progress;
+                    // 进度从“有”变为清除 = 完成；活动 Tab 不放完成标记，避免打扰。
+                    rt.activity.completed =
+                        progress.state == ProgressState::Clear && had_progress && !is_active;
+                    tabs_dirty = true;
+                    eprintln!(
+                        "[ui] ts_ms={} tab progress pane={id} tab={tab:?} state={:?} percent={:?}",
+                        logging::now_ms(),
+                        progress.state,
+                        progress.percent
+                    );
+                }
+                CoreEvent::Notification(note) => {
+                    eprintln!(
+                        "[event] ts_ms={} pane={id} kind=notification title={:?}",
+                        logging::now_ms(),
+                        note.title
+                    );
+                    tabs_dirty |= apply_notification(
+                        rt,
+                        note,
+                        id,
+                        tab,
+                        tab_title,
+                        is_active,
+                        desktop_notifications,
+                        false,
+                    );
+                }
+                CoreEvent::Bell => {
+                    bell_count += 1;
+                    eprintln!("[event] ts_ms={} pane={id} kind=bell", logging::now_ms());
+                    tabs_dirty |= apply_notification(
+                        rt,
+                        activity::bell_notification(),
+                        id,
+                        tab,
+                        tab_title,
+                        is_active,
+                        desktop_notifications,
+                        true,
+                    );
+                    // 视觉铃只闪当前活动 pane；非活动 Tab 仍走未读点/桌面通知。
+                    if is_active && visual_bell {
+                        bell_panes.push(id);
                     }
-                    CoreEvent::Bell => {
-                        bell_count += 1;
-                        tabs_dirty |= apply_notification(
-                            rt,
-                            activity::bell_notification(),
-                            id,
-                            tab,
-                            tab_title,
-                            is_active,
-                            desktop_notifications,
-                            true,
-                        );
-                        // 视觉铃只闪当前活动 pane；非活动 Tab 仍走未读点/桌面通知。
-                        if is_active && visual_bell {
-                            bell_panes.push(id);
-                        }
-                    }
-                    CoreEvent::Cwd(cwd) => {
-                        eprintln!("[ui] cwd pane={id} tab={tab:?} path={cwd:?}");
-                    }
-                    CoreEvent::Clipboard(request) => clipboard_events.push((id, request)),
-                    CoreEvent::ResetTitle | CoreEvent::CursorBlinkChange | CoreEvent::Exited => {}
+                }
+                CoreEvent::Cwd(cwd) => {
+                    eprintln!(
+                        "[ui] ts_ms={} cwd pane={id} tab={tab:?} path={cwd:?}",
+                        logging::now_ms()
+                    );
+                }
+                CoreEvent::Clipboard(request) => clipboard_events.push((id, request)),
+                CoreEvent::ResetTitle | CoreEvent::CursorBlinkChange | CoreEvent::Exited => {}
+            }
+        }
+    }
+    for (id, request) in clipboard_events {
+        apply_osc52(st, id, request);
+    }
+    if titles_dirty {
+        // 保持既有行为：只把活动 Tab 首个 pane 的标题写回 Tab。
+        if let Some(tab) = st.ws.tabs.get_mut(active) {
+            if let Some(first) = tab.panes().first() {
+                if let Some(rt) = st.panes.get(first) {
+                    tab.title = rt.title.clone();
                 }
             }
         }
-        for (id, request) in clipboard_events {
-            apply_osc52(st, id, request);
-        }
-        if titles_dirty {
-            // 保持既有行为：只把活动 Tab 首个 pane 的标题写回 Tab。
-            if let Some(tab) = st.ws.tabs.get_mut(active) {
-                if let Some(first) = tab.panes().first() {
-                    if let Some(rt) = st.panes.get(first) {
-                        tab.title = rt.title.clone();
-                    }
-                }
-            }
-        }
-        if titles_dirty || tabs_dirty {
-            rebuild_tabs(st);
-        }
-        for id in bell_panes {
-            flash_bell(st, id);
-        }
-        // 插件命令/事件在后台线程写活动日志；这里只按 revision 增量刷新设置页模型。
-        refresh_plugin_activity(st, false);
-        // SFTP 传输进度：400ms 一次非阻塞收事件；终态时回收任务线程。
-        poll_sftp_transfer(st);
-        // SFTP 元数据命令后台结果（list/mkdir/rename/delete）。
-        poll_sftp_op(st);
-        (audible_bell, bell_count)
-    })
-    .unwrap_or((false, 0));
+    }
+    if titles_dirty || tabs_dirty {
+        rebuild_tabs(st);
+    }
+    for id in bell_panes {
+        flash_bell(st, id);
+    }
+    (audible_bell, bell_count)
+}
 
-    // 响铃放在 with_app 之外：X11 连接懒建立可能做一次同步 connect，不能占着
-    // RefCell 借用；同一轮轮询里的多个 BEL 合并成一次响铃，避免 BEL 风暴。
+/// 响铃放在 `with_app` 之外：X11 连接懒建立可能做一次同步 connect，不能占着
+/// RefCell 借用；同一轮里的多个 BEL 合并成一次响铃，避免 BEL 风暴。
+fn ring_bell(audible_bell: bool, bell_count: u32) {
     if audible_bell && bell_count > 0 {
         let ok = bell::ring();
         eprintln!(
-            "[bell] audible count={bell_count} backend={}",
+            "[bell] ts_ms={} audible count={bell_count} backend={}",
+            logging::now_ms(),
             if ok { "ok" } else { "unavailable" }
         );
     }
+}
+
+/// CoreEvent 唤醒回调（UI 事件循环线程）：只做语义事件，不跑周期任务。
+fn on_core_event_wake() {
+    CORE_EVENT_WAKES.fetch_add(1, Ordering::Relaxed);
+    let (audible_bell, bell_count) = with_app(drain_core_events).unwrap_or((false, 0));
+    ring_bell(audible_bell, bell_count);
+}
+
+/// 插件活动 / SFTP 后台结果唤醒回调：立即收结果；周期兜底仍在 400ms timer。
+fn on_app_event_wake() {
+    APP_EVENT_WAKES.fetch_add(1, Ordering::Relaxed);
+    with_app(|st| {
+        // 插件命令/事件在后台线程写活动日志；这里只按 revision 增量刷新设置页模型。
+        refresh_plugin_activity(st, false);
+        // SFTP 传输进度：非阻塞收事件；终态时回收任务线程。
+        poll_sftp_transfer(st);
+        // SFTP 元数据命令后台结果（list/mkdir/rename/delete）。
+        poll_sftp_op(st);
+    });
+}
+
+/// 400ms 兜底/周期轮询：语义事件 + 插件活动 + SFTP 传输/元数据。
+///
+/// 事件唤醒是低延迟路径，本函数仍是必需的兜底（唤醒丢失、合并窗口、超时与
+/// 周期性刷新都靠它），但不会因为事件多就变成高频轮询。
+fn poll_events() {
+    PERIODIC_POLLS.fetch_add(1, Ordering::Relaxed);
+    let (audible_bell, bell_count) = with_app(|st| {
+        let bells = drain_core_events(st);
+        refresh_plugin_activity(st, false);
+        poll_sftp_transfer(st);
+        poll_sftp_op(st);
+        bells
+    })
+    .unwrap_or((false, 0));
+    ring_bell(audible_bell, bell_count);
 }
 
 /// 活动 pane 收到 BEL：闪一下边框（`visual_bell = false` 时完全不做）。
@@ -6924,7 +7073,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui.set_profilemenu_items(ModelRc::from(profile_menu_model.clone()));
 
     // 插件发现 + 命令注册：旧扁平清单只展示；v1 目录插件把启用命令合并进 Registry。
-    let plugins = plugin::PluginStore::load();
+    // `app_wake` 同时供插件活动与 SFTP 后台结果使用：后台线程写完通道后立即
+    // 叫醒 UI；400ms 轮询仍保留作为兜底。默认开启，A/B 诊断见 event_wake_enabled。
+    let (app_wake, app_wake_rx) = WakeSignal::new();
+    let mut plugins = plugin::PluginStore::load();
+    plugins.set_activity_wake(app_wake.clone());
     let mut command_registry = commands::builtin();
     let plugin_command_count = plugin::register_plugins(&mut command_registry, &plugins);
     eprintln!(
@@ -7004,6 +7157,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         hotkey_recording: None,
         held_keys: HashMap::new(),
         plugins,
+        app_wake,
         plugin_model,
         plugin_activity_model,
         plugin_activity_revision: 0,
@@ -7069,6 +7223,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
     }));
     APP.with(|c| *c.borrow_mut() = Some(state.clone()));
+
+    // 后台事件唤醒（插件活动/SFTP 结果）：默认启用；A/B 诊断时关闭桥接，
+    // 回到旧版纯 400ms 轮询并保留同一套日志时间戳。
+    if event_wake_enabled() {
+        spawn_app_wake_bridge(app_wake_rx);
+    } else {
+        drop(app_wake_rx);
+        eprintln!("[event] TERVO_EVENT_WAKE=0：禁用事件唤醒，仅 400ms 轮询（A/B 诊断）");
+    }
 
     // ---- 回调 ----
     let keylog = std::env::var("TERVO_KEYLOG").is_ok();
@@ -9081,6 +9244,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Duration::from_millis(400),
         poll_events,
     );
+
+    // 唤醒计数诊断：空闲时 core/app 唤醒数不应增长（只有 400ms 兜底在跑）。
+    // 只在显式设置时启动，正常使用不产生额外 timer/日志。
+    if std::env::var_os("TERVO_WAKE_STATS").is_some() {
+        let stats_timer = slint::Timer::default();
+        stats_timer.start(
+            slint::TimerMode::Repeated,
+            Duration::from_secs(5),
+            || {
+                eprintln!(
+                    "[wake] ts_ms={} core_event={} app_event={} periodic_400ms={}",
+                    logging::now_ms(),
+                    CORE_EVENT_WAKES.load(Ordering::Relaxed),
+                    APP_EVENT_WAKES.load(Ordering::Relaxed),
+                    PERIODIC_POLLS.load(Ordering::Relaxed),
+                );
+            },
+        );
+        std::mem::forget(stats_timer);
+    }
 
     // DECSET 1004：窗口焦点变化及时同步给 TUI（50ms 轮询）。
     let focus_timer = slint::Timer::default();
