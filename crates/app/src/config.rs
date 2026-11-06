@@ -161,6 +161,11 @@ pub struct Config {
     pub copy_on_select: bool,
     /// 多行粘贴前确认（默认开）。
     pub confirm_multiline_paste: bool,
+    /// OSC 52 剪贴板："allow"（默认）| "deny"。
+    ///
+    /// 允许时远端程序可通过 OSC 52 写本机剪贴板/PRIMARY，也可查询剪贴板并经
+    /// PTY 回写；不需要时设 `"deny"` 关闭两个方向。未知值按默认 `allow` 处理。
+    pub osc52: String,
     /// 右键直接粘贴（旧字段，保留用于迁移；新配置用 `right_click`）。
     pub right_click_paste: bool,
     /// Tabby 式右键模式：menu | paste | clipboard | off。
@@ -216,6 +221,7 @@ impl Default for Config {
             confirm_close: true,
             copy_on_select: true,
             confirm_multiline_paste: true,
+            osc52: "allow".to_string(),
             right_click_paste: false,
             right_click: "menu".to_string(),
             paste_on_middle_click: true,
@@ -255,6 +261,12 @@ impl Config {
         } else {
             &self.right_click
         }
+    }
+
+    /// OSC 52 是否放行。默认 allow；只有显式 `deny`（不区分大小写）才拒绝，
+    /// 未知值仍按默认 allow，避免写错一个词就让功能整体失效。
+    pub fn osc52_allowed(&self) -> bool {
+        !self.osc52.trim().eq_ignore_ascii_case("deny")
     }
 
     pub fn load() -> Self {
@@ -556,7 +568,30 @@ mod tests {
         assert_eq!(c.tabbar_position, "top", "默认 TabBar 在上");
         assert!(c.desktop_notifications, "默认允许桌面通知");
         assert_eq!(c.close_action, "end", "默认关闭即结束会话");
+        assert_eq!(c.osc52, "allow", "OSC 52 默认放行");
+        assert!(c.osc52_allowed());
         assert_eq!(c.version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn osc52_config_allow_deny_and_unknown() {
+        let cfg: Config = toml::from_str("version = 1\nosc52 = \"deny\"\n").unwrap();
+        assert!(!cfg.osc52_allowed());
+        let cfg: Config = toml::from_str("version = 1\nosc52 = \"ALLOW\"\n").unwrap();
+        assert!(cfg.osc52_allowed());
+        // 拼错/未知值按默认 allow；空值也按默认。
+        let cfg: Config = toml::from_str("version = 1\nosc52 = \"nope\"\n").unwrap();
+        assert!(cfg.osc52_allowed());
+        let cfg: Config = toml::from_str("version = 1\n").unwrap();
+        assert_eq!(cfg.osc52, "allow", "旧配置缺 osc52 时默认 allow");
+
+        let dir = tmpdir("osc52");
+        let path = dir.join("config.toml");
+        Config { osc52: "deny".into(), ..Config::default() }.save_to(&path);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("osc52 = \"deny\""), "{text}");
+        assert!(!Config::load_from(&path).osc52_allowed());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

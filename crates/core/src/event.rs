@@ -40,6 +40,32 @@ pub struct Notification {
     pub body: String,
 }
 
+/// OSC 52 的目标选择区。
+///
+/// xterm 的 `Pc` 参数分别是 `c`（系统剪贴板）、`p`（PRIMARY）、`s`（SELECTION）。
+/// Linux/X11 上没有独立的 SELECTION 剪贴板，`p` 和 `s` 都落到 PRIMARY（中键粘贴）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClipboardSelection {
+    /// `c`：桌面剪贴板，Ctrl+V / 右键粘贴使用。
+    Clipboard,
+    /// `p` / `s`：X11 PRIMARY 选区。
+    Primary,
+}
+
+/// 远端通过 OSC 52 请求的剪贴板操作，由 UI 线程实际执行。
+///
+/// 只传文本：控制序列的 base64 已在 core 解析时解码并校验；读写系统剪贴板
+/// 需要 arboard/X11，属于 app 层职责。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ClipboardRequest {
+    /// `OSC 52;Pc;BASE64`：写入文本。
+    Store { selection: ClipboardSelection, text: String },
+    /// `OSC 52;Pc;?`：读取剪贴板，UI 需用 `PaneHandle::clipboard_reply` 回写 PTY。
+    Load { selection: ClipboardSelection },
+    /// `OSC 52;Pc;`：清空。
+    Clear { selection: ClipboardSelection },
+}
+
 /// 从终端核心发往 UI 的语义事件。高频的「内容变了」不在此列：
 /// 它走 [`WakeSignal`]（容量 1，天然合并）。
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -53,6 +79,8 @@ pub enum CoreEvent {
     Notification(Notification),
     /// OSC 7;file://host/path（cwd）。MVP 只上报，不改变会话行为。
     Cwd(String),
+    /// OSC 52：远端读写/清空剪贴板或 PRIMARY。
+    Clipboard(ClipboardRequest),
     /// PTY 读到 EOF / 子进程退出。
     Exited,
     CursorBlinkChange,

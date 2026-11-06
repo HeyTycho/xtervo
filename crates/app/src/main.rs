@@ -32,8 +32,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tervo_core::{
-    link::is_allowed_uri, spawn, CoreEvent, Frame, Modifiers, MouseAction, MouseButton, MouseEvent,
-    Notification, PaneConfig, PaneHandle, ProgressState, Theme, UiColors,
+    link::is_allowed_uri, spawn, ClipboardRequest, ClipboardSelection, CoreEvent, Frame, Modifiers,
+    MouseAction, MouseButton, MouseEvent, Notification, PaneConfig, PaneHandle, ProgressState,
+    Theme, UiColors,
 };
 use slint::winit_030::{winit, WinitWindowAccessor};
 use slint::{Model, ModelRc, VecModel};
@@ -3423,26 +3424,81 @@ fn show_link_status(msg: String) {
     });
 }
 
-fn set_clipboard(st: &mut AppState, text: &str) {
-    eprintln!("[clipboard] 复制 {} 字节: {:?}", text.len(), text.chars().take(40).collect::<String>());
+/// 惰性创建 arboard 句柄；没有 X11/剪贴板服务时返回 None（不 panic）。
+fn with_clipboard<R>(
+    st: &mut AppState,
+    f: impl FnOnce(&mut arboard::Clipboard) -> R,
+) -> Option<R> {
     if st.clipboard.is_none() {
         st.clipboard = arboard::Clipboard::new().ok();
     }
-    match &mut st.clipboard {
-        Some(cb) => {
-            if let Err(e) = cb.set_text(text.to_string()) {
-                eprintln!("[clipboard] 写入失败: {e}");
-            }
-        },
+    st.clipboard.as_mut().map(f)
+}
+
+fn set_clipboard(st: &mut AppState, text: &str) {
+    eprintln!(
+        "[clipboard] 复制 {} 字节: {:?}",
+        text.len(),
+        text.chars().take(40).collect::<String>()
+    );
+    match with_clipboard(st, |cb| cb.set_text(text.to_string())) {
+        Some(Ok(())) => {},
+        Some(Err(e)) => eprintln!("[clipboard] 写入失败: {e}"),
         None => eprintln!("[clipboard] 不可用"),
     }
 }
 
 fn get_clipboard(st: &mut AppState) -> Option<String> {
-    if st.clipboard.is_none() {
-        st.clipboard = arboard::Clipboard::new().ok();
+    with_clipboard(st, |cb| cb.get_text().ok()).flatten()
+}
+
+/// 写 X11 PRIMARY（中键粘贴）。arboard 的 Linux 扩展 API 不需要 Wayland data-control。
+fn set_primary(st: &mut AppState, text: &str) {
+    use arboard::{LinuxClipboardKind, SetExtLinux};
+    eprintln!("[clipboard] PRIMARY 写入 {} 字节", text.len());
+    match with_clipboard(st, |cb| {
+        cb.set().clipboard(LinuxClipboardKind::Primary).text(text.to_string())
+    }) {
+        Some(Ok(())) => {},
+        Some(Err(e)) => eprintln!("[clipboard] PRIMARY 写入失败: {e}"),
+        None => eprintln!("[clipboard] 不可用"),
     }
-    st.clipboard.as_mut().and_then(|cb| cb.get_text().ok())
+}
+
+fn get_primary(st: &mut AppState) -> Option<String> {
+    use arboard::{GetExtLinux, LinuxClipboardKind};
+    with_clipboard(st, |cb| {
+        cb.get().clipboard(LinuxClipboardKind::Primary).text().ok()
+    })
+    .flatten()
+}
+
+fn clear_clipboard(st: &mut AppState) {
+    eprintln!("[clipboard] OSC 52 清空剪贴板");
+    match with_clipboard(st, |cb| cb.clear()) {
+        Some(Ok(())) => {},
+        Some(Err(e)) => eprintln!("[clipboard] 清空失败: {e}"),
+        None => eprintln!("[clipboard] 不可用"),
+    }
+}
+
+fn clear_primary(st: &mut AppState) {
+    use arboard::{ClearExtLinux, LinuxClipboardKind};
+    eprintln!("[clipboard] OSC 52 清空 PRIMARY");
+    match with_clipboard(st, |cb| {
+        cb.clear_with().clipboard(LinuxClipboardKind::Primary)
+    }) {
+        Some(Ok(())) => {},
+        Some(Err(e)) => eprintln!("[clipboard] PRIMARY 清空失败: {e}"),
+        None => eprintln!("[clipboard] 不可用"),
+    }
+}
+
+/// 用户主动复制（Ctrl+Shift+C / 右键 Copy / copy-on-select）：同时写普通剪贴板
+/// 与 X11 PRIMARY，保证之后中键粘贴也能拿到。
+fn set_selection_clipboards(st: &mut AppState, text: &str) {
+    set_clipboard(st, text);
+    set_primary(st, text);
 }
 
 /// 复制前归一化：去掉行尾多余换行（全选时后面一堆空行不该进剪贴板），
@@ -3457,7 +3513,7 @@ fn copy_current_selection(st: &mut AppState) {
     let Some(id) = focused else { return };
     let text = st.panes.get(&id).and_then(|rt| rt.handle.copy_selection()).and_then(normalize_clipboard_text);
     if let Some(text) = text {
-        set_clipboard(st, &text);
+        set_selection_clipboards(st, &text);
     }
 }
 
@@ -3470,7 +3526,7 @@ fn copy_or_paste(st: &mut AppState) {
         .and_then(|rt| rt.handle.copy_selection())
         .and_then(normalize_clipboard_text);
     if let Some(text) = text {
-        set_clipboard(st, &text);
+        set_selection_clipboards(st, &text);
         if let Some(rt) = st.panes.get(&id) {
             rt.handle.clear_selection();
         }
@@ -3517,23 +3573,38 @@ fn deliver_paste(st: &mut AppState, text: &str) {
     }
 }
 
-fn paste_into_focused(st: &mut AppState) {
-    let Some(text) = get_clipboard(st) else { return };
+fn paste_text_into_focused(st: &mut AppState, text: &str) {
     if text.is_empty() {
         return;
     }
-    if needs_paste_confirm(&text, st.cfg.confirm_multiline_paste) {
+    if needs_paste_confirm(text, st.cfg.confirm_multiline_paste) {
         let lines = text.lines().count();
         let preview: String = text.lines().take(3).collect::<Vec<_>>().join("\n");
         let preview = if lines > 3 { format!("{preview}\n…") } else { preview };
         eprintln!("[ui] paste confirm lines={lines}");
-        st.pending_paste = Some(text);
+        st.pending_paste = Some(text.to_string());
         st.ui.set_paste_lines(lines as i32);
         st.ui.set_paste_preview(preview.as_str().into());
         st.ui.set_paste_open(true);
         return;
     }
-    deliver_paste(st, &text);
+    deliver_paste(st, text);
+}
+
+fn paste_into_focused(st: &mut AppState) {
+    let Some(text) = get_clipboard(st) else { return };
+    paste_text_into_focused(st, &text);
+}
+
+/// 中键粘贴：优先 X11 PRIMARY，没有内容（或读取失败）再回退普通剪贴板。
+fn paste_primary_into_focused(st: &mut AppState) {
+    if let Some(text) = get_primary(st).filter(|t| !t.is_empty()) {
+        eprintln!("[clipboard] middle paste source=primary bytes={}", text.len());
+        paste_text_into_focused(st, &text);
+    } else {
+        eprintln!("[clipboard] middle paste source=clipboard (primary empty)");
+        paste_into_focused(st);
+    }
 }
 
 fn update_search_bar(st: &mut AppState) {
@@ -4090,6 +4161,64 @@ fn send_desktop_notification(title: &str, body: &str) {
     });
 }
 
+fn selection_label(selection: ClipboardSelection) -> &'static str {
+    match selection {
+        ClipboardSelection::Clipboard => "clipboard",
+        ClipboardSelection::Primary => "primary",
+    }
+}
+
+/// 消费 core 的 OSC 52 事件。`osc52 = "deny"` 时两个方向都拒绝
+/// （query 同样会泄漏本机剪贴板，不能只拦写入）。
+fn apply_osc52(st: &mut AppState, pane: PaneId, request: ClipboardRequest) {
+    if !st.cfg.osc52_allowed() {
+        eprintln!("[clipboard] osc52 denied pane={pane} osc52={:?}", st.cfg.osc52);
+        return;
+    }
+    match request {
+        ClipboardRequest::Store { selection, text } => {
+            eprintln!(
+                "[clipboard] osc52 store pane={pane} selection={} bytes={}",
+                selection_label(selection),
+                text.len()
+            );
+            match selection {
+                ClipboardSelection::Clipboard => set_clipboard(st, &text),
+                ClipboardSelection::Primary => set_primary(st, &text),
+            }
+        },
+        ClipboardRequest::Clear { selection } => {
+            eprintln!(
+                "[clipboard] osc52 clear pane={pane} selection={}",
+                selection_label(selection)
+            );
+            match selection {
+                ClipboardSelection::Clipboard => clear_clipboard(st),
+                ClipboardSelection::Primary => clear_primary(st),
+            }
+        },
+        ClipboardRequest::Load { selection } => {
+            let text = match selection {
+                ClipboardSelection::Clipboard => get_clipboard(st),
+                ClipboardSelection::Primary => get_primary(st),
+            };
+            eprintln!(
+                "[clipboard] osc52 query pane={pane} selection={} bytes={}",
+                selection_label(selection),
+                text.as_ref().map_or(0, String::len)
+            );
+            if let (Some(text), Some(rt)) = (text, st.panes.get(&pane)) {
+                eprintln!(
+                    "[clipboard] osc52 reply pane={pane} selection={} bytes={}",
+                    selection_label(selection),
+                    text.len()
+                );
+                rt.handle.clipboard_reply(selection, &text);
+            }
+        },
+    }
+}
+
 fn poll_events() {
     with_app(|st| {
         let active = st.ws.active;
@@ -4105,6 +4234,9 @@ fn poll_events() {
 
         let mut titles_dirty = false;
         let mut tabs_dirty = false;
+        // OSC 52 需要读写 st 的剪贴板状态，不能在内层 `rt` 可变借用期间处理；
+        // 先收集 (pane, request)，等 pane 遍历结束后统一消费。
+        let mut clipboard_events: Vec<(PaneId, ClipboardRequest)> = Vec::new();
         let ids: Vec<PaneId> = st.panes.keys().copied().collect();
         for id in ids {
             let Some(rt) = st.panes.get_mut(&id) else { continue };
@@ -4162,9 +4294,13 @@ fn poll_events() {
                     CoreEvent::Cwd(cwd) => {
                         eprintln!("[ui] cwd pane={id} tab={tab:?} path={cwd:?}");
                     },
+                    CoreEvent::Clipboard(request) => clipboard_events.push((id, request)),
                     CoreEvent::ResetTitle | CoreEvent::CursorBlinkChange | CoreEvent::Exited => {},
                 }
             }
+        }
+        for (id, request) in clipboard_events {
+            apply_osc52(st, id, request);
         }
         if titles_dirty {
             // 保持既有行为：只把活动 Tab 首个 pane 的标题写回 Tab。
@@ -5021,7 +5157,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .and_then(|rt| rt.handle.copy_selection())
                 .and_then(normalize_clipboard_text);
             if let Some(text) = text {
-                set_clipboard(st, &text);
+                set_selection_clipboards(st, &text);
             }
         });
     });
@@ -5295,7 +5431,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui.on_pane_middle_click(|_id| {
         with_app(|st| {
             if st.cfg.paste_on_middle_click {
-                paste_into_focused(st);
+                paste_primary_into_focused(st);
                 eprintln!("[ui] middle-click paste");
             }
         });

@@ -135,9 +135,10 @@ tervo                 # 直接启动
 | 新建窗口 | `Ctrl+Shift+N`，或标签栏右键 → New Window（独立进程，关闭互不影响） |
 | 分屏 | 右键 pane → Split Right / Split Down |
 | 关闭 pane | 右键 → Close Pane；关掉最后一个 pane 退出应用 |
-| 复制 | 鼠标拖选（松手自动复制）或 `Ctrl+Shift+C`，或右键 → Copy |
+| 复制 | 鼠标拖选（松手自动复制，同时写系统剪贴板与 X11 PRIMARY）或 `Ctrl+Shift+C`，或右键 → Copy |
+| 复制 | 鼠标拖选（松手自动复制，同时写系统剪贴板与 X11 PRIMARY）或 `Ctrl+Shift+C`，或右键 → Copy |
 | 打开链接 | `Ctrl+左键点击` http/https/file 链接（OSC 8 优先）；右键 → Open Link / Copy Link |
-| 粘贴 | `Ctrl+Shift+V` 或右键 → Paste（多行会按终端 bracketed-paste 规则包起来） |
+| 粘贴 | `Ctrl+Shift+V` 或右键 → Paste（多行会按终端 bracketed-paste 规则包起来）；中键优先粘 X11 PRIMARY，为空/不可读时回退普通剪贴板 |
 | 搜索 | `Ctrl+F`，输入即高亮下一个；`Enter` 下一个，`Shift+Enter` 上一个，`Esc` 关闭 |
 | 中文输入 | fcitx5 / ibus（X11 XIM）：拼音候选窗跟随光标；组合中的回车/退格只作用于输入法，不会写入 shell |
 | 回滚历史 | 鼠标滚轮 |
@@ -148,6 +149,17 @@ tervo                 # 直接启动
 | 移动窗口 | 拖标签栏；双击标签栏最大化/还原 |
 
 配置：`~/.config/tervo/config.toml`（`TERVO_CONFIG` 可覆盖）。
+
+剪贴板：拖选/Ctrl+Shift+C 会同时写系统剪贴板与 X11 PRIMARY（中键粘贴用）。
+远端程序可通过 **OSC 52** 读写本机剪贴板，默认放行；不需要时在配置里关闭：
+
+```toml
+osc52 = "deny"   # 默认 "allow"；deny 同时拒绝写入和查询
+```
+
+> 安全提示：`allow` 意味着任何能向终端输出转义序列的程序（包括 SSH 远端、
+> `cat` 一个不可信文件、tmux 里的远端进程）都能覆盖或读取你的系统剪贴板/
+> PRIMARY。只处理可信内容，或设为 `deny`。
 
 默认 `theme = "auto"`：跟随系统浅色/深色（深色 → Yaru Dark，浅色 → Yaru Light），也可以显式选任意主题。
 把现成配色文件丢进 `~/.config/tervo/themes/` 即可在设置面板里选择，支持 iTerm2 `.itermcolors`、

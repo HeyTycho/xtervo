@@ -1340,3 +1340,37 @@ cargo bench -p tervo-core --bench pty_throughput
   `[ime] spot` 从 x=54 变 x=846。
 - 普通 shell/非 mouse-reporting 不受影响；不改变 TUI 自动 focus 逻辑。
 
+### 2026-11-06 · OSC 52 剪贴板 + X11 PRIMARY
+
+- **OSC 52（core）**：`osc.rs` 在旁路扫描器里补 `OSC 52;Pc;Pd`：
+  - `Pd` 为 base64 文本 = set；`?` = query；空 = clear；`Pc` 支持 `c`（剪贴板）、
+    `p`/`s`（都映射 X11 PRIMARY），缺省按 xterm 取 `s`；
+  - 自带严格 base64 编解码（不新增依赖），支持带/不带 `=`；非法字符、错误长度、
+    中间补位、非 UTF-8、解码后超过 **1 MiB** 都整条忽略，不 panic；
+  - 扫描器对 `52;` 前缀单独放宽到 ~1.4 MB（1 MiB 原文的 base64），其它 OSC 仍限
+    16 KiB；超限后继续吃到 terminator，不污染后续序列；
+  - 新事件 `CoreEvent::Clipboard(Store/Load/Clear)`；`PaneHandle::clipboard_reply`
+    负责把查询结果编码成 `OSC 52;Pc;BASE64 ST` 写回 PTY。alacritty `TermConfig`
+    的 `osc52` 设为 `Disabled`，避免同一条序列被处理两次。
+- **app**：`osc52 = "allow" | "deny"`（默认 allow，未知值按 allow）。allow 时
+  Store 写 arboard 剪贴板 / `SetExtLinux` PRIMARY，Load 读对应选区并回写，Clear
+  调 arboard clear；deny 两个方向都拒绝（query 也能泄漏本机剪贴板）。日志以
+  `[clipboard] osc52 ...` 前缀输出。
+- **copy-on-select / 中键**：拖选、双击选行、Ctrl+Shift+C 现在同时写系统剪贴板与
+  X11 PRIMARY；中键粘贴优先读 PRIMARY，为空/读取失败回退普通剪贴板（日志
+  `middle paste source=primary|clipboard`）。不需要 `wayland-data-control` feature。
+- **单测**：core 新增 `osc::tests::osc52_*` / `base64_*` / `clipboard_reply_*`
+  （set、c/p/s、缺省 selection、query、clear、非法 base64/UTF-8、1 MiB 边界、
+  跨 chunk、回包截断）；`tests/osc52.rs` 用真实 PTY 验证 OSC52 set 事件与
+  `clipboard_reply` 回写。core 全量 91 tests；app 215 tests。
+- **GUI（headless Xvfb :113，`scripts/e2e_osc52.sh`）**：16 项 PASS，覆盖
+  set c/p（`xsel -b/-p` 读到 `hello-osc52`/`primary-osc52`）、query 回包
+  （`ESC]52;c;aGVsbG8tb3NjNTI=ESC\`）、clear、copy-on-select 双写、中键优先
+  PRIMARY、清空 PRIMARY 后回退剪贴板、deny 不处理且不写剪贴板。未使用 Xephyr、
+  未碰 :1、未 pkill；只 kill 脚本自己启动的 Xvfb/app。
+- **限制**：只支持单个 selection 字符（`OSC 52;cp;...` 这类组合未实现）；缺省
+  selection 按 xterm 是 PRIMARY，部分工具可能预期 `c`；查询回包截断到 1 MiB；
+  Wayland 原生 data-control 未启用，只有 X11/XWayland 路径；没有设置页开关，
+  需要手改 `config.toml`；多行中键粘贴仍走同一确认弹窗。
+- **安全**：allow 时任何能向终端写转义序列的程序（SSH 远端、`cat` 不可信文件、
+  tmux 内远端进程）都能覆盖或读取剪贴板/PRIMARY；README 已写明，可设 deny。
