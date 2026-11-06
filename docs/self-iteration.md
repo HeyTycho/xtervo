@@ -1496,49 +1496,61 @@ cargo bench -p tervo-core --bench pty_throughput
   sbix 仅 PNG（JPEG/TIFF 不支持）；不做 ZWJ 合字；彩色位图按逻辑字号解码，
   HiDPI 由合成器放大；彩色 emoji 忽略终端 fg/INVERSE；RGBA 缓存随不同 emoji
   数量线性增长。
-||||||| a42a108
 
-### 2026-11-06 · Sixel 内联图片（feat/sixel）
+### 2026-11-06 · IME 稳定性加固（feat/ime-hardening）
 
-- **目标**：按 Tabby 同款路径提供终端内联图片，默认开启、配置可关；不改 window
-  resize / GPU 默认 / 背景 / Tab 布局 / IME / 字体 fallback。
-- **DCS 过滤（core/sixel.rs + pane.rs）**：alacritty 0.26 不会把 Sixel 画出来，且
-  BEL 终止的 DCS 会让 vte 停在字符串状态吞掉后续输出。actor 把 `ESC P ... q ...`
-  整段 DCS 从 vte 输入里摘掉，只把普通字节交给 vte / OscScanner；状态机跨 PTY
-  chunk 保存 ESC、DCS 头、 payload 与 `ESC \` 的中间状态，支持 BEL、C1 ST、CAN/SUB
-  中止。非 Sixel DCS（如 DECRQSS `$q`）原样放行。
-- **解码**：RGB（0–100%，兼容 0–255 写法）与 HLS 调色板、透明像素、`!Pn` 重复、
-  raster attributes；单条原始数据 25 MiB、单图 16 MP / 单边 16384 px 上限，空图/
-  非法/超限一律丢图，不 panic。输出直通 RGBA8（未预乘，未覆盖像素 alpha=0）。
-- **锚定与多图**：图片按创建时光标 cell 锚定，`abs_line = grid line + history_size`；
-  滚动时 `row = abs_line - history + display_offset`，resize 改变 history/screen
-  划分时仍保持同一内容行。`sixel_scrolling = false` 时改为固定视口行。actor 最多
-  保存 64 张 / 64 MiB，超预算淘汰最旧；清屏（`Ctrl::ClearScreen`、`CSI 2J/3J`、
-  进入/离开备用屏、RIS）会清除图片。
-- **渲染（app/main.slint + main.rs）**：`Frame::images` 只携带视口内图片；app 按
-  core 图片 ID 缓存 Slint `Image`，`sync_inline_images` 只在图片集合/锚点变化时重建
-  `PaneImage` 模型，x/y 用当前 cell 尺寸计算。图片是 pane 内独立 Image overlay，
-  不进终端帧、不参与文本/选区/搜索/链接；光标和 Read Only 角标仍画在图片之上。
-  滚动/纯文本输出不会重新上传 RGBA，光标闪烁仍只切 overlay visible。
-- **DA1**：Listener 精确拦截 alacritty 的 Primary DA `ESC[?6c`；Sixel 开启时回
-  `ESC[?62;4;9;22c`（参数 4 = Sixel，供 dsh-tui 自动选择），关闭时保持 `ESC[?6c`；
-  二级 DA 不改写，不宣告 Kitty。
-- **配置/设置页**：`sixel = true`、`sixel_scrolling = true`（serde default，旧配置
-  自动补齐）；Terminal → Images 两个 ToggleRow + 上限/DA1 提示。关闭立即清空现有
-  图片，并对已有 pane/后台保留会话即时生效。
-- **测试**：`cargo test -p tervo-core` 88 lib + 59 integration（新增 18 个 sixel/lib
-  单测与 6 个真实 PTY 集成：跨 32 KiB chunk 大图、BEL 终止、非法/超限、DA1 on/off、
-   `CSI 2J` 清图、滚动锚点）；`cargo test -p tervo-app --bin tervo` 249 passed。
-- **截图/证据（headless Xvfb :120，`.logs/sixel/`）**：`01-two-images.png`（两张图 +
-  文本）、`02-scrolled.png`（滚轮上滚后图片跟随内容下移）、`04-back-to-image.png`
-  （切 Tab 再回来）、`05-resized.png`（窗口 resize 后仍在同一 cell）、
-  `13-settings-sixel-off.png` / `14-terminal-after-sixel-off.png`（设置页开关 + 即时
-  清图）；DA1：`15-da1-sixel-on.png` 显示 `1b5b3f36323b343b393b323263` /
-  `^[[?62;4;9;22c`，`16-da1-sixel-off.png` 显示 `1b5b3f3663` / `^[[?6c`。
-  `17-dsh-start.png`：dsh-tui 在 Tervo 内启动到 onboarding（API/模型已连接）；用
-  dsh 自己的 `selectTerminalImageProtocol` 对 `[62,4,9,22]` 返回 `sixel`
-  （`.logs/sixel/dsh-protocol-select.txt`）。
-- **限制**：iTerm2 IIP（OSC 1337）未实现，文档和 DA1 都不宣称；dsh 只验证启动与
-  协议选择函数，未伪造图片消息；TUI 的局部 `ECH` 擦除没有逐像素追踪，只有清屏类
-  序列会清图；scrollback 淘汰最旧行后锚点可能偏移；Sixel 无部分透明；只在
-  Xvfb/llvmpipe 验证，未验证真 GPU；未做 fuzz 与超大真图内存峰值测试。
+- **范围**：只动候选点同步与修饰键/点击锚点，不碰 Sixel/emoji/GPU/resize 行为/Tab/字体，不新增依赖。
+- **候选点去重键**（`ImeSpotKey`）：从 `(i32,i32)` 扩为
+  `pane + 逻辑毫点坐标/尺寸 + 物理像素 + DPR 千分比 + 是否点击锚点`。
+  纯函数 `ime_spot_key` 负责换算（`rect + cell*cell_size`，纵向再加
+  tabbar 偏移），单测覆盖 dsh 实测格 `(37,94)` / cell 9x22 / tabbar 32 →
+  `win=846,846`，tabbar 在底部 → y=814，DPR 1.25 → 物理 1058/11x28，
+  pane/锚点/光标格变化都会产生不同键。
+- **DPR/窗口坐标**：继续向 winit 传 `LogicalPosition/LogicalSize`（winit 在
+  X11 内部按 `scale_factor` 转物理像素），去重键同时记录物理值与 DPR：
+  只改缩放不改逻辑坐标时也会重发，不会被误判为“没动”。
+- **强制重发**（`ime_spot_dirty`）：pane 切换、Tab 切换、布局刷新
+  （`refresh_views`）、resize、窗口重新获得焦点、DPR 变化、点击锚点更新时置脏；
+  即使坐标与上次完全相同也重新 `set_ime_cursor_area`。只有真的交给 winit
+  （窗口已创建）才清脏，启动早期不会吞掉首次下发。
+- **窗口事件**：复用已有的 `on_winit_window_event`（Slint 只允许一个 filter，
+  因此并入文件拖放桥接，改名 `install_native_window_events`），处理
+  `Focused(true)` 与 `ScaleFactorChanged`；50ms 轮询仍作为后备。
+- **点击锚点**：抽出 `ime_click_anchor(button, wants_mouse, shift)`，仅
+  mouse-reporting TUI 的普通左键记录锚点；Shift+左键本地选择、右键、中键、
+  普通 shell 都不锚定。TUI 关闭鼠标上报时清锚点并重发硬件光标位置。
+- **Shift 过滤**：`is_modifier_artifact` 已覆盖 Shift_L `U+0010` / Shift_R
+  `U+0015`（含 ctrl=true 的组合前缀）；新增左右 Shift 回归测试，确认真实
+  Ctrl+U（text="u"）不被误杀。日志可看到 `[key] "\u{10}"/"\u{15}"` 后紧跟
+  `[key] 忽略修饰键伪事件`，PTY 无 0x10/0x15。
+- **测试**：`cargo test -p tervo-app --bin tervo` 249 → **253 passed**
+  （新增 IME 坐标/DPR/pane 去重 2 例、点击锚点 1 例、左右 Shift 1 例）；
+  `cargo test -p tervo-core` **70 lib + 53 integration** 全通过（未改 core）。
+- **真实 dsh 验收（Xvfb :122，1080x912，cell 9x22）**：把 `~/.dsh` 复制到
+  `/tmp` 可写 HOME，`DSH_HOME` 指向副本、`onboarding.json` 置
+  `completed=true`、假 API key 仅用于进入会话；`dsh --profile dsh-tui` 在
+  Tervo 内启动，先提交 `hello` 建立会话，再 `/btw test` 打开右侧 BtwComposer。
+  点击右侧 composer 前后：
+  - 点击前硬件光标 `[ime] spot pane=1 cell=35,6 win=54.0,802.0 ... anchor=false`
+    （左侧 chat 输入框）；
+  - 点击后 `[mouse] down pane=1 cell=(37, 94) button=0 mods=0 wants=true reporting=true`
+    与 `[ime] spot pane=1 cell=37,94 win=846.0,846.0 phys=846,846 scale=1.000 anchor=true`；
+  - 在右侧 composer 输入 `abc`，再注入 Shift_L/Shift_R 后输入 `xyz`，
+    截图仍为 `abcxyz`（若 Shift_R 漏进 PTY 会变成 Ctrl+U 清空）；
+  - 仅改窗口宽度（1080→1000→1080，候选坐标不变）后 spot 日志行数 24→26；
+    焦点切到 root 再回窗口后 26→28：证明 resize/focus 的 dirty 重发生效，
+    不会因坐标去重而停在旧位置。
+- **普通 shell 验收**：独立 Tervo 实例 `--shell /bin/sh`，注入 `echo A` +
+  Shift_L/Shift_R + `CCEPT` + Enter，XTest 发送的字节为 `[65][67][67][69][80][84][13]`，
+  Shift 伪字符均被忽略，PTY 无 0x10/0x15；点击普通终端后
+  `[ime] spot ... anchor=false`，不会误用点击锚点。
+- **截图/证据**：`.logs/ime-hardening/dsh-btw-panel.png`（右侧 btw 面板）、
+  `dsh-btw-after-click.png`（点击后）、`dsh-after-shifts.png`（`abcxyz`
+  保留）、`shell-shift.png`（`/bin/sh` 输出 ACCEPT）。验收脚本为临时的
+  `.ime-test/run_dsh_btw.sh`（未提交、已删除；依赖本机 dsh/Node 与 CP 配置）。
+- **残余限制**：Xvfb 中没有 fcitx5/ibus 守护进程，无法断言真实中文候选窗的
+  像素位置，只能验证 spot/键序列/composer 行为；DPR 路径只有纯函数单测，
+  未在缩放 Xvfb 上跑 dsh；pane 切换是通用 `focus_pane`/`refresh_views` 路径，
+  dsh 单 pane 场景未做分屏 e2e；**没有**引入 fcitx5 DBus 方案（本机无
+  fcitx5，且会引入异步 DBus 依赖/新故障面）；若将来要做，必须独立
+  feature flag + 默认 fallback + 单独 commit，不能默认开启，不能 unsafe。

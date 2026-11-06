@@ -223,8 +223,11 @@ struct AppState {
     resize: Option<WindowResize>,
     /// 窗口是否聚焦（100ms 轮询 winit），用于 DECSET 1004 focus 上报。
     window_focused: bool,
-    /// 上次同步给输入法的光标/预编辑；None 表示尚未发送。
-    ime_spot: Option<(i32, i32, String)>,
+    /// 上次同步给输入法的候选点（含 pane/DPR/锚点来源）；None 表示尚未发送。
+    ime_spot: Option<ImeSpotKey>,
+    /// 强制下一次 IME 同步重新下发（pane/Tab 切换、resize、窗口 focus/DPR 变化）。
+    /// 输入法可能丢弃过期的 XNSpotLocation，即使坐标没变也要重发一次。
+    ime_spot_dirty: bool,
     /// mouse-reporting TUI（dsh 侧栏等）不移动硬件光标时，用最近一次点击的格子
     /// 作为 IME 候选锚点；否则输入法只能停在左侧 chat 光标。
     ime_override: Option<(PaneId, (u16, u16))>,
@@ -2747,9 +2750,12 @@ fn focus_pane(id: PaneId) {
             return;
         }
         st.ws.tabs[idx].focused = id;
+        // 显式切 pane：即使新旧 pane 光标屏幕坐标恰好相同也要让输入法重收 spot。
+        st.ime_spot_dirty = true;
         refresh_views(st);
         let win = st.window_focused;
         sync_terminal_focus(st, win);
+        update_ime_spot(st);
     });
 }
 
@@ -2849,6 +2855,7 @@ fn set_active_tab_inner(st: &mut AppState, index: usize) {
     }
     st.ws.active = index;
     st.ime_override = None;
+    st.ime_spot_dirty = true;
     // 获得焦点的 Tab：清除未读通知点 / 完成标记（Tabby 的 unread 语义）。
     let ids = st.ws.tabs[index].panes();
     let mut cleared = 0usize;
@@ -3167,6 +3174,9 @@ fn refresh_views_impl(st: &mut AppState, resize_terminals: bool) {
     } else {
         st.divider_model.set_vec(views);
     }
+
+    // 分屏/切 pane/Tab 切换/Tab 栏换边最终都会刷新布局：候选点跟着新矩形走。
+    update_ime_spot(st);
 }
 
 /// `pane_model` 能否原地更新：模型行数等于布局数量，且每行 id 顺序一致。
@@ -3328,11 +3338,73 @@ fn redraw_pane(id: PaneId) {
     with_app(|st| redraw_pane_inner(st, id));
 }
 
+/// IME 候选点去重键。
+///
+/// 逻辑坐标以毫点保存（`set_ime_cursor_area` 收 LogicalPosition），同时把
+/// 物理像素与 DPR 入键：窗口在不同缩放屏之间移动、或只改 DPR 不改逻辑坐标时
+/// 也必须重新下发，不能被当成“坐标没变”。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ImeSpotKey {
+    pane: PaneId,
+    logical_x_milli: i32,
+    logical_y_milli: i32,
+    logical_w_milli: i32,
+    logical_h_milli: i32,
+    physical_x: i32,
+    physical_y: i32,
+    physical_w: i32,
+    physical_h: i32,
+    scale_milli: u32,
+    /// 候选点来自 mouse-reporting 点击锚点而非硬件光标；来源变化也要重发。
+    anchored: bool,
+}
+
+/// 纯函数：由 pane 矩形、字符尺寸、光标格算出 IME 候选点。
+///
+/// `rect`/`cell_w`/`cell_h` 都是 Slint 逻辑像素；`tabbar_offset` 是内容区在
+/// 窗口内的纵向偏移。物理值只用于去重与日志，真正下发给 winit 的仍是逻辑值。
+fn ime_spot_key(
+    pane: PaneId,
+    rect: Rect,
+    cell_w: f32,
+    cell_h: f32,
+    cell: (usize, usize),
+    tabbar_offset: f32,
+    scale: f64,
+    anchored: bool,
+) -> ImeSpotKey {
+    let cw = cell_w.max(1.0);
+    let ch = cell_h.max(1.0);
+    let x = rect.x + cell.1 as f32 * cw;
+    let y = tabbar_offset + rect.y + cell.0 as f32 * ch;
+    let dpr = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
+    let phys = |v: f32| (v as f64 * dpr).round() as i32;
+    ImeSpotKey {
+        pane,
+        logical_x_milli: (x * 1000.0).round() as i32,
+        logical_y_milli: (y * 1000.0).round() as i32,
+        logical_w_milli: (cw * 1000.0).round() as i32,
+        logical_h_milli: (ch * 1000.0).round() as i32,
+        physical_x: phys(x),
+        physical_y: phys(y),
+        physical_w: phys(cw),
+        physical_h: phys(ch),
+        scale_milli: (dpr * 1000.0).round() as u32,
+        anchored,
+    }
+}
+
+/// 左键在 mouse-reporting TUI 里才记录 IME 锚点；Shift 是本地选择逃生门。
+fn ime_click_anchor(button: i32, wants_mouse: bool, shift: bool) -> bool {
+    button == 0 && wants_mouse && !shift
+}
+
 /// 把聚焦 pane 的终端光标同步给输入法候选窗。
 ///
 /// Slint 只在 TextInput 文本变化时发 IME Update，移动隐藏 TextInput 不会更新
-/// preedit spot；这里直接调用同版本 i-slint-core 的 InputMethodRequest，使用
-/// **窗口坐标**（内容区 + tabbar 偏移），并带上当前 preedit 以保留组合。
+/// preedit spot；这里直接调 winit `set_ime_cursor_area`，使用**窗口坐标**
+/// （内容区 + tabbar 偏移）。逻辑像素交给 winit，由它按 DPR 转物理像素；
+/// 去重键同时记录物理坐标与 DPR，缩放变化不会被误判成“没动”。
 fn update_ime_spot(st: &mut AppState) {
     use slint::winit_030::winit::dpi::{LogicalPosition, LogicalSize};
 
@@ -3340,6 +3412,7 @@ fn update_ime_spot(st: &mut AppState) {
     let focused = tab.focused;
     let Some(rt) = st.panes.get(&focused) else { return };
     if !rt.handle.wants_mouse() {
+        // TUI 已关闭鼠标上报：点击锚点不应再压过真实硬件光标。
         st.ime_override = None;
     }
     let mouse_anchor = st
@@ -3352,28 +3425,49 @@ fn update_ime_spot(st: &mut AppState) {
             let (l, c) = rt.handle.cursor_pos();
             (l as usize, c as usize)
         });
-    let cw = rt.renderer.cell_w.max(1) as f32;
-    let ch = rt.renderer.cell_h.max(1) as f32;
-    let x = rt.rect.x + col as f32 * cw;
-    let y = rt.rect.y + line as f32 * ch;
     let content_y = if st.cfg.tabbar_position == "bottom" { 0.0 } else { TABBAR_H };
-    let key = (x.round() as i32, (content_y + y).round() as i32);
-    if st.ime_spot.as_ref().map(|(a, b, _)| (*a, *b)) == Some(key) {
+    let scale = st.ui.window().scale_factor() as f64;
+    let key = ime_spot_key(
+        focused,
+        rt.rect,
+        rt.renderer.cell_w as f32,
+        rt.renderer.cell_h as f32,
+        (line, col),
+        content_y,
+        scale,
+        mouse_anchor.is_some(),
+    );
+    // 普通 50ms 轮询按完整键去重；pane/Tab/resize/focus 变化由 dirty 强制重发。
+    if !st.ime_spot_dirty && st.ime_spot == Some(key) {
         return;
     }
-    st.ime_spot = Some((key.0, key.1, String::new()));
+    st.ime_spot = Some(key);
 
-    // 隐藏 TextInput 继续跟随内容坐标；真正的候选窗位置由 winit 直接设置。
-    st.ui.set_ime_x(x);
-    st.ui.set_ime_y(y);
-    let pos = LogicalPosition::new(x as f64, (content_y + y) as f64);
-    let size = LogicalSize::new(cw as f64, ch as f64);
-    let _ = st
+    let x = key.logical_x_milli as f64 / 1000.0;
+    let y = key.logical_y_milli as f64 / 1000.0;
+    let w = key.logical_w_milli as f64 / 1000.0;
+    let h = key.logical_h_milli as f64 / 1000.0;
+    // 隐藏 TextInput 继续跟随**内容坐标**（tabbar 偏移由 Slint 布局负责）；
+    // 真正的候选窗位置由 winit 直接设置。
+    st.ui.set_ime_x(x as f32);
+    st.ui.set_ime_y((y - content_y as f64) as f32);
+    let pos = LogicalPosition::new(x, y);
+    let size = LogicalSize::new(w, h);
+    let sent = st
         .ui
         .window()
-        .with_winit_window(|window| window.set_ime_cursor_area(pos, size));
+        .with_winit_window(|window| window.set_ime_cursor_area(pos, size))
+        .is_some();
+    if sent {
+        // 只有真的交给 winit 才清 dirty；窗口还没建好时下次轮询会重试。
+        st.ime_spot_dirty = false;
+    }
     if std::env::var_os("TERVO_IME_LOG").is_some() {
-        eprintln!("[ime] spot pane={focused} cell={line},{col} win={x:.1},{:.1}", content_y + y);
+        eprintln!(
+            "[ime] spot pane={focused} cell={line},{col} win={x:.1},{y:.1} \
+             phys={},{} scale={:.3} anchor={}",
+            key.physical_x, key.physical_y, scale, key.anchored
+        );
     }
 }
 
@@ -3975,13 +4069,28 @@ fn drop_target_at(win: &winit::window::Window) -> Option<PaneId> {
     .flatten()
 }
 
-/// 原生文件拖放桥接：winit 的 X11 后端已经完成 XDND 协商并给出本地路径，
-/// 但 Slint 1.18 winit 后端没有把它送进 DropArea。这里直接消费
-/// `HoveredFile`/`DroppedFile`，复用与 DropArea 相同的插入路径。
-fn install_native_file_drop(ui: &MainWindow) {
+/// 原生窗口事件桥接：文件拖放（Slint 1.18 winit 后端不投递 DropArea），
+/// 以及窗口 focus / DPR 变化时的 IME 候选点重同步。
+fn install_native_window_events(ui: &MainWindow) {
     let weak = ui.as_weak();
     ui.window().on_winit_window_event(move |win, event| {
         match event {
+            winit::event::WindowEvent::Focused(focused) => {
+                // 比 50ms 轮询更及时；失焦时不发，等重新获得焦点再强制补发。
+                if *focused {
+                    with_app(|st| {
+                        st.ime_spot_dirty = true;
+                        update_ime_spot(st);
+                    });
+                }
+            },
+            winit::event::WindowEvent::ScaleFactorChanged { .. } => {
+                // DPR 变化后逻辑尺寸可能还没更新；强制按新 scale 重发 spot。
+                with_app(|st| {
+                    st.ime_spot_dirty = true;
+                    update_ime_spot(st);
+                });
+            },
             winit::event::WindowEvent::HoveredFile(_) => {
                 let target = win.with_winit_window(drop_target_at).flatten();
                 if let Some(ui) = weak.upgrade() {
@@ -5717,6 +5826,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         resize: None,
         window_focused: true,
         ime_spot: None,
+        ime_spot_dirty: true,
         ime_override: None,
         wm_resize: false,
         wm_release_pending: false,
@@ -5784,10 +5894,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let modifiers = mouse_mods(mods);
             // Shift 是「绕过鼠标上报、改成本地选词」的惯例逃生门（xterm/gnome-terminal 同款）。
             let reporting = wants_mouse && !modifiers.shift;
-            if button == 0 && reporting {
+            if ime_click_anchor(button, wants_mouse, modifiers.shift) {
                 // dsh 的 Btw 侧栏 composer 只画反色 caret，不移动硬件光标；
                 // 记住点击格，IME 候选才会贴到右侧输入框。
                 st.ime_override = Some((id, cell));
+                // 每次点击都强制重发：输入法可能已丢弃旧 spot（例如刚从别的窗口回来）。
+                st.ime_spot_dirty = true;
                 update_ime_spot(st);
             }
             let Some(rt) = st.panes.get(&id) else { return };
@@ -7092,6 +7204,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if st.cfg.tabbar_position == "bottom" { "top".into() } else { "bottom".into() };
                 st.ui.set_tabbar_bottom(st.cfg.tabbar_position == "bottom");
                 st.cfg.save();
+                // 内容区在窗口内的纵向偏移变了：候选点必须重新下发。
+                st.ime_spot_dirty = true;
+                update_ime_spot(st);
                 eprintln!("[ui] tabbar_position={}", st.cfg.tabbar_position);
             },
             _ => {},
@@ -7439,6 +7554,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if (st.content.w - w).abs() < 0.5 && (st.content.h - h).abs() < 0.5 {
                 return;
             }
+            // 窗口尺寸/DPR 变化：即使光标格相对窗口没动，也让输入法重收 spot。
+            st.ime_spot_dirty = true;
             let old_w = st.content.w;
             let was_resizing = st.resize_in_progress;
             // 只有用户正在拖动边/角（WM live resize 或自绘 resize）才隐藏背景/做
@@ -7524,7 +7641,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let poll_timer = slint::Timer::default();
     poll_timer.start(slint::TimerMode::Repeated, Duration::from_millis(400), poll_events);
 
-    // DECSET 1004：窗口焦点变化及时同步给 TUI（100ms 足够，避免 400ms 轮询延迟）。
+    // DECSET 1004：窗口焦点变化及时同步给 TUI（50ms 轮询）。
     let focus_timer = slint::Timer::default();
     focus_timer.start(slint::TimerMode::Repeated, Duration::from_millis(50), || {
         let win = with_app(|st| {
@@ -7535,7 +7652,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .unwrap_or(true);
         with_app(|st| {
+            let was_focused = st.window_focused;
             sync_terminal_focus(st, win);
+            if win && !was_focused {
+                // 输入法在失焦期间可能丢弃旧 spot；重新获得焦点时强制补发。
+                st.ime_spot_dirty = true;
+            }
             // dsh 侧栏可能只移动终端光标、不产生内容重绘；独立轮询光标，
             // 不能只等 redraw_visible 才更新 IME spot。
             update_ime_spot(st);
@@ -7643,7 +7765,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ---- 首帧 ----
     ui.show()?;
     // Slint 1.18 的 winit 后端不投递外部文件拖放，用 winit 事件桥接补齐。
-    install_native_file_drop(&ui);
+    install_native_window_events(&ui);
     // GPU 自检兜底：Skia 软件 surface 会“窗口正常但全黑”，而 Slint 的
     // set_rendering_notifier 在 software surface 上不会给出 NativeOpenGL/WGPU
     // 回调。给 GPU 首帧 1s 初始化时间，仍无 GPU API 就 exec 回退软件后端。
@@ -8438,5 +8560,72 @@ mod tests {
         let default = default_save_path(42);
         assert!(default.to_string_lossy().ends_with("tervo-save-42.txt"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ime_spot_maps_click_anchor_to_window_pixels() {
+        // 复刻 dsh /btw 的实测：120x40 终端、cell 9x22、顶部 tabbar 32px；
+        // 右击记录到的 composer 格是 (37, 94)，候选点应落在 win=846,846。
+        let rect = Rect::new(0.0, 0.0, 1080.0, 848.0);
+        let a = ime_spot_key(1, rect, 9.0, 22.0, (37, 94), TABBAR_H, 1.0, true);
+        assert_eq!((a.logical_x_milli, a.logical_y_milli), (846_000, 846_000));
+        assert_eq!((a.physical_x, a.physical_y), (846, 846));
+        assert_eq!((a.logical_w_milli, a.logical_h_milli), (9_000, 22_000));
+        assert_eq!((a.physical_w, a.physical_h), (9, 22));
+        assert_eq!(a.scale_milli, 1000);
+        assert_eq!((a.pane, a.anchored), (1, true));
+
+        // 同一格但 tabbar 在底部：y 少一个 tabbar 高度。
+        let bottom = ime_spot_key(1, rect, 9.0, 22.0, (37, 94), 0.0, 1.0, true);
+        assert_eq!(bottom.logical_y_milli, 814_000);
+
+        // pane 切换 / 锚点来源 / 光标格变化都必须产生不同的键（否则会误去重）。
+        assert_ne!(a, ime_spot_key(2, rect, 9.0, 22.0, (37, 94), TABBAR_H, 1.0, true));
+        assert_ne!(a, ime_spot_key(1, rect, 9.0, 22.0, (37, 94), TABBAR_H, 1.0, false));
+        assert_ne!(a, ime_spot_key(1, rect, 9.0, 22.0, (37, 93), TABBAR_H, 1.0, true));
+        assert_eq!(a, ime_spot_key(1, rect, 9.0, 22.0, (37, 94), TABBAR_H, 1.0, true));
+    }
+
+    #[test]
+    fn ime_spot_keys_include_dpr_and_physical_pixels() {
+        let rect = Rect::new(0.0, 0.0, 1080.0, 848.0);
+        let base = ime_spot_key(1, rect, 9.0, 22.0, (37, 94), TABBAR_H, 1.0, false);
+        let hidpi = ime_spot_key(1, rect, 9.0, 22.0, (37, 94), TABBAR_H, 1.25, false);
+        // winit 收逻辑坐标；物理像素按 DPR 四舍五入后只用于去重/日志。
+        assert_eq!((hidpi.logical_x_milli, hidpi.logical_y_milli), (846_000, 846_000));
+        assert_eq!((hidpi.physical_x, hidpi.physical_y), (1058, 1058));
+        assert_eq!((hidpi.physical_w, hidpi.physical_h), (11, 28));
+        assert_eq!(hidpi.scale_milli, 1250);
+        assert_ne!(base, hidpi, "DPR 改变必须重发 spot");
+
+        // 非法/零 DPR 回退 1.0，不能出现除零或饱和垃圾坐标。
+        let bad = ime_spot_key(1, rect, 9.0, 22.0, (37, 94), TABBAR_H, 0.0, false);
+        assert_eq!(bad.scale_milli, 1000);
+        assert_eq!(bad, base);
+    }
+
+    #[test]
+    fn ime_click_anchor_only_for_plain_left_click_on_mouse_reporting_tui() {
+        assert!(ime_click_anchor(0, true, false), "dsh composer 左键应记录锚点");
+        assert!(!ime_click_anchor(0, false, false), "普通 shell 不记录锚点");
+        assert!(!ime_click_anchor(0, true, true), "Shift+左键是本地选择，不锚定 IME");
+        assert!(!ime_click_anchor(2, true, false), "右键不改变候选点");
+        assert!(!ime_click_anchor(1, true, false), "中键不改变候选点");
+    }
+
+    #[test]
+    fn left_and_right_shift_artifacts_never_reach_pty() {
+        // Slint: Shift_L=U+0010、Shift_R=U+0015；xterm 行编辑里 0x15 是 Ctrl+U。
+        for artifact in ["\u{10}", "\u{15}"] {
+            for (ctrl, alt) in [(false, false), (true, false), (false, true), (true, true)] {
+                assert!(
+                    is_modifier_artifact(artifact, ctrl, alt, true),
+                    "{artifact:?} ctrl={ctrl} alt={alt} 必须被过滤"
+                );
+            }
+        }
+        // 真正的 Ctrl+U / 小写 u 不能被误杀。
+        assert!(!is_modifier_artifact("u", true, false, false));
+        assert!(!is_modifier_artifact("u", false, false, false));
     }
 }
