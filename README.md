@@ -11,7 +11,7 @@
 > Phase 2 常用工作流已可用：标签页/分屏/右键四模式、多窗口、Tab 活动/OSC 通知、
 > 可编辑快捷键、Profile 搜索/默认/复制、Tab 自动收缩/搜索、Vault 加密凭据、Tabby 配置导入、外部进程插件 API。
 > 功能覆盖与已知差距见 [`docs/FEATURE_MATRIX.md`](docs/FEATURE_MATRIX.md) 与
-> [`docs/CLOSURE.md`](docs/CLOSURE.md)；最近一次 `./scripts/selfcheck.sh` 通过（app 204 / core 80）。
+> [`docs/CLOSURE.md`](docs/CLOSURE.md)；最近一次 `./scripts/selfcheck.sh` 通过（app 209 / core 80）。
 
 ## 架构（已冻结）
 
