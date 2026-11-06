@@ -148,6 +148,420 @@ component MenuRow inherits Rectangle {
     }
 }
 
+/// 终端右键菜单的轻量线性图标：16×16 手绘 Path/Rectangle，不依赖字体里
+/// 是否有对应符号，也不混入 emoji。描边统一 1.3–1.5px、round cap。
+enum MenuIconKind {
+    copy,
+    paste,
+    split-right,
+    split-down,
+    close,
+    broadcast,
+    find,
+    select-all,
+    clear,
+    save,
+    read-only,
+    reset,
+    reset-clear,
+    open-link,
+    copy-link,
+}
+
+component MenuIcon inherits Rectangle {
+    in property <MenuIconKind> kind: MenuIconKind.copy;
+    in property <color> tint: Palette.colors.subtext;
+
+    width: 16px;
+    height: 16px;
+    background: transparent;
+
+    // Copy：前后两张纸。
+    if root.kind == MenuIconKind.copy : Rectangle {
+        width: 100%;
+        height: 100%;
+        background: transparent;
+        Rectangle {
+            x: 2px; y: 4.5px; width: 9px; height: 9.5px;
+            border-radius: 2px;
+            border-width: 1.3px;
+            border-color: root.tint;
+            background: transparent;
+        }
+        Path {
+            width: 100%; height: 100%;
+            commands: "M 5 4.5 L 5 3 C 5 2.2 5.7 1.5 6.5 1.5 L 11.5 1.5 C 12.3 1.5 13 2.2 13 3 L 13 8 C 13 8.8 12.3 9.5 11.5 9.5 L 11 9.5";
+            stroke: root.tint;
+            stroke-width: 1.3px;
+            stroke-line-cap: round;
+        }
+    }
+
+    // Paste：剪贴板 + 顶部夹子 + 文本行。
+    if root.kind == MenuIconKind.paste : Rectangle {
+        width: 100%;
+        height: 100%;
+        background: transparent;
+        Rectangle {
+            x: 2.5px; y: 2.5px; width: 11px; height: 12px;
+            border-radius: 2px;
+            border-width: 1.3px;
+            border-color: root.tint;
+            background: transparent;
+        }
+        Path {
+            width: 100%; height: 100%;
+            commands: "M 5.5 2.5 L 5.5 1.5 C 5.5 0.9 6 0.5 6.5 0.5 L 9.5 0.5 C 10 0.5 10.5 0.9 10.5 1.5 L 10.5 2.5 M 5.5 6 L 10.5 6 M 5.5 9 L 10.5 9";
+            stroke: root.tint;
+            stroke-width: 1.3px;
+            stroke-line-cap: round;
+        }
+    }
+
+    // Split Right：外框 + 右侧分屏线。
+    if root.kind == MenuIconKind.split-right : Rectangle {
+        width: 100%;
+        height: 100%;
+        background: transparent;
+        Rectangle {
+            x: 1.5px; y: 2.5px; width: 13px; height: 11px;
+            border-radius: 2px;
+            border-width: 1.3px;
+            border-color: root.tint;
+            background: transparent;
+        }
+        Path {
+            width: 100%; height: 100%;
+            commands: "M 8.5 2.5 L 8.5 13.5";
+            stroke: root.tint;
+            stroke-width: 1.3px;
+        }
+    }
+
+    // Split Down：外框 + 下方分屏线。
+    if root.kind == MenuIconKind.split-down : Rectangle {
+        width: 100%;
+        height: 100%;
+        background: transparent;
+        Rectangle {
+            x: 1.5px; y: 2.5px; width: 13px; height: 11px;
+            border-radius: 2px;
+            border-width: 1.3px;
+            border-color: root.tint;
+            background: transparent;
+        }
+        Path {
+            width: 100%; height: 100%;
+            commands: "M 1.5 8.5 L 14.5 8.5";
+            stroke: root.tint;
+            stroke-width: 1.3px;
+        }
+    }
+
+    // Close：X。
+    if root.kind == MenuIconKind.close : Path {
+        width: 100%; height: 100%;
+        commands: "M 4 4 L 12 12 M 12 4 L 4 12";
+        stroke: root.tint;
+        stroke-width: 1.5px;
+        stroke-line-cap: round;
+    }
+
+    // Broadcast：左下圆点 + 向右上扩散的两道信号弧（cast 语义）。
+    if root.kind == MenuIconKind.broadcast : Rectangle {
+        width: 100%;
+        height: 100%;
+        background: transparent;
+        Rectangle {
+            x: 2px; y: 12px; width: 3.5px; height: 3.5px;
+            border-radius: 1.75px;
+            background: root.tint;
+        }
+        Path {
+            width: 100%; height: 100%;
+            commands: "M 5.5 10.8 C 8 10.8 9.8 12.4 9.8 15.5";
+            stroke: root.tint;
+            stroke-width: 1.4px;
+            stroke-line-cap: round;
+        }
+        Path {
+            width: 100%; height: 100%;
+            commands: "M 5.5 7.2 C 10 7.2 13.6 10.6 13.6 15.5";
+            stroke: root.tint;
+            stroke-width: 1.4px;
+            stroke-line-cap: round;
+        }
+    }
+
+    // Find：放大镜。
+    if root.kind == MenuIconKind.find : Rectangle {
+        width: 100%;
+        height: 100%;
+        background: transparent;
+        Rectangle {
+            x: 2px; y: 2px; width: 8px; height: 8px;
+            border-radius: 4px;
+            border-width: 1.4px;
+            border-color: root.tint;
+            background: transparent;
+        }
+        Path {
+            width: 100%; height: 100%;
+            commands: "M 9 9 L 14 14";
+            stroke: root.tint;
+            stroke-width: 1.4px;
+            stroke-line-cap: round;
+        }
+    }
+
+    // Select All：四角选择框 + 勾。
+    if root.kind == MenuIconKind.select-all : Rectangle {
+        width: 100%;
+        height: 100%;
+        background: transparent;
+        Path {
+            width: 100%; height: 100%;
+            commands: "M 3 1.5 L 1.5 1.5 L 1.5 3 M 13 1.5 L 14.5 1.5 L 14.5 3 M 3 14.5 L 1.5 14.5 L 1.5 13 M 13 14.5 L 14.5 14.5 L 14.5 13";
+            stroke: root.tint;
+            stroke-width: 1.3px;
+            stroke-line-cap: round;
+            stroke-line-join: round;
+        }
+        Path {
+            width: 100%; height: 100%;
+            commands: "M 5 8 L 7.2 10.2 L 11.2 5.2";
+            stroke: root.tint;
+            stroke-width: 1.4px;
+            stroke-line-cap: round;
+            stroke-line-join: round;
+        }
+    }
+
+    // Clear：橡皮擦 + 基线。
+    if root.kind == MenuIconKind.clear : Rectangle {
+        width: 100%;
+        height: 100%;
+        background: transparent;
+        Path {
+            width: 100%; height: 100%;
+            commands: "M 6.2 12.8 L 2.8 9.4 C 2.2 8.8 2.2 7.8 2.8 7.2 L 7.2 2.8 C 7.8 2.2 8.8 2.2 9.4 2.8 L 12.8 6.2 C 13.4 6.8 13.4 7.8 12.8 8.4 L 8.4 12.8 C 7.8 13.4 6.8 13.4 6.2 12.8 Z M 5 5 L 11 11";
+            stroke: root.tint;
+            stroke-width: 1.3px;
+            stroke-line-cap: round;
+            stroke-line-join: round;
+        }
+    }
+
+    // Save Contents：下载到托盘。
+    if root.kind == MenuIconKind.save : Path {
+        width: 100%; height: 100%;
+        commands: "M 8 1.5 L 8 9.5 M 4.5 6 L 8 9.5 L 11.5 6 M 2.5 13 L 13.5 13";
+        stroke: root.tint;
+        stroke-width: 1.4px;
+        stroke-line-cap: round;
+        stroke-line-join: round;
+    }
+
+    // Read Only：锁。
+    if root.kind == MenuIconKind.read-only : Rectangle {
+        width: 100%;
+        height: 100%;
+        background: transparent;
+        Rectangle {
+            x: 3px; y: 7px; width: 10px; height: 7px;
+            border-radius: 2px;
+            border-width: 1.3px;
+            border-color: root.tint;
+            background: transparent;
+        }
+        Path {
+            width: 100%; height: 100%;
+            commands: "M 5 7 L 5 4.5 C 5 1.8 11 1.8 11 4.5 L 11 7 M 8 9.5 L 8 11.5";
+            stroke: root.tint;
+            stroke-width: 1.3px;
+            stroke-line-cap: round;
+        }
+    }
+
+    // Reset：逆时针回环箭头。
+    if root.kind == MenuIconKind.reset : Rectangle {
+        width: 100%;
+        height: 100%;
+        background: transparent;
+        Path {
+            width: 100%; height: 100%;
+            commands: "M 13 8 C 13 4.7 10.3 2 7 2 C 3.7 2 1 4.7 1 8 C 1 11.3 3.7 14 7 14";
+            stroke: root.tint;
+            stroke-width: 1.4px;
+            stroke-line-cap: round;
+        }
+        Path {
+            width: 100%; height: 100%;
+            commands: "M 13 4 L 13 8 L 9 8";
+            stroke: root.tint;
+            stroke-width: 1.4px;
+            stroke-line-cap: round;
+            stroke-line-join: round;
+        }
+    }
+
+    // Reset and Clear：回环箭头 + 右下角清除叉。
+    if root.kind == MenuIconKind.reset-clear : Rectangle {
+        width: 100%;
+        height: 100%;
+        background: transparent;
+        Path {
+            width: 100%; height: 100%;
+            commands: "M 13 8 C 13 4.7 10.3 2 7 2 C 3.7 2 1 4.7 1 8 C 1 11.3 3.7 14 7 14";
+            stroke: root.tint;
+            stroke-width: 1.4px;
+            stroke-line-cap: round;
+        }
+        Path {
+            width: 100%; height: 100%;
+            commands: "M 13 4 L 13 8 L 9 8";
+            stroke: root.tint;
+            stroke-width: 1.4px;
+            stroke-line-cap: round;
+            stroke-line-join: round;
+        }
+        Path {
+            width: 100%; height: 100%;
+            commands: "M 10.5 11 L 14 14.5 M 14 11 L 10.5 14.5";
+            stroke: root.tint;
+            stroke-width: 1.4px;
+            stroke-line-cap: round;
+        }
+    }
+
+    // Open Link：从框里跳出的箭头。
+    if root.kind == MenuIconKind.open-link : Path {
+        width: 100%; height: 100%;
+        commands: "M 9 2.5 L 13.5 2.5 L 13.5 7 M 13.5 2.5 L 7.5 8.5 M 11 9.5 L 11 12.5 C 11 13.3 10.3 14 9.5 14 L 3.5 14 C 2.7 14 2 13.3 2 12.5 L 2 6.5 C 2 5.7 2.7 5 3.5 5 L 6.5 5";
+        stroke: root.tint;
+        stroke-width: 1.4px;
+        stroke-line-cap: round;
+        stroke-line-join: round;
+    }
+
+    // Copy Link：链环。
+    if root.kind == MenuIconKind.copy-link : Path {
+        width: 100%; height: 100%;
+        commands: "M 6.6 9.4 L 9.4 6.6 M 5.2 7.2 L 3.8 8.6 C 2.4 10 4.4 12 5.8 10.6 L 7.2 9.2 M 10.8 8.8 L 12.2 7.4 C 13.6 6 11.6 4 10.2 5.4 L 8.8 6.8";
+        stroke: root.tint;
+        stroke-width: 1.4px;
+        stroke-line-cap: round;
+    }
+}
+
+/// 菜单分组标题：13px semi-bold 次级色；非首组顶部画一条 1px 分隔线。
+component MenuGroupLabel inherits Rectangle {
+    in property <string> label;
+    in property <bool> first: false;
+
+    height: 22px;
+    background: transparent;
+
+    Rectangle {
+        visible: !root.first;
+        x: 6px;
+        y: 0px;
+        width: parent.width - 12px;
+        height: 1px;
+        background: Palette.colors.border;
+        opacity: 0.6;
+    }
+    Text {
+        x: 10px;
+        y: 2px;
+        width: parent.width - 20px;
+        height: parent.height - 2px;
+        text: root.label;
+        color: Palette.colors.subtext;
+        font-size: 13px;
+        font-weight: 600;
+        letter-spacing: 0.4px;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+}
+
+/// 终端右键菜单项：30px 行高 / 14px 标签 + 16px 图标 + 可选快捷键提示。
+/// 只在终端 pane 菜单里使用，TabBar/Profile 菜单仍用紧凑的 MenuRow（行为不变）。
+component ContextMenuRow inherits Rectangle {
+    in property <string> label;
+    in property <string> shortcut: "";
+    in property <MenuIconKind> icon: MenuIconKind.copy;
+    /// 状态类菜单项（Read Only / Broadcast）开启时用 accent 淡底 + 图标高亮。
+    in property <bool> active: false;
+    in property <bool> danger: false;
+    callback picked();
+
+    height: 30px;
+    border-radius: 5px;
+    background: hit.has-hover ? Palette.colors.hover : transparent;
+
+    // 状态项：轻量 accent 洗色，不压过文字对比度。
+    if root.active && !hit.has-hover : Rectangle {
+        width: 100%;
+        height: 100%;
+        border-radius: 5px;
+        background: Palette.colors.accent;
+        opacity: 0.10;
+    }
+
+    hit := TouchArea {
+        width: 100%;
+        height: 100%;
+        clicked => { root.picked(); }
+    }
+
+    // 悬停左侧标记；关闭 pane 用 danger 色提示破坏性。
+    Rectangle {
+        x: 2px;
+        y: 9px;
+        width: 2px;
+        height: 12px;
+        border-radius: 1px;
+        background: root.danger ? Palette.colors.danger : Palette.colors.accent;
+        visible: hit.has-hover;
+    }
+
+    MenuIcon {
+        x: 10px;
+        y: 7px;
+        kind: root.icon;
+        tint: hit.has-hover
+            ? (root.danger ? Palette.colors.danger : Palette.colors.accent)
+            : (root.active ? Palette.colors.accent : Palette.colors.subtext);
+    }
+
+    Text {
+        x: 34px;
+        y: 0px;
+        width: parent.width - 34px - (root.shortcut == "" ? 12px : 104px);
+        height: 100%;
+        text: root.label;
+        color: root.danger && hit.has-hover ? Palette.colors.danger : Palette.colors.text;
+        font-size: 14px;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    if root.shortcut != "" : Text {
+        x: parent.width - 106px;
+        y: 0px;
+        width: 96px;
+        height: 100%;
+        text: root.shortcut;
+        color: Palette.colors.subtext;
+        font-size: 11px;
+        horizontal-alignment: right;
+        vertical-alignment: center;
+        opacity: 0.92;
+    }
+}
+
 
 // 设置页里的动作按钮（Vault 等）
 component ActionBtn inherits Rectangle {
@@ -1032,7 +1446,25 @@ export component MainWindow inherits Window {
     in property <bool> menu-read-only: false;
     // 链接打开失败等短暂提示（底部浮层，Rust 侧 4 秒后清空）。
     in-out property <string> link-status: "";
-    property <length> menu-height: root.menu-link != "" ? 460px : 400px;
+    // 终端右键菜单：宽度按最长标签 + 快捷键提示留足，窄窗口自动收窄；
+    // 内容高度固定（分组标题 22px / 菜单项 30px），超过内容区时菜单内滚动，
+    // 不做整块溢出到窗口外。
+    property <length> menu-width: Math.max(180px, Math.min(280px, root.width - 16px));
+    property <length> menu-content-h: root.menu-link != "" ? 572px : 490px;
+    property <length> menu-view-h: Math.max(80px,
+        Math.min(root.menu-content-h, root.height - root.tabbar-height - 12px));
+    // 锚点同原生菜单：优先右/下，放不下翻到左/上，再放不下才夹进窗口。
+    property <length> menu-left: root.menu-x + root.menu-width + 8px <= root.width
+        ? root.menu-x
+        : (root.menu-x - root.menu-width >= 8px
+            ? root.menu-x - root.menu-width
+            : Math.max(8px, Math.min(root.menu-x, root.width - root.menu-width - 8px)));
+    property <length> menu-top: root.menu-y + root.menu-view-h + 8px <= root.height - root.tabbar-height
+        ? root.menu-y
+        : (root.menu-y - root.menu-view-h >= 0px
+            ? root.menu-y - root.menu-view-h
+            : Math.max(6px,
+                Math.min(root.menu-y, root.height - root.tabbar-height - root.menu-view-h - 6px)));
 
     callback key-input(string, bool, bool, bool);
     // 右键事件到达 UI 层的追踪（日志排查用）
@@ -2557,89 +2989,161 @@ export component MainWindow inherits Window {
                 }
 
                 // ---------------- 右键菜单 ----------------
+                // 分类分组（Link / Clipboard / Pane / View / Session）+ 线性图标 +
+                // 快捷键提示；动作 ID 与回调保持原样，仅重排/放大。
                 if root.menu-open : Rectangle {
-                    // 菜单坐标系是内容区。靠右/下边时不把左上角硬夹到远处，而是
-                    // 像原生菜单一样翻到鼠标左侧/上方，菜单才会贴着右键位置出现。
-                    x: root.menu-x + 150px > root.width
-                        ? Math.max(0px, root.menu-x - 150px)
-                        : root.menu-x;
-                    y: root.menu-y + root.menu-height > root.height - root.tabbar-height
-                        ? Math.max(0px, root.menu-y - root.menu-height)
-                        : root.menu-y;
-                    width: 150px;
-                    height: root.menu-height;
+                    x: root.menu-left;
+                    y: root.menu-top;
+                    width: root.menu-width;
+                    height: root.menu-view-h;
                     background: Palette.colors.raise;
-                    border-radius: 8px;
+                    border-radius: 10px;
                     border-width: 1px;
-                    border-color: Palette.colors.hover;
-                    drop-shadow-blur: 18px;
-                    drop-shadow-offset-y: 6px;
-                    drop-shadow-color: #000000a8;
+                    border-color: Palette.colors.border;
+                    drop-shadow-blur: 22px;
+                    drop-shadow-offset-y: 7px;
+                    drop-shadow-color: #00000088;
+                    clip: true;
 
-                    VerticalLayout {
-                        padding: 4px;
-                        spacing: 2px;
+                    // interactive=false：滚轮仍可滚动（Slint Flickable 语义），
+                    // 但按下/抬起会立即交给菜单行，避免拖拽延迟/吞点击。
+                    menu-flick := Flickable {
+                        x: 0px;
+                        y: 0px;
+                        width: parent.width;
+                        height: parent.height;
+                        interactive: false;
+                        mouse-drag-pan-enabled: false;
+                        content-width: parent.width;
+                        content-height: menu-list.preferred-height;
 
-                        if root.menu-link != "" : MenuRow {
-                            label: "Open Link";
-                            picked => { root.menu-open = false; root.menu-action(root.menu-pane, 9); }
+                        menu-list := VerticalLayout {
+                            x: 0px;
+                            y: 0px;
+                            width: parent.width;
+                            padding: 6px;
+                            spacing: 0px;
+
+                            if root.menu-link != "" : MenuGroupLabel {
+                                label: "Link";
+                                first: true;
+                            }
+                            if root.menu-link != "" : ContextMenuRow {
+                                icon: MenuIconKind.open-link;
+                                label: "Open Link";
+                                picked => { root.menu-open = false; root.menu-action(root.menu-pane, 9); }
+                            }
+                            if root.menu-link != "" : ContextMenuRow {
+                                icon: MenuIconKind.copy-link;
+                                label: "Copy Link";
+                                picked => { root.menu-open = false; root.menu-action(root.menu-pane, 10); }
+                            }
+
+                            MenuGroupLabel {
+                                label: "Clipboard";
+                                first: root.menu-link == "";
+                            }
+                            ContextMenuRow {
+                                icon: MenuIconKind.copy;
+                                label: "Copy";
+                                shortcut: "Ctrl+Shift+C";
+                                picked => { root.menu-open = false; root.menu-action(root.menu-pane, 3); }
+                            }
+                            ContextMenuRow {
+                                icon: MenuIconKind.paste;
+                                label: "Paste";
+                                shortcut: "Ctrl+Shift+V";
+                                picked => { root.menu-open = false; root.menu-action(root.menu-pane, 4); }
+                            }
+
+                            MenuGroupLabel {
+                                label: "Pane";
+                            }
+                            ContextMenuRow {
+                                icon: MenuIconKind.split-right;
+                                label: "Split Right";
+                                shortcut: "Ctrl+Shift+E";
+                                picked => { root.menu-open = false; root.menu-action(root.menu-pane, 0); }
+                            }
+                            ContextMenuRow {
+                                icon: MenuIconKind.split-down;
+                                label: "Split Down";
+                                shortcut: "Ctrl+Shift+D";
+                                picked => { root.menu-open = false; root.menu-action(root.menu-pane, 1); }
+                            }
+                            ContextMenuRow {
+                                icon: MenuIconKind.close;
+                                label: "Close Pane";
+                                shortcut: "Ctrl+Shift+W";
+                                danger: true;
+                                picked => { root.menu-open = false; root.menu-action(root.menu-pane, 2); }
+                            }
+                            ContextMenuRow {
+                                icon: MenuIconKind.broadcast;
+                                label: root.broadcast ? "Broadcast Input: ON" : "Broadcast Input: OFF";
+                                active: root.broadcast;
+                                picked => { root.menu-open = false; root.menu-action(root.menu-pane, 8); }
+                            }
+
+                            MenuGroupLabel {
+                                label: "View";
+                            }
+                            ContextMenuRow {
+                                icon: MenuIconKind.find;
+                                label: "Find";
+                                shortcut: "Ctrl+F";
+                                picked => { root.menu-open = false; root.menu-action(root.menu-pane, 5); }
+                            }
+                            ContextMenuRow {
+                                icon: MenuIconKind.select-all;
+                                label: "Select All";
+                                picked => { root.menu-open = false; root.menu-action(root.menu-pane, 6); }
+                            }
+                            ContextMenuRow {
+                                icon: MenuIconKind.clear;
+                                label: "Clear";
+                                picked => { root.menu-open = false; root.menu-action(root.menu-pane, 7); }
+                            }
+
+                            MenuGroupLabel {
+                                label: "Session";
+                            }
+                            ContextMenuRow {
+                                icon: MenuIconKind.read-only;
+                                label: root.menu-read-only ? "Read Only: ON" : "Read Only: OFF";
+                                active: root.menu-read-only;
+                                picked => { root.menu-open = false; root.menu-action(root.menu-pane, 11); }
+                            }
+                            ContextMenuRow {
+                                icon: MenuIconKind.reset;
+                                label: "Reset";
+                                picked => { root.menu-open = false; root.menu-action(root.menu-pane, 12); }
+                            }
+                            ContextMenuRow {
+                                icon: MenuIconKind.reset-clear;
+                                label: "Reset and Clear";
+                                picked => { root.menu-open = false; root.menu-action(root.menu-pane, 13); }
+                            }
+                            ContextMenuRow {
+                                icon: MenuIconKind.save;
+                                label: "Save Contents…";
+                                picked => { root.menu-open = false; root.menu-action(root.menu-pane, 14); }
+                            }
                         }
-                        if root.menu-link != "" : MenuRow {
-                            label: "Copy Link";
-                            picked => { root.menu-open = false; root.menu-action(root.menu-pane, 10); }
-                        }
-                        MenuRow {
-                            label: "Copy";
-                            picked => { root.menu-open = false; root.menu-action(root.menu-pane, 3); }
-                        }
-                        MenuRow {
-                            label: "Paste";
-                            picked => { root.menu-open = false; root.menu-action(root.menu-pane, 4); }
-                        }
-                        MenuRow {
-                            label: "Split Right";
-                            picked => { root.menu-open = false; root.menu-action(root.menu-pane, 0); }
-                        }
-                        MenuRow {
-                            label: "Split Down";
-                            picked => { root.menu-open = false; root.menu-action(root.menu-pane, 1); }
-                        }
-                        MenuRow {
-                            label: "Close Pane";
-                            picked => { root.menu-open = false; root.menu-action(root.menu-pane, 2); }
-                        }
-                        MenuRow {
-                            label: "Find";
-                            picked => { root.menu-open = false; root.menu-action(root.menu-pane, 5); }
-                        }
-                        MenuRow {
-                            label: "Select All";
-                            picked => { root.menu-open = false; root.menu-action(root.menu-pane, 6); }
-                        }
-                        MenuRow {
-                            label: "Clear";
-                            picked => { root.menu-open = false; root.menu-action(root.menu-pane, 7); }
-                        }
-                        MenuRow {
-                            label: "Save Contents…";
-                            picked => { root.menu-open = false; root.menu-action(root.menu-pane, 14); }
-                        }
-                        MenuRow {
-                            label: root.menu-read-only ? "Read Only: ON" : "Read Only: OFF";
-                            picked => { root.menu-open = false; root.menu-action(root.menu-pane, 11); }
-                        }
-                        MenuRow {
-                            label: "Reset";
-                            picked => { root.menu-open = false; root.menu-action(root.menu-pane, 12); }
-                        }
-                        MenuRow {
-                            label: "Reset and Clear";
-                            picked => { root.menu-open = false; root.menu-action(root.menu-pane, 13); }
-                        }
-                        MenuRow {
-                            label: root.broadcast ? "Broadcast Input: ON" : "Broadcast Input: OFF";
-                            picked => { root.menu-open = false; root.menu-action(root.menu-pane, 8); }
-                        }
+                    }
+
+                    // 窄窗口：菜单内容高于可用视口时显示细滚动条（提示还有分组/项）。
+                    if menu-flick.content-height > menu-flick.height : Rectangle {
+                        x: parent.width - 5px;
+                        y: 6px + (-menu-flick.content-y)
+                            / Math.max(1px, menu-flick.content-height - menu-flick.height)
+                            * Math.max(0px, parent.height - self.height - 12px);
+                        width: 3px;
+                        height: Math.max(24px,
+                            parent.height * parent.height / Math.max(1px, menu-flick.content-height));
+                        border-radius: 1.5px;
+                        background: Palette.colors.subtext;
+                        opacity: 0.55;
                     }
                 }
             }
