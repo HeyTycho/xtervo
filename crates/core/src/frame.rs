@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use alacritty_terminal::term::cell::Cell;
 use alacritty_terminal::vte::ansi::CursorShape as VteCursorShape;
 
+use crate::link::{scan, LinkKind};
 use crate::palette::Palette;
 
 /// 单元格标志位，数值与 `alacritty_terminal::term::cell::Flags` 的 bits 一一对应。
@@ -228,10 +229,66 @@ impl Frame {
     }
 
     /// 取某格的超链接 URI。
+    ///
+    /// 宽字符占两列：右半边是 `WIDE_CHAR_SPACER`，某些应用不会把 OSC 8
+    /// 复制到 spacer 上，这里回退到左半边，保证点右半边也能打开。
     #[inline]
     pub fn hyperlink_at(&self, row: usize, col: usize) -> Option<&str> {
-        let idx = self.cell(row, col).link as usize;
+        let index = row.checked_mul(self.cols)?.checked_add(col)?;
+        let cell = self.cells.get(index)?;
+        let mut idx = cell.link as usize;
+        if idx == 0 && col > 0 && cell.has(flags::WIDE_CHAR_SPACER) {
+            idx = self.cells.get(index - 1)?.link as usize;
+        }
         (idx > 0).then(|| self.hyperlinks.get(idx)).flatten().map(|s| s.as_str())
+    }
+
+    /// 取某格上的普通 URL（行内文本识别，不支持 OSC 8；调用方应先查
+    /// [`Frame::hyperlink_at`]，让显式超链接优先）。
+    ///
+    /// 返回的是新分配的 URI 字符串，只在点击时调用。列号是**显示列**
+    /// （与鼠标命中格一致），内部按单元格重建文本并记录“显示列 → 字符下标”：
+    /// - 宽字符占一列文本、两列网格；右半 spacer 映射回同一字符；
+    /// - 组合字符由 alacritty 存在单元格的 `zerowidth` 里，不占列，故不会错位；
+    /// - 中文、全角标点等宽字符不会让 URL 列号偏移。
+    pub fn url_at(&self, row: usize, col: usize) -> Option<String> {
+        if row >= self.rows || col >= self.cols {
+            return None;
+        }
+        let (text, char_of_col) = self.row_text_and_columns(row);
+        let char_idx = *char_of_col.get(col)?;
+        if char_idx == u32::MAX {
+            return None;
+        }
+        scan(&text).into_iter().find_map(|link| {
+            (link.kind == LinkKind::Url
+                && link.start as u32 <= char_idx
+                && char_idx <= link.end as u32)
+                .then_some(link.text)
+        })
+    }
+
+    /// 按显示列重建一行文本，并返回 `显示列 -> 文本字符下标`。
+    /// spacer 不写入文本（宽字符只占一个字符），但会把它的列映射回左半边。
+    fn row_text_and_columns(&self, row: usize) -> (String, Vec<u32>) {
+        let mut text = String::with_capacity(self.cols);
+        let mut char_of_col = vec![u32::MAX; self.cols];
+        let mut char_idx = 0u32;
+        for (col, cell) in self.row(row).iter().enumerate() {
+            if cell.has(flags::WIDE_CHAR_SPACER) {
+                if col > 0 {
+                    char_of_col[col] = char_of_col[col - 1];
+                }
+                continue;
+            }
+            char_of_col[col] = char_idx;
+            if cell.has(flags::WIDE_CHAR) && col + 1 < self.cols {
+                char_of_col[col + 1] = char_idx;
+            }
+            text.push(cell.char());
+            char_idx += 1;
+        }
+        (text, char_of_col)
     }
 
     #[inline]
@@ -273,6 +330,84 @@ mod tests {
     #[test]
     fn cell_data_is_16_bytes() {
         assert_eq!(std::mem::size_of::<CellData>(), 16);
+    }
+
+    fn put_text(f: &mut Frame, row: usize, col: usize, text: &str) -> usize {
+        let mut at = col;
+        for ch in text.chars() {
+            let mut cell = CellData::default();
+            cell.ch = ch as u32;
+            f.put(row * f.cols + at, cell, None);
+            at += 1;
+        }
+        at
+    }
+
+    #[test]
+    fn url_at_maps_display_columns_across_wide_chars() {
+        let mut f = Frame::new(40, 2);
+        // URL 前有中文和空格：中占 0/1 列、文占 2/3 列、空格 4 列、URL 从 5 列开始。
+        put_text(&mut f, 0, 0, "中");
+        f.cells[0].flags = flags::WIDE_CHAR;
+        f.cells[1].ch = ' ' as u32;
+        f.cells[1].flags = flags::WIDE_CHAR_SPACER;
+        put_text(&mut f, 0, 2, "文");
+        f.cells[2].flags = flags::WIDE_CHAR;
+        f.cells[3].ch = ' ' as u32;
+        f.cells[3].flags = flags::WIDE_CHAR_SPACER;
+        let end = put_text(&mut f, 0, 4, " https://example.com/");
+        put_text(&mut f, 0, end, "中");
+        f.cells[end].flags = flags::WIDE_CHAR;
+        f.cells[end + 1].ch = ' ' as u32;
+        f.cells[end + 1].flags = flags::WIDE_CHAR_SPACER;
+        put_text(&mut f, 0, end + 2, "文");
+        f.cells[end + 2].flags = flags::WIDE_CHAR;
+        f.cells[end + 3].ch = ' ' as u32;
+        f.cells[end + 3].flags = flags::WIDE_CHAR_SPACER;
+
+        assert_eq!(f.url_at(0, 5).as_deref(), Some("https://example.com/中文"));
+        // 点击最后的中文（宽字符右半边 spacer）也要命中同一个 URL。
+        let start = 5 + "https://example.com/".len();
+        assert_eq!(f.url_at(0, start).as_deref(), Some("https://example.com/中文"));
+        assert_eq!(f.url_at(0, start + 1).as_deref(), Some("https://example.com/中文"));
+        assert_eq!(f.url_at(0, start + 2).as_deref(), Some("https://example.com/中文"));
+        assert_eq!(f.url_at(0, start + 3).as_deref(), Some("https://example.com/中文"));
+        // 宽字符左半边/空格不属于 URL；下一行也不命中。
+        assert_eq!(f.url_at(0, 0), None);
+        assert_eq!(f.url_at(0, 4), None);
+        assert_eq!(f.url_at(1, 5), None);
+        assert_eq!(f.url_at(2, 0), None, "越界行必须是 None");
+        assert_eq!(f.url_at(0, 40), None, "越界列必须是 None");
+    }
+
+    #[test]
+    fn url_at_does_not_shift_after_zero_width_combining_mark() {
+        // 组合字符只占一个 CellData 的字符位、不新增网格列；URL 的显示列不能因此偏移。
+        let mut f = Frame::new(32, 1);
+        put_text(&mut f, 0, 0, "e");
+        put_text(&mut f, 0, 1, "\u{0301}"); // 实际 alacritty 存在前一格 zerowidth，这里显式占格验证映射
+        put_text(&mut f, 0, 2, " ");
+        put_text(&mut f, 0, 3, "https://example.com/x");
+        assert_eq!(f.url_at(0, 3).as_deref(), Some("https://example.com/x"));
+        assert_eq!(f.url_at(0, 4).as_deref(), Some("https://example.com/x"));
+    }
+
+    #[test]
+    fn hyperlink_at_falls_back_to_wide_char_left_half() {
+        let mut f = Frame::new(4, 1);
+        f.hyperlinks.push("https://osc.example/中".to_string());
+        let mut wide = CellData::default();
+        wide.ch = '中' as u32;
+        wide.flags = flags::WIDE_CHAR;
+        wide.link = 1;
+        f.put(0, wide, None);
+        let mut spacer = CellData::default();
+        spacer.ch = ' ' as u32;
+        spacer.flags = flags::WIDE_CHAR_SPACER;
+        // 故意不给 spacer 设置 link，验证点击右半边时回退到左半边。
+        f.put(1, spacer, None);
+        assert_eq!(f.hyperlink_at(0, 0), Some("https://osc.example/中"));
+        assert_eq!(f.hyperlink_at(0, 1), Some("https://osc.example/中"));
     }
 
     #[test]
