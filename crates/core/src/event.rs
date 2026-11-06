@@ -140,6 +140,18 @@ pub struct PaneStats {
     pub cells_copied: AtomicU64,
     pub wakeups: AtomicU64,
     pub wakeups_coalesced: AtomicU64,
+    /// PTY 写 backlog 到 16 MiB 上限后丢弃的块数/字节数（慢 shell 背压）。
+    pub write_dropped_chunks: AtomicU64,
+    pub write_dropped_bytes: AtomicU64,
+    /// `pull` 超时次数与因此跳过的帧数；`pull_stale_responses` 是超时后才回来的
+    /// 旧响应（会被丢弃并由下一次 `force_full` 补画）。
+    pub pull_timeouts: AtomicU64,
+    pub pull_skipped_frames: AtomicU64,
+    pub pull_stale_responses: AtomicU64,
+    /// copy/search/contents 等同步 ctrl 回复超时次数（超时返回空结果）。
+    pub ctrl_reply_timeouts: AtomicU64,
+    /// ctrl 通道投递超时/断开次数（UI 侧最多等 50ms，不无限阻塞）。
+    pub ctrl_send_timeouts: AtomicU64,
 }
 
 impl PaneStats {

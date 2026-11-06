@@ -224,6 +224,8 @@ pub struct Frame {
     pub images: Vec<InlineImage>,
     /// 单调递增序号，便于 UI 判断是否漏帧。
     pub generation: u64,
+    /// true = 本次拉帧超时被跳过，帧是空占位；UI 不应重绘，等下一次整屏补帧。
+    pub skipped: bool,
     /// 本帧从 grid 拷贝的单元格数（性能计数器）。
     pub copied_cells: u32,
     /// OSC 8 链接表：下标 0 是占位（无链接），1.. 为 URI。

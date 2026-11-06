@@ -10,14 +10,25 @@
 //! 此时 UI 退化为「当前文件 + 不确定进度」，不伪造百分比。
 
 use std::io::{Read, Write};
+use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::profile::Profile;
+
+/// 单次 SFTP 元数据命令（list/mkdir/rename/rm）的硬超时。
+///
+/// 10s 覆盖正常连上后的目录列举/建目录/改名/删除；连接卡死或远端不响应时
+/// 到点 kill 整个子进程组并返回可解释错误。UI 侧不再同步调用，见 [`SftpOpJob`]。
+pub const SFTP_TIMEOUT: Duration = Duration::from_secs(10);
+/// 超时 kill 后等待 reader 线程收尾的宽限；主流程最多再多等这么久。
+const KILL_GRACE: Duration = Duration::from_millis(200);
+/// 轮询子进程退出的间隔（try_wait，不做阻塞 wait）。
+const WAIT_POLL: Duration = Duration::from_millis(10);
 
 /// 连接目标（从 SSH Profile 提取；SFTP 复用同一套认证参数）。
 #[derive(Clone, Debug, PartialEq)]
@@ -64,27 +75,189 @@ impl SftpTarget {
     }
 
     /// 执行一段 batch 脚本，返回 stdout；退出码非 0 时返回 stderr 内容。
+    ///
+    /// 硬超时 [`SFTP_TIMEOUT`]，到点 kill 子进程组；不再无限 `wait_with_output`。
+    /// UI 不应直接调用它（会阻塞调用线程最多 10s），请用 [`SftpOpJob`]。
     pub fn run(&self, batch: &str) -> Result<String, String> {
+        self.run_with_timeout(batch, SFTP_TIMEOUT)
+    }
+
+    /// 带显式超时的 batch 执行；测试也用它验证假 sftp 卡死。
+    pub fn run_with_timeout(&self, batch: &str, timeout: Duration) -> Result<String, String> {
+        run_command_with_timeout(self.command(), batch, timeout)
+    }
+
+    fn command(&self) -> Command {
         // 选项必须在 destination 之前，否则 sftp 会把它们当成多余参数
-        let mut child = Command::new("sftp")
-            .args(["-q", "-b", "-"])
-            .args(self.args())
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| format!("启动 sftp 失败: {e}"))?;
-        if let Some(mut stdin) = child.stdin.take() {
-            stdin.write_all(batch.as_bytes()).map_err(|e| format!("写入 batch 失败: {e}"))?;
+        let mut command = Command::new("sftp");
+        command.args(["-q", "-b", "-"]).args(self.args());
+        command
+    }
+}
+
+/// 执行任意子进程并喂一段 batch 脚本，带硬超时 / 进程组 kill。
+///
+/// 抽成公开函数是为了让测试用假脚本（`sleep` 永不退出）验证超时路径；
+/// 生产调用由 [`SftpTarget::run_with_timeout`] 或 [`SftpOpJob`] 发起。
+pub fn run_command_with_timeout(
+    mut command: Command,
+    batch: &str,
+    timeout: Duration,
+) -> Result<String, String> {
+    // 独立进程组：sftp 可能再起 ssh 子进程；超时要连它们一起 kill，
+    // 否则孙进程仍持有 stdout/stderr 管道，reader 线程永远等不到 EOF。
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    // 临时脚本刚写完时可能 ETXTBSY（测试/某些文件系统）；重试几次。
+    let mut child = None;
+    for attempt in 0..5 {
+        match command.spawn() {
+            Ok(spawned) => {
+                child = Some(spawned);
+                break;
+            },
+            Err(e) if e.raw_os_error() == Some(26) && attempt < 4 => {
+                thread::sleep(Duration::from_millis(20));
+            },
+            Err(e) => return Err(format!("启动 sftp 失败: {e}")),
         }
-        let out = child.wait_with_output().map_err(|e| format!("等待 sftp 失败: {e}"))?;
-        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-        if !out.status.success() {
-            let msg = if stderr.trim().is_empty() { stdout.trim().to_string() } else { stderr.trim().to_string() };
-            return Err(format!("sftp 失败（{}）: {msg}", out.status));
+    }
+    let mut child = child.ok_or_else(|| "启动 sftp 失败: 重试后仍失败".to_string())?;
+
+    let write_error = match child.stdin.take() {
+        Some(mut stdin) => stdin
+            .write_all(batch.as_bytes())
+            .err()
+            .map(|e| format!("写入 batch 失败: {e}")),
+        None => Some("无法接管 sftp stdin".to_string()),
+    };
+
+    // reader 线程 + 通道：kill 后即使有进程逃出进程组，也不会把主流程 join 死。
+    let (out_tx, out_rx) = mpsc::channel();
+    let (err_tx, err_rx) = mpsc::channel();
+    let mut readers = Vec::new();
+    if let Some(stdout) = child.stdout.take() {
+        readers.push(thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = stdout.take(64 * 1024 * 1024).read_to_end(&mut buf);
+            let _ = out_tx.send(buf);
+        }));
+    } else {
+        let _ = out_tx.send(Vec::new());
+    }
+    if let Some(stderr) = child.stderr.take() {
+        readers.push(thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = stderr.take(64 * 1024 * 1024).read_to_end(&mut buf);
+            let _ = err_tx.send(buf);
+        }));
+    } else {
+        let _ = err_tx.send(Vec::new());
+    }
+
+    let deadline = Instant::now() + timeout;
+    let mut timed_out = false;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Ok(status),
+            Ok(None) => {},
+            Err(e) => break Err(e),
         }
-        Ok(stdout)
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            timed_out = true;
+            kill_child_tree(&mut child);
+            // SIGKILL 后通常立即 reap；仍加 1s 上限，避免 D-state 把后台线程挂死
+            // （即使挂死也不能再拖住 UI，因为 UI 只在 poll 里 try_recv）。
+            break match reap_after_kill(&mut child) {
+                Some(status) => Ok(status),
+                None => Err(std::io::Error::other("超时 kill 后未在宽限内回收")),
+            };
+        }
+        thread::sleep(remaining.min(WAIT_POLL));
+    };
+
+    // kill 后给 reader 一个有限宽限；正常退出则允许 2s 把剩余 stdout 读完。
+    let grace = if timed_out { KILL_GRACE } else { Duration::from_secs(2) };
+    let stdout = out_rx.recv_timeout(grace).unwrap_or_default();
+    let stderr = err_rx.recv_timeout(grace).unwrap_or_default();
+    for reader in readers {
+        if reader.is_finished() {
+            let _ = reader.join();
+        }
+    }
+
+    let stdout = String::from_utf8_lossy(&stdout).to_string();
+    let stderr = String::from_utf8_lossy(&stderr).to_string();
+    if timed_out {
+        return Err(format!(
+            "sftp 超时（{}），已终止子进程",
+            format_timeout(timeout)
+        ));
+    }
+    match status {
+        Ok(status) if status.success() => Ok(stdout),
+        Ok(status) => {
+            let msg = if stderr.trim().is_empty() {
+                stdout.trim().to_string()
+            } else {
+                stderr.trim().to_string()
+            };
+            // 连接/认证失败时 sftp 可能很快退出并留下 stderr；优先展示真实错误。
+            if msg.is_empty() {
+                if let Some(error) = write_error {
+                    return Err(error);
+                }
+            }
+            Err(format!("sftp 失败（{status}）: {msg}"))
+        },
+        Err(e) => Err(format!("等待 sftp 失败: {e}")),
+    }
+}
+
+/// 超时文案：≥1s 用秒（10s），测试里的短超时用毫秒。
+fn format_timeout(timeout: Duration) -> String {
+    if timeout.as_secs() >= 1 {
+        format!("{}s", timeout.as_secs())
+    } else {
+        format!("{}ms", timeout.as_millis())
+    }
+}
+
+/// 超时 kill：Unix 杀整个进程组（含 sftp 拉起的 ssh），其它平台杀直接子进程。
+fn kill_child_tree(child: &mut Child) {
+    #[cfg(unix)]
+    {
+        let pid = child.id() as i32;
+        // SAFETY: kill(2) 对负 pid 表示进程组；子进程由本函数以 process_group(0)
+        // 启动，pgid == pid。即使 kill 返回 ESRCH 也是合法失败，忽略返回值。
+        unsafe {
+            libc::kill(-pid, libc::SIGKILL);
+        }
+    }
+    let _ = child.kill();
+}
+
+/// kill 后最多等 1s 回收子进程；不无限 `wait()`（D-state 也不能拖死后台）。
+fn reap_after_kill(child: &mut Child) -> Option<std::process::ExitStatus> {
+    let deadline = Instant::now() + Duration::from_secs(1);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Some(status),
+            Ok(None) => {},
+            Err(_) => return None,
+        }
+        if Instant::now() >= deadline {
+            return None;
+        }
+        thread::sleep(Duration::from_millis(5));
     }
 }
 
@@ -115,6 +288,174 @@ pub fn remove(t: &SftpTarget, remote: &str) -> Result<(), String> {
     match t.run(&format!("rm {remote}\n")) {
         Ok(_) => Ok(()),
         Err(first) => t.run(&format!("rmdir {remote}\n")).map(|_| ()).map_err(|_| first),
+    }
+}
+
+// ------------------------------------------------------------ 元数据后台任务
+
+/// 元数据命令（打开 SFTP 面板后的 list/mkdir/rename/delete）。
+///
+/// 这些操作以前在 Slint 回调里同步 `wait_with_output()`，远端卡住会把整个 UI
+/// 冻死；现在统一进 [`SftpOpJob`] 后台线程 + 硬超时。
+#[derive(Clone, Debug, PartialEq)]
+pub enum SftpCommand {
+    List { target: SftpTarget, remote: String },
+    Mkdir { target: SftpTarget, remote: String },
+    Rename { target: SftpTarget, from: String, to: String },
+    Remove { target: SftpTarget, remote: String },
+}
+
+/// 后台元数据任务的结果：带原始路径，便于 UI 写回状态文案/刷新列表。
+#[derive(Clone, Debug, PartialEq)]
+pub enum SftpOutcome {
+    List { remote: String, items: Result<Vec<String>, String> },
+    Mkdir { remote: String, result: Result<(), String> },
+    Rename { from: String, to: String, result: Result<(), String> },
+    Remove { path: String, result: Result<(), String> },
+}
+
+impl SftpOutcome {
+    /// 单行可解释摘要（日志/调试用）。
+    pub fn describe(&self) -> String {
+        match self {
+            Self::List { remote, items } => match items {
+                Ok(items) => format!("list {remote}: {} 条", items.len()),
+                Err(e) => format!("list {remote} 失败: {e}"),
+            },
+            Self::Mkdir { remote, result } => format_result("mkdir", remote, result),
+            Self::Rename { from, to, result } => {
+                format!("rename {from} → {to}: {}", ok_or_err(result))
+            },
+            Self::Remove { path, result } => format_result("remove", path, result),
+        }
+    }
+}
+
+fn ok_or_err<T>(result: &Result<T, String>) -> &str {
+    match result {
+        Ok(_) => "ok",
+        Err(e) => e,
+    }
+}
+
+fn format_result(verb: &str, path: &str, result: &Result<(), String>) -> String {
+    format!("{verb} {path}: {}", ok_or_err(result))
+}
+
+impl SftpCommand {
+    /// 可注入程序/超时的执行入口（测试用假 sftp 脚本，避免真连网）。
+    pub fn execute_with(self, program: &Path, timeout: Duration) -> SftpOutcome {
+        match self {
+            Self::List { target, remote } => {
+                let items = run_program(program, &target, &format!("ls -1 {remote}\n"), timeout)
+                    .map(|out| parse_list(&out));
+                SftpOutcome::List { remote, items }
+            },
+            Self::Mkdir { target, remote } => {
+                let result =
+                    run_program(program, &target, &format!("mkdir {remote}\n"), timeout).map(|_| ());
+                SftpOutcome::Mkdir { remote, result }
+            },
+            Self::Rename { target, from, to } => {
+                let result = run_program(
+                    program,
+                    &target,
+                    &format!("rename {from} {to}\n"),
+                    timeout,
+                )
+                .map(|_| ());
+                SftpOutcome::Rename { from, to, result }
+            },
+            Self::Remove { target, remote } => {
+                let started = Instant::now();
+                let result = match run_program(
+                    program,
+                    &target,
+                    &format!("rm {remote}\n"),
+                    timeout,
+                ) {
+                    Ok(_) => Ok(()),
+                    Err(first) => {
+                        // rmdir 回退也受同一次操作的总超时约束：第一次已超时就直接
+                        // 返回，避免 10s + 10s 双倍卡后台。
+                        let remaining = timeout.saturating_sub(started.elapsed());
+                        if remaining.is_zero() {
+                            Err(first)
+                        } else {
+                            run_program(
+                                program,
+                                &target,
+                                &format!("rmdir {remote}\n"),
+                                remaining,
+                            )
+                            .map(|_| ())
+                            .map_err(|_| first)
+                        }
+                    },
+                };
+                SftpOutcome::Remove { path: remote, result }
+            },
+        }
+    }
+}
+
+/// 用指定程序 + 目标参数执行 batch；`program` 可被测试替换成假脚本。
+fn run_program(
+    program: &Path,
+    target: &SftpTarget,
+    batch: &str,
+    timeout: Duration,
+) -> Result<String, String> {
+    let mut command = Command::new(program);
+    command.args(["-q", "-b", "-"]).args(target.args());
+    run_command_with_timeout(command, batch, timeout)
+}
+
+/// 后台元数据任务：启动后立即返回，结果通过非阻塞 `events.try_recv()` 交给 UI。
+///
+/// 与 [`TransferJob`] 不同，它没有进度事件，也不要求 UI join：worker 发完唯一
+/// 的结果就退出；UI 在 poll 里收到结果后丢弃句柄即可（不会阻塞）。
+pub struct SftpOpJob {
+    pub events: Receiver<SftpOutcome>,
+    join: Option<JoinHandle<()>>,
+}
+
+impl SftpOpJob {
+    /// 启动生产任务（系统 `sftp`）；只 spawn 线程，UI 调用耗时与网络无关。
+    pub fn start(command: SftpCommand) -> Self {
+        Self::start_with(command, Path::new("sftp").to_path_buf(), SFTP_TIMEOUT)
+    }
+
+    /// 注入程序/超时的启动入口（测试用；生产用 [`Self::start`]）。
+    pub fn start_with(command: SftpCommand, program: std::path::PathBuf, timeout: Duration) -> Self {
+        let (sender, events) = mpsc::channel();
+        let join = thread::spawn(move || {
+            let outcome = command.execute_with(&program, timeout);
+            let _ = sender.send(outcome);
+        });
+        Self { events, join: Some(join) }
+    }
+
+    /// UI 线程非阻塞收结果。
+    pub fn try_recv(&self) -> Result<SftpOutcome, mpsc::TryRecvError> {
+        self.events.try_recv()
+    }
+
+    /// 测试/探针：等结果并回收线程；只应在确认 worker 已结束（或可接受等待）时用。
+    pub fn wait(mut self) -> Option<SftpOutcome> {
+        let outcome = self.events.recv_timeout(SFTP_TIMEOUT + KILL_GRACE * 4).ok();
+        if let Some(join) = self.join.take() {
+            let _ = join.join();
+        }
+        outcome
+    }
+}
+
+impl Drop for SftpOpJob {
+    fn drop(&mut self) {
+        // 绝不 join：UI 侧丢弃时 worker 可能还在等 10s 超时；让它自行结束。
+        // 进程退出时 OS 会回收；正常收到结果后 join 也已在 wait 里做过。
+        self.join.take();
     }
 }
 
@@ -981,6 +1322,113 @@ mod tests {
         }
         assert_eq!(state.phase, TransferPhase::Failed);
         job.join();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ------------------------------------------------------- 元数据超时/后台
+
+    #[cfg(unix)]
+    #[test]
+    fn run_command_hard_timeout_kills_child() {
+        let dir = temp_dir("timeout");
+        // exec 让 shell 自身变成 sleep，超时 kill 能直接命中进程组。
+        let script = write_script(&dir, "#!/bin/sh\nexec sleep 30\n");
+        let started = Instant::now();
+        let err = run_command_with_timeout(Command::new(&script), "", Duration::from_millis(250))
+            .expect_err("sleep 30 必须超时");
+        let elapsed = started.elapsed();
+        assert!(err.contains("超时"), "error={err}");
+        assert!(err.contains("已终止"), "error 应说明已 kill: {err}");
+        assert!(elapsed >= Duration::from_millis(200), "过早返回: {elapsed:?}");
+        assert!(elapsed < Duration::from_secs(3), "超时回收太慢: {elapsed:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sftp_op_job_start_is_non_blocking_and_reports_timeout() {
+        let dir = temp_dir("job-timeout");
+        let script = write_script(&dir, "#!/bin/sh\nexec sleep 30\n");
+        let started = Instant::now();
+        // 旧实现这里会同步 wait_with_output，UI 冻结 30s；新实现只 spawn 线程。
+        let job = SftpOpJob::start_with(
+            SftpCommand::List {
+                target: target(),
+                remote: "/tmp".into(),
+            },
+            script,
+            Duration::from_millis(300),
+        );
+        let start_cost = started.elapsed();
+        assert!(
+            start_cost < Duration::from_millis(100),
+            "SftpOpJob::start 阻塞了调用线程: {start_cost:?}"
+        );
+        let outcome = job
+            .events
+            .recv_timeout(Duration::from_secs(3))
+            .expect("后台任务应在超时后发结果");
+        match outcome {
+            SftpOutcome::List { items: Err(e), .. } => {
+                assert!(e.contains("超时"), "error={e}");
+                assert!(e.contains("已终止"), "error 应说明已 kill: {e}");
+            },
+            other => panic!("期望 List 超时结果，得到 {other:?}"),
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "后台超时没有及时返回: {:?}",
+            started.elapsed()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sftp_command_list_and_mkdir_use_fake_program_successfully() {
+        let dir = temp_dir("fake-ok");
+        let script = write_script(&dir, "#!/bin/sh\ncat >/dev/null\nprintf 'alpha\\nbeta\\n'\n");
+
+        let list = SftpCommand::List { target: target(), remote: "/tmp".into() }
+            .execute_with(&script, Duration::from_secs(2));
+        match list {
+            SftpOutcome::List { remote, items } => {
+                assert_eq!(remote, "/tmp");
+                assert_eq!(items, Ok(vec!["alpha".to_string(), "beta".to_string()]));
+            },
+            other => panic!("期望 List 结果，得到 {other:?}"),
+        }
+
+        let mkdir = SftpCommand::Mkdir { target: target(), remote: "/tmp/new".into() }
+            .execute_with(&script, Duration::from_secs(2));
+        match mkdir {
+            SftpOutcome::Mkdir { remote, result } => {
+                assert_eq!(remote, "/tmp/new");
+                assert_eq!(result, Ok(()));
+            },
+            other => panic!("期望 Mkdir 结果，得到 {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remove_falls_back_to_rmdir_within_one_deadline() {
+        let dir = temp_dir("rm-fallback");
+        // 读 batch 脚本：rm 失败，rmdir 成功；总耗时仍受同一个 timeout 约束。
+        let script = write_script(
+            &dir,
+            "#!/bin/sh\nscript=$(cat)\ncase \"$script\" in\n  rmdir*) exit 0;;\n  rm*) echo 'rm denied' >&2; exit 1;;\n  *) exit 2;;\nesac\n",
+        );
+        let outcome = SftpCommand::Remove { target: target(), remote: "/tmp/dir".into() }
+            .execute_with(&script, Duration::from_secs(2));
+        match outcome {
+            SftpOutcome::Remove { path, result } => {
+                assert_eq!(path, "/tmp/dir");
+                assert_eq!(result, Ok(()), "rm 失败后应回退 rmdir");
+            },
+            other => panic!("期望 Remove 结果，得到 {other:?}"),
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
