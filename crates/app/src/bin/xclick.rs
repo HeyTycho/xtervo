@@ -45,7 +45,11 @@ fn main() {
     };
     let shift_kc = shift.then(|| find_kc(0xffe1)).flatten(); // Shift_L
     let ctrl_kc = ctrl.then(|| find_kc(0xffe3)).flatten(); // Control_L
-    eprintln!("xclick: shift={shift} shift_kc={shift_kc:?} ctrl={ctrl} ctrl_kc={ctrl_kc:?}");
+    // 仅在显式注入修饰键时打印解析结果；普通点击/拖拽保持安静，
+    // 避免 e2e 输出被每条 xclick 的调试行淹没。
+    if shift || ctrl {
+        eprintln!("xclick: shift={shift} shift_kc={shift_kc:?} ctrl={ctrl} ctrl_kc={ctrl_kc:?}");
+    }
     let press_mod = |kc: Option<u8>, on: bool| {
         if let Some(kc) = kc {
             let _ = xtest::fake_input(
