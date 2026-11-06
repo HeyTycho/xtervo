@@ -242,10 +242,10 @@ trigger_sftp_upload() { # <dir> <log>
     menu_left=$(( menu_x < w - 180 ? menu_x : w - 180 ))
     "$XCLICK" $((ox + menu_left + 85)) $((oy + menu_y + 4 + 9 * 30 + 14)) 1 >/dev/null 2>&1
     wait_log "$log" '\[sftp\] 打开面板' 5 || fail "SFTP 面板没有打开"
-    local panel_x=$(( (w - 460) / 2 ))
-    local panel_y=$(( (h - 490) / 2 ))
-    # Upload 按钮中心：面板内 x=162..252、y=366..390。
-    "$XCLICK" $((ox + panel_x + 207)) $((oy + panel_y + 378)) 1 >/dev/null 2>&1
+    local panel_x=$(( (w - 480) / 2 ))
+    local panel_y=$(( (h - 610) / 2 < 8 ? 8 : (h - 610) / 2 ))
+    # Upload 按钮中心：面板内 x=172..252、y=398..422。
+    "$XCLICK" $((ox + panel_x + 212)) $((oy + panel_y + 410)) 1 >/dev/null 2>&1
 }
 
 # 从 /proc 读 CPU ticks（utime+stime，100Hz）与 voluntary context switches。
