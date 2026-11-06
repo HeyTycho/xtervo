@@ -27,6 +27,7 @@ fn main() {
         let name = args.get(pos + 1).map(|s| s.as_str()).unwrap_or("");
         text = match name {
             "backspace" => "\u{8}".to_string(),
+            "delete" => "\u{7f}".to_string(),
             "enter" => "\n".to_string(),
             "escape" => "\u{1b}".to_string(),
             "tab" => "\t".to_string(),
@@ -61,6 +62,7 @@ fn main() {
             '\n' | '\r' => 0xff0d, // Return
             '\t' => 0xff09,
             '\u{8}' => 0xff08,     // BackSpace
+            '\u{7f}' => 0xffff,    // Delete（winit 上报为 U+007F）
             '\u{1b}' => 0xff1b,    // Escape
             '\u{F70E}' => 0xffc8,  // F11
             '\u{F705}' => 0xffbf,  // F2

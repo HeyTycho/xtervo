@@ -493,6 +493,16 @@ export component MainWindow inherits Window {
     in-out property <bool> cfg-paste-middle: true;
     in-out property <bool> cfg-desktop-notifications: true;
     in-out property <bool> cfg-visual-bell: true;
+    in-out property <bool> cfg-audible-bell: false;
+    in-out property <bool> cfg-scroll-output: false;
+    in-out property <bool> cfg-scroll-keystroke: true;
+    in-out property <bool> cfg-scrollback-unlimited: false;
+    /// "always" | "auto" | "never"
+    in-out property <string> cfg-scrollbar-policy: "auto";
+    /// "ascii-delete" | "control-h"
+    in-out property <string> cfg-backspace-binding: "ascii-delete";
+    /// "delete-sequence" | "ascii-del" | "control-h"
+    in-out property <string> cfg-delete-binding: "delete-sequence";
     in-out property <bool> cfg-quake: false;
     in-out property <bool> broadcast: false;
     callback toggle-copy-on-select();
@@ -502,6 +512,13 @@ export component MainWindow inherits Window {
     callback toggle-paste-middle();
     callback toggle-desktop-notifications();
     callback toggle-visual-bell();
+    callback toggle-audible-bell();
+    callback toggle-scroll-output();
+    callback toggle-scroll-keystroke();
+    callback toggle-scrollback-unlimited();
+    callback set-scrollbar-policy(string);
+    callback set-backspace-binding(string);
+    callback set-delete-binding(string);
     callback toggle-quake();
     // 多行粘贴确认
     in-out property <bool> paste-open: false;
@@ -3901,161 +3918,328 @@ export component MainWindow inherits Window {
                     }
                 }
 
-                if root.settings-category == 1 : VerticalLayout {
+                if root.settings-category == 1 : Flickable {
                     width: 100%;
-                    spacing: 12px;
+                    height: 100%;
+                    interactive: true;
 
-                    HorizontalLayout {
-                        spacing: 8px;
+                    VerticalLayout {
+                        width: parent.width;
+                        spacing: 12px;
+
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Text {
+                                text: "Font size";
+                                color: Palette.colors.subtext;
+                                width: 76px;
+                                font-size: 12px;
+                                vertical-alignment: center;
+                            }
+                            MiniBtn {
+                                label: "−";
+                                clicked => { root.bump-font-size(-1); }
+                            }
+                            Text {
+                                text: "\{root.font-size}px";
+                                color: Palette.colors.text;
+                                width: 52px;
+                                font-size: 12px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                            MiniBtn {
+                                label: "+";
+                                clicked => { root.bump-font-size(1); }
+                            }
+                        }
+
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Text {
+                                text: "Scrollback";
+                                color: Palette.colors.subtext;
+                                width: 76px;
+                                font-size: 12px;
+                                vertical-alignment: center;
+                            }
+                            MiniBtn {
+                                label: "−";
+                                clicked => { root.bump-scrollback(-500); }
+                            }
+                            Text {
+                                text: root.cfg-scrollback-unlimited ? "∞" : "\{root.scrollback}";
+                                color: Palette.colors.text;
+                                width: 52px;
+                                font-size: 12px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                            MiniBtn {
+                                label: "+";
+                                clicked => { root.bump-scrollback(500); }
+                            }
+                        }
+
+                        ToggleRow {
+                            label: "Unlimited scrollback（仅新 pane）";
+                            on: root.cfg-scrollback-unlimited;
+                            toggled => { root.toggle-scrollback-unlimited(); }
+                        }
                         Text {
-                            text: "Font size";
+                            text: "实际安全上限 100,000 行。alacritty 预分配历史，最坏约 192 MB（120 列）× 每个新 pane；点 +/- 会退回固定值。";
+                            color: Palette.colors.muted;
+                            font-size: 10px;
+                            wrap: word-wrap;
+                        }
+
+                        Rectangle {
+                            height: 1px;
+                            horizontal-stretch: 1;
+                            background: Palette.colors.border;
+                        }
+
+                        ToggleRow {
+                            label: "Copy on select（拖选自动复制）";
+                            on: root.cfg-copy-on-select;
+                            toggled => { root.toggle-copy-on-select(); }
+                        }
+
+                        ToggleRow {
+                            label: "Confirm before closing multiple sessions";
+                            on: root.cfg-confirm-close;
+                            toggled => { root.toggle-confirm-close(); }
+                        }
+
+                        ToggleRow {
+                            label: "Confirm multi-line paste";
+                            on: root.cfg-confirm-paste;
+                            toggled => { root.toggle-confirm-paste(); }
+                        }
+
+                        Text {
+                            text: "Right click";
                             color: Palette.colors.subtext;
-                            width: 76px;
                             font-size: 12px;
-                            vertical-alignment: center;
                         }
-                        MiniBtn {
-                            label: "−";
-                            clicked => { root.bump-font-size(-1); }
-                        }
-                        Text {
-                            text: "\{root.font-size}px";
-                            color: Palette.colors.text;
-                            width: 52px;
-                            font-size: 12px;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                        }
-                        MiniBtn {
-                            label: "+";
-                            clicked => { root.bump-font-size(1); }
-                        }
-                    }
 
-                    HorizontalLayout {
-                        spacing: 8px;
+                        HorizontalLayout {
+                            spacing: 6px;
+                            ChoiceBtn {
+                                width: 72px; height: 24px; font-size: 10px;
+                                label: "Menu";
+                                active: root.cfg-right-click == "menu";
+                                clicked => { root.set-right-click("menu"); }
+                            }
+                            ChoiceBtn {
+                                width: 72px; height: 24px; font-size: 10px;
+                                label: "Paste";
+                                active: root.cfg-right-click == "paste";
+                                clicked => { root.set-right-click("paste"); }
+                            }
+                            ChoiceBtn {
+                                width: 82px; height: 24px; font-size: 10px;
+                                label: "Clipboard";
+                                active: root.cfg-right-click == "clipboard";
+                                clicked => { root.set-right-click("clipboard"); }
+                            }
+                            ChoiceBtn {
+                                width: 60px; height: 24px; font-size: 10px;
+                                label: "Off";
+                                active: root.cfg-right-click == "off";
+                                clicked => { root.set-right-click("off"); }
+                            }
+                        }
+
                         Text {
-                            text: "Scrollback";
+                            text: "Paste / Clipboard 短按立即执行，长按 250ms 出菜单；Clipboard 有选区时复制并清除，否则粘贴。";
+                            color: Palette.colors.muted;
+                            font-size: 10px;
+                            wrap: word-wrap;
+                        }
+
+                        ToggleRow {
+                            label: "Paste on middle-click";
+                            on: root.cfg-paste-middle;
+                            toggled => { root.toggle-paste-middle(); }
+                        }
+
+                        ToggleRow {
+                            label: "Desktop notifications for inactive tabs";
+                            on: root.cfg-desktop-notifications;
+                            toggled => { root.toggle-desktop-notifications(); }
+                        }
+
+                        Text {
+                            text: "OSC 9 / 777 / BEL 到达且 Tab 非活动时调用 notify-send；未安装则静默跳过。";
+                            color: Palette.colors.muted;
+                            font-size: 10px;
+                            wrap: word-wrap;
+                        }
+
+                        ToggleRow {
+                            label: "Visual bell（活动 pane 收到 BEL 闪边框）";
+                            on: root.cfg-visual-bell;
+                            toggled => { root.toggle-visual-bell(); }
+                        }
+
+                        ToggleRow {
+                            label: "Audible bell（BEL 响系统铃）";
+                            on: root.cfg-audible-bell;
+                            toggled => { root.toggle-audible-bell(); }
+                        }
+
+                        Text {
+                            text: "视觉铃只画 1-2px 边框；可听铃默认关闭，开启后调用 X11 Bell（无 X11 时回退到启动终端的 BEL），两者互相独立。";
+                            color: Palette.colors.muted;
+                            font-size: 10px;
+                            wrap: word-wrap;
+                        }
+
+                        Rectangle {
+                            height: 1px;
+                            horizontal-stretch: 1;
+                            background: Palette.colors.border;
+                        }
+
+                        Text {
+                            text: "Scroll";
                             color: Palette.colors.subtext;
-                            width: 76px;
                             font-size: 12px;
-                            vertical-alignment: center;
+                            font-weight: 600;
                         }
-                        MiniBtn {
-                            label: "−";
-                            clicked => { root.bump-scrollback(-500); }
+
+                        ToggleRow {
+                            label: "Scroll on output（输出时回到底部）";
+                            on: root.cfg-scroll-output;
+                            toggled => { root.toggle-scroll-output(); }
                         }
+
                         Text {
-                            text: "\{root.scrollback}";
-                            color: Palette.colors.text;
-                            width: 52px;
+                            text: "关闭（默认）：用户上滚看历史时，新输出只增长历史、不抢视图；开启后任何输出都会把视口拉回最新。";
+                            color: Palette.colors.muted;
+                            font-size: 10px;
+                            wrap: word-wrap;
+                        }
+
+                        ToggleRow {
+                            label: "Scroll on keystroke（按键时回到底部）";
+                            on: root.cfg-scroll-keystroke;
+                            toggled => { root.toggle-scroll-keystroke(); }
+                        }
+
+                        Text {
+                            text: "开启（GNOME 默认）：按键发送前先回到底部；关闭后按键不改变滚动位置。只影响物理按键/IME 提交，不影响粘贴。";
+                            color: Palette.colors.muted;
+                            font-size: 10px;
+                            wrap: word-wrap;
+                        }
+
+                        Text {
+                            text: "Scrollbar";
+                            color: Palette.colors.subtext;
                             font-size: 12px;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
                         }
-                        MiniBtn {
-                            label: "+";
-                            clicked => { root.bump-scrollback(500); }
+
+                        HorizontalLayout {
+                            spacing: 6px;
+                            ChoiceBtn {
+                                width: 84px; height: 24px; font-size: 10px;
+                                label: "Always";
+                                active: root.cfg-scrollbar-policy == "always";
+                                clicked => { root.set-scrollbar-policy("always"); }
+                            }
+                            ChoiceBtn {
+                                width: 84px; height: 24px; font-size: 10px;
+                                label: "Auto";
+                                active: root.cfg-scrollbar-policy == "auto";
+                                clicked => { root.set-scrollbar-policy("auto"); }
+                            }
+                            ChoiceBtn {
+                                width: 84px; height: 24px; font-size: 10px;
+                                label: "Never";
+                                active: root.cfg-scrollbar-policy == "never";
+                                clicked => { root.set-scrollbar-policy("never"); }
+                            }
+                        }
+
+                        Text {
+                            text: "Always 无历史时 thumb 占满轨道；Auto 有 scrollback 才显示；Never 始终隐藏。右侧 overlay 滚动条。";
+                            color: Palette.colors.muted;
+                            font-size: 10px;
+                            wrap: word-wrap;
+                        }
+
+                        Rectangle {
+                            height: 1px;
+                            horizontal-stretch: 1;
+                            background: Palette.colors.border;
+                        }
+
+                        Text {
+                            text: "Key encoding";
+                            color: Palette.colors.subtext;
+                            font-size: 12px;
+                            font-weight: 600;
+                        }
+
+                        Text {
+                            text: "Backspace";
+                            color: Palette.colors.subtext;
+                            font-size: 12px;
+                        }
+
+                        HorizontalLayout {
+                            spacing: 6px;
+                            ChoiceBtn {
+                                width: 100px; height: 24px; font-size: 10px;
+                                label: "ASCII DEL (0x7F)";
+                                active: root.cfg-backspace-binding == "ascii-delete";
+                                clicked => { root.set-backspace-binding("ascii-delete"); }
+                            }
+                            ChoiceBtn {
+                                width: 100px; height: 24px; font-size: 10px;
+                                label: "Control-H (0x08)";
+                                active: root.cfg-backspace-binding == "control-h";
+                                clicked => { root.set-backspace-binding("control-h"); }
+                            }
+                        }
+
+                        Text {
+                            text: "Delete";
+                            color: Palette.colors.subtext;
+                            font-size: 12px;
+                        }
+
+                        HorizontalLayout {
+                            spacing: 6px;
+                            ChoiceBtn {
+                                width: 92px; height: 24px; font-size: 10px;
+                                label: "ESC [3~";
+                                active: root.cfg-delete-binding == "delete-sequence";
+                                clicked => { root.set-delete-binding("delete-sequence"); }
+                            }
+                            ChoiceBtn {
+                                width: 92px; height: 24px; font-size: 10px;
+                                label: "ASCII DEL";
+                                active: root.cfg-delete-binding == "ascii-del";
+                                clicked => { root.set-delete-binding("ascii-del"); }
+                            }
+                            ChoiceBtn {
+                                width: 92px; height: 24px; font-size: 10px;
+                                label: "Control-H";
+                                active: root.cfg-delete-binding == "control-h";
+                                clicked => { root.set-delete-binding("control-h"); }
+                            }
+                        }
+
+                        Text {
+                            text: "只影响发给 PTY 的字节，默认使用 GNOME 值（Backspace=0x7F，Delete=ESC [3~）；设置即时生效。";
+                            color: Palette.colors.muted;
+                            font-size: 10px;
+                            wrap: word-wrap;
                         }
                     }
-
-                    Rectangle {
-                        height: 1px;
-                        horizontal-stretch: 1;
-                        background: Palette.colors.border;
-                    }
-
-                    ToggleRow {
-                        label: "Copy on select（拖选自动复制）";
-                        on: root.cfg-copy-on-select;
-                        toggled => { root.toggle-copy-on-select(); }
-                    }
-
-                    ToggleRow {
-                        label: "Confirm before closing multiple sessions";
-                        on: root.cfg-confirm-close;
-                        toggled => { root.toggle-confirm-close(); }
-                    }
-
-                    ToggleRow {
-                        label: "Confirm multi-line paste";
-                        on: root.cfg-confirm-paste;
-                        toggled => { root.toggle-confirm-paste(); }
-                    }
-
-                    Text {
-                        text: "Right click";
-                        color: Palette.colors.subtext;
-                        font-size: 12px;
-                    }
-
-                    HorizontalLayout {
-                        spacing: 6px;
-                        ChoiceBtn {
-                            width: 72px; height: 24px; font-size: 10px;
-                            label: "Menu";
-                            active: root.cfg-right-click == "menu";
-                            clicked => { root.set-right-click("menu"); }
-                        }
-                        ChoiceBtn {
-                            width: 72px; height: 24px; font-size: 10px;
-                            label: "Paste";
-                            active: root.cfg-right-click == "paste";
-                            clicked => { root.set-right-click("paste"); }
-                        }
-                        ChoiceBtn {
-                            width: 82px; height: 24px; font-size: 10px;
-                            label: "Clipboard";
-                            active: root.cfg-right-click == "clipboard";
-                            clicked => { root.set-right-click("clipboard"); }
-                        }
-                        ChoiceBtn {
-                            width: 60px; height: 24px; font-size: 10px;
-                            label: "Off";
-                            active: root.cfg-right-click == "off";
-                            clicked => { root.set-right-click("off"); }
-                        }
-                    }
-
-                    Text {
-                        text: "Paste / Clipboard 短按立即执行，长按 250ms 出菜单；Clipboard 有选区时复制并清除，否则粘贴。";
-                        color: Palette.colors.muted;
-                        font-size: 10px;
-                        wrap: word-wrap;
-                    }
-
-                    ToggleRow {
-                        label: "Paste on middle-click";
-                        on: root.cfg-paste-middle;
-                        toggled => { root.toggle-paste-middle(); }
-                    }
-
-                    ToggleRow {
-                        label: "Desktop notifications for inactive tabs";
-                        on: root.cfg-desktop-notifications;
-                        toggled => { root.toggle-desktop-notifications(); }
-                    }
-
-                    Text {
-                        text: "OSC 9 / 777 / BEL 到达且 Tab 非活动时调用 notify-send；未安装则静默跳过。";
-                        color: Palette.colors.muted;
-                        font-size: 10px;
-                        wrap: word-wrap;
-                    }
-
-                    ToggleRow {
-                        label: "Visual bell（活动 pane 收到 BEL 闪边框）";
-                        on: root.cfg-visual-bell;
-                        toggled => { root.toggle-visual-bell(); }
-                    }
-
-                    Text {
-                        text: "视觉铃只画 1-2px 边框，不覆盖终端内容；非活动 Tab 仍用未读点/桌面通知。";
-                        color: Palette.colors.muted;
-                        font-size: 10px;
-                        wrap: word-wrap;
-                    }
-
                 }
 
                 if root.settings-category == 2 : VerticalLayout {
