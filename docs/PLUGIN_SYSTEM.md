@@ -2,16 +2,35 @@
 
 > 状态：设计稿（2026-11-06）  
 > 范围：终端插件/扩展系统，不包含普通主题文件的实现细节。  
-> 结论先行：**核心不做插件；高频用 Rust/WASM，低频用 sidecar，UI 用声明式插槽，绝不引入原生 dylib 插件。**
+> 结论先行：**核心不做插件；插件重点不是 UI，而是连接、终端数据流、命令/工作区、外部集成。**  
+> 高频用 Rust/WASM，冷路径用 sidecar；UI 只保留最小状态/命令入口，绝不引入原生 dylib 插件。
 
 ## 1. 目标
 
 Tervo 的插件系统要满足四件事：
 
-1. **可扩展**：主题、命令、链接识别、图片协议、连接类型、状态栏等可以由第三方扩展。
+1. **可扩展行为**：连接类型、终端输入/输出中间件、输出观察者、命令、工作区、外部集成，而不是只加按钮/面板。
 2. **不拖垮终端**：插件不能出现在 PTY/解析/渲染/IME 的热路径上；不得阻塞 UI。
 3. **可隔离**：插件崩溃、死循环、OOM 不能带崩终端；默认最小权限。
 4. **可长期维护**：不引入 Rust ABI/dylib 地狱，不让插件和 Tervo 编译器版本死绑。
+
+### 1.1 插件价值排序（UI 不是重点）
+
+Tervo 的插件第一优先级是**改变终端能做什么**，不是**改变终端长什么样**：
+
+| 优先级 | 扩展点 | 价值 |
+|---|---|---|
+| P0 | Connection Provider | SSH/Docker/K8s/串口/自定义传输 |
+| P0 | Terminal Middleware | 输出过滤/编码转换/脱敏/协议扩展 |
+| P0 | Terminal Observer | 日志、通知、命令检测、审计、触发器 |
+| P0 | Command Provider | Quick Commands、命令面板、广播 |
+| P1 | Workspace Provider | 工作区/会话模板/恢复 |
+| P1 | Integration Provider | MCP、Git、CI/CD、AI/agent 状态 |
+| P1 | Theme Provider | 主题/配色 |
+| P2 | UI Extension | 状态栏/Tab 角标/右键项；只做宿主渲染的最小插槽 |
+
+**UI 面板、侧栏、自定义 Slint 组件不是重点**，也不进入 V1。  
+插件市场真正有粘性的是连接、数据流、命令工作流和外部工具集成。
 
 ### 非目标
 
@@ -68,33 +87,34 @@ Tervo 的插件系统要满足四件事：
 
 ## 3. 支持的插件类型
 
-### 3.1 V1：先做“低风险、可声明”
+### 3.1 V1：先做“行为/数据流”，不碰 UI 布局
 
 | 类型 | 能力 | 形态 | 示例 |
 |---|---|---|---|
-| Theme Pack | 颜色、字体、光标、背景预设 | TOML | Tokyo Night、Tabby 主题导入 |
-| Keymap Pack | 快捷键覆盖 | TOML | Ctrl+Shift 组合 |
-| Profile Preset | shell/args/cwd/env/连接预设 | TOML | 开发环境模板 |
-| Command | 命令面板/快捷键动作 | WASM 或声明 | “清屏并重置”、 “复制当前路径” |
-| Linkifier | 从行文本识别链接/路径 | WASM | URL、issue、文件路径、自定义规则 |
-| Status Provider | 状态栏文本/图标/颜色 | WASM 返回值 | Git 分支、K8s context、AI 状态 |
-| Tab Badge | Tab 颜色/角标/tooltip | 宿主 schema | 构建状态、SSH 主机 |
-| Settings Schema | 设置页新增声明式字段 | TOML/WASM | 插件配置页 |
-| Context Menu Item | 右键菜单增加命令 | 声明 | “在浏览器打开” |
+| Connection Provider | 注册连接类型/传输 | sidecar | SSH、Docker、K8s、串口 |
+| Terminal Middleware | 终端输出过滤/编码/脱敏 | WASM | 编码转换、日志脱敏、协议扩展 |
+| Terminal Observer | 只读观察输出/命令/状态 | WASM | 日志、通知、命令检测、审计 |
+| Command Provider | 命令面板/快捷键/广播 | WASM 或声明 | Quick Commands、发送到多 pane |
+| Workspace Provider | 工作区/会话模板/恢复 | 声明 + sidecar | “打开前端环境” |
+| Integration Provider | 外部工具/服务 | sidecar | MCP、Git、CI、AI/agent 状态 |
+| Theme Pack | 颜色/字体预设 | TOML | 主题、Tabby 主题导入 |
+| Profile/Keymap Preset | Profile/快捷键片段 | TOML | 开发环境/键位模板 |
+| Minimal UI | 状态栏文本、Tab 角标、右键命令项 | 宿主 schema | 构建状态、主机名 |
 
-V1 不开放：自定义 Slint 组件、任意面板、原生网络/文件访问。
+V1 不开放：自定义 Slint 组件、任意侧栏/面板、直接 PTY 写、无限制文件/网络。
 
-### 3.2 V2：受控的 UI 与协议扩展
+### 3.2 V2：协议、连接与自动化
 
 | 类型 | 能力 | 约束 |
 |---|---|---|
 | Image Decoder | Sixel/IIP/自定义图片格式解码 | 只输出 RGBA + 尺寸；placement 由核心做 |
 | Protocol Filter | OSC/DCS/CSI 扩展解析 | 只读/受限写；不能绕过白名单 |
-| Sidebar/Panel | 声明式面板 + 数据源 | 宿主提供布局/滚动/主题；插件不写 Slint |
 | Connection Transport | SSH/SFTP/串口/自定义 | sidecar + 权限声明 |
 | Profile Provider | 动态生成 Profile/凭据引用 | 不直接读 Vault 明文 |
 | Completion Provider | 命令补全 | 有超时/取消 |
 | Trigger/Automation | 输出匹配 → 动作 | 规则声明 + 受限动作 |
+| Settings Schema | 插件配置字段 | 只生成表单描述，不写 UI 代码 |
+| Optional Panel | 数据型面板（列表/树/表单） | 宿主渲染；V2 末或 V3，不是重点 |
 
 V2 仍不开放：任意 UI 代码、直接 PTY 写、无限制文件/网络。
 
@@ -150,10 +170,12 @@ status = false
 on_start(ctx)
 on_command(id, args)
 on_linkify(line_view, output_spans)
-on_status(ctx) -> StatusItem[]
-on_settings_schema() -> SettingsSchema
-on_output_filter(chunk) -> FilterResult   # V2，严格权限
-on_profile_provider(...)                   # V2 sidecar
+on_output_filter(chunk) -> FilterResult    # Terminal Middleware，严格权限
+on_output_observe(chunk) -> ()             # Terminal Observer，只读
+on_status(ctx) -> StatusItem[]             # 最小 UI，可选
+on_settings_schema() -> SettingsSchema     # 只生成表单描述
+on_profile_provider(...)                   # sidecar
+on_workspace_provider(...)                 # 声明/ sidecar
 ```
 
 ### 4.3 热路径数据布局
@@ -170,18 +192,18 @@ struct Span { start: u32, end: u32, kind: u8 }
 
 宿主预分配 output buffer，插件返回数量；宿主不把 `Vec<String>` 跨边界。
 
-### 4.4 UI 扩展
+### 4.4 UI 扩展：最小、宿主渲染
 
-V1/V2 只提供**声明式插槽**：
+**UI 不是插件重点。** V1 只保留：
 
-- 设置页字段：string/bool/number/enum/path/color；
 - 状态栏 item：text/icon/tooltip/command；
 - Tab badge：color/text/tooltip；
 - 右键菜单 item；
 - 命令面板 item；
-- 侧栏 panel：列表/树/表单（V2）。
+- 插件配置表单：宿主根据 schema 渲染。
 
-插件返回数据，Slint 组件由宿主渲染；这样主题、DPR、可访问性、布局都统一。
+V2 末/V3 才考虑数据型侧栏/面板；仍由宿主渲染，插件只返回列表/树/表单数据。  
+插件不能写任意 Slint 组件，不能控制布局/主题/DPR；UI 扩展不进入终端热路径。
 
 ## 5. 性能契约
 
@@ -354,31 +376,60 @@ compact bar、配置/布局插件
 | 自动化 | 登录脚本、post-connect、输出触发 | 声明式规则 + sidecar |
 | 自迭代 | 轮次、测试、截图、批准 | 外部 `tervo-iterate` |
 
+### 7.9 Tervo 应优先覆盖的 8 个扩展点
+
+结合 Tabby/kitty/Zellij/tmux 的市场功能，Tervo 第一版 Plugin API 按以下顺序设计：
+
+| API | 典型用途 | 首版 |
+|---|---|---|
+| Connection Provider | SSH、Docker、Kubernetes、串口 | ✅ |
+| Terminal Middleware | 输出过滤、编码转换、脱敏、协议扩展 | ✅ |
+| Terminal Observer | 日志、通知、命令检测、审计 | ✅ |
+| Command Provider | Quick Commands、命令面板、广播 | ✅ |
+| Workspace Provider | 工作区、会话模板、恢复 | ✅ |
+| Integration Provider | MCP、Git、CI/CD、AI/agent | ✅ |
+| Theme Provider | 主题、配色、字体预设 | ✅ |
+| UI Extension | 状态栏、Tab 角标、右键项；面板延后 | 最小 |
+
+用 4 个真实插件验证 API，而不是先做 UI 框架：
+
+1. Quick Commands（多 pane 广播）
+2. Highlight/Observer（输出高亮/日志）
+3. Docker/K8s Connector（sidecar 连接）
+4. MCP/Integration Provider（外部工具）
+
+**市场判断：主题和 UI 插件数量多，但差异化低；连接管理、终端数据流、命令工作流和外部集成才是 Tervo 值得投入的部分。**
+
 ## 8. Tervo 分阶段路线
 
-### Phase A：P0 稳定后（V1）
+### Phase A：P0 稳定后（V1，行为优先）
 
 ```text
 1. Plugin manifest + 权限声明
-2. Declarative: theme/keymap/profile/settings schema
-3. Command + context menu + status bar
-4. Linkifier WASM（批量 + 缓存 + 超时）
-5. AOT 预编译缓存
+2. Connection Provider（sidecar 协议）
+3. Terminal Middleware / Observer（WASM，批量/只读）
+4. Command Provider（命令面板/广播）
+5. Workspace Provider（声明式）
+6. Integration Provider（MCP/Git/CI 的最小适配）
+7. Theme/Profile/Keymap 声明包
+8. AOT 预编译缓存
 ```
 
-验收：插件崩溃/超时不影响输入；linkifier p99 达标；插件禁用可恢复。
+验收：插件崩溃/超时不影响输入；middleware p99 达标；命令/连接可禁用恢复；UI 只出现状态/命令入口。
 
 ### Phase B：V2
 
 ```text
 1. Image decoder WASM 接口（Sixel/IIP）
-2. Settings/status/tab 插槽完善
+2. Protocol Filter（严格权限）
 3. Sidecar JSON-RPC + 共享内存
 4. SSH/SFTP/连接传输插件 API
 5. Trigger/automation 规则
+6. 设置表单 schema
+7. 数据型面板（最后，非重点）
 ```
 
-验收：图片解码不阻塞 UI；sidecar 崩溃可重启；权限拒绝可解释。
+验收：图片解码不阻塞 UI；sidecar 崩溃可重启；权限拒绝可解释；新增 UI 不阻塞终端热路径。
 
 ### Phase C：V3
 

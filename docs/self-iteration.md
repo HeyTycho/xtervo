@@ -1554,3 +1554,45 @@ cargo bench -p tervo-core --bench pty_throughput
   dsh 单 pane 场景未做分屏 e2e；**没有**引入 fcitx5 DBus 方案（本机无
   fcitx5，且会引入异步 DBus 依赖/新故障面）；若将来要做，必须独立
   feature flag + 默认 fallback + 单独 commit，不能默认开启，不能 unsafe。
+
+### 2026-11-06 · Settings UI：Tab 化设置页 + 图标分类 + 下拉/分段
+
+- **问题**：设置是居中 520×520 小 modal，所有控件平铺；主题/光标/滚动条/按键编码用
+  一排 chip，分类无分组无图标，搜索只能切分类。Sixel Images 段加入后旧 e2e 坐标
+  也点不到 Scrollbar/Backspace。
+- **选择**：优先做**主窗口内的 Settings Tab**，而不是拖拽浮层。实现上不进入
+  `workspace::Tab`/PTY 模型：标签栏渲染一个只在 `settings-open` 时出现的齿轮 Tab，
+  内容区整页替换为设置页；关闭后不创建/杀死任何 PTY，也不污染会话快照。
+  比真正改 Tab/PTY 模型的侵入小得多，同时满足“像 Tab、可关闭、Esc、不建 PTY”。
+- **UI**：
+  - 左侧 PERSONALIZE / WORKSPACE / SYSTEM 三组、8 个分类（Appearance/Terminal/
+    Window/Keys/Profiles/Plugins/Vault/Advanced），每类 16×16 线性图标（Path/Rectangle
+    手绘，无 emoji），选中态 accent 边条 + 图标/文字。
+  - 右侧卡片化：Theme 下拉框、Cursor/Scrollbar/Right click/Backspace/Delete 分段选择器、
+    布尔 switch、字号/回滚 Stepper、透明度/遮罩 Slider；Themes 切换即时生效。
+  - Profiles 分类新增内嵌列表（打开/默认星标/编辑/删除/新建），完整管理面板仍可从
+    “Manage Profiles…”叠在上方打开；Advanced = 原 Config（路径/Open Folder/Import/
+    Export/诊断文案）。
+  - 搜索：Rust 索引带 `section` 锚点，结果点击后切分类 + 80ms 后二次 bump token，
+    Slint 在布局完成后滚到对应卡片并 accent 高亮/标题变色。
+  - 关闭：Esc / 标签 × / 页头 × / 点终端 Tab；键盘焦点在设置 FocusScope，
+    打开期间按键不会写 PTY（用 `read` shell 做 leak 测试）。
+- **回退**：`TERVO_SETTINGS_LEGACY=1` 启动时设置页回到居中 modal（同一套控件，
+  顶部 LEGACY MODAL 标记，标签栏不显示 Settings Tab）。默认新 UI；启动日志
+  `[ui] settings ui=tab|legacy-modal`。
+- **测试**：
+  - `cargo test -p tervo-app` **263 passed**（基线 262，+1：搜索命中带 section、
+    8 分类均有索引项）。
+  - `scripts/e2e_terminal_behavior.sh` 在 Xvfb :124 全通过；设置段改为 120×32
+    （1080×736）稳定窗口 + 新坐标，覆盖 Unlimited / Scrollbar Always / Scroll on
+    output / Audible bell / Backspace Control-H / Delete ASCII DEL，并新增
+    “搜索 sixel → 跳 Images”和 Esc 关闭断言。
+  - `scripts/settings_ui_shots.sh` 在 Xvfb :124 生成 open/dropdown/terminal/search/
+    search-jump/profiles/closed/small(700×500)/tiny(480×360)/legacy 截图；
+    小窗口侧栏改为 156–164px，分类名不再被截断。
+  - 焦点/PTY 隔离：`/bin/sh` 循环 `read` 写文件；打开设置输入 `LEAK` 未落盘，
+    Esc/标签 ×/终端 Tab 关闭后 `AFTER` 落盘，证明焦点归还终端。
+  - 浅色主题（Yaru Light）与底部 TabBar 也各截图走查。
+- **限制**：没有真正把 Settings 作为 `workspace::Tab`（这是刻意选择，避免改 PTY/
+  会话模型）；设置页无字体族/行距项；搜索跳到卡片而不是单个控件；键盘 Tab 焦点
+  遍历仍有限；legacy 是同一套控件换 modal 呈现，不是保留旧代码逐像素复刻。
