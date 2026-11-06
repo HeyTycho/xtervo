@@ -406,6 +406,11 @@ export component MainWindow inherits Window {
     in property <length> menu-x: 0px;
     in property <length> menu-y: 0px;
     in property <int> menu-pane: -1;
+    // 右键那格命中的链接（OSC 8 优先，普通 URL 兜底）；空 = 不显示 Open/Copy Link。
+    in-out property <string> menu-link: "";
+    // 链接打开失败等短暂提示（底部浮层，Rust 侧 4 秒后清空）。
+    in-out property <string> link-status: "";
+    property <length> menu-height: root.menu-link != "" ? 340px : 276px;
 
     callback key-input(string, bool, bool, bool);
     // 右键事件到达 UI 层的追踪（日志排查用）
@@ -1585,11 +1590,11 @@ export component MainWindow inherits Window {
                     x: root.menu-x + 150px > root.width
                         ? Math.max(0px, root.menu-x - 150px)
                         : root.menu-x;
-                    y: root.menu-y + 276px > root.height - root.tabbar-height
-                        ? Math.max(0px, root.menu-y - 276px)
+                    y: root.menu-y + root.menu-height > root.height - root.tabbar-height
+                        ? Math.max(0px, root.menu-y - root.menu-height)
                         : root.menu-y;
                     width: 150px;
-                    height: 276px;
+                    height: root.menu-height;
                     background: Palette.colors.raise;
                     border-radius: 8px;
                     border-width: 1px;
@@ -1602,6 +1607,14 @@ export component MainWindow inherits Window {
                         padding: 4px;
                         spacing: 2px;
 
+                        if root.menu-link != "" : MenuRow {
+                            label: "Open Link";
+                            picked => { root.menu-open = false; root.menu-action(root.menu-pane, 9); }
+                        }
+                        if root.menu-link != "" : MenuRow {
+                            label: "Copy Link";
+                            picked => { root.menu-open = false; root.menu-action(root.menu-pane, 10); }
+                        }
                         MenuRow {
                             label: "Copy";
                             picked => { root.menu-open = false; root.menu-action(root.menu-pane, 3); }
@@ -4403,6 +4416,32 @@ export component MainWindow inherits Window {
                 }
             }
 
+        }
+    }
+
+    // 链接打开失败等短暂提示：不拦截鼠标事件，4 秒后由 Rust 清空。
+    if root.link-status != "" : Rectangle {
+        x: 12px;
+        y: root.height - 54px;
+        width: root.width - 24px;
+        height: 36px;
+        background: Palette.colors.raise;
+        border-radius: 8px;
+        border-width: 1px;
+        border-color: Palette.colors.danger;
+        drop-shadow-blur: 12px;
+        drop-shadow-offset-y: 4px;
+        drop-shadow-color: #000000a8;
+
+        Text {
+            x: 12px;
+            width: parent.width - 24px;
+            height: parent.height;
+            text: root.link-status;
+            color: Palette.colors.text;
+            font-size: 12px;
+            vertical-alignment: center;
+            overflow: elide;
         }
     }
 
