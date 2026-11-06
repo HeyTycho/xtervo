@@ -1,6 +1,6 @@
 # Tervo 任务看板
 
-> 最后更新：2026-11-06 23:15  
+> 最后更新：2026-11-06 23:50  
 > 规则：每个任务开始/完成/阻塞都要更新本文件；记录 worktree、branch、commit、测试/截图、限制。  
 > 当前 master：`a82ac52`（Settings Tab 持久化）；当前 release：`target/release/tervo` 19:07。
 
@@ -55,7 +55,7 @@
 | W-03 | iTerm2 IIP 图片 | done | `.worktrees/iip-image` / `feat/iip-image` | commit `4968a55`；合 master `b23476a`；core 194/app 327；Xvfb :140 PNG/JPEG 截图；`.logs/iip/` | 跨 chunk/滚动/resize/关闭/热更新；无 Kitty |
 | W-04 | 插件系统 V1 | running | `.worktrees/plugin-v1` / `feat/plugin-v1` | 外部进程 manifest/权限 + Command/Status/Theme V1；不含任意 UI | 4 个真实插件；崩溃/超时/禁用 |
 | W-05 | 打包/自动更新/崩溃报告 | done | `.worktrees/packaging` / `feat/packaging` | commit `2ac3ac6`；合 master `585fd21`；327 tests；packaging 71 项 PASS；`dist/` tar/deb/sha | tar/deb/install/rollback/deb smoke；自动更新/崩溃报告明确未做 |
-| W-06 | Wayland 原生 spike | running | `.worktrees/wayland-spike` / `feat/wayland-spike` | 支持矩阵/阻塞/分阶段；只读实验，不硬塞 | `docs/WAYLAND_SPIKE.md` |
+| W-06 | Wayland 原生 spike | done | `.worktrees/wayland-spike` / `feat/wayland-spike` | commit `f2e16e4`；合 master `e8ef824`；`docs/WAYLAND_SPIKE.md` 576 行；纯 Wayland/Xwayland headless 实测；DnD/全局快捷键/PRIMARY 硬阻断 | 只 spike，不承诺原生完整 |
 | W-07 | 24h 稳定性 soak | queued | 输出洪峰、Sixel 大图、emoji cache、多 Tab/多窗口内存 | 无崩溃/无持续内存增长；报告 |
 | W-08 | 全量 e2e/回归矩阵 | queued | 现有 5 e2e + 新功能 e2e + 性能门禁 | 全部绿；写入 selfcheck |
 | DOC-01 | 最终人工复测清单 | queued | `docs/RETEST_CHECKLIST.md`：IME/GPU/设置/右键/图片/剪贴板/SSH/SFTP/Profile/插件/打包 | 交付前填好步骤、预期、日志/截图、已知限制 |
@@ -116,4 +116,5 @@
 | 2026-11-06 22:25 | P1 稳定 release 构建 22:08（242M/51M，app 326）；W-02/W-03/W-05 三个周末大块开跑 |
 | 2026-11-06 22:40 | W-05 打包合入（585fd21，327 tests，packaging 71 PASS）；W-04 插件 V1 开跑 |
 | 2026-11-06 23:15 | W-03 IIP 合入（b23476a，core 194/app 327）；W-02/W-04/W-06 继续 |
+| 2026-11-06 23:50 | W-06 Wayland spike 报告合入（e8ef824）；W-02/W-04/W-07 继续 |
 | 2026-11-06 21:35 | W-01 完成（feat/profile-session，未合 master）：每 Profile 外观 + session profile_id/可选启动自动恢复；app 295、workspace 489；Xvfb :136 e2e PASS；限制见 docs/self-iteration.md |
