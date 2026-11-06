@@ -7135,6 +7135,29 @@ fn print_diagnostics() {
     }
 }
 
+/// 编译期注入的发布信息；`scripts/package.sh` 用固定的 `SOURCE_DATE_EPOCH`
+/// 构建以保证同 commit 的产物可复现。
+const BUILD_VERSION: &str = env!("CARGO_PKG_VERSION");
+const BUILD_COMMIT: &str = env!("TERVO_GIT_COMMIT");
+const BUILD_DIRTY: &str = env!("TERVO_GIT_DIRTY");
+const BUILD_TIME: &str = env!("TERVO_BUILD_TIME");
+const BUILD_TARGET: &str = env!("TERVO_BUILD_TARGET");
+
+/// `--version` 的完整文本；与打印分离，便于单测。
+fn version_text() -> String {
+    let dirty = if BUILD_DIRTY == "1" { " (dirty)" } else { "" };
+    format!(
+        "Tervo {BUILD_VERSION}\n\
+         commit:  {BUILD_COMMIT}{dirty}\n\
+         built:   {BUILD_TIME}\n\
+         target:  {BUILD_TARGET}"
+    )
+}
+
+fn print_version() {
+    println!("{}", version_text());
+}
+
 fn print_help() {
     println!(
         "Tervo {}\n\n\
@@ -7157,6 +7180,7 @@ fn print_help() {
 --import-tabby PATH 无 UI：导入 Tabby config.yaml（Profile/字号/快捷键/主题）后退出\n  \
 --export-tabby PATH 无 UI：导出 Profile 为 Tabby YAML 后退出\n  \
 --diagnose          打印环境/窗口/最近日志后退出（排查右键/焦点问题）\n  \
+-V, --version       显示版本、git commit 与构建时间\n  \
 -h, --help          显示帮助\n\n\
 快捷键: Ctrl+T 新建标签 / Ctrl+Shift+N 新建窗口 / Ctrl+W 关闭 / Ctrl+F 搜索 / Ctrl+Shift+C 复制 / Ctrl+Shift+V 粘贴\n\
 配置: ~/.config/tervo/config.toml (TERVO_CONFIG 可覆盖)\n\
@@ -7284,6 +7308,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let argv: Vec<String> = std::env::args().collect();
     if let Some(pos) = argv.iter().position(|a| a == "--sftp-probe") {
         std::process::exit(run_sftp_probe(&argv[pos + 1..]));
+    }
+    // 版本信息必须在 logging/后端初始化之前返回：`--version` 不能写日志、
+    // 不能建窗口，脚本才能在没有 DISPLAY 的打包/安装环境里安全调用。
+    if argv.iter().any(|a| a == "-V" || a == "--version") {
+        print_version();
+        return Ok(());
     }
     if std::env::args().any(|a| a == "-h" || a == "--help") {
         print_help();
@@ -10878,6 +10908,15 @@ mod tests {
             std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o600)).unwrap();
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn version_text_has_commit_build_time_and_target() {
+        let text = version_text();
+        assert!(text.starts_with("Tervo "), "{text}");
+        assert!(text.contains("\ncommit:  "), "{text}");
+        assert!(text.contains("\nbuilt:   "), "{text}");
+        assert!(text.contains("\ntarget:  "), "{text}");
     }
 
     #[test]
