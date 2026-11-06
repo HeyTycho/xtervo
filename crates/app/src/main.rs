@@ -3278,14 +3278,17 @@ fn tab_search_accept(st: &mut AppState) {
 
 fn tab_search_pick(st: &mut AppState, row: usize) {
     let target = st.tab_search_indices.get(row).copied();
+    // 空结果时 Enter 不应把面板关掉后把键盘留在“已销毁的输入框”里。
+    let Some(index) = target else {
+        eprintln!("[ui] tab search pick row={row} (no match)");
+        return;
+    };
     st.ui.set_tabsearch_open(false);
     st.ui.set_tabsearch_query("".into());
     st.tab_search_query.clear();
-    if let Some(index) = target {
-        eprintln!("[ui] tab search pick={index}");
-        set_active_tab_inner(st, index);
-        st.ui.invoke_focus_terminal();
-    }
+    eprintln!("[ui] tab search pick={index}");
+    set_active_tab_inner(st, index);
+    st.ui.invoke_focus_terminal();
 }
 
 fn refresh_palette(st: &mut AppState) {
@@ -3337,6 +3340,7 @@ fn run_command(st: &mut AppState, id: &str) {
         "tab.close" => close_tab_inner(st, st.ws.active),
         "tab.next" => switch_tab_relative(st, 1),
         "tab.prev" => switch_tab_relative(st, -1),
+        "tab.search" => open_tab_search(st),
         "tab.duplicate" => duplicate_tab(st, st.ws.active),
         "tab.reopen-closed" => reopen_closed_tab(st),
         "pane.split-right" => {
@@ -3567,6 +3571,11 @@ fn handle_input(
                 return;
             },
             "a" => {
+                open_tab_search(st);
+                return;
+            },
+            // 部分 X11 文本映射会把 Ctrl+Shift+A 折成控制字符 ^A；仍按 Search Tabs 处理。
+            "\u{1}" => {
                 open_tab_search(st);
                 return;
             },
