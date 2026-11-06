@@ -37,7 +37,7 @@
 | P1-03 | URL hover 手型 + 本地文件路径 Ctrl+click | done | `.worktrees/url-paths` / `feat/url-paths` | commit `ad63082`；合 master；app 284/core 94+63；Xvfb :128 PASS；`.logs/url-paths/` | URL/OSC8/路径/hover/失败提示全 PASS |
 | P1-04 | 每 Profile 字体/颜色/命令/登录 shell/默认尺寸/word chars | queued | 待建 | 依赖 P0 设置 UI merged |
 | P1-05 | Codex P1：copy/search/save 500ms UI 阻塞 | queued | 待建 | 与 P0-05 同源，可并入 P0 hardening |
-| P1-06 | Codex P1：渲染 damage 路径失效、每帧全屏重绘 | running | `.worktrees/render-damage` / `feat/render-damage`（基于 1a55f09） | 双缓冲轮换只复制上一帧脏行 + 本帧 damage；单行/按键 rows=1、full_redraws 不增；release A/B 45.6×/46.4×，full/滚动 1.00×；app 310 / workspace 527；Xvfb :137 5 截图 e2e PASS；commit 见下；**待合 master** |
+| P1-06 | Codex P1：渲染 damage 路径失效、每帧全屏重绘 | running | `.worktrees/render-damage` / `feat/render-damage`（基于 1a55f09） | 双缓冲轮换只复制上一帧脏行 + 本帧 damage；单行/按键 rows=1、full_redraws 不增；release A/B 45.6×/46.4×，full/滚动 1.00×；app 310 / workspace 527；Xvfb :137 5 截图 e2e PASS；commit `8146aa7`；**待合 master** |
 | P1-07 | Codex P1：400ms CoreEvent 轮询 → wake 桥接 | queued | 待建 | 目标语义事件 <50ms，空闲 CPU 不退化 |
 | P1-08 | Codex P1：Vault Argon2 KDF 移出 UI 线程 | queued | 待建 | 解锁期间 UI 不停顿 |
 | P1-09 | Codex P1：`main.rs` 拆分 + `with_app` 重入不丢操作 | queued | 待建 | 大重构，分小步 |
@@ -109,4 +109,4 @@
 | 2026-11-06 19:55 | P0-05/06/07 done（474 tests，6 e2e，release 19:51）；P1-01/02/03/10 恢复；WM resize 首次偶发、重跑 PASS 记录 |
 | 2026-11-06 20:05 | P1-02 搜索 UX 合入（282 tests，search e2e PASS）；注意 e2e 必须重建 target/debug |
 | 2026-11-06 20:20 | P1-10 右键菜单合入（3e5c270）；context-menu + term_menu e2e PASS；开始 W-01 |
-| 2026-11-06 21:45 | P1-06 渲染 damage 恢复（feat/render-damage）：双缓冲行同步 + 真实 damage；单行/按键 rows=1、full_redraws 不增，release 45.6×/46.4×，full/滚动 1.00×；app 310 passed / workspace 527；Xvfb :137 5 张截图与 profile 断言 PASS；commit `perf(render): 恢复 damage 局部重绘`；**未合 master** |
+| 2026-11-06 21:45 | P1-06 渲染 damage 恢复（feat/render-damage）：双缓冲行同步 + 真实 damage；单行/按键 rows=1、full_redraws 不增，release 45.6×/46.4×，full/滚动 1.00×；app 310 passed / workspace 527；Xvfb :137 5 张截图与 profile 断言 PASS；commit `8146aa7`（`perf(render): 恢复 damage 局部重绘`）+ 本次看板更新；**未合 master** |
