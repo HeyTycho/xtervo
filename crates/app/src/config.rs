@@ -242,6 +242,9 @@ pub struct Config {
     pub rows: u16,
     /// 关闭窗口时若有多个会话，先弹确认（默认开）。
     pub confirm_close: bool,
+    /// 启动时自动按上次退出快照恢复 Tab/分屏/cwd（默认 false = 只保留手动
+    /// Restart Session）。只在正常退出时写快照；崩溃不保证恢复。
+    pub restore_session_on_startup: bool,
     /// 拖选后自动复制（默认开）。
     pub copy_on_select: bool,
     /// 多行粘贴前确认（默认开）。
@@ -345,6 +348,7 @@ impl Default for Config {
             cols: 120,
             rows: 32,
             confirm_close: true,
+            restore_session_on_startup: false,
             copy_on_select: true,
             confirm_multiline_paste: true,
             osc52: "allow".to_string(),
@@ -657,12 +661,29 @@ mod tests {
     }
 
     #[test]
+    fn restore_session_on_startup_defaults_off_and_roundtrips() {
+        assert!(
+            !Config::default().restore_session_on_startup,
+            "默认保持旧行为：启动不自动恢复"
+        );
+        let dir = tmpdir("restore-session");
+        let path = dir.join("config.toml");
+        let cfg = Config { restore_session_on_startup: true, ..Config::default() };
+        cfg.save_to(&path);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("restore_session_on_startup = true"), "{text}");
+        assert!(Config::load_from(&path).restore_session_on_startup);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn missing_fields_use_defaults() {
         let cfg: Config = toml::from_str("theme = \"latte\"\n").unwrap();
         assert_eq!(cfg.theme, "latte");
         assert_eq!(cfg.font_size, 15.0);
         assert_eq!(cfg.scrollback, 2000);
         assert_eq!(cfg.default_profile_id, 0, "旧配置缺 default_profile_id 时回退系统 shell");
+        assert!(!cfg.restore_session_on_startup, "旧配置默认不自动恢复会话");
         // 新增的桌面通知/视觉铃开关对旧配置也要默认开启
         assert!(cfg.desktop_notifications, "旧配置缺 desktop_notifications 时默认开");
         assert!(cfg.visual_bell, "旧配置缺 visual_bell 时默认为视觉铃");
