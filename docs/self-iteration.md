@@ -1451,3 +1451,48 @@ cargo bench -p tervo-core --bench pty_throughput
   DECSCUSR 的 underline/beam/hollow 优先于配置；frame=Block 时用配置形状（无法
   区分“显式 block”和默认 block），与 GNOME 的“配置只是默认值”仍有细微差别；颜色只接受 #RGB/#RRGGBB；无窗口失焦暂停闪烁；只验证 Xvfb/llvmpipe，
   未验证真 GPU；设置页其它分类仍是固定高度。
+
+### 2026-11-06 · 彩色 emoji 字形（feat/emoji-color）
+
+- **目标**：把 emoji 占位框换成真正彩色字形，**默认开启**；只动字体/渲染层，
+  不碰 Sixel/图片协议/window resize/GPU/Tab 布局/IME。
+- **依赖**：app 增加 `owned_ttf_parser = "0.25"`（封装 ttf-parser 的 `Face` 与文件
+  所有权，避免自引用 unsafe；与 slint 传递依赖同版本）和 `png = "0.18"`（已在
+  Cargo.lock，避免新增两套解码器）。fontdue 继续负责轮廓，彩色位图完全独立。
+- **实现（glyph.rs）**：
+  - `FontSet` 回退链新增 `color_candidates`：内置 NotoColorEmoji 的 Debian/Ubuntu/
+    Fedora 常见路径 + `TERVO_FALLBACK_FONTS` 追加项；**CJK 永不进入彩色候选**。
+  - `ColorFace` 用 `owned_ttf_parser::OwnedFace` + ttf-parser 的
+    `glyph_raster_image` 读 CBDT/CBLC、EBDT/EBLC、sbix；只支持 PNG 与预乘
+    BGRA32。文件字节与解析结果由 `OwnedFace` 一起持有，无 unsafe。
+  - PNG 用 `png` 解码并统一到 8-bit；预乘 BGRA 反预乘为直通 alpha RGBA。
+    `fit_color_dims` 按 `span*cell_w x cell_h` 等比缩小，`scale_color` 做预乘
+    面积平均，避免透明边缘黑边；水平/垂直居中。
+  - `GlyphCache.color_map` 以 `(字符, 样式, 占格数)` 缓存 `Rc<Vec<u32>>`；
+    命中只复制指针，不重读字体/不重解 PNG；失败结果也缓存。
+  - `TERVO_COLOR_EMOJI=0/off/false/no` 可关闭；默认开启，配置 schema 不变。
+  - 只有彩色位图的字体不再进入 fontdue 轮廓链（旧逻辑会为 emoji 解析 10 MB
+    字体再放弃），`glyph_face` 返回类型简化为 `Option<&Font>`。
+- **实现（render.rs）**：emoji 码位先查彩色缓存，命中后用独立 RGBA 混合
+  （不套文字 coverage 的 gamma、不乘 fg）画在 `span` 格内；横向裁剪到
+  `[x0, x0+span*cell_w)`、纵向裁剪到本行。彩色字体缺失/COLR 不支持时自动回落到
+  原单色 `blit`，再回落到占位框。块状光标下同样优先彩色。
+- **emoji cluster**：VS16/ZWJ 仍是 alacritty 零宽标记，不额外占格；`❤+VS16`
+  单格彩色，`👨‍👩‍👧` 按 3 个宽字符逐个彩色绘制（6 格），`👩‍💻` 2 个组件
+  （4 格），不做 grapheme cluster 合并/合字位图。
+- **测试**：基线 app 249 → **258 passed, 0 failed**（新增 9 例）：CBDT 解码/彩色
+  像素/尺寸/缓存命中 `Rc::ptr_eq`/emoji 不解析 CJK、`❤` 单格、ASCII/CJK 不建立
+  彩色链、损坏/缺失/非彩色字体安全跳过、预乘 BGRA 反预乘、缩放边界、真实渲染的
+  😀/❤+VS16/ZWJ 家族彩色像素与网格裁剪。
+- **截图（headless Xvfb :121，`scripts/font_glyph_shot.sh`，font-size 16）**：
+  `.logs/font-emoji/color-after.png`（默认彩色：😀🚀❤️✔️👍⚡🎉 与 👨‍👩‍👧 /
+  👩‍💻 / 🏳️‍🌈 组件均为彩色）、`.logs/font-emoji/color-off.png`
+  （`TERVO_COLOR_EMOJI=0` 单色/占位对照）。未使用 Xephyr、未碰 :1、未 pkill。
+- **性能/日志证据**：`TERVO_FONTLOG=1` 下彩色字体只探测一次：
+  `[font] 彩色字体 NotoColorEmoji.ttf#0（CBDT/CBLC/sbix, 3976 字形, 4.75ms）`；
+  同一次会话中 CJK 只因中文行解析一次（wqy-microhei），没有 Noto CJK 18 MB
+  解析记录；emoji 行渲染前也没有额外的 fontdue 回退加载。
+- **限制**：COLR/CPAL 与 SVG 彩色字形不绘制（Twemoji 等会回落单色/占位）；
+  sbix 仅 PNG（JPEG/TIFF 不支持）；不做 ZWJ 合字；彩色位图按逻辑字号解码，
+  HiDPI 由合成器放大；彩色 emoji 忽略终端 fg/INVERSE；RGBA 缓存随不同 emoji
+  数量线性增长。

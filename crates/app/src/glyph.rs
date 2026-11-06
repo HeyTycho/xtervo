@@ -1,21 +1,26 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! 等宽字形图集：fontdue 光栅化 + 单通道 atlas 打包。
+//! 等宽字形图集：fontdue 光栅化 + 单通道 atlas 打包；彩色 emoji 走独立 RGBA 缓存。
 //!
-//! 只在下一次出现新字符时栅格化，之后每帧只做 coverage 混合。
+//! 只在下一次出现新字符时栅格化，之后每帧只做 coverage / RGBA 混合。
 //!
-//! 字体链（按顺序、全部惰性加载）：
+//! 轮廓字体链（按顺序、全部惰性加载）：
 //! 1. 主等宽字体（JetBrains Mono / DejaVu Sans Mono）；
 //! 2. CJK 回退（WQY Micro Hei / Droid Sans Fallback / Noto Sans CJK / WQY Zen Hei）；
 //! 3. 符号与单色 emoji（Noto Sans Symbols 2 / DejaVu Sans / Symbola / Noto Emoji）；
 //! 4. 用户用 `TERVO_FALLBACK_FONTS` 追加的字体（常见用途：Nerd Font 图标）；
-//! 5. 彩色位图 emoji（Noto Color Emoji）只用来判断“系统确实有该字符”，
-//!    fontdue 没有 CBDT/CBLC/COLR 位图光栅化能力，取不到轮廓时继续往后找，
-//!    最后由渲染层画明确占位框，绝不画 tofu、也不 panic。
+//! 5. 彩色位图 emoji（Noto Color Emoji 等）单独走 `ttf-parser` 读 CBDT/CBLC/sbix
+//!    位图，PNG 由 `png` 解码，缩放后缓存在 [`GlyphCache`] 的 RGBA 缓存里。
+//!    找不到彩色字体/字形时保持原单色回退与占位框，绝不画 tofu、也不 panic。
+//!
+//! emoji 的网格宽度仍由 alacritty + unicode-width 决定（通常 2 格；`❤` 这类
+//! VS16 变体是 1 格），彩色位图只负责在既有格子内绘制并裁剪，不改变宽度语义。
 
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::OnceLock;
 
 use fontdue::{Font, FontSettings};
+use owned_ttf_parser::{AsFaceRef, OwnedFace, RasterImageFormat};
 
 pub const ATLAS_W: usize = 1024;
 pub const ATLAS_H: usize = 1024;
@@ -101,7 +106,8 @@ struct FallbackCandidate {
     bold_path: Option<&'static str>,
     bold_index: u32,
     group: usize,
-    /// 只有彩色位图（CBDT/CBLC），fontdue 无法取轮廓；命中后直接占位，不再扫后续字体。
+    /// 只有彩色位图（CBDT/CBLC/sbix/COLR），fontdue 取不到轮廓；不进入单色轮廓链，
+    /// 由 ttf-parser 彩色位图管线单独处理。
     color_only: bool,
 }
 
@@ -203,9 +209,42 @@ const FALLBACK_SETS: &[FallbackCandidate] = &[
         color_only: false,
     },
     // --- 彩色位图 emoji（最后）---
-    // fontdue 不支持 CBDT/CBLC；保留它是为了知道系统有该 emoji 并回退到占位框。
+    // fontdue 不支持 CBDT/CBLC；这些候选项交给 ttf-parser 的彩色位图管线。
+    // 常见发行版路径都列上，命中其中一个即可；不在 fontdue 轮廓链里解析。
     FallbackCandidate {
         regular: "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
+        regular_index: 0,
+        bold_path: None,
+        bold_index: 0,
+        group: GROUP_COLOR,
+        color_only: true,
+    },
+    FallbackCandidate {
+        regular: "/usr/share/fonts/noto/NotoColorEmoji.ttf",
+        regular_index: 0,
+        bold_path: None,
+        bold_index: 0,
+        group: GROUP_COLOR,
+        color_only: true,
+    },
+    FallbackCandidate {
+        regular: "/usr/share/fonts/opentype/noto/NotoColorEmoji.ttf",
+        regular_index: 0,
+        bold_path: None,
+        bold_index: 0,
+        group: GROUP_COLOR,
+        color_only: true,
+    },
+    FallbackCandidate {
+        regular: "/usr/share/fonts/google-noto-emoji/NotoColorEmoji.ttf",
+        regular_index: 0,
+        bold_path: None,
+        bold_index: 0,
+        group: GROUP_COLOR,
+        color_only: true,
+    },
+    FallbackCandidate {
+        regular: "/usr/share/fonts/truetype/google-noto-emoji/NotoColorEmoji.ttf",
         regular_index: 0,
         bold_path: None,
         bold_index: 0,
@@ -230,7 +269,218 @@ fn fontlog() -> bool {
     *ON.get_or_init(|| std::env::var_os("TERVO_FONTLOG").is_some())
 }
 
-/// 一个回退候选，两个槽位各自惰性解析；失败结果也缓存，避免逐字重试。
+/// 彩色 emoji 总开关：默认开启；`TERVO_COLOR_EMOJI=0/off/false` 可退回单色。
+///
+/// 做成环境变量而不是配置项：默认行为要彩色，排障时可一键关掉（配置 schema 不动）。
+fn color_emoji_enabled() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| {
+        !matches!(
+            std::env::var("TERVO_COLOR_EMOJI").ok().as_deref(),
+            Some("0" | "off" | "false" | "no")
+        )
+    })
+}
+
+/// 彩色位图字体的一个字形图像（借用字体文件，不复制 PNG）。
+enum ColorRaster<'a> {
+    Png { width: usize, height: usize, data: &'a [u8] },
+    /// CBDT/EBDT 的 32 位 BGRA，通道已按 alpha 预乘（ttf-parser 文档约定）。
+    BgraPremul { width: usize, height: usize, data: &'a [u8] },
+}
+
+/// 彩色位图字体：`OwnedFace` 同时持有文件字节与解析后的 `ttf-parser::Face`，
+/// 文件只读一次、表只解析一次，不需要自引用 unsafe。
+struct ColorFace {
+    face: OwnedFace,
+}
+
+impl ColorFace {
+    fn load(path: &str, index: u32) -> Option<Self> {
+        let started = std::time::Instant::now();
+        let bytes = match std::fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                if fontlog() {
+                    eprintln!("[font] 彩色字体不可用 {path}#{index}: {err}");
+                }
+                return None;
+            },
+        };
+        let face = match OwnedFace::from_vec(bytes, index) {
+            Ok(face) => face,
+            Err(err) => {
+                if fontlog() {
+                    eprintln!("[font] 彩色字体解析失败 {path}#{index}: {err:?}");
+                }
+                return None;
+            },
+        };
+        let parsed = face.as_face_ref();
+        let tables = parsed.tables();
+        let has_bitmap = tables.cbdt.is_some()
+            || tables.sbix.is_some()
+            || tables.bdat.is_some()
+            || tables.ebdt.is_some();
+        let has_colr = tables.colr.is_some();
+        if !has_bitmap && !has_colr {
+            if fontlog() {
+                eprintln!("[font] 跳过非彩色字体 {path}#{index}");
+            }
+            return None;
+        }
+        if fontlog() {
+            let kind = if has_bitmap { "CBDT/CBLC/sbix" } else { "COLR" };
+            eprintln!(
+                "[font] 彩色字体 {path}#{index}（{kind}, {} 字形, {:?}）",
+                parsed.number_of_glyphs(),
+                started.elapsed()
+            );
+        }
+        Some(Self { face })
+    }
+
+    /// 只解码 PNG 与预乘 BGRA；COLR/SVG 本轮不支持，返回 `None` 走单色回退。
+    fn image(&self, ch: char, px: u16) -> Option<ColorRaster<'_>> {
+        let face = self.face.as_face_ref();
+        let gid = face.glyph_index(ch)?;
+        let img = face.glyph_raster_image(gid, px)?;
+        let (width, height) = (img.width as usize, img.height as usize);
+        match img.format {
+            RasterImageFormat::PNG => Some(ColorRaster::Png { width, height, data: img.data }),
+            RasterImageFormat::BitmapPremulBgra32 => {
+                Some(ColorRaster::BgraPremul { width, height, data: img.data })
+            },
+            _ => None,
+        }
+    }
+}
+
+/// PNG / 预乘 BGRA → 直通 alpha 的 RGBA `u32`（内存序 r | g<<8 | b<<16 | a<<24）。
+///
+/// 解码失败、尺寸异常或超过 1024x1024 时返回 `None`，不影响单色回退。
+fn decode_color_raster(raster: &ColorRaster<'_>) -> Option<(usize, usize, Vec<u32>)> {
+    const MAX_DIM: usize = 1024;
+    match *raster {
+        ColorRaster::Png { width, height, data } => {
+            if width == 0 || height == 0 || width > MAX_DIM || height > MAX_DIM {
+                return None;
+            }
+            let mut decoder = png::Decoder::new(std::io::Cursor::new(data));
+            decoder.set_transformations(png::Transformations::normalize_to_color8());
+            let mut reader = decoder.read_info().ok()?;
+            let mut buf = vec![0u8; reader.output_buffer_size()?];
+            let info = reader.next_frame(&mut buf).ok()?;
+            let (w, h) = (info.width as usize, info.height as usize);
+            if w == 0 || h == 0 || w > MAX_DIM || h > MAX_DIM {
+                return None;
+            }
+            let bytes = &buf[..info.buffer_size()];
+            let mut pixels = Vec::with_capacity(w * h);
+            match (info.color_type, info.bit_depth) {
+                (png::ColorType::Rgba, png::BitDepth::Eight) => {
+                    for px in bytes.chunks_exact(4) {
+                        pixels.push(
+                            px[0] as u32
+                                | (px[1] as u32) << 8
+                                | (px[2] as u32) << 16
+                                | (px[3] as u32) << 24,
+                        );
+                    }
+                },
+                (png::ColorType::Rgb, png::BitDepth::Eight) => {
+                    for px in bytes.chunks_exact(3) {
+                        pixels.push(
+                            px[0] as u32 | (px[1] as u32) << 8 | (px[2] as u32) << 16 | 0xff00_0000,
+                        );
+                    }
+                },
+                (png::ColorType::GrayscaleAlpha, png::BitDepth::Eight) => {
+                    for px in bytes.chunks_exact(2) {
+                        let v = px[0] as u32;
+                        pixels.push(v | v << 8 | v << 16 | (px[1] as u32) << 24);
+                    }
+                },
+                (png::ColorType::Grayscale, png::BitDepth::Eight) => {
+                    for &v in bytes {
+                        let v = v as u32;
+                        pixels.push(v | v << 8 | v << 16 | 0xff00_0000);
+                    }
+                },
+                // normalize_to_color8 会把调色板展开成 RGB/RGBA；其它位深不支持。
+                _ => return None,
+            }
+            Some((w, h, pixels))
+        },
+        ColorRaster::BgraPremul { width, height, data } => {
+            if width == 0 || height == 0 || width > MAX_DIM || height > MAX_DIM {
+                return None;
+            }
+            if data.len() < width * height * 4 {
+                return None;
+            }
+            let mut pixels = Vec::with_capacity(width * height);
+            for px in data.chunks_exact(4) {
+                let a = px[3] as u32;
+                let un = |v: u8| -> u32 {
+                    if a == 0 { 0 } else { ((v as u32 * 255 + a / 2) / a).min(255) }
+                };
+                pixels.push(un(px[2]) | un(px[1]) << 8 | un(px[0]) << 16 | a << 24);
+            }
+            Some((width, height, pixels))
+        },
+    }
+}
+
+/// 等比缩放到 `max_w x max_h` 内；只缩小不放大（放大交给 Slint/显示层）。
+fn fit_color_dims(src_w: usize, src_h: usize, max_w: usize, max_h: usize) -> (usize, usize) {
+    if src_w == 0 || src_h == 0 || max_w == 0 || max_h == 0 {
+        return (0, 0);
+    }
+    let scale = (max_w as f64 / src_w as f64).min(max_h as f64 / src_h as f64).min(1.0);
+    let w = ((src_w as f64 * scale).round() as usize).clamp(1, max_w);
+    let h = ((src_h as f64 * scale).round() as usize).clamp(1, max_h);
+    (w, h)
+}
+
+/// 面积平均缩小（预乘 alpha 累加，避免透明边缘出现黑边）；尺寸相同时直接拷贝。
+fn scale_color(src: &[u32], sw: usize, sh: usize, dw: usize, dh: usize) -> Vec<u32> {
+    if dw == sw && dh == sh {
+        return src.to_vec();
+    }
+    let mut out = vec![0u32; dw * dh];
+    for dy in 0..dh {
+        let sy0 = dy * sh / dh;
+        let sy1 = (((dy + 1) * sh + dh - 1) / dh).max(sy0 + 1).min(sh);
+        for dx in 0..dw {
+            let sx0 = dx * sw / dw;
+            let sx1 = (((dx + 1) * sw + dw - 1) / dw).max(sx0 + 1).min(sw);
+            let (mut sr, mut sg, mut sb, mut sa, mut n) = (0u64, 0u64, 0u64, 0u64, 0u64);
+            for sy in sy0..sy1 {
+                for sx in sx0..sx1 {
+                    let px = src[sy * sw + sx];
+                    let a = (px >> 24) & 0xff;
+                    sr += ((px & 0xff) as u64) * a as u64;
+                    sg += (((px >> 8) & 0xff) as u64) * a as u64;
+                    sb += (((px >> 16) & 0xff) as u64) * a as u64;
+                    sa += a as u64;
+                    n += 1;
+                }
+            }
+            if n == 0 || sa == 0 {
+                continue;
+            }
+            let a = (sa / n) as u32;
+            let r = ((sr / sa) as u32).min(255);
+            let g = ((sg / sa) as u32).min(255);
+            let b = ((sb / sa) as u32).min(255);
+            out[dy * dw + dx] = r | g << 8 | b << 16 | a << 24;
+        }
+    }
+    out
+}
+
+/// 一个回退候选，三个槽位各自惰性解析；失败结果也缓存，避免逐字重试。
 struct FallbackFace {
     path: String,
     index: u32,
@@ -240,6 +490,8 @@ struct FallbackFace {
     is_env: bool,
     regular: OnceLock<Option<Font>>,
     bold_face: OnceLock<Option<Font>>,
+    /// 彩色位图字体（ttf-parser）。只有 GROUP_COLOR 与用户追加字体才会探测。
+    color: OnceLock<Option<ColorFace>>,
 }
 
 impl FallbackFace {
@@ -260,6 +512,7 @@ impl FallbackFace {
             is_env: env,
             regular: OnceLock::new(),
             bold_face: OnceLock::new(),
+            color: OnceLock::new(),
         }
     }
 
@@ -287,7 +540,13 @@ impl FallbackFace {
     }
 
     /// 取常规/粗体字形；没有粗体文件时用常规体顶替。
+    ///
+    /// 只有彩色位图的字体不进入轮廓链：fontdue 解析它既慢又画不出字形，
+    /// 彩色绘制走 [`Self::color_face`]。
     fn load(&self, bold: bool) -> Option<&Font> {
+        if self.color_only {
+            return None;
+        }
         if bold {
             if let Some((path, index)) = &self.bold {
                 return self.load_font(path, *index, &self.bold_face);
@@ -295,27 +554,41 @@ impl FallbackFace {
         }
         self.load_font(&self.path, self.index, &self.regular)
     }
+
+    /// 彩色位图字体；`TERVO_FALLBACK_FONTS` 追加的字体也会在此探测一次并缓存。
+    fn color_face(&self) -> Option<&ColorFace> {
+        self.color
+            .get_or_init(|| {
+                if fontlog() {
+                    eprintln!("[font] 探测彩色字体 {}#{}", self.path, self.index);
+                }
+                ColorFace::load(&self.path, self.index)
+            })
+            .as_ref()
+    }
 }
 
 struct Fallback {
     faces: Vec<FallbackFace>,
     /// 每个用途组的候选下标；`glyph_face` 按字符类型只走相关组。
     groups: [Vec<usize>; GROUP_COUNT],
+    /// 彩色位图候选：用户追加字体优先，然后内置 COLOR 组。只探测这些，不碰 CJK。
+    color_candidates: Vec<usize>,
 }
 
-/// 不同字符类型对应的回退组顺序。
+/// 不同字符类型对应的回退组顺序（只含轮廓字体；彩色位图走独立管线）。
 ///
-/// - 中文：CJK → 符号 → emoji → 彩色 emoji（不碰图标组，Nerd 字体不该抢中文）
-/// - emoji：符号（DejaVu 单色）→ 单色 emoji → 彩色 emoji；**不扫 CJK**
+/// - 中文：CJK → 符号 → 单色 emoji（不碰图标组，Nerd 字体不该抢中文）
+/// - emoji：符号（DejaVu 单色）→ 单色 emoji；**不扫 CJK、不解析彩色字体**
 /// - PUA/Nerd 图标：图标 → 符号；没有 Nerd 字体时直接占位，不去解析 18 MB CJK
-/// - 其它：符号 → CJK → emoji → 彩色
+/// - 其它：符号 → CJK → 单色 emoji
 fn group_order(ch: char) -> &'static [usize] {
     use PlaceholderKind::*;
     match placeholder_kind(ch) {
-        Some(Emoji) => &[GROUP_SYMBOL, GROUP_EMOJI, GROUP_COLOR],
+        Some(Emoji) => &[GROUP_SYMBOL, GROUP_EMOJI],
         Some(Icon) => &[GROUP_ICON, GROUP_SYMBOL],
-        None if is_cjk(ch) => &[GROUP_CJK, GROUP_SYMBOL, GROUP_EMOJI, GROUP_COLOR, GROUP_ICON],
-        None => &[GROUP_SYMBOL, GROUP_CJK, GROUP_EMOJI, GROUP_COLOR, GROUP_ICON],
+        None if is_cjk(ch) => &[GROUP_CJK, GROUP_SYMBOL, GROUP_EMOJI, GROUP_ICON],
+        None => &[GROUP_SYMBOL, GROUP_CJK, GROUP_EMOJI, GROUP_ICON],
     }
 }
 
@@ -387,21 +660,15 @@ impl FontSet {
         self.fallback.get_or_init(load_fallback)
     }
 
-    /// 第 `skip` 个**声称覆盖** `ch` 的字体：0 = 主字体，其后按回退链顺序。
+    /// 第 `skip` 个**声称覆盖** `ch` 的轮廓字体：0 = 主字体，其后按回退链顺序。
     ///
-    /// 返回值第二项 `true` 表示这是只有彩色位图（CBDT/CBLC）的字体：`has_glyph`
-    /// 为真但 fontdue 取不到轮廓。栅格化层遇到它就直接放弃后续查找并交给占位框，
-    /// 避免为一个 emoji 去解析整条 CJK 字体链。单色 emoji 字体在组顺序上先于它。
-    pub fn glyph_face(
-        &self,
-        ch: char,
-        style: Style,
-        mut skip: usize,
-    ) -> Option<(&Font, bool)> {
+    /// 只有彩色位图的字体不在这里出现（[`FallbackFace::load`] 直接返回 None）；
+    /// emoji 的彩色绘制走 [`Self::color_image`]，两者都不需要为 emoji 解析 CJK 链。
+    pub fn glyph_face(&self, ch: char, style: Style, mut skip: usize) -> Option<&Font> {
         let primary = &self.faces[style.idx()];
         if primary.has_glyph(ch) {
             if skip == 0 {
-                return Some((primary, false));
+                return Some(primary);
             }
             skip -= 1;
         }
@@ -413,7 +680,7 @@ impl FontSet {
                 let Some(font) = face.load(bold) else { continue };
                 if font.has_glyph(ch) {
                     if skip == 0 {
-                        return Some((font, face.color_only));
+                        return Some(font);
                     }
                     skip -= 1;
                 }
@@ -422,7 +689,25 @@ impl FontSet {
         None
     }
 
-    /// 字体链里是否有字体声称覆盖该字符（含彩色 emoji；用于测试/诊断）。
+    /// 取 emoji 的彩色位图（PNG / 预乘 BGRA 原始数据）。
+    ///
+    /// 只在 emoji 码位调用；候选只包含 COLOR 组与 `TERVO_FALLBACK_FONTS`，
+    /// 不会碰 CJK 字体。字体探测结果（含失败）缓存在回退链里。
+    fn color_image(&self, ch: char, px: u16) -> Option<ColorRaster<'_>> {
+        if !color_emoji_enabled() || !is_emoji(ch as u32) {
+            return None;
+        }
+        let fallback = self.fallback();
+        for &i in &fallback.color_candidates {
+            let Some(face) = fallback.faces[i].color_face() else { continue };
+            if let Some(image) = face.image(ch, px) {
+                return Some(image);
+            }
+        }
+        None
+    }
+
+    /// 字体链里是否有**轮廓**字体覆盖该字符（用于测试/诊断；不含彩色位图字体）。
     #[allow(dead_code)]
     pub fn has_glyph(&self, ch: char) -> bool {
         // ASCII/主字体覆盖是最常见路径：短路后完全不触碰回退链。
@@ -435,10 +720,22 @@ impl FontSet {
         })
     }
 
+    /// 彩色位图链里是否有该字符（诊断/测试用；会触发彩色候选探测）。
+    #[allow(dead_code)]
+    pub fn has_color_glyph(&self, ch: char) -> bool {
+        self.color_image(ch, 16).is_some()
+    }
+
     /// 字体链建立后的候选数量（诊断/测试用）。
     #[allow(dead_code)]
     pub fn fallback_len(&self) -> usize {
         self.fallback().faces.len()
+    }
+
+    /// 回退链是否已经建立（诊断/测试用）。
+    #[allow(dead_code)]
+    pub fn fallback_initialized(&self) -> bool {
+        self.fallback.get().is_some()
     }
 }
 
@@ -516,16 +813,25 @@ fn load_fallback() -> Fallback {
     let mut groups: [Vec<usize>; GROUP_COUNT] = Default::default();
     // 用户显式配置的字体优先于内置符号字体（常见：Nerd Font）。放在 SYMBOL 组，
     // emoji/图标/普通缺字的回退顺序都会先经过它；CJK 字符仍优先用内置 CJK 字体。
+    // 追加字体也会作为彩色候选探测一次（支持用户指定自带彩色 emoji 字体）。
+    let mut color_candidates = env_indices.clone();
     groups[GROUP_SYMBOL] = env_indices;
     for (i, face) in faces.iter().enumerate() {
         if !face.is_env {
             groups[face.group].push(i);
+            if face.group == GROUP_COLOR {
+                color_candidates.push(i);
+            }
         }
     }
     if fontlog() {
-        eprintln!("[font] 回退链 {} 个候选（按需解析）", faces.len());
+        eprintln!(
+            "[font] 回退链 {} 个候选（按需解析；彩色候选 {} 个）",
+            faces.len(),
+            color_candidates.len()
+        );
     }
-    Fallback { faces, groups }
+    Fallback { faces, groups, color_candidates }
 }
 
 /// 完全缺失时的明确占位类型。渲染层画空框，而不是字体的 .notdef tofu。
@@ -584,6 +890,28 @@ pub fn placeholder_kind(ch: char) -> Option<PlaceholderKind> {
     None
 }
 
+/// 已解码并缩放好的彩色 emoji 位图。
+///
+/// 像素是直通 alpha 的 RGBA（内存序 r | g<<8 | b<<16 | a<<24）；`Rc` 让缓存命中
+/// 只复制一个指针，不重新解码/缩放。
+#[derive(Clone, Debug)]
+pub struct ColorGlyph {
+    pub w: u16,
+    pub h: u16,
+    /// 位图左边相对单元格左边的像素偏移
+    pub x_off: i16,
+    /// 位图顶边相对单元格顶边的像素偏移
+    pub y_off: i16,
+    pixels: Rc<Vec<u32>>,
+}
+
+impl ColorGlyph {
+    #[inline]
+    pub fn pixels(&self) -> &[u32] {
+        &self.pixels
+    }
+}
+
 pub struct GlyphCache {
     atlas: Vec<u8>,
     pen_x: usize,
@@ -591,8 +919,13 @@ pub struct GlyphCache {
     row_h: usize,
     /// (字符, 样式, 占格数)：同一字符可能在 1 格/2 格上下文里缩放不同。
     map: HashMap<(char, Style, u8), Option<Glyph>>,
+    /// 彩色 emoji 独立缓存：不占单通道 atlas，命中不重复读字体/解 PNG/缩放。
+    /// 键不含样式：彩色位图没有字重/斜体，粗体 emoji 复用同一份像素。
+    color_map: HashMap<(char, u8), Option<ColorGlyph>>,
     pub rasterized: u64,
     pub atlas_full: u64,
+    pub color_decodes: u64,
+    pub color_hits: u64,
 }
 
 impl Default for GlyphCache {
@@ -603,8 +936,11 @@ impl Default for GlyphCache {
             pen_y: 0,
             row_h: 0,
             map: HashMap::with_capacity(512),
+            color_map: HashMap::with_capacity(128),
             rasterized: 0,
             atlas_full: 0,
+            color_decodes: 0,
+            color_hits: 0,
         }
     }
 }
@@ -633,18 +969,66 @@ impl GlyphCache {
         glyph
     }
 
+    /// 取彩色 emoji 位图；`span` 与单色字形一致（通常 2 格，`❤`+VS16 为 1 格）。
+    ///
+    /// 只对 emoji 码位查彩色字体，CJK/ASCII 完全不会触碰彩色候选。命中缓存时
+    /// 不读文件、不解析字体、不重复解 PNG；失败结果也缓存（不会逐帧重试）。
+    pub fn get_color(
+        &mut self,
+        fonts: &FontSet,
+        ch: char,
+        _style: Style,
+        span: usize,
+    ) -> Option<ColorGlyph> {
+        if !color_emoji_enabled() || !is_emoji(ch as u32) {
+            return None;
+        }
+        let span = span.clamp(1, u8::MAX as usize) as u8;
+        let key = (ch, span);
+        if let Some(glyph) = self.color_map.get(&key) {
+            self.color_hits += 1;
+            return glyph.clone();
+        }
+        let glyph = self.rasterize_color(fonts, ch, span as usize);
+        if glyph.is_some() {
+            self.color_decodes += 1;
+        }
+        self.color_map.insert(key, glyph.clone());
+        glyph
+    }
+
+    fn rasterize_color(&mut self, fonts: &FontSet, ch: char, span: usize) -> Option<ColorGlyph> {
+        // 彩色 emoji 没有字重/斜体；用字体自身的 px 选最大 strike（Noto 只有一档）。
+        let px = fonts.size.round().clamp(1.0, u16::MAX as f32) as u16;
+        let raster = fonts.color_image(ch, px)?;
+        let (src_w, src_h, src) = decode_color_raster(&raster)?;
+        if src.is_empty() {
+            return None;
+        }
+        let max_w = span.max(1) * fonts.cell_w;
+        let max_h = fonts.cell_h.max(1);
+        let (w, h) = fit_color_dims(src_w, src_h, max_w, max_h);
+        if w == 0 || h == 0 {
+            return None;
+        }
+        let pixels = scale_color(&src, src_w, src_h, w, h);
+        Some(ColorGlyph {
+            w: w as u16,
+            h: h as u16,
+            x_off: ((max_w - w) / 2) as i16,
+            // 垂直居中：emoji 位图通常带内边距，贴基线会显得偏下。
+            y_off: ((max_h - h) / 2) as i16,
+            pixels: Rc::new(pixels),
+        })
+    }
+
     fn rasterize(&mut self, fonts: &FontSet, ch: char, style: Style, span: usize) -> Option<Glyph> {
         let limit = (span.max(1) * fonts.cell_w) as f32;
         let mut skip = 0usize;
-        // 依次尝试主字体 + 回退链里所有声称覆盖该字符的字体；彩色位图 emoji 命中
-        // 会直接返回 None（由渲染层画占位框），单色 emoji 字体在组顺序上先于它。
-        while let Some((font, color_only)) = fonts.glyph_face(ch, style, skip) {
+        // 依次尝试主字体 + 回退链里所有声称覆盖该字符的轮廓字体；彩色位图字体
+        // 不在这个链里（由 get_color 单独处理），所以这里不会被 10 MB emoji 字体拖慢。
+        while let Some(font) = fonts.glyph_face(ch, style, skip) {
             skip += 1;
-            // 彩色位图 emoji：cmap 里有这个码位，但 fontdue 取不到轮廓。直接交给
-            // 占位框，不再为它解析后面的 CJK 字体（一个 emoji 不该吃几百 MB RSS）。
-            if color_only {
-                return None;
-            }
             let Some((metrics, bitmap)) = rasterize_fit(font, ch, fonts.size, limit) else {
                 continue;
             };
@@ -698,7 +1082,7 @@ fn rasterize_fit(
     let mut px = base_px;
     let mut metrics = font.metrics(ch, px);
     if metrics.width == 0 || metrics.height == 0 {
-        // 彩色位图 emoji：cmap 有该码位，但没有可轮廓化的字形。
+        // cmap 有该码位但没有可轮廓化的字形（位图字体等）。
         return None;
     }
     let widest = metrics.advance_width.max(metrics.width as f32);
@@ -808,6 +1192,130 @@ mod tests {
                 fonts.cell_w
             );
         }
+    }
+
+    #[test]
+    fn color_emoji_decodes_cbdt_and_caches_after_first_time() {
+        let Some(fonts) = fonts() else { return };
+        if !fonts.has_color_glyph('😀') {
+            eprintln!("跳过：系统没有 CBDT/CBLC/sbix 彩色 emoji 字体");
+            return;
+        }
+        let mut cache = GlyphCache::default();
+        let g = cache.get_color(&fonts, '😀', Style::Regular, 2).expect("😀 应能解出彩色位图");
+        assert!(g.w >= 8 && g.h >= 8, "彩色 emoji 位图过小: {g:?}");
+        assert!(
+            g.w as usize <= 2 * fonts.cell_w && g.h as usize <= fonts.cell_h,
+            "彩色 emoji 超出两格/行高: {g:?} cell={}x{}",
+            fonts.cell_w,
+            fonts.cell_h
+        );
+        assert!(colored_pixels(&g) > 10, "彩色 emoji 没有彩色像素（解码成了灰度？）");
+        assert_eq!(cache.color_decodes, 1);
+
+        // 彩色管线只探测 COLOR/env 候选，不能为了 emoji 解析 CJK 字体。
+        let fallback = fonts.fallback.get().expect("彩色查询应已建立回退链");
+        assert!(!fallback.color_candidates.is_empty(), "没有彩色候选");
+        for face in &fallback.faces {
+            if face.group == GROUP_CJK {
+                assert!(
+                    face.regular.get().is_none(),
+                    "emoji 彩色渲染解析了 CJK 字体: {}",
+                    face.path
+                );
+            }
+        }
+
+        // 缓存命中：不重新读字体、不重复解 PNG；Rc 指向同一块像素。
+        let again = cache.get_color(&fonts, '😀', Style::Regular, 2).expect("缓存命中");
+        assert_eq!(cache.color_decodes, 1, "缓存命中不应重复解码 PNG");
+        assert!(cache.color_hits >= 1, "缓存命中计数未增加");
+        assert!(std::rc::Rc::ptr_eq(&g.pixels, &again.pixels), "缓存命中应复用同一 RGBA 缓冲");
+        assert_eq!((g.w, g.h), (again.w, again.h));
+
+        // 彩色位图没有字重：粗体 emoji 复用同一份像素，不重复解码。
+        let bold = cache.get_color(&fonts, '😀', Style::Bold, 2).expect("粗体复用彩色位图");
+        assert_eq!(cache.color_decodes, 1, "粗体 emoji 不应重复解码");
+        assert!(std::rc::Rc::ptr_eq(&g.pixels, &bold.pixels), "粗体应复用同一 RGBA 缓冲");
+    }
+
+    #[test]
+    fn color_emoji_narrow_heart_fits_one_cell() {
+        let Some(fonts) = fonts() else { return };
+        if !fonts.has_color_glyph('❤') {
+            eprintln!("跳过：系统没有 ❤ 的彩色位图");
+            return;
+        }
+        let mut cache = GlyphCache::default();
+        let g = cache.get_color(&fonts, '❤', Style::Regular, 1).expect("❤ 彩色位图");
+        assert!(g.w as usize <= fonts.cell_w, "1 格彩色 emoji 宽度越界: {g:?}");
+        assert!(g.h as usize <= fonts.cell_h, "1 格彩色 emoji 高度越界: {g:?}");
+        assert!(colored_pixels(&g) > 0, "❤ 没有彩色像素");
+    }
+
+    #[test]
+    fn color_emoji_is_not_probed_for_ascii_or_cjk() {
+        let Some(fonts) = fonts() else { return };
+        let mut cache = GlyphCache::default();
+        // 普通字符/中文不能触发彩色候选探测，更不能为 emoji 解析 CJK 字体。
+        assert!(cache.get_color(&fonts, 'A', Style::Regular, 1).is_none());
+        assert!(cache.get_color(&fonts, '你', Style::Regular, 2).is_none());
+        assert!(!fonts.fallback_initialized(), "ASCII/CJK 不应建立彩色回退链");
+        assert_eq!(cache.color_decodes, 0);
+    }
+
+    #[test]
+    fn color_font_loader_rejects_non_color_and_missing_files() {
+        // 主字体只有轮廓，不能被当成彩色字体。
+        assert!(ColorFace::load(FONT_SETS[0].regular, 0).is_none());
+        assert!(ColorFace::load("/nonexistent/NotoColorEmoji.ttf", 0).is_none());
+    }
+
+    #[test]
+    fn color_raster_decode_handles_premultiplied_bgra() {
+        // 半透明纯红：预乘 BGRA = B0 G0 R128 A128 → 直通 RGBA R255。
+        let data = [0u8, 0, 128, 128];
+        let raster = ColorRaster::BgraPremul { width: 1, height: 1, data: &data };
+        let (w, h, px) = decode_color_raster(&raster).expect("预乘 BGRA 应能解码");
+        assert_eq!((w, h), (1, 1));
+        assert_eq!(px[0] & 0xff, 255, "红通道未反预乘: {:#x}", px[0]);
+        assert_eq!(px[0] >> 24, 128, "alpha 被改坏: {:#x}", px[0]);
+
+        // 损坏 PNG / 0 尺寸不能 panic。
+        let bad = ColorRaster::Png { width: 4, height: 4, data: b"not a png" };
+        assert!(decode_color_raster(&bad).is_none());
+        let empty = ColorRaster::BgraPremul { width: 0, height: 0, data: &[] };
+        assert!(decode_color_raster(&empty).is_none());
+    }
+
+    #[test]
+    fn color_scaling_fits_grid_and_keeps_color() {
+        let red = 0xffu32 | 0x00 << 8 | 0x00 << 16 | 0xff << 24;
+        let src = vec![red; 4];
+        let out = scale_color(&src, 2, 2, 1, 1);
+        assert_eq!(out, vec![red], "缩小后颜色/alpha 改变");
+
+        let (w, h) = fit_color_dims(136, 128, 18, 20);
+        assert!(w > 0 && h > 0 && w <= 18 && h <= 20, "缩放尺寸越界: {w}x{h}");
+        assert_eq!(fit_color_dims(0, 128, 18, 20), (0, 0), "0 宽源图应拒绝");
+
+        // 全透明源图不能除零/panic。
+        let transparent = vec![0u32; 2];
+        let out = scale_color(&transparent, 2, 1, 1, 1);
+        assert_eq!(out, vec![0]);
+    }
+
+    fn colored_pixels(g: &ColorGlyph) -> usize {
+        g.pixels()
+            .iter()
+            .filter(|p| {
+                let a = *p >> 24 & 0xff;
+                let r = *p & 0xff;
+                let gg = (*p >> 8) & 0xff;
+                let b = (*p >> 16) & 0xff;
+                a > 128 && (r.abs_diff(gg) > 8 || gg.abs_diff(b) > 8 || r.abs_diff(b) > 8)
+            })
+            .count()
     }
 
     #[test]
