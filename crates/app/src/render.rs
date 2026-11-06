@@ -673,7 +673,7 @@ impl Renderer {
             if is_zero_width_control(mark) {
                 continue;
             }
-            let Some(g) = self.glyphs.get(&self.fonts, mark, style, span) else { continue };
+            let Some(g) = self.glyphs.get_mark(&self.fonts, mark, style, span) else { continue };
             let gx = center_x - g.w as i32 / 2;
             let gy = baseline + g.top as i32;
             // 组合标记也裁剪在基字形占的 span/本行内，避免重音压到相邻格/行。
@@ -774,7 +774,7 @@ impl Renderer {
             if is_zero_width_control(mark) {
                 continue;
             }
-            let Some(g) = glyphs.get(fonts, mark, style, span) else { continue };
+            let Some(g) = glyphs.get_mark(fonts, mark, style, span) else { continue };
             let gx = center_x - g.w as i32 / 2;
             let gy = baseline + g.top as i32;
             let atlas = glyphs.atlas();
