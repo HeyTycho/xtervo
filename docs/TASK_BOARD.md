@@ -1,6 +1,6 @@
 # Tervo 任务看板
 
-> 最后更新：2026-11-06 20:20  
+> 最后更新：2026-11-06 21:00  
 > 规则：每个任务开始/完成/阻塞都要更新本文件；记录 worktree、branch、commit、测试/截图、限制。  
 > 当前 master：`a82ac52`（Settings Tab 持久化）；当前 release：`target/release/tervo` 19:07。
 
@@ -32,13 +32,13 @@
 
 | ID | 任务 | 状态 | worktree / branch | 说明 |
 |---|---|---|---|---|
-| P1-01 | 完整键盘协议：Kitty query/set/push/pop、alternate/event types、modifyOtherKeys、release/repeat | running | `.worktrees/keyboard-protocol` / `feat/keyboard-protocol` | P0 已稳，恢复；已有未提交 `core/src/keyboard.rs` |
+| P1-01 | 完整键盘协议：Kitty query/set/push/pop、alternate/event types、modifyOtherKeys、release/repeat | done | `.worktrees/keyboard-protocol` / `feat/keyboard-protocol` | commit `4805793`；合 master `1a55f09`；514 tests；Xvfb :123 + 真实 dsh kitty flags=1；`.logs/keyboard-protocol/` | 普通 shell/off 字节不变；`.logs/dsh-kbd-final2/` |
 | P1-02 | 搜索匹配计数 + 鼠标可编辑搜索框 | done | `.worktrees/search-ux` / `feat/search-ux` | commit `2ac8943`；合 master；`.logs/search-ux/` | app 282；search e2e PASS；term_menu PASS |
 | P1-03 | URL hover 手型 + 本地文件路径 Ctrl+click | done | `.worktrees/url-paths` / `feat/url-paths` | commit `ad63082`；合 master；app 284/core 94+63；Xvfb :128 PASS；`.logs/url-paths/` | URL/OSC8/路径/hover/失败提示全 PASS |
-| P1-04 | 每 Profile 字体/颜色/命令/登录 shell/默认尺寸/word chars | queued | 待建 | 依赖 P0 设置 UI merged |
+| P1-04 | 每 Profile 字体/颜色/命令/登录 shell/默认尺寸/word chars | running | `.worktrees/profile-session` / `feat/profile-session` | W-01 合并；Profile 外观+会话恢复审计 |
 | P1-05 | Codex P1：copy/search/save 500ms UI 阻塞 | queued | 待建 | 与 P0-05 同源，可并入 P0 hardening |
-| P1-06 | Codex P1：渲染 damage 路径失效、每帧全屏重绘 | queued | 待建 | 先做双缓冲脏行复制，再评估持久纹理 |
-| P1-07 | Codex P1：400ms CoreEvent 轮询 → wake 桥接 | queued | 待建 | 目标语义事件 <50ms，空闲 CPU 不退化 |
+| P1-06 | Codex P1：渲染 damage 路径失效、每帧全屏重绘 | running | `.worktrees/render-damage` / `feat/render-damage` | 双缓冲脏行复制；单行 `full=false rows=1` 验收 |
+| P1-07 | Codex P1：400ms CoreEvent 轮询 → wake 桥接 | running | `.worktrees/event-wake` / `feat/event-wake` | 语义事件 <50ms；空闲 CPU 不退化 |
 | P1-08 | Codex P1：Vault Argon2 KDF 移出 UI 线程 | queued | 待建 | 解锁期间 UI 不停顿 |
 | P1-09 | Codex P1：`main.rs` 拆分 + `with_app` 重入不丢操作 | queued | 待建 | 大重构，分小步 |
 | P1-10 | 右键菜单美化：字号加大、分类分组、图标/分隔线、窄窗不溢出 | done | `.worktrees/context-menu` / `feat/context-menu` | commit `bddf0ef`；合 master `3e5c270`；`.logs/context-menu/` | context-menu e2e PASS；term_menu PASS；字号/分组/窄窗/右下翻转截图 |
@@ -109,3 +109,4 @@
 | 2026-11-06 19:55 | P0-05/06/07 done（474 tests，6 e2e，release 19:51）；P1-01/02/03/10 恢复；WM resize 首次偶发、重跑 PASS 记录 |
 | 2026-11-06 20:05 | P1-02 搜索 UX 合入（282 tests，search e2e PASS）；注意 e2e 必须重建 target/debug |
 | 2026-11-06 20:20 | P1-10 右键菜单合入（3e5c270）；context-menu + term_menu e2e PASS；开始 W-01 |
+| 2026-11-06 21:00 | P1-01 键盘协议合入（1a55f09，514 tests）；P1-06 damage/P1-07 event-wake 开跑 |
