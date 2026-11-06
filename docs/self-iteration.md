@@ -1310,3 +1310,13 @@ cargo bench -p tervo-core --bench pty_throughput
 - 测试：合成 TUI 收到 `ESC[O`/`ESC[I`；214 app tests（新增 kitty 单测）。
 - 未做：modifyOtherKeys 全量、kitty event-types/release、OSC 52、URL 点击等。
 
+### 2026-11-06 · IME 候选点跟随聚焦 pane
+
+- 根因：Slint 只在 TextInput 文本变化时发 IME Update；移动隐藏 TextInput 不会更新
+  preedit spot，切右侧 pane/光标移动后候选窗仍停在旧位置。
+- 修复：`update_ime_spot` 用聚焦 pane 的 `(cursor.line, cursor.col)` 换算窗口坐标
+  （内容区 + tabbar 偏移），直接调 winit `set_ime_cursor_area`；焦点切换、Tab 切换、
+  resize、每次终端帧重绘都会同步，并按坐标去重。
+- 验证：右侧分屏聚焦后日志 `[ime] spot pane=2 ... win=407,32`，不再从 0 开始。
+- 限制：fcitx/ibus 是否遵守 XNSpotLocation 取决于输入法；若仍不跟随，需要输入法侧日志。
+
