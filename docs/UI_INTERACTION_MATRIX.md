@@ -95,16 +95,16 @@
 
 | 控件 | 触发方式 | 当前行为 | 期望行为 | 差异 | 验收方式 |
 |---|---|---|---|---|---|
-| 搜索条 | Ctrl+F | `open_search`；右上角 360×62 浮层；搜索框不是 TextInput | 打开查找面板并聚焦 | 显示条可用；无真实文本光标 | Ctrl+F 出现搜索条（`find_nocase.png`） |
-| 搜索输入 | 键盘字符/退格 | `search_open` 时字符追加、退格 pop，增量 `run_search`；空查询清高亮 | 输入关键词 | 可用；搜索框本身不可点击/选区 | 输入 `abc` 看高亮 |
-| Match case | 点击开关 / Alt+C | `search-match-case` → core `SearchOptions.match_case`；`(?-i:)` 强制区分大小写 | 大小写开关 | 已实现 | 搜 `ALPHA`：开=no match，关=命中 |
+| 搜索条 | Ctrl+F | `open_search`；右上角 360×62 浮层；查询区是 `TextInput`，打开时 `init.focus()` | 打开查找面板并聚焦 | 已实现；有真实文本光标 | Ctrl+F 出现搜索条并直接可输入（`count_2of3.png`、`reopen_focus.png`） |
+| 搜索输入 | 键盘字符/退格 | TextInput 原生编辑，`edited` → Rust 增量 `run_search`；空查询清高亮并显示 `0/0` | 输入关键词 | 已实现 | 输入 `alpha` 看高亮与计数（Xvfb :127） |
+| Match case | 点击开关 / Alt+C | `search-match-case` → core `SearchOptions.match_case`；`(?-i:)` 强制区分大小写 | 大小写开关 | 已实现 | 搜 `ALPHA`：开=不命中，关=命中 |
 | Match regex | 点击开关 / Alt+R | `search-regex` 同排开关；regex 直接交给 alacritty `RegexSearch` | 正则开关 | 已实现 | 搜 `a.c` 命中 `abc`；`[` 报错 |
-| 非法 regex | 输入 `[` 等 | `search_with` 返回 Err；条内显示 `invalid regex`、边框 danger 色，完整错误进日志，旧高亮清掉 | 明确错误 | 已实现（英文短文本） | `find_invalid.png`；日志 `error=invalid regex` |
-| 上一个/下一个 | Enter / Shift+Enter | Enter 向前、Shift+Enter 向后；命中滚动到视口并高亮 | 上/下一个 | 已实现上下跳；无匹配计数 | 多次 Enter 观察命中位置 |
-| 无命中提示 | — | `search-status = "no match"` | 明确空状态 | 已实现（英文） | 搜不存在字符串显示 no match |
-| 关闭 | Esc | `close_search`，清所有 pane 高亮与错误状态 | Esc/关闭按钮 | 已实现 Esc；无关闭按钮 | Esc 后高亮消失 |
-| 搜索框交互 | 鼠标 | 开关可点；查询文本本身不可点击定位/选择/复制 | 可编辑 | 仍缺失（沿用键盘路径） | 点击查询文本无光标 |
-| 匹配计数 | — | 无 | 如 3/17 | 缺失 | 无计数显示 |
+| 非法 regex | 输入 `[` 等 | `search_with` 返回 Err；条内显示 `invalid regex`、边框 danger 色，完整错误进日志，旧高亮清掉 | 明确错误 | 已实现（英文短文本） | `invalid_regex.png`；日志 `error=invalid regex` |
+| 上一个/下一个 | Enter / Shift+Enter | Enter 向前、Shift+Enter 向后（origin 前进/后退一格并环绕）；命中滚动到视口并高亮 | 上/下一个 | 已实现；计数同步刷新 | `1/3 → 2/3 → 3/3 → 1/3`，反向回 `3/3`（core 测试 + Xvfb 日志） |
+| 无命中提示 | — | `search-status = "0/0"`（无命中时） | 明确空状态 | 已实现 | 搜 `zzz` 显示 `0/0`（`count_0of0.png`） |
+| 关闭 | Esc | `close_search` 清所有 pane 高亮/错误，`focus-terminal()` 归还 IME/键盘焦点，spot 标脏 | Esc/关闭按钮 | 已实现 Esc + 焦点归还；无关闭按钮 | Esc 后 `echo FOCUS_OK` 到达 shell（`terminal_focus.png`） |
+| 搜索框交互 | 鼠标 | TextInput 点击聚焦/移动光标、拖选、Ctrl+A/C/V；空白区由背景 TouchArea 吃掉，不穿透终端 | 可编辑 | 已实现 | `mouse_caret.png`、`mouse_select.png`；拖选+C 剪贴板 = 当前查询；Esc 后查询不泄漏到终端 |
+| 匹配计数 | — | core `SearchHit.index/total`（alacritty `RegexIter` 扫 scrollback+视口）；UI 显示 `当前/总数`，非法 regex 显示 `invalid regex` | 如 `3/17` | 已实现 | `count_2of3.png`、`count_3of3.png`、`count_0of0.png`；app/core 单测 |
 
 ## 7. 设置（Settings Tab）
 
