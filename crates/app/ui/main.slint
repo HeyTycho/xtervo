@@ -1603,9 +1603,9 @@ export component MainWindow inherits Window {
     if root.tabctx-open : Rectangle {
         x: Math.max(0px, Math.min(root.tabctx-x, root.width - 180px));
         // 菜单 126 高：TabBar 在上时贴其下沿，在下时贴其上沿
-        y: root.tabbar-bottom ? root.height - root.tabbar-height - 126px : root.tabbar-height;
-        width: 170px;
-        height: 126px;
+        y: root.tabbar-bottom ? root.height - root.tabbar-height - 174px : root.tabbar-height;
+        width: 190px;
+        height: 174px;
         background: Palette.colors.raise;
         border-radius: 8px;
         border-width: 1px;
@@ -1625,6 +1625,14 @@ export component MainWindow inherits Window {
             MenuRow {
                 label: "Close Others";
                 picked => { root.tabctx-open = false; root.tab-menu-action(root.tabctx-index, 1); }
+            }
+            MenuRow {
+                label: "Close Left";
+                picked => { root.tabctx-open = false; root.tab-menu-action(root.tabctx-index, 4); }
+            }
+            MenuRow {
+                label: "Close Right";
+                picked => { root.tabctx-open = false; root.tab-menu-action(root.tabctx-index, 5); }
             }
             MenuRow {
                 label: "Duplicate";

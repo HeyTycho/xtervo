@@ -967,3 +967,15 @@ cargo bench -p tervo-core --bench pty_throughput
 - 测试：`cargo test -p tervo-app --bin tervo` → 204 passed；Xephyr 真机：10 Tab 自动收缩、
   `[ui] tab search open items=10`、pick=4；截图 `.logs/tabs-autoshrink.png`、`.logs/tab-search.png`。
 - 同时修复插件/SFTP 测试在刚写完临时脚本时的 ETXTBSY（exec 重试 5 次）。
+
+### 2026-11-06 · Tab 关闭范围（左/右/其它）
+
+- per-tab 菜单新增 Close Left / Close Right（保留 Close Others）；Rust 新增
+  `close_tabs_left` / `close_tabs_right`，复用 `close_tab_inner` 以触发 PTY 关闭、
+  TabClose 插件事件、后台保留策略与最近关闭快照。
+- 修复首版 off-by-one：Close Left 现在只关 `keep` 次，当前 Tab 保持在最左；Close Right
+  从尾部关到 `keep+1`，当前 Tab 保持激活。
+- Xephyr 真机（5 Tab，右键第 3 个 → Close Left）：剩 3 个（当前 + 右侧）；
+  Close Right 同；`.logs/tab-close-left.png` / `tab-close-right.png`。
+- 测试：`cargo test -p tervo-app --bin tervo` → 204 passed。
+

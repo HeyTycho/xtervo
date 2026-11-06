@@ -2011,6 +2011,41 @@ fn open_rename(st: &mut AppState, index: usize) {
     st.ui.set_rename_open(true);
 }
 
+/// 关闭 keep 左侧的所有 Tab；keep 本身保留并保持激活。
+fn close_tabs_left(st: &mut AppState, keep: usize) {
+    if keep == 0 || keep >= st.ws.tabs.len() {
+        return;
+    }
+    eprintln!("[ws] close tabs left keep={keep}");
+    let to_close = keep.min(st.ws.tabs.len().saturating_sub(1));
+    for _ in 0..to_close {
+        // 每轮都关第 0 个；目标 Tab 会逐步左移，关闭 keep 次后正好成为第 0 个。
+        if st.ws.active == 0 {
+            st.ws.active = 1;
+        }
+        close_tab_inner(st, 0);
+        if st.ws.tabs.is_empty() {
+            return;
+        }
+    }
+    set_active_tab_inner(st, 0);
+}
+
+/// 关闭 keep 右侧的所有 Tab；keep 本身保留并保持激活。
+fn close_tabs_right(st: &mut AppState, keep: usize) {
+    if keep + 1 >= st.ws.tabs.len() {
+        return;
+    }
+    eprintln!("[ws] close tabs right keep={keep}");
+    while st.ws.tabs.len() > keep + 1 {
+        close_tab_inner(st, st.ws.tabs.len() - 1);
+        if st.ws.tabs.is_empty() {
+            return;
+        }
+    }
+    set_active_tab_inner(st, keep.min(st.ws.tabs.len() - 1));
+}
+
 /// 只保留指定 Tab，其它 Tab 的 PTY 全部关掉。
 fn close_other_tabs(st: &mut AppState, keep: usize) {
     if keep >= st.ws.tabs.len() {
@@ -5095,6 +5130,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 1 => close_other_tabs(st, index),
                 2 => duplicate_tab(st, index),
                 3 => open_rename(st, index),
+                4 => close_tabs_left(st, index),
+                5 => close_tabs_right(st, index),
                 _ => {},
             }
         });
