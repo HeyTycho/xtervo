@@ -1135,3 +1135,42 @@ cargo bench -p tervo-core --bench pty_throughput
   Slint 按路径缓存图片，同一路径替换文件需重启或改路径；设置面板在极矮窗口（内容区
   < 约 480px）仍可能裁剪，未做整页滚动；只验证了 winit-software，Skia/GPU 后端未走查；
   设置页布局/滑块命中只做了 Xvfb 自动点击，未做人工触控板走查。
+
+### 2026-11-06 · TabBar 收缩与 Tab 搜索交互打磨
+
+- **Tab 收缩**：下限从 40px 提到 52px（`tab-width-cap` 52–180px），宽度动画
+  120ms→140ms；窄 Tab 标题字体降到 10px、左右内边距收窄、close 阈值 84px
+  （更窄只在 hover 覆盖显示），状态标记在 <64px 时压缩成 4px 小点，避免
+  “所有标题只剩 ...”。背景/边框/close 颜色加 120–140ms 过渡；没有常驻动画。
+- **溢出滚动**：Tab 条放进 `Flickable`，左侧留 58px 固定搜索/品牌区，滚动内容
+  不会钻到图标下面；支持拖拽与横向滚轮，底部加 2px 滚动条。活动 Tab 变化、
+  新建/关闭、窗口 resize 时 `reveal-active-tab()` 自动把它滚进视口；活动 Tab
+  是最后一个时把 `+`/Profile 一起带入视口。`+`/Profile 仍在 Tab 条内跟随 Tab，
+  没有改成右侧固定。
+- **Tab 搜索**：手绘放大镜按钮（圆环 + Path 手柄）替代字体字符 `⌕`；浮层
+  `min(340, width-8)` 宽，贴 TabBar 下方；TextInput 自动聚焦并显示 placeholder，
+  实时过滤 Tab 标题 + pane 标题；↑↓ 循环、Enter 跳转、Esc/点外部关闭；无匹配
+  时显示 “No matching tabs”，Enter 不再关闭面板；结果列表内部 Flickable 滚动，
+  选中项自动保持可见。关闭/跳转/空结果 Enter 后把焦点还给终端。
+- **命令与快捷键**：`run_command` 补上 `"tab.search"`（命令面板之前会落到
+  “未知命令”）；保留 Ctrl+Shift+A，并加 `^A` 控制字符回退分支。顺带修复重命名
+  浮层提交/取消后焦点没有归还终端的问题。
+- **GUI 验证**：headless Xvfb `:107`（1280x800，`-ac -nolisten tcp`），窗口
+  1080×736 与 540×700。1/3/10/20 Tab 截图：
+  `.logs/tabs-{1,3,10,20}-1080.png`、`.logs/tabs-{1,3,10,20}-540.png`
+  （20 Tab 末个活动时另见 `.logs/tabs-20-540-active-last.png`）；
+  20 Tab 下点 `+` 新建第 21 个（`.logs/tabs-21-after-plus.png`），`+`/Profile
+  仍可见；滚轮左右滚动 `.logs/tabs-20-scrolled-{left,right}.png`；hover close
+  `.logs/tab-hover-close.png`。Tab 搜索：20 结果、输入过滤、Down×12 选中滚入、
+  Enter `[ui] tab search pick=3`、Esc/点外部关闭后终端继续收到
+  `echo focus_ok` / `outside_ok`；命令面板搜 “Search Tabs” 执行
+  `[ui] run command tab.search`；空态与滚动截图
+  `.logs/tab-search-{20,empty,wheel-scroll,wheel-then-down,pick-focus2,click-outside}.png`。
+  拖动排序在 Flickable 改造后仍正常（`[ws] reorder tab 0 → 1`）。
+- **测试**：`cargo test -p tervo-app --bin tervo` → **204 passed**。
+- **限制**：20 Tab/窄窗口必须横向滚动才能看全；活动 Tab 在中部时 `+`/Profile
+  可能在视口外（只有末个 Tab 会自动带入），需要滚到末尾；滚动无 snap/惯性参数
+  调优，reveal 后可能保留前一个 Tab 的半截；搜索只做子串匹配、无模糊排序/高亮；
+  Ctrl+Shift+A 的 `^A` 回退分支未单独注入（正常文本映射和命令面板已验证）。
+  未做 CPU/帧率 profiler 采样；所有过渡都是一次性属性动画，没有常驻 Timer 或
+  循环动画。本轮未改窗口 resize/max/min/背景图代码。

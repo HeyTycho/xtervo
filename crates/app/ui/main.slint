@@ -577,6 +577,12 @@ export component MainWindow inherits Window {
     in-out property <string> tabsearch-query: "";
     in property <[string]> tabsearch-items: [];
     in-out property <int> tabsearch-selected: 0;
+    /// 结果列表视口高度：最多 10 行，超出后在面板内部滚动。
+    property <length> tabsearch-list-height: Math.min(260px,
+        Math.max(26px, root.tabsearch-items.length * 26px));
+    /// 结果列表滚动位置（负数向上滚）；键盘选择/滚轮/拖拽都改这里。
+    in-out property <length> tabsearch-scroll-y: 0px;
+    changed tabsearch-selected => { root.tabsearch-reveal(); }
     callback tabsearch-open-requested();
     callback tabsearch-query-changed(string);
     callback tabsearch-move(int);
@@ -669,6 +675,50 @@ export component MainWindow inherits Window {
     public function focus-terminal() {
         ime.focus();
     }
+
+    /// 记录活动 Tab 在滚动内容里的位置；切换/增删/宽度动画时调用。
+    public function note-active-tab(left: length, width: length, last: bool) {
+        root.active-tab-left = left;
+        root.active-tab-width = width;
+        root.active-tab-last = last;
+        root.reveal-active-tab();
+    }
+
+    /// 把活动 Tab（若为最后一个，连同 +/Profile）滚进视口；只写 content-x，
+    /// 不建立绑定，用户仍可拖拽/滚轮自由滚动。
+    public function reveal-active-tab() {
+        if (root.active-tab-width > 0px) {
+            let view = tab-flick.width;
+            let margin = 8px;
+            let left = root.active-tab-left;
+            let right = left + root.active-tab-width + (root.active-tab-last ? 58px : 0px);
+            let visible-left = -tab-flick.content-x;
+            if (left - margin < visible-left) {
+                tab-flick.content-x = -(left - margin);
+            } else if (right + margin > visible-left + view) {
+                tab-flick.content-x = -(right + margin - view);
+            }
+            let min-x = Math.min(0px, view - tab-flick.content-width);
+            tab-flick.content-x = Math.max(min-x, Math.min(0px, tab-flick.content-x));
+        }
+    }
+
+    /// 搜索浮层结果列表：让 ↑↓ 选中的行保持在视口内。
+    public function tabsearch-reveal() {
+        if (root.tabsearch-open) {
+            let h = root.tabsearch-list-height;
+            let top = root.tabsearch-selected * 26px;
+            let visible-top = -root.tabsearch-scroll-y;
+            if (top < visible-top) {
+                root.tabsearch-scroll-y = -top;
+            } else if (top + 26px > visible-top + h) {
+                root.tabsearch-scroll-y = h - top - 26px;
+            }
+            let content-h = Math.max(26px, root.tabsearch-items.length * 26px);
+            let min-y = Math.min(0px, h - content-h);
+            root.tabsearch-scroll-y = Math.max(min-y, Math.min(0px, root.tabsearch-scroll-y));
+        }
+    }
     in property <int> font-size: 15;
     in property <int> scrollback: 2000;
     in-out property <bool> search-open: false;
@@ -696,9 +746,13 @@ export component MainWindow inherits Window {
     // TabBar 位置可切（上/下）：用绝对定位而不是 VerticalLayout，
     // 否则元素的布局顺序没法在运行时反转。
     in-out property <bool> tabbar-bottom: false;
+    // 最近一次活动 Tab 在滚动内容中的位置（由 Tab 自己上报）。
+    property <length> active-tab-left: 0px;
+    property <length> active-tab-width: 0px;
+    property <bool> active-tab-last: false;
     // Tab 自动收缩：把扣除左侧搜索/品牌、+、Profile、窗口按钮后的宽度均分给 Tab。
-    // 40px 是可用下限（标题 elide、close 仅在 hover/宽度足够时显示）；再窄就滚动。
-    property <length> tab-width-cap: Math.max(40px, Math.min(180px,
+    // 52px 是可读下限（标题至少保留几个字符）；再窄就横向滚动，并把活动 Tab 滚进视口。
+    property <length> tab-width-cap: Math.max(52px, Math.min(180px,
         (root.width - 266px - 4px * root.tabs.length) / Math.max(1, root.tabs.length)));
 
     Rectangle {
@@ -784,37 +838,62 @@ export component MainWindow inherits Window {
                 }
             }
 
-            // Tab 条放进 Flickable：视口固定，内容再宽也不会把窗口的 preferred/min 宽度撑大
-            Flickable {
-                x: 0px;
+            // Tab 条放进 Flickable：视口固定，内容再宽也不会把窗口的 preferred/min 宽度撑大。
+            // 支持拖拽和滚轮横向滚动；活动 Tab 变化/窗口变化时自动滚进视口。
+            tab-flick := Flickable {
+                // 左侧 58px 留给固定的搜索/品牌图标；滚动内容从图标右侧开始，
+                // 不会钻到图标下面（活动 Tab 自动 reveal 时也安全）。
+                x: 58px;
                 y: 0px;
-                width: parent.width - 140px;
+                width: parent.width - 198px;
                 height: parent.height;
                 interactive: true;
                 content-width: tab-strip.preferred-width;
                 content-height: parent.height;
+                changed width => { root.reveal-active-tab(); }
 
                 tab-strip := HorizontalLayout {
-                padding-left: 58px;
-                padding-right: 0px;
+                padding-left: 0px;
+                padding-right: 8px;
                 padding-top: 4px;
                 spacing: 4px;
                 alignment: start;
 
                 for tab[i] in root.tabs : Rectangle {
+                    property <bool> is-active: tab.active;
                     property <bool> show-status: tab.attention || tab.completed
                         || tab.progress-state == 2 || tab.progress-label != "";
-                    property <bool> show-close: tab-hit.has-hover || parent.width >= 68px;
+                    // 窄 Tab 不预留整块状态区：状态压成右侧小点，标题优先占满。
+                    property <bool> show-status-text: show-status && parent.width >= 64px;
+                    property <bool> show-close: tab-hit.has-hover || parent.width >= 84px;
                     height: 22px;
-                    // 自动收缩：少量 Tab 按标题宽度，多 Tab 均分可用宽度；40px 下限后滚动。
-                    width: Math.max(40px, Math.min(root.tab-width-cap, tab-area.preferred-width + 36px));
-                    animate width { duration: 120ms; easing: ease-out; }
+                    // 自动收缩：少量 Tab 按标题宽度，多 Tab 均分可用宽度；
+                    // 52px 下限后横向滚动（活动 Tab 会被滚进视口）。
+                    width: Math.max(52px, Math.min(root.tab-width-cap, tab-area.preferred-width + 36px));
+                    animate width { duration: 140ms; easing: ease-out; }
                     border-radius: 6px;
                     background: tab.active
                         ? Palette.colors.bg
                         : (tab-hit.has-hover ? Palette.colors.raise : transparent);
+                    animate background, border-color { duration: 140ms; easing: ease-out; }
                     border-width: 1px;
                     border-color: tab.active ? Palette.colors.border : transparent;
+
+                    changed is-active => {
+                        if (is-active) {
+                            root.note-active-tab(self.x, self.width, i == root.tabs.length - 1);
+                        }
+                    }
+                    changed x => {
+                        if (tab.active) {
+                            root.note-active-tab(self.x, self.width, i == root.tabs.length - 1);
+                        }
+                    }
+                    changed width => {
+                        if (tab.active) {
+                            root.note-active-tab(self.x, self.width, i == root.tabs.length - 1);
+                        }
+                    }
 
                     // 激活态底部的强调线（Yaru 橙 / 主题 accent）
                     Rectangle {
@@ -850,7 +929,7 @@ export component MainWindow inherits Window {
 
                     // 未读通知点（Tab 非活动时由 Rust 置位，切到该 Tab 清除）
                     Text {
-                        visible: tab.attention;
+                        visible: tab.attention && show-status-text;
                         x: parent.width - 44px;
                         y: 0px;
                         width: 18px;
@@ -864,7 +943,7 @@ export component MainWindow inherits Window {
 
                     // 错误标记
                     Text {
-                        visible: !tab.attention && tab.progress-state == 2;
+                        visible: !tab.attention && tab.progress-state == 2 && show-status-text;
                         x: parent.width - 44px;
                         y: 0px;
                         width: 18px;
@@ -879,7 +958,8 @@ export component MainWindow inherits Window {
 
                     // 完成标记（进度从有到清除；切 Tab 时清除）
                     Text {
-                        visible: !tab.attention && tab.progress-state == 0 && tab.completed;
+                        visible: !tab.attention && tab.progress-state == 0 && tab.completed
+                            && show-status-text;
                         x: parent.width - 44px;
                         y: 0px;
                         width: 18px;
@@ -894,7 +974,8 @@ export component MainWindow inherits Window {
                     // 百分比文本（有合法 percent 时）
                     Text {
                         visible: !tab.attention && tab.progress-state != 2
-                            && !tab.completed && tab.progress-label != "";
+                            && !tab.completed && tab.progress-label != ""
+                            && show-status-text;
                         x: parent.width - 48px;
                         y: 0px;
                         width: 24px;
@@ -906,15 +987,34 @@ export component MainWindow inherits Window {
                         vertical-alignment: center;
                     }
 
+                    // 窄 Tab 的状态压缩为 4px 小点，不挤占标题宽度。
+                    Rectangle {
+                        visible: show-status && !show-status-text;
+                        x: parent.width - 7px;
+                        y: 4px;
+                        width: 4px;
+                        height: 4px;
+                        border-radius: 2px;
+                        background: tab.attention
+                            ? Palette.colors.accent
+                            : (tab.progress-state == 2
+                                ? Palette.colors.danger
+                                : (tab.completed ? Palette.colors.accent : Palette.colors.muted));
+                    }
+
                     tab-area := Text {
-                        x: 8px;
-                        width: parent.width - (show-close ? 34px : 16px) - (show-status ? 22px : 0px);
+                        x: parent.width < 60px ? 5px : 8px;
+                        // 窄 Tab 的 close 只在 hover 时覆盖显示，不因 hover 重排标题。
+                        width: parent.width - self.x
+                            - (show-close && parent.width >= 84px ? 26px : 6px)
+                            - (show-status-text ? 22px : 0px);
                         text: tab.title;
                         color: tab.active ? Palette.colors.text : Palette.colors.muted;
-                        font-size: 12px;
+                        font-size: root.tab-width-cap < 60px ? 10px : 12px;
                         font-weight: tab.active ? 600 : 400;
                         overflow: elide;
                         vertical-alignment: center;
+                        animate color { duration: 140ms; }
                     }
 
                     tab-hit := TouchArea {
@@ -963,6 +1063,16 @@ export component MainWindow inherits Window {
                         height: 20px;
                         clicked => { root.tab-closed(i); }
 
+                        Rectangle {
+                            x: 1px;
+                            y: 1px;
+                            width: 18px;
+                            height: 18px;
+                            border-radius: 9px;
+                            background: close-hit.has-hover ? Palette.colors.hover : transparent;
+                            animate background { duration: 120ms; }
+                        }
+
                         Text {
                             text: "×";
                             color: close-hit.has-hover ? Palette.colors.danger : Palette.colors.muted;
@@ -971,6 +1081,7 @@ export component MainWindow inherits Window {
                             horizontal-alignment: center;
                             width: 100%;
                             height: 100%;
+                            animate color { duration: 120ms; }
                         }
                     }
                 }
@@ -980,6 +1091,7 @@ export component MainWindow inherits Window {
                     width: 24px;
                     border-radius: 5px;
                     background: new-hit.has-hover ? Palette.colors.raise : transparent;
+                    animate background { duration: 120ms; }
 
                     new-hit := TouchArea {
                         clicked => { root.new-tab(); }
@@ -1002,6 +1114,7 @@ export component MainWindow inherits Window {
                     width: 26px;
                     border-radius: 5px;
                     background: profile-menu-hit.has-hover ? Palette.colors.raise : transparent;
+                    animate background { duration: 120ms; }
 
                     profile-menu-hit := TouchArea {
                         clicked => {
@@ -1024,6 +1137,22 @@ export component MainWindow inherits Window {
             }
             }
 
+            // 横向滚动条：仅在 Tab + 按钮溢出时出现，提示可拖拽/滚轮滚动。
+            Rectangle {
+                property <length> bar-w: Math.min(tab-flick.width - 4px,
+                    Math.max(18px,
+                        tab-flick.width * tab-flick.width / Math.max(1px, tab-flick.content-width)));
+                visible: tab-flick.content-width > tab-flick.width + 1px;
+                x: 59px + (-tab-flick.content-x)
+                    / Math.max(1px, tab-flick.content-width - tab-flick.width)
+                    * Math.max(0px, tab-flick.width - self.bar-w - 2px);
+                y: parent.height - 3px;
+                width: self.bar-w;
+                height: 2px;
+                border-radius: 1px;
+                background: Palette.colors.muted;
+            }
+
         // 最左侧 Tab 搜索按钮（Chrome 风格）：搜索当前窗口所有 Tab
         Rectangle {
             x: 4px;
@@ -1032,6 +1161,7 @@ export component MainWindow inherits Window {
             height: 24px;
             border-radius: 5px;
             background: tabsearch-btn.has-hover ? Palette.colors.hover : Palette.colors.raise;
+            animate background { duration: 120ms; }
 
             tabsearch-btn := TouchArea {
                 clicked => {
@@ -1041,14 +1171,32 @@ export component MainWindow inherits Window {
                 }
             }
 
-            Text {
-                text: "⌕";
-                color: Palette.colors.text;
-                font-size: 16px;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-                width: 100%;
-                height: 100%;
+            // 手绘放大镜：圆环 + 45° 手柄，避免依赖字体里是否有 "⌕"。
+            Rectangle {
+                x: 6px;
+                y: 5px;
+                width: 10px;
+                height: 10px;
+                border-radius: 5px;
+                border-width: 1.5px;
+                border-color: Palette.colors.text;
+                background: transparent;
+            }
+            Rectangle {
+                x: 15px;
+                y: 14px;
+                width: 7px;
+                height: 7px;
+                background: transparent;
+
+                Path {
+                    width: 100%;
+                    height: 100%;
+                    commands: "M 0 0 L 5 5";
+                    stroke: Palette.colors.text;
+                    stroke-width: 1.5px;
+                    stroke-line-cap: round;
+                }
             }
         }
 
@@ -2806,8 +2954,8 @@ export component MainWindow inherits Window {
         y: root.tabbar-bottom
             ? root.height - root.tabbar-height - self.height - 4px
             : root.tabbar-height + 4px;
-        width: 340px;
-        height: Math.min(324px, 52px + root.tabsearch-items.length * 28px + 8px);
+        width: Math.min(340px, root.width - 8px);
+        height: 49px + root.tabsearch-list-height;
         background: Palette.colors.raise;
         border-radius: 10px;
         border-width: 1px;
@@ -2827,8 +2975,15 @@ export component MainWindow inherits Window {
                 single-line: true;
                 color: Palette.colors.text;
                 font-size: 13px;
-                init => { self.focus(); }
-                edited => { root.tabsearch-query-changed(self.text); }
+                init => {
+                    self.focus();
+                    root.tabsearch-scroll-y = 0px;
+                }
+                edited => {
+                    root.tabsearch-query-changed(self.text);
+                    // 过滤条件变了，列表回到顶部；选中项由 Rust 重置为 0。
+                    root.tabsearch-scroll-y = 0px;
+                }
                 key-pressed(event) => {
                     if (event.text == "\u{1b}") { root.tabsearch-cancel(); return EventResult.accept; }
                     if (event.text == "\u{F700}") { root.tabsearch-move(-1); return EventResult.accept; }
@@ -2838,34 +2993,70 @@ export component MainWindow inherits Window {
                 }
             }
 
-            for item[i] in root.tabsearch-items : Rectangle {
-                height: 26px;
-                border-radius: 4px;
-                background: i == root.tabsearch-selected ? Palette.colors.accent : transparent;
+            // 结果多时在面板内部滚动；↑↓ 选中项会自动滚进视口。
+            tabsearch-flick := Flickable {
+                height: root.tabsearch-list-height;
+                content-height: Math.max(26px, root.tabsearch-items.length * 26px);
+                content-width: self.width;
+                interactive: true;
+                property <length> scroll-request: root.tabsearch-scroll-y;
+                changed scroll-request => { self.content-y = self.scroll-request; }
+                flicked => { root.tabsearch-scroll-y = self.content-y; }
 
-                Text {
-                    x: 8px;
-                    text: item;
-                    color: i == root.tabsearch-selected ? Palette.colors.accent-text : Palette.colors.text;
-                    font-size: 12px;
-                    vertical-alignment: center;
-                    width: parent.width - 16px;
-                    overflow: elide;
-                }
+                VerticalLayout {
+                    width: tabsearch-flick.width;
+                    spacing: 0px;
 
-                TouchArea {
-                    clicked => { root.tabsearch-selected = i; root.tabsearch-pick(i); }
+                    for item[i] in root.tabsearch-items : Rectangle {
+                        height: 26px;
+                        border-radius: 4px;
+                        background: i == root.tabsearch-selected ? Palette.colors.accent : transparent;
+                        animate background { duration: 100ms; }
+
+                        Text {
+                            x: 8px;
+                            text: item;
+                            color: i == root.tabsearch-selected ? Palette.colors.accent-text : Palette.colors.text;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                            width: parent.width - 16px;
+                            overflow: elide;
+                        }
+
+                        TouchArea {
+                            clicked => { root.tabsearch-selected = i; root.tabsearch-pick(i); }
+                        }
+                    }
+
+                    Rectangle {
+                        visible: root.tabsearch-items.length == 0;
+                        height: 26px;
+
+                        Text {
+                            x: 8px;
+                            text: "No matching tabs";
+                            color: Palette.colors.muted;
+                            font-size: 11px;
+                            vertical-alignment: center;
+                            width: parent.width - 16px;
+                            overflow: elide;
+                        }
+                    }
                 }
             }
+        }
 
-            Text {
-                visible: root.tabsearch-items.length == 0;
-                text: "没有匹配的标签页";
-                color: Palette.colors.muted;
-                font-size: 11px;
-                height: 26px;
-                vertical-alignment: center;
-            }
+        // 空输入时的占位提示；不拦截点击，焦点仍在下面的 TextInput。
+        Text {
+            x: 12px;
+            y: 8px;
+            width: parent.width - 24px;
+            height: 30px;
+            text: "Search tabs";
+            color: Palette.colors.muted;
+            font-size: 13px;
+            vertical-alignment: center;
+            visible: root.tabsearch-query == "";
         }
     }
 
@@ -3124,11 +3315,13 @@ export component MainWindow inherits Window {
                 if (event.text == "\u{a}" || event.text == "\u{d}") {
                     root.rename-committed(root.rename-index, self.text);
                     root.rename-open = false;
+                    root.focus-terminal();
                     return EventResult.accept;
                 }
                 if (event.text == "\u{1b}") {
                     root.rename-cancelled();
                     root.rename-open = false;
+                    root.focus-terminal();
                     return EventResult.accept;
                 }
                 EventResult.reject
