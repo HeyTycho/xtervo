@@ -639,6 +639,7 @@ const SETTINGS_CATALOG: &[(i32, &str, &str, &str)] = &[
     (1, "scroll", "Scroll on keystroke", "scroll keystroke keyboard bottom 按键 回底 滚动"),
     (1, "scrollbar", "Scrollbar policy", "scrollbar always auto never policy 滚动条"),
     (1, "images", "Sixel inline images", "sixel image inline graphics 图片"),
+    (1, "images", "iTerm2 IIP images", "iterm2 iip osc 1337 image inline png jpeg 图片"),
     (1, "keys", "Backspace / Delete binding", "backspace delete ascii del control-h key encoding 退格 删除 编码"),
     (2, "window", "Tab bar at bottom", "tab bar position bottom top 标签栏"),
     (2, "window", "Quake mode", "quake drop down hotkey F12 下拉"),
@@ -1184,6 +1185,7 @@ fn reconfig_summary(old: &Config, new: &Config) -> ReconfigSummary {
         old.sixel_scrolling != new.sixel_scrolling,
         "sixel_scrolling",
     );
+    hot(old.iip != new.iip, "iip");
     hot(old.cursor_shape != new.cursor_shape, "cursor_shape");
     hot(old.cursor_blink != new.cursor_blink, "cursor_blink");
     hot(old.cursor_color != new.cursor_color, "cursor_color");
@@ -1270,6 +1272,7 @@ fn apply_external_config(st: &mut AppState, new_cfg: Config) {
     let scroll_output_changed = old.scroll_on_output != new_cfg.scroll_on_output;
     let sixel_changed = old.sixel != new_cfg.sixel;
     let sixel_scrolling_changed = old.sixel_scrolling != new_cfg.sixel_scrolling;
+    let iip_changed = old.iip != new_cfg.iip;
     let scrollbar_changed = old.scrollbar_policy != new_cfg.scrollbar_policy;
     let cursor_changed = old.cursor_shape != new_cfg.cursor_shape
         || old.cursor_color != new_cfg.cursor_color
@@ -1337,6 +1340,15 @@ fn apply_external_config(st: &mut AppState, new_cfg: Config) {
         }
         for (_, rt, _) in &st.detached {
             rt.handle.set_sixel_scrolling(enabled);
+        }
+    }
+    if iip_changed {
+        let enabled = st.cfg.iip;
+        for rt in st.panes.values() {
+            rt.handle.set_iip(enabled);
+        }
+        for (_, rt, _) in &st.detached {
+            rt.handle.set_iip(enabled);
         }
     }
     if scrollbar_changed {
@@ -1407,6 +1419,7 @@ fn sync_reload_ui(st: &mut AppState) {
     st.ui.set_cfg_scroll_keystroke(st.cfg.scroll_on_keystroke);
     st.ui.set_cfg_sixel(st.cfg.sixel);
     st.ui.set_cfg_sixel_scrolling(st.cfg.sixel_scrolling);
+    st.ui.set_cfg_iip(st.cfg.iip);
     st.ui
         .set_cfg_scrollback_unlimited(st.cfg.scrollback_unlimited);
     st.ui
@@ -1739,6 +1752,8 @@ fn create_pane(
         keyboard_protocol: st.cfg.keyboard_protocol_enabled(),
         sixel: st.cfg.sixel,
         sixel_scrolling: st.cfg.sixel_scrolling,
+        iip: st.cfg.iip,
+        cell_width: fonts.cell_w as u16,
         cell_height: fonts.cell_h as u16,
         shell,
         args,
@@ -4869,6 +4884,9 @@ fn apply_font_size(st: &mut AppState) -> bool {
             .and_then(|sel| theme_for_selection(registry, cfg, Some(sel)))
             .unwrap_or_else(|| fallback.clone());
         rt.cell = (fonts.cell_w, fonts.cell_h);
+        // IIP 的 width/height 以 cell 为单位时需要最新字号；Sixel 可见性也用 cell 高。
+        rt.handle
+            .set_cell_size(fonts.cell_w as u16, fonts.cell_h as u16);
         rt.renderer = Renderer::new(
             fonts,
             cols,
@@ -8870,6 +8888,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     });
 
+    ui.on_toggle_iip(|| {
+        with_app(|st| {
+            st.cfg.iip = !st.cfg.iip;
+            st.ui.set_cfg_iip(st.cfg.iip);
+            let enabled = st.cfg.iip;
+            for rt in st.panes.values() {
+                rt.handle.set_iip(enabled);
+            }
+            for (_, rt, _) in &st.detached {
+                rt.handle.set_iip(enabled);
+            }
+            st.cfg.save();
+            eprintln!("[ui] iip={enabled}");
+        });
+    });
+
     ui.on_toggle_scrollback_unlimited(|| {
         with_app(|st| {
             st.cfg.scrollback_unlimited = !st.cfg.scrollback_unlimited;
@@ -9784,6 +9818,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         st.ui.set_cfg_scroll_keystroke(st.cfg.scroll_on_keystroke);
         st.ui.set_cfg_sixel(st.cfg.sixel);
         st.ui.set_cfg_sixel_scrolling(st.cfg.sixel_scrolling);
+        st.ui.set_cfg_iip(st.cfg.iip);
         st.ui
             .set_cfg_scrollback_unlimited(st.cfg.scrollback_unlimited);
         st.ui
@@ -10257,6 +10292,7 @@ mod tests {
         next.scroll_on_keystroke = false;
         next.scrollbar_policy = "never".into();
         next.sixel_scrolling = false;
+        next.iip = false;
         next.desktop_notifications = false;
         next.hotkeys.push(commands::HotkeyOverride {
             command: "tab.new".into(),
@@ -10269,6 +10305,7 @@ mod tests {
             "scroll_on_keystroke",
             "scrollbar_policy",
             "sixel_scrolling",
+            "iip",
             "desktop_notifications",
             "hotkeys",
         ] {
@@ -10463,6 +10500,12 @@ mod tests {
             sixel.iter().any(|h| h.cat == 1 && h.section == "images"),
             "sixel 应跳到 Terminal/Images: {:?}",
             sixel.iter().map(|h| (h.cat, h.section)).collect::<Vec<_>>()
+        );
+        let iip = settings_search_hits("iip");
+        assert!(
+            iip.iter().any(|h| h.cat == 1 && h.section == "images"),
+            "iip 应跳到 Terminal/Images: {:?}",
+            iip.iter().map(|h| (h.cat, h.section)).collect::<Vec<_>>()
         );
         let backspace = settings_search_hits("backspace");
         assert!(backspace.iter().any(|h| h.cat == 1 && h.section == "keys"));

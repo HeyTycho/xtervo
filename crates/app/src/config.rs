@@ -291,6 +291,9 @@ pub struct Config {
     pub sixel: bool,
     /// Sixel 图片是否跟随滚动历史移动（默认 true）；false 时固定在创建时的屏幕行。
     pub sixel_scrolling: bool,
+    /// iTerm2 IIP（OSC 1337 File）内联图片（默认开）。关闭后不解析/解码 IIP，
+    /// 已显示的 IIP 图片立即清除；不影响 Sixel/DA1。
+    pub iip: bool,
     /// 忽略 `scrollback` 数值，使用 [`UNLIMITED_SCROLLBACK_LINES`] 安全上限。
     /// 只对之后新建的 pane 生效（历史缓冲大小不能在会话中安全扩容）。
     pub scrollback_unlimited: bool,
@@ -379,6 +382,7 @@ impl Default for Config {
             scroll_on_keystroke: true,
             sixel: true,
             sixel_scrolling: true,
+            iip: true,
             scrollback_unlimited: false,
             scrollbar_policy: "auto".to_string(),
             backspace_binding: "ascii-delete".to_string(),
@@ -916,6 +920,7 @@ mod tests {
              scrollback_unlimited = true\n\
              sixel = false\n\
              sixel_scrolling = false\n\
+             iip = false\n\
              scrollbar_policy = \"never\"\n\
              backspace_binding = \"control-h\"\n\
              delete_binding = \"ascii-del\"\n",
@@ -927,6 +932,7 @@ mod tests {
         assert!(cfg.scrollback_unlimited);
         assert!(!cfg.sixel);
         assert!(!cfg.sixel_scrolling);
+        assert!(!cfg.iip);
         assert_eq!(cfg.effective_scrollback(), UNLIMITED_SCROLLBACK_LINES, "unlimited 必须有明确安全上限");
         assert_eq!(UNLIMITED_SCROLLBACK_LINES, 100_000);
         assert_eq!(cfg.scrollbar_policy(), ScrollbarPolicy::Never);
@@ -940,6 +946,7 @@ mod tests {
         assert!(text.contains("audible_bell = true"), "{text}");
         assert!(text.contains("scroll_on_output = true"), "{text}");
         assert!(text.contains("sixel = false"), "{text}");
+        assert!(text.contains("iip = false"), "{text}");
         assert!(text.contains("scrollbar_policy = \"never\""), "{text}");
         assert!(text.contains("backspace_binding = \"control-h\""), "{text}");
         let back = Config::load_from(&path);
@@ -947,10 +954,15 @@ mod tests {
         assert!(back.scroll_on_output);
         assert!(!back.sixel);
         assert!(!back.sixel_scrolling);
+        assert!(!back.iip);
         assert!(!back.scroll_on_keystroke);
         assert_eq!(back.scrollbar_policy(), ScrollbarPolicy::Never);
         assert_eq!(back.key_bindings(), cfg.key_bindings());
         let _ = std::fs::remove_dir_all(&dir);
+
+        // 旧配置没有 iip 字段：additive，默认开启。
+        let old: Config = toml::from_str("version = 1\nfont_size = 13.0\n").unwrap();
+        assert!(old.iip, "旧配置缺 iip 时必须默认开启");
 
         // 固定 scrollback 时忽略 unlimited 上限，保持用户配置的数值。
         let fixed = Config { scrollback: 1234, ..Config::default() };
