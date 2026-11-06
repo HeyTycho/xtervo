@@ -2,7 +2,9 @@
 
 > 审计日期：2026-11-05 ｜ 起始 HEAD `0ea6231`，复核到并发提交 `8327e20` ｜ 依据：`crates/app/ui/main.slint`、`crates/app/src/main.rs`、`workspace.rs`、`pane.rs` 的实际代码。
 > 本轮只读审计，未启动 GUI、未执行构建。表中“当前行为”均可在上述文件定位；“期望行为”来自需求 B 部分，上游未核实处标 `待核`。
-> 说明：当前 UI 只有「窗口壳 + TabBar + 终端分屏 + 5 项右键菜单 + 单卡片设置 + 搜索条」；B4/B5/B8/B9/B10/B11 的大部分控件尚不存在，缺失控件集中列在 §8。
+> 说明：当前 UI 只有「窗口壳 + TabBar + 终端分屏 + 13 项右键菜单 + 设置 + 搜索条」；B4/B5/B8/B9/B10/B11 的大部分控件尚不存在，缺失控件集中列在 §8。
+> 2026-11-06 增补（`feat/term-menu`）：§5 菜单项、§6 查找 Match case/regex 与非法 regex、Read Only/Reset/Save Contents；
+> 细节与 Xvfb :119 证据见 [`terminal-menu-find.md`](terminal-menu-find.md)。
 
 ## 1. 窗口壳 / TitleBar
 
@@ -60,7 +62,7 @@
 | Pane 区域 | 左键拖选 | 按下 `selection_start`；移动 `selection_extend`；抬起自动复制 | 跨行/反向/滚动扩展；可配置 copy-on-select | 跨行/反向可用；无滚动扩展；copy-on-select 强制开 | 反向拖选验证行首；滚动时选区不扩展 |
 | Pane 区域 | 左键双击/三击 | 无特殊处理（按单击处理） | 选词/选行（按上游） | 缺失 | 双击单词，仅移动光标/无选区 |
 | Pane 区域 | Ctrl+左键点击链接 | core `Frame::hyperlink_at` 优先 OSC 8，`Frame::url_at` 识别普通 http/https/file 并按显示列处理宽字符/组合字符；app 在非鼠标上报时 Ctrl+点击打开，失败显示底部浮层并写日志；右键菜单出现 Open Link / Copy Link | 悬停手型；Ctrl+点击打开 URL/路径；区分本地/远端 | URL/OSC 8 已接 UI；IP/路径与 hover 手型缺失；远端/本地未区分 | headless Xvfb :114 + fake xdg-open：普通 URL/OSC 8/OSC 8 优先/失败提示/菜单 Open Link 均记录命中 |
-| Pane 区域 | 右键（非鼠标上报） | `pane-right-clicked` → 5 项终端菜单 | 复制/粘贴/查找/清屏/Profile/拆分（按上游） | 只有 5 项；无 Find/Clear/Profile | 右键观察菜单项 |
+| Pane 区域 | 右键（非鼠标上报） | `pane-right-clicked` → 13 项终端菜单（带链接 15 项），含 Find/Clear/Save Contents/Read Only/Reset | 复制/粘贴/查找/清屏/复位/保存/Profile/拆分（按上游） | 13 项已含主要终端动作；无 Profile/缩放项 | 右键观察菜单；Xvfb :119 `menu_open.png` |
 | Pane 区域 | 右键/中键（鼠标上报模式） | `p.mouse-reporting` 时转发给 PTY，不弹菜单 | TUI 收到右键/中键；Shift 绕过 | 已实现；1002 拖动按钮错误（见主矩阵） | 在 vim `:set mouse=a` 下右键，检查 PTY 字节 |
 | Pane 区域 | 滚轮 | `scroll-event`：鼠标上报模式发 64/65；否则本地回滚 | 上报或回滚；Shift 绕过 | 已实现 | `vim` 中滚轮翻页；普通 shell 滚历史 |
 | Pane 区域 | Shift+左键 | 强制本地选词（绕过上报） | 逃生门 | 已实现 | 鼠标模式下 Shift 拖选可复制 |
@@ -72,29 +74,36 @@
 | Pane 拖拽重排 | 左键拖 Pane | 无 | 移动/重排/重组 | 缺失 | 拖 Pane 无布局变化 |
 | 广播输入 | 开关/UI | 无 | 可开关、显示范围、危险提示 | 缺失 | 无广播按钮/状态 |
 
-## 5. 终端右键菜单（5 项）
+## 5. 终端右键菜单（13 项；命中链接时 15 项）
 
 | 控件 | 触发方式 | 当前行为 | 期望行为 | 差异 | 验收方式 |
 |---|---|---|---|---|---|
-| 菜单容器 | Pane 右键 | `menu-open`，坐标内容区，x/y 均夹取；150×156 | 边界内、点外/Esc 关闭、键盘导航 | 点外不关闭；无键盘导航；Esc 只在 `menu-open` 且搜索未开时 | 菜单打开后点终端空白，菜单仍在 |
-| Copy | 左键单击 | `menu-action(3)` → `copy_current_selection` | 复制选区 | 已实现（无选区则无动作） | 选文本→右键 Copy→剪贴板一致 |
-| Paste | 左键单击 | `menu-action(4)` → `paste_into_focused` | 粘贴；多行确认 | 直接粘贴；无多行确认 | 复制多行→Paste，检查是否直接执行 |
-| Split Right | 左键单击 | `split_pane(id, Row)`，新 pane 聚焦 | 左右分屏 | 已实现 | 菜单后 pane 数 +1 |
-| Split Down | 左键单击 | `split_pane(id, Col)` | 上下分屏 | 已实现 | 同上，方向为上下 |
-| Close Pane | 左键单击 | `close_pane_inner`；最后一个 pane 删 Tab/退应用 | 关闭；最后一个按产品定义 | 已实现；无空状态/确认 | 关到最后一个，应用退出 |
-| Esc 关闭 | Esc | 隐藏的 IME TextInput 捕获；`menu-open` 时关菜单 | 关闭菜单 | 只处理终端菜单；TabBar 菜单不响应 Esc | 打开两种菜单分别按 Esc |
+| 菜单容器 | Pane 右键 | `menu-open`，内容区坐标；无链接 13 行、带链接 15 行；点外部/Esc 关闭 | 边界内、点外/Esc 关闭、键盘导航 | 点外/Esc 已实现；无键盘导航 | 右键后点空白/Esc 关闭 |
+| Copy / Paste | 左键 | action 3/4；粘贴遵守多行确认与 bracketed paste | 复制/粘贴 | 已实现 | 选文本→Copy；多行→Paste 确认 |
+| Split Right / Split Down | 左键 | action 0/1 → `split_pane` | 左右/上下分屏 | 已实现 | 菜单后 pane 数 +1 |
+| Close Pane | 左键 | action 2 → `close_pane_inner` | 关闭当前 pane | 已实现 | 关闭后 pane 消失 |
+| Find | 左键 | action 5 → `terminal.find` | 打开查找条 | 已实现（Ctrl+F 同路径） | 菜单 Find 后出现查找条 |
+| Select All / Clear | 左键 | action 6/7 → core select-all/clear-screen | 全选/清屏 | 已实现 | 全选后复制；清屏后屏幕空 |
+| Save Contents… | 左键 | action 14 → 显式路径弹窗；core `contents()` 保存 scrollback+视口；失败红字 | 保存内容到明确路径 | 已实现最小版；非系统文件对话框 | 菜单打开弹窗→Enter→文件存在且含历史 |
+| Read Only | 左键 | action 11 → 切换当前 pane 只读；pane 角标 `READ ONLY` + 菜单标签 + 浮层 | 可切换、状态可见、关闭恢复 | 已实现；每 pane 不持久化 | 开启后键入/粘贴不写 PTY，关闭恢复 |
+| Reset / Reset and Clear | 左键 | action 12/13 → core `Ctrl::Reset` / `ResetAndClear`（RIS + 清回滚） | 复位终端状态，不关 pane | 已实现；Reset 也清 scrollback（上游限制） | 复位后屏幕空、会话仍可输入 |
+| Broadcast Input | 左键 | action 8 切换 broadcast | 多 pane 同步输入 | 已实现 | 两 pane 下键入同时到达 |
+| Open / Copy Link | 左键 | 命中链接时 action 9/10 | 打开/复制链接 | 已实现 | 右键链接→Open/Copy |
+| Esc / 点外部关闭 | 键盘/鼠标 | 隐藏 IME TextInput 捕获 Esc；`menu-open` 时关闭；外部 TouchArea 关闭 | 关闭菜单 | 已实现 | 两种方式都能关 |
 
 ## 6. 搜索
 
 | 控件 | 触发方式 | 当前行为 | 期望行为 | 差异 | 验收方式 |
 |---|---|---|---|---|---|
-| 搜索条 | Ctrl+F | `open_search`；右上角 300×34 显示条；搜索框不是 TextInput | 打开查找面板并聚焦 | 显示条可用；无真实输入焦点 | Ctrl+F 出现搜索条 |
-| 搜索输入 | 键盘字符/退格 | `handle_input` 在 `search_open` 时把字符追加到 `search_query`，退格 pop，增量 `run_search` | 输入关键词、可鼠标选中/编辑 | 可用；但搜索框本身不可点击/选区/光标 | 输入 `abc` 观察高亮；点击搜索条无光标 |
-| 上一个/下一个 | Enter / Shift+Enter | Enter 向前、Shift+Enter 向后；命中滚动到视口并高亮 | 上/下一个、匹配计数 | 已实现上下跳；无计数 | 多次 Enter 观察命中位置 |
-| 大小写/正则 | 设置/开关 | 无；`regex_escape` 强制纯文本 | 可配置大小写/正则（按上游） | 缺失 | 搜 `ABC` 与 `abc` 行为相同；无开关 |
+| 搜索条 | Ctrl+F | `open_search`；右上角 360×62 浮层；搜索框不是 TextInput | 打开查找面板并聚焦 | 显示条可用；无真实文本光标 | Ctrl+F 出现搜索条（`find_nocase.png`） |
+| 搜索输入 | 键盘字符/退格 | `search_open` 时字符追加、退格 pop，增量 `run_search`；空查询清高亮 | 输入关键词 | 可用；搜索框本身不可点击/选区 | 输入 `abc` 看高亮 |
+| Match case | 点击开关 / Alt+C | `search-match-case` → core `SearchOptions.match_case`；`(?-i:)` 强制区分大小写 | 大小写开关 | 已实现 | 搜 `ALPHA`：开=no match，关=命中 |
+| Match regex | 点击开关 / Alt+R | `search-regex` 同排开关；regex 直接交给 alacritty `RegexSearch` | 正则开关 | 已实现 | 搜 `a.c` 命中 `abc`；`[` 报错 |
+| 非法 regex | 输入 `[` 等 | `search_with` 返回 Err；条内显示 `invalid regex`、边框 danger 色，完整错误进日志，旧高亮清掉 | 明确错误 | 已实现（英文短文本） | `find_invalid.png`；日志 `error=invalid regex` |
+| 上一个/下一个 | Enter / Shift+Enter | Enter 向前、Shift+Enter 向后；命中滚动到视口并高亮 | 上/下一个 | 已实现上下跳；无匹配计数 | 多次 Enter 观察命中位置 |
 | 无命中提示 | — | `search-status = "no match"` | 明确空状态 | 已实现（英文） | 搜不存在字符串显示 no match |
-| 关闭 | Esc | `close_search`，清所有 pane 高亮 | Esc/关闭按钮 | 已实现 Esc；无关闭按钮 | Esc 后高亮消失 |
-| 搜索框交互 | 鼠标 | 无 TouchArea/TextInput | 可点击定位、选择、复制 | 缺失 | 点击搜索条无反应 |
+| 关闭 | Esc | `close_search`，清所有 pane 高亮与错误状态 | Esc/关闭按钮 | 已实现 Esc；无关闭按钮 | Esc 后高亮消失 |
+| 搜索框交互 | 鼠标 | 开关可点；查询文本本身不可点击定位/选择/复制 | 可编辑 | 仍缺失（沿用键盘路径） | 点击查询文本无光标 |
 | 匹配计数 | — | 无 | 如 3/17 | 缺失 | 无计数显示 |
 
 ## 7. 设置面板
@@ -119,7 +128,7 @@
 | Toolbar | 点击 | 无 | 按钮/分组/插件按钮/Tooltip | 缺失 | 界面无工具栏 |
 | Connection Manager | 菜单/快捷键 | 无 | 始终易访问 | 缺失 | 无入口 |
 | Profile Selector | 新 Tab 下拉 | 无 | Shell/SSH/Serial/Telnet Profile 选择 | 缺失 | 新建 Tab 无下拉 |
-| Command Palette | Ctrl+Shift+P 等（待核） | `commands.rs` 已有 21 命令 + 模糊搜索；无面板 UI/执行接线 | 模糊搜索命令/Profile/设置并执行 | 数据层已有，UI 缺失 | Ctrl+Shift+P 无反应；`Registry::search` 单测通过 |
+| Command Palette | Ctrl+Shift+P | `commands.rs` 30 命令 + 模糊搜索；Slint 浮层 + `run_command` 分发；支持键盘输入/↑↓/Enter/Esc | 模糊搜索命令/Profile/设置并执行 | 命令路径已接 30/30；Profile/设置项未接入搜索 | Xvfb :119 键盘搜索 `reset terminal` / `reset and clear` 并执行成功；日志 `[ui] run command ...` |
 | 状态/通知区 | — | 无 | 连接/任务/进度/完成 | 缺失 | 无状态栏 |
 | Tab 重命名 | 双击/快捷键 | 无 | 输入框改名 | 缺失 | 双击无反应 |
 | Tab 拖拽排序 | 拖动 | 无 | 排序/拖出 | 缺失 | 拖动无效 |

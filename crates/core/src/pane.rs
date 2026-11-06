@@ -58,6 +58,15 @@ pub struct SearchHit {
     pub end_col: u16,
 }
 
+/// 搜索选项：默认大小写不敏感、纯文本。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SearchOptions {
+    /// true = 区分大小写；false = 大小写不敏感。
+    pub match_case: bool,
+    /// true = 把 query 当正则；false = 转义成纯文本。
+    pub regex: bool,
+}
+
 /// 非阻塞滚动位置快照（actor 在输出/滚动/resize 后刷新）。
 ///
 /// UI 线程只读原子值，绝不向 actor 发同步请求，因此即使 PTY 输出洪峰
@@ -271,11 +280,22 @@ enum Ctrl {
     SelectLine(i32),
     /// 清屏并清回滚（终端“Clear”语义）。
     ClearScreen,
+    /// 复位终端状态（RIS 语义：模式/光标/字符集/滚动区/标题栈等）。
+    Reset,
+    /// 复位终端状态并显式再清一次回滚缓冲（与 Reset 在 alacritty 下等价）。
+    ResetAndClear,
     /// 鼠标上报：终端启用 1000/1002/1003 时转成转义序列写进 PTY。
     Mouse(MouseEvent),
     CopySelection(Sender<Option<String>>),
-    Search { query: String, forward: bool, reply: Sender<Option<SearchHit>> },
+    Search {
+        query: String,
+        forward: bool,
+        options: SearchOptions,
+        reply: Sender<Result<Option<SearchHit>, String>>,
+    },
     SearchClear,
+    /// 取全部内容（回滚 + 视口），保存到文件用。
+    Contents(Sender<Option<String>>),
     Pull(Box<Frame>),
     PtyClosed,
     Shutdown,
@@ -296,6 +316,8 @@ pub struct PaneHandle {
     cursor_bits: Arc<std::sync::atomic::AtomicU64>,
     /// 滚动位置快照（打包 offset/history），见 [`PaneHandle::scroll_position`]。
     scroll: Arc<std::sync::atomic::AtomicU64>,
+    /// Read Only：true 时 UI 输入/粘贴/鼠标上报都不写 PTY（选区/滚动仍走 ctrl）。
+    read_only: Arc<std::sync::atomic::AtomicBool>,
     child: Box<dyn portable_pty::Child + Send + Sync>,
     #[allow(dead_code)]
     threads: Vec<JoinHandle<()>>,
@@ -309,13 +331,30 @@ impl PaneHandle {
     }
 
     /// 送键盘输入。有界阻塞：宁可短暂背压，也不丢按键。
+    /// Read Only 时直接丢弃，连队列都不进（不阻塞 UI）。
     pub fn input(&self, bytes: &[u8]) {
+        if self.read_only() {
+            return;
+        }
         let _ = self.input_tx.send(bytes.to_vec());
     }
 
     /// 非阻塞输入（满则返回 false），供高频粘贴等场景降级。
     pub fn try_input(&self, bytes: &[u8]) -> bool {
+        if self.read_only() {
+            return false;
+        }
         self.input_tx.try_send(bytes.to_vec()).is_ok()
+    }
+
+    /// 切换 Read Only。actor 侧也会检查同一个原子标志，已入队但未写的输入同样丢弃。
+    pub fn set_read_only(&self, on: bool) {
+        self.read_only.store(on, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// 当前是否 Read Only（无锁）。
+    pub fn read_only(&self) -> bool {
+        self.read_only.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// 滚轮回滚：正数向上翻历史。
@@ -354,13 +393,14 @@ impl PaneHandle {
     }
 
     /// 终端是否要求接收鼠标事件（1000/1002/1003）。
+    /// Read Only 时返回 false：鼠标点击改为本地选区/滚动，不写 PTY。
     pub fn wants_mouse(&self) -> bool {
-        mouse::reporting(self.mode())
+        !self.read_only() && mouse::reporting(self.mode())
     }
 
-    /// 是否要求上报「无按键悬停」（1003）。
+    /// 是否要求上报「无按键悬停」（1003）。Read Only 时不上报。
     pub fn wants_motion(&self) -> bool {
-        self.mode().contains(TermMode::MOUSE_MOTION)
+        !self.read_only() && self.mode().contains(TermMode::MOUSE_MOTION)
     }
 
     /// 是否启用 DECSET 1004 focus in/out 上报。
@@ -382,8 +422,11 @@ impl PaneHandle {
         )
     }
 
-    /// 上报一次鼠标事件。未启用鼠标模式的 pane 会自动忽略（actor 侧门禁）。
+    /// 上报一次鼠标事件。未启用鼠标模式 / Read Only 的 pane 自动忽略。
     pub fn mouse(&self, ev: MouseEvent) {
+        if self.read_only() {
+            return;
+        }
         let _ = self.ctrl_tx.send(Ctrl::Mouse(ev));
     }
 
@@ -429,6 +472,20 @@ impl PaneHandle {
         let _ = self.ctrl_tx.send(Ctrl::ClearScreen);
     }
 
+    /// 复位终端状态（等同 RIS）：清屏、清回滚、重置模式/光标/字符集/滚动区等。
+    ///
+    /// alacritty 0.26 的 `Handler::reset_state()` 会同时清空回滚历史，因此本方法
+    /// 与 [`Self::reset_and_clear`] 在当前上游版本等价；保留两个入口是为了菜单/
+    /// 命令语义与未来上游 API 对齐。
+    pub fn reset(&self) {
+        let _ = self.ctrl_tx.send(Ctrl::Reset);
+    }
+
+    /// 复位并清空回滚缓冲（显式语义；当前与 [`Self::reset`] 等价）。
+    pub fn reset_and_clear(&self) {
+        let _ = self.ctrl_tx.send(Ctrl::ResetAndClear);
+    }
+
     /// 取当前选区文本（阻塞等 actor 回复）。
     pub fn copy_selection(&self) -> Option<String> {
         let (tx, rx) = bounded(1);
@@ -444,13 +501,43 @@ impl PaneHandle {
     }
 
     /// 搜索下一个/上一个命中；命中会滚动到可见并返回视口内高亮区间。
+    ///
+    /// 兼容旧调用：纯文本、大小写不敏感；非法正则返回 `Err` 请用
+    /// [`Self::search_with`]。
     pub fn search(&self, query: &str, forward: bool) -> Option<SearchHit> {
+        self.search_with(query, forward, SearchOptions::default()).ok().flatten()
+    }
+
+    /// 带选项搜索；非法 regex 返回可展示的错误字符串（不 panic）。
+    pub fn search_with(
+        &self,
+        query: &str,
+        forward: bool,
+        options: SearchOptions,
+    ) -> Result<Option<SearchHit>, String> {
         let (tx, rx) = bounded(1);
         if self
             .ctrl_tx
-            .send(Ctrl::Search { query: query.to_string(), forward, reply: tx })
+            .send(Ctrl::Search {
+                query: query.to_string(),
+                forward,
+                options,
+                reply: tx,
+            })
             .is_err()
         {
+            return Ok(None);
+        }
+        match rx.recv_timeout(std::time::Duration::from_millis(500)) {
+            Ok(result) => result,
+            Err(_) => Ok(None),
+        }
+    }
+
+    /// 取回滚 + 视口全部文本（阻塞等 actor 回复；最多 500ms）。
+    pub fn contents(&self) -> Option<String> {
+        let (tx, rx) = bounded(1);
+        if self.ctrl_tx.send(Ctrl::Contents(tx)).is_err() {
             return None;
         }
         rx.recv_timeout(std::time::Duration::from_millis(500)).ok().flatten()
@@ -642,6 +729,7 @@ pub fn spawn(config: PaneConfig) -> std::io::Result<PaneHandle> {
         term.grid().display_offset(),
         term.grid().history_size(),
     )));
+    let read_only = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     let actor = Actor {
         term,
@@ -661,6 +749,7 @@ pub fn spawn(config: PaneConfig) -> std::io::Result<PaneHandle> {
         mode_bits: mode_bits.clone(),
         cursor_bits: cursor_bits.clone(),
         scroll: scroll.clone(),
+        read_only: read_only.clone(),
         sel_anchor: None,
         pty_closed: false,
         force_full: false,
@@ -681,11 +770,26 @@ pub fn spawn(config: PaneConfig) -> std::io::Result<PaneHandle> {
         mode_bits,
         cursor_bits,
         scroll,
+        read_only,
         child,
         threads: vec![reader_thread, writer_thread, actor_thread],
         grid: size,
         exited: false,
     })
+}
+
+/// 搜索 query → alacritty RegexSearch 模式。
+///
+/// - 纯文本模式先转义元字符；
+/// - `match_case` 用内联组强制（alacritty 默认按“是否含大写”启发式决定，
+///   不能表达用户显式开关，所以这里始终写 `(?i:...)` / `(?-i:...)`）。
+fn search_pattern(query: &str, options: SearchOptions) -> String {
+    let body = if options.regex { query.to_string() } else { regex_escape(query) };
+    if options.match_case {
+        format!("(?-i:{body})")
+    } else {
+        format!("(?i:{body})")
+    }
 }
 
 /// 转义正则元字符：搜索框按「纯文本」语义处理。
@@ -740,6 +844,8 @@ struct Actor {
     cursor_bits: Arc<std::sync::atomic::AtomicU64>,
     /// 滚动位置快照（打包 offset/history），供 UI 无阻塞查询。
     scroll: Arc<std::sync::atomic::AtomicU64>,
+    /// Read Only 原子标志：actor 写 PTY 前再检查一次，丢弃已入队的输入。
+    read_only: Arc<std::sync::atomic::AtomicBool>,
     /// 选区锚点（网格坐标）；反向选择时用来保持两端 side 一致。
     sel_anchor: Option<Point>,
     pty_closed: bool,
@@ -803,6 +909,9 @@ impl Actor {
 
     /// 用户输入必须写进 PTY（交给 shell 处理），绝不能喂给 VT 解析器。
     fn write_input(&self, bytes: &[u8]) {
+        if self.read_only.load(std::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
         if self.write_tx.try_send(bytes.to_vec()).is_err() {
             // 有界队列满：按键不能丢，退化为阻塞发送
             let _ = self.write_tx.send(bytes.to_vec());
@@ -857,13 +966,26 @@ impl Actor {
         Point::new(Line(line - offset), Column(col))
     }
 
-    fn search(&mut self, query: &str, forward: bool) -> Option<SearchHit> {
+    fn search(
+        &mut self,
+        query: &str,
+        forward: bool,
+        options: SearchOptions,
+    ) -> Result<Option<SearchHit>, String> {
         if query.is_empty() {
             self.search_span = None;
             self.wake.notify();
-            return None;
+            return Ok(None);
         }
-        let mut regex = RegexSearch::new(&regex_escape(query)).ok()?;
+        // 非法 regex 必须把错误交回 UI，而不是静默返回 None（否则看起来像“没命中”）。
+        let mut regex = match RegexSearch::new(&search_pattern(query, options)) {
+            Ok(regex) => regex,
+            Err(e) => {
+                self.search_span = None;
+                self.wake.notify();
+                return Err(format!("invalid regex: {e}"));
+            },
+        };
         let direction = if forward { Direction::Right } else { Direction::Left };
         let offset = self.term.grid().display_offset() as i32;
         let origin = match self.search_span {
@@ -878,7 +1000,11 @@ impl Actor {
             None => self.term.grid().cursor.point,
         };
 
-        let found = self.term.search_next(&mut regex, origin, direction, Side::Left, None)?;
+        let Some(found) =
+            self.term.search_next(&mut regex, origin, direction, Side::Left, None)
+        else {
+            return Ok(None);
+        };
         let (start, end) = (*found.start(), *found.end());
 
         // 命中不在视口内就滚动过去
@@ -892,7 +1018,7 @@ impl Actor {
         let offset = self.term.grid().display_offset() as i32;
         line = start.line.0 + offset;
         if !(0..rows).contains(&line) {
-            return None;
+            return Ok(None);
         }
 
         let end_line = (end.line.0 + offset).clamp(0, rows - 1) as u16;
@@ -904,7 +1030,45 @@ impl Actor {
         };
         self.search_span = Some(span);
         self.wake.notify();
-        Some(SearchHit { line: span.start_line, start_col: span.start_col, end_col: span.end_col })
+        Ok(Some(SearchHit {
+            line: span.start_line,
+            start_col: span.start_col,
+            end_col: span.end_col,
+        }))
+    }
+
+    /// 复位终端状态（RIS）。`clear_scrollback` 为 true 时再显式清一次回滚。
+    fn reset(&mut self, clear_scrollback: bool) {
+        // alacritty 的 Handler::reset_state() 会清屏、清回滚，并重置模式/光标/
+        // 字符集/滚动区/标题栈等，等价于 RIS。
+        self.term.reset_state();
+        if clear_scrollback {
+            self.term.clear_screen(ClearMode::Saved);
+        }
+        self.term.selection = None;
+        self.sel_anchor = None;
+        self.search_span = None;
+        self.force_full = true;
+        self.refresh_zerowidth = false;
+        use std::sync::atomic::Ordering::Relaxed;
+        self.mode_bits.store(self.term.mode().bits(), Relaxed);
+        self.store_cursor();
+        self.sync_scroll();
+        self.wake.notify();
+    }
+
+    /// 全部内容（回滚 + 视口）转成文本；末尾补一个换行（与常见抓取工具一致）。
+    fn contents(&self) -> String {
+        let text = self.term.bounds_to_string(
+            Point::new(self.term.topmost_line(), Column(0)),
+            Point::new(self.term.bottommost_line(), self.term.last_column()),
+        );
+        let text = text.trim_end();
+        if text.is_empty() {
+            String::new()
+        } else {
+            format!("{text}\n")
+        }
     }
 
     fn handle(&mut self, ctrl: Ctrl) -> bool {
@@ -1041,6 +1205,14 @@ impl Actor {
                 self.wake.notify();
                 true
             },
+            Ctrl::Reset => {
+                self.reset(false);
+                true
+            },
+            Ctrl::ResetAndClear => {
+                self.reset(true);
+                true
+            },
             Ctrl::CopySelection(reply) => {
                 let text = self.term.selection_to_string().filter(|s| !s.is_empty());
                 let _ = reply.send(text);
@@ -1051,9 +1223,13 @@ impl Actor {
                 self.wake.notify();
                 true
             },
-            Ctrl::Search { query, forward, reply } => {
-                let hit = self.search(&query, forward);
+            Ctrl::Search { query, forward, options, reply } => {
+                let hit = self.search(&query, forward, options);
                 let _ = reply.send(hit);
+                true
+            },
+            Ctrl::Contents(reply) => {
+                let _ = reply.send(Some(self.contents()));
                 true
             },
             Ctrl::SetTheme(palette) => {

@@ -34,7 +34,7 @@ use std::time::{Duration, Instant};
 use tervo_core::{
     link::is_allowed_uri, spawn, ClipboardRequest, ClipboardSelection, CoreEvent, Frame, Modifiers,
     MouseAction, MouseButton, MouseEvent, Notification, PaneConfig, PaneHandle, ProgressState,
-    Theme, UiColors,
+    SearchOptions, Theme, UiColors,
 };
 use slint::winit_030::{winit, EventResult, WinitWindowAccessor};
 use slint::{Model, ModelRc, VecModel};
@@ -134,6 +134,11 @@ struct AppState {
     auto_watch_started: bool,
     search_open: bool,
     search_query: String,
+    /// 查找选项：区分大小写 / 正则。
+    search_match_case: bool,
+    search_regex: bool,
+    /// Save Contents 弹窗打开时锁定的 pane（右键菜单可能不是焦点 pane）。
+    save_pane: Option<PaneId>,
     /// 命令表（Command Palette / 快捷键分发共用）
     commands: commands::Registry,
     /// Palette 当前展示项对应的命令 ID（与 palette_model 同序）
@@ -2954,6 +2959,7 @@ fn pane_view(id: PaneId, rt: &PaneRuntime, focused: bool) -> PaneView {
         scrollbar_thumb_h: thumb_h,
         scrollbar_track_h: track_h,
         bell_flash: rt.bell_until.is_some(),
+        read_only: rt.handle.read_only(),
     }
 }
 
@@ -3334,6 +3340,9 @@ fn open_pane_menu(st: &mut AppState, id: PaneId, x: f32, y: f32) {
     eprintln!("[ui] right click pane={id} at {x},{y} link={}", !link.is_empty());
     st.menu_link = link.clone();
     st.ui.set_menu_link(link.as_str().into());
+    st.ui.set_menu_read_only(
+        st.panes.get(&id).is_some_and(|rt| rt.handle.read_only()),
+    );
     st.ui.set_menu_pane(id as i32);
     st.ui.set_menu_x(x);
     st.ui.set_menu_y(y);
@@ -3444,13 +3453,16 @@ fn open_link_uri(uri: &str) {
 /// 底部短暂状态浮层；4 秒后自动清空。调用方可在任意线程（内部切回 UI 线程）。
 fn show_link_status(msg: String) {
     let _ = slint::invoke_from_event_loop(move || {
-        with_app(|st| {
-            st.ui.set_link_status(msg.as_str().into());
-            let ui = st.ui.clone_strong();
-            slint::Timer::single_shot(Duration::from_secs(4), move || {
-                ui.set_link_status("".into());
-            });
-        });
+        with_app(|st| set_status_toast(st, msg));
+    });
+}
+
+/// 已在 UI 线程时的状态浮层版本（Read Only / Save Contents 等直接调用）。
+fn set_status_toast(st: &mut AppState, msg: String) {
+    st.ui.set_link_status(msg.as_str().into());
+    let ui = st.ui.clone_strong();
+    slint::Timer::single_shot(Duration::from_secs(4), move || {
+        ui.set_link_status("".into());
     });
 }
 
@@ -3591,6 +3603,11 @@ fn needs_paste_confirm(text: &str, enabled: bool) -> bool {
 fn deliver_paste(st: &mut AppState, text: &str) {
     let normalized = normalize_paste(text);
     let Some(focused) = st.ws.active_tab().map(|t| t.focused) else { return };
+    if st.panes.get(&focused).is_some_and(|rt| rt.handle.read_only()) {
+        eprintln!("[readonly] pane={focused} 丢弃粘贴 bytes={}", normalized.len());
+        set_status_toast(st, "Read Only: paste ignored".to_string());
+        return;
+    }
     let bracketed = st
         .panes
         .get(&focused)
@@ -3640,6 +3657,11 @@ fn drop_paths_text(paths: &[PathBuf]) -> String {
 fn drop_files_into_pane(id: PaneId, paths: &[PathBuf]) {
     with_app(|st| {
         let Some(rt) = st.panes.get(&id) else { return };
+        if rt.handle.read_only() {
+            eprintln!("[readonly] pane={id} 丢弃拖放文件 {}", paths.len());
+            set_status_toast(st, "Read Only: drop ignored".to_string());
+            return;
+        }
         let bracketed = rt.frame.mode & BRACKETED_PASTE != 0;
         let text = drop_paths_text(paths);
         let payload = paste_payload(&text, bracketed);
@@ -3726,6 +3748,13 @@ fn paste_text_into_focused(st: &mut AppState, text: &str) {
     if text.is_empty() {
         return;
     }
+    if let Some(id) = focused_pane(st) {
+        if st.panes.get(&id).is_some_and(|rt| rt.handle.read_only()) {
+            eprintln!("[readonly] pane={id} 丢弃粘贴 bytes={}", text.len());
+            set_status_toast(st, "Read Only: paste ignored".to_string());
+            return;
+        }
+    }
     if needs_paste_confirm(text, st.cfg.confirm_multiline_paste) {
         let lines = text.lines().count();
         let preview: String = text.lines().take(3).collect::<Vec<_>>().join("\n");
@@ -3758,6 +3787,50 @@ fn paste_primary_into_focused(st: &mut AppState) {
 
 fn update_search_bar(st: &mut AppState) {
     st.ui.set_search_query(st.search_query.as_str().into());
+    st.ui.set_search_match_case(st.search_match_case);
+    st.ui.set_search_regex(st.search_regex);
+}
+
+/// 当前查找选项快照。
+fn search_options(st: &AppState) -> SearchOptions {
+    SearchOptions { match_case: st.search_match_case, regex: st.search_regex }
+}
+
+/// 切换 Match case；查询非空时从当前位置重新搜索（并清掉旧命中起点）。
+fn toggle_search_case(st: &mut AppState) {
+    st.search_match_case = !st.search_match_case;
+    update_search_bar(st);
+    eprintln!(
+        "[ui] find option match_case={} regex={}",
+        st.search_match_case, st.search_regex
+    );
+    rerun_search_after_option_change(st);
+}
+
+/// 切换 Match regex；非法 regex 的错误由 run_search 显示。
+fn toggle_search_regex(st: &mut AppState) {
+    st.search_regex = !st.search_regex;
+    update_search_bar(st);
+    eprintln!(
+        "[ui] find option match_case={} regex={}",
+        st.search_match_case, st.search_regex
+    );
+    rerun_search_after_option_change(st);
+}
+
+fn rerun_search_after_option_change(st: &mut AppState) {
+    // 选项变化后旧匹配位置不再可靠，清掉高亮起点再搜。
+    let focused = st.ws.active_tab().map(|t| t.focused);
+    if let Some(rt) = focused.and_then(|id| st.panes.get(&id)) {
+        rt.handle.search_clear();
+    }
+    if st.search_query.is_empty() {
+        st.ui.set_search_status("".into());
+        st.ui.set_search_error(false);
+        redraw_visible(st);
+    } else {
+        run_search(st, true);
+    }
 }
 
 // ------------------------------------------------------------ Command Palette
@@ -3933,6 +4006,14 @@ fn run_command(st: &mut AppState, id: &str) {
                 }
             }
         },
+        "terminal.toggle-read-only" => toggle_read_only(st, focused_pane(st)),
+        "terminal.reset" => reset_focused_pane(st, false),
+        "terminal.reset-and-clear" => reset_focused_pane(st, true),
+        "terminal.save-contents" => {
+            if let Some(id) = focused_pane(st) {
+                open_save_contents(st, id);
+            }
+        },
         "view.command-palette" => open_palette(st),
         "view.toggle-fullscreen" => toggle_fullscreen(st),
         "view.toggle-quake" => toggle_quake_inner(st),
@@ -3958,13 +4039,19 @@ fn open_search(st: &mut AppState) {
     st.search_open = true;
     st.ui.set_search_open(true);
     st.ui.set_search_status("".into());
+    st.ui.set_search_error(false);
     update_search_bar(st);
+    eprintln!(
+        "[ui] find open case={} regex={}",
+        st.search_match_case, st.search_regex
+    );
 }
 
 fn close_search(st: &mut AppState) {
     st.search_open = false;
     st.ui.set_search_open(false);
     st.ui.set_search_status("".into());
+    st.ui.set_search_error(false);
     let ids: Vec<PaneId> = st.panes.keys().copied().collect();
     for id in ids {
         if let Some(rt) = st.panes.get(&id) {
@@ -3976,13 +4063,198 @@ fn close_search(st: &mut AppState) {
 
 fn run_search(st: &mut AppState, forward: bool) {
     let query = st.search_query.clone();
+    let options = search_options(st);
+    let Some(focused) = st.ws.active_tab().map(|t| t.focused) else { return };
     if query.is_empty() {
+        if let Some(rt) = st.panes.get(&focused) {
+            rt.handle.search_clear();
+        }
+        st.ui.set_search_status("".into());
+        st.ui.set_search_error(false);
+        redraw_visible(st);
         return;
     }
-    let Some(focused) = st.ws.active_tab().map(|t| t.focused) else { return };
-    let hit = st.panes.get(&focused).and_then(|rt| rt.handle.search(&query, forward));
-    st.ui.set_search_status(if hit.is_some() { "".into() } else { "no match".into() });
+    let result = st
+        .panes
+        .get(&focused)
+        .map(|rt| rt.handle.search_with(&query, forward, options));
+    match result {
+        Some(Ok(Some(hit))) => {
+            st.ui.set_search_status("".into());
+            st.ui.set_search_error(false);
+            eprintln!(
+                "[ui] find query={query:?} forward={forward} case={} regex={} hit={hit:?}",
+                options.match_case, options.regex
+            );
+        },
+        Some(Ok(None)) => {
+            st.ui.set_search_status("no match".into());
+            st.ui.set_search_error(false);
+            eprintln!(
+                "[ui] find query={query:?} forward={forward} case={} regex={} hit=none",
+                options.match_case, options.regex
+            );
+        },
+        Some(Err(err)) => {
+            // 搜索条空间小，显示短状态；完整错误进日志，红框提示非法 regex。
+            st.ui.set_search_status("invalid regex".into());
+            st.ui.set_search_error(true);
+            eprintln!(
+                "[ui] find query={query:?} forward={forward} case={} regex={} error={err}",
+                options.match_case, options.regex
+            );
+        },
+        None => {
+            st.ui.set_search_status("no match".into());
+            st.ui.set_search_error(false);
+        },
+    }
     redraw_visible(st);
+}
+
+/// 切换 Read Only（None = 当前焦点 pane）。状态通过菜单项、pane 角标与底部浮层可见。
+fn toggle_read_only(st: &mut AppState, pane: Option<PaneId>) {
+    let id = pane.or_else(|| st.ws.active_tab().map(|t| t.focused));
+    let Some(id) = id else { return };
+    let on = match st.panes.get(&id) {
+        Some(rt) => {
+            let on = !rt.handle.read_only();
+            rt.handle.set_read_only(on);
+            on
+        },
+        None => return,
+    };
+    refresh_pane_view(st, id);
+    st.ui.set_menu_read_only(on);
+    eprintln!("[ui] read-only pane={id} on={on}");
+    set_status_toast(st, format!("Read Only: {}", if on { "ON" } else { "OFF" }));
+}
+
+/// 复位指定 pane；`clear_scrollback` 对应 Reset and Clear。
+fn reset_pane(st: &mut AppState, id: PaneId, clear_scrollback: bool) {
+    let Some(rt) = st.panes.get(&id) else { return };
+    if clear_scrollback {
+        rt.handle.reset_and_clear();
+    } else {
+        rt.handle.reset();
+    }
+    eprintln!("[ui] reset pane={id} clear-scrollback={clear_scrollback}");
+    set_status_toast(
+        st,
+        if clear_scrollback { "Terminal reset and cleared" } else { "Terminal reset" }.to_string(),
+    );
+}
+
+fn reset_focused_pane(st: &mut AppState, clear_scrollback: bool) {
+    if let Some(id) = st.ws.active_tab().map(|t| t.focused) {
+        reset_pane(st, id, clear_scrollback);
+    }
+}
+
+fn focused_pane(st: &AppState) -> Option<PaneId> {
+    st.ws.active_tab().map(|t| t.focused)
+}
+
+/// 默认保存路径：`$HOME/tervo-save-<epoch>.txt`；无 HOME 时退到临时目录。
+fn default_save_path(stamp: u64) -> PathBuf {
+    if let Some(home) = std::env::var_os("HOME").filter(|h| !h.is_empty()) {
+        PathBuf::from(home).join(format!("tervo-save-{stamp}.txt"))
+    } else {
+        std::env::temp_dir().join(format!("tervo-save-{stamp}.txt"))
+    }
+}
+
+/// 展开 `~` / 相对路径，返回真正要写的绝对路径（不访问文件系统）。
+fn resolve_save_path(
+    raw: &str,
+    home: Option<&std::path::Path>,
+    cwd: &std::path::Path,
+) -> Result<PathBuf, String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Err("保存路径为空".to_string());
+    }
+    let path = if raw == "~" {
+        home.ok_or_else(|| "无法展开 ~：HOME 未设置".to_string())?.to_path_buf()
+    } else if let Some(rest) = raw.strip_prefix("~/") {
+        home.ok_or_else(|| "无法展开 ~：HOME 未设置".to_string())?.join(rest)
+    } else {
+        PathBuf::from(raw)
+    };
+    Ok(if path.is_absolute() { path } else { cwd.join(path) })
+}
+
+/// 写文件（同步；内容量是 scrollback 级别，UI 线程可接受）。返回绝对路径。
+fn save_contents_file(
+    raw: &str,
+    text: &str,
+    home: Option<&std::path::Path>,
+    cwd: &std::path::Path,
+) -> Result<PathBuf, String> {
+    let path = resolve_save_path(raw, home, cwd)?;
+    std::fs::write(&path, text).map_err(|e| format!("写入 {} 失败：{e}", path.display()))?;
+    Ok(path)
+}
+
+/// Save Contents 入口：锁存目标 pane，给出明确默认路径，由 UI 弹窗编辑/确认。
+fn open_save_contents(st: &mut AppState, pane: PaneId) {
+    if !st.panes.contains_key(&pane) {
+        set_status_toast(st, "Save Contents: pane 不存在".to_string());
+        return;
+    }
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let path = default_save_path(stamp);
+    st.save_pane = Some(pane);
+    st.ui.set_save_path(path.to_string_lossy().as_ref().into());
+    st.ui.set_save_status("".into());
+    st.ui.set_save_open(true);
+    eprintln!("[ui] save-contents open pane={pane} path={}", path.display());
+}
+
+fn save_contents_commit(st: &mut AppState, raw: &str) {
+    let Some(pane) = st.save_pane else {
+        st.ui.set_save_status("Save Contents: 没有目标 pane".into());
+        return;
+    };
+    let Some(text) = st.panes.get(&pane).and_then(|rt| rt.handle.contents()) else {
+        let msg = "读取终端内容失败（会话可能已结束）";
+        eprintln!("[ui] save-contents error pane={pane} path={raw:?} error={msg}");
+        st.ui.set_save_status(msg.into());
+        return;
+    };
+    let home = std::env::var_os("HOME").filter(|h| !h.is_empty()).map(PathBuf::from);
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    match save_contents_file(raw, &text, home.as_deref(), &cwd) {
+        Ok(path) => {
+            st.save_pane = None;
+            st.ui.set_save_open(false);
+            st.ui.set_save_status("".into());
+            eprintln!(
+                "[ui] save-contents ok pane={pane} path={} bytes={}",
+                path.display(),
+                text.len()
+            );
+            set_status_toast(
+                st,
+                format!("Saved {} bytes to {}", text.len(), path.display()),
+            );
+            st.ui.invoke_focus_terminal();
+        },
+        Err(err) => {
+            eprintln!("[ui] save-contents error pane={pane} path={raw:?} error={err}");
+            st.ui.set_save_status(err.as_str().into());
+        },
+    }
+}
+
+fn cancel_save_contents(st: &mut AppState) {
+    st.save_pane = None;
+    st.ui.set_save_open(false);
+    st.ui.set_save_status("".into());
+    st.ui.invoke_focus_terminal();
 }
 
 // ------------------------------------------------------------------- 事件
@@ -3990,14 +4262,14 @@ fn run_search(st: &mut AppState, forward: bool) {
 /// Slint/winit 在 X11 下会把修饰键**本身**也当成 key-pressed 上报：
 /// Ctrl→U+0011、Shift→U+0010、Alt→U+0012。这些不是用户输入，必须丢掉，
 /// 否则终端会莫名收到 0x11/0x10（Ctrl+Q 的真实按键会另发一条 "q" 事件）。
-fn is_modifier_artifact(text: &str, ctrl: bool, alt: bool, shift: bool) -> bool {
+fn is_modifier_artifact(text: &str, ctrl: bool, alt: bool, _shift: bool) -> bool {
     match text {
         // Slint 的修饰键伪字符：Ctrl=\u{11}、Alt=\u{12}、Shift_L=\u{10}、Shift_R=\u{15}。
-        // 右 Shift 的 \u{15} 若漏过滤会写入 PTY 变成 Ctrl+U（清空当前输入行）。
+        // Shift 伪字符在 Ctrl+Shift 组合里会带 ctrl=true（Ctrl+Shift+P/C/V 都会先发
+        // 一条 "\u{10}"）；若不无条件过滤，就会往 PTY 写 0x10（Ctrl+P）。
         "\u{11}" => ctrl,
         "\u{12}" => alt,
-        "\u{10}" => shift && !ctrl && !alt,
-        "\u{15}" => shift && !ctrl && !alt,
+        "\u{10}" | "\u{15}" => true,
         _ => false,
     }
 }
@@ -4077,6 +4349,20 @@ fn handle_input(
 
     // 搜索框打开时，键盘归搜索框（Esc 关闭、Enter 下一个、Shift+Enter 上一个）
     if st.search_open {
+        // Alt+C / Alt+R 是 GNOME Terminal 查找栏的 Match case / regex 开关。
+        if alt && !ctrl && !shift {
+            match text.to_ascii_lowercase().as_str() {
+                "c" => {
+                    toggle_search_case(st);
+                    return;
+                },
+                "r" => {
+                    toggle_search_regex(st);
+                    return;
+                },
+                _ => {},
+            }
+        }
         match text {
             "\u{1b}" => {
                 close_search(st);
@@ -4089,9 +4375,8 @@ fn handle_input(
             "\u{8}" | "\u{7f}" => {
                 st.search_query.pop();
                 update_search_bar(st);
-                if !st.search_query.is_empty() {
-                    run_search(st, true);
-                }
+                // 空查询也要跑一次：清掉旧高亮并复位状态。
+                run_search(st, true);
                 return;
             },
             _ => {},
@@ -4237,6 +4522,11 @@ fn handle_input(
     for target in targets {
     match st.panes.get_mut(&target) {
         Some(rt) => {
+            // UI 层先挡一次，避免编码/入队；core 的 input()/actor 仍有第二道门禁。
+            if rt.handle.read_only() {
+                eprintln!("[readonly] pane={target} 丢弃按键 text={text:?}");
+                continue;
+            }
             let encoded = keys::encode_mode(
                 text,
                 ctrl,
@@ -5073,6 +5363,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         auto_watch_started: false,
         search_open: false,
         search_query: String::new(),
+        search_match_case: false,
+        search_regex: false,
+        save_pane: None,
         commands: command_registry,
         palette_ids: Vec::new(),
         palette_model,
@@ -5738,9 +6031,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 });
             },
+            11 => {
+                with_app(|st| toggle_read_only(st, Some(id)));
+            },
+            12 => {
+                with_app(|st| reset_pane(st, id, false));
+            },
+            13 => {
+                with_app(|st| reset_pane(st, id, true));
+            },
+            14 => {
+                with_app(|st| open_save_contents(st, id));
+            },
             _ => {},
         }
-        with_app(|st| st.ui.invoke_focus_terminal());
+        // Save Contents 需要把焦点交给输入路径的 TextInput，不能抢回终端。
+        if action != 14 {
+            with_app(|st| st.ui.invoke_focus_terminal());
+        }
     });
 
     ui.on_tab_rename(|index| {
@@ -6272,6 +6580,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             st.ui.set_palette_selected(index.max(0));
             palette_accept(st);
         });
+    });
+
+    ui.on_search_toggle_case(|| {
+        with_app(toggle_search_case);
+    });
+
+    ui.on_search_toggle_regex(|| {
+        with_app(toggle_search_regex);
+    });
+
+    ui.on_save_commit(|path| {
+        with_app(|st| save_contents_commit(st, path.as_str()));
+    });
+
+    ui.on_save_cancel(|| {
+        with_app(cancel_save_contents);
     });
 
     ui.on_tab_reorder(|from, drag_x, strip_w| {
@@ -7121,7 +7445,10 @@ mod tests {
         assert!(is_modifier_artifact("\u{11}", true, true, true));
         // 真实按键不能被误杀
         assert!(!is_modifier_artifact("q", true, false, false));
-        assert!(!is_modifier_artifact("\u{10}", true, false, false)); // Ctrl+P
+        // \u{10} 是 Shift 伪字符，即使带 ctrl=true 也来自 Ctrl+Shift 组合；
+        // 真正的 Ctrl+P 是 text="p" + ctrl=true，不能混为一谈。
+        assert!(is_modifier_artifact("\u{10}", true, false, false));
+        assert!(!is_modifier_artifact("p", true, false, true)); // Ctrl+P
         assert!(!is_modifier_artifact("\u{1b}", false, false, false)); // Esc
         assert!(!is_modifier_artifact("\n", true, false, false)); // Ctrl+Enter
         assert!(!is_modifier_artifact("你", false, false, false));
@@ -7154,7 +7481,10 @@ mod tests {
     fn hotkey_page_lists_bindings_and_conflicts() {
         let reg = commands::builtin();
         let (summary, rows, ids) = hotkey_rows(&reg, &[]);
-        assert!(summary.contains("26 commands"), "{summary}");
+        assert!(
+            summary.contains(&format!("{} commands", reg.len())),
+            "{summary}"
+        );
         assert_eq!(rows.len(), reg.all().len());
         assert_eq!(ids.len(), rows.len());
         assert!(rows.iter().any(|r| r.title == "New Tab" && r.chord == "Ctrl+T" && !r.custom));
@@ -7449,7 +7779,58 @@ mod tests {
     #[test]
     fn shift_right_modifier_artifact_is_ignored_but_ctrl_u_is_not() {
         assert!(is_modifier_artifact("\u{15}", false, false, true));
-        assert!(!is_modifier_artifact("\u{15}", true, false, false));
+        // Ctrl+Shift+P/C/V 时 Slint 会带 ctrl=true 上报 Shift 伪字符，也必须过滤，
+        // 否则往 PTY 写 0x10（Ctrl+P）。真正的 Ctrl+U 是 text="u"，不受影响。
+        assert!(is_modifier_artifact("\u{15}", true, false, true));
+        assert!(is_modifier_artifact("\u{10}", true, false, true));
+        // 即使 Slint 未上报 shift，Shift 伪字符也不能落进 PTY。
+        assert!(is_modifier_artifact("\u{15}", true, false, false));
         assert!(!is_modifier_artifact("u", true, false, false));
+    }
+
+    #[test]
+    fn save_contents_resolves_paths_and_writes_files() {
+        let dir = std::env::temp_dir().join(format!(
+            "tervo-save-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("home")).expect("create temp dir");
+        let home = dir.join("home");
+
+        // ~ 展开 + 写文件
+        let path = save_contents_file(
+            "~/out.txt",
+            "hello\nworld\n",
+            Some(&home),
+            &dir,
+        )
+        .expect("save");
+        assert_eq!(path, home.join("out.txt"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "hello\nworld\n");
+
+        // 相对路径按 cwd 解析
+        let path = save_contents_file("relative.txt", "x", Some(&home), &dir).expect("save");
+        assert_eq!(path, dir.join("relative.txt"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "x");
+
+        // 绝对路径保持
+        let abs = dir.join("absolute.txt");
+        let saved =
+            save_contents_file(abs.to_str().unwrap(), "abs", Some(&home), &dir).expect("save");
+        assert_eq!(saved, abs);
+
+        // 明确错误：空路径 / 无 HOME 的 ~ / 不存在的父目录
+        assert!(save_contents_file("  ", "x", Some(&home), &dir).unwrap_err().contains("为空"));
+        assert!(resolve_save_path("~/x", None, &dir).unwrap_err().contains("HOME"));
+        let bad = dir.join("missing-dir").join("x.txt");
+        let err = save_contents_file(bad.to_str().unwrap(), "x", Some(&home), &dir)
+            .expect_err("父目录不存在应报错");
+        assert!(err.contains("写入"), "{err}");
+
+        // 默认路径必须明确到文件名，便于 UI 显示/用户确认。
+        let default = default_save_path(42);
+        assert!(default.to_string_lossy().ends_with("tervo-save-42.txt"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
