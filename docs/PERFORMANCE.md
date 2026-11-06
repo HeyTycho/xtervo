@@ -80,6 +80,25 @@ Skia 同轮记录到 35 帧渲染，中位 2.85ms、最大 6.84ms（llvmpipe，�
 “apply 次数少”当成更快；1080 窗口的 80 步数据更能反映逐 configure 路径。
 完整日志/截图：`.logs/bench-resize/`、`.logs/gpu-func/`（gitignored）。
 
+## 2.3 事件唤醒延迟 / 空闲开销（2026-11-06，P1-07，headless Xvfb :138）
+
+测试：`scripts/e2e_event_wake.sh`，同一 debug binary 跑两遍（wake 默认 / `TERVO_EVENT_WAKE=0`
+纯 400ms 轮询），shell 在发事件前用 `date +%s%3N` 打点，应用日志 `ts_ms=` 对齐。
+
+| 事件 | 事件唤醒 | 400ms 轮询（对照） |
+|---|---|---|
+| OSC 标题 ×6 | 0–1 ms | 88–390 ms |
+| BEL | 0–1 ms | 287–292 ms |
+| OSC52 query | 1–2 ms | 385–388 ms |
+| 插件活动刷新 | 8–9 ms | 397–400 ms |
+| SFTP 上传完成 | 27–33 ms | 82–102 ms |
+
+空闲（8 秒采样，`TERVO_WAKE_STATS=1`）：两遍 `core_event/app_event` 增量均为 0，
+`periodic_400ms` 每 5 秒 12–13 次；CPU ticks before 111–214 / after 103–110（100 Hz，
+两次运行系统负载有波动），voluntary context switches before 225–252 / after 263——
+事件唤醒没有引入高频轮询。本表是相对 A/B 数据（Xvfb + `winit-software`），不能直接
+当真实 GPU/桌面空闲 CPU。日志/截图：`.logs/event-wake/`。
+
 ## 3. 4 pane 测量步骤（可复现）
 
 ```bash
