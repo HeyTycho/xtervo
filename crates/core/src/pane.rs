@@ -48,6 +48,7 @@ use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtyPair, PtySiz
 
 use crate::event::{ClipboardSelection, CoreEvent, EventSink, PaneStats, WakeSignal};
 use crate::frame::{CellData, CursorShape, CursorState, Frame, InlineImage, LineDamage, Span};
+use crate::iip::{IipEvent, IipFilter, IipImage};
 use crate::keyboard::{KeyboardAction, KeyboardFlags, KeyboardScanner};
 use crate::mouse::{self, MouseEvent};
 use crate::osc::OscScanner;
@@ -394,7 +395,12 @@ pub struct PaneConfig {
     pub sixel: bool,
     /// Sixel 图片是否跟随滚动历史（默认 true）；false 时锚定在创建时的屏幕行。
     pub sixel_scrolling: bool,
-    /// 终端 cell 像素高度：只用于判断图片是否仍与视口相交（不影响锚点）。
+    /// 启用 iTerm2 IIP（OSC 1337 File）内联图片。关闭后不解析/解码 IIP，
+    /// 已显示的 IIP 图片立即清除；不影响 Sixel。
+    pub iip: bool,
+    /// 终端 cell 像素宽度：IIP 的 `width=/height=` 以 cell 为单位时换算像素。
+    pub cell_width: u16,
+    /// 终端 cell 像素高度：判断图片是否仍与视口相交，并换算 IIP cell 尺寸。
     pub cell_height: u16,
 }
 
@@ -415,6 +421,8 @@ impl Default for PaneConfig {
             keyboard_protocol: true,
             sixel: true,
             sixel_scrolling: true,
+            iip: true,
+            cell_width: 8,
             cell_height: 16,
         }
     }
@@ -428,10 +436,14 @@ enum Ctrl {
     ScrollTo(usize),
     /// 运行时切换 scroll-on-output（设置页改动立即生效）。
     SetScrollOnOutput(bool),
-    /// 运行时开关 Sixel（设置页改动立即生效）；关闭时清除已有图片。
+    /// 运行时开关 Sixel（设置页改动立即生效）；关闭时清除已有 Sixel 图片。
     SetSixel(bool),
     /// 运行时切换 Sixel 图片是否随滚动历史移动。
     SetSixelScrolling(bool),
+    /// 运行时开关 iTerm2 IIP；关闭时清除已有 IIP 图片（不影响 Sixel）。
+    SetIip(bool),
+    /// 字号变化后更新 cell 像素尺寸（IIP cell 尺寸换算 + 图片可见性判断）。
+    SetCellSize { width: u16, height: u16 },
     SelectionStart { line: u16, col: u16 },
     SelectionExtend { line: u16, col: u16 },
     SelectionClear,
@@ -610,6 +622,18 @@ impl PaneHandle {
     /// 运行时切换 Sixel 图片是否跟随滚动历史（异步）。
     pub fn set_sixel_scrolling(&self, scrolling: bool) {
         self.send_ctrl(Ctrl::SetSixelScrolling(scrolling));
+    }
+
+    /// 运行时开关 iTerm2 IIP（异步）。关闭后 actor 不再解码 IIP，并清除
+    /// 已有 IIP 图片；Sixel 图片与 DA1 宣告不受影响。
+    pub fn set_iip(&self, enabled: bool) {
+        self.send_ctrl(Ctrl::SetIip(enabled));
+    }
+
+    /// 字号变化后同步 cell 像素尺寸（异步）。IIP 的 cell 宽高换算与图片
+    /// 可见性判断都依赖它；不影响已经解码图片的像素尺寸。
+    pub fn set_cell_size(&self, width: u16, height: u16) {
+        self.send_ctrl(Ctrl::SetCellSize { width, height });
     }
 
     /// 非阻塞滚动位置查询：只读 actor 维护的原子快照。
@@ -995,6 +1019,7 @@ pub fn spawn(config: PaneConfig) -> std::io::Result<PaneHandle> {
 
     let shared_palette = Arc::new(RwLock::new(config.palette.clone()));
     let sixel_enabled = Arc::new(AtomicBool::new(config.sixel));
+    let iip_enabled = Arc::new(AtomicBool::new(config.iip));
     let listener = Listener {
         wake: wake_signal,
         events: events_sink,
@@ -1068,6 +1093,8 @@ pub fn spawn(config: PaneConfig) -> std::io::Result<PaneHandle> {
         term.grid().history_size(),
     )));
     let read_only = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut iip = IipFilter::new();
+    iip.set_cell_size(config.cell_width.max(1), config.cell_height.max(1));
 
     let actor = Actor {
         term,
@@ -1077,6 +1104,8 @@ pub fn spawn(config: PaneConfig) -> std::io::Result<PaneHandle> {
         sixel: SixelFilter::new(),
         sixel_enabled: sixel_enabled.clone(),
         sixel_scrolling: config.sixel_scrolling,
+        iip,
+        iip_enabled: iip_enabled.clone(),
         cell_height: config.cell_height.max(1),
         images: ImageStore::default(),
         image_clear: ImageClearScanner::default(),
@@ -1246,6 +1275,10 @@ struct Actor {
     sixel_enabled: Arc<AtomicBool>,
     /// 图片是否跟随滚动历史。
     sixel_scrolling: bool,
+    /// iTerm2 IIP 流式过滤器（OSC 1337 File）。
+    iip: IipFilter,
+    /// IIP 开关：关闭时只吞序列，不解码/渲染。
+    iip_enabled: Arc<AtomicBool>,
     /// 终端 cell 像素高度（判断图片是否与视口相交）。
     cell_height: u16,
     /// 已解码的 Sixel 图片（按创建顺序，超出预算淘汰最旧）。
@@ -1362,9 +1395,17 @@ impl ImageClearScanner {
     }
 }
 
-/// actor 内保存的一张已解码 Sixel 图片。
+/// 图片来自哪种协议；两种图片共用一个 ID 空间与预算，但可以各自开关/清除。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ImageKind {
+    Sixel,
+    Iip,
+}
+
+/// actor 内保存的一张已解码内联图片（Sixel 或 IIP）。
 struct StoredImage {
     id: u64,
+    kind: ImageKind,
     /// 绝对行号 = grid 行 + 当时的 history_size；滚动/resize 时保持不变
     ///（scrollback 满后淘汰最旧行会让它偏移，见模块文档中的说明）。
     abs_line: i64,
@@ -1390,11 +1431,25 @@ impl ImageStore {
         self.bytes = 0;
     }
 
-    /// 锚定到光标处的图片。`cursor.line` 是 alacritty grid 坐标（视口底行为
-    /// `screen_lines-1`，历史为负）。
+    /// 只清除某一种协议的图片（关闭 Sixel 时不影响 IIP，反之亦然）。
+    fn clear_kind(&mut self, kind: ImageKind) {
+        let mut removed = 0usize;
+        self.images.retain(|image| {
+            if image.kind == kind {
+                removed += image.bytes;
+                false
+            } else {
+                true
+            }
+        });
+        self.bytes = self.bytes.saturating_sub(removed);
+    }
+
+    /// 锚定到光标处的 Sixel 图片。
     #[allow(clippy::too_many_arguments)]
     fn push(
         &mut self,
+        kind: ImageKind,
         image: SixelImage,
         cursor: Point,
         history: usize,
@@ -1402,15 +1457,40 @@ impl ImageStore {
         scrolling: bool,
         cols: usize,
     ) {
-        let expected = image.width as usize * image.height as usize * 4;
-        if image.width == 0
-            || image.height == 0
-            || image.rgba.len() != expected
-            || expected > MAX_STORED_IMAGE_BYTES
+        self.push_rgba(
+            kind,
+            image.width,
+            image.height,
+            image.rgba,
+            cursor,
+            history,
+            display_offset,
+            scrolling,
+            cols,
+        );
+    }
+
+    /// 锚定到光标处的一张 RGBA 图片。`cursor.line` 是 alacritty grid 坐标
+    /// （视口底行为 `screen_lines-1`，历史为负）。
+    #[allow(clippy::too_many_arguments)]
+    fn push_rgba(
+        &mut self,
+        kind: ImageKind,
+        width: u32,
+        height: u32,
+        rgba: Vec<u8>,
+        cursor: Point,
+        history: usize,
+        display_offset: usize,
+        scrolling: bool,
+        cols: usize,
+    ) {
+        let expected = width as usize * height as usize * 4;
+        if width == 0 || height == 0 || rgba.len() != expected || expected > MAX_STORED_IMAGE_BYTES
         {
             return;
         }
-        let bytes = image.rgba.len();
+        let bytes = rgba.len();
         // 按创建顺序淘汰最旧图片，给新图腾预算。
         while !self.images.is_empty()
             && (self.images.len() >= MAX_STORED_IMAGES
@@ -1434,12 +1514,13 @@ impl ImageStore {
         self.bytes += bytes;
         self.images.push_back(StoredImage {
             id: self.next_id,
+            kind,
             abs_line,
             fixed_row,
             col,
-            width: image.width,
-            height: image.height,
-            data: Arc::from(image.rgba.into_boxed_slice()),
+            width,
+            height,
+            data: Arc::from(rgba.into_boxed_slice()),
             bytes,
         });
     }
@@ -1622,35 +1703,21 @@ impl Actor {
 
         // 先摘出 Sixel DCS：既避免图片字节进入网格，也避免 BEL 终止的
         // DCS 让 vte 卡在字符串状态吞掉后续输出。
-        let decode = self.sixel_enabled.load(Ordering::Relaxed);
-        let filtered = self.sixel.feed(bytes, decode);
+        let decode_sixel = self.sixel_enabled.load(Ordering::Relaxed);
+        let decode_iip = self.iip_enabled.load(Ordering::Relaxed);
+        let filtered = self.sixel.feed(bytes, decode_sixel);
         let mut parsed = 0usize;
         let mut changed = false;
         if let Some(events) = filtered {
             for event in events {
                 match event {
                     SixelEvent::Pass(chunk) => {
-                        if chunk.is_empty() {
-                            continue;
-                        }
-                        changed = true;
-                        parsed += chunk.len();
-                        if self.image_clear.feed(&chunk) {
-                            self.images.clear();
-                        }
-                        // 通知扫描也只看真正交给 vte 的字节：Sixel payload
-                        // 已被剔除，其中的 BEL 不会被误判成铃声。
-                        let mut notif_events = Vec::new();
-                        self.osc.feed(&chunk, &mut notif_events);
-                        for event in notif_events {
-                            self.events.send(event);
-                        }
-                        let keyboard_actions = self.scan_keyboard_modes(&chunk);
-                        self.processor.advance(&mut self.term, &chunk);
-                        self.apply_keyboard_actions(keyboard_actions);
+                        let (chunk_changed, chunk_parsed) = self.feed_iip(&chunk, decode_iip);
+                        changed |= chunk_changed;
+                        parsed += chunk_parsed;
                     },
                     SixelEvent::Image(image) => {
-                        self.add_image(image);
+                        self.add_sixel_image(image);
                         // 图片把字节流分成两段，清屏序列不可能跨过它。
                         self.image_clear.tail.clear();
                         changed = true;
@@ -1658,20 +1725,9 @@ impl Actor {
                 }
             }
         } else {
-            changed = true;
-            parsed = bytes.len();
-            if self.image_clear.feed(bytes) {
-                self.images.clear();
-            }
-            // 先扫通知类 OSC/BEL：这些序列 vte 内部不转发给 EventListener。
-            let mut notif_events = Vec::new();
-            self.osc.feed(bytes, &mut notif_events);
-            for event in notif_events {
-                self.events.send(event);
-            }
-            let keyboard_actions = self.scan_keyboard_modes(bytes);
-            self.processor.advance(&mut self.term, bytes);
-            self.apply_keyboard_actions(keyboard_actions);
+            let (chunk_changed, chunk_parsed) = self.feed_iip(bytes, decode_iip);
+            changed |= chunk_changed;
+            parsed += chunk_parsed;
         }
 
         if changed {
@@ -1697,17 +1753,70 @@ impl Actor {
         changed
     }
 
+    /// 二级过滤：从 Sixel 放行的普通字节里再摘出 `OSC 1337;File=`。
+    ///
+    /// 返回 `(是否有可见变化, 真正交给 vte 的字节数)`；`Pass`/`Image` 事件
+    /// 严格按输入顺序处理，保证图片锚点就是该序列结束时的光标。
+    fn feed_iip(&mut self, bytes: &[u8], decode: bool) -> (bool, usize) {
+        let Some(events) = self.iip.feed(bytes, decode) else {
+            // None = 本段没有 IIP；原始字节直接交给 vte（含其他 OSC）。
+            if bytes.is_empty() {
+                return (false, 0);
+            }
+            self.process_vte_chunk(bytes);
+            return (true, bytes.len());
+        };
+        let mut changed = false;
+        let mut parsed = 0usize;
+        for event in events {
+            match event {
+                IipEvent::Pass(chunk) => {
+                    if chunk.is_empty() {
+                        continue;
+                    }
+                    changed = true;
+                    parsed += chunk.len();
+                    self.process_vte_chunk(&chunk);
+                },
+                IipEvent::Image(image) => {
+                    self.add_iip_image(image);
+                    // 图片把字节流分成两段，清屏序列不可能跨过它。
+                    self.image_clear.tail.clear();
+                    changed = true;
+                },
+            }
+        }
+        (changed, parsed)
+    }
+
+    /// 通知扫描/清屏检测/键盘协议扫描/vte 解析都只处理真正交给 vte 的字节。
+    fn process_vte_chunk(&mut self, chunk: &[u8]) {
+        if chunk.is_empty() {
+            return;
+        }
+        if self.image_clear.feed(chunk) {
+            // 2J/3J、备用屏切换、RIS 会清空整屏：两种协议的内联图片都要清。
+            self.images.clear();
+        }
+        let mut notif_events = Vec::new();
+        self.osc.feed(chunk, &mut notif_events);
+        for event in notif_events {
+            self.events.send(event);
+        }
+        let keyboard_actions = self.scan_keyboard_modes(chunk);
+        self.processor.advance(&mut self.term, chunk);
+        self.apply_keyboard_actions(keyboard_actions);
+    }
+
     /// 把一张 Sixel 图片锚定到**当前**光标（可能刚解析完同一 chunk 里图片
     /// 之前的位置控制序列，因此必须逐个事件读取，不能等整批结束）。
-    fn add_image(&mut self, image: SixelImage) {
+    fn add_sixel_image(&mut self, image: SixelImage) {
         if !self.sixel_enabled.load(Ordering::Relaxed) {
             return;
         }
-        let cursor = self.term.grid().cursor.point;
-        let history = self.term.grid().history_size();
-        let display_offset = self.term.grid().display_offset();
-        let cols = self.term.columns();
+        let (cursor, history, display_offset, cols) = self.image_anchor();
         self.images.push(
+            ImageKind::Sixel,
             image,
             cursor,
             history,
@@ -1715,6 +1824,34 @@ impl Actor {
             self.sixel_scrolling,
             cols,
         );
+    }
+
+    /// IIP 图片与 Sixel 共用锚点/滚动/store 预算，只是解码来源不同。
+    fn add_iip_image(&mut self, image: IipImage) {
+        if !self.iip_enabled.load(Ordering::Relaxed) {
+            return;
+        }
+        let (cursor, history, display_offset, cols) = self.image_anchor();
+        self.images.push_rgba(
+            ImageKind::Iip,
+            image.width,
+            image.height,
+            image.rgba,
+            cursor,
+            history,
+            display_offset,
+            self.sixel_scrolling,
+            cols,
+        );
+    }
+
+    fn image_anchor(&self) -> (Point, usize, usize, usize) {
+        (
+            self.term.grid().cursor.point,
+            self.term.grid().history_size(),
+            self.term.grid().display_offset(),
+            self.term.columns(),
+        )
     }
 
     fn viewport_point(&self, line: u16, col: u16) -> Point {
@@ -1902,8 +2039,8 @@ impl Actor {
             Ctrl::SetSixel(enabled) => {
                 self.sixel_enabled.store(enabled, Ordering::Relaxed);
                 if !enabled {
-                    // 关闭后已有图片立即清除；下一帧 UI 收到空列表。
-                    self.images.clear();
+                    // 关闭后已有 Sixel 立即清除；IIP 图片不受影响。
+                    self.images.clear_kind(ImageKind::Sixel);
                 }
                 self.wake.notify();
                 true
@@ -1914,6 +2051,20 @@ impl Actor {
                 let offset = self.term.grid().display_offset();
                 self.images.set_scrolling(scrolling, history, offset);
                 self.wake.notify();
+                true
+            },
+            Ctrl::SetIip(enabled) => {
+                self.iip_enabled.store(enabled, Ordering::Relaxed);
+                if !enabled {
+                    // 只清 IIP；Sixel 与 DA1 宣告保持不变。
+                    self.images.clear_kind(ImageKind::Iip);
+                }
+                self.wake.notify();
+                true
+            },
+            Ctrl::SetCellSize { width, height } => {
+                self.cell_height = height.max(1);
+                self.iip.set_cell_size(width, height);
                 true
             },
             Ctrl::SelectionStart { line, col } => {
@@ -2107,7 +2258,9 @@ impl Actor {
     /// 按当前滚动位置把图片锚点换算成视口行，写进帧。
     fn fill_images(&mut self, frame: &mut Frame) {
         frame.images.clear();
-        if !self.sixel_enabled.load(Ordering::Relaxed) {
+        let sixel = self.sixel_enabled.load(Ordering::Relaxed);
+        let iip = self.iip_enabled.load(Ordering::Relaxed);
+        if !sixel && !iip {
             return;
         }
         let history = self.term.grid().history_size();
@@ -2306,6 +2459,7 @@ mod tests {
         let mut store = ImageStore::default();
         // 光标在视口第 5 行、历史已有 100 行 → 绝对行 105。
         store.push(
+            ImageKind::Sixel,
             test_image(16, 16),
             Point::new(Line(5), Column(10)),
             100,
@@ -2337,6 +2491,7 @@ mod tests {
     fn image_anchor_fixed_mode_does_not_move_on_scroll() {
         let mut store = ImageStore::default();
         store.push(
+            ImageKind::Sixel,
             test_image(16, 16),
             Point::new(Line(5), Column(2)),
             100,
@@ -2362,10 +2517,62 @@ mod tests {
     }
 
     #[test]
+    fn image_store_clear_kind_keeps_other_protocol() {
+        let mut store = ImageStore::default();
+        store.push(
+            ImageKind::Sixel,
+            test_image(16, 16),
+            Point::new(Line(0), Column(0)),
+            0,
+            0,
+            true,
+            80,
+        );
+        store.push_rgba(
+            ImageKind::Iip,
+            8,
+            8,
+            vec![7; 8 * 8 * 4],
+            Point::new(Line(1), Column(1)),
+            0,
+            0,
+            true,
+            80,
+        );
+        assert_eq!(store.images.len(), 2);
+        assert!(store.bytes > 0);
+        store.clear_kind(ImageKind::Iip);
+        assert_eq!(store.images.len(), 1);
+        assert_eq!(store.images[0].kind, ImageKind::Sixel);
+        let mut out = Vec::new();
+        store.place(0, 0, 24, 80, 16, &mut out);
+        assert_eq!(out.len(), 1, "清除 IIP 不应带走 Sixel");
+        store.clear_kind(ImageKind::Sixel);
+        assert!(store.images.is_empty());
+        assert_eq!(store.bytes, 0);
+    }
+
+    #[test]
     fn image_store_clears_and_drops_empty() {
         let mut store = ImageStore::default();
-        store.push(test_image(16, 16), Point::new(Line(0), Column(0)), 0, 0, true, 80);
-        store.push(test_image(0, 16), Point::new(Line(0), Column(0)), 0, 0, true, 80);
+        store.push(
+            ImageKind::Sixel,
+            test_image(16, 16),
+            Point::new(Line(0), Column(0)),
+            0,
+            0,
+            true,
+            80,
+        );
+        store.push(
+            ImageKind::Sixel,
+            test_image(0, 16),
+            Point::new(Line(0), Column(0)),
+            0,
+            0,
+            true,
+            80,
+        );
         assert_eq!(store.images.len(), 1);
         assert!(store.bytes > 0);
         store.clear();

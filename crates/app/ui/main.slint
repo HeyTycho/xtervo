@@ -1555,6 +1555,8 @@ export component MainWindow inherits Window {
     in-out property <bool> cfg-sixel: true;
     /// Sixel 图片是否随滚动历史移动（默认开）。
     in-out property <bool> cfg-sixel-scrolling: true;
+    /// iTerm2 IIP（OSC 1337 File）内联图片（默认开）；关闭后已有 IIP 图片清除。
+    in-out property <bool> cfg-iip: true;
     in-out property <bool> cfg-scrollback-unlimited: false;
     /// "always" | "auto" | "never"
     in-out property <string> cfg-scrollbar-policy: "auto";
@@ -1592,6 +1594,7 @@ export component MainWindow inherits Window {
     callback toggle-scroll-keystroke();
     callback toggle-sixel();
     callback toggle-sixel-scrolling();
+    callback toggle-iip();
     callback toggle-scrollback-unlimited();
     callback set-scrollbar-policy(string);
     callback set-backspace-binding(string);
@@ -4238,6 +4241,14 @@ export component MainWindow inherits Window {
                                 SettingsSwitch {
                                     on: root.cfg-sixel;
                                     toggled => { root.toggle-sixel(); }
+                                }
+                            }
+                            SettingRow {
+                                label: "iTerm2 IIP images";
+                                description: "OSC 1337 File (PNG/JPEG); 20 MB per file, 16 MP cap. Independent of Sixel.";
+                                SettingsSwitch {
+                                    on: root.cfg-iip;
+                                    toggled => { root.toggle-iip(); }
                                 }
                             }
                             SettingRow {
