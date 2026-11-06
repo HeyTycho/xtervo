@@ -923,6 +923,20 @@ impl PaneHandle {
         self.exited
     }
 
+    /// 子进程退出码/信号（非阻塞）。进程仍在运行/无法取到返回 `None`。
+    ///
+    /// `Exited` 事件只表示 PTY 关闭，UI 需要退出状态给用户看（SSH 断线时
+    /// 常见 255）；这里直接 `try_wait` 拿 OS 状态，不阻塞事件循环。
+    pub fn try_exit_code(&mut self) -> Option<(u32, Option<String>)> {
+        match self.child.try_wait() {
+            Ok(Some(status)) => {
+                self.exited = true;
+                Some((status.exit_code(), status.signal().map(str::to_string)))
+            },
+            _ => None,
+        }
+    }
+
     pub fn kill(&mut self) {
         self.send_ctrl(Ctrl::Shutdown);
         let _ = self.child.kill();

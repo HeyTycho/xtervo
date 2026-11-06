@@ -84,8 +84,17 @@ impl Askpass {
         // TERVO_ASKPASS_DEBUG 是可选诊断：只记 prompt/匹配结果，绝不写密码。
         let body = r#"#!/bin/sh
 prompt="$1"
-case "$prompt" in
-  *[Pp]assword*|*密码*)
+# ASCII 大小写归一；非 ASCII（中文/日文/俄文）原样保留，照样匹配。
+lower=$(printf '%s' "$prompt" | tr '[:upper:]' '[:lower:]')
+case "$lower" in
+  # 一次性验证码/OTP 即使包含 "password" 也不能回填账户密码（kbd-int 常见）。
+  *verification*|*one-time*|*onetime*|*otp*|*passcode*|*auth\ code*|*验证码*|*ワンタイム*)
+    if [ -n "$TERVO_ASKPASS_DEBUG" ]; then
+      printf '%s\n' "match=no prompt=$prompt" >>"$TERVO_ASKPASS_DEBUG" 2>/dev/null
+    fi
+    printf 'no\n'
+    ;;
+  *password*|*passwd*|*passwort*|*mot\ de\ passe*|*contraseña*|*senha*|*wachtwoord*|*пароль*|*Пароль*|*ПАРОЛЬ*|*パスワード*|*비밀번호*|*密码*|*密碼*|*口令*)
     if [ -n "$TERVO_ASKPASS_DEBUG" ]; then
       printf '%s\n' "match=password prompt=$prompt" >>"$TERVO_ASKPASS_DEBUG" 2>/dev/null
     fi
@@ -148,106 +157,7 @@ esac
 /// “已知”而仍然出现确认 prompt；此时 askpass 脚本会对非密码 prompt 回答 `no`，
 /// ssh 快速失败而不是死循环。用户需在终端手动连接一次。
 pub fn host_key_known(profile: &Profile) -> bool {
-    let host = profile.host.trim();
-    if host.is_empty() {
-        return false;
-    }
-    let (prog, args) = profile.ssh_command();
-    let mut gargs = vec!["-G".to_string()];
-    gargs.extend(args);
-    let mut strict = "ask".to_string();
-    let mut files: Vec<PathBuf> = Vec::new();
-    // ssh -G 的输出是“实际生效的值”，默认值先按 Profile 填。
-    let mut match_host = host.to_string();
-    let mut effective_port = profile.port;
-    let mut host_key_alias: Option<String> = None;
-    if let Ok(out) = Command::new(&prog).args(&gargs).output() {
-        if out.status.success() {
-            for line in String::from_utf8_lossy(&out.stdout).lines() {
-                if let Some(v) = line.strip_prefix("stricthostkeychecking ") {
-                    strict = v.trim().to_ascii_lowercase();
-                } else if let Some(v) = line.strip_prefix("userknownhostsfile ") {
-                    files.extend(split_ssh_paths(v));
-                } else if let Some(v) = line.strip_prefix("globalknownhostsfile ") {
-                    files.extend(split_ssh_paths(v));
-                } else if let Some(v) = line.strip_prefix("hostname ") {
-                    let effective = v.trim();
-                    if !effective.is_empty() {
-                        match_host = effective.to_string();
-                    }
-                } else if let Some(v) = line.strip_prefix("port ") {
-                    if let Ok(p) = v.trim().parse::<u16>() {
-                        effective_port = p;
-                    }
-                } else if let Some(v) = line.strip_prefix("hostkeyalias ") {
-                    let alias = v.trim();
-                    if !alias.is_empty() {
-                        host_key_alias = Some(alias.to_string());
-                    }
-                }
-            }
-        }
-    }
-    // no / off / accept-new：不会弹 host key 确认（accept-new 自动信任新 key）。
-    if strict != "ask" && strict != "yes" {
-        return true;
-    }
-    if files.is_empty() {
-        if let Some(home) = std::env::var_os("HOME") {
-            let ssh = PathBuf::from(home).join(".ssh");
-            files.push(ssh.join("known_hosts"));
-            files.push(ssh.join("known_hosts2"));
-        }
-    }
-    // HostKeyAlias 是 known_hosts 里原样的键（不套端口）；否则用解析后的 hostname。
-    let spec = match host_key_alias {
-        Some(alias) => alias,
-        None => host_spec(&match_host, effective_port),
-    };
-    let found = files.iter().any(|file| ssh_keygen_finds(file, &spec));
-    if !found {
-        // 只打印查找键与候选文件（不含密码），便于排查 known_hosts 写到了别处。
-        eprintln!(
-            "[askpass] known_hosts 未命中：lookup={spec} strict={strict} files={files:?}"
-        );
-    }
-    found
-}
-
-fn split_ssh_paths(value: &str) -> Vec<PathBuf> {
-    value
-        .split_whitespace()
-        .filter(|p| !p.is_empty() && *p != "none")
-        .map(expand_home)
-        .collect()
-}
-
-fn expand_home(path: &str) -> PathBuf {
-    if let Some(rest) = path.strip_prefix("~/") {
-        if let Some(home) = std::env::var_os("HOME") {
-            return PathBuf::from(home).join(rest);
-        }
-    }
-    PathBuf::from(path)
-}
-
-fn host_spec(host: &str, port: u16) -> String {
-    if port == 22 || port == 0 {
-        host.to_string()
-    } else {
-        format!("[{host}]:{port}")
-    }
-}
-
-fn ssh_keygen_finds(file: &PathBuf, host_spec: &str) -> bool {
-    Command::new("ssh-keygen")
-        .arg("-F")
-        .arg(host_spec)
-        .arg("-f")
-        .arg(file)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    crate::known_hosts::has_known_entry(profile)
 }
 
 impl Drop for Askpass {
@@ -305,11 +215,33 @@ mod tests {
             format!("{password}\n"),
             "中文密码 prompt 也要识别"
         );
+        // keyboard-interactive 服务器/PAM 常见的本地化密码 prompt。
+        for prompt in [
+            "Password: ",
+            "PASSWORD for deploy: ",
+            "deploy@example.com's passwd: ",
+            "Passwort: ",
+            "Mot de passe : ",
+            "Contraseña: ",
+            "Пароль: ",
+            "パスワード: ",
+            "비밀번호: ",
+            "密碼：",
+        ] {
+            assert_eq!(
+                run_script(&ask, prompt, password),
+                format!("{password}\n"),
+                "password prompt={prompt:?}"
+            );
+        }
         // 主机密钥确认等 prompt 绝不能拿到密码，也不能进入 yes/no 重试循环。
+        // OTP/验证码 prompt 也不能把 Vault 密码当成一次性码回填。
         for prompt in [
             "Are you sure you want to continue connecting (yes/no/[fingerprint])? ",
             "Please type 'yes', 'no' or the fingerprint: ",
             "Permission denied, please try again.",
+            "Verification code: ",
+            "One-time password (OTP): ",
         ] {
             let got = run_script(&ask, prompt, password);
             assert_eq!(got, "no\n", "prompt={prompt:?} 应回答 no");
@@ -502,23 +434,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    #[test]
-    fn ssh_keygen_matches_bracketed_port_spec() {
-        if !have_ssh_tools() {
-            return;
-        }
-        let dir = test_dir("keygen-port");
-        let kh = dir.join("known_hosts");
-        write_known_hosts(&kh, &[&format!("[127.0.0.1]:2222 {TEST_KEY}")]);
-        assert!(
-            ssh_keygen_finds(&kh, &host_spec("127.0.0.1", 2222)),
-            "ssh-keygen -F 应命中 [127.0.0.1]:2222"
-        );
-        assert!(!ssh_keygen_finds(&kh, &host_spec("127.0.0.1", 22)), "端口必须参与匹配");
-        assert!(!ssh_keygen_finds(&kh, &host_spec("127.0.0.2", 2222)), "主机必须参与匹配");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
     /// `Host alias` + `HostName 127.0.0.1`：ssh 用解析后的主机名查 known_hosts，
     /// 不能用 Profile 里的别名（旧实现会误判“未确认”）。
     #[test]
@@ -606,16 +521,6 @@ mod tests {
             "HostKeyAlias 应使用别名原文查 known_hosts（不含端口后缀）"
         );
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn host_spec_uses_bracketed_port_except_22() {
-        assert_eq!(host_spec("example.com", 22), "example.com");
-        assert_eq!(host_spec("example.com", 0), "example.com");
-        assert_eq!(host_spec("example.com", 2222), "[example.com]:2222");
-        assert_eq!(host_spec("2001:db8::1", 2222), "[2001:db8::1]:2222");
-        let paths = split_ssh_paths("none /tmp/kh2   ~/.ssh/known_hosts");
-        assert_eq!(paths, vec![PathBuf::from("/tmp/kh2"), expand_home("~/.ssh/known_hosts")]);
     }
 
     #[cfg(unix)]
