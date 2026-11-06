@@ -1,6 +1,6 @@
 # Tervo 任务看板
 
-> 最后更新：2026-11-06 22:25  
+> 最后更新：2026-11-06 22:40  
 > 规则：每个任务开始/完成/阻塞都要更新本文件；记录 worktree、branch、commit、测试/截图、限制。  
 > 当前 master：`a82ac52`（Settings Tab 持久化）；当前 release：`target/release/tervo` 19:07。
 
@@ -53,8 +53,8 @@
 | W-01 | Profiles + 会话恢复 | done | `.worktrees/profile-session` / `feat/profile-session` | 每 Profile 外观（font_size/theme/cursor_shape/cursor_blink/scrollback，additive v2，空=继承全局，Profile 显式 > 全局）；Settings→Profiles 表单共用 Appearance 区；session Snapshot 增加可选 profile_id，local Profile 恢复外观/shell/cwd，SSH/Serial/Telnet 不自动建连；`restore_session_on_startup`（默认 false）正常退出写快照，启动恢复 Tab/split/ratio/cwd/网格，失败回退新 Tab。验收：app 295 / workspace 489 tests；Xvfb :136 `scripts/e2e_profile_session.sh` PASS（表单/应用外观/3 Tab+split+cwd 重启恢复/损坏快照 fallback；截图 `.logs/profile-session/e2e/shots`） |
 | W-02 | SSH/SFTP/Vault 产品化 | running | `.worktrees/ssh-sftp` / `feat/ssh-sftp` | Jump/转发/known_hosts/SFTP 队列/Vault KDF；等 commit | 真实 SSH/超时/取消；基线 326 |
 | W-03 | iTerm2 IIP 图片 | running | `.worktrees/iip-image` / `feat/iip-image` | OSC 1337 File PNG/JPEG；复用 Sixel overlay；默认开可关 | 真实图片/滚动/resize/关闭 |
-| W-04 | 插件系统 V1 | queued | manifest/权限；Connection/Middleware/Observer/Command/Workspace/Integration；最小 UI 插槽；AOT | 4 个真实插件验证；崩溃/超时不拖终端 |
-| W-05 | 打包/自动更新/崩溃报告 | running | `.worktrees/packaging` / `feat/packaging` | tar/deb/install、版本/校验/升级回滚；不造假自动更新 | 干净目录安装/deb 解包/smoke/回滚 |
+| W-04 | 插件系统 V1 | running | `.worktrees/plugin-v1` / `feat/plugin-v1` | 外部进程 manifest/权限 + Command/Status/Theme V1；不含任意 UI | 4 个真实插件；崩溃/超时/禁用 |
+| W-05 | 打包/自动更新/崩溃报告 | done | `.worktrees/packaging` / `feat/packaging` | commit `2ac3ac6`；合 master `585fd21`；327 tests；packaging 71 项 PASS；`dist/` tar/deb/sha | tar/deb/install/rollback/deb smoke；自动更新/崩溃报告明确未做 |
 | W-06 | Wayland 原生 spike | queued | text-input-v3 IME、剪贴板、DnD、resize、全局快捷键 | 只 spike/报告，不承诺合并 |
 | W-07 | 24h 稳定性 soak | queued | 输出洪峰、Sixel 大图、emoji cache、多 Tab/多窗口内存 | 无崩溃/无持续内存增长；报告 |
 | W-08 | 全量 e2e/回归矩阵 | queued | 现有 5 e2e + 新功能 e2e + 性能门禁 | 全部绿；写入 selfcheck |
@@ -114,4 +114,5 @@
 | 2026-11-06 21:45 | P1-06 渲染 damage 恢复（feat/render-damage）：双缓冲行同步 + 真实 damage；单行/按键 rows=1、full_redraws 不增，release 45.6×/46.4×，full/滚动 1.00×；app 310 passed / workspace 527；Xvfb :137 5 张截图与 profile 断言 PASS；commit `8146aa7` |
 | 2026-11-06 22:10 | P1-04/W-01 Profile+会话恢复合入；app 326；P1-06/07 合入；e2e 日志断言修正；准备 P1 稳定 release |
 | 2026-11-06 22:25 | P1 稳定 release 构建 22:08（242M/51M，app 326）；W-02/W-03/W-05 三个周末大块开跑 |
+| 2026-11-06 22:40 | W-05 打包合入（585fd21，327 tests，packaging 71 PASS）；W-04 插件 V1 开跑 |
 | 2026-11-06 21:35 | W-01 完成（feat/profile-session，未合 master）：每 Profile 外观 + session profile_id/可选启动自动恢复；app 295、workspace 489；Xvfb :136 e2e PASS；限制见 docs/self-iteration.md |
