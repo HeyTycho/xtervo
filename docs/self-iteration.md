@@ -1002,3 +1002,17 @@ cargo bench -p tervo-core --bench pty_throughput
   Xephyr 无 WM 的 fallback 可启动。GNOME 实际拖拽待用户用 release 复测。
 - **限制**：WM 路径依赖 EWMH；无 WM/远程 X 仍走自绘；圆角 SHAPE 仍非原生。
 
+### 2026-11-06 · resize/SHAPE 止损：默认方角、Xvfb 无宿主窗口测试
+
+- 现象：最大化/最小化后右侧露桌面、右上角按钮点不到。定位到 X11 SHAPE
+  BOUNDING mask 在窗口尺寸/WM state 变化时可能保留旧尺寸；部分 WM 的 live
+  resize/maximize 组合更明显。`clear_rounded_corners` 已补 INPUT 清理并加 250ms
+  geometry 轮询重裁，但 SHAPE 仍不是可靠的原生方案。
+- 决策：**SHAPE 圆角默认关闭**，`TERVO_CORNERS=1` 显式开启实验；默认窗口方角，
+  不再让 mask 干扰 WM 最大化/最小化/live resize。show 后再同步一次 client 尺寸，
+  规避 WM 用 preferred size 建 frame 的竞态。
+- 测试隔离：`scripts/e2e_lib.sh` 改为 **headless Xvfb**（`.perf/xvfb` 或系统 Xvfb），
+  不再创建 Xephyr 宿主窗口，不占用户 workspace/键鼠；Openbox/Xvfb 仅用于本地
+  WM 行为验证。
+- 测试：`cargo test -p tervo-app --bin tervo` → 204 passed。
+

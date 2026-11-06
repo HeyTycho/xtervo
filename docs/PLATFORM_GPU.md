@@ -35,7 +35,7 @@ main/AppState ──► trait FrameRenderer
 
 - `screen_size()`, `pointer_position()`
 - `own_windows()`, `active_window()`, `activate_window(id)`
-- `set_window_icon(...)`, `set_rounded_corners(win, radius)`（X11 实现；Wayland no-op）
+- `set_window_icon(...)`, `set_rounded_corners(win, radius)`（X11 SHAPE 默认关闭，实验开关；Wayland no-op）
 - `begin_resize(dir) / resize_drag() / end_resize()`（X11 自己改 geometry；Wayland 交给 compositor）
 - `register_quake_hotkey(...)`（X11 grab；Wayland 走 portal / compositor 快捷键，失败则提示）
 - `diagnostics()`（平台相关窗口/焦点信息）
