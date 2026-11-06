@@ -41,7 +41,7 @@
 | P1-07 | Codex P1：400ms CoreEvent 轮询 → wake 桥接 | queued | 待建 | 目标语义事件 <50ms，空闲 CPU 不退化 |
 | P1-08 | Codex P1：Vault Argon2 KDF 移出 UI 线程 | queued | 待建 | 解锁期间 UI 不停顿 |
 | P1-09 | Codex P1：`main.rs` 拆分 + `with_app` 重入不丢操作 | queued | 待建 | 大重构，分小步 |
-| P1-10 | 右键菜单美化：字号加大、分类分组、图标/分隔线、窄窗不溢出 | running | `.worktrees/context-menu` / `feat/context-menu` | 新建；不改菜单动作语义 |
+| P1-10 | 右键菜单美化：字号加大、分类分组、图标/分隔线、窄窗不溢出 | done | `.worktrees/context-menu` / `feat/context-menu` | commit `feat(ui): 右键菜单字号/分类/美化`；app 281 tests；Xvfb :135 7 张截图 + bbox 断言；term_menu e2e 全 PASS；限制：短窗需滚动、无菜单内键盘导航 |
 
 ## 4. 周末大块任务
 
