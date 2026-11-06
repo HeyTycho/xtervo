@@ -291,6 +291,12 @@ struct AppState {
     plugin_activity_model: Rc<VecModel<slint::SharedString>>,
     /// 与 `PluginStore` 活动日志 revision 对齐，避免每 400ms 无谓刷新 Slint model。
     plugin_activity_revision: u64,
+    /// 状态提供者 revision：变化时才更新底部状态栏文本。
+    plugin_status_revision: u64,
+    /// 运行状态 revision：常驻插件崩溃/重启/禁用后刷新设置页列表。
+    plugin_runtime_revision: u64,
+    /// 底部状态栏当前可点击执行的命令（空 = 不可点击）。
+    plugin_status_command: Option<String>,
     /// Delete 需要点两次确认（避免误删远端文件）
     sftp_delete_armed: bool,
     /// 进行中的上传/下载；同一时间只允许一个。
@@ -828,6 +834,57 @@ fn refresh_plugin_activity(st: &mut AppState, force: bool) {
             "[ui] ts_ms={} plugin activity rev={revision} rows={row_count}",
             logging::now_ms()
         );
+    }
+}
+
+/// 插件 UI 汇总刷新：命令结果浮层、最小状态栏、运行状态设置页。
+///
+/// 后台线程只写 `PluginStore` 内部队列并唤醒 UI；UI 线程在这里批量取走，
+/// 不在回调里逐条碰 Slint model。
+fn refresh_plugin_ui(st: &mut AppState) {
+    // 活动列表按 revision 增量刷新（后台线程 push 后唤醒）。
+    refresh_plugin_activity(st, false);
+
+    // 命令结果：浮层显示最新一条；所有结果都已经写入活动列表/日志。
+    let notices = st.plugins.take_notices();
+    if let Some(last) = notices.last() {
+        let prefix = if last.ok { "" } else { "error: " };
+        let mut msg = format!("{}: {}{}", last.plugin, prefix, last.text);
+        // 浮层是单行 elide 展示，避免超长结果撑爆；完整结果见日志/活动。
+        if msg.chars().count() > 320 {
+            msg = msg.chars().take(319).collect::<String>() + "…";
+        }
+        set_status_toast(st, msg);
+    }
+
+    // 状态栏：多个插件用 " · " 合并；只保留第一条可点击命令。
+    let (status_rev, items) = st.plugins.status_snapshot();
+    if status_rev != st.plugin_status_revision {
+        st.plugin_status_revision = status_rev;
+        let text = items
+            .iter()
+            .map(|item| format!("{}: {}", item.plugin, item.text))
+            .collect::<Vec<_>>()
+            .join(" · ");
+        let tooltip = items
+            .iter()
+            .find(|item| !item.tooltip.is_empty())
+            .map(|item| item.tooltip.clone())
+            .unwrap_or_default();
+        st.plugin_status_command = items
+            .iter()
+            .find(|item| !item.command.is_empty())
+            .map(|item| item.command.clone());
+        st.ui.set_plugin_status(text.as_str().into());
+        st.ui.set_plugin_status_tooltip(tooltip.as_str().into());
+    }
+
+    // 运行状态（running/restarting/disabled: 原因）变化时刷新 Plugins 设置页。
+    // Slint model 更新只在设置页打开时才有意义，但行数很少，保持简单一致。
+    let runtime_rev = st.plugins.runtime_revision();
+    if runtime_rev != st.plugin_runtime_revision {
+        st.plugin_runtime_revision = runtime_rev;
+        refresh_plugin_page(st);
     }
 }
 
@@ -7535,8 +7592,9 @@ fn on_core_event_wake() {
 fn on_app_event_wake() {
     APP_EVENT_WAKES.fetch_add(1, Ordering::Relaxed);
     with_app(|st| {
-        // 插件命令/事件在后台线程写活动日志；这里只按 revision 增量刷新设置页模型。
-        refresh_plugin_activity(st, false);
+        // 插件命令/事件在后台线程写活动日志；这里按 revision 增量刷新设置页/
+        // 状态栏/结果浮层。所有操作非阻塞。
+        refresh_plugin_ui(st);
         // SFTP 传输进度：非阻塞收事件；终态时回收任务线程。
         poll_sftp_transfer(st);
         // SFTP 元数据命令后台结果（list/mkdir/rename/delete）。
@@ -7556,7 +7614,7 @@ fn poll_events() {
     PERIODIC_POLLS.fetch_add(1, Ordering::Relaxed);
     let (audible_bell, bell_count) = with_app(|st| {
         let bells = drain_core_events(st);
-        refresh_plugin_activity(st, false);
+        refresh_plugin_ui(st);
         poll_sftp_transfer(st);
         poll_sftp_op(st);
         poll_hostkey_check(st);
@@ -8085,8 +8143,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    // 内置 + 用户自定义主题；加载失败只记录，不阻塞启动。
-    let registry = ThemeRegistry::load(&ThemeRegistry::default_dir());
+    // 插件发现提前到主题加载之前：声明式 Theme Pack（可选）要并入主题列表；
+    // 此时只读 manifest，不启动任何插件进程。
+    let mut plugins = plugin::PluginStore::load();
+
+    // 内置 + 用户自定义主题 + 插件声明的主题；加载失败只记录，不阻塞启动。
+    let mut registry = ThemeRegistry::load(&ThemeRegistry::default_dir());
+    for package in &plugins.packages {
+        if !package.manifest.enabled {
+            continue;
+        }
+        let Some(path) = package.theme_path.as_deref() else {
+            continue;
+        };
+        match themes::load_plugin_theme(path, &package.manifest.name) {
+            Ok(theme) => {
+                eprintln!(
+                    "[theme] 插件 {} 提供主题 {}（{}）",
+                    package.manifest.name,
+                    theme.id,
+                    path.display()
+                );
+                registry.add_custom(theme);
+            },
+            Err(e) => eprintln!(
+                "[theme] 插件 {} 的主题 {} 加载失败: {e}",
+                package.manifest.name,
+                path.display()
+            ),
+        }
+    }
     for err in &registry.errors {
         eprintln!("[theme] {err}");
     }
@@ -8198,8 +8284,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // `app_wake` 同时供插件活动与 SFTP 后台结果使用：后台线程写完通道后立即
     // 叫醒 UI；400ms 轮询仍保留作为兜底。默认开启，A/B 诊断见 event_wake_enabled。
     let (app_wake, app_wake_rx) = WakeSignal::new();
-    let mut plugins = plugin::PluginStore::load();
     plugins.set_activity_wake(app_wake.clone());
+    // 常驻进程插件在后台启动/握手，不阻塞首屏；崩溃/超时由 supervisor 处理。
+    plugins.start_process_plugins();
     let mut command_registry = commands::builtin();
     let plugin_command_count = plugin::register_plugins(&mut command_registry, &plugins);
     eprintln!(
@@ -8291,6 +8378,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         plugin_model,
         plugin_activity_model,
         plugin_activity_revision: 0,
+        plugin_status_revision: 0,
+        plugin_runtime_revision: 0,
+        plugin_status_command: None,
         sftp_delete_armed: false,
         sftp_transfer: None,
         sftp_current_request: None,
@@ -9065,6 +9155,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if action != 14 {
             with_app(|st| st.ui.invoke_focus_terminal());
         }
+    });
+
+    ui.on_plugin_status_clicked(|| {
+        with_app(|st| {
+            if let Some(command) = st.plugin_status_command.clone() {
+                eprintln!("[plugin] 状态栏点击 → {command}");
+                run_command(st, &command);
+            }
+        });
     });
 
     ui.on_tab_rename(|index| {

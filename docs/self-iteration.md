@@ -2073,3 +2073,64 @@ cargo bench -p tervo-core --bench pty_throughput
   - SSH 重连是用户点击触发，不自动重试；Vault 密码/主机密钥变更时仍可能出现一次
     失败并需要用户重连。
   - 小窗口下 700px 高的 SSH 表单可能超出底部（未做通用滚动）。
+
+### 2026-11-06 · W-04 外部进程插件 V1：命令/状态/主题包（feat/plugin-v1）
+
+- **问题**：`plugin.rs` 已有外部进程 MVP（oneshot 命令 + 三种事件），但每次触发起新进程、
+  结果只写日志、没有握手/常驻生命周期/状态提供者/结构化返回/声明式主题/权限声明；
+  PLUG-001..005 与 UI-PLUG-001..007 仍是 partial，需求 C13 的“可扩展行为 + 隔离”没有闭环。
+- **做法**（旧格式/旧行为保留，新增稳定子集，不引入 WASM）：
+  - **清单**：`PackageManifest` 新增 `id`（默认 name）、`runtime`（缺省/oneshot/process）、
+    `[permissions]`（filesystem/network/process/clipboard/credentials，仅声明/默认拒绝未实现
+    能力）、`[contributes]`（status/theme/commands 交叉校验）；`[[commands]].args` 静态参数；
+    字段校验扩展（id/runtime/权限/主题路径/args 上限）且坏清单跳过不影响启动。
+  - **常驻进程宿主**：`start_process_plugins()` 每个启用 process 插件一个 supervisor 线程，
+    子进程 stdin/stdout/stderr 全管道；`init` → 2s 内 `ready` 握手；JSON Lines
+    （command/result/event/status/log/shutdown），单行 64 KiB 上限；命令 10s 超时 kill、
+    进程退出/握手失败自动重启（上限 2 次）后禁用；坏 JSON/超长行 5 次直接禁用；
+    stderr 逐行写日志；Unix 子进程设 PDEATHSIG，宿主 Drop 主动 shutdown/kill。
+    所有等待都在后台线程，UI 线程只投递，不阻塞输入/渲染。
+  - **Command Provider**：命令仍以 `plugin.<name>.<id>` 进 Palette/默认键/override；
+    `command` 消息带 `args`，`result` 带 ok/text；结果经后台等待线程写活动列表 + UI 通知，
+    底部浮层显示 `plugin: text`，完整文本写日志；命令失败/超时/不可用分别标记。
+  - **Status Provider**：`[contributes] status = true` 时宿主每 2s 发 `status` 请求，插件也可
+    主动推送；状态项 text/tooltip/command 有长度上限，command 必须是本插件命令并归一化为
+    完整 ID；主窗口底部新增一行最小状态栏（不改变终端布局），点击执行命令。
+  - **Theme Pack**：`[contributes] theme = "theme.toml"` 声明式 TOML（支持 tervo/Alacritty
+    等既有格式），主题 id 加 `custom:plugin-<slug>-` 前缀并入主题下拉；坏主题只记
+    theme-error，插件仍加载。
+  - **设置页**：Plugins 行显示 enabled/disabled、id/api/runtime、命令/事件、status/theme、
+    running/restarting/disabled 原因、权限声明；不新增安装/卸载/开关等复杂 UI。
+  - **安全**：无 shell 拼接（entry 直接 exec，参数 JSON 传 stdin）；不传 Vault 明文；
+    事件 payload 仍只含 Tab 标题/类型；行/结果/状态/日志全部限长；超时 kill；插件崩溃/
+    坏 JSON/坏 manifest 都在独立进程/加载阶段被隔离。
+- **测试**：`cargo test -p tervo-app --bin tervo` → **341 passed, 0 failed, 1 ignored**
+  （基线 327；新增 14 例）。新增覆盖：Python process 命令（静态 args/返回文本/事件）、
+  Node process 命令、status 轮询/command 归一化、崩溃重启上限后禁用、命令超时 kill、
+  坏 JSON 禁用、握手超时、api 不匹配、disabled 进程不启动、清单新字段/权限/contributes/
+  theme 路径校验、坏主题保留插件、read_line 长度上限（CRLF/EOF/超长）；主题命名空间
+  1 例。旧 oneshot/旧扁平清单/事件测试全部保持通过。
+- **Xvfb :142 e2e**：新增 `scripts/e2e_plugin_v1.sh`（Openbox 用可写 HOME/XDG + xwin
+  `--focus`，无 WM 时也能稳定注入按键）。全部 PASS：
+  - `.logs/plugin-v1/command_result.png`：Palette 执行 `Status: Greet` → 底部浮层
+    `status: hello world`，同时状态栏 `status: build ok` 可见；
+  - `.logs/plugin-v1/status.png`：浮层 4s 自动消失后，底部一行 `status: build ok`；
+  - `.logs/plugin-v1/plugins.png`：Settings → Plugins 显示
+    `crash ... disabled: 达到重启上限（2 次）：握手前进程退出`、
+    `off v0.1.0 — disabled`、`status ... running`、最近活动；
+  - 脚本还断言状态栏点击执行 command、Theme Pack 日志、
+    `[plugin] crash: 已禁用`、`enabled=false` 插件没有 `常驻进程就绪`。
+- **文档**：重写 [`PLUGIN_API.md`](PLUGIN_API.md)（两种 runtime/清单/协议/生命周期/
+  权限/状态/主题/测试/限制）；PLUGIN_SYSTEM 增加 V1 落地状态；README 外部进程插件 V1；
+  FEATURE_MATRIX UI-SET-008 / UI-PLUG-001..005/007 / PLUG-001..005 / OPS-003 更新为
+  实际实现、测试与限制。
+- **限制/未做**：
+  - 无 WASM/WIT、无 Tabby npm/JS/Node sidecar/WebView；扩展点仍只有 Commands、三种
+    生命周期事件、Status、Theme。
+  - 命令参数只能清单静态声明，无运行时输入框/补全/取消；返回值只有文本。
+  - 无安装/卸载/更新/市场/签名；设置页无启用开关、搜索、详情页；`enabled` 改动需重启。
+  - `[permissions]` 仅声明，没有沙箱/强制撤销/安装前权限确认；插件仍是当前用户普通子进程。
+  - 无热重载/手动重启/单插件并发上限；活动列表仍只 8 条内存摘要；状态栏只有一行文本。
+  - 主题包只进主题下拉，不自动切换、不覆盖字体/快捷键/Profile；无 Windows 验证。
+  - `xwin --focus` 是 e2e 工具增强（无 WM 时显式 XSetInputFocus），不改 app 键盘路径；
+    Palette 关闭后焦点仍在隐藏输入框的既有键盘行为本轮未改（e2e 用点回终端规避）。

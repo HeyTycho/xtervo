@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use x11rb::connection::Connection;
 use x11rb::protocol::xproto::{
-    AtomEnum, ClientMessageEvent, ConnectionExt as XprotoExt, EventMask, Window,
+    AtomEnum, ClientMessageEvent, ConnectionExt as XprotoExt, EventMask, InputFocus, Window,
 };
 use x11rb::rust_connection::RustConnection;
 
@@ -101,6 +101,12 @@ fn main() {
         let _ = conn.send_event(false, root, mask, hide);
         let _ = conn.flush();
         return;
+    }
+
+    // --focus：无 WM/Openbox 未接管时显式设 X 输入焦点，自动化按键才会落到 app。
+    if args.iter().any(|a| a == "--focus") {
+        let _ = conn.set_input_focus(InputFocus::PARENT, win, x11rb::CURRENT_TIME);
+        let _ = conn.flush();
     }
 
     if let (Some(x), Some(y)) = (
