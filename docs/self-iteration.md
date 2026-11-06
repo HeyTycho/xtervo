@@ -1837,3 +1837,49 @@ cargo bench -p tervo-core --bench pty_throughput
     未实现 formatOtherKeys=1；modifyOtherKeys 的 F21–F24 用 CSI 42–45。
   - 不支持 Wayland IME；键盘协议与硬编码 app 快捷键的优先级仍由现有分发决定
     （Ctrl+Shift+字母会被 app 抢占）。
+
+### 2026-11-06 · P1-07 事件唤醒：400ms CoreEvent 轮询 → wake（feat/event-wake）
+
+- **基线**：`poll_events` 每 400ms 跑一次，OSC 标题/Bell/OSC52/通知/插件活动/SFTP
+  完成都最多等 400ms。输入与拉帧已有独立 wake，不受影响。
+- **实现（commit `16b5135`）**：
+  - core `EventSink`：新增 `new_with_wake(capacity)`。事件仍走原来的有界队列
+    （容量 256，满则计数丢弃），成功 `try_send` 后额外 `WakeSignal::notify()`
+    （容量 1，只表示“去看”）。唤醒可丢/可合并，但事件本身不会被唤醒消费；
+    `pane::spawn` 改用它并暴露 `PaneHandle::event_wake_receiver()`。
+  - app 每个 pane 的桥接线程改为 `select!` 同时等两条通道：内容 wake →
+    `redraw_pane`（原逻辑不变）；事件 wake → `invoke_from_event_loop` 后在 UI
+    线程 `drain_core_events`，一次 drain 到空。pending 标志只合并“排 UI 回调”，
+    回调先清 pending 再 drain，处理期间新事件还能再唤醒一次。
+  - 从 `poll_events` 拆出 `drain_core_events`（标题/进度/通知/Bell/Cwd/OSC52），
+    `poll_events` 保留为 **400ms 兜底 + 周期任务**：仍调用语义 drain（防唤醒
+    丢失/合并窗口），并刷新插件活动 revision、SFTP 传输/元数据、超时逻辑。
+  - 插件：`ActivityLog::push` 后 `WakeSignal` 通知；SFTP：`TransferJob` 的进度/
+    结束事件、`SftpOpJob` 的结果写通道后通知。两类共用一个 app 级
+    `app-wake` 桥接线程，UI 回调只做非阻塞 `try_recv` + revision 去重。
+  - 诊断：`TERVO_EVENT_WAKE=0` 关闭事件唤醒回到纯 400ms 轮询（默认开启）；
+    `TERVO_WAKE_STATS=1` 每 5s 打印 `core_event/app_event/periodic_400ms`
+    计数；事件/完成日志统一加 `ts_ms=<epoch ms>`，可与 shell 的
+    `date +%s%3N` 直接对差。
+- **验证（Xvfb :138，`scripts/e2e_event_wake.sh`，同 binary A/B）**：
+  - wake：6 个 OSC 标题 0–1ms、BEL 0–1ms、OSC52 query 1–2ms、插件活动 8–9ms、
+    SFTP 上传完成 27–33ms；每个事件在日志里恰好一次（不丢/不重复），OSC52
+    回包写回 PTY 且 base64 为 `wake-clip`。
+  - before（`TERVO_EVENT_WAKE=0`）：标题 88–390ms、BEL 287–292ms、OSC52
+    385–388ms、插件 397–400ms、SFTP 82–102ms，确认旧路径确实是 400ms 轮询。
+  - 空闲 5s：两遍 `core_delta=0 app_delta=0`，`periodic_400ms=12–13`（只在
+    400ms timer 上跑）；空闲 8s CPU before 111–214 / after 103–110 ticks
+    （两次运行，系统负载有波动），voluntary context switches before 225–252 /
+    after 263，无高频轮询/CPU 退化。
+  - `cargo test -p tervo-app --bin tervo`：**300 passed**（基线 297 + 事件
+    唤醒/插件/SFTP 3 例）；`cargo test -p tervo-core --lib`：**108 passed**
+    （基线 107 + EventSink wake 合并/不丢事件 1 例）；workspace **518 passed**。
+  - 截图 `.logs/event-wake/event-wake.png`：Tab 标题为 `wake-title-6`，SFTP
+    面板可见 fake-ssh 的 `probe-one/probe-two`；日志在 `.logs/event-wake/`。
+- **行为/UI**：默认路径只改变事件处理时机，不改变事件语义与界面；400ms
+  timer 仍在，插件/SFTP 的 100ms 元数据 timer 也未移除。关闭/退出时桥接线程
+  随通道断开自行退出，无额外清理流程。
+- **限制**：`EventSink` 事件队列满仍按既有策略丢弃并计数（`dropped()` 可读），
+  唤醒不等于反压；app 级 wake 合并插件/SFTP 通知，回调会同时尝试两类
+  `try_recv`（幂等）；`TERVO_EVENT_WAKE` 只是 A/B 诊断开关，不写配置；
+  SFTP/插件延迟实测基于假 sftp/本地插件，真实网络时延另计。

@@ -110,6 +110,14 @@ fn now_secs() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
+/// 当前 epoch 毫秒。
+///
+/// 只给“事件到达/UI 处理”这类延迟日志用：测试脚本在同机用
+/// `date +%s%3N` 打点，两边时间戳可直接相减得到端到端延迟。
+pub fn now_ms() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+}
+
 fn rotate(dir: &Path) {
     let Ok(rd) = fs::read_dir(dir) else { return };
     let mut files: Vec<(u64, PathBuf)> = rd

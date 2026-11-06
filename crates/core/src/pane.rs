@@ -11,6 +11,7 @@
 //!                                       │
 //!                                       ├─ wake(容量1，可合并) ──► UI 重绘
 //!                                       ├─ events(有界256) ──────► 标题/bell/退出
+//!                                       │    └─ event_wake(容量1) ► UI 立即 drain
 //!                                       └─ pull_req/pull_resp ──► UI 主动拉帧
 //! ```
 //!
@@ -19,7 +20,9 @@
 //!   慢 shell 也只会在 backlog 满后明确丢弃并计数，不会把 UI/actor 拖死；
 //! - actor 只负责解析输出与编码鼠标，不再作为键盘输入的中转站；
 //! - PTY 读线程只做 `read` + 有界 `send`，无任何 UI 调用；
-//! - UI 事件走容量 1 的唤醒通道，输出洪峰只会被合并，不会堆积；
+//! - 内容变化走容量 1 的唤醒通道，输出洪峰只会被合并，不会堆积；
+//! - 语义事件另有容量 1 的唤醒：UI 收到即 drain 事件队列；400ms timer 只是
+//!   兜底/周期任务，不是语义事件的主延迟路径。
 //! - 帧数据由 UI 侧持有 `Box<Frame>` 往返复用，稳态零分配；`pull` 硬超时。
 
 use std::collections::VecDeque;
@@ -475,6 +478,8 @@ pub struct PaneHandle {
     ctrl_tx: Sender<Ctrl>,
     pull_rx: Receiver<(u64, Box<Frame>)>,
     events_rx: Receiver<CoreEvent>,
+    /// 语义事件唤醒（容量 1，合并）：有事件时 UI 立即 drain，400ms 仅兜底。
+    events_wake_rx: Receiver<()>,
     wake_rx: Receiver<()>,
     pub stats: Arc<PaneStats>,
     /// actor 每次喂数据后刷新的模式位快照：UI 需要在**不阻塞**的前提下判断
@@ -906,6 +911,14 @@ impl PaneHandle {
         self.wake_rx.clone()
     }
 
+    /// 语义事件唤醒通道的克隆。
+    ///
+    /// 与 [`Self::wake_receiver`] 分开：内容变化走拉帧 + 重绘，标题/Bell/OSC52
+    /// 等语义事件走 UI 事件处理，两者不互相冒充。容量 1，洪峰只合并通知。
+    pub fn event_wake_receiver(&self) -> Receiver<()> {
+        self.events_wake_rx.clone()
+    }
+
     pub fn is_exited(&self) -> bool {
         self.exited
     }
@@ -974,7 +987,7 @@ pub fn spawn(config: PaneConfig) -> std::io::Result<PaneHandle> {
     let (pty_tx, pty_rx) = bounded::<Vec<u8>>(PTY_QUEUE_CHUNKS);
     let (ctrl_tx, ctrl_rx) = bounded::<Ctrl>(CTRL_QUEUE);
     let (pull_tx, pull_rx) = bounded::<(u64, Box<Frame>)>(1);
-    let (events_sink, events_rx) = EventSink::new(EVENT_QUEUE);
+    let (events_sink, events_rx, events_wake_rx) = EventSink::new_with_wake(EVENT_QUEUE);
     let (wake_signal, wake_rx) = WakeSignal::new();
 
     let stats = Arc::new(PaneStats::default());
@@ -1100,6 +1113,7 @@ pub fn spawn(config: PaneConfig) -> std::io::Result<PaneHandle> {
         ctrl_tx,
         pull_rx,
         events_rx,
+        events_wake_rx,
         wake_rx,
         stats,
         mode_bits,

@@ -24,6 +24,8 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
+use tervo_core::WakeSignal;
+
 use crate::commands::{self, Command, Registry, Shortcut};
 
 /// 宿主实现的插件 API 版本；清单里的 `api` 必须精确等于它。
@@ -429,15 +431,26 @@ impl PluginActivity {
 pub struct ActivityLog {
     records: VecDeque<PluginActivity>,
     revision: u64,
+    /// 活动变化唤醒 UI（容量 1，合并）；后台线程 push 后通知，UI 立即刷新。
+    wake: Option<WakeSignal>,
 }
 
 impl ActivityLog {
+    /// 安装唤醒信号；`PluginStore` 在启动时注入，测试可用默认空值。
+    pub fn set_wake(&mut self, wake: WakeSignal) {
+        self.wake = Some(wake);
+    }
+
     pub fn push(&mut self, record: PluginActivity) {
         if self.records.len() >= ACTIVITY_CAPACITY {
             self.records.pop_front();
         }
         self.records.push_back(record);
         self.revision = self.revision.wrapping_add(1);
+        // 非阻塞：容量 1，连续 push 只合并成一次 UI 唤醒；实际记录仍逐条保留。
+        if let Some(wake) = &self.wake {
+            wake.notify();
+        }
     }
 
     #[allow(dead_code)] // 单测断言容量/空表；生产只读 lines()
@@ -711,6 +724,13 @@ impl PluginStore {
         match self.activity.lock() {
             Ok(log) => (log.revision(), log.lines()),
             Err(_) => (0, Vec::new()),
+        }
+    }
+
+    /// 插件活动写入后唤醒 UI（容量 1）。必须在事件循环启动前注入。
+    pub fn set_activity_wake(&self, wake: WakeSignal) {
+        if let Ok(mut log) = self.activity.lock() {
+            log.set_wake(wake);
         }
     }
 
@@ -1896,6 +1916,33 @@ exit 0
         assert_eq!(error.outcome, "spawn-error");
         assert_eq!(error.summary, "无法启动 x");
         assert!(!error.display_line().contains('\u{0}'));
+    }
+
+    #[test]
+    fn activity_push_wakes_ui_once_per_burst() {
+        let (wake, rx) = WakeSignal::new();
+        let mut log = ActivityLog::default();
+        log.set_wake(wake);
+
+        log.push(PluginActivity::new("12:00:00", "hello", "event startup", "exit=0", "one"));
+        assert!(rx.try_recv().is_ok(), "push 后应立即唤醒 UI");
+        assert_eq!(log.revision(), 1);
+
+        // 连续 push 合并成一次唤醒；记录本身不合并。
+        for i in 1..5 {
+            log.push(PluginActivity::new(
+                format!("12:00:0{i}"),
+                "hello",
+                "event startup",
+                "exit=0",
+                "buried",
+            ));
+        }
+        assert!(rx.try_recv().is_ok(), "合并窗口内的第一次唤醒必须还在");
+        assert!(rx.try_recv().is_err(), "同一轮唤醒必须合并成一次");
+        assert_eq!(log.revision(), 5);
+        assert_eq!(log.len(), 5);
+        assert_eq!(log.lines().len(), 5);
     }
 
     #[cfg(unix)]

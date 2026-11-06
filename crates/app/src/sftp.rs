@@ -19,6 +19,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::profile::Profile;
+use tervo_core::WakeSignal;
 
 /// 单次 SFTP 元数据命令（list/mkdir/rename/rm）的硬超时。
 ///
@@ -421,17 +422,39 @@ pub struct SftpOpJob {
 }
 
 impl SftpOpJob {
-    /// 启动生产任务（系统 `sftp`）；只 spawn 线程，UI 调用耗时与网络无关。
+    /// 启动生产任务（无 UI 唤醒；测试/探针用；UI 用 [`Self::start_woken`]）。
+    #[allow(dead_code)]
     pub fn start(command: SftpCommand) -> Self {
-        Self::start_with(command, Path::new("sftp").to_path_buf(), SFTP_TIMEOUT)
+        Self::start_inner(command, Path::new("sftp").to_path_buf(), SFTP_TIMEOUT, None)
     }
 
-    /// 注入程序/超时的启动入口（测试用；生产用 [`Self::start`]）。
+    /// 生产入口：结果（含超时）写通道后额外唤醒 UI，把完成延迟从 400ms 降到事件级。
+    pub fn start_woken(command: SftpCommand, wake: WakeSignal) -> Self {
+        Self::start_inner(command, Path::new("sftp").to_path_buf(), SFTP_TIMEOUT, Some(wake))
+    }
+
+    /// 注入程序/超时的启动入口（测试/探针用；生产用 [`Self::start_woken`]）。
+    #[allow(dead_code)]
     pub fn start_with(command: SftpCommand, program: std::path::PathBuf, timeout: Duration) -> Self {
+        Self::start_inner(command, program, timeout, None)
+    }
+
+    /// 内部统一入口；`wake` 为 `Some` 时结果到达后立即通知 UI。
+    fn start_inner(
+        command: SftpCommand,
+        program: std::path::PathBuf,
+        timeout: Duration,
+        wake: Option<WakeSignal>,
+    ) -> Self {
         let (sender, events) = mpsc::channel();
         let join = thread::spawn(move || {
             let outcome = command.execute_with(&program, timeout);
-            let _ = sender.send(outcome);
+            // 先写通道再唤醒：UI 被唤醒后 drain 一定能看到结果，不会空转。
+            if sender.send(outcome).is_ok() {
+                if let Some(wake) = &wake {
+                    wake.notify();
+                }
+            }
         });
         Self { events, join: Some(join) }
     }
@@ -442,6 +465,7 @@ impl SftpOpJob {
     }
 
     /// 测试/探针：等结果并回收线程；只应在确认 worker 已结束（或可接受等待）时用。
+    #[allow(dead_code)]
     pub fn wait(mut self) -> Option<SftpOutcome> {
         let outcome = self.events.recv_timeout(SFTP_TIMEOUT + KILL_GRACE * 4).ok();
         if let Some(join) = self.join.take() {
@@ -616,15 +640,30 @@ pub struct TransferJob {
 }
 
 impl TransferJob {
-    /// 启动真实的 sftp 传输。
+    /// 启动真实的 sftp 传输（无 UI 唤醒；测试/探针用）。
     pub fn start(request: &TransferRequest) -> Result<Self, String> {
         let mut command = Command::new("sftp");
         command.args(["-q", "-b", "-"]).args(request.target.args());
         Self::spawn_with_script(command, request.batch_script())
     }
 
+    /// 生产入口：进度/结束事件写通道后额外唤醒 UI（容量 1，洪峰合并）。
+    pub fn start_woken(request: &TransferRequest, wake: WakeSignal) -> Result<Self, String> {
+        let mut command = Command::new("sftp");
+        command.args(["-q", "-b", "-"]).args(request.target.args());
+        Self::spawn_with_script_and_wake(command, request.batch_script(), Some(wake))
+    }
+
     /// 启动任意子进程并喂一段脚本；抽出来便于用临时 shell 脚本测取消/状态机。
-    pub fn spawn_with_script(mut command: Command, script: String) -> Result<Self, String> {
+    pub fn spawn_with_script(command: Command, script: String) -> Result<Self, String> {
+        Self::spawn_with_script_and_wake(command, script, None)
+    }
+
+    fn spawn_with_script_and_wake(
+        mut command: Command,
+        script: String,
+        wake: Option<WakeSignal>,
+    ) -> Result<Self, String> {
         command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
         // 临时脚本刚写完时可能 ETXTBSY（测试/某些文件系统）；重试几次。
         let mut child = None;
@@ -651,11 +690,15 @@ impl TransferJob {
         let (sender, events) = mpsc::channel();
 
         let stdout_sender = sender.clone();
-        let stdout_reader = thread::spawn(move || read_stream(stdout, stdout_sender, None));
+        let stdout_wake = wake.clone();
+        let stdout_reader =
+            thread::spawn(move || read_stream(stdout, stdout_sender, None, stdout_wake));
         let stderr_sender = sender.clone();
         let stderr_sink = stderr_text.clone();
-        let stderr_reader =
-            thread::spawn(move || read_stream(stderr, stderr_sender, Some(stderr_sink)));
+        let stderr_wake = wake.clone();
+        let stderr_reader = thread::spawn(move || {
+            read_stream(stderr, stderr_sender, Some(stderr_sink), stderr_wake)
+        });
 
         let worker_child = child.clone();
         let worker_cancel = cancel.clone();
@@ -700,6 +743,9 @@ impl TransferJob {
                 }
             };
             let _ = sender.send(event);
+            if let Some(wake) = &wake {
+                wake.notify();
+            }
         });
 
         Ok(Self { events, cancel, child, join: Some(join) })
@@ -798,6 +844,7 @@ fn read_stream<R: Read>(
     mut reader: R,
     sender: Sender<TransferEvent>,
     stderr_sink: Option<Arc<Mutex<String>>>,
+    wake: Option<WakeSignal>,
 ) {
     let mut pending = Vec::new();
     let mut chunk = [0u8; 8192];
@@ -807,7 +854,7 @@ fn read_stream<R: Read>(
             Ok(n) => {
                 pending.extend_from_slice(&chunk[..n]);
                 for line in take_complete_lines(&mut pending) {
-                    dispatch_line(&line, &sender, stderr_sink.as_ref());
+                    dispatch_line(&line, &sender, stderr_sink.as_ref(), wake.as_ref());
                 }
             },
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
@@ -817,14 +864,24 @@ fn read_stream<R: Read>(
     if !pending.is_empty() {
         let line = String::from_utf8_lossy(&pending).trim().to_string();
         if !line.is_empty() {
-            dispatch_line(&line, &sender, stderr_sink.as_ref());
+            dispatch_line(&line, &sender, stderr_sink.as_ref(), wake.as_ref());
         }
     }
 }
 
-fn dispatch_line(line: &str, sender: &Sender<TransferEvent>, stderr_sink: Option<&Arc<Mutex<String>>>) {
+fn dispatch_line(
+    line: &str,
+    sender: &Sender<TransferEvent>,
+    stderr_sink: Option<&Arc<Mutex<String>>>,
+    wake: Option<&WakeSignal>,
+) {
     if let Some(progress) = parse_progress_line(line) {
-        let _ = sender.send(TransferEvent::Progress(progress));
+        // 先写通道再唤醒，UI drain 时事件一定已在队列里。
+        if sender.send(TransferEvent::Progress(progress)).is_ok() {
+            if let Some(wake) = wake {
+                wake.notify();
+            }
+        }
         return;
     }
     if let Some(sink) = stderr_sink {
@@ -1298,6 +1355,81 @@ mod tests {
         assert_eq!(state.percent, Some(100));
         assert!(state.status_text().contains("已上传"));
         job.join();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn transfer_job_wake_fires_before_poll_and_after_event_is_queued() {
+        let dir = temp_dir("wake");
+        let script = write_script(
+            &dir,
+            "#!/bin/sh\nprintf 'wake.bin 10%% 1KB 1.0MB/s --:-- ETA\\r'\nsleep 0.05\nprintf 'wake.bin 100%% 2KB 1.0MB/s 00:00\\r'\nexit 0\n",
+        );
+        let (wake, rx) = WakeSignal::new();
+        let job = TransferJob::spawn_with_script_and_wake(
+            Command::new(&script),
+            String::new(),
+            Some(wake),
+        )
+        .unwrap();
+        let started = Instant::now();
+        rx.recv_timeout(Duration::from_secs(2)).expect("进度事件应唤醒 UI");
+        assert!(
+            started.elapsed() < Duration::from_millis(400),
+            "唤醒不应等 400ms 轮询: {:?}",
+            started.elapsed()
+        );
+        // 唤醒只是一个“去看”的信号：事件必须已经在独立通道里，不能靠唤醒携带。
+        let first = job.events.try_recv().expect("唤醒后进度事件必须已在队列");
+        assert!(matches!(first, TransferEvent::Progress(_)), "first={first:?}");
+
+        // 等待结束事件（期间可能有合并的进度唤醒）。
+        let mut finished = None;
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline {
+            let _ = rx.recv_timeout(Duration::from_millis(200));
+            while let Ok(event) = job.events.try_recv() {
+                if let TransferEvent::Finished { cancelled, error } = event {
+                    finished = Some((cancelled, error));
+                }
+            }
+            if finished.is_some() {
+                break;
+            }
+        }
+        assert_eq!(finished, Some((false, None)), "应收到成功结束事件");
+        job.join();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sftp_op_job_wake_fires_before_400ms_poll() {
+        let dir = temp_dir("op-wake");
+        let script = write_script(&dir, "#!/bin/sh\ncat >/dev/null\nprintf 'one\\ntwo\\n'\n");
+        let (wake, rx) = WakeSignal::new();
+        let job = SftpOpJob::start_inner(
+            SftpCommand::List { target: target(), remote: "/".into() },
+            script,
+            SFTP_TIMEOUT,
+            Some(wake),
+        );
+        let started = Instant::now();
+        rx.recv_timeout(Duration::from_secs(2)).expect("后台结果应唤醒 UI");
+        assert!(
+            started.elapsed() < Duration::from_millis(400),
+            "结果唤醒不应等 400ms 轮询: {:?}",
+            started.elapsed()
+        );
+        let outcome = job.try_recv().expect("唤醒后结果必须已在队列");
+        match outcome {
+            SftpOutcome::List { items: Ok(items), .. } => {
+                assert_eq!(items, vec!["one".to_string(), "two".to_string()])
+            },
+            other => panic!("期望 List 成功，得到 {other:?}"),
+        }
+        let _ = job.wait(); // 已 drain；这里只回收 worker
         let _ = std::fs::remove_dir_all(&dir);
     }
 
