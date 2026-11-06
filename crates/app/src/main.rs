@@ -68,11 +68,61 @@ const BELL_FLASH_MS: u64 = 180;
 /// 滚动条 thumb 的最小像素高度（长 scrollback 时仍可抓取）。
 const SCROLLBAR_MIN_THUMB_PX: f32 = 24.0;
 
+/// 一个 pane 的外观覆盖（Profile 显式值 > 全局 Config；`None` = 继承）。
+///
+/// 只保存“选择”，不保存解析后的 `ThemeData`：全局主题/系统深浅变化时，
+/// Profile 选择 `auto` 的 pane 也能跟着重新解析；渲染用字体集则按字号缓存。
+#[derive(Clone, Debug, Default)]
+struct PaneAppearance {
+    font_size: Option<f32>,
+    /// 主题 id（`auto` / 内置 id / `custom:<stem>`）。
+    theme: Option<String>,
+    /// 规范化后的 `block` / `underline` / `ibeam` 等。
+    cursor_shape: Option<String>,
+    /// `Some(true/false)` = Profile 显式闪/不闪；`None` = 跟随全局。
+    cursor_blink: Option<bool>,
+    scrollback: Option<usize>,
+}
+
+impl PaneAppearance {
+    fn from_profile(profile: &profile::Profile) -> Self {
+        Self {
+            font_size: profile.effective_font_size(),
+            theme: profile.effective_theme().map(str::to_string),
+            cursor_shape: profile
+                .effective_cursor_shape()
+                .map(|shape| shape.config_name().to_string()),
+            cursor_blink: profile.effective_cursor_blink(),
+            scrollback: profile.effective_scrollback(),
+        }
+    }
+
+    /// 该 pane 实际使用的光标形状：Profile 值优先，否则全局。
+    fn cursor_shape(&self, cfg: &Config) -> tervo_core::CursorShape {
+        self.cursor_shape
+            .as_deref()
+            .map(tervo_core::CursorShape::from_name)
+            .unwrap_or_else(|| cfg.cursor_shape())
+    }
+
+    /// 该 pane 是否需要闪烁（Profile 覆盖全局）。
+    fn cursor_blinks(&self, global: bool) -> bool {
+        self.cursor_blink.unwrap_or(global)
+    }
+}
+
 struct PaneRuntime {
     handle: PaneHandle,
     renderer: Renderer,
     frame: Box<Frame>,
     image: slint::Image,
+    /// 该 pane 打开时使用的 Profile 外观覆盖；全局设置变化时用于决定谁优先。
+    appearance: PaneAppearance,
+    /// 该 pane 关联的 Profile ID（None = 默认 shell / 无关联）。会话快照用它
+    /// 保留连接类型；Profile 已删除或启动失败时恢复路径回退普通 shell。
+    profile_id: Option<u64>,
+    /// 渲染字符尺寸（Profile 字号可能不同，布局/PTY resize 必须按 pane 自己的）。
+    cell: (usize, usize),
     /// 光标 overlay（app 不把光标画进终端帧，闪烁只切可见性）。
     cursor_image: slint::Image,
     /// Sixel 图片 overlay 的 Slint 模型；只在图片集合/位置变化时重建。
@@ -239,6 +289,8 @@ struct AppState {
     last_click: Option<(PaneId, i32, i32, std::time::Instant)>,
     /// 最近关闭的 Tab（最多 10 个），用于 Ctrl+Shift+T / 菜单重开
     closed_tabs: Vec<session::TabSnapshot>,
+    /// Restart Session 已保存快照并拉起子进程：退出钩子不要再写一次。
+    restarting: bool,
     fwd_profile_indices: Vec<usize>,
     fwd_model: Rc<VecModel<slint::SharedString>>,
     settings_result_cats: Vec<i32>,
@@ -477,6 +529,36 @@ fn resolve_theme(
     }
 }
 
+/// 应用配置/Profile 的主题选择；`None` = 继承全局（返回 None）。
+///
+/// Profile 的 `theme` 只影响该 Tab 的终端内容（渲染器背景/调色板），不改
+/// 应用 UI 主题；未知 id 记日志并回退当前全局主题，不改写 Profile。
+fn theme_for_selection(
+    reg: &ThemeRegistry,
+    cfg: &Config,
+    selection: Option<&str>,
+) -> Option<ThemeData> {
+    let selected = selection?.trim();
+    if selected.is_empty() {
+        return None;
+    }
+    if is_auto_theme(selected) {
+        return Some(resolve_theme(
+            reg,
+            AUTO_THEME,
+            cfg.auto_dark.as_deref(),
+            cfg.auto_light.as_deref(),
+        ));
+    }
+    match reg.get(selected) {
+        Some(theme) => Some(theme.clone()),
+        None => {
+            eprintln!("[profile] 未知主题 {selected:?}，该 pane 回退全局主题");
+            None
+        },
+    }
+}
+
 /// 启动时把配置里的选择归一化成设置面板能高亮的 id（兼容旧的 mocha/latte 别名）。
 fn normalize_selection(reg: &ThemeRegistry, selected: &str) -> String {
     if is_auto_theme(selected) {
@@ -546,6 +628,7 @@ const SETTINGS_CATALOG: &[(i32, &str, &str, &str)] = &[
     (1, "scrollback", "Unlimited scrollback", "unlimited scrollback history cap memory 无限 历史 内存"),
     (1, "behavior", "Copy on select", "copy select clipboard 复制 选区"),
     (1, "behavior", "Confirm before closing", "confirm close window exit 确认 关闭"),
+    (1, "behavior", "Restore session on startup", "restore session startup workspace tabs splits cwd 会话 恢复 启动"),
     (1, "behavior", "Confirm multi-line paste", "paste multiline confirm 粘贴 确认"),
     (1, "behavior", "Right click", "right click menu paste clipboard 右键"),
     (1, "behavior", "Paste on middle-click", "middle click paste 中键 粘贴"),
@@ -860,15 +943,6 @@ fn theme_choices(reg: &ThemeRegistry) -> ModelRc<ThemeChoice> {
     ModelRc::from(Rc::new(VecModel::from(choices)))
 }
 
-/// 实际生效的终端调色板：主题 16 色 + 用户粗体策略。
-fn pane_palette(st: &AppState) -> TermPalette {
-    st.resolved_theme.palette().with_bold(
-        st.cfg.bold_is_bright,
-        st.cfg.bold_color_rgb(),
-        st.cfg.bold_color_same_as_fg,
-    )
-}
-
 /// 设置面板高度：12 套内置主题 3 行；每多一行加 30px。
 
 /// 下发实际生效的主题（不改配置与选中项；auto 监听回调走这里）。
@@ -882,10 +956,22 @@ fn push_theme(st: &mut AppState, theme: &ThemeData) {
         theme.label.as_str().into()
     });
     st.ui.global::<Palette>().set_colors(slint_theme(&theme.ui));
-    let palette = pane_palette(st);
+    // 优先级：Profile 显式 theme > 全局 theme。Profile 选 auto 时跟随系统/全局
+    // 的深色侧设置重新解析；未知 id 已在 theme_for_selection 里回退全局。
+    let registry = &st.registry;
+    let cfg = &st.cfg;
+    let bold = (cfg.bold_is_bright, cfg.bold_color_rgb(), cfg.bold_color_same_as_fg);
     for rt in st.panes.values_mut() {
-        rt.renderer.set_theme(theme.spec.bg, theme.spec.cursor);
-        rt.handle.set_theme(palette.clone());
+        let pane_theme = rt
+            .appearance
+            .theme
+            .as_deref()
+            .and_then(|sel| theme_for_selection(registry, cfg, Some(sel)))
+            .unwrap_or_else(|| theme.clone());
+        rt.renderer
+            .set_theme(pane_theme.spec.bg, pane_theme.spec.cursor);
+        rt.handle
+            .set_theme(pane_theme.palette().with_bold(bold.0, bold.1, bold.2));
     }
     redraw_visible(st);
 }
@@ -1152,6 +1238,9 @@ fn reconfig_summary(old: &Config, new: &Config) -> ReconfigSummary {
     if old.default_profile_id != new.default_profile_id {
         s.new_pane.push("default_profile_id");
     }
+    if old.restore_session_on_startup != new.restore_session_on_startup {
+        s.restart.push("restore_session_on_startup");
+    }
     if old.cols != new.cols || old.rows != new.rows {
         s.restart.push("cols/rows");
     }
@@ -1304,6 +1393,8 @@ fn sync_reload_ui(st: &mut AppState) {
     st.ui.set_background_dim(st.cfg.background_dim);
     st.ui.set_cfg_copy_on_select(st.cfg.copy_on_select);
     st.ui.set_cfg_confirm_close(st.cfg.confirm_close);
+    st.ui
+        .set_cfg_restore_session(st.cfg.restore_session_on_startup);
     st.ui.set_cfg_confirm_paste(st.cfg.confirm_multiline_paste);
     st.ui
         .set_cfg_right_click(st.cfg.effective_right_click().into());
@@ -1583,8 +1674,7 @@ fn shell_name(opts: &Options) -> String {
 fn create_pane(
     st: &AppState,
     id: PaneId,
-    cols: usize,
-    rows: usize,
+    rect: Rect,
     cwd: Option<PathBuf>,
     profile: Option<&profile::Profile>,
     mut askpass: Option<askpass::Askpass>,
@@ -1613,22 +1703,46 @@ fn create_pane(
             .any(|(k, v)| k.as_str() == askpass::SECRET_ENV && !v.is_empty());
         eprintln!("[askpass] 注入 ssh 子进程环境: keys={keys:?} secret_set={secret_set}");
     }
-    let cwd = profile
-        .and_then(|p| p.cwd.clone())
-        .map(PathBuf::from)
-        .or(cwd);
+    // 显式 cwd（会话恢复的 /proc/<pid>/cwd）优先于 Profile 的起始目录：
+    // 恢复要回到用户实际 cd 到的目录，而不是每次都回到 Profile 配置的目录。
+    let cwd = cwd.or_else(|| profile.and_then(|p| p.cwd.clone()).map(PathBuf::from));
+
+    // per-profile 外观：字号决定渲染字符尺寸/PTY 网格；空 = 继承全局。
+    let mut appearance = profile.map(PaneAppearance::from_profile).unwrap_or_default();
+    let fonts = match appearance.font_size {
+        Some(size) if (size - st.cfg.font_size).abs() > f32::EPSILON => match FontSet::load(size) {
+            Some(fonts) => Rc::new(fonts),
+            None => {
+                eprintln!("[profile] Profile 字号 {size} 加载字体失败，回退全局字号");
+                appearance.font_size = None;
+                st.fonts.clone()
+            },
+        },
+        _ => st.fonts.clone(),
+    };
+    let (cols, rows) = cell_of(rect, (fonts.cell_w, fonts.cell_h));
+    let theme = theme_for_selection(&st.registry, &st.cfg, appearance.theme.as_deref())
+        .unwrap_or_else(|| st.resolved_theme.clone());
+    let scrollback = appearance
+        .scrollback
+        .unwrap_or_else(|| st.cfg.effective_scrollback());
+    let palette = theme.palette().with_bold(
+        st.cfg.bold_is_bright,
+        st.cfg.bold_color_rgb(),
+        st.cfg.bold_color_same_as_fg,
+    );
     let handle = spawn(PaneConfig {
         cols: cols as u16,
         rows: rows as u16,
-        scrollback: st.cfg.effective_scrollback(),
+        scrollback,
         scroll_on_output: st.cfg.scroll_on_output,
         keyboard_protocol: st.cfg.keyboard_protocol_enabled(),
         sixel: st.cfg.sixel,
         sixel_scrolling: st.cfg.sixel_scrolling,
-        cell_height: st.fonts.cell_h as u16,
+        cell_height: fonts.cell_h as u16,
         shell,
         args,
-        palette: pane_palette(st),
+        palette,
         cwd,
         env,
     })?;
@@ -1685,9 +1799,8 @@ fn create_pane(
             }
         })?;
 
-    let theme = &st.resolved_theme;
     let mut renderer = Renderer::new(
-        st.fonts.clone(),
+        fonts.clone(),
         cols,
         rows,
         theme.spec.bg,
@@ -1695,7 +1808,7 @@ fn create_pane(
         renderer_opacity(st),
     );
     renderer.set_cursor_style(
-        st.cfg.cursor_shape(),
+        appearance.cursor_shape(&st.cfg),
         st.cfg.cursor_color_rgb(),
         st.cfg.cursor_text_color_rgb(),
     );
@@ -1714,6 +1827,9 @@ fn create_pane(
         renderer,
         frame,
         image,
+        appearance,
+        profile_id: profile.map(|p| p.id).filter(|id| *id != 0),
+        cell: (fonts.cell_w, fonts.cell_h),
         cursor_image,
         cursor_rect,
         cursor_visible,
@@ -1736,8 +1852,7 @@ fn create_pane(
 
 fn new_tab_inner(st: &mut AppState) {
     let id = st.ws.alloc_id();
-    let (cols, rows) = cell_of(st.content, st.cell);
-    match create_pane(st, id, cols, rows, None, None, None) {
+    match create_pane(st, id, st.content, None, None, None) {
         Ok(rt) => {
             st.next_title += 1;
             let n = st.next_title;
@@ -1958,12 +2073,42 @@ fn prompt_profile_password(st: &mut AppState, index: usize, msg: &str) {
 }
 
 /// 用 Profile 打开新 Tab（shell/args/env/cwd 全按 Profile）。
-fn open_profile_tab(st: &mut AppState, index: usize) {
-    let Some(p) = st.profiles.profiles.get(index).cloned() else {
-        return;
-    };
-    // kind → 实际启动命令：local 直接用 Profile；ssh 用系统 ssh 客户端（PTY 里跑）；
-    // serial/telnet 后端还没做，明确拒绝而不是假装能连。
+/// Profile 启动时可能失败的分类（不包含密码明文）。
+#[derive(Debug)]
+enum ProfileLaunchError {
+    NotFound,
+    VaultLocked,
+    Vault(String),
+    Askpass(String),
+    UnknownKind(String),
+}
+
+impl ProfileLaunchError {
+    fn message(&self) -> String {
+        match self {
+            Self::NotFound => "Profile 不存在".into(),
+            Self::VaultLocked => "Vault 已锁定".into(),
+            Self::Vault(e) => e.clone(),
+            Self::Askpass(e) => format!("创建 ssh askpass 失败: {e}"),
+            Self::UnknownKind(kind) => format!("未知 Profile 类型: {kind}"),
+        }
+    }
+}
+
+/// 构造 Profile 的启动 spec（ssh/telnet/serial 会替换成系统客户端命令）。
+///
+/// 不修改 UI/配置；Vault/askpass 失败用错误分类返回，调用方决定是弹设置页
+/// （用户主动打开 Profile）还是回退普通 shell（会话恢复/复制 Tab）。
+fn build_profile_launch(
+    st: &AppState,
+    index: usize,
+) -> Result<(profile::Profile, Option<askpass::Askpass>), ProfileLaunchError> {
+    let p = st
+        .profiles
+        .profiles
+        .get(index)
+        .cloned()
+        .ok_or(ProfileLaunchError::NotFound)?;
     let mut askpass = None;
     let spec = match p.kind.as_str() {
         "local" => p.clone(),
@@ -2003,36 +2148,20 @@ fn open_profile_tab(st: &mut AppState, index: usize) {
                                 }
                                 Err(e) => {
                                     drop(password);
-                                    prompt_profile_password(
-                                        st,
-                                        index,
-                                        &format!("创建 ssh askpass 失败: {e}"),
-                                    );
-                                    return;
+                                    return Err(ProfileLaunchError::Askpass(e.to_string()));
                                 }
                             }
                         }
                     }
                     Err(vault::VaultError::Locked | vault::VaultError::NotInitialized) => {
-                        prompt_vault_unlock(
-                            st,
-                            "Vault 已锁定：请先在 Vault 页解锁，再连接该 SSH Profile",
-                        );
-                        return;
+                        return Err(ProfileLaunchError::VaultLocked);
                     }
-                    Err(e) => {
-                        prompt_profile_password(
-                            st,
-                            index,
-                            &format!("{e}；请解锁 Vault 并重新保存密码"),
-                        );
-                        return;
-                    }
+                    Err(e) => return Err(ProfileLaunchError::Vault(e.to_string())),
                 }
             }
             eprintln!("[profile] ssh 命令: {} {}", q.shell, q.args.join(" "));
             q
-        }
+        },
         "telnet" => {
             let (prog, args) = p.telnet_command();
             let mut q = p.clone();
@@ -2041,7 +2170,7 @@ fn open_profile_tab(st: &mut AppState, index: usize) {
             q.cwd = None;
             eprintln!("[profile] telnet 命令: {} {}", q.shell, q.args.join(" "));
             q
-        }
+        },
         "serial" => {
             let (prog, args) = p.serial_command();
             let mut q = p.clone();
@@ -2050,17 +2179,42 @@ fn open_profile_tab(st: &mut AppState, index: usize) {
             q.cwd = None;
             eprintln!("[profile] serial 命令: {} {}", q.shell, q.args.join(" "));
             q
-        }
-        other => {
-            eprintln!("[profile] {:?} kind={other} 未知类型", p.name);
+        },
+        other => return Err(ProfileLaunchError::UnknownKind(other.to_string())),
+    };
+    Ok((spec, askpass))
+}
+
+/// 用 Profile 打开新 Tab（shell/args/env/cwd/外观全按 Profile）。
+fn open_profile_tab(st: &mut AppState, index: usize) {
+    let (spec, askpass) = match build_profile_launch(st, index) {
+        Ok(v) => v,
+        Err(err @ (ProfileLaunchError::NotFound | ProfileLaunchError::UnknownKind(_))) => {
+            eprintln!("[profile] 打开失败: {}", err.message());
             return;
-        }
+        },
+        Err(ProfileLaunchError::VaultLocked) => {
+            prompt_vault_unlock(st, "Vault 已锁定：请先在 Vault 页解锁，再连接该 SSH Profile");
+            return;
+        },
+        Err(err @ ProfileLaunchError::Vault(_)) => {
+            prompt_profile_password(
+                st,
+                index,
+                &format!("{}；请解锁 Vault 并重新保存密码", err.message()),
+            );
+            return;
+        },
+        Err(err @ ProfileLaunchError::Askpass(_)) => {
+            prompt_profile_password(st, index, &err.message());
+            return;
+        },
     };
     let id = st.ws.alloc_id();
-    let (cols, rows) = cell_of(st.content, st.cell);
-    match create_pane(st, id, cols, rows, None, Some(&spec), askpass) {
+    let tab_title = spec.name.clone();
+    let kind = spec.kind.clone();
+    match create_pane(st, id, st.content, None, Some(&spec), askpass) {
         Ok(rt) => {
-            let tab_title = p.name.clone();
             st.panes.insert(id, rt);
             st.ws.tabs.push(Tab::single(id, tab_title.clone()));
             st.ws.active = st.ws.tabs.len() - 1;
@@ -2075,14 +2229,23 @@ fn open_profile_tab(st: &mut AppState, index: usize) {
             dispatch_plugin_event(
                 st,
                 plugin::PluginEvent::TabOpen,
-                plugin::tab_open_payload(&tab_title, &p.kind),
+                plugin::tab_open_payload(&tab_title, &kind),
             );
             refresh_views(st);
             rebuild_tabs(st);
             redraw_pane_inner(st, id);
-            eprintln!("[profile] open {:?} kind={}", p.name, p.kind);
-        }
-        Err(e) => eprintln!("[profile] 打开 {:?} 失败: {e}", p.name),
+            eprintln!(
+                "[profile] open {:?} kind={kind} appearance font_size={:?} theme={:?} cursor={:?}/{:?} scrollback={:?} cell={:?}",
+                spec.name,
+                spec.effective_font_size(),
+                spec.effective_theme(),
+                spec.effective_cursor_shape_name(),
+                spec.effective_cursor_blink(),
+                spec.effective_scrollback(),
+                st.panes.get(&id).map(|rt| rt.cell)
+            );
+        },
+        Err(e) => eprintln!("[profile] 打开 {:?} 失败: {e}", spec.name),
     }
 }
 
@@ -2127,6 +2290,11 @@ fn open_profile_form(st: &mut AppState) {
     st.ui.set_form_forwards("".into());
     st.ui.set_form_serial_port("/dev/ttyUSB0".into());
     st.ui.set_form_baud("115200".into());
+    st.ui.set_form_font_size("".into());
+    st.ui.set_form_theme("".into());
+    st.ui.set_form_cursor_shape("".into());
+    st.ui.set_form_cursor_blink("".into());
+    st.ui.set_form_scrollback("".into());
     st.ui.set_form_error("".into());
     st.ui.set_profile_form_open(true);
     eprintln!("[profile] 打开新建表单 name={name:?} shell={shell:?} cwd={cwd:?}");
@@ -2161,6 +2329,36 @@ fn edit_profile_form(st: &mut AppState, index: usize) {
         .set_form_forwards(p.local_forwards.join(" ").as_str().into());
     st.ui.set_form_serial_port(p.serial_port.as_str().into());
     st.ui.set_form_baud(p.baud.to_string().as_str().into());
+    st.ui.set_form_font_size(
+        p.font_size
+            .map(|v| v.to_string())
+            .unwrap_or_default()
+            .as_str()
+            .into(),
+    );
+    st.ui
+        .set_form_theme(p.theme.clone().unwrap_or_default().as_str().into());
+    st.ui.set_form_cursor_shape(
+        p.cursor_shape
+            .clone()
+            .unwrap_or_default()
+            .as_str()
+            .into(),
+    );
+    st.ui.set_form_cursor_blink(
+        p.cursor_blink
+            .clone()
+            .unwrap_or_default()
+            .as_str()
+            .into(),
+    );
+    st.ui.set_form_scrollback(
+        p.scrollback
+            .map(|v| v.to_string())
+            .unwrap_or_default()
+            .as_str()
+            .into(),
+    );
     st.ui.set_form_error("".into());
     st.ui.set_profile_form_open(true);
     eprintln!(
@@ -2220,6 +2418,44 @@ fn save_profile_form(st: &mut AppState) {
             p.cwd = (!cwd.trim().is_empty()).then(|| cwd.trim().to_string());
         }
     }
+    // ---- 外观（可选；空 = 继承全局）----
+    let trim_opt = |s: String| -> Option<String> {
+        let t = s.trim().to_string();
+        (!t.is_empty()).then_some(t)
+    };
+    let font_size = match trim_opt(st.ui.get_form_font_size().to_string()) {
+        None => None,
+        Some(raw) => match raw.parse::<f32>() {
+            Ok(v) => Some(v),
+            Err(_) => {
+                let msg = format!(
+                    "字号无效: {raw}（应为 {:.0}–{:.0}）",
+                    profile::MIN_FONT_SIZE,
+                    profile::MAX_FONT_SIZE
+                );
+                st.ui.set_form_error(msg.as_str().into());
+                return;
+            },
+        },
+    };
+    let scrollback = match trim_opt(st.ui.get_form_scrollback().to_string()) {
+        None => None,
+        Some(raw) => match raw.parse::<usize>() {
+            Ok(v) if v > 0 => Some(v),
+            _ => {
+                let msg = format!("scrollback 无效: {raw}（应为正整数，留空继承全局）");
+                st.ui.set_form_error(msg.as_str().into());
+                return;
+            },
+        },
+    };
+    p.font_size = font_size;
+    p.theme = trim_opt(st.ui.get_form_theme().to_string());
+    p.cursor_shape = trim_opt(st.ui.get_form_cursor_shape().to_string());
+    p.cursor_blink =
+        trim_opt(st.ui.get_form_cursor_blink().to_string()).map(|s| s.to_ascii_lowercase());
+    p.scrollback = scrollback;
+
     // ---- Vault 密码：只在 auth=password 且勾选保存时处理 ----
     let password = st.ui.get_form_password().to_string();
     let save_checked = st.ui.get_form_save_password();
@@ -3120,6 +3356,7 @@ fn duplicate_tab(st: &mut AppState, index: usize) {
         };
         let ids = root.panes();
         let mut cwds = HashMap::with_capacity(ids.len());
+        let mut profiles = HashMap::with_capacity(ids.len());
         for id in &ids {
             let cwd = st
                 .panes
@@ -3127,33 +3364,34 @@ fn duplicate_tab(st: &mut AppState, index: usize) {
                 .and_then(|rt| rt.handle.pid())
                 .and_then(session::cwd_of);
             cwds.insert(*id, cwd);
+            profiles.insert(*id, st.panes.get(id).and_then(|rt| rt.profile_id));
         }
         (
             src.title.clone(),
             src.focused,
             ids,
-            session::Tree::from_node(root, &cwds),
+            session::Tree::from_node_with_profiles(root, &cwds, &profiles),
         )
     };
 
     let leaf_cwds = tree.leaf_cwds();
+    let leaf_profiles = tree.leaf_profiles();
     eprintln!("[ws] duplicate tab={index} panes={}", leaf_cwds.len());
     let new_ids: Vec<PaneId> = (0..leaf_cwds.len()).map(|_| st.ws.alloc_id()).collect();
     let Some(new_root) = tree.assign(&new_ids) else {
         return;
     };
-    let (cols, rows) = cell_of(st.content, st.cell);
-
     let mut created = Vec::with_capacity(new_ids.len());
     for (i, cwd) in leaf_cwds.iter().enumerate() {
+        let (profile, askpass) =
+            restore_pane_launch(st, leaf_profiles.get(i).copied().flatten());
         match create_pane(
             st,
             new_ids[i],
-            cols,
-            rows,
+            st.content,
             cwd.as_ref().map(PathBuf::from),
-            None,
-            None,
+            profile.as_ref(),
+            askpass,
         ) {
             Ok(rt) => {
                 st.panes.insert(new_ids[i], rt);
@@ -3254,6 +3492,7 @@ fn snapshot_tab(st: &AppState, index: usize) -> Option<session::TabSnapshot> {
     let root = tab.root.as_ref()?;
     let ids = root.panes();
     let mut cwds = HashMap::with_capacity(ids.len());
+    let mut profiles = HashMap::with_capacity(ids.len());
     for id in &ids {
         let cwd = st
             .panes
@@ -3261,19 +3500,62 @@ fn snapshot_tab(st: &AppState, index: usize) -> Option<session::TabSnapshot> {
             .and_then(|rt| rt.handle.pid())
             .and_then(session::cwd_of);
         cwds.insert(*id, cwd);
+        profiles.insert(*id, st.panes.get(id).and_then(|rt| rt.profile_id));
     }
     let focused = ids.iter().position(|id| *id == tab.focused).unwrap_or(0);
     Some(session::TabSnapshot {
         title: tab.title.clone(),
         focused,
-        tree: session::Tree::from_node(root, &cwds),
+        tree: session::Tree::from_node_with_profiles(root, &cwds, &profiles),
     })
+}
+
+/// 会话/复制 Tab 恢复一个 pane 的 Profile 启动信息。
+///
+/// Profile 已删除、Vault 锁定、askpass 创建失败等一律回退普通 shell（返回
+/// `None`），保证“恢复失败也能开出新 Tab”，不因为坏 Profile 拒绝启动。
+fn restore_pane_launch(
+    st: &AppState,
+    profile_id: Option<u64>,
+) -> (Option<profile::Profile>, Option<askpass::Askpass>) {
+    let Some(profile_id) = profile_id else {
+        return (None, None);
+    };
+    let Some(index) = st.profiles.profiles.iter().position(|p| p.id == profile_id) else {
+        eprintln!("[session] Profile id={profile_id} 已删除，回退普通 shell");
+        return (None, None);
+    };
+    // 只自动恢复 local Profile 的 shell/外观；SSH/Serial/Telnet 需要主动连接，
+    // 会话恢复不自动建连（避免启动即连远端/Vault 弹窗），回退普通 shell。
+    if st.profiles.profiles[index].kind != "local" {
+        eprintln!(
+            "[session] Profile id={profile_id} 类型为 {}，会话恢复不自动连接，回退普通 shell",
+            st.profiles.profiles[index].kind
+        );
+        return (None, None);
+    }
+    match build_profile_launch(st, index) {
+        Ok((spec, askpass)) => {
+            eprintln!(
+                "[session] 恢复 local Profile id={profile_id} name={:?}，外观/启动按 Profile",
+                spec.name
+            );
+            (Some(spec), askpass)
+        },
+        Err(err) => {
+            eprintln!(
+                "[session] Profile id={profile_id} 启动信息不可用（{}），回退普通 shell",
+                err.message()
+            );
+            (None, None)
+        },
+    }
 }
 
 /// 按快照恢复一个 Tab（新 Pane、新 shell）；失败时清理半成品。
 fn restore_tab_snapshot(st: &mut AppState, tab_snap: &session::TabSnapshot) -> bool {
-    let (cols, rows) = cell_of(st.content, st.cell);
     let cwds = tab_snap.tree.leaf_cwds();
+    let profiles = tab_snap.tree.leaf_profiles();
     let ids: Vec<PaneId> = (0..cwds.len()).map(|_| st.ws.alloc_id()).collect();
     let Some(root) = tab_snap.tree.assign(&ids) else {
         eprintln!("[session] 布局与 pane 数量不符，跳过该标签");
@@ -3281,14 +3563,14 @@ fn restore_tab_snapshot(st: &mut AppState, tab_snap: &session::TabSnapshot) -> b
     };
     let mut created = 0;
     for (i, cwd) in cwds.iter().enumerate() {
+        let (profile, askpass) = restore_pane_launch(st, profiles.get(i).copied().flatten());
         match create_pane(
             st,
             ids[i],
-            cols,
-            rows,
+            st.content,
             cwd.as_ref().map(PathBuf::from),
-            None,
-            None,
+            profile.as_ref(),
+            askpass,
         ) {
             Ok(rt) => {
                 st.panes.insert(ids[i], rt);
@@ -3353,6 +3635,7 @@ fn capture_snapshot(st: &AppState) -> Option<session::Snapshot> {
         let root = tab.root.as_ref()?;
         let ids = root.panes();
         let mut cwds = HashMap::with_capacity(ids.len());
+        let mut profiles = HashMap::with_capacity(ids.len());
         for id in &ids {
             // cwd 从子进程的 /proc/<pid>/cwd 取，用户 cd 到哪就恢复到哪
             let cwd = st
@@ -3361,12 +3644,13 @@ fn capture_snapshot(st: &AppState) -> Option<session::Snapshot> {
                 .and_then(|rt| rt.handle.pid())
                 .and_then(session::cwd_of);
             cwds.insert(*id, cwd);
+            profiles.insert(*id, st.panes.get(id).and_then(|rt| rt.profile_id));
         }
         let focused = ids.iter().position(|id| *id == tab.focused).unwrap_or(0);
         tabs.push(session::TabSnapshot {
             title: tab.title.clone(),
             focused,
-            tree: session::Tree::from_node(root, &cwds),
+            tree: session::Tree::from_node_with_profiles(root, &cwds, &profiles),
         });
     }
     Some(session::Snapshot {
@@ -3439,10 +3723,36 @@ fn restart_session(st: &mut AppState) {
     }
     match cmd.spawn() {
         Ok(child) => {
+            st.restarting = true;
             eprintln!("[session] 已拉起新实例 pid={}，退出当前进程", child.id());
             let _ = slint::quit_event_loop();
-        }
+        },
         Err(e) => eprintln!("[session] 重启失败（保留当前窗口）: {e}"),
+    }
+}
+
+/// 正常退出时按开关写会话快照；无 Tab 时清掉旧快照，避免下次恢复幽灵布局。
+///
+/// `Restart Session` 已提前写好快照并拉起子进程，此时 `restarting` 为 true，
+/// 不再在退出钩子里重复写（避免与子进程的 `session::clear` 竞争）。
+fn save_session_on_exit(st: &AppState) {
+    if !st.cfg.restore_session_on_startup || st.restarting || st.opts.window {
+        return;
+    }
+    match capture_snapshot(st) {
+        Some(snap) => match session::save(&snap) {
+            Ok(path) => eprintln!(
+                "[session] 退出时已保存 {}（{} 个标签 / {} 个 pane）",
+                path.display(),
+                snap.tabs.len(),
+                snap.tabs.iter().map(|t| t.tree.leaf_count()).sum::<usize>()
+            ),
+            Err(e) => eprintln!("[session] 退出时保存快照失败（下次启动回退新 Tab）: {e}"),
+        },
+        None => {
+            session::clear();
+            eprintln!("[session] 退出时没有 Tab，已清除旧快照");
+        },
     }
 }
 
@@ -3482,15 +3792,26 @@ fn split_pane_inner(st: &mut AppState, id: PaneId, dir: Dir) {
     let Some(tab_index) = st.ws.tab_of(id) else {
         return;
     };
-    let Some((cols, rows)) = st.panes.get(&id).map(|r| r.grid) else {
+    let Some(rect) = st.panes.get(&id).map(|r| r.rect) else {
         return;
     };
-    let guess = match dir {
-        Dir::Row => ((cols / 2).max(10), rows),
-        Dir::Col => (cols, (rows / 2).max(3)),
+    // 新 pane 大致占原 pane 的一半；refresh_views 会按最终矩形重算网格。
+    let new_rect = match dir {
+        Dir::Row => Rect::new(
+            rect.x + rect.w / 2.0,
+            rect.y,
+            (rect.w / 2.0).max(1.0),
+            rect.h,
+        ),
+        Dir::Col => Rect::new(
+            rect.x,
+            rect.y + rect.h / 2.0,
+            rect.w,
+            (rect.h / 2.0).max(1.0),
+        ),
     };
     let new_id = st.ws.alloc_id();
-    match create_pane(st, new_id, guess.0, guess.1, None, None, None) {
+    match create_pane(st, new_id, new_rect, None, None, None) {
         Ok(rt) => {
             st.panes.insert(new_id, rt);
             st.ws.tabs[tab_index].split(id, dir, new_id);
@@ -3820,12 +4141,15 @@ fn pane_view(
     rt: &PaneRuntime,
     focused: bool,
     cursor_blink_on: bool,
+    global_blink: bool,
     policy: ScrollbarPolicy,
 ) -> PaneView {
     let pos = rt.handle.scroll_position();
     let track_h = rt.renderer.height.max(1) as f32;
     let min_thumb = (SCROLLBAR_MIN_THUMB_PX / track_h).clamp(0.0, 1.0);
     let (scrollbar_visible, thumb_y, thumb_h) = scrollbar_geometry(policy, pos, min_thumb, track_h);
+    // Profile 可显式关闭/开启闪烁；`off` 时 overlay 恒亮，不跟全局相位。
+    let blink = rt.appearance.cursor_blinks(global_blink);
     PaneView {
         id: id as i32,
         image: rt.image.clone(),
@@ -3841,7 +4165,7 @@ fn pane_view(
         cursor_y: rt.cursor_rect.1,
         cursor_w: rt.cursor_rect.2,
         cursor_h: rt.cursor_rect.3,
-        cursor_visible: rt.cursor_visible && cursor_blink_on,
+        cursor_visible: rt.cursor_visible && (!blink || cursor_blink_on),
         mouse_reporting: rt.handle.wants_mouse(),
         scrollbar_visible,
         scrollbar_thumb_y: thumb_y,
@@ -3861,9 +4185,12 @@ fn refresh_pane_view(st: &mut AppState, id: PaneId) {
     };
     let focused = st.ws.active_tab().map(|t| t.focused) == Some(id);
     let policy = st.cfg.scrollbar_policy();
+    let global_blink = st.cfg.cursor_blinking();
     let Some(rt) = st.panes.get(&id) else { return };
-    st.pane_model
-        .set_row_data(row, pane_view(id, rt, focused, st.cursor_blink_on, policy));
+    st.pane_model.set_row_data(
+        row,
+        pane_view(id, rt, focused, st.cursor_blink_on, global_blink, policy),
+    );
 }
 
 /// 配置变化后立即刷新所有 pane 的滚动条/铃视图（不重排布局）。
@@ -3903,7 +4230,7 @@ fn refresh_views_impl(st: &mut AppState, resize_terminals: bool) {
 
     for (id, rect) in &rects {
         if let Some(rt) = st.panes.get_mut(id) {
-            let (cols, rows) = cell_of(*rect, st.cell);
+            let (cols, rows) = cell_of(*rect, rt.cell);
             rt.rect = *rect;
             if resize_terminals && rt.grid != (cols, rows) {
                 rt.renderer.resize_grid(cols, rows);
@@ -3914,9 +4241,17 @@ fn refresh_views_impl(st: &mut AppState, resize_terminals: bool) {
     }
 
     let policy = st.cfg.scrollbar_policy();
+    let global_blink = st.cfg.cursor_blinking();
     let make_view = |id: &PaneId, rect: &Rect| -> Option<PaneView> {
         st.panes.get(id).map(|rt| {
-            let mut view = pane_view(*id, rt, *id == focused, st.cursor_blink_on, policy);
+            let mut view = pane_view(
+                *id,
+                rt,
+                *id == focused,
+                st.cursor_blink_on,
+                global_blink,
+                policy,
+            );
             view.x = rect.x;
             view.y = rect.y;
             view.w = rect.w;
@@ -3976,6 +4311,8 @@ fn refresh_views_impl(st: &mut AppState, resize_terminals: bool) {
 
     // 分屏/切 pane/Tab 切换/Tab 栏换边最终都会刷新布局：候选点跟着新矩形走。
     update_ime_spot(st);
+    // 新建/关闭 Profile pane 后，按“是否还有 pane 需要闪烁”启停计时器。
+    ensure_cursor_blink_timer(st);
 }
 
 /// `pane_model` 能否原地更新：模型行数等于布局数量，且每行 id 顺序一致。
@@ -4056,13 +4393,18 @@ fn refresh_cursor_overlay(rt: &mut PaneRuntime) {
 }
 
 /// 光标外观变化：只换 renderer 字段 + 重新生成小 overlay，不重绘整屏。
+///
+/// 优先级：Profile 显式 cursor_shape > 全局 `config.cursor_shape`；颜色仍全局。
 fn apply_cursor_settings(st: &mut AppState) {
-    let (shape, color, text_color) = (
-        st.cfg.cursor_shape(),
-        st.cfg.cursor_color_rgb(),
-        st.cfg.cursor_text_color_rgb(),
-    );
+    let global_shape = st.cfg.cursor_shape();
+    let (color, text_color) = (st.cfg.cursor_color_rgb(), st.cfg.cursor_text_color_rgb());
     for rt in st.panes.values_mut() {
+        let shape = rt
+            .appearance
+            .cursor_shape
+            .as_deref()
+            .map(tervo_core::CursorShape::from_name)
+            .unwrap_or(global_shape);
         if rt.renderer.set_cursor_style(shape, color, text_color) {
             refresh_cursor_overlay(rt);
         }
@@ -4078,19 +4420,48 @@ fn refresh_cursor_views(st: &mut AppState) {
     }
 }
 
-/// 粗体配置变化：重建调色板并让 core 重取整帧（颜色在 core 解析）。
+/// 粗体配置变化：按每个 pane 的主题重建调色板并让 core 重取整帧。
 fn apply_bold_settings(st: &mut AppState) {
-    let palette = pane_palette(st);
+    let fallback = st.resolved_theme.clone();
+    let registry = &st.registry;
+    let cfg = &st.cfg;
+    let bold = (cfg.bold_is_bright, cfg.bold_color_rgb(), cfg.bold_color_same_as_fg);
     for rt in st.panes.values_mut() {
-        rt.handle.set_theme(palette.clone());
+        let theme = rt
+            .appearance
+            .theme
+            .as_deref()
+            .and_then(|sel| theme_for_selection(registry, cfg, Some(sel)))
+            .unwrap_or_else(|| fallback.clone());
+        rt.handle
+            .set_theme(theme.palette().with_bold(bold.0, bold.1, bold.2));
     }
     redraw_visible(st);
+}
+
+/// 是否有 pane 需要闪烁（全局开启，或任一 Profile 显式 on）。
+fn needs_cursor_blink(st: &AppState) -> bool {
+    st.cfg.cursor_blinking()
+        || st
+            .panes
+            .values()
+            .any(|rt| rt.appearance.cursor_blink == Some(true))
+}
+
+/// 截图/自动化冻结相位：`TERVO_CURSOR_BLINK_PHASE=on|off`。
+fn frozen_cursor_blink_phase() -> Option<bool> {
+    let phase = std::env::var_os("TERVO_CURSOR_BLINK_PHASE")?;
+    match phase.to_string_lossy().to_ascii_lowercase().as_str() {
+        "on" | "1" | "true" => Some(true),
+        "off" | "0" | "false" => Some(false),
+        _ => None,
+    }
 }
 
 /// 光标闪烁半周期：只切换 overlay 的 `cursor-visible`，终端帧不重绘。
 fn tick_cursor_blink() {
     with_app(|st| {
-        if !st.cfg.cursor_blinking() {
+        if !needs_cursor_blink(st) {
             st.cursor_blink_timer.stop();
             st.cursor_blink_on = true;
             refresh_cursor_views(st);
@@ -4101,25 +4472,17 @@ fn tick_cursor_blink() {
     });
 }
 
-/// 按配置启停闪烁计时器；`off` 时停掉，空闲零唤醒。
+/// 按配置/Profile 启停闪烁计时器；没有 pane 需要闪时停掉，空闲零唤醒。
 ///
 /// `TERVO_CURSOR_BLINK_PHASE=on|off` 用于截图/自动化：冻结相位、不启动计时器。
 fn configure_cursor_blink(st: &mut AppState) {
-    if let Some(phase) = std::env::var_os("TERVO_CURSOR_BLINK_PHASE") {
-        let phase = phase.to_string_lossy().to_ascii_lowercase();
-        let frozen = match phase.as_str() {
-            "on" | "1" | "true" => Some(true),
-            "off" | "0" | "false" => Some(false),
-            _ => None,
-        };
-        if let Some(on) = frozen {
-            st.cursor_blink_timer.stop();
-            st.cursor_blink_on = on;
-            refresh_cursor_views(st);
-            return;
-        }
+    if let Some(on) = frozen_cursor_blink_phase() {
+        st.cursor_blink_timer.stop();
+        st.cursor_blink_on = on;
+        refresh_cursor_views(st);
+        return;
     }
-    if st.cfg.cursor_blinking() {
+    if needs_cursor_blink(st) {
         st.cursor_blink_on = true;
         if st.cursor_blink_timer.running() {
             st.cursor_blink_timer.restart();
@@ -4135,6 +4498,26 @@ fn configure_cursor_blink(st: &mut AppState) {
         st.cursor_blink_on = true;
     }
     refresh_cursor_views(st);
+}
+
+/// 新建/关闭 Profile pane 后同步计时器：只在“需要闪且未运行”时启动，
+/// 避免每次布局刷新都重置相位。
+fn ensure_cursor_blink_timer(st: &mut AppState) {
+    if frozen_cursor_blink_phase().is_some() {
+        return;
+    }
+    let need = needs_cursor_blink(st);
+    if need && !st.cursor_blink_timer.running() {
+        st.cursor_blink_on = true;
+        st.cursor_blink_timer.start(
+            slint::TimerMode::Repeated,
+            Duration::from_millis(config::CURSOR_BLINK_MS),
+            tick_cursor_blink,
+        );
+    } else if !need && st.cursor_blink_timer.running() {
+        st.cursor_blink_timer.stop();
+        st.cursor_blink_on = true;
+    }
 }
 
 fn redraw_pane(id: PaneId) {
@@ -4360,6 +4743,7 @@ fn sync_inline_images(rt: &mut PaneRuntime, frame: &Frame) {
 fn redraw_pane_inner(st: &mut AppState, id: PaneId) {
     let focused = st.ws.active_tab().map(|t| t.focused) == Some(id);
     let blink_on = st.cursor_blink_on;
+    let global_blink = st.cfg.cursor_blinking();
     let policy = st.cfg.scrollbar_policy();
     let Some(rt) = st.panes.get_mut(&id) else {
         return;
@@ -4401,8 +4785,10 @@ fn redraw_pane_inner(st: &mut AppState, id: PaneId) {
     rt.frame = frame;
     refresh_cursor_overlay(rt);
     if let Some(&row) = st.pane_rows.get(&id) {
-        st.pane_model
-            .set_row_data(row, pane_view(id, rt, focused, blink_on, policy));
+        st.pane_model.set_row_data(
+            row,
+            pane_view(id, rt, focused, blink_on, global_blink, policy),
+        );
     }
     if focused {
         update_ime_spot(st);
@@ -4437,26 +4823,68 @@ fn apply_font_size(st: &mut AppState) -> bool {
         eprintln!("[config] 字体加载失败，字号变更忽略");
         return false;
     };
-    let fonts = Rc::new(fonts);
-    st.cell = (fonts.cell_w, fonts.cell_h);
-    st.fonts = fonts.clone();
-    let theme = st.resolved_theme.clone();
+    let global_fonts = Rc::new(fonts);
+    st.cell = (global_fonts.cell_w, global_fonts.cell_h);
+    st.fonts = global_fonts.clone();
+    let global_size = st.cfg.font_size;
+
+    // 每个不同的 Profile 字号只加载一次字体集（同一字号的多个 pane 共享）。
+    let mut sizes: Vec<u32> = st
+        .panes
+        .values()
+        .filter_map(|rt| rt.appearance.font_size)
+        .filter(|size| (*size - global_size).abs() > f32::EPSILON)
+        .map(f32::to_bits)
+        .collect();
+    sizes.sort_unstable();
+    sizes.dedup();
+    let mut cache: HashMap<u32, Rc<FontSet>> = HashMap::new();
+    for bits in sizes {
+        let size = f32::from_bits(bits);
+        match FontSet::load(size) {
+            Some(fonts) => {
+                cache.insert(bits, Rc::new(fonts));
+            },
+            None => eprintln!("[config] Profile 字号 {size} 加载字体失败，回退全局字号"),
+        }
+    }
+
+    let fallback = st.resolved_theme.clone();
+    let registry = &st.registry;
+    let cfg = &st.cfg;
     let opacity = renderer_opacity(st);
+    let global_shape = cfg.cursor_shape();
+    let (cursor_color, cursor_text_color) = (cfg.cursor_color_rgb(), cfg.cursor_text_color_rgb());
     for rt in st.panes.values_mut() {
+        let fonts = rt
+            .appearance
+            .font_size
+            .and_then(|size| cache.get(&size.to_bits()).cloned())
+            .unwrap_or_else(|| global_fonts.clone());
         let (cols, rows) = rt.grid;
+        let theme = rt
+            .appearance
+            .theme
+            .as_deref()
+            .and_then(|sel| theme_for_selection(registry, cfg, Some(sel)))
+            .unwrap_or_else(|| fallback.clone());
+        rt.cell = (fonts.cell_w, fonts.cell_h);
         rt.renderer = Renderer::new(
-            fonts.clone(),
+            fonts,
             cols,
             rows,
             theme.spec.bg,
             theme.spec.cursor,
             opacity,
         );
-        rt.renderer.set_cursor_style(
-            st.cfg.cursor_shape(),
-            st.cfg.cursor_color_rgb(),
-            st.cfg.cursor_text_color_rgb(),
-        );
+        let shape = rt
+            .appearance
+            .cursor_shape
+            .as_deref()
+            .map(tervo_core::CursorShape::from_name)
+            .unwrap_or(global_shape);
+        rt.renderer
+            .set_cursor_style(shape, cursor_color, cursor_text_color);
     }
     refresh_views(st);
     redraw_visible(st);
@@ -6963,8 +7391,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         eprintln!("[render] requested_backend={requested_backend}（默认 GPU/Skia；可用 SLINT_BACKEND 覆盖）");
     }
-    let mut cfg = Config::load();
-    let opts = parse_args(&cfg);
+    let cfg = Config::load();
+    let mut opts = parse_args(&cfg);
+    // 启动自动恢复（默认关）。开启且有快照时沿用快照网格打开窗口；
+    // 没有快照/解析失败时完全保持旧的启动行为（新建单 Tab）。
+    // 子窗口进程（--window）不参与自动恢复/退出快照：session.json 只有一份，
+    // 让任意子窗口覆盖主窗口布局会在下次启动恢复错窗口。
+    let auto_restore = cfg.restore_session_on_startup && !opts.restore && !opts.window;
+    if auto_restore {
+        if let Some(snap) = session::load() {
+            if snap.cols > 0 && snap.rows > 0 {
+                opts.cols = snap.cols;
+                opts.rows = snap.rows;
+            }
+        }
+    }
     if opts.window {
         // 子窗口进程：仅日志区分。这里刻意不做任何“再建窗口”的动作，避免递归启动。
         eprintln!(
@@ -7183,6 +7624,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         broadcast: false,
         last_click: None,
         closed_tabs: Vec::new(),
+        restarting: false,
         fwd_profile_indices: Vec::new(),
         fwd_model,
         settings_result_cats: Vec::new(),
@@ -8629,6 +9071,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     });
 
+    ui.on_toggle_restore_session(|| {
+        with_app(|st| {
+            st.cfg.restore_session_on_startup = !st.cfg.restore_session_on_startup;
+            st.ui
+                .set_cfg_restore_session(st.cfg.restore_session_on_startup);
+            st.cfg.save();
+            eprintln!(
+                "[ui] restore_session_on_startup={}（下次启动生效；正常退出时写快照）",
+                st.cfg.restore_session_on_startup
+            );
+        });
+    });
+
     ui.on_tabsearch_open_requested(|| {
         let _ = with_app(open_tab_search);
     });
@@ -9304,6 +9759,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     with_app(|st| {
         st.ui.set_cfg_copy_on_select(st.cfg.copy_on_select);
         st.ui.set_cfg_confirm_close(st.cfg.confirm_close);
+        st.ui
+            .set_cfg_restore_session(st.cfg.restore_session_on_startup);
         st.ui.set_cfg_confirm_paste(st.cfg.confirm_multiline_paste);
         st.ui
             .set_cfg_desktop_notifications(st.cfg.desktop_notifications);
@@ -9393,7 +9850,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ---- 首个标签页 / 会话恢复 ----
     let restored = with_app(|st| {
-        let restored = opts.restore && restore_session(st);
+        // 手动 Restart Session（--restore）或配置开启的启动自动恢复；
+        // 没有快照/全部恢复失败时走下面的 new_tab_inner，保证总有一个可用 Tab。
+        let restored = (opts.restore || auto_restore) && restore_session(st);
         if !restored {
             new_tab_inner(st);
         }
@@ -9608,6 +10067,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let _keepalive = (poll_timer, state);
     let run_result = slint::run_event_loop();
+    // 正常退出（窗口关闭/最后一个 Tab 关闭）：开关打开时写会话快照。
+    with_app(|st| save_session_on_exit(st));
     stop_auto_watcher();
     // 显式停止并 join 轮询线程，避免退出阶段还有回调投递。
     with_app(|st| st.config_watcher.take());
@@ -9983,6 +10444,7 @@ mod tests {
             ("keystroke", "Scroll on keystroke"),
             ("unlimited", "Unlimited scrollback"),
             ("scrollbar", "Scrollbar policy"),
+            ("restore session", "Restore session on startup"),
             ("backspace", "Backspace / Delete binding"),
         ] {
             let hits = settings_search(query);
@@ -10617,6 +11079,50 @@ mod tests {
         // 真正的 Ctrl+U / 小写 u 不能被误杀。
         assert!(!is_modifier_artifact("u", true, false, false));
         assert!(!is_modifier_artifact("u", false, false, false));
+    }
+
+    #[test]
+    fn profile_appearance_maps_overrides_and_inherits() {
+        let cfg = Config::default();
+        let custom = profile::Profile {
+            font_size: Some(18.0),
+            theme: Some("catppuccin-mocha".into()),
+            cursor_shape: Some("beam".into()),
+            cursor_blink: Some("off".into()),
+            scrollback: Some(12_000),
+            ..profile::Profile::default()
+        };
+        let a = PaneAppearance::from_profile(&custom);
+        assert_eq!(a.font_size, Some(18.0));
+        assert_eq!(a.theme.as_deref(), Some("catppuccin-mocha"));
+        assert_eq!(a.cursor_shape.as_deref(), Some("ibeam"), "别名规范化");
+        assert_eq!(a.cursor_blink, Some(false));
+        assert_eq!(a.scrollback, Some(12_000));
+        assert!(!a.cursor_blinks(true), "Profile off 覆盖全局 on");
+        assert_eq!(a.cursor_shape(&cfg), tervo_core::CursorShape::Beam);
+
+        let inherit = PaneAppearance::from_profile(&profile::Profile::default());
+        assert_eq!(inherit.font_size, None);
+        assert_eq!(inherit.theme, None);
+        assert_eq!(inherit.cursor_shape, None);
+        assert_eq!(inherit.cursor_blink, None);
+        assert_eq!(inherit.scrollback, None);
+        assert!(inherit.cursor_blinks(true), "空 = 继承全局闪烁设置");
+        assert!(!inherit.cursor_blinks(false));
+        assert_eq!(
+            inherit.cursor_shape(&cfg),
+            cfg.cursor_shape(),
+            "空 = 继承全局光标形状"
+        );
+    }
+
+    #[test]
+    fn profile_appearance_blink_on_wakes_timer_without_global() {
+        // 只验证继承/覆盖的布尔含义；计时器需要 AppState（GUI），不在单测里构造。
+        let on = PaneAppearance { cursor_blink: Some(true), ..PaneAppearance::default() };
+        let off = PaneAppearance { cursor_blink: Some(false), ..PaneAppearance::default() };
+        assert!(on.cursor_blinks(false), "全局 off 时 Profile on 仍需闪烁");
+        assert!(!off.cursor_blinks(true), "全局 on 时 Profile off 保持常亮");
     }
 
     #[test]
