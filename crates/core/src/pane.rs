@@ -31,13 +31,13 @@ use alacritty_terminal::grid::Scroll;
 use alacritty_terminal::index::{Direction, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::search::RegexSearch;
-use alacritty_terminal::term::{Config as TermConfig, Term, TermDamage, TermMode};
+use alacritty_terminal::term::{Config as TermConfig, Osc52, Term, TermDamage, TermMode};
 use alacritty_terminal::vte::ansi::{ClearMode, Handler, Processor, Rgb};
 use crossbeam_channel::{bounded, Receiver, Sender};
 use parking_lot::RwLock;
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtyPair, PtySize};
 
-use crate::event::{CoreEvent, EventSink, PaneStats, WakeSignal};
+use crate::event::{ClipboardSelection, CoreEvent, EventSink, PaneStats, WakeSignal};
 use crate::frame::{CellData, CursorShape, CursorState, Frame, LineDamage, Span};
 use crate::mouse::{self, MouseEvent};
 use crate::osc::OscScanner;
@@ -272,6 +272,15 @@ impl PaneHandle {
         let _ = self.ctrl_tx.send(Ctrl::Mouse(ev));
     }
 
+    /// 回写 OSC 52 查询结果（`OSC 52;Pc;<base64> ST`）到 PTY。
+    ///
+    /// app 收到 [`CoreEvent::Clipboard`] 的 `Load` 后调用；文本由 core 统一编码，
+    /// 避免 UI 层再拼一遍控制序列。
+    pub fn clipboard_reply(&self, selection: ClipboardSelection, text: &str) {
+        let reply = crate::osc::clipboard_reply(selection, text);
+        self.input(&reply);
+    }
+
     /// 鼠标按下：在视口坐标 (line, col) 开始选区。
     pub fn selection_start(&self, line: u16, col: u16) {
         let _ = self.ctrl_tx.send(Ctrl::SelectionStart { line, col });
@@ -501,6 +510,9 @@ pub fn spawn(config: PaneConfig) -> std::io::Result<PaneHandle> {
     // ---- actor 线程 ----
     let term_config = TermConfig {
         scrolling_history: config.scrollback,
+        // OSC 52 由 core 的 OscScanner 统一处理（带 1 MiB 上限并转成 CoreEvent）；
+        // 关掉 alacritty 内建实现，避免同一条序列被写两次。
+        osc52: Osc52::Disabled,
         ..TermConfig::default()
     };
     let term = Term::new(term_config, &size, listener.clone());

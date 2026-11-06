@@ -7,10 +7,22 @@
 //!
 //! 所有解析函数只接收字节切片：非法/越界/超长输入一律忽略，绝不 panic。
 
-use crate::event::{CoreEvent, Notification, Progress, ProgressState};
+use crate::event::{
+    ClipboardRequest, ClipboardSelection, CoreEvent, Notification, Progress, ProgressState,
+};
 
 /// 单个 OSC 序列的缓冲上限（通知正文可能较长，但绝不允许无限增长）。
 const MAX_OSC_BYTES: usize = 16 * 1024;
+
+/// OSC 52 解码后的文本上限（1 MiB）：防止远端用一条序列撑爆内存/剪贴板。
+pub const MAX_CLIPBOARD_BYTES: usize = 1024 * 1024;
+
+/// 1 MiB 原文对应的 base64 编码长度（4 × ceil(n/3)）。
+const MAX_OSC52_ENCODED_BYTES: usize = 4 * MAX_CLIPBOARD_BYTES.div_ceil(3);
+
+/// OSC 52 整条序列的缓冲上限：留出 `52;c;` 前缀的余量。
+/// 非 52 的 OSC 仍按 [`MAX_OSC_BYTES`] 截断，避免标题等序列白占 1.4 MB。
+const MAX_OSC52_OSC_BYTES: usize = MAX_OSC52_ENCODED_BYTES + 8;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum State {
@@ -132,7 +144,10 @@ impl OscScanner {
         if self.overflow {
             return;
         }
-        if self.buf.len() >= MAX_OSC_BYTES {
+        // OSC 52 的内容（base64）允许到 ~1.4 MB；其余 OSC 仍限 16 KiB。
+        let limit =
+            if self.buf.starts_with(b"52;") { MAX_OSC52_OSC_BYTES } else { MAX_OSC_BYTES };
+        if self.buf.len() >= limit {
             // 超长序列直接丢弃，但仍继续吃到 terminator，避免污染下一条。
             self.overflow = true;
             self.buf.clear();
@@ -155,11 +170,12 @@ impl OscScanner {
 
 /// 解析一条 OSC 的全部参数（已按 `;` 切分，第 0 项是 OSC 编号）。
 ///
-/// 只处理通知相关编号：7（cwd）、9（iTerm2 通知/进度）、777（notify）。
-/// 其他 OSC（0/2 标题、4 颜色、8 超链接、52 剪贴板…）交给 alacritty，返回 None。
+/// 只处理通知相关编号：7（cwd）、9（iTerm2 通知/进度）、52（剪贴板）、777（notify）。
+/// 其他 OSC（0/2 标题、4 颜色、8 超链接…）交给 alacritty，返回 None。
 pub fn parse_osc(params: &[&[u8]]) -> Option<CoreEvent> {
     match *params.first()? {
         b"9" => parse_osc9(params),
+        b"52" => parse_osc52(params),
         b"777" => parse_osc777(params),
         b"7" => params.get(1).and_then(|uri| parse_cwd(uri)).map(CoreEvent::Cwd),
         _ => None,
@@ -210,6 +226,175 @@ fn parse_osc777(params: &[&[u8]]) -> Option<CoreEvent> {
         return None;
     }
     Some(CoreEvent::Notification(Notification { title, body }))
+}
+
+/// `OSC 52;Pc;Pd`：剪贴板写入、查询与清空。
+///
+/// - `Pd = ?`：查询，由 app 读系统剪贴板后经 [`clipboard_reply`] 回写 PTY；
+/// - `Pd` 为空：清空；
+/// - 其他：base64 文本。非法 base64、非 UTF-8、超过 [`MAX_CLIPBOARD_BYTES`]
+///   的输入整条忽略（绝不 panic）。
+///
+/// `Pc` 省略时按 xterm 默认取 `s`（PRIMARY）；`p`/`s` 都映射到 PRIMARY。
+/// base64 字符集不含 `;`，所以参数多于 3 段一定是坏输入，直接丢弃。
+fn parse_osc52(params: &[&[u8]]) -> Option<CoreEvent> {
+    if params.len() > 3 {
+        return None;
+    }
+    let selection = parse_clipboard_selection(*params.get(1)?)?;
+    let data = *params.get(2)?;
+    let request = if data == b"?" {
+        ClipboardRequest::Load { selection }
+    } else if data.is_empty() {
+        ClipboardRequest::Clear { selection }
+    } else {
+        let bytes = decode_base64(data)?;
+        let text = String::from_utf8(bytes).ok()?;
+        ClipboardRequest::Store { selection, text }
+    };
+    Some(CoreEvent::Clipboard(request))
+}
+
+fn parse_clipboard_selection(raw: &[u8]) -> Option<ClipboardSelection> {
+    match raw {
+        // xterm 规范：Pc 缺省是 s；空参数与 s 等价。
+        b"" | b"s" | b"p" => Some(ClipboardSelection::Primary),
+        b"c" => Some(ClipboardSelection::Clipboard),
+        _ => None,
+    }
+}
+
+/// 把剪贴板内容编码成 OSC 52 回写序列（查询响应）。
+///
+/// PRIMARY 统一回 `p`：X11 上 `p` 与 `s` 是同一个选区，回 `p` 更接近事实。
+pub fn clipboard_reply(selection: ClipboardSelection, text: &str) -> Vec<u8> {
+    let pc = match selection {
+        ClipboardSelection::Clipboard => b'c',
+        ClipboardSelection::Primary => b'p',
+    };
+    // 查询回写与写入共用 1 MiB 上限：本地剪贴板可能被别的程序塞进超大文本，
+    // 不能让一条 OSC 52 回包无限膨胀（也会阻塞有界输入队列）。
+    let encoded = encode_base64(truncate_utf8(text, MAX_CLIPBOARD_BYTES).as_bytes());
+    let mut out = Vec::with_capacity(encoded.len() + 8);
+    out.extend_from_slice(b"\x1b]52;");
+    out.push(pc);
+    out.push(b';');
+    out.extend_from_slice(encoded.as_bytes());
+    out.extend_from_slice(b"\x1b\\");
+    out
+}
+
+fn base64_value(b: u8) -> Option<u8> {
+    match b {
+        b'A'..=b'Z' => Some(b - b'A'),
+        b'a'..=b'z' => Some(b - b'a' + 26),
+        b'0'..=b'9' => Some(b - b'0' + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    }
+}
+
+/// 标准 base64 解码；支持带或不带 `=` 补位，但拒绝非法字符、错误长度与
+/// 中间补位。解码结果超过 [`MAX_CLIPBOARD_BYTES`] 时返回 None。
+fn decode_base64(input: &[u8]) -> Option<Vec<u8>> {
+    if input.is_empty() {
+        return Some(Vec::new());
+    }
+    if input.len() > MAX_OSC52_ENCODED_BYTES {
+        return None;
+    }
+    let mut end = input.len();
+    let mut pad = 0;
+    while end > 0 && input[end - 1] == b'=' {
+        pad += 1;
+        end -= 1;
+        if pad > 2 {
+            return None;
+        }
+    }
+    // "====" / "==" 全是补位，没有数据。
+    if end == 0 {
+        return None;
+    }
+    // 有补位时总长必须是 4 的倍数（如 "YQ=="）；无补位允许 2/3 的尾巴。
+    if pad > 0 && input.len() % 4 != 0 {
+        return None;
+    }
+    if end % 4 == 1 {
+        return None;
+    }
+
+    let mut out = Vec::with_capacity((end / 4) * 3 + 2);
+    let mut i = 0;
+    while i + 4 <= end {
+        let a = base64_value(input[i])?;
+        let b = base64_value(input[i + 1])?;
+        let c = base64_value(input[i + 2])?;
+        let d = base64_value(input[i + 3])?;
+        out.push((a << 2) | (b >> 4));
+        out.push((b << 4) | (c >> 2));
+        out.push((c << 6) | d);
+        i += 4;
+    }
+    match end - i {
+        0 => {},
+        2 => {
+            let a = base64_value(input[i])?;
+            let b = base64_value(input[i + 1])?;
+            out.push((a << 2) | (b >> 4));
+        },
+        3 => {
+            let a = base64_value(input[i])?;
+            let b = base64_value(input[i + 1])?;
+            let c = base64_value(input[i + 2])?;
+            out.push((a << 2) | (b >> 4));
+            out.push((b << 4) | (c >> 2));
+        },
+        _ => return None,
+    }
+    if out.len() > MAX_CLIPBOARD_BYTES {
+        return None;
+    }
+    Some(out)
+}
+
+/// 按字节上限截断，且不切断 UTF-8 字符边界。
+fn truncate_utf8(text: &str, max: usize) -> &str {
+    if text.len() <= max {
+        return text;
+    }
+    let mut end = max;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
+
+/// 标准 base64 编码（带 `=` 补位），仅用于 OSC 52 查询响应与测试。
+pub fn encode_base64(input: &[u8]) -> String {
+    const TABLE: &[u8; 64] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
+    for chunk in input.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = *chunk.get(1).unwrap_or(&0) as u32;
+        let b2 = *chunk.get(2).unwrap_or(&0) as u32;
+        let bits = (b0 << 16) | (b1 << 8) | b2;
+        out.push(TABLE[((bits >> 18) & 0x3f) as usize] as char);
+        out.push(TABLE[((bits >> 12) & 0x3f) as usize] as char);
+        if chunk.len() > 1 {
+            out.push(TABLE[((bits >> 6) & 0x3f) as usize] as char);
+        } else {
+            out.push('=');
+        }
+        if chunk.len() > 2 {
+            out.push(TABLE[(bits & 0x3f) as usize] as char);
+        } else {
+            out.push('=');
+        }
+    }
+    out
 }
 
 /// `file://host/path` → `path`；host 忽略，简单解码 `%XX`。
@@ -432,13 +617,215 @@ mod tests {
     #[test]
     fn unrelated_osc_and_invalid_utf8_are_ignored() {
         assert!(scan(b"\x1b]0;window title\x07").is_empty());
-        assert!(scan(b"\x1b]52;c;aGVsbG8=\x07").is_empty());
+        assert!(scan(b"\x1b]133;A\x07").is_empty());
         // 非 UTF-8 正文用替换字符，不 panic
         assert_eq!(
             scan(b"\x1b]9;ok\xff\x07"),
             vec![CoreEvent::Notification(Notification {
                 title: String::new(),
                 body: "ok\u{fffd}".to_string(),
+            })]
+        );
+    }
+
+    fn clipboard(request: ClipboardRequest) -> CoreEvent {
+        CoreEvent::Clipboard(request)
+    }
+
+    #[test]
+    fn osc52_store_clipboard_and_primary() {
+        assert_eq!(
+            scan(b"\x1b]52;c;aGVsbG8=\x07"),
+            vec![clipboard(ClipboardRequest::Store {
+                selection: ClipboardSelection::Clipboard,
+                text: "hello".to_string(),
+            })]
+        );
+        // p / s 都是 PRIMARY；ST 结尾同样支持。
+        for pc in ["p", "s"] {
+            let mut seq = format!("\x1b]52;{pc};").into_bytes();
+            seq.extend_from_slice(b"5LiA5Liq5rWL6K+V");
+            seq.extend_from_slice(b"\x1b\\");
+            assert_eq!(
+                scan(&seq),
+                vec![clipboard(ClipboardRequest::Store {
+                    selection: ClipboardSelection::Primary,
+                    text: "一个测试".to_string(),
+                })],
+                "Pc={pc}"
+            );
+        }
+        // 无补位 base64 也接受。
+        assert_eq!(
+            scan(b"\x1b]52;c;aGVsbG8\x07"),
+            vec![clipboard(ClipboardRequest::Store {
+                selection: ClipboardSelection::Clipboard,
+                text: "hello".to_string(),
+            })]
+        );
+    }
+
+    #[test]
+    fn osc52_default_selection_is_primary() {
+        // xterm：Pc 缺省为 s（PRIMARY）。
+        assert_eq!(
+            scan(b"\x1b]52;;aGk=\x07"),
+            vec![clipboard(ClipboardRequest::Store {
+                selection: ClipboardSelection::Primary,
+                text: "hi".to_string(),
+            })]
+        );
+    }
+
+    #[test]
+    fn osc52_query_and_clear() {
+        assert_eq!(
+            scan(b"\x1b]52;c;?\x07"),
+            vec![clipboard(ClipboardRequest::Load { selection: ClipboardSelection::Clipboard })]
+        );
+        assert_eq!(
+            scan(b"\x1b]52;p;?\x1b\\"),
+            vec![clipboard(ClipboardRequest::Load { selection: ClipboardSelection::Primary })]
+        );
+        assert_eq!(
+            scan(b"\x1b]52;c;\x07"),
+            vec![clipboard(ClipboardRequest::Clear { selection: ClipboardSelection::Clipboard })]
+        );
+        assert_eq!(
+            scan(b"\x1b]52;s;\x07"),
+            vec![clipboard(ClipboardRequest::Clear { selection: ClipboardSelection::Primary })]
+        );
+    }
+
+    #[test]
+    fn osc52_bad_selection_or_shape_is_ignored() {
+        assert!(scan(b"\x1b]52;x;aGk=\x07").is_empty(), "未知 Pc");
+        assert!(scan(b"\x1b]52;cc;aGk=\x07").is_empty(), "多字符 Pc");
+        assert!(scan(b"\x1b]52;c;aGk=;extra\x07").is_empty(), "多于 3 段");
+        assert!(scan(b"\x1b]52\x07").is_empty(), "缺 Pc/Pd");
+        assert!(scan(b"\x1b]52;c\x07").is_empty(), "缺 Pd（应写成空段）");
+        // 单独的 0 是合法 base64（一个 NUL 字节，也是合法 UTF-8）。
+        assert_eq!(
+            scan(b"\x1b]52;c;AA==\x07"),
+            vec![clipboard(ClipboardRequest::Store {
+                selection: ClipboardSelection::Clipboard,
+                text: "\0".to_string(),
+            })]
+        );
+    }
+
+    #[test]
+    fn osc52_invalid_base64_and_utf8_are_ignored() {
+        for bad in [
+            &b"!!!!"[..],
+            b"A",
+            b"AB=C",
+            b"====",
+            b"aGVsbG8===",
+            b"aGVs bG8=",
+            b"aGVsbG8=\xff",
+        ] {
+            let mut seq = b"\x1b]52;c;".to_vec();
+            seq.extend_from_slice(bad);
+            seq.push(0x07);
+            assert!(scan(&seq).is_empty(), "bad base64 {bad:?} 必须忽略");
+        }
+    }
+
+    #[test]
+    fn base64_decode_and_encode_roundtrip() {
+        assert_eq!(decode_base64(b""), Some(Vec::new()));
+        assert_eq!(decode_base64(b"aGVsbG8=").unwrap(), b"hello");
+        assert_eq!(decode_base64(b"aGVsbG8").unwrap(), b"hello");
+        assert_eq!(decode_base64(b"YQ==").unwrap(), b"a");
+        assert_eq!(decode_base64(b"YWI=").unwrap(), b"ab");
+        assert_eq!(decode_base64(b"YWJj").unwrap(), b"abc");
+        for len in 0..=16 {
+            let data: Vec<u8> = (0..len).map(|i| (i * 37 + 11) as u8).collect();
+            let encoded = encode_base64(&data);
+            assert_eq!(decode_base64(encoded.as_bytes()), Some(data), "len={len}");
+        }
+        assert!(decode_base64(b"a").is_none());
+        assert!(decode_base64(b"A===").is_none());
+        assert!(decode_base64(b"AB=C").is_none());
+        assert!(decode_base64(b"====").is_none());
+        assert!(decode_base64(b"YQ==YQ==").is_none());
+    }
+
+    #[test]
+    fn clipboard_reply_is_valid_osc52() {
+        let reply = clipboard_reply(ClipboardSelection::Clipboard, "hello");
+        assert_eq!(reply, b"\x1b]52;c;aGVsbG8=\x1b\\");
+        let reply = clipboard_reply(ClipboardSelection::Primary, "hi");
+        assert_eq!(reply, b"\x1b]52;p;aGk=\x1b\\");
+        // 回写序列自己也能被扫描器解析回同样的文本。
+        assert_eq!(
+            scan(&reply),
+            vec![clipboard(ClipboardRequest::Store {
+                selection: ClipboardSelection::Primary,
+                text: "hi".to_string(),
+            })]
+        );
+
+        // 超大剪贴板回包截到 1 MiB，且不切坏多字节字符。
+        let big = "界".repeat(MAX_CLIPBOARD_BYTES / 3 + 10);
+        let reply = clipboard_reply(ClipboardSelection::Clipboard, &big);
+        let payload = &reply[7..reply.len() - 2];
+        let decoded = decode_base64(payload).unwrap();
+        assert!(decoded.len() <= MAX_CLIPBOARD_BYTES);
+        assert!(std::str::from_utf8(&decoded).is_ok());
+    }
+
+    #[test]
+    fn osc52_size_limit() {
+        // 恰好 1 MiB 可以接受。
+        let max = vec![b'a'; MAX_CLIPBOARD_BYTES];
+        let mut seq = b"\x1b]52;c;".to_vec();
+        seq.extend_from_slice(encode_base64(&max).as_bytes());
+        seq.push(0x07);
+        assert_eq!(
+            scan(&seq),
+            vec![clipboard(ClipboardRequest::Store {
+                selection: ClipboardSelection::Clipboard,
+                text: "a".repeat(MAX_CLIPBOARD_BYTES),
+            })],
+            "上限内应接受"
+        );
+
+        // 超过 1 MiB 解码后长度，整条忽略。
+        let over = vec![b'a'; MAX_CLIPBOARD_BYTES + 1];
+        let mut seq = b"\x1b]52;c;".to_vec();
+        seq.extend_from_slice(encode_base64(&over).as_bytes());
+        seq.push(0x07);
+        assert!(scan(&seq).is_empty(), "超过 1 MiB 必须忽略");
+
+        // 超长（超过扫描器缓冲）同样忽略，且后续 BEL 仍正常。
+        let mut seq = b"\x1b]52;c;".to_vec();
+        seq.extend(std::iter::repeat(b'A').take(MAX_OSC52_OSC_BYTES + 10));
+        seq.push(0x07);
+        assert!(scan(&seq).is_empty());
+        seq.push(0x07);
+        assert_eq!(scan(&seq), vec![CoreEvent::Bell]);
+    }
+
+    #[test]
+    fn osc52_split_across_chunks() {
+        // 跨 chunk 的 payload 在扫描器里拼接后仍能解析。
+        let mut scanner = OscScanner::new();
+        let mut out = Vec::new();
+        let encoded = encode_base64(b"split-me");
+        let mut seq = b"\x1b]52;c;".to_vec();
+        seq.extend_from_slice(encoded.as_bytes());
+        seq.push(0x07);
+        let (a, b) = seq.split_at(12);
+        scanner.feed(a, &mut out);
+        assert!(out.is_empty());
+        scanner.feed(b, &mut out);
+        assert_eq!(
+            out,
+            vec![clipboard(ClipboardRequest::Store {
+                selection: ClipboardSelection::Clipboard,
+                text: "split-me".to_string(),
             })]
         );
     }

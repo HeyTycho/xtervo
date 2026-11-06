@@ -16,7 +16,8 @@ pub mod palette;
 pub mod pane;
 
 pub use event::{
-    CoreEvent, EventSink, Notification, PaneStats, Progress, ProgressState, WakeSignal,
+    ClipboardRequest, ClipboardSelection, CoreEvent, EventSink, Notification, PaneStats, Progress,
+    ProgressState, WakeSignal,
 };
 pub use frame::{flags, CellData, CursorShape, CursorState, Frame, LineDamage, Span};
 pub use link::{is_allowed_uri, Link, LinkKind};
