@@ -184,8 +184,6 @@ struct AppState {
     /// 1003 悬停上报的上一格（按格去重，避免鼠标移动刷爆有界 ctrl 队列）。
     hover_cell: Option<(PaneId, (u16, u16))>,
     resize: Option<WindowResize>,
-    /// 当前 resize 已交给 WM（_NET_WM_MOVERESIZE）；此时不再每帧 set_size。
-    wm_resize: bool,
     xresize: Option<ResizeCtx>,
     /// X11 SHAPE 自适应圆角 worker；None = 未启动（X11 连接/线程失败，窗口保持直角）。
     corners: Option<xconn::CornerShaper>,
@@ -4138,7 +4136,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         settings_model,
         hover_cell: None,
         resize: None,
-        wm_resize: false,
         xresize: None,
         corners,
         clipboard: arboard::Clipboard::new().ok(),
@@ -4388,37 +4385,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui.on_start_window_resize(|dir| {
         with_app(|st| {
             ensure_resize_conn(st);
-            st.wm_resize = false;
-            // 首选：把 live resize 交给 WM/compositor（GNOME Terminal 同路）。
-            let sent = {
-                let Some(ctx) = st.xresize.as_ref() else { return };
-                let Some((px, py)) = xconn::query_pointer(&ctx.conn, ctx.root) else {
-                    return;
-                };
-                if !xconn::wm_supports_moveresize(&ctx.conn, ctx.root) {
-                    false
-                } else {
-                    let win = xconn::find_own_window(&ctx.conn, ctx.root, &st.opts.title);
-                    match win {
-                        Some(win) => match xconn::start_wm_resize(
-                            &ctx.conn, ctx.root, win, dir, px, py,
-                        ) {
-                            Ok(()) => true,
-                            Err(e) => {
-                                eprintln!("[ui] _NET_WM_MOVERESIZE 失败，回退自绘 resize: {e}");
-                                false
-                            },
-                        },
-                        None => false,
-                    }
-                }
-            };
-            if sent {
-                st.wm_resize = true;
-                eprintln!("[ui] WM live resize dir={dir}");
-                return;
-            }
-            // 回退：无 EWMH moveresize 的 WM/Xephyr 下继续自绘。
             let Some(pointer) = resize_pointer(st) else { return };
             let pos = st.ui.window().position();
             let size = st.ui.window().size();
@@ -4433,9 +4399,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     ui.on_window_resize_drag(|| {
         with_app(|st| {
-            if st.wm_resize {
-                return;
-            }
             let Some(r) = st.resize else { return };
             let Some((px, py)) = resize_pointer(st) else { return };
             let dx = px - r.pointer.0;
@@ -4494,10 +4457,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     ui.on_end_window_resize(|| {
-        with_app(|st| {
-            st.wm_resize = false;
-            st.resize = None;
-        });
+        with_app(|st| st.resize = None);
     });
 
     ui.on_input_trace(|kind, id, x, y| {
@@ -5332,12 +5292,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         let weak = ui.as_weak();
         ui.on_minimize_window(move || {
-            eprintln!("[ui] minimize window");
             if let Some(ui) = weak.upgrade() {
-                let title = with_app(|st| st.opts.title.clone()).unwrap_or_else(|| TITLE.into());
-                if let Err(e) = xconn::wm_minimize(&title) {
-                    eprintln!("[ui] WM minimize 失败，退回 winit: {e}");
-                }
                 ui.window().set_minimized(true);
             }
         });
@@ -5348,17 +5303,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ui.on_toggle_maximize(move || {
             if let Some(ui) = weak.upgrade() {
                 // 内置 `maximized` 属性与窗口状态双向同步，直接翻转即可
-                let title = with_app(|st| st.opts.title.clone()).unwrap_or_else(|| TITLE.into());
-                // 以 EWMH 真实状态为准；winit 的 is_maximized 在部分 WM 下不更新。
-                let current = xconn::window_is_maximized(&title).unwrap_or_else(|| ui.window().is_maximized());
-                let target = !current;
-                eprintln!("[ui] toggle maximize target={target} current={current}");
-                xconn::clear_window_shape(&title);
-                // Slint/winit 在部分 X11 WM 下 set_maximized 不会落地；直接发 EWMH。
-                if let Err(e) = xconn::wm_set_maximized(&title, target) {
-                    eprintln!("[ui] WM maximize 失败，退回 winit: {e}");
-                    ui.window().set_maximized(target);
-                }
+                let target = !ui.window().is_maximized();
+                ui.window().set_maximized(target);
                 // 先按目标状态更新圆角，避免 WM 尚未写回 _NET_WM_STATE 时四角留缝。
                 with_app(|st| {
                     request_window_corners(
@@ -5520,10 +5466,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ---- 首帧 ----
     ui.show()?;
-    // 部分 WM（Openbox/GNOME 某些路径）在 map 时按 Slint preferred size 建 frame，
-    // 之后再 set_size 只改了 client，导致 frame/client 尺寸不一致、右侧露桌面/按钮点不到。
-    // show 后补一次，让 WM 收到明确的 resize 请求。
-    ui.window().set_size(slint::PhysicalSize::new(win_w as u32, win_h as u32));
     // 启动/窗口 map 后先应用一次圆角；worker 会按 _NET_WM_PID 等本进程窗口出现。
     with_app(|st| request_window_corners(st, None, None));
     {
