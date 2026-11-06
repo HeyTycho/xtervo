@@ -18,17 +18,32 @@ use crate::commands::{Chord, HotkeyOverride};
 /// 当前配置结构版本。改动字段语义/结构时递增，并在 [`Config::migrate`] 里补迁移步骤。
 pub const SCHEMA_VERSION: u32 = 1;
 
-/// 终端背景不透明度下限（再低文字/背景对比度不可控）。
-pub const MIN_BACKGROUND_OPACITY: f32 = 0.2;
+/// 终端背景不透明度下限：0 = 完全透出背景图，默认不透明时保持主题底色。
+pub const MIN_BACKGROUND_OPACITY: f32 = 0.0;
 /// 终端背景不透明度上限。
 pub const MAX_BACKGROUND_OPACITY: f32 = 1.0;
+/// 背景图暗化遮罩下限（0 = 不遮）。
+pub const MIN_BACKGROUND_DIM: f32 = 0.0;
+/// 背景图暗化遮罩上限：再深就只剩一片黑，失去背景图意义。
+pub const MAX_BACKGROUND_DIM: f32 = 0.8;
+/// 默认遮罩 60%：白块被压到 ~102 灰，浅色终端文字仍能保持可读对比度。
+pub const DEFAULT_BACKGROUND_DIM: f32 = 0.6;
 
-/// 夹取到 0.2–1.0 并四舍五入到两位小数；NaN/∞ 回退到 1.0。
+/// 夹取到 0.0–1.0 并四舍五入到两位小数；NaN/∞ 回退到 1.0。
 pub fn clamp_opacity(v: f32) -> f32 {
     if !v.is_finite() {
         return 1.0;
     }
     let v = v.clamp(MIN_BACKGROUND_OPACITY, MAX_BACKGROUND_OPACITY);
+    (v * 100.0).round() / 100.0
+}
+
+/// 夹取到 0.0–0.8 并四舍五入到两位小数；NaN/∞ 回退到默认遮罩。
+pub fn clamp_dim(v: f32) -> f32 {
+    if !v.is_finite() {
+        return DEFAULT_BACKGROUND_DIM;
+    }
+    let v = v.clamp(MIN_BACKGROUND_DIM, MAX_BACKGROUND_DIM);
     (v * 100.0).round() / 100.0
 }
 
@@ -53,12 +68,33 @@ fn deserialize_opacity<'de, D>(deserializer: D) -> Result<f32, D::Error>
 where
     D: Deserializer<'de>,
 {
+    Ok(clamp_opacity(deserialize_f32(deserializer)?))
+}
+
+fn serialize_dim<S>(value: &f32, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    let rounded = (clamp_dim(*value) as f64 * 100.0).round() / 100.0;
+    serializer.serialize_f64(rounded)
+}
+
+fn deserialize_dim<'de, D>(deserializer: D) -> Result<f32, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(clamp_dim(deserialize_f32(deserializer)?))
+}
+
+fn deserialize_f32<'de, D>(deserializer: D) -> Result<f32, D::Error>
+where
+    D: Deserializer<'de>,
+{
     let value = OpacityValue::deserialize(deserializer)?;
-    let value = match value {
+    Ok(match value {
         OpacityValue::Float(v) => v as f32,
         OpacityValue::Int(v) => v as f32,
-    };
-    Ok(clamp_opacity(value))
+    })
 }
 
 /// 展开 `~` / `~/...`；`~user` 不查 passwd，保持原样。
@@ -138,9 +174,14 @@ pub struct Config {
     /// 窗口/终端背景图路径。空 = 关闭；`~` 在应用时展开。
     /// 只有“存在的普通文件”才会生效（校验见 [`resolve_background_image`]）。
     pub background_image: String,
-    /// 终端默认背景的不透明度（0.2–1.0，默认 1.0）。写入时四舍五入到两位小数。
+    /// 终端默认背景的不透明度（0.0–1.0，默认 1.0）。0 = 完全透出背景图，
+    /// 1 = 主题纯色。写入时四舍五入到两位小数。
     #[serde(deserialize_with = "deserialize_opacity", serialize_with = "serialize_opacity")]
     pub background_opacity: f32,
+    /// 背景图之上的暗化遮罩（0.0–0.8，默认 0.6）。只影响背景图，
+    /// 让浅色终端文字在纯白/亮色图片区域仍有可读对比度。
+    #[serde(deserialize_with = "deserialize_dim", serialize_with = "serialize_dim")]
+    pub background_dim: f32,
     // ---- Quake mode ----
     /// 启用后 F12（可配置）全局显示/隐藏下拉终端。
     pub quake_enabled: bool,
@@ -182,6 +223,7 @@ impl Default for Config {
             desktop_notifications: true,
             background_image: String::new(),
             background_opacity: 1.0,
+            background_dim: DEFAULT_BACKGROUND_DIM,
             quake_enabled: false,
             quake_hotkey: "F12".to_string(),
             quake_width: 0.7,
@@ -271,8 +313,13 @@ impl Config {
                 return;
             },
         };
-        // serde/toml 只保证数值精度，不保留末尾 0；这里把透明度一行固定成两位小数。
-        let text = format_opacity_line(text, self.background_opacity);
+        // serde/toml 只保证数值精度，不保留末尾 0；这里把两个小数配置固定成两位小数。
+        let text = format_float_line(
+            text,
+            "background_opacity",
+            clamp_opacity(self.background_opacity),
+        );
+        let text = format_float_line(text, "background_dim", clamp_dim(self.background_dim));
         let tmp = path.with_extension("toml.tmp");
         if let Err(e) = std::fs::write(&tmp, text) {
             eprintln!("[config] 写入 {} 失败: {e}", tmp.display());
@@ -301,13 +348,12 @@ fn backup_path(path: &Path, from: u32) -> PathBuf {
     path.with_file_name(format!("{name}.v{from}.bak"))
 }
 
-/// TOML 序列化出来的 `background_opacity` 行改成固定两位小数（如 `0.50`）。
-fn format_opacity_line(text: String, opacity: f32) -> String {
-    const KEY: &str = "background_opacity = ";
-    let formatted = format!("{KEY}{:.2}", clamp_opacity(opacity));
+/// TOML 序列化出来的某个 f32 配置行改成固定两位小数（如 `background_dim = 0.60`）。
+fn format_float_line(text: String, key: &str, value: f32) -> String {
+    let formatted = format!("{key} = {value:.2}");
     let mut out = String::with_capacity(text.len() + 1);
     for line in text.lines() {
-        if line.starts_with(KEY) {
+        if line.starts_with(key) && line[key.len()..].starts_with(" = ") {
             out.push_str(&formatted);
         } else {
             out.push_str(line);
@@ -336,6 +382,7 @@ mod tests {
             default_profile_id: 42,
             background_image: "~/wall.png".into(),
             background_opacity: 0.55,
+            background_dim: 0.45,
             ..Config::default()
         };
         let text = toml::to_string_pretty(&cfg).unwrap();
@@ -346,6 +393,7 @@ mod tests {
         assert_eq!(back.default_profile_id, 42);
         assert_eq!(back.background_image, "~/wall.png");
         assert!((back.background_opacity - 0.55).abs() < f32::EPSILON);
+        assert!((back.background_dim - 0.45).abs() < f32::EPSILON);
         assert_eq!(back.version, SCHEMA_VERSION);
     }
 
@@ -378,14 +426,15 @@ mod tests {
         // 背景图/透明度对旧配置也必须兼容（默认关闭背景、不透明）
         assert_eq!(cfg.background_image, "");
         assert_eq!(cfg.background_opacity, 1.0);
+        assert!((cfg.background_dim - DEFAULT_BACKGROUND_DIM).abs() < f32::EPSILON);
         // 没有 version 的旧文件按 v0 读入
         assert_eq!(cfg.version, 0);
     }
 
     #[test]
     fn background_opacity_clamps_and_rounds() {
-        assert!((clamp_opacity(0.0) - 0.2).abs() < f32::EPSILON);
-        assert!((clamp_opacity(0.199) - 0.2).abs() < f32::EPSILON);
+        assert!((clamp_opacity(0.0) - 0.0).abs() < f32::EPSILON);
+        assert!((clamp_opacity(-0.3) - 0.0).abs() < f32::EPSILON);
         assert!((clamp_opacity(0.333) - 0.33).abs() < f32::EPSILON);
         assert!((clamp_opacity(0.999) - 1.0).abs() < f32::EPSILON);
         assert!((clamp_opacity(1.5) - 1.0).abs() < f32::EPSILON);
@@ -398,9 +447,27 @@ mod tests {
         let cfg: Config = toml::from_str("version = 1\nbackground_opacity = 1\n").unwrap();
         assert!((cfg.background_opacity - 1.0).abs() < f32::EPSILON);
         let cfg: Config = toml::from_str("version = 1\nbackground_opacity = 0.05\n").unwrap();
-        assert!((cfg.background_opacity - 0.2).abs() < f32::EPSILON);
+        assert!((cfg.background_opacity - 0.05).abs() < f32::EPSILON, "0% 也必须允许");
         let cfg: Config = toml::from_str("version = 1\nbackground_opacity = 2.0\n").unwrap();
         assert!((cfg.background_opacity - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn background_dim_clamps_and_rounds() {
+        assert!((clamp_dim(0.0) - 0.0).abs() < f32::EPSILON);
+        assert!((clamp_dim(0.333) - 0.33).abs() < f32::EPSILON);
+        assert!((clamp_dim(0.8) - 0.8).abs() < f32::EPSILON);
+        assert!((clamp_dim(0.95) - 0.8).abs() < f32::EPSILON, "遮罩上限 80%");
+        assert!((clamp_dim(-1.0) - 0.0).abs() < f32::EPSILON);
+        assert!((clamp_dim(f32::NAN) - DEFAULT_BACKGROUND_DIM).abs() < f32::EPSILON);
+        assert!((Config::default().background_dim - 0.6).abs() < f32::EPSILON);
+
+        let cfg: Config = toml::from_str("version = 1\nbackground_dim = 0.456\n").unwrap();
+        assert!((cfg.background_dim - 0.46).abs() < 1e-6);
+        let cfg: Config = toml::from_str("version = 1\nbackground_dim = 1\n").unwrap();
+        assert!((cfg.background_dim - 0.8).abs() < f32::EPSILON);
+        let cfg: Config = toml::from_str("version = 1\nbackground_dim = 0\n").unwrap();
+        assert!((cfg.background_dim - 0.0).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -410,23 +477,29 @@ mod tests {
         let cfg = Config {
             background_image: "~/Pictures/wall.png".into(),
             background_opacity: 0.333,
+            background_dim: 0.666,
             ..Config::default()
         };
         cfg.save_to(&path);
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("background_image = \"~/Pictures/wall.png\""), "{text}");
         assert!(text.contains("background_opacity = 0.33"), "{text}");
+        assert!(text.contains("background_dim = 0.67"), "{text}");
         let back = Config::load_from(&path);
         assert_eq!(back.background_image, "~/Pictures/wall.png");
         assert!((back.background_opacity - 0.33).abs() < 1e-6);
+        assert!((back.background_dim - 0.67).abs() < 1e-6);
 
         // 末尾 0 也要保留：0.5 → "0.50"。
         let path2 = dir.join("config2.toml");
-        Config { background_opacity: 0.5, ..Config::default() }.save_to(&path2);
+        Config { background_opacity: 0.5, background_dim: 0.5, ..Config::default() }
+            .save_to(&path2);
         let text2 = std::fs::read_to_string(&path2).unwrap();
         assert!(text2.contains("background_opacity = 0.50"), "{text2}");
+        assert!(text2.contains("background_dim = 0.50"), "{text2}");
         let back2 = Config::load_from(&path2);
         assert!((back2.background_opacity - 0.5).abs() < f32::EPSILON);
+        assert!((back2.background_dim - 0.5).abs() < f32::EPSILON);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

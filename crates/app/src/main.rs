@@ -624,13 +624,38 @@ fn push_theme(st: &mut AppState, theme: &ThemeData) {
     redraw_visible(st);
 }
 
+/// 无背景图时强制不透明：opacity 只在与背景图混合时才有意义。
+/// 这样旧配置里残留的低 opacity 不会让纯色终端发灰，也满足“默认无图不透明”。
+fn renderer_opacity(st: &AppState) -> f32 {
+    if st.ui.get_has_background_image() {
+        config::clamp_opacity(st.cfg.background_opacity)
+    } else {
+        1.0
+    }
+}
+
+/// 把“当前是否真的显示背景图”对应的 alpha 下发给所有 pane 并重绘。
+/// 背景图加载/清除后必须调用，否则渲染器还停留在旧的 alpha。
+fn sync_renderer_opacity(st: &mut AppState) {
+    let value = renderer_opacity(st);
+    if st.panes.is_empty() {
+        return;
+    }
+    for rt in st.panes.values_mut() {
+        rt.renderer.set_opacity(value);
+    }
+    redraw_visible(st);
+}
+
 /// 应用用户输入/配置里的背景图路径。空路径 = 关闭；非法路径/解码失败只返回错误，
 /// 不改变当前已生效的背景（设置页据此显示红字并回退到上一张图/纯色）。
 fn apply_background_image(st: &mut AppState, raw: &str) -> Result<(), String> {
     match config::resolve_background_image(raw) {
         Ok(None) => {
+            st.ui.set_background_image(slint::Image::default());
             st.ui.set_has_background_image(false);
             st.ui.set_background_image_error("".into());
+            sync_renderer_opacity(st);
             Ok(())
         },
         Ok(Some(path)) => match slint::Image::load_from_path(&path) {
@@ -638,6 +663,7 @@ fn apply_background_image(st: &mut AppState, raw: &str) -> Result<(), String> {
                 st.ui.set_background_image(image);
                 st.ui.set_has_background_image(true);
                 st.ui.set_background_image_error("".into());
+                sync_renderer_opacity(st);
                 eprintln!("[theme] 背景图 {} 已加载", path.display());
                 Ok(())
             },
@@ -650,11 +676,61 @@ fn apply_background_image(st: &mut AppState, raw: &str) -> Result<(), String> {
     }
 }
 
-/// 启动时把配置里的背景图/透明度下发给 UI；坏路径回退为纯色并在设置页留错误。
+/// 第一次成功设置背景图且当前 opacity 仍是 100% 时自动降到的值。
+/// 否则终端底色完全不透明，背景图看起来“没生效”。
+const FIRST_BACKGROUND_OPACITY: f32 = 0.35;
+
+/// 设置路径的统一入口：空 = 关闭；合法 = 加载并写盘；非法 = 保留当前背景。
+/// `report_error` 为 false 用于输入过程中的即时预览（不弹红字），true 用于回车/失焦提交。
+fn commit_background_path(st: &mut AppState, raw: &str, report_error: bool) -> bool {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        st.cfg.background_image.clear();
+        if let Err(e) = apply_background_image(st, "") {
+            if report_error {
+                st.ui.set_background_image_error(e.into());
+            }
+            return false;
+        }
+        st.cfg.save();
+        eprintln!("[theme] background_image 关闭");
+        return true;
+    }
+    // 以“当前是否真的显示着背景图”判断首次启用：坏路径回退后重新选图也会自动给可见 opacity。
+    let first_image = !st.ui.get_has_background_image();
+    match apply_background_image(st, raw) {
+        Ok(()) => {
+            st.cfg.background_image = raw.to_string();
+            if first_image && st.cfg.background_opacity >= 0.99 {
+                st.cfg.background_opacity = FIRST_BACKGROUND_OPACITY;
+                st.ui.set_background_opacity(FIRST_BACKGROUND_OPACITY);
+                sync_renderer_opacity(st);
+                eprintln!(
+                    "[theme] 首次启用背景图，opacity 自动设为 {FIRST_BACKGROUND_OPACITY:.2}"
+                );
+            }
+            st.cfg.save();
+            eprintln!("[theme] background_image={raw} opacity={:.2}", st.cfg.background_opacity);
+            true
+        },
+        Err(e) => {
+            if report_error {
+                eprintln!("[theme] 背景图无效，保留当前背景: {e}");
+                st.ui.set_background_image_error(e.into());
+            } else {
+                eprintln!("[theme] 背景图输入尚未生效: {e}");
+            }
+            false
+        },
+    }
+}
+
+/// 启动时把配置里的背景图/遮罩/透明度下发给 UI；坏路径回退为纯色并在设置页留错误。
 fn init_background(st: &mut AppState) {
     let raw = st.cfg.background_image.clone();
     st.ui.set_background_image_path(raw.as_str().into());
     st.ui.set_background_opacity(st.cfg.background_opacity);
+    st.ui.set_background_dim(st.cfg.background_dim);
     if let Err(e) = apply_background_image(st, &raw) {
         eprintln!("[theme] 背景图不可用，回退纯色背景: {e}");
         st.ui.set_background_image_error(e.into());
@@ -988,7 +1064,7 @@ fn create_pane(
         rows,
         theme.spec.bg,
         theme.spec.cursor,
-        st.cfg.background_opacity,
+        renderer_opacity(st),
     );
     let mut frame = handle.new_frame();
     frame = handle.pull(frame);
@@ -2910,6 +2986,7 @@ fn apply_font_size(st: &mut AppState) {
     st.cell = (fonts.cell_w, fonts.cell_h);
     st.fonts = fonts.clone();
     let theme = st.resolved_theme.clone();
+    let opacity = renderer_opacity(st);
     for rt in st.panes.values_mut() {
         let (cols, rows) = rt.grid;
         rt.renderer = Renderer::new(
@@ -2918,7 +2995,7 @@ fn apply_font_size(st: &mut AppState) {
             rows,
             theme.spec.bg,
             theme.spec.cursor,
-            st.cfg.background_opacity,
+            opacity,
         );
     }
     refresh_views(st);
@@ -5386,42 +5463,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         with_app(|st| apply_theme(st, name.as_str()));
     });
 
-    // Appearance：背景图路径（空 = 关闭）。合法立即生效并写盘；非法显示错误、
-    // 保留上一张已生效背景（回退），不把坏路径写进配置。
+    // Appearance：背景图路径（空 = 关闭）。合法路径输入过程中即时加载/写盘；
+    // 非法路径只在回车/失焦提交时显示错误，并保留上一张已生效背景（回退）。
     ui.on_background_image_changed(|path| {
         with_app(|st| {
-            let raw = path.trim().to_string();
-            if raw.is_empty() {
-                st.cfg.background_image.clear();
-                st.ui.set_background_image(slint::Image::default());
-                st.ui.set_has_background_image(false);
-                st.ui.set_background_image_error("".into());
-                st.cfg.save();
-                eprintln!("[theme] background_image 关闭");
-                return;
-            }
-            match apply_background_image(st, &raw) {
-                Ok(()) => {
-                    st.cfg.background_image = raw.clone();
-                    st.cfg.save();
-                    eprintln!("[theme] background_image={raw}");
-                },
-                Err(e) => {
-                    eprintln!("[theme] 背景图无效，保留当前背景: {e}");
-                    st.ui.set_background_image_error(e.into());
-                },
-            }
+            commit_background_path(st, path.as_str(), false);
+        });
+    });
+    ui.on_background_image_commit(|path| {
+        with_app(|st| {
+            commit_background_path(st, path.as_str(), true);
         });
     });
 
     // 拖动时只预览（重绘终端帧），松手才写盘，避免每一帧都原子写 config.toml。
+    // 无背景图时不改有效 alpha（见 renderer_opacity），所以不会把纯色终端拖灰。
     ui.on_background_opacity_preview(|value| {
         with_app(|st| {
             let value = config::clamp_opacity(value);
-            for rt in st.panes.values_mut() {
-                rt.renderer.set_opacity(value);
+            st.cfg.background_opacity = value;
+            if st.ui.get_has_background_image() {
+                sync_renderer_opacity(st);
             }
-            redraw_visible(st);
         });
     });
 
@@ -5430,12 +5493,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let value = config::clamp_opacity(value);
             st.cfg.background_opacity = value;
             st.ui.set_background_opacity(value);
-            for rt in st.panes.values_mut() {
-                rt.renderer.set_opacity(value);
+            if st.ui.get_has_background_image() {
+                sync_renderer_opacity(st);
             }
-            redraw_visible(st);
             st.cfg.save();
-            eprintln!("[theme] background_opacity={value:.2}");
+            eprintln!("[theme] background_opacity={value:.2}（仅终端默认背景）");
+        });
+    });
+
+    // 遮罩层只影响背景图，由 Slint 直接改属性完成即时预览；松手才落盘。
+    ui.on_background_dim_preview(|value| {
+        with_app(|st| {
+            st.cfg.background_dim = config::clamp_dim(value);
+        });
+    });
+
+    ui.on_background_dim_changed(|value| {
+        with_app(|st| {
+            let value = config::clamp_dim(value);
+            st.cfg.background_dim = value;
+            st.ui.set_background_dim(value);
+            st.cfg.save();
+            eprintln!("[theme] background_dim={value:.2}");
         });
     });
 
