@@ -10,6 +10,7 @@
 //! 此时 UI 退化为「当前文件 + 不确定进度」，不伪造百分比。
 
 use std::io::{Read, Write};
+use std::collections::VecDeque;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -38,6 +39,8 @@ pub struct SftpTarget {
     pub port: u16,
     pub user: String,
     pub key_path: String,
+    /// ProxyJump（跳板机）：SFTP 与 SSH Profile 共用同一条跳板配置。
+    pub proxy_jump: String,
     pub extra_args: Vec<String>,
 }
 
@@ -57,11 +60,18 @@ impl SftpTarget {
             port: p.port.max(1),
             user: p.user.trim().to_string(),
             key_path: p.key_path.trim().to_string(),
+            proxy_jump: p.proxy_jump.trim().to_string(),
             extra_args: p.extra_args.clone(),
         })
     }
 
-    /// sftp 参数：`[-i key] -P port <extra> user@host`。
+    /// sftp 参数：`[-i key] -P port <extra> <网络超时/keepalive> user@host`。
+    ///
+    /// 超时策略（10s 级别，所有网络操作有界/可取消）：
+    /// - `ConnectTimeout=10`：TCP/SSH 握手最多 10s，连接卡死不会无限等；
+    /// - `ServerAliveInterval=5` + `ServerAliveCountMax=2`：链路断掉后约 10s
+    ///   发现并让 sftp 退出（传输中也能由 UI Cancel 立即 kill）；
+    /// - 用户 extra_args 在前，OpenSSH「先出现者生效」，因此用户仍可覆盖默认值。
     pub fn args(&self) -> Vec<String> {
         let mut args = Vec::new();
         if !self.key_path.is_empty() {
@@ -70,7 +80,19 @@ impl SftpTarget {
         }
         args.push("-P".to_string());
         args.push(self.port.to_string());
+        if !self.proxy_jump.is_empty() {
+            args.push("-J".to_string());
+            args.push(self.proxy_jump.clone());
+        }
         args.extend(self.extra_args.iter().filter(|a| !a.trim().is_empty()).cloned());
+        for option in [
+            "ConnectTimeout=10",
+            "ServerAliveInterval=5",
+            "ServerAliveCountMax=2",
+        ] {
+            args.push("-o".to_string());
+            args.push(option.to_string());
+        }
         args.push(format!("{}@{}", self.user, self.host));
         args
     }
@@ -101,9 +123,20 @@ impl SftpTarget {
 /// 抽成公开函数是为了让测试用假脚本（`sleep` 永不退出）验证超时路径；
 /// 生产调用由 [`SftpTarget::run_with_timeout`] 或 [`SftpOpJob`] 发起。
 pub fn run_command_with_timeout(
+    command: Command,
+    batch: &str,
+    timeout: Duration,
+) -> Result<String, String> {
+    run_command_with_timeout_cancel(command, batch, timeout, None)
+}
+
+/// [`run_command_with_timeout`] + 外部取消标志：UI 点 Cancel 时 kill 子进程组，
+/// 返回「已取消」。网络操作既受 10s 硬超时约束，也能被用户随时中断。
+pub fn run_command_with_timeout_cancel(
     mut command: Command,
     batch: &str,
     timeout: Duration,
+    cancel: Option<&AtomicBool>,
 ) -> Result<String, String> {
     // 独立进程组：sftp 可能再起 ssh 子进程；超时要连它们一起 kill，
     // 否则孙进程仍持有 stdout/stderr 管道，reader 线程永远等不到 EOF。
@@ -165,7 +198,16 @@ pub fn run_command_with_timeout(
 
     let deadline = Instant::now() + timeout;
     let mut timed_out = false;
+    let mut cancelled = false;
     let status = loop {
+        if cancel.is_some_and(|c| c.load(Ordering::SeqCst)) {
+            cancelled = true;
+            kill_child_tree(&mut child);
+            break match reap_after_kill(&mut child) {
+                Some(status) => Ok(status),
+                None => Err(std::io::Error::other("取消 kill 后未在宽限内回收")),
+            };
+        }
         match child.try_wait() {
             Ok(Some(status)) => break Ok(status),
             Ok(None) => {},
@@ -186,7 +228,7 @@ pub fn run_command_with_timeout(
     };
 
     // kill 后给 reader 一个有限宽限；正常退出则允许 2s 把剩余 stdout 读完。
-    let grace = if timed_out { KILL_GRACE } else { Duration::from_secs(2) };
+    let grace = if timed_out || cancelled { KILL_GRACE } else { Duration::from_secs(2) };
     let stdout = out_rx.recv_timeout(grace).unwrap_or_default();
     let stderr = err_rx.recv_timeout(grace).unwrap_or_default();
     for reader in readers {
@@ -197,6 +239,9 @@ pub fn run_command_with_timeout(
 
     let stdout = String::from_utf8_lossy(&stdout).to_string();
     let stderr = String::from_utf8_lossy(&stderr).to_string();
+    if cancelled {
+        return Err("sftp 操作已取消".into());
+    }
     if timed_out {
         return Err(format!(
             "sftp 超时（{}），已终止子进程",
@@ -304,6 +349,8 @@ pub enum SftpCommand {
     Mkdir { target: SftpTarget, remote: String },
     Rename { target: SftpTarget, from: String, to: String },
     Remove { target: SftpTarget, remote: String },
+    /// `chmod <mode> <remote>`；mode 已由 UI 解析成八进制权限位。
+    Chmod { target: SftpTarget, remote: String, mode: u32 },
 }
 
 /// 后台元数据任务的结果：带原始路径，便于 UI 写回状态文案/刷新列表。
@@ -313,6 +360,7 @@ pub enum SftpOutcome {
     Mkdir { remote: String, result: Result<(), String> },
     Rename { from: String, to: String, result: Result<(), String> },
     Remove { path: String, result: Result<(), String> },
+    Chmod { path: String, mode: u32, result: Result<(), String> },
 }
 
 impl SftpOutcome {
@@ -328,6 +376,9 @@ impl SftpOutcome {
                 format!("rename {from} → {to}: {}", ok_or_err(result))
             },
             Self::Remove { path, result } => format_result("remove", path, result),
+            Self::Chmod { path, mode, result } => {
+                format!("chmod {mode:04o} {path}: {}", ok_or_err(result))
+            },
         }
     }
 }
@@ -346,34 +397,58 @@ fn format_result(verb: &str, path: &str, result: &Result<(), String>) -> String 
 impl SftpCommand {
     /// 可注入程序/超时的执行入口（测试用假 sftp 脚本，避免真连网）。
     pub fn execute_with(self, program: &Path, timeout: Duration) -> SftpOutcome {
+        self.execute_with_cancel(program, timeout, None)
+    }
+
+    /// 带取消标志的执行入口：UI Cancel 时 kill 子进程组并返回「已取消」。
+    pub fn execute_with_cancel(
+        self,
+        program: &Path,
+        timeout: Duration,
+        cancel: Option<&AtomicBool>,
+    ) -> SftpOutcome {
         match self {
             Self::List { target, remote } => {
-                let items = run_program(program, &target, &format!("ls -1 {remote}\n"), timeout)
-                    .map(|out| parse_list(&out));
+                let items = run_program_cancel(
+                    program,
+                    &target,
+                    &format!("ls -1 {remote}\n"),
+                    timeout,
+                    cancel,
+                )
+                .map(|out| parse_list(&out));
                 SftpOutcome::List { remote, items }
             },
             Self::Mkdir { target, remote } => {
-                let result =
-                    run_program(program, &target, &format!("mkdir {remote}\n"), timeout).map(|_| ());
+                let result = run_program_cancel(
+                    program,
+                    &target,
+                    &format!("mkdir {remote}\n"),
+                    timeout,
+                    cancel,
+                )
+                .map(|_| ());
                 SftpOutcome::Mkdir { remote, result }
             },
             Self::Rename { target, from, to } => {
-                let result = run_program(
+                let result = run_program_cancel(
                     program,
                     &target,
                     &format!("rename {from} {to}\n"),
                     timeout,
+                    cancel,
                 )
                 .map(|_| ());
                 SftpOutcome::Rename { from, to, result }
             },
             Self::Remove { target, remote } => {
                 let started = Instant::now();
-                let result = match run_program(
+                let result = match run_program_cancel(
                     program,
                     &target,
                     &format!("rm {remote}\n"),
                     timeout,
+                    cancel,
                 ) {
                     Ok(_) => Ok(()),
                     Err(first) => {
@@ -383,11 +458,12 @@ impl SftpCommand {
                         if remaining.is_zero() {
                             Err(first)
                         } else {
-                            run_program(
+                            run_program_cancel(
                                 program,
                                 &target,
                                 &format!("rmdir {remote}\n"),
                                 remaining,
+                                cancel,
                             )
                             .map(|_| ())
                             .map_err(|_| first)
@@ -396,20 +472,49 @@ impl SftpCommand {
                 };
                 SftpOutcome::Remove { path: remote, result }
             },
+            Self::Chmod { target, remote, mode } => {
+                let result = run_program_cancel(
+                    program,
+                    &target,
+                    &format!("chmod {mode:04o} {remote}\n"),
+                    timeout,
+                    cancel,
+                )
+                .map(|_| ());
+                SftpOutcome::Chmod { path: remote, mode, result }
+            },
         }
     }
 }
 
-/// 用指定程序 + 目标参数执行 batch；`program` 可被测试替换成假脚本。
-fn run_program(
+fn run_program_cancel(
     program: &Path,
     target: &SftpTarget,
     batch: &str,
     timeout: Duration,
+    cancel: Option<&AtomicBool>,
 ) -> Result<String, String> {
     let mut command = Command::new(program);
     command.args(["-q", "-b", "-"]).args(target.args());
-    run_command_with_timeout(command, batch, timeout)
+    run_command_with_timeout_cancel(command, batch, timeout, cancel)
+}
+
+/// 把 UI 里的权限输入解析成八进制权限位。
+///
+/// 接受 `644` / `0644` / `0o644` / `u=rw,go=r` 之外的纯八进制形式；
+/// 范围 0..=0o7777（含 setuid/setgid/sticky）。空/含非法字符/超过 4 位拒绝。
+pub fn parse_mode(input: &str) -> Result<u32, String> {
+    let trimmed = input.trim();
+    let digits = trimmed.strip_prefix("0o").unwrap_or(trimmed);
+    if digits.is_empty() || digits.len() > 4 || !digits.bytes().all(|b| (b'0'..=b'7').contains(&b))
+    {
+        return Err(format!("权限必须是 0–4 位八进制（如 644），实际: {input:?}"));
+    }
+    let mode = u32::from_str_radix(digits, 8).map_err(|_| format!("权限无效: {input:?}"))?;
+    if mode > 0o7777 {
+        return Err(format!("权限超出 0–7777: {input:?}"));
+    }
+    Ok(mode)
 }
 
 /// 后台元数据任务：启动后立即返回，结果通过非阻塞 `events.try_recv()` 交给 UI。
@@ -418,6 +523,7 @@ fn run_program(
 /// 的结果就退出；UI 在 poll 里收到结果后丢弃句柄即可（不会阻塞）。
 pub struct SftpOpJob {
     pub events: Receiver<SftpOutcome>,
+    cancel: Arc<AtomicBool>,
     join: Option<JoinHandle<()>>,
 }
 
@@ -447,8 +553,10 @@ impl SftpOpJob {
         wake: Option<WakeSignal>,
     ) -> Self {
         let (sender, events) = mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let worker_cancel = cancel.clone();
         let join = thread::spawn(move || {
-            let outcome = command.execute_with(&program, timeout);
+            let outcome = command.execute_with_cancel(&program, timeout, Some(&worker_cancel));
             // 先写通道再唤醒：UI 被唤醒后 drain 一定能看到结果，不会空转。
             if sender.send(outcome).is_ok() {
                 if let Some(wake) = &wake {
@@ -456,7 +564,14 @@ impl SftpOpJob {
                 }
             }
         });
-        Self { events, join: Some(join) }
+        Self { events, cancel, join: Some(join) }
+    }
+
+    /// UI 线程调用：标记取消并唤醒 worker 的轮询（worker 负责 kill 子进程组）。
+    /// 不等待、不阻塞；结果仍会以 `Err("sftp 操作已取消")` 形式回到通道。
+    pub fn cancel(&self) {
+        self.cancel.store(true, Ordering::SeqCst);
+        eprintln!("[sftp] 已请求取消远端操作");
     }
 
     /// UI 线程非阻塞收结果。
@@ -603,7 +718,7 @@ pub enum TransferEvent {
 
 /// 一次传输请求。下载始终用 `get -R`（对普通文件无副作用，对目录才能递归）；
 /// 上传只有本地是目录时才加 `put -R`。
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct TransferRequest {
     pub direction: TransferDirection,
     pub target: SftpTarget,
@@ -622,9 +737,80 @@ impl TransferRequest {
                 format!("progress\nput {flag}{} {}\n", self.local, self.remote)
             },
             TransferDirection::Download => {
-                format!("progress\nget {flag}{} {}\n", self.remote, self.local)
+                format!("progress\nget -R {} {}\n", self.remote, self.local)
             },
         }
+    }
+
+    /// UI 队列里的一行（不含密码/主机凭据）。
+    pub fn queue_label(&self) -> String {
+        let (src, dst) = match self.direction {
+            TransferDirection::Upload => (&self.local, &self.remote),
+            TransferDirection::Download => (&self.remote, &self.local),
+        };
+        format!(
+            "{} {} → {}",
+            self.direction.verb(),
+            display_name(src),
+            display_name(dst)
+        )
+    }
+}
+
+/// 上传/下载队列：纯数据结构，便于单测顺序/重试/清空。
+///
+/// UI 线程只做 push/pop，不持有子进程；同一时间仍只有一个 `TransferJob` 在跑，
+/// 完成后由 `poll_sftp_transfer` 自动取下一个。
+#[derive(Debug, Default)]
+pub struct TransferQueue {
+    pending: VecDeque<TransferRequest>,
+}
+
+impl TransferQueue {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn len(&self) -> usize {
+        self.pending.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.pending.is_empty()
+    }
+
+    pub fn push(&mut self, request: TransferRequest) -> usize {
+        self.pending.push_back(request);
+        self.pending.len()
+    }
+
+    /// 重试时插到队首（优先于用户后来排队的项）。
+    pub fn push_front(&mut self, request: TransferRequest) -> usize {
+        self.pending.push_front(request);
+        self.pending.len()
+    }
+
+    pub fn pop(&mut self) -> Option<TransferRequest> {
+        self.pending.pop_front()
+    }
+
+    pub fn clear(&mut self) -> usize {
+        let n = self.pending.len();
+        self.pending.clear();
+        n
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &TransferRequest> {
+        self.pending.iter()
+    }
+
+    /// 队列展示行（最多 `limit` 条，超出用一行汇总）。
+    pub fn labels(&self, limit: usize) -> Vec<String> {
+        let mut out: Vec<String> = self.pending.iter().take(limit).map(|r| r.queue_label()).collect();
+        if self.pending.len() > limit {
+            out.push(format!("… 还有 {} 项", self.pending.len() - limit));
+        }
+        out
     }
 }
 
@@ -1075,6 +1261,7 @@ mod tests {
             port: 2222,
             user: "yt".into(),
             key_path: "/home/yt/.ssh/id_ed25519".into(),
+            proxy_jump: String::new(),
             extra_args: vec!["-o".into(), "StrictHostKeyChecking=yes".into()],
         }
     }
@@ -1088,11 +1275,58 @@ mod tests {
                 "/home/yt/.ssh/id_ed25519",
                 "-P",
                 "2222",
+                // 用户 extra_args 在前（OpenSSH 先出现者生效），可覆盖默认超时。
                 "-o",
                 "StrictHostKeyChecking=yes",
+                "-o",
+                "ConnectTimeout=10",
+                "-o",
+                "ServerAliveInterval=5",
+                "-o",
+                "ServerAliveCountMax=2",
                 "yt@example.com"
             ]
         );
+    }
+
+    #[test]
+    fn args_bound_network_timeouts_and_allow_user_override() {
+        let args = target().args();
+        for option in ["ConnectTimeout=10", "ServerAliveInterval=5", "ServerAliveCountMax=2"] {
+            assert!(args.iter().any(|a| a == option), "缺少网络超时选项 {option}: {args:?}");
+        }
+        // 用户在 extra_args 里写的 ConnectTimeout 必须排在默认值之前。
+        let mut t = target();
+        t.extra_args = vec!["-o".into(), "ConnectTimeout=30".into()];
+        let args = t.args();
+        let user = args.iter().position(|a| a == "ConnectTimeout=30").unwrap();
+        let default = args.iter().position(|a| a == "ConnectTimeout=10").unwrap();
+        assert!(user < default, "用户选项应先出现: {args:?}");
+        assert!(args.last().is_some_and(|a| a == "yt@example.com"));
+
+        let mut jump = target();
+        jump.proxy_jump = "ops@bastion:2222".into();
+        let args = jump.args();
+        let j = args.iter().position(|a| a == "-J").expect("-J 缺失");
+        assert_eq!(args[j + 1], "ops@bastion:2222");
+        assert!(j < args.iter().position(|a| a == "yt@example.com").unwrap());
+    }
+
+    #[test]
+    fn parse_mode_accepts_octal_and_rejects_junk() {
+        for (input, want) in [
+            ("644", 0o644),
+            ("0644", 0o644),
+            ("0o755", 0o755),
+            (" 600 ", 0o600),
+            ("7777", 0o7777),
+            ("0", 0),
+        ] {
+            assert_eq!(parse_mode(input).unwrap(), want, "input={input:?}");
+        }
+        for bad in ["", "   ", "8", "9999", "06444", "-644", "rwxr-xr-x", "0x1ff"] {
+            assert!(parse_mode(bad).is_err(), "应拒绝 {bad:?}");
+        }
     }
 
     #[test]
@@ -1107,7 +1341,20 @@ mod tests {
         let t = SftpTarget::from_profile(&p).unwrap();
         assert_eq!(t.port, 22);
         assert!(t.key_path.is_empty());
-        assert_eq!(t.args(), vec!["-P", "22", "u@h"]);
+        assert_eq!(
+            t.args(),
+            vec![
+                "-P",
+                "22",
+                "-o",
+                "ConnectTimeout=10",
+                "-o",
+                "ServerAliveInterval=5",
+                "-o",
+                "ServerAliveCountMax=2",
+                "u@h"
+            ]
+        );
     }
 
     #[test]
@@ -1271,6 +1518,67 @@ mod tests {
             upload_dir.batch_script(),
             "progress\nput -R /tmp/local.bin /remote/local.bin\n"
         );
+    }
+
+    #[test]
+    fn queue_keeps_fifo_order_retry_front_and_clear() {
+        let request = |name: &str, direction| TransferRequest {
+            direction,
+            target: target(),
+            local: format!("/tmp/{name}"),
+            remote: format!("/remote/{name}"),
+            recursive: false,
+        };
+        let mut q = TransferQueue::new();
+        assert!(q.is_empty());
+        q.push(request("a", TransferDirection::Upload));
+        q.push(request("b", TransferDirection::Download));
+        assert_eq!(q.len(), 2);
+        let labels = q.labels(2);
+        assert_eq!(labels.len(), 2);
+        assert!(labels[0].contains("上传") && labels[0].contains('a'));
+        assert!(labels[1].contains("下载") && labels[1].contains('b'));
+        assert_eq!(q.pop().unwrap().local, "/tmp/a", "FIFO");
+        q.push_front(request("retry", TransferDirection::Upload));
+        assert_eq!(q.pop().unwrap().local, "/tmp/retry", "重试插到队首");
+        assert_eq!(q.pop().unwrap().local, "/tmp/b");
+        assert!(q.pop().is_none());
+
+        q.push(request("x", TransferDirection::Upload));
+        q.push(request("y", TransferDirection::Upload));
+        q.push(request("z", TransferDirection::Upload));
+        let labels = q.labels(2);
+        assert_eq!(labels.len(), 3);
+        assert!(labels[2].contains("还有 1 项"), "{labels:?}");
+        assert_eq!(q.clear(), 3);
+        assert!(q.is_empty());
+    }
+
+    #[test]
+    fn chmod_command_and_outcome_are_wired() {
+        let command = SftpCommand::Chmod {
+            target: target(),
+            remote: "/remote/file".into(),
+            mode: 0o640,
+        };
+        let SftpOutcome::Chmod { path, mode, result } = command.execute_with(
+            Path::new("/bin/false"),
+            Duration::from_millis(500),
+        ) else {
+            panic!("期望 Chmod outcome");
+        };
+        assert_eq!(path, "/remote/file");
+        assert_eq!(mode, 0o640);
+        assert!(result.is_err());
+        let SftpOutcome::Chmod { result, .. } = SftpCommand::Chmod {
+            target: target(),
+            remote: "/remote/file".into(),
+            mode: 0o644,
+        }
+        .execute_with(Path::new("/bin/true"), Duration::from_millis(500)) else {
+            panic!("期望 Chmod outcome");
+        };
+        assert!(result.is_ok());
     }
 
     #[cfg(unix)]
@@ -1512,6 +1820,33 @@ mod tests {
             "后台超时没有及时返回: {:?}",
             started.elapsed()
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sftp_op_job_cancel_kills_child_and_reports_cancelled() {
+        let dir = temp_dir("op-cancel");
+        let script = write_script(&dir, "#!/bin/sh\nexec sleep 30\n");
+        let job = SftpOpJob::start_with(
+            SftpCommand::List { target: target(), remote: "/tmp".into() },
+            script,
+            Duration::from_secs(10),
+        );
+        std::thread::sleep(Duration::from_millis(80));
+        let started = Instant::now();
+        job.cancel();
+        let outcome = job
+            .events
+            .recv_timeout(Duration::from_secs(3))
+            .expect("取消后应尽快收到结果");
+        match outcome {
+            SftpOutcome::List { items: Err(e), .. } => {
+                assert!(e.contains("已取消"), "error={e}");
+            },
+            other => panic!("期望 List 取消结果，得到 {other:?}"),
+        }
+        assert!(started.elapsed() < Duration::from_secs(3), "取消回收太慢");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

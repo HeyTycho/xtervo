@@ -16,6 +16,11 @@
 - 文件 0600、临时文件 + `rename` 原子写；文件里不含主密码/明文密码。
 - 设置 → Vault 页：状态、路径、Master 密码输入（masked）、Set/Change、Unlock、Lock、
   Clear（两次点击确认）、错误/提示。
+- **P1-08：Argon2id 不跑 UI 线程**。`initialize/unlock/change_master` 的派生/加解密在
+  `VaultTask` 后台线程执行，完成后经 `WakeSignal` 唤醒 UI；期间 Vault 页显示
+  「正在后台派生密钥」并保持可重绘/可滚动。UI 线程只做 `adopt()`，不重新派生。
+  串行状态机：同一时间只允许一个 Vault 任务，busy 时的按钮调用被拒绝并提示；任务线程
+  异常结束时恢复 busy=false，不会永久卡住。
 - Profile 表单：`auth=password` 时出现 masked 密码输入 +「Save password to Vault」勾选；
   profiles.toml **只**保存 `save_password` 布尔值，永不保存密码。
 
@@ -40,18 +45,30 @@ base64、大小上限（4 MiB）做校验，未知字段/缺少字段一律拒�
 
 1. Profile `auth=password` 且勾选保存：保存时 `vault.set(profile.id, password)`。
 2. 打开该 Profile：若 Vault 已锁定 → 设置页跳到 Vault 并提示先解锁；解密后取出密码。
-3. **先确认 host key**：用 `ssh -G` 取实际生效的 `stricthostkeychecking`、`hostname`、
-   `port`、`hostkeyalias` 与 known_hosts 路径，再用 `ssh-keygen -F` 查主机条目。
+3. **先确认 host key（W-02）**：打开 SSH Profile 时启动 `known_hosts::HostKeyJob`
+   后台预检（最多 10s，可取消，UI 不冻结）。用 `ssh -G` 取实际生效的
+   `stricthostkeychecking`、`hostname`、`port`、`hostkeyalias`、known_hosts 路径与
+   `proxyjump`，再用 `ssh-keygen -F` 查主机条目、用 `ssh-keyscan -T 5` 取服务器当前公钥：
    查找键必须与 OpenSSH 自己的 known_hosts 匹配一致：
    - 默认用 `ssh -G` 的 **`hostname`**（`Host alias` 经 `HostName` 解析后的真实主机），
      非 22 端口写成 `[host]:port`；直接用 Profile 里的别名会误判“未确认”。
    - 配置了 `HostKeyAlias` 时，OpenSSH 使用**别名原文**查表（不附加 `[alias]:port`，
      已用真实 ssh 验证）。
-   - 未确认（默认 `ask` 且查不到）：本次**不用 askpass**，交给 ssh 在终端显示指纹并让用户
-     手输一次密码；确认后 host key 进入 known_hosts，下次连接才自动填充。
-   - `StrictHostKeyChecking=no/accept-new`：不会弹确认，可直接用 askpass。
+   - **Known**：直接连接，password Profile 可用 Vault + askpass。
+   - **Unknown（首次）**：弹窗显示 `SHA256:` 指纹，用户可选「Trust & connect」（写
+     user known_hosts 后连接）或「Once in terminal」（本次不用 askpass，由 ssh 在终端
+     显示指纹/密码提示）。没有“静默信任”路径。
+   - **Changed**：known_hosts 已有条目但同类型公钥不一致时，弹窗并列显示旧/新指纹与
+     WARNING；只有用户显式点「Update key & connect」才删除旧条目并写入新 key，Cancel 不改文件。
+   - **Unverifiable**（keyscan 失败/ProxyJump/无共同 key 类型）：不自动信任，弹窗提示
+     回退到终端人工确认；`Continue (terminal)` 本次禁用 askpass。
+   - `StrictHostKeyChecking=no/off/accept-new`：用户配置显式接管，不弹应用内确认
+     （与系统 ssh 行为一致）。
+   - 进程内对已确认的连接配置（profile id/host/port/jump/extra）做缓存，避免每次连接都
+     keyscan；Profile 配置或 host 变化后缓存键不同，会重新预检。
 4. 启动系统 `ssh` 前，对 `auth=password` 的 Profile **强制只走密码认证**：
-   `-o PubkeyAuthentication=no -o PreferredAuthentications=password,keyboard-interactive`
+   `-o PubkeyAuthentication=no -o PreferredAuthentications=password,keyboard-interactive
+   -o KbdInteractiveAuthentication=yes`
    （`keyboard-interactive` 仅作 PAM 服务器兜底，顺序在 `password` 之后）。
    否则 ssh 会先尝试 agent/密钥：只要服务器接受某个公钥，就根本不会出现密码 prompt，
    Vault 密码和 askpass 都不会被用到（GUI 实测表现为服务端 `password auth ok` 为 0、
@@ -61,9 +78,12 @@ base64、大小上限（4 MiB）做校验，未知字段/缺少字段一律拒�
    ```sh
    #!/bin/sh
    prompt="$1"
-   # 只回答真正的密码 prompt；host key 确认等一律 no（防 OpenSSH force 模式死循环）
-   case "$prompt" in
-     *[Pp]assword*|*密码*)
+   lower=$(printf '%s' "$prompt" | tr '[:upper:]' '[:lower:]')
+   # 只回答真正的密码 prompt；host key 确认/OTP 等一律 no（防 force 模式死循环/误回填）
+   case "$lower" in
+     *verification*|*one-time*|*onetime*|*otp*|*passcode*|*auth\ code*|*验证码*|*ワンタイム*)
+       printf 'no\n' ;;
+     *password*|*passwd*|*passwort*|*mot\ de\ passe*|*contraseña*|*senha*|*wachtwoord*|*пароль*|*Пароль*|*ПАРОЛЬ*|*パスワード*|*비밀번호*|*密码*|*密碼*|*口令*)
        if [ -n "$TERVO_ASKPASS_DEBUG" ]; then
          printf '%s\n' "match=password prompt=$prompt" >>"$TERVO_ASKPASS_DEBUG" 2>/dev/null
        fi
@@ -111,9 +131,10 @@ base64、大小上限（4 MiB）做校验，未知字段/缺少字段一律拒�
    - 后续：Tervo 主进程把密码放进继承 fd/pipe（memfd 或 pipe），askpass 从 fd 读取；
      环境只留 fd 号。注意当前 PTY 启动链（portable-pty）会在 `pre_exec` 里关闭所有
      `fd > 2`，需要给 `spawn` 增加 fd 白名单或改由 Tervo 主进程用 Unix socket 按次下发。
-2. **解锁后主密码/凭据在进程内存**。本 MVP 未引入 `mlock`/完整 `zeroize`；正常
-   `lock()`/Drop 会覆盖 key 与密码字符串，但分配器/崩溃转储仍可能残留。不要在不信任的
-   机器上长时间保持解锁。
+2. **解锁后主密码/凭据在进程内存**。本 MVP 未引入 `mlock`/完整 `zeroize`；后台 KDF
+   线程会覆盖自己持有的主密码副本，`Unlocked` 的 Drop 会覆盖 key 与密码字符串，AEAD
+   明文字节也在解析后清零；但分配器/崩溃转储仍可能残留。不要在不信任的机器上长时间
+   保持解锁。
 3. **没有 Secret Service/Keyring 后端**，也没有主密码找回。忘记主密码 = 无法解密。
 4. **没有空闲自动锁定/解锁弹窗**；锁定只能手动点 Lock 或退出进程。
 5. 取消「Save password to Vault」时：Vault 已解锁会同步删除旧条目；**锁定时无法删除**，
@@ -123,16 +144,23 @@ base64、大小上限（4 MiB）做校验，未知字段/缺少字段一律拒�
 8. 备份/同步工具复制的 vault.enc 同样受主密码保护；但旧版本文件不会自动轮换主密码。
 9. 文件 `vault.enc` 0600；配置目录/`profiles.toml` 的权限没有统一收紧（Linux 默认受
    `umask` 影响）。
-10. 主机密钥校验仍完全交给系统 ssh（known_hosts），Tervo 没有额外 UI/告警。首次连接
-    不会自动信任新 key：本次回退到终端确认；askpass 对 host key prompt 回答 `no`。
-    判定时按 `ssh -G` 解析后的 `hostname`/`port`（或 `HostKeyAlias` 原文）查 known_hosts，
-    与 ssh 的匹配规则一致；查不到仍返回“未知”，不会因为解析失败而放行。未命中时日志会打印
-    查找键与候选 known_hosts 路径（不含密码），便于排查条目写到了别的位置。
-    known_hosts 判定是 best-effort：`KnownHostsCommand` 等动态配置、或 known_hosts 只有
-    host 条目但服务器换了 key 类型时可能误判；最坏结果是快速失败，不会自动接受或死循环。
-11. askpass 脚本只识别含 `password` / `密码` 的 prompt。其它语言的密码提示（或
-    keyboard-interactive 自定义问题）可能被当成非密码 prompt 回答 `no` 而导致认证失败；
-    此时可取消勾选保存、按终端提示交互式输入，或补脚本匹配规则。
+10. **known_hosts 预检是 best-effort，不是第二套 SSH 实现**：最终认证/主机密钥握手仍由
+    系统 ssh 完成。Tervo 在连接前额外做一次 `ssh-keyscan` 预检，首次连接/密钥变更时弹窗，
+    用户必须显式选择「Trust & connect / Update key & connect / Once in terminal」，没有
+    静默信任。限制：
+    - 配置了 `ProxyJump` 时 `ssh-keyscan` 无法穿透跳板机 → 判为 Unverifiable，回退到
+      终端确认（`Continue (terminal)` 本次禁用 askpass）。
+    - keyscan 失败/超时（10s）同样回退终端确认；不会自动信任。
+    - `KnownHostsCommand`、`Match exec` 等动态配置可能让本地查找与 ssh 实际行为不一致。
+    - `StrictHostKeyChecking=no/off/accept-new` 由用户显式配置接管，不弹应用内提示。
+    - known_hosts 只有 host 条目但服务器换了 key 类型时，没有共同类型 → Unverifiable，
+      交给 ssh 终端确认；不会静默放行。
+    - 写 known_hosts 只写 `UserKnownHostsFile` 的第一个文件（不写系统 `/etc/ssh`），
+      变更场景先用 `ssh-keygen -R` 删除该主机旧条目，文件权限 0600。
+11. askpass 识别常见本地化密码 prompt（password/passwd/passwort/mot de passe/contraseña/
+    senha/wachtwoord/пароль/パスワード/비밀번호/密码/密碼/口令）并显式排除 OTP/验证码/
+    one-time code 等 keyboard-interactive 问题；未识别的自定义问题回答 `no`，认证会快速
+    失败而不会把账户密码回填给验证码。此时可取消勾选保存、按终端提示交互式输入。
 12. `TERVO_ASKPASS_DEBUG` 诊断文件会记录服务器发来的 prompt 原文（通常含用户名/主机名，
     **不含密码**）。只在排查时临时开启；文件路径由用户环境变量指定，Tervo 不自动创建。
 13. `auth=password` 会禁用公钥认证。若服务器实际只接受公钥、或用户想回退到 agent，
@@ -146,11 +174,17 @@ export CARGO_TARGET_DIR=$PWD/target
 cargo test -p tervo-app --bin tervo
 ```
 
-覆盖（本轮 168 例）：
+覆盖（W-02 后 app 351 例；Vault/askpass/known_hosts 相关节选）：
 - `vault::tests::set_get_remove_roundtrip_survives_lock_and_reload`
 - `vault::tests::credential_is_keyed_by_profile_store_id`
   （`ProfileStore::add` 分配的 id → `vault.set(id)` → 用 store 中 `Profile.id` 取回，
   两个 Profile 的密码不串、未保存 id 返回 NotFound、重启后仍能取回）
+- `vault::tests::background_unlock_moves_kdf_off_caller_and_adopts_session`
+  （后台 `VaultTask::unlock` + `WakeSignal`，成功才 `adopt`，UI 线程不等 Argon2）
+- `vault::tests::background_unlock_wrong_password_keeps_ui_locked`
+- `vault::tests::background_change_master_reencrypts_without_leaking_old_key`
+- `vault::tests::background_initialize_state_machine_and_errors`
+- `vault::tests::background_task_drop_does_not_block_or_leak_into_ui`
 - `vault::tests::wrong_password_and_corrupt_file_fail_cleanly`
 - `vault::tests::file_never_contains_plaintext_and_permissions_are_private`
 - `vault::tests::change_master_reencrypts_and_old_password_stops_working`
@@ -159,8 +193,12 @@ cargo test -p tervo-app --bin tervo
 - `profile::tests::profile_serialization_has_no_plaintext_password`
 - `profile::tests::password_auth_ssh_command_is_password_only`
   （`auth=password` 注入 `PubkeyAuthentication=no` +
-  `PreferredAuthentications=password,keyboard-interactive`；agent/key 不注入）
-- `askpass::tests::*`（密码 prompt 输出、非密码 prompt 回答 no、force 环境、Debug 脱敏、
+  `PreferredAuthentications=password,keyboard-interactive` +
+  `KbdInteractiveAuthentication=yes`；agent/key 不注入）
+- `profile::tests::old_profiles_toml_without_new_ssh_fields_still_loads`
+- `known_hosts::tests::*`（ssh -G 解析、HostKeyAlias、`[host]:port`、首次/变更分类、
+  keyscan 超时/取消、trust 写入权限 0600、假 keyscan Changed/Unknown/Known）
+- `askpass::tests::*`（本地化密码 prompt、OTP/验证码回答 no、force 环境、Debug 脱敏、
   0700 权限、真实 `ssh -G`/`ssh-keygen -F` known_hosts 判定）
 - `askpass::tests::applied_envs_reach_real_child_process`
   （`apply()` 后真的 spawn 子进程，验证 `SSH_ASKPASS`/`SSH_ASKPASS_REQUIRE=force`/
@@ -169,11 +207,12 @@ cargo test -p tervo-app --bin tervo
   （`TERVO_ASKPASS_DEBUG` 记录 prompt/匹配分支，但文件里没有密码）
 - `askpass::tests::host_key_known_matches_nonstandard_port_entry`
   （Profile 级 `[127.0.0.1]:2222` 命中，端口/主机不同必须 miss）
-- `askpass::tests::ssh_keygen_matches_bracketed_port_spec`（`[127.0.0.1]:2222` 端口键）
 - `askpass::tests::host_key_known_uses_resolved_hostname_from_ssh_config`
   （`Host alias` + `HostName 127.0.0.1`：用解析后的主机名查表）
 - `askpass::tests::host_key_known_uses_host_key_alias_verbatim`
   （`HostKeyAlias=myalias`：按别名原文，不附加端口）
+- GUI e2e：`scripts/e2e_ssh_sftp_vault.sh`（Xvfb :139；SSH 表单/known_hosts 首次+变更/
+  Vault 后台 KDF busy/完成/SFTP 队列/取消/chmod/retry 截图，见 `.logs/ssh-sftp/e2e/shots`）
 
 所有 Vault 测试使用 `std::env::temp_dir()` 下独立目录，不读写真实 `$HOME`。
 

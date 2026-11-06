@@ -2021,3 +2021,55 @@ cargo bench -p tervo-core --bench pty_throughput
     保存不报错，打开时回退全局并记日志。
   - 小窗口（<620px 高）SSH 表单仍可能超出底部；local/serial/telnet 已用 440px
     紧凑表单，完整通用滚动表单未做。
+
+### 2026-11-06 · W-02/P1-08：SSH/SFTP/Vault 产品化
+
+- **SSH Profile（additive v2）**：新增 `proxy_jump`、`remote_forwards`、`dynamic_forwards`、
+  `agent_forward` 四个字段；旧 profiles.toml 缺字段由 serde default 补空/false，无需 bump
+  version。`ssh_command()` 追加 `-A`、`-J`、`-R`、`-D`；校验器分别校验跳板串、远程转发
+  `[bind:]port:host:port`、动态转发 `[bind:]port`。Profile 表单 SSH 区新增 Jump/
+  R-Forwards/D-Forwards/Agent forwarding，编辑回填、保存解析均有单测。
+  `auth=password` 追加 `KbdInteractiveAuthentication=yes`，并扩展 askpass prompt 匹配
+  （本地化 password、排除 OTP/验证码）。
+- **known_hosts 预检**（新 `known_hosts.rs`）：连接前后台跑 `ssh -G` →
+  `ssh-keygen -F` → `ssh-keyscan -T 5`（10s 硬超时/可取消，UI 不冻结）。结论分
+  Known/Unknown/Changed/Unverifiable：首次显示服务器 `SHA256:` 指纹；变更并列旧/新指纹；
+  “Trust/Update key & connect” 才写第一个 user known_hosts（0600，先 `ssh-keygen -R`），
+  Cancel 不改文件；ProxyJump/keyscan 失败回退终端人工确认，askpass 对 host-key prompt
+  回答 no。进程内缓存已确认配置，避免每次连接 keyscan。
+- **SSH 退出/重连**：core `PaneHandle::try_exit_code()` 非阻塞取子进程退出码/信号；
+  app 只对 SSH Profile 弹「SSH session ended（退出码/信号）」横幅，点 Reconnect 在原
+  pane 格子按当前 Profile 重新拉起 ssh，不自动循环重连。
+- **SFTP**：`TransferQueue`（FIFO/重试插队首/labels/Clear queue）；传输结束自动取下一项；
+  失败保留请求供 Retry；`SftpCommand::Chmod` + 八进制校验（0–7777）；元数据操作支持
+  Cancel（kill 进程组）；`SftpTarget` 携带 ProxyJump（`-J`）。所有 sftp 命令增加
+  `ConnectTimeout=10`/`ServerAliveInterval=5`/`ServerAliveCountMax=2`，用户 extra_args
+  在前可覆盖；元数据仍是 10s 硬超时。UI 面板新增 Mode/Chmod/Retry/Clear queue、
+  Queue 列表、元数据 Cancel 进度行。
+- **Vault P1-08**：新增 `VaultTask` 后台线程 API；initialize/unlock/change_master 全部
+  离 UI 线程，结束后 `WakeSignal` 唤醒并在 UI 线程 `adopt()`。Vault 页有 busy 状态
+  （「正在后台派生密钥」）且保持可重绘；busy 时操作拒绝、job 异常/断连恢复状态；
+  worker 主密码、AEAD 明文字节、`Unlocked` key/凭据在 Drop 时尽力清零；日志/错误不出现
+  主密码。`TERVO_VAULT_KDF_DELAY_MS` 仅供 GUI e2e 截 busy 状态（默认 0）。
+- **测试**：
+  - app：**351 passed**（基线 326；+25：profile 新字段/校验/旧文件兼容 3、known_hosts 14、
+    Vault 后台 5、SFTP queue/chmod/cancel/args 8、askpass 本地化 prompt 1 等）。
+  - core：108 单元 + smoke 25（新增 `child_exit_status_is_available_after_exit`）。
+  - Xvfb :139 `scripts/e2e_ssh_sftp_vault.sh` PASS：19 张截图覆盖 SSH 表单、
+    known_hosts 首次/变更、退出横幅、重连、Vault busy/完成、SFTP 列表/队列/取消/
+    元数据取消/chmod/失败/retry；日志断言 Trust 写入/变更不写、重连、后台 KDF、
+    `e2emasterpass` 不出现在日志/vault.enc。
+- **限制**：
+  - 本机无 sshd，未做真实 sshd 登录/SFTP 传输；用假 ssh/sftp/keyscan 驱动 GUI，
+    并复用真实 `ssh -G`/`ssh-keygen` 验证 known_hosts 逻辑。既有 `--sftp-probe` /
+    paramiko 测试脚本仍可对真实服务器跑。
+  - SFTP 传输没有“总时长 10s”上限（会误杀大文件）；10s 约束用于连接建立、keepalive
+    掉线检测与元数据命令；传输可随时 Cancel。OpenSSH 在管道下不输出 progress，
+    大文件通常仍只能显示“不确定进度”。
+  - SFTP 不注入 Vault 密码/askpass：password-only Profile 需要系统 ssh 交互或改用
+    agent/key。暂未做覆盖确认/断点续传/递归删除。
+  - known_hosts 预检对 ProxyJump/keyscan 失败只能回退终端确认；应用内 known_hosts
+    管理（查看/删除条目）仍未做。
+  - SSH 重连是用户点击触发，不自动重试；Vault 密码/主机密钥变更时仍可能出现一次
+    失败并需要用户重连。
+  - 小窗口下 700px 高的 SSH 表单可能超出底部（未做通用滚动）。

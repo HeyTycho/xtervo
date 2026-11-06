@@ -1639,7 +1639,15 @@ export component MainWindow inherits Window {
     in-out property <string> form-password: "";
     in-out property <bool> form-save-password: false;
     in-out property <string> form-extra: "";
+    /// 本地转发（-L），空格分隔。
     in-out property <string> form-forwards: "";
+    /// 远程转发（-R），空格分隔。
+    in-out property <string> form-remote-forwards: "";
+    /// 动态转发（-D），空格分隔。
+    in-out property <string> form-dynamic-forwards: "";
+    /// ProxyJump（-J）；空 = 直连。
+    in-out property <string> form-proxy-jump: "";
+    in-out property <bool> form-agent-forward: false;
     /// -1 = 新建；>0 = 正在编辑的 Profile ID
     in-out property <int> form-edit-id: -1;
     callback profile-edit(int);
@@ -1654,6 +1662,22 @@ export component MainWindow inherits Window {
     in-out property <string> form-error: "";
     callback profile-form-save();
     callback profile-form-cancel();
+    // known_hosts 主机密钥预检（首次/变更时弹出，绝不静默信任）
+    in-out property <bool> hostkey-open: false;
+    /// checking | unknown | changed | unverifiable
+    in-out property <string> hostkey-mode: "checking";
+    in-out property <string> hostkey-title: "";
+    in-out property <string> hostkey-detail: "";
+    in-out property <string> hostkey-error: "";
+    callback hostkey-trust();
+    callback hostkey-once();
+    callback hostkey-cancel();
+    // SSH 会话结束提示 + 重连（不自动改写用户默认行为）
+    in-out property <bool> ssh-exit-open: false;
+    in-out property <string> ssh-exit-text: "";
+    in-out property <bool> ssh-exit-reconnectable: false;
+    callback ssh-exit-reconnect();
+    callback ssh-exit-dismiss();
     // SFTP 面板
     in-out property <bool> sftp-open: false;
     in property <[string]> sftp-profiles: [];
@@ -1662,8 +1686,15 @@ export component MainWindow inherits Window {
     in-out property <string> sftp-remote: "/";
     in-out property <string> sftp-local: "/tmp/tervo-sftp";
     in-out property <string> sftp-target: "";
+    /// 选中条目的 chmod 权限（八进制，如 644）。
+    in-out property <string> sftp-mode: "644";
     in-out property <int> sftp-selected: -1;
     in-out property <string> sftp-status: "";
+    /// 上传/下载队列（最多展示 3 行 + 失败重试行）。
+    in-out property <[string]> sftp-queue: [];
+    in-out property <int> sftp-queue-count: 0;
+    in-out property <bool> sftp-retry-available: false;
+    in-out property <bool> sftp-op-active: false;
     // 传输进行中：显示当前文件 + 进度（-1 = 不确定）+ Cancel；操作按钮暂时禁用。
     in-out property <bool> sftp-transfer-active: false;
     in property <string> sftp-transfer-name: "";
@@ -1676,7 +1707,10 @@ export component MainWindow inherits Window {
     callback sftp-mkdir();
     callback sftp-rename();
     callback sftp-delete();
+    callback sftp-chmod();
     callback sftp-cancel();
+    callback sftp-retry();
+    callback sftp-clear-queue();
     callback sftp-close();
     // Port Forwards 面板
     in-out property <bool> fwd-open: false;
@@ -1804,6 +1838,8 @@ export component MainWindow inherits Window {
     in-out property <string> config-status: "";
     // Vault（加密凭据）
     in-out property <string> vault-status: "";
+    /// true = 后台 Argon2id 正在跑；设置页仍可重绘/滚动，按钮由 Rust 侧防重入。
+    in-out property <bool> vault-busy: false;
     in-out property <string> vault-path: "";
     in-out property <int> vault-entries: 0;
     in-out property <string> vault-password: "";
@@ -4880,6 +4916,12 @@ export component MainWindow inherits Window {
                                 color: Palette.colors.text;
                                 font-size: 12px;
                             }
+                            if root.vault-busy : Text {
+                                text: "Argon2id KDF runs on a background thread — this page stays responsive.";
+                                color: Palette.colors.accent;
+                                font-size: 10px;
+                                wrap: word-wrap;
+                            }
                             Text {
                                 text: root.vault-path;
                                 color: Palette.colors.muted;
@@ -5431,8 +5473,8 @@ export component MainWindow inherits Window {
 
     if root.profile-form-open : Rectangle {
         x: (root.width - 440px) / 2;
-        // local/serial/telnet 用紧凑高度；SSH 展开 password 时需要更高。
-        property <length> form-h: root.form-kind == 1 ? 620px : 440px;
+        // local/serial/telnet 用紧凑高度；SSH 展开 password/转发/跳板时需要更高。
+        property <length> form-h: root.form-kind == 1 ? 700px : 440px;
         y: (root.height - form-h) / 2 < 8px ? 8px : (root.height - form-h) / 2;
         width: 440px;
         height: form-h;
@@ -5497,7 +5539,7 @@ export component MainWindow inherits Window {
         }
 
         if root.form-kind == 1 : VerticalLayout {
-            x: 16px; y: 116px; width: 408px; height: 290px;
+            x: 16px; y: 116px; width: 408px; height: 380px;
             spacing: 5px;
             FormRow { label: "Host"; text <=> root.form-host; }
             FormRow { label: "Port"; text <=> root.form-port; }
@@ -5517,8 +5559,16 @@ export component MainWindow inherits Window {
                     toggled => { root.form-save-password = !root.form-save-password; }
                 }
             }
+            FormRow { label: "Jump"; text <=> root.form-proxy-jump; }
+            FormRow { label: "R-Forwards"; text <=> root.form-remote-forwards; }
+            FormRow { label: "D-Forwards"; text <=> root.form-dynamic-forwards; }
+            ToggleRow {
+                label: "Agent forwarding (-A)";
+                on: root.form-agent-forward;
+                toggled => { root.form-agent-forward = !root.form-agent-forward; }
+            }
             FormRow { label: "Extra"; text <=> root.form-extra; }
-            FormRow { label: "Forwards"; text <=> root.form-forwards; }
+            FormRow { label: "L-Forwards"; text <=> root.form-forwards; }
         }
 
         if root.form-kind == 2 : VerticalLayout {
@@ -5539,7 +5589,7 @@ export component MainWindow inherits Window {
         // 绝对定位在不同类型间固定：local 在字段下方，SSH 留出 password 展开空间。
         VerticalLayout {
             x: 16px;
-            y: root.form-kind == 0 ? 232px : (root.form-kind == 1 ? 400px : 196px);
+            y: root.form-kind == 0 ? 232px : (root.form-kind == 1 ? 510px : 196px);
             width: 408px;
             height: 110px;
             spacing: 6px;
@@ -5633,6 +5683,220 @@ export component MainWindow inherits Window {
         }
     }
 
+    // known_hosts 主机密钥预检：首次连接 / 密钥变更时明确提示，绝不静默信任。
+    if root.hostkey-open : Rectangle {
+        width: 100%;
+        height: 100%;
+        background: #00000040;
+    }
+
+    if root.hostkey-open : Rectangle {
+        x: (root.width - 520px) / 2;
+        y: (root.height - 470px) / 2 < 8px ? 8px : (root.height - 470px) / 2;
+        width: 520px;
+        height: 470px;
+        background: Palette.colors.raise;
+        border-radius: 10px;
+        border-width: 1px;
+        border-color: Palette.colors.border;
+        drop-shadow-blur: 24px;
+        drop-shadow-offset-y: 8px;
+        drop-shadow-color: #000000c0;
+
+        Text {
+            x: 18px; y: 14px; width: 484px; height: 24px;
+            text: root.hostkey-title;
+            color: root.hostkey-mode == "changed" ? Palette.colors.danger : Palette.colors.text;
+            font-size: 15px;
+            font-weight: 600;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+
+        Rectangle {
+            x: 16px; y: 46px; width: 488px; height: 300px;
+            background: Palette.colors.bg;
+            border-radius: 6px;
+            border-width: 1px;
+            border-color: Palette.colors.border;
+
+            Text {
+                x: 10px; y: 8px; width: 468px; height: 284px;
+                text: root.hostkey-detail;
+                color: Palette.colors.subtext;
+                font-size: 11px;
+                wrap: word-wrap;
+                overflow: elide;
+            }
+        }
+
+        if root.hostkey-error != "" : Text {
+            x: 18px; y: 352px; width: 484px; height: 30px;
+            text: root.hostkey-error;
+            color: Palette.colors.danger;
+            font-size: 11px;
+            wrap: word-wrap;
+            overflow: elide;
+        }
+
+        if root.hostkey-mode != "checking" : Rectangle {
+            x: 18px; y: 410px; width: 150px; height: 28px; border-radius: 6px;
+            background: hk-cancel-hit.has-hover ? Palette.colors.hover : Palette.colors.raise;
+            border-width: 1px;
+            border-color: Palette.colors.border;
+            hk-cancel-hit := TouchArea {
+                clicked => { root.hostkey-cancel(); }
+            }
+            Text {
+                text: root.hostkey-mode == "unverifiable" ? "Cancel" : "Cancel";
+                color: Palette.colors.text;
+                font-size: 12px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                width: 100%;
+                height: 100%;
+            }
+        }
+
+        if root.hostkey-mode == "unknown" || root.hostkey-mode == "changed" : Rectangle {
+            x: 180px; y: 410px; width: 140px; height: 28px; border-radius: 6px;
+            background: hk-once-hit.has-hover ? Palette.colors.hover : Palette.colors.raise;
+            border-width: 1px;
+            border-color: Palette.colors.border;
+            hk-once-hit := TouchArea {
+                clicked => { root.hostkey-once(); }
+            }
+            Text {
+                text: "Once in terminal";
+                color: Palette.colors.text;
+                font-size: 11px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                width: 100%;
+                height: 100%;
+            }
+        }
+
+        if root.hostkey-mode == "unverifiable" : Rectangle {
+            x: 180px; y: 410px; width: 160px; height: 28px; border-radius: 6px;
+            background: hk-continue-hit.has-hover ? Palette.colors.hover : Palette.colors.raise;
+            border-width: 1px;
+            border-color: Palette.colors.border;
+            hk-continue-hit := TouchArea {
+                clicked => { root.hostkey-once(); }
+            }
+            Text {
+                text: "Continue (terminal)";
+                color: Palette.colors.text;
+                font-size: 11px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                width: 100%;
+                height: 100%;
+            }
+        }
+
+        if root.hostkey-mode == "unknown" || root.hostkey-mode == "changed" : Rectangle {
+            x: 330px; y: 410px; width: 172px; height: 28px; border-radius: 6px;
+            background: hk-trust-hit.has-hover ? Palette.colors.danger : Palette.colors.accent;
+            hk-trust-hit := TouchArea {
+                clicked => { root.hostkey-trust(); }
+            }
+            Text {
+                text: root.hostkey-mode == "changed" ? "Update key & connect" : "Trust & connect";
+                color: Palette.colors.accent-text;
+                font-size: 11px;
+                font-weight: 600;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                width: 100%;
+                height: 100%;
+            }
+        }
+
+        if root.hostkey-mode == "checking" : Rectangle {
+            x: 340px; y: 410px; width: 162px; height: 28px; border-radius: 6px;
+            background: hk-checking-cancel.has-hover ? Palette.colors.hover : Palette.colors.raise;
+            border-width: 1px;
+            border-color: Palette.colors.border;
+            hk-checking-cancel := TouchArea {
+                clicked => { root.hostkey-cancel(); }
+            }
+            Text {
+                text: "Cancel";
+                color: Palette.colors.text;
+                font-size: 12px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                width: 100%;
+                height: 100%;
+            }
+        }
+    }
+
+    // SSH 会话结束：小横幅（不遮终端内容，可重连/关闭）。
+    if root.ssh-exit-open : Rectangle {
+        x: root.width - 500px;
+        y: 52px;
+        width: 484px;
+        height: 92px;
+        background: Palette.colors.raise;
+        border-radius: 8px;
+        border-width: 1px;
+        border-color: Palette.colors.danger;
+        drop-shadow-blur: 18px;
+        drop-shadow-offset-y: 6px;
+        drop-shadow-color: #00000080;
+
+        Text {
+            x: 14px; y: 8px; width: 456px; height: 20px;
+            text: "SSH session ended";
+            color: Palette.colors.danger;
+            font-size: 13px;
+            font-weight: 600;
+            vertical-alignment: center;
+        }
+        Text {
+            x: 14px; y: 30px; width: 456px; height: 26px;
+            text: root.ssh-exit-text;
+            color: Palette.colors.text;
+            font-size: 11px;
+            wrap: word-wrap;
+            overflow: elide;
+        }
+        Rectangle {
+            x: 270px; y: 58px; width: 92px; height: 24px; border-radius: 5px;
+            background: ssh-exit-dismiss-hit.has-hover ? Palette.colors.hover : Palette.colors.raise;
+            border-width: 1px;
+            border-color: Palette.colors.border;
+            ssh-exit-dismiss-hit := TouchArea { clicked => { root.ssh-exit-dismiss(); } }
+            Text {
+                text: "Dismiss";
+                color: Palette.colors.text;
+                font-size: 11px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                width: 100%;
+                height: 100%;
+            }
+        }
+        if root.ssh-exit-reconnectable : Rectangle {
+            x: 372px; y: 58px; width: 98px; height: 24px; border-radius: 5px;
+            background: ssh-exit-reconnect-hit.has-hover ? Palette.colors.danger : Palette.colors.accent;
+            ssh-exit-reconnect-hit := TouchArea { clicked => { root.ssh-exit-reconnect(); } }
+            Text {
+                text: "Reconnect";
+                color: Palette.colors.accent-text;
+                font-size: 11px;
+                font-weight: 600;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                width: 100%;
+                height: 100%;
+            }
+        }
+    }
+
     // sftp-open 的遮罩：点外部（左右键都行）关闭
     if root.sftp-open : Rectangle {
         width: 100%;
@@ -5654,10 +5918,10 @@ export component MainWindow inherits Window {
     }
 
     if root.sftp-open : Rectangle {
-        x: (root.width - 460px) / 2;
-        y: (root.height - 490px) / 2;
-        width: 460px;
-        height: 490px;
+        x: (root.width - 480px) / 2;
+        y: (root.height - 610px) / 2 < 8px ? 8px : (root.height - 610px) / 2;
+        width: 480px;
+        height: 610px;
         background: Palette.colors.raise;
         border-radius: 10px;
         border-width: 1px;
@@ -5673,8 +5937,7 @@ export component MainWindow inherits Window {
             height: 100%;
             pointer-event(event) => {
                 if (event.kind == PointerEventKind.down
-                    && event.button == PointerEventButton.right
-                    && !root.sftp-transfer-active) {
+                    && event.button == PointerEventButton.right) {
                     root.sftp-open = false; root.sftp-close();
                 }
                 EventResult.accept
@@ -5692,7 +5955,7 @@ export component MainWindow inherits Window {
         // SSH Profile 选择（只列 SSH 类型）
         HorizontalLayout {
             x: 16px; y: 38px;
-            width: 428px; height: 24px;
+            width: 448px; height: 24px;
             spacing: 8px;
             for p[i] in root.sftp-profiles : ChoiceBtn {
                 width: 120px; height: 24px; font-size: 11px;
@@ -5703,7 +5966,7 @@ export component MainWindow inherits Window {
         }
 
         FormRow {
-            x: 16px; y: 72px; width: 428px; height: 26px;
+            x: 16px; y: 72px; width: 448px; height: 26px;
             label: "Remote"; text <=> root.sftp-remote;
         }
 
@@ -5726,7 +5989,7 @@ export component MainWindow inherits Window {
 
         Text {
             x: 104px; y: 114px;
-            width: 340px;
+            width: 360px;
             text: root.sftp-status;
             color: Palette.colors.muted;
             font-size: 11px;
@@ -5735,14 +5998,14 @@ export component MainWindow inherits Window {
 
         // 远端条目列表（固定行高 24px）
         Rectangle {
-            x: 16px; y: 142px; width: 428px; height: 150px;
+            x: 16px; y: 142px; width: 448px; height: 150px;
             background: Palette.colors.bg;
             border-radius: 6px;
             border-width: 1px;
             border-color: Palette.colors.border;
 
             VerticalLayout {
-                x: 2px; y: 2px; width: 424px; height: 146px;
+                x: 2px; y: 2px; width: 444px; height: 146px;
                 spacing: 0px;
 
                 for item[i] in root.sftp-items : Rectangle {
@@ -5769,17 +6032,40 @@ export component MainWindow inherits Window {
         }
 
         FormRow {
-            x: 16px; y: 300px; width: 428px; height: 26px;
+            x: 16px; y: 300px; width: 448px; height: 26px;
             label: "Target"; text <=> root.sftp-target;
         }
 
         FormRow {
-            x: 16px; y: 332px; width: 428px; height: 26px;
+            x: 16px; y: 332px; width: 448px; height: 26px;
             label: "Local"; text <=> root.sftp-local;
         }
 
+        FormRow {
+            x: 16px; y: 364px; width: 200px; height: 26px;
+            label: "Mode"; text <=> root.sftp-mode;
+        }
+
         Rectangle {
-            x: 16px; y: 366px; width: 140px; height: 24px; border-radius: 5px;
+            x: 240px; y: 364px; width: 90px; height: 24px; border-radius: 5px;
+            background: sftp-chmod-hit.has-hover ? Palette.colors.hover : Palette.colors.raise;
+            border-width: 1px;
+            border-color: Palette.colors.border;
+            sftp-chmod-hit := TouchArea { clicked => { root.sftp-chmod(); } }
+            Text {
+                text: "Chmod";
+                color: Palette.colors.text;
+                font-size: 11px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                width: 100%;
+                height: 100%;
+            }
+        }
+
+        // 第一行操作：传输类（允许在传输中继续入队）。
+        Rectangle {
+            x: 16px; y: 398px; width: 148px; height: 24px; border-radius: 5px;
             background: sftp-get-hit.has-hover ? Palette.colors.hover : Palette.colors.raise;
             border-width: 1px;
             border-color: Palette.colors.border;
@@ -5796,7 +6082,7 @@ export component MainWindow inherits Window {
         }
 
         Rectangle {
-            x: 162px; y: 366px; width: 90px; height: 24px; border-radius: 5px;
+            x: 172px; y: 398px; width: 80px; height: 24px; border-radius: 5px;
             background: sftp-put-hit.has-hover ? Palette.colors.hover : Palette.colors.raise;
             border-width: 1px;
             border-color: Palette.colors.border;
@@ -5812,8 +6098,43 @@ export component MainWindow inherits Window {
             }
         }
 
+        if root.sftp-retry-available : Rectangle {
+            x: 260px; y: 398px; width: 70px; height: 24px; border-radius: 5px;
+            background: sftp-retry-hit.has-hover ? Palette.colors.hover : Palette.colors.raise;
+            border-width: 1px;
+            border-color: Palette.colors.border;
+            sftp-retry-hit := TouchArea { clicked => { root.sftp-retry(); } }
+            Text {
+                text: "Retry";
+                color: Palette.colors.text;
+                font-size: 11px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                width: 100%;
+                height: 100%;
+            }
+        }
+
         Rectangle {
-            x: 258px; y: 366px; width: 82px; height: 24px; border-radius: 5px;
+            x: 384px; y: 398px; width: 80px; height: 24px; border-radius: 5px;
+            background: sftp-del-hit.has-hover ? Palette.colors.danger : Palette.colors.raise;
+            border-width: 1px;
+            border-color: Palette.colors.border;
+            sftp-del-hit := TouchArea { clicked => { root.sftp-delete(); } }
+            Text {
+                text: "Delete";
+                color: sftp-del-hit.has-hover ? Palette.colors.bg : Palette.colors.text;
+                font-size: 11px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                width: 100%;
+                height: 100%;
+            }
+        }
+
+        // 第二行操作：元数据（远端操作进行中由 Rust 侧拒绝并发）。
+        Rectangle {
+            x: 16px; y: 430px; width: 80px; height: 24px; border-radius: 5px;
             background: sftp-mkdir-hit.has-hover ? Palette.colors.hover : Palette.colors.raise;
             border-width: 1px;
             border-color: Palette.colors.border;
@@ -5830,7 +6151,7 @@ export component MainWindow inherits Window {
         }
 
         Rectangle {
-            x: 346px; y: 366px; width: 82px; height: 24px; border-radius: 5px;
+            x: 104px; y: 430px; width: 80px; height: 24px; border-radius: 5px;
             background: sftp-rename-hit.has-hover ? Palette.colors.hover : Palette.colors.raise;
             border-width: 1px;
             border-color: Palette.colors.border;
@@ -5847,14 +6168,14 @@ export component MainWindow inherits Window {
         }
 
         Rectangle {
-            x: 16px; y: 400px; width: 82px; height: 24px; border-radius: 5px;
-            background: sftp-del-hit.has-hover ? Palette.colors.danger : Palette.colors.raise;
+            x: 192px; y: 430px; width: 96px; height: 24px; border-radius: 5px;
+            background: sftp-clearq-hit.has-hover ? Palette.colors.hover : Palette.colors.raise;
             border-width: 1px;
             border-color: Palette.colors.border;
-            sftp-del-hit := TouchArea { clicked => { root.sftp-delete(); } }
+            sftp-clearq-hit := TouchArea { clicked => { root.sftp-clear-queue(); } }
             Text {
-                text: "Delete";
-                color: sftp-del-hit.has-hover ? Palette.colors.bg : Palette.colors.text;
+                text: "Clear queue";
+                color: root.sftp-queue-count > 0 ? Palette.colors.text : Palette.colors.muted;
                 font-size: 11px;
                 horizontal-alignment: center;
                 vertical-alignment: center;
@@ -5864,7 +6185,7 @@ export component MainWindow inherits Window {
         }
 
         Rectangle {
-            x: 364px; y: 400px; width: 80px; height: 24px; border-radius: 5px;
+            x: 384px; y: 430px; width: 80px; height: 24px; border-radius: 5px;
             background: sftp-close-hit.has-hover ? Palette.colors.hover : Palette.colors.raise;
             border-width: 1px;
             border-color: Palette.colors.border;
@@ -5880,24 +6201,43 @@ export component MainWindow inherits Window {
             }
         }
 
-        // 传输进行中：挡住面板内所有旧操作，只留下面的 Cancel。
-        // （取消/关闭由 Rust 侧再次校验，这里只是 UI 层防误触。）
-        if root.sftp-transfer-active : Rectangle {
-            width: 100%;
-            height: 100%;
-            background: #00000018;
-            TouchArea {
-                pointer-event(event) => { EventResult.accept }
+        // 上传/下载队列（最多 3 行 + 失败重试行；完整计数在标题里）。
+        Rectangle {
+            x: 16px; y: 464px; width: 448px; height: 68px;
+            background: Palette.colors.bg;
+            border-radius: 6px;
+            border-width: 1px;
+            border-color: Palette.colors.border;
+
+            VerticalLayout {
+                x: 8px; y: 4px; width: 432px; height: 60px;
+                spacing: 1px;
+                Text {
+                    height: 15px;
+                    text: "Queue (\{root.sftp-queue-count}) · completed transfers leave this list";
+                    color: Palette.colors.subtext;
+                    font-size: 10px;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+                for q[i] in root.sftp-queue : Text {
+                    height: 14px;
+                    text: q;
+                    color: Palette.colors.muted;
+                    font-size: 10px;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
             }
         }
 
-        // 传输进度：当前文件 + 百分比/不确定进度 + Cancel。
-        if root.sftp-transfer-active : Rectangle {
-            x: 16px; y: 430px; width: 428px; height: 44px;
+        // 传输/远端操作进度 + Cancel（取消当前的传输或元数据操作）。
+        if root.sftp-transfer-active || root.sftp-op-active : Rectangle {
+            x: 16px; y: 540px; width: 448px; height: 54px;
 
             Text {
-                x: 0; y: 0; width: 240px; height: 24px;
-                text: root.sftp-transfer-name;
+                x: 0; y: 0; width: 250px; height: 24px;
+                text: root.sftp-transfer-active ? root.sftp-transfer-name : "Remote operation";
                 color: Palette.colors.text;
                 font-size: 12px;
                 vertical-alignment: center;
@@ -5905,8 +6245,8 @@ export component MainWindow inherits Window {
             }
 
             Text {
-                x: 244px; y: 0; width: 104px; height: 24px;
-                text: root.sftp-transfer-detail;
+                x: 250px; y: 0; width: 118px; height: 24px;
+                text: root.sftp-transfer-active ? root.sftp-transfer-detail : "10s timeout";
                 color: Palette.colors.muted;
                 font-size: 10px;
                 horizontal-alignment: right;
@@ -5915,7 +6255,7 @@ export component MainWindow inherits Window {
             }
 
             Rectangle {
-                x: 356px; y: 0; width: 72px; height: 24px; border-radius: 5px;
+                x: 376px; y: 0; width: 72px; height: 24px; border-radius: 5px;
                 background: sftp-cancel-hit.has-hover ? Palette.colors.danger : Palette.colors.raise;
                 border-width: 1px;
                 border-color: Palette.colors.border;
@@ -5931,8 +6271,8 @@ export component MainWindow inherits Window {
                 }
             }
 
-            Rectangle {
-                x: 0; y: 30px; width: 428px; height: 8px;
+            if root.sftp-transfer-active : Rectangle {
+                x: 0; y: 30px; width: 448px; height: 8px;
                 background: Palette.colors.bg;
                 border-radius: 4px;
                 border-width: 1px;

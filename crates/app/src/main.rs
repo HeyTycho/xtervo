@@ -7,6 +7,7 @@ mod config;
 mod config_watch;
 mod glyph;
 mod keys;
+mod known_hosts;
 mod latency;
 mod logging;
 mod plugin;
@@ -151,14 +152,25 @@ struct PaneRuntime {
     /// 当前 pane 的进程是否通过 SSH/telnet/serial Profile 启动。
     /// 远端会话里的路径不能交给本地 xdg-open，避免把远端路径当本地文件打开。
     remote: bool,
+    /// 远端会话退出状态（进程退出后填充；SSH 断开时用于 UI 提示/重连）。
+    exit_code: Option<i32>,
+    exit_signal: Option<String>,
+    /// 已经弹过「会话已结束」提示，避免重复 Exited 事件反复弹窗。
+    exit_notified: bool,
     /// 鼠标正悬停在可点击链接上（Slint mouse-cursor / 避免每帧重绘终端）。
     link_hover: bool,
     /// SSH 密码认证用的临时 askpass 脚本；随 pane 一起释放。
     _askpass: Option<askpass::Askpass>,
 }
 
-struct Drag {
+/// SSH 会话结束提示：记录 pane/Profile，重连时复用同一格。
+struct SshExitNotice {
     pane: PaneId,
+    profile_id: Option<u64>,
+    text: String,
+}
+
+struct Drag {    pane: PaneId,
     start: (f32, f32),
     moved: bool,
     cell: (u16, u16),
@@ -240,8 +252,24 @@ struct AppState {
     profile_query: String,
     /// 加密凭据容器：启动时锁定，需在设置 → Vault 里解锁。
     vault: vault::Vault,
+    /// Vault 后台 KDF 任务（解锁/初始化/改密码）；Argon2 不跑 UI 线程。
+    vault_job: Option<vault::VaultTask>,
+    /// 正在跑的后台动作（决定成功提示文案）。
+    vault_action: Option<VaultAction>,
+    /// `true` 时 Vault 页显示“正在派生密钥”，按钮由 Rust 侧防重入。
+    vault_busy: bool,
     /// Clear vault 需要点两次确认。
     vault_clear_armed: bool,
+    /// SSH 连接前的 known_hosts 后台预检。
+    hostkey_job: Option<known_hosts::HostKeyJob>,
+    /// 等待预检结果的 Profile 下标 + 缓存键。
+    hostkey_pending: Option<(usize, String)>,
+    /// 预检结论等待用户选择（index, cache key, verdict）。
+    hostkey_prompt: Option<(usize, String, known_hosts::Verdict)>,
+    /// 进程内已确认过的连接配置（避免每次连接都 keyscan）。
+    hostkey_verified: std::collections::HashSet<String>,
+    /// 最近一个结束的 SSH 会话（用于「会话已结束 / 重连」提示）。
+    ssh_exit: Option<SshExitNotice>,
     /// SFTP 面板里可选的 SSH Profile 索引（打开面板时快照）
     sftp_profiles: Vec<usize>,
     sftp_model: Rc<VecModel<slint::SharedString>>,
@@ -267,6 +295,13 @@ struct AppState {
     sftp_delete_armed: bool,
     /// 进行中的上传/下载；同一时间只允许一个。
     sftp_transfer: Option<sftp::TransferJob>,
+    /// 当前传输请求；失败时保留用于 Retry。
+    sftp_current_request: Option<sftp::TransferRequest>,
+    /// 上传/下载队列（当前任务结束后自动取下一个）。
+    sftp_queue: sftp::TransferQueue,
+    sftp_queue_model: Rc<VecModel<slint::SharedString>>,
+    /// 最近一次失败的传输请求（Retry 按钮用；成功后清空）。
+    sftp_last_failed: Option<sftp::TransferRequest>,
     /// 传输状态机（进度事件在 poll_events 里消费后写入 UI）。
     sftp_transfer_state: sftp::TransferState,
     /// 进行中的远端元数据操作（list/mkdir/rename/delete）；后台线程 + 10s 硬超时。
@@ -1860,6 +1895,9 @@ fn create_pane(
         notification: None,
         bell_until: None,
         remote,
+        exit_code: None,
+        exit_signal: None,
+        exit_notified: false,
         link_hover: false,
         _askpass: askpass,
     })
@@ -2118,6 +2156,17 @@ fn build_profile_launch(
     st: &AppState,
     index: usize,
 ) -> Result<(profile::Profile, Option<askpass::Askpass>), ProfileLaunchError> {
+    build_profile_launch_with(st, index, true)
+}
+
+/// [`build_profile_launch`] 的可控版本：`allow_askpass=false` 用于
+/// 「首次/变更主机密钥只在终端确认」以及预检失败的回退路径，确保 ssh 在
+/// PTY 里亲自询问密码/指纹，而不是被 askpass 自动回答。
+fn build_profile_launch_with(
+    st: &AppState,
+    index: usize,
+    allow_askpass: bool,
+) -> Result<(profile::Profile, Option<askpass::Askpass>), ProfileLaunchError> {
     let p = st
         .profiles
         .profiles
@@ -2144,7 +2193,12 @@ fn build_profile_launch(
                             p.id,
                             password.len()
                         );
-                        if !askpass::host_key_known(&p) {
+                        if !allow_askpass {
+                            eprintln!(
+                                "[profile] 本次连接按用户选择/预检回退：不启用 askpass，\
+                                 由 ssh 在终端确认主机密钥并询问密码"
+                            );
+                        } else if !askpass::host_key_known(&p) {
                             // 首次连接：不用 askpass，交给 ssh 在终端里显示指纹/确认
                             // 并让用户手输一次密码；之后 known_hosts 命中才自动填充。
                             eprintln!(
@@ -2201,8 +2255,191 @@ fn build_profile_launch(
 }
 
 /// 用 Profile 打开新 Tab（shell/args/env/cwd/外观全按 Profile）。
+///
+/// SSH Profile 会先做 known_hosts 预检（后台，最多 10s，可取消）：首次连接 /
+/// 主机密钥变更时弹窗让用户明确选择，绝不静默信任；同一条连接配置在一次进程内
+/// 预检通过后缓存，后续快速打开。其它 kind 直接打开。
 fn open_profile_tab(st: &mut AppState, index: usize) {
-    let (spec, askpass) = match build_profile_launch(st, index) {
+    let Some(p) = st.profiles.profiles.get(index).cloned() else {
+        eprintln!("[profile] 打开失败: Profile 不存在");
+        return;
+    };
+    if p.kind != "ssh" {
+        open_profile_tab_now(st, index, true);
+        return;
+    }
+    // Vault 锁定要先弹解锁，没必要先做网络预检（否则用户要等两次）。
+    if p.auth == "password" && p.save_password && !st.vault.is_unlocked() {
+        prompt_vault_unlock(st, "Vault 已锁定：请先在 Vault 页解锁，再连接该 SSH Profile");
+        return;
+    }
+    let cache_key = hostkey_cache_key(&p);
+    if st.hostkey_verified.contains(&cache_key) {
+        open_profile_tab_now(st, index, true);
+        return;
+    }
+    start_hostkey_check(st, p, index, cache_key);
+}
+
+/// 预检缓存键：包含会影响 ssh 连接/known_hosts 查找的字段。
+fn hostkey_cache_key(p: &profile::Profile) -> String {
+    format!(
+        "{}|{}|{}|{}|{}",
+        p.id,
+        p.host.trim(),
+        p.port,
+        p.proxy_jump.trim(),
+        p.extra_args.join(" ")
+    )
+}
+
+fn start_hostkey_check(
+    st: &mut AppState,
+    p: profile::Profile,
+    index: usize,
+    cache_key: String,
+) {
+    // 同一时间只保留一个预检；用户连点另一个 Profile 时取消旧的。
+    if let Some(old) = st.hostkey_job.take() {
+        old.cancel();
+    }
+    let host = format!("{}:{}", p.host.trim(), p.port);
+    eprintln!("[known_hosts] 后台预检 host={host} profile={}", p.id);
+    st.hostkey_pending = Some((index, cache_key));
+    st.hostkey_prompt = None;
+    st.hostkey_job = Some(known_hosts::HostKeyJob::start(p, st.app_wake.clone()));
+    st.ui.set_hostkey_open(true);
+    st.ui.set_hostkey_mode("checking".into());
+    st.ui.set_hostkey_title("Checking host key…".into());
+    st.ui
+        .set_hostkey_detail(format!("{host}\n正在读取 known_hosts 并检查服务器公钥（最多 10s）").as_str().into());
+    st.ui.set_hostkey_error("".into());
+}
+
+/// 预检结果轮询：Known 直接开 Tab；其余弹 known_hosts 对话框。
+fn poll_hostkey_check(st: &mut AppState) {
+    let Some(job) = st.hostkey_job.as_ref() else {
+        return;
+    };
+    match job.try_recv() {
+        Ok(verdict) => {
+            st.hostkey_job = None;
+            let Some((index, cache_key)) = st.hostkey_pending.take() else {
+                st.ui.set_hostkey_open(false);
+                return;
+            };
+            eprintln!("[known_hosts] 预检结果: {}", verdict.summary());
+            if verdict == known_hosts::Verdict::Known {
+                st.hostkey_verified.insert(cache_key);
+                st.ui.set_hostkey_open(false);
+                st.ui.set_hostkey_error("".into());
+                open_profile_tab_now(st, index, true);
+            } else {
+                show_hostkey_verdict(st, index, cache_key, verdict);
+            }
+        },
+        Err(std::sync::mpsc::TryRecvError::Empty) => {},
+        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+            st.hostkey_job = None;
+            let Some((index, cache_key)) = st.hostkey_pending.take() else {
+                st.ui.set_hostkey_open(false);
+                return;
+            };
+            show_hostkey_verdict(
+                st,
+                index,
+                cache_key,
+                known_hosts::Verdict::Unverifiable {
+                    reason: "主机密钥预检线程意外结束".into(),
+                    local: false,
+                },
+            );
+        },
+    }
+}
+
+fn show_hostkey_verdict(
+    st: &mut AppState,
+    index: usize,
+    cache_key: String,
+    verdict: known_hosts::Verdict,
+) {
+    let profile = st.profiles.profiles.get(index).cloned();
+    let host = profile
+        .as_ref()
+        .map(|p| format!("{}:{}", p.host.trim(), p.port))
+        .unwrap_or_else(|| "SSH".into());
+    let (mode, title) = match &verdict {
+        known_hosts::Verdict::Known => ("known", "Host key already known"),
+        known_hosts::Verdict::Unknown { .. } => ("unknown", "First connection: confirm host key"),
+        known_hosts::Verdict::Changed { .. } => ("changed", "WARNING: host key has changed"),
+        known_hosts::Verdict::Unverifiable { .. } => ("unverifiable", "Host key not pre-checked"),
+    };
+    eprintln!("[known_hosts] host={host} verdict={mode} profile={index}");
+    st.ui.set_hostkey_open(true);
+    st.ui.set_hostkey_mode(mode.into());
+    st.ui.set_hostkey_title(title.into());
+    let detail = format!("{host}\n\n{}", verdict.detail());
+    st.ui.set_hostkey_detail(detail.as_str().into());
+    st.ui.set_hostkey_error("".into());
+    st.hostkey_prompt = Some((index, cache_key, verdict));
+}
+
+/// 用户点「信任/更新」：写 known_hosts 后按正常路径连接（可用 Vault）。
+fn hostkey_trust(st: &mut AppState) {
+    let Some((index, cache_key, verdict)) = st.hostkey_prompt.take() else {
+        return;
+    };
+    let Some(profile) = st.profiles.profiles.get(index).cloned() else {
+        st.ui.set_hostkey_open(false);
+        return;
+    };
+    let keys = match &verdict {
+        known_hosts::Verdict::Unknown { current } => current.clone(),
+        known_hosts::Verdict::Changed { new, .. } => new.clone(),
+        _ => {
+            st.hostkey_prompt = Some((index, cache_key, verdict));
+            return;
+        },
+    };
+    match known_hosts::trust_keys(&profile, &keys) {
+        Ok(()) => {
+            st.hostkey_verified.insert(cache_key);
+            st.ui.set_hostkey_open(false);
+            st.ui.set_hostkey_error("".into());
+            open_profile_tab_now(st, index, true);
+        },
+        Err(e) => {
+            eprintln!("[known_hosts] 写入失败: {e}");
+            st.ui.set_hostkey_error(format!("写入 known_hosts 失败: {e}").as_str().into());
+            st.hostkey_prompt = Some((index, cache_key, verdict));
+        },
+    }
+}
+
+/// 用户选择「只在终端确认」/预检失败继续：本次不启用 askpass，交给 ssh 询问。
+fn hostkey_once(st: &mut AppState) {
+    let Some((index, _, _)) = st.hostkey_prompt.take() else {
+        return;
+    };
+    st.ui.set_hostkey_open(false);
+    st.ui.set_hostkey_error("".into());
+    open_profile_tab_now(st, index, false);
+}
+
+fn hostkey_cancel(st: &mut AppState) {
+    if let Some(job) = st.hostkey_job.take() {
+        job.cancel();
+    }
+    st.hostkey_pending = None;
+    st.hostkey_prompt = None;
+    st.ui.set_hostkey_open(false);
+    st.ui.set_hostkey_error("".into());
+    eprintln!("[known_hosts] 用户取消连接");
+}
+
+fn open_profile_tab_now(st: &mut AppState, index: usize, allow_askpass: bool) {
+    let (spec, askpass) = match build_profile_launch_with(st, index, allow_askpass) {
         Ok(v) => v,
         Err(err @ (ProfileLaunchError::NotFound | ProfileLaunchError::UnknownKind(_))) => {
             eprintln!("[profile] 打开失败: {}", err.message());
@@ -2264,6 +2501,115 @@ fn open_profile_tab(st: &mut AppState, index: usize) {
     }
 }
 
+/// SSH 进程结束：只对 SSH Profile 弹横幅（本地 shell/串口退出不打扰）。
+fn note_ssh_exit(
+    st: &mut AppState,
+    pane: PaneId,
+    profile_id: Option<u64>,
+    code: u32,
+    signal: Option<String>,
+) {
+    let Some(profile) = profile_id.and_then(|id| st.profiles.get(id)).cloned() else {
+        return;
+    };
+    if profile.kind != "ssh" {
+        return;
+    }
+    let text = match signal.as_deref() {
+        Some(signal) => format!("{}（{}）· 进程被信号终止: {signal}", profile.name, profile.host),
+        None => format!("{}（{}）· 退出码 {code}", profile.name, profile.host),
+    };
+    eprintln!(
+        "[ssh] ts_ms={} pane={pane} profile={} host={} exit={code} signal={:?}",
+        logging::now_ms(),
+        profile.id,
+        profile.host.trim(),
+        signal
+    );
+    st.ssh_exit = Some(SshExitNotice {
+        pane,
+        profile_id,
+        text: text.clone(),
+    });
+    st.ui.set_ssh_exit_text(text.as_str().into());
+    st.ui.set_ssh_exit_reconnectable(profile_id.is_some());
+    st.ui.set_ssh_exit_open(true);
+}
+
+fn dismiss_ssh_exit(st: &mut AppState) {
+    st.ssh_exit = None;
+    st.ui.set_ssh_exit_open(false);
+    st.ui.set_ssh_exit_text("".into());
+}
+
+/// 重连：复用原 pane 的格子/外观，按当前 Profile 配置重新拉起 ssh。
+///
+/// 不自动循环重连（避免断网时刷屏/打爆服务器）；主密码在 Vault 里且已解锁时
+/// 仍走 askpass。主机密钥变更由 ssh 自己拒绝（askpass 对非密码 prompt 回答 no）。
+fn reconnect_ssh_exit(st: &mut AppState) {
+    let Some(notice) = st.ssh_exit.take() else {
+        return;
+    };
+    st.ui.set_ssh_exit_open(false);
+    let Some(profile_id) = notice.profile_id else {
+        return;
+    };
+    let Some(index) = st.profiles.profiles.iter().position(|p| p.id == profile_id) else {
+        eprintln!("[ssh] 重连失败：Profile {profile_id} 已被删除");
+        return;
+    };
+    let Some(rect) = st.panes.get(&notice.pane).map(|rt| rt.rect) else {
+        eprintln!("[ssh] 重连失败：pane {} 已关闭", notice.pane);
+        return;
+    };
+    let (spec, askpass) = match build_profile_launch_with(st, index, true) {
+        Ok(v) => v,
+        Err(ProfileLaunchError::VaultLocked) => {
+            prompt_vault_unlock(st, "Vault 已锁定：请先在 Vault 页解锁，再重连该 SSH Profile");
+            return;
+        },
+        Err(e) => {
+            let text = format!("重连失败: {}", e.message());
+            eprintln!("[ssh] {text}");
+            st.ssh_exit = Some(SshExitNotice {
+                pane: notice.pane,
+                profile_id: Some(profile_id),
+                text: text.clone(),
+            });
+            st.ui.set_ssh_exit_text(text.as_str().into());
+            st.ui.set_ssh_exit_reconnectable(true);
+            st.ui.set_ssh_exit_open(true);
+            return;
+        },
+    };
+    // 旧 runtime 已经退出；换掉它但保留 pane id（Tab/分屏布局不变）。
+    st.panes.remove(&notice.pane);
+    match create_pane(st, notice.pane, rect, None, Some(&spec), askpass) {
+        Ok(rt) => {
+            st.panes.insert(notice.pane, rt);
+            if let Some(tab) = st.ws.tabs.iter_mut().find(|t| t.panes().contains(&notice.pane)) {
+                tab.title = spec.name.clone();
+            }
+            refresh_views(st);
+            rebuild_tabs(st);
+            redraw_pane_inner(st, notice.pane);
+            eprintln!("[ssh] 已重连 pane={} profile={profile_id}", notice.pane);
+        },
+        Err(e) => {
+            let text = format!("重连失败: {e}");
+            eprintln!("[ssh] {text}");
+            st.ssh_exit = Some(SshExitNotice {
+                pane: notice.pane,
+                profile_id: Some(profile_id),
+                text: text.clone(),
+            });
+            st.ui.set_ssh_exit_text(text.as_str().into());
+            st.ui.set_ssh_exit_reconnectable(true);
+            st.ui.set_ssh_exit_open(true);
+        },
+    }
+}
+
 /// 打开新建表单：预填一个不冲突的名字、当前 shell、聚焦 pane 的 cwd。
 fn open_profile_form(st: &mut AppState) {
     let base = "profile".to_string();
@@ -2303,6 +2649,10 @@ fn open_profile_form(st: &mut AppState) {
     st.ui.set_form_save_password(false);
     st.ui.set_form_extra("".into());
     st.ui.set_form_forwards("".into());
+    st.ui.set_form_remote_forwards("".into());
+    st.ui.set_form_dynamic_forwards("".into());
+    st.ui.set_form_proxy_jump("".into());
+    st.ui.set_form_agent_forward(false);
     st.ui.set_form_serial_port("/dev/ttyUSB0".into());
     st.ui.set_form_baud("115200".into());
     st.ui.set_form_font_size("".into());
@@ -2342,6 +2692,14 @@ fn edit_profile_form(st: &mut AppState, index: usize) {
     st.ui.set_form_extra(p.extra_args.join(" ").as_str().into());
     st.ui
         .set_form_forwards(p.local_forwards.join(" ").as_str().into());
+    st.ui.set_form_remote_forwards(
+        p.remote_forwards.join(" ").as_str().into(),
+    );
+    st.ui.set_form_dynamic_forwards(
+        p.dynamic_forwards.join(" ").as_str().into(),
+    );
+    st.ui.set_form_proxy_jump(p.proxy_jump.as_str().into());
+    st.ui.set_form_agent_forward(p.agent_forward);
     st.ui.set_form_serial_port(p.serial_port.as_str().into());
     st.ui.set_form_baud(p.baud.to_string().as_str().into());
     st.ui.set_form_font_size(
@@ -2412,6 +2770,20 @@ fn save_profile_form(st: &mut AppState) {
                 .split_whitespace()
                 .map(|s| s.to_string())
                 .collect();
+            p.remote_forwards = st
+                .ui
+                .get_form_remote_forwards()
+                .split_whitespace()
+                .map(|s| s.to_string())
+                .collect();
+            p.dynamic_forwards = st
+                .ui
+                .get_form_dynamic_forwards()
+                .split_whitespace()
+                .map(|s| s.to_string())
+                .collect();
+            p.proxy_jump = st.ui.get_form_proxy_jump().trim().to_string();
+            p.agent_forward = st.ui.get_form_agent_forward();
         }
         "serial" => {
             p.serial_port = st.ui.get_form_serial_port().to_string();
@@ -2570,6 +2942,14 @@ fn save_profile_form(st: &mut AppState) {
 
 // ------------------------------------------------------------ Vault（加密凭据）
 
+/// 后台 KDF 成功后用于选择提示文案；不携带任何密码。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum VaultAction {
+    Initialize,
+    Unlock,
+    ChangeMaster,
+}
+
 /// Vault 状态文字（不含任何秘密）。
 fn vault_status_text(v: &vault::Vault) -> String {
     match v.status() {
@@ -2581,12 +2961,88 @@ fn vault_status_text(v: &vault::Vault) -> String {
 
 /// 刷新设置页 Vault 状态/路径/条数（不清空错误提示）。
 fn refresh_vault_ui(st: &mut AppState) {
-    let status = vault_status_text(&st.vault);
+    let status = if st.vault_busy {
+        "正在后台派生密钥（Argon2id）…".to_string()
+    } else {
+        vault_status_text(&st.vault)
+    };
     let path = st.vault.path().display().to_string();
     let entries = st.vault.entry_count() as i32;
     st.ui.set_vault_status(status.as_str().into());
     st.ui.set_vault_path(path.as_str().into());
     st.ui.set_vault_entries(entries);
+    st.ui.set_vault_busy(st.vault_busy);
+}
+
+/// 后台任务启动前统一防重入；返回 true = 已有任务在跑。
+fn vault_busy_guard(st: &mut AppState) -> bool {
+    if st.vault_busy {
+        vault_fail(st, "Vault 正在后台派生密钥，请稍候（设置页仍可操作）");
+        return true;
+    }
+    false
+}
+
+fn start_vault_task(st: &mut AppState, action: VaultAction, task: vault::VaultTask) {
+    st.vault_busy = true;
+    st.vault_action = Some(action);
+    st.vault_job = Some(task);
+    // 密码输入框立刻清空：后台任务已经拿到自己的副本，UI 不再持有明文。
+    st.ui.set_vault_password("".into());
+    refresh_vault_ui(st);
+    st.ui.set_vault_notice("".into());
+    st.ui.set_vault_error("".into());
+    eprintln!("[vault] 后台 KDF 开始 action={action:?}");
+}
+
+/// Vault 后台任务轮询：成功才 adopt；失败保持原锁定状态。
+fn poll_vault(st: &mut AppState) {
+    let Some(job) = st.vault_job.as_ref() else {
+        return;
+    };
+    use std::sync::mpsc::TryRecvError;
+    match job.try_recv() {
+        Ok(vault::VaultTaskOutcome::Ok(session)) => {
+            let entries = session.entry_count();
+            st.vault.adopt(session);
+            st.vault_job = None;
+            st.vault_busy = false;
+            let action = st.vault_action.take();
+            refresh_vault_ui(st);
+            match action {
+                Some(VaultAction::Initialize) => {
+                    vault_notice(st, "主密码已设置，Vault 已解锁（空 vault）");
+                    eprintln!("[vault] 后台初始化完成");
+                },
+                Some(VaultAction::ChangeMaster) => {
+                    vault_notice(st, "主密码已更新；凭据已用新密钥重新加密");
+                    eprintln!("[vault] 后台改主密码完成");
+                },
+                _ => {
+                    vault_notice(st, format!("已解锁 · {entries} 条凭据"));
+                    eprintln!("[vault] 后台解锁完成 entries={entries}");
+                },
+            }
+        },
+        Ok(vault::VaultTaskOutcome::Err(e)) => {
+            st.vault_job = None;
+            st.vault_busy = false;
+            st.vault_action = None;
+            if e == vault::VaultError::NotInitialized {
+                st.vault.refresh_status();
+            }
+            refresh_vault_ui(st);
+            vault_fail(st, e.to_string());
+        },
+        Err(TryRecvError::Empty) => {},
+        Err(TryRecvError::Disconnected) => {
+            st.vault_job = None;
+            st.vault_busy = false;
+            st.vault_action = None;
+            refresh_vault_ui(st);
+            vault_fail(st, "Vault 后台任务异常结束（没有结果）");
+        },
+    }
 }
 
 /// 操作成功时的中性提示（不是错误）。
@@ -2604,62 +3060,64 @@ fn vault_fail(st: &mut AppState, msg: impl Into<String>) {
 }
 
 /// Set / Change master password：未初始化 → 创建；已解锁 → 用新密码重新加密；
-/// 已锁定 → 必须先解锁（避免绕过旧主密码）。
+/// 已锁定 → 必须先解锁（避免绕过旧主密码）。Argon2 全部在后台线程。
 fn vault_set_master_password(st: &mut AppState) {
     st.vault_clear_armed = false;
+    if vault_busy_guard(st) {
+        return;
+    }
     let master = st.ui.get_vault_password().to_string();
     if master.is_empty() {
         vault_fail(st, "请输入主密码");
         return;
     }
+    let path = st.vault.path().to_path_buf();
     match st.vault.status() {
-        vault::VaultStatus::Uninitialized => match st.vault.initialize(&master) {
-            Ok(()) => {
-                st.ui.set_vault_password("".into());
-                refresh_vault_ui(st);
-                vault_notice(st, "主密码已设置，Vault 已解锁（空 vault）");
-                eprintln!("[vault] 初始化完成");
-            }
-            Err(e) => vault_fail(st, e.to_string()),
+        vault::VaultStatus::Uninitialized => {
+            let task = vault::VaultTask::initialize(path, master, st.app_wake.clone());
+            start_vault_task(st, VaultAction::Initialize, task);
         },
-        vault::VaultStatus::Unlocked => match st.vault.change_master(&master) {
-            Ok(()) => {
-                st.ui.set_vault_password("".into());
-                refresh_vault_ui(st);
-                vault_notice(st, "主密码已更新；凭据已用新密钥重新加密");
-                eprintln!("[vault] 主密码已更新");
-            }
-            Err(e) => vault_fail(st, e.to_string()),
+        vault::VaultStatus::Unlocked => {
+            let snapshot = match st.vault.change_snapshot() {
+                Ok(snapshot) => snapshot,
+                Err(e) => {
+                    vault_fail(st, e.to_string());
+                    return;
+                },
+            };
+            let task =
+                vault::VaultTask::change_master(path, snapshot, master, st.app_wake.clone());
+            start_vault_task(st, VaultAction::ChangeMaster, task);
         },
         vault::VaultStatus::Locked => {
             vault_fail(st, "Vault 已锁定：先用当前主密码解锁，再修改主密码");
-        }
+        },
     }
 }
 
 fn vault_unlock(st: &mut AppState) {
     st.vault_clear_armed = false;
+    if vault_busy_guard(st) {
+        return;
+    }
     let master = st.ui.get_vault_password().to_string();
     if master.is_empty() {
         vault_fail(st, "请输入主密码");
         return;
     }
-    match st.vault.unlock(&master) {
-        Ok(()) => {
-            st.ui.set_vault_password("".into());
-            refresh_vault_ui(st);
-            vault_notice(st, format!("已解锁 · {} 条凭据", st.vault.entry_count()));
-            eprintln!("[vault] 已解锁 entries={}", st.vault.entry_count());
-        }
-        Err(e) => {
-            // 密码本身不放进提示/日志。
-            refresh_vault_ui(st);
-            vault_fail(st, e.to_string());
-        }
-    }
+    let task = vault::VaultTask::unlock(st.vault.path().to_path_buf(), master, st.app_wake.clone());
+    start_vault_task(st, VaultAction::Unlock, task);
 }
 
 fn vault_lock(st: &mut AppState) {
+    if st.vault_busy {
+        vault_fail(st, "Vault 正在后台派生密钥，完成后再锁定");
+        return;
+    }
+    if st.vault.status() == vault::VaultStatus::Uninitialized {
+        vault_fail(st, "Vault 尚未初始化：先设置主密码");
+        return;
+    }
     st.vault.lock();
     st.ui.set_vault_password("".into());
     st.vault_clear_armed = false;
@@ -2669,6 +3127,10 @@ fn vault_lock(st: &mut AppState) {
 }
 
 fn vault_clear(st: &mut AppState) {
+    if st.vault_busy {
+        vault_fail(st, "Vault 正在后台派生密钥，完成后再清空");
+        return;
+    }
     if !st.vault.is_unlocked() {
         vault_fail(st, "Vault 未解锁，无法清空");
         return;
@@ -2731,6 +3193,7 @@ fn open_sftp_panel(st: &mut AppState) {
         st.ui.set_sftp_status(status.as_str().into());
     }
     sftp_show_transfer(st);
+    refresh_sftp_queue(st);
     st.ui.set_sftp_open(true);
     eprintln!("[sftp] 打开面板 profiles={}", st.sftp_profiles.len());
 }
@@ -2756,6 +3219,22 @@ fn sftp_show_transfer(st: &mut AppState) {
     st.ui.set_sftp_transfer_name(current.as_str().into());
     st.ui.set_sftp_transfer_percent(percent);
     st.ui.set_sftp_transfer_detail(detail.as_str().into());
+    st.ui.set_sftp_op_active(st.sftp_op.is_some());
+}
+
+/// 刷新队列行（当前失败项可重试）、队列计数/按钮状态。
+fn refresh_sftp_queue(st: &mut AppState) {
+    let mut items: Vec<slint::SharedString> =
+        st.sftp_queue.labels(2).into_iter().map(Into::into).collect();
+    if let Some(failed) = &st.sftp_last_failed {
+        if st.sftp_transfer.is_none() {
+            items.push(format!("失败 · 可重试: {}", failed.queue_label()).into());
+        }
+    }
+    let count = st.sftp_queue.len() as i32;
+    st.sftp_queue_model.set_vec(items);
+    st.ui.set_sftp_queue_count(count);
+    st.ui.set_sftp_retry_available(st.sftp_last_failed.is_some());
 }
 
 fn sftp_update_status(st: &mut AppState) {
@@ -2765,15 +3244,61 @@ fn sftp_update_status(st: &mut AppState) {
     }
 }
 
-/// 启动一次后台传输；同一时间只允许一个任务。
+/// 启动队列里的一个请求（不做并发检查：调用方保证没有活动 job）。
+fn sftp_launch_request(st: &mut AppState, request: sftp::TransferRequest) -> bool {
+    let direction = request.direction;
+    let local = request.local.clone();
+    let remote = request.remote.clone();
+    let recursive = request.recursive;
+    match sftp::TransferJob::start_woken(&request, st.app_wake.clone()) {
+        Ok(job) => {
+            st.sftp_transfer = Some(job);
+            st.sftp_current_request = Some(request);
+            st.sftp_transfer_state =
+                sftp::TransferState::running(direction, local.clone(), remote.clone());
+            sftp_show_transfer(st);
+            refresh_sftp_queue(st);
+            let status = st.sftp_transfer_state.status_text();
+            sftp_set_status(st, &status);
+            eprintln!(
+                "[sftp] {} 开始 local={local:?} remote={remote:?} recursive={recursive} queue={}",
+                direction.verb(),
+                st.sftp_queue.len()
+            );
+            true
+        },
+        Err(e) => {
+            let msg = format!("{}失败: {e}", direction.verb());
+            sftp_set_status(st, &msg);
+            st.sftp_last_failed = Some(request);
+            sftp_show_transfer(st);
+            refresh_sftp_queue(st);
+            false
+        },
+    }
+}
+
+/// 发起一次传输：空闲则立即开始；已有传输时加入队列（可连续点多次）。
+fn sftp_submit_transfer(st: &mut AppState, request: sftp::TransferRequest) {
+    if st.sftp_transfer.is_some() {
+        let n = st.sftp_queue.push(request);
+        refresh_sftp_queue(st);
+        sftp_set_status(st, &format!("已加入队列（{n} 项），当前传输完成后自动开始"));
+        eprintln!("[sftp] 传输已入队 queue={n}");
+        return;
+    }
+    sftp_launch_request(st, request);
+}
+
+/// 启动一次后台传输（从当前 UI 选择构造请求）。
 fn sftp_start_transfer(
     st: &mut AppState,
     direction: sftp::TransferDirection,
     local: String,
     remote: String,
 ) {
-    if st.sftp_transfer.is_some() {
-        sftp_set_status(st, "已有传输进行中，先 Cancel 或等完成");
+    if st.sftp_op.is_some() {
+        sftp_set_status(st, "远端元数据操作进行中，请稍候（10s 超时/可取消）");
         return;
     }
     let Some(target) = sftp_current_target(st) else {
@@ -2783,28 +3308,8 @@ fn sftp_start_transfer(
     // 下载始终 get -R（普通文件安全）；上传只有本地是目录才 put -R。
     let recursive =
         direction == sftp::TransferDirection::Upload && std::path::Path::new(&local).is_dir();
-    let request = sftp::TransferRequest {
-        direction,
-        target,
-        local: local.clone(),
-        remote: remote.clone(),
-        recursive,
-    };
-    match sftp::TransferJob::start_woken(&request, st.app_wake.clone()) {
-        Ok(job) => {
-            st.sftp_transfer = Some(job);
-            st.sftp_transfer_state =
-                sftp::TransferState::running(direction, local.clone(), remote.clone());
-            sftp_show_transfer(st);
-            let status = st.sftp_transfer_state.status_text();
-            sftp_set_status(st, &status);
-            eprintln!(
-                "[sftp] {} 开始 local={local:?} remote={remote:?} recursive={recursive}",
-                direction.verb()
-            );
-        }
-        Err(e) => sftp_set_status(st, &format!("{}失败: {e}", direction.verb())),
-    }
+    let request = sftp::TransferRequest { direction, target, local, remote, recursive };
+    sftp_submit_transfer(st, request);
 }
 
 /// 由 400ms 的 poll_events 驱动：非阻塞收事件、更新 UI、终态回收线程。
@@ -2852,17 +3357,98 @@ fn poll_sftp_transfer(st: &mut AppState) {
     let status = st.sftp_transfer_state.status_text();
     let phase = st.sftp_transfer_state.phase;
     let upload_done = st.sftp_transfer_state.is_done_upload();
+    let finished_request = st.sftp_current_request.take();
+    if phase == sftp::TransferPhase::Failed {
+        // 保留失败请求，Retry 按钮可重新入队（不自动无限重试）。
+        st.sftp_last_failed = finished_request;
+    } else if phase == sftp::TransferPhase::Done {
+        st.sftp_last_failed = None;
+    }
     sftp_show_transfer(st);
+    refresh_sftp_queue(st);
     sftp_set_status(st, &status);
     eprintln!(
-        "[sftp] ts_ms={} 传输结束 phase={phase:?}",
-        logging::now_ms()
+        "[sftp] ts_ms={} 传输结束 phase={phase:?} queue={}",
+        logging::now_ms(),
+        st.sftp_queue.len()
     );
-    if upload_done {
+    if upload_done && st.sftp_queue.is_empty() {
         // 上传完成后刷新远端列表，但保留“已上传”结果文案。
         sftp_do_list(st);
         sftp_set_status(st, &status);
     }
+    // 当前任务结束（成功/失败/取消）后自动开始下一个排队项。
+    if st.sftp_transfer.is_none() {
+        if let Some(next) = st.sftp_queue.pop() {
+            eprintln!("[sftp] 队列取出下一个: {}", next.queue_label());
+            sftp_launch_request(st, next);
+        }
+    }
+}
+
+/// Cancel：优先取消传输；没有传输时取消正在跑的远端元数据操作。
+fn sftp_cancel_active(st: &mut AppState) {
+    if st.sftp_transfer.is_some() {
+        sftp_cancel_transfer(st);
+        return;
+    }
+    if let Some(job) = st.sftp_op.as_ref() {
+        job.cancel();
+        sftp_set_status(st, "正在取消远端操作…");
+        return;
+    }
+    sftp_set_status(st, "没有进行中的远端操作");
+}
+
+/// Retry：把最近失败的传输重新插到队首（若有活动任务则等待其结束）。
+fn sftp_retry_failed(st: &mut AppState) {
+    let Some(request) = st.sftp_last_failed.take() else {
+        sftp_set_status(st, "没有可重试的失败传输");
+        return;
+    };
+    if st.sftp_transfer.is_some() {
+        let n = st.sftp_queue.push_front(request);
+        sftp_set_status(st, &format!("已把重试项插到队首（队列 {n} 项）"));
+        refresh_sftp_queue(st);
+        return;
+    }
+    sftp_launch_request(st, request);
+}
+
+/// 清空尚未开始的排队项（当前传输不受影响）。
+fn sftp_clear_queue(st: &mut AppState) {
+    let n = st.sftp_queue.clear();
+    refresh_sftp_queue(st);
+    sftp_set_status(st, &format!("已清空队列（{n} 项）"));
+    eprintln!("[sftp] 清空队列 items={n}");
+}
+
+fn sftp_do_chmod(st: &mut AppState) {
+    if sftp_busy(st) {
+        return;
+    }
+    let Some(target) = sftp_current_target(st) else {
+        sftp_set_status(st, "请选择 SSH Profile");
+        return;
+    };
+    let sel = st.ui.get_sftp_selected();
+    let Some(item) = st.sftp_model.row_data(sel.max(0) as usize) else {
+        sftp_set_status(st, "先在列表里选一条");
+        return;
+    };
+    let mode = match sftp::parse_mode(st.ui.get_sftp_mode().as_str()) {
+        Ok(mode) => mode,
+        Err(e) => {
+            sftp_set_status(st, &e);
+            return;
+        },
+    };
+    let remote = remote_entry_path(&st.ui.get_sftp_remote(), &item);
+    sftp_start_op(
+        st,
+        sftp::SftpCommand::Chmod { target, remote, mode },
+        "修改权限中…（后台）",
+    );
 }
 
 fn sftp_cancel_transfer(st: &mut AppState) {
@@ -2892,6 +3478,8 @@ fn sftp_start_op(st: &mut AppState, command: sftp::SftpCommand, status: &str) {
     eprintln!("[sftp] 后台操作开始: {command:?}（timeout=10s）");
     sftp_set_status(st, status);
     st.sftp_op = Some(sftp::SftpOpJob::start_woken(command, st.app_wake.clone()));
+    // 立刻把 op-active 写进 UI：否则用户看不到 Cancel（慢连接尤其明显）。
+    sftp_show_transfer(st);
     // 操作期间 100ms 收一次结果；完成/失败即 stop，空闲时零开销。
     st.sftp_op_timer.start(
         slint::TimerMode::Repeated,
@@ -2937,7 +3525,9 @@ fn join_remote(dir: &str, name: &str) -> String {
 }
 
 fn sftp_do_download(st: &mut AppState) {
-    if sftp_busy(st) {
+    // 传输进行中允许继续入队（队列会依次执行）；只拒绝与元数据操作并发。
+    if st.sftp_op.is_some() {
+        sftp_set_status(st, "远端元数据操作进行中，请稍候（10s 超时/可取消）");
         return;
     }
     if sftp_current_target(st).is_none() {
@@ -2955,7 +3545,8 @@ fn sftp_do_download(st: &mut AppState) {
 }
 
 fn sftp_do_upload(st: &mut AppState) {
-    if sftp_busy(st) {
+    if st.sftp_op.is_some() {
+        sftp_set_status(st, "远端元数据操作进行中，请稍候（10s 超时/可取消）");
         return;
     }
     if sftp_current_target(st).is_none() {
@@ -3060,12 +3651,14 @@ fn poll_sftp_op(st: &mut AppState) {
                 outcome.describe()
             );
             apply_sftp_outcome(st, outcome);
+            sftp_show_transfer(st);
         },
         Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => {
             st.sftp_op = None;
             st.sftp_op_timer.stop();
             eprintln!("[sftp] 后台操作异常结束（worker 没有发出结果）");
             sftp_set_status(st, "远端操作异常结束（没有结果）");
+            sftp_show_transfer(st);
         },
         Some(Err(std::sync::mpsc::TryRecvError::Empty)) => {},
         None => {
@@ -3108,6 +3701,13 @@ fn apply_sftp_outcome(st: &mut AppState, outcome: sftp::SftpOutcome) {
         },
         sftp::SftpOutcome::Remove { result: Err(e), .. } => {
             sftp_set_status(st, &format!("删除失败: {e}"));
+        },
+        sftp::SftpOutcome::Chmod { path, mode, result: Ok(()) } => {
+            // `ls -1` 不显示权限，列表内容不会变；保留成功文案而不是刷新成“N 个条目”。
+            sftp_set_status(st, &format!("已把 {path} 权限改为 {mode:04o}"));
+        },
+        sftp::SftpOutcome::Chmod { path, result: Err(e), .. } => {
+            sftp_set_status(st, &format!("修改 {path} 权限失败: {e}"));
         },
     }
 }
@@ -6787,6 +7387,8 @@ fn drain_core_events(st: &mut AppState) -> (bool, u32) {
     // 先收集 (pane, request)，等 pane 遍历结束后统一消费。
     let mut clipboard_events: Vec<(PaneId, ClipboardRequest)> = Vec::new();
     let mut bell_panes: Vec<PaneId> = Vec::new();
+    // 远端进程退出：先收集，等 pane 可变借用结束后再改 AppState UI 状态。
+    let mut exited_panes: Vec<(PaneId, Option<u64>, u32, Option<String>)> = Vec::new();
     let ids: Vec<PaneId> = st.panes.keys().copied().collect();
     for id in ids {
         let Some(rt) = st.panes.get_mut(&id) else {
@@ -6868,12 +7470,27 @@ fn drain_core_events(st: &mut AppState) -> (bool, u32) {
                     );
                 }
                 CoreEvent::Clipboard(request) => clipboard_events.push((id, request)),
-                CoreEvent::ResetTitle | CoreEvent::CursorBlinkChange | CoreEvent::Exited => {}
+                CoreEvent::Exited => {
+                    // Exited 可能由多个来源重复上报；只有真正等到子进程退出且
+                    // 本轮还没提示过时才记一次。
+                    if !rt.exit_notified {
+                        if let Some((code, signal)) = rt.handle.try_exit_code() {
+                            rt.exit_code = Some(code as i32);
+                            rt.exit_signal = signal.clone();
+                            rt.exit_notified = true;
+                            exited_panes.push((id, rt.profile_id, code, signal));
+                        }
+                    }
+                },
+                CoreEvent::ResetTitle | CoreEvent::CursorBlinkChange => {}
             }
         }
     }
     for (id, request) in clipboard_events {
         apply_osc52(st, id, request);
+    }
+    for (id, profile_id, code, signal) in exited_panes {
+        note_ssh_exit(st, id, profile_id, code, signal);
     }
     if titles_dirty {
         // 保持既有行为：只把活动 Tab 首个 pane 的标题写回 Tab。
@@ -6924,6 +7541,10 @@ fn on_app_event_wake() {
         poll_sftp_transfer(st);
         // SFTP 元数据命令后台结果（list/mkdir/rename/delete）。
         poll_sftp_op(st);
+        // SSH known_hosts 后台预检结果（首次/变更提示）。
+        poll_hostkey_check(st);
+        // Vault 后台 Argon2 结果（设置页在派生期间仍可重绘）。
+        poll_vault(st);
     });
 }
 
@@ -6938,6 +7559,8 @@ fn poll_events() {
         refresh_plugin_activity(st, false);
         poll_sftp_transfer(st);
         poll_sftp_op(st);
+        poll_hostkey_check(st);
+        poll_vault(st);
         bells
     })
     .unwrap_or((false, 0));
@@ -7556,6 +8179,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui.set_profile_items(ModelRc::from(profile_model.clone()));
     let sftp_model = Rc::new(VecModel::<slint::SharedString>::default());
     ui.set_sftp_items(ModelRc::from(sftp_model.clone()));
+    let sftp_queue_model = Rc::new(VecModel::<slint::SharedString>::default());
+    ui.set_sftp_queue(ModelRc::from(sftp_queue_model.clone()));
     let hotkey_model = Rc::new(VecModel::<HotkeyRow>::default());
     ui.set_hotkey_rows(ModelRc::from(hotkey_model.clone()));
     let plugin_model = Rc::new(VecModel::<slint::SharedString>::default());
@@ -7646,7 +8271,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         profile_indices: Vec::new(),
         profile_query: String::new(),
         vault: vault::Vault::open_default(),
+        vault_job: None,
+        vault_action: None,
+        vault_busy: false,
         vault_clear_armed: false,
+        hostkey_job: None,
+        hostkey_pending: None,
+        hostkey_prompt: None,
+        hostkey_verified: std::collections::HashSet::new(),
+        ssh_exit: None,
         sftp_profiles: Vec::new(),
         sftp_model,
         hotkey_model,
@@ -7660,6 +8293,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         plugin_activity_revision: 0,
         sftp_delete_armed: false,
         sftp_transfer: None,
+        sftp_current_request: None,
+        sftp_queue: sftp::TransferQueue::new(),
+        sftp_queue_model,
+        sftp_last_failed: None,
         sftp_transfer_state: sftp::TransferState::idle(),
         sftp_op: None,
         sftp_op_timer: slint::Timer::default(),
@@ -8583,7 +9220,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     ui.on_sftp_cancel(|| {
-        with_app(|st| sftp_cancel_transfer(st));
+        with_app(|st| sftp_cancel_active(st));
+    });
+
+    ui.on_sftp_chmod(|| {
+        with_app(|st| sftp_do_chmod(st));
+    });
+
+    ui.on_sftp_retry(|| {
+        with_app(|st| sftp_retry_failed(st));
+    });
+
+    ui.on_sftp_clear_queue(|| {
+        with_app(|st| sftp_clear_queue(st));
     });
 
     ui.on_sftp_mkdir(|| {
@@ -8695,6 +9344,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             st.ui.set_form_error("".into());
             refocus_after_modal(st);
         });
+    });
+
+    ui.on_hostkey_trust(|| {
+        with_app(|st| hostkey_trust(st));
+    });
+    ui.on_hostkey_once(|| {
+        with_app(|st| hostkey_once(st));
+    });
+    ui.on_hostkey_cancel(|| {
+        with_app(|st| hostkey_cancel(st));
+    });
+
+    ui.on_ssh_exit_reconnect(|| {
+        with_app(|st| reconnect_ssh_exit(st));
+    });
+    ui.on_ssh_exit_dismiss(|| {
+        with_app(|st| dismiss_ssh_exit(st));
     });
 
     ui.on_profile_delete(|index| {

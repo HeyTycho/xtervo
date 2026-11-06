@@ -12,8 +12,8 @@
 > 可编辑快捷键、Profile 搜索/默认/复制/每 Profile 外观、会话恢复、Tab 自动收缩/搜索、
 > Vault 加密凭据、Tabby 配置导入、外部进程插件 API。
 > 功能覆盖与已知差距见 [`docs/FEATURE_MATRIX.md`](docs/FEATURE_MATRIX.md) 与
-> [`docs/CLOSURE.md`](docs/CLOSURE.md)；W-01 分支验证：app **295** / core **90** 单测
-> （workspace **489 passed**），Xvfb :136 Profile/会话恢复 e2e PASS。
+> [`docs/CLOSURE.md`](docs/CLOSURE.md)；W-02 分支验证：app **351** / core 单元 **108**
+> + smoke **25** 单测，Xvfb :139 SSH/SFTP/Vault e2e PASS（19 张截图）。
 
 ## 架构（已冻结）
 
@@ -173,6 +173,12 @@ ls -l dist/ && file dist/tervo-stripped && ./dist/tervo-stripped --help
   主题/字号/光标变化仍作用于未覆盖的 pane，Profile 覆盖值不会被后台改掉；主题只影响
   该 pane 的终端内容，不改应用 UI。`profiles.toml` v2 是 additive 字段，旧文件不用迁移；
   v1 仍自动补齐 `kind`。
+- SSH/SFTP（W-02）：SSH Profile 支持 ProxyJump（`-J`）、本地/远程/动态转发
+  （`-L/-R/-D`）、agent forwarding（`-A`）与 keyboard-interactive 兜底；连接前在后台
+  做 known_hosts 预检，首次/密钥变更弹窗显示 SHA256 指纹并要求显式 Trust/Update（绝不
+  静默信任），ProxyJump/预检失败回退终端确认。SSH 退出显示退出码/信号与 Reconnect；
+  SFTP 面板支持上传/下载队列、进度、取消、失败 Retry、chmod、10s 连接超时/keepalive。
+  Vault 的 Argon2id 解锁/初始化/改主密码在后台线程执行，设置页保持可重绘。
 - 会话恢复：标签栏右键 → **Restart Session** 手动恢复；Settings → Behavior 的
   **Restore session on startup**（默认关）开启后，正常退出写快照，下次启动恢复
   Tab 顺序/标题/分屏树/ratio/焦点/窗口网格与每个 pane 的 cwd。local Profile 关联

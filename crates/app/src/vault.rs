@@ -31,6 +31,9 @@ use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver};
+use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
 use argon2::{Algorithm, Argon2, Params, Version};
 use base64::engine::general_purpose::STANDARD as B64;
@@ -38,6 +41,7 @@ use base64::Engine as _;
 use chacha20poly1305::aead::{Aead, KeyInit, OsRng, Payload};
 use chacha20poly1305::aead::rand_core::RngCore;
 use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
+use tervo_core::WakeSignal;
 
 /// 文件首行的 magic（与版本分两段：`TERVO-VAULT <version>`）。
 pub const MAGIC: &str = "TERVO-VAULT";
@@ -131,10 +135,156 @@ struct Unlocked {
     entries: BTreeMap<u64, String>,
 }
 
+impl Drop for Unlocked {
+    fn drop(&mut self) {
+        // 尽力覆盖 key 与密码字符串（Rust 分配器可能仍留旧副本，见模块文档）。
+        self.key.fill(0);
+        for (_, value) in self.entries.iter_mut() {
+            unsafe {
+                value.as_bytes_mut().fill(0);
+            }
+        }
+    }
+}
+
 enum State {
     Uninitialized,
     Locked,
     Unlocked(Unlocked),
+}
+
+/// 后台 KDF 成功后移交回 UI 的会话。只在本进程内传递，**不经过任何
+/// 序列化/日志/UI 属性**；`Display/Debug` 故意不实现。
+pub struct VaultSession(Unlocked);
+
+impl VaultSession {
+    /// 凭据条数（只读；给测试/日志用，不暴露密码）。
+    pub fn entry_count(&self) -> usize {
+        self.0.entries.len()
+    }
+}
+
+/// 改主密码需要的当前会话快照。只允许在解锁状态下取；交给后台线程后
+/// 旧 key/凭据副本在工作线程结束时由 `Unlocked::drop` 清零。
+pub struct VaultChange(Unlocked);
+
+/// 后台任务结果。错误里绝不包含主密码/凭据内容。
+pub enum VaultTaskOutcome {
+    Ok(VaultSession),
+    Err(VaultError),
+}
+
+/// 一次 Vault 后台任务（解锁 / 初始化 / 改主密码）。
+///
+/// Argon2id 是刻意慢的 KDF：如果在 Slint 回调里同步跑，设置页会卡住不能重绘。
+/// 这里把派生+解密/加密全部放到独立线程，UI 只轮询结果。
+pub struct VaultTask {
+    events: Receiver<VaultTaskOutcome>,
+    join: Option<JoinHandle<()>>,
+}
+
+impl VaultTask {
+    /// 解锁：读文件 + Argon2id + AEAD 解密。
+    pub fn unlock(path: PathBuf, master: String, wake: WakeSignal) -> Self {
+        Self::start(wake, move || {
+            let mut master = master;
+            let result = prepare_unlock(&path, &master);
+            zeroize_string(&mut master);
+            result
+        })
+    }
+
+    /// 初始化：校验主密码 + Argon2id + 写空 vault。
+    pub fn initialize(path: PathBuf, master: String, wake: WakeSignal) -> Self {
+        Self::start(wake, move || {
+            let mut master = master;
+            let result = prepare_initialize(&path, &master);
+            zeroize_string(&mut master);
+            result
+        })
+    }
+
+    /// 改主密码：用当前 key/entries 重新加密全部凭据。
+    pub fn change_master(
+        path: PathBuf,
+        current: VaultChange,
+        new_master: String,
+        wake: WakeSignal,
+    ) -> Self {
+        Self::start(wake, move || {
+            let mut new_master = new_master;
+            let result = prepare_change(&path, current, &new_master);
+            zeroize_string(&mut new_master);
+            result
+        })
+    }
+
+    fn start(wake: WakeSignal, work: impl FnOnce() -> Result<Unlocked, VaultError> + Send + 'static) -> Self {
+        let (sender, events) = mpsc::channel();
+        let join = thread::Builder::new()
+            .name("vault-kdf".into())
+            .spawn(move || {
+                maybe_test_kdf_delay();
+                let outcome = match work() {
+                    Ok(unlocked) => VaultTaskOutcome::Ok(VaultSession(unlocked)),
+                    Err(e) => VaultTaskOutcome::Err(e),
+                };
+                // 先入队再唤醒：UI 被叫醒后 try_recv 一定能拿到结果。
+                if sender.send(outcome).is_ok() {
+                    wake.notify();
+                }
+            });
+        match join {
+            Ok(join) => Self { events, join: Some(join) },
+            Err(e) => {
+                // 线程都起不来时给一个立即失败的结果，UI 状态机不会永远 busy。
+                let (sender, events) = mpsc::channel();
+                let _ = sender.send(VaultTaskOutcome::Err(VaultError::Internal(format!(
+                    "启动 vault KDF 线程失败: {e}"
+                ))));
+                Self { events, join: None }
+            },
+        }
+    }
+
+    /// UI 线程非阻塞取结果；`Disconnected` 表示线程异常结束。
+    pub fn try_recv(&self) -> Result<VaultTaskOutcome, mpsc::TryRecvError> {
+        self.events.try_recv()
+    }
+
+    /// 测试/探针：阻塞等结果并回收线程；UI 不使用（会卡事件循环）。
+    #[cfg(test)]
+    pub fn wait(mut self) -> Option<VaultTaskOutcome> {
+        let result = self.events.recv_timeout(Duration::from_secs(60)).ok();
+        if let Some(join) = self.join.take() {
+            let _ = join.join();
+        }
+        result
+    }
+}
+
+impl Drop for VaultTask {
+    fn drop(&mut self) {
+        // 不 join：Argon2 不能被强杀，线程最多再跑完一次派生；结果通道断开后
+        // 线程自然结束。UI 丢弃时不会阻塞。
+        self.join.take();
+    }
+}
+
+/// 仅用于 GUI e2e 截图：让 Argon2 派生前多停留一会儿，使「正在解锁」状态
+/// 可被截到。默认 0；只从进程环境读一次，不写配置、不影响生产行为。
+fn maybe_test_kdf_delay() {
+    static DELAY: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    let ms = *DELAY.get_or_init(|| {
+        std::env::var("TERVO_VAULT_KDF_DELAY_MS")
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .unwrap_or(0)
+            .min(10_000)
+    });
+    if ms > 0 {
+        thread::sleep(Duration::from_millis(ms));
+    }
 }
 
 /// 加密凭据容器。一个进程一个实例；`lock()` 后内存中的 key/密码一并丢弃。
@@ -190,88 +340,76 @@ impl Vault {
     }
 
     /// 创建空 vault 并解锁。已存在文件时拒绝（绝不覆盖旧凭据）。
+    ///
+    /// UI 请用 [`VaultTask::initialize`]（Argon2 不阻塞事件循环）；保留同步版本
+    /// 给探针/单测使用。
     pub fn initialize(&mut self, master: &str) -> Result<(), VaultError> {
-        if self.path.exists() {
-            return Err(VaultError::AlreadyInitialized);
-        }
-        validate_master(master)?;
-        let salt = random_array::<SALT_LEN>();
-        let key = derive_key(master, &salt)?;
-        let unlocked = Unlocked { key, salt, entries: BTreeMap::new() };
-        persist(&self.path, &unlocked)?;
+        let unlocked = prepare_initialize(&self.path, master)?;
         self.state = State::Unlocked(unlocked);
         Ok(())
     }
 
     /// 解锁：读取文件 → 校验结构 → Argon2id 派生 → AEAD 解密。
     /// 失败时保持原状态（不会把半解密数据留在内存里）。
+    ///
+    /// UI 请用 [`VaultTask::unlock`]；保留同步版本给探针/单测使用。
     pub fn unlock(&mut self, master: &str) -> Result<(), VaultError> {
-        let text = match fs::read_to_string(&self.path) {
-            Ok(t) => t,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                self.state = State::Uninitialized;
-                return Err(VaultError::NotInitialized);
+        match prepare_unlock(&self.path, master) {
+            Ok(unlocked) => {
+                self.state = State::Unlocked(unlocked);
+                Ok(())
             },
-            Err(e) => return Err(VaultError::Io(e.to_string())),
-        };
-        let parsed = ParsedVault::parse(&text)?;
-        let key = derive_key_with(
-            master,
-            &parsed.salt,
-            parsed.m_cost,
-            parsed.t_cost,
-            parsed.p_cost,
-        )?;
-        let cipher = ChaCha20Poly1305::new(Key::from_slice(&key));
-        let nonce = Nonce::from_slice(&parsed.nonce);
-        let plaintext = cipher
-            .decrypt(nonce, Payload { msg: &parsed.ciphertext, aad: parsed.aad })
-            .map_err(|_| VaultError::WrongPassword)?;
-        let entries: BTreeMap<u64, String> = serde_json::from_slice(&plaintext)
-            .map_err(|e| VaultError::Corrupt(format!("凭据 JSON 无效: {e}")))?;
-        self.state = State::Unlocked(Unlocked { key, salt: parsed.salt, entries });
-        Ok(())
+            Err(VaultError::NotInitialized) => {
+                self.state = State::Uninitialized;
+                Err(VaultError::NotInitialized)
+            },
+            Err(e) => Err(e),
+        }
+    }
+
+    /// 文件被外部删除/重建后同步状态（后台任务返回 NotInitialized 时用）。
+    pub fn refresh_status(&mut self) {
+        if matches!(self.state, State::Unlocked(_)) {
+            return;
+        }
+        self.state = if self.path.exists() { State::Locked } else { State::Uninitialized };
+    }
+
+    /// 把后台任务成功解锁的会话装回 UI 状态（不重新派生、不落盘）。
+    pub fn adopt(&mut self, session: VaultSession) {
+        self.state = State::Unlocked(session.0);
     }
 
     /// 清空内存状态；之后 get/set/remove 都返回 `Locked`。
-    /// 尽力覆盖 key 与密码字符串（Rust 分配器可能仍留旧副本，见文档的安全限制）。
+    /// 未初始化状态保持不变（不能因为点 Lock 就假装文件存在）。
     pub fn lock(&mut self) {
         if !matches!(self.state, State::Unlocked(_)) {
             return;
         }
-        if let State::Unlocked(mut old) = std::mem::replace(&mut self.state, State::Locked) {
-            old.key.fill(0);
-            for (_, value) in old.entries.iter_mut() {
-                // NUL 也是合法 UTF-8；覆盖后立刻释放，不暴露给 UI。
-                unsafe {
-                    value.as_bytes_mut().fill(0);
-                }
-            }
+        // 换出 State 后由 `Unlocked::drop` 清零 key 与密码。
+        self.state = State::Locked;
+    }
+
+    /// 取一份当前会话快照供后台改密码线程使用；锁定/未初始化返回错误。
+    pub fn change_snapshot(&self) -> Result<VaultChange, VaultError> {
+        match &self.state {
+            State::Unlocked(cur) => Ok(VaultChange(Unlocked {
+                key: cur.key,
+                salt: cur.salt,
+                entries: cur.entries.clone(),
+            })),
+            State::Uninitialized => Err(VaultError::NotInitialized),
+            State::Locked => Err(VaultError::Locked),
         }
     }
 
     /// 修改主密码：必须已解锁；用新 salt/key 重新加密全部凭据。
+    ///
+    /// UI 请用 [`VaultTask::change_master`]；保留同步版本给探针/单测使用。
     pub fn change_master(&mut self, new_master: &str) -> Result<(), VaultError> {
-        // 锁定优先于参数校验：锁定时一律返回 Locked。
-        let State::Unlocked(cur) = &self.state else {
-            return Err(VaultError::Locked);
-        };
-        validate_master(new_master)?;
-        let salt = random_array::<SALT_LEN>();
-        let key = derive_key(new_master, &salt)?;
-        let next = Unlocked { key, salt, entries: cur.entries.clone() };
-        persist(&self.path, &next)?;
-        // 旧 key/旧密码副本尽量清零后再丢弃。
-        if let State::Unlocked(mut old) =
-            std::mem::replace(&mut self.state, State::Unlocked(next))
-        {
-            old.key.fill(0);
-            for (_, value) in old.entries.iter_mut() {
-                unsafe {
-                    value.as_bytes_mut().fill(0);
-                }
-            }
-        }
+        let snapshot = self.change_snapshot()?;
+        let next = prepare_change(&self.path, snapshot, new_master)?;
+        self.state = State::Unlocked(next);
         Ok(())
     }
 
@@ -393,6 +531,14 @@ fn random_array<const N: usize>() -> [u8; N] {
     out
 }
 
+/// 尽力覆盖堆上的主密码副本；Rust 分配器/寄存器仍可能留旧值（见模块安全限制）。
+fn zeroize_string(value: &mut String) {
+    // SAFETY: 用 0 覆盖 UTF-8 字节是合法 UTF-8（NUL 是有效字符）。
+    unsafe {
+        value.as_bytes_mut().fill(0);
+    }
+}
+
 fn derive_key(master: &str, salt: &[u8]) -> Result<[u8; KEY_LEN], VaultError> {
     derive_key_with(master, salt, KDF_M_COST, KDF_T_COST, KDF_P_COST)
 }
@@ -414,7 +560,63 @@ fn derive_key_with(
     Ok(key)
 }
 
-/// 解析后的文件头 + 密文。`aad` 指向原始头部字节，解密时必须保持一致。
+/// 解锁的纯准备步骤：读文件 + 结构校验 + Argon2 + AEAD 解密。
+/// 不修改 `Vault`，可由后台线程调用；返回的 `Unlocked` 含明文凭据。
+fn prepare_unlock(path: &Path, master: &str) -> Result<Unlocked, VaultError> {
+    let text = match fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(VaultError::NotInitialized);
+        },
+        Err(e) => return Err(VaultError::Io(e.to_string())),
+    };
+    let parsed = ParsedVault::parse(&text)?;
+    let key = derive_key_with(master, &parsed.salt, parsed.m_cost, parsed.t_cost, parsed.p_cost)?;
+    let cipher = ChaCha20Poly1305::new(Key::from_slice(&key));
+    let nonce = Nonce::from_slice(&parsed.nonce);
+    let mut plaintext = cipher
+        .decrypt(nonce, Payload { msg: &parsed.ciphertext, aad: parsed.aad })
+        .map_err(|_| VaultError::WrongPassword)?;
+    let entries: BTreeMap<u64, String> = match serde_json::from_slice(&plaintext) {
+        Ok(entries) => entries,
+        Err(e) => {
+            plaintext.fill(0);
+            return Err(VaultError::Corrupt(format!("凭据 JSON 无效: {e}")));
+        },
+    };
+    plaintext.fill(0);
+    Ok(Unlocked { key, salt: parsed.salt, entries })
+}
+
+/// 初始化的纯准备步骤：校验参数 + 派生 key + 写空 vault。
+fn prepare_initialize(path: &Path, master: &str) -> Result<Unlocked, VaultError> {
+    if path.exists() {
+        return Err(VaultError::AlreadyInitialized);
+    }
+    validate_master(master)?;
+    let salt = random_array::<SALT_LEN>();
+    let key = derive_key(master, &salt)?;
+    let unlocked = Unlocked { key, salt, entries: BTreeMap::new() };
+    persist(path, &unlocked)?;
+    Ok(unlocked)
+}
+
+/// 改主密码的纯准备步骤：校验新密码 + 新 salt/key + 重新加密全部凭据并落盘。
+fn prepare_change(
+    path: &Path,
+    current: VaultChange,
+    new_master: &str,
+) -> Result<Unlocked, VaultError> {
+    validate_master(new_master)?;
+    let salt = random_array::<SALT_LEN>();
+    let key = derive_key(new_master, &salt)?;
+    // current.0 在工作线程结束时 drop（key/明文清零）。
+    let next = Unlocked { key, salt, entries: current.0.entries.clone() };
+    persist(path, &next)?;
+    Ok(next)
+}
+
+
 struct ParsedVault<'a> {
     m_cost: u32,
     t_cost: u32,
@@ -808,6 +1010,12 @@ mod tests {
         assert_eq!(again.entry_count(), 0);
 
         // 校验输入边界。
+        // 未初始化时点 Lock 不能把状态改成“已锁定”（文件仍然不存在）。
+        let mut missing = Vault::new(dir.join("missing.enc"));
+        missing.lock();
+        assert_eq!(missing.status(), VaultStatus::Uninitialized);
+        assert_eq!(missing.get(1).unwrap_err(), VaultError::NotInitialized);
+
         let p2 = dir.join("short.enc");
         let mut short = Vault::new(&p2);
         assert!(matches!(short.initialize("short").unwrap_err(), VaultError::Invalid(_)));
@@ -848,5 +1056,150 @@ mod tests {
             assert!(matches!(m.unlock(master()).unwrap_err(), VaultError::Corrupt(_)));
         }
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    // ---- 后台 KDF 任务（P1-08）：UI 线程只轮询，不跑 Argon2 ----
+
+    #[test]
+    fn background_unlock_moves_kdf_off_caller_and_adopts_session() {
+        let dir = tmpdir("bg-unlock");
+        let path = dir.join("vault.enc");
+        let mut v = Vault::new(&path);
+        v.initialize(master()).unwrap();
+        v.set(9, secret()).unwrap();
+        v.lock();
+
+        let (wake, rx) = tervo_core::WakeSignal::new();
+        let task = VaultTask::unlock(path.clone(), master().to_string(), wake);
+        // 任务在独立线程里跑：这里立即返回，不阻塞调用线程。
+        rx.recv_timeout(Duration::from_secs(30)).expect("KDF 完成应唤醒 UI");
+        let outcome = task.wait().expect("应拿到任务结果");
+        let VaultTaskOutcome::Ok(session) = outcome else {
+            panic!("后台解锁失败: {}", outcome_error(outcome));
+        };
+        assert_eq!(session.entry_count(), 1);
+        let mut ui = Vault::new(&path);
+        ui.adopt(session);
+        assert_eq!(ui.status(), VaultStatus::Unlocked);
+        assert_eq!(ui.get(9).unwrap(), secret());
+
+        // 同一个 Vault 的 adopt 路径（UI 实际用法）。
+        let mut second = Vault::new(&path);
+        let task = VaultTask::unlock(path, master().to_string(), tervo_core::WakeSignal::new().0);
+        let VaultTaskOutcome::Ok(session) = task.wait().unwrap() else {
+            panic!("第二次后台解锁失败");
+        };
+        second.adopt(session);
+        assert_eq!(second.get(9).unwrap(), secret());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn background_unlock_wrong_password_keeps_ui_locked() {
+        let dir = tmpdir("bg-wrong");
+        let path = dir.join("vault.enc");
+        Vault::new(&path).initialize(master()).unwrap();
+        let task = VaultTask::unlock(
+            path.clone(),
+            "wrong-password".into(),
+            tervo_core::WakeSignal::new().0,
+        );
+        match task.wait().unwrap() {
+            VaultTaskOutcome::Err(e) => assert_eq!(e, VaultError::WrongPassword),
+            VaultTaskOutcome::Ok(_) => panic!("错密码不能返回会话"),
+        }
+        let mut v = Vault::new(&path);
+        assert_eq!(v.status(), VaultStatus::Locked);
+        assert_eq!(v.get(1).unwrap_err(), VaultError::Locked);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn background_change_master_reencrypts_without_leaking_old_key() {
+        let dir = tmpdir("bg-change");
+        let path = dir.join("vault.enc");
+        let mut v = Vault::new(&path);
+        v.initialize(master()).unwrap();
+        v.set(4, secret()).unwrap();
+        let snapshot = v.change_snapshot().unwrap();
+        let task = VaultTask::change_master(
+            path.clone(),
+            snapshot,
+            "brand new master".into(),
+            tervo_core::WakeSignal::new().0,
+        );
+        let VaultTaskOutcome::Ok(session) = task.wait().unwrap() else {
+            panic!("后台改密码失败");
+        };
+        v.adopt(session);
+        assert_eq!(v.get(4).unwrap(), secret());
+
+        let mut old = Vault::new(&path);
+        assert_eq!(old.unlock(master()).unwrap_err(), VaultError::WrongPassword);
+        let mut fresh = Vault::new(&path);
+        fresh.unlock("brand new master").unwrap();
+        assert_eq!(fresh.get(4).unwrap(), secret());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn background_initialize_state_machine_and_errors() {
+        let dir = tmpdir("bg-init");
+        let path = dir.join("vault.enc");
+        let task = VaultTask::initialize(
+            path.clone(),
+            master().to_string(),
+            tervo_core::WakeSignal::new().0,
+        );
+        let VaultTaskOutcome::Ok(session) = task.wait().unwrap() else {
+            panic!("后台初始化失败");
+        };
+        let mut v = Vault::new(&path);
+        v.adopt(session);
+        assert_eq!(v.status(), VaultStatus::Unlocked);
+
+        // 已存在时拒绝覆盖；错误信息不含密码。
+        let task = VaultTask::initialize(
+            path.clone(),
+            "another master".into(),
+            tervo_core::WakeSignal::new().0,
+        );
+        match task.wait().unwrap() {
+            VaultTaskOutcome::Err(VaultError::AlreadyInitialized) => {},
+            other => panic!("期望 AlreadyInitialized，得到 {}", outcome_error(other)),
+        }
+        assert_eq!(fs::read_to_string(&path).unwrap().matches("ciphertext=").count(), 1);
+
+        // 锁定时 change_snapshot 立即返回 Locked（不启动后台线程）。
+        let locked = Vault::new(&path);
+        assert!(matches!(
+            locked.change_snapshot().map(|_| ()),
+            Err(VaultError::Locked)
+        ));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn background_task_drop_does_not_block_or_leak_into_ui() {
+        let dir = tmpdir("bg-drop");
+        let path = dir.join("vault.enc");
+        Vault::new(&path).initialize(master()).unwrap();
+        // 启动后立即丢弃任务：Drop 不能 join 卡住调用线程。
+        let started = std::time::Instant::now();
+        let task = VaultTask::unlock(
+            path.clone(),
+            master().to_string(),
+            tervo_core::WakeSignal::new().0,
+        );
+        drop(task);
+        assert!(started.elapsed() < Duration::from_secs(1), "Drop 不能阻塞 UI");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn outcome_error(outcome: VaultTaskOutcome) -> String {
+        match outcome {
+            VaultTaskOutcome::Err(e) => e.to_string(),
+            VaultTaskOutcome::Ok(_) => "ok".into(),
+        }
     }
 }
