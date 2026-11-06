@@ -1451,6 +1451,9 @@ export component MainWindow inherits Window {
     in property <bool> menu-read-only: false;
     // 链接打开失败等短暂提示（底部浮层，Rust 侧 4 秒后清空）。
     in-out property <string> link-status: "";
+    // 插件状态提供者的最小状态栏（底部一行文本；空 = 隐藏，不占布局）。
+    in-out property <string> plugin-status: "";
+    in-out property <string> plugin-status-tooltip: "";
     // 终端右键菜单：宽度按最长标签 + 快捷键提示留足，窄窗口自动收窄；
     // 内容高度固定（分组标题 22px / 菜单项 30px），超过内容区时菜单内滚动，
     // 不做整块溢出到窗口外。
@@ -1523,6 +1526,8 @@ export component MainWindow inherits Window {
     callback set-theme(string);
     callback tabbar-context(length, length);
     callback tabbar-menu-action(int);
+    /// 点击插件状态栏：Rust 执行状态项声明的命令（无 command 时忽略）。
+    callback plugin-status-clicked();
     in-out property <bool> tabmenu-open: false;
     in-out property <length> tabmenu-x: 0px;
     in-out property <length> tabmenu-y: 32px;
@@ -4876,7 +4881,7 @@ export component MainWindow inherits Window {
                                 wrap: word-wrap;
                             }
                             Text {
-                                text: "v1 plugins: <name>/plugin.toml. Commands appear in the Palette; events run startup/tab-open/tab-close. External processes with full user permissions (10s timeout), output goes to logs. Changing enabled requires a restart.";
+                                text: "v1 plugins: <name>/plugin.toml. runtime=\"process\" keeps a JSON-Lines host (2s handshake, 10s command timeout, 2 restarts); runtime absent/oneshot runs per command/event. Commands appear in the Palette; status providers show one bottom-bar line; [contributes] theme adds a declarative TOML theme. Permissions are declaration-only: plugins are still unsandboxed user processes. Changing enabled requires a restart.";
                                 color: Palette.colors.muted;
                                 font-size: 9px;
                                 wrap: word-wrap;
@@ -7240,10 +7245,38 @@ export component MainWindow inherits Window {
         }
     }
 
+    // 插件状态栏：只显示文本（tooltip/command 由 Rust 保存），不改变终端布局。
+    if root.plugin-status != "" : Rectangle {
+        x: 8px;
+        y: root.tabbar-bottom ? root.height - root.tabbar-height - 24px : root.height - 24px;
+        height: 20px;
+        width: Math.min(560px, root.width - 16px);
+        background: Palette.colors.surface;
+        border-radius: 6px;
+        border-width: 1px;
+        border-color: Palette.colors.border;
+        opacity: 0.94;
+
+        Text {
+            x: 8px;
+            width: parent.width - 16px;
+            height: parent.height;
+            text: root.plugin-status;
+            color: Palette.colors.subtext;
+            font-size: 11px;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        TouchArea {
+            clicked => { root.plugin-status-clicked(); }
+        }
+    }
+
     // 链接打开失败等短暂提示：不拦截鼠标事件，4 秒后由 Rust 清空。
     if root.link-status != "" : Rectangle {
         x: 12px;
-        y: root.height - 54px;
+        // 插件状态栏可见时浮层上移，避免盖住状态文本。
+        y: root.plugin-status != "" ? root.height - 84px : root.height - 54px;
         width: root.width - 24px;
         height: 36px;
         background: Palette.colors.raise;
