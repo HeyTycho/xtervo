@@ -38,7 +38,7 @@ use slint::{Model, ModelRc, VecModel};
 use tervo_core::{
     link::is_allowed_uri, spawn, ClipboardRequest, ClipboardSelection, CoreEvent, Frame, Modifiers,
     MouseAction, MouseButton, MouseEvent, Notification, Palette as TermPalette, PaneConfig,
-    PaneHandle, ProgressState, ScrollPosition, SearchOptions, Theme, UiColors,
+    PaneHandle, ProgressState, ScrollPosition, SearchHit, SearchOptions, Theme, UiColors,
 };
 use x11rb::connection::Connection;
 use x11rb::rust_connection::RustConnection;
@@ -4925,6 +4925,21 @@ fn update_search_bar(st: &mut AppState) {
     st.ui.set_search_regex(st.search_regex);
 }
 
+/// 搜索条右侧的 `当前/总数` 文本；无命中固定 `0/0`。
+fn search_count_label(hit: Option<&SearchHit>) -> String {
+    match hit {
+        Some(hit) if hit.total > 0 => format!("{}/{}", hit.index.max(1), hit.total),
+        _ => "0/0".to_string(),
+    }
+}
+
+/// 搜索框文本由 Slint TextInput 编辑（鼠标点击/选区/Ctrl+A/C/V 原生支持），
+/// `edited` 只带文本变化、不带内容，所以从 UI 读回归一到 Rust 状态。
+fn search_edited(st: &mut AppState) {
+    st.search_query = st.ui.get_search_query().to_string();
+    run_search(st, true);
+}
+
 /// 当前查找选项快照。
 fn search_options(st: &AppState) -> SearchOptions {
     SearchOptions {
@@ -4962,7 +4977,7 @@ fn rerun_search_after_option_change(st: &mut AppState) {
         rt.handle.search_clear();
     }
     if st.search_query.is_empty() {
-        st.ui.set_search_status("".into());
+        st.ui.set_search_status("0/0".into());
         st.ui.set_search_error(false);
         redraw_visible(st);
     } else {
@@ -5174,14 +5189,21 @@ fn run_command(st: &mut AppState, id: &str) {
 
 fn open_search(st: &mut AppState) {
     st.search_open = true;
-    st.ui.set_search_open(true);
-    st.ui.set_search_status("".into());
+    let has_query = !st.search_query.is_empty();
+    st.ui.set_search_status("0/0".into());
     st.ui.set_search_error(false);
+    // 先同步 query/选项，再显示浮层：TextInput 创建时的 init 会 focus，
+    // 文本已就位，Ctrl+F 打开即可直接输入。
     update_search_bar(st);
+    st.ui.set_search_open(true);
     eprintln!(
         "[ui] find open case={} regex={}",
         st.search_match_case, st.search_regex
     );
+    // 保留上次查询时直接恢复高亮与计数；空查询保持 0/0。
+    if has_query {
+        run_search(st, true);
+    }
 }
 
 fn close_search(st: &mut AppState) {
@@ -5195,6 +5217,10 @@ fn close_search(st: &mut AppState) {
             rt.handle.search_clear();
         }
     }
+    // 搜索框是真正的 TextInput，关闭后必须把 IME/键盘焦点还给终端；
+    // 同时标脏 spot，让下一次轮询把候选窗锚回光标。
+    st.ui.invoke_focus_terminal();
+    st.ime_spot_dirty = true;
     redraw_visible(st);
 }
 
@@ -5208,7 +5234,7 @@ fn run_search(st: &mut AppState, forward: bool) {
         if let Some(rt) = st.panes.get(&focused) {
             rt.handle.search_clear();
         }
-        st.ui.set_search_status("".into());
+        st.ui.set_search_status("0/0".into());
         st.ui.set_search_error(false);
         redraw_visible(st);
         return;
@@ -5219,18 +5245,18 @@ fn run_search(st: &mut AppState, forward: bool) {
         .map(|rt| rt.handle.search_with(&query, forward, options));
     match result {
         Some(Ok(Some(hit))) => {
-            st.ui.set_search_status("".into());
+            st.ui.set_search_status(search_count_label(Some(&hit)).into());
             st.ui.set_search_error(false);
             eprintln!(
-                "[ui] find query={query:?} forward={forward} case={} regex={} hit={hit:?}",
-                options.match_case, options.regex
+                "[ui] find query={query:?} forward={forward} case={} regex={} hit={hit:?} count={}/{}",
+                options.match_case, options.regex, hit.index, hit.total
             );
         }
         Some(Ok(None)) => {
-            st.ui.set_search_status("no match".into());
+            st.ui.set_search_status("0/0".into());
             st.ui.set_search_error(false);
             eprintln!(
-                "[ui] find query={query:?} forward={forward} case={} regex={} hit=none",
+                "[ui] find query={query:?} forward={forward} case={} regex={} hit=none count=0/0",
                 options.match_case, options.regex
             );
         }
@@ -5244,7 +5270,7 @@ fn run_search(st: &mut AppState, forward: bool) {
             );
         }
         None => {
-            st.ui.set_search_status("no match".into());
+            st.ui.set_search_status("0/0".into());
             st.ui.set_search_error(false);
         }
     }
@@ -8063,6 +8089,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         with_app(toggle_search_regex);
     });
 
+    // TextInput 的编辑（键入/退格/粘贴/鼠标输入）都会回调 edited；文本以 UI 为准。
+    ui.on_search_edited(|| {
+        with_app(search_edited);
+    });
+
+    // Enter / Shift+Enter：从当前命中继续向前/向后，并刷新 index/total。
+    ui.on_search_next(|forward| {
+        with_app(|st| run_search(st, forward));
+    });
+
+    // Esc：关闭搜索条并把 IME/键盘焦点还给终端。
+    ui.on_search_close(|| {
+        with_app(close_search);
+    });
+
     ui.on_save_commit(|path| {
         with_app(|st| save_contents_commit(st, path.as_str()));
     });
@@ -9878,5 +9919,17 @@ mod tests {
         // 真正的 Ctrl+U / 小写 u 不能被误杀。
         assert!(!is_modifier_artifact("u", true, false, false));
         assert!(!is_modifier_artifact("u", false, false, false));
+    }
+
+    #[test]
+    fn search_count_label_formats_index_total_and_empty_results() {
+        let hit = SearchHit { line: 1, start_col: 2, end_col: 4, index: 3, total: 12 };
+        assert_eq!(search_count_label(Some(&hit)), "3/12");
+        assert_eq!(search_count_label(None), "0/0", "无命中固定显示 0/0");
+        let empty = SearchHit { index: 0, total: 0, ..hit };
+        assert_eq!(search_count_label(Some(&empty)), "0/0");
+        // 防御性：core 理论上不会给出 index=0/total>0；UI 至少不能显示 0/N。
+        let partial = SearchHit { index: 0, total: 5, ..hit };
+        assert_eq!(search_count_label(Some(&partial)), "1/5");
     }
 }

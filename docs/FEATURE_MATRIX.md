@@ -5,6 +5,10 @@
 > 状态分布与闭环结论见 [`CLOSURE.md`](CLOSURE.md)；统计脚本 `python3 scripts/matrix_stats.py`。
 > 2026-11-06 增补（`feat/term-menu`）：B6 查找大小写/正则、Read Only、Reset、Save Contents；B6 现有 18 条
 > （implemented=7 / partial=10 / not_started=1），证据见 [`terminal-menu-find.md`](terminal-menu-find.md)。
+> 2026-11-06 增补（`feat/search-ux`，P1）：查找匹配计数 `当前/总数`、可鼠标编辑的
+> TextInput 搜索框（点击/拖选/Ctrl+A/C/V）、Enter/Shift+Enter 刷新计数；
+> UI-TERM-010 升为 implemented，B6 计数改为 implemented=9 / partial=9 / not_started=1
+> （本节只改该行，未重算文件顶部历史总量），证据见 [`terminal-menu-find.md`](terminal-menu-find.md)。
 > 2026-11-06 增补（`feat/sixel`）：Sixel 内联图片（UI-TERM-020 / TERM-020），B/C 各 +1 条 partial；
 > 证据见本文件对应行与 [`self-iteration.md`](self-iteration.md)。
 > 2026-11-06 增补（`feat/settings-ui`）：设置改为无 PTY 的 **Settings Tab**（可回退 legacy modal），
@@ -139,7 +143,7 @@
 
 ### B6. Terminal View 交互（19 条）
 
-状态：implemented=8，partial=10，not_started=1。
+状态：implemented=9，partial=9，not_started=1。
 
 | ID | Feature | Upstream evidence | Rust implementation | Status | Test | Result | Limitation |
 |---|---|---|---|---|---|---|---|
@@ -152,7 +156,7 @@
 | UI-TERM-007 | 多行粘贴确认/警告；记住用户选择 | U-AUDIT / 需求 B6 | main.rs `needs_paste_confirm` + main.slint 粘贴确认浮层（Cancel / Always Allow / Paste）；config `confirm_multiline_paste` | implemented | 单测 `paste_confirm_only_for_multiline_when_enabled`；真机：多行粘贴 → `paste confirm lines=3`；Always Allow 后写配置且下次直发 | 2026-11-05 实测通过 | 只按“是否多行”判断，未做危险命令检测；预览只取前 3 行 |
 | UI-TERM-008 | Bracketed Paste 包裹并发送给支持的 Shell/TUI | U-AUDIT / 需求 B6 | main.rs `paste_payload(normalized, bracketed)` 统一组装；检查 `BRACKETED_PASTE` 模式位 | partial | 单测 `paste_normalization_and_brackets`（包裹字节/长度）；真机 `paste bytes=13 bracketed=false`（cat 未开模式） | 包裹与规范化有单测 | 缺“应用真的收到 200/201”的端到端验收；未测内容含 201 |
 | UI-TERM-009 | 滚动条/滚轮；alternate screen（vim/less）滚动正确 | U-AUDIT / 需求 B6 | main.rs `on_pane_scrolled`；pane.rs `Ctrl::Scroll`；**可见滚动条**：core `ScrollPosition` 原子快照 + `PaneHandle::scroll_position()/scroll_to()/scroll_to_bottom()`；Slint 右侧 overlay，click/drag → `pane-scrollbar`；`scrollbar_policy`（always/auto/never，默认 auto）：auto 仅 history>0，always 无历史时 thumb 占满轨道，never 隐藏但滚轮/键盘/选区不受影响，改动即时刷新所有 pane；alacritty alt screen | partial | core 几何/打包/集成 4 例 + smoke `wheel_scrollback_shows_history`（含 scroll_to 顶/中/底/越界）与 `scroll_position_tracks_resize_without_blocking`；app `scrollbar_policy_controls_visibility_and_always_thumb`；Xvfb :115 旧截图 + Xvfb :118 `always/auto/never` 像素检测（213/213 vs 0/0，脚本 `scripts/e2e_terminal_behavior.sh`） | 回滚/位置显示/点击跳转/拖拽可用；滚动条策略可配且即时生效；非阻塞查询不挡 PTY | alt screen 滚轮行为未专项验收；滚动条 9px overlay（右侧最外 5px 仍是窗口 resize 带）；always 无历史时不画禁用态轨道背景；无滚动位置百分比/快捷键跳顶底 |
-| UI-TERM-010 | 查找面板：关键词、大小写/正则、上/下一个、匹配计数 | U-AUDIT（上游选项待核） | main.rs `open_search`/`run_search`/`close_search`；pane.rs `search`（regex_escape 纯文本） | partial | `search_finds_and_scrolls`；人工 Ctrl+F、Enter/Shift+Enter | 增量纯文本搜索/高亮/上下跳转可用 | 无大小写/正则/匹配计数；搜索框不可鼠标聚焦/选中 |
+| UI-TERM-010 | 查找面板：关键词、大小写/正则、上/下一个、匹配计数 | U-AUDIT（上游选项待核） | main.rs `open_search`/`run_search`/`close_search`/`search_edited`；pane.rs `search` + `count_search_matches`（alacritty `RegexSearch`/`RegexIter` 扫 scrollback+视口，`SearchHit.index/total`）；main.slint 搜索框为 TextInput，`init.focus()`，Enter/Shift+Enter、Esc、鼠标点击/拖选、Ctrl+A/C/V 原生编辑；`SearchOptions` 控制大小写/正则 | implemented | core `search_supports_case_and_regex_options`、`search_reports_match_index_and_total_across_scrollback`（1/3→2/3→3/3→1/3，反向 3/3）、`search_finds_and_scrolls`（1/2）；app `search_count_label_formats_index_total_and_empty_results`；workspace 476 passed；Xvfb :127 `scripts/e2e_search_ux.sh`：计数 2/3、3/3、0/0、invalid regex、鼠标插入/拖选/Ctrl+A/C/V、Esc 后 `echo FOCUS_OK` 到达 shell 且查询不泄漏 | 当前命中/总数可见；Enter/Shift+Enter 刷新；搜索框可鼠标编辑；非法 regex 不崩溃；匹配数来自 core，不扫 UI 帧 | 每次搜索全量扫 grid，超大 scrollback 会增加 UI 线程耗时；只高亮当前命中；搜索框内 IME 组合未专项测试；打开时点击终端仍会切走焦点 |
 | UI-TERM-011 | 点击 URL/IP/文件路径执行动作；区分远端/本地路径 | U-AUDIT / 需求 B6 | core `Frame::hyperlink_at`（OSC 8）+ `Frame::url_at`（普通 http/https/file，按显示列映射宽字符/组合字符）；app Ctrl+左键（非鼠标上报）打开，右键菜单 Open Link / Copy Link；`is_allowed_uri` 只允许 http/https/file；xdg-open 后台运行，非 0 退出/stderr 写日志并显示底部浮层 | partial | 单测：link.rs scheme/标点/白名单、frame.rs 宽字符/组合字符列映射、app OSC 8 优先/不安全 scheme 回退；headless Xvfb :114 + fake xdg-open 验证普通 URL、OSC 8、OSC 8 优先、失败提示、右键 Open Link | URL/OSC 8 点击可用；失败有 UI/日志反馈 | IP/路径不触发打开；无 hover 手型；远端/本地路径未区分；无插件 Linkifier；长 URL 折行不拼接 |
 | UI-TERM-012 | 终端字体放大/缩小/重置；显示当前缩放 | U-AUDIT / 需求 B6 | 键盘 Ctrl+= / Ctrl+- / Ctrl+0 → `zoom_font`/`reset_font`；命令面板 zoom-in/out/reset 共用同一实现；字号持久化到 config | partial | 真机：Ctrl+= ×2 → `font_size=16/17`，Ctrl+- → 16，Ctrl+0 → 15（重置） | 快捷键/命令缩放可用且持久化 | 无屏内 zoom HUD（只在设置页/日志可见当前值）；行高按字体自动重排 |
 | UI-TERM-013 | 可配置终端上下文菜单与插件装饰器 | U-AUDIT / 需求 B6 | main.slint 固定 13 项菜单；无插件/装饰器接口 | not_started | 无 | 未实现 | 菜单项硬编码；无配置/插件扩展点 |

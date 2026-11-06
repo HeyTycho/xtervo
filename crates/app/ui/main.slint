@@ -1463,6 +1463,12 @@ export component MainWindow inherits Window {
     in property <bool> search-error: false;
     callback search-toggle-case();
     callback search-toggle-regex();
+    /// TextInput 编辑（键入/退格/粘贴/鼠标插入）后同步文本并重新搜索。
+    callback search-edited();
+    /// Enter / Shift+Enter：向前 / 向后继续搜索。
+    callback search-next(bool);
+    /// Esc：关闭搜索条并把焦点还给终端。
+    callback search-close();
 
     // Save Contents：Slint 1.18 没有原生文件对话框，这里用显式路径输入 + 错误提示。
     in-out property <bool> save-open: false;
@@ -6031,8 +6037,8 @@ export component MainWindow inherits Window {
         drop-shadow-offset-y: 4px;
         drop-shadow-color: #00000090;
 
-        // 吃掉查找条内部的点击：这里没有文字输入框，若让事件穿透到
-        // 后面的终端，点一下查找条就会被“外部点击”逻辑关掉。
+        // 吃掉查找条内部的空白点击，避免穿透到后面的终端切换焦点/触发选区；
+        // 输入框与 FindToggle 是后置子元素，会先拿到各自的鼠标事件。
         TouchArea {
             width: 100%;
             height: 100%;
@@ -6050,17 +6056,75 @@ export component MainWindow inherits Window {
                     text: "🔍";
                     color: Palette.colors.subtext;
                     font-size: 12px;
-                    height: 18px;
+                    height: 20px;
                     vertical-alignment: center;
                 }
-                Text {
-                    text: root.search-query == "" ? "Search…" : root.search-query;
-                    color: root.search-query == "" ? Palette.colors.muted : Palette.colors.text;
-                    font-size: 13px;
-                    height: 18px;
-                    vertical-alignment: center;
-                    overflow: elide;
+                Rectangle {
+                    height: 20px;
                     horizontal-stretch: 1;
+                    clip: true;
+                    background: transparent;
+
+                    // 空查询占位符画在下面：Text 不接收鼠标事件，点击仍落到输入框。
+                    Text {
+                        visible: root.search-query == "";
+                        text: "Search…";
+                        color: Palette.colors.muted;
+                        font-size: 13px;
+                        height: 100%;
+                        vertical-alignment: center;
+                    }
+                    search-input := TextInput {
+                        width: 100%;
+                        height: 100%;
+                        text <=> root.search-query;
+                        single-line: true;
+                        color: Palette.colors.text;
+                        font-size: 13px;
+                        vertical-alignment: center;
+                        selection-background-color: Palette.colors.accent;
+                        selection-foreground-color: Palette.colors.accent-text;
+                        init => { self.focus(); }
+                        edited => { root.search-edited(); }
+                        key-pressed(event) => {
+                            // 拼音/IME 组合中：Enter=上屏候选、Esc=取消，键归输入法，
+                            // 不能被搜索下一个/关闭截走（与终端 IME 宿主同策略）。
+                            if (self.preedit-text != "") {
+                                return EventResult.reject;
+                            }
+                            if (event.text == "\u{1b}") {
+                                root.search-close();
+                                return EventResult.accept;
+                            }
+                            if (event.text == "\u{a}" || event.text == "\u{d}") {
+                                root.search-next(!event.modifiers.shift);
+                                return EventResult.accept;
+                            }
+                            // Ctrl+F 在搜索框内全选，仍符合“打开并聚焦”的直觉。
+                            if (event.modifiers.control && !event.modifiers.alt
+                                && !event.modifiers.shift
+                                && (event.text == "f" || event.text == "F"
+                                    || event.text == "\u{6}")) {
+                                self.select-all();
+                                return EventResult.accept;
+                            }
+                            // 保留 GNOME Terminal 风格的 Alt+C / Alt+R 开关快捷键。
+                            if (event.modifiers.alt && !event.modifiers.control
+                                && !event.modifiers.shift) {
+                                if (event.text == "c" || event.text == "C") {
+                                    root.search-toggle-case();
+                                    return EventResult.accept;
+                                }
+                                if (event.text == "r" || event.text == "R") {
+                                    root.search-toggle-regex();
+                                    return EventResult.accept;
+                                }
+                            }
+                            // 其余按键（字符、方向键、Ctrl+A/C/V、鼠标选区扩展）交给
+                            // Slint TextInput 内置编辑逻辑；不会进入终端输入路径。
+                            EventResult.reject
+                        }
+                    }
                 }
             }
 
