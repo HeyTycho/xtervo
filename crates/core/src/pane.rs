@@ -58,6 +58,100 @@ pub struct SearchHit {
     pub end_col: u16,
 }
 
+/// 非阻塞滚动位置快照（actor 在输出/滚动/resize 后刷新）。
+///
+/// UI 线程只读原子值，绝不向 actor 发同步请求，因此即使 PTY 输出洪峰
+/// 也不会因为画滚动条而卡住。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ScrollPosition {
+    /// 视口距历史底部的偏移；0 = 底部（最新内容），`history` = 顶部。
+    pub offset: usize,
+    /// 可回滚历史行数（不含视口内的 `rows` 行）。
+    pub history: usize,
+    /// 当前视口行数。
+    pub rows: usize,
+}
+
+impl ScrollPosition {
+    /// 历史 + 视口总行数。
+    #[inline]
+    pub fn total(&self) -> usize {
+        self.history.saturating_add(self.rows)
+    }
+
+    /// 是否有可滚动历史；false 时 UI 不显示滚动条。
+    #[inline]
+    pub fn scrollable(&self) -> bool {
+        self.history > 0 && self.rows > 0
+    }
+
+    /// 滚动条 thumb 在 track 中的归一化 `(top, height)`，取值 0.0..=1.0。
+    ///
+    /// `min_thumb` 是 thumb 的最小高度（归一化，防止长历史时 thumb 细到点不中）。
+    /// 没有历史时返回 `None`。
+    pub fn thumb(&self, min_thumb: f32) -> Option<(f32, f32)> {
+        if !self.scrollable() {
+            return None;
+        }
+        let total = self.total() as f32;
+        let min_thumb = if min_thumb.is_finite() { min_thumb.clamp(0.0, 1.0) } else { 0.0 };
+        let height = (self.rows as f32 / total).max(min_thumb).min(1.0);
+        let travel = (1.0 - height).max(0.0);
+        // offset=history（顶部）→ top=0；offset=0（底部）→ top=travel。
+        let progress = if self.history == 0 {
+            1.0
+        } else {
+            1.0 - self.offset.min(self.history) as f32 / self.history as f32
+        };
+        Some((progress * travel, height))
+    }
+
+    /// 由 thumb 顶部归一化位置反推目标 offset（拖动时用）。
+    pub fn offset_for_thumb_top(&self, thumb_top: f32, min_thumb: f32) -> usize {
+        if self.history == 0 {
+            return 0;
+        }
+        let Some((_, height)) = self.thumb(min_thumb) else { return 0 };
+        let travel = (1.0 - height).max(0.0);
+        if travel <= f32::EPSILON {
+            return 0;
+        }
+        let top = if thumb_top.is_finite() { thumb_top.clamp(0.0, travel) } else { 0.0 };
+        let progress = 1.0 - top / travel;
+        ((progress * self.history as f32).round() as usize).min(self.history)
+    }
+
+    /// 点击/拖动 track 的归一化位置（0 = 顶部，1 = 底部）→ 目标 offset。
+    ///
+    /// 语义是「让 thumb 中心跟到指针」；因此点 track 两端会直接跳到顶/底。
+    pub fn offset_for_track_fraction(&self, fraction: f32, min_thumb: f32) -> usize {
+        if self.history == 0 {
+            return 0;
+        }
+        let Some((_, height)) = self.thumb(min_thumb) else { return 0 };
+        let travel = (1.0 - height).max(0.0);
+        let fraction =
+            if fraction.is_finite() { fraction.clamp(0.0, 1.0) } else { 1.0 };
+        let top = (fraction - height * 0.5).clamp(0.0, travel);
+        self.offset_for_thumb_top(top, min_thumb)
+    }
+}
+
+const SCROLL_OFFSET_MASK: u64 = u32::MAX as u64;
+
+/// 把 offset/history 打包进一个 `AtomicU64`：一次 load 就能拿到一致的一组值。
+#[inline]
+fn pack_scroll(offset: usize, history: usize) -> u64 {
+    let offset = offset.min(u32::MAX as usize) as u64;
+    let history = history.min(u32::MAX as usize) as u64;
+    (history << 32) | offset
+}
+
+#[inline]
+fn unpack_scroll(bits: u64) -> (usize, usize) {
+    ((bits & SCROLL_OFFSET_MASK) as usize, (bits >> 32) as usize)
+}
+
 /// 终端网格尺寸（实现 alacritty 的 `Dimensions`）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GridSize {
@@ -164,6 +258,8 @@ enum Ctrl {
     Resize { cols: u16, rows: u16 },
     SetTheme(Palette),
     Scroll(i32),
+    /// 绝对滚动位置（0 = 底部）；滚动条点击/拖拽用。
+    ScrollTo(usize),
     SelectionStart { line: u16, col: u16 },
     SelectionExtend { line: u16, col: u16 },
     SelectionClear,
@@ -196,6 +292,8 @@ pub struct PaneHandle {
     /// actor 每次喂数据后刷新的模式位快照：UI 需要在**不阻塞**的前提下判断
     /// 当前是否处于鼠标上报模式（决定「转发」还是「本地选词」）。
     mode_bits: Arc<std::sync::atomic::AtomicU32>,
+    /// 滚动位置快照（打包 offset/history），见 [`PaneHandle::scroll_position`]。
+    scroll: Arc<std::sync::atomic::AtomicU64>,
     child: Box<dyn portable_pty::Child + Send + Sync>,
     #[allow(dead_code)]
     threads: Vec<JoinHandle<()>>,
@@ -221,6 +319,23 @@ impl PaneHandle {
     /// 滚轮回滚：正数向上翻历史。
     pub fn scroll(&self, lines: i32) {
         let _ = self.ctrl_tx.send(Ctrl::Scroll(lines));
+    }
+
+    /// 绝对滚动位置（0 = 底部/最新，`history` = 顶部/最旧）。
+    ///
+    /// 异步：发送后由 actor 在下一轮处理；UI 通过 [`Self::scroll_position`]
+    /// 读取新位置并在唤醒后重绘。
+    pub fn scroll_to(&self, offset: usize) {
+        let _ = self.ctrl_tx.send(Ctrl::ScrollTo(offset));
+    }
+
+    /// 非阻塞滚动位置查询：只读 actor 维护的原子快照。
+    ///
+    /// `rows` 取 UI 侧已同步的网格行数，`offset/history` 来自同一份打包值，
+    /// 不会出现「新 history 配旧 offset」的撕裂。
+    pub fn scroll_position(&self) -> ScrollPosition {
+        let (offset, history) = unpack_scroll(self.scroll.load(std::sync::atomic::Ordering::Relaxed));
+        ScrollPosition { offset, history, rows: self.grid.rows }
     }
 
     /// 当前终端模式位（actor 刷新，无阻塞）。
@@ -499,6 +614,10 @@ pub fn spawn(config: PaneConfig) -> std::io::Result<PaneHandle> {
     let palette = shared_palette.clone();
     let stats_actor = stats.clone();
     let mode_bits = Arc::new(std::sync::atomic::AtomicU32::new(term.mode().bits()));
+    let scroll = Arc::new(std::sync::atomic::AtomicU64::new(pack_scroll(
+        term.grid().display_offset(),
+        term.grid().history_size(),
+    )));
 
     let actor = Actor {
         term,
@@ -516,6 +635,7 @@ pub fn spawn(config: PaneConfig) -> std::io::Result<PaneHandle> {
         events: listener.events.clone(),
         write_tx: write_tx.clone(),
         mode_bits: mode_bits.clone(),
+        scroll: scroll.clone(),
         sel_anchor: None,
         pty_closed: false,
         force_full: false,
@@ -533,6 +653,7 @@ pub fn spawn(config: PaneConfig) -> std::io::Result<PaneHandle> {
         wake_rx,
         stats,
         mode_bits,
+        scroll,
         child,
         threads: vec![reader_thread, writer_thread, actor_thread],
         grid: size,
@@ -588,6 +709,8 @@ struct Actor {
     write_tx: Sender<Vec<u8>>,
     /// 模式位快照，供 UI 无阻塞查询（见 [`PaneHandle::mode`]）。
     mode_bits: Arc<std::sync::atomic::AtomicU32>,
+    /// 滚动位置快照（打包 offset/history），供 UI 无阻塞查询。
+    scroll: Arc<std::sync::atomic::AtomicU64>,
     /// 选区锚点（网格坐标）；反向选择时用来保持两端 side 一致。
     sel_anchor: Option<Point>,
     pty_closed: bool,
@@ -628,7 +751,22 @@ impl Actor {
                     },
                 }
             }
+            // 每轮处理完刷新一次滚动快照：输出增长历史、用户滚动、搜索跳转、
+            // resize 改变历史长度都会走到这里；一次 relaxed store 极便宜。
+            self.sync_scroll();
         }
+    }
+
+    /// 把 actor 里的真实滚动状态发布给 UI 的无锁快照。
+    #[inline]
+    fn sync_scroll(&self) {
+        self.scroll.store(
+            pack_scroll(
+                self.term.grid().display_offset(),
+                self.term.grid().history_size(),
+            ),
+            std::sync::atomic::Ordering::Relaxed,
+        );
     }
 
     /// 用户输入必须写进 PTY（交给 shell 处理），绝不能喂给 VT 解析器。
@@ -723,13 +861,25 @@ impl Actor {
         match ctrl {
             Ctrl::Pull(mut frame) => {
                 self.fill(&mut frame);
-                // UI 正在等这一帧；容量 1，不会堆积。
+                // UI 正在等这一帧；先发布同一时刻的滚动快照，避免 UI 拿到帧后
+                // 读到上一轮的 offset（滚动条会滞后一帧）。容量 1，不会堆积。
+                self.sync_scroll();
                 let _ = self.pull_tx.send(frame);
                 true
             },
             Ctrl::Scroll(lines) => {
                 if lines != 0 {
                     self.term.scroll_display(Scroll::Delta(lines));
+                    self.wake.notify();
+                }
+                true
+            },
+            Ctrl::ScrollTo(offset) => {
+                let current = self.term.grid().display_offset() as i64;
+                let target = offset.min(self.term.grid().history_size()) as i64;
+                let delta = (target - current).clamp(i32::MIN as i64, i32::MAX as i64) as i32;
+                if delta != 0 {
+                    self.term.scroll_display(Scroll::Delta(delta));
                     self.wake.notify();
                 }
                 true
@@ -1005,4 +1155,81 @@ pub fn fill_frame<T: EventListener>(
         shape: CursorShape::from_vte(term.cursor_style().shape),
         visible: term.mode().contains(TermMode::SHOW_CURSOR),
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scroll_position_pack_roundtrip() {
+        for &(offset, history) in &[(0usize, 0usize), (3, 100), (100, 100), (0, 12345)] {
+            let (o, h) = unpack_scroll(pack_scroll(offset, history));
+            assert_eq!((o, h), (offset, history));
+        }
+        // 超大值饱和而不是回绕（实际 scrollback 远小于 u32::MAX）
+        let bits = pack_scroll(u32::MAX as usize + 9, u32::MAX as usize + 7);
+        assert_eq!(unpack_scroll(bits), (u32::MAX as usize, u32::MAX as usize));
+    }
+
+    #[test]
+    fn scroll_position_requires_history() {
+        let none = ScrollPosition { offset: 0, history: 0, rows: 24 };
+        assert!(!none.scrollable());
+        assert_eq!(none.thumb(0.1), None);
+        assert_eq!(none.total(), 24);
+        assert_eq!(none.offset_for_track_fraction(0.5, 0.1), 0);
+
+        let empty_view = ScrollPosition { offset: 0, history: 100, rows: 0 };
+        assert!(!empty_view.scrollable());
+        assert_eq!(empty_view.thumb(0.1), None);
+    }
+
+    #[test]
+    fn scroll_thumb_geometry_endpoints_and_min_size() {
+        let pos = ScrollPosition { offset: 0, history: 100, rows: 20 };
+        let (top_bottom, h) = pos.thumb(0.0).expect("scrollable");
+        // 视口占 20/120，thumb 高 1/6；在底部时 thumb 顶 = 1 - h。
+        assert!((h - 20.0 / 120.0).abs() < 1e-6, "thumb height={h}");
+        assert!((top_bottom - (1.0 - h)).abs() < 1e-6, "bottom top={top_bottom}");
+
+        let (top_top, _) = ScrollPosition { offset: 100, ..pos }.thumb(0.0).unwrap();
+        assert!(top_top.abs() < 1e-6, "顶部 thumb 顶必须为 0: {top_top}");
+
+        // 长历史下 thumb 被最小高度托底。
+        let long = ScrollPosition { offset: 0, history: 100_000, rows: 20 };
+        let (_, min_h) = long.thumb(0.08).unwrap();
+        assert!((min_h - 0.08).abs() < 1e-6, "min thumb={min_h}");
+        let (_, tiny) = long.thumb(0.0).unwrap();
+        assert!(tiny < 0.001, "没有 min 时应非常小: {tiny}");
+    }
+
+    #[test]
+    fn scroll_track_fraction_maps_to_top_and_bottom() {
+        let pos = ScrollPosition { offset: 10, history: 100, rows: 20 };
+        let min = 0.08;
+        assert_eq!(pos.offset_for_track_fraction(0.0, min), 100, "点顶部 = 最旧");
+        assert_eq!(pos.offset_for_track_fraction(1.0, min), 0, "点底部 = 最新");
+        assert_eq!(pos.offset_for_track_fraction(-5.0, min), 100, "越界夹取");
+        assert_eq!(pos.offset_for_track_fraction(5.0, min), 0, "越界夹取");
+
+        // thumb 顶 ↔ offset 往返：thumb(top) 后反推应回到原 offset。
+        let (top, _) = pos.thumb(min).unwrap();
+        assert_eq!(pos.offset_for_thumb_top(top, min), 10, "thumb 顶 ↔ offset 往返");
+    }
+
+    #[test]
+    fn scroll_thumb_offset_roundtrip_is_monotonic() {
+        let pos = ScrollPosition { offset: 0, history: 500, rows: 30 };
+        let min = 0.05;
+        let mut last = usize::MAX;
+        for i in 0..=20 {
+            let top = i as f32 / 20.0;
+            let offset = pos.offset_for_thumb_top(top, min);
+            assert!(offset <= last, "top 增大时 offset 必须单调下降: {offset} > {last}");
+            last = offset;
+        }
+        assert_eq!(pos.offset_for_thumb_top(0.0, min), 500);
+        assert_eq!(pos.offset_for_thumb_top(1.0, min), 0);
+    }
 }

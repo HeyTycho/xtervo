@@ -114,6 +114,13 @@ ls -l dist/ && file dist/tervo && ./dist/tervo --help
 - 快捷键：`Ctrl+T` 新建标签、`Ctrl+Shift+N` 新建窗口、`Ctrl+W` 关闭标签。
 - 多窗口（MVP）：`Ctrl+Shift+N` / 标签栏右键 → New Window / 命令面板 `New Window`
   会拉起一个独立的 Tervo 进程，各自拥有 Tab/PTY；窗口互不影响，Tab 暂不能跨窗口移动。
+- 可见滚动条：右侧 overlay，只有 scrollback 超出视口时出现；显示当前回滚位置，支持点击/拖动跳转
+  （core 暴露非阻塞 `PaneHandle::scroll_position()` / `scroll_to()`）。
+- 视觉铃：活动 pane 收到 BEL 时闪一下 2px accent 边框（`visual_bell = true`，设置可关），
+  非活动 Tab 仍走未读点/桌面通知；不遮挡终端内容。
+- 文件拖放（X11）：从文件管理器拖文件/目录到 pane，插入 shell 转义后的路径
+  （bracketed paste + 末尾空格）；Slint `DropArea` 已接入，winit 1.18 后端不投递外部拖放，
+  由 winit `HoveredFile`/`DroppedFile` 原生桥接补齐（详见 `docs/terminal-ui-basics.md`）。
 - 设置面板（⚙）：12 套内置主题 + `Auto`（跟随系统深/浅色，默认 Yaru Dark/Light）、字号、回滚行数；
   也支持把 iTerm2 / Windows Terminal / Alacritty / kitty / Xresources 主题直接放进 `themes/` 目录。
 - Tabby 功能对照见 [`docs/tabby-parity.md`](docs/tabby-parity.md)；
@@ -137,7 +144,8 @@ tervo                 # 直接启动
 | 粘贴 | `Ctrl+Shift+V` 或右键 → Paste（多行会按终端 bracketed-paste 规则包起来） |
 | 搜索 | `Ctrl+F`，输入即高亮下一个；`Enter` 下一个，`Shift+Enter` 上一个，`Esc` 关闭 |
 | 中文输入 | fcitx5 / ibus（X11 XIM）：拼音候选窗跟随光标；组合中的回车/退格只作用于输入法，不会写入 shell |
-| 回滚历史 | 鼠标滚轮 |
+| 回滚历史 | 鼠标滚轮；或点击/拖动右侧滚动条（仅历史超出视口时显示） |
+| 拖放路径 | 从文件管理器拖文件/目录到 pane：插入 shell 转义路径 + 末尾空格（X11） |
 | 窗口置顶 | 右键标签栏空白处 → Always on Top |
 | 调整分屏 | 拖动 pane 之间的分隔线（左右/上下比例都可调） |
 | 缩放窗口 | 拖动窗口四边/四角（无边框窗口自绘命中区） |
@@ -171,6 +179,9 @@ update-desktop-database ~/.local/share/applications 2>/dev/null || true
   默认有 `/dev/dri` 走 Skia/GL，无 DRM 或 1s 内确认不到 GPU API 会自动回退
   `winit-software`；真机 NVIDIA 的 GPU 帧率/延迟数据仍待用户复测。
 - tab 不能拖拽排序；分屏已有分隔条拖拽与窗口拖边缩放。
+- 文件拖放的原生桥接目前只覆盖 X11/winit：Slint 1.18.1 的 winit 后端不会把
+  `HoveredFile`/`DroppedFile` 转成 `DataTransfer`，因此 DropArea 单独在 winit 下收不到
+  外部拖放；Wayland 下暂不保证。视觉铃尚未跟随系统 reduced motion。
 - 分屏比例、窗口位置/大小都在应用层维护，Wayland 下窗口 `set_position` 可能被合成器忽略。
 - 字体固定 JetBrains Mono（回退 DejaVu）；中文自动回退 WenQuanYi Micro Hei / Droid / Noto CJK，
   暂不支持自选字体、连字，emoji 仍留空。

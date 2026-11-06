@@ -69,6 +69,14 @@ export struct PaneView {
     ih: length,
     /// 终端启用了鼠标上报（1000/1002/1003）：中键/右键/滚轮要转发给 PTY。
     mouse-reporting: bool,
+    /// scrollback 超出视口时显示右侧 overlay 滚动条。
+    scrollbar-visible: bool,
+    /// thumb 顶部相对 pane 的 y（像素）与高度；track 高度 = 终端网格像素高。
+    scrollbar-thumb-y: length,
+    scrollbar-thumb-h: length,
+    scrollbar-track-h: length,
+    /// 活动 pane 收到 BEL 时短暂闪烁边框。
+    bell-flash: bool,
 }
 
 export struct TabView {
@@ -400,6 +408,10 @@ component ResizeHandle inherits TouchArea {
 export component MainWindow inherits Window {
     in property <[PaneView]> panes;
     in property <[DividerView]> dividers;
+    /// 原生文件拖放 hover 的目标 pane（-1 = 没有拖放）。
+    /// Slint 1.18 的 winit 后端不投递外部拖放的 DataTransfer，Rust 侧用
+    /// winit 的 HoveredFile/DroppedFile 桥接并写这个属性做高亮。
+    in-out property <int> drop-hover-pane: -1;
     in property <[TabView]> tabs;
     in property <length> tabbar-height: 32px;
     in-out property <bool> menu-open: false;
@@ -431,6 +443,11 @@ export component MainWindow inherits Window {
     callback pane-mouse-move(int, length, length, int, int);
     callback pane-mouse-up(int, length, length, int, int);
     callback pane-scrolled(int, length, length, length, int);
+    /// 滚动条交互：pane id + track 归一化位置（0=顶部/最旧，1=底部/最新）。
+    callback pane-scrollbar(int, float);
+    /// 拖入文件/目录：Slint 把平台 DataTransfer 原样交给 Rust 解路径。
+    pure callback can-drop-files(data-transfer) -> bool;
+    callback files-dropped(int, data-transfer);
     callback tab-clicked(int);
     callback tab-closed(int);
     callback new-tab();
@@ -470,6 +487,7 @@ export component MainWindow inherits Window {
     in-out property <string> cfg-right-click: "menu";
     in-out property <bool> cfg-paste-middle: true;
     in-out property <bool> cfg-desktop-notifications: true;
+    in-out property <bool> cfg-visual-bell: true;
     in-out property <bool> cfg-quake: false;
     in-out property <bool> broadcast: false;
     callback toggle-copy-on-select();
@@ -478,6 +496,7 @@ export component MainWindow inherits Window {
     callback set-right-click(string);
     callback toggle-paste-middle();
     callback toggle-desktop-notifications();
+    callback toggle-visual-bell();
     callback toggle-quake();
     // 多行粘贴确认
     in-out property <bool> paste-open: false;
@@ -1493,6 +1512,100 @@ export component MainWindow inherits Window {
                             root.pane-scrolled(p.id, event.delta-y, pane-hit.mouse-x, pane-hit.mouse-y,
                                 (event.modifiers.shift ? 1 : 0) + (event.modifiers.alt ? 2 : 0) + (event.modifiers.control ? 4 : 0));
                             EventResult.accept
+                        }
+                    }
+
+                    // ---------------- 视觉铃（只画边框，不遮挡终端） ----------------
+                    Rectangle {
+                        x: 0px;
+                        y: 0px;
+                        width: 100%;
+                        height: 100%;
+                        background: transparent;
+                        border-width: p.bell-flash ? 2px : 0px;
+                        border-color: Palette.colors.accent;
+                        opacity: p.bell-flash ? 1.0 : 0.0;
+                        animate opacity { duration: 160ms; easing: ease-out; }
+                        animate border-width { duration: 140ms; easing: ease-out; }
+                    }
+
+                    // ---------------- 拖放：文件/目录到 pane ----------------
+                    drop := DropArea {
+                        x: 0px;
+                        y: 0px;
+                        width: 100%;
+                        height: 100%;
+                        can-drop(event) => {
+                            root.can-drop-files(event.data) ? DragAction.copy : DragAction.none
+                        }
+                        dropped(event) => {
+                            root.files-dropped(p.id, event.data);
+                            return event.proposed-action;
+                        }
+                    }
+
+                    // 拖放 hover 提示：半透明 accent 覆盖 + 边框，不改变命中层。
+                    // DropArea 的 has-drag 是 Slint 官方路径；winit 后端下由
+                    // drop-hover-pane（原生桥接）承担同样的提示。
+                    if drop.has-drag || root.drop-hover-pane == p.id : Rectangle {
+                        x: 0px;
+                        y: 0px;
+                        width: 100%;
+                        height: 100%;
+                        background: Palette.colors.accent.with-alpha(0.08);
+                        border-width: 2px;
+                        border-color: Palette.colors.accent;
+                    }
+
+                    // ---------------- 滚动条 overlay ----------------
+                    // 只有 scrollback 超出视口时出现；track 与终端网格等高，
+                    // 不吃掉右侧字符区域的布局（overlay，不改变 pane 尺寸）。
+                    if p.scrollbar-visible : Rectangle {
+                        // 右侧留 3px 给窗口 resize 命中带（最外 5px），
+                        // overlay 本体 9px 宽，thumb 居中偏内。
+                        x: p.w - 12px;
+                        y: 0px;
+                        width: 9px;
+                        height: p.scrollbar-track-h;
+                        background: transparent;
+
+                        sb-hit := TouchArea {
+                            property <bool> dragging: false;
+                            x: 0px;
+                            y: 0px;
+                            width: 100%;
+                            height: 100%;
+
+                            pointer-event(event) => {
+                                if (event.kind == PointerEventKind.down
+                                    && event.button == PointerEventButton.left) {
+                                    self.dragging = true;
+                                    root.pane-scrollbar(p.id, Math.max(0.0,
+                                        Math.min(1.0, self.mouse-y / p.scrollbar-track-h)));
+                                    return EventResult.accept;
+                                }
+                                if (event.kind == PointerEventKind.move && self.dragging) {
+                                    root.pane-scrollbar(p.id, Math.max(0.0,
+                                        Math.min(1.0, self.mouse-y / p.scrollbar-track-h)));
+                                    return EventResult.accept;
+                                }
+                                if (event.kind == PointerEventKind.up) {
+                                    self.dragging = false;
+                                    return EventResult.accept;
+                                }
+                                EventResult.reject
+                            }
+                        }
+
+                        Rectangle {
+                            x: 2px;
+                            width: 5px;
+                            y: p.scrollbar-thumb-y;
+                            height: p.scrollbar-thumb-h;
+                            border-radius: 3px;
+                            background: (sb-hit.has-hover || sb-hit.pressed)
+                                ? Palette.colors.accent
+                                : Palette.colors.muted.with-alpha(0.8);
                         }
                     }
                 }
@@ -3912,6 +4025,19 @@ export component MainWindow inherits Window {
 
                     Text {
                         text: "OSC 9 / 777 / BEL 到达且 Tab 非活动时调用 notify-send；未安装则静默跳过。";
+                        color: Palette.colors.muted;
+                        font-size: 10px;
+                        wrap: word-wrap;
+                    }
+
+                    ToggleRow {
+                        label: "Visual bell（活动 pane 收到 BEL 闪边框）";
+                        on: root.cfg-visual-bell;
+                        toggled => { root.toggle-visual-bell(); }
+                    }
+
+                    Text {
+                        text: "视觉铃只画 1-2px 边框，不覆盖终端内容；非活动 Tab 仍用未读点/桌面通知。";
                         color: Palette.colors.muted;
                         font-size: 10px;
                         wrap: word-wrap;
