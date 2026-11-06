@@ -4,27 +4,31 @@
 //! 线程模型（严格对应冻结架构）：
 //!
 //! ```text
-//!  UI 线程 ──input(有界64)──┐
-//!                            ├──► actor 线程: Term + vte::Processor + damage
-//!  PTY 读线程 ──data(有界64)─┘         │
+//!  UI 线程 ──input(直接推入有界字节 backlog)──┐
+//!  actor 线程（鼠标编码/PtyWrite 回应）───────┤
+//!                                            ├──► PTY 写线程 ◄── write backlog
+//!  PTY 读线程 ──data(有界64)──► actor: Term + vte::Processor + damage
+//!                                       │
 //!                                       ├─ wake(容量1，可合并) ──► UI 重绘
 //!                                       ├─ events(有界256) ──────► 标题/bell/退出
 //!                                       └─ pull_req/pull_resp ──► UI 主动拉帧
-//!  PTY 写线程 ◄──write(有界256)── actor/PtyWrite 事件
 //! ```
 //!
 //! 关键点：
+//! - UI 的 `input()` 永不阻塞：直接进按字节数限界的写 backlog（16 MiB），
+//!   慢 shell 也只会在 backlog 满后明确丢弃并计数，不会把 UI/actor 拖死；
+//! - actor 只负责解析输出与编码鼠标，不再作为键盘输入的中转站；
 //! - PTY 读线程只做 `read` + 有界 `send`，无任何 UI 调用；
 //! - UI 事件走容量 1 的唤醒通道，输出洪峰只会被合并，不会堆积；
-//! - 帧数据由 UI 侧持有 `Box<Frame>` 往返复用，稳态零分配。
+//! - 帧数据由 UI 侧持有 `Box<Frame>` 往返复用，稳态零分配；`pull` 硬超时。
 
 use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::Dimensions;
@@ -35,8 +39,8 @@ use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::search::RegexSearch;
 use alacritty_terminal::term::{Config as TermConfig, Osc52, Term, TermDamage, TermMode};
 use alacritty_terminal::vte::ansi::{ClearMode, Handler, Processor, Rgb};
-use crossbeam_channel::{bounded, Receiver, Sender};
-use parking_lot::RwLock;
+use crossbeam_channel::{bounded, Receiver, SendTimeoutError, Sender, TrySendError};
+use parking_lot::{Condvar, Mutex, RwLock};
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtyPair, PtySize};
 
 use crate::event::{ClipboardSelection, CoreEvent, EventSink, PaneStats, WakeSignal};
@@ -48,10 +52,23 @@ use crate::sixel::{rewrite_da1, SixelEvent, SixelFilter, SixelImage};
 
 const READ_CHUNK: usize = 32 * 1024;
 const PTY_QUEUE_CHUNKS: usize = 64;
-const INPUT_QUEUE: usize = 64;
 const CTRL_QUEUE: usize = 64;
-const WRITE_QUEUE: usize = 256;
 const EVENT_QUEUE: usize = 256;
+
+/// PTY 写 backlog 的硬上限：慢 shell 不读 stdin 时，最多在内存里压这么多
+/// 尚未写进内核的字节；超过就丢弃新块并计数/限频日志。正常输入远小于此值。
+///
+/// 10 MiB 粘贴 + 后续按键也能完整落在 backlog 内，因此“慢 shell”不会立刻丢
+/// 正常输入；只有持续灌入超过 16 MiB 才进入明确的丢弃策略。
+const WRITE_BACKLOG_BYTES: usize = 16 * 1024 * 1024;
+/// backlog 的块数上限：防止大量 1 字节按键把 VecDeque 撑爆（正常键盘远小于此）。
+const WRITE_BACKLOG_CHUNKS: usize = 8192;
+/// UI 拉帧的硬超时：actor 忙/异常时返回“跳过本帧”，绝不无限等。
+const PULL_TIMEOUT: Duration = Duration::from_millis(100);
+/// copy/search/contents 这类同步问 actor 的调用上限；超时返回空结果而不是卡 UI。
+const CTRL_REPLY_TIMEOUT: Duration = Duration::from_millis(200);
+/// ctrl 通道投递上限：actor 忙时 UI 最多等这么久，超时丢弃并计数（不无限阻塞）。
+const CTRL_SEND_TIMEOUT: Duration = Duration::from_millis(50);
 
 /// 搜索命中（视口坐标）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -189,13 +206,107 @@ impl Dimensions for GridSize {
     }
 }
 
+/// PTY 写队列满/已关闭的两种结果。
+///
+/// `Full` 是真实背压（慢 shell 不读、backlog 到上限），必须计数并限频日志；
+/// `Closed` 是 PTY 已结束，静默忽略即可，不应再刷“丢弃”。
+enum PushError {
+    Full,
+    Closed,
+}
+
+/// PTY 写的独立有界 backlog：actor / EventListener 只做 O(1) push，永不阻塞。
+///
+/// 之前 actor 直接把输入 `send` 到有界(256)通道：慢 shell 不读 stdin 时
+/// pty-writer 阻塞在 `write_all`，通道一满 actor 就卡住，接着 input 通道被灌满，
+/// UI 线程的 `input()` 跟着无限阻塞。这里把“写不进内核”的字节留在**按字节数
+/// 限界**的队列里，由 pty-writer 单独消费；生产者永不碰阻塞写。
+struct WriteQueue {
+    state: Mutex<WriteQueueState>,
+    ready: Condvar,
+}
+
+struct WriteQueueState {
+    queue: VecDeque<Vec<u8>>,
+    bytes: usize,
+    closed: bool,
+}
+
+impl WriteQueue {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            state: Mutex::new(WriteQueueState {
+                queue: VecDeque::new(),
+                bytes: 0,
+                closed: false,
+            }),
+            ready: Condvar::new(),
+        })
+    }
+
+    /// 非阻塞入队；超过字节/块上限返回 `Full`（调用方计数+限频日志）。
+    fn push(&self, bytes: Vec<u8>) -> Result<(), PushError> {
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        let mut state = self.state.lock();
+        if state.closed {
+            return Err(PushError::Closed);
+        }
+        if state.queue.len() >= WRITE_BACKLOG_CHUNKS
+            || state.bytes.saturating_add(bytes.len()) > WRITE_BACKLOG_BYTES
+        {
+            return Err(PushError::Full);
+        }
+        state.bytes += bytes.len();
+        state.queue.push_back(bytes);
+        self.ready.notify_one();
+        Ok(())
+    }
+
+    /// pty-writer 消费：队列空且未关闭时在 Condvar 上等待（不占 CPU）。
+    fn pop(&self) -> Option<Vec<u8>> {
+        let mut state = self.state.lock();
+        loop {
+            if let Some(bytes) = state.queue.pop_front() {
+                state.bytes -= bytes.len();
+                return Some(bytes);
+            }
+            if state.closed {
+                return None;
+            }
+            self.ready.wait(&mut state);
+        }
+    }
+
+    fn close(&self) {
+        let mut state = self.state.lock();
+        state.closed = true;
+        state.queue.clear();
+        state.bytes = 0;
+        self.ready.notify_all();
+    }
+}
+
+/// PTY 写 backlog 到上限时的限频计数+日志。
+fn note_write_drop(stats: &PaneStats, bytes: usize) {
+    let chunks = stats.write_dropped_chunks.fetch_add(1, Ordering::Relaxed) + 1;
+    stats.write_dropped_bytes.fetch_add(bytes as u64, Ordering::Relaxed);
+    if chunks == 1 || chunks % 64 == 0 {
+        eprintln!(
+            "[pty] 写 backlog 已满（{} MiB），丢弃 {bytes} bytes（累计 {chunks} 块）；慢 shell 背压"
+            , WRITE_BACKLOG_BYTES / (1024 * 1024)
+        );
+    }
+}
+
 /// 事件监听器：只做「转发到有界通道」，绝不阻塞解析线程。
 #[derive(Clone)]
 struct Listener {
     wake: WakeSignal,
     events: EventSink,
-    pty_write: Sender<Vec<u8>>,
-    write_dropped: Arc<std::sync::atomic::AtomicU64>,
+    write_queue: Arc<WriteQueue>,
+    stats: Arc<PaneStats>,
     /// 当前调色板：OSC 4/10/11/12 查询要按主题回真实颜色。
     palette: Arc<RwLock<Palette>>,
     /// Sixel 开关：开启时把 alacritty 的 Primary DA 回应加上参数 4。
@@ -217,9 +328,11 @@ impl EventListener for Listener {
                 if let Some(da1) = rewrite_da1(&text, self.sixel.load(Ordering::Relaxed)) {
                     text = da1;
                 }
-                if self.pty_write.try_send(text.into_bytes()).is_err() {
-                    self.write_dropped
-                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if !text.is_empty() {
+                    let len = text.len();
+                    if let Err(PushError::Full) = self.write_queue.push(text.into_bytes()) {
+                        note_write_drop(&self.stats, len);
+                    }
                 }
             },
             Event::Exit | Event::ChildExit(_) => self.events.send(CoreEvent::Exited),
@@ -233,9 +346,9 @@ impl EventListener for Listener {
                     g: (rgb >> 8) as u8,
                     b: rgb as u8,
                 });
-                if self.pty_write.try_send(reply.into_bytes()).is_err() {
-                    self.write_dropped
-                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let len = reply.len();
+                if let Err(PushError::Full) = self.write_queue.push(reply.into_bytes()) {
+                    note_write_drop(&self.stats, len);
                 }
             },
             _ => {},
@@ -328,16 +441,24 @@ enum Ctrl {
     SearchClear,
     /// 取全部内容（回滚 + 视口），保存到文件用。
     Contents(Sender<Option<String>>),
-    Pull(Box<Frame>),
+    /// UI 拉帧：请求 ID 用于丢弃“上一帧超时后才回来”的迟到响应。
+    Pull {
+        id: u64,
+        frame: Box<Frame>,
+        /// 上一帧超时/跳帧后强制整屏重取，避免迟到响应消费 damage 造成漏画。
+        force_full: bool,
+    },
     PtyClosed,
     Shutdown,
 }
 
 /// UI 侧持有的单 pane 句柄。
 pub struct PaneHandle {
-    input_tx: Sender<Vec<u8>>,
+    /// 与 pty-writer 共享的有界字节 backlog：键盘/粘贴直接进入，不经过 actor，
+    /// 因此 actor 再慢也不会反压 UI 的输入。
+    write_queue: Arc<WriteQueue>,
     ctrl_tx: Sender<Ctrl>,
-    pull_rx: Receiver<Box<Frame>>,
+    pull_rx: Receiver<(u64, Box<Frame>)>,
     events_rx: Receiver<CoreEvent>,
     wake_rx: Receiver<()>,
     pub stats: Arc<PaneStats>,
@@ -350,6 +471,10 @@ pub struct PaneHandle {
     scroll: Arc<std::sync::atomic::AtomicU64>,
     /// Read Only：true 时 UI 输入/粘贴/鼠标上报都不写 PTY（选区/滚动仍走 ctrl）。
     read_only: Arc<std::sync::atomic::AtomicBool>,
+    /// 下一次拉帧的请求 ID（只由 UI 线程递增）。
+    pull_seq: AtomicU64,
+    /// 上一帧是否超时/跳帧；下一次 pull 用它强制整屏，保证不因迟到帧漏画。
+    pull_needs_full: AtomicBool,
     child: Box<dyn portable_pty::Child + Send + Sync>,
     #[allow(dead_code)]
     threads: Vec<JoinHandle<()>>,
@@ -362,13 +487,29 @@ impl PaneHandle {
         self.child.process_id()
     }
 
-    /// 送键盘输入。有界阻塞：宁可短暂背压，也不丢按键。
-    /// Read Only 时直接丢弃，连队列都不进（不阻塞 UI）。
+    /// 送键盘输入。**永不阻塞 UI**：直接进 16 MiB 有界写 backlog；只有 backlog
+    /// 满（极端慢 shell 持续不读）才丢弃新块并计数/限频日志。
+    ///
+    /// 正常按键/粘贴（单次 10 MiB 也只是一个队列块）不会丢。顺序保证：同一
+    /// 调用成块入队，跨调用按 UI 调用顺序 FIFO；保留下来的块顺序不乱。
+    /// Read Only 时直接丢弃，连队列都不进。
     pub fn input(&self, bytes: &[u8]) {
         if self.read_only() {
             return;
         }
-        let _ = self.input_tx.send(bytes.to_vec());
+        self.enqueue_input(bytes);
+    }
+
+    /// 入队一帧输入；返回 false = backlog 满（已计数）或 PTY 已关闭。
+    fn enqueue_input(&self, bytes: &[u8]) -> bool {
+        match self.write_queue.push(bytes.to_vec()) {
+            Ok(()) => true,
+            Err(PushError::Full) => {
+                note_write_drop(&self.stats, bytes.len());
+                false
+            },
+            Err(PushError::Closed) => false,
+        }
     }
 
     /// 非阻塞输入（满则返回 false），供高频粘贴等场景降级。
@@ -376,7 +517,28 @@ impl PaneHandle {
         if self.read_only() {
             return false;
         }
-        self.input_tx.try_send(bytes.to_vec()).is_ok()
+        self.enqueue_input(bytes)
+    }
+
+    /// 控制消息投递：最多等 [`CTRL_SEND_TIMEOUT`]，actor 忙/退出时丢弃并计数。
+    ///
+    /// 返回 false = 未投递。调用方对 copy/search/contents 直接走“超时=空结果”
+    /// 分支；滚动/选区等高频操作也可以安全丢弃（下一次事件会覆盖状态）。
+    fn send_ctrl(&self, ctrl: Ctrl) -> bool {
+        match self.ctrl_tx.send_timeout(ctrl, CTRL_SEND_TIMEOUT) {
+            Ok(()) => true,
+            Err(SendTimeoutError::Timeout(_)) | Err(SendTimeoutError::Disconnected(_)) => {
+                let n = self.stats.ctrl_send_timeouts.fetch_add(1, Ordering::Relaxed) + 1;
+                if n == 1 || n % 128 == 0 {
+                    eprintln!(
+                        "[pty] ctrl 队列投递超时（{}ms，累计 {} 次）；UI 不阻塞",
+                        CTRL_SEND_TIMEOUT.as_millis(),
+                        n
+                    );
+                }
+                false
+            },
+        }
     }
 
     /// 切换 Read Only。actor 侧也会检查同一个原子标志，已入队但未写的输入同样丢弃。
@@ -391,7 +553,7 @@ impl PaneHandle {
 
     /// 滚轮回滚：正数向上翻历史。
     pub fn scroll(&self, lines: i32) {
-        let _ = self.ctrl_tx.send(Ctrl::Scroll(lines));
+        self.send_ctrl(Ctrl::Scroll(lines));
     }
 
     /// 绝对滚动位置（0 = 底部/最新，`history` = 顶部/最旧）。
@@ -399,7 +561,7 @@ impl PaneHandle {
     /// 异步：发送后由 actor 在下一轮处理；UI 通过 [`Self::scroll_position`]
     /// 读取新位置并在唤醒后重绘。
     pub fn scroll_to(&self, offset: usize) {
-        let _ = self.ctrl_tx.send(Ctrl::ScrollTo(offset));
+        self.send_ctrl(Ctrl::ScrollTo(offset));
     }
 
     /// 回到底部（最新内容）；`scroll_on_keystroke` 的按键路径使用。
@@ -407,23 +569,23 @@ impl PaneHandle {
     /// 与 [`Self::scroll_to`] 一样只投递异步消息，不阻塞 UI；是否已经在底部
     /// 由调用方读 [`Self::scroll_position`] 判断。
     pub fn scroll_to_bottom(&self) {
-        let _ = self.ctrl_tx.send(Ctrl::ScrollTo(0));
+        self.send_ctrl(Ctrl::ScrollTo(0));
     }
 
     /// 运行时切换「输出即回底」策略（异步投递，不阻塞 UI）。
     pub fn set_scroll_on_output(&self, enabled: bool) {
-        let _ = self.ctrl_tx.send(Ctrl::SetScrollOnOutput(enabled));
+        self.send_ctrl(Ctrl::SetScrollOnOutput(enabled));
     }
 
     /// 运行时开关 Sixel（异步）。关闭后 actor 不再解码/渲染图片，并清除已有图；
     /// 同时 Listener 的 DA1 回应不再包含参数 4。
     pub fn set_sixel(&self, enabled: bool) {
-        let _ = self.ctrl_tx.send(Ctrl::SetSixel(enabled));
+        self.send_ctrl(Ctrl::SetSixel(enabled));
     }
 
     /// 运行时切换 Sixel 图片是否跟随滚动历史（异步）。
     pub fn set_sixel_scrolling(&self, scrolling: bool) {
-        let _ = self.ctrl_tx.send(Ctrl::SetSixelScrolling(scrolling));
+        self.send_ctrl(Ctrl::SetSixelScrolling(scrolling));
     }
 
     /// 非阻塞滚动位置查询：只读 actor 维护的原子快照。
@@ -483,7 +645,7 @@ impl PaneHandle {
         if self.read_only() {
             return;
         }
-        let _ = self.ctrl_tx.send(Ctrl::Mouse(ev));
+        self.send_ctrl(Ctrl::Mouse(ev));
     }
 
     /// 回写 OSC 52 查询结果（`OSC 52;Pc;<base64> ST`）到 PTY。
@@ -497,35 +659,35 @@ impl PaneHandle {
 
     /// 鼠标按下：在视口坐标 (line, col) 开始选区。
     pub fn selection_start(&self, line: u16, col: u16) {
-        let _ = self.ctrl_tx.send(Ctrl::SelectionStart { line, col });
+        self.send_ctrl(Ctrl::SelectionStart { line, col });
     }
 
     pub fn selection_extend(&self, line: u16, col: u16) {
-        let _ = self.ctrl_tx.send(Ctrl::SelectionExtend { line, col });
+        self.send_ctrl(Ctrl::SelectionExtend { line, col });
     }
 
     pub fn selection_clear(&self) {
-        let _ = self.ctrl_tx.send(Ctrl::SelectionClear);
+        self.send_ctrl(Ctrl::SelectionClear);
     }
 
     /// 清除选区。
     pub fn clear_selection(&self) {
-        let _ = self.ctrl_tx.send(Ctrl::ClearSelection);
+        self.send_ctrl(Ctrl::ClearSelection);
     }
 
     /// 选中当前视口（不含回滚历史）。
     pub fn select_all(&self) {
-        let _ = self.ctrl_tx.send(Ctrl::SelectAll);
+        self.send_ctrl(Ctrl::SelectAll);
     }
 
     /// 选中视口内第 `line` 行（双击选行；`line` 是视口坐标，0 = 顶行）。
     pub fn select_line(&self, line: i32) {
-        let _ = self.ctrl_tx.send(Ctrl::SelectLine(line));
+        self.send_ctrl(Ctrl::SelectLine(line));
     }
 
     /// 清屏 + 清回滚；下一次拉帧强制整屏。
     pub fn clear_screen(&self) {
-        let _ = self.ctrl_tx.send(Ctrl::ClearScreen);
+        self.send_ctrl(Ctrl::ClearScreen);
     }
 
     /// 复位终端状态（等同 RIS）：清屏、清回滚、重置模式/光标/字符集/滚动区等。
@@ -534,26 +696,33 @@ impl PaneHandle {
     /// 与 [`Self::reset_and_clear`] 在当前上游版本等价；保留两个入口是为了菜单/
     /// 命令语义与未来上游 API 对齐。
     pub fn reset(&self) {
-        let _ = self.ctrl_tx.send(Ctrl::Reset);
+        self.send_ctrl(Ctrl::Reset);
     }
 
     /// 复位并清空回滚缓冲（显式语义；当前与 [`Self::reset`] 等价）。
     pub fn reset_and_clear(&self) {
-        let _ = self.ctrl_tx.send(Ctrl::ResetAndClear);
+        self.send_ctrl(Ctrl::ResetAndClear);
     }
 
-    /// 取当前选区文本（阻塞等 actor 回复）。
+    /// 取当前选区文本（最多等 actor 200ms；超时返回 None，不阻塞 UI）。
     pub fn copy_selection(&self) -> Option<String> {
         let (tx, rx) = bounded(1);
-        if self.ctrl_tx.send(Ctrl::CopySelection(tx)).is_err() {
+        if !self.send_ctrl(Ctrl::CopySelection(tx)) {
             return None;
         }
-        rx.recv_timeout(std::time::Duration::from_millis(500)).ok().flatten()
+        match rx.recv_timeout(CTRL_REPLY_TIMEOUT) {
+            Ok(text) => text,
+            Err(_) => {
+                self.stats.ctrl_reply_timeouts.fetch_add(1, Ordering::Relaxed);
+                eprintln!("[pty] copy_selection 回复超时（{}ms），本次跳过", CTRL_REPLY_TIMEOUT.as_millis());
+                None
+            },
+        }
     }
 
     /// 清除搜索高亮。
     pub fn search_clear(&self) {
-        let _ = self.ctrl_tx.send(Ctrl::SearchClear);
+        self.send_ctrl(Ctrl::SearchClear);
     }
 
     /// 搜索下一个/上一个命中；命中会滚动到可见并返回视口内高亮区间。
@@ -572,50 +741,106 @@ impl PaneHandle {
         options: SearchOptions,
     ) -> Result<Option<SearchHit>, String> {
         let (tx, rx) = bounded(1);
-        if self
-            .ctrl_tx
-            .send(Ctrl::Search {
-                query: query.to_string(),
-                forward,
-                options,
-                reply: tx,
-            })
-            .is_err()
-        {
+        if !self.send_ctrl(Ctrl::Search {
+            query: query.to_string(),
+            forward,
+            options,
+            reply: tx,
+        }) {
             return Ok(None);
         }
-        match rx.recv_timeout(std::time::Duration::from_millis(500)) {
+        match rx.recv_timeout(CTRL_REPLY_TIMEOUT) {
             Ok(result) => result,
-            Err(_) => Ok(None),
+            Err(_) => {
+                self.stats.ctrl_reply_timeouts.fetch_add(1, Ordering::Relaxed);
+                eprintln!("[pty] search 回复超时（{}ms），本次无结果", CTRL_REPLY_TIMEOUT.as_millis());
+                Ok(None)
+            },
         }
     }
 
-    /// 取回滚 + 视口全部文本（阻塞等 actor 回复；最多 500ms）。
+    /// 取回滚 + 视口全部文本（最多等 actor 200ms；超时返回 None）。
     pub fn contents(&self) -> Option<String> {
         let (tx, rx) = bounded(1);
-        if self.ctrl_tx.send(Ctrl::Contents(tx)).is_err() {
+        if !self.send_ctrl(Ctrl::Contents(tx)) {
             return None;
         }
-        rx.recv_timeout(std::time::Duration::from_millis(500)).ok().flatten()
+        match rx.recv_timeout(CTRL_REPLY_TIMEOUT) {
+            Ok(text) => text,
+            Err(_) => {
+                self.stats.ctrl_reply_timeouts.fetch_add(1, Ordering::Relaxed);
+                eprintln!("[pty] contents 回复超时（{}ms），本次跳过", CTRL_REPLY_TIMEOUT.as_millis());
+                None
+            },
+        }
     }
 
     /// 切换配色：actor 侧置 full damage，下一次拉帧整屏重取。
     pub fn set_theme(&self, palette: Palette) {
-        let _ = self.ctrl_tx.send(Ctrl::SetTheme(palette));
+        self.send_ctrl(Ctrl::SetTheme(palette));
     }
 
     pub fn resize(&mut self, cols: u16, rows: u16) {
         self.grid = GridSize::new(cols as usize, rows as usize);
-        let _ = self.ctrl_tx.send(Ctrl::Resize { cols, rows });
+        self.send_ctrl(Ctrl::Resize { cols, rows });
     }
 
     /// 主动拉取一帧：把旧缓冲送进去，拿回填充后的同一块内存。
+    ///
+    /// 最多等 [`PULL_TIMEOUT`]；actor 忙/异常时返回空帧并标记 [`Frame::skipped`]，
+    /// 由 app 跳过本帧重绘（旧画面留在屏幕上）。下一次 pull 强制整屏，
+    /// 迟到响应消费掉的 damage 不会导致漏画。UI 线程永不无限等 PTY。
     pub fn pull(&self, frame: Box<Frame>) -> Box<Frame> {
-        if self.ctrl_tx.send(Ctrl::Pull(frame)).is_err() {
-            // actor 已退出：返回空帧，避免 UI 卡死
-            return Box::new(Frame::new(self.grid.cols, self.grid.rows));
+        let id = self.pull_seq.fetch_add(1, Ordering::SeqCst) + 1;
+        let force_full = self.pull_needs_full.swap(false, Ordering::SeqCst);
+        if !self.send_ctrl(Ctrl::Pull {
+            id,
+            frame,
+            force_full,
+        }) {
+            // actor 已退出/ctrl 队列堵住：返回跳过帧，UI 不阻塞。
+            self.stats.pull_timeouts.fetch_add(1, Ordering::Relaxed);
+            return self.skipped_frame();
         }
-        self.pull_rx.recv().unwrap_or_else(|_| Box::new(Frame::new(self.grid.cols, self.grid.rows)))
+
+        let deadline = Instant::now() + PULL_TIMEOUT;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            match self.pull_rx.recv_timeout(remaining) {
+                Ok((rid, mut filled)) => {
+                    if rid == id {
+                        filled.skipped = false;
+                        return filled;
+                    }
+                    // 上一帧超时后才回来的响应：丢弃，它的 damage 由 force_full 补回。
+                    self.stats.pull_stale_responses.fetch_add(1, Ordering::Relaxed);
+                },
+                Err(_) => break,
+            }
+        }
+
+        self.pull_needs_full.store(true, Ordering::SeqCst);
+        let timeouts = self.stats.pull_timeouts.fetch_add(1, Ordering::Relaxed) + 1;
+        self.stats.pull_skipped_frames.fetch_add(1, Ordering::Relaxed);
+        if timeouts == 1 || timeouts % 128 == 0 {
+            eprintln!(
+                "[pty] 拉帧超时 {}ms，跳过本帧（累计 {} 次）；UI 不阻塞",
+                PULL_TIMEOUT.as_millis(),
+                timeouts
+            );
+        }
+        self.skipped_frame()
+    }
+
+    /// 超时/actor 退出时交给 UI 的占位帧：`skipped = true`，app 不应重绘。
+    fn skipped_frame(&self) -> Box<Frame> {
+        let mut empty = Box::new(Frame::new(self.grid.cols, self.grid.rows));
+        empty.skipped = true;
+        empty.full = true;
+        // 帧内容不可用，但模式位是 UI 的异步快照：保留它，避免 skip 期间
+        // 粘贴误判 bracketed paste 等模式。
+        empty.mode = self.mode_bits.load(Ordering::Relaxed);
+        empty
     }
 
     pub fn new_frame(&self) -> Box<Frame> {
@@ -651,14 +876,14 @@ impl PaneHandle {
     }
 
     pub fn kill(&mut self) {
-        let _ = self.ctrl_tx.send(Ctrl::Shutdown);
+        self.send_ctrl(Ctrl::Shutdown);
         let _ = self.child.kill();
     }
 }
 
 impl Drop for PaneHandle {
     fn drop(&mut self) {
-        let _ = self.ctrl_tx.send(Ctrl::Shutdown);
+        self.send_ctrl(Ctrl::Shutdown);
         let _ = self.child.kill();
     }
 }
@@ -711,24 +936,22 @@ pub fn spawn(config: PaneConfig) -> std::io::Result<PaneHandle> {
         .map_err(|e| std::io::Error::other(e.to_string()))?;
 
     // ---- 有界通道 ----
-    let (input_tx, input_rx) = bounded::<Vec<u8>>(INPUT_QUEUE);
     let (pty_tx, pty_rx) = bounded::<Vec<u8>>(PTY_QUEUE_CHUNKS);
     let (ctrl_tx, ctrl_rx) = bounded::<Ctrl>(CTRL_QUEUE);
-    let (pull_tx, pull_rx) = bounded::<Box<Frame>>(1);
-    let (write_tx, write_rx) = bounded::<Vec<u8>>(WRITE_QUEUE);
+    let (pull_tx, pull_rx) = bounded::<(u64, Box<Frame>)>(1);
     let (events_sink, events_rx) = EventSink::new(EVENT_QUEUE);
     let (wake_signal, wake_rx) = WakeSignal::new();
 
     let stats = Arc::new(PaneStats::default());
-    let write_dropped = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let write_queue = WriteQueue::new();
 
     let shared_palette = Arc::new(RwLock::new(config.palette.clone()));
     let sixel_enabled = Arc::new(AtomicBool::new(config.sixel));
     let listener = Listener {
         wake: wake_signal,
         events: events_sink,
-        pty_write: write_tx.clone(),
-        write_dropped: write_dropped.clone(),
+        write_queue: write_queue.clone(),
+        stats: stats.clone(),
         palette: shared_palette.clone(),
         sixel: sixel_enabled.clone(),
     };
@@ -756,15 +979,18 @@ pub fn spawn(config: PaneConfig) -> std::io::Result<PaneHandle> {
         })?;
 
     // ---- PTY 写线程 ----
+    let writer_queue = write_queue.clone();
     let writer_thread = thread::Builder::new()
         .name("pty-writer".into())
         .spawn(move || {
-            while let Ok(bytes) = write_rx.recv() {
+            while let Some(bytes) = writer_queue.pop() {
                 if writer.write_all(&bytes).is_err() {
                     break;
                 }
                 let _ = writer.flush();
             }
+            // 写端结束：后续 push 直接 Closed（不再堆积/刷日志）。
+            writer_queue.close();
         })?;
 
     // ---- actor 线程 ----
@@ -799,17 +1025,17 @@ pub fn spawn(config: PaneConfig) -> std::io::Result<PaneHandle> {
         cell_height: config.cell_height.max(1),
         images: ImageStore::default(),
         image_clear: ImageClearScanner::default(),
-        input_rx,
         pty_rx,
         ctrl_rx,
         pull_tx,
+        pull_rx: pull_rx.clone(),
         palette,
         stats: stats_actor,
         master,
         size,
         wake: listener.wake.clone(),
         events: listener.events.clone(),
-        write_tx: write_tx.clone(),
+        write_queue: write_queue.clone(),
         mode_bits: mode_bits.clone(),
         cursor_bits: cursor_bits.clone(),
         scroll: scroll.clone(),
@@ -826,7 +1052,7 @@ pub fn spawn(config: PaneConfig) -> std::io::Result<PaneHandle> {
         .spawn(move || actor.run())?;
 
     Ok(PaneHandle {
-        input_tx,
+        write_queue: write_queue.clone(),
         ctrl_tx,
         pull_rx,
         events_rx,
@@ -836,6 +1062,8 @@ pub fn spawn(config: PaneConfig) -> std::io::Result<PaneHandle> {
         cursor_bits,
         scroll,
         read_only,
+        pull_seq: AtomicU64::new(0),
+        pull_needs_full: AtomicBool::new(false),
         child,
         threads: vec![reader_thread, writer_thread, actor_thread],
         grid: size,
@@ -904,17 +1132,20 @@ struct Actor {
     images: ImageStore,
     /// 清屏/备用屏切换检测：这些序列让 alacritty 清屏，图片也必须一起清。
     image_clear: ImageClearScanner,
-    input_rx: Receiver<Vec<u8>>,
     pty_rx: Receiver<Vec<u8>>,
     ctrl_rx: Receiver<Ctrl>,
-    pull_tx: Sender<Box<Frame>>,
+    pull_tx: Sender<(u64, Box<Frame>)>,
+    /// 拉帧响应通道的接收端克隆：仅在容量 1 被迟到响应占住时由 actor 自行排空，
+    /// 保证 actor 永远不因 UI 超时而阻塞。
+    pull_rx: Receiver<(u64, Box<Frame>)>,
     palette: Arc<RwLock<Palette>>,
     stats: Arc<PaneStats>,
     master: Box<dyn MasterPty + Send>,
     size: GridSize,
     wake: WakeSignal,
     events: EventSink,
-    write_tx: Sender<Vec<u8>>,
+    /// 与 Listener 共享的 PTY 写 backlog（actor 只 push，永不阻塞）。
+    write_queue: Arc<WriteQueue>,
     /// 模式位快照，供 UI 无阻塞查询（见 [`PaneHandle::mode`]）。
     mode_bits: Arc<std::sync::atomic::AtomicU32>,
     /// 光标快照，供 IME/焦点同步（不依赖 UI 拉帧）。
@@ -1148,21 +1379,23 @@ impl ImageStore {
     }
 }
 
+impl Drop for Actor {
+    fn drop(&mut self) {
+        // actor 退出（Shutdown / ctrl 通道断开）时唤醒并结束 pty-writer，避免
+        // 慢 shell 场景下 writer 永远等在 Condvar 上。
+        self.write_queue.close();
+    }
+}
+
 impl Actor {
     fn run(mut self) {
-        let input = self.input_rx.clone();
         let pty = self.pty_rx.clone();
         let ctrl = self.ctrl_rx.clone();
 
+        // 键盘/粘贴不再经过 actor：UI 直接推写 backlog，因此这里没有 input 分支。
         loop {
-            // 输入优先：任何洪峰下按键都不排在几 MB 数据后面。
-            while let Ok(bytes) = input.try_recv() {
-                self.write_input(&bytes);
-            }
-
             if self.pty_closed {
                 crossbeam_channel::select! {
-                    recv(input) -> msg => if let Ok(b) = msg { self.write_input(&b); },
                     recv(ctrl) -> msg => match msg {
                         Ok(c) => if !self.handle(c) { break },
                         Err(_) => break,
@@ -1170,7 +1403,6 @@ impl Actor {
                 }
             } else {
                 crossbeam_channel::select! {
-                    recv(input) -> msg => if let Ok(b) = msg { self.write_input(&b); },
                     recv(ctrl) -> msg => match msg {
                         Ok(c) => if !self.handle(c) { break },
                         Err(_) => break,
@@ -1202,14 +1434,16 @@ impl Actor {
         );
     }
 
-    /// 用户输入必须写进 PTY（交给 shell 处理），绝不能喂给 VT 解析器。
+    /// actor 侧编码后的输入（鼠标上报等）写进 PTY；绝不能喂给 VT 解析器。
+    ///
+    /// 只做有界 backlog 的 O(1) push：慢 shell 时最多压 16 MiB，超过则丢弃新块
+    /// 并计数/限频日志。actor 绝不在这里阻塞；键盘输入由 UI 直接推同一队列。
     fn write_input(&self, bytes: &[u8]) {
         if self.read_only.load(std::sync::atomic::Ordering::Relaxed) {
             return;
         }
-        if self.write_tx.try_send(bytes.to_vec()).is_err() {
-            // 有界队列满：按键不能丢，退化为阻塞发送
-            let _ = self.write_tx.send(bytes.to_vec());
+        if let Err(PushError::Full) = self.write_queue.push(bytes.to_vec()) {
+            note_write_drop(&self.stats, bytes.len());
         }
     }
 
@@ -1446,12 +1680,33 @@ impl Actor {
 
     fn handle(&mut self, ctrl: Ctrl) -> bool {
         match ctrl {
-            Ctrl::Pull(mut frame) => {
+            Ctrl::Pull {
+                id,
+                mut frame,
+                force_full,
+            } => {
+                // 上一帧超时后必须整屏重取：迟到的 Pull 可能已经消费了 damage。
+                if force_full {
+                    self.force_full = true;
+                }
                 self.fill(&mut frame);
                 // UI 正在等这一帧；先发布同一时刻的滚动快照，避免 UI 拿到帧后
                 // 读到上一轮的 offset（滚动条会滞后一帧）。容量 1，不会堆积。
                 self.sync_scroll();
-                let _ = self.pull_tx.send(frame);
+                let mut frame = frame;
+                loop {
+                    match self.pull_tx.try_send((id, frame)) {
+                        Ok(()) => break,
+                        Err(TrySendError::Full(returned)) => {
+                            // UI 拉帧超时后旧响应还占着容量 1；丢弃旧帧，保留最新帧。
+                            frame = returned.1;
+                            let _ = self.pull_rx.try_recv();
+                            self.stats.pull_stale_responses.fetch_add(1, Ordering::Relaxed);
+                        },
+                        // UI 已退出：没人收帧，直接丢弃，绝不在 actor 里阻塞。
+                        Err(TrySendError::Disconnected(_)) => break,
+                    }
+                }
                 true
             },
             Ctrl::Scroll(lines) => {
@@ -1742,6 +1997,7 @@ pub fn fill_frame<T: EventListener>(
     frame.ensure_size(cols, rows);
 
     frame.generation += 1;
+    frame.skipped = false;
     frame.damage.clear();
     frame.full = false;
 
@@ -2018,5 +2274,32 @@ mod tests {
         }
         assert_eq!(pos.offset_for_thumb_top(0.0, min), 500);
         assert_eq!(pos.offset_for_thumb_top(1.0, min), 0);
+    }
+
+    #[test]
+    fn write_queue_is_fifo_bounded_and_close_wakes_consumer() {
+        let queue = WriteQueue::new();
+        assert!(queue.push(b"first".to_vec()).is_ok());
+        assert!(queue.push(b"second".to_vec()).is_ok());
+        assert_eq!(queue.pop().as_deref(), Some(&b"first"[..]));
+        assert_eq!(queue.pop().as_deref(), Some(&b"second"[..]));
+
+        // 字节上限：塞满 16 MiB 后下一条必须明确 Full，而不是无限增长/阻塞。
+        assert!(queue.push(vec![1u8; WRITE_BACKLOG_BYTES]).is_ok());
+        assert!(matches!(queue.push(vec![2u8]), Err(PushError::Full)));
+        // 关闭后消费者立即被唤醒；生产者得到 Closed（静默，不刷丢弃日志）。
+        queue.close();
+        assert!(queue.pop().is_none());
+        assert!(matches!(queue.push(vec![3u8]), Err(PushError::Closed)));
+    }
+
+    #[test]
+    fn write_queue_chunk_cap_protects_against_tiny_message_flood() {
+        let queue = WriteQueue::new();
+        for _ in 0..WRITE_BACKLOG_CHUNKS {
+            assert!(queue.push(vec![1u8]).is_ok());
+        }
+        assert!(matches!(queue.push(vec![2u8]), Err(PushError::Full)));
+        queue.close();
     }
 }

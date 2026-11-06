@@ -1596,3 +1596,75 @@ cargo bench -p tervo-core --bench pty_throughput
 - **限制**：没有真正把 Settings 作为 `workspace::Tab`（这是刻意选择，避免改 PTY/
   会话模型）；设置页无字体族/行距项；搜索跳到卡片而不是单个控件；键盘 Tab 焦点
   遍历仍有限；legacy 是同一套控件换 modal 呈现，不是保留旧代码逐像素复刻。
+
+### 2026-11-06 · P0 UI 阻塞加固：PTY 写 backlog + SFTP 10s 超时（feat/p0-hardening）
+
+- **范围**：只修 Codex 只读审计的 P0 两项（PTY 输入/拉帧、SFTP 元数据同步），顺带把
+  `copy_selection/search_with/contents` 的 500ms 同步等待压到 200ms。不改默认配置/UI 布局，
+  不碰 Sixel/emoji/GPU/resize；未合入 master，提交在 `feat/p0-hardening`。
+- **问题 1（PTY）**：旧 `PaneHandle::input()` 用有界(64) `send` 阻塞；actor 的
+  `write_input()` 在写队列满时退化为阻塞 `send`；`pull()` 无超时 `recv()`。慢 reader
+  时 pty-writer 阻塞在 `write_all` → actor 阻塞 → input 通道满 → UI 线程无限等。
+- **修复 1**：
+  - 键盘/粘贴改为 UI 直接推 **按字节限界的写 backlog**（16 MiB / 8192 块，
+    `crates/core/src/pane.rs::WriteQueue`），pty-writer 用 Condvar 消费；
+    生产者只做 `try push`，actor 不再做键盘中转。超限才丢弃新块并计数
+    （`PaneStats::write_dropped_*`），日志限频（首块/每 64 块）。
+  - `pull()` 100ms `recv_timeout`；超时返回 `Frame::skipped` 空占位，app 跳过重绘；
+    下一次 pull 带 `force_full` 整屏补画，迟到响应按请求 ID 丢弃（actor 侧收到
+    `Ctrl::Pull{id,force_full}`，迟到帧 `try_send` 满时自排空，绝不在 actor 阻塞）。
+  - 所有 ctrl 投递改为 50ms `send_timeout`（超时计数）；copy/search/contents
+    回复上限 500ms → 200ms。
+- **问题 2（SFTP）**：`SftpTarget::run()` 用 `wait_with_output()` 无超时；list/mkdir/
+  rename/delete 在 Slint 回调里同步执行，远端卡死 = 窗口冻结。
+- **修复 2**：
+  - `run_command_with_timeout`：spawn 后 `try_wait` 轮询 + 截止时间；超时 kill
+    **整个进程组**（`process_group(0)` + `libc::kill(-pid)`，连带 sftp 拉起的 ssh），
+    reader 线程走通道 + 有限宽限，不让重孙进程把 join 挂死。
+  - 默认 `SFTP_TIMEOUT=10s`；错误文案 `sftp 超时（10s），已终止子进程`。
+  - 新增 `SftpCommand`/`SftpOutcome`/`SftpOpJob`：Slint 回调只 `start` 后台线程，
+    100ms timer + 400ms poll 非阻塞收结果；list/mkdir/rename/rm 全部后台化；
+    `rm`→`rmdir` 回退共享同一 deadline，不会 20s。
+  - 操作期间 `sftp_busy` 阻止并发子进程；传输完成后的列表刷新仍走同一后台任务。
+- **前/后证据（临时 probe，现已固化为 `crates/core/examples/p0_blocking_probe.rs`）**：
+  慢 reader（每 10ms 读 1 字节）+ 2000×1KiB 灌入：
+  - master `a82ac52` 同源探针：`pull_blocked=true (no frame within 2000ms)`、
+    `input_blocked=true (2000 chunks did not return within 2100ms)`；
+  - 修复后：`pull_done elapsed_ms=0.4`、`input_done elapsed_ms=2.0 worst_ms=0.134`，
+    无丢弃（2 MiB < 16 MiB）；10 MiB 单次粘贴由压力测试逐字节校验。
+  - SFTP 旧实现（master 快照 + 假 `sftp`=`exec sleep 30`）：`sftp_run_blocked=true
+    (no result within 2000ms)`；修复后同一场景 300ms 测试超时并返回 `sftp 超时
+    （300ms），已终止子进程`，默认 10s 由 :133 GUI e2e 验证。
+  - 压力测试（`crates/core/tests/p0_backpressure.rs`）：
+    - 慢 shell + 8 MiB 输出洪峰 + 10 MiB 粘贴：`worst_input≈0.8ms`、
+      `worst_pull≈0.15ms`，文件与粘贴内容**逐字节相等**（顺序/不丢/无 PTY 转换）；
+    - 完全不读的 shell 灌 20 MiB：16 MiB 后明确丢弃 3 MiB（计数+首条日志），
+      input/pull 均 <250ms，进程不卡；
+    - backlog 饱和时 copy/search/contents：copy≈0.24ms、search≈1.5ms、
+      contents≈0.22ms（上限 200ms）；
+    - actor 退出后 `pull()` 在 50ms ctrl 投递超时后返回 `skipped`（<300ms）。
+- **SFTP GUI 证据（Xvfb :133，`scripts/e2e_p0_blocking.sh`）**：假 `sftp` 写 pid 后
+  `exec sleep 30`；点击面板 List 后 10034ms 返回 `sftp 超时（10s），已终止子进程`，
+  app 进程存活，假 sftp pid 已被 kill；期间再次打开 TabBar 菜单并执行 New Tab
+  成功，证明窗口事件循环未冻结。日志摘要
+  `[sftp] 后台操作完成: list / 失败: sftp 超时（10s），已终止子进程`。
+- **测试**：
+  - `cargo test -p tervo-core`：**90 lib + 63 integration**（新增 p0_backpressure 4、
+    WriteQueue 2）；`cargo test -p tervo-app --bin tervo`：**281 passed**（基线 277，
+    新增元数据超时 4 例）。
+  - `cargo test --workspace --locked`：**474 passed, 0 failed**（app 281 + core 153 +
+    xclick/xdrop/xkey/xwin 40）；Xvfb :133 的 SFTP e2e 全 PASS。
+  - 启动冒烟（Xvfb :133，winit-software）：`READY TIMING total_us=217295`、
+    `FIRST_DAMAGE_US 252680`，无 panic。
+  - 既有键盘/粘贴/拉帧/搜索/复制/选区/OSC52/Sixel/mouse-report 回归全绿。
+- **限制/风险**：
+  - 16 MiB 写 backlog 是明确上限：持续灌入超过上限会丢弃**新块**（计数+限频日志），
+    极端慢 shell 下不保证全部字节送达；10 MiB 正常粘贴有覆盖。
+  - ctrl（resize/theme/selection 等）在 actor 极端忙时可能 50ms 投递超时被丢弃；
+    下一次 UI 操作/重绘会恢复，但 resize 极端情况下可能与 actor 网格短暂不一致。
+  - SFTP 元数据命令没有独立 Cancel 按钮，只能等 10s 硬超时；大目录/慢链路可能在
+    10s 被截断，需要用户重试。`rm`→`rmdir` 回退共享 10s，不会双倍等待。
+  - Vault Argon2 仍同步在 UI 回调里（本轮未动）：`Vault::unlock(&mut self)` 接口和
+    密钥状态迁移需要单独设计 worker/状态机，属于可选项，未为赶 P0 冒险改接口。
+  - 未改默认值/UI 布局/P1（keyboard/search/url/settings/Sixel/emoji/GPU/resize）；
+    真实 50 MiB/s 零丢字节压测与远端大目录（>10s）实测未做。
