@@ -7,9 +7,20 @@
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use tervo_core::CursorShape;
 
 /// 当前 Profile 结构版本（v2 引入 kind 与连接字段）。
+///
+/// v2 的外观字段（font_size/theme/cursor_*/scrollback）是 **additive** 的：
+/// 旧版程序读到新文件只会忽略不认识的键，因此不 bump 版本（bump 会让旧版
+/// 把整个 profiles.toml 当成“未来版本”丢弃）。旧文件缺这些键时 serde
+/// default 补 `None`（= 继承全局配置），v1 迁移路径保持不变。
 pub const VERSION: u32 = 2;
+
+/// Profile 允许的字号范围，与设置页/配置的 8–40 保持一致。
+pub const MIN_FONT_SIZE: f32 = 8.0;
+/// 见 [`MIN_FONT_SIZE`]。
+pub const MAX_FONT_SIZE: f32 = 40.0;
 
 /// 一个本地 Profile：决定新 Tab 用什么 shell / 参数 / 起始目录 / 环境变量。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -42,6 +53,18 @@ pub struct Profile {
     // ---- serial ----
     pub serial_port: String,
     pub baud: u32,
+    // ---- 外观（None / 空 = 继承全局 Config；对所有 kind 生效）----
+    /// 该 Profile 打开的 pane 使用的字号；`None` = 继承 `config.font_size`。
+    pub font_size: Option<f32>,
+    /// 主题 id（`auto` / 内置主题 id / `custom:<stem>`）；`None` = 继承
+    /// `config.theme`。未知 id 在打开时回退当前全局主题（不改写 Profile）。
+    pub theme: Option<String>,
+    /// `block` | `underline` | `ibeam`；`None` = 继承 `config.cursor_shape`。
+    pub cursor_shape: Option<String>,
+    /// `on` | `off` | `system`；`None` = 继承 `config.cursor_blink`。
+    pub cursor_blink: Option<String>,
+    /// 历史缓冲行数；`None` = 继承 `config.scrollback` / `scrollback_unlimited`。
+    pub scrollback: Option<usize>,
 }
 
 /// 校验一条本地转发规格：`本地端口:主机:端口`，端口 1–65535。
@@ -61,6 +84,15 @@ pub fn validate_forward(spec: &str) -> Result<(), String> {
 
 /// 支持的 Profile 类型（字符串值即配置里的 `kind`）。
 pub const KINDS: [&str; 4] = ["local", "ssh", "serial", "telnet"];
+
+/// 光标形状是否是可识别的别名（与 [`CursorShape::from_name`] 的接受集合同步）。
+fn known_cursor_shape(name: &str) -> bool {
+    matches!(
+        name.trim().to_ascii_lowercase().replace(['_', ' '], "-").as_str(),
+        "block" | "underline" | "under-line" | "ibeam" | "i-beam" | "beam" | "bar"
+            | "hollow-block" | "hollow" | "hidden" | "none"
+    )
+}
 
 pub fn default_kind() -> String {
     "local".to_string()
@@ -121,11 +153,87 @@ impl Default for Profile {
             local_forwards: Vec::new(),
             serial_port: String::new(),
             baud: 115200,
+            font_size: None,
+            theme: None,
+            cursor_shape: None,
+            cursor_blink: None,
+            scrollback: None,
         }
     }
 }
 
 impl Profile {
+    /// 归一化外观字段：去空白、空串 → `None`（继承全局）、字号夹取到 8–40。
+    ///
+    /// 校验失败的原始值（例如 `font_size = 0`）会在 [`Profile::validate`] 里被
+    /// 拒绝；这里只做“读盘后恢复到可运行状态”的兜底，不静默改写用户文件。
+    pub fn normalize_appearance(&mut self) {
+        self.font_size = self
+            .font_size
+            .filter(|v| v.is_finite() && *v > 0.0)
+            .map(|v| {
+                let clamped = v.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE);
+                (clamped * 10.0).round() / 10.0
+            });
+        self.theme = self
+            .theme
+            .take()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        self.cursor_shape = self
+            .cursor_shape
+            .take()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        self.cursor_blink = self
+            .cursor_blink
+            .take()
+            .map(|s| s.trim().to_ascii_lowercase())
+            .filter(|s| !s.is_empty());
+        self.scrollback = self.scrollback.filter(|n| *n > 0);
+    }
+
+    /// 有效字号；`None` = 继承全局 `config.font_size`。
+    pub fn effective_font_size(&self) -> Option<f32> {
+        self.font_size
+            .filter(|v| v.is_finite() && *v > 0.0)
+            .map(|v| v.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE))
+    }
+
+    /// 有效主题 id；空串/空白视为继承全局。
+    pub fn effective_theme(&self) -> Option<&str> {
+        self.theme.as_deref().map(str::trim).filter(|s| !s.is_empty())
+    }
+
+    /// 有效光标形状；未知别名按 [`CursorShape::from_name`] 回退 block。
+    pub fn effective_cursor_shape(&self) -> Option<CursorShape> {
+        self.effective_cursor_shape_name()
+            .map(CursorShape::from_name)
+    }
+
+    /// 规范化后的光标形状名（供 UI/测试展示）。
+    pub fn effective_cursor_shape_name(&self) -> Option<&str> {
+        self.cursor_shape
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    }
+
+    /// 有效光标闪烁：`Some(true)` 闪、`Some(false)` 不闪、`None` 继承全局。
+    /// `system` 表示交给全局配置（等同 `None`）。
+    pub fn effective_cursor_blink(&self) -> Option<bool> {
+        match self.cursor_blink.as_deref().map(str::trim).map(str::to_ascii_lowercase).as_deref() {
+            Some("on" | "true" | "yes" | "1") => Some(true),
+            Some("off" | "false" | "no" | "0") => Some(false),
+            _ => None,
+        }
+    }
+
+    /// 有效 scrollback 行数；`None` = 继承全局（含 unlimited 语义）。
+    pub fn effective_scrollback(&self) -> Option<usize> {
+        self.scrollback.filter(|n| *n > 0)
+    }
+
     /// SSH 启动命令：用系统 `ssh` 客户端跑在 PTY 里（原生 russh 引擎后续再做）。
     ///
     /// 参数顺序：`[-i key] [-o password-only...] -p port [-l user] host`，与 OpenSSH 用法一致。
@@ -179,6 +287,28 @@ impl Profile {
     pub fn validate(&self) -> Result<(), String> {
         if !KINDS.contains(&self.kind.as_str()) {
             return Err(format!("未知 Profile 类型: {}", self.kind));
+        }
+        // 外观是可选项，但显式写下的值必须可解释；空串/None = 继承全局。
+        if let Some(size) = self.font_size {
+            if !size.is_finite() || !(MIN_FONT_SIZE..=MAX_FONT_SIZE).contains(&size) {
+                return Err(format!(
+                    "字号必须在 {MIN_FONT_SIZE:.0}–{MAX_FONT_SIZE:.0} 之间，实际: {size}"
+                ));
+            }
+        }
+        if let Some(shape) = &self.cursor_shape {
+            if !shape.trim().is_empty() && !known_cursor_shape(shape) {
+                return Err(format!("未知光标形状: {shape}（block/underline/ibeam）"));
+            }
+        }
+        if let Some(blink) = &self.cursor_blink {
+            let key = blink.trim().to_ascii_lowercase();
+            if !key.is_empty() && !matches!(key.as_str(), "on" | "off" | "system") {
+                return Err(format!("未知光标闪烁值: {blink}（on/off/system）"));
+            }
+        }
+        if self.scrollback == Some(0) {
+            return Err("Profile scrollback 必须大于 0（留空 = 继承全局）".into());
         }
         match self.kind.as_str() {
             "ssh" => {
@@ -277,12 +407,18 @@ impl ProfileStore {
                 if !KINDS.contains(&p.kind.as_str()) {
                     p.kind = default_kind();
                 }
+                p.normalize_appearance();
             }
             store.version = VERSION;
             store.fix_ids();
             store.save_to(path);
             eprintln!("[profile] 已迁移到 v{VERSION}");
             return store;
+        }
+        // 外观字段是 additive 的：旧 v2 文件缺字段 -> None（继承全局）；
+        // 手写文件里的空串/越界字号在内存里归一，不改写原文件。
+        for p in &mut store.profiles {
+            p.normalize_appearance();
         }
         store.fix_ids();
         store
@@ -326,6 +462,7 @@ impl ProfileStore {
             return Err(format!("已存在同名 Profile: {name}"));
         }
         profile.validate()?;
+        profile.normalize_appearance();
         let id = self.next_id.max(1);
         self.next_id = id + 1;
         profile.id = id;
@@ -346,6 +483,7 @@ impl ProfileStore {
         updated.id = id;
         updated.name = name;
         updated.validate()?;
+        updated.normalize_appearance();
         let slot = self.profiles.iter_mut().find(|p| p.id == id).ok_or("Profile 不存在")?;
         *slot = updated;
         Ok(())
@@ -444,6 +582,182 @@ mod tests {
         assert_eq!(back.profiles[0].cwd.as_deref(), Some("/home/user/work"));
         assert_eq!(back.profiles[0].env, vec![("FOO".to_string(), "1".to_string())]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn appearance_fields_roundtrip_and_missing_inherits() {
+        let dir = tmpdir("appearance");
+        let path = dir.join("profiles.toml");
+        let mut s = ProfileStore::default();
+        s.add(Profile {
+            name: "pretty".into(),
+            font_size: Some(18.0),
+            theme: Some("catppuccin-mocha".into()),
+            cursor_shape: Some("underline".into()),
+            cursor_blink: Some("off".into()),
+            scrollback: Some(12_000),
+            ..Profile::default()
+        })
+        .unwrap();
+        s.add(Profile { name: "inherit".into(), ..Profile::default() })
+            .unwrap();
+        s.save_to(&path);
+
+        let back = ProfileStore::load_from(&path);
+        let pretty = back.profiles.iter().find(|p| p.name == "pretty").unwrap();
+        assert_eq!(pretty.effective_font_size(), Some(18.0));
+        assert_eq!(pretty.effective_theme(), Some("catppuccin-mocha"));
+        assert_eq!(pretty.effective_cursor_shape_name(), Some("underline"));
+        assert_eq!(pretty.effective_cursor_blink(), Some(false));
+        assert_eq!(pretty.effective_scrollback(), Some(12_000));
+
+        let inherit = back.profiles.iter().find(|p| p.name == "inherit").unwrap();
+        assert_eq!(inherit.effective_font_size(), None);
+        assert_eq!(inherit.effective_theme(), None);
+        assert_eq!(inherit.effective_cursor_shape(), None);
+        assert_eq!(inherit.effective_cursor_blink(), None);
+        assert_eq!(inherit.effective_scrollback(), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn v2_without_appearance_fields_loads_as_inherit_without_rewrite() {
+        let dir = tmpdir("v2-additive");
+        let path = dir.join("profiles.toml");
+        let original = r#"
+version = 2
+next_id = 2
+
+[[profiles]]
+id = 1
+name = "old"
+kind = "local"
+shell = "/bin/sh"
+"#;
+        std::fs::write(&path, original).unwrap();
+        let store = ProfileStore::load_from(&path);
+        assert_eq!(store.profiles.len(), 1);
+        assert_eq!(store.profiles[0].font_size, None);
+        assert_eq!(store.profiles[0].theme, None);
+        assert_eq!(store.profiles[0].cursor_shape, None);
+        assert_eq!(store.profiles[0].cursor_blink, None);
+        assert_eq!(store.profiles[0].scrollback, None);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            original,
+            "v2 additive 字段缺失时不应因读盘而改写用户文件"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn hand_written_appearance_is_normalized_on_load() {
+        let dir = tmpdir("appearance-normalize");
+        let path = dir.join("profiles.toml");
+        std::fs::write(
+            &path,
+            r#"
+version = 2
+next_id = 2
+
+[[profiles]]
+id = 1
+name = "odd"
+kind = "local"
+font_size = 99.0
+theme = "  "
+cursor_shape = "  UNDERLINE "
+cursor_blink = " OFF "
+scrollback = 0
+"#,
+        )
+        .unwrap();
+        let store = ProfileStore::load_from(&path);
+        let p = &store.profiles[0];
+        assert_eq!(p.font_size, Some(40.0), "读盘时夹取到安全上限");
+        assert_eq!(p.theme, None, "空白主题 = 继承全局");
+        assert_eq!(p.cursor_shape.as_deref(), Some("UNDERLINE"), "trim 保留原始大小写");
+        assert_eq!(p.cursor_blink.as_deref(), Some("off"));
+        assert_eq!(p.scrollback, None, "0 行视为继承全局");
+        assert_eq!(p.effective_cursor_shape_name(), Some("UNDERLINE"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn appearance_validation_rejects_uninterpretable_values() {
+        let base = sample("a");
+        for bad in [4.0, 100.0, f32::NAN, 0.0] {
+            let p = Profile { font_size: Some(bad), ..base.clone() };
+            assert!(p.validate().is_err(), "font_size={bad} 必须拒绝");
+        }
+        let p = Profile { cursor_shape: Some("diamond".into()), ..base.clone() };
+        assert!(p.validate().unwrap_err().contains("光标形状"));
+        let p = Profile { cursor_blink: Some("sometimes".into()), ..base.clone() };
+        assert!(p.validate().unwrap_err().contains("闪烁"));
+        let p = Profile { scrollback: Some(0), ..base.clone() };
+        assert!(p.validate().unwrap_err().contains("scrollback"));
+        // 合法边界/别名可通过
+        for (size, shape, blink) in [
+            (MIN_FONT_SIZE, "block", "on"),
+            (MAX_FONT_SIZE, "ibeam", "off"),
+            (15.0, "bar", "system"),
+            (15.0, "hollow-block", "ON"),
+        ] {
+            let p = Profile {
+                font_size: Some(size),
+                cursor_shape: Some(shape.into()),
+                cursor_blink: Some(blink.into()),
+                ..base.clone()
+            };
+            assert!(p.validate().is_ok(), "{size} {shape} {blink} 应通过");
+        }
+        // 空白 = 继承，不算非法值
+        let p = Profile {
+            cursor_shape: Some("  ".into()),
+            cursor_blink: Some("".into()),
+            ..base
+        };
+        assert!(p.validate().is_ok());
+    }
+
+    #[test]
+    fn appearance_helpers_cover_aliases_and_inherit_semantics() {
+        let p = Profile {
+            cursor_blink: Some("system".into()),
+            cursor_shape: Some("a custom shape".into()),
+            theme: Some(" auto ".into()),
+            ..Profile::default()
+        };
+        assert_eq!(p.effective_cursor_blink(), None, "system 表示交给全局");
+        assert_eq!(p.effective_cursor_shape(), Some(CursorShape::Block));
+        assert_eq!(p.effective_theme(), Some("auto"));
+        let p = Profile { cursor_shape: Some("beam".into()), ..Profile::default() };
+        assert_eq!(p.effective_cursor_shape(), Some(CursorShape::Beam));
+        let p = Profile { cursor_blink: Some(" true ".into()), ..Profile::default() };
+        assert_eq!(p.effective_cursor_blink(), Some(true));
+    }
+
+    #[test]
+    fn add_and_update_normalize_optional_appearance() {
+        let mut s = ProfileStore::default();
+        let id = s
+            .add(Profile {
+                name: "n".into(),
+                theme: Some("  yaru-dark  ".into()),
+                cursor_blink: Some(" OFF ".into()),
+                ..Profile::default()
+            })
+            .unwrap();
+        let p = s.get(id).unwrap();
+        assert_eq!(p.theme.as_deref(), Some("yaru-dark"));
+        assert_eq!(p.cursor_blink.as_deref(), Some("off"));
+        let mut edited = p.clone();
+        edited.theme = Some("   ".into());
+        edited.font_size = Some(20.04);
+        s.update(id, edited).unwrap();
+        let p = s.get(id).unwrap();
+        assert_eq!(p.theme, None);
+        assert_eq!(p.font_size, Some(20.0), "字号保留一位小数");
     }
 
     #[test]
@@ -686,10 +1000,18 @@ env = []
         let store = ProfileStore::load_from(&path);
         assert_eq!(store.version, VERSION);
         assert_eq!(store.profiles[0].kind, "local");
+        // 新增外观字段对 v1 文件是 additive：迁移后为 None（继承全局）。
+        assert_eq!(store.profiles[0].font_size, None);
+        assert_eq!(store.profiles[0].theme, None);
         // 迁移已写回文件
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("version = 2"), "{text}");
         assert!(text.contains("kind = \"local\""), "{text}");
+        assert!(!text.contains("font_size"), "None 不应写出外观键: {text}");
+        // 迁移后的文件还能再次正常读取
+        let again = ProfileStore::load_from(&path);
+        assert_eq!(again.profiles.len(), 1);
+        assert_eq!(again.profiles[0].kind, "local");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

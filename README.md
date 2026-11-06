@@ -9,9 +9,11 @@
 
 > 当前进度：Phase 0（可行性验证）已完成（[报告](docs/phase0-report.md)）；
 > Phase 2 常用工作流已可用：标签页/分屏/右键四模式、多窗口、Tab 活动/OSC 通知、
-> 可编辑快捷键、Profile 搜索/默认/复制、Tab 自动收缩/搜索、Vault 加密凭据、Tabby 配置导入、外部进程插件 API。
+> 可编辑快捷键、Profile 搜索/默认/复制/每 Profile 外观、会话恢复、Tab 自动收缩/搜索、
+> Vault 加密凭据、Tabby 配置导入、外部进程插件 API。
 > 功能覆盖与已知差距见 [`docs/FEATURE_MATRIX.md`](docs/FEATURE_MATRIX.md) 与
-> [`docs/CLOSURE.md`](docs/CLOSURE.md)；最近一次 `./scripts/selfcheck.sh` 通过（app 209 / core 80）。
+> [`docs/CLOSURE.md`](docs/CLOSURE.md)；W-01 分支验证：app **295** / core **90** 单测
+> （workspace **489 passed**），Xvfb :136 Profile/会话恢复 e2e PASS。
 
 ## 架构（已冻结）
 
@@ -65,6 +67,9 @@ TERVO_DIST=/tmp/dist ./scripts/package.sh
 
 # 一键自检（构建 + 单测 + VT 契约 + 启动预算；RUN_IME=1 加中文冒烟）
 ./scripts/selfcheck.sh
+
+# Profile 外观 + 会话恢复 e2e（Xvfb :136；需要先 cargo build 出 tervo/xwin/xclick/xkey）
+./scripts/e2e_profile_session.sh
 
 # Phase 0 全套指标
 ./scripts/bench.sh
@@ -141,6 +146,17 @@ ls -l dist/ && file dist/tervo && ./dist/tervo --help
   12 套内置主题 + `Auto`（跟随系统深/浅色，默认 Yaru Dark/Light）、字号、回滚行数、
   滚动条策略、可听/视觉铃、滚动策略、Backspace/Delete 编码；
   也支持把 iTerm2 / Windows Terminal / Alacritty / kitty / Xresources 主题直接放进 `themes/` 目录。
+- Profile 外观：Settings → Profiles → Edit/New 可为每个 Local/SSH/Serial/Telnet Profile
+  设置 `font_size` / `theme` / `cursor_shape` / `cursor_blink` / `scrollback`；空 = 继承
+  全局配置。打开该 Profile 的 Tab 时应用，优先级 **Profile 显式值 > 全局**：之后全局
+  主题/字号/光标变化仍作用于未覆盖的 pane，Profile 覆盖值不会被后台改掉；主题只影响
+  该 pane 的终端内容，不改应用 UI。`profiles.toml` v2 是 additive 字段，旧文件不用迁移；
+  v1 仍自动补齐 `kind`。
+- 会话恢复：标签栏右键 → **Restart Session** 手动恢复；Settings → Behavior 的
+  **Restore session on startup**（默认关）开启后，正常退出写快照，下次启动恢复
+  Tab 顺序/标题/分屏树/ratio/焦点/窗口网格与每个 pane 的 cwd。local Profile 关联
+  会保留；SSH/Serial/Telnet 出于安全不自动建连，回退普通 shell。快照损坏或恢复
+  失败时回退新 Tab；不恢复 scrollback/屏幕内容/运行中进程。
 - Tabby 功能对照见 [`docs/tabby-parity.md`](docs/tabby-parity.md)；
   主题下载/自定义见 [`docs/themes.md`](docs/themes.md)，Tabby 主题机制调研见 [`docs/tabby-themes.md`](docs/tabby-themes.md)；
   度量/诊断/改进/门禁闭环见 [`docs/self-iteration.md`](docs/self-iteration.md)；
@@ -178,6 +194,30 @@ tervo                 # 直接启动
 | 移动窗口 | 拖标签栏；双击标签栏最大化/还原 |
 
 配置：`~/.config/tervo/config.toml`（`TERVO_CONFIG` 可覆盖）。
+
+Profile 与启动恢复相关配置：`~/.config/tervo/profiles.toml`
+（`TERVO_PROFILES` 可覆盖）。`restore_session_on_startup = false` 是默认值；
+开启后只在正常退出写 `session.json`（`TERVO_SESSION` 可覆盖路径）。
+
+```toml
+# config.toml（Settings → Behavior 同款开关）
+restore_session_on_startup = false
+
+# profiles.toml：外观字段均可选，省略 = 继承全局
+[[profiles]]
+id = 1
+name = "work"
+kind = "local"
+shell = "/bin/zsh"
+args = ["-l"]
+cwd = "/home/me/src"
+env = [["FOO", "1"]]
+font_size = 18.0
+theme = "catppuccin-mocha"
+cursor_shape = "underline"
+cursor_blink = "off"
+scrollback = 10000
+```
 
 剪贴板：拖选/Ctrl+Shift+C 会同时写系统剪贴板与 X11 PRIMARY（中键粘贴用）。
 远端程序可通过 **OSC 52** 读写本机剪贴板，默认放行；不需要时在配置里关闭：
@@ -271,6 +311,13 @@ update-desktop-database ~/.local/share/applications 2>/dev/null || true
 - 自定义主题仍在启动时扫描，改主题文件后需要重启（热重载尚未实现）。
 - 设置页目前不含字体族/行距设置；搜索跳转定位到设置卡片而不是单个控件，键盘焦点遍历（Tab/方向键）
   仍以鼠标点击/搜索为主。旧 modal 回退是同一套控件换呈现，并非保留 2026-11 之前的旧实现。
+- 会话快照只恢复布局/标题/cwd/Profile 关联，不恢复滚动历史、屏幕内容或运行中进程；
+  自动恢复只在正常退出时写快照，崩溃/被 SIGKILL 不保证，也没有崩溃恢复守护。
+  `session.json` 全局只有一份，多窗口布局不能分别恢复；`--window` 子窗口不写快照。
+- SSH/Serial/Telnet Profile 不会随会话恢复自动重连（需要用户主动打开，避免启动即连远端）；
+  恢复为普通 shell 并保留 Tab 标题/布局/cwd。
+- Profile 外观覆盖是 per-pane 的“pin”：Profile 显式设置后，全局字号/主题/光标改动不会
+  刷新该 pane；清空 Profile 对应字段后新开 Tab 即回到继承。
 
 ## 许可证
 

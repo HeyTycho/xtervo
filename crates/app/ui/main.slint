@@ -599,12 +599,14 @@ component ActionBtn inherits Rectangle {
 component FormRow inherits HorizontalLayout {
     in property <string> label;
     in-out property <string> text;
+    /// 标签列宽；紧凑的两列外观行用 64px，默认保持原设置表单样式。
+    in property <length> label-width: 64px;
     /// true = 密码输入（Slint 负责 masked 显示）
     in property <bool> masked: false;
     spacing: 8px;
 
     Text {
-        width: 64px;
+        width: root.label-width;
         text: root.label;
         color: Palette.colors.subtext;
         font-size: 12px;
@@ -1539,6 +1541,8 @@ export component MainWindow inherits Window {
     // 设置项开关状态（由 Rust 侧从 Config 下发）
     in-out property <bool> cfg-copy-on-select: true;
     in-out property <bool> cfg-confirm-close: true;
+    /// 启动时自动恢复上次退出快照（默认关 = 保持旧行为）。
+    in-out property <bool> cfg-restore-session: false;
     in-out property <bool> cfg-confirm-paste: true;
     in-out property <string> cfg-right-click: "menu";
     in-out property <bool> cfg-paste-middle: true;
@@ -1577,6 +1581,7 @@ export component MainWindow inherits Window {
     in-out property <bool> broadcast: false;
     callback toggle-copy-on-select();
     callback toggle-confirm-close();
+    callback toggle-restore-session();
     callback toggle-confirm-paste();
     callback set-right-click(string);
     callback toggle-paste-middle();
@@ -1637,6 +1642,12 @@ export component MainWindow inherits Window {
     callback profile-edit(int);
     in-out property <string> form-serial-port: "";
     in-out property <string> form-baud: "";
+    // 外观（可选；空 = 继承全局）：字号 / 主题 / 光标形状 / 闪烁 / 滚动历史。
+    in-out property <string> form-font-size: "";
+    in-out property <string> form-theme: "";
+    in-out property <string> form-cursor-shape: "";
+    in-out property <string> form-cursor-blink: "";
+    in-out property <string> form-scrollback: "";
     in-out property <string> form-error: "";
     callback profile-form-save();
     callback profile-form-cancel();
@@ -4155,6 +4166,14 @@ export component MainWindow inherits Window {
                                 }
                             }
                             SettingRow {
+                                label: "Restore session on startup";
+                                description: "Reopen tabs, splits and cwd from the last clean exit (off by default).";
+                                SettingsSwitch {
+                                    on: root.cfg-restore-session;
+                                    toggled => { root.toggle-restore-session(); }
+                                }
+                            }
+                            SettingRow {
                                 label: "Confirm multi-line paste";
                                 description: "Show a preview before pasting text with newlines.";
                                 SettingsSwitch {
@@ -5401,9 +5420,11 @@ export component MainWindow inherits Window {
 
     if root.profile-form-open : Rectangle {
         x: (root.width - 440px) / 2;
-        y: (root.height - 480px) / 2;
+        // local/serial/telnet 用紧凑高度；SSH 展开 password 时需要更高。
+        property <length> form-h: root.form-kind == 1 ? 620px : 440px;
+        y: (root.height - form-h) / 2 < 8px ? 8px : (root.height - form-h) / 2;
         width: 440px;
-        height: 480px;
+        height: form-h;
         background: Palette.colors.raise;
         border-radius: 10px;
         border-width: 1px;
@@ -5503,9 +5524,59 @@ export component MainWindow inherits Window {
             FormRow { label: "Port"; text <=> root.form-port; }
         }
 
+        // 外观覆盖（所有类型共用；空 = 继承全局 Config）。
+        // 绝对定位在不同类型间固定：local 在字段下方，SSH 留出 password 展开空间。
+        VerticalLayout {
+            x: 16px;
+            y: root.form-kind == 0 ? 232px : (root.form-kind == 1 ? 400px : 196px);
+            width: 408px;
+            height: 110px;
+            spacing: 6px;
+
+            Text {
+                height: 14px;
+                text: "Appearance · empty = inherit global";
+                color: Palette.colors.subtext;
+                font-size: 11px;
+                vertical-alignment: center;
+            }
+            HorizontalLayout {
+                height: 26px;
+                spacing: 12px;
+                FormRow {
+                    width: 198px;
+                    label-width: 64px;
+                    label: "Font"; text <=> root.form-font-size;
+                }
+                FormRow {
+                    width: 198px;
+                    label-width: 64px;
+                    label: "History"; text <=> root.form-scrollback;
+                }
+            }
+            HorizontalLayout {
+                height: 26px;
+                spacing: 12px;
+                FormRow {
+                    width: 198px;
+                    label-width: 64px;
+                    label: "Cursor"; text <=> root.form-cursor-shape;
+                }
+                FormRow {
+                    width: 198px;
+                    label-width: 64px;
+                    label: "Blink"; text <=> root.form-cursor-blink;
+                }
+            }
+            FormRow {
+                height: 26px;
+                label: "Theme"; text <=> root.form-theme;
+            }
+        }
+
         Text {
             x: 16px;
-            y: 410px;
+            y: form-h - 82px;
             width: 408px;
             text: root.form-error;
             color: Palette.colors.danger;
@@ -5514,7 +5585,7 @@ export component MainWindow inherits Window {
         }
 
         Rectangle {
-            x: 252px; y: 442px; width: 80px; height: 28px; border-radius: 6px;
+            x: 252px; y: form-h - 50px; width: 80px; height: 28px; border-radius: 6px;
             background: form-cancel-hit.has-hover ? Palette.colors.hover : Palette.colors.raise;
             border-width: 1px;
             border-color: Palette.colors.border;
@@ -5533,7 +5604,7 @@ export component MainWindow inherits Window {
         }
 
         Rectangle {
-            x: 340px; y: 442px; width: 80px; height: 28px; border-radius: 6px;
+            x: 340px; y: form-h - 50px; width: 80px; height: 28px; border-radius: 6px;
             background: form-save-hit.has-hover ? Palette.colors.danger : Palette.colors.accent;
             form-save-hit := TouchArea {
                 clicked => { root.profile-form-save(); }
