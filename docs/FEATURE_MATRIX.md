@@ -5,11 +5,13 @@
 > 状态分布与闭环结论见 [`CLOSURE.md`](CLOSURE.md)；统计脚本 `python3 scripts/matrix_stats.py`。
 > 2026-11-06 增补（`feat/term-menu`）：B6 查找大小写/正则、Read Only、Reset、Save Contents；B6 现有 18 条
 > （implemented=7 / partial=10 / not_started=1），证据见 [`terminal-menu-find.md`](terminal-menu-find.md)。
+> 2026-11-06 增补（`feat/sixel`）：Sixel 内联图片（UI-TERM-020 / TERM-020），B/C 各 +1 条 partial；
+> 证据见本文件对应行与 [`self-iteration.md`](self-iteration.md)。
 
 ## 0. 覆盖与状态口径
 
 - 并发说明：审计期间另一 Agent 提交了 `b80e265`（config schema/迁移/备份、字体惰性加载等），本矩阵已按该提交复核 config 相关行；此后 `94baefb`/`99d7895` 加入行内链接识别与 OSC 8 透出、`8327e20` 加入命令注册表，均已复核对应行（TERM-012/UI-TERM-011/C9）。工作区其余未提交改动未纳入。
-- 覆盖需求文档 B、C 两部分的**全部 228 个 `[ ]` 复选框**：B 部分 110 条，C 部分 118 条；另附 B7 引言 1 条、C15 平台说明 5 条（标 `extra`，不计入完成度）。
+- 覆盖需求文档 B、C 两部分的**全部 228 个 `[ ]` 复选框**：B 部分 110 条，C 部分 118 条；另附 B7 引言 1 条、C15 平台说明 5 条（标 `extra`，不计入完成度）。本表另含 2026-11-06 新增的 Sixel 2 行（UI-TERM-020 / TERM-020，B/C 各 +1 partial），故下方计数为 230。
 - `implemented` 仅表示：用户可见路径存在、非 mock、错误路径基本处理、有既有测试或可重复人工验收记录、文档已更新。本轮**未复跑**任何测试，Result 列引用既有记录并注明。
 - `partial`：已有可用子集，但存在明确缺口。`needs_verification`：上游行为/触发方式/协议本身未核实，或本仓库行为未经查证。`not_started`：无实现。`unsupported`：明确排除（平台/外部工具）。
 - Upstream evidence 列缩写：`U-AUDIT` = 本轮网络不可用，上游未核实（不代表上游没有该功能）；`U-XTERM` = Tabby 默认 xterm.js 前端（转引 `docs/tabby-themes.md`）；`U-THEME` = 已核主题 API（`tabby-core/src/services/themes.service.ts`、`api/theme.ts`，转引）；`U-PLUGIN` = 已核 npm 插件结构（keyword `tabby-plugin`，转引）；`U-CONF` = 已核 `config.yaml`/`config.service.ts`（转引）；`U-REQ` = 仅需求文档描述。
@@ -18,9 +20,9 @@
 
 | 范围 | 条目 | implemented | partial | in_progress | needs_verification | not_started | unsupported | 加权完成度 |
 |---|---|---|---|---|---|---|---|---|
-| B 部分（UI） | 110 | 25 | 57 | 0 | 5 | 22 | 1 | 48.6% |
-| C 部分（底层） | 118 | 12 | 50 | 0 | 9 | 41 | 6 | 31.4% |
-| B+C 合计 | 228 | 37 | 107 | 0 | 14 | 63 | 7 | 39.7% |
+| B 部分（UI） | 111 | 25 | 58 | 0 | 5 | 22 | 1 | 48.6% |
+| C 部分（底层） | 119 | 12 | 51 | 0 | 9 | 41 | 6 | 31.5% |
+| B+C 合计 | 230 | 37 | 109 | 0 | 14 | 63 | 7 | 39.8% |
 
 > 加权公式：`(implemented + 0.5×partial + 0.5×in_progress) / 条目总数`。`needs_verification / not_started / unsupported` 记 0。该数字是“功能条目覆盖度”，不是代码行数或工时完成度。本轮补 Vault 时用 `scripts/matrix_stats.py` 逐行复核并刷新了上表（旧审计快照数字已过期；脚本额外把 needs_verification 记 0.25，故其 weighted 输出略高）。2026-11-05 Profiles UX/插件 API/Tabby 导入/Vault SSH 修复/SFTP 进度与取消/自适应窗口圆角合入后刷新；脚本 `matrix_stats.py` 当前输出 37/107/14/63/7、weighted 41.2%（脚本把 needs_verification 记 0.25，表中按原公式只计 implemented+0.5×partial = 39.7%）。
 
@@ -241,6 +243,7 @@
 
 | ID | Feature | Upstream evidence | Rust implementation | Status | Test | Result | Limitation |
 |---|---|---|---|---|---|---|---|
+| UI-TERM-020 | Sixel 内联图片默认开启、可配置关闭、滚动/resize 锚定、不参与文本/选区 | U-AUDIT / 需求 C1 | core `sixel.rs` 流式 DCS 过滤 + Sixel→RGBA 解码（RGB/HLS/透明/重复/raster/25 MiB/16 MP 上限）；`PaneHandle::set_sixel/set_sixel_scrolling`；app `sync_inline_images` 把可见图片按 cell 锚点同步到 Slint `PaneImage` overlay（按 core id 缓存 RGBA，仅图片/锚点变化时重建）；设置页 Terminal → Images 两个开关与上限提示；关闭立即清图且 DA1 去参数 4 | partial | core 88 lib（含跨 chunk/非法/超限/DA1/滚动锚点）+ tests/sixel 6 例（真实 PTY 跨 32 KiB chunk、BEL、CSI 2J、清屏、滚动锚点、DA1 on/off）；app 249 passed；Xvfb :120 `.logs/sixel/01-two-images.png`、`02-scrolled.png`、`04-back-to-image.png`、`05-resized.png`、`13-settings-sixel-off.png`、`14-terminal-after-sixel-off.png`、DA1 `15-da1-sixel-on.png`/`16-da1-sixel-off.png`（`1b5b3f36323b343b393b323263` vs `1b5b3f3663`） | Sixel 默认开、设置页即时开关、DA1 宣告、滚动/resize/切 Tab 位置正确；图片不进选区；dsh-tui 可启动 | iTerm2 IIP 未实现且不宣告；dsh 启动到 onboarding，未验证真实图片消息；TUI 局部 ECH 擦除不追踪；scrollback 淘汰最旧行时锚点可能偏移；Sixel 无部分透明；仅 Xvfb/llvmpipe |
 | TERM-001 | VT220 基础兼容及 Tabby 实际使用的 xterm/ANSI 扩展；兼容测试集验证 | U-XTERM / 需求 C1 | alacritty_terminal 0.26 `Term` + `vte::ansi::Processor`；crates/core/tests/vt_conformance.rs 10 例 | partial | `cargo test -p tervo-core`（已有记录 10 条 conformance）；无 vttest/esctest 全套 | 基础 SGR/光标/宽字符/备用屏有契约测试 | 未跑完整 VT220/xterm 套件；与 Tabby 实际序列集未差分 |
 | TERM-002 | CSI/ESC/OSC/DCS 解析；不完整序列、分包、非法、超长序列 | U-XTERM / 需求 C1 | vte Processor 处理分包/不完整；pane.rs `feed` 按 32 KiB 读块喂入；无 DCS/OSC 业务分发 | partial | vt_conformance 覆盖常见 CSI/OSC 标题；无 fuzz/超长/非法输入回归 | 常见序列可解析；异常输入未系统验证 | 无 fuzz 目标；DCS 只被解析器吞掉，无业务处理；超长序列未测 |
 | TERM-003 | 光标移动、擦除、插入/删除字符行、滚屏、滚动区域、制表位、自动换行 | U-XTERM / 需求 C1 | alacritty_terminal 实现；`cursor_move_and_erase_line`、`autowrap_moves_to_next_line`、`clear_screen_and_home` | partial | 3 条专项契约 + alacritty 上游实现；IL/DL/滚动区域/制表位无本项目测试 | 光标/擦除/自动换行已验证 | 插入删除行、滚动区域、制表位未专项验收；依赖 alacritty 行为 |
@@ -466,6 +469,7 @@ C15 无 `[ ]` 复选框条目；平台差异说明见 §5（不计入 228 条）
 | PLAT-003 | macOS 后续：Vibrancy、Keychain、平台 Shell/键盘 | U-AUDIT / 需求 C15 | 无实现 | unsupported | 无 | 明确排除（Ubuntu 第一阶段） | 不在当前交付范围 |
 | PLAT-004 | Tabby Web App/self-hosted 不混入桌面版完成度 | U-AUDIT / 需求 C15 | 无实现 | unsupported | 无 | 明确排除 | 无 Web 版目标/代码 |
 | PLAT-005 | Tabby 不是 Shell 本身；通过 PTY 启动系统 Shell | U-AUDIT / 需求 C15 | pane.rs `spawn` 用 portable-pty 启动 $SHELL/config.shell；不实现 Bash/Zsh | implemented | smoke PTY 测试；人工启动 bash/zsh | 已按此边界实现 | 无内置 shell/补全；依赖系统 shell |
+| TERM-020 | DCS/Sixel 业务解析：跨 chunk、BEL 终止、非法/超限丢图、DA1 能力宣告 | U-AUDIT / 需求 C1 | `core/sixel.rs` 独立状态机过滤 `ESC P ... q ... ST/BEL/C1 ST`，跨 chunk 保留 ESC/DCS 头；非 Sixel DCS 原样交还 vte；解码支持 RGB/HLS、透明、`!Pn`、raster attributes，原始 25 MiB / 16 MP / 单边 16384 上限；DA1 回应在 Listener 精确替换为 `CSI ?62;4;9;22c`，关闭/二级 DA 不改写 | partial | core 单测 18 例 + PTY 集成 6 例；DA1 真机截图 on/off；dsh-tui 启动截图 + 用 dsh 自己的 `selectTerminalImageProtocol([62,4,9,22])` 输出 `sixel` | 常见 Sixel 编码器输出可解码；BEL 终止不会污染解析器；超限/畸形只丢图；dsh 的 DA1 选择路径成立 | 未实现 HLS 以外的其它色彩空间差异/调色板重映射；未做 fuzz；未验证超大真图内存峰值；iTerm2 IIP 未实现 |
 
 ## 6. 维护规则
 

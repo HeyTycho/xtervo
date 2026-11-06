@@ -68,6 +68,12 @@ struct PaneRuntime {
     image: slint::Image,
     /// 光标 overlay（app 不把光标画进终端帧，闪烁只切可见性）。
     cursor_image: slint::Image,
+    /// Sixel 图片 overlay 的 Slint 模型；只在图片集合/位置变化时重建。
+    inline_model: Rc<VecModel<PaneImage>>,
+    /// 图片 ID → Slint Image 缓存（避免每次滚动/输出重复上传整张图）。
+    inline_cache: HashMap<u64, slint::Image>,
+    /// 上一次下发的图片布局签名；相同则跳过模型重建。
+    inline_sig: Vec<(u64, i32, u16, u32, u32)>,
     /// overlay 在 pane 内的 x/y/w/h（像素）。
     cursor_rect: (f32, f32, f32, f32),
     /// 当前帧光标是否显示（不含闪烁相位；phase 由 AppState 统一控制）。
@@ -1123,6 +1129,9 @@ fn create_pane(
         rows: rows as u16,
         scrollback: st.cfg.effective_scrollback(),
         scroll_on_output: st.cfg.scroll_on_output,
+        sixel: st.cfg.sixel,
+        sixel_scrolling: st.cfg.sixel_scrolling,
+        cell_height: st.fonts.cell_h as u16,
         shell,
         args,
         palette: pane_palette(st),
@@ -1178,6 +1187,9 @@ fn create_pane(
         cursor_image,
         cursor_rect,
         cursor_visible,
+        inline_model: Rc::new(VecModel::from(Vec::<PaneImage>::new())),
+        inline_cache: HashMap::new(),
+        inline_sig: Vec::new(),
         grid: (cols, rows),
         cursor: (0, 0),
         focus_sent: None,
@@ -3035,6 +3047,7 @@ fn pane_view(
         scrollbar_track_h: track_h,
         bell_flash: rt.bell_until.is_some(),
         read_only: rt.handle.read_only(),
+        images: ModelRc::from(rt.inline_model.clone()),
     }
 }
 
@@ -3365,6 +3378,70 @@ fn update_ime_spot(st: &mut AppState) {
 }
 
 
+/// 把 core 帧里的 Sixel 图片同步成 Slint Image overlay。
+///
+/// - 只在图片集合或锚点变化时重建模型；光标闪烁/纯文本输出不会重新上传图片。
+/// - Slint Image 按 core 图片 ID 缓存，滚动/resize 时只改 x/y，不重复拷贝 RGBA。
+fn sync_inline_images(rt: &mut PaneRuntime, frame: &Frame) {
+    let sig: Vec<(u64, i32, u16, u32, u32)> = frame
+        .images
+        .iter()
+        .map(|img| (img.id, img.row, img.col, img.width, img.height))
+        .collect();
+    if sig == rt.inline_sig {
+        return;
+    }
+    rt.inline_sig = sig;
+    if std::env::var_os("TERVO_SIXEL_DEBUG").is_some() {
+        let pos = rt.handle.scroll_position();
+        eprintln!(
+            "[sixel] offset={} scroll=({},{}) images={:?}",
+            frame.display_offset,
+            pos.offset,
+            pos.history,
+            frame.images.iter().map(|i| (i.id, i.row, i.col)).collect::<Vec<_>>()
+        );
+    }
+
+    let cell_w = rt.renderer.cell_w.max(1) as f32;
+    let cell_h = rt.renderer.cell_h.max(1) as f32;
+    let mut keep = std::collections::HashSet::with_capacity(frame.images.len());
+    let mut views = Vec::with_capacity(frame.images.len());
+    for img in &frame.images {
+        if img.width == 0 || img.height == 0 {
+            continue;
+        }
+        keep.insert(img.id);
+        let image = if let Some(cached) = rt.inline_cache.get(&img.id) {
+            cached.clone()
+        } else {
+            let expected = img.width as usize * img.height as usize * 4;
+            if img.data.len() != expected {
+                continue;
+            }
+            let mut buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(
+                img.width,
+                img.height,
+            );
+            buffer.make_mut_bytes().copy_from_slice(&img.data);
+            let image = slint::Image::from_rgba8(buffer);
+            rt.inline_cache.insert(img.id, image.clone());
+            image
+        };
+        views.push(PaneImage {
+            image,
+            x: img.col as f32 * cell_w,
+            y: img.row as f32 * cell_h,
+            w: img.width as f32,
+            h: img.height as f32,
+        });
+    }
+    // 只缓存当前可见图片：滚出视口的 RGBA 由 core 保存，滚回来时重新上传，
+    // 避免 UI 侧再常驻一份最多 64 MB 的解码数据。
+    rt.inline_cache.retain(|id, _| keep.contains(id));
+    rt.inline_model.set_vec(views);
+}
+
 fn redraw_pane_inner(st: &mut AppState, id: PaneId) {
     let focused = st.ws.active_tab().map(|t| t.focused) == Some(id);
     let blink_on = st.cursor_blink_on;
@@ -3375,6 +3452,7 @@ fn redraw_pane_inner(st: &mut AppState, id: PaneId) {
     // 光标不进帧缓冲：用独立 overlay，闪烁时只换 visible。
     rt.renderer.draw_without_cursor(&frame);
     rt.image = rt.renderer.image();
+    sync_inline_images(rt, &frame);
     if render_profile() {
         eprintln!(
             "[render] pane={id} grid={}x{} full={} rows={} draw={:.2}ms image={:.2}ms detach={} bytes={}",
@@ -6691,6 +6769,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     });
 
+    ui.on_toggle_sixel(|| {
+        with_app(|st| {
+            st.cfg.sixel = !st.cfg.sixel;
+            st.ui.set_cfg_sixel(st.cfg.sixel);
+            let enabled = st.cfg.sixel;
+            for rt in st.panes.values() {
+                rt.handle.set_sixel(enabled);
+            }
+            for (_, rt, _) in &st.detached {
+                rt.handle.set_sixel(enabled);
+            }
+            st.cfg.save();
+            eprintln!("[ui] sixel={enabled}");
+        });
+    });
+
+    ui.on_toggle_sixel_scrolling(|| {
+        with_app(|st| {
+            st.cfg.sixel_scrolling = !st.cfg.sixel_scrolling;
+            st.ui.set_cfg_sixel_scrolling(st.cfg.sixel_scrolling);
+            let scrolling = st.cfg.sixel_scrolling;
+            for rt in st.panes.values() {
+                rt.handle.set_sixel_scrolling(scrolling);
+            }
+            for (_, rt, _) in &st.detached {
+                rt.handle.set_sixel_scrolling(scrolling);
+            }
+            st.cfg.save();
+            eprintln!("[ui] sixel_scrolling={scrolling}");
+        });
+    });
+
     ui.on_toggle_scrollback_unlimited(|| {
         with_app(|st| {
             st.cfg.scrollback_unlimited = !st.cfg.scrollback_unlimited;
@@ -7451,6 +7561,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         st.ui.set_cfg_audible_bell(st.cfg.audible_bell);
         st.ui.set_cfg_scroll_output(st.cfg.scroll_on_output);
         st.ui.set_cfg_scroll_keystroke(st.cfg.scroll_on_keystroke);
+        st.ui.set_cfg_sixel(st.cfg.sixel);
+        st.ui.set_cfg_sixel_scrolling(st.cfg.sixel_scrolling);
         st.ui.set_cfg_scrollback_unlimited(st.cfg.scrollback_unlimited);
         st.ui.set_cfg_scrollbar_policy(st.cfg.scrollbar_policy().as_str().into());
         st.ui.set_cfg_backspace_binding(st.cfg.key_bindings().backspace.as_str().into());
