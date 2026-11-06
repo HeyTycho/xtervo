@@ -25,6 +25,12 @@ use owned_ttf_parser::{AsFaceRef, OwnedFace, RasterImageFormat};
 pub const ATLAS_W: usize = 1024;
 pub const ATLAS_H: usize = 1024;
 
+/// 单色字形缓存上限。正常终端只有几百个可见码位；恶意/异常输出可以制造无限
+/// 不同的 `(char, Style, span)`，没有上限时每个 pane 的缓存会随会话无限增长。
+pub const MAX_MONO_GLYPHS: usize = 8192;
+/// 彩色 emoji 缓存上限（每个条目持有解码后的 RGBA，必须比单色缓存更小）。
+pub const MAX_COLOR_GLYPHS: usize = 1024;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Style {
     Regular,
@@ -786,6 +792,15 @@ fn load_fallback() -> Fallback {
             });
         }
     }
+    // CJK 回退字体优先按文件大小升序：fontdue 解析一个 18 MB TTC 会常驻上百 MB，
+    // 先用 3.8 MB 的 Droid 覆盖绝大多数汉字，避免为个别生僻字直接解析最大字体。
+    specs.sort_by_key(|s| {
+        if s.group == GROUP_CJK {
+            std::fs::metadata(&s.path).map(|m| m.len()).unwrap_or(u64::MAX)
+        } else {
+            0
+        }
+    });
     // 去重：同一路径/face 只解析一次；内置候选里可能和用户追加项重复。
     let mut seen = std::collections::HashSet::new();
     let mut faces = Vec::with_capacity(specs.len());
@@ -966,7 +981,25 @@ impl GlyphCache {
         }
         let glyph = self.rasterize(fonts, ch, style, span as usize);
         self.map.insert((ch, style, span), glyph);
+        self.enforce_limits();
         glyph
+    }
+
+    /// 缓存达到上限时整体丢弃并复用 atlas，而不是让内存随码位种类线性增长。
+    ///
+    /// 丢弃只会让后续字形多一次栅格化，不影响当前帧已经画出的像素；正常会话
+    /// 远达不到上限，因此不会触发。
+    fn enforce_limits(&mut self) {
+        if self.map.len() > MAX_MONO_GLYPHS {
+            self.map.clear();
+            self.atlas.fill(0);
+            self.pen_x = 0;
+            self.pen_y = 0;
+            self.row_h = 0;
+        }
+        if self.color_map.len() > MAX_COLOR_GLYPHS {
+            self.color_map.clear();
+        }
     }
 
     /// 取彩色 emoji 位图；`span` 与单色字形一致（通常 2 格，`❤`+VS16 为 1 格）。
@@ -994,6 +1027,7 @@ impl GlyphCache {
             self.color_decodes += 1;
         }
         self.color_map.insert(key, glyph.clone());
+        self.enforce_limits();
         glyph
     }
 
@@ -1032,43 +1066,74 @@ impl GlyphCache {
             let Some((metrics, bitmap)) = rasterize_fit(font, ch, fonts.size, limit) else {
                 continue;
             };
-            let (w, h) = (metrics.width, metrics.height);
-            if w + 2 > ATLAS_W || h + 2 > ATLAS_H {
-                continue;
+            if let Some(glyph) = self.insert_bitmap(metrics, &bitmap) {
+                return Some(glyph);
             }
-            if self.pen_x + w + 1 > ATLAS_W {
-                self.pen_x = 0;
-                self.pen_y += self.row_h + 1;
-                self.row_h = 0;
-            }
-            if self.pen_y + h + 1 > ATLAS_H {
-                self.atlas_full += 1;
-                return None;
-            }
-
-            // 写入 atlas
-            for row in 0..h {
-                let dst = (self.pen_y + row) * ATLAS_W + self.pen_x;
-                let src = row * w;
-                self.atlas[dst..dst + w].copy_from_slice(&bitmap[src..src + w]);
-            }
-
-            let glyph = Glyph {
-                x: self.pen_x as u16,
-                y: self.pen_y as u16,
-                w: w as u16,
-                h: h as u16,
-                left: metrics.xmin as i16,
-                top: -(metrics.ymin + h as i32) as i16,
-                advance: metrics.advance_width.round().max(0.0) as u16,
-            };
-
-            self.pen_x += w + 1;
-            self.row_h = self.row_h.max(h);
-            self.rasterized += 1;
-            return Some(glyph);
+            // atlas 满：继续换下一个字体也放不下，直接放弃本帧。
+            return None;
         }
         None
+    }
+
+    /// 把一张已栅格化的位图写进 atlas，返回可直接绘制的字形坐标。
+    fn insert_bitmap(&mut self, metrics: fontdue::Metrics, bitmap: &[u8]) -> Option<Glyph> {
+        let (w, h) = (metrics.width, metrics.height);
+        if w + 2 > ATLAS_W || h + 2 > ATLAS_H {
+            return None;
+        }
+        if self.pen_x + w + 1 > ATLAS_W {
+            self.pen_x = 0;
+            self.pen_y += self.row_h + 1;
+            self.row_h = 0;
+        }
+        if self.pen_y + h + 1 > ATLAS_H {
+            self.atlas_full += 1;
+            return None;
+        }
+        for row in 0..h {
+            let dst = (self.pen_y + row) * ATLAS_W + self.pen_x;
+            let src = row * w;
+            self.atlas[dst..dst + w].copy_from_slice(&bitmap[src..src + w]);
+        }
+        let glyph = Glyph {
+            x: self.pen_x as u16,
+            y: self.pen_y as u16,
+            w: w as u16,
+            h: h as u16,
+            left: metrics.xmin as i16,
+            top: -(metrics.ymin + h as i32) as i16,
+            advance: metrics.advance_width.round().max(0.0) as u16,
+        };
+        self.pen_x += w + 1;
+        self.row_h = self.row_h.max(h);
+        self.rasterized += 1;
+        Some(glyph)
+    }
+
+    /// 组合标记专用：只在主字体里取字形，**不建立/不探测回退链**。
+    ///
+    /// 组合音标、keycap(U+20E3) 等零宽标记在多数回退字体里也没有轮廓；若走
+    /// `get` 的完整回退链，会为了一个标记按需解析 CJK/emoji 字体（fontdue
+    /// 解析单个 CJK 字体可达数百 MB），这是长时内存暴涨的主要来源之一。
+    pub fn get_mark(
+        &mut self,
+        fonts: &FontSet,
+        ch: char,
+        style: Style,
+        span: usize,
+    ) -> Option<Glyph> {
+        let span = span.clamp(1, u8::MAX as usize) as u8;
+        let key = (ch, style, span);
+        if let Some(g) = self.map.get(&key) {
+            return *g;
+        }
+        let limit = (span.max(1) as usize * fonts.cell_w) as f32;
+        let font = &fonts.faces[style.idx()];
+        let glyph = rasterize_fit(font, ch, fonts.size, limit)
+            .and_then(|(metrics, bitmap)| self.insert_bitmap(metrics, &bitmap));
+        self.map.insert(key, glyph);
+        self.enforce_limits();
+        glyph
     }
 }
 
@@ -1262,6 +1327,48 @@ mod tests {
         assert!(cache.get_color(&fonts, '你', Style::Regular, 2).is_none());
         assert!(!fonts.fallback_initialized(), "ASCII/CJK 不应建立彩色回退链");
         assert_eq!(cache.color_decodes, 0);
+    }
+
+    #[test]
+    fn glyph_cache_is_bounded_by_explicit_limits() {
+        let mut cache = GlyphCache::default();
+        for i in 0..(MAX_MONO_GLYPHS + 50) {
+            let ch = char::from_u32(0xE000 + i as u32).expect("private use char");
+            cache.map.insert((ch, Style::Regular, 1), None);
+            cache.enforce_limits();
+        }
+        assert!(
+            cache.map.len() <= MAX_MONO_GLYPHS,
+            "单色字形缓存超上限: {} > {}",
+            cache.map.len(),
+            MAX_MONO_GLYPHS
+        );
+        assert_eq!((cache.pen_x, cache.pen_y), (0, 0), "清空缓存应同时重置 atlas 游标");
+
+        for i in 0..(MAX_COLOR_GLYPHS + 10) {
+            let ch = char::from_u32(0x1F300 + i as u32).expect("emoji char");
+            cache.color_map.insert((ch, 2), None);
+            cache.enforce_limits();
+        }
+        assert!(
+            cache.color_map.len() <= MAX_COLOR_GLYPHS,
+            "彩色 emoji 缓存超上限: {} > {}",
+            cache.color_map.len(),
+            MAX_COLOR_GLYPHS
+        );
+    }
+
+    #[test]
+    fn combining_mark_never_builds_fallback_chain() {
+        let Some(fonts) = fonts() else { return };
+        assert!(!fonts.fallback_initialized(), "初始不应建立回退链");
+        let mut cache = GlyphCache::default();
+        // keycap U+20E3 在多数回退字体里没有轮廓；不允许为它解析整套字体。
+        let _ = cache.get_mark(&fonts, '\u{20E3}', Style::Regular, 1);
+        assert!(
+            !fonts.fallback_initialized(),
+            "组合标记不应触发回退字体解析（fontdue 解析 CJK 字体可达数百 MB）"
+        );
     }
 
     #[test]

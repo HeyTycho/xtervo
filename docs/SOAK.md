@@ -180,3 +180,60 @@ cat .logs/soak/long-15m/report.md
 cat .logs/soak/long-15m/summary.json
 column -s, -t < .logs/soak/long-15m/samples.csv | less
 ```
+
+## 分段隔离（feat/memory-fix）
+
+为定位 15m 的 RSS 增长，用同一份 `scripts/soak.sh` 的临时副本把 cycle 拆成
+单场景（`DURATION=2m/3m`、`SOAK_SAMPLE_INTERVAL=5`、22 Tab 或 1 Tab + 4 pane），
+其余环境与正式门禁一致；**未修改任何 PASS/FAIL 阈值**。release `f6ae438` 上结果：
+
+| 分段 | 时长 | RSS 变化 | 结论 |
+|---|---|---|---|
+| idle（22 Tab + 4 pane，无操作） | 3m | 389.6 → 389.9 MiB | 稳定 |
+| flood+seq（1 Tab + 4 pane） | 3m | 232.1 → 232.4 MiB | 稳定，history 封顶 2000 |
+| 仅 Sixel+IIP | 3m | 231.3 → 231.3 MiB | 稳定 |
+| 仅 resize（210/210 成功） | 3m | 238.3 → 248.7 MiB（R²=0.15） | 抖动，无线性增长 |
+| 仅 copy/search | 3m | 271.2 → 272.4 MiB | +1.2 MiB |
+| 仅 Settings（31 开/248 类） | 3m | 279.8 → 280.4 MiB | 稳定 |
+| **仅 emoji** | 2m | **232 → 1062 MiB，之后 +0.1 MiB** | **首帧 emoji 一次性 +800 MiB** |
+
+### emoji 首帧 800 MiB 根因（已定位）
+
+用受控 shell 逐条输出单个字符/组合（真实 UTF-8，经 PTY）后逐段采样 RSS：
+
+| 输入 | RSS 变化 |
+|---|---|
+| `A` / `😀` / `❤️` / ZWJ 家庭 / 国旗 | 稳定（225–237 MiB） |
+| `漢字` | +165 MiB |
+| 组合附加符 `Z̸̧̛̪̎` | +18 MiB |
+| keycap `1️⃣` | +341 MiB |
+| 彩虹旗 `🏳️‍🌈` | +301 MiB |
+| 之后 120 行 emoji.txt | 稳定在 ~1062 MiB |
+
+逐段合计约 +800 MiB，且**一次性、不随重复 emoji 再增长**。同时：
+- Renderer 指针稳定、彩色 glyph 缓存 mono=31/color=16/decodes=16/hits 数千，
+  排除逐帧重建与彩色缓存未命中；
+- resize 旧 buffer、ImageStore/inline cache 均未增长；
+- `font_probe` 单独解析 7 个回退字体（合计约 100 MB 文件）进程峰值 RSS
+  **340 MiB**（fontdue 解析 CJK/TTC 的常驻放大），说明增量来自**首次按需解析
+  回退字体**，而不是终端帧/图像缓冲。
+
+修复（最小、低风险）：
+1. 组合标记/零宽附加符走新的 `GlyphCache::get_mark`：只在主字体取字形，
+   **不再为单个 keycap/U+20E3 等标记扫描并解析整套 CJK/emoji 回退字体**；
+2. CJK 回退候选按文件大小升序（优先 3.8 MB Droid，避免为个别生僻字直接解析
+   18 MB NotoSansCJK TTC）；
+3. `GlyphCache` 单色/彩色缓存加显式上限（8192/1024，超限整体丢弃并复用 atlas），
+   防止异常码位种类使每个 pane 缓存无界增长。
+单测：`combining_mark_never_builds_fallback_chain`、
+`glyph_cache_is_bounded_by_explicit_limits`。
+
+**修复后实测**（同一 quickbisect，1 Tab）：从 212 MiB 起步，`漢字` → 332、
+keycap → 334（+2）、彩虹旗 → 344（+11）、随后整行 emoji.txt → 345（+1），
+结束 347 MiB。首帧 emoji 总增量从 ~850 MiB 降到 **~135 MiB**，keycap/彩虹旗的
+两段大跳变消失；剩余主要是首个 CJK 字符仍会按需解析一个 CJK 回退字体。
+
+**未完成/限制**：尚未在修复版上复跑完整 15m；15m 的 +228 MiB 慢斜率与该一次性
+跳变的关系仍需后续确认。普通 CJK 首字仍会解析一个 CJK 回退字体；若要求首帧
+<100 MiB，需要进一步换用按字形惰性解析的字体后端或去掉大 CJK 回退。门禁阈值
+未改。
