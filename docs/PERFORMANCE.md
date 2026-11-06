@@ -80,6 +80,65 @@ Skia 同轮记录到 35 帧渲染，中位 2.85ms、最大 6.84ms（llvmpipe，�
 “apply 次数少”当成更快；1080 窗口的 80 步数据更能反映逐 configure 路径。
 完整日志/截图：`.logs/bench-resize/`、`.logs/gpu-func/`（gitignored）。
 
+## 2.3 渲染 damage 恢复（2026-11-06，P1-06）
+
+**问题**：双缓冲改造后 `FrameBuffers::rotate()` 恒返回 true，`draw_impl` 把
+`buffer_switched` 并进 `full`，`frame.damage` 分支实际不可达；每次按键/单行输出
+都整屏 raster/blend（200x50 实测约 1.58 ms，profile `rows=50`、每帧
+`full_redraws+1`）。
+
+**修复**：双缓冲只在轮换时把**上一帧重绘过的行**从旧 buffer 复制到新 buffer，
+再 raster 本帧 damage 行；两边始终只差一帧。首帧/resize/主题/透明度、以及
+`frame.full` 或 damage 行数 > `rows/2`（普通屏幕滚动会脏所有行）仍走整屏。
+单色字形补单元格纵向裁剪：部分字体的重音/上半块会向邻行渗 1px，局部重绘不覆盖
+邻行时会在那里留下混合像素（像素等价测试抓到的真实残影）。
+
+**可复现基准**（同进程 legacy-full vs damage 对照，release）：
+
+```bash
+CARGO_TARGET_DIR=$PWD/.target-render ./scripts/bench_render.sh
+# 场景：single_row / typing_burst / full_200x50 / scroll，每项 200–600 帧
+```
+
+200x50（cell 9x22，buffer 1800x1100，`draw_without_cursor` + `image`）：
+
+| 场景 | legacy full p50 | damage p50 | speedup | rows | full_redraws delta |
+|---|---|---|---|---|---|
+| 单行输出 | 1581.4 µs | **34.7 µs** | **45.6×** | 1 | 0 |
+| 连续按键（400 帧） | 1584.0 µs | **34.1 µs** | **46.4×** | 1 | 0 |
+| full 200x50 | 1612.8 µs | 同路径 | 1.00× | 50 | 200/200 |
+| 滚动（全行 damage） | 1605.9 µs | 1607.4 µs | 1.00× | 50 | 200/200 |
+
+`image()` p50 0.05–0.08 µs（refcount clone），benchmark 内 `detach=0`。
+跨提交 before（基线 `1a55f09` 首次干净运行）单行/按键/滚动都约 1.56–1.61 ms、
+`rows=50`、每帧 `full_redraws+1`（1a55f09 构建后多次运行因机器负载可到
+2.3–5.4 ms）；因此**同进程 A/B 比值**才是主要证据，绝对值只作参考。
+
+**Xvfb :137 e2e**（`scripts/e2e_render_damage.sh`，release 二进制）：
+
+```
+[render] pane=1 grid=100x30 full=false rows=1 copy=0 full_redraws=1 damage_rows=1 ...
+[render] pane=1 grid=100x30 full=true  rows=30 copy=0 full_redraws=2 ...   # 滚动
+[render] pane=1 grid=105x30 full=true  rows=30 ...                         # resize
+[render] pane=1 grid=105x30 full=false rows=1 copy=29 ...                  # resize 后单行
+```
+
+断言：单行输出 `full=false rows=1` 且 `full_redraws` 不增长；搜索高亮只重绘命中行；
+滚动/resize/主题切换出现整屏帧；截图 5 张（单行输出、搜索高亮、滚动、resize、
+主题切换）在 `.logs/render-damage/`，主题背景像素从 tokyo-night 切到 catppuccin-mocha
+的计数为 235057→0 / 0→235057。
+
+**已知限制**：
+
+- 仍是两块 CPU 持久帧。若 Slint 连续两帧以上未消费旧 `Image`，写入目标 buffer 会触发
+  `SharedPixelBuffer` 整块 CoW（release 100x30 约 0.6 ms；2560x1413 会更大）。此时只保证
+  正确性，不保证 damage 成本；正常单帧节奏下 `detach=false`。
+- Skia 仍整张纹理上传（Slint 1.18 没有安全持久 GPU texture API）；本次只省 CPU
+  raster/blend/行复制，不改变纹理上传。
+- Sixel 是独立 overlay，不写入终端帧，因此不参与 damage；滚动历史（`display_offset≠0`）
+  仍由 core 强制 full。
+- 只在 Xvfb/llvmpipe + `winit-software` 验证；真机 GPU 的 detach 频率/帧时间未验收。
+
 ## 3. 4 pane 测量步骤（可复现）
 
 ```bash

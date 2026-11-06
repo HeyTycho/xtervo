@@ -13,6 +13,10 @@ mod plugin;
 mod profile;
 mod quake;
 mod render;
+#[cfg(test)]
+mod render_bench;
+#[cfg(test)]
+mod render_damage_tests;
 mod render_probe;
 mod session;
 mod sftp;
@@ -4275,11 +4279,15 @@ fn redraw_pane_inner(st: &mut AppState, id: PaneId) {
     sync_inline_images(rt, &frame);
     if render_profile() {
         eprintln!(
-            "[render] pane={id} grid={}x{} full={} rows={} draw={:.2}ms image={:.2}ms detach={} bytes={}",
+            "[render] pane={id} grid={}x{} full={} rows={} copy={} full_redraws={} \
+             damage_rows={} draw={:.2}ms image={:.2}ms detach={} bytes={}",
             frame.cols,
             frame.rows,
-            frame.full,
+            rt.renderer.last_draw_full,
             rt.renderer.last_draw_rows,
+            rt.renderer.last_copied_rows,
+            rt.renderer.full_redraws,
+            frame.damage.len(),
             rt.renderer.last_draw_us,
             rt.renderer.last_image_us,
             rt.renderer.last_buffer_detached,

@@ -3,8 +3,13 @@
 //!
 //! Phase 0 目的：把「Slint + Skia 能否以 60 FPS 承载整屏终端帧」这件事量出来。
 //! 现在使用**双缓冲持久帧**：两块 `SharedPixelBuffer` 隔帧交替写入，`Image`
-//! 只做 refcount clone，不再每帧整屏 memcpy。每次切换 buffer 整屏重绘（2560x1413
-//! 实测约 1ms），比整屏 image 拷贝（约 5ms）便宜，也避免新 buffer 缺上一帧内容。
+//! 只做 refcount clone，不再每帧整屏 memcpy。
+//!
+//! damage 恢复：新 buffer 是「上上帧」的内容，缺上一帧的改动。因此每次轮换只把
+//! **上一帧实际重绘过的行**从旧 buffer 复制过来，再栅格化本帧 damage 行；两边
+//! 始终相差不超过一帧，旧行不会丢也不会花屏。全屏重绘（首帧/resize/主题/滚动
+//! 历史）不需要复制，直接把所有行画进新 buffer，并把“全部行”记为下一帧要同步
+//! 的集合。单行输出/按键因此只 raster + 复制 1 行，而不是整屏。
 
 use std::rc::Rc;
 
@@ -110,9 +115,9 @@ fn blend_color(fg: u32, bg: u32) -> u32 {
 /// 释放，`make_mut_bytes` 就能原地写（`make_mut_slice` 在仍共享时会 detach，
 /// 这里用 `last_detached` 记录并在 profiling 日志里暴露，绝不假设）。
 ///
-/// 每次切换缓冲都整屏重绘：整屏 draw 在 2560x1413 实测约 1ms，而整屏 image
-/// 拷贝约 4.8ms；即使终端只脏一行，整屏重绘仍比全帧拷贝便宜。这样也避免
-/// “新缓冲缺少上一帧内容 → 脏行叠加出现花屏”的问题。
+/// 两块缓冲的内容始终只差**上一帧重绘过的行**：轮换到旧 buffer 时先把这些行从
+/// 当前 buffer 复制过去（见 [`Renderer::draw_impl`]），再画本帧 damage。这样
+/// 单行更新只处理一行，不会为了补齐新 buffer 再整屏 raster 一次。
 struct FrameBuffers {
     buffers: [slint::SharedPixelBuffer<slint::Rgba8Pixel>; 2],
     active: usize,
@@ -121,8 +126,8 @@ struct FrameBuffers {
 }
 
 impl FrameBuffers {
-    /// 只分配、不填充：每次 `draw()` 都会整屏重绘两块缓冲之一，首帧/换尺寸后
-    /// 的空白像素会被完整覆盖。这样 resize 时省掉 2×整屏 `fill` 的写带宽。
+    /// 只分配、不填充：首帧/换尺寸后 `draw()` 会整屏重绘，空白像素会被完整覆盖。
+    /// 这样 resize 时省掉 2×整屏 `fill` 的写带宽。
     fn new(width: usize, height: usize) -> Self {
         let buffers = [
             slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(width as u32, height as u32),
@@ -151,9 +156,58 @@ impl FrameBuffers {
         bytemuck::cast_slice_mut(bytes)
     }
 
-    fn rotate(&mut self) -> bool {
+    /// 把 `active` 切换到另一块 buffer。
+    fn rotate(&mut self) {
         self.active = (self.active + 1) % 2;
-        true
+    }
+
+    /// 轮换后补齐新 buffer：把上一帧重绘过的 cell 行从 `src` 复制到当前 buffer。
+    ///
+    /// 本帧已标记为脏的行会被 `draw_row` 完整覆盖，跳过复制省一次写带宽。
+    /// 返回实际复制的行数（profile/测试用）。若目标 buffer 仍被 Slint 持有，
+    /// `make_mut_bytes` 会 detach 一次（整块 CoW），内容仍是正确的旧帧。
+    fn copy_rows_from(
+        &mut self,
+        src: usize,
+        cell_h: usize,
+        dirty_flags: &[bool],
+        rows: &[usize],
+    ) -> u32 {
+        let dst = self.active;
+        if src == dst || rows.is_empty() || cell_h == 0 {
+            return 0;
+        }
+        let width = self.buffers[dst].width() as usize;
+        let row_bytes = width * 4 * cell_h;
+        let (src_buf, dst_buf) = match (src, dst) {
+            (0, 1) => {
+                let (lo, hi) = self.buffers.split_at_mut(1);
+                (&lo[0], &mut hi[0])
+            },
+            (1, 0) => {
+                let (lo, hi) = self.buffers.split_at_mut(1);
+                (&hi[0], &mut lo[0])
+            },
+            _ => return 0,
+        };
+        let src_bytes = src_buf.as_bytes();
+        let before = dst_buf.as_bytes().as_ptr();
+        let dst_bytes = dst_buf.make_mut_bytes();
+        self.detached |= dst_bytes.as_ptr() != before;
+        let mut copied = 0;
+        for &row in rows {
+            if dirty_flags.get(row).copied().unwrap_or(false) {
+                continue;
+            }
+            let start = row * row_bytes;
+            let end = start + row_bytes;
+            if end > src_bytes.len() || end > dst_bytes.len() {
+                continue;
+            }
+            dst_bytes[start..end].copy_from_slice(&src_bytes[start..end]);
+            copied += 1;
+        }
+        copied
     }
 
     fn image(&self) -> slint::Image {
@@ -210,12 +264,23 @@ pub struct Renderer {
     /// 帧内光标闪烁相位（`draw` 用；app 的光标 overlay 由 UI timer 控制）。
     cursor_blink_on: bool,
     force_full: bool,
-    last_cursor: (u16, u16),
+    /// 上一帧已经烘焙进帧缓冲的光标格（`draw` 兼容路径）；app 用 overlay 时为 None。
+    drawn_cursor: Option<(u16, u16)>,
     last_selection: Option<Span>,
     last_search: Option<Span>,
+    /// 本帧逐行脏标记（复用，避免每帧分配）。
+    dirty_flags: Vec<bool>,
+    /// 本帧实际重绘的行（升序）。
+    dirty_rows: Vec<usize>,
+    /// 上一帧重绘过的行：轮换 buffer 时只需同步这些行。
+    prev_changed_rows: Vec<usize>,
     /// 统计
     pub last_draw_cells: u32,
     pub last_draw_rows: u32,
+    /// 本次 draw 是否走了整屏路径（不是 frame.full，而是渲染器的最终判定）。
+    pub last_draw_full: bool,
+    /// 轮换时从旧 buffer 复制过来的行数。
+    pub last_copied_rows: u32,
     pub full_redraws: u64,
     /// 最近一次 `draw`/`image` 的耗时（毫秒，仅用于 TERVO_RENDER_PROFILE 日志）。
     pub last_draw_us: f64,
@@ -258,11 +323,16 @@ impl Renderer {
             cursor_text_color_override: None,
             cursor_blink_on: true,
             force_full: true,
-            last_cursor: (0, 0),
+            drawn_cursor: None,
             last_selection: None,
             last_search: None,
+            dirty_flags: vec![false; rows],
+            dirty_rows: Vec::with_capacity(rows),
+            prev_changed_rows: Vec::with_capacity(rows),
             last_draw_cells: 0,
             last_draw_rows: 0,
+            last_draw_full: false,
+            last_copied_rows: 0,
             full_redraws: 0,
             last_draw_us: 0.0,
             last_image_us: 0.0,
@@ -277,6 +347,8 @@ impl Renderer {
         self.cursor_color = pack(cursor_color);
         self.buffer.fill_all(self.default_bg);
         self.force_full = true;
+        self.drawn_cursor = None;
+        self.prev_changed_rows.clear();
         self.last_selection = None;
         self.last_search = None;
     }
@@ -288,6 +360,8 @@ impl Renderer {
         self.default_bg = default_background(self.theme_bg, opacity);
         self.buffer.fill_all(self.default_bg);
         self.force_full = true;
+        self.drawn_cursor = None;
+        self.prev_changed_rows.clear();
         self.last_selection = None;
         self.last_search = None;
     }
@@ -374,6 +448,10 @@ impl Renderer {
         self.height = rows * self.cell_h;
         self.buffer = FrameBuffers::new(self.width, self.height);
         self.force_full = true;
+        self.drawn_cursor = None;
+        self.prev_changed_rows.clear();
+        self.dirty_flags.clear();
+        self.dirty_flags.resize(rows, false);
         self.last_selection = None;
         self.last_search = None;
     }
@@ -418,6 +496,7 @@ impl Renderer {
     ///
     /// 裁剪是“渲染不撑破网格”的最后一道保险：即使字体步进异常、或网格把 emoji
     /// 标成 1 格，字形也只会出现在自己的单元格里。
+    #[allow(clippy::too_many_arguments)]
     fn blit_bitmap(
         &mut self,
         gx: i32,
@@ -426,12 +505,16 @@ impl Renderer {
         color: u32,
         clip_x0: i32,
         clip_x1: i32,
+        clip_y0: i32,
+        clip_y1: i32,
     ) {
         let width = self.width;
         let height = self.height;
         let atlas = self.glyphs.atlas();
         let pixels = self.buffer.pixels_mut();
-        Self::blit_bitmap_buf(pixels, width, height, atlas, gx, gy, g, color, clip_x0, clip_x1);
+        Self::blit_bitmap_buf(
+            pixels, width, height, atlas, gx, gy, g, color, clip_x0, clip_x1, clip_y0, clip_y1,
+        );
     }
 
     /// 把字形位图混合进任意缓冲；`blit_bitmap` 与光标 overlay 共用。
@@ -447,6 +530,8 @@ impl Renderer {
         color: u32,
         clip_x0: i32,
         clip_x1: i32,
+        clip_y0: i32,
+        clip_y1: i32,
     ) {
         if gx >= width as i32 || gy >= height as i32 {
             return;
@@ -454,7 +539,9 @@ impl Renderer {
         let (w, h) = (g.w as usize, g.h as usize);
         for row in 0..h {
             let dy = gy + row as i32;
-            if dy < 0 || dy >= height as i32 {
+            // 纵向也严格裁剪到本行：部分字体的重音/上半块会向相邻行伸出 1px，
+            // 局部重绘不覆盖邻行时会在那里留下上一帧的混合像素（残影）。
+            if dy < clip_y0 || dy >= clip_y1 || dy < 0 || dy >= height as i32 {
                 continue;
             }
             let drow = dy as usize * width;
@@ -553,7 +640,17 @@ impl Renderer {
         let pad = ((total - g.advance as i32) / 2).max(0);
         let gx = x + pad + g.left as i32;
         let gy = baseline + g.top as i32;
-        self.blit_bitmap(gx, gy, g, color, x, x + total);
+        let row_top = baseline - self.fonts.baseline;
+        self.blit_bitmap(
+            gx,
+            gy,
+            g,
+            color,
+            x,
+            x + total,
+            row_top,
+            row_top + self.cell_h as i32,
+        );
         Some(gx + g.w as i32 / 2)
     }
 
@@ -579,8 +676,18 @@ impl Renderer {
             let Some(g) = self.glyphs.get(&self.fonts, mark, style, span) else { continue };
             let gx = center_x - g.w as i32 / 2;
             let gy = baseline + g.top as i32;
-            // 组合标记也裁剪在基字形占的 span 内，避免重音压到相邻格。
-            self.blit_bitmap(gx, gy, g, color, x0, x0 + total);
+            // 组合标记也裁剪在基字形占的 span/本行内，避免重音压到相邻格/行。
+            let row_top = baseline - self.fonts.baseline;
+            self.blit_bitmap(
+                gx,
+                gy,
+                g,
+                color,
+                x0,
+                x0 + total,
+                row_top,
+                row_top + self.cell_h as i32,
+            );
         }
     }
 
@@ -606,7 +713,21 @@ impl Renderer {
         let gx = x + pad + g.left as i32;
         let gy = baseline + g.top as i32;
         let atlas = glyphs.atlas();
-        Self::blit_bitmap_buf(pixels, width, height, atlas, gx, gy, g, color, x, x + total);
+        let row_top = baseline - fonts.baseline;
+        Self::blit_bitmap_buf(
+            pixels,
+            width,
+            height,
+            atlas,
+            gx,
+            gy,
+            g,
+            color,
+            x,
+            x + total,
+            row_top,
+            row_top + fonts.cell_h as i32,
+        );
         Some(gx + g.w as i32 / 2)
     }
 
@@ -657,7 +778,21 @@ impl Renderer {
             let gx = center_x - g.w as i32 / 2;
             let gy = baseline + g.top as i32;
             let atlas = glyphs.atlas();
-            Self::blit_bitmap_buf(pixels, width, height, atlas, gx, gy, g, color, x0, x0 + total);
+            let row_top = baseline - fonts.baseline;
+            Self::blit_bitmap_buf(
+                pixels,
+                width,
+                height,
+                atlas,
+                gx,
+                gy,
+                g,
+                color,
+                x0,
+                x0 + total,
+                row_top,
+                row_top + fonts.cell_h as i32,
+            );
         }
     }
 
@@ -1005,12 +1140,14 @@ impl Renderer {
 
     /// 把光标画进终端帧缓冲（`draw` 的兼容路径）。app 使用 `draw_without_cursor`
     /// + [`Renderer::cursor_overlay`]，让闪烁只切换 Slint overlay 的可见性。
-    fn draw_cursor(&mut self, frame: &Frame) {
+    ///
+    /// 返回实际画下的光标格；下一帧用它擦除旧光标/决定是否要整屏重画。
+    fn draw_cursor(&mut self, frame: &Frame) -> Option<(u16, u16)> {
         if !self.cursor_blink_on {
-            return;
+            return None;
         }
-        let Some(shape) = self.effective_cursor_shape(frame) else { return };
-        let Some((row, col, span)) = self.cursor_geometry(frame) else { return };
+        let shape = self.effective_cursor_shape(frame)?;
+        let (row, col, span) = self.cursor_geometry(frame)?;
         let (x0, y0) = (col * self.cell_w, row * self.cell_h);
         let cell = frame.cells.get(row * frame.cols + col).copied();
         let marks = frame.zerowidth_at(row, col);
@@ -1034,6 +1171,7 @@ impl Renderer {
             color,
             text_color,
         );
+        Some((row as u16, col as u16))
     }
 
     /// 生成光标 overlay 的像素缓冲与几何；测试直接检查像素，`cursor_overlay`
@@ -1112,67 +1250,105 @@ impl Renderer {
         self.draw_impl(frame, false);
     }
 
-    fn draw_impl(&mut self, frame: &Frame, draw_cursor: bool) {
+    fn draw_impl(&mut self, frame: &Frame, with_cursor: bool) {
         let started = std::time::Instant::now();
         if frame.cols != self.cols || frame.rows != self.rows {
             self.resize_grid(frame.cols, frame.rows);
         }
-        // 切换到另一块缓冲；上一块仍可能被 Slint 的 Image 持有，不能原地写。
-        // 新缓冲缺少上一帧内容，因此本帧必须整屏重绘（详见 FrameBuffers 注释）。
-        let buffer_switched = self.buffer.rotate();
         self.buffer.detached = false;
         self.last_draw_cells = 0;
         self.last_draw_rows = 0;
+        self.last_copied_rows = 0;
+        self.last_draw_full = false;
 
-        // 双缓冲每次切换缓冲都必须整屏重建（见 FrameBuffers）。
-        let full = frame.full || self.force_full || buffer_switched;
+        // 光标是否要烘焙进帧缓冲。app 走 overlay 路径（with_cursor=false），
+        // 光标移动/闪烁不触碰终端帧；`draw` 兼容路径才需要擦旧画新。
+        let cursor_target = if with_cursor && self.cursor_blink_on {
+            self.cursor_geometry(frame).map(|(row, col, _)| (row as u16, col as u16))
+        } else {
+            None
+        };
+
+        // 大范围 damage（普通屏幕滚动会脏所有行）等同整屏：逐行重绘再把
+        // 上一帧未重绘的行复制过来没有收益，直接整屏更省一次复制。
+        let full = frame.full || self.force_full || frame.needs_full_redraw();
+
         if full {
             self.force_full = false;
             self.full_redraws += 1;
+            self.last_draw_full = true;
+            // 全屏重绘不依赖旧缓冲内容；切到另一块，避免与 Slint 当前持有的
+            // Image 共用同一块内存（写前 detach 会多一次整屏 CoW）。
+            self.buffer.rotate();
             for row in 0..self.rows {
                 self.draw_row(frame, row);
-                self.last_draw_rows += 1;
             }
+            self.last_draw_rows = self.rows as u32;
+            self.prev_changed_rows.clear();
+            self.prev_changed_rows.extend(0..self.rows);
         } else {
-            // 行级脏标记：用 cursor 前后位置补齐
-            let mut dirty = vec![false; self.rows];
+            // 行级脏标记：damage + 选区/搜索高亮新旧 span + 光标格。
+            self.dirty_flags.clear();
+            self.dirty_flags.resize(self.rows, false);
             for d in &frame.damage {
                 if (d.line as usize) < self.rows {
-                    dirty[d.line as usize] = true;
+                    self.dirty_flags[d.line as usize] = true;
                 }
             }
-            if frame.cursor.visible {
-                let (old_row, _) = self.last_cursor;
-                if (old_row as usize) < self.rows {
-                    dirty[old_row as usize] = true;
-                }
-                if (frame.cursor.line as usize) < self.rows {
-                    dirty[frame.cursor.line as usize] = true;
-                }
-            }
-            // 选区/搜索高亮变化：补齐受影响的行
-            let marks: [Option<Span>; 4] =
-                [self.last_selection, frame.selection, self.last_search, frame.search];
             if self.last_selection != frame.selection || self.last_search != frame.search {
+                let marks: [Option<Span>; 4] =
+                    [self.last_selection, frame.selection, self.last_search, frame.search];
                 for span in marks.into_iter().flatten() {
                     for line in span.start_line..=span.end_line {
                         if (line as usize) < self.rows {
-                            dirty[line as usize] = true;
+                            self.dirty_flags[line as usize] = true;
                         }
                     }
                 }
             }
-            for (row, d) in dirty.iter().enumerate() {
-                if *d {
-                    self.draw_row(frame, row);
-                    self.last_draw_rows += 1;
+            if with_cursor {
+                if let Some((row, _)) = self.drawn_cursor {
+                    if (row as usize) < self.rows {
+                        self.dirty_flags[row as usize] = true;
+                    }
+                }
+                if let Some((row, _)) = cursor_target {
+                    if (row as usize) < self.rows {
+                        self.dirty_flags[row as usize] = true;
+                    }
                 }
             }
+            self.dirty_rows.clear();
+            for (row, dirty) in self.dirty_flags.iter().enumerate() {
+                if *dirty {
+                    self.dirty_rows.push(row);
+                }
+            }
+
+            // 新 buffer 停留在两帧前，缺上一帧的改动：只复制上一帧重绘过的行。
+            // 本帧要重绘的行会被 draw_row 完整覆盖，跳过复制。
+            let prev_active = self.buffer.active;
+            self.buffer.rotate();
+            self.last_copied_rows = self.buffer.copy_rows_from(
+                prev_active,
+                self.cell_h,
+                &self.dirty_flags,
+                &self.prev_changed_rows,
+            );
+            for i in 0..self.dirty_rows.len() {
+                let row = self.dirty_rows[i];
+                self.draw_row(frame, row);
+            }
+            self.last_draw_rows = self.dirty_rows.len() as u32;
+            self.prev_changed_rows.clear();
+            self.prev_changed_rows.extend_from_slice(&self.dirty_rows);
         }
-        if draw_cursor {
-            self.draw_cursor(frame);
+
+        if with_cursor {
+            self.drawn_cursor = self.draw_cursor(frame);
+        } else {
+            self.drawn_cursor = None;
         }
-        self.last_cursor = (frame.cursor.line, frame.cursor.col);
         self.last_selection = frame.selection;
         self.last_search = frame.search;
         self.last_draw_us = started.elapsed().as_secs_f64() * 1000.0;
