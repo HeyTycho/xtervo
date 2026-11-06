@@ -212,6 +212,23 @@ backspace_binding = "ascii-delete" # ascii-delete(0x7f) | control-h(0x08)
 delete_binding = "delete-sequence" # delete-sequence(ESC[3~) | ascii-del | control-h
 ```
 
+Sixel 内联图片默认开启（设置页 Terminal → Images 可关）：
+
+```toml
+sixel = true             # 默认；false 时不解析/渲染图片，DA1 不再宣告参数 4，已有图清除
+sixel_scrolling = true   # true = 图片跟随滚动历史；false = 固定在创建时的屏幕行
+```
+
+- 支持 DCS `ESC P ... q ... ST`（含 BEL 终止、C0 分包、跨 PTY chunk）、RGB/HLS 调色板、
+  透明像素、重复（`!Pn`）与 raster attributes；非法/超限数据只丢图，不崩溃。
+- 上限：单条 Sixel 原始数据 25 MiB、单图 16 MP / 单边 16384 px；图片作为独立
+  Slint Image overlay 画在终端帧之上，不进入 cell 文本/选区，也不改变终端帧重绘频率。
+- Primary DA1 在开启时回 `CSI ?62;4;9;22c`（含 Sixel 参数 4，供 dsh-tui 等自动选择），
+  关闭时回 alacritty 原生的 `CSI ?6c`；不宣告 Kitty。iTerm2 IIP（OSC 1337）暂未实现，
+  因此也不做任何 IIP 宣告。
+- 已知限制：TUI 的局部 ECH 擦除不会逐像素追踪（清屏/备用屏切换会清图）；scrollback
+  淘汰最旧行后，锚点可能偏移；Sixel 没有部分透明；仅在 Xvfb/llvmpipe 验证。
+
 详见 [`docs/terminal-behavior.md`](docs/terminal-behavior.md)。
 
 默认 `theme = "auto"`：跟随系统浅色/深色（深色 → Yaru Dark，浅色 → Yaru Light），也可以显式选任意主题。

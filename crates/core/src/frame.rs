@@ -7,6 +7,7 @@
 //! - 颜色在此层解析为 RGB，UI 不再依赖 alacritty 的类型。
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use alacritty_terminal::term::cell::{Cell, Flags};
 use alacritty_terminal::vte::ansi::CursorShape as VteCursorShape;
@@ -167,6 +168,39 @@ impl Span {
     }
 }
 
+/// 视口内的一张内联图片（Sixel 等）。
+///
+/// 图片像素不进入 `cells`，因此不参与文本、选区、搜索与链接；UI 把它作为
+/// 独立 overlay 画在终端帧之上。`data` 是直通 RGBA8（未预乘），`row`/`col`
+/// 是当前视口内的锚点（`row` 可以为负，表示图片顶部在视口上方）。
+#[derive(Clone)]
+pub struct InlineImage {
+    /// actor 内单调递增的图片 ID；UI 用它缓存 Slint `Image`，避免重复上传。
+    pub id: u64,
+    /// 视口行（0 = 顶行；负值表示滚动到视口上方）。
+    pub row: i32,
+    /// 图片左上角所在列（cell）。
+    pub col: u16,
+    /// 像素宽高（Sixel 的像素尺寸，不随字号缩放）。
+    pub width: u32,
+    pub height: u32,
+    /// 直通 RGBA8，长度 = width * height * 4。
+    pub data: Arc<[u8]>,
+}
+
+impl std::fmt::Debug for InlineImage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InlineImage")
+            .field("id", &self.id)
+            .field("row", &self.row)
+            .field("col", &self.col)
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("bytes", &self.data.len())
+            .finish()
+    }
+}
+
 /// 可复用的终端帧缓冲。
 #[derive(Clone, Debug, Default)]
 pub struct Frame {
@@ -186,6 +220,8 @@ pub struct Frame {
     pub mode: u32,
     /// 视口相对滚动历史顶端的偏移。
     pub display_offset: usize,
+    /// 当前视口内可见的内联图片（Sixel），按创建顺序排列。
+    pub images: Vec<InlineImage>,
     /// 单调递增序号，便于 UI 判断是否漏帧。
     pub generation: u64,
     /// 本帧从 grid 拷贝的单元格数（性能计数器）。
@@ -220,6 +256,7 @@ impl Frame {
         self.rows = rows;
         self.cells = vec![CellData::default(); cols * rows];
         self.damage.clear();
+        self.images.clear();
         self.full = true;
         self.reset_links();
         self.zerowidth.clear();

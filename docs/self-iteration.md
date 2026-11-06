@@ -1496,3 +1496,49 @@ cargo bench -p tervo-core --bench pty_throughput
   sbix 仅 PNG（JPEG/TIFF 不支持）；不做 ZWJ 合字；彩色位图按逻辑字号解码，
   HiDPI 由合成器放大；彩色 emoji 忽略终端 fg/INVERSE；RGBA 缓存随不同 emoji
   数量线性增长。
+||||||| a42a108
+
+### 2026-11-06 · Sixel 内联图片（feat/sixel）
+
+- **目标**：按 Tabby 同款路径提供终端内联图片，默认开启、配置可关；不改 window
+  resize / GPU 默认 / 背景 / Tab 布局 / IME / 字体 fallback。
+- **DCS 过滤（core/sixel.rs + pane.rs）**：alacritty 0.26 不会把 Sixel 画出来，且
+  BEL 终止的 DCS 会让 vte 停在字符串状态吞掉后续输出。actor 把 `ESC P ... q ...`
+  整段 DCS 从 vte 输入里摘掉，只把普通字节交给 vte / OscScanner；状态机跨 PTY
+  chunk 保存 ESC、DCS 头、 payload 与 `ESC \` 的中间状态，支持 BEL、C1 ST、CAN/SUB
+  中止。非 Sixel DCS（如 DECRQSS `$q`）原样放行。
+- **解码**：RGB（0–100%，兼容 0–255 写法）与 HLS 调色板、透明像素、`!Pn` 重复、
+  raster attributes；单条原始数据 25 MiB、单图 16 MP / 单边 16384 px 上限，空图/
+  非法/超限一律丢图，不 panic。输出直通 RGBA8（未预乘，未覆盖像素 alpha=0）。
+- **锚定与多图**：图片按创建时光标 cell 锚定，`abs_line = grid line + history_size`；
+  滚动时 `row = abs_line - history + display_offset`，resize 改变 history/screen
+  划分时仍保持同一内容行。`sixel_scrolling = false` 时改为固定视口行。actor 最多
+  保存 64 张 / 64 MiB，超预算淘汰最旧；清屏（`Ctrl::ClearScreen`、`CSI 2J/3J`、
+  进入/离开备用屏、RIS）会清除图片。
+- **渲染（app/main.slint + main.rs）**：`Frame::images` 只携带视口内图片；app 按
+  core 图片 ID 缓存 Slint `Image`，`sync_inline_images` 只在图片集合/锚点变化时重建
+  `PaneImage` 模型，x/y 用当前 cell 尺寸计算。图片是 pane 内独立 Image overlay，
+  不进终端帧、不参与文本/选区/搜索/链接；光标和 Read Only 角标仍画在图片之上。
+  滚动/纯文本输出不会重新上传 RGBA，光标闪烁仍只切 overlay visible。
+- **DA1**：Listener 精确拦截 alacritty 的 Primary DA `ESC[?6c`；Sixel 开启时回
+  `ESC[?62;4;9;22c`（参数 4 = Sixel，供 dsh-tui 自动选择），关闭时保持 `ESC[?6c`；
+  二级 DA 不改写，不宣告 Kitty。
+- **配置/设置页**：`sixel = true`、`sixel_scrolling = true`（serde default，旧配置
+  自动补齐）；Terminal → Images 两个 ToggleRow + 上限/DA1 提示。关闭立即清空现有
+  图片，并对已有 pane/后台保留会话即时生效。
+- **测试**：`cargo test -p tervo-core` 88 lib + 59 integration（新增 18 个 sixel/lib
+  单测与 6 个真实 PTY 集成：跨 32 KiB chunk 大图、BEL 终止、非法/超限、DA1 on/off、
+   `CSI 2J` 清图、滚动锚点）；`cargo test -p tervo-app --bin tervo` 249 passed。
+- **截图/证据（headless Xvfb :120，`.logs/sixel/`）**：`01-two-images.png`（两张图 +
+  文本）、`02-scrolled.png`（滚轮上滚后图片跟随内容下移）、`04-back-to-image.png`
+  （切 Tab 再回来）、`05-resized.png`（窗口 resize 后仍在同一 cell）、
+  `13-settings-sixel-off.png` / `14-terminal-after-sixel-off.png`（设置页开关 + 即时
+  清图）；DA1：`15-da1-sixel-on.png` 显示 `1b5b3f36323b343b393b323263` /
+  `^[[?62;4;9;22c`，`16-da1-sixel-off.png` 显示 `1b5b3f3663` / `^[[?6c`。
+  `17-dsh-start.png`：dsh-tui 在 Tervo 内启动到 onboarding（API/模型已连接）；用
+  dsh 自己的 `selectTerminalImageProtocol` 对 `[62,4,9,22]` 返回 `sixel`
+  （`.logs/sixel/dsh-protocol-select.txt`）。
+- **限制**：iTerm2 IIP（OSC 1337）未实现，文档和 DA1 都不宣称；dsh 只验证启动与
+  协议选择函数，未伪造图片消息；TUI 的局部 `ECH` 擦除没有逐像素追踪，只有清屏类
+  序列会清图；scrollback 淘汰最旧行后锚点可能偏移；Sixel 无部分透明；只在
+  Xvfb/llvmpipe 验证，未验证真 GPU；未做 fuzz 与超大真图内存峰值测试。

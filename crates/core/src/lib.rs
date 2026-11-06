@@ -14,12 +14,15 @@ pub mod mouse;
 pub mod osc;
 pub mod palette;
 pub mod pane;
+pub mod sixel;
 
 pub use event::{
     ClipboardRequest, ClipboardSelection, CoreEvent, EventSink, Notification, PaneStats, Progress,
     ProgressState, WakeSignal,
 };
-pub use frame::{flags, CellData, CursorShape, CursorState, Frame, LineDamage, Span};
+pub use frame::{
+    flags, CellData, CursorShape, CursorState, Frame, InlineImage, LineDamage, Span,
+};
 pub use link::{is_allowed_uri, Link, LinkKind};
 pub use mouse::{Modifiers, MouseAction, MouseButton, MouseEvent};
 pub use bench_support::TermSim;
@@ -28,3 +31,4 @@ pub use pane::fill_frame;
 pub use pane::{
     spawn, GridSize, PaneConfig, PaneHandle, ScrollPosition, SearchHit, SearchOptions,
 };
+pub use sixel::{SixelEvent, SixelFilter, SixelImage};
