@@ -61,6 +61,10 @@ struct PaneRuntime {
     frame: Box<Frame>,
     image: slint::Image,
     grid: (usize, usize),
+    /// 最近一帧的终端光标；IME/焦点同步用。
+    cursor: (usize, usize),
+    /// 已发送的 1004 focus 状态；None=应用未启用。
+    focus_sent: Option<bool>,
     rect: Rect,
     title: String,
     /// 进度 / 未读通知 / 完成标记，rebuild_tabs 时按 Tab 聚合。
@@ -188,6 +192,8 @@ struct AppState {
     /// 1003 悬停上报的上一格（按格去重，避免鼠标移动刷爆有界 ctrl 队列）。
     hover_cell: Option<(PaneId, (u16, u16))>,
     resize: Option<WindowResize>,
+    /// 窗口是否聚焦（100ms 轮询 winit），用于 DECSET 1004 focus 上报。
+    window_focused: bool,
     /// 本次边/角拖动已交给 WM/compositor（winit drag_resize）。
     /// true 时 drag 回调不再每帧 query_pointer + set_size；若 150ms 内 WM 没有
     /// 产生尺寸变化，drag 回调会解除它并回退自绘，保证 resize 不会“按了没反应”。
@@ -1103,6 +1109,8 @@ fn create_pane(
         frame,
         image,
         grid: (cols, rows),
+        cursor: (0, 0),
+        focus_sent: None,
         rect: Rect::new(0.0, 0.0, 0.0, 0.0),
         title: shell_name(&st.opts),
         activity: activity::PaneActivity::default(),
@@ -2657,7 +2665,30 @@ fn focus_pane(id: PaneId) {
         }
         st.ws.tabs[idx].focused = id;
         refresh_views(st);
+        let win = st.window_focused;
+        sync_terminal_focus(st, win);
     });
+}
+
+/// 把窗口/ pane 焦点同步给启用了 DECSET 1004 的终端。
+/// 每个 pane 记录上次发送的状态；模式刚启用时也会补发当前 FocusIn。
+fn sync_terminal_focus(st: &mut AppState, window_focused: bool) {
+    st.window_focused = window_focused;
+    let active_focused = st.ws.active_tab().map(|t| t.focused);
+    for (id, rt) in st.panes.iter_mut() {
+        if !rt.handle.wants_focus() {
+            rt.focus_sent = None;
+            continue;
+        }
+        let want = window_focused && Some(*id) == active_focused;
+        if rt.focus_sent != Some(want) {
+            rt.handle.focus_event(want);
+            rt.focus_sent = Some(want);
+            if std::env::var_os("TERVO_FOCUS_LOG").is_some() {
+                eprintln!("[focus] pane={id} focused={want} window={window_focused}");
+            }
+        }
+    }
 }
 
 /// 关闭前是否需要确认：开着开关且不止一个会话时弹窗，避免误关杀掉一堆 shell。
@@ -2753,6 +2784,8 @@ fn set_active_tab_inner(st: &mut AppState, index: usize) {
     refresh_views(st);
     rebuild_tabs(st);
     redraw_visible(st);
+    let win = st.window_focused;
+    sync_terminal_focus(st, win);
 }
 
 /// 拖拽落点：按平均槽位（padding-left 32px）把指针 x 换算成目标下标。
@@ -3186,6 +3219,8 @@ fn focus_pane_dir(st: &mut AppState, dx: f32, dy: f32) {
         }
         refresh_views(st);
         redraw_visible(st);
+        let win = st.window_focused;
+        sync_terminal_focus(st, win);
         eprintln!("[ws] focus pane={id} dir=({dx},{dy})");
     }
 }
@@ -3813,13 +3848,19 @@ fn handle_input(
     } else {
         vec![focused]
     };
-    let encoded = keys::encode(text, ctrl, alt);
     if st.broadcast && targets.len() > 1 && keylog {
         eprintln!("[send] broadcast to {} panes", targets.len());
     }
     for target in targets {
     match st.panes.get_mut(&target) {
         Some(rt) => {
+            let encoded = keys::encode_mode(
+                text,
+                ctrl,
+                alt,
+                shift,
+                rt.handle.wants_kitty_keyboard(),
+            );
             if let Some(bytes) = &encoded {
                 rt.handle.input(bytes);
                 if keylog {
@@ -4580,6 +4621,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         settings_model,
         hover_cell: None,
         resize: None,
+        window_focused: true,
         wm_resize: false,
         wm_release_pending: false,
         xresize: None,
@@ -6013,6 +6055,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ---- OSC 标题轮询 ----
     let poll_timer = slint::Timer::default();
     poll_timer.start(slint::TimerMode::Repeated, Duration::from_millis(400), poll_events);
+
+    // DECSET 1004：窗口焦点变化及时同步给 TUI（100ms 足够，避免 400ms 轮询延迟）。
+    let focus_timer = slint::Timer::default();
+    focus_timer.start(slint::TimerMode::Repeated, Duration::from_millis(100), || {
+        let win = with_app(|st| {
+            st.ui
+                .window()
+                .with_winit_window(|w| w.has_focus())
+                .unwrap_or(true)
+        })
+        .unwrap_or(true);
+        with_app(|st| sync_terminal_focus(st, win));
+    });
 
     // 设置开关的初始状态
     with_app(|st| {
