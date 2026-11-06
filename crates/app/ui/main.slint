@@ -148,30 +148,6 @@ component MenuRow inherits Rectangle {
     }
 }
 
-component MiniBtn inherits Rectangle {
-    in property <string> label;
-    callback clicked();
-
-    width: 26px;
-    height: 26px;
-    border-radius: 6px;
-    background: hit.has-hover ? Palette.colors.hover : Palette.colors.raise;
-    border-width: 1px;
-    border-color: Palette.colors.border;
-
-    hit := TouchArea {
-        clicked => { root.clicked(); }
-    }
-    Text {
-        text: root.label;
-        color: Palette.colors.text;
-        font-size: 13px;
-        horizontal-alignment: center;
-        vertical-alignment: center;
-        width: 100%;
-        height: 100%;
-    }
-}
 
 // 设置页里的动作按钮（Vault 等）
 component ActionBtn inherits Rectangle {
@@ -376,27 +352,610 @@ component ChoiceBtn inherits Rectangle {
     }
 }
 
+/// 设置分类图标：统一 16×16 线性图标（细描边、低对比度）。
+/// 全部用 Path/Rectangle 手绘，避免依赖字体里是否有对应符号或混入 emoji。
+enum SettingsIconKind {
+    appearance,
+    terminal,
+    window,
+    keys,
+    profiles,
+    plugins,
+    vault,
+    advanced,
+    gear,
+    search,
+    chevron,
+}
+
+component SettingsIconView inherits Rectangle {
+    in property <SettingsIconKind> kind: SettingsIconKind.appearance;
+    in property <color> tint: Palette.colors.subtext;
+
+    width: 16px;
+    height: 16px;
+    background: transparent;
+
+    // Appearance / theme：中心圆 + 8 条光线。
+    if root.kind == SettingsIconKind.appearance : Rectangle {
+        width: 100%;
+        height: 100%;
+        background: transparent;
+        Rectangle {
+            x: 5px; y: 5px; width: 6px; height: 6px;
+            border-radius: 3px;
+            background: transparent;
+            border-width: 1.3px;
+            border-color: root.tint;
+        }
+        Path {
+            width: 100%; height: 100%;
+            commands: "M 8 1 L 8 3 M 8 13 L 8 15 M 1 8 L 3 8 M 13 8 L 15 8 M 3 3 L 4.5 4.5 M 11.5 11.5 L 13 13 M 13 3 L 11.5 4.5 M 4.5 11.5 L 3 13";
+            stroke: root.tint;
+            stroke-width: 1.3px;
+            stroke-line-cap: round;
+        }
+    }
+
+    // Terminal：>_ 提示符。
+    if root.kind == SettingsIconKind.terminal : Path {
+        width: 100%; height: 100%;
+        commands: "M 2.5 3.5 L 7 8 L 2.5 12.5 M 8.5 12.5 L 13.5 12.5";
+        stroke: root.tint;
+        stroke-width: 1.4px;
+        stroke-line-cap: round;
+        stroke-line-join: round;
+    }
+
+    // Window：外框 + 标题栏分隔线。
+    if root.kind == SettingsIconKind.window : Rectangle {
+        width: 100%;
+        height: 100%;
+        background: transparent;
+        Rectangle {
+            x: 2px; y: 3px; width: 12px; height: 10px;
+            border-radius: 2px;
+            background: transparent;
+            border-width: 1.3px;
+            border-color: root.tint;
+        }
+        Rectangle {
+            x: 2px; y: 6px; width: 12px; height: 1px;
+            background: root.tint;
+        }
+    }
+
+    // Keys：键盘外框 + 键帽点。
+    if root.kind == SettingsIconKind.keys : Rectangle {
+        width: 100%;
+        height: 100%;
+        background: transparent;
+        Rectangle {
+            x: 1.5px; y: 4.5px; width: 13px; height: 7px;
+            border-radius: 2px;
+            background: transparent;
+            border-width: 1.3px;
+            border-color: root.tint;
+        }
+        Path {
+            width: 100%; height: 100%;
+            commands: "M 4 7 L 4.5 7 M 6.5 7 L 7 7 M 9 7 L 9.5 7 M 11.5 7 L 12 7 M 5 9.5 L 11 9.5";
+            stroke: root.tint;
+            stroke-width: 1.2px;
+            stroke-line-cap: round;
+        }
+    }
+
+    // Profiles：头像 + 肩线。
+    if root.kind == SettingsIconKind.profiles : Rectangle {
+        width: 100%;
+        height: 100%;
+        background: transparent;
+        Rectangle {
+            x: 5px; y: 1.5px; width: 6px; height: 6px;
+            border-radius: 3px;
+            background: transparent;
+            border-width: 1.3px;
+            border-color: root.tint;
+        }
+        Path {
+            width: 100%; height: 100%;
+            commands: "M 2.5 14 C 2.5 10.8 5 9.5 8 9.5 C 11 9.5 13.5 10.8 13.5 14";
+            stroke: root.tint;
+            stroke-width: 1.3px;
+            stroke-line-cap: round;
+        }
+    }
+
+    // Plugins：插头（两脚 + 本体 + 线）。
+    if root.kind == SettingsIconKind.plugins : Rectangle {
+        width: 100%;
+        height: 100%;
+        background: transparent;
+        Rectangle {
+            x: 3px; y: 5px; width: 10px; height: 6px;
+            border-radius: 2px;
+            background: transparent;
+            border-width: 1.3px;
+            border-color: root.tint;
+        }
+        Path {
+            width: 100%; height: 100%;
+            commands: "M 5.5 1.5 L 5.5 5 M 10.5 1.5 L 10.5 5 M 8 11 L 8 14";
+            stroke: root.tint;
+            stroke-width: 1.3px;
+            stroke-line-cap: round;
+        }
+    }
+
+    // Vault：锁体 + 锁梁。
+    if root.kind == SettingsIconKind.vault : Rectangle {
+        width: 100%;
+        height: 100%;
+        background: transparent;
+        Rectangle {
+            x: 3px; y: 7px; width: 10px; height: 7px;
+            border-radius: 2px;
+            background: transparent;
+            border-width: 1.3px;
+            border-color: root.tint;
+        }
+        Path {
+            width: 100%; height: 100%;
+            commands: "M 5 7 L 5 4.5 C 5 1.8 11 1.8 11 4.5 L 11 7 M 8 9.5 L 8 11.5";
+            stroke: root.tint;
+            stroke-width: 1.3px;
+            stroke-line-cap: round;
+        }
+    }
+
+    // Advanced：三条滑杆 + 旋钮。
+    if root.kind == SettingsIconKind.advanced : Rectangle {
+        width: 100%;
+        height: 100%;
+        background: transparent;
+        Path {
+            width: 100%; height: 100%;
+            commands: "M 2 4 L 14 4 M 2 8 L 14 8 M 2 12 L 14 12";
+            stroke: root.tint;
+            stroke-width: 1.3px;
+            stroke-line-cap: round;
+        }
+        Rectangle {
+            x: 5px; y: 2.5px; width: 3px; height: 3px;
+            border-radius: 1.5px;
+            background: Palette.colors.surface;
+            border-width: 1px;
+            border-color: root.tint;
+        }
+        Rectangle {
+            x: 9px; y: 6.5px; width: 3px; height: 3px;
+            border-radius: 1.5px;
+            background: Palette.colors.surface;
+            border-width: 1px;
+            border-color: root.tint;
+        }
+        Rectangle {
+            x: 4px; y: 10.5px; width: 3px; height: 3px;
+            border-radius: 1.5px;
+            background: Palette.colors.surface;
+            border-width: 1px;
+            border-color: root.tint;
+        }
+    }
+
+    // Gear：中心圆环 + 8 个齿。
+    if root.kind == SettingsIconKind.gear : Rectangle {
+        width: 100%;
+        height: 100%;
+        background: transparent;
+        Rectangle {
+            x: 4px; y: 4px; width: 8px; height: 8px;
+            border-radius: 4px;
+            background: transparent;
+            border-width: 1.4px;
+            border-color: root.tint;
+        }
+        Path {
+            width: 100%; height: 100%;
+            commands: "M 8 1 L 8 2.5 M 8 13.5 L 8 15 M 1 8 L 2.5 8 M 13.5 8 L 15 8 M 3 3 L 4 4 M 12 12 L 13 13 M 13 3 L 12 4 M 4 12 L 3 13";
+            stroke: root.tint;
+            stroke-width: 1.4px;
+            stroke-line-cap: round;
+        }
+    }
+
+    // Search：圆环 + 手柄。
+    if root.kind == SettingsIconKind.search : Rectangle {
+        width: 100%;
+        height: 100%;
+        background: transparent;
+        Rectangle {
+            x: 2px; y: 2px; width: 8px; height: 8px;
+            border-radius: 4px;
+            background: transparent;
+            border-width: 1.4px;
+            border-color: root.tint;
+        }
+        Path {
+            width: 100%; height: 100%;
+            commands: "M 9 9 L 14 14";
+            stroke: root.tint;
+            stroke-width: 1.4px;
+            stroke-line-cap: round;
+        }
+    }
+
+    // Chevron：下拉箭头。
+    if root.kind == SettingsIconKind.chevron : Path {
+        width: 100%; height: 100%;
+        commands: "M 4 6 L 8 10 L 12 6";
+        stroke: root.tint;
+        stroke-width: 1.4px;
+        stroke-line-cap: round;
+        stroke-line-join: round;
+    }
+}
+
+/// 设置项开关（右侧，整行点击也可切换）。
+component SettingsSwitch inherits Rectangle {
+    in property <bool> on: false;
+    callback toggled();
+
+    width: 42px;
+    height: 22px;
+    border-radius: 11px;
+    background: root.on ? Palette.colors.accent : Palette.colors.hover;
+    border-width: 1px;
+    border-color: root.on ? Palette.colors.accent : Palette.colors.border;
+    animate background, border-color { duration: 120ms; easing: ease-out; }
+
+    Rectangle {
+        x: root.on ? parent.width - 19px : 2px;
+        y: 2px;
+        width: 16px;
+        height: 16px;
+        border-radius: 8px;
+        background: root.on ? Palette.colors.accent-text : Palette.colors.subtext;
+        animate x, background { duration: 120ms; easing: ease-out; }
+    }
+
+    TouchArea {
+        clicked => { root.toggled(); }
+    }
+}
+
+/// 布尔设置行：左侧标题/说明，右侧 switch。
+component SettingRow inherits HorizontalLayout {
+    in property <string> label;
+    in property <string> description: "";
+    spacing: 12px;
+    cross-axis-alignment: center;
+
+    VerticalLayout {
+        horizontal-stretch: 1;
+        spacing: 2px;
+        Text {
+            text: root.label;
+            color: Palette.colors.text;
+            font-size: 12px;
+            wrap: word-wrap;
+        }
+        if root.description != "" : Text {
+            text: root.description;
+            color: Palette.colors.muted;
+            font-size: 10px;
+            wrap: word-wrap;
+        }
+    }
+
+    @children
+}
+
+/// 堆叠设置项：标题/说明在上，下拉/分段/滑杆/输入占满整行。
+component SettingField inherits VerticalLayout {
+    in property <string> label;
+    in property <string> description: "";
+    width: 100%;
+    spacing: 6px;
+
+    Text {
+        text: root.label;
+        color: Palette.colors.text;
+        font-size: 12px;
+    }
+    if root.description != "" : Text {
+        text: root.description;
+        color: Palette.colors.muted;
+        font-size: 10px;
+        wrap: word-wrap;
+    }
+
+    @children
+}
+
+/// 设置分组卡片：标题 + 子项；搜索结果跳转时边框/标题用 accent 高亮。
+component SettingsCard inherits Rectangle {
+    in property <string> title;
+    in property <string> description: "";
+    in property <bool> highlighted: false;
+
+    height: card-layout.preferred-height;
+    border-radius: 10px;
+    background: root.highlighted ? Palette.colors.hover : Palette.colors.surface;
+    border-width: 1px;
+    border-color: root.highlighted ? Palette.colors.accent : Palette.colors.border;
+    animate background, border-color { duration: 160ms; easing: ease-out; }
+
+    card-layout := VerticalLayout {
+        width: 100%;
+        padding: 14px;
+        spacing: 12px;
+
+        HorizontalLayout {
+            spacing: 6px;
+            Text {
+                text: root.title;
+                color: root.highlighted ? Palette.colors.accent : Palette.colors.subtext;
+                font-size: 12px;
+                font-weight: 600;
+                vertical-alignment: center;
+            }
+            Rectangle { horizontal-stretch: 1; height: 1px; background: transparent; }
+            // 高亮的小圆点：搜索跳转后明确指向当前分组。
+            Rectangle {
+                visible: root.highlighted;
+                width: 6px; height: 6px;
+                border-radius: 3px;
+                background: Palette.colors.accent;
+            }
+        }
+
+        if root.description != "" : Text {
+            text: root.description;
+            color: Palette.colors.muted;
+            font-size: 10px;
+            wrap: word-wrap;
+        }
+
+        @children
+    }
+}
+
+/// 分段选择器：2–3 个互斥选项；选中态用 accent，不再铺一排 chip。
+component Segmented inherits Rectangle {
+    in property <[string]> options: [];
+    in property <[string]> values: [];
+    in property <string> value: "";
+    callback picked(string);
+
+    width: 100%;
+    height: 32px;
+    border-radius: 8px;
+    background: Palette.colors.bg;
+    border-width: 1px;
+    border-color: Palette.colors.border;
+
+    HorizontalLayout {
+        padding: 2px;
+        spacing: 2px;
+
+        for opt[i] in root.options : Rectangle {
+            horizontal-stretch: 1;
+            height: 26px;
+            border-radius: 6px;
+            property <bool> selected: i < root.values.length && root.values[i] == root.value;
+            background: selected
+                ? Palette.colors.accent
+                : (seg-hit.has-hover ? Palette.colors.hover : transparent);
+            animate background { duration: 120ms; easing: ease-out; }
+
+            seg-hit := TouchArea {
+                clicked => {
+                    if (i < root.values.length) {
+                        root.picked(root.values[i]);
+                    }
+                }
+            }
+
+            Text {
+                text: opt;
+                color: selected ? Palette.colors.accent-text : Palette.colors.subtext;
+                font-size: 11px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                width: 100%;
+                height: 100%;
+                overflow: elide;
+            }
+        }
+    }
+}
+
+/// 数值步进器：− / 当前值 / +（字号、回滚行数等）。
+component Stepper inherits Rectangle {
+    in property <string> text: "";
+    callback minus();
+    callback plus();
+
+    width: 100%;
+    height: 32px;
+    border-radius: 8px;
+    background: Palette.colors.bg;
+    border-width: 1px;
+    border-color: Palette.colors.border;
+
+    HorizontalLayout {
+        padding: 2px;
+        spacing: 2px;
+
+        Rectangle {
+            width: 30px;
+            height: 26px;
+            border-radius: 6px;
+            background: step-minus.has-hover ? Palette.colors.hover : Palette.colors.raise;
+            Text {
+                text: "−";
+                color: Palette.colors.text;
+                font-size: 14px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                width: 100%;
+                height: 100%;
+            }
+            step-minus := TouchArea { clicked => { root.minus(); } }
+        }
+
+        Text {
+            horizontal-stretch: 1;
+            text: root.text;
+            color: Palette.colors.text;
+            font-size: 12px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+
+        Rectangle {
+            width: 30px;
+            height: 26px;
+            border-radius: 6px;
+            background: step-plus.has-hover ? Palette.colors.hover : Palette.colors.raise;
+            Text {
+                text: "+";
+                color: Palette.colors.text;
+                font-size: 14px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                width: 100%;
+                height: 100%;
+            }
+            step-plus := TouchArea { clicked => { root.plus(); } }
+        }
+    }
+}
+
+/// 设置页文本输入：支持占位符、密码掩码、红色错误描边、可选清除按钮。
+component SettingsTextField inherits Rectangle {
+    in-out property <string> text: "";
+    in property <string> placeholder: "";
+    in property <bool> masked: false;
+    in property <bool> error: false;
+    in property <bool> clearable: false;
+    /// 失焦提交（仅背景图路径等需要校验的字段）：旧 modal 的 changed has-focus 行为。
+    in property <bool> commit-on-blur: false;
+    callback edited(string);
+    callback accepted(string);
+    callback cleared();
+    callback blurred(string);
+
+    width: 100%;
+    height: 32px;
+    border-radius: 8px;
+    background: Palette.colors.bg;
+    border-width: 1px;
+    border-color: root.error ? Palette.colors.danger : Palette.colors.border;
+
+    Text {
+        x: 10px;
+        width: parent.width - (root.clearable && root.text != "" ? 42px : 20px);
+        height: parent.height;
+        text: root.placeholder;
+        color: Palette.colors.muted;
+        font-size: 11px;
+        vertical-alignment: center;
+        visible: root.text == "";
+        overflow: elide;
+    }
+
+    TextInput {
+        x: 10px;
+        width: parent.width - (root.clearable && root.text != "" ? 42px : 20px);
+        height: parent.height;
+        text <=> root.text;
+        single-line: true;
+        input-type: root.masked ? InputType.password : InputType.text;
+        color: Palette.colors.text;
+        font-size: 11px;
+        vertical-alignment: center;
+        edited => { root.edited(self.text); }
+        accepted => { root.accepted(self.text); }
+        changed has-focus => {
+            if (!self.has-focus && root.commit-on-blur) {
+                root.blurred(self.text);
+            }
+        }
+    }
+
+    if root.clearable && root.text != "" : Rectangle {
+        x: parent.width - 30px;
+        y: 6px;
+        width: 20px;
+        height: 20px;
+        border-radius: 4px;
+        background: field-clear.has-hover ? Palette.colors.hover : transparent;
+        Text {
+            text: "×";
+            color: Palette.colors.muted;
+            font-size: 13px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            width: 100%;
+            height: 100%;
+        }
+        field-clear := TouchArea {
+            clicked => {
+                root.text = "";
+                root.cleared();
+            }
+        }
+    }
+}
+
+/// 左侧分类项：线性图标 + 标签；选中态用 accent 边条/文字，而不是整块高饱和底。
 component NavItem inherits Rectangle {
     in property <string> label;
     in property <bool> active: false;
+    in property <SettingsIconKind> icon: SettingsIconKind.appearance;
     callback clicked();
 
-    height: 30px;
-    border-radius: 6px;
-    background: root.active ? Palette.colors.accent : (hit.has-hover ? Palette.colors.hover : transparent);
+    height: 34px;
+    border-radius: 7px;
+    background: root.active
+        ? Palette.colors.hover
+        : (hit.has-hover ? Palette.colors.surface : transparent);
+    animate background { duration: 120ms; easing: ease-out; }
+
+    Rectangle {
+        visible: root.active;
+        x: 0px;
+        y: 7px;
+        width: 2px;
+        height: 20px;
+        border-radius: 1px;
+        background: Palette.colors.accent;
+    }
+
+    SettingsIconView {
+        x: 11px;
+        y: 9px;
+        kind: root.icon;
+        tint: root.active ? Palette.colors.accent : Palette.colors.subtext;
+    }
+
+    Text {
+        x: 37px;
+        width: parent.width - 47px;
+        height: parent.height;
+        text: root.label;
+        color: root.active ? Palette.colors.accent : Palette.colors.text;
+        font-size: 12px;
+        font-weight: root.active ? 600 : 400;
+        vertical-alignment: center;
+        overflow: elide;
+    }
 
     hit := TouchArea {
         clicked => { root.clicked(); }
-    }
-    Text {
-        x: 10px;
-        width: parent.width - 20px;
-        height: parent.height;
-        text: root.label;
-        color: root.active ? Palette.colors.accent-text : Palette.colors.text;
-        font-size: 12px;
-        vertical-alignment: center;
-        overflow: elide;
     }
 }
 
@@ -724,6 +1283,8 @@ export component MainWindow inherits Window {
     callback bump-scrollback(int);
     in-out property <bool> settings-open: false;
     in property <string> theme-name: "auto";
+    /// 主题下拉显示名（Auto 时带解析结果），由 Rust 侧随实际主题一起下发。
+    in property <string> theme-display: "Auto";
     /// Auto 主题当前解析到的主题短名（如 "Yaru Dark"）；非 auto 时为空。
     in property <string> auto-resolved: "";
     in property <[ThemeChoice]> theme-choices: [];
@@ -747,15 +1308,25 @@ export component MainWindow inherits Window {
     callback background-opacity-changed(float);
     callback background-dim-preview(float);
     callback background-dim-changed(float);
-    /// 设置面板高度：主题数量变多时由 Rust 侧按行数下发。
-    /// 设置分类：0=Appearance 1=Terminal 2=Window 3=Config 4=Hotkeys 5=Plugins 6=Vault
+    /// 设置分类：0=Appearance 1=Terminal 2=Window 3=Advanced 4=Keys 5=Plugins 6=Vault 7=Profiles
     in-out property <int> settings-category: 0;
     in-out property <string> settings-path: "";
     in-out property <string> settings-query: "";
     in property <[string]> settings-results: [];
+    /// 搜索结果点击后要滚动/高亮的卡片锚点（theme/background/cursor/...）。
+    in-out property <string> settings-focus: "";
+    /// Rust 每次跳转自增；Slint 在 changed 里把 Flickable 滚到锚点。
+    in-out property <int> settings-jump-token: 0;
+    /// 叠在设置页上的模态关闭后自增；设置 FocusScope 收到后重新拿焦点。
+    in-out property <int> settings-refocus-token: 0;
+    /// 主题下拉是否展开（面板级浮层，避免 Flickable 裁剪）。
+    in-out property <bool> settings-theme-open: false;
+    /// TERVO_SETTINGS_LEGACY=1：退回居中 modal；默认 false = 窗口内 Settings Tab。
+    in property <bool> settings-legacy: false;
     callback settings-filter(string);
     callback settings-open-result(int);
     callback settings-category-changed(int);
+    callback settings-manage-profiles();
     in property <string> hotkey-summary: "";
     in property <[HotkeyRow]> hotkey-rows: [];
     /// 正在录制的行下标；-1 = 未录制
@@ -790,6 +1361,25 @@ export component MainWindow inherits Window {
     /// 录制结束/关闭设置后把键盘焦点还给终端 IME 宿主，否则按键会丢失。
     public function focus-terminal() {
         ime.focus();
+    }
+
+    /// 关闭设置（✕ / Esc / 点终端 Tab 都走这里）。focus 由 Rust 侧
+    /// settings-toggled(false) 统一归还，避免两处抢焦点。
+    public function close-settings() {
+        if (root.settings-open) {
+            root.settings-open = false;
+            root.settings-query = "";
+            root.settings-theme-open = false;
+            root.settings-focus = "";
+            root.settings-toggled(false);
+        }
+    }
+
+    /// 让设置 Tab 在 TabBar 横向滚动时保持可见（Tab 多时贴最右端）。
+    public function reveal-settings-tab() {
+        if (root.settings-open && tab-flick.content-width > tab-flick.width) {
+            tab-flick.content-x = Math.min(0px, tab-flick.width - tab-flick.content-width);
+        }
     }
 
     /// 记录活动 Tab 在滚动内容里的位置；切换/增删/宽度动画时调用。
@@ -980,6 +1570,10 @@ export component MainWindow inherits Window {
                 content-width: tab-strip.preferred-width;
                 content-height: parent.height;
                 changed width => { root.reveal-active-tab(); }
+                // 设置 Tab 追加到末尾：打开时滚到最右，保证齿轮 Tab 可见。
+                property <bool> settings-open: root.settings-open;
+                changed content-width => { root.reveal-settings-tab(); }
+                changed settings-open => { root.reveal-settings-tab(); }
 
                 tab-strip := HorizontalLayout {
                 padding-left: 0px;
@@ -989,7 +1583,8 @@ export component MainWindow inherits Window {
                 alignment: start;
 
                 for tab[i] in root.tabs : Rectangle {
-                    property <bool> is-active: tab.active;
+                    property <bool> is-active: tab.active
+                        && !(root.settings-open && !root.settings-legacy);
                     property <bool> show-status: tab.attention || tab.completed
                         || tab.progress-state == 2 || tab.progress-label != "";
                     // 窄 Tab 不预留整块状态区：状态压成右侧小点，标题优先占满。
@@ -1001,12 +1596,12 @@ export component MainWindow inherits Window {
                     width: Math.max(52px, Math.min(root.tab-width-cap, tab-area.preferred-width + 36px));
                     animate width { duration: 140ms; easing: ease-out; }
                     border-radius: 6px;
-                    background: tab.active
+                    background: is-active
                         ? Palette.colors.bg
                         : (tab-hit.has-hover ? Palette.colors.raise : transparent);
                     animate background, border-color { duration: 140ms; easing: ease-out; }
                     border-width: 1px;
-                    border-color: tab.active ? Palette.colors.border : transparent;
+                    border-color: is-active ? Palette.colors.border : transparent;
 
                     changed is-active => {
                         if (is-active) {
@@ -1014,19 +1609,19 @@ export component MainWindow inherits Window {
                         }
                     }
                     changed x => {
-                        if (tab.active) {
+                        if (is-active) {
                             root.note-active-tab(self.x, self.width, i == root.tabs.length - 1);
                         }
                     }
                     changed width => {
-                        if (tab.active) {
+                        if (is-active) {
                             root.note-active-tab(self.x, self.width, i == root.tabs.length - 1);
                         }
                     }
 
                     // 激活态底部的强调线（Yaru 橙 / 主题 accent）
                     Rectangle {
-                        visible: tab.active;
+                        visible: is-active;
                         x: 8px;
                         y: parent.height - 2px;
                         width: parent.width - 16px;
@@ -1138,9 +1733,9 @@ export component MainWindow inherits Window {
                             - (show-close && parent.width >= 84px ? 26px : 6px)
                             - (show-status-text ? 22px : 0px);
                         text: tab.title;
-                        color: tab.active ? Palette.colors.text : Palette.colors.muted;
+                        color: is-active ? Palette.colors.text : Palette.colors.muted;
                         font-size: root.tab-width-cap < 60px ? 10px : 12px;
-                        font-weight: tab.active ? 600 : 400;
+                        font-weight: is-active ? 600 : 400;
                         overflow: elide;
                         vertical-alignment: center;
                         animate color { duration: 140ms; }
@@ -1149,6 +1744,10 @@ export component MainWindow inherits Window {
                     tab-hit := TouchArea {
                         clicked => {
                             root.tabctx-open = false;
+                            // 设置页是瞬态视图：点任意终端 Tab 即回到终端。
+                            if (root.settings-open) {
+                                root.close-settings();
+                            }
                             root.tab-clicked(i);
                         }
                         double-clicked => {
@@ -1215,6 +1814,75 @@ export component MainWindow inherits Window {
                     }
                 }
 
+                // Settings Tab：不是 PTY Tab，不进入 workspace；只在打开时出现。
+                // 用齿轮图标 + 可关闭 ×，按 Esc/✕/点终端 Tab 都退出。
+                if root.settings-open && !root.settings-legacy : Rectangle {
+                    height: 22px;
+                    width: 112px;
+                    border-radius: 6px;
+                    background: Palette.colors.bg;
+                    border-width: 1px;
+                    border-color: Palette.colors.border;
+
+                    Rectangle {
+                        x: 8px;
+                        y: parent.height - 2px;
+                        width: parent.width - 16px;
+                        height: 2px;
+                        border-radius: 1px;
+                        background: Palette.colors.accent;
+                    }
+
+                    SettingsIconView {
+                        x: 8px;
+                        y: 3px;
+                        kind: SettingsIconKind.gear;
+                        tint: Palette.colors.accent;
+                    }
+
+                    Text {
+                        x: 28px;
+                        width: parent.width - 52px;
+                        height: parent.height;
+                        text: "Settings";
+                        color: Palette.colors.text;
+                        font-size: 12px;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+
+                    // 吃掉 Tab 本体的点击（设置已激活，不重复打开）。
+                    TouchArea {
+                        x: 0px;
+                        y: 0px;
+                        width: parent.width - 22px;
+                        height: parent.height;
+                    }
+
+                    settings-tab-close := TouchArea {
+                        x: parent.width - 22px;
+                        y: 1px;
+                        width: 20px;
+                        height: 20px;
+                        clicked => { root.close-settings(); }
+                        Rectangle {
+                            x: 1px; y: 1px; width: 18px; height: 18px;
+                            border-radius: 9px;
+                            background: settings-tab-close.has-hover ? Palette.colors.hover : transparent;
+                        }
+                        Text {
+                            text: "×";
+                            color: settings-tab-close.has-hover ? Palette.colors.danger : Palette.colors.muted;
+                            font-size: 14px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                            width: 100%;
+                            height: 100%;
+                        }
+                    }
+                }
+
                 Rectangle {
                     height: 22px;
                     width: 24px;
@@ -1223,7 +1891,12 @@ export component MainWindow inherits Window {
                     animate background { duration: 120ms; }
 
                     new-hit := TouchArea {
-                        clicked => { root.new-tab(); }
+                        clicked => {
+                            if (root.settings-open) {
+                                root.close-settings();
+                            }
+                            root.new-tab();
+                        }
                     }
 
                     Text {
@@ -1247,6 +1920,9 @@ export component MainWindow inherits Window {
 
                     profile-menu-hit := TouchArea {
                         clicked => {
+                            if (root.settings-open) {
+                                root.close-settings();
+                            }
                             root.profilemenu-x = self.absolute-position.x;
                             root.profilemenu-open = true;
                             root.profilemenu-menu();
@@ -1336,23 +2012,26 @@ export component MainWindow inherits Window {
             width: 28px;
             height: 24px;
             clicked => {
-                root.settings-open = !root.settings-open;
-                root.settings-toggled(root.settings-open);
+                if (root.settings-open) {
+                    root.close-settings();
+                } else {
+                    root.settings-open = true;
+                    root.settings-toggled(true);
+                }
             }
 
             Rectangle {
                 width: 100%;
                 height: 100%;
                 border-radius: 5px;
-                background: win-gear.has-hover ? Palette.colors.hover : Palette.colors.raise;
-                Text {
-                    text: "⚙";
-                    color: Palette.colors.text;
-                    font-size: 12px;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
-                    width: 100%;
-                    height: 100%;
+                background: root.settings-open
+                    ? Palette.colors.hover
+                    : (win-gear.has-hover ? Palette.colors.hover : Palette.colors.raise);
+                SettingsIconView {
+                    x: 6px;
+                    y: 4px;
+                    kind: SettingsIconKind.gear;
+                    tint: root.settings-open ? Palette.colors.accent : Palette.colors.text;
                 }
             }
         }
@@ -2123,6 +2802,1693 @@ export component MainWindow inherits Window {
             }
         }
     }
+
+    // ================= Settings =================
+    // 默认：窗口内的 Settings Tab（占满 TabBar 下方内容区，不创建 PTY、不进 workspace）。
+    // TERVO_SETTINGS_LEGACY=1：同一套控件退回居中 modal（顶部有 LEGACY 标记）。
+    if root.settings-open : Rectangle {
+        x: 0px;
+        y: root.tabbar-bottom ? 0px : root.tabbar-height;
+        width: root.width;
+        height: root.height - root.tabbar-height;
+        background: root.settings-legacy ? #00000080 : Palette.colors.bg;
+
+        // legacy 模式点遮罩关闭；Tab 模式下没有遮罩。
+        if root.settings-legacy : TouchArea {
+            x: 0px;
+            y: 0px;
+            width: 100%;
+            height: 100%;
+            clicked => { root.close-settings(); }
+        }
+
+        settings-panel := Rectangle {
+            x: root.settings-legacy ? (parent.width - self.width) / 2 : 0px;
+            y: root.settings-legacy ? (parent.height - self.height) / 2 : 0px;
+            width: root.settings-legacy ? Math.min(820px, parent.width - 32px) : parent.width;
+            height: root.settings-legacy ? Math.min(620px, parent.height - 32px) : parent.height;
+            background: Palette.colors.bg;
+            border-radius: root.settings-legacy ? 12px : 0px;
+            border-width: root.settings-legacy ? 1px : 0px;
+            border-color: Palette.colors.border;
+            drop-shadow-blur: root.settings-legacy ? 30px : 0px;
+            drop-shadow-offset-y: root.settings-legacy ? 10px : 0px;
+            drop-shadow-color: #000000b8;
+            clip: true;
+
+            settings-body := FocusScope {
+                x: 0px;
+                y: 0px;
+                width: 100%;
+                height: 100%;
+                focus-on-click: false;
+                init => { self.focus(); }
+
+                // Esc：先收起主题下拉，再关闭设置；其它键不写入终端。
+                key-pressed(event) => {
+                    if (event.text == "\u{1b}") {
+                        if (root.settings-theme-open) {
+                            root.settings-theme-open = false;
+                        } else {
+                            root.close-settings();
+                        }
+                        return EventResult.accept;
+                    }
+                    EventResult.reject
+                }
+
+                // 模态（Profiles/Profile 表单）关闭后重新拿回键盘焦点。
+                property <int> refocus-token: root.settings-refocus-token;
+                changed refocus-token => { self.focus(); }
+
+                property <length> sidebar-w: self.width < 900px
+                    ? Math.min(164px, Math.max(156px, self.width * 0.32))
+                    : 220px;
+                property <length> content-w: Math.min(980px,
+                    Math.max(80px, self.width - self.sidebar-w - 40px));
+                property <length> content-x: self.sidebar-w + 20px
+                    + Math.max(0px, (self.width - self.sidebar-w - 40px - self.content-w) / 2);
+                property <length> content-y: 64px;
+                property <length> content-h: self.height - 76px;
+                property <length> search-w: Math.max(80px, Math.min(260px, self.width - 210px));
+                property <length> search-x: self.width - self.search-w - 56px;
+
+                // 吃掉面板空白处的点击，避免穿透到下面的终端 pane（误选中/误点击）。
+                TouchArea {
+                    x: 0px;
+                    y: 0px;
+                    width: 100%;
+                    height: 100%;
+                    pointer-event(event) => { EventResult.accept; }
+                }
+
+                // ---------------- 顶栏 ----------------
+                Text {
+                    x: 24px;
+                    y: 0px;
+                    width: Math.max(60px, Math.min(180px, settings-body.width - 200px));
+                    height: 52px;
+                    text: "Settings";
+                    color: Palette.colors.text;
+                    font-size: 17px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+
+                if root.settings-legacy : Text {
+                    x: 120px;
+                    y: 0px;
+                    width: 130px;
+                    height: 52px;
+                    text: "LEGACY MODAL";
+                    color: Palette.colors.accent;
+                    font-size: 9px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                    visible: settings-body.width > 560px;
+                }
+
+                Rectangle {
+                    x: settings-body.search-x;
+                    y: 12px;
+                    width: settings-body.search-w;
+                    height: 28px;
+                    border-radius: 8px;
+                    background: Palette.colors.surface;
+                    border-width: 1px;
+                    border-color: root.settings-query != ""
+                        ? Palette.colors.accent
+                        : Palette.colors.border;
+
+                    SettingsIconView {
+                        x: 8px;
+                        y: 6px;
+                        kind: SettingsIconKind.search;
+                        tint: Palette.colors.muted;
+                    }
+
+                    Text {
+                        x: 30px;
+                        width: parent.width - 40px;
+                        height: parent.height;
+                        text: "Search settings…";
+                        color: Palette.colors.muted;
+                        font-size: 11px;
+                        vertical-alignment: center;
+                        visible: root.settings-query == "";
+                        overflow: elide;
+                    }
+
+                    TextInput {
+                        x: 30px;
+                        width: parent.width - (root.settings-query == "" ? 40px : 64px);
+                        height: parent.height;
+                        text <=> root.settings-query;
+                        single-line: true;
+                        color: Palette.colors.text;
+                        font-size: 11px;
+                        vertical-alignment: center;
+                        edited => {
+                            root.settings-theme-open = false;
+                            root.settings-filter(self.text);
+                        }
+                        accepted => {
+                            if (root.settings-results.length > 0) {
+                                root.settings-open-result(0);
+                            }
+                        }
+                        key-pressed(event) => {
+                            if (event.text == "\u{1b}") {
+                                if (root.settings-query != "") {
+                                    root.settings-query = "";
+                                    root.settings-filter("");
+                                } else {
+                                    root.close-settings();
+                                }
+                                return EventResult.accept;
+                            }
+                            EventResult.reject
+                        }
+                    }
+
+                    if root.settings-query != "" : Rectangle {
+                        x: parent.width - 28px;
+                        y: 4px;
+                        width: 20px;
+                        height: 20px;
+                        border-radius: 5px;
+                        background: settings-search-clear.has-hover ? Palette.colors.hover : transparent;
+                        Text {
+                            text: "×";
+                            color: Palette.colors.muted;
+                            font-size: 13px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                            width: 100%;
+                            height: 100%;
+                        }
+                        settings-search-clear := TouchArea {
+                            clicked => {
+                                root.settings-query = "";
+                                root.settings-filter("");
+                            }
+                        }
+                    }
+                }
+
+                Rectangle {
+                    x: settings-body.width - 42px;
+                    y: 10px;
+                    width: 30px;
+                    height: 30px;
+                    border-radius: 7px;
+                    background: settings-close-hit.has-hover ? Palette.colors.danger : Palette.colors.hover;
+                    Text {
+                        text: "✕";
+                        color: settings-close-hit.has-hover
+                            ? Palette.colors.accent-text
+                            : Palette.colors.subtext;
+                        font-size: 12px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        width: 100%;
+                        height: 100%;
+                    }
+                    settings-close-hit := TouchArea {
+                        clicked => { root.close-settings(); }
+                    }
+                }
+
+                Rectangle {
+                    x: 0px;
+                    y: 51px;
+                    width: 100%;
+                    height: 1px;
+                    background: Palette.colors.border;
+                }
+
+                // ---------------- 左导航 ----------------
+                Rectangle {
+                    x: 0px;
+                    y: 52px;
+                    width: settings-body.sidebar-w;
+                    height: parent.height - 52px;
+                    background: Palette.colors.surface;
+                }
+                Rectangle {
+                    x: settings-body.sidebar-w;
+                    y: 52px;
+                    width: 1px;
+                    height: parent.height - 52px;
+                    background: Palette.colors.border;
+                }
+
+                settings-nav := Flickable {
+                    x: 0px;
+                    y: 52px;
+                    width: settings-body.sidebar-w;
+                    height: parent.height - 52px;
+                    interactive: true;
+                    content-width: self.width;
+                    content-height: nav-layout.preferred-height + 24px;
+
+                    nav-layout := VerticalLayout {
+                        x: 10px;
+                        y: 12px;
+                        width: parent.width - 20px;
+                        spacing: 2px;
+
+                        Text {
+                            height: 24px;
+                            text: "PERSONALIZE";
+                            color: Palette.colors.muted;
+                            font-size: 9px;
+                            font-weight: 600;
+                            letter-spacing: 0.8px;
+                            vertical-alignment: bottom;
+                        }
+                        NavItem {
+                            label: "Appearance";
+                            icon: SettingsIconKind.appearance;
+                            active: root.settings-category == 0;
+                            clicked => {
+                                root.settings-focus = "";
+                                root.settings-theme-open = false;
+                                root.settings-category = 0;
+                                root.settings-category-changed(0);
+                            }
+                        }
+                        NavItem {
+                            label: "Terminal";
+                            icon: SettingsIconKind.terminal;
+                            active: root.settings-category == 1;
+                            clicked => {
+                                root.settings-focus = "";
+                                root.settings-theme-open = false;
+                                root.settings-category = 1;
+                                root.settings-category-changed(1);
+                            }
+                        }
+                        NavItem {
+                            label: "Window";
+                            icon: SettingsIconKind.window;
+                            active: root.settings-category == 2;
+                            clicked => {
+                                root.settings-focus = "";
+                                root.settings-theme-open = false;
+                                root.settings-category = 2;
+                                root.settings-category-changed(2);
+                            }
+                        }
+
+                        Rectangle { height: 10px; background: transparent; }
+
+                        Text {
+                            height: 24px;
+                            text: "WORKSPACE";
+                            color: Palette.colors.muted;
+                            font-size: 9px;
+                            font-weight: 600;
+                            letter-spacing: 0.8px;
+                            vertical-alignment: bottom;
+                        }
+                        NavItem {
+                            label: "Keys";
+                            icon: SettingsIconKind.keys;
+                            active: root.settings-category == 4;
+                            clicked => {
+                                root.settings-focus = "";
+                                root.settings-theme-open = false;
+                                root.settings-category = 4;
+                                root.settings-category-changed(4);
+                            }
+                        }
+                        NavItem {
+                            label: "Profiles";
+                            icon: SettingsIconKind.profiles;
+                            active: root.settings-category == 7;
+                            clicked => {
+                                root.settings-focus = "";
+                                root.settings-theme-open = false;
+                                root.settings-category = 7;
+                                root.settings-category-changed(7);
+                            }
+                        }
+                        NavItem {
+                            label: "Plugins";
+                            icon: SettingsIconKind.plugins;
+                            active: root.settings-category == 5;
+                            clicked => {
+                                root.settings-focus = "";
+                                root.settings-theme-open = false;
+                                root.settings-category = 5;
+                                root.settings-category-changed(5);
+                            }
+                        }
+
+                        Rectangle { height: 10px; background: transparent; }
+
+                        Text {
+                            height: 24px;
+                            text: "SYSTEM";
+                            color: Palette.colors.muted;
+                            font-size: 9px;
+                            font-weight: 600;
+                            letter-spacing: 0.8px;
+                            vertical-alignment: bottom;
+                        }
+                        NavItem {
+                            label: "Vault";
+                            icon: SettingsIconKind.vault;
+                            active: root.settings-category == 6;
+                            clicked => {
+                                root.settings-focus = "";
+                                root.settings-theme-open = false;
+                                root.settings-category = 6;
+                                root.settings-category-changed(6);
+                            }
+                        }
+                        NavItem {
+                            label: "Advanced";
+                            icon: SettingsIconKind.advanced;
+                            active: root.settings-category == 3;
+                            clicked => {
+                                root.settings-focus = "";
+                                root.settings-theme-open = false;
+                                root.settings-category = 3;
+                                root.settings-category-changed(3);
+                            }
+                        }
+
+                        Text {
+                            height: 40px;
+                            text: "Tervo · changes apply instantly";
+                            color: Palette.colors.muted;
+                            font-size: 9px;
+                            vertical-alignment: bottom;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+
+                // ---------------- Appearance ----------------
+                if root.settings-category == 0 : Flickable {
+                    x: settings-body.content-x;
+                    y: settings-body.content-y;
+                    width: settings-body.content-w;
+                    height: settings-body.content-h;
+                    property <int> jump-token: root.settings-jump-token;
+                    interactive: true;
+                    content-width: self.width;
+                    content-height: appearance-layout.preferred-height + 10px;
+
+                    changed jump-token => {
+                        let min-y = -Math.max(0px, self.content-height - self.height);
+                        if (root.settings-focus == "theme") {
+                            self.content-y = Math.max(min-y, Math.min(0px, -theme-card.y + 8px));
+                        } else if (root.settings-focus == "background") {
+                            self.content-y = Math.max(min-y, Math.min(0px, -background-card.y + 8px));
+                        } else if (root.settings-focus == "cursor") {
+                            self.content-y = Math.max(min-y, Math.min(0px, -cursor-card.y + 8px));
+                        } else if (root.settings-focus == "bold") {
+                            self.content-y = Math.max(min-y, Math.min(0px, -bold-card.y + 8px));
+                        }
+                    }
+
+                    appearance-layout := VerticalLayout {
+                        width: 100%;
+                        spacing: 10px;
+
+                        theme-card := SettingsCard {
+                            title: "Theme";
+                            description: "Color scheme applies immediately to every pane and UI chrome.";
+                            highlighted: root.settings-focus == "theme";
+
+                            SettingField {
+                                label: "Color scheme";
+                                Rectangle {
+                                    width: 100%;
+                                    height: 32px;
+                                    border-radius: 8px;
+                                    background: Palette.colors.bg;
+                                    border-width: 1px;
+                                    border-color: root.settings-theme-open
+                                        ? Palette.colors.accent
+                                        : Palette.colors.border;
+
+                                    Text {
+                                        x: 12px;
+                                        width: parent.width - 46px;
+                                        height: parent.height;
+                                        text: root.theme-display;
+                                        color: Palette.colors.text;
+                                        font-size: 12px;
+                                        vertical-alignment: center;
+                                        overflow: elide;
+                                    }
+                                    SettingsIconView {
+                                        x: parent.width - 30px;
+                                        y: 8px;
+                                        kind: SettingsIconKind.chevron;
+                                        tint: root.settings-theme-open
+                                            ? Palette.colors.accent
+                                            : Palette.colors.muted;
+                                    }
+                                    TouchArea {
+                                        width: 100%;
+                                        height: 100%;
+                                        clicked => {
+                                            root.settings-theme-open = !root.settings-theme-open;
+                                        }
+                                    }
+                                }
+                            }
+
+                            SettingRow {
+                                label: "Auto follows system";
+                                description: "Uses the desktop dark/light preference when available.";
+                                SettingsSwitch {
+                                    on: root.theme-name == "auto";
+                                    toggled => { root.set-theme("auto"); }
+                                }
+                            }
+                        }
+
+                        background-card := SettingsCard {
+                            title: "Background";
+                            description: "Optional wallpaper behind the terminal; text and colors stay readable.";
+                            highlighted: root.settings-focus == "background";
+
+                            SettingField {
+                                label: "Image";
+                                description: "PNG / JPEG / SVG path · ~ is expanded · empty = off";
+                                SettingsTextField {
+                                    text <=> root.background-image-path;
+                                    placeholder: "/home/you/Pictures/wallpaper.png";
+                                    error: root.background-image-error != "";
+                                    clearable: true;
+                                    commit-on-blur: true;
+                                    edited(t) => { root.background-image-changed(t); }
+                                    accepted(t) => { root.background-image-commit(t); }
+                                    cleared => { root.background-image-changed(""); }
+                                    blurred(t) => { root.background-image-commit(t); }
+                                }
+                            }
+
+                            if root.background-image-error != "" : Text {
+                                text: root.background-image-error;
+                                color: Palette.colors.danger;
+                                font-size: 10px;
+                                wrap: word-wrap;
+                            }
+                            if root.background-image-error == "" : Text {
+                                text: "Images are cropped to fill the window; only existing regular files are accepted.";
+                                color: Palette.colors.muted;
+                                font-size: 10px;
+                                wrap: word-wrap;
+                            }
+
+                            SettingField {
+                                label: "Dim";
+                                description: "Darkens only the image (default 60%).";
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    OpacitySlider {
+                                        height: 22px;
+                                        horizontal-stretch: 1;
+                                        value: root.background-dim;
+                                        min: 0.0;
+                                        max: 0.8;
+                                        preview(v) => {
+                                            root.background-dim = v;
+                                            root.background-dim-preview(v);
+                                        }
+                                        changed(v) => {
+                                            root.background-dim = v;
+                                            root.background-dim-changed(v);
+                                        }
+                                    }
+                                    Text {
+                                        text: "\{Math.round(root.background-dim * 100)}%";
+                                        color: Palette.colors.text;
+                                        width: 42px;
+                                        font-size: 12px;
+                                        horizontal-alignment: right;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+
+                            SettingField {
+                                label: "Terminal opacity";
+                                description: !root.has-background-image
+                                    ? "No background image set — the terminal stays fully opaque."
+                                    : "0% reveals the wallpaper completely; 100% keeps the theme color.";
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    OpacitySlider {
+                                        height: 22px;
+                                        horizontal-stretch: 1;
+                                        value: root.background-opacity;
+                                        min: 0.0;
+                                        max: 1.0;
+                                        preview(v) => {
+                                            root.background-opacity = v;
+                                            root.background-opacity-preview(v);
+                                        }
+                                        changed(v) => {
+                                            root.background-opacity = v;
+                                            root.background-opacity-changed(v);
+                                        }
+                                    }
+                                    Text {
+                                        text: "\{Math.round(root.background-opacity * 100)}%";
+                                        color: Palette.colors.text;
+                                        width: 42px;
+                                        font-size: 12px;
+                                        horizontal-alignment: right;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                        }
+
+                        cursor-card := SettingsCard {
+                            title: "Cursor";
+                            description: "Shape and colors update the overlay without repainting the terminal grid.";
+                            highlighted: root.settings-focus == "cursor";
+
+                            SettingField {
+                                label: "Shape";
+                                Segmented {
+                                    options: ["Block", "Underline", "I-beam"];
+                                    values: ["block", "underline", "ibeam"];
+                                    value: root.cfg-cursor-shape;
+                                    picked(v) => { root.set-cursor-shape(v); }
+                                }
+                            }
+                            SettingField {
+                                label: "Blink";
+                                Segmented {
+                                    options: ["Follow system", "On", "Off"];
+                                    values: ["system", "on", "off"];
+                                    value: root.cfg-cursor-blink;
+                                    picked(v) => { root.set-cursor-blink(v); }
+                                }
+                            }
+                            SettingField {
+                                label: "Cursor color";
+                                description: "Empty = theme cursor color (#rrggbb).";
+                                SettingsTextField {
+                                    text <=> root.cfg-cursor-color;
+                                    placeholder: "theme default";
+                                    clearable: true;
+                                    edited(t) => { root.cursor-color-changed(t); }
+                                    cleared => { root.cursor-color-changed(""); }
+                                }
+                            }
+                            SettingField {
+                                label: "Cursor text color";
+                                description: "Empty = theme background (inverse block cursor).";
+                                SettingsTextField {
+                                    text <=> root.cfg-cursor-text-color;
+                                    placeholder: "theme background";
+                                    clearable: true;
+                                    edited(t) => { root.cursor-text-color-changed(t); }
+                                    cleared => { root.cursor-text-color-changed(""); }
+                                }
+                            }
+                        }
+
+                        bold-card := SettingsCard {
+                            title: "Bold";
+                            highlighted: root.settings-focus == "bold";
+
+                            SettingRow {
+                                label: "Bold is bright";
+                                description: "ANSI 0–7 bold text uses the bright palette.";
+                                SettingsSwitch {
+                                    on: root.cfg-bold-is-bright;
+                                    toggled => { root.toggle-bold-is-bright(); }
+                                }
+                            }
+                            SettingRow {
+                                label: "Bold color same as foreground";
+                                description: "Disable to use a dedicated bold color below.";
+                                SettingsSwitch {
+                                    on: root.cfg-bold-color-same-as-fg;
+                                    toggled => { root.toggle-bold-color-same-as-fg(); }
+                                }
+                            }
+                            SettingField {
+                                label: "Bold color";
+                                description: "Empty = normal foreground; explicit ANSI colors are unaffected.";
+                                SettingsTextField {
+                                    text <=> root.cfg-bold-color;
+                                    placeholder: "use foreground";
+                                    clearable: true;
+                                    edited(t) => { root.bold-color-changed(t); }
+                                    cleared => { root.bold-color-changed(""); }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ---------------- Terminal ----------------
+                if root.settings-category == 1 : Flickable {
+                    x: settings-body.content-x;
+                    y: settings-body.content-y;
+                    width: settings-body.content-w;
+                    height: settings-body.content-h;
+                    property <int> jump-token: root.settings-jump-token;
+                    interactive: true;
+                    content-width: self.width;
+                    content-height: terminal-layout.preferred-height + 10px;
+
+                    changed jump-token => {
+                        let min-y = -Math.max(0px, self.content-height - self.height);
+                        if (root.settings-focus == "text") {
+                            self.content-y = Math.max(min-y, Math.min(0px, -text-card.y + 8px));
+                        } else if (root.settings-focus == "scrollback") {
+                            self.content-y = Math.max(min-y, Math.min(0px, -scrollback-card.y + 8px));
+                        } else if (root.settings-focus == "behavior") {
+                            self.content-y = Math.max(min-y, Math.min(0px, -behavior-card.y + 8px));
+                        } else if (root.settings-focus == "bell") {
+                            self.content-y = Math.max(min-y, Math.min(0px, -bell-card.y + 8px));
+                        } else if (root.settings-focus == "scroll") {
+                            self.content-y = Math.max(min-y, Math.min(0px, -scrollback-card.y + 8px));
+                        } else if (root.settings-focus == "scrollbar") {
+                            self.content-y = Math.max(min-y, Math.min(0px, -scrollback-card.y + 8px));
+                        } else if (root.settings-focus == "images") {
+                            self.content-y = Math.max(min-y, Math.min(0px, -images-card.y + 8px));
+                        } else if (root.settings-focus == "keys") {
+                            self.content-y = Math.max(min-y, Math.min(0px, -keybind-card.y + 8px));
+                        }
+                    }
+
+                    terminal-layout := VerticalLayout {
+                        width: 100%;
+                        spacing: 10px;
+
+                        text-card := SettingsCard {
+                            title: "Text & history";
+                            highlighted: root.settings-focus == "text"
+                                || root.settings-focus == "scrollback";
+
+                            SettingField {
+                                label: "Font size";
+                                description: "Applies immediately to existing panes.";
+                                Stepper {
+                                    text: "\{root.font-size} px";
+                                    minus => { root.bump-font-size(-1); }
+                                    plus => { root.bump-font-size(1); }
+                                }
+                            }
+                            SettingField {
+                                label: "Scrollback";
+                                description: root.cfg-scrollback-unlimited
+                                    ? "Unlimited mode (safe cap 100,000 lines; new panes only)."
+                                    : "Lines kept per pane (new panes only).";
+                                Stepper {
+                                    text: root.cfg-scrollback-unlimited
+                                        ? "Unlimited"
+                                        : "\{root.scrollback} lines";
+                                    minus => { root.bump-scrollback(-500); }
+                                    plus => { root.bump-scrollback(500); }
+                                }
+                            }
+                            SettingRow {
+                                label: "Unlimited scrollback";
+                                description: "Safe cap 100,000 lines; preallocated memory per new pane.";
+                                SettingsSwitch {
+                                    on: root.cfg-scrollback-unlimited;
+                                    toggled => { root.toggle-scrollback-unlimited(); }
+                                }
+                            }
+                        }
+
+                        scrollback-card := SettingsCard {
+                            title: "Scrolling";
+                            description: "How the viewport follows output and keyboard input.";
+                            highlighted: root.settings-focus == "scroll"
+                                || root.settings-focus == "scrollbar";
+
+                            SettingRow {
+                                label: "Scroll on output";
+                                description: "Any output pulls the viewport back to the newest line.";
+                                SettingsSwitch {
+                                    on: root.cfg-scroll-output;
+                                    toggled => { root.toggle-scroll-output(); }
+                                }
+                            }
+                            SettingRow {
+                                label: "Scroll on keystroke";
+                                description: "Jump to the bottom before sending a key (GNOME default).";
+                                SettingsSwitch {
+                                    on: root.cfg-scroll-keystroke;
+                                    toggled => { root.toggle-scroll-keystroke(); }
+                                }
+                            }
+                            SettingField {
+                                label: "Scrollbar";
+                                description: "Right-edge overlay scrollbar policy.";
+                                Segmented {
+                                    options: ["Always", "Auto", "Never"];
+                                    values: ["always", "auto", "never"];
+                                    value: root.cfg-scrollbar-policy;
+                                    picked(v) => { root.set-scrollbar-policy(v); }
+                                }
+                            }
+                        }
+
+                        behavior-card := SettingsCard {
+                            title: "Behavior";
+                            highlighted: root.settings-focus == "behavior";
+
+                            SettingRow {
+                                label: "Copy on select";
+                                description: "Copy the selection to the clipboard automatically.";
+                                SettingsSwitch {
+                                    on: root.cfg-copy-on-select;
+                                    toggled => { root.toggle-copy-on-select(); }
+                                }
+                            }
+                            SettingRow {
+                                label: "Confirm closing multiple sessions";
+                                description: "Ask before closing a window with several tabs/panes.";
+                                SettingsSwitch {
+                                    on: root.cfg-confirm-close;
+                                    toggled => { root.toggle-confirm-close(); }
+                                }
+                            }
+                            SettingRow {
+                                label: "Confirm multi-line paste";
+                                description: "Show a preview before pasting text with newlines.";
+                                SettingsSwitch {
+                                    on: root.cfg-confirm-paste;
+                                    toggled => { root.toggle-confirm-paste(); }
+                                }
+                            }
+                            SettingField {
+                                label: "Right click";
+                                description: "Short press acts immediately; long press (250ms) opens the menu.";
+                                Segmented {
+                                    options: ["Menu", "Paste", "Clipboard", "Off"];
+                                    values: ["menu", "paste", "clipboard", "off"];
+                                    value: root.cfg-right-click;
+                                    picked(v) => { root.set-right-click(v); }
+                                }
+                            }
+                            SettingRow {
+                                label: "Paste on middle-click";
+                                SettingsSwitch {
+                                    on: root.cfg-paste-middle;
+                                    toggled => { root.toggle-paste-middle(); }
+                                }
+                            }
+                            SettingRow {
+                                label: "Desktop notifications";
+                                description: "notify-send when an inactive tab emits OSC 9 / 777 / BEL.";
+                                SettingsSwitch {
+                                    on: root.cfg-desktop-notifications;
+                                    toggled => { root.toggle-desktop-notifications(); }
+                                }
+                            }
+                        }
+
+                        bell-card := SettingsCard {
+                            title: "Bell";
+                            highlighted: root.settings-focus == "bell";
+                            SettingRow {
+                                label: "Visual bell";
+                                description: "Flash a 1–2px accent border when the active pane receives BEL.";
+                                SettingsSwitch {
+                                    on: root.cfg-visual-bell;
+                                    toggled => { root.toggle-visual-bell(); }
+                                }
+                            }
+                            SettingRow {
+                                label: "Audible bell";
+                                description: "Ring the system bell via X11 (falls back to the terminal BEL).";
+                                SettingsSwitch {
+                                    on: root.cfg-audible-bell;
+                                    toggled => { root.toggle-audible-bell(); }
+                                }
+                            }
+                        }
+
+                        images-card := SettingsCard {
+                            title: "Images";
+                            highlighted: root.settings-focus == "images";
+                            SettingRow {
+                                label: "Sixel inline images";
+                                description: "Primary DA advertises parameter 4; 25 MB per image, 16 MP cap.";
+                                SettingsSwitch {
+                                    on: root.cfg-sixel;
+                                    toggled => { root.toggle-sixel(); }
+                                }
+                            }
+                            SettingRow {
+                                label: "Images scroll with history";
+                                description: "Off pins images to the viewport; on moves them with the text.";
+                                SettingsSwitch {
+                                    on: root.cfg-sixel-scrolling;
+                                    toggled => { root.toggle-sixel-scrolling(); }
+                                }
+                            }
+                        }
+
+                        keybind-card := SettingsCard {
+                            title: "Key encoding";
+                            highlighted: root.settings-focus == "keys";
+                            SettingField {
+                                label: "Backspace";
+                                Segmented {
+                                    options: ["ASCII DEL (0x7F)", "Control-H (0x08)"];
+                                    values: ["ascii-delete", "control-h"];
+                                    value: root.cfg-backspace-binding;
+                                    picked(v) => { root.set-backspace-binding(v); }
+                                }
+                            }
+                            SettingField {
+                                label: "Delete";
+                                Segmented {
+                                    options: ["ESC [3~", "ASCII DEL", "Control-H"];
+                                    values: ["delete-sequence", "ascii-del", "control-h"];
+                                    value: root.cfg-delete-binding;
+                                    picked(v) => { root.set-delete-binding(v); }
+                                }
+                            }
+                            Text {
+                                text: "Only the bytes sent to the PTY change; defaults match GNOME (Backspace=0x7F, Delete=ESC [3~).";
+                                color: Palette.colors.muted;
+                                font-size: 10px;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+                }
+
+                // ---------------- Window ----------------
+                if root.settings-category == 2 : Flickable {
+                    x: settings-body.content-x;
+                    y: settings-body.content-y;
+                    width: settings-body.content-w;
+                    height: settings-body.content-h;
+                    property <int> jump-token: root.settings-jump-token;
+                    interactive: true;
+                    content-width: self.width;
+                    content-height: window-layout.preferred-height + 10px;
+
+                    changed jump-token => {
+                        if (root.settings-focus == "window") {
+                            self.content-y = 0px;
+                        }
+                    }
+
+                    window-layout := VerticalLayout {
+                        width: 100%;
+                        spacing: 10px;
+
+                        window-card := SettingsCard {
+                            title: "Window & Tab bar";
+                            highlighted: root.settings-focus == "window";
+                            SettingRow {
+                                label: "Tab bar at bottom";
+                                description: "Move the tab strip below the terminal content.";
+                                SettingsSwitch {
+                                    on: root.tabbar-bottom;
+                                    toggled => { root.tabbar-menu-action(6); }
+                                }
+                            }
+                            SettingRow {
+                                label: "Quake mode (F12)";
+                                description: "Global drop-down terminal: 70% screen width, 50% height (X11).";
+                                SettingsSwitch {
+                                    on: root.cfg-quake;
+                                    toggled => { root.toggle-quake(); }
+                                }
+                            }
+                            Text {
+                                text: "Tab bar position is written to config immediately. Close confirmation lives in Terminal → Behavior.";
+                                color: Palette.colors.muted;
+                                font-size: 10px;
+                                wrap: word-wrap;
+                            }
+                        }
+
+                        SettingsCard {
+                            title: "Settings window";
+                            description: root.settings-legacy
+                                ? "Legacy modal mode is active (TERVO_SETTINGS_LEGACY=1)."
+                                : "Settings is a tab inside the main window: close it with ✕, Esc, or by clicking a terminal tab.";
+                            Text {
+                                text: "Start with TERVO_SETTINGS_LEGACY=1 to use the centered modal fallback.";
+                                color: Palette.colors.muted;
+                                font-size: 10px;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+                }
+
+                // ---------------- Advanced ----------------
+                if root.settings-category == 3 : Flickable {
+                    x: settings-body.content-x;
+                    y: settings-body.content-y;
+                    width: settings-body.content-w;
+                    height: settings-body.content-h;
+                    property <int> jump-token: root.settings-jump-token;
+                    interactive: true;
+                    content-width: self.width;
+                    content-height: advanced-layout.preferred-height + 10px;
+
+                    changed jump-token => {
+                        if (root.settings-focus == "config") {
+                            self.content-y = 0px;
+                        }
+                    }
+
+                    advanced-layout := VerticalLayout {
+                        width: 100%;
+                        spacing: 10px;
+
+                        config-card := SettingsCard {
+                            title: "Config file";
+                            highlighted: root.settings-focus == "config";
+                            SettingField {
+                                label: "Path";
+                                Text {
+                                    text: root.settings-path;
+                                    color: Palette.colors.text;
+                                    font-size: 11px;
+                                    wrap: word-wrap;
+                                }
+                            }
+                            HorizontalLayout {
+                                spacing: 6px;
+                                ActionBtn {
+                                    horizontal-stretch: 1;
+                                    label: "Open Folder";
+                                    font-size: 10px;
+                                    clicked => { root.settings-open-path(); }
+                                }
+                                ActionBtn {
+                                    horizontal-stretch: 1;
+                                    label: "Import Tabby";
+                                    font-size: 10px;
+                                    clicked => { root.config-import-tabby(); }
+                                }
+                                ActionBtn {
+                                    horizontal-stretch: 1;
+                                    label: "Export Profiles";
+                                    font-size: 10px;
+                                    clicked => { root.config-export-tabby(); }
+                                }
+                            }
+                            Text {
+                                text: root.config-status;
+                                color: Palette.colors.muted;
+                                font-size: 10px;
+                                wrap: word-wrap;
+                                visible: root.config-status != "";
+                            }
+                            Text {
+                                text: "Passwords and private keys never live in the plain config; SSH passwords go to the encrypted Vault.";
+                                color: Palette.colors.muted;
+                                font-size: 10px;
+                                wrap: word-wrap;
+                            }
+                        }
+
+                        SettingsCard {
+                            title: "Interface";
+                            description: "Settings presentation is selected at startup for safety.";
+                            Text {
+                                text: root.settings-legacy
+                                    ? "Current: legacy centered modal. Remove TERVO_SETTINGS_LEGACY to return to the Settings Tab."
+                                    : "Current: in-window Settings Tab. Set TERVO_SETTINGS_LEGACY=1 before launch to fall back to the centered modal.";
+                                color: Palette.colors.muted;
+                                font-size: 10px;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+                }
+
+                // ---------------- Keys ----------------
+                if root.settings-category == 4 : Flickable {
+                    x: settings-body.content-x;
+                    y: settings-body.content-y;
+                    width: settings-body.content-w;
+                    height: settings-body.content-h;
+                    property <int> jump-token: root.settings-jump-token;
+                    interactive: true;
+                    content-width: self.width;
+                    content-height: hotkeys-layout.preferred-height + 10px;
+
+                    changed jump-token => {
+                        if (root.settings-focus == "hotkeys") {
+                            self.content-y = 0px;
+                        }
+                    }
+
+                    hotkeys-layout := VerticalLayout {
+                        width: 100%;
+                        spacing: 10px;
+
+                        SettingsCard {
+                            title: "Keyboard shortcuts";
+                            description: "Click Edit, then press a single chord. Esc cancels; Backspace restores the default.";
+
+                            HorizontalLayout {
+                                height: 22px;
+                                spacing: 8px;
+                                Text {
+                                    text: root.hotkey-summary;
+                                    color: Palette.colors.subtext;
+                                    font-size: 10px;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                    overflow: elide;
+                                }
+                                Text {
+                                    text: root.hotkey-conflict-count > 0
+                                        ? "⚠ \{root.hotkey-conflict-count} conflict(s)"
+                                        : "✓ no conflicts";
+                                    color: root.hotkey-conflict-count > 0
+                                        ? Palette.colors.danger
+                                        : Palette.colors.muted;
+                                    font-size: 10px;
+                                    vertical-alignment: center;
+                                }
+                                ChoiceBtn {
+                                    width: 72px;
+                                    height: 22px;
+                                    font-size: 9px;
+                                    label: "Reset All";
+                                    clicked => { root.hotkey-reset-all(); }
+                                }
+                            }
+
+                            if root.hotkey-recording-row >= 0 : Text {
+                                text: "Recording: press Ctrl/Alt/Shift + key · Esc cancel · Backspace reset";
+                                color: Palette.colors.accent;
+                                font-size: 10px;
+                                wrap: word-wrap;
+                            }
+
+                            VerticalLayout {
+                                width: 100%;
+                                spacing: 1px;
+
+                                for row[i] in root.hotkey-rows : Rectangle {
+                                    height: 30px;
+                                    border-radius: 5px;
+                                    background: i == root.hotkey-recording-row
+                                        ? Palette.colors.hover
+                                        : (hotkey-row-hit.has-hover ? Palette.colors.surface : transparent);
+
+                                    hotkey-row-hit := TouchArea {
+                                        width: 100%;
+                                        height: 100%;
+                                        pointer-event(event) => { EventResult.reject; }
+                                    }
+
+                                    Text {
+                                        x: 6px;
+                                        width: parent.width - 158px;
+                                        height: parent.height;
+                                        text: row.title;
+                                        color: Palette.colors.text;
+                                        font-size: 11px;
+                                        vertical-alignment: center;
+                                        overflow: elide;
+                                    }
+
+                                    Text {
+                                        x: parent.width - 152px;
+                                        width: 88px;
+                                        height: 15px;
+                                        text: i == root.hotkey-recording-row ? "Press keys…" : row.chord;
+                                        color: i == root.hotkey-recording-row
+                                            ? Palette.colors.accent
+                                            : (row.conflict ? Palette.colors.danger : Palette.colors.subtext);
+                                        font-size: 10px;
+                                        horizontal-alignment: right;
+                                        vertical-alignment: center;
+                                        overflow: elide;
+                                    }
+
+                                    Text {
+                                        x: parent.width - 152px;
+                                        y: 15px;
+                                        width: 88px;
+                                        height: 12px;
+                                        text: row.conflict ? "CONFLICT" : (row.custom ? "CUSTOM" : "");
+                                        color: row.conflict ? Palette.colors.danger : Palette.colors.accent;
+                                        font-size: 7px;
+                                        horizontal-alignment: right;
+                                        vertical-alignment: center;
+                                    }
+
+                                    ChoiceBtn {
+                                        x: parent.width - 60px;
+                                        y: 4px;
+                                        width: 52px;
+                                        height: 22px;
+                                        font-size: 9px;
+                                        label: i == root.hotkey-recording-row ? "Cancel" : "Edit";
+                                        active: i == root.hotkey-recording-row;
+                                        clicked => {
+                                            if (i == root.hotkey-recording-row) {
+                                                root.hotkey-cancel-edit();
+                                            } else {
+                                                root.hotkey-start-edit(i);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            if root.hotkey-error != "" : Text {
+                                text: root.hotkey-error;
+                                color: Palette.colors.danger;
+                                font-size: 10px;
+                                wrap: word-wrap;
+                            }
+                            if root.hotkey-error == "" && root.hotkey-status != "" : Text {
+                                text: root.hotkey-status;
+                                color: Palette.colors.muted;
+                                font-size: 10px;
+                                wrap: word-wrap;
+                            }
+                            Text {
+                                text: "Single chord: Ctrl/Alt/Meta + key, or F1–F24. Conflicting chords are rejected; multi-chord sequences (Ctrl+K Ctrl+T) are not supported.";
+                                color: Palette.colors.muted;
+                                font-size: 9px;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+                }
+
+                // ---------------- Profiles ----------------
+                if root.settings-category == 7 : Flickable {
+                    x: settings-body.content-x;
+                    y: settings-body.content-y;
+                    width: settings-body.content-w;
+                    height: settings-body.content-h;
+                    property <int> jump-token: root.settings-jump-token;
+                    interactive: true;
+                    content-width: self.width;
+                    content-height: profiles-layout.preferred-height + 10px;
+
+                    changed jump-token => {
+                        if (root.settings-focus == "profiles") {
+                            self.content-y = 0px;
+                        }
+                    }
+
+                    profiles-layout := VerticalLayout {
+                        width: 100%;
+                        spacing: 10px;
+
+                        profiles-card := SettingsCard {
+                            title: "Profiles";
+                            description: "Saved local / SSH / serial / telnet connections. Click a row to open it in a new tab.";
+                            highlighted: root.settings-focus == "profiles";
+
+                            VerticalLayout {
+                                width: 100%;
+                                spacing: 2px;
+
+                                if root.profile-items.length == 0 : Text {
+                                    height: 28px;
+                                    text: "No profiles yet — create one below.";
+                                    color: Palette.colors.muted;
+                                    font-size: 11px;
+                                    vertical-alignment: center;
+                                }
+
+                                for item[i] in root.profile-items : Rectangle {
+                                    height: 34px;
+                                    border-radius: 6px;
+                                    background: profile-row-hit.has-hover ? Palette.colors.hover : transparent;
+
+                                    profile-row-hit := TouchArea {
+                                        x: 0px;
+                                        y: 0px;
+                                        width: parent.width - 108px;
+                                        height: parent.height;
+                                        clicked => { root.profile-open(i); }
+                                    }
+
+                                    Text {
+                                        x: 8px;
+                                        width: parent.width - 122px;
+                                        height: parent.height;
+                                        text: item.label;
+                                        color: Palette.colors.text;
+                                        font-size: 12px;
+                                        vertical-alignment: center;
+                                        overflow: elide;
+                                    }
+
+                                    Rectangle {
+                                        x: parent.width - 104px;
+                                        y: 5px;
+                                        width: 26px;
+                                        height: 24px;
+                                        border-radius: 5px;
+                                        background: profile-star.has-hover ? Palette.colors.hover : transparent;
+                                        Text {
+                                            text: item.is-default ? "★" : "☆";
+                                            color: item.is-default ? Palette.colors.accent : Palette.colors.muted;
+                                            font-size: 13px;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                            width: 100%;
+                                            height: 100%;
+                                        }
+                                        profile-star := TouchArea {
+                                            clicked => { root.profile-set-default(i); }
+                                        }
+                                    }
+
+                                    ChoiceBtn {
+                                        x: parent.width - 76px;
+                                        y: 6px;
+                                        width: 42px;
+                                        height: 22px;
+                                        font-size: 9px;
+                                        label: "Edit";
+                                        clicked => { root.profile-edit(i); }
+                                    }
+
+                                    Rectangle {
+                                        x: parent.width - 30px;
+                                        y: 5px;
+                                        width: 24px;
+                                        height: 24px;
+                                        border-radius: 5px;
+                                        background: profile-del.has-hover ? Palette.colors.danger : transparent;
+                                        Text {
+                                            text: "×";
+                                            color: profile-del.has-hover
+                                                ? Palette.colors.accent-text
+                                                : Palette.colors.muted;
+                                            font-size: 14px;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                            width: 100%;
+                                            height: 100%;
+                                        }
+                                        profile-del := TouchArea {
+                                            clicked => { root.profile-delete(i); }
+                                        }
+                                    }
+                                }
+                            }
+
+                            Text {
+                                text: root.profile-default-info;
+                                color: Palette.colors.muted;
+                                font-size: 10px;
+                                wrap: word-wrap;
+                            }
+
+                            HorizontalLayout {
+                                spacing: 6px;
+                                ActionBtn {
+                                    horizontal-stretch: 1;
+                                    label: "New Profile";
+                                    font-size: 10px;
+                                    clicked => { root.profile-new(); }
+                                }
+                                ActionBtn {
+                                    horizontal-stretch: 1;
+                                    label: "Manage Profiles…";
+                                    font-size: 10px;
+                                    clicked => { root.settings-manage-profiles(); }
+                                }
+                            }
+                            Text {
+                                text: "The full Profiles panel adds search and duplicate; it opens above this page.";
+                                color: Palette.colors.muted;
+                                font-size: 10px;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+                }
+
+                // ---------------- Plugins ----------------
+                if root.settings-category == 5 : Flickable {
+                    x: settings-body.content-x;
+                    y: settings-body.content-y;
+                    width: settings-body.content-w;
+                    height: settings-body.content-h;
+                    property <int> jump-token: root.settings-jump-token;
+                    interactive: true;
+                    content-width: self.width;
+                    content-height: plugins-layout.preferred-height + 10px;
+
+                    changed jump-token => {
+                        if (root.settings-focus == "plugins") {
+                            self.content-y = 0px;
+                        }
+                    }
+
+                    plugins-layout := VerticalLayout {
+                        width: 100%;
+                        spacing: 10px;
+
+                        plugins-card := SettingsCard {
+                            title: "Plugins";
+                            highlighted: root.settings-focus == "plugins";
+
+                            Text {
+                                text: root.plugin-summary;
+                                color: Palette.colors.subtext;
+                                font-size: 11px;
+                                wrap: word-wrap;
+                            }
+
+                            Text {
+                                text: "Installed";
+                                color: Palette.colors.muted;
+                                font-size: 10px;
+                                font-weight: 600;
+                            }
+
+                            VerticalLayout {
+                                width: 100%;
+                                spacing: 0px;
+                                for item[i] in root.plugin-items : Text {
+                                    height: 22px;
+                                    text: item;
+                                    color: Palette.colors.text;
+                                    font-size: 11px;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                }
+                                if root.plugin-items.length == 0 : Text {
+                                    height: 22px;
+                                    text: "No plugins installed.";
+                                    color: Palette.colors.muted;
+                                    font-size: 10px;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            Text {
+                                text: "Recent plugin activity";
+                                color: Palette.colors.muted;
+                                font-size: 10px;
+                                font-weight: 600;
+                            }
+
+                            VerticalLayout {
+                                width: 100%;
+                                spacing: 0px;
+                                if root.plugin-activity-items.length == 0 : Text {
+                                    height: 22px;
+                                    text: "No plugin activity yet — run a plugin command or open a tab with an event plugin installed.";
+                                    color: Palette.colors.muted;
+                                    font-size: 10px;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                }
+                                for item[i] in root.plugin-activity-items : Text {
+                                    height: 20px;
+                                    text: item;
+                                    color: Palette.colors.text;
+                                    font-size: 10px;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                }
+                            }
+
+                            Text {
+                                text: root.plugin-dir;
+                                color: Palette.colors.muted;
+                                font-size: 9px;
+                                wrap: word-wrap;
+                            }
+                            Text {
+                                text: "v1 plugins: <name>/plugin.toml. Commands appear in the Palette; events run startup/tab-open/tab-close. External processes with full user permissions (10s timeout), output goes to logs. Changing enabled requires a restart.";
+                                color: Palette.colors.muted;
+                                font-size: 9px;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+                }
+
+                // ---------------- Vault ----------------
+                if root.settings-category == 6 : Flickable {
+                    x: settings-body.content-x;
+                    y: settings-body.content-y;
+                    width: settings-body.content-w;
+                    height: settings-body.content-h;
+                    property <int> jump-token: root.settings-jump-token;
+                    interactive: true;
+                    content-width: self.width;
+                    content-height: vault-layout.preferred-height + 10px;
+
+                    changed jump-token => {
+                        if (root.settings-focus == "vault") {
+                            self.content-y = 0px;
+                        }
+                    }
+
+                    vault-layout := VerticalLayout {
+                        width: 100%;
+                        spacing: 10px;
+
+                        vault-card := SettingsCard {
+                            title: "Vault";
+                            description: "Local encrypted credential store for SSH passwords.";
+                            highlighted: root.settings-focus == "vault";
+
+                            Text {
+                                text: "Status: \{root.vault-status}";
+                                color: Palette.colors.text;
+                                font-size: 12px;
+                            }
+                            Text {
+                                text: root.vault-path;
+                                color: Palette.colors.muted;
+                                font-size: 10px;
+                                wrap: word-wrap;
+                            }
+                            SettingField {
+                                label: "Master password";
+                                SettingsTextField {
+                                    text <=> root.vault-password;
+                                    placeholder: "Master password";
+                                    masked: true;
+                                    accepted(t) => { root.vault-unlock(); }
+                                }
+                            }
+                            HorizontalLayout {
+                                spacing: 4px;
+                                ActionBtn {
+                                    horizontal-stretch: 1;
+                                    label: "Set / Change";
+                                    font-size: 10px;
+                                    clicked => { root.vault-set-master(); }
+                                }
+                                ActionBtn {
+                                    horizontal-stretch: 1;
+                                    label: "Unlock";
+                                    font-size: 10px;
+                                    clicked => { root.vault-unlock(); }
+                                }
+                                ActionBtn {
+                                    horizontal-stretch: 1;
+                                    label: "Lock";
+                                    font-size: 10px;
+                                    clicked => { root.vault-lock(); }
+                                }
+                                ActionBtn {
+                                    horizontal-stretch: 1;
+                                    label: "Clear";
+                                    font-size: 10px;
+                                    danger: true;
+                                    clicked => { root.vault-clear(); }
+                                }
+                            }
+                            if root.vault-error != "" : Text {
+                                text: root.vault-error;
+                                color: Palette.colors.danger;
+                                font-size: 10px;
+                                wrap: word-wrap;
+                            }
+                            if root.vault-notice != "" : Text {
+                                text: root.vault-notice;
+                                color: Palette.colors.muted;
+                                font-size: 10px;
+                                wrap: word-wrap;
+                            }
+                            Text {
+                                text: "The master password is only used for Argon2id key derivation; it never touches disk or logs. vault.enc is 0600 and written atomically. Clear must be clicked twice.";
+                                color: Palette.colors.subtext;
+                                font-size: 10px;
+                                wrap: word-wrap;
+                            }
+                            Text {
+                                text: "SSH password auth: saved passwords are injected through askpass after unlock. MVP caveat: askpass passes the secret via environment, observable by the same user in /proc — see docs/VAULT.md.";
+                                color: Palette.colors.muted;
+                                font-size: 10px;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+                }
+
+                // ---------------- 搜索结果浮层 ----------------
+                if root.settings-query != "" : Rectangle {
+                    x: settings-body.content-x;
+                    y: settings-body.content-y;
+                    width: settings-body.content-w;
+                    height: Math.min(settings-body.content-h,
+                        58px + root.settings-results.length * 30px);
+                    background: Palette.colors.raise;
+                    border-radius: 10px;
+                    border-width: 1px;
+                    border-color: Palette.colors.accent;
+                    drop-shadow-blur: 18px;
+                    drop-shadow-offset-y: 6px;
+                    drop-shadow-color: #000000b0;
+
+                    VerticalLayout {
+                        padding: 10px;
+                        spacing: 2px;
+
+                        Text {
+                            height: 28px;
+                            text: root.settings-results.length == 0
+                                ? "No matches"
+                                : (root.settings-results.length == 1
+                                    ? "1 match — click to jump"
+                                    : "\{root.settings-results.length} matches — click to jump");
+                            color: Palette.colors.muted;
+                            font-size: 10px;
+                            vertical-alignment: center;
+                        }
+
+                        Flickable {
+                            width: 100%;
+                            height: parent.height - 34px;
+                            interactive: true;
+                            content-width: self.width;
+                            content-height: root.settings-results.length * 30px;
+
+                            VerticalLayout {
+                                width: 100%;
+                                spacing: 0px;
+                                for item[i] in root.settings-results : Rectangle {
+                                    height: 30px;
+                                    border-radius: 5px;
+                                    background: search-result-hit.has-hover
+                                        ? Palette.colors.hover
+                                        : transparent;
+                                    Text {
+                                        x: 8px;
+                                        width: parent.width - 16px;
+                                        height: parent.height;
+                                        text: item;
+                                        color: Palette.colors.text;
+                                        font-size: 11px;
+                                        vertical-alignment: center;
+                                        overflow: elide;
+                                    }
+                                    search-result-hit := TouchArea {
+                                        clicked => { root.settings-open-result(i); }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 主题下拉的点击外部关闭层（只覆盖内容区；sidebar 仍可切分类）。
+                if root.settings-theme-open && root.settings-category == 0 : Rectangle {
+                    x: settings-body.content-x;
+                    y: settings-body.content-y;
+                    width: settings-body.content-w;
+                    height: settings-body.content-h;
+                    background: transparent;
+                    TouchArea {
+                        width: 100%;
+                        height: 100%;
+                        clicked => { root.settings-theme-open = false; }
+                    }
+                }
+
+                // 主题下拉：面板级浮层，避免被 Flickable 裁剪；不依赖 PopupWindow。
+                if root.settings-theme-open && root.settings-category == 0 : Rectangle {
+                    x: settings-body.content-x + 14px;
+                    y: settings-body.content-y + 116px;
+                    width: Math.min(320px, settings-body.content-w - 28px);
+                    height: Math.min(260px, root.theme-choices.length * 30px + 10px);
+                    background: Palette.colors.raise;
+                    border-radius: 9px;
+                    border-width: 1px;
+                    border-color: Palette.colors.accent;
+                    drop-shadow-blur: 18px;
+                    drop-shadow-offset-y: 6px;
+                    drop-shadow-color: #000000b0;
+
+                    Flickable {
+                        width: 100%;
+                        height: 100%;
+                        interactive: true;
+                        content-width: self.width;
+                        content-height: root.theme-choices.length * 30px + 8px;
+
+                        VerticalLayout {
+                            x: 4px;
+                            y: 4px;
+                            width: parent.width - 8px;
+                            spacing: 1px;
+
+                            for choice[i] in root.theme-choices : Rectangle {
+                                height: 28px;
+                                border-radius: 5px;
+                                background: choice.id == root.theme-name
+                                    ? Palette.colors.accent
+                                    : (theme-pick.has-hover ? Palette.colors.hover : transparent);
+                                theme-pick := TouchArea {
+                                    clicked => {
+                                        root.set-theme(choice.id);
+                                        root.settings-theme-open = false;
+                                    }
+                                }
+                                Text {
+                                    x: 10px;
+                                    width: parent.width - 20px;
+                                    height: parent.height;
+                                    text: choice.label;
+                                    color: choice.id == root.theme-name
+                                        ? Palette.colors.accent-text
+                                        : Palette.colors.text;
+                                    font-size: 11px;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
 
     // profiles-open 的遮罩：点外部（左右键都行）关闭
     if root.profiles-open : Rectangle {
@@ -3685,1505 +6051,6 @@ export component MainWindow inherits Window {
                     overflow: elide;
                 }
             }
-        }
-    }
-
-    if root.settings-open : Rectangle {
-        width: 100%;
-        height: 100%;
-        background: #00000080;
-
-        backdrop := TouchArea {
-            pointer-event(event) => {
-                if (event.kind == PointerEventKind.down) {
-                    root.settings-open = false;
-                    root.settings-toggled(false);
-                    return EventResult.accept;
-                }
-                EventResult.reject
-            }
-        }
-
-        // Tabby 式布局：左侧分类导航 + 右侧内容；顶部一条搜索栏。
-        Rectangle {
-            width: Math.min(520px, root.width - 12px);
-            // 居中在 TabBar 下方的内容区，避免盖住 TabBar/窗口按钮。
-            // 520 高给 Appearance 的背景图/遮罩/透明度三组控件留出空间。
-            height: Math.min(520px, root.height - root.tabbar-height - 12px);
-            x: (root.width - self.width) / 2;
-            y: root.tabbar-height + (root.height - root.tabbar-height - self.height) / 2;
-            background: @linear-gradient(180deg, Palette.colors.raise 0%, Palette.colors.surface 100%);
-            border-radius: 12px;
-            border-width: 1px;
-            border-color: Palette.colors.border;
-            drop-shadow-blur: 30px;
-            drop-shadow-offset-y: 10px;
-            drop-shadow-color: #000000b8;
-
-            // 吃掉面板内部的空白点击，否则会穿透到 backdrop 把设置关掉；
-            // 右键直接关闭设置（设置页没有右键菜单）。
-            TouchArea {
-                width: 100%;
-                height: 100%;
-                pointer-event(event) => {
-                    if (event.kind == PointerEventKind.down
-                        && event.button == PointerEventButton.right) {
-                        root.settings-open = false;
-                        root.settings-toggled(false);
-                    }
-                    EventResult.accept
-                }
-            }
-
-            // ---------------- 顶栏 ----------------
-            HorizontalLayout {
-                x: 18px; y: 12px;
-                width: parent.width - 36px;
-                height: 26px;
-                spacing: 10px;
-
-                Image {
-                    width: 22px;
-                    height: 22px;
-                    source: @image-url("../../../assets/icon-small.png");
-                    image-fit: contain;
-                }
-                Text {
-                    text: "Settings";
-                    color: Palette.colors.text;
-                    font-size: 16px;
-                    font-weight: 600;
-                    vertical-alignment: center;
-                }
-                Rectangle {
-                    height: 24px;
-                    horizontal-stretch: 1;
-                    border-radius: 4px;
-                    background: Palette.colors.bg;
-                    border-width: 1px;
-                    border-color: Palette.colors.border;
-
-                    Text {
-                        x: 6px;
-                        width: parent.width - 12px;
-                        height: parent.height;
-                        text: "Search settings…";
-                        color: Palette.colors.muted;
-                        font-size: 11px;
-                        vertical-alignment: center;
-                        visible: root.settings-query == "";
-                    }
-
-                    TextInput {
-                        x: 6px;
-                        width: parent.width - 12px;
-                        height: parent.height;
-                        text <=> root.settings-query;
-                        single-line: true;
-                        color: Palette.colors.text;
-                        font-size: 11px;
-                        vertical-alignment: center;
-                        edited => { root.settings-filter(self.text); }
-                    }
-                }
-            }
-
-            Rectangle {
-                x: 18px; y: 50px;
-                width: parent.width - 36px;
-                height: 1px;
-                background: Palette.colors.border;
-            }
-
-            // ---------------- 左导航 ----------------
-            NavItem {
-                x: 18px; y: 64px; width: 118px;
-                label: "Appearance";
-                active: root.settings-category == 0;
-                clicked => { root.settings-category = 0; root.settings-category-changed(0); }
-            }
-            NavItem {
-                x: 18px; y: 98px; width: 118px;
-                label: "Terminal";
-                active: root.settings-category == 1;
-                clicked => { root.settings-category = 1; root.settings-category-changed(1); }
-            }
-            NavItem {
-                x: 18px; y: 132px; width: 118px;
-                label: "Window";
-                active: root.settings-category == 2;
-                clicked => { root.settings-category = 2; root.settings-category-changed(2); }
-            }
-            NavItem {
-                x: 18px; y: 166px; width: 118px;
-                label: "Config";
-                active: root.settings-category == 3;
-                clicked => { root.settings-category = 3; root.settings-category-changed(3); }
-            }
-            NavItem {
-                x: 18px; y: 200px; width: 118px;
-                label: "Hotkeys";
-                active: root.settings-category == 4;
-                clicked => { root.settings-category = 4; root.settings-category-changed(4); }
-            }
-            NavItem {
-                x: 18px; y: 234px; width: 118px;
-                label: "Plugins";
-                active: root.settings-category == 5;
-                clicked => { root.settings-category = 5; root.settings-category-changed(5); }
-            }
-            NavItem {
-                x: 18px; y: 268px; width: 118px;
-                label: "Vault";
-                active: root.settings-category == 6;
-                clicked => { root.settings-category = 6; root.settings-category-changed(6); }
-            }
-
-            Text {
-                x: 18px;
-                y: parent.height - 28px;
-                width: 118px;
-                text: "Tervo";
-                color: Palette.colors.muted;
-                font-size: 10px;
-                vertical-alignment: center;
-            }
-
-            // ---------------- 右侧内容 ----------------
-            Rectangle {
-                x: 146px; y: 64px;
-                width: parent.width - 164px;
-                height: parent.height - 80px;
-                clip: true;
-
-                if root.settings-category == 0 : Flickable {
-                    width: 100%;
-                    height: 100%;
-                    content-width: self.width;
-                    content-height: appearance-pane.preferred-height;
-                    interactive: true;
-
-                // Appearance 项较多（主题/背景/光标/粗体），小窗口下整体纵向滚动，
-                // 不再靠裁剪或压暗其它控件来腾空间。
-                appearance-pane := VerticalLayout {
-                    width: 100%;
-                    spacing: 10px;
-
-                    HorizontalLayout {
-                        spacing: 8px;
-                        Text {
-                            text: "Theme";
-                            color: Palette.colors.subtext;
-                            width: 52px;
-                            font-size: 12px;
-                            vertical-alignment: top;
-                        }
-                        VerticalLayout {
-                            spacing: 6px;
-                            horizontal-stretch: 1;
-
-                            HorizontalLayout {
-                                spacing: 6px;
-                                ChoiceBtn {
-                                    width: 136px;
-                                    height: 24px;
-                                    font-size: 10px;
-                                    label: "Auto（跟随系统）";
-                                    active: root.theme-name == "auto";
-                                    clicked => { root.set-theme("auto"); }
-                                }
-                                Text {
-                                    text: root.auto-resolved == "" ? "" : "→ \{root.auto-resolved}";
-                                    color: Palette.colors.subtext;
-                                    font-size: 11px;
-                                    vertical-alignment: center;
-                                    overflow: elide;
-                                    horizontal-stretch: 1;
-                                }
-                            }
-
-                            Flickable {
-                                width: 100%;
-                                // 缩短主题网格，为下方背景图/透明度控件留出空间；
-                                // 主题多时仍可滚动。
-                                height: 128px;
-                                content-width: self.width;
-                                content-height: Math.ceil(root.theme-choices.length / 4) * 30px - 6px;
-                                interactive: true;
-
-                                GridLayout {
-                                    width: 100%;
-                                    spacing: 6px;
-                                    for choice[i] in root.theme-choices : ChoiceBtn {
-                                        row: Math.floor(i / 4);
-                                        col: Math.mod(i, 4);
-                                        width: 66px;
-                                        height: 24px;
-                                        font-size: 10px;
-                                        label: choice.label;
-                                        active: root.theme-name == choice.id;
-                                        clicked => { root.set-theme(choice.id); }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    Rectangle {
-                        height: 1px;
-                        horizontal-stretch: 1;
-                        background: Palette.colors.border;
-                    }
-
-                    Text {
-                        text: "Background image";
-                        color: Palette.colors.subtext;
-                        font-size: 12px;
-                    }
-
-                    HorizontalLayout {
-                        spacing: 6px;
-                        Rectangle {
-                            height: 26px;
-                            horizontal-stretch: 1;
-                            border-radius: 4px;
-                            background: Palette.colors.bg;
-                            border-width: 1px;
-                            border-color: root.background-image-error == ""
-                                ? Palette.colors.border
-                                : Palette.colors.danger;
-
-                            Text {
-                                x: 7px;
-                                width: parent.width - 14px;
-                                height: parent.height;
-                                text: "PNG / JPEG / SVG 路径，空 = 关闭";
-                                color: Palette.colors.muted;
-                                font-size: 11px;
-                                vertical-alignment: center;
-                                visible: root.background-image-path == "";
-                            }
-
-                            TextInput {
-                                x: 7px;
-                                width: parent.width - 14px;
-                                height: parent.height;
-                                text <=> root.background-image-path;
-                                single-line: true;
-                                color: Palette.colors.text;
-                                font-size: 11px;
-                                vertical-alignment: center;
-                                // 边打边预览合法路径；错误留到回车/失焦再报。
-                                edited => { root.background-image-changed(self.text); }
-                                accepted => { root.background-image-commit(self.text); }
-                                changed has-focus => {
-                                    if (!self.has-focus) {
-                                        root.background-image-commit(self.text);
-                                    }
-                                }
-                            }
-                        }
-                        MiniBtn {
-                            label: "×";
-                            clicked => {
-                                root.background-image-path = "";
-                                root.background-image-changed("");
-                            }
-                        }
-                    }
-
-                    Text {
-                        visible: root.background-image-error != "";
-                        text: root.background-image-error;
-                        color: Palette.colors.danger;
-                        font-size: 10px;
-                        wrap: word-wrap;
-                    }
-                    Text {
-                        visible: root.background-image-error == "";
-                        text: "支持 ~ 展开；只接受存在的普通文件；铺满窗口并保持比例裁切。";
-                        color: Palette.colors.muted;
-                        font-size: 10px;
-                        wrap: word-wrap;
-                    }
-
-                    // 背景图暗化遮罩：0% 不压暗，80% 几乎全黑。只影响图片本身。
-                    HorizontalLayout {
-                        spacing: 8px;
-                        Text {
-                            text: "Dim";
-                            color: Palette.colors.subtext;
-                            width: 52px;
-                            font-size: 12px;
-                            vertical-alignment: center;
-                        }
-                        OpacitySlider {
-                            height: 22px;
-                            horizontal-stretch: 1;
-                            value: root.background-dim;
-                            min: 0.0;
-                            max: 0.8;
-                            preview(v) => {
-                                root.background-dim = v;
-                                root.background-dim-preview(v);
-                            }
-                            changed(v) => {
-                                root.background-dim = v;
-                                root.background-dim-changed(v);
-                            }
-                        }
-                        Text {
-                            text: "\{Math.round(root.background-dim * 100)}%";
-                            color: Palette.colors.text;
-                            width: 42px;
-                            font-size: 12px;
-                            horizontal-alignment: right;
-                            vertical-alignment: center;
-                        }
-                    }
-                    Text {
-                        text: "遮罩只压暗背景图（默认 60%）；白块区域也能保证浅色终端文字可读。";
-                        color: Palette.colors.muted;
-                        font-size: 10px;
-                        wrap: word-wrap;
-                    }
-
-                    // 终端默认背景不透明度：0% 完全透出图片，100% 主题纯色。
-                    HorizontalLayout {
-                        spacing: 8px;
-                        Text {
-                            text: "Opacity";
-                            color: Palette.colors.subtext;
-                            width: 52px;
-                            font-size: 12px;
-                            vertical-alignment: center;
-                        }
-                        OpacitySlider {
-                            height: 22px;
-                            horizontal-stretch: 1;
-                            value: root.background-opacity;
-                            min: 0.0;
-                            max: 1.0;
-                            preview(v) => {
-                                root.background-opacity = v;
-                                root.background-opacity-preview(v);
-                            }
-                            changed(v) => {
-                                root.background-opacity = v;
-                                root.background-opacity-changed(v);
-                            }
-                        }
-                        Text {
-                            text: "\{Math.round(root.background-opacity * 100)}%";
-                            color: Palette.colors.text;
-                            width: 42px;
-                            font-size: 12px;
-                            horizontal-alignment: right;
-                            vertical-alignment: center;
-                        }
-                    }
-                    Text {
-                        text: !root.has-background-image
-                            ? "未设置背景图时 Opacity 不生效，终端保持纯色不透明。"
-                            : (root.background-opacity >= 0.99
-                                ? "Opacity 100% 会完全遮住背景图；向左拖可让图片透出。"
-                                : "0% = 完全透出背景图，100% = 主题纯色；文字/光标/彩色 cell 始终不透明。");
-                        color: (root.has-background-image && root.background-opacity >= 0.99)
-                            ? Palette.colors.accent
-                            : Palette.colors.muted;
-                        font-size: 10px;
-                        wrap: word-wrap;
-                    }
-
-                    Rectangle {
-                        height: 1px;
-                        horizontal-stretch: 1;
-                        background: Palette.colors.border;
-                    }
-
-                    // ---- GNOME Terminal 光标外观 ----
-                    Text {
-                        text: "Cursor";
-                        color: Palette.colors.subtext;
-                        font-size: 12px;
-                        font-weight: 600;
-                    }
-
-                    HorizontalLayout {
-                        spacing: 6px;
-                        Text {
-                            text: "Shape";
-                            color: Palette.colors.subtext;
-                            width: 52px;
-                            font-size: 12px;
-                            vertical-alignment: center;
-                        }
-                        ChoiceBtn {
-                            width: 68px; height: 24px; font-size: 10px;
-                            label: "Block";
-                            active: root.cfg-cursor-shape == "block";
-                            clicked => { root.set-cursor-shape("block"); }
-                        }
-                        ChoiceBtn {
-                            width: 82px; height: 24px; font-size: 10px;
-                            label: "Underline";
-                            active: root.cfg-cursor-shape == "underline";
-                            clicked => { root.set-cursor-shape("underline"); }
-                        }
-                        ChoiceBtn {
-                            width: 68px; height: 24px; font-size: 10px;
-                            label: "I-beam";
-                            active: root.cfg-cursor-shape == "ibeam";
-                            clicked => { root.set-cursor-shape("ibeam"); }
-                        }
-                    }
-
-                    HorizontalLayout {
-                        spacing: 6px;
-                        Text {
-                            text: "Blink";
-                            color: Palette.colors.subtext;
-                            width: 52px;
-                            font-size: 12px;
-                            vertical-alignment: center;
-                        }
-                        ChoiceBtn {
-                            width: 68px; height: 24px; font-size: 10px;
-                            label: "System";
-                            active: root.cfg-cursor-blink == "system";
-                            clicked => { root.set-cursor-blink("system"); }
-                        }
-                        ChoiceBtn {
-                            width: 58px; height: 24px; font-size: 10px;
-                            label: "On";
-                            active: root.cfg-cursor-blink == "on";
-                            clicked => { root.set-cursor-blink("on"); }
-                        }
-                        ChoiceBtn {
-                            width: 58px; height: 24px; font-size: 10px;
-                            label: "Off";
-                            active: root.cfg-cursor-blink == "off";
-                            clicked => { root.set-cursor-blink("off"); }
-                        }
-                    }
-
-                    HorizontalLayout {
-                        spacing: 6px;
-                        Text {
-                            text: "Color";
-                            color: Palette.colors.subtext;
-                            width: 52px;
-                            font-size: 12px;
-                            vertical-alignment: center;
-                        }
-                        Rectangle {
-                            height: 24px;
-                            horizontal-stretch: 1;
-                            border-radius: 4px;
-                            background: Palette.colors.bg;
-                            border-width: 1px;
-                            border-color: Palette.colors.border;
-
-                            Text {
-                                x: 7px;
-                                width: parent.width - 14px;
-                                height: parent.height;
-                                text: "空 = 主题光标色";
-                                color: Palette.colors.muted;
-                                font-size: 10px;
-                                vertical-alignment: center;
-                                visible: root.cfg-cursor-color == "";
-                            }
-                            TextInput {
-                                x: 7px;
-                                width: parent.width - 14px;
-                                height: parent.height;
-                                text <=> root.cfg-cursor-color;
-                                single-line: true;
-                                color: Palette.colors.text;
-                                font-size: 11px;
-                                vertical-alignment: center;
-                                edited => { root.cursor-color-changed(self.text); }
-                            }
-                        }
-                        MiniBtn {
-                            label: "×";
-                            clicked => { root.cfg-cursor-color = ""; root.cursor-color-changed(""); }
-                        }
-                    }
-
-                    HorizontalLayout {
-                        spacing: 6px;
-                        Text {
-                            text: "Text";
-                            color: Palette.colors.subtext;
-                            width: 52px;
-                            font-size: 12px;
-                            vertical-alignment: center;
-                        }
-                        Rectangle {
-                            height: 24px;
-                            horizontal-stretch: 1;
-                            border-radius: 4px;
-                            background: Palette.colors.bg;
-                            border-width: 1px;
-                            border-color: Palette.colors.border;
-
-                            Text {
-                                x: 7px;
-                                width: parent.width - 14px;
-                                height: parent.height;
-                                text: "空 = 主题背景（块状光标反色）";
-                                color: Palette.colors.muted;
-                                font-size: 10px;
-                                vertical-alignment: center;
-                                visible: root.cfg-cursor-text-color == "";
-                            }
-                            TextInput {
-                                x: 7px;
-                                width: parent.width - 14px;
-                                height: parent.height;
-                                text <=> root.cfg-cursor-text-color;
-                                single-line: true;
-                                color: Palette.colors.text;
-                                font-size: 11px;
-                                vertical-alignment: center;
-                                edited => { root.cursor-text-color-changed(self.text); }
-                            }
-                        }
-                        MiniBtn {
-                            label: "×";
-                            clicked => { root.cfg-cursor-text-color = ""; root.cursor-text-color-changed(""); }
-                        }
-                    }
-
-                    Text {
-                        text: "形状/颜色即时生效；闪烁只切换光标 overlay，不重绘终端整屏。";
-                        color: Palette.colors.muted;
-                        font-size: 10px;
-                        wrap: word-wrap;
-                    }
-
-                    Rectangle {
-                        height: 1px;
-                        horizontal-stretch: 1;
-                        background: Palette.colors.border;
-                    }
-
-                    // ---- 粗体 ----
-                    Text {
-                        text: "Bold";
-                        color: Palette.colors.subtext;
-                        font-size: 12px;
-                        font-weight: 600;
-                    }
-
-                    ToggleRow {
-                        label: "Bold is bright（粗体 ANSI 0–7 用亮色）";
-                        on: root.cfg-bold-is-bright;
-                        toggled => { root.toggle-bold-is-bright(); }
-                    }
-
-                    ToggleRow {
-                        label: "Bold color same as foreground";
-                        on: root.cfg-bold-color-same-as-fg;
-                        toggled => { root.toggle-bold-color-same-as-fg(); }
-                    }
-
-                    HorizontalLayout {
-                        spacing: 6px;
-                        Text {
-                            text: "Color";
-                            color: Palette.colors.subtext;
-                            width: 52px;
-                            font-size: 12px;
-                            vertical-alignment: center;
-                        }
-                        Rectangle {
-                            height: 24px;
-                            horizontal-stretch: 1;
-                            border-radius: 4px;
-                            background: Palette.colors.bg;
-                            border-width: 1px;
-                            border-color: Palette.colors.border;
-
-                            Text {
-                                x: 7px;
-                                width: parent.width - 14px;
-                                height: parent.height;
-                                text: "空 = 用普通前景色";
-                                color: Palette.colors.muted;
-                                font-size: 10px;
-                                vertical-alignment: center;
-                                visible: root.cfg-bold-color == "";
-                            }
-                            TextInput {
-                                x: 7px;
-                                width: parent.width - 14px;
-                                height: parent.height;
-                                text <=> root.cfg-bold-color;
-                                single-line: true;
-                                color: Palette.colors.text;
-                                font-size: 11px;
-                                vertical-alignment: center;
-                                edited => { root.bold-color-changed(self.text); }
-                            }
-                        }
-                        MiniBtn {
-                            label: "×";
-                            clicked => { root.cfg-bold-color = ""; root.bold-color-changed(""); }
-                        }
-                    }
-
-                    Text {
-                        text: "关闭 same-as-fg 后，默认前景色的粗体文字使用上面的颜色；显式 ANSI 色不受影响。";
-                        color: Palette.colors.muted;
-                        font-size: 10px;
-                        wrap: word-wrap;
-                    }
-                }
-                }
-
-                if root.settings-category == 1 : Flickable {
-                    width: 100%;
-                    height: 100%;
-                    interactive: true;
-
-                    VerticalLayout {
-                        width: parent.width;
-                        spacing: 12px;
-
-                        HorizontalLayout {
-                            spacing: 8px;
-                            Text {
-                                text: "Font size";
-                                color: Palette.colors.subtext;
-                                width: 76px;
-                                font-size: 12px;
-                                vertical-alignment: center;
-                            }
-                            MiniBtn {
-                                label: "−";
-                                clicked => { root.bump-font-size(-1); }
-                            }
-                            Text {
-                                text: "\{root.font-size}px";
-                                color: Palette.colors.text;
-                                width: 52px;
-                                font-size: 12px;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
-                            MiniBtn {
-                                label: "+";
-                                clicked => { root.bump-font-size(1); }
-                            }
-                        }
-
-                        HorizontalLayout {
-                            spacing: 8px;
-                            Text {
-                                text: "Scrollback";
-                                color: Palette.colors.subtext;
-                                width: 76px;
-                                font-size: 12px;
-                                vertical-alignment: center;
-                            }
-                            MiniBtn {
-                                label: "−";
-                                clicked => { root.bump-scrollback(-500); }
-                            }
-                            Text {
-                                text: root.cfg-scrollback-unlimited ? "∞" : "\{root.scrollback}";
-                                color: Palette.colors.text;
-                                width: 52px;
-                                font-size: 12px;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
-                            MiniBtn {
-                                label: "+";
-                                clicked => { root.bump-scrollback(500); }
-                            }
-                        }
-
-                        ToggleRow {
-                            label: "Unlimited scrollback（仅新 pane）";
-                            on: root.cfg-scrollback-unlimited;
-                            toggled => { root.toggle-scrollback-unlimited(); }
-                        }
-                        Text {
-                            text: "实际安全上限 100,000 行。alacritty 预分配历史，最坏约 192 MB（120 列）× 每个新 pane；点 +/- 会退回固定值。";
-                            color: Palette.colors.muted;
-                            font-size: 10px;
-                            wrap: word-wrap;
-                        }
-
-                        Rectangle {
-                            height: 1px;
-                            horizontal-stretch: 1;
-                            background: Palette.colors.border;
-                        }
-
-                        ToggleRow {
-                            label: "Copy on select（拖选自动复制）";
-                            on: root.cfg-copy-on-select;
-                            toggled => { root.toggle-copy-on-select(); }
-                        }
-
-                        ToggleRow {
-                            label: "Confirm before closing multiple sessions";
-                            on: root.cfg-confirm-close;
-                            toggled => { root.toggle-confirm-close(); }
-                        }
-
-                        ToggleRow {
-                            label: "Confirm multi-line paste";
-                            on: root.cfg-confirm-paste;
-                            toggled => { root.toggle-confirm-paste(); }
-                        }
-
-                        Text {
-                            text: "Right click";
-                            color: Palette.colors.subtext;
-                            font-size: 12px;
-                        }
-
-                        HorizontalLayout {
-                            spacing: 6px;
-                            ChoiceBtn {
-                                width: 72px; height: 24px; font-size: 10px;
-                                label: "Menu";
-                                active: root.cfg-right-click == "menu";
-                                clicked => { root.set-right-click("menu"); }
-                            }
-                            ChoiceBtn {
-                                width: 72px; height: 24px; font-size: 10px;
-                                label: "Paste";
-                                active: root.cfg-right-click == "paste";
-                                clicked => { root.set-right-click("paste"); }
-                            }
-                            ChoiceBtn {
-                                width: 82px; height: 24px; font-size: 10px;
-                                label: "Clipboard";
-                                active: root.cfg-right-click == "clipboard";
-                                clicked => { root.set-right-click("clipboard"); }
-                            }
-                            ChoiceBtn {
-                                width: 60px; height: 24px; font-size: 10px;
-                                label: "Off";
-                                active: root.cfg-right-click == "off";
-                                clicked => { root.set-right-click("off"); }
-                            }
-                        }
-
-                        Text {
-                            text: "Paste / Clipboard 短按立即执行，长按 250ms 出菜单；Clipboard 有选区时复制并清除，否则粘贴。";
-                            color: Palette.colors.muted;
-                            font-size: 10px;
-                            wrap: word-wrap;
-                        }
-
-                        ToggleRow {
-                            label: "Paste on middle-click";
-                            on: root.cfg-paste-middle;
-                            toggled => { root.toggle-paste-middle(); }
-                        }
-
-                        ToggleRow {
-                            label: "Desktop notifications for inactive tabs";
-                            on: root.cfg-desktop-notifications;
-                            toggled => { root.toggle-desktop-notifications(); }
-                        }
-
-                        Text {
-                            text: "OSC 9 / 777 / BEL 到达且 Tab 非活动时调用 notify-send；未安装则静默跳过。";
-                            color: Palette.colors.muted;
-                            font-size: 10px;
-                            wrap: word-wrap;
-                        }
-
-                        ToggleRow {
-                            label: "Visual bell（活动 pane 收到 BEL 闪边框）";
-                            on: root.cfg-visual-bell;
-                            toggled => { root.toggle-visual-bell(); }
-                        }
-
-                        ToggleRow {
-                            label: "Audible bell（BEL 响系统铃）";
-                            on: root.cfg-audible-bell;
-                            toggled => { root.toggle-audible-bell(); }
-                        }
-
-                        Text {
-                            text: "视觉铃只画 1-2px 边框；可听铃默认关闭，开启后调用 X11 Bell（无 X11 时回退到启动终端的 BEL），两者互相独立。";
-                            color: Palette.colors.muted;
-                            font-size: 10px;
-                            wrap: word-wrap;
-                        }
-
-                        Rectangle {
-                            height: 1px;
-                            horizontal-stretch: 1;
-                            background: Palette.colors.border;
-                        }
-
-                        Text {
-                            text: "Scroll";
-                            color: Palette.colors.subtext;
-                            font-size: 12px;
-                            font-weight: 600;
-                        }
-
-                        ToggleRow {
-                            label: "Scroll on output（输出时回到底部）";
-                            on: root.cfg-scroll-output;
-                            toggled => { root.toggle-scroll-output(); }
-                        }
-
-                        Text {
-                            text: "关闭（默认）：用户上滚看历史时，新输出只增长历史、不抢视图；开启后任何输出都会把视口拉回最新。";
-                            color: Palette.colors.muted;
-                            font-size: 10px;
-                            wrap: word-wrap;
-                        }
-
-                        ToggleRow {
-                            label: "Scroll on keystroke（按键时回到底部）";
-                            on: root.cfg-scroll-keystroke;
-                            toggled => { root.toggle-scroll-keystroke(); }
-                        }
-
-                        Text {
-                            text: "开启（GNOME 默认）：按键发送前先回到底部；关闭后按键不改变滚动位置。只影响物理按键/IME 提交，不影响粘贴。";
-                            color: Palette.colors.muted;
-                            font-size: 10px;
-                            wrap: word-wrap;
-                        }
-
-                        Text {
-                            text: "Scrollbar";
-                            color: Palette.colors.subtext;
-                            font-size: 12px;
-                        }
-
-                        HorizontalLayout {
-                            spacing: 6px;
-                            ChoiceBtn {
-                                width: 84px; height: 24px; font-size: 10px;
-                                label: "Always";
-                                active: root.cfg-scrollbar-policy == "always";
-                                clicked => { root.set-scrollbar-policy("always"); }
-                            }
-                            ChoiceBtn {
-                                width: 84px; height: 24px; font-size: 10px;
-                                label: "Auto";
-                                active: root.cfg-scrollbar-policy == "auto";
-                                clicked => { root.set-scrollbar-policy("auto"); }
-                            }
-                            ChoiceBtn {
-                                width: 84px; height: 24px; font-size: 10px;
-                                label: "Never";
-                                active: root.cfg-scrollbar-policy == "never";
-                                clicked => { root.set-scrollbar-policy("never"); }
-                            }
-                        }
-
-                        Text {
-                            text: "Always 无历史时 thumb 占满轨道；Auto 有 scrollback 才显示；Never 始终隐藏。右侧 overlay 滚动条。";
-                            color: Palette.colors.muted;
-                            font-size: 10px;
-                            wrap: word-wrap;
-                        }
-
-                        Rectangle {
-                            height: 1px;
-                            horizontal-stretch: 1;
-                            background: Palette.colors.border;
-                        }
-
-                        Text {
-                            text: "Images";
-                            color: Palette.colors.subtext;
-                            font-size: 12px;
-                            font-weight: 600;
-                        }
-
-                        ToggleRow {
-                            label: "Sixel inline images（默认开）";
-                            on: root.cfg-sixel;
-                            toggled => { root.toggle-sixel(); }
-                        }
-
-                        ToggleRow {
-                            label: "Sixel 图片随滚动历史移动";
-                            on: root.cfg-sixel-scrolling;
-                            toggled => { root.toggle-sixel-scrolling(); }
-                        }
-
-                        Text {
-                            text: "单条 Sixel 原始数据上限 25 MB、单图 16 MP；图片作为独立 overlay 绘制，不进 cell 文本/选区。关闭后 Primary DA 不再包含参数 4，已有图片立即清除。";
-                            color: Palette.colors.muted;
-                            font-size: 10px;
-                            wrap: word-wrap;
-                        }
-
-                        Rectangle {
-                            height: 1px;
-                            horizontal-stretch: 1;
-                            background: Palette.colors.border;
-                        }
-
-                        Text {
-                            text: "Key encoding";
-                            color: Palette.colors.subtext;
-                            font-size: 12px;
-                            font-weight: 600;
-                        }
-
-                        Text {
-                            text: "Backspace";
-                            color: Palette.colors.subtext;
-                            font-size: 12px;
-                        }
-
-                        HorizontalLayout {
-                            spacing: 6px;
-                            ChoiceBtn {
-                                width: 100px; height: 24px; font-size: 10px;
-                                label: "ASCII DEL (0x7F)";
-                                active: root.cfg-backspace-binding == "ascii-delete";
-                                clicked => { root.set-backspace-binding("ascii-delete"); }
-                            }
-                            ChoiceBtn {
-                                width: 100px; height: 24px; font-size: 10px;
-                                label: "Control-H (0x08)";
-                                active: root.cfg-backspace-binding == "control-h";
-                                clicked => { root.set-backspace-binding("control-h"); }
-                            }
-                        }
-
-                        Text {
-                            text: "Delete";
-                            color: Palette.colors.subtext;
-                            font-size: 12px;
-                        }
-
-                        HorizontalLayout {
-                            spacing: 6px;
-                            ChoiceBtn {
-                                width: 92px; height: 24px; font-size: 10px;
-                                label: "ESC [3~";
-                                active: root.cfg-delete-binding == "delete-sequence";
-                                clicked => { root.set-delete-binding("delete-sequence"); }
-                            }
-                            ChoiceBtn {
-                                width: 92px; height: 24px; font-size: 10px;
-                                label: "ASCII DEL";
-                                active: root.cfg-delete-binding == "ascii-del";
-                                clicked => { root.set-delete-binding("ascii-del"); }
-                            }
-                            ChoiceBtn {
-                                width: 92px; height: 24px; font-size: 10px;
-                                label: "Control-H";
-                                active: root.cfg-delete-binding == "control-h";
-                                clicked => { root.set-delete-binding("control-h"); }
-                            }
-                        }
-
-                        Text {
-                            text: "只影响发给 PTY 的字节，默认使用 GNOME 值（Backspace=0x7F，Delete=ESC [3~）；设置即时生效。";
-                            color: Palette.colors.muted;
-                            font-size: 10px;
-                            wrap: word-wrap;
-                        }
-                    }
-                }
-
-                if root.settings-category == 2 : VerticalLayout {
-                    width: 100%;
-                    spacing: 14px;
-
-                    ToggleRow {
-                        label: "Tab Bar at bottom";
-                        on: root.tabbar-bottom;
-                        toggled => { root.tabbar-menu-action(6); }
-                    }
-
-                    ToggleRow {
-                        label: "Quake mode (F12)";
-                        on: root.cfg-quake;
-                        toggled => { root.toggle-quake(); }
-                    }
-
-                    Text {
-                        text: "Quake：F12 全局呼出顶部下拉终端（屏宽 70% / 屏高 50%，X11；Wayland 无全局热键）。";
-                        color: Palette.colors.muted;
-                        font-size: 11px;
-                        wrap: word-wrap;
-                    }
-
-                    Text {
-                        text: "Tab Bar 位置即时生效并写入配置；关闭多个会话前的确认在 Terminal 分类里。";
-                        color: Palette.colors.muted;
-                        font-size: 10px;
-                        wrap: word-wrap;
-                    }
-                }
-
-                if root.settings-category == 3 : VerticalLayout {
-                    width: 100%;
-                    spacing: 10px;
-
-                    Text {
-                        text: "Config file";
-                        color: Palette.colors.subtext;
-                        font-size: 12px;
-                    }
-                    Text {
-                        text: root.settings-path;
-                        color: Palette.colors.text;
-                        font-size: 11px;
-                        wrap: word-wrap;
-                    }
-                    HorizontalLayout {
-                        alignment: start;
-                        spacing: 4px;
-                        Rectangle {
-                            width: 96px; height: 26px; border-radius: 6px;
-                            background: open-path-hit.has-hover ? Palette.colors.hover : Palette.colors.raise;
-                            border-width: 1px;
-                            border-color: Palette.colors.border;
-                            open-path-hit := TouchArea {
-                                clicked => { root.settings-open-path(); }
-                            }
-                            Text {
-                                text: "Open Folder";
-                                color: Palette.colors.text;
-                                font-size: 11px;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                                width: 100%;
-                                height: 100%;
-                            }
-                        }
-                        Rectangle {
-                            width: 108px; height: 26px; border-radius: 6px;
-                            background: cfg-import-hit.has-hover ? Palette.colors.hover : Palette.colors.raise;
-                            border-width: 1px;
-                            border-color: Palette.colors.border;
-                            cfg-import-hit := TouchArea {
-                                clicked => { root.config-import-tabby(); }
-                            }
-                            Text {
-                                text: "Import Tabby";
-                                color: Palette.colors.text;
-                                font-size: 11px;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                                width: 100%;
-                                height: 100%;
-                            }
-                        }
-                        Rectangle {
-                            width: 112px; height: 26px; border-radius: 6px;
-                            background: cfg-export-hit.has-hover ? Palette.colors.hover : Palette.colors.raise;
-                            border-width: 1px;
-                            border-color: Palette.colors.border;
-                            cfg-export-hit := TouchArea {
-                                clicked => { root.config-export-tabby(); }
-                            }
-                            Text {
-                                text: "Export Profiles";
-                                color: Palette.colors.text;
-                                font-size: 11px;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                                width: 100%;
-                                height: 100%;
-                            }
-                        }
-                    }
-                    Text {
-                        text: root.config-status;
-                        color: Palette.colors.muted;
-                        font-size: 10px;
-                        wrap: word-wrap;
-                    }
-                    Text {
-                        text: "普通配置里不会出现密码或私钥；SSH 密码保存在本地加密 Vault（Settings → Vault）。";
-                        color: Palette.colors.muted;
-                        font-size: 10px;
-                        wrap: word-wrap;
-                    }
-                }
-
-                if root.settings-category == 4 : VerticalLayout {
-                    width: 100%;
-                    spacing: 6px;
-
-                    // 右上角：冲突数汇总 + 全部重置
-                    HorizontalLayout {
-                        height: 20px;
-                        spacing: 8px;
-
-                        Text {
-                            text: root.hotkey-summary;
-                            color: Palette.colors.subtext;
-                            font-size: 10px;
-                            vertical-alignment: center;
-                            horizontal-stretch: 1;
-                            overflow: elide;
-                        }
-
-                        Text {
-                            text: root.hotkey-conflict-count > 0
-                                ? "⚠ \{root.hotkey-conflict-count} conflict(s)"
-                                : "✓ no conflicts";
-                            color: root.hotkey-conflict-count > 0
-                                ? Palette.colors.danger
-                                : Palette.colors.muted;
-                            font-size: 10px;
-                            vertical-alignment: center;
-                        }
-
-                        ChoiceBtn {
-                            width: 72px;
-                            height: 20px;
-                            font-size: 9px;
-                            label: "Reset All";
-                            clicked => { root.hotkey-reset-all(); }
-                        }
-                    }
-
-                    Text {
-                        text: root.hotkey-recording-row >= 0
-                            ? "Recording: press Ctrl/Alt/Shift + key · Esc cancel · Backspace reset"
-                            : "Click Edit, then press a key combination. Esc cancels; Backspace restores the default.";
-                        color: root.hotkey-recording-row >= 0
-                            ? Palette.colors.accent
-                            : Palette.colors.muted;
-                        font-size: 10px;
-                        wrap: word-wrap;
-                    }
-
-                    Flickable {
-                        width: 100%;
-                        height: 220px;
-                        interactive: true;
-                        content-height: root.hotkey-rows.length * 28px;
-
-                        VerticalLayout {
-                            width: parent.width;
-                            spacing: 2px;
-
-                            for row[i] in root.hotkey-rows : Rectangle {
-                                height: 26px;
-                                border-radius: 4px;
-                                background: i == root.hotkey-recording-row
-                                    ? Palette.colors.hover
-                                    : transparent;
-
-                                Text {
-                                    x: 2px;
-                                    y: 2px;
-                                    width: parent.width - 206px;
-                                    height: parent.height - 4px;
-                                    text: row.title;
-                                    color: Palette.colors.text;
-                                    font-size: 11px;
-                                    vertical-alignment: center;
-                                    overflow: elide;
-                                }
-
-                                Text {
-                                    x: parent.width - 202px;
-                                    y: 1px;
-                                    width: 102px;
-                                    height: 13px;
-                                    text: i == root.hotkey-recording-row ? "Press keys…" : row.chord;
-                                    color: i == root.hotkey-recording-row
-                                        ? Palette.colors.accent
-                                        : (row.conflict ? Palette.colors.danger : Palette.colors.subtext);
-                                    font-size: 10px;
-                                    horizontal-alignment: right;
-                                    vertical-alignment: center;
-                                    overflow: elide;
-                                }
-
-                                Text {
-                                    x: parent.width - 202px;
-                                    y: 15px;
-                                    width: 102px;
-                                    height: 10px;
-                                    text: row.conflict ? "CONFLICT" : (row.custom ? "CUSTOM" : "");
-                                    color: row.conflict ? Palette.colors.danger : Palette.colors.accent;
-                                    font-size: 7px;
-                                    horizontal-alignment: right;
-                                    vertical-alignment: center;
-                                }
-
-                                ChoiceBtn {
-                                    x: parent.width - 94px;
-                                    y: 4px;
-                                    width: 42px;
-                                    height: 18px;
-                                    font-size: 9px;
-                                    label: i == root.hotkey-recording-row ? "Cancel" : "Edit";
-                                    active: i == root.hotkey-recording-row;
-                                    clicked => {
-                                        if (i == root.hotkey-recording-row) {
-                                            root.hotkey-cancel-edit();
-                                        } else {
-                                            root.hotkey-start-edit(i);
-                                        }
-                                    }
-                                }
-
-                                ChoiceBtn {
-                                    x: parent.width - 48px;
-                                    y: 4px;
-                                    width: 46px;
-                                    height: 18px;
-                                    font-size: 9px;
-                                    label: "Reset";
-                                    clicked => { root.hotkey-reset(i); }
-                                }
-                            }
-                        }
-                    }
-
-                    if root.hotkey-error != "" : Text {
-                        text: root.hotkey-error;
-                        color: Palette.colors.danger;
-                        font-size: 10px;
-                        wrap: word-wrap;
-                    }
-                    if root.hotkey-error == "" && root.hotkey-status != "" : Text {
-                        text: root.hotkey-status;
-                        color: Palette.colors.muted;
-                        font-size: 10px;
-                        wrap: word-wrap;
-                    }
-
-                    Text {
-                        text: "单段组合键：Ctrl/Alt/Meta + 键，或 F1–F24。冲突的组合拒绝保存；多段键（Ctrl+K Ctrl+T）暂不支持。";
-                        color: Palette.colors.muted;
-                        font-size: 9px;
-                        wrap: word-wrap;
-                    }
-                }
-
-                if root.settings-category == 5 : VerticalLayout {
-                    width: 100%;
-                    spacing: 5px;
-
-                    Text {
-                        text: root.plugin-summary;
-                        color: Palette.colors.subtext;
-                        font-size: 10px;
-                    }
-
-                    Text {
-                        text: "Installed";
-                        color: Palette.colors.muted;
-                        font-size: 10px;
-                        font-weight: 600;
-                    }
-
-                    Flickable {
-                        width: 100%;
-                        height: 80px;
-                        interactive: true;
-                        content-height: Math.max(root.plugin-items.length * 20px, 80px);
-
-                        VerticalLayout {
-                            width: parent.width;
-                            for item[i] in root.plugin-items : Text {
-                                height: 20px;
-                                text: item;
-                                color: Palette.colors.text;
-                                font-size: 11px;
-                                vertical-alignment: center;
-                                overflow: elide;
-                            }
-                        }
-                    }
-
-                    Text {
-                        text: "Recent plugin activity";
-                        color: Palette.colors.muted;
-                        font-size: 10px;
-                        font-weight: 600;
-                    }
-
-                    if root.plugin-activity-items.length == 0 : Text {
-                        height: 18px;
-                        text: "No plugin activity yet — run a plugin command or open a tab with an event plugin installed.";
-                        color: Palette.colors.muted;
-                        font-size: 9px;
-                        vertical-alignment: center;
-                        overflow: elide;
-                    }
-
-                    Flickable {
-                        width: 100%;
-                        height: 108px;
-                        interactive: true;
-                        content-height: Math.max(root.plugin-activity-items.length * 18px, 108px);
-
-                        VerticalLayout {
-                            width: parent.width;
-                            for item[i] in root.plugin-activity-items : Text {
-                                height: 18px;
-                                text: item;
-                                color: Palette.colors.text;
-                                font-size: 10px;
-                                vertical-alignment: center;
-                                overflow: elide;
-                            }
-                        }
-                    }
-
-                    Text {
-                        text: root.plugin-dir;
-                        color: Palette.colors.muted;
-                        font-size: 9px;
-                        wrap: word-wrap;
-                    }
-
-                    Text {
-                        text: "v1 插件 <name>/plugin.toml：命令进 Palette；events 声明 startup/tab-open/tab-close 后于对应时机后台执行。命令与事件都是外部进程（10s 超时），完整输出只写日志，最近 8 条摘要见上方列表。旧 *.toml 仅展示。修改 enabled 后需重启。插件拥有当前用户全部权限，无沙箱。";
-                        color: Palette.colors.muted;
-                        font-size: 9px;
-                        wrap: word-wrap;
-                    }
-                }
-
-                if root.settings-category == 6 : VerticalLayout {
-                    width: 100%;
-                    spacing: 7px;
-
-                    Text {
-                        text: "状态：\{root.vault-status}";
-                        color: Palette.colors.text;
-                        font-size: 12px;
-                    }
-                    Text {
-                        text: root.vault-path;
-                        color: Palette.colors.muted;
-                        font-size: 10px;
-                        wrap: word-wrap;
-                    }
-
-                    FormRow {
-                        label: "Master";
-                        text <=> root.vault-password;
-                        masked: true;
-                    }
-
-                    HorizontalLayout {
-                        spacing: 6px;
-                        ActionBtn {
-                            width: 86px;
-                            label: "Set/Change";
-                            clicked => { root.vault-set-master(); }
-                        }
-                        ActionBtn {
-                            width: 66px;
-                            label: "Unlock";
-                            clicked => { root.vault-unlock(); }
-                        }
-                        ActionBtn {
-                            width: 56px;
-                            label: "Lock";
-                            clicked => { root.vault-lock(); }
-                        }
-                        ActionBtn {
-                            width: 60px;
-                            label: "Clear";
-                            danger: true;
-                            clicked => { root.vault-clear(); }
-                        }
-                    }
-
-                    Text {
-                        visible: root.vault-error != "";
-                        text: root.vault-error;
-                        color: Palette.colors.danger;
-                        font-size: 10px;
-                        wrap: word-wrap;
-                    }
-                    Text {
-                        visible: root.vault-notice != "";
-                        text: root.vault-notice;
-                        color: Palette.colors.muted;
-                        font-size: 10px;
-                        wrap: word-wrap;
-                    }
-
-                    Text {
-                        text: "主密码只用于 Argon2id 派生，不落盘/不写日志；vault.enc 为 0600、原子写。未初始化时点 Set/Change 创建；已解锁才能改主密码。Clear 需点两次。";
-                        color: Palette.colors.subtext;
-                        font-size: 10px;
-                        wrap: word-wrap;
-                    }
-                    Text {
-                        text: "SSH 密码认证：勾选保存的 Profile 解锁后用 askpass 自动登录；未勾选则 ssh 在终端里询问。MVP 限制：askpass 密码经子进程环境变量传递，同用户可经 /proc 观察，详见 docs/VAULT.md。";
-                        color: Palette.colors.muted;
-                        font-size: 10px;
-                        wrap: word-wrap;
-                    }
-                }
-            }
-
-            // 搜索结果：覆盖右内容区
-            if root.settings-query != "" : Rectangle {
-                x: 146px;
-                y: 64px;
-                width: parent.width - 164px;
-                height: parent.height - 80px;
-                background: Palette.colors.raise;
-                border-radius: 8px;
-                border-width: 1px;
-                border-color: Palette.colors.border;
-                drop-shadow-blur: 16px;
-                drop-shadow-offset-y: 6px;
-                drop-shadow-color: #000000b0;
-
-                VerticalLayout {
-                    padding: 8px;
-                    spacing: 2px;
-
-                    Text {
-                        height: 22px;
-                        text: "\{root.settings-results.length} matches — click to open";
-                        color: Palette.colors.muted;
-                        font-size: 10px;
-                    }
-
-                    for item[i] in root.settings-results : Rectangle {
-                        height: 24px;
-                        border-radius: 4px;
-                        background: res-hit.has-hover ? Palette.colors.hover : transparent;
-
-                        Text {
-                            x: 6px;
-                            width: parent.width - 12px;
-                            text: item;
-                            color: Palette.colors.text;
-                            font-size: 11px;
-                            vertical-alignment: center;
-                            overflow: elide;
-                        }
-
-                        res-hit := TouchArea {
-                            clicked => { root.settings-open-result(i); }
-                        }
-                    }
-                }
-            }
-
         }
     }
 
