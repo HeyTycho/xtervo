@@ -116,14 +116,23 @@ ls -l dist/ && file dist/tervo && ./dist/tervo --help
   `Open Link` / `Copy Link`，`xdg-open` 失败会在底部浮层提示并写日志。
 - 多窗口（MVP）：`Ctrl+Shift+N` / 标签栏右键 → New Window / 命令面板 `New Window`
   会拉起一个独立的 Tervo 进程，各自拥有 Tab/PTY；窗口互不影响，Tab 暂不能跨窗口移动。
-- 可见滚动条：右侧 overlay，只有 scrollback 超出视口时出现；显示当前回滚位置，支持点击/拖动跳转
-  （core 暴露非阻塞 `PaneHandle::scroll_position()` / `scroll_to()`）。
-- 视觉铃：活动 pane 收到 BEL 时闪一下 2px accent 边框（`visual_bell = true`，设置可关），
-  非活动 Tab 仍走未读点/桌面通知；不遮挡终端内容。
+- 可见滚动条：右侧 overlay，支持 `scrollbar_policy = "always" | "auto" | "never"`；
+  显示当前回滚位置，支持点击/拖动跳转（core 暴露非阻塞
+  `PaneHandle::scroll_position()` / `scroll_to()` / `scroll_to_bottom()`）。
+- 视觉铃 + 可听铃：活动 pane 收到 BEL 时闪 2px accent 边框（`visual_bell = true`）；
+  可听铃默认关闭，开启后 BEL 调 X11 Bell（`audible_bell = true`），两者独立；
+  非活动 Tab 仍走未读点/桌面通知，不遮挡终端内容。
+- 滚动策略：`scroll_on_output = false`（上滚时不抢视图，默认）、
+  `scroll_on_keystroke = true`（按键回到底部）；`scrollback_unlimited = true`
+  使用 100,000 行安全上限（预分配 ≈192 MB/新 pane，设置页有提示）。
+- Backspace / Delete 编码可配：`backspace_binding = "ascii-delete" | "control-h"`、
+  `delete_binding = "delete-sequence" | "ascii-del" | "control-h"`，默认 GNOME 值；
+  只影响写入 PTY 的字节，设置即时生效。
 - 文件拖放（X11）：从文件管理器拖文件/目录到 pane，插入 shell 转义后的路径
   （bracketed paste + 末尾空格）；Slint `DropArea` 已接入，winit 1.18 后端不投递外部拖放，
   由 winit `HoveredFile`/`DroppedFile` 原生桥接补齐（详见 `docs/terminal-ui-basics.md`）。
-- 设置面板（⚙）：12 套内置主题 + `Auto`（跟随系统深/浅色，默认 Yaru Dark/Light）、字号、回滚行数；
+- 设置面板（⚙）：12 套内置主题 + `Auto`（跟随系统深/浅色，默认 Yaru Dark/Light）、字号、回滚行数、
+  滚动条策略、可听/视觉铃、滚动策略、Backspace/Delete 编码；
   也支持把 iTerm2 / Windows Terminal / Alacritty / kitty / Xresources 主题直接放进 `themes/` 目录。
 - Tabby 功能对照见 [`docs/tabby-parity.md`](docs/tabby-parity.md)；
   主题下载/自定义见 [`docs/themes.md`](docs/themes.md)，Tabby 主题机制调研见 [`docs/tabby-themes.md`](docs/tabby-themes.md)；
@@ -156,7 +165,13 @@ tervo                 # 直接启动
 | 窗口置顶 | 右键标签栏空白处 → Always on Top |
 | 调整分屏 | 拖动 pane 之间的分隔线（左右/上下比例都可调） |
 | 缩放窗口 | 拖动窗口四边/四角（无边框窗口自绘命中区） |
+<<<<<<< HEAD
 | 设置 | 标签栏 ⚙：主题 / 背景 / 光标形状·闪烁·颜色 / 粗体 / 字号 / 回滚行数 |
+||||||| d8ac7f8
+| 设置 | 标签栏 ⚙：主题 / 字号 / 回滚行数 |
+=======
+| 设置 | 标签栏 ⚙：主题 / 字号 / 回滚 / 滚动条 / 响铃 / 滚动策略 / 按键编码 |
+>>>>>>> feat/term-behavior
 | 移动窗口 | 拖标签栏；双击标签栏最大化/还原 |
 
 配置：`~/.config/tervo/config.toml`（`TERVO_CONFIG` 可覆盖）。
@@ -183,6 +198,21 @@ bold_color_same_as_fg = false # false 时 bold_color 作用于默认前景色粗
 > 安全提示：`allow` 意味着任何能向终端输出转义序列的程序（包括 SSH 远端、
 > `cat` 一个不可信文件、tmux 里的远端进程）都能覆盖或读取你的系统剪贴板/
 > PRIMARY。只处理可信内容，或设为 `deny`。
+
+终端基础行为也可以直接写配置（设置页 Terminal 分类有同样控件）：
+
+```toml
+audible_bell = false              # BEL 响系统铃（默认关）
+visual_bell = true                # BEL 闪边框（默认开，与 audible_bell 独立）
+scroll_on_output = false          # 上滚时不抢视图（默认）
+scroll_on_keystroke = true        # 按键回到底部（默认，GNOME 行为）
+scrollback_unlimited = false      # true = 100,000 行安全上限（≈192 MB/新 pane）
+scrollbar_policy = "auto"         # always | auto | never
+backspace_binding = "ascii-delete" # ascii-delete(0x7f) | control-h(0x08)
+delete_binding = "delete-sequence" # delete-sequence(ESC[3~) | ascii-del | control-h
+```
+
+详见 [`docs/terminal-behavior.md`](docs/terminal-behavior.md)。
 
 默认 `theme = "auto"`：跟随系统浅色/深色（深色 → Yaru Dark，浅色 → Yaru Light），也可以显式选任意主题。
 把现成配色文件丢进 `~/.config/tervo/themes/` 即可在设置面板里选择，支持 iTerm2 `.itermcolors`、

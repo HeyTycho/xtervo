@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 mod activity;
 mod askpass;
+mod bell;
 mod commands;
 mod config;
 mod glyph;
@@ -32,16 +33,16 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tervo_core::{
-    link::is_allowed_uri, spawn, ClipboardRequest, ClipboardSelection, CoreEvent, Frame,
-    Modifiers, MouseAction, MouseButton, MouseEvent, Notification, Palette as TermPalette,
-    PaneConfig, PaneHandle, ProgressState, SearchOptions, Theme, UiColors,
+    link::is_allowed_uri, spawn, ClipboardRequest, ClipboardSelection, CoreEvent, Frame, Modifiers,
+    MouseAction, MouseButton, MouseEvent, Notification, Palette as TermPalette, PaneConfig,
+    PaneHandle, ProgressState, ScrollPosition, SearchOptions, Theme, UiColors,
 };
 use slint::winit_030::{winit, EventResult, WinitWindowAccessor};
 use slint::{Model, ModelRc, VecModel};
 use x11rb::connection::Connection;
 use x11rb::rust_connection::RustConnection;
 
-use crate::config::Config;
+use crate::config::{Config, ScrollbarPolicy, UNLIMITED_SCROLLBACK_LINES};
 use crate::glyph::FontSet;
 use crate::latency::{DamageWatcher, Injector, LatencyStats};
 use crate::render::Renderer;
@@ -443,6 +444,12 @@ const SETTINGS_CATALOG: &[(i32, &str, &str)] = &[
     (1, "Confirm before closing", "confirm close window exit"),
     (1, "Confirm multi-line paste", "paste multiline confirm"),
     (1, "Visual bell", "visual bell BEL flash border 视觉铃"),
+    (1, "Audible bell", "audible bell BEL beep sound system 响铃 声音"),
+    (1, "Scroll on output", "scroll output follow bottom 输出 跟随 滚动"),
+    (1, "Scroll on keystroke", "scroll keystroke keyboard bottom 按键 回底 滚动"),
+    (1, "Unlimited scrollback", "unlimited scrollback history cap memory 无限 历史 内存"),
+    (1, "Scrollbar policy", "scrollbar always auto never policy 滚动条"),
+    (1, "Backspace / Delete binding", "backspace delete ascii del control-h key encoding 退格 删除 编码"),
     (2, "Tab bar at bottom", "tab bar position bottom top"),
     (3, "Config file path", "config path file folder"),
     (4, "Hotkey bindings", "hotkey shortcut key binding"),
@@ -1114,7 +1121,8 @@ fn create_pane(
     let handle = spawn(PaneConfig {
         cols: cols as u16,
         rows: rows as u16,
-        scrollback: st.cfg.scrollback,
+        scrollback: st.cfg.effective_scrollback(),
+        scroll_on_output: st.cfg.scroll_on_output,
         shell,
         args,
         palette: pane_palette(st),
@@ -2971,16 +2979,39 @@ fn schedule_resize_finalize(st: &mut AppState) {
 
 // ------------------------------------------------------------------- 布局
 
+/// 由滚动条策略与当前滚动位置算可见性和 thumb 几何（纯函数，便于单测）。
+///
+/// - `always`：没有历史时 thumb 占满轨道（表示“有滚动条但内容全在视口内”）；
+/// - `auto`：只有真的能滚动时才显示（既有行为）；
+/// - `never`：始终隐藏。
+fn scrollbar_geometry(policy: ScrollbarPolicy, pos: ScrollPosition, min_thumb: f32, track_h: f32) -> (bool, f32, f32) {
+    let visible = match policy {
+        ScrollbarPolicy::Always => true,
+        ScrollbarPolicy::Auto => pos.scrollable(),
+        ScrollbarPolicy::Never => false,
+    };
+    if !visible {
+        return (false, 0.0, 0.0);
+    }
+    match pos.thumb(min_thumb) {
+        Some((top, height)) => (true, top * track_h, height * track_h),
+        None => (true, 0.0, track_h),
+    }
+}
+
 /// PaneRuntime → Slint 视图。滚动条几何在这里一次算好，Slint 只负责画，
 /// 避免在 UI 线程上做 clamp/浮点分支。
-fn pane_view(id: PaneId, rt: &PaneRuntime, focused: bool, cursor_blink_on: bool) -> PaneView {
+fn pane_view(
+    id: PaneId,
+    rt: &PaneRuntime,
+    focused: bool,
+    cursor_blink_on: bool,
+    policy: ScrollbarPolicy,
+) -> PaneView {
     let pos = rt.handle.scroll_position();
     let track_h = rt.renderer.height.max(1) as f32;
     let min_thumb = (SCROLLBAR_MIN_THUMB_PX / track_h).clamp(0.0, 1.0);
-    let (thumb_y, thumb_h) = match pos.thumb(min_thumb) {
-        Some((top, height)) => (top * track_h, height * track_h),
-        None => (0.0, 0.0),
-    };
+    let (scrollbar_visible, thumb_y, thumb_h) = scrollbar_geometry(policy, pos, min_thumb, track_h);
     PaneView {
         id: id as i32,
         image: rt.image.clone(),
@@ -2998,7 +3029,7 @@ fn pane_view(id: PaneId, rt: &PaneRuntime, focused: bool, cursor_blink_on: bool)
         cursor_h: rt.cursor_rect.3,
         cursor_visible: rt.cursor_visible && cursor_blink_on,
         mouse_reporting: rt.handle.wants_mouse(),
-        scrollbar_visible: pos.scrollable(),
+        scrollbar_visible,
         scrollbar_thumb_y: thumb_y,
         scrollbar_thumb_h: thumb_h,
         scrollbar_track_h: track_h,
@@ -3011,8 +3042,18 @@ fn pane_view(id: PaneId, rt: &PaneRuntime, focused: bool, cursor_blink_on: bool)
 fn refresh_pane_view(st: &mut AppState, id: PaneId) {
     let Some(&row) = st.pane_rows.get(&id) else { return };
     let focused = st.ws.active_tab().map(|t| t.focused) == Some(id);
+    let policy = st.cfg.scrollbar_policy();
     let Some(rt) = st.panes.get(&id) else { return };
-    st.pane_model.set_row_data(row, pane_view(id, rt, focused, st.cursor_blink_on));
+    st.pane_model
+        .set_row_data(row, pane_view(id, rt, focused, st.cursor_blink_on, policy));
+}
+
+/// 配置变化后立即刷新所有 pane 的滚动条/铃视图（不重排布局）。
+fn refresh_all_pane_views(st: &mut AppState) {
+    let ids: Vec<PaneId> = st.pane_rows.keys().copied().collect();
+    for id in ids {
+        refresh_pane_view(st, id);
+    }
 }
 
 /// 重新计算布局：必要时 resize 各 pane 的网格，并刷新 Slint 模型。
@@ -3052,9 +3093,11 @@ fn refresh_views_impl(st: &mut AppState, resize_terminals: bool) {
         }
     }
 
+    let policy = st.cfg.scrollbar_policy();
     let make_view = |id: &PaneId, rect: &Rect| -> Option<PaneView> {
         st.panes.get(id).map(|rt| {
-            let mut view = pane_view(*id, rt, *id == focused, st.cursor_blink_on);
+            let mut view =
+                pane_view(*id, rt, *id == focused, st.cursor_blink_on, policy);
             view.x = rect.x;
             view.y = rect.y;
             view.w = rect.w;
@@ -3325,6 +3368,7 @@ fn update_ime_spot(st: &mut AppState) {
 fn redraw_pane_inner(st: &mut AppState, id: PaneId) {
     let focused = st.ws.active_tab().map(|t| t.focused) == Some(id);
     let blink_on = st.cursor_blink_on;
+    let policy = st.cfg.scrollbar_policy();
     let Some(rt) = st.panes.get_mut(&id) else { return };
     let frame = rt.handle.pull(std::mem::take(&mut rt.frame));
     rt.cursor = (frame.cursor.line as usize, frame.cursor.col as usize);
@@ -3352,7 +3396,8 @@ fn redraw_pane_inner(st: &mut AppState, id: PaneId) {
     rt.frame = frame;
     refresh_cursor_overlay(rt);
     if let Some(&row) = st.pane_rows.get(&id) {
-        st.pane_model.set_row_data(row, pane_view(id, rt, focused, blink_on));
+        st.pane_model
+            .set_row_data(row, pane_view(id, rt, focused, blink_on, policy));
     }
     if focused {
         update_ime_spot(st);
@@ -4424,6 +4469,15 @@ fn is_modifier_artifact(text: &str, ctrl: bool, alt: bool, _shift: bool) -> bool
     }
 }
 
+/// 按键是否应把 pane 拉回底部（GNOME scroll-on-keystroke）。
+///
+/// 只有开启配置且当前确实上滚过才返回 true；判断只读无锁原子快照，
+/// 不向 actor 发同步请求。
+#[inline]
+fn key_scrolls_to_bottom(scroll_on_keystroke: bool, pos: ScrollPosition) -> bool {
+    scroll_on_keystroke && pos.offset > 0
+}
+
 /// 统一的输入分发：物理按键与 IME 上屏都走这里。
 /// `ctrl/alt/shift` 对 IME 提交恒为 false，避免把中文误判成快捷键。
 fn handle_input(
@@ -4669,6 +4723,8 @@ fn handle_input(
     if st.broadcast && targets.len() > 1 && keylog {
         eprintln!("[send] broadcast to {} panes", targets.len());
     }
+    let key_bindings = st.cfg.key_bindings();
+    let scroll_on_keystroke = st.cfg.scroll_on_keystroke;
     for target in targets {
     match st.panes.get_mut(&target) {
         Some(rt) => {
@@ -4683,9 +4739,15 @@ fn handle_input(
                 alt,
                 shift,
                 rt.handle.wants_kitty_keyboard(),
+                key_bindings,
             );
             if let Some(bytes) = &encoded {
                 rt.handle.input(bytes);
+                // GNOME scroll_on_keystroke：按键后回到底部。非阻塞读取原子快照，
+                // 只有确实上滚过才发异步滚动消息，避免每次按键都占 ctrl 队列。
+                if key_scrolls_to_bottom(scroll_on_keystroke, rt.handle.scroll_position()) {
+                    rt.handle.scroll_to_bottom();
+                }
                 if keylog {
                     eprintln!("[send] pane={target} bytes={bytes:?}");
                 }
@@ -4812,10 +4874,12 @@ fn apply_osc52(st: &mut AppState, pane: PaneId, request: ClipboardRequest) {
 }
 
 fn poll_events() {
-    with_app(|st| {
+    let (audible_bell, bell_count) = with_app(|st| {
         let active = st.ws.active;
         let desktop_notifications = st.cfg.desktop_notifications;
         let visual_bell = st.cfg.visual_bell;
+        let audible_bell = st.cfg.audible_bell;
+        let mut bell_count = 0u32;
         let tab_titles: Vec<String> = st.ws.tabs.iter().map(|t| t.title.clone()).collect();
         let pane_tab: HashMap<PaneId, usize> = st
             .ws
@@ -4874,6 +4938,7 @@ fn poll_events() {
                         );
                     },
                     CoreEvent::Bell => {
+                        bell_count += 1;
                         tabs_dirty |= apply_notification(
                             rt,
                             activity::bell_notification(),
@@ -4920,7 +4985,19 @@ fn poll_events() {
         refresh_plugin_activity(st, false);
         // SFTP 传输进度：400ms 一次非阻塞收事件；终态时回收任务线程。
         poll_sftp_transfer(st);
-    });
+        (audible_bell, bell_count)
+    })
+    .unwrap_or((false, 0));
+
+    // 响铃放在 with_app 之外：X11 连接懒建立可能做一次同步 connect，不能占着
+    // RefCell 借用；同一轮轮询里的多个 BEL 合并成一次响铃，避免 BEL 风暴。
+    if audible_bell && bell_count > 0 {
+        let ok = bell::ring();
+        eprintln!(
+            "[bell] audible count={bell_count} backend={}",
+            if ok { "ok" } else { "unavailable" }
+        );
+    }
 }
 
 /// 活动 pane 收到 BEL：闪一下边框（`visual_bell = false` 时完全不做）。
@@ -6571,13 +6648,90 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     rt.bell_until = None;
                 }
                 st.bell_timer.stop();
-                let ids: Vec<PaneId> = st.pane_rows.keys().copied().collect();
-                for id in ids {
-                    refresh_pane_view(st, id);
-                }
+                refresh_all_pane_views(st);
             }
             st.cfg.save();
             eprintln!("[ui] visual_bell={}", st.cfg.visual_bell);
+        });
+    });
+
+    ui.on_toggle_audible_bell(|| {
+        with_app(|st| {
+            st.cfg.audible_bell = !st.cfg.audible_bell;
+            st.ui.set_cfg_audible_bell(st.cfg.audible_bell);
+            st.cfg.save();
+            eprintln!("[ui] audible_bell={}", st.cfg.audible_bell);
+        });
+    });
+
+    ui.on_toggle_scroll_output(|| {
+        with_app(|st| {
+            st.cfg.scroll_on_output = !st.cfg.scroll_on_output;
+            st.ui.set_cfg_scroll_output(st.cfg.scroll_on_output);
+            // 已存在的 pane 立即生效（actor 侧字段），不只影响新 pane。
+            let enabled = st.cfg.scroll_on_output;
+            for rt in st.panes.values() {
+                rt.handle.set_scroll_on_output(enabled);
+            }
+            // 后台保留的会话重新接管时也应使用新配置。
+            for (_, rt, _) in &st.detached {
+                rt.handle.set_scroll_on_output(enabled);
+            }
+            st.cfg.save();
+            eprintln!("[ui] scroll_on_output={enabled}");
+        });
+    });
+
+    ui.on_toggle_scroll_keystroke(|| {
+        with_app(|st| {
+            st.cfg.scroll_on_keystroke = !st.cfg.scroll_on_keystroke;
+            st.ui.set_cfg_scroll_keystroke(st.cfg.scroll_on_keystroke);
+            st.cfg.save();
+            eprintln!("[ui] scroll_on_keystroke={}", st.cfg.scroll_on_keystroke);
+        });
+    });
+
+    ui.on_toggle_scrollback_unlimited(|| {
+        with_app(|st| {
+            st.cfg.scrollback_unlimited = !st.cfg.scrollback_unlimited;
+            st.ui.set_cfg_scrollback_unlimited(st.cfg.scrollback_unlimited);
+            st.cfg.save();
+            eprintln!(
+                "[ui] scrollback_unlimited={} effective={} (仅新 pane)",
+                st.cfg.scrollback_unlimited,
+                st.cfg.effective_scrollback()
+            );
+        });
+    });
+
+    ui.on_set_scrollbar_policy(|value| {
+        with_app(|st| {
+            let policy = ScrollbarPolicy::from_config(&value);
+            st.cfg.scrollbar_policy = policy.as_str().to_string();
+            st.ui.set_cfg_scrollbar_policy(policy.as_str().into());
+            refresh_all_pane_views(st);
+            st.cfg.save();
+            eprintln!("[ui] scrollbar_policy={}", policy.as_str());
+        });
+    });
+
+    ui.on_set_backspace_binding(|value| {
+        with_app(|st| {
+            let binding = keys::BackspaceBinding::from_config(&value);
+            st.cfg.backspace_binding = binding.as_str().to_string();
+            st.ui.set_cfg_backspace_binding(binding.as_str().into());
+            st.cfg.save();
+            eprintln!("[ui] backspace_binding={}", binding.as_str());
+        });
+    });
+
+    ui.on_set_delete_binding(|value| {
+        with_app(|st| {
+            let binding = keys::DeleteBinding::from_config(&value);
+            st.cfg.delete_binding = binding.as_str().to_string();
+            st.ui.set_cfg_delete_binding(binding.as_str().into());
+            st.cfg.save();
+            eprintln!("[ui] delete_binding={}", binding.as_str());
         });
     });
 
@@ -7046,7 +7200,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     ui.on_bump_scrollback(|delta| {
         with_app(|st| {
-            let new = (st.cfg.scrollback as i64 + delta as i64).clamp(500, 100_000) as usize;
+            // 无限滚动下点 +/-：视为用户要改回固定值，先关闭 unlimited。
+            if st.cfg.scrollback_unlimited {
+                st.cfg.scrollback_unlimited = false;
+                st.ui.set_cfg_scrollback_unlimited(false);
+            }
+            let new = (st.cfg.scrollback as i64 + delta as i64)
+                .clamp(500, UNLIMITED_SCROLLBACK_LINES as i64) as usize;
             st.cfg.scrollback = new;
             st.ui.set_scrollback(new as i32);
             st.cfg.save();
@@ -7288,6 +7448,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         st.ui.set_cfg_bold_color(st.cfg.bold_color.clone().into());
         st.ui.set_cfg_bold_color_same_as_fg(st.cfg.bold_color_same_as_fg);
         configure_cursor_blink(st);
+        st.ui.set_cfg_audible_bell(st.cfg.audible_bell);
+        st.ui.set_cfg_scroll_output(st.cfg.scroll_on_output);
+        st.ui.set_cfg_scroll_keystroke(st.cfg.scroll_on_keystroke);
+        st.ui.set_cfg_scrollback_unlimited(st.cfg.scrollback_unlimited);
+        st.ui.set_cfg_scrollbar_policy(st.cfg.scrollbar_policy().as_str().into());
+        st.ui.set_cfg_backspace_binding(st.cfg.key_bindings().backspace.as_str().into());
+        st.ui.set_cfg_delete_binding(st.cfg.key_bindings().delete.as_str().into());
         st.ui.set_tabbar_bottom(st.cfg.tabbar_position == "bottom");
         st.ui.set_settings_path(Config::path().display().to_string().as_str().into());
         init_background(st);
@@ -7751,6 +7918,57 @@ mod tests {
         // 结果按目录顺序返回
         let cats: Vec<i32> = settings_search("e").iter().map(|(c, _)| *c).collect();
         assert!(cats.windows(2).all(|w| w[0] <= w[1]), "{cats:?}");
+    }
+
+    #[test]
+    fn settings_search_finds_terminal_behavior_controls() {
+        for (query, label) in [
+            ("audible", "Audible bell"),
+            ("scroll on output", "Scroll on output"),
+            ("keystroke", "Scroll on keystroke"),
+            ("unlimited", "Unlimited scrollback"),
+            ("scrollbar", "Scrollbar policy"),
+            ("backspace", "Backspace / Delete binding"),
+        ] {
+            let hits = settings_search(query);
+            assert!(
+                hits.iter().any(|(cat, line)| *cat == 1 && line.contains(label)),
+                "query={query:?} 应命中 {label}: {hits:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn key_scroll_policy_only_fires_when_scrolled_up_and_enabled() {
+        let bottom = ScrollPosition { offset: 0, history: 100, rows: 20 };
+        let up = ScrollPosition { offset: 7, history: 100, rows: 20 };
+        assert!(!key_scrolls_to_bottom(true, bottom), "已在底部不重复滚动");
+        assert!(key_scrolls_to_bottom(true, up));
+        assert!(!key_scrolls_to_bottom(false, up), "配置关闭时不回底");
+    }
+
+    #[test]
+    fn scrollbar_policy_controls_visibility_and_always_thumb() {
+        let track = 200.0;
+        let no_history = ScrollPosition { offset: 0, history: 0, rows: 20 };
+        let scrollable = ScrollPosition { offset: 0, history: 80, rows: 20 };
+
+        // auto：有历史才显示；thumb 在底部。
+        let (visible, y, h) = scrollbar_geometry(ScrollbarPolicy::Auto, no_history, 0.1, track);
+        assert!(!visible && y == 0.0 && h == 0.0);
+        let (visible, y, h) = scrollbar_geometry(ScrollbarPolicy::Auto, scrollable, 0.1, track);
+        assert!(visible);
+        assert!(h >= 20.0 && h < track, "thumb 高度按比例: {h}");
+        assert!(y > 0.0, "offset=0 时 thumb 应在底部: {y}");
+
+        // always：没有历史也显示，thumb 占满轨道。
+        let (visible, y, h) = scrollbar_geometry(ScrollbarPolicy::Always, no_history, 0.1, track);
+        assert!(visible);
+        assert_eq!((y, h), (0.0, track));
+
+        // never：有历史也隐藏。
+        let (visible, y, h) = scrollbar_geometry(ScrollbarPolicy::Never, scrollable, 0.1, track);
+        assert!(!visible && y == 0.0 && h == 0.0);
     }
 
     #[test]
