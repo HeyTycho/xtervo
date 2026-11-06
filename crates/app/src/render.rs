@@ -20,26 +20,23 @@ fn pack(c: u32) -> u32 {
     r | g << 8 | b << 16 | 0xff00_0000
 }
 
-/// 背景不透明度（0.2–1.0）→ 默认背景 alpha（0..=255）。
+/// 背景不透明度（0.0–1.0）→ 默认背景 alpha（0..=255）。
 ///
-/// 纯函数，便于不启动 GUI 验证。与 `config::clamp_opacity` 的范围保持一致；
-/// 非有限值按不透明处理。终端帧是直通 alpha 的 RGBA，Slint 负责与背景图混合。
+/// 纯函数，便于不启动 GUI 验证。0 = 完全透出背景图，1 = 主题纯色。
+/// 非有限值按不透明处理。
 pub fn background_alpha(opacity: f32) -> u32 {
-    let opacity = if opacity.is_finite() { opacity.clamp(0.2, 1.0) } else { 1.0 };
+    let opacity = if opacity.is_finite() { opacity.clamp(0.0, 1.0) } else { 1.0 };
     (opacity * 255.0).round().clamp(0.0, 255.0) as u32
 }
 
-/// 终端默认背景像素：按 Slint 的 **premultiplied alpha** 约定同时缩放 RGB 与 alpha。
-/// 只改 alpha 会让 RGB 在混合时被额外叠加，背景图会变亮/发白。
+/// 终端默认背景像素：**直通（非预乘）RGBA**，主题 RGB 保持不变、只改 alpha。
+///
+/// `image()` 用 `Image::from_rgba8` 交给 Slint，由 Slint 统一预乘；这里若先预乘
+/// 会被重复乘一次（alpha=0.5 时主题底色只剩 25%，整体发黑）。
+/// 文字/光标/彩色 cell 背景在绘制时 alpha 恒为 255，因此始终不透明。
 #[inline]
 fn default_background(theme_bg: u32, opacity: f32) -> u32 {
-    let a = background_alpha(opacity);
-    let rgb = pack(theme_bg) & 0x00ff_ffff;
-    let scale = |shift: u32| {
-        let c = (rgb >> shift) & 0xff;
-        ((c * a + 127) / 255) & 0xff
-    };
-    scale(0) | scale(8) << 8 | scale(16) << 16 | a << 24
+    (pack(theme_bg) & 0x00ff_ffff) | background_alpha(opacity) << 24
 }
 
 /// 只比较 RGB：默认背景带 opacity alpha，而 cell.bg 是不透明的主题色，
@@ -92,7 +89,7 @@ pub struct Renderer {
     default_bg: u32,
     /// 主题原始背景（不透明），用于判断 cell 是否使用默认背景。
     theme_bg: u32,
-    /// 当前终端背景不透明度（0.2–1.0），只影响默认背景像素 alpha。
+    /// 当前终端背景不透明度（0.0–1.0），只影响默认背景像素 alpha。
     opacity: f32,
     cursor_color: u32,
     force_full: bool,
@@ -118,7 +115,7 @@ impl Renderer {
         let cell_h = fonts.cell_h;
         let width = cols * cell_w;
         let height = rows * cell_h;
-        let opacity = if opacity.is_finite() { opacity.clamp(0.2, 1.0) } else { 1.0 };
+        let opacity = if opacity.is_finite() { opacity.clamp(0.0, 1.0) } else { 1.0 };
         let default_bg = default_background(theme_bg, opacity);
         Self {
             cols,
@@ -157,7 +154,7 @@ impl Renderer {
 
     /// 调整终端默认背景 alpha；文字/光标/cell 彩色背景保持不透明。
     pub fn set_opacity(&mut self, opacity: f32) {
-        let opacity = if opacity.is_finite() { opacity.clamp(0.2, 1.0) } else { 1.0 };
+        let opacity = if opacity.is_finite() { opacity.clamp(0.0, 1.0) } else { 1.0 };
         self.opacity = opacity;
         self.default_bg = default_background(self.theme_bg, opacity);
         self.pixels.fill(self.default_bg);
@@ -455,8 +452,9 @@ mod tests {
         assert_eq!(background_alpha(0.5), 128);
         assert_eq!(background_alpha(0.7), 179);
         assert_eq!(background_alpha(0.2), 51);
-        // 非法/越界值按边界处理，绝不让背景完全透明。
-        assert_eq!(background_alpha(0.0), 51);
+        // 0 是合法值：完全透出背景图；越界值夹到边界。
+        assert_eq!(background_alpha(0.0), 0);
+        assert_eq!(background_alpha(-1.0), 0);
         assert_eq!(background_alpha(1.9), 255);
         assert_eq!(background_alpha(f32::NAN), 255);
     }
@@ -466,8 +464,11 @@ mod tests {
         let theme_bg = 0x0012_3456;
         let px = default_background(theme_bg, 0.5);
         // 像素是内存序 RGBA（LE），低 24 位与 pack 的 RGB 布局一致。
+        // 保持直通 alpha：RGB 不预乘，由 Slint 在合成前统一预乘一次。
+        assert_eq!(px & 0x00ff_ffff, pack(theme_bg) & 0x00ff_ffff, "默认背景 RGB 保持主题色");
         assert_eq!(px >> 24, 128);
-        assert_eq!(px & 0x00ff_ffff, 0x002b_1a09, "默认背景 RGB 必须按 alpha 预乘");
+        assert_eq!(default_background(theme_bg, 0.0) >> 24, 0);
+        assert_eq!(default_background(theme_bg, 0.0) & 0x00ff_ffff, pack(theme_bg) & 0x00ff_ffff);
         assert_eq!(default_background(theme_bg, 1.0) >> 24, 255);
         assert_eq!(default_background(0x00ff_ffff, 1.0) & 0x00ff_ffff, 0x00ff_ffff);
     }
@@ -489,8 +490,8 @@ mod tests {
         assert_eq!(renderer.pixels[bg_idx] >> 24, 128, "默认背景应带 50% alpha");
         assert_eq!(
             renderer.pixels[bg_idx] & 0x00ff_ffff,
-            default_background(theme_bg, 0.5) & 0x00ff_ffff,
-            "默认背景 RGB 应按 alpha 预乘"
+            pack(theme_bg) & 0x00ff_ffff,
+            "默认背景 RGB 不应预乘（否则会被 Slint 再乘一次）"
         );
         // row 1 / col 0 的像素下标（像素缓冲按像素宽度索引，不是按 cell）。
         let idx = renderer.cell_h * renderer.width;
@@ -502,6 +503,44 @@ mod tests {
 
         renderer.set_opacity(0.2);
         assert_eq!(renderer.default_bg >> 24, 51, "即时调整透明度后默认背景 alpha 更新");
+    }
+
+    #[test]
+    fn text_stays_opaque_when_default_background_is_transparent() {
+        let Some(fonts) = FontSet::load(15.0) else { return };
+        let theme_bg = Theme::default().bg();
+        let mut renderer =
+            Renderer::new(Rc::new(fonts), 4, 2, theme_bg, Theme::default().cursor(), 0.0);
+        let mut frame = blank_frame(4, 2);
+        frame.full = true;
+        let mut cell = CellData::default();
+        cell.ch = 'A' as u32;
+        cell.fg = 0x00ff_ffff;
+        cell.bg = theme_bg;
+        frame.cells[4 + 1] = cell;
+        renderer.draw(&frame);
+
+        // 默认背景 alpha=0，字形像素必须 alpha=255：文字/光标不能跟着背景一起“半透明”。
+        let mut opaque = 0;
+        let mut transparent = 0;
+        for y in renderer.cell_h..renderer.cell_h * 2 {
+            for x in renderer.cell_w..renderer.cell_w * 2 {
+                let a = renderer.pixels[y * renderer.width + x] >> 24;
+                assert!(a == 0 || a == 255, "文字帧出现半透明像素 alpha={a}");
+                if a == 255 {
+                    opaque += 1;
+                } else {
+                    transparent += 1;
+                }
+            }
+        }
+        assert!(opaque > 0, "应有不透明的字形像素");
+        assert!(transparent > 0, "应有透明的默认背景像素");
+        // 不透明字形像素不应被预先压暗：取字形中最亮的白色像素。
+        assert!(
+            renderer.pixels.iter().any(|p| *p >> 24 == 255 && p & 0x00ff_ffff == 0x00ff_ffff),
+            "白色字形应保持原色"
+        );
     }
 
     #[test]

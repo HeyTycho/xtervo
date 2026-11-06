@@ -1029,3 +1029,62 @@ cargo bench -p tervo-core --bench pty_throughput
 - 测试：204 passed；headless Xvfb（不再 Xephyr）验证启动/点击；Openbox 测试中
   回调可触发但 Openbox 不接受 EWMH maximize（测试 WM 限制），GNOME 待用户实测。
 
+
+### 2026-11-06 · 背景图 / 终端透明度可用性重做（feat/bgpolish）
+
+- **用户反馈**：背景图 + 透明度“稀烂根本没法用”。先按约束在 headless Xvfb
+  `:106`（`.perf/xvfb/usr/bin/Xvfb :106 -screen 0 1280x800x24 -ac -nolisten tcp`）
+  跑 GUI 截图复现，再对照代码定位。
+- **根因（4 个，都可独立造成“没法用”）**：
+  1. **alpha 双重预乘**：`render.rs` 已把默认背景 RGB 按 opacity 预乘，`image()` 却仍用
+     `Image::from_rgba8`；Slint 对该接口的约定是**直通 alpha**，内部合成前会再预乘一次。
+     结果 opacity=50% 时主题底色贡献只剩 25%，画面整体发黑；字形抗锯齿又按这份被压暗的
+     底色混合，文字边缘发灰。旧提交 `b43443e` 的“修复发白”方向反了。
+  2. **pane 帧图没有钉在左上角**：`Image { width: p.iw; height: p.ih }` 未写 x/y，Slint
+     在元素小于父级时会居中。窗口尺寸除不尽 cell 时（如 800×568 内容区、cell 9×22），
+     帧图偏移 (4,9)：左侧/顶部漏出**未经终端底色混合的原图**，右侧/底部与补条重叠，
+     出现一条双倍 alpha 的暗边。1080×736（cell 整除）看不出来，所以此前截图没暴露。
+  3. **没有暗化遮罩**：最低 20% opacity 时纯白图片区域仍是 204 灰，浅色终端文字对比度
+     <2:1；用户把 opacity 拉到能看见图片时文字就不可读。
+  4. **默认/旧配置体验**：有图 + opacity=100% 时图片完全被主题底色盖住，用户会以为
+     “设了没生效”；无图时 opacity 仍可拖动但不生效，且旧配置残留低 opacity 没有明确
+     回退。设置面板高度也不够放 Dim/Opacitiy 两组控件与说明。
+- **修复**：
+  - `render.rs` 改回**直通 RGBA**（主题 RGB 不变、只写 alpha）并用 `from_rgba8`，由 Slint
+    统一预乘一次；alpha 范围 0–1（0% 完全透出图片）；文字/光标/彩色 cell 背景仍恒为
+    alpha=255。新增回归测试：opacity=0 时默认背景 alpha=0、字形像素 alpha=255 且保持原色。
+  - 新增 `background_dim: f32`（0–0.8，默认 **0.60**，两位小数，整数 TOML 也接受）：
+    Slint 在背景图之上、所有内容之下加纯黑 `opacity: background-dim` 遮罩；设置页新增
+    **Dim** 滑块（0–80%）与百分比。默认 60% 把纯白压到 102 灰，0% opacity 下白字对比度
+    仍有 4.94:1；用户可自行调低。
+  - `Image` 显式 `x: 0px; y: 0px`；pane 右侧/底部不足一格的余量用
+    `Palette.colors.bg.with-alpha(opacity)` 的**两条窄补条**补齐，且不给整块 pane 铺这个
+    半透明色（否则帧图下会二次叠 alpha）。800×600 实测左右/上下边缘颜色一致，无暗边/漏图。
+  - 无图时 `renderer_opacity()` 强制 1.0（旧配置残留低 opacity 也不会让纯色终端发灰）；
+    首次通过设置页启用背景图且 opacity=100% 时自动降到 35%，避免“设图没反应”。
+  - 路径输入：合法路径边打边加载/写盘，输入过程中不闪红字；Enter/失焦 commit 时才把
+    非法路径显示为红字并保留上一张背景（坏路径不写配置）；× 清除路径并恢复不透明。
+    Opacity 拖动即时重绘预览、松手写盘；Dim 预览由 Slint 直接改属性、松手写盘。
+    设置面板 520 高，Opacity 下方提示按“无图/100% 遮住图/正常”三态切换。
+- **测试**：`CARGO_HOME=... CARGO_TARGET_DIR=$PWD/target cargo test -p tervo-app --bin tervo`
+  → **206 passed**（新增 dim clamp/roundtrip/default、alpha=0、文字不透明等；不启动 GUI）。
+- **GUI 验收（headless Xvfb :106，1280×800×24，winit-software，窗口 1080×736）**：
+   - 高对比测试图（纯红/绿/蓝/白四象限 + 文字）截图：`.logs/bg-readability-000/030/060/090.png`；
+     同场景整屏终端输出：`.logs/bg-opacity-000/030/060/090.png`。
+   - `.logs/bg-settings-opacity0.png`：0% opacity 时设置面板与 TabBar 仍不透明可读；
+     `.logs/bg-cover-800x600.png`：改变窗口比例后 cover 正确（红绿分界仍在 1/2，无拉伸），
+     帧图贴左上、边缘无漏图/暗边。
+   - `.logs/bg-invalid-path.png`：非法路径红字 + 输入框红边 + 背景回退纯色；
+     `.logs/bg-noimage-opacity20.png`：无图 + 旧 opacity 20% 时内容区仍是纯主题底色。
+   - `xkey`/`xclick` 实测：输入 `.logs/bg-test.png` → config 写入 image + opacity 0.35；
+     非法路径 Enter → 错误显示且 config 保持上一张图；× 清除 → `background_image=""` 且
+     终端立即变为不透明；拖 Dim 到 20% → config `background_dim=0.20`；拖 Opacity → 0.03 落盘。
+   - 对比度量化见 `.logs/bg-contrast.txt`：0/30/60/90% 四象限最差（纯白块）分别为
+     4.94/6.94/9.79/13.19:1；白字前景恒为 (238,238,236)；彩色 cell 背景恒为 (204,0,0)，
+     证明文字/光标/彩色 cell 不随 opacity 变透明。
+- **改动文件**：`crates/app/src/config.rs`、`render.rs`、`main.rs`、`crates/app/ui/main.slint`。
+- **限制**：无模糊、无桌面透传（窗口自身不透明，opacity 只在与背景图叠加时可见）、无每主题
+  独立背景；cover 固定，无 contain/fill 选项；大图仍在 UI 线程同步解码，可能短暂卡顿；
+  Slint 按路径缓存图片，同一路径替换文件需重启或改路径；设置面板在极矮窗口（内容区
+  < 约 480px）仍可能裁剪，未做整页滚动；只验证了 winit-software，Skia/GPU 后端未走查；
+  设置页布局/滑块命中只做了 Xvfb 自动点击，未做人工触控板走查。
