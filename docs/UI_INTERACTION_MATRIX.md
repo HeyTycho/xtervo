@@ -59,7 +59,7 @@
 | Pane 区域 | 左键单击 | `ime.focus()` + `pane-clicked` → `focus_pane`；键盘归属该 pane | 聚焦；清晰视觉状态 | 聚焦逻辑可用；`PaneView.focused` 未被 Slint 使用，无视觉态 | 点击不同 pane 输入；截图无焦点标记 |
 | Pane 区域 | 左键拖选 | 按下 `selection_start`；移动 `selection_extend`；抬起自动复制 | 跨行/反向/滚动扩展；可配置 copy-on-select | 跨行/反向可用；无滚动扩展；copy-on-select 强制开 | 反向拖选验证行首；滚动时选区不扩展 |
 | Pane 区域 | 左键双击/三击 | 无特殊处理（按单击处理） | 选词/选行（按上游） | 缺失 | 双击单词，仅移动光标/无选区 |
-| Pane 区域 | Ctrl+左键点击链接 | core `link.rs` 可识别 URL/IPv4/路径，`frame.rs` 透出 OSC 8；app 未接 hover/点击动作 | 悬停手型；Ctrl+点击打开 URL/路径；区分本地/远端 | 数据层已有，UI 动作缺失 | 终端打印链接后 Ctrl+点击，记录无动作 |
+| Pane 区域 | Ctrl+左键点击链接 | core `Frame::hyperlink_at` 优先 OSC 8，`Frame::url_at` 识别普通 http/https/file 并按显示列处理宽字符/组合字符；app 在非鼠标上报时 Ctrl+点击打开，失败显示底部浮层并写日志；右键菜单出现 Open Link / Copy Link | 悬停手型；Ctrl+点击打开 URL/路径；区分本地/远端 | URL/OSC 8 已接 UI；IP/路径与 hover 手型缺失；远端/本地未区分 | headless Xvfb :114 + fake xdg-open：普通 URL/OSC 8/OSC 8 优先/失败提示/菜单 Open Link 均记录命中 |
 | Pane 区域 | 右键（非鼠标上报） | `pane-right-clicked` → 5 项终端菜单 | 复制/粘贴/查找/清屏/Profile/拆分（按上游） | 只有 5 项；无 Find/Clear/Profile | 右键观察菜单项 |
 | Pane 区域 | 右键/中键（鼠标上报模式） | `p.mouse-reporting` 时转发给 PTY，不弹菜单 | TUI 收到右键/中键；Shift 绕过 | 已实现；1002 拖动按钮错误（见主矩阵） | 在 vim `:set mouse=a` 下右键，检查 PTY 字节 |
 | Pane 区域 | 滚轮 | `scroll-event`：鼠标上报模式发 64/65；否则本地回滚 | 上报或回滚；Shift 绕过 | 已实现 | `vim` 中滚轮翻页；普通 shell 滚历史 |

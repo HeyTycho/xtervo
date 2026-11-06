@@ -19,7 +19,7 @@ pub use event::{
     CoreEvent, EventSink, Notification, PaneStats, Progress, ProgressState, WakeSignal,
 };
 pub use frame::{flags, CellData, CursorShape, CursorState, Frame, LineDamage, Span};
-pub use link::{Link, LinkKind};
+pub use link::{is_allowed_uri, Link, LinkKind};
 pub use mouse::{Modifiers, MouseAction, MouseButton, MouseEvent};
 pub use bench_support::TermSim;
 pub use palette::{Palette, PaletteSpec, Theme, UiColors};

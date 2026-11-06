@@ -112,6 +112,8 @@ ls -l dist/ && file dist/tervo && ./dist/tervo --help
 - 每个 pane 独立 shell；关闭时自动回收 PTY 与线程。
 - 无边框窗口自带 `─` 最小化、`□/❐` 最大化/还原、`✕` 关闭；拖标签栏移动窗口，双击标题栏最大化。
 - 快捷键：`Ctrl+T` 新建标签、`Ctrl+Shift+N` 新建窗口、`Ctrl+W` 关闭标签。
+- 终端链接：`Ctrl+左键点击` 打开 `http` / `https` / `file` 链接（OSC 8 优先）；右键链接所在格出现
+  `Open Link` / `Copy Link`，`xdg-open` 失败会在底部浮层提示并写日志。
 - 多窗口（MVP）：`Ctrl+Shift+N` / 标签栏右键 → New Window / 命令面板 `New Window`
   会拉起一个独立的 Tervo 进程，各自拥有 Tab/PTY；窗口互不影响，Tab 暂不能跨窗口移动。
 - 设置面板（⚙）：12 套内置主题 + `Auto`（跟随系统深/浅色，默认 Yaru Dark/Light）、字号、回滚行数；
@@ -134,6 +136,7 @@ tervo                 # 直接启动
 | 分屏 | 右键 pane → Split Right / Split Down |
 | 关闭 pane | 右键 → Close Pane；关掉最后一个 pane 退出应用 |
 | 复制 | 鼠标拖选（松手自动复制）或 `Ctrl+Shift+C`，或右键 → Copy |
+| 打开链接 | `Ctrl+左键点击` http/https/file 链接（OSC 8 优先）；右键 → Open Link / Copy Link |
 | 粘贴 | `Ctrl+Shift+V` 或右键 → Paste（多行会按终端 bracketed-paste 规则包起来） |
 | 搜索 | `Ctrl+F`，输入即高亮下一个；`Enter` 下一个，`Shift+Enter` 上一个，`Esc` 关闭 |
 | 中文输入 | fcitx5 / ibus（X11 XIM）：拼音候选窗跟随光标；组合中的回车/退格只作用于输入法，不会写入 shell |

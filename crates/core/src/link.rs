@@ -2,16 +2,18 @@
 //! 终端行内链接识别：URL / IPv4[:端口] / 文件路径。
 //!
 //! 纯函数、不依赖 UI：输入是一行可见文本，输出是若干**列区间**。
-//! UI 层拿它做 hover 手型、Ctrl+点击打开（后续接插件 Linkifier）。
+//! UI 层用 [`is_allowed_uri`] 做打开前的安全白名单，Ctrl+点击打开。
 //!
-//! 列号按**字符**计数（0 基、闭区间）。URL / 路径 / IP 都是 ASCII，
-//! 正常行内不会因宽字符产生偏移；一行里混排宽字符时由调用方自行校正。
-//! 这是当前实现的有意简化，写在文档里而不是假装支持。
+//! 列号按**字符**计数（0 基、闭区间），本层不感知显示宽度；URL path 可以
+//! 含中文等宽字符。需要显示列映射时用 [`Frame::url_at`]
+//! （它会按单元格把显示列换算成字符下标，宽字符/组合字符不会错位）。
+//!
+//! [`Frame::url_at`]: crate::Frame::url_at
 
 /// 链接类型。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LinkKind {
-    /// `http://` / `https://` / `ftp://`
+    /// `http://` / `https://` / `file://`（只识别这三种可安全打开的 scheme）
     Url,
     /// 四段点分十进制，可带端口
     Ipv4,
@@ -36,7 +38,23 @@ impl Link {
 }
 
 /// 行尾常粘上的标点：识别时去掉，但括号要配对处理。
-const TRAILING: &[char] = &['.', ',', ';', ':', '!', '?', '>', '\'', '"', ']', '}'];
+/// 含中日韩全角标点，否则 `https://example.com。` 会把句号也带进 URL。
+const TRAILING: &[char] = &[
+    '.', ',', ';', ':', '!', '?', '>', '<', '\'', '"', ']', '}', '，', '。', '；', '：', '！',
+    '？', '、', '）', '】', '》', '」', '』',
+];
+
+/// URL 结束符：空白/控制字符、HTML 包裹符与中日韩全角标点。
+/// 半角括号留给 [`trim_end`] 做配对；全角标点在中日文里通常直接断句，不再收进 URL。
+fn is_url_end(c: char) -> bool {
+    c.is_whitespace()
+        || c.is_control()
+        || matches!(
+            c,
+            '<' | '>' | '"' | '`' | '，' | '。' | '；' | '：' | '！' | '？' | '、' | '）'
+                | '】' | '》' | '」' | '』'
+        )
+}
 
 pub fn scan(text: &str) -> Vec<Link> {
     let chars: Vec<char> = text.chars().collect();
@@ -52,11 +70,17 @@ pub fn scan(text: &str) -> Vec<Link> {
             i += 1;
             continue;
         }
+        let text: String = chars[i..=end].iter().collect();
+        // 去掉标点后 `https://` / `https://.` 这类空壳不再是链接。
+        if kind == LinkKind::Url && !valid_url_text(&text) {
+            i += 1;
+            continue;
+        }
         out.push(Link {
             kind,
             start: i as u16,
             end: end as u16,
-            text: chars[i..=end].iter().collect(),
+            text,
         });
         i = end + 1;
     }
@@ -78,20 +102,49 @@ fn match_at(chars: &[char], i: usize) -> Option<(usize, LinkKind)> {
 fn is_boundary(chars: &[char], i: usize) -> bool {
     match i.checked_sub(1).map(|p| chars[p]) {
         None => true,
-        Some(prev) => !(prev.is_alphanumeric() || prev == '_' || prev == '/' || prev == '-' || prev == '.'),
+        // 只拦 ASCII 词中粘连（`xhttps://`）；中文正文常无空格，`见https://…` 应当命中。
+        Some(prev) => {
+            !(prev.is_ascii_alphanumeric()
+                || prev == '_'
+                || prev == '/'
+                || prev == '-'
+                || prev == '.')
+        },
     }
 }
 
 fn scheme_len(chars: &[char], i: usize) -> Option<usize> {
-    const SCHEMES: [&str; 3] = ["https://", "http://", "ftp://"];
+    // 只识别可以安全交给系统打开器的 scheme；`javascript:` / `data:` /
+    // `ftp:` 等不进入识别结果（[`is_allowed_uri`] 还会在打开前再验证一次）。
+    const SCHEMES: [&str; 3] = ["https://", "http://", "file://"];
     let rest: String = chars[i..].iter().take(8).collect();
-    let scheme = SCHEMES.iter().find(|s| rest.starts_with(**s))?;
+    let scheme = SCHEMES
+        .iter()
+        .find(|s| rest.get(..s.len()).is_some_and(|p| p.eq_ignore_ascii_case(s)))?;
     let mut len = scheme.len();
-    while i + len < chars.len() && !chars[i + len].is_whitespace() {
+    while i + len < chars.len() && !is_url_end(chars[i + len]) {
         len += 1;
     }
-    // 至少要有一个主机名字符，避免 `https://` 这种空壳
-    (len > scheme.len() + 1).then_some(len)
+    // 至少一个 URI 字符串；真正的非空校验在 trim 后由 valid_url_text 做。
+    (len > scheme.len()).then_some(len)
+}
+
+/// `scheme://` 之后必须还有内容（`file:///` 的 `/` 也算）。
+fn valid_url_text(text: &str) -> bool {
+    let Some((scheme, rest)) = text.split_once("://") else { return false };
+    !rest.is_empty() && matches!(scheme.to_ascii_lowercase().as_str(), "http" | "https" | "file")
+}
+
+/// 打开前的安全白名单：只允许 `http` / `https` / `file`，且必须带 `://`。
+///
+/// OSC 8 的 URI 由终端应用任意指定，不能直接交给 `xdg-open`：
+/// `javascript:`、`data:`、`mailto:`、裸命令等都拒绝。控制字符/空白也拒绝，
+/// 避免把换行或额外参数混进外部打开器。
+pub fn is_allowed_uri(uri: &str) -> bool {
+    if uri.is_empty() || uri.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return false;
+    }
+    valid_url_text(uri)
 }
 
 fn ipv4_len(chars: &[char], i: usize) -> Option<usize> {
@@ -199,6 +252,66 @@ mod tests {
     #[test]
     fn finds_https_with_trailing_period() {
         assert_eq!(texts("see https://example.com/a?b=1."), vec!["https://example.com/a?b=1"]);
+    }
+
+    #[test]
+    fn only_http_https_file_schemes_are_recognized() {
+        assert_eq!(texts("HTTP://Example.com/x"), vec!["HTTP://Example.com/x"]);
+        assert_eq!(texts("file:///tmp/a.txt"), vec!["file:///tmp/a.txt"]);
+        // 老实现识别 ftp；打开白名单只允许三种，识别层也不再声称支持。
+        assert!(texts("ftp://example.com/file").is_empty());
+        assert!(texts("javascript:alert(1)").is_empty());
+        assert!(texts("data://text/html,hello").is_empty());
+        assert!(texts("mailto:user@example.com").is_empty());
+    }
+
+    #[test]
+    fn trailing_punctuation_and_wrappers_are_trimmed() {
+        assert_eq!(texts("see https://example.com/a."), vec!["https://example.com/a"]);
+        assert_eq!(texts("see https://example.com/a,"), vec!["https://example.com/a"]);
+        assert_eq!(texts("see https://example.com/a;"), vec!["https://example.com/a"]);
+        assert_eq!(texts("see https://example.com/a!"), vec!["https://example.com/a"]);
+        assert_eq!(texts("url <https://example.com/a>"), vec!["https://example.com/a"]);
+        assert_eq!(texts("\"https://example.com/a\""), vec!["https://example.com/a"]);
+        assert_eq!(texts("https://example.com/a。"), vec!["https://example.com/a"]);
+        assert_eq!(texts("https://example.com/a，"), vec!["https://example.com/a"]);
+        assert_eq!(texts("（https://example.com/a）"), vec!["https://example.com/a"]);
+        // 中文正文没有空格：CJK 字符不是“词中粘连”，全角句号必须截断 URL。
+        assert_eq!(texts("见https://example.com/a。更多"), vec!["https://example.com/a"]);
+        assert_eq!(texts("链接：https://example.com/a，然后"), vec!["https://example.com/a"]);
+        // 只有标点的空壳不能算链接
+        assert!(texts("https://.").is_empty());
+        assert!(texts("https://).").is_empty());
+    }
+
+    #[test]
+    fn allowed_uri_is_a_strict_scheme_allowlist() {
+        for ok in [
+            "http://example.com",
+            "https://example.com/a?b=c#d",
+            "HTTPS://EXAMPLE.COM",
+            "file:///tmp/a.txt",
+            "file://server/share/a",
+            "https://user:pass@example.com:8443/x",
+        ] {
+            assert!(is_allowed_uri(ok), "应允许: {ok}");
+        }
+        for bad in [
+            "",
+            "https://",
+            "ftp://example.com",
+            "javascript:alert(1)",
+            "JavaScript://alert(1)",
+            "data:text/html,<script>alert(1)</script>",
+            "mailto:user@example.com",
+            "http:example.com",
+            "http//example.com",
+            "https://exa mple.com",
+            "https://example.com\nrm -rf /",
+            "https://example.com\u{0}",
+        ] {
+            assert!(!is_allowed_uri(bad), "应拒绝: {bad:?}");
+        }
     }
 
     #[test]

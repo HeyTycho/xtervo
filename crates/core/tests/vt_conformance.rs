@@ -203,3 +203,26 @@ fn osc8_hyperlink_is_exposed_in_frame() {
     // 没有链接的普通行也为 None
     assert_eq!(frame.hyperlink_at(1, 0), None);
 }
+
+#[test]
+fn url_at_is_not_shifted_by_wide_or_combining_chars() {
+    // e + U+0301 组合重音（零宽，挂在 e 的 zerowidth）；空格；中文；空格；URL。
+    // 显示列：e=0，组合符不占列，空格=1，中=2/3，文=4/5，空格=6，URL 从 7 开始。
+    let script = "printf 'e\u{0301} 中文 https://example.com/路径\r\nEND'";
+    let (_, frame) = run(script);
+
+    assert_eq!(cell_text(&frame, 0, 0), "e");
+    assert_eq!(cell_text(&frame, 0, 1), " ");
+    assert_eq!(cell_text(&frame, 0, 2), "中");
+    assert!(frame.cell(0, 3).has(flags::WIDE_CHAR_SPACER));
+    assert_eq!(cell_text(&frame, 0, 4), "文");
+    assert_eq!(cell_text(&frame, 0, 7), "h");
+    assert_eq!(frame.url_at(0, 7).as_deref(), Some("https://example.com/路径"));
+    // 宽字符右半边的 spacer 也要映射回 URL 内（URL 路径本身可以是中文）。
+    assert_eq!(frame.url_at(0, 29).as_deref(), Some("https://example.com/路径"));
+    assert_eq!(frame.url_at(0, 30).as_deref(), Some("https://example.com/路径"));
+    // 空格、中文前缀、下一行都不是 URL。
+    assert_eq!(frame.url_at(0, 1), None);
+    assert_eq!(frame.url_at(0, 6), None);
+    assert_eq!(frame.url_at(1, 7), None);
+}
