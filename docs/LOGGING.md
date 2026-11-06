@@ -10,6 +10,11 @@ Tervo 默认把 stderr（包括 panic）同时写入按次启动的日志文件�
 | 文件 | `tervo-<epoch 秒>.log`，保留最近 8 个 |
 | `TERVO_LOG_DIR` | 覆盖日志目录（测试/多实例） |
 | `TERVO_LOG=0` | 关闭文件日志（panic 仍打印到 stderr） |
+| `SLINT_BACKEND` | 显式指定后端：`winit-skia` / `winit-software`；不设时默认 GPU（无 `/dev/dri` 自动软件）。`winit-skia-wgpu` 可对比 Vulkan/wgpu 路径，`winit-skia-opengl` 强制 GL |
+| `TERVO_RENDER_PROFILE=1` | 打印每帧「pane 绘制 / Image 交接 / Skia 合成」耗时 |
+| `TERVO_RESIZE_PROFILE=1` | 打印 resize apply 次数/耗时、背景隐藏/恢复、resize 汇总 |
+| `TERVO_RESIZE_KEEP_BG=1` | 对比实验：resize 期间不隐藏大背景图 |
+| `TERVO_FORCE_GPU=1` | 测试用：无 `/dev/dri` 时也走默认 GPU/Skia 分支 |
 
 ## 一键诊断
 
@@ -18,6 +23,28 @@ tervo --diagnose
 ```
 
 会打印：版本/pid、DISPLAY/Wayland/Slint backend、config/profiles 路径、日志路径、屏幕尺寸、指针位置、**当前活动窗口（pid/几何/title）**、本进程窗口、**其他 Tervo 实例窗口**，以及最近 40 行日志。
+
+## 渲染后端怎么读日志
+
+启动时会打印**请求的 backend** 和**实际 renderer**：
+
+```
+[render] requested_backend=winit-skia（默认 GPU/Skia；可用 SLINT_BACKEND 覆盖）
+[render] requested_backend=winit-skia；notifier=已安装（Skia），等待 GL 上下文自检
+[render] actual_renderer=skia-opengl
+[render] GL_VENDOR="NVIDIA Corporation"
+[render] GL_RENDERER="NVIDIA GeForce ..."
+```
+
+- `actual_renderer=skia-opengl` + 真实 `GL_RENDERER`：GPU/GL 路径（如果 `GL_RENDERER`
+  含 `llvmpipe/softpipe`，那是 CPU 光栅，不能当 GPU 性能）。
+- `actual_renderer=skia-software-surface`：Skia 没拿到 GL 且没有渲染帧，可能黑屏；
+  启动 1s 后仍无 GPU API/帧会自动 `exec` 回退 `winit-software`，日志出现
+  `exec 自动回退 winit-software`，随后是新进程的 `actual_renderer=winit-software`。
+- `actual_renderer=winit-software`：软件后端（用户显式指定、无 `/dev/dri`，或 GPU
+  初始化失败）。
+- 没有 `/dev/dri` 的 headless/CI 环境**不能验证 GPU**；测试脚本应显式设
+  `SLINT_BACKEND=winit-skia`，并且不要把 llvmpipe 数字写成 NVIDIA 结论。
 
 ## 右键问题怎么读日志
 

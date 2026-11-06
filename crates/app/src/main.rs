@@ -10,6 +10,7 @@ mod logging;
 mod plugin;
 mod profile;
 mod render;
+mod render_probe;
 mod quake;
 mod session;
 mod sftp;
@@ -195,16 +196,25 @@ struct AppState {
     /// pressed/grabbed；收到第一帧 WM resize 后补发一次 PointerReleased 清理状态。
     wm_release_pending: bool,
     xresize: Option<ResizeCtx>,
-    /// 窗口拖动 resize 的 fast path：只更新 pane 矩形并拉伸旧帧，140ms 停下后
-    /// 才 resize terminal grid / PTY / 软件重绘。
-    resizing: bool,
-    resize_gen: u64,
     resize_events: u32,
     resize_applied: u32,
-    resize_max_layout_us: u128,
     resize_pending: Option<(f32, f32)>,
     resize_apply_scheduled: bool,
     resize_apply: slint::Timer,
+    /// 最近一次 configure（WM 或自绘）时间；watchdog 用“最近还在动”而不是只看
+    /// 按下后过了多久，避免 GPU/渲染排队导致 configure 稍晚到达时误判 WM 未接管。
+    last_resize_event: Option<Instant>,
+    /// 本次拖拽开始后是否收到过 configure；一旦收到就说明 WM 确实接管了。
+    wm_resize_saw_configure: bool,
+    /// resize 期间的 UI redraw 合并：缩小时仍立即 request_redraw（否则右上角按钮
+    /// 会被新窗口裁掉一帧），放大时最多 60fps。
+    resize_redraw_scheduled: bool,
+    resize_redraw: slint::Timer,
+    /// 停止拖动 200ms 后恢复背景图并做最终重绘。
+    resize_finalize: slint::Timer,
+    resize_in_progress: bool,
+    /// 最近一次 resize apply 的最大耗时（profile 汇总）。
+    resize_max_apply_us: f64,
     /// X11 SHAPE 自适应圆角 worker；None = 未启动（X11 连接/线程失败，窗口保持直角）。
     corners: Option<xconn::CornerShaper>,
     clipboard: Option<arboard::Clipboard>,
@@ -222,6 +232,12 @@ static PIPE_ON: AtomicBool = AtomicBool::new(false);
 static SCHEME_WATCH_CHILD: std::sync::Mutex<Option<std::process::Child>> =
     std::sync::Mutex::new(None);
 static SCHEME_WATCH_STOPPED: AtomicBool = AtomicBool::new(false);
+
+/// `TERVO_RENDER_PROFILE=1`：打印每 pane 的栅格化/帧缓冲耗时与 resize apply 分项。
+fn render_profile() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("TERVO_RENDER_PROFILE").is_some())
+}
 
 fn with_app<R>(f: impl FnOnce(&mut AppState) -> R) -> Option<R> {
     let app = APP.with(|c| c.borrow().clone())?;
@@ -2773,6 +2789,88 @@ fn switch_tab_number(st: &mut AppState, n: usize) {
     }
 }
 
+// ------------------------------------------------------------------- resize 收尾
+
+/// WM watchdog：最近不再有 configure、且按下后已超过宽限，才算没接管。
+///
+/// 之前用固定的 150ms × 按下时刻判断；GPU/Skia 首帧或事件队列排队时 configure
+/// 可能晚到，于是被误判成“WM 未接管”而回退自绘——用户日志里的
+/// `WM live resize 未接管指针，回退自绘 resize` 就是这么来的。
+fn wm_resize_timed_out(
+    saw_configure: bool,
+    since_last_configure: Option<Duration>,
+    since_start: Duration,
+) -> bool {
+    // 收到过 configure 后给更宽的窗口；只要最近还在动就绝不回退。
+    let timeout = if saw_configure { Duration::from_millis(800) } else { Duration::from_millis(400) };
+    if since_start < timeout {
+        return false;
+    }
+    !since_last_configure.is_some_and(|d| d < timeout)
+}
+
+/// 缩小/首次 configure 必须立即重绘；放大可以合并到 60fps。拆成纯函数便于回归测试。
+///
+/// 布局本身已经在每个 configure 立即更新，因此即使 16ms 后重绘，按钮也已在
+/// 新布局的正确位置；缩小则不能等，否则旧帧按钮会露在窗口外一帧。
+fn should_redraw_resize_immediately(old_w: f32, new_w: f32, was_resizing: bool) -> bool {
+    new_w + 0.5 < old_w || !was_resizing
+}
+
+fn schedule_resize_redraw(st: &mut AppState, immediate: bool) {
+    if immediate {
+        st.ui.window().request_redraw();
+        return;
+    }
+    if st.resize_redraw_scheduled {
+        return;
+    }
+    st.resize_redraw_scheduled = true;
+    st.resize_redraw.start(slint::TimerMode::SingleShot, Duration::from_millis(16), || {
+        with_app(|st| {
+            st.resize_redraw_scheduled = false;
+            st.ui.window().request_redraw();
+        });
+    });
+}
+
+/// 拖动停止 200ms 后：恢复背景图、做最终重绘、打印汇总。
+fn schedule_resize_finalize(st: &mut AppState) {
+    st.resize_finalize.start(slint::TimerMode::SingleShot, Duration::from_millis(200), || {
+        with_app(|st| {
+            // 定时器是 single-shot；如果 200ms 内又来了 configure，重新计时。
+            if st
+                .last_resize_event
+                .is_some_and(|t| t.elapsed() < Duration::from_millis(180))
+            {
+                schedule_resize_finalize(st);
+                return;
+            }
+            let was_active = st.resize_in_progress;
+            st.resize_in_progress = false;
+            // 无论 apply/收尾顺序如何，都必须恢复背景，避免一直隐藏。
+            if st.ui.get_background_suspended() {
+                st.ui.set_background_suspended(false);
+                st.ui.window().request_redraw();
+            }
+            if (was_active || st.resize_applied > 0)
+                && std::env::var_os("TERVO_RESIZE_PROFILE").is_some()
+            {
+                eprintln!(
+                    "[ui] resize done applies={} max_apply={:.1}ms content={:.0}x{:.0}",
+                    st.resize_applied,
+                    st.resize_max_apply_us / 1000.0,
+                    st.content.w,
+                    st.content.h
+                );
+            }
+            st.resize_applied = 0;
+            st.resize_max_apply_us = 0.0;
+            st.resize_events = 0;
+        });
+    });
+}
+
 // ------------------------------------------------------------------- 布局
 
 /// 重新计算布局：必要时 resize 各 pane 的网格，并刷新 Slint 模型。
@@ -2944,6 +3042,19 @@ fn redraw_pane_inner(st: &mut AppState, id: PaneId) {
     let frame = rt.handle.pull(std::mem::take(&mut rt.frame));
     rt.renderer.draw(&frame);
     rt.image = rt.renderer.image();
+    if render_profile() {
+        eprintln!(
+            "[render] pane={id} grid={}x{} full={} rows={} draw={:.2}ms image={:.2}ms detach={} bytes={}",
+            frame.cols,
+            frame.rows,
+            frame.full,
+            rt.renderer.last_draw_rows,
+            rt.renderer.last_draw_us,
+            rt.renderer.last_image_us,
+            rt.renderer.last_buffer_detached,
+            rt.renderer.width * rt.renderer.height * 4
+        );
+    }
 
     if focused {
         st.echo.store(count_marker(&frame, MARKER), Ordering::Release);
@@ -3960,6 +4071,19 @@ fn print_diagnostics() {
     ] {
         println!("{key}={:?}", std::env::var(key).ok());
     }
+    let explicit_backend = std::env::var("SLINT_BACKEND").ok();
+    let effective_backend = explicit_backend.clone().unwrap_or_else(|| {
+        if std::path::Path::new("/dev/dri").exists() {
+            "winit-skia".to_string()
+        } else {
+            "winit-software".to_string()
+        }
+    });
+    println!(
+        "requested_backend={effective_backend}{}",
+        if explicit_backend.is_some() { " (env)" } else { " (default)" }
+    );
+    println!("/dev/dri={}", std::path::Path::new("/dev/dri").exists());
     println!("config={}", Config::path().display());
     println!("profiles={}", profile::ProfileStore::path().display());
     let v = vault::Vault::open_default();
@@ -4105,11 +4229,50 @@ fn sftp_probe_transfer(
     Ok(String::new())
 }
 
+/// Skia 已创建窗口但 1s 内没有拿到 GPU/GL 上下文（software surface 在本机实测
+/// 黑屏），用 exec 换成 winit-software 重新启动；保留原参数/环境，且用
+/// `TERVO_RENDER_FALLBACK=1` 防止循环。`exec` 前恢复 stderr，避免新进程继承
+/// 旧 tee pipe 导致日志全部丢失。
+fn exec_software_fallback(requested: &str) -> ! {
+    use std::os::unix::process::CommandExt;
+    eprintln!(
+        "[render] requested_backend={requested} 在 1s 内未确认 GPU/GL 上下文；\
+         Skia software surface 在本机会黑屏，exec 自动回退 winit-software"
+    );
+    logging::restore_stderr();
+    // 给 tee 线程一点时间把上面这行写进日志。
+    std::thread::sleep(Duration::from_millis(50));
+    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("tervo"));
+    let err = std::process::Command::new(exe)
+        .args(args)
+        .env("SLINT_BACKEND", "winit-software")
+        .env("TERVO_RENDER_FALLBACK", "1")
+        .env_remove("TERVO_TEST_FORCE_UI_INIT_FAIL")
+        .env_remove("TERVO_TEST_SUSPEND_BG")
+        .exec();
+    eprintln!("[render] exec winit-software 回退失败: {err}");
+    std::process::exit(3);
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Skia 在本机 resize 时会让事件循环排队，软件渲染反而更跟手；默认 software，
-    // 需要 GPU 合成时用 SLINT_BACKEND=winit-skia 覆盖。
-    if std::env::var_os("SLINT_BACKEND").is_none() {
-        std::env::set_var("SLINT_BACKEND", "winit-software");
+    // 默认 GPU/Skia：用户没有显式设置 SLINT_BACKEND 时请求 winit-skia。
+    // `SLINT_BACKEND=winit-software` 仍是显式回退开关；显式设置任何值都以用户为准。
+    // Skia 初始化失败时由 render_probe/下面的重试自动回退 software，不黑屏、不崩溃。
+    let explicit_backend = std::env::var("SLINT_BACKEND").ok();
+    let mut requested_backend = explicit_backend.clone().unwrap_or_else(|| "winit-skia".to_string());
+    let backend_from_env = explicit_backend.is_some();
+    // 没有 DRM 设备时 Skia 可能只能建 software surface，而该 surface 在本机
+    // 实测会黑屏（窗口在、内容全黑）。这不是“GPU 初始化失败后回退”而是压根
+    // 没有可呈现的 GPU surface，所以默认直接走 winit-software；用户仍可显式
+    // `SLINT_BACKEND=winit-skia` 强制尝试（headless/llvmpipe 验证用）。
+    let mut auto_software_no_drm = false;
+    if !backend_from_env
+        && !std::path::Path::new("/dev/dri").exists()
+        && std::env::var_os("TERVO_FORCE_GPU").is_none()
+    {
+        requested_backend = "winit-software".to_string();
+        auto_software_no_drm = true;
     }
 
     let t_start = Instant::now();
@@ -4200,13 +4363,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     env_logger::init();
-    // 无 GPU（沙箱/无 /dev/dri）时 Skia 能建窗口但拿不到可呈现的 surface，
-    // 表现为“窗口存在但全黑”。用户显式设置 SLINT_BACKEND 时不干预。
-    if std::env::var_os("SLINT_BACKEND").is_none()
-        && !std::path::Path::new("/dev/dri").exists()
-    {
-        std::env::set_var("SLINT_BACKEND", "winit-software");
-        eprintln!("[render] 未检测到 /dev/dri，自动使用 winit-software 后端");
+    // 必须在任何 Slint backend 初始化之前设置；放在 logging::init 之后是为了让
+    // 日志里的 SLINT_BACKEND 能区分“程序默认 GPU”与“用户显式设置”。
+    if !backend_from_env {
+        std::env::set_var("SLINT_BACKEND", &requested_backend);
+    }
+    if backend_from_env {
+        eprintln!("[render] requested_backend={requested_backend}（显式设置 SLINT_BACKEND）");
+    } else if auto_software_no_drm {
+        eprintln!(
+            "[render] requested_backend=winit-software（默认 GPU/Skia，但未检测到 /dev/dri；\
+             为避免 Skia software surface 黑屏而自动选软件；设置 SLINT_BACKEND=winit-skia \
+             可强制尝试，headless 不能验证真实 GPU 性能）"
+        );
+    } else {
+        eprintln!("[render] requested_backend={requested_backend}（默认 GPU/Skia；可用 SLINT_BACKEND 覆盖）");
     }
     let mut cfg = Config::load();
     let opts = parse_args(&cfg);
@@ -4235,7 +4406,49 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let content = Rect::new(0.0, 0.0, win_w, win_h - TABBAR_H);
     let t_font = t_start.elapsed();
 
-    let ui = MainWindow::new()?;
+    // 后端初始化失败时显式重试软件渲染。注意：大多数 GPU/renderer 失败会被
+    // Slint winit 后端内部按 Skia→software 的顺序处理（窗口仍能创建）；这里兜底
+    // “连 winit-skia backend 都建不起来”的情况，避免直接退出/黑屏。
+    // 自测钩子（仅 debug）：注入一次 UI 初始化失败，验证“失败→回退 software→
+    // 窗口正常”的路径。release 构建里该分支恒为 false。
+    #[cfg(debug_assertions)]
+    let force_init_fail = std::env::var_os("TERVO_TEST_FORCE_UI_INIT_FAIL").is_some();
+    #[cfg(not(debug_assertions))]
+    let force_init_fail = false;
+
+    let first_ui = if force_init_fail {
+        eprintln!("[render] 测试注入：强制首次 UI 初始化失败（TERVO_TEST_FORCE_UI_INIT_FAIL）");
+        Err(slint::PlatformError::Other("test-injected UI init failure".into()))
+    } else {
+        MainWindow::new()
+    };
+
+    let (ui, backend_fell_back) = match first_ui {
+        Ok(ui) => (ui, false),
+        Err(err) if requested_backend != "winit-software" => {
+            eprintln!(
+                "[render] requested_backend={requested_backend} 初始化失败: {err}；\
+                 自动回退 SLINT_BACKEND=winit-software"
+            );
+            std::env::set_var("SLINT_BACKEND", "winit-software");
+            match MainWindow::new() {
+                Ok(ui) => (ui, true),
+                Err(err2) => {
+                    eprintln!(
+                        "[render] winit-software 回退也失败: {err2}；\
+                         这通常是没有可用的 X11/Wayland display，而不是 GPU 问题"
+                    );
+                    return Err(err2.into());
+                },
+            }
+        },
+        Err(err) => {
+            eprintln!("[render] requested_backend={requested_backend} 初始化失败: {err}");
+            return Err(err.into());
+        },
+    };
+    // 在 show/首帧之前安装：读取实际渲染器（Skia/GL vs winit-software）和 GL 信息。
+    render_probe::install(&ui.window(), &requested_backend, backend_fell_back);
     // --title 以前只解析不使用，窗口标题永远硬编码；现在透传到 Slint 属性。
     ui.set_window_title(opts.title.as_str().into());
     ui.window().set_size(slint::PhysicalSize::new(win_w as u32, win_h as u32));
@@ -4370,14 +4583,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         wm_resize: false,
         wm_release_pending: false,
         xresize: None,
-        resizing: false,
-        resize_gen: 0,
         resize_events: 0,
         resize_applied: 0,
-        resize_max_layout_us: 0,
         resize_pending: None,
         resize_apply_scheduled: false,
         resize_apply: slint::Timer::default(),
+        last_resize_event: None,
+        wm_resize_saw_configure: false,
+        resize_redraw_scheduled: false,
+        resize_redraw: slint::Timer::default(),
+        resize_finalize: slint::Timer::default(),
+        resize_in_progress: false,
+        resize_max_apply_us: 0.0,
         corners,
         clipboard: arboard::Clipboard::new().ok(),
         cfg: {
@@ -4628,6 +4845,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ensure_resize_conn(st);
             st.wm_resize = false;
             st.wm_release_pending = false;
+            st.wm_resize_saw_configure = false;
+            st.last_resize_event = None;
             // 先记录自绘起点。即使 WM 路径随后失败/没接管，drag 回调也能无缝回退，
             // 不会出现“按了边角却完全拖不动”。
             if let Some(pointer) = resize_pointer(st) {
@@ -4661,9 +4880,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let Some(r) = st.resize else { return };
                 let now = st.ui.window().size();
                 let wm_acted = (now.width, now.height) != r.size;
-                // WM 可能仍在驱动 live resize，也可能只是比我们晚一帧。给它 150ms
-                // 或一次真实尺寸变化；两者都没有才判定没接管，回退自绘保证能拖。
-                if wm_acted || r.since.elapsed() < Duration::from_millis(150) {
+                // WM 可能仍在驱动 live resize，也可能只是比我们晚一帧。判断依据：
+                // 真实尺寸变化、最近一次 configure、或按下后还没超过首个 configure
+                // 的宽限；三者都没有才回退自绘。不能只看按下后是否过了 150ms——
+                // GPU 首帧/渲染排队会让 configure 晚到。
+                if wm_acted
+                    || !wm_resize_timed_out(
+                        st.wm_resize_saw_configure,
+                        st.last_resize_event.map(|t| t.elapsed()),
+                        r.since.elapsed(),
+                    )
+                {
                     return;
                 }
                 eprintln!("[ui] WM live resize 未接管指针，回退自绘 resize");
@@ -4731,6 +4958,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             st.wm_resize = false;
             st.wm_release_pending = false;
             st.resize = None;
+            // 松手后仍然让最后一次 apply 落地，再恢复背景。
+            if st.resize_in_progress {
+                schedule_resize_finalize(st);
+            }
         });
     });
 
@@ -5689,16 +5920,55 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             request_window_corners(st, Some((w, h)), None);
             let w = w.max(1.0);
             let h = (h - TABBAR_H).max(1.0);
+            // configure 本身就是“WM/窗口系统正在动”的证据；即使尺寸和上一帧
+            // 相同也刷新时间戳，watchdog 不会把它误判成 WM 没接管。
+            st.last_resize_event = Some(Instant::now());
+            if st.wm_resize {
+                st.wm_resize_saw_configure = true;
+            }
             if (st.content.w - w).abs() < 0.5 && (st.content.h - h).abs() < 0.5 {
                 return;
             }
+            let old_w = st.content.w;
+            let was_resizing = st.resize_in_progress;
+            // 只有用户正在拖动边/角（WM live resize 或自绘 resize）才隐藏背景/做
+            // resize 收尾；最大化、字体变化等程序化 set_size 不应让背景闪一下。
+            let live_drag = st.wm_resize || st.resize.is_some();
             st.resize_events = st.resize_events.saturating_add(1);
             st.resize_pending = Some((w, h));
             // UI 布局必须每个 configure 立即更新：缩小时如果晚一帧，右上角按钮
             // 还在旧宽度的右边界外，会被新窗口裁掉，下一帧才“吐出来”。
             st.content = Rect::new(0.0, 0.0, w, h);
             refresh_views_layout(st);
-            st.ui.window().request_redraw();
+            if live_drag {
+                st.resize_in_progress = true;
+            }
+            // resize 期间隐藏**大窗口**的背景图，避免 Skia 每帧对整张图做 cover
+            // 缩放（2560x1440 llvmpipe 实测每帧省约 2ms）。小窗口收益小、闪一下
+            // 不划算，故按面积设阈值；停下 200ms 后自动恢复。字符帧不缩放，仍是 1:1。
+            // TERVO_RESIZE_KEEP_BG=1 可关闭该优化，用于 A/B 性能对比。
+            const RESIZE_BG_SUSPEND_AREA: f32 = 1_500_000.0;
+            if live_drag
+                && w * h > RESIZE_BG_SUSPEND_AREA
+                && st.ui.get_has_background_image()
+                && std::env::var_os("TERVO_RESIZE_KEEP_BG").is_none()
+            {
+                if !st.ui.get_background_suspended()
+                    && std::env::var_os("TERVO_RESIZE_PROFILE").is_some()
+                {
+                    eprintln!("[ui] resize 期间隐藏背景图（减少 cover 缩放）");
+                }
+                st.ui.set_background_suspended(true);
+            }
+            // 缩小必须立即重绘，否则旧帧的右上角按钮会露在窗口外一帧；放大可以
+            // 合并到 60fps（没有裁切风险），避免高速拖动把渲染线程灌满。
+            schedule_resize_redraw(
+                st,
+                should_redraw_resize_immediately(old_w, w, was_resizing),
+            );
+            if live_drag {
+                schedule_resize_finalize(st);
+            }
             // terminal grid/PTY/字符重绘仍 16ms 合并，避免高速拖动把 UI 线程灌满。
             if !st.resize_apply_scheduled {
                 st.resize_apply_scheduled = true;
@@ -5712,12 +5982,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             st.content = Rect::new(0.0, 0.0, w, h);
                             let t0 = Instant::now();
                             refresh_views(st);
+                            let t_layout = t0.elapsed();
                             redraw_visible(st);
+                            let total = t0.elapsed();
+                            let cost_us = total.as_secs_f64() * 1_000_000.0;
+                            st.resize_applied = st.resize_applied.saturating_add(1);
+                            st.resize_max_apply_us = st.resize_max_apply_us.max(cost_us);
+                            // apply 更新了 pane 图像，必须安排一次重绘；此时布局
+                            // 已是新尺寸，不会出现按钮晚一帧。
+                            schedule_resize_redraw(st, false);
                             if std::env::var_os("TERVO_RESIZE_PROFILE").is_some() {
                                 eprintln!(
-                                    "[ui] resize apply events={} cost={:.1}ms content={:.0}x{:.0}",
+                                    "[ui] resize apply events={} cost={:.1}ms layout={:.1}ms redraw={:.1}ms content={:.0}x{:.0}",
                                     st.resize_events,
-                                    t0.elapsed().as_secs_f64() * 1000.0,
+                                    total.as_secs_f64() * 1000.0,
+                                    t_layout.as_secs_f64() * 1000.0,
+                                    (total - t_layout).as_secs_f64() * 1000.0,
                                     st.content.w,
                                     st.content.h
                                 );
@@ -5743,6 +6023,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         st.ui.set_tabbar_bottom(st.cfg.tabbar_position == "bottom");
         st.ui.set_settings_path(Config::path().display().to_string().as_str().into());
         init_background(st);
+        // 测试/对比用：启动即隐藏背景，测量 cover 缩放成本（不影响正常路径）。
+        if std::env::var_os("TERVO_TEST_SUSPEND_BG").is_some() {
+            st.ui.set_background_suspended(true);
+        }
         refresh_hotkeys(st);
         refresh_vault_ui(st);
         refresh_plugin_page(st);
@@ -5811,6 +6095,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ---- 首帧 ----
     ui.show()?;
+    // GPU 自检兜底：Skia 软件 surface 会“窗口正常但全黑”，而 Slint 的
+    // set_rendering_notifier 在 software surface 上不会给出 NativeOpenGL/WGPU
+    // 回调。给 GPU 首帧 1s 初始化时间，仍无 GPU API 就 exec 回退软件后端。
+    if requested_backend != "winit-software"
+        && std::env::var_os("TERVO_RENDER_FALLBACK").is_none()
+    {
+        let requested = requested_backend.clone();
+        slint::Timer::single_shot(Duration::from_millis(1000), move || {
+            // frames==0 才是“Skia software surface 黑屏”的特征；wgpu 可能已出帧但
+            // 因未启用 unstable-wgpu-30 而拿不到 GraphicsAPI 回调。
+            if render_probe::notifier_registered()
+                && !render_probe::gpu_confirmed()
+                && render_probe::frames() == 0
+            {
+                exec_software_fallback(&requested);
+            }
+        });
+    }
     // 启动/窗口 map 后先应用一次圆角；worker 会按 _NET_WM_PID 等本进程窗口出现。
     with_app(|st| request_window_corners(st, None, None));
     {
@@ -6055,6 +6357,40 @@ fn run_fps_probe(secs: f64, title: String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wm_resize_watchdog_waits_for_first_configure() {
+        let ms = Duration::from_millis;
+        // 刚按下/不到首个 configure 的宽限：绝不回退。
+        assert!(!wm_resize_timed_out(false, None, ms(0)));
+        assert!(!wm_resize_timed_out(false, None, ms(399)));
+        // 一直没 configure 才回退（真·WM 没接管）。
+        assert!(wm_resize_timed_out(false, None, ms(400)));
+        assert!(wm_resize_timed_out(false, Some(ms(900)), ms(900)));
+    }
+
+    #[test]
+    fn wm_resize_watchdog_does_not_fire_while_configures_keep_coming() {
+        let ms = Duration::from_millis;
+        // 收到过 configure 后，即使按下已 500ms，只要最近 800ms 内还有 configure
+        // 就认为 WM 仍在驱动（GPU 首帧排队时 configure 可能晚到）。
+        assert!(!wm_resize_timed_out(true, Some(ms(0)), ms(500)));
+        assert!(!wm_resize_timed_out(true, Some(ms(500)), ms(900)));
+        assert!(!wm_resize_timed_out(true, Some(ms(799)), ms(2000)));
+        // 真的停了（>800ms 没有 configure）才允许回退。
+        assert!(wm_resize_timed_out(true, Some(ms(801)), ms(900)));
+        assert!(wm_resize_timed_out(true, None, ms(900)));
+    }
+
+    #[test]
+    fn resize_redraw_is_immediate_on_shrink_and_first_event() {
+        // 缩小时旧帧右上角按钮会被裁，必须立即重绘。
+        assert!(should_redraw_resize_immediately(1200.0, 1100.0, true));
+        // 首次 configure 也要立即绘制。
+        assert!(should_redraw_resize_immediately(1200.0, 1200.0, false));
+        // 放大没有裁切风险，可合并到 16ms 定时器。
+        assert!(!should_redraw_resize_immediately(1200.0, 1300.0, true));
+    }
 
     #[test]
     fn color_scheme_has_priority() {

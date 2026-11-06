@@ -2086,6 +2086,7 @@ dependencies = [
  "icu_normalizer",
  "image",
  "js-sys",
+ "log",
  "lyon_algorithms",
  "lyon_extra",
  "lyon_geom",
