@@ -11,8 +11,8 @@ use std::rc::Rc;
 use tervo_core::{flags, CellData, CursorShape, Frame, Span};
 
 use crate::glyph::{
-    is_zero_width_control, placeholder_kind, FontSet, Glyph, GlyphCache, PlaceholderKind, Style,
-    ATLAS_W,
+    is_zero_width_control, placeholder_kind, ColorGlyph, FontSet, Glyph, GlyphCache, PlaceholderKind,
+    Style, ATLAS_W,
 };
 
 /// 0x00RRGGBB -> 内存序 RGBA(u32, LE) = r | g<<8 | b<<16 | a<<24
@@ -76,6 +76,28 @@ fn blend(fg: u32, bg: u32, a: u32) -> u32 {
         let f = (fg >> shift) & 0xff;
         let b = (bg >> shift) & 0xff;
         ((f * a + b * inv) / 255) & 0xff
+    };
+    ch(0) | ch(8) << 8 | ch(16) << 16 | 0xff00_0000
+}
+
+/// 彩色 emoji 的直通 alpha 混合。
+///
+/// 位图 alpha 不是字体 coverage，不能套 `gamma_alpha`（会把彩色图整体压暗/发灰）；
+/// 前景色直接取像素 RGB，不再乘终端 fg。结果保持不透明。
+#[inline]
+fn blend_color(fg: u32, bg: u32) -> u32 {
+    let a = fg >> 24 & 0xff;
+    if a == 0 {
+        return bg;
+    }
+    if a == 255 {
+        return fg;
+    }
+    let inv = 255 - a;
+    let ch = |shift: u32| {
+        let f = (fg >> shift) & 0xff;
+        let b = (bg >> shift) & 0xff;
+        ((f * a + b * inv + 127) / 255) & 0xff
     };
     ch(0) | ch(8) << 8 | ch(16) << 16 | 0xff00_0000
 }
@@ -452,10 +474,71 @@ impl Renderer {
         }
     }
 
+    /// 把彩色 emoji 位图混合进帧缓冲；横向裁剪到该字符占的 `span` 格，纵向裁剪
+    /// 到本行，保证异常尺寸/损坏字体也不会画穿网格。
+    fn blit_color(&mut self, x0: usize, y0: usize, g: &ColorGlyph, span: usize) {
+        let (width, height) = (self.width, self.height);
+        Self::blit_color_buf(
+            self.buffer.pixels_mut(),
+            width,
+            height,
+            x0,
+            y0,
+            g,
+            span,
+            self.cell_w,
+            self.cell_h,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn blit_color_buf(
+        pixels: &mut [u32],
+        width: usize,
+        height: usize,
+        x0: usize,
+        y0: usize,
+        g: &ColorGlyph,
+        span: usize,
+        cell_w: usize,
+        cell_h: usize,
+    ) {
+        let clip_x0 = x0 as i32;
+        let clip_x1 = x0.saturating_add(span.max(1) * cell_w) as i32;
+        let clip_y0 = y0 as i32;
+        let clip_y1 = y0.saturating_add(cell_h) as i32;
+        let gx = x0 as i32 + g.x_off as i32;
+        let gy = y0 as i32 + g.y_off as i32;
+        let (gw, gh) = (g.w as usize, g.h as usize);
+        let src = g.pixels();
+        if src.len() < gw * gh {
+            return;
+        }
+        for row in 0..gh {
+            let dy = gy + row as i32;
+            if dy < clip_y0 || dy >= clip_y1 || dy < 0 || dy >= height as i32 {
+                continue;
+            }
+            let drow = dy as usize * width;
+            for col in 0..gw {
+                let dx = gx + col as i32;
+                if dx < clip_x0 || dx >= clip_x1 || dx < 0 || dx >= width as i32 {
+                    continue;
+                }
+                let px = src[row * gw + col];
+                if px >> 24 == 0 {
+                    continue;
+                }
+                let idx = drow + dx as usize;
+                pixels[idx] = blend_color(px, pixels[idx]);
+            }
+        }
+    }
+
     /// `span` = 占用的 cell 数（CJK 宽字符为 2）；字形在 span 内居中。
     ///
-    /// 返回字形墨迹的水平中心，供组合音标对齐；完全画不出来（缺字/彩色位图
-    /// emoji）时返回 `None`，调用方决定是否画占位框。
+    /// 返回字形墨迹的水平中心，供组合音标对齐；完全画不出来（缺字/只有位图
+    /// 无轮廓的字体）时返回 `None`，调用方决定是否画占位框。
     fn blit(
         &mut self,
         x: i32,
@@ -527,6 +610,27 @@ impl Renderer {
         Some(gx + g.w as i32 / 2)
     }
 
+    /// 光标 overlay 专用：把彩色 emoji 画进小型临时缓冲。返回水平中心，供零宽标记对齐。
+    #[allow(clippy::too_many_arguments)]
+    fn blit_color_into(
+        glyphs: &mut GlyphCache,
+        fonts: &FontSet,
+        cell_w: usize,
+        cell_h: usize,
+        pixels: &mut [u32],
+        width: usize,
+        height: usize,
+        x0: usize,
+        y0: usize,
+        ch: char,
+        style: Style,
+        span: usize,
+    ) -> Option<i32> {
+        let g = glyphs.get_color(fonts, ch, style, span)?;
+        Self::blit_color_buf(pixels, width, height, x0, y0, &g, span, cell_w, cell_h);
+        Some(x0 as i32 + g.x_off as i32 + g.w as i32 / 2)
+    }
+
     /// 光标 overlay 专用：组合音标叠加，坐标以 overlay 缓冲为原点。
     #[allow(clippy::too_many_arguments)]
     fn blit_marks_into(
@@ -590,20 +694,31 @@ impl Renderer {
                     let ch = cell.char();
                     if ch != ' ' {
                         let style = Self::style_of(&cell);
-                        match Self::blit_into(
-                            glyphs,
-                            fonts,
-                            cell_w,
-                            pixels,
-                            width,
-                            height,
-                            x0 as i32,
-                            baseline,
-                            ch,
-                            style,
-                            text_color,
-                            span,
-                        ) {
+                        // 彩色 emoji 优先（与普通渲染一致）；没有彩色字体时再走单色轮廓。
+                        let color_center = if placeholder_kind(ch) == Some(PlaceholderKind::Emoji) {
+                            Self::blit_color_into(
+                                glyphs, fonts, cell_w, cell_h, pixels, width, height, x0, y0, ch,
+                                style, span,
+                            )
+                        } else {
+                            None
+                        };
+                        match color_center.or_else(|| {
+                            Self::blit_into(
+                                glyphs,
+                                fonts,
+                                cell_w,
+                                pixels,
+                                width,
+                                height,
+                                x0 as i32,
+                                baseline,
+                                ch,
+                                style,
+                                text_color,
+                                span,
+                            )
+                        }) {
                             Some(center) if !marks.is_empty() => {
                                 Self::blit_marks_into(
                                     glyphs,
@@ -820,18 +935,35 @@ impl Renderer {
                 &[][..]
             };
             if ch != ' ' {
-                match self.blit(x0 as i32, baseline, ch, style, fg, span) {
-                    Some(center) => {
-                        if !marks.is_empty() {
-                            self.blit_marks(x0 as i32, baseline, center, marks, style, fg, span);
-                        }
-                    },
-                    // 回退链完全画不出来：emoji/PUA 图标画明确占位框，其它缺字留空。
-                    None => {
-                        if let Some(kind) = placeholder_kind(ch) {
-                            self.draw_placeholder(x0, y0, cell_px, fg, kind);
-                        }
-                    },
+                // 彩色 emoji 优先；彩色字体缺失/不支持时回落到单色轮廓，再回落到占位框。
+                // 只对 emoji 码位查彩色缓存，ASCII/CJK 不增加字体探测。
+                let color = if placeholder_kind(ch) == Some(PlaceholderKind::Emoji) {
+                    self.glyphs.get_color(&self.fonts, ch, style, span)
+                } else {
+                    None
+                };
+                if let Some(g) = color {
+                    self.blit_color(x0, y0, &g, span);
+                    if !marks.is_empty() {
+                        let center = x0 as i32 + g.x_off as i32 + g.w as i32 / 2;
+                        self.blit_marks(x0 as i32, baseline, center, marks, style, fg, span);
+                    }
+                } else {
+                    match self.blit(x0 as i32, baseline, ch, style, fg, span) {
+                        Some(center) => {
+                            if !marks.is_empty() {
+                                self.blit_marks(
+                                    x0 as i32, baseline, center, marks, style, fg, span,
+                                );
+                            }
+                        },
+                        // 回退链完全画不出来：emoji/PUA 图标画明确占位框，其它缺字留空。
+                        None => {
+                            if let Some(kind) = placeholder_kind(ch) {
+                                self.draw_placeholder(x0, y0, cell_px, fg, kind);
+                            }
+                        },
+                    }
                 }
             } else if !marks.is_empty() {
                 // 空格上挂了组合音标（行首等边角情况）：居中叠在空格上。
@@ -1074,6 +1206,25 @@ mod tests {
         for y in y0..y1 {
             for x in x0..x1.min(renderer.width) {
                 if renderer.pixels()[y * renderer.width + x] != bg {
+                    n += 1;
+                }
+            }
+        }
+        n
+    }
+
+    /// 彩色像素数：排除背景与灰阶文字，只统计 RGB 通道明显不同的像素。
+    fn color_ink(renderer: &Renderer, x0: usize, x1: usize, y0: usize, y1: usize) -> usize {
+        let bg = renderer.default_bg;
+        let mut n = 0;
+        for y in y0..y1 {
+            for x in x0..x1.min(renderer.width) {
+                let p = renderer.pixels()[y * renderer.width + x];
+                if p == bg {
+                    continue;
+                }
+                let (r, g, b) = (p & 0xff, (p >> 8) & 0xff, (p >> 16) & 0xff);
+                if r.abs_diff(g) > 8 || g.abs_diff(b) > 8 || r.abs_diff(b) > 8 {
                     n += 1;
                 }
             }
@@ -1411,6 +1562,119 @@ mod tests {
         renderer.draw(&frame);
         assert!(ink(&renderer, 0, cell_w, 0, cell_h) > 0);
         assert_eq!(ink(&renderer, cell_w, 4 * cell_w, 0, cell_h), 0, "1 格 emoji 撑破网格");
+    }
+
+    #[test]
+    fn color_emoji_draws_rgb_inside_wide_cell() {
+        let Some(fonts) = FontSet::load(15.0) else { return };
+        let cell_w = fonts.cell_w;
+        let cell_h = fonts.cell_h;
+        let mut renderer = Renderer::new(
+            Rc::new(fonts),
+            4,
+            1,
+            Theme::default().bg(),
+            Theme::default().cursor(),
+            1.0,
+        );
+        if renderer.glyphs.get_color(&renderer.fonts, '😀', Style::Regular, 2).is_none() {
+            eprintln!("跳过：系统没有彩色 emoji 位图");
+            return;
+        }
+        let mut wide = CellData::default();
+        wide.ch = '😀' as u32;
+        wide.fg = 0x00ffffff;
+        wide.bg = Theme::default().bg();
+        wide.flags = flags::WIDE_CHAR;
+        let mut spacer = CellData::default();
+        spacer.flags = flags::WIDE_CHAR_SPACER;
+        let mut frame = blank_frame(4, 1);
+        frame.full = true;
+        frame.put(0, wide, None);
+        frame.put(1, spacer, None);
+        renderer.draw(&frame);
+
+        assert!(color_ink(&renderer, 0, 2 * cell_w, 0, cell_h) > 10, "😀 没有画出彩色像素");
+        assert_eq!(
+            ink(&renderer, 2 * cell_w, 4 * cell_w, 0, cell_h),
+            0,
+            "彩色 emoji 溢出到相邻格"
+        );
+    }
+
+    #[test]
+    fn vs16_heart_color_stays_in_one_cell() {
+        let Some(fonts) = FontSet::load(15.0) else { return };
+        let cell_w = fonts.cell_w;
+        let cell_h = fonts.cell_h;
+        let mut renderer = Renderer::new(
+            Rc::new(fonts),
+            4,
+            1,
+            Theme::default().bg(),
+            Theme::default().cursor(),
+            1.0,
+        );
+        if renderer.glyphs.get_color(&renderer.fonts, '❤', Style::Regular, 1).is_none() {
+            eprintln!("跳过：系统没有 ❤ 彩色位图");
+            return;
+        }
+        // ❤ 本身是窄字符，VS16 零宽挂在前一格：网格仍是 1 格。
+        let mut cell = CellData::default();
+        cell.ch = '❤' as u32;
+        cell.fg = 0x00ffffff;
+        cell.bg = Theme::default().bg();
+        let mut frame = blank_frame(4, 1);
+        frame.full = true;
+        frame.put_zerowidth(0, cell, None, &['\u{FE0F}']);
+        renderer.draw(&frame);
+
+        assert!(color_ink(&renderer, 0, cell_w, 0, cell_h) > 0, "❤+VS16 没有彩色像素");
+        assert_eq!(ink(&renderer, cell_w, 4 * cell_w, 0, cell_h), 0, "❤+VS16 溢出单格");
+    }
+
+    #[test]
+    fn zwj_family_color_components_stay_inside_grid() {
+        let Some(fonts) = FontSet::load(15.0) else { return };
+        let cell_w = fonts.cell_w;
+        let cell_h = fonts.cell_h;
+        let mut renderer = Renderer::new(
+            Rc::new(fonts),
+            8,
+            1,
+            Theme::default().bg(),
+            Theme::default().cursor(),
+            1.0,
+        );
+        // 彩色字体可能只覆盖部分组件；至少一个能画就验证网格，否则跳过。
+        let supported = ['👨', '👩', '👧']
+            .iter()
+            .any(|ch| renderer.glyphs.get_color(&renderer.fonts, *ch, Style::Regular, 2).is_some());
+        if !supported {
+            eprintln!("跳过：系统没有 ZWJ 家族组件的彩色位图");
+            return;
+        }
+        let mut frame = blank_frame(8, 1);
+        frame.full = true;
+        for (col, ch) in [(0usize, '👨'), (2, '👩'), (4, '👧')] {
+            let mut wide = CellData::default();
+            wide.ch = ch as u32;
+            wide.fg = 0x00ffffff;
+            wide.bg = Theme::default().bg();
+            wide.flags = flags::WIDE_CHAR;
+            // ZWJ 零宽，挂在每个 emoji 上；彩色渲染逐个组件顺序覆盖，不额外占格。
+            frame.put_zerowidth(col, wide, None, &['\u{200D}']);
+            let mut spacer = CellData::default();
+            spacer.flags = flags::WIDE_CHAR_SPACER;
+            frame.put(col + 1, spacer, None);
+        }
+        renderer.draw(&frame);
+
+        assert!(
+            color_ink(&renderer, 0, 6 * cell_w, 0, cell_h) > 0,
+            "ZWJ 家族没有彩色组件"
+        );
+        assert_eq!(ink(&renderer, 6 * cell_w, 8 * cell_w, 0, cell_h), 0, "ZWJ 彩色渲染撑破网格");
     }
 
     #[test]
