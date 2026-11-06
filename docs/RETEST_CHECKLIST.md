@@ -37,8 +37,9 @@ e2e:
 
 - [ ] 齿轮打开 Settings Tab
 - [ ] 左侧分类图标/分组正常，窗口小时侧栏可滚动
-- [ ] 点 Terminal Tab 后 Settings Tab 仍在；点回能恢复
-- [ ] 只有 ×/Esc/齿轮关闭；关闭后终端键盘正常
+- [ ] 点 Terminal Tab 后 Settings Tab 仍在；点回能恢复，状态/搜索词不丢
+- [ ] 点 + / Profile 只 suspend，不销毁 Settings Tab
+- [ ] 只有 Settings Tab × / 页头 × / Esc / 齿轮关闭；关闭后终端键盘正常
 - [ ] 主题下拉/光标/滚动条/Backspace/Delete 修改即时生效
 - [ ] `TERVO_SETTINGS_LEGACY=1` 可回旧 modal
 - [ ] 搜索 `sixel` 能跳 Terminal/Images
@@ -90,11 +91,67 @@ e2e:
 - [ ] 升级/回滚不丢配置
 - [ ] 桌面文件/图标/卸载
 
+## 9. 必测：搜索 / URL / 键盘协议
+
+### 搜索
+- [ ] Ctrl+F 打开即聚焦，输入显示 `2/3` 计数
+- [ ] Enter/Shift+Enter 正向/反向环绕
+- [ ] 鼠标点击/拖选/Ctrl+A/C/V 只作用于搜索框
+- [ ] Match case / regex；非法 regex 红框不崩溃
+- [ ] Esc 关闭后终端立即能输入，查询词不泄漏
+
+### URL / 路径
+- [ ] URL hover 变手型，离开恢复
+- [ ] Ctrl+click URL/OSC8 打开；失败有底部提示
+- [ ] 本地路径 Ctrl+click 打开；缺失/无权限不 spawn
+- [ ] 右键 Open/Copy Link 正常
+
+### 键盘协议
+- [ ] 普通 shell 输入字节与旧版一致（Backspace/Delete/方向键）
+- [ ] Kitty flags=1 应用：Ctrl+Shift+J、Shift+Enter 序列正确
+- [ ] modifyOtherKeys level 2：Ctrl+A = `CSI 27;5;97~`
+- [ ] 右 Shift 不再删除 dsh 输入
+- [ ] 应用未请求协议时无额外 CSI-u
+
+## 9.1 必测：Profile / 会话恢复
+
+- [ ] Profile 表单可设置字体/主题/光标/滚动/命令/登录 shell
+- [ ] 打开 Profile 应用对应外观；空字段继承全局
+- [ ] 正常退出后重启恢复 Tab/分屏/焦点/cwd
+- [ ] 损坏快照回退新 Tab，不崩溃
+- [ ] SSH/Serial 不自动重连（已知限制）
+
+## 9.2 必测：Sixel / IIP
+
+- [ ] 真实 Sixel 图片按光标显示；滚动/resize/切 Tab 不跑位
+- [ ] 关闭 Sixel 立即清图，DA1 不含参数 4
+- [ ] OSC 1337 File PNG/JPEG 显示；滚动/resize 正常
+- [ ] 关闭 IIP 立即清图，不影响 Sixel
+- [ ] 非法/超限图片只丢图，不崩溃
+
+## 9.3 必测：打包/升级
+
+- [ ] tar.gz 干净 prefix 安装/启动/卸载
+- [ ] .deb `dpkg-deb -x` 解包后 `--version/--help` 正常
+- [ ] 升级保留上一版；`install.sh --rollback` 可回退
+- [ ] 升级/回滚/卸载不丢 config/Profile（保留 .bak）
+- [ ] 运行中覆盖不杀旧进程
+
+## 9.4 必测：插件 V1（若最终包含）
+
+- [ ] Plugins 页显示外部插件状态/启用禁用/错误
+- [ ] 命令插件在命令面板执行并返回结果
+- [ ] 插件崩溃/超时被禁用，不拖死终端
+- [ ] 权限未声明的能力被拒绝
+
 ## 10. 已知限制（不要求修复）
 
-- fcitx XIM 候选窗位置在部分输入法下仍受 winit/XIM 限制
+- fcitx XIM 候选窗位置在部分输入法下仍受 winit/XIM 限制；dsh Btw 侧栏需先点击 composer 锚点
 - 彩色位图 emoji 之外（COLR/SVG）回退单色/占位
-- Sixel 局部 ECH 擦除不逐像素清图；scrollback 淘汰后锚点可能偏移
+- Sixel/IIP 局部 ECH 擦除不逐像素清图；scrollback 淘汰后锚点可能偏移
+- IIP 覆盖文本、不占光标行；不做 inline=0 文件下载/动画
+- 会话恢复不恢复 scrollback/屏幕内容/运行中进程；SSH/Serial 不自动重连
+- 打包不含自动更新/崩溃上报/AppImage/Flatpak/Snap/GPG 签名
 - Wayland 仅 spike，不承诺完整
 - Bidi/非 UTF-8/rewrap/OSC133/Kitty graphics 未实现
 
