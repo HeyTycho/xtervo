@@ -1207,3 +1207,13 @@ cargo bench -p tervo-core --bench pty_throughput
 - 验证：software 默认 + Openbox WM resize 540→700→800 通过；209 tests。
 - 限制：software 在高分屏/大窗口有上限；GPU 终端帧仍是后续方向。
 
+### 2026-11-06 · 右侧 pane 右键菜单“不好使”：坐标夹取
+
+- 用户日志里 `right click pane=2` 与菜单打开都正常，但随后 `menu dismissed`；
+  复现发现右侧/底部右键时菜单左上角被 `min(x, width-150)` / `min(y, height-276)`
+  硬夹到离鼠标约 100px 的位置，看起来像没弹在右键处，用户点外部关闭。
+- 修复：靠右/下时菜单翻到鼠标左侧/上方（标准 context menu 锚定），x/y 不再
+  远距离夹取；菜单 action 仍绑定被右键的 pane id。
+- 验证：右侧分屏 720x472，右键右 pane (600,300)，菜单贴在鼠标左上方；
+  Split Right action 仍作用于 pane=2。
+
