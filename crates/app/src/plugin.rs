@@ -1,27 +1,33 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! 插件清单与外部进程宿主（MVP）。
+//! 插件清单与外部进程宿主（V1）。
 //!
-//! 支持两种清单格式，互不替换：
+//! 支持三种形态，互不替换：
 //!
 //! 1. **旧扁平清单**：`<plugins>/*.toml`（`id`/`name`/`version`/`description`/`enabled`）。
 //!    仅发现、校验、展示，**不执行**；保留给旧配置与旧版设置页。
-//! 2. **v1 目录插件**：`<plugins>/<name>/plugin.toml`，可声明 `[[commands]]` 与
-//!    `events = ["startup"|"tab-open"|"tab-close"]`。启用后命令以 `plugin.<name>.<id>`
-//!    注册进命令表；命令与事件都以后台线程 spawn `entry`，通过 stdin 发一行 JSON，
-//!    stdout/stderr 写日志，超时 kill；最近 8 条执行摘要进设置页「最近插件活动」。
+//! 2. **v1 oneshot 目录插件**：`<plugins>/<name>/plugin.toml`，无 `runtime` 或
+//!    `runtime = "oneshot"`；命令/事件每次以后台线程 spawn `entry`，stdin 发一行 JSON，
+//!    stdout/stderr 写日志，10s 超时 kill。兼容既有插件。
+//! 3. **v1 process 目录插件**：`runtime = "process"`；每个插件一个 supervisor 线程，
+//!    常驻子进程 + JSON Lines（init/ready/command/result/event/status/log/shutdown），
+//!    2s 握手、10s 命令超时、崩溃重启上限 2、坏 JSON 禁用；命令结果回 UI 浮层/活动，
+//!    `[contributes] status` 提供底部状态栏，`theme` 提供声明式主题。
 //!
 //! 安全边界：插件是**普通子进程**，拥有当前用户全部权限，没有沙箱/权限模型；
-//! `entry` 只允许插件目录内的相对路径（拒绝绝对路径、`..`、符号链接逃逸）。
+//! `[permissions]` 仅声明/展示，不授予能力。`entry` 只允许插件目录内的相对路径
+//! （拒绝绝对路径、`..`、符号链接逃逸）；不 shell 拼接、不传 Vault 明文；
 //! 事件 payload 只带 Tab 标题/类型，不含 cwd、命令行、环境变量或凭据。
 //! 详见 `docs/PLUGIN_API.md`。
 
-use std::collections::VecDeque;
-use std::io::{Read, Write};
+use std::collections::{HashMap, VecDeque};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Component, Path, PathBuf};
-use std::process::{Command as ProcessCommand, Stdio};
+use std::process::{Child, Command as ProcessCommand, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use crossbeam_channel::{Receiver, Sender};
 use serde::{Deserialize, Serialize};
 
 use tervo_core::WakeSignal;
@@ -51,6 +57,45 @@ const MAX_CAPTURE_BYTES: usize = 64 * 1024;
 
 /// 日志里单条流最多展示的字节数。
 const MAX_LOG_BYTES: usize = 8 * 1024;
+
+// ---------------------------------------------------------------- 常驻进程插件
+
+/// 常驻进程插件启动并完成 `ready` 握手的上限；超时 kill 并按崩溃处理。
+pub const PROCESS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// 常驻进程插件单条命令的默认超时；超时 kill 进程并按崩溃处理。
+pub const PROCESS_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// 状态提供者的轮询间隔（宿主主动请求，插件也可异步推送）。
+pub const PROCESS_STATUS_INTERVAL: Duration = Duration::from_secs(2);
+
+/// 单次状态请求超时；超时只丢弃该次请求，不 kill 进程。
+pub const PROCESS_STATUS_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// 同一插件在本次 Tervo 运行内允许的自动重启次数；超过后禁用并显示原因。
+pub const PROCESS_MAX_RESTARTS: u32 = 2;
+
+/// 连续坏 JSON/超长行达到该数量后禁用插件，避免坏插件空转拖日志。
+pub const PROCESS_MAX_BAD_LINES: u32 = 5;
+
+/// 协议单行上限（字节）。超长行会被截断并计入坏行，不会无限分配内存。
+pub const MAX_PROTOCOL_LINE_BYTES: usize = 64 * 1024;
+
+/// 命令返回文本、状态文本与 tooltip 的最大字符数（按字符截断）。
+pub const MAX_RESULT_TEXT_CHARS: usize = 2000;
+pub const MAX_STATUS_TEXT_CHARS: usize = 200;
+pub const MAX_TOOLTIP_CHARS: usize = 512;
+/// 插件返回的 command 字段只允许短 ID。
+const MAX_STATUS_COMMAND_CHARS: usize = 128;
+
+/// 活动记录里进程生命周期摘要的最大字符数。
+const MAX_LIFECYCLE_SUMMARY_CHARS: usize = 140;
+
+/// 最近未展示的插件通知（命令结果）上限；UI 每轮取走。
+const NOTICE_CAPACITY: usize = 16;
+
+/// 预留：插件协议版本（与 api 一起写在 init 行里）。
+const PLUGIN_PROTOCOL_VERSION: u32 = 1;
 
 /// 宿主支持的生命周期事件钩子。
 ///
@@ -146,19 +191,136 @@ pub struct PluginCommandDecl {
     /// 可选默认快捷键（`ctrl+alt+g` / `f9`），必须是单个可绑定组合。
     #[serde(default)]
     pub key: Option<String>,
+    /// 可选静态参数（V1：命令面板不弹参数输入，按清单原样下发到协议 `args`）。
+    #[serde(default)]
+    pub args: Vec<String>,
 }
 
 fn default_enabled() -> bool {
     true
 }
 
+/// 插件运行形态。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PluginRuntimeKind {
+    /// 旧行为：每次命令/事件启动一个新进程，发一行 JSON 后退出。
+    Oneshot,
+    /// V1 常驻进程：启动时握手，JSON Lines 双向通信，崩溃可重启（有上限）。
+    Process,
+}
+
+impl PluginRuntimeKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Oneshot => "oneshot",
+            Self::Process => "process",
+        }
+    }
+}
+
+/// 权限声明（**仅声明 + 展示，当前不授予、不沙箱**）。
+///
+/// 所有字段默认拒绝；宿主 V1 仍以普通子进程运行插件，拥有当前用户权限。
+/// 声明用于让设置页/文档明确“插件想要什么”，真正执行仍靠用户信任。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PluginPermissions {
+    /// `none` | `read-plugin` | `read-home` | `custom`（仅声明，不实现）。
+    pub filesystem: String,
+    pub network: bool,
+    pub process: bool,
+    pub clipboard: bool,
+    /// `none` | `profile-ref`（仅声明；V1 不把任何 Vault 明文传给插件）。
+    pub credentials: String,
+}
+
+impl Default for PluginPermissions {
+    fn default() -> Self {
+        Self {
+            filesystem: "none".to_string(),
+            network: false,
+            process: false,
+            clipboard: false,
+            credentials: "none".to_string(),
+        }
+    }
+}
+
+impl PluginPermissions {
+    pub fn validate(&self) -> Result<(), String> {
+        let fs = self.filesystem.trim();
+        if !matches!(fs, "none" | "read-plugin" | "read-home" | "custom") {
+            return Err(format!(
+                "permissions.filesystem 只支持 none/read-plugin/read-home/custom（当前 {fs:?}）"
+            ));
+        }
+        let cred = self.credentials.trim();
+        if !matches!(cred, "none" | "profile-ref") {
+            return Err(format!(
+                "permissions.credentials 只支持 none/profile-ref（当前 {cred:?}）"
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn declares_anything(&self) -> bool {
+        self.filesystem != "none"
+            || self.network
+            || self.process
+            || self.clipboard
+            || self.credentials != "none"
+    }
+
+    /// 设置页/日志用的一行；未声明任何权限时返回空串。
+    pub fn summary(&self) -> String {
+        if !self.declares_anything() {
+            return String::new();
+        }
+        format!(
+            "fs={} net={} process={} clipboard={} credentials={}（仅声明/未授予）",
+            self.filesystem, self.network, self.process, self.clipboard, self.credentials
+        )
+    }
+}
+
+/// 插件声明的贡献点。
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PluginContributes {
+    /// 可选交叉校验：列出的命令必须存在于 `[[commands]]`。
+    pub commands: Vec<String>,
+    /// 是否提供状态（周期轮询 + 可异步推送）。
+    pub status: bool,
+    /// 可选声明式 TOML 主题（插件目录内相对路径）。
+    pub theme: Option<String>,
+}
+
+impl PluginContributes {
+    pub fn validate(&self) -> Result<(), String> {
+        if let Some(theme) = &self.theme {
+            entry_path(theme).map_err(|e| format!("contributes.theme 非法: {e}"))?;
+        }
+        Ok(())
+    }
+}
+
 /// v1 目录插件清单：`<plugins>/<name>/plugin.toml`。
+///
+/// 兼容旧的扁平字段（`name/version/api/entry/enabled/description/commands/events`），
+/// 新增可选 `id`、`runtime`、`[permissions]`、`[contributes]`。旧清单缺省
+/// `runtime = "oneshot"`，行为与之前完全一致。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PackageManifest {
+    /// 稳定 ID（默认 = name）；允许反向域名点号，用于展示/去重。
+    #[serde(default)]
+    pub id: String,
     pub name: String,
     pub version: String,
     /// 必须等于 [`PLUGIN_API_VERSION`]。
     pub api: u32,
+    /// `process`（常驻、握手/JSON Lines）或 `oneshot`（旧行为）；缺省 oneshot。
+    #[serde(default)]
+    pub runtime: Option<String>,
     /// 相对插件目录的可执行文件；禁止绝对路径、`..` 与符号链接逃逸。
     pub entry: String,
     #[serde(default = "default_enabled")]
@@ -170,12 +332,38 @@ pub struct PackageManifest {
     /// 可选事件订阅：`startup` / `tab-open` / `tab-close`；未知值整份清单跳过。
     #[serde(default)]
     pub events: Vec<String>,
+    #[serde(default)]
+    pub permissions: PluginPermissions,
+    #[serde(default)]
+    pub contributes: PluginContributes,
 }
 
 impl PackageManifest {
+    /// 稳定 ID：显式 `id` 优先，否则回退到 `name`。
+    pub fn plugin_id(&self) -> &str {
+        if self.id.trim().is_empty() {
+            &self.name
+        } else {
+            self.id.trim()
+        }
+    }
+
+    pub fn runtime_kind(&self) -> Result<PluginRuntimeKind, String> {
+        match self.runtime.as_deref().map(str::trim) {
+            None | Some("") | Some("oneshot") => Ok(PluginRuntimeKind::Oneshot),
+            Some("process") => Ok(PluginRuntimeKind::Process),
+            Some(other) => Err(format!(
+                "不支持的 runtime {other:?}（只支持 process / oneshot；缺省 oneshot）"
+            )),
+        }
+    }
+
     /// 不访问文件系统的字段校验；`entry` 是否存在/是否逃逸在加载时另行检查。
     pub fn validate(&self) -> Result<(), String> {
         validate_plugin_name(&self.name)?;
+        if !self.id.trim().is_empty() {
+            validate_plugin_id(self.plugin_id())?;
+        }
         if self.version.trim().is_empty() {
             return Err(format!("插件 {} 缺少 version", self.name));
         }
@@ -185,12 +373,34 @@ impl PackageManifest {
                 self.api
             ));
         }
+        self.runtime_kind()?;
         entry_path(&self.entry)?;
+        self.permissions.validate()?;
+        self.contributes.validate()?;
+        if self.contributes.status && self.runtime_kind()? != PluginRuntimeKind::Process {
+            return Err(format!(
+                "插件 {} 声明了 contributes.status，但 runtime 不是 process",
+                self.name
+            ));
+        }
         for (i, command) in self.commands.iter().enumerate() {
             validate_command_id(&command.id)
                 .map_err(|e| format!("插件 {} 的命令 #{} 非法: {e}", self.name, i + 1))?;
             if command.title.trim().is_empty() {
                 return Err(format!("插件 {} 的命令 {} 缺少 title", self.name, command.id));
+            }
+            if command.args.len() > 16 {
+                return Err(format!("插件 {} 命令 {} 的 args 最多 16 个", self.name, command.id));
+            }
+            for (j, arg) in command.args.iter().enumerate() {
+                if arg.chars().count() > 256 {
+                    return Err(format!(
+                        "插件 {} 命令 {} 的 args[{}] 超过 256 字符",
+                        self.name,
+                        command.id,
+                        j + 1
+                    ));
+                }
             }
             if self.commands[..i].iter().any(|prev| prev.id == command.id) {
                 return Err(format!("插件 {} 内命令 id 重复: {}", self.name, command.id));
@@ -204,6 +414,15 @@ impl PackageManifest {
                         self.name, command.id
                     ));
                 }
+            }
+        }
+        for (i, declared) in self.contributes.commands.iter().enumerate() {
+            if !self.commands.iter().any(|c| c.id == *declared) {
+                return Err(format!(
+                    "插件 {} 的 contributes.commands[{}] 未在 [[commands]] 中声明: {declared:?}",
+                    self.name,
+                    i + 1
+                ));
             }
         }
         for (i, event) in self.events.iter().enumerate() {
@@ -225,6 +444,23 @@ impl PackageManifest {
     pub fn declares_event(&self, event: PluginEvent) -> bool {
         self.events.iter().any(|name| PluginEvent::parse(name) == Some(event))
     }
+
+    pub fn is_process(&self) -> bool {
+        self.runtime_kind() == Ok(PluginRuntimeKind::Process)
+    }
+}
+
+fn validate_plugin_id(id: &str) -> Result<(), String> {
+    if id.is_empty() || id.len() > 128 {
+        return Err(format!("插件 id 必须非空且不超过 128 字节: {id:?}"));
+    }
+    if !id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    {
+        return Err(format!("插件 id 只能包含字母/数字/-/_/. : {id}"));
+    }
+    Ok(())
 }
 
 fn validate_plugin_name(name: &str) -> Result<(), String> {
@@ -280,6 +516,23 @@ fn entry_path(entry: &str) -> Result<&Path, String> {
     Ok(path)
 }
 
+/// 解析并校验主题文件的真实路径：必须存在、是普通文件、canonical 后仍在插件目录内。
+fn resolve_theme_file(plugin_dir: &Path, theme: &str) -> Result<PathBuf, String> {
+    let relative = entry_path(theme)?;
+    let canonical_dir = std::fs::canonicalize(plugin_dir)
+        .map_err(|e| format!("插件目录不可访问 {}: {e}", plugin_dir.display()))?;
+    let joined = canonical_dir.join(relative);
+    let canonical_file = std::fs::canonicalize(&joined)
+        .map_err(|e| format!("主题文件不存在或不可访问 {}: {e}", joined.display()))?;
+    if !canonical_file.starts_with(&canonical_dir) {
+        return Err(format!("主题文件解析后逃出插件目录: {}", canonical_file.display()));
+    }
+    if !canonical_file.is_file() {
+        return Err(format!("主题不是普通文件: {}", canonical_file.display()));
+    }
+    Ok(canonical_file)
+}
+
 /// 解析并校验 entry 的真实路径：必须存在、是普通文件、canonical 后仍在插件目录内。
 fn resolve_entry(plugin_dir: &Path, entry: &str) -> Result<PathBuf, String> {
     let relative = entry_path(entry)?;
@@ -297,6 +550,76 @@ fn resolve_entry(plugin_dir: &Path, entry: &str) -> Result<PathBuf, String> {
     Ok(canonical_entry)
 }
 
+/// 常驻进程插件的运行状态（设置页展示；崩溃后自动重启，超限禁用）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RuntimePhase {
+    Starting,
+    Running,
+    Restarting,
+    Disabled,
+    Stopped,
+}
+
+impl RuntimePhase {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Starting => "starting",
+            Self::Running => "running",
+            Self::Restarting => "restarting",
+            Self::Disabled => "disabled",
+            Self::Stopped => "stopped",
+        }
+    }
+}
+
+/// 常驻进程插件状态快照。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RuntimeInfo {
+    pub phase: RuntimePhase,
+    /// 禁用/重启原因（空 = 正常）。
+    pub error: String,
+    pub restarts: u32,
+    pub pid: Option<u32>,
+}
+
+impl Default for RuntimeInfo {
+    fn default() -> Self {
+        Self {
+            phase: RuntimePhase::Stopped,
+            error: String::new(),
+            restarts: 0,
+            pid: None,
+        }
+    }
+}
+
+impl RuntimeInfo {
+    #[allow(dead_code)] // 单测/后续状态页使用；生产 UI 只读 display()
+    pub fn is_healthy(&self) -> bool {
+        self.phase == RuntimePhase::Running
+    }
+
+    /// 设置页展示：`running` / `disabled: <原因>` / `restarting (2/2)`。
+    pub fn display(&self) -> String {
+        match self.phase {
+            RuntimePhase::Running | RuntimePhase::Starting | RuntimePhase::Stopped => {
+                self.phase.as_str().to_string()
+            },
+            RuntimePhase::Restarting => {
+                format!("restarting {}/{}", self.restarts, PROCESS_MAX_RESTARTS)
+            },
+            RuntimePhase::Disabled => {
+                let reason = sanitize_activity_text(&self.error);
+                if reason.is_empty() {
+                    "disabled".to_string()
+                } else {
+                    format!("disabled: {reason}")
+                }
+            },
+        }
+    }
+}
+
 /// 一个已加载的 v1 目录插件。
 #[derive(Clone, Debug)]
 pub struct PluginPackage {
@@ -305,6 +628,10 @@ pub struct PluginPackage {
     pub dir: PathBuf,
     /// 已解析的 entry 绝对路径（canonical）。
     pub entry: PathBuf,
+    /// 可选声明式主题文件的 canonical 路径（`[contributes] theme`）。
+    pub theme_path: Option<PathBuf>,
+    /// 主题声明存在但文件/路径不合法时的原因（插件仍加载，主题跳过）。
+    pub theme_error: Option<String>,
 }
 
 impl PluginPackage {
@@ -318,17 +645,49 @@ impl PluginPackage {
     }
 
     /// 设置页展示用的一行：名称/版本/状态/API/命令数/说明。
+    #[allow(dead_code)] // 测试/诊断用；生产走 display_line_with(runtime)
     pub fn display_line(&self) -> String {
+        self.display_line_with(None)
+    }
+
+    /// 带运行状态的一行（常驻进程插件传 runtime；oneshot 传 None）。
+    pub fn display_line_with(&self, runtime: Option<&RuntimeInfo>) -> String {
         let state = if self.manifest.enabled { "enabled" } else { "disabled" };
         let mut line = format!(
-            "{} v{} — {state} · api {} · {} command(s)",
-            self.manifest.name,
-            self.manifest.version,
-            self.manifest.api,
-            self.command_count()
+            "{} v{} — {state}",
+            self.manifest.name, self.manifest.version
         );
+        // 反向域名 id 与 name 不同时展示，便于对应插件目录。
+        if self.manifest.plugin_id() != self.manifest.name {
+            line.push_str(&format!(" · id={}", self.manifest.plugin_id()));
+        }
+        line.push_str(&format!(" · api {}", self.manifest.api));
+        line.push_str(&format!(" · {}", self.manifest.runtime_kind().map(|k| k.as_str()).unwrap_or("invalid")));
+        line.push_str(&format!(" · {} command(s)", self.command_count()));
         if !self.manifest.events.is_empty() {
             line.push_str(&format!(" · {} event(s)", self.manifest.events.len()));
+        }
+        if self.manifest.contributes.status {
+            line.push_str(" · status");
+        }
+        if let Some(theme) = &self.manifest.contributes.theme {
+            let path = theme.trim();
+            if !path.is_empty() {
+                line.push_str(" · theme");
+            }
+        }
+        if let Some(runtime) = runtime {
+            line.push_str(" · ");
+            line.push_str(&runtime.display());
+        }
+        if let Some(error) = &self.theme_error {
+            line.push_str(" · theme-error: ");
+            line.push_str(&sanitize_activity_text(error));
+        }
+        let perms = self.manifest.permissions.summary();
+        if !perms.is_empty() {
+            line.push_str(" · ");
+            line.push_str(&perms);
         }
         if !self.manifest.description.trim().is_empty() {
             line.push_str(" — ");
@@ -349,6 +708,16 @@ pub struct PluginStore {
     pub skipped: Vec<(String, String)>,
     /// 最近命令/事件执行摘要；后台线程写，UI 轮询读取（互不阻塞）。
     activity: Arc<Mutex<ActivityLog>>,
+    /// 常驻进程插件的 supervisor 句柄（`start_process_plugins` 后填充）。
+    processes: Vec<ProcessPluginHandle>,
+    process_started: bool,
+    /// 状态文本/进程状态的 revision，UI 只在变化时刷 Slint model。
+    status_revision: Arc<AtomicU64>,
+    runtime_revision: Arc<AtomicU64>,
+    /// 后台命令结果，UI 下一轮取走并显示浮层。
+    notices: Arc<Mutex<NoticeQueue>>,
+    /// 插件活动/状态变化唤醒 UI（与 ActivityLog 共用同一信号）。
+    wake: Arc<Mutex<Option<Arc<WakeSignal>>>>,
 }
 
 /// 一条「最近插件活动」记录。
@@ -432,12 +801,18 @@ pub struct ActivityLog {
     records: VecDeque<PluginActivity>,
     revision: u64,
     /// 活动变化唤醒 UI（容量 1，合并）；后台线程 push 后通知，UI 立即刷新。
-    wake: Option<WakeSignal>,
+    wake: Option<Arc<WakeSignal>>,
 }
 
 impl ActivityLog {
     /// 安装唤醒信号；`PluginStore` 在启动时注入，测试可用默认空值。
+    #[allow(dead_code)] // 单测直接持有 ActivityLog 时使用；生产走 set_wake_arc
     pub fn set_wake(&mut self, wake: WakeSignal) {
+        self.wake = Some(Arc::new(wake));
+    }
+
+    /// 与常驻进程 supervisor 共享同一个唤醒信号。
+    fn set_wake_arc(&mut self, wake: Arc<WakeSignal>) {
         self.wake = Some(wake);
     }
 
@@ -511,6 +886,1183 @@ fn record_activity(log: &Arc<Mutex<ActivityLog>>, record: PluginActivity) {
         Ok(mut log) => log.push(record),
         Err(_) => eprintln!("[plugin] 活动记录锁被污染，丢弃一条记录"),
     }
+}
+
+// ---------------------------------------------------------------- 常驻进程运行时
+
+/// 状态提供者返回的一条状态（设置页/底部最小状态栏共用）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PluginStatusItem {
+    pub plugin: String,
+    pub text: String,
+    pub tooltip: String,
+    /// 点击状态栏时执行的命令 ID（空 = 不可点击）。
+    pub command: String,
+}
+
+/// 命令结果通知：UI 下一轮取走并显示在底部浮层（同时写活动/日志）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PluginNotice {
+    pub plugin: String,
+    pub text: String,
+    pub ok: bool,
+}
+
+#[derive(Clone, Debug, Default)]
+struct NoticeQueue {
+    records: VecDeque<PluginNotice>,
+}
+
+impl NoticeQueue {
+    fn push(&mut self, notice: PluginNotice) {
+        if self.records.len() >= NOTICE_CAPACITY {
+            self.records.pop_front();
+        }
+        self.records.push_back(notice);
+    }
+
+    fn drain(&mut self) -> Vec<PluginNotice> {
+        self.records.drain(..).collect()
+    }
+}
+
+fn push_notice(notices: &Arc<Mutex<NoticeQueue>>, notice: PluginNotice) {
+    match notices.lock() {
+        Ok(mut queue) => queue.push(notice),
+        Err(_) => eprintln!("[plugin] 通知队列锁被污染，丢弃一条通知"),
+    }
+}
+
+/// 常驻进程命令的执行结果（由 supervisor 回传给等待线程）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum CommandOutcome {
+    Ok(String),
+    Error(String),
+    Timeout,
+    Unavailable(String),
+}
+
+impl CommandOutcome {
+    fn ok(&self) -> bool {
+        matches!(self, Self::Ok(_))
+    }
+
+    fn outcome_label(&self) -> &'static str {
+        match self {
+            Self::Ok(_) => "ok",
+            Self::Error(_) => "error",
+            Self::Timeout => "timeout",
+            Self::Unavailable(_) => "unavailable",
+        }
+    }
+
+    fn text(&self) -> &str {
+        match self {
+            Self::Ok(text) | Self::Error(text) | Self::Unavailable(text) => text,
+            Self::Timeout => "命令超时（已 kill 插件进程）",
+        }
+    }
+}
+
+/// supervisor 接收的宿主请求。
+enum SupervisorMsg {
+    Execute {
+        command: String,
+        args: Vec<String>,
+        reply: Sender<CommandOutcome>,
+    },
+    Event {
+        event: PluginEvent,
+        payload: serde_json::Value,
+    },
+    Shutdown,
+}
+
+/// stdout 读取线程解析后的消息。
+enum HostIncoming {
+    Ready(u32),
+    Result { id: u64, ok: bool, text: String },
+    Status { text: String, tooltip: String, command: String },
+    Log(String),
+    BadLine(String),
+    Eof,
+}
+
+/// 一个常驻插件进程的句柄。
+#[derive(Clone, Debug)]
+struct ProcessPluginHandle {
+    name: String,
+    tx: Sender<SupervisorMsg>,
+    info: Arc<Mutex<RuntimeInfo>>,
+    status: Arc<Mutex<PluginStatusItem>>,
+    has_status: bool,
+    shutdown: Arc<AtomicBool>,
+}
+
+impl ProcessPluginHandle {
+    fn info(&self) -> RuntimeInfo {
+        self.info.lock().map(|i| i.clone()).unwrap_or_default()
+    }
+}
+
+struct PendingRequest {
+    kind: PendingKind,
+    deadline: Instant,
+    label: String,
+    reply: Option<Sender<CommandOutcome>>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PendingKind {
+    Command,
+    Status,
+}
+
+enum InstanceEnd {
+    Shutdown,
+    /// 可以按崩溃处理并重启（握手失败/进程退出/命令超时）。
+    Crashed(String),
+    /// 不可恢复（entry 丢失、坏 JSON 超限）：直接禁用。
+    Disabled(String),
+}
+
+fn sanitize_short(text: &str, max: usize) -> String {
+    crate::activity::sanitize_notification_text(text, max)
+}
+
+fn set_runtime(
+    info: &Arc<Mutex<RuntimeInfo>>,
+    revision: &Arc<AtomicU64>,
+    phase: RuntimePhase,
+    error: String,
+    restarts: u32,
+    pid: Option<u32>,
+) {
+    if let Ok(mut guard) = info.lock() {
+        guard.phase = phase;
+        guard.error = error;
+        guard.restarts = restarts;
+        guard.pid = pid;
+    }
+    revision.fetch_add(1, Ordering::Relaxed);
+}
+
+fn notify_wake(wake: &Arc<Mutex<Option<Arc<WakeSignal>>>>) {
+    if let Ok(guard) = wake.lock() {
+        if let Some(signal) = guard.as_ref() {
+            signal.notify();
+        }
+    }
+}
+
+fn lifecycle_activity(
+    activity: &Arc<Mutex<ActivityLog>>,
+    plugin: &str,
+    outcome: &str,
+    summary: &str,
+) {
+    record_activity(
+        activity,
+        PluginActivity::new(
+            now_hms(),
+            plugin,
+            "lifecycle",
+            outcome,
+            sanitize_short(summary, MAX_LIFECYCLE_SUMMARY_CHARS),
+        ),
+    );
+}
+
+/// 启动所有已启用 `runtime = "process"` 插件。非阻塞：每个插件一个 supervisor 线程，
+/// 进程启动/握手/重启都在后台完成；坏插件不会阻塞 UI 或其它插件。
+impl PluginStore {
+    pub fn start_process_plugins(&mut self) {
+        self.start_process_plugins_with_timeout(PROCESS_COMMAND_TIMEOUT);
+    }
+
+    /// 测试钩子：用更短命令超时启动，避免单测等 10s；生产只用默认值。
+    pub(crate) fn start_process_plugins_with_timeout(&mut self, command_timeout: Duration) {
+        if self.process_started {
+            return;
+        }
+        self.process_started = true;
+        let mut started = 0;
+        for package in &self.packages {
+            if !package.manifest.enabled || !package.manifest.is_process() {
+                continue;
+            }
+            let handle = spawn_process_supervisor(
+                package.clone(),
+                self.activity.clone(),
+                self.status_revision.clone(),
+                self.runtime_revision.clone(),
+                self.wake.clone(),
+                command_timeout,
+            );
+            self.processes.push(handle);
+            started += 1;
+        }
+        if started > 0 {
+            eprintln!(
+                "[plugin] 已启动 {} 个常驻进程插件（握手超时 {}ms，命令超时 {}ms，重启上限 {PROCESS_MAX_RESTARTS}）",
+                started,
+                PROCESS_HANDSHAKE_TIMEOUT.as_millis(),
+                command_timeout.as_millis()
+            );
+        }
+    }
+
+    /// 关闭所有常驻插件进程并等待 supervisor 退出（窗口关闭/测试清理）。
+    pub fn shutdown_processes(&self) {
+        for process in &self.processes {
+            process.shutdown.store(true, Ordering::Relaxed);
+            let _ = process.tx.send(SupervisorMsg::Shutdown);
+        }
+        let deadline = Instant::now() + Duration::from_millis(1200);
+        while Instant::now() < deadline {
+            let busy = self.processes.iter().any(|p| {
+                matches!(
+                    p.info().phase,
+                    RuntimePhase::Starting | RuntimePhase::Running | RuntimePhase::Restarting
+                )
+            });
+            if !busy {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    pub fn runtime_info(&self, name: &str) -> Option<RuntimeInfo> {
+        self.processes
+            .iter()
+            .find(|p| p.name == name)
+            .map(ProcessPluginHandle::info)
+    }
+
+    pub fn runtime_revision(&self) -> u64 {
+        self.runtime_revision.load(Ordering::Relaxed)
+    }
+
+    /// 汇总所有常驻插件的状态文本；UI 只在 revision 变化时刷新。
+    pub fn status_snapshot(&self) -> (u64, Vec<PluginStatusItem>) {
+        let revision = self.status_revision.load(Ordering::Relaxed);
+        let items = self
+            .processes
+            .iter()
+            .filter(|p| p.has_status)
+            .filter_map(|p| {
+                let status = p.status.lock().ok()?.clone();
+                if status.text.is_empty() {
+                    None
+                } else {
+                    Some(status)
+                }
+            })
+            .collect();
+        (revision, items)
+    }
+
+    /// UI 取走命令结果通知（最多 [`NOTICE_CAPACITY`] 条，新→旧顺序由队列保证）。
+    pub fn take_notices(&self) -> Vec<PluginNotice> {
+        match self.notices.lock() {
+            Ok(mut queue) => queue.drain(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    fn process_handle(&self, name: &str) -> Option<&ProcessPluginHandle> {
+        self.processes.iter().find(|p| p.name == name)
+    }
+
+    fn spawn_process_command(&self, package: &PluginPackage, decl: &PluginCommandDecl) -> bool {
+        let plugin_name = package.manifest.name.clone();
+        let action = format!("command {}", decl.id);
+        let full_id = package.full_command_id(&decl.id);
+        let Some(handle) = self.process_handle(&plugin_name) else {
+            let reason = "插件进程未启动（runtime=process 需宿主启动事件循环）".to_string();
+            record_activity(
+                &self.activity,
+                PluginActivity::new(now_hms(), &plugin_name, &action, "unavailable", &reason),
+            );
+            push_notice(
+                &self.notices,
+                PluginNotice { plugin: plugin_name, text: reason, ok: false },
+            );
+            notify_wake(&self.wake);
+            return true;
+        };
+        let (reply_tx, reply_rx) = crossbeam_channel::bounded(1);
+        if handle
+            .tx
+            .send(SupervisorMsg::Execute {
+                command: decl.id.clone(),
+                args: decl.args.clone(),
+                reply: reply_tx,
+            })
+            .is_err()
+        {
+            let reason = "插件 supervisor 已退出".to_string();
+            record_activity(
+                &self.activity,
+                PluginActivity::new(now_hms(), &plugin_name, &action, "unavailable", &reason),
+            );
+            push_notice(
+                &self.notices,
+                PluginNotice { plugin: plugin_name, text: reason, ok: false },
+            );
+            notify_wake(&self.wake);
+            return true;
+        }
+        let activity = self.activity.clone();
+        let notices = self.notices.clone();
+        let wake = self.wake.clone();
+        let plugin_for_thread = plugin_name.clone();
+        let action_for_thread = action.clone();
+        let label = full_id.clone();
+        let spawned = std::thread::Builder::new()
+            .name(format!("plugin-cmd-{plugin_name}"))
+            .spawn(move || {
+                let outcome = reply_rx
+                    .recv_timeout(PROCESS_COMMAND_TIMEOUT + Duration::from_secs(2))
+                    .unwrap_or_else(|_| CommandOutcome::Unavailable("等待插件响应超时".to_string()));
+                let text = sanitize_short(outcome.text(), MAX_RESULT_TEXT_CHARS);
+                record_activity(
+                    &activity,
+                    PluginActivity::new(
+                        now_hms(),
+                        &plugin_for_thread,
+                        &action_for_thread,
+                        outcome.outcome_label(),
+                        sanitize_short(&text, MAX_ACTIVITY_SUMMARY_CHARS),
+                    ),
+                );
+                eprintln!(
+                    "[plugin] {label} {}: {text}",
+                    outcome.outcome_label()
+                );
+                push_notice(
+                    &notices,
+                    PluginNotice {
+                        plugin: plugin_for_thread,
+                        text: sanitize_short(&text, 300),
+                        ok: outcome.ok(),
+                    },
+                );
+                notify_wake(&wake);
+            });
+        match spawned {
+            Ok(_) => true,
+            Err(e) => {
+                eprintln!("[plugin] {full_id}: 无法创建命令等待线程: {e}");
+                record_activity(
+                    &self.activity,
+                    PluginActivity::new(
+                        now_hms(),
+                        &plugin_name,
+                        &action,
+                        "spawn-error",
+                        sanitize_short(&format!("无法创建等待线程: {e}"), MAX_ACTIVITY_SUMMARY_CHARS),
+                    ),
+                );
+                true
+            },
+        }
+    }
+}
+
+impl Drop for PluginStore {
+    fn drop(&mut self) {
+        self.shutdown_processes();
+    }
+}
+
+/// 创建 supervisor 线程并返回句柄；线程内负责启动/握手/重启/禁用。
+fn spawn_process_supervisor(
+    package: PluginPackage,
+    activity: Arc<Mutex<ActivityLog>>,
+    status_revision: Arc<AtomicU64>,
+    runtime_revision: Arc<AtomicU64>,
+    wake: Arc<Mutex<Option<Arc<WakeSignal>>>>,
+    command_timeout: Duration,
+) -> ProcessPluginHandle {
+    let name = package.manifest.name.clone();
+    let (tx, rx) = crossbeam_channel::unbounded();
+    let info = Arc::new(Mutex::new(RuntimeInfo {
+        phase: RuntimePhase::Starting,
+        ..RuntimeInfo::default()
+    }));
+    let status = Arc::new(Mutex::new(PluginStatusItem {
+        plugin: name.clone(),
+        text: String::new(),
+        tooltip: String::new(),
+        command: String::new(),
+    }));
+    let has_status = package.manifest.contributes.status;
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let handle = ProcessPluginHandle {
+        name: name.clone(),
+        tx,
+        info: info.clone(),
+        status: status.clone(),
+        has_status,
+        shutdown: shutdown.clone(),
+    };
+
+    let thread_name = format!("plugin-host-{name}");
+    let spawn_result = std::thread::Builder::new().name(thread_name).spawn(move || {
+        supervisor_loop(
+            package,
+            rx,
+            info,
+            status,
+            status_revision,
+            runtime_revision,
+            activity,
+            wake,
+            shutdown,
+            command_timeout,
+        );
+    });
+    if let Err(e) = spawn_result {
+        eprintln!("[plugin] {name}: 无法创建 supervisor 线程: {e}");
+        if let Ok(mut guard) = handle.info.lock() {
+            guard.phase = RuntimePhase::Disabled;
+            guard.error = format!("无法创建 supervisor 线程: {e}");
+        }
+    }
+    handle
+}
+
+#[allow(clippy::too_many_arguments)]
+fn supervisor_loop(
+    package: PluginPackage,
+    rx: Receiver<SupervisorMsg>,
+    info: Arc<Mutex<RuntimeInfo>>,
+    status: Arc<Mutex<PluginStatusItem>>,
+    status_revision: Arc<AtomicU64>,
+    runtime_revision: Arc<AtomicU64>,
+    activity: Arc<Mutex<ActivityLog>>,
+    wake: Arc<Mutex<Option<Arc<WakeSignal>>>>,
+    shutdown: Arc<AtomicBool>,
+    command_timeout: Duration,
+) {
+    let plugin = package.manifest.name.clone();
+    let has_status = package.manifest.contributes.status;
+    let mut restarts = 0u32;
+    loop {
+        if shutdown.load(Ordering::Relaxed) {
+            set_runtime(&info, &runtime_revision, RuntimePhase::Stopped, String::new(), restarts, None);
+            break;
+        }
+        let phase = if restarts == 0 {
+            RuntimePhase::Starting
+        } else {
+            RuntimePhase::Restarting
+        };
+        set_runtime(&info, &runtime_revision, phase, String::new(), restarts, None);
+        match run_instance(
+            &package,
+            &rx,
+            &info,
+            &status,
+            &status_revision,
+            &runtime_revision,
+            &wake,
+            &shutdown,
+            has_status,
+            restarts,
+            command_timeout,
+        ) {
+            InstanceEnd::Shutdown => {
+                clear_status(&status, &status_revision, &wake);
+                set_runtime(
+                    &info,
+                    &runtime_revision,
+                    RuntimePhase::Stopped,
+                    String::new(),
+                    restarts,
+                    None,
+                );
+                break;
+            },
+            InstanceEnd::Disabled(reason) => {
+                clear_status(&status, &status_revision, &wake);
+                eprintln!("[plugin] {plugin}: 已禁用：{reason}");
+                lifecycle_activity(&activity, &plugin, "disabled", &reason);
+                set_runtime(
+                    &info,
+                    &runtime_revision,
+                    RuntimePhase::Disabled,
+                    reason,
+                    restarts,
+                    None,
+                );
+                break;
+            },
+            InstanceEnd::Crashed(reason) => {
+                clear_status(&status, &status_revision, &wake);
+                restarts += 1;
+                lifecycle_activity(
+                    &activity,
+                    &plugin,
+                    &format!("crash {}", restarts),
+                    &reason,
+                );
+                if restarts > PROCESS_MAX_RESTARTS {
+                    let reason = format!(
+                        "达到重启上限（{} 次）：{reason}",
+                        PROCESS_MAX_RESTARTS
+                    );
+                    eprintln!("[plugin] {plugin}: 已禁用：{reason}");
+                    lifecycle_activity(&activity, &plugin, "disabled", &reason);
+                    set_runtime(
+                        &info,
+                        &runtime_revision,
+                        RuntimePhase::Disabled,
+                        reason,
+                        restarts - 1,
+                        None,
+                    );
+                    break;
+                }
+                eprintln!(
+                    "[plugin] {plugin}: 进程异常（{}），准备重启 {}/{}",
+                    sanitize_short(&reason, MAX_LIFECYCLE_SUMMARY_CHARS),
+                    restarts,
+                    PROCESS_MAX_RESTARTS
+                );
+                set_runtime(
+                    &info,
+                    &runtime_revision,
+                    RuntimePhase::Restarting,
+                    reason,
+                    restarts,
+                    None,
+                );
+                std::thread::sleep(Duration::from_millis(300));
+            },
+        }
+    }
+}
+
+fn clear_status(
+    status: &Arc<Mutex<PluginStatusItem>>,
+    revision: &Arc<AtomicU64>,
+    wake: &Arc<Mutex<Option<Arc<WakeSignal>>>>,
+) {
+    let changed = match status.lock() {
+        Ok(mut status) => {
+            if status.text.is_empty() && status.tooltip.is_empty() && status.command.is_empty() {
+                false
+            } else {
+                status.text.clear();
+                status.tooltip.clear();
+                status.command.clear();
+                true
+            }
+        },
+        Err(_) => false,
+    };
+    if changed {
+        revision.fetch_add(1, Ordering::Relaxed);
+        notify_wake(wake);
+    }
+}
+
+/// 启动并服务一次插件进程生命周期；退出时返回下一次动作。
+#[allow(clippy::too_many_arguments)]
+fn run_instance(
+    package: &PluginPackage,
+    rx: &Receiver<SupervisorMsg>,
+    info: &Arc<Mutex<RuntimeInfo>>,
+    status: &Arc<Mutex<PluginStatusItem>>,
+    status_revision: &Arc<AtomicU64>,
+    runtime_revision: &Arc<AtomicU64>,
+    wake: &Arc<Mutex<Option<Arc<WakeSignal>>>>,
+    shutdown: &Arc<AtomicBool>,
+    has_status: bool,
+    restarts: u32,
+    command_timeout: Duration,
+) -> InstanceEnd {
+    let plugin = package.manifest.name.clone();
+    let SpawnedChild {
+        child,
+        stdin,
+        incoming_rx,
+        stdout_thread,
+        stderr_thread,
+    } = match spawn_plugin_child(package) {
+        Ok(spawned) => spawned,
+        Err(e) => {
+            eprintln!("[plugin] {plugin}: 无法启动常驻进程：{e}");
+            return InstanceEnd::Disabled(format!("无法启动: {e}"));
+        },
+    };
+    // reader 线程句柄 detach：进程被 kill 后管道关闭，线程自行退出；不 join 以免
+    // 坏插件在退出路径上卡住宿主。
+    drop(stdout_thread);
+    drop(stderr_thread);
+    let mut child = child.expect("child");
+    let mut stdin = stdin.expect("stdin");
+    let incoming_rx = incoming_rx.expect("incoming_rx");
+
+    let pid = child.id();
+    if let Ok(mut guard) = info.lock() {
+        guard.pid = Some(pid);
+    }
+    runtime_revision.fetch_add(1, Ordering::Relaxed);
+
+    // init：插件必须在 2s 内回 ready；否则 kill 并重试（有上限）。
+    let init = serde_json::json!({
+        "type": "init",
+        "api": PLUGIN_API_VERSION,
+        "protocol": PLUGIN_PROTOCOL_VERSION,
+        "plugin": plugin,
+        "host": "tervo",
+    });
+    if let Err(e) = send_json_line(&mut stdin, &init) {
+        kill_child(&mut child);
+        return InstanceEnd::Crashed(format!("写入 init 失败: {e}"));
+    }
+
+    let handshake_deadline = Instant::now() + PROCESS_HANDSHAKE_TIMEOUT;
+    let mut ready = false;
+    let mut bad_lines = 0u32;
+    while Instant::now() < handshake_deadline {
+        if shutdown.load(Ordering::Relaxed) {
+            shutdown_child(&mut child, &mut stdin);
+            return InstanceEnd::Shutdown;
+        }
+        if let Ok(Some(_status)) = child.try_wait() {
+            return InstanceEnd::Crashed("握手前进程退出".to_string());
+        }
+        match incoming_rx.try_recv() {
+            Ok(HostIncoming::Ready(api)) => {
+                if api != PLUGIN_API_VERSION {
+                    kill_child(&mut child);
+                    return InstanceEnd::Disabled(format!(
+                        "握手 api={api} 与宿主 api={PLUGIN_API_VERSION} 不兼容"
+                    ));
+                }
+                ready = true;
+                break;
+            },
+            Ok(HostIncoming::BadLine(line)) => {
+                bad_lines += 1;
+                eprintln!(
+                    "[plugin] {plugin}: 握手期坏 JSON（{}/{}）: {}",
+                    bad_lines,
+                    PROCESS_MAX_BAD_LINES,
+                    sanitize_short(&line, 160)
+                );
+                if bad_lines >= PROCESS_MAX_BAD_LINES {
+                    kill_child(&mut child);
+                    return InstanceEnd::Disabled("坏 JSON 过多".to_string());
+                }
+            },
+            Ok(HostIncoming::Eof) => {
+                kill_child(&mut child);
+                return InstanceEnd::Crashed("握手前 stdout 关闭".to_string());
+            },
+            Ok(_) => {}, // 握手期其它消息先忽略
+            Err(crossbeam_channel::TryRecvError::Empty) => {},
+            Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                kill_child(&mut child);
+                return InstanceEnd::Crashed("stdout reader 退出".to_string());
+            },
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    if !ready {
+        kill_child(&mut child);
+        return InstanceEnd::Crashed(format!(
+            "握手超时（{}ms 内未 ready）",
+            PROCESS_HANDSHAKE_TIMEOUT.as_millis()
+        ));
+    }
+
+    set_runtime(
+        info,
+        runtime_revision,
+        RuntimePhase::Running,
+        String::new(),
+        restarts,
+        Some(child.id()),
+    );
+    eprintln!("[plugin] {plugin}: 常驻进程就绪 pid={}", child.id());
+
+    let mut pending: HashMap<u64, PendingRequest> = HashMap::new();
+    let mut next_id = 1u64;
+    let mut status_due = Instant::now() + Duration::from_millis(200);
+    let mut status_errors = 0u32;
+
+    loop {
+        if shutdown.load(Ordering::Relaxed) {
+            fail_pending(&mut pending, CommandOutcome::Unavailable("宿主退出".to_string()));
+            shutdown_child(&mut child, &mut stdin);
+            return InstanceEnd::Shutdown;
+        }
+        match child.try_wait() {
+            Ok(Some(exit)) => {
+                fail_pending(
+                    &mut pending,
+                    CommandOutcome::Unavailable(format!("插件进程退出（{:?}）", exit.code())),
+                );
+                return InstanceEnd::Crashed(format!("进程退出（{:?}）", exit.code()));
+            },
+            Ok(None) => {},
+            Err(e) => {
+                kill_child(&mut child);
+                fail_pending(
+                    &mut pending,
+                    CommandOutcome::Unavailable(format!("等待进程失败: {e}")),
+                );
+                return InstanceEnd::Crashed(format!("等待进程失败: {e}"));
+            },
+        }
+
+        // stdout 消息
+        loop {
+            match incoming_rx.try_recv() {
+                Ok(HostIncoming::Result { id, ok, text }) => {
+                    let text = sanitize_short(&text, MAX_RESULT_TEXT_CHARS);
+                    if let Some(pending) = pending.remove(&id) {
+                        if let Some(reply) = pending.reply {
+                            let outcome = if ok {
+                                CommandOutcome::Ok(text)
+                            } else {
+                                CommandOutcome::Error(text)
+                            };
+                            let _ = reply.send(outcome);
+                        }
+                    } else {
+                        eprintln!("[plugin] {plugin}: 收到未知请求 id={id} 的结果，已忽略");
+                    }
+                },
+                Ok(HostIncoming::Status { text, tooltip, command }) => {
+                    // status 响应没有强制 id：移除最早的一个状态请求，避免 pending 堆积
+                    // 导致每 2s 误报“状态请求超时”。
+                    if let Some(id) = pending
+                        .iter()
+                        .find_map(|(id, request)| (request.kind == PendingKind::Status).then_some(*id))
+                    {
+                        pending.remove(&id);
+                    }
+                    status_errors = 0;
+                    let text = sanitize_short(&text, MAX_STATUS_TEXT_CHARS);
+                    let tooltip = sanitize_short(&tooltip, MAX_TOOLTIP_CHARS);
+                    let command = if command.is_empty() {
+                        String::new()
+                    } else {
+                        match normalize_status_command(package, &command) {
+                            Some(command) => command,
+                            None => {
+                                eprintln!(
+                                    "[plugin] {plugin}: 状态 command 不是本插件命令，已忽略: {}",
+                                    sanitize_short(&command, 80)
+                                );
+                                String::new()
+                            },
+                        }
+                    };
+                    let changed = match status.lock() {
+                        Ok(mut status) => {
+                            let changed = status.text != text
+                                || status.tooltip != tooltip
+                                || status.command != command;
+                            status.text = text;
+                            status.tooltip = tooltip;
+                            status.command = command;
+                            changed
+                        },
+                        Err(_) => false,
+                    };
+                    if changed {
+                        status_revision.fetch_add(1, Ordering::Relaxed);
+                        notify_wake(wake);
+                        eprintln!(
+                            "[plugin] {plugin}: 状态更新 text={:?} tooltip={:?} command={:?}",
+                            sanitize_short(&status.lock().map(|s| s.text.clone()).unwrap_or_default(), 120),
+                            sanitize_short(&status.lock().map(|s| s.tooltip.clone()).unwrap_or_default(), 120),
+                            sanitize_short(&status.lock().map(|s| s.command.clone()).unwrap_or_default(), 120),
+                        );
+                    }
+                },
+                Ok(HostIncoming::Log(text)) => {
+                    eprintln!("[plugin] {plugin}: {}", sanitize_short(&text, 500));
+                },
+                Ok(HostIncoming::BadLine(line)) => {
+                    bad_lines += 1;
+                    eprintln!(
+                        "[plugin] {plugin}: 坏 JSON/超长行（{}/{}）: {}",
+                        bad_lines,
+                        PROCESS_MAX_BAD_LINES,
+                        sanitize_short(&line, 160)
+                    );
+                    if bad_lines >= PROCESS_MAX_BAD_LINES {
+                        fail_pending(
+                            &mut pending,
+                            CommandOutcome::Unavailable("坏 JSON 过多，插件被禁用".to_string()),
+                        );
+                        kill_child(&mut child);
+                        return InstanceEnd::Disabled("坏 JSON/超长行过多".to_string());
+                    }
+                },
+                Ok(HostIncoming::Ready(_api)) => {},
+                Ok(HostIncoming::Eof) => {
+                    fail_pending(
+                        &mut pending,
+                        CommandOutcome::Unavailable("插件 stdout 关闭".to_string()),
+                    );
+                    return InstanceEnd::Crashed("stdout 关闭".to_string());
+                },
+                Err(crossbeam_channel::TryRecvError::Empty) => break,
+                Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                    fail_pending(
+                        &mut pending,
+                        CommandOutcome::Unavailable("stdout reader 退出".to_string()),
+                    );
+                    return InstanceEnd::Crashed("stdout reader 退出".to_string());
+                },
+            }
+        }
+
+        // 宿主请求（命令/事件/退出）
+        match rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(SupervisorMsg::Execute { command, args, reply }) => {
+                let id = next_id;
+                next_id = next_id.wrapping_add(1).max(1);
+                let message = serde_json::json!({
+                    "type": "command",
+                    "id": id,
+                    "command": command,
+                    "args": args,
+                });
+                if let Err(e) = send_json_line(&mut stdin, &message) {
+                    let _ = reply.send(CommandOutcome::Unavailable(format!("写入 stdin 失败: {e}")));
+                    kill_child(&mut child);
+                    fail_pending(&mut pending, CommandOutcome::Unavailable("插件 stdin 写入失败".to_string()));
+                    return InstanceEnd::Crashed(format!("写入命令失败: {e}"));
+                }
+                pending.insert(
+                    id,
+                    PendingRequest {
+                        kind: PendingKind::Command,
+                        deadline: Instant::now() + command_timeout,
+                        label: command,
+                        reply: Some(reply),
+                    },
+                );
+            },
+            Ok(SupervisorMsg::Event { event, payload }) => {
+                let message = serde_json::json!({
+                    "type": "event",
+                    "event": event.as_str(),
+                    "payload": payload,
+                });
+                if let Err(e) = send_json_line(&mut stdin, &message) {
+                    kill_child(&mut child);
+                    fail_pending(&mut pending, CommandOutcome::Unavailable("插件 stdin 写入失败".to_string()));
+                    return InstanceEnd::Crashed(format!("写入事件失败: {e}"));
+                }
+            },
+            Ok(SupervisorMsg::Shutdown) | Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                fail_pending(&mut pending, CommandOutcome::Unavailable("宿主退出".to_string()));
+                shutdown_child(&mut child, &mut stdin);
+                return InstanceEnd::Shutdown;
+            },
+            Err(crossbeam_channel::RecvTimeoutError::Timeout) => {},
+        }
+
+        // 请求超时：命令超时 kill 进程（按崩溃重启）；状态超时只丢弃该次请求。
+        let now = Instant::now();
+        let mut timed_out_command: Option<String> = None;
+        let mut status_timed_out = 0u32;
+        pending.retain(|_id, request| {
+            if now < request.deadline {
+                return true;
+            }
+            match request.kind {
+                PendingKind::Command => {
+                    timed_out_command = Some(request.label.clone());
+                    if let Some(reply) = request.reply.as_ref() {
+                        let _ = reply.send(CommandOutcome::Timeout);
+                    }
+                    false
+                },
+                PendingKind::Status => {
+                    status_timed_out += 1;
+                    false
+                },
+            }
+        });
+        if status_timed_out > 0 {
+            status_errors += status_timed_out;
+            eprintln!(
+                "[plugin] {plugin}: 状态请求超时（连续 {status_errors} 次），本次丢弃"
+            );
+        }
+        if let Some(command) = timed_out_command {
+            kill_child(&mut child);
+            fail_pending(
+                &mut pending,
+                CommandOutcome::Unavailable("插件已被 kill（命令超时）".to_string()),
+            );
+            return InstanceEnd::Crashed(format!(
+                "命令 {command} 超时（{}ms），已 kill",
+                command_timeout.as_millis()
+            ));
+        }
+
+        // 周期性状态请求（插件也可以主动推送 status）
+        if has_status && now >= status_due {
+            let id = next_id;
+            next_id = next_id.wrapping_add(1).max(1);
+            let message = serde_json::json!({ "type": "status", "id": id });
+            if let Err(e) = send_json_line(&mut stdin, &message) {
+                kill_child(&mut child);
+                fail_pending(&mut pending, CommandOutcome::Unavailable("插件 stdin 写入失败".to_string()));
+                return InstanceEnd::Crashed(format!("写入状态请求失败: {e}"));
+            }
+            pending.insert(
+                id,
+                PendingRequest {
+                    kind: PendingKind::Status,
+                    deadline: Instant::now() + PROCESS_STATUS_TIMEOUT,
+                    label: "status".to_string(),
+                    reply: None,
+                },
+            );
+            status_due = now + PROCESS_STATUS_INTERVAL;
+        }
+    }
+}
+
+/// 状态项 command 只接受本插件命令；裸命令 id 归一化为完整 ID（点击可直接执行）。
+fn normalize_status_command(package: &PluginPackage, command: &str) -> Option<String> {
+    if command.len() > MAX_STATUS_COMMAND_CHARS {
+        return None;
+    }
+    package.manifest.commands.iter().find_map(|decl| {
+        let full = package.full_command_id(&decl.id);
+        (command == full || command == decl.id).then_some(full)
+    })
+}
+
+fn fail_pending(pending: &mut HashMap<u64, PendingRequest>, outcome: CommandOutcome) {
+    for (_, request) in pending.drain() {
+        if let Some(reply) = request.reply {
+            let _ = reply.send(outcome.clone());
+        }
+    }
+}
+
+/// 启动一个插件子进程：stdin/stdout 管道、stderr 持续写日志、stdout 逐行解析 JSON。
+struct SpawnedChild {
+    child: Option<Child>,
+    stdin: Option<std::process::ChildStdin>,
+    incoming_rx: Option<Receiver<HostIncoming>>,
+    stdout_thread: Option<std::thread::JoinHandle<()>>,
+    stderr_thread: Option<std::thread::JoinHandle<()>>,
+}
+
+fn spawn_plugin_child(package: &PluginPackage) -> Result<SpawnedChild, String> {
+    let mut command = ProcessCommand::new(&package.entry);
+    command
+        .current_dir(&package.dir)
+        .env("TERVO_PLUGIN_NAME", &package.manifest.name)
+        .env("TERVO_PLUGIN_ID", package.manifest.plugin_id())
+        .env("TERVO_PLUGIN_API", PLUGIN_API_VERSION.to_string())
+        .env("TERVO_PLUGIN_PROTOCOL", PLUGIN_PROTOCOL_VERSION.to_string())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(unix)]
+    unsafe {
+        use std::os::unix::process::CommandExt;
+        // 父进程（Tervo）退出时内核给插件发 SIGTERM，避免留下孤儿进程。
+        command.pre_exec(|| {
+            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+            Ok(())
+        });
+    }
+    // 刚写完的 entry 在部分文件系统上会短暂 ETXTBSY；和 oneshot 路径保持一致重试。
+    let mut child = None;
+    for attempt in 0..5 {
+        match command.spawn() {
+            Ok(spawned) => {
+                child = Some(spawned);
+                break;
+            },
+            Err(e) if e.raw_os_error() == Some(26) && attempt < 4 => {
+                std::thread::sleep(Duration::from_millis(20));
+            },
+            Err(e) => return Err(format!("无法启动 {}: {e}", package.entry.display())),
+        }
+    }
+    let mut child = child.ok_or_else(|| "无法启动：重试后仍失败".to_string())?;
+    let stdin = child.stdin.take().ok_or_else(|| "stdin 管道不可用".to_string())?;
+    let stdout = child.stdout.take().ok_or_else(|| "stdout 管道不可用".to_string())?;
+    let stderr = child.stderr.take().ok_or_else(|| "stderr 管道不可用".to_string())?;
+
+    let (incoming_tx, incoming_rx) = crossbeam_channel::bounded(64);
+    let plugin = package.manifest.name.clone();
+    let stdout_thread = std::thread::Builder::new()
+        .name(format!("plugin-out-{plugin}"))
+        .spawn(move || {
+            let mut reader = BufReader::new(stdout);
+            loop {
+                match read_line_capped(&mut reader, MAX_PROTOCOL_LINE_BYTES) {
+                    Ok(Some((line, truncated))) => {
+                        if truncated {
+                            let _ = incoming_tx
+                                .send(HostIncoming::BadLine(format!("超长行 > {MAX_PROTOCOL_LINE_BYTES}B")));
+                            continue;
+                        }
+                        if line.trim().is_empty() {
+                            continue;
+                        }
+                        let msg = parse_host_incoming(&line);
+                        if incoming_tx.send(msg).is_err() {
+                            return;
+                        }
+                    },
+                    Ok(None) => break,
+                    Err(_) => break,
+                }
+            }
+            let _ = incoming_tx.send(HostIncoming::Eof);
+        });
+    let stderr_thread = std::thread::Builder::new()
+        .name(format!("plugin-err-{plugin}"))
+        .spawn(move || {
+            let mut reader = BufReader::new(stderr);
+            loop {
+                match read_line_capped(&mut reader, MAX_LOG_BYTES) {
+                    Ok(Some((line, _))) => {
+                        if !line.trim().is_empty() {
+                            eprintln!("[plugin] {plugin} stderr: {}", sanitize_short(&line, 500));
+                        }
+                    },
+                    Ok(None) => break,
+                    Err(_) => break,
+                }
+            }
+        });
+
+    Ok(SpawnedChild {
+        child: Some(child),
+        stdin: Some(stdin),
+        incoming_rx: Some(incoming_rx),
+        stdout_thread: stdout_thread.ok(),
+        stderr_thread: stderr_thread.ok(),
+    })
+}
+
+/// 从 BufRead 读一行并限制最大字节数；超长行继续 drain 到换行，不无限分配。
+fn read_line_capped<R: BufRead>(reader: &mut R, cap: usize) -> std::io::Result<Option<(String, bool)>> {
+    let mut out: Vec<u8> = Vec::new();
+    let mut truncated = false;
+    loop {
+        let (chunk, consume, has_newline) = {
+            let buf = reader.fill_buf()?;
+            if buf.is_empty() {
+                if out.is_empty() && !truncated {
+                    return Ok(None);
+                }
+                break;
+            }
+            let newline = buf.iter().position(|b| *b == b'\n');
+            let data_len = newline.unwrap_or(buf.len());
+            let consume = newline.map(|i| i + 1).unwrap_or(buf.len());
+            (buf[..data_len].to_vec(), consume, newline.is_some())
+        };
+        if out.len() < cap {
+            let take = (cap - out.len()).min(chunk.len());
+            out.extend_from_slice(&chunk[..take]);
+            if take < chunk.len() {
+                truncated = true;
+            }
+        } else if !chunk.is_empty() {
+            truncated = true;
+        }
+        reader.consume(consume);
+        if has_newline {
+            break;
+        }
+    }
+    while out.last().is_some_and(|b| *b == b'\r') {
+        out.pop();
+    }
+    Ok(Some((String::from_utf8_lossy(&out).into_owned(), truncated)))
+}
+
+fn parse_host_incoming(line: &str) -> HostIncoming {
+    let value: serde_json::Value = match serde_json::from_str(line) {
+        Ok(value) => value,
+        Err(e) => return HostIncoming::BadLine(format!("{e}: {}", sanitize_short(line, 120))),
+    };
+    let Some(kind) = value.get("type").and_then(|v| v.as_str()) else {
+        return HostIncoming::BadLine(format!("缺少 type: {}", sanitize_short(line, 120)));
+    };
+    match kind {
+        "ready" => {
+            let api = value.get("api").and_then(|v| v.as_u64()).unwrap_or(PLUGIN_API_VERSION as u64);
+            HostIncoming::Ready(api.min(u32::MAX as u64) as u32)
+        },
+        "result" => {
+            let Some(id) = value.get("id").and_then(|v| v.as_u64()) else {
+                return HostIncoming::BadLine("result 缺少 id".to_string());
+            };
+            let ok = value.get("ok").and_then(|v| v.as_bool()).unwrap_or(true);
+            let text = value.get("text").and_then(|v| v.as_str()).unwrap_or("");
+            HostIncoming::Result { id, ok, text: text.to_string() }
+        },
+        "status" => {
+            let text = value.get("text").and_then(|v| v.as_str()).unwrap_or("");
+            let tooltip = value.get("tooltip").and_then(|v| v.as_str()).unwrap_or("");
+            let command = value.get("command").and_then(|v| v.as_str()).unwrap_or("");
+            HostIncoming::Status {
+                text: text.to_string(),
+                tooltip: tooltip.to_string(),
+                command: command.to_string(),
+            }
+        },
+        "log" => HostIncoming::Log(
+            value.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        ),
+        other => HostIncoming::BadLine(format!("未知 type {other:?}")),
+    }
+}
+
+fn send_json_line(
+    stdin: &mut std::process::ChildStdin,
+    value: &serde_json::Value,
+) -> std::io::Result<()> {
+    let mut line = value.to_string();
+    line.push('\n');
+    stdin.write_all(line.as_bytes())?;
+    stdin.flush()
+}
+
+fn kill_child(child: &mut Child) {
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+fn shutdown_child(child: &mut Child, stdin: &mut std::process::ChildStdin) {
+    let _ = send_json_line(stdin, &serde_json::json!({ "type": "shutdown" }));
+    // 关闭 stdin 让插件读到 EOF；最多等 300ms 自主退出，再 kill。
+    let deadline = Instant::now() + Duration::from_millis(300);
+    while Instant::now() < deadline {
+        match child.try_wait() {
+            Ok(Some(_)) => return,
+            Ok(None) => std::thread::sleep(Duration::from_millis(10)),
+            Err(_) => break,
+        }
+    }
+    kill_child(child);
 }
 
 
@@ -635,7 +2187,35 @@ impl PluginStore {
             ));
             return;
         }
-        self.packages.push(PluginPackage { manifest, dir: canonical_dir, entry });
+        let plugin_id = manifest.plugin_id().to_string();
+        if self
+            .packages
+            .iter()
+            .any(|p| p.manifest.plugin_id() == plugin_id)
+        {
+            self.skipped.push((
+                manifest_path.display().to_string(),
+                format!("重复插件 id {plugin_id}"),
+            ));
+            return;
+        }
+        let (theme_path, theme_error) = match manifest.contributes.theme.as_deref() {
+            Some(theme) if !theme.trim().is_empty() => {
+                match resolve_theme_file(&canonical_dir, theme) {
+                    Ok(path) => (Some(path), None),
+                    // 主题是可选贡献：坏主题只记录原因，插件本身仍加载。
+                    Err(e) => (None, Some(e)),
+                }
+            },
+            _ => (None, None),
+        };
+        self.packages.push(PluginPackage {
+            manifest,
+            dir: canonical_dir,
+            entry,
+            theme_path,
+            theme_error,
+        });
     }
 
     /// 设置页列表：旧清单 + v1 目录插件，按名称排序。
@@ -644,11 +2224,17 @@ impl PluginStore {
             .plugins
             .iter()
             .map(|p| (p.name.clone(), p.display_line()))
-            .chain(
-                self.packages
-                    .iter()
-                    .map(|p| (p.manifest.name.clone(), p.display_line())),
-            )
+            .chain(self.packages.iter().map(|p| {
+                let runtime = if p.manifest.is_process() {
+                    self.runtime_info(&p.manifest.name)
+                } else {
+                    None
+                };
+                (
+                    p.manifest.name.clone(),
+                    p.display_line_with(runtime.as_ref()),
+                )
+            }))
             .collect();
         rows.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
         rows.into_iter().map(|(_, line)| line).collect()
@@ -729,8 +2315,12 @@ impl PluginStore {
 
     /// 插件活动写入后唤醒 UI（容量 1）。必须在事件循环启动前注入。
     pub fn set_activity_wake(&self, wake: WakeSignal) {
+        let shared = Arc::new(wake);
         if let Ok(mut log) = self.activity.lock() {
-            log.set_wake(wake);
+            log.set_wake_arc(shared.clone());
+        }
+        if let Ok(mut guard) = self.wake.lock() {
+            *guard = Some(shared);
         }
     }
 
@@ -750,6 +2340,23 @@ impl PluginStore {
         let mut spawned = 0;
         for package in self.event_targets(event) {
             let plugin_name = package.manifest.name.clone();
+            if package.manifest.is_process() {
+                match self.process_handle(&plugin_name) {
+                    Some(handle) if handle.tx.send(SupervisorMsg::Event {
+                        event,
+                        payload: payload.clone(),
+                    }).is_ok() => {
+                        spawned += 1;
+                    },
+                    Some(_) => {
+                        eprintln!("[plugin] {plugin_name}: 常驻进程已退出，事件 {} 未投递", event.as_str());
+                    },
+                    None => {
+                        eprintln!("[plugin] {plugin_name}: 常驻进程未启动，事件 {} 未投递", event.as_str());
+                    },
+                }
+                continue;
+            }
             let plugin_dir = package.dir.clone();
             let entry = package.entry.clone();
             let activity = self.activity.clone();
@@ -819,6 +2426,9 @@ impl PluginStore {
         let Some((package, decl)) = self.find_command(full_id) else {
             return false;
         };
+        if package.manifest.is_process() {
+            return self.spawn_process_command(package, decl);
+        }
         let plugin_name = package.manifest.name.clone();
         let plugin_dir = package.dir.clone();
         let entry = package.entry.clone();
@@ -1970,9 +3580,11 @@ exit 0
         let mut broken = PluginStore::default();
         broken.packages.push(PluginPackage {
             manifest: PackageManifest {
+                id: String::new(),
                 name: "broken".to_string(),
                 version: "1".to_string(),
                 api: PLUGIN_API_VERSION,
+                runtime: None,
                 entry: "nope.sh".to_string(),
                 enabled: true,
                 description: String::new(),
@@ -1980,11 +3592,16 @@ exit 0
                     id: "boom".to_string(),
                     title: "Boom".to_string(),
                     key: None,
+                    args: Vec::new(),
                 }],
                 events: Vec::new(),
+                permissions: PluginPermissions::default(),
+                contributes: PluginContributes::default(),
             },
             dir: dir.clone(),
             entry: dir.join("nope.sh"),
+            theme_path: None,
+            theme_error: None,
         });
         assert!(broken.spawn_command("plugin.broken.boom"));
         assert!(
@@ -1997,4 +3614,623 @@ exit 0
         assert!(line.contains("无法启动"), "{line}");
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    // ---------------------------------------------------------- 常驻进程插件（V1）
+
+    const PROCESS_MANIFEST: &str = r#"
+id = "dev.tervo.fake"
+name = "fake"
+version = "1.0.0"
+api = 1
+runtime = "process"
+entry = "plugin.py"
+description = "fake process plugin"
+events = ["startup"]
+
+[permissions]
+filesystem = "none"
+network = false
+process = false
+clipboard = false
+credentials = "none"
+
+[contributes]
+status = true
+commands = ["greet", "fail"]
+theme = "theme.toml"
+
+[[commands]]
+id = "greet"
+title = "Fake: Greet"
+key = "ctrl+alt+g"
+args = ["world"]
+
+[[commands]]
+id = "fail"
+title = "Fake: Fail"
+"#;
+
+    const PROCESS_PY: &str = r#"#!/usr/bin/env python3
+import json
+import sys
+
+for line in sys.stdin:
+    try:
+        msg = json.loads(line)
+    except Exception:
+        print("not json", flush=True)
+        continue
+    kind = msg.get("type")
+    if kind == "init":
+        print(json.dumps({"type": "ready", "api": 1}), flush=True)
+    elif kind == "command":
+        cmd = msg.get("command")
+        if cmd == "greet":
+            text = "hello " + " ".join(msg.get("args", []))
+            print(json.dumps({"type": "result", "id": msg["id"], "ok": True, "text": text}), flush=True)
+        elif cmd == "fail":
+            print(json.dumps({"type": "result", "id": msg["id"], "ok": False, "text": "nope"}), flush=True)
+    elif kind == "status":
+        print(json.dumps({"type": "status", "text": "build ok", "tooltip": "fake status", "command": "greet"}), flush=True)
+    elif kind == "event":
+        with open("events.log", "a", encoding="utf-8") as fh:
+            fh.write(msg.get("event", "") + "\n")
+    elif kind == "shutdown":
+        break
+"#;
+
+    fn write_process_package(
+        root: &Path,
+        dir_name: &str,
+        manifest: &str,
+        script_name: &str,
+        script: &str,
+    ) -> PathBuf {
+        let dir = write_package(root, dir_name, manifest, None);
+        write_script(&dir.join(script_name), script);
+        dir
+    }
+
+    fn wait_phase(store: &PluginStore, name: &str, phase: RuntimePhase, timeout: Duration) -> bool {
+        wait_until(
+            || store.runtime_info(name).is_some_and(|info| info.phase == phase),
+            timeout,
+        )
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn process_plugin_handshakes_runs_commands_and_events() {
+        let dir = tmpdir("process-cmd");
+        write_process_package(&dir, "fake", PROCESS_MANIFEST, "plugin.py", PROCESS_PY);
+        let mut store = PluginStore::load_from(&dir);
+        assert!(store.skipped.is_empty(), "{:?}", store.skipped);
+        assert_eq!(store.packages.len(), 1);
+        store.start_process_plugins_with_timeout(Duration::from_secs(2));
+        assert!(
+            wait_phase(&store, "fake", RuntimePhase::Running, Duration::from_secs(4)),
+            "插件未就绪: {:?}",
+            store.runtime_info("fake")
+        );
+
+        assert!(store.spawn_command("plugin.fake.greet"));
+        assert!(
+            wait_until(
+                || store
+                    .activity_snapshot()
+                    .1
+                    .iter()
+                    .any(|line| line.contains("command greet") && line.contains("hello world")),
+                Duration::from_secs(4)
+            ),
+            "命令结果未记录: {:?}",
+            store.activity_snapshot().1
+        );
+        let notices = store.take_notices();
+        assert!(
+            notices.iter().any(|n| n.plugin == "fake" && n.ok && n.text.contains("hello world")),
+            "{notices:?}"
+        );
+
+        // 静态参数 + 返回 ok=false：结果文本回 UI 通知/活动，但标记 error。
+        assert!(store.spawn_command("plugin.fake.fail"));
+        assert!(
+            wait_until(
+                || store.take_notices().iter().any(|n| !n.ok && n.text.contains("nope")),
+                Duration::from_secs(4)
+            ),
+            "失败结果未通知"
+        );
+
+        // 常驻进程的事件是通知，不结束进程；插件写入自己的 events.log。
+        assert_eq!(store.spawn_event(PluginEvent::Startup, startup_payload()), 1);
+        assert!(
+            wait_until(
+                || read_lines(&dir.join("fake").join("events.log"))
+                    .iter()
+                    .any(|line| line == "startup"),
+                Duration::from_secs(4)
+            ),
+            "事件未投递"
+        );
+        assert!(store.runtime_info("fake").is_some_and(|i| i.is_healthy()));
+        store.shutdown_processes();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn process_plugin_status_provider_is_polled_and_command_normalized() {
+        let dir = tmpdir("process-status");
+        write_process_package(&dir, "fake", PROCESS_MANIFEST, "plugin.py", PROCESS_PY);
+        let mut store = PluginStore::load_from(&dir);
+        store.start_process_plugins_with_timeout(Duration::from_secs(2));
+        assert!(
+            wait_phase(&store, "fake", RuntimePhase::Running, Duration::from_secs(4)),
+            "{:?}",
+            store.runtime_info("fake")
+        );
+        let mut items = Vec::new();
+        assert!(
+            wait_until(
+                || {
+                    let (_, snapshot) = store.status_snapshot();
+                    if snapshot.is_empty() {
+                        false
+                    } else {
+                        items = snapshot;
+                        true
+                    }
+                },
+                Duration::from_secs(4)
+            ),
+            "状态未被轮询: {:?}",
+            store.runtime_info("fake")
+        );
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].plugin, "fake");
+        assert_eq!(items[0].text, "build ok");
+        assert_eq!(items[0].tooltip, "fake status");
+        // 裸命令 id 归一化为完整 ID，状态栏点击才能走 run_command。
+        assert_eq!(items[0].command, "plugin.fake.greet");
+        let (rev, _) = store.status_snapshot();
+        assert!(rev > 0);
+        store.shutdown_processes();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn node_process_plugin_command_result() {
+        if std::process::Command::new("node").arg("--version").output().is_err() {
+            eprintln!("跳过：node 不可用");
+            return;
+        }
+        let manifest = r#"
+name = "nodefake"
+version = "1.0.0"
+api = 1
+runtime = "process"
+entry = "plugin.js"
+
+[[commands]]
+id = "greet"
+title = "Node: Greet"
+"#;
+        let script = r#"#!/usr/bin/env node
+const readline = require('readline');
+const rl = readline.createInterface({ input: process.stdin });
+rl.on('line', (line) => {
+  let m;
+  try { m = JSON.parse(line); } catch (e) { return; }
+  if (m.type === 'init') {
+    console.log(JSON.stringify({ type: 'ready', api: 1 }));
+  } else if (m.type === 'command') {
+    console.log(JSON.stringify({ type: 'result', id: m.id, ok: true, text: 'node:' + m.command }));
+  }
+});
+"#;
+        let dir = tmpdir("process-node");
+        write_process_package(&dir, "nodefake", manifest, "plugin.js", script);
+        let mut store = PluginStore::load_from(&dir);
+        store.start_process_plugins_with_timeout(Duration::from_secs(2));
+        assert!(
+            wait_phase(&store, "nodefake", RuntimePhase::Running, Duration::from_secs(4)),
+            "{:?}",
+            store.runtime_info("nodefake")
+        );
+        assert!(store.spawn_command("plugin.nodefake.greet"));
+        assert!(
+            wait_until(
+                || store
+                    .activity_snapshot()
+                    .1
+                    .iter()
+                    .any(|line| line.contains("node:greet")),
+                Duration::from_secs(4)
+            ),
+            "{:?}",
+            store.activity_snapshot().1
+        );
+        store.shutdown_processes();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn crashing_process_plugin_restarts_then_disables() {
+        let manifest = r#"
+name = "crash"
+version = "1.0.0"
+api = 1
+runtime = "process"
+entry = "plugin.py"
+
+[[commands]]
+id = "ping"
+title = "Crash: Ping"
+"#;
+        let script = r#"#!/usr/bin/env python3
+import json
+import sys
+for line in sys.stdin:
+    msg = json.loads(line)
+    if msg.get("type") == "init":
+        print(json.dumps({"type": "ready", "api": 1}), flush=True)
+        sys.exit(1)
+"#;
+        let dir = tmpdir("process-crash");
+        write_process_package(&dir, "crash", manifest, "plugin.py", script);
+        let mut store = PluginStore::load_from(&dir);
+        store.start_process_plugins_with_timeout(Duration::from_secs(2));
+        assert!(
+            wait_phase(&store, "crash", RuntimePhase::Disabled, Duration::from_secs(8)),
+            "崩溃插件未按上限禁用: {:?}",
+            store.runtime_info("crash")
+        );
+        let info = store.runtime_info("crash").unwrap();
+        assert!(info.error.contains("重启上限") || info.error.contains("达到重启上限"), "{info:?}");
+        let line = store.display_lines()[0].clone();
+        assert!(line.contains("disabled") && line.contains("重启上限"), "{line}");
+        // 已禁用插件的命令不再可执行（find_command 过滤 enabled，但插件进程状态独立）。
+        assert!(!store.spawn_command("no.such.command"));
+        store.shutdown_processes();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn command_timeout_kills_process_and_reports_timeout() {
+        let manifest = r#"
+name = "slow"
+version = "1.0.0"
+api = 1
+runtime = "process"
+entry = "plugin.py"
+
+[[commands]]
+id = "slow"
+title = "Slow: Run"
+"#;
+        let script = r#"#!/usr/bin/env python3
+import json
+import sys
+import time
+for line in sys.stdin:
+    msg = json.loads(line)
+    if msg.get("type") == "init":
+        print(json.dumps({"type": "ready", "api": 1}), flush=True)
+    elif msg.get("type") == "command":
+        time.sleep(30)
+"#;
+        let dir = tmpdir("process-timeout");
+        write_process_package(&dir, "slow", manifest, "plugin.py", script);
+        let mut store = PluginStore::load_from(&dir);
+        store.start_process_plugins_with_timeout(Duration::from_millis(300));
+        assert!(
+            wait_phase(&store, "slow", RuntimePhase::Running, Duration::from_secs(4)),
+            "{:?}",
+            store.runtime_info("slow")
+        );
+        assert!(store.spawn_command("plugin.slow.slow"));
+        assert!(
+            wait_until(
+                || store
+                    .activity_snapshot()
+                    .1
+                    .iter()
+                    .any(|line| line.contains("timeout") && line.contains("命令超时")),
+                Duration::from_secs(4)
+            ),
+            "{:?}",
+            store.activity_snapshot().1
+        );
+        let notices = store.take_notices();
+        assert!(notices.iter().any(|n| n.text.contains("超时")), "{notices:?}");
+        store.shutdown_processes();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bad_json_disables_plugin_without_hanging_host() {
+        let manifest = r#"
+name = "badjson"
+version = "1.0.0"
+api = 1
+runtime = "process"
+entry = "plugin.py"
+
+[[commands]]
+id = "ping"
+title = "Bad: Ping"
+"#;
+        let script = r#"#!/usr/bin/env python3
+import json
+import sys
+import time
+print(json.dumps({"type": "ready", "api": 1}), flush=True)
+for _ in range(10):
+    print("this is not json", flush=True)
+time.sleep(30)
+"#;
+        let dir = tmpdir("process-badjson");
+        write_process_package(&dir, "badjson", manifest, "plugin.py", script);
+        let mut store = PluginStore::load_from(&dir);
+        store.start_process_plugins_with_timeout(Duration::from_secs(2));
+        assert!(
+            wait_phase(&store, "badjson", RuntimePhase::Disabled, Duration::from_secs(6)),
+            "坏 JSON 未禁用: {:?}",
+            store.runtime_info("badjson")
+        );
+        let info = store.runtime_info("badjson").unwrap();
+        assert!(info.error.contains("坏 JSON"), "{info:?}");
+        store.shutdown_processes();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn handshake_timeout_is_reported_and_retried() {
+        let manifest = r#"
+name = "dumb"
+version = "1.0.0"
+api = 1
+runtime = "process"
+entry = "plugin.py"
+
+[[commands]]
+id = "ping"
+title = "Dumb: Ping"
+"#;
+        let script = "#!/usr/bin/env python3\nimport time\ntime.sleep(30)\n";
+        let dir = tmpdir("process-handshake");
+        write_process_package(&dir, "dumb", manifest, "plugin.py", script);
+        let mut store = PluginStore::load_from(&dir);
+        store.start_process_plugins_with_timeout(Duration::from_secs(2));
+        assert!(
+            wait_until(
+                || {
+                    store.runtime_info("dumb").is_some_and(|info| {
+                        info.phase == RuntimePhase::Restarting
+                            && info.error.contains("握手超时")
+                    })
+                },
+                Duration::from_secs(5)
+            ),
+            "握手超时未上报: {:?}",
+            store.runtime_info("dumb")
+        );
+        store.shutdown_processes();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn disabled_process_plugin_is_not_started() {
+        let manifest = PROCESS_MANIFEST.replace(
+            "description = \"fake process plugin\"",
+            "description = \"fake process plugin\"\nenabled = false",
+        );
+        let dir = tmpdir("process-disabled");
+        write_process_package(&dir, "fake", &manifest, "plugin.py", PROCESS_PY);
+        let mut store = PluginStore::load_from(&dir);
+        assert_eq!(store.packages.len(), 1);
+        store.start_process_plugins_with_timeout(Duration::from_secs(2));
+        assert!(store.runtime_info("fake").is_none());
+        assert!(!store.spawn_command("plugin.fake.greet"));
+        assert!(store.display_lines()[0].contains("disabled"), "{:?}", store.display_lines());
+        store.shutdown_processes();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn process_manifest_parses_permissions_contributions_and_theme() {
+        let dir = tmpdir("process-manifest");
+        // 在既有 [permissions] 表里换非默认值，验证声明+展示不会被拒绝。
+        let manifest = PROCESS_MANIFEST.replace(
+            "filesystem = \"none\"\nnetwork = false\nprocess = false\nclipboard = false\ncredentials = \"none\"",
+            "filesystem = \"read-plugin\"\nnetwork = true\nprocess = true\nclipboard = true\ncredentials = \"profile-ref\"",
+        );
+        write_process_package(&dir, "fake", &manifest, "plugin.py", PROCESS_PY);
+        std::fs::write(dir.join("fake").join("theme.toml"), ALACRITTY_THEME).unwrap();
+        let store = PluginStore::load_from(&dir);
+        assert!(store.skipped.is_empty(), "{:?}", store.skipped);
+        let package = &store.packages[0];
+        assert_eq!(package.manifest.plugin_id(), "dev.tervo.fake");
+        assert_eq!(package.manifest.runtime_kind(), Ok(PluginRuntimeKind::Process));
+        assert!(package.manifest.contributes.status);
+        assert_eq!(package.manifest.commands[0].args, vec!["world".to_string()]);
+        assert!(package.theme_path.is_some());
+        let perms = package.manifest.permissions.summary();
+        assert!(perms.contains("read-plugin") && perms.contains("net=true"), "{perms}");
+        assert!(perms.contains("仅声明/未授予"), "{perms}");
+        let line = store.display_lines()[0].clone();
+        assert!(line.contains("process"), "{line}");
+        assert!(line.contains("status"), "{line}");
+        assert!(line.contains("theme"), "{line}");
+        assert!(line.contains("仅声明/未授予"), "{line}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn invalid_process_manifest_fields_are_skipped() {
+        let cases = [
+            ("runtime", "runtime = \"process\"", "runtime = \"wasm\"", "runtime"),
+            (
+                "status-oneshot",
+                "runtime = \"process\"",
+                "runtime = \"oneshot\"",
+                "contributes.status",
+            ),
+            (
+                "unknown-contrib",
+                "commands = [\"greet\", \"fail\"]",
+                "commands = [\"greet\", \"missing\"]",
+                "contributes.commands",
+            ),
+            (
+                "bad-permission",
+                "filesystem = \"none\"",
+                "filesystem = \"everything\"",
+                "filesystem",
+            ),
+            (
+                "theme-escape",
+                "theme = \"theme.toml\"",
+                "theme = \"../theme.toml\"",
+                "theme",
+            ),
+            (
+                "theme-absolute",
+                "theme = \"theme.toml\"",
+                "theme = \"/tmp/theme.toml\"",
+                "绝对路径",
+            ),
+        ];
+        for (tag, from, to, needle) in cases {
+            let dir = tmpdir(&format!("process-invalid-{tag}"));
+            let manifest = PROCESS_MANIFEST.replace(from, to);
+            write_process_package(&dir, "fake", &manifest, "plugin.py", PROCESS_PY);
+            let store = PluginStore::load_from(&dir);
+            assert!(store.packages.is_empty(), "{tag}: {:?}", store.display_lines());
+            assert_eq!(store.skipped.len(), 1, "{tag}: {:?}", store.skipped);
+            assert!(
+                store.skipped[0].1.contains(needle),
+                "{tag}: {:?}",
+                store.skipped
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn missing_plugin_theme_keeps_plugin_and_reports_reason() {
+        let dir = tmpdir("process-theme-missing");
+        write_process_package(&dir, "fake", PROCESS_MANIFEST, "plugin.py", PROCESS_PY);
+        let store = PluginStore::load_from(&dir);
+        assert_eq!(store.packages.len(), 1);
+        let package = &store.packages[0];
+        assert!(package.theme_path.is_none());
+        assert!(package.theme_error.as_deref().unwrap_or("").contains("主题文件不存在"));
+        let line = &store.display_lines()[0];
+        assert!(line.contains("theme-error"), "{line}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    const ALACRITTY_THEME: &str = r##"
+[colors.primary]
+background = "#101010"
+foreground = "#eeeeee"
+
+[colors.cursor]
+cursor = "#ffffff"
+
+[colors.normal]
+black = "#000000"
+red = "#cc0000"
+green = "#00cc00"
+yellow = "#cccc00"
+blue = "#0000cc"
+magenta = "#cc00cc"
+cyan = "#00cccc"
+white = "#cccccc"
+
+[colors.bright]
+black = "#555555"
+red = "#ff5555"
+green = "#55ff55"
+yellow = "#ffff55"
+blue = "#5555ff"
+magenta = "#ff55ff"
+cyan = "#55ffff"
+white = "#ffffff"
+"##;
+
+    #[test]
+    fn read_line_capped_handles_crlf_eof_and_overlong_lines() {
+        use std::io::Cursor;
+        let mut input = Cursor::new(b"one\r\ntwo\nthreee".to_vec());
+        assert_eq!(
+            read_line_capped(&mut input, 16).unwrap(),
+            Some(("one".to_string(), false))
+        );
+        assert_eq!(
+            read_line_capped(&mut input, 16).unwrap(),
+            Some(("two".to_string(), false))
+        );
+        assert_eq!(
+            read_line_capped(&mut input, 16).unwrap(),
+            Some(("threee".to_string(), false))
+        );
+        assert_eq!(read_line_capped(&mut input, 16).unwrap(), None);
+
+        // cap 以内的前缀 + truncated；后续行仍可继续读，内存有界。
+        let mut input = Cursor::new(b"0123456789abcdefXYZ\nok\n".to_vec());
+        assert_eq!(
+            read_line_capped(&mut input, 8).unwrap(),
+            Some(("01234567".to_string(), true))
+        );
+        assert_eq!(
+            read_line_capped(&mut input, 8).unwrap(),
+            Some(("ok".to_string(), false))
+        );
+        assert_eq!(read_line_capped(&mut input, 8).unwrap(), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn process_plugin_api_mismatch_is_disabled() {
+        let manifest = r#"
+name = "apimismatch"
+version = "1.0.0"
+api = 1
+runtime = "process"
+entry = "plugin.py"
+
+[[commands]]
+id = "ping"
+title = "Api: Ping"
+"#;
+        let script = r#"#!/usr/bin/env python3
+import json
+print(json.dumps({"type": "ready", "api": 2}), flush=True)
+import time
+time.sleep(30)
+"#;
+        let dir = tmpdir("process-api-mismatch");
+        write_process_package(&dir, "apimismatch", manifest, "plugin.py", script);
+        let mut store = PluginStore::load_from(&dir);
+        store.start_process_plugins_with_timeout(Duration::from_secs(2));
+        assert!(
+            wait_phase(&store, "apimismatch", RuntimePhase::Disabled, Duration::from_secs(4)),
+            "{:?}",
+            store.runtime_info("apimismatch")
+        );
+        let info = store.runtime_info("apimismatch").unwrap();
+        assert!(info.error.contains("握手 api=2"), "{info:?}");
+        store.shutdown_processes();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
 }

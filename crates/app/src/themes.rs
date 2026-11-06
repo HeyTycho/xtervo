@@ -120,6 +120,17 @@ impl ThemeRegistry {
         Self { builtins, customs, errors: Vec::new() }
     }
 
+    /// 加入一个插件声明的主题（id 已加 `plugin-` 前缀）。重复 id 只记录错误，
+    /// 不覆盖已有主题；主题坏掉不影响插件本身。
+    pub fn add_custom(&mut self, theme: ThemeData) {
+        if self.get(&theme.id).is_some() {
+            self.errors.push(format!("{}: 主题 id 重复，已跳过", theme.id));
+            return;
+        }
+        self.customs.push(theme);
+        validate_pairs(&mut self.customs, &mut self.errors);
+    }
+
     pub fn get(&self, id: &str) -> Option<&ThemeData> {
         self.builtins.iter().chain(self.customs.iter()).find(|t| t.id == id)
     }
@@ -212,6 +223,23 @@ fn is_theme_file(path: &Path) -> bool {
         "" | "toml" | "itermcolors" | "json" | "yaml" | "yml" | "conf" | "config" | "kitty"
             | "xresources" | "txt" | "colors" | "theme"
     )
+}
+
+/// 加载插件目录内的声明式主题文件（TOML/Alacritty 等既有格式）。
+///
+/// 主题 id 统一加 `custom:plugin-<插件名>-` 前缀，避免与 `~/.config/tervo/themes`
+/// 里的用户主题撞 id；显示名追加来源，方便在设置页辨认。
+pub fn load_plugin_theme(path: &Path, plugin: &str) -> Result<ThemeData, String> {
+    let mut theme = load_one(path)?;
+    let plugin_slug = slugify(plugin).ok_or_else(|| format!("插件名 {plugin:?} 无法生成主题前缀"))?;
+    let stem = theme
+        .id
+        .strip_prefix(CUSTOM_PREFIX)
+        .unwrap_or(theme.id.as_str())
+        .to_string();
+    theme.id = format!("{CUSTOM_PREFIX}plugin-{plugin_slug}-{stem}");
+    theme.label = format!("{} (plugin: {})", theme.label, plugin);
+    Ok(theme)
 }
 
 fn load_one(path: &Path) -> Result<ThemeData, String> {
@@ -1060,4 +1088,38 @@ white = "#a6adc8"
         assert!(reg.errors.iter().any(|e| e.contains("broken.toml")));
         let _ = std::fs::remove_dir_all(&dir);
     }
+    #[test]
+    fn plugin_theme_is_namespaced_and_duplicate_is_rejected() {
+        let dir = std::env::temp_dir().join(format!(
+            "tervo-theme-pack-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut xres = String::from("*.foreground: #eeeeee\n*.background: #101010\n");
+        for i in 0..16 {
+            xres.push_str(&format!("*.color{i}: #{:02x}2233\n", i * 8));
+        }
+        let path = dir.join("Ocean.txt");
+        std::fs::write(&path, xres).unwrap();
+        let theme = load_plugin_theme(&path, "demo.plugin").unwrap();
+        assert_eq!(theme.id, "custom:plugin-demo-plugin-ocean");
+        assert!(theme.label.contains("plugin: demo.plugin"), "{}", theme.label);
+
+        let mut reg = ThemeRegistry::from_parts(
+            Theme::ALL.iter().copied().map(builtin).collect(),
+            Vec::new(),
+        );
+        reg.add_custom(theme.clone());
+        assert!(reg.get("custom:plugin-demo-plugin-ocean").is_some());
+        assert_eq!(reg.custom_count(), 1);
+        reg.add_custom(theme);
+        assert_eq!(reg.custom_count(), 1);
+        assert!(reg.errors.iter().any(|e| e.contains("重复")), "{:?}", reg.errors);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
 }

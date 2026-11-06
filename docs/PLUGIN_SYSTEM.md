@@ -5,6 +5,24 @@
 > 结论先行：**核心不做插件；插件重点不是 UI，而是连接、终端数据流、命令/工作区、外部集成。**  
 > 高频用 Rust/WASM，冷路径用 sidecar；UI 只保留最小状态/命令入口，绝不引入原生 dylib 插件。
 
+## 0. V1 落地状态（2026-11-06，`feat/plugin-v1`）
+
+本设计稿的 Phase A 已按“稳定子集”落地为**外部进程插件 V1**，不引入 WASM/wasmtime：
+
+| 设计项 | V1 实现 |
+|---|---|
+| Manifest + 权限声明 | `plugin.toml` 新增 `id`/`runtime`/`[permissions]`/`[contributes]`；权限**仅声明/展示**，默认拒绝未实现能力（不授予） |
+| Sidecar/外部进程 | `runtime = "process"` 常驻子进程 + JSON Lines；2s 握手、10s 命令超时、崩溃重启上限 2、坏 JSON 禁用；旧 oneshot 行为保留 |
+| Command Provider | 命令进 Palette/快捷键；清单静态参数 + `result.text` 回 UI 浮层/活动/日志 |
+| Status Provider | 2s 轮询 + 插件主动推送 `text/tooltip/command`；主窗口底部一行最小状态栏，可点击执行命令 |
+| Theme Pack | `[contributes] theme` 声明式 TOML，并入现有主题下拉；坏主题不拖垮插件/启动 |
+| 安全 | 无 shell 拼接、不传 Vault 明文、输出/行长度上限、超时 kill、坏 manifest/JSON/崩溃隔离 |
+| UI | 设置页 Plugins 显示 running/restarting/disabled + 错误原因；不新增任意 Slint UI |
+
+未做（按设计延后）：WASM/Component Model、Connection/Middleware/Observer/Linkifier/
+Workspace/Profile Provider、安装/市场/签名、权限强制、任意 UI 面板。
+协议、清单、权限边界与测试详见 [`PLUGIN_API.md`](PLUGIN_API.md)。
+
 ## 1. 目标
 
 Tervo 的插件系统要满足四件事：
