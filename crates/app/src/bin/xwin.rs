@@ -81,6 +81,28 @@ fn main() {
     };
     println!("window = 0x{win:x}");
 
+    // --unmap：直接 unmap Xephyr 宿主窗口（不依赖 WM，测试期间完全不可见）。
+    if args.iter().any(|a| a == "--unmap") {
+        let _ = conn.unmap_window(win);
+        let _ = conn.flush();
+        return;
+    }
+
+    // --minimize：把 Xephyr 宿主窗口最小化，避免测试弹窗占用当前 workspace。
+    if args.iter().any(|a| a == "--minimize") {
+        let wm_change = conn.intern_atom(false, b"WM_CHANGE_STATE").unwrap().reply().unwrap().atom;
+        let net_state = conn.intern_atom(false, b"_NET_WM_STATE").unwrap().reply().unwrap().atom;
+        let hidden = conn.intern_atom(false, b"_NET_WM_STATE_HIDDEN").unwrap().reply().unwrap().atom;
+        let mask = EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY;
+        // 两种都发：GNOME/Mutter 对 EWMH 的 hidden 更可靠，WM_CHANGE_STATE 兼容老 WM。
+        let iconify = ClientMessageEvent::new(32, win, wm_change, [3, 0, 0, 0, 0]);
+        let _ = conn.send_event(false, root, mask, iconify);
+        let hide = ClientMessageEvent::new(32, win, net_state, [1, hidden, 0, 1, 0]);
+        let _ = conn.send_event(false, root, mask, hide);
+        let _ = conn.flush();
+        return;
+    }
+
     if let (Some(x), Some(y)) = (
         args.get(2).and_then(|v| v.parse::<i32>().ok()),
         args.get(3).and_then(|v| v.parse::<i32>().ok()),
