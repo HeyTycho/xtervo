@@ -145,7 +145,8 @@ ls -l dist/ && file dist/tervo && ./dist/tervo --help
   主题下载/自定义见 [`docs/themes.md`](docs/themes.md)，Tabby 主题机制调研见 [`docs/tabby-themes.md`](docs/tabby-themes.md)；
   度量/诊断/改进/门禁闭环见 [`docs/self-iteration.md`](docs/self-iteration.md)；
   插件目标/运行时/能力类型/市场调研见 [`docs/PLUGIN_SYSTEM.md`](docs/PLUGIN_SYSTEM.md)；
-  P0/P1/周末任务状态见 [`docs/TASK_BOARD.md`](docs/TASK_BOARD.md)。
+  P0/P1/周末任务状态见 [`docs/TASK_BOARD.md`](docs/TASK_BOARD.md)；
+  最终人工复测见 [`docs/RETEST_CHECKLIST.md`](docs/RETEST_CHECKLIST.md)。
 
 ## 日常使用
 

@@ -1,6 +1,6 @@
 # Tervo 任务看板
 
-> 最后更新：2026-11-06 19:15  
+> 最后更新：2026-11-06 19:25  
 > 规则：每个任务开始/完成/阻塞都要更新本文件；记录 worktree、branch、commit、测试/截图、限制。  
 > 当前 master：`a82ac52`（Settings Tab 持久化）；当前 release：`target/release/tervo` 19:07。
 
@@ -41,6 +41,7 @@
 | P1-07 | Codex P1：400ms CoreEvent 轮询 → wake 桥接 | queued | 待建 | 目标语义事件 <50ms，空闲 CPU 不退化 |
 | P1-08 | Codex P1：Vault Argon2 KDF 移出 UI 线程 | queued | 待建 | 解锁期间 UI 不停顿 |
 | P1-09 | Codex P1：`main.rs` 拆分 + `with_app` 重入不丢操作 | queued | 待建 | 大重构，分小步 |
+| P1-10 | 右键菜单美化：字号加大、分类分组、图标/分隔线、窄窗不溢出 | queued | 待建 | 样式与信息架构；不改菜单动作语义 |
 
 ## 4. 周末大块任务
 
@@ -57,6 +58,18 @@
 | W-06 | Wayland 原生 spike | queued | text-input-v3 IME、剪贴板、DnD、resize、全局快捷键 | 只 spike/报告，不承诺合并 |
 | W-07 | 24h 稳定性 soak | queued | 输出洪峰、Sixel 大图、emoji cache、多 Tab/多窗口内存 | 无崩溃/无持续内存增长；报告 |
 | W-08 | 全量 e2e/回归矩阵 | queued | 现有 5 e2e + 新功能 e2e + 性能门禁 | 全部绿；写入 selfcheck |
+| DOC-01 | 最终人工复测清单 | queued | `docs/RETEST_CHECKLIST.md`：IME/GPU/设置/右键/图片/剪贴板/SSH/SFTP/Profile/插件/打包 | 交付前填好步骤、预期、日志/截图、已知限制 |
+
+## 4.1 自主执行规则（2026-11-06 起）
+
+用户已授权：**周末任务不再中途确认**。
+
+- P0 修复完成后自动进入 P1，再进入 W-01..W-08；
+- 每项独立 worktree，tests + 对应 e2e 全绿才合；
+- 失败/不可逆阻塞写看板并继续下一项，不等待用户确认；
+- 只有需要真实凭据/真机/发布签名的外部依赖才标记 `blocked`；
+- 最终统一输出 `docs/RETEST_CHECKLIST.md`，列出用户需要人工复测的项；
+- 不把未验证代码合进稳定包；release 仍保留回滚点。
 
 ## 5. 明确不做
 
