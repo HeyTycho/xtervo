@@ -1,6 +1,6 @@
 # Tervo 任务看板
 
-> 最后更新：2026-11-06 19:25  
+> 最后更新：2026-11-06 19:55  
 > 规则：每个任务开始/完成/阻塞都要更新本文件；记录 worktree、branch、commit、测试/截图、限制。  
 > 当前 master：`a82ac52`（Settings Tab 持久化）；当前 release：`target/release/tervo` 19:07。
 
@@ -23,25 +23,25 @@
 | P0-02 | 设置 Tab 持久化：切终端只 suspend，不自动关闭 | done | master | commit `a82ac52`；`.logs/settings-persist/` | behavior e2e；手动截图 |
 | P0-03 | 外部 `config.toml` 热更新（500ms、回环保护、失败保留） | done | `.worktrees/config-hotreload` / `feat/config-hotreload` | commit `d6e5676`；主仓补齐 `1228748`；`.logs/config-hot-reload/` | 276 tests；Xvfb :126 |
 | P0-04 | find 外部点击自动收起 + 搜索条防穿透 | done | master | commit `69801cc`；`.logs/find-dismiss/` | app tests；手动 |
-| P0-05 | Codex P0：PTY 输入/写队列背压、pull 无超时导致 UI 冻结 | running | `.worktrees/p0-hardening` / `feat/p0-hardening` | agent 运行中；等 commit | 慢 shell/10MB 粘贴/输出洪峰；UI 停顿 <50ms |
-| P0-06 | Codex P0：SFTP 元数据 `wait_with_output()` 无超时阻塞 UI | running | 同上 | 同上 | 假 SFTP 挂起 5s/永不退出；10s 超时；窗口仍响应 |
-| P0-07 | Codex P0 修复合并 + 全量回归 + P0 稳定 release | queued | master | 等 P0-05/06 | workspace tests + 5 e2e + smoke |
+| P0-05 | Codex P0：PTY 输入/写队列背压、pull 无超时导致 UI 冻结 | done | `.worktrees/p0-hardening` / `feat/p0-hardening` | commit `7b6b7ad`；合 master `f3e9e0e`；`.logs/p0-blocking/` | 474 workspace tests；慢 shell/10MiB 粘贴/20MiB 洪峰；UI 调用 <1ms |
+| P0-06 | Codex P0：SFTP 元数据 `wait_with_output()` 无超时阻塞 UI | done | 同上 | `SftpOpJob` 后台化；10s kill 进程组；`.logs/p0-blocking/` | 假 sftp sleep 30：List 10.0s 超时；TabBar/New Tab 仍响应 |
+| P0-07 | Codex P0 修复合并 + 全量回归 + P0 稳定 release | done | master `f3e9e0e` | release `target/release/tervo` 19:51 / `tervo-stripped-new` 50M | 474 tests；6 e2e 全 PASS（WM resize 首次偶发、重跑 PASS）；smoke rc=0 |
 | P0-08 | Codex 审计报告归档 | done | `.logs/codex-architecture-review.md` | 19k 行原始输出；摘要见本文件 §6 | — |
 
 ## 3. P1：P0 稳定后再跑/合
 
 | ID | 任务 | 状态 | worktree / branch | 说明 |
 |---|---|---|---|---|
-| P1-01 | 完整键盘协议：Kitty query/set/push/pop、alternate/event types、modifyOtherKeys、release/repeat | paused | `.worktrees/keyboard-protocol` / `feat/keyboard-protocol` | 已有未提交 `core/src/keyboard.rs`；等 P0 稳定 |
-| P1-02 | 搜索匹配计数 + 鼠标可编辑搜索框 | paused | `.worktrees/search-ux` / `feat/search-ux` | 未开工/无改动 |
-| P1-03 | URL hover 手型 + 本地文件路径 Ctrl+click | paused | `.worktrees/url-paths` / `feat/url-paths` | 未开工/无改动 |
+| P1-01 | 完整键盘协议：Kitty query/set/push/pop、alternate/event types、modifyOtherKeys、release/repeat | running | `.worktrees/keyboard-protocol` / `feat/keyboard-protocol` | P0 已稳，恢复；已有未提交 `core/src/keyboard.rs` |
+| P1-02 | 搜索匹配计数 + 鼠标可编辑搜索框 | running | `.worktrees/search-ux` / `feat/search-ux` | P0 已稳，恢复 |
+| P1-03 | URL hover 手型 + 本地文件路径 Ctrl+click | running | `.worktrees/url-paths` / `feat/url-paths` | P0 已稳，恢复 |
 | P1-04 | 每 Profile 字体/颜色/命令/登录 shell/默认尺寸/word chars | queued | 待建 | 依赖 P0 设置 UI merged |
 | P1-05 | Codex P1：copy/search/save 500ms UI 阻塞 | queued | 待建 | 与 P0-05 同源，可并入 P0 hardening |
 | P1-06 | Codex P1：渲染 damage 路径失效、每帧全屏重绘 | queued | 待建 | 先做双缓冲脏行复制，再评估持久纹理 |
 | P1-07 | Codex P1：400ms CoreEvent 轮询 → wake 桥接 | queued | 待建 | 目标语义事件 <50ms，空闲 CPU 不退化 |
 | P1-08 | Codex P1：Vault Argon2 KDF 移出 UI 线程 | queued | 待建 | 解锁期间 UI 不停顿 |
 | P1-09 | Codex P1：`main.rs` 拆分 + `with_app` 重入不丢操作 | queued | 待建 | 大重构，分小步 |
-| P1-10 | 右键菜单美化：字号加大、分类分组、图标/分隔线、窄窗不溢出 | queued | 待建 | 样式与信息架构；不改菜单动作语义 |
+| P1-10 | 右键菜单美化：字号加大、分类分组、图标/分隔线、窄窗不溢出 | running | `.worktrees/context-menu` / `feat/context-menu` | 新建；不改菜单动作语义 |
 
 ## 4. 周末大块任务
 
@@ -106,3 +106,4 @@
 | 日期 | 变更 |
 |---|---|
 | 2026-11-06 19:15 | 建立看板；P0-01..04 完成；P0-05/06 running；P1 冻结；周末大块排期 |
+| 2026-11-06 19:55 | P0-05/06/07 done（474 tests，6 e2e，release 19:51）；P1-01/02/03/10 恢复；WM resize 首次偶发、重跑 PASS 记录 |
