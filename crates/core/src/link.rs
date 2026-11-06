@@ -189,7 +189,24 @@ fn ipv4_len(chars: &[char], i: usize) -> Option<usize> {
     Some(idx - i)
 }
 
+/// 路径起点比 URL 更严格：只接受行首/空白/开括号/引号。
+///
+/// 这能避免把 `--prefix=/usr`、`PATH=/bin:/usr/bin`、提示符
+/// `user@host:/tmp$` 里的斜杠识别成可点击路径。URL 仍可按 `key=https://…`
+/// 这种形式命中（URL 的边界规则更宽）。
+fn is_path_boundary(chars: &[char], i: usize) -> bool {
+    match i.checked_sub(1).map(|p| chars[p]) {
+        None => true,
+        Some(prev) => {
+            prev.is_whitespace() || matches!(prev, '(' | '[' | '{' | '<' | '"' | '\'' | '`')
+        },
+    }
+}
+
 fn path_len(chars: &[char], i: usize) -> Option<usize> {
+    if !is_path_boundary(chars, i) {
+        return None;
+    }
     let next = chars.get(i + 1).copied();
     let next2 = chars.get(i + 2).copied();
     let starts = match chars.get(i) {
@@ -354,6 +371,36 @@ mod tests {
     fn path_trailing_punctuation_trimmed() {
         assert_eq!(texts("see /var/log/syslog."), vec!["/var/log/syslog"]);
         assert_eq!(texts("file /etc/hosts:"), vec!["/etc/hosts"]);
+        // 括号包裹的路径：右括号是外壳，不属于路径。
+        assert_eq!(texts("at (/tmp/a)"), vec!["/tmp/a"]);
+    }
+
+    #[test]
+    fn path_requires_a_real_boundary_not_embedded_in_arguments() {
+        // 命令参数/环境变量里的 `/` 后缀不是“当前行明显路径”，避免误点。
+        assert!(texts("--prefix=/usr/local").is_empty());
+        assert!(texts("--config=/etc/app.conf").is_empty());
+        assert!(texts("PATH=/bin:/usr/bin").is_empty());
+        assert!(texts("user@host:/tmp$ ").is_empty(), "提示符里的 cwd 不该变成链接");
+        assert!(texts("key=value/with/slash").is_empty());
+        // 空格/行首/开引号之后的路径仍然命中。
+        assert_eq!(texts("open /tmp/a"), vec!["/tmp/a"]);
+        assert_eq!(texts("\"/tmp/b\""), vec!["/tmp/b"]);
+        assert_eq!(texts("(/tmp/c)"), vec!["/tmp/c"]);
+        // URL 不受路径边界收紧影响：`key=https://…` 仍可点击。
+        assert_eq!(texts("url=https://example.com/x"), vec!["https://example.com/x"]);
+    }
+
+    #[test]
+    fn http_ipv4_with_port_is_a_url_not_a_bare_ip() {
+        let found = scan("http://127.0.0.1:8080/health");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].kind, LinkKind::Url);
+        assert_eq!(found[0].text, "http://127.0.0.1:8080/health");
+        // 裸 IP:port 只识别为 Ipv4（UI 可以选择不打开），不会混成 Path/URL。
+        let bare = scan("listen 127.0.0.1:8080");
+        assert_eq!(bare.len(), 1);
+        assert_eq!(bare[0].kind, LinkKind::Ipv4);
     }
 
     #[test]
