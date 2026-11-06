@@ -166,7 +166,10 @@ update-desktop-database ~/.local/share/applications 2>/dev/null || true
 
 ## 已知限制
 
-- 渲染目前是 CPU 光栅化 + 整帧上传；GPU/Skia 路径的实测数据待真机补齐。
+- 终端字符光栅仍是 CPU（fontdue），但已改为双缓冲持久帧：`Image` 只做 refcount
+  clone，不再每帧整屏 `SharedPixelBuffer` 拷贝；Skia 仍会把帧上传为纹理再合成。
+  默认有 `/dev/dri` 走 Skia/GL，无 DRM 或 1s 内确认不到 GPU API 会自动回退
+  `winit-software`；真机 NVIDIA 的 GPU 帧率/延迟数据仍待用户复测。
 - tab 不能拖拽排序；分屏已有分隔条拖拽与窗口拖边缩放。
 - 分屏比例、窗口位置/大小都在应用层维护，Wayland 下窗口 `set_position` 可能被合成器忽略。
 - 字体固定 JetBrains Mono（回退 DejaVu）；中文自动回退 WenQuanYi Micro Hei / Droid / Noto CJK，

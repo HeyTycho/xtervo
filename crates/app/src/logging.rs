@@ -15,6 +15,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 static INIT: Once = Once::new();
 static LOG_PATH: OnceLock<PathBuf> = OnceLock::new();
+/// `tee_stderr` 保存的原始 stderr fd；exec 回退前必须恢复，否则新进程继承
+/// 一个没有 reader 的 pipe，日志/panic 输出会全部丢失。
+static SAVED_STDERR: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
 
 const MAX_FILES: usize = 8;
 
@@ -83,6 +86,18 @@ pub fn init() {
     });
 }
 
+/// 把 fd 2 从 tee pipe 恢复到原始 stderr（exec 进程替换前调用）。
+pub fn restore_stderr() {
+    let saved = SAVED_STDERR.swap(-1, std::sync::atomic::Ordering::Relaxed);
+    if saved >= 0 {
+        unsafe {
+            // 不要 close(saved)：tee 线程仍持有这个 fd，重复 close 可能误关
+            // 其他线程刚复用的 fd。dup2 只增加一个引用，进程 exec 后自然清理。
+            libc::dup2(saved, 2);
+        }
+    }
+}
+
 /// 最后 `n` 行（诊断用；文件很小，直接读）。
 pub fn tail(n: usize) -> Vec<String> {
     let Some(path) = path() else { return Vec::new() };
@@ -118,6 +133,9 @@ fn tee_stderr(path: &Path) {
     use std::os::fd::FromRawFd;
     unsafe {
         let saved = libc::dup(2);
+        if saved >= 0 {
+            SAVED_STDERR.store(saved, std::sync::atomic::Ordering::Relaxed);
+        }
         if saved < 0 {
             return;
         }

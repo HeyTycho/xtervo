@@ -1217,3 +1217,75 @@ cargo bench -p tervo-core --bench pty_throughput
 - 验证：右侧分屏 720x472，右键右 pane (600,300)，菜单贴在鼠标左上方；
   Split Right action 仍作用于 pane=2。
 
+
+### 2026-11-06 · GPU/Skia 默认开启 + resize 事件循环修复 + 持久双缓冲
+
+- **背景**：master 在 `main()` 无条件 `SLINT_BACKEND=winit-software`，为了规避用户
+  NVIDIA 机器上 Skia resize 卡顿与 `WM live resize 未接管指针，回退自绘`。本轮移除
+  强制 software 默认，默认请求 Slint Skia；显式 `SLINT_BACKEND=winit-software` 保留。
+- **根因/关键实证**：
+  1. `/dev/dri` 缺失时 Skia 能建窗，但 OpenGL/GL 初始化失败会落到 Skia software
+     surface：`:104` 用 `GALLIUM_DRIVER=invalid` + `MESA_LOADER_DRIVER_OVERRIDE=invalid`
+     复现“窗口存在、内容全黑”；`set_rendering_notifier` 不触发任何 GPU 回调。
+  2. 这不是“等一帧”问题，必须自动回退。策略：无 `/dev/dri` 默认
+     `winit-software`；有 DRM 时默认 `winit-skia`，建窗后 1s 内没有 GPU API 回调、
+     且没有任何渲染帧（Skia software surface 在 Slint 1.18 不出帧）就 `exec` 回退
+     `winit-software`（保留参数/日志，标记防循环）。
+  3. 旧 watchdog 只看“按下后是否过了 150ms”，GPU 首帧/渲染排队时 configure 晚到就被
+     误判成 WM 没接管。改为“最近一次 configure / 是否见过 configure”，400ms（未见过）
+     或 800ms（见过但停了）才回退；有 configure 就绝不因渲染慢而抢回自绘。
+  4. resize 性能热点不是 terminal reflow（release 0.5–2ms），而是每帧整屏
+     `SharedPixelBuffer::new` + `copy_from_slice`：2560x1413 实测 4.8ms。双缓冲持久帧
+     把 `image()` 降到 0.00ms（`detach=false`），改为一帧整屏 draw（0.55–1.11ms）。
+- **实现**：
+  - `Cargo.toml`：Slint features 增加 `renderer-skia-opengl`（优先 OpenGL，而不是仅
+    wgpu/softbuffer），保留 `renderer-software`；`log` 打开 Slint 日志通道。
+  - 新增 `render_probe.rs`：`Window::set_rendering_notifier` 判实际 renderer；
+    `NativeOpenGL` 回调里经文档化的 `get_proc_address` 查 `glGetString`，打印
+    `GL_VENDOR/GL_RENDERER/GL_VERSION`；1.2s 无 GL 回调明确打印
+    `skia-software-surface` 且注明 headless 不能验证 GPU；`Unsupported` 打印
+    `winit-software`。GPU 确认状态用于 1s 自动回退。
+  - `main.rs`：默认 backend、无 DRM 降级、debug-only 注入 UI 初始化失败、exec 回退、
+    resize watchdog/redraw 合并/背景隐藏、profile 日志。
+  - `render.rs`：`FrameBuffers` 双缓冲；`draw()` 切换 buffer 后整屏重绘，`image()` 只
+    refcount clone；记录 `last_draw_us/last_image_us/last_buffer_detached`。
+  - `main.slint`：`background-suspended`；窗口面积 >1.5MP 的拖动期间隐藏背景图/暗化层，
+    停止 200ms 恢复。小窗口不做，避免闪一下。
+- **验证（全部 headless Xvfb :104，未碰 :1、未用 Xephyr、未 pkill）**：
+  - 实际后端：默认无 DRM → `winit-software`；显式 `SLINT_BACKEND=winit-skia` +
+    `LIBGL_ALWAYS_SOFTWARE=1` → `actual_renderer=skia-opengl`、
+    `GL_RENDERER="llvmpipe (LLVM 15.0.7, 256 bits)"`（CPU 光栅，明确不是 NVIDIA）。
+  - 黑屏回退：强制 GL 失败日志 `exec 自动回退 winit-software`；新进程
+    `actual_renderer=winit-software`，`.logs/fallback-gl/after.png` 非黑（content 可见）；
+    debug 注入 UI 初始化失败也走同一回退。
+  - 功能：`.logs/gpu-func/` 覆盖 Tab/搜索（items=2、pick=0）、分屏右 pane 右键
+    （`right click pane=3`、`menu action pane=3 action=0`）、mouse reporting
+    （TUI 原始字节收到 `ESC[<0;31;17M`/`m`）、最大化 2560x1440、还原 1080x736、
+    最小化 `_NET_WM_STATE_HIDDEN` 唤醒、背景/暗化/resize 后恢复。
+  - resize：Skia/llvmpipe 1080x736→1380x736，80 步/4ms，14 次 apply，中位 1.80ms，
+    最大 3.00ms，35 帧渲染中位 2.85ms/最大 6.84ms，`watchdog 回退 0`；software
+    11 次 apply 中位 3.10ms/最大 4.10ms。大窗口 2538x1396→2238x1396：software 1 次
+    9.60ms，Skia 2 次中位 10.85ms/最大 12.70ms（Openbox 合并了 configure）。
+  - 无 WM：`-ac -nolisten tcp` 的 Xvfb 无 Openbox，日志
+    `WM 未声明 _NET_WM_MOVERESIZE` + `自绘 resize dir=3`，1080→1380，背景恢复。
+  - 缩小中途截图 `.logs/shrink-clip/mid.png`：窗口 1017x736 时右上角四个按钮完整，
+    证明“缩小立即重绘”路径没有晚一帧裁切。
+  - 背景 A/B：2560x1440 持续帧有背景 render 中位 3.53ms，隐藏后 1.49ms/帧。
+  - 测试：`cargo test` 全绿；`cargo test -p tervo-app --bin tervo` → **213 passed**
+    （新增 3 个 watchdog/redraw 单测 + 1 个双缓冲脏帧回归）。
+- **限制/残余风险**：
+  - **没有真 NVIDIA GPU**：所有 Skia 数字来自 llvmpipe，不能声称等同用户机器；用户
+    580.173.02 上仍需 release 复测 resize 流畅度、首帧、长时间稳定性。
+  - Skia software surface 在无 GL 时必须等 1s watchdog 才回退，用户会看到约 1s 黑窗；
+    无 DRM 的机器已提前走 software，只有“有 /dev/dri 但 GL 坏”才会遇到。
+  - exec 回退会重启进程，当前 Tab/会话重新创建；PTY 子进程随旧进程关闭。
+  - `renderer-skia-opengl` 会优先 OpenGL（而不是 wgpu/Vulkan）；若 NVIDIA GLX/EGL
+    有驱动特定问题，仍可能回退到 software surface 并触发 1s 超时。
+  - 双缓冲每次切 buffer 整屏重绘；4K/多 pane 下的 CPU 上限未压测。`Image` 仍需 Skia
+    每帧上传纹理（没有安全的持久 GPU texture API），这是下一步。
+  - 背景图仅在 >1.5MP 窗口拖动时隐藏；拖动中会看到背景短暂消失，停止 200ms 恢复。
+  - Mutter/GNOME live resize 的“能收到 move 但 configure 晚到”场景无法在 Openbox
+    精确复现；watchdog 逻辑已用单测覆盖，但真机仍需看 `TERVO_RESIZE_PROFILE=1` 日志。
+  - `xwd -id` 与 live resize 有竞态：窗口在 geometry 查询与 XGetImage 之间继续缩放时，
+    会抓到“右侧黑边/错行条纹”的伪帧（软件后端同样有黑边，只是没有背景条纹）。按钮
+    验证只用 geometries 前后一致的干净帧，不把伪帧当应用缺陷；真机肉眼复测仍需做。

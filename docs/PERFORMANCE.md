@@ -1,7 +1,8 @@
 # 性能与打包基线（Tervo）
 
 本文记录**可复现**的性能/体积数据与门禁。所有数字都在本仓库的开发机上测得
-（Ubuntu + X11 + winit-software 渲染），换机器会变，但门禁与采集方式不变。
+（Ubuntu + X11；2026-11-06 起默认 Skia/GL，无 GPU/GL 失败回退 winit-software）。
+换机器会变，但门禁与采集方式不变。
 
 ## 1. 一键门禁
 
@@ -51,6 +52,34 @@ export CARGO_HOME=$PWD/.cargo
 
 因此 47 ms → 60–140 ms 不是性能退化，而是口径修正；门槛（600 ms）保持不变。
 
+## 2.2 2560x1413 持久帧 / 背景 / resize（2026-11-06，headless llvmpipe）
+
+测试环境：Xvfb :104 2560x1440x24 + Openbox + `LIBGL_ALWAYS_SOFTWARE=1`；
+`render_probe` 实证 `actual_renderer=skia-opengl`、`GL_RENDERER=llvmpipe`。
+**llvmpipe 是 CPU 光栅，不能当成 NVIDIA/真 GPU 数据。**
+
+| 指标 | 旧实现 | 新实现 | 说明 |
+|---|---|---|---|
+| `Renderer::image()` 2560x1413 | 4.8 ms | **0.00 ms** | 双缓冲持久 `SharedPixelBuffer`；`Image` 仅 refcount clone，`detach=false` |
+| 整屏 draw 2560x1413 | 0.36–1.67 ms（脏行） | 0.55–1.11 ms（整屏） | 切缓冲必须整屏重建；比整屏拷贝便宜 |
+| resize apply（含 grid resize） | 11.0 ms | 10.5–12.7 ms | 新实现多分配一块 14MB buffer，基本持平（随运行有波动） |
+| 背景图 cover（2560x1440 持续帧） | 3.53 ms/帧 | 1.49 ms/帧 | 大窗口拖动期间临时隐藏背景，停下恢复 |
+
+XTest 80 步/4ms resize（1080x736→1380x736，Openbox WM live resize）：
+
+| backend | applies | 中位 apply | 最大 apply | watchdog 回退 |
+|---|---|---|---|---|
+| winit-software | 11 | 3.10 ms | 4.10 ms | 0 |
+| winit-skia / llvmpipe | 14 | 1.80 ms | 3.00 ms | 0 |
+
+Skia 同轮记录到 35 帧渲染，中位 2.85ms、最大 6.84ms（llvmpipe，包含每帧纹理上传）。
+大窗口（2538x1396→2238x1396）Openbox 只产生 1–2 次 configure：software 1 次
+9.60ms，Skia 2 次中位 10.85ms/最大 12.70ms。
+
+注意：Openbox 会把 2538x1396 的拖动合并成 1–2 次 configure（9.6/10.9ms），不能把
+“apply 次数少”当成更快；1080 窗口的 80 步数据更能反映逐 configure 路径。
+完整日志/截图：`.logs/bench-resize/`、`.logs/gpu-func/`（gitignored）。
+
 ## 3. 4 pane 测量步骤（可复现）
 
 ```bash
@@ -80,7 +109,12 @@ PREFIX=/tmp/prefix ./scripts/install.sh        # bin + .desktop + 图标
 
 - **CJK 回退字体**：首次显示中文会触发一次字体解析（约 159 ms），之后常驻；
   启动路径已惰性化，不影响英文启动时间。
-- **软件渲染**：沙箱/无 GPU 环境走 `winit-software`，60fps 与高吞吐未做正式验收。
+- **渲染后端**：有 `/dev/dri` 默认 Skia/GL；无 DRM 默认 `winit-software`；Skia 建窗
+  后 1s 内确认不到 GPU/GL API 会 exec 回退软件（避免 Skia software surface 黑屏）。
+- **真机 GPU 未验收**：上述 Skia 数据全部来自 llvmpipe；NVIDIA 580 上的帧率/延迟/
+  长时间稳定性仍需用户用 release 复测。
+- **持久帧**：已去掉每帧整屏 CPU 拷贝；Skia 仍每帧上传纹理（Slint 1.18 无安全持久
+  GPU texture API），这是下一步 GPU 化的主战场。
 - **未验收**：P95 帧延迟 ≤50 ms、`50 MiB/s` 吞吐、4 pane 长时间 CPU 稳定性
   （见 `docs/ACTION_ITEMS.md` ACT-032）。当前只验收了上面的启动/RSS/空闲 CPU/体积。
 
