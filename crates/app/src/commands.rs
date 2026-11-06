@@ -570,6 +570,10 @@ pub fn builtin() -> Registry {
         ("terminal.find", "Find", Category::Terminal, Some("ctrl+f")),
         ("terminal.clear", "Clear Screen", Category::Terminal, None),
         ("terminal.select-all", "Select All", Category::Terminal, None),
+        ("terminal.toggle-read-only", "Toggle Read Only", Category::Terminal, None),
+        ("terminal.reset", "Reset Terminal", Category::Terminal, None),
+        ("terminal.reset-and-clear", "Reset and Clear", Category::Terminal, None),
+        ("terminal.save-contents", "Save Contents…", Category::Terminal, None),
         ("view.command-palette", "Command Palette", Category::View, Some("ctrl+shift+p")),
         ("view.toggle-fullscreen", "Toggle Fullscreen", Category::View, Some("f11")),
         ("view.toggle-quake", "Toggle Quake Mode", Category::View, None),
@@ -876,6 +880,21 @@ mod tests {
         let err = r.validate_override("tab.close", "ctrl+alt+n", &overrides).unwrap_err();
         assert!(err.contains("New Tab"), "{err}");
         assert!(r.effective_conflicts(&overrides).is_empty());
+    }
+
+    #[test]
+    fn terminal_menu_commands_are_registered_without_default_shortcuts() {
+        let r = builtin();
+        for id in [
+            "terminal.toggle-read-only",
+            "terminal.reset",
+            "terminal.reset-and-clear",
+            "terminal.save-contents",
+        ] {
+            let cmd = r.get(id).unwrap_or_else(|| panic!("缺少命令 {id}"));
+            assert_eq!(cmd.category, Category::Terminal);
+            assert!(cmd.default_shortcut.is_none(), "{id} 不应占用默认快捷键");
+        }
     }
 
     #[test]
