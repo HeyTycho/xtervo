@@ -153,7 +153,7 @@ tervo                 # 直接启动
 | 窗口置顶 | 右键标签栏空白处 → Always on Top |
 | 调整分屏 | 拖动 pane 之间的分隔线（左右/上下比例都可调） |
 | 缩放窗口 | 拖动窗口四边/四角（无边框窗口自绘命中区） |
-| 设置 | 标签栏 ⚙：主题 / 字号 / 回滚行数 |
+| 设置 | 标签栏 ⚙：主题 / 背景 / 光标形状·闪烁·颜色 / 粗体 / 字号 / 回滚行数 |
 | 移动窗口 | 拖标签栏；双击标签栏最大化/还原 |
 
 配置：`~/.config/tervo/config.toml`（`TERVO_CONFIG` 可覆盖）。
@@ -163,6 +163,18 @@ tervo                 # 直接启动
 
 ```toml
 osc52 = "deny"   # 默认 "allow"；deny 同时拒绝写入和查询
+```
+
+光标与粗体（GNOME Terminal 兼容；颜色留空 = 跟随主题）：
+
+```toml
+cursor_shape = "block"        # block | underline | ibeam
+cursor_blink = "system"       # system（当前等同 on）| on | off
+cursor_color = "#ff5f56"      # 空 = 主题光标色
+cursor_text_color = "#101010" # 空 = 主题背景色（块状光标反色）
+bold_is_bright = true         # 粗体 ANSI 0–7 用亮色
+bold_color = "#ff8800"        # 空 = 不启用
+bold_color_same_as_fg = false # false 时 bold_color 作用于默认前景色粗体
 ```
 
 > 安全提示：`allow` 意味着任何能向终端输出转义序列的程序（包括 SSH 远端、

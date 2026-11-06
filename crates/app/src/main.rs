@@ -32,9 +32,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tervo_core::{
-    link::is_allowed_uri, spawn, ClipboardRequest, ClipboardSelection, CoreEvent, Frame, Modifiers,
-    MouseAction, MouseButton, MouseEvent, Notification, PaneConfig, PaneHandle, ProgressState,
-    Theme, UiColors,
+    link::is_allowed_uri, spawn, ClipboardRequest, ClipboardSelection, CoreEvent, Frame,
+    Modifiers, MouseAction, MouseButton, MouseEvent, Notification, Palette as TermPalette,
+    PaneConfig, PaneHandle, ProgressState, Theme, UiColors,
 };
 use slint::winit_030::{winit, EventResult, WinitWindowAccessor};
 use slint::{Model, ModelRc, VecModel};
@@ -65,6 +65,12 @@ struct PaneRuntime {
     renderer: Renderer,
     frame: Box<Frame>,
     image: slint::Image,
+    /// 光标 overlay（app 不把光标画进终端帧，闪烁只切可见性）。
+    cursor_image: slint::Image,
+    /// overlay 在 pane 内的 x/y/w/h（像素）。
+    cursor_rect: (f32, f32, f32, f32),
+    /// 当前帧光标是否显示（不含闪烁相位；phase 由 AppState 统一控制）。
+    cursor_visible: bool,
     grid: (usize, usize),
     /// 最近一帧的终端光标；IME/焦点同步用。
     cursor: (usize, usize),
@@ -236,6 +242,10 @@ struct AppState {
     resize_finalize: slint::Timer,
     /// 视觉铃到期清除（30ms 重复；没有闪烁时停止）。
     bell_timer: slint::Timer,
+    /// 光标闪烁相位：true = 显示；无闪烁/闪烁关闭时恒 true。
+    cursor_blink_on: bool,
+    /// 光标闪烁计时器；`cursor_blink=off` 时停掉，空闲零开销。
+    cursor_blink_timer: slint::Timer,
     resize_in_progress: bool,
     /// 最近一次 resize apply 的最大耗时（profile 汇总）。
     resize_max_apply_us: f64,
@@ -417,6 +427,11 @@ const SETTINGS_CATALOG: &[(i32, &str, &str)] = &[
     (0, "Theme / Color scheme", "theme color scheme appearance dark light"),
     (0, "Background image", "background image wallpaper picture path 背景 壁纸"),
     (0, "Background opacity", "background opacity transparency alpha 背景 透明 不透明度"),
+    (0, "Cursor shape", "cursor shape block underline ibeam beam 光标 形状"),
+    (0, "Cursor blink", "cursor blink on off system 光标 闪烁"),
+    (0, "Cursor color", "cursor color colour text 光标 颜色"),
+    (0, "Bold is bright", "bold bright ansi color 粗体 亮色"),
+    (0, "Bold color", "bold color same as fg 粗体 颜色"),
     (1, "Font size", "font size text zoom"),
     (1, "Scrollback", "scrollback history lines"),
     (1, "Copy on select", "copy select clipboard"),
@@ -659,6 +674,15 @@ fn theme_choices(reg: &ThemeRegistry) -> ModelRc<ThemeChoice> {
     ModelRc::from(Rc::new(VecModel::from(choices)))
 }
 
+/// 实际生效的终端调色板：主题 16 色 + 用户粗体策略。
+fn pane_palette(st: &AppState) -> TermPalette {
+    st.resolved_theme.palette().with_bold(
+        st.cfg.bold_is_bright,
+        st.cfg.bold_color_rgb(),
+        st.cfg.bold_color_same_as_fg,
+    )
+}
+
 /// 设置面板高度：12 套内置主题 3 行；每多一行加 30px。
 
 /// 下发实际生效的主题（不改配置与选中项；auto 监听回调走这里）。
@@ -667,7 +691,7 @@ fn push_theme(st: &mut AppState, theme: &ThemeData) {
     let auto = is_auto_theme(&st.cfg.theme);
     st.ui.set_auto_resolved(if auto { theme.label.as_str().into() } else { "".into() });
     st.ui.global::<Palette>().set_colors(slint_theme(&theme.ui));
-    let palette = theme.palette();
+    let palette = pane_palette(st);
     for rt in st.panes.values_mut() {
         rt.renderer.set_theme(theme.spec.bg, theme.spec.cursor);
         rt.handle.set_theme(palette.clone());
@@ -1088,7 +1112,7 @@ fn create_pane(
         scrollback: st.cfg.scrollback,
         shell,
         args,
-        palette: st.resolved_theme.palette(),
+        palette: pane_palette(st),
         cwd,
         env,
     })?;
@@ -1117,16 +1141,30 @@ fn create_pane(
         theme.spec.cursor,
         renderer_opacity(st),
     );
+    renderer.set_cursor_style(
+        st.cfg.cursor_shape(),
+        st.cfg.cursor_color_rgb(),
+        st.cfg.cursor_text_color_rgb(),
+    );
     let mut frame = handle.new_frame();
     frame = handle.pull(frame);
-    renderer.draw(&frame);
+    // 光标不画进终端帧：单独生成 cell 大小 overlay，闪烁只切 Slint visible。
+    renderer.draw_without_cursor(&frame);
     let image = renderer.image();
+    let (cursor_image, cursor_rect, cursor_visible) =
+        match renderer.cursor_overlay(&frame) {
+            Some(o) => (o.image, (o.x, o.y, o.width, o.height), true),
+            None => (slint::Image::default(), (0.0, 0.0, 0.0, 0.0), false),
+        };
 
     Ok(PaneRuntime {
         handle,
         renderer,
         frame,
         image,
+        cursor_image,
+        cursor_rect,
+        cursor_visible,
         grid: (cols, rows),
         cursor: (0, 0),
         focus_sent: None,
@@ -2930,7 +2968,7 @@ fn schedule_resize_finalize(st: &mut AppState) {
 
 /// PaneRuntime → Slint 视图。滚动条几何在这里一次算好，Slint 只负责画，
 /// 避免在 UI 线程上做 clamp/浮点分支。
-fn pane_view(id: PaneId, rt: &PaneRuntime, focused: bool) -> PaneView {
+fn pane_view(id: PaneId, rt: &PaneRuntime, focused: bool, cursor_blink_on: bool) -> PaneView {
     let pos = rt.handle.scroll_position();
     let track_h = rt.renderer.height.max(1) as f32;
     let min_thumb = (SCROLLBAR_MIN_THUMB_PX / track_h).clamp(0.0, 1.0);
@@ -2948,6 +2986,12 @@ fn pane_view(id: PaneId, rt: &PaneRuntime, focused: bool) -> PaneView {
         focused,
         iw: rt.renderer.width as f32,
         ih: rt.renderer.height as f32,
+        cursor_image: rt.cursor_image.clone(),
+        cursor_x: rt.cursor_rect.0,
+        cursor_y: rt.cursor_rect.1,
+        cursor_w: rt.cursor_rect.2,
+        cursor_h: rt.cursor_rect.3,
+        cursor_visible: rt.cursor_visible && cursor_blink_on,
         mouse_reporting: rt.handle.wants_mouse(),
         scrollbar_visible: pos.scrollable(),
         scrollbar_thumb_y: thumb_y,
@@ -2962,7 +3006,7 @@ fn refresh_pane_view(st: &mut AppState, id: PaneId) {
     let Some(&row) = st.pane_rows.get(&id) else { return };
     let focused = st.ws.active_tab().map(|t| t.focused) == Some(id);
     let Some(rt) = st.panes.get(&id) else { return };
-    st.pane_model.set_row_data(row, pane_view(id, rt, focused));
+    st.pane_model.set_row_data(row, pane_view(id, rt, focused, st.cursor_blink_on));
 }
 
 /// 重新计算布局：必要时 resize 各 pane 的网格，并刷新 Slint 模型。
@@ -3004,7 +3048,7 @@ fn refresh_views_impl(st: &mut AppState, resize_terminals: bool) {
 
     let make_view = |id: &PaneId, rect: &Rect| -> Option<PaneView> {
         st.panes.get(id).map(|rt| {
-            let mut view = pane_view(*id, rt, *id == focused);
+            let mut view = pane_view(*id, rt, *id == focused, st.cursor_blink_on);
             view.x = rect.x;
             view.y = rect.y;
             view.w = rect.w;
@@ -3115,6 +3159,104 @@ fn redraw_visible(st: &mut AppState) {
 
 // ------------------------------------------------------------------- 渲染
 
+/// 重新生成 pane 光标 overlay（从当前 `frame` 读光标/格内容，不拉帧）。
+fn refresh_cursor_overlay(rt: &mut PaneRuntime) {
+    match rt.renderer.cursor_overlay(&rt.frame) {
+        Some(o) => {
+            rt.cursor_image = o.image;
+            rt.cursor_rect = (o.x, o.y, o.width, o.height);
+            rt.cursor_visible = true;
+        },
+        None => {
+            rt.cursor_image = slint::Image::default();
+            rt.cursor_rect = (0.0, 0.0, 0.0, 0.0);
+            rt.cursor_visible = false;
+        },
+    }
+}
+
+/// 光标外观变化：只换 renderer 字段 + 重新生成小 overlay，不重绘整屏。
+fn apply_cursor_settings(st: &mut AppState) {
+    let (shape, color, text_color) = (
+        st.cfg.cursor_shape(),
+        st.cfg.cursor_color_rgb(),
+        st.cfg.cursor_text_color_rgb(),
+    );
+    for rt in st.panes.values_mut() {
+        if rt.renderer.set_cursor_style(shape, color, text_color) {
+            refresh_cursor_overlay(rt);
+        }
+    }
+    refresh_cursor_views(st);
+}
+
+/// 只刷新 pane 视图（光标 overlay 可见性/几何），不拉帧不栅格化。
+fn refresh_cursor_views(st: &mut AppState) {
+    let ids: Vec<PaneId> = st.panes.keys().copied().collect();
+    for id in ids {
+        refresh_pane_view(st, id);
+    }
+}
+
+/// 粗体配置变化：重建调色板并让 core 重取整帧（颜色在 core 解析）。
+fn apply_bold_settings(st: &mut AppState) {
+    let palette = pane_palette(st);
+    for rt in st.panes.values_mut() {
+        rt.handle.set_theme(palette.clone());
+    }
+    redraw_visible(st);
+}
+
+/// 光标闪烁半周期：只切换 overlay 的 `cursor-visible`，终端帧不重绘。
+fn tick_cursor_blink() {
+    with_app(|st| {
+        if !st.cfg.cursor_blinking() {
+            st.cursor_blink_timer.stop();
+            st.cursor_blink_on = true;
+            refresh_cursor_views(st);
+            return;
+        }
+        st.cursor_blink_on = !st.cursor_blink_on;
+        refresh_cursor_views(st);
+    });
+}
+
+/// 按配置启停闪烁计时器；`off` 时停掉，空闲零唤醒。
+///
+/// `TERVO_CURSOR_BLINK_PHASE=on|off` 用于截图/自动化：冻结相位、不启动计时器。
+fn configure_cursor_blink(st: &mut AppState) {
+    if let Some(phase) = std::env::var_os("TERVO_CURSOR_BLINK_PHASE") {
+        let phase = phase.to_string_lossy().to_ascii_lowercase();
+        let frozen = match phase.as_str() {
+            "on" | "1" | "true" => Some(true),
+            "off" | "0" | "false" => Some(false),
+            _ => None,
+        };
+        if let Some(on) = frozen {
+            st.cursor_blink_timer.stop();
+            st.cursor_blink_on = on;
+            refresh_cursor_views(st);
+            return;
+        }
+    }
+    if st.cfg.cursor_blinking() {
+        st.cursor_blink_on = true;
+        if st.cursor_blink_timer.running() {
+            st.cursor_blink_timer.restart();
+        } else {
+            st.cursor_blink_timer.start(
+                slint::TimerMode::Repeated,
+                Duration::from_millis(config::CURSOR_BLINK_MS),
+                tick_cursor_blink,
+            );
+        }
+    } else {
+        st.cursor_blink_timer.stop();
+        st.cursor_blink_on = true;
+    }
+    refresh_cursor_views(st);
+}
+
 fn redraw_pane(id: PaneId) {
     if PIPE_ON.load(Ordering::Relaxed) {
         if let Some(t) = LAST_KEY.lock().unwrap().take() {
@@ -3176,10 +3318,12 @@ fn update_ime_spot(st: &mut AppState) {
 
 fn redraw_pane_inner(st: &mut AppState, id: PaneId) {
     let focused = st.ws.active_tab().map(|t| t.focused) == Some(id);
+    let blink_on = st.cursor_blink_on;
     let Some(rt) = st.panes.get_mut(&id) else { return };
     let frame = rt.handle.pull(std::mem::take(&mut rt.frame));
     rt.cursor = (frame.cursor.line as usize, frame.cursor.col as usize);
-    rt.renderer.draw(&frame);
+    // 光标不进帧缓冲：用独立 overlay，闪烁时只换 visible。
+    rt.renderer.draw_without_cursor(&frame);
     rt.image = rt.renderer.image();
     if render_profile() {
         eprintln!(
@@ -3199,10 +3343,11 @@ fn redraw_pane_inner(st: &mut AppState, id: PaneId) {
         st.echo.store(count_marker(&frame, MARKER), Ordering::Release);
     }
 
-    if let Some(&row) = st.pane_rows.get(&id) {
-        st.pane_model.set_row_data(row, pane_view(id, rt, focused));
-    }
     rt.frame = frame;
+    refresh_cursor_overlay(rt);
+    if let Some(&row) = st.pane_rows.get(&id) {
+        st.pane_model.set_row_data(row, pane_view(id, rt, focused, blink_on));
+    }
     if focused {
         update_ime_spot(st);
     }
@@ -3250,6 +3395,11 @@ fn apply_font_size(st: &mut AppState) {
             theme.spec.bg,
             theme.spec.cursor,
             opacity,
+        );
+        rt.renderer.set_cursor_style(
+            st.cfg.cursor_shape(),
+            st.cfg.cursor_color_rgb(),
+            st.cfg.cursor_text_color_rgb(),
         );
     }
     refresh_views(st);
@@ -5134,6 +5284,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         resize_redraw: slint::Timer::default(),
         resize_finalize: slint::Timer::default(),
         bell_timer: slint::Timer::default(),
+        cursor_blink_on: true,
+        cursor_blink_timer: slint::Timer::default(),
         resize_in_progress: false,
         resize_max_apply_us: 0.0,
         corners,
@@ -6444,6 +6596,117 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     });
 
+    // ---- Appearance：光标形状/闪烁/颜色 + 粗体（GNOME Terminal 基础项）----
+    // 形状/颜色只影响光标 overlay，不重绘终端帧；闪烁用 UI timer 切换 overlay 可见性。
+    ui.on_set_cursor_shape(|shape| {
+        with_app(|st| {
+            let next = config::normalize_cursor_shape(shape.as_str());
+            if st.cfg.cursor_shape == next {
+                return;
+            }
+            st.cfg.cursor_shape = next.clone();
+            st.ui.set_cfg_cursor_shape(next.as_str().into());
+            apply_cursor_settings(st);
+            st.cfg.save();
+            eprintln!("[appearance] cursor_shape={next}");
+        });
+    });
+
+    ui.on_set_cursor_blink(|mode| {
+        with_app(|st| {
+            let next = config::normalize_cursor_blink(mode.as_str());
+            if st.cfg.cursor_blink == next {
+                return;
+            }
+            st.cfg.cursor_blink = next.clone();
+            st.ui.set_cfg_cursor_blink(next.as_str().into());
+            configure_cursor_blink(st);
+            st.cfg.save();
+            eprintln!("[appearance] cursor_blink={next}");
+        });
+    });
+
+    // 输入过程中空串=跟随主题、合法 #RGB/#RRGGBB 即时生效；半截/非法输入不写配置。
+    ui.on_cursor_color_changed(|text| {
+        with_app(|st| {
+            let raw = text.as_str();
+            let next = if raw.trim().is_empty() {
+                String::new()
+            } else {
+                let Some(color) = config::normalize_hex_color(raw) else { return };
+                color
+            };
+            if st.cfg.cursor_color == next {
+                return;
+            }
+            st.cfg.cursor_color = next.clone();
+            apply_cursor_settings(st);
+            st.cfg.save();
+            eprintln!("[appearance] cursor_color={next:?}");
+        });
+    });
+
+    ui.on_cursor_text_color_changed(|text| {
+        with_app(|st| {
+            let raw = text.as_str();
+            let next = if raw.trim().is_empty() {
+                String::new()
+            } else {
+                let Some(color) = config::normalize_hex_color(raw) else { return };
+                color
+            };
+            if st.cfg.cursor_text_color == next {
+                return;
+            }
+            st.cfg.cursor_text_color = next.clone();
+            apply_cursor_settings(st);
+            st.cfg.save();
+            eprintln!("[appearance] cursor_text_color={next:?}");
+        });
+    });
+
+    ui.on_toggle_bold_is_bright(|| {
+        with_app(|st| {
+            st.cfg.bold_is_bright = !st.cfg.bold_is_bright;
+            st.ui.set_cfg_bold_is_bright(st.cfg.bold_is_bright);
+            apply_bold_settings(st);
+            st.cfg.save();
+            eprintln!("[appearance] bold_is_bright={}", st.cfg.bold_is_bright);
+        });
+    });
+
+    ui.on_bold_color_changed(|text| {
+        with_app(|st| {
+            let raw = text.as_str();
+            let next = if raw.trim().is_empty() {
+                String::new()
+            } else {
+                let Some(color) = config::normalize_hex_color(raw) else { return };
+                color
+            };
+            if st.cfg.bold_color == next {
+                return;
+            }
+            st.cfg.bold_color = next.clone();
+            apply_bold_settings(st);
+            st.cfg.save();
+            eprintln!("[appearance] bold_color={next:?}");
+        });
+    });
+
+    ui.on_toggle_bold_color_same_as_fg(|| {
+        with_app(|st| {
+            st.cfg.bold_color_same_as_fg = !st.cfg.bold_color_same_as_fg;
+            st.ui.set_cfg_bold_color_same_as_fg(st.cfg.bold_color_same_as_fg);
+            apply_bold_settings(st);
+            st.cfg.save();
+            eprintln!(
+                "[appearance] bold_color_same_as_fg={}",
+                st.cfg.bold_color_same_as_fg
+            );
+        });
+    });
+
     ui.on_bump_font_size(|delta| {
         with_app(|st| {
             let new = (st.cfg.font_size + delta as f32).clamp(8.0, 32.0);
@@ -6692,6 +6955,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         st.ui.set_cfg_confirm_paste(st.cfg.confirm_multiline_paste);
         st.ui.set_cfg_desktop_notifications(st.cfg.desktop_notifications);
         st.ui.set_cfg_visual_bell(st.cfg.visual_bell);
+        // 光标/粗体外观（GNOME Terminal 基础项）
+        st.ui.set_cfg_cursor_shape(st.cfg.cursor_shape.clone().into());
+        st.ui.set_cfg_cursor_blink(st.cfg.cursor_blink.clone().into());
+        st.ui.set_cfg_cursor_color(st.cfg.cursor_color.clone().into());
+        st.ui.set_cfg_cursor_text_color(st.cfg.cursor_text_color.clone().into());
+        st.ui.set_cfg_bold_is_bright(st.cfg.bold_is_bright);
+        st.ui.set_cfg_bold_color(st.cfg.bold_color.clone().into());
+        st.ui.set_cfg_bold_color_same_as_fg(st.cfg.bold_color_same_as_fg);
+        configure_cursor_blink(st);
         st.ui.set_tabbar_bottom(st.cfg.tabbar_position == "bottom");
         st.ui.set_settings_path(Config::path().display().to_string().as_str().into());
         init_background(st);
@@ -7143,6 +7415,10 @@ mod tests {
         assert!(hits.iter().any(|(cat, line)| *cat == 1 && line.contains("Font size")), "{hits:?}");
         assert!(settings_search("copy").iter().any(|(_, l)| l.contains("Copy on select")));
         assert!(settings_search("  theme  ").iter().any(|(cat, _)| *cat == 0));
+        assert!(settings_search("cursor")
+            .iter()
+            .any(|(cat, line)| *cat == 0 && line.contains("Cursor")));
+        assert!(settings_search("bold").iter().any(|(cat, _)| *cat == 0));
         assert!(settings_search("zzzz").is_empty());
         assert!(settings_search("").is_empty());
         // 结果按目录顺序返回
