@@ -4,21 +4,22 @@ mod askpass;
 mod bell;
 mod commands;
 mod config;
+mod config_watch;
 mod glyph;
 mod keys;
 mod latency;
 mod logging;
 mod plugin;
 mod profile;
+mod quake;
 mod render;
 mod render_probe;
-mod quake;
 mod session;
 mod sftp;
 mod tabby_import;
 mod themes;
-mod window;
 mod vault;
+mod window;
 mod workspace;
 mod xconn;
 
@@ -32,13 +33,13 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use slint::winit_030::{winit, EventResult, WinitWindowAccessor};
+use slint::{Model, ModelRc, VecModel};
 use tervo_core::{
     link::is_allowed_uri, spawn, ClipboardRequest, ClipboardSelection, CoreEvent, Frame, Modifiers,
     MouseAction, MouseButton, MouseEvent, Notification, Palette as TermPalette, PaneConfig,
     PaneHandle, ProgressState, ScrollPosition, SearchOptions, Theme, UiColors,
 };
-use slint::winit_030::{winit, EventResult, WinitWindowAccessor};
-use slint::{Model, ModelRc, VecModel};
 use x11rb::connection::Connection;
 use x11rb::rust_connection::RustConnection;
 
@@ -139,6 +140,8 @@ struct AppState {
     content: Rect,
     next_title: usize,
     cfg: Config,
+    /// 外部 config.toml 轮询监听；设置页保存时靠自己写入标记跳过回环。
+    config_watcher: Option<config_watch::ConfigWatcher>,
     /// 当前实际生效的主题（`cfg.theme == "auto"` 时是解析后的结果）。
     resolved_theme: ThemeData,
     /// 内置 + `themes/*.toml` 自定义主题。
@@ -297,7 +300,7 @@ fn with_app<R>(f: impl FnOnce(&mut AppState) -> R) -> Option<R> {
         Err(_) => {
             eprintln!("[app] with_app 重入（AppState 已被借用），忽略本次操作");
             return None;
-        },
+        }
     };
     Some(f(&mut st))
 }
@@ -359,7 +362,10 @@ fn gsettings_get(key: &str) -> Option<String> {
         .args(["get", "org.gnome.desktop.interface", key])
         .output()
         .ok()?;
-    output.status.success().then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 /// 检测系统当前是否深色。gsettings 不可用（非 GNOME/无 dconf）时逐级回退。
@@ -384,10 +390,16 @@ fn resolve_theme(
     auto_light: Option<&str>,
 ) -> ThemeData {
     if is_auto_theme(selected) {
-        let want = if detect_system_dark() { Variant::Dark } else { Variant::Light };
+        let want = if detect_system_dark() {
+            Variant::Dark
+        } else {
+            Variant::Light
+        };
         resolve_auto(reg, want, auto_dark, auto_light)
     } else {
-        reg.get(selected).cloned().unwrap_or_else(|| reg.dark_default().clone())
+        reg.get(selected)
+            .cloned()
+            .unwrap_or_else(|| reg.dark_default().clone())
     }
 }
 
@@ -432,17 +444,34 @@ fn tabby_config_path() -> std::path::PathBuf {
     let base = std::env::var("XDG_CONFIG_HOME")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| {
-            std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into())).join(".config")
+            std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into()))
+                .join(".config")
         });
     base.join("tabby").join("config.yaml")
 }
 
 /// 设置搜索索引：(分类下标, 展示名, 关键词)。
 const SETTINGS_CATALOG: &[(i32, &str, &str)] = &[
-    (0, "Theme / Color scheme", "theme color scheme appearance dark light"),
-    (0, "Background image", "background image wallpaper picture path 背景 壁纸"),
-    (0, "Background opacity", "background opacity transparency alpha 背景 透明 不透明度"),
-    (0, "Cursor shape", "cursor shape block underline ibeam beam 光标 形状"),
+    (
+        0,
+        "Theme / Color scheme",
+        "theme color scheme appearance dark light",
+    ),
+    (
+        0,
+        "Background image",
+        "background image wallpaper picture path 背景 壁纸",
+    ),
+    (
+        0,
+        "Background opacity",
+        "background opacity transparency alpha 背景 透明 不透明度",
+    ),
+    (
+        0,
+        "Cursor shape",
+        "cursor shape block underline ibeam beam 光标 形状",
+    ),
     (0, "Cursor blink", "cursor blink on off system 光标 闪烁"),
     (0, "Cursor color", "cursor color colour text 光标 颜色"),
     (0, "Bold is bright", "bold bright ansi color 粗体 亮色"),
@@ -453,17 +482,45 @@ const SETTINGS_CATALOG: &[(i32, &str, &str)] = &[
     (1, "Confirm before closing", "confirm close window exit"),
     (1, "Confirm multi-line paste", "paste multiline confirm"),
     (1, "Visual bell", "visual bell BEL flash border 视觉铃"),
-    (1, "Audible bell", "audible bell BEL beep sound system 响铃 声音"),
-    (1, "Scroll on output", "scroll output follow bottom 输出 跟随 滚动"),
-    (1, "Scroll on keystroke", "scroll keystroke keyboard bottom 按键 回底 滚动"),
-    (1, "Unlimited scrollback", "unlimited scrollback history cap memory 无限 历史 内存"),
-    (1, "Scrollbar policy", "scrollbar always auto never policy 滚动条"),
-    (1, "Backspace / Delete binding", "backspace delete ascii del control-h key encoding 退格 删除 编码"),
+    (
+        1,
+        "Audible bell",
+        "audible bell BEL beep sound system 响铃 声音",
+    ),
+    (
+        1,
+        "Scroll on output",
+        "scroll output follow bottom 输出 跟随 滚动",
+    ),
+    (
+        1,
+        "Scroll on keystroke",
+        "scroll keystroke keyboard bottom 按键 回底 滚动",
+    ),
+    (
+        1,
+        "Unlimited scrollback",
+        "unlimited scrollback history cap memory 无限 历史 内存",
+    ),
+    (
+        1,
+        "Scrollbar policy",
+        "scrollbar always auto never policy 滚动条",
+    ),
+    (
+        1,
+        "Backspace / Delete binding",
+        "backspace delete ascii del control-h key encoding 退格 删除 编码",
+    ),
     (2, "Tab bar at bottom", "tab bar position bottom top"),
     (3, "Config file path", "config path file folder"),
     (4, "Hotkey bindings", "hotkey shortcut key binding"),
     (5, "Installed plugins", "plugin plugins installed list"),
-    (6, "Vault / master password", "vault master password credentials 凭据 解锁 锁定"),
+    (
+        6,
+        "Vault / master password",
+        "vault master password credentials 凭据 解锁 锁定",
+    ),
 ];
 
 /// 设置搜索：大小写不敏感的子串匹配（名称或关键词），返回 (分类, 展示行)。
@@ -472,7 +529,15 @@ fn settings_search(query: &str) -> Vec<(i32, String)> {
     if q.is_empty() {
         return Vec::new();
     }
-    let cats = ["Appearance", "Terminal", "Window", "Config", "Hotkeys", "Plugins", "Vault"];
+    let cats = [
+        "Appearance",
+        "Terminal",
+        "Window",
+        "Config",
+        "Hotkeys",
+        "Plugins",
+        "Vault",
+    ];
     SETTINGS_CATALOG
         .iter()
         .filter(|(_, label, keywords)| {
@@ -547,8 +612,12 @@ fn refresh_hotkeys(st: &mut AppState) {
 
 /// 刷新 Plugins 设置页：已安装清单、统计、目录与最近活动。
 fn refresh_plugin_page(st: &mut AppState) {
-    let lines: Vec<slint::SharedString> =
-        st.plugins.display_lines().iter().map(|line| line.as_str().into()).collect();
+    let lines: Vec<slint::SharedString> = st
+        .plugins
+        .display_lines()
+        .iter()
+        .map(|line| line.as_str().into())
+        .collect();
     st.plugin_model.set_vec(lines);
     let summary = format!(
         "{} plugins · {} enabled · {} commands · {} skipped",
@@ -558,7 +627,13 @@ fn refresh_plugin_page(st: &mut AppState) {
         st.plugins.skipped.len()
     );
     st.ui.set_plugin_summary(summary.as_str().into());
-    st.ui.set_plugin_dir(plugin::PluginStore::dir().display().to_string().as_str().into());
+    st.ui.set_plugin_dir(
+        plugin::PluginStore::dir()
+            .display()
+            .to_string()
+            .as_str()
+            .into(),
+    );
     refresh_plugin_activity(st, true);
 }
 
@@ -577,24 +652,37 @@ fn refresh_plugin_activity(st: &mut AppState, force: bool) {
 }
 
 /// 异步分发一个插件事件；spawn 失败/插件执行失败都只写日志与活动列表。
-fn dispatch_plugin_event(st: &mut AppState, event: plugin::PluginEvent, payload: serde_json::Value) {
+fn dispatch_plugin_event(
+    st: &mut AppState,
+    event: plugin::PluginEvent,
+    payload: serde_json::Value,
+) {
     let spawned = st.plugins.spawn_event(event, payload);
     if spawned > 0 {
-        eprintln!("[plugin] 事件 {} 已提交后台执行（{} 个插件）", event.as_str(), spawned);
+        eprintln!(
+            "[plugin] 事件 {} 已提交后台执行（{} 个插件）",
+            event.as_str(),
+            spawned
+        );
     }
 }
 
 fn hotkey_title(reg: &commands::Registry, id: &str) -> String {
-    reg.get(id).map(|c| c.title.to_string()).unwrap_or_else(|| id.to_string())
+    reg.get(id)
+        .map(|c| c.title.to_string())
+        .unwrap_or_else(|| id.to_string())
 }
 
 /// 进入录制：先让终端 IME 宿主拿回焦点，否则按键会落在设置搜索框里。
 fn start_hotkey_edit(st: &mut AppState, index: i32) {
-    let Some(id) = st.hotkey_ids.get(index.max(0) as usize).copied() else { return };
+    let Some(id) = st.hotkey_ids.get(index.max(0) as usize).copied() else {
+        return;
+    };
     let title = hotkey_title(&st.commands, id);
     st.hotkey_recording = Some(id);
     st.ui.set_hotkey_error("".into());
-    st.ui.set_hotkey_status(format!("录制「{title}」：按下新的组合键").into());
+    st.ui
+        .set_hotkey_status(format!("录制「{title}」：按下新的组合键").into());
     st.ui.set_hotkey_recording_row(index.max(0));
     st.ui.invoke_focus_terminal();
     eprintln!("[hotkey] record start {id}");
@@ -611,7 +699,9 @@ fn cancel_hotkey_edit(st: &mut AppState) {
 }
 
 fn reset_hotkey(st: &mut AppState, index: i32) {
-    let Some(id) = st.hotkey_ids.get(index.max(0) as usize).copied() else { return };
+    let Some(id) = st.hotkey_ids.get(index.max(0) as usize).copied() else {
+        return;
+    };
     let title = hotkey_title(&st.commands, id);
     let removed = commands::clear_override(&mut st.cfg.hotkeys, id);
     if removed {
@@ -622,7 +712,8 @@ fn reset_hotkey(st: &mut AppState, index: i32) {
         st.ui.invoke_focus_terminal();
     }
     st.ui.set_hotkey_error("".into());
-    st.ui.set_hotkey_status(format!("{title} 已恢复默认").into());
+    st.ui
+        .set_hotkey_status(format!("{title} 已恢复默认").into());
     refresh_hotkeys(st);
     eprintln!("[hotkey] reset {id} removed={removed}");
 }
@@ -635,7 +726,8 @@ fn reset_all_hotkeys(st: &mut AppState) {
     }
     st.hotkey_recording = None;
     st.ui.set_hotkey_error("".into());
-    st.ui.set_hotkey_status(format!("已重置 {count} 条自定义快捷键").into());
+    st.ui
+        .set_hotkey_status(format!("已重置 {count} 条自定义快捷键").into());
     st.ui.invoke_focus_terminal();
     refresh_hotkeys(st);
     eprintln!("[hotkey] reset all count={count}");
@@ -645,7 +737,9 @@ fn reset_all_hotkeys(st: &mut AppState) {
 ///
 /// 冲突/非法组合只显示错误并保持录制，方便用户直接再按一个；不会触发任何命令。
 fn record_hotkey_key(st: &mut AppState, text: &str, ctrl: bool, alt: bool, shift: bool) {
-    let Some(id) = st.hotkey_recording else { return };
+    let Some(id) = st.hotkey_recording else {
+        return;
+    };
     if !ctrl && !alt && !shift {
         if text == "\u{1b}" {
             cancel_hotkey_edit(st);
@@ -659,38 +753,48 @@ fn record_hotkey_key(st: &mut AppState, text: &str, ctrl: bool, alt: bool, shift
             }
             st.hotkey_recording = None;
             st.ui.set_hotkey_error("".into());
-            st.ui.set_hotkey_status(format!("{title} 已恢复默认").into());
+            st.ui
+                .set_hotkey_status(format!("{title} 已恢复默认").into());
             refresh_hotkeys(st);
             st.ui.invoke_focus_terminal();
             eprintln!("[hotkey] record clear {id} removed={removed}");
             return;
         }
     }
-    let Some(chord) = keys::chord_from_key_event(text, ctrl, alt, shift) else { return };
+    let Some(chord) = keys::chord_from_key_event(text, ctrl, alt, shift) else {
+        return;
+    };
     let canonical = chord.canonical();
-    match st.commands.validate_override(id, &canonical, &st.cfg.hotkeys) {
+    match st
+        .commands
+        .validate_override(id, &canonical, &st.cfg.hotkeys)
+    {
         Ok(chord) => {
             let title = hotkey_title(&st.commands, id);
             commands::set_override(&mut st.cfg.hotkeys, id, &chord);
             st.cfg.save();
             st.hotkey_recording = None;
             st.ui.set_hotkey_error("".into());
-            st.ui.set_hotkey_status(format!("{title} → {}（已保存）", chord).into());
+            st.ui
+                .set_hotkey_status(format!("{title} → {}（已保存）", chord).into());
             refresh_hotkeys(st);
             st.ui.invoke_focus_terminal();
             eprintln!("[hotkey] saved {id} = {canonical}");
-        },
+        }
         Err(err) => {
             eprintln!("[hotkey] rejected {id} {canonical:?}: {err}");
             st.ui.set_hotkey_error(err.into());
-        },
+        }
     }
 }
 
 fn theme_choices(reg: &ThemeRegistry) -> ModelRc<ThemeChoice> {
     let choices: Vec<ThemeChoice> = reg
         .all()
-        .map(|t| ThemeChoice { id: t.id.as_str().into(), label: t.label.as_str().into() })
+        .map(|t| ThemeChoice {
+            id: t.id.as_str().into(),
+            label: t.label.as_str().into(),
+        })
         .collect();
     ModelRc::from(Rc::new(VecModel::from(choices)))
 }
@@ -710,7 +814,11 @@ fn pane_palette(st: &AppState) -> TermPalette {
 fn push_theme(st: &mut AppState, theme: &ThemeData) {
     st.resolved_theme = theme.clone();
     let auto = is_auto_theme(&st.cfg.theme);
-    st.ui.set_auto_resolved(if auto { theme.label.as_str().into() } else { "".into() });
+    st.ui.set_auto_resolved(if auto {
+        theme.label.as_str().into()
+    } else {
+        "".into()
+    });
     st.ui.global::<Palette>().set_colors(slint_theme(&theme.ui));
     let palette = pane_palette(st);
     for rt in st.panes.values_mut() {
@@ -753,7 +861,7 @@ fn apply_background_image(st: &mut AppState, raw: &str) -> Result<(), String> {
             st.ui.set_background_image_error("".into());
             sync_renderer_opacity(st);
             Ok(())
-        },
+        }
         Ok(Some(path)) => match slint::Image::load_from_path(&path) {
             Ok(image) => {
                 st.ui.set_background_image(image);
@@ -762,7 +870,7 @@ fn apply_background_image(st: &mut AppState, raw: &str) -> Result<(), String> {
                 sync_renderer_opacity(st);
                 eprintln!("[theme] 背景图 {} 已加载", path.display());
                 Ok(())
-            },
+            }
             Err(_) => Err(format!(
                 "无法解码图片（支持 PNG/JPEG/SVG）：{}",
                 path.display()
@@ -801,14 +909,15 @@ fn commit_background_path(st: &mut AppState, raw: &str, report_error: bool) -> b
                 st.cfg.background_opacity = FIRST_BACKGROUND_OPACITY;
                 st.ui.set_background_opacity(FIRST_BACKGROUND_OPACITY);
                 sync_renderer_opacity(st);
-                eprintln!(
-                    "[theme] 首次启用背景图，opacity 自动设为 {FIRST_BACKGROUND_OPACITY:.2}"
-                );
+                eprintln!("[theme] 首次启用背景图，opacity 自动设为 {FIRST_BACKGROUND_OPACITY:.2}");
             }
             st.cfg.save();
-            eprintln!("[theme] background_image={raw} opacity={:.2}", st.cfg.background_opacity);
+            eprintln!(
+                "[theme] background_image={raw} opacity={:.2}",
+                st.cfg.background_opacity
+            );
             true
-        },
+        }
         Err(e) => {
             if report_error {
                 eprintln!("[theme] 背景图无效，保留当前背景: {e}");
@@ -817,7 +926,7 @@ fn commit_background_path(st: &mut AppState, raw: &str, report_error: bool) -> b
                 eprintln!("[theme] 背景图输入尚未生效: {e}");
             }
             false
-        },
+        }
     }
 }
 
@@ -833,8 +942,11 @@ fn init_background(st: &mut AppState) {
     }
 }
 
-/// 应用用户选择的主题（"auto" 或具体 id），并写回配置。
-fn apply_theme(st: &mut AppState, selected: &str) {
+/// 应用主题选择（"auto" 或具体 id），但不写盘。
+///
+/// 返回 false 表示主题 id 不存在，调用方应保留原配置/旧主题。设置页保存和
+/// 外部热更新共用这一段，避免两条路径的主题行为漂移。
+fn install_theme_selection(st: &mut AppState, selected: &str) -> bool {
     let auto = is_auto_theme(selected);
     if auto {
         st.cfg.theme = AUTO_THEME.to_string();
@@ -842,7 +954,7 @@ fn apply_theme(st: &mut AppState, selected: &str) {
         st.cfg.theme = found.id.clone();
     } else {
         eprintln!("[theme] 未知主题 {selected:?}，保持当前配置");
-        return;
+        return false;
     }
     let theme = resolve_theme(
         &st.registry,
@@ -850,12 +962,320 @@ fn apply_theme(st: &mut AppState, selected: &str) {
         st.cfg.auto_dark.as_deref(),
         st.cfg.auto_light.as_deref(),
     );
-    st.ui.set_theme_name(if auto { AUTO_THEME.into() } else { theme.id.as_str().into() });
+    st.ui.set_theme_name(if auto {
+        AUTO_THEME.into()
+    } else {
+        theme.id.as_str().into()
+    });
     push_theme(st, &theme);
-    st.cfg.save();
     if auto {
         ensure_auto_watcher(st);
     }
+    true
+}
+
+/// 应用用户选择的主题（"auto" 或具体 id），并写回配置。
+fn apply_theme(st: &mut AppState, selected: &str) {
+    if install_theme_selection(st, selected) {
+        st.cfg.save();
+    }
+}
+
+/// 外部配置热更新的字段分类。只用于日志与文档矩阵的同源核对；
+/// 真正套用仍按字段逐项进行，JSON/TOML 里没写到的字段不会被“假装热更”。
+#[derive(Debug, Default, PartialEq, Eq)]
+struct ReconfigSummary {
+    hot: Vec<&'static str>,
+    new_pane: Vec<&'static str>,
+    restart: Vec<&'static str>,
+}
+
+fn reconfig_summary(old: &Config, new: &Config) -> ReconfigSummary {
+    let mut s = ReconfigSummary::default();
+    let mut hot = |cond: bool, name: &'static str| {
+        if cond {
+            s.hot.push(name);
+        }
+    };
+    hot(
+        old.theme != new.theme
+            || old.auto_dark != new.auto_dark
+            || old.auto_light != new.auto_light,
+        "theme",
+    );
+    hot(old.font_size != new.font_size, "font_size");
+    hot(
+        old.background_image != new.background_image,
+        "background_image",
+    );
+    hot(
+        old.background_opacity != new.background_opacity,
+        "background_opacity",
+    );
+    hot(old.background_dim != new.background_dim, "background_dim");
+    hot(old.visual_bell != new.visual_bell, "visual_bell");
+    hot(old.audible_bell != new.audible_bell, "audible_bell");
+    hot(
+        old.desktop_notifications != new.desktop_notifications,
+        "desktop_notifications",
+    );
+    hot(
+        old.scroll_on_output != new.scroll_on_output,
+        "scroll_on_output",
+    );
+    hot(
+        old.scroll_on_keystroke != new.scroll_on_keystroke,
+        "scroll_on_keystroke",
+    );
+    hot(
+        old.scrollbar_policy != new.scrollbar_policy,
+        "scrollbar_policy",
+    );
+    hot(old.sixel != new.sixel, "sixel");
+    hot(
+        old.sixel_scrolling != new.sixel_scrolling,
+        "sixel_scrolling",
+    );
+    hot(old.cursor_shape != new.cursor_shape, "cursor_shape");
+    hot(old.cursor_blink != new.cursor_blink, "cursor_blink");
+    hot(old.cursor_color != new.cursor_color, "cursor_color");
+    hot(
+        old.cursor_text_color != new.cursor_text_color,
+        "cursor_text_color",
+    );
+    hot(old.bold_is_bright != new.bold_is_bright, "bold_is_bright");
+    hot(old.bold_color != new.bold_color, "bold_color");
+    hot(
+        old.bold_color_same_as_fg != new.bold_color_same_as_fg,
+        "bold_color_same_as_fg",
+    );
+    hot(
+        old.right_click != new.right_click || old.right_click_paste != new.right_click_paste,
+        "right_click",
+    );
+    hot(
+        old.paste_on_middle_click != new.paste_on_middle_click,
+        "paste_on_middle_click",
+    );
+    hot(
+        old.confirm_multiline_paste != new.confirm_multiline_paste,
+        "confirm_multiline_paste",
+    );
+    hot(old.copy_on_select != new.copy_on_select, "copy_on_select");
+    hot(old.confirm_close != new.confirm_close, "confirm_close");
+    hot(old.osc52 != new.osc52, "osc52");
+    hot(
+        old.tabbar_position != new.tabbar_position,
+        "tabbar_position",
+    );
+    hot(
+        old.backspace_binding != new.backspace_binding,
+        "backspace_binding",
+    );
+    hot(old.delete_binding != new.delete_binding, "delete_binding");
+    hot(old.close_action != new.close_action, "close_action");
+    hot(old.hotkeys != new.hotkeys, "hotkeys");
+    hot(old.quake_enabled != new.quake_enabled, "quake_enabled");
+    hot(
+        old.quake_width != new.quake_width || old.quake_height != new.quake_height,
+        "quake_geometry",
+    );
+
+    if old.scrollback != new.scrollback || old.scrollback_unlimited != new.scrollback_unlimited {
+        s.new_pane.push("scrollback");
+    }
+    if old.shell != new.shell {
+        s.new_pane.push("shell");
+    }
+    if old.default_profile_id != new.default_profile_id {
+        s.new_pane.push("default_profile_id");
+    }
+    if old.cols != new.cols || old.rows != new.rows {
+        s.restart.push("cols/rows");
+    }
+    if old.quake_hotkey != new.quake_hotkey {
+        s.restart.push("quake_hotkey");
+    }
+    s
+}
+
+/// 外部 `config.toml` 成功解析后套用。**绝不调用 `save`**，避免 watcher 自己
+/// 触发第二轮文件变化；设置页保存走各自现有回调，不经过这里。
+fn apply_external_config(st: &mut AppState, new_cfg: Config) {
+    let old = st.cfg.clone();
+    if old == new_cfg {
+        // 典型情况：设置页刚 save 完、watcher 收到还没消费掉的自身写入；或只是
+        // 重新格式化/改注释/换行。内容等价就不重载、不重绘。
+        eprintln!("[config] 外部变更与当前配置等价，跳过套用（自身写入/仅格式变化）");
+        return;
+    }
+    let summary = reconfig_summary(&old, &new_cfg);
+    let theme_changed = old.theme != new_cfg.theme
+        || old.auto_dark != new_cfg.auto_dark
+        || old.auto_light != new_cfg.auto_light;
+    let font_changed = old.font_size != new_cfg.font_size;
+    let bg_image_changed = old.background_image != new_cfg.background_image;
+    let bg_opacity_changed = old.background_opacity != new_cfg.background_opacity;
+    let scroll_output_changed = old.scroll_on_output != new_cfg.scroll_on_output;
+    let sixel_changed = old.sixel != new_cfg.sixel;
+    let sixel_scrolling_changed = old.sixel_scrolling != new_cfg.sixel_scrolling;
+    let scrollbar_changed = old.scrollbar_policy != new_cfg.scrollbar_policy;
+    let cursor_changed = old.cursor_shape != new_cfg.cursor_shape
+        || old.cursor_color != new_cfg.cursor_color
+        || old.cursor_text_color != new_cfg.cursor_text_color;
+    let blink_changed = old.cursor_blink != new_cfg.cursor_blink;
+    let bold_changed = old.bold_is_bright != new_cfg.bold_is_bright
+        || old.bold_color != new_cfg.bold_color
+        || old.bold_color_same_as_fg != new_cfg.bold_color_same_as_fg;
+    let visual_bell_changed = old.visual_bell != new_cfg.visual_bell;
+    let tabbar_changed = old.tabbar_position != new_cfg.tabbar_position;
+    let hotkeys_changed = old.hotkeys != new_cfg.hotkeys;
+
+    st.cfg = new_cfg;
+
+    if theme_changed {
+        let selected = st.cfg.theme.clone();
+        let before = old.theme.clone();
+        if !install_theme_selection(st, &selected) {
+            // 配置解析成功但主题 id 不存在：保留旧主题，其余字段仍继续套用。
+            st.cfg.theme = before;
+        }
+    }
+
+    if font_changed {
+        let requested = st.cfg.font_size;
+        if !apply_font_size(st) {
+            eprintln!("[config] 外部 font_size={requested} 应用失败，保留旧字号");
+            st.cfg.font_size = old.font_size;
+        }
+    }
+
+    if bg_image_changed {
+        let raw = st.cfg.background_image.clone();
+        if let Err(e) = apply_background_image(st, &raw) {
+            // 不改回 cfg.path：设置页应看到用户刚写的路径和错误，但屏幕继续用旧图。
+            eprintln!("[config] 外部 background_image 无效，保留当前背景: {e}");
+        }
+    }
+    if bg_opacity_changed || bg_image_changed {
+        sync_renderer_opacity(st);
+    }
+
+    if scroll_output_changed {
+        let enabled = st.cfg.scroll_on_output;
+        for rt in st.panes.values() {
+            rt.handle.set_scroll_on_output(enabled);
+        }
+        for (_, rt, _) in &st.detached {
+            rt.handle.set_scroll_on_output(enabled);
+        }
+    }
+    if sixel_changed {
+        let enabled = st.cfg.sixel;
+        for rt in st.panes.values() {
+            rt.handle.set_sixel(enabled);
+        }
+        for (_, rt, _) in &st.detached {
+            rt.handle.set_sixel(enabled);
+        }
+    }
+    if sixel_scrolling_changed {
+        let enabled = st.cfg.sixel_scrolling;
+        for rt in st.panes.values() {
+            rt.handle.set_sixel_scrolling(enabled);
+        }
+        for (_, rt, _) in &st.detached {
+            rt.handle.set_sixel_scrolling(enabled);
+        }
+    }
+    if scrollbar_changed {
+        refresh_all_pane_views(st);
+    }
+    if cursor_changed {
+        apply_cursor_settings(st);
+    }
+    if blink_changed {
+        configure_cursor_blink(st);
+    }
+    if bold_changed {
+        apply_bold_settings(st);
+    }
+    if visual_bell_changed && !st.cfg.visual_bell {
+        for rt in st.panes.values_mut() {
+            rt.bell_until = None;
+        }
+        st.bell_timer.stop();
+        refresh_all_pane_views(st);
+    }
+    if hotkeys_changed {
+        refresh_hotkeys(st);
+    }
+
+    sync_reload_ui(st);
+    if tabbar_changed {
+        st.ime_spot_dirty = true;
+        update_ime_spot(st);
+    }
+
+    eprintln!("[config] 已套用外部热更新: {}", summary.hot.join(", "));
+    if !summary.new_pane.is_empty() {
+        eprintln!(
+            "[config] 以下字段仅对之后新建的 pane/Tab 生效，旧 pane 保持原行为: {}",
+            summary.new_pane.join(", ")
+        );
+    }
+    if !summary.restart.is_empty() {
+        eprintln!(
+            "[config] 以下字段需要重启 Tervo 才生效: {}",
+            summary.restart.join(", ")
+        );
+    }
+}
+
+/// 外部热更新后同步设置页控件状态。只改 Slint 属性，不触发回调、不写盘。
+fn sync_reload_ui(st: &mut AppState) {
+    st.ui.set_font_size(st.cfg.font_size as i32);
+    st.ui.set_scrollback(st.cfg.scrollback as i32);
+    st.ui
+        .set_background_image_path(st.cfg.background_image.as_str().into());
+    st.ui.set_background_opacity(st.cfg.background_opacity);
+    st.ui.set_background_dim(st.cfg.background_dim);
+    st.ui.set_cfg_copy_on_select(st.cfg.copy_on_select);
+    st.ui.set_cfg_confirm_close(st.cfg.confirm_close);
+    st.ui.set_cfg_confirm_paste(st.cfg.confirm_multiline_paste);
+    st.ui
+        .set_cfg_right_click(st.cfg.effective_right_click().into());
+    st.ui.set_cfg_paste_middle(st.cfg.paste_on_middle_click);
+    st.ui
+        .set_cfg_desktop_notifications(st.cfg.desktop_notifications);
+    st.ui.set_cfg_visual_bell(st.cfg.visual_bell);
+    st.ui.set_cfg_audible_bell(st.cfg.audible_bell);
+    st.ui.set_cfg_scroll_output(st.cfg.scroll_on_output);
+    st.ui.set_cfg_scroll_keystroke(st.cfg.scroll_on_keystroke);
+    st.ui.set_cfg_sixel(st.cfg.sixel);
+    st.ui.set_cfg_sixel_scrolling(st.cfg.sixel_scrolling);
+    st.ui
+        .set_cfg_scrollback_unlimited(st.cfg.scrollback_unlimited);
+    st.ui
+        .set_cfg_scrollbar_policy(st.cfg.scrollbar_policy().as_str().into());
+    st.ui
+        .set_cfg_backspace_binding(st.cfg.key_bindings().backspace.as_str().into());
+    st.ui
+        .set_cfg_delete_binding(st.cfg.key_bindings().delete.as_str().into());
+    st.ui
+        .set_cfg_cursor_shape(st.cfg.cursor_shape.clone().into());
+    st.ui
+        .set_cfg_cursor_blink(st.cfg.cursor_blink.clone().into());
+    st.ui
+        .set_cfg_cursor_color(st.cfg.cursor_color.clone().into());
+    st.ui
+        .set_cfg_cursor_text_color(st.cfg.cursor_text_color.clone().into());
+    st.ui.set_cfg_bold_is_bright(st.cfg.bold_is_bright);
+    st.ui.set_cfg_bold_color(st.cfg.bold_color.clone().into());
+    st.ui
+        .set_cfg_bold_color_same_as_fg(st.cfg.bold_color_same_as_fg);
+    st.ui.set_cfg_quake(st.cfg.quake_enabled);
+    st.ui.set_tabbar_bottom(st.cfg.tabbar_position == "bottom");
 }
 
 /// 启动一次 `gsettings monitor` 监听；启动失败（非 GNOME、无 gsettings）就静默放弃。
@@ -905,7 +1325,9 @@ fn watch_system_scheme() {
         Ok(child) => child,
         Err(_) => return,
     };
-    let Some(stdout) = child.stdout.take() else { return };
+    let Some(stdout) = child.stdout.take() else {
+        return;
+    };
     // 子进程句柄交给全局槽位，主线程退出事件循环时可以统一 kill。
     // 与 stop_auto_watcher 用同一把锁，避免「刚启动就退出」时漏杀。
     if let Ok(mut slot) = SCHEME_WATCH_CHILD.lock() {
@@ -984,15 +1406,12 @@ fn winit_resize_direction(dir: i32) -> Option<winit::window::ResizeDirection> {
 /// `xresize` 会把 Wayland 窗口误判成 X11，从而错误地跳过 `xdg_toplevel.resize`。
 fn winit_window_is_x11(window: &winit::window::Window) -> bool {
     use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
-    window
-        .window_handle()
-        .ok()
-        .is_some_and(|handle| {
-            matches!(
-                handle.as_raw(),
-                RawWindowHandle::Xlib(_) | RawWindowHandle::Xcb(_)
-            )
-        })
+    window.window_handle().ok().is_some_and(|handle| {
+        matches!(
+            handle.as_raw(),
+            RawWindowHandle::Xlib(_) | RawWindowHandle::Xcb(_)
+        )
+    })
 }
 
 /// 尝试把一次边/角拖动交给 winit/合成器。
@@ -1029,38 +1448,38 @@ fn start_wm_live_resize(st: &AppState, dir: i32) -> bool {
         }
     }
 
-    let (started, source) =
-        match st.ui.window().with_winit_window(|window| window.drag_resize_window(winit_dir)) {
-            Some(Ok(())) => (true, "winit"),
-            Some(Err(err)) => {
-                eprintln!("[ui] winit drag_resize_window 失败，回退自绘 resize: {err}");
-                (false, "winit")
-            }
-            None => {
-                // 当前构建固定 winit 后端；只有未来换后端时才会走到这里。
-                let Some(ctx) = st.xresize.as_ref() else {
-                    eprintln!("[ui] 没有 winit 窗口，也没有 X11 连接，无法拖边 resize");
-                    return false;
-                };
-                let Some(window) = xconn::find_own_window(&ctx.conn, ctx.root, &st.opts.title)
-                else {
-                    eprintln!("[ui] 找不到本进程窗口，无法走 EWMH resize");
-                    return false;
-                };
-                match xconn::start_wm_resize(&ctx.conn, ctx.root, window, dir) {
-                    Ok(()) => {
-                        eprintln!(
-                            "[ui] xconn EWMH 兜底已发送；跨连接 ungrab 可能无效，仍保留自绘回退"
-                        );
-                        (true, "xconn-ewmh")
-                    }
-                    Err(err) => {
-                        eprintln!("[ui] xconn EWMH 兜底失败，回退自绘 resize: {err}");
-                        (false, "xconn-ewmh")
-                    }
+    let (started, source) = match st
+        .ui
+        .window()
+        .with_winit_window(|window| window.drag_resize_window(winit_dir))
+    {
+        Some(Ok(())) => (true, "winit"),
+        Some(Err(err)) => {
+            eprintln!("[ui] winit drag_resize_window 失败，回退自绘 resize: {err}");
+            (false, "winit")
+        }
+        None => {
+            // 当前构建固定 winit 后端；只有未来换后端时才会走到这里。
+            let Some(ctx) = st.xresize.as_ref() else {
+                eprintln!("[ui] 没有 winit 窗口，也没有 X11 连接，无法拖边 resize");
+                return false;
+            };
+            let Some(window) = xconn::find_own_window(&ctx.conn, ctx.root, &st.opts.title) else {
+                eprintln!("[ui] 找不到本进程窗口，无法走 EWMH resize");
+                return false;
+            };
+            match xconn::start_wm_resize(&ctx.conn, ctx.root, window, dir) {
+                Ok(()) => {
+                    eprintln!("[ui] xconn EWMH 兜底已发送；跨连接 ungrab 可能无效，仍保留自绘回退");
+                    (true, "xconn-ewmh")
+                }
+                Err(err) => {
+                    eprintln!("[ui] xconn EWMH 兜底失败，回退自绘 resize: {err}");
+                    (false, "xconn-ewmh")
                 }
             }
-        };
+        }
+    };
 
     // winit 路径在 X11/Wayland 都由后端保证支持；xconn 兜底在发送前已查 _NET_SUPPORTED。
     let route = xconn::resize_route(true, started);
@@ -1091,7 +1510,11 @@ fn cell_of(rect: Rect, cell: (usize, usize)) -> (usize, usize) {
 fn shell_name(opts: &Options) -> String {
     let path = opts.shell.clone().or_else(|| std::env::var("SHELL").ok());
     path.as_deref()
-        .and_then(|s| std::path::Path::new(s).file_name().map(|f| f.to_string_lossy().to_string()))
+        .and_then(|s| {
+            std::path::Path::new(s)
+                .file_name()
+                .map(|f| f.to_string_lossy().to_string())
+        })
         .unwrap_or_else(|| "shell".to_string())
 }
 
@@ -1109,7 +1532,9 @@ fn create_pane(
         .map(|p| p.shell.clone())
         .filter(|s| !s.is_empty())
         .or_else(|| st.cfg.shell.clone());
-    let args = profile.map(|p| p.args.clone()).unwrap_or_else(|| st.opts.args.clone());
+    let args = profile
+        .map(|p| p.args.clone())
+        .unwrap_or_else(|| st.opts.args.clone());
     let mut env = profile.map(|p| p.env.clone()).unwrap_or_default();
     if let Some(a) = askpass.as_mut() {
         a.apply(&mut env);
@@ -1119,8 +1544,9 @@ fn create_pane(
             .map(|(k, _)| k.as_str())
             .filter(|k| k.starts_with("SSH_ASKPASS") || *k == askpass::SECRET_ENV)
             .collect();
-        let secret_set =
-            env.iter().any(|(k, v)| k.as_str() == askpass::SECRET_ENV && !v.is_empty());
+        let secret_set = env
+            .iter()
+            .any(|(k, v)| k.as_str() == askpass::SECRET_ENV && !v.is_empty());
         eprintln!("[askpass] 注入 ssh 子进程环境: keys={keys:?} secret_set={secret_set}");
     }
     let cwd = profile
@@ -1144,18 +1570,20 @@ fn create_pane(
 
     let wake = handle.wake_receiver();
     let pending = Arc::new(AtomicBool::new(false));
-    std::thread::Builder::new().name(format!("wake-{id}")).spawn(move || {
-        while wake.recv().is_ok() {
-            if pending.swap(true, Ordering::AcqRel) {
-                continue;
+    std::thread::Builder::new()
+        .name(format!("wake-{id}"))
+        .spawn(move || {
+            while wake.recv().is_ok() {
+                if pending.swap(true, Ordering::AcqRel) {
+                    continue;
+                }
+                let pending = pending.clone();
+                let _ = slint::invoke_from_event_loop(move || {
+                    pending.store(false, Ordering::Release);
+                    redraw_pane(id);
+                });
             }
-            let pending = pending.clone();
-            let _ = slint::invoke_from_event_loop(move || {
-                pending.store(false, Ordering::Release);
-                redraw_pane(id);
-            });
-        }
-    })?;
+        })?;
 
     let theme = &st.resolved_theme;
     let mut renderer = Renderer::new(
@@ -1176,11 +1604,10 @@ fn create_pane(
     // 光标不画进终端帧：单独生成 cell 大小 overlay，闪烁只切 Slint visible。
     renderer.draw_without_cursor(&frame);
     let image = renderer.image();
-    let (cursor_image, cursor_rect, cursor_visible) =
-        match renderer.cursor_overlay(&frame) {
-            Some(o) => (o.image, (o.x, o.y, o.width, o.height), true),
-            None => (slint::Image::default(), (0.0, 0.0, 0.0, 0.0), false),
-        };
+    let (cursor_image, cursor_rect, cursor_visible) = match renderer.cursor_overlay(&frame) {
+        Some(o) => (o.image, (o.x, o.y, o.width, o.height), true),
+        None => (slint::Image::default(), (0.0, 0.0, 0.0, 0.0), false),
+    };
 
     Ok(PaneRuntime {
         handle,
@@ -1217,11 +1644,15 @@ fn new_tab_inner(st: &mut AppState) {
             st.ws.tabs.push(Tab::single(id, title.clone()));
             eprintln!("[ws] new tab: tabs={}", st.ws.tabs.len());
             st.ws.active = st.ws.tabs.len() - 1;
-            dispatch_plugin_event(st, plugin::PluginEvent::TabOpen, plugin::tab_open_payload(&title, "local"));
+            dispatch_plugin_event(
+                st,
+                plugin::PluginEvent::TabOpen,
+                plugin::tab_open_payload(&title, "local"),
+            );
             refresh_views(st);
             rebuild_tabs(st);
             redraw_pane_inner(st, id);
-        },
+        }
         Err(e) => eprintln!("创建 pane 失败: {e}"),
     }
 }
@@ -1241,8 +1672,14 @@ fn new_window() {
 
 /// 关视图但保留会话：运行时挪到后台池，PaneHandle 不被 Drop，子进程继续跑。
 fn detach_runtime(st: &mut AppState, id: PaneId) {
-    let Some(rt) = st.panes.remove(&id) else { return };
-    let title = if rt.title.is_empty() { format!("session {id}") } else { rt.title.clone() };
+    let Some(rt) = st.panes.remove(&id) else {
+        return;
+    };
+    let title = if rt.title.is_empty() {
+        format!("session {id}")
+    } else {
+        rt.title.clone()
+    };
     eprintln!("[session] detach pane={id} title={title:?}（子进程保留）");
     st.detached.push((id, rt, title));
     refresh_background(st);
@@ -1250,8 +1687,11 @@ fn detach_runtime(st: &mut AppState, id: PaneId) {
 
 /// 后台会话列表（标题 + 窗口内 cwd 提示不吃内存）。
 fn refresh_background(st: &mut AppState) {
-    let items: Vec<slint::SharedString> =
-        st.detached.iter().map(|(id, _, title)| format!("{title}   #{id}").into()).collect();
+    let items: Vec<slint::SharedString> = st
+        .detached
+        .iter()
+        .map(|(id, _, title)| format!("{title}   #{id}").into())
+        .collect();
     st.bg_model.set_vec(items);
 }
 
@@ -1302,7 +1742,7 @@ fn new_tab_with_default(st: &mut AppState) {
             let id = st.profiles.profiles[index].id;
             eprintln!("[profile] 新 Tab 使用默认 Profile id={id} index={index}");
             open_profile_tab(st, index);
-        },
+        }
         None => new_tab_inner(st),
     }
 }
@@ -1346,7 +1786,9 @@ fn toggle_quake_inner(st: &mut AppState) {
     }
     st.ui.window().set_minimized(false);
     st.ui.window().set_size(slint::PhysicalSize::new(w, h));
-    st.ui.window().set_position(slint::PhysicalPosition::new(x, 0));
+    st.ui
+        .window()
+        .set_position(slint::PhysicalPosition::new(x, 0));
     st.ui.window().show();
     let _ = crate::xconn::activate_own_window("");
     st.quake_visible = true;
@@ -1370,7 +1812,10 @@ fn open_profile_menu(st: &mut AppState) {
     st.profile_menu_indices = indices;
     st.profile_menu_model.set_vec(items);
     st.ui.set_profilemenu_open(true);
-    eprintln!("[ui] profile menu profiles={}", st.profile_menu_indices.len());
+    eprintln!(
+        "[ui] profile menu profiles={}",
+        st.profile_menu_indices.len()
+    );
 }
 
 fn open_profiles_panel(st: &mut AppState) {
@@ -1401,7 +1846,9 @@ fn prompt_profile_password(st: &mut AppState, index: usize, msg: &str) {
 
 /// 用 Profile 打开新 Tab（shell/args/env/cwd 全按 Profile）。
 fn open_profile_tab(st: &mut AppState, index: usize) {
-    let Some(p) = st.profiles.profiles.get(index).cloned() else { return };
+    let Some(p) = st.profiles.profiles.get(index).cloned() else {
+        return;
+    };
     // kind → 实际启动命令：local 直接用 Profile；ssh 用系统 ssh 客户端（PTY 里跑）；
     // serial/telnet 后端还没做，明确拒绝而不是假装能连。
     let mut askpass = None;
@@ -1440,7 +1887,7 @@ fn open_profile_tab(st: &mut AppState, index: usize) {
                                         askpass::debug_enabled()
                                     );
                                     askpass = Some(a);
-                                },
+                                }
                                 Err(e) => {
                                     drop(password);
                                     prompt_profile_password(
@@ -1449,17 +1896,17 @@ fn open_profile_tab(st: &mut AppState, index: usize) {
                                         &format!("创建 ssh askpass 失败: {e}"),
                                     );
                                     return;
-                                },
+                                }
                             }
                         }
-                    },
+                    }
                     Err(vault::VaultError::Locked | vault::VaultError::NotInitialized) => {
                         prompt_vault_unlock(
                             st,
                             "Vault 已锁定：请先在 Vault 页解锁，再连接该 SSH Profile",
                         );
                         return;
-                    },
+                    }
                     Err(e) => {
                         prompt_profile_password(
                             st,
@@ -1467,12 +1914,12 @@ fn open_profile_tab(st: &mut AppState, index: usize) {
                             &format!("{e}；请解锁 Vault 并重新保存密码"),
                         );
                         return;
-                    },
+                    }
                 }
             }
             eprintln!("[profile] ssh 命令: {} {}", q.shell, q.args.join(" "));
             q
-        },
+        }
         "telnet" => {
             let (prog, args) = p.telnet_command();
             let mut q = p.clone();
@@ -1481,7 +1928,7 @@ fn open_profile_tab(st: &mut AppState, index: usize) {
             q.cwd = None;
             eprintln!("[profile] telnet 命令: {} {}", q.shell, q.args.join(" "));
             q
-        },
+        }
         "serial" => {
             let (prog, args) = p.serial_command();
             let mut q = p.clone();
@@ -1490,11 +1937,11 @@ fn open_profile_tab(st: &mut AppState, index: usize) {
             q.cwd = None;
             eprintln!("[profile] serial 命令: {} {}", q.shell, q.args.join(" "));
             q
-        },
+        }
         other => {
             eprintln!("[profile] {:?} kind={other} 未知类型", p.name);
             return;
-        },
+        }
     };
     let id = st.ws.alloc_id();
     let (cols, rows) = cell_of(st.content, st.cell);
@@ -1506,12 +1953,16 @@ fn open_profile_tab(st: &mut AppState, index: usize) {
             st.ws.active = st.ws.tabs.len() - 1;
             st.ui.set_profiles_open(false);
             st.ui.invoke_focus_terminal();
-            dispatch_plugin_event(st, plugin::PluginEvent::TabOpen, plugin::tab_open_payload(&tab_title, &p.kind));
+            dispatch_plugin_event(
+                st,
+                plugin::PluginEvent::TabOpen,
+                plugin::tab_open_payload(&tab_title, &p.kind),
+            );
             refresh_views(st);
             rebuild_tabs(st);
             redraw_pane_inner(st, id);
             eprintln!("[profile] open {:?} kind={}", p.name, p.kind);
-        },
+        }
         Err(e) => eprintln!("[profile] 打开 {:?} 失败: {e}", p.name),
     }
 }
@@ -1525,7 +1976,12 @@ fn open_profile_form(st: &mut AppState) {
         name = format!("{base}-{n}");
         n += 1;
     }
-    let shell = st.cfg.shell.clone().or_else(|| std::env::var("SHELL").ok()).unwrap_or_default();
+    let shell = st
+        .cfg
+        .shell
+        .clone()
+        .or_else(|| std::env::var("SHELL").ok())
+        .unwrap_or_default();
     let cwd = st
         .ws
         .active_tab()
@@ -1542,7 +1998,8 @@ fn open_profile_form(st: &mut AppState) {
     st.ui.set_form_cwd(cwd.as_str().into());
     st.ui.set_form_host("".into());
     st.ui.set_form_port("22".into());
-    st.ui.set_form_user(std::env::var("USER").unwrap_or_default().as_str().into());
+    st.ui
+        .set_form_user(std::env::var("USER").unwrap_or_default().as_str().into());
     st.ui.set_form_auth("agent".into());
     st.ui.set_form_key("".into());
     st.ui.set_form_password("".into());
@@ -1558,14 +2015,20 @@ fn open_profile_form(st: &mut AppState) {
 
 /// 打开编辑表单：回填已有 Profile 的所有字段。
 fn edit_profile_form(st: &mut AppState, index: usize) {
-    let Some(p) = st.profiles.profiles.get(index).cloned() else { return };
-    let kind_idx = profile::KINDS.iter().position(|k| *k == p.kind).unwrap_or(0);
+    let Some(p) = st.profiles.profiles.get(index).cloned() else {
+        return;
+    };
+    let kind_idx = profile::KINDS
+        .iter()
+        .position(|k| *k == p.kind)
+        .unwrap_or(0);
     st.ui.set_form_edit_id(p.id as i32);
     st.ui.set_form_name(p.name.as_str().into());
     st.ui.set_form_kind(kind_idx as i32);
     st.ui.set_form_shell(p.shell.as_str().into());
     st.ui.set_form_args(p.args.join(" ").as_str().into());
-    st.ui.set_form_cwd(p.cwd.clone().unwrap_or_default().as_str().into());
+    st.ui
+        .set_form_cwd(p.cwd.clone().unwrap_or_default().as_str().into());
     st.ui.set_form_host(p.host.as_str().into());
     st.ui.set_form_port(p.port.to_string().as_str().into());
     st.ui.set_form_user(p.user.as_str().into());
@@ -1575,12 +2038,16 @@ fn edit_profile_form(st: &mut AppState, index: usize) {
     st.ui.set_form_password("".into());
     st.ui.set_form_save_password(p.save_password);
     st.ui.set_form_extra(p.extra_args.join(" ").as_str().into());
-    st.ui.set_form_forwards(p.local_forwards.join(" ").as_str().into());
+    st.ui
+        .set_form_forwards(p.local_forwards.join(" ").as_str().into());
     st.ui.set_form_serial_port(p.serial_port.as_str().into());
     st.ui.set_form_baud(p.baud.to_string().as_str().into());
     st.ui.set_form_error("".into());
     st.ui.set_profile_form_open(true);
-    eprintln!("[profile] 编辑表单 id={} name={:?} kind={}", p.id, p.name, p.kind);
+    eprintln!(
+        "[profile] 编辑表单 id={} name={:?} kind={}",
+        p.id, p.name, p.kind
+    );
 }
 
 fn save_profile_form(st: &mut AppState) {
@@ -1589,7 +2056,11 @@ fn save_profile_form(st: &mut AppState) {
     let name = st.ui.get_form_name().to_string();
     let parse_port = |s: String| s.trim().parse::<u16>().unwrap_or(0);
     let edit_id = st.ui.get_form_edit_id();
-    let mut p = profile::Profile { name, kind: kind.to_string(), ..profile::Profile::default() };
+    let mut p = profile::Profile {
+        name,
+        kind: kind.to_string(),
+        ..profile::Profile::default()
+    };
     match kind {
         "ssh" => {
             p.host = st.ui.get_form_host().to_string();
@@ -1597,33 +2068,52 @@ fn save_profile_form(st: &mut AppState) {
             p.user = st.ui.get_form_user().to_string();
             p.auth = st.ui.get_form_auth().to_string();
             p.key_path = st.ui.get_form_key().to_string();
-            p.extra_args =
-                st.ui.get_form_extra().split_whitespace().map(|s| s.to_string()).collect();
-            p.local_forwards =
-                st.ui.get_form_forwards().split_whitespace().map(|s| s.to_string()).collect();
-        },
+            p.extra_args = st
+                .ui
+                .get_form_extra()
+                .split_whitespace()
+                .map(|s| s.to_string())
+                .collect();
+            p.local_forwards = st
+                .ui
+                .get_form_forwards()
+                .split_whitespace()
+                .map(|s| s.to_string())
+                .collect();
+        }
         "serial" => {
             p.serial_port = st.ui.get_form_serial_port().to_string();
             p.baud = st.ui.get_form_baud().trim().parse::<u32>().unwrap_or(0);
-        },
+        }
         "telnet" => {
             p.host = st.ui.get_form_host().to_string();
             p.port = parse_port(st.ui.get_form_port().to_string());
-        },
+        }
         _ => {
             p.shell = st.ui.get_form_shell().to_string();
-            p.args = st.ui.get_form_args().split_whitespace().map(|s| s.to_string()).collect();
+            p.args = st
+                .ui
+                .get_form_args()
+                .split_whitespace()
+                .map(|s| s.to_string())
+                .collect();
             let cwd = st.ui.get_form_cwd().to_string();
             p.cwd = (!cwd.trim().is_empty()).then(|| cwd.trim().to_string());
-        },
+        }
     }
     // ---- Vault 密码：只在 auth=password 且勾选保存时处理 ----
     let password = st.ui.get_form_password().to_string();
     let save_checked = st.ui.get_form_save_password();
     p.save_password = kind == "ssh" && p.auth == "password" && save_checked;
     let save_password = p.save_password;
-    let previous_save =
-        if edit_id > 0 { st.profiles.get(edit_id as u64).map(|q| q.save_password).unwrap_or(false) } else { false };
+    let previous_save = if edit_id > 0 {
+        st.profiles
+            .get(edit_id as u64)
+            .map(|q| q.save_password)
+            .unwrap_or(false)
+    } else {
+        false
+    };
 
     // 先做 Vault 前置校验，任何错误都不改动 ProfileStore。
     if p.save_password {
@@ -1632,7 +2122,7 @@ fn save_profile_form(st: &mut AppState) {
                 let msg = match st.vault.status() {
                     vault::VaultStatus::Uninitialized => {
                         "Vault 未初始化：请先在 Settings → Vault 设置主密码，再保存密码"
-                    },
+                    }
                     _ => "Vault 未解锁：请先在 Settings → Vault 解锁，再保存密码",
                 };
                 st.ui.set_form_error(msg.into());
@@ -1656,7 +2146,9 @@ fn save_profile_form(st: &mut AppState) {
     }
 
     let result = if edit_id > 0 {
-        st.profiles.update(edit_id as u64, p).map(|_| edit_id as u64)
+        st.profiles
+            .update(edit_id as u64, p)
+            .map(|_| edit_id as u64)
     } else {
         st.profiles.add(p)
     };
@@ -1670,10 +2162,10 @@ fn save_profile_form(st: &mut AppState) {
             } else if !save_password && previous_save {
                 // 取消勾选：解锁时同步删除旧凭据；锁定则只能先留着，等 Clear vault 清理。
                 match st.vault.remove(id) {
-                    Ok(_) => {},
+                    Ok(_) => {}
                     Err(vault::VaultError::Locked | vault::VaultError::NotInitialized) => {
                         eprintln!("[vault] Vault 锁定，Profile {id} 的旧密码暂留（已被取消勾选，不再使用）");
-                    },
+                    }
                     Err(e) => eprintln!("[vault] 删除 Profile {id} 的密码失败: {e}"),
                 }
             }
@@ -1696,12 +2188,15 @@ fn save_profile_form(st: &mut AppState) {
             st.ui.set_form_save_password(false);
             st.ui.set_form_error("".into());
             refresh_vault_ui(st);
-            eprintln!("[profile] 保存 id={id} kind={kind}（共 {}）", st.profiles.profiles.len());
-        },
+            eprintln!(
+                "[profile] 保存 id={id} kind={kind}（共 {}）",
+                st.profiles.profiles.len()
+            );
+        }
         Err(e) => {
             eprintln!("[profile] 表单校验失败: {e}");
             st.ui.set_form_error(e.as_str().into());
-        },
+        }
     }
 }
 
@@ -1756,7 +2251,7 @@ fn vault_set_master_password(st: &mut AppState) {
                 refresh_vault_ui(st);
                 vault_notice(st, "主密码已设置，Vault 已解锁（空 vault）");
                 eprintln!("[vault] 初始化完成");
-            },
+            }
             Err(e) => vault_fail(st, e.to_string()),
         },
         vault::VaultStatus::Unlocked => match st.vault.change_master(&master) {
@@ -1765,12 +2260,12 @@ fn vault_set_master_password(st: &mut AppState) {
                 refresh_vault_ui(st);
                 vault_notice(st, "主密码已更新；凭据已用新密钥重新加密");
                 eprintln!("[vault] 主密码已更新");
-            },
+            }
             Err(e) => vault_fail(st, e.to_string()),
         },
         vault::VaultStatus::Locked => {
             vault_fail(st, "Vault 已锁定：先用当前主密码解锁，再修改主密码");
-        },
+        }
     }
 }
 
@@ -1787,12 +2282,12 @@ fn vault_unlock(st: &mut AppState) {
             refresh_vault_ui(st);
             vault_notice(st, format!("已解锁 · {} 条凭据", st.vault.entry_count()));
             eprintln!("[vault] 已解锁 entries={}", st.vault.entry_count());
-        },
+        }
         Err(e) => {
             // 密码本身不放进提示/日志。
             refresh_vault_ui(st);
             vault_fail(st, e.to_string());
-        },
+        }
     }
 }
 
@@ -1813,7 +2308,10 @@ fn vault_clear(st: &mut AppState) {
     if !st.vault_clear_armed {
         st.vault_clear_armed = true;
         let n = st.vault.entry_count();
-        vault_notice(st, format!("再次点击 Clear 确认清空 {n} 条凭据（主密码保留）"));
+        vault_notice(
+            st,
+            format!("再次点击 Clear 确认清空 {n} 条凭据（主密码保留）"),
+        );
         return;
     }
     st.vault_clear_armed = false;
@@ -1822,7 +2320,7 @@ fn vault_clear(st: &mut AppState) {
             refresh_vault_ui(st);
             vault_notice(st, "已清空全部凭据（vault.enc 与主密码保留）");
             eprintln!("[vault] 已清空全部凭据");
-        },
+        }
         Err(e) => vault_fail(st, e.to_string()),
     }
 }
@@ -1841,8 +2339,10 @@ fn sftp_profile_indices(st: &AppState) -> Vec<usize> {
 
 fn open_sftp_panel(st: &mut AppState) {
     let indices = sftp_profile_indices(st);
-    let names: Vec<slint::SharedString> =
-        indices.iter().map(|i| st.profiles.profiles[*i].name.clone().into()).collect();
+    let names: Vec<slint::SharedString> = indices
+        .iter()
+        .map(|i| st.profiles.profiles[*i].name.clone().into())
+        .collect();
     st.sftp_profiles = indices;
     let model = Rc::new(VecModel::from(names));
     st.ui.set_sftp_profiles(ModelRc::from(model));
@@ -1934,7 +2434,7 @@ fn sftp_start_transfer(
                 "[sftp] {} 开始 local={local:?} remote={remote:?} recursive={recursive}",
                 direction.verb()
             );
-        },
+        }
         Err(e) => sftp_set_status(st, &format!("{}失败: {e}", direction.verb())),
     }
 }
@@ -1953,7 +2453,7 @@ fn poll_sftp_transfer(st: &mut AppState) {
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 disconnected = true;
                 break;
-            },
+            }
         }
     }
     for event in events {
@@ -2031,7 +2531,7 @@ fn sftp_do_list(st: &mut AppState) {
             st.sftp_model.set_vec(names);
             st.ui.set_sftp_selected(-1);
             sftp_set_status(st, &format!("{n} 个条目"));
-        },
+        }
         Err(e) => sftp_set_status(st, &format!("列目录失败: {e}")),
     }
 }
@@ -2107,7 +2607,7 @@ fn sftp_do_mkdir(st: &mut AppState) {
         Ok(()) => {
             sftp_set_status(st, &format!("已创建 {remote}"));
             sftp_do_list(st);
-        },
+        }
         Err(e) => sftp_set_status(st, &format!("建目录失败: {e}")),
     }
 }
@@ -2137,7 +2637,7 @@ fn sftp_do_rename(st: &mut AppState) {
         Ok(()) => {
             sftp_set_status(st, &format!("已重命名 {from} → {to}"));
             sftp_do_list(st);
-        },
+        }
         Err(e) => sftp_set_status(st, &format!("重命名失败: {e}")),
     }
 }
@@ -2166,7 +2666,7 @@ fn sftp_do_delete(st: &mut AppState) {
         Ok(()) => {
             sftp_set_status(st, &format!("已删除 {path}"));
             sftp_do_list(st);
-        },
+        }
         Err(e) => sftp_set_status(st, &format!("删除失败: {e}")),
     }
 }
@@ -2186,8 +2686,10 @@ fn refresh_forwards(st: &mut AppState) {
 
 fn open_forwards_panel(st: &mut AppState) {
     let indices = sftp_profile_indices(st);
-    let names: Vec<slint::SharedString> =
-        indices.iter().map(|i| st.profiles.profiles[*i].name.clone().into()).collect();
+    let names: Vec<slint::SharedString> = indices
+        .iter()
+        .map(|i| st.profiles.profiles[*i].name.clone().into())
+        .collect();
     st.fwd_profile_indices = indices;
     let model = Rc::new(VecModel::from(names));
     st.ui.set_fwd_profiles(ModelRc::from(model));
@@ -2216,7 +2718,9 @@ fn fwd_add(st: &mut AppState) {
         st.ui.set_fwd_status(e.as_str().into());
         return;
     }
-    let Some(profile) = st.profiles.profiles.get_mut(profile_index) else { return };
+    let Some(profile) = st.profiles.profiles.get_mut(profile_index) else {
+        return;
+    };
     if profile.local_forwards.iter().any(|f| f == &spec) {
         st.ui.set_fwd_status("这条规则已存在".into());
         return;
@@ -2225,21 +2729,27 @@ fn fwd_add(st: &mut AppState) {
     st.profiles.save();
     st.ui.set_fwd_new("".into());
     refresh_forwards(st);
-    st.ui.set_fwd_status(format!("已添加 -L {spec}（下次连接生效）").as_str().into());
+    st.ui
+        .set_fwd_status(format!("已添加 -L {spec}（下次连接生效）").as_str().into());
     eprintln!("[fwd] add {spec}");
 }
 
 fn fwd_delete(st: &mut AppState, index: usize) {
     let idx = st.ui.get_fwd_profile().max(0) as usize;
-    let Some(profile_index) = st.fwd_profile_indices.get(idx).copied() else { return };
-    let Some(profile) = st.profiles.profiles.get_mut(profile_index) else { return };
+    let Some(profile_index) = st.fwd_profile_indices.get(idx).copied() else {
+        return;
+    };
+    let Some(profile) = st.profiles.profiles.get_mut(profile_index) else {
+        return;
+    };
     if index >= profile.local_forwards.len() {
         return;
     }
     let spec = profile.local_forwards.remove(index);
     st.profiles.save();
     refresh_forwards(st);
-    st.ui.set_fwd_status(format!("已删除 -L {spec}").as_str().into());
+    st.ui
+        .set_fwd_status(format!("已删除 -L {spec}").as_str().into());
     eprintln!("[fwd] delete {spec}");
 }
 
@@ -2262,7 +2772,10 @@ fn reattach_background(st: &mut AppState, index: usize) {
     rebuild_tabs(st);
     redraw_pane_inner(st, id);
     refresh_background(st);
-    eprintln!("[session] reattach pane={id} title={title:?}（剩余后台 {}）", st.detached.len());
+    eprintln!(
+        "[session] reattach pane={id} title={title:?}（剩余后台 {}）",
+        st.detached.len()
+    );
 }
 
 /// 把最近一个后台会话接回当前窗口（新 Tab）。
@@ -2294,7 +2807,11 @@ fn close_tab_inner(st: &mut AppState, index: usize) {
         }
     }
     st.ws.tabs.remove(index);
-    dispatch_plugin_event(st, plugin::PluginEvent::TabClose, plugin::tab_close_payload(&tab_title));
+    dispatch_plugin_event(
+        st,
+        plugin::PluginEvent::TabClose,
+        plugin::tab_close_payload(&tab_title),
+    );
     if st.ws.tabs.is_empty() {
         let _ = slint::quit_event_loop();
         return;
@@ -2319,7 +2836,9 @@ fn sanitize_tab_title(text: &str) -> Option<String> {
 }
 
 fn open_rename(st: &mut AppState, index: usize) {
-    let Some(tab) = st.ws.tabs.get(index) else { return };
+    let Some(tab) = st.ws.tabs.get(index) else {
+        return;
+    };
     eprintln!("[ui] rename tab={index} title={:?}", tab.title);
     st.ui.set_tabctx_open(false);
     st.ui.set_rename_index(index as i32);
@@ -2376,9 +2895,16 @@ fn close_other_tabs(st: &mut AppState, keep: usize) {
         .map(|(_, tab)| tab.title.clone())
         .collect();
     let dropped = st.ws.keep_only(keep);
-    eprintln!("[ws] close other tabs, keep={keep}, 关闭 {} 个 pane", dropped.len());
+    eprintln!(
+        "[ws] close other tabs, keep={keep}, 关闭 {} 个 pane",
+        dropped.len()
+    );
     for title in &closed_titles {
-        dispatch_plugin_event(st, plugin::PluginEvent::TabClose, plugin::tab_close_payload(title));
+        dispatch_plugin_event(
+            st,
+            plugin::PluginEvent::TabClose,
+            plugin::tab_close_payload(title),
+        );
     }
     let background = st.cfg.close_action == "background";
     for id in dropped {
@@ -2396,8 +2922,12 @@ fn close_other_tabs(st: &mut AppState, keep: usize) {
 /// 复制一个 Tab：布局、分屏比例、每个 pane 的 cwd 都照抄。
 fn duplicate_tab(st: &mut AppState, index: usize) {
     let (title, focused, ids, tree) = {
-        let Some(src) = st.ws.tabs.get(index) else { return };
-        let Some(root) = src.root.as_ref() else { return };
+        let Some(src) = st.ws.tabs.get(index) else {
+            return;
+        };
+        let Some(root) = src.root.as_ref() else {
+            return;
+        };
         let ids = root.panes();
         let mut cwds = HashMap::with_capacity(ids.len());
         for id in &ids {
@@ -2408,26 +2938,41 @@ fn duplicate_tab(st: &mut AppState, index: usize) {
                 .and_then(session::cwd_of);
             cwds.insert(*id, cwd);
         }
-        (src.title.clone(), src.focused, ids, session::Tree::from_node(root, &cwds))
+        (
+            src.title.clone(),
+            src.focused,
+            ids,
+            session::Tree::from_node(root, &cwds),
+        )
     };
 
     let leaf_cwds = tree.leaf_cwds();
     eprintln!("[ws] duplicate tab={index} panes={}", leaf_cwds.len());
     let new_ids: Vec<PaneId> = (0..leaf_cwds.len()).map(|_| st.ws.alloc_id()).collect();
-    let Some(new_root) = tree.assign(&new_ids) else { return };
+    let Some(new_root) = tree.assign(&new_ids) else {
+        return;
+    };
     let (cols, rows) = cell_of(st.content, st.cell);
 
     let mut created = Vec::with_capacity(new_ids.len());
     for (i, cwd) in leaf_cwds.iter().enumerate() {
-        match create_pane(st, new_ids[i], cols, rows, cwd.as_ref().map(PathBuf::from), None, None) {
+        match create_pane(
+            st,
+            new_ids[i],
+            cols,
+            rows,
+            cwd.as_ref().map(PathBuf::from),
+            None,
+            None,
+        ) {
             Ok(rt) => {
                 st.panes.insert(new_ids[i], rt);
                 created.push(new_ids[i]);
-            },
+            }
             Err(e) => {
                 eprintln!("[ws] 复制 Tab 时创建 pane 失败: {e}");
                 break;
-            },
+            }
         }
     }
     if created.len() != new_ids.len() {
@@ -2450,14 +2995,20 @@ fn duplicate_tab(st: &mut AppState, index: usize) {
         },
     );
     st.ws.active = index + 1;
-    dispatch_plugin_event(st, plugin::PluginEvent::TabOpen, plugin::tab_open_payload(&new_title, "local"));
+    dispatch_plugin_event(
+        st,
+        plugin::PluginEvent::TabOpen,
+        plugin::tab_open_payload(&new_title, "local"),
+    );
     refresh_views(st);
     rebuild_tabs(st);
     redraw_visible(st);
 }
 
 fn close_pane_inner(st: &mut AppState, id: PaneId) {
-    let Some(tab_index) = st.ws.tab_of(id) else { return };
+    let Some(tab_index) = st.ws.tab_of(id) else {
+        return;
+    };
     let tab_title = st.ws.tabs[tab_index].title.clone();
     let emptied = st.ws.tabs[tab_index].remove(id);
     if st.cfg.close_action == "background" {
@@ -2468,7 +3019,11 @@ fn close_pane_inner(st: &mut AppState, id: PaneId) {
     // pane_rows 只由 refresh_views 维护：在这里提前删会破坏「模型行数是否仍然对齐」的判断。
     if emptied {
         st.ws.tabs.remove(tab_index);
-        dispatch_plugin_event(st, plugin::PluginEvent::TabClose, plugin::tab_close_payload(&tab_title));
+        dispatch_plugin_event(
+            st,
+            plugin::PluginEvent::TabClose,
+            plugin::tab_close_payload(&tab_title),
+        );
         if st.ws.tabs.is_empty() {
             let _ = slint::quit_event_loop();
             return;
@@ -2536,15 +3091,23 @@ fn restore_tab_snapshot(st: &mut AppState, tab_snap: &session::TabSnapshot) -> b
     };
     let mut created = 0;
     for (i, cwd) in cwds.iter().enumerate() {
-        match create_pane(st, ids[i], cols, rows, cwd.as_ref().map(PathBuf::from), None, None) {
+        match create_pane(
+            st,
+            ids[i],
+            cols,
+            rows,
+            cwd.as_ref().map(PathBuf::from),
+            None,
+            None,
+        ) {
             Ok(rt) => {
                 st.panes.insert(ids[i], rt);
                 created += 1;
-            },
+            }
             Err(e) => {
                 eprintln!("[session] pane 恢复失败: {e}");
                 break;
-            },
+            }
         }
     }
     if created != ids.len() {
@@ -2561,7 +3124,11 @@ fn restore_tab_snapshot(st: &mut AppState, tab_snap: &session::TabSnapshot) -> b
         focused,
         grid: HashMap::new(),
     });
-    dispatch_plugin_event(st, plugin::PluginEvent::TabOpen, plugin::tab_open_payload(&tab_title, "local"));
+    dispatch_plugin_event(
+        st,
+        plugin::PluginEvent::TabOpen,
+        plugin::tab_open_payload(&tab_title, "local"),
+    );
     true
 }
 
@@ -2641,11 +3208,11 @@ fn restart_session(st: &mut AppState) {
                 snap.tabs.len(),
                 snap.tabs.iter().map(|t| t.tree.leaf_count()).sum::<usize>()
             )
-        },
+        }
         Err(e) => {
             eprintln!("[session] 保存失败，取消重启: {e}");
             return;
-        },
+        }
     }
 
     let exe = match std::env::current_exe() {
@@ -2653,7 +3220,7 @@ fn restart_session(st: &mut AppState) {
         Err(e) => {
             eprintln!("[session] 找不到自身可执行文件: {e}");
             return;
-        },
+        }
     };
     let mut cmd = std::process::Command::new(exe);
     cmd.arg("--restore")
@@ -2684,14 +3251,16 @@ fn restart_session(st: &mut AppState) {
         Ok(child) => {
             eprintln!("[session] 已拉起新实例 pid={}，退出当前进程", child.id());
             let _ = slint::quit_event_loop();
-        },
+        }
         Err(e) => eprintln!("[session] 重启失败（保留当前窗口）: {e}"),
     }
 }
 
 /// 按快照重建 tabs/panes；成功返回 true。
 fn restore_session(st: &mut AppState) -> bool {
-    let Some(snap) = session::load() else { return false };
+    let Some(snap) = session::load() else {
+        return false;
+    };
     if snap.tabs.is_empty() {
         return false;
     }
@@ -2720,8 +3289,12 @@ fn restore_session(st: &mut AppState) -> bool {
 
 fn split_pane_inner(st: &mut AppState, id: PaneId, dir: Dir) {
     eprintln!("[ws] split pane={id} dir={dir:?}");
-    let Some(tab_index) = st.ws.tab_of(id) else { return };
-    let Some((cols, rows)) = st.panes.get(&id).map(|r| r.grid) else { return };
+    let Some(tab_index) = st.ws.tab_of(id) else {
+        return;
+    };
+    let Some((cols, rows)) = st.panes.get(&id).map(|r| r.grid) else {
+        return;
+    };
     let guess = match dir {
         Dir::Row => ((cols / 2).max(10), rows),
         Dir::Col => (cols, (rows / 2).max(3)),
@@ -2734,7 +3307,7 @@ fn split_pane_inner(st: &mut AppState, id: PaneId, dir: Dir) {
             st.ws.tabs[tab_index].focused = new_id;
             refresh_views(st);
             redraw_visible(st);
-        },
+        }
         Err(e) => eprintln!("分屏失败: {e}"),
     }
 }
@@ -2788,7 +3361,10 @@ fn needs_close_confirm(tabs: usize, panes: usize, enabled: bool) -> bool {
 fn request_close(st: &mut AppState) {
     let tabs = st.ws.tabs.len();
     let panes: usize = st.ws.tabs.iter().map(|t| t.panes().len()).sum();
-    eprintln!("[ui] close requested: tabs={tabs} panes={panes} confirm={}", st.cfg.confirm_close);
+    eprintln!(
+        "[ui] close requested: tabs={tabs} panes={panes} confirm={}",
+        st.cfg.confirm_close
+    );
     if needs_close_confirm(tabs, panes, st.cfg.confirm_close) {
         let text = format!("将结束 {tabs} 个标签、{panes} 个终端会话，子进程会被终止。");
         eprintln!("[ui] close confirm: tabs={tabs} panes={panes}");
@@ -2817,9 +3393,16 @@ fn request_window_corners(
         None => {
             // window.size() 是物理像素；除以 scale 还原逻辑尺寸，供 worker 兜底/日志。
             let physical = window.size();
-            let scale = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
-            (physical.width as f32 / scale, physical.height as f32 / scale)
-        },
+            let scale = if scale.is_finite() && scale > 0.0 {
+                scale
+            } else {
+                1.0
+            };
+            (
+                physical.width as f32 / scale,
+                physical.height as f32 / scale,
+            )
+        }
     };
     shaper.request(xconn::CornerRequest {
         logical_width,
@@ -2840,7 +3423,10 @@ fn toggle_fullscreen(st: &AppState) {
     request_window_corners(
         st,
         None,
-        Some(xconn::CornerState { maximized: win.is_maximized(), fullscreen: next }),
+        Some(xconn::CornerState {
+            maximized: win.is_maximized(),
+            fullscreen: next,
+        }),
     );
     eprintln!("[ui] fullscreen={next}");
 }
@@ -2860,7 +3446,9 @@ fn set_active_tab_inner(st: &mut AppState, index: usize) {
     let ids = st.ws.tabs[index].panes();
     let mut cleared = 0usize;
     for id in ids {
-        let Some(rt) = st.panes.get_mut(&id) else { continue };
+        let Some(rt) = st.panes.get_mut(&id) else {
+            continue;
+        };
         if rt.activity.attention || rt.activity.completed || rt.notification.is_some() {
             rt.activity.attention = false;
             rt.activity.completed = false;
@@ -2927,7 +3515,11 @@ fn wm_resize_timed_out(
     since_start: Duration,
 ) -> bool {
     // 收到过 configure 后给更宽的窗口；只要最近还在动就绝不回退。
-    let timeout = if saw_configure { Duration::from_millis(800) } else { Duration::from_millis(400) };
+    let timeout = if saw_configure {
+        Duration::from_millis(800)
+    } else {
+        Duration::from_millis(400)
+    };
     if since_start < timeout {
         return false;
     }
@@ -2951,49 +3543,57 @@ fn schedule_resize_redraw(st: &mut AppState, immediate: bool) {
         return;
     }
     st.resize_redraw_scheduled = true;
-    st.resize_redraw.start(slint::TimerMode::SingleShot, Duration::from_millis(16), || {
-        with_app(|st| {
-            st.resize_redraw_scheduled = false;
-            st.ui.window().request_redraw();
-        });
-    });
+    st.resize_redraw.start(
+        slint::TimerMode::SingleShot,
+        Duration::from_millis(16),
+        || {
+            with_app(|st| {
+                st.resize_redraw_scheduled = false;
+                st.ui.window().request_redraw();
+            });
+        },
+    );
 }
 
 /// 拖动停止 200ms 后：恢复背景图、做最终重绘、打印汇总。
 fn schedule_resize_finalize(st: &mut AppState) {
-    st.resize_finalize.start(slint::TimerMode::SingleShot, Duration::from_millis(200), || {
-        with_app(|st| {
-            // 定时器是 single-shot；如果 200ms 内又来了 configure，重新计时。
-            if st
-                .last_resize_event
-                .is_some_and(|t| t.elapsed() < Duration::from_millis(180))
-            {
-                schedule_resize_finalize(st);
-                return;
-            }
-            let was_active = st.resize_in_progress;
-            st.resize_in_progress = false;
-            // 无论 apply/收尾顺序如何，都必须恢复背景，避免一直隐藏。
-            if st.ui.get_background_suspended() {
-                st.ui.set_background_suspended(false);
-                st.ui.window().request_redraw();
-            }
-            if (was_active || st.resize_applied > 0)
-                && std::env::var_os("TERVO_RESIZE_PROFILE").is_some()
-            {
-                eprintln!(
-                    "[ui] resize done applies={} max_apply={:.1}ms content={:.0}x{:.0}",
-                    st.resize_applied,
-                    st.resize_max_apply_us / 1000.0,
-                    st.content.w,
-                    st.content.h
-                );
-            }
-            st.resize_applied = 0;
-            st.resize_max_apply_us = 0.0;
-            st.resize_events = 0;
-        });
-    });
+    st.resize_finalize.start(
+        slint::TimerMode::SingleShot,
+        Duration::from_millis(200),
+        || {
+            with_app(|st| {
+                // 定时器是 single-shot；如果 200ms 内又来了 configure，重新计时。
+                if st
+                    .last_resize_event
+                    .is_some_and(|t| t.elapsed() < Duration::from_millis(180))
+                {
+                    schedule_resize_finalize(st);
+                    return;
+                }
+                let was_active = st.resize_in_progress;
+                st.resize_in_progress = false;
+                // 无论 apply/收尾顺序如何，都必须恢复背景，避免一直隐藏。
+                if st.ui.get_background_suspended() {
+                    st.ui.set_background_suspended(false);
+                    st.ui.window().request_redraw();
+                }
+                if (was_active || st.resize_applied > 0)
+                    && std::env::var_os("TERVO_RESIZE_PROFILE").is_some()
+                {
+                    eprintln!(
+                        "[ui] resize done applies={} max_apply={:.1}ms content={:.0}x{:.0}",
+                        st.resize_applied,
+                        st.resize_max_apply_us / 1000.0,
+                        st.content.w,
+                        st.content.h
+                    );
+                }
+                st.resize_applied = 0;
+                st.resize_max_apply_us = 0.0;
+                st.resize_events = 0;
+            });
+        },
+    );
 }
 
 // ------------------------------------------------------------------- 布局
@@ -3003,7 +3603,12 @@ fn schedule_resize_finalize(st: &mut AppState) {
 /// - `always`：没有历史时 thumb 占满轨道（表示“有滚动条但内容全在视口内”）；
 /// - `auto`：只有真的能滚动时才显示（既有行为）；
 /// - `never`：始终隐藏。
-fn scrollbar_geometry(policy: ScrollbarPolicy, pos: ScrollPosition, min_thumb: f32, track_h: f32) -> (bool, f32, f32) {
+fn scrollbar_geometry(
+    policy: ScrollbarPolicy,
+    pos: ScrollPosition,
+    min_thumb: f32,
+    track_h: f32,
+) -> (bool, f32, f32) {
     let visible = match policy {
         ScrollbarPolicy::Always => true,
         ScrollbarPolicy::Auto => pos.scrollable(),
@@ -3060,7 +3665,9 @@ fn pane_view(
 
 /// 刷新一个 pane 在模型里的视图（滚动条/铃/尺寸），不拉帧不重绘。
 fn refresh_pane_view(st: &mut AppState, id: PaneId) {
-    let Some(&row) = st.pane_rows.get(&id) else { return };
+    let Some(&row) = st.pane_rows.get(&id) else {
+        return;
+    };
     let focused = st.ws.active_tab().map(|t| t.focused) == Some(id);
     let policy = st.cfg.scrollbar_policy();
     let Some(rt) = st.panes.get(&id) else { return };
@@ -3091,7 +3698,9 @@ fn refresh_views_impl(st: &mut AppState, resize_terminals: bool) {
         return;
     }
     let (rects, focused, dividers) = {
-        let Some(tab) = st.ws.active_tab() else { return };
+        let Some(tab) = st.ws.active_tab() else {
+            return;
+        };
         let mut rects: Vec<(PaneId, Rect)> = Vec::new();
         let mut dividers: Vec<Divider> = Vec::new();
         if let Some(root) = &tab.root {
@@ -3116,8 +3725,7 @@ fn refresh_views_impl(st: &mut AppState, resize_terminals: bool) {
     let policy = st.cfg.scrollbar_policy();
     let make_view = |id: &PaneId, rect: &Rect| -> Option<PaneView> {
         st.panes.get(id).map(|rt| {
-            let mut view =
-                pane_view(*id, rt, *id == focused, st.cursor_blink_on, policy);
+            let mut view = pane_view(*id, rt, *id == focused, st.cursor_blink_on, policy);
             view.x = rect.x;
             view.y = rect.y;
             view.w = rect.w;
@@ -3189,7 +3797,11 @@ fn rows_can_update_in_place(
     rows: &HashMap<PaneId, usize>,
     order: &[PaneId],
 ) -> bool {
-    model_rows == order.len() && order.iter().enumerate().all(|(i, id)| rows.get(id) == Some(&i))
+    model_rows == order.len()
+        && order
+            .iter()
+            .enumerate()
+            .all(|(i, id)| rows.get(id) == Some(&i))
 }
 
 fn rebuild_tabs(st: &mut AppState) {
@@ -3202,7 +3814,10 @@ fn rebuild_tabs(st: &mut AppState) {
         .map(|(i, t)| {
             // 一个 Tab 可能有多个 pane：错误优先、进行中次之，通知/完成取并集。
             let agg = activity::aggregate(
-                t.panes().iter().filter_map(|id| st.panes.get(id)).map(|rt| &rt.activity),
+                t.panes()
+                    .iter()
+                    .filter_map(|id| st.panes.get(id))
+                    .map(|rt| &rt.activity),
             );
             TabView {
                 title: t.title.clone().into(),
@@ -3221,7 +3836,9 @@ fn rebuild_tabs(st: &mut AppState) {
 /// 重绘当前可见的 pane（切换 tab / 布局变化后）。
 fn redraw_visible(st: &mut AppState) {
     let ids: Vec<PaneId> = {
-        let Some(tab) = st.ws.active_tab() else { return };
+        let Some(tab) = st.ws.active_tab() else {
+            return;
+        };
         tab.panes()
     };
     for id in ids {
@@ -3238,12 +3855,12 @@ fn refresh_cursor_overlay(rt: &mut PaneRuntime) {
             rt.cursor_image = o.image;
             rt.cursor_rect = (o.x, o.y, o.width, o.height);
             rt.cursor_visible = true;
-        },
+        }
         None => {
             rt.cursor_image = slint::Image::default();
             rt.cursor_rect = (0.0, 0.0, 0.0, 0.0);
             rt.cursor_visible = false;
-        },
+        }
     }
 }
 
@@ -3377,7 +3994,11 @@ fn ime_spot_key(
     let ch = cell_h.max(1.0);
     let x = rect.x + cell.1 as f32 * cw;
     let y = tabbar_offset + rect.y + cell.0 as f32 * ch;
-    let dpr = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
+    let dpr = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
     let phys = |v: f32| (v as f64 * dpr).round() as i32;
     ImeSpotKey {
         pane,
@@ -3408,9 +4029,13 @@ fn ime_click_anchor(button: i32, wants_mouse: bool, shift: bool) -> bool {
 fn update_ime_spot(st: &mut AppState) {
     use slint::winit_030::winit::dpi::{LogicalPosition, LogicalSize};
 
-    let Some(tab) = st.ws.active_tab() else { return };
+    let Some(tab) = st.ws.active_tab() else {
+        return;
+    };
     let focused = tab.focused;
-    let Some(rt) = st.panes.get(&focused) else { return };
+    let Some(rt) = st.panes.get(&focused) else {
+        return;
+    };
     if !rt.handle.wants_mouse() {
         // TUI 已关闭鼠标上报：点击锚点不应再压过真实硬件光标。
         st.ime_override = None;
@@ -3425,7 +4050,11 @@ fn update_ime_spot(st: &mut AppState) {
             let (l, c) = rt.handle.cursor_pos();
             (l as usize, c as usize)
         });
-    let content_y = if st.cfg.tabbar_position == "bottom" { 0.0 } else { TABBAR_H };
+    let content_y = if st.cfg.tabbar_position == "bottom" {
+        0.0
+    } else {
+        TABBAR_H
+    };
     let scale = st.ui.window().scale_factor() as f64;
     let key = ime_spot_key(
         focused,
@@ -3471,7 +4100,6 @@ fn update_ime_spot(st: &mut AppState) {
     }
 }
 
-
 /// 把 core 帧里的 Sixel 图片同步成 Slint Image overlay。
 ///
 /// - 只在图片集合或锚点变化时重建模型；光标闪烁/纯文本输出不会重新上传图片。
@@ -3493,7 +4121,11 @@ fn sync_inline_images(rt: &mut PaneRuntime, frame: &Frame) {
             frame.display_offset,
             pos.offset,
             pos.history,
-            frame.images.iter().map(|i| (i.id, i.row, i.col)).collect::<Vec<_>>()
+            frame
+                .images
+                .iter()
+                .map(|i| (i.id, i.row, i.col))
+                .collect::<Vec<_>>()
         );
     }
 
@@ -3513,10 +4145,8 @@ fn sync_inline_images(rt: &mut PaneRuntime, frame: &Frame) {
             if img.data.len() != expected {
                 continue;
             }
-            let mut buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(
-                img.width,
-                img.height,
-            );
+            let mut buffer =
+                slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(img.width, img.height);
             buffer.make_mut_bytes().copy_from_slice(&img.data);
             let image = slint::Image::from_rgba8(buffer);
             rt.inline_cache.insert(img.id, image.clone());
@@ -3540,7 +4170,9 @@ fn redraw_pane_inner(st: &mut AppState, id: PaneId) {
     let focused = st.ws.active_tab().map(|t| t.focused) == Some(id);
     let blink_on = st.cursor_blink_on;
     let policy = st.cfg.scrollbar_policy();
-    let Some(rt) = st.panes.get_mut(&id) else { return };
+    let Some(rt) = st.panes.get_mut(&id) else {
+        return;
+    };
     let frame = rt.handle.pull(std::mem::take(&mut rt.frame));
     rt.cursor = (frame.cursor.line as usize, frame.cursor.col as usize);
     // 光标不进帧缓冲：用独立 overlay，闪烁时只换 visible。
@@ -3562,7 +4194,8 @@ fn redraw_pane_inner(st: &mut AppState, id: PaneId) {
     }
 
     if focused {
-        st.echo.store(count_marker(&frame, MARKER), Ordering::Release);
+        st.echo
+            .store(count_marker(&frame, MARKER), Ordering::Release);
     }
 
     rt.frame = frame;
@@ -3599,10 +4232,10 @@ fn reset_font(st: &mut AppState) {
 }
 
 /// 字号变更：重建字体集与所有 pane 的渲染器，再按新网格重排。
-fn apply_font_size(st: &mut AppState) {
+fn apply_font_size(st: &mut AppState) -> bool {
     let Some(fonts) = FontSet::load(st.cfg.font_size) else {
         eprintln!("[config] 字体加载失败，字号变更忽略");
-        return;
+        return false;
     };
     let fonts = Rc::new(fonts);
     st.cell = (fonts.cell_w, fonts.cell_h);
@@ -3627,6 +4260,7 @@ fn apply_font_size(st: &mut AppState) {
     }
     refresh_views(st);
     redraw_visible(st);
+    true
 }
 
 fn redraw_all() {
@@ -3651,20 +4285,26 @@ fn cell_at(rt: &PaneRuntime, x: f32, y: f32) -> (u16, u16) {
 /// 打开 pane 右键菜单；坐标是内容区坐标（Slint 侧负责夹取）。
 /// Ctrl+Shift+方向键：按 pane 中心点的方向投影切焦点（同方向取最近）。
 fn focus_pane_dir(st: &mut AppState, dx: f32, dy: f32) {
-    let Some(tab) = st.ws.active_tab() else { return };
+    let Some(tab) = st.ws.active_tab() else {
+        return;
+    };
     let ids = tab.panes();
     if ids.len() < 2 {
         return;
     }
     let cur = tab.focused;
-    let Some(cur_rect) = st.panes.get(&cur).map(|rt| rt.rect) else { return };
+    let Some(cur_rect) = st.panes.get(&cur).map(|rt| rt.rect) else {
+        return;
+    };
     let (cx, cy) = (cur_rect.x + cur_rect.w / 2.0, cur_rect.y + cur_rect.h / 2.0);
     let mut best: Option<(f32, PaneId)> = None;
     for id in ids {
         if id == cur {
             continue;
         }
-        let Some(r) = st.panes.get(&id).map(|rt| rt.rect) else { continue };
+        let Some(r) = st.panes.get(&id).map(|rt| rt.rect) else {
+            continue;
+        };
         let (x, y) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
         let (adx, ady) = (x - cx, y - cy);
         let primary = adx * dx + ady * dy;
@@ -3704,12 +4344,14 @@ fn open_pane_menu(st: &mut AppState, id: PaneId, x: f32, y: f32) {
             frame_link_at(&rt.frame, row, col)
         })
         .unwrap_or_default();
-    eprintln!("[ui] right click pane={id} at {x},{y} link={}", !link.is_empty());
+    eprintln!(
+        "[ui] right click pane={id} at {x},{y} link={}",
+        !link.is_empty()
+    );
     st.menu_link = link.clone();
     st.ui.set_menu_link(link.as_str().into());
-    st.ui.set_menu_read_only(
-        st.panes.get(&id).is_some_and(|rt| rt.handle.read_only()),
-    );
+    st.ui
+        .set_menu_read_only(st.panes.get(&id).is_some_and(|rt| rt.handle.read_only()));
     st.ui.set_menu_pane(id as i32);
     st.ui.set_menu_x(x);
     st.ui.set_menu_y(y);
@@ -3734,7 +4376,11 @@ fn nearest_pane(rects: &[(PaneId, Rect)], x: f32, y: f32) -> Option<PaneId> {
 
 /// Slint 修饰键位（1=Shift 2=Alt 4=Ctrl）→ 鼠标修饰键。
 fn mouse_mods(bits: i32) -> Modifiers {
-    Modifiers { shift: bits & 1 != 0, alt: bits & 2 != 0, ctrl: bits & 4 != 0 }
+    Modifiers {
+        shift: bits & 1 != 0,
+        alt: bits & 2 != 0,
+        ctrl: bits & 4 != 0,
+    }
 }
 
 /// Slint 按键号（0=左 1=中 2=右）→ 上报按键。
@@ -3780,36 +4426,41 @@ fn open_link_uri(uri: &str) {
     let target = uri.to_string();
     eprintln!("[link] open uri={target:?}");
     let thread_target = target.clone();
-    let spawned = std::thread::Builder::new().name("xdg-open".into()).spawn(move || {
-        let target = thread_target;
-        let result = std::process::Command::new("xdg-open")
-            .arg(&target)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped())
-            .output();
-        match result {
-            Ok(out) if out.status.success() => {
-                eprintln!("[link] xdg-open ok uri={target:?}");
-            },
-            Ok(out) => {
-                let detail: String =
-                    String::from_utf8_lossy(&out.stderr).trim().chars().take(300).collect();
-                let msg = if detail.is_empty() {
-                    format!("打开链接失败：xdg-open {}", out.status)
-                } else {
-                    format!("打开链接失败：xdg-open {} — {detail}", out.status)
-                };
-                eprintln!("[link] {msg} uri={target:?}");
-                show_link_status(msg);
-            },
-            Err(e) => {
-                let msg = format!("打开链接失败：无法运行 xdg-open（{e}）");
-                eprintln!("[link] {msg} uri={target:?}");
-                show_link_status(msg);
-            },
-        }
-    });
+    let spawned = std::thread::Builder::new()
+        .name("xdg-open".into())
+        .spawn(move || {
+            let target = thread_target;
+            let result = std::process::Command::new("xdg-open")
+                .arg(&target)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::piped())
+                .output();
+            match result {
+                Ok(out) if out.status.success() => {
+                    eprintln!("[link] xdg-open ok uri={target:?}");
+                }
+                Ok(out) => {
+                    let detail: String = String::from_utf8_lossy(&out.stderr)
+                        .trim()
+                        .chars()
+                        .take(300)
+                        .collect();
+                    let msg = if detail.is_empty() {
+                        format!("打开链接失败：xdg-open {}", out.status)
+                    } else {
+                        format!("打开链接失败：xdg-open {} — {detail}", out.status)
+                    };
+                    eprintln!("[link] {msg} uri={target:?}");
+                    show_link_status(msg);
+                }
+                Err(e) => {
+                    let msg = format!("打开链接失败：无法运行 xdg-open（{e}）");
+                    eprintln!("[link] {msg} uri={target:?}");
+                    show_link_status(msg);
+                }
+            }
+        });
     if let Err(e) = spawned {
         let msg = format!("打开链接失败：无法创建 xdg-open 线程（{e}）");
         eprintln!("[link] {msg} uri={target:?}");
@@ -3834,10 +4485,7 @@ fn set_status_toast(st: &mut AppState, msg: String) {
 }
 
 /// 惰性创建 arboard 句柄；没有 X11/剪贴板服务时返回 None（不 panic）。
-fn with_clipboard<R>(
-    st: &mut AppState,
-    f: impl FnOnce(&mut arboard::Clipboard) -> R,
-) -> Option<R> {
+fn with_clipboard<R>(st: &mut AppState, f: impl FnOnce(&mut arboard::Clipboard) -> R) -> Option<R> {
     if st.clipboard.is_none() {
         st.clipboard = arboard::Clipboard::new().ok();
     }
@@ -3851,7 +4499,7 @@ fn set_clipboard(st: &mut AppState, text: &str) {
         text.chars().take(40).collect::<String>()
     );
     match with_clipboard(st, |cb| cb.set_text(text.to_string())) {
-        Some(Ok(())) => {},
+        Some(Ok(())) => {}
         Some(Err(e)) => eprintln!("[clipboard] 写入失败: {e}"),
         None => eprintln!("[clipboard] 不可用"),
     }
@@ -3866,9 +4514,11 @@ fn set_primary(st: &mut AppState, text: &str) {
     use arboard::{LinuxClipboardKind, SetExtLinux};
     eprintln!("[clipboard] PRIMARY 写入 {} 字节", text.len());
     match with_clipboard(st, |cb| {
-        cb.set().clipboard(LinuxClipboardKind::Primary).text(text.to_string())
+        cb.set()
+            .clipboard(LinuxClipboardKind::Primary)
+            .text(text.to_string())
     }) {
-        Some(Ok(())) => {},
+        Some(Ok(())) => {}
         Some(Err(e)) => eprintln!("[clipboard] PRIMARY 写入失败: {e}"),
         None => eprintln!("[clipboard] 不可用"),
     }
@@ -3885,7 +4535,7 @@ fn get_primary(st: &mut AppState) -> Option<String> {
 fn clear_clipboard(st: &mut AppState) {
     eprintln!("[clipboard] OSC 52 清空剪贴板");
     match with_clipboard(st, |cb| cb.clear()) {
-        Some(Ok(())) => {},
+        Some(Ok(())) => {}
         Some(Err(e)) => eprintln!("[clipboard] 清空失败: {e}"),
         None => eprintln!("[clipboard] 不可用"),
     }
@@ -3897,7 +4547,7 @@ fn clear_primary(st: &mut AppState) {
     match with_clipboard(st, |cb| {
         cb.clear_with().clipboard(LinuxClipboardKind::Primary)
     }) {
-        Some(Ok(())) => {},
+        Some(Ok(())) => {}
         Some(Err(e)) => eprintln!("[clipboard] PRIMARY 清空失败: {e}"),
         None => eprintln!("[clipboard] 不可用"),
     }
@@ -3920,7 +4570,11 @@ fn normalize_clipboard_text(text: String) -> Option<String> {
 fn copy_current_selection(st: &mut AppState) {
     let focused = st.ws.active_tab().map(|t| t.focused);
     let Some(id) = focused else { return };
-    let text = st.panes.get(&id).and_then(|rt| rt.handle.copy_selection()).and_then(normalize_clipboard_text);
+    let text = st
+        .panes
+        .get(&id)
+        .and_then(|rt| rt.handle.copy_selection())
+        .and_then(normalize_clipboard_text);
     if let Some(text) = text {
         set_selection_clipboards(st, &text);
     }
@@ -3928,7 +4582,9 @@ fn copy_current_selection(st: &mut AppState) {
 
 /// Tabby 的 Clipboard 右键：有选区复制并清除，否则粘贴。
 fn copy_or_paste(st: &mut AppState) {
-    let Some(id) = st.ws.active_tab().map(|t| t.focused) else { return };
+    let Some(id) = st.ws.active_tab().map(|t| t.focused) else {
+        return;
+    };
     let text = st
         .panes
         .get(&id)
@@ -3939,7 +4595,10 @@ fn copy_or_paste(st: &mut AppState) {
         if let Some(rt) = st.panes.get(&id) {
             rt.handle.clear_selection();
         }
-        eprintln!("[ui] right-click clipboard copy {} chars", text.chars().count());
+        eprintln!(
+            "[ui] right-click clipboard copy {} chars",
+            text.chars().count()
+        );
     } else {
         paste_into_focused(st);
     }
@@ -3969,9 +4628,18 @@ fn needs_paste_confirm(text: &str, enabled: bool) -> bool {
 
 fn deliver_paste(st: &mut AppState, text: &str) {
     let normalized = normalize_paste(text);
-    let Some(focused) = st.ws.active_tab().map(|t| t.focused) else { return };
-    if st.panes.get(&focused).is_some_and(|rt| rt.handle.read_only()) {
-        eprintln!("[readonly] pane={focused} 丢弃粘贴 bytes={}", normalized.len());
+    let Some(focused) = st.ws.active_tab().map(|t| t.focused) else {
+        return;
+    };
+    if st
+        .panes
+        .get(&focused)
+        .is_some_and(|rt| rt.handle.read_only())
+    {
+        eprintln!(
+            "[readonly] pane={focused} 丢弃粘贴 bytes={}",
+            normalized.len()
+        );
         set_status_toast(st, "Read Only: paste ignored".to_string());
         return;
     }
@@ -4083,31 +4751,32 @@ fn install_native_window_events(ui: &MainWindow) {
                         update_ime_spot(st);
                     });
                 }
-            },
+            }
             winit::event::WindowEvent::ScaleFactorChanged { .. } => {
                 // DPR 变化后逻辑尺寸可能还没更新；强制按新 scale 重发 spot。
                 with_app(|st| {
                     st.ime_spot_dirty = true;
                     update_ime_spot(st);
                 });
-            },
+            }
             winit::event::WindowEvent::HoveredFile(_) => {
                 let target = win.with_winit_window(drop_target_at).flatten();
                 if let Some(ui) = weak.upgrade() {
                     ui.set_drop_hover_pane(target.map(|id| id as i32).unwrap_or(-1));
                 }
                 eprintln!("[ui] native drag hover pane={target:?}");
-            },
+            }
             winit::event::WindowEvent::HoveredFileCancelled => {
                 if let Some(ui) = weak.upgrade() {
                     ui.set_drop_hover_pane(-1);
                 }
                 eprintln!("[ui] native drag cancelled");
-            },
+            }
             winit::event::WindowEvent::DroppedFile(path) => {
-                let target = win.with_winit_window(drop_target_at).flatten().or_else(|| {
-                    with_app(|st| st.ws.active_tab().map(|t| t.focused)).flatten()
-                });
+                let target = win
+                    .with_winit_window(drop_target_at)
+                    .flatten()
+                    .or_else(|| with_app(|st| st.ws.active_tab().map(|t| t.focused)).flatten());
                 if let Some(ui) = weak.upgrade() {
                     ui.set_drop_hover_pane(-1);
                 }
@@ -4119,8 +4788,8 @@ fn install_native_window_events(ui: &MainWindow) {
                 drop_files_into_pane(id, std::slice::from_ref(path));
                 // 拖到哪个 pane 就聚焦哪个，随后输入落到刚插入的路径上。
                 focus_pane(id);
-            },
-            _ => {},
+            }
+            _ => {}
         }
         EventResult::Propagate
     });
@@ -4140,7 +4809,11 @@ fn paste_text_into_focused(st: &mut AppState, text: &str) {
     if needs_paste_confirm(text, st.cfg.confirm_multiline_paste) {
         let lines = text.lines().count();
         let preview: String = text.lines().take(3).collect::<Vec<_>>().join("\n");
-        let preview = if lines > 3 { format!("{preview}\n…") } else { preview };
+        let preview = if lines > 3 {
+            format!("{preview}\n…")
+        } else {
+            preview
+        };
         eprintln!("[ui] paste confirm lines={lines}");
         st.pending_paste = Some(text.to_string());
         st.ui.set_paste_lines(lines as i32);
@@ -4152,14 +4825,19 @@ fn paste_text_into_focused(st: &mut AppState, text: &str) {
 }
 
 fn paste_into_focused(st: &mut AppState) {
-    let Some(text) = get_clipboard(st) else { return };
+    let Some(text) = get_clipboard(st) else {
+        return;
+    };
     paste_text_into_focused(st, &text);
 }
 
 /// 中键粘贴：优先 X11 PRIMARY，没有内容（或读取失败）再回退普通剪贴板。
 fn paste_primary_into_focused(st: &mut AppState) {
     if let Some(text) = get_primary(st).filter(|t| !t.is_empty()) {
-        eprintln!("[clipboard] middle paste source=primary bytes={}", text.len());
+        eprintln!(
+            "[clipboard] middle paste source=primary bytes={}",
+            text.len()
+        );
         paste_text_into_focused(st, &text);
     } else {
         eprintln!("[clipboard] middle paste source=clipboard (primary empty)");
@@ -4175,7 +4853,10 @@ fn update_search_bar(st: &mut AppState) {
 
 /// 当前查找选项快照。
 fn search_options(st: &AppState) -> SearchOptions {
-    SearchOptions { match_case: st.search_match_case, regex: st.search_regex }
+    SearchOptions {
+        match_case: st.search_match_case,
+        regex: st.search_regex,
+    }
 }
 
 /// 切换 Match case；查询非空时从当前位置重新搜索（并清掉旧命中起点）。
@@ -4336,7 +5017,7 @@ fn run_command(st: &mut AppState, id: &str) {
         "tab.new" => {
             new_tab_with_default(st);
             rebuild_tabs(st);
-        },
+        }
         "tab.close" => close_tab_inner(st, st.ws.active),
         "tab.next" => switch_tab_relative(st, 1),
         "tab.prev" => switch_tab_relative(st, -1),
@@ -4347,17 +5028,17 @@ fn run_command(st: &mut AppState, id: &str) {
             if let Some(focused) = st.ws.active_tab().map(|t| t.focused) {
                 split_pane_inner(st, focused, Dir::Row);
             }
-        },
+        }
         "pane.split-down" => {
             if let Some(focused) = st.ws.active_tab().map(|t| t.focused) {
                 split_pane_inner(st, focused, Dir::Col);
             }
-        },
+        }
         "pane.close" => {
             if let Some(focused) = st.ws.active_tab().map(|t| t.focused) {
                 close_pane_inner(st, focused);
             }
-        },
+        }
         "pane.focus-next" => {
             let (panes, focused) = match st.ws.active_tab() {
                 Some(t) => (t.panes(), t.focused),
@@ -4370,7 +5051,7 @@ fn run_command(st: &mut AppState, id: &str) {
                 st.ws.tabs[idx].focused = next;
                 refresh_views(st);
             }
-        },
+        }
         "terminal.copy" => copy_current_selection(st),
         "terminal.paste" => paste_into_focused(st),
         "terminal.find" => open_search(st),
@@ -4380,14 +5061,14 @@ fn run_command(st: &mut AppState, id: &str) {
                     rt.handle.select_all();
                 }
             }
-        },
+        }
         "terminal.clear" => {
             if let Some(focused) = st.ws.active_tab().map(|t| t.focused) {
                 if let Some(rt) = st.panes.get(&focused) {
                     rt.handle.clear_screen();
                 }
             }
-        },
+        }
         "terminal.toggle-read-only" => toggle_read_only(st, focused_pane(st)),
         "terminal.reset" => reset_focused_pane(st, false),
         "terminal.reset-and-clear" => reset_focused_pane(st, true),
@@ -4395,7 +5076,7 @@ fn run_command(st: &mut AppState, id: &str) {
             if let Some(id) = focused_pane(st) {
                 open_save_contents(st, id);
             }
-        },
+        }
         "view.command-palette" => open_palette(st),
         "view.toggle-fullscreen" => toggle_fullscreen(st),
         "view.toggle-quake" => toggle_quake_inner(st),
@@ -4413,7 +5094,7 @@ fn run_command(st: &mut AppState, id: &str) {
             } else {
                 eprintln!("[ui] 未知命令 {other}");
             }
-        },
+        }
     }
 }
 
@@ -4446,7 +5127,9 @@ fn close_search(st: &mut AppState) {
 fn run_search(st: &mut AppState, forward: bool) {
     let query = st.search_query.clone();
     let options = search_options(st);
-    let Some(focused) = st.ws.active_tab().map(|t| t.focused) else { return };
+    let Some(focused) = st.ws.active_tab().map(|t| t.focused) else {
+        return;
+    };
     if query.is_empty() {
         if let Some(rt) = st.panes.get(&focused) {
             rt.handle.search_clear();
@@ -4468,7 +5151,7 @@ fn run_search(st: &mut AppState, forward: bool) {
                 "[ui] find query={query:?} forward={forward} case={} regex={} hit={hit:?}",
                 options.match_case, options.regex
             );
-        },
+        }
         Some(Ok(None)) => {
             st.ui.set_search_status("no match".into());
             st.ui.set_search_error(false);
@@ -4476,7 +5159,7 @@ fn run_search(st: &mut AppState, forward: bool) {
                 "[ui] find query={query:?} forward={forward} case={} regex={} hit=none",
                 options.match_case, options.regex
             );
-        },
+        }
         Some(Err(err)) => {
             // 搜索条空间小，显示短状态；完整错误进日志，红框提示非法 regex。
             st.ui.set_search_status("invalid regex".into());
@@ -4485,11 +5168,11 @@ fn run_search(st: &mut AppState, forward: bool) {
                 "[ui] find query={query:?} forward={forward} case={} regex={} error={err}",
                 options.match_case, options.regex
             );
-        },
+        }
         None => {
             st.ui.set_search_status("no match".into());
             st.ui.set_search_error(false);
-        },
+        }
     }
     redraw_visible(st);
 }
@@ -4503,7 +5186,7 @@ fn toggle_read_only(st: &mut AppState, pane: Option<PaneId>) {
             let on = !rt.handle.read_only();
             rt.handle.set_read_only(on);
             on
-        },
+        }
         None => return,
     };
     refresh_pane_view(st, id);
@@ -4523,7 +5206,12 @@ fn reset_pane(st: &mut AppState, id: PaneId, clear_scrollback: bool) {
     eprintln!("[ui] reset pane={id} clear-scrollback={clear_scrollback}");
     set_status_toast(
         st,
-        if clear_scrollback { "Terminal reset and cleared" } else { "Terminal reset" }.to_string(),
+        if clear_scrollback {
+            "Terminal reset and cleared"
+        } else {
+            "Terminal reset"
+        }
+        .to_string(),
     );
 }
 
@@ -4557,13 +5245,19 @@ fn resolve_save_path(
         return Err("保存路径为空".to_string());
     }
     let path = if raw == "~" {
-        home.ok_or_else(|| "无法展开 ~：HOME 未设置".to_string())?.to_path_buf()
+        home.ok_or_else(|| "无法展开 ~：HOME 未设置".to_string())?
+            .to_path_buf()
     } else if let Some(rest) = raw.strip_prefix("~/") {
-        home.ok_or_else(|| "无法展开 ~：HOME 未设置".to_string())?.join(rest)
+        home.ok_or_else(|| "无法展开 ~：HOME 未设置".to_string())?
+            .join(rest)
     } else {
         PathBuf::from(raw)
     };
-    Ok(if path.is_absolute() { path } else { cwd.join(path) })
+    Ok(if path.is_absolute() {
+        path
+    } else {
+        cwd.join(path)
+    })
 }
 
 /// 写文件（同步；内容量是 scrollback 级别，UI 线程可接受）。返回绝对路径。
@@ -4593,7 +5287,10 @@ fn open_save_contents(st: &mut AppState, pane: PaneId) {
     st.ui.set_save_path(path.to_string_lossy().as_ref().into());
     st.ui.set_save_status("".into());
     st.ui.set_save_open(true);
-    eprintln!("[ui] save-contents open pane={pane} path={}", path.display());
+    eprintln!(
+        "[ui] save-contents open pane={pane} path={}",
+        path.display()
+    );
 }
 
 fn save_contents_commit(st: &mut AppState, raw: &str) {
@@ -4607,7 +5304,9 @@ fn save_contents_commit(st: &mut AppState, raw: &str) {
         st.ui.set_save_status(msg.into());
         return;
     };
-    let home = std::env::var_os("HOME").filter(|h| !h.is_empty()).map(PathBuf::from);
+    let home = std::env::var_os("HOME")
+        .filter(|h| !h.is_empty())
+        .map(PathBuf::from);
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     match save_contents_file(raw, &text, home.as_deref(), &cwd) {
         Ok(path) => {
@@ -4624,11 +5323,11 @@ fn save_contents_commit(st: &mut AppState, raw: &str) {
                 format!("Saved {} bytes to {}", text.len(), path.display()),
             );
             st.ui.invoke_focus_terminal();
-        },
+        }
         Err(err) => {
             eprintln!("[ui] save-contents error pane={pane} path={raw:?} error={err}");
             st.ui.set_save_status(err.as_str().into());
-        },
+        }
     }
 }
 
@@ -4667,14 +5366,7 @@ fn key_scrolls_to_bottom(scroll_on_keystroke: bool, pos: ScrollPosition) -> bool
 
 /// 统一的输入分发：物理按键与 IME 上屏都走这里。
 /// `ctrl/alt/shift` 对 IME 提交恒为 false，避免把中文误判成快捷键。
-fn handle_input(
-    st: &mut AppState,
-    text: &str,
-    ctrl: bool,
-    alt: bool,
-    shift: bool,
-    keylog: bool,
-) {
+fn handle_input(st: &mut AppState, text: &str, ctrl: bool, alt: bool, shift: bool, keylog: bool) {
     if is_modifier_artifact(text, ctrl, alt, shift) {
         if keylog {
             eprintln!("[key] 忽略修饰键伪事件 {text:?}");
@@ -4692,7 +5384,10 @@ fn handle_input(
     // 配置为空时完全跳过，保证无自定义快捷键时按键路径零变化。
     if !st.cfg.hotkeys.is_empty() {
         if let Some(chord) = keys::chord_from_key_event(text, ctrl, alt, shift) {
-            if let Some(id) = st.commands.override_command_for_chord(&chord, &st.cfg.hotkeys) {
+            if let Some(id) = st
+                .commands
+                .override_command_for_chord(&chord, &st.cfg.hotkeys)
+            {
                 if keylog {
                     eprintln!("[hotkey] override {id} ← {chord}");
                 }
@@ -4746,31 +5441,31 @@ fn handle_input(
                 "c" => {
                     toggle_search_case(st);
                     return;
-                },
+                }
                 "r" => {
                     toggle_search_regex(st);
                     return;
-                },
-                _ => {},
+                }
+                _ => {}
             }
         }
         match text {
             "\u{1b}" => {
                 close_search(st);
                 return;
-            },
+            }
             "\n" | "\r" => {
                 run_search(st, !shift);
                 return;
-            },
+            }
             "\u{8}" | "\u{7f}" => {
                 st.search_query.pop();
                 update_search_bar(st);
                 // 空查询也要跑一次：清掉旧高亮并复位状态。
                 run_search(st, true);
                 return;
-            },
-            _ => {},
+            }
+            _ => {}
         }
         if !ctrl && !alt && !text.is_empty() {
             st.search_query.push_str(text);
@@ -4785,71 +5480,71 @@ fn handle_input(
             "c" => {
                 copy_current_selection(st);
                 return;
-            },
+            }
             "v" => {
                 paste_into_focused(st);
                 return;
-            },
+            }
             "p" => {
                 open_palette(st);
                 return;
-            },
+            }
             "a" => {
                 open_tab_search(st);
                 return;
-            },
+            }
             // 部分 X11 文本映射会把 Ctrl+Shift+A 折成控制字符 ^A；仍按 Search Tabs 处理。
             "\u{1}" => {
                 open_tab_search(st);
                 return;
-            },
+            }
             "n" => {
                 new_window();
                 return;
-            },
+            }
             "e" => {
                 if let Some(focused) = st.ws.active_tab().map(|t| t.focused) {
                     split_pane_inner(st, focused, Dir::Row);
                 }
                 return;
-            },
+            }
             "d" => {
                 if let Some(focused) = st.ws.active_tab().map(|t| t.focused) {
                     split_pane_inner(st, focused, Dir::Col);
                 }
                 return;
-            },
+            }
             "w" => {
                 if let Some(focused) = st.ws.active_tab().map(|t| t.focused) {
                     close_pane_inner(st, focused);
                 }
                 return;
-            },
+            }
             "t" => {
                 reopen_closed_tab(st);
                 return;
-            },
+            }
             "\u{F700}" => {
                 focus_pane_dir(st, 0.0, -1.0);
                 return;
-            },
+            }
             "\u{F701}" => {
                 focus_pane_dir(st, 0.0, 1.0);
                 return;
-            },
+            }
             "\u{F702}" => {
                 focus_pane_dir(st, -1.0, 0.0);
                 return;
-            },
+            }
             "\u{F703}" => {
                 focus_pane_dir(st, 1.0, 0.0);
                 return;
-            },
+            }
             "+" => {
                 zoom_font(st, 1.0);
                 return;
-            },
-            _ => {},
+            }
+            _ => {}
         }
     }
 
@@ -4859,29 +5554,29 @@ fn handle_input(
                 new_tab_with_default(st);
                 rebuild_tabs(st);
                 return;
-            },
+            }
             "w" => {
                 let idx = st.ws.active;
                 close_tab_inner(st, idx);
                 return;
-            },
+            }
             "f" => {
                 open_search(st);
                 return;
-            },
+            }
             "=" | "+" => {
                 zoom_font(st, 1.0);
                 return;
-            },
+            }
             "-" => {
                 zoom_font(st, -1.0);
                 return;
-            },
+            }
             "0" => {
                 reset_font(st);
                 return;
-            },
-            _ => {},
+            }
+            _ => {}
         }
     }
 
@@ -4900,7 +5595,9 @@ fn handle_input(
     if PIPE_ON.load(Ordering::Relaxed) {
         *LAST_KEY.lock().unwrap() = Some(Instant::now());
     }
-    let Some(tab) = st.ws.active_tab() else { return };
+    let Some(tab) = st.ws.active_tab() else {
+        return;
+    };
     let focused = tab.focused;
     let targets: Vec<PaneId> = if st.broadcast && tab.panes().len() > 1 {
         tab.panes()
@@ -4913,44 +5610,44 @@ fn handle_input(
     let key_bindings = st.cfg.key_bindings();
     let scroll_on_keystroke = st.cfg.scroll_on_keystroke;
     for target in targets {
-    match st.panes.get_mut(&target) {
-        Some(rt) => {
-            // UI 层先挡一次，避免编码/入队；core 的 input()/actor 仍有第二道门禁。
-            if rt.handle.read_only() {
-                eprintln!("[readonly] pane={target} 丢弃按键 text={text:?}");
-                continue;
-            }
-            let encoded = keys::encode_mode(
-                text,
-                ctrl,
-                alt,
-                shift,
-                rt.handle.wants_kitty_keyboard(),
-                key_bindings,
-            );
-            if let Some(bytes) = &encoded {
-                rt.handle.input(bytes);
-                // GNOME scroll_on_keystroke：按键后回到底部。非阻塞读取原子快照，
-                // 只有确实上滚过才发异步滚动消息，避免每次按键都占 ctrl 队列。
-                if key_scrolls_to_bottom(scroll_on_keystroke, rt.handle.scroll_position()) {
-                    rt.handle.scroll_to_bottom();
+        match st.panes.get_mut(&target) {
+            Some(rt) => {
+                // UI 层先挡一次，避免编码/入队；core 的 input()/actor 仍有第二道门禁。
+                if rt.handle.read_only() {
+                    eprintln!("[readonly] pane={target} 丢弃按键 text={text:?}");
+                    continue;
                 }
-                if keylog {
-                    eprintln!("[send] pane={target} bytes={bytes:?}");
-                }
-            } else if keylog {
-                eprintln!("[send] pane={target} 未编码 text={text:?}");
-            }
-        },
-        None => {
-            if keylog {
-                eprintln!(
-                    "[send] 找不到 pane {target}（现有 {:?}）",
-                    st.panes.keys().collect::<Vec<_>>()
+                let encoded = keys::encode_mode(
+                    text,
+                    ctrl,
+                    alt,
+                    shift,
+                    rt.handle.wants_kitty_keyboard(),
+                    key_bindings,
                 );
+                if let Some(bytes) = &encoded {
+                    rt.handle.input(bytes);
+                    // GNOME scroll_on_keystroke：按键后回到底部。非阻塞读取原子快照，
+                    // 只有确实上滚过才发异步滚动消息，避免每次按键都占 ctrl 队列。
+                    if key_scrolls_to_bottom(scroll_on_keystroke, rt.handle.scroll_position()) {
+                        rt.handle.scroll_to_bottom();
+                    }
+                    if keylog {
+                        eprintln!("[send] pane={target} bytes={bytes:?}");
+                    }
+                } else if keylog {
+                    eprintln!("[send] pane={target} 未编码 text={text:?}");
+                }
             }
-        },
-    }
+            None => {
+                if keylog {
+                    eprintln!(
+                        "[send] 找不到 pane {target}（现有 {:?}）",
+                        st.panes.keys().collect::<Vec<_>>()
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -4989,17 +5686,19 @@ fn send_desktop_notification(title: &str, body: &str) {
     let title = title.to_owned();
     let body = body.to_owned();
     // 通知可能很频繁，绝不能在 UI 线程里等 notify-send 退出。
-    let _ = std::thread::Builder::new().name("notify-send".into()).spawn(move || {
-        let _ = std::process::Command::new("notify-send")
-            .arg("--app-name=Tervo")
-            .arg("--")
-            .arg(&title)
-            .arg(&body)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
-    });
+    let _ = std::thread::Builder::new()
+        .name("notify-send".into())
+        .spawn(move || {
+            let _ = std::process::Command::new("notify-send")
+                .arg("--app-name=Tervo")
+                .arg("--")
+                .arg(&title)
+                .arg(&body)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+        });
 }
 
 fn selection_label(selection: ClipboardSelection) -> &'static str {
@@ -5013,7 +5712,10 @@ fn selection_label(selection: ClipboardSelection) -> &'static str {
 /// （query 同样会泄漏本机剪贴板，不能只拦写入）。
 fn apply_osc52(st: &mut AppState, pane: PaneId, request: ClipboardRequest) {
     if !st.cfg.osc52_allowed() {
-        eprintln!("[clipboard] osc52 denied pane={pane} osc52={:?}", st.cfg.osc52);
+        eprintln!(
+            "[clipboard] osc52 denied pane={pane} osc52={:?}",
+            st.cfg.osc52
+        );
         return;
     }
     match request {
@@ -5027,7 +5729,7 @@ fn apply_osc52(st: &mut AppState, pane: PaneId, request: ClipboardRequest) {
                 ClipboardSelection::Clipboard => set_clipboard(st, &text),
                 ClipboardSelection::Primary => set_primary(st, &text),
             }
-        },
+        }
         ClipboardRequest::Clear { selection } => {
             eprintln!(
                 "[clipboard] osc52 clear pane={pane} selection={}",
@@ -5037,7 +5739,7 @@ fn apply_osc52(st: &mut AppState, pane: PaneId, request: ClipboardRequest) {
                 ClipboardSelection::Clipboard => clear_clipboard(st),
                 ClipboardSelection::Primary => clear_primary(st),
             }
-        },
+        }
         ClipboardRequest::Load { selection } => {
             let text = match selection {
                 ClipboardSelection::Clipboard => get_clipboard(st),
@@ -5056,7 +5758,7 @@ fn apply_osc52(st: &mut AppState, pane: PaneId, request: ClipboardRequest) {
                 );
                 rt.handle.clipboard_reply(selection, &text);
             }
-        },
+        }
     }
 }
 
@@ -5084,12 +5786,16 @@ fn poll_events() {
         let mut bell_panes: Vec<PaneId> = Vec::new();
         let ids: Vec<PaneId> = st.panes.keys().copied().collect();
         for id in ids {
-            let Some(rt) = st.panes.get_mut(&id) else { continue };
+            let Some(rt) = st.panes.get_mut(&id) else {
+                continue;
+            };
             let mut events = Vec::new();
             rt.handle.drain_events(&mut events);
             let tab = pane_tab.get(&id).copied();
-            let tab_title =
-                tab.and_then(|i| tab_titles.get(i)).map(String::as_str).unwrap_or("Tervo");
+            let tab_title = tab
+                .and_then(|i| tab_titles.get(i))
+                .map(String::as_str)
+                .unwrap_or("Tervo");
             let is_active = tab == Some(active);
             for ev in events {
                 match ev {
@@ -5098,20 +5804,19 @@ fn poll_events() {
                             rt.title = t;
                             titles_dirty = true;
                         }
-                    },
+                    }
                     CoreEvent::Progress(progress) => {
                         let had_progress = rt.activity.progress.state != ProgressState::Clear;
                         rt.activity.progress = progress;
                         // 进度从“有”变为清除 = 完成；活动 Tab 不放完成标记，避免打扰。
-                        rt.activity.completed = progress.state == ProgressState::Clear
-                            && had_progress
-                            && !is_active;
+                        rt.activity.completed =
+                            progress.state == ProgressState::Clear && had_progress && !is_active;
                         tabs_dirty = true;
                         eprintln!(
                             "[ui] tab progress pane={id} tab={tab:?} state={:?} percent={:?}",
                             progress.state, progress.percent
                         );
-                    },
+                    }
                     CoreEvent::Notification(note) => {
                         tabs_dirty |= apply_notification(
                             rt,
@@ -5123,7 +5828,7 @@ fn poll_events() {
                             desktop_notifications,
                             false,
                         );
-                    },
+                    }
                     CoreEvent::Bell => {
                         bell_count += 1;
                         tabs_dirty |= apply_notification(
@@ -5140,12 +5845,12 @@ fn poll_events() {
                         if is_active && visual_bell {
                             bell_panes.push(id);
                         }
-                    },
+                    }
                     CoreEvent::Cwd(cwd) => {
                         eprintln!("[ui] cwd pane={id} tab={tab:?} path={cwd:?}");
-                    },
+                    }
                     CoreEvent::Clipboard(request) => clipboard_events.push((id, request)),
-                    CoreEvent::ResetTitle | CoreEvent::CursorBlinkChange | CoreEvent::Exited => {},
+                    CoreEvent::ResetTitle | CoreEvent::CursorBlinkChange | CoreEvent::Exited => {}
                 }
             }
         }
@@ -5195,11 +5900,17 @@ fn flash_bell(st: &mut AppState, id: PaneId) {
     if !st.cfg.visual_bell {
         return;
     }
-    let Some(rt) = st.panes.get_mut(&id) else { return };
+    let Some(rt) = st.panes.get_mut(&id) else {
+        return;
+    };
     rt.bell_until = Some(Instant::now() + Duration::from_millis(BELL_FLASH_MS));
     refresh_pane_view(st, id);
     // 已经在跑就重置计时；到期没有新的闪烁时 tick 会 stop。
-    st.bell_timer.start(slint::TimerMode::Repeated, Duration::from_millis(30), tick_bell_flash);
+    st.bell_timer.start(
+        slint::TimerMode::Repeated,
+        Duration::from_millis(30),
+        tick_bell_flash,
+    );
 }
 
 /// 清除到期的视觉铃闪烁；全部清完就停掉 30ms timer，空闲时零开销。
@@ -5217,7 +5928,9 @@ fn tick_bell_flash() {
             .values()
             .any(|rt| rt.bell_until.is_some_and(|until| now < until));
         for id in expired {
-            let Some(rt) = st.panes.get_mut(&id) else { continue };
+            let Some(rt) = st.panes.get_mut(&id) else {
+                continue;
+            };
             rt.bell_until = None;
             refresh_pane_view(st, id);
         }
@@ -5271,8 +5984,18 @@ fn parse_args_from(cfg: &Config, args: impl IntoIterator<Item = String>) -> Opti
         match arg.as_str() {
             "--cols" => o.cols = it.next().and_then(|v| v.parse().ok()).unwrap_or(o.cols),
             "--rows" => o.rows = it.next().and_then(|v| v.parse().ok()).unwrap_or(o.rows),
-            "--scrollback" => o.scrollback = it.next().and_then(|v| v.parse().ok()).unwrap_or(o.scrollback),
-            "--font-size" => o.font_size = it.next().and_then(|v| v.parse().ok()).unwrap_or(o.font_size),
+            "--scrollback" => {
+                o.scrollback = it
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(o.scrollback)
+            }
+            "--font-size" => {
+                o.font_size = it
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(o.font_size)
+            }
             "--shell" => o.shell = it.next(),
             "--latency" | "-l" => o.latency = it.next().and_then(|v| v.parse().ok()),
             "--fps" => o.fps = it.next().and_then(|v| v.parse().ok()),
@@ -5288,7 +6011,7 @@ fn parse_args_from(cfg: &Config, args: impl IntoIterator<Item = String>) -> Opti
             "--" => {
                 o.args = it.by_ref().collect();
                 break;
-            },
+            }
             other => o.args.push(other.to_string()),
         }
     }
@@ -5321,7 +6044,11 @@ fn print_diagnostics() {
     });
     println!(
         "requested_backend={effective_backend}{}",
-        if explicit_backend.is_some() { " (env)" } else { " (default)" }
+        if explicit_backend.is_some() {
+            " (env)"
+        } else {
+            " (default)"
+        }
     );
     println!("/dev/dri={}", std::path::Path::new("/dev/dri").exists());
     println!("config={}", Config::path().display());
@@ -5355,8 +6082,10 @@ fn print_diagnostics() {
             w.id, w.pid, w.w, w.h, w.x, w.y, w.viewable, w.title
         );
     }
-    let others: Vec<_> =
-        xconn::tervo_windows().into_iter().filter(|w| w.pid != std::process::id()).collect();
+    let others: Vec<_> = xconn::tervo_windows()
+        .into_iter()
+        .filter(|w| w.pid != std::process::id())
+        .collect();
     if !others.is_empty() {
         println!("⚠ 其他 Tervo 实例窗口（可能挡住点击）:");
         for w in others {
@@ -5415,7 +6144,7 @@ fn run_sftp_probe(args: &[String]) -> i32 {
         Err(e) => {
             eprintln!("[sftp-probe] {e}");
             return 2;
-        },
+        }
     };
     let op = args.first().map(String::as_str).unwrap_or("");
     let remote = args.get(1).map(String::as_str).unwrap_or(".");
@@ -5424,17 +6153,17 @@ fn run_sftp_probe(args: &[String]) -> i32 {
         "get" => {
             let local = args.get(2).map(String::as_str).unwrap_or("");
             sftp_probe_transfer(&target, sftp::TransferDirection::Download, local, remote)
-        },
+        }
         "put" => {
             // put <local> <remote>（与 cp 习惯一致；get 则是 <remote> <local>）
             let local = args.get(1).map(String::as_str).unwrap_or("");
             let remote = args.get(2).map(String::as_str).unwrap_or("");
             sftp_probe_transfer(&target, sftp::TransferDirection::Upload, local, remote)
-        },
+        }
         other => {
             eprintln!("[sftp-probe] 未知操作 {other}");
             return 2;
-        },
+        }
     };
     match result {
         Ok(out) => {
@@ -5443,11 +6172,11 @@ fn run_sftp_probe(args: &[String]) -> i32 {
             }
             println!("[sftp-probe] ok {op}");
             0
-        },
+        }
         Err(e) => {
             eprintln!("[sftp-probe] {e}");
             1
-        },
+        }
     }
 }
 
@@ -5500,7 +6229,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // `SLINT_BACKEND=winit-software` 仍是显式回退开关；显式设置任何值都以用户为准。
     // Skia 初始化失败时由 render_probe/下面的重试自动回退 software，不黑屏、不崩溃。
     let explicit_backend = std::env::var("SLINT_BACKEND").ok();
-    let mut requested_backend = explicit_backend.clone().unwrap_or_else(|| "winit-skia".to_string());
+    let mut requested_backend = explicit_backend
+        .clone()
+        .unwrap_or_else(|| "winit-skia".to_string());
     let backend_from_env = explicit_backend.is_some();
     // 没有 DRM 设备时 Skia 可能只能建 software surface，而该 surface 在本机
     // 实测会黑屏（窗口在、内容全黑）。这不是“GPU 初始化失败后回退”而是压根
@@ -5533,13 +6264,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 无 UI 的 Tabby 配置迁移：在初始化窗口/后端之前处理，直接退出。
     let arg_value = |flag: &str| -> Option<std::path::PathBuf> {
-        argv.iter().position(|a| a == flag).and_then(|i| argv.get(i + 1)).map(std::path::PathBuf::from)
+        argv.iter()
+            .position(|a| a == flag)
+            .and_then(|i| argv.get(i + 1))
+            .map(std::path::PathBuf::from)
     };
     if let Some(path) = arg_value("--export-tabby") {
         let store = profile::ProfileStore::load();
         let yaml = tabby_import::export_yaml(&store);
         std::fs::write(&path, yaml)?;
-        println!("[tabby] 导出 {} 个 Profile → {}", store.profiles.len(), path.display());
+        println!(
+            "[tabby] 导出 {} 个 Profile → {}",
+            store.profiles.len(),
+            path.display()
+        );
         return Ok(());
     }
     if let Some(path) = arg_value("--import-tabby") {
@@ -5594,11 +6332,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!("  - 应用字号 {fs}px");
                 }
                 return Ok(());
-            },
+            }
             Err(e) => {
                 eprintln!("[tabby] 导入失败: {e}");
                 std::process::exit(1);
-            },
+            }
         }
     }
 
@@ -5623,7 +6361,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let opts = parse_args(&cfg);
     if opts.window {
         // 子窗口进程：仅日志区分。这里刻意不做任何“再建窗口”的动作，避免递归启动。
-        eprintln!("[ui] new window process pid={} (--window)", std::process::id());
+        eprintln!(
+            "[ui] new window process pid={} (--window)",
+            std::process::id()
+        );
     }
 
     // 内置 + 用户自定义主题；加载失败只记录，不阻塞启动。
@@ -5658,7 +6399,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let first_ui = if force_init_fail {
         eprintln!("[render] 测试注入：强制首次 UI 初始化失败（TERVO_TEST_FORCE_UI_INIT_FAIL）");
-        Err(slint::PlatformError::Other("test-injected UI init failure".into()))
+        Err(slint::PlatformError::Other(
+            "test-injected UI init failure".into(),
+        ))
     } else {
         MainWindow::new()
     };
@@ -5679,19 +6422,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                          这通常是没有可用的 X11/Wayland display，而不是 GPU 问题"
                     );
                     return Err(err2.into());
-                },
+                }
             }
-        },
+        }
         Err(err) => {
             eprintln!("[render] requested_backend={requested_backend} 初始化失败: {err}");
             return Err(err.into());
-        },
+        }
     };
     // 在 show/首帧之前安装：读取实际渲染器（Skia/GL vs winit-software）和 GL 信息。
     render_probe::install(&ui.window(), &requested_backend, backend_fell_back);
     // --title 以前只解析不使用，窗口标题永远硬编码；现在透传到 Slint 属性。
     ui.set_window_title(opts.title.as_str().into());
-    ui.window().set_size(slint::PhysicalSize::new(win_w as u32, win_h as u32));
+    ui.window()
+        .set_size(slint::PhysicalSize::new(win_w as u32, win_h as u32));
 
     let pane_model = Rc::new(VecModel::<PaneView>::default());
     let tab_model = Rc::new(VecModel::<TabView>::default());
@@ -5753,7 +6497,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Err(e) => {
                 eprintln!("[corners] {e}");
                 None
-            },
+            }
         }
     };
 
@@ -5772,6 +6516,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         opts: opts.clone(),
         content,
         next_title: 0,
+        config_watcher: None,
         resolved_theme: initial_theme.clone(),
         registry,
         auto_watch_started: false,
@@ -5887,6 +6632,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui.on_pane_mouse_down(move |id, x, y, button, mods| {
         let id = id as u64;
         with_app(|st| {
+            // 点击终端属于“find 之外”：先收起查找条，再按正常点击处理。
+            if st.search_open {
+                close_search(st);
+            }
             let (cell, wants_mouse) = {
                 let Some(rt) = st.panes.get(&id) else { return };
                 (cell_at(rt, x, y), rt.handle.wants_mouse())
@@ -6083,8 +6832,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // 终端要鼠标：滚轮变成 64/65 上报（tmux 翻页、vim 滚动才生效）。
             if rt.handle.wants_mouse() && !modifiers.shift {
                 let cell = cell_at(rt, x, y);
-                let button =
-                    if dy > 0.0 { MouseButton::WheelUp } else { MouseButton::WheelDown };
+                let button = if dy > 0.0 {
+                    MouseButton::WheelUp
+                } else {
+                    MouseButton::WheelDown
+                };
                 rt.handle.mouse(MouseEvent {
                     button,
                     action: MouseAction::Press,
@@ -6132,7 +6884,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Err(e) => {
                 eprintln!("[ui] drop 无法读取文件列表: {e:?}");
                 return;
-            },
+            }
         };
         if paths.is_empty() {
             return;
@@ -6142,7 +6894,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     ui.on_divider_dragged(|index, x, y| {
         with_app(|st| {
-            let Some(info) = st.divider_infos.get(index as usize).cloned() else { return };
+            let Some(info) = st.divider_infos.get(index as usize).cloned() else {
+                return;
+            };
             let usable = match info.dir {
                 Dir::Row => info.parent.w - SPLIT_GAP,
                 Dir::Col => info.parent.h - SPLIT_GAP,
@@ -6155,8 +6909,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Dir::Col => (y - info.parent.y) / usable,
             };
             let changed = {
-                let Some(tab) = st.ws.active_tab_mut() else { return };
-                let Some(root) = tab.root.as_mut() else { return };
+                let Some(tab) = st.ws.active_tab_mut() else {
+                    return;
+                };
+                let Some(root) = tab.root.as_mut() else {
+                    return;
+                };
                 root.set_ratio(&info.path, ratio)
             };
             if changed {
@@ -6223,7 +6981,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 st.wm_resize = false;
             }
             let Some(r) = st.resize else { return };
-            let Some((px, py)) = resize_pointer(st) else { return };
+            let Some((px, py)) = resize_pointer(st) else {
+                return;
+            };
             let dx = px - r.pointer.0;
             let dy = py - r.pointer.1;
 
@@ -6345,7 +7105,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui.on_pane_right_up(|id, _x, _y| {
         with_app(|st| {
             let id = id as u64;
-            let Some((down_id, at, dx, dy)) = st.right_down.take() else { return };
+            let Some((down_id, at, dx, dy)) = st.right_down.take() else {
+                return;
+            };
             if down_id != id {
                 return;
             }
@@ -6358,15 +7120,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     } else {
                         open_pane_menu(st, id, dx, dy);
                     }
-                },
+                }
                 "clipboard" => {
                     if short {
                         copy_or_paste(st);
                     } else {
                         open_pane_menu(st, id, dx, dy);
                     }
-                },
-                _ => {},
+                }
+                _ => {}
             }
             eprintln!("[ui] right-up pane={id} mode={mode} short={short}");
         });
@@ -6385,7 +7147,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui.on_pane_right_clicked_at(|x, y| {
         with_app(|st| {
             let rects: Vec<(PaneId, Rect)> = {
-                let Some(tab) = st.ws.active_tab() else { return };
+                let Some(tab) = st.ws.active_tab() else {
+                    return;
+                };
                 tab.panes()
                     .into_iter()
                     .filter_map(|id| st.panes.get(&id).map(|rt| (id, rt.rect)))
@@ -6406,19 +7170,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             2 => close_pane(id),
             3 => {
                 with_app(copy_current_selection);
-            },
+            }
             4 => {
                 with_app(paste_into_focused);
-            },
+            }
             5 => {
                 with_app(|st| run_command(st, "terminal.find"));
-            },
+            }
             6 => {
                 with_app(|st| run_command(st, "terminal.select-all"));
-            },
+            }
             7 => {
                 with_app(|st| run_command(st, "terminal.clear"));
-            },
+            }
             8 => {
                 with_app(|st| {
                     st.broadcast = !st.broadcast;
@@ -6430,7 +7194,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         eprintln!("[ui] broadcast={} panes={panes}", st.broadcast);
                     }
                 });
-            },
+            }
             9 => {
                 with_app(|st| {
                     let uri = st.menu_link.clone();
@@ -6440,7 +7204,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         open_link_uri(&uri);
                     }
                 });
-            },
+            }
             10 => {
                 with_app(|st| {
                     let uri = st.menu_link.clone();
@@ -6449,20 +7213,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         set_clipboard(st, &uri);
                     }
                 });
-            },
+            }
             11 => {
                 with_app(|st| toggle_read_only(st, Some(id)));
-            },
+            }
             12 => {
                 with_app(|st| reset_pane(st, id, false));
-            },
+            }
             13 => {
                 with_app(|st| reset_pane(st, id, true));
-            },
+            }
             14 => {
                 with_app(|st| open_save_contents(st, id));
-            },
-            _ => {},
+            }
+            _ => {}
         }
         // Save Contents 需要把焦点交给输入路径的 TextInput，不能抢回终端。
         if action != 14 {
@@ -6574,7 +7338,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                         eprintln!("[tabby] {msg}");
                         msg
-                    },
+                    }
                     Err(e) => format!("导入失败: {e}"),
                 },
                 Err(e) => format!("读不到 {}: {e}", path.display()),
@@ -6589,10 +7353,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let yaml = tabby_import::export_yaml(&st.profiles);
             let status = match std::fs::write(&path, yaml) {
                 Ok(()) => {
-                    let msg = format!("已导出 {} 个 Profile → {}", st.profiles.profiles.len(), path.display());
+                    let msg = format!(
+                        "已导出 {} 个 Profile → {}",
+                        st.profiles.profiles.len(),
+                        path.display()
+                    );
                     eprintln!("[tabby] {msg}");
                     msg
-                },
+                }
                 Err(e) => format!("导出失败: {e}"),
             };
             st.ui.set_config_status(status.as_str().into());
@@ -6660,31 +7428,53 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         with_app(|st| {
             st.profile_query = query.to_string();
             refresh_profiles(st);
-            eprintln!("[profile] filter={:?} items={}", st.profile_query, st.profile_indices.len());
+            eprintln!(
+                "[profile] filter={:?} items={}",
+                st.profile_query,
+                st.profile_indices.len()
+            );
         });
     });
 
     // 星标：点已默认的项 = 取消默认（回退系统 shell）；点其他项 = 切换默认。
     ui.on_profile_set_default(|index| {
         with_app(|st| {
-            let Some(store_index) = profile_row_to_store(st, index) else { return };
-            let Some(id) = st.profiles.profiles.get(store_index).map(|p| p.id) else { return };
-            st.cfg.default_profile_id = if st.cfg.default_profile_id == id { 0 } else { id };
+            let Some(store_index) = profile_row_to_store(st, index) else {
+                return;
+            };
+            let Some(id) = st.profiles.profiles.get(store_index).map(|p| p.id) else {
+                return;
+            };
+            st.cfg.default_profile_id = if st.cfg.default_profile_id == id {
+                0
+            } else {
+                id
+            };
             st.cfg.save();
             refresh_profiles(st);
             if st.cfg.default_profile_id == 0 {
                 eprintln!("[profile] 已清除默认 Profile（新 Tab 用系统 shell）");
             } else {
-                eprintln!("[profile] 默认 Profile id={id} name={:?}",
-                    st.profiles.profiles.get(store_index).map(|p| p.name.as_str()).unwrap_or(""));
+                eprintln!(
+                    "[profile] 默认 Profile id={id} name={:?}",
+                    st.profiles
+                        .profiles
+                        .get(store_index)
+                        .map(|p| p.name.as_str())
+                        .unwrap_or("")
+                );
             }
         });
     });
 
     ui.on_profile_duplicate(|index| {
         with_app(|st| {
-            let Some(store_index) = profile_row_to_store(st, index) else { return };
-            let Some(source_id) = st.profiles.profiles.get(store_index).map(|p| p.id) else { return };
+            let Some(store_index) = profile_row_to_store(st, index) else {
+                return;
+            };
+            let Some(source_id) = st.profiles.profiles.get(store_index).map(|p| p.id) else {
+                return;
+            };
             match st.profiles.duplicate(source_id) {
                 Ok(id) => {
                     st.profiles.save();
@@ -6694,7 +7484,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         st.profiles.get(id).map(|p| p.name.as_str()).unwrap_or(""),
                         st.profiles.profiles.len()
                     );
-                },
+                }
                 Err(e) => eprintln!("[profile] 复制 id={source_id} 失败: {e}"),
             }
         });
@@ -6710,8 +7500,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     ui.on_profile_delete(|index| {
         with_app(|st| {
-            let Some(store_index) = profile_row_to_store(st, index) else { return };
-            let Some(p) = st.profiles.profiles.get(store_index).map(|p| p.id) else { return };
+            let Some(store_index) = profile_row_to_store(st, index) else {
+                return;
+            };
+            let Some(p) = st.profiles.profiles.get(store_index).map(|p| p.id) else {
+                return;
+            };
             if st.profiles.remove(p) {
                 // 删除的是默认项时必须回退 0，否则新 Tab 会一直解析失败。
                 let cleared = clear_default_after_remove(&mut st.cfg, p);
@@ -6804,7 +7598,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             st.cfg.paste_on_middle_click = !st.cfg.paste_on_middle_click;
             st.ui.set_cfg_paste_middle(st.cfg.paste_on_middle_click);
             st.cfg.save();
-            eprintln!("[ui] paste_on_middle_click={}", st.cfg.paste_on_middle_click);
+            eprintln!(
+                "[ui] paste_on_middle_click={}",
+                st.cfg.paste_on_middle_click
+            );
         });
     });
 
@@ -6812,19 +7609,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         with_app(|st| {
             st.cfg.confirm_multiline_paste = !st.cfg.confirm_multiline_paste;
             st.ui.set_cfg_confirm_paste(st.cfg.confirm_multiline_paste);
-        st.ui.set_cfg_right_click(st.cfg.effective_right_click().into());
-        st.ui.set_cfg_paste_middle(st.cfg.paste_on_middle_click);
+            st.ui
+                .set_cfg_right_click(st.cfg.effective_right_click().into());
+            st.ui.set_cfg_paste_middle(st.cfg.paste_on_middle_click);
             st.cfg.save();
-            eprintln!("[ui] confirm_multiline_paste={}", st.cfg.confirm_multiline_paste);
+            eprintln!(
+                "[ui] confirm_multiline_paste={}",
+                st.cfg.confirm_multiline_paste
+            );
         });
     });
 
     ui.on_toggle_desktop_notifications(|| {
         with_app(|st| {
             st.cfg.desktop_notifications = !st.cfg.desktop_notifications;
-            st.ui.set_cfg_desktop_notifications(st.cfg.desktop_notifications);
+            st.ui
+                .set_cfg_desktop_notifications(st.cfg.desktop_notifications);
             st.cfg.save();
-            eprintln!("[ui] desktop_notifications={}", st.cfg.desktop_notifications);
+            eprintln!(
+                "[ui] desktop_notifications={}",
+                st.cfg.desktop_notifications
+            );
         });
     });
 
@@ -6916,7 +7721,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui.on_toggle_scrollback_unlimited(|| {
         with_app(|st| {
             st.cfg.scrollback_unlimited = !st.cfg.scrollback_unlimited;
-            st.ui.set_cfg_scrollback_unlimited(st.cfg.scrollback_unlimited);
+            st.ui
+                .set_cfg_scrollback_unlimited(st.cfg.scrollback_unlimited);
             st.cfg.save();
             eprintln!(
                 "[ui] scrollback_unlimited={} effective={} (仅新 pane)",
@@ -6960,10 +7766,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui.on_settings_open_path(|| {
         with_app(|_st| {
             let path = Config::path();
-            let dir = path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| path.clone());
+            let dir = path
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| path.clone());
             eprintln!("[ui] open config folder {}", dir.display());
             match std::process::Command::new("xdg-open").arg(&dir).spawn() {
-                Ok(_) => {},
+                Ok(_) => {}
                 Err(e) => eprintln!("[ui] 打开配置目录失败: {e}"),
             }
         });
@@ -6994,9 +7803,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             st.ui.set_settings_query(q.as_str().into());
             let hits = settings_search(&q);
             st.settings_result_cats = hits.iter().map(|(c, _)| *c).collect();
-            st.settings_model
-                .set_vec(hits.into_iter().map(|(_, line)| line.into()).collect::<Vec<_>>());
-            eprintln!("[ui] settings filter q={q:?} hits={}", st.settings_result_cats.len());
+            st.settings_model.set_vec(
+                hits.into_iter()
+                    .map(|(_, line)| line.into())
+                    .collect::<Vec<_>>(),
+            );
+            eprintln!(
+                "[ui] settings filter q={q:?} hits={}",
+                st.settings_result_cats.len()
+            );
         });
     });
 
@@ -7012,6 +7827,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     ui.on_settings_toggled(|open| {
+        if open {
+            with_app(|st| {
+                if st.search_open {
+                    close_search(st);
+                }
+            });
+        }
         with_app(|st| {
             if open {
                 refresh_vault_ui(st);
@@ -7163,7 +7985,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 3 => open_rename(st, index),
                 4 => close_tabs_left(st, index),
                 5 => close_tabs_right(st, index),
-                _ => {},
+                _ => {}
             }
         });
     });
@@ -7180,18 +8002,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui.on_tabbar_menu_action(|action| {
         eprintln!("[ui] tabbar action={action}");
         with_app(|st| match action {
-            0 => {}, // 置顶由 Slint 侧直接切换（绑定 Window.always-on-top）
+            0 => {} // 置顶由 Slint 侧直接切换（绑定 Window.always-on-top）
             1 => {
                 new_tab_with_default(st);
                 rebuild_tabs(st);
-            },
+            }
             13 => new_window(),
             2 => {
                 st.ui.set_settings_open(true);
-            },
+            }
             3 => {
                 let _ = slint::quit_event_loop();
-            },
+            }
             4 => restart_session(st),
             5 => open_palette(st),
             7 => reattach_last_background(st),
@@ -7200,16 +8022,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             10 => open_sftp_panel(st),
             11 => open_forwards_panel(st),
             6 => {
-                st.cfg.tabbar_position =
-                    if st.cfg.tabbar_position == "bottom" { "top".into() } else { "bottom".into() };
+                st.cfg.tabbar_position = if st.cfg.tabbar_position == "bottom" {
+                    "top".into()
+                } else {
+                    "bottom".into()
+                };
                 st.ui.set_tabbar_bottom(st.cfg.tabbar_position == "bottom");
                 st.cfg.save();
                 // 内容区在窗口内的纵向偏移变了：候选点必须重新下发。
                 st.ime_spot_dirty = true;
                 update_ime_spot(st);
                 eprintln!("[ui] tabbar_position={}", st.cfg.tabbar_position);
-            },
-            _ => {},
+            }
+            _ => {}
         });
     });
 
@@ -7231,9 +8056,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     {
         let auto = is_auto_theme(&theme_selection);
-        ui.set_theme_name(if auto { AUTO_THEME.into() } else { initial_theme.id.as_str().into() });
-        ui.set_auto_resolved(if auto { initial_theme.label.as_str().into() } else { "".into() });
-        ui.global::<Palette>().set_colors(slint_theme(&initial_theme.ui));
+        ui.set_theme_name(if auto {
+            AUTO_THEME.into()
+        } else {
+            initial_theme.id.as_str().into()
+        });
+        ui.set_auto_resolved(if auto {
+            initial_theme.label.as_str().into()
+        } else {
+            "".into()
+        });
+        ui.global::<Palette>()
+            .set_colors(slint_theme(&initial_theme.ui));
         ui.set_theme_choices(theme_choices(&state.borrow().registry));
     }
     ui.set_font_size(state.borrow().cfg.font_size as i32);
@@ -7336,7 +8170,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let next = if raw.trim().is_empty() {
                 String::new()
             } else {
-                let Some(color) = config::normalize_hex_color(raw) else { return };
+                let Some(color) = config::normalize_hex_color(raw) else {
+                    return;
+                };
                 color
             };
             if st.cfg.cursor_color == next {
@@ -7355,7 +8191,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let next = if raw.trim().is_empty() {
                 String::new()
             } else {
-                let Some(color) = config::normalize_hex_color(raw) else { return };
+                let Some(color) = config::normalize_hex_color(raw) else {
+                    return;
+                };
                 color
             };
             if st.cfg.cursor_text_color == next {
@@ -7384,7 +8222,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let next = if raw.trim().is_empty() {
                 String::new()
             } else {
-                let Some(color) = config::normalize_hex_color(raw) else { return };
+                let Some(color) = config::normalize_hex_color(raw) else {
+                    return;
+                };
                 color
             };
             if st.cfg.bold_color == next {
@@ -7400,7 +8240,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui.on_toggle_bold_color_same_as_fg(|| {
         with_app(|st| {
             st.cfg.bold_color_same_as_fg = !st.cfg.bold_color_same_as_fg;
-            st.ui.set_cfg_bold_color_same_as_fg(st.cfg.bold_color_same_as_fg);
+            st.ui
+                .set_cfg_bold_color_same_as_fg(st.cfg.bold_color_same_as_fg);
             apply_bold_settings(st);
             st.cfg.save();
             eprintln!(
@@ -7469,9 +8310,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    ui.on_tab_clicked(|i| set_active_tab(i as usize));
+    ui.on_tab_clicked(|i| {
+        with_app(|st| {
+            if st.search_open {
+                close_search(st);
+            }
+        });
+        set_active_tab(i as usize);
+    });
     ui.on_tab_closed(|i| close_tab(i as usize));
-    ui.on_new_tab(new_tab);
+    ui.on_new_tab(|| {
+        with_app(|st| {
+            if st.search_open {
+                close_search(st);
+            }
+        });
+        new_tab();
+    });
 
     ui.on_profilemenu_menu(|| {
         with_app(open_profile_menu);
@@ -7639,58 +8494,77 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ---- OSC 标题轮询 ----
     let poll_timer = slint::Timer::default();
-    poll_timer.start(slint::TimerMode::Repeated, Duration::from_millis(400), poll_events);
+    poll_timer.start(
+        slint::TimerMode::Repeated,
+        Duration::from_millis(400),
+        poll_events,
+    );
 
     // DECSET 1004：窗口焦点变化及时同步给 TUI（50ms 轮询）。
     let focus_timer = slint::Timer::default();
-    focus_timer.start(slint::TimerMode::Repeated, Duration::from_millis(50), || {
-        let win = with_app(|st| {
-            st.ui
-                .window()
-                .with_winit_window(|w| w.has_focus())
-                .unwrap_or(true)
-        })
-        .unwrap_or(true);
-        with_app(|st| {
-            let was_focused = st.window_focused;
-            sync_terminal_focus(st, win);
-            if win && !was_focused {
-                // 输入法在失焦期间可能丢弃旧 spot；重新获得焦点时强制补发。
-                st.ime_spot_dirty = true;
-            }
-            // dsh 侧栏可能只移动终端光标、不产生内容重绘；独立轮询光标，
-            // 不能只等 redraw_visible 才更新 IME spot。
-            update_ime_spot(st);
-        });
-    });
+    focus_timer.start(
+        slint::TimerMode::Repeated,
+        Duration::from_millis(50),
+        || {
+            let win = with_app(|st| {
+                st.ui
+                    .window()
+                    .with_winit_window(|w| w.has_focus())
+                    .unwrap_or(true)
+            })
+            .unwrap_or(true);
+            with_app(|st| {
+                let was_focused = st.window_focused;
+                sync_terminal_focus(st, win);
+                if win && !was_focused {
+                    // 输入法在失焦期间可能丢弃旧 spot；重新获得焦点时强制补发。
+                    st.ime_spot_dirty = true;
+                }
+                // dsh 侧栏可能只移动终端光标、不产生内容重绘；独立轮询光标，
+                // 不能只等 redraw_visible 才更新 IME spot。
+                update_ime_spot(st);
+            });
+        },
+    );
 
     // 设置开关的初始状态
     with_app(|st| {
         st.ui.set_cfg_copy_on_select(st.cfg.copy_on_select);
         st.ui.set_cfg_confirm_close(st.cfg.confirm_close);
         st.ui.set_cfg_confirm_paste(st.cfg.confirm_multiline_paste);
-        st.ui.set_cfg_desktop_notifications(st.cfg.desktop_notifications);
+        st.ui
+            .set_cfg_desktop_notifications(st.cfg.desktop_notifications);
         st.ui.set_cfg_visual_bell(st.cfg.visual_bell);
         // 光标/粗体外观（GNOME Terminal 基础项）
-        st.ui.set_cfg_cursor_shape(st.cfg.cursor_shape.clone().into());
-        st.ui.set_cfg_cursor_blink(st.cfg.cursor_blink.clone().into());
-        st.ui.set_cfg_cursor_color(st.cfg.cursor_color.clone().into());
-        st.ui.set_cfg_cursor_text_color(st.cfg.cursor_text_color.clone().into());
+        st.ui
+            .set_cfg_cursor_shape(st.cfg.cursor_shape.clone().into());
+        st.ui
+            .set_cfg_cursor_blink(st.cfg.cursor_blink.clone().into());
+        st.ui
+            .set_cfg_cursor_color(st.cfg.cursor_color.clone().into());
+        st.ui
+            .set_cfg_cursor_text_color(st.cfg.cursor_text_color.clone().into());
         st.ui.set_cfg_bold_is_bright(st.cfg.bold_is_bright);
         st.ui.set_cfg_bold_color(st.cfg.bold_color.clone().into());
-        st.ui.set_cfg_bold_color_same_as_fg(st.cfg.bold_color_same_as_fg);
+        st.ui
+            .set_cfg_bold_color_same_as_fg(st.cfg.bold_color_same_as_fg);
         configure_cursor_blink(st);
         st.ui.set_cfg_audible_bell(st.cfg.audible_bell);
         st.ui.set_cfg_scroll_output(st.cfg.scroll_on_output);
         st.ui.set_cfg_scroll_keystroke(st.cfg.scroll_on_keystroke);
         st.ui.set_cfg_sixel(st.cfg.sixel);
         st.ui.set_cfg_sixel_scrolling(st.cfg.sixel_scrolling);
-        st.ui.set_cfg_scrollback_unlimited(st.cfg.scrollback_unlimited);
-        st.ui.set_cfg_scrollbar_policy(st.cfg.scrollbar_policy().as_str().into());
-        st.ui.set_cfg_backspace_binding(st.cfg.key_bindings().backspace.as_str().into());
-        st.ui.set_cfg_delete_binding(st.cfg.key_bindings().delete.as_str().into());
+        st.ui
+            .set_cfg_scrollback_unlimited(st.cfg.scrollback_unlimited);
+        st.ui
+            .set_cfg_scrollbar_policy(st.cfg.scrollbar_policy().as_str().into());
+        st.ui
+            .set_cfg_backspace_binding(st.cfg.key_bindings().backspace.as_str().into());
+        st.ui
+            .set_cfg_delete_binding(st.cfg.key_bindings().delete.as_str().into());
         st.ui.set_tabbar_bottom(st.cfg.tabbar_position == "bottom");
-        st.ui.set_settings_path(Config::path().display().to_string().as_str().into());
+        st.ui
+            .set_settings_path(Config::path().display().to_string().as_str().into());
         init_background(st);
         // 测试/对比用：启动即隐藏背景，测量 cover 缩放成本（不影响正常路径）。
         if std::env::var_os("TERVO_TEST_SUSPEND_BG").is_some() {
@@ -7709,6 +8583,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("[ui] 启动 tabbar_position={}", st.cfg.tabbar_position);
     });
 
+    // ---- 外部 config.toml 热更新监听 ----
+    // 基线在 watcher 启动时采样，不主动触发一次；只有启动之后的内容变化才套用。
+    let cfg_path = Config::path();
+    let watcher_path = cfg_path.clone();
+    match config_watch::ConfigWatcher::start(cfg_path.clone(), move |cfg, hash| {
+        let check_path = watcher_path.clone();
+        if slint::invoke_from_event_loop(move || {
+            // 事件排队期间设置页可能又保存过：以磁盘当前内容为准，旧事件直接丢弃。
+            if !config_watch::file_hash_matches(&check_path, hash) {
+                eprintln!("[config] 热更新事件已过期（文件又被修改），跳过旧配置");
+                return;
+            }
+            with_app(|st| apply_external_config(st, cfg));
+        })
+        .is_err()
+        {
+            eprintln!("[config] watcher 回调投递失败（事件循环已退出）");
+        }
+    }) {
+        Ok(watcher) => {
+            with_app(|st| st.config_watcher = Some(watcher));
+            eprintln!(
+                "[config] 热更新监听已启动: {} ({}ms 轮询，mtime/hash)",
+                cfg_path.display(),
+                config_watch::POLL_INTERVAL.as_millis()
+            );
+        }
+        Err(e) => eprintln!("[config] 热更新监听启动失败（配置仍可用）: {e}"),
+    }
+
     // 启动事件：应用状态就绪后、首个 Tab 创建前后台分发；失败不影响主流程。
     with_app(|st| {
         dispatch_plugin_event(st, plugin::PluginEvent::Startup, plugin::startup_payload());
@@ -7726,7 +8630,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     .unwrap_or(false);
     if restored {
         let (tabs, panes) = with_app(|st| {
-            (st.ws.tabs.len(), st.ws.tabs.iter().map(|t| t.panes().len()).sum::<usize>())
+            (
+                st.ws.tabs.len(),
+                st.ws.tabs.iter().map(|t| t.panes().len()).sum::<usize>(),
+            )
         })
         .unwrap_or((0, 0));
         eprintln!("[session] 已按快照恢复：{tabs} 个标签 / {panes} 个 pane");
@@ -7769,8 +8676,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // GPU 自检兜底：Skia 软件 surface 会“窗口正常但全黑”，而 Slint 的
     // set_rendering_notifier 在 software surface 上不会给出 NativeOpenGL/WGPU
     // 回调。给 GPU 首帧 1s 初始化时间，仍无 GPU API 就 exec 回退软件后端。
-    if requested_backend != "winit-software"
-        && std::env::var_os("TERVO_RENDER_FALLBACK").is_none()
+    if requested_backend != "winit-software" && std::env::var_os("TERVO_RENDER_FALLBACK").is_none()
     {
         let requested = requested_backend.clone();
         slint::Timer::single_shot(Duration::from_millis(1000), move || {
@@ -7817,7 +8723,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             request_window_corners(
                 st,
                 None,
-                Some(xconn::CornerState { maximized: false, fullscreen: true }),
+                Some(xconn::CornerState {
+                    maximized: false,
+                    fullscreen: true,
+                }),
             );
         });
         eprintln!("[ui] fullscreen=true (--fullscreen)");
@@ -7832,37 +8741,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         const ICON_RGBA: &[u8] = include_bytes!("../../../assets/icon-64.rgba");
         let title_for_icon = opts.title.clone();
-        std::thread::Builder::new().name("icon".into()).spawn(move || {
-            // 等 Slint 完成首轮 window properties，避免被它的空 icon 覆盖
-            std::thread::sleep(std::time::Duration::from_millis(800));
-            match xconn::set_window_icon(ICON_RGBA, 64, &title_for_icon) {
-                Ok(win) => eprintln!("[ui] _NET_WM_ICON 已设置 (win=0x{win:x})"),
-                Err(e) => eprintln!("[ui] 设置窗口图标失败: {e}"),
-            }
-        })?;
+        std::thread::Builder::new()
+            .name("icon".into())
+            .spawn(move || {
+                // 等 Slint 完成首轮 window properties，避免被它的空 icon 覆盖
+                std::thread::sleep(std::time::Duration::from_millis(800));
+                match xconn::set_window_icon(ICON_RGBA, 64, &title_for_icon) {
+                    Ok(win) => eprintln!("[ui] _NET_WM_ICON 已设置 (win=0x{win:x})"),
+                    Err(e) => eprintln!("[ui] 设置窗口图标失败: {e}"),
+                }
+            })?;
     }
 
     redraw_all();
     let t_show = t_start.elapsed();
 
     if opts.exit_after_first {
-        std::thread::Builder::new().name("first-frame".into()).spawn(move || {
-            let Some(watcher) = DamageWatcher::start(&opts.title, Duration::from_secs(30)) else {
-                println!("FIRST_DAMAGE unavailable");
+        std::thread::Builder::new()
+            .name("first-frame".into())
+            .spawn(move || {
+                let Some(watcher) = DamageWatcher::start(&opts.title, Duration::from_secs(30))
+                else {
+                    println!("FIRST_DAMAGE unavailable");
+                    let _ = slint::quit_event_loop();
+                    return;
+                };
+                // 监听建立后再强制重绘一帧：否则首帧可能早于 damage 选择，测到的是下一次
+                // damage（如光标/后续输出），first_damage 会被高估。
+                redraw_all();
+                match watcher.recv_timeout(Duration::from_secs(30)) {
+                    Some(_) => println!("FIRST_DAMAGE_US {}", t_start.elapsed().as_micros()),
+                    None => println!("FIRST_DAMAGE timeout"),
+                }
+                use std::io::Write;
+                let _ = std::io::stdout().flush();
                 let _ = slint::quit_event_loop();
-                return;
-            };
-            // 监听建立后再强制重绘一帧：否则首帧可能早于 damage 选择，测到的是下一次
-            // damage（如光标/后续输出），first_damage 会被高估。
-            redraw_all();
-            match watcher.recv_timeout(Duration::from_secs(30)) {
-                Some(_) => println!("FIRST_DAMAGE_US {}", t_start.elapsed().as_micros()),
-                None => println!("FIRST_DAMAGE timeout"),
-            }
-            use std::io::Write;
-            let _ = std::io::stdout().flush();
-            let _ = slint::quit_event_loop();
-        })?;
+            })?;
     }
 
     {
@@ -7922,6 +8836,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _keepalive = (poll_timer, state);
     let run_result = slint::run_event_loop();
     stop_auto_watcher();
+    // 显式停止并 join 轮询线程，避免退出阶段还有回调投递。
+    with_app(|st| st.config_watcher.take());
     run_result?;
     Ok(())
 }
@@ -7955,13 +8871,15 @@ fn run_latency_probe(n: usize, echo: Arc<AtomicUsize>, title: String) {
         wait_echo(&watcher, &echo, 0, Duration::from_millis(500));
         watcher.drain();
 
-        let Some(t0) = inj.tap_char(MARKER) else { break };
+        let Some(t0) = inj.tap_char(MARKER) else {
+            break;
+        };
         match wait_echo(&watcher, &echo, 1, Duration::from_millis(1500)) {
             Some(t) => {
                 if i >= WARMUP {
                     samples.push(t.duration_since(t0));
                 }
-            },
+            }
             None => timeouts += 1,
         }
         std::thread::sleep(Duration::from_millis(6));
@@ -7981,7 +8899,12 @@ fn run_latency_probe(n: usize, echo: Arc<AtomicUsize>, title: String) {
     let _ = slint::quit_event_loop();
 }
 
-fn wait_echo(watcher: &DamageWatcher, echo: &AtomicUsize, target: usize, timeout: Duration) -> Option<Instant> {
+fn wait_echo(
+    watcher: &DamageWatcher,
+    echo: &AtomicUsize,
+    target: usize,
+    timeout: Duration,
+) -> Option<Instant> {
     let deadline = Instant::now() + timeout;
     loop {
         let left = deadline.saturating_duration_since(Instant::now());
@@ -8013,7 +8936,11 @@ fn run_fps_probe(secs: f64, title: String) {
     }
     let intervals: Vec<Duration> = stamps.windows(2).map(|w| w[1] - w[0]).collect();
     let stats = LatencyStats::from_samples(&intervals);
-    let fps = if stats.mean_us > 0.0 { 1e6 / stats.mean_us } else { 0.0 };
+    let fps = if stats.mean_us > 0.0 {
+        1e6 / stats.mean_us
+    } else {
+        0.0
+    };
     println!(
         "{{\"mode\":\"fps\",\"frames\":{},\"fps\":{:.1},\"interval_median_ms\":{:.2},\"interval_p99_ms\":{:.2},\"interval_max_ms\":{:.2}}}",
         stamps.len().saturating_sub(1),
@@ -8028,6 +8955,92 @@ fn run_fps_probe(secs: f64, title: String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn config_reload_summary_separates_hot_new_pane_and_restart_fields() {
+        let old = Config::default();
+        let mut next = old.clone();
+        next.theme = "latte".into();
+        next.font_size = 18.0;
+        next.background_opacity = 0.5;
+        next.visual_bell = false;
+        next.sixel = false;
+        next.cursor_shape = "ibeam".into();
+        next.bold_is_bright = false;
+        next.right_click = "paste".into();
+        next.tabbar_position = "bottom".into();
+        let summary = reconfig_summary(&old, &next);
+        for field in [
+            "theme",
+            "font_size",
+            "background_opacity",
+            "cursor_shape",
+            "bold_is_bright",
+            "right_click",
+            "tabbar_position",
+        ] {
+            assert!(
+                summary.hot.contains(&field),
+                "missing hot field {field}: {summary:?}"
+            );
+        }
+        assert!(summary.hot.contains(&"visual_bell"));
+        assert!(summary.hot.contains(&"sixel"));
+        assert!(summary.new_pane.is_empty());
+        assert!(summary.restart.is_empty());
+    }
+
+    #[test]
+    fn config_reload_summary_marks_scrollback_as_new_pane_and_columns_as_restart() {
+        let old = Config::default();
+        let mut next = old.clone();
+        next.scrollback = 5000;
+        next.scrollback_unlimited = true;
+        next.shell = Some("/bin/zsh".into());
+        next.default_profile_id = 7;
+        next.cols = 100;
+        next.quake_hotkey = "F11".into();
+        let summary = reconfig_summary(&old, &next);
+        assert!(
+            summary.hot.is_empty(),
+            "scrollback/shell/cols 不能假装热更: {summary:?}"
+        );
+        assert_eq!(
+            summary.new_pane,
+            vec!["scrollback", "shell", "default_profile_id"],
+            "这些字段只影响之后新建的 pane/Tab"
+        );
+        assert_eq!(summary.restart, vec!["cols/rows", "quake_hotkey"]);
+        assert!(reconfig_summary(&old, &old).hot.is_empty());
+    }
+
+    #[test]
+    fn config_reload_summary_covers_bell_scroll_sixel_and_hotkeys() {
+        let old = Config::default();
+        let mut next = old.clone();
+        next.audible_bell = true;
+        next.scroll_on_output = true;
+        next.scroll_on_keystroke = false;
+        next.scrollbar_policy = "never".into();
+        next.sixel_scrolling = false;
+        next.desktop_notifications = false;
+        next.hotkeys.push(commands::HotkeyOverride {
+            command: "tab.new".into(),
+            chord: "ctrl+shift+n".into(),
+        });
+        let summary = reconfig_summary(&old, &next);
+        for field in [
+            "audible_bell",
+            "scroll_on_output",
+            "scroll_on_keystroke",
+            "scrollbar_policy",
+            "sixel_scrolling",
+            "desktop_notifications",
+            "hotkeys",
+        ] {
+            assert!(summary.hot.contains(&field), "missing {field}: {summary:?}");
+        }
+    }
 
     #[test]
     fn wm_resize_watchdog_waits_for_first_configure() {
@@ -8067,8 +9080,16 @@ mod tests {
     fn color_scheme_has_priority() {
         // color-scheme 有明确答案时，忽略 gtk-theme 与 COLORFGBG。
         assert!(scheme_from_outputs("'prefer-dark'", "'Yaru'", Some("0;15")));
-        assert!(!scheme_from_outputs("'prefer-light'", "'Yaru-dark'", Some("15;0")));
-        assert!(!scheme_from_outputs("'default'", "'Yaru-dark'", Some("15;0")));
+        assert!(!scheme_from_outputs(
+            "'prefer-light'",
+            "'Yaru-dark'",
+            Some("15;0")
+        ));
+        assert!(!scheme_from_outputs(
+            "'default'",
+            "'Yaru-dark'",
+            Some("15;0")
+        ));
     }
 
     #[test]
@@ -8099,11 +9120,21 @@ mod tests {
     #[test]
     fn auto_defaults_to_yaru() {
         let reg = ThemeRegistry::from_parts(
-            Theme::ALL.iter().copied().map(crate::themes::builtin).collect(),
+            Theme::ALL
+                .iter()
+                .copied()
+                .map(crate::themes::builtin)
+                .collect(),
             Vec::new(),
         );
-        assert_eq!(resolve_auto(&reg, Variant::Dark, None, None).id, "yaru-dark");
-        assert_eq!(resolve_auto(&reg, Variant::Light, None, None).id, "yaru-light");
+        assert_eq!(
+            resolve_auto(&reg, Variant::Dark, None, None).id,
+            "yaru-dark"
+        );
+        assert_eq!(
+            resolve_auto(&reg, Variant::Light, None, None).id,
+            "yaru-light"
+        );
         assert!(is_auto_theme("auto"));
         assert!(is_auto_theme(" AUTO "));
         assert!(!is_auto_theme("tokyo-night"));
@@ -8129,20 +9160,37 @@ mod tests {
 
     #[test]
     fn selection_normalization_trims_trailing_blank_lines() {
-        assert_eq!(normalize_clipboard_text("a\nb\n\n\n".into()), Some("a\nb".to_string()));
-        assert_eq!(normalize_clipboard_text("a\nb  ".into()), Some("a\nb  ".to_string()));
+        assert_eq!(
+            normalize_clipboard_text("a\nb\n\n\n".into()),
+            Some("a\nb".to_string())
+        );
+        assert_eq!(
+            normalize_clipboard_text("a\nb  ".into()),
+            Some("a\nb  ".to_string())
+        );
         assert_eq!(normalize_clipboard_text("\n\n\n".into()), None);
         assert_eq!(normalize_clipboard_text(String::new()), None);
         // 中间空行要保留
-        assert_eq!(normalize_clipboard_text("a\n\nb".into()), Some("a\n\nb".to_string()));
+        assert_eq!(
+            normalize_clipboard_text("a\n\nb".into()),
+            Some("a\n\nb".to_string())
+        );
     }
 
     #[test]
     fn settings_search_matches_labels_and_keywords() {
         let hits = settings_search("font");
-        assert!(hits.iter().any(|(cat, line)| *cat == 1 && line.contains("Font size")), "{hits:?}");
-        assert!(settings_search("copy").iter().any(|(_, l)| l.contains("Copy on select")));
-        assert!(settings_search("  theme  ").iter().any(|(cat, _)| *cat == 0));
+        assert!(
+            hits.iter()
+                .any(|(cat, line)| *cat == 1 && line.contains("Font size")),
+            "{hits:?}"
+        );
+        assert!(settings_search("copy")
+            .iter()
+            .any(|(_, l)| l.contains("Copy on select")));
+        assert!(settings_search("  theme  ")
+            .iter()
+            .any(|(cat, _)| *cat == 0));
         assert!(settings_search("cursor")
             .iter()
             .any(|(cat, line)| *cat == 0 && line.contains("Cursor")));
@@ -8166,7 +9214,8 @@ mod tests {
         ] {
             let hits = settings_search(query);
             assert!(
-                hits.iter().any(|(cat, line)| *cat == 1 && line.contains(label)),
+                hits.iter()
+                    .any(|(cat, line)| *cat == 1 && line.contains(label)),
                 "query={query:?} 应命中 {label}: {hits:?}"
             );
         }
@@ -8174,8 +9223,16 @@ mod tests {
 
     #[test]
     fn key_scroll_policy_only_fires_when_scrolled_up_and_enabled() {
-        let bottom = ScrollPosition { offset: 0, history: 100, rows: 20 };
-        let up = ScrollPosition { offset: 7, history: 100, rows: 20 };
+        let bottom = ScrollPosition {
+            offset: 0,
+            history: 100,
+            rows: 20,
+        };
+        let up = ScrollPosition {
+            offset: 7,
+            history: 100,
+            rows: 20,
+        };
         assert!(!key_scrolls_to_bottom(true, bottom), "已在底部不重复滚动");
         assert!(key_scrolls_to_bottom(true, up));
         assert!(!key_scrolls_to_bottom(false, up), "配置关闭时不回底");
@@ -8184,8 +9241,16 @@ mod tests {
     #[test]
     fn scrollbar_policy_controls_visibility_and_always_thumb() {
         let track = 200.0;
-        let no_history = ScrollPosition { offset: 0, history: 0, rows: 20 };
-        let scrollable = ScrollPosition { offset: 0, history: 80, rows: 20 };
+        let no_history = ScrollPosition {
+            offset: 0,
+            history: 0,
+            rows: 20,
+        };
+        let scrollable = ScrollPosition {
+            offset: 0,
+            history: 80,
+            rows: 20,
+        };
 
         // auto：有历史才显示；thumb 在底部。
         let (visible, y, h) = scrollbar_geometry(ScrollbarPolicy::Auto, no_history, 0.1, track);
@@ -8215,8 +9280,12 @@ mod tests {
         );
         assert_eq!(rows.len(), reg.all().len());
         assert_eq!(ids.len(), rows.len());
-        assert!(rows.iter().any(|r| r.title == "New Tab" && r.chord == "Ctrl+T" && !r.custom));
-        assert!(rows.iter().any(|r| r.title == "Duplicate Tab" && r.chord == "(none)"));
+        assert!(rows
+            .iter()
+            .any(|r| r.title == "New Tab" && r.chord == "Ctrl+T" && !r.custom));
+        assert!(rows
+            .iter()
+            .any(|r| r.title == "Duplicate Tab" && r.chord == "(none)"));
         assert!(rows.iter().all(|r| !r.conflict));
 
         // 自定义标记：override 后 chord 生效并标 custom
@@ -8394,7 +9463,10 @@ mod tests {
 
     #[test]
     fn deleting_default_profile_falls_back_to_shell() {
-        let mut cfg = Config { default_profile_id: 7, ..Config::default() };
+        let mut cfg = Config {
+            default_profile_id: 7,
+            ..Config::default()
+        };
         // 删别的 Profile：默认保持不变
         assert!(!clear_default_after_remove(&mut cfg, 8));
         assert_eq!(cfg.default_profile_id, 7);
@@ -8421,9 +9493,15 @@ mod tests {
         first.ch = 'h' as u32;
         f.put(0, first, Some("https://osc.example/x"));
 
-        assert_eq!(frame_link_at(&f, 0, 0).as_deref(), Some("https://osc.example/x"));
+        assert_eq!(
+            frame_link_at(&f, 0, 0).as_deref(),
+            Some("https://osc.example/x")
+        );
         // 同行的普通 URL 只在没有 OSC 8 的格子上兜底。
-        assert_eq!(frame_link_at(&f, 0, 3).as_deref(), Some("https://plain.example/x"));
+        assert_eq!(
+            frame_link_at(&f, 0, 3).as_deref(),
+            Some("https://plain.example/x")
+        );
     }
 
     #[test]
@@ -8435,7 +9513,10 @@ mod tests {
         f.put(0, first, Some("javascript:alert(1)"));
 
         // 恶意 OSC 8 不得阻止同格可见 http URL 的兜底。
-        assert_eq!(frame_link_at(&f, 0, 0).as_deref(), Some("https://plain.example/x"));
+        assert_eq!(
+            frame_link_at(&f, 0, 0).as_deref(),
+            Some("https://plain.example/x")
+        );
     }
 
     #[test]
@@ -8469,10 +9550,16 @@ mod tests {
 
     #[test]
     fn drop_paths_are_shell_escaped_literally() {
-        assert_eq!(drop_paths_text(&[PathBuf::from("/tmp/plain")]), "'/tmp/plain' ");
+        assert_eq!(
+            drop_paths_text(&[PathBuf::from("/tmp/plain")]),
+            "'/tmp/plain' "
+        );
         assert_eq!(drop_paths_text(&[PathBuf::from("/tmp/a b")]), "'/tmp/a b' ");
         // 单引号在单引号字符串里写成 '\''，shell 解析后仍是字面单引号。
-        assert_eq!(drop_paths_text(&[PathBuf::from("/tmp/it's")]), "'/tmp/it'\\''s' ");
+        assert_eq!(
+            drop_paths_text(&[PathBuf::from("/tmp/it's")]),
+            "'/tmp/it'\\''s' "
+        );
         assert_eq!(
             drop_paths_text(&[PathBuf::from("/tmp/x"), PathBuf::from("目录")]),
             "'/tmp/x' '目录' "
@@ -8518,22 +9605,14 @@ mod tests {
 
     #[test]
     fn save_contents_resolves_paths_and_writes_files() {
-        let dir = std::env::temp_dir().join(format!(
-            "tervo-save-test-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("tervo-save-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("home")).expect("create temp dir");
         let home = dir.join("home");
 
         // ~ 展开 + 写文件
-        let path = save_contents_file(
-            "~/out.txt",
-            "hello\nworld\n",
-            Some(&home),
-            &dir,
-        )
-        .expect("save");
+        let path =
+            save_contents_file("~/out.txt", "hello\nworld\n", Some(&home), &dir).expect("save");
         assert_eq!(path, home.join("out.txt"));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "hello\nworld\n");
 
@@ -8549,8 +9628,12 @@ mod tests {
         assert_eq!(saved, abs);
 
         // 明确错误：空路径 / 无 HOME 的 ~ / 不存在的父目录
-        assert!(save_contents_file("  ", "x", Some(&home), &dir).unwrap_err().contains("为空"));
-        assert!(resolve_save_path("~/x", None, &dir).unwrap_err().contains("HOME"));
+        assert!(save_contents_file("  ", "x", Some(&home), &dir)
+            .unwrap_err()
+            .contains("为空"));
+        assert!(resolve_save_path("~/x", None, &dir)
+            .unwrap_err()
+            .contains("HOME"));
         let bad = dir.join("missing-dir").join("x.txt");
         let err = save_contents_file(bad.to_str().unwrap(), "x", Some(&home), &dir)
             .expect_err("父目录不存在应报错");
@@ -8580,10 +9663,22 @@ mod tests {
         assert_eq!(bottom.logical_y_milli, 814_000);
 
         // pane 切换 / 锚点来源 / 光标格变化都必须产生不同的键（否则会误去重）。
-        assert_ne!(a, ime_spot_key(2, rect, 9.0, 22.0, (37, 94), TABBAR_H, 1.0, true));
-        assert_ne!(a, ime_spot_key(1, rect, 9.0, 22.0, (37, 94), TABBAR_H, 1.0, false));
-        assert_ne!(a, ime_spot_key(1, rect, 9.0, 22.0, (37, 93), TABBAR_H, 1.0, true));
-        assert_eq!(a, ime_spot_key(1, rect, 9.0, 22.0, (37, 94), TABBAR_H, 1.0, true));
+        assert_ne!(
+            a,
+            ime_spot_key(2, rect, 9.0, 22.0, (37, 94), TABBAR_H, 1.0, true)
+        );
+        assert_ne!(
+            a,
+            ime_spot_key(1, rect, 9.0, 22.0, (37, 94), TABBAR_H, 1.0, false)
+        );
+        assert_ne!(
+            a,
+            ime_spot_key(1, rect, 9.0, 22.0, (37, 93), TABBAR_H, 1.0, true)
+        );
+        assert_eq!(
+            a,
+            ime_spot_key(1, rect, 9.0, 22.0, (37, 94), TABBAR_H, 1.0, true)
+        );
     }
 
     #[test]
@@ -8592,7 +9687,10 @@ mod tests {
         let base = ime_spot_key(1, rect, 9.0, 22.0, (37, 94), TABBAR_H, 1.0, false);
         let hidpi = ime_spot_key(1, rect, 9.0, 22.0, (37, 94), TABBAR_H, 1.25, false);
         // winit 收逻辑坐标；物理像素按 DPR 四舍五入后只用于去重/日志。
-        assert_eq!((hidpi.logical_x_milli, hidpi.logical_y_milli), (846_000, 846_000));
+        assert_eq!(
+            (hidpi.logical_x_milli, hidpi.logical_y_milli),
+            (846_000, 846_000)
+        );
         assert_eq!((hidpi.physical_x, hidpi.physical_y), (1058, 1058));
         assert_eq!((hidpi.physical_w, hidpi.physical_h), (11, 28));
         assert_eq!(hidpi.scale_milli, 1250);
@@ -8606,9 +9704,15 @@ mod tests {
 
     #[test]
     fn ime_click_anchor_only_for_plain_left_click_on_mouse_reporting_tui() {
-        assert!(ime_click_anchor(0, true, false), "dsh composer 左键应记录锚点");
+        assert!(
+            ime_click_anchor(0, true, false),
+            "dsh composer 左键应记录锚点"
+        );
         assert!(!ime_click_anchor(0, false, false), "普通 shell 不记录锚点");
-        assert!(!ime_click_anchor(0, true, true), "Shift+左键是本地选择，不锚定 IME");
+        assert!(
+            !ime_click_anchor(0, true, true),
+            "Shift+左键是本地选择，不锚定 IME"
+        );
         assert!(!ime_click_anchor(2, true, false), "右键不改变候选点");
         assert!(!ime_click_anchor(1, true, false), "中键不改变候选点");
     }
