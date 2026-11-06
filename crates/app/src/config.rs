@@ -218,7 +218,7 @@ pub fn resolve_background_image(input: &str) -> Result<Option<PathBuf>, String> 
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     /// 配置结构版本；缺失（旧文件）= 0。
@@ -473,18 +473,10 @@ impl Config {
         Self::load_from(&Self::path())
     }
 
-    /// 读配置；旧版本先备份再迁移写回。解析失败返回默认值且**不动原文件**。
-    pub fn load_from(path: &Path) -> Self {
-        let Ok(text) = std::fs::read_to_string(path) else {
-            return Self::default();
-        };
-        let mut cfg: Config = match toml::from_str(&text) {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("[config] {} 解析失败，本次用默认值（原文件未改动）: {e}", path.display());
-                return Self::default();
-            },
-        };
+    /// 只解析、归一化，不写盘。热更新监听使用这个入口，避免因为文件里
+    /// `version` 较旧就在后台触发迁移写回（那会被监听器误判成外部修改）。
+    pub(crate) fn parse_text(text: &str) -> Result<Self, toml::de::Error> {
+        let mut cfg: Config = toml::from_str(text)?;
         // 手写配置也统一成规范小写 chord；非法项原样保留（分发时忽略）。
         for over in &mut cfg.hotkeys {
             if let Ok(chord) = Chord::parse(&over.chord) {
@@ -494,6 +486,21 @@ impl Config {
         // 外观字段是 additive 的：旧配置缺字段走 serde default，手写别名/大小写
         // 在这里归一；v1 不 bump schema（避免每次启动重写用户配置）。
         cfg.normalize_appearance();
+        Ok(cfg)
+    }
+
+    /// 读配置；旧版本先备份再迁移写回。解析失败返回默认值且**不动原文件**。
+    pub fn load_from(path: &Path) -> Self {
+        let Ok(text) = std::fs::read_to_string(path) else {
+            return Self::default();
+        };
+        let mut cfg: Config = match Self::parse_text(&text) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("[config] {} 解析失败，本次用默认值（原文件未改动）: {e}", path.display());
+                return Self::default();
+            },
+        };
 
         if cfg.version < SCHEMA_VERSION {
             let from = cfg.version;
@@ -536,14 +543,17 @@ impl Config {
         );
         let text = format_float_line(text, "background_dim", clamp_dim(self.background_dim));
         let tmp = path.with_extension("toml.tmp");
-        if let Err(e) = std::fs::write(&tmp, text) {
+        if let Err(e) = std::fs::write(&tmp, &text) {
             eprintln!("[config] 写入 {} 失败: {e}", tmp.display());
             return;
         }
         if let Err(e) = std::fs::rename(&tmp, path) {
             eprintln!("[config] 替换 {} 失败: {e}", path.display());
             let _ = std::fs::remove_file(&tmp);
+            return;
         }
+        // 告诉轮询线程“这是自己写的”，避免设置页保存后又被 watcher 套用一次。
+        crate::config_watch::note_own_write(path, text.as_bytes());
     }
 
     /// 逐步迁移到当前版本。新增版本时在这里追加分支，保证可以跨多个版本一次升上来。
