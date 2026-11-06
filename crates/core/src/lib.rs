@@ -25,4 +25,4 @@ pub use mouse::{Modifiers, MouseAction, MouseButton, MouseEvent};
 pub use bench_support::TermSim;
 pub use palette::{Palette, PaletteSpec, Theme, UiColors};
 pub use pane::fill_frame;
-pub use pane::{spawn, GridSize, PaneConfig, PaneHandle, SearchHit};
+pub use pane::{spawn, GridSize, PaneConfig, PaneHandle, ScrollPosition, SearchHit};
