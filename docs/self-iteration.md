@@ -1374,3 +1374,13 @@ cargo bench -p tervo-core --bench pty_throughput
   需要手改 `config.toml`；多行中键粘贴仍走同一确认弹窗。
 - **安全**：allow 时任何能向终端写转义序列的程序（SSH 远端、`cat` 不可信文件、
   tmux 内远端进程）都能覆盖或读取剪贴板/PRIMARY；README 已写明，可设 deny。
+
+### 2026-11-06 · 右 Shift 清空 dsh 输入：修饰键伪字符
+
+- 现象：左侧 Shift 正常，右侧 Shift 会把 dsh 输入框文字删空。
+- 根因：Slint 把 Shift_R 映射为 `\u{0015}`，而 `is_modifier_artifact` 只过滤了
+  Shift_L 的 `\u{0010}`；`\u{0015}` 写入 PTY 就是 **Ctrl+U**，终端行编辑器清空当前输入。
+- 修复：`\u{15}` 在 shift=true 且无 ctrl/alt 时按修饰键伪事件忽略；Ctrl+U
+  （ctrl=true）仍然保留。新增回归测试。
+- 测试：app 221 passed。
+

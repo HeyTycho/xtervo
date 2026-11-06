@@ -3992,9 +3992,12 @@ fn run_search(st: &mut AppState, forward: bool) {
 /// 否则终端会莫名收到 0x11/0x10（Ctrl+Q 的真实按键会另发一条 "q" 事件）。
 fn is_modifier_artifact(text: &str, ctrl: bool, alt: bool, shift: bool) -> bool {
     match text {
+        // Slint 的修饰键伪字符：Ctrl=\u{11}、Alt=\u{12}、Shift_L=\u{10}、Shift_R=\u{15}。
+        // 右 Shift 的 \u{15} 若漏过滤会写入 PTY 变成 Ctrl+U（清空当前输入行）。
         "\u{11}" => ctrl,
         "\u{12}" => alt,
-        "\u{10}" => shift,
+        "\u{10}" => shift && !ctrl && !alt,
+        "\u{15}" => shift && !ctrl && !alt,
         _ => false,
     }
 }
@@ -7441,5 +7444,12 @@ mod tests {
 
         // 未启用时退化为纯文本（由 shell 自己处理行编辑）。
         assert_eq!(paste_payload(&text, false), text.as_bytes());
+    }
+
+    #[test]
+    fn shift_right_modifier_artifact_is_ignored_but_ctrl_u_is_not() {
+        assert!(is_modifier_artifact("\u{15}", false, false, true));
+        assert!(!is_modifier_artifact("\u{15}", true, false, false));
+        assert!(!is_modifier_artifact("u", true, false, false));
     }
 }
