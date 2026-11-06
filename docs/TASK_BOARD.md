@@ -39,7 +39,7 @@
 | P1-05 | Codex P1：copy/search/save 500ms UI 阻塞 | queued | 待建 | 与 P0-05 同源，可并入 P0 hardening |
 | P1-06 | Codex P1：渲染 damage 路径失效、每帧全屏重绘 | done | `.worktrees/render-damage` / `feat/render-damage` | commit `8146aa7`；合 master `b8effd0`；单行 45.6×、连续按键 46.4×；Xvfb :137 e2e PASS；`.logs/render-damage/` | 逐像素等价；full/滚动 1.00× |
 | P1-07 | Codex P1：400ms CoreEvent 轮询 → wake 桥接 | done | `.worktrees/event-wake` / `feat/event-wake` | commit `16b5135`；合 master；app 300/core 518 tests；Xvfb :138 e2e PASS：标题 0–1ms/Bell 1ms/OSC52 1ms/插件 3ms/SFTP 28ms；空闲 CPU 不退化；`.logs/event-wake/` | 400ms 兜底保留 |
-| P1-08 | Codex P1：Vault Argon2 KDF 移出 UI 线程 | running | `.worktrees/ssh-sftp` / `feat/ssh-sftp` | 并入 W-02；解锁期间 UI 不停顿 |
+| P1-08 | Codex P1：Vault Argon2 KDF 移出 UI 线程 | done | `.worktrees/ssh-sftp` / `feat/ssh-sftp` | 后台 `VaultTask` + `WakeSignal`：initialize/unlock/change_master 全部不占 UI 线程；busy 状态可重绘、串行防重入、线程异常恢复；worker 主密码/AEAD 明文/`Unlocked` Drop 尽力清零；app 351 tests；Xvfb :139 busy/完成截图；解锁/改密码期间 UI 不停顿 |
 | P1-09 | Codex P1：`main.rs` 拆分 + `with_app` 重入不丢操作 | queued | 待建 | 大重构，分小步 |
 | P1-10 | 右键菜单美化：字号加大、分类分组、图标/分隔线、窄窗不溢出 | done | `.worktrees/context-menu` / `feat/context-menu` | commit `bddf0ef`；合 master `3e5c270`；`.logs/context-menu/` | context-menu e2e PASS；term_menu PASS；字号/分组/窄窗/右下翻转截图 |
 
@@ -51,7 +51,7 @@
 | ID | 大块 | 状态 | 范围 | 验收 |
 |---|---|---|---|---|
 | W-01 | Profiles + 会话恢复 | done | `.worktrees/profile-session` / `feat/profile-session` | 每 Profile 外观（font_size/theme/cursor_shape/cursor_blink/scrollback，additive v2，空=继承全局，Profile 显式 > 全局）；Settings→Profiles 表单共用 Appearance 区；session Snapshot 增加可选 profile_id，local Profile 恢复外观/shell/cwd，SSH/Serial/Telnet 不自动建连；`restore_session_on_startup`（默认 false）正常退出写快照，启动恢复 Tab/split/ratio/cwd/网格，失败回退新 Tab。验收：app 295 / workspace 489 tests；Xvfb :136 `scripts/e2e_profile_session.sh` PASS（表单/应用外观/3 Tab+split+cwd 重启恢复/损坏快照 fallback；截图 `.logs/profile-session/e2e/shots`） |
-| W-02 | SSH/SFTP/Vault 产品化 | running | `.worktrees/ssh-sftp` / `feat/ssh-sftp` | Jump/转发/known_hosts/SFTP 队列/Vault KDF；等 commit | 真实 SSH/超时/取消；基线 326 |
+| W-02 | SSH/SFTP/Vault 产品化 | done | `.worktrees/ssh-sftp` / `feat/ssh-sftp`（未合 master） | **SSH**：Profile 增加 `proxy_jump`/`remote_forwards`/`dynamic_forwards`/`agent_forward`（additive v2，旧 profiles.toml 兼容），表单可编辑，`ssh_command` 生成 `-J/-R/-D/-A`；`auth=password` 显式 kbd-interactive + askpass 识别本地化密码 prompt/排除 OTP；known_hosts 连接前后台预检（10s、可取消）：首次显示 SHA256 指纹、变更并列旧/新指纹，Trust/Update 才写 known_hosts（0600，`ssh-keygen -R` 先删旧条目），否则回退终端确认；SSH 退出状态横幅 + Reconnect（不自动循环重连）。**SFTP**：上传/下载队列（FIFO、Clear queue）、失败 Retry、chmod（八进制校验）、元数据 Cancel、传输 Cancel；`ConnectTimeout=10`+`ServerAliveInterval=5/CountMax=2`，元数据 10s 硬超时；全部后台不阻塞 UI。**Vault**：Argon2/初始化/改密码移出 UI 线程（P1-08）。验收：app 351、core smoke 25；`scripts/e2e_ssh_sftp_vault.sh` Xvfb :139 PASS（19 张截图：SSH 表单/known_hosts 首次+变更/退出横幅/重连/Vault busy+完成/SFTP 队列/取消/chmod/失败+retry）；真实 sshd 不可用，改用假 ssh/sftp/keyscan + 真实 ssh -G/ssh-keygen |
 | W-03 | iTerm2 IIP 图片 | done | `.worktrees/iip-image` / `feat/iip-image` | commit `4968a55`；合 master `b23476a`；core 194/app 327；Xvfb :140 PNG/JPEG 截图；`.logs/iip/` | 跨 chunk/滚动/resize/关闭/热更新；无 Kitty |
 | W-04 | 插件系统 V1 | running | `.worktrees/plugin-v1` / `feat/plugin-v1` | 外部进程 manifest/权限 + Command/Status/Theme V1；不含任意 UI | 4 个真实插件；崩溃/超时/禁用 |
 | W-05 | 打包/自动更新/崩溃报告 | done | `.worktrees/packaging` / `feat/packaging` | commit `2ac3ac6`；合 master `585fd21`；327 tests；packaging 71 项 PASS；`dist/` tar/deb/sha | tar/deb/install/rollback/deb smoke；自动更新/崩溃报告明确未做 |
@@ -118,3 +118,4 @@
 | 2026-11-06 23:15 | W-03 IIP 合入（b23476a，core 194/app 327）；W-02/W-04/W-06 继续 |
 | 2026-11-06 23:50 | W-06 Wayland spike 报告合入（e8ef824）；W-02/W-04/W-07 继续 |
 | 2026-11-06 21:35 | W-01 完成（feat/profile-session，未合 master）：每 Profile 外观 + session profile_id/可选启动自动恢复；app 295、workspace 489；Xvfb :136 e2e PASS；限制见 docs/self-iteration.md |
+| 2026-11-06 23:56 | W-02 + P1-08 完成（feat/ssh-sftp，未合 master）：SSH 跳板/远程+动态转发/agent forwarding/known_hosts 预检/重连；SFTP 队列/chmod/retry/cancel/10s 连接超时；Vault 后台 KDF。app 351、core smoke 25；Xvfb :139 e2e 19 张截图 PASS；限制见 docs/self-iteration.md |

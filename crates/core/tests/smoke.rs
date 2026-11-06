@@ -970,3 +970,33 @@ fn reset_clears_state_and_contents_include_scrollback() {
     assert!(frame_text(&frame).trim().is_empty(), "Reset and Clear 后屏幕应为空");
     assert_eq!(handle.scroll_position().history, 0);
 }
+
+/// SSH 断线时 UI 需要知道退出码：`Exited` 之后非阻塞地取一次 OS 退出状态。
+#[test]
+fn child_exit_status_is_available_after_exit() {
+    let mut handle = spawn(sh("exit 7")).expect("spawn pane");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut status = None;
+    let mut saw_exited = false;
+    while Instant::now() < deadline {
+        while let Some(event) = handle.try_event() {
+            if matches!(event, CoreEvent::Exited) {
+                saw_exited = true;
+            }
+        }
+        if status.is_none() {
+            status = handle.try_exit_code();
+        }
+        // 退出状态与 Exited 事件谁先到都合法；两者都拿到再结束。
+        if status.is_some() && saw_exited {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(saw_exited, "应收到 Exited 事件");
+    let (code, signal) = status.expect("退出后应能拿到子进程状态");
+    assert_eq!(code, 7);
+    assert_eq!(signal, None);
+    // 重复调用不 panic（UI 可能因多个 Exited 事件重复取）。
+    assert!(handle.try_exit_code().is_some());
+}
