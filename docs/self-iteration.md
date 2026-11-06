@@ -1837,3 +1837,68 @@ cargo bench -p tervo-core --bench pty_throughput
     未实现 formatOtherKeys=1；modifyOtherKeys 的 F21–F24 用 CSI 42–45。
   - 不支持 Wayland IME；键盘协议与硬编码 app 快捷键的优先级仍由现有分发决定
     （Ctrl+Shift+字母会被 app 抢占）。
+
+### 2026-11-06 · 渲染 damage 恢复：单行更新不再整屏重绘（feat/render-damage）
+
+- **问题（Codex P1）**：`crates/app/src/render.rs` 的 `FrameBuffers::rotate()` 恒
+  返回 true，`draw_impl` 把 `buffer_switched` 合并进 `full`，导致 `frame.damage`
+  分支实际不可达。`TERVO_RENDER_PROFILE=1` 下每次按键/单行输出都是
+  `grid=200x50 rows=50`，`full_redraws` 每帧 +1；双缓冲虽然省掉了 image 拷贝，
+  但每帧仍整屏 raster/blend。
+- **修复（render.rs）**：
+  - 双缓冲行同步：`prev_changed_rows` 记录上一帧实际重绘的行；轮换到旧 buffer 时
+    只把这些行从当前 buffer 复制过去，再栅格化本帧 damage 行（本帧要重绘的行跳过
+    复制）。两块 buffer 始终保持“只差一帧”，旧行不丢、不会叠出花屏。
+  - `full` 最终判定 = `frame.full || force_full || frame.needs_full_redraw()`
+    （damage 行数 > rows/2）。首帧/resize/主题/透明度/整屏 damage/普通屏幕滚动
+    走整屏；整屏后把“全部行”记为下一帧要同步的集合。
+  - 选区/搜索高亮：比较新旧 `Span`，把两者覆盖的行都标脏；没有变化时不重绘。
+  - 光标：app 的 `draw_without_cursor` 路径不再因为光标移动/闪烁重绘任意终端行；
+    `draw()` 兼容路径记录 `drawn_cursor`，移动/改形状时擦旧画新。
+  - 日志：profile 行改为打印渲染器实际 `full`、`rows`、`copy`、`full_redraws`、
+    `damage_rows`，不再用 `frame.full` 冒充最终判定。
+  - **字形纵向裁剪**：新增像素等价测试发现 `Ö`/`▀` 等重音/半块字形会向邻行渗
+    1px；局部重绘不覆盖邻行时会留下上一帧的混合像素。`blit_bitmap_buf` 增加
+    单元格纵向 clip（光标 overlay/frame 光标共用），水平裁剪逻辑不变，未改
+    Sixel/彩色 emoji 路径。
+- **不变量 / 安全检查**：
+  - 轮换后新 buffer 必须补齐上一帧脏行；`partial_redraw_does_not_detach_shared_buffers`
+    覆盖 app 持有上一帧 `Image` 时的双缓冲写入。
+  - 增量结果与“同一帧全新 Renderer 整屏重绘”逐像素一致：单行文本、宽字符、
+    选区出现/扩大/清除、搜索高亮、彩色背景、下划线/删除线、光标 overlay 移动、
+    整屏后立刻单行、跨行字形渗漏共 12 步场景。
+  - `frame.skipped`（actor 超时）仍直接保留上一帧、不轮换不重绘；下一次 core
+    force_full 补全。
+- **测试**：
+  - `cargo test -p tervo-app --bin tervo`：**310 passed, 0 failed, 1 ignored**
+    （基线 297 + 12 damage 单测 + 1 字形渗漏像素等价；ignored 是手动基准）。
+  - `cargo test --workspace`：**527 passed, 1 ignored**（core 177 不变）。
+  - 新增 `crates/app/src/render_damage_tests.rs`：单行只重绘 1 行、连续按键
+    `full_redraws` 不增、全屏路径行数、全行 damage 走 full、主题/resize 强制
+    full、选区/搜索旧新 span 补行、光标 overlay 不动帧、`draw()` 光标换行擦除、
+    双缓冲不 detach、字形跨行不渗漏。
+- **性能（release，同进程 A/B，200x50 / 1800x1100）**：单行输出
+  **1581.4 µs → 34.7 µs（45.6×）**；连续按键 **1584.0 µs → 34.1 µs（46.4×）**；
+  full 200x50 1612.8 µs、滚动 1605.9→1607.4 µs（同路径，1.00×，不退化）。
+  复现：`CARGO_TARGET_DIR=$PWD/.target-render ./scripts/bench_render.sh`，
+  详见 `docs/PERFORMANCE.md` §2.3。
+- **GUI e2e（Xvfb :137，`scripts/e2e_render_damage.sh`，release 二进制）**：
+  - 单行输出：`full=false rows=1 copy=0 full_redraws=1`，截图
+    `.logs/render-damage/01-single-line.png`；
+  - 搜索高亮：命中行局部重绘 `full=false rows=1`，截图中 #f9e2af 高亮 876 px，
+    `02-search-highlight.png`；
+  - 滚动 100 行：`full=true rows=30`，截图 `03-scroll.png`（scroll-072..100 对齐）；
+  - resize 900→1090：整屏后 `full=false rows=1 copy=29`（0.15ms），
+    `04-resize.png`；
+  - 主题热更新到 catppuccin-mocha：整屏重绘，背景像素 tokyo 235057→0、
+    mocha 0→235057，`05-theme.png`；
+  - 日志断言无 panic，应用存活。
+- **限制**：
+  - 两块 buffer 仍在 Slint 连续两帧以上未消费时触发整块 CoW（release 100x30
+    约 0.6 ms，2560x1413 更大）；正确性由 CoW 保证，但该帧不是 damage 成本。
+    正常单帧节奏 `detach=false`。
+  - Skia 仍整张纹理上传；本次只省 CPU raster/blend/行复制，Slint 1.18 无持久
+    GPU texture API。
+  - Sixel 是 Slint overlay，不写终端帧，不参与 damage；滚动历史
+    （`display_offset≠0`）仍由 core 强制 full。
+  - 只验证 Xvfb/llvmpipe + winit-software；真机 GPU 的 detach 频率/帧时间未验收。
