@@ -1194,3 +1194,16 @@ cargo bench -p tervo-core --bench pty_throughput
   当帧贴到新右边界；terminal grid/PTY/字符重绘仍每 16ms 合并，避免重排灌满 UI 线程。
 - 字符仍 1:1，无 resize-stretch。
 
+### 2026-11-06 · 默认 software 渲染：Skia 在 resize 时阻塞事件循环
+
+- 用户实测日志：Skia 下 `WM live resize dir=3 source=winit` 后 150ms 判定
+  “未接管指针”回退自绘；同一台机器 `SLINT_BACKEND=winit-software` 下 WM 路径
+  正常、拖动明显更跟手。
+- 结论：Skia/GL 帧提交在 resize 时让 winit 事件循环排队，watchdog 误判 WM 未接管；
+  不是 EWMH 协议问题。先把 **software 设为默认**，`SLINT_BACKEND=winit-skia`
+  保留为 GPU 实验开关。
+- 保留：WM live resize、UI 布局逐 configure 立即更新、terminal 16ms 合并重排、
+  字符 1:1 不拉伸。
+- 验证：software 默认 + Openbox WM resize 540→700→800 通过；209 tests。
+- 限制：software 在高分屏/大窗口有上限；GPU 终端帧仍是后续方向。
+
