@@ -134,6 +134,11 @@ ls -l dist/ && file dist/tervo-stripped && ./dist/tervo-stripped --help
 ## 已实现
 
 - 无边框窗口 + 自绘标签栏（新建 / 切换 / 关闭 / OSC 标题）。
+- Tab 级 Pin：右键 Tab → Pin Tab / Unpin Tab（action 6，旧菜单 ID 不变）；pinned Tab 固定在最左
+  pinned 区、显示小图钉角标，Pin 追加到最后一个 pinned 后，Unpin 回到第一个 unpinned 前；
+  pinned/unpinned 不因普通排序跨组；`session.json` additive 保存 `pinned`，重启/会话恢复保留。
+- Tab 拖拽：按住移动超过 6px 进入拖拽态，半透明 ghost 跟随鼠标；目标槽位显示 2px accent
+  插入线并让后续 Tab 平滑让位；pinned 跨组时插入线不亮、松手不移动；Esc/窗口失焦取消并复位。
 - 右键菜单分屏（左右 / 上下）、关闭 pane、焦点切换、窗口缩放重排。
 - 每个 pane 独立 shell；关闭时自动回收 PTY 与线程。
 - 无边框窗口自带 `─` 最小化、`□/❐` 最大化/还原、`✕` 关闭；拖标签栏移动窗口，双击标题栏最大化。
@@ -207,6 +212,8 @@ tervo                 # 直接启动
 | 操作 | 方式 |
 |---|---|
 | 新建 / 关闭标签 | `Ctrl+T` / `Ctrl+W`，或标签栏 `+` / `×` |
+| Pin / Unpin Tab | 右键 Tab → Pin Tab / Unpin Tab；pinned 固定在左侧，普通拖动不跨组 |
+| 拖动排序 | 按住 Tab 移动：ghost + 2px 插入线 + 让位动画；松手落位，Esc/失焦取消 |
 | 新建窗口 | `Ctrl+Shift+N`，或标签栏右键 → New Window（独立进程，关闭互不影响） |
 | 分屏 | 右键 pane → Split Right / Split Down |
 | 关闭 pane | 右键 → Close Pane；关掉最后一个 pane 退出应用 |
@@ -353,11 +360,13 @@ update-desktop-database ~/.local/share/applications 2>/dev/null || true
 - 自定义主题仍在启动时扫描，改主题文件后需要重启（热重载尚未实现）。
 - 设置页目前不含字体族/行距设置；搜索跳转定位到设置卡片而不是单个控件，键盘焦点遍历（Tab/方向键）
   仍以鼠标点击/搜索为主。旧 modal 回退是同一套控件换呈现，并非保留 2026-11 之前的旧实现。
-- 会话快照只恢复布局/标题/cwd/Profile 关联，不恢复滚动历史、屏幕内容或运行中进程；
+- 会话快照只恢复布局/标题/cwd/Profile 关联和 Tab pinned，不恢复滚动历史、屏幕内容或运行中进程；
   自动恢复只在正常退出时写快照，崩溃/被 SIGKILL 不保证，也没有崩溃恢复守护。
   `session.json` 全局只有一份，多窗口布局不能分别恢复；`--window` 子窗口不写快照。
 - SSH/Serial/Telnet Profile 不会随会话恢复自动重连（需要用户主动打开，避免启动即连远端）；
   恢复为普通 shell 并保留 Tab 标题/布局/cwd。
+- Tab pin 是“固定到左侧 pinned 区”，不是窗口置顶；pinned 组内顺序仍可拖动，但不能跨到
+  unpinned 组；拖出窗口/跨窗口移动未实现。
 - Profile 外观覆盖是 per-pane 的“pin”：Profile 显式设置后，全局字号/主题/光标改动不会
   刷新该 pane；清空 Profile 对应字段后新开 Tab 即回到继承。
 - 打包/发布：自动更新、崩溃报告/上传、AppImage/Flatpak/Snap、发布签名与 APT 仓库
