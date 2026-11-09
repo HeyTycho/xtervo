@@ -1681,6 +1681,23 @@ export component MainWindow inherits Window {
     in property <string> plugin-dir: "";
     // 最近插件命令/事件活动（新→旧，最多 8 条；只读展示）
     in property <[string]> plugin-activity-items: [];
+    // ---- AI Chat 面板（Settings → Plugins → Open AI Chat）----
+    // 只列出 api=2、runtime=process、声明 [contributes.ai] 的已启用插件。
+    in property <[string]> ai-plugin-items: [];
+    in-out property <int> ai-plugin-index: -1;
+    in property <string> ai-plugin-detail: "";
+    in-out property <string> ai-prompt: "";
+    in property <string> ai-output: "";
+    in property <string> ai-status: "";
+    in property <bool> ai-status-error: false;
+    in property <bool> ai-busy: false;
+    in property <string> ai-empty-hint: "";
+    in-out property <bool> ai-panel-open: false;
+    callback ai-open();
+    callback ai-send(string);
+    callback ai-cancel();
+    callback ai-close();
+    callback ai-plugin-selected(int);
     in-out property <string> config-status: "";
     // Vault（加密凭据）
     in-out property <string> vault-status: "";
@@ -4803,7 +4820,7 @@ export component MainWindow inherits Window {
                     content-height: plugins-layout.preferred-height + 10px;
 
                     changed jump-token => {
-                        if (root.settings-focus == "plugins") {
+                        if (root.settings-focus == "plugins" || root.settings-focus == "ai") {
                             self.content-y = 0px;
                         }
                     }
@@ -4811,6 +4828,39 @@ export component MainWindow inherits Window {
                     plugins-layout := VerticalLayout {
                         width: 100%;
                         spacing: 10px;
+
+                        // AI Chat 入口先于插件列表：搜索 "ai chat" 时滚到顶部即可见。
+                        ai-card := SettingsCard {
+                            title: Lang.t("AI Chat (process plugin)", "AI 聊天（进程插件）");
+                            highlighted: root.settings-focus == "ai";
+
+                            Text {
+                                text: Lang.t("Send prompts to an api=2 process plugin that declares [contributes.ai]. The plugin runs as your user and owns its credentials; Tervo never stores or forwards API keys.", "向声明了 [contributes.ai] 的 api=2 常驻进程插件发送提示词。插件以你的用户身份运行并自行持有凭据；Tervo 不保存也不转发 API Key。");
+                                color: Palette.colors.subtext;
+                                font-size: 10px;
+                                wrap: word-wrap;
+                            }
+                            if root.ai-plugin-items.length > 0 : Text {
+                                text: Lang.t("At least one AI-capable plugin is installed.", "已安装支持 AI 的插件。");
+                                color: Palette.colors.muted;
+                                font-size: 10px;
+                                wrap: word-wrap;
+                            }
+                            if root.ai-plugin-items.length == 0 : Text {
+                                text: root.ai-empty-hint;
+                                color: Palette.colors.muted;
+                                font-size: 10px;
+                                wrap: word-wrap;
+                            }
+                            HorizontalLayout {
+                                spacing: 8px;
+                                ActionBtn {
+                                    horizontal-stretch: 1;
+                                    label: Lang.t("Open AI Chat…", "打开 AI 聊天…");
+                                    clicked => { root.ai-open(); }
+                                }
+                            }
+                        }
 
                         plugins-card := SettingsCard {
                             title: Lang.t("Plugins", "插件");
@@ -7681,6 +7731,252 @@ export component MainWindow inherits Window {
                 height: 26px;
                 label: Lang.t("Close", "关闭");
                 clicked => { root.image-preview-open = false; }
+            }
+        }
+    }
+
+    // ---------------- AI Chat 面板 ----------------
+    // 从 Settings → Plugins 打开；独立浮层，不进入终端/设置页布局。
+    // 插件调用在 Rust 后台线程，这里只展示已提交/已返回的状态，不做假 token 流。
+    if root.ai-panel-open : Rectangle {
+        width: 100%;
+        height: 100%;
+        background: #00000080;
+
+        ai-focus := FocusScope {
+            width: 100%;
+            height: 100%;
+            init => { self.focus(); }
+            key-pressed(event) => {
+                if (event.text == "\u{1b}") {
+                    root.ai-close();
+                    return EventResult.accept;
+                }
+                EventResult.reject
+            }
+
+            // 点击遮罩关闭；卡片内部的空 TouchArea 会吃掉点击，避免误关。
+            TouchArea {
+                width: 100%;
+                height: 100%;
+                clicked => { root.ai-close(); }
+            }
+
+            Rectangle {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                width: Math.min(680px, parent.width - 32px);
+                height: Math.min(580px, parent.height - 32px);
+                border-radius: 12px;
+                background: Palette.colors.bg;
+                border-width: 1px;
+                border-color: Palette.colors.border;
+                drop-shadow-blur: 30px;
+                drop-shadow-offset-y: 10px;
+                drop-shadow-color: #000000b8;
+                clip: true;
+
+                TouchArea {
+                    width: 100%;
+                    height: 100%;
+                    clicked => {}
+                }
+
+                VerticalLayout {
+                    width: 100%;
+                    height: 100%;
+                    padding: 16px;
+                    spacing: 9px;
+
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text {
+                            text: Lang.t("AI Chat (process plugin)", "AI 聊天（进程插件）");
+                            color: Palette.colors.text;
+                            font-size: 15px;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                        }
+                        Rectangle {
+                            horizontal-stretch: 1;
+                            height: 1px;
+                            background: transparent;
+                        }
+                        ActionBtn {
+                            label: Lang.t("Close", "关闭");
+                            clicked => { root.ai-close(); }
+                        }
+                    }
+
+                    Text {
+                        text: Lang.t("Security: the selected plugin runs as your user with your full permissions. Tervo does not store or send API keys; each plugin owns its credentials. Review AI output before using it.", "安全提示：所选插件以你的用户身份运行，拥有你的全部权限。Tervo 不保存也不发送 API Key；凭据由各插件自行管理。使用 AI 输出前请自行核对。");
+                        color: Palette.colors.accent;
+                        font-size: 10px;
+                        wrap: word-wrap;
+                    }
+
+                    if root.ai-plugin-items.length == 0 : Text {
+                        vertical-stretch: 1;
+                        text: root.ai-empty-hint;
+                        color: Palette.colors.muted;
+                        font-size: 11px;
+                        wrap: word-wrap;
+                        vertical-alignment: top;
+                    }
+
+                    if root.ai-plugin-items.length > 0 : VerticalLayout {
+                        width: 100%;
+                        vertical-stretch: 1;
+                        spacing: 7px;
+
+                        Text {
+                            text: Lang.t("AI-capable plugins", "支持 AI 的插件");
+                            color: Palette.colors.muted;
+                            font-size: 10px;
+                            font-weight: 600;
+                        }
+                        Rectangle {
+                            height: 76px;
+                            border-radius: 6px;
+                            background: Palette.colors.surface;
+                            border-width: 1px;
+                            border-color: Palette.colors.border;
+                            clip: true;
+
+                            Flickable {
+                                width: 100%;
+                                height: 100%;
+                                interactive: true;
+                                content-width: self.width;
+                                content-height: ai-plugin-list.preferred-height + 8px;
+
+                                ai-plugin-list := VerticalLayout {
+                                    x: 4px;
+                                    y: 4px;
+                                    width: parent.width - 8px;
+                                    spacing: 2px;
+                                    for item[i] in root.ai-plugin-items : Rectangle {
+                                        height: 24px;
+                                        border-radius: 4px;
+                                        background: i == root.ai-plugin-index
+                                            ? Palette.colors.hover
+                                            : transparent;
+                                        Text {
+                                            x: 7px;
+                                            width: parent.width - 14px;
+                                            height: 100%;
+                                            text: item;
+                                            color: Palette.colors.text;
+                                            font-size: 10px;
+                                            vertical-alignment: center;
+                                            overflow: elide;
+                                        }
+                                        TouchArea {
+                                            width: 100%;
+                                            height: 100%;
+                                            clicked => {
+                                                if (!root.ai-busy) {
+                                                    root.ai-plugin-index = i;
+                                                    root.ai-plugin-selected(i);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if root.ai-plugin-detail != "" : Text {
+                            text: root.ai-plugin-detail;
+                            color: Palette.colors.muted;
+                            font-size: 10px;
+                            wrap: word-wrap;
+                        }
+
+                        SettingsTextField {
+                            text <=> root.ai-prompt;
+                            placeholder: Lang.t("Ask the selected plugin…", "向所选插件提问…");
+                            accepted(text) => {
+                                if (!root.ai-busy) {
+                                    root.ai-send(text);
+                                }
+                            }
+                        }
+
+                        HorizontalLayout {
+                            spacing: 8px;
+                            if (!root.ai-busy) : ActionBtn {
+                                width: 90px;
+                                label: Lang.t("Send", "发送");
+                                clicked => { root.ai-send(root.ai-prompt); }
+                            }
+                            if (root.ai-busy) : ActionBtn {
+                                width: 90px;
+                                label: Lang.t("Cancel", "取消");
+                                clicked => { root.ai-cancel(); }
+                            }
+                            Rectangle {
+                                horizontal-stretch: 1;
+                                height: 1px;
+                                background: transparent;
+                            }
+                        }
+
+                        if root.ai-status != "" : Text {
+                            text: root.ai-status;
+                            color: root.ai-status-error
+                                ? Palette.colors.danger
+                                : Palette.colors.subtext;
+                            font-size: 10px;
+                            wrap: word-wrap;
+                        }
+
+                        Text {
+                            text: Lang.t("Output", "输出");
+                            color: Palette.colors.muted;
+                            font-size: 10px;
+                            font-weight: 600;
+                        }
+                        Rectangle {
+                            vertical-stretch: 1;
+                            border-radius: 6px;
+                            background: Palette.colors.surface;
+                            border-width: 1px;
+                            border-color: Palette.colors.border;
+                            clip: true;
+
+                            ai-output-flick := Flickable {
+                                width: 100%;
+                                height: 100%;
+                                interactive: true;
+                                content-width: self.width;
+                                content-height: Math.max(
+                                    self.height,
+                                    ai-output-text.preferred-height + 16px
+                                );
+                                changed content-height => {
+                                    self.viewport-y = Math.max(
+                                        0px,
+                                        self.content-height - self.height
+                                    );
+                                }
+
+                                ai-output-text := Text {
+                                    x: 8px;
+                                    y: 8px;
+                                    width: parent.width - 16px;
+                                    text: root.ai-output == ""
+                                        ? Lang.t("No response yet.", "还没有回复。")
+                                        : root.ai-output;
+                                    color: root.ai-output == ""
+                                        ? Palette.colors.muted
+                                        : Palette.colors.text;
+                                    font-size: 11px;
+                                    wrap: word-wrap;
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }
