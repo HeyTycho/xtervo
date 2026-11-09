@@ -1025,6 +1025,98 @@ impl Renderer {
         }
     }
 
+    /// 终端块元素（U+2580–U+259F）按 cell 几何直接填充，不依赖字体字形。
+    ///
+    /// dsh-tui 的鲸鱼/欢迎大字是 `█/▀/▄` 字符画；字体里的半块字形宽度/高度
+    /// 不总是填满 cell，逐字栅格化会出现竖缝、错位，看起来像“字母乱码”。
+    /// 这类字符本来就是几何图形，直接画矩形比字形更准确，也更快。
+    fn draw_block_element(
+        &mut self,
+        ch: char,
+        x0: usize,
+        y0: usize,
+        w: usize,
+        h: usize,
+        fg: u32,
+        bg: u32,
+    ) -> bool {
+        let cp = ch as u32;
+        let (fw, fh) = (w as usize, h as usize);
+        match cp {
+            0x2588 => { // FULL BLOCK
+                self.fill_rect(x0, y0, fw, fh, fg);
+            },
+            0x2580 => { // UPPER HALF BLOCK
+                self.fill_rect(x0, y0, fw, fh / 2, fg);
+            },
+            0x2584 => { // LOWER HALF BLOCK
+                self.fill_rect(x0, y0 + fh / 2, fw, fh - fh / 2, fg);
+            },
+            0x258C => { // LEFT HALF BLOCK
+                self.fill_rect(x0, y0, fw / 2, fh, fg);
+            },
+            0x2590 => { // RIGHT HALF BLOCK
+                self.fill_rect(x0 + fw / 2, y0, fw - fw / 2, fh, fg);
+            },
+            0x2591..=0x2593 => {
+                // LIGHT/MEDIUM/DARK SHADE：用前景色和当前背景混合。
+                let alpha = match cp {
+                    0x2591 => 0x40,
+                    0x2592 => 0x80,
+                    _ => 0xc0,
+                };
+                self.fill_rect(x0, y0, fw, fh, blend(fg, bg, alpha));
+            },
+            0x2581..=0x2587 => {
+                // LOWER ONE EIGHTH ... SEVEN EIGHTHS BLOCK
+                let eighths = (cp - 0x2580) as usize;
+                let bh = (fh * eighths / 8).max(1);
+                self.fill_rect(x0, y0 + fh - bh, fw, bh, fg);
+            },
+            0x2594 => { // UPPER ONE EIGHTH BLOCK
+                self.fill_rect(x0, y0, fw, (fh / 8).max(1), fg);
+            },
+            0x2595 => { // RIGHT ONE EIGHTH BLOCK
+                self.fill_rect(x0 + fw - (fw / 8).max(1), y0, (fw / 8).max(1), fh, fg);
+            },
+            0x258F => { // LEFT ONE EIGHTH BLOCK
+                self.fill_rect(x0, y0, (fw / 8).max(1), fh, fg);
+            },
+            0x2596..=0x259F => {
+                // Quadrants (▖▗▘▙▚▛▜▝▞▟): 由字符位拼出左/右、上/下四个象限。
+                let (left, right, top, bottom) = match cp {
+                    0x2596 => (true, false, false, true),  // ▖
+                    0x2597 => (false, true, false, true),  // ▗
+                    0x2598 => (true, false, true, false),  // ▘
+                    0x2599 => (true, true, true, true),    // ▙
+                    0x259A => (true, false, true, true),   // ▚
+                    0x259B => (true, true, true, false),   // ▛
+                    0x259C => (false, true, true, true),   // ▜
+                    0x259D => (false, false, true, false), // ▝
+                    0x259E => (false, true, true, false),  // ▞
+                    _ => (false, true, false, true),       // ▟
+                };
+                let half_w = fw / 2;
+                let half_h = fh / 2;
+                if left { self.fill_rect(x0, y0 + if top { 0 } else { half_h }, half_w, half_h, fg); }
+                if right { self.fill_rect(x0 + half_w, y0 + if top { 0 } else { half_h }, fw - half_w, half_h, fg); }
+                if bottom && !top { /* already bottom */ }
+                if top && !bottom { /* top only */ }
+                if bottom && top { /* full */ }
+                if bottom && !top { /* bottom only */ }
+                if left && !top && !bottom { self.fill_rect(x0, y0, half_w, half_h, fg); }
+                if right && !top && !bottom { self.fill_rect(x0 + half_w, y0, fw - half_w, half_h, fg); }
+                // 上面的象限分支已覆盖上下；补 right/left 的上下组合
+                if left && top && !bottom { self.fill_rect(x0, y0, half_w, half_h, fg); }
+                if right && top && !bottom { self.fill_rect(x0 + half_w, y0, fw - half_w, half_h, fg); }
+                if left && bottom && !top { self.fill_rect(x0, y0 + half_h, half_w, half_h, fg); }
+                if right && bottom && !top { self.fill_rect(x0 + half_w, y0 + half_h, fw - half_w, half_h, fg); }
+            },
+            _ => return false,
+        }
+        true
+    }
+
     fn draw_row(&mut self, frame: &Frame, row: usize) {
         if row >= self.rows || row >= frame.rows {
             return;
@@ -1070,6 +1162,10 @@ impl Renderer {
                 &[][..]
             };
             if ch != ' ' {
+                // 块元素是几何图形，直接填 cell；不要走字体栅格化。
+                if self.draw_block_element(ch, x0, y0, cell_px, self.cell_h, fg, bg) {
+                    // 继续处理 underline/strikeout，但不画字形。
+                } else {
                 // 彩色 emoji 优先；彩色字体缺失/不支持时回落到单色轮廓，再回落到占位框。
                 // 只对 emoji 码位查彩色缓存，ASCII/CJK 不增加字体探测。
                 let color = if placeholder_kind(ch) == Some(PlaceholderKind::Emoji) {
@@ -1099,6 +1195,7 @@ impl Renderer {
                             }
                         },
                     }
+                }
                 }
             } else if !marks.is_empty() {
                 // 空格上挂了组合音标（行首等边角情况）：居中叠在空格上。
