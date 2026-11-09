@@ -2197,3 +2197,30 @@ cargo bench -p tervo-core --bench pty_throughput
 - **限制**：不提供 Pin 快捷键/命令面板/多选 Pin，不做 pinned 区折叠或独立滚动；拖拽 ghost
   是简化 Tab 副本（不是完整控件）；仍不能拖出窗口/跨窗口移动；拖拽跨组是直接非法，不会
   自动改变 pinned 状态；快照只保存 pinned 布尔，不保存“pinned 区宽度”等布局参数。
+
+### 2026-11-09：Settings → Help（feat/settings-help）
+
+- **目标**：在窗口内 Settings 增加 Help 分类，不新开窗口；桌面帮助/诊断信息集中一页。
+- **实现**：
+  - 新 `SettingsIconKind.help`：16px 圆形问号，圆环 + Path 问号笔画 + 圆点，全手绘，
+    不依赖字体/emoji；放在 SYSTEM 组最后（分类 8），旧 0–7 分类下标/回调不变。
+  - Help 四张卡片：Quick start/Keyboard shortcuts（9 行）、Config file & logs（路径 +
+    打开目录 + 复制诊断）、Version information（版本/commit/built/target）、Known
+    limitations/Documentation（IME/Wayland/插件沙箱/24h soak + `docs/` 路径）。
+  - 版本信息来自 `build.rs` 注入的 `CARGO_PKG_VERSION`/`TERVO_GIT_COMMIT`/
+    `TERVO_BUILD_TIME`/`TERVO_BUILD_TARGET`，页面与 `--version` 同源；日志
+    `[help] info ...` 便于自动化断言。
+  - 打开目录复用 shell-safe `xdg-open <单参数>`；缺 xdg-open/目录不存在/线程失败时把
+    错误写入 `help-status`（可见、不 panic）。复制诊断走 arboard helper，成功/失败都写状态；
+    文本只含版本/路径/语言，不含密码/环境变量。
+  - `SETTINGS_CATALOG` 增加 4 条 cat=8 索引（keywords 同时含 `help`/`帮助`），
+    `settings_cat_label` 扩到 9 项；搜索点击沿用现有 jump token/锚点机制。
+- **测试**：`cargo check/test -p tervo-app --bin tervo` → **383 passed / 1 ignored**
+  （基线 382；新增 Help 索引/诊断文本单测）。新增 `scripts/e2e_settings_help.sh`
+  （Xvfb :147）PASS：源码断言（图标手绘、33 组 Lang.t、9 快捷键、4 索引、shell-safe
+  xdg-open）、en/zh 截图、版本/commit 日志、三个按钮与复制状态、搜索 `help`/`帮助`
+  各 4 命中、760×520 滚动、1400×900 卡片宽度 1138/期望 1140、无 xdg-open 错误路径。
+  截图：`.logs/settings-help/shots/01..16-*.png`。
+- **限制**：24h soak 仍未执行（Help 文案明确标注，不夸大）；插件权限仍只声明、无沙箱；
+  Wayland IME/全局热键未实现；复制失败的 UI 状态只能在没有剪贴板服务时触发（e2e 覆盖
+  成功路径与源码失败分支）；`docs/` 路径是静态列表，不联网抓取。
