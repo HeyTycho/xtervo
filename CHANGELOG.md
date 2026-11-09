@@ -2,7 +2,7 @@
 
 Tervo 的版本与 tag 规则见 `docs/RELEASING.md`。
 
-## [Unreleased]
+## [0.2.0] - 2026-11-09
 
 ### Added
 
@@ -13,6 +13,14 @@ Tervo 的版本与 tag 规则见 `docs/RELEASING.md`。
 - dsh-tui 等 TUI 用 ECH/空格擦图时同步清理旧 overlay，避免图片“到处飘”。
 - 回应 XTWINOPS `CSI 16t/14t` 并设置 PTY 像素 winsize，修复 dsh 图片按默认 8×16 低清。
 - Unicode 块元素（U+2580–259F）按 cell 几何绘制，不再依赖字体半块字形。
+- 插件 API v2：v1 清单继续兼容，新 `[contributes.ai]` 声明式 AI 能力，`ai.chat` 走同一 process supervisor；v2 样例 `docs/examples/ai-echo`。
+- Settings → Plugins 的 AI Chat 面板：插件选择、prompt、Send/Cancel/Close、错误/空状态；宿主不保存/转发 API Key，不内置网络客户端。
+- AI Chat e2e：`scripts/e2e_ai_panel.sh`，离线 echo 插件验证命令路由与日志脱敏。
+
+### Changed
+
+- 内联图片从独立 Slint overlay 改为 framebuffer 内合成：文本覆盖图片、滚动随 cell、灯箱仍用原图。
+- `PLUGIN_API_VERSION` 提升到 2，最低兼容 1；新增 `PLUGIN_AI_API_VERSION`。
 
 ### Fixed
 

@@ -1,8 +1,8 @@
 # Tervo 任务看板
 
-> 最后更新：2026-11-09 16:35  
+> 最后更新：2026-11-09 18:25  
 > 规则：每个任务开始/完成/阻塞都要更新本文件；记录 worktree、branch、commit、测试/截图、限制。  
-> 当前 master：`a82ac52`（Settings Tab 持久化）；当前 release：`target/release/tervo` 19:07。
+> 当前 master：图片 v2 + 插件 API v2/AI panel（0.2.0 发布候选）；当前 release：`target/release/tervo` 0.2.0。
 
 ## 1. 状态图例
 
@@ -27,6 +27,8 @@
 | P0-06 | Codex P0：SFTP 元数据 `wait_with_output()` 无超时阻塞 UI | done | 同上 | `SftpOpJob` 后台化；10s kill 进程组；`.logs/p0-blocking/` | 假 sftp sleep 30：List 10.0s 超时；TabBar/New Tab 仍响应 |
 | P0-07 | Codex P0 修复合并 + 全量回归 + P0 稳定 release | done | master `f3e9e0e` | release `target/release/tervo` 19:51 / `tervo-stripped-new` 50M | 474 tests；6 e2e 全 PASS（WM resize 首次偶发、重跑 PASS）；smoke rc=0 |
 | P0-08 | Codex 审计报告归档 | done | `.logs/codex-architecture-review.md` | 19k 行原始输出；摘要见本文件 §6 | — |
+| P0-09 | 图片合成 v2：framebuffer 内合成、ECH 行级清理、XTWIN 像素尺寸、块元素几何 | done | master | `0b62596`/`c7f13ac`/`3131ca5`；`.logs/image-compose`、`.logs/scroll-compose`、`.logs/dsh-v2-final` | app 393；core sixel 9；2m/15m PASS；真实 dsh 截图 |
+| P0-10 | 插件 API v2 + AI Chat（process plugin，宿主不存 key） | done | `.worktrees/ai-panel` / `feat/ai-panel` | `f975179`；合并 `9cc2330`；`docs/examples/ai-echo`；`.logs/ai-panel/` | app 393；AI e2e PASS；plugin v1 e2e PASS |
 
 ## 3. P1：P0 稳定后再跑/合
 
