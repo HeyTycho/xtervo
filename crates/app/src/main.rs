@@ -304,6 +304,20 @@ struct AppState {
     plugin_runtime_revision: u64,
     /// 底部状态栏当前可点击执行的命令（空 = 不可点击）。
     plugin_status_command: Option<String>,
+    /// AI Chat 面板可选的插件（api=2 + process + [contributes.ai]；启动时快照）。
+    ai_plugins: Vec<plugin::AiPluginInfo>,
+    /// Settings → Plugins 入口旁的 AI 插件列表模型。
+    ai_plugin_model: Rc<VecModel<slint::SharedString>>,
+    /// 当前会话对应的插件名；切换插件时清空对话，避免跨插件串上下文。
+    ai_active_plugin: Option<String>,
+    /// 已发送/已返回的对话消息（仅内存，不持久化）。
+    ai_messages: Vec<plugin::AiChatMessage>,
+    /// 面板展示的对话文本（仅内存；不写日志正文）。
+    ai_output: String,
+    /// 正在等待的后台 AI 结果；None = 空闲。
+    ai_job: Option<crossbeam_channel::Receiver<plugin::AiChatResult>>,
+    /// 等待中的插件名（取消/关闭时用）。
+    ai_busy_plugin: Option<String>,
     /// Delete 需要点两次确认（避免误删远端文件）
     sftp_delete_armed: bool,
     /// 进行中的上传/下载；同一时间只允许一个。
@@ -734,6 +748,7 @@ const SETTINGS_CATALOG: &[SettingsCatalogEntry] = &[
     SettingsCatalogEntry { cat: 3, section: "config", en: "Import / export", zh: "导入 / 导出", keywords: "import export tabby profiles 导入 导出" },
     SettingsCatalogEntry { cat: 4, section: "hotkeys", en: "Hotkey bindings", zh: "快捷键绑定", keywords: "hotkey shortcut key binding 快捷键 绑定" },
     SettingsCatalogEntry { cat: 5, section: "plugins", en: "Installed plugins", zh: "已安装插件", keywords: "plugin plugins installed list 插件 已安装" },
+    SettingsCatalogEntry { cat: 5, section: "ai", en: "AI Chat", zh: "AI 聊天", keywords: "ai chat prompt model plugin 人工智能 聊天 提示词 模型 插件" },
     SettingsCatalogEntry { cat: 6, section: "vault", en: "Vault / master password", zh: "保险库 / 主密码", keywords: "vault master password credentials 凭据 解锁 锁定 保险库 主密码" },
     SettingsCatalogEntry { cat: 7, section: "profiles", en: "Profiles", zh: "配置", keywords: "profile connection ssh serial telnet 连接 配置" },
     SettingsCatalogEntry { cat: 8, section: "quickstart", en: "Quick start / Keyboard shortcuts", zh: "快速开始 / 快捷键", keywords: "help getting started quick start keyboard shortcuts hotkey keybinding ctrl+t ctrl+w ctrl+f f11 settings 帮助 快速开始 快捷键 设置" },
@@ -967,6 +982,339 @@ fn refresh_plugin_page(st: &mut AppState) {
     refresh_plugin_activity(st, true);
 }
 
+// ---------------------------------------------------------------- AI Chat 面板
+
+/// 无 AI 插件时的空状态：把示例目录与真实插件目录都写清楚，不要求联网。
+fn ai_empty_hint_text(st: &AppState) -> String {
+    let lang = st.cfg.lang();
+    let dir = plugin::PluginStore::dir().display().to_string();
+    let example = "docs/examples/ai-echo";
+    if lang == "zh" {
+        format!(
+            "未安装支持 AI 的插件。\n将 {example}/ 复制到 {dir}/ai-echo/（或设置 TERVO_PLUGINS），然后重启 Tervo。\n插件清单需要 api = 2、runtime = \"process\" 与 [contributes.ai]。"
+        )
+    } else {
+        format!(
+            "No AI-capable plugin installed.\nCopy {example}/ into {dir}/ai-echo/ (or set TERVO_PLUGINS), then restart Tervo.\nThe manifest needs api = 2, runtime = \"process\" and [contributes.ai]."
+        )
+    }
+}
+
+/// 面板里选中插件的详情行（模型/id/描述都来自清单，不翻译第三方内容）。
+fn ai_plugin_detail_text(info: &plugin::AiPluginInfo, lang: &str) -> String {
+    let model = if info.model.is_empty() {
+        ui_text(lang, "model: default", "模型：默认").to_string()
+    } else {
+        format!("{} {}", ui_text(lang, "model:", "模型："), info.model)
+    };
+    let mut line = format!(
+        "{}: {} · {}: {} · {model}",
+        ui_text(lang, "plugin", "插件"),
+        info.plugin,
+        ui_text(lang, "id", "ID"),
+        info.id
+    );
+    if !info.description.is_empty() {
+        line.push_str(" · ");
+        line.push_str(&info.description);
+    }
+    line
+}
+
+/// 刷新 AI 插件列表/当前选择；切换插件时清空上一段对话。
+fn refresh_ai_plugins(st: &mut AppState) {
+    let hint = ai_empty_hint_text(st);
+    let plugins = st.plugins.ai_plugins();
+    let rows: Vec<slint::SharedString> = plugins
+        .iter()
+        .map(|info| info.display_line().into())
+        .collect();
+    st.ai_plugin_model.set_vec(rows);
+    st.ai_plugins = plugins;
+    st.ui.set_ai_empty_hint(hint.as_str().into());
+    if st.ai_plugins.is_empty() {
+        st.ai_active_plugin = None;
+        st.ai_messages.clear();
+        st.ai_output.clear();
+        st.ui.set_ai_plugin_index(-1);
+        st.ui.set_ai_plugin_detail("".into());
+        st.ui.set_ai_output("".into());
+        return;
+    }
+    let current = st.ui.get_ai_plugin_index();
+    let index = if current >= 0 && (current as usize) < st.ai_plugins.len() {
+        current as usize
+    } else {
+        0
+    };
+    let info = st.ai_plugins[index].clone();
+    if st.ai_active_plugin.as_deref() != Some(info.plugin.as_str()) {
+        st.ai_active_plugin = Some(info.plugin.clone());
+        st.ai_messages.clear();
+        st.ai_output.clear();
+        st.ui.set_ai_output("".into());
+    }
+    let lang = st.cfg.lang().to_string();
+    st.ui.set_ai_plugin_index(index as i32);
+    st.ui.set_ai_plugin_detail(ai_plugin_detail_text(&info, &lang).into());
+}
+
+/// 用户点选插件：只在空闲时调用；同时重置该插件的对话上下文。
+fn select_ai_plugin(st: &mut AppState, index: i32) {
+    if st.ai_job.is_some() {
+        return;
+    }
+    let Some(info) = (index >= 0)
+        .then(|| st.ai_plugins.get(index as usize).cloned())
+        .flatten()
+    else {
+        return;
+    };
+    if st.ai_active_plugin.as_deref() != Some(info.plugin.as_str()) {
+        st.ai_active_plugin = Some(info.plugin.clone());
+        st.ai_messages.clear();
+        st.ai_output.clear();
+        st.ui.set_ai_output("".into());
+    }
+    let lang = st.cfg.lang().to_string();
+    st.ui.set_ai_plugin_index(index);
+    st.ui.set_ai_plugin_detail(ai_plugin_detail_text(&info, &lang).into());
+    st.ui.set_ai_status("".into());
+    st.ui.set_ai_status_error(false);
+}
+
+fn append_ai_output(st: &mut AppState, text: &str) {
+    if text.is_empty() {
+        return;
+    }
+    if !st.ai_output.is_empty() {
+        st.ai_output.push_str("\n\n");
+    }
+    st.ai_output.push_str(text);
+    st.ui.set_ai_output(st.ai_output.as_str().into());
+}
+
+/// 宿主侧错误（超时/取消/进程退出）按 UI 语言展示；插件返回的正文原样保留。
+fn localize_ai_host_error(err: &str, lang: &str) -> String {
+    if err.starts_with("AI 请求超时") || err.starts_with("等待 AI 插件响应超时") {
+        ui_text(
+            lang,
+            "The AI request timed out; the plugin process is still running.",
+            "AI 请求超时；插件进程仍在运行。",
+        )
+        .to_string()
+    } else if err == "AI 请求已取消" {
+        ui_text(lang, "AI request cancelled.", "AI 请求已取消。").to_string()
+    } else {
+        err.to_string()
+    }
+}
+
+/// 提交一条用户提示词；只在 UI 线程做校验/入队，不等待插件。
+fn send_ai_prompt(st: &mut AppState, prompt: &str) {
+    if st.ai_job.is_some() {
+        return;
+    }
+    let lang = st.cfg.lang().to_string();
+    let prompt = prompt.trim();
+    if prompt.is_empty() {
+        st.ui
+            .set_ai_status(ui_text(&lang, "Enter a prompt first.", "请先输入提示词。").into());
+        st.ui.set_ai_status_error(true);
+        return;
+    }
+    let index = st.ui.get_ai_plugin_index();
+    let Some(info) = (index >= 0)
+        .then(|| st.ai_plugins.get(index as usize).cloned())
+        .flatten()
+    else {
+        st.ui.set_ai_status(
+            ui_text(&lang, "No AI plugin selected.", "未选择 AI 插件。").into(),
+        );
+        st.ui.set_ai_status_error(true);
+        return;
+    };
+    if st.ai_active_plugin.as_deref() != Some(info.plugin.as_str()) {
+        st.ai_active_plugin = Some(info.plugin.clone());
+        st.ai_messages.clear();
+        st.ai_output.clear();
+        st.ui.set_ai_output("".into());
+    }
+    // 保留最近 MAX_AI_MESSAGES 条（通常是一问一答），超限从最旧开始丢。
+    let overflow = (st.ai_messages.len() + 1).saturating_sub(plugin::MAX_AI_MESSAGES);
+    if overflow > 0 {
+        st.ai_messages.drain(0..overflow);
+    }
+    st.ai_messages
+        .push(plugin::AiChatMessage::user(prompt.to_string()));
+    let messages = st.ai_messages.clone();
+    let model = if info.model.is_empty() {
+        None
+    } else {
+        Some(info.model.clone())
+    };
+    match st
+        .plugins
+        .spawn_ai_chat(&info.plugin, messages, model)
+    {
+        Ok(rx) => {
+            st.ai_job = Some(rx);
+            st.ai_busy_plugin = Some(info.plugin.clone());
+            let chunk = format!("{}:\n{prompt}", ui_text(&lang, "You", "你"));
+            append_ai_output(st, &chunk);
+            st.ui.set_ai_prompt("".into());
+            st.ui.set_ai_busy(true);
+            st.ui.set_ai_status(
+                format!("{} {}", ui_text(&lang, "Waiting for", "等待"), info.name).into(),
+            );
+            st.ui.set_ai_status_error(false);
+            eprintln!(
+                "[plugin] ai.chat submitted plugin={} messages={}",
+                info.plugin,
+                st.ai_messages.len()
+            );
+        },
+        Err(e) => {
+            // 没发出去：撤回刚加入的用户消息，允许修好后重试。
+            st.ai_messages.pop();
+            eprintln!("[plugin] ai.chat start failed plugin={}: {e}", info.plugin);
+            st.ui.set_ai_status(
+                ui_text(
+                    &lang,
+                    "Could not start the AI request. See logs for details.",
+                    "无法启动 AI 请求，详情见日志。",
+                )
+                .into(),
+            );
+            st.ui.set_ai_status_error(true);
+        },
+    }
+}
+
+fn cancel_ai_chat(st: &mut AppState) {
+    if st.ai_job.is_none() {
+        return;
+    }
+    let lang = st.cfg.lang().to_string();
+    let Some(plugin) = st.ai_busy_plugin.clone() else {
+        return;
+    };
+    if st.plugins.cancel_ai_chat(&plugin) {
+        st.ui.set_ai_status(
+            ui_text(&lang, "Cancelling…", "正在取消…").into(),
+        );
+        st.ui.set_ai_status_error(false);
+        eprintln!("[plugin] ai.chat cancel requested plugin={plugin}");
+    } else {
+        st.ui.set_ai_status(
+            ui_text(&lang, "Could not cancel the AI request.", "无法取消 AI 请求。").into(),
+        );
+        st.ui.set_ai_status_error(true);
+    }
+}
+
+fn close_ai_panel(st: &mut AppState) {
+    if let Some(plugin) = st.ai_busy_plugin.clone() {
+        st.plugins.cancel_ai_chat(&plugin);
+    }
+    st.ai_job = None;
+    st.ai_busy_plugin = None;
+    st.ui.set_ai_busy(false);
+    st.ui.set_ai_panel_open(false);
+    st.ui.set_ai_status("".into());
+    st.ui.set_ai_status_error(false);
+    if st.ui.get_settings_open() {
+        // 关闭浮层后把键盘焦点还给设置页；否则还给终端输入。
+        let token = st.ui.get_settings_refocus_token().wrapping_add(1);
+        st.ui.set_settings_refocus_token(token);
+    } else {
+        st.ui.invoke_focus_terminal();
+    }
+    eprintln!("[ui] ai panel closed");
+}
+
+fn open_ai_panel(st: &mut AppState) {
+    refresh_ai_plugins(st);
+    st.ui.set_ai_panel_open(true);
+    st.ui.set_ai_status("".into());
+    st.ui.set_ai_status_error(false);
+    eprintln!("[ui] ai panel open plugins={}", st.ai_plugins.len());
+}
+
+/// 非阻塞收 AI 结果；由 event-loop 唤醒与 400ms 兜底共同调用。
+fn poll_ai_chat(st: &mut AppState) {
+    let received = match st.ai_job.as_ref() {
+        None => return,
+        Some(rx) => match rx.try_recv() {
+            Ok(result) => result,
+            Err(crossbeam_channel::TryRecvError::Empty) => return,
+            Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                st.ai_job = None;
+                st.ai_busy_plugin = None;
+                st.ui.set_ai_busy(false);
+                let lang = st.cfg.lang().to_string();
+                st.ui.set_ai_status(
+                    ui_text(
+                        &lang,
+                        "The AI request ended unexpectedly. See logs for details.",
+                        "AI 请求异常结束，详情见日志。",
+                    )
+                    .into(),
+                );
+                st.ui.set_ai_status_error(true);
+                return;
+            },
+        },
+    };
+    st.ai_job = None;
+    st.ai_busy_plugin = None;
+    st.ui.set_ai_busy(false);
+    let lang = st.cfg.lang().to_string();
+    match received.outcome {
+        plugin::AiChatOutcome::Ok(text) => {
+            st.ai_messages.push(plugin::AiChatMessage::assistant(text.clone()));
+            let chunk = format!("{}:\n{text}", ui_text(&lang, "AI", "AI"));
+            append_ai_output(st, &chunk);
+            st.ui.set_ai_status(
+                ui_text(&lang, "Response received.", "已收到回复。").into(),
+            );
+            st.ui.set_ai_status_error(false);
+            eprintln!(
+                "[plugin] ai.chat result plugin={} chars={}",
+                received.plugin,
+                text.chars().count()
+            );
+        },
+        plugin::AiChatOutcome::Error(err) => {
+            if st.ai_messages.last().is_some_and(|m| m.role == "user") {
+                st.ai_messages.pop();
+            }
+            let shown = localize_ai_host_error(&err, &lang);
+            append_ai_output(
+                st,
+                &format!("{}:\n{shown}", ui_text(&lang, "Error", "错误")),
+            );
+            st.ui.set_ai_status(
+                ui_text(&lang, "AI request failed.", "AI 请求失败。").into(),
+            );
+            st.ui.set_ai_status_error(true);
+            // 完整错误只进日志；prompt/回复正文不写日志。
+            eprintln!(
+                "[plugin] ai.chat error plugin={}: {err}",
+                received.plugin
+            );
+        },
+        plugin::AiChatOutcome::Cancelled => {
+            if st.ai_messages.last().is_some_and(|m| m.role == "user") {
+                st.ai_messages.pop();
+            }
+            st.ui.set_ai_status(ui_text(&lang, "Cancelled.", "已取消。").into());
+            st.ui.set_ai_status_error(false);
+            eprintln!("[plugin] ai.chat cancelled plugin={}", received.plugin);
+        },
+    }
+}
+
 /// 活动列表变化时刷新 Slint model；`force` 用于首次填充。
 ///
 /// 后台线程只往 `PluginStore` 的 ActivityLog push 并唤醒 UI；UI 线程按
@@ -1000,6 +1348,8 @@ fn refresh_plugin_activity(st: &mut AppState, force: bool) {
 /// 后台线程只写 `PluginStore` 内部队列并唤醒 UI；UI 线程在这里批量取走，
 /// 不在回调里逐条碰 Slint model。
 fn refresh_plugin_ui(st: &mut AppState) {
+    // AI Chat 后台结果：非阻塞收，收到后唤醒/400ms 兜底都会走到这里。
+    poll_ai_chat(st);
     // 活动列表按 revision 增量刷新（后台线程 push 后唤醒）。
     refresh_plugin_activity(st, false);
 
@@ -8992,6 +9342,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui.set_plugin_items(ModelRc::from(plugin_model.clone()));
     let plugin_activity_model = Rc::new(VecModel::<slint::SharedString>::default());
     ui.set_plugin_activity_items(ModelRc::from(plugin_activity_model.clone()));
+    let ai_plugin_model = Rc::new(VecModel::<slint::SharedString>::default());
+    ui.set_ai_plugin_items(ModelRc::from(ai_plugin_model.clone()));
     let settings_model = Rc::new(VecModel::<slint::SharedString>::default());
     ui.set_settings_results(ModelRc::from(settings_model.clone()));
     let fwd_model = Rc::new(VecModel::<slint::SharedString>::default());
@@ -9037,6 +9389,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
+    let ai_plugins = plugins.ai_plugins();
     let state = Rc::new(RefCell::new(AppState {
         ui: ui.clone_strong(),
         ws: Workspace::new(),
@@ -9100,6 +9453,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         plugin_status_revision: 0,
         plugin_runtime_revision: 0,
         plugin_status_command: None,
+        ai_plugins,
+        ai_plugin_model,
+        ai_active_plugin: None,
+        ai_messages: Vec::new(),
+        ai_output: String::new(),
+        ai_job: None,
+        ai_busy_plugin: None,
         sftp_delete_armed: false,
         sftp_transfer: None,
         sftp_current_request: None,
@@ -9888,6 +10248,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 run_command(st, &command);
             }
         });
+    });
+
+    // ---- AI Chat 面板（Settings → Plugins → Open AI Chat）----
+    ui.on_ai_open(|| {
+        with_app(open_ai_panel);
+    });
+    ui.on_ai_close(|| {
+        with_app(close_ai_panel);
+    });
+    ui.on_ai_cancel(|| {
+        with_app(cancel_ai_chat);
+    });
+    ui.on_ai_plugin_selected(|index| {
+        with_app(|st| select_ai_plugin(st, index));
+    });
+    ui.on_ai_send(|prompt| {
+        with_app(|st| send_ai_prompt(st, prompt.as_str()));
     });
 
     ui.on_tab_rename(|index| {
@@ -11540,6 +11917,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         refresh_hotkeys(st);
         refresh_vault_ui(st);
         refresh_plugin_page(st);
+        refresh_ai_plugins(st);
         refresh_settings_results(st);
         eprintln!(
             "[plugin] 设置页 {} 个插件，{} 个启用，{} 条命令，跳过 {}",
@@ -11547,6 +11925,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             st.plugins.enabled_count(),
             st.plugins.enabled_command_count(),
             st.plugins.skipped.len()
+        );
+        eprintln!(
+            "[plugin] AI 面板可用插件 {} 个",
+            st.ai_plugins.len()
         );
         eprintln!("[ui] 启动 tabbar_position={}", st.cfg.tabbar_position);
     });
