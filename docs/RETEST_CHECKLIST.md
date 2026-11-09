@@ -6,10 +6,10 @@
 ## 0. 版本信息（最终填写）
 
 ```text
-commit:    3fafbc8a680b
-release:   dist/tervo-stripped（40.4 MB，sha256 f8f157d7…6eaf5150）
-tar.gz:    dist/tervo-0.1.0-linux-x86_64.tar.gz（sha256 4e21fb26…2e2a410ff）
-deb:       dist/tervo_0.1.0-1_amd64.deb（sha256 c884d571…adc82b87）
+commit:    5dc3c318d9be
+release:   dist/tervo-stripped（40.4 MB，sha256 6940a14b…f2d6fe69）
+tar.gz:    dist/tervo-0.1.0-linux-x86_64.tar.gz（sha256 0ac86b51…783a7e59）
+deb:       dist/tervo_0.1.0-1_amd64.deb（sha256 e1d89c1e…dc414759）
 built:     2026-11-06T19:26:31Z（SOURCE_DATE_EPOCH）
 测试:      app 369 passed / 1 ignored；workspace 全绿
 e2e:       15 个脚本全 PASS（SSH/SFTP、插件、设置、图片、键盘、事件、渲染、P0、URL/右键等）
@@ -42,6 +42,8 @@ e2e:       15 个脚本全 PASS（SSH/SFTP、插件、设置、图片、键盘�
 - [ ] 点 + / Profile 只 suspend，不销毁 Settings Tab
 - [ ] 只有 Settings Tab × / 页头 × / Esc / 齿轮关闭；关闭后终端键盘正常
 - [ ] 主题下拉/光标/滚动条/Backspace/Delete 修改即时生效
+- [ ] Dim/Terminal opacity 滑块只有左键按住拖动才变，悬停不跟随
+- [ ] 放大窗口时设置页侧栏/内容卡片跟着变宽
 - [ ] `TERVO_SETTINGS_LEGACY=1` 可回旧 modal
 - [ ] 搜索 `sixel` 能跳 Terminal/Images
 
