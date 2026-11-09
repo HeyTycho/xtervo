@@ -231,7 +231,36 @@ resize/字号：图片重算
 无 P0/SSH/插件语义变化
 ```
 
-## 10. 时间表（18:00 后）
+## 10. 已落地（2026-11-09）
+
+```text
+0b62596  framebuffer 合成第一刀：图片在背景之后、文本之前
+c7f13ac  ECH 按当前光标行清图，不再任何 ECH 清全部图
+3131ca5  XTWINOPS/PTY 像素尺寸 + 块元素几何绘制
+57a30cc  ECH 清旧图（已被 v2 行级清理取代）
+```
+
+验证：
+
+```text
+BEFORE → Sixel → AFTER：AFTER 正确覆盖图片
+offset=0/3/6/9/12/15：图片 row 与文本同步移动；offset=18 滚出视口
+app 387 passed
+core Sixel 8 passed
+2m soak PASS
+15m soak 进行中
+```
+
+仍未完成：
+
+```text
+旧 Slint 点击模型/Image 缓存（仅点击，不再作为视觉层）
+ECH 部分遮挡的像素级裁剪（目前整张 drop）
+块字符画与 dsh 参考截图的最终对照
+真实 dsh 含图会话多 offset 截图
+```
+
+## 11. 时间表（18:00 后）
 
 ```text
 18:00–18:30  设计冻结 + dsh fixture

@@ -18,7 +18,7 @@ Tervo 的版本与 tag 规则见 `docs/RELEASING.md`。
 
 - 松开左键后仍能 resize 窗口（尤其上边框）。
 - 内联图片改为 framebuffer 合成（文本覆盖图片、滚动随 cell），移除独立视觉 overlay。
-- XTWINOPS/PTY 像素尺寸、ECH 清图、块元素几何绘制。
+- XTWINOPS/PTY 像素尺寸、ECH 按光标行清图、块元素几何绘制。
 
 ## [0.1.0] - 2026-11-09
 
