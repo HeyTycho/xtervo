@@ -297,8 +297,9 @@ background_opacity = 0.35                       # 0 = 完全透明，1 = 主题�
 background_dim = 0.6                            # 只压暗背景图
 ```
 
-- 没有背景图也可以调低 `background_opacity`：窗口使用透明 visual，终端帧 alpha 直接透出桌面；
-  需要桌面合成器（GNOME/KDE 等），无合成器的裸 X11 可能显示为黑底。
+- 没有背景图也可以调低 `background_opacity`：启动时使用透明 visual，终端帧 alpha 直接透出桌面；
+  需要桌面合成器（GNOME/KDE 等），无合成器的裸 X11 可能显示为黑底。运行时从 100% 降到半透明
+  需要重启 Tervo 才切换窗口 visual（Slint 1.18 Linux 后端限制）。
 - 设置页的 **Browse…** 调 zenity/kdialog（`TERVO_FILE_DIALOG` 可覆盖）；选择失败/取消不改变当前图片。
 - Background Image/Cwd/Shell/SSH key 等本地路径支持 `~`；远端 SSH 路径不本地展开。
 
