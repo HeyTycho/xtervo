@@ -509,6 +509,8 @@ pub struct PaneHandle {
     scroll: Arc<std::sync::atomic::AtomicU64>,
     /// Read Only：true 时 UI 输入/粘贴/鼠标上报都不写 PTY（选区/滚动仍走 ctrl）。
     read_only: Arc<std::sync::atomic::AtomicBool>,
+    /// 网格行数快照（high 32 = history_size，low 32 = total_lines），诊断用。
+    grid_lines: Arc<std::sync::atomic::AtomicU64>,
     /// 下一次拉帧的请求 ID（只由 UI 线程递增）。
     pull_seq: AtomicU64,
     /// 上一帧是否超时/跳帧；下一次 pull 用它强制整屏，保证不因迟到帧漏画。
@@ -587,6 +589,12 @@ impl PaneHandle {
     /// 当前是否 Read Only（无锁）。
     pub fn read_only(&self) -> bool {
         self.read_only.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// 诊断用：`(history_size, total_lines)`（当前网格；备用屏只含可见行）。
+    pub fn grid_lines(&self) -> (usize, usize) {
+        let v = self.grid_lines.load(std::sync::atomic::Ordering::Relaxed);
+        ((v >> 32) as usize, (v & 0xffff_ffff) as usize)
     }
 
     /// 滚轮回滚：正数向上翻历史。
@@ -1114,6 +1122,7 @@ pub fn spawn(config: PaneConfig) -> std::io::Result<PaneHandle> {
         term.grid().history_size(),
     )));
     let read_only = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let grid_lines = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let mut iip = IipFilter::new();
     iip.set_cell_size(config.cell_width.max(1), config.cell_height.max(1));
 
@@ -1154,6 +1163,9 @@ pub fn spawn(config: PaneConfig) -> std::io::Result<PaneHandle> {
         refresh_zerowidth: false,
         search_span: None,
         scroll_on_output: config.scroll_on_output,
+        scroll_total: 0,
+        last_history: 0,
+        grid_lines: grid_lines.clone(),
     };
     let actor_thread = thread::Builder::new()
         .name("term-actor".into())
@@ -1173,6 +1185,7 @@ pub fn spawn(config: PaneConfig) -> std::io::Result<PaneHandle> {
         cursor_bits,
         scroll,
         read_only,
+        grid_lines: grid_lines.clone(),
         pull_seq: AtomicU64::new(0),
         pull_needs_full: AtomicBool::new(false),
         child,
@@ -1284,6 +1297,55 @@ fn selection_span<T: EventListener>(term: &Term<T>, rows: usize, offset: usize) 
     })
 }
 
+/// 在 `\n` 边界切分后逐段喂给 parser，与一次性喂入语义完全等价（vte 状态机
+/// 跨 `advance` 调用保持）。每段只含一个 LF：若处理前后光标都停在最后一行，
+/// 说明这条 LF 触发了向上滚动（光标在底部 → linefeed 滚动一格，光标仍停在底
+/// 行）；其它位置的 LF 只是下移光标，不计数。
+///
+/// 自动折行/非 LF 滚动无法这样逐条检测：`history_size` 未满时它的增长会补进
+/// 来；满员后折行只会让锚点少算（图片保留更久），不会提前丢掉仍可达的图片。
+fn advance_tracking_scroll<T: EventListener>(
+    term: &mut Term<T>,
+    processor: &mut Processor,
+    scroll_total: &mut u64,
+    last_history: &mut usize,
+    grid_lines_slot: Option<&std::sync::atomic::AtomicU64>,
+    chunk: &[u8],
+) {
+    let rows = term.screen_lines();
+    let last_row = rows.saturating_sub(1) as i32;
+    let alt = term.mode().contains(TermMode::ALT_SCREEN);
+    let mut detected = 0u64;
+    let mut start = 0usize;
+    while start < chunk.len() {
+        let Some(rel) = chunk[start..].iter().position(|&b| b == b'\n') else {
+            processor.advance(term, &chunk[start..]);
+            break;
+        };
+        let end = start + rel + 1;
+        let before = term.grid().cursor.point.line.0;
+        processor.advance(term, &chunk[start..end]);
+        let after = term.grid().cursor.point.line.0;
+        // 备用屏没有 scrollback：滚动不能推进主屏图片的绝对行号。
+        if !alt && before == last_row && after == last_row {
+            detected += 1;
+        }
+        start = end;
+    }
+    let history_now = term.grid().history_size();
+    if !alt {
+        let grew = history_now.saturating_sub(*last_history) as u64;
+        // 取较大值：未满员时 grew 已包含 LF 滚动；满员后 grew=0，由 detected
+        // 继续推进，不会重复累加。
+        *scroll_total = scroll_total.saturating_add(detected.max(grew));
+        *last_history = history_now;
+    }
+    let snap = ((history_now as u64) << 32) | (term.grid().total_lines() as u64 & 0xffff_ffff);
+    if let Some(slot) = grid_lines_slot {
+        slot.store(snap, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 struct Actor {
     term: Term<Listener>,
     /// 当前生效的 alacritty 配置（动态 scrollback 预算用）。
@@ -1344,10 +1406,24 @@ struct Actor {
     search_span: Option<Span>,
     /// 收到输出后是否强制回到底部（GNOME scroll-on-output）。
     scroll_on_output: bool,
+    /// 网格行数快照（high 32 = history_size，low 32 = total_lines）。
+    /// 诊断用：scrollback 内存 ≈ total_lines × columns × size_of::<Cell>()。
+    grid_lines: Arc<std::sync::atomic::AtomicU64>,
+    /// 单调累计的滚动行数。alacritty 的 `history_size()` 在达到 scrollback
+    /// 上限后不再增长，但内容仍在向上滚；图片锚点/淘汰必须用这个只增不减
+    /// 的计数，否则 scrollback 满后图片会“粘”在底部且永不释放。
+    scroll_total: u64,
+    /// 上一次观测到的 `history_size()`：未满员时把因换行/自动折行产生的
+    /// 历史增长补进 `scroll_total`（与逐 LF 检测取较大值，避免重复计数）。
+    last_history: usize,
 }
 
 /// 单图 + 全部图片的像素预算：UI 侧缓存 Slint Image 还会再占一份，所以这里
 /// 限制得比“单图 16 MP（64 MiB）”宽不了多少。
+/// alacritty 单元格字节数：`total_lines × columns × CELL_BYTES` 可作为
+/// scrollback 存储（含 alacritty 的 1000 行 cache）的内存估计。
+pub const CELL_BYTES: usize = std::mem::size_of::<alacritty_terminal::term::cell::Cell>();
+
 const MAX_STORED_IMAGES: usize = 64;
 const MAX_STORED_IMAGE_BYTES: usize = 64 * 1024 * 1024;
 
@@ -1430,8 +1506,9 @@ enum ImageKind {
 struct StoredImage {
     id: u64,
     kind: ImageKind,
-    /// 绝对行号 = grid 行 + 当时的 history_size；滚动/resize 时保持不变
-    ///（scrollback 满后淘汰最旧行会让它偏移，见模块文档中的说明）。
+    /// 绝对行号 = grid 行 + 当时的累计滚动行数 `scroll_total`。`scroll_total`
+    /// 只增不减，因此 scrollback 满员、最旧行被淘汰后锚点仍然正确（旧实现用
+    /// `history_size`，满员后不再增长，图片会粘在底部且永远不会被淘汰）。
     abs_line: i64,
     /// `sixel_scrolling=false` 时使用：创建时的视口行，滚动时固定在屏幕上。
     fixed_row: Option<i32>,
@@ -1476,7 +1553,7 @@ impl ImageStore {
         kind: ImageKind,
         image: SixelImage,
         cursor: Point,
-        history: usize,
+        scroll_total: u64,
         display_offset: usize,
         scrolling: bool,
         cols: usize,
@@ -1487,7 +1564,7 @@ impl ImageStore {
             image.height,
             image.rgba,
             cursor,
-            history,
+            scroll_total,
             display_offset,
             scrolling,
             cols,
@@ -1504,7 +1581,7 @@ impl ImageStore {
         height: u32,
         rgba: Vec<u8>,
         cursor: Point,
-        history: usize,
+        scroll_total: u64,
         display_offset: usize,
         scrolling: bool,
         cols: usize,
@@ -1528,7 +1605,7 @@ impl ImageStore {
             return;
         }
         let col = if cols == 0 { 0 } else { (cursor.column.0).min(cols - 1) as u16 };
-        let abs_line = cursor.line.0 as i64 + history as i64;
+        let abs_line = cursor.line.0 as i64 + scroll_total as i64;
         let fixed_row = if scrolling {
             None
         } else {
@@ -1550,24 +1627,62 @@ impl ImageStore {
     }
 
     /// 运行时切换“图片跟随滚动”。已有图片换算锚点，避免下次滚动时跳一下。
-    fn set_scrolling(&mut self, scrolling: bool, history: usize, display_offset: usize) {
-        let hist = history as i64;
+    fn set_scrolling(&mut self, scrolling: bool, scroll_total: u64, display_offset: usize) {
+        let total = scroll_total as i64;
         let off = display_offset as i64;
         for image in &mut self.images {
             if scrolling {
                 if let Some(row) = image.fixed_row.take() {
-                    image.abs_line = row as i64 - off + hist;
+                    image.abs_line = row as i64 - off + total;
                 }
             } else if image.fixed_row.is_none() {
-                let row = image.abs_line - hist + off;
+                let row = image.abs_line - total + off;
                 image.fixed_row = Some(row.clamp(i32::MIN as i64, i32::MAX as i64) as i32);
             }
         }
     }
 
+    /// 淘汰已经滚出 scrollback 可达范围的图片。
+    ///
+    /// 图片只有落在“最深可回滚的 history 行 .. 视口底行”之间才可能再次显示：
+    /// 在底部时行号为 `abs_line - scroll_total`，上滚 `history_size` 行后
+    /// 再加 `history_size`。完全高于最旧 history 行（或低于视口底）的图片
+    /// 永远不会再出现，必须在每次拉帧时 drop，否则 scrollback 一满，图片
+    /// 就会永久占用最多 64 张/64 MiB（22 Tab 时可达 GB 级）。
+    fn retain_reachable(
+        &mut self,
+        history: usize,
+        scroll_total: u64,
+        rows: usize,
+        cell_height: u16,
+    ) {
+        if rows == 0 || self.images.is_empty() {
+            return;
+        }
+        let hist = history as i64;
+        let total = scroll_total as i64;
+        let screen_rows = rows as i64;
+        let cell_h = cell_height.max(1) as i64;
+        let mut removed = 0usize;
+        self.images.retain(|image| {
+            if image.fixed_row.is_some() {
+                // 固定屏幕行的图片不随历史滚动，仍受数量/字节预算约束。
+                return true;
+            }
+            let row = image.abs_line - total;
+            let cell_rows = (image.height as i64 + cell_h - 1) / cell_h;
+            let reachable = row < screen_rows && row + cell_rows.max(1) > -hist;
+            if !reachable {
+                removed += image.bytes;
+            }
+            reachable
+        });
+        self.bytes = self.bytes.saturating_sub(removed);
+    }
+
     fn place(
         &self,
-        history: usize,
+        scroll_total: u64,
         display_offset: usize,
         rows: usize,
         cols: usize,
@@ -1577,14 +1692,14 @@ impl ImageStore {
         if rows == 0 || cols == 0 {
             return;
         }
-        let hist = history as i64;
+        let total = scroll_total as i64;
         let off = display_offset as i64;
         let screen_rows = rows as i64;
         let cell_h = cell_height.max(1) as i64;
         for image in &self.images {
             let row = match image.fixed_row {
                 Some(row) => row as i64,
-                None => image.abs_line - hist + off,
+                None => image.abs_line - total + off,
             };
             if row >= screen_rows {
                 continue;
@@ -1828,8 +1943,27 @@ impl Actor {
             self.events.send(event);
         }
         let keyboard_actions = self.scan_keyboard_modes(chunk);
-        self.processor.advance(&mut self.term, chunk);
+        self.advance_tracking_scroll(chunk);
         self.apply_keyboard_actions(keyboard_actions);
+    }
+
+    fn store_grid_lines(&self) {
+        let hist = self.term.grid().history_size() as u64;
+        let total = self.term.grid().total_lines() as u64 & 0xffff_ffff;
+        self.grid_lines
+            .store((hist << 32) | total, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// 把字节交给 vte，同时把“到底后换行导致的历史滚动”累计到 `scroll_total`。
+    fn advance_tracking_scroll(&mut self, chunk: &[u8]) {
+        advance_tracking_scroll(
+            &mut self.term,
+            &mut self.processor,
+            &mut self.scroll_total,
+            &mut self.last_history,
+            Some(&self.grid_lines),
+            chunk,
+        );
     }
 
     /// 把一张 Sixel 图片锚定到**当前**光标（可能刚解析完同一 chunk 里图片
@@ -1838,12 +1972,12 @@ impl Actor {
         if !self.sixel_enabled.load(Ordering::Relaxed) {
             return;
         }
-        let (cursor, history, display_offset, cols) = self.image_anchor();
+        let (cursor, scroll_total, display_offset, cols) = self.image_anchor();
         self.images.push(
             ImageKind::Sixel,
             image,
             cursor,
-            history,
+            scroll_total,
             display_offset,
             self.sixel_scrolling,
             cols,
@@ -1855,24 +1989,24 @@ impl Actor {
         if !self.iip_enabled.load(Ordering::Relaxed) {
             return;
         }
-        let (cursor, history, display_offset, cols) = self.image_anchor();
+        let (cursor, scroll_total, display_offset, cols) = self.image_anchor();
         self.images.push_rgba(
             ImageKind::Iip,
             image.width,
             image.height,
             image.rgba,
             cursor,
-            history,
+            scroll_total,
             display_offset,
             self.sixel_scrolling,
             cols,
         );
     }
 
-    fn image_anchor(&self) -> (Point, usize, usize, usize) {
+    fn image_anchor(&self) -> (Point, u64, usize, usize) {
         (
             self.term.grid().cursor.point,
-            self.term.grid().history_size(),
+            self.scroll_total,
             self.term.grid().display_offset(),
             self.term.columns(),
         )
@@ -1977,6 +2111,7 @@ impl Actor {
         if clear_scrollback {
             self.term.clear_screen(ClearMode::Saved);
         }
+        self.last_history = self.term.grid().history_size();
         self.term.selection = None;
         self.sel_anchor = None;
         self.search_span = None;
@@ -2071,9 +2206,9 @@ impl Actor {
             },
             Ctrl::SetSixelScrolling(scrolling) => {
                 self.sixel_scrolling = scrolling;
-                let history = self.term.grid().history_size();
                 let offset = self.term.grid().display_offset();
-                self.images.set_scrolling(scrolling, history, offset);
+                self.images
+                    .set_scrolling(scrolling, self.scroll_total, offset);
                 self.wake.notify();
                 true
             },
@@ -2082,6 +2217,9 @@ impl Actor {
                 if self.term_config.scrolling_history != lines {
                     self.term_config.scrolling_history = lines;
                     self.term.set_options(self.term_config.clone());
+                    // 预算变化会对 history 做 shrink/truncate，不视为输出滚动。
+                    self.last_history = self.term.grid().history_size();
+                self.store_grid_lines();
                     self.force_full = true;
                     self.wake.notify();
                 }
@@ -2202,6 +2340,8 @@ impl Actor {
                 // All = 清屏，Saved = 清回滚；两刀下去等价于终端里的 Clear
                 self.term.clear_screen(ClearMode::All);
                 self.term.clear_screen(ClearMode::Saved);
+                self.last_history = self.term.grid().history_size();
+                self.store_grid_lines();
                 self.term.selection = None;
                 self.sel_anchor = None;
                 self.images.clear();
@@ -2245,6 +2385,9 @@ impl Actor {
             Ctrl::Resize { cols, rows } => {
                 self.size = GridSize::new(cols as usize, rows as usize);
                 self.term.resize(self.size);
+                // resize/reflow 造成的 history 变化不是输出滚动，不推进 scroll_total。
+                self.last_history = self.term.grid().history_size();
+                self.store_grid_lines();
                 let _ = self.master.resize(PtySize {
                     rows,
                     cols,
@@ -2301,8 +2444,11 @@ impl Actor {
         let display_offset = self.term.grid().display_offset();
         let rows = self.term.screen_lines();
         let cols = self.term.columns();
+        // 先把已经滚出可达 scrollback 的图片 drop，再生成当前视口 overlay。
+        self.images
+            .retain_reachable(history, self.scroll_total, rows, self.cell_height);
         self.images.place(
-            history,
+            self.scroll_total,
             display_offset,
             rows,
             cols,
@@ -2486,6 +2632,91 @@ mod tests {
 
     fn test_image(w: u32, h: u32) -> SixelImage {
         SixelImage { width: w, height: h, rgba: vec![255; w as usize * h as usize * 4] }
+    }
+
+    #[test]
+    fn scroll_tracking_keeps_counting_after_history_cap() {
+        use alacritty_terminal::event::VoidListener;
+        let size = GridSize::new(20, 5);
+        // 视口 5 行、scrollback 上限 10 行。输出 20 行：前 4 个 LF 只下移光标，
+        // 之后 16 个 LF 滚动；其中后 6 次发生在 history 已满、history_size 不再
+        // 增长之后，必须仍能推进 scroll_total（图片锚点的唯一时间轴）。
+        let config = TermConfig { scrolling_history: 10, ..TermConfig::default() };
+        let mut term: Term<VoidListener> = Term::new(config, &size, VoidListener);
+        let mut processor = Processor::new();
+        let (mut total, mut last) = (0u64, 0usize);
+        let mut bytes = Vec::new();
+        for i in 0..20 {
+            bytes.extend_from_slice(format!("L{i}\r\n").as_bytes());
+        }
+        advance_tracking_scroll(&mut term, &mut processor, &mut total, &mut last, None, &bytes);
+        assert_eq!(term.grid().history_size(), 10, "history 应到上限");
+        assert_eq!(total, 16, "scrollback 满后仍必须累计滚动行数");
+        assert_eq!(last, 10);
+    }
+
+    #[test]
+    fn image_anchor_uses_monotonic_scroll_total_after_history_capped() {
+        // scrollback 满员后 history_size 不再增长，但 scroll_total 继续增长。
+        // 旧实现用 history 做锚点，图片会粘在底行且永不淘汰；新实现必须随
+        // scroll_total 上移，并在超出可达 history 范围时被 drop。
+        let mut store = ImageStore::default();
+        store.push(
+            ImageKind::Iip,
+            test_image(16, 16),
+            Point::new(Line(5), Column(0)),
+            1000,
+            0,
+            true,
+            80,
+        );
+        let mut out = Vec::new();
+        // 同一绝对行：scroll_total=1000 时在第 5 行。
+        store.place(1000, 0, 24, 80, 16, &mut out);
+        assert_eq!(out[0].row, 5);
+        // 又滚 10 行（history 仍是 960）→ 图片上移到 -5，旧公式会错误地停在 5。
+        out.clear();
+        store.place(1010, 0, 24, 80, 16, &mut out);
+        assert!(out.is_empty());
+        store.place(1010, 10, 24, 80, 16, &mut out);
+        assert_eq!(out[0].row, 5);
+        // 滚出最深 scrollback（abs=1005，scroll_total=1966 → 行 -961，高 1 行）
+        // 后不可达，必须释放，否则每次输出都会留下永久图片。
+        store.retain_reachable(960, 1965, 24, 16);
+        assert_eq!(store.images.len(), 1, "还差一行时保留");
+        store.retain_reachable(960, 1966, 24, 16);
+        assert!(store.images.is_empty(), "完全滚出 scrollback 后必须释放");
+        assert_eq!(store.bytes, 0);
+    }
+
+    #[test]
+    fn image_retention_keeps_images_inside_reachable_history() {
+        let mut store = ImageStore::default();
+        store.push(
+            ImageKind::Iip,
+            test_image(16, 16),
+            Point::new(Line(0), Column(0)),
+            100,
+            0,
+            true,
+            80,
+        );
+        // 已滚到视口上方 50 行，但 history=960 → 仍可回滚看到。
+        store.retain_reachable(960, 150, 24, 16);
+        assert_eq!(store.images.len(), 1);
+        // 视野固定图片（sixel_scrolling=false）不受 history 淘汰影响。
+        let mut fixed = ImageStore::default();
+        fixed.push(
+            ImageKind::Sixel,
+            test_image(16, 16),
+            Point::new(Line(5), Column(0)),
+            0,
+            0,
+            false,
+            80,
+        );
+        fixed.retain_reachable(0, 10_000, 24, 16);
+        assert_eq!(fixed.images.len(), 1);
     }
 
     #[test]
