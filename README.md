@@ -119,8 +119,8 @@ $PREFIX/lib/tervo/install.sh --uninstall --prefix $PREFIX
 ```bash
 ./dist/tervo-stripped --version
 # Tervo 0.2.0
-# commit:  <release commit>
-# built:   <release time>
+# commit:  4a8f5f28049d
+# built:   2026-11-09T11:00:30Z
 # target:  x86_64-unknown-linux-gnu
 ```
 
