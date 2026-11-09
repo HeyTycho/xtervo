@@ -4,6 +4,7 @@
 //! 用法：
 //!   `xclick <x> <y> [button] [ctrl] [shift]`  单击（可带修饰键）
 //!   `xclick <x> <y> drag <x2> <y2>`           按下->移动->松开（拖选）
+//!   `XCLICK_HOLD_MS=800 xclick ... drag ...`  松开前保持按下（e2e 截拖拽中间态）
 
 use x11rb::connection::Connection;
 use x11rb::protocol::xproto::ConnectionExt as _;
@@ -91,6 +92,14 @@ fn main() {
             xtest::fake_input(&conn, MOTION, 0, x11rb::CURRENT_TIME, root, mx, my, 0).expect("motion");
             conn.flush().unwrap();
             std::thread::sleep(std::time::Duration::from_millis(interval));
+        }
+        // e2e 需要在“按住并已到落点”时截图/注入 Esc；默认 0 不改变普通拖拽。
+        let hold_ms: u64 = std::env::var("XCLICK_HOLD_MS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        if hold_ms > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(hold_ms));
         }
         xtest::fake_input(&conn, RELEASE, button, x11rb::CURRENT_TIME, root, x2, y2, 0)
             .expect("release");
