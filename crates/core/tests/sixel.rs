@@ -7,6 +7,10 @@ use std::time::{Duration, Instant};
 
 use tervo_core::{spawn, Frame, PaneConfig, PaneHandle};
 
+/// PTY 集成测试会同时 fork shell/actor；并行跑时偶发某个 pane 5s 内完全无输出。
+/// 用进程内锁串行化这些用例，避免 CI/全量测试的资源竞争造成假失败。
+static SIXEL_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn sh(script: &str) -> PaneConfig {
     PaneConfig {
         cols: 100,
@@ -79,6 +83,7 @@ fn big_sixel_st() -> Vec<u8> {
 
 #[test]
 fn sixel_over_pty_bel_terminated_and_cross_chunk() {
+    let _serial = SIXEL_TEST_LOCK.lock().unwrap();
     let small = temp_payload("small", &small_sixel_bel());
     let big = temp_payload("big", &big_sixel_st());
     let script = format!(
@@ -105,6 +110,7 @@ fn sixel_over_pty_bel_terminated_and_cross_chunk() {
 
 #[test]
 fn invalid_and_oversize_sixel_drop_image_without_breaking_output() {
+    let _serial = SIXEL_TEST_LOCK.lock().unwrap();
     let path = temp_payload(
         "bad",
         concat!(
@@ -130,6 +136,7 @@ fn invalid_and_oversize_sixel_drop_image_without_breaking_output() {
 
 #[test]
 fn ech_blank_damage_erases_inline_image() {
+    let _serial = SIXEL_TEST_LOCK.lock().unwrap();
     let small = temp_payload("ech", &small_sixel_bel());
     // dsh-tui 的擦图路径：光标回到图片区域，ECH 写入空白 cell。
     let script = format!(
@@ -144,6 +151,7 @@ fn ech_blank_damage_erases_inline_image() {
 
 #[test]
 fn ech_on_other_row_keeps_inline_image() {
+    let _serial = SIXEL_TEST_LOCK.lock().unwrap();
     let small = temp_payload("ech-other-row", &small_sixel_bel());
     // 图片在第 1 行；ECH 在第 10 行，不应清掉无关图片。
     let script = format!(
@@ -158,6 +166,7 @@ fn ech_on_other_row_keeps_inline_image() {
 
 #[test]
 fn xtwinops_reports_cell_and_window_pixels() {
+    let _serial = SIXEL_TEST_LOCK.lock().unwrap();
     let resp = std::env::temp_dir().join(format!("tervo-xtwinops-{}.bin", std::process::id()));
     let _ = std::fs::remove_file(&resp);
     let script = format!(
@@ -179,6 +188,7 @@ fn xtwinops_reports_cell_and_window_pixels() {
 
 #[test]
 fn da1_advertises_sixel_only_when_enabled() {
+    let _serial = SIXEL_TEST_LOCK.lock().unwrap();
     fn check(sixel: bool, expect_hex: &str) {
         let resp = std::env::temp_dir().join(format!(
             "tervo-da1-{}-{}.bin",
@@ -212,6 +222,7 @@ fn da1_advertises_sixel_only_when_enabled() {
 
 #[test]
 fn image_anchor_scrolls_with_history() {
+    let _serial = SIXEL_TEST_LOCK.lock().unwrap();
     let path = temp_payload("anchor", &small_sixel_bel());
     let script = format!(
         "printf '\\033[24;1H'; cat '{}'; printf '\\r\\n\\r\\n\\r\\n\\r\\n\\r\\nEND'; sleep 0.5",
@@ -244,6 +255,7 @@ fn image_anchor_scrolls_with_history() {
 
 #[test]
 fn escape_clear_screen_removes_images() {
+    let _serial = SIXEL_TEST_LOCK.lock().unwrap();
     let path = temp_payload("esc-clear", &small_sixel_bel());
     let script = format!(
         "cat '{}'; printf '\\033[2J\\033[1;1HESCAPE-CLEARED'; sleep 0.4",
@@ -259,6 +271,7 @@ fn escape_clear_screen_removes_images() {
 
 #[test]
 fn sixel_clear_screen_removes_images() {
+    let _serial = SIXEL_TEST_LOCK.lock().unwrap();
     let path = temp_payload("clear", &small_sixel_bel());
     let script = format!("cat '{}'; printf '\\r\\nX\\r\\n'; sleep 0.4", path.display());
     let handle = spawn(sh(&script)).expect("spawn pane");

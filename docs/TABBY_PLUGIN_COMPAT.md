@@ -243,3 +243,10 @@ AI 相关是今晚最高优先级。
 - [ ] 命令插件样例可运行
 - [ ] 2m 内存门禁 PASS
 - [ ] 文档写明“不加载 Tabby JS 插件”
+
+## 8. 当前落地状态（2026-11-09 0.2.0）
+
+- 已落地：Plugin API v2（v1 兼容）、`[contributes.ai]`、`ai.chat` process plugin、Settings AI Chat 面板、离线 echo 样例。
+- 边界：不加载 Tabby Electron/Angular JS 插件；AI 能力由插件自己持有凭据/网络，宿主不存 API Key。
+- 未完成：插件安装市场/签名/权限沙箱/热重载；MCP 只读桥仍在设计，不在 0.2.0。
+- 验收：`scripts/e2e_ai_panel.sh`、`scripts/e2e_plugin_v1.sh`、app 393 tests。
