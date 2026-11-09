@@ -1471,6 +1471,8 @@ const IMAGE_CLEAR_SEQUENCES: [&[u8]; 8] = [
 #[derive(Default)]
 struct ImageClearScanner {
     tail: Vec<u8>,
+    /// 本 chunk/尾部拼接里出现过 ECH；由 actor 在 vte 处理后按光标行清图。
+    ech: bool,
 }
 
 impl ImageClearScanner {
@@ -1480,12 +1482,10 @@ impl ImageClearScanner {
         let mut buf = Vec::with_capacity(self.tail.len() + bytes.len());
         buf.extend_from_slice(&self.tail);
         buf.extend_from_slice(bytes);
-        let mut hit = IMAGE_CLEAR_SEQUENCES
+        let hit = IMAGE_CLEAR_SEQUENCES
             .iter()
             .any(|pattern| buf.windows(pattern.len()).any(|w| w == *pattern));
-        if !hit {
-            hit = contains_ech(&buf);
-        }
+        self.ech = contains_ech(&buf);
         // 保留末尾 32 字节：ECH 参数/跨 chunk 边界都足够。
         let keep = 32.min(buf.len());
         self.tail.clear();
@@ -1677,6 +1677,43 @@ impl ImageStore {
                 removed += image.bytes;
             }
             reachable
+        });
+        self.bytes = self.bytes.saturating_sub(removed);
+    }
+
+    /// ECH 只清与当前光标行相交的图片，避免“任何 ECH 清全部图”导致正常
+    /// 图片在滚动/TUI 重绘时无故消失。图片跨多行时整张 drop，等 TUI 重画。
+    fn clear_at_viewport_row(
+        &mut self,
+        row: i64,
+        scroll_total: u64,
+        display_offset: usize,
+        rows: usize,
+        cell_width: u16,
+        cell_height: u16,
+    ) {
+        if self.images.is_empty() || rows == 0 {
+            return;
+        }
+        let total = scroll_total as i64;
+        let off = display_offset as i64;
+        let cell_w = cell_width.max(1) as i64;
+        let cell_h = cell_height.max(1) as i64;
+        let mut removed = 0usize;
+        self.images.retain(|image| {
+            let top = match image.fixed_row {
+                Some(r) => r as i64,
+                None => image.abs_line - total + off,
+            };
+            let cell_rows = (image.height as i64 + cell_h - 1) / cell_h;
+            let cell_cols = (image.width as i64 + cell_w - 1) / cell_w;
+            let _ = cell_cols;
+            if row >= top && row < top + cell_rows.max(1) {
+                removed += image.bytes;
+                false
+            } else {
+                true
+            }
         });
         self.bytes = self.bytes.saturating_sub(removed);
     }
@@ -2066,7 +2103,9 @@ impl Actor {
             return;
         }
         self.scan_pixel_size_queries(chunk);
-        if self.image_clear.feed(chunk) {
+        let full_clear = self.image_clear.feed(chunk);
+        let had_ech = self.image_clear.ech;
+        if full_clear {
             // 2J/3J、备用屏切换、RIS 会清空整屏：两种协议的内联图片都要清。
             self.images.clear();
         }
@@ -2077,6 +2116,19 @@ impl Actor {
         }
         let keyboard_actions = self.scan_keyboard_modes(chunk);
         self.advance_tracking_scroll(chunk);
+        // ECH 已经过 vte：用当前光标行只清与之相交的图；全屏清屏已在上面处理。
+        if had_ech && !full_clear {
+            let off = self.term.grid().display_offset() as i64;
+            let cursor_row = self.term.grid().cursor.point.line.0 as i64 + off;
+            self.images.clear_at_viewport_row(
+                cursor_row,
+                self.scroll_total,
+                self.term.grid().display_offset(),
+                self.term.screen_lines(),
+                self.cell_width,
+                self.cell_height,
+            );
+        }
         self.apply_keyboard_actions(keyboard_actions);
     }
 
