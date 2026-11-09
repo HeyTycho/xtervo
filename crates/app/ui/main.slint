@@ -1609,17 +1609,24 @@ export component MainWindow inherits Window {
     in property <bool> has-background-image: false;
     in-out property <string> background-image-path: "";
     in property <string> background-image-error: "";
+    /// 内联图片灯箱：点击 Sixel/IIP 打开；zoom=1 表示 fit 到灯箱。
+    in-out property <bool> image-preview-open: false;
+    in-out property <image> image-preview-source;
+    in-out property <float> image-preview-zoom: 1.0;
     /// resize 拖动期间临时隐藏大背景图：避免 Skia/GPU 每帧重新 cover 缩放整张大图。
     /// 停下 200ms 后自动恢复；终端字符帧仍是 1:1，不会拉伸。
     in-out property <bool> background-suspended: false;
     /// 背景图之上的暗化遮罩（0.0–0.8，默认 0.6）：只压暗图片，不碰文字/面板。
     in-out property <float> background-dim: 0.6;
-    /// 终端默认背景不透明度（0.0–1.0）：0 = 完全透出背景图，1 = 主题纯色。
-    /// 实际 alpha 由 Rust 渲染器写入帧缓冲；无图时 Rust 强制按 1.0 渲染。
+    /// 终端背景需要透出桌面（有背景图，或无图但 opacity < 100%）。
+    in-out property <bool> terminal-transparent: false;
+    /// 终端默认背景不透明度（0.0–1.0）：0 = 完全透明，1 = 主题纯色。
     in-out property <float> background-opacity: 1.0;
     callback background-image-changed(string);
     /// 回车/失焦提交：非法路径在这里报错（输入过程中不闪红字）。
     callback background-image-commit(string);
+    /// 打开系统文件选择器选图片（zenity/kdialog；失败走文本路径输入）。
+    callback background-image-browse();
     callback background-opacity-preview(float);
     callback background-opacity-changed(float);
     callback background-dim-preview(float);
@@ -1826,7 +1833,10 @@ export component MainWindow inherits Window {
     // 不让内容（长 Tab 标题/很多 Tab）决定窗口最小宽度：否则加 Tab 会把窗口撑大。
     min-width: 240px;
     min-height: 160px;
-    background: Palette.colors.surface;
+    // 窗口始终 transparent：Slint 1.18 的 Linux 后端只在建窗时决定 visual，
+    // 运行时改 Window 背景不会切换透明。终端层由 background-opacity 控制，
+    // 不透明时 pane 自己铺主题底色，仍能正常遮挡桌面。
+    background: transparent;
     no-frame: true;
     always-on-top: root.pinned;
     icon: @image-url("../../../assets/icon.png");
@@ -2616,6 +2626,10 @@ export component MainWindow inherits Window {
                         if (self.preedit-text != "") {
                             return EventResult.reject;
                         }
+                        if (event.text == "\u{1b}" && root.image-preview-open) {
+                            root.image-preview-open = false;
+                            return EventResult.accept;
+                        }
                         if (event.text == "\u{1b}" && (root.drag-tab >= 0 || root.drag-active)) {
                             root.cancel-drag();
                             return EventResult.accept;
@@ -2656,7 +2670,9 @@ export component MainWindow inherits Window {
                     y: p.y;
                     width: p.w;
                     height: p.h;
-                    background: root.has-background-image ? transparent : Palette.colors.bg;
+                    background: (root.has-background-image || root.terminal-transparent)
+                        ? transparent
+                        : Palette.colors.bg;
                     clip: true;
                     // 多分屏时用 1px accent 边框标出输入焦点；单 pane 不画，避免常驻边框。
                     border-width: (p.focused && root.panes.length > 1) ? 1px : 0px;
@@ -2665,13 +2681,13 @@ export component MainWindow inherits Window {
                     // 网格像素宽高是 cell 的整数倍，pane 右侧/底部可能余下不到一格。
                     // 这里用“主题底色 + 同样的 opacity”补齐，和终端默认背景的混合结果一致；
                     // 不能给整块 pane 铺这个半透明色，否则帧图下会二次叠 alpha。
-                    if root.has-background-image : Rectangle {
+                    if root.has-background-image || root.terminal-transparent : Rectangle {
                         x: p.iw;
                         width: p.w - p.iw;
                         height: p.ih;
                         background: Palette.colors.bg.with-alpha(root.background-opacity);
                     }
-                    if root.has-background-image : Rectangle {
+                    if root.has-background-image || root.terminal-transparent : Rectangle {
                         y: p.ih;
                         width: p.w;
                         height: p.h - p.ih;
@@ -2832,6 +2848,21 @@ export component MainWindow inherits Window {
                             root.pane-scrolled(p.id, event.delta-y, pane-hit.mouse-x, pane-hit.mouse-y,
                                 (event.modifiers.shift ? 1 : 0) + (event.modifiers.alt ? 2 : 0) + (event.modifiers.control ? 4 : 0));
                             EventResult.accept
+                        }
+                    }
+
+                    // 图片是 pane 的独立 overlay；TouchArea 必须放在 pane-hit 之后，
+                    // 否则点击会被终端命中区吃掉。图片本身仍由上面的 Image 绘制。
+                    for pic in p.images : TouchArea {
+                        x: pic.x;
+                        y: pic.y;
+                        width: pic.w;
+                        height: pic.h;
+                        mouse-cursor: pointer;
+                        clicked => {
+                            root.image-preview-source = pic.image;
+                            root.image-preview-zoom = 1.0;
+                            root.image-preview-open = true;
                         }
                     }
 
@@ -3871,16 +3902,30 @@ export component MainWindow inherits Window {
                             SettingField {
                                 label: Lang.t("Image", "图片");
                                 description: Lang.t("PNG / JPEG / SVG path · ~ is expanded · empty = off", "PNG / JPEG / SVG 路径 · 自动展开 ~ · 留空 = 关闭");
-                                SettingsTextField {
-                                    text <=> root.background-image-path;
-                                    placeholder: "/home/you/Pictures/wallpaper.png";
-                                    error: root.background-image-error != "";
-                                    clearable: true;
-                                    commit-on-blur: true;
-                                    edited(t) => { root.background-image-changed(t); }
-                                    accepted(t) => { root.background-image-commit(t); }
-                                    cleared => { root.background-image-changed(""); }
-                                    blurred(t) => { root.background-image-commit(t); }
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    Rectangle {
+                                        horizontal-stretch: 1;
+                                        height: 32px;
+                                        background: transparent;
+                                        SettingsTextField {
+                                            width: 100%;
+                                            text <=> root.background-image-path;
+                                            placeholder: "/home/you/Pictures/wallpaper.png";
+                                            error: root.background-image-error != "";
+                                            clearable: true;
+                                            commit-on-blur: true;
+                                            edited(t) => { root.background-image-changed(t); }
+                                            accepted(t) => { root.background-image-commit(t); }
+                                            cleared => { root.background-image-changed(""); }
+                                            blurred(t) => { root.background-image-commit(t); }
+                                        }
+                                    }
+                                    ActionBtn {
+                                        label: Lang.t("Browse…", "浏览…");
+                                        width: 76px;
+                                        clicked => { root.background-image-browse(); }
+                                    }
                                 }
                             }
 
@@ -3931,7 +3976,7 @@ export component MainWindow inherits Window {
                             SettingField {
                                 label: Lang.t("Terminal opacity", "终端不透明度");
                                 description: !root.has-background-image
-                                    ? Lang.t("No background image set — the terminal stays fully opaque.", "未设置背景图 — 终端保持完全不透明。")
+                                    ? Lang.t("0% makes the terminal background transparent; 100% keeps the theme color.", "0% 让终端背景透明；100% 保持主题色。")
                                     : Lang.t("0% reveals the wallpaper completely; 100% keeps the theme color.", "0% 完全透出壁纸；100% 保持主题色。");
                                 HorizontalLayout {
                                     spacing: 8px;
@@ -7505,5 +7550,114 @@ export component MainWindow inherits Window {
         begin(d) => { root.start-window-resize(d); }
         drag => { root.window-resize-drag(); }
         stop => { root.end-window-resize(); }
+    }
+
+    // ---------------- 内联图片灯箱 ----------------
+    if root.image-preview-open : Rectangle {
+        width: 100%;
+        height: 100%;
+        background: #000000d0;
+
+        // 点击暗色背景关闭；图片/控制条在更上层，不会穿透到这里。
+        TouchArea {
+            width: 100%;
+            height: 100%;
+            clicked => { root.image-preview-open = false; }
+        }
+
+        Rectangle {
+            x: 12px;
+            y: 12px;
+            width: root.width - 24px;
+            height: root.height - 68px;
+            clip: true;
+            background: transparent;
+
+            Image {
+                source: root.image-preview-source;
+                width: parent.width * root.image-preview-zoom;
+                height: parent.height * root.image-preview-zoom;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                image-fit: contain;
+            }
+
+            // 吃掉图片区域点击，避免点到背景就关闭。
+            TouchArea {
+                width: 100%;
+                height: 100%;
+                pointer-event(event) => { EventResult.accept; }
+            }
+        }
+
+        Rectangle {
+            x: 12px;
+            y: root.height - 48px;
+            width: root.width - 24px;
+            height: 36px;
+            background: Palette.colors.raise;
+            border-radius: 7px;
+            border-width: 1px;
+            border-color: Palette.colors.border;
+
+            Text {
+                x: 12px;
+                y: 0px;
+                width: 120px;
+                height: 100%;
+                text: Lang.t("Image preview", "图片预览");
+                color: Palette.colors.text;
+                font-size: 12px;
+                vertical-alignment: center;
+            }
+
+            ActionBtn {
+                x: 140px;
+                y: 5px;
+                width: 34px;
+                height: 26px;
+                label: "−";
+                clicked => {
+                    root.image-preview-zoom = Math.max(0.25, root.image-preview-zoom * 0.8);
+                }
+            }
+            Text {
+                x: 180px;
+                y: 0px;
+                width: 58px;
+                height: 100%;
+                text: "\{Math.round(root.image-preview-zoom * 100)}%";
+                color: Palette.colors.subtext;
+                font-size: 11px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            ActionBtn {
+                x: 244px;
+                y: 5px;
+                width: 34px;
+                height: 26px;
+                label: "+";
+                clicked => {
+                    root.image-preview-zoom = Math.min(4.0, root.image-preview-zoom * 1.25);
+                }
+            }
+            ActionBtn {
+                x: 288px;
+                y: 5px;
+                width: 52px;
+                height: 26px;
+                label: Lang.t("Fit", "适应");
+                clicked => { root.image-preview-zoom = 1.0; }
+            }
+            ActionBtn {
+                x: root.width - 60px;
+                y: 5px;
+                width: 46px;
+                height: 26px;
+                label: Lang.t("Close", "关闭");
+                clicked => { root.image-preview-open = false; }
+            }
+        }
     }
 }

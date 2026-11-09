@@ -308,7 +308,7 @@ impl Profile {
         let mut args = Vec::new();
         if self.auth == "key" && !self.key_path.trim().is_empty() {
             args.push("-i".to_string());
-            args.push(self.key_path.trim().to_string());
+            args.push(crate::config::expand_tilde(self.key_path.trim()).display().to_string());
         }
         if self.auth == "password" {
             // auth=password 的语义是「只用密码」：不能让 agent/密钥先认证成功，否则
@@ -942,6 +942,22 @@ shell = "/bin/sh"
             with_extra.ssh_command().1,
             vec!["-p", "22", "-l", "u", "-o", "UserKnownHostsFile=/tmp/kh", "h"]
         );
+    }
+
+    #[test]
+    fn ssh_key_path_expands_tilde() {
+        let p = Profile {
+            kind: "ssh".into(),
+            host: "h".into(),
+            port: 22,
+            user: "u".into(),
+            auth: "key".into(),
+            key_path: "~/.ssh/id_ed25519".into(),
+            ..Profile::default()
+        };
+        let (_, args) = p.ssh_command();
+        let expected = crate::config::expand_tilde("~/.ssh/id_ed25519").display().to_string();
+        assert_eq!(args[1], expected);
     }
 
     #[test]
