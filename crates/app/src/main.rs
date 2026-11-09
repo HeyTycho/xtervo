@@ -5858,23 +5858,6 @@ fn update_ime_spot(st: &mut AppState) {
 ///
 /// - 只在图片集合或锚点变化时重建模型；光标闪烁/纯文本输出不会重新上传图片。
 /// - Slint Image 按 core 图片 ID 缓存，滚动/resize 时只改 x/y，不重复拷贝 RGBA。
-/// 把内联图片缩到 pane 的可用格子区域；只缩小不放大，保持宽高比。
-/// `x/y` 是图片在 pane 内的左上角，靠右下角的图片也要留出剩余空间。
-fn fit_inline_image_size(
-    src_w: u32,
-    src_h: u32,
-    avail_w: f32,
-    avail_h: f32,
-) -> (f32, f32) {
-    if src_w == 0 || src_h == 0 || avail_w <= 1.0 || avail_h <= 1.0 {
-        return (src_w as f32, src_h as f32);
-    }
-    let scale = (avail_w / src_w as f32)
-        .min(avail_h / src_h as f32)
-        .min(1.0);
-    ((src_w as f32 * scale).max(1.0), (src_h as f32 * scale).max(1.0))
-}
-
 fn sync_inline_images(rt: &mut PaneRuntime, frame: &Frame) {
     let sig: Vec<(u64, i32, u16, u32, u32)> = frame
         .images
@@ -5936,7 +5919,7 @@ fn sync_inline_images(rt: &mut PaneRuntime, frame: &Frame) {
         // 只能被 pane clip 截掉。这里先按 pane 可用区域等比缩小，保留原图给灯箱。
         let avail_w = (rt.grid.0 as f32 * cell_w - x).max(cell_w);
         let avail_h = (rt.grid.1 as f32 * cell_h - y).max(cell_h);
-        let (w, h) = fit_inline_image_size(img.width, img.height, avail_w, avail_h);
+        let (w, h) = crate::render::fit_inline_image_size(img.width, img.height, avail_w, avail_h);
         views.push(PaneImage {
             image,
             x,
@@ -12565,11 +12548,11 @@ mod tests {
 
     #[test]
     fn inline_image_fits_inside_pane() {
-        assert_eq!(fit_inline_image_size(100, 50, 200.0, 200.0), (100.0, 50.0));
-        assert_eq!(fit_inline_image_size(400, 200, 200.0, 200.0), (200.0, 100.0));
-        assert_eq!(fit_inline_image_size(100, 400, 200.0, 200.0), (50.0, 200.0));
+        assert_eq!(crate::render::fit_inline_image_size(100, 50, 200.0, 200.0), (100.0, 50.0));
+        assert_eq!(crate::render::fit_inline_image_size(400, 200, 200.0, 200.0), (200.0, 100.0));
+        assert_eq!(crate::render::fit_inline_image_size(100, 400, 200.0, 200.0), (50.0, 200.0));
         // 已经贴到右下角时只使用剩余空间，不越过 pane。
-        assert_eq!(fit_inline_image_size(400, 200, 80.0, 200.0), (80.0, 40.0));
+        assert_eq!(crate::render::fit_inline_image_size(400, 200, 80.0, 200.0), (80.0, 40.0));
     }
 
     #[test]

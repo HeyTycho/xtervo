@@ -2711,16 +2711,6 @@ export component MainWindow inherits Window {
                         height: p.ih;
                     }
 
-                    // Sixel overlay：独立图片层，绝对定位；pane 的 clip 负责裁掉
-                    // 滚出视口/超出网格的部分。图片不进终端帧、不参与选区。
-                    for pic in p.images : Image {
-                        source: pic.image;
-                        x: pic.x;
-                        y: pic.y;
-                        width: pic.w;
-                        height: pic.h;
-                    }
-
                     // Read Only 角标：不拦截鼠标事件，选区/滚动照常工作。
                     if p.read-only : Rectangle {
                         x: Math.max(6px, p.w - 76px);

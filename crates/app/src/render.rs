@@ -20,6 +20,22 @@ use crate::glyph::{
     Style, ATLAS_W,
 };
 
+/// 内联图片的等比缩放：只缩小不放大，返回显示像素宽高。
+pub(crate) fn fit_inline_image_size(
+    src_w: u32,
+    src_h: u32,
+    avail_w: f32,
+    avail_h: f32,
+) -> (f32, f32) {
+    if src_w == 0 || src_h == 0 || avail_w <= 1.0 || avail_h <= 1.0 {
+        return (src_w as f32, src_h as f32);
+    }
+    let scale = (avail_w / src_w as f32)
+        .min(avail_h / src_h as f32)
+        .min(1.0);
+    ((src_w as f32 * scale).max(1.0), (src_h as f32 * scale).max(1.0))
+}
+
 /// 0x00RRGGBB -> 内存序 RGBA(u32, LE) = r | g<<8 | b<<16 | a<<24
 #[inline]
 fn pack(c: u32) -> u32 {
@@ -274,6 +290,8 @@ pub struct Renderer {
     dirty_rows: Vec<usize>,
     /// 上一帧重绘过的行：轮换 buffer 时只需同步这些行。
     prev_changed_rows: Vec<usize>,
+    /// 上一帧的内联图片签名；变化时整屏重绘，保证旧图不会留在 framebuffer。
+    last_image_sig: Vec<(u64, i32, u16, u32, u32)>,
     /// 统计
     pub last_draw_cells: u32,
     pub last_draw_rows: u32,
@@ -329,6 +347,7 @@ impl Renderer {
             dirty_flags: vec![false; rows],
             dirty_rows: Vec::with_capacity(rows),
             prev_changed_rows: Vec::with_capacity(rows),
+            last_image_sig: Vec::new(),
             last_draw_cells: 0,
             last_draw_rows: 0,
             last_draw_full: false,
@@ -1117,11 +1136,85 @@ impl Renderer {
         true
     }
 
+    /// 把图片按 pane 可用区域等比缩放后合成到 framebuffer 的当前行。
+    /// 只处理与这一行相交的源像素；文本随后覆盖在图片之上。
+    fn draw_image_row(&mut self, frame: &Frame, row: usize) {
+        if frame.images.is_empty() {
+            return;
+        }
+        let cell_w = self.cell_w.max(1) as f32;
+        let cell_h = self.cell_h.max(1) as f32;
+        let row_top = row as f32 * cell_h;
+        let row_bottom = row_top + cell_h;
+        let pane_w = self.cols as f32 * cell_w;
+        let pane_h = self.rows as f32 * cell_h;
+        for img in &frame.images {
+            if img.width == 0 || img.height == 0 {
+                continue;
+            }
+            let x = img.col as f32 * cell_w;
+            let y = img.row as f32 * cell_h;
+            let avail_w = (pane_w - x).max(cell_w);
+            let avail_h = (pane_h - y.max(0.0)).max(cell_h);
+            let (dw, dh) = fit_inline_image_size(img.width, img.height, avail_w, avail_h);
+            let top = y;
+            let bottom = y + dh;
+            if bottom <= row_top || top >= row_bottom {
+                continue;
+            }
+            let dy0 = (row_top.max(top) - top) as usize;
+            let dy1 = (row_bottom.min(bottom) - top) as usize;
+            if dy1 <= dy0 {
+                continue;
+            }
+            let left = x;
+            let right = x + dw;
+            let x0 = left.max(0.0) as usize;
+            let x1 = right.min(pane_w) as usize;
+            if x1 <= x0 {
+                continue;
+            }
+            let scale_x = img.width as f32 / dw.max(1.0);
+            let scale_y = img.height as f32 / dh.max(1.0);
+            let dest_y0 = (top.max(0.0) + dy0 as f32).round() as usize;
+            let src_y0 = (dy0 as f32 * scale_y) as usize;
+            let src_x0 = (x0 as f32 - left).max(0.0) as usize;
+            let pixels = self.buffer.pixels_mut();
+            let width = self.width;
+            let height = self.height;
+            for out_dy in 0..(dy1 - dy0) {
+                let py = dest_y0 + out_dy;
+                if py >= height {
+                    break;
+                }
+                let sy = (src_y0 + (out_dy as f32 * scale_y) as usize).min(img.height as usize - 1);
+                for px in x0..x1 {
+                    if px >= width {
+                        break;
+                    }
+                    let sx = (src_x0 as f32 + (px - x0) as f32 * scale_x)
+                        .min(img.width as f32 - 1.0) as usize;
+                    let si = (sy * img.width as usize + sx) * 4;
+                    if si + 3 >= img.data.len() {
+                        continue;
+                    }
+                    let src = img.data[si] as u32
+                        | (img.data[si + 1] as u32) << 8
+                        | (img.data[si + 2] as u32) << 16
+                        | (img.data[si + 3] as u32) << 24;
+                    let di = py * width + px;
+                    pixels[di] = blend_color(src, pixels[di]);
+                }
+            }
+        }
+    }
+
     fn draw_row(&mut self, frame: &Frame, row: usize) {
         if row >= self.rows || row >= frame.rows {
             return;
         }
         self.fill_row(row);
+        self.draw_image_row(frame, row);
         let y0 = row * self.cell_h;
         let baseline = y0 as i32 + self.fonts.baseline;
         let (sel, search) = (frame.selection, frame.search);
@@ -1365,6 +1458,17 @@ impl Renderer {
         } else {
             None
         };
+
+        // 图片新增/移除/滚动/缩放：framebuffer 里可能残留旧图像素，整屏重绘。
+        let image_sig: Vec<_> = frame
+            .images
+            .iter()
+            .map(|img| (img.id, img.row, img.col, img.width, img.height))
+            .collect();
+        if image_sig != self.last_image_sig {
+            self.last_image_sig = image_sig;
+            self.force_full = true;
+        }
 
         // 大范围 damage（普通屏幕滚动会脏所有行）等同整屏：逐行重绘再把
         // 上一帧未重绘的行复制过来没有收益，直接整屏更省一次复制。
@@ -1685,6 +1789,43 @@ mod tests {
             ink(&renderer, 2 * cell_w, 3 * cell_w, 0, renderer.cell_h) > 10,
             "切换 buffer 后 B 未画出"
         );
+    }
+
+    #[test]
+    fn inline_image_is_composited_below_text_cells() {
+        let Some(fonts) = FontSet::load(15.0) else { return };
+        let cell_w = fonts.cell_w;
+        let cell_h = fonts.cell_h;
+        let mut renderer = Renderer::new(
+            Rc::new(fonts),
+            4,
+            1,
+            Theme::default().bg(),
+            Theme::default().cursor(),
+            1.0,
+        );
+        let mut frame = blank_frame(4, 1);
+        frame.full = true;
+        // 两格宽的纯红图片；第一格留空，第二格写 X。
+        let mut data = vec![0u8; cell_w * 2 * cell_h * 4];
+        for px in data.chunks_exact_mut(4) {
+            px[0] = 255;
+            px[3] = 255;
+        }
+        frame.images.push(tervo_core::InlineImage {
+            id: 1,
+            row: 0,
+            col: 0,
+            width: (cell_w * 2) as u32,
+            height: cell_h as u32,
+            data: std::sync::Arc::from(data.into_boxed_slice()),
+        });
+        frame.cells[1].ch = 'X' as u32;
+        frame.cells[1].fg = 0x00ff_ffff;
+        renderer.draw(&frame);
+        let px = |x: usize| renderer.pixels()[x];
+        assert_eq!(px(1), pack(0x00ff_0000), "空白 cell 应保留图片");
+        assert_ne!(px(cell_w + 1) & 0x00ff_ffff, 0x00ff_0000, "文本应覆盖在图片上");
     }
 
     #[test]
