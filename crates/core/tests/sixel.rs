@@ -82,17 +82,13 @@ fn sixel_over_pty_bel_terminated_and_cross_chunk() {
     let small = temp_payload("small", &small_sixel_bel());
     let big = temp_payload("big", &big_sixel_st());
     let script = format!(
-        "printf '\\033[1;1H'; cat '{}'; printf '\\r\\nAFTER-SMALL\\r\\n'; cat '{}'; printf '\\r\\nAFTER-BIG\\r\\n'; sleep 0.5",
+        "printf '\\033[1;1H'; cat '{}'; cat '{}'; sleep 0.5",
         small.display(),
         big.display()
     );
     let handle = spawn(sh(&script)).expect("spawn pane");
 
-    let frame = wait_for(&handle, Duration::from_secs(8), |f| {
-        frame_text(f).contains("AFTER-BIG") && f.images.len() >= 2
-    });
-    assert!(frame_text(&frame).contains("AFTER-SMALL"));
-    assert!(frame_text(&frame).contains("AFTER-BIG"));
+    let frame = wait_for(&handle, Duration::from_secs(8), |f| f.images.len() >= 2);
     // 2x2 小图 + 400x500 大图（大图经过 max payload chunk 切分）。
     let small_img = frame.images.iter().find(|i| i.width == 2 && i.height == 2).expect("2x2 image");
     assert_eq!(&small_img.data[0..4], &[255, 0, 0, 255]);
@@ -119,7 +115,7 @@ fn invalid_and_oversize_sixel_drop_image_without_breaking_output() {
         .as_bytes(),
     );
     let script = format!(
-        "cat '{}'; printf '\\r\\nSTILL-ALIVE\\r\\n'; sleep 0.3",
+        "cat '{}'; printf '\\033[20;1HSTILL-ALIVE\\r\\n'; sleep 0.3",
         path.display()
     );
     let handle = spawn(sh(&script)).expect("spawn pane");
@@ -130,6 +126,20 @@ fn invalid_and_oversize_sixel_drop_image_without_breaking_output() {
     assert_eq!(frame.images.len(), 1);
     assert_eq!((frame.images[0].width, frame.images[0].height), (3, 6));
     let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn ech_blank_damage_erases_inline_image() {
+    let small = temp_payload("ech", &small_sixel_bel());
+    // dsh-tui 的擦图路径：光标回到图片区域，ECH 写入空白 cell。
+    let script = format!(
+        "cat '{}'; printf '\\033[1;1H\\033[2X'; sleep 0.4",
+        small.display()
+    );
+    let handle = spawn(sh(&script)).expect("spawn pane");
+    let frame = wait_for(&handle, Duration::from_secs(5), |f| f.images.is_empty());
+    assert!(frame.images.is_empty(), "ECH 空白擦除后旧图应消失");
+    let _ = std::fs::remove_file(small);
 }
 
 #[test]

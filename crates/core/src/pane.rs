@@ -1137,6 +1137,7 @@ pub fn spawn(config: PaneConfig) -> std::io::Result<PaneHandle> {
         sixel_scrolling: config.sixel_scrolling,
         iip,
         iip_enabled: iip_enabled.clone(),
+        cell_width: config.cell_width.max(1),
         cell_height: config.cell_height.max(1),
         images: ImageStore::default(),
         image_clear: ImageClearScanner::default(),
@@ -1365,7 +1366,8 @@ struct Actor {
     iip: IipFilter,
     /// IIP 开关：关闭时只吞序列，不解码/渲染。
     iip_enabled: Arc<AtomicBool>,
-    /// 终端 cell 像素高度（判断图片是否与视口相交）。
+    /// 终端 cell 像素宽/高（图片 cell 覆盖范围与文本擦除判定）。
+    cell_width: u16,
     cell_height: u16,
     /// 已解码的 Sixel 图片（按创建顺序，超出预算淘汰最旧）。
     images: ImageStore,
@@ -1427,10 +1429,30 @@ pub const CELL_BYTES: usize = std::mem::size_of::<alacritty_terminal::term::cell
 const MAX_STORED_IMAGES: usize = 64;
 const MAX_STORED_IMAGE_BYTES: usize = 64 * 1024 * 1024;
 
+/// 检测 CSI ... X（ECH，擦除字符）。dsh-tui 的 Sixel 管理器用 ECH 擦旧图：
+/// 图片是独立 overlay，alacritty 的空白单元格 damage 可能为空，必须在
+/// 输入流层面识别，否则旧图会留在原地，新图在别处重画，看起来“到处飘”。
+fn contains_ech(bytes: &[u8]) -> bool {
+    let mut i = 0;
+    while i + 2 < bytes.len() {
+        if bytes[i] == 0x1b && bytes[i + 1] == b'[' {
+            let mut j = i + 2;
+            while j < bytes.len() && matches!(bytes[j], 0x30..=0x3f) {
+                j += 1;
+            }
+            if j < bytes.len() && bytes[j] == b'X' {
+                return true;
+            }
+        }
+        i += 1;
+    }
+    false
+}
+
 /// 会清空整屏/切换备用屏、因而必须清除内联图片的转义序列。
 ///
-/// 只做“清空所有图片”的粗粒度处理（Escape 2J/3J、进入/离开备用屏、RIS）：
-/// 足以保证 `clear` / TUI 重绘不会留下旧图；局部 ECH 擦除不做像素级追踪。
+/// 粗粒度清屏（Escape 2J/3J、进入/离开备用屏、RIS）+ ECH 都会清图片；
+/// 局部 ECH 的精确 cell 擦除由 `ImageStore::erase_overlapping_damage` 补足。
 const IMAGE_CLEAR_SEQUENCES: [&[u8]; 8] = [
     b"\x1b[2J",
     b"\x1b[3J",
@@ -1450,46 +1472,22 @@ struct ImageClearScanner {
 
 impl ImageClearScanner {
     fn feed(&mut self, bytes: &[u8]) -> bool {
-        let mut hit = false;
-        for pattern in IMAGE_CLEAR_SEQUENCES {
-            // 跨边界：tail 的后缀 + bytes 的前缀。
-            let tail_need = pattern.len().saturating_sub(1).min(self.tail.len());
-            if tail_need > 0 && bytes.len() + tail_need >= pattern.len() {
-                let tail_start = self.tail.len() - tail_need;
-                let mut matched = true;
-                for (i, want) in pattern.iter().enumerate() {
-                    let got = if i < tail_need {
-                        self.tail[tail_start + i]
-                    } else {
-                        let bi = i - tail_need;
-                        if bi >= bytes.len() {
-                            matched = false;
-                            break;
-                        }
-                        bytes[bi]
-                    };
-                    if got != *want {
-                        matched = false;
-                        break;
-                    }
-                }
-                if matched {
-                    hit = true;
-                }
-            }
-            // 同一 chunk 内。
-            if !hit && bytes.len() >= pattern.len() {
-                hit = bytes.windows(pattern.len()).any(|w| w == pattern);
-            }
-            if hit {
-                break;
-            }
+        // 把上一块尾部拼进来，统一做 chunk 内扫描；旧实现逐 pattern 处理跨边界，
+        // 这里同时覆盖 ECH 这类参数长度不固定的序列。
+        let mut buf = Vec::with_capacity(self.tail.len() + bytes.len());
+        buf.extend_from_slice(&self.tail);
+        buf.extend_from_slice(bytes);
+        let mut hit = IMAGE_CLEAR_SEQUENCES
+            .iter()
+            .any(|pattern| buf.windows(pattern.len()).any(|w| w == *pattern));
+        if !hit {
+            hit = contains_ech(&buf);
         }
-        // 保留末尾 7 字节（最长 pattern 8 字节，跨边界最多需要 7）。
-        let keep = 7.min(bytes.len());
+        // 保留末尾 32 字节：ECH 参数/跨 chunk 边界都足够。
+        let keep = 32.min(buf.len());
+        self.tail.clear();
         if keep > 0 {
-            self.tail.clear();
-            self.tail.extend_from_slice(&bytes[bytes.len() - keep..]);
+            self.tail.extend_from_slice(&buf[buf.len() - keep..]);
         }
         hit
     }
@@ -1676,6 +1674,79 @@ impl ImageStore {
                 removed += image.bytes;
             }
             reachable
+        });
+        self.bytes = self.bytes.saturating_sub(removed);
+    }
+
+    /// dsh-tui 等 TUI 用“空格/背景色重绘”来擦除 Sixel；图片是独立 overlay，
+    /// 文本 damage 不会自动清图。若本帧 damage 与图片覆盖的 cell 矩形相交，
+    /// 删除旧图，让 TUI 重画的新图只有一个锚点，避免旧图留在原地“到处飘”。
+    fn erase_overlapping_damage(
+        &mut self,
+        frame: &Frame,
+        scroll_total: u64,
+        display_offset: usize,
+        cell_width: u16,
+        cell_height: u16,
+    ) {
+        if self.images.is_empty() || frame.damage.is_empty() || frame.rows == 0 {
+            return;
+        }
+        let total = scroll_total as i64;
+        let off = display_offset as i64;
+        let screen_rows = frame.rows as i64;
+        let cell_w = cell_width.max(1) as i64;
+        let cell_h = cell_height.max(1) as i64;
+        let mut removed = 0usize;
+        self.images.retain(|image| {
+            let row = match image.fixed_row {
+                Some(row) => row as i64,
+                None => image.abs_line - total + off,
+            };
+            let cell_rows = (image.height as i64 + cell_h - 1) / cell_h;
+            let cell_cols = (image.width as i64 + cell_w - 1) / cell_w;
+            let top = row.max(0);
+            let bottom = (row + cell_rows.max(1)).min(screen_rows);
+            if top >= bottom {
+                return true;
+            }
+            let left = image.col as i64;
+            let right = left + cell_cols.max(1);
+            let mut hit = false;
+            for d in &frame.damage {
+                let line = d.line as i64;
+                if line < top || line >= bottom {
+                    continue;
+                }
+                let start = (d.left as i64).max(left);
+                let end = ((d.right as i64) + 1).min(right);
+                if start >= end {
+                    continue;
+                }
+                // 光标移动/单个空格产生的 1-cell damage 很常见，不能据此删整图；
+                // dsh ECH 会覆盖图片的整段列（至少 2 格）。
+                if end - start < 2 {
+                    continue;
+                }
+                // dsh-tui 的擦图是 ECH/空格（整段都是空白）；普通文本覆盖图片
+                // 不应误删整张图，所以只有 damage 区域全空白才认为是清图。
+                let all_blank = (start..end).all(|col| {
+                    if col < 0 || col >= frame.cols as i64 {
+                        return true;
+                    }
+                    frame.cell(line as usize, col as usize).char() == ' '
+                });
+                if all_blank {
+                    hit = true;
+                    break;
+                }
+            }
+            if hit {
+                removed += image.bytes;
+                false
+            } else {
+                true
+            }
         });
         self.bytes = self.bytes.saturating_sub(removed);
     }
@@ -2235,6 +2306,7 @@ impl Actor {
                 true
             },
             Ctrl::SetCellSize { width, height } => {
+                self.cell_width = width.max(1);
                 self.cell_height = height.max(1);
                 self.iip.set_cell_size(width, height);
                 true
@@ -2444,6 +2516,17 @@ impl Actor {
         let display_offset = self.term.grid().display_offset();
         let rows = self.term.screen_lines();
         let cols = self.term.columns();
+        // TUI 用文本/空格重绘擦图时，先淘汰被 damage 覆盖的旧图；否则旧图
+        // 会留在 overlay 上，新图再出现在新锚点，表现为图片“到处飘”。
+        if !frame.full {
+            self.images.erase_overlapping_damage(
+                frame,
+                self.scroll_total,
+                display_offset,
+                self.cell_width,
+                self.cell_height,
+            );
+        }
         // 先把已经滚出可达 scrollback 的图片 drop，再生成当前视口 overlay。
         self.images
             .retain_reachable(history, self.scroll_total, rows, self.cell_height);

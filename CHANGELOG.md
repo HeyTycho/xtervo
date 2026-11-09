@@ -10,6 +10,7 @@ Tervo 的版本与 tag 规则见 `docs/RELEASING.md`。
 - Background image Browse 文件选择器；图片/Cwd/Shell/SSH key 支持 `~`。
 - 无背景图时终端 opacity 也可用（透明窗口；需要合成器）。
 - Sixel/IIP 超大图缩到 pane 内；点击打开灯箱，支持缩放/Fit/Close/Esc。
+- dsh-tui 等 TUI 用 ECH/空格擦图时同步清理旧 overlay，避免图片“到处飘”。
 
 ### Fixed
 

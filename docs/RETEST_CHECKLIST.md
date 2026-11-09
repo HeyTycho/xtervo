@@ -190,7 +190,7 @@ e2e:       15 个脚本全 PASS（SSH/SFTP、插件、设置、图片、键盘�
 
 - fcitx XIM 候选窗位置在部分输入法下仍受 winit/XIM 限制；dsh Btw 侧栏需先点击 composer 锚点
 - 彩色位图 emoji 之外（COLR/SVG）回退单色/占位
-- Sixel/IIP 局部 ECH 擦除不逐像素清图；scrollback 淘汰后锚点可能偏移
+- Sixel/IIP 的 ECH 擦除会清掉内联图（不做逐像素局部擦除）；scrollback 淘汰后锚点可能偏移
 - IIP 覆盖文本、不占光标行；不做 inline=0 文件下载/动画
 - 会话恢复不恢复 scrollback/屏幕内容/运行中进程；SSH/Serial 不自动重连
 - 打包不含自动更新/崩溃上报/AppImage/Flatpak/Snap/GPG 签名
