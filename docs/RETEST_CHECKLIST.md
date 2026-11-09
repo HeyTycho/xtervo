@@ -6,10 +6,10 @@
 ## 0. 版本信息（最终填写）
 
 ```text
-commit:    0cb84e86fdab
-release:   dist/tervo-stripped（40.4 MB，sha256 534f7656…fc76543f）
-tar.gz:    dist/tervo-0.1.0-linux-x86_64.tar.gz（sha256 c8dd4704…3ce7931）
-deb:       dist/tervo_0.1.0-1_amd64.deb（sha256 cbca5360…4cb0501）
+commit:    dfdb25bab0c5
+release:   dist/tervo-stripped（40.4 MB，sha256 16d7a477…73321cb）
+tar.gz:    dist/tervo-0.1.0-linux-x86_64.tar.gz（sha256 d88a4479…c76fd3）
+deb:       dist/tervo_0.1.0-1_amd64.deb（sha256 8dc34bf7…a76c604）
 built:     2026-11-06T19:26:31Z（SOURCE_DATE_EPOCH）
 测试:      app 369 passed / 1 ignored；workspace 全绿
 e2e:       15 个脚本全 PASS（SSH/SFTP、插件、设置、图片、键盘、事件、渲染、P0、URL/右键等）
@@ -51,6 +51,11 @@ e2e:       15 个脚本全 PASS（SSH/SFTP、插件、设置、图片、键盘�
 - [ ] 重启后语言保持；外部编辑 config.toml 的 `language` 能热更新
 - [ ] 终端右键菜单（Link/Clipboard/Pane/View/Session）与 TabBar 菜单跟随语言；en/zh 均无混排
 - [ ] 小窗口（约 760×520）与 `TERVO_SETTINGS_LEGACY=1` 下语言卡片/文字不溢出
+- [ ] Settings 齿轮明确可辨（8 齿 + 中心孔），窗口右上角/Tab 图标一致
+- [ ] 终端右键菜单无图标，文字与分组标题左对齐；280px 宽/窄窗滚动/右下翻转正常
+- [ ] Pin/Unpin Tab：pinned 固定在左侧、图钉角标、重启后保留
+- [ ] 拖拽 Tab：ghost/插入线/让位动画；pinned 跨组不亮线不移动；Esc 取消复位
+- [ ] 拖拽后顺序正确，关闭/重命名/复制无回归
 
 ## 4. 必测：右键菜单美化
 
