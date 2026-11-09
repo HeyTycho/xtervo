@@ -41,6 +41,9 @@ e2e:       15 个脚本全 PASS（SSH/SFTP、插件、设置、图片、键盘�
 - [ ] 点 Terminal Tab 后 Settings Tab 仍在；点回能恢复，状态/搜索词不丢
 - [ ] 点 + / Profile 只 suspend，不销毁 Settings Tab
 - [ ] 只有 Settings Tab × / 页头 × / Esc / 齿轮关闭；关闭后终端键盘正常
+- [ ] 背景图 Browse 打开文件选择器；取消不改图，选中立即加载
+- [ ] 图片/Cwd/Shell/SSH key 的 `~` 路径按 HOME 展开
+- [ ] 无背景图时 Terminal opacity 也能改变终端背景透明度（有合成器）
 - [ ] 主题下拉/光标/滚动条/Backspace/Delete 修改即时生效
 - [ ] Dim/Terminal opacity 滑块只有左键按住拖动才变，悬停不跟随
 - [ ] 放大窗口时设置页侧栏/内容卡片跟着变宽
@@ -74,6 +77,8 @@ e2e:       15 个脚本全 PASS（SSH/SFTP、插件、设置、图片、键盘�
 ## 5. 必测：Sixel / emoji
 
 - [ ] 发送真实 Sixel 图片，按光标位置显示
+- [ ] 超出 pane 的图片等比缩小在终端内，不撑出/裁到窗口外
+- [ ] 点击内联图片打开灯箱；+/−/Fit/Close、Esc 正常，缩放不破坏原图
 - [ ] 滚动/resize/切 Tab 后图片不跑位
 - [ ] 关闭 `sixel` 后已有图清除，DA1 不再含参数 4
 - [ ] 😀🚀❤️ 显示彩色；👨‍👩‍👧 组件彩色不越界
@@ -144,6 +149,7 @@ e2e:       15 个脚本全 PASS（SSH/SFTP、插件、设置、图片、键盘�
 ## 9.2 必测：Sixel / IIP
 
 - [ ] 真实 Sixel 图片按光标显示；滚动/resize/切 Tab 不跑位
+- [ ] 超大 Sixel/IIP 自动缩进 pane，点击灯箱可缩放/关闭
 - [ ] 关闭 Sixel 立即清图，DA1 不含参数 4
 - [ ] OSC 1337 File PNG/JPEG 显示；滚动/resize 正常
 - [ ] 关闭 IIP 立即清图，不影响 Sixel

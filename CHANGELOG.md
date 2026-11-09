@@ -4,6 +4,17 @@ Tervo 的版本与 tag 规则见 `docs/RELEASING.md`。
 
 ## [Unreleased]
 
+### Added
+
+- Settings Help 页面：快捷键、配置/日志路径、诊断复制、版本信息、已知限制。
+- Background image Browse 文件选择器；图片/Cwd/Shell/SSH key 支持 `~`。
+- 无背景图时终端 opacity 也可用（透明窗口；需要合成器）。
+- Sixel/IIP 超大图缩到 pane 内；点击打开灯箱，支持缩放/Fit/Close/Esc。
+
+### Fixed
+
+- 松开左键后仍能 resize 窗口（尤其上边框）。
+
 ## [0.1.0] - 2026-11-09
 
 ### Added

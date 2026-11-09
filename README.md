@@ -289,6 +289,19 @@ bold_color = "#ff8800"        # 空 = 不启用
 bold_color_same_as_fg = false # false 时 bold_color 作用于默认前景色粗体
 ```
 
+背景图与终端透明度（设置页 Appearance → Background；图片字段支持 `~` 和 Browse 选择器）：
+
+```toml
+background_image = "~/Pictures/wallpaper.png"  # 空 = 关闭；PNG/JPEG/SVG
+background_opacity = 0.35                       # 0 = 完全透明，1 = 主题纯色
+background_dim = 0.6                            # 只压暗背景图
+```
+
+- 没有背景图也可以调低 `background_opacity`：窗口使用透明 visual，终端帧 alpha 直接透出桌面；
+  需要桌面合成器（GNOME/KDE 等），无合成器的裸 X11 可能显示为黑底。
+- 设置页的 **Browse…** 调 zenity/kdialog（`TERVO_FILE_DIALOG` 可覆盖）；选择失败/取消不改变当前图片。
+- Background Image/Cwd/Shell/SSH key 等本地路径支持 `~`；远端 SSH 路径不本地展开。
+
 > 安全提示：`allow` 意味着任何能向终端输出转义序列的程序（包括 SSH 远端、
 > `cat` 一个不可信文件、tmux 里的远端进程）都能覆盖或读取你的系统剪贴板/
 > PRIMARY。只处理可信内容，或设为 `deny`。
@@ -327,6 +340,8 @@ iip = true               # 默认；false 时不解析/渲染 iTerm2 IIP（OSC 1
   单边 16384 px；非法/超限只丢图，不崩溃，图片字节不进入文本/选区。
 - 两种图片共用同一套 overlay/缓存/滚动/resize 机制；IIP 与 Sixel 独立开关、独立清除，
   切换 Tab 或窗口 resize 后按光标 cell 重新定位。
+- 超过 pane 可用区域的图片会等比缩到终端内（不放大、不撑出 pane）；点击图片打开灯箱，
+  支持缩小/放大/Fit/Close 和 Esc 关闭，灯箱始终使用原始解码图。
 - 已知限制：TUI 的局部 ECH 擦除不会逐像素追踪（清屏/备用屏切换会清图）；IIP/Sixel 图片
   覆盖在文本之上、不占用光标行（与 iTerm2 协议一致，客户端应自行换行留位）；不做动画/
   文件下载（`inline=0` 或缺少 `inline=1` 的文件被忽略）；scrollback 淘汰最旧行后，锚点

@@ -1,6 +1,6 @@
 # Tervo 任务看板
 
-> 最后更新：2026-11-09 16:15  
+> 最后更新：2026-11-09 16:35  
 > 规则：每个任务开始/完成/阻塞都要更新本文件；记录 worktree、branch、commit、测试/截图、限制。  
 > 当前 master：`a82ac52`（Settings Tab 持久化）；当前 release：`target/release/tervo` 19:07。
 
@@ -66,6 +66,7 @@
 | UI-02 | Tab pin + 拖拽 ghost/插入动画 | done | `.worktrees/tab-pin-drag` / `feat/tab-pin-drag` | commit `564b0d3`；合 master `5f1987a`；app 382；`e2e_tab_pin_drag.sh` PASS；12 截图 | Pin/Unpin、恢复、ghost、跨组 blocked、Esc |
 | UI-03 | Settings 齿轮 + 右键菜单去图标 | done | `.worktrees/settings-icon` / `feat/settings-icon` | commit `ccb8ea6`；8 齿齿轮/15 处 icon 移除；`e2e_settings_icon.sh`/`e2e_context_menu.sh` PASS | 像素签名防太阳回归 |
 | DOC-03 | 版本/tag/发布规范 | done | `docs/RELEASING.md` + `CHANGELOG.md` | SemVer 0.x、`vX.Y.Z` annotated tag、发布/hotfix/CHANGELOG/禁止事项 | 当前 0.1.0，下一功能 0.2.0 |
+| UI-04 | 背景图 Browse/~、无图透明度、内联图灯箱 | in_progress | master | picker/scale-to-fit/lightbox；Xvfb 截图；待 2m 门禁 | 待合包 |
 
 ## 4.1 自主执行规则（2026-11-06 起）
 
@@ -141,6 +142,7 @@
 | 2026-11-09 12:45 | 内存收敛：IIP/Sixel 图片按单调滚动淘汰（66ae0c6）；30m +64.0MiB PASS；消融 full/noimg 10m +87.4/+60.0；最终包 0cb84e8 |
 | 2026-11-09 14:35 | 合入 i18n、Tab pin/拖拽、Settings 齿轮/右键去图标；新增 `docs/UI_DESIGN.md`；app 382 tests |
 | 2026-11-09 14:55 | 最终 UI 包 dfdb25b：tab/icon/context e2e PASS；2m 内存 +43.7MiB PASS；tar/deb 重打 |
+| 2026-11-09 16:35 | Settings Help 合入；背景图 Browse/~、无图透明度、内联图 scale-to-fit + 灯箱；待最终 tests/内存门禁 |
 | 2026-11-07 00:23 | soak 脚本交付；2m PASS，15m FAIL 内存增长（+16.7MiB/min）；内存专项开跑 |
 | 2026-11-06 23:55 | W-04 插件 V1 完成（feat/plugin-v1，未合 master）：常驻 process 生命周期/命令结果/状态栏/Theme Pack/权限声明；app 341 passed（基线 327）；Xvfb :142 e2e PASS（command_result/status/plugins 截图）；限制见 PLUGIN_API.md §11 |
 | 2026-11-06 21:35 | W-01 完成（feat/profile-session，未合 master）：每 Profile 外观 + session profile_id/可选启动自动恢复；app 295、workspace 489；Xvfb :136 e2e PASS；限制见 docs/self-iteration.md |
