@@ -153,6 +153,8 @@ e2e:       15 个脚本全 PASS（SSH/SFTP、插件、设置、图片、键盘�
 - 极端 22 Tab + 3 split（4 pane）+ 图片/emoji/搜索/resize 的 30m soak：
   RSS 753.2→817.2 MiB，**+64.0 MiB（<96 MiB 门禁）**，+0.78 MiB/min，R²=0.13，
   约 6 分钟后平台、末段略降；线程/FD/子进程稳定，无 panic/OOM。
+- 验收矩阵（同一修复 HEAD）：2m +39.5MiB PASS；15m +74.2MiB PASS；
+  30m +64.0MiB PASS（30m 低于 15m 是 run 间基线与末期回落，不是泄漏）。
 - 根因：IIP/Sixel 图片锚点依赖 alacritty `history_size()`；全局 scrollback 预算封顶后
   锚点不再推进，滚出历史的图片永久保留。修复为单调 `scroll_total` + `retain_reachable`。
 - 对照：修复前 30m +209.6 MiB；消融 full vs no-images 10m 为 +87.4 vs +60.0 MiB，
