@@ -10742,7 +10742,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // 没有快照/全部恢复失败时走下面的 new_tab_inner，保证总有一个可用 Tab。
         let restored = (opts.restore || auto_restore) && restore_session(st);
         if !restored {
-            new_tab_inner(st);
+            // 首次启动也必须尊重 default_profile_id；之前只有 Ctrl+T 走默认 Profile，
+            // 导致 SSH 默认 Profile 启动后落到本地 shell。
+            new_tab_with_default(st);
         }
         rebuild_tabs(st);
         restored
