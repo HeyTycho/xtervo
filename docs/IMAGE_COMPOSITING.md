@@ -1,6 +1,6 @@
 # 内联图片合成层 v2
 
-> 状态：方案冻结（2026-11-09）
+> 状态：v2 第一刀已落地（2026-11-09）
 > 目标：替换 `PaneImage` 独立 Slint overlay，把 Sixel/IIP 图片变成 terminal framebuffer 内的 cell-aware 图层。
 > 参考：xterm.js `@xterm/addon-image`、WezTerm（Rust）、Kitty/iTerm2 图片协议。
 > Tabby：只借产品交互/设置体验，不借 Electron/xterm.js DOM 实现。
