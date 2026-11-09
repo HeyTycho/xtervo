@@ -1900,6 +1900,45 @@ fn resize_pointer(st: &AppState) -> Option<(i32, i32)> {
         .and_then(|ctx| crate::xconn::query_pointer(&ctx.conn, ctx.root))
 }
 
+/// 自绘/ WM resize 共用的收尾：清 Rust 状态，并补发一次 PointerReleased 清理
+/// Slint TouchArea 的 pressed/抓取状态。WM live resize 期间 mouse-up 可能被
+/// WM grab 吃掉；如果只清 Rust 状态，ResizeHandle 仍认为按着，后续每次 move
+/// 都会继续 set_size，表现为“松开左键后还能放缩窗口”。
+fn finish_window_resize(st: &mut AppState, reason: &str) {
+    let was_active = st.wm_resize || st.resize.is_some();
+    st.wm_resize = false;
+    st.wm_release_pending = false;
+    st.resize = None;
+    if !was_active {
+        return;
+    }
+    eprintln!("[ui] window resize end reason={reason}");
+    if st.resize_in_progress {
+        schedule_resize_finalize(st);
+    }
+    // 用当前指针位置补发，命中原来的 ResizeHandle；0,0 会落到窗口外/别的控件，
+    // 不会清掉 TouchArea 的 pressed 状态。
+    let local = resize_pointer(st).map(|(px, py)| {
+        let pos = st.ui.window().position();
+        let scale = st.ui.window().scale_factor().max(0.1) as f32;
+        let size = st.ui.window().size();
+        let max_x = (size.width as f32 / scale - 1.0).max(0.0);
+        let max_y = (size.height as f32 / scale - 1.0).max(0.0);
+        (
+            ((px as f32 - pos.x as f32) / scale).clamp(0.0, max_x),
+            ((py as f32 - pos.y as f32) / scale).clamp(0.0, max_y),
+        )
+    });
+    if let Some((x, y)) = local {
+        st.ui.window().dispatch_event(
+            slint::platform::WindowEvent::PointerReleased {
+                position: slint::LogicalPosition::new(x, y),
+                button: slint::platform::PointerEventButton::Left,
+            },
+        );
+    }
+}
+
 /// Slint `ResizeHandle` 的 0..7 → winit `ResizeDirection`（两者同序）。
 fn winit_resize_direction(dir: i32) -> Option<winit::window::ResizeDirection> {
     use winit::window::ResizeDirection;
@@ -9470,6 +9509,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     ui.on_window_resize_drag(|| {
         with_app(|st| {
+            // 松开左键后的 move 不能继续 resize：WM grab 可能让 Slint 收不到 up。
+            if st.wm_resize || st.resize.is_some() {
+                if let Some(ctx) = st.xresize.as_ref() {
+                    if let Some((_, _, mask)) =
+                        crate::xconn::query_pointer_with_mask(&ctx.conn, ctx.root)
+                    {
+                        if !crate::xconn::button1_down(mask) {
+                            finish_window_resize(st, "pointer-up");
+                            return;
+                        }
+                    }
+                }
+            }
             if st.wm_resize {
                 let Some(r) = st.resize else { return };
                 let now = st.ui.window().size();
@@ -9550,15 +9602,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     ui.on_end_window_resize(|| {
-        with_app(|st| {
-            st.wm_resize = false;
-            st.wm_release_pending = false;
-            st.resize = None;
-            // 松手后仍然让最后一次 apply 落地，再恢复背景。
-            if st.resize_in_progress {
-                schedule_resize_finalize(st);
-            }
-        });
+        with_app(|st| finish_window_resize(st, "callback"));
     });
 
     ui.on_input_trace(|kind, id, x, y| {

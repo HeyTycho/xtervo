@@ -430,11 +430,22 @@ pub fn set_window_icon(rgba: &[u8], size: u16, title: &str) -> Result<u32, Strin
     Ok(win)
 }
 
-/// 查询指针在 root 窗口上的绝对坐标（用于自绘拖边缩放）。
-pub fn query_pointer(conn: &RustConnection, root: u32) -> Option<(i32, i32)> {
+/// 查询指针在 root 窗口上的坐标与 X11 按键掩码（用于自绘拖边缩放）。
+pub fn query_pointer_with_mask(conn: &RustConnection, root: u32) -> Option<(i32, i32, u16)> {
     use x11rb::protocol::xproto::ConnectionExt;
     let reply = conn.query_pointer(root).ok()?.reply().ok()?;
-    Some((reply.root_x as i32, reply.root_y as i32))
+    Some((reply.root_x as i32, reply.root_y as i32, reply.mask.bits()))
+}
+
+/// 查询指针在 root 窗口上的绝对坐标（用于自绘拖边缩放）。
+pub fn query_pointer(conn: &RustConnection, root: u32) -> Option<(i32, i32)> {
+    query_pointer_with_mask(conn, root).map(|(x, y, _)| (x, y))
+}
+
+/// X11 Button1Mask = 1 << 8；WM live resize 可能 grab 指针，导致 winit/Slint
+/// 收不到 ButtonRelease，但 XQueryPointer 仍能反映物理左键状态。
+pub fn button1_down(mask: u16) -> bool {
+    mask & (1 << 8) != 0
 }
 
 /// 连接当前 DISPLAY：优先抽象 socket，失败再退回 x11rb 默认路径。
@@ -1352,6 +1363,16 @@ mod tests {
         assert_eq!(physical_extent(100.0, 0.0), 100);
         assert_eq!(physical_extent(100.0, f32::NAN), 100);
         assert_eq!(physical_extent(40000.0, 2.0), u16::MAX as u32);
+    }
+
+    #[test]
+    fn button1_mask_only_matches_left_button() {
+        // X11 Button1Mask = 1 << 8；Button2/3 不应被当成左键。
+        assert!(button1_down(1 << 8));
+        assert!(!button1_down(0));
+        assert!(!button1_down(1 << 9));
+        assert!(!button1_down(1 << 10));
+        assert!(button1_down((1 << 8) | (1 << 9)));
     }
 
     #[test]
