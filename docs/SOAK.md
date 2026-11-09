@@ -246,3 +246,5 @@ keycap → 334（+2）、彩虹旗 → 344（+11）、随后整行 emoji.txt →
 - 修复：`scroll_total` 单调滚动计数 + `ImageStore::retain_reachable`；commit `66ae0c6`。
 - 消融：full 10m +87.4 MiB vs no-images +60.0 MiB，图片模块约 27 MiB/10m。
 - 残余 64 MiB 为一次性 scrollback 行/cell + Skia/llvmpipe 预热，不是线性泄漏。
+
+- 验收矩阵（22 Tab/4 pane，修复后）：2m +39.5MiB、15m +74.2MiB、30m +64.0MiB，均 PASS。
