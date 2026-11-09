@@ -1609,10 +1609,15 @@ export component MainWindow inherits Window {
     in property <bool> has-background-image: false;
     in-out property <string> background-image-path: "";
     in property <string> background-image-error: "";
-    /// 内联图片灯箱：点击 Sixel/IIP 打开；zoom=1 表示 fit 到灯箱。
+    /// 内联图片灯箱：点击 Sixel/IIP 打开。
+    /// fit=true 时只缩小不放大；100% 是原始像素 1:1，>100% 用 pixelated。
     in-out property <bool> image-preview-open: false;
     in-out property <image> image-preview-source;
+    in-out property <bool> image-preview-fit: true;
     in-out property <float> image-preview-zoom: 1.0;
+    property <float> image-preview-fit-scale: Math.min(1.0,
+        (root.width - 24px) / 1px / Math.max(1, root.image-preview-source.width),
+        (root.height - 68px) / 1px / Math.max(1, root.image-preview-source.height));
     /// resize 拖动期间临时隐藏大背景图：避免 Skia/GPU 每帧重新 cover 缩放整张大图。
     /// 停下 200ms 后自动恢复；终端字符帧仍是 1:1，不会拉伸。
     in-out property <bool> background-suspended: false;
@@ -2861,6 +2866,7 @@ export component MainWindow inherits Window {
                         mouse-cursor: pointer;
                         clicked => {
                             root.image-preview-source = pic.image;
+                            root.image-preview-fit = true;
                             root.image-preview-zoom = 1.0;
                             root.image-preview-open = true;
                         }
@@ -7575,11 +7581,17 @@ export component MainWindow inherits Window {
 
             Image {
                 source: root.image-preview-source;
-                width: parent.width * root.image-preview-zoom;
-                height: parent.height * root.image-preview-zoom;
+                // Fit 只缩不放；按钮 100% 回到原始像素。这样默认不会把
+                // 小图放大成一坨平滑插值。
+                property <float> effective-scale: root.image-preview-fit
+                    ? root.image-preview-fit-scale
+                    : root.image-preview-zoom;
+                width: Math.max(1px, root.image-preview-source.width * 1px) * self.effective-scale;
+                height: Math.max(1px, root.image-preview-source.height * 1px) * self.effective-scale;
                 x: (parent.width - self.width) / 2;
                 y: (parent.height - self.height) / 2;
                 image-fit: contain;
+                image-rendering: self.effective-scale > 1.0 ? pixelated : smooth;
             }
 
             // 吃掉图片区域点击，避免点到背景就关闭。
@@ -7618,7 +7630,11 @@ export component MainWindow inherits Window {
                 height: 26px;
                 label: "−";
                 clicked => {
-                    root.image-preview-zoom = Math.max(0.25, root.image-preview-zoom * 0.8);
+                    let base = root.image-preview-fit
+                        ? root.image-preview-fit-scale
+                        : root.image-preview-zoom;
+                    root.image-preview-fit = false;
+                    root.image-preview-zoom = Math.max(0.1, base * 0.8);
                 }
             }
             Text {
@@ -7626,7 +7642,9 @@ export component MainWindow inherits Window {
                 y: 0px;
                 width: 58px;
                 height: 100%;
-                text: "\{Math.round(root.image-preview-zoom * 100)}%";
+                text: "\{Math.round((root.image-preview-fit
+                    ? root.image-preview-fit-scale
+                    : root.image-preview-zoom) * 100)}%";
                 color: Palette.colors.subtext;
                 font-size: 11px;
                 horizontal-alignment: center;
@@ -7639,7 +7657,11 @@ export component MainWindow inherits Window {
                 height: 26px;
                 label: "+";
                 clicked => {
-                    root.image-preview-zoom = Math.min(4.0, root.image-preview-zoom * 1.25);
+                    let base = root.image-preview-fit
+                        ? root.image-preview-fit-scale
+                        : root.image-preview-zoom;
+                    root.image-preview-fit = false;
+                    root.image-preview-zoom = Math.min(4.0, base * 1.25);
                 }
             }
             ActionBtn {
@@ -7648,7 +7670,18 @@ export component MainWindow inherits Window {
                 width: 52px;
                 height: 26px;
                 label: Lang.t("Fit", "适应");
-                clicked => { root.image-preview-zoom = 1.0; }
+                clicked => { root.image-preview-fit = true; }
+            }
+            ActionBtn {
+                x: 344px;
+                y: 5px;
+                width: 52px;
+                height: 26px;
+                label: "100%";
+                clicked => {
+                    root.image-preview-fit = false;
+                    root.image-preview-zoom = 1.0;
+                }
             }
             ActionBtn {
                 x: root.width - 60px;

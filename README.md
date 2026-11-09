@@ -341,7 +341,8 @@ iip = true               # 默认；false 时不解析/渲染 iTerm2 IIP（OSC 1
 - 两种图片共用同一套 overlay/缓存/滚动/resize 机制；IIP 与 Sixel 独立开关、独立清除，
   切换 Tab 或窗口 resize 后按光标 cell 重新定位。
 - 超过 pane 可用区域的图片会等比缩到终端内（不放大、不撑出 pane）；点击图片打开灯箱，
-  支持缩小/放大/Fit/Close 和 Esc 关闭，灯箱始终使用原始解码图。
+  支持缩小/放大/Fit/Close 和 Esc 关闭，灯箱始终使用原始解码图。灯箱 Fit 只缩不放，
+  100% 是原图像素 1:1，>100% 使用 pixelated，避免平滑插值糊。
 - 已知限制：TUI 的局部 ECH 擦除不会逐像素追踪（清屏/备用屏切换会清图）；IIP/Sixel 图片
   覆盖在文本之上、不占用光标行（与 iTerm2 协议一致，客户端应自行换行留位）；不做动画/
   文件下载（`inline=0` 或缺少 `inline=1` 的文件被忽略）；scrollback 淘汰最旧行后，锚点
