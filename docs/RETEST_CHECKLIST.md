@@ -46,6 +46,11 @@ e2e:       15 个脚本全 PASS（SSH/SFTP、插件、设置、图片、键盘�
 - [ ] 放大窗口时设置页侧栏/内容卡片跟着变宽
 - [ ] `TERVO_SETTINGS_LEGACY=1` 可回旧 modal
 - [ ] 搜索 `sixel` 能跳 Terminal/Images
+- [ ] Appearance 顶部 Language 切 English/中文：整页即时切换，无需重启；config 写回 `language`
+- [ ] en 下 Settings 无中文（语言选项“中文”除外），zh 下无整句英文；搜索 `sixel`/`光标` 命中项行跟随语言
+- [ ] 重启后语言保持；外部编辑 config.toml 的 `language` 能热更新
+- [ ] 终端右键菜单（Link/Clipboard/Pane/View/Session）与 TabBar 菜单跟随语言；en/zh 均无混排
+- [ ] 小窗口（约 760×520）与 `TERVO_SETTINGS_LEGACY=1` 下语言卡片/文字不溢出
 
 ## 4. 必测：右键菜单美化
 
