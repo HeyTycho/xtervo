@@ -121,6 +121,7 @@
 | 2026-11-07 00:35 | W-02/W-04/W-07 合入；SSH/SFTP 19 截图 e2e PASS，plugin e2e PASS；soak 15m FAIL 内存，MEM-01 开跑 |
 | 2026-11-07 04:35 | 最终候选 8823311；15 个功能 e2e 全 PASS；30m soak 仍 +209.6MiB 内存未收敛；dist tar/deb 生成；复测清单完成 |
 | 2026-11-09 01:40 | 真实 SSH 172.27.133.14 验收：Tervo SSH Profile known_hosts/登录/远程命令 PASS；修首次启动不读 default_profile_id；最终包 3fafbc8 |
+| 2026-11-09 11:35 | feat/i18n：Settings/终端右键/TabBar 中英双语 + Appearance 顶部 Language（运行中切换、写回、热更新）；app 376 passed（基线 369）；`scripts/e2e_settings_i18n.sh` PASS；未合 master |
 | 2026-11-09 02:00 | 设置页修复：Dim/Opacity 仅左键拖拽（悬停 0 像素变化）、内容区随窗口放大（1080→1482）；最终包 5dc3c31 |
 | 2026-11-07 00:23 | soak 脚本交付；2m PASS，15m FAIL 内存增长（+16.7MiB/min）；内存专项开跑 |
 | 2026-11-06 23:55 | W-04 插件 V1 完成（feat/plugin-v1，未合 master）：常驻 process 生命周期/命令结果/状态栏/Theme Pack/权限声明；app 341 passed（基线 327）；Xvfb :142 e2e PASS（command_result/status/plugins 截图）；限制见 PLUGIN_API.md §11 |

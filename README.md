@@ -164,6 +164,12 @@ ls -l dist/ && file dist/tervo-stripped && ./dist/tervo-stripped --help
   主题用下拉框，光标/滚动条/按键编码用分段选择器，开关/滑杆/步进器替代平铺 chip；顶部搜索的
   结果会跳到对应分类并滚动/高亮具体设置卡片。兼容性回退：启动时设 `TERVO_SETTINGS_LEGACY=1`
   可回到居中旧 modal（同一套控件，仅换呈现）。
+- 界面语言（i18n）：Settings → Appearance 顶部新增 **Language / 语言** 分段按钮
+  （English / 中文），点击后整个 Settings 页和终端右键/TabBar 菜单立即切换，无需重启并写回
+  `language = "en" | "zh"`。默认 `en`，未知值读入回退 `en`；旧 config 缺省兼容；
+  外部修改 config.toml 时 `language` 也走热更新。搜索索引中英文都可命中，结果行跟随当前语言。
+  除语言选项自身必须同时显示 English/中文外，`en` 页无中文；`zh` 页无整句英文
+  （SFTP/Sixel/Kitty/JSON/URL 等专有名词保留）。
   12 套内置主题 + `Auto`（跟随系统深/浅色，默认 Yaru Dark/Light）、字号、回滚行数、
   滚动条策略、可听/视觉铃、滚动策略、Backspace/Delete 编码；
   也支持把 iTerm2 / Windows Terminal / Alacritty / kitty / Xresources 主题直接放进 `themes/` 目录。
