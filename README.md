@@ -93,13 +93,15 @@ TERVO_DIST=/tmp/dist ./scripts/package.sh
 `target/release/tervo` 仍保留符号供 `perf`/flamegraph；`scripts/package.sh` 只
 strip 输出目录里的副本，`target/release` 原样保留。
 
+版本号、tag、CHANGELOG 与发布流程见 `docs/RELEASING.md`；变更记录见 `CHANGELOG.md`。
+
 ```bash
 ./scripts/package.sh                            # → dist/（默认 40 MiB 门禁）
 TERVO_DIST=/tmp/dist ./scripts/package.sh       # 自定义输出目录（相对仓库根）
 ./scripts/package.sh /tmp/dist                  # 同上，位置参数
 SKIP_BUILD=1 ./scripts/package.sh               # 复用已有 release 二进制
 SKIP_DEB=1 ./scripts/package.sh                 # 只出 tar.gz/二进制
-MAX_MB=42 ./scripts/package.sh                  # 自定义体积门禁
+MAX_MB=64 ./scripts/package.sh                  # 自定义体积门禁
 ALLOW_DIRTY=1 ./scripts/package.sh              # 允许未提交修改（产物标 dirty）
 
 PREFIX=/tmp/prefix ./scripts/install.sh         # 装到自定义 prefix（验证用）
