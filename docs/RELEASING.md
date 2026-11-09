@@ -122,7 +122,7 @@ git tag -s v0.2.0 -m "Tervo 0.2.0"
 
 ```text
 当前版本：0.2.0
-发布产物 commit：待本次 0.2.0 打包后回填
+发布产物 commit：4a8f5f28049d
 canonical tag：v0.2.0
 历史 tag：v0.1.0 / final-2026-11-09 / stable-*-2026-11-06（legacy，不再使用）
 下一个功能版本：0.3.0
