@@ -6,10 +6,10 @@
 ## 0. 版本信息（最终填写）
 
 ```text
-commit:    28521aa5a0a5
-release:   dist/tervo-stripped（40.4 MB，sha256 46812448…5fd71d1）
-tar.gz:    dist/tervo-0.1.0-linux-x86_64.tar.gz（sha256 bb4d91e8…27717fd0）
-deb:       dist/tervo_0.1.0-1_amd64.deb（sha256 b715762d…381e9478）
+commit:    3fafbc8a680b
+release:   dist/tervo-stripped（40.4 MB，sha256 f8f157d7…6eaf5150）
+tar.gz:    dist/tervo-0.1.0-linux-x86_64.tar.gz（sha256 4e21fb26…2e2a410ff）
+deb:       dist/tervo_0.1.0-1_amd64.deb（sha256 c884d571…adc82b87）
 built:     2026-11-06T19:26:31Z（SOURCE_DATE_EPOCH）
 测试:      app 369 passed / 1 ignored；workspace 全绿
 e2e:       15 个脚本全 PASS（SSH/SFTP、插件、设置、图片、键盘、事件、渲染、P0、URL/右键等）
@@ -75,6 +75,7 @@ e2e:       15 个脚本全 PASS（SSH/SFTP、插件、设置、图片、键盘�
 - [ ] 新建/编辑/复制/删除 Profile
 - [ ] 每 Profile 字体/颜色/命令/登录 shell/起始目录生效
 - [ ] 重启后恢复 Tab/分屏/cwd/滚动位置
+- [ ] 设置 default_profile_id 后首次启动直接打开该 Profile（SSH 默认 Profile 不再落本地 shell）
 - [ ] 关闭窗口确认行为符合配置
 
 ## 8. 必测：SSH/SFTP/Vault

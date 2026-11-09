@@ -1,6 +1,6 @@
 # Tervo 任务看板
 
-> 最后更新：2026-11-07 04:35  
+> 最后更新：2026-11-09 01:40  
 > 规则：每个任务开始/完成/阻塞都要更新本文件；记录 worktree、branch、commit、测试/截图、限制。  
 > 当前 master：`a82ac52`（Settings Tab 持久化）；当前 release：`target/release/tervo` 19:07。
 
@@ -120,6 +120,7 @@
 | 2026-11-06 23:50 | W-06 Wayland spike 报告合入（e8ef824）；W-02/W-04/W-07 继续 |
 | 2026-11-07 00:35 | W-02/W-04/W-07 合入；SSH/SFTP 19 截图 e2e PASS，plugin e2e PASS；soak 15m FAIL 内存，MEM-01 开跑 |
 | 2026-11-07 04:35 | 最终候选 8823311；15 个功能 e2e 全 PASS；30m soak 仍 +209.6MiB 内存未收敛；dist tar/deb 生成；复测清单完成 |
+| 2026-11-09 01:40 | 真实 SSH 172.27.133.14 验收：Tervo SSH Profile known_hosts/登录/远程命令 PASS；修首次启动不读 default_profile_id；最终包 3fafbc8 |
 | 2026-11-07 00:23 | soak 脚本交付；2m PASS，15m FAIL 内存增长（+16.7MiB/min）；内存专项开跑 |
 | 2026-11-06 23:55 | W-04 插件 V1 完成（feat/plugin-v1，未合 master）：常驻 process 生命周期/命令结果/状态栏/Theme Pack/权限声明；app 341 passed（基线 327）；Xvfb :142 e2e PASS（command_result/status/plugins 截图）；限制见 PLUGIN_API.md §11 |
 | 2026-11-06 21:35 | W-01 完成（feat/profile-session，未合 master）：每 Profile 外观 + session profile_id/可选启动自动恢复；app 295、workspace 489；Xvfb :136 e2e PASS；限制见 docs/self-iteration.md |
