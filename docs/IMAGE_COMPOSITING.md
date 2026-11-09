@@ -248,7 +248,7 @@ offset=0/3/6/9/12/15：图片 row 与文本同步移动；offset=18 滚出视口
 app 387 passed
 core Sixel 8 passed
 2m soak PASS
-15m soak 进行中
+15m soak PASS（RSS +70.1 MiB，R²=0.30，线程/FD 稳定）
 ```
 
 仍未完成：

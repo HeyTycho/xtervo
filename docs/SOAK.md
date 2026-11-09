@@ -248,3 +248,16 @@ keycap → 334（+2）、彩虹旗 → 344（+11）、随后整行 emoji.txt →
 - 残余 64 MiB 为一次性 scrollback 行/cell + Skia/llvmpipe 预热，不是线性泄漏。
 
 - 验收矩阵（22 Tab/4 pane，修复后）：2m +39.5MiB、15m +74.2MiB、30m +64.0MiB，均 PASS。
+
+## 2026-11-09 18:09 图片合成 v2 15m
+
+```text
+verdict : PASS
+actual  : 914s
+RSS     : 742.1 -> 812.2 MiB (+70.1 MiB, +3.11 MiB/min, R2=0.30)
+PSS     : 679.9 -> 749.6 MiB (peak 762.6)
+CPU     : avg 84.9% / max 107.7%
+threads : 166 -> 166
+fds     : 92 -> 92
+coverage: tabs=22 splits=3 settings=34/272 find=67 copy=132 resize=168/168
+```
