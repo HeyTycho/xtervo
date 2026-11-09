@@ -1,6 +1,6 @@
 # Tervo 任务看板
 
-> 最后更新：2026-11-09 12:45  
+> 最后更新：2026-11-09 14:10  
 > 规则：每个任务开始/完成/阻塞都要更新本文件；记录 worktree、branch、commit、测试/截图、限制。  
 > 当前 master：`a82ac52`（Settings Tab 持久化）；当前 release：`target/release/tervo` 19:07。
 
@@ -42,6 +42,7 @@
 | P1-08 | Codex P1：Vault Argon2 KDF 移出 UI 线程 | done | `.worktrees/ssh-sftp` / `feat/ssh-sftp` | 后台 `VaultTask` + `WakeSignal`：initialize/unlock/change_master 全部不占 UI 线程；busy 状态可重绘、串行防重入、线程异常恢复；worker 主密码/AEAD 明文/`Unlocked` Drop 尽力清零；app 351 tests；Xvfb :139 busy/完成截图；解锁/改密码期间 UI 不停顿 |
 | P1-09 | Codex P1：`main.rs` 拆分 + `with_app` 重入不丢操作 | partial | master | 技术债：main.rs 仍大；本轮未重构，避免影响稳定包；已记录 | 后续分段迁移 |
 | P1-10 | 右键菜单美化：字号加大、分类分组、图标/分隔线、窄窗不溢出 | done | `.worktrees/context-menu` / `feat/context-menu` | commit `bddf0ef`；合 master `3e5c270`；`.logs/context-menu/` | context-menu e2e PASS；term_menu PASS；字号/分组/窄窗/右下翻转截图 |
+| P1-11 | Tab 级 Pin + 拖拽 ghost/插入线/让位动画 | done | `.worktrees/tab-pin-drag` / `feat/tab-pin-drag` | commit `feat(tabs): pin + 拖拽 ghost/插入动画`（分支头；基于 master `562773e`）；`.logs/tab-pin-drag/e2e/shots/` | app 375 tests；Xvfb :158 `scripts/e2e_tab_pin_drag.sh` PASS：pin/unpin、重启恢复 pinned、ghost+2px 插入线+让位、跨组 blocked、Esc 取消；截图 12 张 |
 
 ## 4. 周末大块任务
 
@@ -110,6 +111,7 @@
 | 2026-11-06 19:55 | P0-05/06/07 done（474 tests，6 e2e，release 19:51）；P1-01/02/03/10 恢复；WM resize 首次偶发、重跑 PASS 记录 |
 | 2026-11-06 20:05 | P1-02 搜索 UX 合入（282 tests，search e2e PASS）；注意 e2e 必须重建 target/debug |
 | 2026-11-06 20:20 | P1-10 右键菜单合入（3e5c270）；context-menu + term_menu e2e PASS；开始 W-01 |
+| 2026-11-09 14:05 | P1-11 Tab Pin + 拖拽 ghost/插入线/让位动画 done（feat/tab-pin-drag，未合 master）；app 375 tests；Xvfb :158 e2e PASS；截图 `.logs/tab-pin-drag/e2e/shots/` |
 | 2026-11-06 21:00 | P1-01 键盘协议合入（1a55f09，514 tests）；P1-06 damage/P1-07 event-wake 开跑 |
 | 2026-11-06 21:40 | P1-07 事件唤醒完成并提交（16b5135，feat/event-wake，未合 master）：语义事件/插件/SFTP 结果即时唤醒，400ms 兜底保留；Xvfb :138 e2e PASS；待父任务合入 |
 | 2026-11-06 21:45 | P1-06 渲染 damage 恢复（feat/render-damage）：双缓冲行同步 + 真实 damage；单行/按键 rows=1、full_redraws 不增，release 45.6×/46.4×，full/滚动 1.00×；app 310 passed / workspace 527；Xvfb :137 5 张截图与 profile 断言 PASS；commit `8146aa7` |

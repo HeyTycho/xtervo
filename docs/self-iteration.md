@@ -2157,3 +2157,43 @@ cargo bench -p tervo-core --bench pty_throughput
   搜索、主题下拉、Profiles 面板/表单、小窗口 760×520、重启持久化、legacy modal。
 - **限制**：权限/known_hosts/Profile 表单校验等少数 Rust 动态错误仍为中文；插件名/描述是第三方
   数据不翻译；语言选项自身必须同时出现 English/中文，因此 en 页会出现“中文”二字。
+
+### 2026-11-09 · Tab Pin + 拖拽 ghost/插入线/让位动画（feat/tab-pin-drag）
+
+- **问题**：Slint 的 `pinned` 只是窗口 always-on-top，不是 Tab 级固定；Tab 右键菜单没有
+  Pin；Tab 拖动只有松手后的下标排序，没有拖拽态、落点提示或让位动画，跨 pinned 组
+  也没有约束。
+- **做法**（additive，不改旧菜单 ID/快照版本）：
+  - `workspace::Tab` 增加 `pinned: bool`；`Workspace` 维护 “pinned 永远是前缀” 不变量：
+    `set_tab_pinned` Pin 时插到最后一个 pinned 后、Unpin 时插到第一个 unpinned 前；
+    `move_tab` 只允许同组移动；`insert_tab` 按组插入；`normalize_pinned` 兜底坏快照并让
+    active 跟着 Tab 走。复制 pinned Tab 保留 pinned；关闭/重命名/关闭左右/关闭其它不受影响。
+  - `TabView` 增加 `pinned`，Tab 左侧画 10px 图钉角标（Path 绘制，不依赖 emoji 字体）；
+    per-tab 菜单新增 action 6：label 按当前状态显示 `Pin Tab` / `Unpin Tab`；旧 0..5 不变。
+  - `session::TabSnapshot` 增加 `#[serde(default, skip_serializing_if)] pinned`：旧快照读为
+    false、false 不写出；恢复时 `insert_tab` 保持 pinned 前缀，恢复日志带 pinned/index。
+  - 拖拽：`drag-tab/drag-x` 之外增加 `drag-active/drag-win-x/y/drag-w/drag-title`；移动超过
+    6px 才进入拖拽态；根级半透明 ghost 跟随鼠标（不挂 TouchArea）；槽位用 `insert-gap`
+    动画加 8px、内层 Tab `animate x` 让位；Rust `tab-drag-move` 只写
+    `drop-index/drop-gap/drop-valid` 三个标量，不重建 Tab/TouchArea 模型。
+  - 落点：`drag_target` 按内容坐标等宽槽位换算；`drag_target_in_group` 校验 pinned 组，
+    `drag_gap_index` 把最终下标换成视觉插入边界；非法/原地返回 None，UI 不亮线不移动。
+  - 取消：拖拽中 Esc 或 winit 窗口失焦调用 `cancel-drag()`，清 ghost/插入线/drop 属性并让
+    `animate` 复位；松手只按最终 target 排序。
+- **测试**：`cargo test -p tervo-app --bin tervo` → **375 passed, 0 failed, 1 ignored**
+  （基线 369；新增 6 例：pin/unpin 排序、active 跟踪、普通排序不跨组、按组插入+normalize、
+  drag_target 分组、drag_gap_index）。`cargo check -p tervo-app --bin tervo` PASS。
+- **Xvfb :158 e2e**：新增 `scripts/e2e_tab_pin_drag.sh`，PASS，截图
+  `.logs/tab-pin-drag/e2e/shots/`：
+  - `02-pin-t2.png`/`03-pin-t3.png`/`04-unpin-t2.png`：Pin 追加、Unpin 回第一个 unpinned、
+    图钉角标与 pinned 分组分隔线；
+  - `05-before-restart.png` → `06-restored.png`：session.json 断言
+    `[('T3', True), ('T4', True), ('T2', False), ('T1', False)]`，重启日志
+    `restore tab "T3" pinned=true index=0`；
+  - `07-drag-ghost-line.png`：浮动 ghost + 2px accent 插入线 + 让位间隙（像素断言
+    diff=1365、accent 30→58）；`08-drag-reordered.png`：松手后 `[ws] reorder tab 3 → 2`；
+  - `09/10-*-blocked.png`：pinned↔unpinned 跨组不亮线、不排序；
+  - `11-esc-cancelled.png` + `12-final.png`：Esc 取消，最终快照顺序不变。
+- **限制**：不提供 Pin 快捷键/命令面板/多选 Pin，不做 pinned 区折叠或独立滚动；拖拽 ghost
+  是简化 Tab 副本（不是完整控件）；仍不能拖出窗口/跨窗口移动；拖拽跨组是直接非法，不会
+  自动改变 pinned 状态；快照只保存 pinned 布尔，不保存“pinned 区宽度”等布局参数。

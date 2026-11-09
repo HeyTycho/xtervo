@@ -36,7 +36,15 @@ pub struct TabSnapshot {
     pub title: String,
     /// 聚焦 pane 在叶子**前序**中的下标（与 [`Node::panes`] 同序）。
     pub focused: usize,
+    /// Tab 是否 Pin 在标签栏左侧固定区。additive：旧快照没有该键时视为 false，
+    /// false 也不写出，保持旧快照体积/格式。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub pinned: bool,
     pub tree: Tree,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -297,9 +305,12 @@ mod tests {
         let snap: Snapshot = serde_json::from_str(json).unwrap();
         assert_eq!(snap.tabs[0].tree.leaf_profiles(), vec![None]);
         assert_eq!(snap.tabs[0].tree.leaf_cwds(), vec![Some("/tmp".to_string())]);
-        // None 不写出键：保持快照体积/旧格式兼容。
+        // 旧快照没有 pinned：additive default -> false。
+        assert!(!snap.tabs[0].pinned);
+        // None/false 不写出键：保持快照体积/旧格式兼容。
         let text = serde_json::to_string(&snap).unwrap();
         assert!(!text.contains("profile_id"), "{text}");
+        assert!(!text.contains("pinned"), "{text}");
     }
 
     #[test]
@@ -333,17 +344,26 @@ mod tests {
                 TabSnapshot {
                     title: "Terminal 1".into(),
                     focused: 1,
+                    pinned: false,
                     tree: Tree::from_node(
                         &Node::leaf(1).split(1, Dir::Col, 2, 0.5),
                         &cwds(&[(1, Some("/home/user"))]),
                     ),
                 },
-                TabSnapshot { title: "Terminal 2".into(), focused: 0, tree: Tree::Leaf { cwd: None, profile_id: None } },
+                TabSnapshot {
+                    title: "Terminal 2".into(),
+                    focused: 0,
+                    pinned: true,
+                    tree: Tree::Leaf { cwd: None, profile_id: None },
+                },
             ],
         };
         let json = serde_json::to_vec(&snap).unwrap();
+        let text = String::from_utf8(json.clone()).unwrap();
+        assert!(text.contains("\"pinned\":true"), "{text}");
         let back: Snapshot = serde_json::from_slice(&json).unwrap();
         assert_eq!(back, snap);
+        assert!(back.tabs[1].pinned);
 
         let dir = std::env::temp_dir().join(format!("rt-session-{}", std::process::id()));
         let path = dir.join("session.json");

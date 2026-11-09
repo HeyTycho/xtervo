@@ -130,6 +130,8 @@ export struct TabView {
     attention: bool,
     /// 刚完成（进度从有到清除）的完成标记
     completed: bool,
+    /// Pin 在左侧固定区（Tab 级，不是窗口置顶）。
+    pinned: bool,
 }
 
 /// Profiles 面板的一行：过滤/星标都在 Rust 侧算好，UI 只负责画。
@@ -1459,6 +1461,21 @@ component FindToggle inherits Rectangle {
     }
 }
 
+/// Tab 级 Pin 角标：图钉轮廓（不依赖 emoji 字体）。
+component PinIcon inherits Rectangle {
+    in property <color> tint: Palette.colors.muted;
+    width: 10px;
+    height: 10px;
+    background: transparent;
+
+    Path {
+        width: 100%;
+        height: 100%;
+        commands: "M 2.5 1 L 7.5 1 L 6.5 3.8 L 8.5 6 L 8.5 7 L 5.7 7 L 5.7 9.5 L 4.3 9.5 L 4.3 7 L 1.5 7 L 1.5 6 L 3.5 3.8 Z";
+        fill: root.tint;
+    }
+}
+
 export component MainWindow inherits Window {
     /// 当前 UI 语言："en" | "zh"。Rust 在启动/切换/热更新时写入；
     /// Settings 页与右键菜单的静态文案都绑定到 `Lang.t(...)`。
@@ -1794,15 +1811,35 @@ export component MainWindow inherits Window {
     callback palette-accept();
     callback palette-cancel();
     callback palette-pick(int);
-    // Tab 拖拽排序：按下记起点，抬起按 x 落位
+    // Tab 拖拽排序：
+    // - 按下只记起点；移动超过阈值才进入 drag-active（显示 ghost + 插入线）
+    // - 每帧只更新下面这些轻量属性；落点由 Rust 侧算好写 drop-index/drop-gap
     property <int> drag-tab: -1;
     property <length> drag-x: 0px;
     property <length> drag-start: 0px;
+    property <length> drag-start-y: 0px;
+    property <bool> drag-active: false;
+    property <length> drag-win-x: 0px;
+    property <length> drag-win-y: 0px;
+    property <length> drag-w: 0px;
+    property <length> drag-strip-w: 0px;
+    property <string> drag-title: "";
+    property <bool> drag-pinned: false;
+    // 最终落点下标（-1 = 不合法/原地）与视觉插入边界（0..=n，-1 = 不显示）。
+    in-out property <int> drop-index: -1;
+    in-out property <int> drop-gap: -1;
+    in-out property <bool> drop-valid: false;
+    in property <int> pinned-count: 0;
     callback tab-reorder(int, length, length);
+    callback tab-drag-move(int, length, length);
+    callback tab-drag-cancelled();
     // 单个 Tab 的右键菜单（窗口坐标）
     in-out property <bool> tabctx-open: false;
     in-out property <length> tabctx-x: 0px;
     in-out property <int> tabctx-index: -1;
+    property <bool> tabctx-pinned: root.tabctx-index >= 0 && root.tabctx-index < root.tabs.length
+        ? root.tabs[root.tabctx-index].pinned
+        : false;
     callback tab-context(int, length);
     callback tab-menu-action(int, int);
     /// 绑定到 Window 内置的 always-on-top
@@ -1894,6 +1931,18 @@ export component MainWindow inherits Window {
     /// 录制结束/关闭设置后把键盘焦点还给终端 IME 宿主，否则按键会丢失。
     public function focus-terminal() {
         ime.focus();
+    }
+
+    /// Esc / 窗口失焦：取消拖拽，隐藏 ghost/插入线并让让位动画复位。
+    public function cancel-drag() {
+        if (root.drag-tab >= 0 || root.drag-active) {
+            root.drag-tab = -1;
+            root.drag-active = false;
+            root.drop-index = -1;
+            root.drop-gap = -1;
+            root.drop-valid = false;
+            root.tab-drag-cancelled();
+        }
     }
 
     /// 切到终端：设置 Tab 留在标签栏，只隐藏内容，不销毁状态。
@@ -2146,233 +2195,324 @@ export component MainWindow inherits Window {
                 alignment: start;
 
                 for tab[i] in root.tabs : Rectangle {
-                    property <bool> is-active: tab.active
-                        && !(root.settings-open && !root.settings-legacy);
-                    property <bool> show-status: tab.attention || tab.completed
-                        || tab.progress-state == 2 || tab.progress-label != "";
-                    // 窄 Tab 不预留整块状态区：状态压成右侧小点，标题优先占满。
-                    property <bool> show-status-text: show-status && parent.width >= 64px;
-                    property <bool> show-close: tab-hit.has-hover || parent.width >= 84px;
+                    // 外层槽位：拖拽落点在本槽时加 8px 间隙，后面的 Tab 由 layout
+                    // 平滑让位；内层 tab-box 用 animate x 跟着间隙移动。
+                    property <length> insert-gap: (root.drag-active && root.drop-valid
+                        && root.drop-gap == i) ? 8px : 0px;
+                    animate insert-gap { duration: 120ms; easing: ease-out; }
+                    width: tab-box.width + insert-gap;
                     height: 22px;
-                    // 自动收缩：少量 Tab 按标题宽度，多 Tab 均分可用宽度；
-                    // 52px 下限后横向滚动（活动 Tab 会被滚进视口）。
-                    width: Math.max(52px, Math.min(root.tab-width-cap, tab-area.preferred-width + 36px));
-                    animate width { duration: 140ms; easing: ease-out; }
-                    border-radius: 6px;
-                    background: is-active
-                        ? Palette.colors.bg
-                        : (tab-hit.has-hover ? Palette.colors.raise : transparent);
-                    animate background, border-color { duration: 140ms; easing: ease-out; }
-                    border-width: 1px;
-                    border-color: is-active ? Palette.colors.border : transparent;
+                    background: transparent;
 
-                    changed is-active => {
-                        if (is-active) {
-                            root.note-active-tab(self.x, self.width, i == root.tabs.length - 1);
-                        }
-                    }
-                    changed x => {
-                        if (is-active) {
-                            root.note-active-tab(self.x, self.width, i == root.tabs.length - 1);
-                        }
-                    }
-                    changed width => {
-                        if (is-active) {
-                            root.note-active-tab(self.x, self.width, i == root.tabs.length - 1);
-                        }
-                    }
-
-                    // 激活态底部的强调线（Yaru 橙 / 主题 accent）
+                    // 插入线：画在 8px 间隙里；2px accent，只在合法落点显示。
                     Rectangle {
-                        visible: is-active;
-                        x: 8px;
-                        y: parent.height - 2px;
-                        width: parent.width - 16px;
-                        height: 2px;
+                        visible: root.drag-active && root.drop-valid && root.drop-gap == i;
+                        x: 3px;
+                        y: 3px;
+                        width: 2px;
+                        height: parent.height - 6px;
                         border-radius: 1px;
                         background: Palette.colors.accent;
                     }
 
-                    // 进度条：盖在强调线上；错误红、暂停灰、进行中/不确定用 accent。
-                    Rectangle {
-                        visible: tab.progress-state == 1 || tab.progress-state == 2
-                            || tab.progress-state == 3 || tab.progress-state == 4;
-                        x: 8px;
-                        y: parent.height - 2px;
-                        width: parent.width - 16px;
-                        height: 2px;
-                        border-radius: 1px;
-                        background: transparent;
+                    // pinned 区与 unpinned 区之间的细分隔线。
+                    if tab.pinned && i == root.pinned-count - 1
+                        && root.pinned-count > 0 && root.pinned-count < root.tabs.length : Rectangle {
+                        x: parent.width + 2px;
+                        y: 5px;
+                        width: 1px;
+                        height: 12px;
+                        background: Palette.colors.border;
+                    }
 
+                    tab-box := Rectangle {
+                        x: parent.insert-gap;
+                        height: parent.height;
+                        // 自动收缩：少量 Tab 按标题宽度，多 Tab 均分可用宽度；
+                        // 52px 下限后横向滚动（活动 Tab 会被滚进视口）。
+                        width: Math.max(52px, Math.min(root.tab-width-cap, tab-area.preferred-width + 36px));
+                        animate width { duration: 140ms; easing: ease-out; }
+                        border-radius: 6px;
+                        background: is-active
+                            ? Palette.colors.bg
+                            : (tab-hit.has-hover ? Palette.colors.raise : transparent);
+                        animate background, border-color { duration: 140ms; easing: ease-out; }
+                        border-width: 1px;
+                        border-color: is-active ? Palette.colors.border : transparent;
+
+                        property <bool> is-active: tab.active
+                            && !(root.settings-open && !root.settings-legacy);
+                        property <bool> show-status: tab.attention || tab.completed
+                            || tab.progress-state == 2 || tab.progress-label != "";
+                        // 窄 Tab 不预留整块状态区：状态压成右侧小点，标题优先占满。
+                        property <bool> show-status-text: show-status && parent.width >= 64px;
+                        property <bool> show-close: tab-hit.has-hover || parent.width >= 84px;
+
+                        changed is-active => {
+                            if (is-active) {
+                                root.note-active-tab(parent.x + self.x, self.width, i == root.tabs.length - 1);
+                            }
+                        }
+                        changed x => {
+                            if (is-active) {
+                                root.note-active-tab(parent.x + self.x, self.width, i == root.tabs.length - 1);
+                            }
+                        }
+                        changed width => {
+                            if (is-active) {
+                                root.note-active-tab(parent.x + self.x, self.width, i == root.tabs.length - 1);
+                            }
+                        }
+
+                        // 激活态底部的强调线（Yaru 橙 / 主题 accent）
                         Rectangle {
-                            width: parent.width * tab.progress-ratio;
-                            height: 100%;
+                            visible: is-active;
+                            x: 8px;
+                            y: parent.height - 2px;
+                            width: parent.width - 16px;
+                            height: 2px;
                             border-radius: 1px;
-                            background: tab.progress-state == 2
-                                ? Palette.colors.danger
-                                : (tab.progress-state == 4 ? Palette.colors.muted : Palette.colors.accent);
+                            background: Palette.colors.accent;
                         }
-                    }
 
-                    // 未读通知点（Tab 非活动时由 Rust 置位，切到该 Tab 清除）
-                    Text {
-                        visible: tab.attention && show-status-text;
-                        x: parent.width - 44px;
-                        y: 0px;
-                        width: 18px;
-                        height: 22px;
-                        text: "●";
-                        color: Palette.colors.accent;
-                        font-size: 9px;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
+                        // 进度条：盖在强调线上；错误红、暂停灰、进行中/不确定用 accent。
+                        Rectangle {
+                            visible: tab.progress-state == 1 || tab.progress-state == 2
+                                || tab.progress-state == 3 || tab.progress-state == 4;
+                            x: 8px;
+                            y: parent.height - 2px;
+                            width: parent.width - 16px;
+                            height: 2px;
+                            border-radius: 1px;
+                            background: transparent;
 
-                    // 错误标记
-                    Text {
-                        visible: !tab.attention && tab.progress-state == 2 && show-status-text;
-                        x: parent.width - 44px;
-                        y: 0px;
-                        width: 18px;
-                        height: 22px;
-                        text: "!";
-                        color: Palette.colors.danger;
-                        font-size: 12px;
-                        font-weight: 700;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
-
-                    // 完成标记（进度从有到清除；切 Tab 时清除）
-                    Text {
-                        visible: !tab.attention && tab.progress-state == 0 && tab.completed
-                            && show-status-text;
-                        x: parent.width - 44px;
-                        y: 0px;
-                        width: 18px;
-                        height: 22px;
-                        text: "✓";
-                        color: Palette.colors.accent;
-                        font-size: 11px;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
-
-                    // 百分比文本（有合法 percent 时）
-                    Text {
-                        visible: !tab.attention && tab.progress-state != 2
-                            && !tab.completed && tab.progress-label != ""
-                            && show-status-text;
-                        x: parent.width - 48px;
-                        y: 0px;
-                        width: 24px;
-                        height: 22px;
-                        text: tab.progress-label;
-                        color: Palette.colors.muted;
-                        font-size: 9px;
-                        horizontal-alignment: right;
-                        vertical-alignment: center;
-                    }
-
-                    // 窄 Tab 的状态压缩为 4px 小点，不挤占标题宽度。
-                    Rectangle {
-                        visible: show-status && !show-status-text;
-                        x: parent.width - 7px;
-                        y: 4px;
-                        width: 4px;
-                        height: 4px;
-                        border-radius: 2px;
-                        background: tab.attention
-                            ? Palette.colors.accent
-                            : (tab.progress-state == 2
-                                ? Palette.colors.danger
-                                : (tab.completed ? Palette.colors.accent : Palette.colors.muted));
-                    }
-
-                    tab-area := Text {
-                        x: parent.width < 60px ? 5px : 8px;
-                        // 窄 Tab 的 close 只在 hover 时覆盖显示，不因 hover 重排标题。
-                        width: parent.width - self.x
-                            - (show-close && parent.width >= 84px ? 26px : 6px)
-                            - (show-status-text ? 22px : 0px);
-                        text: tab.title;
-                        color: is-active ? Palette.colors.text : Palette.colors.muted;
-                        font-size: root.tab-width-cap < 60px ? 10px : 12px;
-                        font-weight: is-active ? 600 : 400;
-                        overflow: elide;
-                        vertical-alignment: center;
-                        animate color { duration: 140ms; }
-                    }
-
-                    tab-hit := TouchArea {
-                        clicked => {
-                            root.tabctx-open = false;
-                            // 切到终端时设置只 suspend，Settings Tab 保留在标签栏。
-                            if (root.settings-open) {
-                                root.suspend-settings();
+                            Rectangle {
+                                width: parent.width * tab.progress-ratio;
+                                height: 100%;
+                                border-radius: 1px;
+                                background: tab.progress-state == 2
+                                    ? Palette.colors.danger
+                                    : (tab.progress-state == 4 ? Palette.colors.muted : Palette.colors.accent);
                             }
-                            root.tab-clicked(i);
                         }
-                        double-clicked => {
-                            root.tab-rename(i);
+
+                        // 未读通知点（Tab 非活动时由 Rust 置位，切到该 Tab 清除）
+                        Text {
+                            visible: tab.attention && show-status-text;
+                            x: parent.width - 44px;
+                            y: 0px;
+                            width: 18px;
+                            height: 22px;
+                            text: "●";
+                            color: Palette.colors.accent;
+                            font-size: 9px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
                         }
-                        pointer-event(event) => {
-                            // 左键拖动：记起点，抬起时把落点交给 Rust 算
-                            if (event.kind == PointerEventKind.down && event.button == PointerEventButton.left) {
-                                root.drag-tab = i;
-                                root.drag-x = self.mouse-x + parent.x;
-                                root.drag-start = root.drag-x;
-                                return EventResult.reject;   // 不抢按下，否则 clicked/双击会被吞
+
+                        // 错误标记
+                        Text {
+                            visible: !tab.attention && tab.progress-state == 2 && show-status-text;
+                            x: parent.width - 44px;
+                            y: 0px;
+                            width: 18px;
+                            height: 22px;
+                            text: "!";
+                            color: Palette.colors.danger;
+                            font-size: 12px;
+                            font-weight: 700;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+
+                        // 完成标记（进度从有到清除；切 Tab 时清除）
+                        Text {
+                            visible: !tab.attention && tab.progress-state == 0 && tab.completed
+                                && show-status-text;
+                            x: parent.width - 44px;
+                            y: 0px;
+                            width: 18px;
+                            height: 22px;
+                            text: "✓";
+                            color: Palette.colors.accent;
+                            font-size: 11px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+
+                        // 百分比文本（有合法 percent 时）
+                        Text {
+                            visible: !tab.attention && tab.progress-state != 2
+                                && !tab.completed && tab.progress-label != ""
+                                && show-status-text;
+                            x: parent.width - 48px;
+                            y: 0px;
+                            width: 24px;
+                            height: 22px;
+                            text: tab.progress-label;
+                            color: Palette.colors.muted;
+                            font-size: 9px;
+                            horizontal-alignment: right;
+                            vertical-alignment: center;
+                        }
+
+                        // 窄 Tab 的状态压缩为 4px 小点，不挤占标题宽度。
+                        Rectangle {
+                            visible: show-status && !show-status-text;
+                            x: parent.width - 7px;
+                            y: 4px;
+                            width: 4px;
+                            height: 4px;
+                            border-radius: 2px;
+                            background: tab.attention
+                                ? Palette.colors.accent
+                                : (tab.progress-state == 2
+                                    ? Palette.colors.danger
+                                    : (tab.completed ? Palette.colors.accent : Palette.colors.muted));
+                        }
+
+                        // Tab 级 Pin 角标：pinned Tab 才有；标题相应右移。
+                        if tab.pinned : PinIcon {
+                            x: 6px;
+                            y: 6px;
+                            tint: is-active ? Palette.colors.accent : Palette.colors.muted;
+                        }
+
+                        tab-area := Text {
+                            x: parent.width < 60px
+                                ? (tab.pinned ? 17px : 5px)
+                                : (tab.pinned ? 20px : 8px);
+                            // 窄 Tab 的 close 只在 hover 时覆盖显示，不因 hover 重排标题。
+                            width: parent.width - self.x
+                                - (show-close && parent.width >= 84px ? 26px : 6px)
+                                - (show-status-text ? 22px : 0px);
+                            text: tab.title;
+                            color: is-active ? Palette.colors.text : Palette.colors.muted;
+                            font-size: root.tab-width-cap < 60px ? 10px : 12px;
+                            font-weight: is-active ? 600 : 400;
+                            overflow: elide;
+                            vertical-alignment: center;
+                            animate color { duration: 140ms; }
+                        }
+
+                        // 拖到最右端（插入边界 == Tab 数）时的尾部插入线。
+                        if i == root.tabs.length - 1 : Rectangle {
+                            visible: root.drag-active && root.drop-valid
+                                && root.drop-gap == root.tabs.length;
+                            x: parent.width + 1px;
+                            y: 3px;
+                            width: 2px;
+                            height: parent.height - 6px;
+                            border-radius: 1px;
+                            background: Palette.colors.accent;
+                        }
+
+                        tab-hit := TouchArea {
+                            clicked => {
+                                root.tabctx-open = false;
+                                // 切到终端时设置只 suspend，Settings Tab 保留在标签栏。
+                                if (root.settings-open) {
+                                    root.suspend-settings();
+                                }
+                                root.tab-clicked(i);
                             }
-                            if (event.kind == PointerEventKind.move && root.drag-tab == i) {
-                                root.drag-x = self.mouse-x + parent.x;
-                                return EventResult.accept;
+                            double-clicked => {
+                                root.tab-rename(i);
                             }
-                            if (event.kind == PointerEventKind.up && root.drag-tab == i) {
-                                root.drag-tab = -1;
-                                // 只有真的拖动过才接管；否则放行给 clicked / double-clicked
-                                if (Math.abs(root.drag-x - root.drag-start) > 6px) {
-                                    root.tab-reorder(i, root.drag-x, tab-strip.preferred-width);
+                            pointer-event(event) => {
+                                // 右键在按下时直接开菜单（与终端 pane 一致）：
+                                // Flickable 在 headless/WM 下可能吞掉 right-up，按下处理最稳。
+                                if (event.kind == PointerEventKind.down
+                                    && event.button == PointerEventButton.right) {
+                                    root.tab-context(i, self.absolute-position.x + self.mouse-x);
                                     return EventResult.accept;
                                 }
-                                return EventResult.reject;
+                                // 左键拖动：按下只记起点；超过阈值才进入拖拽态。
+                                // 坐标用 absolute-position 换算，兼容 Flickable 横向滚动。
+                                if (event.kind == PointerEventKind.down && event.button == PointerEventButton.left) {
+                                    root.drag-tab = i;
+                                    root.drag-win-x = self.absolute-position.x + self.mouse-x;
+                                    root.drag-win-y = self.absolute-position.y + self.mouse-y;
+                                    root.drag-x = root.drag-win-x - tab-flick.absolute-position.x
+                                        - tab-flick.content-x;
+                                    root.drag-start = root.drag-x;
+                                    root.drag-start-y = root.drag-win-y;
+                                    root.drag-w = tab-box.width;
+                                    // 用实际 Tab 宽 + spacing 估槽宽：content-width 在标题动画后可能短暂偏大。
+                                    root.drag-strip-w = (tab-box.width + 4px) * root.tabs.length;
+                                    root.drag-title = tab.title;
+                                    root.drag-pinned = tab.pinned;
+                                    root.drag-active = false;
+                                    root.drop-index = -1;
+                                    root.drop-gap = -1;
+                                    root.drop-valid = false;
+                                    return EventResult.reject;   // 不抢按下，否则 clicked/双击会被吞
+                                }
+                                if (event.kind == PointerEventKind.move && root.drag-tab == i) {
+                                    root.drag-win-x = self.absolute-position.x + self.mouse-x;
+                                    root.drag-win-y = self.absolute-position.y + self.mouse-y;
+                                    root.drag-x = root.drag-win-x - tab-flick.absolute-position.x
+                                        - tab-flick.content-x;
+                                    if (!root.drag-active
+                                        && (Math.abs(root.drag-x - root.drag-start) > 6px
+                                            || Math.abs(root.drag-win-y - root.drag-start-y) > 6px)) {
+                                        root.drag-active = true;
+                                    }
+                                    if (root.drag-active) {
+                                        // Rust 只算落点并写 3 个标量属性，不重建 Tab 模型。
+                                        root.tab-drag-move(i, root.drag-x, root.drag-strip-w);
+                                        return EventResult.accept;
+                                    }
+                                    return EventResult.accept;
+                                }
+                                if (event.kind == PointerEventKind.up && root.drag-tab == i) {
+                                    let was-drag = root.drag-active;
+                                    let final-x = root.drag-x;
+                                    let moved = Math.abs(root.drag-x - root.drag-start) > 6px;
+                                    root.drag-tab = -1;
+                                    root.drag-active = false;
+                                    root.drop-index = -1;
+                                    root.drop-gap = -1;
+                                    root.drop-valid = false;
+                                    // 只有真的拖动过才接管；否则放行给 clicked / double-clicked
+                                    if (was-drag || moved) {
+                                        root.tab-reorder(i, final-x, root.drag-strip-w);
+                                        return EventResult.accept;
+                                    }
+                                    return EventResult.reject;
+                                }
+                                EventResult.reject
                             }
-                            if (event.button == PointerEventButton.right && event.kind == PointerEventKind.up) {
-                                // 菜单锚在 Tab 上沿：窗口 x ≈ tabbar 左内边距 + tab 偏移
-                                root.tab-context(i, 32px + parent.x);
-                                return EventResult.accept;
-                            }
-                            EventResult.reject
                         }
-                    }
 
-                    close-hit := TouchArea {
-                        visible: show-close;
-                        x: parent.width - 22px;
-                        y: 1px;
-                        width: 20px;
-                        height: 20px;
-                        clicked => { root.tab-closed(i); }
-
-                        Rectangle {
-                            x: 1px;
+                        close-hit := TouchArea {
+                            visible: show-close;
+                            x: parent.width - 22px;
                             y: 1px;
-                            width: 18px;
-                            height: 18px;
-                            border-radius: 9px;
-                            background: close-hit.has-hover ? Palette.colors.hover : transparent;
-                            animate background { duration: 120ms; }
-                        }
+                            width: 20px;
+                            height: 20px;
+                            clicked => { root.tab-closed(i); }
 
-                        Text {
-                            text: "×";
-                            color: close-hit.has-hover ? Palette.colors.danger : Palette.colors.muted;
-                            font-size: 14px;
-                            vertical-alignment: center;
-                            horizontal-alignment: center;
-                            width: 100%;
-                            height: 100%;
-                            animate color { duration: 120ms; }
+                            Rectangle {
+                                x: 1px;
+                                y: 1px;
+                                width: 18px;
+                                height: 18px;
+                                border-radius: 9px;
+                                background: close-hit.has-hover ? Palette.colors.hover : transparent;
+                                animate background { duration: 120ms; }
+                            }
+
+                            Text {
+                                text: "×";
+                                color: close-hit.has-hover ? Palette.colors.danger : Palette.colors.muted;
+                                font-size: 14px;
+                                vertical-alignment: center;
+                                horizontal-alignment: center;
+                                width: 100%;
+                                height: 100%;
+                                animate color { duration: 120ms; }
+                            }
                         }
                     }
                 }
@@ -2715,6 +2855,10 @@ export component MainWindow inherits Window {
                         //（这正是之前“回车没用 / 键盘像失灵”的根源）。
                         if (self.preedit-text != "") {
                             return EventResult.reject;
+                        }
+                        if (event.text == "\u{1b}" && (root.drag-tab >= 0 || root.drag-active)) {
+                            root.cancel-drag();
+                            return EventResult.accept;
                         }
                         if (event.text == "\u{1b}" && (root.menu-open || root.tabmenu-open || root.tabctx-open || root.profilemenu-open)) {
                             root.menu-open = false;
@@ -3424,10 +3568,10 @@ export component MainWindow inherits Window {
 
     if root.tabctx-open : Rectangle {
         x: Math.max(0px, Math.min(root.tabctx-x, root.width - 180px));
-        // 菜单 126 高：TabBar 在上时贴其下沿，在下时贴其上沿
-        y: root.tabbar-bottom ? root.height - root.tabbar-height - 174px : root.tabbar-height;
+        // 7 行 × 28px + 6×2px spacing + 上下 padding 8 = 216px。
+        y: root.tabbar-bottom ? root.height - root.tabbar-height - 216px : root.tabbar-height;
         width: 190px;
-        height: 174px;
+        height: 216px;
         background: Palette.colors.raise;
         border-radius: 8px;
         border-width: 1px;
@@ -3463,6 +3607,11 @@ export component MainWindow inherits Window {
             MenuRow {
                 label: Lang.t("Rename", "重命名");
                 picked => { root.tabctx-open = false; root.tab-menu-action(root.tabctx-index, 3); }
+            }
+            // action 6：additive，label 按当前 Tab 的 pinned 状态切换。
+            MenuRow {
+                label: root.tabctx-pinned ? Lang.t("Unpin Tab", "取消固定") : Lang.t("Pin Tab", "固定标签页");
+                picked => { root.tabctx-open = false; root.tab-menu-action(root.tabctx-index, 6); }
             }
         }
     }
@@ -7351,6 +7500,42 @@ export component MainWindow inherits Window {
             text: root.link-status;
             color: Palette.colors.text;
             font-size: 12px;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+
+    // ---------------- Tab 拖拽 ghost ----------------
+    // 半透明 Tab 副本跟随鼠标；只是普通 Rectangle 覆盖层，不挂 TouchArea，
+    // 不抢指针事件，也不改动 Tab 模型/布局。
+    if root.drag-active : Rectangle {
+        width: Math.max(52px, root.drag-w);
+        height: 22px;
+        x: Math.max(4px, Math.min(root.drag-win-x - self.width / 2, root.width - self.width - 4px));
+        y: Math.max(4px, Math.min(root.drag-win-y + 10px, root.height - self.height - 4px));
+        opacity: 0.88;
+        border-radius: 6px;
+        border-width: 1px;
+        border-color: Palette.colors.accent;
+        background: Palette.colors.raise;
+        drop-shadow-blur: 12px;
+        drop-shadow-offset-y: 4px;
+        drop-shadow-color: #00000088;
+
+        if root.drag-pinned : PinIcon {
+            x: 6px;
+            y: 6px;
+            tint: Palette.colors.accent;
+        }
+
+        Text {
+            x: root.drag-pinned ? 20px : 8px;
+            width: parent.width - self.x - 8px;
+            height: parent.height;
+            text: root.drag-title;
+            color: Palette.colors.text;
+            font-size: 12px;
+            font-weight: 600;
             vertical-alignment: center;
             overflow: elide;
         }
