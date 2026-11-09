@@ -136,6 +136,9 @@ struct PaneRuntime {
     inline_cache: HashMap<u64, slint::Image>,
     /// 上一次下发的图片布局签名；相同则跳过模型重建。
     inline_sig: Vec<(u64, i32, u16, u32, u32)>,
+    /// 图片 overlay 依赖的 cell/grid 几何。字体/resize/分屏变化时图片的
+    /// x/y/scale 必须重算，不能只比较图片 id/row/col。
+    inline_geometry: (usize, usize, usize, usize),
     /// overlay 在 pane 内的 x/y/w/h（像素）。
     cursor_rect: (f32, f32, f32, f32),
     /// 当前帧光标是否显示（不含闪烁相位；phase 由 AppState 统一控制）。
@@ -2302,6 +2305,7 @@ fn create_pane(
         inline_model: Rc::new(VecModel::from(Vec::<PaneImage>::new())),
         inline_cache: HashMap::new(),
         inline_sig: Vec::new(),
+        inline_geometry: (fonts.cell_w, fonts.cell_h, cols, rows),
         grid: (cols, rows),
         cursor: (0, 0),
         focus_sent: None,
@@ -5877,10 +5881,17 @@ fn sync_inline_images(rt: &mut PaneRuntime, frame: &Frame) {
         .iter()
         .map(|img| (img.id, img.row, img.col, img.width, img.height))
         .collect();
-    if sig == rt.inline_sig {
+    let geometry = (
+        rt.renderer.cell_w.max(1),
+        rt.renderer.cell_h.max(1),
+        rt.grid.0,
+        rt.grid.1,
+    );
+    if sig == rt.inline_sig && geometry == rt.inline_geometry {
         return;
     }
     rt.inline_sig = sig;
+    rt.inline_geometry = geometry;
     if std::env::var_os("TERVO_SIXEL_DEBUG").is_some() {
         let pos = rt.handle.scroll_position();
         eprintln!(
