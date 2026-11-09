@@ -1,6 +1,6 @@
 # Tervo 任务看板
 
-> 最后更新：2026-11-09 02:00  
+> 最后更新：2026-11-09 12:45  
 > 规则：每个任务开始/完成/阻塞都要更新本文件；记录 worktree、branch、commit、测试/截图、限制。  
 > 当前 master：`a82ac52`（Settings Tab 持久化）；当前 release：`target/release/tervo` 19:07。
 
@@ -56,10 +56,10 @@
 | W-04 | 插件系统 V1 | done | `.worktrees/plugin-v1` / `feat/plugin-v1` | commit 为分支头；外部进程 manifest（id/runtime/permissions/contributes）+ 常驻 process JSON Lines（2s 握手/10s 命令超时/重启上限 2/坏 JSON 禁用）+ Command（静态 args/返回文本浮层）+ Status（2s 轮询/底部状态栏/可点击 command）+ Theme Pack（TOML，可选）；旧 oneshot/旧扁平清单兼容；设置页显示 running/restarting/disabled 原因；UI 不新增复杂面板。测试 341 passed（基线 327）；fake Python/Node 插件覆盖命令/状态/崩溃/超时/坏 JSON/禁用；Xvfb :142 `scripts/e2e_plugin_v1.sh` PASS，截图 `.logs/plugin-v1/{command_result,status,plugins}.png` | 命令/状态/主题闭环；崩溃/超时/坏 JSON/坏 manifest 不拖死 Tervo；无沙箱（权限仅声明）、无安装/UI 开关/热重载，限制见 docs/PLUGIN_API.md |
 | W-05 | 打包/自动更新/崩溃报告 | done | `.worktrees/packaging` / `feat/packaging` | commit `2ac3ac6`；合 master `585fd21`；327 tests；packaging 71 项 PASS；`dist/` tar/deb/sha | tar/deb/install/rollback/deb smoke；自动更新/崩溃报告明确未做 |
 | W-06 | Wayland 原生 spike | done | `.worktrees/wayland-spike` / `feat/wayland-spike` | commit `f2e16e4`；合 master `e8ef824`；`docs/WAYLAND_SPIKE.md` 576 行；纯 Wayland/Xwayland headless 实测；DnD/全局快捷键/PRIMARY 硬阻断 | 只 spike，不承诺原生完整 |
-| W-07 | 长时稳定性 soak | partial | `.worktrees/soak` / `feat/soak` | `scripts/soak.sh` + `docs/SOAK.md`；2m PASS；15m/30m **内存门禁 FAIL**：修复前 1.8GiB/15m，修复后 30m 752.5→962.1 MiB（+209.6MiB，+6.59MiB/min），无 panic/OOM；`.logs/soak/final-30m/` | 功能存活 PASS；内存未完全收敛，不声称 24h |
-| W-08 | 全量 e2e/回归矩阵 | done | 15 个脚本（SSH/SFTP、插件、设置、Sixel/IIP、键盘、事件、渲染、P0、URL/右键等） | 功能 e2e 全 PASS；URL/WM 各一次注入竞态重跑 PASS；内存 soak 单列为已知限制 | 功能矩阵绿；内存门禁未过 |
-| MEM-01 | 长时内存增长修复 | partial | `.worktrees/memory-fix` / `feat/memory-fix` + `memory-fix2` / `feat/memory-fix2` | 首帧 850→135MiB；scrollback 全局预算/arena trim；30m 仍 +209.6MiB（6.59MiB/min，曲线趋平）；app 369 | 2m PASS；15m/30m 仍未达 96MiB 门禁 |
-| DOC-01 | 最终人工复测清单 | done | `docs/RETEST_CHECKLIST.md` | 已填版本/哈希/e2e/已知内存限制，待用户逐项签字 | 文档交付 |
+| W-07 | 长时稳定性 soak | done | `.worktrees/soak` / `feat/soak` | `scripts/soak.sh` + `docs/SOAK.md`；2m PASS；30m 修复后 RSS 753.2→817.2 MiB（+64.0MiB，+0.78MiB/min，R²=0.13），6min 后平台；`.worktrees/mem-converge/.logs/soak/fix-30m/` | 30m PASS；不声称 24h |
+| W-08 | 全量 e2e/回归矩阵 | done | 15 个脚本（SSH/SFTP、插件、设置、Sixel/IIP、键盘、事件、渲染、P0、URL/右键等） | 功能 e2e 全 PASS；URL/WM 各一次注入竞态重跑 PASS；内存 30m 单独 PASS | 功能+内存门禁绿 |
+| MEM-01 | 长时内存增长修复 | done | `.worktrees/mem-converge` / `feat/mem-converge` | 根因 IIP/Sixel 图片锚点 + scrollback 封顶；`66ae0c6` 合 master `0cb84e8`；30m +64.0MiB（旧 +209.6），6min 平台；app 369/core 127 | 30m PASS；诊断 commit 1bec94f 未合发布 |
+| DOC-01 | 最终人工复测清单 | done | `docs/RETEST_CHECKLIST.md` | 已填版本/哈希/e2e/30m 内存结果，待用户逐项签字 | 文档交付 |
 
 ## 4.1 自主执行规则（2026-11-06 起）
 
@@ -122,6 +122,7 @@
 | 2026-11-07 04:35 | 最终候选 8823311；15 个功能 e2e 全 PASS；30m soak 仍 +209.6MiB 内存未收敛；dist tar/deb 生成；复测清单完成 |
 | 2026-11-09 01:40 | 真实 SSH ssh.example.test 验收：Tervo SSH Profile known_hosts/登录/远程命令 PASS；修首次启动不读 default_profile_id；最终包 3fafbc8 |
 | 2026-11-09 02:00 | 设置页修复：Dim/Opacity 仅左键拖拽（悬停 0 像素变化）、内容区随窗口放大（1080→1482）；最终包 5dc3c31 |
+| 2026-11-09 12:45 | 内存收敛：IIP/Sixel 图片按单调滚动淘汰（66ae0c6）；30m +64.0MiB PASS；消融 full/noimg 10m +87.4/+60.0；最终包 0cb84e8 |
 | 2026-11-07 00:23 | soak 脚本交付；2m PASS，15m FAIL 内存增长（+16.7MiB/min）；内存专项开跑 |
 | 2026-11-06 23:55 | W-04 插件 V1 完成（feat/plugin-v1，未合 master）：常驻 process 生命周期/命令结果/状态栏/Theme Pack/权限声明；app 341 passed（基线 327）；Xvfb :142 e2e PASS（command_result/status/plugins 截图）；限制见 PLUGIN_API.md §11 |
 | 2026-11-06 21:35 | W-01 完成（feat/profile-session，未合 master）：每 Profile 外观 + session profile_id/可选启动自动恢复；app 295、workspace 489；Xvfb :136 e2e PASS；限制见 docs/self-iteration.md |

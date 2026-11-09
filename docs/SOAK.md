@@ -237,3 +237,12 @@ keycap → 334（+2）、彩虹旗 → 344（+11）、随后整行 emoji.txt →
 跳变的关系仍需后续确认。普通 CJK 首字仍会解析一个 CJK 回退字体；若要求首帧
 <100 MiB，需要进一步换用按字形惰性解析的字体后端或去掉大 CJK 回退。门禁阈值
 未改。
+
+
+## 2026-11-09 内存收敛补充
+
+- 30m 最终结果（22 Tab/4 pane）：RSS 753.2→817.2 MiB，+64.0 MiB，+0.78 MiB/min，R²=0.13；约 6min 后平台。
+- 根因：IIP/Sixel 图片锚点用 `history_size()`，scrollback 全局预算封顶后图片永久保留。
+- 修复：`scroll_total` 单调滚动计数 + `ImageStore::retain_reachable`；commit `66ae0c6`。
+- 消融：full 10m +87.4 MiB vs no-images +60.0 MiB，图片模块约 27 MiB/10m。
+- 残余 64 MiB 为一次性 scrollback 行/cell + Skia/llvmpipe 预热，不是线性泄漏。
