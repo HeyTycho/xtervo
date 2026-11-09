@@ -4312,7 +4312,7 @@ fn close_other_tabs(st: &mut AppState, keep: usize) {
 
 /// 复制一个 Tab：布局、分屏比例、每个 pane 的 cwd 都照抄。
 fn duplicate_tab(st: &mut AppState, index: usize) {
-    let (title, focused, ids, tree) = {
+    let (title, focused, ids, tree, pinned) = {
         let Some(src) = st.ws.tabs.get(index) else {
             return;
         };
@@ -4336,6 +4336,7 @@ fn duplicate_tab(st: &mut AppState, index: usize) {
             src.focused,
             ids,
             session::Tree::from_node_with_profiles(root, &cwds, &profiles),
+            src.pinned,
         )
     };
 
@@ -4385,6 +4386,7 @@ fn duplicate_tab(st: &mut AppState, index: usize) {
             root: Some(new_root),
             focused: focused_new,
             grid: HashMap::new(),
+            pinned,
         },
     );
     st.ws.active = index + 1;
@@ -4396,6 +4398,25 @@ fn duplicate_tab(st: &mut AppState, index: usize) {
     refresh_views(st);
     rebuild_tabs(st);
     redraw_visible(st);
+}
+
+/// Tab 右键菜单 action 6：Pin/Unpin 当前 Tab。
+///
+/// Pin 移到最后一个 pinned 后；Unpin 回到第一个 unpinned 前。
+/// 只影响 Tab 栏顺序，不重建 pane/PTY。
+fn toggle_tab_pin(st: &mut AppState, index: usize) {
+    let Some(tab) = st.ws.tabs.get(index) else {
+        return;
+    };
+    let pinned = !tab.pinned;
+    let Some(new_index) = st.ws.set_tab_pinned(index, pinned) else {
+        return;
+    };
+    eprintln!(
+        "[ws] {} tab {index} → {new_index}",
+        if pinned { "pin" } else { "unpin" }
+    );
+    rebuild_tabs(st);
 }
 
 fn close_pane_inner(st: &mut AppState, id: PaneId) {
@@ -4471,6 +4492,7 @@ fn snapshot_tab(st: &AppState, index: usize) -> Option<session::TabSnapshot> {
     Some(session::TabSnapshot {
         title: tab.title.clone(),
         focused,
+        pinned: tab.pinned,
         tree: session::Tree::from_node_with_profiles(root, &cwds, &profiles),
     })
 }
@@ -4518,13 +4540,14 @@ fn restore_pane_launch(
 }
 
 /// 按快照恢复一个 Tab（新 Pane、新 shell）；失败时清理半成品。
-fn restore_tab_snapshot(st: &mut AppState, tab_snap: &session::TabSnapshot) -> bool {
+/// 返回插入后的 workspace 下标（调用方用于设置 active / 重开最近关闭）。
+fn restore_tab_snapshot(st: &mut AppState, tab_snap: &session::TabSnapshot) -> Option<usize> {
     let cwds = tab_snap.tree.leaf_cwds();
     let profiles = tab_snap.tree.leaf_profiles();
     let ids: Vec<PaneId> = (0..cwds.len()).map(|_| st.ws.alloc_id()).collect();
     let Some(root) = tab_snap.tree.assign(&ids) else {
         eprintln!("[session] 布局与 pane 数量不符，跳过该标签");
-        return false;
+        return None;
     };
     let mut created = 0;
     for (i, cwd) in cwds.iter().enumerate() {
@@ -4551,22 +4574,27 @@ fn restore_tab_snapshot(st: &mut AppState, tab_snap: &session::TabSnapshot) -> b
         for id in &ids {
             st.panes.remove(id);
         }
-        return false;
+        return None;
     }
     let focused = ids.get(tab_snap.focused).copied().unwrap_or(ids[0]);
     let tab_title = tab_snap.title.clone();
-    st.ws.tabs.push(Tab {
+    let index = st.ws.insert_tab(Tab {
         title: tab_title.clone(),
         root: Some(root),
         focused,
         grid: HashMap::new(),
+        pinned: tab_snap.pinned,
     });
+    eprintln!(
+        "[session] restore tab {tab_title:?} pinned={} index={index}",
+        tab_snap.pinned
+    );
     dispatch_plugin_event(
         st,
         plugin::PluginEvent::TabOpen,
         plugin::tab_open_payload(&tab_title, "local"),
     );
-    true
+    Some(index)
 }
 
 /// 重开最近关闭的 Tab（Ctrl+Shift+T / 菜单）。
@@ -4575,11 +4603,11 @@ fn reopen_closed_tab(st: &mut AppState) {
         eprintln!("[ws] 没有可重开的 Tab");
         return;
     };
-    if !restore_tab_snapshot(st, &snap) {
+    let Some(index) = restore_tab_snapshot(st, &snap) else {
         eprintln!("[ws] 重开失败: {:?}", snap.title);
         return;
-    }
-    st.ws.active = st.ws.tabs.len() - 1;
+    };
+    st.ws.active = index;
     refresh_views(st);
     rebuild_tabs(st);
     redraw_visible(st);
@@ -4615,6 +4643,7 @@ fn capture_snapshot(st: &AppState) -> Option<session::Snapshot> {
         tabs.push(session::TabSnapshot {
             title: tab.title.clone(),
             focused,
+            pinned: tab.pinned,
             tree: session::Tree::from_node_with_profiles(root, &cwds, &profiles),
         });
     }
@@ -4743,6 +4772,8 @@ fn restore_session(st: &mut AppState) -> bool {
         return false;
     }
     st.ws.active = snap.active.min(st.ws.tabs.len() - 1);
+    // 旧/坏快照可能把 pinned 放在 unpinned 后面；恢复后按组稳定归位。
+    st.ws.normalize_pinned();
     st.next_title = st.ws.tabs.len();
     refresh_views(st);
     rebuild_tabs(st);
@@ -4944,14 +4975,48 @@ fn set_active_tab_inner(st: &mut AppState, index: usize) {
     sync_terminal_focus(st, win);
 }
 
-/// 拖拽落点：按平均槽位（padding-left 32px）把指针 x 换算成目标下标。
+/// 拖拽落点：按平均槽位把指针 x（Flickable 内容坐标）换算成目标下标。
+///
+/// Tab 从内容 x=0 开始排；`strip_w` 是 tab-strip 的内容宽度（含 padding）。
+/// 视觉上插入线按真实 layout 绘制，这里只负责“落在第几个槽”。
 fn drag_target(drag_x: f32, strip_w: f32, n: usize) -> usize {
     if n == 0 {
         return 0;
     }
-    let slot = ((strip_w - 32.0) / n as f32).max(1.0);
-    let idx = ((drag_x - 32.0) / slot).floor().max(0.0) as usize;
+    let slot = (strip_w / n as f32).max(1.0);
+    let idx = (drag_x / slot).floor().max(0.0) as usize;
     idx.min(n - 1)
+}
+
+/// 组内落点：pinned 只能落在 pinned 区，unpinned 只能落在 unpinned 区。
+/// 返回最终 workspace 下标；落在另一组、原地或越界返回 None（不移动/不亮插入线）。
+fn drag_target_in_group(
+    drag_x: f32,
+    strip_w: f32,
+    n: usize,
+    pinned_count: usize,
+    from: usize,
+) -> Option<usize> {
+    if n == 0 || from >= n {
+        return None;
+    }
+    let pinned_count = pinned_count.min(n);
+    let target = drag_target(drag_x, strip_w, n);
+    let (lo, hi) = if from < pinned_count {
+        (0, pinned_count)
+    } else {
+        (pinned_count, n)
+    };
+    (target >= lo && target < hi && target != from).then_some(target)
+}
+
+/// 最终下标 → 视觉插入边界（0..=n）：插在目标 Tab 前/后。
+fn drag_gap_index(from: usize, target: usize) -> usize {
+    if target < from {
+        target
+    } else {
+        target + 1
+    }
 }
 
 /// 相对切 Tab（循环）。`len > 0` 由调用方保证。
@@ -5348,9 +5413,15 @@ fn rebuild_tabs(st: &mut AppState) {
                 progress_label: activity::progress_label(agg.progress).into(),
                 attention: agg.attention,
                 completed: agg.completed,
+                pinned: t.pinned,
             }
         })
         .collect();
+    st.ui.set_pinned_count(st.ws.pinned_count() as i32);
+    // Tab 模型重建时任何进行中的落点都不再有效（拖拽中不会触发 rebuild）。
+    st.ui.set_drop_index(-1);
+    st.ui.set_drop_gap(-1);
+    st.ui.set_drop_valid(false);
     st.tab_model.set_vec(tabs);
 }
 
@@ -6602,6 +6673,9 @@ fn install_native_window_events(ui: &MainWindow) {
                         st.ime_spot_dirty = true;
                         update_ime_spot(st);
                     });
+                } else if let Some(ui) = weak.upgrade() {
+                    // 窗口失焦：取消可能正在进行的 Tab 拖拽，并复位 ghost/插入线/让位动画。
+                    ui.invoke_cancel_drag();
                 }
             }
             winit::event::WindowEvent::ScaleFactorChanged { .. } => {
@@ -10367,6 +10441,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui.on_tab_reorder(|from, drag_x, strip_w| {
         with_app(|st| {
             let n = st.ws.tabs.len();
+            st.ui.set_drop_index(-1);
+            st.ui.set_drop_gap(-1);
+            st.ui.set_drop_valid(false);
             if n < 2 || from < 0 {
                 return;
             }
@@ -10374,15 +10451,59 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if from >= n {
                 return;
             }
-            let target = drag_target(drag_x, strip_w, n);
-            if target != from && st.ws.move_tab(from, target) {
+            let target =
+                drag_target_in_group(drag_x, strip_w, n, st.ws.pinned_count(), from);
+            let Some(target) = target else {
+                eprintln!("[ui] tab drop blocked from={from} x={drag_x:.1} strip={strip_w:.1}");
+                return;
+            };
+            if st.ws.move_tab(from, target) {
                 eprintln!("[ws] reorder tab {from} → {target}");
                 rebuild_tabs(st);
             }
         });
     });
 
+    // 拖拽过程中只更新落点属性；不重建 Tab 模型/TouchArea，避免每帧重排。
+    ui.on_tab_drag_move(|from, drag_x, strip_w| {
+        with_app(|st| {
+            let n = st.ws.tabs.len();
+            if from < 0 || from as usize >= n {
+                st.ui.set_drop_index(-1);
+                st.ui.set_drop_gap(-1);
+                st.ui.set_drop_valid(false);
+                return;
+            }
+            let from = from as usize;
+            let target =
+                drag_target_in_group(drag_x, strip_w, n, st.ws.pinned_count(), from);
+            let gap: i32 = target
+                .map(|t| drag_gap_index(from, t) as i32)
+                .unwrap_or(-1);
+            let prev = (st.ui.get_drop_index(), st.ui.get_drop_gap(), st.ui.get_drop_valid());
+            st.ui.set_drop_index(target.map(|t| t as i32).unwrap_or(-1));
+            st.ui.set_drop_gap(gap);
+            st.ui.set_drop_valid(target.is_some());
+            if prev != (target.map(|t| t as i32).unwrap_or(-1), gap, target.is_some()) {
+                eprintln!(
+                    "[ui] tab drag from={from} x={drag_x:.1} strip={strip_w:.1} target={} gap={gap}",
+                    target.map(|t| t.to_string()).unwrap_or_else(|| "blocked".into())
+                );
+            }
+        });
+    });
+
+    ui.on_tab_drag_cancelled(|| {
+        with_app(|st| {
+            st.ui.set_drop_index(-1);
+            st.ui.set_drop_gap(-1);
+            st.ui.set_drop_valid(false);
+        });
+        eprintln!("[ui] tab drag cancelled");
+    });
+
     ui.on_tab_context(|index, x| {
+        eprintln!("[ui] tab context index={index} x={x:.1}");
         with_app(|st| {
             st.ui.set_tabctx_index(index);
             st.ui.set_tabctx_x(x);
@@ -10401,6 +10522,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 3 => open_rename(st, index),
                 4 => close_tabs_left(st, index),
                 5 => close_tabs_right(st, index),
+                // 6 = Pin/Unpin 切换（additive；旧 ID 0..5 不变）
+                6 => toggle_tab_pin(st, index),
                 _ => {}
             }
         });
@@ -12038,6 +12161,46 @@ mod tests {
         assert_eq!(drag_target(5000.0, strip, 3), 2);
         // 单 Tab 永远 0
         assert_eq!(drag_target(100.0, 100.0, 1), 0);
+    }
+
+    #[test]
+    fn drag_target_respects_pinned_groups() {
+        // 5 Tab（2 pinned + 3 unpinned），每槽 100px + 4px spacing + 8px padding。
+        let strip = 5.0 * 100.0 + 4.0 * 4.0 + 8.0;
+        let slot = strip / 5.0;
+        let x_at = |slot_index: usize| slot_index as f32 * slot + 2.0;
+
+        // pinned 拖动：只能落在 0..pinned_count-1；原地/跨组/越界都 None。
+        assert_eq!(drag_target_in_group(x_at(0), strip, 5, 2, 0), None);
+        assert_eq!(drag_target_in_group(x_at(1), strip, 5, 2, 0), Some(1));
+        assert_eq!(drag_target_in_group(x_at(2), strip, 5, 2, 0), None);
+        assert_eq!(drag_target_in_group(x_at(4), strip, 5, 2, 0), None);
+        assert_eq!(drag_target_in_group(x_at(0), strip, 5, 2, 1), Some(0));
+        assert_eq!(drag_target_in_group(x_at(2), strip, 5, 2, 1), None);
+
+        // unpinned 拖动：只能落在 pinned_count..n-1。
+        assert_eq!(drag_target_in_group(x_at(0), strip, 5, 2, 4), None);
+        assert_eq!(drag_target_in_group(x_at(1), strip, 5, 2, 4), None);
+        assert_eq!(drag_target_in_group(x_at(2), strip, 5, 2, 4), Some(2));
+        assert_eq!(drag_target_in_group(x_at(3), strip, 5, 2, 4), Some(3));
+        assert_eq!(drag_target_in_group(x_at(4), strip, 5, 2, 4), None);
+        assert_eq!(drag_target_in_group(x_at(3), strip, 5, 2, 3), None);
+
+        // 全 unpinned / 非法输入。
+        assert_eq!(drag_target_in_group(x_at(3), strip, 5, 0, 0), Some(3));
+        assert_eq!(drag_target_in_group(x_at(0), strip, 5, 5, 4), Some(0));
+        assert_eq!(drag_target_in_group(x_at(0), strip, 0, 0, 0), None);
+        assert_eq!(drag_target_in_group(x_at(0), strip, 5, 2, 9), None);
+    }
+
+    #[test]
+    fn drag_gap_index_maps_insertion_boundary() {
+        // 向右拖：最终下标 t 表示插在原 t 之后，视觉 gap = t+1。
+        assert_eq!(drag_gap_index(0, 1), 2);
+        assert_eq!(drag_gap_index(2, 3), 4);
+        // 向左拖：插在原 t 之前，视觉 gap = t。
+        assert_eq!(drag_gap_index(4, 2), 2);
+        assert_eq!(drag_gap_index(1, 0), 0);
     }
 
     #[test]

@@ -211,6 +211,8 @@ pub struct Tab {
     pub focused: PaneId,
     /// 每个 pane 最近一次用于布局的网格尺寸（列, 行），用于检测是否需要 resize。
     pub grid: std::collections::HashMap<PaneId, (usize, usize)>,
+    /// Pin 到标签栏左侧固定区。会话快照 additive 保存，旧快照视为未 Pin。
+    pub pinned: bool,
 }
 
 impl Tab {
@@ -220,6 +222,7 @@ impl Tab {
             root: Some(Node::Leaf(id)),
             focused: id,
             grid: std::collections::HashMap::new(),
+            pinned: false,
         }
     }
 
@@ -279,13 +282,34 @@ impl Workspace {
         self.tabs.get_mut(self.active)
     }
 
-    /// 把第 `from` 个 Tab 移到 `to` 位置；越界或相同返回 false。
+    /// pinned Tab 的数量。布局约定：pinned 永远构成 `tabs` 的前缀。
+    pub fn pinned_count(&self) -> usize {
+        self.tabs.iter().filter(|t| t.pinned).count()
+    }
+
+    /// 把第 `from` 个 Tab 移到 `to` 位置；越界、相同或跨 pinned 组返回 false。
     pub fn move_tab(&mut self, from: usize, to: usize) -> bool {
         if from == to || from >= self.tabs.len() || to >= self.tabs.len() {
             return false;
         }
+        // 普通排序只能在同组内移动：pinned 留在左侧固定区，unpinned 不能插进去。
+        let pinned_count = self.pinned_count();
+        let (lo, hi) = if self.tabs[from].pinned {
+            (0, pinned_count)
+        } else {
+            (pinned_count, self.tabs.len())
+        };
+        if to < lo || to >= hi {
+            return false;
+        }
         let tab = self.tabs.remove(from);
         self.tabs.insert(to, tab);
+        self.track_active_after_move(from, to);
+        true
+    }
+
+    /// 根据 remove+insert 的位置修正 active 下标（调用前已修改 tabs）。
+    fn track_active_after_move(&mut self, from: usize, to: usize) {
         if self.active == from {
             self.active = to;
         } else if from < self.active && self.active <= to {
@@ -293,7 +317,62 @@ impl Workspace {
         } else if to <= self.active && self.active < from {
             self.active += 1;
         }
-        true
+    }
+
+    /// Pin/Unpin 第 `index` 个 Tab；返回移动后的新下标（状态未变返回 None）。
+    ///
+    /// 两种方向都移到「pinned 前缀的下一个槽位」：Pin 时即最后一个 pinned
+    /// 之后；Unpin 时即第一个 unpinned 之前。
+    pub fn set_tab_pinned(&mut self, index: usize, pinned: bool) -> Option<usize> {
+        if index >= self.tabs.len() || self.tabs[index].pinned == pinned {
+            return None;
+        }
+        let mut tab = self.tabs.remove(index);
+        tab.pinned = pinned;
+        let to = self
+            .tabs
+            .iter()
+            .position(|t| !t.pinned)
+            .unwrap_or(self.tabs.len());
+        self.tabs.insert(to, tab);
+        self.track_active_after_move(index, to);
+        Some(to)
+    }
+
+    /// 按组插入一个 Tab（恢复会话/重开最近关闭用）；返回插入下标。
+    /// pinned 插到 pinned 区末尾，unpinned 追加到末尾。
+    pub fn insert_tab(&mut self, tab: Tab) -> usize {
+        let index = if tab.pinned {
+            self.tabs
+                .iter()
+                .position(|t| !t.pinned)
+                .unwrap_or(self.tabs.len())
+        } else {
+            self.tabs.len()
+        };
+        self.tabs.insert(index, tab);
+        index
+    }
+
+    /// 修正外部快照可能带来的 pinned/unpinned 交错顺序（稳定排序），active 跟着 Tab 走。
+    pub fn normalize_pinned(&mut self) {
+        let len = self.tabs.len();
+        if len < 2 || self.tabs.windows(2).all(|w| w[0].pinned || !w[1].pinned) {
+            return;
+        }
+        let active = self.active.min(len - 1);
+        let active_pinned = self.tabs[active].pinned;
+        let pinned_before = self.tabs[..active].iter().filter(|t| t.pinned).count();
+        let unpinned_before = self.tabs[..active].iter().filter(|t| !t.pinned).count();
+        let pinned_total = self.pinned_count();
+        // sort_by_key 是稳定排序：同组内保持快照相对顺序。
+        self.tabs.sort_by_key(|t| !t.pinned);
+        self.active = if active_pinned {
+            pinned_before
+        } else {
+            pinned_total + unpinned_before
+        }
+        .min(len - 1);
     }
 
     /// 只保留第 `index` 个 Tab；返回被丢弃 Tab 的 pane id（调用方负责关 PTY）。
@@ -501,5 +580,115 @@ mod tests {
         assert_eq!(ws.tab_of(a), Some(0));
         assert_eq!(ws.tab_of(b), Some(1));
         assert_eq!(ws.tab_of(999), None);
+    }
+
+    fn titles(ws: &Workspace) -> Vec<&str> {
+        ws.tabs.iter().map(|t| t.title.as_str()).collect()
+    }
+
+    #[test]
+    fn pin_moves_to_last_pinned_and_unpin_to_first_unpinned() {
+        let mut ws = Workspace::new();
+        for (i, title) in ["a", "b", "c", "d"].iter().enumerate() {
+            ws.tabs.push(Tab::single(i as PaneId + 1, *title));
+        }
+
+        // 没有 pinned 时 Pin b：进入 pinned 区（最左），后面的 Tab 前移。
+        assert_eq!(ws.set_tab_pinned(1, true), Some(0));
+        assert_eq!(titles(&ws), vec!["b", "a", "c", "d"]);
+        assert_eq!(ws.pinned_count(), 1);
+
+        // Pin c：放到最后一个 pinned（b）之后。
+        assert_eq!(ws.set_tab_pinned(2, true), Some(1));
+        assert_eq!(titles(&ws), vec!["b", "c", "a", "d"]);
+        assert_eq!(ws.pinned_count(), 2);
+
+        // Unpin b：回到第一个 unpinned 之前（a 前）。
+        assert_eq!(ws.set_tab_pinned(0, false), Some(1));
+        assert_eq!(titles(&ws), vec!["c", "b", "a", "d"]);
+        assert_eq!(ws.pinned_count(), 1);
+
+        // 已经是目标状态：不动。
+        assert_eq!(ws.set_tab_pinned(0, true), None);
+        assert_eq!(ws.set_tab_pinned(99, true), None);
+    }
+
+    #[test]
+    fn pin_keeps_active_tab_following_its_position() {
+        let mut ws = Workspace::new();
+        for (i, title) in ["a", "b", "c"].iter().enumerate() {
+            ws.tabs.push(Tab::single(i as PaneId + 1, *title));
+        }
+        ws.active = 2; // c
+
+        // Pin b（active 在它右边）：c 的下标保持不变。
+        ws.set_tab_pinned(1, true).unwrap();
+        assert_eq!(titles(&ws), vec!["b", "a", "c"]);
+        assert_eq!(ws.active, 2);
+        assert_eq!(ws.tabs[ws.active].title, "c");
+
+        // Pin 当前 active 的 c：active 跟着 Tab 走。
+        ws.set_tab_pinned(2, true).unwrap();
+        assert_eq!(titles(&ws), vec!["b", "c", "a"]);
+        assert_eq!(ws.active, 1);
+        assert_eq!(ws.tabs[ws.active].title, "c");
+
+        // Unpin 当前 active：仍指向同一个 Tab。
+        ws.set_tab_pinned(1, false).unwrap();
+        assert_eq!(titles(&ws), vec!["b", "c", "a"]);
+        assert_eq!(ws.active, 1);
+        assert_eq!(ws.tabs[ws.active].title, "c");
+    }
+
+    #[test]
+    fn normal_reorder_never_crosses_pinned_group() {
+        let mut ws = Workspace::new();
+        let mut a = Tab::single(1, "a");
+        let b = Tab::single(2, "b");
+        let mut c = Tab::single(3, "c");
+        let d = Tab::single(4, "d");
+        a.pinned = true;
+        c.pinned = true;
+        ws.tabs = vec![a, c, b, d];
+        ws.active = 2;
+
+        // pinned 只能落在 0..pinned_count，不能拖到 unpinned 区。
+        assert!(!ws.move_tab(0, 2));
+        assert!(!ws.move_tab(0, 3));
+        assert!(ws.move_tab(0, 1));
+        assert_eq!(titles(&ws), vec!["c", "a", "b", "d"]);
+        assert_eq!(ws.active, 2);
+
+        // unpinned 不能插进 pinned 区。
+        assert!(!ws.move_tab(3, 1));
+        assert!(!ws.move_tab(2, 0));
+        assert!(ws.move_tab(3, 2));
+        assert_eq!(titles(&ws), vec!["c", "a", "d", "b"]);
+    }
+
+    #[test]
+    fn insert_tab_and_normalize_keep_pinned_prefix() {
+        let mut ws = Workspace::new();
+        ws.tabs.push(Tab::single(1, "a"));
+        ws.tabs.push(Tab::single(2, "b"));
+
+        let mut p = Tab::single(3, "p");
+        p.pinned = true;
+        let at = ws.insert_tab(p);
+        assert_eq!(at, 0);
+        assert_eq!(titles(&ws), vec!["p", "a", "b"]);
+        assert_eq!(ws.pinned_count(), 1);
+
+        // 模拟坏快照：pinned 出现在 unpinned 后面，normalize 后回到前缀。
+        let mut u = Tab::single(4, "u");
+        u.pinned = false;
+        let mut p2 = Tab::single(5, "p2");
+        p2.pinned = true;
+        ws.tabs = vec![ws.tabs[0].clone(), u, p2];
+        ws.active = 1; // u
+        ws.normalize_pinned();
+        assert_eq!(titles(&ws), vec!["p", "p2", "u"]);
+        assert_eq!(ws.active, 2);
+        assert_eq!(ws.tabs[ws.active].title, "u");
     }
 }
