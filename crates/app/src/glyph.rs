@@ -970,6 +970,18 @@ impl GlyphCache {
         self.map.len()
     }
 
+    /// 诊断用：单色/彩色缓存条目数。
+    #[allow(dead_code)]
+    pub fn entry_counts(&self) -> (usize, usize) {
+        (self.map.len(), self.color_map.len())
+    }
+
+    /// 诊断用：atlas 常驻字节数。
+    #[allow(dead_code)]
+    pub fn atlas_bytes(&self) -> usize {
+        self.atlas.len()
+    }
+
     /// 取字形；`span` 是该格在网格里占的格数（宽字符/emoji = 2）。
     ///
     /// 字形步进超过 `span * cell_w` 时按比例缩小字号重新栅格化，保证不会撑破网格

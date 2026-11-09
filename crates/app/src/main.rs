@@ -10,6 +10,8 @@ mod keys;
 mod known_hosts;
 mod latency;
 mod logging;
+// 诊断用分配采样（默认关闭，仅 TERVO_MEMPROBE=1 时启用）。
+mod memprobe;
 mod plugin;
 mod profile;
 mod quake;
@@ -29,6 +31,11 @@ mod workspace;
 mod xconn;
 
 slint::include_modules!();
+
+/// 诊断用全局分配器：默认直通（只多一次 relaxed 检查），
+/// `TERVO_MEMPROBE=1` 时按调用栈采样 malloc/free。
+#[global_allocator]
+static GLOBAL_ALLOCATOR: memprobe::SamplingAllocator = memprobe::SamplingAllocator;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -7667,6 +7674,101 @@ fn poll_events() {
     ring_bell(audible_bell, bell_count);
 }
 
+/// 诊断用：按归属统计 AppState 里常驻的大块资源（pane 双缓冲/atlas/图片/
+/// 帧/scrollback），与分配采样对照，确认增长是“活对象变多”还是分配器滞留。
+/// 只在 `TERVO_MEMPROBE=1` 或 `TERVO_MEM_STATS=1` 时由 timer 调用。
+fn mem_stats_enabled() -> bool {
+    memprobe::enabled() || std::env::var_os("TERVO_MEM_STATS").is_some()
+}
+
+fn pane_mem_bytes(rt: &PaneRuntime) -> usize {
+    let mut bytes = rt.renderer.buffer_bytes();
+    let (atlas, _, _) = rt.renderer.glyph_stats();
+    bytes += atlas;
+    bytes += rt.frame.cells.len() * std::mem::size_of::<tervo_core::frame::CellData>();
+    for (_, img) in rt.inline_cache.iter() {
+        let sz = img.size();
+        bytes += sz.width as usize * sz.height as usize * 4;
+    }
+    for img in rt.inline_model.iter() {
+        let sz = img.image.size();
+        bytes += sz.width as usize * sz.height as usize * 4;
+    }
+    bytes += rt.inline_sig.len()
+        * std::mem::size_of::<(u64, i32, u16, u32, u32)>();
+    bytes
+}
+
+fn dump_mem_stats(st: &AppState) {
+    if !mem_stats_enabled() {
+        return;
+    }
+    let mut renderer = 0usize;
+    let mut atlas = 0usize;
+    let mut frames = 0usize;
+    let mut inline_cache = 0usize;
+    let mut inline_model = 0usize;
+    let mut glyphs = 0usize;
+    let mut color_glyphs = 0usize;
+    let mut scrollback = 0usize;
+    let mut grid_lines = 0usize;
+    let mut grid_bytes = 0usize;
+    let mut per_pane: Vec<(u64, usize)> = Vec::with_capacity(st.panes.len());
+    for (id, rt) in &st.panes {
+        renderer += rt.renderer.buffer_bytes();
+        let (a, mono, color) = rt.renderer.glyph_stats();
+        atlas += a;
+        glyphs += mono;
+        color_glyphs += color;
+        frames += rt.frame.cells.len() * std::mem::size_of::<tervo_core::frame::CellData>();
+        for (_, img) in rt.inline_cache.iter() {
+            let sz = img.size();
+            inline_cache += sz.width as usize * sz.height as usize * 4;
+        }
+        for img in rt.inline_model.iter() {
+            let sz = img.image.size();
+            inline_model += sz.width as usize * sz.height as usize * 4;
+        }
+        scrollback += rt.scrollback_applied * rt.grid.0 * std::mem::size_of::<tervo_core::frame::CellData>();
+        let (hist, total) = rt.handle.grid_lines();
+        grid_lines += total;
+        grid_bytes += total * rt.grid.0 * tervo_core::pane::CELL_BYTES;
+        let _ = hist;
+        per_pane.push((*id, pane_mem_bytes(rt)));
+    }
+    per_pane.sort_by_key(|(_, b)| std::cmp::Reverse(*b));
+    let detached: usize = st.detached.iter().map(|(_, rt, _)| pane_mem_bytes(rt)).sum();
+    let held: usize = st.held_keys.values().map(|s| s.len()).sum();
+    eprintln!(
+        "[memstats] panes={} renderer={}KiB atlas={}KiB frames={}KiB inline_cache={}KiB \
+         inline_model={}KiB scrollback_est={}KiB grid_lines={} grid_mem={}KiB detached={} ({} panes) \
+         tabs={} closed_tabs={} glyphs={}+{} held_keys={} plugin_activity={}",
+        st.panes.len(),
+        renderer / 1024,
+        atlas / 1024,
+        frames / 1024,
+        inline_cache / 1024,
+        inline_model / 1024,
+        scrollback / 1024,
+        grid_lines,
+        grid_bytes / 1024,
+        detached / 1024,
+        st.detached.len(),
+        st.ws.tabs.len(),
+        st.closed_tabs.len(),
+        glyphs,
+        color_glyphs,
+        held,
+        st.plugin_activity_model.row_count(),
+    );
+    let top: Vec<String> = per_pane
+        .iter()
+        .take(5)
+        .map(|(id, b)| format!("{id}:{}KiB", b / 1024))
+        .collect();
+    eprintln!("[memstats] top_panes={}", top.join(" "));
+}
+
 /// 活动 pane 收到 BEL：闪一下边框（`visual_bell = false` 时完全不做）。
 ///
 /// 只更新视图属性，不重新拉帧/不 overlay 终端内容；重绘由 Slint 的
@@ -8024,6 +8126,7 @@ fn exec_software_fallback(requested: &str) -> ! {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    memprobe::init();
     // 默认 GPU/Skia：用户没有显式设置 SLINT_BACKEND 时请求 winit-skia。
     // `SLINT_BACKEND=winit-software` 仍是显式回退开关；显式设置任何值都以用户为准。
     // Skia 初始化失败时由 render_probe/下面的重试自动回退 software，不黑屏、不崩溃。
@@ -10593,6 +10696,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
         );
         std::mem::forget(trim_timer);
+    }
+
+    // 诊断用：分配采样 + AppState 归属统计（默认完全关闭）。
+    if mem_stats_enabled() {
+        let mem_timer = slint::Timer::default();
+        mem_timer.start(
+            slint::TimerMode::Repeated,
+            Duration::from_secs(memprobe::dump_interval_secs()),
+            || {
+                memprobe::dump();
+                with_app(|st| dump_mem_stats(st));
+            },
+        );
+        std::mem::forget(mem_timer);
     }
 
     // 唤醒计数诊断：空闲时 core/app 唤醒数不应增长（只有 400ms 兜底在跑）。

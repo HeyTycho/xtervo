@@ -430,6 +430,19 @@ impl Renderer {
         self.glyphs.cached_count()
     }
 
+    /// 诊断用：双缓冲像素字节数。
+    #[allow(dead_code)]
+    pub fn buffer_bytes(&self) -> usize {
+        2 * self.width * self.height * 4
+    }
+
+    /// 诊断用：字形 atlas 与缓存条目数。
+    #[allow(dead_code)]
+    pub fn glyph_stats(&self) -> (usize, usize, usize) {
+        let (mono, color) = self.glyphs.entry_counts();
+        (self.glyphs.atlas_bytes(), mono, color)
+    }
+
     #[allow(dead_code)]
     pub fn metrics(&self) -> (usize, usize) {
         (self.cell_w, self.cell_h)
