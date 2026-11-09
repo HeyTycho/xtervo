@@ -127,6 +127,25 @@ pub fn keyboard_protocol_enabled(value: &str) -> bool {
     normalize_keyboard_protocol(value) != "off"
 }
 
+/// 界面语言：`en`（默认）| `zh`。
+pub const LANGUAGE_EN: &str = "en";
+pub const LANGUAGE_ZH: &str = "zh";
+
+/// 语言值归一：`zh` / `zh-CN` / `zh_CN` / `cn` / `chinese` → `zh`；
+/// 其它（含空、拼错、未知）一律回退默认 `en`。大小写/空白不敏感。
+pub fn normalize_language(input: &str) -> String {
+    let lower = input.trim().to_ascii_lowercase();
+    if lower == "zh"
+        || lower.starts_with("zh-")
+        || lower.starts_with("zh_")
+        || matches!(lower.as_str(), "cn" | "chinese" | "中文")
+    {
+        LANGUAGE_ZH.to_string()
+    } else {
+        LANGUAGE_EN.to_string()
+    }
+}
+
 /// 夹取到 0.0–1.0 并四舍五入到两位小数；NaN/∞ 回退到 1.0。
 pub fn clamp_opacity(v: f32) -> f32 {
     if !v.is_finite() {
@@ -237,6 +256,8 @@ pub struct Config {
     /// 配置结构版本；缺失（旧文件）= 0。
     #[serde(default)]
     pub version: u32,
+    /// 界面语言：`en`（默认）| `zh`。未知值读入时回退 `en`；热更新包含它。
+    pub language: String,
     /// 主题 id（"auto" | "yaru-dark" | "catppuccin-mocha" | "custom:<stem>" ...）。
     /// 默认 `"auto"`：深色用 Yaru Dark，浅色用 Yaru Light；也可显式指定任意主题。
     pub theme: String,
@@ -357,6 +378,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             version: SCHEMA_VERSION,
+            language: LANGUAGE_EN.to_string(),
             theme: "auto".to_string(),
             auto_dark: None,
             auto_light: None,
@@ -422,6 +444,15 @@ impl Config {
         base.join("tervo").join("config.toml")
     }
 
+    /// 生效语言：`zh` 或 `en`（未知值回退 en）。UI 热更新/启动都读取它。
+    pub fn lang(&self) -> &'static str {
+        if normalize_language(&self.language) == LANGUAGE_ZH {
+            LANGUAGE_ZH
+        } else {
+            LANGUAGE_EN
+        }
+    }
+
     /// 生效的右键模式：旧配置 `right_click_paste=true` 且未显式选模式时按 paste 处理。
     pub fn effective_right_click(&self) -> &str {
         if self.right_click == "menu" && self.right_click_paste {
@@ -465,6 +496,8 @@ impl Config {
     /// 把外观相关字段归一成规范值。新增字段都是 additive，不 bump
     /// schema；旧配置（v0/v1）读入时靠这里 + serde default 补齐。
     fn normalize_appearance(&mut self) {
+        // 语言是 additive 字段：旧配置缺省 en，手写大小写/别名归一。
+        self.language = normalize_language(&self.language);
         self.cursor_shape = normalize_cursor_shape(&self.cursor_shape);
         self.cursor_blink = normalize_cursor_blink(&self.cursor_blink);
         self.keyboard_protocol = normalize_keyboard_protocol(&self.keyboard_protocol);
@@ -1182,6 +1215,50 @@ mod tests {
         let v0: Config = toml::from_str("theme = \"nord\"\n").unwrap();
         assert_eq!(v0.cursor_shape, "block");
         assert!(v0.bold_is_bright);
+    }
+
+    #[test]
+    fn language_defaults_to_english_and_old_config_is_compatible() {
+        assert_eq!(Config::default().language, "en");
+        assert_eq!(Config::default().lang(), "en");
+        // 旧配置没有 language 字段：serde(default) 补齐 en，不能解析失败。
+        let cfg: Config = toml::from_str("version = 1\ntheme = \"nord\"\n").unwrap();
+        assert_eq!(cfg.language, "en");
+        assert_eq!(cfg.lang(), "en");
+    }
+
+    #[test]
+    fn language_parses_zh_and_unknown_falls_back_to_en() {
+        let cfg = Config::parse_text("version = 1\nlanguage = \"zh\"\n").unwrap();
+        assert_eq!(cfg.lang(), "zh");
+        // 大小写/区域写法都归一成规范 zh。
+        assert_eq!(normalize_language(" ZH "), "zh");
+        assert_eq!(normalize_language("zh-CN"), "zh");
+        // 未知/拼错/空值一律回退 en（additive 字段不能因为写错而解析失败）。
+        for raw in ["", "fr", "english!", "zho"] {
+            let cfg =
+                Config::parse_text(&format!("version = 1\nlanguage = \"{raw}\"\n")).unwrap();
+            assert_eq!(cfg.language, "en", "raw={raw:?}");
+            assert_eq!(cfg.lang(), "en");
+        }
+        assert_eq!(normalize_language("chinese"), "zh");
+        assert_eq!(normalize_language("zh-TW"), "zh");
+    }
+
+    #[test]
+    fn language_hot_reload_and_roundtrip() {
+        let dir = tmpdir("language-roundtrip");
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "version = 1\nlanguage = \"zh\"\n").unwrap();
+        let cfg = Config::load_from(&path);
+        assert_eq!(cfg.lang(), "zh");
+        // save_to 必须把 language 写回，watcher 才能观察到热更新。
+        cfg.save_to(&path);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("language = \"zh\""), "{text}");
+        let again = Config::parse_text(&text).unwrap();
+        assert_eq!(again.lang(), "zh");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

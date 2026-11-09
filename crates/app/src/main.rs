@@ -651,49 +651,87 @@ fn tabby_config_path() -> std::path::PathBuf {
     base.join("tabby").join("config.yaml")
 }
 
+/// 界面文案二选一：`lang == "zh"` 用中文，否则英文（未知语言已在 config 层回退）。
+fn ui_text<'a>(lang: &str, en: &'a str, zh: &'a str) -> &'a str {
+    if lang == "zh" {
+        zh
+    } else {
+        en
+    }
+}
+
 /// 设置分类显示名；下标就是 Slint 侧的 `settings-category`。
 /// 0=Appearance 1=Terminal 2=Window 3=Advanced 4=Keys 5=Plugins 6=Vault 7=Profiles。
-const SETTINGS_CATS: [&str; 8] =
-    ["Appearance", "Terminal", "Window", "Advanced", "Keys", "Plugins", "Vault", "Profiles"];
+const SETTINGS_CATS_EN: [&str; 8] = [
+    "Appearance",
+    "Terminal",
+    "Window",
+    "Advanced",
+    "Keys",
+    "Plugins",
+    "Vault",
+    "Profiles",
+];
+const SETTINGS_CATS_ZH: [&str; 8] = [
+    "外观", "终端", "窗口", "高级", "快捷键", "插件", "保险库", "配置",
+];
 
-/// 设置搜索索引：(分类下标, 卡片锚点, 展示名, 关键词)。
+fn settings_cat_label(cat: i32, lang: &str) -> &'static str {
+    let i = cat.clamp(0, 7) as usize;
+    if lang == "zh" {
+        SETTINGS_CATS_ZH[i]
+    } else {
+        SETTINGS_CATS_EN[i]
+    }
+}
+
+/// 一条设置搜索索引：(分类下标, 卡片锚点, 英文名, 中文名, 关键词)。
 /// 锚点用于搜索结果点击后把内容滚到对应卡片并高亮；卡片 id 在 Slint 侧同名。
-const SETTINGS_CATALOG: &[(i32, &str, &str, &str)] = &[
-    (0, "theme", "Theme / Color scheme", "theme color scheme appearance dark light 主题 配色"),
-    (0, "background", "Background image", "background image wallpaper picture path 背景 壁纸"),
-    (0, "background", "Background opacity", "background opacity transparency alpha 背景 透明 不透明度"),
-    (0, "background", "Background dim", "background dim mask overlay 背景 遮罩 压暗"),
-    (0, "cursor", "Cursor shape", "cursor shape block underline ibeam beam 光标 形状"),
-    (0, "cursor", "Cursor blink", "cursor blink on off system 光标 闪烁"),
-    (0, "cursor", "Cursor color", "cursor color colour text 光标 颜色"),
-    (0, "bold", "Bold is bright", "bold bright ansi color 粗体 亮色"),
-    (0, "bold", "Bold color", "bold color same as fg 粗体 颜色"),
-    (1, "text", "Font size", "font size text zoom 字号"),
-    (1, "scrollback", "Scrollback", "scrollback history lines 回滚 历史"),
-    (1, "scrollback", "Unlimited scrollback", "unlimited scrollback history cap memory 无限 历史 内存"),
-    (1, "behavior", "Copy on select", "copy select clipboard 复制 选区"),
-    (1, "behavior", "Confirm before closing", "confirm close window exit 确认 关闭"),
-    (1, "behavior", "Restore session on startup", "restore session startup workspace tabs splits cwd 会话 恢复 启动"),
-    (1, "behavior", "Confirm multi-line paste", "paste multiline confirm 粘贴 确认"),
-    (1, "behavior", "Right click", "right click menu paste clipboard 右键"),
-    (1, "behavior", "Paste on middle-click", "middle click paste 中键 粘贴"),
-    (1, "behavior", "Desktop notifications", "desktop notification notify-send 通知"),
-    (1, "bell", "Visual bell", "visual bell BEL flash border 视觉铃"),
-    (1, "bell", "Audible bell", "audible bell BEL beep sound system 响铃 声音"),
-    (1, "scroll", "Scroll on output", "scroll output follow bottom 输出 跟随 滚动"),
-    (1, "scroll", "Scroll on keystroke", "scroll keystroke keyboard bottom 按键 回底 滚动"),
-    (1, "scrollbar", "Scrollbar policy", "scrollbar always auto never policy 滚动条"),
-    (1, "images", "Sixel inline images", "sixel image inline graphics 图片"),
-    (1, "images", "iTerm2 IIP images", "iterm2 iip osc 1337 image inline png jpeg 图片"),
-    (1, "keys", "Backspace / Delete binding", "backspace delete ascii del control-h key encoding 退格 删除 编码"),
-    (2, "window", "Tab bar at bottom", "tab bar position bottom top 标签栏"),
-    (2, "window", "Quake mode", "quake drop down hotkey F12 下拉"),
-    (3, "config", "Config file path", "config path file folder 配置 路径"),
-    (3, "config", "Import / export", "import export tabby profiles 导入 导出"),
-    (4, "hotkeys", "Hotkey bindings", "hotkey shortcut key binding 快捷键"),
-    (5, "plugins", "Installed plugins", "plugin plugins installed list 插件"),
-    (6, "vault", "Vault / master password", "vault master password credentials 凭据 解锁 锁定"),
-    (7, "profiles", "Profiles", "profile connection ssh serial telnet 连接 配置"),
+/// 名称/关键词同时索引中英文，展示行跟随当前 UI 语言。
+struct SettingsCatalogEntry {
+    cat: i32,
+    section: &'static str,
+    en: &'static str,
+    zh: &'static str,
+    keywords: &'static str,
+}
+
+const SETTINGS_CATALOG: &[SettingsCatalogEntry] = &[
+    SettingsCatalogEntry { cat: 0, section: "theme", en: "Theme / Color scheme", zh: "主题 / 配色方案", keywords: "theme color scheme appearance dark light 主题 配色 外观 深色 浅色" },
+    SettingsCatalogEntry { cat: 0, section: "background", en: "Background image", zh: "背景图", keywords: "background image wallpaper picture path 背景 壁纸 图片 路径" },
+    SettingsCatalogEntry { cat: 0, section: "background", en: "Background opacity", zh: "背景不透明度", keywords: "background opacity transparency alpha 背景 透明 不透明度" },
+    SettingsCatalogEntry { cat: 0, section: "background", en: "Background dim", zh: "背景暗化", keywords: "background dim mask overlay 背景 遮罩 压暗 暗化" },
+    SettingsCatalogEntry { cat: 0, section: "cursor", en: "Cursor shape", zh: "光标形状", keywords: "cursor shape block underline ibeam beam 光标 形状" },
+    SettingsCatalogEntry { cat: 0, section: "cursor", en: "Cursor blink", zh: "光标闪烁", keywords: "cursor blink on off system 光标 闪烁" },
+    SettingsCatalogEntry { cat: 0, section: "cursor", en: "Cursor color", zh: "光标颜色", keywords: "cursor color colour text 光标 颜色" },
+    SettingsCatalogEntry { cat: 0, section: "bold", en: "Bold is bright", zh: "粗体使用亮色", keywords: "bold bright ansi color 粗体 亮色" },
+    SettingsCatalogEntry { cat: 0, section: "bold", en: "Bold color", zh: "粗体颜色", keywords: "bold color same as fg 粗体 颜色" },
+    SettingsCatalogEntry { cat: 1, section: "text", en: "Font size", zh: "字号", keywords: "font size text zoom 字号 字体" },
+    SettingsCatalogEntry { cat: 1, section: "scrollback", en: "Scrollback", zh: "回滚缓冲", keywords: "scrollback history lines 回滚 历史 缓冲" },
+    SettingsCatalogEntry { cat: 1, section: "scrollback", en: "Unlimited scrollback", zh: "无限回滚", keywords: "unlimited scrollback history cap memory 无限 历史 内存" },
+    SettingsCatalogEntry { cat: 1, section: "behavior", en: "Copy on select", zh: "选中即复制", keywords: "copy select clipboard 复制 选区" },
+    SettingsCatalogEntry { cat: 1, section: "behavior", en: "Confirm before closing", zh: "关闭前确认", keywords: "confirm close window exit 确认 关闭" },
+    SettingsCatalogEntry { cat: 1, section: "behavior", en: "Restore session on startup", zh: "启动时恢复会话", keywords: "restore session startup workspace tabs splits cwd 会话 恢复 启动" },
+    SettingsCatalogEntry { cat: 1, section: "behavior", en: "Confirm multi-line paste", zh: "多行粘贴前确认", keywords: "paste multiline confirm 粘贴 确认 多行" },
+    SettingsCatalogEntry { cat: 1, section: "behavior", en: "Right click", zh: "右键", keywords: "right click menu paste clipboard 右键" },
+    SettingsCatalogEntry { cat: 1, section: "behavior", en: "Paste on middle-click", zh: "中键粘贴", keywords: "middle click paste 中键 粘贴" },
+    SettingsCatalogEntry { cat: 1, section: "behavior", en: "Desktop notifications", zh: "桌面通知", keywords: "desktop notification notify-send 通知 桌面" },
+    SettingsCatalogEntry { cat: 1, section: "bell", en: "Visual bell", zh: "视觉铃", keywords: "visual bell BEL flash border 视觉铃 响铃" },
+    SettingsCatalogEntry { cat: 1, section: "bell", en: "Audible bell", zh: "声音铃", keywords: "audible bell BEL beep sound system 响铃 声音" },
+    SettingsCatalogEntry { cat: 1, section: "scroll", en: "Scroll on output", zh: "输出时滚动", keywords: "scroll output follow bottom 输出 跟随 滚动" },
+    SettingsCatalogEntry { cat: 1, section: "scroll", en: "Scroll on keystroke", zh: "按键时滚动", keywords: "scroll keystroke keyboard bottom 按键 回底 滚动" },
+    SettingsCatalogEntry { cat: 1, section: "scrollbar", en: "Scrollbar policy", zh: "滚动条策略", keywords: "scrollbar always auto never policy 滚动条 策略" },
+    SettingsCatalogEntry { cat: 1, section: "images", en: "Sixel inline images", zh: "Sixel 内联图片", keywords: "sixel image inline graphics 图片 内联" },
+    SettingsCatalogEntry { cat: 1, section: "images", en: "iTerm2 IIP images", zh: "iTerm2 IIP 图片", keywords: "iterm2 iip osc 1337 image inline png jpeg 图片" },
+    SettingsCatalogEntry { cat: 1, section: "keys", en: "Backspace / Delete binding", zh: "退格 / 删除绑定", keywords: "backspace delete ascii del control-h key encoding 退格 删除 编码" },
+    SettingsCatalogEntry { cat: 2, section: "window", en: "Tab bar at bottom", zh: "标签栏置底", keywords: "tab bar position bottom top 标签栏 位置 底部" },
+    SettingsCatalogEntry { cat: 2, section: "window", en: "Quake mode", zh: "Quake 模式", keywords: "quake drop down hotkey F12 下拉 模式" },
+    SettingsCatalogEntry { cat: 3, section: "config", en: "Config file path", zh: "配置文件路径", keywords: "config path file folder 配置 路径 文件" },
+    SettingsCatalogEntry { cat: 3, section: "config", en: "Import / export", zh: "导入 / 导出", keywords: "import export tabby profiles 导入 导出" },
+    SettingsCatalogEntry { cat: 4, section: "hotkeys", en: "Hotkey bindings", zh: "快捷键绑定", keywords: "hotkey shortcut key binding 快捷键 绑定" },
+    SettingsCatalogEntry { cat: 5, section: "plugins", en: "Installed plugins", zh: "已安装插件", keywords: "plugin plugins installed list 插件 已安装" },
+    SettingsCatalogEntry { cat: 6, section: "vault", en: "Vault / master password", zh: "保险库 / 主密码", keywords: "vault master password credentials 凭据 解锁 锁定 保险库 主密码" },
+    SettingsCatalogEntry { cat: 7, section: "profiles", en: "Profiles", zh: "配置", keywords: "profile connection ssh serial telnet 连接 配置" },
 ];
 
 /// 一条设置搜索命中：分类、卡片锚点、展示行（分类 · 名称）。
@@ -703,34 +741,87 @@ struct SettingsHit {
     line: String,
 }
 
-/// 设置搜索：大小写不敏感的子串匹配（名称或关键词）。
-fn settings_search_hits(query: &str) -> Vec<SettingsHit> {
+/// 设置搜索：大小写不敏感的子串匹配（中英文名称或关键词都索引）；
+/// 结果展示行跟随 `lang`，避免中文界面出现英文分类名。
+fn settings_search_hits(query: &str, lang: &str) -> Vec<SettingsHit> {
     let q = query.trim().to_lowercase();
     if q.is_empty() {
         return Vec::new();
     }
     SETTINGS_CATALOG
         .iter()
-        .filter(|(_, _, label, keywords)| {
-            label.to_lowercase().contains(&q) || keywords.to_lowercase().contains(&q)
+        .filter(|e| {
+            e.en.to_lowercase().contains(&q)
+                || e.zh.contains(&q)
+                || e.keywords.to_lowercase().contains(&q)
         })
-        .map(|(cat, section, label, _)| SettingsHit {
-            cat: *cat,
-            section,
-            line: format!("{} · {label}", SETTINGS_CATS[*cat as usize]),
+        .map(|e| SettingsHit {
+            cat: e.cat,
+            section: e.section,
+            line: format!(
+                "{} · {}",
+                settings_cat_label(e.cat, lang),
+                ui_text(lang, e.en, e.zh)
+            ),
         })
         .collect()
 }
 
-/// 兼容单测/旧调用：只返回 (分类, 展示行)。
+/// 兼容单测/旧调用：只返回 (分类, 展示行)，默认英文。
+#[cfg(test)]
 fn settings_search(query: &str) -> Vec<(i32, String)> {
-    settings_search_hits(query).into_iter().map(|h| (h.cat, h.line)).collect()
+    settings_search_hits(query, "en")
+        .into_iter()
+        .map(|h| (h.cat, h.line))
+        .collect()
+}
+
+/// 内置命令的中文标题。命令表保持稳定英文 ID；插件命令没有翻译时回退原名。
+fn command_title(lang: &str, id: &str, fallback: &'static str) -> &'static str {
+    if lang != "zh" {
+        return fallback;
+    }
+    match id {
+        "window.new" => "新建窗口",
+        "tab.new" => "新建标签",
+        "tab.search" => "搜索标签",
+        "tab.close" => "关闭标签",
+        "tab.next" => "下一个标签",
+        "tab.prev" => "上一个标签",
+        "tab.duplicate" => "复制标签",
+        "tab.reopen-closed" => "重新打开已关闭标签",
+        "pane.split-right" => "向右拆分",
+        "pane.split-down" => "向下拆分",
+        "pane.close" => "关闭窗格",
+        "pane.focus-next" => "聚焦下一个窗格",
+        "terminal.copy" => "复制",
+        "terminal.paste" => "粘贴",
+        "terminal.find" => "查找",
+        "terminal.clear" => "清屏",
+        "terminal.select-all" => "全选",
+        "terminal.toggle-read-only" => "切换只读",
+        "terminal.reset" => "重置终端",
+        "terminal.reset-and-clear" => "重置并清空",
+        "terminal.save-contents" => "保存内容…",
+        "view.command-palette" => "命令面板",
+        "view.toggle-fullscreen" => "切换全屏",
+        "view.toggle-quake" => "切换 Quake 模式",
+        "view.zoom-in" => "放大",
+        "view.zoom-out" => "缩小",
+        "view.zoom-reset" => "重置缩放",
+        "session.restart" => "重启会话",
+        "session.reattach" => "重连后台会话",
+        "settings.open" => "打开设置",
+        _ => fallback,
+    }
 }
 
 /// Hotkeys 页数据：按分类/标题排序，返回 (摘要, 行, 行对应的命令 ID)。
+/// 摘要/命令标题/空绑定都跟随 `lang`，避免中文设置页出现整句英文。
 fn hotkey_rows(
     reg: &commands::Registry,
     overrides: &[commands::HotkeyOverride],
+    lang: &str,
 ) -> (String, Vec<HotkeyRow>, Vec<&'static str>) {
     let conflicts = reg.effective_conflicts(overrides);
     let mut cmds: Vec<&commands::Command> = reg.all().iter().collect();
@@ -746,7 +837,11 @@ fn hotkey_rows(
                 .is_some_and(|o| commands::Chord::parse(&o.chord).is_ok())
         })
         .count();
-    let summary = format!("{} commands · {bound} bound · {custom} custom", cmds.len());
+    let summary = if lang == "zh" {
+        format!("{} 条命令 · {bound} 条已绑定 · {custom} 条自定义", cmds.len())
+    } else {
+        format!("{} commands · {bound} bound · {custom} custom", cmds.len())
+    };
     let rows: Vec<HotkeyRow> = cmds
         .iter()
         .map(|c| {
@@ -759,11 +854,11 @@ fn hotkey_rows(
                 .is_some_and(|s| conflicts.iter().any(|c| c.shortcut == *s));
             let chord: slint::SharedString = shortcut
                 .map(|s| s.to_string())
-                .unwrap_or_else(|| "(none)".to_string())
+                .unwrap_or_else(|| ui_text(lang, "(none)", "（无）").to_string())
                 .into();
             HotkeyRow {
                 command: c.id.into(),
-                title: c.title.into(),
+                title: command_title(lang, c.id, c.title).into(),
                 chord,
                 custom,
                 conflict,
@@ -776,7 +871,7 @@ fn hotkey_rows(
 
 /// 重新计算 Hotkeys 页（保存/重置后调用），并同步录制行状态。
 fn refresh_hotkeys(st: &mut AppState) {
-    let (summary, rows, ids) = hotkey_rows(&st.commands, &st.cfg.hotkeys);
+    let (summary, rows, ids) = hotkey_rows(&st.commands, &st.cfg.hotkeys, st.cfg.lang());
     st.hotkey_ids = ids;
     st.hotkey_model.set_vec(rows);
     st.ui.set_hotkey_summary(summary.as_str().into());
@@ -790,22 +885,69 @@ fn refresh_hotkeys(st: &mut AppState) {
     st.ui.set_hotkey_recording_row(recording);
 }
 
+/// 插件平台产出的展示行是英文状态词；在 UI 层按语言替换，插件名/描述等
+/// 用户数据保持原样（不擅自翻译第三方内容）。
+fn localize_plugin_line(line: &str, lang: &str) -> String {
+    if lang != "zh" {
+        return line.replace("（仅声明/未授予）", " (declared only)");
+    }
+    line.replace(" — enabled", " — 已启用")
+        .replace(" — disabled", " — 已禁用")
+        .replace(" · running", " · 运行中")
+        .replace(" · starting", " · 启动中")
+        .replace(" · stopped", " · 已停止")
+        .replace(" · restarting ", " · 重启中 ")
+        .replace(" · disabled: ", " · 已禁用：")
+        .replace(" · disabled", " · 已禁用")
+        .replace(" · invalid", " · 无效")
+        .replace(" · status", " · 状态")
+        .replace(" · theme-error: ", " · 主题错误：")
+        .replace(" · theme", " · 主题")
+        .replace(" command(s)", " 条命令")
+        .replace(" event(s)", " 个事件")
+        .replace("（仅声明/未授予）", "（仅声明/未授予）")
+}
+
+/// 最近活动行：动作/结果词跟随语言；插件名与输出摘要原样保留。
+fn localize_plugin_activity(line: &str, lang: &str) -> String {
+    if lang != "zh" {
+        return line.to_string();
+    }
+    line.replace(" · command ", " · 命令 ")
+        .replace(" · event ", " · 事件 ")
+        .replace(" · timeout", " · 超时")
+        .replace(" · signal", " · 信号")
+        .replace(" · spawn-error", " · 启动失败")
+        .replace(" · exit=", " · 退出=")
+}
+
 /// 刷新 Plugins 设置页：已安装清单、统计、目录与最近活动。
 fn refresh_plugin_page(st: &mut AppState) {
+    let lang = st.cfg.lang();
     let lines: Vec<slint::SharedString> = st
         .plugins
         .display_lines()
         .iter()
-        .map(|line| line.as_str().into())
+        .map(|line| localize_plugin_line(line, lang).into())
         .collect();
     st.plugin_model.set_vec(lines);
-    let summary = format!(
-        "{} plugins · {} enabled · {} commands · {} skipped",
-        st.plugins.total_count(),
-        st.plugins.enabled_count(),
-        st.plugins.enabled_command_count(),
-        st.plugins.skipped.len()
-    );
+    let summary = if lang == "zh" {
+        format!(
+            "{} 个插件 · {} 个已启用 · {} 条命令 · {} 个跳过",
+            st.plugins.total_count(),
+            st.plugins.enabled_count(),
+            st.plugins.enabled_command_count(),
+            st.plugins.skipped.len()
+        )
+    } else {
+        format!(
+            "{} plugins · {} enabled · {} commands · {} skipped",
+            st.plugins.total_count(),
+            st.plugins.enabled_count(),
+            st.plugins.enabled_command_count(),
+            st.plugins.skipped.len()
+        )
+    };
     st.ui.set_plugin_summary(summary.as_str().into());
     st.ui.set_plugin_dir(
         plugin::PluginStore::dir()
@@ -828,7 +970,11 @@ fn refresh_plugin_activity(st: &mut AppState, force: bool) {
         return;
     }
     st.plugin_activity_revision = revision;
-    let rows: Vec<slint::SharedString> = lines.iter().map(|line| line.as_str().into()).collect();
+    let lang = st.cfg.lang();
+    let rows: Vec<slint::SharedString> = lines
+        .iter()
+        .map(|line| localize_plugin_activity(line, lang).into())
+        .collect();
     let row_count = rows.len();
     st.plugin_activity_model.set_vec(rows);
     // rev=0 是首次空表填充，不打日志；有活动时记录 UI 实际刷新时间，
@@ -908,10 +1054,28 @@ fn dispatch_plugin_event(
     }
 }
 
-fn hotkey_title(reg: &commands::Registry, id: &str) -> String {
+fn hotkey_title(reg: &commands::Registry, lang: &str, id: &str) -> String {
     reg.get(id)
-        .map(|c| c.title.to_string())
+        .map(|c| command_title(lang, c.id, c.title).to_string())
         .unwrap_or_else(|| id.to_string())
+}
+
+/// 命令层只产出中文的快捷键校验错误；英文界面下做最小映射，
+/// 解析器/底层错误保持原样（不伪装成已翻译）。
+fn localize_hotkey_error(lang: &str, err: String) -> String {
+    if lang != "en" {
+        return err;
+    }
+    if let Some(rest) = err.strip_prefix("冲突：") {
+        return format!("Conflict: {rest}");
+    }
+    if let Some(rest) = err.strip_prefix("未知命令: ") {
+        return format!("Unknown command: {rest}");
+    }
+    if err.starts_with("快捷键需要") {
+        return "Shortcut requires Ctrl/Alt/Meta, or F1–F24".to_string();
+    }
+    err
 }
 
 /// 进入录制：先让终端 IME 宿主拿回焦点，否则按键会落在设置搜索框里。
@@ -919,11 +1083,15 @@ fn start_hotkey_edit(st: &mut AppState, index: i32) {
     let Some(id) = st.hotkey_ids.get(index.max(0) as usize).copied() else {
         return;
     };
-    let title = hotkey_title(&st.commands, id);
+    let title = hotkey_title(&st.commands, st.cfg.lang(), id);
     st.hotkey_recording = Some(id);
     st.ui.set_hotkey_error("".into());
-    st.ui
-        .set_hotkey_status(format!("录制「{title}」：按下新的组合键").into());
+    let status = if st.cfg.lang() == "zh" {
+        format!("录制「{title}」：按下新的组合键")
+    } else {
+        format!("Recording \"{title}\": press a new chord")
+    };
+    st.ui.set_hotkey_status(status.into());
     st.ui.set_hotkey_recording_row(index.max(0));
     st.ui.invoke_focus_terminal();
     eprintln!("[hotkey] record start {id}");
@@ -931,7 +1099,8 @@ fn start_hotkey_edit(st: &mut AppState, index: i32) {
 
 fn cancel_hotkey_edit(st: &mut AppState) {
     if st.hotkey_recording.take().is_some() {
-        st.ui.set_hotkey_status("已取消录制".into());
+        st.ui
+            .set_hotkey_status(ui_text(st.cfg.lang(), "Recording cancelled", "已取消录制").into());
         eprintln!("[hotkey] record cancel");
     }
     st.ui.set_hotkey_error("".into());
@@ -943,7 +1112,7 @@ fn reset_hotkey(st: &mut AppState, index: i32) {
     let Some(id) = st.hotkey_ids.get(index.max(0) as usize).copied() else {
         return;
     };
-    let title = hotkey_title(&st.commands, id);
+    let title = hotkey_title(&st.commands, st.cfg.lang(), id);
     let removed = commands::clear_override(&mut st.cfg.hotkeys, id);
     if removed {
         st.cfg.save();
@@ -953,8 +1122,12 @@ fn reset_hotkey(st: &mut AppState, index: i32) {
         st.ui.invoke_focus_terminal();
     }
     st.ui.set_hotkey_error("".into());
-    st.ui
-        .set_hotkey_status(format!("{title} 已恢复默认").into());
+    let status = if st.cfg.lang() == "zh" {
+        format!("{title} 已恢复默认")
+    } else {
+        format!("{title} reset to default")
+    };
+    st.ui.set_hotkey_status(status.into());
     refresh_hotkeys(st);
     eprintln!("[hotkey] reset {id} removed={removed}");
 }
@@ -967,8 +1140,12 @@ fn reset_all_hotkeys(st: &mut AppState) {
     }
     st.hotkey_recording = None;
     st.ui.set_hotkey_error("".into());
-    st.ui
-        .set_hotkey_status(format!("已重置 {count} 条自定义快捷键").into());
+    let status = if st.cfg.lang() == "zh" {
+        format!("已重置 {count} 条自定义快捷键")
+    } else {
+        format!("Reset {count} custom shortcuts")
+    };
+    st.ui.set_hotkey_status(status.into());
     st.ui.invoke_focus_terminal();
     refresh_hotkeys(st);
     eprintln!("[hotkey] reset all count={count}");
@@ -987,15 +1164,19 @@ fn record_hotkey_key(st: &mut AppState, text: &str, ctrl: bool, alt: bool, shift
             return;
         }
         if text == "\u{8}" || text == "\u{7f}" {
-            let title = hotkey_title(&st.commands, id);
+            let title = hotkey_title(&st.commands, st.cfg.lang(), id);
             let removed = commands::clear_override(&mut st.cfg.hotkeys, id);
             if removed {
                 st.cfg.save();
             }
             st.hotkey_recording = None;
             st.ui.set_hotkey_error("".into());
-            st.ui
-                .set_hotkey_status(format!("{title} 已恢复默认").into());
+            let status = if st.cfg.lang() == "zh" {
+                format!("{title} 已恢复默认")
+            } else {
+                format!("{title} reset to default")
+            };
+            st.ui.set_hotkey_status(status.into());
             refresh_hotkeys(st);
             st.ui.invoke_focus_terminal();
             eprintln!("[hotkey] record clear {id} removed={removed}");
@@ -1011,19 +1192,24 @@ fn record_hotkey_key(st: &mut AppState, text: &str, ctrl: bool, alt: bool, shift
         .validate_override(id, &canonical, &st.cfg.hotkeys)
     {
         Ok(chord) => {
-            let title = hotkey_title(&st.commands, id);
+            let title = hotkey_title(&st.commands, st.cfg.lang(), id);
             commands::set_override(&mut st.cfg.hotkeys, id, &chord);
             st.cfg.save();
             st.hotkey_recording = None;
             st.ui.set_hotkey_error("".into());
-            st.ui
-                .set_hotkey_status(format!("{title} → {}（已保存）", chord).into());
+            let status = if st.cfg.lang() == "zh" {
+                format!("{title} → {}（已保存）", chord)
+            } else {
+                format!("{title} → {} (saved)", chord)
+            };
+            st.ui.set_hotkey_status(status.into());
             refresh_hotkeys(st);
             st.ui.invoke_focus_terminal();
             eprintln!("[hotkey] saved {id} = {canonical}");
         }
         Err(err) => {
             eprintln!("[hotkey] rejected {id} {canonical:?}: {err}");
+            let err = localize_hotkey_error(st.cfg.lang(), err);
             st.ui.set_hotkey_error(err.into());
         }
     }
@@ -1048,7 +1234,12 @@ fn push_theme(st: &mut AppState, theme: &ThemeData) {
     let auto = is_auto_theme(&st.cfg.theme);
     st.ui.set_auto_resolved(if auto { theme.label.as_str().into() } else { "".into() });
     st.ui.set_theme_display(if auto {
-        format!("Auto · {}", theme.label).into()
+        format!(
+            "{} · {}",
+            ui_text(st.cfg.lang(), "Auto", "自动"),
+            theme.label
+        )
+        .into()
     } else {
         theme.label.as_str().into()
     });
@@ -1098,6 +1289,22 @@ fn sync_renderer_opacity(st: &mut AppState) {
 
 /// 应用用户输入/配置里的背景图路径。空路径 = 关闭；非法路径/解码失败只返回错误，
 /// 不改变当前已生效的背景（设置页据此显示红字并回退到上一张图/纯色）。
+fn localize_background_error(lang: &str, err: String) -> String {
+    if lang != "en" {
+        return err;
+    }
+    if let Some(rest) = err.strip_prefix("不是普通文件：") {
+        return format!("Not a regular file: {rest}");
+    }
+    if let Some(rest) = err.strip_prefix("文件不存在：") {
+        return format!("File does not exist: {rest}");
+    }
+    if let Some(rest) = err.strip_prefix("无法访问 ") {
+        return format!("Cannot access {rest}");
+    }
+    err
+}
+
 fn apply_background_image(st: &mut AppState, raw: &str) -> Result<(), String> {
     match config::resolve_background_image(raw) {
         Ok(None) => {
@@ -1116,12 +1323,16 @@ fn apply_background_image(st: &mut AppState, raw: &str) -> Result<(), String> {
                 eprintln!("[theme] 背景图 {} 已加载", path.display());
                 Ok(())
             }
-            Err(_) => Err(format!(
-                "无法解码图片（支持 PNG/JPEG/SVG）：{}",
-                path.display()
-            )),
+            Err(_) => Err(if st.cfg.lang() == "zh" {
+                format!("无法解码图片（支持 PNG/JPEG/SVG）：{}", path.display())
+            } else {
+                format!(
+                    "Cannot decode image (PNG/JPEG/SVG supported): {}",
+                    path.display()
+                )
+            }),
         },
-        Err(e) => Err(e),
+        Err(e) => Err(localize_background_error(st.cfg.lang(), e)),
     }
 }
 
@@ -1242,6 +1453,7 @@ fn reconfig_summary(old: &Config, new: &Config) -> ReconfigSummary {
             s.hot.push(name);
         }
     };
+    hot(old.language != new.language, "language");
     hot(
         old.theme != new.theme
             || old.auto_dark != new.auto_dark
@@ -1359,6 +1571,7 @@ fn apply_external_config(st: &mut AppState, new_cfg: Config) {
         return;
     }
     let summary = reconfig_summary(&old, &new_cfg);
+    let language_changed = old.lang() != new_cfg.lang();
     let theme_changed = old.theme != new_cfg.theme
         || old.auto_dark != new_cfg.auto_dark
         || old.auto_light != new_cfg.auto_light;
@@ -1471,6 +1684,9 @@ fn apply_external_config(st: &mut AppState, new_cfg: Config) {
     }
 
     sync_reload_ui(st);
+    if language_changed {
+        sync_language_ui(st);
+    }
     if tabbar_changed {
         st.ime_spot_dirty = true;
         update_ime_spot(st);
@@ -1493,6 +1709,7 @@ fn apply_external_config(st: &mut AppState, new_cfg: Config) {
 
 /// 外部热更新后同步设置页控件状态。只改 Slint 属性，不触发回调、不写盘。
 fn sync_reload_ui(st: &mut AppState) {
+    st.ui.set_language(st.cfg.lang().into());
     st.ui.set_font_size(st.cfg.font_size as i32);
     st.ui.set_scrollback(st.cfg.scrollback as i32);
     st.ui
@@ -1538,6 +1755,38 @@ fn sync_reload_ui(st: &mut AppState) {
         .set_cfg_bold_color_same_as_fg(st.cfg.bold_color_same_as_fg);
     st.ui.set_cfg_quake(st.cfg.quake_enabled);
     st.ui.set_tabbar_bottom(st.cfg.tabbar_position == "bottom");
+}
+
+/// 退出设置搜索/清空后重算结果；展示行与“无匹配”状态跟随当前语言。
+fn refresh_settings_results(st: &mut AppState) {
+    let q = st.ui.get_settings_query().to_string();
+    let hits = settings_search_hits(&q, st.cfg.lang());
+    st.settings_result_cats = hits.iter().map(|h| h.cat).collect();
+    st.settings_result_sections = hits.iter().map(|h| h.section).collect();
+    st.settings_model
+        .set_vec(hits.into_iter().map(|h| h.line.into()).collect::<Vec<_>>());
+}
+
+/// 语言切换/外部热更新后统一刷新：静态文案由 Slint `Lang.t` 自动重算，
+/// 这里只重建 Rust 侧动态数据（快捷键/插件/Vault/配置/搜索/主题显示名）。
+fn sync_language_ui(st: &mut AppState) {
+    let lang = st.cfg.lang().to_string();
+    st.ui.set_language(lang.as_str().into());
+    refresh_hotkeys(st);
+    refresh_plugin_page(st);
+    refresh_vault_ui(st);
+    refresh_profiles(st);
+    let theme_display = if is_auto_theme(&st.cfg.theme) {
+        format!(
+            "{} · {}",
+            ui_text(&lang, "Auto", "自动"),
+            st.resolved_theme.label
+        )
+    } else {
+        st.resolved_theme.label.clone()
+    };
+    st.ui.set_theme_display(theme_display.into());
+    refresh_settings_results(st);
 }
 
 /// 启动一次 `gsettings monitor` 监听；启动失败（非 GNOME、无 gsettings）就静默放弃。
@@ -2034,6 +2283,14 @@ fn refresh_background(st: &mut AppState) {
 /// 避免过滤后 “点第 0 行却打开第 0 个 store 项” 的错位。
 fn refresh_profiles(st: &mut AppState) {
     let default_id = st.cfg.default_profile_id;
+    let lang = st.cfg.lang();
+    let kind_label = |kind: &str| -> String {
+        match kind {
+            "local" => ui_text(lang, "local", "本地").to_string(),
+            "serial" => ui_text(lang, "serial", "串口").to_string(),
+            other => other.to_string(),
+        }
+    };
     let indices = profile::filter_indices(&st.profiles.profiles, &st.profile_query);
     let items: Vec<ProfileRow> = indices
         .iter()
@@ -2041,14 +2298,20 @@ fn refresh_profiles(st: &mut AppState) {
             let p = st.profiles.profiles.get(i)?;
             Some(ProfileRow {
                 id: p.id as i32,
-                label: format!("[{}] {}", p.kind, p.name).into(),
+                label: format!("[{}] {}", kind_label(&p.kind), p.name).into(),
                 is_default: default_id != 0 && p.id == default_id,
             })
         })
         .collect();
     let default_info = match st.profiles.default_index(default_id) {
-        Some(i) => format!("New tab default: {}", st.profiles.profiles[i].name),
-        None => "New tab default: system shell".to_string(),
+        Some(i) => {
+            if lang == "zh" {
+                format!("新标签默认：{}", st.profiles.profiles[i].name)
+            } else {
+                format!("New tab default: {}", st.profiles.profiles[i].name)
+            }
+        },
+        None => ui_text(lang, "New tab default: system shell", "新标签默认：系统 Shell").to_string(),
     };
     st.profile_indices = indices;
     st.profile_model.set_vec(items);
@@ -3013,21 +3276,43 @@ enum VaultAction {
     ChangeMaster,
 }
 
-/// Vault 状态文字（不含任何秘密）。
-fn vault_status_text(v: &vault::Vault) -> String {
+/// Vault 状态文字（不含任何秘密）。跟随 UI 语言。
+fn vault_status_text(v: &vault::Vault, lang: &str) -> String {
     match v.status() {
-        vault::VaultStatus::Uninitialized => "未初始化：设置主密码后创建 vault.enc".into(),
-        vault::VaultStatus::Locked => "已锁定：输入主密码后点 Unlock".into(),
-        vault::VaultStatus::Unlocked => format!("已解锁 · {} 条凭据", v.entry_count()),
+        vault::VaultStatus::Uninitialized => ui_text(
+            lang,
+            "Not initialized: set a master password to create vault.enc",
+            "未初始化：设置主密码后创建 vault.enc",
+        )
+        .into(),
+        vault::VaultStatus::Locked => ui_text(
+            lang,
+            "Locked: enter the master password and click Unlock",
+            "已锁定：输入主密码后点解锁",
+        )
+        .into(),
+        vault::VaultStatus::Unlocked => {
+            if lang == "zh" {
+                format!("已解锁 · {} 条凭据", v.entry_count())
+            } else {
+                format!("Unlocked · {} credential(s)", v.entry_count())
+            }
+        },
     }
 }
 
 /// 刷新设置页 Vault 状态/路径/条数（不清空错误提示）。
 fn refresh_vault_ui(st: &mut AppState) {
+    let lang = st.cfg.lang();
     let status = if st.vault_busy {
-        "正在后台派生密钥（Argon2id）…".to_string()
+        ui_text(
+            lang,
+            "Deriving key in background (Argon2id)…",
+            "正在后台派生密钥（Argon2id）…",
+        )
+        .to_string()
     } else {
-        vault_status_text(&st.vault)
+        vault_status_text(&st.vault, lang)
     };
     let path = st.vault.path().display().to_string();
     let entries = st.vault.entry_count() as i32;
@@ -3040,7 +3325,7 @@ fn refresh_vault_ui(st: &mut AppState) {
 /// 后台任务启动前统一防重入；返回 true = 已有任务在跑。
 fn vault_busy_guard(st: &mut AppState) -> bool {
     if st.vault_busy {
-        vault_fail(st, "Vault 正在后台派生密钥，请稍候（设置页仍可操作）");
+        vault_fail(st, ui_text(st.cfg.lang(), "Vault is deriving a key in the background; try again shortly (this page stays usable)", "Vault 正在后台派生密钥，请稍候（设置页仍可操作）"));
         return true;
     }
     false
@@ -3074,15 +3359,15 @@ fn poll_vault(st: &mut AppState) {
             refresh_vault_ui(st);
             match action {
                 Some(VaultAction::Initialize) => {
-                    vault_notice(st, "主密码已设置，Vault 已解锁（空 vault）");
+                    vault_notice(st, ui_text(st.cfg.lang(), "Master password set; Vault is unlocked (empty vault)", "主密码已设置，Vault 已解锁（空 vault）"));
                     eprintln!("[vault] 后台初始化完成");
                 },
                 Some(VaultAction::ChangeMaster) => {
-                    vault_notice(st, "主密码已更新；凭据已用新密钥重新加密");
+                    vault_notice(st, ui_text(st.cfg.lang(), "Master password updated; credentials re-encrypted with the new key", "主密码已更新；凭据已用新密钥重新加密"));
                     eprintln!("[vault] 后台改主密码完成");
                 },
                 _ => {
-                    vault_notice(st, format!("已解锁 · {entries} 条凭据"));
+                    vault_notice(st, if st.cfg.lang() == "zh" { format!("已解锁 · {entries} 条凭据") } else { format!("Unlocked · {entries} credential(s)") });
                     eprintln!("[vault] 后台解锁完成 entries={entries}");
                 },
             }
@@ -3103,7 +3388,7 @@ fn poll_vault(st: &mut AppState) {
             st.vault_busy = false;
             st.vault_action = None;
             refresh_vault_ui(st);
-            vault_fail(st, "Vault 后台任务异常结束（没有结果）");
+            vault_fail(st, ui_text(st.cfg.lang(), "Vault background task ended unexpectedly (no result)", "Vault 后台任务异常结束（没有结果）"));
         },
     }
 }
@@ -3131,7 +3416,7 @@ fn vault_set_master_password(st: &mut AppState) {
     }
     let master = st.ui.get_vault_password().to_string();
     if master.is_empty() {
-        vault_fail(st, "请输入主密码");
+        vault_fail(st, ui_text(st.cfg.lang(), "Enter the master password", "请输入主密码"));
         return;
     }
     let path = st.vault.path().to_path_buf();
@@ -3153,7 +3438,7 @@ fn vault_set_master_password(st: &mut AppState) {
             start_vault_task(st, VaultAction::ChangeMaster, task);
         },
         vault::VaultStatus::Locked => {
-            vault_fail(st, "Vault 已锁定：先用当前主密码解锁，再修改主密码");
+            vault_fail(st, ui_text(st.cfg.lang(), "Vault is locked: unlock with the current master password before changing it", "Vault 已锁定：先用当前主密码解锁，再修改主密码"));
         },
     }
 }
@@ -3165,7 +3450,7 @@ fn vault_unlock(st: &mut AppState) {
     }
     let master = st.ui.get_vault_password().to_string();
     if master.is_empty() {
-        vault_fail(st, "请输入主密码");
+        vault_fail(st, ui_text(st.cfg.lang(), "Enter the master password", "请输入主密码"));
         return;
     }
     let task = vault::VaultTask::unlock(st.vault.path().to_path_buf(), master, st.app_wake.clone());
@@ -3174,44 +3459,46 @@ fn vault_unlock(st: &mut AppState) {
 
 fn vault_lock(st: &mut AppState) {
     if st.vault_busy {
-        vault_fail(st, "Vault 正在后台派生密钥，完成后再锁定");
+        vault_fail(st, ui_text(st.cfg.lang(), "Vault is deriving a key; lock again when it finishes", "Vault 正在后台派生密钥，完成后再锁定"));
         return;
     }
     if st.vault.status() == vault::VaultStatus::Uninitialized {
-        vault_fail(st, "Vault 尚未初始化：先设置主密码");
+        vault_fail(st, ui_text(st.cfg.lang(), "Vault is not initialized: set a master password first", "Vault 尚未初始化：先设置主密码"));
         return;
     }
     st.vault.lock();
     st.ui.set_vault_password("".into());
     st.vault_clear_armed = false;
     refresh_vault_ui(st);
-    vault_notice(st, "已锁定：内存中的密钥/凭据已丢弃");
+    vault_notice(st, ui_text(st.cfg.lang(), "Locked: keys/credentials in memory were discarded", "已锁定：内存中的密钥/凭据已丢弃"));
     eprintln!("[vault] 已锁定");
 }
 
 fn vault_clear(st: &mut AppState) {
     if st.vault_busy {
-        vault_fail(st, "Vault 正在后台派生密钥，完成后再清空");
+        vault_fail(st, ui_text(st.cfg.lang(), "Vault is deriving a key; clear again when it finishes", "Vault 正在后台派生密钥，完成后再清空"));
         return;
     }
     if !st.vault.is_unlocked() {
-        vault_fail(st, "Vault 未解锁，无法清空");
+        vault_fail(st, ui_text(st.cfg.lang(), "Vault is locked; cannot clear", "Vault 未解锁，无法清空"));
         return;
     }
     if !st.vault_clear_armed {
         st.vault_clear_armed = true;
         let n = st.vault.entry_count();
-        vault_notice(
-            st,
-            format!("再次点击 Clear 确认清空 {n} 条凭据（主密码保留）"),
-        );
+        let notice = if st.cfg.lang() == "zh" {
+            format!("再次点击 Clear 确认清空 {n} 条凭据（主密码保留）")
+        } else {
+            format!("Click Clear again to erase {n} credential(s) (master password kept)")
+        };
+        vault_notice(st, notice);
         return;
     }
     st.vault_clear_armed = false;
     match st.vault.clear() {
         Ok(()) => {
             refresh_vault_ui(st);
-            vault_notice(st, "已清空全部凭据（vault.enc 与主密码保留）");
+            vault_notice(st, ui_text(st.cfg.lang(), "All credentials cleared (vault.enc and master password kept)", "已清空全部凭据（vault.enc 与主密码保留）"));
             eprintln!("[vault] 已清空全部凭据");
         }
         Err(e) => vault_fail(st, e.to_string()),
@@ -9279,43 +9566,75 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                             st.ui.set_theme_choices(theme_choices(&st.registry));
                         }
-                        let mut msg = format!(
-                            "已从 {} 导入 {} 个 Profile、{} 条快捷键、{} 个主题\
-                             （Profile 跳过 {}，快捷键未映射 {} / 跳过 {}，主题跳过 {}）",
-                            path.display(),
-                            report.added,
-                            report.hotkeys_added,
-                            report.themes_added,
-                            report.skipped.len(),
-                            report.hotkeys_unmapped.len(),
-                            report.hotkeys_skipped.len(),
-                            report.themes_skipped.len()
-                        );
+                        let lang = st.cfg.lang();
+                        let mut msg = if lang == "zh" {
+                            format!(
+                                "已从 {} 导入 {} 个 Profile、{} 条快捷键、{} 个主题\
+                                 （Profile 跳过 {}，快捷键未映射 {} / 跳过 {}，主题跳过 {}）",
+                                path.display(),
+                                report.added,
+                                report.hotkeys_added,
+                                report.themes_added,
+                                report.skipped.len(),
+                                report.hotkeys_unmapped.len(),
+                                report.hotkeys_skipped.len(),
+                                report.themes_skipped.len()
+                            )
+                        } else {
+                            format!(
+                                "Imported {} profiles, {} shortcuts, {} themes from {} \
+                                 (profiles skipped {}, hotkeys unmapped {} / skipped {}, themes skipped {})",
+                                report.added,
+                                report.hotkeys_added,
+                                report.themes_added,
+                                path.display(),
+                                report.skipped.len(),
+                                report.hotkeys_unmapped.len(),
+                                report.hotkeys_skipped.len(),
+                                report.themes_skipped.len()
+                            )
+                        };
                         let first_skip = report
                             .skipped
                             .first()
-                            .map(|(name, why)| format!("{name}（{why}）"))
+                            .map(|(name, why)| format!("{name} ({why})"))
                             .or_else(|| {
                                 report
                                     .hotkeys_skipped
                                     .first()
-                                    .map(|(id, why)| format!("{id}（{why}）"))
+                                    .map(|(id, why)| format!("{id} ({why})"))
                             })
                             .or_else(|| {
                                 report
                                     .themes_skipped
                                     .first()
-                                    .map(|(name, why)| format!("{name}（{why}）"))
+                                    .map(|(name, why)| format!("{name} ({why})"))
                             });
                         if let Some(skip) = first_skip {
-                            msg.push_str(&format!("；首个跳过：{skip}"));
+                            if lang == "zh" {
+                                msg.push_str(&format!("；首个跳过：{skip}"));
+                            } else {
+                                msg.push_str(&format!("; first skipped: {skip}"));
+                            }
                         }
                         eprintln!("[tabby] {msg}");
                         msg
                     }
-                    Err(e) => format!("导入失败: {e}"),
+                    Err(e) => {
+                        if st.cfg.lang() == "zh" {
+                            format!("导入失败: {e}")
+                        } else {
+                            format!("Import failed: {e}")
+                        }
+                    },
                 },
-                Err(e) => format!("读不到 {}: {e}", path.display()),
+                Err(e) => {
+                    if st.cfg.lang() == "zh" {
+                        format!("读不到 {}: {e}", path.display())
+                    } else {
+                        format!("Cannot read {}: {e}", path.display())
+                    }
+                }
             };
             st.ui.set_config_status(status.as_str().into());
         });
@@ -9327,15 +9646,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let yaml = tabby_import::export_yaml(&st.profiles);
             let status = match std::fs::write(&path, yaml) {
                 Ok(()) => {
-                    let msg = format!(
-                        "已导出 {} 个 Profile → {}",
-                        st.profiles.profiles.len(),
-                        path.display()
-                    );
+                    let msg = if st.cfg.lang() == "zh" {
+                        format!(
+                            "已导出 {} 个 Profile → {}",
+                            st.profiles.profiles.len(),
+                            path.display()
+                        )
+                    } else {
+                        format!(
+                            "Exported {} profiles → {}",
+                            st.profiles.profiles.len(),
+                            path.display()
+                        )
+                    };
                     eprintln!("[tabby] {msg}");
                     msg
                 }
-                Err(e) => format!("导出失败: {e}"),
+                Err(e) => {
+                    if st.cfg.lang() == "zh" {
+                        format!("导出失败: {e}")
+                    } else {
+                        format!("Export failed: {e}")
+                    }
+                }
             };
             st.ui.set_config_status(status.as_str().into());
         });
@@ -9828,7 +10161,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         with_app(|st| {
             let q = query.to_string();
             st.ui.set_settings_query(q.as_str().into());
-            let hits = settings_search_hits(&q);
+            let hits = settings_search_hits(&q, st.cfg.lang());
             st.settings_result_cats = hits.iter().map(|h| h.cat).collect();
             st.settings_result_sections = hits.iter().map(|h| h.section).collect();
             st.settings_model
@@ -10142,7 +10475,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ui.set_theme_name(if auto { AUTO_THEME.into() } else { initial_theme.id.as_str().into() });
         ui.set_auto_resolved(if auto { initial_theme.label.as_str().into() } else { "".into() });
         ui.set_theme_display(if auto {
-            format!("Auto · {}", initial_theme.label).into()
+            format!(
+                "{} · {}",
+                ui_text(cfg.lang(), "Auto", "自动"),
+                initial_theme.label
+            )
+            .into()
         } else {
             initial_theme.label.as_str().into()
         });
@@ -10155,6 +10493,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui.on_set_theme(|name| {
         eprintln!("[theme] 选择 -> {name}");
         with_app(|st| apply_theme(st, name.as_str()));
+    });
+
+    // Settings → Appearance → Language：立即切换静态文案（Slint 侧已先改
+    // root.language），Rust 侧再重建动态列表并写回 config；无需重启。
+    ui.on_language_changed(|code| {
+        with_app(|st| {
+            let next = config::normalize_language(code.as_str());
+            if st.cfg.language == next {
+                return;
+            }
+            st.cfg.language = next.clone();
+            st.cfg.save();
+            sync_language_ui(st);
+            eprintln!("[ui] language={next}");
+        });
     });
 
     // Appearance：背景图路径（空 = 关闭）。合法路径输入过程中即时加载/写盘；
@@ -10688,9 +11041,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if std::env::var_os("TERVO_TEST_SUSPEND_BG").is_some() {
             st.ui.set_background_suspended(true);
         }
+        st.ui.set_language(st.cfg.lang().into());
         refresh_hotkeys(st);
         refresh_vault_ui(st);
         refresh_plugin_page(st);
+        refresh_settings_results(st);
         eprintln!(
             "[plugin] 设置页 {} 个插件，{} 个启用，{} 条命令，跳过 {}",
             st.plugins.total_count(),
@@ -11304,6 +11659,177 @@ mod tests {
     }
 
     #[test]
+    fn language_change_is_hot_reload_and_search_follows_language() {
+        // 语言是热更新字段：不应被归类为 new_pane/restart。
+        let old = Config::default();
+        let mut next = old.clone();
+        next.language = "zh".into();
+        let summary = reconfig_summary(&old, &next);
+        assert!(summary.hot.contains(&"language"), "{summary:?}");
+        assert!(summary.new_pane.is_empty(), "{summary:?}");
+        assert!(summary.restart.is_empty(), "{summary:?}");
+
+        // 搜索索引中英都命中；展示行跟随语言，中文行不再出现英文分类名。
+        let en = settings_search_hits("sixel", "en");
+        let en_line = &en.iter().find(|h| h.section == "images").expect("en sixel").line;
+        assert!(en_line.contains("Terminal · Sixel"), "{en_line}");
+        assert!(!en_line.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)), "{en_line}");
+        let zh = settings_search_hits("sixel", "zh");
+        let zh_line = &zh.iter().find(|h| h.section == "images").expect("zh sixel").line;
+        assert!(zh_line.contains("终端 · Sixel"), "{zh_line}");
+        assert!(!zh_line.contains("Terminal"), "{zh_line}");
+        // 中文关键词也能搜到英文界面下的同一项。
+        assert!(settings_search_hits("光标", "en").iter().any(|h| h.cat == 0));
+        // 每个分类都有索引项，侧栏不会出现空页。
+        for cat in 0..SETTINGS_CATS_EN.len() as i32 {
+            assert!(
+                SETTINGS_CATALOG.iter().any(|e| e.cat == cat),
+                "settings 分类 {cat} 没有任何搜索索引项"
+            );
+        }
+    }
+
+    #[test]
+    fn command_titles_have_chinese_names_for_settings_page() {
+        assert_eq!(command_title("zh", "tab.new", "New Tab"), "新建标签");
+        assert_eq!(command_title("zh", "terminal.find", "Find"), "查找");
+        assert_eq!(command_title("en", "tab.new", "New Tab"), "New Tab");
+        // 插件命令没有内置翻译时回退原名，不 panic/不丢标题。
+        assert_eq!(command_title("zh", "plugin.demo.greet", "Greet"), "Greet");
+    }
+
+    /// 解析 Slint 源码里的 `Lang.t("en", "zh")` 对，供静态校验使用。
+    fn parse_lang_pairs(source: &str) -> Vec<(String, String)> {
+        fn quoted(s: &str, start: usize) -> Option<(String, usize)> {
+            let bytes = s.as_bytes();
+            if *bytes.get(start)? != b'"' {
+                return None;
+            }
+            let mut out = String::new();
+            let mut i = start + 1;
+            while i < bytes.len() {
+                match bytes[i] {
+                    b'\\' => {
+                        let next = *bytes.get(i + 1)?;
+                        match next {
+                            b'"' => out.push('"'),
+                            b'\\' => out.push('\\'),
+                            b'n' => out.push('\n'),
+                            b't' => out.push('\t'),
+                            b'{' => out.push_str("\\{"),
+                            b'}' => out.push_str("\\}"),
+                            other => out.push(other as char),
+                        }
+                        i += 2;
+                    },
+                    b'"' => return Some((out, i + 1)),
+                    _ => {
+                        let ch = s[i..].chars().next()?;
+                        out.push(ch);
+                        i += ch.len_utf8();
+                    },
+                }
+            }
+            None
+        }
+        let mut pairs = Vec::new();
+        for (idx, _) in source.match_indices("Lang.t(") {
+            let after = idx + "Lang.t(".len();
+            let Some((en, pos)) = quoted(source, after) else { continue };
+            let rest = &source[pos..];
+            let Some(comma) = rest.find(',') else { continue };
+            let zh_start = pos + comma + 1;
+            let Some((zh, _)) = quoted(source, source[zh_start..].find('"').map(|p| zh_start + p).unwrap_or(zh_start)) else { continue };
+            pairs.push((en, zh));
+        }
+        pairs
+    }
+
+    #[test]
+    fn settings_i18n_translation_pairs_are_clean() {
+        let source = include_str!("../ui/main.slint");
+        let pairs = parse_lang_pairs(source);
+        assert!(pairs.len() > 250, "Settings/菜单静态文案应全部走 Lang.t，实际 {} 对", pairs.len());
+        let has_cjk = |s: &str| s.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c));
+        for (en, zh) in &pairs {
+            // en 文案里绝不能混入中文。
+            assert!(!has_cjk(en), "英文文案混入中文: {en:?}");
+            // zh 文案必须有中文；ASCII DEL/Control-H 这类纯技术选项例外。
+            let technical = en == "ASCII DEL (0x7F)" || en == "Control-H (0x08)";
+            assert!(has_cjk(zh) || technical, "中文文案没有中文: {en:?} -> {zh:?}");
+        }
+    }
+
+    #[test]
+    fn settings_static_text_is_always_wrapped_in_lang_t() {
+        let source = include_str!("../ui/main.slint");
+        let settings = source
+            .split("// ================= Settings =================")
+            .nth(1)
+            .expect("Settings section");
+        let settings = settings.split("// profiles-open 的遮罩").next().unwrap();
+        let ctx = source
+            .split("// ---------------- 右键菜单 ----------------")
+            .nth(1)
+            .expect("context menu")
+            .split("// Profile 选择器菜单")
+            .next()
+            .unwrap();
+        let tabmenu = source
+            .split("if root.tabmenu-open : Rectangle {")
+            .nth(1)
+            .expect("tab menu")
+            .split("// ================= Settings")
+            .next()
+            .unwrap();
+        let profiles = source
+            .split("// profiles-open 的遮罩")
+            .nth(1)
+            .expect("profiles panel")
+            .split("// known_hosts 主机密钥预检：")
+            .next()
+            .unwrap();
+
+        let allowed = |s: &str| {
+            s.is_empty()
+                || matches!(s, "×" | "✕" | "★" | "☆" | "✎")
+                || s.starts_with("\\{")
+                || s.starts_with("Ctrl+")
+                || s.starts_with("ESC [")
+                || matches!(
+                    s,
+                    "English" | "中文" | "SSH" | "Telnet" | "Shell" | "SFTP"
+                        | "ASCII DEL" | "Control-H"
+                )
+                || s.starts_with('/')
+        };
+        for (tag, section) in [
+            ("settings", settings),
+            ("context-menu", ctx),
+            ("tab-menu", tabmenu),
+            ("profiles", profiles),
+        ] {
+            for (lineno, line) in section.lines().enumerate() {
+                if line.trim_start().starts_with("//") {
+                    continue;
+                }
+                for prop in ["text: ", "label: ", "description: ", "placeholder: ", "title: "] {
+                    let Some(pos) = line.find(prop) else { continue };
+                    let value = line[pos + prop.len()..].trim_start();
+                    let Some(value) = value.strip_prefix('"') else { continue };
+                    let end = value.find('"').unwrap_or(value.len());
+                    let literal = &value[..end];
+                    assert!(
+                        allowed(literal),
+                        "{tag} 第 {} 行静态文案未走 Lang.t: {literal:?}",
+                        lineno + 1
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn settings_search_matches_labels_and_keywords() {
         let hits = settings_search("font");
         assert!(
@@ -11350,35 +11876,37 @@ mod tests {
 
     #[test]
     fn settings_search_hits_carry_jump_sections_and_new_categories() {
-        let sixel = settings_search_hits("sixel");
+        let sixel = settings_search_hits("sixel", "en");
         assert!(
             sixel.iter().any(|h| h.cat == 1 && h.section == "images"),
             "sixel 应跳到 Terminal/Images: {:?}",
             sixel.iter().map(|h| (h.cat, h.section)).collect::<Vec<_>>()
         );
-        let iip = settings_search_hits("iip");
+        let iip = settings_search_hits("iip", "en");
         assert!(
             iip.iter().any(|h| h.cat == 1 && h.section == "images"),
             "iip 应跳到 Terminal/Images: {:?}",
             iip.iter().map(|h| (h.cat, h.section)).collect::<Vec<_>>()
         );
-        let backspace = settings_search_hits("backspace");
+        let backspace = settings_search_hits("backspace", "en");
         assert!(backspace.iter().any(|h| h.cat == 1 && h.section == "keys"));
-        let profiles = settings_search_hits("profile");
+        let profiles = settings_search_hits("profile", "en");
         assert!(profiles.iter().any(|h| h.cat == 7 && h.section == "profiles"));
-        let advanced = settings_search_hits("import");
+        let advanced = settings_search_hits("import", "en");
         assert!(advanced.iter().any(|h| h.cat == 3 && h.section == "config"));
         // 每个分类都必须有索引项，侧栏不会出现空页。
-        for cat in 0..SETTINGS_CATS.len() as i32 {
+        for cat in 0..SETTINGS_CATS_EN.len() as i32 {
             assert!(
-                SETTINGS_CATALOG.iter().any(|(c, _, _, _)| *c == cat),
+                SETTINGS_CATALOG.iter().any(|e| e.cat == cat),
                 "settings 分类 {cat} 没有任何搜索索引项"
             );
         }
-        assert!(SETTINGS_CATALOG.iter().all(|(cat, section, _, _)| {
-            *cat >= 0
-                && (*cat as usize) < SETTINGS_CATS.len()
-                && !section.is_empty()
+        assert!(SETTINGS_CATALOG.iter().all(|e| {
+            e.cat >= 0
+                && (e.cat as usize) < SETTINGS_CATS_EN.len()
+                && !e.section.is_empty()
+                && !e.en.is_empty()
+                && !e.zh.is_empty()
         }));
     }
 
@@ -11434,7 +11962,7 @@ mod tests {
     #[test]
     fn hotkey_page_lists_bindings_and_conflicts() {
         let reg = commands::builtin();
-        let (summary, rows, ids) = hotkey_rows(&reg, &[]);
+        let (summary, rows, ids) = hotkey_rows(&reg, &[], "en");
         assert!(
             summary.contains(&format!("{} commands", reg.len())),
             "{summary}"
@@ -11454,7 +11982,7 @@ mod tests {
             command: "tab.new".into(),
             chord: "ctrl+alt+n".into(),
         }];
-        let (summary, rows, _) = hotkey_rows(&reg, &overrides);
+        let (summary, rows, _) = hotkey_rows(&reg, &overrides, "en");
         assert!(summary.contains("1 custom"), "{summary}");
         let row = rows.iter().find(|r| r.title == "New Tab").unwrap();
         assert_eq!(row.chord, "Ctrl+Alt+N");
@@ -11465,7 +11993,7 @@ mod tests {
             command: "tab.close".into(),
             chord: "ctrl+alt+n".into(),
         });
-        let (summary, rows, _) = hotkey_rows(&reg, &overrides);
+        let (summary, rows, _) = hotkey_rows(&reg, &overrides, "en");
         assert!(summary.contains("2 custom"), "{summary}");
         assert_eq!(reg.effective_conflicts(&overrides).len(), 1);
         assert_eq!(rows.iter().filter(|r| r.conflict).count(), 2);
