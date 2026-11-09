@@ -1,0 +1,32 @@
+# Tervo AI Chat 参考插件（API v2）。
+#
+# 安装：把整个 ai-echo/ 目录复制到 ~/.config/tervo/plugins/ai-echo/，
+# 然后重启 Tervo。插件不需要 API Key，也不会访问网络；它是确定性测试目标。
+id = "dev.tervo.ai-echo"
+name = "ai-echo"
+version = "1.0.0"
+api = 2
+runtime = "process"
+entry = "plugin.py"
+description = "Deterministic local AI echo for the Tervo AI panel (no network, no API key)"
+
+[permissions]
+# 仅声明/展示；宿主当前仍以普通用户进程运行插件，没有沙箱。
+filesystem = "none"
+network = false
+process = false
+clipboard = false
+credentials = "none"
+
+[contributes]
+commands = ["ping"]
+
+[contributes.ai]
+id = "dev.tervo.ai-echo"
+name = "AI Echo"
+model = "echo-1"
+description = "Replies with a deterministic echo of the last user message; no API key or network."
+
+[[commands]]
+id = "ping"
+title = "AI Echo: Ping"
