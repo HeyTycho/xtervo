@@ -1272,17 +1272,18 @@ fn push_theme(st: &mut AppState, theme: &ThemeData) {
 /// 无背景图时强制不透明：opacity 只在与背景图混合时才有意义。
 /// 这样旧配置里残留的低 opacity 不会让纯色终端发灰，也满足“默认无图不透明”。
 fn renderer_opacity(st: &AppState) -> f32 {
-    if st.ui.get_has_background_image() {
-        config::clamp_opacity(st.cfg.background_opacity)
-    } else {
-        1.0
-    }
+    // 无背景图时也允许半透明：终端帧的 alpha 直接透出桌面。是否真的透明由
+    // `terminal_transparent` 控制窗口/ pane 背景；这里只负责帧 alpha。
+    config::clamp_opacity(st.cfg.background_opacity)
 }
 
 /// 把“当前是否真的显示背景图”对应的 alpha 下发给所有 pane 并重绘。
 /// 背景图加载/清除后必须调用，否则渲染器还停留在旧的 alpha。
 fn sync_renderer_opacity(st: &mut AppState) {
     let value = renderer_opacity(st);
+    // 有图时终端层本来就透出背景图；无图时只有 opacity < 1 才需要透明窗口。
+    let transparent = st.ui.get_has_background_image() || value < 0.999;
+    st.ui.set_terminal_transparent(transparent);
     if st.panes.is_empty() {
         return;
     }
@@ -1338,6 +1339,49 @@ fn apply_background_image(st: &mut AppState, raw: &str) -> Result<(), String> {
             }),
         },
         Err(e) => Err(localize_background_error(st.cfg.lang(), e)),
+    }
+}
+
+/// 打开系统文件选择器选择背景图。返回：
+/// - `Ok(Some(path))`：用户选中；
+/// - `Ok(None)`：用户取消；
+/// - `Err(msg)`：zenity/kdialog 不可用或启动失败。
+///
+/// 不拼 shell；只把固定参数传给 picker。`TERVO_FILE_DIALOG` 可覆盖可执行文件，
+/// 便于无桌面测试使用 fake picker。
+fn pick_background_image(initial: &str) -> Result<Option<String>, String> {
+    let exe = std::env::var("TERVO_FILE_DIALOG").unwrap_or_else(|_| "zenity".to_string());
+    let mut cmd = std::process::Command::new(&exe);
+    cmd.args([
+        "--file-selection",
+        "--title=Tervo — choose a background image",
+        "--file-filter=Images | *.png *.jpg *.jpeg *.svg *.webp *.bmp",
+    ]);
+    let initial = config::expand_tilde(initial.trim());
+    let start = if initial.is_dir() {
+        initial
+    } else {
+        initial.parent().map(Path::to_path_buf).unwrap_or_default()
+    };
+    if !start.as_os_str().is_empty() {
+        let filename_arg = format!("--filename={}/", start.display());
+        cmd.arg(filename_arg);
+    }
+    let out = cmd
+        .output()
+        .map_err(|e| format!("无法启动文件选择器 {exe}: {e}（可直接输入路径）"))?;
+    if !out.status.success() {
+        // zenity 取消返回 1；其它非 0 也按取消处理，不把 stderr 当错误弹给用户。
+        return Ok(None);
+    }
+    let path = String::from_utf8(out.stdout)
+        .map_err(|_| "文件选择器返回了非 UTF-8 路径".to_string())?
+        .trim()
+        .to_string();
+    if path.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(path))
     }
 }
 
@@ -2087,7 +2131,15 @@ fn create_pane(
     let shell = profile
         .map(|p| p.shell.clone())
         .filter(|s| !s.is_empty())
-        .or_else(|| st.cfg.shell.clone());
+        .or_else(|| st.cfg.shell.clone())
+        // 设置/Profile 里的 shell 和 cwd 允许 `~`；SSH 远端路径不展开。
+        .map(|s| {
+            if remote {
+                s
+            } else {
+                config::expand_tilde(&s).to_string_lossy().into_owned()
+            }
+        });
     let args = profile
         .map(|p| p.args.clone())
         .unwrap_or_else(|| st.opts.args.clone());
@@ -2107,7 +2159,15 @@ fn create_pane(
     }
     // 显式 cwd（会话恢复的 /proc/<pid>/cwd）优先于 Profile 的起始目录：
     // 恢复要回到用户实际 cd 到的目录，而不是每次都回到 Profile 配置的目录。
-    let cwd = cwd.or_else(|| profile.and_then(|p| p.cwd.clone()).map(PathBuf::from));
+    let cwd = cwd
+        .or_else(|| profile.and_then(|p| p.cwd.clone()).map(PathBuf::from))
+        .map(|p| {
+            if remote {
+                p
+            } else {
+                config::expand_tilde(&p.to_string_lossy())
+            }
+        });
 
     // per-profile 外观：字号决定渲染字符尺寸/PTY 网格；空 = 继承全局。
     let mut appearance = profile.map(PaneAppearance::from_profile).unwrap_or_default();
@@ -5794,6 +5854,23 @@ fn update_ime_spot(st: &mut AppState) {
 ///
 /// - 只在图片集合或锚点变化时重建模型；光标闪烁/纯文本输出不会重新上传图片。
 /// - Slint Image 按 core 图片 ID 缓存，滚动/resize 时只改 x/y，不重复拷贝 RGBA。
+/// 把内联图片缩到 pane 的可用格子区域；只缩小不放大，保持宽高比。
+/// `x/y` 是图片在 pane 内的左上角，靠右下角的图片也要留出剩余空间。
+fn fit_inline_image_size(
+    src_w: u32,
+    src_h: u32,
+    avail_w: f32,
+    avail_h: f32,
+) -> (f32, f32) {
+    if src_w == 0 || src_h == 0 || avail_w <= 1.0 || avail_h <= 1.0 {
+        return (src_w as f32, src_h as f32);
+    }
+    let scale = (avail_w / src_w as f32)
+        .min(avail_h / src_h as f32)
+        .min(1.0);
+    ((src_w as f32 * scale).max(1.0), (src_h as f32 * scale).max(1.0))
+}
+
 fn sync_inline_images(rt: &mut PaneRuntime, frame: &Frame) {
     let sig: Vec<(u64, i32, u16, u32, u32)> = frame
         .images
@@ -5842,12 +5919,19 @@ fn sync_inline_images(rt: &mut PaneRuntime, frame: &Frame) {
             rt.inline_cache.insert(img.id, image.clone());
             image
         };
+        let x = img.col as f32 * cell_w;
+        let y = img.row as f32 * cell_h;
+        // Sixel/IIP 的原始像素尺寸可能远大于终端；以前直接按原始 w/h 绘制，
+        // 只能被 pane clip 截掉。这里先按 pane 可用区域等比缩小，保留原图给灯箱。
+        let avail_w = (rt.grid.0 as f32 * cell_w - x).max(cell_w);
+        let avail_h = (rt.grid.1 as f32 * cell_h - y).max(cell_h);
+        let (w, h) = fit_inline_image_size(img.width, img.height, avail_w, avail_h);
         views.push(PaneImage {
             image,
-            x: img.col as f32 * cell_w,
-            y: img.row as f32 * cell_h,
-            w: img.width as f32,
-            h: img.height as f32,
+            x,
+            y,
+            w,
+            h,
         });
     }
     // 只缓存当前可见图片：滚出视口的 RGBA 由 core 保存，滚回来时重新上传，
@@ -10909,15 +10993,47 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     });
 
+    let image_picker_weak = ui.as_weak();
+    ui.on_background_image_browse(move || {
+        let Some(current_ui) = image_picker_weak.upgrade() else { return };
+        let initial = current_ui.get_background_image_path().to_string();
+        let weak = image_picker_weak.clone();
+        std::thread::Builder::new()
+            .name("image-picker".into())
+            .spawn(move || {
+                let result = pick_background_image(&initial);
+                let _ = slint::invoke_from_event_loop(move || {
+                    let Some(ui) = weak.upgrade() else { return };
+                    with_app(|st| match result {
+                        Ok(Some(path)) => {
+                            eprintln!("[theme] 文件选择器选择背景图: {path}");
+                            st.ui.set_background_image_path(path.as_str().into());
+                            commit_background_path(st, &path, true);
+                        }
+                        Ok(None) => {}
+                        Err(e) => {
+                            let err = e.clone();
+                            let msg = if st.cfg.lang() == "zh" {
+                                e
+                            } else {
+                                format!("Image picker unavailable: {e}")
+                            };
+                            st.ui.set_background_image_error(msg.into());
+                            eprintln!("[theme] 背景图选择器失败: {err}");
+                        }
+                    });
+                });
+            })
+            .ok();
+    });
+
     // 拖动时只预览（重绘终端帧），松手才写盘，避免每一帧都原子写 config.toml。
     // 无背景图时不改有效 alpha（见 renderer_opacity），所以不会把纯色终端拖灰。
     ui.on_background_opacity_preview(|value| {
         with_app(|st| {
             let value = config::clamp_opacity(value);
             st.cfg.background_opacity = value;
-            if st.ui.get_has_background_image() {
-                sync_renderer_opacity(st);
-            }
+            sync_renderer_opacity(st);
         });
     });
 
@@ -10926,9 +11042,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let value = config::clamp_opacity(value);
             st.cfg.background_opacity = value;
             st.ui.set_background_opacity(value);
-            if st.ui.get_has_background_image() {
-                sync_renderer_opacity(st);
-            }
+            sync_renderer_opacity(st);
             st.cfg.save();
             eprintln!("[theme] background_opacity={value:.2}（仅终端默认背景）");
         });
@@ -12436,6 +12550,15 @@ mod tests {
         assert!(!needs_paste_confirm("a\nb", false));
         // 单独 \r 不算多行（单行回车粘贴不烦人）
         assert!(!needs_paste_confirm("a\rb", true));
+    }
+
+    #[test]
+    fn inline_image_fits_inside_pane() {
+        assert_eq!(fit_inline_image_size(100, 50, 200.0, 200.0), (100.0, 50.0));
+        assert_eq!(fit_inline_image_size(400, 200, 200.0, 200.0), (200.0, 100.0));
+        assert_eq!(fit_inline_image_size(100, 400, 200.0, 200.0), (50.0, 200.0));
+        // 已经贴到右下角时只使用剩余空间，不越过 pane。
+        assert_eq!(fit_inline_image_size(400, 200, 80.0, 200.0), (80.0, 40.0));
     }
 
     #[test]
