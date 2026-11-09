@@ -11,6 +11,8 @@ Tervo 的版本与 tag 规则见 `docs/RELEASING.md`。
 - 无背景图时终端 opacity 也可用（透明窗口；需要合成器）。
 - Sixel/IIP 超大图缩到 pane 内；点击打开灯箱，支持缩放/Fit/Close/Esc。
 - dsh-tui 等 TUI 用 ECH/空格擦图时同步清理旧 overlay，避免图片“到处飘”。
+- 回应 XTWINOPS `CSI 16t/14t` 并设置 PTY 像素 winsize，修复 dsh 图片按默认 8×16 低清。
+- Unicode 块元素（U+2580–259F）按 cell 几何绘制，不再依赖字体半块字形。
 
 ### Fixed
 

@@ -143,6 +143,27 @@ fn ech_blank_damage_erases_inline_image() {
 }
 
 #[test]
+fn xtwinops_reports_cell_and_window_pixels() {
+    let resp = std::env::temp_dir().join(format!("tervo-xtwinops-{}.bin", std::process::id()));
+    let _ = std::fs::remove_file(&resp);
+    let script = format!(
+        "stty raw -echo; printf '\\033[16t\\033[14t\\033[c'; timeout --foreground 0.8 dd bs=1 count=96 of='{}' 2>/dev/null || true; stty sane; printf '\\r\\nXTDONE\\r\\n'; sleep 0.3",
+        resp.display()
+    );
+    let handle = spawn(sh(&script)).expect("spawn pane");
+    let frame = wait_for(&handle, Duration::from_secs(5), |f| {
+        frame_text(f).contains("XTDONE")
+    });
+    let _ = frame;
+    let bytes = std::fs::read(&resp).unwrap_or_default();
+    let text = String::from_utf8_lossy(&bytes);
+    // 默认 cell=8x16；100x24 的窗口 = 800x384。
+    assert!(text.contains("\u{1b}[6;16;8t"), "缺少 cell pixel 回复: {text:?}");
+    assert!(text.contains("\u{1b}[4;384;800t"), "缺少 window pixel 回复: {text:?}");
+    let _ = std::fs::remove_file(resp);
+}
+
+#[test]
 fn da1_advertises_sixel_only_when_enabled() {
     fn check(sixel: bool, expect_hex: &str) {
         let resp = std::env::temp_dir().join(format!(

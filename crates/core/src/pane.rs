@@ -998,8 +998,8 @@ pub fn spawn(config: PaneConfig) -> std::io::Result<PaneHandle> {
         .openpty(PtySize {
             rows: config.rows,
             cols: config.cols,
-            pixel_width: 0,
-            pixel_height: 0,
+            pixel_width: config.cols.saturating_mul(config.cell_width.max(1)),
+            pixel_height: config.rows.saturating_mul(config.cell_height.max(1)),
         })
         .map_err(|e| std::io::Error::other(e.to_string()))?;
 
@@ -1140,6 +1140,7 @@ pub fn spawn(config: PaneConfig) -> std::io::Result<PaneHandle> {
         cell_width: config.cell_width.max(1),
         cell_height: config.cell_height.max(1),
         images: ImageStore::default(),
+        query_tail: Vec::new(),
         image_clear: ImageClearScanner::default(),
         pty_rx,
         ctrl_rx,
@@ -1371,6 +1372,8 @@ struct Actor {
     cell_height: u16,
     /// 已解码的 Sixel 图片（按创建顺序，超出预算淘汰最旧）。
     images: ImageStore,
+    /// XTWINOPS (CSI 16t/14t) 跨 chunk 扫描尾部。
+    query_tail: Vec<u8>,
     /// 清屏/备用屏切换检测：这些序列让 alacritty 清屏，图片也必须一起清。
     image_clear: ImageClearScanner,
     pty_rx: Receiver<Vec<u8>>,
@@ -1999,11 +2002,70 @@ impl Actor {
         (changed, parsed)
     }
 
+    /// 回应 XTWINOPS：`CSI 16 t` 单元格像素、`CSI 14 t` 窗口像素。
+    ///
+    /// dsh-tui 等 TUI 用这两个查询决定图像编码分辨率；不回就只能用 8×16
+    /// 默认值，图片会明显低清。响应格式与 xterm 一致：`CSI 6;h;w t` /
+    /// `CSI 4;h;w t`。
+    fn scan_pixel_size_queries(&mut self, bytes: &[u8]) {
+        let mut buf = Vec::with_capacity(self.query_tail.len() + bytes.len());
+        buf.extend_from_slice(&self.query_tail);
+        buf.extend_from_slice(bytes);
+        let mut i = 0;
+        while i + 2 < buf.len() {
+            if buf[i] == 0x1b && buf[i + 1] == b'[' {
+                let mut j = i + 2;
+                while j < buf.len() && (buf[j].is_ascii_digit() || buf[j] == b';') {
+                    j += 1;
+                }
+                if j < buf.len() && buf[j] == b't' {
+                    let param = std::str::from_utf8(&buf[i + 2..j]).unwrap_or("");
+                    let (code, reply_h, reply_w) = match param {
+                        "16" => (
+                            6,
+                            self.cell_height.max(1),
+                            self.cell_width.max(1),
+                        ),
+                        "14" => (
+                            4,
+                            self.size
+                                .rows
+                                .saturating_mul(self.cell_height.max(1) as usize)
+                                .min(u16::MAX as usize) as u16,
+                            self.size
+                                .cols
+                                .saturating_mul(self.cell_width.max(1) as usize)
+                                .min(u16::MAX as usize) as u16,
+                        ),
+                        _ => {
+                            i = j + 1;
+                            continue;
+                        }
+                    };
+                    let reply = format!("\x1b[{code};{reply_h};{reply_w}t");
+                    let len = reply.len();
+                    if let Err(PushError::Full) = self.write_queue.push(reply.into_bytes()) {
+                        note_write_drop(&self.stats, len);
+                    }
+                    i = j + 1;
+                    continue;
+                }
+            }
+            i += 1;
+        }
+        let keep = 24.min(buf.len());
+        self.query_tail.clear();
+        if keep > 0 {
+            self.query_tail.extend_from_slice(&buf[buf.len() - keep..]);
+        }
+    }
+
     /// 通知扫描/清屏检测/键盘协议扫描/vte 解析都只处理真正交给 vte 的字节。
     fn process_vte_chunk(&mut self, chunk: &[u8]) {
         if chunk.is_empty() {
             return;
         }
+        self.scan_pixel_size_queries(chunk);
         if self.image_clear.feed(chunk) {
             // 2J/3J、备用屏切换、RIS 会清空整屏：两种协议的内联图片都要清。
             self.images.clear();
@@ -2463,8 +2525,8 @@ impl Actor {
                 let _ = self.master.resize(PtySize {
                     rows,
                     cols,
-                    pixel_width: 0,
-                    pixel_height: 0,
+                    pixel_width: cols.saturating_mul(self.cell_width.max(1)),
+                    pixel_height: rows.saturating_mul(self.cell_height.max(1)),
                 });
                 self.wake.notify();
                 true

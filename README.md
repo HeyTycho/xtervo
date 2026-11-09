@@ -341,6 +341,8 @@ iip = true               # 默认；false 时不解析/渲染 iTerm2 IIP（OSC 1
   单边 16384 px；非法/超限只丢图，不崩溃，图片字节不进入文本/选区。
 - 两种图片共用同一套 overlay/缓存/滚动/resize 机制；IIP 与 Sixel 独立开关、独立清除，
   切换 Tab 或窗口 resize 后按光标 cell 重新定位。
+- PTY `winsize.pixel_width/height` 与 XTWINOPS `CSI 16t/14t` 会返回真实 cell/window
+  像素尺寸，dsh-tui 等据此编码图片，不再退回 8×16 默认值导致低清。
 - 超过 pane 可用区域的图片会等比缩到终端内（不放大、不撑出 pane）；点击图片打开灯箱，
   支持缩小/放大/Fit/Close 和 Esc 关闭，灯箱始终使用原始解码图。灯箱 Fit 只缩不放，
   100% 是原图像素 1:1，>100% 使用 pixelated，避免平滑插值糊。
