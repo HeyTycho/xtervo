@@ -143,6 +143,20 @@ fn ech_blank_damage_erases_inline_image() {
 }
 
 #[test]
+fn ech_on_other_row_keeps_inline_image() {
+    let small = temp_payload("ech-other-row", &small_sixel_bel());
+    // 图片在第 1 行；ECH 在第 10 行，不应清掉无关图片。
+    let script = format!(
+        "cat '{}'; printf '\\033[10;1H\\033[1X'; sleep 0.4",
+        small.display()
+    );
+    let handle = spawn(sh(&script)).expect("spawn pane");
+    let frame = wait_for(&handle, Duration::from_secs(5), |f| !f.images.is_empty());
+    assert!(!frame.images.is_empty(), "无关行的 ECH 不应清除图片");
+    let _ = std::fs::remove_file(small);
+}
+
+#[test]
 fn xtwinops_reports_cell_and_window_pixels() {
     let resp = std::env::temp_dir().join(format!("tervo-xtwinops-{}.bin", std::process::id()));
     let _ = std::fs::remove_file(&resp);
