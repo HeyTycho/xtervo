@@ -52,6 +52,12 @@ e2e:       15 个脚本全 PASS（SSH/SFTP、插件、设置、图片、键盘�
 - [ ] 终端右键菜单（Link/Clipboard/Pane/View/Session）与 TabBar 菜单跟随语言；en/zh 均无混排
 - [ ] 小窗口（约 760×520）与 `TERVO_SETTINGS_LEGACY=1` 下语言卡片/文字不溢出
 - [ ] Settings 齿轮明确可辨（8 齿 + 中心孔），窗口右上角/Tab 图标一致
+- [ ] Settings → SYSTEM → Help：圆形问号图标；快捷键表 9 行（Ctrl+T/W/F、Ctrl+Shift+C/V/E/D、F11、Settings）
+- [ ] Help 显示 config.toml/logs 路径；Open Config/Logs Folder 可用；Copy Diagnostics 有成功/失败状态文案
+- [ ] Help 版本卡片显示 Tervo 版本、commit、构建时间、target（与 `tervo --version` 一致，无硬编码）
+- [ ] Help 已知限制含 IME/Wayland/插件沙箱/24h soak，并列出 `docs/` 路径；页面不联网/不发遥测
+- [ ] 搜索 `help` 与 `帮助` 均命中 4 条 Help 索引；点击结果跳到 Help 对应卡片
+- [ ] Help 页窄窗滚动、宽窗铺满且不横向溢出；en/zh 文案无混排
 - [ ] 终端右键菜单无图标，文字与分组标题左对齐；280px 宽/窄窗滚动/右下翻转正常
 - [ ] Pin/Unpin Tab：pinned 固定在左侧、图钉角标、重启后保留
 - [ ] 拖拽 Tab：ghost/插入线/让位动画；pinned 跨组不亮线不移动；Esc 取消复位

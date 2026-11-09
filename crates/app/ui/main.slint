@@ -495,6 +495,7 @@ enum SettingsIconKind {
     plugins,
     vault,
     advanced,
+    help,
     gear,
     search,
     chevron,
@@ -676,6 +677,33 @@ component SettingsIconView inherits Rectangle {
         }
     }
 
+    // Help：圆形问号（圆环 + 手绘问号笔画 + 点，不依赖字体/emoji）。
+    if root.kind == SettingsIconKind.help : Rectangle {
+        width: 100%;
+        height: 100%;
+        background: transparent;
+        Rectangle {
+            x: 1.6px; y: 1.6px; width: 12.8px; height: 12.8px;
+            border-radius: 6.4px;
+            background: transparent;
+            border-width: 1.3px;
+            border-color: root.tint;
+        }
+        Path {
+            width: 100%; height: 100%;
+            commands: "M 5.9 6.1 C 5.9 4.7 6.9 3.9 8.1 3.9 C 9.3 3.9 10.2 4.7 10.2 5.9 C 10.2 7.5 8.1 7.7 8.1 9.4";
+            stroke: root.tint;
+            stroke-width: 1.3px;
+            stroke-line-cap: round;
+            stroke-line-join: round;
+        }
+        Rectangle {
+            x: 7.3px; y: 10.5px; width: 1.6px; height: 1.6px;
+            border-radius: 0.8px;
+            background: root.tint;
+        }
+    }
+
     // Gear：8 齿实心轮廓 + 中心圆孔（内圈反向绕序挖空）。
     // 齿与轮体连成一体：旧版“圆环 + 8 条分离短线”在 16px 下会被读成太阳。
     if root.kind == SettingsIconKind.gear : Path {
@@ -839,6 +867,54 @@ component SettingsCard inherits Rectangle {
         }
 
         @children
+    }
+}
+
+/// Help 页快捷键行：左列固定 chord，右列动作文字换行，窄窗不横向溢出。
+component HelpRow inherits HorizontalLayout {
+    in property <string> keys;
+    in property <string> action;
+
+    spacing: 12px;
+    Text {
+        width: 136px;
+        text: root.keys;
+        color: Palette.colors.accent;
+        font-size: 11px;
+        font-weight: 600;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+    Text {
+        horizontal-stretch: 1;
+        text: root.action;
+        color: Palette.colors.text;
+        font-size: 11px;
+        vertical-alignment: center;
+        wrap: word-wrap;
+    }
+}
+
+/// Help 页信息行：label 固定宽，value 可换行（路径/commit 不撑破卡片）。
+component HelpInfoRow inherits HorizontalLayout {
+    in property <string> label;
+    in property <string> value;
+
+    spacing: 10px;
+    Text {
+        width: 86px;
+        text: root.label;
+        color: Palette.colors.subtext;
+        font-size: 11px;
+        vertical-alignment: center;
+    }
+    Text {
+        horizontal-stretch: 1;
+        text: root.value;
+        color: Palette.colors.text;
+        font-size: 11px;
+        vertical-alignment: center;
+        wrap: word-wrap;
     }
 }
 
@@ -1548,9 +1624,19 @@ export component MainWindow inherits Window {
     callback background-opacity-changed(float);
     callback background-dim-preview(float);
     callback background-dim-changed(float);
-    /// 设置分类：0=Appearance 1=Terminal 2=Window 3=Advanced 4=Keys 5=Plugins 6=Vault 7=Profiles
+    /// 设置分类：0=Appearance 1=Terminal 2=Window 3=Advanced 4=Keys 5=Plugins 6=Vault 7=Profiles 8=Help
     in-out property <int> settings-category: 0;
     in-out property <string> settings-path: "";
+    // Help 页：路径/版本均来自 Rust build.rs 编译期信息与运行时 XDG 路径。
+    in property <string> help-config-path: "";
+    in property <string> help-log-path: "";
+    in property <string> help-version: "";
+    in property <string> help-commit: "";
+    in property <string> help-built: "";
+    in property <string> help-target: "";
+    /// 仓库内文档路径；纯展示，不联网抓取。
+    in property <string> help-docs: "docs/VAULT.md · docs/WAYLAND_SPIKE.md · docs/SOAK.md · docs/PLUGIN_API.md";
+    in-out property <string> help-status: "";
     in-out property <string> settings-query: "";
     in property <[string]> settings-results: [];
     /// 搜索结果点击后要滚动/高亮的卡片锚点（theme/background/cursor/...）。
@@ -1600,6 +1686,8 @@ export component MainWindow inherits Window {
     callback config-import-tabby();
     callback config-export-tabby();
     callback settings-open-path();
+    callback settings-help-open(string);
+    callback settings-help-copy-diagnostics();
     /// 录制结束/关闭设置后把键盘焦点还给终端 IME 宿主，否则按键会丢失。
     public function focus-terminal() {
         ime.focus();
@@ -3651,6 +3739,17 @@ export component MainWindow inherits Window {
                                 root.settings-category-changed(3);
                             }
                         }
+                        NavItem {
+                            label: Lang.t("Help", "帮助");
+                            icon: SettingsIconKind.help;
+                            active: root.settings-category == 8;
+                            clicked => {
+                                root.settings-focus = "";
+                                root.settings-theme-open = false;
+                                root.settings-category = 8;
+                                root.settings-category-changed(8);
+                            }
+                        }
 
                         Text {
                             height: 40px;
@@ -4854,6 +4953,149 @@ export component MainWindow inherits Window {
                             Text {
                                 text: Lang.t("SSH password auth: saved passwords are injected through askpass after unlock. MVP caveat: askpass passes the secret via environment, observable by the same user in /proc — see docs/VAULT.md.", "SSH 密码认证：解锁后保存的密码通过 askpass 注入。MVP 限制：askpass 通过环境变量传递密钥，同一用户可在 /proc 中看到 — 见 docs/VAULT.md。");
                                 color: Palette.colors.muted;
+                                font-size: 10px;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+                }
+
+                // ---------------- Help ----------------
+                if root.settings-category == 8 : Flickable {
+                    x: settings-body.content-x;
+                    y: settings-body.content-y;
+                    width: settings-body.content-w;
+                    height: settings-body.content-h;
+                    property <int> jump-token: root.settings-jump-token;
+                    interactive: true;
+                    content-width: self.width;
+                    content-height: help-layout.preferred-height + 10px;
+
+                    changed jump-token => {
+                        let min-y = -Math.max(0px, self.content-height - self.height);
+                        if (root.settings-focus == "quickstart") {
+                            self.content-y = 0px;
+                        } else if (root.settings-focus == "paths") {
+                            self.content-y = Math.max(min-y, Math.min(0px, -help-paths-card.y + 8px));
+                        } else if (root.settings-focus == "version") {
+                            self.content-y = Math.max(min-y, Math.min(0px, -help-version-card.y + 8px));
+                        } else if (root.settings-focus == "limits") {
+                            self.content-y = Math.max(min-y, Math.min(0px, -help-limits-card.y + 8px));
+                        }
+                    }
+
+                    help-layout := VerticalLayout {
+                        width: 100%;
+                        spacing: 10px;
+
+                        help-quickstart-card := SettingsCard {
+                            title: Lang.t("Quick start / Keyboard shortcuts", "快速开始 / 快捷键");
+                            description: Lang.t("Default bindings; edit them in Keys. Settings lives in the tab bar gear.", "默认绑定；可在“快捷键”分类中修改。设置入口在标签栏齿轮。");
+                            highlighted: root.settings-focus == "quickstart";
+
+                            HelpRow { keys: "Ctrl+T"; action: Lang.t("New tab", "新建标签页"); }
+                            HelpRow { keys: "Ctrl+W"; action: Lang.t("Close current tab", "关闭当前标签页"); }
+                            HelpRow { keys: "Ctrl+F"; action: Lang.t("Find in terminal", "在终端中查找"); }
+                            HelpRow { keys: "Ctrl+Shift+C"; action: Lang.t("Copy selection", "复制选中内容"); }
+                            HelpRow { keys: "Ctrl+Shift+V"; action: Lang.t("Paste clipboard", "粘贴剪贴板"); }
+                            HelpRow { keys: "Ctrl+Shift+E"; action: Lang.t("Split right", "向右分屏"); }
+                            HelpRow { keys: "Ctrl+Shift+D"; action: Lang.t("Split down", "向下分屏"); }
+                            HelpRow { keys: "F11"; action: Lang.t("Toggle fullscreen", "切换全屏"); }
+                            HelpRow { keys: Lang.t("Settings", "设置"); action: Lang.t("Tab bar gear, or the Settings tab; Esc closes it", "标签栏齿轮或设置标签页；Esc 关闭"); }
+                        }
+
+                        help-paths-card := SettingsCard {
+                            title: Lang.t("Config file & logs", "配置文件与日志");
+                            description: Lang.t("Local paths only. Nothing on this page is uploaded.", "仅本地路径；本页不会上传任何内容。");
+                            highlighted: root.settings-focus == "paths";
+
+                            HelpInfoRow { label: Lang.t("Config dir", "配置目录"); value: root.help-config-path; }
+                            HelpInfoRow { label: Lang.t("Logs dir", "日志目录"); value: root.help-log-path; }
+
+                            HorizontalLayout {
+                                spacing: 6px;
+                                ActionBtn {
+                                    horizontal-stretch: 1;
+                                    label: Lang.t("Open Config Folder", "打开配置目录");
+                                    font-size: 10px;
+                                    clicked => { root.settings-help-open("config"); }
+                                }
+                                ActionBtn {
+                                    horizontal-stretch: 1;
+                                    label: Lang.t("Open Logs Folder", "打开日志目录");
+                                    font-size: 10px;
+                                    clicked => { root.settings-help-open("logs"); }
+                                }
+                                ActionBtn {
+                                    horizontal-stretch: 1;
+                                    label: Lang.t("Copy Diagnostics", "复制诊断信息");
+                                    font-size: 10px;
+                                    clicked => { root.settings-help-copy-diagnostics(); }
+                                }
+                            }
+                            if root.help-status != "" : Text {
+                                text: root.help-status;
+                                color: Palette.colors.subtext;
+                                font-size: 10px;
+                                wrap: word-wrap;
+                            }
+                            Text {
+                                text: Lang.t("Opening a folder uses xdg-open and never builds a shell command. If xdg-open is missing, the error appears here.", "打开目录使用 xdg-open；绝不拼接 shell 命令。缺少 xdg-open 时错误会显示在这里。");
+                                color: Palette.colors.muted;
+                                font-size: 10px;
+                                wrap: word-wrap;
+                            }
+                        }
+
+                        help-version-card := SettingsCard {
+                            title: Lang.t("Version information", "版本信息");
+                            description: Lang.t("Injected at build time from Cargo and git.", "构建时从 Cargo 与 git 注入。");
+                            highlighted: root.settings-focus == "version";
+
+                            HelpInfoRow { label: Lang.t("Version", "版本"); value: root.help-version; }
+                            HelpInfoRow { label: Lang.t("Commit", "提交"); value: root.help-commit; }
+                            HelpInfoRow { label: Lang.t("Built", "构建时间"); value: root.help-built; }
+                            HelpInfoRow { label: Lang.t("Target", "目标平台"); value: root.help-target; }
+                        }
+
+                        help-limits-card := SettingsCard {
+                            title: Lang.t("Known limitations / Documentation", "已知限制 / 更多文档");
+                            description: Lang.t("Short list of current boundaries; details live in the repository docs.", "当前边界摘要；细节见仓库文档。");
+                            highlighted: root.settings-focus == "limits";
+
+                            Text {
+                                text: Lang.t("• IME: X11 XIM only; Wayland IME is not implemented.", "• 输入法：仅 X11 XIM；Wayland IME 尚未实现。");
+                                color: Palette.colors.text;
+                                font-size: 10px;
+                                wrap: word-wrap;
+                            }
+                            Text {
+                                text: Lang.t("• Wayland: native path is not verified; global hotkeys and PRIMARY are blocked.", "• Wayland：原生路径未验收；全局热键与 PRIMARY 不可用。");
+                                color: Palette.colors.text;
+                                font-size: 10px;
+                                wrap: word-wrap;
+                            }
+                            Text {
+                                text: Lang.t("• Plugins: ordinary subprocesses; permissions are declared, not sandbox-enforced.", "• 插件：以普通子进程运行；权限仅声明，未做沙箱强制。");
+                                color: Palette.colors.text;
+                                font-size: 10px;
+                                wrap: word-wrap;
+                            }
+                            Text {
+                                text: Lang.t("• Soak: the 24h soak has not run yet; the 30m memory gate passed.", "• 稳定性：24 小时 soak 尚未执行；30 分钟内存门禁已通过。");
+                                color: Palette.colors.text;
+                                font-size: 10px;
+                                wrap: word-wrap;
+                            }
+                            Text {
+                                text: Lang.t("Repository docs (offline, no telemetry):", "仓库文档（离线，无遥测）：");
+                                color: Palette.colors.muted;
+                                font-size: 10px;
+                                wrap: word-wrap;
+                            }
+                            Text {
+                                text: root.help-docs;
+                                color: Palette.colors.subtext;
                                 font-size: 10px;
                                 wrap: word-wrap;
                             }
