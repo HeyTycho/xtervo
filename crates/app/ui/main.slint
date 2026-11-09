@@ -1838,10 +1838,11 @@ export component MainWindow inherits Window {
     // 不让内容（长 Tab 标题/很多 Tab）决定窗口最小宽度：否则加 Tab 会把窗口撑大。
     min-width: 240px;
     min-height: 160px;
-    // 窗口始终 transparent：Slint 1.18 的 Linux 后端只在建窗时决定 visual，
-    // 运行时改 Window 背景不会切换透明。终端层由 background-opacity 控制，
-    // 不透明时 pane 自己铺主题底色，仍能正常遮挡桌面。
-    background: transparent;
+    // Slint 1.18 的 Linux 后端只在建窗时决定 visual。按启动时的实际需要
+    // 选择 transparent：无图且 opacity=100% 时保持 opaque，避免透明 surface
+    // 在部分合成器上出现文字残影；有图/半透明启动才开透明。
+    // 运行中把 opacity 从 100 降到 50 需要重启 Tervo 才切到透明窗口。
+    background: root.terminal-transparent ? transparent : Palette.colors.surface;
     no-frame: true;
     always-on-top: root.pinned;
     icon: @image-url("../../../assets/icon.png");
