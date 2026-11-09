@@ -29,6 +29,7 @@
 | P0-08 | Codex 审计报告归档 | done | `.logs/codex-architecture-review.md` | 19k 行原始输出；摘要见本文件 §6 | — |
 | P0-09 | 图片合成 v2：framebuffer 内合成、ECH 行级清理、XTWIN 像素尺寸、块元素几何 | done | master | `0b62596`/`c7f13ac`/`3131ca5`；`.logs/image-compose`、`.logs/scroll-compose`、`.logs/dsh-v2-final` | app 393；core sixel 9；2m/15m PASS；真实 dsh 截图 |
 | P0-10 | 插件 API v2 + AI Chat（process plugin，宿主不存 key） | done | `.worktrees/ai-panel` / `feat/ai-panel` | `f975179`；合并 `9cc2330`；`docs/examples/ai-echo`；`.logs/ai-panel/` | app 393；AI e2e PASS；plugin v1 e2e PASS |
+| P0-11 | 0.2.0 发布候选：版本/CHANGELOG/打包/30m | in_progress | master | 版本 0.2.0；30m PASS；打包后回填 commit/tag | tar/deb/校验和；tag `v0.2.0` |
 
 ## 3. P1：P0 稳定后再跑/合
 

@@ -261,3 +261,17 @@ threads : 166 -> 166
 fds     : 92 -> 92
 coverage: tabs=22 splits=3 settings=34/272 find=67 copy=132 resize=168/168
 ```
+
+## 2026-11-09 19:00 0.2.0 发布候选 30m
+
+```text
+verdict : PASS
+actual  : 1816s
+RSS     : 742.8 -> 812.0 MiB (+69.1 MiB, +0.54 MiB/min, R2=0.09)
+PSS     : 702.0 -> 771.3 MiB (peak 785.2)
+CPU     : avg 85.0% / max 110.2%
+threads : 166 -> 166
+fds     : 92 -> 92
+coverage: tabs=22 splits=3 settings=68/544 find=135 copy=268 resize=338/338
+commands: 1080；fatal=0 errors=0
+```
