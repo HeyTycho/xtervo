@@ -95,6 +95,8 @@ strip 输出目录里的副本，`target/release` 原样保留。
 
 版本号、tag、CHANGELOG 与发布流程见 `docs/RELEASING.md`；变更记录见 `CHANGELOG.md`。
 
+Agent 工作时间与开发规则见 `AGENTS.md`（大任务 18:00 后）。
+
 ```bash
 ./scripts/package.sh                            # → dist/（默认 40 MiB 门禁）
 TERVO_DIST=/tmp/dist ./scripts/package.sh       # 自定义输出目录（相对仓库根）
