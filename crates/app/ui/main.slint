@@ -720,11 +720,17 @@ component OpacitySlider inherits Rectangle {
         border-color: Palette.colors.bg;
     }
 
+    // 只有左键按下后才跟踪移动；否则鼠标悬停/划过会不断 preview，
+    // 看起来像滑块“粘住鼠标”。down 允许直接点轨道跳转。
+    property <bool> dragging: false;
+
     TouchArea {
         width: 100%;
         height: 100%;
         pointer-event(event) => {
-            if (event.kind == PointerEventKind.down || event.kind == PointerEventKind.move) {
+            if (event.kind == PointerEventKind.down
+                && event.button == PointerEventButton.left) {
+                root.dragging = true;
                 // length 需除以 1px 转成普通数字再算比例。
                 let track = (self.width - 8px) / 1px;
                 let x = (self.mouse-x - 4px) / 1px;
@@ -734,7 +740,15 @@ component OpacitySlider inherits Rectangle {
                 root.preview(root.min + t * (root.max - root.min));
                 return EventResult.accept;
             }
-            if (event.kind == PointerEventKind.up) {
+            if (event.kind == PointerEventKind.move && root.dragging) {
+                let track = (self.width - 8px) / 1px;
+                let x = (self.mouse-x - 4px) / 1px;
+                let t = track <= 0.0 ? 0.0 : Math.max(0.0, Math.min(1.0, x / track));
+                root.preview(root.min + t * (root.max - root.min));
+                return EventResult.accept;
+            }
+            if (event.kind == PointerEventKind.up && root.dragging) {
+                root.dragging = false;
                 root.changed(root.value);
                 return EventResult.accept;
             }
@@ -3490,8 +3504,9 @@ export component MainWindow inherits Window {
                 property <length> sidebar-w: self.width < 900px
                     ? Math.min(164px, Math.max(156px, self.width * 0.32))
                     : 220px;
-                property <length> content-w: Math.min(980px,
-                    Math.max(80px, self.width - self.sidebar-w - 40px));
+                // 不设固定上限：设置页必须跟整个窗口一起放大；只保留最小宽度。
+                property <length> content-w: Math.max(80px,
+                    self.width - self.sidebar-w - 40px);
                 property <length> content-x: self.sidebar-w + 20px
                     + Math.max(0px, (self.width - self.sidebar-w - 40px - self.content-w) / 2);
                 property <length> content-y: 64px;
