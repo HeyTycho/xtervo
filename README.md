@@ -238,7 +238,8 @@ tervo                 # 直接启动
 | 窗口置顶 | 右键标签栏空白处 → Always on Top |
 | 调整分屏 | 拖动 pane 之间的分隔线（左右/上下比例都可调） |
 | 缩放窗口 | 拖动窗口四边/四角（无边框窗口自绘命中区） |
-| 设置 | 标签栏 ⚙ 打开 Settings Tab：分组分类（Appearance/Terminal/Window/Keys/Profiles/Plugins/Vault/Advanced）、主题下拉、搜索跳转；Esc / Tab × / 点终端 Tab 关闭。环境变量 `TERVO_SETTINGS_LEGACY=1` 回退居中 modal |
+| 设置 | 标签栏 ⚙ 打开 Settings Tab：分组分类（Appearance/Terminal/Window/Keys/Profiles/Plugins/Vault/Advanced/Help）、主题下拉、搜索跳转；Esc / Tab × / 点终端 Tab 关闭。环境变量 `TERVO_SETTINGS_LEGACY=1` 回退居中 modal |
+| 帮助 / 诊断 | Settings → Help（SYSTEM 组最后）：快捷键表、config/log 路径（打开目录）、复制诊断信息、版本/commit/构建时间/target、已知限制与 `docs/` 路径；全部双语并纳入 Settings 搜索 |
 | 移动窗口 | 拖标签栏；双击标签栏最大化/还原 |
 
 配置：`~/.config/tervo/config.toml`（`TERVO_CONFIG` 可覆盖）。

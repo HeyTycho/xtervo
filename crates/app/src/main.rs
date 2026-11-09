@@ -661,8 +661,8 @@ fn ui_text<'a>(lang: &str, en: &'a str, zh: &'a str) -> &'a str {
 }
 
 /// 设置分类显示名；下标就是 Slint 侧的 `settings-category`。
-/// 0=Appearance 1=Terminal 2=Window 3=Advanced 4=Keys 5=Plugins 6=Vault 7=Profiles。
-const SETTINGS_CATS_EN: [&str; 8] = [
+/// 0=Appearance 1=Terminal 2=Window 3=Advanced 4=Keys 5=Plugins 6=Vault 7=Profiles 8=Help。
+const SETTINGS_CATS_EN: [&str; 9] = [
     "Appearance",
     "Terminal",
     "Window",
@@ -671,13 +671,14 @@ const SETTINGS_CATS_EN: [&str; 8] = [
     "Plugins",
     "Vault",
     "Profiles",
+    "Help",
 ];
-const SETTINGS_CATS_ZH: [&str; 8] = [
-    "外观", "终端", "窗口", "高级", "快捷键", "插件", "保险库", "配置",
+const SETTINGS_CATS_ZH: [&str; 9] = [
+    "外观", "终端", "窗口", "高级", "快捷键", "插件", "保险库", "配置", "帮助",
 ];
 
 fn settings_cat_label(cat: i32, lang: &str) -> &'static str {
-    let i = cat.clamp(0, 7) as usize;
+    let i = cat.clamp(0, 8) as usize;
     if lang == "zh" {
         SETTINGS_CATS_ZH[i]
     } else {
@@ -732,6 +733,10 @@ const SETTINGS_CATALOG: &[SettingsCatalogEntry] = &[
     SettingsCatalogEntry { cat: 5, section: "plugins", en: "Installed plugins", zh: "已安装插件", keywords: "plugin plugins installed list 插件 已安装" },
     SettingsCatalogEntry { cat: 6, section: "vault", en: "Vault / master password", zh: "保险库 / 主密码", keywords: "vault master password credentials 凭据 解锁 锁定 保险库 主密码" },
     SettingsCatalogEntry { cat: 7, section: "profiles", en: "Profiles", zh: "配置", keywords: "profile connection ssh serial telnet 连接 配置" },
+    SettingsCatalogEntry { cat: 8, section: "quickstart", en: "Quick start / Keyboard shortcuts", zh: "快速开始 / 快捷键", keywords: "help getting started quick start keyboard shortcuts hotkey keybinding ctrl+t ctrl+w ctrl+f f11 settings 帮助 快速开始 快捷键 设置" },
+    SettingsCatalogEntry { cat: 8, section: "paths", en: "Config & log paths", zh: "配置文件与日志", keywords: "help config log logs path directory diagnostic copy 帮助 配置 日志 路径 目录 诊断 复制" },
+    SettingsCatalogEntry { cat: 8, section: "version", en: "Version information", zh: "版本信息", keywords: "help version commit build time target 帮助 版本 提交 构建 时间 目标" },
+    SettingsCatalogEntry { cat: 8, section: "limits", en: "Known limitations / Documentation", zh: "已知限制 / 更多文档", keywords: "help limitations docs documentation ime wayland plugin sandbox soak 帮助 限制 文档 输入法 沙箱 插件" },
 ];
 
 /// 一条设置搜索命中：分类、卡片锚点、展示行（分类 · 名称）。
@@ -6275,6 +6280,9 @@ fn open_target(target: &LinkTarget, cwd: Option<&Path>, remote: bool) {
     }
 }
 
+/// xdg-open 结果观察者：Help 页用它把失败写回页面状态；普通链接传 None。
+type XdgObserver = Option<std::sync::Arc<dyn Fn(Result<(), String>) + Send + Sync + 'static>>;
+
 /// 在 UI 线程外跑 `xdg-open`，失败时把原因写日志并显示短暂浮层。
 ///
 /// - 用 arg 传 URI/路径，绝不拼 shell，天然避免命令注入；
@@ -6282,8 +6290,22 @@ fn open_target(target: &LinkTarget, cwd: Option<&Path>, remote: bool) {
 /// - `xdg-open` 进程失败（非 0 退出）也算失败，不能只看 spawn 是否成功。
 fn open_with_xdg(target: std::ffi::OsString, shown: String, kind: &'static str) {
     let fail_prefix = if kind == "path" { "打开路径失败" } else { "打开链接失败" };
+    open_with_xdg_observed(target, shown, kind, fail_prefix.to_string(), None);
+}
+
+/// 统一实现：链接打开、Advanced“打开目录”、Help 页目录按钮共用。
+fn open_with_xdg_observed(
+    target: std::ffi::OsString,
+    shown: String,
+    kind: &'static str,
+    fail_prefix: String,
+    observer: XdgObserver,
+) {
     let thread_target = target.clone();
     let thread_shown = shown.clone();
+    let thread_observer = observer.clone();
+    let thread_prefix = fail_prefix.clone();
+    let sep = if fail_prefix.is_ascii() { ": " } else { "：" };
     let spawned = std::thread::Builder::new().name("xdg-open".into()).spawn(move || {
         let target = thread_target;
         let shown = thread_shown;
@@ -6296,6 +6318,9 @@ fn open_with_xdg(target: std::ffi::OsString, shown: String, kind: &'static str) 
         match result {
             Ok(out) if out.status.success() => {
                 eprintln!("[link] xdg-open ok {kind}={shown:?}");
+                if let Some(obs) = &thread_observer {
+                    obs(Ok(()));
+                }
             },
             Ok(out) => {
                 let detail: String = String::from_utf8_lossy(&out.stderr)
@@ -6304,23 +6329,42 @@ fn open_with_xdg(target: std::ffi::OsString, shown: String, kind: &'static str) 
                     .take(300)
                     .collect();
                 let msg = if detail.is_empty() {
-                    format!("{fail_prefix}：xdg-open {}", out.status)
+                    format!("{thread_prefix}{sep}xdg-open {}", out.status)
                 } else {
-                    format!("{fail_prefix}：xdg-open {} — {detail}", out.status)
+                    format!("{thread_prefix}{sep}xdg-open {} — {detail}", out.status)
                 };
                 eprintln!("[link] {msg} {kind}={shown:?}");
+                if let Some(obs) = &thread_observer {
+                    obs(Err(msg.clone()));
+                }
                 show_link_status(msg);
             },
             Err(e) => {
-                let msg = format!("{fail_prefix}：无法运行 xdg-open（{e}）");
+                let run_detail = if thread_prefix.is_ascii() {
+                    format!("could not run xdg-open ({e})")
+                } else {
+                    format!("无法运行 xdg-open（{e}）")
+                };
+                let msg = format!("{thread_prefix}{sep}{run_detail}");
                 eprintln!("[link] {msg} {kind}={shown:?}");
+                if let Some(obs) = &thread_observer {
+                    obs(Err(msg.clone()));
+                }
                 show_link_status(msg);
             },
         }
     });
     if let Err(e) = spawned {
-        let msg = format!("{fail_prefix}：无法创建 xdg-open 线程（{e}）");
+        let detail = if fail_prefix.is_ascii() {
+            format!("could not spawn xdg-open thread ({e})")
+        } else {
+            format!("无法创建 xdg-open 线程（{e}）")
+        };
+        let msg = format!("{fail_prefix}{sep}{detail}");
         eprintln!("[link] {msg} {kind}={shown:?}");
+        if let Some(obs) = &observer {
+            obs(Err(msg.clone()));
+        }
         show_link_status(msg);
     }
 }
@@ -6415,16 +6459,30 @@ fn with_clipboard<R>(st: &mut AppState, f: impl FnOnce(&mut arboard::Clipboard) 
     st.clipboard.as_mut().map(f)
 }
 
-fn set_clipboard(st: &mut AppState, text: &str) {
+/// 写系统剪贴板；保留原有日志格式（soak 统计依赖 `[clipboard] 复制`）。
+/// 返回可读错误给 Help 页等需要展示成功/失败状态的调用方。
+fn set_clipboard_checked(st: &mut AppState, text: &str) -> Result<(), String> {
     eprintln!(
         "[clipboard] 复制 {} 字节: {:?}",
         text.len(),
         text.chars().take(40).collect::<String>()
     );
     match with_clipboard(st, |cb| cb.set_text(text.to_string())) {
-        Some(Ok(())) => {}
-        Some(Err(e)) => eprintln!("[clipboard] 写入失败: {e}"),
-        None => eprintln!("[clipboard] 不可用"),
+        Some(Ok(())) => Ok(()),
+        Some(Err(e)) => {
+            eprintln!("[clipboard] 写入失败: {e}");
+            Err(format!("clipboard write failed: {e}"))
+        },
+        None => {
+            eprintln!("[clipboard] 不可用");
+            Err("clipboard unavailable".to_string())
+        },
+    }
+}
+
+fn set_clipboard(st: &mut AppState, text: &str) {
+    if let Err(e) = set_clipboard_checked(st, text) {
+        eprintln!("[clipboard] 写入失败: {e}");
     }
 }
 
@@ -8258,6 +8316,147 @@ fn version_text() -> String {
 
 fn print_version() {
     println!("{}", version_text());
+}
+
+/// Settings → Help 展示的本地信息；版本类字段全部来自 build.rs 注入的
+/// compile-time 常量，不在 UI 里写死版本号。
+struct HelpInfo {
+    config_dir: PathBuf,
+    log_dir: PathBuf,
+    version: &'static str,
+    commit: String,
+    built: &'static str,
+    target: &'static str,
+}
+
+fn help_info() -> HelpInfo {
+    let config = Config::path();
+    let config_dir = config
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| config.clone());
+    let log_dir = logging::path()
+        .and_then(|p| p.parent().map(Path::to_path_buf))
+        .unwrap_or_else(logging::dir);
+    let dirty = if BUILD_DIRTY == "1" { " (dirty)" } else { "" };
+    HelpInfo {
+        config_dir,
+        log_dir,
+        version: BUILD_VERSION,
+        commit: format!("{BUILD_COMMIT}{dirty}"),
+        built: BUILD_TIME,
+        target: BUILD_TARGET,
+    }
+}
+
+/// 下发 Help 页的路径/版本属性并打一条可 grep 的日志。
+fn refresh_help_info(st: &mut AppState) {
+    let info = help_info();
+    st.ui
+        .set_help_config_path(info.config_dir.display().to_string().as_str().into());
+    st.ui
+        .set_help_log_path(info.log_dir.display().to_string().as_str().into());
+    st.ui
+        .set_help_version(format!("Tervo {}", info.version).as_str().into());
+    st.ui.set_help_commit(info.commit.as_str().into());
+    st.ui.set_help_built(info.built.into());
+    st.ui.set_help_target(info.target.into());
+    eprintln!(
+        "[help] info version={} commit={} built={} target={} config={} logs={}",
+        info.version,
+        info.commit,
+        info.built,
+        info.target,
+        info.config_dir.display(),
+        info.log_dir.display()
+    );
+}
+
+/// 复制到剪贴板的诊断文本：路径 + 版本，不包含任何密码/密钥/环境变量。
+fn help_diagnostics_text(info: &HelpInfo, lang: &str) -> String {
+    format!(
+        "Tervo diagnostics\n\
+         version: {}\n\
+         commit:  {}\n\
+         built:   {}\n\
+         target:  {}\n\
+         config:  {}\n\
+         logs:    {}\n\
+         language: {lang}",
+        info.version,
+        info.commit,
+        info.built,
+        info.target,
+        info.config_dir.display(),
+        info.log_dir.display()
+    )
+}
+
+/// Help 页“复制诊断信息”：成功/失败都写回 help-status，不 panic。
+fn copy_help_diagnostics(st: &mut AppState) {
+    let info = help_info();
+    let lang = st.cfg.lang();
+    let text = help_diagnostics_text(&info, lang);
+    let bytes = text.len();
+    match set_clipboard_checked(st, &text) {
+        Ok(()) => {
+            eprintln!("[help] copy diagnostics ok=true bytes={bytes}");
+            st.ui.set_help_status(
+                ui_text(
+                    lang,
+                    "Diagnostics copied to clipboard (no secrets included).",
+                    "诊断信息已复制到剪贴板（不含密钥）。",
+                )
+                .into(),
+            );
+        },
+        Err(e) => {
+            eprintln!("[help] copy diagnostics ok=false bytes={bytes} error={e}");
+            let msg = format!(
+                "{}{e}",
+                ui_text(
+                    lang,
+                    "Could not copy diagnostics: ",
+                    "复制诊断信息失败："
+                )
+            );
+            st.ui.set_help_status(msg.as_str().into());
+        },
+    }
+}
+
+/// Help 页目录按钮：校验目录后复用统一的 shell-safe `xdg-open <单参数>` helper。
+/// 打开失败（目录不存在/进程非 0/找不到 xdg-open）写回 Help 页可见状态，不 panic。
+fn open_help_directory(
+    dir: PathBuf,
+    kind: &'static str,
+    lang: &'static str,
+) -> Result<(), String> {
+    eprintln!("[help] open {kind} path={}", dir.display());
+    if !dir.is_dir() {
+        let msg = format!(
+            "{}{}",
+            ui_text(lang, "Directory does not exist: ", "目录不存在："),
+            dir.display()
+        );
+        eprintln!("[help] open {kind} failed: {msg}");
+        return Err(msg);
+    }
+    let prefix = ui_text(lang, "Could not open directory", "无法打开目录").to_string();
+    let observer: XdgObserver = Some(std::sync::Arc::new(move |result: Result<(), String>| {
+        match result {
+            Ok(()) => eprintln!("[help] open {kind} ok"),
+            Err(msg) => {
+                eprintln!("[help] open {kind} failed: {msg}");
+                let _ = slint::invoke_from_event_loop(move || {
+                    with_app(|st| st.ui.set_help_status(msg.as_str().into()));
+                });
+            },
+        }
+    }));
+    let shown = dir.display().to_string();
+    open_with_xdg_observed(dir.into_os_string(), shown, "path", prefix, observer);
+    Ok(())
 }
 
 fn print_help() {
@@ -10201,11 +10400,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .map(|p| p.to_path_buf())
                 .unwrap_or_else(|| path.clone());
             eprintln!("[ui] open config folder {}", dir.display());
-            match std::process::Command::new("xdg-open").arg(&dir).spawn() {
-                Ok(_) => {}
-                Err(e) => eprintln!("[ui] 打开配置目录失败: {e}"),
+            // 复用 shell-safe 的 xdg-open helper：单个参数、失败显示浮层、不 panic。
+            let shown = dir.display().to_string();
+            open_with_xdg(dir.into_os_string(), shown, "path");
+        });
+    });
+
+    ui.on_settings_help_open(|kind| {
+        with_app(|st| {
+            let info = help_info();
+            let lang = st.cfg.lang();
+            let is_logs = kind.as_str() == "logs";
+            let kind_static: &'static str = if is_logs { "logs" } else { "config" };
+            let dir = if is_logs { info.log_dir } else { info.config_dir };
+            if let Err(msg) = open_help_directory(dir, kind_static, lang) {
+                st.ui.set_help_status(msg.as_str().into());
             }
         });
+    });
+
+    ui.on_settings_help_copy_diagnostics(|| {
+        with_app(|st| copy_help_diagnostics(st));
     });
 
     ui.on_settings_category_changed(|c| {
@@ -10218,6 +10433,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Profiles 分类直接读 profile-model；每次进入都刷新（含搜索清空）。
             if c == 7 {
                 refresh_profiles(st);
+            }
+            // Help 每次进入都重取路径（TERVO_CONFIG/TERVO_LOG_DIR 可能变了）。
+            if c == 8 {
+                refresh_help_info(st);
             }
         });
         eprintln!("[ui] settings category={c}");
@@ -11159,6 +11378,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         st.ui.set_tabbar_bottom(st.cfg.tabbar_position == "bottom");
         st.ui
             .set_settings_path(Config::path().display().to_string().as_str().into());
+        refresh_help_info(st);
         init_background(st);
         // 测试/对比用：启动即隐藏背景，测量 cover 缩放成本（不影响正常路径）。
         if std::env::var_os("TERVO_TEST_SUSPEND_BG").is_some() {
@@ -11975,6 +12195,31 @@ mod tests {
         // 结果按目录顺序返回
         let cats: Vec<i32> = settings_search("e").iter().map(|(c, _)| *c).collect();
         assert!(cats.windows(2).all(|w| w[0] <= w[1]), "{cats:?}");
+    }
+
+    #[test]
+    fn settings_help_category_is_indexed_in_both_languages() {
+        let en = settings_search_hits("help", "en");
+        assert_eq!(en.len(), 4, "en help hits={}", en.len());
+        assert!(en.iter().all(|h| h.cat == 8 && h.line.contains("Help")));
+        let zh = settings_search_hits("帮助", "zh");
+        assert_eq!(zh.len(), 4, "zh help hits={}", zh.len());
+        assert!(zh.iter().all(|h| h.cat == 8 && h.line.contains("帮助")));
+        // 旧分类下标不因新增 Help 改变。
+        assert_eq!(settings_cat_label(0, "en"), "Appearance");
+        assert_eq!(settings_cat_label(7, "en"), "Profiles");
+        assert_eq!(settings_cat_label(8, "en"), "Help");
+        assert_eq!(settings_cat_label(8, "zh"), "帮助");
+
+        let info = help_info();
+        let text = help_diagnostics_text(&info, "zh");
+        assert!(text.contains(BUILD_VERSION));
+        assert!(text.contains(BUILD_COMMIT));
+        assert!(text.contains(BUILD_TARGET));
+        assert!(text.contains(&info.config_dir.display().to_string()));
+        assert!(text.contains(&info.log_dir.display().to_string()));
+        assert!(!text.to_lowercase().contains("password"));
+        assert!(!text.to_lowercase().contains("secret"));
     }
 
     #[test]
