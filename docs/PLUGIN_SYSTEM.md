@@ -5,23 +5,27 @@
 > 结论先行：**核心不做插件；插件重点不是 UI，而是连接、终端数据流、命令/工作区、外部集成。**  
 > 高频用 Rust/WASM，冷路径用 sidecar；UI 只保留最小状态/命令入口，绝不引入原生 dylib 插件。
 
-## 0. V1 落地状态（2026-11-06，`feat/plugin-v1`）
+## 0. V1 + V2 AI 落地状态（2026-11-09，`feat/ai-panel`）
 
-本设计稿的 Phase A 已按“稳定子集”落地为**外部进程插件 V1**，不引入 WASM/wasmtime：
+V1 本设计稿的 Phase A 已按“稳定子集”落地为**外部进程插件 V1**；V2 在 V1 上**只做加法**，
+新增 `api = 2` 清单选项、`[contributes.ai]` 与内置 AI Chat 面板，不引入 WASM/wasmtime，
+不改变 JSON Lines 协议 V1：
 
-| 设计项 | V1 实现 |
+| 设计项 | V1 / V2 实现 |
 |---|---|
 | Manifest + 权限声明 | `plugin.toml` 新增 `id`/`runtime`/`[permissions]`/`[contributes]`；权限**仅声明/展示**，默认拒绝未实现能力（不授予） |
 | Sidecar/外部进程 | `runtime = "process"` 常驻子进程 + JSON Lines；2s 握手、10s 命令超时、崩溃重启上限 2、坏 JSON 禁用；旧 oneshot 行为保留 |
 | Command Provider | 命令进 Palette/快捷键；清单静态参数 + `result.text` 回 UI 浮层/活动/日志 |
 | Status Provider | 2s 轮询 + 插件主动推送 `text/tooltip/command`；主窗口底部一行最小状态栏，可点击执行命令 |
 | Theme Pack | `[contributes] theme` 声明式 TOML，并入现有主题下拉；坏主题不拖垮插件/启动 |
-| 安全 | 无 shell 拼接、不传 Vault 明文、输出/行长度上限、超时 kill、坏 manifest/JSON/崩溃隔离 |
-| UI | 设置页 Plugins 显示 running/restarting/disabled + 错误原因；不新增任意 Slint UI |
+| **API v2 / AI Chat** | `api = 2` 可加 `[contributes.ai]`（id/name/model/description）；内置面板列出插件，经同一 supervisor 发 `ai.chat`（messages + 可选 model），结果一次性追加；120s 超时/取消不 kill 进程；宿主不存/不传 API Key |
+| 安全 | 无 shell 拼接、不传 Vault 明文、输出/行长度上限、超时 kill、坏 manifest/JSON/崩溃隔离；插件仍是普通用户进程 |
+| UI | 设置页 Plugins 显示 running/restarting/disabled + 错误原因；Settings → Plugins → AI Chat 打开宿主渲染的最小面板（不开放任意 Slint UI） |
 
 未做（按设计延后）：WASM/Component Model、Connection/Middleware/Observer/Linkifier/
-Workspace/Profile Provider、安装/市场/签名、权限强制、任意 UI 面板。
-协议、清单、权限边界与测试详见 [`PLUGIN_API.md`](PLUGIN_API.md)。
+Workspace/Profile Provider、安装/市场/签名、权限强制、任意 UI 面板、真实模型 provider
+（示例插件只做确定性 echo，真实凭据/网络由插件自己负责）。
+协议、清单、AI 契约与测试详见 [`PLUGIN_API.md`](PLUGIN_API.md)。
 
 ## 1. 目标
 
@@ -123,8 +127,12 @@ V1 不开放：自定义 Slint 组件、任意侧栏/面板、直接 PTY 写、�
 
 ### 3.2 V2：协议、连接与自动化
 
+当前 `api = 2` 只落地了最小的 **AI Chat 进程插件契约**（`[contributes.ai]` + `ai.chat`），
+其余 V2 能力仍按下表规划，未宣称已实现：
+
 | 类型 | 能力 | 约束 |
 |---|---|---|
+| AI Chat Provider（已落地最小版） | 进程插件声明 `[contributes.ai]`，响应 `ai.chat` 的 messages/model | 仅 `runtime="process"`；宿主不存/不传 API Key；120s 超时/可取消；不 fake token 流 |
 | Image Decoder | Sixel/IIP/自定义图片格式解码 | 只输出 RGBA + 尺寸；placement 由核心做 |
 | Protocol Filter | OSC/DCS/CSI 扩展解析 | 只读/受限写；不能绕过白名单 |
 | Connection Transport | SSH/SFTP/串口/自定义 | sidecar + 权限声明 |
@@ -134,7 +142,8 @@ V1 不开放：自定义 Slint 组件、任意侧栏/面板、直接 PTY 写、�
 | Settings Schema | 插件配置字段 | 只生成表单描述，不写 UI 代码 |
 | Optional Panel | 数据型面板（列表/树/表单） | 宿主渲染；V2 末或 V3，不是重点 |
 
-V2 仍不开放：任意 UI 代码、直接 PTY 写、无限制文件/网络。
+V2 仍不开放：任意 UI 代码、直接 PTY 写、无限制文件/网络。AI 面板是**宿主内置**的固定
+UI，只从清单读取展示元数据，不接受插件提供的 Slint 组件/布局。
 
 ### 3.3 V3：市场与兼容层
 
@@ -222,6 +231,47 @@ struct Span { start: u32, end: u32, kind: u8 }
 
 V2 末/V3 才考虑数据型侧栏/面板；仍由宿主渲染，插件只返回列表/树/表单数据。  
 插件不能写任意 Slint 组件，不能控制布局/主题/DPR；UI 扩展不进入终端热路径。
+
+### 4.5 AI Chat 契约（api = 2，当前实现）
+
+清单（只列增量字段）：
+
+```toml
+api = 2
+runtime = "process"            # AI 仅支持常驻进程
+entry = "plugin.py"
+
+[contributes.ai]
+id = "dev.tervo.ai-echo"       # 可选，缺省回退插件 id/name
+name = "AI Echo"               # 可选，面板展示名
+model = "echo-1"               # 可选，原样进 payload.model
+description = "offline echo"   # 可选，面板说明
+```
+
+宿主 → 插件（JSON Lines，协议仍是 V1）：
+
+```json
+{"type":"command","id":8,"command":"ai.chat","args":[],
+ "payload":{"messages":[{"role":"user","content":"hello"}],"model":"echo-1"}}
+```
+
+插件 → 宿主（兼容旧 result schema）：
+
+```json
+{"type":"result","id":8,"ok":true,"text":"hello"}
+{"type":"result","id":8,"ok":true,"result":{"text":"hello"}}
+```
+
+- `messages` 最多 32 条，role 仅 `system`/`user`/`assistant`，每条 ≤16000 字符；
+  `model` ≤128 字符；请求总行仍受 64 KiB 协议上限约束（宿主按长度拒绝）。
+- 120s 超时/用户 Cancel 只取消本次请求并回错误，不 kill 常驻进程；普通命令仍 10s 超时。
+- 面板只支持**一次完整回复**（append 一次），不做假 token 流；后续可扩展为协议事件，
+  但 MVP 不宣称 streaming。
+- **安全**：插件是普通用户进程，无沙箱；宿主不保存、不读取、不转发 API Key。
+  真实插件应在自己的进程内管理凭据（环境变量/自有配置/系统 keyring）。
+- 空状态：没有 AI 插件时面板显示 `docs/examples/ai-echo/` 与
+  `~/.config/tervo/plugins/ai-echo/` 示例路径，不要求联网。
+- 参考插件：`docs/examples/ai-echo/`（确定性 echo、无网络、无密钥）。
 
 ## 5. 性能契约
 

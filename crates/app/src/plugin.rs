@@ -1,17 +1,22 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! 插件清单与外部进程宿主（V1）。
+//! 插件清单与外部进程宿主（API v1/v2）。
 //!
 //! 支持三种形态，互不替换：
 //!
 //! 1. **旧扁平清单**：`<plugins>/*.toml`（`id`/`name`/`version`/`description`/`enabled`）。
 //!    仅发现、校验、展示，**不执行**；保留给旧配置与旧版设置页。
-//! 2. **v1 oneshot 目录插件**：`<plugins>/<name>/plugin.toml`，无 `runtime` 或
+//! 2. **v1/v2 oneshot 目录插件**：`<plugins>/<name>/plugin.toml`，无 `runtime` 或
 //!    `runtime = "oneshot"`；命令/事件每次以后台线程 spawn `entry`，stdin 发一行 JSON，
 //!    stdout/stderr 写日志，10s 超时 kill。兼容既有插件。
-//! 3. **v1 process 目录插件**：`runtime = "process"`；每个插件一个 supervisor 线程，
+//! 3. **v1/v2 process 目录插件**：`runtime = "process"`；每个插件一个 supervisor 线程，
 //!    常驻子进程 + JSON Lines（init/ready/command/result/event/status/log/shutdown），
 //!    2s 握手、10s 命令超时、崩溃重启上限 2、坏 JSON 禁用；命令结果回 UI 浮层/活动，
 //!    `[contributes] status` 提供底部状态栏，`theme` 提供声明式主题。
+//!
+//! **API v2** 是 v1 的加法扩展：`api = 1` 清单照旧加载，`api = 2` 清单可额外声明
+//! `[contributes.ai]`，由内置 AI 面板通过同一 supervisor 发送 `ai.chat` 请求
+//! （payload：messages/model），插件返回 `text`（兼容旧 result schema）。宿主不保存、
+//! 不转发 API Key；凭据完全由插件自己持有。
 //!
 //! 安全边界：插件是**普通子进程**，拥有当前用户全部权限，没有沙箱/权限模型；
 //! `[permissions]` 仅声明/展示，不授予能力。`entry` 只允许插件目录内的相对路径
@@ -34,8 +39,15 @@ use tervo_core::WakeSignal;
 
 use crate::commands::{self, Command, Registry, Shortcut};
 
-/// 宿主实现的插件 API 版本；清单里的 `api` 必须精确等于它。
-pub const PLUGIN_API_VERSION: u32 = 1;
+/// 宿主支持的最高插件 API 版本；清单 `api` 必须落在
+/// [`PLUGIN_API_MIN_VERSION`]..=[`PLUGIN_API_VERSION`]。
+pub const PLUGIN_API_VERSION: u32 = 2;
+
+/// 宿主仍兼容的最低插件 API 版本（v1 清单/插件行为不变）。
+pub const PLUGIN_API_MIN_VERSION: u32 = 1;
+
+/// 带 `[contributes.ai]` 的插件所需的最低 API 版本。
+pub const PLUGIN_AI_API_VERSION: u32 = 2;
 
 /// 单条插件命令的执行超时（MVP 固定值，不开放配置）。
 pub const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
@@ -65,6 +77,19 @@ pub const PROCESS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// 常驻进程插件单条命令的默认超时；超时 kill 进程并按崩溃处理。
 pub const PROCESS_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// AI Chat 请求的独立超时：模型生成通常远慢于普通命令，超时只取消本次请求，
+/// 不 kill 常驻进程（插件可能仍在其它命令上工作）。
+pub const AI_CHAT_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// AI 返回文本上限（按字符）；比普通命令结果 2000 字符更宽，但仍防止坏插件撑爆 UI。
+pub const MAX_AI_TEXT_CHARS: usize = 16_000;
+
+/// 单次 AI 请求最多带的消息条数与每条内容字符数。
+pub const MAX_AI_MESSAGES: usize = 32;
+pub const MAX_AI_MESSAGE_CHARS: usize = 16_000;
+/// 模型标识只做长度限制（凭据/模型由插件解释，宿主不校验供应商）。
+pub const MAX_AI_MODEL_CHARS: usize = 128;
 
 /// 状态提供者的轮询间隔（宿主主动请求，插件也可异步推送）。
 pub const PROCESS_STATUS_INTERVAL: Duration = Duration::from_secs(2);
@@ -283,6 +308,82 @@ impl PluginPermissions {
     }
 }
 
+/// `[contributes.ai]`：声明插件支持宿主的 AI Chat 面板（API v2 新增）。
+///
+/// 所有字段都有 serde 默认值，便于只写需要的元数据；`id`/`name`/`model`
+/// 只用于面板展示与请求提示，真正的模型路由/凭据由插件自己负责。
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PluginAiContribution {
+    /// 稳定 AI 标识；缺省回退到插件 id/name。
+    pub id: String,
+    /// 面板展示名；缺省回退到插件 name。
+    pub name: String,
+    /// 建议模型标识（原样放入 `ai.chat` payload.model；空 = 不传）。
+    pub model: String,
+    /// 面板/设置页说明。
+    pub description: String,
+}
+
+/// AI Chat 面板可选的插件（已启用、api ≥ 2、runtime=process、声明了 ai）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AiPluginInfo {
+    /// supervisor/协议使用的插件 name（不是 AI id）。
+    pub plugin: String,
+    pub id: String,
+    pub name: String,
+    pub model: String,
+    pub description: String,
+}
+
+impl AiPluginInfo {
+    /// 面板列表一行：`Name — model · description`。
+    pub fn display_line(&self) -> String {
+        let mut line = self.name.clone();
+        if !self.model.trim().is_empty() {
+            line.push_str(" — ");
+            line.push_str(self.model.trim());
+        }
+        if !self.description.trim().is_empty() {
+            line.push_str(" · ");
+            line.push_str(self.description.trim());
+        }
+        line
+    }
+}
+
+/// `ai.chat` 请求中的一条消息；序列化字段就是协议字段。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AiChatMessage {
+    pub role: String,
+    pub content: String,
+}
+
+impl AiChatMessage {
+    pub fn user(content: impl Into<String>) -> Self {
+        Self { role: "user".to_string(), content: content.into() }
+    }
+
+    pub fn assistant(content: impl Into<String>) -> Self {
+        Self { role: "assistant".to_string(), content: content.into() }
+    }
+}
+
+/// `ai.chat` 的终态；UI 只在这里消费一次，不做假 token 流。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AiChatOutcome {
+    Ok(String),
+    Error(String),
+    Cancelled,
+}
+
+/// 后台请求线程回传给 UI 线程的 AI 结果。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AiChatResult {
+    pub plugin: String,
+    pub outcome: AiChatOutcome,
+}
+
 /// 插件声明的贡献点。
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -293,12 +394,31 @@ pub struct PluginContributes {
     pub status: bool,
     /// 可选声明式 TOML 主题（插件目录内相对路径）。
     pub theme: Option<String>,
+    /// API v2：声明后该插件出现在内置 AI Chat 面板。
+    pub ai: Option<PluginAiContribution>,
 }
 
 impl PluginContributes {
     pub fn validate(&self) -> Result<(), String> {
         if let Some(theme) = &self.theme {
             entry_path(theme).map_err(|e| format!("contributes.theme 非法: {e}"))?;
+        }
+        if let Some(ai) = &self.ai {
+            let id = ai.id.trim();
+            if !id.is_empty() {
+                validate_plugin_id(id).map_err(|e| format!("contributes.ai.id 非法: {e}"))?;
+            }
+            if ai.name.chars().count() > 128 {
+                return Err("contributes.ai.name 超过 128 字符".into());
+            }
+            if ai.model.chars().count() > MAX_AI_MODEL_CHARS {
+                return Err(format!(
+                    "contributes.ai.model 超过 {MAX_AI_MODEL_CHARS} 字符"
+                ));
+            }
+            if ai.description.chars().count() > 512 {
+                return Err("contributes.ai.description 超过 512 字符".into());
+            }
         }
         Ok(())
     }
@@ -367,10 +487,10 @@ impl PackageManifest {
         if self.version.trim().is_empty() {
             return Err(format!("插件 {} 缺少 version", self.name));
         }
-        if self.api != PLUGIN_API_VERSION {
+        if self.api < PLUGIN_API_MIN_VERSION || self.api > PLUGIN_API_VERSION {
             return Err(format!(
-                "不支持的 api {}（宿主只支持 api={PLUGIN_API_VERSION}）",
-                self.api
+                "不支持的 api {}（宿主支持 api={}..={}）",
+                self.api, PLUGIN_API_MIN_VERSION, PLUGIN_API_VERSION
             ));
         }
         self.runtime_kind()?;
@@ -382,6 +502,20 @@ impl PackageManifest {
                 "插件 {} 声明了 contributes.status，但 runtime 不是 process",
                 self.name
             ));
+        }
+        if self.contributes.ai.is_some() {
+            if self.api < PLUGIN_AI_API_VERSION {
+                return Err(format!(
+                    "插件 {} 声明了 contributes.ai，需要 api = {PLUGIN_AI_API_VERSION}（当前 {}）",
+                    self.name, self.api
+                ));
+            }
+            if self.runtime_kind()? != PluginRuntimeKind::Process {
+                return Err(format!(
+                    "插件 {} 声明了 contributes.ai，但 runtime 不是 process（V2 仅支持常驻进程 AI 插件）",
+                    self.name
+                ));
+            }
         }
         for (i, command) in self.commands.iter().enumerate() {
             validate_command_id(&command.id)
@@ -447,6 +581,31 @@ impl PackageManifest {
 
     pub fn is_process(&self) -> bool {
         self.runtime_kind() == Ok(PluginRuntimeKind::Process)
+    }
+
+    /// `true` = 清单显式使用 API v2（仍走同一 JSON Lines 协议 V1）。
+    pub fn is_api_v2(&self) -> bool {
+        self.api >= PLUGIN_AI_API_VERSION
+    }
+
+    /// AI 贡献存在且插件具备运行条件（不检查 enabled）。
+    pub fn declares_ai(&self) -> bool {
+        self.contributes.ai.is_some() && self.is_api_v2() && self.is_process()
+    }
+
+    /// AI 面板展示信息；没有 `[contributes.ai]` 时返回 None。
+    pub fn ai_info(&self) -> Option<AiPluginInfo> {
+        let ai = self.contributes.ai.as_ref()?;
+        let fallback = self.plugin_id();
+        let id = if ai.id.trim().is_empty() { fallback } else { ai.id.trim() };
+        let name = if ai.name.trim().is_empty() { self.name.as_str() } else { ai.name.trim() };
+        Some(AiPluginInfo {
+            plugin: self.name.clone(),
+            id: id.to_string(),
+            name: name.to_string(),
+            model: ai.model.trim().to_string(),
+            description: ai.description.trim().to_string(),
+        })
     }
 }
 
@@ -669,6 +828,9 @@ impl PluginPackage {
         }
         if self.manifest.contributes.status {
             line.push_str(" · status");
+        }
+        if self.manifest.declares_ai() {
+            line.push_str(" · ai");
         }
         if let Some(theme) = &self.manifest.contributes.theme {
             let path = theme.trim();
@@ -939,6 +1101,7 @@ enum CommandOutcome {
     Ok(String),
     Error(String),
     Timeout,
+    Cancelled,
     Unavailable(String),
 }
 
@@ -952,6 +1115,7 @@ impl CommandOutcome {
             Self::Ok(_) => "ok",
             Self::Error(_) => "error",
             Self::Timeout => "timeout",
+            Self::Cancelled => "cancelled",
             Self::Unavailable(_) => "unavailable",
         }
     }
@@ -960,6 +1124,7 @@ impl CommandOutcome {
         match self {
             Self::Ok(text) | Self::Error(text) | Self::Unavailable(text) => text,
             Self::Timeout => "命令超时（已 kill 插件进程）",
+            Self::Cancelled => "AI 请求已取消",
         }
     }
 }
@@ -971,6 +1136,14 @@ enum SupervisorMsg {
         args: Vec<String>,
         reply: Sender<CommandOutcome>,
     },
+    /// API v2：结构化 AI 请求，走与普通命令相同的 pending/result 通道。
+    AiChat {
+        messages: Vec<AiChatMessage>,
+        model: Option<String>,
+        reply: Sender<CommandOutcome>,
+    },
+    /// 取消当前插件上所有 pending 的 AI 请求（不 kill 进程）。
+    CancelAi,
     Event {
         event: PluginEvent,
         payload: serde_json::Value,
@@ -980,7 +1153,8 @@ enum SupervisorMsg {
 
 /// stdout 读取线程解析后的消息。
 enum HostIncoming {
-    Ready(u32),
+    /// `api` 缺省 = 旧插件未回版本，按清单声明版本接受（保持 v1 兼容）。
+    Ready(Option<u32>),
     Result { id: u64, ok: bool, text: String },
     Status { text: String, tooltip: String, command: String },
     Log(String),
@@ -1015,6 +1189,7 @@ struct PendingRequest {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum PendingKind {
     Command,
+    AiChat,
     Status,
 }
 
@@ -1269,6 +1444,144 @@ impl PluginStore {
             },
         }
     }
+
+    /// 内置 AI 面板可选的插件列表（已启用 + api≥2 + process + [contributes.ai]）。
+    ///
+    /// 只读清单，不启动/唤醒进程；同名/同 AI id 只保留第一个，顺序按展示名。
+    pub fn ai_plugins(&self) -> Vec<AiPluginInfo> {
+        let mut infos: Vec<AiPluginInfo> = Vec::new();
+        for package in &self.packages {
+            if !package.manifest.enabled || !package.manifest.declares_ai() {
+                continue;
+            }
+            let Some(info) = package.manifest.ai_info() else {
+                continue;
+            };
+            if infos.iter().any(|existing| existing.id == info.id) {
+                continue;
+            }
+            infos.push(info);
+        }
+        infos.sort_by(|a, b| a.name.cmp(&b.name).then(a.plugin.cmp(&b.plugin)));
+        infos
+    }
+
+    /// 提交一次 `ai.chat` 请求，立即返回结果接收端；等待/活动记录在线程里完成。
+    ///
+    /// - 不阻塞 UI：supervisor 只负责写 stdin，结果由独立线程等待后回传；
+    /// - 请求走现有 process 插件 pending/result 通道，不引入第二条 IPC；
+    /// - 宿主不读/不写 API Key，prompt/response 也不写入活动摘要或日志正文。
+    pub fn spawn_ai_chat(
+        &self,
+        plugin: &str,
+        messages: Vec<AiChatMessage>,
+        model: Option<String>,
+    ) -> Result<Receiver<AiChatResult>, String> {
+        let package = self
+            .packages
+            .iter()
+            .find(|package| package.manifest.name == plugin)
+            .ok_or_else(|| format!("AI 插件不存在: {plugin}"))?;
+        if !package.manifest.enabled {
+            return Err(format!("AI 插件未启用: {plugin}"));
+        }
+        if !package.manifest.declares_ai() {
+            return Err(format!(
+                "插件 {plugin} 未声明 [contributes.ai] 或不是 api=2 process 插件"
+            ));
+        }
+        let messages = prepare_ai_messages(messages)?;
+        let model = prepare_ai_model(model)?;
+        // 协议单行 64 KiB：提前按序列化后的 payload 检查，避免插件把它当坏行。
+        let probe = ai_chat_payload(&messages, model.as_deref()).to_string();
+        if probe.len() + 256 > MAX_PROTOCOL_LINE_BYTES {
+            return Err(format!(
+                "AI 请求超过协议单行上限（{} 字节，上限 {}）",
+                probe.len(),
+                MAX_PROTOCOL_LINE_BYTES
+            ));
+        }
+        let handle = self.process_handle(plugin).ok_or_else(|| {
+            format!("AI 插件进程未启动（runtime=process 需宿主启动事件循环）: {plugin}")
+        })?;
+        let (reply_tx, reply_rx) = crossbeam_channel::bounded(1);
+        handle
+            .tx
+            .send(SupervisorMsg::AiChat {
+                messages,
+                model,
+                reply: reply_tx,
+            })
+            .map_err(|_| format!("AI 插件 supervisor 已退出: {plugin}"))?;
+
+        let (ui_tx, ui_rx) = crossbeam_channel::bounded(1);
+        let plugin_name = plugin.to_string();
+        let activity = self.activity.clone();
+        let wake = self.wake.clone();
+        let wait = AI_CHAT_TIMEOUT + Duration::from_secs(5);
+        let spawned = std::thread::Builder::new()
+            .name(format!("plugin-ai-{plugin}"))
+            .spawn(move || {
+                let outcome = reply_rx.recv_timeout(wait).unwrap_or_else(|_| {
+                    CommandOutcome::Error("等待 AI 插件响应超时".to_string())
+                });
+                let (outcome_label, summary) = match &outcome {
+                    CommandOutcome::Ok(text) => (
+                        "ok",
+                        format!("{} chars", text.chars().count()),
+                    ),
+                    CommandOutcome::Error(text) => {
+                        ("error", sanitize_short(text, MAX_ACTIVITY_SUMMARY_CHARS))
+                    },
+                    CommandOutcome::Cancelled => ("cancelled", String::new()),
+                    CommandOutcome::Timeout => ("timeout", String::new()),
+                    CommandOutcome::Unavailable(text) => {
+                        ("unavailable", sanitize_short(text, MAX_ACTIVITY_SUMMARY_CHARS))
+                    },
+                };
+                record_activity(
+                    &activity,
+                    PluginActivity::new(
+                        now_hms(),
+                        &plugin_name,
+                        "ai.chat",
+                        outcome_label,
+                        summary,
+                    ),
+                );
+                // 只记录长度/状态，不把 prompt 或模型输出写进日志正文。
+                eprintln!(
+                    "[plugin] {}: ai.chat {outcome_label} ({} chars)",
+                    plugin_name,
+                    outcome.text().chars().count()
+                );
+                let result = match outcome {
+                    CommandOutcome::Ok(text) => AiChatOutcome::Ok(text),
+                    CommandOutcome::Cancelled => AiChatOutcome::Cancelled,
+                    CommandOutcome::Timeout => {
+                        AiChatOutcome::Error("AI 请求超时".to_string())
+                    },
+                    CommandOutcome::Error(text) | CommandOutcome::Unavailable(text) => {
+                        AiChatOutcome::Error(text)
+                    },
+                };
+                let _ = ui_tx.send(AiChatResult { plugin: plugin_name, outcome: result });
+                notify_wake(&wake);
+            });
+        match spawned {
+            Ok(_) => Ok(ui_rx),
+            Err(e) => {
+                let _ = handle.tx.send(SupervisorMsg::CancelAi);
+                Err(format!("无法创建 AI 等待线程: {e}"))
+            },
+        }
+    }
+
+    /// 取消该插件上 pending 的 AI 请求；结果以 `AiChatOutcome::Cancelled` 回传。
+    pub fn cancel_ai_chat(&self, plugin: &str) -> bool {
+        self.process_handle(plugin)
+            .is_some_and(|handle| handle.tx.send(SupervisorMsg::CancelAi).is_ok())
+    }
 }
 
 impl Drop for PluginStore {
@@ -1514,9 +1827,13 @@ fn run_instance(
     runtime_revision.fetch_add(1, Ordering::Relaxed);
 
     // init：插件必须在 2s 内回 ready；否则 kill 并重试（有上限）。
+    // 按“清单声明的 api”握手，而不是宿主最高版本：v1 插件继续收到 api=1，
+    // v2 插件收到 api=2；双方仍使用同一 JSON Lines 协议 V1。
+    let declared_api = package.manifest.api;
     let init = serde_json::json!({
         "type": "init",
-        "api": PLUGIN_API_VERSION,
+        "api": declared_api,
+        "host_api": PLUGIN_API_VERSION,
         "protocol": PLUGIN_PROTOCOL_VERSION,
         "plugin": plugin,
         "host": "tervo",
@@ -1539,11 +1856,17 @@ fn run_instance(
         }
         match incoming_rx.try_recv() {
             Ok(HostIncoming::Ready(api)) => {
-                if api != PLUGIN_API_VERSION {
-                    kill_child(&mut child);
-                    return InstanceEnd::Disabled(format!(
-                        "握手 api={api} 与宿主 api={PLUGIN_API_VERSION} 不兼容"
-                    ));
+                if let Some(api) = api {
+                    if api != declared_api {
+                        kill_child(&mut child);
+                        return InstanceEnd::Disabled(format!(
+                            "握手 api={api} 与清单 api={declared_api} 不兼容"
+                        ));
+                    }
+                } else {
+                    eprintln!(
+                        "[plugin] {plugin}: ready 未带 api，按清单 api={declared_api} 兼容处理"
+                    );
                 }
                 ready = true;
                 break;
@@ -1626,10 +1949,32 @@ fn run_instance(
         loop {
             match incoming_rx.try_recv() {
                 Ok(HostIncoming::Result { id, ok, text }) => {
-                    let text = sanitize_short(&text, MAX_RESULT_TEXT_CHARS);
-                    if let Some(pending) = pending.remove(&id) {
+                    let request = pending.remove(&id);
+                    let is_ai = request
+                        .as_ref()
+                        .is_some_and(|request| request.kind == PendingKind::AiChat);
+                    // AI 文本走更宽的上限；普通命令仍保持 2000 字符。
+                    let text = sanitize_short(
+                        &text,
+                        if is_ai { MAX_AI_TEXT_CHARS } else { MAX_RESULT_TEXT_CHARS },
+                    );
+                    if let Some(pending) = request {
                         if let Some(reply) = pending.reply {
-                            let outcome = if ok {
+                            let outcome = if is_ai {
+                                if ok {
+                                    if text.trim().is_empty() {
+                                        CommandOutcome::Error("AI 插件未返回 text".to_string())
+                                    } else {
+                                        CommandOutcome::Ok(text)
+                                    }
+                                } else if text.trim().is_empty() {
+                                    CommandOutcome::Error(
+                                        "AI 请求失败（插件未返回错误详情）".to_string(),
+                                    )
+                                } else {
+                                    CommandOutcome::Error(text)
+                                }
+                            } else if ok {
                                 CommandOutcome::Ok(text)
                             } else {
                                 CommandOutcome::Error(text)
@@ -1755,6 +2100,48 @@ fn run_instance(
                     },
                 );
             },
+            Ok(SupervisorMsg::AiChat { messages, model, reply }) => {
+                let id = next_id;
+                next_id = next_id.wrapping_add(1).max(1);
+                let message = serde_json::json!({
+                    "type": "command",
+                    "id": id,
+                    "command": "ai.chat",
+                    "args": [],
+                    "payload": ai_chat_payload(&messages, model.as_deref()),
+                });
+                if let Err(e) = send_json_line(&mut stdin, &message) {
+                    let _ = reply.send(CommandOutcome::Unavailable(format!("写入 stdin 失败: {e}")));
+                    kill_child(&mut child);
+                    fail_pending(&mut pending, CommandOutcome::Unavailable("插件 stdin 写入失败".to_string()));
+                    return InstanceEnd::Crashed(format!("写入 AI 请求失败: {e}"));
+                }
+                pending.insert(
+                    id,
+                    PendingRequest {
+                        kind: PendingKind::AiChat,
+                        deadline: Instant::now() + AI_CHAT_TIMEOUT,
+                        label: "ai.chat".to_string(),
+                        reply: Some(reply),
+                    },
+                );
+            },
+            Ok(SupervisorMsg::CancelAi) => {
+                let cancel_ids: Vec<u64> = pending
+                    .iter()
+                    .filter_map(|(id, request)| {
+                        (request.kind == PendingKind::AiChat).then_some(*id)
+                    })
+                    .collect();
+                for id in cancel_ids {
+                    if let Some(request) = pending.remove(&id) {
+                        if let Some(reply) = request.reply {
+                            let _ = reply.send(CommandOutcome::Cancelled);
+                        }
+                    }
+                }
+                eprintln!("[plugin] {plugin}: 已取消 pending 的 AI 请求");
+            },
             Ok(SupervisorMsg::Event { event, payload }) => {
                 let message = serde_json::json!({
                     "type": "event",
@@ -1775,9 +2162,11 @@ fn run_instance(
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => {},
         }
 
-        // 请求超时：命令超时 kill 进程（按崩溃重启）；状态超时只丢弃该次请求。
+        // 请求超时：普通命令超时 kill 进程（按崩溃重启）；AI 请求超时只取消本次
+        // 请求、不 kill 常驻进程；状态超时只丢弃该次请求。
         let now = Instant::now();
         let mut timed_out_command: Option<String> = None;
+        let mut ai_timed_out = 0u32;
         let mut status_timed_out = 0u32;
         pending.retain(|_id, request| {
             if now < request.deadline {
@@ -1791,12 +2180,28 @@ fn run_instance(
                     }
                     false
                 },
+                PendingKind::AiChat => {
+                    ai_timed_out += 1;
+                    if let Some(reply) = request.reply.as_ref() {
+                        let _ = reply.send(CommandOutcome::Error(format!(
+                            "AI 请求超时（{}s），已取消本次请求",
+                            AI_CHAT_TIMEOUT.as_secs()
+                        )));
+                    }
+                    false
+                },
                 PendingKind::Status => {
                     status_timed_out += 1;
                     false
                 },
             }
         });
+        if ai_timed_out > 0 {
+            eprintln!(
+                "[plugin] {plugin}: AI 请求超时 {ai_timed_out} 个（{}s），进程保留",
+                AI_CHAT_TIMEOUT.as_secs()
+            );
+        }
         if status_timed_out > 0 {
             status_errors += status_timed_out;
             eprintln!(
@@ -1873,7 +2278,8 @@ fn spawn_plugin_child(package: &PluginPackage) -> Result<SpawnedChild, String> {
         .current_dir(&package.dir)
         .env("TERVO_PLUGIN_NAME", &package.manifest.name)
         .env("TERVO_PLUGIN_ID", package.manifest.plugin_id())
-        .env("TERVO_PLUGIN_API", PLUGIN_API_VERSION.to_string())
+        .env("TERVO_PLUGIN_API", package.manifest.api.to_string())
+        .env("TERVO_PLUGIN_HOST_API", PLUGIN_API_VERSION.to_string())
         .env("TERVO_PLUGIN_PROTOCOL", PLUGIN_PROTOCOL_VERSION.to_string())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -2003,21 +2409,35 @@ fn parse_host_incoming(line: &str) -> HostIncoming {
         Ok(value) => value,
         Err(e) => return HostIncoming::BadLine(format!("{e}: {}", sanitize_short(line, 120))),
     };
-    let Some(kind) = value.get("type").and_then(|v| v.as_str()) else {
-        return HostIncoming::BadLine(format!("缺少 type: {}", sanitize_short(line, 120)));
+    // 兼容最小 AI result：`{"id":N,"text":"..."}`（没有 type 字段）。普通协议仍要求
+    // type；只有同时具备 id + text/result 的对象才按 result 处理。
+    let kind = match value.get("type").and_then(|v| v.as_str()) {
+        Some(kind) => kind,
+        None if value.get("id").is_some()
+            && (value.get("text").is_some() || value.get("result").is_some()) =>
+        {
+            "result"
+        },
+        None => {
+            return HostIncoming::BadLine(format!("缺少 type: {}", sanitize_short(line, 120)))
+        },
     };
     match kind {
         "ready" => {
-            let api = value.get("api").and_then(|v| v.as_u64()).unwrap_or(PLUGIN_API_VERSION as u64);
-            HostIncoming::Ready(api.min(u32::MAX as u64) as u32)
+            // 缺省 api = 旧插件未回版本；supervisor 按清单声明版本兼容处理。
+            let api = value
+                .get("api")
+                .and_then(|v| v.as_u64())
+                .map(|api| api.min(u32::MAX as u64) as u32);
+            HostIncoming::Ready(api)
         },
         "result" => {
             let Some(id) = value.get("id").and_then(|v| v.as_u64()) else {
                 return HostIncoming::BadLine("result 缺少 id".to_string());
             };
             let ok = value.get("ok").and_then(|v| v.as_bool()).unwrap_or(true);
-            let text = value.get("text").and_then(|v| v.as_str()).unwrap_or("");
-            HostIncoming::Result { id, ok, text: text.to_string() }
+            let text = result_text(&value).unwrap_or("").to_string();
+            HostIncoming::Result { id, ok, text }
         },
         "status" => {
             let text = value.get("text").and_then(|v| v.as_str()).unwrap_or("");
@@ -2034,6 +2454,71 @@ fn parse_host_incoming(line: &str) -> HostIncoming {
         ),
         other => HostIncoming::BadLine(format!("未知 type {other:?}")),
     }
+}
+
+/// 从 result 行提取文本：兼容旧 `text`、以及 AI 插件常用的
+/// `{"result":{"text":"..."}}` / `{"payload":{"text":"..."}}` / `result` 字符串。
+fn result_text(value: &serde_json::Value) -> Option<&str> {
+    value
+        .get("text")
+        .and_then(|v| v.as_str())
+        .or_else(|| value.get("result").and_then(|v| v.as_str()))
+        .or_else(|| value.get("result").and_then(|v| v.get("text")).and_then(|v| v.as_str()))
+        .or_else(|| value.get("payload").and_then(|v| v.get("text")).and_then(|v| v.as_str()))
+}
+
+/// 构造 `ai.chat` 的 payload；消息/模型在入口已校验并限长。
+fn ai_chat_payload(messages: &[AiChatMessage], model: Option<&str>) -> serde_json::Value {
+    let mut payload = serde_json::json!({ "messages": messages });
+    if let Some(model) = model.map(str::trim).filter(|model| !model.is_empty()) {
+        payload["model"] = serde_json::Value::String(model.to_string());
+    }
+    payload
+}
+
+/// 校验/裁剪 AI 请求消息：只允许 system/user/assistant，拒绝空内容与超限。
+fn prepare_ai_messages(messages: Vec<AiChatMessage>) -> Result<Vec<AiChatMessage>, String> {
+    if messages.is_empty() {
+        return Err("AI 请求至少需要一条消息".to_string());
+    }
+    if messages.len() > MAX_AI_MESSAGES {
+        return Err(format!("AI 请求最多 {MAX_AI_MESSAGES} 条消息"));
+    }
+    let mut prepared = Vec::with_capacity(messages.len());
+    for (index, mut message) in messages.into_iter().enumerate() {
+        message.role = message.role.trim().to_ascii_lowercase();
+        if !matches!(message.role.as_str(), "system" | "user" | "assistant") {
+            return Err(format!(
+                "AI 消息 #{} 的 role 非法（只支持 system/user/assistant）",
+                index + 1
+            ));
+        }
+        if message.content.trim().is_empty() {
+            return Err(format!("AI 消息 #{} 内容为空", index + 1));
+        }
+        if message.content.chars().count() > MAX_AI_MESSAGE_CHARS {
+            return Err(format!(
+                "AI 消息 #{} 超过 {MAX_AI_MESSAGE_CHARS} 字符",
+                index + 1
+            ));
+        }
+        prepared.push(message);
+    }
+    Ok(prepared)
+}
+
+fn prepare_ai_model(model: Option<String>) -> Result<Option<String>, String> {
+    let Some(model) = model else {
+        return Ok(None);
+    };
+    let model = model.trim();
+    if model.is_empty() {
+        return Ok(None);
+    }
+    if model.chars().count() > MAX_AI_MODEL_CHARS {
+        return Err(format!("AI model 超过 {MAX_AI_MODEL_CHARS} 字符"));
+    }
+    Ok(Some(model.to_string()))
 }
 
 fn send_json_line(
@@ -2367,6 +2852,7 @@ impl PluginStore {
             let action_for_thread = action.clone();
             let activity_for_thread = activity.clone();
             let thread_payload = payload.clone();
+            let api = package.manifest.api;
             let result = std::thread::Builder::new().name(thread_name).spawn(move || {
                 match execute_event(
                     &plugin_for_thread,
@@ -2375,6 +2861,7 @@ impl PluginStore {
                     event,
                     &thread_payload,
                     EVENT_TIMEOUT,
+                    api,
                 ) {
                     Ok(report) => {
                         log_execution(&label, &report);
@@ -2438,12 +2925,21 @@ impl PluginStore {
         let action = format!("command {command_id}");
         let activity = self.activity.clone();
         let thread_name = format!("plugin-{plugin_name}");
+        let api = package.manifest.api;
         let spawned = std::thread::Builder::new().name(thread_name).spawn({
             let plugin_name = plugin_name.clone();
             let action = action.clone();
             let activity = activity.clone();
             move || {
-                match execute(&plugin_name, &plugin_dir, &entry, &command_id, &[], COMMAND_TIMEOUT) {
+                match execute(
+                    &plugin_name,
+                    &plugin_dir,
+                    &entry,
+                    &command_id,
+                    &[],
+                    COMMAND_TIMEOUT,
+                    api,
+                ) {
                     Ok(report) => {
                         log_execution(&full_id, &report);
                         record_activity(
@@ -2551,6 +3047,7 @@ pub(crate) fn execute(
     command_id: &str,
     args: &[String],
     timeout: Duration,
+    api: u32,
 ) -> Result<ExecutionReport, String> {
     let message = serde_json::json!({
         "event": "command",
@@ -2559,7 +3056,7 @@ pub(crate) fn execute(
     })
     .to_string()
         + "\n";
-    execute_message(plugin_name, plugin_dir, entry, &message, timeout)
+    execute_message(plugin_name, plugin_dir, entry, &message, timeout, api)
 }
 
 /// 执行一次事件钩子（同步）。仅由 [`PluginStore::spawn_event`] 的后台线程与测试调用。
@@ -2570,9 +3067,10 @@ pub(crate) fn execute_event(
     event: PluginEvent,
     payload: &serde_json::Value,
     timeout: Duration,
+    api: u32,
 ) -> Result<ExecutionReport, String> {
     let message = event_message(event, payload);
-    execute_message(plugin_name, plugin_dir, entry, &message, timeout)
+    execute_message(plugin_name, plugin_dir, entry, &message, timeout, api)
 }
 
 /// 同步执行 entry：写一行 JSON 到 stdin，并发捕获输出，超时 kill。
@@ -2582,6 +3080,7 @@ fn execute_message(
     entry: &Path,
     message: &str,
     timeout: Duration,
+    api: u32,
 ) -> Result<ExecutionReport, String> {
     // 刚写完的 entry 在部分文件系统上会短暂 ETXTBSY；重试几次比把测试/插件判死更稳。
     let mut child = None;
@@ -2589,7 +3088,8 @@ fn execute_message(
         let spawned = ProcessCommand::new(entry)
             .current_dir(plugin_dir)
             .env("TERVO_PLUGIN_NAME", plugin_name)
-            .env("TERVO_PLUGIN_API", PLUGIN_API_VERSION.to_string())
+            .env("TERVO_PLUGIN_API", api.to_string())
+            .env("TERVO_PLUGIN_HOST_API", PLUGIN_API_VERSION.to_string())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -2923,13 +3423,134 @@ enabled = false
     #[test]
     fn rejects_unsupported_api() {
         let dir = tmpdir("api");
-        let manifest = HELLO_MANIFEST.replace("api = 1", "api = 2");
+        // v1/v2 都支持；v3 才是未知版本。
+        let manifest = HELLO_MANIFEST.replace("api = 1", "api = 3");
         write_package(&dir, "hello", &manifest, Some("#!/bin/sh\nexit 0\n"));
         let store = PluginStore::load_from(&dir);
         assert!(store.packages.is_empty());
         assert_eq!(store.skipped.len(), 1);
-        assert!(store.skipped[0].1.contains("api 2"), "{:?}", store.skipped);
+        assert!(store.skipped[0].1.contains("api 3"), "{:?}", store.skipped);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn loads_api_1_and_api_2_manifests() {
+        let dir = tmpdir("api-v1v2");
+        write_package(&dir, "v1", HELLO_MANIFEST, Some("#!/bin/sh\nexit 0\n"));
+        let v2 = HELLO_MANIFEST
+            .replace("name = \"hello\"", "name = \"hello2\"")
+            .replace("api = 1", "api = 2");
+        write_package(&dir, "v2", &v2, Some("#!/bin/sh\nexit 0\n"));
+        let store = PluginStore::load_from(&dir);
+        assert!(store.skipped.is_empty(), "{:?}", store.skipped);
+        assert_eq!(store.packages.len(), 2);
+        let v1 = store.packages.iter().find(|p| p.manifest.name == "hello").unwrap();
+        let v2 = store.packages.iter().find(|p| p.manifest.name == "hello2").unwrap();
+        assert_eq!(v1.manifest.api, 1);
+        assert!(!v1.manifest.is_api_v2());
+        assert_eq!(v2.manifest.api, 2);
+        assert!(v2.manifest.is_api_v2());
+        // 没有 [contributes.ai] 的 v2 清单仍是普通插件，不进 AI 面板。
+        assert!(store.ai_plugins().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parses_ai_contribution_and_apply_defaults() {
+        let dir = tmpdir("ai-manifest");
+        let manifest = HELLO_MANIFEST
+            .replace("name = \"hello\"", "name = \"ai-echo\"")
+            .replace("api = 1", "api = 2\nruntime = \"process\"")
+            + r#"
+[contributes.ai]
+id = "dev.tervo.ai-echo"
+name = "AI Echo"
+model = "echo-1"
+description = "deterministic local echo"
+"#;
+        write_package(&dir, "ai-echo", &manifest, Some("#!/bin/sh\nexit 0\n"));
+        let store = PluginStore::load_from(&dir);
+        assert!(store.skipped.is_empty(), "{:?}", store.skipped);
+        let package = &store.packages[0];
+        let ai = package.manifest.ai_info().expect("ai info");
+        assert_eq!(ai.id, "dev.tervo.ai-echo");
+        assert_eq!(ai.name, "AI Echo");
+        assert_eq!(ai.model, "echo-1");
+        assert_eq!(ai.plugin, "ai-echo");
+        assert_eq!(store.ai_plugins(), vec![ai.clone()]);
+        assert!(package.display_line().contains(" · ai"), "{}", package.display_line());
+
+        // 空 [contributes.ai]：serde 默认值 + 回退到插件 id/name，不拒绝清单。
+        let default_manifest = manifest.replace(
+            "id = \"dev.tervo.ai-echo\"\nname = \"AI Echo\"\nmodel = \"echo-1\"\ndescription = \"deterministic local echo\"\n",
+            "",
+        );
+        let dir2 = tmpdir("ai-manifest-defaults");
+        write_package(&dir2, "ai-echo", &default_manifest, Some("#!/bin/sh\nexit 0\n"));
+        let store2 = PluginStore::load_from(&dir2);
+        assert!(store2.skipped.is_empty(), "{:?}", store2.skipped);
+        let ai = store2.ai_plugins()[0].clone();
+        assert_eq!(ai.id, "ai-echo");
+        assert_eq!(ai.name, "ai-echo");
+        assert!(ai.model.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&dir2);
+    }
+
+    #[test]
+    fn ai_contribution_requires_api_2_process_runtime() {
+        // api=1 声明 AI：整份清单拒绝，并给出明确原因。
+        let dir = tmpdir("ai-api1");
+        let api1 = HELLO_MANIFEST
+            .replace("name = \"hello\"", "name = \"ai-echo\"")
+            + "\n[contributes.ai]\nid = \"ai.echo\"\n";
+        write_package(&dir, "ai-echo", &api1, Some("#!/bin/sh\nexit 0\n"));
+        let store = PluginStore::load_from(&dir);
+        assert!(store.packages.is_empty());
+        assert!(store.skipped[0].1.contains("contributes.ai"), "{:?}", store.skipped);
+
+        // api=2 但 oneshot：AI 贡献需要常驻进程。
+        let dir2 = tmpdir("ai-oneshot");
+        let oneshot = HELLO_MANIFEST
+            .replace("name = \"hello\"", "name = \"ai-echo\"")
+            .replace("api = 1", "api = 2")
+            + "\n[contributes.ai]\nid = \"ai.echo\"\n";
+        write_package(&dir2, "ai-echo", &oneshot, Some("#!/bin/sh\nexit 0\n"));
+        let store = PluginStore::load_from(&dir2);
+        assert!(store.packages.is_empty());
+        assert!(store.skipped[0].1.contains("runtime"), "{:?}", store.skipped);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&dir2);
+    }
+
+    #[test]
+    fn parses_ai_result_text_shapes() {
+        for (line, expected) in [
+            (r#"{"type":"result","id":1,"ok":true,"text":"legacy"}"#, "legacy"),
+            (
+                r#"{"type":"result","id":2,"ok":true,"result":{"text":"nested"}}"#,
+                "nested",
+            ),
+            (
+                r#"{"type":"result","id":3,"payload":{"text":"payload"}}"#,
+                "payload",
+            ),
+            (r#"{"id":4,"text":"minimal"}"#, "minimal"),
+        ] {
+            match parse_host_incoming(line) {
+                HostIncoming::Result { text, .. } => assert_eq!(text, expected, "{line}"),
+                _ => panic!("未解析为 result: {line}"),
+            }
+        }
+        assert!(matches!(
+            parse_host_incoming(r#"{"type":"ready","api":2}"#),
+            HostIncoming::Ready(Some(2))
+        ));
+        // 旧插件的 ready 没带 api：保留兼容，交给 supervisor 按清单版本处理。
+        assert!(matches!(
+            parse_host_incoming(r#"{"type":"ready"}"#),
+            HostIncoming::Ready(None)
+        ));
     }
 
     #[test]
@@ -3107,6 +3728,7 @@ exit 0
             "greet",
             &[],
             Duration::from_secs(5),
+            1,
         )
         .unwrap();
         assert!(report.success(), "{report:?}");
@@ -3142,6 +3764,7 @@ exit 0
             "greet",
             &[],
             Duration::from_secs(5),
+            1,
         )
         .unwrap();
         assert!(!report.success());
@@ -3165,6 +3788,7 @@ exit 0
             "slow",
             &[],
             Duration::from_millis(150),
+            1,
         )
         .unwrap();
         let elapsed = start.elapsed();
@@ -3185,6 +3809,7 @@ exit 0
             "greet",
             &[],
             Duration::from_secs(1),
+            1,
         )
         .unwrap_err();
         assert!(err.contains("无法启动"), "{err}");
@@ -3404,6 +4029,7 @@ exit 0
             PluginEvent::TabOpen,
             &tab_open_payload("Build: dev", "ssh"),
             Duration::from_secs(5),
+            1,
         )
         .unwrap();
         assert_eq!(report.exit_code, Some(3));
@@ -3427,6 +4053,7 @@ exit 0
             PluginEvent::Startup,
             &startup_payload(),
             Duration::from_millis(150),
+            1,
         )
         .unwrap();
         assert!(report.timed_out, "{report:?}");
@@ -4229,6 +4856,178 @@ time.sleep(30)
         );
         let info = store.runtime_info("apimismatch").unwrap();
         assert!(info.error.contains("握手 api=2"), "{info:?}");
+        store.shutdown_processes();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ai_chat_routes_payload_and_returns_text() {
+        let manifest = r#"
+id = "dev.tervo.ai-echo"
+name = "ai-echo"
+version = "1.0.0"
+api = 2
+runtime = "process"
+entry = "plugin.py"
+
+[contributes.ai]
+id = "dev.tervo.ai-echo"
+name = "AI Echo"
+model = "echo-1"
+description = "deterministic local echo"
+
+[[commands]]
+id = "ping"
+title = "AI Echo: Ping"
+"#;
+        let script = r#"#!/usr/bin/env python3
+import json
+import sys
+
+for line in sys.stdin:
+    msg = json.loads(line)
+    kind = msg.get("type")
+    if kind == "init":
+        print(json.dumps({"type": "ready", "api": 2}), flush=True)
+    elif kind == "command":
+        with open("requests.log", "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(msg) + "\n")
+        if msg.get("command") == "ai.chat":
+            payload = msg.get("payload", {})
+            text = payload["messages"][-1]["content"]
+            model = payload.get("model", "")
+            result = {"text": "echo:" + text + ":" + model}
+            print(json.dumps({"type": "result", "id": msg["id"], "ok": True, "result": result}), flush=True)
+        else:
+            print(json.dumps({"type": "result", "id": msg["id"], "ok": True, "text": "pong"}), flush=True)
+    elif kind == "shutdown":
+        break
+"#;
+        let dir = tmpdir("ai-route");
+        write_process_package(&dir, "ai-echo", manifest, "plugin.py", script);
+        let mut store = PluginStore::load_from(&dir);
+        assert!(store.skipped.is_empty(), "{:?}", store.skipped);
+        assert_eq!(store.ai_plugins().len(), 1);
+        assert_eq!(store.ai_plugins()[0].id, "dev.tervo.ai-echo");
+        store.start_process_plugins_with_timeout(Duration::from_secs(2));
+        assert!(
+            wait_phase(&store, "ai-echo", RuntimePhase::Running, Duration::from_secs(4)),
+            "{:?}",
+            store.runtime_info("ai-echo")
+        );
+
+        let rx = store
+            .spawn_ai_chat(
+                "ai-echo",
+                vec![AiChatMessage::user("hello")],
+                Some("echo-1".to_string()),
+            )
+            .expect("spawn ai chat");
+        let result = rx.recv_timeout(Duration::from_secs(5)).expect("ai result");
+        assert_eq!(result.plugin, "ai-echo");
+        assert_eq!(
+            result.outcome,
+            AiChatOutcome::Ok("echo:hello:echo-1".to_string())
+        );
+
+        // 请求确实走同一 command 通道，命令名 ai.chat，payload 结构符合约定。
+        let lines = read_lines(&dir.join("ai-echo").join("requests.log"));
+        let request: serde_json::Value = serde_json::from_str(lines.last().unwrap()).unwrap();
+        assert_eq!(request["type"], "command");
+        assert_eq!(request["command"], "ai.chat");
+        assert_eq!(request["payload"]["messages"][0]["role"], "user");
+        assert_eq!(request["payload"]["messages"][0]["content"], "hello");
+        assert_eq!(request["payload"]["model"], "echo-1");
+
+        // 活动只记录长度/状态，不把 prompt/回复正文写入共享活动列表。
+        let (_, activity) = store.activity_snapshot();
+        assert!(
+            activity
+                .iter()
+                .any(|line| line.contains("ai.chat") && line.contains("ok")),
+            "{activity:?}"
+        );
+        assert!(
+            activity.iter().all(|line| !line.contains("hello")),
+            "AI 正文不应进活动列表: {activity:?}"
+        );
+
+        // 路由错误：未知插件 / 非法消息直接拒绝，不进入 supervisor。
+        assert!(store
+            .spawn_ai_chat("missing", vec![AiChatMessage::user("x")], None)
+            .is_err());
+        assert!(store
+            .spawn_ai_chat(
+                "ai-echo",
+                vec![AiChatMessage { role: "root".into(), content: "x".into() }],
+                None,
+            )
+            .is_err());
+        assert!(store
+            .spawn_ai_chat("ai-echo", vec![AiChatMessage::user("")], None)
+            .is_err());
+
+        store.shutdown_processes();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ai_chat_cancel_returns_cancelled_without_killing_plugin() {
+        let manifest = r#"
+name = "ai-cancel"
+version = "1.0.0"
+api = 2
+runtime = "process"
+entry = "plugin.py"
+
+[contributes.ai]
+name = "Slow AI"
+
+[[commands]]
+id = "ping"
+title = "AI Cancel: Ping"
+"#;
+        let script = r#"#!/usr/bin/env python3
+import json
+import sys
+import time
+
+for line in sys.stdin:
+    msg = json.loads(line)
+    kind = msg.get("type")
+    if kind == "init":
+        print(json.dumps({"type": "ready", "api": 2}), flush=True)
+    elif kind == "command" and msg.get("command") == "ai.chat":
+        with open("request.log", "a", encoding="utf-8") as fh:
+            fh.write("requested\n")
+        time.sleep(10)
+"#;
+        let dir = tmpdir("ai-cancel");
+        write_process_package(&dir, "ai-cancel", manifest, "plugin.py", script);
+        let mut store = PluginStore::load_from(&dir);
+        store.start_process_plugins_with_timeout(Duration::from_secs(2));
+        assert!(
+            wait_phase(&store, "ai-cancel", RuntimePhase::Running, Duration::from_secs(4)),
+            "{:?}",
+            store.runtime_info("ai-cancel")
+        );
+        let rx = store
+            .spawn_ai_chat("ai-cancel", vec![AiChatMessage::user("slow")], None)
+            .expect("spawn");
+        assert!(
+            wait_until(
+                || dir.join("ai-cancel").join("request.log").is_file(),
+                Duration::from_secs(4)
+            ),
+            "AI 请求未到达插件"
+        );
+        assert!(store.cancel_ai_chat("ai-cancel"));
+        let result = rx.recv_timeout(Duration::from_secs(3)).expect("cancel result");
+        assert_eq!(result.outcome, AiChatOutcome::Cancelled);
+        // 取消只丢弃本次请求，插件进程仍健康（超时/取消都不 kill）。
+        assert!(store.runtime_info("ai-cancel").is_some_and(|info| info.is_healthy()));
         store.shutdown_processes();
         let _ = std::fs::remove_dir_all(&dir);
     }
