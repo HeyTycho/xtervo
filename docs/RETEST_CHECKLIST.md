@@ -6,10 +6,10 @@
 ## 0. 版本信息（最终填写）
 
 ```text
-commit:    5dc3c318d9be
-release:   dist/tervo-stripped（40.4 MB，sha256 6940a14b…f2d6fe69）
-tar.gz:    dist/tervo-0.1.0-linux-x86_64.tar.gz（sha256 0ac86b51…783a7e59）
-deb:       dist/tervo_0.1.0-1_amd64.deb（sha256 e1d89c1e…dc414759）
+commit:    0cb84e86fdab
+release:   dist/tervo-stripped（40.4 MB，sha256 534f7656…fc76543f）
+tar.gz:    dist/tervo-0.1.0-linux-x86_64.tar.gz（sha256 c8dd4704…3ce7931）
+deb:       dist/tervo_0.1.0-1_amd64.deb（sha256 cbca5360…4cb0501）
 built:     2026-11-06T19:26:31Z（SOURCE_DATE_EPOCH）
 测试:      app 369 passed / 1 ignored；workspace 全绿
 e2e:       15 个脚本全 PASS（SSH/SFTP、插件、设置、图片、键盘、事件、渲染、P0、URL/右键等）
@@ -148,14 +148,17 @@ e2e:       15 个脚本全 PASS（SSH/SFTP、插件、设置、图片、键盘�
 - [ ] 插件崩溃/超时被禁用，不拖死终端
 - [ ] 权限未声明的能力被拒绝
 
-## 9.5 已知内存限制（必须知情）
+## 9.5 内存收敛结果（已修复）
 
 - 极端 22 Tab + 3 split（4 pane）+ 图片/emoji/搜索/resize 的 30m soak：
-  RSS 752→962 MiB（+209.6 MiB，+6.59 MiB/min），曲线在首轮字体/缓存填充后明显趋平；
-  无 panic/OOM，线程/FD 稳定。
-- 这是“22 Tab 极端压力”下的高水位；普通 1–4 Tab 空闲/flood 稳定。
-- 已做：emoji 首帧回退字体 850→135MiB、scrollback 全局预算、glibc arena trim；
-  未完全达到 15m/30m 的 96MiB 门禁，未声称 24h PASS。
+  RSS 753.2→817.2 MiB，**+64.0 MiB（<96 MiB 门禁）**，+0.78 MiB/min，R²=0.13，
+  约 6 分钟后平台、末段略降；线程/FD/子进程稳定，无 panic/OOM。
+- 根因：IIP/Sixel 图片锚点依赖 alacritty `history_size()`；全局 scrollback 预算封顶后
+  锚点不再推进，滚出历史的图片永久保留。修复为单调 `scroll_total` + `retain_reachable`。
+- 对照：修复前 30m +209.6 MiB；消融 full vs no-images 10m 为 +87.4 vs +60.0 MiB，
+  图片模块贡献约 27 MiB/10m。
+- 残余：预热前 3 分钟还有一次性 ~64MiB（scrollback 行/cell 容量 + Skia/llvmpipe 缓存），
+  之后平台；这是高水位，不是线性泄漏。30m 结果不外推 24h。
 - 如你复测发现日常 Tab 数下 RSS 持续上涨/卡顿，请记录 Tab 数、操作、`/proc/<pid>/status` 采样。
 
 ## 10. 已知限制（不要求修复）
