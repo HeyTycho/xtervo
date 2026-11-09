@@ -14,6 +14,19 @@ export struct ThemeColors {
     danger: color,
 }
 
+
+/// 全局语言：Rust 设置 `code`（"en" / "zh"）；静态文案统一通过 `Lang.t(en, zh)`
+/// 绑定，属性变化时所有文字自动重算，无需重建组件。
+export global Lang {
+    in-out property <string> code: "en";
+    pure public function t(en: string, zh: string) -> string {
+        if (code == "zh") {
+            return zh;
+        }
+        return en;
+    }
+}
+
 // 默认值 = Tokyo Night（与 core::Theme 的默认主题保持一致）。
 export global Palette {
     in-out property <ThemeColors> colors: {
@@ -1447,6 +1460,12 @@ component FindToggle inherits Rectangle {
 }
 
 export component MainWindow inherits Window {
+    /// 当前 UI 语言："en" | "zh"。Rust 在启动/切换/热更新时写入；
+    /// Settings 页与右键菜单的静态文案都绑定到 `Lang.t(...)`。
+    in-out property <string> language: "en";
+    init => { Lang.code = root.language; }
+    changed language => { Lang.code = root.language; }
+
     in property <[PaneView]> panes;
     in property <[DividerView]> dividers;
     /// 原生文件拖放 hover 的目标 pane（-1 = 没有拖放）。
@@ -1538,6 +1557,7 @@ export component MainWindow inherits Window {
     callback minimize-window();
     callback toggle-maximize();
     callback set-theme(string);
+    callback language-changed(string);
     callback tabbar-context(length, length);
     callback tabbar-menu-action(int);
     /// 点击插件状态栏：Rust 执行状态项声明的命令（无 command 时忽略）。
@@ -1795,7 +1815,7 @@ export component MainWindow inherits Window {
     in-out property <bool> settings-tab-open: false;
     in property <string> theme-name: "auto";
     /// 主题下拉显示名（Auto 时带解析结果），由 Rust 侧随实际主题一起下发。
-    in property <string> theme-display: "Auto";
+    in property <string> theme-display: Lang.t("Auto", "自动");
     /// Auto 主题当前解析到的主题短名（如 "Yaru Dark"）；非 auto 时为空。
     in property <string> auto-resolved: "";
     in property <[ThemeChoice]> theme-choices: [];
@@ -2387,7 +2407,7 @@ export component MainWindow inherits Window {
                         x: 28px;
                         width: parent.width - 52px;
                         height: parent.height;
-                        text: "Settings";
+                        text: Lang.t("Settings", "设置");
                         color: root.settings-open ? Palette.colors.text : Palette.colors.muted;
                         font-size: 12px;
                         font-weight: 600;
@@ -3124,108 +3144,112 @@ export component MainWindow inherits Window {
                             spacing: 0px;
 
                             if root.menu-link != "" : MenuGroupLabel {
-                                label: "Link";
+                                label: Lang.t("Link", "链接");
                                 first: true;
                             }
                             if root.menu-link != "" : ContextMenuRow {
                                 icon: MenuIconKind.open-link;
-                                label: "Open Link";
+                                label: Lang.t("Open Link", "打开链接");
                                 picked => { root.menu-open = false; root.menu-action(root.menu-pane, 9); }
                             }
                             if root.menu-link != "" : ContextMenuRow {
                                 icon: MenuIconKind.copy-link;
-                                label: "Copy Link";
+                                label: Lang.t("Copy Link", "复制链接");
                                 picked => { root.menu-open = false; root.menu-action(root.menu-pane, 10); }
                             }
 
                             MenuGroupLabel {
-                                label: "Clipboard";
+                                label: Lang.t("Clipboard", "剪贴板");
                                 first: root.menu-link == "";
                             }
                             ContextMenuRow {
                                 icon: MenuIconKind.copy;
-                                label: "Copy";
+                                label: Lang.t("Copy", "复制");
                                 shortcut: "Ctrl+Shift+C";
                                 picked => { root.menu-open = false; root.menu-action(root.menu-pane, 3); }
                             }
                             ContextMenuRow {
                                 icon: MenuIconKind.paste;
-                                label: "Paste";
+                                label: Lang.t("Paste", "粘贴");
                                 shortcut: "Ctrl+Shift+V";
                                 picked => { root.menu-open = false; root.menu-action(root.menu-pane, 4); }
                             }
 
                             MenuGroupLabel {
-                                label: "Pane";
+                                label: Lang.t("Pane", "窗格");
                             }
                             ContextMenuRow {
                                 icon: MenuIconKind.split-right;
-                                label: "Split Right";
+                                label: Lang.t("Split Right", "向右拆分");
                                 shortcut: "Ctrl+Shift+E";
                                 picked => { root.menu-open = false; root.menu-action(root.menu-pane, 0); }
                             }
                             ContextMenuRow {
                                 icon: MenuIconKind.split-down;
-                                label: "Split Down";
+                                label: Lang.t("Split Down", "向下拆分");
                                 shortcut: "Ctrl+Shift+D";
                                 picked => { root.menu-open = false; root.menu-action(root.menu-pane, 1); }
                             }
                             ContextMenuRow {
                                 icon: MenuIconKind.close;
-                                label: "Close Pane";
+                                label: Lang.t("Close Pane", "关闭窗格");
                                 shortcut: "Ctrl+Shift+W";
                                 danger: true;
                                 picked => { root.menu-open = false; root.menu-action(root.menu-pane, 2); }
                             }
                             ContextMenuRow {
                                 icon: MenuIconKind.broadcast;
-                                label: root.broadcast ? "Broadcast Input: ON" : "Broadcast Input: OFF";
+                                label: root.broadcast
+                                    ? Lang.t("Broadcast Input: ON", "广播输入：开")
+                                    : Lang.t("Broadcast Input: OFF", "广播输入：关");
                                 active: root.broadcast;
                                 picked => { root.menu-open = false; root.menu-action(root.menu-pane, 8); }
                             }
 
                             MenuGroupLabel {
-                                label: "View";
+                                label: Lang.t("View", "视图");
                             }
                             ContextMenuRow {
                                 icon: MenuIconKind.find;
-                                label: "Find";
+                                label: Lang.t("Find", "查找");
                                 shortcut: "Ctrl+F";
                                 picked => { root.menu-open = false; root.menu-action(root.menu-pane, 5); }
                             }
                             ContextMenuRow {
                                 icon: MenuIconKind.select-all;
-                                label: "Select All";
+                                label: Lang.t("Select All", "全选");
                                 picked => { root.menu-open = false; root.menu-action(root.menu-pane, 6); }
                             }
                             ContextMenuRow {
                                 icon: MenuIconKind.clear;
-                                label: "Clear";
+                                label: Lang.t("Clear", "清除");
                                 picked => { root.menu-open = false; root.menu-action(root.menu-pane, 7); }
                             }
 
                             MenuGroupLabel {
-                                label: "Session";
+                                label: Lang.t("Session", "会话");
                             }
                             ContextMenuRow {
                                 icon: MenuIconKind.read-only;
-                                label: root.menu-read-only ? "Read Only: ON" : "Read Only: OFF";
+                                label: root.menu-read-only
+                                    ? Lang.t("Read Only: ON", "只读：开")
+                                    : Lang.t("Read Only: OFF", "只读：关");
                                 active: root.menu-read-only;
                                 picked => { root.menu-open = false; root.menu-action(root.menu-pane, 11); }
                             }
                             ContextMenuRow {
                                 icon: MenuIconKind.reset;
-                                label: "Reset";
+                                label: Lang.t("Reset", "重置");
                                 picked => { root.menu-open = false; root.menu-action(root.menu-pane, 12); }
                             }
                             ContextMenuRow {
                                 icon: MenuIconKind.reset-clear;
-                                label: "Reset and Clear";
+                                label: Lang.t("Reset and Clear", "重置并清空");
                                 picked => { root.menu-open = false; root.menu-action(root.menu-pane, 13); }
                             }
                             ContextMenuRow {
                                 icon: MenuIconKind.save;
-                                label: "Save Contents…";
+                                label: Lang.t("Save Contents…", "保存内容…");
                                 picked => { root.menu-open = false; root.menu-action(root.menu-pane, 14); }
                             }
                         }
@@ -3298,7 +3322,7 @@ export component MainWindow inherits Window {
             }
 
             MenuRow {
-                label: "Manage Profiles…";
+                label: Lang.t("Manage Profiles…", "管理配置…");
                 picked => { root.profilemenu-open = false; root.profilemenu-manage(); }
             }
         }
@@ -3343,40 +3367,40 @@ export component MainWindow inherits Window {
             spacing: 2px;
 
             MenuRow {
-                label: root.pinned ? "Always on Top  ✓" : "Always on Top";
+                label: root.pinned ? Lang.t("Always on Top  ✓", "总在最前  ✓") : Lang.t("Always on Top", "总在最前");
                 picked => { root.tabmenu-open = false; root.pinned = !root.pinned; }
             }
             MenuRow {
-                label: "New Tab";
+                label: Lang.t("New Tab", "新建标签");
                 picked => { root.tabmenu-open = false; root.tabbar-menu-action(1); }
             }
             MenuRow {
-                label: "New Window";
+                label: Lang.t("New Window", "新建窗口");
                 picked => { root.tabmenu-open = false; root.tabbar-menu-action(13); }
             }
             MenuRow {
-                label: "Settings";
+                label: Lang.t("Settings", "设置");
                 picked => { root.tabmenu-open = false; root.tabbar-menu-action(2); }
             }
             MenuRow {
                 // 存布局 + cwd，重启进程后按快照恢复（不丢分屏）
-                label: "Restart Session";
+                label: Lang.t("Restart Session", "重启会话");
                 picked => { root.tabmenu-open = false; root.tabbar-menu-action(4); }
             }
             MenuRow {
-                label: "Command Palette";
+                label: Lang.t("Command Palette", "命令面板");
                 picked => { root.tabmenu-open = false; root.tabbar-menu-action(5); }
             }
             MenuRow {
-                label: root.tabbar-bottom ? "Tab Bar: Bottom" : "Tab Bar: Top";
+                label: root.tabbar-bottom ? Lang.t("Tab Bar: Bottom", "标签栏：底部") : Lang.t("Tab Bar: Top", "标签栏：顶部");
                 picked => { root.tabmenu-open = false; root.tabbar-menu-action(6); }
             }
             MenuRow {
-                label: "Background Sessions";
+                label: Lang.t("Background Sessions", "后台会话");
                 picked => { root.tabmenu-open = false; root.tabbar-menu-action(8); }
             }
             MenuRow {
-                label: "Profiles";
+                label: Lang.t("Profiles", "配置");
                 picked => { root.tabmenu-open = false; root.tabbar-menu-action(9); }
             }
             MenuRow {
@@ -3384,15 +3408,15 @@ export component MainWindow inherits Window {
                 picked => { root.tabmenu-open = false; root.tabbar-menu-action(10); }
             }
             MenuRow {
-                label: "Port Forwards";
+                label: Lang.t("Port Forwards", "端口转发");
                 picked => { root.tabmenu-open = false; root.tabbar-menu-action(11); }
             }
             MenuRow {
-                label: "Reopen Closed Tab";
+                label: Lang.t("Reopen Closed Tab", "重新打开已关闭标签");
                 picked => { root.tabmenu-open = false; root.tabbar-menu-action(12); }
             }
             MenuRow {
-                label: "Close Window";
+                label: Lang.t("Close Window", "关闭窗口");
                 picked => { root.tabmenu-open = false; root.tabbar-menu-action(3); }
             }
         }
@@ -3417,27 +3441,27 @@ export component MainWindow inherits Window {
             spacing: 2px;
 
             MenuRow {
-                label: "Close";
+                label: Lang.t("Close", "关闭");
                 picked => { root.tabctx-open = false; root.tab-menu-action(root.tabctx-index, 0); }
             }
             MenuRow {
-                label: "Close Others";
+                label: Lang.t("Close Others", "关闭其他");
                 picked => { root.tabctx-open = false; root.tab-menu-action(root.tabctx-index, 1); }
             }
             MenuRow {
-                label: "Close Left";
+                label: Lang.t("Close Left", "关闭左侧");
                 picked => { root.tabctx-open = false; root.tab-menu-action(root.tabctx-index, 4); }
             }
             MenuRow {
-                label: "Close Right";
+                label: Lang.t("Close Right", "关闭右侧");
                 picked => { root.tabctx-open = false; root.tab-menu-action(root.tabctx-index, 5); }
             }
             MenuRow {
-                label: "Duplicate";
+                label: Lang.t("Duplicate", "复制标签");
                 picked => { root.tabctx-open = false; root.tab-menu-action(root.tabctx-index, 2); }
             }
             MenuRow {
-                label: "Rename";
+                label: Lang.t("Rename", "重命名");
                 picked => { root.tabctx-open = false; root.tab-menu-action(root.tabctx-index, 3); }
             }
         }
@@ -3529,7 +3553,7 @@ export component MainWindow inherits Window {
                     y: 0px;
                     width: Math.max(60px, Math.min(180px, settings-body.width - 200px));
                     height: 52px;
-                    text: "Settings";
+                    text: Lang.t("Settings", "设置");
                     color: Palette.colors.text;
                     font-size: 17px;
                     font-weight: 600;
@@ -3542,7 +3566,7 @@ export component MainWindow inherits Window {
                     y: 0px;
                     width: 130px;
                     height: 52px;
-                    text: "LEGACY MODAL";
+                    text: Lang.t("LEGACY MODAL", "传统模态窗口");
                     color: Palette.colors.accent;
                     font-size: 9px;
                     font-weight: 600;
@@ -3573,7 +3597,7 @@ export component MainWindow inherits Window {
                         x: 30px;
                         width: parent.width - 40px;
                         height: parent.height;
-                        text: "Search settings…";
+                        text: Lang.t("Search settings…", "搜索设置…");
                         color: Palette.colors.muted;
                         font-size: 11px;
                         vertical-alignment: center;
@@ -3702,7 +3726,7 @@ export component MainWindow inherits Window {
 
                         Text {
                             height: 24px;
-                            text: "PERSONALIZE";
+                            text: Lang.t("PERSONALIZE", "个性化");
                             color: Palette.colors.muted;
                             font-size: 9px;
                             font-weight: 600;
@@ -3710,7 +3734,7 @@ export component MainWindow inherits Window {
                             vertical-alignment: bottom;
                         }
                         NavItem {
-                            label: "Appearance";
+                            label: Lang.t("Appearance", "外观");
                             icon: SettingsIconKind.appearance;
                             active: root.settings-category == 0;
                             clicked => {
@@ -3721,7 +3745,7 @@ export component MainWindow inherits Window {
                             }
                         }
                         NavItem {
-                            label: "Terminal";
+                            label: Lang.t("Terminal", "终端");
                             icon: SettingsIconKind.terminal;
                             active: root.settings-category == 1;
                             clicked => {
@@ -3732,7 +3756,7 @@ export component MainWindow inherits Window {
                             }
                         }
                         NavItem {
-                            label: "Window";
+                            label: Lang.t("Window", "窗口");
                             icon: SettingsIconKind.window;
                             active: root.settings-category == 2;
                             clicked => {
@@ -3747,7 +3771,7 @@ export component MainWindow inherits Window {
 
                         Text {
                             height: 24px;
-                            text: "WORKSPACE";
+                            text: Lang.t("WORKSPACE", "工作区");
                             color: Palette.colors.muted;
                             font-size: 9px;
                             font-weight: 600;
@@ -3755,7 +3779,7 @@ export component MainWindow inherits Window {
                             vertical-alignment: bottom;
                         }
                         NavItem {
-                            label: "Keys";
+                            label: Lang.t("Keys", "快捷键");
                             icon: SettingsIconKind.keys;
                             active: root.settings-category == 4;
                             clicked => {
@@ -3766,7 +3790,7 @@ export component MainWindow inherits Window {
                             }
                         }
                         NavItem {
-                            label: "Profiles";
+                            label: Lang.t("Profiles", "配置");
                             icon: SettingsIconKind.profiles;
                             active: root.settings-category == 7;
                             clicked => {
@@ -3777,7 +3801,7 @@ export component MainWindow inherits Window {
                             }
                         }
                         NavItem {
-                            label: "Plugins";
+                            label: Lang.t("Plugins", "插件");
                             icon: SettingsIconKind.plugins;
                             active: root.settings-category == 5;
                             clicked => {
@@ -3792,7 +3816,7 @@ export component MainWindow inherits Window {
 
                         Text {
                             height: 24px;
-                            text: "SYSTEM";
+                            text: Lang.t("SYSTEM", "系统");
                             color: Palette.colors.muted;
                             font-size: 9px;
                             font-weight: 600;
@@ -3800,7 +3824,7 @@ export component MainWindow inherits Window {
                             vertical-alignment: bottom;
                         }
                         NavItem {
-                            label: "Vault";
+                            label: Lang.t("Vault", "保险库");
                             icon: SettingsIconKind.vault;
                             active: root.settings-category == 6;
                             clicked => {
@@ -3811,7 +3835,7 @@ export component MainWindow inherits Window {
                             }
                         }
                         NavItem {
-                            label: "Advanced";
+                            label: Lang.t("Advanced", "高级");
                             icon: SettingsIconKind.advanced;
                             active: root.settings-category == 3;
                             clicked => {
@@ -3824,7 +3848,7 @@ export component MainWindow inherits Window {
 
                         Text {
                             height: 40px;
-                            text: "Tervo · changes apply instantly";
+                            text: Lang.t("Tervo · changes apply instantly", "Tervo · 更改立即生效");
                             color: Palette.colors.muted;
                             font-size: 9px;
                             vertical-alignment: bottom;
@@ -3861,13 +3885,31 @@ export component MainWindow inherits Window {
                         width: 100%;
                         spacing: 10px;
 
+                        language-card := SettingsCard {
+                            title: Lang.t("Language", "语言");
+                            description: Lang.t("Applies immediately to Settings and context menus.", "立即应用到设置页与右键菜单。");
+
+                            SettingField {
+                                label: Lang.t("Interface language", "界面语言");
+                                Segmented {
+                                    options: ["English", "中文"];
+                                    values: ["en", "zh"];
+                                    value: root.language;
+                                    picked(v) => {
+                                        root.language = v;
+                                        root.language-changed(v);
+                                    }
+                                }
+                            }
+                        }
+
                         theme-card := SettingsCard {
-                            title: "Theme";
-                            description: "Color scheme applies immediately to every pane and UI chrome.";
+                            title: Lang.t("Theme", "主题");
+                            description: Lang.t("Color scheme applies immediately to every pane and UI chrome.", "配色立即应用到所有窗格与界面。");
                             highlighted: root.settings-focus == "theme";
 
                             SettingField {
-                                label: "Color scheme";
+                                label: Lang.t("Color scheme", "配色方案");
                                 Rectangle {
                                     width: 100%;
                                     height: 32px;
@@ -3907,8 +3949,8 @@ export component MainWindow inherits Window {
                             }
 
                             SettingRow {
-                                label: "Auto follows system";
-                                description: "Uses the desktop dark/light preference when available.";
+                                label: Lang.t("Auto follows system", "自动跟随系统");
+                                description: Lang.t("Uses the desktop dark/light preference when available.", "可用时跟随桌面深色/浅色偏好。");
                                 SettingsSwitch {
                                     on: root.theme-name == "auto";
                                     toggled => { root.set-theme("auto"); }
@@ -3917,13 +3959,13 @@ export component MainWindow inherits Window {
                         }
 
                         background-card := SettingsCard {
-                            title: "Background";
-                            description: "Optional wallpaper behind the terminal; text and colors stay readable.";
+                            title: Lang.t("Background", "背景");
+                            description: Lang.t("Optional wallpaper behind the terminal; text and colors stay readable.", "可选终端壁纸；文字与配色保持可读。");
                             highlighted: root.settings-focus == "background";
 
                             SettingField {
-                                label: "Image";
-                                description: "PNG / JPEG / SVG path · ~ is expanded · empty = off";
+                                label: Lang.t("Image", "图片");
+                                description: Lang.t("PNG / JPEG / SVG path · ~ is expanded · empty = off", "PNG / JPEG / SVG 路径 · 自动展开 ~ · 留空 = 关闭");
                                 SettingsTextField {
                                     text <=> root.background-image-path;
                                     placeholder: "/home/you/Pictures/wallpaper.png";
@@ -3944,15 +3986,15 @@ export component MainWindow inherits Window {
                                 wrap: word-wrap;
                             }
                             if root.background-image-error == "" : Text {
-                                text: "Images are cropped to fill the window; only existing regular files are accepted.";
+                                text: Lang.t("Images are cropped to fill the window; only existing regular files are accepted.", "图片会被裁剪以填满窗口；只接受存在的普通文件。");
                                 color: Palette.colors.muted;
                                 font-size: 10px;
                                 wrap: word-wrap;
                             }
 
                             SettingField {
-                                label: "Dim";
-                                description: "Darkens only the image (default 60%).";
+                                label: Lang.t("Dim", "暗化");
+                                description: Lang.t("Darkens only the image (default 60%).", "仅压暗图片（默认 60%）。");
                                 HorizontalLayout {
                                     spacing: 8px;
                                     OpacitySlider {
@@ -3982,10 +4024,10 @@ export component MainWindow inherits Window {
                             }
 
                             SettingField {
-                                label: "Terminal opacity";
+                                label: Lang.t("Terminal opacity", "终端不透明度");
                                 description: !root.has-background-image
-                                    ? "No background image set — the terminal stays fully opaque."
-                                    : "0% reveals the wallpaper completely; 100% keeps the theme color.";
+                                    ? Lang.t("No background image set — the terminal stays fully opaque.", "未设置背景图 — 终端保持完全不透明。")
+                                    : Lang.t("0% reveals the wallpaper completely; 100% keeps the theme color.", "0% 完全透出壁纸；100% 保持主题色。");
                                 HorizontalLayout {
                                     spacing: 8px;
                                     OpacitySlider {
@@ -4016,45 +4058,45 @@ export component MainWindow inherits Window {
                         }
 
                         cursor-card := SettingsCard {
-                            title: "Cursor";
-                            description: "Shape and colors update the overlay without repainting the terminal grid.";
+                            title: Lang.t("Cursor", "光标");
+                            description: Lang.t("Shape and colors update the overlay without repainting the terminal grid.", "形状与颜色只更新叠加层，不重绘终端网格。");
                             highlighted: root.settings-focus == "cursor";
 
                             SettingField {
-                                label: "Shape";
+                                label: Lang.t("Shape", "形状");
                                 Segmented {
-                                    options: ["Block", "Underline", "I-beam"];
+                                    options: [Lang.t("Block", "块状"), Lang.t("Underline", "下划线"), Lang.t("I-beam", "竖线")];
                                     values: ["block", "underline", "ibeam"];
                                     value: root.cfg-cursor-shape;
                                     picked(v) => { root.set-cursor-shape(v); }
                                 }
                             }
                             SettingField {
-                                label: "Blink";
+                                label: Lang.t("Blink", "闪烁");
                                 Segmented {
-                                    options: ["Follow system", "On", "Off"];
+                                    options: [Lang.t("Follow system", "跟随系统"), Lang.t("On", "开"), Lang.t("Off", "关")];
                                     values: ["system", "on", "off"];
                                     value: root.cfg-cursor-blink;
                                     picked(v) => { root.set-cursor-blink(v); }
                                 }
                             }
                             SettingField {
-                                label: "Cursor color";
-                                description: "Empty = theme cursor color (#rrggbb).";
+                                label: Lang.t("Cursor color", "光标颜色");
+                                description: Lang.t("Empty = theme cursor color (#rrggbb).", "留空 = 主题光标色（#rrggbb）。");
                                 SettingsTextField {
                                     text <=> root.cfg-cursor-color;
-                                    placeholder: "theme default";
+                                    placeholder: Lang.t("theme default", "主题默认");
                                     clearable: true;
                                     edited(t) => { root.cursor-color-changed(t); }
                                     cleared => { root.cursor-color-changed(""); }
                                 }
                             }
                             SettingField {
-                                label: "Cursor text color";
-                                description: "Empty = theme background (inverse block cursor).";
+                                label: Lang.t("Cursor text color", "光标下文字颜色");
+                                description: Lang.t("Empty = theme background (inverse block cursor).", "留空 = 主题背景色（块状光标反色）。");
                                 SettingsTextField {
                                     text <=> root.cfg-cursor-text-color;
-                                    placeholder: "theme background";
+                                    placeholder: Lang.t("theme background", "主题背景");
                                     clearable: true;
                                     edited(t) => { root.cursor-text-color-changed(t); }
                                     cleared => { root.cursor-text-color-changed(""); }
@@ -4063,31 +4105,31 @@ export component MainWindow inherits Window {
                         }
 
                         bold-card := SettingsCard {
-                            title: "Bold";
+                            title: Lang.t("Bold", "粗体");
                             highlighted: root.settings-focus == "bold";
 
                             SettingRow {
-                                label: "Bold is bright";
-                                description: "ANSI 0–7 bold text uses the bright palette.";
+                                label: Lang.t("Bold is bright", "粗体使用亮色");
+                                description: Lang.t("ANSI 0–7 bold text uses the bright palette.", "ANSI 0–7 的粗体使用亮色调色板。");
                                 SettingsSwitch {
                                     on: root.cfg-bold-is-bright;
                                     toggled => { root.toggle-bold-is-bright(); }
                                 }
                             }
                             SettingRow {
-                                label: "Bold color same as foreground";
-                                description: "Disable to use a dedicated bold color below.";
+                                label: Lang.t("Bold color same as foreground", "粗体颜色同前景色");
+                                description: Lang.t("Disable to use a dedicated bold color below.", "关闭后使用下方单独的粗体颜色。");
                                 SettingsSwitch {
                                     on: root.cfg-bold-color-same-as-fg;
                                     toggled => { root.toggle-bold-color-same-as-fg(); }
                                 }
                             }
                             SettingField {
-                                label: "Bold color";
-                                description: "Empty = normal foreground; explicit ANSI colors are unaffected.";
+                                label: Lang.t("Bold color", "粗体颜色");
+                                description: Lang.t("Empty = normal foreground; explicit ANSI colors are unaffected.", "留空 = 普通前景色；显式 ANSI 颜色不受影响。");
                                 SettingsTextField {
                                     text <=> root.cfg-bold-color;
-                                    placeholder: "use foreground";
+                                    placeholder: Lang.t("use foreground", "使用前景色");
                                     clearable: true;
                                     edited(t) => { root.bold-color-changed(t); }
                                     cleared => { root.bold-color-changed(""); }
@@ -4134,13 +4176,13 @@ export component MainWindow inherits Window {
                         spacing: 10px;
 
                         text-card := SettingsCard {
-                            title: "Text & history";
+                            title: Lang.t("Text & history", "文本与历史");
                             highlighted: root.settings-focus == "text"
                                 || root.settings-focus == "scrollback";
 
                             SettingField {
-                                label: "Font size";
-                                description: "Applies immediately to existing panes.";
+                                label: Lang.t("Font size", "字号");
+                                description: Lang.t("Applies immediately to existing panes.", "立即应用到已有窗格。");
                                 Stepper {
                                     text: "\{root.font-size} px";
                                     minus => { root.bump-font-size(-1); }
@@ -4148,21 +4190,21 @@ export component MainWindow inherits Window {
                                 }
                             }
                             SettingField {
-                                label: "Scrollback";
+                                label: Lang.t("Scrollback", "回滚缓冲");
                                 description: root.cfg-scrollback-unlimited
-                                    ? "Unlimited mode (safe cap 100,000 lines; new panes only)."
-                                    : "Lines kept per pane (new panes only).";
+                                    ? Lang.t("Unlimited mode (safe cap 100,000 lines; new panes only).", "无限模式（安全上限 100,000 行；仅新窗格）。")
+                                    : Lang.t("Lines kept per pane (new panes only).", "每个窗格保留的行数（仅新窗格）。");
                                 Stepper {
                                     text: root.cfg-scrollback-unlimited
-                                        ? "Unlimited"
-                                        : "\{root.scrollback} lines";
+                                        ? Lang.t("Unlimited", "无限")
+                                        : Lang.t("\{root.scrollback} lines", "\{root.scrollback} 行");
                                     minus => { root.bump-scrollback(-500); }
                                     plus => { root.bump-scrollback(500); }
                                 }
                             }
                             SettingRow {
-                                label: "Unlimited scrollback";
-                                description: "Safe cap 100,000 lines; preallocated memory per new pane.";
+                                label: Lang.t("Unlimited scrollback", "无限回滚");
+                                description: Lang.t("Safe cap 100,000 lines; preallocated memory per new pane.", "安全上限 100,000 行；每个新窗格预分配内存。");
                                 SettingsSwitch {
                                     on: root.cfg-scrollback-unlimited;
                                     toggled => { root.toggle-scrollback-unlimited(); }
@@ -4171,32 +4213,32 @@ export component MainWindow inherits Window {
                         }
 
                         scrollback-card := SettingsCard {
-                            title: "Scrolling";
-                            description: "How the viewport follows output and keyboard input.";
+                            title: Lang.t("Scrolling", "滚动");
+                            description: Lang.t("How the viewport follows output and keyboard input.", "视口如何跟随输出与键盘输入。");
                             highlighted: root.settings-focus == "scroll"
                                 || root.settings-focus == "scrollbar";
 
                             SettingRow {
-                                label: "Scroll on output";
-                                description: "Any output pulls the viewport back to the newest line.";
+                                label: Lang.t("Scroll on output", "输出时滚动");
+                                description: Lang.t("Any output pulls the viewport back to the newest line.", "任何输出都把视口拉回最新行。");
                                 SettingsSwitch {
                                     on: root.cfg-scroll-output;
                                     toggled => { root.toggle-scroll-output(); }
                                 }
                             }
                             SettingRow {
-                                label: "Scroll on keystroke";
-                                description: "Jump to the bottom before sending a key (GNOME default).";
+                                label: Lang.t("Scroll on keystroke", "按键时滚动");
+                                description: Lang.t("Jump to the bottom before sending a key (GNOME default).", "发送按键前先跳到最底部（GNOME 默认）。");
                                 SettingsSwitch {
                                     on: root.cfg-scroll-keystroke;
                                     toggled => { root.toggle-scroll-keystroke(); }
                                 }
                             }
                             SettingField {
-                                label: "Scrollbar";
-                                description: "Right-edge overlay scrollbar policy.";
+                                label: Lang.t("Scrollbar", "滚动条");
+                                description: Lang.t("Right-edge overlay scrollbar policy.", "右侧叠加滚动条策略。");
                                 Segmented {
-                                    options: ["Always", "Auto", "Never"];
+                                    options: [Lang.t("Always", "始终"), Lang.t("Auto", "自动"), Lang.t("Never", "从不")];
                                     values: ["always", "auto", "never"];
                                     value: root.cfg-scrollbar-policy;
                                     picked(v) => { root.set-scrollbar-policy(v); }
@@ -4205,61 +4247,61 @@ export component MainWindow inherits Window {
                         }
 
                         behavior-card := SettingsCard {
-                            title: "Behavior";
+                            title: Lang.t("Behavior", "行为");
                             highlighted: root.settings-focus == "behavior";
 
                             SettingRow {
-                                label: "Copy on select";
-                                description: "Copy the selection to the clipboard automatically.";
+                                label: Lang.t("Copy on select", "选中即复制");
+                                description: Lang.t("Copy the selection to the clipboard automatically.", "自动把选区复制到剪贴板。");
                                 SettingsSwitch {
                                     on: root.cfg-copy-on-select;
                                     toggled => { root.toggle-copy-on-select(); }
                                 }
                             }
                             SettingRow {
-                                label: "Confirm closing multiple sessions";
-                                description: "Ask before closing a window with several tabs/panes.";
+                                label: Lang.t("Confirm closing multiple sessions", "关闭多个会话前确认");
+                                description: Lang.t("Ask before closing a window with several tabs/panes.", "关闭含多个标签/窗格的窗口前询问。");
                                 SettingsSwitch {
                                     on: root.cfg-confirm-close;
                                     toggled => { root.toggle-confirm-close(); }
                                 }
                             }
                             SettingRow {
-                                label: "Restore session on startup";
-                                description: "Reopen tabs, splits and cwd from the last clean exit (off by default).";
+                                label: Lang.t("Restore session on startup", "启动时恢复会话");
+                                description: Lang.t("Reopen tabs, splits and cwd from the last clean exit (off by default).", "按上次正常退出重新打开标签、分屏与工作目录（默认关闭）。");
                                 SettingsSwitch {
                                     on: root.cfg-restore-session;
                                     toggled => { root.toggle-restore-session(); }
                                 }
                             }
                             SettingRow {
-                                label: "Confirm multi-line paste";
-                                description: "Show a preview before pasting text with newlines.";
+                                label: Lang.t("Confirm multi-line paste", "多行粘贴前确认");
+                                description: Lang.t("Show a preview before pasting text with newlines.", "粘贴含换行文本前显示预览。");
                                 SettingsSwitch {
                                     on: root.cfg-confirm-paste;
                                     toggled => { root.toggle-confirm-paste(); }
                                 }
                             }
                             SettingField {
-                                label: "Right click";
-                                description: "Short press acts immediately; long press (250ms) opens the menu.";
+                                label: Lang.t("Right click", "右键");
+                                description: Lang.t("Short press acts immediately; long press (250ms) opens the menu.", "短按立即执行；长按（250ms）打开菜单。");
                                 Segmented {
-                                    options: ["Menu", "Paste", "Clipboard", "Off"];
+                                    options: [Lang.t("Menu", "菜单"), Lang.t("Paste", "粘贴"), Lang.t("Clipboard", "剪贴板"), Lang.t("Off", "关")];
                                     values: ["menu", "paste", "clipboard", "off"];
                                     value: root.cfg-right-click;
                                     picked(v) => { root.set-right-click(v); }
                                 }
                             }
                             SettingRow {
-                                label: "Paste on middle-click";
+                                label: Lang.t("Paste on middle-click", "中键粘贴");
                                 SettingsSwitch {
                                     on: root.cfg-paste-middle;
                                     toggled => { root.toggle-paste-middle(); }
                                 }
                             }
                             SettingRow {
-                                label: "Desktop notifications";
-                                description: "notify-send when an inactive tab emits OSC 9 / 777 / BEL.";
+                                label: Lang.t("Desktop notifications", "桌面通知");
+                                description: Lang.t("notify-send when an inactive tab emits OSC 9 / 777 / BEL.", "非活动标签收到 OSC 9 / 777 / BEL 时调用 notify-send。");
                                 SettingsSwitch {
                                     on: root.cfg-desktop-notifications;
                                     toggled => { root.toggle-desktop-notifications(); }
@@ -4268,19 +4310,19 @@ export component MainWindow inherits Window {
                         }
 
                         bell-card := SettingsCard {
-                            title: "Bell";
+                            title: Lang.t("Bell", "响铃");
                             highlighted: root.settings-focus == "bell";
                             SettingRow {
-                                label: "Visual bell";
-                                description: "Flash a 1–2px accent border when the active pane receives BEL.";
+                                label: Lang.t("Visual bell", "视觉铃");
+                                description: Lang.t("Flash a 1–2px accent border when the active pane receives BEL.", "活动窗格收到 BEL 时闪烁 1–2px 强调边框。");
                                 SettingsSwitch {
                                     on: root.cfg-visual-bell;
                                     toggled => { root.toggle-visual-bell(); }
                                 }
                             }
                             SettingRow {
-                                label: "Audible bell";
-                                description: "Ring the system bell via X11 (falls back to the terminal BEL).";
+                                label: Lang.t("Audible bell", "声音铃");
+                                description: Lang.t("Ring the system bell via X11 (falls back to the terminal BEL).", "通过 X11 响系统铃（失败时回退终端 BEL）。");
                                 SettingsSwitch {
                                     on: root.cfg-audible-bell;
                                     toggled => { root.toggle-audible-bell(); }
@@ -4289,27 +4331,27 @@ export component MainWindow inherits Window {
                         }
 
                         images-card := SettingsCard {
-                            title: "Images";
+                            title: Lang.t("Images", "图片");
                             highlighted: root.settings-focus == "images";
                             SettingRow {
-                                label: "Sixel inline images";
-                                description: "Primary DA advertises parameter 4; 25 MB per image, 16 MP cap.";
+                                label: Lang.t("Sixel inline images", "Sixel 内联图片");
+                                description: Lang.t("Primary DA advertises parameter 4; 25 MB per image, 16 MP cap.", "主 DA 宣告参数 4；单图上限 25 MB、16 MP。");
                                 SettingsSwitch {
                                     on: root.cfg-sixel;
                                     toggled => { root.toggle-sixel(); }
                                 }
                             }
                             SettingRow {
-                                label: "iTerm2 IIP images";
-                                description: "OSC 1337 File (PNG/JPEG); 20 MB per file, 16 MP cap. Independent of Sixel.";
+                                label: Lang.t("iTerm2 IIP images", "iTerm2 IIP 图片");
+                                description: Lang.t("OSC 1337 File (PNG/JPEG); 20 MB per file, 16 MP cap. Independent of Sixel.", "OSC 1337 File（PNG/JPEG）；单文件上限 20 MB、16 MP。与 Sixel 独立。");
                                 SettingsSwitch {
                                     on: root.cfg-iip;
                                     toggled => { root.toggle-iip(); }
                                 }
                             }
                             SettingRow {
-                                label: "Images scroll with history";
-                                description: "Off pins images to the viewport; on moves them with the text.";
+                                label: Lang.t("Images scroll with history", "图片随历史滚动");
+                                description: Lang.t("Off pins images to the viewport; on moves them with the text.", "关闭时图片固定在视口；开启时随文本移动。");
                                 SettingsSwitch {
                                     on: root.cfg-sixel-scrolling;
                                     toggled => { root.toggle-sixel-scrolling(); }
@@ -4318,19 +4360,19 @@ export component MainWindow inherits Window {
                         }
 
                         keybind-card := SettingsCard {
-                            title: "Key encoding";
+                            title: Lang.t("Key encoding", "按键编码");
                             highlighted: root.settings-focus == "keys";
                             SettingField {
-                                label: "Backspace";
+                                label: Lang.t("Backspace", "退格键");
                                 Segmented {
-                                    options: ["ASCII DEL (0x7F)", "Control-H (0x08)"];
+                                    options: [Lang.t("ASCII DEL (0x7F)", "ASCII DEL（0x7F）"), Lang.t("Control-H (0x08)", "Control-H（0x08）")];
                                     values: ["ascii-delete", "control-h"];
                                     value: root.cfg-backspace-binding;
                                     picked(v) => { root.set-backspace-binding(v); }
                                 }
                             }
                             SettingField {
-                                label: "Delete";
+                                label: Lang.t("Delete", "删除键");
                                 Segmented {
                                     options: ["ESC [3~", "ASCII DEL", "Control-H"];
                                     values: ["delete-sequence", "ascii-del", "control-h"];
@@ -4339,7 +4381,7 @@ export component MainWindow inherits Window {
                                 }
                             }
                             Text {
-                                text: "Only the bytes sent to the PTY change; defaults match GNOME (Backspace=0x7F, Delete=ESC [3~).";
+                                text: Lang.t("Only the bytes sent to the PTY change; defaults match GNOME (Backspace=0x7F, Delete=ESC [3~).", "只有发送给 PTY 的字节会变；默认与 GNOME 一致（退格=0x7F，删除=ESC [3~）。");
                                 color: Palette.colors.muted;
                                 font-size: 10px;
                                 wrap: word-wrap;
@@ -4370,26 +4412,26 @@ export component MainWindow inherits Window {
                         spacing: 10px;
 
                         window-card := SettingsCard {
-                            title: "Window & Tab bar";
+                            title: Lang.t("Window & Tab bar", "窗口与标签栏");
                             highlighted: root.settings-focus == "window";
                             SettingRow {
-                                label: "Tab bar at bottom";
-                                description: "Move the tab strip below the terminal content.";
+                                label: Lang.t("Tab bar at bottom", "标签栏置底");
+                                description: Lang.t("Move the tab strip below the terminal content.", "把标签条移到终端内容下方。");
                                 SettingsSwitch {
                                     on: root.tabbar-bottom;
                                     toggled => { root.tabbar-menu-action(6); }
                                 }
                             }
                             SettingRow {
-                                label: "Quake mode (F12)";
-                                description: "Global drop-down terminal: 70% screen width, 50% height (X11).";
+                                label: Lang.t("Quake mode (F12)", "Quake 模式（F12）");
+                                description: Lang.t("Global drop-down terminal: 70% screen width, 50% height (X11).", "全局下拉终端：屏宽 70%、高 50%（X11）。");
                                 SettingsSwitch {
                                     on: root.cfg-quake;
                                     toggled => { root.toggle-quake(); }
                                 }
                             }
                             Text {
-                                text: "Tab bar position is written to config immediately. Close confirmation lives in Terminal → Behavior.";
+                                text: Lang.t("Tab bar position is written to config immediately. Close confirmation lives in Terminal → Behavior.", "标签栏位置立即写入配置。关闭确认在 终端 → 行为。");
                                 color: Palette.colors.muted;
                                 font-size: 10px;
                                 wrap: word-wrap;
@@ -4397,12 +4439,12 @@ export component MainWindow inherits Window {
                         }
 
                         SettingsCard {
-                            title: "Settings window";
+                            title: Lang.t("Settings window", "设置窗口");
                             description: root.settings-legacy
-                                ? "Legacy modal mode is active (TERVO_SETTINGS_LEGACY=1)."
-                                : "Settings is a tab inside the main window: close it with ✕, Esc, or by clicking a terminal tab.";
+                                ? Lang.t("Legacy modal mode is active (TERVO_SETTINGS_LEGACY=1).", "传统模态模式已启用（TERVO_SETTINGS_LEGACY=1）。")
+                                : Lang.t("Settings is a tab inside the main window: close it with ✕, Esc, or by clicking a terminal tab.", "设置是主窗口内的标签页：用 ✕、Esc 或点击终端标签关闭。");
                             Text {
-                                text: "Start with TERVO_SETTINGS_LEGACY=1 to use the centered modal fallback.";
+                                text: Lang.t("Start with TERVO_SETTINGS_LEGACY=1 to use the centered modal fallback.", "启动时设置 TERVO_SETTINGS_LEGACY=1 可使用居中模态回退。");
                                 color: Palette.colors.muted;
                                 font-size: 10px;
                                 wrap: word-wrap;
@@ -4433,10 +4475,10 @@ export component MainWindow inherits Window {
                         spacing: 10px;
 
                         config-card := SettingsCard {
-                            title: "Config file";
+                            title: Lang.t("Config file", "配置文件");
                             highlighted: root.settings-focus == "config";
                             SettingField {
-                                label: "Path";
+                                label: Lang.t("Path", "路径");
                                 Text {
                                     text: root.settings-path;
                                     color: Palette.colors.text;
@@ -4448,19 +4490,19 @@ export component MainWindow inherits Window {
                                 spacing: 6px;
                                 ActionBtn {
                                     horizontal-stretch: 1;
-                                    label: "Open Folder";
+                                    label: Lang.t("Open Folder", "打开目录");
                                     font-size: 10px;
                                     clicked => { root.settings-open-path(); }
                                 }
                                 ActionBtn {
                                     horizontal-stretch: 1;
-                                    label: "Import Tabby";
+                                    label: Lang.t("Import Tabby", "导入 Tabby");
                                     font-size: 10px;
                                     clicked => { root.config-import-tabby(); }
                                 }
                                 ActionBtn {
                                     horizontal-stretch: 1;
-                                    label: "Export Profiles";
+                                    label: Lang.t("Export Profiles", "导出配置");
                                     font-size: 10px;
                                     clicked => { root.config-export-tabby(); }
                                 }
@@ -4473,7 +4515,7 @@ export component MainWindow inherits Window {
                                 visible: root.config-status != "";
                             }
                             Text {
-                                text: "Passwords and private keys never live in the plain config; SSH passwords go to the encrypted Vault.";
+                                text: Lang.t("Passwords and private keys never live in the plain config; SSH passwords go to the encrypted Vault.", "密码与私钥绝不写入明文配置；SSH 密码保存在加密保险库。");
                                 color: Palette.colors.muted;
                                 font-size: 10px;
                                 wrap: word-wrap;
@@ -4481,12 +4523,12 @@ export component MainWindow inherits Window {
                         }
 
                         SettingsCard {
-                            title: "Interface";
-                            description: "Settings presentation is selected at startup for safety.";
+                            title: Lang.t("Interface", "界面");
+                            description: Lang.t("Settings presentation is selected at startup for safety.", "为安全起见，设置页呈现方式在启动时选定。");
                             Text {
                                 text: root.settings-legacy
-                                    ? "Current: legacy centered modal. Remove TERVO_SETTINGS_LEGACY to return to the Settings Tab."
-                                    : "Current: in-window Settings Tab. Set TERVO_SETTINGS_LEGACY=1 before launch to fall back to the centered modal.";
+                                    ? Lang.t("Current: legacy centered modal. Remove TERVO_SETTINGS_LEGACY to return to the Settings Tab.", "当前：传统居中模态。移除 TERVO_SETTINGS_LEGACY 可回到设置标签页。")
+                                    : Lang.t("Current: in-window Settings Tab. Set TERVO_SETTINGS_LEGACY=1 before launch to fall back to the centered modal.", "当前：窗口内设置标签页。启动前设置 TERVO_SETTINGS_LEGACY=1 可回退到居中模态。");
                                 color: Palette.colors.muted;
                                 font-size: 10px;
                                 wrap: word-wrap;
@@ -4517,8 +4559,8 @@ export component MainWindow inherits Window {
                         spacing: 10px;
 
                         SettingsCard {
-                            title: "Keyboard shortcuts";
-                            description: "Click Edit, then press a single chord. Esc cancels; Backspace restores the default.";
+                            title: Lang.t("Keyboard shortcuts", "键盘快捷键");
+                            description: Lang.t("Click Edit, then press a single chord. Esc cancels; Backspace restores the default.", "点击“编辑”后按单个组合键。Esc 取消；退格键恢复默认。");
 
                             HorizontalLayout {
                                 height: 22px;
@@ -4533,8 +4575,8 @@ export component MainWindow inherits Window {
                                 }
                                 Text {
                                     text: root.hotkey-conflict-count > 0
-                                        ? "⚠ \{root.hotkey-conflict-count} conflict(s)"
-                                        : "✓ no conflicts";
+                                        ? Lang.t("⚠ \{root.hotkey-conflict-count} conflict(s)", "⚠ \{root.hotkey-conflict-count} 个冲突")
+                                        : Lang.t("✓ no conflicts", "✓ 无冲突");
                                     color: root.hotkey-conflict-count > 0
                                         ? Palette.colors.danger
                                         : Palette.colors.muted;
@@ -4545,13 +4587,13 @@ export component MainWindow inherits Window {
                                     width: 72px;
                                     height: 22px;
                                     font-size: 9px;
-                                    label: "Reset All";
+                                    label: Lang.t("Reset All", "全部重置");
                                     clicked => { root.hotkey-reset-all(); }
                                 }
                             }
 
                             if root.hotkey-recording-row >= 0 : Text {
-                                text: "Recording: press Ctrl/Alt/Shift + key · Esc cancel · Backspace reset";
+                                text: Lang.t("Recording: press Ctrl/Alt/Shift + key · Esc cancel · Backspace reset", "录制中：按 Ctrl/Alt/Shift + 键 · Esc 取消 · 退格键恢复");
                                 color: Palette.colors.accent;
                                 font-size: 10px;
                                 wrap: word-wrap;
@@ -4589,7 +4631,7 @@ export component MainWindow inherits Window {
                                         x: parent.width - 152px;
                                         width: 88px;
                                         height: 15px;
-                                        text: i == root.hotkey-recording-row ? "Press keys…" : row.chord;
+                                        text: i == root.hotkey-recording-row ? Lang.t("Press keys…", "请按键…") : row.chord;
                                         color: i == root.hotkey-recording-row
                                             ? Palette.colors.accent
                                             : (row.conflict ? Palette.colors.danger : Palette.colors.subtext);
@@ -4604,7 +4646,7 @@ export component MainWindow inherits Window {
                                         y: 15px;
                                         width: 88px;
                                         height: 12px;
-                                        text: row.conflict ? "CONFLICT" : (row.custom ? "CUSTOM" : "");
+                                        text: row.conflict ? Lang.t("CONFLICT", "冲突") : (row.custom ? Lang.t("CUSTOM", "自定义") : "");
                                         color: row.conflict ? Palette.colors.danger : Palette.colors.accent;
                                         font-size: 7px;
                                         horizontal-alignment: right;
@@ -4617,7 +4659,7 @@ export component MainWindow inherits Window {
                                         width: 52px;
                                         height: 22px;
                                         font-size: 9px;
-                                        label: i == root.hotkey-recording-row ? "Cancel" : "Edit";
+                                        label: i == root.hotkey-recording-row ? Lang.t("Cancel", "取消") : Lang.t("Edit", "编辑");
                                         active: i == root.hotkey-recording-row;
                                         clicked => {
                                             if (i == root.hotkey-recording-row) {
@@ -4643,7 +4685,7 @@ export component MainWindow inherits Window {
                                 wrap: word-wrap;
                             }
                             Text {
-                                text: "Single chord: Ctrl/Alt/Meta + key, or F1–F24. Conflicting chords are rejected; multi-chord sequences (Ctrl+K Ctrl+T) are not supported.";
+                                text: Lang.t("Single chord: Ctrl/Alt/Meta + key, or F1–F24. Conflicting chords are rejected; multi-chord sequences (Ctrl+K Ctrl+T) are not supported.", "单个组合键：Ctrl/Alt/Meta + 键，或 F1–F24。拒绝冲突组合；不支持多段序列（Ctrl+K Ctrl+T）。");
                                 color: Palette.colors.muted;
                                 font-size: 9px;
                                 wrap: word-wrap;
@@ -4674,8 +4716,8 @@ export component MainWindow inherits Window {
                         spacing: 10px;
 
                         profiles-card := SettingsCard {
-                            title: "Profiles";
-                            description: "Saved local / SSH / serial / telnet connections. Click a row to open it in a new tab.";
+                            title: Lang.t("Profiles", "配置");
+                            description: Lang.t("Saved local / SSH / serial / telnet connections. Click a row to open it in a new tab.", "已保存的本地 / SSH / 串口 / Telnet 连接。点击一行在新标签中打开。");
                             highlighted: root.settings-focus == "profiles";
 
                             VerticalLayout {
@@ -4684,7 +4726,7 @@ export component MainWindow inherits Window {
 
                                 if root.profile-items.length == 0 : Text {
                                     height: 28px;
-                                    text: "No profiles yet — create one below.";
+                                    text: Lang.t("No profiles yet — create one below.", "还没有配置 — 在下方创建一个。");
                                     color: Palette.colors.muted;
                                     font-size: 11px;
                                     vertical-alignment: center;
@@ -4741,7 +4783,7 @@ export component MainWindow inherits Window {
                                         width: 42px;
                                         height: 22px;
                                         font-size: 9px;
-                                        label: "Edit";
+                                        label: Lang.t("Edit", "编辑");
                                         clicked => { root.profile-edit(i); }
                                     }
 
@@ -4781,19 +4823,19 @@ export component MainWindow inherits Window {
                                 spacing: 6px;
                                 ActionBtn {
                                     horizontal-stretch: 1;
-                                    label: "New Profile";
+                                    label: Lang.t("New Profile", "新建配置");
                                     font-size: 10px;
                                     clicked => { root.profile-new(); }
                                 }
                                 ActionBtn {
                                     horizontal-stretch: 1;
-                                    label: "Manage Profiles…";
+                                    label: Lang.t("Manage Profiles…", "管理配置…");
                                     font-size: 10px;
                                     clicked => { root.settings-manage-profiles(); }
                                 }
                             }
                             Text {
-                                text: "The full Profiles panel adds search and duplicate; it opens above this page.";
+                                text: Lang.t("The full Profiles panel adds search and duplicate; it opens above this page.", "完整配置面板还提供搜索与复制；它会在此页之上打开。");
                                 color: Palette.colors.muted;
                                 font-size: 10px;
                                 wrap: word-wrap;
@@ -4824,7 +4866,7 @@ export component MainWindow inherits Window {
                         spacing: 10px;
 
                         plugins-card := SettingsCard {
-                            title: "Plugins";
+                            title: Lang.t("Plugins", "插件");
                             highlighted: root.settings-focus == "plugins";
 
                             Text {
@@ -4835,7 +4877,7 @@ export component MainWindow inherits Window {
                             }
 
                             Text {
-                                text: "Installed";
+                                text: Lang.t("Installed", "已安装");
                                 color: Palette.colors.muted;
                                 font-size: 10px;
                                 font-weight: 600;
@@ -4854,7 +4896,7 @@ export component MainWindow inherits Window {
                                 }
                                 if root.plugin-items.length == 0 : Text {
                                     height: 22px;
-                                    text: "No plugins installed.";
+                                    text: Lang.t("No plugins installed.", "未安装插件。");
                                     color: Palette.colors.muted;
                                     font-size: 10px;
                                     vertical-alignment: center;
@@ -4862,7 +4904,7 @@ export component MainWindow inherits Window {
                             }
 
                             Text {
-                                text: "Recent plugin activity";
+                                text: Lang.t("Recent plugin activity", "最近插件活动");
                                 color: Palette.colors.muted;
                                 font-size: 10px;
                                 font-weight: 600;
@@ -4873,7 +4915,7 @@ export component MainWindow inherits Window {
                                 spacing: 0px;
                                 if root.plugin-activity-items.length == 0 : Text {
                                     height: 22px;
-                                    text: "No plugin activity yet — run a plugin command or open a tab with an event plugin installed.";
+                                    text: Lang.t("No plugin activity yet — run a plugin command or open a tab with an event plugin installed.", "还没有插件活动 — 运行插件命令或打开安装了事件插件的标签。");
                                     color: Palette.colors.muted;
                                     font-size: 10px;
                                     vertical-alignment: center;
@@ -4896,7 +4938,7 @@ export component MainWindow inherits Window {
                                 wrap: word-wrap;
                             }
                             Text {
-                                text: "v1 plugins: <name>/plugin.toml. runtime=\"process\" keeps a JSON-Lines host (2s handshake, 10s command timeout, 2 restarts); runtime absent/oneshot runs per command/event. Commands appear in the Palette; status providers show one bottom-bar line; [contributes] theme adds a declarative TOML theme. Permissions are declaration-only: plugins are still unsandboxed user processes. Changing enabled requires a restart.";
+                                text: Lang.t("v1 plugins: <name>/plugin.toml. runtime=\"process\" keeps a JSON-Lines host (2s handshake, 10s command timeout, 2 restarts); runtime absent/oneshot runs per command/event. Commands appear in the Palette; status providers show one bottom-bar line; [contributes] theme adds a declarative TOML theme. Permissions are declaration-only: plugins are still unsandboxed user processes. Changing enabled requires a restart.", "v1 插件：<name>/plugin.toml。runtime=\"process\" 保持 JSON-Lines 常驻宿主（2s 握手、10s 命令超时、最多重启 2 次）；缺省 runtime/oneshot 按命令/事件运行。命令出现在命令面板；状态提供者在底栏显示一行；[contributes] theme 添加声明式 TOML 主题。权限仅为声明：插件仍是未沙箱化的用户进程。更改启用状态需要重启。");
                                 color: Palette.colors.muted;
                                 font-size: 9px;
                                 wrap: word-wrap;
@@ -4927,17 +4969,17 @@ export component MainWindow inherits Window {
                         spacing: 10px;
 
                         vault-card := SettingsCard {
-                            title: "Vault";
-                            description: "Local encrypted credential store for SSH passwords.";
+                            title: Lang.t("Vault", "保险库");
+                            description: Lang.t("Local encrypted credential store for SSH passwords.", "SSH 密码的本地加密凭据存储。");
                             highlighted: root.settings-focus == "vault";
 
                             Text {
-                                text: "Status: \{root.vault-status}";
+                                text: Lang.t("Status: \{root.vault-status}", "状态：\{root.vault-status}");
                                 color: Palette.colors.text;
                                 font-size: 12px;
                             }
                             if root.vault-busy : Text {
-                                text: "Argon2id KDF runs on a background thread — this page stays responsive.";
+                                text: Lang.t("Argon2id KDF runs on a background thread — this page stays responsive.", "Argon2id 密钥派生在后台线程运行 — 本页保持响应。");
                                 color: Palette.colors.accent;
                                 font-size: 10px;
                                 wrap: word-wrap;
@@ -4949,10 +4991,10 @@ export component MainWindow inherits Window {
                                 wrap: word-wrap;
                             }
                             SettingField {
-                                label: "Master password";
+                                label: Lang.t("Master password", "主密码");
                                 SettingsTextField {
                                     text <=> root.vault-password;
-                                    placeholder: "Master password";
+                                    placeholder: Lang.t("Master password", "主密码");
                                     masked: true;
                                     accepted(t) => { root.vault-unlock(); }
                                 }
@@ -4961,25 +5003,25 @@ export component MainWindow inherits Window {
                                 spacing: 4px;
                                 ActionBtn {
                                     horizontal-stretch: 1;
-                                    label: "Set / Change";
+                                    label: Lang.t("Set / Change", "设置 / 更改");
                                     font-size: 10px;
                                     clicked => { root.vault-set-master(); }
                                 }
                                 ActionBtn {
                                     horizontal-stretch: 1;
-                                    label: "Unlock";
+                                    label: Lang.t("Unlock", "解锁");
                                     font-size: 10px;
                                     clicked => { root.vault-unlock(); }
                                 }
                                 ActionBtn {
                                     horizontal-stretch: 1;
-                                    label: "Lock";
+                                    label: Lang.t("Lock", "锁定");
                                     font-size: 10px;
                                     clicked => { root.vault-lock(); }
                                 }
                                 ActionBtn {
                                     horizontal-stretch: 1;
-                                    label: "Clear";
+                                    label: Lang.t("Clear", "清除");
                                     font-size: 10px;
                                     danger: true;
                                     clicked => { root.vault-clear(); }
@@ -4998,13 +5040,13 @@ export component MainWindow inherits Window {
                                 wrap: word-wrap;
                             }
                             Text {
-                                text: "The master password is only used for Argon2id key derivation; it never touches disk or logs. vault.enc is 0600 and written atomically. Clear must be clicked twice.";
+                                text: Lang.t("The master password is only used for Argon2id key derivation; it never touches disk or logs. vault.enc is 0600 and written atomically. Clear must be clicked twice.", "主密码只用于 Argon2id 密钥派生；绝不写入磁盘或日志。vault.enc 权限为 0600 并以原子方式写入。清除需要点击两次。");
                                 color: Palette.colors.subtext;
                                 font-size: 10px;
                                 wrap: word-wrap;
                             }
                             Text {
-                                text: "SSH password auth: saved passwords are injected through askpass after unlock. MVP caveat: askpass passes the secret via environment, observable by the same user in /proc — see docs/VAULT.md.";
+                                text: Lang.t("SSH password auth: saved passwords are injected through askpass after unlock. MVP caveat: askpass passes the secret via environment, observable by the same user in /proc — see docs/VAULT.md.", "SSH 密码认证：解锁后保存的密码通过 askpass 注入。MVP 限制：askpass 通过环境变量传递密钥，同一用户可在 /proc 中看到 — 见 docs/VAULT.md。");
                                 color: Palette.colors.muted;
                                 font-size: 10px;
                                 wrap: word-wrap;
@@ -5035,10 +5077,10 @@ export component MainWindow inherits Window {
                         Text {
                             height: 28px;
                             text: root.settings-results.length == 0
-                                ? "No matches"
+                                ? Lang.t("No matches", "无匹配")
                                 : (root.settings-results.length == 1
-                                    ? "1 match — click to jump"
-                                    : "\{root.settings-results.length} matches — click to jump");
+                                    ? Lang.t("1 match — click to jump", "1 个结果 — 点击跳转")
+                                    : Lang.t("\{root.settings-results.length} matches — click to jump", "\{root.settings-results.length} 个结果 — 点击跳转"));
                             color: Palette.colors.muted;
                             font-size: 10px;
                             vertical-alignment: center;
@@ -5096,7 +5138,7 @@ export component MainWindow inherits Window {
                 // 主题下拉：面板级浮层，避免被 Flickable 裁剪；不依赖 PopupWindow。
                 if root.settings-theme-open && root.settings-category == 0 : Rectangle {
                     x: settings-body.content-x + 14px;
-                    y: settings-body.content-y + 116px;
+                    y: settings-body.content-y + 256px;
                     width: Math.min(320px, settings-body.content-w - 28px);
                     height: Math.min(260px, root.theme-choices.length * 30px + 10px);
                     background: Palette.colors.raise;
@@ -5200,7 +5242,7 @@ export component MainWindow inherits Window {
 
         Text {
             x: 16px; y: 10px;
-            text: "Profiles";
+            text: Lang.t("Profiles", "配置");
             color: Palette.colors.text;
             font-size: 15px;
             font-weight: 600;
@@ -5246,7 +5288,7 @@ export component MainWindow inherits Window {
                 x: 8px;
                 width: parent.width - 40px;
                 height: parent.height;
-                text: "Search name / host / kind…";
+                text: Lang.t("Search name / host / kind…", "搜索名称 / 主机 / 类型…");
                 color: Palette.colors.muted;
                 font-size: 11px;
                 vertical-alignment: center;
@@ -5346,7 +5388,7 @@ export component MainWindow inherits Window {
                         background: prof-dup-hit.has-hover ? Palette.colors.hover : transparent;
 
                         Text {
-                            text: "Dup";
+                            text: Lang.t("Dup", "复制");
                             color: Palette.colors.muted;
                             font-size: 9px;
                             horizontal-alignment: center;
@@ -5413,7 +5455,7 @@ export component MainWindow inherits Window {
         Text {
             x: 16px; y: 150px;
             width: 388px;
-            text: "No profiles yet — click New Profile to create one";
+            text: Lang.t("No profiles yet — click New Profile to create one", "还没有配置 — 点击“新建配置”创建一个");
             color: Palette.colors.muted;
             font-size: 11px;
             horizontal-alignment: center;
@@ -5424,7 +5466,7 @@ export component MainWindow inherits Window {
         Text {
             x: 16px; y: 150px;
             width: 388px;
-            text: "No profiles match the search";
+            text: Lang.t("No profiles match the search", "没有匹配的配置");
             color: Palette.colors.muted;
             font-size: 11px;
             horizontal-alignment: center;
@@ -5435,7 +5477,7 @@ export component MainWindow inherits Window {
         Text {
             x: 16px; y: 297px;
             width: 388px;
-            text: "Click to open · ★ default for new tabs · Dup = duplicate";
+            text: Lang.t("Click to open · ★ default for new tabs · Dup = duplicate", "点击打开 · ★ 新标签默认 · 复制=复制");
             color: Palette.colors.muted;
             font-size: 10px;
             horizontal-alignment: center;
@@ -5450,7 +5492,7 @@ export component MainWindow inherits Window {
                 clicked => { root.profile-new(); }
             }
             Text {
-                text: "New Profile";
+                text: Lang.t("New Profile", "新建配置");
                 color: Palette.colors.text;
                 font-size: 12px;
                 horizontal-alignment: center;
@@ -5469,7 +5511,7 @@ export component MainWindow inherits Window {
                 clicked => { root.profiles-open = false; root.profiles-close(); }
             }
             Text {
-                text: "Close";
+                text: Lang.t("Close", "关闭");
                 color: Palette.colors.text;
                 font-size: 12px;
                 horizontal-alignment: center;
@@ -5510,7 +5552,7 @@ export component MainWindow inherits Window {
         Text {
             x: 16px;
             y: 14px;
-            text: root.form-edit-id < 0 ? "New Profile" : "Edit Profile";
+            text: root.form-edit-id < 0 ? Lang.t("New Profile", "新建配置") : Lang.t("Edit Profile", "编辑配置");
             color: Palette.colors.text;
             font-size: 15px;
             font-weight: 600;
@@ -5525,7 +5567,7 @@ export component MainWindow inherits Window {
 
             ChoiceBtn {
                 width: 92px; height: 24px; font-size: 11px;
-                label: "Local"; active: root.form-kind == 0;
+                label: Lang.t("Local", "本地"); active: root.form-kind == 0;
                 clicked => { root.form-kind = 0; root.form-error = ""; }
             }
             ChoiceBtn {
@@ -5535,7 +5577,7 @@ export component MainWindow inherits Window {
             }
             ChoiceBtn {
                 width: 92px; height: 24px; font-size: 11px;
-                label: "Serial"; active: root.form-kind == 2;
+                label: Lang.t("Serial", "串口"); active: root.form-kind == 2;
                 clicked => { root.form-kind = 2; root.form-error = ""; }
             }
             ChoiceBtn {
@@ -5547,62 +5589,62 @@ export component MainWindow inherits Window {
 
         FormRow {
             x: 16px; y: 80px; width: 408px; height: 26px;
-            label: "Name"; text <=> root.form-name;
+            label: Lang.t("Name", "名称"); text <=> root.form-name;
         }
 
         if root.form-kind == 0 : VerticalLayout {
             x: 16px; y: 116px; width: 408px; height: 130px;
             spacing: 12px;
             FormRow { label: "Shell"; text <=> root.form-shell; }
-            FormRow { label: "Args"; text <=> root.form-args; }
-            FormRow { label: "Cwd"; text <=> root.form-cwd; }
+            FormRow { label: Lang.t("Args", "参数"); text <=> root.form-args; }
+            FormRow { label: Lang.t("Cwd", "工作目录"); text <=> root.form-cwd; }
         }
 
         if root.form-kind == 1 : VerticalLayout {
             x: 16px; y: 116px; width: 408px; height: 380px;
             spacing: 5px;
-            FormRow { label: "Host"; text <=> root.form-host; }
-            FormRow { label: "Port"; text <=> root.form-port; }
-            FormRow { label: "User"; text <=> root.form-user; }
-            FormRow { label: "Auth"; text <=> root.form-auth; }
-            FormRow { label: "Key"; text <=> root.form-key; }
+            FormRow { label: Lang.t("Host", "主机"); text <=> root.form-host; }
+            FormRow { label: Lang.t("Port", "端口"); text <=> root.form-port; }
+            FormRow { label: Lang.t("User", "用户名"); text <=> root.form-user; }
+            FormRow { label: Lang.t("Auth", "认证"); text <=> root.form-auth; }
+            FormRow { label: Lang.t("Key", "密钥"); text <=> root.form-key; }
             if root.form-auth == "password" : VerticalLayout {
                 spacing: 5px;
                 FormRow {
-                    label: "Password";
+                    label: Lang.t("Password", "密码");
                     text <=> root.form-password;
                     masked: true;
                 }
                 ToggleRow {
-                    label: "Save password to Vault";
+                    label: Lang.t("Save password to Vault", "保存密码到保险库");
                     on: root.form-save-password;
                     toggled => { root.form-save-password = !root.form-save-password; }
                 }
             }
-            FormRow { label: "Jump"; text <=> root.form-proxy-jump; }
-            FormRow { label: "R-Forwards"; text <=> root.form-remote-forwards; }
-            FormRow { label: "D-Forwards"; text <=> root.form-dynamic-forwards; }
+            FormRow { label: Lang.t("Jump", "跳板"); text <=> root.form-proxy-jump; }
+            FormRow { label: Lang.t("R-Forwards", "远程转发"); text <=> root.form-remote-forwards; }
+            FormRow { label: Lang.t("D-Forwards", "动态转发"); text <=> root.form-dynamic-forwards; }
             ToggleRow {
-                label: "Agent forwarding (-A)";
+                label: Lang.t("Agent forwarding (-A)", "代理转发（-A）");
                 on: root.form-agent-forward;
                 toggled => { root.form-agent-forward = !root.form-agent-forward; }
             }
-            FormRow { label: "Extra"; text <=> root.form-extra; }
-            FormRow { label: "L-Forwards"; text <=> root.form-forwards; }
+            FormRow { label: Lang.t("Extra", "额外参数"); text <=> root.form-extra; }
+            FormRow { label: Lang.t("L-Forwards", "本地转发"); text <=> root.form-forwards; }
         }
 
         if root.form-kind == 2 : VerticalLayout {
             x: 16px; y: 116px; width: 408px; height: 80px;
             spacing: 12px;
-            FormRow { label: "Serial"; text <=> root.form-serial-port; }
-            FormRow { label: "Baud"; text <=> root.form-baud; }
+            FormRow { label: Lang.t("Serial", "串口"); text <=> root.form-serial-port; }
+            FormRow { label: Lang.t("Baud", "波特率"); text <=> root.form-baud; }
         }
 
         if root.form-kind == 3 : VerticalLayout {
             x: 16px; y: 116px; width: 408px; height: 80px;
             spacing: 12px;
-            FormRow { label: "Host"; text <=> root.form-host; }
-            FormRow { label: "Port"; text <=> root.form-port; }
+            FormRow { label: Lang.t("Host", "主机"); text <=> root.form-host; }
+            FormRow { label: Lang.t("Port", "端口"); text <=> root.form-port; }
         }
 
         // 外观覆盖（所有类型共用；空 = 继承全局 Config）。
@@ -5616,7 +5658,7 @@ export component MainWindow inherits Window {
 
             Text {
                 height: 14px;
-                text: "Appearance · empty = inherit global";
+                text: Lang.t("Appearance · empty = inherit global", "外观 · 留空 = 继承全局");
                 color: Palette.colors.subtext;
                 font-size: 11px;
                 vertical-alignment: center;
@@ -5627,12 +5669,12 @@ export component MainWindow inherits Window {
                 FormRow {
                     width: 198px;
                     label-width: 64px;
-                    label: "Font"; text <=> root.form-font-size;
+                    label: Lang.t("Font", "字号"); text <=> root.form-font-size;
                 }
                 FormRow {
                     width: 198px;
                     label-width: 64px;
-                    label: "History"; text <=> root.form-scrollback;
+                    label: Lang.t("History", "历史"); text <=> root.form-scrollback;
                 }
             }
             HorizontalLayout {
@@ -5641,17 +5683,17 @@ export component MainWindow inherits Window {
                 FormRow {
                     width: 198px;
                     label-width: 64px;
-                    label: "Cursor"; text <=> root.form-cursor-shape;
+                    label: Lang.t("Cursor", "光标"); text <=> root.form-cursor-shape;
                 }
                 FormRow {
                     width: 198px;
                     label-width: 64px;
-                    label: "Blink"; text <=> root.form-cursor-blink;
+                    label: Lang.t("Blink", "闪烁"); text <=> root.form-cursor-blink;
                 }
             }
             FormRow {
                 height: 26px;
-                label: "Theme"; text <=> root.form-theme;
+                label: Lang.t("Theme", "主题"); text <=> root.form-theme;
             }
         }
 
@@ -5674,7 +5716,7 @@ export component MainWindow inherits Window {
                 clicked => { root.profile-form-open = false; root.profile-form-cancel(); }
             }
             Text {
-                text: "Cancel";
+                text: Lang.t("Cancel", "取消");
                 color: Palette.colors.text;
                 font-size: 12px;
                 horizontal-alignment: center;
@@ -5691,7 +5733,7 @@ export component MainWindow inherits Window {
                 clicked => { root.profile-form-save(); }
             }
             Text {
-                text: "Save";
+                text: Lang.t("Save", "保存");
                 color: Palette.colors.accent-text;
                 font-size: 12px;
                 font-weight: 600;
@@ -5768,7 +5810,7 @@ export component MainWindow inherits Window {
                 clicked => { root.hostkey-cancel(); }
             }
             Text {
-                text: root.hostkey-mode == "unverifiable" ? "Cancel" : "Cancel";
+                text: root.hostkey-mode == "unverifiable" ? Lang.t("Cancel", "取消") : Lang.t("Cancel", "取消");
                 color: Palette.colors.text;
                 font-size: 12px;
                 horizontal-alignment: center;
@@ -5843,7 +5885,7 @@ export component MainWindow inherits Window {
                 clicked => { root.hostkey-cancel(); }
             }
             Text {
-                text: "Cancel";
+                text: Lang.t("Cancel", "取消");
                 color: Palette.colors.text;
                 font-size: 12px;
                 horizontal-alignment: center;
@@ -6058,7 +6100,7 @@ export component MainWindow inherits Window {
 
         FormRow {
             x: 16px; y: 332px; width: 448px; height: 26px;
-            label: "Local"; text <=> root.sftp-local;
+            label: Lang.t("Local", "本地"); text <=> root.sftp-local;
         }
 
         FormRow {
@@ -6142,7 +6184,7 @@ export component MainWindow inherits Window {
             border-color: Palette.colors.border;
             sftp-del-hit := TouchArea { clicked => { root.sftp-delete(); } }
             Text {
-                text: "Delete";
+                text: Lang.t("Delete", "删除");
                 color: sftp-del-hit.has-hover ? Palette.colors.bg : Palette.colors.text;
                 font-size: 11px;
                 horizontal-alignment: center;
@@ -6177,7 +6219,7 @@ export component MainWindow inherits Window {
             border-color: Palette.colors.border;
             sftp-rename-hit := TouchArea { clicked => { root.sftp-rename(); } }
             Text {
-                text: "Rename";
+                text: Lang.t("Rename", "重命名");
                 color: Palette.colors.text;
                 font-size: 11px;
                 horizontal-alignment: center;
@@ -6211,7 +6253,7 @@ export component MainWindow inherits Window {
             border-color: Palette.colors.border;
             sftp-close-hit := TouchArea { clicked => { root.sftp-open = false; root.sftp-close(); } }
             Text {
-                text: "Close";
+                text: Lang.t("Close", "关闭");
                 color: Palette.colors.text;
                 font-size: 11px;
                 horizontal-alignment: center;
@@ -6281,7 +6323,7 @@ export component MainWindow inherits Window {
                 border-color: Palette.colors.border;
                 sftp-cancel-hit := TouchArea { clicked => { root.sftp-cancel(); } }
                 Text {
-                    text: "Cancel";
+                    text: Lang.t("Cancel", "取消");
                     color: sftp-cancel-hit.has-hover ? Palette.colors.bg : Palette.colors.danger;
                     font-size: 11px;
                     horizontal-alignment: center;
@@ -6360,7 +6402,7 @@ export component MainWindow inherits Window {
 
         Text {
             x: 16px; y: 10px;
-            text: "Port Forwards";
+            text: Lang.t("Port Forwards", "端口转发");
             color: Palette.colors.text;
             font-size: 15px;
             font-weight: 600;
@@ -6477,7 +6519,7 @@ export component MainWindow inherits Window {
             border-color: Palette.colors.border;
             fwd-close-hit := TouchArea { clicked => { root.fwd-open = false; root.fwd-close(); } }
             Text {
-                text: "Close";
+                text: Lang.t("Close", "关闭");
                 color: Palette.colors.text;
                 font-size: 11px;
                 horizontal-alignment: center;
@@ -6538,7 +6580,7 @@ export component MainWindow inherits Window {
             spacing: 10px;
 
             Text {
-                text: "Background Sessions";
+                text: Lang.t("Background Sessions", "后台会话");
                 color: Palette.colors.text;
                 font-size: 15px;
                 font-weight: 600;
@@ -6590,7 +6632,7 @@ export component MainWindow inherits Window {
                         clicked => { root.bg-open = false; root.bg-close(); }
                     }
                     Text {
-                        text: "Close";
+                        text: Lang.t("Close", "关闭");
                         color: Palette.colors.text;
                         font-size: 12px;
                         horizontal-alignment: center;
@@ -6830,7 +6872,7 @@ export component MainWindow inherits Window {
                         clicked => { root.paste-open = false; root.paste-cancel(); }
                     }
                     Text {
-                        text: "Cancel";
+                        text: Lang.t("Cancel", "取消");
                         color: Palette.colors.text;
                         font-size: 12px;
                         horizontal-alignment: center;
@@ -6866,7 +6908,7 @@ export component MainWindow inherits Window {
                         clicked => { root.paste-open = false; root.paste-accept(); }
                     }
                     Text {
-                        text: "Paste";
+                        text: Lang.t("Paste", "粘贴");
                         color: Palette.colors.accent-text;
                         font-size: 12px;
                         font-weight: 600;
@@ -6922,7 +6964,7 @@ export component MainWindow inherits Window {
                         clicked => { root.confirm-open = false; root.confirm-cancel(); }
                     }
                     Text {
-                        text: "Cancel";
+                        text: Lang.t("Cancel", "取消");
                         color: Palette.colors.text;
                         font-size: 12px;
                         horizontal-alignment: center;
@@ -6938,7 +6980,7 @@ export component MainWindow inherits Window {
                         clicked => { root.confirm-open = false; root.confirm-accept(); }
                     }
                     Text {
-                        text: "Close";
+                        text: Lang.t("Close", "关闭");
                         color: Palette.colors.accent-text;
                         font-size: 12px;
                         font-weight: 600;
@@ -7229,7 +7271,7 @@ export component MainWindow inherits Window {
                             }
                         }
                         Text {
-                            text: "Cancel";
+                            text: Lang.t("Cancel", "取消");
                             color: Palette.colors.text;
                             font-size: 12px;
                             horizontal-alignment: center;
@@ -7245,7 +7287,7 @@ export component MainWindow inherits Window {
                             clicked => { root.save-commit(root.save-path); }
                         }
                         Text {
-                            text: "Save";
+                            text: Lang.t("Save", "保存");
                             color: Palette.colors.accent-text;
                             font-size: 12px;
                             font-weight: 600;

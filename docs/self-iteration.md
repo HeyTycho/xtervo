@@ -2134,3 +2134,26 @@ cargo bench -p tervo-core --bench pty_throughput
   - 主题包只进主题下拉，不自动切换、不覆盖字体/快捷键/Profile；无 Windows 验证。
   - `xwin --focus` 是 e2e 工具增强（无 WM 时显式 XSetInputFocus），不改 app 键盘路径；
     Palette 关闭后焦点仍在隐藏输入框的既有键盘行为本轮未改（e2e 用点回终端规避）。
+
+### 2026-11-09 · 第 N 轮：Settings / 菜单中英双语（feat/i18n）
+
+- **问题**：Settings 页此前中英混排（卡片标题/字段 label 英文，Vault 状态/快捷键提示中文），
+  且没有语言选项；终端右键/TabBar 菜单也全英文。
+- **做法**：
+  - Slint 新增全局 `Lang.t(en, zh)`（`pure public function`，`root.language` 变化时
+    所有属性绑定自动重算）；Appearance 顶部新增 Language 卡片（English / 中文 Segmented）。
+  - `Config.language` 为 additive 字段，默认 `en`，未知值归一回退 `en`；`Config::save`
+    写回、`apply_external_config`/`reconfig_summary` 将 `language` 纳入热更新。
+  - Settings 全部静态文案、Profiles 面板/表单、终端右键菜单、TabBar 菜单双语文案；
+    搜索索引中英双向匹配、结果行按当前语言生成。
+  - Rust 动态状态跟随语言：快捷键 summary/命令标题/状态、插件 summary/状态词/活动词、
+    Vault 状态、config 导入导出状态、Profile 默认项、主题 `Auto` 显示名、背景图错误。
+- **测试**：`cargo test -p tervo-app --bin tervo` → **376 passed, 0 failed, 1 ignored**
+  （基线 369；新增 7 例：config 语言默认/迁移/非法值 3 例 + 搜索/命令标题/翻译对/静态包裹 4 例）。
+- **Xvfb e2e**：新增 `scripts/e2e_settings_i18n.sh`（Xvfb :126 + Openbox + winit-software）。
+  源码级断言：277 组 `Lang.t`，en 侧无中文、zh 侧无未翻译整句，Settings/右键/TabBar/Profiles
+  静态属性全部包裹；运行级断言：live en→zh→en 写回 config、外部热更新日志、右键菜单/标签菜单
+  截图非空、23 张截图覆盖 en/zh Appearance/Terminal/Window/Keys/Profiles/Plugins/Vault/Advanced、
+  搜索、主题下拉、Profiles 面板/表单、小窗口 760×520、重启持久化、legacy modal。
+- **限制**：权限/known_hosts/Profile 表单校验等少数 Rust 动态错误仍为中文；插件名/描述是第三方
+  数据不翻译；语言选项自身必须同时出现 English/中文，因此 en 页会出现“中文”二字。
