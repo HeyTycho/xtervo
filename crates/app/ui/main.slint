@@ -2868,8 +2868,12 @@ export component MainWindow inherits Window {
                     }
 
                     // 图片是 pane 的独立 overlay；TouchArea 必须放在 pane-hit 之后，
-                    // 否则点击会被终端命中区吃掉。图片本身仍由上面的 Image 绘制。
+                    // 否则点击会被终端命中区吃掉。但 TUI 开启鼠标上报时，图片点击
+                    // 必须交给 PTY（dsh 的缩略图预览就是这样打开的），否则 Tervo
+                    // 灯箱会抢走点击，dsh 永远收不到。mouse-reporting 下禁用图片
+                    // 命中区，让下面的 pane-hit 转发真实鼠标事件。
                     for pic in p.images : TouchArea {
+                        enabled: !p.mouse-reporting;
                         x: pic.x;
                         y: pic.y;
                         width: pic.w;
