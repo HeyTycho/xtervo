@@ -17,6 +17,8 @@ unicode-width.workspace = true
 # iTerm2 IIP（OSC 1337 File）图片解码：PNG 用 png，JPEG 用轻量纯 Rust zune-jpeg。
 png = "0.18"
 zune-jpeg = "0.5"
+# Kitty graphics `o=z` zlib 解压（纯 Rust miniz_oxide 后端）。
+flate2 = "1"
 
 [dev-dependencies]
 criterion.workspace = true

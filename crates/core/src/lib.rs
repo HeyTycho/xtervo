@@ -11,6 +11,7 @@ pub mod event;
 pub mod frame;
 pub mod iip;
 pub mod keyboard;
+pub mod kitty_graphics;
 pub mod link;
 pub mod mouse;
 pub mod osc;
