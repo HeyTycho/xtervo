@@ -7,6 +7,7 @@ tervo diag env --json
 tervo diag snapshot --json
 tervo diag replay --input trace-raw.bin --json
 tervo diag trace --input trace-raw.bin --out trace.jsonl
+tervo diag serve            # MCP stdio server
 ```
 
 不启动 Slint 窗口、不需要 DISPLAY；任何 harness（Codex CLI、Claude Code、
@@ -113,10 +114,57 @@ tervo diag snapshot --shell /bin/sh --wait-ms 300 -- -c '<command>'
 
 它们不需要 Tervo 插件；诊断由宿主自带。
 
-### MCP
+### MCP stdio（已实现，阶段 A）
 
-尚未实现。计划是 `tervo-mcp` 只读 server，见
-`docs/issues/0001-harness-neutral-terminal-diagnostics.md` 和 `docs/MCP.md`。
+```bash
+tervo diag serve
+```
+
+这是 **内置 CLI 子命令**，不是插件；MCP client 直接 spawn 它，stdin/stdout
+JSON-RPC，日志只走 stderr。
+
+已实现工具：
+
+```text
+tervo.diag_env       版本/display/config/log 路径
+tervo.diag_snapshot  一次性 PTY 运行 command，返回 frame/cursor/images
+tervo.diag_replay    回放原始字节文件，返回 frame
+```
+
+Claude Code：
+
+```bash
+claude mcp add tervo-diag -- tervo diag serve
+```
+
+Codex CLI（`~/.codex/config.toml`）：
+
+```toml
+[mcp_servers.tervo_diag]
+command = "tervo"
+args = ["diag", "serve"]
+```
+
+DSH / 其他 MCP harness：同样 spawn `tervo diag serve`，按标准
+`initialize` → `tools/list` → `tools/call` 调用。没有 MCP 的 harness 用
+`tervo diag snapshot --json` 即可。
+
+安全边界：
+
+```text
+- 只读 Tervo 状态；snapshot 会执行调用者给的 shell command（本地诊断进程）
+- 不读 Vault/API key/环境变量值
+- 不写日志/stdout 正文以外的终端内容
+- 仅本地 stdio，无网络监听
+```
+
+尚未实现：
+
+```text
+- 读正在运行的 Tervo 实例（app control socket）
+- screenshot / image RGBA / PTY 事件级 trace
+- 权限 token / per-harness 鉴权
+```
 
 ## 限制
 

@@ -34,6 +34,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         "snapshot" => snapshot(&args[1..]),
         "replay" => replay(&args[1..]),
         "trace" => trace(&args[1..]),
+        "serve" => serve(),
         "help" | "-h" | "--help" => {
             println!("{}", help_text());
             Ok(())
@@ -55,6 +56,7 @@ fn help_text() -> &'static str {
      replay --input FILE         把录制字节通过 PTY 回放并抓 frame\n\
      trace --input FILE --out F  回放并按 frame 变化写 JSONL trace\n\
        --duration-ms N           默认 1000\n\
+     serve                       MCP/JSON-RPC stdio server（tools: env/snapshot/replay）\n\
        --cols/--rows/--wait-ms\n\
      \n\
      输出 schema=tervo.diag.v1；不含 API key/环境变量值。"
@@ -117,6 +119,10 @@ fn env_json() -> Value {
 }
 
 fn snapshot(args: &[String]) -> Result<(), Box<dyn Error>> {
+    print_json(&snapshot_value(args)?)
+}
+
+fn snapshot_value(args: &[String]) -> Result<Value, Box<dyn Error>> {
     let cfg = PaneConfig {
         cols: num(args, "--cols", 120) as u16,
         rows: num(args, "--rows", 32) as u16,
@@ -127,10 +133,14 @@ fn snapshot(args: &[String]) -> Result<(), Box<dyn Error>> {
     let handle = spawn(cfg)?;
     std::thread::sleep(Duration::from_millis(wait_ms(args, 250)));
     let frame = handle.pull(handle.new_frame());
-    print_json(&frame_json(&frame, "snapshot"))
+    Ok(frame_json(&frame, "snapshot"))
 }
 
 fn replay(args: &[String]) -> Result<(), Box<dyn Error>> {
+    print_json(&replay_value(args)?)
+}
+
+fn replay_value(args: &[String]) -> Result<Value, Box<dyn Error>> {
     let input = opt(args, "--input").ok_or("replay 需要 --input FILE")?;
     // pane 的 cwd 不一定等于调用者 cwd；先转绝对路径，避免 cat 找不到文件。
     let input = std::fs::canonicalize(&input)
@@ -147,7 +157,7 @@ fn replay(args: &[String]) -> Result<(), Box<dyn Error>> {
     let handle = spawn(cfg)?;
     std::thread::sleep(Duration::from_millis(wait_ms(args, 400)));
     let frame = handle.pull(handle.new_frame());
-    print_json(&frame_json(&frame, "replay"))
+    Ok(frame_json(&frame, "replay"))
 }
 
 fn trace(args: &[String]) -> Result<(), Box<dyn Error>> {
@@ -257,9 +267,175 @@ fn frame_json(frame: &Frame, kind: &str) -> Value {
     })
 }
 
+/// 极简 MCP/JSON-RPC stdio server。非插件；随 CLI 启动，stdin/stdout 通信。
+///
+/// 只暴露诊断读取；snapshot 会执行调用者给的 command（这是“启动一个 shell
+/// 做诊断”，不是 Tervo 远程控制）。MCP client 应只在本地显式启动本进程。
+fn serve() -> Result<(), Box<dyn Error>> {
+    use std::io::{BufRead, Write};
+    let stdin = std::io::stdin();
+    let mut stdout = std::io::stdout();
+    for line in stdin.lock().lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let req: Value = match serde_json::from_str(&line) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("[diag] MCP 坏 JSON: {e}");
+                continue;
+            },
+        };
+        let id = req.get("id").cloned();
+        let method = req.get("method").and_then(Value::as_str).unwrap_or("");
+        let response = match method {
+            "initialize" => Some(json!({
+                "protocolVersion": "2024-11-05",
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "tervo-diag", "version": VERSION},
+            })),
+            "tools/list" => Some(json!({"tools": mcp_tools()})),
+            "tools/call" => Some(mcp_call(&req)),
+            "notifications/initialized" => None,
+            _ => Some(json!({"error": {"code": -32601, "message": "method not found"}})),
+        };
+        let Some(mut result) = response else { continue };
+        if let Some(id) = id {
+            let mut envelope = json!({"jsonrpc": "2.0", "id": id});
+            if let Some(error) = result.get("error").cloned() {
+                envelope["error"] = error;
+            } else {
+                envelope["result"] = result;
+            }
+            writeln!(stdout, "{}", serde_json::to_string(&envelope)?)?;
+            stdout.flush()?;
+        }
+    }
+    Ok(())
+}
+
+fn mcp_tools() -> Value {
+    json!([
+        {
+            "name": "tervo.diag_env",
+            "description": "Tervo version/display/config/log paths; no env values or secrets.",
+            "inputSchema": {"type": "object", "properties": {}}
+        },
+        {
+            "name": "tervo.diag_snapshot",
+            "description": "Run a shell command in a one-shot PTY and return the terminal frame/cursor/images metadata.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description": "shell -c command"},
+                    "shell": {"type": "string", "default": "/bin/sh"},
+                    "cols": {"type": "integer", "default": 120},
+                    "rows": {"type": "integer", "default": 32},
+                    "wait_ms": {"type": "integer", "default": 250}
+                },
+                "required": ["command"]
+            }
+        },
+        {
+            "name": "tervo.diag_replay",
+            "description": "Replay raw terminal bytes from a file through the real PTY/core and return a frame.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "input": {"type": "string"},
+                    "cols": {"type": "integer", "default": 120},
+                    "rows": {"type": "integer", "default": 32},
+                    "wait_ms": {"type": "integer", "default": 400}
+                },
+                "required": ["input"]
+            }
+        }
+    ])
+}
+
+fn mcp_call(req: &Value) -> Value {
+    let params = req.get("params").cloned().unwrap_or(Value::Null);
+    let name = params.get("name").and_then(Value::as_str).unwrap_or("");
+    let args = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
+    let result = match name {
+        "tervo.diag_env" => Ok(env_json()),
+        "tervo.diag_snapshot" => {
+            let command = match args.get("command").and_then(Value::as_str) {
+                Some(c) => c.to_string(),
+                None => return mcp_error(-32602, "command is required"),
+            };
+            let mut cli = Vec::new();
+            if let Some(v) = args.get("cols").and_then(Value::as_u64) {
+                cli.extend(["--cols".into(), v.to_string()]);
+            }
+            if let Some(v) = args.get("rows").and_then(Value::as_u64) {
+                cli.extend(["--rows".into(), v.to_string()]);
+            }
+            if let Some(v) = args.get("wait_ms").and_then(Value::as_u64) {
+                cli.extend(["--wait-ms".into(), v.to_string()]);
+            }
+            cli.extend([
+                "--shell".into(),
+                args.get("shell").and_then(Value::as_str).unwrap_or("/bin/sh").to_string(),
+                "--".into(),
+                "-c".into(),
+                command,
+            ]);
+            snapshot_value(&cli)
+        },
+        "tervo.diag_replay" => {
+            let input = match args.get("input").and_then(Value::as_str) {
+                Some(v) => v.to_string(),
+                None => return mcp_error(-32602, "input is required"),
+            };
+            let mut cli = vec!["--input".into(), input];
+            if let Some(v) = args.get("cols").and_then(Value::as_u64) {
+                cli.extend(["--cols".into(), v.to_string()]);
+            }
+            if let Some(v) = args.get("rows").and_then(Value::as_u64) {
+                cli.extend(["--rows".into(), v.to_string()]);
+            }
+            if let Some(v) = args.get("wait_ms").and_then(Value::as_u64) {
+                cli.extend(["--wait-ms".into(), v.to_string()]);
+            }
+            replay_value(&cli)
+        },
+        _ => return mcp_error(-32602, "unknown tool"),
+    };
+    match result {
+        Ok(value) => json!({
+            "content": [{"type": "text", "text": serde_json::to_string_pretty(&value).unwrap_or_default()}],
+            "isError": false,
+        }),
+        Err(e) => json!({
+            "content": [{"type": "text", "text": format!("Tervo diag error: {e}")}],
+            "isError": true,
+        }),
+    }
+}
+
+fn mcp_error(code: i64, message: &str) -> Value {
+    json!({"error": {"code": code, "message": message}})
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mcp_exposes_read_only_diag_tools() {
+        let tools = mcp_tools();
+        let names: Vec<_> = tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t.get("name").and_then(Value::as_str))
+            .collect();
+        assert!(names.contains(&"tervo.diag_env"));
+        assert!(names.contains(&"tervo.diag_snapshot"));
+        assert!(names.contains(&"tervo.diag_replay"));
+    }
 
     #[test]
     fn frame_schema_is_stable_and_omits_image_bytes() {
