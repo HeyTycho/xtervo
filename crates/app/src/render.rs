@@ -1897,6 +1897,7 @@ mod tests {
         frame.images.push(tervo_core::InlineImage {
             id: 1,
             source_id: 1,
+            row_id: 0,
             row: 0,
             col: 0,
             width: (cell_w * 2) as u32,
@@ -1937,6 +1938,7 @@ mod tests {
         frame.images.push(tervo_core::InlineImage {
             id: 7,
             source_id: 7,
+            row_id: 0,
             row: 0,
             col: 0,
             width: (cell_w * 2) as u32,
@@ -1970,6 +1972,7 @@ mod tests {
         tervo_core::InlineImage {
             id,
             source_id,
+            row_id: 0,
             row,
             col,
             width: 16,
@@ -2023,6 +2026,7 @@ mod tests {
         frame.images.push(tervo_core::InlineImage {
             id: 3,
             source_id: 10,
+            row_id: 0,
             row: 0,
             col: 0,
             width: cell_w as u32,
