@@ -275,3 +275,25 @@ fds     : 92 -> 92
 coverage: tabs=22 splits=3 settings=68/544 find=135 copy=268 resize=338/338
 commands: 1080；fatal=0 errors=0
 ```
+
+## 2026-11-10 11:28 0.3.0 15m
+
+```text
+verdict : PASS
+actual  : 916s
+RSS     : 744.8 -> 810.2 MiB (+65.3 MiB, +3.01 MiB/min, R2=0.28)
+PSS     : 703.9 -> 725.5 MiB (peak 779.7)
+CPU     : avg 84.3% / max 106.6%
+threads : 166 -> 166
+fds     : 92 -> 92
+```
+
+## 2026-11-10 11:27 0.3.1 2m
+
+```text
+verdict : PASS
+PSS     : 537.4 -> 577.0 MiB (peak 597.8)
+CPU     : avg 85.4% / max 99.8%
+threads : 166 -> 166
+fds     : 92 -> 92
+```
