@@ -4674,6 +4674,7 @@ dependencies = [
  "criterion",
  "crossbeam-channel",
  "env_logger",
+ "flate2",
  "log",
  "parking_lot",
  "png",
