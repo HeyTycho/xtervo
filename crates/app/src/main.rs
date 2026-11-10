@@ -134,9 +134,12 @@ struct PaneRuntime {
     /// Sixel 图片 overlay 的 Slint 模型；只在图片集合/位置变化时重建。
     inline_model: Rc<VecModel<PaneImage>>,
     /// 图片 ID → Slint Image 缓存（避免每次滚动/输出重复上传整张图）。
+    /// 源像素 ID 而非 placement ID：同一 placement 数据变化也不能复用旧纹理。
     inline_cache: HashMap<u64, slint::Image>,
     /// 上一次下发的图片布局签名；相同则跳过模型重建。
-    inline_sig: Vec<(u64, i32, u16, u32, u32)>,
+    inline_sig: Vec<(u64, u64, i32, u16, u32, u32)>,
+    /// 点击命中只依赖 placement + 不可变 source；与可见纹理缓存分离。
+    inline_hits: HashMap<u64, ImageSource>,
     /// 图片 overlay 依赖的 cell/grid 几何。字体/resize/分屏变化时图片的
     /// x/y/scale 必须重算，不能只比较图片 id/row/col。
     inline_geometry: (usize, usize, usize, usize),
@@ -169,6 +172,14 @@ struct PaneRuntime {
     link_hover: bool,
     /// SSH 密码认证用的临时 askpass 脚本；随 pane 一起释放。
     _askpass: Option<askpass::Askpass>,
+}
+
+#[derive(Clone)]
+struct ImageSource {
+    source_id: u64,
+    width: u32,
+    height: u32,
+    data: Arc<[u8]>,
 }
 
 /// SSH 会话结束提示：记录 pane/Profile，重连时复用同一格。
@@ -2692,6 +2703,7 @@ fn create_pane(
         inline_model: Rc::new(VecModel::from(Vec::<PaneImage>::new())),
         inline_cache: HashMap::new(),
         inline_sig: Vec::new(),
+        inline_hits: HashMap::new(),
         inline_geometry: (fonts.cell_w, fonts.cell_h, cols, rows),
         grid: (cols, rows),
         cursor: (0, 0),
@@ -6276,11 +6288,7 @@ fn update_ime_spot(st: &mut AppState) {
 /// - 只在图片集合或锚点变化时重建模型；光标闪烁/纯文本输出不会重新上传图片。
 /// - Slint Image 按 core 图片 ID 缓存，滚动/resize 时只改 x/y，不重复拷贝 RGBA。
 fn sync_inline_images(rt: &mut PaneRuntime, frame: &Frame) {
-    let sig: Vec<(u64, i32, u16, u32, u32)> = frame
-        .images
-        .iter()
-        .map(|img| (img.id, img.row, img.col, img.width, img.height))
-        .collect();
+    let sig = inline_image_sig(frame);
     let geometry = (
         rt.renderer.cell_w.max(1),
         rt.renderer.cell_h.max(1),
@@ -6309,27 +6317,32 @@ fn sync_inline_images(rt: &mut PaneRuntime, frame: &Frame) {
 
     let cell_w = rt.renderer.cell_w.max(1) as f32;
     let cell_h = rt.renderer.cell_h.max(1) as f32;
-    let mut keep = std::collections::HashSet::with_capacity(frame.images.len());
     let mut views = Vec::with_capacity(frame.images.len());
+    let mut hits = HashMap::with_capacity(frame.images.len());
+    rt.inline_cache.clear();
     for img in &frame.images {
         if img.width == 0 || img.height == 0 {
             continue;
         }
-        keep.insert(img.id);
-        let image = if let Some(cached) = rt.inline_cache.get(&img.id) {
-            cached.clone()
-        } else {
-            let expected = img.width as usize * img.height as usize * 4;
-            if img.data.len() != expected {
-                continue;
-            }
-            let mut buffer =
-                slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(img.width, img.height);
-            buffer.make_mut_bytes().copy_from_slice(&img.data);
-            let image = slint::Image::from_rgba8(buffer);
-            rt.inline_cache.insert(img.id, image.clone());
-            image
-        };
+        let expected = img.width as usize * img.height as usize * 4;
+        if img.data.len() != expected {
+            continue;
+        }
+        hits.insert(
+            img.id,
+            ImageSource {
+                source_id: img.source_id,
+                width: img.width,
+                height: img.height,
+                data: img.data.clone(),
+            },
+        );
+        if !rt.inline_cache.contains_key(&img.source_id) {
+            rt.inline_cache.insert(
+                img.source_id,
+                image_from_source(img.width, img.height, &img.data),
+            );
+        }
         let x = img.col as f32 * cell_w;
         let y = img.row as f32 * cell_h;
         // Sixel/IIP 的原始像素尺寸可能远大于终端；以前直接按原始 w/h 绘制，
@@ -6345,10 +6358,59 @@ fn sync_inline_images(rt: &mut PaneRuntime, frame: &Frame) {
             h,
         });
     }
-    // 只缓存当前可见图片：滚出视口的 RGBA 由 core 保存，滚回来时重新上传，
-    // 避免 UI 侧再常驻一份最多 64 MB 的解码数据。
-    rt.inline_cache.retain(|id, _| keep.contains(id));
+    rt.inline_hits = hits;
     rt.inline_model.set_vec(views);
+}
+
+fn inline_image_sig(frame: &Frame) -> Vec<(u64, u64, i32, u16, u32, u32)> {
+    frame
+        .images
+        .iter()
+        .map(|img| (img.id, img.source_id, img.row, img.col, img.width, img.height))
+        .collect()
+}
+
+fn refresh_inline_hits(rt: &mut PaneRuntime, frame: &Frame) {
+    rt.inline_hits = frame
+        .images
+        .iter()
+        .filter(|img| {
+            img.width > 0
+                && img.height > 0
+                && img.data.len() == img.width as usize * img.height as usize * 4
+        })
+        .map(|img| {
+            (
+                img.id,
+                ImageSource {
+                    source_id: img.source_id,
+                    width: img.width,
+                    height: img.height,
+                    data: img.data.clone(),
+                },
+            )
+        })
+        .collect();
+}
+
+fn cached_image_source(rt: &mut PaneRuntime, source_id: u64) -> Option<slint::Image> {
+    if let Some(image) = rt.inline_cache.get(&source_id) {
+        return Some(image.clone());
+    }
+    let source = rt
+        .inline_hits
+        .values()
+        .find(|source| source.source_id == source_id)
+        .cloned()?;
+    let image = image_from_source(source.width, source.height, &source.data);
+    rt.inline_cache.insert(source_id, image.clone());
+    Some(image)
+}
+
+fn image_from_source(width: u32, height: u32, rgba: &[u8]) -> slint::Image {
+    let mut buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(width, height);
+    buffer.make_mut_bytes().copy_from_slice(rgba);
+    slint::Image::from_rgba8(buffer)
 }
 
 fn redraw_pane_inner(st: &mut AppState, id: PaneId) {
@@ -6370,6 +6432,9 @@ fn redraw_pane_inner(st: &mut AppState, id: PaneId) {
     rt.renderer.draw_without_cursor(&frame);
     rt.image = rt.renderer.image();
     sync_inline_images(rt, &frame);
+    // 可见纹理缓存与点击 source 分离：即使 Slint 纹理缓存淘汰，本帧命中的
+    // 不可变 RGBA 仍在，首次点击无需再等 actor 回包。
+    refresh_inline_hits(rt, &frame);
     if render_profile() {
         eprintln!(
             "[render] pane={id} grid={}x{} full={} rows={} copy={} full_redraws={} \
@@ -10145,20 +10210,45 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let id = image_id as u64;
             let image = {
                 let Some(rt) = st.panes.get_mut(&(pane_id as u64)) else { return };
-                if let Some(cached) = rt.inline_cache.get(&id).cloned() {
-                    cached
-                } else if let Some((w, h, rgba)) = rt.handle.image_rgba(id) {
-                    // UI 只保留可见图片；点击旧 hit 时缓存可能已淘汰。向 actor
-                    // 取回原始 RGBA，避免灯箱以 0×0 source 打开成灰面板。
-                    let mut buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(w, h);
-                    buffer.make_mut_bytes().copy_from_slice(&rgba);
-                    let image = slint::Image::from_rgba8(buffer);
-                    rt.inline_cache.insert(id, image.clone());
-                    eprintln!("[image] preview source recovered id={id}");
-                    image
-                } else {
-                    eprintln!("[image] preview source missing id={image_id}");
-                    return;
+                let source_id = rt.inline_hits.get(&id).map(|source| source.source_id);
+                match source_id {
+                    Some(source_id) => {
+                        let mut image = cached_image_source(rt, source_id);
+                        if image.is_none() {
+                            image = rt.handle.image_rgba(source_id).map(|(w, h, rgba)| {
+                                let image = image_from_source(w, h, &rgba);
+                                rt.inline_cache.insert(source_id, image.clone());
+                                image
+                            });
+                        }
+                        match image {
+                            Some(image) => image,
+                            None => {
+                                eprintln!(
+                                    "[image] preview source missing placement={id} source={source_id}"
+                                );
+                                return;
+                            },
+                        }
+                    },
+                    None => {
+                        // 兼容旧调用方传 source ID 的路径。
+                        let mut image = cached_image_source(rt, id);
+                        if image.is_none() {
+                            image = rt.handle.image_rgba(id).map(|(w, h, rgba)| {
+                                let image = image_from_source(w, h, &rgba);
+                                rt.inline_cache.insert(id, image.clone());
+                                image
+                            });
+                        }
+                        match image {
+                            Some(image) => image,
+                            None => {
+                                eprintln!("[image] preview source missing id={image_id}");
+                                return;
+                            },
+                        }
+                    },
                 }
             };
             st.ui.set_image_preview_open(false);
@@ -12458,6 +12548,24 @@ mod tests {
         assert!(summary.hot.contains(&"sixel"));
         assert!(summary.new_pane.is_empty());
         assert!(summary.restart.is_empty());
+    }
+
+    #[test]
+    fn image_hit_survives_visible_texture_cache_eviction() {
+        let pixels: Arc<[u8]> = Arc::from(vec![255, 0, 0, 255]);
+        let source = ImageSource {
+            source_id: 42,
+            width: 1,
+            height: 1,
+            data: pixels,
+        };
+        let cache_slot = source.source_id;
+        // 模拟 Slint 可见纹理淘汰；命中仍按 placement 找 source，
+        // source 数据不再依赖 cache 是否仍持有它。
+        let inline_cache: HashMap<u64, slint::Image> = HashMap::new();
+        assert!(!inline_cache.contains_key(&cache_slot));
+        assert_eq!(source.source_id, 42);
+        assert_eq!(source.data.as_ref(), &[255, 0, 0, 255]);
     }
 
     #[test]

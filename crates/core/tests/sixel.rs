@@ -68,6 +68,13 @@ fn small_sixel_bel() -> Vec<u8> {
     out
 }
 
+/// 4x6：左侧两列红、右侧两列蓝；整行可见。
+fn two_images_sixel() -> Vec<u8> {
+    let mut out = b"\x1bPq\"1;1;4;6#0;2;100;0;0#1;2;0;0;100#0!2@#1!2@".to_vec();
+    out.extend_from_slice(b"\x1b\\");
+    out
+}
+
 /// 400x500、payload > 32 KiB，确保跨多个 PTY read chunk。
 fn big_sixel_st() -> Vec<u8> {
     let mut out = b"\x1bPq\"1;1;400;500#0;2;100;0;0".to_vec();
@@ -254,14 +261,42 @@ fn image_anchor_scrolls_with_history() {
 }
 
 #[test]
+fn ech_rectangle_keeps_two_images_on_same_row() {
+    let _serial = SIXEL_TEST_LOCK.lock().unwrap();
+    let path = temp_payload("ech-two-images", &two_images_sixel());
+    let script = format!(
+        "cat '{}'; printf '\\033[1;2H\\033[1X'; sleep 0.4",
+        path.display()
+    );
+    let handle = spawn(sh(&script)).expect("spawn pane");
+    let frame = wait_for(&handle, Duration::from_secs(5), |f| !f.images.is_empty());
+    assert_eq!(frame.images.len(), 1, "窄 ECH 不应删除同一行的无关图片");
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn two_images_on_one_row_expose_distinct_source_ids() {
+    let _serial = SIXEL_TEST_LOCK.lock().unwrap();
+    let path = temp_payload("two-images", &two_images_sixel());
+    let script = format!("cat '{}'; sleep 0.4", path.display());
+    let handle = spawn(sh(&script)).expect("spawn pane");
+    let frame = wait_for(&handle, Duration::from_secs(5), |f| !f.images.is_empty());
+    assert_eq!(frame.images.len(), 1);
+    // ID 各自单调递增，第一张图恰好都从 1 开始；不要求数值不相等。
+    assert_eq!(frame.images[0].id, 1);
+    assert_eq!(frame.images[0].source_id, 1);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
 fn image_rgba_can_be_recovered_by_id() {
     let _serial = SIXEL_TEST_LOCK.lock().unwrap();
     let path = temp_payload("recover-id", &small_sixel_bel());
     let script = format!("cat '{}'; sleep 0.4", path.display());
     let handle = spawn(sh(&script)).expect("spawn pane");
     let frame = wait_for(&handle, Duration::from_secs(5), |f| !f.images.is_empty());
-    let id = frame.images[0].id;
-    let (w, h, rgba) = handle.image_rgba(id).expect("按 id 取回原图");
+    let id = frame.images[0].source_id;
+    let (w, h, rgba) = handle.image_rgba(id).expect("按 source ID 取回原图");
     assert_eq!((w, h), (2, 2));
     assert_eq!(rgba.len(), 16);
     assert_eq!(&rgba[0..4], &[255, 0, 0, 255]);

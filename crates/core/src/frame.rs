@@ -170,13 +170,15 @@ impl Span {
 
 /// 视口内的一张内联图片（Sixel 等）。
 ///
-/// 图片像素不进入 `cells`，因此不参与文本、选区、搜索与链接；UI 把它作为
-/// 独立 overlay 画在终端帧之上。`data` 是直通 RGBA8（未预乘），`row`/`col`
-/// 是当前视口内的锚点（`row` 可以为负，表示图片顶部在视口上方）。
+/// 图片像素不进入 `cells`，因此不参与文本、选区、搜索与链接；UI 把它们
+/// 合成在 cell 背景之上、文字之下。`data` 是直通 RGBA8（未预乘），
+/// `row`/`col` 是当前视口内的锚点（`row` 可以为负，表示顶部在视口上方）。
 #[derive(Clone)]
 pub struct InlineImage {
-    /// actor 内单调递增的图片 ID；UI 用它缓存 Slint `Image`，避免重复上传。
+    /// actor 内单调递增的 placement ID；UI 用它关联点击命中。
     pub id: u64,
+    /// 本次 placement 的源像素 ID；同一 placement 源数据变化时它会变。
+    pub source_id: u64,
     /// 视口行（0 = 顶行；负值表示滚动到视口上方）。
     pub row: i32,
     /// 图片左上角所在列（cell）。
@@ -192,6 +194,7 @@ impl std::fmt::Debug for InlineImage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("InlineImage")
             .field("id", &self.id)
+            .field("source_id", &self.source_id)
             .field("row", &self.row)
             .field("col", &self.col)
             .field("width", &self.width)

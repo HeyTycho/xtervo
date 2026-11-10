@@ -36,6 +36,31 @@ pub(crate) fn fit_inline_image_size(
     ((src_w as f32 * scale).max(1.0), (src_h as f32 * scale).max(1.0))
 }
 
+/// 一帧内不可变的图片层。显示几何在绘制前固定，避免同一帧不同行因浮点
+/// 边界取整不同而产生接缝。
+#[derive(Clone)]
+struct ImageLayerEntry {
+    row: i32,
+    col: u16,
+    width: u32,
+    height: u32,
+    data: std::sync::Arc<[u8]>,
+    display_w: f32,
+    display_h: f32,
+}
+
+impl ImageLayerEntry {
+    fn row_span(&self, rows: usize, cell_h: usize) -> Option<(usize, usize)> {
+        let top = self.row as f32 * cell_h as f32;
+        let bottom = top + self.display_h;
+        let first = (top / cell_h as f32).floor() as i32;
+        let last = ((bottom - f32::EPSILON) / cell_h as f32).ceil() as i32;
+        let first = first.max(0) as usize;
+        let last = last.min(rows as i32) as usize;
+        (first < last).then_some((first, last))
+    }
+}
+
 /// 0x00RRGGBB -> 内存序 RGBA(u32, LE) = r | g<<8 | b<<16 | a<<24
 #[inline]
 fn pack(c: u32) -> u32 {
@@ -290,8 +315,8 @@ pub struct Renderer {
     dirty_rows: Vec<usize>,
     /// 上一帧重绘过的行：轮换 buffer 时只需同步这些行。
     prev_changed_rows: Vec<usize>,
-    /// 上一帧的内联图片签名；变化时整屏重绘，保证旧图不会留在 framebuffer。
-    last_image_sig: Vec<(u64, i32, u16, u32, u32)>,
+    /// 上一帧参与合成（含透明像素）的内联图片。
+    prev_images: Vec<ImageLayerEntry>,
     /// 统计
     pub last_draw_cells: u32,
     pub last_draw_rows: u32,
@@ -347,7 +372,7 @@ impl Renderer {
             dirty_flags: vec![false; rows],
             dirty_rows: Vec::with_capacity(rows),
             prev_changed_rows: Vec::with_capacity(rows),
-            last_image_sig: Vec::new(),
+            prev_images: Vec::new(),
             last_draw_cells: 0,
             last_draw_rows: 0,
             last_draw_full: false,
@@ -1139,8 +1164,8 @@ impl Renderer {
 
     /// 把图片按 pane 可用区域等比缩放后合成到 framebuffer 的当前行。
     /// 只处理与这一行相交的源像素；文本随后覆盖在图片之上。
-    fn draw_image_row(&mut self, frame: &Frame, row: usize) {
-        if frame.images.is_empty() {
+    fn draw_image_row(&mut self, row: usize, images: &[ImageLayerEntry]) {
+        if images.is_empty() {
             return;
         }
         let cell_w = self.cell_w.max(1) as f32;
@@ -1148,16 +1173,10 @@ impl Renderer {
         let row_top = row as f32 * cell_h;
         let row_bottom = row_top + cell_h;
         let pane_w = self.cols as f32 * cell_w;
-        let pane_h = self.rows as f32 * cell_h;
-        for img in &frame.images {
-            if img.width == 0 || img.height == 0 {
-                continue;
-            }
+        for img in images {
             let x = img.col as f32 * cell_w;
             let y = img.row as f32 * cell_h;
-            let avail_w = (pane_w - x).max(cell_w);
-            let avail_h = (pane_h - y.max(0.0)).max(cell_h);
-            let (dw, dh) = fit_inline_image_size(img.width, img.height, avail_w, avail_h);
+        let (dw, dh) = (img.display_w, img.display_h);
             let top = y;
             let bottom = y + dh;
             if bottom <= row_top || top >= row_bottom {
@@ -1193,8 +1212,13 @@ impl Renderer {
                     if px >= width {
                         break;
                     }
-                    let sx = (src_x0 as f32 + (px - x0) as f32 * scale_x)
-                        .min(img.width as f32 - 1.0) as usize;
+                    let sx = if img.width as usize == dw.round() as usize {
+                        src_x0 + (px - x0)
+                    } else {
+                        (src_x0 as f32 + (px - x0) as f32 * scale_x)
+                            .min(img.width as f32 - 1.0) as usize
+                    }
+                    .min(img.width as usize - 1);
                     let si = (sy * img.width as usize + sx) * 4;
                     if si + 3 >= img.data.len() {
                         continue;
@@ -1210,7 +1234,7 @@ impl Renderer {
         }
     }
 
-    fn draw_row(&mut self, frame: &Frame, row: usize) {
+    fn draw_row(&mut self, frame: &Frame, images: &[ImageLayerEntry], row: usize) {
         if row >= self.rows || row >= frame.rows {
             return;
         }
@@ -1242,7 +1266,7 @@ impl Renderer {
         }
 
         // 图层 3：图片，位于 cell 背景之上、文字/选区之下。
-        self.draw_image_row(frame, row);
+        self.draw_image_row(row, images);
 
         // 图层 4/5：选区/搜索覆盖 + 文字字形。背景已经画过，这里不再重复铺
         // 普通 cell 背景；只补选区/搜索这类必须位于图片之上的高亮。
@@ -1488,16 +1512,31 @@ impl Renderer {
             None
         };
 
-        // 图片新增/移除/滚动/缩放：framebuffer 里可能残留旧图像素，整屏重绘。
-        let image_sig: Vec<_> = frame
+        // 图片层每帧从 cell 背景重新合成。相交行即使没有文本 damage 也要
+        // 重绘，否则双缓冲轮换会把图片留在旧位置、把新位置盖回旧底图。
+        let images: Vec<_> = frame
             .images
             .iter()
-            .map(|img| (img.id, img.row, img.col, img.width, img.height))
+            .filter(|img| img.width > 0 && img.height > 0)
+            .map(|img| {
+                let x = img.col as f32 * self.cell_w.max(1) as f32;
+                let y = img.row as f32 * self.cell_h.max(1) as f32;
+                let avail_w = (self.width as f32 - x).max(self.cell_w.max(1) as f32);
+                let avail_h = (self.height as f32 - y.max(0.0))
+                    .max(self.cell_h.max(1) as f32);
+                let (display_w, display_h) =
+                    fit_inline_image_size(img.width, img.height, avail_w, avail_h);
+                ImageLayerEntry {
+                    row: img.row,
+                    col: img.col,
+                    width: img.width,
+                    height: img.height,
+                    data: img.data.clone(),
+                    display_w,
+                    display_h,
+                }
+            })
             .collect();
-        if image_sig != self.last_image_sig {
-            self.last_image_sig = image_sig;
-            self.force_full = true;
-        }
 
         // 大范围 damage（普通屏幕滚动会脏所有行）等同整屏：逐行重绘再把
         // 上一帧未重绘的行复制过来没有收益，直接整屏更省一次复制。
@@ -1511,7 +1550,7 @@ impl Renderer {
             // Image 共用同一块内存（写前 detach 会多一次整屏 CoW）。
             self.buffer.rotate();
             for row in 0..self.rows {
-                self.draw_row(frame, row);
+                self.draw_row(frame, &images, row);
             }
             self.last_draw_rows = self.rows as u32;
             self.prev_changed_rows.clear();
@@ -1520,6 +1559,19 @@ impl Renderer {
             // 行级脏标记：damage + 选区/搜索高亮新旧 span + 光标格。
             self.dirty_flags.clear();
             self.dirty_flags.resize(self.rows, false);
+            let mut image_rows = vec![false; self.rows];
+            let mark_image_rows = |entries: &[ImageLayerEntry], target: &mut Vec<bool>| {
+                for entry in entries {
+                    if let Some((first, end)) = entry.row_span(self.rows, self.cell_h) {
+                        target[first..end].fill(true);
+                    }
+                }
+            };
+            mark_image_rows(&self.prev_images, &mut image_rows);
+            mark_image_rows(&images, &mut image_rows);
+            for (dirty, below_image) in self.dirty_flags.iter_mut().zip(&image_rows) {
+                *dirty |= *below_image;
+            }
             for d in &frame.damage {
                 if (d.line as usize) < self.rows {
                     self.dirty_flags[d.line as usize] = true;
@@ -1567,7 +1619,7 @@ impl Renderer {
             );
             for i in 0..self.dirty_rows.len() {
                 let row = self.dirty_rows[i];
-                self.draw_row(frame, row);
+                self.draw_row(frame, &images, row);
             }
             self.last_draw_rows = self.dirty_rows.len() as u32;
             self.prev_changed_rows.clear();
@@ -1581,6 +1633,7 @@ impl Renderer {
         }
         self.last_selection = frame.selection;
         self.last_search = frame.search;
+        self.prev_images = images;
         self.last_draw_us = started.elapsed().as_secs_f64() * 1000.0;
         self.last_buffer_detached = self.buffer.detached;
     }
@@ -1843,6 +1896,7 @@ mod tests {
         }
         frame.images.push(tervo_core::InlineImage {
             id: 1,
+            source_id: 1,
             row: 0,
             col: 0,
             width: (cell_w * 2) as u32,
@@ -1851,6 +1905,7 @@ mod tests {
         });
         frame.cells[1].ch = 'X' as u32;
         frame.cells[1].fg = 0x00ff_ffff;
+        frame.cells[1].bg = Theme::default().bg();
         renderer.draw(&frame);
         let px = |x: usize| renderer.pixels()[x];
         assert_eq!(px(1), pack(0x00ff_0000), "空白 cell 应保留图片");
@@ -1881,6 +1936,7 @@ mod tests {
         }
         frame.images.push(tervo_core::InlineImage {
             id: 7,
+            source_id: 7,
             row: 0,
             col: 0,
             width: (cell_w * 2) as u32,
@@ -1888,6 +1944,8 @@ mod tests {
             data: std::sync::Arc::from(data.into_boxed_slice()),
         });
         frame.cells[0].bg = 0;
+        frame.cells[0].ch = ' ' as u32;
+        frame.cells[1].bg = Theme::default().bg();
         frame.cells[0].ch = ' ' as u32;
         frame.cells[1].ch = 'X' as u32;
         frame.cells[1].fg = 0x00ff_ffff;
@@ -1902,6 +1960,134 @@ mod tests {
             0x00ff_0000,
             "字形应画在图片之上"
         );
+    }
+
+    fn test_image(id: u64, source_id: u64, row: i32, col: u16, px: [u8; 4]) -> tervo_core::InlineImage {
+        let mut data = vec![0u8; 16 * 16 * 4];
+        for pixel in data.chunks_exact_mut(4) {
+            pixel.copy_from_slice(&px);
+        }
+        tervo_core::InlineImage {
+            id,
+            source_id,
+            row,
+            col,
+            width: 16,
+            height: 16,
+            data: std::sync::Arc::from(data.into_boxed_slice()),
+        }
+    }
+
+    #[test]
+    fn transparent_image_preserves_backing_cell() {
+        let Some(fonts) = FontSet::load(15.0) else { return };
+        let mut renderer = Renderer::new(
+            Rc::new(fonts),
+            4,
+            1,
+            Theme::default().bg(),
+            Theme::default().cursor(),
+            1.0,
+        );
+        let mut frame = blank_frame(4, 1);
+        frame.full = true;
+        frame.images.push(test_image(1, 1, 0, 0, [255, 255, 255, 0]));
+        renderer.draw_without_cursor(&frame);
+        assert_eq!(
+            renderer.pixels()[0],
+            pack(Theme::default().bg()),
+            "透明图片不能把行背景盖成黑/零值"
+        );
+    }
+
+    #[test]
+    fn same_image_geometry_recomposites_and_removal_clears_pixels() {
+        let Some(fonts) = FontSet::load(15.0) else { return };
+        let cell_w = fonts.cell_w;
+        let cell_h = fonts.cell_h;
+        let theme_bg = Theme::default().bg();
+        let pixels: Vec<u8> = (0..cell_w * cell_h)
+            .flat_map(|_| [0, 0, 255, 255])
+            .collect();
+        let data: std::sync::Arc<[u8]> = pixels.into();
+        let mut renderer = Renderer::new(
+            Rc::new(fonts),
+            4,
+            2,
+            theme_bg,
+            Theme::default().cursor(),
+            1.0,
+        );
+        let mut frame = blank_frame(4, 2);
+        frame.full = true;
+        frame.images.push(tervo_core::InlineImage {
+            id: 3,
+            source_id: 10,
+            row: 0,
+            col: 0,
+            width: cell_w as u32,
+            height: cell_h as u32,
+            data,
+        });
+        renderer.draw_without_cursor(&frame);
+        assert_eq!(renderer.pixels()[0], pack(0x000000_ff));
+
+        // 无文本 damage、几何完全相同，但源数据变化：仍须重合成。
+        frame.images[0].source_id = 11;
+        frame.images[0].data = std::sync::Arc::from(vec![0u8; 4].into_boxed_slice());
+        frame.images[0].width = 1;
+        frame.images[0].height = 1;
+        frame.full = false;
+        frame.damage.clear();
+        renderer.draw_without_cursor(&frame);
+        assert_eq!(renderer.pixels()[0], pack(theme_bg));
+
+        frame.images.clear();
+        renderer.draw_without_cursor(&frame);
+        assert_eq!(
+            renderer.pixels()[0],
+            pack(theme_bg),
+            "图片删除后即使没有文本 damage 也必须擦除旧像素"
+        );
+    }
+
+    #[test]
+    fn image_scroll_partial_does_not_leave_stale_bands() {
+        let Some(fonts) = FontSet::load(15.0) else { return };
+        let fonts = Rc::new(fonts);
+        let mut renderer = Renderer::new(
+            fonts.clone(),
+            4,
+            4,
+            Theme::default().bg(),
+            Theme::default().cursor(),
+            1.0,
+        );
+        let mut frame = blank_frame(4, 4);
+        frame.full = true;
+        let mut image = test_image(5, 5, 0, 0, [255, 0, 0, 255]);
+        image.width = 1;
+        image.height = renderer.cell_h as u32 * 3;
+        image.data = std::sync::Arc::from(vec![255; 4 * image.height as usize].into_boxed_slice());
+        frame.images.push(image);
+        renderer.draw_without_cursor(&frame);
+
+        frame.images[0].row = 1;
+        frame.full = false;
+        frame.damage.clear();
+        renderer.draw_without_cursor(&frame);
+        let mut fresh = Renderer::new(
+            fonts.clone(),
+            4,
+            4,
+            Theme::default().bg(),
+            Theme::default().cursor(),
+            1.0,
+        );
+        let mut reference = frame.clone();
+        reference.full = true;
+        fresh.draw_without_cursor(&reference);
+        assert_eq!(renderer.pixels(), fresh.pixels(), "图片局部滚动必须与整屏参考一致");
     }
 
     #[test]

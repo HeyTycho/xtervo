@@ -446,8 +446,8 @@ enum Ctrl {
     SetIip(bool),
     /// 字号变化后更新 cell 像素尺寸（IIP cell 尺寸换算 + 图片可见性判断）。
     SetCellSize { width: u16, height: u16 },
-    /// 按 id 取回原始 RGBA（灯箱在 UI 缓存淘汰后兜底）。
-    ImageRgba { id: u64, reply: Sender<Option<(u32, u32, Vec<u8>)>> },
+    /// 按源 ID 取回不可变 RGBA（灯箱与点击命中不依赖可见缓存）。
+    ImageRgba { source_id: u64, reply: Sender<Option<(u32, u32, Arc<[u8]>)>> },
     SelectionStart { line: u16, col: u16 },
     SelectionExtend { line: u16, col: u16 },
     SelectionClear,
@@ -801,11 +801,11 @@ impl PaneHandle {
         }
     }
 
-    /// 按图片 id 取原始 RGBA。UI 的可见图片缓存可能已淘汰，灯箱用它兜底；
+    /// 按源 ID 取不可变 RGBA。UI 的可见纹理缓存淘汰不影响点击/灯箱；
     /// actor 忙/超时返回 None，不阻塞 UI。
-    pub fn image_rgba(&self, id: u64) -> Option<(u32, u32, Vec<u8>)> {
+    pub fn image_rgba(&self, source_id: u64) -> Option<(u32, u32, Arc<[u8]>)> {
         let (tx, rx) = bounded(1);
-        if !self.send_ctrl(Ctrl::ImageRgba { id, reply: tx }) {
+        if !self.send_ctrl(Ctrl::ImageRgba { source_id, reply: tx }) {
             return None;
         }
         match rx.recv_timeout(CTRL_REPLY_TIMEOUT) {
@@ -1450,10 +1450,9 @@ pub const CELL_BYTES: usize = std::mem::size_of::<alacritty_terminal::term::cell
 const MAX_STORED_IMAGES: usize = 64;
 const MAX_STORED_IMAGE_BYTES: usize = 64 * 1024 * 1024;
 
-/// 检测 CSI ... X（ECH，擦除字符）。dsh-tui 的 Sixel 管理器用 ECH 擦旧图：
-/// 图片是独立 overlay，alacritty 的空白单元格 damage 可能为空，必须在
-/// 输入流层面识别，否则旧图会留在原地，新图在别处重画，看起来“到处飘”。
-fn contains_ech(bytes: &[u8]) -> bool {
+/// 检测 `CSI Ps X`（ECH，擦除字符）并返回参数。dsh-tui 用 ECH 释放旧图；
+/// 图片像素不在 cell 中，必须显式擦除对应矩形。
+fn erase_char_params(bytes: &[u8], out: &mut Vec<Option<u16>>) -> bool {
     let mut i = 0;
     while i + 2 < bytes.len() {
         if bytes[i] == 0x1b && bytes[i + 1] == b'[' {
@@ -1462,18 +1461,24 @@ fn contains_ech(bytes: &[u8]) -> bool {
                 j += 1;
             }
             if j < bytes.len() && bytes[j] == b'X' {
-                return true;
+                let params = std::str::from_utf8(&bytes[i + 2..j]).unwrap_or("");
+                // ECH 可以有多个参数，按每个参数各擦一次当前光标位置。
+                for value in params.split(';').map(str::trim).filter(|v| !v.is_empty()) {
+                    out.push(value.parse::<u16>().ok());
+                }
+                if params.is_empty() {
+                    out.push(None);
+                }
             }
         }
         i += 1;
     }
-    false
+    !out.is_empty()
 }
 
 /// 会清空整屏/切换备用屏、因而必须清除内联图片的转义序列。
 ///
-/// 粗粒度清屏（Escape 2J/3J、进入/离开备用屏、RIS）+ ECH 都会清图片；
-/// 局部 ECH 的精确 cell 擦除由 `ImageStore::erase_overlapping_damage` 补足。
+/// 粗粒度清屏（Escape 2J/3J、进入/离开备用屏、RIS）会清全部图片。
 const IMAGE_CLEAR_SEQUENCES: [&[u8]; 8] = [
     b"\x1b[2J",
     b"\x1b[3J",
@@ -1489,8 +1494,8 @@ const IMAGE_CLEAR_SEQUENCES: [&[u8]; 8] = [
 #[derive(Default)]
 struct ImageClearScanner {
     tail: Vec<u8>,
-    /// 本 chunk/尾部拼接里出现过 ECH；由 actor 在 vte 处理后按光标行清图。
-    ech: bool,
+    /// 本 chunk/尾部拼接里的 ECH 宽度；由 actor 取 vte 处理后光标左侧的矩形。
+    ech: Vec<Option<u16>>,
 }
 
 impl ImageClearScanner {
@@ -1503,7 +1508,8 @@ impl ImageClearScanner {
         let hit = IMAGE_CLEAR_SEQUENCES
             .iter()
             .any(|pattern| buf.windows(pattern.len()).any(|w| w == *pattern));
-        self.ech = contains_ech(&buf);
+        self.ech.clear();
+        erase_char_params(&buf, &mut self.ech);
         // 保留末尾 32 字节：ECH 参数/跨 chunk 边界都足够。
         let keep = 32.min(buf.len());
         self.tail.clear();
@@ -1523,7 +1529,10 @@ enum ImageKind {
 
 /// actor 内保存的一张已解码内联图片（Sixel 或 IIP）。
 struct StoredImage {
+    /// 与 terminal placement 同生命周期；仅用于可访问/擦除判断。
     id: u64,
+    /// 源像素生命周期标识。UI 以它缓存纹理和灯箱 source。
+    source_id: u64,
     kind: ImageKind,
     /// 绝对行号 = grid 行 + 当时的累计滚动行数 `scroll_total`。`scroll_total`
     /// 只增不减，因此 scrollback 满员、最旧行被淘汰后锚点仍然正确（旧实现用
@@ -1543,6 +1552,7 @@ struct ImageStore {
     images: VecDeque<StoredImage>,
     bytes: usize,
     next_id: u64,
+    next_source_id: u64,
 }
 
 impl ImageStore {
@@ -1631,9 +1641,11 @@ impl ImageStore {
             Some(cursor.line.0.saturating_add(display_offset as i32))
         };
         self.next_id = self.next_id.wrapping_add(1);
+        self.next_source_id = self.next_source_id.wrapping_add(1);
         self.bytes += bytes;
         self.images.push_back(StoredImage {
             id: self.next_id,
+            source_id: self.next_source_id,
             kind,
             abs_line,
             fixed_row,
@@ -1699,13 +1711,17 @@ impl ImageStore {
         self.bytes = self.bytes.saturating_sub(removed);
     }
 
-    /// ECH 只清与当前光标行相交的图片，避免“任何 ECH 清全部图”导致正常
-    /// 图片在滚动/TUI 重绘时无故消失。图片跨多行时整张 drop，等 TUI 重画。
-    fn clear_at_viewport_row(
+    /// 擦除与视口 cell 矩形相交的图片。图片跨多行时整张 drop，等 TUI 重画；
+    /// 同行的另一张图片不受影响。
+    #[allow(clippy::too_many_arguments)]
+    fn erase_viewport_rectangle(
         &mut self,
         row: i64,
-        scroll_total: u64,
+        left: usize,
+        right: usize,
         display_offset: usize,
+        scroll_total: u64,
+        cols: usize,
         rows: usize,
         cell_width: u16,
         cell_height: u16,
@@ -1713,10 +1729,15 @@ impl ImageStore {
         if self.images.is_empty() || rows == 0 {
             return;
         }
-        let total = scroll_total as i64;
         let off = display_offset as i64;
+        let total = scroll_total as i64;
         let cell_w = cell_width.max(1) as i64;
         let cell_h = cell_height.max(1) as i64;
+        let left = left.min(cols) as i64;
+        let right = right.min(cols) as i64;
+        if left >= right {
+            return;
+        }
         let mut removed = 0usize;
         self.images.retain(|image| {
             let top = match image.fixed_row {
@@ -1725,8 +1746,13 @@ impl ImageStore {
             };
             let cell_rows = (image.height as i64 + cell_h - 1) / cell_h;
             let cell_cols = (image.width as i64 + cell_w - 1) / cell_w;
-            let _ = cell_cols;
-            if row >= top && row < top + cell_rows.max(1) {
+            let image_left = image.col as i64;
+            let image_right = image_left + cell_cols.max(1);
+            let intersects = row >= top
+                && row < top + cell_rows.max(1)
+                && left < image_right
+                && right > image_left;
+            if intersects {
                 removed += image.bytes;
                 false
             } else {
@@ -1736,79 +1762,7 @@ impl ImageStore {
         self.bytes = self.bytes.saturating_sub(removed);
     }
 
-    /// dsh-tui 等 TUI 用“空格/背景色重绘”来擦除 Sixel；图片是独立 overlay，
-    /// 文本 damage 不会自动清图。若本帧 damage 与图片覆盖的 cell 矩形相交，
-    /// 删除旧图，让 TUI 重画的新图只有一个锚点，避免旧图留在原地“到处飘”。
-    fn erase_overlapping_damage(
-        &mut self,
-        frame: &Frame,
-        scroll_total: u64,
-        display_offset: usize,
-        cell_width: u16,
-        cell_height: u16,
-    ) {
-        if self.images.is_empty() || frame.damage.is_empty() || frame.rows == 0 {
-            return;
-        }
-        let total = scroll_total as i64;
-        let off = display_offset as i64;
-        let screen_rows = frame.rows as i64;
-        let cell_w = cell_width.max(1) as i64;
-        let cell_h = cell_height.max(1) as i64;
-        let mut removed = 0usize;
-        self.images.retain(|image| {
-            let row = match image.fixed_row {
-                Some(row) => row as i64,
-                None => image.abs_line - total + off,
-            };
-            let cell_rows = (image.height as i64 + cell_h - 1) / cell_h;
-            let cell_cols = (image.width as i64 + cell_w - 1) / cell_w;
-            let top = row.max(0);
-            let bottom = (row + cell_rows.max(1)).min(screen_rows);
-            if top >= bottom {
-                return true;
-            }
-            let left = image.col as i64;
-            let right = left + cell_cols.max(1);
-            let mut hit = false;
-            for d in &frame.damage {
-                let line = d.line as i64;
-                if line < top || line >= bottom {
-                    continue;
-                }
-                let start = (d.left as i64).max(left);
-                let end = ((d.right as i64) + 1).min(right);
-                if start >= end {
-                    continue;
-                }
-                // 光标移动/单个空格产生的 1-cell damage 很常见，不能据此删整图；
-                // dsh ECH 会覆盖图片的整段列（至少 2 格）。
-                if end - start < 2 {
-                    continue;
-                }
-                // dsh-tui 的擦图是 ECH/空格（整段都是空白）；普通文本覆盖图片
-                // 不应误删整张图，所以只有 damage 区域全空白才认为是清图。
-                let all_blank = (start..end).all(|col| {
-                    if col < 0 || col >= frame.cols as i64 {
-                        return true;
-                    }
-                    frame.cell(line as usize, col as usize).char() == ' '
-                });
-                if all_blank {
-                    hit = true;
-                    break;
-                }
-            }
-            if hit {
-                removed += image.bytes;
-                false
-            } else {
-                true
-            }
-        });
-        self.bytes = self.bytes.saturating_sub(removed);
-    }
-
+    /// 将图片锚点展开为当前视口内的 layer placement。
     fn place(
         &self,
         scroll_total: u64,
@@ -1842,6 +1796,7 @@ impl ImageStore {
             }
             out.push(InlineImage {
                 id: image.id,
+                source_id: image.source_id,
                 row: row.clamp(i32::MIN as i64, i32::MAX as i64) as i32,
                 col: image.col,
                 width: image.width,
@@ -2122,7 +2077,7 @@ impl Actor {
         }
         self.scan_pixel_size_queries(chunk);
         let full_clear = self.image_clear.feed(chunk);
-        let had_ech = self.image_clear.ech;
+        let had_ech = !self.image_clear.ech.is_empty();
         if full_clear {
             // 2J/3J、备用屏切换、RIS 会清空整屏：两种协议的内联图片都要清。
             self.images.clear();
@@ -2134,18 +2089,29 @@ impl Actor {
         }
         let keyboard_actions = self.scan_keyboard_modes(chunk);
         self.advance_tracking_scroll(chunk);
-        // ECH 已经过 vte：用当前光标行只清与之相交的图；全屏清屏已在上面处理。
+        let cursor = self.term.grid().cursor.point;
+        // ECH 已经过 vte。常见场景一次性发出：`CUP -> ECH`，此时光标仍在
+        // 被擦矩形的右端；按 ECH 宽度取光标左侧区域，不删除同行其他图片。
+        let samples = self.image_clear.ech.clone();
         if had_ech && !full_clear {
             let off = self.term.grid().display_offset() as i64;
-            let cursor_row = self.term.grid().cursor.point.line.0 as i64 + off;
-            self.images.clear_at_viewport_row(
-                cursor_row,
-                self.scroll_total,
-                self.term.grid().display_offset(),
-                self.term.screen_lines(),
-                self.cell_width,
-                self.cell_height,
-            );
+            for erase in samples.into_iter().rev() {
+                let cells = (erase.unwrap_or(1).max(1) as usize).min(self.term.columns());
+                let end = cursor.column.0.saturating_add(1);
+                let start = end.saturating_sub(cells);
+                self.images.erase_viewport_rectangle(
+                    cursor.line.0 as i64 + off,
+                    start,
+                    end,
+                    off as usize,
+                    self.scroll_total,
+                    self.term.columns(),
+                    self.term.screen_lines(),
+                    self.cell_width,
+                    self.cell_height,
+                );
+                // 同一 chunk 中连续的 ECH 都作用于同一光标位置。
+            }
         }
         self.apply_keyboard_actions(keyboard_actions);
     }
@@ -2561,13 +2527,13 @@ impl Actor {
                 self.reset(true);
                 true
             },
-            Ctrl::ImageRgba { id, reply } => {
+            Ctrl::ImageRgba { source_id, reply } => {
                 let value = self
                     .images
                     .images
                     .iter()
-                    .find(|image| image.id == id)
-                    .map(|image| (image.width, image.height, image.data.to_vec()));
+                    .find(|image| image.source_id == source_id)
+                    .map(|image| (image.width, image.height, image.data.clone()));
                 let _ = reply.send(value);
                 true
             },
@@ -2658,17 +2624,6 @@ impl Actor {
         let display_offset = self.term.grid().display_offset();
         let rows = self.term.screen_lines();
         let cols = self.term.columns();
-        // TUI 用文本/空格重绘擦图时，先淘汰被 damage 覆盖的旧图；否则旧图
-        // 会留在 overlay 上，新图再出现在新锚点，表现为图片“到处飘”。
-        if !frame.full {
-            self.images.erase_overlapping_damage(
-                frame,
-                self.scroll_total,
-                display_offset,
-                self.cell_width,
-                self.cell_height,
-            );
-        }
         // 先把已经滚出可达 scrollback 的图片 drop，再生成当前视口 overlay。
         self.images
             .retain_reachable(history, self.scroll_total, rows, self.cell_height);
@@ -3068,6 +3023,60 @@ mod tests {
         store.clear();
         assert!(store.images.is_empty());
         assert_eq!(store.bytes, 0);
+    }
+
+    #[test]
+    fn image_ids_are_generation_safe_after_clear() {
+        let mut store = ImageStore::default();
+        store.push(
+            ImageKind::Sixel,
+            test_image(16, 16),
+            Point::new(Line(0), Column(0)),
+            0,
+            0,
+            true,
+            80,
+        );
+        let old = (store.images[0].id, store.images[0].source_id);
+        store.clear();
+        store.push(
+            ImageKind::Sixel,
+            test_image(16, 16),
+            Point::new(Line(0), Column(0)),
+            0,
+            0,
+            true,
+            80,
+        );
+        let new = (store.images[0].id, store.images[0].source_id);
+        assert!(new.0 > old.0, "placement ID 在 clear 后仍必须单调");
+        assert!(new.1 > old.1, "source ID 在 clear 后仍必须单调");
+    }
+
+    #[test]
+    fn ech_rectangle_removes_only_intersecting_image() {
+        let mut store = ImageStore::default();
+        store.push(
+            ImageKind::Sixel,
+            test_image(16, 16),
+            Point::new(Line(2), Column(0)),
+            0,
+            0,
+            true,
+            80,
+        );
+        store.push(
+            ImageKind::Sixel,
+            test_image(16, 16),
+            Point::new(Line(2), Column(8)),
+            0,
+            0,
+            true,
+            80,
+        );
+        store.erase_viewport_rectangle(2, 1, 3, 0, 0, 80, 24, 8, 16);
+        assert_eq!(store.images.len(), 1);
+        assert_eq!(store.images[0].col, 8);
     }
 
     #[test]
