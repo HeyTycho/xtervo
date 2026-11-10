@@ -480,6 +480,34 @@ fn spawn_app_wake_bridge(rx: crossbeam_channel::Receiver<()>) {
     }
 }
 
+/// live control socket 的 snapshot：只在 UI 线程调用。
+fn live_diag_snapshot() -> serde_json::Value {
+    with_app(|st| {
+        let active = st.ws.active_tab().map(|t| t.focused);
+        let mut panes = Vec::new();
+        for (id, rt) in &st.panes {
+            let mut f = diag::frame_json(&rt.frame, "live");
+            f["pane_id"] = serde_json::json!(id);
+            f["title"] = serde_json::json!(rt.title);
+            f["active"] = serde_json::json!(Some(*id) == active);
+            f["grid"] = serde_json::json!([rt.grid.0, rt.grid.1]);
+            panes.push(f);
+        }
+        serde_json::json!({
+            "schema": "tervo.diag.v1",
+            "kind": "live",
+            "version": BUILD_VERSION,
+            "commit": BUILD_COMMIT,
+            "target": BUILD_TARGET,
+            "active_pane": active,
+            "panes": panes,
+        })
+    })
+    .unwrap_or_else(|| serde_json::json!({
+        "schema":"tervo.diag.v1","kind":"live","error":"app unavailable"
+    }))
+}
+
 fn with_app<R>(f: impl FnOnce(&mut AppState) -> R) -> Option<R> {
     let app = APP.with(|c| c.borrow().clone())?;
     // 防御性：正常路径不应重入；万一将来某个回调在借用期内又调 with_app，
@@ -12114,6 +12142,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     redraw_all();
+    diag::start_control_socket(live_diag_snapshot);
     let t_show = t_start.elapsed();
 
     if opts.exit_after_first {

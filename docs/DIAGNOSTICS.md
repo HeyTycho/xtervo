@@ -92,6 +92,36 @@ tervo diag trace --input bytes.bin --out trace.jsonl --duration-ms 1000
 当前 trace 是 **frame 变化流**，不是完整 PTY 事件流；输入文件本身可保留原始
 字节，后续再增加 pty/damage 事件。
 
+## live control socket（已实现，显式 opt-in）
+
+启动 Tervo 时：
+
+```bash
+TERVO_DIAG_SOCKET=/run/user/$(id -u)/tervo-diag.sock TERVO_DIAG_TOKEN=$(head -c 24 /dev/urandom | base64) tervo
+```
+
+- Unix stream，权限 0600
+- 默认不启动；未设置 env 就没有监听
+- JSON Lines 请求：`{"id":1,"cmd":"capabilities","token":"..."}` / `{"cmd":"snapshot"}`
+- 只读命令：`capabilities`、`snapshot`
+- `snapshot` 经 `invoke_from_event_loop` 回 UI 线程取当前所有 pane 的 frame/cursor/images
+- 2s 超时；不阻塞渲染/输入
+
+MCP 读取 live：
+
+```bash
+tervo diag serve --socket /run/user/$(id -u)/tervo-diag.sock --token "$TERVO_DIAG_TOKEN"
+```
+
+额外工具：
+
+```text
+tervo.live_capabilities
+tervo.live_snapshot
+```
+
+没有 socket 时 MCP 仍提供静态 env/snapshot/replay。
+
 ## schema v1
 
 所有输出：
