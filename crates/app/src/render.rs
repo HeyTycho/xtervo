@@ -1903,6 +1903,8 @@ mod tests {
             width: (cell_w * 2) as u32,
             height: cell_h as u32,
             data: std::sync::Arc::from(data.into_boxed_slice()),
+            z_index: -1,
+            above_text: false,
         });
         frame.cells[1].ch = 'X' as u32;
         frame.cells[1].fg = 0x00ff_ffff;
@@ -1944,6 +1946,8 @@ mod tests {
             width: (cell_w * 2) as u32,
             height: cell_h as u32,
             data: std::sync::Arc::from(data.into_boxed_slice()),
+            z_index: -1,
+            above_text: false,
         });
         frame.cells[0].bg = 0;
         frame.cells[0].ch = ' ' as u32;
@@ -1978,6 +1982,8 @@ mod tests {
             width: 16,
             height: 16,
             data: std::sync::Arc::from(data.into_boxed_slice()),
+            z_index: -1,
+            above_text: false,
         }
     }
 
@@ -2032,6 +2038,8 @@ mod tests {
             width: cell_w as u32,
             height: cell_h as u32,
             data,
+            z_index: -1,
+            above_text: false,
         });
         renderer.draw_without_cursor(&frame);
         assert_eq!(renderer.pixels()[0], pack(0x000000_ff));

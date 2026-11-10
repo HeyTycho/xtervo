@@ -439,6 +439,12 @@ impl KittyParser {
         self.pending.is_some()
     }
 
+    /// True while the scanner holds a partial `ESC`/APC prefix across feeds.
+    /// Lets the PTY hot path bypass the parser when no ESC is present.
+    pub fn has_partial_sequence(&self) -> bool {
+        self.scan != ScanState::Ground
+    }
+
     /// Dimensions of a tracked image id.
     pub fn image_dimensions(&self, id: u32) -> Option<(u32, u32)> {
         self.images.get(&id).map(|meta| (meta.width, meta.height))
@@ -1437,6 +1443,9 @@ fn parse_control(bytes: &[u8]) -> Result<Control, KittyErrorCode> {
             _ => {}
         }
     }
+    if control.image_id.is_some() && control.image_number.is_some() {
+        return Err(KittyErrorCode::Invalid);
+    }
     Ok(control)
 }
 
@@ -1700,9 +1709,10 @@ fn build_placement(
 
 fn should_reply(quiet: u8, ok: bool) -> bool {
     match quiet {
-        // q=1 suppresses OK, q=2 suppresses errors.
+        // Kitty's actual policy (and what dsh relies on): q=1 suppresses OK
+        // replies but still reports failures; q=2 suppresses every reply.
         1 => !ok,
-        2 => ok,
+        2 => false,
         _ => true,
     }
 }

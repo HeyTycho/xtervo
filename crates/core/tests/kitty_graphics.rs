@@ -174,10 +174,11 @@ fn compressed_rgba_chunks_inherit_control_and_emit_one_transmit() {
     assert_eq!(transmit.image.rgba, rgba);
     assert!(!transmit.replaces_existing);
     assert_eq!(transmit.quiet, 2);
-    // q=2 suppresses failure responses, not OK responses; the OK reply is
-    // harmless to clients that only inspect ENOENT but the test focuses on
-    // the transmit payload.
+    // q=2 suppresses every reply, so the chunked transmit is silent.
     assert_eq!(parse_errors(&accumulated).len(), 0);
+    assert!(!accumulated
+        .iter()
+        .any(|event| matches!(event, KittyEvent::Command(KittyCommand::Response(_)))));
 
     let place = apc(
         "a=p,i=7,p=3,c=8,r=4,x=4,y=8,w=16,h=16,z=-2147483648,C=1,q=1",
