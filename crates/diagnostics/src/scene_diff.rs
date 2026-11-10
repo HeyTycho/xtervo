@@ -56,10 +56,10 @@ impl DamageSummary {
     /// Union area of the damage rects in cells. `full` covers the viewport.
     pub fn area(&self, viewport_cells: u64) -> u64 {
         if self.full {
-            return viewport_cells;
+            viewport_cells
+        } else {
+            union_area(&self.rects)
         }
-        let _ = viewport_cells;
-        union_area(&self.rects)
     }
 
     /// Coverage in parts per million, clamped to 100%.

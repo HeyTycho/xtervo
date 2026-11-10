@@ -35,5 +35,5 @@ pub use resources::{
 pub use scene_diff::{DamageRect, DamageSummary, ImageSummary, SceneDiff, SceneSummary};
 pub use trace::{
     TraceBuffer, TraceContext, TraceEvent, TraceKind, TraceSnapshot, DEFAULT_TRACE_CAPACITY,
-    MAX_TRACE_CAPACITY,
+    MAX_TRACE_CAPACITY, MAX_TRACE_MESSAGE_CHARS,
 };

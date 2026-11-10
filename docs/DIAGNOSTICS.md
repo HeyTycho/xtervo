@@ -7,6 +7,9 @@ tervo diag env --json
 tervo diag snapshot --json
 tervo diag replay --input trace-raw.bin --json
 tervo diag trace --input trace-raw.bin --out trace.jsonl
+tervo diag metrics
+tervo diag observability
+tervo diag scene-diff --left before.json --right after.json --json
 tervo diag serve            # MCP stdio server
 ```
 
@@ -91,6 +94,40 @@ tervo diag trace --input bytes.bin --out trace.jsonl --duration-ms 1000
 
 当前 trace 是 **frame 变化流**，不是完整 PTY 事件流；输入文件本身可保留原始
 字节，后续再增加 pty/damage 事件。
+
+### metrics / observability（P0 additive）
+
+```bash
+tervo diag metrics
+tervo diag observability
+```
+
+输出 `tervo.diag.v1` 的 additive 字段：
+
+```text
+metrics       atomic frame/damage/image/texture/presenter/stale 计数器
+resources     image resources/placements、glyph atlas、GPU textures 的 count+bytes
+trace         有界 TraceBuffer（capacity/dropped/events）
+integration   仅 observability：下一步接线点（machine-readable）
+```
+
+CLI 进程没有 app 渲染循环，所以当前计数是**真实的空 registry 默认值**：
+`initialized=false`、`source=cli`，不伪造 live app 指标。schema/字段说明见
+[`OBSERVABILITY.md`](OBSERVABILITY.md)。app 接入后仍走同一 shape，kind 可保持
+`metrics`/`observability` 并由 live snapshot 合并。
+
+### scene-diff
+
+```bash
+tervo diag scene-diff --left before.json --right after.json
+tervo diag scene-diff --left before.json --right after.json --json
+```
+
+比较两个 frame JSON（`tervo.diag.v1` snapshot/trace）或轻量 SceneSummary：
+文本 changed rows/cells、图片 added/removed/moved/resized/source_changed、
+damage region 增删和 coverage ppm。默认输出有界文本；`--json` 输出
+`kind=scene_diff`。frame JSON 新增 additive 的
+`damage.full/region_count/rects` 字段。
 
 ## live control socket（已实现，显式 opt-in）
 
@@ -208,11 +245,14 @@ DSH / 其他 MCP harness：同样 spawn `tervo diag serve`，按标准
 
 ```text
 - 当前只能抓一次性 pane，不能读正在运行的 Tervo 实例
+- metrics/observability CLI 是未接线的 schema；app render loop 尚未喂 registry
 - 没有 trace（PTY/frame/image 事件流），replay 输入是原始字节文件
 - 没有 screenshot/PNG
 - 没有 MCP / Unix socket / token
 - raw bytes 可能含终端内容，录制/分享前自行脱敏
 ```
+
+observability 设计/集成点见 [`OBSERVABILITY.md`](OBSERVABILITY.md)。
 
 ## 验证
 

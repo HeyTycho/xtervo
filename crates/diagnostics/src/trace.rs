@@ -23,6 +23,10 @@ pub const DEFAULT_TRACE_CAPACITY: usize = 256;
 /// clamped into `1..=MAX_TRACE_CAPACITY`.
 pub const MAX_TRACE_CAPACITY: usize = 4_096;
 
+/// Maximum chars retained for one optional trace message. Longer messages are
+/// truncated with an ellipsis so a single event cannot defeat the ring bound.
+pub const MAX_TRACE_MESSAGE_CHARS: usize = 512;
+
 /// Correlation ids for one observable update.
 ///
 /// `placement_id` is the numeric `PlacementId` from `tervo-graphics`; the
@@ -179,7 +183,7 @@ impl TraceBuffer {
         value: u64,
         message: impl Into<String>,
     ) -> u64 {
-        self.push(kind, context, code, value, Some(message.into()))
+        self.push(kind, context, code, value, Some(bounded_message(message.into())))
     }
 
     fn push(
@@ -237,6 +241,18 @@ impl TraceBuffer {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
+}
+
+fn bounded_message(message: String) -> String {
+    if message.chars().count() <= MAX_TRACE_MESSAGE_CHARS {
+        return message;
+    }
+    let mut truncated: String = message
+        .chars()
+        .take(MAX_TRACE_MESSAGE_CHARS.saturating_sub(1))
+        .collect();
+    truncated.push('…');
+    truncated
 }
 
 #[cfg(test)]
@@ -309,6 +325,15 @@ mod tests {
             seqs.windows(2).all(|pair| pair[0] < pair[1]),
             "seqs: {seqs:?}"
         );
+    }
+
+    #[test]
+    fn long_messages_are_truncated() {
+        let trace = TraceBuffer::new(1);
+        trace.record_message(TraceKind::Error, ctx(1), 0, 0, "x".repeat(2_000));
+        let message = trace.snapshot().events[0].message.clone().unwrap();
+        assert_eq!(message.chars().count(), MAX_TRACE_MESSAGE_CHARS);
+        assert!(message.ends_with('…'));
     }
 
     #[test]

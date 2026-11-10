@@ -4662,6 +4662,7 @@ dependencies = [
  "slint",
  "slint-build",
  "tervo-core",
+ "tervo-diagnostics",
  "toml",
  "x11rb 0.14.0",
 ]

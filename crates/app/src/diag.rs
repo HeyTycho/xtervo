@@ -13,6 +13,10 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 use tervo_core::{spawn, Frame, PaneConfig};
+use tervo_diagnostics::{
+    AtomicResourceTracker, DamageRect, DamageSummary, ImageSummary, MetricsRegistry,
+    ResourceTracker, SceneDiff, SceneSummary, TraceBuffer, DEFAULT_TRACE_CAPACITY,
+};
 
 use crate::config::Config;
 use crate::logging;
@@ -34,6 +38,15 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         "snapshot" => snapshot(&args[1..]),
         "replay" => replay(&args[1..]),
         "trace" => trace(&args[1..]),
+        "metrics" => {
+            print_json(&observability_value("metrics"))?;
+            Ok(())
+        },
+        "observability" | "obs" => {
+            print_json(&observability_value("observability"))?;
+            Ok(())
+        },
+        "scene-diff" | "scene_diff" => scene_diff_cli(&args[1..]),
         "serve" => serve(&args[1..]),
         "help" | "-h" | "--help" => {
             println!("{}", help_text());
@@ -56,6 +69,10 @@ fn help_text() -> &'static str {
      replay --input FILE         把录制字节通过 PTY 回放并抓 frame\n\
      trace --input FILE --out F  回放并按 frame 变化写 JSONL trace\n\
        --duration-ms N           默认 1000\n\
+     metrics                     输出 additive metrics/resources/trace schema（CLI 未接线时为零）\n\
+     observability               同上 + 集成点/能力声明（kind=observability）\n\
+     scene-diff --left FILE --right FILE [--json]\n\
+                                  比较两个 frame/scene summary JSON（默认文本）\n\
      serve [--socket PATH --token T]  MCP/JSON-RPC stdio server；--socket 时增加 live 工具\n\
        --cols/--rows/--wait-ms\n\
      \n\
@@ -219,6 +236,203 @@ fn trace(args: &[String]) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// `tervo diag metrics|observability`: schema probe for the additive
+/// observability fields.
+///
+/// The CLI process has no app frame loop, so the registry here is genuinely
+/// empty. `initialized=false` / `source=cli` make that explicit instead of
+/// pretending these are live app counters. A future live feed can reuse the
+/// same document shape under `kind=live`.
+fn observability_value(kind: &str) -> Value {
+    let metrics = MetricsRegistry::new();
+    let resources = AtomicResourceTracker::new();
+    let trace = TraceBuffer::new(DEFAULT_TRACE_CAPACITY);
+    let mut value = json!({
+        "schema": "tervo.diag.v1",
+        "kind": kind,
+        "version": VERSION,
+        "commit": COMMIT,
+        "target": TARGET,
+        "initialized": false,
+        "source": "cli",
+        "note": "no app frame loop in this process; counters are empty registry defaults until Renderer/Presenter feeds a shared registry",
+        "metrics": metrics.snapshot(),
+        "resources": resources.snapshot_json(),
+        "trace": trace.snapshot_json(),
+        "capabilities": {
+            "atomic_metrics": true,
+            "bounded_trace_ring": true,
+            "scene_diff": true,
+            "live_app_feed": false,
+        },
+    });
+    if kind == "observability" {
+        value["integration"] = integration_points();
+    }
+    value
+}
+
+/// Machine-readable integration seam for the next slice. Keeping this next to
+/// the CLI output makes it obvious what is wired and what is still zero.
+fn integration_points() -> Value {
+    json!({
+        "status": "not_wired",
+        "reason": "observability P0 adds the standalone crate + CLI; the app render loop is intentionally untouched",
+        "points": [
+            {
+                "path": "crates/app/src/render.rs",
+                "symbol": "Renderer::draw_without_cursor",
+                "feed": "MetricsRegistry::record_frame(FrameSample { cpu_time_us, damage_regions, damage_area, viewport_area, scene_revision })"
+            },
+            {
+                "path": "crates/app/src/main.rs",
+                "symbol": "redraw_pane_inner",
+                "feed": "set_image_counts(frame.images.len(), placement_count); record_stale_frame() when frame.skipped"
+            },
+            {
+                "path": "crates/app/src/main.rs",
+                "symbol": "live_diag_snapshot",
+                "feed": "merge registry.snapshot()/trace.snapshot_json()/resource snapshot into kind=live (additive fields only)"
+            },
+            {
+                "path": "crates/app/src/render.rs",
+                "symbol": "Renderer::image",
+                "feed": "set_presenter_revision once the presenter has a monotonic revision"
+            },
+            {
+                "path": "crates/graphics/src/lib.rs",
+                "symbol": "GraphicsManager",
+                "feed": "ResourceTracker: image resource count + width*height*4 bytes, placement count"
+            },
+            {
+                "path": "GPU backend (future)",
+                "symbol": "texture create/destroy",
+                "feed": "record_texture_created/destroyed; set_gpu_textures(count, bytes) without per-frame GPU sync"
+            }
+        ]
+    })
+}
+
+fn scene_diff_cli(args: &[String]) -> Result<(), Box<dyn Error>> {
+    let left_path = opt(args, "--left").ok_or("scene-diff 需要 --left FILE")?;
+    let right_path = opt(args, "--right").ok_or("scene-diff 需要 --right FILE")?;
+    let left = read_scene_summary(&left_path)?;
+    let right = read_scene_summary(&right_path)?;
+    let diff = SceneDiff::between(&left, &right);
+    if args.iter().any(|arg| arg == "--json") {
+        print_json(&diff.to_json())?;
+    } else {
+        print!("{}", diff.to_text());
+    }
+    Ok(())
+}
+
+fn read_scene_summary(path: &str) -> Result<SceneSummary, Box<dyn Error>> {
+    let body =
+        std::fs::read_to_string(path).map_err(|e| format!("读取 scene 文件失败 {path}: {e}"))?;
+    let value: Value =
+        serde_json::from_str(&body).map_err(|e| format!("scene 文件不是 JSON {path}: {e}"))?;
+    scene_summary_from_value(&value)
+}
+
+/// Accept both `tervo.diag.v1` frame JSON (`generation`, image `id`) and a
+/// plain `SceneSummary` (`revision`, image `placement_id`). Unknown fields are
+/// ignored so the schema stays additive.
+fn scene_summary_from_value(value: &Value) -> Result<SceneSummary, Box<dyn Error>> {
+    let cols = value.get("cols").and_then(Value::as_u64).unwrap_or(0) as usize;
+    let rows = value.get("rows").and_then(Value::as_u64).unwrap_or(0) as usize;
+    let revision = value
+        .get("revision")
+        .or_else(|| value.get("generation"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let text = value
+        .get("text")
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .map(|row| row.as_str().unwrap_or_default().to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    let images = value
+        .get("images")
+        .and_then(Value::as_array)
+        .map(|images| images.iter().filter_map(image_summary_from_value).collect())
+        .unwrap_or_default();
+    let damage = damage_summary_from_value(value.get("damage"));
+    Ok(SceneSummary {
+        revision,
+        cols,
+        rows,
+        text,
+        images,
+        damage,
+    })
+}
+
+fn image_summary_from_value(value: &Value) -> Option<ImageSummary> {
+    let placement_id = value
+        .get("placement_id")
+        .or_else(|| value.get("id"))
+        .and_then(Value::as_u64)?;
+    Some(ImageSummary {
+        placement_id,
+        source_id: value.get("source_id").and_then(Value::as_u64).unwrap_or(0),
+        row: value
+            .get("row")
+            .and_then(Value::as_i64)
+            .unwrap_or(0)
+            .clamp(i32::MIN as i64, i32::MAX as i64) as i32,
+        col: value
+            .get("col")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            .min(u16::MAX as u64) as u16,
+        width: value
+            .get("width")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            .min(u32::MAX as u64) as u32,
+        height: value
+            .get("height")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            .min(u32::MAX as u64) as u32,
+        z_index: value
+            .get("z_index")
+            .and_then(Value::as_i64)
+            .unwrap_or(0)
+            .clamp(i32::MIN as i64, i32::MAX as i64) as i32,
+    })
+}
+
+fn damage_summary_from_value(value: Option<&Value>) -> DamageSummary {
+    let Some(value) = value else {
+        return DamageSummary::default();
+    };
+    let full = value.get("full").and_then(Value::as_bool).unwrap_or(false);
+    let mut rects = Vec::new();
+    if let Some(array) = value.get("rects").and_then(Value::as_array) {
+        for rect in array {
+            let x = rect.get("x").and_then(Value::as_u64).unwrap_or(0);
+            let y = rect.get("y").and_then(Value::as_u64).unwrap_or(0);
+            let w = rect.get("w").and_then(Value::as_u64).unwrap_or(0);
+            let h = rect.get("h").and_then(Value::as_u64).unwrap_or(0);
+            let rect = DamageRect::new(
+                x.min(u32::MAX as u64) as u32,
+                y.min(u32::MAX as u64) as u32,
+                w.min(u32::MAX as u64) as u32,
+                h.min(u32::MAX as u64) as u32,
+            );
+            if !rect.is_empty() {
+                rects.push(rect);
+            }
+        }
+    }
+    DamageSummary { full, rects }
+}
+
 /// 稳定 schema v1 的 frame 部分；图片只给 rect，不给 RGBA。
 pub(crate) fn frame_json(frame: &Frame, kind: &str) -> Value {
     let text: Vec<String> = (0..frame.rows)
@@ -245,6 +459,19 @@ pub(crate) fn frame_json(frame: &Frame, kind: &str) -> Value {
             })
         })
         .collect();
+    // 行段 damage 转成 cell rect，供 scene-diff/debug 使用；纯加法字段。
+    let damage_rects: Vec<Value> = frame
+        .damage
+        .iter()
+        .map(|damage| {
+            json!({
+                "x": damage.left,
+                "y": damage.line,
+                "w": damage.right.saturating_sub(damage.left),
+                "h": 1,
+            })
+        })
+        .collect();
     json!({
         "schema": "tervo.diag.v1",
         "kind": kind,
@@ -262,6 +489,11 @@ pub(crate) fn frame_json(frame: &Frame, kind: &str) -> Value {
         "mode": frame.mode,
         "display_offset": frame.display_offset,
         "generation": frame.generation,
+        "damage": {
+            "full": frame.full,
+            "region_count": frame.damage.len(),
+            "rects": damage_rects,
+        },
         "images": images,
         "text": text,
     })
@@ -627,6 +859,79 @@ mod tests {
         assert_eq!(value["cols"], 4);
         assert_eq!(value["cursor"]["col"], 1);
         assert_eq!(value["text"][0], "A");
+        assert_eq!(value["damage"]["full"], false);
+        assert_eq!(value["damage"]["region_count"], 0);
         assert!(value.get("data").is_none());
+    }
+
+    #[test]
+    fn scene_diff_parses_frame_json_and_reports_counts() {
+        let left = json!({
+            "schema": "tervo.diag.v1",
+            "kind": "snapshot",
+            "cols": 6,
+            "rows": 2,
+            "generation": 5,
+            "text": ["abc", "def"],
+            "images": [
+                {"id": 1, "source_id": 11, "row": 0, "col": 0, "width": 2, "height": 1}
+            ],
+            "damage": {
+                "full": false,
+                "region_count": 1,
+                "rects": [{"x": 0, "y": 0, "w": 2, "h": 1}]
+            }
+        });
+        let right = json!({
+            "schema": "tervo.diag.v1",
+            "kind": "snapshot",
+            "cols": 6,
+            "rows": 2,
+            "generation": 6,
+            "text": ["abd", "def"],
+            "images": [
+                {"id": 1, "source_id": 11, "row": 1, "col": 2, "width": 2, "height": 1}
+            ],
+            "damage": {
+                "full": false,
+                "region_count": 1,
+                "rects": [{"x": 3, "y": 0, "w": 2, "h": 1}]
+            }
+        });
+        let left = scene_summary_from_value(&left).unwrap();
+        let right = scene_summary_from_value(&right).unwrap();
+        assert_eq!(left.revision, 5);
+        assert_eq!(left.images[0].placement_id, 1);
+        assert_eq!(left.damage.region_count(), 1);
+
+        let diff = SceneDiff::between(&left, &right);
+        assert_eq!(diff.text.changed_rows, 1);
+        assert_eq!(diff.text.changed_cells, 1);
+        assert_eq!(diff.images.moved.len(), 1);
+        assert_eq!(diff.images.added.len(), 0);
+        assert_eq!(diff.damage.regions_added.len(), 1);
+        assert_eq!(diff.damage.regions_removed.len(), 1);
+        let value = diff.to_json();
+        assert_eq!(value["schema"], "tervo.diag.v1");
+        assert_eq!(value["kind"], "scene_diff");
+        assert_eq!(value["images"]["counts"]["moved"], 1);
+    }
+
+    #[test]
+    fn observability_document_is_additive_and_marks_unfed_collector() {
+        let value = observability_value("observability");
+        assert_eq!(value["schema"], "tervo.diag.v1");
+        assert_eq!(value["kind"], "observability");
+        assert_eq!(value["initialized"], false);
+        assert_eq!(value["source"], "cli");
+        assert_eq!(value["metrics"]["frame_count"], 0);
+        assert_eq!(value["metrics"]["damage"]["regions_last"], 0);
+        assert_eq!(value["trace"]["capacity"], DEFAULT_TRACE_CAPACITY);
+        assert_eq!(value["resources"]["gpu_textures"]["count"], 0);
+        assert!(value["integration"]["points"].as_array().unwrap().len() >= 4);
+
+        let metrics = observability_value("metrics");
+        assert_eq!(metrics["kind"], "metrics");
+        assert!(metrics.get("integration").is_none());
     }
 }
