@@ -468,7 +468,93 @@ pub fn connect() -> Result<(RustConnection, usize), String> {
 }
 
 
-/// 屏幕（root）尺寸，用于 Quake 定位。
+/// 一块 XRandR monitor 的像素几何（root 坐标）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Monitor {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+    pub primary: bool,
+}
+
+/// 当前活动 monitor 列表；没有 RandR 时退化为整块 root 屏。
+pub fn monitors() -> Vec<Monitor> {
+    use x11rb::connection::Connection;
+    use x11rb::protocol::randr::ConnectionExt as _;
+
+    let Ok((conn, screen_num)) = connect() else { return Vec::new() };
+    let root = conn.setup().roots[screen_num].root;
+    let mut out = Vec::new();
+    if let Ok(cookie) = conn.randr_get_monitors(root, true) {
+        if let Ok(reply) = cookie.reply() {
+            for m in reply.monitors {
+                out.push(Monitor {
+                    x: m.x as i32,
+                    y: m.y as i32,
+                    width: m.width as u32,
+                    height: m.height as u32,
+                    primary: m.primary,
+                });
+            }
+        }
+    }
+    if out.is_empty() {
+        if let Some((w, h)) = screen_size() {
+            out.push(Monitor { x: 0, y: 0, width: w, height: h, primary: true });
+        }
+    }
+    out
+}
+
+/// 包含指定 root 坐标的 monitor；越界时回退 primary/第一块。
+pub fn monitor_at(monitors: &[Monitor], x: i32, y: i32) -> Option<Monitor> {
+    monitors
+        .iter()
+        .find(|m| {
+            x >= m.x
+                && x < m.x + m.width as i32
+                && y >= m.y
+                && y < m.y + m.height as i32
+        })
+        .copied()
+        .or_else(|| monitors.iter().find(|m| m.primary).copied())
+        .or_else(|| monitors.first().copied())
+}
+
+/// EWMH `_NET_WORKAREA` 的第一块矩形（GNOME 顶部 panel 等会缩小 y/height）。
+pub fn workarea() -> Option<(i32, i32, u32, u32)> {
+    use x11rb::connection::Connection;
+    use x11rb::protocol::xproto::{AtomEnum, ConnectionExt as _};
+
+    let (conn, screen_num) = connect().ok()?;
+    let root = conn.setup().roots[screen_num].root;
+    let atom = conn
+        .intern_atom(false, b"_NET_WORKAREA")
+        .ok()?
+        .reply()
+        .ok()?
+        .atom;
+    let reply = conn
+        .get_property(false, root, atom, AtomEnum::CARDINAL, 0, 4)
+        .ok()?
+        .reply()
+        .ok()?;
+    if reply.value_len < 4 {
+        return None;
+    }
+    let vals: Vec<u32> = reply
+        .value
+        .chunks_exact(4)
+        .map(|c| u32::from_ne_bytes([c[0], c[1], c[2], c[3]]))
+        .collect();
+    if vals.len() < 4 {
+        return None;
+    }
+    Some((vals[0] as i32, vals[1] as i32, vals[2], vals[3]))
+}
+
+/// 屏幕（root）尺寸，用于旧路径/兜底。
 pub fn screen_size() -> Option<(u32, u32)> {
     use x11rb::connection::Connection;
 
@@ -1428,6 +1514,22 @@ mod tests {
             assert!((rect.y as i32) < 80);
             assert!(rect.width > 0 && rect.height == 1);
         }
+    }
+
+    #[test]
+    fn monitor_at_prefers_containing_then_primary_then_first() {
+        let m0 = Monitor { x: 0, y: 0, width: 2560, height: 1440, primary: true };
+        let m1 = Monitor { x: 2560, y: 0, width: 2560, height: 1440, primary: false };
+        let ms = [m0, m1];
+        assert_eq!(monitor_at(&ms, 10, 10), Some(m0));
+        assert_eq!(monitor_at(&ms, 3000, 10), Some(m1));
+        // 越界回退 primary，而不是把窗口放到 root 中心。
+        assert_eq!(monitor_at(&ms, -10, 10), Some(m0));
+        assert_eq!(monitor_at(&ms, 9999, 10), Some(m0));
+        // 没有 primary 时回退第一块。
+        let no_primary = [Monitor { primary: false, ..m1 }, Monitor { primary: false, ..m0 }];
+        assert_eq!(monitor_at(&no_primary, 9999, 9999), Some(no_primary[0]));
+        assert_eq!(monitor_at(&[], 0, 0), None);
     }
 
     #[test]

@@ -25,6 +25,9 @@ Tervo 的版本与 tag 规则见 `docs/RELEASING.md`。
 
 ### Fixed
 
+- 多显示器：Quake 使用当前 monitor 几何 + EWMH workarea，不再按整个 root 居中。
+- 鼠标上报 TUI（dsh-tui/vim/tmux）中，`right_click = "menu"` 不再被无条件转发给 TUI。
+- GNOME dock/任务栏右键增加 New Window action（`StartupWMClass=tervo`）。
 - 松开左键后仍能 resize 窗口（尤其上边框）。
 - 内联图片改为 framebuffer 合成（文本覆盖图片、滚动随 cell），移除独立视觉 overlay。
 - XTWINOPS/PTY 像素尺寸、ECH 按光标行清图、块元素几何绘制。

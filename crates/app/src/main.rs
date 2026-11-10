@@ -2860,10 +2860,40 @@ fn toggle_quake_inner(st: &mut AppState) {
         eprintln!("[quake] hide (minimized)");
         return;
     }
-    let (sw, sh) = crate::xconn::screen_size().unwrap_or((1920, 1080));
-    let w = ((sw as f32 * st.cfg.quake_width).round() as u32).clamp(320, sw);
-    let h = ((sh as f32 * st.cfg.quake_height).round() as u32).clamp(200, sh);
-    let x = (sw.saturating_sub(w) / 2) as i32;
+    // 多显示器：用当前窗口所在 monitor，而不是整个 root（双屏时 5120 会
+    // 把 Quake 放到接缝上）。顶部/底部 panel 用 EWMH workarea 让开。
+    let pos = st.ui.window().position();
+    let monitors = crate::xconn::monitors();
+    let monitor = crate::xconn::monitor_at(&monitors, pos.x, pos.y)
+        .unwrap_or(crate::xconn::Monitor {
+            x: 0,
+            y: 0,
+            width: crate::xconn::screen_size().map(|v| v.0).unwrap_or(1920),
+            height: crate::xconn::screen_size().map(|v| v.1).unwrap_or(1080),
+            primary: true,
+        });
+    let wa = crate::xconn::workarea();
+    let top_inset = wa
+        .map(|(_, wy, _, _)| (wy - monitor.y).max(0) as u32)
+        .unwrap_or(0)
+        .min(monitor.height.saturating_sub(200));
+    let bottom_inset = wa
+        .map(|(_, wy, _, wh)| {
+            ((monitor.y + monitor.height as i32) - (wy + wh as i32)).max(0) as u32
+        })
+        .unwrap_or(0)
+        .min(monitor.height.saturating_sub(200));
+    let avail_h = monitor
+        .height
+        .saturating_sub(top_inset)
+        .saturating_sub(bottom_inset)
+        .max(200);
+    let w = ((monitor.width as f32 * st.cfg.quake_width).round() as u32)
+        .clamp(320, monitor.width);
+    let h = ((avail_h as f32 * st.cfg.quake_height).round() as u32)
+        .clamp(200, avail_h);
+    let x = monitor.x + ((monitor.width.saturating_sub(w)) / 2) as i32;
+    let y = monitor.y + top_inset as i32;
     if st.quake_saved.is_none() {
         st.quake_saved = Some((st.ui.window().position(), st.ui.window().size()));
     }
@@ -2871,7 +2901,7 @@ fn toggle_quake_inner(st: &mut AppState) {
     st.ui.window().set_size(slint::PhysicalSize::new(w, h));
     st.ui
         .window()
-        .set_position(slint::PhysicalPosition::new(x, 0));
+        .set_position(slint::PhysicalPosition::new(x, y));
     st.ui.window().show();
     let _ = crate::xconn::activate_own_window("");
     st.quake_visible = true;
@@ -8751,6 +8781,15 @@ fn print_diagnostics() {
     }
     if let Some((w, h)) = xconn::screen_size() {
         println!("screen={w}x{h}");
+    }
+    for m in xconn::monitors() {
+        println!(
+            "monitor={}x{}+{}+{} primary={}",
+            m.width, m.height, m.x, m.y, m.primary
+        );
+    }
+    if let Some((x, y, w, h)) = xconn::workarea() {
+        println!("workarea={w}x{h}+{x}+{y}");
     }
     if let Some((x, y)) = xconn::pointer_position() {
         println!("pointer={x},{y}");
