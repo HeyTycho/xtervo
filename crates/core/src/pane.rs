@@ -1768,9 +1768,11 @@ impl ImageStore {
     }
 }
 
-/// Kitty placement/source ID 下界：与 Sixel/IIP 的本地 ID 空间隔开，UI 的
-/// `inline_hits`/纹理缓存用 u64 source_id 才不会跨协议碰撞。
-const KITTY_ID_BASE: u64 = 1 << 62;
+/// Kitty source ID 下界：source_id 在 UI 中是 u64，与 Sixel/IIP 隔离即可。
+const KITTY_SOURCE_ID_BASE: u64 = 1 << 62;
+/// Kitty placement ID 下界。`InlineImage.id` 在 Slint presenter 里会转成
+/// i32 传点击命中，因此必须保持正 i32 范围，不能像 source_id 那样用高位段。
+const KITTY_PLACEMENT_ID_BASE: u64 = 1 << 30;
 const MAX_KITTY_IMAGES: usize = 256;
 const MAX_KITTY_IMAGE_BYTES: usize = 64 * 1024 * 1024;
 
@@ -1852,10 +1854,12 @@ impl KittyStore {
             return (evicted, false);
         }
 
-        self.next_source_id = if self.next_source_id < KITTY_ID_BASE {
-            KITTY_ID_BASE + 1
+        self.next_source_id = if self.next_source_id < KITTY_SOURCE_ID_BASE {
+            KITTY_SOURCE_ID_BASE + 1
         } else {
-            self.next_source_id.wrapping_add(1).max(KITTY_ID_BASE + 1)
+            self.next_source_id
+                .wrapping_add(1)
+                .max(KITTY_SOURCE_ID_BASE + 1)
         };
         let source_id = self.next_source_id;
         self.resources.insert(
@@ -1964,12 +1968,12 @@ impl KittyStore {
             });
         }
 
-        self.next_placement_id = if self.next_placement_id < KITTY_ID_BASE {
-            KITTY_ID_BASE + 1
+        self.next_placement_id = if self.next_placement_id < KITTY_PLACEMENT_ID_BASE {
+            KITTY_PLACEMENT_ID_BASE + 1
         } else {
             self.next_placement_id
                 .wrapping_add(1)
-                .max(KITTY_ID_BASE + 1)
+                .max(KITTY_PLACEMENT_ID_BASE + 1)
         };
         let col = if cols == 0 {
             0
