@@ -28,6 +28,32 @@
 AI 请求：`PluginStore::spawn_ai_chat()` / `cancel_ai_chat()`；参考插件：
 `docs/examples/ai-echo/`。
 
+## 0. 兼容承诺（0.2.x）
+
+“API 固定”指**可以按本文写插件**，不是永远不扩展：
+
+```text
+api = 1   已固定的稳定子集；清单字段、oneshot/process 行为、JSON Lines V1 保持
+api = 2   0.2.0 固定为“v1 + 可选 [contributes.ai] + ai.chat”基线
+```
+
+0.2.x 的保证：
+
+- 宿主同时接受 `api = 1` 和 `api = 2`；清单 `api` 必须精确等于声明版本。
+- v1 清单字段、`init/ready/command/result/event/status/log/shutdown` 行格式不变；
+  v2 只增加可选的 AI 贡献，不改变已有 JSON Lines 行。
+- 清单未知字段被忽略；AI 请求/结果新增字段只做加法，插件应忽略未知字段。
+- 破坏已有字段/语义的变更必须提升到 `api = 3`；不会在 0.2.x 静默破坏 v1/v2。
+- `ai.chat` 固定请求形状：`messages: [{role, content}]`，可选 `model`；返回 `text`
+  （兼容旧 `result.text` 形状）。凭据/网络由插件负责，宿主不存 Key。
+
+不承诺固定：
+
+- 安装/卸载/市场/签名/权限沙箱/热重载（当前没有）。
+- 超时、并发上限、日志/活动截断、UI 坐标/布局等宿主实现细节。
+- `[permissions]` 仅展示，不是安全边界；插件以当前用户权限运行。
+- 未来大版本可能停止支持 v1；会先写 CHANGELOG/迁移说明。
+
 ## 1. 目录与启用规则
 
 插件根目录默认 `~/.config/tervo/plugins`（遵循 `XDG_CONFIG_HOME`）；
