@@ -7,6 +7,7 @@ members = [
     "crates/scene",
     "crates/render",
     "crates/render-wgpu",
+    "crates/diagnostics",
 ]
 
 [workspace.package]
