@@ -13,7 +13,7 @@
 
 use std::rc::Rc;
 
-use tervo_core::{flags, CellData, CursorShape, Frame, Span};
+use tervo_core::{flags, CellData, CursorShape, Frame, ImageCrop, Span};
 
 use crate::glyph::{
     is_zero_width_control, placeholder_kind, prefers_color_emoji, ColorGlyph, FontSet, Glyph,
@@ -42,8 +42,14 @@ pub(crate) fn fit_inline_image_size(
 struct ImageLayerEntry {
     row: i32,
     col: u16,
+    /// Full source dimensions (used to index RGBA).
     width: u32,
     height: u32,
+    /// Crop inside the source, in pixels.
+    source_x: f32,
+    source_y: f32,
+    source_w: f32,
+    source_h: f32,
     data: std::sync::Arc<[u8]>,
     display_w: f32,
     display_h: f32,
@@ -1194,8 +1200,8 @@ impl Renderer {
             if x1 <= x0 {
                 continue;
             }
-            let scale_x = img.width as f32 / dw.max(1.0);
-            let scale_y = img.height as f32 / dh.max(1.0);
+            let scale_x = img.source_w / dw.max(1.0);
+            let scale_y = img.source_h / dh.max(1.0);
             let dest_y0 = (top.max(0.0) + dy0 as f32).round() as usize;
             let src_y0 = (dy0 as f32 * scale_y) as usize;
             let src_x0 = (x0 as f32 - left).max(0.0) as usize;
@@ -1207,19 +1213,22 @@ impl Renderer {
                 if py >= height {
                     break;
                 }
-                let sy = (src_y0 + (out_dy as f32 * scale_y) as usize).min(img.height as usize - 1);
+                let sy = (src_y0 + (out_dy as f32 * scale_y) as usize)
+                    .min(img.source_h as usize - 1);
                 for px in x0..x1 {
                     if px >= width {
                         break;
                     }
-                    let sx = if img.width as usize == dw.round() as usize {
+                    let sx = if img.source_w as usize == dw.round() as usize {
                         src_x0 + (px - x0)
                     } else {
                         (src_x0 as f32 + (px - x0) as f32 * scale_x)
-                            .min(img.width as f32 - 1.0) as usize
+                            .min(img.source_w - 1.0) as usize
                     }
-                    .min(img.width as usize - 1);
-                    let si = (sy * img.width as usize + sx) * 4;
+                    .min(img.source_w as usize - 1);
+                    let full_x = img.source_x as usize + sx;
+                    let full_y = img.source_y as usize + sy;
+                    let si = (full_y * img.width as usize + full_x) * 4;
                     if si + 3 >= img.data.len() {
                         continue;
                     }
@@ -1517,20 +1526,43 @@ impl Renderer {
         let images: Vec<_> = frame
             .images
             .iter()
-            .filter(|img| img.width > 0 && img.height > 0)
-            .map(|img| {
+            .enumerate()
+            .filter(|(_, img)| img.width > 0 && img.height > 0)
+            .map(|(idx, img)| {
                 let x = img.col as f32 * self.cell_w.max(1) as f32;
                 let y = img.row as f32 * self.cell_h.max(1) as f32;
                 let avail_w = (self.width as f32 - x).max(self.cell_w.max(1) as f32);
                 let avail_h = (self.height as f32 - y.max(0.0))
                     .max(self.cell_h.max(1) as f32);
-                let (display_w, display_h) =
-                    fit_inline_image_size(img.width, img.height, avail_w, avail_h);
+                let meta = frame.image_placements.get(idx);
+                let crop: ImageCrop = meta
+                    .and_then(|m| m.source_rect)
+                    .unwrap_or(ImageCrop { x: 0, y: 0, w: img.width, h: img.height });
+                let source_w = crop.w.min(img.width).max(1) as f32;
+                let source_h = crop.h.min(img.height).max(1) as f32;
+                // Kitty placement carries an explicit cell rectangle; use it.
+                // Sixel/IIP without a crop keeps the historical pane-fit behavior.
+                let (display_w, display_h) = match meta {
+                    Some(m) if m.source_rect.is_some() && m.cells_w > 0 && m.cells_h > 0 => (
+                        m.cells_w as f32 * self.cell_w.max(1) as f32,
+                        m.cells_h as f32 * self.cell_h.max(1) as f32,
+                    ),
+                    _ => fit_inline_image_size(
+                        source_w as u32,
+                        source_h as u32,
+                        avail_w,
+                        avail_h,
+                    ),
+                };
                 ImageLayerEntry {
                     row: img.row,
                     col: img.col,
                     width: img.width,
                     height: img.height,
+                    source_x: crop.x as f32,
+                    source_y: crop.y as f32,
+                    source_w,
+                    source_h,
                     data: img.data.clone(),
                     display_w,
                     display_h,

@@ -24,7 +24,7 @@ pub use event::{
     ProgressState, WakeSignal,
 };
 pub use frame::{
-    flags, CellData, CursorShape, CursorState, Frame, InlineImage, LineDamage, Span,
+    flags, CellData, CursorShape, CursorState, Frame, ImageCrop, ImagePlacementMeta, InlineImage, LineDamage, Span,
 };
 pub use keyboard::{KeyboardFlags, MODIFY_OTHER_KEYS_MAX_LEVEL};
 pub use link::{is_allowed_uri, Link, LinkKind};
