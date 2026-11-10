@@ -108,6 +108,11 @@ tervo diag replay trace.jsonl --json  # 确定性回放
 - 不实现各 harness 的私有插件格式
 - 不把诊断接口当安全边界
 
+## 当前进度
+
+- 阶段 A 已落地：`tervo diag env/snapshot/replay --json`，`tervo.diag.v1`，见 `docs/DIAGNOSTICS.md`。
+- 未完成：trace 事件流、实时 app socket、MCP、screenshot、harness 配置 e2e。
+
 ## 实现阶段
 
 1. `tervo diag` CLI + trace schema + snapshot/replay（无 GUI 可测）

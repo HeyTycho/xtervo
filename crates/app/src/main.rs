@@ -5,6 +5,7 @@ mod bell;
 mod commands;
 mod config;
 mod config_watch;
+mod diag;
 mod glyph;
 mod keys;
 mod known_hosts;
@@ -8948,6 +8949,7 @@ fn print_help() {
 --import-tabby PATH 无 UI：导入 Tabby config.yaml（Profile/字号/快捷键/主题）后退出\n  \
 --export-tabby PATH 无 UI：导出 Profile 为 Tabby YAML 后退出\n  \
 --diagnose          打印环境/窗口/最近日志后退出（排查右键/焦点问题）\n  \
+  diag [env|snapshot|replay]  harness 可调用 JSON 诊断（tervo diag help）\n  \
 -V, --version       显示版本、git commit 与构建时间\n  \
 -h, --help          显示帮助\n\n\
 快捷键: Ctrl+T 新建标签 / Ctrl+Shift+N 新建窗口 / Ctrl+W 关闭 / Ctrl+F 搜索 / Ctrl+Shift+C 复制 / Ctrl+Shift+V 粘贴\n\
@@ -9086,6 +9088,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::args().any(|a| a == "-h" || a == "--help") {
         print_help();
         return Ok(());
+    }
+
+    if argv.get(1).map(String::as_str) == Some("diag") {
+        return diag::run(&argv[2..]);
     }
 
     logging::init();

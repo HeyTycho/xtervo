@@ -6,6 +6,7 @@ Tervo 的版本与 tag 规则见 `docs/RELEASING.md`。
 
 ### Added
 
+- 内置 `tervo diag env/snapshot/replay --json`（harness-neutral，无窗口），`tervo.diag.v1` schema；不含 API key/图片 RGBA。
 - Settings Help 页面：快捷键、配置/日志路径、诊断复制、版本信息、已知限制。
 - Background image Browse 文件选择器；图片/Cwd/Shell/SSH key 支持 `~`。
 - 无背景图时终端 opacity 也可用（透明窗口；需要合成器）。
