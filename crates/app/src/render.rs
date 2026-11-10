@@ -16,8 +16,8 @@ use std::rc::Rc;
 use tervo_core::{flags, CellData, CursorShape, Frame, Span};
 
 use crate::glyph::{
-    is_zero_width_control, placeholder_kind, ColorGlyph, FontSet, Glyph, GlyphCache, PlaceholderKind,
-    Style, ATLAS_W,
+    is_zero_width_control, placeholder_kind, prefers_color_emoji, ColorGlyph, FontSet, Glyph,
+    GlyphCache, PlaceholderKind, Style, ATLAS_W,
 };
 
 /// 内联图片的等比缩放：只缩小不放大，返回显示像素宽高。
@@ -849,7 +849,8 @@ impl Renderer {
                     if ch != ' ' {
                         let style = Self::style_of(&cell);
                         // 彩色 emoji 优先（与普通渲染一致）；没有彩色字体时再走单色轮廓。
-                        let color_center = if placeholder_kind(ch) == Some(PlaceholderKind::Emoji) {
+                        // 文本默认的几何图形（dsh 侧栏 ◀/▶）在无 VS16 时走字体轮廓。
+                        let color_center = if prefers_color_emoji(ch, marks) {
                             Self::blit_color_into(
                                 glyphs, fonts, cell_w, cell_h, pixels, width, height, x0, y0, ch,
                                 style, span,
@@ -1287,8 +1288,9 @@ impl Renderer {
                     // 继续处理 underline/strikeout，但不画字形。
                 } else {
                     // 彩色 emoji 优先；彩色字体缺失/不支持时回落到单色轮廓，再回落到占位框。
-                    // 只对 emoji 码位查彩色缓存，ASCII/CJK 不增加字体探测。
-                    let color = if placeholder_kind(ch) == Some(PlaceholderKind::Emoji) {
+                    // 只对 emoji 码位查彩色缓存，ASCII/CJK 不增加字体探测；文本默认的
+                    // 几何图形（dsh 侧栏 ◀/▶）没有 VS16 时不查彩色字体。
+                    let color = if prefers_color_emoji(ch, marks) {
                         self.glyphs.get_color(&self.fonts, ch, style, span)
                     } else {
                         None
@@ -2087,6 +2089,48 @@ mod tests {
             ink(&renderer, 2 * cell_w, 4 * cell_w, 0, cell_h),
             0,
             "彩色 emoji 溢出到相邻格"
+        );
+    }
+
+    #[test]
+    fn text_default_panel_arrows_render_mono_unless_vs16() {
+        let Some(fonts) = FontSet::load(15.0) else { return };
+        let cell_w = fonts.cell_w;
+        let cell_h = fonts.cell_h;
+        // 黑底 + 白字：单色轮廓只会产生灰阶像素，彩色 emoji 才会出现 RGB 差异。
+        let mut renderer =
+            Renderer::new(Rc::new(fonts), 4, 1, 0x000000, 0x00ffffff, 1.0);
+        let color_available = renderer
+            .glyphs
+            .get_color(&renderer.fonts, '\u{25C0}', Style::Regular, 1)
+            .is_some();
+        let mut cell = CellData::default();
+        cell.ch = '\u{25C0}' as u32;
+        cell.fg = 0x00ffffff;
+        cell.bg = 0x000000;
+        let mut frame = blank_frame(4, 1);
+        frame.full = true;
+        frame.put(0, cell, None);
+        renderer.draw(&frame);
+        assert!(ink(&renderer, 0, cell_w, 0, cell_h) > 0, "◀ 没有画出字形");
+        assert_eq!(
+            color_ink(&renderer, 0, cell_w, 0, cell_h),
+            0,
+            "◀ 无 VS16 时应走单色字体，不能画成橙色 emoji"
+        );
+
+        if !color_available {
+            eprintln!("跳过 VS16 断言：系统没有 ◀ 彩色位图");
+            return;
+        }
+        // 同一码位带 VS16：彩色路径应重新启用，证明门控是双向的。
+        let mut frame = blank_frame(4, 1);
+        frame.full = true;
+        frame.put_zerowidth(0, cell, None, &['\u{FE0F}']);
+        renderer.draw(&frame);
+        assert!(
+            color_ink(&renderer, 0, cell_w, 0, cell_h) > 0,
+            "◀+VS16 应恢复彩色 emoji 呈现"
         );
     }
 
