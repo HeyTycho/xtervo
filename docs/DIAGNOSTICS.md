@@ -122,6 +122,14 @@ tervo.live_snapshot
 
 没有 socket 时 MCP 仍提供静态 env/snapshot/replay。
 
+自动验收：
+
+```bash
+./scripts/e2e_diag_live.sh
+# PASS: live socket capabilities/snapshot
+# PASS: MCP tools/list + live_snapshot
+```
+
 ## schema v1
 
 所有输出：
