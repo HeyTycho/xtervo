@@ -179,6 +179,10 @@ pub struct InlineImage {
     pub id: u64,
     /// 本次 placement 的源像素 ID；同一 placement 源数据变化时它会变。
     pub source_id: u64,
+    /// 稳定的逻辑行身份（alacritty `RowId`）。滚动/换屏/历史淘汰都不会
+    /// 改变它；逻辑行消失（reset / 清屏 / alt-screen 切换）时 placement
+    /// 会被显式丢弃。`row` 只是它在当前帧视口中的投影。
+    pub row_id: u64,
     /// 视口行（0 = 顶行；负值表示滚动到视口上方）。
     pub row: i32,
     /// 图片左上角所在列（cell）。
@@ -195,6 +199,7 @@ impl std::fmt::Debug for InlineImage {
         f.debug_struct("InlineImage")
             .field("id", &self.id)
             .field("source_id", &self.source_id)
+            .field("row_id", &self.row_id)
             .field("row", &self.row)
             .field("col", &self.col)
             .field("width", &self.width)
@@ -211,6 +216,12 @@ pub struct Frame {
     pub rows: usize,
     /// `rows * cols` 个单元格，行优先。
     pub cells: Vec<CellData>,
+    /// 视口每一行的稳定 RowId（下标 = 视口行，长度恒为 `rows`）。
+    ///
+    /// 来自 vendored alacritty `Grid::row_id`，滚动时跟着逻辑行走；图片
+    /// placement 只认它，不再用 `scroll_total`/绝对行号推算。整屏和脏行
+    /// 路径都会刷新（O(rows) 次 u64 写入，不分配）。
+    pub row_ids: Vec<u64>,
     /// 本次拉取中发生变化的行段；`full == true` 时为空（表示整屏）。
     pub damage: Vec<LineDamage>,
     pub full: bool,
@@ -248,18 +259,22 @@ impl Frame {
     pub fn new(cols: usize, rows: usize) -> Self {
         let mut f = Self { cols, rows, ..Default::default() };
         f.cells = vec![CellData::default(); cols * rows];
+        f.row_ids = vec![0; rows];
         f.reset_links();
         f
     }
 
     /// 尺寸变化时重建缓冲（仅此路径分配）。
     pub fn ensure_size(&mut self, cols: usize, rows: usize) -> bool {
-        if self.cols == cols && self.rows == rows && self.cells.len() == cols * rows {
+        if self.cols == cols && self.rows == rows && self.cells.len() == cols * rows
+            && self.row_ids.len() == rows
+        {
             return false;
         }
         self.cols = cols;
         self.rows = rows;
         self.cells = vec![CellData::default(); cols * rows];
+        self.row_ids = vec![0; rows];
         self.damage.clear();
         self.images.clear();
         self.full = true;

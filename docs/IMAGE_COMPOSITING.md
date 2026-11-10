@@ -67,11 +67,11 @@ v2 改成：
 StoredImage {
   id
   kind: Sixel | Iip
-  abs_line: i64          // 单调滚动绝对行
+  row_id: u64            // 创建时光标行的稳定 RowId（唯一位移来源）
   col: u16
   width/height: u32      // 原始像素
   rgba: Arc<[u8]>
-  fixed_row: Option<i32> // sixel_scrolling=false
+  fixed_row: Option<i32> // sixel_scrolling=false：固定屏幕行
   bytes
 }
 ```
@@ -80,7 +80,8 @@ StoredImage {
 
 ```text
 InlineImage {
-  id, row (可为负), col,
+  id, source_id, row_id,
+  row (可为负), col,
   width, height,
   data: Arc<[u8]>
 }
@@ -159,10 +160,12 @@ ImageDamage { row, col_start, col_end }
 
 ## 5. 滚动与生命周期
 
-- 滚动：`row = abs_line - scroll_total + display_offset`；图片与 cells 同源。
+- 滚动：`find_row_id(row_id)` → `row = line + display_offset`；图片与 cells 同源。
 - 用户滚动只改 `display_offset`，不重建图片数据。
-- 图片完全滚出可达 history → `retain_reachable` drop。
-- resize/reflow：`scroll_total` 不因 reflow 增长；图片按新 cell/grid 重算。
+- `find_row_id` 失败（历史淘汰 / reset / 清屏 / 非活动屏幕）→ 显式 drop，绝不回退
+  到 `scroll_total` 或绝对行号。
+- `Frame.row_ids` 每帧全量刷新（O(rows) 次 u64 写入），供 placement 与测试核对。
+- resize/reflow：行身份要么随 vendored 补丁保留/重映射，要么 `find_row_id` 失败后 drop。
 - 关闭 Sixel/IIP：清对应 kind，不影响另一种。
 
 ## 6. 性能与内存
