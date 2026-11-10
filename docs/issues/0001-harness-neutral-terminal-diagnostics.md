@@ -110,8 +110,8 @@ tervo diag replay trace.jsonl --json  # 确定性回放
 
 ## 当前进度
 
-- 阶段 A 已落地：`tervo diag env/snapshot/replay/trace --json` + `tervo diag serve` MCP stdio（env/snapshot/replay），`tervo.diag.v1`，见 `docs/DIAGNOSTICS.md`。
-- 未完成：trace 事件流、实时 app socket、MCP、screenshot、harness 配置 e2e。
+- 阶段 A 已落地：CLI env/snapshot/replay/trace、MCP stdio（env/snapshot/replay）、显式 opt-in live control socket + live MCP 工具，`tervo.diag.v1`，见 `docs/DIAGNOSTICS.md`。
+- 未完成：真实 PTY 事件级 trace、screenshot、token/权限 e2e、真实 harness 配置 e2e。
 
 ## 实现阶段
 
