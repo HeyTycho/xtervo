@@ -6338,7 +6338,7 @@ fn sync_inline_images(rt: &mut PaneRuntime, frame: &Frame) {
         let avail_h = (rt.grid.1 as f32 * cell_h - y).max(cell_h);
         let (w, h) = crate::render::fit_inline_image_size(img.width, img.height, avail_w, avail_h);
         views.push(PaneImage {
-            image,
+            id: img.id as i32,
             x,
             y,
             w,
@@ -10137,6 +10137,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     ui.on_pane_clicked(|id| focus_pane(id as u64));
+
+    // 灯箱只接收 id，从 UI 缓存里取原始 RGBA。先设 source 再 open，避免
+    // 第一次点击时 source 还是 0×0，出现灰面板/无图；第二次才显示。
+    ui.on_image_open(|pane_id, image_id| {
+        with_app(|st| {
+            let Some(rt) = st.panes.get(&(pane_id as u64)) else { return };
+            let Some(image) = rt.inline_cache.get(&(image_id as u64)).cloned() else {
+                eprintln!("[image] preview source missing id={image_id}");
+                return;
+            };
+            st.ui.set_image_preview_open(false);
+            st.ui.set_image_preview_source(image);
+            st.ui.set_image_preview_fit(true);
+            st.ui.set_image_preview_zoom(1.0);
+            st.ui.set_image_preview_open(true);
+            eprintln!("[image] preview open id={image_id}");
+        });
+    });
 
     ui.on_menu_dismissed(|| {
         eprintln!("[ui] menu dismissed");
