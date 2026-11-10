@@ -7836,7 +7836,9 @@ export component MainWindow inherits Window {
                             font-weight: 600;
                         }
                         Rectangle {
-                            height: 76px;
+                            // 只有一个插件时不要留 76px 的灰色空盒；按内容收缩，
+                            // 超过三条再滚动，保持面板紧凑。
+                            height: Math.min(76px, 8px + 26px * root.ai-plugin-items.length);
                             border-radius: 6px;
                             background: Palette.colors.surface;
                             border-width: 1px;
@@ -7859,7 +7861,11 @@ export component MainWindow inherits Window {
                                         height: 24px;
                                         border-radius: 4px;
                                         background: i == root.ai-plugin-index
-                                            ? Palette.colors.hover
+                                            ? Palette.colors.raise
+                                            : transparent;
+                                        border-width: i == root.ai-plugin-index ? 1px : 0px;
+                                        border-color: i == root.ai-plugin-index
+                                            ? Palette.colors.accent
                                             : transparent;
                                         Text {
                                             x: 7px;

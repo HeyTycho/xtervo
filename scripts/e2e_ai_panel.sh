@@ -151,7 +151,7 @@ sleep 0.4
 shot panel-empty
 
 # 输入 prompt（Enter 提交），插件返回确定性 echo；只追加一次。
-click 500 310
+click 500 267
 sleep 0.2
 key "hello"
 sleep 0.2
