@@ -1253,10 +1253,10 @@ export component MainWindow inherits Window {
     in-out property <string> plugin-status: "";
     in-out property <string> plugin-status-tooltip: "";
     // 终端右键菜单：宽度按最长标签 + 快捷键提示留足，窄窗口自动收窄；
-    // 内容高度固定（分组标题 22px / 菜单项 30px），超过内容区时菜单内滚动，
+    // 内容高度固定（菜单项 30px；无分组标题），超过内容区时菜单内滚动，
     // 不做整块溢出到窗口外。
     property <length> menu-width: Math.max(180px, Math.min(280px, root.width - 16px));
-    property <length> menu-content-h: root.menu-link != "" ? 572px : 490px;
+    property <length> menu-content-h: root.menu-link != "" ? 462px : 402px;
     property <length> menu-view-h: Math.max(80px,
         Math.min(root.menu-content-h, root.height - root.tabbar-height - 12px));
     // 锚点同原生菜单：优先右/下，放不下翻到左/上，再放不下才夹进窗口。
@@ -3057,8 +3057,8 @@ export component MainWindow inherits Window {
                 }
 
                 // ---------------- 右键菜单 ----------------
-                // 分类分组（Link / Clipboard / Pane / View / Session）+ 快捷键提示；
-                // 无图标，文字与分组标题左对齐。动作 ID 与回调保持原样。
+                // 扁平菜单：不再显示 Link/Clipboard/Pane/View/Session 分组标题，
+                // 只保留菜单项与快捷键提示。动作 ID 与回调保持原样。
                 if root.menu-open : Rectangle {
                     x: root.menu-left;
                     y: root.menu-top;
@@ -3092,10 +3092,6 @@ export component MainWindow inherits Window {
                             padding: 6px;
                             spacing: 0px;
 
-                            if root.menu-link != "" : MenuGroupLabel {
-                                label: Lang.t("Link", "链接");
-                                first: true;
-                            }
                             if root.menu-link != "" : ContextMenuRow {
                                 label: Lang.t("Open Link", "打开链接");
                                 picked => { root.menu-open = false; root.menu-action(root.menu-pane, 9); }
@@ -3105,10 +3101,6 @@ export component MainWindow inherits Window {
                                 picked => { root.menu-open = false; root.menu-action(root.menu-pane, 10); }
                             }
 
-                            MenuGroupLabel {
-                                label: Lang.t("Clipboard", "剪贴板");
-                                first: root.menu-link == "";
-                            }
                             ContextMenuRow {
                                 label: Lang.t("Copy", "复制");
                                 shortcut: "Ctrl+Shift+C";
@@ -3120,9 +3112,6 @@ export component MainWindow inherits Window {
                                 picked => { root.menu-open = false; root.menu-action(root.menu-pane, 4); }
                             }
 
-                            MenuGroupLabel {
-                                label: Lang.t("Pane", "窗格");
-                            }
                             ContextMenuRow {
                                 label: Lang.t("Split Right", "向右拆分");
                                 shortcut: "Ctrl+Shift+E";
@@ -3147,9 +3136,6 @@ export component MainWindow inherits Window {
                                 picked => { root.menu-open = false; root.menu-action(root.menu-pane, 8); }
                             }
 
-                            MenuGroupLabel {
-                                label: Lang.t("View", "视图");
-                            }
                             ContextMenuRow {
                                 label: Lang.t("Find", "查找");
                                 shortcut: "Ctrl+F";
@@ -3164,9 +3150,6 @@ export component MainWindow inherits Window {
                                 picked => { root.menu-open = false; root.menu-action(root.menu-pane, 7); }
                             }
 
-                            MenuGroupLabel {
-                                label: Lang.t("Session", "会话");
-                            }
                             ContextMenuRow {
                                 label: root.menu-read-only
                                     ? Lang.t("Read Only: ON", "只读：开")
