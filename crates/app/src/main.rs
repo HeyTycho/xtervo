@@ -10142,10 +10142,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 第一次点击时 source 还是 0×0，出现灰面板/无图；第二次才显示。
     ui.on_image_open(|pane_id, image_id| {
         with_app(|st| {
-            let Some(rt) = st.panes.get(&(pane_id as u64)) else { return };
-            let Some(image) = rt.inline_cache.get(&(image_id as u64)).cloned() else {
-                eprintln!("[image] preview source missing id={image_id}");
-                return;
+            let id = image_id as u64;
+            let image = {
+                let Some(rt) = st.panes.get_mut(&(pane_id as u64)) else { return };
+                if let Some(cached) = rt.inline_cache.get(&id).cloned() {
+                    cached
+                } else if let Some((w, h, rgba)) = rt.handle.image_rgba(id) {
+                    // UI 只保留可见图片；点击旧 hit 时缓存可能已淘汰。向 actor
+                    // 取回原始 RGBA，避免灯箱以 0×0 source 打开成灰面板。
+                    let mut buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(w, h);
+                    buffer.make_mut_bytes().copy_from_slice(&rgba);
+                    let image = slint::Image::from_rgba8(buffer);
+                    rt.inline_cache.insert(id, image.clone());
+                    eprintln!("[image] preview source recovered id={id}");
+                    image
+                } else {
+                    eprintln!("[image] preview source missing id={image_id}");
+                    return;
+                }
             };
             st.ui.set_image_preview_open(false);
             st.ui.set_image_preview_source(image);

@@ -254,6 +254,22 @@ fn image_anchor_scrolls_with_history() {
 }
 
 #[test]
+fn image_rgba_can_be_recovered_by_id() {
+    let _serial = SIXEL_TEST_LOCK.lock().unwrap();
+    let path = temp_payload("recover-id", &small_sixel_bel());
+    let script = format!("cat '{}'; sleep 0.4", path.display());
+    let handle = spawn(sh(&script)).expect("spawn pane");
+    let frame = wait_for(&handle, Duration::from_secs(5), |f| !f.images.is_empty());
+    let id = frame.images[0].id;
+    let (w, h, rgba) = handle.image_rgba(id).expect("按 id 取回原图");
+    assert_eq!((w, h), (2, 2));
+    assert_eq!(rgba.len(), 16);
+    assert_eq!(&rgba[0..4], &[255, 0, 0, 255]);
+    assert!(handle.image_rgba(id.wrapping_add(999)).is_none());
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
 fn escape_clear_screen_removes_images() {
     let _serial = SIXEL_TEST_LOCK.lock().unwrap();
     let path = temp_payload("esc-clear", &small_sixel_bel());

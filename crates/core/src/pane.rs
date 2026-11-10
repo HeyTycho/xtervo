@@ -446,6 +446,8 @@ enum Ctrl {
     SetIip(bool),
     /// 字号变化后更新 cell 像素尺寸（IIP cell 尺寸换算 + 图片可见性判断）。
     SetCellSize { width: u16, height: u16 },
+    /// 按 id 取回原始 RGBA（灯箱在 UI 缓存淘汰后兜底）。
+    ImageRgba { id: u64, reply: Sender<Option<(u32, u32, Vec<u8>)>> },
     SelectionStart { line: u16, col: u16 },
     SelectionExtend { line: u16, col: u16 },
     SelectionClear,
@@ -794,6 +796,22 @@ impl PaneHandle {
             Err(_) => {
                 self.stats.ctrl_reply_timeouts.fetch_add(1, Ordering::Relaxed);
                 eprintln!("[pty] copy_selection 回复超时（{}ms），本次跳过", CTRL_REPLY_TIMEOUT.as_millis());
+                None
+            },
+        }
+    }
+
+    /// 按图片 id 取原始 RGBA。UI 的可见图片缓存可能已淘汰，灯箱用它兜底；
+    /// actor 忙/超时返回 None，不阻塞 UI。
+    pub fn image_rgba(&self, id: u64) -> Option<(u32, u32, Vec<u8>)> {
+        let (tx, rx) = bounded(1);
+        if !self.send_ctrl(Ctrl::ImageRgba { id, reply: tx }) {
+            return None;
+        }
+        match rx.recv_timeout(CTRL_REPLY_TIMEOUT) {
+            Ok(value) => value,
+            Err(_) => {
+                self.stats.ctrl_reply_timeouts.fetch_add(1, Ordering::Relaxed);
                 None
             },
         }
@@ -2541,6 +2559,16 @@ impl Actor {
             },
             Ctrl::ResetAndClear => {
                 self.reset(true);
+                true
+            },
+            Ctrl::ImageRgba { id, reply } => {
+                let value = self
+                    .images
+                    .images
+                    .iter()
+                    .find(|image| image.id == id)
+                    .map(|image| (image.width, image.height, image.data.to_vec()));
+                let _ = reply.send(value);
                 true
             },
             Ctrl::CopySelection(reply) => {
