@@ -2,6 +2,13 @@
 
 Tervo 的版本与 tag 规则见 `docs/RELEASING.md`。
 
+## [Unreleased]
+
+### Fixed
+
+- 图片图层顺序：cell 背景 → 图片 → 选区/搜索 → 字形；TUI 黑色 backing cell 不再把图片盖黑。
+- 灯箱按 image id 从原始 RGBA 取图，先设 source 再 open；Fit 允许放大且 >100% pixelated。
+
 ## [0.3.1] - 2026-11-10
 
 ### Fixed

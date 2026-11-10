@@ -1213,35 +1213,62 @@ impl Renderer {
         if row >= self.rows || row >= frame.rows {
             return;
         }
-        self.fill_row(row);
-        self.draw_image_row(frame, row);
         let y0 = row * self.cell_h;
         let baseline = y0 as i32 + self.fonts.baseline;
+        let cols = self.cols.min(frame.cols);
         let (sel, search) = (frame.selection, frame.search);
-        for col in 0..self.cols.min(frame.cols) {
+
+        // 图层 1：行默认底色。
+        self.fill_row(row);
+
+        // 图层 2：所有 cell 背景。TUI 常把图片区域铺成黑色 backing cell；
+        // 这些背景必须在图片下面，否则滚动/局部重绘会把图片盖成黑块。
+        for col in 0..cols {
             let cell = frame.cell(row, col);
-            // 宽字符的右半格只是占位：背景与字形都由左半格负责，跳过早于填背景，
-            // 否则会把已经画好的 CJK 字形右半边盖掉。
+            if cell.has(flags::WIDE_CHAR_SPACER) {
+                continue;
+            }
+            let span = if cell.has(flags::WIDE_CHAR) { 2 } else { 1 };
+            let mut fg = pack(cell.fg);
+            let mut bg = pack(cell.bg);
+            if cell.has(flags::INVERSE) {
+                std::mem::swap(&mut fg, &mut bg);
+            }
+            let x0 = col * self.cell_w;
+            if !same_rgb(bg, self.theme_bg) {
+                self.fill_rect(x0, y0, span * self.cell_w, self.cell_h, bg);
+            }
+        }
+
+        // 图层 3：图片，位于 cell 背景之上、文字/选区之下。
+        self.draw_image_row(frame, row);
+
+        // 图层 4/5：选区/搜索覆盖 + 文字字形。背景已经画过，这里不再重复铺
+        // 普通 cell 背景；只补选区/搜索这类必须位于图片之上的高亮。
+        for col in 0..cols {
+            let cell = frame.cell(row, col);
             if cell.has(flags::WIDE_CHAR_SPACER) {
                 continue;
             }
             let span = if cell.has(flags::WIDE_CHAR) { 2 } else { 1 };
             let cell_px = span * self.cell_w;
+            let x0 = col * self.cell_w;
             let mut fg = pack(cell.fg);
             let mut bg = pack(cell.bg);
             if cell.has(flags::INVERSE) {
                 std::mem::swap(&mut fg, &mut bg);
             }
             let (r16, c16) = (row as u16, col as u16);
-            if sel.is_some_and(|s| s.contains(r16, c16)) {
+            let selected = sel.is_some_and(|s| s.contains(r16, c16));
+            let searched = search.is_some_and(|s| s.contains(r16, c16));
+            if selected {
+                // 选区是覆盖层：必须压在图片上，否则图片区域选不中/看不见高亮。
                 std::mem::swap(&mut fg, &mut bg);
+                self.fill_rect(x0, y0, cell_px, self.cell_h, bg);
             }
-            if search.is_some_and(|s| s.contains(r16, c16)) {
+            if searched {
                 bg = pack(0xf9e2af);
                 fg = pack(0x11111b);
-            }
-            let x0 = col * self.cell_w;
-            if !same_rgb(bg, self.theme_bg) {
                 self.fill_rect(x0, y0, cell_px, self.cell_h, bg);
             }
             if cell.has(flags::HIDDEN) {
@@ -1259,36 +1286,36 @@ impl Renderer {
                 if self.draw_block_element(ch, x0, y0, cell_px, self.cell_h, fg, bg) {
                     // 继续处理 underline/strikeout，但不画字形。
                 } else {
-                // 彩色 emoji 优先；彩色字体缺失/不支持时回落到单色轮廓，再回落到占位框。
-                // 只对 emoji 码位查彩色缓存，ASCII/CJK 不增加字体探测。
-                let color = if placeholder_kind(ch) == Some(PlaceholderKind::Emoji) {
-                    self.glyphs.get_color(&self.fonts, ch, style, span)
-                } else {
-                    None
-                };
-                if let Some(g) = color {
-                    self.blit_color(x0, y0, &g, span);
-                    if !marks.is_empty() {
-                        let center = x0 as i32 + g.x_off as i32 + g.w as i32 / 2;
-                        self.blit_marks(x0 as i32, baseline, center, marks, style, fg, span);
+                    // 彩色 emoji 优先；彩色字体缺失/不支持时回落到单色轮廓，再回落到占位框。
+                    // 只对 emoji 码位查彩色缓存，ASCII/CJK 不增加字体探测。
+                    let color = if placeholder_kind(ch) == Some(PlaceholderKind::Emoji) {
+                        self.glyphs.get_color(&self.fonts, ch, style, span)
+                    } else {
+                        None
+                    };
+                    if let Some(g) = color {
+                        self.blit_color(x0, y0, &g, span);
+                        if !marks.is_empty() {
+                            let center = x0 as i32 + g.x_off as i32 + g.w as i32 / 2;
+                            self.blit_marks(x0 as i32, baseline, center, marks, style, fg, span);
+                        }
+                    } else {
+                        match self.blit(x0 as i32, baseline, ch, style, fg, span) {
+                            Some(center) => {
+                                if !marks.is_empty() {
+                                    self.blit_marks(
+                                        x0 as i32, baseline, center, marks, style, fg, span,
+                                    );
+                                }
+                            },
+                            // 回退链完全画不出来：emoji/PUA 图标画明确占位框，其它缺字留空。
+                            None => {
+                                if let Some(kind) = placeholder_kind(ch) {
+                                    self.draw_placeholder(x0, y0, cell_px, fg, kind);
+                                }
+                            },
+                        }
                     }
-                } else {
-                    match self.blit(x0 as i32, baseline, ch, style, fg, span) {
-                        Some(center) => {
-                            if !marks.is_empty() {
-                                self.blit_marks(
-                                    x0 as i32, baseline, center, marks, style, fg, span,
-                                );
-                            }
-                        },
-                        // 回退链完全画不出来：emoji/PUA 图标画明确占位框，其它缺字留空。
-                        None => {
-                            if let Some(kind) = placeholder_kind(ch) {
-                                self.draw_placeholder(x0, y0, cell_px, fg, kind);
-                            }
-                        },
-                    }
-                }
                 }
             } else if !marks.is_empty() {
                 // 空格上挂了组合音标（行首等边角情况）：居中叠在空格上。
@@ -1826,6 +1853,53 @@ mod tests {
         let px = |x: usize| renderer.pixels()[x];
         assert_eq!(px(1), pack(0x00ff_0000), "空白 cell 应保留图片");
         assert_ne!(px(cell_w + 1) & 0x00ff_ffff, 0x00ff_0000, "文本应覆盖在图片上");
+    }
+
+    #[test]
+    fn image_is_above_cell_background_and_below_glyph() {
+        let Some(fonts) = FontSet::load(15.0) else { return };
+        let cell_w = fonts.cell_w;
+        let cell_h = fonts.cell_h;
+        let mut renderer = Renderer::new(
+            Rc::new(fonts),
+            4,
+            1,
+            Theme::default().bg(),
+            Theme::default().cursor(),
+            1.0,
+        );
+        let mut frame = blank_frame(4, 1);
+        frame.full = true;
+        // 图片覆盖前两格；第一格是 TUI 的黑色 backing cell（非主题背景），
+        // 第二格有字形。正确图层：黑底 -> 图片 -> 字形。
+        let mut data = vec![0u8; cell_w * 2 * cell_h * 4];
+        for px in data.chunks_exact_mut(4) {
+            px[0] = 255;
+            px[3] = 255;
+        }
+        frame.images.push(tervo_core::InlineImage {
+            id: 7,
+            row: 0,
+            col: 0,
+            width: (cell_w * 2) as u32,
+            height: cell_h as u32,
+            data: std::sync::Arc::from(data.into_boxed_slice()),
+        });
+        frame.cells[0].bg = 0;
+        frame.cells[0].ch = ' ' as u32;
+        frame.cells[1].ch = 'X' as u32;
+        frame.cells[1].fg = 0x00ff_ffff;
+        renderer.draw(&frame);
+        assert_eq!(
+            renderer.pixels()[1],
+            pack(0x00ff_0000),
+            "非主题 cell 背景不能盖住图片"
+        );
+        assert_ne!(
+            renderer.pixels()[cell_w + 1] & 0x00ff_ffff,
+            0x00ff_0000,
+            "字形应画在图片之上"
+        );
     }
 
     #[test]
