@@ -72,7 +72,7 @@ export struct DividerView {
 
 /// 终端 pane 上的一张内联图片（Sixel）：pane 内像素坐标，独立 Image overlay。
 export struct PaneImage {
-    image: image,
+    id: int,
     x: length,
     y: length,
     w: length,
@@ -1615,7 +1615,8 @@ export component MainWindow inherits Window {
     in-out property <image> image-preview-source;
     in-out property <bool> image-preview-fit: true;
     in-out property <float> image-preview-zoom: 1.0;
-    property <float> image-preview-fit-scale: Math.min(1.0,
+    // Fit = 适配可用区域，允许小图放大；>100% 走 pixelated，避免平滑模糊。
+    property <float> image-preview-fit-scale: Math.min(
         (root.width - 24px) / 1px / Math.max(1, root.image-preview-source.width),
         (root.height - 68px) / 1px / Math.max(1, root.image-preview-source.height));
     /// resize 拖动期间临时隐藏大背景图：避免 Skia/GPU 每帧重新 cover 缩放整张大图。
@@ -1627,6 +1628,7 @@ export component MainWindow inherits Window {
     in-out property <bool> terminal-transparent: false;
     /// 终端默认背景不透明度（0.0–1.0）：0 = 完全透明，1 = 主题纯色。
     in-out property <float> background-opacity: 1.0;
+    callback image-open(int, int);
     callback background-image-changed(string);
     /// 回车/失焦提交：非法路径在这里报错（输入过程中不闪红字）。
     callback background-image-commit(string);
@@ -2874,10 +2876,7 @@ export component MainWindow inherits Window {
                         height: pic.h;
                         mouse-cursor: pointer;
                         clicked => {
-                            root.image-preview-source = pic.image;
-                            root.image-preview-fit = true;
-                            root.image-preview-zoom = 1.0;
-                            root.image-preview-open = true;
+                            root.image-open(p.id, pic.id);
                         }
                     }
 
