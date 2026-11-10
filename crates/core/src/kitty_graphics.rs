@@ -439,6 +439,12 @@ impl KittyParser {
         self.pending.is_some()
     }
 
+    /// True while the scanner holds a partial `ESC`/APC prefix across feeds.
+    /// Lets the PTY hot path bypass the parser when no ESC is present.
+    pub fn has_partial_sequence(&self) -> bool {
+        self.scan != ScanState::Ground
+    }
+
     /// Dimensions of a tracked image id.
     pub fn image_dimensions(&self, id: u32) -> Option<(u32, u32)> {
         self.images.get(&id).map(|meta| (meta.width, meta.height))

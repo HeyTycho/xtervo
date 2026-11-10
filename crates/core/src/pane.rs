@@ -25,7 +25,7 @@
 //!   兜底/周期任务，不是语义事件的主延迟路径。
 //! - 帧数据由 UI 侧持有 `Box<Frame>` 往返复用，稳态零分配；`pull` 硬超时。
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
@@ -48,9 +48,16 @@ use parking_lot::{Condvar, Mutex, RwLock};
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtyPair, PtySize};
 
 use crate::event::{ClipboardSelection, CoreEvent, EventSink, PaneStats, WakeSignal};
-use crate::frame::{CellData, CursorShape, CursorState, Frame, InlineImage, LineDamage, Span};
+use crate::frame::{
+    CellData, CursorShape, CursorState, Frame, ImageCrop, ImagePlacementMeta, InlineImage,
+    LineDamage, Span,
+};
 use crate::iip::{IipEvent, IipFilter, IipImage};
 use crate::keyboard::{KeyboardAction, KeyboardFlags, KeyboardScanner};
+use crate::kitty_graphics::{
+    CompositePolicy, CursorMovement, DeleteCommand, DeleteTarget, KittyCommand, KittyError,
+    KittyEvent, KittyParser, PlacementCommand, SourceRect, TransmitCommand,
+};
 use crate::mouse::{self, MouseEvent};
 use crate::osc::OscScanner;
 use crate::palette::Palette;
@@ -1159,6 +1166,8 @@ pub fn spawn(config: PaneConfig) -> std::io::Result<PaneHandle> {
         cell_width: config.cell_width.max(1),
         cell_height: config.cell_height.max(1),
         images: ImageStore::default(),
+        kitty: KittyParser::new(),
+        kitty_store: KittyStore::default(),
         query_tail: Vec::new(),
         image_clear: ImageClearScanner::default(),
         pty_rx,
@@ -1356,8 +1365,12 @@ struct Actor {
     /// 终端 cell 像素宽/高（图片 cell 覆盖范围与文本擦除判定）。
     cell_width: u16,
     cell_height: u16,
-    /// 已解码的 Sixel 图片（按创建顺序，超出预算淘汰最旧）。
+    /// 已解码的 Sixel/IIP 图片（按创建顺序，超出预算淘汰最旧）。
     images: ImageStore,
+    /// Kitty graphics APC 过滤器/解析器。
+    kitty: KittyParser,
+    /// Kitty 图片资源 + placement（协议 id 与稳定 RowId 分离）。
+    kitty_store: KittyStore,
     /// XTWINOPS (CSI 16t/14t) 跨 chunk 扫描尾部。
     query_tail: Vec<u8>,
     /// 清屏/备用屏切换检测：这些序列让 alacritty 清屏，图片也必须一起清。
@@ -1746,11 +1759,550 @@ impl ImageStore {
                 width: image.width,
                 height: image.height,
                 data: image.data.clone(),
+                z_index: -1,
+                above_text: false,
             });
             true
         });
         self.bytes = self.bytes.saturating_sub(removed);
     }
+}
+
+/// Kitty placement/source ID 下界：与 Sixel/IIP 的本地 ID 空间隔开，UI 的
+/// `inline_hits`/纹理缓存用 u64 source_id 才不会跨协议碰撞。
+const KITTY_ID_BASE: u64 = 1 << 62;
+const MAX_KITTY_IMAGES: usize = 256;
+const MAX_KITTY_IMAGE_BYTES: usize = 64 * 1024 * 1024;
+
+/// 一张 Kitty 图片的不可变像素资源。
+struct KittyResource {
+    source_id: u64,
+    width: u32,
+    height: u32,
+    data: Arc<[u8]>,
+    bytes: usize,
+}
+
+/// 一次 Kitty placement。`row_id` 是唯一位置来源；`fixed_row` 预留给
+/// 固定滚动策略（当前 Kitty 一律跟随 RowId）。
+struct KittyPlacement {
+    /// 本地 placement ID，与 Sixel/IIP 共用 Frame 命名空间但使用高位段。
+    id: u64,
+    /// 协议 `p`（0 = 无显式 placement id）。
+    client_id: u32,
+    image_id: u32,
+    source_id: u64,
+    row_id: u64,
+    fixed_row: Option<i32>,
+    col: u16,
+    source_rect: Option<SourceRect>,
+    /// 协议 `c/r`；0 表示按源像素与 cell 尺寸推导。
+    columns: u16,
+    rows: u16,
+    cells_w: u16,
+    cells_h: u16,
+    z_index: i32,
+    above_text: bool,
+}
+
+#[derive(Default)]
+struct KittyStore {
+    resources: HashMap<u32, KittyResource>,
+    placements: Vec<KittyPlacement>,
+    bytes: usize,
+    next_placement_id: u64,
+    next_source_id: u64,
+}
+
+impl KittyStore {
+    fn clear(&mut self) {
+        self.resources.clear();
+        self.placements.clear();
+        self.bytes = 0;
+    }
+
+    fn is_empty(&self) -> bool {
+        self.resources.is_empty() && self.placements.is_empty()
+    }
+
+    fn resource_by_source(&self, source_id: u64) -> Option<(u32, u32, Arc<[u8]>)> {
+        self.resources
+            .values()
+            .find(|resource| resource.source_id == source_id)
+            .map(|resource| (resource.width, resource.height, resource.data.clone()))
+    }
+
+    /// 存入一张已解码的 Kitty 图片，返回被预算淘汰的协议 image id 与是否成功。
+    ///
+    /// 同一协议 image id 再次传输按 Kitty 规范替换旧资源和全部旧 placement。
+    fn insert(&mut self, transmit: TransmitCommand) -> (Vec<u32>, bool) {
+        let image = transmit.image;
+        let image_id = image.id;
+        let bytes = image.rgba.len();
+        if bytes == 0 || bytes > MAX_KITTY_IMAGE_BYTES {
+            return (Vec::new(), false);
+        }
+
+        // 规范要求重传同一 id 时先删除旧图及其 placement。
+        self.remove_image(image_id);
+        let evicted = self.make_room(bytes);
+        if self.bytes.saturating_add(bytes) > MAX_KITTY_IMAGE_BYTES
+            || self.resources.len() >= MAX_KITTY_IMAGES
+        {
+            return (evicted, false);
+        }
+
+        self.next_source_id = if self.next_source_id < KITTY_ID_BASE {
+            KITTY_ID_BASE + 1
+        } else {
+            self.next_source_id.wrapping_add(1).max(KITTY_ID_BASE + 1)
+        };
+        let source_id = self.next_source_id;
+        self.resources.insert(
+            image_id,
+            KittyResource {
+                source_id,
+                width: image.width,
+                height: image.height,
+                data: Arc::from(image.rgba.into_boxed_slice()),
+                bytes,
+            },
+        );
+        self.bytes = self.bytes.saturating_add(bytes);
+        (evicted, true)
+    }
+
+    /// 在预算内腾出 `needed` 字节；优先淘汰没有 placement 的资源，其次最旧资源。
+    fn make_room(&mut self, needed: usize) -> Vec<u32> {
+        let mut evicted = Vec::new();
+        while self.bytes.saturating_add(needed) > MAX_KITTY_IMAGE_BYTES
+            || self.resources.len() >= MAX_KITTY_IMAGES
+        {
+            let referenced = |id: &u32, placements: &[KittyPlacement]| {
+                placements.iter().any(|placement| placement.image_id == *id)
+            };
+            let victim = self
+                .resources
+                .keys()
+                .copied()
+                .find(|id| !referenced(id, &self.placements))
+                .or_else(|| {
+                    self.resources
+                        .iter()
+                        .min_by_key(|(_, resource)| resource.source_id)
+                        .map(|(id, _)| *id)
+                });
+            let Some(victim) = victim else {
+                break;
+            };
+            if self.remove_image(victim).is_none() {
+                break;
+            }
+            evicted.push(victim);
+        }
+        evicted
+    }
+
+    fn remove_image(&mut self, image_id: u32) -> Option<KittyResource> {
+        let resource = self.resources.remove(&image_id);
+        if let Some(resource) = &resource {
+            self.bytes = self.bytes.saturating_sub(resource.bytes);
+        }
+        self.placements
+            .retain(|placement| placement.image_id != image_id);
+        resource
+    }
+
+    fn remove_unreferenced(&mut self) -> Vec<u32> {
+        let ids: Vec<u32> = self
+            .resources
+            .keys()
+            .copied()
+            .filter(|id| {
+                !self
+                    .placements
+                    .iter()
+                    .any(|placement| placement.image_id == *id)
+            })
+            .collect();
+        let mut removed = Vec::new();
+        for id in ids {
+            if self.remove_image(id).is_some() {
+                removed.push(id);
+            }
+        }
+        removed
+    }
+
+    /// 放置一张已传输的图片；返回实际目标 cell 宽高（供 C=0 光标移动）。
+    fn place(
+        &mut self,
+        place: PlacementCommand,
+        cursor: Point,
+        row_id: u64,
+        cols: usize,
+        cell_width: u16,
+        cell_height: u16,
+    ) -> Option<(u16, u16)> {
+        let resource = self.resources.get(&place.image_id)?;
+        let (source_w, source_h) = place
+            .source_rect
+            .map_or((resource.width, resource.height), |rect| (rect.w, rect.h));
+        let (cells_w, cells_h) = kitty_cells(
+            place.columns,
+            place.rows,
+            source_w,
+            source_h,
+            cell_width,
+            cell_height,
+        );
+
+        if place.placement_id != 0 {
+            self.placements.retain(|placement| {
+                !(placement.image_id == place.image_id
+                    && placement.client_id == place.placement_id)
+            });
+        }
+
+        self.next_placement_id = if self.next_placement_id < KITTY_ID_BASE {
+            KITTY_ID_BASE + 1
+        } else {
+            self.next_placement_id
+                .wrapping_add(1)
+                .max(KITTY_ID_BASE + 1)
+        };
+        let col = if cols == 0 {
+            0
+        } else {
+            (cursor.column.0).min(cols - 1) as u16
+        };
+        let fixed_row = None;
+        self.placements.push(KittyPlacement {
+            id: self.next_placement_id,
+            client_id: place.placement_id,
+            image_id: place.image_id,
+            source_id: resource.source_id,
+            row_id,
+            fixed_row,
+            col,
+            source_rect: place.source_rect,
+            columns: place.columns,
+            rows: place.rows,
+            cells_w,
+            cells_h,
+            z_index: place.z_index,
+            above_text: matches!(place.composite, CompositePolicy::AboveText),
+        });
+        Some((cells_w, cells_h))
+    }
+
+    /// cell 尺寸变化后按协议 c/r 重新推导目标 cell 矩形。
+    fn retune_cells(&mut self, cell_width: u16, cell_height: u16) {
+        let resources = &self.resources;
+        for placement in &mut self.placements {
+            let Some(resource) = resources.get(&placement.image_id) else {
+                continue;
+            };
+            let (source_w, source_h) = placement
+                .source_rect
+                .map_or((resource.width, resource.height), |rect| (rect.w, rect.h));
+            let (cells_w, cells_h) = kitty_cells(
+                placement.columns,
+                placement.rows,
+                source_w,
+                source_h,
+                cell_width,
+                cell_height,
+            );
+            placement.cells_w = cells_w;
+            placement.cells_h = cells_h;
+        }
+    }
+
+    /// 把当前视口内的 Kitty placement 展开成 Frame 图片和元数据。
+    #[allow(clippy::too_many_arguments)]
+    fn place_frame(
+        &mut self,
+        grid: &Grid<Cell>,
+        display_offset: usize,
+        rows: usize,
+        cols: usize,
+        images: &mut Vec<InlineImage>,
+        metas: &mut Vec<ImagePlacementMeta>,
+    ) {
+        if self.placements.is_empty() || rows == 0 || cols == 0 {
+            return;
+        }
+        let off = display_offset as i64;
+        let screen_rows = rows as i64;
+        let old = std::mem::take(&mut self.placements);
+        let mut kept = Vec::with_capacity(old.len());
+        let mut visible = Vec::new();
+
+        for placement in old {
+            let Some(resource) = self.resources.get(&placement.image_id) else {
+                continue;
+            };
+            let Some(line) = grid.find_row_id(placement.row_id) else {
+                // RowId 消失 = 逻辑行被 reset/淘汰，显式丢弃 placement。
+                continue;
+            };
+            let row = match placement.fixed_row {
+                Some(row) => row as i64,
+                None => line.0 as i64 + off,
+            };
+            if row >= screen_rows
+                || row + placement.cells_h.max(1) as i64 <= 0
+                || placement.col as usize >= cols
+            {
+                kept.push(placement);
+                continue;
+            }
+            visible.push((placement, resource.data.clone(), resource.width, resource.height));
+        }
+
+        visible.sort_by(|a, b| {
+            a.0.z_index
+                .cmp(&b.0.z_index)
+                .then_with(|| a.0.id.cmp(&b.0.id))
+        });
+
+        for (placement, data, width, height) in visible {
+            let meta = ImagePlacementMeta {
+                placement_id: placement.id,
+                image_id: u64::from(placement.image_id),
+                row_id: placement.row_id,
+                source_rect: placement.source_rect.map(|rect| ImageCrop {
+                    x: rect.x,
+                    y: rect.y,
+                    w: rect.w,
+                    h: rect.h,
+                }),
+                cells_w: placement.cells_w,
+                cells_h: placement.cells_h,
+                z_index: placement.z_index,
+                above_text: placement.above_text,
+            };
+            let Some(line) = grid.find_row_id(placement.row_id) else {
+                continue;
+            };
+            let row = match placement.fixed_row {
+                Some(row) => row as i64,
+                None => line.0 as i64 + off,
+            };
+            images.push(InlineImage {
+                id: placement.id,
+                source_id: placement.source_id,
+                row_id: placement.row_id,
+                row: row.clamp(i32::MIN as i64, i32::MAX as i64) as i32,
+                col: placement.col,
+                width,
+                height,
+                data,
+                z_index: placement.z_index,
+                above_text: placement.above_text,
+            });
+            metas.push(meta);
+            kept.push(placement);
+        }
+        self.placements = kept;
+    }
+
+    fn delete(&mut self, target: DeleteTarget, ctx: &KittyDeleteCtx) -> Vec<u32> {
+        let free_data = target_frees_data(&target);
+        let mut removed = Vec::new();
+        match target {
+            DeleteTarget::All | DeleteTarget::AllPlacements { .. } => {
+                self.placements.clear();
+                if free_data {
+                    removed.extend(self.resources.keys().copied());
+                    self.resources.clear();
+                    self.bytes = 0;
+                }
+            },
+            DeleteTarget::Image {
+                image_id,
+                placement_id,
+                free_data,
+            } => match placement_id {
+                Some(client_id) => {
+                    self.placements.retain(|placement| {
+                        !(placement.image_id == image_id && placement.client_id == client_id)
+                    });
+                    if free_data
+                        && !self
+                            .placements
+                            .iter()
+                            .any(|placement| placement.image_id == image_id)
+                        && self.remove_image(image_id).is_some()
+                    {
+                        removed.push(image_id);
+                    }
+                },
+                None => {
+                    if free_data {
+                        if self.remove_image(image_id).is_some() {
+                            removed.push(image_id);
+                        }
+                    } else {
+                        self.placements
+                            .retain(|placement| placement.image_id != image_id);
+                    }
+                },
+            },
+            DeleteTarget::NewestImage { .. } => {
+                // 解析器保留 I/n 语法，但本 slice 不维护 image-number 索引。
+            },
+            DeleteTarget::Cursor { .. } => {
+                self.placements.retain(|placement| {
+                    !(placement.row_id == ctx.cursor_row_id
+                        && kitty_span_contains(placement, ctx.cursor_col))
+                });
+                if free_data {
+                    removed.extend(self.remove_unreferenced());
+                }
+            },
+            DeleteTarget::Cell {
+                x,
+                y,
+                z_index,
+                free_data,
+            } => {
+                let row_id = y
+                    .checked_sub(1)
+                    .and_then(|row| ctx.viewport_row_ids.get(row as usize))
+                    .copied();
+                let col = x.saturating_sub(1);
+                if let Some(row_id) = row_id {
+                    self.placements.retain(|placement| {
+                        if placement.row_id != row_id {
+                            return true;
+                        }
+                        if z_index.is_some_and(|z| z != placement.z_index) {
+                            return true;
+                        }
+                        !kitty_span_contains(placement, col)
+                    });
+                }
+                if free_data {
+                    removed.extend(self.remove_unreferenced());
+                }
+            },
+            DeleteTarget::Column { x, .. } => {
+                let col = x.saturating_sub(1);
+                self.placements
+                    .retain(|placement| !kitty_span_contains(placement, col));
+                if free_data {
+                    removed.extend(self.remove_unreferenced());
+                }
+            },
+            DeleteTarget::Row { y, .. } => {
+                if let Some(row_id) = y
+                    .checked_sub(1)
+                    .and_then(|row| ctx.viewport_row_ids.get(row as usize))
+                    .copied()
+                {
+                    self.placements
+                        .retain(|placement| placement.row_id != row_id);
+                }
+                if free_data {
+                    removed.extend(self.remove_unreferenced());
+                }
+            },
+            DeleteTarget::ZIndex { z_index, .. } => {
+                self.placements
+                    .retain(|placement| placement.z_index != z_index);
+                if free_data {
+                    removed.extend(self.remove_unreferenced());
+                }
+            },
+            DeleteTarget::ImageRange {
+                min_image_id,
+                max_image_id,
+                free_data,
+            } => {
+                if free_data {
+                    let ids: Vec<u32> = self
+                        .resources
+                        .keys()
+                        .copied()
+                        .filter(|id| *id >= min_image_id && *id <= max_image_id)
+                        .collect();
+                    for id in ids {
+                        if self.remove_image(id).is_some() {
+                            removed.push(id);
+                        }
+                    }
+                } else {
+                    self.placements.retain(|placement| {
+                        placement.image_id < min_image_id
+                            || placement.image_id > max_image_id
+                    });
+                }
+            },
+        }
+        removed
+    }
+}
+
+/// 一次删除/擦除命令需要的视口快照，避免在 retain 闭包里再借 `Term`。
+struct KittyDeleteCtx {
+    cursor_row_id: u64,
+    cursor_col: u32,
+    viewport_row_ids: Vec<u64>,
+}
+
+fn target_frees_data(target: &DeleteTarget) -> bool {
+    match target {
+        DeleteTarget::All => false,
+        DeleteTarget::AllPlacements { free_data }
+        | DeleteTarget::Image { free_data, .. }
+        | DeleteTarget::NewestImage { free_data, .. }
+        | DeleteTarget::Cursor { free_data }
+        | DeleteTarget::Cell { free_data, .. }
+        | DeleteTarget::Column { free_data, .. }
+        | DeleteTarget::Row { free_data, .. }
+        | DeleteTarget::ZIndex { free_data, .. }
+        | DeleteTarget::ImageRange { free_data, .. } => *free_data,
+    }
+}
+
+fn kitty_span_contains(placement: &KittyPlacement, col: u32) -> bool {
+    let left = u32::from(placement.col);
+    let right = left.saturating_add(u32::from(placement.cells_w.max(1)));
+    col >= left && col < right
+}
+
+/// 由协议 `c/r` 与源尺寸推导目标 cell 矩形；0 表示按源像素/cell 尺寸推导，
+/// 只有一边时按源宽高比补齐另一边。
+fn kitty_cells(
+    columns: u16,
+    rows: u16,
+    source_w: u32,
+    source_h: u32,
+    cell_width: u16,
+    cell_height: u16,
+) -> (u16, u16) {
+    let cell_w = u64::from(cell_width.max(1));
+    let cell_h = u64::from(cell_height.max(1));
+    let source_w = u64::from(source_w.max(1));
+    let source_h = u64::from(source_h.max(1));
+    let mut columns = u64::from(columns);
+    let mut rows = u64::from(rows);
+    if columns == 0 && rows == 0 {
+        columns = source_w.div_ceil(cell_w);
+        rows = source_h.div_ceil(cell_h);
+    } else if columns == 0 {
+        let dest_w = rows.saturating_mul(cell_h).saturating_mul(source_w) / source_h;
+        columns = dest_w.div_ceil(cell_w);
+    } else if rows == 0 {
+        let dest_h = columns.saturating_mul(cell_w).saturating_mul(source_h) / source_w;
+        rows = dest_h.div_ceil(cell_h);
+    }
+    (
+        columns.clamp(1, u64::from(u16::MAX)) as u16,
+        rows.clamp(1, u64::from(u16::MAX)) as u16,
+    )
 }
 
 impl Drop for Actor {
@@ -1928,12 +2480,8 @@ impl Actor {
     /// 严格按输入顺序处理，保证图片锚点就是该序列结束时的光标。
     fn feed_iip(&mut self, bytes: &[u8], decode: bool) -> (bool, usize) {
         let Some(events) = self.iip.feed(bytes, decode) else {
-            // None = 本段没有 IIP；原始字节直接交给 vte（含其他 OSC）。
-            if bytes.is_empty() {
-                return (false, 0);
-            }
-            self.process_vte_chunk(bytes);
-            return (true, bytes.len());
+            // None = 本段没有 IIP；原始字节直接交给 Kitty APC 过滤 + vte。
+            return self.process_vte_chunk(bytes);
         };
         let mut changed = false;
         let mut parsed = 0usize;
@@ -1943,9 +2491,9 @@ impl Actor {
                     if chunk.is_empty() {
                         continue;
                     }
-                    changed = true;
-                    parsed += chunk.len();
-                    self.process_vte_chunk(&chunk);
+                    let (chunk_changed, chunk_parsed) = self.process_vte_chunk(&chunk);
+                    changed |= chunk_changed;
+                    parsed += chunk_parsed;
                 },
                 IipEvent::Image(image) => {
                     self.add_iip_image(image);
@@ -2016,8 +2564,45 @@ impl Actor {
         }
     }
 
+    /// Kitty APC 三级过滤：APC 解析成图片命令，其余字节按原顺序走
+    /// XTWINOPS/OSC/键盘/vte。
+    ///
+    /// 返回 `(是否有可见变化, 真正交给 vte 的字节数)`。Kitty APC 本身不再
+    /// 计入 `bytes_parsed`。
+    fn process_vte_chunk(&mut self, chunk: &[u8]) -> (bool, usize) {
+        if chunk.is_empty() {
+            return (false, 0);
+        }
+        if !self.kitty.has_partial_sequence() && !chunk.contains(&0x1b) {
+            self.process_vte_bytes(chunk);
+            return (true, chunk.len());
+        }
+        let events = self.kitty.feed(chunk);
+        let mut changed = false;
+        let mut parsed = 0usize;
+        for event in events {
+            match event {
+                KittyEvent::Pass(bytes) => {
+                    if bytes.is_empty() {
+                        continue;
+                    }
+                    changed = true;
+                    parsed += bytes.len();
+                    self.process_vte_bytes(&bytes);
+                },
+                KittyEvent::Command(command) => {
+                    changed |= self.handle_kitty_command(command);
+                },
+                KittyEvent::Error(error) => {
+                    self.handle_kitty_error(error);
+                },
+            }
+        }
+        (changed, parsed)
+    }
+
     /// 通知扫描/清屏检测/键盘协议扫描/vte 解析都只处理真正交给 vte 的字节。
-    fn process_vte_chunk(&mut self, chunk: &[u8]) {
+    fn process_vte_bytes(&mut self, chunk: &[u8]) {
         if chunk.is_empty() {
             return;
         }
@@ -2025,8 +2610,8 @@ impl Actor {
         let full_clear = self.image_clear.feed(chunk);
         let had_ech = !self.image_clear.ech.is_empty();
         if full_clear {
-            // 2J/3J、备用屏切换、RIS 会清空整屏：两种协议的内联图片都要清。
-            self.images.clear();
+            // 2J/3J、备用屏切换、RIS 会清空整屏：所有协议的内联图片都要清。
+            self.clear_all_images();
         }
         let mut notif_events = Vec::new();
         self.osc.feed(chunk, &mut notif_events);
@@ -2079,6 +2664,113 @@ impl Actor {
             Some(&self.grid_lines),
             chunk,
         );
+    }
+
+    /// 处理一条 Kitty 图形命令。返回是否产生可见变化。
+    fn handle_kitty_command(&mut self, command: KittyCommand) -> bool {
+        match command {
+            KittyCommand::Response(bytes) => {
+                self.write_input(&bytes);
+                false
+            },
+            KittyCommand::Transmit(transmit) => {
+                let image_id = transmit.image.id;
+                let (evicted, stored) = self.kitty_store.insert(transmit);
+                for id in evicted {
+                    self.kitty.forget_image(id);
+                }
+                if !stored {
+                    // 资源预算拒绝：让解析器的 image 索引一起失效，后续 a=p
+                    // 会得到 ENOENT，客户端可重传。
+                    self.kitty.forget_image(image_id);
+                    log::debug!("kitty: image {image_id} rejected by image budget");
+                }
+                stored
+            },
+            KittyCommand::Place(place) => self.handle_kitty_place(place),
+            KittyCommand::Delete(delete) => self.handle_kitty_delete(delete),
+        }
+    }
+
+    fn handle_kitty_place(&mut self, place: PlacementCommand) -> bool {
+        let cursor_movement = place.cursor_movement;
+        let (cursor, row_id, cols) = {
+            let grid = self.term.grid();
+            let cursor = grid.cursor.point;
+            (
+                cursor,
+                grid.row_id(cursor.line),
+                self.term.columns(),
+            )
+        };
+        let Some((cells_w, cells_h)) = self.kitty_store.place(
+            place,
+            cursor,
+            row_id,
+            cols,
+            self.cell_width,
+            self.cell_height,
+        ) else {
+            log::debug!("kitty: placement for unknown/evicted image ignored");
+            return false;
+        };
+        if cursor_movement == CursorMovement::Move {
+            self.move_kitty_cursor(cursor, cells_w, cells_h);
+        }
+        true
+    }
+
+    /// Kitty 默认 `C=0`：放置后光标右移 columns、下移 rows。`C=1` 由调用方
+    /// 直接跳过。越界按屏幕边界截断（协议对越界位置未定义）。
+    fn move_kitty_cursor(&mut self, cursor: Point, cells_w: u16, cells_h: u16) {
+        let rows = self.term.screen_lines().saturating_sub(1) as i32;
+        let cols = self.term.columns().saturating_sub(1) as i32;
+        let line = (cursor.line.0 + i32::from(cells_h)).clamp(0, rows);
+        let col = (cursor.column.0 as i32 + i32::from(cells_w)).clamp(0, cols);
+        let seq = format!("\x1b[{};{}H", line + 1, col + 1);
+        // 直接喂 vte；不经过图片清屏扫描器，避免移动光标被误判成擦图。
+        self.advance_vte(seq.as_bytes());
+    }
+
+    fn handle_kitty_delete(&mut self, delete: DeleteCommand) -> bool {
+        let ctx = {
+            let grid = self.term.grid();
+            let cursor = grid.cursor.point;
+            let display_offset = grid.display_offset();
+            let rows = self.term.screen_lines();
+            let mut viewport_row_ids = Vec::with_capacity(rows);
+            for row in 0..rows {
+                viewport_row_ids.push(grid.row_id(Line(row as i32 - display_offset as i32)));
+            }
+            KittyDeleteCtx {
+                cursor_row_id: grid.row_id(cursor.line),
+                cursor_col: cursor.column.0 as u32,
+                viewport_row_ids,
+            }
+        };
+        for id in self.kitty_store.delete(delete.target, &ctx) {
+            self.kitty.forget_image(id);
+        }
+        true
+    }
+
+    fn handle_kitty_error(&mut self, error: KittyError) {
+        if let Some(response) = error.response {
+            self.write_input(&response);
+        }
+        log::debug!(
+            "kitty: {}:{} image={:?} placement={:?}",
+            error.code.as_str(),
+            error.detail,
+            error.image_id,
+            error.placement_id
+        );
+    }
+
+    fn clear_all_images(&mut self) {
+        self.images.clear();
+        self.kitty_store.clear();
+        self.kitty.reset();
     }
 
     /// 把一张 Sixel 图片锚定到**当前**光标（可能刚解析完同一 chunk 里图片
@@ -2230,7 +2922,7 @@ impl Actor {
         self.term.selection = None;
         self.sel_anchor = None;
         self.search_span = None;
-        self.images.clear();
+        self.clear_all_images();
         self.force_full = true;
         self.refresh_zerowidth = false;
         // RIS 同样复位 kitty 键盘栈与 xterm modifyOtherKeys。
@@ -2350,6 +3042,8 @@ impl Actor {
             Ctrl::SetCellSize { width, height } => {
                 self.cell_width = width.max(1);
                 self.cell_height = height.max(1);
+                self.kitty_store
+                    .retune_cells(self.cell_width, self.cell_height);
                 self.iip.set_cell_size(width, height);
                 true
             },
@@ -2457,7 +3151,7 @@ impl Actor {
                 self.store_grid_lines();
                 self.term.selection = None;
                 self.sel_anchor = None;
-                self.images.clear();
+                self.clear_all_images();
                 self.force_full = true;
                 self.wake.notify();
                 true
@@ -2476,7 +3170,8 @@ impl Actor {
                     .images
                     .iter()
                     .find(|image| image.source_id == source_id)
-                    .map(|image| (image.width, image.height, image.data.clone()));
+                    .map(|image| (image.width, image.height, image.data.clone()))
+                    .or_else(|| self.kitty_store.resource_by_source(source_id));
                 let _ = reply.send(value);
                 true
             },
@@ -2508,6 +3203,8 @@ impl Actor {
             Ctrl::Resize { cols, rows } => {
                 self.size = GridSize::new(cols as usize, rows as usize);
                 self.term.resize(self.size);
+                self.kitty_store
+                    .retune_cells(self.cell_width, self.cell_height);
                 self.store_grid_lines();
                 let _ = self.master.resize(PtySize {
                     rows,
@@ -2559,22 +3256,52 @@ impl Actor {
     /// 行身份找不到就 drop，不再有 `scroll_total` 时间轴。
     fn fill_images(&mut self, frame: &mut Frame) {
         frame.images.clear();
+        frame.image_placements.clear();
         let sixel = self.sixel_enabled.load(Ordering::Relaxed);
         let iip = self.iip_enabled.load(Ordering::Relaxed);
-        if !sixel && !iip {
+        if !sixel && !iip && self.kitty_store.is_empty() {
             return;
         }
         let grid = self.term.grid();
         let display_offset = grid.display_offset();
         let rows = self.term.screen_lines();
         let cols = self.term.columns();
-        self.images.place(
+
+        if sixel || iip {
+            let start = frame.images.len();
+            self.images.place(
+                grid,
+                display_offset,
+                rows,
+                cols,
+                self.cell_height,
+                &mut frame.images,
+            );
+            let cell_w = u32::from(self.cell_width.max(1));
+            let cell_h = u32::from(self.cell_height.max(1));
+            for image in &frame.images[start..] {
+                let cells_w = image.width.div_ceil(cell_w).clamp(1, u32::from(u16::MAX)) as u16;
+                let cells_h = image.height.div_ceil(cell_h).clamp(1, u32::from(u16::MAX)) as u16;
+                frame.image_placements.push(ImagePlacementMeta {
+                    placement_id: image.id,
+                    image_id: image.id,
+                    row_id: image.row_id,
+                    source_rect: None,
+                    cells_w,
+                    cells_h,
+                    z_index: -1,
+                    above_text: false,
+                });
+            }
+        }
+
+        self.kitty_store.place_frame(
             grid,
             display_offset,
             rows,
             cols,
-            self.cell_height,
             &mut frame.images,
+            &mut frame.image_placements,
         );
     }
 }
