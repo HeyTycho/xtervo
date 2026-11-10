@@ -4684,6 +4684,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "tervo-graphics"
+version = "0.3.1"
+
+[[package]]
+name = "tervo-render"
+version = "0.3.1"
+dependencies = [
+ "tervo-scene",
+]
+
+[[package]]
+name = "tervo-scene"
+version = "0.3.1"
+dependencies = [
+ "tervo-graphics",
+]
+
+[[package]]
 name = "text-size"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
