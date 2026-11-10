@@ -6,6 +6,7 @@
 tervo diag env --json
 tervo diag snapshot --json
 tervo diag replay --input trace-raw.bin --json
+tervo diag trace --input trace-raw.bin --out trace.jsonl
 ```
 
 不启动 Slint 窗口、不需要 DISPLAY；任何 harness（Codex CLI、Claude Code、
@@ -73,6 +74,22 @@ mode            TermMode 原始位
 display_offset  滚动 offset
 images[]        id/row/col/width/height（不含 RGBA）
 ```
+
+### trace
+
+```bash
+tervo diag trace --input bytes.bin --out trace.jsonl --duration-ms 1000
+```
+
+回放输入字节并按 frame generation 变化写 JSONL：
+
+```text
+{"schema":"tervo.diag.v1","kind":"trace","seq":1,"ts_ms":25,
+ "generation":1,"input":"/abs/bytes.bin", ...frame 字段}
+```
+
+当前 trace 是 **frame 变化流**，不是完整 PTY 事件流；输入文件本身可保留原始
+字节，后续再增加 pty/damage 事件。
 
 ## schema v1
 

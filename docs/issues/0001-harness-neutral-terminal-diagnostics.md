@@ -110,7 +110,7 @@ tervo diag replay trace.jsonl --json  # 确定性回放
 
 ## 当前进度
 
-- 阶段 A 已落地：`tervo diag env/snapshot/replay --json`，`tervo.diag.v1`，见 `docs/DIAGNOSTICS.md`。
+- 阶段 A 已落地：`tervo diag env/snapshot/replay/trace --json`，`tervo.diag.v1`，见 `docs/DIAGNOSTICS.md`。
 - 未完成：trace 事件流、实时 app socket、MCP、screenshot、harness 配置 e2e。
 
 ## 实现阶段
