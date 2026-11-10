@@ -34,11 +34,12 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use alacritty_terminal::event::{Event, EventListener};
-use alacritty_terminal::grid::Dimensions;
+use alacritty_terminal::grid::{Dimensions, Grid};
 use alacritty_terminal::index::{Column, Line, Point};
 use alacritty_terminal::grid::Scroll;
 use alacritty_terminal::index::{Direction, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
+use alacritty_terminal::term::cell::Cell;
 use alacritty_terminal::term::search::{RegexIter, RegexSearch};
 use alacritty_terminal::term::{Config as TermConfig, Osc52, Term, TermDamage, TermMode};
 use alacritty_terminal::vte::ansi::{ClearMode, Handler, Processor, Rgb};
@@ -1183,8 +1184,6 @@ pub fn spawn(config: PaneConfig) -> std::io::Result<PaneHandle> {
         refresh_zerowidth: false,
         search_span: None,
         scroll_on_output: config.scroll_on_output,
-        scroll_total: 0,
-        last_history: 0,
         grid_lines: grid_lines.clone(),
     };
     let actor_thread = thread::Builder::new()
@@ -1317,50 +1316,19 @@ fn selection_span<T: EventListener>(term: &Term<T>, rows: usize, offset: usize) 
     })
 }
 
-/// 在 `\n` 边界切分后逐段喂给 parser，与一次性喂入语义完全等价（vte 状态机
-/// 跨 `advance` 调用保持）。每段只含一个 LF：若处理前后光标都停在最后一行，
-/// 说明这条 LF 触发了向上滚动（光标在底部 → linefeed 滚动一格，光标仍停在底
-/// 行）；其它位置的 LF 只是下移光标，不计数。
+/// 把一块真正交给 vte 的字节喂给 parser，然后刷新 grid 行数诊断快照。
 ///
-/// 自动折行/非 LF 滚动无法这样逐条检测：`history_size` 未满时它的增长会补进
-/// 来；满员后折行只会让锚点少算（图片保留更久），不会提前丢掉仍可达的图片。
-fn advance_tracking_scroll<T: EventListener>(
+/// RowId 改造后 Tervo 不再自行累计 `scroll_total`：图片锚点只认 alacritty
+/// `RowId`，滚动/历史淘汰由 `Grid::find_row_id` 直接判定。
+fn advance_and_publish_grid_lines<T: EventListener>(
     term: &mut Term<T>,
     processor: &mut Processor,
-    scroll_total: &mut u64,
-    last_history: &mut usize,
     grid_lines_slot: Option<&std::sync::atomic::AtomicU64>,
     chunk: &[u8],
 ) {
-    let rows = term.screen_lines();
-    let last_row = rows.saturating_sub(1) as i32;
-    let alt = term.mode().contains(TermMode::ALT_SCREEN);
-    let mut detected = 0u64;
-    let mut start = 0usize;
-    while start < chunk.len() {
-        let Some(rel) = chunk[start..].iter().position(|&b| b == b'\n') else {
-            processor.advance(term, &chunk[start..]);
-            break;
-        };
-        let end = start + rel + 1;
-        let before = term.grid().cursor.point.line.0;
-        processor.advance(term, &chunk[start..end]);
-        let after = term.grid().cursor.point.line.0;
-        // 备用屏没有 scrollback：滚动不能推进主屏图片的绝对行号。
-        if !alt && before == last_row && after == last_row {
-            detected += 1;
-        }
-        start = end;
-    }
-    let history_now = term.grid().history_size();
-    if !alt {
-        let grew = history_now.saturating_sub(*last_history) as u64;
-        // 取较大值：未满员时 grew 已包含 LF 滚动；满员后 grew=0，由 detected
-        // 继续推进，不会重复累加。
-        *scroll_total = scroll_total.saturating_add(detected.max(grew));
-        *last_history = history_now;
-    }
-    let snap = ((history_now as u64) << 32) | (term.grid().total_lines() as u64 & 0xffff_ffff);
+    processor.advance(term, chunk);
+    let snap = ((term.grid().history_size() as u64) << 32)
+        | (term.grid().total_lines() as u64 & 0xffff_ffff);
     if let Some(slot) = grid_lines_slot {
         slot.store(snap, std::sync::atomic::Ordering::Relaxed);
     }
@@ -1432,13 +1400,6 @@ struct Actor {
     /// 网格行数快照（high 32 = history_size，low 32 = total_lines）。
     /// 诊断用：scrollback 内存 ≈ total_lines × columns × size_of::<Cell>()。
     grid_lines: Arc<std::sync::atomic::AtomicU64>,
-    /// 单调累计的滚动行数。alacritty 的 `history_size()` 在达到 scrollback
-    /// 上限后不再增长，但内容仍在向上滚；图片锚点/淘汰必须用这个只增不减
-    /// 的计数，否则 scrollback 满后图片会“粘”在底部且永不释放。
-    scroll_total: u64,
-    /// 上一次观测到的 `history_size()`：未满员时把因换行/自动折行产生的
-    /// 历史增长补进 `scroll_total`（与逐 LF 检测取较大值，避免重复计数）。
-    last_history: usize,
 }
 
 /// 单图 + 全部图片的像素预算：UI 侧缓存 Slint Image 还会再占一份，所以这里
@@ -1534,11 +1495,14 @@ struct StoredImage {
     /// 源像素生命周期标识。UI 以它缓存纹理和灯箱 source。
     source_id: u64,
     kind: ImageKind,
-    /// 绝对行号 = grid 行 + 当时的累计滚动行数 `scroll_total`。`scroll_total`
-    /// 只增不减，因此 scrollback 满员、最旧行被淘汰后锚点仍然正确（旧实现用
-    /// `history_size`，满员后不再增长，图片会粘在底部且永远不会被淘汰）。
-    abs_line: i64,
-    /// `sixel_scrolling=false` 时使用：创建时的视口行，滚动时固定在屏幕上。
+    /// 创建时光标所在 grid 行的稳定身份（`Grid::row_id`）。
+    ///
+    /// placement 的位置只认它：`find_row_id` 找不到说明该逻辑行已被
+    /// reset/清屏/历史淘汰/切到备用屏，必须显式删除，绝不回退到
+    /// `scroll_total` 或绝对行号推算。
+    row_id: u64,
+    /// `sixel_scrolling=false` 时使用：创建（或切到固定模式）时的视口行，
+    /// 滚动时固定在屏幕上；`row_id` 仍负责判定逻辑行是否还存在。
     fixed_row: Option<i32>,
     col: u16,
     width: u32,
@@ -1575,14 +1539,15 @@ impl ImageStore {
         self.bytes = self.bytes.saturating_sub(removed);
     }
 
-    /// 锚定到光标处的 Sixel 图片。
+    /// 锚定到光标处的 Sixel 图片。`row_id` 由调用方从当前光标 grid 行读取
+    /// （`Grid::row_id(cursor.line)`）。
     #[allow(clippy::too_many_arguments)]
     fn push(
         &mut self,
         kind: ImageKind,
         image: SixelImage,
         cursor: Point,
-        scroll_total: u64,
+        row_id: u64,
         display_offset: usize,
         scrolling: bool,
         cols: usize,
@@ -1593,7 +1558,7 @@ impl ImageStore {
             image.height,
             image.rgba,
             cursor,
-            scroll_total,
+            row_id,
             display_offset,
             scrolling,
             cols,
@@ -1610,7 +1575,7 @@ impl ImageStore {
         height: u32,
         rgba: Vec<u8>,
         cursor: Point,
-        scroll_total: u64,
+        row_id: u64,
         display_offset: usize,
         scrolling: bool,
         cols: usize,
@@ -1634,7 +1599,6 @@ impl ImageStore {
             return;
         }
         let col = if cols == 0 { 0 } else { (cursor.column.0).min(cols - 1) as u16 };
-        let abs_line = cursor.line.0 as i64 + scroll_total as i64;
         let fixed_row = if scrolling {
             None
         } else {
@@ -1647,7 +1611,7 @@ impl ImageStore {
             id: self.next_id,
             source_id: self.next_source_id,
             kind,
-            abs_line,
+            row_id,
             fixed_row,
             col,
             width,
@@ -1657,70 +1621,37 @@ impl ImageStore {
         });
     }
 
-    /// 运行时切换“图片跟随滚动”。已有图片换算锚点，避免下次滚动时跳一下。
-    fn set_scrolling(&mut self, scrolling: bool, scroll_total: u64, display_offset: usize) {
-        let total = scroll_total as i64;
-        let off = display_offset as i64;
+    /// 运行时切换“图片跟随滚动”。
+    ///
+    /// 滚动模式只由 `row_id` 解析；切到固定模式时记录**当前**视口行，让
+    /// 图片停在切换那一刻的屏幕位置。切回滚动模式直接丢掉 fixed_row，
+    /// 逻辑行身份本来就在，不需要重新换算绝对行号。
+    fn set_scrolling(&mut self, scrolling: bool, grid: &Grid<Cell>, display_offset: usize) {
         for image in &mut self.images {
             if scrolling {
-                if let Some(row) = image.fixed_row.take() {
-                    image.abs_line = row as i64 - off + total;
-                }
+                image.fixed_row = None;
             } else if image.fixed_row.is_none() {
-                let row = image.abs_line - total + off;
-                image.fixed_row = Some(row.clamp(i32::MIN as i64, i32::MAX as i64) as i32);
+                if let Some(line) = grid.find_row_id(image.row_id) {
+                    image.fixed_row = Some(line.0.saturating_add(display_offset as i32));
+                }
             }
         }
-    }
-
-    /// 淘汰已经滚出 scrollback 可达范围的图片。
-    ///
-    /// 图片只有落在“最深可回滚的 history 行 .. 视口底行”之间才可能再次显示：
-    /// 在底部时行号为 `abs_line - scroll_total`，上滚 `history_size` 行后
-    /// 再加 `history_size`。完全高于最旧 history 行（或低于视口底）的图片
-    /// 永远不会再出现，必须在每次拉帧时 drop，否则 scrollback 一满，图片
-    /// 就会永久占用最多 64 张/64 MiB（22 Tab 时可达 GB 级）。
-    fn retain_reachable(
-        &mut self,
-        history: usize,
-        scroll_total: u64,
-        rows: usize,
-        cell_height: u16,
-    ) {
-        if rows == 0 || self.images.is_empty() {
-            return;
-        }
-        let hist = history as i64;
-        let total = scroll_total as i64;
-        let screen_rows = rows as i64;
-        let cell_h = cell_height.max(1) as i64;
-        let mut removed = 0usize;
-        self.images.retain(|image| {
-            if image.fixed_row.is_some() {
-                // 固定屏幕行的图片不随历史滚动，仍受数量/字节预算约束。
-                return true;
-            }
-            let row = image.abs_line - total;
-            let cell_rows = (image.height as i64 + cell_h - 1) / cell_h;
-            let reachable = row < screen_rows && row + cell_rows.max(1) > -hist;
-            if !reachable {
-                removed += image.bytes;
-            }
-            reachable
-        });
-        self.bytes = self.bytes.saturating_sub(removed);
     }
 
     /// 擦除与视口 cell 矩形相交的图片。图片跨多行时整张 drop，等 TUI 重画；
     /// 同行的另一张图片不受影响。
+    ///
+    /// 图片当前视口行由 `row_id` + `Grid::find_row_id` 解析；固定模式用
+    /// `fixed_row`。`row_id` 已找不到的图片交给 [`ImageStore::place`] 显式
+    /// drop，这里不做猜测性擦除。
     #[allow(clippy::too_many_arguments)]
     fn erase_viewport_rectangle(
         &mut self,
+        grid: &Grid<Cell>,
         row: i64,
         left: usize,
         right: usize,
         display_offset: usize,
-        scroll_total: u64,
         cols: usize,
         rows: usize,
         cell_width: u16,
@@ -1730,7 +1661,6 @@ impl ImageStore {
             return;
         }
         let off = display_offset as i64;
-        let total = scroll_total as i64;
         let cell_w = cell_width.max(1) as i64;
         let cell_h = cell_height.max(1) as i64;
         let left = left.min(cols) as i64;
@@ -1742,7 +1672,11 @@ impl ImageStore {
         self.images.retain(|image| {
             let top = match image.fixed_row {
                 Some(r) => r as i64,
-                None => image.abs_line - total + off,
+                None => match grid.find_row_id(image.row_id) {
+                    Some(line) => line.0 as i64 + off,
+                    // 行已消失：交给 place 统一显式删除。
+                    None => return true,
+                },
             };
             let cell_rows = (image.height as i64 + cell_h - 1) / cell_h;
             let cell_cols = (image.width as i64 + cell_w - 1) / cell_w;
@@ -1763,9 +1697,14 @@ impl ImageStore {
     }
 
     /// 将图片锚点展开为当前视口内的 layer placement。
+    ///
+    /// `row_id` 是唯一位置来源：`find_row_id` 找不到 = 逻辑行已 reset /
+    /// 清屏 / 历史淘汰 / 属于非活动屏幕，必须从 store 显式删除，绝不回退
+    /// 到 `scroll_total` 或绝对行号。完全在视口外但行仍存在的图片保留，
+    /// 以便滚回时重新显示。
     fn place(
-        &self,
-        scroll_total: u64,
+        &mut self,
+        grid: &Grid<Cell>,
         display_offset: usize,
         rows: usize,
         cols: usize,
@@ -1775,35 +1714,42 @@ impl ImageStore {
         if rows == 0 || cols == 0 {
             return;
         }
-        let total = scroll_total as i64;
         let off = display_offset as i64;
         let screen_rows = rows as i64;
         let cell_h = cell_height.max(1) as i64;
-        for image in &self.images {
+        let mut removed = 0usize;
+        self.images.retain(|image| {
+            let Some(line) = grid.find_row_id(image.row_id) else {
+                removed += image.bytes;
+                return false;
+            };
             let row = match image.fixed_row {
                 Some(row) => row as i64,
-                None => image.abs_line - total + off,
+                None => line.0 as i64 + off,
             };
             if row >= screen_rows {
-                continue;
+                return true;
             }
             let cell_rows = (image.height as i64 + cell_h - 1) / cell_h;
             if row + cell_rows.max(1) <= 0 {
-                continue;
+                return true;
             }
             if image.col as usize >= cols {
-                continue;
+                return true;
             }
             out.push(InlineImage {
                 id: image.id,
                 source_id: image.source_id,
+                row_id: image.row_id,
                 row: row.clamp(i32::MIN as i64, i32::MAX as i64) as i32,
                 col: image.col,
                 width: image.width,
                 height: image.height,
                 data: image.data.clone(),
             });
-        }
+            true
+        });
+        self.bytes = self.bytes.saturating_sub(removed);
     }
 }
 
@@ -2088,23 +2034,24 @@ impl Actor {
             self.events.send(event);
         }
         let keyboard_actions = self.scan_keyboard_modes(chunk);
-        self.advance_tracking_scroll(chunk);
+        self.advance_vte(chunk);
         let cursor = self.term.grid().cursor.point;
         // ECH 已经过 vte。常见场景一次性发出：`CUP -> ECH`，此时光标仍在
         // 被擦矩形的右端；按 ECH 宽度取光标左侧区域，不删除同行其他图片。
         let samples = self.image_clear.ech.clone();
         if had_ech && !full_clear {
-            let off = self.term.grid().display_offset() as i64;
+            let grid = self.term.grid();
+            let off = grid.display_offset() as i64;
             for erase in samples.into_iter().rev() {
                 let cells = (erase.unwrap_or(1).max(1) as usize).min(self.term.columns());
                 let end = cursor.column.0.saturating_add(1);
                 let start = end.saturating_sub(cells);
                 self.images.erase_viewport_rectangle(
+                    grid,
                     cursor.line.0 as i64 + off,
                     start,
                     end,
                     off as usize,
-                    self.scroll_total,
                     self.term.columns(),
                     self.term.screen_lines(),
                     self.cell_width,
@@ -2123,13 +2070,12 @@ impl Actor {
             .store((hist << 32) | total, std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// 把字节交给 vte，同时把“到底后换行导致的历史滚动”累计到 `scroll_total`。
-    fn advance_tracking_scroll(&mut self, chunk: &[u8]) {
-        advance_tracking_scroll(
+    /// 把字节交给 vte，并刷新 grid 行数诊断快照（RowId 锚点不再需要 Tervo
+    /// 侧累计滚动行数）。
+    fn advance_vte(&mut self, chunk: &[u8]) {
+        advance_and_publish_grid_lines(
             &mut self.term,
             &mut self.processor,
-            &mut self.scroll_total,
-            &mut self.last_history,
             Some(&self.grid_lines),
             chunk,
         );
@@ -2137,16 +2083,22 @@ impl Actor {
 
     /// 把一张 Sixel 图片锚定到**当前**光标（可能刚解析完同一 chunk 里图片
     /// 之前的位置控制序列，因此必须逐个事件读取，不能等整批结束）。
+    ///
+    /// 锚点是光标所在 grid 行的稳定 RowId，而不是易变的行号。
     fn add_sixel_image(&mut self, image: SixelImage) {
         if !self.sixel_enabled.load(Ordering::Relaxed) {
             return;
         }
-        let (cursor, scroll_total, display_offset, cols) = self.image_anchor();
+        let grid = self.term.grid();
+        let cursor = grid.cursor.point;
+        let row_id = grid.row_id(cursor.line);
+        let display_offset = grid.display_offset();
+        let cols = self.term.columns();
         self.images.push(
             ImageKind::Sixel,
             image,
             cursor,
-            scroll_total,
+            row_id,
             display_offset,
             self.sixel_scrolling,
             cols,
@@ -2158,27 +2110,22 @@ impl Actor {
         if !self.iip_enabled.load(Ordering::Relaxed) {
             return;
         }
-        let (cursor, scroll_total, display_offset, cols) = self.image_anchor();
+        let grid = self.term.grid();
+        let cursor = grid.cursor.point;
+        let row_id = grid.row_id(cursor.line);
+        let display_offset = grid.display_offset();
+        let cols = self.term.columns();
         self.images.push_rgba(
             ImageKind::Iip,
             image.width,
             image.height,
             image.rgba,
             cursor,
-            scroll_total,
+            row_id,
             display_offset,
             self.sixel_scrolling,
             cols,
         );
-    }
-
-    fn image_anchor(&self) -> (Point, u64, usize, usize) {
-        (
-            self.term.grid().cursor.point,
-            self.scroll_total,
-            self.term.grid().display_offset(),
-            self.term.columns(),
-        )
     }
 
     fn viewport_point(&self, line: u16, col: u16) -> Point {
@@ -2280,7 +2227,6 @@ impl Actor {
         if clear_scrollback {
             self.term.clear_screen(ClearMode::Saved);
         }
-        self.last_history = self.term.grid().history_size();
         self.term.selection = None;
         self.sel_anchor = None;
         self.search_span = None;
@@ -2375,9 +2321,9 @@ impl Actor {
             },
             Ctrl::SetSixelScrolling(scrolling) => {
                 self.sixel_scrolling = scrolling;
-                let offset = self.term.grid().display_offset();
-                self.images
-                    .set_scrolling(scrolling, self.scroll_total, offset);
+                let grid = self.term.grid();
+                let offset = grid.display_offset();
+                self.images.set_scrolling(scrolling, grid, offset);
                 self.wake.notify();
                 true
             },
@@ -2386,9 +2332,7 @@ impl Actor {
                 if self.term_config.scrolling_history != lines {
                     self.term_config.scrolling_history = lines;
                     self.term.set_options(self.term_config.clone());
-                    // 预算变化会对 history 做 shrink/truncate，不视为输出滚动。
-                    self.last_history = self.term.grid().history_size();
-                self.store_grid_lines();
+                    self.store_grid_lines();
                     self.force_full = true;
                     self.wake.notify();
                 }
@@ -2510,7 +2454,6 @@ impl Actor {
                 // All = 清屏，Saved = 清回滚；两刀下去等价于终端里的 Clear
                 self.term.clear_screen(ClearMode::All);
                 self.term.clear_screen(ClearMode::Saved);
-                self.last_history = self.term.grid().history_size();
                 self.store_grid_lines();
                 self.term.selection = None;
                 self.sel_anchor = None;
@@ -2565,8 +2508,6 @@ impl Actor {
             Ctrl::Resize { cols, rows } => {
                 self.size = GridSize::new(cols as usize, rows as usize);
                 self.term.resize(self.size);
-                // resize/reflow 造成的 history 变化不是输出滚动，不推进 scroll_total。
-                self.last_history = self.term.grid().history_size();
                 self.store_grid_lines();
                 let _ = self.master.resize(PtySize {
                     rows,
@@ -2612,7 +2553,10 @@ impl Actor {
         self.stats.cells_copied.fetch_add(frame.copied_cells as u64, Relaxed);
     }
 
-    /// 按当前滚动位置把图片锚点换算成视口行，写进帧。
+    /// 按当前滚动位置把图片锚点展开成视口行，写进帧。
+    ///
+    /// 位置解析与生命周期淘汰都在 [`ImageStore::place`] 里按 `RowId` 完成：
+    /// 行身份找不到就 drop，不再有 `scroll_total` 时间轴。
     fn fill_images(&mut self, frame: &mut Frame) {
         frame.images.clear();
         let sixel = self.sixel_enabled.load(Ordering::Relaxed);
@@ -2620,15 +2564,12 @@ impl Actor {
         if !sixel && !iip {
             return;
         }
-        let history = self.term.grid().history_size();
-        let display_offset = self.term.grid().display_offset();
+        let grid = self.term.grid();
+        let display_offset = grid.display_offset();
         let rows = self.term.screen_lines();
         let cols = self.term.columns();
-        // 先把已经滚出可达 scrollback 的图片 drop，再生成当前视口 overlay。
-        self.images
-            .retain_reachable(history, self.scroll_total, rows, self.cell_height);
         self.images.place(
-            self.scroll_total,
+            grid,
             display_offset,
             rows,
             cols,
@@ -2790,6 +2731,14 @@ pub fn fill_frame<T: EventListener>(
                 frame.copied_cells += d.right as u32 - d.left as u32 + 1;
             }
         }
+
+        // 视口行身份：无论整屏还是脏行路径都全量刷新（rows 次 u64 写入），
+        // 这样滚动/行移动后不会留下旧 RowId。图片 placement 只认这里。
+        frame.row_ids.resize(rows, 0);
+        let origin = -(display_offset as i32);
+        for row in 0..rows {
+            frame.row_ids[row] = grid.row_id(Line(row as i32 + origin));
+        }
     }
 
     let offset = display_offset;
@@ -2814,161 +2763,204 @@ mod tests {
         SixelImage { width: w, height: h, rgba: vec![255; w as usize * h as usize * 4] }
     }
 
-    #[test]
-    fn scroll_tracking_keeps_counting_after_history_cap() {
+    /// 5 行视口的测试终端；scrollback 可配置。
+    fn test_term(rows: usize, scrollback: usize) -> Term<alacritty_terminal::event::VoidListener> {
         use alacritty_terminal::event::VoidListener;
-        let size = GridSize::new(20, 5);
-        // 视口 5 行、scrollback 上限 10 行。输出 20 行：前 4 个 LF 只下移光标，
-        // 之后 16 个 LF 滚动；其中后 6 次发生在 history 已满、history_size 不再
-        // 增长之后，必须仍能推进 scroll_total（图片锚点的唯一时间轴）。
-        let config = TermConfig { scrolling_history: 10, ..TermConfig::default() };
-        let mut term: Term<VoidListener> = Term::new(config, &size, VoidListener);
-        let mut processor = Processor::new();
-        let (mut total, mut last) = (0u64, 0usize);
-        let mut bytes = Vec::new();
-        for i in 0..20 {
-            bytes.extend_from_slice(format!("L{i}\r\n").as_bytes());
+        let size = GridSize::new(80, rows);
+        let config = TermConfig { scrolling_history: scrollback, ..TermConfig::default() };
+        Term::new(config, &size, VoidListener)
+    }
+
+    /// 输出若干行，制造可回滚历史（视口 5 行时第 5 个 LF 起开始滚动）。
+    fn feed_lines(term: &mut Term<alacritty_terminal::event::VoidListener>, count: usize) {
+        let mut processor: Processor = Processor::new();
+        for i in 0..count {
+            processor.advance(term, format!("L{i}\r\n").as_bytes());
         }
-        advance_tracking_scroll(&mut term, &mut processor, &mut total, &mut last, None, &bytes);
-        assert_eq!(term.grid().history_size(), 10, "history 应到上限");
-        assert_eq!(total, 16, "scrollback 满后仍必须累计滚动行数");
-        assert_eq!(last, 10);
     }
 
     #[test]
-    fn image_anchor_uses_monotonic_scroll_total_after_history_capped() {
-        // scrollback 满员后 history_size 不再增长，但 scroll_total 继续增长。
-        // 旧实现用 history 做锚点，图片会粘在底行且永不淘汰；新实现必须随
-        // scroll_total 上移，并在超出可达 history 范围时被 drop。
+    fn image_placement_follows_row_id_across_scroll() {
+        let mut term = test_term(5, 10);
+        feed_lines(&mut term, 10);
+        assert!(term.grid().history_size() >= 2, "需要可回滚历史");
+
+        let line = Line(2);
+        let row_id = term.grid().row_id(line);
         let mut store = ImageStore::default();
         store.push(
-            ImageKind::Iip,
+            ImageKind::Sixel,
             test_image(16, 16),
-            Point::new(Line(5), Column(0)),
-            1000,
+            Point::new(line, Column(2)),
+            row_id,
             0,
             true,
             80,
         );
+
         let mut out = Vec::new();
-        // 同一绝对行：scroll_total=1000 时在第 5 行。
-        store.place(1000, 0, 24, 80, 16, &mut out);
-        assert_eq!(out[0].row, 5);
-        // 又滚 10 行（history 仍是 960）→ 图片上移到 -5，旧公式会错误地停在 5。
+        store.place(term.grid(), 0, 5, 80, 16, &mut out);
+        assert_eq!(out.len(), 1);
+        assert_eq!((out[0].row, out[0].col), (2, 2));
+        assert_eq!(out[0].row_id, row_id);
+
+        // 视口上滚 2 行：同一逻辑行在屏幕上下移 2 行，RowId 不变。
+        term.scroll_display(Scroll::Delta(2));
+        let offset = term.grid().display_offset();
         out.clear();
-        store.place(1010, 0, 24, 80, 16, &mut out);
+        store.place(term.grid(), offset, 5, 80, 16, &mut out);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].row, 4, "视口行必须随 display_offset 移动");
+        assert_eq!(out[0].row_id, row_id, "滚动只改变视口投影，不改变 RowId");
+    }
+
+    #[test]
+    fn image_is_dropped_when_row_id_is_reset() {
+        let mut term = test_term(5, 10);
+        let row_id = term.grid().row_id(Line(1));
+        let mut store = ImageStore::default();
+        store.push(
+            ImageKind::Iip,
+            test_image(16, 16),
+            Point::new(Line(1), Column(0)),
+            row_id,
+            0,
+            true,
+            80,
+        );
+
+        // CSI 1J：光标移到第 5 行后清上方，被清的 Row 会拿到全新 RowId。
+        let mut processor: Processor = Processor::new();
+        processor.advance(&mut term, b"\x1b[5;1H\x1b[1J");
+        assert_eq!(term.grid().find_row_id(row_id), None, "reset 后旧 RowId 必须消失");
+
+        let mut out = Vec::new();
+        store.place(term.grid(), 0, 5, 80, 16, &mut out);
         assert!(out.is_empty());
-        store.place(1010, 10, 24, 80, 16, &mut out);
-        assert_eq!(out[0].row, 5);
-        // 滚出最深 scrollback（abs=1005，scroll_total=1966 → 行 -961，高 1 行）
-        // 后不可达，必须释放，否则每次输出都会留下永久图片。
-        store.retain_reachable(960, 1965, 24, 16);
-        assert_eq!(store.images.len(), 1, "还差一行时保留");
-        store.retain_reachable(960, 1966, 24, 16);
-        assert!(store.images.is_empty(), "完全滚出 scrollback 后必须释放");
+        assert!(store.images.is_empty(), "RowId 消失的 placement 必须显式 drop");
         assert_eq!(store.bytes, 0);
     }
 
     #[test]
-    fn image_retention_keeps_images_inside_reachable_history() {
+    fn image_above_viewport_is_kept_until_row_is_evicted() {
+        let mut term = test_term(5, 3);
+        feed_lines(&mut term, 8);
+        assert_eq!(term.grid().history_size(), 3, "history 应到上限");
+
+        let oldest = term.grid().topmost_line();
+        let row_id = term.grid().row_id(oldest);
         let mut store = ImageStore::default();
         store.push(
             ImageKind::Iip,
             test_image(16, 16),
-            Point::new(Line(0), Column(0)),
-            100,
+            Point::new(oldest, Column(0)),
+            row_id,
             0,
             true,
             80,
         );
-        // 已滚到视口上方 50 行，但 history=960 → 仍可回滚看到。
-        store.retain_reachable(960, 150, 24, 16);
-        assert_eq!(store.images.len(), 1);
-        // 视野固定图片（sixel_scrolling=false）不受 history 淘汰影响。
-        let mut fixed = ImageStore::default();
-        fixed.push(
-            ImageKind::Sixel,
-            test_image(16, 16),
-            Point::new(Line(5), Column(0)),
-            0,
-            0,
-            false,
-            80,
-        );
-        fixed.retain_reachable(0, 10_000, 24, 16);
-        assert_eq!(fixed.images.len(), 1);
-    }
 
-    #[test]
-    fn image_anchor_follows_scrolling_history() {
-        let mut store = ImageStore::default();
-        // 光标在视口第 5 行、历史已有 100 行 → 绝对行 105。
-        store.push(
-            ImageKind::Sixel,
-            test_image(16, 16),
-            Point::new(Line(5), Column(10)),
-            100,
-            0,
-            true,
-            80,
-        );
+        // 完全在视口上方但仍在 scrollback 里：保留以便滚回，不输出 placement。
         let mut out = Vec::new();
-        store.place(100, 0, 24, 80, 16, &mut out);
-        assert_eq!(out.len(), 1);
-        assert_eq!((out[0].row, out[0].col), (5, 10));
-
-        // 向上滚 10 行：图片跟着内容下移 10 行（仍在视口内）。
-        out.clear();
-        store.place(100, 10, 24, 80, 16, &mut out);
-        assert_eq!(out.len(), 1);
-        assert_eq!(out[0].row, 15);
-
-        // 又输出 10 行：历史 110，图片内容上移到视口 -5 行（图片高 1 个 cell，
-        // 完全在视口上方 → 不发给 UI，但保留以便滚回去）。
-        out.clear();
-        store.place(110, 0, 24, 80, 16, &mut out);
+        store.place(term.grid(), 0, 5, 80, 16, &mut out);
         assert!(out.is_empty());
-        store.place(110, 10, 24, 80, 16, &mut out);
-        assert_eq!(out[0].row, 5);
+        assert_eq!(store.images.len(), 1, "仍可达的历史行不能提前释放");
+
+        // 继续输出把最旧行挤出 scrollback：RowId 消失后必须显式释放。
+        let mut processor: Processor = Processor::new();
+        processor.advance(&mut term, b"more\r\nmore\r\nmore\r\n");
+        assert_eq!(term.grid().find_row_id(row_id), None, "最旧行必须被淘汰");
+        out.clear();
+        store.place(term.grid(), 0, 5, 80, 16, &mut out);
+        assert!(out.is_empty());
+        assert!(store.images.is_empty(), "RowId 淘汰后 placement 必须释放");
+        assert_eq!(store.bytes, 0);
     }
 
     #[test]
-    fn image_anchor_fixed_mode_does_not_move_on_scroll() {
+    fn fixed_image_keeps_screen_row_but_is_owned_by_row_id() {
+        let mut term = test_term(5, 10);
+        feed_lines(&mut term, 10);
+        let line = Line(2);
+        let row_id = term.grid().row_id(line);
         let mut store = ImageStore::default();
         store.push(
             ImageKind::Sixel,
             test_image(16, 16),
-            Point::new(Line(5), Column(2)),
-            100,
+            Point::new(line, Column(2)),
+            row_id,
             0,
             false,
             80,
         );
-        let mut out = Vec::new();
-        store.place(100, 0, 24, 80, 16, &mut out);
-        assert_eq!(out[0].row, 5);
-        out.clear();
-        store.place(100, 12, 24, 80, 16, &mut out);
-        assert_eq!(out[0].row, 5, "sixel_scrolling=false 时锚定屏幕行");
 
-        // 切换回滚动模式后，按当前视图换算绝对行。
-        store.set_scrolling(true, 100, 12);
+        let mut out = Vec::new();
+        store.place(term.grid(), 0, 5, 80, 16, &mut out);
+        assert_eq!(out[0].row, 2);
+
+        // sixel_scrolling=false：屏幕行固定，不随视口滚动下移。
+        term.scroll_display(Scroll::Delta(2));
         out.clear();
-        store.place(100, 12, 24, 80, 16, &mut out);
-        assert_eq!(out[0].row, 5);
+        store.place(term.grid(), 2, 5, 80, 16, &mut out);
+        assert_eq!(out[0].row, 2, "固定图片锚定屏幕行");
+        assert_eq!(out[0].row_id, row_id);
+
+        // 逻辑行被 reset 后，固定图片也不能继续泄漏。
+        let mut processor: Processor = Processor::new();
+        processor.advance(&mut term, b"\x1b[5;1H\x1b[1J");
+        assert_eq!(term.grid().find_row_id(row_id), None);
         out.clear();
-        store.place(100, 0, 24, 80, 16, &mut out);
-        assert!(out.is_empty(), "图片已完全滚出视口上方");
+        store.place(term.grid(), 2, 5, 80, 16, &mut out);
+        assert!(out.is_empty());
+        assert!(store.images.is_empty(), "固定图片的 RowId 消失后必须 drop");
+    }
+
+    #[test]
+    fn toggling_scrolling_reanchors_with_row_id() {
+        let mut term = test_term(5, 10);
+        feed_lines(&mut term, 10);
+        let line = Line(2);
+        let row_id = term.grid().row_id(line);
+        let mut store = ImageStore::default();
+        store.push(
+            ImageKind::Sixel,
+            test_image(16, 16),
+            Point::new(line, Column(2)),
+            row_id,
+            0,
+            true,
+            80,
+        );
+
+        let mut out = Vec::new();
+        term.scroll_display(Scroll::Delta(2));
+        store.place(term.grid(), 2, 5, 80, 16, &mut out);
+        assert_eq!(out[0].row, 4);
+
+        // 切到固定模式：记录当前视口行，之后滚动不再移动。
+        store.set_scrolling(false, term.grid(), 2);
+        out.clear();
+        store.place(term.grid(), 2, 5, 80, 16, &mut out);
+        assert_eq!(out[0].row, 4);
+
+        // 切回滚动模式：RowId 本身没变，按当前 offset 重新解析即可。
+        store.set_scrolling(true, term.grid(), 2);
+        out.clear();
+        store.place(term.grid(), 0, 5, 80, 16, &mut out);
+        assert_eq!(out[0].row, 2, "回到底部后图片回到逻辑行");
+        assert_eq!(out[0].row_id, row_id);
     }
 
     #[test]
     fn image_store_clear_kind_keeps_other_protocol() {
+        let term = test_term(5, 10);
+        let row_id = term.grid().row_id(Line(0));
         let mut store = ImageStore::default();
         store.push(
             ImageKind::Sixel,
             test_image(16, 16),
             Point::new(Line(0), Column(0)),
-            0,
+            row_id,
             0,
             true,
             80,
@@ -2979,7 +2971,7 @@ mod tests {
             8,
             vec![7; 8 * 8 * 4],
             Point::new(Line(1), Column(1)),
-            0,
+            term.grid().row_id(Line(1)),
             0,
             true,
             80,
@@ -2990,7 +2982,7 @@ mod tests {
         assert_eq!(store.images.len(), 1);
         assert_eq!(store.images[0].kind, ImageKind::Sixel);
         let mut out = Vec::new();
-        store.place(0, 0, 24, 80, 16, &mut out);
+        store.place(term.grid(), 0, 5, 80, 16, &mut out);
         assert_eq!(out.len(), 1, "清除 IIP 不应带走 Sixel");
         store.clear_kind(ImageKind::Sixel);
         assert!(store.images.is_empty());
@@ -3055,12 +3047,14 @@ mod tests {
 
     #[test]
     fn ech_rectangle_removes_only_intersecting_image() {
+        let term = test_term(5, 10);
+        let row_id = term.grid().row_id(Line(2));
         let mut store = ImageStore::default();
         store.push(
             ImageKind::Sixel,
             test_image(16, 16),
             Point::new(Line(2), Column(0)),
-            0,
+            row_id,
             0,
             true,
             80,
@@ -3069,12 +3063,12 @@ mod tests {
             ImageKind::Sixel,
             test_image(16, 16),
             Point::new(Line(2), Column(8)),
-            0,
+            row_id,
             0,
             true,
             80,
         );
-        store.erase_viewport_rectangle(2, 1, 3, 0, 0, 80, 24, 8, 16);
+        store.erase_viewport_rectangle(term.grid(), 2, 1, 3, 0, 80, 5, 8, 16);
         assert_eq!(store.images.len(), 1);
         assert_eq!(store.images[0].col, 8);
     }

@@ -243,13 +243,21 @@ fn image_anchor_scrolls_with_history() {
     // 图片锚定在输出前的第 24 行（grid 23），5 个换行把历史顶到 5：
     // 视口行 = 23 - 5 = 18。
     assert_eq!(frame.images[0].row, 18);
+    let row_id = frame.images[0].row_id;
+    assert_ne!(row_id, 0);
+    assert_eq!(
+        frame.row_ids[18], row_id,
+        "图片 RowId 必须出现在 Frame.row_ids 对应的可见行"
+    );
 
-    // 用户上滚 3 行：同一图片在视口里下移 3 行。
+    // 用户上滚 3 行：同一图片在视口里下移 3 行，RowId 不变。
     handle.scroll(3);
     let frame = wait_for(&handle, Duration::from_secs(3), |f| {
         !f.images.is_empty() && f.images[0].row == 21
     });
     assert_eq!(frame.images[0].row, 21);
+    assert_eq!(frame.images[0].row_id, row_id, "滚动不改变逻辑行身份");
+    assert_eq!(frame.row_ids[21], row_id);
 
     // 回到底部，位置恢复。
     handle.scroll_to(0);
@@ -257,6 +265,113 @@ fn image_anchor_scrolls_with_history() {
         !f.images.is_empty() && f.images[0].row == 18
     });
     assert_eq!(frame.images[0].row, 18);
+    assert_eq!(frame.images[0].row_id, row_id);
+    assert_eq!(frame.row_ids[18], row_id);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn frame_exposes_stable_row_ids_on_full_and_partial_pulls() {
+    let _serial = SIXEL_TEST_LOCK.lock().unwrap();
+    // 先产生整屏文本，再只改一行：第二次拉帧很可能是脏行（partial）路径。
+    let script = "printf 'ONE\\r\\nTWO\\r\\nTHREE'; sleep 0.4; \
+                  printf '\\033[2;1HXY'; sleep 0.5";
+    let handle = spawn(sh(script)).expect("spawn pane");
+    let frame = wait_for(&handle, Duration::from_secs(5), |f| {
+        frame_text(f).contains("THREE")
+    });
+    assert_eq!(frame.row_ids.len(), frame.rows, "row_ids 必须与视口行数一致");
+    assert!(frame.row_ids.iter().all(|&id| id != 0), "可见行必须有非零 RowId");
+    let mut distinct = frame.row_ids.clone();
+    distinct.sort_unstable();
+    distinct.dedup();
+    assert_eq!(distinct.len(), frame.rows, "同一视口内 RowId 必须互不相同");
+    let before = frame.row_ids.clone();
+
+    let frame = wait_for(&handle, Duration::from_secs(5), |f| {
+        frame_text(f).contains("XYO")
+    });
+    assert_eq!(frame.row_ids.len(), frame.rows);
+    assert_eq!(frame.row_ids, before, "无滚动/无 reset 时 RowId 必须稳定");
+}
+
+#[test]
+fn row_reset_makes_row_id_disappear_and_drops_image() {
+    let _serial = SIXEL_TEST_LOCK.lock().unwrap();
+    let path = temp_payload("row-reset", &small_sixel_bel());
+    // 图片在第 1 行。光标移到第 10 行后 CSI 1J 会 reset 上方所有 Row；
+    // 这不是 2J/3J，ImageClearScanner 不会整批清图，必须由 RowId 消失来 drop。
+    let script = format!(
+        "cat '{}'; sleep 0.5; printf '\\033[10;1H\\033[1J'; sleep 0.5",
+        path.display()
+    );
+    let handle = spawn(sh(&script)).expect("spawn pane");
+    let frame = wait_for(&handle, Duration::from_secs(5), |f| !f.images.is_empty());
+    let old_row_id = frame.images[0].row_id;
+    assert_eq!(frame.row_ids[0], old_row_id);
+
+    let frame = wait_for(&handle, Duration::from_secs(5), |f| f.images.is_empty());
+    assert!(frame.images.is_empty(), "RowId 被 reset 后 placement 必须 drop");
+    assert!(
+        !frame.row_ids.contains(&old_row_id),
+        "reset 的行不应再以旧 RowId 出现在视口"
+    );
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn alt_screen_does_not_leak_placement() {
+    let _serial = SIXEL_TEST_LOCK.lock().unwrap();
+    let path = temp_payload("alt-screen", &small_sixel_bel());
+    // 主屏创建图片 -> 进入备用屏 -> 返回主屏；备用屏不能携带主屏 placement，
+    // 回到主屏后旧 placement 也不能“复活”。
+    let script = format!(
+        "cat '{}'; sleep 0.4; printf '\\033[?1049h'; sleep 0.4; \
+         printf 'ALT'; sleep 0.4; printf '\\033[?1049l'; sleep 0.4; \
+         printf 'BACK'; sleep 0.4",
+        path.display()
+    );
+    let handle = spawn(sh(&script)).expect("spawn pane");
+    wait_for(&handle, Duration::from_secs(5), |f| !f.images.is_empty());
+
+    let frame = wait_for(&handle, Duration::from_secs(5), |f| {
+        frame_text(f).contains("ALT")
+    });
+    assert!(frame.images.is_empty(), "备用屏不能泄漏主屏 placement");
+
+    let frame = wait_for(&handle, Duration::from_secs(5), |f| {
+        frame_text(f).contains("BACK")
+    });
+    assert!(frame.images.is_empty(), "离开备用屏后旧 placement 不能复活");
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn fixed_sixel_keeps_screen_row_while_row_id_is_stable() {
+    let _serial = SIXEL_TEST_LOCK.lock().unwrap();
+    let path = temp_payload("fixed-anchor", &small_sixel_bel());
+    let script = format!(
+        "printf '\\033[24;1H'; cat '{}'; printf '\\r\\n\\r\\n\\r\\n\\r\\n\\r\\nEND'; sleep 0.5",
+        path.display()
+    );
+    let handle = spawn(PaneConfig {
+        cols: 40,
+        rows: 24,
+        sixel_scrolling: false,
+        ..sh(&script)
+    })
+    .expect("spawn pane");
+    let frame = wait_for(&handle, Duration::from_secs(5), |f| {
+        frame_text(f).contains("END") && !f.images.is_empty()
+    });
+    // sixel_scrolling=false：文本滚动 5 行后图片仍固定在创建时的屏幕行 23。
+    assert_eq!(frame.images[0].row, 23);
+    let row_id = frame.images[0].row_id;
+    assert_ne!(row_id, 0);
+    assert!(
+        frame.row_ids.contains(&row_id),
+        "逻辑行仍应存在于 scrollback 的 RowId 空间"
+    );
     let _ = std::fs::remove_file(path);
 }
 
