@@ -8,6 +8,8 @@ Tervo 的版本与 tag 规则见 `docs/RELEASING.md`。
 
 - 图片图层顺序：cell 背景 → 图片 → 选区/搜索 → 字形；TUI 黑色 backing cell 不再把图片盖黑。
 - 灯箱按 image id 从原始 RGBA 取图，先设 source 再 open；Fit 允许放大且 >100% pixelated。
+- 新增 `scripts/e2e_image_display.sh`：自生成 Sixel，断言图片图层/黑底/滚动/灯箱首次点击/Fit/100%。
+- dsh 侧栏 ◀/▶ 按文本几何图形单色渲染；U+2922 ⤢ 增加 DejaVuSerif 符号 fallback。
 
 ## [0.3.1] - 2026-11-10
 

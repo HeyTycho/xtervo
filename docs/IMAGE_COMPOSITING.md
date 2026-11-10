@@ -271,3 +271,22 @@ ECH 部分遮挡的像素级裁剪（目前整张 drop）
 ```
 
 不回退到“再加一个 overlay 补丁”的路线。
+
+
+## 自动图片显示测试
+
+```bash
+./scripts/e2e_image_display.sh
+```
+
+覆盖：
+
+```text
+Sixel 可见
+黑色 backing cell 不盖图
+灯箱首次点击有原图
+Fit 放大 / 100% 原图
+图片部分越界仍可见、首次点击可打开
+```
+
+截图/日志默认在 `.logs/image-display-e2e/`。

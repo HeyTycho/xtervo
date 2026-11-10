@@ -172,6 +172,16 @@ const FALLBACK_SETS: &[FallbackCandidate] = &[
         group: GROUP_SYMBOL,
         color_only: false,
     },
+    // DejaVuSerif 补少量 DejaVuSans/Symbols2 没有的几何/箭头符号（如 U+2922 ⤢，
+    // dsh-tui 侧栏展开按钮）；只在前面候选缺字时按需解析。
+    FallbackCandidate {
+        regular: "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf",
+        regular_index: 0,
+        bold_path: None,
+        bold_index: 0,
+        group: GROUP_SYMBOL,
+        color_only: false,
+    },
     // Ubuntu fonts-symbola：单色 emoji 覆盖极好（含 ZWJ 家族），有则优先用。
     FallbackCandidate {
         regular: "/usr/share/fonts/truetype/ancient-scripts/Symbola_hint.ttf",
@@ -1222,6 +1232,19 @@ mod tests {
         // 回退字体没有粗体时也必须能画（用常规体顶替，不能掉回主字体变 tofu）
         assert!(cache.get(&fonts, '你', Style::Bold, 2).is_some(), "粗体中文丢字形");
         assert!(cache.get(&fonts, '好', Style::Italic, 2).is_some(), "斜体中文丢字形");
+    }
+
+    #[test]
+    fn expand_arrow_falls_back_to_serif() {
+        let Some(fonts) = fonts() else { return };
+        if !std::path::Path::new("/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf").exists() {
+            return;
+        }
+        // dsh-tui 侧栏 PanelBar 的展开图标是 U+2922 ⤢；DejaVuSans 没有，
+        // 由 DejaVuSerif 的符号组兜底。缺字时只应触发一次懒加载。
+        assert!(fonts.has_glyph('\u{2922}'), "U+2922 应能从 fallback 解析");
+        let mut cache = GlyphCache::default();
+        assert!(cache.get(&fonts, '\u{2922}', Style::Regular, 1).is_some());
     }
 
     #[test]
