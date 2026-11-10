@@ -2,6 +2,12 @@
 
 Tervo 的版本与 tag 规则见 `docs/RELEASING.md`。
 
+## [0.3.1] - 2026-11-10
+
+### Fixed
+
+- 窗口 resize 收尾不再在 `with_app` 借用期间同步 dispatch PointerReleased，消除 `with_app 重入` 和松开鼠标后状态卡住。
+
 ## [0.3.0] - 2026-11-10
 
 ### Added
