@@ -33,6 +33,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         },
         "snapshot" => snapshot(&args[1..]),
         "replay" => replay(&args[1..]),
+        "trace" => trace(&args[1..]),
         "help" | "-h" | "--help" => {
             println!("{}", help_text());
             Ok(())
@@ -52,6 +53,8 @@ fn help_text() -> &'static str {
        --shell PATH              默认 /bin/bash\n\
        -- <args...>              传给 shell 的参数\n\
      replay --input FILE         把录制字节通过 PTY 回放并抓 frame\n\
+     trace --input FILE --out F  回放并按 frame 变化写 JSONL trace\n\
+       --duration-ms N           默认 1000\n\
        --cols/--rows/--wait-ms\n\
      \n\
      输出 schema=tervo.diag.v1；不含 API key/环境变量值。"
@@ -145,6 +148,65 @@ fn replay(args: &[String]) -> Result<(), Box<dyn Error>> {
     std::thread::sleep(Duration::from_millis(wait_ms(args, 400)));
     let frame = handle.pull(handle.new_frame());
     print_json(&frame_json(&frame, "replay"))
+}
+
+fn trace(args: &[String]) -> Result<(), Box<dyn Error>> {
+    let input = opt(args, "--input").ok_or("trace 需要 --input FILE")?;
+    let input = std::fs::canonicalize(&input)
+        .map_err(|e| format!("trace 输入文件不存在/不可读: {input}: {e}"))?
+        .display()
+        .to_string();
+    let out_path = opt(args, "--out").ok_or("trace 需要 --out FILE")?;
+    let duration = opt(args, "--duration-ms")
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(1000)
+        .clamp(50, 30_000);
+    let cfg = PaneConfig {
+        cols: num(args, "--cols", 120) as u16,
+        rows: num(args, "--rows", 32) as u16,
+        shell: Some("/bin/cat".to_string()),
+        args: vec![input.clone()],
+        ..Default::default()
+    };
+    let handle = spawn(cfg)?;
+    let start = std::time::Instant::now();
+    let mut seq = 0u64;
+    let mut last_gen = u64::MAX;
+    let mut lines = Vec::new();
+    let mut final_value: Option<Value> = None;
+    while start.elapsed() < Duration::from_millis(duration) {
+        std::thread::sleep(Duration::from_millis(25));
+        let frame = handle.pull(handle.new_frame());
+        if frame.generation == last_gen {
+            continue;
+        }
+        last_gen = frame.generation;
+        seq += 1;
+        let mut value = frame_json(&frame, "trace");
+        value["seq"] = json!(seq);
+        value["ts_ms"] = json!(start.elapsed().as_millis() as u64);
+        value["input"] = json!(input);
+        lines.push(serde_json::to_string(&value)?);
+        final_value = Some(value);
+    }
+    if lines.is_empty() {
+        let frame = handle.pull(handle.new_frame());
+        seq += 1;
+        let mut value = frame_json(&frame, "trace");
+        value["seq"] = json!(seq);
+        value["ts_ms"] = json!(start.elapsed().as_millis() as u64);
+        value["input"] = json!(input);
+        lines.push(serde_json::to_string(&value)?);
+        final_value = Some(value);
+    }
+    let mut body = lines.join("\n");
+    body.push('\n');
+    std::fs::write(&out_path, body)?;
+    eprintln!(
+        "[diag] trace {} frames -> {} ({} ms, last gen {:?})",
+        seq, out_path, duration, final_value.as_ref().and_then(|v| v.get("generation"))
+    );
+    Ok(())
 }
 
 /// 稳定 schema v1 的 frame 部分；图片只给 rect，不给 RGBA。
