@@ -1,0 +1,42 @@
+[package]
+name = "tervo-render-wgpu"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+# The Slint presenter is opt-in: without it this crate only needs wgpu and can
+# be used for headless/offscreen frame production.
+slint-presenter = ["dep:slint"]
+
+[dependencies]
+tervo-render = { path = "../render" }
+tervo-scene = { path = "../scene" }
+# Must stay on the exact wgpu major/minor Slint 1.18 unstable-wgpu-30 uses:
+# `slint::Image::try_from(wgpu::Texture)` is only implemented for that type.
+wgpu = { version = "=30.0.1" }
+
+# The winit backend is required to obtain a device/queue via
+# `set_rendering_notifier`; the femtovg WGPU renderer provides
+# `Window::take_snapshot()` for headless pixel validation.
+#
+# `renderer-femtovg` (OpenGL) is enabled in addition to the WGPU renderer only
+# for feature unification: `tervo-app` enables `renderer-skia-opengl`, and Slint
+# 1.18.1's winit backend then compiles femtovg's GL context module, which needs
+# glutin. Without the OpenGL femtovg feature, `cargo check --workspace
+# --all-features` fails inside Slint. Runtime renderer selection is unaffected:
+# `require_wgpu_30` still selects the WGPU renderer.
+slint = { version = "=1.18.1", optional = true, default-features = false, features = [
+    "std",
+    "backend-winit",
+    "compat-1-18",
+    "unstable-wgpu-30",
+    "renderer-femtovg-wgpu",
+    "renderer-femtovg",
+] }
+
+[[example]]
+name = "two_colors"
+required-features = ["slint-presenter"]
