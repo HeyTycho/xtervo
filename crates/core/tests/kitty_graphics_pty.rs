@@ -4,8 +4,12 @@
 //! 覆盖：跨 chunk APC、query APC 回包、chunked transmit + place、RowId 跨滚动、
 //! C=1 不移动光标、delete placement/image、非法输入不破坏终端。
 
+use std::io::Write;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
+
+use flate2::write::ZlibEncoder;
+use flate2::Compression;
 
 use tervo_core::osc::encode_base64;
 use tervo_core::{spawn, Frame, PaneConfig, PaneHandle};
@@ -60,6 +64,12 @@ fn temp_payload(name: &str, bytes: &[u8]) -> PathBuf {
     ));
     std::fs::write(&path, bytes).expect("write payload");
     path
+}
+
+fn zlib(data: &[u8]) -> Vec<u8> {
+    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::fast());
+    encoder.write_all(data).unwrap();
+    encoder.finish().unwrap()
 }
 
 fn apc(control: &str, payload: &[u8]) -> Vec<u8> {
@@ -283,5 +293,36 @@ fn kitty_malformed_input_does_not_break_terminal() {
     });
     assert!(frame.images.is_empty(), "非法输入不得生成图片");
     assert!(!handle.is_exited(), "非法 Kitty 输入不得让 actor 退出");
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn kitty_compressed_rgba_transmit_and_positive_z() {
+    let _serial = KITTY_TEST_LOCK.lock().unwrap();
+    let rgba: Vec<u8> = vec![
+        255, 0, 0, 255, 0, 255, 0, 128, 0, 0, 255, 64, 255, 255, 0, 255,
+    ];
+    let compressed = zlib(&rgba);
+    let encoded = encode_base64(&compressed);
+    let mut payload = apc("a=t,i=9,f=32,s=2,v=2,o=z,q=2", encoded.as_bytes());
+    payload.extend_from_slice(b"\x1b[3;3H");
+    payload.extend(apc("a=p,i=9,p=2,c=1,r=1,z=1,C=1,q=2", b""));
+    payload.extend_from_slice(b"Z");
+    let path = temp_payload("compressed", &payload);
+    let script = format!("stty raw -echo; cat '{}'; sleep 0.4", path.display());
+    let handle = spawn(sh(&script)).expect("spawn pane");
+
+    let frame = wait_for(&handle, Duration::from_secs(5), |f| {
+        f.images.len() == 1 && frame_text(f).contains('Z')
+    });
+    let image = &frame.images[0];
+    assert_eq!((image.width, image.height), (2, 2));
+    assert_eq!(image.data.as_ref(), rgba.as_slice());
+    assert_eq!(image.z_index, 1);
+    assert!(image.above_text, "正 z 必须暴露 AboveText");
+    assert_eq!(frame.image_placements[0].z_index, 1);
+    assert!(frame.image_placements[0].above_text);
+    // C=1：Z 仍在放置前的 (2,2)。
+    assert_eq!(frame.row(2)[2].char(), 'Z');
     let _ = std::fs::remove_file(path);
 }
