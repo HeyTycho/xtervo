@@ -2,7 +2,7 @@
 
 Tervo 的版本与 tag 规则见 `docs/RELEASING.md`。
 
-## [0.2.0] - 2026-11-09
+## [0.3.0] - 2026-11-10
 
 ### Added
 
@@ -31,6 +31,19 @@ Tervo 的版本与 tag 规则见 `docs/RELEASING.md`。
 - 松开左键后仍能 resize 窗口（尤其上边框）。
 - 内联图片改为 framebuffer 合成（文本覆盖图片、滚动随 cell），移除独立视觉 overlay。
 - XTWINOPS/PTY 像素尺寸、ECH 按光标行清图、块元素几何绘制。
+
+## [0.2.0] - 2026-11-09
+
+### Added
+
+- 图片合成 v2：framebuffer 内合成、ECH 行级清理、XTWIN/PTY 像素尺寸、块元素几何绘制。
+- 插件 API v2 + process plugin AI Chat（宿主不存 API Key）、`docs/examples/ai-echo`。
+- Settings AI Chat 面板、Help 页面、i18n、Tab pin/拖拽、背景图/灯箱。
+- 打包 tar/deb/校验和，30m soak PASS。
+
+### Fixed
+
+- 图片低清/漂移、Settings 齿轮/右键菜单、窗口 resize 松手、内存收敛。
 
 ## [0.1.0] - 2026-11-09
 
