@@ -905,6 +905,32 @@ pub fn placeholder_kind(ch: char) -> Option<PlaceholderKind> {
     None
 }
 
+/// 几何图形区里 Unicode 默认呈现为**文本**的 Emoji（`Emoji_Presentation=No`）。
+///
+/// Noto Color Emoji 也收了这个区里的几个码位，且画成橙色媒体按钮：
+/// dsh-tui 侧栏的 ◀/▶ 翻页键（U+25C0 / U+25B6）因此会变成橙方块，把
+/// JetBrains Mono / DejaVu 本来能画的单色三角盖掉。终端惯例是：没有
+/// VS16（U+FE0F）时按文本呈现走字体轮廓，VS16 才请求彩色 emoji。
+///
+/// 这里只列 0x25A0..=0x25FF 中 `Emoji_Presentation=No` 的六个码位；
+/// U+25FD/U+25FE 默认就是 emoji 呈现，仍走彩色路径。其它区段（❤ 等）
+/// 的既有彩色行为不动，避免扩大改动面。
+fn is_text_presentation_geometric(ch: char) -> bool {
+    matches!(ch as u32, 0x25AA | 0x25AB | 0x25B6 | 0x25C0 | 0x25FB | 0x25FC)
+}
+
+/// 该格是否应按彩色 emoji 位图绘制。
+///
+/// `marks` 是挂在该格上的零宽码位（变体选择符等）。普通 emoji 保持
+/// “彩色优先、单色兜底”的既有行为；文本默认的几何图形只有在 VS16 明确
+/// 请求 emoji 呈现时才查彩色字体。ASCII/CJK 永远不会触发彩色探测。
+pub fn prefers_color_emoji(ch: char, marks: &[char]) -> bool {
+    if placeholder_kind(ch) != Some(PlaceholderKind::Emoji) {
+        return false;
+    }
+    !is_text_presentation_geometric(ch) || marks.contains(&'\u{FE0F}')
+}
+
 /// 已解码并缩放好的彩色 emoji 位图。
 ///
 /// 像素是直通 alpha 的 RGBA（内存序 r | g<<8 | b<<16 | a<<24）；`Rc` 让缓存命中
@@ -1436,6 +1462,26 @@ mod tests {
         assert_eq!(placeholder_kind('你'), None);
         assert_eq!(placeholder_kind('\u{200D}'), None);
         assert_eq!(placeholder_kind('\u{FE0F}'), None);
+    }
+
+    #[test]
+    fn text_default_geometric_arrows_stay_monochrome_without_vs16() {
+        // dsh-tui PanelBar 用 U+25C0/U+25B6 画侧栏翻页键，输出不带 VS16。
+        assert!(!prefers_color_emoji('\u{25C0}', &[]));
+        assert!(!prefers_color_emoji('\u{25B6}', &[]));
+        assert!(!prefers_color_emoji('\u{25AA}', &[]));
+        assert!(!prefers_color_emoji('\u{25FB}', &[]));
+        // VS16 明确请求 emoji 呈现时仍走彩色位图。
+        assert!(prefers_color_emoji('\u{25C0}', &['\u{FE0F}']));
+        assert!(prefers_color_emoji('\u{25B6}', &['\u{FE0F}']));
+        // 默认 emoji 呈现的几何图形、普通 emoji 保持彩色优先。
+        assert!(prefers_color_emoji('\u{25FD}', &[]));
+        assert!(prefers_color_emoji('\u{25FE}', &[]));
+        assert!(prefers_color_emoji('😀', &[]));
+        // 非 emoji 文本（含缺字 ⤢）不进入彩色探测。
+        assert!(!prefers_color_emoji('<', &[]));
+        assert!(!prefers_color_emoji('你', &[]));
+        assert!(!prefers_color_emoji('\u{2922}', &[]));
     }
 
     #[test]
