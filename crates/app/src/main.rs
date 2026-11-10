@@ -2356,12 +2356,20 @@ fn finish_window_resize(st: &mut AppState, reason: &str) {
         )
     });
     if let Some((x, y)) = local {
-        st.ui.window().dispatch_event(
-            slint::platform::WindowEvent::PointerReleased {
-                position: slint::LogicalPosition::new(x, y),
-                button: slint::platform::PointerEventButton::Left,
-            },
-        );
+        // 不能在 with_app 借用期间同步 dispatch：Slint 会立刻回调 resize/up
+        // callback，再进 with_app 变成重入，操作被丢弃（鼠标松开后状态卡住）。
+        // 当前借用先结束，回到事件循环再补发 PointerReleased。
+        let weak = st.ui.as_weak();
+        slint::Timer::single_shot(Duration::from_millis(0), move || {
+            if let Some(ui) = weak.upgrade() {
+                ui.window().dispatch_event(
+                    slint::platform::WindowEvent::PointerReleased {
+                        position: slint::LogicalPosition::new(x, y),
+                        button: slint::platform::PointerEventButton::Left,
+                    },
+                );
+            }
+        });
     }
 }
 
