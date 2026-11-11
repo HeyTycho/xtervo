@@ -1,0 +1,17 @@
+# 完整真实 dsh raw（302517 bytes）过滤链守恒验证
+# raw: .worktrees/agent-e2e/.logs/dsh-image-preview-e2e/pty/app-to-host.raw
+# 命令: 临时 probe（源码见 full-raw-probe.rs.txt）
+# 时间: 2026-11-11 18:49:45 CST
+
+    Blocking waiting for file lock on build directory
+running 1 test
+raw=302517 apcs=70 apc_bytes=234629 expected_pass=67888
+single chunk: cmds=14 errs=0
+  round 32 ok
+  round 64 ok
+  round 96 ok
+  round 128 ok
+128 random chunkings OK
+test full_dsh_raw_conservation ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.30s
+EXIT=0

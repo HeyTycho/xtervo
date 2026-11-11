@@ -445,6 +445,30 @@ impl KittyParser {
         self.scan != ScanState::Ground
     }
 
+    /// Bytes currently buffered in a not-yet-terminated sequence (`ESC` / `ESC _`
+    /// prefix or an in-flight APC payload).
+    ///
+    /// Audit/test only: a normal stream satisfies
+    /// `input == passed + explicitly consumed APC bytes + held`. Silent byte
+    /// drops make that ledger fail. Not used by production logic.
+    pub fn held_bytes(&self) -> usize {
+        let prefix = match self.scan {
+            // `ESC` held while waiting for the next byte.
+            ScanState::Escape => 1,
+            // `ESC _` held while waiting for the APC type byte.
+            ScanState::ApcStart => 2,
+            // The ESC that may start `ESC \` is held; the payload is in `apc`.
+            ScanState::ApcEscape | ScanState::ApcOverflowEscape => 1,
+            _ => 0,
+        };
+        let payload = if matches!(self.scan, ScanState::ApcCollect | ScanState::ApcEscape) {
+            self.apc.len()
+        } else {
+            0
+        };
+        prefix + payload
+    }
+
     /// Dimensions of a tracked image id.
     pub fn image_dimensions(&self, id: u32) -> Option<(u32, u32)> {
         self.images.get(&id).map(|meta| (meta.width, meta.height))

@@ -116,6 +116,31 @@ fn sixel_over_pty_bel_terminated_and_cross_chunk() {
 }
 
 #[test]
+fn cjk_before_bel_sixel_keeps_following_text() {
+    let _serial = SIXEL_TEST_LOCK.lock().unwrap();
+    // 回归（2026-11-11 审计 F1）：`面` = E9 9D A2，续字节 0x9D 与 C1 OSC
+    // 同值。旧 sixel filter 会把 `面` 当 OSC 起点，紧随其后的 BEL 终止
+    // Sixel 被当正文放给 vte；vte 的 DCS 状态没有 BEL 终止符，于是吞掉
+    // `AFTER-TEXT`。修复后：0x9D 按 UTF-8 续字节放行，Sixel 被识别，
+    // 后文完整。
+    let mut payload = "面".as_bytes().to_vec();
+    payload.extend_from_slice(&small_sixel_bel());
+    payload.extend_from_slice(b"AFTER-TEXT\r\n");
+    let path = temp_payload("cjk-before-bel", &payload);
+    let script = format!("cat '{}'; sleep 0.5", path.display());
+    let handle = spawn(sh(&script)).expect("spawn pane");
+
+    let frame = wait_for(&handle, Duration::from_secs(8), |f| {
+        !f.images.is_empty() && frame_text(f).contains("AFTER-TEXT")
+    });
+    let text = frame_text(&frame);
+    assert!(text.contains('面'), "CJK 文本必须保留，实际:\n{text}");
+    assert_eq!(frame.images.len(), 1, "Sixel 必须被识别");
+    assert_eq!((frame.images[0].width, frame.images[0].height), (2, 2));
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
 fn invalid_and_oversize_sixel_drop_image_without_breaking_output() {
     let _serial = SIXEL_TEST_LOCK.lock().unwrap();
     let path = temp_payload(
