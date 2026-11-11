@@ -98,6 +98,38 @@ pub fn find_window(conn: &RustConnection, win: u32, title: &str, depth: usize) -
     None
 }
 
+/// WM 是否声明支持 EWMH 最大化。没有 WM/未声明时不要发，调用方应回退。
+fn wm_supports_maximize(
+    conn: &RustConnection,
+    root: u32,
+    atom: &impl Fn(&[u8]) -> Result<u32, String>,
+) -> bool {
+    use x11rb::protocol::xproto::{AtomEnum, ConnectionExt as _};
+    let Ok(check_atom) = atom(b"_NET_SUPPORTING_WM_CHECK") else { return false };
+    let Ok(check) = conn.get_property(false, root, check_atom, AtomEnum::WINDOW, 0, 1) else {
+        return false;
+    };
+    let Ok(check) = check.reply() else { return false };
+    if check.value32().is_none_or(|mut it| it.next().is_none()) {
+        return false;
+    }
+    let Ok(supported_atom) = atom(b"_NET_SUPPORTED") else { return false };
+    let Ok(supported) = conn.get_property(false, root, supported_atom, AtomEnum::ATOM, 0, 1024)
+    else {
+        return false;
+    };
+    let Ok(supported) = supported.reply() else { return false };
+    let Ok(horz) = atom(b"_NET_WM_STATE_MAXIMIZED_HORZ") else { return false };
+    let Ok(vert) = atom(b"_NET_WM_STATE_MAXIMIZED_VERT") else { return false };
+    let mut has_h = false;
+    let mut has_v = false;
+    for a in supported.value32().into_iter().flatten() {
+        has_h |= a == horz;
+        has_v |= a == vert;
+    }
+    has_h && has_v
+}
+
 /// 通过 EWMH `_NET_WM_STATE` 请求最大化/还原；显式 xid，不依赖标题。
 pub fn wm_set_maximized_id(win: u32, maximized: bool) -> Result<(), String> {
     use x11rb::connection::Connection as _;
@@ -114,6 +146,9 @@ pub fn wm_set_maximized_id(win: u32, maximized: bool) -> Result<(), String> {
     let net_state = atom(b"_NET_WM_STATE")?;
     let horz = atom(b"_NET_WM_STATE_MAXIMIZED_HORZ")?;
     let vert = atom(b"_NET_WM_STATE_MAXIMIZED_VERT")?;
+    if !wm_supports_maximize(&conn, root, &atom) {
+        return Err("WM 未声明 _NET_SUPPORTING_WM_CHECK / MAXIMIZED_HORZ+VERT".into());
+    }
     let action = if maximized { 1u32 } else { 0u32 }; // 1=add, 0=remove
     eprintln!(
         "[wm] set_maximized win=0x{win:x} target={maximized} action={action}"
@@ -637,6 +672,10 @@ pub fn activate_own_window(title: &str) -> Option<u32> {
         &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE),
     );
     let _ = conn.flush();
+    // 同 maximize：合成事件在连接关闭前必须被 server 处理完。
+    if let Ok(cookie) = conn.get_input_focus() {
+        let _ = cookie.reply();
+    }
     Some(win)
 }
 

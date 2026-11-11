@@ -12195,7 +12195,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 };
                 match sent {
                     Ok(()) => eprintln!(
-                        "[ui] toggle-maximize before={before} target={target} via=ewmh"
+                        "[ui] toggle-maximize before={before} target={target} sent=ewmh"
                     ),
                     Err(err) => {
                         eprintln!(
