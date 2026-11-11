@@ -118,7 +118,20 @@ target/debug/tervo-doctor schema --out /tmp/tervo.diagnostic_case.v1.json
 
 返回码：`0` 正常；`1` 输入/IO 错误；配置 `--fail-on warn|error` 时达到阈值返回 `2`。
 
-## 6. 明确限制（本 slice）
+## 6. 验证命令
+
+```bash
+CARGO_HOME=.cargo-home-scene-cpu cargo test -p tervo-diagnostics --offline
+CARGO_HOME=.cargo-home-scene-cpu cargo clippy -p tervo-diagnostics --all-targets --offline
+
+# 可选 2 分钟库级内存门禁（不启动窗口，不接 app 主循环）
+CARGO_HOME=.cargo-home-scene-cpu cargo test -p tervo-diagnostics \
+  --test doctor_soak --offline -- --ignored --nocapture
+```
+
+2026-11-11 实测：43,605 次 case 生成，RSS 4048→4144 KiB，threads 2→2，FD 4→4。
+
+## 7. 明确限制（本 slice）
 
 - 没有 app 内接线：`tervo diag doctor` 子命令尚未添加；本 slice 提供库 API + 独立 CLI。
 - 没有 live renderer/GPU 适配器字段：现有 `tervo.diag.v1 env` 只有 backend 请求；GPU adapter/active/fallback 需调用方补充（CLI flags 或 additive env 字段），缺失就报 Unknown。
