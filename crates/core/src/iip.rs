@@ -167,6 +167,16 @@ impl IipFilter {
         }
     }
 
+    /// 跨 chunk 暂存、尚未决定去留的字节数（`ESC`/OSC 前缀）。
+    ///
+    /// 仅供审计/测试：正常流满足
+    /// `输入 == 放行 + 明确消费的图片序列 + held`，任何静默丢字节都会让
+    /// 这个账本对不上。不参与生产逻辑。
+    #[inline]
+    pub fn held_bytes(&self) -> usize {
+        self.pending.len() + self.prefix.len()
+    }
+
     /// 设置终端 cell 像素尺寸；`width`/`height` 以 cell 为单位时按此换算。
     pub fn set_cell_size(&mut self, width: u16, height: u16) {
         self.cell_w = u32::from(width.max(1));

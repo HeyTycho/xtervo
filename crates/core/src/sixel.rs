@@ -97,6 +97,16 @@ impl SixelFilter {
         Self::default()
     }
 
+    /// 跨 chunk 暂存、尚未决定去留的字节数（`ESC`/DCS 头）。
+    ///
+    /// 仅供审计/测试：正常流满足
+    /// `输入 == 放行 + 明确消费的图片序列 + held`，任何静默丢字节都会让
+    /// 这个账本对不上。不参与生产逻辑。
+    #[inline]
+    pub fn held_bytes(&self) -> usize {
+        self.pending.len()
+    }
+
     /// 当前是否处于 Sixel payload 中（actor 可据此抑制无意义唤醒）。
     #[inline]
     pub fn in_sixel(&self) -> bool {
