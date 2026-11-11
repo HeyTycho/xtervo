@@ -239,6 +239,14 @@ pub fn encode_mode(
     if text.is_empty() {
         return None;
     }
+    // Delete 带修饰键：xterm/GNOME 风格的 modified function key。
+    // Ctrl+Delete = CSI 3;5~，readline 默认把它绑定到 kill-word；这不是
+    // 终端自己删字，而是把“删一个词”的标准按键序列交给 shell/应用。
+    if text == "\u{7f}" && (ctrl || alt || shift) && bindings.delete == DeleteBinding::DeleteSequence {
+        let bits = (shift as u8) | ((alt as u8) << 1) | ((ctrl as u8) << 2);
+        let param = u16::from(bits) + 1;
+        return Some(format!("\x1b[3;{param}~").into_bytes());
+    }
     if let Some(seq) = special(text, bindings) {
         let mut v = seq.to_vec();
         if alt {
@@ -876,6 +884,21 @@ mod tests {
             encode_mode("\u{7f}", false, false, false, false, default).unwrap(),
             b"\x1b[3~",
             "默认 delete-sequence"
+        );
+        assert_eq!(
+            encode_mode("\u{7f}", true, false, false, false, default).unwrap(),
+            b"\x1b[3;5~",
+            "Ctrl+Delete 是 modified Delete；readline 默认 kill-word"
+        );
+        assert_eq!(
+            encode_mode("\u{7f}", false, true, false, false, default).unwrap(),
+            b"\x1b[3;3~",
+            "Alt+Delete 用 CSI 修饰符，不再拼 ESC 前缀"
+        );
+        assert_eq!(
+            encode_mode("\u{7f}", true, false, true, false, default).unwrap(),
+            b"\x1b[3;6~",
+            "Ctrl+Shift+Delete"
         );
         let ascii_del =
             KeyBindings { delete: DeleteBinding::AsciiDel, ..KeyBindings::default() };
