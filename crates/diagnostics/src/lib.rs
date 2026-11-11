@@ -22,12 +22,19 @@
 //! logging here; callers must only log bounded summaries/errors.
 
 #![forbid(unsafe_code)]
+#![recursion_limit = "512"]
 
+pub mod doctor;
 pub mod metrics;
 pub mod resources;
 pub mod scene_diff;
 pub mod trace;
 
+pub use doctor::{
+    Attachment, DiagnosticCase, Doctor, DoctorConfig, DoctorError, DoctorInput, Environment,
+    FrameSummary, IssueDraft, MetricsSummary, ProbeStatus, RenderProfileSummary, Symptom,
+    DIAGNOSTIC_CASE_SCHEMA,
+};
 pub use metrics::{FrameSample, MetricsRegistry, FRAME_TIME_BUCKETS_US};
 pub use resources::{
     rgba_bytes, AtomicResourceTracker, ResourceCount, ResourceSnapshot, ResourceTracker,

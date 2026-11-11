@@ -1,0 +1,694 @@
+{
+  "$defs": {
+    "environment": {
+      "additionalProperties": true,
+      "description": "Every field is optional. Null means not collected.",
+      "properties": {
+        "build_time": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "commit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "config_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "desktop": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dirty": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "display": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dri_present": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "log_dir": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "log_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "os": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "profiles_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "renderer": {
+          "additionalProperties": true,
+          "properties": {
+            "active": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "fallback": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "fallback_reason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "gpu": {
+              "additionalProperties": true,
+              "properties": {
+                "adapter": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "backend": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "device_type": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "driver": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "type": [
+                "object",
+                "null"
+              ]
+            },
+            "requested": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "session_type": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "target": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "wayland_display": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "evidence_bundle": {
+      "additionalProperties": true,
+      "properties": {
+        "items": {
+          "items": {
+            "$ref": "#/$defs/evidence_item"
+          },
+          "type": "array"
+        },
+        "limits": {
+          "properties": {
+            "max_item_bytes": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "max_items": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "max_total_bytes": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "max_item_bytes",
+            "max_total_bytes",
+            "max_items"
+          ],
+          "type": "object"
+        },
+        "omissions": {
+          "items": {
+            "properties": {
+              "kind": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "reason": {
+                "enum": [
+                  "count_limit",
+                  "total_limit",
+                  "empty"
+                ]
+              }
+            },
+            "required": [
+              "label",
+              "kind",
+              "reason"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "redaction": {
+          "$ref": "#/$defs/redaction_report"
+        },
+        "schema": {
+          "const": "tervo.evidence_bundle.v1"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "total_bytes": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "schema",
+        "limits",
+        "items",
+        "total_bytes",
+        "sha256",
+        "redaction",
+        "omissions"
+      ],
+      "type": "object"
+    },
+    "evidence_item": {
+      "additionalProperties": true,
+      "properties": {
+        "content": {
+          "type": "string"
+        },
+        "id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "environment",
+            "config",
+            "paths",
+            "frame",
+            "damage",
+            "metrics",
+            "render_profile",
+            "logs",
+            "attachment",
+            "other"
+          ]
+        },
+        "label": {
+          "type": "string"
+        },
+        "media_type": {
+          "type": "string"
+        },
+        "original_bytes": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "redaction": {
+          "$ref": "#/$defs/redaction_report"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "stored_bytes": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "label",
+        "media_type",
+        "content",
+        "original_bytes",
+        "stored_bytes",
+        "truncated",
+        "sha256",
+        "redaction"
+      ],
+      "type": "object"
+    },
+    "finding": {
+      "additionalProperties": true,
+      "properties": {
+        "confidence": {
+          "enum": [
+            "observed",
+            "high",
+            "medium",
+            "low",
+            "hypothesis"
+          ]
+        },
+        "detail": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "evidence": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "falsify": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "next_probe": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "probe": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "severity": {
+          "enum": [
+            "info",
+            "warning",
+            "error"
+          ]
+        },
+        "title": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "probe",
+        "severity",
+        "title",
+        "detail",
+        "evidence",
+        "confidence"
+      ],
+      "type": "object"
+    },
+    "issue_draft": {
+      "properties": {
+        "labels": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "markdown": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "title": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "markdown"
+      ],
+      "type": "object"
+    },
+    "probe": {
+      "additionalProperties": true,
+      "properties": {
+        "command": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "evidence": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "layer": {
+          "enum": [
+            "bytes",
+            "filter",
+            "term",
+            "frame",
+            "damage",
+            "framebuffer",
+            "presenter",
+            "renderer",
+            "gpu",
+            "profile",
+            "config",
+            "files",
+            "build",
+            "environment",
+            "evidence"
+          ]
+        },
+        "status": {
+          "enum": [
+            "pass",
+            "warn",
+            "fail",
+            "skipped",
+            "unknown"
+          ]
+        },
+        "summary": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "layer",
+        "status",
+        "summary",
+        "evidence"
+      ],
+      "type": "object"
+    },
+    "recommendation": {
+      "additionalProperties": true,
+      "properties": {
+        "action": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "command": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "evidence": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "collect_evidence",
+            "config",
+            "probe",
+            "code_fix",
+            "regression_test"
+          ]
+        },
+        "related_findings": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "title": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "action",
+        "kind",
+        "evidence"
+      ],
+      "type": "object"
+    },
+    "redaction_report": {
+      "additionalProperties": false,
+      "properties": {
+        "matches": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "rules": {
+          "additionalProperties": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "matches",
+        "rules"
+      ],
+      "type": "object"
+    },
+    "regression_test": {
+      "additionalProperties": true,
+      "properties": {
+        "command": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "evidence": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "expected": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "note": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "not_generated",
+            "proposed",
+            "not_applicable"
+          ]
+        }
+      },
+      "required": [
+        "status",
+        "note"
+      ],
+      "type": "object"
+    },
+    "symptom": {
+      "additionalProperties": true,
+      "properties": {
+        "actual": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "details": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "expected": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reported": {
+          "type": "boolean"
+        },
+        "repro_steps": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "summary": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "reported",
+        "summary"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://tervo.dev/schemas/tervo.diagnostic_case.v1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
+  "description": "Deterministic, offline diagnostic case produced by tervo-doctor. Missing data is null, never a fabricated default.",
+  "properties": {
+    "case_id": {
+      "description": "Deterministic hash-based id; no timestamp/random component.",
+      "pattern": "^case-[0-9a-f]{16}$",
+      "type": "string"
+    },
+    "environment": {
+      "$ref": "#/$defs/environment"
+    },
+    "evidence": {
+      "$ref": "#/$defs/evidence_bundle"
+    },
+    "findings": {
+      "items": {
+        "$ref": "#/$defs/finding"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "issue_draft": {
+      "$ref": "#/$defs/issue_draft"
+    },
+    "probes": {
+      "items": {
+        "$ref": "#/$defs/probe"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "recommendations": {
+      "items": {
+        "$ref": "#/$defs/recommendation"
+      },
+      "type": "array"
+    },
+    "regression_test": {
+      "$ref": "#/$defs/regression_test"
+    },
+    "schema": {
+      "const": "tervo.diagnostic_case.v1",
+      "description": "Versioned document id."
+    },
+    "symptom": {
+      "$ref": "#/$defs/symptom"
+    }
+  },
+  "required": [
+    "schema",
+    "case_id",
+    "symptom",
+    "environment",
+    "evidence",
+    "probes",
+    "findings",
+    "recommendations",
+    "issue_draft",
+    "regression_test"
+  ],
+  "title": "Tervo DiagnosticCase v1",
+  "type": "object"
+}
