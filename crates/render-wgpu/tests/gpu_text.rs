@@ -13,8 +13,8 @@ use std::sync::OnceLock;
 
 use tervo_render_wgpu::{
     compare_rgba, diff_rgba, discover_font_path, rasterize_reference, read_target_rgba8,
-    request_headless_gpu, write_ppm, AtlasConfig, AtlasError, FontStyle, GpuTextRenderer,
-    HeadlessGpu, TextLayout, TextRenderError, TextSection, TextTarget,
+    request_headless_gpu, write_ppm, AtlasConfig, AtlasError, FontStyle, GpuImageRenderer,
+    GpuTextRenderer, HeadlessGpu, TextLayout, TextRenderError, TextSection, TextTarget,
 };
 use tervo_scene::{
     BackgroundInstance, CursorState, DrawItem, PhysicalSize, Scene, SceneLayer, TextAttributes,
@@ -1024,21 +1024,27 @@ fn render_scene_uses_background_layer_and_reports_skipped_overlays() {
             },
             SceneLayer {
                 z_index: TEXT_LAYER_Z,
-                items: vec![DrawItem::Text(batch)],
+                items: vec![DrawItem::Text(batch.clone())],
             },
         ],
     };
-    let stats = fixture
-        .renderer
-        .render_scene(&fixture.target, &scene, text_layout)
+    let mut images = GpuImageRenderer::new(fixture.gpu.device.clone(), fixture.gpu.queue.clone());
+    let section = TextSection::new(&batch, text_layout);
+    let stats = images
+        .render_scene(
+            &mut fixture.renderer,
+            &fixture.target,
+            [0x11, 0x22, 0x33, 255],
+            &[section],
+            &scene,
+        )
         .expect("render scene");
-    assert_eq!(stats.scene_revision, 77);
-    assert!(stats.background_from_scene);
-    assert!(stats.scene_cursor_skipped);
-    assert_eq!(stats.scene_images_skipped, 0);
+    let text = stats.text.as_ref().expect("text stage stats");
+    assert_eq!(text.cells, 1);
+    assert_eq!(stats.below.images + stats.above.images, 0);
     let pixels = read_target_rgba8(&fixture.gpu.device, &fixture.gpu.queue, &fixture.target)
         .expect("scene readback");
-    // A far corner is the Scene background layer's clear color.
+    // A far corner keeps the caller's Scene background clear color.
     let offset = (79 * 200 + 199) * 4;
     assert_eq!(&pixels[offset..offset + 3], &[0x11, 0x22, 0x33]);
 }

@@ -6539,7 +6539,13 @@ fn redraw_pane_inner(st: &mut AppState, id: PaneId) {
         };
     }
     let gpu_after = gpu_present::upload_stats();
-    sync_inline_images(rt, &frame);
+    if rt.gpu_native_active {
+        // GPU Scene 已经按 Scene.image 合成图片；再显示 Slint 图片 overlay 会双画。
+        rt.inline_model.set_vec(Vec::new());
+        rt.inline_sig.clear();
+    } else {
+        sync_inline_images(rt, &frame);
+    }
     // 可见纹理缓存与点击 source 分离：即使 Slint 纹理缓存淘汰，本帧命中的
     // 不可变 RGBA 仍在，首次点击无需再等 actor 回包。
     refresh_inline_hits(rt, &frame);
@@ -6806,10 +6812,12 @@ fn take_snapshot_and_log(ui: &MainWindow, path: &Path) {
                 Ok(()) => {
                     let native = gpu_native::totals();
                     let last = gpu_native::last_stats();
+                    let text_stats = last.as_ref().and_then(|stats| stats.text.as_ref());
                     eprintln!(
                         "[gpu-snapshot] path={} size={width}x{height} gpu_ready={} \
                          gpu_native_ready={} gpu_native_frames={} draw_calls={} \
                          atlas_uploads={} atlas_bytes={} vertex_bytes={} \
+                         image_uploads={} image_sources={} \
                          last(fallback={} missing={} wide={} spacer={} hidden={} dim={} \
                          selected={} searched={} images_skipped={} cursor_skipped={} \
                          background_from_scene={}) total={total} nonbg={nonbg} distinct={} \
@@ -6822,19 +6830,19 @@ fn take_snapshot_and_log(ui: &MainWindow, path: &Path) {
                         native.atlas_uploads,
                         native.atlas_uploaded_bytes,
                         native.vertex_uploaded_bytes,
-                        last.as_ref().map_or(0, |stats| stats.fallback_glyphs),
-                        last.as_ref().map_or(0, |stats| stats.missing_glyphs),
-                        last.as_ref().map_or(0, |stats| stats.wide_cells),
-                        last.as_ref().map_or(0, |stats| stats.wide_spacer_cells),
-                        last.as_ref().map_or(0, |stats| stats.hidden_cells),
-                        last.as_ref().map_or(0, |stats| stats.dim_cells),
-                        last.as_ref().map_or(0, |stats| stats.selected_cells),
-                        last.as_ref().map_or(0, |stats| stats.searched_cells),
-                        last.as_ref().map_or(0, |stats| stats.scene_images_skipped),
-                        last.as_ref()
-                            .is_some_and(|stats| stats.scene_cursor_skipped),
-                        last.as_ref()
-                            .is_some_and(|stats| stats.background_from_scene),
+                        native.image_uploads,
+                        native.image_sources,
+                        text_stats.map_or(0, |stats| stats.fallback_glyphs),
+                        text_stats.map_or(0, |stats| stats.missing_glyphs),
+                        text_stats.map_or(0, |stats| stats.wide_cells),
+                        text_stats.map_or(0, |stats| stats.wide_spacer_cells),
+                        text_stats.map_or(0, |stats| stats.hidden_cells),
+                        text_stats.map_or(0, |stats| stats.dim_cells),
+                        text_stats.map_or(0, |stats| stats.selected_cells),
+                        text_stats.map_or(0, |stats| stats.searched_cells),
+                        last.as_ref().map_or(0, |stats| stats.below.images + stats.above.images),
+                        true,
+                        true,
                         histogram.len(),
                         center
                             .iter()

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! `TERVO_GPU_NATIVE=1`：真实终端 `Frame` → `tervo_scene::Scene` → WGPU 文字/背景。
+//! `TERVO_GPU_NATIVE=1`：真实终端 `Frame` → `tervo_scene::Scene` → WGPU 分层合成。
 //!
 //! 这是默认 GPU（Skia/WGPU30）上的核心 vertical slice，**不是**默认路径：
 //! - 只有显式 `TERVO_GPU_NATIVE=1` 才启用；`TERVO_GPU=1` 的 stage 0
@@ -9,10 +9,11 @@
 //! - 文字来源是 `SceneBuilder::from_frame` 产出的 `TextBatch`，由
 //!   `tervo_render_wgpu::GpuTextRenderer` 的 glyph atlas 实例化绘制到离屏
 //!   `Rgba8Unorm`；**绝不读取 CPU 终端 framebuffer 当 GPU 文字源**。
-//! - 背景来自 Scene 的 `BackgroundInstance`（clear pass）。
-//! - 图片和光标继续走现有 Slint overlay；`render_scene` 会报告跳过的
-//!   image/cursor 数量，而不是假装已合成。
-//! - 任何失败（无 device / atlas 创建失败 / 渲染失败 / 尺寸异常）只记录一次，
+//! - 图片来自 `Frame.images`：每个 `source_id` 只 `upload_source` 一次，随后
+//!   `retain_sources`；`GpuImageRenderer::render_scene` 按
+//!   background -> below-text images -> glyphs -> above-text images 顺序合成。
+//! - 光标继续走现有 Slint overlay（明确保留，不在本 slice 合成）。
+//! - 任何失败（无 device / atlas / image upload / 渲染 / 尺寸异常）只记录一次，
 //!   本进程剩余时间返回 `None`，调用方立即回到 CPU `Renderer::image()`。
 //!   不会把 CPU framebuffer 包装成 GPU 成功。
 //!
@@ -29,10 +30,14 @@ use std::sync::{Mutex, OnceLock};
 
 use slint::wgpu_30::wgpu;
 use tervo_core::Frame;
+use tervo_graphics::SourceId;
 use tervo_render_wgpu::{
-    read_target_rgba8, write_ppm, AtlasConfig, FrameStats, GpuTextRenderer, TextLayout, TextTarget,
+    read_target_rgba8, write_ppm, AtlasConfig, GpuImageRenderer, GpuTextRenderer, SceneLayerStats,
+    TextLayout, TextSection, TextTarget,
 };
-use tervo_scene::{BackgroundInstance, PhysicalSize, SceneBuilder, Viewport};
+use tervo_scene::{
+    BackgroundInstance, DrawItem, PhysicalSize, Scene, SceneBuilder, Viewport, BACKGROUND_LAYER_Z,
+};
 
 /// `TERVO_GPU_NATIVE` 是否请求 Stage 1（默认 false）。
 pub fn requested() -> bool {
@@ -56,7 +61,7 @@ fn dump_prefix() -> Option<PathBuf> {
     std::env::var_os("TERVO_GPU_NATIVE_DUMP").map(PathBuf::from)
 }
 
-/// One offscreen texture + cached import per pane.
+/// One offscreen texture per pane.
 struct PaneTarget {
     target: TextTarget,
     frames: u64,
@@ -73,8 +78,9 @@ struct State {
     device: wgpu::Device,
     queue: wgpu::Queue,
     renderer: GpuTextRenderer,
+    images: GpuImageRenderer,
     panes: HashMap<u64, PaneTarget>,
-    last_stats: Option<FrameStats>,
+    last_stats: Option<SceneLayerStats>,
 }
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
@@ -86,6 +92,8 @@ static DRAW_CALLS: AtomicU64 = AtomicU64::new(0);
 static ATLAS_UPLOADS: AtomicU64 = AtomicU64::new(0);
 static ATLAS_UPLOADED_BYTES: AtomicU64 = AtomicU64::new(0);
 static VERTEX_UPLOADED_BYTES: AtomicU64 = AtomicU64::new(0);
+static IMAGE_UPLOADS: AtomicU64 = AtomicU64::new(0);
+static IMAGE_SOURCES: AtomicU64 = AtomicU64::new(0);
 
 /// 进程累计的 GPU-native 统计（用于快照验收/integration 证据）。
 #[derive(Clone, Copy, Debug, Default)]
@@ -95,6 +103,8 @@ pub struct NativeTotals {
     pub atlas_uploads: u64,
     pub atlas_uploaded_bytes: u64,
     pub vertex_uploaded_bytes: u64,
+    pub image_uploads: u64,
+    pub image_sources: u64,
 }
 
 pub fn totals() -> NativeTotals {
@@ -104,6 +114,8 @@ pub fn totals() -> NativeTotals {
         atlas_uploads: ATLAS_UPLOADS.load(Ordering::Relaxed),
         atlas_uploaded_bytes: ATLAS_UPLOADED_BYTES.load(Ordering::Relaxed),
         vertex_uploaded_bytes: VERTEX_UPLOADED_BYTES.load(Ordering::Relaxed),
+        image_uploads: IMAGE_UPLOADS.load(Ordering::Relaxed),
+        image_sources: IMAGE_SOURCES.load(Ordering::Relaxed),
     }
 }
 
@@ -146,8 +158,6 @@ pub fn install(device: &wgpu::Device, _queue: &wgpu::Queue) {
     if !requested() || failed() {
         return;
     }
-    // Renderer 需要 pane 的真实字体路径；这里只替换 device/queue，
-    // renderer 为 None 时下一次 pane_image 会重建。
     if let Ok(mut guard) = STATE.lock() {
         if guard.is_some() {
             eprintln!("[gpu-native] RenderingSetup 重新安装：丢弃旧 device 上的 atlas/target");
@@ -242,6 +252,7 @@ fn ensure_state(input: &PaneFrame<'_>) -> bool {
         renderer.atlas().height(),
         renderer.fallback_font_paths().len()
     );
+    let images = GpuImageRenderer::new(device.clone(), queue.clone());
     let mut guard = STATE
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -249,13 +260,34 @@ fn ensure_state(input: &PaneFrame<'_>) -> bool {
         device,
         queue,
         renderer,
+        images,
         panes: HashMap::new(),
         last_stats: None,
     });
     true
 }
 
-/// 把真实 `Frame` 走 Scene → WGPU 文字/背景，返回可交给 `PaneView.image` 的
+fn scene_clear_color(scene: &Scene) -> ([u8; 4], bool) {
+    if let Some(layer) = scene.layer(BACKGROUND_LAYER_Z) {
+        for item in &layer.items {
+            if let DrawItem::Background(background) = item {
+                let color = background.color & 0x00ff_ffff;
+                return (
+                    [
+                        ((color >> 16) & 0xff) as u8,
+                        ((color >> 8) & 0xff) as u8,
+                        (color & 0xff) as u8,
+                        255,
+                    ],
+                    true,
+                );
+            }
+        }
+    }
+    ([0, 0, 0, 255], false)
+}
+
+/// 把真实 `Frame` 走 Scene → WGPU 分层合成，返回可交给 `PaneView.image` 的
 /// `slint::Image`。返回 `None` 时调用方必须使用 CPU `Renderer::image()`。
 pub fn pane_image(input: &PaneFrame<'_>) -> Option<slint::Image> {
     if !requested() || failed() {
@@ -298,11 +330,57 @@ pub fn pane_image(input: &PaneFrame<'_>) -> Option<slint::Image> {
         baseline: input.baseline as f32,
         default_background: Some(input.theme_bg & 0x00ff_ffff),
     };
+    let (clear, background_from_scene) = scene_clear_color(&scene);
 
     let mut guard = STATE
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let state = guard.as_mut()?;
+
+    // Upload each immutable Frame image source at most once, then drop sources
+    // that are no longer visible. This is the only image pixel upload; no
+    // per-frame full-image copy.
+    let mut visible_sources: Vec<SourceId> = Vec::with_capacity(input.frame.images.len());
+    for image in &input.frame.images {
+        if image.width == 0 || image.height == 0 {
+            continue;
+        }
+        let source = SourceId(image.source_id);
+        let expected = image.width as usize * image.height as usize * 4;
+        if image.data.len() != expected {
+            drop(guard);
+            fail(format!(
+                "pane={} image source={} has {} bytes, expected {expected}",
+                input.pane,
+                image.source_id,
+                image.data.len()
+            ));
+            return None;
+        }
+        match state
+            .images
+            .upload_source(source, image.width, image.height, &image.data)
+        {
+            Ok(uploaded) => {
+                if uploaded {
+                    IMAGE_UPLOADS.fetch_add(1, Ordering::Relaxed);
+                }
+                visible_sources.push(source);
+            }
+            Err(error) => {
+                drop(guard);
+                fail(format!(
+                    "pane={} 上传 image source={} 失败: {error}",
+                    input.pane, image.source_id
+                ));
+                return None;
+            }
+        }
+    }
+    state
+        .images
+        .retain_sources(|source| visible_sources.contains(&source));
+    IMAGE_SOURCES.store(visible_sources.len() as u64, Ordering::Relaxed);
 
     let recreate = state
         .panes
@@ -327,25 +405,50 @@ pub fn pane_image(input: &PaneFrame<'_>) -> Option<slint::Image> {
         );
     }
 
+    let section;
+    let sections = match scene.text_batch() {
+        Some(batch) => {
+            section = TextSection::new(batch, layout);
+            std::slice::from_ref(&section)
+        }
+        None => &[],
+    };
+
     let stats = {
         let pane = state.panes.get_mut(&input.pane)?;
-        match state.renderer.render_scene(&pane.target, &scene, layout) {
+        match state.images.render_scene(
+            &mut state.renderer,
+            &pane.target,
+            clear,
+            sections,
+            &scene,
+        ) {
             Ok(stats) => stats,
             Err(error) => {
                 drop(guard);
-                fail(format!("pane={} GPU Scene 渲染失败: {error}", input.pane));
+                fail(format!(
+                    "pane={} GPU Scene 分层渲染失败: {error}",
+                    input.pane
+                ));
                 return None;
             }
         }
     };
-    // render_scene counts images/cursor from the Scene; the app keeps its
-    // existing Slint overlays for them (reported in the frame log below).
+    let text = stats
+        .text
+        .as_ref()
+        .expect("successful Scene composition includes text stats");
+    let draw_calls = text.draw_calls + stats.below.draw_calls + stats.above.draw_calls;
+    let render_passes = text.render_passes + stats.below.render_passes + stats.above.render_passes;
+    let image_quads = stats.below.images + stats.above.images;
 
     FRAMES.fetch_add(1, Ordering::Relaxed);
-    DRAW_CALLS.fetch_add(u64::from(stats.draw_calls), Ordering::Relaxed);
-    ATLAS_UPLOADS.fetch_add(stats.atlas_uploads, Ordering::Relaxed);
-    ATLAS_UPLOADED_BYTES.fetch_add(stats.atlas_uploaded_bytes, Ordering::Relaxed);
-    VERTEX_UPLOADED_BYTES.fetch_add(stats.vertex_uploaded_bytes, Ordering::Relaxed);
+    DRAW_CALLS.fetch_add(u64::from(draw_calls), Ordering::Relaxed);
+    ATLAS_UPLOADS.fetch_add(text.atlas_uploads, Ordering::Relaxed);
+    ATLAS_UPLOADED_BYTES.fetch_add(text.atlas_uploaded_bytes, Ordering::Relaxed);
+    VERTEX_UPLOADED_BYTES.fetch_add(text.vertex_uploaded_bytes, Ordering::Relaxed);
+    VERTEX_UPLOADED_BYTES.fetch_add(stats.below.vertex_uploaded_bytes, Ordering::Relaxed);
+    VERTEX_UPLOADED_BYTES.fetch_add(stats.above.vertex_uploaded_bytes, Ordering::Relaxed);
 
     let pane = state.panes.get_mut(&input.pane)?;
     pane.frames += 1;
@@ -373,35 +476,45 @@ pub fn pane_image(input: &PaneFrame<'_>) -> Option<slint::Image> {
              atlas_uploads={} atlas_bytes={} vertex_bytes={} \
              fallback_glyphs={} missing_glyphs={} style_fallbacks={} \
              wide={} spacer={} hidden={} dim={} selected={} searched={} \
-             images_skipped={} cursor_skipped={} background_from_scene={} cpu_us={}",
+             image_quads={} image_draw_calls={} image_uploads_total={} image_sources={} \
+             frame_images={} scene_images={} cursor_overlay_external=true \
+             background_from_scene={} cpu_us={}",
             input.pane,
-            stats.frame,
-            stats.scene_revision,
+            text.frame,
+            scene.revision,
             input.cols,
             input.rows,
             width,
             height,
-            stats.draw_calls,
-            stats.render_passes,
-            stats.cells,
-            stats.solid_quads,
-            stats.glyph_quads,
-            stats.atlas_uploads,
-            stats.atlas_uploaded_bytes,
-            stats.vertex_uploaded_bytes,
-            stats.fallback_glyphs,
-            stats.missing_glyphs,
-            stats.style_fallbacks,
-            stats.wide_cells,
-            stats.wide_spacer_cells,
-            stats.hidden_cells,
-            stats.dim_cells,
-            stats.selected_cells,
-            stats.searched_cells,
-            stats.scene_images_skipped,
-            stats.scene_cursor_skipped,
-            stats.background_from_scene,
-            stats.cpu_time.as_micros()
+            draw_calls,
+            render_passes,
+            text.cells,
+            text.solid_quads,
+            text.glyph_quads,
+            text.atlas_uploads,
+            text.atlas_uploaded_bytes,
+            text.vertex_uploaded_bytes
+                + stats.below.vertex_uploaded_bytes
+                + stats.above.vertex_uploaded_bytes,
+            text.fallback_glyphs,
+            text.missing_glyphs,
+            text.style_fallbacks,
+            text.wide_cells,
+            text.wide_spacer_cells,
+            text.hidden_cells,
+            text.dim_cells,
+            text.selected_cells,
+            text.searched_cells,
+            image_quads,
+            stats.below.draw_calls + stats.above.draw_calls,
+            IMAGE_UPLOADS.load(Ordering::Relaxed),
+            IMAGE_SOURCES.load(Ordering::Relaxed),
+            input.frame.images.len(),
+            scene.image_count(),
+            background_from_scene,
+            text.cpu_time.as_micros()
+                + stats.below.cpu_time.as_micros()
+                + stats.above.cpu_time.as_micros()
         );
     }
 
@@ -437,14 +550,13 @@ pub fn pane_image(input: &PaneFrame<'_>) -> Option<slint::Image> {
     Some(image)
 }
 
-/// 最近一帧 GPU-native 统计（快照验收日志用）。
-pub fn last_stats() -> Option<FrameStats> {
+/// 最近一帧 GPU-native 分层统计（快照验收日志用）。
+pub fn last_stats() -> Option<SceneLayerStats> {
     STATE
         .lock()
         .ok()
         .and_then(|guard| guard.as_ref().and_then(|state| state.last_stats.clone()))
 }
-
 
 #[cfg(test)]
 mod tests {

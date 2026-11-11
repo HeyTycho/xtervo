@@ -7,3 +7,7 @@
 
 # 多 worktree/agent 并行构建：独立 target 避免共享 target 的二进制互相覆盖
 /.target-*
+
+# GPU native e2e 证据/独立二进制（不提交）
+/.e2e-gpu-native/
+/.bin/
