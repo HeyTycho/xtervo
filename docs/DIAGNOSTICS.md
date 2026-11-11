@@ -2,6 +2,8 @@
 
 状态：**阶段 A 已落地（2026-11-10）**。
 
+排障前先读事故复盘：[`POSTMORTEM_2026-11-11_RENDER_RESIDUE.md`](POSTMORTEM_2026-11-11_RENDER_RESIDUE.md)。
+
 ```text
 tervo diag env --json
 tervo diag snapshot --json
@@ -166,6 +168,38 @@ tervo.live_snapshot
 # PASS: live socket capabilities/snapshot
 # PASS: MCP tools/list + live_snapshot
 ```
+
+## 排障环境变量（显式 opt-in）
+
+```bash
+TERVO_LINE_NUMBERS=1
+# 终端行号 overlay；每行显示 1..N，会盖住最左约 3 个字符，仅调试。
+
+TERVO_FRAME_DUMP=/tmp/tervo-frame.txt
+# 每次重绘前把当前 Frame 文本写入该文件；用于区分 Term/Frame 与 Slint 层。
+
+TERVO_SIXEL_DEBUG=1
+# 打印图片 placement 的 id/row/col；图片滚动/删除问题使用。
+
+TERVO_RENDER_PROFILE=1
+# 打印 full/partial、rows/copy/damage/draw/image 耗时。
+```
+
+### 分层排障顺序
+
+```text
+raw PTY bytes
+  -> IIP/Sixel/Kitty filter
+  -> alacritty Term
+  -> partial Frame + damage
+  -> force_full Frame
+  -> 增量 framebuffer
+  -> fresh full framebuffer
+  -> xwd/take_snapshot
+```
+
+只修第一处出现分歧的层。不要用默认整屏重绘掩盖上游字节/Frame 错误。
+详见事故复盘第 5 节。
 
 ## schema v1
 

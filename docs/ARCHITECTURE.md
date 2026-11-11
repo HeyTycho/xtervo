@@ -7,6 +7,11 @@
 [`IMAGE_ENGINE_CONTRACT.md`](IMAGE_ENGINE_CONTRACT.md) 为准；Alacritty row identity 补丁见
 [`ALACRITTY_ROW_ID.md`](ALACRITTY_ROW_ID.md)。
 
+排障/分层定位纪律见
+[`POSTMORTEM_2026-11-11_RENDER_RESIDUE.md`](POSTMORTEM_2026-11-11_RENDER_RESIDUE.md)。
+当前实现是 legacy CPU Frame 与目标 Scene/Renderer 的迁移期；两者语义不一致时，
+以事故复盘的“分层阶梯”为准，禁止把目标架构的约束当成 legacy 路径已满足。
+
 ## 1. 目标与非目标
 
 ### 目标
@@ -39,6 +44,9 @@ iTerm2 全参数
 4. Renderer 不读取/修改 VT 状态，只消费不可变 Scene 和 Damage。
 5. 图片生命周期绑定 RowId / Placement，不绑定 framebuffer 像素。
 6. 图片不写入文本 framebuffer。
+   （**迁移期例外**：legacy CPU 路径仍把图片合成进 framebuffer；这是
+   `POSTMORTEM_2026-11-11_RENDER_RESIDUE.md` 记录的架构漂移，Scene 路径
+   落地前不能假设此原则已满足。）
 7. 协议解析、资源管理、场景构建、GPU 绘制四层解耦。
 8. 增量更新优先：Cell damage、Placement damage、Texture upload queue。
 ```
