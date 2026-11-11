@@ -317,17 +317,6 @@ pub fn pane_image(input: &PaneFrame<'_>) -> Option<slint::Image> {
                 return None;
             }
         };
-        let image = match slint::Image::try_from(target.texture().clone()) {
-            Ok(image) => image,
-            Err(error) => {
-                drop(guard);
-                fail(format!("slint::Image::try_from 拒绝 GPU target: {error}"));
-                return None;
-            }
-        };
-        PANE_IMAGES.with(|images| {
-            images.borrow_mut().insert(input.pane, image);
-        });
         state.panes.insert(
             input.pane,
             PaneTarget {
@@ -361,9 +350,21 @@ pub fn pane_image(input: &PaneFrame<'_>) -> Option<slint::Image> {
     let pane = state.panes.get_mut(&input.pane)?;
     pane.frames += 1;
     let first = pane.frames == 1;
-    // Imported image is UI-thread-local; the texture is stable per target so
-    // this is a cheap clone, not a pixel copy.
-    let image = PANE_IMAGES.with(|images| images.borrow().get(&input.pane).cloned())?;
+    // Re-import after rendering. Slint's Skia/WGPU bridge is known to show an
+    // empty image when a freshly created texture is imported before its first
+    // render pass; importing after the submit matches the stage-0 path that is
+    // proven to snapshot correctly. This wraps the live texture (no pixel copy).
+    let image = match slint::Image::try_from(pane.target.texture().clone()) {
+        Ok(image) => image,
+        Err(error) => {
+            drop(guard);
+            fail(format!("slint::Image::try_from 拒绝 GPU target: {error}"));
+            return None;
+        }
+    };
+    PANE_IMAGES.with(|images| {
+        images.borrow_mut().insert(input.pane, image.clone());
+    });
 
     if first || debug() {
         eprintln!(
