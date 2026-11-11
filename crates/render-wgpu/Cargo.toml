@@ -14,6 +14,9 @@ slint-presenter = ["dep:slint"]
 [dependencies]
 tervo-render = { path = "../render" }
 tervo-scene = { path = "../scene" }
+# Image sources are keyed by the graphics `SourceId`/`CompositePolicy`; the
+# renderer must not invent a parallel id space.
+tervo-graphics = { path = "../graphics" }
 # Must stay on the exact wgpu major/minor Slint 1.18 unstable-wgpu-30 uses:
 # `slint::Image::try_from(wgpu::Texture)` is only implemented for that type.
 wgpu = { version = "=30.0.1" }
@@ -42,6 +45,12 @@ slint = { version = "=1.18.1", optional = true, default-features = false, featur
     "renderer-femtovg-wgpu",
     "renderer-femtovg",
 ] }
+
+[dev-dependencies]
+# Only the image integration test builds a real `tervo_core::Frame` to prove
+# that `Frame.images` RGBA uploads by `source_id` and that the scene adapter's
+# crop/z/above-text/negative-row semantics reach the renderer unchanged.
+tervo-core = { path = "../core" }
 
 [[example]]
 name = "two_colors"

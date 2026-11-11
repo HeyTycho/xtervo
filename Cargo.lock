@@ -4840,6 +4840,8 @@ dependencies = [
  "fontdue",
  "futures-lite",
  "slint",
+ "tervo-core",
+ "tervo-graphics",
  "tervo-render",
  "tervo-scene",
  "wgpu",

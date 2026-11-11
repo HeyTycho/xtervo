@@ -44,6 +44,7 @@ use tervo_scene::{DamageRegion, PhysicalSize, Scene};
 
 pub mod atlas;
 pub mod headless;
+pub mod image;
 pub mod reference;
 pub mod text;
 
@@ -58,12 +59,19 @@ pub use atlas::{
     GlyphLookup, GlyphSlot, ATLAS_FORMAT, DEFAULT_ATLAS_SIZE,
 };
 pub use headless::{request_headless_gpu, HeadlessGpu};
+pub use image::{
+    build_image_quad, collect_image_layers, image_layer_z, is_above_text, CompositeError,
+    GpuImageRenderer, ImageError, ImageFrameStats, ImageGeometry, ImageLayers, ImageQuad,
+    ImageTextureRegistry, SceneLayerStats, IMAGE_SOURCE_FORMAT,
+};
 pub use reference::{
-    compare_rgba, diff_rgba, rasterize_reference, write_ppm, PixelDiff, ReferenceImage,
+    compare_rgba, diff_rgba, rasterize_glyphs_into, rasterize_image_reference,
+    rasterize_images_into, rasterize_reference, rasterize_text_backgrounds_into,
+    rasterize_text_into, write_ppm, ImageSourceView, PixelDiff, ReferenceImage,
 };
 pub use text::{
-    read_target_rgba8, FrameStats, GlyphInstance, GpuTextRenderer, SolidInstance, TextGeometry,
-    TextLayout, TextRenderError, TextSection, TextTarget,
+    read_target_rgba8, FrameStats, GlyphInstance, GpuTextRenderer, PreparedText, SolidInstance,
+    TextGeometry, TextLayout, TextRenderError, TextSection, TextTarget,
 };
 
 /// Pixel format of the offscreen terminal frame texture.
