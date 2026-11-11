@@ -20,6 +20,7 @@ use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::term::{Config as TermConfig, Term};
 use alacritty_terminal::vte::ansi::Processor;
 use tervo_core::{fill_frame, CellData, Frame, GridSize, Palette};
+use tervo_core::{spawn, CoreEvent, PaneConfig};
 
 /// 本批字节是否含零宽码位。与 `crate::pane::has_zero_width_chars` 语义一致：
 /// 生产 actor 遇到零宽输入会强制下一帧整屏，这里复刻同样的策略。
@@ -45,6 +46,15 @@ fn uri_of<'a>(frame: &'a Frame, cell: &CellData) -> Option<&'a str> {
     } else {
         frame.hyperlinks.get(cell.link as usize).map(String::as_str)
     }
+}
+
+/// 两个 cell 的可见内容是否相同。`CellData.link` 只是各帧 URI 表的下标，
+/// partial 帧与 force-full 帧的编号可能不同；比较实际 URI，忽略下标。
+fn same_visible_cell(fa: &Frame, a: &CellData, fb: &Frame, b: &CellData) -> bool {
+    let (mut x, mut y) = (*a, *b);
+    x.link = 0;
+    y.link = 0;
+    x == y && uri_of(fa, a) == uri_of(fb, b)
 }
 
 fn cell_repr(frame: &Frame, cell: &CellData) -> String {
@@ -199,15 +209,8 @@ impl Replay {
             for col in 0..cols {
                 let expected = &self.full.cells[base + col];
                 let actual = &self.partial.cells[base + col];
-                // link index 是帧内 intern 表下标，partial/full 各自建表时
-                // 可以不同；视觉语义看 URI。
-                let mut a = *actual;
-                let mut e = *expected;
-                a.link = 0;
-                e.link = 0;
-                if a != e
+                if !same_visible_cell(&self.partial, actual, &self.full, expected)
                     || self.partial.zerowidth_at(row, col) != self.full.zerowidth_at(row, col)
-                    || uri_of(&self.partial, actual) != uri_of(&self.full, expected)
                 {
                     mismatches.push(Mismatch {
                         step: self.steps,
@@ -291,8 +294,14 @@ impl Replay {
         if !needs_full {
             for row in 0..rows {
                 let base = row * cols;
-                let changed = self.prev[base..base + cols] != self.partial.cells[base..base + cols]
-                    || (0..cols).any(|col| {
+                let changed = (0..cols).any(|col| {
+                    !same_visible_cell(
+                        &self.partial,
+                        &self.prev[base + col],
+                        &self.partial,
+                        &self.partial.cells[base + col],
+                    )
+                }) || (0..cols).any(|col| {
                         // zerowidth 变化也算需要重绘该行。
                         self.partial.zerowidth_at(row, col) != self.partial_prev_zerowidth(row, col)
                     });
@@ -317,12 +326,12 @@ impl Replay {
             'screen: for row in 0..rows {
                 let base = row * cols;
                 for col in 0..cols {
-                    let mut screen_cell = self.screen[base + col];
-                    let mut term_cell = self.full.cells[base + col];
-                    // link index 是帧内 intern 表下标；不要把它当字符残留。
-                    screen_cell.link = 0;
-                    term_cell.link = 0;
-                    if screen_cell != term_cell {
+                    if !same_visible_cell(
+                        &self.partial,
+                        &self.screen[base + col],
+                        &self.full,
+                        &self.full.cells[base + col],
+                    ) {
                         mismatches.push(Mismatch {
                             step: self.steps,
                             kind: "rendered screen != term (stale glyph)",
@@ -612,4 +621,59 @@ fn raw_dsh_replay_matches_force_full() {
             replay.full.mode,
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// 生产 PTY 管道回归：过滤层不能吞字节
+// ---------------------------------------------------------------------------
+
+/// dsh 的整行重绘大量出现 `]` + 紧跟 ESC（`[stderr]` + `ESC[..C`、
+/// `[Image #1]` + `ESC[1C`）。IIP 过滤器曾经因为 `ESC x` 后状态没回到
+/// Ground，把正文里的 `]` 当成 OSC 前缀丢掉；丢一个字符会让整行右移，
+/// 行尾保留旧字符（用户看到的“旧行字符残留”）。
+///
+/// 这里走真实 PTY + PaneActor + 各过滤层，断言最终 Frame 文本完整。
+#[test]
+fn pty_pipeline_preserves_bracket_before_escape() {
+    let script = "printf '\\033[31m[stderr]\\033[39m[Image #1]\\033[1Cdone\\r\\n'";
+    let cfg = PaneConfig {
+        cols: 80,
+        rows: 4,
+        scrollback: 100,
+        shell: Some("/bin/sh".to_string()),
+        args: vec!["-c".to_string(), script.to_string()],
+        ..PaneConfig::default()
+    };
+    let handle = spawn(cfg).expect("spawn pane");
+    let mut frame = handle.new_frame();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut exited = false;
+    while std::time::Instant::now() < deadline {
+        frame = handle.pull(frame);
+        while let Some(event) = handle.try_event() {
+            if matches!(event, CoreEvent::Exited) {
+                exited = true;
+            }
+        }
+        if exited {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert!(exited, "pane 未在超时前退出");
+    // EOF 后再拉两次，确保 actor 已排空 PTY 队列。
+    for _ in 0..3 {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        frame = handle.pull(frame);
+    }
+    let text: String = frame.row(0).iter().map(CellData::char).collect();
+    assert!(
+        text.contains("[stderr]"),
+        "`]` 后紧跟 ESC 时不能被过滤层吞掉；实际行: {text:?}"
+    );
+    assert!(
+        text.contains("[Image #1]"),
+        "`[Image #1]` 的 `]` 被吞；实际行: {text:?}"
+    );
+    assert!(text.contains("done"), "后续正文不能丢失；实际行: {text:?}");
 }

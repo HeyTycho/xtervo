@@ -136,6 +136,12 @@ pub struct IipFilter {
     decode: bool,
     cell_w: u32,
     cell_h: u32,
+    /// 最近 3 个输入字节（滚动窗口，时间顺序）。
+    ///
+    /// 0x9D 同时是 8-bit C1 OSC 和很多 UTF-8 字符的续字节（如 `”` 的
+    /// `E2 80 9D`）。只看单字节会把正文当 OSC 起点，后续处理可能吞掉字符。
+    utf8_prev: [u8; 3],
+    utf8_prev_len: u8,
 }
 
 impl Default for IipFilter {
@@ -156,6 +162,8 @@ impl IipFilter {
             decode: false,
             cell_w: 8,
             cell_h: 16,
+            utf8_prev: [0; 3],
+            utf8_prev_len: 0,
         }
     }
 
@@ -177,6 +185,8 @@ impl IipFilter {
     /// 解码与渲染，避免关闭配置后大段 base64 进入 vte 的 OSC 状态机。
     pub fn feed(&mut self, bytes: &[u8], decode: bool) -> Option<Vec<IipEvent>> {
         if self.state == State::Ground && self.pending.is_empty() && !contains_iip_start(bytes) {
+            // 下一块的首字节可能是 UTF-8 续字节，尾部窗口必须跨块保留。
+            self.remember_tail(bytes);
             return None;
         }
 
@@ -191,7 +201,8 @@ impl IipFilter {
                         self.pending.push(ESC);
                         self.state = State::Escape;
                     },
-                    C1_OSC => {
+                    // 只有“真正独立”的 0x9D 才是 C1 OSC；UTF-8 续字节按正文放行。
+                    b if b == C1_OSC && !self.looks_like_utf8_continuation() => {
                         self.pending.push(C1_OSC);
                         self.prefix.clear();
                         self.state = State::Prefix;
@@ -282,6 +293,7 @@ impl IipFilter {
                     },
                 },
             }
+            self.remember_byte(b);
         }
 
         self.flush_pass(&mut pass, &mut out);
@@ -297,6 +309,72 @@ impl IipFilter {
     fn flush_pending(&mut self, pass: &mut Vec<u8>) {
         pass.extend_from_slice(&self.pending);
         self.pending.clear();
+    }
+
+    /// 快速路径也要更新 UTF-8 尾部窗口：下一块的首字节可能续上一个字符。
+    /// 只需最后 3 个字节，避免给普通输出热路径加一次 O(n) 拷贝。
+    fn remember_tail(&mut self, bytes: &[u8]) {
+        let start = bytes.len().saturating_sub(self.utf8_prev.len());
+        for &b in &bytes[start..] {
+            self.remember_byte(b);
+        }
+    }
+
+    #[inline]
+    fn remember_byte(&mut self, b: u8) {
+        if (self.utf8_prev_len as usize) < self.utf8_prev.len() {
+            self.utf8_prev[self.utf8_prev_len as usize] = b;
+            self.utf8_prev_len += 1;
+        } else {
+            self.utf8_prev.rotate_left(1);
+            self.utf8_prev[2] = b;
+        }
+    }
+
+    /// 当前字节之前第 `back` 个字节（back=1 是紧邻的前一个）。
+    #[inline]
+    fn prev_byte(&self, back: usize) -> Option<u8> {
+        if back == 0 || back > self.utf8_prev_len as usize {
+            return None;
+        }
+        Some(self.utf8_prev[self.utf8_prev_len as usize - back])
+    }
+
+    /// 0x9D 是否只是 UTF-8 多字节字符的续字节。
+    ///
+    /// 0x9D 落在 `0x80..=0xBF`，既可能是正文（`”` = E2 80 9D），也可能是
+    /// 8-bit C1 OSC。只有当前面 1–3 字节恰好构成一个以 0x9D 结尾的合法
+    /// UTF-8 前缀时才按正文处理；否则保持 OSC 语义。
+    fn looks_like_utf8_continuation(&self) -> bool {
+        #[inline]
+        fn cont(b: u8) -> bool {
+            (0x80..=0xBF).contains(&b)
+        }
+        // 合法 UTF-8 首字节：2/3/4 字节序列。
+        #[inline]
+        fn lead2(b: u8) -> bool {
+            (0xC2..=0xDF).contains(&b)
+        }
+        #[inline]
+        fn lead3(b: u8) -> bool {
+            (0xE0..=0xEF).contains(&b)
+        }
+        #[inline]
+        fn lead4(b: u8) -> bool {
+            (0xF0..=0xF4).contains(&b)
+        }
+        let (p1, p2, p3) = (self.prev_byte(1), self.prev_byte(2), self.prev_byte(3));
+        // 当前字节可能是 2/3/4 字节序列的第 2、3、4 个字节。
+        let as_second = p1.is_some_and(|p1| lead2(p1) || lead3(p1) || lead4(p1));
+        let as_third = match (p1, p2) {
+            (Some(p1), Some(p2)) => cont(p1) && (lead3(p2) || lead4(p2)),
+            _ => false,
+        };
+        let as_fourth = match (p1, p2, p3) {
+            (Some(p1), Some(p2), Some(p3)) => cont(p1) && cont(p2) && lead4(p3),
+            _ => false,
+        };
+        as_second || as_third || as_fourth
     }
 
     /// 把累积的 pass 字节作为一个事件按顺序提交（图片事件之前必须调用，
@@ -320,7 +398,13 @@ impl IipFilter {
                 self.prefix.clear();
                 self.state = State::Prefix;
             },
-            _ => pass.push(b),
+            _ => {
+                // 关键：`ESC x`（x 不是 `]`）里的 ESC 已放行，x 就是普通正文。
+                // 这里必须回到 Ground；遗漏会让 state 永远停在 Escape，之后
+                // 正文里的 `]` 会被误当 OSC 前缀，紧跟 ESC 时整字节被丢掉。
+                pass.push(b);
+                self.state = State::Ground;
+            },
         }
     }
 
@@ -871,6 +955,95 @@ mod tests {
         let (pass, images) = feed_chunks(&[&input], true);
         assert!(pass.is_empty(), "空 OSC 前缀不应把 vte 留在 OSC 状态");
         assert_eq!(images.len(), 1);
+    }
+
+    /// 回归：`ESC x` 后 state 必须回到 Ground。旧实现漏了这一步，正文里的
+    /// `]` 会被当成 OSC 前缀；紧跟 ESC 时整字节被丢弃（dsh 的 `[stderr]`
+    /// 后面正好是 `ESC[..C`，丢一个 `]` 就会让整行右移、行尾残留旧字符）。
+    #[test]
+    fn bracket_before_escape_is_never_dropped() {
+        let input = b"\x1b[31m[stderr]\x1b[39m[Image #1]\x1b[1Cdone\x1b[0m";
+        let (pass, images) = feed_chunks(&[input], true);
+        assert!(images.is_empty());
+        assert_eq!(pass, input, "单 chunk：`]` 紧邻 ESC 也必须原样放行");
+
+        let chunks: Vec<&[u8]> = input.chunks(1).collect();
+        let (pass, images) = feed_chunks(&chunks, true);
+        assert!(images.is_empty());
+        assert_eq!(pass, input, "逐字节 chunk：`]` 紧邻 ESC 也必须原样放行");
+
+        // 最小复现：`ESC x` 后紧跟 `]` 再跟 ESC，旧实现只丢掉 `]`。
+        let minimal = b"\x1b[m]\x1b[0m";
+        let (pass, _) = feed_chunks(&[minimal], true);
+        assert_eq!(pass, minimal, "最小序列 `ESC[m]ESC[0m` 不能丢 `]`");
+    }
+
+    /// 回归：`”`（U+201D = E2 80 9D）的续字节 0x9D 不是 C1 OSC 起点。
+    #[test]
+    fn utf8_continuation_0x9d_is_text_not_c1_osc() {
+        let input = "“jietu”\x1b[1C中文内容\r\n".as_bytes();
+        assert!(input.contains(&C1_OSC), "语料必须包含 UTF-8 续字节 0x9D");
+        for chunk in [1usize, 2, 3, 5, input.len()] {
+            let chunks: Vec<&[u8]> = input.chunks(chunk).collect();
+            let (pass, images) = feed_chunks(&chunks, true);
+            assert!(images.is_empty(), "chunk={chunk}");
+            assert_eq!(pass, input, "chunk={chunk}: UTF-8 续字节不能被吞");
+        }
+        // 最小复现：`”`（E2 80 9D）+ 紧跟 ESC，旧实现吞掉 0x9D。
+        let minimal = "”\x1b[1C".as_bytes();
+        assert_eq!(minimal, &[0xE2, 0x80, 0x9D, ESC, b'[', b'1', b'C']);
+        let (pass, _) = feed_chunks(&[minimal], true);
+        assert_eq!(pass, minimal, "最小序列 `”ESC[1C` 不能丢续字节");
+    }
+
+    /// 属性测试：不含 IIP 的普通文本/转义流必须逐字节原样放行。
+    ///
+    /// 覆盖 0x9D 处于 UTF-8 第 2/3/4 字节的位置、`]` 紧邻 ESC、OSC 8 等。
+    #[test]
+    fn text_without_iip_is_byte_identical() {
+        let inputs: &[&[u8]] = &[
+            b"\x1b[31m[stderr]\x1b[39m[Image #1]\x1b[1C",
+            b"a]b]c\x1b[1C]",
+            "“jietu”\x1b[1C".as_bytes(),
+            "❔ ❝ 🤝 中文】”\x1b[2C".as_bytes(),
+            "🤝\x1b[1C".as_bytes(),
+            "\u{009d}\x1b[1C".as_bytes(),
+            b"\x1b]8;;https://example.com/a\x07link\x1b]8;;\x07",
+            b"prefix\x1b]1337;SetUserVar=foo=YmFy\x07suffix",
+            "e\u{301}cole \u{1f91d}\u{1f3fd}".as_bytes(),
+        ];
+        assert!(inputs[0].contains(&ESC), "语料必须含真实 ESC");
+        assert!(inputs[1].contains(&ESC), "语料必须含真实 ESC");
+        for input in inputs {
+            for chunk in [1usize, 2, 3, 5, 7, 64, input.len()] {
+                let chunks: Vec<&[u8]> = input.chunks(chunk).collect();
+                let (pass, images) = feed_chunks(&chunks, true);
+                assert!(images.is_empty(), "input={input:?} chunk={chunk}");
+                assert_eq!(
+                    pass, *input,
+                    "普通文本被过滤层改写: input={input:?} chunk={chunk}"
+                );
+            }
+        }
+    }
+
+    /// 修复不能误伤真正的 8-bit C1 OSC IIP：0x9D 开头的 `1337;File=` 仍要识图。
+    #[test]
+    fn c1_osc_iip_is_still_detected() {
+        let png = rgba_png();
+        let mut osc = vec![C1_OSC];
+        osc.extend_from_slice(b"1337;File=inline=1:");
+        osc.extend_from_slice(encode_base64(&png).as_bytes());
+        osc.push(BEL);
+        let mut input = b"before".to_vec();
+        input.extend_from_slice(&osc);
+        input.extend_from_slice(b"after");
+        for chunk in [1usize, 4, input.len()] {
+            let chunks: Vec<&[u8]> = input.chunks(chunk).collect();
+            let (pass, images) = feed_chunks(&chunks, true);
+            assert_eq!(pass, b"beforeafter", "chunk={chunk}");
+            assert_eq!(images.len(), 1, "chunk={chunk}");
+        }
     }
 
     #[test]
