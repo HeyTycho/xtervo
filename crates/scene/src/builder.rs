@@ -111,6 +111,12 @@ where
             }
         }
 
+        let cursor_state = self.cursor.map(|cursor| crate::CursorState {
+            row: cursor.row,
+            col: cursor.col,
+            shape: cursor.shape,
+            visible: true,
+        });
         if let Some(cursor) = self.cursor {
             layers
                 .entry(CURSOR_LAYER_Z)
@@ -122,6 +128,9 @@ where
             viewport: self.viewport,
             revision: self.revision,
             damage: self.damage.clone(),
+            selection: None,
+            search: None,
+            cursor: cursor_state,
             layers: layers
                 .into_iter()
                 .map(|(z_index, items)| SceneLayer { z_index, items })
@@ -174,9 +183,16 @@ where
                 placement_id: placement.id,
                 source_id: placement.source_id,
                 source_rect,
+                source_size: (resource.width, resource.height),
                 destination,
                 clip,
+                cells_w: placement.cells_w,
+                cells_h: placement.cells_h,
+                row: row.min(i32::MAX as usize) as i32,
+                col: placement.col,
+                row_id: placement.row_id,
                 z_index: placement.z_index,
+                above_text: placement.is_above_text(),
                 policy: placement.policy,
             },
         ))
@@ -387,10 +403,13 @@ mod tests {
         let scene = SceneBuilder::new(&manager, viewport(), |_| Some(0))
             .background(crate::BackgroundInstance { color: 0x0012_3456 })
             .cursor(CursorInstance {
+                row: 0,
+                col: 0,
                 x: 1.0,
                 y: 2.0,
                 w: 8.0,
                 h: 16.0,
+                shape: crate::CursorShape::Block,
             })
             .build();
 

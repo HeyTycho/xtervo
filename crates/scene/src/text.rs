@@ -49,13 +49,34 @@ pub struct TextCell {
 }
 
 /// Text attributes affecting shaping or rasterization.
+///
+/// These are semantic flags copied from the terminal frame, not a promise that a renderer
+/// implements all of them yet. Selection and search are resolved into the cell colors by the
+/// builder; the flags below are retained so a renderer can still distinguish "selected because
+/// the user selected it" from "selected because a search matched".
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TextAttributes {
     pub bold: bool,
     pub italic: bool,
     pub underline: bool,
+    pub double_underline: bool,
+    pub strikethrough: bool,
+    /// Faint / dimmed glyph. The legacy CPU renderer maps this to the bold face.
+    pub dim: bool,
+    /// The terminal hides the glyph (SGR 8), but the cell background is still painted.
+    pub hidden: bool,
+    /// The cell colors were swapped before being written to this batch (SGR 7).
+    ///
+    /// `foreground`/`background` already contain the final post-inverse values.
+    pub inverse: bool,
+    /// A double-width cell. Its glyph occupies this column and the next one.
+    pub wide: bool,
+    /// The right half of a [`Self::wide`] cell. Renderers must not shape this cell again.
+    pub wide_spacer: bool,
     /// The cell is selected. Its `foreground`/`background` already reflect selection colors.
     pub selected: bool,
+    /// The cell is a search hit. Its colors already reflect the search highlight.
+    pub searched: bool,
 }
 
 #[cfg(test)]
