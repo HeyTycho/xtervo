@@ -91,6 +91,28 @@ GPU 路径用 llvmpipe（无 /dev/dri），CPU avg 95.5%
 注意：soak 脚本在 `TERVO_GPU=1` 时必须不导出 `SLINT_BACKEND`，否则会走
 Skia/OpenGL 而不是 WGPU；`scripts/soak.sh` 已修正。
 
+## 30m GPU soak（release `5531643`，真实 wgpu30）
+
+```text
+DURATION=30m TERVO_GPU=1 SLINT_WGPU_CPU=1 ./scripts/soak.sh
+verdict: PASS
+RSS: 802.2 -> 599.6 MiB (-202.6 MiB, -9.11 MiB/min, R2=0.70)
+PSS: 771.9 -> 564.4 MiB (peak 831.4)
+threads: 167 -> 167
+fds:     93 -> 93
+CPU:     avg 100.2% / max 121.1%
+fatal=0 errors=0
+coverage: resize=335/335, copy=266, find=134
+```
+
+说明：
+
+```text
+RSS 下降，不是内存泄漏；线程/FD 稳定
+这是 stage 0 显示链路的稳定性门禁，不是默认 GPU 验收
+默认 GPU 仍需 GPU-native 文字/图片路径
+```
+
 ## 未做 / 风险
 
 - 未统一 GPU Scene，未做 glyph atlas、图片/光标 GPU 合成；光标仍是独立 CPU overlay。
