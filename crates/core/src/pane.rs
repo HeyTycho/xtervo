@@ -3465,6 +3465,11 @@ pub fn fill_frame<T: EventListener>(
             // （第三方 TUI 的 CUP 整行重写尤其常见）。以 Frame 作为上一帧，
             // 逐 cell 对账；漏标 cell 只补对应行并追加 damage。这样 renderer
             // 仍然走增量路径，不做整屏兜底。
+            //
+            // 对账不能只比 `CellData`：零宽组合字符挂在独立的 side table 上，
+            // 滚动/重写后 base char 可能不变而组合字符已消失；超链接也只在
+            // Frame 的 URI 表里。两者都必须参与比较，否则会留下幽灵重音或
+            // 过期链接。
             let mut reconciled_rows = vec![false; rows];
             for row in 0..rows {
                 let line = Line(row as i32);
@@ -3473,20 +3478,27 @@ pub fn fill_frame<T: EventListener>(
                     let cell = &grid[Point::new(line, Column(col))];
                     let data = CellData::from_cell(cell, palette);
                     let link = cell.hyperlink();
+                    let expected_uri = link.as_ref().map(|h| h.uri());
                     let zerowidth = cell.zerowidth().unwrap_or(&[]);
                     let index = base + col;
-                    let same = frame.cells.get(index).is_some_and(|old| *old == data);
+                    let old = frame.cells.get(index).copied();
+                    let old_uri = old.and_then(|old| match old.link as usize {
+                        0 => None,
+                        idx => frame.hyperlinks.get(idx).map(String::as_str),
+                    });
+                    let mut old_without_link = old.unwrap_or_default();
+                    old_without_link.link = 0;
+                    // 全表都没有组合字符时跳过逐格 HashMap 查找（常见路径）。
+                    let zero_same = (zerowidth.is_empty() && !frame.has_zerowidth())
+                        || frame.zerowidth_at(row, col) == zerowidth;
+                    let same = old.is_some()
+                        && old_without_link == data
+                        && zero_same
+                        && old_uri == expected_uri;
                     if !same {
-                        if zerowidth.is_empty() {
-                            frame.put(index, data, link.as_ref().map(|h| h.uri()));
-                        } else {
-                            frame.put_zerowidth(
-                                index,
-                                data,
-                                link.as_ref().map(|h| h.uri()),
-                                zerowidth,
-                            );
-                        }
+                        // 即使本次没有零宽字符也必须走 `put_zerowidth`：`put`
+                        // 不会删除该格上一帧残留的组合字符记录。
+                        frame.put_zerowidth(index, data, expected_uri, zerowidth);
                         reconciled_rows[row] = true;
                     }
                 }
@@ -3608,10 +3620,59 @@ mod tests {
         fill_frame(&mut term, &mut frame, &palette, false, None, false);
         // 人为把 damage 范围之外的 cell 弄脏，模拟旧 Frame 残留。
         frame.cells[10].ch = 'Z' as u32;
-        processor.advance(&mut term, b"\\x1b[1;1Hxy");
+        processor.advance(&mut term, b"\x1b[1;1Hxy");
         fill_frame(&mut term, &mut frame, &palette, false, None, false);
         assert!(!frame.full, "本用例需要 partial damage 才有区分度");
         assert_ne!(frame.cell(0, 10).ch, 'Z' as u32, "damage 行必须整行刷新");
+    }
+
+    /// 组合字符跨 chunk 到达时不会被 `has_zero_width_chars` 识别（半个 UTF-8），
+    /// Frame 可能先看到 base char；后续整行重写必须同时清掉旧组合字符，否则
+    /// `e` + `◌́` 会变成 `x` + `◌́` 的幽灵重音。
+    #[test]
+    fn stale_combining_mark_is_dropped_when_cell_is_rewritten() {
+        let mut term = test_term(4, 0);
+        let mut processor: Processor = Processor::new();
+        let mut frame = Box::new(Frame::default());
+        let palette = Palette::default();
+        processor.advance(&mut term, b"a");
+        fill_frame(&mut term, &mut frame, &palette, false, None, false);
+        // UTF-8 组合音标被 PTY/测试 chunk 边界切开：两个 chunk 单独都判定不了
+        // 零宽字符，不会触发整帧刷新。
+        processor.advance(&mut term, b"\xcc");
+        fill_frame(&mut term, &mut frame, &palette, false, None, false);
+        processor.advance(&mut term, b"\x81");
+        fill_frame(&mut term, &mut frame, &palette, false, None, false);
+        processor.advance(&mut term, b"b\x1b[1;1Hx");
+        fill_frame(&mut term, &mut frame, &palette, false, None, false);
+        assert_eq!(frame.cell(0, 0).ch, 'x' as u32);
+        assert!(
+            frame.zerowidth_at(0, 0).is_empty(),
+            "重写后不能残留上一帧的组合字符: {:?}",
+            frame.zerowidth_at(0, 0)
+        );
+        assert!(frame.damage.iter().any(|d| d.line == 0), "重写行必须标 damage");
+    }
+
+    /// 直接在 Frame 上模拟“上一帧有组合字符、本帧网格里没有”的旁路变化，
+    /// 对账必须发现并删除 side table 记录（不能只比 `CellData`）。
+    #[test]
+    fn reconcile_clears_frame_combining_mark_absent_from_grid() {
+        let mut term = test_term(2, 0);
+        let mut processor: Processor = Processor::new();
+        let mut frame = Box::new(Frame::default());
+        let palette = Palette::default();
+        processor.advance(&mut term, b"e");
+        fill_frame(&mut term, &mut frame, &palette, false, None, false);
+        // 旧帧残留：cell 内容与 Term 完全一致，只多了一个组合字符。
+        frame.put_zerowidth(0, *frame.cell(0, 0), None, &['\u{301}']);
+        term.reset_damage();
+        fill_frame(&mut term, &mut frame, &palette, false, None, false);
+        assert!(
+            frame.zerowidth_at(0, 0).is_empty(),
+            "对账必须清掉 Term 里不存在的组合字符"
+        );
+        assert!(frame.damage.iter().any(|d| d.line == 0), "补写行必须标 damage");
     }
 
     #[test]
