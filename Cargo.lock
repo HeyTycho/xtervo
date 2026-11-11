@@ -4837,6 +4837,8 @@ dependencies = [
 name = "tervo-render-wgpu"
 version = "0.3.1"
 dependencies = [
+ "fontdue",
+ "futures-lite",
  "slint",
  "tervo-render",
  "tervo-scene",

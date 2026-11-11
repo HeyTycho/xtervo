@@ -5,9 +5,12 @@ image-engine renderer. This crate deliberately does **not** depend on `tervo-cor
 or `tervo-app`; it only consumes `tervo-scene` and implements `tervo-render`'s
 `Renderer` trait.
 
-Status: primitive/spike. The backend currently owns an offscreen frame texture and
-runs only a full-frame clear pass. Glyph, image and cursor drawing are not part of
-this crate yet.
+Status: primitive/spike. [`WgpuRenderer`] owns an offscreen frame texture and
+runs only a full-frame clear pass. In addition, the opt-in **text/glyph atlas
+prototype** ([`GpuTextRenderer`]) consumes `tervo_scene::TextBatch` directly and
+draws instanced glyph quads into an `Rgba8Unorm` target with no CPU terminal
+framebuffer. It is not wired into the app main loop, and the clear-only
+`WgpuRenderer` remains the `tervo_render::Renderer` implementation.
 
 ## Features
 
@@ -54,6 +57,81 @@ for tests/examples that only need a solid frame.
 `SlintTexturePresenter::replace_texture()` exists for a backend resize/recreation:
 call it with the new `renderer.texture().clone()`, then `present()` so the UI
 property observes the new image. The current example uses a fixed-size texture.
+
+## Text/glyph atlas prototype
+
+`GpuTextRenderer` is the vertical slice requested by the 2026-11-11 GPU text
+task. It lives next to, not inside, `WgpuRenderer`:
+
+```text
+TextBatch cells
+  -> per-cell background/underline solid instances
+  -> per-ASCII-glyph instances (atlas UV + fg color)
+  -> one render pass: 1 solid draw call + 1 glyph draw call
+  -> offscreen Rgba8Unorm texture (Slint-importable, COPY_SRC for validation)
+```
+
+- The atlas is a single `R8Unorm` texture, 1024x1024 by default (1 MiB): glyphs
+  are coverage masks and color is per instance. RGBA would waste 3/4 of the
+  memory.
+- fontdue rasterizes only on an atlas miss. New glyph rectangles are uploaded
+  with `queue.write_texture`; there is no per-frame screen upload and no CPU
+  framebuffer in the render path.
+- Instance buffers are reused and grown only when a frame needs more instances.
+  They are not recreated per frame.
+- ASCII is the supported range. Non-ASCII characters deterministically fall back
+  to `?` and are counted in `FrameStats::unknown_glyphs`. Bold/italic faces are
+  loaded from sibling font files when installed, otherwise the regular face is
+  used and counted as `style_fallbacks`. Underline and already-resolved selection
+  colors are drawn.
+- A 64x64 atlas is usable in tests to force `AtlasError::Full`; a failed frame
+  returns before a render pass, so the target keeps its previous contents.
+
+```rust
+use tervo_render_wgpu::{GpuTextRenderer, TextLayout, TextSection, TextTarget};
+
+let mut renderer = GpuTextRenderer::new(device, queue)?;
+let metrics = renderer.metrics(16);
+let layout = TextLayout::from_metrics(metrics, 8.0, 8.0, 16);
+let target = TextTarget::new(&device, size)?;
+let sections = [TextSection::new(&text_batch, layout)];
+
+let stats = renderer.render(&target, [12, 14, 20, 255], &sections)?;
+// target.texture() is importable by slint::Image::try_from; stats reports
+// draw calls, atlas hits/misses/uploads, texture bytes and CPU time.
+```
+
+Validation commands:
+
+```text
+# GPU offscreen vs CPU reference, including failure scenarios (needs a headless
+# wgpu adapter and DejaVu Sans Mono; TERVO_WGPU_FONT overrides the font path):
+cargo test -p tervo-render-wgpu --test gpu_text -- --nocapture
+
+# Release perf probe, no window:
+TERVO_WGPU_TEXT_FRAMES=300   cargo run --release -p tervo-render-wgpu --example wgpu_text_bench
+
+# Slint presentation + take_snapshot (isolated Xvfb, never the user's :1):
+Xvfb :79 -screen 0 1400x800x24 -nolisten tcp &
+DISPLAY=:79 SLINT_WGPU_CPU=1 env -u SLINT_BACKEND   cargo run -p tervo-render-wgpu --features slint-presenter --example text_atlas
+```
+
+Long-run memory probe (no per-frame benchmark sample storage):
+
+```text
+MODE=static FRAMES=60000 cargo run --release -p tervo-render-wgpu --example memory_probe
+MODE=dynamic FRAMES=60000 cargo run --release -p tervo-render-wgpu --example memory_probe
+```
+
+The pixel reference is a validation-only CPU compositor over the same atlas
+coverage bytes and the same instance geometry. It isolates the WGPU path (UVs,
+blending, geometry) rather than pretending to be the app's terminal renderer.
+Measured on the llvmpipe Vulkan CPU adapter at 1280x720, 300 frames: 2 draw
+calls/frame, 0 atlas uploads after warmup, CPU frame time avg ~0.99 ms
+(p95 1.30 ms), pixel diff vs the CPU reference mean 0.019 / max 1 (no pixel over
+2), atlas 1 MiB + target 3.5 MiB. Slint `take_snapshot()` matched the offscreen
+target exactly (mean 0, max 0) for all five scenes. These are CPU-adapter numbers,
+not hardware GPU throughput.
 
 ## Slint texture-import constraints (1.18.1)
 
@@ -124,9 +202,10 @@ Environment notes:
 
 - **Not integrated**: nothing in `tervo-app` or `tervo-core` references this
   crate. It is a standalone primitive.
-- **Clear pass only**: `Scene` layers/DrawItems and `DamageRegion` are not drawn or
-  tracked. There is no glyph atlas, image cache, cursor pass, or z-order
-  compositing.
+- **Clear pass only (WgpuRenderer)**: `Scene` layers/DrawItems and `DamageRegion`
+  are not drawn or tracked. Glyph atlas support is a separate opt-in
+  `GpuTextRenderer`; image cache, cursor pass and z-order compositing are absent
+  from both.
 - **No incremental rendering**: every render clears the full frame; `invalidate`
   is a no-op.
 - **No device-loss recovery**: `device_lost()` is an explicit no-op. Recreate the
@@ -145,3 +224,7 @@ Environment notes:
 - **Two GPU stages, not one pass**: the backend renders to its offscreen texture,
   then Slint samples that texture while compositing the window. This is not a
   zero-copy single-render-pass path.
+- **Text prototype scope**: ASCII only; no shaping/combining marks, images,
+  cursor, z-order, atlas eviction, or app integration. See
+  [`docs/WGPU_TEXT_ATLAS_PROTOTYPE.md`](../../docs/WGPU_TEXT_ATLAS_PROTOTYPE.md)
+  for the full report and evidence.

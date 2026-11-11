@@ -6,11 +6,20 @@
 //!
 //! # Scope
 //!
-//! The current backend is a frame-target skeleton: it owns the offscreen
-//! texture, handles resize/recreation and implements the [`tervo_render::Renderer`]
-//! contract as a single full-frame clear pass. Glyph, image and cursor passes are
-//! not implemented yet. This is enough to wire the texture hand-off pipeline and
-//! validate live texture updates, which is the purpose of this crate.
+//! Two independent pieces live here:
+//!
+//! - [`WgpuRenderer`] is the original frame-target skeleton: offscreen texture,
+//!   resize/recreation and a single clear pass implementing
+//!   [`tervo_render::Renderer`].
+//! - [`GpuTextRenderer`] is the glyph-atlas prototype. It consumes
+//!   [`tervo_scene::TextBatch`] directly, rasterizes ASCII glyphs with fontdue
+//!   into an `R8Unorm` GPU atlas, and draws instanced quads into an offscreen
+//!   `Rgba8Unorm` target in one render pass. No CPU terminal framebuffer is
+//!   produced or uploaded.
+//!
+//! The text prototype is opt-in and is not wired into the app main loop. The
+//! clear-only backend remains the [`tervo_render::Renderer`] implementation so
+//! existing callers are unaffected.
 //!
 //! The Slint presenter lives behind the `slint-presenter` feature so that the
 //! backend can be built and used headlessly without Slint's winit/femtovg stack.
@@ -33,11 +42,29 @@ use std::fmt;
 use tervo_render::{RenderedFrame, Renderer};
 use tervo_scene::{DamageRegion, PhysicalSize, Scene};
 
+pub mod atlas;
+pub mod headless;
+pub mod reference;
+pub mod text;
+
 #[cfg(feature = "slint-presenter")]
 pub mod presenter;
 
 #[cfg(feature = "slint-presenter")]
 pub use presenter::{PresenterError, SlintTexturePresenter};
+
+pub use atlas::{
+    discover_font_path, AtlasConfig, AtlasError, AtlasStats, FontMetrics, FontStyle, GlyphAtlas,
+    GlyphLookup, GlyphSlot, ATLAS_FORMAT, DEFAULT_ATLAS_SIZE,
+};
+pub use headless::{request_headless_gpu, HeadlessGpu};
+pub use reference::{
+    compare_rgba, diff_rgba, rasterize_reference, write_ppm, PixelDiff, ReferenceImage,
+};
+pub use text::{
+    read_target_rgba8, FrameStats, GlyphInstance, GpuTextRenderer, SolidInstance, TextGeometry,
+    TextLayout, TextRenderError, TextSection, TextTarget,
+};
 
 /// Pixel format of the offscreen terminal frame texture.
 pub const FRAME_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
