@@ -227,6 +227,11 @@ pub enum TextRenderError {
         section: usize,
         reason: &'static str,
     },
+    /// A staged draw referenced a [`PreparedText`] that a newer
+    /// [`GpuTextRenderer::prepare`] call has already superseded. The GPU
+    /// instance buffers no longer hold that frame, so drawing it would produce
+    /// a corrupt frame.
+    StalePreparedFrame,
 }
 
 impl fmt::Display for TextRenderError {
@@ -236,6 +241,10 @@ impl fmt::Display for TextRenderError {
             Self::InvalidLayout { section, reason } => {
                 write!(f, "text section {section} has an invalid layout: {reason}")
             }
+            Self::StalePreparedFrame => write!(
+                f,
+                "staged text frame was superseded by a newer prepare call"
+            ),
         }
     }
 }
@@ -244,7 +253,7 @@ impl std::error::Error for TextRenderError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Atlas(error) => Some(error),
-            Self::InvalidLayout { .. } => None,
+            Self::InvalidLayout { .. } | Self::StalePreparedFrame => None,
         }
     }
 }
@@ -331,6 +340,58 @@ pub struct TextGeometry {
     pub style_fallbacks: u64,
     pub missing_outlines: u64,
     pub skipped_control: u64,
+}
+
+/// A text frame that has been built and uploaded, but not yet drawn.
+///
+/// This is the staging primitive behind [`GpuTextRenderer`]'s normal
+/// single-pass render and the layered image/text composition path:
+///
+/// ```text
+/// prepare -> draw_backgrounds (clear + cell solids)
+///         -> [image renderer: below-text images]
+///         -> draw_glyphs (load)
+///         -> [image renderer: above-text images]
+///         -> finish
+/// ```
+///
+/// The GPU instance buffers belong to the renderer, not to this value. A newer
+/// [`GpuTextRenderer::prepare`] invalidates it; the draw methods return
+/// [`TextRenderError::StalePreparedFrame`] instead of drawing the wrong frame.
+#[derive(Clone, Debug)]
+pub struct PreparedText {
+    geometry: TextGeometry,
+    serial: u64,
+    width: u32,
+    height: u32,
+    started: Instant,
+    atlas_before: AtlasStats,
+    atlas_after: AtlasStats,
+    reallocations_before: u64,
+    vertex_uploaded_bytes: u64,
+}
+
+impl PreparedText {
+    /// The exact instances uploaded for this frame, for CPU reference tests.
+    pub fn geometry(&self) -> &TextGeometry {
+        &self.geometry
+    }
+
+    /// Physical size of the frame this geometry was built for.
+    pub fn size(&self) -> PhysicalSize {
+        PhysicalSize {
+            width: self.width,
+            height: self.height,
+        }
+    }
+
+    pub fn solid_count(&self) -> usize {
+        self.geometry.solids.len()
+    }
+
+    pub fn glyph_count(&self) -> usize {
+        self.geometry.glyphs.len()
+    }
 }
 
 fn rgba(color: u32) -> [f32; 4] {
@@ -507,6 +568,8 @@ pub struct GpuTextRenderer {
     glyph_bytes: Vec<u8>,
     frame_index: u64,
     buffer_reallocations: u64,
+    /// Serial of the most recent [`Self::prepare`]; staged draws must match it.
+    prepared_serial: u64,
 }
 
 impl fmt::Debug for GpuTextRenderer {
@@ -710,6 +773,7 @@ impl GpuTextRenderer {
             glyph_bytes: Vec::new(),
             frame_index: 0,
             buffer_reallocations: 0,
+            prepared_serial: 0,
         })
     }
 
@@ -751,6 +815,23 @@ impl GpuTextRenderer {
         clear: [u8; 4],
         sections: &[TextSection<'_>],
     ) -> Result<(FrameStats, TextGeometry), TextRenderError> {
+        let prepared = self.prepare(target, sections)?;
+        let draw_calls = self.draw_prepared_all(target, clear, &prepared)?;
+        Ok(self.finish(prepared, draw_calls, 1))
+    }
+
+    /// Builds and uploads one text frame without submitting any GPU work.
+    ///
+    /// The returned [`PreparedText`] can be drawn in layers with
+    /// [`Self::draw_backgrounds`] and [`Self::draw_glyphs`], leaving a gap for
+    /// the image renderer, then finalized with [`Self::finish`]. A newer
+    /// `prepare` call invalidates previously returned values; staged draws
+    /// then fail with [`TextRenderError::StalePreparedFrame`].
+    pub fn prepare(
+        &mut self,
+        target: &TextTarget,
+        sections: &[TextSection<'_>],
+    ) -> Result<PreparedText, TextRenderError> {
         let started = Instant::now();
         let atlas_before = self.atlas.stats();
         let reallocations_before = self.buffer_reallocations;
@@ -806,29 +887,194 @@ impl GpuTextRenderer {
                 .write_buffer(&self.glyph_buffer, 0, &self.glyph_bytes);
         }
 
-        let mut draw_calls = 0u32;
+        self.prepared_serial = self.prepared_serial.wrapping_add(1);
+        Ok(PreparedText {
+            geometry: frame,
+            serial: self.prepared_serial,
+            width,
+            height,
+            started,
+            atlas_before,
+            atlas_after,
+            reallocations_before,
+            vertex_uploaded_bytes: (self.solid_bytes.len() + self.glyph_bytes.len()) as u64,
+        })
+    }
+
+    /// Clears `target` and draws the prepared text backgrounds (cell solids and
+    /// underlines). Returns the number of draw calls submitted.
+    ///
+    /// This is the first stage of the layered composition path; glyphs are
+    /// drawn later by [`Self::draw_glyphs`], which lets below-text images
+    /// composite between backgrounds and glyphs instead of being hidden under
+    /// opaque cell backgrounds.
+    pub fn draw_backgrounds(
+        &mut self,
+        target: &TextTarget,
+        clear: [u8; 4],
+        prepared: &PreparedText,
+    ) -> Result<u32, TextRenderError> {
+        self.validate_prepared(target, prepared)?;
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("tervo-wgpu-text-backgrounds"),
+            });
+        let draw_calls = self.encode_pass(
+            &mut encoder,
+            target,
+            "tervo-wgpu-text-backgrounds-pass",
+            wgpu::LoadOp::Clear(wgpu::Color {
+                r: f64::from(clear[0]) / 255.0,
+                g: f64::from(clear[1]) / 255.0,
+                b: f64::from(clear[2]) / 255.0,
+                a: f64::from(clear[3]) / 255.0,
+            }),
+            &prepared.geometry.solids,
+            &[],
+        );
+        self.queue.submit(Some(encoder.finish()));
+        Ok(draw_calls)
+    }
+
+    /// Draws the prepared glyphs over the target's current contents.
+    ///
+    /// Returns `0` without submitting when the frame has no glyph quads.
+    pub fn draw_glyphs(
+        &mut self,
+        target: &TextTarget,
+        prepared: &PreparedText,
+    ) -> Result<u32, TextRenderError> {
+        self.validate_prepared(target, prepared)?;
+        if prepared.geometry.glyphs.is_empty() {
+            return Ok(0);
+        }
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("tervo-wgpu-text-glyphs"),
+            });
+        let draw_calls = self.encode_pass(
+            &mut encoder,
+            target,
+            "tervo-wgpu-text-glyphs-pass",
+            wgpu::LoadOp::Load,
+            &[],
+            &prepared.geometry.glyphs,
+        );
+        self.queue.submit(Some(encoder.finish()));
+        Ok(draw_calls)
+    }
+
+    /// Finalizes a prepared frame and returns its stats plus instance geometry.
+    ///
+    /// `draw_calls`/`render_passes` are supplied by the caller because the
+    /// staged path may interleave non-text passes (images).
+    pub fn finish(
+        &mut self,
+        prepared: PreparedText,
+        draw_calls: u32,
+        render_passes: u32,
+    ) -> (FrameStats, TextGeometry) {
+        self.frame_index = self.frame_index.wrapping_add(1);
+        let delta = |before: u64, after: u64| after.saturating_sub(before);
+        let geometry = prepared.geometry;
+        let stats = FrameStats {
+            frame: self.frame_index,
+            width: prepared.width,
+            height: prepared.height,
+            cells: geometry.cells,
+            solid_quads: geometry.solids.len(),
+            glyph_quads: geometry.glyphs.len(),
+            render_passes,
+            draw_calls,
+            atlas_hits: delta(prepared.atlas_before.hits, prepared.atlas_after.hits),
+            atlas_misses: delta(prepared.atlas_before.misses, prepared.atlas_after.misses),
+            atlas_rasterized: delta(
+                prepared.atlas_before.rasterized,
+                prepared.atlas_after.rasterized,
+            ),
+            atlas_uploads: delta(prepared.atlas_before.uploads, prepared.atlas_after.uploads),
+            atlas_uploaded_bytes: delta(
+                prepared.atlas_before.uploaded_bytes,
+                prepared.atlas_after.uploaded_bytes,
+            ),
+            vertex_uploaded_bytes: prepared.vertex_uploaded_bytes,
+            atlas_gpu_bytes: self.atlas.gpu_bytes(),
+            target_gpu_bytes: u64::from(prepared.width) * u64::from(prepared.height) * 4,
+            atlas_cached_glyphs: self.atlas.cached_glyph_count(),
+            buffer_reallocations: delta(prepared.reallocations_before, self.buffer_reallocations),
+            unknown_glyphs: geometry.unknown_glyphs,
+            style_fallbacks: geometry.style_fallbacks,
+            missing_outlines: geometry.missing_outlines,
+            skipped_control: geometry.skipped_control,
+            cpu_time: prepared.started.elapsed(),
+        };
+        (stats, geometry)
+    }
+
+    fn validate_prepared(
+        &self,
+        target: &TextTarget,
+        prepared: &PreparedText,
+    ) -> Result<(), TextRenderError> {
+        if prepared.serial != self.prepared_serial || prepared.size() != target.size() {
+            return Err(TextRenderError::StalePreparedFrame);
+        }
+        Ok(())
+    }
+
+    fn draw_prepared_all(
+        &mut self,
+        target: &TextTarget,
+        clear: [u8; 4],
+        prepared: &PreparedText,
+    ) -> Result<u32, TextRenderError> {
+        self.validate_prepared(target, prepared)?;
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("tervo-wgpu-text-encoder"),
             });
+        let draw_calls = self.encode_pass(
+            &mut encoder,
+            target,
+            "tervo-wgpu-text-pass",
+            wgpu::LoadOp::Clear(wgpu::Color {
+                r: f64::from(clear[0]) / 255.0,
+                g: f64::from(clear[1]) / 255.0,
+                b: f64::from(clear[2]) / 255.0,
+                a: f64::from(clear[3]) / 255.0,
+            }),
+            &prepared.geometry.solids,
+            &prepared.geometry.glyphs,
+        );
+        self.queue.submit(Some(encoder.finish()));
+        Ok(draw_calls)
+    }
+
+    fn encode_pass(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &TextTarget,
+        label: &'static str,
+        load: wgpu::LoadOp<wgpu::Color>,
+        solids: &[SolidInstance],
+        glyphs: &[GlyphInstance],
+    ) -> u32 {
+        let mut draw_calls = 0u32;
         {
             let color_attachments = [Some(wgpu::RenderPassColorAttachment {
                 view: target.view(),
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color {
-                        r: f64::from(clear[0]) / 255.0,
-                        g: f64::from(clear[1]) / 255.0,
-                        b: f64::from(clear[2]) / 255.0,
-                        a: f64::from(clear[3]) / 255.0,
-                    }),
+                    load,
                     store: wgpu::StoreOp::Store,
                 },
             })];
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("tervo-wgpu-text-pass"),
+                label: Some(label),
                 color_attachments: &color_attachments,
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
@@ -836,49 +1082,20 @@ impl GpuTextRenderer {
                 multiview_mask: None,
             });
             pass.set_bind_group(0, &self.bind_group, &[]);
-            if !frame.solids.is_empty() {
+            if !solids.is_empty() {
                 pass.set_pipeline(&self.solid_pipeline);
                 pass.set_vertex_buffer(0, self.solid_buffer.slice(..));
-                pass.draw(0..6, 0..frame.solids.len() as u32);
+                pass.draw(0..6, 0..solids.len() as u32);
                 draw_calls += 1;
             }
-            if !frame.glyphs.is_empty() {
+            if !glyphs.is_empty() {
                 pass.set_pipeline(&self.glyph_pipeline);
                 pass.set_vertex_buffer(0, self.glyph_buffer.slice(..));
-                pass.draw(0..6, 0..frame.glyphs.len() as u32);
+                pass.draw(0..6, 0..glyphs.len() as u32);
                 draw_calls += 1;
             }
         }
-        self.queue.submit(Some(encoder.finish()));
-
-        self.frame_index = self.frame_index.wrapping_add(1);
-        let delta = |before: u64, after: u64| after.saturating_sub(before);
-        let stats = FrameStats {
-            frame: self.frame_index,
-            width,
-            height,
-            cells: frame.cells,
-            solid_quads: frame.solids.len(),
-            glyph_quads: frame.glyphs.len(),
-            render_passes: 1,
-            draw_calls,
-            atlas_hits: delta(atlas_before.hits, atlas_after.hits),
-            atlas_misses: delta(atlas_before.misses, atlas_after.misses),
-            atlas_rasterized: delta(atlas_before.rasterized, atlas_after.rasterized),
-            atlas_uploads: delta(atlas_before.uploads, atlas_after.uploads),
-            atlas_uploaded_bytes: delta(atlas_before.uploaded_bytes, atlas_after.uploaded_bytes),
-            vertex_uploaded_bytes: (self.solid_bytes.len() + self.glyph_bytes.len()) as u64,
-            atlas_gpu_bytes: self.atlas.gpu_bytes(),
-            target_gpu_bytes: target.gpu_bytes(),
-            atlas_cached_glyphs: self.atlas.cached_glyph_count(),
-            buffer_reallocations: delta(reallocations_before, self.buffer_reallocations),
-            unknown_glyphs: frame.unknown_glyphs,
-            style_fallbacks: frame.style_fallbacks,
-            missing_outlines: frame.missing_outlines,
-            skipped_control: frame.skipped_control,
-            cpu_time: started.elapsed(),
-        };
-        Ok((stats, frame))
+        draw_calls
     }
 
     /// Cumulative atlas counters. Useful for soak/perf checks.
