@@ -172,7 +172,26 @@ pane texture: 随 pane 释放
 只 request_redraw 不重设 image 属性
 ```
 
-## 7. 当前判定
+## 7. 默认 GPU 是发布门禁
+
+```text
+默认 GPU 不允许延后到后续版本
+但默认必须是 Scene/WGPU 文字/图片路径
+不能把“CPU framebuffer -> texture”的 stage 0 默认化
+```
+
+默认行为的目标：
+
+```text
+不设置 TERVO_GPU -> 自动尝试 GPU
+TERVO_CPU=1      -> 强制 CPU
+无 adapter       -> 自动 CPU
+device lost      -> 自动 CPU/恢复
+```
+
+如果 P2/P3 未完成：发布延期；不允许用 stage 0 冒充“默认 GPU 已完成”。
+
+## 8. 当前判定
 
 ```text
 TERVO_GPU=1 = GPU 显示链路，不是统一 GPU 渲染

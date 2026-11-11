@@ -212,7 +212,18 @@ dsh 图片预览/滚动无残留
 无 CPU 图片合成
 ```
 
-### P4：统一呈现与默认 GPU（2–3 天）
+### P4：统一呈现与默认 GPU（2–3 天，**release blocker，不可延后**）
+
+默认 GPU 不是“后续可选优化”。本 milestone 的发布门禁要求：
+
+```text
+不设置 TERVO_GPU 时默认选择 GPU
+显式 TERVO_CPU=1 才强制 CPU
+无 adapter/device lost 自动回 CPU
+默认路径必须是 GPU-native 文字/图片，不是 CPU framebuffer 上传
+```
+
+因此 P4 依赖 P2/P3；如果 P2/P3 未完成，发布延期，而不是把默认 GPU 推迟。
 
 交付：
 
