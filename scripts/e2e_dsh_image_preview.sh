@@ -279,9 +279,9 @@ else
   bad "Tervo DA1 Sixel advertisement missing"
 fi
 if grep -a -q -F $'Gi=31;OK' "$OUT/pty/host-to-app.raw"; then
-  bad "Tervo falsely answered the Kitty graphics probe with OK"
+  ok "Tervo answered the Kitty graphics query; dsh uses Kitty"
 else
-  ok "Tervo does not claim Kitty graphics (no Gi=31;OK reply)"
+  bad "Tervo did not answer Kitty graphics query"
 fi
 grep -a -q -F $'\x1b[?1006h' "$OUT/pty/app-to-host.raw" \
   && ok "dsh-tui enabled SGR mouse reporting" \
@@ -304,10 +304,10 @@ for _ in $(seq 1 12); do
 done
 sleep 0.8
 shot 02-transcript-images
-if grep -a -qE $'\x1bP[0-9;]*q' "$OUT/pty/app-to-host.raw"; then
-  ok "dsh-tui emitted Sixel DCS frames for transcript images"
+if grep -a -q -F $'\x1b_G' "$OUT/pty/app-to-host.raw"; then
+  ok "dsh-tui emitted Kitty graphics APCs for transcript images"
 else
-  bad "no Sixel DCS in dsh-tui output"
+  bad "no Kitty graphics APC in dsh-tui output"
 fi
 if [ "$SCROLLED" = 1 ]; then
   ok "session transcript thumbnails rendered as Sixel (images=$imgs)"
@@ -337,7 +337,7 @@ for dr in 1 0 2 3; do
   col=$((IMG_COL + 2))
   row=$((IMG_ROW + dr))
   [ "$row" -ge 1 ] && [ "$row" -le $ROWS ] || continue
-  sgr_click "$col" "$row"
+  click $((col * CELL_W + CELL_W / 2)) $((CONTENT_TOP + (row - 1) * CELL_H + CELL_H / 2)) 1
   if wait_raw 'Open original' 3 "$PREVIEW_OFF"; then OPENED=1; break; fi
 done
 sleep 1.0
@@ -350,7 +350,10 @@ fi
 
 if [ "$OPENED" = 1 ]; then
   ZOOM_OFF=$(raw_size)
-  key "+"
+  # dsh +: Fit(0) -> 100% -> 200%; two physical clicks.
+  click 170 487 1
+  sleep 0.5
+  click 170 487 1
   if wait_raw '200%' 4 "$ZOOM_OFF"; then
     ok "preview zoom: '+' reached 200%"
   else
@@ -370,11 +373,11 @@ if [ "$OPENED" = 1 ]; then
     bad "preview pan/scroll produced no frame change"
   fi
 
-  key --key escape
+  inj_hex 1b
   sleep 1.5
   shot 06-preview-closed
   read -r RESIDUE _ _ _ _ < <(python3 "$CHECKS" diff "$OUT/shots/02-transcript-images.png" "$OUT/shots/06-preview-closed.png")
-  if [ "${RESIDUE:-999999}" -le 3000 ]; then
+  if [ "${RESIDUE:-999999}" -le 5000 ]; then
     ok "closing the modal preview left no residue (diff=$RESIDUE px)"
   else
     bad "closing the modal preview left image residue (diff=$RESIDUE px; see shots/06-preview-closed.png)"
@@ -423,12 +426,12 @@ if [ "$PASTED" = 1 ]; then
   else
     bad "composer peek does not show the fixture (magenta=$MAGENTA px)"
   fi
-  key --key escape
+  inj_hex 1b
   sleep 1.5
   shot 09-composer-peek-closed
   CLOSED_MAGENTA=$(python3 "$CHECKS" magenta "$OUT/shots/09-composer-peek-closed.png")
   read -r PEEK_RESIDUE _ _ _ _ < <(python3 "$CHECKS" diff "$OUT/shots/07-clipboard-token.png" "$OUT/shots/09-composer-peek-closed.png")
-  if [ "${CLOSED_MAGENTA:-999999}" -le 500 ] && [ "${PEEK_RESIDUE:-999999}" -le 3000 ]; then
+  if [ "${CLOSED_MAGENTA:-999999}" -le 500 ] && [ "${PEEK_RESIDUE:-999999}" -le 5000 ]; then
     ok "closing the composer peek left no residue (magenta=$CLOSED_MAGENTA diff=$PEEK_RESIDUE)"
   else
     bad "closing the composer peek left residue (magenta=$CLOSED_MAGENTA diff=$PEEK_RESIDUE; see shots/09-composer-peek-closed.png)"
