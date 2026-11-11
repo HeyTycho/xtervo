@@ -1,0 +1,5 @@
+pty: spawned /bin/sh -c <printf 46x9 ...>; waiting for output
+pty: generation=2 grid=46x9 text="TERVO-GPU-PTY                                 \n  RED-BG                                      \n  BLUE-BG                                     \nPTY-FRAME-OK                                  \n                                              \n                                              \n                                              \n                                              \n                                              \n"
+gpu: Slint WGPU30 adapter="llvmpipe (LLVM 15.0.7, 256 bits)" backend=Vulkan device_type=Cpu
+gpu: uploaded 414x198 Rgba8UnormSrgb from PTY framebuffer; window=414x198
+PASS gpu_terminal_spike: real PTY framebuffer 414x198 -> Slint WGPU30 texture -> take_snapshot; cpu_ink=5300 snap_ink=5300 ratio=1.000 mismatch>8=0.000% mismatch>32=0.000% mean_abs=0.000 max_abs=0 generation=2 snapshot=/home/user/AIworkspace/rusttabbyterminal/.worktrees/agent-gpu-spike/docs/evidence/gpu-spike/slint_snapshot.ppm cpu=/home/user/AIworkspace/rusttabbyterminal/.worktrees/agent-gpu-spike/docs/evidence/gpu-spike/cpu_framebuffer.ppm
