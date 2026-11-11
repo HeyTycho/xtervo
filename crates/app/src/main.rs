@@ -6732,6 +6732,13 @@ fn install_gpu_snapshot_hook(ui: &MainWindow) {
     let base_for_log = base.clone();
     let want_resize = env_flag("TERVO_GPU_SNAPSHOT_RESIZE");
     let exit_after = env_flag("TERVO_GPU_SNAPSHOT_EXIT");
+    // llvmpipe first WGPU present can land after 2.5s; tests that need the
+    // imported texture to have been presented should pass a larger delay.
+    let first_delay = std::env::var("TERVO_GPU_SNAPSHOT_DELAY_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(Duration::from_millis)
+        .unwrap_or(Duration::from_millis(2500));
     let weak = ui.as_weak();
     let started = Instant::now();
     let stage = Rc::new(std::cell::Cell::new(0u8));
@@ -6745,7 +6752,7 @@ fn install_gpu_snapshot_hook(ui: &MainWindow) {
         move || {
             let Some(ui) = weak.upgrade() else { return };
             match stage_c.get() {
-                0 if started.elapsed() >= Duration::from_millis(2500) => {
+                0 if started.elapsed() >= first_delay => {
                     take_snapshot_and_log(&ui, &snapshot_path(&base, ".before.ppm"));
                     stage_c.set(1);
                     if want_resize {

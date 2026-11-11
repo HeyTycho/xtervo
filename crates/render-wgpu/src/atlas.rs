@@ -320,15 +320,17 @@ enum FaceId {
 struct FallbackFace {
     path: PathBuf,
     collection_index: u32,
+    group: u8,
     font: Option<Font>,
     unavailable: bool,
 }
 
 impl FallbackFace {
-    fn new(path: PathBuf, collection_index: u32) -> Self {
+    fn new(path: PathBuf, collection_index: u32, group: u8) -> Self {
         Self {
             path,
             collection_index,
+            group,
             font: None,
             unavailable: false,
         }
@@ -414,7 +416,7 @@ impl FontFaces {
         let fallbacks = if with_fallbacks {
             fallback_candidates()
                 .into_iter()
-                .map(|(path, index)| FallbackFace::new(path, index))
+                .map(|(path, index, group)| FallbackFace::new(path, index, group))
                 .collect()
         } else {
             Vec::new()
@@ -472,34 +474,42 @@ impl FontFaces {
         }
 
         let mut fonts_loaded = 0;
-        for index in 0..self.fallbacks.len() {
-            let fallback = &mut self.fallbacks[index];
-            if fallback.unavailable {
-                continue;
-            }
-            if fallback.font.is_none() {
-                if !fallback.covers(ch) {
+        // Probe the group that matches the character first. Without this a
+        // single snowman can make the first frame parse every CJK collection
+        // in the chain (multi-second stall) before reaching DejaVu.
+        for group in fallback_group_order(ch) {
+            for index in 0..self.fallbacks.len() {
+                if self.fallbacks[index].group != group {
                     continue;
                 }
-                match load_font_at(&fallback.path, fallback.collection_index) {
-                    Ok(font) => {
-                        fallback.font = Some(font);
-                        fonts_loaded += 1;
-                    }
-                    Err(_) => {
-                        fallback.unavailable = true;
+                let fallback = &mut self.fallbacks[index];
+                if fallback.unavailable {
+                    continue;
+                }
+                if fallback.font.is_none() {
+                    if !fallback.covers(ch) {
                         continue;
                     }
+                    match load_font_at(&fallback.path, fallback.collection_index) {
+                        Ok(font) => {
+                            fallback.font = Some(font);
+                            fonts_loaded += 1;
+                        }
+                        Err(_) => {
+                            fallback.unavailable = true;
+                            continue;
+                        }
+                    }
                 }
-            }
-            if fallback.font.as_ref().is_some_and(|font| font.has_glyph(ch)) {
-                return FaceSelection {
-                    face: FaceId::Fallback(index),
-                    style_fallback,
-                    glyph_fallback: true,
-                    missing: false,
-                    fonts_loaded,
-                };
+                if fallback.font.as_ref().is_some_and(|font| font.has_glyph(ch)) {
+                    return FaceSelection {
+                        face: FaceId::Fallback(index),
+                        style_fallback,
+                        glyph_fallback: true,
+                        missing: false,
+                        fonts_loaded,
+                    };
+                }
             }
         }
 
@@ -527,27 +537,65 @@ impl FontFaces {
     }
 }
 
+/// Fallback groups: probe order depends on the missing character's class.
+const GROUP_CJK: u8 = 0;
+const GROUP_SYMBOL: u8 = 1;
+const GROUP_EMOJI: u8 = 2;
+const GROUP_ICON: u8 = 3;
+
+fn is_cjk(ch: char) -> bool {
+    matches!(ch as u32,
+        0x1100..=0x11FF | 0x2E80..=0xA4CF | 0xAC00..=0xD7AF
+        | 0xF900..=0xFAFF | 0xFE30..=0xFE4F | 0xFF00..=0xFFEF
+        | 0x20000..=0x3FFFF)
+}
+
+fn is_emoji_like(ch: char) -> bool {
+    matches!(ch as u32,
+        0x1F000..=0x1FAFF | 0x2600..=0x27BF | 0x2B00..=0x2BFF
+        | 0x1F1E6..=0x1F1FF | 0xFE0F)
+}
+
+fn is_private_use(ch: char) -> bool {
+    matches!(ch as u32, 0xE000..=0xF8FF | 0xF0000..=0xFFFFD | 0x100000..=0x10FFFD)
+}
+
+/// Probe order for a missing character: CJK first for CJK, symbol/emoji first
+/// for emoji-like code points, icon fonts first for PUA/Nerd Font glyphs.
+fn fallback_group_order(ch: char) -> [u8; 4] {
+    if is_cjk(ch) {
+        [GROUP_CJK, GROUP_SYMBOL, GROUP_EMOJI, GROUP_ICON]
+    } else if is_emoji_like(ch) {
+        [GROUP_EMOJI, GROUP_SYMBOL, GROUP_ICON, GROUP_CJK]
+    } else if is_private_use(ch) {
+        [GROUP_ICON, GROUP_SYMBOL, GROUP_EMOJI, GROUP_CJK]
+    } else {
+        [GROUP_SYMBOL, GROUP_CJK, GROUP_EMOJI, GROUP_ICON]
+    }
+}
+
 /// Fallback outline fonts shared with the CPU renderer's chain. Paths absent on
 /// the host are skipped; the first file that covers a character is parsed.
 ///
 /// `TERVO_FALLBACK_FONTS` may add `path[:path...]`, with an optional
 /// `#face_index` for collections, matching the app's CPU fallback syntax.
-fn fallback_candidates() -> Vec<(PathBuf, u32)> {
-    let mut candidates: Vec<(PathBuf, u32)> = [
-        ("/usr/share/fonts/truetype/wqy/wqy-microhei.ttc", 0),
-        ("/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf", 0),
-        ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", 7),
-        ("/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc", 1),
-        ("/usr/share/fonts/truetype/noto/NotoSansSymbols2-Regular.ttf", 0),
-        ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 0),
-        ("/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf", 0),
-        ("/usr/share/fonts/truetype/ancient-scripts/Symbola_hint.ttf", 0),
-        ("/usr/share/fonts/truetype/noto/NotoEmoji-Regular.ttf", 0),
-        ("/usr/share/fonts/truetype/nerd-fonts/SymbolsNerdFontMono-Regular.ttf", 0),
-        ("/usr/share/fonts/TTF/SymbolsNerdFontMono-Regular.ttf", 0),
+/// Extra fonts are treated as icon/symbol faces and probed after the built-ins.
+fn fallback_candidates() -> Vec<(PathBuf, u32, u8)> {
+    let mut candidates: Vec<(PathBuf, u32, u8)> = [
+        ("/usr/share/fonts/truetype/wqy/wqy-microhei.ttc", 0, GROUP_CJK),
+        ("/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf", 0, GROUP_CJK),
+        ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", 7, GROUP_CJK),
+        ("/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc", 1, GROUP_CJK),
+        ("/usr/share/fonts/truetype/noto/NotoSansSymbols2-Regular.ttf", 0, GROUP_SYMBOL),
+        ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 0, GROUP_SYMBOL),
+        ("/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf", 0, GROUP_SYMBOL),
+        ("/usr/share/fonts/truetype/ancient-scripts/Symbola_hint.ttf", 0, GROUP_EMOJI),
+        ("/usr/share/fonts/truetype/noto/NotoEmoji-Regular.ttf", 0, GROUP_EMOJI),
+        ("/usr/share/fonts/truetype/nerd-fonts/SymbolsNerdFontMono-Regular.ttf", 0, GROUP_ICON),
+        ("/usr/share/fonts/TTF/SymbolsNerdFontMono-Regular.ttf", 0, GROUP_ICON),
     ]
     .into_iter()
-    .map(|(path, index)| (PathBuf::from(path), index))
+    .map(|(path, index, group)| (PathBuf::from(path), index, group))
     .collect();
 
     if let Some(value) = std::env::var_os("TERVO_FALLBACK_FONTS") {
@@ -560,7 +608,7 @@ fn fallback_candidates() -> Vec<(PathBuf, u32)> {
                 Some((path, index)) => (path, index.parse().unwrap_or(0)),
                 None => (entry, 0),
             };
-            candidates.push((PathBuf::from(path), index));
+            candidates.push((PathBuf::from(path), index, GROUP_ICON));
         }
     }
     candidates
