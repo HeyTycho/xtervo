@@ -7,6 +7,7 @@ mod config;
 mod config_watch;
 mod diag;
 mod glyph;
+mod gpu_present;
 mod keys;
 mod known_hosts;
 mod latency;
@@ -6459,7 +6460,24 @@ fn redraw_pane_inner(st: &mut AppState, id: PaneId) {
     }
     // 光标不进帧缓冲：用独立 overlay，闪烁时只换 visible。
     rt.renderer.draw_without_cursor(&frame);
-    rt.image = rt.renderer.image();
+    // TERVO_GPU=1 且 Slint 已给出 WGPU30 device/queue：把 CPU framebuffer 上传到
+    // 同一 device 上的纹理并导入为 Slint Image；任何失败都返回 None -> 原 CPU 路径。
+    let gpu_image = if gpu_present::ready() {
+        gpu_present::pane_image(
+            id,
+            rt.renderer.pixels(),
+            rt.renderer.width,
+            rt.renderer.height,
+            rt.renderer.last_draw_full,
+            rt.renderer.dirty_rows(),
+        )
+    } else {
+        None
+    };
+    rt.image = match gpu_image {
+        Some(image) => image,
+        None => rt.renderer.image(),
+    };
     sync_inline_images(rt, &frame);
     // 可见纹理缓存与点击 source 分离：即使 Slint 纹理缓存淘汰，本帧命中的
     // 不可变 RGBA 仍在，首次点击无需再等 actor 回包。
@@ -6603,6 +6621,133 @@ fn redraw_all() {
     let ids: Vec<PaneId> = with_app(|st| st.panes.keys().copied().collect()).unwrap_or_default();
     for id in ids {
         redraw_pane(id);
+    }
+}
+
+/// 环境变量是否被设置为“开”（任意非空值都可，`0` 视为关）。
+fn env_flag(name: &str) -> bool {
+    std::env::var_os(name).is_some_and(|v| v != "0")
+}
+
+fn snapshot_path(base: &Path, suffix: &str) -> PathBuf {
+    let mut p = base.as_os_str().to_os_string();
+    p.push(suffix);
+    PathBuf::from(p)
+}
+
+/// 无头验收：`TERVO_GPU_SNAPSHOT=<前缀>` 时用 `Window::take_snapshot()` 读回
+/// Slint 合成后的像素，写二进制 PPM，并打印非背景像素/颜色统计。
+///
+/// 可选：
+/// - `TERVO_GPU_SNAPSHOT_RESIZE=1`：首张快照后程序化改窗口尺寸，1.5s 后再拍一张
+///   （验证 resize 不黑；走 Slint `resized` 回调 + PTY resize）。
+/// - `TERVO_GPU_SNAPSHOT_EXIT=1`：拍完退出事件循环，供脚本无头跑。
+fn install_gpu_snapshot_hook(ui: &MainWindow) {
+    let Some(base) = std::env::var_os("TERVO_GPU_SNAPSHOT") else {
+        return;
+    };
+    let base = PathBuf::from(base);
+    let base_for_log = base.clone();
+    let want_resize = env_flag("TERVO_GPU_SNAPSHOT_RESIZE");
+    let exit_after = env_flag("TERVO_GPU_SNAPSHOT_EXIT");
+    let weak = ui.as_weak();
+    let started = Instant::now();
+    let stage = Rc::new(std::cell::Cell::new(0u8));
+    let resized_at = Rc::new(std::cell::Cell::new(None::<Instant>));
+    let timer = slint::Timer::default();
+    let stage_c = stage.clone();
+    let resized_at_c = resized_at.clone();
+    timer.start(
+        slint::TimerMode::Repeated,
+        Duration::from_millis(100),
+        move || {
+            let Some(ui) = weak.upgrade() else { return };
+            match stage_c.get() {
+                0 if started.elapsed() >= Duration::from_millis(2500) => {
+                    take_snapshot_and_log(&ui, &snapshot_path(&base, ".before.ppm"));
+                    stage_c.set(1);
+                    if want_resize {
+                        let size = ui.window().size();
+                        let (w, h) = (size.width + 160, size.height + 120);
+                        eprintln!("[gpu-snapshot] resize {size:?} -> {w}x{h}");
+                        ui.window().set_size(slint::PhysicalSize::new(w, h));
+                        resized_at_c.set(Some(Instant::now()));
+                    } else if exit_after {
+                        slint::quit_event_loop();
+                    }
+                },
+                1 => {
+                    let Some(at) = resized_at_c.get() else { return };
+                    if at.elapsed() < Duration::from_millis(1500) {
+                        return;
+                    }
+                    take_snapshot_and_log(&ui, &snapshot_path(&base, ".resized.ppm"));
+                    stage_c.set(2);
+                    if exit_after {
+                        slint::quit_event_loop();
+                    }
+                },
+                _ => {},
+            }
+        },
+    );
+    // Slint Timer 需在事件循环期间存活；与 app 内现有定时器同样用 forget 保活。
+    std::mem::forget(timer);
+    eprintln!(
+        "[gpu-snapshot] 已安装：base={} resize={} exit={}",
+        base_for_log.display(),
+        want_resize,
+        exit_after
+    );
+}
+
+fn take_snapshot_and_log(ui: &MainWindow, path: &Path) {
+    match ui.window().take_snapshot() {
+        Ok(buffer) => {
+            let width = buffer.width();
+            let height = buffer.height();
+            let bytes = buffer.as_bytes();
+            let total = width as usize * height as usize;
+            let mut histogram: HashMap<u32, usize> = HashMap::new();
+            for px in bytes.chunks_exact(4) {
+                let key = u32::from_le_bytes([px[0], px[1], px[2], px[3]]);
+                *histogram.entry(key).or_default() += 1;
+            }
+            let (top, top_n) = histogram
+                .iter()
+                .max_by_key(|(_, count)| **count)
+                .map(|(color, count)| (*color, *count))
+                .unwrap_or((0, 0));
+            let nonbg = total.saturating_sub(top_n);
+            let center_idx = (height as usize / 2 * width as usize + width as usize / 2) * 4;
+            let center = bytes.get(center_idx..center_idx + 4).unwrap_or(&[0; 4]);
+            let mut ppm = Vec::with_capacity(total * 3 + 32);
+            ppm.extend_from_slice(format!("P6\n{width} {height}\n255\n").as_bytes());
+            for px in bytes.chunks_exact(4) {
+                ppm.extend_from_slice(&px[..3]);
+            }
+            match std::fs::write(path, &ppm) {
+                Ok(()) => eprintln!(
+                    "[gpu-snapshot] path={} size={width}x{height} gpu_ready={} total={total} \
+                     nonbg={nonbg} distinct={} top=#{top:08x} center=#{}",
+                    path.display(),
+                    gpu_present::ready(),
+                    histogram.len(),
+                    center
+                        .iter()
+                        .map(|b| format!("{b:02x}"))
+                        .collect::<String>()
+                ),
+                Err(err) => eprintln!(
+                    "[gpu-snapshot] 写 PPM 失败 path={} error={err}",
+                    path.display()
+                ),
+            }
+        },
+        Err(err) => eprintln!(
+            "[gpu-snapshot] take_snapshot 失败 path={} error={err}",
+            path.display()
+        ),
     }
 }
 
@@ -9290,6 +9435,28 @@ fn sftp_probe_transfer(
     Ok(String::new())
 }
 
+/// TERVO_GPU=1 但 WGPU30 backend/adapter/device 初始化失败：exec 重启自己并
+/// `TERVO_GPU=0`，走原来的默认 CPU/Skia 路径。保留参数，日志明确写出原因。
+/// `TERVO_GPU_FALLBACK=1` 只用于标记这次重启，不再请求 GPU（TERVO_GPU=0 已足够）。
+fn exec_cpu_fallback(requested: &str, reason: &str) -> ! {
+    use std::os::unix::process::CommandExt;
+    eprintln!(
+        "[gpu] requested_backend={requested} 的 WGPU 显示链路初始化失败：{reason}；\
+         exec 重启并 TERVO_GPU=0 自动回退 CPU/Skia（默认路径）"
+    );
+    logging::restore_stderr();
+    std::thread::sleep(Duration::from_millis(50));
+    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("tervo"));
+    let err = std::process::Command::new(exe)
+        .args(args)
+        .env("TERVO_GPU", "0")
+        .env("TERVO_GPU_FALLBACK", "1")
+        .exec();
+    eprintln!("[gpu] exec CPU 回退失败: {err}");
+    std::process::exit(3);
+}
+
 /// Skia 已创建窗口但 1s 内没有拿到 GPU/GL 上下文（software surface 在本机实测
 /// 黑屏），用 exec 换成 winit-software 重新启动；保留原参数/环境，且用
 /// `TERVO_RENDER_FALLBACK=1` 防止循环。`exec` 前恢复 stderr，避免新进程继承
@@ -9321,9 +9488,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // `SLINT_BACKEND=winit-software` 仍是显式回退开关；显式设置任何值都以用户为准。
     // Skia 初始化失败时由 render_probe/下面的重试自动回退 software，不黑屏、不崩溃。
     let explicit_backend = std::env::var("SLINT_BACKEND").ok();
+    // TERVO_GPU=1 是显式 opt-in：请求 Slint 的 femtovg-wgpu 渲染器，从而在
+    // RenderingSetup 里拿到 WGPU30 device/queue。默认（未设置）完全不改变原路径。
+    let tervo_gpu = gpu_present::requested();
     let mut requested_backend = explicit_backend
         .clone()
         .unwrap_or_else(|| "winit-skia".to_string());
+    if tervo_gpu && explicit_backend.is_none() {
+        requested_backend = "winit-femtovg-wgpu".to_string();
+    }
     let backend_from_env = explicit_backend.is_some();
     // 没有 DRM 设备时 Skia 可能只能建 software surface，而该 surface 在本机
     // 实测会黑屏（窗口在、内容全黑）。这不是“GPU 初始化失败后回退”而是压根
@@ -9331,6 +9504,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // `SLINT_BACKEND=winit-skia` 强制尝试（headless/llvmpipe 验证用）。
     let mut auto_software_no_drm = false;
     if !backend_from_env
+        && !tervo_gpu
         && !std::path::Path::new("/dev/dri").exists()
         && std::env::var_os("TERVO_FORCE_GPU").is_none()
     {
@@ -9445,10 +9619,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
     // 必须在任何 Slint backend 初始化之前设置；放在 logging::init 之后是为了让
     // 日志里的 SLINT_BACKEND 能区分“程序默认 GPU”与“用户显式设置”。
-    if !backend_from_env {
+    // TERVO_GPU=1 时不能写 SLINT_BACKEND：BackendSelector::select() 会读它，
+    // 而我们要用 require_wgpu_30() 明确选中 femtovg-wgpu。
+    if !backend_from_env && !tervo_gpu {
         std::env::set_var("SLINT_BACKEND", &requested_backend);
     }
-    if backend_from_env {
+    if tervo_gpu && !backend_from_env {
+        eprintln!(
+            "[gpu] TERVO_GPU=1：请求 Slint WGPU30 显示链路（BackendSelector.require_wgpu_30；\
+             失败会自动回退 CPU/Skia，默认路径不受影响）"
+        );
+    } else if backend_from_env {
         eprintln!("[render] requested_backend={requested_backend}（显式设置 SLINT_BACKEND）");
     } else if auto_software_no_drm {
         eprintln!(
@@ -9540,6 +9721,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(not(debug_assertions))]
     let force_init_fail = false;
 
+    // TERVO_GPU=1：在任何 Slint UI 初始化之前明确要求 WGPU30。
+    // require_wgpu_30 选中 femtovg-wgpu；adapter/device 不可用时 select() 返回错误，
+    // 这里 exec 回退 CPU/Skia（默认路径），不会黑屏硬撑。
+    if tervo_gpu && !backend_from_env && !force_init_fail {
+        match slint::BackendSelector::new()
+            .require_wgpu_30(slint::wgpu_30::WGPUConfiguration::default())
+            .select()
+        {
+            Ok(()) => eprintln!(
+                "[gpu] BackendSelector::require_wgpu_30(...).select() = OK（等待 RenderingSetup 的 device/queue）"
+            ),
+            Err(err) => exec_cpu_fallback(
+                &requested_backend,
+                &format!("require_wgpu_30/select: {err}"),
+            ),
+        }
+    }
     let first_ui = if force_init_fail {
         eprintln!("[render] 测试注入：强制首次 UI 初始化失败（TERVO_TEST_FORCE_UI_INIT_FAIL）");
         Err(slint::PlatformError::Other(
@@ -9551,6 +9749,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (ui, backend_fell_back) = match first_ui {
         Ok(ui) => (ui, false),
+        Err(err) if tervo_gpu => {
+            // WGPU platform 已经 select；再改 SLINT_BACKEND 重试无效，直接 exec 回退。
+            exec_cpu_fallback(&requested_backend, &format!("MainWindow::new: {err}"))
+        }
         Err(err) if requested_backend != "winit-software" => {
             eprintln!(
                 "[render] requested_backend={requested_backend} 初始化失败: {err}；\
@@ -12352,6 +12554,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ---- 首帧 ----
     ui.show()?;
+    // 无头验收钩子：TERVO_GPU_SNAPSHOT=<前缀> 时定时 take_snapshot 写 PPM 并打像素统计。
+    install_gpu_snapshot_hook(&ui);
     // Slint 1.18 的 winit 后端不投递外部文件拖放，用 winit 事件桥接补齐。
     install_native_window_events(&ui);
     // GPU 自检兜底：Skia 软件 surface 会“窗口正常但全黑”，而 Slint 的

@@ -504,6 +504,12 @@ impl Renderer {
         self.buffer.pixels()
     }
 
+    /// 本帧实际重绘的行（升序）。整屏重绘时 `last_draw_full=true`，调用方应忽略
+    /// 这个列表并上传整帧；GPU 纹理上传只按这里做行级更新。
+    pub fn dirty_rows(&self) -> &[usize] {
+        &self.dirty_rows
+    }
+
     pub fn resize_grid(&mut self, cols: usize, rows: usize) {
         self.cols = cols;
         self.rows = rows;
