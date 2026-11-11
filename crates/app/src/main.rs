@@ -12148,14 +12148,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     {
         let weak = ui.as_weak();
+        let last_max_click = Rc::new(std::cell::Cell::new(None::<Instant>));
+        let last_max_click_handler = last_max_click.clone();
         ui.on_max_pointer_down(|| eprintln!("[ui] max-pointer-down"));
         ui.on_toggle_maximize(move || {
             if let Some(ui) = weak.upgrade() {
+                let now = Instant::now();
+                let recent = last_max_click_handler
+                    .get()
+                    .is_some_and(|t| now.duration_since(t) < Duration::from_millis(800));
+                last_max_click_handler.set(Some(now));
+                // 静置后第一次点击：用真实窗口几何校准 UI。过渡期/连点不能
+                // 用 WM 状态重算 target，否则同一目标会被重复发送。
+                if !recent {
+                    if let Some(actual) = xconn::window_geometry_maximized() {
+                        if ui.get_window_maximized() != actual {
+                            ui.set_window_maximized(actual);
+                        }
+                    }
+                }
                 let ui_state = ui.get_window_maximized();
                 let before = ui.window().is_maximized();
-                // 点击必须翻转“用户看到的 desired state”，不能用 WM actual
-                // 重新算 target：X11 的 _NET_WM_STATE 在过渡期会抖动，曾导致
-                // 连续多次点击都发出同一个请求（看起来不灵敏）。
                 let target = !ui_state;
                 ui.set_window_maximized(target);
                 with_app(|st| {
@@ -12173,12 +12186,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let title = ui.get_window_title().to_string();
                 match xconn::wm_set_maximized(&title, target) {
                     Ok(()) => eprintln!(
-                        "[ui] toggle-maximize ui_state={ui_state} before={before} target={target} via=ewmh"
+                        "[ui] toggle-maximize ui_state={ui_state} before={before} target={target} recent={recent} via=ewmh"
                     ),
                     Err(err) => {
                         eprintln!(
                             "[ui] toggle-maximize ui_state={ui_state} before={before} target={target} \
-                             ewmh_err={err} fallback=winit"
+                             recent={recent} ewmh_err={err} fallback=winit"
                         );
                         ui.window().set_maximized(target);
                     }
