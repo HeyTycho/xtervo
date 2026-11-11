@@ -52,7 +52,7 @@ cargo test -p tervo-app --bin tervo
 
 # GPU：TERVO_GPU=1 + SLINT_WGPU_CPU=1，未设置 SLINT_BACKEND
 BackendSelector::require_wgpu_30(...).select() = OK
-actual_renderer=wgpu30（Slint femtovg-wgpu）
+actual_renderer=wgpu30（Slint Skia WGPU30）
 [gpu] pane=1 已导入 1053x682 Rgba8Unorm 纹理到 Slint 同一 device
 
 gpu.before.ppm  900x604  gpu_ready=true  nonbg=27319 distinct=404

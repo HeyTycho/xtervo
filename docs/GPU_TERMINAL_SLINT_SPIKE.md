@@ -133,7 +133,7 @@ example 在以下任一情况**不会**打印 `PASS`，并以非零码退出：
    device loss 恢复、present revision 验证。
 4. **sRGB 依赖**：使用 `Rgba8UnormSrgb` 才得到逐字节一致；若改成
    `Rgba8Unorm`，中间色调会出现颜色空间差异（需重新定义容差，不能当等价）。
-5. **Slint 1.18 unstable API**：`unstable-wgpu-30` / `renderer-femtovg-wgpu`
+5. **Slint 1.18 unstable API**：`unstable-wgpu-30` / `renderer-Skia WGPU30`
    是 unstable feature，未来 Slint 升级可能破坏。
 6. **无硬件 GPU**：只能用 `llvmpipe` CPU adapter（`SLINT_WGPU_CPU=1`）；
    本结果证明 Vulkan CPU adapter 上的 WGPU 纹理导入/显示链路成立，
@@ -147,7 +147,7 @@ example 在以下任一情况**不会**打印 `PASS`，并以非零码退出：
 
 - `crates/app/examples/gpu_terminal_spike.rs`：新增验收 example。
 - `crates/app/Cargo.toml`：仅 `[dev-dependencies]` 追加 Slint 的
-  `unstable-wgpu-30` / `renderer-femtovg` / `renderer-femtovg-wgpu` features
+  `unstable-wgpu-30` / `renderer-Skia WGPU` / `renderer-Skia WGPU30` features
   （与工作区主依赖取并集后等于已验证的构建，不影响 app 正常依赖）。
 - `scripts/gpu-terminal-spike.sh`：隔离 Xvfb + 运行 example 的辅助脚本。
 - `docs/evidence/gpu-spike/`：运行日志、基线测试日志、snapshot/CPU 帧 PNG。

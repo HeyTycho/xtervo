@@ -1604,6 +1604,9 @@ impl Renderer {
         // 大范围 damage（普通屏幕滚动会脏所有行）等同整屏：逐行重绘再把
         // 上一帧未重绘的行复制过来没有收益，直接整屏更省一次复制。
         let full = frame.full || self.force_full || frame.needs_full_redraw();
+        // full 帧没有“局部重绘行”；清掉上一帧遗留的 dirty_rows，避免调用方
+        // 误把旧行区间当成这一帧的增量。
+        self.dirty_rows.clear();
 
         if full {
             self.force_full = false;

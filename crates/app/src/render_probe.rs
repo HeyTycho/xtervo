@@ -75,13 +75,13 @@ pub fn install(window: &slint::Window, requested: &str, fell_back: bool) {
                         report_gl(get_proc_address, &mut st);
                     },
                     GraphicsAPI::WGPU30 { device, queue, .. } => {
-                        // TERVO_GPU=1 的显示链路：Slint 的 femtovg-wgpu 渲染器把
+                        // TERVO_GPU=1 的显示链路：Slint 的 WGPU30 API 把
                         // 它实际使用的同一 device/queue 交出来，gpu_present 用它
                         // 创建终端纹理（不做 glyph/Scene GPU 化）。
                         st.gl_reported = true;
                         GPU_CONFIRMED.store(true, Ordering::Relaxed);
                         eprintln!(
-                            "[render] actual_renderer=wgpu30（Slint femtovg-wgpu；\
+                            "[render] actual_renderer=wgpu30（Slint WGPU30；\
                              device/queue 与终端纹理同源）"
                         );
                         crate::gpu_present::install(device, queue);

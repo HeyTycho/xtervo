@@ -82,7 +82,11 @@ pub fn install(device: &wgpu::Device, queue: &wgpu::Queue) {
         Err(poisoned) => poisoned.into_inner(),
     };
     if guard.is_some() {
-        return;
+        // Slint 可能在 suspend/resume 或后端重建时再次发 RenderingSetup，
+        // 但没有成对 teardown；旧 device 的纹理不能给新 renderer 用。
+        eprintln!("[gpu] RenderingSetup 重新安装：丢弃旧 device 纹理");
+        *guard = None;
+        READY.store(false, Ordering::Release);
     }
     let limits = device.limits();
     eprintln!(
@@ -96,6 +100,27 @@ pub fn install(device: &wgpu::Device, queue: &wgpu::Queue) {
         frames: HashMap::new(),
     });
     READY.store(true, Ordering::Release);
+}
+
+/// 丢弃某个 pane 的纹理；pane id 被重连复用时必须先调用，否则会复用旧会话纹理。
+pub fn forget(pane: u64) {
+    if let Ok(mut guard) = STATE.lock() {
+        if let Some(state) = guard.as_mut() {
+            state.frames.remove(&pane);
+        }
+    }
+}
+
+/// 丢弃已关闭 pane 的纹理；只保留当前仍存在的 pane。
+///
+/// 纹理若只放在全局 HashMap，关闭 Tab/pane 后不会随 PaneRuntime 释放，
+/// 会表现为“开关 pane 时 VRAM 单调增长”。每次重绘用当前 pane 列表回收。
+pub fn retain(active: &[u64]) {
+    if let Ok(mut guard) = STATE.lock() {
+        if let Some(state) = guard.as_mut() {
+            state.frames.retain(|pane, _| active.contains(pane));
+        }
+    }
 }
 
 /// 渲染器销毁时丢弃旧 device 上的纹理。
@@ -120,6 +145,7 @@ pub fn pane_image(
     height: usize,
     full: bool,
     rows: &[usize],
+    allow_resize: bool,
 ) -> Option<slint::Image> {
     if !ready() {
         return None;
@@ -129,6 +155,7 @@ pub fn pane_image(
         return None;
     };
     if width == 0 || height == 0 || pixels.len() < width as usize * height as usize {
+        fail("framebuffer 为空或像素数不足");
         return None;
     }
     let mut guard = match STATE.lock() {
@@ -152,6 +179,11 @@ pub fn pane_image(
         .frames
         .get(&pane)
         .is_none_or(|slot| slot.width != width || slot.height != height);
+    // live resize 期间继续用 CPU Image：拖动时每个中间尺寸都新建一张
+    // 大纹理会造成几十次 VRAM 分配/释放。resize 结束后再建最终纹理。
+    if recreate && !allow_resize {
+        return None;
+    }
     if recreate {
         let texture = state.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("tervo-terminal-frame"),

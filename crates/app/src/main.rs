@@ -2529,6 +2529,9 @@ fn create_pane(
     profile: Option<&profile::Profile>,
     mut askpass: Option<askpass::Askpass>,
 ) -> std::io::Result<PaneRuntime> {
+    // pane id 可能被重连复用；旧 GPU 纹理不能跨会话复用。
+    gpu_present::forget(id);
+
     // Profile 优先：它显式带 shell/args/env；否则沿用全局配置。
     // 远端 Profile（ssh/telnet/serial）里出现的路径属于远端文件系统，不能本地打开。
     let remote = profile.is_some_and(|p| p.kind != "local");
@@ -6437,6 +6440,11 @@ fn redraw_pane_inner(st: &mut AppState, id: PaneId) {
     let blink_on = st.cursor_blink_on;
     let global_blink = st.cfg.cursor_blinking();
     let policy = st.cfg.scrollbar_policy();
+    // 回收已关闭 pane 的 GPU 纹理，避免全局 HashMap 持有已删除 pane。
+    if gpu_present::ready() {
+        let active: Vec<u64> = st.panes.keys().copied().collect();
+        gpu_present::retain(&active);
+    }
     let Some(rt) = st.panes.get_mut(&id) else {
         return;
     };
@@ -6470,6 +6478,7 @@ fn redraw_pane_inner(st: &mut AppState, id: PaneId) {
             rt.renderer.height,
             rt.renderer.last_draw_full,
             rt.renderer.dirty_rows(),
+            !st.resize_in_progress,
         )
     } else {
         None
@@ -9488,14 +9497,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // `SLINT_BACKEND=winit-software` 仍是显式回退开关；显式设置任何值都以用户为准。
     // Skia 初始化失败时由 render_probe/下面的重试自动回退 software，不黑屏、不崩溃。
     let explicit_backend = std::env::var("SLINT_BACKEND").ok();
-    // TERVO_GPU=1 是显式 opt-in：请求 Slint 的 femtovg-wgpu 渲染器，从而在
-    // RenderingSetup 里拿到 WGPU30 device/queue。默认（未设置）完全不改变原路径。
+    // TERVO_GPU=1 是显式 opt-in：请求 Skia 的 WGPU30 API（require_wgpu_30），
+    // 从而在 RenderingSetup 里拿到 WGPU30 device/queue。默认完全不改变原路径。
     let tervo_gpu = gpu_present::requested();
     let mut requested_backend = explicit_backend
         .clone()
         .unwrap_or_else(|| "winit-skia".to_string());
     if tervo_gpu && explicit_backend.is_none() {
-        requested_backend = "winit-femtovg-wgpu".to_string();
+        requested_backend = "winit-skia".to_string();
     }
     let backend_from_env = explicit_backend.is_some();
     // 没有 DRM 设备时 Skia 可能只能建 software surface，而该 surface 在本机
@@ -9620,7 +9629,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 必须在任何 Slint backend 初始化之前设置；放在 logging::init 之后是为了让
     // 日志里的 SLINT_BACKEND 能区分“程序默认 GPU”与“用户显式设置”。
     // TERVO_GPU=1 时不能写 SLINT_BACKEND：BackendSelector::select() 会读它，
-    // 而我们要用 require_wgpu_30() 明确选中 femtovg-wgpu。
+    // 而我们要用 require_wgpu_30() 明确选中 Skia 的 WGPU30 API。
     if !backend_from_env && !tervo_gpu {
         std::env::set_var("SLINT_BACKEND", &requested_backend);
     }
@@ -9722,7 +9731,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let force_init_fail = false;
 
     // TERVO_GPU=1：在任何 Slint UI 初始化之前明确要求 WGPU30。
-    // require_wgpu_30 选中 femtovg-wgpu；adapter/device 不可用时 select() 返回错误，
+    // require_wgpu_30 请求 WGPU30 API；adapter/device 不可用时 select() 返回错误，
     // 这里 exec 回退 CPU/Skia（默认路径），不会黑屏硬撑。
     if tervo_gpu && !backend_from_env && !force_init_fail {
         match slint::BackendSelector::new()
@@ -12556,6 +12565,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui.show()?;
     // 无头验收钩子：TERVO_GPU_SNAPSHOT=<前缀> 时定时 take_snapshot 写 PPM 并打像素统计。
     install_gpu_snapshot_hook(&ui);
+    // RenderingSetup 可能首帧后才给出 device/queue；GPU 就绪后主动重绘一次。
+    if tervo_gpu {
+        slint::Timer::single_shot(Duration::from_millis(180), || {
+            if gpu_present::ready() {
+                redraw_all();
+            }
+        });
+    }
     // Slint 1.18 的 winit 后端不投递外部文件拖放，用 winit 事件桥接补齐。
     install_native_window_events(&ui);
     // GPU 自检兜底：Skia 软件 surface 会“窗口正常但全黑”，而 Slint 的

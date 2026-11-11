@@ -47,6 +47,4 @@ i-slint-renderer-software = "1.18.1"
 # features 与主 slint 依赖取并集后，正好等于 `crates/render-wgpu` 已验证过的构建。
 slint = { workspace = true, features = [
     "unstable-wgpu-30",
-    "renderer-femtovg",
-    "renderer-femtovg-wgpu",
 ] }
