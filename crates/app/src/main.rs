@@ -385,6 +385,8 @@ struct AppState {
     resize: Option<WindowResize>,
     /// 窗口是否聚焦（100ms 轮询 winit），用于 DECSET 1004 focus 上报。
     window_focused: bool,
+    /// Rust 侧权威的最大化 desired state；Slint 属性只做图标显示。
+    window_maximized: bool,
     /// 上次同步给输入法的候选点（含 pane/DPR/锚点来源）；None 表示尚未发送。
     ime_spot: Option<ImeSpotKey>,
     /// 强制下一次 IME 同步重新下发（pane/Tab 切换、resize、窗口 focus/DPR 变化）。
@@ -9988,6 +9990,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         link_hover_cell: None,
         resize: None,
         window_focused: true,
+        window_maximized: false,
         ime_spot: None,
         ime_spot_dirty: true,
         ime_override: None,
@@ -12160,16 +12163,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 last_max_click_handler.set(Some(now));
                 // 静置后第一次点击：用真实窗口几何校准 UI。过渡期/连点不能
                 // 用 WM 状态重算 target，否则同一目标会被重复发送。
-                if !recent {
-                    if let Some(actual) = xconn::window_geometry_maximized() {
-                        if ui.get_window_maximized() != actual {
-                            ui.set_window_maximized(actual);
-                        }
+                let geometry = if !recent {
+                    xconn::window_geometry_maximized()
+                } else {
+                    None
+                };
+                // AppState 是权威 desired；不依赖 Slint 属性 setter/getter 的
+                // 事件循环时序（日志里曾连续三次 target=true，下一次仍 false）。
+                let target = with_app(|st| {
+                    if let Some(actual) = geometry {
+                        st.window_maximized = actual;
                     }
-                }
-                let ui_state = ui.get_window_maximized();
+                    st.window_maximized = !st.window_maximized;
+                    st.window_maximized
+                })
+                .unwrap_or_else(|| !ui.get_window_maximized());
                 let before = ui.window().is_maximized();
-                let target = !ui_state;
                 ui.set_window_maximized(target);
                 with_app(|st| {
                     request_window_corners(
@@ -12186,12 +12195,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let title = ui.get_window_title().to_string();
                 match xconn::wm_set_maximized(&title, target) {
                     Ok(()) => eprintln!(
-                        "[ui] toggle-maximize ui_state={ui_state} before={before} target={target} recent={recent} via=ewmh"
+                        "[ui] toggle-maximize before={before} target={target} recent={recent} via=ewmh"
                     ),
                     Err(err) => {
                         eprintln!(
-                            "[ui] toggle-maximize ui_state={ui_state} before={before} target={target} \
-                             recent={recent} ewmh_err={err} fallback=winit"
+                            "[ui] toggle-maximize before={before} target={target} recent={recent} \
+                             ewmh_err={err} fallback=winit"
                         );
                         ui.window().set_maximized(target);
                     }
@@ -12612,7 +12621,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ---- 首帧 ----
     ui.show()?;
-    ui.set_window_maximized(ui.window().is_maximized());
+    let initial_maximized = ui.window().is_maximized();
+    ui.set_window_maximized(initial_maximized);
+    with_app(|st| st.window_maximized = initial_maximized);
     // 无头验收钩子：TERVO_GPU_SNAPSHOT=<前缀> 时定时 take_snapshot 写 PPM 并打像素统计。
     install_gpu_snapshot_hook(&ui);
     // RenderingSetup 可能首帧后才给出 device/queue；GPU 就绪后主动重绘一次。
