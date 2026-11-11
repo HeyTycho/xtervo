@@ -7641,7 +7641,7 @@ fn install_native_window_events(ui: &MainWindow) {
                 if let Some(ui) = weak.upgrade() {
                     let recent_click = with_app(|st| {
                         st.maximize_changed_at
-                            .is_some_and(|t| t.elapsed() < Duration::from_millis(500))
+                            .is_some_and(|t| t.elapsed() < Duration::from_millis(800))
                     })
                     .unwrap_or(false);
                     if !recent_click {
@@ -12183,10 +12183,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ui.on_toggle_maximize(move || {
             if let Some(ui) = weak.upgrade() {
                 let ui_state = ui.get_window_maximized();
-                let before = ui.window().is_maximized();
-                // 静止时以 WM actual 为准；不一致时先对齐，避免第一次点击
-                // 因为 UI 状态过期而变成 no-op。
-                let target = if ui_state == before { !ui_state } else { !before };
+                let before = xconn::window_is_maximized(&ui.get_window_title())
+                    .unwrap_or_else(|| ui.window().is_maximized());
+                let recent_click = with_app(|st| {
+                    st.maximize_changed_at
+                        .is_some_and(|t| t.elapsed() < Duration::from_millis(800))
+                })
+                .unwrap_or(false);
+                // 快速连点时 WM 的 _NET_WM_STATE 还停留在上一个状态；此时只信
+                // 用户最后一次点击产生的 desired UI，每次点击都必须翻转。
+                // 静止后的第一次点击才用 EWMH actual 校准，避免初始 UI 过期。
+                let target = if recent_click {
+                    !ui_state
+                } else {
+                    if ui_state != before {
+                        ui.set_window_maximized(before);
+                    }
+                    !before
+                };
                 ui.set_window_maximized(target);
                 with_app(|st| {
                     st.maximize_changed_at = Some(Instant::now());
@@ -12201,7 +12215,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 });
                 ui.window().set_maximized(target);
                 eprintln!(
-                    "[ui] toggle-maximize ui_state={ui_state} before={before} target={target}"
+                    "[ui] toggle-maximize ui_state={ui_state} before={before} target={target} recent={recent_click}"
                 );
             }
         });
