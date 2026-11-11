@@ -6444,6 +6444,17 @@ fn redraw_pane_inner(st: &mut AppState, id: PaneId) {
         return;
     }
     rt.cursor = (frame.cursor.line as usize, frame.cursor.col as usize);
+    // 诊断：TERVO_FRAME_DUMP=/tmp/frame.txt 时，每次重绘前把 Frame 文本落盘。
+    if let Some(path) = std::env::var_os("TERVO_FRAME_DUMP") {
+        let mut out = String::with_capacity(frame.rows * frame.cols + frame.rows);
+        for row in 0..frame.rows {
+            for col in 0..frame.cols {
+                out.push(frame.cell(row, col).char());
+            }
+            out.push('\n');
+        }
+        let _ = std::fs::write(&path, out);
+    }
     // 光标不进帧缓冲：用独立 overlay，闪烁时只换 visible。
     rt.renderer.draw_without_cursor(&frame);
     rt.image = rt.renderer.image();

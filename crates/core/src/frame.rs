@@ -389,6 +389,11 @@ impl Frame {
         if let Some(slot) = self.cells.get_mut(index) {
             *slot = data;
         }
+        // 覆盖为普通 cell 时，旧格子的组合字符必须移除；否则增量帧会把
+        // 上一帧的重音/ZWJ 画到新字符上（whole-row 对账也走这里）。
+        if !self.zerowidth.is_empty() {
+            self.zerowidth.remove(&index);
+        }
     }
 
     /// 写一个带零宽字符（组合音标/ZWJ/VS）的单元格。

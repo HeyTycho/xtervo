@@ -477,6 +477,93 @@ fn incremental_sequence_matches_fresh_full_redraw_pixel_for_pixel() {
 }
 
 #[test]
+fn image_partially_above_viewport_does_not_write_outside_its_rows() {
+    use std::sync::Arc;
+    use tervo_core::InlineImage;
+
+    let Some(fonts) = fonts() else { return };
+    let mut renderer = renderer(&fonts, COLS, ROWS);
+    let mut frame = blank(COLS, ROWS);
+    frame.full = true;
+    renderer.draw_without_cursor(&frame);
+
+    // 顶部滚出视口：row=-1，高度 3 行。旧 dest_y0 公式会把它整体下移
+    // 22px，写到 row_span 之外的行；该行没有 damage，增量渲染就留下残影。
+    let cell_h = fonts.cell_h as u32;
+    let cell_w = fonts.cell_w as u32;
+    frame.images.push(InlineImage {
+        id: 9,
+        source_id: 9,
+        row_id: 9,
+        row: -1,
+        col: 4,
+        width: cell_w,
+        height: 3 * cell_h,
+        data: Arc::from(vec![0u8, 255, 0, 255].repeat((cell_w * 3 * cell_h) as usize)),
+        z_index: -1,
+        above_text: false,
+    });
+    frame.full = false;
+    frame.damage.clear();
+    renderer.draw_without_cursor(&frame);
+    assert_matches_fresh_redraw(&renderer, &fonts, &frame, "image 顶部滚出视口");
+}
+
+#[test]
+fn inline_image_scroll_removal_matches_fresh_full_redraw() {
+    use std::sync::Arc;
+    use tervo_core::{ImageCrop, ImagePlacementMeta, InlineImage};
+
+    let Some(fonts) = fonts() else { return };
+    let mut renderer = renderer(&fonts, COLS, ROWS);
+    let mut frame = blank(COLS, ROWS);
+    for row in 0..ROWS {
+        put(&mut frame, row, 1, 'A', 0x00ff_ffff);
+    }
+    let mut image = InlineImage {
+        id: 7,
+        source_id: 7,
+        row_id: 7,
+        row: 1,
+        col: 2,
+        width: 3,
+        height: 3,
+        data: Arc::from(vec![255u8, 0, 0, 255].repeat(9)),
+        z_index: -1,
+        above_text: false,
+    };
+    frame.images.push(image.clone());
+    frame.image_placements.push(ImagePlacementMeta {
+        placement_id: 7,
+        image_id: 7,
+        row_id: 7,
+        source_rect: Some(ImageCrop { x: 0, y: 1, w: 2, h: 1 }),
+        cells_w: 2,
+        cells_h: 1,
+        z_index: -1,
+        above_text: false,
+    });
+    frame.full = true;
+    renderer.draw_without_cursor(&frame);
+    assert_matches_fresh_redraw(&renderer, &fonts, &frame, "image 首帧");
+
+    // 只把图片从第 1 行移动到第 4 行；文本 cells 不变，damage 列表为空。
+    image.row = 4;
+    frame.images[0] = image.clone();
+    frame.full = false;
+    frame.damage.clear();
+    renderer.draw_without_cursor(&frame);
+    assert_matches_fresh_redraw(&renderer, &fonts, &frame, "image 滚动");
+
+    // 删除图片；旧位置行必须被清掉。
+    frame.images.clear();
+    frame.full = false;
+    frame.damage.clear();
+    renderer.draw_without_cursor(&frame);
+    assert_matches_fresh_redraw(&renderer, &fonts, &frame, "image 删除");
+}
+
+#[test]
 fn tall_glyphs_do_not_leave_stale_pixels_in_neighbor_rows() {
     // 字形位图只做水平裁剪；这里用一批可能向上/下伸出的字符验证：只重绘本行
     // 也不会在相邻行留下上一帧的墨迹（与整屏参考逐像素一致）。

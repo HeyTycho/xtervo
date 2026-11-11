@@ -1215,7 +1215,10 @@ impl Renderer {
             }
             let scale_x = img.source_w / dw.max(1.0);
             let scale_y = img.source_h / dh.max(1.0);
-            let dest_y0 = (top.max(0.0) + dy0 as f32).round() as usize;
+            // `dy0` 已经按 `row_top` 裁剪过；目标起点是当前行顶，不是
+            // `top.max(0)+dy0`。后者在图片顶部 row<0 时会把整张图向下错移
+            // |top| 像素，写进 row_span 之外的行，留下未标 damage 的残影。
+            let dest_y0 = row_top.round() as usize;
             let src_y0 = (dy0 as f32 * scale_y) as usize;
             let src_x0 = (x0 as f32 - left).max(0.0) as usize;
             let pixels = self.buffer.pixels_mut();
