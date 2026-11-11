@@ -4849,6 +4849,7 @@ dependencies = [
 name = "tervo-scene"
 version = "0.3.1"
 dependencies = [
+ "tervo-core",
  "tervo-graphics",
 ]
 
