@@ -56,16 +56,33 @@ fn rerun_on_git_change(root: &Path) {
         return;
     };
     let git_dir = PathBuf::from(git_dir);
-    for name in ["HEAD", "packed-refs"] {
-        let path = git_dir.join(name);
-        if path.exists() {
-            println!("cargo:rerun-if-changed={}", path.display());
+    // In a linked worktree HEAD lives in the per-worktree git dir, while
+    // branch refs live in the common dir. Watch both, otherwise a commit in
+    // this worktree leaves a stale commit/dirty value embedded in the binary.
+    let common_dir = git(root, &["rev-parse", "--git-common-dir"])
+        .map(PathBuf::from)
+        .map(|path| {
+            if path.is_absolute() {
+                path
+            } else {
+                root.join(path)
+            }
+        })
+        .unwrap_or_else(|| git_dir.clone());
+    for base in [&git_dir, &common_dir] {
+        for name in ["HEAD", "packed-refs"] {
+            let path = base.join(name);
+            if path.exists() {
+                println!("cargo:rerun-if-changed={}", path.display());
+            }
         }
     }
     if let Some(reference) = git(root, &["symbolic-ref", "-q", "HEAD"]) {
-        let path = git_dir.join(&reference);
-        if path.exists() {
-            println!("cargo:rerun-if-changed={}", path.display());
+        for base in [&git_dir, &common_dir] {
+            let path = base.join(&reference);
+            if path.exists() {
+                println!("cargo:rerun-if-changed={}", path.display());
+            }
         }
     }
 }
