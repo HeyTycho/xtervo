@@ -9,6 +9,7 @@ tervo diag env --json
 tervo diag snapshot --json
 tervo diag replay --input trace-raw.bin --json
 tervo diag trace --input trace-raw.bin --out trace.jsonl
+tervo diag trace-layer --input trace-raw.bin --options frame-snapshot.json --json
 tervo diag metrics
 tervo diag observability
 tervo diag scene-diff --left before.json --right after.json --json
@@ -96,6 +97,104 @@ tervo diag trace --input bytes.bin --out trace.jsonl --duration-ms 1000
 
 当前 trace 是 **frame 变化流**，不是完整 PTY 事件流；输入文件本身可保留原始
 字节，后续再增加 pty/damage 事件。
+
+### trace-layer（P0：第一处分歧）
+
+```bash
+# 合成夹具（无需外部文件）
+tervo diag trace-layer --fixture clean
+tervo diag trace-layer --fixture images --json
+
+# 真实 dsh raw：自动读取同目录/上一级的 frame-snapshot.json 里的 cols/rows
+tervo diag trace-layer \
+  --input .logs/dsh-dump-run/pty/app-to-host.raw \
+  --chunk 4096 --json
+```
+
+按事故复盘 §5.1 的阶梯逐层比较，**只在第一处分歧停下**：
+
+```text
+filter       raw bytes 与独立协议账本（Sixel DCS / OSC 1337;File / Kitty APC）
+             比较；非图片协议字节必须逐字节保留；再比较分块 vs 一次性
+             filter 输出是否一致
+term         filtered bytes 分块喂入 vs 一次性喂入后的 Term cell/cursor/mode
+frame        生产 pull 路径的增量 Frame vs 全新 Term 的 force-full Frame
+             （逐 cell/行、cursor/mode/display_offset；RowId 不跨 Term 实例比较）
+framebuffer  renderer 的 cell 级模型：按 damage 增量更新上一帧 screen，
+             再与 Term 真相逐 cell 比较（旧字符/残影）
+image        解码出的图片 placement 锚点与 row 裁剪几何（source_y0 等）
+```
+
+输出同时支持人类可读（默认）与 `--json`。`status` 只有 `PASS` / `FAIL`；
+找不到分歧时 `first_divergence=null`，不会只给统计不给位置：
+
+```text
+tervo diag trace-layer: FAIL
+input: fixture:clean (215 bytes)
+options: 120x32 chunk=16384 cell=10x20 (defaults)
+layers:
+  filter      FAIL   raw_bytes=215  filtered_bytes=172 ...
+  term        SKIPPED
+  ...
+first divergence:
+  layer: filter
+  check: byte_conservation
+  step : 1
+  chunk: raw bytes [0,215)
+  byte : 6
+  left  (ledger_expected): 0x65 'e'
+  right (pipeline): <missing; next byte 0x6c 'l'>
+  context: ascii=".[32mhe <<<llo.[0m world..line2 [s" hex=...
+  explain: 字节守恒失败：协议账本认为 raw byte 6 不属于任何图片序列，
+           但 filter 链没有输出它（疑似 filter 吞字节）
+```
+
+JSON（`--json`）是 `tervo.diag.v1`、`kind=trace_layer`；`first_divergence`
+含 `layer/check/at{byte,row,col,chunk,step}`、`left`/`right`（byte/hex/
+cell/missing）与 `context/explain`。脚本读 `status`，**退出码始终为 0**。
+
+参数：
+
+```text
+--input FILE          raw PTY 字节；`-` 读 stdin
+--fixture NAME        clean | images | filter-edge
+--options FILE        读取 cols/rows/cell_width/cell_height/chunk/scrollback
+--cols/--rows         覆盖尺寸（缺省 120x32；有 frame-snapshot.json 时自动读取）
+--chunk N             filter/Term 分块（默认 16384；真实 dsh 可用 4096 加压）
+--cell-width/height   图片裁剪审计用 cell 尺寸（默认 10x20）
+--no-images           只过滤图片协议、不解码（图片层 SKIPPED）
+--fault SPEC          仅自测定位器，见下
+```
+
+`--fault` 用来证明“定位器真的能定位”，生产诊断不要使用：
+
+```text
+filter-drop=N       从 filtered 输出删掉第 N 个字节（模拟 filter 吞字节）
+frame-residue=R:C[@STEP]  第 STEP 次 pull 后把 (R,C) 改成旧内容（模拟残影）
+damage-drop=R       删掉第 R 行的 damage（模拟 renderer 不重绘）
+```
+
+自测示例：
+
+```bash
+tervo diag trace-layer --fixture clean --fault filter-drop=6 --json
+tervo diag trace-layer --fixture clean --fault frame-residue=1:2 --json
+tervo diag trace-layer --fixture clean --fault damage-drop=0 --chunk 7 --json
+```
+
+测试覆盖：filter 吞字节（含 UTF-8 0x9D 续字节）、C1 文本后接 Sixel 的
+chunk 依赖、Frame 残影、damage 残影、图片 `row=-1` 裁剪（纯几何 + 真实
+PaneActor frame）、真实 dsh raw 全链路 PASS（存在 fixture 时）。
+
+限制（也在 JSON `limitations` 里显式列出）：
+
+```text
+- CLI 不建窗口：只比较 cell 级 framebuffer，不比较完整像素 framebuffer/Slint
+- Term 层是“分块 vs 一次性”，不是第二个终端模拟器对照
+- 图片层只审计解码 placement 的裁剪几何；SixelFilter 同 chunk 事件顺序
+  （同 chunk 文本先于图片时 anchor 可能滞后）是 core 已知边界，不在本切片修
+- 协议账本是独立整段扫描器，不跑生产 filter；它只回答“哪些字节属于图片协议”
+```
 
 ### metrics / observability（P0 additive）
 
