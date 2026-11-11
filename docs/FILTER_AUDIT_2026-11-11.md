@@ -86,6 +86,20 @@ len(I) == len(所有 Pass) + len(显式消费的完整图片序列) + held
 真实 raw fixture 来源与再生成命令见
 [`crates/core/tests/fixtures/README.md`](../crates/core/tests/fixtures/README.md)。
 
+### 2.1 全量真实 raw 验证
+
+把 `app-to-host.raw` 完整 302517 字节过同一管线（临时 probe，源码与输出见
+[`docs/evidence/filter-audit-2026-11-11/`](evidence/filter-audit-2026-11-11/full-dsh-raw-replay.txt)）：
+
+```text
+raw=302517  apcs=70  apc_bytes=234629  expected_pass=67888
+single chunk: pass==expected, held=0, kitty cmds=14, errors=0
+128 组随机 38-chunk 切分：每组 pass==expected, held=0
+```
+
+即完整 raw 里 70 条 APC（234629 B）只吞自己，其余 67888 B 逐字节透传；
+修复后的 Sixel filter 在真实中文/框线/OSC 8 输出上没有暂存残留。
+
 ## 3. 发现（按严重度）
 
 复现全部失败：`cargo test -p tervo-core --test filter_conservation -- --ignored`，
@@ -173,6 +187,9 @@ cargo test -p tervo-core --test filter_conservation
 cargo test -p tervo-core
 => 258 passed, 0 failed（12 个 test binary，含真实 PTY 的 sixel/kitty e2e）
 => Doc-tests tervo_core: 0 passed, 0 failed
+   （一次全量运行时 doctest 报缺 rlib；同一时刻日志有
+    “Blocking waiting for file lock on build directory”，为多 agent 共享
+    target 的并发构建竞态，单独重跑/再次全量均通过）
 ```
 
 两个真实 dsh raw fixture 测试（文本逐字节、Kitty 分片守恒）在修复前后都
@@ -209,3 +226,7 @@ CARGO_HOME=/home/user/AIworkspace/rusttabbyterminal/.cargo CARGO_NET_OFFLINE=tru
   `crates/core/tests/sixel.rs` 的真实 PTY 用例覆盖（本次已随全量 core 跑）。
 - 未验证 GUI 端到端截图：本层目标是把 `bytes -> filter` 的守恒钉死；Frame/
   framebuffer 层由其他 agent 的差分测试覆盖。
+- 2m/15m 内存门禁未跑：本次只改 core filter + 测试，未触及渲染循环/线程/
+  buffer 生命周期；如需发布门禁由 integrator 在主进程按 AGENTS.md 执行。
+- 全量 raw probe 依赖未提交的 `.logs/` capture，故只保留源码与输出作为
+  证据，不进 CI；CI 防回归由两个提交的 raw fixture 测试承担。
