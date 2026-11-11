@@ -498,6 +498,38 @@ impl Renderer {
         (self.cell_w, self.cell_h)
     }
 
+    /// CPU `FontSet` 的四个 face 路径（GPU-native atlas 复用同一组文件）。
+    pub fn font_paths(&self) -> [&str; 4] {
+        self.fonts.font_paths
+    }
+
+    /// 字号（px），GPU atlas 用同一栅格化尺寸。
+    pub fn font_size(&self) -> f32 {
+        self.fonts.size
+    }
+
+    /// 行顶到基线的像素距离。
+    pub fn baseline(&self) -> i32 {
+        self.fonts.baseline
+    }
+
+    /// 主题背景（不透明 `0x00RRGGBB`）：GPU Scene 的 clear + default cell bg。
+    pub fn theme_bg_rgb(&self) -> u32 {
+        self.theme_bg & 0x00ff_ffff
+    }
+
+    /// GPU-native 失败/切回 CPU 时强制下一帧整屏重绘。
+    ///
+    /// GPU 渲染期间没有维护 `dirty_flags`/双缓冲历史，回退首帧必须整屏，
+    /// 否则会沿用旧 framebuffer 的残影。
+    pub fn force_full_redraw(&mut self) {
+        self.force_full = true;
+        self.dirty_rows.clear();
+        self.prev_changed_rows.clear();
+        self.last_selection = None;
+        self.last_search = None;
+    }
+
     /// 当前可显示帧的像素（测试/诊断用；返回刚绘制的那块缓冲）。
     #[allow(dead_code)]
     pub fn pixels(&self) -> &[u32] {

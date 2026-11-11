@@ -27,7 +27,7 @@ use tervo_scene::{PhysicalSize, TextBatch};
 
 use crate::atlas::{
     discover_font_path, AtlasConfig, AtlasError, AtlasStats, FontMetrics, FontStyle, GlyphAtlas,
-    GlyphLookup,
+    GlyphSlot,
 };
 use crate::{BackendError, FRAME_FORMAT, FRAME_USAGE};
 
@@ -102,6 +102,12 @@ pub struct TextLayout {
     pub font_size_px: u16,
     /// Distance from a cell's top edge to the text baseline.
     pub baseline: f32,
+    /// Theme/default cell background (`0x00RRGGBB`).
+    ///
+    /// Cells whose resolved background matches this are left to the clear
+    /// color, exactly like the CPU renderer's `same_rgb(bg, theme_bg)` rule.
+    /// `None` paints every cell background.
+    pub default_background: Option<u32>,
 }
 
 impl TextLayout {
@@ -119,7 +125,14 @@ impl TextLayout {
             cell_height: metrics.cell_height,
             font_size_px,
             baseline: metrics.baseline,
+            default_background: None,
         }
+    }
+
+    /// Leaves cells with this background color to the target clear color.
+    pub fn with_default_background(mut self, color: Option<u32>) -> Self {
+        self.default_background = color;
+        self
     }
 
     /// Same layout translated by `(dx, dy)`.
@@ -205,8 +218,13 @@ pub struct FrameStats {
     pub atlas_cached_glyphs: usize,
     /// Cumulative instance-buffer growth events.
     pub buffer_reallocations: u64,
-    /// Non-ASCII characters replaced by `?` this frame.
+    /// Non-ASCII characters with no font coverage, replaced by an explicit
+    /// `?` marker (never silently dropped or mis-shaped).
     pub unknown_glyphs: u64,
+    /// Glyphs rendered from a CJK/symbol/emoji fallback font.
+    pub fallback_glyphs: u64,
+    /// Characters no loaded font covers (subset of `unknown_glyphs`).
+    pub missing_glyphs: u64,
     /// Bold/italic glyphs rendered with the regular face because the variant
     /// font file is absent.
     pub style_fallbacks: u64,
@@ -214,6 +232,26 @@ pub struct FrameStats {
     pub missing_outlines: u64,
     /// Control characters skipped by the cell layout.
     pub skipped_control: u64,
+    /// Wide cells (2 grid columns) and spacer cells that were not drawn twice.
+    pub wide_cells: u64,
+    pub wide_spacer_cells: u64,
+    /// SGR hidden cells: background painted, glyph omitted.
+    pub hidden_cells: u64,
+    /// Faint/dim cells rendered with the bold face.
+    pub dim_cells: u64,
+    /// Selection/search spans resolved into cell colors by the Scene builder.
+    pub selected_cells: u64,
+    pub searched_cells: u64,
+    /// Hollow fallback boxes drawn when even the `?` marker is unavailable.
+    pub placeholder_quads: u64,
+    /// Source Scene provenance (only set by [`GpuTextRenderer::render_scene`]).
+    pub scene_revision: u64,
+    /// Images/cursor the Scene contained but the text slice did not composite.
+    /// The app keeps its existing Slint image/cursor overlays for those.
+    pub scene_images_skipped: u32,
+    pub scene_cursor_skipped: bool,
+    /// The clear color came from the Scene's background layer.
+    pub background_from_scene: bool,
     /// CPU time spent building instances, uploading and submitting the frame.
     /// This excludes GPU execution (no timestamp queries in this prototype).
     pub cpu_time: Duration,
@@ -337,10 +375,20 @@ pub struct TextGeometry {
     pub glyphs: Vec<GlyphInstance>,
     pub cells: usize,
     pub unknown_glyphs: u64,
+    pub fallback_glyphs: u64,
+    pub missing_glyphs: u64,
     pub style_fallbacks: u64,
     pub missing_outlines: u64,
     pub skipped_control: u64,
+    pub wide_cells: u64,
+    pub wide_spacer_cells: u64,
+    pub hidden_cells: u64,
+    pub dim_cells: u64,
+    pub selected_cells: u64,
+    pub searched_cells: u64,
+    pub placeholder_quads: u64,
 }
+
 
 /// A text frame that has been built and uploaded, but not yet drawn.
 ///
@@ -403,62 +451,108 @@ fn rgba(color: u32) -> [f32; 4] {
     ]
 }
 
-struct GlyphPlacement {
+/// Characters that take no grid advance of their own (combining marks,
+/// variation selectors, ZWJ/format controls). They are centered on the base
+/// glyph instead of advancing a cell.
+fn is_zero_width(ch: char) -> bool {
+    use unicode_width::UnicodeWidthChar;
+    ch.width() == Some(0)
+}
+
+/// Result of resolving one character through the atlas fallback chain.
+struct EnsuredGlyph {
+    slot: Option<GlyphSlot>,
+    missing: bool,
+}
+
+/// Looks up `ch`, counts style/glyph fallbacks, and substitutes a centered `?`
+/// for characters no font covers. Never silently drops or re-shapes a cell.
+fn ensure_glyph(
+    atlas: &mut GlyphAtlas,
     ch: char,
     px: u16,
     style: FontStyle,
-    x: f32,
-    row_top: f32,
-    baseline: f32,
-    color: [f32; 4],
-}
-
-fn push_glyph(
-    atlas: &mut GlyphAtlas,
-    placement: GlyphPlacement,
     frame: &mut TextGeometry,
-) -> Result<(), AtlasError> {
-    let GlyphLookup {
-        slot,
-        style_fallback,
-    } = atlas.ensure(placement.ch, placement.px, placement.style)?;
-    if style_fallback {
+) -> Result<EnsuredGlyph, AtlasError> {
+    let lookup = atlas.ensure(ch, px, style)?;
+    if lookup.style_fallback {
         frame.style_fallbacks += 1;
     }
-    let Some(slot) = slot else {
-        if !placement.ch.is_whitespace() {
-            frame.missing_outlines += 1;
-        }
-        return Ok(());
-    };
-    if slot.is_empty() {
-        return Ok(());
+    if lookup.glyph_fallback {
+        frame.fallback_glyphs += 1;
     }
+    if lookup.missing {
+        frame.missing_glyphs += 1;
+        frame.unknown_glyphs += 1;
+        // Explicit, deterministic fallback marker. The caller centers it in
+        // the cell span, so a missing wide CJK/emoji does not shift the rest
+        // of the row.
+        let marker = atlas.ensure('?', px, style)?;
+        return Ok(EnsuredGlyph {
+            slot: marker.slot,
+            missing: true,
+        });
+    }
+    Ok(EnsuredGlyph {
+        slot: lookup.slot,
+        missing: false,
+    })
+}
 
-    let x0 = placement.x.round() + slot.xmin as f32;
-    let baseline_y = placement.row_top.round() + placement.baseline.round();
-    let y0 = baseline_y - (slot.ymin + slot.h as i32) as f32;
+/// Emits one glyph quad. Returns the horizontal ink center for mark alignment.
+fn push_glyph_quad(
+    atlas: &GlyphAtlas,
+    slot: GlyphSlot,
+    x: f32,
+    baseline_y: f32,
+    color: [f32; 4],
+    frame: &mut TextGeometry,
+) -> Option<f32> {
+    if slot.is_empty() {
+        return None;
+    }
+    let left = (x + slot.xmin as f32).round();
+    let top = baseline_y.round() - (slot.ymin + slot.h as i32) as f32;
     frame.glyphs.push(GlyphInstance {
-        rect: [x0, y0, slot.w as f32, slot.h as f32],
+        rect: [left, top, slot.w as f32, slot.h as f32],
         uv: slot.uv(atlas.width(), atlas.height()),
-        color: placement.color,
+        color,
     });
-    Ok(())
+    Some(left + slot.w as f32 / 2.0)
+}
+
+/// Explicit hollow box for a character no font (not even `?`) covers.
+fn push_placeholder(
+    x0: f32,
+    y0: f32,
+    width: f32,
+    height: f32,
+    color: [f32; 4],
+    frame: &mut TextGeometry,
+) {
+    frame.placeholder_quads += 1;
+    let thickness = 1.0;
+    let inner_w = (width - 2.0).max(1.0);
+    let inner_h = (height - 2.0).max(1.0);
+    for rect in [
+        [x0, y0, width, thickness],
+        [x0, y0 + height - thickness, width, thickness],
+        [x0, y0, thickness, height],
+        [x0 + width - thickness, y0, thickness, height],
+    ] {
+        frame.solids.push(SolidInstance {
+            rect,
+            color,
+        });
+    }
+    let _ = (inner_w, inner_h);
 }
 
 fn build_frame(
     atlas: &mut GlyphAtlas,
     sections: &[TextSection<'_>],
 ) -> Result<TextGeometry, TextRenderError> {
-    let mut frame = TextGeometry {
-        solids: Vec::new(),
-        glyphs: Vec::new(),
-        cells: 0,
-        unknown_glyphs: 0,
-        style_fallbacks: 0,
-        missing_outlines: 0,
-        skipped_control: 0,
-    };
+    let mut frame = TextGeometry::default();
 
     for (section_index, section) in sections.iter().enumerate() {
         section
@@ -471,56 +565,145 @@ fn build_frame(
         let layout = section.layout;
         for cell in &section.batch.cells {
             frame.cells += 1;
+            let attributes = cell.attributes;
+
+            // The right half of a wide cell owns no background/glyph; the wide
+            // cell itself paints a 2-cell background span.
+            if attributes.wide_spacer {
+                frame.wide_spacer_cells += 1;
+                continue;
+            }
+
+            let span = if attributes.wide { 2 } else { 1 };
+            if attributes.wide {
+                frame.wide_cells += 1;
+            }
             let x0 = (layout.origin_x + f32::from(cell.col) * layout.cell_width).round();
             let y0 = (layout.origin_y + f32::from(cell.row) * layout.cell_height).round();
-            frame.solids.push(SolidInstance {
-                rect: [x0, y0, layout.cell_width, layout.cell_height],
-                color: rgba(cell.background),
-            });
+            let span_width = layout.cell_width * span as f32;
 
-            let style = FontStyle::from_attributes(cell.attributes);
+            // Background: one span-wide quad per logical cell. Cells already
+            // painted by the target clear color are skipped so an opaque quad
+            // never destroys terminal background opacity.
+            let same_as_clear = layout
+                .default_background
+                .is_some_and(|default| default & 0x00ff_ffff == cell.background & 0x00ff_ffff);
+            if !same_as_clear {
+                frame.solids.push(SolidInstance {
+                    rect: [x0, y0, span_width, layout.cell_height],
+                    color: rgba(cell.background),
+                });
+            }
+
+            if attributes.hidden {
+                // SGR 8: background remains visible, glyph is hidden.
+                frame.hidden_cells += 1;
+                continue;
+            }
+            if attributes.dim {
+                frame.dim_cells += 1;
+            }
+            if attributes.selected {
+                frame.selected_cells += 1;
+            }
+            if attributes.searched {
+                frame.searched_cells += 1;
+            }
+
+            let style = FontStyle::from_attributes(attributes);
             let foreground = rgba(cell.foreground);
-            let mut glyph_count = 0usize;
-            for (index, ch) in cell.text.chars().enumerate() {
-                if ch.is_ascii_control() {
+            let baseline_y = y0 + layout.baseline.round();
+            let mut advance_index = 0i32;
+            let mut base_center: Option<f32> = None;
+
+            for ch in cell.text.chars() {
+                if ch.is_control() {
                     frame.skipped_control += 1;
                     continue;
                 }
-                glyph_count += 1;
-                let (ch, substituted) = if ch.is_ascii() {
-                    (ch, false)
-                } else {
-                    ('?', true)
-                };
-                if substituted {
-                    frame.unknown_glyphs += 1;
+                if is_zero_width(ch) {
+                    // Combining mark / VS / ZWJ: no advance, center on the last
+                    // base glyph's ink like the CPU renderer.
+                    if let Some(center) = base_center {
+                        let ensured = ensure_glyph(
+                            atlas,
+                            ch,
+                            layout.font_size_px,
+                            style,
+                            &mut frame,
+                        )?;
+                        if let Some(slot) = ensured.slot {
+                            let mark_x = center - slot.w as f32 / 2.0;
+                            push_glyph_quad(atlas, slot, mark_x, baseline_y, foreground, &mut frame);
+                        }
+                    }
+                    continue;
                 }
-                let x = x0 + index as f32 * layout.cell_width;
-                push_glyph(
-                    atlas,
-                    GlyphPlacement {
-                        ch,
-                        px: layout.font_size_px,
-                        style,
-                        x,
-                        row_top: y0,
-                        baseline: layout.baseline,
-                        color: foreground,
-                    },
-                    &mut frame,
-                )?;
+                if ch.is_whitespace() {
+                    advance_index += 1;
+                    base_center = None;
+                    continue;
+                }
+
+                use unicode_width::UnicodeWidthChar;
+                let cells = ch.width().unwrap_or(1).clamp(1, span);
+                let char_width = layout.cell_width * cells as f32;
+                let x = x0 + advance_index as f32 * layout.cell_width;
+                advance_index += cells as i32;
+
+                let ensured =
+                    ensure_glyph(atlas, ch, layout.font_size_px, style, &mut frame)?;
+                match ensured.slot {
+                    Some(slot) if !slot.is_empty() => {
+                        // Center per-cell glyphs inside their span, matching
+                        // the CPU renderer's `(total - advance) / 2` padding.
+                        let pad = ((char_width - slot.advance as f32) / 2.0).max(0.0);
+                        base_center = push_glyph_quad(
+                            atlas,
+                            slot,
+                            x + pad,
+                            baseline_y,
+                            foreground,
+                            &mut frame,
+                        );
+                    }
+                    _ => {
+                        if ensured.missing {
+                            push_placeholder(
+                                x0,
+                                y0,
+                                span_width,
+                                layout.cell_height,
+                                foreground,
+                                &mut frame,
+                            );
+                        } else if !ch.is_whitespace() {
+                            frame.missing_outlines += 1;
+                        }
+                        base_center = None;
+                    }
+                }
             }
 
-            if cell.attributes.underline {
-                let baseline_y = y0 + layout.baseline.round();
-                let thickness = (f32::from(layout.font_size_px) / 14.0).round().max(1.0);
+            // Underline/strikeout are cell geometry, not glyph shapes. Their
+            // positions match the CPU renderer (bottom-2 / middle).
+            let cell_height = layout.cell_height.round();
+            if attributes.underline || attributes.double_underline {
+                let underline_y = y0 + cell_height - 2.0;
                 frame.solids.push(SolidInstance {
-                    rect: [
-                        x0,
-                        baseline_y + 2.0,
-                        layout.cell_width * glyph_count.max(1) as f32,
-                        thickness,
-                    ],
+                    rect: [x0, underline_y, span_width, 1.0],
+                    color: foreground,
+                });
+                if attributes.double_underline {
+                    frame.solids.push(SolidInstance {
+                        rect: [x0, underline_y - 2.0, span_width, 1.0],
+                        color: foreground,
+                    });
+                }
+            }
+            if attributes.strikethrough {
+                frame.solids.push(SolidInstance {
+                    rect: [x0, y0 + (cell_height / 2.0).floor(), span_width, 1.0],
                     color: foreground,
                 });
             }
@@ -597,6 +780,26 @@ impl GpuTextRenderer {
         config: AtlasConfig,
     ) -> Result<Self, AtlasError> {
         let atlas = GlyphAtlas::from_path(&device, &queue, font_path, config)?;
+        Self::with_atlas(device, queue, atlas)
+    }
+
+    /// Creates a renderer from explicit regular/bold/italic/bold-italic files.
+    ///
+    /// The app integration uses this so the GPU atlas rasterizes the exact
+    /// same font files the CPU renderer uses (including a Medium regular face
+    /// whose bold sibling is not named `Medium-Bold`).
+    pub fn with_font_paths(
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        regular: impl AsRef<std::path::Path>,
+        bold: Option<&std::path::Path>,
+        italic: Option<&std::path::Path>,
+        bold_italic: Option<&std::path::Path>,
+        config: AtlasConfig,
+    ) -> Result<Self, AtlasError> {
+        let atlas = GlyphAtlas::from_paths(
+            &device, &queue, regular, bold, italic, bold_italic, config,
+        )?;
         Self::with_atlas(device, queue, atlas)
     }
 
@@ -790,6 +993,11 @@ impl GpuTextRenderer {
     /// Font file backing the regular face.
     pub fn font_path(&self) -> &std::path::Path {
         self.atlas.font_path()
+    }
+
+    /// Configured fallback font paths (parsed on demand, not all loaded).
+    pub fn fallback_font_paths(&self) -> Vec<std::path::PathBuf> {
+        self.atlas.fallback_font_paths()
     }
 
     /// Renders `sections` into `target` in one render pass.
@@ -1005,9 +1213,22 @@ impl GpuTextRenderer {
             atlas_cached_glyphs: self.atlas.cached_glyph_count(),
             buffer_reallocations: delta(prepared.reallocations_before, self.buffer_reallocations),
             unknown_glyphs: geometry.unknown_glyphs,
+            fallback_glyphs: geometry.fallback_glyphs,
+            missing_glyphs: geometry.missing_glyphs,
             style_fallbacks: geometry.style_fallbacks,
             missing_outlines: geometry.missing_outlines,
             skipped_control: geometry.skipped_control,
+            wide_cells: geometry.wide_cells,
+            wide_spacer_cells: geometry.wide_spacer_cells,
+            hidden_cells: geometry.hidden_cells,
+            dim_cells: geometry.dim_cells,
+            selected_cells: geometry.selected_cells,
+            searched_cells: geometry.searched_cells,
+            placeholder_quads: geometry.placeholder_quads,
+            scene_revision: 0,
+            scene_images_skipped: 0,
+            scene_cursor_skipped: false,
+            background_from_scene: false,
             cpu_time: prepared.started.elapsed(),
         };
         (stats, geometry)
