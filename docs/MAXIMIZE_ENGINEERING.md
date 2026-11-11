@@ -1,6 +1,8 @@
 # 最大化按钮：工业级状态机与验收门禁
 
-状态：**设计契约，53e1033 不是最终验收；禁止继续用启发式补丁迭代。**
+状态：**设计契约；53e1033 不是最终验收。** 2026-11-11 已补 EWMH round-trip
+和显式 X11 xid，release 隔离单实例/伪双屏通过；完整状态机（PropertyNotify/pending）
+仍未完成。
 
 ## 1. 这次为什么错
 
@@ -127,7 +129,11 @@ Xvfb + Openbox
 ## 6. 当前状态
 
 ```text
-53e1033：删除几何校准，但仍是“desired 直接翻”的过渡实现；
-        release 恢复路径在伪双屏测试中仍失败，不验收。
-下一步：按本文件实现 MaximizeController + PropertyNotify + window id。
+53e1033：删除几何校准，但仍是“desired 直接翻”的过渡实现。
+
+2026-11-11 后续修复：
+  - send_event 后 get_input_focus round-trip，修复 X 连接 drop 丢 ClientMessage
+  - wm_set_maximized_id / window_is_maximized_id，不再用 title 查找
+  - release 隔离单实例 + 伪双屏 _NET_WORKAREA：max/restore PASS
+  - 完整 MaximizeController/PropertyNotify/pending 仍未实现，继续作为门禁。
 ```

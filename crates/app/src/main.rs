@@ -2409,6 +2409,15 @@ fn winit_resize_direction(dir: i32) -> Option<winit::window::ResizeDirection> {
 ///
 /// Wayland 会话里通常同时有 `DISPLAY`（XWayland），`xconn` 也能连上；只看
 /// `xresize` 会把 Wayland 窗口误判成 X11，从而错误地跳过 `xdg_toplevel.resize`。
+fn winit_window_x11_id(window: &winit::window::Window) -> Option<u32> {
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    match window.window_handle().ok()?.as_raw() {
+        RawWindowHandle::Xlib(h) => Some(h.window as u32),
+        RawWindowHandle::Xcb(h) => Some(h.window.get()),
+        _ => None,
+    }
+}
+
 fn winit_window_is_x11(window: &winit::window::Window) -> bool {
     use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
     window.window_handle().ok().is_some_and(|handle| {
@@ -12174,10 +12183,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }),
                     );
                 });
-                // 优先显式 EWMH client message；某些 WM/winit 组合下
-                // set_maximized() 会被吞掉，这层失败再回退 winit。
-                let title = ui.get_window_title().to_string();
-                match xconn::wm_set_maximized(&title, target) {
+                // 显式 X11 window id，不再用 WM_NAME/title 查找；某些 WM 下
+                // winit set_maximized 会被吞掉，这层失败再回退 winit。
+                let xid = ui.window().with_winit_window(winit_window_x11_id).flatten();
+                let sent = match xid {
+                    Some(id) => xconn::wm_set_maximized_id(id, target),
+                    None => {
+                        let title = ui.get_window_title().to_string();
+                        xconn::wm_set_maximized(&title, target)
+                    }
+                };
+                match sent {
                     Ok(()) => eprintln!(
                         "[ui] toggle-maximize before={before} target={target} via=ewmh"
                     ),
@@ -12607,8 +12623,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui.show()?;
     // 启动时用 EWMH 查询校准；不要用窗口几何：多显示器下
     // _NET_WORKAREA 是整块虚拟桌面，单屏最大化窗口会永远被判为 false。
-    let title = ui.get_window_title().to_string();
-    let initial_maximized = xconn::window_is_maximized(&title)
+    let xid = ui.window().with_winit_window(winit_window_x11_id).flatten();
+    let initial_maximized = xid
+        .and_then(xconn::window_is_maximized_id)
         .unwrap_or_else(|| ui.window().is_maximized());
     ui.set_window_maximized(initial_maximized);
     with_app(|st| st.window_maximized = initial_maximized);
