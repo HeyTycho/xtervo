@@ -80,6 +80,7 @@ len(I) == len(所有 Pass) + len(显式消费的完整图片序列) + held
 | 图片序列只吞自己，前后文本完整 | `image_sequence_swallows_only_itself`、`multiple_images_keep_text_and_order` |
 | 随机 chunk 边界（ESC/OSC/0x9D/UTF-8） | `esc_and_osc_split_at_every_boundary`、`random_chunk_boundaries_mixed_corpus_are_chunking_invariant` |
 | 真实 dsh raw 防回归 | `real_dsh_cjk_text_slice_is_byte_identical`、`real_dsh_kitty_chunked_is_conserved` |
+| 真实 PTY：CJK 后 BEL Sixel 不吞后文 | `cjk_before_bel_sixel_keeps_following_text`（`tests/sixel.rs`，修复前 8s 超时、屏幕只剩 `面`） |
 | Kitty APC 非法/截断 | `malformed_kitty_apc_does_not_swallow_following_text`、`unterminated_kitty_apc_is_bounded_and_aborts_on_can` |
 | 管线镜像防漂移 | `pipeline_mirror_matches_pane_source` |
 
@@ -185,7 +186,7 @@ Kitty parser 只认 `ESC _ G`，C1 `0x9F G` 不识别；字节会透传给 vte�
 cargo test -p tervo-core --test filter_conservation
 => 18 passed; 0 failed; 0 ignored
 cargo test -p tervo-core
-=> 258 passed, 0 failed（12 个 test binary，含真实 PTY 的 sixel/kitty e2e）
+=> 259 passed, 0 failed（12 个 test binary，含真实 PTY 的 sixel/kitty e2e）
 => Doc-tests tervo_core: 0 passed, 0 failed
    （一次全量运行时 doctest 报缺 rlib；同一时刻日志有
     “Blocking waiting for file lock on build directory”，为多 agent 共享
@@ -196,6 +197,13 @@ cargo test -p tervo-core
 通过，用于防回归；上述 7 个失败测试在修复前全红（证据文件），修复后全绿。
 `plain_text_corpus` 还加入了 2026-11-11 第一处根因（IIP `ESC x` 后丢 `]`）
 的最小序列与真实 dsh `[stderr]` 行，防止同类状态泄漏回归。
+
+真实 PTY A/B：`tests/sixel.rs::cjk_before_bel_sixel_keeps_following_text`
+把 `面`（E9 9D A2）+ BEL 终止 Sixel + `AFTER-TEXT` 从真实 bash/PTY 打进去。
+在 `10df3dd` 的旧 sixel.rs 上 8s 超时、Frame 只剩 `面`（后文被 vte 的 DCS
+状态吞掉，证据见
+[`pre-fix-pty-cjk-sixel.txt`](evidence/filter-audit-2026-11-11/pre-fix-pty-cjk-sixel.txt)）；
+修复后通过。
 
 ## 5. 测试命令
 
