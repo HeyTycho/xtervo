@@ -86,6 +86,10 @@ for title,wid in ids:
     before=geometry(wid); click(wid); maxed=geometry(wid); st_max=state(wid)
     print(title,'max',before,'->',maxed, st_max)
     assert 'MAXIMIZED_HORZ' in st_max and 'MAXIMIZED_VERT' in st_max, (title,st_max)
+    # 锁死双屏回归：_NET_WORKAREA 是整块虚拟桌面（例如 5120x1413），
+    # 单屏最大化窗口只有 2560x1440。伪造成 2560x800，旧几何校准会误判 false。
+    shell('xprop','-display',disp,'-root','-f','_NET_WORKAREA','32c',
+          '-set','_NET_WORKAREA','0,0,2560,800')
     click(wid); restored=geometry(wid); st_rest=state(wid)
     print(title,'restore ->',restored, st_rest)
     assert 'MAXIMIZED_HORZ' not in st_rest and 'MAXIMIZED_VERT' not in st_rest, (title,st_rest)
