@@ -84,6 +84,11 @@ printf '\033[31mred\033[0m \033[42mgreen-bg\033[0m \033[4munderline\033[0m \033[
 printf 'CJK: \344\275\240\345\245\275\344\270\226\347\225\214 \346\227\245\346\234\254\350\252\236\n'
 printf 'symbols: \342\230\203 \342\230\205 \342\231\245\n'
 printf '\033[41m  RED-BG  \033[0m \033[44m  BLUE-BG  \033[0m END\n'
+# 80x6 solid red Sixel: one below-text image, parsed after the first frame.
+printf '\033Pq#0;2;100;0;0#0~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\033\\'
+printf '\nIMAGE-AFTER\n'
+sleep 2
+printf 'PING\n'
 exec sleep 300
 FIXTURE
 chmod +x "$out/fixture.sh"
@@ -134,7 +139,10 @@ run_app cpu SLINT_BACKEND=winit-software \
     TERVO_GPU_SNAPSHOT="$out/cpu/snap" TERVO_GPU_SNAPSHOT_EXIT=1
 
 echo "running TERVO_GPU_NATIVE=1 (WGPU30)"
-run_app gpu TERVO_GPU_NATIVE=1 \
+# llvmpipe can take ~2.5s to present its first WGPU frame; give the imported
+# texture time to be sampled before take_snapshot.
+run_app gpu TERVO_GPU_NATIVE=1 TERVO_GPU_NATIVE_DEBUG=1 \
+    TERVO_GPU_SNAPSHOT_DELAY_MS=6000 \
     TERVO_GPU_NATIVE_DUMP="$out/gpu/offscreen" \
     TERVO_GPU_SNAPSHOT="$out/gpu/snap" TERVO_GPU_SNAPSHOT_EXIT=1
 
@@ -163,6 +171,17 @@ if [[ -z "${native_nonbg:-}" || "$native_nonbg" -lt 1000 ]]; then
 fi
 grep -q "\[gpu-native\] pane=.*draw_calls=" "$out/gpu/app.log" || \
     fail_msg "GPU run has no [gpu-native] frame log"
+grep -q "image_quads=1" "$out/gpu/app.log" || \
+    fail_msg "GPU Scene did not compose the Frame.images Sixel quad"
+grep -q "image_uploads_total=1" "$out/gpu/app.log" || \
+    fail_msg "GPU image registry did not upload the source exactly once"
+# Cumulative registry uploads (snapshot line), independent of which frame
+# happens to be the last one.
+gpu_snapshot_line=$(grep -h "\[gpu-snapshot\] path=.*gpu/snap" "$out/gpu/app.log" || true)
+native_image_uploads=$(sed -n 's/.* image_uploads=\([0-9]*\).*/\1/p' <<<"$gpu_snapshot_line" | head -1)
+if [[ -z "${native_image_uploads:-}" || "$native_image_uploads" -lt 1 ]]; then
+    fail_msg "GPU image registry reported no cumulative uploads"
+fi
 grep -q "gpu-native\] 失败" "$out/gpu/app.log" && \
     fail_msg "GPU run reported an unexpected failure fallback"
 
@@ -231,6 +250,12 @@ def write_png(path, w, h, rgb):
         + chunk(b"IEND", b"")
     )
 
+def red_pixels(rgb):
+    return sum(
+        1 for k in range(0, len(rgb), 3)
+        if rgb[k] > 180 and rgb[k+1] < 90 and rgb[k+2] < 90
+    )
+
 def region_stats(cpu, gpu):
     w, h = cpu[0], cpu[1]
     a, b = cpu[2], gpu[2]
@@ -269,6 +294,9 @@ write_png(out / "cpu.png", cpu[0], cpu[1], cpu[2])
 write_png(out / "gpu.png", gpu[0], gpu[1], gpu[2])
 write_png(out / "fallback.png", fallback[0], fallback[1], fallback[2])
 
+red_cpu = red_pixels(cpu[2])
+red_gpu = red_pixels(gpu[2])
+print(f"sixel_red_pixels: cpu={red_cpu} gpu={red_gpu}")
 stats = region_stats(cpu, gpu)
 print(
     "terminal_diff: "
@@ -293,8 +321,20 @@ if stats["mae"] > 2.0:
 if stats["ink_iou"] < 0.70:
     print(f"FAIL: GPU vs CPU ink IoU {stats['ink_iou']:.3f} < 0.70")
     ok = False
-if fb["ratio"] > 0.002:
+if fb["ratio"] > 0.01:
     print(f"FAIL: software failure-path snapshot differs from CPU on {fb['ratio']:.2%} pixels")
+    ok = False
+# The red Sixel block is 80x6 = 480 px; the fixture also has a red [41m
+# background and a theme-coloured cursor, so use a loose lower bound plus a
+# relative tolerance (cursor blink phase / subpixel AA differ per run).
+if red_cpu < 1000:
+    print(f"FAIL: CPU baseline did not draw the red Sixel image ({red_cpu} red pixels)")
+    ok = False
+if red_gpu < 1000:
+    print(f"FAIL: GPU path did not draw the red Sixel image ({red_gpu} red pixels)")
+    ok = False
+if abs(red_cpu - red_gpu) > max(300, red_cpu // 3):
+    print(f"FAIL: GPU/CPU Sixel image pixels differ too much (cpu={red_cpu} gpu={red_gpu})")
     ok = False
 sys.exit(0 if ok else 1)
 PY

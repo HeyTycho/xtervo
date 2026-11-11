@@ -105,6 +105,13 @@ pub fn install(window: &slint::Window, requested: &str, fell_back: bool) {
                 st.before = Some(now);
                 st.frames += 1;
                 RENDER_FRAMES.store(st.frames, Ordering::Relaxed);
+                // A texture imported before Slint's first WGPU present can
+                // stay unsampled (empty pane) until a later redraw. Once the
+                // first WGPU frame exists, request one fresh terminal frame so
+                // the import happens after a real present.
+                if st.frames == 1 && crate::gpu_native::ready() {
+                    slint::Timer::single_shot(Duration::from_millis(0), crate::redraw_all);
+                }
                 if frame_profile() {
                     eprintln!(
                         "[render] frame={} gap={}ms",

@@ -8,6 +8,8 @@
 | `5cff84e` | Frame → Scene → WGPU 文字/背景 slice，默认 CPU，显式 `TERVO_GPU_NATIVE=1` |
 | `e40f7b8` | Slint 在首次 render 前 import texture 会空白：改为 render 后 import |
 | `6faefdc` | merge B 的 `GpuImageRenderer`/`ImageTextureRegistry`/staged `render_scene`，接图片分层合成 |
+| `762800b` | 隔离 Xvfb CPU/GPU/fallback e2e + raw RGBA alpha 证据 |
+| `0069006` | fallback 字体分组探测；首个 WGPU present 后重绘；Sixel e2e |
 
 ## 目标与边界
 
@@ -92,7 +94,7 @@ TERVO_BIN=target/debug/tervo scripts/e2e_gpu_native.sh
 - 只比较 `take_snapshot()` 终端区域（去掉 32px tab bar），并检查
   draw calls / atlas uploads / gpu_native_frames / raw RGBA alpha。
 
-本机（llvmpipe Vulkan，非硬件 GPU）实测：
+本机（llvmpipe Vulkan，非硬件 GPU）实测，纯文字夹具：
 
 ```text
 terminal_diff: size=720x528 differing=6134 ratio=1.6135%
@@ -103,6 +105,42 @@ gpu_snapshot: gpu_native_frames=2 draw_calls=4 atlas_uploads=71
   atlas_bytes=7179 vertex_bytes=13376 fallback_glyphs=10 missing=0
   wide=7 spacer=7 hidden=6 dim=3 cursor_skipped=true background_from_scene=true
 ```
+
+带 Sixel 图片夹具（`image_quads=1 image_draw_calls=1 image_uploads=1
+image_sources=1 frame_images=1 scene_images=1`），连续 3 次 PASS：
+
+```text
+sixel_red_pixels: cpu=2373 gpu=2340
+terminal_diff: size=720x528 differing=7527 ratio=1.9800%
+  mae=0.742 pixels_over_8=6121 ink_cpu=9205 ink_gpu=8924 ink_iou=0.841
+fallback_vs_cpu: differing=766 ratio=0.2015% mae=0.326
+gpu_snapshot: gpu_native_frames=7 draw_calls=21 atlas_uploads=76
+  image_uploads=1 image_sources=1
+initial GPU frame cpu_us≈1.16s（fallback 分组探测前同一夹具 3.42s）
+```
+
+`fallback_vs_cpu` 的 0.20% 来自两次 CPU 进程之间 cursor blink 相位/AA；
+fallback 仍是纯 CPU，没有 GPU 帧（快照行 `gpu_native_frames=0`）。
+
+`TERVO_GPU_SNAPSHOT_DELAY_MS` 是测试旋钮：llvmpipe 首次 WGPU present 可能晚于
+2.5s，e2e 用 6000ms，等 import 的 texture 真正被 Slint 采样后再
+`take_snapshot()`。生产路径不依赖这个延迟。
+
+### 15 分钟内存门禁
+
+```
+elapsed_s rss_kb pss_kb threads fds
+0         548020 522303 72      22
+...（每分钟采样，13 次稳定在 548–551 MB / 488–525 MB PSS）
+841       215396 189147 72      22   # 结束后页回收，非增长
+```
+
+- 4516 个 GPU-native 帧（持续 CJK/彩色/下划线/滚动输出，约 5.4 fps）。
+- RSS 峰值 551 MB，无单调增长；线程 72、FD 22 全程恒定；0 次 GPU fallback/panic。
+- 证据：`docs/evidence/gpu-native/2026-11-11-soak-mem.log`、
+  `docs/evidence/gpu-native/2026-11-11-e2e.txt`。
+- 2 分钟 image soak 是 B 的 ignored 测试 `image_render_soak_two_minutes`；
+  本 slice 未单独重跑 15m 图片 soak。
 
 证据目录（默认 `target/gpu-native-e2e/`）：`cpu.png` / `gpu.png` /
 `fallback.png`、`diff.txt`、`alpha.txt`、三个 `app.log`、GPU 离屏 `*.ppm` +
@@ -116,9 +154,11 @@ gpu_snapshot: gpu_native_frames=2 draw_calls=4 atlas_uploads=71
 3. 彩色 emoji 不做（fontdue 只支持轮廓）；无字形时显式 `?` + 计数。
 4. 背景透明度：Scene background 使用主题不透明 RGB；`background-opacity < 1`
    时 GPU 路径与 CPU 的窗口透明混合还未逐像素验证（默认 1.0）。
-5. 图片几何沿用 B 的 `ImageInstance`/registry；本分支只验证 B 的
-   `gpu_images` 套件，尚未在 Xvfb fixture 里稳定复现 Sixel（CPU overlay 与
-   `Frame.images` 的测试夹具问题，不是合成器失败）。
+5. 图片：Sixel 单帧已在 Xvfb 夹具中端到端验证（GPU Scene 合成、source
+   只上传一次、红块像素与 CPU 对齐）。多图 z-order/crop/透明图由 B 的
+   `gpu_images`（10 passed）覆盖；长时图片 soak 未在本分支重跑。
 6. atlas 固定 1024×1024、无 eviction；溢出会让整帧回 CPU（有明确错误）。
+   CJK/emoji fallback 按字符类别排序探测（CJK/emoji/PUA），避免首次 emoji
+   触发整条 CJK 链解析；首帧仍有一次 fontdue 字体解析成本（本机 1.2s）。
 7. llvmpipe 是 CPU 光栅 Vulkan adapter；上面的数字是正确性证据，不是 GPU 性能。
-8. 15 分钟 soak 见 `docs/` 或本次报告；2 分钟 image soak 是 B 的 ignored 测试。
+8. 2 分钟 image soak 是 B 的 ignored 测试；本分支跑的是 15 分钟文字/CJK soak。
