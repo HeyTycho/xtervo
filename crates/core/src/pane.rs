@@ -3435,11 +3435,14 @@ pub fn fill_frame<T: EventListener>(
             }
             frame.copied_cells = (rows * cols) as u32;
         } else {
+            // 一帧的 renderer 按整行绘制；Frame 也必须整行与 Term 一致。
+            // 若只合并 damage 的 left..right，damage 之外仍是旧 cell，renderer
+            // 绘制整行时就会把旧字符重新画出来（dsh 整屏重写时非常明显）。
             for i in 0..frame.damage.len() {
                 let d = frame.damage[i];
                 let line = Line(d.line as i32);
                 let base = d.line as usize * cols;
-                for col in d.left as usize..=d.right as usize {
+                for col in 0..cols {
                     let cell = &grid[Point::new(line, Column(col))];
                     let data = CellData::from_cell(cell, palette);
                     let link = cell.hyperlink();
@@ -3455,7 +3458,7 @@ pub fn fill_frame<T: EventListener>(
                         );
                     }
                 }
-                frame.copied_cells += d.right as u32 - d.left as u32 + 1;
+                frame.copied_cells += cols as u32;
             }
         }
 
@@ -3504,6 +3507,45 @@ mod tests {
         for i in 0..count {
             processor.advance(term, format!("L{i}\r\n").as_bytes());
         }
+    }
+
+    #[test]
+    fn printable_writes_damage_every_written_cell() {
+        use alacritty_terminal::term::TermDamage;
+        let mut term = test_term(2, 0);
+        let mut processor: Processor = Processor::new();
+        processor.advance(&mut term, b"ABCDE");
+        term.reset_damage();
+        processor.advance(&mut term, b"\x1b[1;1Hxy");
+        let mut bounds = None;
+        match term.damage() {
+            TermDamage::Full => panic!("expected partial damage"),
+            TermDamage::Partial(iter) => {
+                for d in iter {
+                    if d.line == 0 {
+                        bounds = Some((d.left, d.right));
+                    }
+                }
+            },
+        }
+        let (left, right) = bounds.expect("line 0 must be damaged");
+        assert!(left <= 0 && right >= 1, "writes at cols 0..=1 must expand damage: {left}..={right}");
+    }
+
+    #[test]
+    fn damaged_line_refreshes_the_whole_frame_row() {
+        let mut term = test_term(2, 0);
+        let mut processor: Processor = Processor::new();
+        let mut frame = Box::new(Frame::default());
+        let palette = Palette::default();
+        processor.advance(&mut term, b"ABCDE");
+        fill_frame(&mut term, &mut frame, &palette, false, None, false);
+        // 人为把 damage 范围之外的 cell 弄脏，模拟旧 Frame 残留。
+        frame.cells[10].ch = 'Z' as u32;
+        processor.advance(&mut term, b"\\x1b[1;1Hxy");
+        fill_frame(&mut term, &mut frame, &palette, false, None, false);
+        assert!(!frame.full, "本用例需要 partial damage 才有区分度");
+        assert_ne!(frame.cell(0, 10).ch, 'Z' as u32, "damage 行必须整行刷新");
     }
 
     #[test]

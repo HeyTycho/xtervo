@@ -1015,6 +1015,17 @@ impl<T> Term<T> {
         cursor_cell.bg = bg;
         cursor_cell.flags = flags;
         cursor_cell.extra = extra;
+
+        // Tervo: alacritty upstream only marks cursor movement / erase primitives;
+        // a plain printable write through `Term::input` leaves no damage unless the
+        // cursor moved. dsh-tui rewrites full lines at fixed CUP positions, so the
+        // frame keep-alive cache would retain stale cells. Every cell write is a
+        // damage point; line damage unions then cover the whole rewritten line.
+        let point = self.grid.cursor.point;
+        self.damage.damage_point(Point::new(
+            point.line.0.max(0) as usize,
+            Column(point.column.0),
+        ));
     }
 
     #[inline]

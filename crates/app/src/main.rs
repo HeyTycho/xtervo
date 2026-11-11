@@ -6413,18 +6413,6 @@ fn image_from_source(width: u32, height: u32, rgba: &[u8]) -> slint::Image {
     slint::Image::from_rgba8(buffer)
 }
 
-/// 局部 damage 兜底：默认每帧整屏重绘，可用 `TERVO_FULL_REDRAW=0` 关闭。
-/// 当前 dsh 的 TUI 会整屏重写，alacritty damage 无法覆盖所有旁路写入；
-/// 先保证画面正确，再逐步恢复增量。
-fn full_redraw_enabled() -> bool {
-    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        std::env::var("TERVO_FULL_REDRAW")
-            .map(|v| v != "0")
-            .unwrap_or(true)
-    })
-}
-
 fn redraw_pane_inner(st: &mut AppState, id: PaneId) {
     let focused = st.ws.active_tab().map(|t| t.focused) == Some(id);
     let blink_on = st.cursor_blink_on;
@@ -6440,9 +6428,6 @@ fn redraw_pane_inner(st: &mut AppState, id: PaneId) {
         return;
     }
     rt.cursor = (frame.cursor.line as usize, frame.cursor.col as usize);
-    if full_redraw_enabled() {
-        rt.renderer.request_full_redraw();
-    }
     // 光标不进帧缓冲：用独立 overlay，闪烁时只换 visible。
     rt.renderer.draw_without_cursor(&frame);
     rt.image = rt.renderer.image();
