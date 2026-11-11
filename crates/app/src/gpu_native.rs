@@ -170,6 +170,10 @@ pub fn install(device: &wgpu::Device, _queue: &wgpu::Queue) {
          adapter={:?} backend={:?} device_type={:?}",
         info.name, info.backend, info.device_type
     );
+    // RenderingSetup can arrive after the terminal's first frame. Importing a
+    // texture before Slint's first WGPU present could snapshot as an empty
+    // pane until another redraw; request one after setup settles.
+    slint::Timer::single_shot(std::time::Duration::from_millis(250), crate::redraw_all);
 }
 
 /// 丢弃旧 device（RenderingTeardown / 重建）。
@@ -529,15 +533,29 @@ pub fn pane_image(input: &PaneFrame<'_>) -> Option<slint::Image> {
             path.push(format!("-pane{}-{}x{}.ppm", input.pane, width, height));
             let path = PathBuf::from(path);
             match read_target_rgba8(&device, &queue, &pane.target) {
-                Ok(pixels) => match write_ppm(&path, width, height, &pixels) {
-                    Ok(()) => eprintln!(
-                        "[gpu-native] 像素证据（一次性只读回读）path={} size={width}x{height}",
-                        path.display()
-                    ),
-                    Err(error) => eprintln!(
-                        "[gpu-native] 写像素证据失败 path={} error={error}",
-                        path.display()
-                    ),
+                Ok(pixels) => {
+                    // PPM drops alpha; keep the raw RGBA next to it so the
+                    // evidence can prove the composited target is opaque.
+                    let mut raw_path = path.clone().into_os_string();
+                    raw_path.push(".rgba");
+                    let raw_path = PathBuf::from(raw_path);
+                    let alpha_min = pixels.chunks_exact(4).map(|p| p[3]).min().unwrap_or(0);
+                    let alpha_max = pixels.chunks_exact(4).map(|p| p[3]).max().unwrap_or(0);
+                    let translucent = pixels.chunks_exact(4).filter(|p| p[3] != 255).count();
+                    let _ = std::fs::write(&raw_path, &pixels);
+                    match write_ppm(&path, width, height, &pixels) {
+                        Ok(()) => eprintln!(
+                            "[gpu-native] 像素证据（一次性只读回读）path={} raw={} \
+                             size={width}x{height} alpha_min={alpha_min} alpha_max={alpha_max} \
+                             non_opaque_pixels={translucent}",
+                            path.display(),
+                            raw_path.display()
+                        ),
+                        Err(error) => eprintln!(
+                            "[gpu-native] 写像素证据失败 path={} error={error}",
+                            path.display()
+                        ),
+                    }
                 },
                 Err(error) => {
                     eprintln!("[gpu-native] 像素证据回读失败: {error}");

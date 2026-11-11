@@ -12721,7 +12721,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Stage 0 和 Scene 文字链路都需要这一脚，否则首帧以后没有输入时画面
     // 会一直停在 CPU 初帧。
     if tervo_gpu_any {
-        for delay_ms in [180u64, 800] {
+        // Slint's first WGPU present can happen after the first terminal frame
+        // (PTY output/timer). An imported texture that has not been sampled by
+        // a WGPU frame yet used to snapshot as an empty pane until the next
+        // redraw, so nudge several times around renderer setup/first present.
+        for delay_ms in [180u64, 800, 1500, 2100] {
             slint::Timer::single_shot(Duration::from_millis(delay_ms), || {
                 if gpu_present::ready() || gpu_native::ready() {
                     redraw_all();
