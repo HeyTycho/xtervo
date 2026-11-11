@@ -58,10 +58,20 @@ struct ImageLayerEntry {
 
 impl ImageLayerEntry {
     fn row_span(&self, rows: usize, cell_h: usize) -> Option<(usize, usize)> {
+        if cell_h == 0 || !self.display_h.is_finite() {
+            return None;
+        }
         let top = self.row as f32 * cell_h as f32;
         let bottom = top + self.display_h;
         let first = (top / cell_h as f32).floor() as i32;
         let last = ((bottom - f32::EPSILON) / cell_h as f32).ceil() as i32;
+        // 完全在视口上方的图片（负行 + 等比缩放后显示高度不足一行）两个端点
+        // 都是负数：必须先判空再 clamp，否则负数转 usize 会得到天文数字并
+        // 在 `target[first..end]` panic。prev_images 里残留的旧 placement
+        // 正好会走到这里。
+        if last <= 0 || first >= rows as i32 {
+            return None;
+        }
         let first = first.max(0) as usize;
         let last = last.min(rows as i32) as usize;
         (first < last).then_some((first, last))
@@ -1215,7 +1225,12 @@ impl Renderer {
             }
             let scale_x = img.source_w / dw.max(1.0);
             let scale_y = img.source_h / dh.max(1.0);
-            let dest_y0 = (top.max(0.0) + dy0 as f32).round() as usize;
+            // 目标行必须是这一行真正开始的位置。旧实现用
+            // `top.max(0.0) + dy0`：图片顶部被视口裁掉（row < 0）时
+            // top.max(0)=0，而 dy0 已经含 -top 的裁剪偏移，结果整张图
+            // 又被向下平移 -top，画到下方错误行；这些行不在 row_span 里，
+            // 图片移走/删除后不会被标记重绘，表现为“图片像素残留在错误行”。
+            let dest_y0 = row_top.max(top).max(0.0).round() as usize;
             let src_y0 = (dy0 as f32 * scale_y) as usize;
             let src_x0 = (x0 as f32 - left).max(0.0) as usize;
             let pixels = self.buffer.pixels_mut();

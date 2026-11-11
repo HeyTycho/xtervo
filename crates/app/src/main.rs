@@ -16,6 +16,8 @@ mod profile;
 mod quake;
 mod render;
 #[cfg(test)]
+mod image_layer_diff_tests;
+#[cfg(test)]
 mod render_bench;
 #[cfg(test)]
 mod render_damage_tests;

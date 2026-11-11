@@ -4779,6 +4779,7 @@ dependencies = [
  "crossbeam-channel",
  "env_logger",
  "fontdue",
+ "i-slint-renderer-software",
  "libc",
  "log",
  "owned_ttf_parser",
