@@ -1257,6 +1257,8 @@ export component MainWindow inherits Window {
     in-out property <int> drop-hover-pane: -1;
     in property <[TabView]> tabs;
     in property <length> tabbar-height: 32px;
+    /// 窗口最大化状态（由 Rust 同步，避免按钮直接读异步 WM 状态）。
+    in-out property <bool> window-maximized: false;
     in-out property <bool> menu-open: false;
     in property <length> menu-x: 0px;
     in property <length> menu-y: 0px;
@@ -2582,19 +2584,22 @@ export component MainWindow inherits Window {
         }
 
         win-max := TouchArea {
-            x: parent.width - 68px;
-            y: 4px;
-            width: 28px;
-            height: 24px;
+            // 命中区比 28x24 的视觉按钮略大：边框/缩放边缘附近也能稳定点中。
+            x: parent.width - 70px;
+            y: 2px;
+            width: 32px;
+            height: 28px;
             clicked => { root.toggle-maximize(); }
 
             Rectangle {
-                width: 100%;
-                height: 100%;
+                x: 2px;
+                y: 2px;
+                width: 28px;
+                height: 24px;
                 border-radius: 5px;
                 background: win-max.has-hover ? Palette.colors.hover : Palette.colors.raise;
                 Text {
-                    text: root.maximized ? "❐" : "□";
+                    text: root.window-maximized ? "❐" : "□";
                     color: Palette.colors.text;
                     font-size: 11px;
                     horizontal-alignment: center;

@@ -7632,6 +7632,27 @@ fn install_native_window_events(ui: &MainWindow) {
                     update_ime_spot(st);
                 });
             }
+            winit::event::WindowEvent::Resized(_) => {
+                // WM 的 maximize 是异步的：先更新 UI 的权威状态，再同步圆角。
+                // 不能只让按钮读取 win.is_maximized()，否则 _NET_WM_STATE 尚未
+                // 回写的窗口会出现“点一下没反应/连点两次才恢复”的假状态。
+                if let Some(ui) = weak.upgrade() {
+                    let actual = win.is_maximized();
+                    if ui.get_window_maximized() != actual {
+                        ui.set_window_maximized(actual);
+                        with_app(|st| {
+                            request_window_corners(
+                                st,
+                                None,
+                                Some(xconn::CornerState {
+                                    maximized: actual,
+                                    fullscreen: st.ui.window().is_fullscreen(),
+                                }),
+                            );
+                        });
+                    }
+                }
+            }
             winit::event::WindowEvent::HoveredFile(_) => {
                 let target = win.with_winit_window(drop_target_at).flatten();
                 if let Some(ui) = weak.upgrade() {
@@ -12150,9 +12171,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let weak = ui.as_weak();
         ui.on_toggle_maximize(move || {
             if let Some(ui) = weak.upgrade() {
-                // 内置 `maximized` 属性与窗口状态双向同步，直接翻转即可
-                let target = !ui.window().is_maximized();
+                // 以 UI 状态为准，不直接读可能滞后的 winit `_NET_WM_STATE`；
+                // 点击时先把目标状态写回 UI，避免 WM 异步回写期间的假状态。
+                let target = !ui.get_window_maximized();
+                ui.set_window_maximized(target);
                 ui.window().set_maximized(target);
+                eprintln!(
+                    "[ui] toggle-maximize target={target} initial_actual={}",
+                    ui.window().is_maximized()
+                );
                 // 先按目标状态更新圆角，避免 WM 尚未写回 _NET_WM_STATE 时四角留缝。
                 with_app(|st| {
                     request_window_corners(
@@ -12163,6 +12190,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             fullscreen: st.ui.window().is_fullscreen(),
                         }),
                     );
+                });
+                // WM 可能拒绝/延迟 maximize；180ms 后回读一次，至少保证按钮状态
+                // 不会卡在“看起来已最大化、再点却没反应”的假状态。
+                let weak = ui.as_weak();
+                slint::Timer::single_shot(Duration::from_millis(180), move || {
+                    let Some(ui) = weak.upgrade() else { return };
+                    let actual = ui.window().is_maximized();
+                    if ui.get_window_maximized() != actual {
+                        ui.set_window_maximized(actual);
+                        with_app(|st| {
+                            request_window_corners(
+                                st,
+                                None,
+                                Some(xconn::CornerState {
+                                    maximized: actual,
+                                    fullscreen: st.ui.window().is_fullscreen(),
+                                }),
+                            );
+                        });
+                        eprintln!("[ui] toggle-maximize reconcile actual={actual}");
+                    }
                 });
             }
         });
@@ -12580,6 +12628,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ---- 首帧 ----
     ui.show()?;
+    ui.set_window_maximized(ui.window().is_maximized());
     // 无头验收钩子：TERVO_GPU_SNAPSHOT=<前缀> 时定时 take_snapshot 写 PPM 并打像素统计。
     install_gpu_snapshot_hook(&ui);
     // RenderingSetup 可能首帧后才给出 device/queue；GPU 就绪后主动重绘一次。
