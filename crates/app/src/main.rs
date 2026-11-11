@@ -12151,29 +12151,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     {
         let weak = ui.as_weak();
-        let last_max_click = Rc::new(std::cell::Cell::new(None::<Instant>));
-        let last_max_click_handler = last_max_click.clone();
         ui.on_max_pointer_down(|| eprintln!("[ui] max-pointer-down"));
         ui.on_toggle_maximize(move || {
             if let Some(ui) = weak.upgrade() {
-                let now = Instant::now();
-                let recent = last_max_click_handler
-                    .get()
-                    .is_some_and(|t| now.duration_since(t) < Duration::from_millis(800));
-                last_max_click_handler.set(Some(now));
-                // 静置后第一次点击：用真实窗口几何校准 UI。过渡期/连点不能
-                // 用 WM 状态重算 target，否则同一目标会被重复发送。
-                let geometry = if !recent {
-                    xconn::window_geometry_maximized()
-                } else {
-                    None
-                };
-                // AppState 是权威 desired；不依赖 Slint 属性 setter/getter 的
-                // 事件循环时序（日志里曾连续三次 target=true，下一次仍 false）。
+                // AppState 是唯一 desired 状态源。点击只翻转它，绝不再拿
+                // WM actual/几何来校准：双显示器上几何判据会永远 false，
+                // 导致每次点击都重复发送 maximize。
                 let target = with_app(|st| {
-                    if let Some(actual) = geometry {
-                        st.window_maximized = actual;
-                    }
                     st.window_maximized = !st.window_maximized;
                     st.window_maximized
                 })
@@ -12195,11 +12179,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let title = ui.get_window_title().to_string();
                 match xconn::wm_set_maximized(&title, target) {
                     Ok(()) => eprintln!(
-                        "[ui] toggle-maximize before={before} target={target} recent={recent} via=ewmh"
+                        "[ui] toggle-maximize before={before} target={target} via=ewmh"
                     ),
                     Err(err) => {
                         eprintln!(
-                            "[ui] toggle-maximize before={before} target={target} recent={recent} \
+                            "[ui] toggle-maximize before={before} target={target} \
                              ewmh_err={err} fallback=winit"
                         );
                         ui.window().set_maximized(target);
@@ -12621,7 +12605,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ---- 首帧 ----
     ui.show()?;
-    let initial_maximized = ui.window().is_maximized();
+    // 启动时用 EWMH 查询校准；不要用窗口几何：多显示器下
+    // _NET_WORKAREA 是整块虚拟桌面，单屏最大化窗口会永远被判为 false。
+    let title = ui.get_window_title().to_string();
+    let initial_maximized = xconn::window_is_maximized(&title)
+        .unwrap_or_else(|| ui.window().is_maximized());
     ui.set_window_maximized(initial_maximized);
     with_app(|st| st.window_maximized = initial_maximized);
     // 无头验收钩子：TERVO_GPU_SNAPSHOT=<前缀> 时定时 take_snapshot 写 PPM 并打像素统计。

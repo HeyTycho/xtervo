@@ -166,19 +166,6 @@ pub fn window_is_maximized(title: &str) -> Option<bool> {
     Some(h && v)
 }
 
-/// 用实际窗口几何判断当前是否铺满 EWMH workarea。
-///
-/// `_NET_WM_STATE`/winit 的 is_maximized 在请求过渡期会短暂抖动；几何是
-/// 用户真正看到的状态。仅用于点击前的静置校准，不用于快速连点决策。
-pub fn window_geometry_maximized() -> Option<bool> {
-    let (_, _, ww, wh) = workarea()?;
-    let win = own_windows()
-        .into_iter()
-        .filter(|w| w.viewable)
-        .max_by_key(|w| u64::from(w.w) * u64::from(w.h))?;
-    Some(win.w + 4 >= ww && win.h + 4 >= wh)
-}
-
 /// 通过 ICCCM `WM_CHANGE_STATE` 请求最小化（IconicState=3）。
 pub fn wm_minimize(title: &str) -> Result<(), String> {
     use x11rb::connection::Connection as _;
