@@ -6413,6 +6413,18 @@ fn image_from_source(width: u32, height: u32, rgba: &[u8]) -> slint::Image {
     slint::Image::from_rgba8(buffer)
 }
 
+/// 局部 damage 兜底：默认每帧整屏重绘，可用 `TERVO_FULL_REDRAW=0` 关闭。
+/// 当前 dsh 的 TUI 会整屏重写，alacritty damage 无法覆盖所有旁路写入；
+/// 先保证画面正确，再逐步恢复增量。
+fn full_redraw_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("TERVO_FULL_REDRAW")
+            .map(|v| v != "0")
+            .unwrap_or(true)
+    })
+}
+
 fn redraw_pane_inner(st: &mut AppState, id: PaneId) {
     let focused = st.ws.active_tab().map(|t| t.focused) == Some(id);
     let blink_on = st.cursor_blink_on;
@@ -6428,6 +6440,9 @@ fn redraw_pane_inner(st: &mut AppState, id: PaneId) {
         return;
     }
     rt.cursor = (frame.cursor.line as usize, frame.cursor.col as usize);
+    if full_redraw_enabled() {
+        rt.renderer.request_full_redraw();
+    }
     // 光标不进帧缓冲：用独立 overlay，闪烁时只换 visible。
     rt.renderer.draw_without_cursor(&frame);
     rt.image = rt.renderer.image();
@@ -7089,6 +7104,96 @@ fn get_clipboard(st: &mut AppState) -> Option<String> {
     with_clipboard(st, |cb| cb.get_text().ok()).flatten()
 }
 
+/// 剪贴板里的图像 → 临时 PNG 文件路径。
+///
+/// 终端 PTY 只能收文本；图片必须先落盘，再把路径作为 bracketed paste
+/// 交给 TUI（dsh 会把路径识别成 `[Image #N]`）。文件名无空格，0600。
+fn write_clipboard_image(image: arboard::ImageData) -> std::io::Result<PathBuf> {
+    if image.width == 0 || image.height == 0 || image.bytes.len() % 4 != 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "clipboard image has invalid dimensions/pixels",
+        ));
+    }
+    let expected = image.width.saturating_mul(image.height).saturating_mul(4);
+    if image.bytes.len() < expected {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "clipboard image RGBA buffer is short",
+        ));
+    }
+    // 32 MP 上限：避免恶意/误触剪贴板把 UI 线程内存打爆。
+    if image.width as u64 * image.height as u64 > 32_000_000 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "clipboard image exceeds 32 MP",
+        ));
+    }
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let path = std::env::temp_dir().join(format!(
+        "tervo-paste-{}-{stamp}.png",
+        std::process::id()
+    ));
+    let file = {
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        opts.open(&path)?
+    };
+    let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), image.width as u32, image.height as u32);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header()?;
+    writer.write_image_data(&image.bytes[..expected])?;
+    writer.finish()?;
+    Ok(path)
+}
+
+fn get_clipboard_image(st: &mut AppState) -> Option<arboard::ImageData> {
+    with_clipboard(st, |cb| cb.get_image().ok()).flatten()
+}
+
+fn get_primary_image(st: &mut AppState) -> Option<arboard::ImageData> {
+    use arboard::{GetExtLinux, LinuxClipboardKind};
+    with_clipboard(st, |cb| {
+        cb.get().clipboard(LinuxClipboardKind::Primary).image().ok()
+    })
+    .flatten()
+}
+
+/// 有图片就粘贴图片路径；返回 false 表示剪贴板没有图片。
+fn paste_clipboard_image(st: &mut AppState, primary: bool) -> bool {
+    let image = if primary {
+        get_primary_image(st)
+    } else {
+        get_clipboard_image(st)
+    };
+    let Some(image) = image else { return false };
+    match write_clipboard_image(image) {
+        Ok(path) => {
+            eprintln!(
+                "[clipboard] image paste source={} path={}",
+                if primary { "primary" } else { "clipboard" },
+                path.display()
+            );
+            set_status_toast(st, format!("Image pasted: {}", path.display()));
+            paste_text_into_focused(st, &path.to_string_lossy());
+            true
+        }
+        Err(e) => {
+            eprintln!("[clipboard] image encode failed: {e}");
+            false
+        }
+    }
+}
+
 /// 写 X11 PRIMARY（中键粘贴）。arboard 的 Linux 扩展 API 不需要 Wayland data-control。
 fn set_primary(st: &mut AppState, text: &str) {
     use arboard::{LinuxClipboardKind, SetExtLinux};
@@ -7408,6 +7513,9 @@ fn paste_text_into_focused(st: &mut AppState, text: &str) {
 }
 
 fn paste_into_focused(st: &mut AppState) {
+    if paste_clipboard_image(st, false) {
+        return;
+    }
     let Some(text) = get_clipboard(st) else {
         return;
     };
@@ -7422,6 +7530,8 @@ fn paste_primary_into_focused(st: &mut AppState) {
             text.len()
         );
         paste_text_into_focused(st, &text);
+    } else if paste_clipboard_image(st, true) {
+        eprintln!("[clipboard] middle paste source=primary image");
     } else {
         eprintln!("[clipboard] middle paste source=clipboard (primary empty)");
         paste_into_focused(st);
@@ -13128,6 +13238,31 @@ mod tests {
         assert_eq!(join_remote("/", "a"), "/a");
         assert_eq!(join_remote("/tmp", "a"), "/tmp/a");
         assert_eq!(join_remote("/tmp/", "a"), "/tmp/a");
+    }
+
+    #[test]
+    fn clipboard_image_is_written_as_valid_png() {
+        let image = arboard::ImageData {
+            width: 2,
+            height: 1,
+            bytes: vec![255, 0, 0, 255, 0, 255, 0, 128].into(),
+        };
+        let path = write_clipboard_image(image).expect("encode clipboard image");
+        let bytes = std::fs::read(&path).expect("read png");
+        let decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+        let mut reader = decoder.read_info().expect("png header");
+        let mut out = vec![0u8; reader.output_buffer_size().unwrap()];
+        let info = reader.next_frame(&mut out).expect("png frame");
+        assert_eq!((info.width, info.height), (2, 1));
+        assert_eq!(&out[..8], &[255, 0, 0, 255, 0, 255, 0, 128]);
+        let _ = std::fs::remove_file(path);
+
+        let bad = arboard::ImageData {
+            width: 2,
+            height: 2,
+            bytes: vec![0; 4].into(),
+        };
+        assert!(write_clipboard_image(bad).is_err(), "short RGBA must be rejected");
     }
 
     #[test]

@@ -392,6 +392,14 @@ impl Renderer {
     }
 
     /// 切换主题：更新默认背景与光标色，下一帧整屏重绘。
+    /// 请求下一帧强制整屏重绘。
+    ///
+    /// 用于局部 damage 不可信的场景（TUI 整屏重写/侧栏滚动）。正确性优先于
+    /// 增量优化；调用方应按需开启，而不是每帧无条件打开。
+    pub fn request_full_redraw(&mut self) {
+        self.force_full = true;
+    }
+
     pub fn set_theme(&mut self, theme_bg: u32, cursor_color: u32) {
         self.theme_bg = pack(theme_bg);
         self.default_bg = default_background(theme_bg, self.opacity);
