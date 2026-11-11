@@ -38,3 +38,8 @@ base64 = "0.22.1"
 
 [build-dependencies]
 slint-build = { version = "1.18", default-features = false, features = ["compat-1-18"] }
+
+[dev-dependencies]
+# 仅测试用：MinimalSoftwareWindow + SwappedBuffers 部分重绘，验证 Slint
+# Image item 在 SharedPixelBuffer 原地更新/同指针重新赋值时不会复用旧纹理。
+i-slint-renderer-software = "1.18.1"
