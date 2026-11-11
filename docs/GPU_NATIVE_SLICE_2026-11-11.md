@@ -5,7 +5,7 @@
 
 | commit | 内容 |
 | --- | --- |
-| `5cff84e` | Frame → Scene → WGPU 文字/背景 slice，默认 CPU，显式 `TERVO_GPU_NATIVE=1` |
+| `5cff84e` | Frame → Scene → WGPU 文字/背景 slice，默认 GPU-native，`TERVO_CPU=1` 关闭 |
 | `e40f7b8` | Slint 在首次 render 前 import texture 会空白：改为 render 后 import |
 | `6faefdc` | merge B 的 `GpuImageRenderer`/`ImageTextureRegistry`/staged `render_scene`，接图片分层合成 |
 | `762800b` | 隔离 Xvfb CPU/GPU/fallback e2e + raw RGBA alpha 证据 |
@@ -32,7 +32,7 @@ tervo_core::Frame
 - Device/Queue 来自 Slint `RenderingSetup` 的 `GraphicsAPI::WGPU30`（`render_probe`），
   与 `TERVO_GPU=1` stage 0 共用同一个 device；不创建第二个 wgpu 实例。
 - 显式开关：
-  - `TERVO_GPU_NATIVE=1`：本 slice。默认**不**开，默认仍是 CPU/Skia 路径。
+  - `TERVO_GPU_NATIVE=1`：本 slice。默认开启；`TERVO_CPU=1` / `TERVO_GPU_NATIVE=0` 关闭。
   - `TERVO_GPU=1`：原有 stage 0，CPU framebuffer 上传纹理，行为未改。
   - 两者同时设置时：GPU native 优先；失败才回 CPU，stage 0 不接管。
 - 任何失败（拿不到 device、atlas/target 创建失败、image upload/分层渲染失败、
@@ -149,7 +149,7 @@ elapsed_s rss_kb pss_kb threads fds
 
 ## 已知限制 / 后续
 
-1. **默认仍是 CPU**。本分支按原任务要求保留 opt-in；默认 GPU 接线由集成方决定。
+1. 默认已切换 GPU-native；`TERVO_CPU=1` 强制 CPU；`TERVO_GPU_NATIVE=0` 仅用于显式兼容 stage 0。
 2. 光标仍走原有 Slint overlay（明确保留）；Scene 里有 cursor 但 GPU 不合成。
 3. 彩色 emoji 不做（fontdue 只支持轮廓）；无字形时显式 `?` + 计数。
 4. 背景透明度：Scene background 使用主题不透明 RGB；`background-opacity < 1`
