@@ -6519,8 +6519,9 @@ fn redraw_pane_inner(st: &mut AppState, id: PaneId) {
         }
         // 光标不进帧缓冲：用独立 overlay，闪烁时只换 visible。
         rt.renderer.draw_without_cursor(&frame);
-        // TERVO_GPU=1 stage 0：把 CPU framebuffer 上传到同一 device 纹理。
-        let gpu_image = if gpu_present::ready() {
+        // stage 0 只作为显式 TERVO_GPU_NATIVE=0 的兼容路径；默认 GPU-native
+        // 失败时直接 CPU，绝不偷偷回“CPU framebuffer 上传”冒充 GPU。
+        let gpu_image = if gpu_present::ready() && !gpu_native::requested() {
             gpu_present::pane_image(
                 id,
                 rt.renderer.pixels(),

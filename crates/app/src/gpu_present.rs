@@ -20,15 +20,31 @@ use std::sync::{Mutex, OnceLock};
 
 use slint::wgpu_30::wgpu;
 
-/// `TERVO_GPU` 是否请求 GPU 显示链路（默认 false）。
+/// `TERVO_CPU=1`：强制 CPU/Skia，关闭所有 GPU 路径。
+pub fn cpu_forced() -> bool {
+    static CPU: OnceLock<bool> = OnceLock::new();
+    *CPU.get_or_init(|| {
+        std::env::var("TERVO_CPU").is_ok_and(|v| {
+            matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")
+        })
+    })
+}
+
+/// `TERVO_GPU` 是否请求 GPU 显示链路（默认 true）。
 pub fn requested() -> bool {
     static REQUESTED: OnceLock<bool> = OnceLock::new();
-    *REQUESTED.get_or_init(|| match std::env::var("TERVO_GPU") {
-        Ok(v) => matches!(
-            v.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
-        ),
-        Err(_) => false,
+    *REQUESTED.get_or_init(|| {
+        // GPU-native 时代默认请求 WGPU；显式 TERVO_CPU=1 / TERVO_GPU=0 才关闭。
+        if cpu_forced() {
+            return false;
+        }
+        match std::env::var("TERVO_GPU") {
+            Ok(v) => !matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "0" | "false" | "no" | "off"
+            ),
+            Err(_) => true,
+        }
     })
 }
 

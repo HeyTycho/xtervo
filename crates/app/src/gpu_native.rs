@@ -39,16 +39,22 @@ use tervo_scene::{
     BackgroundInstance, DrawItem, PhysicalSize, Scene, SceneBuilder, Viewport, BACKGROUND_LAYER_Z,
 };
 
-/// `TERVO_GPU_NATIVE` 是否请求 Stage 1（默认 false）。
+/// GPU-native 默认启用；`TERVO_CPU=1` / `TERVO_GPU=0` / `TERVO_GPU_NATIVE=0` 关闭。
 pub fn requested() -> bool {
     static REQUESTED: OnceLock<bool> = OnceLock::new();
     *REQUESTED.get_or_init(|| {
-        std::env::var("TERVO_GPU_NATIVE").is_ok_and(|value| {
-            matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        })
+        if crate::gpu_present::cpu_forced() {
+            return false;
+        }
+        if let Ok(v) = std::env::var("TERVO_GPU") {
+            if matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no" | "off") {
+                return false;
+            }
+        }
+        match std::env::var("TERVO_GPU_NATIVE") {
+            Ok(v) => !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no" | "off"),
+            Err(_) => true,
+        }
     })
 }
 
