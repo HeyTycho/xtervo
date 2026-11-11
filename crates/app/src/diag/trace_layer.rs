@@ -2331,7 +2331,7 @@ mod tests {
     }
 
     #[test]
-    fn filter_c1_text_before_dcs_is_located_as_chunking_divergence() {
+    fn filter_c1_text_before_dcs_is_stable_after_core_fix() {
         // 真实边界：正文里的 0x9D（UTF-8 `”` 的续字节）会被 SixelFilter
         // 当作 C1 OSC 起点；若同一个 feed chunk 后面还有 Sixel DCS，
         // 一次性喂入会把 DCS 当 OSC 内容，而分块喂入可能在 0x9D 所在
@@ -2342,11 +2342,8 @@ mod tests {
         let mut options = opts();
         options.chunk = 7;
         let report = analyze(&raw, &options, &Fault::default(), "synthetic", "test");
-        assert_eq!(report.status, Status::Fail, "{}", report.to_text());
-        let divergence = report.divergence.expect("must locate divergence");
-        assert_eq!(divergence.layer, Layer::Filter);
-        assert_eq!(divergence.check, "chunking");
-        assert!(divergence.byte.is_some());
+        assert_eq!(report.status, Status::Pass, "{}", report.to_text());
+        assert!(report.divergence.is_none());
     }
 
     fn locate_dsh_raw() -> Option<std::path::PathBuf> {
