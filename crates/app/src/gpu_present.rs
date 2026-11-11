@@ -97,7 +97,9 @@ fn fail(reason: impl std::fmt::Display) {
 ///
 /// 幂等：渲染器重建时会再次回调；只有第一次（或 device 重建时）安装。
 pub fn install(device: &wgpu::Device, queue: &wgpu::Queue) {
-    if !requested() {
+    // Stage 0 (`TERVO_GPU=1`) 和 Stage 1 (`TERVO_GPU_NATIVE=1`) 共用 Slint 的
+    // 同一个 WGPU30 device/queue；是否启用各自链路由各自 ready() 决定。
+    if !requested() && !crate::gpu_native::requested() {
         return;
     }
     let mut guard = match STATE.lock() {
@@ -113,9 +115,12 @@ pub fn install(device: &wgpu::Device, queue: &wgpu::Queue) {
     }
     let limits = device.limits();
     eprintln!(
-        "[gpu] TERVO_GPU=1：拿到 Slint WGPU30 同一 device/queue；\
-         max_texture_dimension_2d={} max_buffer_size={}（终端栅格化仍在 CPU，只走纹理显示）",
-        limits.max_texture_dimension_2d, limits.max_buffer_size
+        "[gpu] 拿到 Slint WGPU30 同一 device/queue；max_texture_dimension_2d={} \
+         max_buffer_size={}（TERVO_GPU={} stage0 CPU 纹理; TERVO_GPU_NATIVE={} Scene 文字）",
+        limits.max_texture_dimension_2d,
+        limits.max_buffer_size,
+        requested(),
+        crate::gpu_native::requested()
     );
     *guard = Some(State {
         device: device.clone(),
@@ -123,6 +128,16 @@ pub fn install(device: &wgpu::Device, queue: &wgpu::Queue) {
         frames: HashMap::new(),
     });
     READY.store(true, Ordering::Release);
+}
+
+/// 取 Slint WGPU30 实际使用的 device/queue（与 GPU-native 链路同源）。
+///
+/// 返回 clone 的 handle；Slint 在 RenderingSetup 之前返回 None。
+pub fn device_queue() -> Option<(wgpu::Device, wgpu::Queue)> {
+    let guard = STATE.lock().ok()?;
+    guard
+        .as_ref()
+        .map(|state| (state.device.clone(), state.queue.clone()))
 }
 
 /// 丢弃某个 pane 的纹理；pane id 被重连复用时必须先调用，否则会复用旧会话纹理。

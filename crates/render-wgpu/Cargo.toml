@@ -20,6 +20,12 @@ wgpu = { version = "=30.0.1" }
 # fontdue is already used by tervo-app; the atlas prototype shares the exact
 # same version so the rasterized coverage is comparable.
 fontdue = "0.9"
+# Cheap cmap coverage probes for the CJK/emoji fallback chain before paying a
+# fontdue parse. Same version as tervo-app's owned_ttf_parser, so it is already
+# in the workspace lockfile and build graph.
+owned_ttf_parser = "0.25"
+# Zero-width/wide classification for combining marks and CJK/emoji cells.
+unicode-width.workspace = true
 # Used only to block on wgpu adapter/device futures in the headless helper and
 # validation examples/tests. No runtime thread pool is pulled in.
 futures-lite = "2"

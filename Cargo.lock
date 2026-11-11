@@ -4792,6 +4792,8 @@ dependencies = [
  "slint-build",
  "tervo-core",
  "tervo-diagnostics",
+ "tervo-render-wgpu",
+ "tervo-scene",
  "toml",
  "x11rb 0.14.0",
 ]
@@ -4839,9 +4841,11 @@ version = "0.3.1"
 dependencies = [
  "fontdue",
  "futures-lite",
+ "owned_ttf_parser",
  "slint",
  "tervo-render",
  "tervo-scene",
+ "unicode-width",
  "wgpu",
 ]
 

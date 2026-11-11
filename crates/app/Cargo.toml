@@ -12,6 +12,9 @@ path = "src/main.rs"
 [dependencies]
 tervo-core = { path = "../core" }
 tervo-diagnostics = { path = "../diagnostics" }
+# `TERVO_GPU_NATIVE=1` vertical slice: Frame -> Scene -> WGPU glyph atlas.
+tervo-scene = { path = "../scene" }
+tervo-render-wgpu = { path = "../render-wgpu" }
 slint.workspace = true
 log.workspace = true
 env_logger.workspace = true

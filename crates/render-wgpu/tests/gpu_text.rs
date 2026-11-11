@@ -16,7 +16,10 @@ use tervo_render_wgpu::{
     request_headless_gpu, write_ppm, AtlasConfig, AtlasError, FontStyle, GpuTextRenderer,
     HeadlessGpu, TextLayout, TextRenderError, TextSection, TextTarget,
 };
-use tervo_scene::{PhysicalSize, TextAttributes, TextBatch, TextCell};
+use tervo_scene::{
+    BackgroundInstance, CursorState, DrawItem, PhysicalSize, Scene, SceneLayer, TextAttributes,
+    TextBatch, TextCell, Viewport, BACKGROUND_LAYER_Z, TEXT_LAYER_Z,
+};
 
 const CLEAR: [u8; 4] = [16, 18, 24, 255];
 
@@ -44,6 +47,29 @@ fn test_gpu() -> &'static HeadlessGpu {
 
 fn fixture(width: u32, height: u32) -> Fixture {
     fixture_with_atlas(width, height, AtlasConfig::default())
+}
+
+/// Fixture with **no** system fallback chain: used by tests that need a
+/// guaranteed-missing glyph, independent of which CJK/emoji fonts are installed.
+fn fixture_without_fallbacks(width: u32, height: u32) -> Fixture {
+    let gpu = test_gpu();
+    let font = discover_font_path().expect("system font");
+    let bytes = std::fs::read(&font).expect("read system font");
+    let renderer = GpuTextRenderer::with_font_bytes(
+        gpu.device.clone(),
+        gpu.queue.clone(),
+        bytes,
+        &font,
+        AtlasConfig::default(),
+    )
+    .expect("create no-fallback atlas renderer");
+    let target =
+        TextTarget::new(&gpu.device, PhysicalSize { width, height }).expect("create text target");
+    Fixture {
+        gpu,
+        renderer,
+        target,
+    }
 }
 
 fn fixture_with_atlas(width: u32, height: u32, atlas_config: AtlasConfig) -> Fixture {
@@ -651,12 +677,14 @@ fn atlas_overflow_is_reported_and_leaves_target_untouched() {
 
 #[test]
 fn unknown_glyphs_fall_back_to_question_mark_and_are_counted() {
-    let mut fixture = fixture(240, 80);
+    // No fallback chain: U+10FFFF can never be covered, so the substituted `?`
+    // is observable independent of installed fonts.
+    let mut fixture = fixture_without_fallbacks(240, 80);
     let mut unknown = TextBatch::new(11);
     unknown.push(cell(
         0,
         0,
-        "☃",
+        "\u{10FFFF}",
         0x00ff_ffff,
         CLEAR_RGB,
         TextAttributes::default(),
@@ -671,6 +699,8 @@ fn unknown_glyphs_fall_back_to_question_mark_and_are_counted() {
         )
         .expect("render unknown glyph");
     assert_eq!(stats.unknown_glyphs, 1);
+    assert_eq!(stats.missing_glyphs, 1);
+    assert_eq!(stats.placeholder_quads, 0);
     assert_eq!(geometry.glyphs.len(), 1);
     let unknown_pixels =
         read_target_rgba8(&fixture.gpu.device, &fixture.gpu.queue, &fixture.target)
@@ -702,7 +732,7 @@ fn unknown_glyphs_fall_back_to_question_mark_and_are_counted() {
             .expect("replacement readback");
     assert_eq!(
         unknown_pixels, replacement_pixels,
-        "non-ASCII glyph must render exactly like its '?' fallback"
+        "a missing glyph must render exactly like its deterministic '?' marker"
     );
 
     // Controls are skipped, whitespace draws background but no glyph.
@@ -734,6 +764,283 @@ fn unknown_glyphs_fall_back_to_question_mark_and_are_counted() {
     assert_eq!(stats.skipped_control, 1);
     assert_eq!(stats.missing_outlines, 0);
     assert_eq!(stats.glyph_quads, 2);
+}
+
+#[test]
+fn cjk_fallback_is_explicit_and_wide_cells_span_two_columns() {
+    let mut fixture = fixture(320, 120);
+    let text_layout = layout(&fixture.renderer, 22, 0.0, 0.0);
+
+    // Wide cell paints red across both columns; the spacer would paint blue if
+    // it were (incorrectly) drawn as an independent cell.
+    let mut wide = TextBatch::new(20);
+    wide.push(cell(
+        0,
+        0,
+        "你",
+        0x00ff_ffff,
+        0x00ff_0000,
+        TextAttributes {
+            wide: true,
+            ..TextAttributes::default()
+        },
+    ));
+    wide.push(cell(
+        0,
+        1,
+        " ",
+        0x00ff_ffff,
+        0x0000_00ff,
+        TextAttributes {
+            wide_spacer: true,
+            ..TextAttributes::default()
+        },
+    ));
+    let (stats, geometry) = fixture
+        .renderer
+        .render_with_geometry(
+            &fixture.target,
+            CLEAR,
+            &[TextSection::new(&wide, text_layout)],
+        )
+        .expect("render wide cell");
+    assert_eq!(stats.cells, 2);
+    assert_eq!(stats.wide_cells, 1);
+    assert_eq!(stats.wide_spacer_cells, 1);
+    // One span-wide background quad for the wide cell; spacer contributes none.
+    assert_eq!(stats.solid_quads, 1);
+    assert!(stats.glyph_quads >= 1, "wide glyph or explicit '?' marker missing");
+    // CJK coverage is host-dependent, but either a fallback glyph or the
+    // counted '?' marker is acceptable; silently drawing nothing is not.
+    assert!(stats.fallback_glyphs >= 1 || stats.unknown_glyphs == 1);
+    assert_eq!(stats.missing_glyphs, stats.unknown_glyphs);
+    eprintln!(
+        "cjk fallback: glyphs={} fallback={} missing={} font={}",
+        stats.glyph_quads,
+        stats.fallback_glyphs,
+        stats.missing_glyphs,
+        fixture.renderer.font_path().display()
+    );
+
+    let pixels =
+        read_target_rgba8(&fixture.gpu.device, &fixture.gpu.queue, &fixture.target)
+            .expect("wide readback");
+    let cw = text_layout.cell_width as u32;
+    let ch = text_layout.cell_height as u32;
+    let pixel = |x: u32, y: u32| -> [u8; 4] {
+        let i = ((y * 320 + x) * 4) as usize;
+        [pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]]
+    };
+    // Both columns are the wide cell's red background, not the spacer blue.
+    // Sample the bottom padding so the glyph ink itself is not in the way.
+    for x in [1, cw + 1] {
+        assert_eq!(
+            pixel(x, ch - 2),
+            [255, 0, 0, 255],
+            "wide background did not span/protect column x={x}"
+        );
+    }
+    assert_eq!(geometry.solids.len(), 1);
+}
+
+#[test]
+fn hidden_dim_underline_and_selection_semantics_are_applied() {
+    let mut fixture = fixture(360, 160);
+    let text_layout = layout(&fixture.renderer, 22, 0.0, 0.0);
+
+    // Hidden: background painted, no glyph, no underline.
+    let mut hidden = TextBatch::new(21);
+    hidden.push(cell(
+        0,
+        0,
+        "H",
+        0x00ff_ffff,
+        0x0012_3456,
+        TextAttributes {
+            hidden: true,
+            underline: true,
+            ..TextAttributes::default()
+        },
+    ));
+    let (hidden_stats, hidden_geometry) = fixture
+        .renderer
+        .render_with_geometry(
+            &fixture.target,
+            CLEAR,
+            &[TextSection::new(&hidden, text_layout)],
+        )
+        .expect("hidden");
+    assert_eq!(hidden_stats.hidden_cells, 1);
+    assert_eq!(hidden_stats.glyph_quads, 0);
+    assert_eq!(hidden_stats.solid_quads, 1, "hidden must paint only its background");
+    assert_eq!(hidden_geometry.solids.len(), 1);
+
+    // Dim resolves to the bold face, exactly like the CPU renderer.
+    let mut dim = TextBatch::new(22);
+    dim.push(cell(
+        0,
+        0,
+        "A",
+        0x00ff_ffff,
+        CLEAR_RGB,
+        TextAttributes {
+            dim: true,
+            ..TextAttributes::default()
+        },
+    ));
+    let mut bold = TextBatch::new(23);
+    bold.push(cell(
+        0,
+        0,
+        "A",
+        0x00ff_ffff,
+        CLEAR_RGB,
+        TextAttributes {
+            bold: true,
+            ..TextAttributes::default()
+        },
+    ));
+    let (dim_stats, _) = fixture
+        .renderer
+        .render_with_geometry(
+            &fixture.target,
+            CLEAR,
+            &[TextSection::new(&dim, text_layout)],
+        )
+        .expect("dim");
+    let dim_pixels = read_target_rgba8(&fixture.gpu.device, &fixture.gpu.queue, &fixture.target)
+        .expect("dim readback");
+    let (bold_stats, _) = fixture
+        .renderer
+        .render_with_geometry(
+            &fixture.target,
+            CLEAR,
+            &[TextSection::new(&bold, text_layout)],
+        )
+        .expect("bold");
+    let bold_pixels = read_target_rgba8(&fixture.gpu.device, &fixture.gpu.queue, &fixture.target)
+        .expect("bold readback");
+    assert_eq!(dim_stats.dim_cells, 1);
+    assert_eq!(dim_stats.style_fallbacks, bold_stats.style_fallbacks);
+    assert_eq!(
+        dim_pixels, bold_pixels,
+        "dim must map to the same face as bold"
+    );
+
+    // Underline + double underline + strikethrough are cell geometry solids.
+    let mut decorated = TextBatch::new(24);
+    decorated.push(cell(
+        0,
+        0,
+        "U",
+        0x00ff_ffff,
+        CLEAR_RGB,
+        TextAttributes {
+            underline: true,
+            double_underline: true,
+            strikethrough: true,
+            ..TextAttributes::default()
+        },
+    ));
+    let (decorated_stats, _) = fixture
+        .renderer
+        .render_with_geometry(
+            &fixture.target,
+            CLEAR,
+            &[TextSection::new(&decorated, text_layout)],
+        )
+        .expect("decorated");
+    // background + underline + double underline + strikeout
+    assert_eq!(decorated_stats.solid_quads, 4);
+
+    // Selection/search colors are already resolved by the Scene builder; the
+    // renderer must count them and paint the resolved background.
+    let mut highlighted = TextBatch::new(25);
+    highlighted.push(cell(
+        0,
+        0,
+        "S",
+        0x0011_111b,
+        0x00f9_e2af,
+        TextAttributes {
+            selected: true,
+            searched: true,
+            ..TextAttributes::default()
+        },
+    ));
+    let (highlighted_stats, _) = fixture
+        .renderer
+        .render_with_geometry(
+            &fixture.target,
+            CLEAR,
+            &[TextSection::new(&highlighted, text_layout)],
+        )
+        .expect("highlighted");
+    assert_eq!(highlighted_stats.selected_cells, 1);
+    assert_eq!(highlighted_stats.searched_cells, 1);
+    let pixels = read_target_rgba8(&fixture.gpu.device, &fixture.gpu.queue, &fixture.target)
+        .expect("highlight readback");
+    let corner = 3usize * 4;
+    assert_eq!(&pixels[corner..corner + 3], &[0xf9, 0xe2, 0xaf]);
+}
+
+#[test]
+fn render_scene_uses_background_layer_and_reports_skipped_overlays() {
+    let mut fixture = fixture(200, 80);
+    let text_layout = layout(&fixture.renderer, 20, 0.0, 0.0);
+
+    let mut batch = TextBatch::new(31);
+    batch.push(cell(
+        0,
+        0,
+        "S",
+        0x00ff_ffff,
+        0x0011_2233,
+        TextAttributes::default(),
+    ));
+    let scene = Scene {
+        viewport: Viewport {
+            cell_w: text_layout.cell_width,
+            cell_h: text_layout.cell_height,
+            cols: 10,
+            rows: 4,
+        },
+        revision: 77,
+        damage: Default::default(),
+        selection: None,
+        search: None,
+        cursor: Some(CursorState {
+            row: 0,
+            col: 0,
+            shape: Default::default(),
+            visible: true,
+        }),
+        layers: vec![
+            SceneLayer {
+                z_index: BACKGROUND_LAYER_Z,
+                items: vec![DrawItem::Background(BackgroundInstance {
+                    color: 0x0011_2233,
+                })],
+            },
+            SceneLayer {
+                z_index: TEXT_LAYER_Z,
+                items: vec![DrawItem::Text(batch)],
+            },
+        ],
+    };
+    let stats = fixture
+        .renderer
+        .render_scene(&fixture.target, &scene, text_layout)
+        .expect("render scene");
+    assert_eq!(stats.scene_revision, 77);
+    assert!(stats.background_from_scene);
+    assert!(stats.scene_cursor_skipped);
+    assert_eq!(stats.scene_images_skipped, 0);
+    let pixels = read_target_rgba8(&fixture.gpu.device, &fixture.gpu.queue, &fixture.target)
+        .expect("scene readback");
+    // A far corner is the Scene background layer's clear color.
+    let offset = (79 * 200 + 199) * 4;
+    assert_eq!(&pixels[offset..offset + 3], &[0x11, 0x22, 0x33]);
 }
 
 #[test]

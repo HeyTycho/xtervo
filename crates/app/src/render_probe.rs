@@ -75,16 +75,17 @@ pub fn install(window: &slint::Window, requested: &str, fell_back: bool) {
                         report_gl(get_proc_address, &mut st);
                     },
                     GraphicsAPI::WGPU30 { device, queue, .. } => {
-                        // TERVO_GPU=1 的显示链路：Slint 的 WGPU30 API 把
-                        // 它实际使用的同一 device/queue 交出来，gpu_present 用它
-                        // 创建终端纹理（不做 glyph/Scene GPU 化）。
+                        // TERVO_GPU=1 / TERVO_GPU_NATIVE=1：Slint 的 WGPU30 API
+                        // 把它实际使用的同一 device/queue 交出来，两个链路共用；
+                        // gpu_present 只存 device、gpu_native 惰性建 atlas。
                         st.gl_reported = true;
                         GPU_CONFIRMED.store(true, Ordering::Relaxed);
                         eprintln!(
                             "[render] actual_renderer=wgpu30（Slint WGPU30；\
-                             device/queue 与终端纹理同源）"
+                             device/queue 与 GPU 终端链路同源）"
                         );
                         crate::gpu_present::install(device, queue);
+                        crate::gpu_native::install(device, queue);
                     },
                     _ if !st.gl_reported => {
                         // 其他 GPU surface：没有 GL_RENDERER 可读，但已经拿到 GPU
@@ -126,6 +127,7 @@ pub fn install(window: &slint::Window, requested: &str, fell_back: bool) {
             },
             RenderingState::RenderingTeardown => {
                 crate::gpu_present::teardown();
+                crate::gpu_native::teardown();
                 eprintln!("[render] rendering teardown frame={}", st.frames);
             },
             _ => {},

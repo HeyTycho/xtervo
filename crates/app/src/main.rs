@@ -7,6 +7,7 @@ mod config;
 mod config_watch;
 mod diag;
 mod glyph;
+mod gpu_native;
 mod gpu_present;
 mod keys;
 mod known_hosts;
@@ -173,6 +174,9 @@ struct PaneRuntime {
     exit_notified: bool,
     /// 鼠标正悬停在可点击链接上（Slint mouse-cursor / 避免每帧重绘终端）。
     link_hover: bool,
+    /// 上一帧是否由 `TERVO_GPU_NATIVE` 出图。GPU 失败切回 CPU 时必须强制
+    /// 整屏重绘，因为 GPU 期间没有维护 CPU 双缓冲的 damage 历史。
+    gpu_native_active: bool,
     /// SSH 密码认证用的临时 askpass 脚本；随 pane 一起释放。
     _askpass: Option<askpass::Askpass>,
 }
@@ -2735,6 +2739,7 @@ fn create_pane(
         exit_signal: None,
         exit_notified: false,
         link_hover: false,
+        gpu_native_active: false,
         _askpass: askpass,
     })
 }
@@ -6451,10 +6456,15 @@ fn redraw_pane_inner(st: &mut AppState, id: PaneId) {
     let blink_on = st.cursor_blink_on;
     let global_blink = st.cfg.cursor_blinking();
     let policy = st.cfg.scrollbar_policy();
-    // 回收已关闭 pane 的 GPU 纹理，避免全局 HashMap 持有已删除 pane。
-    if gpu_present::ready() {
+    // 回收已关闭 pane 的 GPU 纹理/离屏 target，避免全局 HashMap 持有已删除 pane。
+    if gpu_present::ready() || gpu_native::ready() {
         let active: Vec<u64> = st.panes.keys().copied().collect();
-        gpu_present::retain(&active);
+        if gpu_present::ready() {
+            gpu_present::retain(&active);
+        }
+        if gpu_native::ready() {
+            gpu_native::retain(&active);
+        }
     }
     let Some(rt) = st.panes.get_mut(&id) else {
         return;
@@ -6477,34 +6487,63 @@ fn redraw_pane_inner(st: &mut AppState, id: PaneId) {
         }
         let _ = std::fs::write(&path, out);
     }
-    // 光标不进帧缓冲：用独立 overlay，闪烁时只换 visible。
-    rt.renderer.draw_without_cursor(&frame);
-    // TERVO_GPU=1 且 Slint 已给出 WGPU30 device/queue：把 CPU framebuffer 上传到
-    // 同一 device 上的纹理并导入为 Slint Image；任何失败都返回 None -> 原 CPU 路径。
-    let gpu_before = gpu_present::upload_stats();
-    let gpu_image = if gpu_present::ready() {
-        gpu_present::pane_image(
-            id,
-            rt.renderer.pixels(),
-            rt.renderer.width,
-            rt.renderer.height,
-            rt.renderer.last_draw_full,
-            rt.renderer.dirty_rows(),
-            !st.resize_in_progress,
-        )
+    // TERVO_GPU_NATIVE=1：真实 Frame -> Scene -> WGPU glyph atlas/背景，先尝试
+    // GPU 出图。成功时**不**碰 CPU framebuffer，也不走 stage 0 纹理上传。
+    // 失败返回 None 才回 CPU，并强制下一帧整屏重绘。
+    let native_image = if gpu_native::ready() {
+        gpu_native::pane_image(&gpu_native::PaneFrame {
+            pane: id,
+            frame: &frame,
+            cols: rt.renderer.cols,
+            rows: rt.renderer.rows,
+            cell_w: rt.renderer.cell_w,
+            cell_h: rt.renderer.cell_h,
+            baseline: rt.renderer.baseline(),
+            font_size: rt.renderer.font_size(),
+            font_paths: rt.renderer.font_paths(),
+            theme_bg: rt.renderer.theme_bg_rgb(),
+        })
     } else {
         None
     };
+
+    let gpu_before = gpu_present::upload_stats();
+    if let Some(image) = native_image {
+        rt.gpu_native_active = true;
+        rt.image = image;
+    } else {
+        if rt.gpu_native_active {
+            // GPU 期间 CPU 双缓冲的 damage 历史是旧的：回退首帧必须整屏。
+            rt.renderer.force_full_redraw();
+            rt.gpu_native_active = false;
+        }
+        // 光标不进帧缓冲：用独立 overlay，闪烁时只换 visible。
+        rt.renderer.draw_without_cursor(&frame);
+        // TERVO_GPU=1 stage 0：把 CPU framebuffer 上传到同一 device 纹理。
+        let gpu_image = if gpu_present::ready() {
+            gpu_present::pane_image(
+                id,
+                rt.renderer.pixels(),
+                rt.renderer.width,
+                rt.renderer.height,
+                rt.renderer.last_draw_full,
+                rt.renderer.dirty_rows(),
+                !st.resize_in_progress,
+            )
+        } else {
+            None
+        };
+        rt.image = match gpu_image {
+            Some(image) => image,
+            None => rt.renderer.image(),
+        };
+    }
     let gpu_after = gpu_present::upload_stats();
-    rt.image = match gpu_image {
-        Some(image) => image,
-        None => rt.renderer.image(),
-    };
     sync_inline_images(rt, &frame);
     // 可见纹理缓存与点击 source 分离：即使 Slint 纹理缓存淘汰，本帧命中的
     // 不可变 RGBA 仍在，首次点击无需再等 actor 回包。
     refresh_inline_hits(rt, &frame);
-    if render_profile() {
+    if render_profile() && !rt.gpu_native_active {
         eprintln!(
             "[render] pane={id} grid={}x{} full={} rows={} copy={} full_redraws={} \
              damage_rows={} draw={:.2}ms image={:.2}ms detach={} bytes={}",
@@ -6764,17 +6803,45 @@ fn take_snapshot_and_log(ui: &MainWindow, path: &Path) {
                 ppm.extend_from_slice(&px[..3]);
             }
             match std::fs::write(path, &ppm) {
-                Ok(()) => eprintln!(
-                    "[gpu-snapshot] path={} size={width}x{height} gpu_ready={} total={total} \
-                     nonbg={nonbg} distinct={} top=#{top:08x} center=#{}",
-                    path.display(),
-                    gpu_present::ready(),
-                    histogram.len(),
-                    center
-                        .iter()
-                        .map(|b| format!("{b:02x}"))
-                        .collect::<String>()
-                ),
+                Ok(()) => {
+                    let native = gpu_native::totals();
+                    let last = gpu_native::last_stats();
+                    eprintln!(
+                        "[gpu-snapshot] path={} size={width}x{height} gpu_ready={} \
+                         gpu_native_ready={} gpu_native_frames={} draw_calls={} \
+                         atlas_uploads={} atlas_bytes={} vertex_bytes={} \
+                         last(fallback={} missing={} wide={} spacer={} hidden={} dim={} \
+                         selected={} searched={} images_skipped={} cursor_skipped={} \
+                         background_from_scene={}) total={total} nonbg={nonbg} distinct={} \
+                         top=#{top:08x} center=#{}",
+                        path.display(),
+                        gpu_present::ready(),
+                        gpu_native::ready(),
+                        native.frames,
+                        native.draw_calls,
+                        native.atlas_uploads,
+                        native.atlas_uploaded_bytes,
+                        native.vertex_uploaded_bytes,
+                        last.as_ref().map_or(0, |stats| stats.fallback_glyphs),
+                        last.as_ref().map_or(0, |stats| stats.missing_glyphs),
+                        last.as_ref().map_or(0, |stats| stats.wide_cells),
+                        last.as_ref().map_or(0, |stats| stats.wide_spacer_cells),
+                        last.as_ref().map_or(0, |stats| stats.hidden_cells),
+                        last.as_ref().map_or(0, |stats| stats.dim_cells),
+                        last.as_ref().map_or(0, |stats| stats.selected_cells),
+                        last.as_ref().map_or(0, |stats| stats.searched_cells),
+                        last.as_ref().map_or(0, |stats| stats.scene_images_skipped),
+                        last.as_ref()
+                            .is_some_and(|stats| stats.scene_cursor_skipped),
+                        last.as_ref()
+                            .is_some_and(|stats| stats.background_from_scene),
+                        histogram.len(),
+                        center
+                            .iter()
+                            .map(|b| format!("{b:02x}"))
+                            .collect::<String>()
+                    )
+                },
                 Err(err) => eprintln!(
                     "[gpu-snapshot] 写 PPM 失败 path={} error={err}",
                     path.display()
@@ -9479,7 +9546,7 @@ fn exec_cpu_fallback(requested: &str, reason: &str) -> ! {
     use std::os::unix::process::CommandExt;
     eprintln!(
         "[gpu] requested_backend={requested} 的 WGPU 显示链路初始化失败：{reason}；\
-         exec 重启并 TERVO_GPU=0 自动回退 CPU/Skia（默认路径）"
+         exec 重启并 TERVO_GPU=0 TERVO_GPU_NATIVE=0 自动回退 CPU/Skia（默认路径）"
     );
     logging::restore_stderr();
     std::thread::sleep(Duration::from_millis(50));
@@ -9488,6 +9555,7 @@ fn exec_cpu_fallback(requested: &str, reason: &str) -> ! {
     let err = std::process::Command::new(exe)
         .args(args)
         .env("TERVO_GPU", "0")
+        .env("TERVO_GPU_NATIVE", "0")
         .env("TERVO_GPU_FALLBACK", "1")
         .exec();
     eprintln!("[gpu] exec CPU 回退失败: {err}");
@@ -9512,6 +9580,7 @@ fn exec_software_fallback(requested: &str) -> ! {
     let err = std::process::Command::new(exe)
         .args(args)
         .env("SLINT_BACKEND", "winit-software")
+        .env("TERVO_GPU_NATIVE", "0")
         .env("TERVO_RENDER_FALLBACK", "1")
         .env_remove("TERVO_TEST_FORCE_UI_INIT_FAIL")
         .env_remove("TERVO_TEST_SUSPEND_BG")
@@ -9528,10 +9597,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // TERVO_GPU=1 是显式 opt-in：请求 Skia 的 WGPU30 API（require_wgpu_30），
     // 从而在 RenderingSetup 里拿到 WGPU30 device/queue。默认完全不改变原路径。
     let tervo_gpu = gpu_present::requested();
+    let tervo_gpu_native = gpu_native::requested();
+    // 两个显式开关都需要 Slint 的 WGPU30 device/queue；但只有 TERVO_GPU=1
+    // 走 stage 0 CPU framebuffer 上传，TERVO_GPU_NATIVE=1 走 Scene 文字。
+    let tervo_gpu_any = tervo_gpu || tervo_gpu_native;
     let mut requested_backend = explicit_backend
         .clone()
         .unwrap_or_else(|| "winit-skia".to_string());
-    if tervo_gpu && explicit_backend.is_none() {
+    if tervo_gpu_any && explicit_backend.is_none() {
         requested_backend = "winit-skia".to_string();
     }
     let backend_from_env = explicit_backend.is_some();
@@ -9541,7 +9614,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // `SLINT_BACKEND=winit-skia` 强制尝试（headless/llvmpipe 验证用）。
     let mut auto_software_no_drm = false;
     if !backend_from_env
-        && !tervo_gpu
+        && !tervo_gpu_any
         && !std::path::Path::new("/dev/dri").exists()
         && std::env::var_os("TERVO_FORCE_GPU").is_none()
     {
@@ -9658,13 +9731,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 日志里的 SLINT_BACKEND 能区分“程序默认 GPU”与“用户显式设置”。
     // TERVO_GPU=1 时不能写 SLINT_BACKEND：BackendSelector::select() 会读它，
     // 而我们要用 require_wgpu_30() 明确选中 Skia 的 WGPU30 API。
-    if !backend_from_env && !tervo_gpu {
+    if !backend_from_env && !tervo_gpu_any {
         std::env::set_var("SLINT_BACKEND", &requested_backend);
     }
-    if tervo_gpu && !backend_from_env {
+    if tervo_gpu_any && !backend_from_env {
         eprintln!(
-            "[gpu] TERVO_GPU=1：请求 Slint WGPU30 显示链路（BackendSelector.require_wgpu_30；\
-             失败会自动回退 CPU/Skia，默认路径不受影响）"
+            "[gpu] {}：请求 Slint WGPU30 显示链路（BackendSelector.require_wgpu_30；\
+             失败会自动回退 CPU/Skia，默认路径不受影响）",
+            if tervo_gpu_native {
+                "TERVO_GPU_NATIVE=1（Frame -> Scene -> WGPU 文字/背景）"
+            } else {
+                "TERVO_GPU=1（stage 0 CPU framebuffer 纹理）"
+            }
         );
     } else if backend_from_env {
         eprintln!("[render] requested_backend={requested_backend}（显式设置 SLINT_BACKEND）");
@@ -9758,10 +9836,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(not(debug_assertions))]
     let force_init_fail = false;
 
-    // TERVO_GPU=1：在任何 Slint UI 初始化之前明确要求 WGPU30。
+    // TERVO_GPU=1 / TERVO_GPU_NATIVE=1：在任何 Slint UI 初始化之前明确要求 WGPU30。
     // require_wgpu_30 请求 WGPU30 API；adapter/device 不可用时 select() 返回错误，
     // 这里 exec 回退 CPU/Skia（默认路径），不会黑屏硬撑。
-    if tervo_gpu && !backend_from_env && !force_init_fail {
+    if tervo_gpu_any && !backend_from_env && !force_init_fail {
         match slint::BackendSelector::new()
             .require_wgpu_30(slint::wgpu_30::WGPUConfiguration::default())
             .select()
@@ -9786,7 +9864,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (ui, backend_fell_back) = match first_ui {
         Ok(ui) => (ui, false),
-        Err(err) if tervo_gpu => {
+        Err(err) if tervo_gpu_any => {
             // WGPU platform 已经 select；再改 SLINT_BACKEND 重试无效，直接 exec 回退。
             exec_cpu_fallback(&requested_backend, &format!("MainWindow::new: {err}"))
         }
@@ -12632,12 +12710,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 无头验收钩子：TERVO_GPU_SNAPSHOT=<前缀> 时定时 take_snapshot 写 PPM 并打像素统计。
     install_gpu_snapshot_hook(&ui);
     // RenderingSetup 可能首帧后才给出 device/queue；GPU 就绪后主动重绘一次。
-    if tervo_gpu {
-        slint::Timer::single_shot(Duration::from_millis(180), || {
-            if gpu_present::ready() {
-                redraw_all();
-            }
-        });
+    // Stage 0 和 Scene 文字链路都需要这一脚，否则首帧以后没有输入时画面
+    // 会一直停在 CPU 初帧。
+    if tervo_gpu_any {
+        for delay_ms in [180u64, 800] {
+            slint::Timer::single_shot(Duration::from_millis(delay_ms), || {
+                if gpu_present::ready() || gpu_native::ready() {
+                    redraw_all();
+                }
+            });
+        }
     }
     // Slint 1.18 的 winit 后端不投递外部文件拖放，用 winit 事件桥接补齐。
     install_native_window_events(&ui);

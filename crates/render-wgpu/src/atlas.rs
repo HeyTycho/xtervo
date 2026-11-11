@@ -16,6 +16,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use fontdue::{Font, FontSettings};
+use owned_ttf_parser::{AsFaceRef, OwnedFace};
 
 use tervo_scene::TextAttributes;
 
@@ -40,8 +41,11 @@ pub enum FontStyle {
 
 impl FontStyle {
     /// Resolves the style requested by terminal cell attributes.
+    ///
+    /// `dim` maps to the bold face, matching the legacy CPU renderer's
+    /// `style_of` (`bold || dim`).
     pub fn from_attributes(attributes: TextAttributes) -> Self {
-        match (attributes.bold, attributes.italic) {
+        match (attributes.bold || attributes.dim, attributes.italic) {
             (false, false) => Self::Regular,
             (true, false) => Self::Bold,
             (false, true) => Self::Italic,
@@ -114,6 +118,11 @@ pub struct GlyphSlot {
     pub xmin: i32,
     /// Whole-pixel offset from the baseline to the bitmap bottom.
     pub ymin: i32,
+    /// Rounded advance width of the face that produced this glyph.
+    ///
+    /// Wide/fallback glyphs are centered inside their cell span exactly like
+    /// the CPU renderer, which needs the advance even when the bitmap is empty.
+    pub advance: i32,
 }
 
 impl GlyphSlot {
@@ -142,6 +151,11 @@ pub struct GlyphLookup {
     pub slot: Option<GlyphSlot>,
     /// The requested bold/italic face was unavailable and regular was used.
     pub style_fallback: bool,
+    /// The primary face had no glyph and a fallback font was used.
+    pub glyph_fallback: bool,
+    /// No loaded font covers this character; renderers must draw an explicit
+    /// fallback marker and count it instead of silently dropping/misplacing it.
+    pub missing: bool,
 }
 
 /// Cumulative atlas counters. Per-frame deltas are produced by the renderer.
@@ -159,6 +173,14 @@ pub struct AtlasStats {
     pub empty_glyphs: u64,
     /// Lookups that requested a style face which was not loaded.
     pub style_fallbacks: u64,
+    /// Glyphs rasterized from a fallback font because the primary face lacked
+    /// the character (CJK/symbol/emoji outline chain).
+    pub glyph_fallbacks: u64,
+    /// Fallback font files parsed on demand.
+    pub fallback_fonts_loaded: u64,
+    /// Characters no loaded font covers. The renderer draws a deterministic
+    /// `?` marker and counts them; this is never a silent drop.
+    pub missing_glyphs: u64,
     /// Frames/glyphs rejected because the shelf allocator could not fit them.
     pub full_errors: u64,
 }
@@ -265,24 +287,83 @@ impl std::error::Error for AtlasError {
 }
 
 /// Reads a font file and parses it with fontdue.
-fn load_font(path: &Path) -> Result<Font, AtlasError> {
+fn load_font_at(path: &Path, collection_index: u32) -> Result<Font, AtlasError> {
     let bytes = std::fs::read(path).map_err(|source| AtlasError::FontIo {
         path: path.to_path_buf(),
         source,
     })?;
-    Font::from_bytes(bytes, FontSettings::default()).map_err(|message| AtlasError::FontParse {
+    let settings = FontSettings {
+        collection_index,
+        ..FontSettings::default()
+    };
+    Font::from_bytes(bytes, settings).map_err(|message| AtlasError::FontParse {
         path: path.to_path_buf(),
         message: message.to_string(),
     })
 }
 
-/// Regular + optional bold/italic faces sharing one atlas.
+fn load_font(path: &Path) -> Result<Font, AtlasError> {
+    load_font_at(path, 0)
+}
+
+/// Which face produced a glyph.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FaceId {
+    Primary(FontStyle),
+    Fallback(usize),
+}
+
+/// One lazily loaded fallback face.
+///
+/// `unavailable` only records a file/parse failure, not "does not cover this
+/// character": the same font may cover the next one.
+struct FallbackFace {
+    path: PathBuf,
+    collection_index: u32,
+    font: Option<Font>,
+    unavailable: bool,
+}
+
+impl FallbackFace {
+    fn new(path: PathBuf, collection_index: u32) -> Self {
+        Self {
+            path,
+            collection_index,
+            font: None,
+            unavailable: false,
+        }
+    }
+
+    /// Cheap coverage probe using `ttf-parser`'s cmap only, so a missing emoji
+    /// does not make fontdue parse every 18 MB CJK collection in the chain.
+    fn covers(&self, ch: char) -> bool {
+        let Ok(bytes) = std::fs::read(&self.path) else {
+            return false;
+        };
+        OwnedFace::from_vec(bytes, self.collection_index)
+            .ok()
+            .is_some_and(|face| face.as_face_ref().glyph_index(ch).is_some())
+    }
+}
+
+/// Result of choosing the face for one character.
+struct FaceSelection {
+    face: FaceId,
+    style_fallback: bool,
+    glyph_fallback: bool,
+    missing: bool,
+    fonts_loaded: u64,
+}
+
+/// Regular + optional bold/italic faces sharing one atlas, plus the on-demand
+/// CJK/symbol/emoji outline fallback chain.
 struct FontFaces {
     regular: Font,
     bold: Option<Font>,
     italic: Option<Font>,
     bold_italic: Option<Font>,
     regular_path: PathBuf,
+    fallbacks: Vec<FallbackFace>,
 }
 
 impl FontFaces {
@@ -291,13 +372,61 @@ impl FontFaces {
         let bold = try_load_variant(path, FontStyle::Bold);
         let italic = try_load_variant(path, FontStyle::Italic);
         let bold_italic = try_load_variant(path, FontStyle::BoldItalic);
-        Ok(Self {
+        Ok(Self::with_faces(
             regular,
             bold,
             italic,
             bold_italic,
-            regular_path: path.to_path_buf(),
-        })
+            path.to_path_buf(),
+            true,
+        ))
+    }
+
+    fn load_explicit(
+        regular_path: &Path,
+        bold: Option<&Path>,
+        italic: Option<&Path>,
+        bold_italic: Option<&Path>,
+    ) -> Result<Self, AtlasError> {
+        let regular = load_font(regular_path)?;
+        let load_optional = |path: Option<&Path>| {
+            path.filter(|path| path.is_file())
+                .and_then(|path| load_font(path).ok())
+        };
+        Ok(Self::with_faces(
+            regular,
+            load_optional(bold),
+            load_optional(italic),
+            load_optional(bold_italic),
+            regular_path.to_path_buf(),
+            true,
+        ))
+    }
+
+    fn with_faces(
+        regular: Font,
+        bold: Option<Font>,
+        italic: Option<Font>,
+        bold_italic: Option<Font>,
+        regular_path: PathBuf,
+        with_fallbacks: bool,
+    ) -> Self {
+        let fallbacks = if with_fallbacks {
+            fallback_candidates()
+                .into_iter()
+                .map(|(path, index)| FallbackFace::new(path, index))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        Self {
+            regular,
+            bold,
+            italic,
+            bold_italic,
+            regular_path,
+            fallbacks,
+        }
     }
 
     fn face(&self, style: FontStyle) -> (&Font, bool) {
@@ -326,6 +455,115 @@ impl FontFaces {
             FontStyle::BoldItalic => self.bold_italic.is_some(),
         }
     }
+
+    /// Chooses the primary style face or the first fallback font that covers
+    /// `ch`. Fallback fonts are parsed with fontdue only after a cheap cmap
+    /// probe says they cover the character.
+    fn select(&mut self, ch: char, style: FontStyle) -> FaceSelection {
+        let (primary, style_fallback) = self.face(style);
+        if primary.has_glyph(ch) {
+            return FaceSelection {
+                face: FaceId::Primary(style),
+                style_fallback,
+                glyph_fallback: false,
+                missing: false,
+                fonts_loaded: 0,
+            };
+        }
+
+        let mut fonts_loaded = 0;
+        for index in 0..self.fallbacks.len() {
+            let fallback = &mut self.fallbacks[index];
+            if fallback.unavailable {
+                continue;
+            }
+            if fallback.font.is_none() {
+                if !fallback.covers(ch) {
+                    continue;
+                }
+                match load_font_at(&fallback.path, fallback.collection_index) {
+                    Ok(font) => {
+                        fallback.font = Some(font);
+                        fonts_loaded += 1;
+                    }
+                    Err(_) => {
+                        fallback.unavailable = true;
+                        continue;
+                    }
+                }
+            }
+            if fallback.font.as_ref().is_some_and(|font| font.has_glyph(ch)) {
+                return FaceSelection {
+                    face: FaceId::Fallback(index),
+                    style_fallback,
+                    glyph_fallback: true,
+                    missing: false,
+                    fonts_loaded,
+                };
+            }
+        }
+
+        FaceSelection {
+            face: FaceId::Primary(style),
+            style_fallback,
+            glyph_fallback: false,
+            missing: true,
+            fonts_loaded,
+        }
+    }
+
+    fn font(&self, face: FaceId) -> &Font {
+        match face {
+            FaceId::Primary(primary_style) => self.face(primary_style).0,
+            FaceId::Fallback(index) => self.fallbacks[index]
+                .font
+                .as_ref()
+                .expect("selected fallback face is loaded"),
+        }
+    }
+
+    fn fallback_paths(&self) -> Vec<PathBuf> {
+        self.fallbacks.iter().map(|face| face.path.clone()).collect()
+    }
+}
+
+/// Fallback outline fonts shared with the CPU renderer's chain. Paths absent on
+/// the host are skipped; the first file that covers a character is parsed.
+///
+/// `TERVO_FALLBACK_FONTS` may add `path[:path...]`, with an optional
+/// `#face_index` for collections, matching the app's CPU fallback syntax.
+fn fallback_candidates() -> Vec<(PathBuf, u32)> {
+    let mut candidates: Vec<(PathBuf, u32)> = [
+        ("/usr/share/fonts/truetype/wqy/wqy-microhei.ttc", 0),
+        ("/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf", 0),
+        ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", 7),
+        ("/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc", 1),
+        ("/usr/share/fonts/truetype/noto/NotoSansSymbols2-Regular.ttf", 0),
+        ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 0),
+        ("/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf", 0),
+        ("/usr/share/fonts/truetype/ancient-scripts/Symbola_hint.ttf", 0),
+        ("/usr/share/fonts/truetype/noto/NotoEmoji-Regular.ttf", 0),
+        ("/usr/share/fonts/truetype/nerd-fonts/SymbolsNerdFontMono-Regular.ttf", 0),
+        ("/usr/share/fonts/TTF/SymbolsNerdFontMono-Regular.ttf", 0),
+    ]
+    .into_iter()
+    .map(|(path, index)| (PathBuf::from(path), index))
+    .collect();
+
+    if let Some(value) = std::env::var_os("TERVO_FALLBACK_FONTS") {
+        for entry in value.to_string_lossy().split(':') {
+            let entry = entry.trim();
+            if entry.is_empty() {
+                continue;
+            }
+            let (path, index) = match entry.rsplit_once('#') {
+                Some((path, index)) => (path, index.parse().unwrap_or(0)),
+                None => (entry, 0),
+            };
+            candidates.push((PathBuf::from(path), index));
+        }
+    }
+    candidates
 }
 
 /// Candidate family suffixes for common system monospace fonts.
@@ -369,6 +607,21 @@ fn style_variant_candidates(regular: &Path, style: FontStyle) -> Vec<PathBuf> {
     }
     if let Some(prefix) = stem.strip_suffix("Regular") {
         candidates.push(parent.join(format!("{prefix}{suffix}.ttf")));
+    }
+    // Weight-named regular faces ("JetBrainsMono-Medium") do not contain
+    // "Regular"; strip the weight so the sibling Bold/Italic files are found.
+    for weight in [
+        "-ExtraBold",
+        "-SemiBold",
+        "-ExtraLight",
+        "-Medium",
+        "-Light",
+        "-Thin",
+    ] {
+        if let Some(prefix) = stem.strip_suffix(weight) {
+            candidates.push(parent.join(format!("{prefix}-{suffix}.ttf")));
+            candidates.push(parent.join(format!("{prefix}{suffix}.ttf")));
+        }
     }
     candidates.push(parent.join(format!("{stem}-{suffix}.ttf")));
     candidates.push(parent.join(format!("{stem}-{dejavu_suffix}.ttf")));
@@ -485,6 +738,8 @@ impl ShelfAllocator {
 struct CachedGlyph {
     slot: Option<GlyphSlot>,
     style_fallback: bool,
+    glyph_fallback: bool,
+    missing: bool,
 }
 
 /// GPU coverage texture plus its CPU mirror and glyph directory.
@@ -530,7 +785,28 @@ impl GlyphAtlas {
         Self::from_path(device, queue, &path, config)
     }
 
-    /// Creates an atlas from an explicit font file.
+    /// Creates an atlas from explicit regular/bold/italic/bold-italic files.
+    ///
+    /// Used by the app integration so the GPU path rasterizes the exact same
+    /// font bytes as the CPU renderer. Missing variant files fall back to the
+    /// regular face (counted as `style_fallbacks`).
+    pub fn from_paths(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        regular: impl AsRef<Path>,
+        bold: Option<&Path>,
+        italic: Option<&Path>,
+        bold_italic: Option<&Path>,
+        config: AtlasConfig,
+    ) -> Result<Self, AtlasError> {
+        let faces = FontFaces::load_explicit(regular.as_ref(), bold, italic, bold_italic)?;
+        Self::from_faces(device, queue, faces, config)
+    }
+
+    /// Creates an atlas from an explicit regular font file.
+    ///
+    /// Bold/italic siblings are auto-discovered. The CJK/symbol/emoji fallback
+    /// chain is loaded on demand.
     pub fn from_path(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -543,6 +819,8 @@ impl GlyphAtlas {
     }
 
     /// Creates an atlas from in-memory font bytes (used by deterministic tests).
+    ///
+    /// No system fallback chain is attached so tests stay host-independent.
     pub fn from_font_bytes(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -557,13 +835,14 @@ impl GlyphAtlas {
                 message: message.to_string(),
             }
         })?;
-        let faces = FontFaces {
+        let faces = FontFaces::with_faces(
             regular,
-            bold: None,
-            italic: None,
-            bold_italic: None,
-            regular_path: source.to_path_buf(),
-        };
+            None,
+            None,
+            None,
+            source.to_path_buf(),
+            false,
+        );
         Self::from_faces(device, queue, faces, config)
     }
 
@@ -678,6 +957,12 @@ impl GlyphAtlas {
         &self.faces.regular_path
     }
 
+    /// Configured fallback font paths (diagnostics/evidence; not all are
+    /// parsed, only faces that cover a missing character are loaded).
+    pub fn fallback_font_paths(&self) -> Vec<PathBuf> {
+        self.faces.fallback_paths()
+    }
+
     /// Whether a real bold/italic face was loaded.
     pub fn style_available(&self, style: FontStyle) -> bool {
         self.faces.style_available(style)
@@ -732,17 +1017,53 @@ impl GlyphAtlas {
             if cached.style_fallback {
                 self.stats.style_fallbacks += 1;
             }
+            if cached.glyph_fallback {
+                self.stats.glyph_fallbacks += 1;
+            }
+            if cached.missing {
+                self.stats.missing_glyphs += 1;
+            }
             return Ok(GlyphLookup {
                 slot: cached.slot,
                 style_fallback: cached.style_fallback,
+                glyph_fallback: cached.glyph_fallback,
+                missing: cached.missing,
             });
         }
 
         self.stats.misses += 1;
-        let (font, style_fallback) = self.faces.face(style);
-        if style_fallback {
+        let selection = self.faces.select(ch, style);
+        if selection.style_fallback {
             self.stats.style_fallbacks += 1;
         }
+        self.stats.fallback_fonts_loaded += selection.fonts_loaded;
+        if selection.glyph_fallback {
+            self.stats.glyph_fallbacks += 1;
+        }
+
+        // A character no face covers must never be rasterized from the wrong
+        // font (fontdue would produce .notdef / tofu). Report it so the text
+        // layer can draw an explicit '?' marker and count it.
+        if selection.missing {
+            self.stats.missing_glyphs += 1;
+            self.glyphs.insert(
+                key,
+                CachedGlyph {
+                    slot: None,
+                    style_fallback: selection.style_fallback,
+                    glyph_fallback: false,
+                    missing: true,
+                },
+            );
+            return Ok(GlyphLookup {
+                slot: None,
+                style_fallback: selection.style_fallback,
+                glyph_fallback: false,
+                missing: true,
+            });
+        }
+
+        let font = self.faces.font(selection.face);
         let (metrics, bitmap) = font.rasterize(ch, f32::from(px));
         self.stats.rasterized += 1;
 
@@ -752,12 +1073,16 @@ impl GlyphAtlas {
                 key,
                 CachedGlyph {
                     slot: None,
-                    style_fallback,
+                    style_fallback: selection.style_fallback,
+                    glyph_fallback: selection.glyph_fallback,
+                    missing: false,
                 },
             );
             return Ok(GlyphLookup {
                 slot: None,
-                style_fallback,
+                style_fallback: selection.style_fallback,
+                glyph_fallback: selection.glyph_fallback,
+                missing: false,
             });
         }
 
@@ -829,17 +1154,22 @@ impl GlyphAtlas {
             h,
             xmin: metrics.xmin,
             ymin: metrics.ymin,
+            advance: metrics.advance_width.round() as i32,
         };
         self.glyphs.insert(
             key,
             CachedGlyph {
                 slot: Some(slot),
-                style_fallback,
+                style_fallback: selection.style_fallback,
+                glyph_fallback: selection.glyph_fallback,
+                missing: false,
             },
         );
         Ok(GlyphLookup {
             slot: Some(slot),
-            style_fallback,
+            style_fallback: selection.style_fallback,
+            glyph_fallback: selection.glyph_fallback,
+            missing: false,
         })
     }
 }
@@ -908,6 +1238,22 @@ mod tests {
         assert_eq!(
             FontStyle::from_attributes(TextAttributes {
                 bold: true,
+                italic: true,
+                ..TextAttributes::default()
+            }),
+            FontStyle::BoldItalic
+        );
+        // Faint/dim maps to the bold face, matching the CPU renderer.
+        assert_eq!(
+            FontStyle::from_attributes(TextAttributes {
+                dim: true,
+                ..TextAttributes::default()
+            }),
+            FontStyle::Bold
+        );
+        assert_eq!(
+            FontStyle::from_attributes(TextAttributes {
+                dim: true,
                 italic: true,
                 ..TextAttributes::default()
             }),
