@@ -1,0 +1,650 @@
+warning: use of deprecated method `std::sync::atomic::Atomic::<u64>::fetch_update`: renamed to `try_update` for consistency
+   --> crates/diagnostics/src/metrics.rs:187:18
+    |
+187 |                 .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+    |                  ^^^^^^^^^^^^
+    |
+    = note: `#[warn(deprecated)]` on by default
+help: replace the use of the deprecated method
+    |
+187 -                 .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+187 +                 .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+    |
+
+warning: `tervo-diagnostics` (lib) generated 1 warning (run `cargo fix --lib -p tervo-diagnostics` to apply 1 suggestion)
+warning: tervo-app@0.3.1: warning: Component is neither used nor exported
+warning: tervo-app@0.3.1:     --> /home/user/AIworkspace/rusttabbyterminal/.worktrees/agent-gpu-spike/crates/app/ui/main.slint:174:1
+warning: tervo-app@0.3.1:      |
+warning: tervo-app@0.3.1:  174 | / component MenuGroupLabel inherits Rectangle {
+warning: tervo-app@0.3.1:  175 | |     in property <string> label;
+warning: tervo-app@0.3.1:  176 | |     in property <bool> first: false;
+warning: tervo-app@0.3.1: ...    |
+warning: tervo-app@0.3.1:  203 | | }
+warning: tervo-app@0.3.1:      | |_^
+warning: tervo-app@0.3.1:      |
+warning: tervo-app@0.3.1: warning: The property 'viewport-y' has been deprecated. Please use 'content-y' instead
+warning: tervo-app@0.3.1:     --> /home/user/AIworkspace/rusttabbyterminal/.worktrees/agent-gpu-spike/crates/app/ui/main.slint:7975:42
+warning: tervo-app@0.3.1:      |
+warning: tervo-app@0.3.1: 7975 | ...                   self.viewport-y = Math.max(
+warning: tervo-app@0.3.1:      |                            ^^^^^^^^^^
+   Compiling tervo-app v0.3.1 (/home/user/AIworkspace/rusttabbyterminal/.worktrees/agent-gpu-spike/crates/app)
+warning: unused import: `x11rb::protocol::xproto::ConnectionExt as _`
+   --> crates/app/src/xconn.rs:197:9
+    |
+197 |     use x11rb::protocol::xproto::ConnectionExt as _;
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `Palette as TermPalette`
+  --> crates/app/src/main.rs:49:68
+   |
+49 |     Modifiers, MouseAction, MouseButton, MouseEvent, Notification, Palette as TermPalette,
+   |                                                                    ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: variable does not need to be mutable
+   --> crates/app/src/diag.rs:538:18
+    |
+538 |         let Some(mut result) = response else { continue };
+    |                  ----^^^^^^
+    |                  |
+    |                  help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> crates/app/src/known_hosts.rs:576:17
+    |
+576 |     if let Some(mut stdout) = child.stdout.take() {
+    |                 ----^^^^^^
+    |                 |
+    |                 help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> crates/app/src/known_hosts.rs:583:17
+    |
+583 |     if let Some(mut stderr) = child.stderr.take() {
+    |                 ----^^^^^^
+    |                 |
+    |                 help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> crates/app/src/vault.rs:1111:13
+     |
+1111 |         let mut v = Vault::new(&path);
+     |             ----^
+     |             |
+     |             help: remove this `mut`
+
+warning: unused variable: `ui`
+     --> crates/app/src/main.rs:11704:30
+      |
+11704 |                     let Some(ui) = weak.upgrade() else { return };
+      |                              ^^ help: if this is intentional, prefix it with an underscore: `_ui`
+      |
+      = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `text` is never read
+   --> crates/app/src/main.rs:191:5
+    |
+188 | struct SshExitNotice {
+    |        ------------- field in this struct
+...
+191 |     text: String,
+    |     ^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `fetch_current_keys` is never used
+   --> crates/app/src/known_hosts.rs:363:8
+    |
+363 | pub fn fetch_current_keys(profile: &Profile) -> Result<Vec<KnownKey>, String> {
+    |        ^^^^^^^^^^^^^^^^^^
+
+warning: function `assess` is never used
+   --> crates/app/src/known_hosts.rs:395:8
+    |
+395 | pub fn assess(profile: &Profile) -> Verdict {
+    |        ^^^^^^
+
+warning: field `height` is never read
+  --> crates/app/src/render.rs:47:5
+   |
+42 | struct ImageLayerEntry {
+   |        --------------- field in this struct
+...
+47 |     height: u32,
+   |     ^^^^^^
+   |
+   = note: `ImageLayerEntry` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+
+warning: function `mkdir` is never used
+   --> crates/app/src/sftp.rs:324:8
+    |
+324 | pub fn mkdir(t: &SftpTarget, remote: &str) -> Result<(), String> {
+    |        ^^^^^
+
+warning: function `rename` is never used
+   --> crates/app/src/sftp.rs:328:8
+    |
+328 | pub fn rename(t: &SftpTarget, from: &str, to: &str) -> Result<(), String> {
+    |        ^^^^^^
+
+warning: function `remove` is never used
+   --> crates/app/src/sftp.rs:333:8
+    |
+333 | pub fn remove(t: &SftpTarget, remote: &str) -> Result<(), String> {
+    |        ^^^^^^
+
+warning: method `iter` is never used
+   --> crates/app/src/sftp.rs:803:12
+    |
+769 | impl TransferQueue {
+    | ------------------ method in this implementation
+...
+803 |     pub fn iter(&self) -> impl Iterator<Item = &TransferRequest> {
+    |            ^^^^
+
+warning: function `wm_set_maximized` is never used
+   --> crates/app/src/xconn.rs:102:8
+    |
+102 | pub fn wm_set_maximized(title: &str, maximized: bool) -> Result<(), String> {
+    |        ^^^^^^^^^^^^^^^^
+
+warning: function `window_is_maximized` is never used
+   --> crates/app/src/xconn.rs:132:8
+    |
+132 | pub fn window_is_maximized(title: &str) -> Option<bool> {
+    |        ^^^^^^^^^^^^^^^^^^^
+
+warning: function `wm_minimize` is never used
+   --> crates/app/src/xconn.rs:170:8
+    |
+170 | pub fn wm_minimize(title: &str) -> Result<(), String> {
+    |        ^^^^^^^^^^^
+
+warning: function `clear_window_shape` is never used
+   --> crates/app/src/xconn.rs:195:8
+    |
+195 | pub fn clear_window_shape(title: &str) {
+    |        ^^^^^^^^^^^^^^^^^^
+
+warning: fields `logical_width`, `logical_height`, and `scale_factor` are never read
+   --> crates/app/src/xconn.rs:870:9
+    |
+869 | pub struct CornerRequest {
+    |            ------------- fields in this struct
+870 |     pub logical_width: f32,
+    |         ^^^^^^^^^^^^^
+871 |     pub logical_height: f32,
+    |         ^^^^^^^^^^^^^^
+872 |     pub scale_factor: f32,
+    |         ^^^^^^^^^^^^
+    |
+    = note: `CornerRequest` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: unused `std::result::Result` that must be used
+    --> crates/app/src/main.rs:2927:5
+     |
+2927 |     st.ui.window().show();
+     |     ^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: this `Result` may be an `Err` variant, which should be handled
+     = note: `#[warn(unused_must_use)]` (part of `#[warn(unused)]`) on by default
+help: use `let _ = ...` to ignore the resulting value
+     |
+2927 |     let _ = st.ui.window().show();
+     |     +++++++
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+    --> crates/app/src/main.rs:7173:28
+     |
+7173 | fn get_clipboard_image(st: &mut AppState) -> Option<arboard::ImageData> {
+     |                            ^^^^^^^^^^^^^            ^^^^^^^^^^^^^^^^^^ the same lifetime is hidden here
+     |                            |
+     |                            the lifetime is elided here
+     |
+     = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+     = note: `#[warn(mismatched_lifetime_syntaxes)]` on by default
+help: use `'_` for type paths
+     |
+7173 | fn get_clipboard_image(st: &mut AppState) -> Option<arboard::ImageData<'_>> {
+     |                                                                       ++++
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+    --> crates/app/src/main.rs:7177:26
+     |
+7177 | fn get_primary_image(st: &mut AppState) -> Option<arboard::ImageData> {
+     |                          ^^^^^^^^^^^^^            ^^^^^^^^^^^^^^^^^^ the same lifetime is hidden here
+     |                          |
+     |                          the lifetime is elided here
+     |
+     = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: use `'_` for type paths
+     |
+7177 | fn get_primary_image(st: &mut AppState) -> Option<arboard::ImageData<'_>> {
+     |                                                                     ++++
+
+warning: `tervo-app` (bin "tervo" test) generated 23 warnings (run `cargo fix --bin "tervo" -p tervo-app --tests` to apply 9 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 27.31s
+     Running unittests src/main.rs (/home/user/AIworkspace/rusttabbyterminal/target/debug/deps/tervo-2a425f8583a3ffe5)
+
+running 414 tests
+test activity::tests::aggregate_ors_attention_and_completion ... ok
+test activity::tests::aggregate_empty_is_clear ... ok
+test activity::tests::aggregate_prefers_error_then_progress ... ok
+test activity::tests::progress_ratio_and_label ... ok
+test activity::tests::notification_content_falls_back_to_tab_title ... ok
+test activity::tests::sanitize_strips_controls_and_normalizes_space ... ok
+test activity::tests::sanitize_truncates_with_ellipsis ... ok
+test askpass::tests::envs_set_force_and_are_redacted_from_debug ... ok
+test askpass::tests::script_permissions_are_private ... ok
+test commands::tests::chord_display_and_bindability ... ok
+test commands::tests::chord_parse_canonical_and_invalid_input ... ok
+test commands::tests::builtin_registry_is_consistent ... ok
+test commands::tests::dispatch_helpers_ignore_unknown_and_plain_keys ... ok
+test commands::tests::duplicate_id_is_rejected ... ok
+test commands::tests::builtin_override_end_to_end ... ok
+test commands::tests::conflict_detection ... ok
+test commands::tests::fuzzy_search_prefers_title_prefix ... ok
+test commands::tests::shortcut_parse_and_format_roundtrip ... ok
+test commands::tests::stale_default_is_suppressed_after_rebind ... ok
+test commands::tests::override_conflict_detection_and_validation ... ok
+test commands::tests::terminal_menu_commands_are_registered_without_default_shortcuts ... ok
+test commands::tests::override_lookup_and_effective_shortcut ... ok
+test commands::tests::window_new_is_registered_with_default_shortcut ... ok
+test askpass::tests::applied_envs_reach_real_child_process ... ok
+test config::tests::appearance_defaults_match_gnome ... ok
+test config::tests::background_opacity_clamps_and_rounds ... ok
+test config::tests::background_dim_clamps_and_rounds ... ok
+test config::tests::cursor_shape_and_blink_config_normalize ... ok
+test config::tests::hex_color_parses_short_long_and_rejects_garbage ... ok
+test config::tests::appearance_colors_normalize_and_invalid_falls_back_to_theme ... ok
+test config::tests::broken_toml_keeps_original_file ... ok
+test config::tests::interactive_defaults ... ok
+test config::tests::appearance_roundtrip ... ok
+test config::tests::background_path_requires_existing_regular_file ... ok
+test config::tests::empty_hotkeys_are_omitted_from_toml ... ok
+test config::tests::language_defaults_to_english_and_old_config_is_compatible ... ok
+test config::tests::default_profile_id_defaults_to_zero_and_survives_roundtrip ... ok
+test config::tests::missing_fields_use_defaults ... ok
+test config::tests::language_parses_zh_and_unknown_falls_back_to_en ... ok
+test config::tests::hotkeys_default_to_empty_and_old_config_loads ... ok
+test config::tests::old_config_gets_appearance_defaults ... ok
+test config::tests::tilde_expands_only_home_prefix ... ok
+test config::tests::keyboard_protocol_config_parsing_and_roundtrip ... ok
+test config::tests::current_version_is_not_backed_up_again ... ok
+test config::tests::save_creates_nested_dirs ... ok
+test config::tests::old_config_is_backed_up_and_migrated ... ok
+test config::tests::restore_session_on_startup_defaults_off_and_roundtrips ... ok
+test config::tests::hotkeys_roundtrip_and_are_written_as_tables ... ok
+test config::tests::unknown_keys_survive_roundtrip ... ok
+test config_watch::tests::content_hash_detects_change_when_mtime_is_preserved ... ok
+test config::tests::osc52_config_allow_deny_and_unknown ... ok
+test config::tests::hotkeys_and_unknown_keys_roundtrip_together ... ok
+test config::tests::language_hot_reload_and_roundtrip ... ok
+test config::tests::roundtrip ... ok
+test config_watch::tests::content_hash_is_stable_and_sensitive ... ok
+test config_watch::tests::invalid_toml_is_rejected_once_and_next_valid_change_applies ... ok
+test config::tests::background_fields_roundtrip_and_persist_two_decimals ... ok
+test config::tests::terminal_behavior_config_parsing_and_roundtrip ... ok
+test config_watch::tests::mtime_touch_does_not_reload_but_content_change_does ... ok
+test diag::tests::frame_schema_is_stable_and_omits_image_bytes ... ok
+test config_watch::tests::read_error_keeps_state_and_recovers_without_panic ... ok
+test config_watch::tests::stale_own_write_marker_does_not_swallow_later_external_revert ... ok
+test diag::tests::mcp_exposes_read_only_diag_tools ... ok
+test config_watch::tests::empty_file_reloads_to_defaults_without_panic ... ok
+test config_watch::tests::own_write_is_skipped_without_feedback_loop ... ok
+test diag::tests::scene_diff_parses_frame_json_and_reports_counts ... ok
+test config_watch::tests::missing_file_keeps_state_and_later_recreation_reloads ... ok
+test config_watch::tests::seed_consumes_own_write_marker_from_startup_migration ... ok
+test diag::tests::observability_document_is_additive_and_marks_unfed_collector ... ok
+test glyph::tests::color_raster_decode_handles_premultiplied_bgra ... ok
+test glyph::tests::color_scaling_fits_grid_and_keeps_color ... ok
+test glyph::tests::placeholder_only_for_emoji_and_private_use ... ok
+test glyph::tests::text_default_geometric_arrows_stay_monochrome_without_vs16 ... ok
+test keys::tests::backspace_binding_controls_encoding ... ok
+test glyph::tests::color_font_loader_rejects_non_color_and_missing_files ... ok
+test keys::tests::key_event_rejects_modifiers_and_unsupported_text ... ok
+test keys::tests::control_codes ... ok
+test keys::tests::key_event_to_chord ... ok
+test keys::tests::key_identity_matches_press_and_release ... ok
+test keys::tests::delete_binding_controls_encoding ... ok
+test keys::tests::kitty_alternate_keys ... ok
+test keys::tests::kitty_event_types_repeat_release ... ok
+test keys::tests::kitty_disambiguate_printable_modifiers ... ok
+test keys::tests::kitty_keyboard_csi_u ... ok
+test keys::tests::kitty_report_all_and_associated_text ... ok
+test keys::tests::kitty_special_keys_use_canonical_sequences ... ok
+test keys::tests::modifier_and_lock_bits ... ok
+test keys::tests::modify_other_keys_levels ... ok
+test keys::tests::modify_other_keys_special_keys ... ok
+test keys::tests::no_protocol_is_byte_identical_to_legacy ... ok
+test keys::tests::printable_passthrough ... ok
+test keys::tests::specials ... ok
+test known_hosts::tests::classify_empty_current_is_unverifiable ... ok
+test known_hosts::tests::classify_detects_changed_key_by_type ... ok
+test known_hosts::tests::classify_first_connect_and_unchanged ... ok
+test known_hosts::tests::classify_ignores_new_or_missing_key_types ... ok
+test known_hosts::tests::explicit_strict_no_skips_prompt ... ok
+test known_hosts::tests::host_spec_uses_bracketed_port_except_22 ... ok
+test known_hosts::tests::keyscan_parser_dedups_repeated_hosts ... ok
+test known_hosts::tests::parser_skips_markers_comments_and_hashed_lines ... ok
+test keys::tests::kitty_has_priority_over_modify_other_keys ... ok
+test askpass::tests::debug_file_records_prompt_without_secret ... ok
+test known_hosts::tests::ssh_g_parser_uses_effective_hostname_port_and_files ... ok
+test plugin::tests::activity_log_keeps_latest_and_sanitizes_summary ... ok
+test plugin::tests::activity_push_wakes_ui_once_per_burst ... ok
+test known_hosts::tests::assess_skips_network_when_strict_is_disabled ... ok
+test plugin::tests::ai_contribution_requires_api_2_process_runtime ... ok
+test glyph::tests::glyph_cache_is_bounded_by_explicit_limits ... ok
+test known_hosts::tests::trust_keys_writes_private_known_hosts_and_replaces_old ... ok
+test askpass::tests::host_key_known_uses_host_key_alias_verbatim ... ok
+test plugin::tests::disabled_package_is_not_registered_or_executed ... ok
+test plugin::tests::disabled_process_plugin_is_not_started ... ok
+test plugin::tests::duplicate_ids_and_invalid_fields_are_rejected ... ok
+test askpass::tests::host_key_known_uses_resolved_hostname_from_ssh_config ... ok
+test plugin::tests::event_payloads_carry_only_title_and_kind ... ok
+test askpass::tests::script_returns_secret_only_for_password_prompts ... ok
+test askpass::tests::host_key_known_uses_effective_known_hosts ... ok
+test plugin::tests::bad_json_disables_plugin_without_hanging_host ... ok
+test plugin::tests::execute_captures_env_protocol_and_streams ... ok
+test plugin::tests::execute_reports_spawn_error_without_panic ... ok
+test plugin::tests::event_failure_updates_activity_without_blocking ... ok
+test known_hosts::tests::local_entries_find_plain_and_bracketed_port_keys ... ok
+test askpass::tests::host_key_known_matches_nonstandard_port_entry ... ok
+test plugin::tests::legacy_and_v1_packages_coexist ... ok
+test plugin::tests::loads_api_1_and_api_2_manifests ... ok
+test plugin::tests::loads_v1_package_and_commands ... ok
+test plugin::tests::loads_valid_manifests_and_skips_broken ... ok
+test plugin::tests::missing_dir_is_empty_not_error ... ok
+test plugin::tests::missing_plugin_theme_keeps_plugin_and_reports_reason ... ok
+test plugin::tests::invalid_process_manifest_fields_are_skipped ... ok
+test plugin::tests::event_targets_respect_declaration_and_enabled ... ok
+test plugin::tests::parses_ai_contribution_and_apply_defaults ... ok
+test plugin::tests::parses_ai_result_text_shapes ... ok
+test plugin::tests::parses_event_subscriptions_and_rejects_unknown_or_duplicate ... ok
+test plugin::tests::process_manifest_parses_permissions_contributions_and_theme ... ok
+test plugin::tests::execute_reports_nonzero_exit_and_cwd ... ok
+test plugin::tests::process_plugin_api_mismatch_is_disabled ... ok
+test plugin::tests::ai_chat_routes_payload_and_returns_text ... ok
+test plugin::tests::read_line_capped_handles_crlf_eof_and_overlong_lines ... ok
+test plugin::tests::registers_namespaced_commands_and_skips_disabled ... ok
+test plugin::tests::rejects_duplicate_package_name_and_duplicate_command_ids ... ok
+test plugin::tests::rejects_entry_escape_absolute_parent_and_missing ... ok
+test plugin::tests::rejects_invalid_command_key ... ok
+test plugin::tests::rejects_missing_required_fields_and_bad_metadata ... ok
+test plugin::tests::rejects_unsupported_api ... ok
+test plugin::tests::rejects_symlink_escape ... ok
+test plugin::tests::spawn_command_records_activity_and_spawn_error ... ok
+test glyph::tests::combining_mark_never_builds_fallback_chain ... ok
+test profile::tests::add_and_update_normalize_optional_appearance ... ok
+test profile::tests::add_enforces_unique_nonempty_names_and_ids ... ok
+test plugin::tests::unknown_fields_are_preserved ... ok
+test profile::tests::appearance_helpers_cover_aliases_and_inherit_semantics ... ok
+test profile::tests::appearance_validation_rejects_uninterpretable_values ... ok
+test image_layer_diff_tests::clipped_top_image_lands_on_its_real_rows ... ok
+test profile::tests::appearance_fields_roundtrip_and_missing_inherits ... ok
+test profile::tests::broken_file_keeps_original ... ok
+test profile::tests::default_index_resolves_and_falls_back ... ok
+test profile::tests::duplicate_ids_are_repaired_on_load ... ok
+test profile::tests::duplicate_missing_profile_is_rejected ... ok
+test profile::tests::duplicate_assigns_new_id_and_dedupes_copy_names ... ok
+test profile::tests::duplicate_name_helper_handles_existing_copies ... ok
+test profile::tests::filter_matches_name_host_kind_case_insensitively ... ok
+test profile::tests::forward_validation_helper ... ok
+test profile::tests::new_ssh_field_validation_rejects_bad_specs ... ok
+test profile::tests::hand_written_appearance_is_normalized_on_load ... ok
+test profile::tests::password_auth_ssh_command_is_password_only ... ok
+test profile::tests::remove_works_and_new_ids_not_reused ... ok
+test profile::tests::old_profiles_toml_without_new_ssh_fields_still_loads ... ok
+test profile::tests::profile_serialization_has_no_plaintext_password ... ok
+test profile::tests::ssh_command_builds_openssh_args ... ok
+test profile::tests::ssh_key_path_expands_tilde ... ok
+test profile::tests::ssh_forwards_become_dash_l_args ... ok
+test profile::tests::roundtrip_and_atomic_save ... ok
+test profile::tests::ssh_remote_dynamic_forwards_and_proxy_jump_become_args ... ok
+test profile::tests::telnet_and_serial_commands ... ok
+test profile::tests::update_keeps_id_and_rejects_duplicate_names ... ok
+test profile::tests::validate_by_kind ... ok
+test profile::tests::v2_without_appearance_fields_loads_as_inherit_without_rewrite ... ok
+test profile::tests::v1_file_is_migrated_and_written_back ... ok
+test plugin::tests::process_plugin_handshakes_runs_commands_and_events ... ok
+test render::tests::background_alpha_clamps_and_rounds ... ok
+test known_hosts::tests::fake_keyscan_returns_unknown_and_changed ... ok
+test glyph::tests::latin_uses_primary_face ... ok
+test image_layer_diff_tests::negative_row_image_is_cleared_when_it_scrolls_out ... ok
+test glyph::tests::color_emoji_decodes_cbdt_and_caches_after_first_time ... ok
+test known_hosts::tests::keyscan_timeout_and_cancel_do_not_block ... ok
+test glyph::tests::fallback_chain_has_multiple_candidates ... ok
+test render::tests::default_background_keeps_theme_rgb_and_sets_alpha ... ok
+test glyph::tests::color_emoji_is_not_probed_for_ascii_or_cjk ... ok
+test glyph::tests::color_emoji_narrow_heart_fits_one_cell ... ok
+test plugin::tests::execute_times_out_and_kills ... ok
+test plugin::tests::execute_event_sends_event_json_and_reports_failure ... ok
+test render::tests::app_requested_cursor_shape_wins_over_config_block_default ... ok
+test render::tests::ascii_does_not_bleed_outside_cell ... ok
+test render::tests::color_emoji_draws_rgb_inside_wide_cell ... ok
+test plugin::tests::spawn_event_sends_json_payload_to_declared_plugins_only ... ok
+test render::tests::cursor_overlay_underline_and_beam_are_transparent_outside_line ... ok
+test render::tests::dirty_frame_across_buffer_switch_keeps_previous_cells ... ok
+test glyph::tests::narrow_emoji_is_scaled_into_one_cell ... ok
+test render::tests::cursor_blink_off_does_not_draw_cursor_in_frame ... ok
+test render::tests::combining_mark_is_overlaid_inside_base_cell ... ok
+test render::tests::cursor_color_and_text_color_overrides_apply ... ok
+test render::tests::cursor_shapes_paint_expected_regions ... ok
+test render::tests::draw_without_cursor_keeps_frame_clean_but_overlay_works ... ok
+test render_bench::render_damage_benchmark ... ignored, 渲染 damage 基准：手动 cargo test --release ... --ignored --nocapture
+test render::tests::image_scroll_partial_does_not_leave_stale_bands ... ok
+test render::tests::drawn_frame_applies_opacity_only_to_default_background ... ok
+test render::tests::image_is_above_cell_background_and_below_glyph ... ok
+test plugin::tests::process_plugin_status_provider_is_polled_and_command_normalized ... ok
+test render::tests::emoji_forced_narrow_does_not_bleed_into_neighbor ... ok
+test plugin::tests::ai_chat_cancel_returns_cancelled_without_killing_plugin ... ok
+test glyph::tests::emoji_uses_monochrome_outline_when_available ... ok
+test render::tests::inline_image_is_composited_below_text_cells ... ok
+test render::tests::transparent_image_preserves_backing_cell ... ok
+test render::tests::above_text_image_covers_block_glyph_and_below_text_does_not ... ok
+test render::tests::text_stays_opaque_when_default_background_is_transparent ... ok
+test render::tests::same_image_geometry_recomposites_and_removal_clears_pixels ... ok
+test render::tests::text_default_panel_arrows_render_mono_unless_vs16 ... ok
+test render::tests::vs16_heart_color_stays_in_one_cell ... ok
+test render::tests::zwj_family_color_components_stay_inside_grid ... ok
+test session::tests::assign_rejects_mismatched_ids ... ok
+test session::tests::bad_or_empty_snapshot_never_blocks_new_tab_fallback ... ok
+test session::tests::cwd_of_dead_pid_is_none ... ok
+test session::tests::cwd_of_self_matches_current_dir ... ok
+test session::tests::old_snapshot_without_profile_id_is_still_readable ... ok
+test session::tests::profile_id_is_skipped_when_none_but_kept_when_some ... ok
+test session::tests::profile_ids_roundtrip_with_same_leaf_order_as_cwds ... ok
+test session::tests::snapshot_json_roundtrip_and_version_gate ... ok
+test session::tests::tree_roundtrip_preserves_shape_ratio_and_cwd ... ok
+test sftp::tests::args_bound_network_timeouts_and_allow_user_override ... ok
+test sftp::tests::args_follow_sftp_convention ... ok
+test sftp::tests::batch_script_uses_progress_and_recursion ... ok
+test render_damage_tests::all_rows_damage_takes_full_path_even_without_frame_full ... ok
+test sftp::tests::list_parsing_drops_prompts ... ok
+test sftp::tests::parse_mode_accepts_octal_and_rejects_junk ... ok
+test sftp::tests::progress_parser_handles_multiple_files ... ok
+test sftp::tests::progress_parser_handles_openssh_format ... ok
+test sftp::tests::progress_parser_handles_zero_and_completion ... ok
+test sftp::tests::progress_parser_keeps_spaces_in_path ... ok
+test sftp::tests::progress_parser_rejects_non_progress_lines ... ok
+test sftp::tests::queue_keeps_fifo_order_retry_front_and_clear ... ok
+test render_damage_tests::cursor_overlay_move_does_not_touch_frame_pixels ... ok
+test render_damage_tests::full_frame_draws_every_row ... ok
+test render_damage_tests::frame_cursor_path_erases_old_cursor_row_on_move ... ok
+test render::tests::zwj_family_keeps_every_component_inside_grid ... ok
+test sftp::tests::chmod_command_and_outcome_are_wired ... ok
+test sftp::tests::remove_falls_back_to_rmdir_within_one_deadline ... ok
+test sftp::tests::state_machine_handles_cancel_and_failure ... ok
+test sftp::tests::state_machine_tracks_progress_and_completion ... ok
+test sftp::tests::stream_lines_split_on_cr_or_lf ... ok
+test sftp::tests::target_requires_ssh_profile_fields ... ok
+test sftp::tests::sftp_command_list_and_mkdir_use_fake_program_successfully ... ok
+test render_damage_tests::image_partially_above_viewport_does_not_write_outside_its_rows ... ok
+test sftp::tests::sftp_op_job_wake_fires_before_400ms_poll ... ok
+test render_damage_tests::resize_forces_full_and_allocates_new_frame ... ok
+test sftp::tests::upload_done_is_detected_for_list_refresh ... ok
+test tabby_import::tests::bad_color_schemes_are_skipped_with_reasons ... ok
+test tabby_import::tests::broken_yaml_and_non_list_profiles_are_error_but_empty_is_ok ... ok
+test tabby_import::tests::colors_accept_short_hex_and_respect_dark_light_variant ... ok
+test tabby_import::tests::duplicate_names_are_suffixed ... ok
+test tabby_import::tests::export_import_roundtrip ... ok
+test tabby_import::tests::hotkey_conflicts_empty_bindings_and_multi_chords_are_skipped ... ok
+test tabby_import::tests::imports_all_supported_kinds_and_reports_unknown ... ok
+test tabby_import::tests::imports_color_schemes_writes_theme_toml_and_suffixes_existing ... ok
+test tabby_import::tests::imports_mapped_hotkeys_and_reports_unmapped_and_invalid ... ok
+test tabby_import::tests::tabby_chords_normalize_to_tervo_canonical ... ok
+test tabby_import::tests::tabby_command_map_targets_exist_and_is_unique ... ok
+test tests::auto_defaults_to_yaru ... ok
+test tests::clipboard_image_is_written_as_valid_png ... ok
+test tests::close_confirm_policy ... ok
+test tests::closing_last_pane_must_not_update_rows_in_place ... ok
+test tests::color_scheme_has_priority ... ok
+test tests::colorfgbg_is_last_fallback ... ok
+test tests::command_titles_have_chinese_names_for_settings_page ... ok
+test tests::config_reload_summary_covers_bell_scroll_sixel_and_hotkeys ... ok
+test tests::config_reload_summary_marks_scrollback_as_new_pane_and_columns_as_restart ... ok
+test tests::config_reload_summary_separates_hot_new_pane_and_restart_fields ... ok
+test tests::deleting_default_profile_falls_back_to_shell ... ok
+test tests::drag_gap_index_maps_insertion_boundary ... ok
+test tests::drag_target_maps_pointer_to_slot ... ok
+test tests::drag_target_respects_pinned_groups ... ok
+test tests::drop_paths_are_shell_escaped_literally ... ok
+test tests::drop_payload_is_bracketed_with_trailing_space ... ok
+test tests::frame_target_opens_paths_but_not_bare_ipv4 ... ok
+test tests::frame_target_prefers_osc8_over_plain_url ... ok
+test tests::frame_target_rejects_unsafe_only_and_out_of_bounds ... ok
+test tests::gtk_theme_is_second_fallback ... ok
+test tests::hotkey_page_lists_bindings_and_conflicts ... ok
+test tests::image_hit_survives_visible_texture_cache_eviction ... ok
+test tests::ime_click_anchor_only_for_plain_left_click_on_mouse_reporting_tui ... ok
+test tests::ime_spot_keys_include_dpr_and_physical_pixels ... ok
+test tests::ime_spot_maps_click_anchor_to_window_pixels ... ok
+test tests::inline_image_fits_inside_pane ... ok
+test tests::key_scroll_policy_only_fires_when_scrolled_up_and_enabled ... ok
+test tests::language_change_is_hot_reload_and_search_follows_language ... ok
+test tests::left_and_right_shift_artifacts_never_reach_pty ... ok
+test tests::local_path_inspection_reports_missing_and_permission_denied ... ok
+test tests::local_path_resolution_expands_home_and_uses_shell_cwd ... ok
+test tests::malformed_outputs_default_to_dark ... ok
+test tests::modifier_only_events_are_filtered ... ok
+test tests::mouse_button_codes_map ... ok
+test tests::mouse_modifier_bits_decode ... ok
+test tests::nearest_pane_handles_gaps_and_edges ... ok
+test tests::paste_confirm_only_for_multiline_when_enabled ... ok
+test tests::paste_normalization_and_brackets ... ok
+test tests::profile_appearance_blink_on_wakes_timer_without_global ... ok
+test tests::profile_appearance_maps_overrides_and_inherits ... ok
+test tests::remote_join_avoids_double_slashes ... ok
+test tests::resize_redraw_is_immediate_on_shrink_and_first_event ... ok
+test tests::save_contents_resolves_paths_and_writes_files ... ok
+test tests::scrollback_budget_scales_with_pane_count ... ok
+test tests::scrollbar_policy_controls_visibility_and_always_thumb ... ok
+test tests::search_count_label_formats_index_total_and_empty_results ... ok
+test tests::selection_normalization_trims_trailing_blank_lines ... ok
+test tests::settings_help_category_is_indexed_in_both_languages ... ok
+test glyph::tests::expand_arrow_falls_back_to_serif ... ok
+test tests::settings_i18n_translation_pairs_are_clean ... ok
+test tests::settings_search_finds_terminal_behavior_controls ... ok
+test tests::settings_search_hits_carry_jump_sections_and_new_categories ... ok
+test tests::settings_search_matches_labels_and_keywords ... ok
+test tests::shift_right_modifier_artifact_is_ignored_but_ctrl_u_is_not ... ok
+test tests::tab_navigation_wraps ... ok
+test tests::tab_title_sanitizing ... ok
+test tests::unsafe_osc8_is_rejected_and_plain_url_still_wins ... ok
+test tests::version_text_has_commit_build_time_and_target ... ok
+test tests::window_flag_marks_child_process_without_parent_args ... ok
+test tests::winit_resize_direction_matches_slint_resize_handles ... ok
+test tests::wm_resize_watchdog_does_not_fire_while_configures_keep_coming ... ok
+test tests::wm_resize_watchdog_waits_for_first_configure ... ok
+test themes::tests::broken_pair_is_dropped_but_theme_survives ... ok
+test themes::tests::imports_alacritty_toml ... ok
+test themes::tests::imports_itermcolors ... ok
+test themes::tests::imports_kitty ... ok
+test themes::tests::imports_simple_yaml ... ok
+test themes::tests::imports_windows_terminal ... ok
+test themes::tests::imports_xresources ... ok
+test plugin::tests::node_process_plugin_command_result ... ok
+test themes::tests::loads_directory_and_reports_errors ... ok
+test themes::tests::pair_validation_and_auto_resolution ... ok
+test themes::tests::parses_complete_theme ... ok
+test themes::tests::plugin_theme_is_namespaced_and_duplicate_is_rejected ... ok
+test themes::tests::slug_rules ... ok
+test render_damage_tests::search_change_redraws_highlighted_rows ... ok
+test themes::tests::rejects_bad_inputs ... ok
+test tests::settings_static_text_is_always_wrapped_in_lang_t ... ok
+test render_damage_tests::partial_redraw_does_not_detach_shared_buffers ... ok
+test render_damage_tests::selection_change_redraws_only_old_and_new_spans ... ok
+test sftp::tests::transfer_job_cancel_kills_slow_child ... ok
+test sftp::tests::transfer_job_captures_stderr_failure ... ok
+test sftp::tests::transfer_job_completes_and_reports_success ... ok
+test vault::tests::default_path_respects_tervo_vault_override ... ok
+test render_damage_tests::inline_image_scroll_removal_matches_fresh_full_redraw ... ok
+test render_damage_tests::single_row_damage_redraws_only_one_row_and_keeps_others ... ok
+test sftp::tests::sftp_op_job_cancel_kills_child_and_reports_cancelled ... ok
+test config_watch::tests::watcher_thread_delivers_reload_to_callback ... ok
+test window::tests::command_is_self_with_only_window_marker ... ok
+test window::tests::marker_matches_parsed_flag ... ok
+test workspace::tests::dividers_match_split_gap ... ok
+test workspace::tests::insert_tab_and_normalize_keep_pinned_prefix ... ok
+test workspace::tests::keep_only_drops_other_tabs_and_reports_panes ... ok
+test workspace::tests::move_tab_reorders_and_tracks_active ... ok
+test workspace::tests::nested_dividers_have_paths ... ok
+test workspace::tests::nested_split_layout_is_contained ... ok
+test workspace::tests::normal_reorder_never_crosses_pinned_group ... ok
+test workspace::tests::pin_keeps_active_tab_following_its_position ... ok
+test workspace::tests::pin_moves_to_last_pinned_and_unpin_to_first_unpinned ... ok
+test workspace::tests::ratio_is_clamped ... ok
+test workspace::tests::remove_collapses_to_sibling ... ok
+test workspace::tests::remove_last_leaf_returns_none ... ok
+test workspace::tests::set_ratio_updates_layout_and_clamps ... ok
+test workspace::tests::single_leaf_fills_rect ... ok
+test workspace::tests::split_col_divides_height ... ok
+test workspace::tests::split_row_divides_width_with_gap ... ok
+test workspace::tests::tab_focus_moves_after_removal ... ok
+test workspace::tests::workspace_finds_tab_of_pane ... ok
+test xconn::tests::button1_mask_only_matches_left_button ... ok
+test xconn::tests::corner_inset_is_monotonic ... ok
+test xconn::tests::corner_inset_matches_circle_rows ... ok
+test xconn::tests::corner_radius_caps_and_adapts_to_small_windows ... ok
+test xconn::tests::corner_radius_is_zero_when_maximized_or_fullscreen ... ok
+test xconn::tests::ewmh_resize_direction_matches_slint_resize_handles ... ok
+test xconn::tests::mask_rects_clamp_radius_and_skip_degenerate_windows ... ok
+test xconn::tests::mask_rects_mirror_all_four_corners ... ok
+test xconn::tests::monitor_at_prefers_containing_then_primary_then_first ... ok
+test xconn::tests::physical_extent_honours_scale_factor ... ok
+test xconn::tests::radius_uses_physical_pixels_not_logical ... ok
+test xconn::tests::resize_route_falls_back_unless_wm_really_started ... ok
+test sftp::tests::transfer_job_wake_fires_before_poll_and_after_event_is_queued ... ok
+test render_damage_tests::typing_burst_never_grows_full_redraws ... ok
+test render_damage_tests::theme_change_forces_full_and_uses_new_background ... ok
+test render::tests::missing_private_use_icon_draws_placeholder_inside_cell ... ok
+test plugin::tests::command_timeout_kills_process_and_reports_timeout ... ok
+test sftp::tests::run_command_hard_timeout_kills_child ... ok
+test plugin::tests::crashing_process_plugin_restarts_then_disables ... ok
+test sftp::tests::sftp_op_job_start_is_non_blocking_and_reports_timeout ... ok
+test vault::tests::corrupt_header_params_are_rejected_before_argon2 ... ok
+test vault::tests::background_task_drop_does_not_block_or_leak_into_ui ... ok
+test vault::tests::background_initialize_state_machine_and_errors ... ok
+test vault::tests::file_never_contains_plaintext_and_permissions_are_private ... ok
+test vault::tests::credential_is_keyed_by_profile_store_id ... ok
+test vault::tests::wrong_password_and_corrupt_file_fail_cleanly ... ok
+test glyph::tests::cjk_fallback_rasterizes ... ok
+test vault::tests::background_unlock_wrong_password_keeps_ui_locked ... ok
+test render::tests::wide_cjk_is_drawn_across_two_cells ... ok
+test vault::tests::background_unlock_moves_kdf_off_caller_and_adopts_session ... ok
+test glyph::tests::fallback_is_lazy ... ok
+test render_damage_tests::incremental_sequence_matches_fresh_full_redraw_pixel_for_pixel ... ok
+test vault::tests::set_get_remove_roundtrip_survives_lock_and_reload ... ok
+test vault::tests::initialize_refuses_to_overwrite_and_clear_keeps_file ... ok
+test vault::tests::change_master_reencrypts_and_old_password_stops_working ... ok
+test vault::tests::background_change_master_reencrypts_without_leaking_old_key ... ok
+test render_damage_tests::tall_glyphs_do_not_leave_stale_pixels_in_neighbor_rows ... ok
+test plugin::tests::handshake_timeout_is_reported_and_retried ... ok
+test image_layer_diff_tests::partial_image_sequence_matches_full_redraw ... ok
+
+test result: ok. 413 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 2.64s
+
+EXIT:0
