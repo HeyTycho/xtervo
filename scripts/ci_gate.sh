@@ -25,4 +25,8 @@ cargo test -p tervo-diagnostics
 echo "[ci] image scroll clip e2e"
 bash scripts/e2e_image_scroll_clip.sh
 
+echo "[ci] maximize isolated (release binary)"
+cargo build --release -p tervo-app --bin tervo
+BIN="$ROOT/target/release/tervo" bash scripts/e2e_maximize_isolated.sh
+
 echo "[ci] PASS"
