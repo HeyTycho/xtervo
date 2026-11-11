@@ -12169,8 +12169,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     {
         let weak = ui.as_weak();
+        let max_seq = Rc::new(std::cell::Cell::new(0u64));
+        let max_seq_click = max_seq.clone();
+        ui.on_max_pointer_down(|| eprintln!("[ui] max-pointer-down"));
         ui.on_toggle_maximize(move || {
             if let Some(ui) = weak.upgrade() {
+                let generation = max_seq_click.get().wrapping_add(1);
+                max_seq_click.set(generation);
                 // 以 UI 状态为准，不直接读可能滞后的 winit `_NET_WM_STATE`；
                 // 点击时先把目标状态写回 UI，避免 WM 异步回写期间的假状态。
                 let target = !ui.get_window_maximized();
@@ -12193,8 +12198,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 });
                 // WM 可能拒绝/延迟 maximize；180ms 后回读一次，至少保证按钮状态
                 // 不会卡在“看起来已最大化、再点却没反应”的假状态。
+                // generation 防止旧 timer 覆盖用户的新点击。
                 let weak = ui.as_weak();
+                let max_seq_timer = max_seq_click.clone();
                 slint::Timer::single_shot(Duration::from_millis(180), move || {
+                    if max_seq_timer.get() != generation {
+                        return;
+                    }
                     let Some(ui) = weak.upgrade() else { return };
                     let actual = ui.window().is_maximized();
                     if ui.get_window_maximized() != actual {

@@ -1341,6 +1341,7 @@ export component MainWindow inherits Window {
     callback close-window();
     callback minimize-window();
     callback toggle-maximize();
+    callback max-pointer-down();
     callback set-theme(string);
     callback language-changed(string);
     callback tabbar-context(length, length);
@@ -2587,9 +2588,21 @@ export component MainWindow inherits Window {
             // 命中区比 28x24 的视觉按钮略大：边框/缩放边缘附近也能稳定点中。
             x: parent.width - 70px;
             y: 2px;
-            width: 32px;
-            height: 28px;
+            width: 40px;
+            height: 30px;
             clicked => { root.toggle-maximize(); }
+            // 吃掉按下/抬起，避免无边框标题栏的 WindowMoveArea 把这一下
+            // 当拖拽起手（拖拽会取消 click，表现为“偶尔点了没反应”）。
+            pointer-event(event) => {
+                if (event.kind == PointerEventKind.down) {
+                    root.max-pointer-down();
+                    return EventResult.accept;
+                }
+                if (event.kind == PointerEventKind.up) {
+                    return EventResult.accept;
+                }
+                EventResult.reject
+            }
 
             Rectangle {
                 x: 2px;
