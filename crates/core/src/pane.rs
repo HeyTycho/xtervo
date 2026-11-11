@@ -3460,6 +3460,51 @@ pub fn fill_frame<T: EventListener>(
                 }
                 frame.copied_cells += cols as u32;
             }
+
+            // damage 不是唯一真相：alacritty 的 TermDamage 仍可能漏标整行
+            // （第三方 TUI 的 CUP 整行重写尤其常见）。以 Frame 作为上一帧，
+            // 逐 cell 对账；漏标 cell 只补对应行并追加 damage。这样 renderer
+            // 仍然走增量路径，不做整屏兜底。
+            let mut reconciled_rows = vec![false; rows];
+            for row in 0..rows {
+                let line = Line(row as i32);
+                let base = row * cols;
+                for col in 0..cols {
+                    let cell = &grid[Point::new(line, Column(col))];
+                    let data = CellData::from_cell(cell, palette);
+                    let link = cell.hyperlink();
+                    let zerowidth = cell.zerowidth().unwrap_or(&[]);
+                    let index = base + col;
+                    let same = frame.cells.get(index).is_some_and(|old| *old == data);
+                    if !same {
+                        if zerowidth.is_empty() {
+                            frame.put(index, data, link.as_ref().map(|h| h.uri()));
+                        } else {
+                            frame.put_zerowidth(
+                                index,
+                                data,
+                                link.as_ref().map(|h| h.uri()),
+                                zerowidth,
+                            );
+                        }
+                        reconciled_rows[row] = true;
+                    }
+                }
+            }
+            for (row, changed) in reconciled_rows.into_iter().enumerate() {
+                if changed
+                    && !frame
+                        .damage
+                        .iter()
+                        .any(|d| d.line as usize == row)
+                {
+                    frame.damage.push(LineDamage {
+                        line: row as u16,
+                        left: 0,
+                        right: cols.saturating_sub(1) as u16,
+                    });
+                }
+            }
         }
 
         // 视口行身份：无论整屏还是脏行路径都全量刷新（rows 次 u64 写入），
@@ -3507,6 +3552,27 @@ mod tests {
         for i in 0..count {
             processor.advance(term, format!("L{i}\r\n").as_bytes());
         }
+    }
+
+    #[test]
+    fn undamaged_side_write_is_reconciled_into_frame() {
+        let mut term = test_term(2, 0);
+        let mut processor: Processor = Processor::new();
+        let mut frame = Box::new(Frame::default());
+        let palette = Palette::default();
+        processor.advance(&mut term, b"ABCDE");
+        fill_frame(&mut term, &mut frame, &palette, false, None, false);
+        // 模拟某条 damage 漏标的整行旁路写：直接改 grid，不经过 Processor。
+        {
+            let grid = term.grid_mut();
+            for (i, ch) in "xy   ".chars().enumerate() {
+                grid[Point::new(Line(0), Column(i))].c = ch;
+            }
+        }
+        fill_frame(&mut term, &mut frame, &palette, false, None, false);
+        assert_eq!(frame.cell(0, 0).ch, 'x' as u32, "漏标行必须通过对账补进 Frame");
+        assert_eq!(frame.cell(0, 1).ch, 'y' as u32, "漏标行第二格也必须补");
+        assert!(frame.damage.iter().any(|d| d.line == 0), "补行必须带 damage");
     }
 
     #[test]
