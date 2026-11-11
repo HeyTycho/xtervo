@@ -8,6 +8,8 @@
 | `5cff84e` | Frame → Scene → WGPU 文字/背景 slice，默认 CPU，显式 `TERVO_GPU_NATIVE=1` |
 | `e40f7b8` | Slint 在首次 render 前 import texture 会空白：改为 render 后 import |
 | `6faefdc` | merge B 的 `GpuImageRenderer`/`ImageTextureRegistry`/staged `render_scene`，接图片分层合成 |
+| `762800b` | 隔离 Xvfb CPU/GPU/fallback e2e + raw RGBA alpha 证据 |
+| `0069006` | fallback 字体分组探测；首个 WGPU present 后重绘；Sixel e2e |
 
 ## 目标与边界
 
@@ -105,16 +107,20 @@ gpu_snapshot: gpu_native_frames=2 draw_calls=4 atlas_uploads=71
 ```
 
 带 Sixel 图片夹具（`image_quads=1 image_draw_calls=1 image_uploads=1
-image_sources=1 frame_images=1 scene_images=1`）：
+image_sources=1 frame_images=1 scene_images=1`），连续 3 次 PASS：
 
 ```text
-sixel_red_pixels: cpu=1989 gpu=2306
-terminal_diff: size=720x528 differing=6892 ratio=1.8129%
-  mae=0.550 pixels_over_8=5542 ink_cpu=8657 ink_gpu=8744 ink_iou=0.879
-fallback_vs_cpu: differing=0 ratio=0.0000% mae=0.000
-gpu_snapshot: gpu_native_frames=7 draw_calls=21 image_uploads=1 image_sources=1
-initial GPU frame cpu_us=1.20s（fallback 分组探测前同一夹具 3.42s）
+sixel_red_pixels: cpu=2373 gpu=2340
+terminal_diff: size=720x528 differing=7527 ratio=1.9800%
+  mae=0.742 pixels_over_8=6121 ink_cpu=9205 ink_gpu=8924 ink_iou=0.841
+fallback_vs_cpu: differing=766 ratio=0.2015% mae=0.326
+gpu_snapshot: gpu_native_frames=7 draw_calls=21 atlas_uploads=76
+  image_uploads=1 image_sources=1
+initial GPU frame cpu_us≈1.16s（fallback 分组探测前同一夹具 3.42s）
 ```
+
+`fallback_vs_cpu` 的 0.20% 来自两次 CPU 进程之间 cursor blink 相位/AA；
+fallback 仍是纯 CPU，没有 GPU 帧（快照行 `gpu_native_frames=0`）。
 
 `TERVO_GPU_SNAPSHOT_DELAY_MS` 是测试旋钮：llvmpipe 首次 WGPU present 可能晚于
 2.5s，e2e 用 6000ms，等 import 的 texture 真正被 Slint 采样后再

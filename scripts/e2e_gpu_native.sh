@@ -86,9 +86,9 @@ printf 'symbols: \342\230\203 \342\230\205 \342\231\245\n'
 printf '\033[41m  RED-BG  \033[0m \033[44m  BLUE-BG  \033[0m END\n'
 # 80x6 solid red Sixel: one below-text image, parsed after the first frame.
 printf '\033Pq#0;2;100;0;0#0~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\033\\'
-printf '\n'
-sleep 1
-printf 'IMAGE-AFTER\n'
+printf '\nIMAGE-AFTER\n'
+sleep 2
+printf 'PING\n'
 exec sleep 300
 FIXTURE
 chmod +x "$out/fixture.sh"
@@ -141,7 +141,7 @@ run_app cpu SLINT_BACKEND=winit-software \
 echo "running TERVO_GPU_NATIVE=1 (WGPU30)"
 # llvmpipe can take ~2.5s to present its first WGPU frame; give the imported
 # texture time to be sampled before take_snapshot.
-run_app gpu TERVO_GPU_NATIVE=1 \
+run_app gpu TERVO_GPU_NATIVE=1 TERVO_GPU_NATIVE_DEBUG=1 \
     TERVO_GPU_SNAPSHOT_DELAY_MS=6000 \
     TERVO_GPU_NATIVE_DUMP="$out/gpu/offscreen" \
     TERVO_GPU_SNAPSHOT="$out/gpu/snap" TERVO_GPU_SNAPSHOT_EXIT=1
@@ -175,6 +175,13 @@ grep -q "image_quads=1" "$out/gpu/app.log" || \
     fail_msg "GPU Scene did not compose the Frame.images Sixel quad"
 grep -q "image_uploads_total=1" "$out/gpu/app.log" || \
     fail_msg "GPU image registry did not upload the source exactly once"
+# Cumulative registry uploads (snapshot line), independent of which frame
+# happens to be the last one.
+gpu_snapshot_line=$(grep -h "\[gpu-snapshot\] path=.*gpu/snap" "$out/gpu/app.log" || true)
+native_image_uploads=$(sed -n 's/.* image_uploads=\([0-9]*\).*/\1/p' <<<"$gpu_snapshot_line" | head -1)
+if [[ -z "${native_image_uploads:-}" || "$native_image_uploads" -lt 1 ]]; then
+    fail_msg "GPU image registry reported no cumulative uploads"
+fi
 grep -q "gpu-native\] 失败" "$out/gpu/app.log" && \
     fail_msg "GPU run reported an unexpected failure fallback"
 
