@@ -69,6 +69,28 @@ require_wgpu_30/select: no GPU-backed WGPU adapter ... Set SLINT_WGPU_CPU=1
 `gpu2.before.ppm`、`gpu2.resized.ppm`、`cpu.before.ppm`、`cpu.resized.ppm`、
 `fallback.before.ppm`、`gpu2.stderr`、`cpu.stderr`、`fallback.stderr`。
 
+## 15m GPU soak（release `5531643`）
+
+```text
+DURATION=15m TERVO_GPU=1 SLINT_WGPU_CPU=1 ./scripts/soak.sh
+verdict: PASS
+RSS: 803.1 -> 844.2 MiB (+41.1 MiB, +1.51 MiB/min, R2=0.12)
+PSS: 772.9 -> 813.8 MiB (peak 884.4)
+threads: 167 -> 167
+fds:     93 -> 93
+fatal=0 errors=0
+```
+
+说明：
+
+```text
+R2=0.12，非线性；15m 尾部已趋平，不是明显泄漏
+GPU 路径用 llvmpipe（无 /dev/dri），CPU avg 95.5%
+```
+
+注意：soak 脚本在 `TERVO_GPU=1` 时必须不导出 `SLINT_BACKEND`，否则会走
+Skia/OpenGL 而不是 WGPU；`scripts/soak.sh` 已修正。
+
 ## 未做 / 风险
 
 - 未统一 GPU Scene，未做 glyph atlas、图片/光标 GPU 合成；光标仍是独立 CPU overlay。
