@@ -1426,7 +1426,7 @@ const MAX_STORED_IMAGE_BYTES: usize = 64 * 1024 * 1024;
 
 /// 检测 `CSI Ps X`（ECH，擦除字符）并返回参数。dsh-tui 用 ECH 释放旧图；
 /// 图片像素不在 cell 中，必须显式擦除对应矩形。
-fn erase_char_params(bytes: &[u8], out: &mut Vec<Option<u16>>) -> bool {
+fn erase_char_params(bytes: &[u8], after: usize, out: &mut Vec<Option<u16>>) -> bool {
     let mut i = 0;
     while i + 2 < bytes.len() {
         if bytes[i] == 0x1b && bytes[i + 1] == b'[' {
@@ -1434,7 +1434,9 @@ fn erase_char_params(bytes: &[u8], out: &mut Vec<Option<u16>>) -> bool {
             while j < bytes.len() && matches!(bytes[j], 0x30..=0x3f) {
                 j += 1;
             }
-            if j < bytes.len() && bytes[j] == b'X' {
+            // 只认结束于本 chunk 新字节的 ECH；tail 里已经扫描过的序列
+            // 不能下一块再清一次图片。
+            if j < bytes.len() && bytes[j] == b'X' && j + 1 > after {
                 let params = std::str::from_utf8(&bytes[i + 2..j]).unwrap_or("");
                 // ECH 可以有多个参数，按每个参数各擦一次当前光标位置。
                 for value in params.split(';').map(str::trim).filter(|v| !v.is_empty()) {
@@ -1476,14 +1478,19 @@ impl ImageClearScanner {
     fn feed(&mut self, bytes: &[u8]) -> bool {
         // 把上一块尾部拼进来，统一做 chunk 内扫描；旧实现逐 pattern 处理跨边界，
         // 这里同时覆盖 ECH 这类参数长度不固定的序列。
-        let mut buf = Vec::with_capacity(self.tail.len() + bytes.len());
+        let old_len = self.tail.len();
+        let mut buf = Vec::with_capacity(old_len + bytes.len());
         buf.extend_from_slice(&self.tail);
         buf.extend_from_slice(bytes);
-        let hit = IMAGE_CLEAR_SEQUENCES
-            .iter()
-            .any(|pattern| buf.windows(pattern.len()).any(|w| w == *pattern));
+        // 只匹配“结束于新字节”的序列；tail 中已完整处理的 2J 不能在下一块
+        // 再命中，否则会误清掉紧接着 place 的图片。
+        let hit = IMAGE_CLEAR_SEQUENCES.iter().any(|pattern| {
+            buf.windows(pattern.len())
+                .enumerate()
+                .any(|(i, w)| i + pattern.len() > old_len && w == *pattern)
+        });
         self.ech.clear();
-        erase_char_params(&buf, &mut self.ech);
+        erase_char_params(&buf, old_len, &mut self.ech);
         // 保留末尾 32 字节：ECH 参数/跨 chunk 边界都足够。
         let keep = 32.min(buf.len());
         self.tail.clear();
@@ -3673,6 +3680,21 @@ mod tests {
             "对账必须清掉 Term 里不存在的组合字符"
         );
         assert!(frame.damage.iter().any(|d| d.line == 0), "补写行必须标 damage");
+    }
+
+    #[test]
+    fn image_clear_scanner_does_not_replay_matched_tail() {
+        let mut scanner = ImageClearScanner::default();
+        assert!(!scanner.feed(b"\x1b["));
+        assert!(scanner.feed(b"2J"), "跨 chunk 的 2J 必须命中一次");
+        assert!(!scanner.feed(b"plain text"), "已处理的 2J 不能在下一块再次命中");
+        assert!(scanner.feed(b"\x1b[3J"), "新的 3J 仍必须命中");
+
+        // ECH 也只在结束于新字节时记录，避免 tail 重复擦除。
+        let mut scanner = ImageClearScanner::default();
+        assert!(!scanner.feed(b"\x1b[3"));
+        assert!(!scanner.feed(b"X"));
+        assert_eq!(scanner.ech, vec![Some(3)]);
     }
 
     #[test]

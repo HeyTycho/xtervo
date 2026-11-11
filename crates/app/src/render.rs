@@ -269,19 +269,9 @@ impl FrameBuffers {
     }
 
     fn image(&self) -> slint::Image {
-        // Slint may cache the GPU texture by the SharedPixelBuffer identity.
-        // Handing it the persistent double-buffer clone means an in-place
-        // scroll/partial update can be sampled from a stale texture; a font
-        // resize forces a new texture and appears to "fix" it. Copy into a
-        // fresh buffer so every frame has a new identity. This is correctness
-        // at one framebuffer copy per presented frame.
-        let src = self.buffers[self.active].as_bytes();
-        let mut dst = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(
-            self.buffers[self.active].width(),
-            self.buffers[self.active].height(),
-        );
-        dst.make_mut_bytes().copy_from_slice(src);
-        slint::Image::from_rgba8(dst)
+        // Agent C 的 MinimalSoftwareWindow + SwappedBuffers 测试证明 Slint
+        // 能正确重新栅格化原地更新的 SharedPixelBuffer；不需要每帧整屏 copy。
+        slint::Image::from_rgba8(self.buffers[self.active].clone())
     }
 }
 
