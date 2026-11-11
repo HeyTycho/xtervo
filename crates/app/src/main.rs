@@ -6470,6 +6470,7 @@ fn redraw_pane_inner(st: &mut AppState, id: PaneId) {
     rt.renderer.draw_without_cursor(&frame);
     // TERVO_GPU=1 且 Slint 已给出 WGPU30 device/queue：把 CPU framebuffer 上传到
     // 同一 device 上的纹理并导入为 Slint Image；任何失败都返回 None -> 原 CPU 路径。
+    let gpu_before = gpu_present::upload_stats();
     let gpu_image = if gpu_present::ready() {
         gpu_present::pane_image(
             id,
@@ -6483,6 +6484,7 @@ fn redraw_pane_inner(st: &mut AppState, id: PaneId) {
     } else {
         None
     };
+    let gpu_after = gpu_present::upload_stats();
     rt.image = match gpu_image {
         Some(image) => image,
         None => rt.renderer.image(),
@@ -6507,14 +6509,19 @@ fn redraw_pane_inner(st: &mut AppState, id: PaneId) {
             rt.renderer.last_buffer_detached,
             rt.renderer.width * rt.renderer.height * 4
         );
-        let gpu = gpu_present::upload_stats();
-        if gpu.frames > 0 {
+        let gpu_rows = gpu_after.rows.saturating_sub(gpu_before.rows);
+        let gpu_bytes = gpu_after.bytes.saturating_sub(gpu_before.bytes);
+        let gpu_ns = gpu_after
+            .upload_nanos
+            .saturating_sub(gpu_before.upload_nanos);
+        if gpu_after.frames > gpu_before.frames {
             eprintln!(
-                "[gpu-profile] upload_frames={} rows={} bytes={} upload_us={:.2}",
-                gpu.frames,
-                gpu.rows,
-                gpu.bytes,
-                gpu.upload_nanos as f64 / 1000.0
+                "[gpu-profile] frames={} rows={} bytes={} upload_us={:.2} total_frames={}",
+                gpu_after.frames.saturating_sub(gpu_before.frames),
+                gpu_rows,
+                gpu_bytes,
+                gpu_ns as f64 / 1000.0,
+                gpu_after.frames
             );
         }
     }
