@@ -8,6 +8,8 @@
 //! 安全：不输出环境变量值、API key、Vault 内容或图片 RGBA；只给版本、路径、
 //! frame 文本、cursor/modes 和图片 rect。
 
+mod trace_layer;
+
 use std::error::Error;
 use std::time::Duration;
 
@@ -47,6 +49,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
             Ok(())
         },
         "scene-diff" | "scene_diff" => scene_diff_cli(&args[1..]),
+        "trace-layer" | "trace_layer" => trace_layer::cli(&args[1..]),
         "serve" => serve(&args[1..]),
         "help" | "-h" | "--help" => {
             println!("{}", help_text());
@@ -73,6 +76,8 @@ fn help_text() -> &'static str {
      observability               同上 + 集成点/能力声明（kind=observability）\n\
      scene-diff --left FILE --right FILE [--json]\n\
                                   比较两个 frame/scene summary JSON（默认文本）\n\
+     trace-layer --input FILE     按 raw->filter->Term->Frame->framebuffer 逐层找第一处分歧\n\
+                                  合成夹具 --fixture clean|images|filter-edge；--json\n\
      serve [--socket PATH --token T]  MCP/JSON-RPC stdio server；--socket 时增加 live 工具\n\
        --cols/--rows/--wait-ms\n\
      \n\
