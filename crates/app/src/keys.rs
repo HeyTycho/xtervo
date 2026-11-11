@@ -228,6 +228,43 @@ pub fn encode(text: &str, ctrl: bool, alt: bool) -> Option<Vec<u8>> {
 ///
 /// 这是**普通 shell 的 legacy 路径**，只由 [`encode_key_event`] 在应用没有
 /// 请求任何协议时调用；修改它必须保证字节不变。
+/// xterm modified navigation/function keys。
+///
+/// Ctrl+Left/Right = `CSI 1;5D/C`，readline 默认映射到 backward-word/
+/// forward-word；Ctrl+Delete = `CSI 3;5~`，映射到 kill-word。终端只负责把
+/// 标准序列交给 shell/应用，不自己删除字符。
+fn modified_navigation(
+    text: &str,
+    ctrl: bool,
+    alt: bool,
+    shift: bool,
+    bindings: KeyBindings,
+) -> Option<Vec<u8>> {
+    if !(ctrl || alt || shift) {
+        return None;
+    }
+    // 自定义 delete-binding 优先：ascii-del/control-h 明确要求保留原字节。
+    if text == "\u{7f}" && bindings.delete != DeleteBinding::DeleteSequence {
+        return None;
+    }
+    let (number, trailer) = match text {
+        "\u{F700}" => (1, 'A'), // Up
+        "\u{F701}" => (1, 'B'), // Down
+        "\u{F702}" => (1, 'D'), // Left
+        "\u{F703}" => (1, 'C'), // Right
+        "\u{F729}" => (1, 'H'), // Home
+        "\u{F72B}" => (1, 'F'), // End
+        "\u{F727}" => (2, '~'), // Insert
+        "\u{7f}" => (3, '~'),   // Delete
+        "\u{F72C}" => (5, '~'), // PageUp
+        "\u{F72D}" => (6, '~'), // PageDown
+        _ => return None,
+    };
+    let bits = (shift as u8) | ((alt as u8) << 1) | ((ctrl as u8) << 2);
+    let param = u16::from(bits) + 1;
+    Some(format!("\x1b[{number};{param}{trailer}").into_bytes())
+}
+
 pub fn encode_mode(
     text: &str,
     ctrl: bool,
@@ -239,13 +276,9 @@ pub fn encode_mode(
     if text.is_empty() {
         return None;
     }
-    // Delete 带修饰键：xterm/GNOME 风格的 modified function key。
-    // Ctrl+Delete = CSI 3;5~，readline 默认把它绑定到 kill-word；这不是
-    // 终端自己删字，而是把“删一个词”的标准按键序列交给 shell/应用。
-    if text == "\u{7f}" && (ctrl || alt || shift) && bindings.delete == DeleteBinding::DeleteSequence {
-        let bits = (shift as u8) | ((alt as u8) << 1) | ((ctrl as u8) << 2);
-        let param = u16::from(bits) + 1;
-        return Some(format!("\x1b[3;{param}~").into_bytes());
+    // 方向/Home/End/Insert/Delete/Page 带修饰键：xterm/GNOME 风格。
+    if let Some(seq) = modified_navigation(text, ctrl, alt, shift, bindings) {
+        return Some(seq);
     }
     if let Some(seq) = special(text, bindings) {
         let mut v = seq.to_vec();
@@ -899,6 +932,31 @@ mod tests {
             encode_mode("\u{7f}", true, false, true, false, default).unwrap(),
             b"\x1b[3;6~",
             "Ctrl+Shift+Delete"
+        );
+        assert_eq!(
+            encode_mode("\u{F702}", true, false, false, false, default).unwrap(),
+            b"\x1b[1;5D",
+            "Ctrl+Left = backward-word"
+        );
+        assert_eq!(
+            encode_mode("\u{F703}", true, false, false, false, default).unwrap(),
+            b"\x1b[1;5C",
+            "Ctrl+Right = forward-word"
+        );
+        assert_eq!(
+            encode_mode("\u{F702}", false, true, false, false, default).unwrap(),
+            b"\x1b[1;3D",
+            "Alt+Left = backward-word"
+        );
+        assert_eq!(
+            encode_mode("\u{F702}", false, false, true, false, default).unwrap(),
+            b"\x1b[1;2D",
+            "Shift+Left modified sequence"
+        );
+        assert_eq!(
+            encode_mode("\u{F729}", true, false, false, false, default).unwrap(),
+            b"\x1b[1;5H",
+            "Ctrl+Home"
         );
         let ascii_del =
             KeyBindings { delete: DeleteBinding::AsciiDel, ..KeyBindings::default() };
