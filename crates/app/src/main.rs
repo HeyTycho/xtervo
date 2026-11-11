@@ -5742,7 +5742,23 @@ fn pane_view(
         read_only: rt.handle.read_only(),
         link_hover: rt.link_hover,
         images: ModelRc::from(rt.inline_model.clone()),
+        line_numbers: line_number_model(rt.renderer.rows, rt.renderer.cell_h),
+        line_h: rt.renderer.cell_h as f32,
     }
+}
+
+/// 调试行号：仅 TERVO_LINE_NUMBERS=1 时生成 1..N 的字符串模型。
+fn line_number_model(rows: usize, _cell_h: usize) -> ModelRc<slint::SharedString> {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let enabled = *ENABLED.get_or_init(|| {
+        std::env::var("TERVO_LINE_NUMBERS").map(|v| v == "1").unwrap_or(false)
+    });
+    if !enabled {
+        return ModelRc::from(Rc::new(VecModel::from(Vec::<slint::SharedString>::new())));
+    }
+    let items: Vec<slint::SharedString> =
+        (1..=rows).map(|n| n.to_string().into()).collect();
+    ModelRc::from(Rc::new(VecModel::from(items)))
 }
 
 /// 刷新一个 pane 在模型里的视图（滚动条/铃/尺寸），不拉帧不重绘。
