@@ -385,8 +385,6 @@ struct AppState {
     resize: Option<WindowResize>,
     /// 窗口是否聚焦（100ms 轮询 winit），用于 DECSET 1004 focus 上报。
     window_focused: bool,
-    /// 最近一次点击最大化按钮；WM 过渡期不回读 is_maximized。
-    maximize_changed_at: Option<Instant>,
     /// 上次同步给输入法的候选点（含 pane/DPR/锚点来源）；None 表示尚未发送。
     ime_spot: Option<ImeSpotKey>,
     /// 强制下一次 IME 同步重新下发（pane/Tab 切换、resize、窗口 focus/DPR 变化）。
@@ -7634,34 +7632,6 @@ fn install_native_window_events(ui: &MainWindow) {
                     update_ime_spot(st);
                 });
             }
-            winit::event::WindowEvent::Resized(_) => {
-                // WM 的 maximize/restore 是异步的；点击后 500ms 内
-                // is_maximized() 可能短暂返回上一个值。过渡期不要回写 UI，
-                // 否则下一次点击会从错误状态取反，表现为“点了没反应”。
-                if let Some(ui) = weak.upgrade() {
-                    let recent_click = with_app(|st| {
-                        st.maximize_changed_at
-                            .is_some_and(|t| t.elapsed() < Duration::from_millis(800))
-                    })
-                    .unwrap_or(false);
-                    if !recent_click {
-                        let actual = win.is_maximized();
-                        if ui.get_window_maximized() != actual {
-                            ui.set_window_maximized(actual);
-                            with_app(|st| {
-                                request_window_corners(
-                                    st,
-                                    None,
-                                    Some(xconn::CornerState {
-                                        maximized: actual,
-                                        fullscreen: st.ui.window().is_fullscreen(),
-                                    }),
-                                );
-                            });
-                        }
-                    }
-                }
-            }
             winit::event::WindowEvent::HoveredFile(_) => {
                 let target = win.with_winit_window(drop_target_at).flatten();
                 if let Some(ui) = weak.upgrade() {
@@ -10018,7 +9988,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         link_hover_cell: None,
         resize: None,
         window_focused: true,
-        maximize_changed_at: None,
         ime_spot: None,
         ime_spot_dirty: true,
         ime_override: None,
@@ -12183,27 +12152,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ui.on_toggle_maximize(move || {
             if let Some(ui) = weak.upgrade() {
                 let ui_state = ui.get_window_maximized();
-                let before = xconn::window_is_maximized(&ui.get_window_title())
-                    .unwrap_or_else(|| ui.window().is_maximized());
-                let recent_click = with_app(|st| {
-                    st.maximize_changed_at
-                        .is_some_and(|t| t.elapsed() < Duration::from_millis(800))
-                })
-                .unwrap_or(false);
-                // 快速连点时 WM 的 _NET_WM_STATE 还停留在上一个状态；此时只信
-                // 用户最后一次点击产生的 desired UI，每次点击都必须翻转。
-                // 静止后的第一次点击才用 EWMH actual 校准，避免初始 UI 过期。
-                let target = if recent_click {
-                    !ui_state
-                } else {
-                    if ui_state != before {
-                        ui.set_window_maximized(before);
-                    }
-                    !before
-                };
+                let before = ui.window().is_maximized();
+                // 点击必须翻转“用户看到的 desired state”，不能用 WM actual
+                // 重新算 target：X11 的 _NET_WM_STATE 在过渡期会抖动，曾导致
+                // 连续多次点击都发出同一个请求（看起来不灵敏）。
+                let target = !ui_state;
                 ui.set_window_maximized(target);
                 with_app(|st| {
-                    st.maximize_changed_at = Some(Instant::now());
                     request_window_corners(
                         st,
                         None,
@@ -12213,10 +12168,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }),
                     );
                 });
-                ui.window().set_maximized(target);
-                eprintln!(
-                    "[ui] toggle-maximize ui_state={ui_state} before={before} target={target} recent={recent_click}"
-                );
+                // 优先显式 EWMH client message；某些 WM/winit 组合下
+                // set_maximized() 会被吞掉，这层失败再回退 winit。
+                let title = ui.get_window_title().to_string();
+                match xconn::wm_set_maximized(&title, target) {
+                    Ok(()) => eprintln!(
+                        "[ui] toggle-maximize ui_state={ui_state} before={before} target={target} via=ewmh"
+                    ),
+                    Err(err) => {
+                        eprintln!(
+                            "[ui] toggle-maximize ui_state={ui_state} before={before} target={target} \
+                             ewmh_err={err} fallback=winit"
+                        );
+                        ui.window().set_maximized(target);
+                    }
+                }
             }
         });
     }
