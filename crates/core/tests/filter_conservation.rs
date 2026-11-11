@@ -283,7 +283,6 @@ fn plain_text_corpus() -> Vec<(&'static str, Vec<u8>)> {
 }
 
 #[test]
-#[ignore = "P0 audit 2026-11-11（现状失败，证据见 docs/FILTER_AUDIT_2026-11-11.md）：sixel filter 把 UTF-8 续字节 0x90/0x98/0x9B/0x9D/0x9E/0x9F 当 C1 控制符 -> 文本被暂存/错吞"]
 fn plain_text_is_byte_identical_for_every_chunking() {
     for (name, input) in plain_text_corpus() {
         let (out, held) = feed_one(&input);
@@ -347,7 +346,6 @@ impl ImageKind {
 }
 
 #[test]
-#[ignore = "P0 audit 2026-11-11（现状失败，证据见 docs/FILTER_AUDIT_2026-11-11.md）：sixel filter 在 SixelEscape 暂存态返回 None -> ESC 泄漏（+ 单 ESC chunk 契约）"]
 fn image_sequence_swallows_only_itself() {
     let prefix = b"BEFORE\r\n".to_vec();
     let suffix = b"\r\nAFTER".to_vec();
@@ -437,7 +435,6 @@ fn c1_continuation_text() -> Vec<u8> {
 }
 
 #[test]
-#[ignore = "P0 audit 2026-11-11（现状失败，证据见 docs/FILTER_AUDIT_2026-11-11.md）：sixel 状态被 UTF-8 续字节破坏后，Sixel 漏给 vte 当 DCS"]
 fn utf8_c1_continuation_then_sixel_is_not_swallowed_by_vte() {
     let text = c1_continuation_text();
     let mut input = text.clone();
@@ -489,7 +486,6 @@ fn truncated_iip_is_aborted_by_can_and_following_text_survives() {
 }
 
 #[test]
-#[ignore = "P0 audit 2026-11-11（现状失败，证据见 docs/FILTER_AUDIT_2026-11-11.md）：截断 Sixel 的畸形终止 ESC 被消费，紧跟的 ESC[..m 丢掉 ESC"]
 fn truncated_sixel_is_aborted_by_next_escape_sequence() {
     // 截断的 Sixel（没有 BEL/ST），紧跟 SGR：SGR 必须原样到达 vte。
     let mut input = b"\x1bPq".to_vec();
@@ -544,7 +540,6 @@ fn c1_st_terminators_are_preserved_for_vte() {
 // ---------------------------------------------------------------- 随机 chunk
 
 #[test]
-#[ignore = "P0 audit 2026-11-11（现状失败，证据见 docs/FILTER_AUDIT_2026-11-11.md）：同上：Cyrillic 文本结束后字节仍被暂存在 DCS 头"]
 fn random_chunk_boundaries_mixed_corpus_are_chunking_invariant() {
     let mut corpus = Vec::new();
     for (name, mut bytes) in plain_text_corpus() {
@@ -795,17 +790,14 @@ fn real_dsh_kitty_chunked_is_conserved() {
     }
 }
 
-// ---------------------------------------------------------------- 已知缺陷
+// ---------------------------------------------------------------- 回归
 
-/// 已知缺陷（2026-11-11 审计发现，尚未修复）：Sixel filter 在
-/// `SixelEscape` 只有 ESC 一个字节时返回 `None`，调用方会把这个 ESC 原样
-/// 交给 vte，造成**字节重复**。真实后果：`ESC \` 被 PTY 切成两块时，vte
-/// 收到孤立的 ESC，和下一个文本字节组成转义序列，吞掉后续字符。
-///
-/// 复现：`cargo test -p tervo-core --test filter_conservation -- --ignored known_deficit`
+/// 回归（2026-11-11 审计发现，同 commit 修复）：Sixel filter 在
+/// `SixelEscape` 只有 ESC 一个字节时必须返回 `Some`。旧实现返回 `None`，
+/// 调用方会把这个 ESC 原样交给 vte，造成**字节重复**：`ESC \` 被 PTY 切成
+/// 两块时，vte 收到孤立 ESC，和下一个文本字节组成转义序列，吞掉后续字符。
 #[test]
-#[ignore = "P0 audit 2026-11-11: sixel feed() 在暂存态返回 None -> ESC 泄漏给 vte"]
-fn known_deficit_sixel_lone_esc_must_not_be_passed() {
+fn regression_sixel_lone_esc_must_not_be_passed() {
     let mut filter = SixelFilter::new();
     let mut input = b"\x1bPq".to_vec();
     input.extend_from_slice(&sixel_payload());
@@ -817,13 +809,11 @@ fn known_deficit_sixel_lone_esc_must_not_be_passed() {
     );
 }
 
-/// 已知缺陷：Sixel filter 把 UTF-8 续字节 0x90 当 C1 DCS 起点，普通文本
-/// 会被暂存在 DCS 头里；若随后第一个 0x40..=0x7E 字节是 `q`，会误判成
-/// Sixel 并丢弃已暂存文本。真实 dsh raw 里 `┐`(E2 94 90)/`某`(E6 9F 90)
-/// 都含 0x90。
+/// 回归：UTF-8 续字节 0x90 不能被当 C1 DCS 起点。旧实现会把普通文本暂存
+/// 在 DCS 头里；若随后第一个 0x40..=0x7E 字节是 `q`，会误判成 Sixel 并
+/// 丢弃已暂存文本。真实 dsh raw 里 `┐`(E2 94 90)/`某`(E6 9F 90) 都含 0x90。
 #[test]
-#[ignore = "P0 audit 2026-11-11: sixel filter 不识别 UTF-8 续字节 0x90/0x98/0x9B/0x9D/0x9E/0x9F"]
-fn known_deficit_c1_continuation_bytes_are_not_controls() {
+fn regression_c1_continuation_bytes_are_not_controls() {
     // `各` = E5 90 84，后面紧跟 ASCII `q`：会被误判成 Sixel 起点。
     let input = b"\xe5\x90\x84qHELLO".to_vec();
     let (out, _held) = feed_one(&input);
