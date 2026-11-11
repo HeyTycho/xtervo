@@ -261,7 +261,7 @@ impl SixelFilter {
                 State::Sixel => match b {
                     ESC => self.state = State::SixelEscape,
                     0x9c | 0x07 => {
-                        self.finish_sixel(decode, &mut out);
+                        self.finish_sixel(decode, &mut out, &mut pass);
                     },
                     0x18 | 0x1a => {
                         // CAN/SUB 中止：丢图。
@@ -283,7 +283,7 @@ impl SixelFilter {
                 },
                 State::SixelEscape => {
                     if b == b'\\' {
-                        self.finish_sixel(decode, &mut out);
+                        self.finish_sixel(decode, &mut out, &mut pass);
                     } else if b == ESC {
                         // 连续 ESC：仍等待 `\`。
                     } else {
@@ -477,8 +477,18 @@ impl SixelFilter {
         self.payload.push(b);
     }
 
-    fn finish_sixel(&mut self, decode: bool, out: &mut Vec<SixelEvent>) {
+    fn finish_sixel(
+        &mut self,
+        decode: bool,
+        out: &mut Vec<SixelEvent>,
+        pass: &mut Vec<u8>,
+    ) {
         self.swallowed = true;
+        // 事件必须严格按输入顺序：图片前的文本/2J 要先交给 vte，否则
+        // ImageClearScanner 会在图片之后看到 2J，把刚放置的图片清掉。
+        if !pass.is_empty() {
+            out.push(SixelEvent::Pass(std::mem::take(pass)));
+        }
         if decode && !self.payload.is_empty() {
             if let Some(image) = decode_sixel(&self.payload) {
                 out.push(SixelEvent::Image(image));
@@ -945,6 +955,25 @@ mod tests {
         let (pass, images) = events(&payload, false);
         assert_eq!(pass, b"next");
         assert!(images.is_empty());
+    }
+
+    #[test]
+    fn pass_before_image_preserves_2j_before_image_order() {
+        let mut filter = SixelFilter::new();
+        let mut chunk = b"\x1b[2Jbefore".to_vec();
+        chunk.extend_from_slice(b"\x1bPq#0;2;100;0;0#0~\x1b\\");
+        chunk.extend_from_slice(b"after");
+        let events = filter.feed(&chunk, true).expect("events");
+        let mut kinds = Vec::new();
+        for event in &events {
+            match event {
+                SixelEvent::Pass(p) => kinds.push(("pass", p.clone())),
+                SixelEvent::Image(_) => kinds.push(("image", Vec::new())),
+            }
+        }
+        let image_pos = kinds.iter().position(|(k, _)| *k == "image").expect("image");
+        assert!(kinds[..image_pos].iter().any(|(k, b)| *k == "pass" && b.windows(4).any(|w| w == b"\x1b[2J")),
+            "2J 必须在 Image 之前交给 vte: {kinds:?}");
     }
 
     #[test]
