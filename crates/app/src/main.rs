@@ -385,6 +385,8 @@ struct AppState {
     resize: Option<WindowResize>,
     /// 窗口是否聚焦（100ms 轮询 winit），用于 DECSET 1004 focus 上报。
     window_focused: bool,
+    /// 最近一次点击最大化按钮；WM 过渡期不回读 is_maximized。
+    maximize_changed_at: Option<Instant>,
     /// 上次同步给输入法的候选点（含 pane/DPR/锚点来源）；None 表示尚未发送。
     ime_spot: Option<ImeSpotKey>,
     /// 强制下一次 IME 同步重新下发（pane/Tab 切换、resize、窗口 focus/DPR 变化）。
@@ -7633,23 +7635,30 @@ fn install_native_window_events(ui: &MainWindow) {
                 });
             }
             winit::event::WindowEvent::Resized(_) => {
-                // WM 的 maximize 是异步的：先更新 UI 的权威状态，再同步圆角。
-                // 不能只让按钮读取 win.is_maximized()，否则 _NET_WM_STATE 尚未
-                // 回写的窗口会出现“点一下没反应/连点两次才恢复”的假状态。
+                // WM 的 maximize/restore 是异步的；点击后 500ms 内
+                // is_maximized() 可能短暂返回上一个值。过渡期不要回写 UI，
+                // 否则下一次点击会从错误状态取反，表现为“点了没反应”。
                 if let Some(ui) = weak.upgrade() {
-                    let actual = win.is_maximized();
-                    if ui.get_window_maximized() != actual {
-                        ui.set_window_maximized(actual);
-                        with_app(|st| {
-                            request_window_corners(
-                                st,
-                                None,
-                                Some(xconn::CornerState {
-                                    maximized: actual,
-                                    fullscreen: st.ui.window().is_fullscreen(),
-                                }),
-                            );
-                        });
+                    let recent_click = with_app(|st| {
+                        st.maximize_changed_at
+                            .is_some_and(|t| t.elapsed() < Duration::from_millis(500))
+                    })
+                    .unwrap_or(false);
+                    if !recent_click {
+                        let actual = win.is_maximized();
+                        if ui.get_window_maximized() != actual {
+                            ui.set_window_maximized(actual);
+                            with_app(|st| {
+                                request_window_corners(
+                                    st,
+                                    None,
+                                    Some(xconn::CornerState {
+                                        maximized: actual,
+                                        fullscreen: st.ui.window().is_fullscreen(),
+                                    }),
+                                );
+                            });
+                        }
                     }
                 }
             }
@@ -10009,6 +10018,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         link_hover_cell: None,
         resize: None,
         window_focused: true,
+        maximize_changed_at: None,
         ime_spot: None,
         ime_spot_dirty: true,
         ime_override: None,
@@ -12169,24 +12179,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     {
         let weak = ui.as_weak();
-        let max_seq = Rc::new(std::cell::Cell::new(0u64));
-        let max_seq_click = max_seq.clone();
         ui.on_max_pointer_down(|| eprintln!("[ui] max-pointer-down"));
         ui.on_toggle_maximize(move || {
             if let Some(ui) = weak.upgrade() {
-                let generation = max_seq_click.get().wrapping_add(1);
-                max_seq_click.set(generation);
-                // 以 UI 状态为准，不直接读可能滞后的 winit `_NET_WM_STATE`；
-                // 点击时先把目标状态写回 UI，避免 WM 异步回写期间的假状态。
-                let target = !ui.get_window_maximized();
+                let ui_state = ui.get_window_maximized();
+                let before = ui.window().is_maximized();
+                // 静止时以 WM actual 为准；不一致时先对齐，避免第一次点击
+                // 因为 UI 状态过期而变成 no-op。
+                let target = if ui_state == before { !ui_state } else { !before };
                 ui.set_window_maximized(target);
-                ui.window().set_maximized(target);
-                eprintln!(
-                    "[ui] toggle-maximize target={target} initial_actual={}",
-                    ui.window().is_maximized()
-                );
-                // 先按目标状态更新圆角，避免 WM 尚未写回 _NET_WM_STATE 时四角留缝。
                 with_app(|st| {
+                    st.maximize_changed_at = Some(Instant::now());
                     request_window_corners(
                         st,
                         None,
@@ -12196,32 +12199,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }),
                     );
                 });
-                // WM 可能拒绝/延迟 maximize；180ms 后回读一次，至少保证按钮状态
-                // 不会卡在“看起来已最大化、再点却没反应”的假状态。
-                // generation 防止旧 timer 覆盖用户的新点击。
-                let weak = ui.as_weak();
-                let max_seq_timer = max_seq_click.clone();
-                slint::Timer::single_shot(Duration::from_millis(180), move || {
-                    if max_seq_timer.get() != generation {
-                        return;
-                    }
-                    let Some(ui) = weak.upgrade() else { return };
-                    let actual = ui.window().is_maximized();
-                    if ui.get_window_maximized() != actual {
-                        ui.set_window_maximized(actual);
-                        with_app(|st| {
-                            request_window_corners(
-                                st,
-                                None,
-                                Some(xconn::CornerState {
-                                    maximized: actual,
-                                    fullscreen: st.ui.window().is_fullscreen(),
-                                }),
-                            );
-                        });
-                        eprintln!("[ui] toggle-maximize reconcile actual={actual}");
-                    }
-                });
+                ui.window().set_maximized(target);
+                eprintln!(
+                    "[ui] toggle-maximize ui_state={ui_state} before={before} target={target}"
+                );
             }
         });
     }
