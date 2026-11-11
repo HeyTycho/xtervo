@@ -15,7 +15,7 @@
 //! - 纹理导入失败/尺寸超限：记录一次明确日志并永久回退 CPU，不每帧重试。
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use slint::wgpu_30::wgpu;
@@ -53,6 +53,29 @@ struct State {
 }
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
+/// 真实 GPU 上传/呈现统计（仅用于 profile，不影响渲染）。
+static UPLOAD_FRAMES: AtomicU64 = AtomicU64::new(0);
+static UPLOAD_ROWS: AtomicU64 = AtomicU64::new(0);
+static UPLOAD_BYTES: AtomicU64 = AtomicU64::new(0);
+static UPLOAD_NS: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct UploadStats {
+    pub frames: u64,
+    pub rows: u64,
+    pub bytes: u64,
+    pub upload_nanos: u64,
+}
+
+/// 当前进程累计的 GPU 纹理上传统计。
+pub fn upload_stats() -> UploadStats {
+    UploadStats {
+        frames: UPLOAD_FRAMES.load(Ordering::Relaxed),
+        rows: UPLOAD_ROWS.load(Ordering::Relaxed),
+        bytes: UPLOAD_BYTES.load(Ordering::Relaxed),
+        upload_nanos: UPLOAD_NS.load(Ordering::Relaxed),
+    }
+}
 /// Slint 已经给出 WGPU30 device/queue，且纹理文件仍可用。
 static READY: AtomicBool = AtomicBool::new(false);
 /// 出现过不可恢复的纹理/上传错误：本进程剩余时间一律走 CPU。
@@ -253,9 +276,11 @@ pub fn pane_image(
         ranges.push((0, 0));
     }
 
+    let upload_started = std::time::Instant::now();
     let bytes: &[u8] = bytemuck::cast_slice(pixels);
     let bytes_per_row = width * 4;
     let mut uploaded_rows = 0u32;
+    let mut uploaded_bytes = 0u64;
     for (y, count) in ranges {
         if count == 0 {
             continue;
@@ -286,7 +311,12 @@ pub fn pane_image(
             },
         );
         uploaded_rows += count;
+        uploaded_bytes = uploaded_bytes.saturating_add(len as u64);
     }
+    UPLOAD_FRAMES.fetch_add(1, Ordering::Relaxed);
+    UPLOAD_ROWS.fetch_add(uploaded_rows as u64, Ordering::Relaxed);
+    UPLOAD_BYTES.fetch_add(uploaded_bytes, Ordering::Relaxed);
+    UPLOAD_NS.fetch_add(upload_started.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
     let image = match slint::Image::try_from(slot.texture.clone()) {
         Ok(image) => image,

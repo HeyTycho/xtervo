@@ -6507,6 +6507,16 @@ fn redraw_pane_inner(st: &mut AppState, id: PaneId) {
             rt.renderer.last_buffer_detached,
             rt.renderer.width * rt.renderer.height * 4
         );
+        let gpu = gpu_present::upload_stats();
+        if gpu.frames > 0 {
+            eprintln!(
+                "[gpu-profile] upload_frames={} rows={} bytes={} upload_us={:.2}",
+                gpu.frames,
+                gpu.rows,
+                gpu.bytes,
+                gpu.upload_nanos as f64 / 1000.0
+            );
+        }
     }
 
     if focused {
