@@ -272,6 +272,13 @@ fn plain_text_corpus() -> Vec<(&'static str, Vec<u8>)> {
         ("c1-csi", b"\x9b31mafter".to_vec()),
         ("c1-apc", b"\x9fGgarbage\x9cafter".to_vec()),
         ("can-sub", b"left\x18right\x1atail".to_vec()),
+        // 2026-11-11 第一处根因回归（IIP filter 状态泄漏）：`ESC x` 后 state
+        // 没回 Ground，紧跟的 `]` 被当 OSC 前缀丢弃。最小序列 + 真实 dsh 行。
+        ("iip-esc-x-bracket", b"\x1b[m]\x1b[0m".to_vec()),
+        (
+            "dsh-stderr-line",
+            b"\x1b[31m[stderr]\x1b[39m[Image #1]\x1b[1Cdone\x1b[0m".to_vec(),
+        ),
     ];
     corpus.push(("mixed", {
         let mut v = b"\x1b[2J\x1b[1;1H".to_vec();

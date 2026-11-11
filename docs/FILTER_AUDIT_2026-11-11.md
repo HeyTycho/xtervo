@@ -5,7 +5,7 @@
 - `10df3dd` test(core)：审计测试、真实 raw fixtures、只读访问器；7 个已知
   失败测试 `#[ignore]` 隔离，证据见
   [`docs/evidence/filter-audit-2026-11-11/`](evidence/filter-audit-2026-11-11/pre-fix-failing-tests.txt)。
-- 后续 commit fix(core)：修复 F1/F2/F3，全部测试去掉 `#[ignore]` 并通过。
+- `be14f08` fix(core)：修复 F1/F2/F3，全部测试去掉 `#[ignore]` 并通过。
 
 ## 0. 结论
 
@@ -171,11 +171,14 @@ Kitty parser 只认 `ESC _ G`，C1 `0x9F G` 不识别；字节会透传给 vte�
 cargo test -p tervo-core --test filter_conservation
 => 18 passed; 0 failed; 0 ignored
 cargo test -p tervo-core
-=> 全部 test binary 通过（含真实 PTY 的 sixel/kitty e2e）
+=> 258 passed, 0 failed（12 个 test binary，含真实 PTY 的 sixel/kitty e2e）
+=> Doc-tests tervo_core: 0 passed, 0 failed
 ```
 
 两个真实 dsh raw fixture 测试（文本逐字节、Kitty 分片守恒）在修复前后都
 通过，用于防回归；上述 7 个失败测试在修复前全红（证据文件），修复后全绿。
+`plain_text_corpus` 还加入了 2026-11-11 第一处根因（IIP `ESC x` 后丢 `]`）
+的最小序列与真实 dsh `[stderr]` 行，防止同类状态泄漏回归。
 
 ## 5. 测试命令
 
