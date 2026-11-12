@@ -1,6 +1,6 @@
 # Tervo Mainline Status / Mainline Audit
 
-Snapshot: 2026-11-12, branch `master`, HEAD `737e70a`
+Snapshot: 2026-11-12, branch `master`, HEAD `9799f03`
 Purpose: one place for supported features, fixes, and branch merge decisions.
 The historical inventory stays in [`FEATURE_MATRIX.md`](FEATURE_MATRIX.md);
 this file is the current mainline truth.
@@ -53,6 +53,13 @@ this file is the current mainline truth.
   permissions + first-enable confirmation, supervisor, events/status/theme,
   declarative panels/settings, enable/disable/reload/restart. v1/v2 entries are
   shown unsupported and never spawned.
+- WASM hot path: `runtime = "wasm"` output filters run before Sixel/IIP/Kitty/vte
+  with fuel/epoch/memory/line caps; trap/oversize falls back to the original
+  bytes. Only `permissions.terminal.output_filter` is supported for WASM.
+- Local plugin install/update/rollback: folder/zip/tar/tar.gz, staging + atomic
+  swap, path traversal/symlink/size limits, versioned backups, optional Ed25519
+  manifest signature (`TERVO_PLUGIN_PUBKEY`, require-signature switch). No
+  marketplace/trust-chain/key distribution.
 - Feedback button: settings → Help → Feedback creates a redacted local
   tar.gz and opens a configured issue page; no auto API/MR.
 - MCP is the external agent/tool surface; it is not a plugin capability.
@@ -81,6 +88,8 @@ this file is the current mainline truth.
 | MCP live terminal control (L0/L1/L2 gated) | `b232a4e`, `d016613`, `fcbe98c` |
 | Feedback bundle/issue page | `b3b862c`, `50d4bc2`, `737e70a` |
 | Plugin API v3 host | `d5bdbbd`, `af098bc`, merge `4174519` |
+| WASM output-filter hot path | `3dea788`, `fab1f2a`, `de1bad3`, merge `a431ecb` |
+| Local plugin install/update/rollback/signature | `a9ad962`, `28eb0d1`, merge `974a7e2` |
 | MCP e2e stale-socket fix | `fdfae65` |
 
 ## Branch merge audit (2026-11-12)
