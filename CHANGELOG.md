@@ -2,7 +2,9 @@
 
 Tervo 的版本与 tag 规则见 `docs/RELEASING.md`。
 
-## [Unreleased]
+## [0.4.0-rc.1] - 2026-11-12
+
+RC candidate: GPU damage scissor, embedded MCP live terminal control, plugin API v3, feedback bundle. WASM hot-path/local install/signing remain future work.
 
 ### Added
 

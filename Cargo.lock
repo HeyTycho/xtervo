@@ -4769,7 +4769,7 @@ dependencies = [
 
 [[package]]
 name = "tervo-app"
-version = "0.3.1"
+version = "0.4.0-rc.1"
 dependencies = [
  "arboard",
  "argon2",
@@ -4804,7 +4804,7 @@ dependencies = [
 
 [[package]]
 name = "tervo-core"
-version = "0.3.1"
+version = "0.4.0-rc.1"
 dependencies = [
  "alacritty_terminal",
  "criterion",
@@ -4822,7 +4822,7 @@ dependencies = [
 
 [[package]]
 name = "tervo-diagnostics"
-version = "0.3.1"
+version = "0.4.0-rc.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -4830,25 +4830,25 @@ dependencies = [
 
 [[package]]
 name = "tervo-graphics"
-version = "0.3.1"
+version = "0.4.0-rc.1"
 
 [[package]]
 name = "tervo-maximize"
-version = "0.3.1"
+version = "0.4.0-rc.1"
 dependencies = [
  "x11rb 0.14.0",
 ]
 
 [[package]]
 name = "tervo-render"
-version = "0.3.1"
+version = "0.4.0-rc.1"
 dependencies = [
  "tervo-scene",
 ]
 
 [[package]]
 name = "tervo-render-wgpu"
-version = "0.3.1"
+version = "0.4.0-rc.1"
 dependencies = [
  "fontdue",
  "futures-lite",
@@ -4864,7 +4864,7 @@ dependencies = [
 
 [[package]]
 name = "tervo-scene"
-version = "0.3.1"
+version = "0.4.0-rc.1"
 dependencies = [
  "tervo-core",
  "tervo-graphics",
