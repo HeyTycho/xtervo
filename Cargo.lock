@@ -4793,6 +4793,7 @@ dependencies = [
  "tervo-core",
  "tervo-diagnostics",
  "tervo-graphics",
+ "tervo-maximize",
  "tervo-render-wgpu",
  "tervo-scene",
  "toml",
@@ -4828,6 +4829,13 @@ dependencies = [
 [[package]]
 name = "tervo-graphics"
 version = "0.3.1"
+
+[[package]]
+name = "tervo-maximize"
+version = "0.3.1"
+dependencies = [
+ "x11rb 0.14.0",
+]
 
 [[package]]
 name = "tervo-render"
