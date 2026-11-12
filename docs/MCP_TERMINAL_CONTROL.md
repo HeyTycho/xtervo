@@ -1,8 +1,8 @@
 # MCP Terminal Control
 
-Status: L0/L1 implemented and exercised by an external Python harness
-(2026-11-12). L2 remains planned. The live socket is embedded in Tervo core; it
-is not a plugin and plugins do not host MCP.
+Status: L0/L1/L2 implemented and exercised by external Python harnesses
+(2026-11-12). L2 is gated by a separate destructiveness switch. The live socket
+is embedded in Tervo core; it is not a plugin and plugins do not host MCP.
 
 Implemented live tools:
 
@@ -10,11 +10,12 @@ Implemented live tools:
 read:  live_capabilities, live_snapshot, live_list, live_output
 write: live_send_text, live_send_key, live_run, live_focus,
        live_new_tab, live_split, live_scroll
+L2:    live_close_pane, live_close_tab, live_kill
 ```
 
-Write tools require `TERVO_DIAG_ALLOW_WRITE=1` and a token. The MCP server only
-lists write tools when that switch is enabled. `live_list`/`live_output` are
-read-only. L2 (`close_pane`, `close_tab`, `kill`, `rename`) is not implemented yet.
+L1 requires `TERVO_DIAG_ALLOW_WRITE=1`; L2 additionally requires
+`TERVO_DIAG_ALLOW_DESTRUCTIVE=1`. Both require a token. The MCP server only lists
+tools whose switch is enabled. `rename`/`resize` are not implemented yet.
 
 ## 1. Architecture
 
