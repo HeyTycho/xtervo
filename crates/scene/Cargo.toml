@@ -1,0 +1,17 @@
+[package]
+name = "tervo-scene"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+# The Frame adapter is a convenience boundary: it is the only part of this
+# crate that knows about tervo-core. Disable it to keep the pure scene contract
+# free of a terminal-core dependency.
+default = ["frame"]
+frame = ["dep:tervo-core"]
+
+[dependencies]
+tervo-graphics = { path = "../graphics" }
+tervo-core = { path = "../core", optional = true }

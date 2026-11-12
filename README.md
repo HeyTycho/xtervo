@@ -47,7 +47,7 @@
 | `crates/app` | Slint UI、字形 atlas、软件光栅化、X11 延迟探针 |
 | `scripts/` | 基准、启动/RSS、延迟/FPS、真机 GPU 验证、发布打包 |
 | `packaging/` | `.desktop` 入口与打包/安装说明 |
-| `docs/` | Phase 0 报告、UI/视觉规范（`UI_DESIGN.md`）、Tabby 功能对照与主题机制调研 |
+| `docs/` | 架构总览（`ARCHITECTURE.md`）、Phase 0 报告、UI/视觉规范、Tabby 功能对照与主题机制调研 |
 
 ## 快速开始
 

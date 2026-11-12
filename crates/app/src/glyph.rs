@@ -631,6 +631,9 @@ pub struct FontSet {
     pub baseline: i32,
     #[allow(dead_code)]
     pub font_path: String,
+    /// CPU 实际加载的四个 face 路径；GPU-native atlas 用同一组文件保证
+    /// 字形 coverage/字重与 CPU 基线可比。
+    pub font_paths: [&'static str; 4],
 }
 
 impl FontSet {
@@ -659,6 +662,7 @@ impl FontSet {
                 cell_h,
                 baseline,
                 font_path: cand.regular.to_string(),
+                font_paths: [cand.regular, cand.bold, cand.italic, cand.bold_italic],
             });
         }
         None

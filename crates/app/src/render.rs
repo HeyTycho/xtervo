@@ -13,7 +13,7 @@
 
 use std::rc::Rc;
 
-use tervo_core::{flags, CellData, CursorShape, Frame, Span};
+use tervo_core::{flags, CellData, CursorShape, Frame, ImageCrop, Span};
 
 use crate::glyph::{
     is_zero_width_control, placeholder_kind, prefers_color_emoji, ColorGlyph, FontSet, Glyph,
@@ -42,19 +42,36 @@ pub(crate) fn fit_inline_image_size(
 struct ImageLayerEntry {
     row: i32,
     col: u16,
+    /// Full source dimensions (used to index RGBA).
     width: u32,
     height: u32,
+    /// Crop inside the source, in pixels.
+    source_x: f32,
+    source_y: f32,
+    source_w: f32,
+    source_h: f32,
     data: std::sync::Arc<[u8]>,
     display_w: f32,
     display_h: f32,
+    above_text: bool,
 }
 
 impl ImageLayerEntry {
     fn row_span(&self, rows: usize, cell_h: usize) -> Option<(usize, usize)> {
+        if cell_h == 0 || !self.display_h.is_finite() {
+            return None;
+        }
         let top = self.row as f32 * cell_h as f32;
         let bottom = top + self.display_h;
         let first = (top / cell_h as f32).floor() as i32;
         let last = ((bottom - f32::EPSILON) / cell_h as f32).ceil() as i32;
+        // 完全在视口上方的图片（负行 + 等比缩放后显示高度不足一行）两个端点
+        // 都是负数：必须先判空再 clamp，否则负数转 usize 会得到天文数字并
+        // 在 `target[first..end]` panic。prev_images 里残留的旧 placement
+        // 正好会走到这里。
+        if last <= 0 || first >= rows as i32 {
+            return None;
+        }
         let first = first.max(0) as usize;
         let last = last.min(rows as i32) as usize;
         (first < last).then_some((first, last))
@@ -252,6 +269,8 @@ impl FrameBuffers {
     }
 
     fn image(&self) -> slint::Image {
+        // Agent C 的 MinimalSoftwareWindow + SwappedBuffers 测试证明 Slint
+        // 能正确重新栅格化原地更新的 SharedPixelBuffer；不需要每帧整屏 copy。
         slint::Image::from_rgba8(self.buffers[self.active].clone())
     }
 }
@@ -479,10 +498,48 @@ impl Renderer {
         (self.cell_w, self.cell_h)
     }
 
+    /// CPU `FontSet` 的四个 face 路径（GPU-native atlas 复用同一组文件）。
+    pub fn font_paths(&self) -> [&str; 4] {
+        self.fonts.font_paths
+    }
+
+    /// 字号（px），GPU atlas 用同一栅格化尺寸。
+    pub fn font_size(&self) -> f32 {
+        self.fonts.size
+    }
+
+    /// 行顶到基线的像素距离。
+    pub fn baseline(&self) -> i32 {
+        self.fonts.baseline
+    }
+
+    /// 主题背景（不透明 `0x00RRGGBB`）：GPU Scene 的 clear + default cell bg。
+    pub fn theme_bg_rgb(&self) -> u32 {
+        self.theme_bg & 0x00ff_ffff
+    }
+
+    /// GPU-native 失败/切回 CPU 时强制下一帧整屏重绘。
+    ///
+    /// GPU 渲染期间没有维护 `dirty_flags`/双缓冲历史，回退首帧必须整屏，
+    /// 否则会沿用旧 framebuffer 的残影。
+    pub fn force_full_redraw(&mut self) {
+        self.force_full = true;
+        self.dirty_rows.clear();
+        self.prev_changed_rows.clear();
+        self.last_selection = None;
+        self.last_search = None;
+    }
+
     /// 当前可显示帧的像素（测试/诊断用；返回刚绘制的那块缓冲）。
     #[allow(dead_code)]
     pub fn pixels(&self) -> &[u32] {
         self.buffer.pixels()
+    }
+
+    /// 本帧实际重绘的行（升序）。整屏重绘时 `last_draw_full=true`，调用方应忽略
+    /// 这个列表并上传整帧；GPU 纹理上传只按这里做行级更新。
+    pub fn dirty_rows(&self) -> &[usize] {
+        &self.dirty_rows
     }
 
     pub fn resize_grid(&mut self, cols: usize, rows: usize) {
@@ -1194,9 +1251,14 @@ impl Renderer {
             if x1 <= x0 {
                 continue;
             }
-            let scale_x = img.width as f32 / dw.max(1.0);
-            let scale_y = img.height as f32 / dh.max(1.0);
-            let dest_y0 = (top.max(0.0) + dy0 as f32).round() as usize;
+            let scale_x = img.source_w / dw.max(1.0);
+            let scale_y = img.source_h / dh.max(1.0);
+            // 目标行必须是这一行真正开始的位置。旧实现用
+            // `top.max(0.0) + dy0`：图片顶部被视口裁掉（row < 0）时
+            // top.max(0)=0，而 dy0 已经含 -top 的裁剪偏移，结果整张图
+            // 又被向下平移 -top，画到下方错误行；这些行不在 row_span 里，
+            // 图片移走/删除后不会被标记重绘，表现为“图片像素残留在错误行”。
+            let dest_y0 = row_top.max(top).max(0.0).round() as usize;
             let src_y0 = (dy0 as f32 * scale_y) as usize;
             let src_x0 = (x0 as f32 - left).max(0.0) as usize;
             let pixels = self.buffer.pixels_mut();
@@ -1207,19 +1269,22 @@ impl Renderer {
                 if py >= height {
                     break;
                 }
-                let sy = (src_y0 + (out_dy as f32 * scale_y) as usize).min(img.height as usize - 1);
+                let sy = (src_y0 + (out_dy as f32 * scale_y) as usize)
+                    .min(img.source_h as usize - 1);
                 for px in x0..x1 {
                     if px >= width {
                         break;
                     }
-                    let sx = if img.width as usize == dw.round() as usize {
+                    let sx = if img.source_w as usize == dw.round() as usize {
                         src_x0 + (px - x0)
                     } else {
                         (src_x0 as f32 + (px - x0) as f32 * scale_x)
-                            .min(img.width as f32 - 1.0) as usize
+                            .min(img.source_w - 1.0) as usize
                     }
-                    .min(img.width as usize - 1);
-                    let si = (sy * img.width as usize + sx) * 4;
+                    .min(img.source_w as usize - 1);
+                    let full_x = img.source_x as usize + sx;
+                    let full_y = img.source_y as usize + sy;
+                    let si = (full_y * img.width as usize + full_x) * 4;
                     if si + 3 >= img.data.len() {
                         continue;
                     }
@@ -1234,7 +1299,7 @@ impl Renderer {
         }
     }
 
-    fn draw_row(&mut self, frame: &Frame, images: &[ImageLayerEntry], row: usize) {
+    fn draw_row(&mut self, frame: &Frame, below_images: &[ImageLayerEntry], above_images: &[ImageLayerEntry], row: usize) {
         if row >= self.rows || row >= frame.rows {
             return;
         }
@@ -1265,8 +1330,8 @@ impl Renderer {
             }
         }
 
-        // 图层 3：图片，位于 cell 背景之上、文字/选区之下。
-        self.draw_image_row(row, images);
+        // 图层 3：负 z / below-text 图片，位于 cell 背景之上、文字之下。
+        self.draw_image_row(row, below_images);
 
         // 图层 4/5：选区/搜索覆盖 + 文字字形。背景已经画过，这里不再重复铺
         // 普通 cell 背景；只补选区/搜索这类必须位于图片之上的高亮。
@@ -1360,6 +1425,8 @@ impl Renderer {
                 self.fill_rect(x0, sy, cell_px, 1, fg);
             }
         }
+        // Kitty positive z / explicit above-text policy: images cover glyphs.
+        self.draw_image_row(row, above_images);
         self.last_draw_cells += self.cols as u32;
     }
 
@@ -1524,23 +1591,54 @@ impl Renderer {
                 let avail_w = (self.width as f32 - x).max(self.cell_w.max(1) as f32);
                 let avail_h = (self.height as f32 - y.max(0.0))
                     .max(self.cell_h.max(1) as f32);
-                let (display_w, display_h) =
-                    fit_inline_image_size(img.width, img.height, avail_w, avail_h);
+                let meta = frame
+                    .image_placements
+                    .iter()
+                    .find(|m| m.placement_id == img.id);
+                let crop: ImageCrop = meta
+                    .and_then(|m| m.source_rect)
+                    .unwrap_or(ImageCrop { x: 0, y: 0, w: img.width, h: img.height });
+                let source_w = crop.w.min(img.width).max(1) as f32;
+                let source_h = crop.h.min(img.height).max(1) as f32;
+                // Kitty placement carries an explicit cell rectangle; use it.
+                // Sixel/IIP without a crop keeps the historical pane-fit behavior.
+                let (display_w, display_h) = match meta {
+                    Some(m) if m.source_rect.is_some() && m.cells_w > 0 && m.cells_h > 0 => (
+                        m.cells_w as f32 * self.cell_w.max(1) as f32,
+                        m.cells_h as f32 * self.cell_h.max(1) as f32,
+                    ),
+                    _ => fit_inline_image_size(
+                        source_w as u32,
+                        source_h as u32,
+                        avail_w,
+                        avail_h,
+                    ),
+                };
                 ImageLayerEntry {
                     row: img.row,
                     col: img.col,
                     width: img.width,
                     height: img.height,
+                    source_x: crop.x as f32,
+                    source_y: crop.y as f32,
+                    source_w,
+                    source_h,
                     data: img.data.clone(),
                     display_w,
                     display_h,
+                    above_text: img.above_text,
                 }
             })
             .collect();
+        let (below_images, above_images): (Vec<_>, Vec<_>) =
+            images.into_iter().partition(|entry| !entry.above_text);
 
         // 大范围 damage（普通屏幕滚动会脏所有行）等同整屏：逐行重绘再把
         // 上一帧未重绘的行复制过来没有收益，直接整屏更省一次复制。
         let full = frame.full || self.force_full || frame.needs_full_redraw();
+        // full 帧没有“局部重绘行”；清掉上一帧遗留的 dirty_rows，避免调用方
+        // 误把旧行区间当成这一帧的增量。
+        self.dirty_rows.clear();
 
         if full {
             self.force_full = false;
@@ -1550,7 +1648,7 @@ impl Renderer {
             // Image 共用同一块内存（写前 detach 会多一次整屏 CoW）。
             self.buffer.rotate();
             for row in 0..self.rows {
-                self.draw_row(frame, &images, row);
+                self.draw_row(frame, &below_images, &above_images, row);
             }
             self.last_draw_rows = self.rows as u32;
             self.prev_changed_rows.clear();
@@ -1568,7 +1666,8 @@ impl Renderer {
                 }
             };
             mark_image_rows(&self.prev_images, &mut image_rows);
-            mark_image_rows(&images, &mut image_rows);
+            mark_image_rows(&below_images, &mut image_rows);
+            mark_image_rows(&above_images, &mut image_rows);
             for (dirty, below_image) in self.dirty_flags.iter_mut().zip(&image_rows) {
                 *dirty |= *below_image;
             }
@@ -1619,7 +1718,7 @@ impl Renderer {
             );
             for i in 0..self.dirty_rows.len() {
                 let row = self.dirty_rows[i];
-                self.draw_row(frame, &images, row);
+                self.draw_row(frame, &below_images, &above_images, row);
             }
             self.last_draw_rows = self.dirty_rows.len() as u32;
             self.prev_changed_rows.clear();
@@ -1633,7 +1732,11 @@ impl Renderer {
         }
         self.last_selection = frame.selection;
         self.last_search = frame.search;
-        self.prev_images = images;
+        self.prev_images = below_images
+            .iter()
+            .chain(above_images.iter())
+            .cloned()
+            .collect();
         self.last_draw_us = started.elapsed().as_secs_f64() * 1000.0;
         self.last_buffer_detached = self.buffer.detached;
     }
@@ -1897,11 +2000,14 @@ mod tests {
         frame.images.push(tervo_core::InlineImage {
             id: 1,
             source_id: 1,
+            row_id: 0,
             row: 0,
             col: 0,
             width: (cell_w * 2) as u32,
             height: cell_h as u32,
             data: std::sync::Arc::from(data.into_boxed_slice()),
+            z_index: -1,
+            above_text: false,
         });
         frame.cells[1].ch = 'X' as u32;
         frame.cells[1].fg = 0x00ff_ffff;
@@ -1937,11 +2043,14 @@ mod tests {
         frame.images.push(tervo_core::InlineImage {
             id: 7,
             source_id: 7,
+            row_id: 0,
             row: 0,
             col: 0,
             width: (cell_w * 2) as u32,
             height: cell_h as u32,
             data: std::sync::Arc::from(data.into_boxed_slice()),
+            z_index: -1,
+            above_text: false,
         });
         frame.cells[0].bg = 0;
         frame.cells[0].ch = ' ' as u32;
@@ -1970,11 +2079,14 @@ mod tests {
         tervo_core::InlineImage {
             id,
             source_id,
+            row_id: 0,
             row,
             col,
             width: 16,
             height: 16,
             data: std::sync::Arc::from(data.into_boxed_slice()),
+            z_index: -1,
+            above_text: false,
         }
     }
 
@@ -2001,6 +2113,67 @@ mod tests {
     }
 
     #[test]
+    fn above_text_image_covers_block_glyph_and_below_text_does_not() {
+        let Some(fonts) = FontSet::load(15.0) else { return };
+        let cell_w = fonts.cell_w;
+        let cell_h = fonts.cell_h;
+        let theme_bg = Theme::default().bg();
+        let make_frame = |above_text: bool| {
+            let mut frame = blank_frame(1, 1);
+            frame.full = true;
+            frame.cells[0].ch = '\u{2588}' as u32; // full block, blue foreground
+            frame.cells[0].fg = 0x0000_00ff;
+            let pixels: Vec<u8> = (0..cell_w * cell_h)
+                .flat_map(|_| [255, 0, 0, 255])
+                .collect();
+            frame.images.push(tervo_core::InlineImage {
+                id: 1,
+                source_id: 1,
+                row_id: 0,
+                row: 0,
+                col: 0,
+                width: cell_w as u32,
+                height: cell_h as u32,
+                data: std::sync::Arc::from(pixels),
+                z_index: 1,
+                above_text,
+            });
+            frame
+        };
+        let mut above = Renderer::new(
+            Rc::new(fonts),
+            1,
+            1,
+            theme_bg,
+            Theme::default().cursor(),
+            1.0,
+        );
+        above.draw_without_cursor(&make_frame(true));
+        let center = (cell_h / 2) * cell_w + cell_w / 2;
+        assert_eq!(
+            above.pixels()[center] & 0x00ff_ffff,
+            pack(0x00ff_0000) & 0x00ff_ffff,
+            "above-text image must cover glyph"
+        );
+
+        let Some(fonts_below) = FontSet::load(15.0) else { return };
+        let mut below = Renderer::new(
+            Rc::new(fonts_below),
+            1,
+            1,
+            theme_bg,
+            Theme::default().cursor(),
+            1.0,
+        );
+        below.draw_without_cursor(&make_frame(false));
+        assert_eq!(
+            below.pixels()[center] & 0x00ff_ffff,
+            pack(0x0000_00ff) & 0x00ff_ffff,
+            "below-text image must be covered by block glyph"
+        );
+    }
+
+    #[test]
     fn same_image_geometry_recomposites_and_removal_clears_pixels() {
         let Some(fonts) = FontSet::load(15.0) else { return };
         let cell_w = fonts.cell_w;
@@ -2023,11 +2196,14 @@ mod tests {
         frame.images.push(tervo_core::InlineImage {
             id: 3,
             source_id: 10,
+            row_id: 0,
             row: 0,
             col: 0,
             width: cell_w as u32,
             height: cell_h as u32,
             data,
+            z_index: -1,
+            above_text: false,
         });
         renderer.draw_without_cursor(&frame);
         assert_eq!(renderer.pixels()[0], pack(0x000000_ff));

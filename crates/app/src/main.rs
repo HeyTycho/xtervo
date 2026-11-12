@@ -7,6 +7,8 @@ mod config;
 mod config_watch;
 mod diag;
 mod glyph;
+mod gpu_native;
+mod gpu_present;
 mod keys;
 mod known_hosts;
 mod latency;
@@ -15,6 +17,8 @@ mod plugin;
 mod profile;
 mod quake;
 mod render;
+#[cfg(test)]
+mod image_layer_diff_tests;
 #[cfg(test)]
 mod render_bench;
 #[cfg(test)]
@@ -170,6 +174,9 @@ struct PaneRuntime {
     exit_notified: bool,
     /// 鼠标正悬停在可点击链接上（Slint mouse-cursor / 避免每帧重绘终端）。
     link_hover: bool,
+    /// 上一帧是否由 `TERVO_GPU_NATIVE` 出图。GPU 失败切回 CPU 时必须强制
+    /// 整屏重绘，因为 GPU 期间没有维护 CPU 双缓冲的 damage 历史。
+    gpu_native_active: bool,
     /// SSH 密码认证用的临时 askpass 脚本；随 pane 一起释放。
     _askpass: Option<askpass::Askpass>,
 }
@@ -382,6 +389,8 @@ struct AppState {
     resize: Option<WindowResize>,
     /// 窗口是否聚焦（100ms 轮询 winit），用于 DECSET 1004 focus 上报。
     window_focused: bool,
+    /// Rust 侧权威的最大化 desired state；Slint 属性只做图标显示。
+    window_maximized: bool,
     /// 上次同步给输入法的候选点（含 pane/DPR/锚点来源）；None 表示尚未发送。
     ime_spot: Option<ImeSpotKey>,
     /// 强制下一次 IME 同步重新下发（pane/Tab 切换、resize、窗口 focus/DPR 变化）。
@@ -2404,6 +2413,15 @@ fn winit_resize_direction(dir: i32) -> Option<winit::window::ResizeDirection> {
 ///
 /// Wayland 会话里通常同时有 `DISPLAY`（XWayland），`xconn` 也能连上；只看
 /// `xresize` 会把 Wayland 窗口误判成 X11，从而错误地跳过 `xdg_toplevel.resize`。
+fn winit_window_x11_id(window: &winit::window::Window) -> Option<u32> {
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    match window.window_handle().ok()?.as_raw() {
+        RawWindowHandle::Xlib(h) => Some(h.window as u32),
+        RawWindowHandle::Xcb(h) => Some(h.window.get()),
+        _ => None,
+    }
+}
+
 fn winit_window_is_x11(window: &winit::window::Window) -> bool {
     use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
     window.window_handle().ok().is_some_and(|handle| {
@@ -2526,6 +2544,9 @@ fn create_pane(
     profile: Option<&profile::Profile>,
     mut askpass: Option<askpass::Askpass>,
 ) -> std::io::Result<PaneRuntime> {
+    // pane id 可能被重连复用；旧 GPU 纹理不能跨会话复用。
+    gpu_present::forget(id);
+
     // Profile 优先：它显式带 shell/args/env；否则沿用全局配置。
     // 远端 Profile（ssh/telnet/serial）里出现的路径属于远端文件系统，不能本地打开。
     let remote = profile.is_some_and(|p| p.kind != "local");
@@ -2718,6 +2739,7 @@ fn create_pane(
         exit_signal: None,
         exit_notified: false,
         link_hover: false,
+        gpu_native_active: false,
         _askpass: askpass,
     })
 }
@@ -5742,7 +5764,23 @@ fn pane_view(
         read_only: rt.handle.read_only(),
         link_hover: rt.link_hover,
         images: ModelRc::from(rt.inline_model.clone()),
+        line_numbers: line_number_model(rt.renderer.rows, rt.renderer.cell_h),
+        line_h: rt.renderer.cell_h as f32,
     }
+}
+
+/// 调试行号：仅 TERVO_LINE_NUMBERS=1 时生成 1..N 的字符串模型。
+fn line_number_model(rows: usize, _cell_h: usize) -> ModelRc<slint::SharedString> {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let enabled = *ENABLED.get_or_init(|| {
+        std::env::var("TERVO_LINE_NUMBERS").map(|v| v == "1").unwrap_or(false)
+    });
+    if !enabled {
+        return ModelRc::from(Rc::new(VecModel::from(Vec::<slint::SharedString>::new())));
+    }
+    let items: Vec<slint::SharedString> =
+        (1..=rows).map(|n| n.to_string().into()).collect();
+    ModelRc::from(Rc::new(VecModel::from(items)))
 }
 
 /// 刷新一个 pane 在模型里的视图（滚动条/铃/尺寸），不拉帧不重绘。
@@ -6418,6 +6456,16 @@ fn redraw_pane_inner(st: &mut AppState, id: PaneId) {
     let blink_on = st.cursor_blink_on;
     let global_blink = st.cfg.cursor_blinking();
     let policy = st.cfg.scrollbar_policy();
+    // 回收已关闭 pane 的 GPU 纹理/离屏 target，避免全局 HashMap 持有已删除 pane。
+    if gpu_present::ready() || gpu_native::ready() {
+        let active: Vec<u64> = st.panes.keys().copied().collect();
+        if gpu_present::ready() {
+            gpu_present::retain(&active);
+        }
+        if gpu_native::ready() {
+            gpu_native::retain(&active);
+        }
+    }
     let Some(rt) = st.panes.get_mut(&id) else {
         return;
     };
@@ -6428,14 +6476,81 @@ fn redraw_pane_inner(st: &mut AppState, id: PaneId) {
         return;
     }
     rt.cursor = (frame.cursor.line as usize, frame.cursor.col as usize);
-    // 光标不进帧缓冲：用独立 overlay，闪烁时只换 visible。
-    rt.renderer.draw_without_cursor(&frame);
-    rt.image = rt.renderer.image();
-    sync_inline_images(rt, &frame);
+    // 诊断：TERVO_FRAME_DUMP=/tmp/frame.txt 时，每次重绘前把 Frame 文本落盘。
+    if let Some(path) = std::env::var_os("TERVO_FRAME_DUMP") {
+        let mut out = String::with_capacity(frame.rows * frame.cols + frame.rows);
+        for row in 0..frame.rows {
+            for col in 0..frame.cols {
+                out.push(frame.cell(row, col).char());
+            }
+            out.push('\n');
+        }
+        let _ = std::fs::write(&path, out);
+    }
+    // TERVO_GPU_NATIVE=1：真实 Frame -> Scene -> WGPU glyph atlas/背景，先尝试
+    // GPU 出图。成功时**不**碰 CPU framebuffer，也不走 stage 0 纹理上传。
+    // 失败返回 None 才回 CPU，并强制下一帧整屏重绘。
+    let native_image = if gpu_native::ready() {
+        gpu_native::pane_image(&gpu_native::PaneFrame {
+            pane: id,
+            frame: &frame,
+            cols: rt.renderer.cols,
+            rows: rt.renderer.rows,
+            cell_w: rt.renderer.cell_w,
+            cell_h: rt.renderer.cell_h,
+            baseline: rt.renderer.baseline(),
+            font_size: rt.renderer.font_size(),
+            font_paths: rt.renderer.font_paths(),
+            theme_bg: rt.renderer.theme_bg_rgb(),
+        })
+    } else {
+        None
+    };
+
+    let gpu_before = gpu_present::upload_stats();
+    if let Some(image) = native_image {
+        rt.gpu_native_active = true;
+        rt.image = image;
+    } else {
+        if rt.gpu_native_active {
+            // GPU 期间 CPU 双缓冲的 damage 历史是旧的：回退首帧必须整屏。
+            rt.renderer.force_full_redraw();
+            rt.gpu_native_active = false;
+        }
+        // 光标不进帧缓冲：用独立 overlay，闪烁时只换 visible。
+        rt.renderer.draw_without_cursor(&frame);
+        // stage 0 只作为显式 TERVO_GPU_NATIVE=0 的兼容路径；默认 GPU-native
+        // 失败时直接 CPU，绝不偷偷回“CPU framebuffer 上传”冒充 GPU。
+        let gpu_image = if gpu_present::ready() && !gpu_native::requested() {
+            gpu_present::pane_image(
+                id,
+                rt.renderer.pixels(),
+                rt.renderer.width,
+                rt.renderer.height,
+                rt.renderer.last_draw_full,
+                rt.renderer.dirty_rows(),
+                !st.resize_in_progress,
+            )
+        } else {
+            None
+        };
+        rt.image = match gpu_image {
+            Some(image) => image,
+            None => rt.renderer.image(),
+        };
+    }
+    let gpu_after = gpu_present::upload_stats();
+    if rt.gpu_native_active {
+        // GPU Scene 已经按 Scene.image 合成图片；再显示 Slint 图片 overlay 会双画。
+        rt.inline_model.set_vec(Vec::new());
+        rt.inline_sig.clear();
+    } else {
+        sync_inline_images(rt, &frame);
+    }
     // 可见纹理缓存与点击 source 分离：即使 Slint 纹理缓存淘汰，本帧命中的
     // 不可变 RGBA 仍在，首次点击无需再等 actor 回包。
     refresh_inline_hits(rt, &frame);
-    if render_profile() {
+    if render_profile() && !rt.gpu_native_active {
         eprintln!(
             "[render] pane={id} grid={}x{} full={} rows={} copy={} full_redraws={} \
              damage_rows={} draw={:.2}ms image={:.2}ms detach={} bytes={}",
@@ -6451,6 +6566,21 @@ fn redraw_pane_inner(st: &mut AppState, id: PaneId) {
             rt.renderer.last_buffer_detached,
             rt.renderer.width * rt.renderer.height * 4
         );
+        let gpu_rows = gpu_after.rows.saturating_sub(gpu_before.rows);
+        let gpu_bytes = gpu_after.bytes.saturating_sub(gpu_before.bytes);
+        let gpu_ns = gpu_after
+            .upload_nanos
+            .saturating_sub(gpu_before.upload_nanos);
+        if gpu_after.frames > gpu_before.frames {
+            eprintln!(
+                "[gpu-profile] frames={} rows={} bytes={} upload_us={:.2} total_frames={}",
+                gpu_after.frames.saturating_sub(gpu_before.frames),
+                gpu_rows,
+                gpu_bytes,
+                gpu_ns as f64 / 1000.0,
+                gpu_after.frames
+            );
+        }
     }
 
     if focused {
@@ -6574,6 +6704,170 @@ fn redraw_all() {
     let ids: Vec<PaneId> = with_app(|st| st.panes.keys().copied().collect()).unwrap_or_default();
     for id in ids {
         redraw_pane(id);
+    }
+}
+
+/// 环境变量是否被设置为“开”（任意非空值都可，`0` 视为关）。
+fn env_flag(name: &str) -> bool {
+    std::env::var_os(name).is_some_and(|v| v != "0")
+}
+
+fn snapshot_path(base: &Path, suffix: &str) -> PathBuf {
+    let mut p = base.as_os_str().to_os_string();
+    p.push(suffix);
+    PathBuf::from(p)
+}
+
+/// 无头验收：`TERVO_GPU_SNAPSHOT=<前缀>` 时用 `Window::take_snapshot()` 读回
+/// Slint 合成后的像素，写二进制 PPM，并打印非背景像素/颜色统计。
+///
+/// 可选：
+/// - `TERVO_GPU_SNAPSHOT_RESIZE=1`：首张快照后程序化改窗口尺寸，1.5s 后再拍一张
+///   （验证 resize 不黑；走 Slint `resized` 回调 + PTY resize）。
+/// - `TERVO_GPU_SNAPSHOT_EXIT=1`：拍完退出事件循环，供脚本无头跑。
+fn install_gpu_snapshot_hook(ui: &MainWindow) {
+    let Some(base) = std::env::var_os("TERVO_GPU_SNAPSHOT") else {
+        return;
+    };
+    let base = PathBuf::from(base);
+    let base_for_log = base.clone();
+    let want_resize = env_flag("TERVO_GPU_SNAPSHOT_RESIZE");
+    let exit_after = env_flag("TERVO_GPU_SNAPSHOT_EXIT");
+    // llvmpipe first WGPU present can land after 2.5s; tests that need the
+    // imported texture to have been presented should pass a larger delay.
+    let first_delay = std::env::var("TERVO_GPU_SNAPSHOT_DELAY_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(Duration::from_millis)
+        .unwrap_or(Duration::from_millis(2500));
+    let weak = ui.as_weak();
+    let started = Instant::now();
+    let stage = Rc::new(std::cell::Cell::new(0u8));
+    let resized_at = Rc::new(std::cell::Cell::new(None::<Instant>));
+    let timer = slint::Timer::default();
+    let stage_c = stage.clone();
+    let resized_at_c = resized_at.clone();
+    timer.start(
+        slint::TimerMode::Repeated,
+        Duration::from_millis(100),
+        move || {
+            let Some(ui) = weak.upgrade() else { return };
+            match stage_c.get() {
+                0 if started.elapsed() >= first_delay => {
+                    take_snapshot_and_log(&ui, &snapshot_path(&base, ".before.ppm"));
+                    stage_c.set(1);
+                    if want_resize {
+                        let size = ui.window().size();
+                        let (w, h) = (size.width + 160, size.height + 120);
+                        eprintln!("[gpu-snapshot] resize {size:?} -> {w}x{h}");
+                        ui.window().set_size(slint::PhysicalSize::new(w, h));
+                        resized_at_c.set(Some(Instant::now()));
+                    } else if exit_after {
+                        slint::quit_event_loop();
+                    }
+                },
+                1 => {
+                    let Some(at) = resized_at_c.get() else { return };
+                    if at.elapsed() < Duration::from_millis(1500) {
+                        return;
+                    }
+                    take_snapshot_and_log(&ui, &snapshot_path(&base, ".resized.ppm"));
+                    stage_c.set(2);
+                    if exit_after {
+                        slint::quit_event_loop();
+                    }
+                },
+                _ => {},
+            }
+        },
+    );
+    // Slint Timer 需在事件循环期间存活；与 app 内现有定时器同样用 forget 保活。
+    std::mem::forget(timer);
+    eprintln!(
+        "[gpu-snapshot] 已安装：base={} resize={} exit={}",
+        base_for_log.display(),
+        want_resize,
+        exit_after
+    );
+}
+
+fn take_snapshot_and_log(ui: &MainWindow, path: &Path) {
+    match ui.window().take_snapshot() {
+        Ok(buffer) => {
+            let width = buffer.width();
+            let height = buffer.height();
+            let bytes = buffer.as_bytes();
+            let total = width as usize * height as usize;
+            let mut histogram: HashMap<u32, usize> = HashMap::new();
+            for px in bytes.chunks_exact(4) {
+                let key = u32::from_le_bytes([px[0], px[1], px[2], px[3]]);
+                *histogram.entry(key).or_default() += 1;
+            }
+            let (top, top_n) = histogram
+                .iter()
+                .max_by_key(|(_, count)| **count)
+                .map(|(color, count)| (*color, *count))
+                .unwrap_or((0, 0));
+            let nonbg = total.saturating_sub(top_n);
+            let center_idx = (height as usize / 2 * width as usize + width as usize / 2) * 4;
+            let center = bytes.get(center_idx..center_idx + 4).unwrap_or(&[0; 4]);
+            let mut ppm = Vec::with_capacity(total * 3 + 32);
+            ppm.extend_from_slice(format!("P6\n{width} {height}\n255\n").as_bytes());
+            for px in bytes.chunks_exact(4) {
+                ppm.extend_from_slice(&px[..3]);
+            }
+            match std::fs::write(path, &ppm) {
+                Ok(()) => {
+                    let native = gpu_native::totals();
+                    let last = gpu_native::last_stats();
+                    let text_stats = last.as_ref().and_then(|stats| stats.text.as_ref());
+                    eprintln!(
+                        "[gpu-snapshot] path={} size={width}x{height} gpu_ready={} \
+                         gpu_native_ready={} gpu_native_frames={} draw_calls={} \
+                         atlas_uploads={} atlas_bytes={} vertex_bytes={} \
+                         image_uploads={} image_sources={} \
+                         last(fallback={} missing={} wide={} spacer={} hidden={} dim={} \
+                         selected={} searched={} images_skipped={} cursor_skipped={} \
+                         background_from_scene={}) total={total} nonbg={nonbg} distinct={} \
+                         top=#{top:08x} center=#{}",
+                        path.display(),
+                        gpu_present::ready(),
+                        gpu_native::ready(),
+                        native.frames,
+                        native.draw_calls,
+                        native.atlas_uploads,
+                        native.atlas_uploaded_bytes,
+                        native.vertex_uploaded_bytes,
+                        native.image_uploads,
+                        native.image_sources,
+                        text_stats.map_or(0, |stats| stats.fallback_glyphs),
+                        text_stats.map_or(0, |stats| stats.missing_glyphs),
+                        text_stats.map_or(0, |stats| stats.wide_cells),
+                        text_stats.map_or(0, |stats| stats.wide_spacer_cells),
+                        text_stats.map_or(0, |stats| stats.hidden_cells),
+                        text_stats.map_or(0, |stats| stats.dim_cells),
+                        text_stats.map_or(0, |stats| stats.selected_cells),
+                        text_stats.map_or(0, |stats| stats.searched_cells),
+                        last.as_ref().map_or(0, |stats| stats.below.images + stats.above.images),
+                        true,
+                        true,
+                        histogram.len(),
+                        center
+                            .iter()
+                            .map(|b| format!("{b:02x}"))
+                            .collect::<String>()
+                    )
+                },
+                Err(err) => eprintln!(
+                    "[gpu-snapshot] 写 PPM 失败 path={} error={err}",
+                    path.display()
+                ),
+            }
+        },
+        Err(err) => eprintln!(
+            "[gpu-snapshot] take_snapshot 失败 path={} error={err}",
+            path.display()
+        ),
     }
 }
 
@@ -7089,6 +7383,96 @@ fn get_clipboard(st: &mut AppState) -> Option<String> {
     with_clipboard(st, |cb| cb.get_text().ok()).flatten()
 }
 
+/// 剪贴板里的图像 → 临时 PNG 文件路径。
+///
+/// 终端 PTY 只能收文本；图片必须先落盘，再把路径作为 bracketed paste
+/// 交给 TUI（dsh 会把路径识别成 `[Image #N]`）。文件名无空格，0600。
+fn write_clipboard_image(image: arboard::ImageData) -> std::io::Result<PathBuf> {
+    if image.width == 0 || image.height == 0 || image.bytes.len() % 4 != 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "clipboard image has invalid dimensions/pixels",
+        ));
+    }
+    let expected = image.width.saturating_mul(image.height).saturating_mul(4);
+    if image.bytes.len() < expected {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "clipboard image RGBA buffer is short",
+        ));
+    }
+    // 32 MP 上限：避免恶意/误触剪贴板把 UI 线程内存打爆。
+    if image.width as u64 * image.height as u64 > 32_000_000 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "clipboard image exceeds 32 MP",
+        ));
+    }
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let path = std::env::temp_dir().join(format!(
+        "tervo-paste-{}-{stamp}.png",
+        std::process::id()
+    ));
+    let file = {
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        opts.open(&path)?
+    };
+    let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), image.width as u32, image.height as u32);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header()?;
+    writer.write_image_data(&image.bytes[..expected])?;
+    writer.finish()?;
+    Ok(path)
+}
+
+fn get_clipboard_image(st: &mut AppState) -> Option<arboard::ImageData> {
+    with_clipboard(st, |cb| cb.get_image().ok()).flatten()
+}
+
+fn get_primary_image(st: &mut AppState) -> Option<arboard::ImageData> {
+    use arboard::{GetExtLinux, LinuxClipboardKind};
+    with_clipboard(st, |cb| {
+        cb.get().clipboard(LinuxClipboardKind::Primary).image().ok()
+    })
+    .flatten()
+}
+
+/// 有图片就粘贴图片路径；返回 false 表示剪贴板没有图片。
+fn paste_clipboard_image(st: &mut AppState, primary: bool) -> bool {
+    let image = if primary {
+        get_primary_image(st)
+    } else {
+        get_clipboard_image(st)
+    };
+    let Some(image) = image else { return false };
+    match write_clipboard_image(image) {
+        Ok(path) => {
+            eprintln!(
+                "[clipboard] image paste source={} path={}",
+                if primary { "primary" } else { "clipboard" },
+                path.display()
+            );
+            set_status_toast(st, format!("Image pasted: {}", path.display()));
+            paste_text_into_focused(st, &path.to_string_lossy());
+            true
+        }
+        Err(e) => {
+            eprintln!("[clipboard] image encode failed: {e}");
+            false
+        }
+    }
+}
+
 /// 写 X11 PRIMARY（中键粘贴）。arboard 的 Linux 扩展 API 不需要 Wayland data-control。
 fn set_primary(st: &mut AppState, text: &str) {
     use arboard::{LinuxClipboardKind, SetExtLinux};
@@ -7408,6 +7792,9 @@ fn paste_text_into_focused(st: &mut AppState, text: &str) {
 }
 
 fn paste_into_focused(st: &mut AppState) {
+    if paste_clipboard_image(st, false) {
+        return;
+    }
     let Some(text) = get_clipboard(st) else {
         return;
     };
@@ -7422,6 +7809,8 @@ fn paste_primary_into_focused(st: &mut AppState) {
             text.len()
         );
         paste_text_into_focused(st, &text);
+    } else if paste_clipboard_image(st, true) {
+        eprintln!("[clipboard] middle paste source=primary image");
     } else {
         eprintln!("[clipboard] middle paste source=clipboard (primary empty)");
         paste_into_focused(st);
@@ -9089,7 +9478,7 @@ fn print_help() {
 --import-tabby PATH 无 UI：导入 Tabby config.yaml（Profile/字号/快捷键/主题）后退出\n  \
 --export-tabby PATH 无 UI：导出 Profile 为 Tabby YAML 后退出\n  \
 --diagnose          打印环境/窗口/最近日志后退出（排查右键/焦点问题）\n  \
-  diag [env|snapshot|replay]  harness 可调用 JSON 诊断（tervo diag help）\n  \
+  diag [env|snapshot|replay|trace|metrics|observability|scene-diff]  harness 可调用 JSON 诊断（tervo diag help）\n  \
 -V, --version       显示版本、git commit 与构建时间\n  \
 -h, --help          显示帮助\n\n\
 快捷键: Ctrl+T 新建标签 / Ctrl+Shift+N 新建窗口 / Ctrl+W 关闭 / Ctrl+F 搜索 / Ctrl+Shift+C 复制 / Ctrl+Shift+V 粘贴\n\
@@ -9166,6 +9555,29 @@ fn sftp_probe_transfer(
     Ok(String::new())
 }
 
+/// TERVO_GPU=1 但 WGPU30 backend/adapter/device 初始化失败：exec 重启自己并
+/// `TERVO_GPU=0`，走原来的默认 CPU/Skia 路径。保留参数，日志明确写出原因。
+/// `TERVO_GPU_FALLBACK=1` 只用于标记这次重启，不再请求 GPU（TERVO_GPU=0 已足够）。
+fn exec_cpu_fallback(requested: &str, reason: &str) -> ! {
+    use std::os::unix::process::CommandExt;
+    eprintln!(
+        "[gpu] requested_backend={requested} 的 WGPU 显示链路初始化失败：{reason}；\
+         exec 重启并 TERVO_GPU=0 TERVO_GPU_NATIVE=0 自动回退 CPU/Skia（默认路径）"
+    );
+    logging::restore_stderr();
+    std::thread::sleep(Duration::from_millis(50));
+    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("tervo"));
+    let err = std::process::Command::new(exe)
+        .args(args)
+        .env("TERVO_GPU", "0")
+        .env("TERVO_GPU_NATIVE", "0")
+        .env("TERVO_GPU_FALLBACK", "1")
+        .exec();
+    eprintln!("[gpu] exec CPU 回退失败: {err}");
+    std::process::exit(3);
+}
+
 /// Skia 已创建窗口但 1s 内没有拿到 GPU/GL 上下文（software surface 在本机实测
 /// 黑屏），用 exec 换成 winit-software 重新启动；保留原参数/环境，且用
 /// `TERVO_RENDER_FALLBACK=1` 防止循环。`exec` 前恢复 stderr，避免新进程继承
@@ -9184,6 +9596,7 @@ fn exec_software_fallback(requested: &str) -> ! {
     let err = std::process::Command::new(exe)
         .args(args)
         .env("SLINT_BACKEND", "winit-software")
+        .env("TERVO_GPU_NATIVE", "0")
         .env("TERVO_RENDER_FALLBACK", "1")
         .env_remove("TERVO_TEST_FORCE_UI_INIT_FAIL")
         .env_remove("TERVO_TEST_SUSPEND_BG")
@@ -9197,9 +9610,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // `SLINT_BACKEND=winit-software` 仍是显式回退开关；显式设置任何值都以用户为准。
     // Skia 初始化失败时由 render_probe/下面的重试自动回退 software，不黑屏、不崩溃。
     let explicit_backend = std::env::var("SLINT_BACKEND").ok();
+    // TERVO_GPU=1 是显式 opt-in：请求 Skia 的 WGPU30 API（require_wgpu_30），
+    // 从而在 RenderingSetup 里拿到 WGPU30 device/queue。默认完全不改变原路径。
+    let tervo_gpu = gpu_present::requested();
+    let tervo_gpu_native = gpu_native::requested();
+    // 两个显式开关都需要 Slint 的 WGPU30 device/queue；但只有 TERVO_GPU=1
+    // 走 stage 0 CPU framebuffer 上传，TERVO_GPU_NATIVE=1 走 Scene 文字。
+    let tervo_gpu_any = tervo_gpu || tervo_gpu_native;
     let mut requested_backend = explicit_backend
         .clone()
         .unwrap_or_else(|| "winit-skia".to_string());
+    if tervo_gpu_any && explicit_backend.is_none() {
+        requested_backend = "winit-skia".to_string();
+    }
     let backend_from_env = explicit_backend.is_some();
     // 没有 DRM 设备时 Skia 可能只能建 software surface，而该 surface 在本机
     // 实测会黑屏（窗口在、内容全黑）。这不是“GPU 初始化失败后回退”而是压根
@@ -9207,6 +9630,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // `SLINT_BACKEND=winit-skia` 强制尝试（headless/llvmpipe 验证用）。
     let mut auto_software_no_drm = false;
     if !backend_from_env
+        && !tervo_gpu_any
         && !std::path::Path::new("/dev/dri").exists()
         && std::env::var_os("TERVO_FORCE_GPU").is_none()
     {
@@ -9321,10 +9745,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
     // 必须在任何 Slint backend 初始化之前设置；放在 logging::init 之后是为了让
     // 日志里的 SLINT_BACKEND 能区分“程序默认 GPU”与“用户显式设置”。
-    if !backend_from_env {
+    // TERVO_GPU=1 时不能写 SLINT_BACKEND：BackendSelector::select() 会读它，
+    // 而我们要用 require_wgpu_30() 明确选中 Skia 的 WGPU30 API。
+    if !backend_from_env && !tervo_gpu_any {
         std::env::set_var("SLINT_BACKEND", &requested_backend);
     }
-    if backend_from_env {
+    if tervo_gpu_any && !backend_from_env {
+        eprintln!(
+            "[gpu] {}：请求 Slint WGPU30 显示链路（BackendSelector.require_wgpu_30；\
+             失败会自动回退 CPU/Skia，默认路径不受影响）",
+            if tervo_gpu_native {
+                "TERVO_GPU_NATIVE=1（Frame -> Scene -> WGPU 文字/背景）"
+            } else {
+                "TERVO_GPU=1（stage 0 CPU framebuffer 纹理）"
+            }
+        );
+    } else if backend_from_env {
         eprintln!("[render] requested_backend={requested_backend}（显式设置 SLINT_BACKEND）");
     } else if auto_software_no_drm {
         eprintln!(
@@ -9416,6 +9852,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(not(debug_assertions))]
     let force_init_fail = false;
 
+    // TERVO_GPU=1 / TERVO_GPU_NATIVE=1：在任何 Slint UI 初始化之前明确要求 WGPU30。
+    // require_wgpu_30 请求 WGPU30 API；adapter/device 不可用时 select() 返回错误，
+    // 这里 exec 回退 CPU/Skia（默认路径），不会黑屏硬撑。
+    if tervo_gpu_any && !backend_from_env && !force_init_fail {
+        match slint::BackendSelector::new()
+            .require_wgpu_30(slint::wgpu_30::WGPUConfiguration::default())
+            .select()
+        {
+            Ok(()) => eprintln!(
+                "[gpu] BackendSelector::require_wgpu_30(...).select() = OK（等待 RenderingSetup 的 device/queue）"
+            ),
+            Err(err) => exec_cpu_fallback(
+                &requested_backend,
+                &format!("require_wgpu_30/select: {err}"),
+            ),
+        }
+    }
     let first_ui = if force_init_fail {
         eprintln!("[render] 测试注入：强制首次 UI 初始化失败（TERVO_TEST_FORCE_UI_INIT_FAIL）");
         Err(slint::PlatformError::Other(
@@ -9427,6 +9880,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (ui, backend_fell_back) = match first_ui {
         Ok(ui) => (ui, false),
+        Err(err) if tervo_gpu_any => {
+            // WGPU platform 已经 select；再改 SLINT_BACKEND 重试无效，直接 exec 回退。
+            exec_cpu_fallback(&requested_backend, &format!("MainWindow::new: {err}"))
+        }
         Err(err) if requested_backend != "winit-software" => {
             eprintln!(
                 "[render] requested_backend={requested_backend} 初始化失败: {err}；\
@@ -9636,6 +10093,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         link_hover_cell: None,
         resize: None,
         window_focused: true,
+        window_maximized: false,
         ime_spot: None,
         ime_spot_dirty: true,
         ime_override: None,
@@ -11796,12 +12254,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     {
         let weak = ui.as_weak();
+        ui.on_max_pointer_down(|| eprintln!("[ui] max-pointer-down"));
         ui.on_toggle_maximize(move || {
             if let Some(ui) = weak.upgrade() {
-                // 内置 `maximized` 属性与窗口状态双向同步，直接翻转即可
-                let target = !ui.window().is_maximized();
-                ui.window().set_maximized(target);
-                // 先按目标状态更新圆角，避免 WM 尚未写回 _NET_WM_STATE 时四角留缝。
+                // AppState 是唯一 desired 状态源。点击只翻转它，绝不再拿
+                // WM actual/几何来校准：双显示器上几何判据会永远 false，
+                // 导致每次点击都重复发送 maximize。
+                let target = with_app(|st| {
+                    st.window_maximized = !st.window_maximized;
+                    st.window_maximized
+                })
+                .unwrap_or_else(|| !ui.get_window_maximized());
+                let before = ui.window().is_maximized();
+                ui.set_window_maximized(target);
                 with_app(|st| {
                     request_window_corners(
                         st,
@@ -11812,6 +12277,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }),
                     );
                 });
+                // 显式 X11 window id，不再用 WM_NAME/title 查找；某些 WM 下
+                // winit set_maximized 会被吞掉，这层失败再回退 winit。
+                let xid = ui.window().with_winit_window(winit_window_x11_id).flatten();
+                let sent = match xid {
+                    Some(id) => xconn::wm_set_maximized_id(id, target),
+                    None => {
+                        let title = ui.get_window_title().to_string();
+                        xconn::wm_set_maximized(&title, target)
+                    }
+                };
+                match sent {
+                    Ok(()) => eprintln!(
+                        "[ui] toggle-maximize before={before} target={target} sent=ewmh"
+                    ),
+                    Err(err) => {
+                        eprintln!(
+                            "[ui] toggle-maximize before={before} target={target} \
+                             ewmh_err={err} fallback=winit"
+                        );
+                        ui.window().set_maximized(target);
+                    }
+                }
             }
         });
     }
@@ -12228,6 +12715,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ---- 首帧 ----
     ui.show()?;
+    // 启动时用 EWMH 查询校准；不要用窗口几何：多显示器下
+    // _NET_WORKAREA 是整块虚拟桌面，单屏最大化窗口会永远被判为 false。
+    let xid = ui.window().with_winit_window(winit_window_x11_id).flatten();
+    let initial_maximized = xid
+        .and_then(xconn::window_is_maximized_id)
+        .unwrap_or_else(|| ui.window().is_maximized());
+    ui.set_window_maximized(initial_maximized);
+    with_app(|st| st.window_maximized = initial_maximized);
+    // 无头验收钩子：TERVO_GPU_SNAPSHOT=<前缀> 时定时 take_snapshot 写 PPM 并打像素统计。
+    install_gpu_snapshot_hook(&ui);
+    // RenderingSetup 可能首帧后才给出 device/queue；GPU 就绪后主动重绘一次。
+    // Stage 0 和 Scene 文字链路都需要这一脚，否则首帧以后没有输入时画面
+    // 会一直停在 CPU 初帧。
+    if tervo_gpu_any {
+        // Slint's first WGPU present can happen after the first terminal frame
+        // (PTY output/timer). An imported texture that has not been sampled by
+        // a WGPU frame yet used to snapshot as an empty pane until the next
+        // redraw, so nudge several times around renderer setup/first present.
+        for delay_ms in [180u64, 800, 1500, 2100] {
+            slint::Timer::single_shot(Duration::from_millis(delay_ms), || {
+                if gpu_present::ready() || gpu_native::ready() {
+                    redraw_all();
+                }
+            });
+        }
+    }
     // Slint 1.18 的 winit 后端不投递外部文件拖放，用 winit 事件桥接补齐。
     install_native_window_events(&ui);
     // GPU 自检兜底：Skia 软件 surface 会“窗口正常但全黑”，而 Slint 的
@@ -13128,6 +13641,31 @@ mod tests {
         assert_eq!(join_remote("/", "a"), "/a");
         assert_eq!(join_remote("/tmp", "a"), "/tmp/a");
         assert_eq!(join_remote("/tmp/", "a"), "/tmp/a");
+    }
+
+    #[test]
+    fn clipboard_image_is_written_as_valid_png() {
+        let image = arboard::ImageData {
+            width: 2,
+            height: 1,
+            bytes: vec![255, 0, 0, 255, 0, 255, 0, 128].into(),
+        };
+        let path = write_clipboard_image(image).expect("encode clipboard image");
+        let bytes = std::fs::read(&path).expect("read png");
+        let decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+        let mut reader = decoder.read_info().expect("png header");
+        let mut out = vec![0u8; reader.output_buffer_size().unwrap()];
+        let info = reader.next_frame(&mut out).expect("png frame");
+        assert_eq!((info.width, info.height), (2, 1));
+        assert_eq!(&out[..8], &[255, 0, 0, 255, 0, 255, 0, 128]);
+        let _ = std::fs::remove_file(path);
+
+        let bad = arboard::ImageData {
+            width: 2,
+            height: 2,
+            bytes: vec![0; 4].into(),
+        };
+        assert!(write_clipboard_image(bad).is_err(), "short RGBA must be rejected");
     }
 
     #[test]

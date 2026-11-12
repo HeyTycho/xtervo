@@ -65,6 +65,30 @@
 → 打包/tag 按 docs/RELEASING.md
 ```
 
+## 排障纪律（强制）
+
+完整复盘见 [`docs/POSTMORTEM_2026-11-11_RENDER_RESIDUE.md`](docs/POSTMORTEM_2026-11-11_RENDER_RESIDUE.md)。
+
+```text
+1. 先复现，保留 raw / Frame dump / 截图，不让用户反复重启。
+2. 按层找第一处分歧：
+   bytes -> filter -> Term -> Frame -> framebuffer -> Slint/窗口。
+3. 没有失败测试，不写修复。
+4. 禁止用默认整屏重绘、每帧新 buffer 掩盖根因；只能作为显式 debug 开关。
+5. 图片/过滤层改动必须同时有逐字节或逐像素差分测试。
+6. 连续两个修复不改变症状，停止猜，转插桩/二分层。
+7. 多 agent 并行必须按层分工，各自交失败测试、复现命令、证据路径，
+   由一个 integrator 统一合并。
+```
+
+调试开关：
+
+```bash
+TERVO_LINE_NUMBERS=1            # 终端行号 overlay（会盖住最左约 3 字符）
+TERVO_FRAME_DUMP=/tmp/frame.txt # 每帧 Frame 文本落盘
+TERVO_SIXEL_DEBUG=1             # 图片 placement 日志
+```
+
 ## 当前状态
 
 ```text

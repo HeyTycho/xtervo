@@ -1,0 +1,38 @@
+running gpu_terminal_spike on isolated display :77 (xvfb=/home/user/AIworkspace/rusttabbyterminal/.worktrees/agent-gpu-spike/.xvfb-local/usr/bin/Xvfb)
+warning: use of deprecated method `std::sync::atomic::Atomic::<u64>::fetch_update`: renamed to `try_update` for consistency
+   --> crates/diagnostics/src/metrics.rs:187:18
+    |
+187 |                 .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+    |                  ^^^^^^^^^^^^
+    |
+    = note: `#[warn(deprecated)]` on by default
+help: replace the use of the deprecated method
+    |
+187 -                 .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+187 +                 .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+    |
+
+warning: tervo-app@0.3.1: warning: Component is neither used nor exported
+warning: tervo-app@0.3.1:     --> /home/user/AIworkspace/rusttabbyterminal/.worktrees/agent-gpu-spike/crates/app/ui/main.slint:174:1
+warning: tervo-app@0.3.1:      |
+warning: tervo-app@0.3.1:  174 | / component MenuGroupLabel inherits Rectangle {
+warning: tervo-app@0.3.1:  175 | |     in property <string> label;
+warning: tervo-app@0.3.1:  176 | |     in property <bool> first: false;
+warning: tervo-app@0.3.1: ...    |
+warning: tervo-app@0.3.1:  203 | | }
+warning: tervo-app@0.3.1:      | |_^
+warning: tervo-app@0.3.1:      |
+warning: tervo-app@0.3.1: warning: The property 'viewport-y' has been deprecated. Please use 'content-y' instead
+warning: tervo-app@0.3.1:     --> /home/user/AIworkspace/rusttabbyterminal/.worktrees/agent-gpu-spike/crates/app/ui/main.slint:7975:42
+warning: tervo-app@0.3.1:      |
+warning: tervo-app@0.3.1: 7975 | ...                   self.viewport-y = Math.max(
+warning: tervo-app@0.3.1:      |                            ^^^^^^^^^^
+warning: `tervo-diagnostics` (lib) generated 1 warning (run `cargo fix --lib -p tervo-diagnostics` to apply 1 suggestion)
+   Compiling tervo-app v0.3.1 (/home/user/AIworkspace/rusttabbyterminal/.worktrees/agent-gpu-spike/crates/app)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.84s
+     Running `/home/user/AIworkspace/rusttabbyterminal/target/debug/examples/gpu_terminal_spike`
+pty: spawned /bin/sh -c <printf 46x9 ...>; waiting for output
+pty: generation=2 grid=46x9 text="TERVO-GPU-PTY                                 \n  RED-BG                                      \n  BLUE-BG                                     \nPTY-FRAME-OK                                  \n                                              \n                                              \n                                              \n                                              \n                                              \n"
+gpu: Slint WGPU30 adapter="llvmpipe (LLVM 15.0.7, 256 bits)" backend=Vulkan device_type=Cpu
+gpu: uploaded 414x198 Rgba8UnormSrgb from PTY framebuffer; window=414x198
+PASS gpu_terminal_spike: real PTY framebuffer 414x198 -> Slint WGPU30 texture -> take_snapshot; cpu_ink=5300 snap_ink=5300 ratio=1.000 mismatch>8=0.000% mismatch>32=0.000% mean_abs=0.000 max_abs=0 generation=2 snapshot=/home/user/AIworkspace/rusttabbyterminal/.worktrees/agent-gpu-spike/docs/evidence/gpu-spike/slint_snapshot.ppm cpu=/home/user/AIworkspace/rusttabbyterminal/.worktrees/agent-gpu-spike/docs/evidence/gpu-spike/cpu_framebuffer.ppm

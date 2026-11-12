@@ -1,0 +1,155 @@
+// 临时脚本测试（不提交）：把完整 302KB 真实 dsh raw 过一遍守恒账本。
+use tervo_core::iip::{IipEvent, IipFilter};
+use tervo_core::kitty_graphics::{KittyEvent, KittyParser};
+use tervo_core::sixel::{SixelEvent, SixelFilter};
+
+const ESC: u8 = 0x1b;
+
+struct P {
+    sixel: SixelFilter,
+    iip: IipFilter,
+    kitty: KittyParser,
+}
+
+impl P {
+    fn feed(&mut self, bytes: &[u8], pass: &mut Vec<u8>, cmds: &mut usize, errs: &mut usize) {
+        match self.sixel.feed(bytes, true) {
+            None => self.iip_feed(bytes, pass, cmds, errs),
+            Some(events) => {
+                for e in events {
+                    match e {
+                        SixelEvent::Pass(c) => self.iip_feed(&c, pass, cmds, errs),
+                        SixelEvent::Image(_) => {},
+                    }
+                }
+            },
+        }
+    }
+    fn iip_feed(&mut self, bytes: &[u8], pass: &mut Vec<u8>, cmds: &mut usize, errs: &mut usize) {
+        match self.iip.feed(bytes, true) {
+            None => self.kitty_feed(bytes, pass, cmds, errs),
+            Some(events) => {
+                for e in events {
+                    match e {
+                        IipEvent::Pass(c) => self.kitty_feed(&c, pass, cmds, errs),
+                        IipEvent::Image(_) => {},
+                    }
+                }
+            },
+        }
+    }
+    fn kitty_feed(&mut self, bytes: &[u8], pass: &mut Vec<u8>, cmds: &mut usize, errs: &mut usize) {
+        if bytes.is_empty() {
+            return;
+        }
+        if !self.kitty.has_partial_sequence() && !bytes.contains(&ESC) {
+            pass.extend_from_slice(bytes);
+            return;
+        }
+        for e in self.kitty.feed(bytes) {
+            match e {
+                KittyEvent::Pass(c) => pass.extend_from_slice(&c),
+                KittyEvent::Command(_) => *cmds += 1,
+                KittyEvent::Error(_) => *errs += 1,
+            }
+        }
+    }
+    fn held(&self) -> usize {
+        self.sixel.held_bytes() + self.iip.held_bytes() + self.kitty.held_bytes()
+    }
+}
+
+fn apc_spans(data: &[u8]) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
+    let mut i = 0;
+    while i + 2 < data.len() {
+        if data[i] == ESC && data[i + 1] == b'_' && data[i + 2] == b'G' {
+            let mut end = None;
+            let mut j = i + 3;
+            while j < data.len() {
+                if data[j] == ESC && j + 1 < data.len() && data[j + 1] == b'\\' {
+                    end = Some(j + 2);
+                    break;
+                }
+                if matches!(data[j], 0x9c | 0x07 | 0x18 | 0x1a) {
+                    end = Some(j + 1);
+                    break;
+                }
+                j += 1;
+            }
+            let end = end.expect("unterminated APC");
+            spans.push((i, end));
+            i = end;
+        } else {
+            i += 1;
+        }
+    }
+    spans
+}
+
+fn without_spans(data: &[u8], spans: &[(usize, usize)]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(data.len());
+    let mut cursor = 0;
+    for &(s, e) in spans {
+        out.extend_from_slice(&data[cursor..s]);
+        cursor = e;
+    }
+    out.extend_from_slice(&data[cursor..]);
+    out
+}
+
+fn run(_input: &[u8], chunks: &[&[u8]]) -> (Vec<u8>, usize, usize) {
+    let mut p = P { sixel: SixelFilter::new(), iip: IipFilter::new(), kitty: KittyParser::new() };
+    let mut pass = Vec::new();
+    let (mut cmds, mut errs) = (0, 0);
+    for c in chunks {
+        p.feed(c, &mut pass, &mut cmds, &mut errs);
+    }
+    if p.held() != 0 { println!("   WARN held={}", p.held()); }
+    (pass, cmds, errs)
+}
+
+#[test]
+fn full_dsh_raw_conservation() {
+    let path = "/home/user/AIworkspace/rusttabbyterminal/.worktrees/agent-e2e/.logs/dsh-image-preview-e2e/pty/app-to-host.raw";
+    let input = std::fs::read(path).expect("raw");
+    let spans = apc_spans(&input);
+    let swallowed: usize = spans.iter().map(|(s, e)| e - s).sum();
+    let expected = without_spans(&input, &spans);
+    println!(
+        "raw={} apcs={} apc_bytes={} expected_pass={}",
+        input.len(),
+        spans.len(),
+        swallowed,
+        expected.len()
+    );
+    let (pass, cmds, errs) = run(&input, &[input.as_slice()]);
+    assert_eq!(pass.len(), expected.len(), "pass 长度");
+    assert!(pass == expected, "完整 raw：pass != 去掉 APC 的原始字节");
+    println!("single chunk: cmds={cmds} errs={errs}");
+
+    let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+    for round in 0..128 {
+        let mut cuts = Vec::new();
+        while cuts.len() < 37 {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            let cut = 1 + (seed as usize % (input.len() - 1));
+            cuts.push(cut);
+        }
+        cuts.sort_unstable();
+        cuts.dedup();
+        let mut chunks: Vec<&[u8]> = Vec::new();
+        let mut start = 0;
+        for cut in cuts {
+            chunks.push(&input[start..cut]);
+            start = cut;
+        }
+        chunks.push(&input[start..]);
+        let (chunked, _, _) = run(&input, &chunks);
+        assert!(chunked == expected, "round {round}: 随机切分后 pass 不一致");
+        if round % 32 == 31 { println!("  round {} ok", round + 1); }
+    }
+    println!("128 random chunkings OK");
+}

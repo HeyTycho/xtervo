@@ -70,15 +70,32 @@ pub fn install(window: &slint::Window, requested: &str, fell_back: bool) {
         let mut st = callback_state.borrow_mut();
         match rendering_state {
             RenderingState::RenderingSetup => {
-                if let GraphicsAPI::NativeOpenGL { get_proc_address } = api {
-                    report_gl(get_proc_address, &mut st);
-                } else if !st.gl_reported {
-                    // wgpu (Vulkan) 等非 OpenGL GPU 后端：没有 GL_RENDERER 可读，
-                    // 但已经拿到 GPU surface，不能误判成 software。
-                    st.gl_reported = true;
-                    GPU_CONFIRMED.store(true, Ordering::Relaxed);
-                    let kind = format!("{api:?}");
-                    eprintln!("[render] actual_renderer=skia-gpu（{kind}；非 OpenGL，读不到 GL_RENDERER）");
+                match api {
+                    GraphicsAPI::NativeOpenGL { get_proc_address } => {
+                        report_gl(get_proc_address, &mut st);
+                    },
+                    GraphicsAPI::WGPU30 { device, queue, .. } => {
+                        // TERVO_GPU=1 / TERVO_GPU_NATIVE=1：Slint 的 WGPU30 API
+                        // 把它实际使用的同一 device/queue 交出来，两个链路共用；
+                        // gpu_present 只存 device、gpu_native 惰性建 atlas。
+                        st.gl_reported = true;
+                        GPU_CONFIRMED.store(true, Ordering::Relaxed);
+                        eprintln!(
+                            "[render] actual_renderer=wgpu30（Slint WGPU30；\
+                             device/queue 与 GPU 终端链路同源）"
+                        );
+                        crate::gpu_present::install(device, queue);
+                        crate::gpu_native::install(device, queue);
+                    },
+                    _ if !st.gl_reported => {
+                        // 其他 GPU surface：没有 GL_RENDERER 可读，但已经拿到 GPU
+                        // surface，不能误判成 software。
+                        st.gl_reported = true;
+                        GPU_CONFIRMED.store(true, Ordering::Relaxed);
+                        let kind = format!("{api:?}");
+                        eprintln!("[render] actual_renderer=skia-gpu（{kind}；非 OpenGL，读不到 GL_RENDERER）");
+                    },
+                    _ => {},
                 }
             },
             RenderingState::BeforeRendering => {
@@ -88,6 +105,13 @@ pub fn install(window: &slint::Window, requested: &str, fell_back: bool) {
                 st.before = Some(now);
                 st.frames += 1;
                 RENDER_FRAMES.store(st.frames, Ordering::Relaxed);
+                // A texture imported before Slint's first WGPU present can
+                // stay unsampled (empty pane) until a later redraw. Once the
+                // first WGPU frame exists, request one fresh terminal frame so
+                // the import happens after a real present.
+                if st.frames == 1 && crate::gpu_native::ready() {
+                    slint::Timer::single_shot(Duration::from_millis(0), crate::redraw_all);
+                }
                 if frame_profile() {
                     eprintln!(
                         "[render] frame={} gap={}ms",
@@ -109,6 +133,8 @@ pub fn install(window: &slint::Window, requested: &str, fell_back: bool) {
                 }
             },
             RenderingState::RenderingTeardown => {
+                crate::gpu_present::teardown();
+                crate::gpu_native::teardown();
                 eprintln!("[render] rendering teardown frame={}", st.frames);
             },
             _ => {},

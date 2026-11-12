@@ -115,6 +115,9 @@ export struct PaneView {
     /// Sixel 图片 overlay（按创建顺序，后创建的画在上面）。图片不进终端
     /// cell 文本/选区，也不触发终端帧重绘。
     images: [PaneImage],
+    /// 调试用行号（TERVO_LINE_NUMBERS=1）。正常为空。
+    line-numbers: [string],
+    line-h: length,
 }
 
 export struct TabView {
@@ -1239,6 +1242,8 @@ export component MainWindow inherits Window {
     in-out property <int> drop-hover-pane: -1;
     in property <[TabView]> tabs;
     in property <length> tabbar-height: 32px;
+    /// 窗口最大化状态（由 Rust 同步，避免按钮直接读异步 WM 状态）。
+    in-out property <bool> window-maximized: false;
     in-out property <bool> menu-open: false;
     in property <length> menu-x: 0px;
     in property <length> menu-y: 0px;
@@ -1321,6 +1326,7 @@ export component MainWindow inherits Window {
     callback close-window();
     callback minimize-window();
     callback toggle-maximize();
+    callback max-pointer-down();
     callback set-theme(string);
     callback language-changed(string);
     callback tabbar-context(length, length);
@@ -2576,7 +2582,7 @@ export component MainWindow inherits Window {
                 border-radius: 5px;
                 background: win-max.has-hover ? Palette.colors.hover : Palette.colors.raise;
                 Text {
-                    text: root.maximized ? "❐" : "□";
+                    text: root.window-maximized ? "❐" : "□";
                     color: Palette.colors.text;
                     font-size: 11px;
                     horizontal-alignment: center;
@@ -2754,7 +2760,11 @@ export component MainWindow inherits Window {
                     }
 
                     // 光标单独成层：闪烁只切 visible，不重绘/重传整屏终端帧。
-                    if p.cursor-visible : Image {
+                    if p.cursor-visible && p.focused
+                        && !root.settings-open && !root.search-open
+                        && !root.rename-open && !root.save-open
+                        && !root.tabsearch-open && !root.ai-panel-open
+                        && !root.image-preview-open : Image {
                         source: p.cursor-image;
                         x: p.cursor-x;
                         y: p.cursor-y;

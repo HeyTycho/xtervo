@@ -369,7 +369,13 @@ export HOME="$OUT/home"
 export XDG_CACHE_HOME="$OUT/home/.cache"
 export XDG_STATE_HOME="$OUT/home/.local/state"
 export XMODIFIERS=@im=none
-export SLINT_BACKEND=${SLINT_BACKEND:-winit-software}
+# TERVO_GPU=1 时必须让 app 自己 require_wgpu_30；显式 SLINT_BACKEND 会让它
+# 走 Skia/OpenGL 而不是 WGPU，soak 就测错了路径。
+if [ "${TERVO_GPU:-0}" = "1" ]; then
+    unset SLINT_BACKEND
+else
+    export SLINT_BACKEND=${SLINT_BACKEND:-winit-software}
+fi
 export TERVO_CONFIG="$OUT/config.toml"
 export TERVO_LOG_DIR
 export TERM=${TERM:-xterm-256color}

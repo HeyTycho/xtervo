@@ -1,0 +1,70 @@
+[package]
+name = "tervo-render-wgpu"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+# The Slint presenter is opt-in: without it this crate only needs wgpu and can
+# be used for headless/offscreen frame production.
+slint-presenter = ["dep:slint"]
+
+[dependencies]
+tervo-render = { path = "../render" }
+tervo-scene = { path = "../scene" }
+# Image sources are keyed by the graphics `SourceId`/`CompositePolicy`; the
+# renderer must not invent a parallel id space.
+tervo-graphics = { path = "../graphics" }
+# Must stay on the exact wgpu major/minor Slint 1.18 unstable-wgpu-30 uses:
+# `slint::Image::try_from(wgpu::Texture)` is only implemented for that type.
+wgpu = { version = "=30.0.1" }
+# fontdue is already used by tervo-app; the atlas prototype shares the exact
+# same version so the rasterized coverage is comparable.
+fontdue = "0.9"
+# Cheap cmap coverage probes for the CJK/emoji fallback chain before paying a
+# fontdue parse. Same version as tervo-app's owned_ttf_parser, so it is already
+# in the workspace lockfile and build graph.
+owned_ttf_parser = "0.25"
+# Zero-width/wide classification for combining marks and CJK/emoji cells.
+unicode-width.workspace = true
+# Used only to block on wgpu adapter/device futures in the headless helper and
+# validation examples/tests. No runtime thread pool is pulled in.
+futures-lite = "2"
+
+# The winit backend is required to obtain a device/queue via
+# `set_rendering_notifier`; the femtovg WGPU renderer provides
+# `Window::take_snapshot()` for headless pixel validation.
+#
+# `renderer-femtovg` (OpenGL) is enabled in addition to the WGPU renderer only
+# for feature unification: `tervo-app` enables `renderer-skia-opengl`, and Slint
+# 1.18.1's winit backend then compiles femtovg's GL context module, which needs
+# glutin. Without the OpenGL femtovg feature, `cargo check --workspace
+# --all-features` fails inside Slint. Runtime renderer selection is unaffected:
+# `require_wgpu_30` still selects the WGPU renderer.
+slint = { version = "=1.18.1", optional = true, default-features = false, features = [
+    "std",
+    "backend-winit",
+    "compat-1-18",
+    "unstable-wgpu-30",
+    "renderer-femtovg-wgpu",
+    "renderer-femtovg",
+] }
+
+[dev-dependencies]
+# Only the image integration test builds a real `tervo_core::Frame` to prove
+# that `Frame.images` RGBA uploads by `source_id` and that the scene adapter's
+# crop/z/above-text/negative-row semantics reach the renderer unchanged.
+tervo-core = { path = "../core" }
+
+[[example]]
+name = "two_colors"
+required-features = ["slint-presenter"]
+
+[[example]]
+name = "text_atlas"
+required-features = ["slint-presenter"]
+
+[[example]]
+name = "wgpu_text_bench"

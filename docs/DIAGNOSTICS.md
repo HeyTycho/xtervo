@@ -2,11 +2,17 @@
 
 状态：**阶段 A 已落地（2026-11-10）**。
 
+排障前先读事故复盘：[`POSTMORTEM_2026-11-11_RENDER_RESIDUE.md`](POSTMORTEM_2026-11-11_RENDER_RESIDUE.md)。
+
 ```text
 tervo diag env --json
 tervo diag snapshot --json
 tervo diag replay --input trace-raw.bin --json
 tervo diag trace --input trace-raw.bin --out trace.jsonl
+tervo diag trace-layer --input trace-raw.bin --options frame-snapshot.json --json
+tervo diag metrics
+tervo diag observability
+tervo diag scene-diff --left before.json --right after.json --json
 tervo diag serve            # MCP stdio server
 ```
 
@@ -92,6 +98,138 @@ tervo diag trace --input bytes.bin --out trace.jsonl --duration-ms 1000
 当前 trace 是 **frame 变化流**，不是完整 PTY 事件流；输入文件本身可保留原始
 字节，后续再增加 pty/damage 事件。
 
+### trace-layer（P0：第一处分歧）
+
+```bash
+# 合成夹具（无需外部文件）
+tervo diag trace-layer --fixture clean
+tervo diag trace-layer --fixture images --json
+
+# 真实 dsh raw：自动读取同目录/上一级的 frame-snapshot.json 里的 cols/rows
+tervo diag trace-layer \
+  --input .logs/dsh-dump-run/pty/app-to-host.raw \
+  --chunk 4096 --json
+```
+
+按事故复盘 §5.1 的阶梯逐层比较，**只在第一处分歧停下**：
+
+```text
+filter       raw bytes 与独立协议账本（Sixel DCS / OSC 1337;File / Kitty APC）
+             比较；非图片协议字节必须逐字节保留；再比较分块 vs 一次性
+             filter 输出是否一致
+term         filtered bytes 分块喂入 vs 一次性喂入后的 Term cell/cursor/mode
+frame        生产 pull 路径的增量 Frame vs 全新 Term 的 force-full Frame
+             （逐 cell/行、cursor/mode/display_offset；RowId 不跨 Term 实例比较）
+framebuffer  renderer 的 cell 级模型：按 damage 增量更新上一帧 screen，
+             再与 Term 真相逐 cell 比较（旧字符/残影）
+image        解码出的图片 placement 锚点与 row 裁剪几何（source_y0 等）
+```
+
+输出同时支持人类可读（默认）与 `--json`。`status` 只有 `PASS` / `FAIL`；
+找不到分歧时 `first_divergence=null`，不会只给统计不给位置：
+
+```text
+tervo diag trace-layer: FAIL
+input: fixture:clean (215 bytes)
+options: 120x32 chunk=16384 cell=10x20 (defaults)
+layers:
+  filter      FAIL   raw_bytes=215  filtered_bytes=172 ...
+  term        SKIPPED
+  ...
+first divergence:
+  layer: filter
+  check: byte_conservation
+  step : 1
+  chunk: raw bytes [0,215)
+  byte : 6
+  left  (ledger_expected): 0x65 'e'
+  right (pipeline): <missing; next byte 0x6c 'l'>
+  context: ascii=".[32mhe <<<llo.[0m world..line2 [s" hex=...
+  explain: 字节守恒失败：协议账本认为 raw byte 6 不属于任何图片序列，
+           但 filter 链没有输出它（疑似 filter 吞字节）
+```
+
+JSON（`--json`）是 `tervo.diag.v1`、`kind=trace_layer`；`first_divergence`
+含 `layer/check/at{byte,row,col,chunk,step}`、`left`/`right`（byte/hex/
+cell/missing）与 `context/explain`。脚本读 `status`，**退出码始终为 0**。
+
+参数：
+
+```text
+--input FILE          raw PTY 字节；`-` 读 stdin
+--fixture NAME        clean | images | filter-edge
+--options FILE        读取 cols/rows/cell_width/cell_height/chunk/scrollback
+--cols/--rows         覆盖尺寸（缺省 120x32；有 frame-snapshot.json 时自动读取）
+--chunk N             filter/Term 分块（默认 16384；真实 dsh 可用 4096 加压）
+--cell-width/height   图片裁剪审计用 cell 尺寸（默认 10x20）
+--no-images           只过滤图片协议、不解码（图片层 SKIPPED）
+--fault SPEC          仅自测定位器，见下
+```
+
+`--fault` 用来证明“定位器真的能定位”，生产诊断不要使用：
+
+```text
+filter-drop=N       从 filtered 输出删掉第 N 个字节（模拟 filter 吞字节）
+frame-residue=R:C[@STEP]  第 STEP 次 pull 后把 (R,C) 改成旧内容（模拟残影）
+damage-drop=R       删掉第 R 行的 damage（模拟 renderer 不重绘）
+```
+
+自测示例：
+
+```bash
+tervo diag trace-layer --fixture clean --fault filter-drop=6 --json
+tervo diag trace-layer --fixture clean --fault frame-residue=1:2 --json
+tervo diag trace-layer --fixture clean --fault damage-drop=0 --chunk 7 --json
+```
+
+测试覆盖：filter 吞字节（含 UTF-8 0x9D 续字节）、C1 文本后接 Sixel 的
+chunk 依赖、Frame 残影、damage 残影、图片 `row=-1` 裁剪（纯几何 + 真实
+PaneActor frame）、真实 dsh raw 全链路 PASS（存在 fixture 时）。
+
+限制（也在 JSON `limitations` 里显式列出）：
+
+```text
+- CLI 不建窗口：只比较 cell 级 framebuffer，不比较完整像素 framebuffer/Slint
+- Term 层是“分块 vs 一次性”，不是第二个终端模拟器对照
+- 图片层只审计解码 placement 的裁剪几何；SixelFilter 同 chunk 事件顺序
+  （同 chunk 文本先于图片时 anchor 可能滞后）是 core 已知边界，不在本切片修
+- 协议账本是独立整段扫描器，不跑生产 filter；它只回答“哪些字节属于图片协议”
+```
+
+### metrics / observability（P0 additive）
+
+```bash
+tervo diag metrics
+tervo diag observability
+```
+
+输出 `tervo.diag.v1` 的 additive 字段：
+
+```text
+metrics       atomic frame/damage/image/texture/presenter/stale 计数器
+resources     image resources/placements、glyph atlas、GPU textures 的 count+bytes
+trace         有界 TraceBuffer（capacity/dropped/events）
+integration   仅 observability：下一步接线点（machine-readable）
+```
+
+CLI 进程没有 app 渲染循环，所以当前计数是**真实的空 registry 默认值**：
+`initialized=false`、`source=cli`，不伪造 live app 指标。schema/字段说明见
+[`OBSERVABILITY.md`](OBSERVABILITY.md)。app 接入后仍走同一 shape，kind 可保持
+`metrics`/`observability` 并由 live snapshot 合并。
+
+### scene-diff
+
+```bash
+tervo diag scene-diff --left before.json --right after.json
+tervo diag scene-diff --left before.json --right after.json --json
+```
+
+比较两个 frame JSON（`tervo.diag.v1` snapshot/trace）或轻量 SceneSummary：
+文本 changed rows/cells、图片 added/removed/moved/resized/source_changed、
+damage region 增删和 coverage ppm。默认输出有界文本；`--json` 输出
+`kind=scene_diff`。frame JSON 新增 additive 的
+`damage.full/region_count/rects` 字段。
+
 ## live control socket（已实现，显式 opt-in）
 
 启动 Tervo 时：
@@ -129,6 +267,38 @@ tervo.live_snapshot
 # PASS: live socket capabilities/snapshot
 # PASS: MCP tools/list + live_snapshot
 ```
+
+## 排障环境变量（显式 opt-in）
+
+```bash
+TERVO_LINE_NUMBERS=1
+# 终端行号 overlay；每行显示 1..N，会盖住最左约 3 个字符，仅调试。
+
+TERVO_FRAME_DUMP=/tmp/tervo-frame.txt
+# 每次重绘前把当前 Frame 文本写入该文件；用于区分 Term/Frame 与 Slint 层。
+
+TERVO_SIXEL_DEBUG=1
+# 打印图片 placement 的 id/row/col；图片滚动/删除问题使用。
+
+TERVO_RENDER_PROFILE=1
+# 打印 full/partial、rows/copy/damage/draw/image 耗时。
+```
+
+### 分层排障顺序
+
+```text
+raw PTY bytes
+  -> IIP/Sixel/Kitty filter
+  -> alacritty Term
+  -> partial Frame + damage
+  -> force_full Frame
+  -> 增量 framebuffer
+  -> fresh full framebuffer
+  -> xwd/take_snapshot
+```
+
+只修第一处出现分歧的层。不要用默认整屏重绘掩盖上游字节/Frame 错误。
+详见事故复盘第 5 节。
 
 ## schema v1
 
@@ -208,11 +378,14 @@ DSH / 其他 MCP harness：同样 spawn `tervo diag serve`，按标准
 
 ```text
 - 当前只能抓一次性 pane，不能读正在运行的 Tervo 实例
+- metrics/observability CLI 是未接线的 schema；app render loop 尚未喂 registry
 - 没有 trace（PTY/frame/image 事件流），replay 输入是原始字节文件
 - 没有 screenshot/PNG
 - 没有 MCP / Unix socket / token
 - raw bytes 可能含终端内容，录制/分享前自行脱敏
 ```
+
+observability 设计/集成点见 [`OBSERVABILITY.md`](OBSERVABILITY.md)。
 
 ## 验证
 

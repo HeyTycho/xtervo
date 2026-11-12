@@ -1,6 +1,14 @@
 [workspace]
 resolver = "2"
-members = ["crates/core", "crates/app"]
+members = [
+    "crates/core",
+    "crates/app",
+    "crates/graphics",
+    "crates/scene",
+    "crates/render",
+    "crates/render-wgpu",
+    "crates/diagnostics",
+]
 
 [workspace.package]
 version = "0.3.1"
@@ -15,7 +23,7 @@ tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time", "m
 # unstable-winit-030 只用于 `WinitWindowAccessor`：无边框自绘拖边时调用
 # `winit::Window::drag_resize_window`，让 winit 在它自己的 X11 连接上先
 # XUngrabPointer 再发 `_NET_WM_MOVERESIZE`（跨连接的 ungrab 会被 X server 忽略）。
-slint = { version = "1.18", default-features = false, features = ["std", "log", "backend-winit", "renderer-skia", "renderer-skia-opengl", "renderer-software", "compat-1-18", "unstable-winit-030"] }
+slint = { version = "=1.18.1", default-features = false, features = ["std", "log", "backend-winit", "renderer-skia", "renderer-skia-opengl", "renderer-software", "unstable-wgpu-30", "compat-1-18", "unstable-winit-030"] }
 parking_lot = "0.12"
 crossbeam-channel = "0.5"
 # 与 alacritty 相同的 Unicode 宽度表：组合字符/emoji 宽度与零宽判定。

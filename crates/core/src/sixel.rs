@@ -90,11 +90,30 @@ pub struct SixelFilter {
     raw_len: usize,
     /// 本 chunk 里是否吞掉/暂存了字节；决定返回 None（原样放行）还是 Some。
     swallowed: bool,
+    /// 最近 3 个输入字节（滚动窗口，时间顺序）。
+    ///
+    /// 0x90/0x98/0x9B/0x9D/0x9E/0x9F 既是 8-bit C1 控制符，也是常见 UTF-8
+    /// 字符的续字节（`各` = E5 90 84、`面` = E9 9D A2、`ß` = C3 9F）。只看单
+    /// 字节会把正文当 C1 起点，状态机停在 DCS/OSC/APC 里，后续 Sixel 被漏
+    /// 给 vte（BEL 终止的 DCS 会让 vte 吞掉后续文本）。与 `iip.rs` 的窗口
+    /// 逻辑保持一致。
+    utf8_prev: [u8; 3],
+    utf8_prev_len: u8,
 }
 
 impl SixelFilter {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// 跨 chunk 暂存、尚未决定去留的字节数（`ESC`/DCS 头）。
+    ///
+    /// 仅供审计/测试：正常流满足
+    /// `输入 == 放行 + 明确消费的图片序列 + held`，任何静默丢字节都会让
+    /// 这个账本对不上。不参与生产逻辑。
+    #[inline]
+    pub fn held_bytes(&self) -> usize {
+        self.pending.len()
     }
 
     /// 当前是否处于 Sixel payload 中（actor 可据此抑制无意义唤醒）。
@@ -121,6 +140,8 @@ impl SixelFilter {
     pub fn feed(&mut self, bytes: &[u8], decode: bool) -> Option<Vec<SixelEvent>> {
         if self.state == State::Ground && self.pending.is_empty() && !contains_dcs_start(bytes)
         {
+            // 下一块的首字节可能是 UTF-8 续字节，尾部窗口必须跨块保留。
+            self.remember_tail(bytes);
             return None;
         }
 
@@ -137,22 +158,22 @@ impl SixelFilter {
                         self.pending.push(ESC);
                         self.state = State::Escape;
                     },
-                    0x90 => {
+                    0x90 if !self.looks_like_utf8_continuation() => {
                         // C1 DCS
                         self.pending.clear();
                         self.pending.push(b);
                         self.dcs_intermediate = false;
                         self.state = State::DcsHeader;
                     },
-                    0x9d => {
+                    0x9d if !self.looks_like_utf8_continuation() => {
                         pass.push(b);
                         self.state = State::Osc;
                     },
-                    0x9b => {
+                    0x9b if !self.looks_like_utf8_continuation() => {
                         pass.push(b);
                         self.state = State::Csi;
                     },
-                    0x98 | 0x9e | 0x9f => {
+                    0x98 | 0x9e | 0x9f if !self.looks_like_utf8_continuation() => {
                         pass.push(b);
                         self.state = State::String;
                     },
@@ -240,7 +261,7 @@ impl SixelFilter {
                 State::Sixel => match b {
                     ESC => self.state = State::SixelEscape,
                     0x9c | 0x07 => {
-                        self.finish_sixel(decode, &mut out);
+                        self.finish_sixel(decode, &mut out, &mut pass);
                     },
                     0x18 | 0x1a => {
                         // CAN/SUB 中止：丢图。
@@ -262,14 +283,18 @@ impl SixelFilter {
                 },
                 State::SixelEscape => {
                     if b == b'\\' {
-                        self.finish_sixel(decode, &mut out);
+                        self.finish_sixel(decode, &mut out, &mut pass);
                     } else if b == ESC {
                         // 连续 ESC：仍等待 `\`。
                     } else {
-                        // 畸形 ESC 序列：中止图片，把当前字节按 Ground 重新处理。
+                        // 畸形 ESC 序列：中止图片。ESC 本身必须按“新转义序列
+                        // 起点”重新处理，否则 `ESC \` 被截断后紧跟的 `ESC[0m`
+                        // 会丢掉 ESC，vte 只看到 `[0m` 并把它当正文。
                         self.payload.clear();
                         self.swallowed = true;
-                        self.state = State::Ground;
+                        self.state = State::Escape;
+                        self.pending.clear();
+                        self.pending.push(ESC);
                         continue;
                     }
                 },
@@ -348,17 +373,90 @@ impl SixelFilter {
                     }
                 },
             }
+            self.remember_byte(b);
             i += 1;
         }
 
         if !pass.is_empty() {
             out.push(SixelEvent::Pass(pass));
         }
-        if self.swallowed || !out.is_empty() || !self.pending.is_empty() {
+        // 处于任何非 Ground 状态时都不能返回 None：调用方会把**原始**字节
+        // 再交给 vte，而其中一部分已经被状态机消费（例如 `SixelEscape` 里
+        // 单独到达的 ESC），造成字节重复。返回 Some(out)（哪怕为空）表示
+        // “这批字节由过滤器接管”。
+        if self.swallowed
+            || !out.is_empty()
+            || !self.pending.is_empty()
+            || self.state != State::Ground
+        {
             Some(out)
         } else {
             None
         }
+    }
+
+    /// 快速路径也要更新 UTF-8 尾部窗口：下一块的首字节可能续上一个字符。
+    #[inline]
+    fn remember_tail(&mut self, bytes: &[u8]) {
+        let start = bytes.len().saturating_sub(self.utf8_prev.len());
+        for &b in &bytes[start..] {
+            self.remember_byte(b);
+        }
+    }
+
+    #[inline]
+    fn remember_byte(&mut self, b: u8) {
+        if (self.utf8_prev_len as usize) < self.utf8_prev.len() {
+            self.utf8_prev[self.utf8_prev_len as usize] = b;
+            self.utf8_prev_len += 1;
+        } else {
+            self.utf8_prev.rotate_left(1);
+            self.utf8_prev[2] = b;
+        }
+    }
+
+    /// 当前字节之前第 `back` 个字节（back=1 是紧邻的前一个）。
+    #[inline]
+    fn prev_byte(&self, back: usize) -> Option<u8> {
+        if back == 0 || back > self.utf8_prev_len as usize {
+            return None;
+        }
+        Some(self.utf8_prev[self.utf8_prev_len as usize - back])
+    }
+
+    /// 当前字节是否只是 UTF-8 多字节字符的续字节（0x80..=0xBF）。
+    ///
+    /// 与 `iip.rs::IipFilter::looks_like_utf8_continuation` 同一判定：只有
+    /// 前 1–3 字节恰好构成以当前字节结尾的合法 UTF-8 前缀时才按正文处理，
+    /// 否则保持 C1 控制符语义。
+    fn looks_like_utf8_continuation(&self) -> bool {
+        #[inline]
+        fn cont(b: u8) -> bool {
+            (0x80..=0xBF).contains(&b)
+        }
+        #[inline]
+        fn lead2(b: u8) -> bool {
+            (0xC2..=0xDF).contains(&b)
+        }
+        #[inline]
+        fn lead3(b: u8) -> bool {
+            (0xE0..=0xEF).contains(&b)
+        }
+        #[inline]
+        fn lead4(b: u8) -> bool {
+            (0xF0..=0xF4).contains(&b)
+        }
+        let (p1, p2, p3) = (self.prev_byte(1), self.prev_byte(2), self.prev_byte(3));
+        let as_second = p1.is_some_and(|p1| lead2(p1) || lead3(p1) || lead4(p1));
+        let as_third = match (p1, p2) {
+            (Some(p1), Some(p2)) => cont(p1) && (lead3(p2) || lead4(p2)),
+            _ => false,
+        };
+        let as_fourth = match (p1, p2, p3) {
+            (Some(p1), Some(p2), Some(p3)) => cont(p1) && cont(p2) && lead4(p3),
+            _ => false,
+        };
+        as_second || as_third || as_fourth
     }
 
     #[inline]
@@ -379,8 +477,18 @@ impl SixelFilter {
         self.payload.push(b);
     }
 
-    fn finish_sixel(&mut self, decode: bool, out: &mut Vec<SixelEvent>) {
+    fn finish_sixel(
+        &mut self,
+        decode: bool,
+        out: &mut Vec<SixelEvent>,
+        pass: &mut Vec<u8>,
+    ) {
         self.swallowed = true;
+        // 事件必须严格按输入顺序：图片前的文本/2J 要先交给 vte，否则
+        // ImageClearScanner 会在图片之后看到 2J，把刚放置的图片清掉。
+        if !pass.is_empty() {
+            out.push(SixelEvent::Pass(std::mem::take(pass)));
+        }
         if decode && !self.payload.is_empty() {
             if let Some(image) = decode_sixel(&self.payload) {
                 out.push(SixelEvent::Image(image));
@@ -847,6 +955,25 @@ mod tests {
         let (pass, images) = events(&payload, false);
         assert_eq!(pass, b"next");
         assert!(images.is_empty());
+    }
+
+    #[test]
+    fn pass_before_image_preserves_2j_before_image_order() {
+        let mut filter = SixelFilter::new();
+        let mut chunk = b"\x1b[2Jbefore".to_vec();
+        chunk.extend_from_slice(b"\x1bPq#0;2;100;0;0#0~\x1b\\");
+        chunk.extend_from_slice(b"after");
+        let events = filter.feed(&chunk, true).expect("events");
+        let mut kinds = Vec::new();
+        for event in &events {
+            match event {
+                SixelEvent::Pass(p) => kinds.push(("pass", p.clone())),
+                SixelEvent::Image(_) => kinds.push(("image", Vec::new())),
+            }
+        }
+        let image_pos = kinds.iter().position(|(k, _)| *k == "image").expect("image");
+        assert!(kinds[..image_pos].iter().any(|(k, b)| *k == "pass" && b.windows(4).any(|w| w == b"\x1b[2J")),
+            "2J 必须在 Image 之前交给 vte: {kinds:?}");
     }
 
     #[test]

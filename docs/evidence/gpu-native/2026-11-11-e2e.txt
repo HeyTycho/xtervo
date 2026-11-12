@@ -1,0 +1,26 @@
+# GPU native e2e evidence (2026-11-11T11:34:06Z)
+
+## summary
+display=:77
+bin=/home/user/AIworkspace/rusttabbyterminal/.worktrees/agent-gpu-native/.bin/tervo-gpu-native
+gpu_snapshot=[gpu-snapshot] path=/home/user/AIworkspace/rusttabbyterminal/.worktrees/agent-gpu-native/.e2e-gpu-native/final-14/gpu/snap.before.ppm size=720x560 gpu_ready=false gpu_native_ready=true gpu_native_frames=7 draw_calls=21 atlas_uploads=76 atlas_bytes=7515 vertex_bytes=51888 image_uploads=1 image_sources=1 last(fallback=10 missing=0 wide=7 spacer=7 hidden=6 dim=3 selected=0 searched=0 images_skipped=1 cursor_skipped=true background_from_scene=true) total=403200 nonbg=35763 distinct=708 top=#fffafafa center=#fafafaff
+native_frames=7 native_draw_calls=21 nonbg=35763
+artifacts=/home/user/AIworkspace/rusttabbyterminal/.worktrees/agent-gpu-native/.e2e-gpu-native/final-14
+
+## diff
+sixel_red_pixels: cpu=2373 gpu=2340
+terminal_diff: size=720x528 differing=7527 ratio=1.9800% mae=0.742 pixels_over_8=6121 ink_cpu=9205 ink_gpu=8924 ink_iou=0.841
+fallback_vs_cpu: differing=766 ratio=0.2015% mae=0.326
+
+## alpha
+offscreen alpha: min=255 max=255 non255=0 count=380160
+
+## first GPU frame
+[gpu-native] pane=1 frame=1 rev=5 grid=80x24 target=720x528 draw_calls=3 passes=3 cells=1920 solids=38 glyphs=125 atlas_uploads=75 atlas_bytes=7427 vertex_bytes=7248 fallback_glyphs=10 missing_glyphs=0 style_fallbacks=0 wide=7 spacer=7 hidden=6 dim=3 selected=0 searched=0 image_quads=1 image_draw_calls=1 image_uploads_total=1 image_sources=1 frame_images=1 scene_images=1 cursor_overlay_external=true background_from_scene=true cpu_us=1270580
+
+## image composition (any frame)
+[gpu-native] pane=1 frame=1 rev=5 grid=80x24 target=720x528 draw_calls=3 passes=3 cells=1920 solids=38 glyphs=125 atlas_uploads=75 atlas_bytes=7427 vertex_bytes=7248 fallback_glyphs=10 missing_glyphs=0 style_fallbacks=0 wide=7 spacer=7 hidden=6 dim=3 selected=0 searched=0 image_quads=1 image_draw_calls=1 image_uploads_total=1 image_sources=1 frame_images=1 scene_images=1 cursor_overlay_external=true background_from_scene=true cpu_us=1270580
+
+## failure path
+[gpu-snapshot] 已安装：base=/home/user/AIworkspace/rusttabbyterminal/.worktrees/agent-gpu-native/.e2e-gpu-native/final-14/fallback/snap resize=false exit=true
+[gpu-snapshot] path=/home/user/AIworkspace/rusttabbyterminal/.worktrees/agent-gpu-native/.e2e-gpu-native/final-14/fallback/snap.before.ppm size=720x560 gpu_ready=false gpu_native_ready=false gpu_native_frames=0 draw_calls=0 atlas_uploads=0 atlas_bytes=0 vertex_bytes=0 image_uploads=0 image_sources=0 last(fallback=0 missing=0 wide=0 spacer=0 hidden=0 dim=0 selected=0 searched=0 images_skipped=0 cursor_skipped=true background_from_scene=true) total=403200 nonbg=36419 distinct=716 top=#fffafafa center=#fafafaff

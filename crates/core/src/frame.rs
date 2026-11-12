@@ -179,6 +179,10 @@ pub struct InlineImage {
     pub id: u64,
     /// 本次 placement 的源像素 ID；同一 placement 源数据变化时它会变。
     pub source_id: u64,
+    /// 稳定的逻辑行身份（alacritty `RowId`）。滚动/换屏/历史淘汰都不会
+    /// 改变它；逻辑行消失（reset / 清屏 / alt-screen 切换）时 placement
+    /// 会被显式丢弃。`row` 只是它在当前帧视口中的投影。
+    pub row_id: u64,
     /// 视口行（0 = 顶行；负值表示滚动到视口上方）。
     pub row: i32,
     /// 图片左上角所在列（cell）。
@@ -188,6 +192,13 @@ pub struct InlineImage {
     pub height: u32,
     /// 直通 RGBA8，长度 = width * height * 4。
     pub data: Arc<[u8]>,
+    /// 协议 z-index；Sixel/IIP 默认 -1（文字之下）。
+    pub z_index: i32,
+    /// 是否应绘制在 glyphs 之后（Kitty 非负 z / 上层策略）。
+    ///
+    /// 当前 CPU/Slint 渲染器仍统一把图片画在文字之下；Scene/Renderer
+    /// 接入后必须按该字段分层，不能把 Kitty AboveText 静默降级。
+    pub above_text: bool,
 }
 
 impl std::fmt::Debug for InlineImage {
@@ -195,13 +206,48 @@ impl std::fmt::Debug for InlineImage {
         f.debug_struct("InlineImage")
             .field("id", &self.id)
             .field("source_id", &self.source_id)
+            .field("row_id", &self.row_id)
             .field("row", &self.row)
             .field("col", &self.col)
             .field("width", &self.width)
             .field("height", &self.height)
             .field("bytes", &self.data.len())
+            .field("z_index", &self.z_index)
+            .field("above_text", &self.above_text)
             .finish()
     }
+}
+
+/// 源图像里被 placement 显示的矩形（像素坐标）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ImageCrop {
+    pub x: u32,
+    pub y: u32,
+    pub w: u32,
+    pub h: u32,
+}
+
+/// placement 的协议元数据。
+///
+/// 旧的扁平 [`InlineImage`] 只有像素与锚点；z-index、源裁剪、目标 cell 矩形
+/// 放在这里，老 UI 可以继续忽略，新 Scene/Renderer 可以直接消费。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImagePlacementMeta {
+    /// 与 [`InlineImage::id`] 相同的 placement ID。
+    pub placement_id: u64,
+    /// 协议图片 ID（Sixel/IIP 用本地图片 ID）。
+    pub image_id: u64,
+    /// 稳定逻辑行身份。
+    pub row_id: u64,
+    /// 源裁剪；`None` 表示整张图。
+    pub source_rect: Option<ImageCrop>,
+    /// 目标 cell 宽/高（由协议 c/r 或像素尺寸推导）。
+    pub cells_w: u16,
+    pub cells_h: u16,
+    /// Kitty 协议 z-index。
+    pub z_index: i32,
+    /// 是否应绘制在文字之上（Kitty 正 z / C=1 语义由协议层给出）。
+    pub above_text: bool,
 }
 
 /// 可复用的终端帧缓冲。
@@ -211,6 +257,12 @@ pub struct Frame {
     pub rows: usize,
     /// `rows * cols` 个单元格，行优先。
     pub cells: Vec<CellData>,
+    /// 视口每一行的稳定 RowId（下标 = 视口行，长度恒为 `rows`）。
+    ///
+    /// 来自 vendored alacritty `Grid::row_id`，滚动时跟着逻辑行走；图片
+    /// placement 只认它，不再用 `scroll_total`/绝对行号推算。整屏和脏行
+    /// 路径都会刷新（O(rows) 次 u64 写入，不分配）。
+    pub row_ids: Vec<u64>,
     /// 本次拉取中发生变化的行段；`full == true` 时为空（表示整屏）。
     pub damage: Vec<LineDamage>,
     pub full: bool,
@@ -223,8 +275,12 @@ pub struct Frame {
     pub mode: u32,
     /// 视口相对滚动历史顶端的偏移。
     pub display_offset: usize,
-    /// 当前视口内可见的内联图片（Sixel），按创建顺序排列。
+    /// 当前视口内可见的内联图片（Sixel/IIP/Kitty），按绘制顺序排列。
     pub images: Vec<InlineImage>,
+    /// 与 [`Frame::images`] 一一对应的 placement 元数据（顺序相同）。
+    /// 老 UI 忽略；新 Scene/Renderer 用来还原 source crop、z-index 与目标
+    /// cell 矩形。
+    pub image_placements: Vec<ImagePlacementMeta>,
     /// 单调递增序号，便于 UI 判断是否漏帧。
     pub generation: u64,
     /// true = 本次拉帧超时被跳过，帧是空占位；UI 不应重绘，等下一次整屏补帧。
@@ -248,20 +304,25 @@ impl Frame {
     pub fn new(cols: usize, rows: usize) -> Self {
         let mut f = Self { cols, rows, ..Default::default() };
         f.cells = vec![CellData::default(); cols * rows];
+        f.row_ids = vec![0; rows];
         f.reset_links();
         f
     }
 
     /// 尺寸变化时重建缓冲（仅此路径分配）。
     pub fn ensure_size(&mut self, cols: usize, rows: usize) -> bool {
-        if self.cols == cols && self.rows == rows && self.cells.len() == cols * rows {
+        if self.cols == cols && self.rows == rows && self.cells.len() == cols * rows
+            && self.row_ids.len() == rows
+        {
             return false;
         }
         self.cols = cols;
         self.rows = rows;
         self.cells = vec![CellData::default(); cols * rows];
+        self.row_ids = vec![0; rows];
         self.damage.clear();
         self.images.clear();
+        self.image_placements.clear();
         self.full = true;
         self.reset_links();
         self.zerowidth.clear();
@@ -327,6 +388,11 @@ impl Frame {
         }
         if let Some(slot) = self.cells.get_mut(index) {
             *slot = data;
+        }
+        // 覆盖为普通 cell 时，旧格子的组合字符必须移除；否则增量帧会把
+        // 上一帧的重音/ZWJ 画到新字符上（whole-row 对账也走这里）。
+        if !self.zerowidth.is_empty() {
+            self.zerowidth.remove(&index);
         }
     }
 
