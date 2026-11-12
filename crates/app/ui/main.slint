@@ -1667,6 +1667,9 @@ export component MainWindow inherits Window {
     /// 仓库内文档路径；纯展示，不联网抓取。
     in property <string> help-docs: "docs/VAULT.md · docs/WAYLAND_SPIKE.md · docs/SOAK.md · docs/PLUGIN_API.md";
     in-out property <string> help-status: "";
+    in-out property <string> feedback-text: "";
+    in-out property <string> feedback-status: "";
+    callback create-feedback();
     in-out property <string> settings-query: "";
     in property <[string]> settings-results: [];
     /// 搜索结果点击后要滚动/高亮的卡片锚点（theme/background/cursor/...）。
@@ -5145,6 +5148,29 @@ export component MainWindow inherits Window {
                             Text {
                                 text: Lang.t("Opening a folder uses xdg-open and never builds a shell command. If xdg-open is missing, the error appears here.", "打开目录使用 xdg-open；绝不拼接 shell 命令。缺少 xdg-open 时错误会显示在这里。");
                                 color: Palette.colors.muted;
+                                font-size: 10px;
+                                wrap: word-wrap;
+                            }
+                        }
+
+                        feedback-card := SettingsCard {
+                            title: Lang.t("Feedback", "问题反馈");
+                            description: Lang.t("Create a redacted local bundle and open the configured issue page. Never uploads terminal contents, environment values, Vault data, or keys.", "生成本地脱敏 bundle 并打开配置的 issue 页面；绝不上传终端内容、环境变量值、Vault 数据或密钥。");
+                            SettingField {
+                                label: Lang.t("Describe the problem", "问题描述");
+                                SettingsTextField {
+                                    text <=> root.feedback-text;
+                                    placeholder: Lang.t("What happened? Steps to reproduce…", "发生了什么？复现步骤…");
+                                    edited(t) => { root.feedback-text = t; }
+                                }
+                            }
+                            ActionBtn {
+                                label: Lang.t("Create bundle & open issue", "生成 bundle 并打开 issue");
+                                clicked => { root.create-feedback(); }
+                            }
+                            if root.feedback-status != "" : Text {
+                                text: root.feedback-status;
+                                color: Palette.colors.subtext;
                                 font-size: 10px;
                                 wrap: word-wrap;
                             }

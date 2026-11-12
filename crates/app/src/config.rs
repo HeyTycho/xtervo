@@ -318,6 +318,9 @@ pub struct Config {
     /// 设置页可开关的渲染 HUD（FPS/renderer/GPU 计数）；默认关。
     /// `TERVO_RENDER_HUD=1` 仍可强制开启，便于无配置复现。
     pub render_hud: bool,
+    /// 反馈 issue 的新建页 URL；空 = 只生成本地 bundle，不打开网页。
+    /// 也可以用 `TERVO_FEEDBACK_ISSUE_URL` 覆盖。不会自动上传或创建 MR。
+    pub feedback_issue_url: String,
     /// 忽略 `scrollback` 数值，使用 [`UNLIMITED_SCROLLBACK_LINES`] 安全上限。
     /// 只对之后新建的 pane 生效（历史缓冲大小不能在会话中安全扩容）。
     pub scrollback_unlimited: bool,
@@ -409,6 +412,7 @@ impl Default for Config {
             sixel_scrolling: true,
             iip: true,
             render_hud: false,
+            feedback_issue_url: String::new(),
             scrollback_unlimited: false,
             scrollbar_policy: "auto".to_string(),
             backspace_binding: "ascii-delete".to_string(),

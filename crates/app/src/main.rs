@@ -6,6 +6,7 @@ mod commands;
 mod config;
 mod config_watch;
 mod diag;
+mod feedback;
 mod glyph;
 mod gpu_native;
 mod gpu_present;
@@ -11885,6 +11886,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         with_app(|st| {
             st.ui.set_doctor_open(false);
             st.ui.set_doctor_text("".into());
+        });
+    });
+
+    ui.on_create_feedback(|| {
+        with_app(|st| {
+            let description = st.ui.get_feedback_text().to_string();
+            match feedback::create_bundle(&description) {
+                Ok(bundle) => {
+                    let url = std::env::var("TERVO_FEEDBACK_ISSUE_URL")
+                        .ok()
+                        .filter(|v| !v.trim().is_empty())
+                        .unwrap_or_else(|| st.cfg.feedback_issue_url.clone());
+                    let result = if url.trim().is_empty() {
+                        bundle
+                            .parent()
+                            .ok_or_else(|| "bundle parent missing".to_string())
+                            .and_then(feedback::open_folder)
+                            .map(|()| format!("Bundle: {}", bundle.display()))
+                    } else {
+                        feedback::open_issue(&url, &bundle)
+                            .map(|()| format!("Bundle: {} (issue page opened)", bundle.display()))
+                    };
+                    st.ui.set_feedback_status(match result {
+                        Ok(message) => message.into(),
+                        Err(error) => format!("Feedback error: {error}").into(),
+                    });
+                },
+                Err(error) => st.ui.set_feedback_status(format!("Feedback error: {error}").into()),
+            }
         });
     });
 
