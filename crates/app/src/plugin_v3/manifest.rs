@@ -18,6 +18,12 @@ pub const PLUGIN_API_VERSION: u32 = 3;
 /// 唯一支持的宿主 ABI。
 pub const HOST_ABI: u32 = 3;
 
+/// v3 的两种 runtime：常驻 process 与 WASM 热路径过滤器。
+pub const RUNTIME_PROCESS: &str = "process";
+pub const RUNTIME_WASM: &str = "wasm";
+/// WASM 模块文件大小上限（与 plugin_wasm 的运行时上限一致）。
+pub const MAX_WASM_BYTES: usize = 8 * 1024 * 1024;
+
 /// 清单文件读取上限，防止把大文件当 TOML 解析。
 pub const MAX_MANIFEST_BYTES: usize = 64 * 1024;
 /// entry/theme 路径长度上限。
@@ -58,6 +64,22 @@ impl PluginEvent {
     }
 }
 
+/// `[permissions.terminal]`：终端热路径能力。
+///
+/// TOML 写法：
+/// ```toml
+/// [permissions.terminal]
+/// output_filter = true
+/// ```
+/// 或 `[permissions]` 下的 `terminal.output_filter = true`。默认 false；
+/// 只有 `runtime = "wasm"` 允许为 true，首次启用仍需用户确认。
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TerminalPermissions {
+    /// 允许 WASM 模块在 PTY 字节进入 vte 前原地过滤终端输出。
+    pub output_filter: bool,
+}
+
 /// `[permissions]`：声明插件希望使用的宿主能力。
 ///
 /// 宿主能真正 gate 的是宿主 mediated API（terminal_context / terminal_write /
@@ -78,6 +100,9 @@ pub struct Permissions {
     pub terminal_context: bool,
     /// `terminal.write` 宿主请求的 capability gate（每次写入还要 ask/allow）。
     pub terminal_write: bool,
+    /// `runtime = "wasm"` 的终端输出热路径过滤权限；默认拒绝。
+    #[serde(default)]
+    pub terminal: TerminalPermissions,
     /// `none` | `own`（own = 插件自行管理凭据；宿主永不提供 Vault/环境变量明文）。
     pub credentials: String,
 }
@@ -91,6 +116,7 @@ impl Default for Permissions {
             clipboard: false,
             terminal_context: false,
             terminal_write: false,
+            terminal: TerminalPermissions::default(),
             credentials: "none".to_string(),
         }
     }
@@ -113,6 +139,37 @@ impl Permissions {
                     "permissions.credentials 只支持 none/own（当前 {other:?}）；宿主不提供凭据明文"
                 ))
             },
+        }
+        Ok(())
+    }
+
+    /// runtime 相关的权限约束：WASM 只能声明 output_filter，process 不能声明它。
+    pub fn validate_for_runtime(&self, wasm: bool) -> Result<(), String> {
+        if wasm {
+            if !self.terminal.output_filter {
+                return Err(
+                    "runtime = \"wasm\" 必须声明 [permissions.terminal] output_filter = true"
+                        .into(),
+                );
+            }
+            if !self.filesystem.trim().eq_ignore_ascii_case("none")
+                || self.network
+                || self.process
+                || self.clipboard
+                || self.terminal_context
+                || self.terminal_write
+                || !self.credentials.trim().eq_ignore_ascii_case("none")
+            {
+                return Err(
+                    "WASM 插件是纯输出过滤器：只能声明 terminal.output_filter，不能声明文件/网络/进程/剪贴板/终端读写/凭据权限"
+                        .into(),
+                );
+            }
+        } else if self.terminal.output_filter {
+            return Err(
+                "terminal.output_filter 只允许 runtime = \"wasm\"（process 插件不能进入 vte 热路径）"
+                    .into(),
+            );
         }
         Ok(())
     }
@@ -140,6 +197,11 @@ impl Permissions {
         }
         if self.terminal_write {
             names.push("terminal_write".to_string());
+        }
+        if self.terminal.output_filter {
+            // 点号形式与 manifest 的 `terminal.output_filter` 对应，确认弹窗/
+            // 状态指纹/设置页都显示同一字符串。
+            names.push("terminal.output_filter".to_string());
         }
         let cred = self.credentials.trim();
         if cred != "none" {
@@ -387,15 +449,42 @@ impl Manifest {
         if self.description.chars().count() > 512 {
             return Err("description 超过 512 字符".into());
         }
-        if self.runtime.trim() != "process" {
-            return Err(format!(
-                "v3 只支持 runtime = \"process\"（当前 {:?}；oneshot 属于已移除的 v1/v2）",
-                self.runtime
-            ));
-        }
+        let wasm = match self.runtime.trim() {
+            RUNTIME_PROCESS => false,
+            RUNTIME_WASM => true,
+            other => {
+                return Err(format!(
+                    "v3 只支持 runtime = \"process\" 或 \"wasm\"（当前 {other:?}；oneshot 属于已移除的 v1/v2）"
+                ))
+            },
+        };
         validate_relative_path(&self.entry)?;
+        if wasm {
+            if !self.entry.trim().to_ascii_lowercase().ends_with(".wasm") {
+                return Err(
+                    "runtime = \"wasm\" 的 entry 必须是插件目录内的 .wasm 文件".into(),
+                );
+            }
+        }
         self.permissions.validate()?;
+        self.permissions.validate_for_runtime(wasm)?;
         self.contributes.validate(&self.commands)?;
+        if wasm {
+            if !self.commands.is_empty()
+                || self.contributes.commands
+                || self.contributes.status
+                || !self.contributes.events.is_empty()
+                || self.contributes.theme.is_some()
+                || !self.contributes.panels.is_empty()
+                || self.contributes.settings
+                || self.contributes.assistant_enabled()
+            {
+                return Err(
+                    "WASM 输出过滤器不支持 commands/status/events/theme/panels/settings/assistant；它只运行 terminal.output_filter 热路径"
+                        .into(),
+                );
+            }
+        }
         let mut seen = Vec::new();
         for command in &self.commands {
             command.validate()?;
@@ -405,6 +494,10 @@ impl Manifest {
             seen.push(command.id.clone());
         }
         Ok(())
+    }
+
+    pub fn is_wasm(&self) -> bool {
+        self.runtime.trim() == RUNTIME_WASM
     }
 
     pub fn full_command_id(&self, command: &str) -> String {
@@ -505,6 +598,22 @@ pub fn resolve_plugin_path(
     }
     if expect_file && !resolved.is_file() {
         return Err(format!("不是普通文件: {}", resolved.display()));
+    }
+    Ok(resolved)
+}
+
+/// WASM 入口：普通文件、留在插件目录内、大小有界；不要求执行位。
+pub fn resolve_wasm_entry(plugin_dir: &Path, entry: &str) -> Result<PathBuf, String> {
+    let resolved = resolve_plugin_path(plugin_dir, entry, true)?;
+    let metadata = std::fs::metadata(&resolved)
+        .map_err(|e| format!("读取 WASM entry 元数据失败 {}: {e}", resolved.display()))?;
+    if metadata.len() > MAX_WASM_BYTES as u64 {
+        return Err(format!(
+            "WASM 模块过大（{} bytes，上限 {}）: {}",
+            metadata.len(),
+            MAX_WASM_BYTES,
+            resolved.display()
+        ));
     }
     Ok(resolved)
 }
@@ -692,5 +801,144 @@ title = "Greet"
             assert_eq!(PluginEvent::parse(event.as_str()), Some(event));
         }
         assert_eq!(PluginEvent::parse("nope"), None);
+    }
+
+    const WASM: &str = r#"
+api = 3
+host_abi = 3
+id = "dev.tervo.wasm-filter"
+name = "WASM filter"
+version = "1.0.0"
+runtime = "wasm"
+entry = "filter.wasm"
+
+[permissions.terminal]
+output_filter = true
+"#;
+
+    #[test]
+    fn wasm_manifest_parses_and_requires_output_filter_permission() {
+        let manifest = parse(WASM);
+        manifest.validate().unwrap();
+        assert!(manifest.is_wasm());
+        assert!(manifest.permissions.terminal.output_filter);
+        assert_eq!(manifest.permission_fingerprint(), vec!["terminal.output_filter"]);
+        assert_eq!(manifest.runtime.trim(), RUNTIME_WASM);
+
+        // 也接受 TOML 点号写法：`[permissions]` 下 terminal.output_filter = true。
+        let dotted = WASM.replace(
+            "[permissions.terminal]\noutput_filter = true",
+            "[permissions]\nterminal.output_filter = true",
+        );
+        let manifest = parse(&dotted);
+        manifest.validate().unwrap();
+        assert!(manifest.permissions.terminal.output_filter);
+    }
+
+    #[test]
+    fn wasm_without_output_filter_permission_is_rejected() {
+        let text = WASM.replace("[permissions.terminal]\noutput_filter = true", "");
+        let manifest = parse(&text);
+        let err = manifest.validate().unwrap_err();
+        assert!(err.contains("terminal"), "{err}");
+    }
+
+    #[test]
+    fn wasm_rejects_filesystem_network_process_capabilities() {
+        for extra in [
+            "filesystem = \"plugin\"",
+            "network = true",
+            "process = true",
+            "clipboard = true",
+            "terminal_context = true",
+            "terminal_write = true",
+            "credentials = \"own\"",
+        ] {
+            let text = WASM.replace(
+                "[permissions.terminal]",
+                &format!("[permissions]\n{extra}\n[permissions.terminal]"),
+            );
+            let manifest = parse(&text);
+            let err = manifest.validate().unwrap_err();
+            assert!(
+                err.contains("WASM") || err.contains("terminal"),
+                "{extra}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn process_runtime_cannot_claim_terminal_output_filter() {
+        let text = GOOD.replace(
+            "[permissions]",
+            "[permissions]\nterminal.output_filter = true",
+        );
+        let manifest = parse(&text);
+        let err = manifest.validate().unwrap_err();
+        assert!(err.contains("terminal.output_filter"), "{err}");
+    }
+
+    #[test]
+    fn wasm_entry_must_be_wasm_and_has_no_exec_bit_requirement() {
+        let text = WASM.replace("entry = \"filter.wasm\"", "entry = \"main.py\"");
+        let manifest = parse(&text);
+        let err = manifest.validate().unwrap_err();
+        assert!(err.contains(".wasm"), "{err}");
+
+        let dir = std::env::temp_dir().join(format!(
+            "tervo-wasm-entry-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("filter.wasm"), b"\0asm").unwrap();
+        let resolved = resolve_wasm_entry(&dir, "filter.wasm").unwrap();
+        assert!(resolved.is_file());
+        // 非 .wasm 路径/逃逸仍被拒绝。
+        assert!(resolve_wasm_entry(&dir, "../filter.wasm").is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn wasm_cannot_declare_process_contributions() {
+        for extra in [
+            "commands = true",
+            "status = true",
+            "events = [\"startup\"]",
+            "theme = \"theme.toml\"",
+            "panels = [\"main\"]",
+            "settings = true",
+            "assistant = true",
+        ] {
+            let text = WASM.replace(
+                "[permissions.terminal]",
+                &format!("[contributes]\n{extra}\n[permissions.terminal]"),
+            );
+            let manifest = parse(&text);
+            let err = manifest.validate().unwrap_err();
+            // commands = true 会先被通用 contributes 校验拒绝；两者都表明 wasm
+            // 不能声明 process 贡献点。
+            assert!(
+                err.contains("WASM 输出过滤器") || err.contains("commands"),
+                "{extra}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn docs_example_wasm_manifest_is_valid() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../docs/examples/plugin-wasm-filter/plugin.toml");
+        let text = std::fs::read_to_string(&path).expect("example manifest exists");
+        let manifest: Manifest = toml::from_str(&text).expect("example manifest parses");
+        manifest.validate().expect("example manifest validates");
+        assert!(manifest.is_wasm());
+        assert_eq!(manifest.permissions.summary(), "terminal.output_filter");
+        let dir = path.parent().unwrap();
+        let entry = resolve_wasm_entry(dir, &manifest.entry).unwrap();
+        assert!(entry.is_file());
     }
 }

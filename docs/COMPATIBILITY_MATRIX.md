@@ -1,11 +1,11 @@
 # 旧 Tabby 插件兼容矩阵（COMPATIBILITY_MATRIX，初版）
 
 > 审计日期：2026-11-05 ｜ 代码基线：`8327e20` ｜ 上游：**未核实**（网络不可用，见 [`TABBY_UPSTREAM_AUDIT.md`](TABBY_UPSTREAM_AUDIT.md)）
-> 本文回答需求 C13：新插件 API 与旧 Tabby 插件的兼容分级。**当前仓库没有任何插件宿主**（无 Node sidecar、无 WebView、无 Wasmtime、无插件 API），所以所有插件的“当前等级”都是 L0；这不是对插件本身可用性的判断，而是对**本仓库宿主能力**的判断。
+> 本文回答需求 C13：新插件 API 与旧 Tabby 插件的兼容分级。**初版基线时仓库没有插件宿主**；后续已合入 Plugin API v3 process 宿主，并新增窄 WASM `terminal.output_filter`（见 `PLUGIN_V3.md` 第 6 节）。但本文的 Tabby/Node/WebView 兼容分级仍是旧基线，未重新审计。
 
 ## 1. 结论
 
-1. **新插件 API：0/6 就绪**（C13 新 API 6 条全部 `not_started`）。`Cargo.toml`/`Cargo.lock` 无 wasmtime、无 WIT、无插件宿主 crate；`crates/` 下无 plugin 模块。
+1. **本文初版的新插件 API 基线为 0/6**。后续已有 v3 process 宿主与窄 WASM 输出过滤器；WIT/任意 WASM Host API 仍未实现。本文不重写旧 Tabby 评级。
 2. **旧插件加载：0 条链路**。无 `package.json` 扫描、无 `tabby-plugin` keyword 识别、无 Node.js sidecar/RPC、无 `tabby-core`/`tabby-terminal` shim、无 WebView UI Host。
 3. **不能承诺全量兼容**。需求 C13 明确“不要承诺全量兼容”；Angular Component/Template/DI 不能由 Slint 执行，依赖 Electron 私有 API/原生 `.node` 模块的插件预期为 D 级。
 4. **14 个代表性插件全部 `needs_verification`**：来源仓库、最近维护状态、实际使用的 API 均未核实；当前只能给出“若做桥接，预计需要哪些宿主能力/风险面”。

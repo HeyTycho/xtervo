@@ -43,6 +43,8 @@ base64 = "0.22.1"
 # Feedback bundles: bounded, redacted tar.gz.
 tar = "0.4"
 flate2 = "1"
+# WASM 热路径运行时（插件 v3 runtime = "wasm"）；不含 WASI/文件/网络导入。
+wasmtime.workspace = true
 
 [build-dependencies]
 slint-build = { version = "1.18", default-features = false, features = ["compat-1-18"] }
@@ -56,3 +58,5 @@ i-slint-renderer-software = "1.18.1"
 slint = { workspace = true, features = [
     "unstable-wgpu-30",
 ] }
+# 只在单元/e2e 测试里把示例 WAT 汇编成 .wasm；生产不解析 WAT。
+wat.workspace = true

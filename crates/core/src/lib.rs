@@ -33,7 +33,8 @@ pub use bench_support::TermSim;
 pub use palette::{Palette, PaletteSpec, Theme, UiColors};
 pub use pane::fill_frame;
 pub use pane::{
-    spawn, GridSize, PaneConfig, PaneHandle, ScrollPosition, SearchHit, SearchOptions,
+    spawn, GridSize, OutputFilter, OutputFilterHandle, PaneConfig, PaneHandle, ScrollPosition,
+    SearchHit, SearchOptions, MAX_OUTPUT_FILTER_BYTES,
 };
 pub use sixel::{SixelEvent, SixelFilter, SixelImage};
 pub use iip::{IipEvent, IipFilter, IipImage};

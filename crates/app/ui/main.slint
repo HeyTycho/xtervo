@@ -66,6 +66,7 @@ export struct PluginRowView {
     name: string,
     version: string,
     api: string,
+    runtime: string,
     status: string,
     error: string,
     permissions: string,
@@ -4908,7 +4909,7 @@ export component MainWindow inherits Window {
                                 wrap: word-wrap;
                             }
                             Text {
-                                text: Lang.t("Protocol: JSON-RPC 2.0 line-delimited stdio. Docs: docs/PLUGIN_V3.md. Example: docs/examples/plugin-v3-echo/.", "协议：JSON-RPC 2.0 行分隔 stdio。文档：docs/PLUGIN_V3.md。示例：docs/examples/plugin-v3-echo/。");
+                                text: Lang.t("process: JSON-RPC 2.0 line-delimited stdio. wasm: terminal.output_filter only. Docs: docs/PLUGIN_V3.md. Examples: docs/examples/plugin-v3-echo/, docs/examples/plugin-wasm-filter/.", "process：JSON-RPC 2.0 行分隔 stdio。wasm：只允许 terminal.output_filter。文档：docs/PLUGIN_V3.md。示例：docs/examples/plugin-v3-echo/、docs/examples/plugin-wasm-filter/。");
                                 color: Palette.colors.muted;
                                 font-size: 9px;
                                 wrap: word-wrap;
@@ -4956,6 +4957,12 @@ export component MainWindow inherits Window {
                                         Text {
                                             text: row.api;
                                             color: Palette.colors.muted;
+                                            font-size: 10px;
+                                            vertical-alignment: center;
+                                        }
+                                        Text {
+                                            text: row.runtime;
+                                            color: row.runtime == "wasm" ? Palette.colors.accent : Palette.colors.muted;
                                             font-size: 10px;
                                             vertical-alignment: center;
                                         }

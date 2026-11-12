@@ -465,7 +465,8 @@
 
 ### C13. Plugin System 与旧插件兼容（13 条）
 
-状态：partial=4，not_started=8，needs_verification=1。
+状态：partial=5，not_started=7，needs_verification=1（PLUG-006 于
+2026-11-12 只落地窄 WASM `terminal.output_filter`，其余 WASM Host API 未做）。
 
 | ID | Feature | Upstream evidence | Rust implementation | Status | Test | Result | Limitation |
 |---|---|---|---|---|---|---|---|
@@ -474,7 +475,7 @@
 | PLUG-003 | 注册/注销时管理资源、事件订阅、异步任务 | U-PLUGIN / 需求 C13 | process runtime：每插件 supervisor 线程管理常驻子进程、pending 请求、状态轮询、重启/禁用与 shutdown；oneshot 每次后台线程 + 并发 stdout/stderr reader；宿主 Drop 发 shutdown/kill；无热注销/重载 API | partial | 进程命令/事件/状态/崩溃/超时/坏 JSON/禁用测试；`shutdown_processes` 清理；无泄漏断言（线程退出由 EOF/shutdown 驱动） | 常驻生命周期、单次执行资源回收、三种事件分发可用 | 无热注销/热重载/自定义事件订阅/单插件并发上限；运行中不能卸载 |
 | PLUG-004 | 权限声明：terminal/file/network/clipboard/secret/process 分权 | U-PLUGIN / 需求 C13 | `[permissions]` filesystem/network/process/clipboard/credentials 参与解析/校验并在设置页展示“仅声明/未授予”；默认拒绝未实现能力（不提供 API），但插件仍是普通子进程、无沙箱/无强制撤销；不传 Vault 明文，事件 payload 不含凭据 | partial | 权限解析/展示/非法值跳过单测；PLUGIN_API §9 安全边界 | 权限声明与展示可用，默认不授予未实现能力 | 无沙箱/seccomp/capability 强制；同用户仍可读文件/网络/进程；不应把插件 API 当安全边界 |
 | PLUG-005 | 插件崩溃隔离、超时、日志、升级与版本兼容检查 | U-PLUGIN / 需求 C13 | 常驻进程独立 supervisor/子进程：2s 握手、10s 命令超时 kill、崩溃重启上限 2 后禁用、坏 JSON/超长行 5 次禁用、api 不匹配/非法 manifest 跳过；stdout/stderr/协议错误写 `[plugin]` 日志；活动列表 + 设置页 disabled 原因 + 底部浮层；版本兼容精确 `api=1` | partial | `crashing_process_plugin_restarts_then_disables`、`command_timeout_kills_process_and_reports_timeout`、`bad_json_disables_plugin_without_hanging_host`、`handshake_timeout_is_reported_and_retried`、`process_plugin_api_mismatch_is_disabled`、`read_line_capped_*`、oneshot 既有超时/退出码测试；Xvfb :142 e2e | 崩溃隔离/自动重启/超时/坏 JSON/API 检查/诊断列表可用 | 无升级/迁移/手动重启/完整结构化诊断 UI；活动仅 8 条；超时固定、无单插件并发上限 |
-| PLUG-006 | 新插件优先 WASM/WIT（先定义 Host API 再引 Runtime） | U-PLUGIN / 需求 C13 | 本轮明确选择外部进程 MVP，不引入 WASM/WIT/Runtime；Host API 以 stdin JSON + env 的最小协议先行定义 | not_started | 无 | 未实现 WASM/WIT | 无 WIT/WASM runtime；`docs/PLUGIN_API.md` 记录该边界 |
+| PLUG-006 | 新插件优先 WASM/WIT（先定义 Host API 再引 Runtime） | U-PLUGIN / 需求 C13 | `runtime = "wasm"` + Wasmtime 34：无 import、窄 ABI（memory/alloc/filter）、fuel/epoch/内存/输入输出上限、trap 原样回退；只支持 `terminal.output_filter`，真实 PTY e2e | partial | `plugin_wasm`、`plugin_v3::tests::wasm`、`output_filter`；2m soak | 窄 WASM 输出过滤器可用 | 无 WIT/组件模型/任意 WASM 命令/UI/WASI；无市场/签名/AOT |
 | PLUG-007 | 扫描原插件包与 API 使用情况；不承诺全量兼容 | U-PLUGIN / 需求 C13 | 无实现 | not_started | 无 | 未实现 | 无扫描器；未建立兼容分级 |
 | PLUG-008 | 识别 package.json `tabby-plugin` keyword、入口、依赖、版本 | U-PLUGIN / 需求 C13 | 无实现 | not_started | 无 | 未实现 | 无 package.json 解析；keyword 事实见 docs/tabby-themes.md |
 | PLUG-009 | Node.js sidecar 加载旧 JS/TS 插件，RPC 与 Rust Host 通信 | U-PLUGIN / 需求 C13 | 无实现 | not_started | 无 | 未实现 | 无 Node 依赖/sidecar/RPC |

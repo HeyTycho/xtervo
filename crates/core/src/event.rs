@@ -188,6 +188,19 @@ pub struct PaneStats {
     pub ctrl_reply_timeouts: AtomicU64,
     /// ctrl 通道投递超时/断开次数（UI 侧最多等 50ms，不无限阻塞）。
     pub ctrl_send_timeouts: AtomicU64,
+    /// 可选输出过滤器（插件 WASM 热路径）的调用/回退/延迟统计。
+    /// 默认过滤器为 None 时这些计数保持 0，热路径没有额外原子操作。
+    pub filter_calls: AtomicU64,
+    /// 过滤器返回 None / panic / 输出超限，原样放行输入块的次数。
+    pub filter_fallbacks: AtomicU64,
+    /// 过滤器 panic 被 catch_unwind 截获的次数（单独计数便于诊断）。
+    pub filter_panics: AtomicU64,
+    /// 过滤器输出超过核心 256 KiB 上限、被丢弃并回退的次数。
+    pub filter_oversize: AtomicU64,
+    pub filter_input_bytes: AtomicU64,
+    pub filter_output_bytes: AtomicU64,
+    /// 过滤器累计耗时（纳秒，含 WASM 调用）；用于证明热路径有界。
+    pub filter_nanos: AtomicU64,
 }
 
 impl PaneStats {
