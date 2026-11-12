@@ -107,6 +107,7 @@ retained, but dirty worktrees may contain uncommitted evidence:
 - Plugin API v3 permissions/events/UI contributions are not implemented.
 - Wayland native, color emoji/shaping, atlas eviction, 24h soak remain open.
 - MCP is local stdio without auth token; read-only tools only.
+- MCP terminal-control design and planned write tools: [`MCP_TERMINAL_CONTROL.md`](MCP_TERMINAL_CONTROL.md).
 
 ## Release rules
 

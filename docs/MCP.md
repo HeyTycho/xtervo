@@ -1,5 +1,7 @@
 # MCP 只读桥（M0 已实现）
 
+> Terminal control tools and the live control socket are specified in [`MCP_TERMINAL_CONTROL.md`](MCP_TERMINAL_CONTROL.md). Current live tools are read-only; write tools are planned/under implementation.
+
 > 状态：M0 只读能力已落在现有 `tervo diag serve`（binary `tervo`），
 > 不新增独立 daemon、不监听网络。完整 CLI/协议细节见
 > [`DIAGNOSTICS.md`](DIAGNOSTICS.md#mcp-stdio已实现阶段-a)。

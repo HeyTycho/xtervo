@@ -1,0 +1,193 @@
+# MCP Terminal Control
+
+Status: design + implementation plan (2026-11-12). The current mainline has a
+read-only live control socket and two MCP live tools. The write tools below are
+the planned 0.4.0 MCP terminal-control surface; do not claim them as shipped
+until the harness e2e gates pass.
+
+## 1. Architecture
+
+MCP is not embedded in the PTY. Tervo exposes a local live control socket, and
+the MCP stdio bridge translates JSON-RPC tools into socket commands:
+
+```text
+external harness
+  -> MCP stdio (tervo diag serve)
+     -> local Unix socket (0600, token)
+        -> Tervo UI/event loop
+           -> AppState: tabs/panes/PTY
+```
+
+The socket is the only control boundary. MCP never gets direct filesystem,
+Vault, environment-variable, or host-process access.
+
+## 2. Operation tiers
+
+### L0: read-only (default)
+
+| Tool | Operation |
+|---|---|
+| `tervo.live_capabilities` | Supported operations, limits, version |
+| `tervo.live_list` | Windows/tabs/panes, active pane, dimensions, title, cwd, process state |
+| `tervo.live_snapshot` | Frame summary: cursor, modes, damage, image rectangles |
+| `tervo.live_output` | Bounded output tail/range (not full scrollback) |
+| `tervo.live_metrics` | Frame time, RSS, upload bytes, threads/FDs |
+
+Read limits:
+
+```text
+max output bytes per call
+max lines per call
+no environment-variable values
+no API keys/tokens/passwords
+no unbounded scrollback dump
+```
+
+### L1: terminal control (requires `TERVO_DIAG_ALLOW_WRITE=1` + token)
+
+| Tool | Operation |
+|---|---|
+| `tervo.live_send_text` | Write text to a pane (no automatic Enter) |
+| `tervo.live_paste` | Bracketed paste into a pane |
+| `tervo.live_send_key` | Send key/chord: Enter, Ctrl+C, Ctrl+D, arrows, F-keys |
+| `tervo.live_run` | Write one command line + Enter; optional output/exit wait |
+| `tervo.live_focus` | Focus a tab/pane |
+| `tervo.live_scroll` | Scroll a pane's scrollback |
+| `tervo.live_resize` | Resize a pane's rows/cols |
+| `tervo.live_new_tab` | Create a tab |
+| `tervo.live_split` | Split a pane horizontally/vertically |
+
+This is effectively shell execution through the terminal. Required controls:
+
+```text
+per-harness token
+explicit write switch
+audit entry for every action
+argument-length and rate limits
+unknown pane/tab -> explicit error, never guess
+```
+
+### L2: destructive (per-action confirmation)
+
+| Tool | Operation |
+|---|---|
+| `tervo.live_close_pane` | Close a pane |
+| `tervo.live_close_tab` | Close a tab |
+| `tervo.live_kill` | Send interrupt/terminate to a PTY |
+| `tervo.live_rename` | Rename a tab/pane |
+
+L2 is disabled by default or requires an explicit confirmation for each call.
+
+## 3. Example harness flow
+
+```text
+tervo.live_list
+  -> find a shell pane
+tervo.live_send_text { pane, text: "cargo test" }
+tervo.live_send_key  { pane, key: "Enter" }
+tervo.live_output    { pane, max_bytes: 65536 }
+  -> read result
+tervo.live_split     { pane, direction: "vertical" }
+  -> run a dev server in the new pane
+tervo.live_focus     { pane: original }
+tervo.live_close_pane{ pane: created }
+```
+
+MCP request shape:
+
+```json
+{"jsonrpc":"2.0","id":1,"method":"tools/call",
+ "params":{"name":"tervo.live_list","arguments":{}}}
+```
+
+## 4. Security model
+
+```text
+socket mode 0600, Unix local only
+token required when configured
+TERVO_DIAG_ALLOW_WRITE=1 required for L1/L2
+per-harness capability scopes
+read/write/destructive tiers
+audit: who, when, pane, action, argument bytes, result
+argument and rate limits
+no host filesystem / Vault / env values / host process execution
+no automatic issue creation or git push
+```
+
+Defaults:
+
+```text
+L0: enabled
+L1: disabled until write switch + token
+L2: disabled or per-call confirmation
+```
+
+## 5. Explicitly not allowed
+
+```text
+read arbitrary host files
+read Vault/credentials/environment values
+execute host commands outside the terminal PTY
+modify user config/plugins/repository
+automatically submit issues or push code
+unbounded scrollback reads
+connect without a token
+write PTY while the write switch is off
+```
+
+## 6. Current vs planned
+
+Current mainline:
+
+```text
+tervo.diag_env
+tervo.diag_snapshot
+tervo.diag_replay
+tervo.doctor_check
+tervo.issue_draft
+tervo.metrics_read
+tervo.live_capabilities
+tervo.live_snapshot
+```
+
+Existing live tools are read-only. The write tools in L1/L2 are planned and
+must be added together with:
+
+```text
+socket command handlers
+token/write-switch checks
+bounded output/read handlers
+audit log
+harness e2e
+```
+
+## 7. Environment and startup
+
+```bash
+export TERVO_DIAG_SOCKET="${XDG_RUNTIME_DIR:-/tmp}/tervo-diag.sock"
+export TERVO_DIAG_TOKEN="$(head -c 24 /dev/urandom | base64)"
+export TERVO_DIAG_ALLOW_WRITE=1   # only when control is intended
+
+tervo diag serve --socket "$TERVO_DIAG_SOCKET" --token "$TERVO_DIAG_TOKEN"
+```
+
+MCP server runs on stdio; the harness spawns it explicitly. No network listener
+is opened.
+
+## 8. Acceptance gates
+
+```text
+read-only list/snapshot/output
+send_text + Enter -> output contains expected token
+send_key Ctrl+C -> process interrupt
+new_tab/split/focus/scroll/resize
+close/kill requires confirmation
+no token -> rejected
+write switch off -> write tools rejected
+argument/rate limits enforced
+audit entries contain no secrets
+external harness e2e script passes
+```
+
+Until these pass, the document describes the planned interface, not shipped
+behavior.
