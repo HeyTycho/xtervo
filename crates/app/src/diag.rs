@@ -514,6 +514,16 @@ pub(crate) fn frame_json(frame: &Frame, kind: &str) -> Value {
     })
 }
 
+/// 设置页 Help → Run Doctor 使用：只跑确定性 Doctor，不调用模型。
+pub(crate) fn doctor_markdown() -> Result<String, String> {
+    let case = mcp_ext::doctor_check(&json!({}))?;
+    case.get("issue_draft")
+        .and_then(|draft| draft.get("markdown"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| "doctor case 缺少 issue_draft.markdown".to_string())
+}
+
 /// `tervo diag doctor`：把已有 Doctor 确定性核心暴露成 app CLI 入口。
 /// 不联系模型、不读 scrollback；只使用显式传入的 frame/metrics 文件和本进程环境。
 fn doctor_cli(args: &[String]) -> Result<(), Box<dyn Error>> {

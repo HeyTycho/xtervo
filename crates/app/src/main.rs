@@ -11755,6 +11755,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     });
 
+    ui.on_run_doctor(|| {
+        with_app(|st| {
+            st.ui.set_doctor_status("Running deterministic Doctor…".into());
+            match diag::doctor_markdown() {
+                Ok(markdown) => {
+                    st.ui.set_doctor_text(markdown.into());
+                    st.ui.set_doctor_open(true);
+                    st.ui.set_doctor_status("".into());
+                },
+                Err(error) => st.ui.set_doctor_status(error.into()),
+            }
+        });
+    });
+
+    ui.on_close_doctor(|| {
+        with_app(|st| {
+            st.ui.set_doctor_open(false);
+            st.ui.set_doctor_text("".into());
+        });
+    });
+
     ui.on_settings_help_copy_diagnostics(|| {
         with_app(|st| copy_help_diagnostics(st));
     });
