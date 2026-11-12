@@ -507,6 +507,19 @@ fn spawn_app_wake_bridge(rx: crossbeam_channel::Receiver<()>) {
 
 /// live control socket 的写操作入口；只在 UI 线程调用。
 fn live_control(cmd: &str, args: &serde_json::Value) -> Result<serde_json::Value, String> {
+    // Audit: never log command text or secrets; only the action and bounded
+    // size/shape metadata. The normal Tervo log file is the audit sink.
+    let pane = args.get("pane_id").and_then(serde_json::Value::as_u64);
+    let bytes = args
+        .get("text")
+        .or_else(|| args.get("command"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::len)
+        .unwrap_or(0);
+    eprintln!(
+        "[mcp] action={cmd} pane={:?} arg_bytes={bytes}",
+        pane
+    );
     with_app(|st| match cmd {
         "list" => Ok(serde_json::json!({
             "schema":"tervo.control.v1",
