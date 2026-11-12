@@ -339,9 +339,7 @@ fn parse_flat_manifest(path: &Path) -> PluginEntry {
         theme_error: None,
         legacy: true,
         supported: false,
-        reason: format!(
-            "Unsupported legacy flat manifest; Plugin API v3 requires <plugins>/<dir>/plugin.toml with api = 3 and host_abi = 3 (see docs/PLUGIN_V3.md)"
-        ),
+        reason: "Unsupported legacy flat manifest; Plugin API v3 requires <plugins>/<dir>/plugin.toml with api = 3 and host_abi = 3 (see docs/PLUGIN_V3.md)".to_string(),
     };
     match read_manifest_value(path) {
         Ok(value) => {
@@ -1259,7 +1257,7 @@ impl PluginStore {
                 }
             }
         }
-        found.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
+        found.sort_by_key(|(_, title)| title.to_lowercase());
         found.truncate(20);
         found
             .into_iter()

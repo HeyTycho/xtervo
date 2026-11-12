@@ -10,7 +10,7 @@
 > 当前进度：Phase 0（可行性验证）已完成（[报告](docs/phase0-report.md)）；
 > Phase 2 常用工作流已可用：标签页/分屏/右键四模式、多窗口、Tab 活动/OSC 通知、
 > 可编辑快捷键、Profile 搜索/默认/复制/每 Profile 外观、会话恢复、Tab 自动收缩/搜索、
-> Vault 加密凭据、Tabby 配置导入、外部进程插件 V1（命令/状态/主题包）。
+> Vault 加密凭据、Tabby 配置导入、外部进程插件 API v3（命令/状态/事件/声明式面板与设置）。
 > 功能覆盖与已知差距见 [`docs/FEATURE_MATRIX.md`](docs/FEATURE_MATRIX.md) 与
 > [`docs/CLOSURE.md`](docs/CLOSURE.md)；W-02 分支验证：app **351** / core 单元 **108**
 > + smoke **25** 单测，Xvfb :139 SSH/SFTP/Vault e2e PASS（19 张截图）。

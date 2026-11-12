@@ -1574,9 +1574,7 @@ fn queue_approval(
             Ok(mut approvals) => {
                 if approvals.iter().any(|a| {
                     a.plugin_id == config.id && a.method == request.method
-                }) {
-                    false
-                } else if approvals.len() >= 16 {
+                }) || approvals.len() >= 16 {
                     false
                 } else {
                     approvals.push_back(request.clone());

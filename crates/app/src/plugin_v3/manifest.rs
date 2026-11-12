@@ -237,7 +237,7 @@ impl AssistantMeta {
 }
 
 /// `[contributes]`：声明式贡献点。所有 UI 都由宿主渲染，插件不能注入 Slint。
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Contributes {
     /// 有 `[[commands]]` 时必须为 true；false 时不允许声明命令。
@@ -256,19 +256,6 @@ pub struct Contributes {
     pub assistant: Option<AssistantContribution>,
 }
 
-impl Default for Contributes {
-    fn default() -> Self {
-        Self {
-            commands: false,
-            status: false,
-            events: Vec::new(),
-            theme: None,
-            panels: Vec::new(),
-            settings: false,
-            assistant: None,
-        }
-    }
-}
 
 impl Contributes {
     pub fn validate(&self, commands: &[CommandDecl]) -> Result<(), String> {

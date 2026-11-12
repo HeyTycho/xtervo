@@ -63,6 +63,7 @@ const COMMANDS: &[&str] = &[
     "terminal-read",
     "terminal-write",
     "clipboard-read",
+    "push-status",
     "context",
     "notify",
     "panel",
@@ -118,6 +119,7 @@ import sys
 import time
 
 STATUS_DELAY = __STATUS_DELAY__
+IGNORE_PING = False
 PROTOCOL = 3
 _next = 100
 _pending = {}
@@ -193,6 +195,9 @@ def handle(msg):
         elif command == "notify":
             send({"jsonrpc": "2.0", "method": "ui.notify", "params": {"text": "plugin-notify", "level": "info"}})
             respond(rid, {"ok": True, "message": "notified"})
+        elif command == "push-status":
+            send({"jsonrpc": "2.0", "method": "ui.status", "params": {"text": "pushed-status", "command": "greet"}})
+            respond(rid, {"ok": True, "message": "status pushed"})
         elif command == "panel":
             elements = [
                 {"type": "text", "text": "panel-text"},
@@ -215,7 +220,8 @@ def handle(msg):
             time.sleep(STATUS_DELAY)
         respond(rid, {"text": "status-ready", "tooltip": "tip", "command": "greet"})
     elif method == "ping":
-        respond(rid, {"seq": params.get("seq", 0)})
+        if not IGNORE_PING:
+            respond(rid, {"seq": params.get("seq", 0)})
     elif method == "surface.render":
         elements = [
             {"type": "text", "text": "surface-text"},
@@ -537,6 +543,16 @@ fn lifecycle_command_status_ping_context_and_events() {
     assert_eq!(status.text, "status-ready");
     assert_eq!(status.command.as_deref(), Some("plugin.dev.test.lifecycle.greet"));
 
+    assert!(store.spawn_command("plugin.dev.test.lifecycle.push-status"));
+    assert!(wait_until(
+        || store
+            .status_snapshot()
+            .1
+            .iter()
+            .any(|status| status.text == "pushed-status"),
+        Duration::from_secs(3)
+    ));
+
     assert!(store.spawn_command("plugin.dev.test.lifecycle.context"));
     assert!(wait_activity(&store, "HOST:", Duration::from_secs(3)));
 
@@ -616,6 +632,59 @@ fn command_timeout_reports_timeout_and_restarts() {
     assert!(wait_until(
         || store
             .runtime_info("dev.test.timeout")
+            .is_some_and(|info| info.restart_count >= 1),
+        Duration::from_secs(4)
+    ));
+    store.shutdown_processes();
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn ping_success_is_quiet_and_consecutive_timeouts_restart() {
+    let root = tmpdir("pingok");
+    install_plugin(
+        &root,
+        "plugin",
+        &manifest("dev.test.pingok", "1.0.0", false, false, false),
+        0.0,
+    );
+    let state = root.join("state.toml");
+    let mut options = fast_options();
+    options.ping_interval = Duration::from_millis(50);
+    options.ping_timeout = Duration::from_millis(100);
+    let mut store = load(&root, &state, options);
+    enable(&mut store, "dev.test.pingok");
+    assert!(wait_phase(&store, "dev.test.pingok", Phase::Running, Duration::from_secs(3)));
+    std::thread::sleep(Duration::from_millis(350));
+    let info = store.runtime_info("dev.test.pingok").unwrap();
+    assert_eq!(info.phase(), Phase::Running);
+    assert_eq!(info.restart_count, 0);
+    store.shutdown_processes();
+    let _ = std::fs::remove_dir_all(&root);
+
+    let root = tmpdir("pingfail");
+    let dir = install_plugin(
+        &root,
+        "plugin",
+        &manifest("dev.test.pingfail", "1.0.0", false, false, false),
+        0.0,
+    );
+    // 让测试插件忽略 ping；连续 2 次超时后 supervisor 必须重启。
+    let script = std::fs::read_to_string(dir.join("main.py")).unwrap().replace(
+        "IGNORE_PING = False",
+        "IGNORE_PING = True",
+    );
+    write_executable(&dir.join("main.py"), &script);
+    let state = root.join("state.toml");
+    let mut options = fast_options();
+    options.ping_interval = Duration::from_millis(50);
+    options.ping_timeout = Duration::from_millis(80);
+    let mut store = load(&root, &state, options);
+    enable(&mut store, "dev.test.pingfail");
+    assert!(wait_phase(&store, "dev.test.pingfail", Phase::Running, Duration::from_secs(3)));
+    assert!(wait_until(
+        || store
+            .runtime_info("dev.test.pingfail")
             .is_some_and(|info| info.restart_count >= 1),
         Duration::from_secs(4)
     ));

@@ -734,8 +734,7 @@ pub fn render_markdown_plain(markdown: &str) -> String {
             .replace("**", "")
             .replace("__", "")
             .replace("~~", "")
-            .replace('`', "")
-            .replace('*', "")
+            .replace(['`', '*'], "")
             .replace("_", "");
         out.push_str(&line);
         out.push('\n');
