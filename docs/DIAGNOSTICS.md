@@ -329,7 +329,7 @@ tervo diag serve
 ```
 
 这是 **内置 CLI 子命令**，不是插件；MCP client 直接 spawn 它，stdin/stdout
-JSON-RPC，日志只走 stderr。
+JSON-RPC 2.0（每行一个 JSON 对象），日志只走 stderr。
 
 已实现工具：
 
@@ -337,6 +337,57 @@ JSON-RPC，日志只走 stderr。
 tervo.diag_env       版本/display/config/log 路径
 tervo.diag_snapshot  一次性 PTY 运行 command，返回 frame/cursor/images
 tervo.diag_replay    回放原始字节文件，返回 frame
+tervo.doctor_check   确定性 doctor；输出 tervo.diagnostic_case.v1（只读、无 shell）
+tervo.issue_draft    对完整 doctor case 渲染 markdown issue 草稿（只读）
+tervo.metrics_read   Tervo 日志目录的有界统计（只读、拒绝任意路径）
+```
+
+资源：
+
+```text
+tervo://version      版本/commit/build/target/display 元数据（application/json）
+```
+
+`tervo.doctor_check` 的输入可以是内联 JSON object，也可以是 `$HOME` 或 `/tmp`
+下的 JSON 文件路径（单个文件上限 1 MiB）：
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call",
+  "params": {
+    "name": "tervo.doctor_check",
+    "arguments": {
+      "environment": {"schema": "tervo.diag.v1", "kind": "env", "version": "0.3.1"},
+      "frame": "/tmp/tervo-frame.json",
+      "metrics": "/tmp/tervo-metrics.json",
+      "symptom": "滚动后残影",
+      "repro_steps": ["打开 Tervo", "滚动输出"]
+    }
+  }
+}
+```
+
+输出就是 `tervo.diagnostic_case.v1` JSON（含 `issue_draft`）。把该对象原样传给
+`tervo.issue_draft` 即可得到 markdown：
+
+```json
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{
+  "name":"tervo.issue_draft","arguments":{"case": <tervo.doctor_check 的输出>}
+}}
+```
+
+`tervo.metrics_read` 默认读取 `TERVO_LOG_DIR` / XDG state 下的 Tervo 日志目录，
+也可显式传 `log_dir`。路径必须位于 `$HOME` 或 `/tmp`，且只统计普通文件
+`tervo-*.log`：最多 8 个文件、每个只扫描尾部 256 KiB；返回文件名、字节数、
+扫描行数和最近 error/panic/fatal 行数，**不返回原始行**。
+
+MCP 资源读取：
+
+```json
+{"jsonrpc":"2.0","id":3,"method":"resources/list","params":{}}
+{"jsonrpc":"2.0","id":4,"method":"resources/read","params":{"uri":"tervo://version"}}
 ```
 
 Claude Code：
@@ -357,31 +408,49 @@ DSH / 其他 MCP harness：同样 spawn `tervo diag serve`，按标准
 `initialize` → `tools/list` → `tools/call` 调用。没有 MCP 的 harness 用
 `tervo diag snapshot --json` 即可。
 
+协议错误码：
+
+```text
+-32700  坏 JSON / parse error
+-32600  非法请求（缺 method、params 不是 object、超长请求）
+-32601  未知 method
+-32602  未知工具、缺 tool name、arguments 不是 object
+-32002  未知 resource URI
+```
+
+工具自身失败时优先返回 MCP 语义的
+`{"content":[{"type":"text","text":"..."}],"isError":true}`。
+
 安全边界：
 
 ```text
-- 只读 Tervo 状态；snapshot 会执行调用者给的 shell command（本地诊断进程）
-- 不读 Vault/API key/环境变量值
-- 不写日志/stdout 正文以外的终端内容
+- doctor/issue/metrics 只读：不启动进程、不写文件、不访问网络
+- 文件路径只允许 $HOME 或 /tmp 下（canonicalize 后校验，拒绝 symlink 逃逸）
+- doctor 只读有界配置/日志路径；配置里的 secret-like 值只输出计数，不输出正文
+- metrics 只统计 tervo-*.log 的尾部摘要，不返回日志原文
+- 不读 Vault/API key/环境变量值；不整段读取 scrollback
+- resource 只暴露版本/构建元数据
 - 仅本地 stdio，无网络监听
+- snapshot 仍会执行调用者显式给出的 shell command（原有诊断行为，保持
+  “本地诊断进程”说明；新工具不使用这个能力）
 ```
 
 尚未实现：
 
 ```text
-- 读正在运行的 Tervo 实例（app control socket）
 - screenshot / image RGBA / PTY 事件级 trace
-- 权限 token / per-harness 鉴权
+- MCP 鉴权 token / per-harness 授权
+- doctor/metrics 的 live app 数据（当前只读进程内 env 与显式输入）
 ```
 
 ## 限制
 
 ```text
-- 当前只能抓一次性 pane，不能读正在运行的 Tervo 实例
+- 默认只能抓一次性 pane；读运行中的 Tervo 实例需显式启用 live control socket
 - metrics/observability CLI 是未接线的 schema；app render loop 尚未喂 registry
 - 没有 trace（PTY/frame/image 事件流），replay 输入是原始字节文件
 - 没有 screenshot/PNG
-- 没有 MCP / Unix socket / token
+- MCP stdio 已实现，但无鉴权 token / per-harness 授权；仅限本地显式 spawn
 - raw bytes 可能含终端内容，录制/分享前自行脱敏
 ```
 

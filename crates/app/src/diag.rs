@@ -2,12 +2,14 @@
 //! 内置 harness-neutral 终端诊断 CLI（`tervo diag`）。
 //!
 //! 不创建窗口、不初始化 Slint；输出 `tervo.diag.v1` JSON，任何 harness 都可以
-//! 在 shell 里调用。当前提供 env / snapshot / replay（无实时 app socket、无 MCP；
-//! 那是后续切片）。
+//! 在 shell 里调用。提供 env / snapshot / replay，以及本地 MCP stdio server
+//! （`tervo diag serve`）。
 //!
 //! 安全：不输出环境变量值、API key、Vault 内容或图片 RGBA；只给版本、路径、
-//! frame 文本、cursor/modes 和图片 rect。
+//! frame 文本、cursor/modes 和图片 rect。MCP 的 doctor/issue/metrics 工具只读，
+//! 不启动进程、不写文件；snapshot 仍会执行调用者显式给出的诊断命令。
 
+mod mcp_ext;
 mod trace_layer;
 
 use std::error::Error;
@@ -29,6 +31,9 @@ const COMMIT: &str = env!("TERVO_GIT_COMMIT");
 const DIRTY: &str = env!("TERVO_GIT_DIRTY");
 const BUILT: &str = env!("TERVO_BUILD_TIME");
 const TARGET: &str = env!("TERVO_BUILD_TARGET");
+/// One JSON-RPC line can carry a diagnostic case plus frame text. 1 MiB is
+/// generous for that use and still prevents an accidentally unbounded request.
+const MCP_MAX_REQUEST_BYTES: usize = 1024 * 1024;
 
 pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
     let sub = args.first().map(String::as_str).unwrap_or("env");
@@ -80,6 +85,8 @@ fn help_text() -> &'static str {
                                   合成夹具 --fixture clean|images|filter-edge；--json\n\
      serve [--socket PATH --token T]  MCP/JSON-RPC stdio server；--socket 时增加 live 工具\n\
        --cols/--rows/--wait-ms\n\
+       resources: tervo://version；tools: diag_env/diag_snapshot/diag_replay/\n\
+       doctor_check/issue_draft/metrics_read（后 3 个只读、无 shell）\n\
      \n\
      输出 schema=tervo.diag.v1；不含 API key/环境变量值。"
 }
@@ -509,50 +516,152 @@ pub(crate) fn frame_json(frame: &Frame, kind: &str) -> Value {
 /// 只暴露诊断读取；snapshot 会执行调用者给的 command（这是“启动一个 shell
 /// 做诊断”，不是 Tervo 远程控制）。MCP client 应只在本地显式启动本进程。
 fn serve(args: &[String]) -> Result<(), Box<dyn Error>> {
-    use std::io::{BufRead, Write};
     let live_socket = opt(args, "--socket");
     let live_token = opt(args, "--token")
         .or_else(|| std::env::var("TERVO_DIAG_TOKEN").ok());
     let stdin = std::io::stdin();
-    let mut stdout = std::io::stdout();
-    for line in stdin.lock().lines() {
+    let stdout = std::io::stdout();
+    serve_reader_writer(
+        stdin.lock(),
+        stdout.lock(),
+        live_socket.as_deref(),
+        live_token.as_deref(),
+    )
+}
+
+/// Testable transport loop: one JSON-RPC object per line, responses on writer.
+///
+/// Notifications never produce a line. Malformed JSON is answered with the
+/// standard -32700 error instead of being silently dropped, so an MCP client
+/// can tell that its request was not understood.
+fn serve_reader_writer<R, W>(
+    reader: R,
+    mut writer: W,
+    live_socket: Option<&str>,
+    live_token: Option<&str>,
+) -> Result<(), Box<dyn Error>>
+where
+    R: std::io::BufRead,
+    W: std::io::Write,
+{
+    for line in reader.lines() {
         let line = line?;
         if line.trim().is_empty() {
             continue;
         }
-        let req: Value = match serde_json::from_str(&line) {
-            Ok(v) => v,
-            Err(e) => {
-                eprintln!("[diag] MCP 坏 JSON: {e}");
-                continue;
-            },
-        };
-        let id = req.get("id").cloned();
-        let method = req.get("method").and_then(Value::as_str).unwrap_or("");
-        let response = match method {
-            "initialize" => Some(json!({
-                "protocolVersion": "2024-11-05",
-                "capabilities": {"tools": {}},
-                "serverInfo": {"name": "tervo-diag", "version": VERSION},
-            })),
-            "tools/list" => Some(json!({"tools": mcp_tools(live_socket.is_some())})),
-            "tools/call" => Some(mcp_call(&req, live_socket.as_deref(), live_token.as_deref())),
-            "notifications/initialized" => None,
-            _ => Some(json!({"error": {"code": -32601, "message": "method not found"}})),
-        };
-        let Some(mut result) = response else { continue };
-        if let Some(id) = id {
-            let mut envelope = json!({"jsonrpc": "2.0", "id": id});
-            if let Some(error) = result.get("error").cloned() {
-                envelope["error"] = error;
-            } else {
-                envelope["result"] = result;
+        let response = if line.len() > MCP_MAX_REQUEST_BYTES {
+            Some(mcp_protocol_error(
+                Value::Null,
+                -32600,
+                "request too large",
+            ))
+        } else {
+            match serde_json::from_str::<Value>(&line) {
+                Ok(request) => mcp_handle_request(&request, live_socket, live_token),
+                Err(error) => {
+                    eprintln!("[diag] MCP 坏 JSON: {error}");
+                    Some(mcp_protocol_error(Value::Null, -32700, "parse error"))
+                },
             }
-            writeln!(stdout, "{}", serde_json::to_string(&envelope)?)?;
-            stdout.flush()?;
-        }
+        };
+        let Some(response) = response else { continue };
+        writeln!(writer, "{}", serde_json::to_string(&response)?)?;
+        writer.flush()?;
     }
     Ok(())
+}
+
+fn mcp_handle_request(
+    request: &Value,
+    live_socket: Option<&str>,
+    live_token: Option<&str>,
+) -> Option<Value> {
+    let object = match request.as_object() {
+        Some(object) => object,
+        None => {
+            return Some(mcp_protocol_error(
+                Value::Null,
+                -32600,
+                "invalid request: expected an object",
+            ))
+        },
+    };
+    if let Some(version) = object.get("jsonrpc").and_then(Value::as_str) {
+        if version != "2.0" {
+            return Some(mcp_protocol_error(
+                object.get("id").cloned().unwrap_or(Value::Null),
+                -32600,
+                "invalid jsonrpc version",
+            ));
+        }
+    }
+    let Some(id) = object.get("id").cloned() else {
+        // JSON-RPC notification: never write a response.
+        return None;
+    };
+    if !(id.is_null() || id.is_string() || id.is_number()) {
+        return Some(mcp_protocol_error(
+            Value::Null,
+            -32600,
+            "invalid request id",
+        ));
+    }
+    let Some(method) = object.get("method").and_then(Value::as_str) else {
+        return Some(mcp_protocol_error(id, -32600, "missing method"));
+    };
+    let params = object.get("params").cloned().unwrap_or(Value::Null);
+    if !params.is_null() && !params.is_object() {
+        return Some(mcp_protocol_error(
+            id,
+            -32602,
+            "params must be an object",
+        ));
+    }
+    match method {
+        "initialize" => Some(mcp_result(
+            id,
+            json!({
+                "protocolVersion": "2024-11-05",
+                "capabilities": {
+                    "tools": {"listChanged": false},
+                    "resources": {"subscribe": false, "listChanged": false}
+                },
+                "serverInfo": {"name": "tervo-diag", "version": VERSION},
+            }),
+        )),
+        "notifications/initialized" => None,
+        "ping" => Some(mcp_result(id, json!({}))),
+        "tools/list" => {
+            Some(mcp_result(id, json!({"tools": mcp_tools(live_socket.is_some())})))
+        },
+        "tools/call" => {
+            let result = mcp_call(request, live_socket, live_token);
+            Some(match result.get("error") {
+                Some(error) => json!({"jsonrpc": "2.0", "id": id, "error": error}),
+                None => mcp_result(id, result),
+            })
+        },
+        "resources/list" => Some(mcp_result(id, mcp_ext::resources_list())),
+        "resources/read" => {
+            let uri = params.get("uri").and_then(Value::as_str);
+            match uri {
+                Some(uri) => match mcp_ext::read_resource(uri) {
+                    Ok(result) => Some(mcp_result(id, result)),
+                    Err(_) => Some(mcp_protocol_error(id, -32002, "resource not found")),
+                },
+                None => Some(mcp_protocol_error(id, -32602, "uri is required")),
+            }
+        },
+        _ => Some(mcp_protocol_error(id, -32601, "method not found")),
+    }
+}
+
+fn mcp_result(id: Value, result: Value) -> Value {
+    json!({"jsonrpc": "2.0", "id": id, "result": result})
+}
+
+fn mcp_protocol_error(id: Value, code: i64, message: &str) -> Value {
+    json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})
 }
 
 fn mcp_tools(live: bool) -> Value {
@@ -590,6 +699,62 @@ fn mcp_tools(live: bool) -> Value {
                 },
                 "required": ["input"]
             }
+        },
+        {
+            "name": "tervo.doctor_check",
+            "description": "Run deterministic, offline Tervo doctor checks and return a tervo.diagnostic_case.v1 JSON document. Read-only; no shell, no writes. Inputs may be inline JSON objects or paths under $HOME or /tmp.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "environment": {
+                        "type": ["object", "string"],
+                        "description": "`tervo diag env --json` object or a path to it"
+                    },
+                    "frame": {
+                        "type": ["object", "string"],
+                        "description": "`tervo diag snapshot --json` object or a path to it"
+                    },
+                    "metrics": {
+                        "type": ["object", "string"],
+                        "description": "`tervo diag metrics` JSON object or a path to it"
+                    },
+                    "symptom": {"type": "string"},
+                    "details": {"type": "string"},
+                    "repro_steps": {"type": "array", "items": {"type": "string"}},
+                    "expected": {"type": "string"},
+                    "actual": {"type": "string"}
+                },
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "tervo.issue_draft",
+            "description": "Render the fixed doctor issue template (markdown) from a complete tervo.diagnostic_case.v1 object. Read-only; no model, no network.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "case": {
+                        "type": "object",
+                        "description": "A complete tervo.diagnostic_case.v1 document, for example the output of tervo.doctor_check"
+                    }
+                },
+                "required": ["case"],
+                "additionalProperties": false
+            }
+        },
+        {
+            "name": "tervo.metrics_read",
+            "description": "Bounded read-only summary of Tervo's log directory: file/byte/line counts and recent error-like lines. Only tervo-*.log files under $HOME or /tmp are considered; raw lines and secrets are never returned.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "log_dir": {
+                        "type": "string",
+                        "description": "Optional Tervo log directory under $HOME or /tmp; defaults to TERVO_LOG_DIR/XDG state path"
+                    }
+                },
+                "additionalProperties": false
+            }
         }
     ]);
     if live {
@@ -611,9 +776,15 @@ fn mcp_tools(live: bool) -> Value {
 
 fn mcp_call(req: &Value, live_socket: Option<&str>, live_token: Option<&str>) -> Value {
     let params = req.get("params").cloned().unwrap_or(Value::Null);
+    if !params.is_object() {
+        return mcp_error(-32602, "params must be an object");
+    }
     let name = params.get("name").and_then(Value::as_str).unwrap_or("");
     let args = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
-    let result = match name {
+    if !args.is_object() {
+        return mcp_error(-32602, "arguments must be an object");
+    }
+    let result: Result<Value, Box<dyn Error>> = match name {
         "tervo.diag_env" => Ok(env_json()),
         "tervo.diag_snapshot" => {
             let command = match args.get("command").and_then(Value::as_str) {
@@ -656,6 +827,9 @@ fn mcp_call(req: &Value, live_socket: Option<&str>, live_token: Option<&str>) ->
             }
             replay_value(&cli)
         },
+        "tervo.doctor_check" => mcp_ext::doctor_check(&args).map_err(|error| error.into()),
+        "tervo.issue_draft" => mcp_ext::issue_draft(&args).map_err(|error| error.into()),
+        "tervo.metrics_read" => mcp_ext::metrics_read(&args).map_err(|error| error.into()),
         "tervo.live_capabilities" => match live_request(live_socket, live_token, "capabilities") {
             Ok(v) => Ok(v),
             Err(e) => Err(e.into()),
@@ -837,6 +1011,120 @@ fn handle_conn(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
+    use std::path::{Path, PathBuf};
+
+    struct TestDir {
+        path: PathBuf,
+    }
+
+    impl TestDir {
+        fn new(label: &str) -> Self {
+            let stamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or(0);
+            let path = std::env::temp_dir().join(format!(
+                "tervo-mcp-test-{}-{}-{stamp}",
+                label,
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&path).expect("create test dir");
+            Self { path }
+        }
+
+        fn join(&self, name: &str) -> PathBuf {
+            self.path.join(name)
+        }
+
+        fn write(&self, name: &str, body: &str) -> PathBuf {
+            let path = self.join(name);
+            std::fs::write(&path, body).expect("write test file");
+            path
+        }
+
+        fn as_str(&self) -> &str {
+            self.path.to_str().expect("UTF-8 temp path")
+        }
+
+        fn snapshot(&self) -> Vec<(String, u64)> {
+            let mut entries = Vec::new();
+            snapshot_dir(&self.path, &self.path, &mut entries);
+            entries.sort();
+            entries
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    fn snapshot_dir(root: &Path, path: &Path, entries: &mut Vec<(String, u64)>) {
+        let Ok(read_dir) = std::fs::read_dir(path) else {
+            return;
+        };
+        for entry in read_dir.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let relative = path
+                .strip_prefix(root)
+                .map(|prefix| prefix.join(&name))
+                .unwrap_or_else(|_| PathBuf::from(&name))
+                .to_string_lossy()
+                .to_string();
+            let Ok(metadata) = entry.metadata() else {
+                continue;
+            };
+            if metadata.is_dir() {
+                entries.push((format!("{relative}/"), 0));
+                snapshot_dir(root, &entry.path(), entries);
+            } else {
+                entries.push((relative, metadata.len()));
+            }
+        }
+    }
+
+    fn mcp_request(id: u64, method: &str, params: Value) -> Value {
+        json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params})
+    }
+
+    fn mcp_run(lines: &[Value]) -> Vec<Value> {
+        let input = lines
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut output = Vec::new();
+        serve_reader_writer(Cursor::new(input.into_bytes()), &mut output, None, None)
+            .expect("serve stdio");
+        String::from_utf8(output)
+            .expect("UTF-8 MCP output")
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("JSON-RPC response"))
+            .collect()
+    }
+
+    fn mcp_call_tool(name: &str, arguments: Value) -> Value {
+        let responses = mcp_run(&[mcp_request(
+            1,
+            "tools/call",
+            json!({"name": name, "arguments": arguments}),
+        )]);
+        assert_eq!(responses.len(), 1);
+        responses.into_iter().next().unwrap()
+    }
+
+    fn mcp_tool_value(response: &Value) -> Value {
+        let text = response["result"]["content"][0]["text"]
+            .as_str()
+            .expect("tool text content");
+        serde_json::from_str(text).expect("tool JSON text")
+    }
+
+    fn mcp_is_error(response: &Value) -> bool {
+        response["result"]["isError"].as_bool() == Some(true)
+    }
 
     #[test]
     fn mcp_exposes_read_only_diag_tools() {
@@ -850,6 +1138,352 @@ mod tests {
         assert!(names.contains(&"tervo.diag_env"));
         assert!(names.contains(&"tervo.diag_snapshot"));
         assert!(names.contains(&"tervo.diag_replay"));
+        assert!(names.contains(&"tervo.doctor_check"));
+        assert!(names.contains(&"tervo.issue_draft"));
+        assert!(names.contains(&"tervo.metrics_read"));
+        for tool in tools.as_array().unwrap() {
+            assert_eq!(tool["inputSchema"]["type"], "object");
+        }
+
+        let live_tools = mcp_tools(true);
+        let live_names: Vec<_> = live_tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t.get("name").and_then(Value::as_str))
+            .collect();
+        assert!(live_names.contains(&"tervo.live_snapshot"));
+    }
+
+    #[test]
+    fn mcp_initialize_advertises_tools_and_resources() {
+        let responses = mcp_run(&[mcp_request(
+            1,
+            "initialize",
+            json!({
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "tervo-test", "version": "0"}
+            }),
+        )]);
+        assert_eq!(responses.len(), 1);
+        let result = &responses[0]["result"];
+        assert_eq!(result["protocolVersion"], "2024-11-05");
+        assert_eq!(result["capabilities"]["tools"]["listChanged"], false);
+        assert_eq!(result["capabilities"]["resources"]["subscribe"], false);
+        assert_eq!(
+            result["capabilities"]["resources"]["listChanged"],
+            false
+        );
+        assert_eq!(result["serverInfo"]["name"], "tervo-diag");
+        assert_eq!(result["serverInfo"]["version"], VERSION);
+    }
+
+    #[test]
+    fn mcp_ping_and_initialized_notification() {
+        let responses = mcp_run(&[
+            mcp_request(1, "initialize", json!({})),
+            json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+            json!({"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {}}),
+            mcp_request(2, "ping", json!({})),
+        ]);
+        assert_eq!(responses.len(), 2);
+        assert_eq!(responses[1]["id"], 2);
+        assert_eq!(responses[1]["result"], json!({}));
+    }
+
+    #[test]
+    fn mcp_unknown_method_and_tool_return_protocol_errors() {
+        let responses = mcp_run(&[
+            mcp_request(1, "unknown/method", json!({})),
+            mcp_request(
+                2,
+                "tools/call",
+                json!({"name": "tervo.unknown_tool", "arguments": {}}),
+            ),
+        ]);
+        assert_eq!(responses.len(), 2);
+        assert_eq!(responses[0]["error"]["code"], -32601);
+        assert_eq!(responses[1]["error"]["code"], -32602);
+        assert!(responses[1].get("result").is_none());
+    }
+
+    #[test]
+    fn mcp_parse_error_returns_32700() {
+        let mut output = Vec::new();
+        serve_reader_writer(
+            Cursor::new(b"this is not json\n".to_vec()),
+            &mut output,
+            None,
+            None,
+        )
+        .expect("serve malformed line");
+        let response: Value = serde_json::from_slice(&output).expect("parse error response");
+        assert_eq!(response["jsonrpc"], "2.0");
+        assert_eq!(response["id"], Value::Null);
+        assert_eq!(response["error"]["code"], -32700);
+    }
+
+    #[test]
+    fn mcp_doctor_check_returns_diagnostic_case() {
+        let response = mcp_call_tool("tervo.doctor_check", json!({}));
+        assert!(!mcp_is_error(&response));
+        let case = mcp_tool_value(&response);
+        assert_eq!(case["schema"], "tervo.diagnostic_case.v1");
+        assert!(case["case_id"]
+            .as_str()
+            .unwrap_or_default()
+            .starts_with("case-"));
+        assert!(!case["probes"].as_array().unwrap().is_empty());
+        assert!(case["issue_draft"]["markdown"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("## 环境"));
+    }
+
+    #[test]
+    fn mcp_doctor_check_accepts_inline_frame_and_metrics() {
+        let frame = json!({
+            "schema": "tervo.diag.v1",
+            "kind": "snapshot",
+            "cols": 80,
+            "rows": 2,
+            "generation": 7,
+            "cursor": {"row": 0, "col": 0, "visible": true, "shape": "block"},
+            "damage": {"full": false, "region_count": 0, "rects": []},
+            "images": [],
+            "text": ["hello", "world"]
+        });
+        let metrics = json!({
+            "schema": "tervo.diag.v1",
+            "kind": "metrics",
+            "initialized": false,
+            "source": "cli",
+            "metrics": {
+                "frame_count": 0,
+                "frame_time": {"p95_us": null, "samples": 0, "p95_overflow": false},
+                "damage": {"area_ratio_last_ppm": 0, "area_ratio_max_ppm": 0},
+                "stale_frames": 0,
+                "textures": {"live_bytes_estimate": 0},
+                "images": {"placements": 0}
+            }
+        });
+        let response = mcp_call_tool(
+            "tervo.doctor_check",
+            json!({
+                "frame": frame,
+                "metrics": metrics,
+                "symptom": "scroll residue",
+                "repro_steps": ["open tervo", "scroll"]
+            }),
+        );
+        assert!(!mcp_is_error(&response));
+        let case = mcp_tool_value(&response);
+        assert_eq!(case["symptom"]["summary"], "scroll residue");
+        assert_eq!(case["symptom"]["repro_steps"][0], "open tervo");
+        assert!(case["probes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|probe| probe["id"] == "probe.frame"));
+    }
+
+    #[test]
+    fn mcp_doctor_check_accepts_bounded_path_inputs() {
+        let dir = TestDir::new("doctor-paths");
+        let config = dir.write("config.toml", "theme = \"dark\"\n");
+        let profile_path = dir.join("profiles.toml");
+        let frame_path = dir.write(
+            "frame.json",
+            &json!({
+                "schema": "tervo.diag.v1",
+                "kind": "snapshot",
+                "cols": 20,
+                "rows": 1,
+                "generation": 1,
+                "cursor": {"row": 0, "col": 0, "visible": true, "shape": "block"},
+                "damage": {"full": false, "region_count": 0, "rects": []},
+                "images": [],
+                "text": ["hi"]
+            })
+            .to_string(),
+        );
+        let env_path = dir.write(
+            "env.json",
+            &json!({
+                "schema": "tervo.diag.v1",
+                "kind": "env",
+                "version": "0.3.1",
+                "commit": "deadbeef",
+                "dirty": false,
+                "built": "2026-11-12T00:00:00Z",
+                "target": "x86_64-unknown-linux-gnu",
+                "dri": false,
+                "config": config.to_string_lossy(),
+                "profiles": profile_path.to_string_lossy(),
+                "log": null
+            })
+            .to_string(),
+        );
+        let response = mcp_call_tool(
+            "tervo.doctor_check",
+            json!({
+                "environment": env_path.to_string_lossy(),
+                "frame": frame_path.to_string_lossy()
+            }),
+        );
+        assert!(!mcp_is_error(&response));
+        let case = mcp_tool_value(&response);
+        assert_eq!(case["environment"]["version"], "0.3.1");
+        assert_eq!(
+            case["environment"]["config_path"],
+            config.to_string_lossy().as_ref()
+        );
+        assert!(case["probes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|probe| probe["id"] == "probe.config"));
+    }
+
+    #[test]
+    fn mcp_doctor_check_rejects_paths_outside_home_and_tmp() {
+        for arguments in [
+            json!({"environment": "/etc/passwd"}),
+            json!({"environment": {
+                "schema": "tervo.diag.v1",
+                "kind": "env",
+                "config": "/etc/passwd"
+            }}),
+        ] {
+            let response = mcp_call_tool("tervo.doctor_check", arguments);
+            assert!(mcp_is_error(&response));
+            let text = response["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap_or_default();
+            assert!(
+                text.contains("outside") || text.contains("allowed"),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn mcp_issue_draft_renders_markdown_from_case() {
+        let check = mcp_call_tool("tervo.doctor_check", json!({"symptom": "flicker"}));
+        assert!(!mcp_is_error(&check));
+        let case = mcp_tool_value(&check);
+        let case_id = case["case_id"].clone();
+        let response = mcp_call_tool("tervo.issue_draft", json!({"case": case}));
+        assert!(!mcp_is_error(&response));
+        let draft = mcp_tool_value(&response);
+        let markdown = draft["markdown"].as_str().unwrap_or_default();
+        assert!(markdown.contains("## 现象"), "{markdown}");
+        assert!(markdown.contains("## 环境"), "{markdown}");
+        assert_eq!(draft["case_id"], case_id);
+    }
+
+    #[test]
+    fn mcp_metrics_read_is_bounded_and_hides_raw_lines() {
+        let dir = TestDir::new("metrics");
+        let body = "boot\nframe error: boom\nok\n";
+        dir.write("tervo-1.log", body);
+        dir.write("notes.log", "API_KEY=super-secret\n");
+        dir.write("tervo-notlog.txt", "fatal secret\n");
+
+        let response = mcp_call_tool("tervo.metrics_read", json!({"log_dir": dir.as_str()}));
+        assert!(!mcp_is_error(&response));
+        let summary = mcp_tool_value(&response);
+        assert_eq!(summary["exists"], true);
+        assert_eq!(summary["summary"]["matched_files"], 1);
+        assert_eq!(summary["summary"]["stats_files"], 1);
+        assert_eq!(summary["summary"]["lines"], 3);
+        assert_eq!(summary["summary"]["recent_errors"], 1);
+        assert_eq!(summary["summary"]["bytes"], body.len() as u64);
+        assert_eq!(summary["files"][0]["name"], "tervo-1.log");
+
+        let text = response["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(!text.contains("super-secret"), "{text}");
+        assert!(!text.contains("API_KEY"), "{text}");
+        assert!(!text.contains("frame error: boom"), "{text}");
+    }
+
+    #[test]
+    fn mcp_metrics_read_rejects_outside_paths() {
+        for path in ["/etc", "relative/logs"] {
+            let response = mcp_call_tool("tervo.metrics_read", json!({"log_dir": path}));
+            assert!(mcp_is_error(&response), "{path} should be rejected");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mcp_metrics_read_rejects_symlink_escape() {
+        let dir = TestDir::new("symlink");
+        let link = dir.join("escape");
+        std::os::unix::fs::symlink("/etc", &link).expect("create symlink");
+        let response = mcp_call_tool(
+            "tervo.metrics_read",
+            json!({"log_dir": link.to_string_lossy()}),
+        );
+        assert!(mcp_is_error(&response));
+    }
+
+    #[test]
+    fn mcp_resources_expose_version_document() {
+        let responses = mcp_run(&[
+            mcp_request(1, "resources/list", json!({})),
+            mcp_request(2, "resources/read", json!({"uri": "tervo://version"})),
+            mcp_request(3, "resources/read", json!({"uri": "tervo://missing"})),
+        ]);
+        assert_eq!(
+            responses[0]["result"]["resources"][0]["uri"],
+            "tervo://version"
+        );
+        let content = &responses[1]["result"]["contents"][0];
+        assert_eq!(content["uri"], "tervo://version");
+        let version: Value =
+            serde_json::from_str(content["text"].as_str().unwrap_or_default()).unwrap();
+        assert_eq!(version["version"], VERSION);
+        assert_eq!(version["schema"], "tervo.diag.v1");
+        assert_eq!(responses[2]["error"]["code"], -32002);
+    }
+
+    #[test]
+    fn mcp_read_only_tools_do_not_write_files() {
+        let dir = TestDir::new("readonly");
+        let config = dir.write("config.toml", "theme = \"dark\"\n");
+        let logs = dir.join("logs");
+        std::fs::create_dir_all(&logs).expect("create logs dir");
+        std::fs::write(logs.join("tervo-1.log"), "one\ntwo\n").expect("write log");
+        let before = dir.snapshot();
+
+        let environment = json!({
+            "schema": "tervo.diag.v1",
+            "kind": "env",
+            "version": VERSION,
+            "commit": COMMIT,
+            "dirty": DIRTY == "1",
+            "built": BUILT,
+            "target": TARGET,
+            "dri": false,
+            "config": config.to_string_lossy(),
+            "log_dir": logs.to_string_lossy()
+        });
+        let check = mcp_call_tool("tervo.doctor_check", json!({"environment": environment}));
+        assert!(!mcp_is_error(&check));
+        let case = mcp_tool_value(&check);
+        let draft = mcp_call_tool("tervo.issue_draft", json!({"case": case}));
+        assert!(!mcp_is_error(&draft));
+        let metrics = mcp_call_tool(
+            "tervo.metrics_read",
+            json!({"log_dir": logs.to_string_lossy()}),
+        );
+        assert!(!mcp_is_error(&metrics));
+
+        assert_eq!(before, dir.snapshot());
     }
 
     #[test]
