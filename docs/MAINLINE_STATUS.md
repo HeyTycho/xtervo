@@ -1,6 +1,6 @@
 # Tervo Mainline Status / Mainline Audit
 
-Snapshot: 2026-11-12, branch `master`, HEAD `9799f03`
+Snapshot: 2026-11-12, branch `master`, HEAD `22a4387`
 Purpose: one place for supported features, fixes, and branch merge decisions.
 The historical inventory stays in [`FEATURE_MATRIX.md`](FEATURE_MATRIX.md);
 this file is the current mainline truth.
@@ -53,6 +53,10 @@ this file is the current mainline truth.
   permissions + first-enable confirmation, supervisor, events/status/theme,
   declarative panels/settings, enable/disable/reload/restart. v1/v2 entries are
   shown unsupported and never spawned.
+- WASM hot path: `runtime = "wasm"` terminal.output_filter with wasmtime 34,
+  no WASI/imports, fuel/epoch/memory caps and original-bytes fallback.
+- Local plugin install/update/rollback with staging, atomic swap, path/size
+  limits, versioned backups, optional Ed25519 manifest signatures.
 - WASM hot path: `runtime = "wasm"` output filters run before Sixel/IIP/Kitty/vte
   with fuel/epoch/memory/line caps; trap/oversize falls back to the original
   bytes. Only `permissions.terminal.output_filter` is supported for WASM.
