@@ -584,6 +584,9 @@ where
     let write_enabled = std::env::var("TERVO_DIAG_ALLOW_WRITE").is_ok_and(|v| {
         matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")
     });
+    let destructive_enabled = std::env::var("TERVO_DIAG_ALLOW_DESTRUCTIVE").is_ok_and(|v| {
+        matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")
+    });
     for line in reader.lines() {
         let line = line?;
         if line.trim().is_empty() {
@@ -597,7 +600,7 @@ where
             ))
         } else {
             match serde_json::from_str::<Value>(&line) {
-                Ok(request) => mcp_handle_request(&request, live_socket, live_token, write_enabled),
+                Ok(request) => mcp_handle_request(&request, live_socket, live_token, write_enabled, destructive_enabled),
                 Err(error) => {
                     eprintln!("[diag] MCP 坏 JSON: {error}");
                     Some(mcp_protocol_error(Value::Null, -32700, "parse error"))
@@ -616,6 +619,7 @@ fn mcp_handle_request(
     live_socket: Option<&str>,
     live_token: Option<&str>,
     write_enabled: bool,
+    destructive_enabled: bool,
 ) -> Option<Value> {
     let object = match request.as_object() {
         Some(object) => object,
@@ -673,10 +677,10 @@ fn mcp_handle_request(
         "notifications/initialized" => None,
         "ping" => Some(mcp_result(id, json!({}))),
         "tools/list" => {
-            Some(mcp_result(id, json!({"tools": mcp_tools(live_socket.is_some(), write_enabled)})))
+            Some(mcp_result(id, json!({"tools": mcp_tools(live_socket.is_some(), write_enabled, destructive_enabled)})))
         },
         "tools/call" => {
-            let result = mcp_call(request, live_socket, live_token, write_enabled);
+            let result = mcp_call(request, live_socket, live_token, write_enabled, destructive_enabled);
             Some(match result.get("error") {
                 Some(error) => json!({"jsonrpc": "2.0", "id": id, "error": error}),
                 None => mcp_result(id, result),
@@ -705,7 +709,7 @@ fn mcp_protocol_error(id: Value, code: i64, message: &str) -> Value {
     json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})
 }
 
-fn mcp_tools(live: bool, write_enabled: bool) -> Value {
+fn mcp_tools(live: bool, write_enabled: bool, destructive_enabled: bool) -> Value {
     let mut tools = json!([
         {
             "name": "tervo.diag_env",
@@ -875,12 +879,29 @@ fn mcp_tools(live: bool, write_enabled: bool) -> Value {
                     }, "required": ["pane_id", "lines"], "additionalProperties": false}
                 }));
             }
+            if destructive_enabled {
+                arr.push(json!({
+                    "name": "tervo.live_close_pane",
+                    "description": "Close a pane. Destructive; requires TERVO_DIAG_ALLOW_DESTRUCTIVE=1.",
+                    "inputSchema": {"type": "object", "properties": {"pane_id": {"type": "integer"}}, "required": ["pane_id"]}
+                }));
+                arr.push(json!({
+                    "name": "tervo.live_close_tab",
+                    "description": "Close the tab containing a pane. Destructive.",
+                    "inputSchema": {"type": "object", "properties": {"pane_id": {"type": "integer"}}, "required": ["pane_id"]}
+                }));
+                arr.push(json!({
+                    "name": "tervo.live_kill",
+                    "description": "Send Ctrl+C to a pane. Destructive.",
+                    "inputSchema": {"type": "object", "properties": {"pane_id": {"type": "integer"}}, "required": ["pane_id"]}
+                }));
+            }
         }
     }
     tools
 }
 
-fn mcp_call(req: &Value, live_socket: Option<&str>, live_token: Option<&str>, write_enabled: bool) -> Value {
+fn mcp_call(req: &Value, live_socket: Option<&str>, live_token: Option<&str>, write_enabled: bool, destructive_enabled: bool) -> Value {
     let params = req.get("params").cloned().unwrap_or(Value::Null);
     if !params.is_object() {
         return mcp_error(-32602, "params must be an object");
@@ -951,6 +972,22 @@ fn mcp_call(req: &Value, live_socket: Option<&str>, live_token: Option<&str>, wr
         "tervo.live_output" => match live_request_args(live_socket, live_token, "output", &args) {
             Ok(v) => Ok(v),
             Err(e) => Err(e.into()),
+        },
+        "tervo.live_close_pane" | "tervo.live_close_tab" | "tervo.live_kill" => {
+            if !destructive_enabled {
+                Err("destructive disabled (set TERVO_DIAG_ALLOW_DESTRUCTIVE=1)".into())
+            } else {
+                let cmd = match name {
+                    "tervo.live_close_pane" => "close_pane",
+                    "tervo.live_close_tab" => "close_tab",
+                    "tervo.live_kill" => "kill",
+                    _ => unreachable!(),
+                };
+                match live_request_args(live_socket, live_token, cmd, &args) {
+                    Ok(v) => Ok(v),
+                    Err(e) => Err(e.into()),
+                }
+            }
         },
         "tervo.live_send_text" | "tervo.live_send_key" | "tervo.live_run"
         | "tervo.live_focus" | "tervo.live_new_tab" | "tervo.live_split"
@@ -1055,6 +1092,9 @@ where
     let write_enabled = std::env::var("TERVO_DIAG_ALLOW_WRITE").is_ok_and(|v| {
         matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")
     });
+    let destructive_enabled = std::env::var("TERVO_DIAG_ALLOW_DESTRUCTIVE").is_ok_and(|v| {
+        matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")
+    });
     let build = std::sync::Arc::new(build_snapshot);
     let control = std::sync::Arc::new(control);
     std::thread::Builder::new()
@@ -1098,6 +1138,7 @@ where
                                 control.clone(),
                                 token.as_deref(),
                                 write_enabled,
+                                destructive_enabled,
                             )
                         })
                         .ok();
@@ -1118,6 +1159,7 @@ fn handle_conn(
     control: std::sync::Arc<dyn Fn(&str, &Value) -> Result<Value, String> + Send + Sync>,
     token: Option<&str>,
     write_enabled: bool,
+    destructive_enabled: bool,
 ) {
     use std::io::{BufRead, BufReader, Write};
     let _ = stream.set_read_timeout(Some(Duration::from_secs(3)));
@@ -1148,8 +1190,13 @@ fn handle_conn(
                     "live": true,
                     "read_only": !write_enabled,
                     "write_enabled": write_enabled,
+                    "destructive_enabled": destructive_enabled,
                     "commands": if write_enabled {
-                        json!(["capabilities","snapshot","list","output","send_text","send_key","run","new_tab","split","focus","scroll"])
+                        if destructive_enabled {
+                            json!(["capabilities","snapshot","list","output","send_text","send_key","run","new_tab","split","focus","scroll","close_pane","close_tab","kill"])
+                        } else {
+                            json!(["capabilities","snapshot","list","output","send_text","send_key","run","new_tab","split","focus","scroll"])
+                        }
                     } else {
                         json!(["capabilities","snapshot","list","output"])
                     },
@@ -1176,7 +1223,12 @@ fn handle_conn(
                 }
             },
             Some(cmd) => {
-                let write = matches!(cmd, "send_text" | "send_key" | "run" | "new_tab" | "split" | "focus" | "scroll");
+                let destructive = matches!(cmd, "close_pane" | "close_tab" | "kill");
+                let write = destructive || matches!(cmd, "send_text" | "send_key" | "run" | "new_tab" | "split" | "focus" | "scroll");
+                if destructive && !destructive_enabled {
+                    let _ = writeln!(stream, "{}", serde_json::to_string(&json!({"id":id,"ok":false,"error":"destructive disabled (set TERVO_DIAG_ALLOW_DESTRUCTIVE=1)"})).unwrap());
+                    continue;
+                }
                 if write && !write_enabled {
                     let _ = writeln!(stream, "{}", serde_json::to_string(&json!({"id":id,"ok":false,"error":"write disabled (set TERVO_DIAG_ALLOW_WRITE=1)"})).unwrap());
                     continue;
@@ -1331,7 +1383,7 @@ mod tests {
 
     #[test]
     fn mcp_exposes_read_only_diag_tools() {
-        let tools = mcp_tools(false, false);
+        let tools = mcp_tools(false, false, false);
         let names: Vec<_> = tools
             .as_array()
             .unwrap()
@@ -1348,7 +1400,7 @@ mod tests {
             assert_eq!(tool["inputSchema"]["type"], "object");
         }
 
-        let live_tools = mcp_tools(true, false);
+        let live_tools = mcp_tools(true, false, false);
         let live_names: Vec<_> = live_tools
             .as_array()
             .unwrap()

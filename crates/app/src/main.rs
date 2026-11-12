@@ -608,6 +608,27 @@ fn live_control(cmd: &str, args: &serde_json::Value) -> Result<serde_json::Value
             rt.handle.scroll(lines as i32);
             Ok(serde_json::json!({"pane_id":pane,"lines":lines}))
         },
+        "close_pane" => {
+            let pane = args.get("pane_id").and_then(serde_json::Value::as_u64)
+                .ok_or_else(|| "pane_id required".to_string())?;
+            if !st.panes.contains_key(&pane) { return Err(format!("unknown pane {pane}")); }
+            close_pane_inner(st, pane);
+            Ok(serde_json::json!({"pane_id":pane}))
+        },
+        "close_tab" => {
+            let pane = args.get("pane_id").and_then(serde_json::Value::as_u64)
+                .ok_or_else(|| "pane_id required".to_string())?;
+            let idx = st.ws.tab_of(pane).ok_or_else(|| format!("unknown pane {pane}"))?;
+            close_tab_inner(st, idx);
+            Ok(serde_json::json!({"pane_id":pane,"tab":idx}))
+        },
+        "kill" => {
+            let pane = args.get("pane_id").and_then(serde_json::Value::as_u64)
+                .ok_or_else(|| "pane_id required".to_string())?;
+            let rt = st.panes.get(&pane).ok_or_else(|| format!("unknown pane {pane}"))?;
+            rt.handle.input(b"\x03");
+            Ok(serde_json::json!({"pane_id":pane,"signal":"Ctrl+C"}))
+        },
         _ => Err(format!("unknown control command {cmd}")),
     }).unwrap_or_else(|| Err("app unavailable".into()))
 }
