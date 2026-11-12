@@ -347,6 +347,18 @@ pub fn pane_image(input: &PaneFrame<'_>) -> Option<slint::Image> {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let state = guard.as_mut()?;
 
+    // 光标闪烁/纯 overlay redraw 没有终端 damage：不要重绘整张 target。
+    // 只有已有可复用 GPU image 时才跳过；首帧、resize、图片帧仍走完整路径。
+    if !input.frame.full
+        && input.frame.damage.is_empty()
+        && input.frame.images.is_empty()
+        && state.panes.contains_key(&input.pane)
+    {
+        if let Some(image) = PANE_IMAGES.with(|images| images.borrow().get(&input.pane).cloned()) {
+            return Some(image);
+        }
+    }
+
     // Upload each immutable Frame image source at most once, then drop sources
     // that are no longer visible. This is the only image pixel upload; no
     // per-frame full-image copy.
