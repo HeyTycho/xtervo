@@ -1,0 +1,10 @@
+[package]
+name = "tervo-maximize"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "EWMH maximize state machine: desired / observed / pending, PropertyNotify driven"
+
+[dependencies]
+x11rb = { version = "0.14", features = [] }
