@@ -741,6 +741,22 @@ mod tests {
     }
 
     #[test]
+    fn render_hud_defaults_off_and_roundtrips() {
+        assert!(!Config::default().render_hud, "HUD 默认关闭");
+        let dir = tmpdir("render-hud");
+        let path = dir.join("config.toml");
+        let cfg = Config { render_hud: true, ..Config::default() };
+        cfg.save_to(&path);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("render_hud = true"), "{text}");
+        let back = Config::load_from(&path);
+        assert!(back.render_hud);
+        let old: Config = toml::from_str("theme = \"nord\"\n").unwrap();
+        assert!(!old.render_hud, "旧配置缺字段必须回退关闭");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn missing_fields_use_defaults() {
         let cfg: Config = toml::from_str("theme = \"latte\"\n").unwrap();
         assert_eq!(cfg.theme, "latte");
