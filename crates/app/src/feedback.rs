@@ -182,3 +182,43 @@ pub fn open_folder(path: &Path) -> Result<(), String> {
         .map(|_| ())
         .map_err(|e| format!("xdg-open failed: {e}"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Read;
+
+    #[test]
+    fn bundle_is_bounded_and_redacts_description() {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let dir = std::env::temp_dir().join(format!("tervo-feedback-test-{}", now_stamp()));
+        let _ = fs::create_dir_all(&dir);
+        let old = std::env::var_os("TERVO_LOG_DIR");
+        std::env::set_var("TERVO_LOG_DIR", &dir);
+        fs::write(dir.join("tervo-1.log"), "api_key=SUPERSECRET\nplain line\n").unwrap();
+        let bundle = create_bundle("my api_key=SUPERSECRET").expect("bundle");
+        let file = File::open(&bundle).expect("open bundle");
+        let decoder = flate2::read::GzDecoder::new(file);
+        let mut archive = tar::Archive::new(decoder);
+        let mut found_report = false;
+        for entry in archive.entries().expect("tar entries") {
+            let mut entry = entry.expect("entry");
+            let path = entry.path().expect("path").display().to_string();
+            if path.ends_with("report.md") {
+                found_report = true;
+                let mut text = String::new();
+                entry.read_to_string(&mut text).expect("read report");
+                assert!(!text.contains("SUPERSECRET"), "description must be redacted");
+                assert!(text.contains("api_key=<redacted>") || text.contains("api_key"));
+            }
+        }
+        assert!(found_report, "report.md missing from bundle");
+        let _ = fs::remove_file(&bundle);
+        let _ = fs::remove_dir_all(&dir);
+        match old {
+            Some(value) => std::env::set_var("TERVO_LOG_DIR", value),
+            None => std::env::remove_var("TERVO_LOG_DIR"),
+        }
+    }
+}
