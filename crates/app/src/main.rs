@@ -504,6 +504,113 @@ fn spawn_app_wake_bridge(rx: crossbeam_channel::Receiver<()>) {
     }
 }
 
+/// live control socket 的写操作入口；只在 UI 线程调用。
+fn live_control(cmd: &str, args: &serde_json::Value) -> Result<serde_json::Value, String> {
+    with_app(|st| match cmd {
+        "list" => Ok(serde_json::json!({
+            "schema":"tervo.control.v1",
+            "panes": st.panes.iter().map(|(id, rt)| serde_json::json!({
+                "pane_id": id,
+                "title": rt.title,
+                "grid": [rt.grid.0, rt.grid.1],
+                "rect": [rt.rect.x, rt.rect.y, rt.rect.w, rt.rect.h],
+                "focused": st.ws.active_tab().map(|t| t.focused) == Some(*id),
+            })).collect::<Vec<_>>(),
+        })),
+        "output" => {
+            let pane = args.get("pane_id").and_then(serde_json::Value::as_u64)
+                .ok_or_else(|| "pane_id required".to_string())?;
+            let rt = st.panes.get(&pane).ok_or_else(|| format!("unknown pane {pane}"))?;
+            let max = args.get("max_bytes").and_then(serde_json::Value::as_u64).unwrap_or(65536).min(262144) as usize;
+            let mut text = String::new();
+            for line in 0..rt.frame.rows {
+                for col in 0..rt.frame.cols {
+                    let cell = rt.frame.cell(line, col);
+                    if cell.ch != 0 { text.push(char::from_u32(cell.ch).unwrap_or('?')); }
+                }
+                text.push('\n');
+            }
+            let bytes = text.as_bytes();
+            let start = bytes.len().saturating_sub(max);
+            Ok(serde_json::json!({
+                "schema":"tervo.control.v1",
+                "pane_id": pane,
+                "text": String::from_utf8_lossy(&bytes[start..]).to_string(),
+                "truncated": start > 0,
+            }))
+        },
+        "send_text" => {
+            let pane = args.get("pane_id").and_then(serde_json::Value::as_u64)
+                .ok_or_else(|| "pane_id required".to_string())?;
+            let text = args.get("text").and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "text required".to_string())?;
+            if text.len() > 65536 { return Err("text too large".into()); }
+            let rt = st.panes.get(&pane).ok_or_else(|| format!("unknown pane {pane}"))?;
+            rt.handle.input(text.as_bytes());
+            Ok(serde_json::json!({"pane_id":pane,"bytes":text.len()}))
+        },
+        "send_key" => {
+            let pane = args.get("pane_id").and_then(serde_json::Value::as_u64)
+                .ok_or_else(|| "pane_id required".to_string())?;
+            let key = args.get("key").and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "key required".to_string())?;
+            let bytes: &[u8] = match key {
+                "Enter" => b"\r", "Tab" => b"\t", "Escape" => b"\x1b",
+                "Ctrl+C" => b"\x03", "Ctrl+D" => b"\x04", "Ctrl+Z" => b"\x1a",
+                "Up" => b"\x1b[A", "Down" => b"\x1b[B", "Right" => b"\x1b[C", "Left" => b"\x1b[D",
+                _ => return Err(format!("unknown key {key}")),
+            };
+            let rt = st.panes.get(&pane).ok_or_else(|| format!("unknown pane {pane}"))?;
+            rt.handle.input(bytes);
+            Ok(serde_json::json!({"pane_id":pane,"key":key}))
+        },
+        "run" => {
+            let pane = args.get("pane_id").and_then(serde_json::Value::as_u64)
+                .ok_or_else(|| "pane_id required".to_string())?;
+            let command = args.get("command").and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "command required".to_string())?;
+            if command.len() > 65536 || command.contains(['\r','\n','\0']) { return Err("invalid command".into()); }
+            let rt = st.panes.get(&pane).ok_or_else(|| format!("unknown pane {pane}"))?;
+            rt.handle.input(command.as_bytes());
+            rt.handle.input(b"\r");
+            Ok(serde_json::json!({"pane_id":pane,"command_bytes":command.len()}))
+        },
+        "focus" => {
+            let pane = args.get("pane_id").and_then(serde_json::Value::as_u64)
+                .ok_or_else(|| "pane_id required".to_string())?;
+            let idx = st.ws.tab_of(pane).ok_or_else(|| format!("unknown pane {pane}"))?;
+            st.ws.tabs[idx].focused = pane;
+            st.ime_spot_dirty = true;
+            refresh_views(st);
+            let win = st.window_focused;
+            sync_terminal_focus(st, win);
+            update_ime_spot(st);
+            Ok(serde_json::json!({"pane_id":pane}))
+        },
+        "new_tab" => { new_tab_inner(st); Ok(serde_json::json!({"ok":true})) },
+        "split" => {
+            let pane = args.get("pane_id").and_then(serde_json::Value::as_u64)
+                .ok_or_else(|| "pane_id required".to_string())?;
+            let dir = match args.get("direction").and_then(serde_json::Value::as_str).unwrap_or("right") {
+                "right" => Dir::Row, "down" => Dir::Col,
+                _ => return Err("direction must be right/down".into()),
+            };
+            split_pane_inner(st, pane, dir);
+            Ok(serde_json::json!({"pane_id":pane,"direction":format!("{dir:?}")}))
+        },
+        "scroll" => {
+            let pane = args.get("pane_id").and_then(serde_json::Value::as_u64)
+                .ok_or_else(|| "pane_id required".to_string())?;
+            let lines = args.get("lines").and_then(serde_json::Value::as_i64)
+                .ok_or_else(|| "lines required".to_string())?;
+            let rt = st.panes.get(&pane).ok_or_else(|| format!("unknown pane {pane}"))?;
+            rt.handle.scroll(lines as i32);
+            Ok(serde_json::json!({"pane_id":pane,"lines":lines}))
+        },
+        _ => Err(format!("unknown control command {cmd}")),
+    }).unwrap_or_else(|| Err("app unavailable".into()))
+}
+
 /// live control socket 的 snapshot：只在 UI 线程调用。
 fn live_diag_snapshot() -> serde_json::Value {
     with_app(|st| {
@@ -13015,7 +13122,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     redraw_all();
-    diag::start_control_socket(live_diag_snapshot);
+    diag::start_control_socket_with_control(live_diag_snapshot, live_control);
     let t_show = t_start.elapsed();
 
     if opts.exit_after_first {

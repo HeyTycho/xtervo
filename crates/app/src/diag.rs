@@ -581,6 +581,9 @@ where
     R: std::io::BufRead,
     W: std::io::Write,
 {
+    let write_enabled = std::env::var("TERVO_DIAG_ALLOW_WRITE").is_ok_and(|v| {
+        matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")
+    });
     for line in reader.lines() {
         let line = line?;
         if line.trim().is_empty() {
@@ -594,7 +597,7 @@ where
             ))
         } else {
             match serde_json::from_str::<Value>(&line) {
-                Ok(request) => mcp_handle_request(&request, live_socket, live_token),
+                Ok(request) => mcp_handle_request(&request, live_socket, live_token, write_enabled),
                 Err(error) => {
                     eprintln!("[diag] MCP 坏 JSON: {error}");
                     Some(mcp_protocol_error(Value::Null, -32700, "parse error"))
@@ -612,6 +615,7 @@ fn mcp_handle_request(
     request: &Value,
     live_socket: Option<&str>,
     live_token: Option<&str>,
+    write_enabled: bool,
 ) -> Option<Value> {
     let object = match request.as_object() {
         Some(object) => object,
@@ -669,10 +673,10 @@ fn mcp_handle_request(
         "notifications/initialized" => None,
         "ping" => Some(mcp_result(id, json!({}))),
         "tools/list" => {
-            Some(mcp_result(id, json!({"tools": mcp_tools(live_socket.is_some())})))
+            Some(mcp_result(id, json!({"tools": mcp_tools(live_socket.is_some(), write_enabled)})))
         },
         "tools/call" => {
-            let result = mcp_call(request, live_socket, live_token);
+            let result = mcp_call(request, live_socket, live_token, write_enabled);
             Some(match result.get("error") {
                 Some(error) => json!({"jsonrpc": "2.0", "id": id, "error": error}),
                 None => mcp_result(id, result),
@@ -701,7 +705,7 @@ fn mcp_protocol_error(id: Value, code: i64, message: &str) -> Value {
     json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})
 }
 
-fn mcp_tools(live: bool) -> Value {
+fn mcp_tools(live: bool, write_enabled: bool) -> Value {
     let mut tools = json!([
         {
             "name": "tervo.diag_env",
@@ -798,7 +802,7 @@ fn mcp_tools(live: bool) -> Value {
         if let Some(arr) = tools.as_array_mut() {
             arr.push(json!({
                 "name": "tervo.live_capabilities",
-                "description": "Read capabilities of the running Tervo live control socket (read-only).",
+                "description": "Read capabilities of the running Tervo live control socket.",
                 "inputSchema": {"type": "object", "properties": {}}
             }));
             arr.push(json!({
@@ -806,12 +810,77 @@ fn mcp_tools(live: bool) -> Value {
                 "description": "Read all pane frames/cursor/images metadata from the running Tervo live control socket (read-only).",
                 "inputSchema": {"type": "object", "properties": {}}
             }));
+            arr.push(json!({
+                "name": "tervo.live_list",
+                "description": "List live tabs/panes, ids, grids, rectangles, focus (read-only).",
+                "inputSchema": {"type": "object", "properties": {}}
+            }));
+            arr.push(json!({
+                "name": "tervo.live_output",
+                "description": "Read bounded visible pane text. max_bytes is capped.",
+                "inputSchema": {"type": "object", "properties": {
+                    "pane_id": {"type": "integer"},
+                    "max_bytes": {"type": "integer", "default": 65536}
+                }, "required": ["pane_id"], "additionalProperties": false}
+            }));
+            if write_enabled {
+                arr.push(json!({
+                    "name": "tervo.live_send_text",
+                    "description": "Write text to a pane's PTY without pressing Enter. Requires TERVO_DIAG_ALLOW_WRITE=1 and token.",
+                    "inputSchema": {"type": "object", "properties": {
+                        "pane_id": {"type": "integer"},
+                        "text": {"type": "string"}
+                    }, "required": ["pane_id", "text"], "additionalProperties": false}
+                }));
+                arr.push(json!({
+                    "name": "tervo.live_send_key",
+                    "description": "Send a named key/chord (Enter, Escape, Ctrl+C, Ctrl+D, Up/Down/Left/Right, Tab).",
+                    "inputSchema": {"type": "object", "properties": {
+                        "pane_id": {"type": "integer"},
+                        "key": {"type": "string"}
+                    }, "required": ["pane_id", "key"], "additionalProperties": false}
+                }));
+                arr.push(json!({
+                    "name": "tervo.live_run",
+                    "description": "Write one command line plus Enter to a pane. No shell is added by Tervo.",
+                    "inputSchema": {"type": "object", "properties": {
+                        "pane_id": {"type": "integer"},
+                        "command": {"type": "string"}
+                    }, "required": ["pane_id", "command"], "additionalProperties": false}
+                }));
+                arr.push(json!({
+                    "name": "tervo.live_focus",
+                    "description": "Focus a pane.",
+                    "inputSchema": {"type": "object", "properties": {"pane_id": {"type": "integer"}}, "required": ["pane_id"]}
+                }));
+                arr.push(json!({
+                    "name": "tervo.live_new_tab",
+                    "description": "Create a new Tervo tab.",
+                    "inputSchema": {"type": "object", "properties": {}}
+                }));
+                arr.push(json!({
+                    "name": "tervo.live_split",
+                    "description": "Split a pane right/down.",
+                    "inputSchema": {"type": "object", "properties": {
+                        "pane_id": {"type": "integer"},
+                        "direction": {"type": "string", "enum": ["right", "down"]}
+                    }, "required": ["pane_id"], "additionalProperties": false}
+                }));
+                arr.push(json!({
+                    "name": "tervo.live_scroll",
+                    "description": "Scroll a pane's scrollback by signed lines.",
+                    "inputSchema": {"type": "object", "properties": {
+                        "pane_id": {"type": "integer"},
+                        "lines": {"type": "integer"}
+                    }, "required": ["pane_id", "lines"], "additionalProperties": false}
+                }));
+            }
         }
     }
     tools
 }
 
-fn mcp_call(req: &Value, live_socket: Option<&str>, live_token: Option<&str>) -> Value {
+fn mcp_call(req: &Value, live_socket: Option<&str>, live_token: Option<&str>, write_enabled: bool) -> Value {
     let params = req.get("params").cloned().unwrap_or(Value::Null);
     if !params.is_object() {
         return mcp_error(-32602, "params must be an object");
@@ -875,6 +944,36 @@ fn mcp_call(req: &Value, live_socket: Option<&str>, live_token: Option<&str>) ->
             Ok(v) => Ok(v),
             Err(e) => Err(e.into()),
         },
+        "tervo.live_list" => match live_request(live_socket, live_token, "list") {
+            Ok(v) => Ok(v),
+            Err(e) => Err(e.into()),
+        },
+        "tervo.live_output" => match live_request_args(live_socket, live_token, "output", &args) {
+            Ok(v) => Ok(v),
+            Err(e) => Err(e.into()),
+        },
+        "tervo.live_send_text" | "tervo.live_send_key" | "tervo.live_run"
+        | "tervo.live_focus" | "tervo.live_new_tab" | "tervo.live_split"
+        | "tervo.live_scroll" => {
+            if !write_enabled {
+                Err("write disabled (set TERVO_DIAG_ALLOW_WRITE=1)".into())
+            } else {
+                let cmd = match name {
+                    "tervo.live_send_text" => "send_text",
+                    "tervo.live_send_key" => "send_key",
+                    "tervo.live_run" => "run",
+                    "tervo.live_focus" => "focus",
+                    "tervo.live_new_tab" => "new_tab",
+                    "tervo.live_split" => "split",
+                    "tervo.live_scroll" => "scroll",
+                    _ => unreachable!(),
+                };
+                match live_request_args(live_socket, live_token, cmd, &args) {
+                    Ok(v) => Ok(v),
+                    Err(e) => Err(e.into()),
+                }
+            }
+        },
         _ => return mcp_error(-32602, "unknown tool"),
     };
     match result {
@@ -894,11 +993,20 @@ fn live_request(
     token: Option<&str>,
     cmd: &str,
 ) -> Result<Value, String> {
+    live_request_args(socket, token, cmd, &json!({}))
+}
+
+fn live_request_args(
+    socket: Option<&str>,
+    token: Option<&str>,
+    cmd: &str,
+    args: &Value,
+) -> Result<Value, String> {
     let socket = socket.ok_or("live control socket 未配置")?;
     let mut stream = std::os::unix::net::UnixStream::connect(socket)
         .map_err(|e| format!("连接 live socket {socket} 失败: {e}"))?;
     use std::io::{BufRead, BufReader, Write};
-    let req = serde_json::json!({"id": 1, "cmd": cmd, "token": token});
+    let req = serde_json::json!({"id": 1, "cmd": cmd, "token": token, "args": args});
     writeln!(stream, "{req}").map_err(|e| format!("写 live socket 失败: {e}"))?;
     let mut line = String::new();
     BufReader::new(stream)
@@ -932,10 +1040,23 @@ pub fn start_control_socket<F>(build_snapshot: F)
 where
     F: Fn() -> Value + Send + Sync + 'static,
 {
+    start_control_socket_with_control(build_snapshot, |_, _| Err("live control 未配置".into()));
+}
+
+/// Full live control: read commands plus host-side terminal actions.
+pub fn start_control_socket_with_control<F, G>(build_snapshot: F, control: G)
+where
+    F: Fn() -> Value + Send + Sync + 'static,
+    G: Fn(&str, &Value) -> Result<Value, String> + Send + Sync + 'static,
+{
     let Some(path) = std::env::var_os("TERVO_DIAG_SOCKET") else { return };
     let path = std::path::PathBuf::from(path);
     let token = std::env::var("TERVO_DIAG_TOKEN").ok();
+    let write_enabled = std::env::var("TERVO_DIAG_ALLOW_WRITE").is_ok_and(|v| {
+        matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")
+    });
     let build = std::sync::Arc::new(build_snapshot);
+    let control = std::sync::Arc::new(control);
     std::thread::Builder::new()
         .name("diag-socket".into())
         .spawn(move || {
@@ -966,10 +1087,19 @@ where
                 for stream in listener.incoming() {
                     let Ok(stream) = stream else { continue };
                     let build = build.clone();
+                    let control = control.clone();
                     let token = token.clone();
                     std::thread::Builder::new()
                         .name("diag-conn".into())
-                        .spawn(move || handle_conn(stream, build.clone(), token.as_deref()))
+                        .spawn(move || {
+                            handle_conn(
+                                stream,
+                                build.clone(),
+                                control.clone(),
+                                token.as_deref(),
+                                write_enabled,
+                            )
+                        })
                         .ok();
                 }
             }
@@ -985,7 +1115,9 @@ where
 fn handle_conn(
     mut stream: std::os::unix::net::UnixStream,
     build: std::sync::Arc<dyn Fn() -> Value + Send + Sync>,
+    control: std::sync::Arc<dyn Fn(&str, &Value) -> Result<Value, String> + Send + Sync>,
     token: Option<&str>,
+    write_enabled: bool,
 ) {
     use std::io::{BufRead, BufReader, Write};
     let _ = stream.set_read_timeout(Some(Duration::from_secs(3)));
@@ -1014,8 +1146,13 @@ fn handle_conn(
                 let data = json!({
                     "schema":"tervo.diag.v1",
                     "live": true,
-                    "read_only": true,
-                    "commands":["capabilities","snapshot"],
+                    "read_only": !write_enabled,
+                    "write_enabled": write_enabled,
+                    "commands": if write_enabled {
+                        json!(["capabilities","snapshot","list","output","send_text","send_key","run","new_tab","split","focus","scroll"])
+                    } else {
+                        json!(["capabilities","snapshot","list","output"])
+                    },
                 });
                 let _ = writeln!(stream, "{}", serde_json::to_string(&json!({"id":id,"ok":true,"data":data})).unwrap());
             },
@@ -1038,8 +1175,37 @@ fn handle_conn(
                     },
                 }
             },
-            _ => {
-                let _ = writeln!(stream, "{}", serde_json::to_string(&json!({"id":id,"ok":false,"error":"unknown cmd"})).unwrap());
+            Some(cmd) => {
+                let write = matches!(cmd, "send_text" | "send_key" | "run" | "new_tab" | "split" | "focus" | "scroll");
+                if write && !write_enabled {
+                    let _ = writeln!(stream, "{}", serde_json::to_string(&json!({"id":id,"ok":false,"error":"write disabled (set TERVO_DIAG_ALLOW_WRITE=1)"})).unwrap());
+                    continue;
+                }
+                let args = req.get("args").cloned().unwrap_or_else(|| json!({}));
+                let (tx, rx) = std::sync::mpsc::channel();
+                let control = control.clone();
+                let cmd = cmd.to_string();
+                let sent = slint::invoke_from_event_loop(move || {
+                    let _ = tx.send(control(&cmd, &args));
+                });
+                if sent.is_err() {
+                    let _ = writeln!(stream, "{}", serde_json::to_string(&json!({"id":id,"ok":false,"error":"event loop closed"})).unwrap());
+                    continue;
+                }
+                match rx.recv_timeout(Duration::from_secs(2)) {
+                    Ok(Ok(data)) => {
+                        let _ = writeln!(stream, "{}", serde_json::to_string(&json!({"id":id,"ok":true,"data":data})).unwrap());
+                    },
+                    Ok(Err(error)) => {
+                        let _ = writeln!(stream, "{}", serde_json::to_string(&json!({"id":id,"ok":false,"error":error})).unwrap());
+                    },
+                    Err(_) => {
+                        let _ = writeln!(stream, "{}", serde_json::to_string(&json!({"id":id,"ok":false,"error":"live command timeout"})).unwrap());
+                    },
+                }
+            },
+            None => {
+                let _ = writeln!(stream, "{}", serde_json::to_string(&json!({"id":id,"ok":false,"error":"missing cmd"})).unwrap());
             },
         }
     }
@@ -1165,7 +1331,7 @@ mod tests {
 
     #[test]
     fn mcp_exposes_read_only_diag_tools() {
-        let tools = mcp_tools(false);
+        let tools = mcp_tools(false, false);
         let names: Vec<_> = tools
             .as_array()
             .unwrap()
@@ -1182,7 +1348,7 @@ mod tests {
             assert_eq!(tool["inputSchema"]["type"], "object");
         }
 
-        let live_tools = mcp_tools(true);
+        let live_tools = mcp_tools(true, false);
         let live_names: Vec<_> = live_tools
             .as_array()
             .unwrap()
