@@ -14,9 +14,9 @@ Categories=System;TerminalEmulator;
 Keywords=terminal;shell;console;
 Keywords[zh_CN]=终端;命令行;控制台;
 StartupWMClass=tervo
-Actions=NewWindow;
+Actions=new-window;
 
-[Desktop Action NewWindow]
+[Desktop Action new-window]
 Name=New Window
 Name[zh_CN]=新建窗口
 Exec=tervo --window
