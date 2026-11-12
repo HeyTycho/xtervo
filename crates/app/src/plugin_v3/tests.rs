@@ -1309,6 +1309,43 @@ fn wasm_filter_transforms_real_pty_output_and_disable_restores_it() {
 }
 
 #[test]
+fn wasm_enable_takes_effect_on_an_existing_pane() {
+    let root = tmpdir("wasm-dynamic-enable");
+    install_wasm_plugin(&root, &example_wasm());
+    let state = root.join("state.toml");
+    let mut store = load(&root, &state, fast_options());
+    // 插件已发现但默认 disabled：先创建 pane，验证 enable 不重建 pane。
+    assert!(store.active_wasm_filters().is_empty());
+    let filter = store.output_filter_handle().expect("filter handle");
+    let handle = spawn_wasm_test_pane(
+        filter,
+        "printf 'before [tervo-wasm]\n'; sleep 1.5; printf 'after [tervo-wasm]\n'; sleep 0.2",
+    );
+    let frame = handle.new_frame();
+    let (frame, text) = wait_frame_text(
+        &handle,
+        frame,
+        "before [tervo-wasm]",
+        Duration::from_secs(5),
+    );
+    assert!(!text.contains("before WASM-FILTER-OK"), "启用前必须原样:\n{text}");
+
+    enable(&mut store, "dev.tervo.wasm-filter");
+    let (_, text) = wait_frame_text(
+        &handle,
+        frame,
+        "after WASM-FILTER-OK",
+        Duration::from_secs(5),
+    );
+    assert!(!text.contains("after [tervo-wasm]"), "启用后必须过滤:\n{text}");
+    assert!(store.wasm_filter_stats("dev.tervo.wasm-filter").unwrap().calls > 0);
+
+    drop(handle);
+    store.shutdown_processes();
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn wasm_trap_falls_back_to_original_bytes_in_real_pty() {
     let trap = r#"
 (module
