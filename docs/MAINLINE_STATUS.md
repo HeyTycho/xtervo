@@ -1,6 +1,6 @@
 # Tervo Mainline Status / Mainline Audit
 
-Snapshot: 2026-11-12, branch `master`, HEAD `502e490`
+Snapshot: 2026-11-12, branch `master`, HEAD `1865af2`
 Purpose: one place for supported features, fixes, and branch merge decisions.
 The historical inventory stays in [`FEATURE_MATRIX.md`](FEATURE_MATRIX.md);
 this file is the current mainline truth.
