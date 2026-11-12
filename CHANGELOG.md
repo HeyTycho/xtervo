@@ -2,24 +2,19 @@
 
 Tervo 的版本与 tag 规则见 `docs/RELEASING.md`。
 
-## [Unreleased]
+## [0.4.0-rc.2] - 2026-11-12
+
+RC candidate: GPU damage scissor, embedded MCP live terminal control, plugin API v3, WASM output-filter hot path, local install/update/rollback/signature, feedback bundle.
 
 ### Added
 
 - Plugin API v3 本地安装/更新/原子回滚/签名校验：目录或 zip/tar/tar.gz → staging →
-  manifest/host_abi/entry/路径/大小限制校验 → `RENAME_EXCHANGE`（不支持时两段 rename
+  manifest/host_abi/entry/路径/大小限制校验 → RENAME_EXCHANGE（不支持时两段 rename
   回退）→ `.backup/<id>/<epoch-ms>-<version>`（默认保留 3 个）。可选 Ed25519
-  `plugin.toml.sig` + `TERVO_PLUGIN_PUBKEY`/默认公钥/设置开关；坏签名始终拒绝，
-  默认未配置公钥允许未签名。设置页 Install/Update/Rollback + source/signature 展示，
-  CLI `tervo plugins install|update|rollback|verify|list|backups|keygen|sign`。
+  `plugin.toml.sig` + `TERVO_PLUGIN_PUBKEY`/默认公钥/设置开关；坏签名始终拒绝。
+  设置页 Install/Update/Rollback + source/signature 展示，CLI
+  `tervo plugins install|update|rollback|verify|list|backups|keygen|sign`。
   不执行插件代码、不做市场/远程更新/在线 key 分发。文档 `docs/PLUGIN_INSTALL.md`。
-
-## [0.4.0-rc.1] - 2026-11-12
-
-RC candidate: GPU damage scissor, embedded MCP live terminal control, plugin API v3, feedback bundle. WASM hot-path remains future work.
-
-### Added
-
 - Plugin API v3 完整宿主（`crates/app/src/plugin_v3/`）：只加载 `api = 3` / `host_abi = 3`；
   v1/v2 清单 unsupported 且不执行，无兼容层。独立子进程 + JSON-RPC 2.0 line-delimited
   stdio；initialize/initialized、command.invoke、event.deliver、status.get、ping、
@@ -32,6 +27,10 @@ RC candidate: GPU damage scissor, embedded MCP live terminal control, plugin API
   最小渲染（text/markdown/list/input/button/select/progress）与 startup/tab-open/
   tab-close/pane-focus 事件。示例 `docs/examples/plugin-v3-echo/`，文档
   `docs/PLUGIN_V3.md`。MCP 仍为宿主内嵌功能，不实现插件 MCP。
+- WASM 热路径：`runtime = "wasm"` 的 terminal.output_filter 在 Sixel/IIP/Kitty/vte 之前执行；
+  wasmtime 34、无 WASI/import，memory/alloc/filter ABI，16 MiB 内存、fuel/epoch、256 KiB
+  输入/输出/行上限；trap/超时/越界/超限原样放行并熔断，绝不丢 PTY 字节。示例
+  `docs/examples/plugin-wasm-filter/`，文档 `docs/PLUGIN_V3.md` 第 6 章。
 - 默认 GPU-native：不设环境变量即走 Slint WGPU30 + Scene glyph atlas/图片；`TERVO_CPU=1` 强制 CPU，`TERVO_GPU_NATIVE=0` 仅兼容 stage 0；无 adapter/失败自动 CPU。
 - Sixel/Kitty 图片进入 GPU Scene（source registry、clip、below/above-text z-order）；修复 Sixel `2J` 事件顺序导致刚放置图片被清除。
 - `TERVO_RENDER_HUD=1` / Settings → Images → Render HUD：FPS、frame time、实际 renderer、GPU-native frames/draw calls、atlas/stage0 上传、网格尺寸。
@@ -45,7 +44,7 @@ RC candidate: GPU damage scissor, embedded MCP live terminal control, plugin API
 
 - Kitty placement ID 保持在正 i32 范围，避免 Slint presenter 点击命中断裂。
 - desktop action id 改为 `new-window`，Ubuntu Dock 不再同时添加默认项和自定义项。
-- 无 terminal damage 的 redraw 复用上一帧 GPU target；有 damage 仍是完整重绘（待 0.4.0 scissor）。
+- 无 terminal damage 的 redraw 复用上一帧 GPU target；有 damage 时 text/image pass 走 damage scissor，不再整 target 重绘。
 - dsh 等全屏 TUI 中滚轮/滚动条滚动时清除原生选区，避免重绘后高亮粘在错误文本上。
 - 图片图层顺序：cell 背景 → 图片 → 选区/搜索 → 字形；TUI 黑色 backing cell 不再把图片盖黑。
 - 灯箱按 image id 从原始 RGBA 取图，先设 source 再 open；Fit 允许放大且 >100% pixelated。
