@@ -1,5 +1,8 @@
 # Tervo 功能矩阵（FEATURE_MATRIX）
 
+> 当前主线快照/合并审计见 [`MAINLINE_STATUS.md`](MAINLINE_STATUS.md)（2026-11-12，master `502e490`）；本文件保留历史审计，不再单独代表当前发布状态。
+
+
 > 审计日期：2026-11-05 ｜ 仓库：`/home/user/AIworkspace/tervoterminal`（起始 HEAD `0ea6231`，复核到并发提交 `8327e20`） ｜ 审计方式：只读代码 + 既有文档 + 静态走查；**未执行 cargo build/test**（同仓另一 Agent 在构建）。
 > 上游网络不可用（2026-11-05，GitHub/docs.tabby.sh DNS 解析到非公网地址），上游行为未能复核；见 [`TABBY_UPSTREAM_AUDIT.md`](TABBY_UPSTREAM_AUDIT.md)。
 > 状态分布与闭环结论见 [`CLOSURE.md`](CLOSURE.md)；统计脚本 `python3 scripts/matrix_stats.py`。

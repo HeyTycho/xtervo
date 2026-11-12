@@ -15,6 +15,9 @@ Tervo 的版本与 tag 规则见 `docs/RELEASING.md`。
 
 ### Fixed
 
+- Kitty placement ID 保持在正 i32 范围，避免 Slint presenter 点击命中断裂。
+- desktop action id 改为 `new-window`，Ubuntu Dock 不再同时添加默认项和自定义项。
+- 无 terminal damage 的 redraw 复用上一帧 GPU target；有 damage 仍是完整重绘（待 0.4.0 scissor）。
 - dsh 等全屏 TUI 中滚轮/滚动条滚动时清除原生选区，避免重绘后高亮粘在错误文本上。
 - 图片图层顺序：cell 背景 → 图片 → 选区/搜索 → 字形；TUI 黑色 backing cell 不再把图片盖黑。
 
