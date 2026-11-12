@@ -1,0 +1,208 @@
+[log] 日志文件: /home/user/AIworkspace/rusttabbyterminal/.worktrees/agent-wasm-hotpath/.logs/soak/wasm-2m-head/logs/tervo-1794489603.log
+[render] requested_backend=winit-software（显式设置 SLINT_BACKEND）
+[render] requested_backend=winit-software；actual_renderer=winit-software（GL/GPU 不可用或已显式回退；headless 不能验证 GPU）
+[ui] settings ui=tab
+[plugin-v3] dev.tervo.wasm-filter: WASM 输出过滤器已激活（463 bytes，input/output ≤ 256 KiB）
+[plugin-v3] 已发现 1 个插件（0 unsupported/invalid），启动 1 个已确认插件，0 个等待权限确认
+[plugin-v3] 发现 1 个插件（0 unsupported/invalid，0 条启用命令）
+[corners] 默认关闭（TERVO_CORNERS=1 可开启 SHAPE 圆角）
+[quake] 全局热键 F12 已注册
+[help] info version=0.4.0-rc.1 commit=4e1aa1d43a65 (dirty) built=2026-11-12T13:01:34Z target=x86_64-unknown-linux-gnu config=/home/user/AIworkspace/rusttabbyterminal/.worktrees/agent-wasm-hotpath/.logs/soak/wasm-2m-head logs=/home/user/AIworkspace/rusttabbyterminal/.worktrees/agent-wasm-hotpath/.logs/soak/wasm-2m-head/logs
+[plugin-v3] 设置页 1 个插件，1 个启用，0 条启用命令，0 unsupported/invalid
+[ui] 启动 tabbar_position=top
+[config] 热更新监听已启动: /home/user/AIworkspace/rusttabbyterminal/.worktrees/agent-wasm-hotpath/.logs/soak/wasm-2m-head/config.toml (500ms 轮询，mtime/hash)
+[ws] new tab: tabs=1
+READY TIMING font_us=12450 show_us=52563 total_us=52564 cell=8x19
+[maximize] controller start win=0x200003 observed=false timeout=2000ms
+[maximize] runtime ready win=0x200003 desired=false observed=false pending=None
+[maximize] state desired=false observed=false pending=None error=None
+[icon] 写入窗口 0x200003，4098 个 CARDINAL
+[ui] _NET_WM_ICON 已设置 (win=0x200003)
+[ws] new tab: tabs=2
+[ws] new tab: tabs=3
+[ws] new tab: tabs=4
+[ws] new tab: tabs=5
+[ws] new tab: tabs=6
+[ws] new tab: tabs=7
+[ws] new tab: tabs=8
+[ws] new tab: tabs=9
+[ws] new tab: tabs=10
+[ws] new tab: tabs=11
+[ws] new tab: tabs=12
+[ws] new tab: tabs=13
+[ws] new tab: tabs=14
+[ws] new tab: tabs=15
+[ws] new tab: tabs=16
+[ws] new tab: tabs=17
+[ws] new tab: tabs=18
+[ws] new tab: tabs=19
+[ws] new tab: tabs=20
+[ws] new tab: tabs=21
+[ws] new tab: tabs=22
+[ws] split pane=22 dir=Row
+[ws] split pane=23 dir=Row
+[ws] split pane=24 dir=Col
+[ui] find open case=false regex=false
+[ui] find query="s" forward=true case=false regex=false hit=none count=0/0
+[ui] find query="sc" forward=true case=false regex=false hit=none count=0/0
+[ui] find query="scr" forward=true case=false regex=false hit=none count=0/0
+[ui] find query="scro" forward=true case=false regex=false hit=none count=0/0
+[ui] find query="scrol" forward=true case=false regex=false hit=none count=0/0
+[ui] find query="scroll" forward=true case=false regex=false hit=none count=0/0
+[ws] active tab=0
+[ws] active tab=1
+[ui] palette open items=10
+[ui] run command settings.open
+[ui] settings category=0
+[ui] settings category=1
+[ui] settings category=2
+[ui] settings category=4
+[ui] settings category=7
+[ui] settings category=5
+[ui] settings category=6
+[ui] settings category=3
+[ui] settings open=false
+[clipboard] 复制 4234 字节: " emoji 👨\u{200d}👩\u{200d}👧\u{200d}👦 🇨🇳 👍🏽 🧑\u{200d}💻 ❤\u{fe0f} ✨ 漢字 Z\u{338}\u{327}\u{31b}\u{32a}\u{30e}a"
+[clipboard] PRIMARY 写入 4234 字节
+[clipboard] 复制 4234 字节: " emoji 👨\u{200d}👩\u{200d}👧\u{200d}👦 🇨🇳 👍🏽 🧑\u{200d}💻 ❤\u{fe0f} ✨ 漢字 Z\u{338}\u{327}\u{31b}\u{32a}\u{30e}a"
+[clipboard] PRIMARY 写入 4234 字节
+[ui] find open case=false regex=false
+[ui] find query="scroll" forward=true case=false regex=false hit=none count=0/0
+[ws] active tab=2
+[ws] active tab=3
+[ui] scrollbar pane=4 fraction=0.097 offset=882 history=960 rows=37
+[ui] scrollbar pane=4 fraction=0.144 offset=835 history=960 rows=37
+[ui] scrollbar pane=4 fraction=0.192 offset=787 history=960 rows=37
+[ui] scrollbar pane=4 fraction=0.240 offset=739 history=960 rows=37
+[ui] scrollbar pane=4 fraction=0.289 offset=691 history=960 rows=37
+[ui] scrollbar pane=4 fraction=0.336 offset=644 history=960 rows=37
+[ui] scrollbar pane=4 fraction=0.384 offset=596 history=960 rows=37
+[ui] scrollbar pane=4 fraction=0.432 offset=547 history=960 rows=37
+[ui] scrollbar pane=4 fraction=0.481 offset=499 history=960 rows=37
+[clipboard] 复制 199 字节: "593\n199594\n199595\n199596\n199597\n199598\n1"
+[clipboard] PRIMARY 写入 199 字节
+[clipboard] 复制 199 字节: "593\n199594\n199595\n199596\n199597\n199598\n1"
+[clipboard] PRIMARY 写入 199 字节
+[ui] find open case=false regex=false
+[ui] find query="scroll" forward=true case=false regex=false hit=none count=0/0
+[ws] active tab=4
+[ws] active tab=5
+[ui] palette open items=10
+[ui] run command settings.open
+[ui] settings category=0
+[ui] settings category=1
+[ui] settings category=2
+[ui] settings category=4
+[ui] settings category=7
+[ui] settings category=5
+[ui] settings category=6
+[ui] settings category=3
+[ui] settings open=false
+[clipboard] 复制 4234 字节: " emoji 👨\u{200d}👩\u{200d}👧\u{200d}👦 🇨🇳 👍🏽 🧑\u{200d}💻 ❤\u{fe0f} ✨ 漢字 Z\u{338}\u{327}\u{31b}\u{32a}\u{30e}a"
+[clipboard] PRIMARY 写入 4234 字节
+[clipboard] 复制 4234 字节: " emoji 👨\u{200d}👩\u{200d}👧\u{200d}👦 🇨🇳 👍🏽 🧑\u{200d}💻 ❤\u{fe0f} ✨ 漢字 Z\u{338}\u{327}\u{31b}\u{32a}\u{30e}a"
+[clipboard] PRIMARY 写入 4234 字节
+[ui] find open case=false regex=false
+[ui] find query="scroll" forward=true case=false regex=false hit=none count=0/0
+[ws] active tab=6
+[ws] active tab=7
+[ui] scrollbar pane=8 fraction=0.097 offset=882 history=960 rows=37
+[ui] scrollbar pane=8 fraction=0.144 offset=835 history=960 rows=37
+[ui] scrollbar pane=8 fraction=0.192 offset=787 history=960 rows=37
+[ui] scrollbar pane=8 fraction=0.240 offset=739 history=960 rows=37
+[ui] scrollbar pane=8 fraction=0.289 offset=691 history=960 rows=37
+[ui] scrollbar pane=8 fraction=0.336 offset=644 history=960 rows=37
+[ui] scrollbar pane=8 fraction=0.384 offset=596 history=960 rows=37
+[ui] scrollbar pane=8 fraction=0.432 offset=547 history=960 rows=37
+[ui] scrollbar pane=8 fraction=0.481 offset=499 history=960 rows=37
+[clipboard] 复制 199 字节: "593\n199594\n199595\n199596\n199597\n199598\n1"
+[clipboard] PRIMARY 写入 199 字节
+[clipboard] 复制 199 字节: "593\n199594\n199595\n199596\n199597\n199598\n1"
+[clipboard] PRIMARY 写入 199 字节
+[ui] find open case=false regex=false
+[ui] find query="scroll" forward=true case=false regex=false hit=none count=0/0
+[ws] active tab=8
+[ws] active tab=9
+[ui] palette open items=10
+[ui] run command settings.open
+[ui] settings category=0
+[ui] settings category=1
+[ui] settings category=2
+[ui] settings category=4
+[ui] settings category=7
+[ui] settings category=5
+[ui] settings category=6
+[ui] settings category=3
+[ui] settings open=false
+[clipboard] 复制 4234 字节: " emoji 👨\u{200d}👩\u{200d}👧\u{200d}👦 🇨🇳 👍🏽 🧑\u{200d}💻 ❤\u{fe0f} ✨ 漢字 Z\u{338}\u{327}\u{31b}\u{32a}\u{30e}a"
+[clipboard] PRIMARY 写入 4234 字节
+[clipboard] 复制 4234 字节: " emoji 👨\u{200d}👩\u{200d}👧\u{200d}👦 🇨🇳 👍🏽 🧑\u{200d}💻 ❤\u{fe0f} ✨ 漢字 Z\u{338}\u{327}\u{31b}\u{32a}\u{30e}a"
+[clipboard] PRIMARY 写入 4234 字节
+[ui] find open case=false regex=false
+[ui] find query="scroll" forward=true case=false regex=false hit=none count=0/0
+[ws] active tab=10
+[ws] active tab=11
+[ui] scrollbar pane=12 fraction=0.097 offset=882 history=960 rows=37
+[ui] scrollbar pane=12 fraction=0.144 offset=835 history=960 rows=37
+[ui] scrollbar pane=12 fraction=0.192 offset=787 history=960 rows=37
+[ui] scrollbar pane=12 fraction=0.240 offset=739 history=960 rows=37
+[ui] scrollbar pane=12 fraction=0.289 offset=691 history=960 rows=37
+[ui] scrollbar pane=12 fraction=0.336 offset=644 history=960 rows=37
+[ui] scrollbar pane=12 fraction=0.384 offset=596 history=960 rows=37
+[ui] scrollbar pane=12 fraction=0.432 offset=547 history=960 rows=37
+[ui] scrollbar pane=12 fraction=0.481 offset=499 history=960 rows=37
+[clipboard] 复制 199 字节: "593\n199594\n199595\n199596\n199597\n199598\n1"
+[clipboard] PRIMARY 写入 199 字节
+[clipboard] 复制 199 字节: "593\n199594\n199595\n199596\n199597\n199598\n1"
+[clipboard] PRIMARY 写入 199 字节
+[ui] find open case=false regex=false
+[ui] find query="scroll" forward=true case=false regex=false hit=none count=0/0
+[ws] active tab=12
+[ws] active tab=13
+[ui] palette open items=10
+[ui] run command settings.open
+[ui] settings category=0
+[ui] settings category=1
+[ui] settings category=2
+[ui] settings category=4
+[ui] settings category=7
+[ui] settings category=5
+[ui] settings category=6
+[ui] settings category=3
+[ui] settings open=false
+[clipboard] 复制 4234 字节: " emoji 👨\u{200d}👩\u{200d}👧\u{200d}👦 🇨🇳 👍🏽 🧑\u{200d}💻 ❤\u{fe0f} ✨ 漢字 Z\u{338}\u{327}\u{31b}\u{32a}\u{30e}a"
+[clipboard] PRIMARY 写入 4234 字节
+[clipboard] 复制 4234 字节: " emoji 👨\u{200d}👩\u{200d}👧\u{200d}👦 🇨🇳 👍🏽 🧑\u{200d}💻 ❤\u{fe0f} ✨ 漢字 Z\u{338}\u{327}\u{31b}\u{32a}\u{30e}a"
+[clipboard] PRIMARY 写入 4234 字节
+[ui] find open case=false regex=false
+[ui] find query="scroll" forward=true case=false regex=false hit=none count=0/0
+[ws] active tab=14
+[ws] active tab=15
+[ui] scrollbar pane=16 fraction=0.097 offset=882 history=960 rows=37
+[ui] scrollbar pane=16 fraction=0.144 offset=835 history=960 rows=37
+[ui] scrollbar pane=16 fraction=0.192 offset=787 history=960 rows=37
+[ui] scrollbar pane=16 fraction=0.240 offset=739 history=960 rows=37
+[ui] scrollbar pane=16 fraction=0.289 offset=691 history=960 rows=37
+[ui] scrollbar pane=16 fraction=0.336 offset=644 history=960 rows=37
+[ui] scrollbar pane=16 fraction=0.384 offset=596 history=960 rows=37
+[ui] scrollbar pane=16 fraction=0.432 offset=547 history=960 rows=37
+[ui] scrollbar pane=16 fraction=0.481 offset=499 history=960 rows=37
+[clipboard] 复制 199 字节: "593\n199594\n199595\n199596\n199597\n199598\n1"
+[clipboard] PRIMARY 写入 199 字节
+[clipboard] 复制 199 字节: "593\n199594\n199595\n199596\n199597\n199598\n1"
+[clipboard] PRIMARY 写入 199 字节
+[ui] find open case=false regex=false
+[ui] find query="scroll" forward=true case=false regex=false hit=none count=0/0
+[ws] active tab=16
+[ws] active tab=17
+[ui] palette open items=10
+[ui] run command settings.open
+[ui] settings category=0
+[ui] settings category=1
+[ui] settings category=2
+[ui] settings category=4
+[ui] settings category=7
+[ui] settings category=5
+[ui] settings category=6
+[ui] settings category=3
+[ui] settings open=false

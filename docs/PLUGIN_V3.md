@@ -555,7 +555,9 @@ printf 'hello [tervo-wasm]\n'
   有效模块成功；坏模块返回错误、停止旧过滤器、设置页显示错误；修好后
   Restart 恢复；
 - `wasm_first_enable_needs_confirmation_and_is_visible_in_settings`：默认
-  不启用，首次 Enable 返回权限确认，设置页显示 `runtime=wasm`/`running`。
+  不启用，首次 Enable 返回权限确认，设置页显示 `runtime=wasm`/`running`；
+- `wasm_enable_takes_effect_on_an_existing_pane`：pane 已创建后才 Enable，
+  同一 pane 的下一行输出立即被转换，不重建 pane。
 
 ### 6.7 测试与命令
 
@@ -572,7 +574,33 @@ WAT/WASM 示例一致性、trap、fuel/epoch 死循环、输入 256 KiB 上限/�
 上限、全链熔断 passthrough、core panic/None/超限回退、真实 PTY 启用转换/
 禁用原样/trap 回退/reload 错误。
 
-### 6.8 非目标（本节明确不做）
+### 6.8 实测证据（本分支，2026-11-12）
+
+HEAD `de1bad3`（功能 commit `fab1f2a`；soak 报告生成于 test-only commit 前），
+release 二进制 SHA256
+`65aef37738e9ddb17da053380b2156f7553c94dbeeecf4415d2a24abf82158a8`
+（361,947,088 bytes，release + debug=1）：
+
+| 项目 | 结果 |
+|---|---|
+| `cargo test -p tervo-app --bin tervo` | **468 passed / 0 failed / 1 ignored** |
+| `cargo test -p tervo-core` | **265 passed / 0 failed**（含 4 个 output_filter 真实 PTY） |
+| 过滤器 32 KiB 延迟（debug） | avg **25.9 µs** / max **85.2 µs**（500 次） |
+| 2m soak | **PASS**：22 tabs / 4 panes / 25 PTY、9 cycles、72 commands、shell_lag=0 |
+| soak RSS/PSS | 360.7→396.4 MiB（**+35.7 MiB, +9.9%**）/ 352.4→388.3 MiB（+36.0） |
+| soak 线程/FD/子进程 | 111→111 / 95→95 / 25→25（无增长） |
+| soak CPU | avg 9.4% / max 12.4%；无 panic/OOM/fatal |
+| 过滤器调用 | app.log 明确 `WASM 输出过滤器已激活（463 bytes）`；真实 PTY e2e 断言 calls>0 |
+
+证据目录：[`evidence/wasm-hotpath-2m/`](evidence/wasm-hotpath-2m/)
+（report.md / samples.csv / summary.json / run.log / app.log）。
+
+**限制**：soak 只跑 2m（实际采样 136s），RSS 斜率在短窗口下是 WARN，不能
+外推 24h；没有跑无插件的同批次 A/B control；延迟数字是 debug 构建的冒烟值，
+不是 release 基准。仓库旧的 2m 基线（不同 commit/workload）为 +80.8 MiB，
+本结果没有显示 WASM 特有的失控增长，但也不构成长期稳定性证明。
+
+### 6.9 非目标（本节明确不做）
 
 - 插件 MCP server/代理（MCP 是宿主内嵌，不属于插件）；
 - 任意 Slint UI、插件命令/状态/事件/面板（wasm runtime 只做热路径过滤器）；

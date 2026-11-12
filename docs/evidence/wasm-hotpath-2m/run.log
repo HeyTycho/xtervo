@@ -1,0 +1,55 @@
+[soak 21:20:03] worktree=/home/user/AIworkspace/rusttabbyterminal/.worktrees/agent-wasm-hotpath
+[soak 21:20:03] branch=agent/wasm-hotpath commit=fab1f2a
+[soak 21:20:03] BIN=/home/user/AIworkspace/rusttabbyterminal/.worktrees/agent-wasm-hotpath/target/release/tervo
+[soak 21:20:03] BIN_SHA256=65aef37738e9ddb17da053380b2156f7553c94dbeeecf4415d2a24abf82158a8 size=361947088
+[soak 21:20:03] duration=120s warmup=40s sample=10s display=:148 screen=1280x800x24 tabs=22
+[soak 21:20:03] 输出目录: /home/user/AIworkspace/rusttabbyterminal/.worktrees/agent-wasm-hotpath/.logs/soak/wasm-2m-head
+[soak 21:20:03] 启动 Xvfb :148 (1280x800x24)
+[soak 21:20:03] Openbox pid=63
+[soak 21:20:03] 启动 Tervo（title=Tervo-Soak，--shell /bin/sh -- shell.sh）
+[soak 21:20:03] Tervo pid=83 win=0x200003
+[soak 21:20:04] 窗口初始位置 0,0 尺寸 1100x700
+[soak 21:20:04] tervo log: /home/user/AIworkspace/rusttabbyterminal/.worktrees/agent-wasm-hotpath/.logs/soak/wasm-2m-head/logs/tervo-1794489603.log
+[soak]    1s rss=  57.9MB pss=  49.4MB cpu=  0.0% thr=  15 fd= 23 child= 1 fatal=0 err=1 alive=1 x=1 phase=setup
+[soak 21:20:05] 创建 22 个 Tab（含初始 1 个）...
+[soak 21:20:11] 在活动 Tab 内分屏 3 次（2 右 + 1 下）...
+[soak 21:20:13] 日志观测: tabs=22 splits=3
+[soak 21:20:13] cycle=0 elapsed=10s
+[soak]   11s rss= 193.0MB pss= 184.5MB cpu=  6.2% thr= 111 fd= 95 child=25 fatal=0 err=1 alive=1 x=1 phase=seq
+[soak]   21s rss= 324.5MB pss= 315.6MB cpu=  7.7% thr= 111 fd= 95 child=25 fatal=0 err=1 alive=1 x=1 phase=settings
+[soak 21:20:30] cycle=1 elapsed=27s
+[soak]   31s rss= 330.9MB pss= 321.3MB cpu=  8.2% thr= 111 fd= 95 child=25 fatal=0 err=1 alive=1 x=1 phase=scroll
+[soak 21:20:41] cycle=2 elapsed=38s
+[soak]   41s rss= 347.2MB pss= 337.6MB cpu= 10.0% thr= 111 fd= 95 child=25 fatal=0 err=1 alive=1 x=1 phase=scroll
+[soak]   51s rss= 348.3MB pss= 339.8MB cpu=  6.4% thr= 111 fd= 95 child=25 fatal=0 err=1 alive=1 x=1 phase=settings
+[soak 21:20:57] cycle=3 elapsed=54s
+[soak]   61s rss= 360.7MB pss= 352.4MB cpu= 10.2% thr= 111 fd= 95 child=25 fatal=0 err=1 alive=1 x=1 phase=tabs
+[soak 21:21:07] cycle=4 elapsed=64s
+[soak]   71s rss= 371.8MB pss= 363.5MB cpu= 12.4% thr= 111 fd= 95 child=25 fatal=0 err=1 alive=1 x=1 phase=tabs
+[soak 21:21:24] cycle=5 elapsed=81s
+[soak]   81s rss= 375.9MB pss= 367.8MB cpu=  7.7% thr= 111 fd= 95 child=25 fatal=0 err=1 alive=1 x=1 phase=flood
+[soak 21:21:34] cycle=6 elapsed=91s
+[soak]   91s rss= 380.0MB pss= 371.9MB cpu= 10.6% thr= 111 fd= 95 child=25 fatal=0 err=1 alive=1 x=1 phase=flood
+[soak]  101s rss= 394.7MB pss= 386.7MB cpu= 11.0% thr= 111 fd= 95 child=25 fatal=0 err=1 alive=1 x=1 phase=settings
+[soak 21:21:51] cycle=7 elapsed=108s
+[soak]  111s rss= 396.4MB pss= 388.3MB cpu=  8.2% thr= 111 fd= 95 child=25 fatal=0 err=1 alive=1 x=1 phase=scroll
+[soak 21:22:01] cycle=8 elapsed=118s
+[soak]  122s rss= 407.4MB pss= 399.3MB cpu= 10.8% thr= 111 fd= 95 child=25 fatal=0 err=1 alive=1 x=1 phase=scroll
+[soak]  132s rss= 413.7MB pss= 405.6MB cpu=  6.8% thr= 111 fd= 95 child=25 fatal=0 err=1 alive=1 x=1 phase=settings
+[soak 21:22:25] 停止 Tervo（SIGTERM，只 kill pid=83）
+
+================ soak summary ================
+verdict       : PASS
+duration      : requested 120s / actual 136s
+samples       : 14 (warmup 40s)
+RSS           : 360.7 -> 396.4 MiB (+35.7 MiB, +45.50 MiB/min, R2=0.99)
+PSS           : 352.4 -> 388.3 MiB (peak 405.6)
+CPU           : avg 9.4% / max 12.4%
+threads/fds   : 111 -> 111 / 95 -> 95
+coverage      : tabs=22 splits=3 settings=5/40 find=9 copy=16 resize=23/23
+commands      : sent=72 shell_lag=0
+log           : fatal=0 errors=1 xvfb_errors=1
+report        : /home/user/AIworkspace/rusttabbyterminal/.worktrees/agent-wasm-hotpath/.logs/soak/wasm-2m-head/report.md
+csv           : /home/user/AIworkspace/rusttabbyterminal/.worktrees/agent-wasm-hotpath/.logs/soak/wasm-2m-head/samples.csv
+=============================================
+[soak 21:22:25] PASS  report=/home/user/AIworkspace/rusttabbyterminal/.worktrees/agent-wasm-hotpath/.logs/soak/wasm-2m-head/report.md csv=/home/user/AIworkspace/rusttabbyterminal/.worktrees/agent-wasm-hotpath/.logs/soak/wasm-2m-head/samples.csv json=/home/user/AIworkspace/rusttabbyterminal/.worktrees/agent-wasm-hotpath/.logs/soak/wasm-2m-head/summary.json
