@@ -1,9 +1,20 @@
 # MCP Terminal Control
 
-Status: design + implementation plan (2026-11-12). The current mainline has a
-read-only live control socket and two MCP live tools. The write tools below are
-the planned 0.4.0 MCP terminal-control surface; do not claim them as shipped
-until the harness e2e gates pass.
+Status: L0/L1 implemented and exercised by an external Python harness
+(2026-11-12). L2 remains planned. The live socket is embedded in Tervo core; it
+is not a plugin and plugins do not host MCP.
+
+Implemented live tools:
+
+```text
+read:  live_capabilities, live_snapshot, live_list, live_output
+write: live_send_text, live_send_key, live_run, live_focus,
+       live_new_tab, live_split, live_scroll
+```
+
+Write tools require `TERVO_DIAG_ALLOW_WRITE=1` and a token. The MCP server only
+lists write tools when that switch is enabled. `live_list`/`live_output` are
+read-only. L2 (`close_pane`, `close_tab`, `kill`, `rename`) is not implemented yet.
 
 ## 1. Architecture
 
@@ -148,18 +159,21 @@ tervo.issue_draft
 tervo.metrics_read
 tervo.live_capabilities
 tervo.live_snapshot
+tervo.live_list
+tervo.live_output
+tervo.live_send_text (write-gated)
+tervo.live_send_key (write-gated)
+tervo.live_run (write-gated)
+tervo.live_focus (write-gated)
+tervo.live_new_tab (write-gated)
+tervo.live_split (write-gated)
+tervo.live_scroll (write-gated)
 ```
 
-Existing live tools are read-only. The write tools in L1/L2 are planned and
-must be added together with:
-
-```text
-socket command handlers
-token/write-switch checks
-bounded output/read handlers
-audit log
-harness e2e
-```
+Evidence: external Python harness connects to `TERVO_DIAG_SOCKET`, runs
+`list -> send_text -> send_key Enter -> output`, creates a tab, and verifies
+wrong-token rejection. L2 tools (close/kill/rename) are not implemented yet.
+Audit logging of every action and per-harness scopes remain follow-up work.
 
 ## 7. Environment and startup
 
