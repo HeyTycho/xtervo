@@ -17,6 +17,12 @@ BIN = pathlib.Path(os.environ.get("TERVO_BIN", ROOT / "target/release/tervo"))
 OUT = pathlib.Path(os.environ.get("E2E_OUT", ROOT / "target/mcp-live-e2e"))
 OUT.mkdir(parents=True, exist_ok=True)
 SOCK = OUT / "diag.sock"
+# Remove a stale socket from a previous run; Unix socket paths survive the
+# process and would otherwise make `exists()` lie about listener readiness.
+try:
+    SOCK.unlink()
+except FileNotFoundError:
+    pass
 TOKEN = "mcp-e2e-token"
 APP_LOG = OUT / "app.log"
 
@@ -42,12 +48,18 @@ app = subprocess.Popen(
 )
 mcp = None
 try:
-    for _ in range(200):
-        if SOCK.exists():
-            break
-        time.sleep(0.05)
+    for _ in range(300):
+        probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            probe.connect(str(SOCK))
+        except OSError:
+            probe.close()
+            time.sleep(0.05)
+            continue
+        probe.close()
+        break
     else:
-        raise SystemExit("live socket did not appear")
+        raise SystemExit("live socket did not become connectable")
 
     mcp = subprocess.Popen(
         [str(BIN), "diag", "serve", "--socket", str(SOCK), "--token", TOKEN],
