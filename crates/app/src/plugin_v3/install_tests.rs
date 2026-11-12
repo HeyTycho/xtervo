@@ -317,13 +317,15 @@ fn rejects_zip_slip_and_absolute_paths() {
     let plugins = temp.path().join("plugins");
     let manifest = manifest_text("dev.test.slip", "1.0.0");
     let zip_path = temp.path().join("slip.zip");
+    let absolute = temp.path().join("absolute-evil");
+    let absolute_text = absolute.to_string_lossy().to_string();
     zip_with_entries(
         &zip_path,
         &[
             ("plugin.toml", manifest.as_bytes()),
             ("main.sh", b"#!/bin/sh\nexit 0\n"),
             ("../evil.txt", b"escaped"),
-            ("/tmp/tervo-absolute-evil", b"escaped"),
+            (absolute_text.as_str(), b"escaped"),
         ],
     );
     let error = install_package(
@@ -339,7 +341,7 @@ fn rejects_zip_slip_and_absolute_paths() {
     assert!(!plugins.join("dev.test.slip").exists());
     assert!(!plugins.join("evil.txt").exists());
     assert!(!plugins.join(".staging").join("evil.txt").exists());
-    assert!(!Path::new("/tmp/tervo-absolute-evil").exists());
+    assert!(!absolute.exists());
 }
 
 #[test]

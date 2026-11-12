@@ -268,6 +268,7 @@ fn install_inner(
     let counts = extract_source(&source, source_kind, &staging, &options.limits)?;
     normalize_package_root(&staging)?;
     ensure_tree_is_regular(&staging, &options.limits)?;
+    verify_staging_root(&staging, &plugins_dir)?;
 
     let manifest_bytes = signature::read_limited_file(
         &staging.join("plugin.toml"),
@@ -451,6 +452,7 @@ pub fn inspect_package(
     let counts = extract_source(&source, source_kind, &staging, &options.limits)?;
     normalize_package_root(&staging)?;
     ensure_tree_is_regular(&staging, &options.limits)?;
+    verify_staging_root(&staging, &plugins_dir)?;
     let manifest_bytes = signature::read_limited_file(
         &staging.join("plugin.toml"),
         manifest::MAX_MANIFEST_BYTES as u64,
@@ -1373,6 +1375,21 @@ fn normalize_package_root(staging: &Path) -> Result<(), String> {
     }
     fs::remove_dir(wrapper)
         .map_err(|e| format!("删除包顶层包装目录失败 {}: {e}", wrapper.display()))?;
+    Ok(())
+}
+
+/// 对 staging 根做 canonicalize，确认解包内容确实落在插件根目录内。
+/// 归档条目已逐项拒绝 `..`/绝对路径/符号链接，这是额外的边界断言。
+fn verify_staging_root(staging: &Path, plugins_dir: &Path) -> Result<(), String> {
+    let canonical = fs::canonicalize(staging)
+        .map_err(|e| format!("staging canonicalize 失败 {}: {e}", staging.display()))?;
+    if !canonical.starts_with(plugins_dir) {
+        return Err(format!(
+            "staging 路径逃逸插件目录: {}（插件根 {}）",
+            canonical.display(),
+            plugins_dir.display()
+        ));
+    }
     Ok(())
 }
 
