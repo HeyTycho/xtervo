@@ -90,7 +90,11 @@ pub fn create_bundle(description: &str) -> Result<PathBuf, String> {
         crate::BUILD_VERSION,
         crate::BUILD_COMMIT,
         crate::BUILD_TIME,
-        if description.trim().is_empty() { "(not provided)" } else { description.trim() }
+        if description.trim().is_empty() {
+            "(not provided)".to_string()
+        } else {
+            redact(description.trim())
+        }
     );
     fs::write(stage.join("report.md"), report).map_err(|e| format!("write report: {e}"))?;
 
