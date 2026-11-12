@@ -1,3 +1,8 @@
+> **已废弃 / Unsupported**：本文档描述 Plugin API v1/v2。Tervo 自 Plugin API v3 起
+> **只加载 `api = 3` 且 `host_abi = 3`** 的清单；v1/v2 清单不会再执行，设置页只显示
+> `unsupported` 与迁移提示，代码中没有双协议兼容层。请使用
+> [`docs/PLUGIN_V3.md`](PLUGIN_V3.md)。以下内容仅作历史参考。
+
 # Tervo 外部进程插件 API（V1 + V2 AI 扩展，api = 1/2）
 
 状态：**V1 稳定子集（2026-11-06）+ V2 AI Chat 扩展（2026-11-09）**。本轮在已有

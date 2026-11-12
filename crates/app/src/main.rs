@@ -14,7 +14,11 @@ mod keys;
 mod known_hosts;
 mod latency;
 mod logging;
-mod plugin;
+// Plugin API v3 protocol exposes a few forward-compatible helpers/limits that are
+// intentionally kept (and covered by tests) even when the current UI does not use
+// every one of them.
+#[allow(dead_code)]
+mod plugin_v3;
 mod profile;
 mod quake;
 mod render;
@@ -223,6 +227,23 @@ struct ResizeCtx {
     root: u32,
 }
 
+/// 首次启用：先展示权限再确认，不做“启用即信任”的静默授权。
+struct PluginConfirmState {
+    key: String,
+    name: String,
+    permissions: Vec<String>,
+}
+
+/// 当前打开的声明式插件 UI（面板或 settings）。
+struct PluginSurfaceState {
+    plugin_id: String,
+    plugin_name: String,
+    /// `"settings"` 或 `"panel:<id>"`。
+    surface: String,
+    panel: Option<String>,
+    doc: plugin_v3::SurfaceDoc,
+}
+
 struct AppState {
     ui: MainWindow,
     ws: Workspace,
@@ -258,7 +279,7 @@ struct AppState {
     /// 命令表（Command Palette / 快捷键分发共用）
     commands: commands::Registry,
     /// Palette 当前展示项对应的命令 ID（与 palette_model 同序）
-    palette_ids: Vec<&'static str>,
+    palette_ids: Vec<String>,
     palette_model: Rc<VecModel<slint::SharedString>>,
     /// Tab 搜索当前展示项对应的 ws.tabs 下标
     tab_search_indices: Vec<usize>,
@@ -310,10 +331,11 @@ struct AppState {
     /// release 只回放这里登记过的键：快捷键/搜索框/录制中的按键 press 没进 PTY，
     /// 对应 release 也绝不能进 PTY。普通 shell（未请求协议）永远为空。
     held_keys: HashMap<PaneId, std::collections::HashSet<keys::KeyId>>,
-    plugins: plugin::PluginStore,
+    plugins: plugin_v3::PluginStore,
     /// 后台事件唤醒（插件活动/SFTP 结果共用，容量 1）：写入结果后通知 UI。
     app_wake: WakeSignal,
-    plugin_model: Rc<VecModel<slint::SharedString>>,
+    /// Plugins 设置页的行模型（声明式；所有控件由宿主渲染）。
+    plugin_row_model: Rc<VecModel<PluginRowView>>,
     /// Plugins 设置页「最近插件活动」模型（新→旧）。
     plugin_activity_model: Rc<VecModel<slint::SharedString>>,
     /// 与 `PluginStore` 活动日志 revision 对齐，避免每 400ms 无谓刷新 Slint model。
@@ -324,20 +346,15 @@ struct AppState {
     plugin_runtime_revision: u64,
     /// 底部状态栏当前可点击执行的命令（空 = 不可点击）。
     plugin_status_command: Option<String>,
-    /// AI Chat 面板可选的插件（api=2 + process + [contributes.ai]；启动时快照）。
-    ai_plugins: Vec<plugin::AiPluginInfo>,
-    /// Settings → Plugins 入口旁的 AI 插件列表模型。
-    ai_plugin_model: Rc<VecModel<slint::SharedString>>,
-    /// 当前会话对应的插件名；切换插件时清空对话，避免跨插件串上下文。
-    ai_active_plugin: Option<String>,
-    /// 已发送/已返回的对话消息（仅内存，不持久化）。
-    ai_messages: Vec<plugin::AiChatMessage>,
-    /// 面板展示的对话文本（仅内存；不写日志正文）。
-    ai_output: String,
-    /// 正在等待的后台 AI 结果；None = 空闲。
-    ai_job: Option<crossbeam_channel::Receiver<plugin::AiChatResult>>,
-    /// 等待中的插件名（取消/关闭时用）。
-    ai_busy_plugin: Option<String>,
+    /// 首次启用时的权限确认卡片；None = 不显示。
+    plugin_confirm: Option<PluginConfirmState>,
+    /// 当前打开的声明式面板/settings。
+    plugin_surface: Option<PluginSurfaceState>,
+    plugin_surface_model: Rc<VecModel<PluginUiElement>>,
+    /// terminal/clipboard ask：当前展示的确认请求。
+    plugin_approval: Option<plugin_v3::ApprovalRequest>,
+    /// 上一次 pane focus；用于去重 `pane-focus` 事件。
+    last_plugin_focus: Option<PaneId>,
     /// Delete 需要点两次确认（避免误删远端文件）
     sftp_delete_armed: bool,
     /// 进行中的上传/下载；同一时间只允许一个。
@@ -944,7 +961,6 @@ const SETTINGS_CATALOG: &[SettingsCatalogEntry] = &[
     SettingsCatalogEntry { cat: 3, section: "config", en: "Import / export", zh: "导入 / 导出", keywords: "import export tabby profiles 导入 导出" },
     SettingsCatalogEntry { cat: 4, section: "hotkeys", en: "Hotkey bindings", zh: "快捷键绑定", keywords: "hotkey shortcut key binding 快捷键 绑定" },
     SettingsCatalogEntry { cat: 5, section: "plugins", en: "Installed plugins", zh: "已安装插件", keywords: "plugin plugins installed list 插件 已安装" },
-    SettingsCatalogEntry { cat: 5, section: "ai", en: "AI Chat", zh: "AI 聊天", keywords: "ai chat prompt model plugin 人工智能 聊天 提示词 模型 插件" },
     SettingsCatalogEntry { cat: 6, section: "vault", en: "Vault / master password", zh: "保险库 / 主密码", keywords: "vault master password credentials 凭据 解锁 锁定 保险库 主密码" },
     SettingsCatalogEntry { cat: 7, section: "profiles", en: "Profiles", zh: "配置", keywords: "profile connection ssh serial telnet 连接 配置" },
     SettingsCatalogEntry { cat: 8, section: "quickstart", en: "Quick start / Keyboard shortcuts", zh: "快速开始 / 快捷键", keywords: "help getting started quick start keyboard shortcuts hotkey keybinding ctrl+t ctrl+w ctrl+f f11 settings 帮助 快速开始 快捷键 设置" },
@@ -1105,411 +1121,486 @@ fn refresh_hotkeys(st: &mut AppState) {
     st.ui.set_hotkey_recording_row(recording);
 }
 
-/// 插件平台产出的展示行是英文状态词；在 UI 层按语言替换，插件名/描述等
-/// 用户数据保持原样（不擅自翻译第三方内容）。
-fn localize_plugin_line(line: &str, lang: &str) -> String {
-    if lang != "zh" {
-        return line.replace("（仅声明/未授予）", " (declared only)");
-    }
-    line.replace(" — enabled", " — 已启用")
-        .replace(" — disabled", " — 已禁用")
-        .replace(" · running", " · 运行中")
-        .replace(" · starting", " · 启动中")
-        .replace(" · stopped", " · 已停止")
-        .replace(" · restarting ", " · 重启中 ")
-        .replace(" · disabled: ", " · 已禁用：")
-        .replace(" · disabled", " · 已禁用")
-        .replace(" · invalid", " · 无效")
-        .replace(" · status", " · 状态")
-        .replace(" · theme-error: ", " · 主题错误：")
-        .replace(" · theme", " · 主题")
-        .replace(" command(s)", " 条命令")
-        .replace(" event(s)", " 个事件")
-        .replace("（仅声明/未授予）", "（仅声明/未授予）")
-}
-
-/// 最近活动行：动作/结果词跟随语言；插件名与输出摘要原样保留。
+/// 插件活动行：动作/结果词跟随语言；插件名与输出摘要原样保留。
 fn localize_plugin_activity(line: &str, lang: &str) -> String {
     if lang != "zh" {
         return line.to_string();
     }
     line.replace(" · command ", " · 命令 ")
         .replace(" · event ", " · 事件 ")
+        .replace(" · ui.notify ", " · 通知 ")
+        .replace(" · ui.render ", " · 渲染 ")
+        .replace(" · supervisor ", " · supervisor ")
+        .replace(" · lifecycle ", " · 生命周期 ")
+        .replace(" · denied", " · 拒绝")
+        .replace(" · ok", " · 成功")
+        .replace(" · error", " · 错误")
         .replace(" · timeout", " · 超时")
-        .replace(" · signal", " · 信号")
+        .replace(" · restart", " · 重启")
+        .replace(" · failed", " · 失败")
+        .replace(" · unavailable", " · 不可用")
         .replace(" · spawn-error", " · 启动失败")
-        .replace(" · exit=", " · 退出=")
 }
 
-/// 刷新 Plugins 设置页：已安装清单、统计、目录与最近活动。
+/// 状态词本地化；插件名/错误正文（第三方或宿主诊断）不翻译。
+fn localize_plugin_status(status: &str, lang: &str) -> String {
+    if lang != "zh" {
+        return status.to_string();
+    }
+    match status {
+        "running" => "运行中".to_string(),
+        "starting" => "启动中".to_string(),
+        "restarting" => "重启中".to_string(),
+        "stopped" => "已停止".to_string(),
+        "failed" => "失败".to_string(),
+        "disabled" => "已禁用".to_string(),
+        "unsupported" => "不支持（v1/v2）".to_string(),
+        "invalid" => "清单无效".to_string(),
+        "permission confirmation required" => "需要确认权限".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn plugin_row_view(row: &plugin_v3::PluginRow, lang: &str) -> PluginRowView {
+    PluginRowView {
+        key: row.key.clone().into(),
+        name: row.name.clone().into(),
+        version: row.version.clone().into(),
+        api: row.api.clone().into(),
+        status: localize_plugin_status(&row.status, lang).into(),
+        error: row.error.clone().into(),
+        permissions: row.permissions.clone().into(),
+        restart_count: row.restart_count,
+        enabled: row.enabled,
+        needs_approval: row.needs_approval,
+        supported: row.supported,
+        has_panel: row.has_panel,
+        has_settings: row.has_settings,
+        assistant: row.assistant,
+        surface_ready: row.surface_ready,
+    }
+}
+
+/// 刷新 Plugins 设置页：v3 行（name/version/api/status/error/permissions/
+/// restart_count + 操作按钮）、unsupported v1/v2 行、目录与最近活动。
 fn refresh_plugin_page(st: &mut AppState) {
     let lang = st.cfg.lang();
-    let lines: Vec<slint::SharedString> = st
-        .plugins
-        .display_lines()
+    let rows = st.plugins.rows();
+    let views: Vec<PluginRowView> = rows
         .iter()
-        .map(|line| localize_plugin_line(line, lang).into())
+        .map(|row| plugin_row_view(row, lang))
         .collect();
-    st.plugin_model.set_vec(lines);
+    st.plugin_row_model.set_vec(views);
     let summary = if lang == "zh" {
         format!(
-            "{} 个插件 · {} 个已启用 · {} 条命令 · {} 个跳过",
+            "{} 个插件 · {} 个已启用 · {} 条命令 · {} unsupported/invalid · API v3",
             st.plugins.total_count(),
             st.plugins.enabled_count(),
             st.plugins.enabled_command_count(),
-            st.plugins.skipped.len()
+            st.plugins.unsupported_count()
         )
     } else {
         format!(
-            "{} plugins · {} enabled · {} commands · {} skipped",
+            "{} plugins · {} enabled · {} commands · {} unsupported/invalid · API v3",
             st.plugins.total_count(),
             st.plugins.enabled_count(),
             st.plugins.enabled_command_count(),
-            st.plugins.skipped.len()
+            st.plugins.unsupported_count()
         )
     };
     st.ui.set_plugin_summary(summary.as_str().into());
     st.ui.set_plugin_dir(
-        plugin::PluginStore::dir()
-            .display()
-            .to_string()
-            .as_str()
-            .into(),
+        match st.plugins.state_error() {
+            Some(error) => format!(
+                "{} — state error: {}",
+                st.plugins.plugin_dir().display(),
+                error
+            ),
+            None => st.plugins.plugin_dir().display().to_string(),
+        }
+        .as_str()
+        .into(),
     );
     refresh_plugin_activity(st, true);
-}
-
-// ---------------------------------------------------------------- AI Chat 面板
-
-/// 无 AI 插件时的空状态：把示例目录与真实插件目录都写清楚，不要求联网。
-fn ai_empty_hint_text(st: &AppState) -> String {
-    let lang = st.cfg.lang();
-    let dir = plugin::PluginStore::dir().display().to_string();
-    let example = "docs/examples/ai-echo";
-    if lang == "zh" {
-        format!(
-            "未安装支持 AI 的插件。\n将 {example}/ 复制到 {dir}/ai-echo/（或设置 TERVO_PLUGINS），然后重启 Tervo。\n插件清单需要 api = 2、runtime = \"process\" 与 [contributes.ai]。"
-        )
-    } else {
-        format!(
-            "No AI-capable plugin installed.\nCopy {example}/ into {dir}/ai-echo/ (or set TERVO_PLUGINS), then restart Tervo.\nThe manifest needs api = 2, runtime = \"process\" and [contributes.ai]."
-        )
+    if st.plugin_surface.is_some() {
+        update_plugin_surface_model(st);
     }
 }
 
-/// 面板里选中插件的详情行（模型/id/描述都来自清单，不翻译第三方内容）。
-fn ai_plugin_detail_text(info: &plugin::AiPluginInfo, lang: &str) -> String {
-    let model = if info.model.is_empty() {
-        ui_text(lang, "model: default", "模型：默认").to_string()
-    } else {
-        format!("{} {}", ui_text(lang, "model:", "模型："), info.model)
+/// 向插件提供非敏感配置元数据（只读 snapshot；不读环境变量/Vault）。
+fn sync_plugin_config_metadata(st: &AppState) {
+    st.plugins.set_config_metadata(serde_json::json!({
+        "theme": st.cfg.theme,
+        "language": st.cfg.lang(),
+        "font_size": st.cfg.font_size,
+        "tabbar_position": st.cfg.tabbar_position,
+        "plugin_api": plugin_v3::PLUGIN_API_VERSION,
+    }));
+}
+
+fn show_plugin_confirm(st: &mut AppState) {
+    match &st.plugin_confirm {
+        Some(confirm) => {
+            let lang = st.cfg.lang();
+            let permissions = if confirm.permissions.is_empty() {
+                ui_text(lang, "No capabilities declared.", "未声明任何能力。").to_string()
+            } else {
+                confirm.permissions.join(", ")
+            };
+            st.ui.set_plugin_confirm_visible(true);
+            st.ui
+                .set_plugin_confirm_name(confirm.name.clone().into());
+            st.ui
+                .set_plugin_confirm_permissions(permissions.into());
+        },
+        None => {
+            st.ui.set_plugin_confirm_visible(false);
+            st.ui.set_plugin_confirm_name("".into());
+            st.ui.set_plugin_confirm_permissions("".into());
+        },
+    }
+}
+
+fn refresh_plugin_approval_ui(st: &mut AppState) {
+    match st.plugin_approval.clone() {
+        Some(approval) => {
+            st.ui.set_plugin_approval_visible(true);
+            st.ui.set_plugin_approval_plugin(
+                format!("{} · {}", approval.plugin_name, approval.method).into(),
+            );
+            st.ui
+                .set_plugin_approval_summary(approval.summary.clone().into());
+            st.ui
+                .set_plugin_approval_details(approval.details.clone().into());
+            st.ui
+                .set_plugin_approval_seconds(approval.seconds_left() as i32);
+        },
+        None => {
+            st.ui.set_plugin_approval_visible(false);
+            st.ui.set_plugin_approval_plugin("".into());
+            st.ui.set_plugin_approval_summary("".into());
+            st.ui.set_plugin_approval_details("".into());
+            st.ui.set_plugin_approval_seconds(0);
+        },
+    }
+}
+
+/// 声明式 UI 文档 -> 宿主固定元素模型（text/markdown/list/input/button/
+/// select/progress）。插件不能提供布局/样式/任意控件。
+fn update_plugin_surface_model(st: &mut AppState) {
+    let Some(surface) = st.plugin_surface.as_ref() else {
+        st.ui.set_plugin_surface_open(false);
+        st.plugin_surface_model.set_vec(Vec::new());
+        return;
     };
-    let mut line = format!(
-        "{}: {} · {}: {} · {model}",
-        ui_text(lang, "plugin", "插件"),
-        info.plugin,
-        ui_text(lang, "id", "ID"),
-        info.id
-    );
-    if !info.description.is_empty() {
-        line.push_str(" · ");
-        line.push_str(&info.description);
-    }
-    line
-}
-
-/// 刷新 AI 插件列表/当前选择；切换插件时清空上一段对话。
-fn refresh_ai_plugins(st: &mut AppState) {
-    let hint = ai_empty_hint_text(st);
-    let plugins = st.plugins.ai_plugins();
-    let rows: Vec<slint::SharedString> = plugins
+    let title = if surface.doc.title.trim().is_empty() {
+        format!("{} · {}", surface.plugin_name, surface.surface)
+    } else {
+        surface.doc.title.clone()
+    };
+    let elements: Vec<PluginUiElement> = surface
+        .doc
+        .elements
         .iter()
-        .map(|info| info.display_line().into())
-        .collect();
-    st.ai_plugin_model.set_vec(rows);
-    st.ai_plugins = plugins;
-    st.ui.set_ai_empty_hint(hint.as_str().into());
-    if st.ai_plugins.is_empty() {
-        st.ai_active_plugin = None;
-        st.ai_messages.clear();
-        st.ai_output.clear();
-        st.ui.set_ai_plugin_index(-1);
-        st.ui.set_ai_plugin_detail("".into());
-        st.ui.set_ai_output("".into());
-        return;
-    }
-    let current = st.ui.get_ai_plugin_index();
-    let index = if current >= 0 && (current as usize) < st.ai_plugins.len() {
-        current as usize
-    } else {
-        0
-    };
-    let info = st.ai_plugins[index].clone();
-    if st.ai_active_plugin.as_deref() != Some(info.plugin.as_str()) {
-        st.ai_active_plugin = Some(info.plugin.clone());
-        st.ai_messages.clear();
-        st.ai_output.clear();
-        st.ui.set_ai_output("".into());
-    }
-    let lang = st.cfg.lang().to_string();
-    st.ui.set_ai_plugin_index(index as i32);
-    st.ui.set_ai_plugin_detail(ai_plugin_detail_text(&info, &lang).into());
-}
-
-/// 用户点选插件：只在空闲时调用；同时重置该插件的对话上下文。
-fn select_ai_plugin(st: &mut AppState, index: i32) {
-    if st.ai_job.is_some() {
-        return;
-    }
-    let Some(info) = (index >= 0)
-        .then(|| st.ai_plugins.get(index as usize).cloned())
-        .flatten()
-    else {
-        return;
-    };
-    if st.ai_active_plugin.as_deref() != Some(info.plugin.as_str()) {
-        st.ai_active_plugin = Some(info.plugin.clone());
-        st.ai_messages.clear();
-        st.ai_output.clear();
-        st.ui.set_ai_output("".into());
-    }
-    let lang = st.cfg.lang().to_string();
-    st.ui.set_ai_plugin_index(index);
-    st.ui.set_ai_plugin_detail(ai_plugin_detail_text(&info, &lang).into());
-    st.ui.set_ai_status("".into());
-    st.ui.set_ai_status_error(false);
-}
-
-fn append_ai_output(st: &mut AppState, text: &str) {
-    if text.is_empty() {
-        return;
-    }
-    if !st.ai_output.is_empty() {
-        st.ai_output.push_str("\n\n");
-    }
-    st.ai_output.push_str(text);
-    st.ui.set_ai_output(st.ai_output.as_str().into());
-}
-
-/// 宿主侧错误（超时/取消/进程退出）按 UI 语言展示；插件返回的正文原样保留。
-fn localize_ai_host_error(err: &str, lang: &str) -> String {
-    if err.starts_with("AI 请求超时") || err.starts_with("等待 AI 插件响应超时") {
-        ui_text(
-            lang,
-            "The AI request timed out; the plugin process is still running.",
-            "AI 请求超时；插件进程仍在运行。",
-        )
-        .to_string()
-    } else if err == "AI 请求已取消" {
-        ui_text(lang, "AI request cancelled.", "AI 请求已取消。").to_string()
-    } else {
-        err.to_string()
-    }
-}
-
-/// 提交一条用户提示词；只在 UI 线程做校验/入队，不等待插件。
-fn send_ai_prompt(st: &mut AppState, prompt: &str) {
-    if st.ai_job.is_some() {
-        return;
-    }
-    let lang = st.cfg.lang().to_string();
-    let prompt = prompt.trim();
-    if prompt.is_empty() {
-        st.ui
-            .set_ai_status(ui_text(&lang, "Enter a prompt first.", "请先输入提示词。").into());
-        st.ui.set_ai_status_error(true);
-        return;
-    }
-    let index = st.ui.get_ai_plugin_index();
-    let Some(info) = (index >= 0)
-        .then(|| st.ai_plugins.get(index as usize).cloned())
-        .flatten()
-    else {
-        st.ui.set_ai_status(
-            ui_text(&lang, "No AI plugin selected.", "未选择 AI 插件。").into(),
-        );
-        st.ui.set_ai_status_error(true);
-        return;
-    };
-    if st.ai_active_plugin.as_deref() != Some(info.plugin.as_str()) {
-        st.ai_active_plugin = Some(info.plugin.clone());
-        st.ai_messages.clear();
-        st.ai_output.clear();
-        st.ui.set_ai_output("".into());
-    }
-    // 保留最近 MAX_AI_MESSAGES 条（通常是一问一答），超限从最旧开始丢。
-    let overflow = (st.ai_messages.len() + 1).saturating_sub(plugin::MAX_AI_MESSAGES);
-    if overflow > 0 {
-        st.ai_messages.drain(0..overflow);
-    }
-    st.ai_messages
-        .push(plugin::AiChatMessage::user(prompt.to_string()));
-    let messages = st.ai_messages.clone();
-    let model = if info.model.is_empty() {
-        None
-    } else {
-        Some(info.model.clone())
-    };
-    match st
-        .plugins
-        .spawn_ai_chat(&info.plugin, messages, model)
-    {
-        Ok(rx) => {
-            st.ai_job = Some(rx);
-            st.ai_busy_plugin = Some(info.plugin.clone());
-            let chunk = format!("{}:\n{prompt}", ui_text(&lang, "You", "你"));
-            append_ai_output(st, &chunk);
-            st.ui.set_ai_prompt("".into());
-            st.ui.set_ai_busy(true);
-            st.ui.set_ai_status(
-                format!("{} {}", ui_text(&lang, "Waiting for", "等待"), info.name).into(),
-            );
-            st.ui.set_ai_status_error(false);
-            eprintln!(
-                "[plugin] ai.chat submitted plugin={} messages={}",
-                info.plugin,
-                st.ai_messages.len()
-            );
-        },
-        Err(e) => {
-            // 没发出去：撤回刚加入的用户消息，允许修好后重试。
-            st.ai_messages.pop();
-            eprintln!("[plugin] ai.chat start failed plugin={}: {e}", info.plugin);
-            st.ui.set_ai_status(
-                ui_text(
-                    &lang,
-                    "Could not start the AI request. See logs for details.",
-                    "无法启动 AI 请求，详情见日志。",
-                )
-                .into(),
-            );
-            st.ui.set_ai_status_error(true);
-        },
-    }
-}
-
-fn cancel_ai_chat(st: &mut AppState) {
-    if st.ai_job.is_none() {
-        return;
-    }
-    let lang = st.cfg.lang().to_string();
-    let Some(plugin) = st.ai_busy_plugin.clone() else {
-        return;
-    };
-    if st.plugins.cancel_ai_chat(&plugin) {
-        st.ui.set_ai_status(
-            ui_text(&lang, "Cancelling…", "正在取消…").into(),
-        );
-        st.ui.set_ai_status_error(false);
-        eprintln!("[plugin] ai.chat cancel requested plugin={plugin}");
-    } else {
-        st.ui.set_ai_status(
-            ui_text(&lang, "Could not cancel the AI request.", "无法取消 AI 请求。").into(),
-        );
-        st.ui.set_ai_status_error(true);
-    }
-}
-
-fn close_ai_panel(st: &mut AppState) {
-    if let Some(plugin) = st.ai_busy_plugin.clone() {
-        st.plugins.cancel_ai_chat(&plugin);
-    }
-    st.ai_job = None;
-    st.ai_busy_plugin = None;
-    st.ui.set_ai_busy(false);
-    st.ui.set_ai_panel_open(false);
-    st.ui.set_ai_status("".into());
-    st.ui.set_ai_status_error(false);
-    if st.ui.get_settings_open() {
-        // 关闭浮层后把键盘焦点还给设置页；否则还给终端输入。
-        let token = st.ui.get_settings_refocus_token().wrapping_add(1);
-        st.ui.set_settings_refocus_token(token);
-    } else {
-        st.ui.invoke_focus_terminal();
-    }
-    eprintln!("[ui] ai panel closed");
-}
-
-fn open_ai_panel(st: &mut AppState) {
-    refresh_ai_plugins(st);
-    st.ui.set_ai_panel_open(true);
-    st.ui.set_ai_status("".into());
-    st.ui.set_ai_status_error(false);
-    eprintln!("[ui] ai panel open plugins={}", st.ai_plugins.len());
-}
-
-/// 非阻塞收 AI 结果；由 event-loop 唤醒与 400ms 兜底共同调用。
-fn poll_ai_chat(st: &mut AppState) {
-    let received = match st.ai_job.as_ref() {
-        None => return,
-        Some(rx) => match rx.try_recv() {
-            Ok(result) => result,
-            Err(crossbeam_channel::TryRecvError::Empty) => return,
-            Err(crossbeam_channel::TryRecvError::Disconnected) => {
-                st.ai_job = None;
-                st.ai_busy_plugin = None;
-                st.ui.set_ai_busy(false);
-                let lang = st.cfg.lang().to_string();
-                st.ui.set_ai_status(
-                    ui_text(
-                        &lang,
-                        "The AI request ended unexpectedly. See logs for details.",
-                        "AI 请求异常结束，详情见日志。",
-                    )
-                    .into(),
-                );
-                st.ui.set_ai_status_error(true);
-                return;
+        .map(|element| match element {
+            plugin_v3::SurfaceElement::Text { text } => PluginUiElement {
+                kind: "text".into(),
+                id: "".into(),
+                label: "".into(),
+                text: text.clone().into(),
+                value: "".into(),
+                placeholder: "".into(),
+                progress: 0.0,
             },
-        },
+            plugin_v3::SurfaceElement::Markdown { text } => PluginUiElement {
+                kind: "markdown".into(),
+                id: "".into(),
+                label: "".into(),
+                text: plugin_v3::render_markdown_plain(text).into(),
+                value: "".into(),
+                placeholder: "".into(),
+                progress: 0.0,
+            },
+            plugin_v3::SurfaceElement::List { items } => PluginUiElement {
+                kind: "list".into(),
+                id: "".into(),
+                label: "".into(),
+                text: items.join("\n").into(),
+                value: "".into(),
+                placeholder: "".into(),
+                progress: 0.0,
+            },
+            plugin_v3::SurfaceElement::Input {
+                id,
+                label,
+                value,
+                placeholder,
+            } => PluginUiElement {
+                kind: "input".into(),
+                id: id.clone().into(),
+                label: label.clone().into(),
+                text: "".into(),
+                value: value.clone().into(),
+                placeholder: placeholder.clone().into(),
+                progress: 0.0,
+            },
+            plugin_v3::SurfaceElement::Button { id, label } => PluginUiElement {
+                kind: "button".into(),
+                id: id.clone().into(),
+                label: label.clone().into(),
+                text: "".into(),
+                value: "".into(),
+                placeholder: "".into(),
+                progress: 0.0,
+            },
+            plugin_v3::SurfaceElement::Select {
+                id,
+                label,
+                value,
+                options,
+            } => PluginUiElement {
+                kind: "select".into(),
+                id: id.clone().into(),
+                label: label.clone().into(),
+                text: options.join(" · ").into(),
+                value: value.clone().into(),
+                placeholder: "".into(),
+                progress: 0.0,
+            },
+            plugin_v3::SurfaceElement::Progress { label, value } => PluginUiElement {
+                kind: "progress".into(),
+                id: "".into(),
+                label: label.clone().into(),
+                text: "".into(),
+                value: "".into(),
+                placeholder: "".into(),
+                progress: *value,
+            },
+        })
+        .collect();
+    st.plugin_surface_model.set_vec(elements);
+    st.ui.set_plugin_surface_title(title.into());
+    st.ui.set_plugin_surface_open(true);
+    st.ui.set_plugin_surface_loading(false);
+    st.ui.set_plugin_surface_error("".into());
+}
+
+fn close_plugin_surface(st: &mut AppState) {
+    st.plugin_surface = None;
+    st.plugin_surface_model.set_vec(Vec::new());
+    st.ui.set_plugin_surface_open(false);
+    st.ui.set_plugin_surface_title("".into());
+    st.ui.set_plugin_surface_error("".into());
+    st.ui.set_plugin_surface_loading(false);
+}
+
+fn open_plugin_surface(st: &mut AppState, key: &str, kind: &str) {
+    let Some(row) = st.plugins.rows().into_iter().find(|row| row.key == key) else {
+        return;
     };
-    st.ai_job = None;
-    st.ai_busy_plugin = None;
-    st.ui.set_ai_busy(false);
-    let lang = st.cfg.lang().to_string();
-    match received.outcome {
-        plugin::AiChatOutcome::Ok(text) => {
-            st.ai_messages.push(plugin::AiChatMessage::assistant(text.clone()));
-            let chunk = format!("{}:\n{text}", ui_text(&lang, "AI", "AI"));
-            append_ai_output(st, &chunk);
-            st.ui.set_ai_status(
-                ui_text(&lang, "Response received.", "已收到回复。").into(),
-            );
-            st.ui.set_ai_status_error(false);
-            eprintln!(
-                "[plugin] ai.chat result plugin={} chars={}",
-                received.plugin,
-                text.chars().count()
-            );
-        },
-        plugin::AiChatOutcome::Error(err) => {
-            if st.ai_messages.last().is_some_and(|m| m.role == "user") {
-                st.ai_messages.pop();
-            }
-            let shown = localize_ai_host_error(&err, &lang);
-            append_ai_output(
-                st,
-                &format!("{}:\n{shown}", ui_text(&lang, "Error", "错误")),
-            );
-            st.ui.set_ai_status(
-                ui_text(&lang, "AI request failed.", "AI 请求失败。").into(),
-            );
-            st.ui.set_ai_status_error(true);
-            // 完整错误只进日志；prompt/回复正文不写日志。
-            eprintln!(
-                "[plugin] ai.chat error plugin={}: {err}",
-                received.plugin
-            );
-        },
-        plugin::AiChatOutcome::Cancelled => {
-            if st.ai_messages.last().is_some_and(|m| m.role == "user") {
-                st.ai_messages.pop();
-            }
-            st.ui.set_ai_status(ui_text(&lang, "Cancelled.", "已取消。").into());
-            st.ui.set_ai_status_error(false);
-            eprintln!("[plugin] ai.chat cancelled plugin={}", received.plugin);
-        },
+    if !row.supported || !row.surface_ready {
+        set_status_toast(
+            st,
+            ui_text(
+                st.cfg.lang(),
+                "Plugin is not enabled or permissions are not confirmed.",
+                "插件未启用或权限未确认。",
+            )
+            .to_string(),
+        );
+        return;
     }
+    let entry = st
+        .plugins
+        .entries()
+        .iter()
+        .find(|entry| entry.key == key)
+        .cloned();
+    let Some(manifest) = entry.and_then(|entry| entry.manifest) else {
+        return;
+    };
+    let (surface, panel, surface_kind) = if kind == "settings" {
+        ("settings".to_string(), None, "settings")
+    } else if let Some(panel) = manifest.contributes.panels.first().cloned() {
+        (format!("panel:{panel}"), Some(panel), "panel")
+    } else {
+        set_status_toast(st, "Plugin has no panel contribution".to_string());
+        return;
+    };
+    st.plugin_surface = Some(PluginSurfaceState {
+        plugin_id: manifest.id.clone(),
+        plugin_name: manifest.name.clone(),
+        surface: surface.clone(),
+        panel: panel.clone(),
+        doc: plugin_v3::SurfaceDoc {
+            title: String::new(),
+            elements: Vec::new(),
+        },
+    });
+    st.plugin_surface_model.set_vec(Vec::new());
+    st.ui.set_plugin_surface_title(
+        format!("{} · {}", manifest.name, surface).into(),
+    );
+    st.ui.set_plugin_surface_open(true);
+    st.ui.set_plugin_surface_loading(true);
+    st.ui.set_plugin_surface_error("".into());
+    if let Err(error) = st
+        .plugins
+        .request_surface(&manifest.id, surface_kind, panel)
+    {
+        st.ui.set_plugin_surface_loading(false);
+        st.ui.set_plugin_surface_error(error.clone().into());
+        set_status_toast(st, error);
+    }
+}
+
+/// 插件 -> 宿主 request 的 UI 侧执行：terminal/clipboard 的实际读写只能由
+/// 持有 `panes`/`arboard` 的 UI 线程完成。宿主不会读取 Vault/env 明文。
+fn resolve_plugin_approval(st: &mut AppState, allow: bool) {
+    let Some(approval) = st.plugin_approval.take() else {
+        return;
+    };
+    refresh_plugin_approval_ui(st);
+    let params = approval.params.clone();
+    // stale ask：插件已停止/已撤销/已超时，绝不执行 terminal/clipboard 副作用。
+    let still_pending = st
+        .plugins
+        .pending_approvals()
+        .iter()
+        .any(|pending| {
+            pending.plugin_id == approval.plugin_id
+                && pending.request_id == approval.request_id
+        })
+        && approval.seconds_left() > 0;
+    if !still_pending || st.plugins.phase(&approval.plugin_id) != Some(plugin_v3::Phase::Running) {
+        let _ = st.plugins.resolve_host_request(
+            &approval.plugin_id,
+            approval.request_id,
+            plugin_v3::HostOutcome::Unavailable(
+                "request is no longer pending or plugin is not running".to_string(),
+            ),
+        );
+        return;
+    }
+    if !allow {
+        st.plugins.resolve_host_request(
+            &approval.plugin_id,
+            approval.request_id,
+            plugin_v3::HostOutcome::Denied,
+        );
+        eprintln!(
+            "[plugin-v3] {}: user denied {}",
+            approval.plugin_id, approval.method
+        );
+        return;
+    }
+    let outcome = match approval.method.as_str() {
+        "terminal.read" => match plugin_terminal_tail(st, &params) {
+            Ok(value) => plugin_v3::HostOutcome::Ok(value),
+            Err(error) => plugin_v3::HostOutcome::Unavailable(error),
+        },
+        "terminal.write" => {
+            let text = params
+                .get("text")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("");
+            let Some(pane) = st.ws.active_tab().map(|tab| tab.focused) else {
+                st.plugins.resolve_host_request(
+                    &approval.plugin_id,
+                    approval.request_id,
+                    plugin_v3::HostOutcome::Unavailable("没有焦点终端".to_string()),
+                );
+                return;
+            };
+            let Some(runtime) = st.panes.get(&pane) else {
+                st.plugins.resolve_host_request(
+                    &approval.plugin_id,
+                    approval.request_id,
+                    plugin_v3::HostOutcome::Unavailable("焦点终端不可用".to_string()),
+                );
+                return;
+            };
+            runtime.handle.input(text.as_bytes());
+            eprintln!(
+                "[plugin-v3] {}: terminal.write applied bytes={}",
+                approval.plugin_id,
+                text.len()
+            );
+            plugin_v3::HostOutcome::Ok(serde_json::json!({}))
+        },
+        "clipboard.read" => match with_clipboard(st, |clipboard| clipboard.get_text()) {
+            Some(Ok(text)) => {
+                let text = plugin_v3::sanitize_text(&text, plugin_v3::MAX_CLIPBOARD_CHARS);
+                plugin_v3::HostOutcome::Ok(serde_json::json!({ "text": text }))
+            },
+            Some(Err(error)) => {
+                plugin_v3::HostOutcome::Unavailable(format!("读取剪贴板失败: {error}"))
+            },
+            None => plugin_v3::HostOutcome::Unavailable("剪贴板不可用".to_string()),
+        },
+        "clipboard.write" => {
+            let text = params
+                .get("text")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            match with_clipboard(st, |clipboard| clipboard.set_text(text)) {
+                Some(Ok(())) => plugin_v3::HostOutcome::Ok(serde_json::json!({})),
+                Some(Err(error)) => {
+                    plugin_v3::HostOutcome::Unavailable(format!("写入剪贴板失败: {error}"))
+                },
+                None => plugin_v3::HostOutcome::Unavailable("剪贴板不可用".to_string()),
+            }
+        },
+        other => plugin_v3::HostOutcome::Error(format!("不支持的授权请求 {other}")),
+    };
+    st.plugins
+        .resolve_host_request(&approval.plugin_id, approval.request_id, outcome);
+}
+
+/// 从焦点终端取尾部文本；先按行再按字节限制，绝不返回 cwd/env/Vault。
+fn plugin_terminal_tail(st: &AppState, params: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let Some(pane) = st.ws.active_tab().map(|tab| tab.focused) else {
+        return Err("没有焦点终端".to_string());
+    };
+    let Some(text) = st.panes.get(&pane).and_then(|runtime| runtime.handle.contents()) else {
+        return Err("读取终端内容失败".to_string());
+    };
+    let max_lines = params
+        .get("max_lines")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(80)
+        .clamp(1, 500) as usize;
+    let max_bytes = params
+        .get("max_bytes")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(32 * 1024)
+        .clamp(1, 64 * 1024) as usize;
+    let total_lines = text.lines().count();
+    let truncated_lines = total_lines > max_lines;
+    let mut tail = text
+        .lines()
+        .rev()
+        .take(max_lines)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>()
+        .join("\n");
+    let truncated_bytes = tail.len() > max_bytes;
+    if truncated_bytes {
+        let mut cut = tail.len() - max_bytes;
+        while cut < tail.len() && !tail.is_char_boundary(cut) {
+            cut += 1;
+        }
+        tail = tail[cut..].to_string();
+    }
+    Ok(serde_json::json!({
+        "text": tail,
+        "truncated": truncated_lines || truncated_bytes,
+        "max_lines": max_lines,
+        "max_bytes": max_bytes,
+    }))
 }
 
 /// 活动列表变化时刷新 Slint model；`force` 用于首次填充。
@@ -1540,24 +1631,30 @@ fn refresh_plugin_activity(st: &mut AppState, force: bool) {
     }
 }
 
-/// 插件 UI 汇总刷新：命令结果浮层、最小状态栏、运行状态设置页。
-///
-/// 后台线程只写 `PluginStore` 内部队列并唤醒 UI；UI 线程在这里批量取走，
-/// 不在回调里逐条碰 Slint model。
+/// 插件 UI 汇总刷新：提示浮层、状态栏、设置页行、声明式 surface、ask 确认、
+/// pane-focus 事件。所有操作非阻塞；后台线程只写队列 + 唤醒 UI。
 fn refresh_plugin_ui(st: &mut AppState) {
-    // AI Chat 后台结果：非阻塞收，收到后唤醒/400ms 兜底都会走到这里。
-    poll_ai_chat(st);
+    // context.config_metadata 只包含这些非敏感字段；不读取环境变量/Vault。
+    sync_plugin_config_metadata(st);
     // 活动列表按 revision 增量刷新（后台线程 push 后唤醒）。
     refresh_plugin_activity(st, false);
 
-    // 命令结果：浮层显示最新一条；所有结果都已经写入活动列表/日志。
+    // 命令结果 / 插件 ui.notify：浮层显示最新一条；完整内容在活动日志。
     let notices = st.plugins.take_notices();
     if let Some(last) = notices.last() {
-        let prefix = if last.ok { "" } else { "error: " };
-        let mut msg = format!("{}: {}{}", last.plugin, prefix, last.text);
-        // 浮层是单行 elide 展示，避免超长结果撑爆；完整结果见日志/活动。
+        let prefix = match last.level.as_str() {
+            "error" => "error: ",
+            "warn" => "warn: ",
+            _ => "",
+        };
+        let mut msg = format!("{}: {}{}", last.plugin_name, prefix, last.text);
         if msg.chars().count() > 320 {
             msg = msg.chars().take(319).collect::<String>() + "…";
+        }
+        if last.level == "error" && st.ui.get_plugin_surface_loading() {
+            st.ui.set_plugin_surface_loading(false);
+            st.ui
+                .set_plugin_surface_error(msg.clone().into());
         }
         set_status_toast(st, msg);
     }
@@ -1568,7 +1665,7 @@ fn refresh_plugin_ui(st: &mut AppState) {
         st.plugin_status_revision = status_rev;
         let text = items
             .iter()
-            .map(|item| format!("{}: {}", item.plugin, item.text))
+            .map(|item| format!("{}: {}", item.plugin_name, item.text))
             .collect::<Vec<_>>()
             .join(" · ");
         let tooltip = items
@@ -1578,35 +1675,260 @@ fn refresh_plugin_ui(st: &mut AppState) {
             .unwrap_or_default();
         st.plugin_status_command = items
             .iter()
-            .find(|item| !item.command.is_empty())
-            .map(|item| item.command.clone());
+            .find_map(|item| item.command.clone());
         st.ui.set_plugin_status(text.as_str().into());
         st.ui.set_plugin_status_tooltip(tooltip.as_str().into());
     }
 
     // 运行状态（running/restarting/disabled: 原因）变化时刷新 Plugins 设置页。
-    // Slint model 更新只在设置页打开时才有意义，但行数很少，保持简单一致。
     let runtime_rev = st.plugins.runtime_revision();
     if runtime_rev != st.plugin_runtime_revision {
         st.plugin_runtime_revision = runtime_rev;
         refresh_plugin_page(st);
+        if let Some(surface) = &st.plugin_surface {
+            let plugin_id = surface.plugin_id.clone();
+            let running = st.plugins.phase(&plugin_id) == Some(plugin_v3::Phase::Running);
+            if !running && st.ui.get_plugin_surface_loading() {
+                st.ui.set_plugin_surface_loading(false);
+                st.ui.set_plugin_surface_error(
+                    "Plugin is not running; the declarative UI is unavailable.".into(),
+                );
+            }
+        }
+    }
+
+    // 声明式 surface 更新：只接受当前打开的那个 (plugin, surface)。
+    for update in st.plugins.take_surfaces() {
+        let matches = st.plugin_surface.as_ref().is_some_and(|surface| {
+            surface.plugin_id == update.plugin_id && surface.surface == update.surface
+        });
+        if matches {
+            if let Some(surface) = st.plugin_surface.as_mut() {
+                surface.doc = update.doc;
+                surface.panel = update.panel;
+                surface.plugin_name = update.plugin_name;
+            }
+            update_plugin_surface_model(st);
+        }
+    }
+
+    // terminal/clipboard ask：一次展示一个；UI 不在时 supervisor 端也会超时。
+    let approvals = st.plugins.pending_approvals();
+    if let Some(current) = &st.plugin_approval {
+        let still_pending = approvals.iter().any(|approval| {
+            approval.plugin_id == current.plugin_id
+                && approval.request_id == current.request_id
+        });
+        if !still_pending || current.seconds_left() == 0 {
+            st.plugin_approval = None;
+        }
+    }
+    if st.plugin_approval.is_none() {
+        if let Some(approval) = approvals
+            .into_iter()
+            .find(|approval| approval.seconds_left() > 0)
+        {
+            st.plugin_approval = Some(approval);
+        }
+    }
+    refresh_plugin_approval_ui(st);
+
+    // pane-focus 事件：只在焦点实际变化时投递；payload 只有不透明 pane id。
+    let focus = st.ws.active_tab().map(|tab| tab.focused);
+    if focus != st.last_plugin_focus {
+        let previous = st.last_plugin_focus;
+        st.last_plugin_focus = focus;
+        if previous.is_some() {
+            if let Some(pane) = focus {
+                dispatch_plugin_event(
+                    st,
+                    plugin_v3::PluginEvent::PaneFocus,
+                    plugin_v3::pane_focus_payload(pane),
+                );
+            }
+        }
     }
 }
 
-/// 异步分发一个插件事件；spawn 失败/插件执行失败都只写日志与活动列表。
+/// 异步分发一个插件事件；失败只写日志，不影响终端。
 fn dispatch_plugin_event(
     st: &mut AppState,
-    event: plugin::PluginEvent,
+    event: plugin_v3::PluginEvent,
     payload: serde_json::Value,
 ) {
-    let spawned = st.plugins.spawn_event(event, payload);
-    if spawned > 0 {
-        eprintln!(
-            "[plugin] 事件 {} 已提交后台执行（{} 个插件）",
-            event.as_str(),
-            spawned
-        );
+    let _ = st.plugins.spawn_event(event, &payload);
+}
+
+/// Settings → Plugins 的用户操作：生命周期不重启 Tervo。
+fn plugin_action(st: &mut AppState, action: &str, key: &str) {
+    let lang = st.cfg.lang();
+    match action {
+        "enable" => match st.plugins.request_enable(key) {
+            Ok(plugin_v3::EnableDecision::Approved) => {
+                set_status_toast(st, ui_text(lang, "Plugin enabled.", "插件已启用。").to_string());
+                st.plugin_confirm = None;
+                show_plugin_confirm(st);
+            },
+            Ok(plugin_v3::EnableDecision::NeedsApproval { permissions }) => {
+                let row = st.plugins.rows().into_iter().find(|row| row.key == key);
+                let name = row
+                    .as_ref()
+                    .map(|row| row.name.clone())
+                    .unwrap_or_else(|| key.to_string());
+                st.plugin_confirm = Some(PluginConfirmState {
+                    key: key.to_string(),
+                    name,
+                    permissions,
+                });
+                show_plugin_confirm(st);
+            },
+            Err(error) => set_status_toast(st, error),
+        },
+        "disable" => match st.plugins.disable_plugin(key) {
+            Ok(()) => set_status_toast(
+                st,
+                ui_text(lang, "Plugin disabled.", "插件已禁用。").to_string(),
+            ),
+            Err(error) => set_status_toast(st, error),
+        },
+        "reload" => match st.plugins.reload_plugin(key) {
+            Ok(()) => set_status_toast(
+                st,
+                ui_text(lang, "Plugin reloaded from disk.", "插件已从磁盘重载。").to_string(),
+            ),
+            Err(error) => set_status_toast(st, error),
+        },
+        "restart" => match st.plugins.restart_plugin(key) {
+            Ok(()) => set_status_toast(
+                st,
+                ui_text(lang, "Plugin restarted.", "插件已重启。").to_string(),
+            ),
+            Err(error) => set_status_toast(st, error),
+        },
+        "folder" => match st.plugins.open_folder(key) {
+            Ok(dir) => {
+                eprintln!("[plugin-v3] open folder {}", dir.display());
+                set_status_toast(
+                    st,
+                    ui_text(lang, "Opened plugin folder.", "已打开插件目录。").to_string(),
+                );
+            },
+            Err(error) => set_status_toast(st, error),
+        },
+        other => eprintln!("[ui] 未知插件动作 {other}"),
     }
+    if matches!(action, "disable" | "reload")
+        && st
+            .plugin_surface
+            .as_ref()
+            .is_some_and(|surface| surface.plugin_id == key)
+    {
+        close_plugin_surface(st);
+    }
+    refresh_plugin_page(st);
+}
+
+fn confirm_plugin_enable(st: &mut AppState) {
+    let Some(confirm) = st.plugin_confirm.take() else {
+        return;
+    };
+    match st.plugins.confirm_enable(&confirm.key) {
+        Ok(()) => {
+            eprintln!(
+                "[ui] plugin {} permissions confirmed: [{}]",
+                confirm.key,
+                confirm.permissions.join(", ")
+            );
+            set_status_toast(
+                st,
+                ui_text(
+                    st.cfg.lang(),
+                    "Permissions confirmed; plugin enabled.",
+                    "权限已确认，插件已启用。",
+                )
+                .to_string(),
+            );
+        },
+        Err(error) => set_status_toast(st, error),
+    }
+    show_plugin_confirm(st);
+    refresh_plugin_page(st);
+}
+
+fn cancel_plugin_enable(st: &mut AppState) {
+    st.plugin_confirm = None;
+    show_plugin_confirm(st);
+}
+
+/// 声明式 UI 的 button/select 动作。select 的 next 值由宿主从文档计算后发给
+/// 插件，插件仍然拥有“接受/拒绝”的最终决定权（可回 ui.render 更新）。
+fn plugin_surface_action(st: &mut AppState, element_id: &str) {
+    let Some(surface) = st.plugin_surface.as_mut() else {
+        return;
+    };
+    let (action, value) = match surface.doc.element(element_id) {
+        Some(plugin_v3::SurfaceElement::Button { .. }) => ("click", None),
+        Some(plugin_v3::SurfaceElement::Select { .. }) => {
+            let next = surface.doc.next_select_value(element_id);
+            if let Some(next) = &next {
+                if let Some(element) = surface
+                    .doc
+                    .elements
+                    .iter_mut()
+                    .find(|element| element.id() == Some(element_id))
+                {
+                    if let plugin_v3::SurfaceElement::Select { value, .. } = element {
+                        *value = next.clone();
+                    }
+                }
+            }
+            ("change", next)
+        },
+        _ => return,
+    };
+    let plugin_id = surface.plugin_id.clone();
+    let surface_kind = surface.surface.clone();
+    let panel = surface.panel.clone();
+    st.plugins.send_ui_action(
+        &plugin_id,
+        &surface_kind,
+        panel,
+        element_id,
+        action,
+        value,
+    );
+    update_plugin_surface_model(st);
+}
+
+/// input 的 change 只发给插件，不重建 Slint model（避免打断光标/输入法）。
+fn plugin_surface_input(st: &mut AppState, element_id: &str, value: String) {
+    let Some(surface) = st.plugin_surface.as_mut() else {
+        return;
+    };
+    let mut updated = false;
+    for element in &mut surface.doc.elements {
+        if let plugin_v3::SurfaceElement::Input { id, value: current, .. } = element {
+            if id == element_id {
+                *current = value.clone();
+                updated = true;
+                break;
+            }
+        }
+    }
+    if !updated {
+        return;
+    }
+    let plugin_id = surface.plugin_id.clone();
+    let surface_kind = surface.surface.clone();
+    let panel = surface.panel.clone();
+    st.plugins.send_ui_action(
+        &plugin_id,
+        &surface_kind,
+        panel,
+        element_id,
+        "change",
+        Some(value),
+    );
 }
 
 fn hotkey_title(reg: &commands::Registry, lang: &str, id: &str) -> String {
@@ -2907,8 +3229,8 @@ fn new_tab_inner(st: &mut AppState) {
             st.ws.active = st.ws.tabs.len() - 1;
             dispatch_plugin_event(
                 st,
-                plugin::PluginEvent::TabOpen,
-                plugin::tab_open_payload(&title, "local"),
+                plugin_v3::PluginEvent::TabOpen,
+                plugin_v3::tab_open_payload(&title, "local"),
             );
             refresh_views(st);
             rebuild_tabs(st);
@@ -3515,8 +3837,8 @@ fn open_profile_tab_now(st: &mut AppState, index: usize, allow_askpass: bool) {
             st.ui.invoke_focus_terminal();
             dispatch_plugin_event(
                 st,
-                plugin::PluginEvent::TabOpen,
-                plugin::tab_open_payload(&tab_title, &kind),
+                plugin_v3::PluginEvent::TabOpen,
+                plugin_v3::tab_open_payload(&tab_title, &kind),
             );
             refresh_views(st);
             rebuild_tabs(st);
@@ -4909,8 +5231,8 @@ fn close_tab_inner(st: &mut AppState, index: usize) {
     st.ws.tabs.remove(index);
     dispatch_plugin_event(
         st,
-        plugin::PluginEvent::TabClose,
-        plugin::tab_close_payload(&tab_title),
+        plugin_v3::PluginEvent::TabClose,
+        plugin_v3::tab_close_payload(&tab_title),
     );
     if st.ws.tabs.is_empty() {
         let _ = slint::quit_event_loop();
@@ -5002,8 +5324,8 @@ fn close_other_tabs(st: &mut AppState, keep: usize) {
     for title in &closed_titles {
         dispatch_plugin_event(
             st,
-            plugin::PluginEvent::TabClose,
-            plugin::tab_close_payload(title),
+            plugin_v3::PluginEvent::TabClose,
+            plugin_v3::tab_close_payload(title),
         );
     }
     let background = st.cfg.close_action == "background";
@@ -5101,8 +5423,8 @@ fn duplicate_tab(st: &mut AppState, index: usize) {
     st.ws.active = index + 1;
     dispatch_plugin_event(
         st,
-        plugin::PluginEvent::TabOpen,
-        plugin::tab_open_payload(&new_title, "local"),
+        plugin_v3::PluginEvent::TabOpen,
+        plugin_v3::tab_open_payload(&new_title, "local"),
     );
     refresh_views(st);
     rebuild_tabs(st);
@@ -5144,8 +5466,8 @@ fn close_pane_inner(st: &mut AppState, id: PaneId) {
         st.ws.tabs.remove(tab_index);
         dispatch_plugin_event(
             st,
-            plugin::PluginEvent::TabClose,
-            plugin::tab_close_payload(&tab_title),
+            plugin_v3::PluginEvent::TabClose,
+            plugin_v3::tab_close_payload(&tab_title),
         );
         if st.ws.tabs.is_empty() {
             let _ = slint::quit_event_loop();
@@ -5300,8 +5622,8 @@ fn restore_tab_snapshot(st: &mut AppState, tab_snap: &session::TabSnapshot) -> O
     );
     dispatch_plugin_event(
         st,
-        plugin::PluginEvent::TabOpen,
-        plugin::tab_open_payload(&tab_title, "local"),
+        plugin_v3::PluginEvent::TabOpen,
+        plugin_v3::tab_open_payload(&tab_title, "local"),
     );
     Some(index)
 }
@@ -8267,9 +8589,25 @@ fn tab_search_pick(st: &mut AppState, row: usize) {
 
 fn refresh_palette(st: &mut AppState) {
     let query = st.ui.get_palette_query().to_string();
-    let hits: Vec<&commands::Command> = st.commands.search(&query).into_iter().take(10).collect();
-    let items: Vec<slint::SharedString> = hits.iter().map(|c| c.title.into()).collect();
-    st.palette_ids = hits.iter().map(|c| c.id).collect();
+    // 内置命令 + 已启用 v3 插件命令；插件命令不进静态 Registry，Enable/Disable
+    // 后下一次打开 Palette 即生效，不需要重启 Tervo。
+    let mut entries: Vec<(String, String)> = st
+        .commands
+        .search(&query)
+        .into_iter()
+        .map(|command| (command.title.to_string(), command.id.to_string()))
+        .collect();
+    entries.extend(
+        st.plugins
+            .palette_commands(&query)
+            .into_iter()
+            .map(|(id, title)| (title, id.to_string())),
+    );
+    entries.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+    entries.truncate(10);
+    st.palette_ids = entries.iter().map(|(_, id)| id.clone()).collect();
+    let items: Vec<slint::SharedString> =
+        entries.into_iter().map(|(title, _)| title.into()).collect();
     st.palette_sel = 0;
     st.palette_model.set_vec(items);
     st.ui.set_palette_selected(0);
@@ -8295,11 +8633,11 @@ fn palette_move(st: &mut AppState, delta: i32) {
 
 fn palette_accept(st: &mut AppState) {
     let idx = st.ui.get_palette_selected().max(0) as usize;
-    let id = st.palette_ids.get(idx).copied();
+    let id = st.palette_ids.get(idx).cloned();
     st.ui.set_palette_open(false);
     if let Some(id) = id {
         eprintln!("[ui] run command {id}");
-        run_command(st, id);
+        run_command(st, &id);
     }
 }
 
@@ -10102,22 +10440,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 插件发现提前到主题加载之前：声明式 Theme Pack（可选）要并入主题列表；
     // 此时只读 manifest，不启动任何插件进程。
-    let mut plugins = plugin::PluginStore::load();
+    let mut plugins = plugin_v3::PluginStore::load();
 
     // 内置 + 用户自定义主题 + 插件声明的主题；加载失败只记录，不阻塞启动。
     let mut registry = ThemeRegistry::load(&ThemeRegistry::default_dir());
-    for package in &plugins.packages {
-        if !package.manifest.enabled {
-            continue;
-        }
-        let Some(path) = package.theme_path.as_deref() else {
-            continue;
-        };
-        match themes::load_plugin_theme(path, &package.manifest.name) {
+    for (plugin_name, path) in plugins.theme_contributions() {
+        match themes::load_plugin_theme(&path, &plugin_name) {
             Ok(theme) => {
                 eprintln!(
                     "[theme] 插件 {} 提供主题 {}（{}）",
-                    package.manifest.name,
+                    plugin_name,
                     theme.id,
                     path.display()
                 );
@@ -10125,7 +10457,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
             Err(e) => eprintln!(
                 "[theme] 插件 {} 的主题 {} 加载失败: {e}",
-                package.manifest.name,
+                plugin_name,
                 path.display()
             ),
         }
@@ -10247,12 +10579,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui.set_sftp_queue(ModelRc::from(sftp_queue_model.clone()));
     let hotkey_model = Rc::new(VecModel::<HotkeyRow>::default());
     ui.set_hotkey_rows(ModelRc::from(hotkey_model.clone()));
-    let plugin_model = Rc::new(VecModel::<slint::SharedString>::default());
-    ui.set_plugin_items(ModelRc::from(plugin_model.clone()));
+    let plugin_row_model = Rc::new(VecModel::<PluginRowView>::default());
+    ui.set_plugin_rows(ModelRc::from(plugin_row_model.clone()));
     let plugin_activity_model = Rc::new(VecModel::<slint::SharedString>::default());
     ui.set_plugin_activity_items(ModelRc::from(plugin_activity_model.clone()));
-    let ai_plugin_model = Rc::new(VecModel::<slint::SharedString>::default());
-    ui.set_ai_plugin_items(ModelRc::from(ai_plugin_model.clone()));
+    let plugin_surface_model = Rc::new(VecModel::<PluginUiElement>::default());
+    ui.set_plugin_surface_elements(ModelRc::from(plugin_surface_model.clone()));
     let settings_model = Rc::new(VecModel::<slint::SharedString>::default());
     ui.set_settings_results(ModelRc::from(settings_model.clone()));
     let fwd_model = Rc::new(VecModel::<slint::SharedString>::default());
@@ -10260,24 +10592,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let profile_menu_model = Rc::new(VecModel::<slint::SharedString>::default());
     ui.set_profilemenu_items(ModelRc::from(profile_menu_model.clone()));
 
-    // 插件发现 + 命令注册：旧扁平清单只展示；v1 目录插件把启用命令合并进 Registry。
+    // 插件发现（只读 manifest，不启动进程）。v3 命令不进静态 Registry：Palette
+    // 打开时把已启用插件的命令与内置命令合并，Enable/Disable 后无需重启 Tervo。
     // `app_wake` 同时供插件活动与 SFTP 后台结果使用：后台线程写完通道后立即
     // 叫醒 UI；400ms 轮询仍保留作为兜底。默认开启，A/B 诊断见 event_wake_enabled。
     let (app_wake, app_wake_rx) = WakeSignal::new();
     plugins.set_activity_wake(app_wake.clone());
-    // 常驻进程插件在后台启动/握手，不阻塞首屏；崩溃/超时由 supervisor 处理。
+    // 已启用且权限已确认的插件在后台启动/握手，不阻塞首屏。
     plugins.start_process_plugins();
-    let mut command_registry = commands::builtin();
-    let plugin_command_count = plugin::register_plugins(&mut command_registry, &plugins);
+    let command_registry = commands::builtin();
     eprintln!(
-        "[plugin] 发现 {} 个插件（{} 个可执行包），注册 {} 条命令，跳过 {}",
+        "[plugin-v3] 发现 {} 个插件（{} unsupported/invalid，{} 条启用命令）",
         plugins.total_count(),
-        plugins.packages.len(),
-        plugin_command_count,
-        plugins.skipped.len()
+        plugins.unsupported_count(),
+        plugins.enabled_command_count()
     );
-    for (path, reason) in &plugins.skipped {
-        eprintln!("[plugin] 跳过 {path}: {reason}");
+    for (path, reason) in &plugins.skipped() {
+        eprintln!("[plugin-v3] 跳过 {path}: {reason}");
     }
 
     // 圆角 worker 只依赖 X11；连不上/没有 SHAPE 时记录日志并保持直角，不阻塞 UI。
@@ -10298,7 +10629,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let ai_plugins = plugins.ai_plugins();
     let state = Rc::new(RefCell::new(AppState {
         ui: ui.clone_strong(),
         ws: Workspace::new(),
@@ -10356,19 +10686,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         held_keys: HashMap::new(),
         plugins,
         app_wake,
-        plugin_model,
+        plugin_row_model,
         plugin_activity_model,
+        plugin_surface_model,
         plugin_activity_revision: 0,
         plugin_status_revision: 0,
         plugin_runtime_revision: 0,
         plugin_status_command: None,
-        ai_plugins,
-        ai_plugin_model,
-        ai_active_plugin: None,
-        ai_messages: Vec::new(),
-        ai_output: String::new(),
-        ai_job: None,
-        ai_busy_plugin: None,
+        plugin_confirm: None,
+        plugin_surface: None,
+        plugin_approval: None,
+        last_plugin_focus: None,
         sftp_delete_armed: false,
         sftp_transfer: None,
         sftp_current_request: None,
@@ -11217,27 +11545,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui.on_plugin_status_clicked(|| {
         with_app(|st| {
             if let Some(command) = st.plugin_status_command.clone() {
-                eprintln!("[plugin] 状态栏点击 → {command}");
+                eprintln!("[plugin-v3] 状态栏点击 → {command}");
                 run_command(st, &command);
             }
         });
     });
 
-    // ---- AI Chat 面板（Settings → Plugins → Open AI Chat）----
-    ui.on_ai_open(|| {
-        with_app(open_ai_panel);
+    // ---- Plugin API v3：所有 UI 由宿主渲染 ----
+    ui.on_plugin_action(|action, key| {
+        with_app(|st| plugin_action(st, action.as_str(), key.as_str()));
     });
-    ui.on_ai_close(|| {
-        with_app(close_ai_panel);
+    ui.on_plugin_confirm_enable(|| {
+        with_app(confirm_plugin_enable);
     });
-    ui.on_ai_cancel(|| {
-        with_app(cancel_ai_chat);
+    ui.on_plugin_confirm_cancel(|| {
+        with_app(cancel_plugin_enable);
     });
-    ui.on_ai_plugin_selected(|index| {
-        with_app(|st| select_ai_plugin(st, index));
+    ui.on_plugin_open_surface(|key, kind| {
+        with_app(|st| open_plugin_surface(st, key.as_str(), kind.as_str()));
     });
-    ui.on_ai_send(|prompt| {
-        with_app(|st| send_ai_prompt(st, prompt.as_str()));
+    ui.on_plugin_surface_close(|| {
+        with_app(close_plugin_surface);
+    });
+    ui.on_plugin_element_action(|element| {
+        with_app(|st| plugin_surface_action(st, element.as_str()));
+    });
+    ui.on_plugin_element_input(|element, value| {
+        with_app(|st| plugin_surface_input(st, element.as_str(), value.to_string()));
+    });
+    ui.on_plugin_approval_allow(|| {
+        with_app(|st| resolve_plugin_approval(st, true));
+    });
+    ui.on_plugin_approval_deny(|| {
+        with_app(|st| resolve_plugin_approval(st, false));
     });
 
     ui.on_tab_rename(|index| {
@@ -12969,19 +13309,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         st.ui.set_language(st.cfg.lang().into());
         refresh_hotkeys(st);
         refresh_vault_ui(st);
+        sync_plugin_config_metadata(st);
         refresh_plugin_page(st);
-        refresh_ai_plugins(st);
         refresh_settings_results(st);
         eprintln!(
-            "[plugin] 设置页 {} 个插件，{} 个启用，{} 条命令，跳过 {}",
+            "[plugin-v3] 设置页 {} 个插件，{} 个启用，{} 条启用命令，{} unsupported/invalid",
             st.plugins.total_count(),
             st.plugins.enabled_count(),
             st.plugins.enabled_command_count(),
-            st.plugins.skipped.len()
-        );
-        eprintln!(
-            "[plugin] AI 面板可用插件 {} 个",
-            st.ai_plugins.len()
+            st.plugins.unsupported_count()
         );
         eprintln!("[ui] 启动 tabbar_position={}", st.cfg.tabbar_position);
     });
@@ -13018,7 +13354,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 启动事件：应用状态就绪后、首个 Tab 创建前后台分发；失败不影响主流程。
     with_app(|st| {
-        dispatch_plugin_event(st, plugin::PluginEvent::Startup, plugin::startup_payload());
+        dispatch_plugin_event(st, plugin_v3::PluginEvent::Startup, plugin_v3::startup_payload());
     });
 
     // ---- 首个标签页 / 会话恢复 ----

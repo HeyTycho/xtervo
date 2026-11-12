@@ -6,6 +6,18 @@ Tervo 的版本与 tag 规则见 `docs/RELEASING.md`。
 
 ### Added
 
+- Plugin API v3 完整宿主（`crates/app/src/plugin_v3/`）：只加载 `api = 3` / `host_abi = 3`；
+  v1/v2 清单 unsupported 且不执行，无兼容层。独立子进程 + JSON-RPC 2.0 line-delimited
+  stdio；initialize/initialized、command.invoke、event.deliver、status.get、ping、
+  shutdown；插件->宿主 ui.notify/ui.status/ui.render/context.version/
+  context.config_metadata/terminal.read/write/clipboard/credentials（终端/剪贴板走
+  capability gate + 每次 Allow/Deny）。每插件 supervisor：握手/命令/status/ping 超时、
+  坏 JSON/崩溃退避重启、重启上限、256 KiB 行/16 MiB 输出/stderr 尾部上限；Linux
+  PR_SET_PDEATHSIG + process group。设置页 Enable/Disable/Reload/Restart/Open folder
+  不重启 Tervo；首次启用展示权限并确认，权限变化要求重新确认。声明式 panel/settings
+  最小渲染（text/markdown/list/input/button/select/progress）与 startup/tab-open/
+  tab-close/pane-focus 事件。示例 `docs/examples/plugin-v3-echo/`，文档
+  `docs/PLUGIN_V3.md`。MCP 仍为宿主内嵌功能，不实现插件 MCP。
 - 默认 GPU-native：不设环境变量即走 Slint WGPU30 + Scene glyph atlas/图片；`TERVO_CPU=1` 强制 CPU，`TERVO_GPU_NATIVE=0` 仅兼容 stage 0；无 adapter/失败自动 CPU。
 - Sixel/Kitty 图片进入 GPU Scene（source registry、clip、below/above-text z-order）；修复 Sixel `2J` 事件顺序导致刚放置图片被清除。
 - `TERVO_RENDER_HUD=1` / Settings → Images → Render HUD：FPS、frame time、实际 renderer、GPU-native frames/draw calls、atlas/stage0 上传、网格尺寸。
