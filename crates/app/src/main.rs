@@ -391,8 +391,6 @@ struct AppState {
     window_focused: bool,
     /// Rust 侧权威的最大化 desired state；Slint 属性只做图标显示。
     window_maximized: bool,
-    /// EWMH 最大化状态机（显式 xid + PropertyNotify）；非 X11 时为 None。
-    maximize: Option<tervo_maximize::MaximizeRuntime>,
     /// 上次同步给输入法的候选点（含 pane/DPR/锚点来源）；None 表示尚未发送。
     ime_spot: Option<ImeSpotKey>,
     /// 强制下一次 IME 同步重新下发（pane/Tab 切换、resize、窗口 focus/DPR 变化）。
@@ -5480,89 +5478,6 @@ fn request_window_corners(
     });
 }
 
-/// 状态机 worker 通过 UI 事件循环回调到这里：只读 snapshot，同步图标/圆角。
-///
-/// 不查询几何、不按标题找窗口；desired 是唯一 target。回调排队期间用户可能
-/// 又点了一次，所以这里重新读当前 snapshot，而不是用回调参数里的旧值。
-fn sync_maximize_from_state_machine(st: &mut AppState) {
-    let Some(snapshot) = st.maximize.as_ref().map(|runtime| runtime.snapshot()) else {
-        return;
-    };
-    let previous = st.window_maximized;
-    st.window_maximized = snapshot.desired;
-    st.ui.set_window_maximized(snapshot.desired);
-    if previous != snapshot.desired {
-        request_window_corners(
-            st,
-            None,
-            Some(xconn::CornerState {
-                maximized: snapshot.desired,
-                fullscreen: st.ui.window().is_fullscreen(),
-            }),
-        );
-        eprintln!(
-            "[maximize] ui-sync desired={} observed={} pending={:?} error={:?}",
-            snapshot.desired, snapshot.observed, snapshot.pending, snapshot.last_error
-        );
-    }
-}
-
-/// 启动状态机。
-///
-/// `ui.show()` 在 winit-skia 下是异步建原生窗口：紧接着读 raw handle 可能还是
-/// None（这就是旧启动逻辑在 X11 上偶尔拿不到 xid 的原因）。每 50ms 重试，直到
-/// winit 给出 Xlib/Xcb handle；最多 2s，之后明确回退 winit。重试只用于窗口
-/// 句柄就绪，不参与最大化状态判断。
-fn start_maximize_when_window_ready(ui: &MainWindow, attempt: u32) {
-    let xid = ui.window().with_winit_window(winit_window_x11_id).flatten();
-    if let Some(id) = xid {
-        let on_event = move |_snapshot: tervo_maximize::MaximizeSnapshot| {
-            let _ = slint::invoke_from_event_loop(move || {
-                with_app(sync_maximize_from_state_machine);
-            });
-        };
-        match tervo_maximize::MaximizeRuntime::start(id, on_event) {
-            Ok(runtime) => {
-                let snapshot = runtime.snapshot();
-                with_app(|st| {
-                    st.window_maximized = snapshot.desired;
-                    st.ui.set_window_maximized(snapshot.desired);
-                    request_window_corners(
-                        st,
-                        None,
-                        Some(xconn::CornerState {
-                            maximized: snapshot.desired,
-                            fullscreen: st.ui.window().is_fullscreen(),
-                        }),
-                    );
-                    st.maximize = Some(runtime);
-                });
-                eprintln!(
-                    "[maximize] runtime ready win=0x{id:x} desired={} observed={} pending={:?}",
-                    snapshot.desired, snapshot.observed, snapshot.pending
-                );
-            },
-            Err(err) => {
-                eprintln!(
-                    "[maximize] runtime start failed win=0x{id:x} err={err}; fallback=winit"
-                );
-            },
-        }
-        return;
-    }
-
-    if attempt >= 40 {
-        eprintln!("[maximize] 2s 内未拿到 winit X11 handle；fallback=winit");
-        return;
-    }
-    let weak = ui.as_weak();
-    slint::Timer::single_shot(Duration::from_millis(50), move || {
-        if let Some(ui) = weak.upgrade() {
-            start_maximize_when_window_ready(&ui, attempt + 1);
-        }
-    });
-}
-
 /// F11 / --fullscreen：切换全屏。
 fn toggle_fullscreen(st: &AppState) {
     // 注意：本函数会被 handle_input / run_command 在 `with_app` 的借用内调用，
@@ -10179,7 +10094,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         resize: None,
         window_focused: true,
         window_maximized: false,
-        maximize: None,
         ime_spot: None,
         ime_spot_dirty: true,
         ime_override: None,
@@ -12343,38 +12257,48 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ui.on_max_pointer_down(|| eprintln!("[ui] max-pointer-down"));
         ui.on_toggle_maximize(move || {
             if let Some(ui) = weak.upgrade() {
-                // X11：MaximizeController 是唯一权威。click 只翻转 desired，
-                // 发送/PropertyNotify 确认/外部同步都在 worker，UI 只显示 target。
-                let from_controller = with_app(|st| {
-                    let target = st.maximize.as_ref()?.click();
-                    st.window_maximized = target;
-                    Some(target)
-                })
-                .flatten();
-                if let Some(target) = from_controller {
-                    ui.set_window_maximized(target);
-                    with_app(|st| {
-                        request_window_corners(
-                            st,
-                            None,
-                            Some(xconn::CornerState {
-                                maximized: target,
-                                fullscreen: st.ui.window().is_fullscreen(),
-                            }),
-                        );
-                    });
-                    eprintln!("[maximize] ui click target={target}");
-                    return;
-                }
-                // 非 X11 / 状态机启动失败：保留 winit 原生路径；不按标题找窗口。
+                // AppState 是唯一 desired 状态源。点击只翻转它，绝不再拿
+                // WM actual/几何来校准：双显示器上几何判据会永远 false，
+                // 导致每次点击都重复发送 maximize。
                 let target = with_app(|st| {
                     st.window_maximized = !st.window_maximized;
                     st.window_maximized
                 })
                 .unwrap_or_else(|| !ui.get_window_maximized());
+                let before = ui.window().is_maximized();
                 ui.set_window_maximized(target);
-                ui.window().set_maximized(target);
-                eprintln!("[maximize] fallback winit target={target}");
+                with_app(|st| {
+                    request_window_corners(
+                        st,
+                        None,
+                        Some(xconn::CornerState {
+                            maximized: target,
+                            fullscreen: st.ui.window().is_fullscreen(),
+                        }),
+                    );
+                });
+                // 显式 X11 window id，不再用 WM_NAME/title 查找；某些 WM 下
+                // winit set_maximized 会被吞掉，这层失败再回退 winit。
+                let xid = ui.window().with_winit_window(winit_window_x11_id).flatten();
+                let sent = match xid {
+                    Some(id) => xconn::wm_set_maximized_id(id, target),
+                    None => {
+                        let title = ui.get_window_title().to_string();
+                        xconn::wm_set_maximized(&title, target)
+                    }
+                };
+                match sent {
+                    Ok(()) => eprintln!(
+                        "[ui] toggle-maximize before={before} target={target} sent=ewmh"
+                    ),
+                    Err(err) => {
+                        eprintln!(
+                            "[ui] toggle-maximize before={before} target={target} \
+                             ewmh_err={err} fallback=winit"
+                        );
+                        ui.window().set_maximized(target);
+                    }
+                }
             }
         });
     }
@@ -12791,12 +12715,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ---- 首帧 ----
     ui.show()?;
-    // 先按 winit 当前状态显示图标；X11 状态机在拿到 raw handle 后启动，
-    // 再用 EWMH 初始查询校正。不要用窗口几何/_NET_WORKAREA 推断最大化。
-    let initial_maximized = ui.window().is_maximized();
+    // 启动时用 EWMH 查询校准；不要用窗口几何：多显示器下
+    // _NET_WORKAREA 是整块虚拟桌面，单屏最大化窗口会永远被判为 false。
+    let xid = ui.window().with_winit_window(winit_window_x11_id).flatten();
+    let initial_maximized = xid
+        .and_then(xconn::window_is_maximized_id)
+        .unwrap_or_else(|| ui.window().is_maximized());
     ui.set_window_maximized(initial_maximized);
     with_app(|st| st.window_maximized = initial_maximized);
-    start_maximize_when_window_ready(&ui, 0);
     // 无头验收钩子：TERVO_GPU_SNAPSHOT=<前缀> 时定时 take_snapshot 写 PPM 并打像素统计。
     install_gpu_snapshot_hook(&ui);
     // RenderingSetup 可能首帧后才给出 device/queue；GPU 就绪后主动重绘一次。

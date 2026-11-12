@@ -98,6 +98,134 @@ pub fn find_window(conn: &RustConnection, win: u32, title: &str, depth: usize) -
     None
 }
 
+/// WM 是否声明支持 EWMH 最大化。没有 WM/未声明时不要发，调用方应回退。
+fn wm_supports_maximize(
+    conn: &RustConnection,
+    root: u32,
+    atom: &impl Fn(&[u8]) -> Result<u32, String>,
+) -> bool {
+    use x11rb::protocol::xproto::{AtomEnum, ConnectionExt as _};
+    let Ok(check_atom) = atom(b"_NET_SUPPORTING_WM_CHECK") else { return false };
+    let Ok(check) = conn.get_property(false, root, check_atom, AtomEnum::WINDOW, 0, 1) else {
+        return false;
+    };
+    let Ok(check) = check.reply() else { return false };
+    if check.value32().is_none_or(|mut it| it.next().is_none()) {
+        return false;
+    }
+    let Ok(supported_atom) = atom(b"_NET_SUPPORTED") else { return false };
+    let Ok(supported) = conn.get_property(false, root, supported_atom, AtomEnum::ATOM, 0, 1024)
+    else {
+        return false;
+    };
+    let Ok(supported) = supported.reply() else { return false };
+    let Ok(horz) = atom(b"_NET_WM_STATE_MAXIMIZED_HORZ") else { return false };
+    let Ok(vert) = atom(b"_NET_WM_STATE_MAXIMIZED_VERT") else { return false };
+    let mut has_h = false;
+    let mut has_v = false;
+    for a in supported.value32().into_iter().flatten() {
+        has_h |= a == horz;
+        has_v |= a == vert;
+    }
+    has_h && has_v
+}
+
+/// 通过 EWMH `_NET_WM_STATE` 请求最大化/还原；显式 xid，不依赖标题。
+pub fn wm_set_maximized_id(win: u32, maximized: bool) -> Result<(), String> {
+    use x11rb::connection::Connection as _;
+    use x11rb::protocol::xproto::{ClientMessageEvent, ConnectionExt as _, EventMask};
+    let (conn, screen_num) = connect().map_err(|e| e.to_string())?;
+    let root = conn.setup().roots[screen_num].root;
+    let atom = |name: &[u8]| -> Result<u32, String> {
+        conn.intern_atom(false, name)
+            .map_err(|e| e.to_string())?
+            .reply()
+            .map_err(|e| e.to_string())
+            .map(|r| r.atom)
+    };
+    let net_state = atom(b"_NET_WM_STATE")?;
+    let horz = atom(b"_NET_WM_STATE_MAXIMIZED_HORZ")?;
+    let vert = atom(b"_NET_WM_STATE_MAXIMIZED_VERT")?;
+    if !wm_supports_maximize(&conn, root, &atom) {
+        return Err("WM 未声明 _NET_SUPPORTING_WM_CHECK / MAXIMIZED_HORZ+VERT".into());
+    }
+    let action = if maximized { 1u32 } else { 0u32 }; // 1=add, 0=remove
+    eprintln!(
+        "[wm] set_maximized win=0x{win:x} target={maximized} action={action}"
+    );
+    let event = ClientMessageEvent::new(32, win, net_state, [action, horz, vert, 1, 0]);
+    conn.send_event(
+        false,
+        root,
+        EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY,
+        event,
+    )
+    .map_err(|e| e.to_string())?;
+    conn.flush().map_err(|e| e.to_string())?;
+    // `send_event` 是 VoidCookie；只 flush 后函数返回、连接被 drop，X server
+    // 可能还没把合成事件交给 WM，ClientMessage 会间歇性丢失。做一次同步
+    // round-trip，强制 server 处理完此前所有请求，才允许连接关闭。
+    conn.get_input_focus()
+        .map_err(|e| e.to_string())?
+        .reply()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// 标题查找兼容入口；新代码应优先传 winit raw handle 的 xid。
+pub fn wm_set_maximized(title: &str, maximized: bool) -> Result<(), String> {
+    use x11rb::connection::Connection as _;
+    let (conn, screen_num) = connect().map_err(|e| e.to_string())?;
+    let root = conn.setup().roots[screen_num].root;
+    let win = find_own_window(&conn, root, title).ok_or("找不到本进程窗口")?;
+    wm_set_maximized_id(win, maximized)
+}
+
+/// 查询指定 xid 的 EWMH 最大化状态；拿不到返回 None。
+pub fn window_is_maximized_id(win: u32) -> Option<bool> {
+    use x11rb::connection::Connection as _;
+    use x11rb::protocol::xproto::{AtomEnum, ConnectionExt as _};
+    let (conn, _screen_num) = connect().ok()?;
+    let net_state = conn
+        .intern_atom(false, b"_NET_WM_STATE")
+        .ok()?
+        .reply()
+        .ok()?
+        .atom;
+    let prop = conn
+        .get_property(false, win, net_state, AtomEnum::ATOM, 0, 64)
+        .ok()?
+        .reply()
+        .ok()?;
+    let horz = conn
+        .intern_atom(false, b"_NET_WM_STATE_MAXIMIZED_HORZ")
+        .ok()?
+        .reply()
+        .ok()?
+        .atom;
+    let vert = conn
+        .intern_atom(false, b"_NET_WM_STATE_MAXIMIZED_VERT")
+        .ok()?
+        .reply()
+        .ok()?
+        .atom;
+    let (mut h, mut v) = (false, false);
+    for atom in prop.value32()? {
+        if atom == horz { h = true; }
+        if atom == vert { v = true; }
+    }
+    Some(h && v)
+}
+
+/// 标题查找兼容入口；新代码应优先用 xid。
+pub fn window_is_maximized(title: &str) -> Option<bool> {
+    use x11rb::connection::Connection as _;
+    let (conn, screen_num) = connect().ok()?;
+    let root = conn.setup().roots[screen_num].root;
+    let win = find_own_window(&conn, root, title)?;
+    window_is_maximized_id(win)
+}
+
 /// 通过 ICCCM `WM_CHANGE_STATE` 请求最小化（IconicState=3）。
 pub fn wm_minimize(title: &str) -> Result<(), String> {
     use x11rb::connection::Connection as _;
