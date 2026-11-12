@@ -1,0 +1,50 @@
+api = 3
+host_abi = 3
+id = "dev.tervo.echo"
+name = "Echo (v3 example)"
+version = "1.0.0"
+runtime = "process"
+entry = "main.py"
+description = "Reference Plugin API v3 process plugin: commands, status, events, panels, settings and ask-gated terminal reads."
+
+[permissions]
+filesystem = "plugin"
+network = false
+process = false
+clipboard = false
+terminal_context = true
+terminal_write = false
+credentials = "own"
+
+[contributes]
+commands = true
+status = true
+events = ["startup", "tab-open", "tab-close", "pane-focus"]
+panels = ["echo"]
+settings = true
+assistant = false
+
+[[commands]]
+id = "greet"
+title = "Echo: Greet"
+description = "Return a hello message from the example v3 plugin."
+
+[[commands]]
+id = "context"
+title = "Echo: Host context"
+description = "Ask the host for its version via context.version."
+
+[[commands]]
+id = "read-terminal"
+title = "Echo: Read terminal tail"
+description = "Request the focused terminal tail (capability gate + per-call Allow)."
+
+[[commands]]
+id = "panel"
+title = "Echo: Render panel"
+description = "Push a declarative panel document rendered by the host."
+
+[[commands]]
+id = "notify"
+title = "Echo: Notify"
+description = "Send a host-rendered notification."

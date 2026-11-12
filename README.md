@@ -182,12 +182,16 @@ ls -l dist/ && file dist/tervo-stripped && ./dist/tervo-stripped --help
   12 套内置主题 + `Auto`（跟随系统深/浅色，默认 Yaru Dark/Light）、字号、回滚行数、
   滚动条策略、可听/视觉铃、滚动策略、Backspace/Delete 编码；
   也支持把 iTerm2 / Windows Terminal / Alacritty / kitty / Xresources 主题直接放进 `themes/` 目录。
-- 外部进程插件 V1：`~/.config/tervo/plugins/<id>/plugin.toml`（`TERVO_PLUGINS` 可覆盖）。
-  `runtime = "process"` 常驻 JSON Lines 插件（2s 握手、10s 命令超时、崩溃重启上限 2、
-  坏 JSON 禁用）；命令进 Palette/快捷键，结果回底部浮层；Status Provider 每 2s 轮询并在
-  底部显示一行状态，可点击执行命令；`[contributes] theme` 可带声明式 TOML 主题；
-  `[permissions]` 仅声明/展示（无沙箱）。旧 oneshot 与旧扁平清单保持兼容。
-  清单/协议/安全边界见 [`docs/PLUGIN_API.md`](docs/PLUGIN_API.md)。
+- 外部进程插件 **API v3**：`~/.config/tervo/plugins/<id>/plugin.toml`（`TERVO_PLUGINS` 可覆盖），
+  只加载 `api = 3` / `host_abi = 3` / `runtime = "process"`；v1/v2 清单显示 unsupported、
+  不执行。插件是独立子进程，JSON-RPC 2.0 line-delimited stdio；每个插件独立 supervisor
+  （5s 握手、10s 命令超时、坏 JSON/崩溃退避重启、输出上限），Enable/Disable/Reload/
+  Restart 不重启 Tervo。命令进 Palette/状态栏；`[contributes]` 支持 status/events/theme/
+  panels/settings，解析为宿主渲染的声明式 UI（text/markdown/list/input/button/select/
+  progress）；terminal/clipboard 请求走 capability gate + 每次 Allow/Deny，**不是 OS
+  沙箱**。首次启用必须确认权限。旧 v1/v2 不兼容。MCP 是 Tervo 内嵌功能，不是插件能力。
+  清单/协议/权限/限制见 [`docs/PLUGIN_V3.md`](docs/PLUGIN_V3.md)，
+  示例 [`docs/examples/plugin-v3-echo/`](docs/examples/plugin-v3-echo/)。
 - Profile 外观：Settings → Profiles → Edit/New 可为每个 Local/SSH/Serial/Telnet Profile
   设置 `font_size` / `theme` / `cursor_shape` / `cursor_blink` / `scrollback`；空 = 继承
   全局配置。打开该 Profile 的 Tab 时应用，优先级 **Profile 显式值 > 全局**：之后全局

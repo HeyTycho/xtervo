@@ -60,6 +60,36 @@ export struct HotkeyRow {
     conflict: bool,
 }
 
+/// Settings → Plugins 的一行：v3 行带操作按钮；v1/v2 行 supported=false。
+export struct PluginRowView {
+    key: string,
+    name: string,
+    version: string,
+    api: string,
+    status: string,
+    error: string,
+    permissions: string,
+    restart-count: int,
+    enabled: bool,
+    needs-approval: bool,
+    supported: bool,
+    has-panel: bool,
+    has-settings: bool,
+    assistant: bool,
+    surface-ready: bool,
+}
+
+/// 插件只能提供这些固定声明式元素；布局/样式/控件全部由宿主决定。
+export struct PluginUiElement {
+    kind: string,
+    id: string,
+    label: string,
+    text: string,
+    value: string,
+    placeholder: string,
+    progress: float,
+}
+
 export struct DividerView {
     index: int,
     x: length,
@@ -1694,28 +1724,34 @@ export component MainWindow inherits Window {
     callback hotkey-cancel-edit();
     callback hotkey-reset(int);
     callback hotkey-reset-all();
-    in property <[string]> plugin-items: [];
+    in property <[PluginRowView]> plugin-rows: [];
     in property <string> plugin-summary: "";
     in property <string> plugin-dir: "";
     // 最近插件命令/事件活动（新→旧，最多 8 条；只读展示）
     in property <[string]> plugin-activity-items: [];
-    // ---- AI Chat 面板（Settings → Plugins → Open AI Chat）----
-    // 只列出 api=2、runtime=process、声明 [contributes.ai] 的已启用插件。
-    in property <[string]> ai-plugin-items: [];
-    in-out property <int> ai-plugin-index: -1;
-    in property <string> ai-plugin-detail: "";
-    in-out property <string> ai-prompt: "";
-    in property <string> ai-output: "";
-    in property <string> ai-status: "";
-    in property <bool> ai-status-error: false;
-    in property <bool> ai-busy: false;
-    in property <string> ai-empty-hint: "";
-    in-out property <bool> ai-panel-open: false;
-    callback ai-open();
-    callback ai-send(string);
-    callback ai-cancel();
-    callback ai-close();
-    callback ai-plugin-selected(int);
+    // ---- Plugin API v3：宿主渲染的操作/确认/surface/ask ----
+    callback plugin-action(string, string);
+    callback plugin-open-surface(string, string);
+    in property <bool> plugin-confirm-visible: false;
+    in property <string> plugin-confirm-name: "";
+    in property <string> plugin-confirm-permissions: "";
+    callback plugin-confirm-enable();
+    callback plugin-confirm-cancel();
+    in property <bool> plugin-surface-open: false;
+    in property <string> plugin-surface-title: "";
+    in property <string> plugin-surface-error: "";
+    in property <bool> plugin-surface-loading: false;
+    in property <[PluginUiElement]> plugin-surface-elements: [];
+    callback plugin-surface-close();
+    callback plugin-element-action(string);
+    callback plugin-element-input(string, string);
+    in property <bool> plugin-approval-visible: false;
+    in property <string> plugin-approval-plugin: "";
+    in property <string> plugin-approval-summary: "";
+    in property <string> plugin-approval-details: "";
+    in property <int> plugin-approval-seconds: 0;
+    callback plugin-approval-allow();
+    callback plugin-approval-deny();
     in-out property <string> config-status: "";
     // Vault（加密凭据）
     in-out property <string> vault-status: "";
@@ -2773,7 +2809,7 @@ export component MainWindow inherits Window {
                     if p.cursor-visible && p.focused
                         && !root.settings-open && !root.search-open
                         && !root.rename-open && !root.save-open
-                        && !root.tabsearch-open && !root.ai-panel-open
+                        && !root.tabsearch-open
                         && !root.image-preview-open : Image {
                         source: p.cursor-image;
                         x: p.cursor-x;
@@ -4819,7 +4855,7 @@ export component MainWindow inherits Window {
                     }
                 }
 
-                // ---------------- Plugins ----------------
+                // ---------------- Plugins (API v3) ----------------
                 if root.settings-category == 5 : Flickable {
                     x: settings-body.content-x;
                     y: settings-body.content-y;
@@ -4831,7 +4867,7 @@ export component MainWindow inherits Window {
                     content-height: plugins-layout.preferred-height + 10px;
 
                     changed jump-token => {
-                        if (root.settings-focus == "plugins" || root.settings-focus == "ai") {
+                        if (root.settings-focus == "plugins") {
                             self.content-y = 0px;
                         }
                     }
@@ -4840,41 +4876,8 @@ export component MainWindow inherits Window {
                         width: 100%;
                         spacing: 10px;
 
-                        // AI Chat 入口先于插件列表：搜索 "ai chat" 时滚到顶部即可见。
-                        ai-card := SettingsCard {
-                            title: Lang.t("AI Chat (process plugin)", "AI 聊天（进程插件）");
-                            highlighted: root.settings-focus == "ai";
-
-                            Text {
-                                text: Lang.t("Send prompts to an api=2 process plugin that declares [contributes.ai]. The plugin runs as your user and owns its credentials; Tervo never stores or forwards API keys.", "向声明了 [contributes.ai] 的 api=2 常驻进程插件发送提示词。插件以你的用户身份运行并自行持有凭据；Tervo 不保存也不转发 API Key。");
-                                color: Palette.colors.subtext;
-                                font-size: 10px;
-                                wrap: word-wrap;
-                            }
-                            if root.ai-plugin-items.length > 0 : Text {
-                                text: Lang.t("At least one AI-capable plugin is installed.", "已安装支持 AI 的插件。");
-                                color: Palette.colors.muted;
-                                font-size: 10px;
-                                wrap: word-wrap;
-                            }
-                            if root.ai-plugin-items.length == 0 : Text {
-                                text: root.ai-empty-hint;
-                                color: Palette.colors.muted;
-                                font-size: 10px;
-                                wrap: word-wrap;
-                            }
-                            HorizontalLayout {
-                                spacing: 8px;
-                                ActionBtn {
-                                    horizontal-stretch: 1;
-                                    label: Lang.t("Open AI Chat…", "打开 AI 聊天…");
-                                    clicked => { root.ai-open(); }
-                                }
-                            }
-                        }
-
-                        plugins-card := SettingsCard {
-                            title: Lang.t("Plugins", "插件");
+                        SettingsCard {
+                            title: Lang.t("Plugins — API v3", "插件 — API v3");
                             highlighted: root.settings-focus == "plugins";
 
                             Text {
@@ -4883,62 +4886,18 @@ export component MainWindow inherits Window {
                                 font-size: 11px;
                                 wrap: word-wrap;
                             }
-
                             Text {
-                                text: Lang.t("Installed", "已安装");
+                                text: Lang.t("Plugins are separate processes. They run as your user with your full system permissions. Permissions below are capability gates for host-mediated APIs (terminal.read/write, clipboard) plus a one-time user confirmation — this is NOT an OS sandbox. MCP is built into Tervo and is not a plugin capability. Only api = 3 / host_abi = 3 is loaded; v1/v2 manifests are unsupported and never executed.", "插件是独立进程，以你的用户身份运行并拥有你的全部系统权限。下面的权限是宿主代理 API（terminal.read/write、clipboard）的 capability gate 加首次启用确认——它不是 OS 沙箱。MCP 是 Tervo 内嵌功能，不是插件能力。宿主只加载 api = 3 / host_abi = 3；v1/v2 清单不受支持，永不执行。");
                                 color: Palette.colors.muted;
                                 font-size: 10px;
-                                font-weight: 600;
+                                wrap: word-wrap;
                             }
-
-                            VerticalLayout {
-                                width: 100%;
-                                spacing: 0px;
-                                for item[i] in root.plugin-items : Text {
-                                    height: 22px;
-                                    text: item;
-                                    color: Palette.colors.text;
-                                    font-size: 11px;
-                                    vertical-alignment: center;
-                                    overflow: elide;
-                                }
-                                if root.plugin-items.length == 0 : Text {
-                                    height: 22px;
-                                    text: Lang.t("No plugins installed.", "未安装插件。");
-                                    color: Palette.colors.muted;
-                                    font-size: 10px;
-                                    vertical-alignment: center;
-                                }
-                            }
-
                             Text {
-                                text: Lang.t("Recent plugin activity", "最近插件活动");
+                                text: Lang.t("Enable/Disable/Reload/Restart never restart Tervo. First enable always shows the declared permissions and asks for confirmation; changing permissions invalidates that confirmation.", "启用/禁用/重载/重启都不会重启 Tervo。首次启用一定展示声明的权限并请求确认；权限变化会使旧确认失效。");
                                 color: Palette.colors.muted;
                                 font-size: 10px;
-                                font-weight: 600;
+                                wrap: word-wrap;
                             }
-
-                            VerticalLayout {
-                                width: 100%;
-                                spacing: 0px;
-                                if root.plugin-activity-items.length == 0 : Text {
-                                    height: 22px;
-                                    text: Lang.t("No plugin activity yet — run a plugin command or open a tab with an event plugin installed.", "还没有插件活动 — 运行插件命令或打开安装了事件插件的标签。");
-                                    color: Palette.colors.muted;
-                                    font-size: 10px;
-                                    vertical-alignment: center;
-                                    overflow: elide;
-                                }
-                                for item[i] in root.plugin-activity-items : Text {
-                                    height: 20px;
-                                    text: item;
-                                    color: Palette.colors.text;
-                                    font-size: 10px;
-                                    vertical-alignment: center;
-                                    overflow: elide;
-                                }
-                            }
-
                             Text {
                                 text: root.plugin-dir;
                                 color: Palette.colors.muted;
@@ -4946,10 +4905,323 @@ export component MainWindow inherits Window {
                                 wrap: word-wrap;
                             }
                             Text {
-                                text: Lang.t("v1 plugins: <name>/plugin.toml. runtime=\"process\" keeps a JSON-Lines host (2s handshake, 10s command timeout, 2 restarts); runtime absent/oneshot runs per command/event. Commands appear in the Palette; status providers show one bottom-bar line; [contributes] theme adds a declarative TOML theme. Permissions are declaration-only: plugins are still unsandboxed user processes. Changing enabled requires a restart.", "v1 插件：<name>/plugin.toml。runtime=\"process\" 保持 JSON-Lines 常驻宿主（2s 握手、10s 命令超时、最多重启 2 次）；缺省 runtime/oneshot 按命令/事件运行。命令出现在命令面板；状态提供者在底栏显示一行；[contributes] theme 添加声明式 TOML 主题。权限仅为声明：插件仍是未沙箱化的用户进程。更改启用状态需要重启。");
+                                text: Lang.t("Protocol: JSON-RPC 2.0 line-delimited stdio. Docs: docs/PLUGIN_V3.md. Example: docs/examples/plugin-v3-echo/.", "协议：JSON-RPC 2.0 行分隔 stdio。文档：docs/PLUGIN_V3.md。示例：docs/examples/plugin-v3-echo/。");
                                 color: Palette.colors.muted;
                                 font-size: 9px;
                                 wrap: word-wrap;
+                            }
+                        }
+
+                        SettingsCard {
+                            title: Lang.t("Installed plugins", "已安装插件");
+
+                            if root.plugin-rows.length == 0 : Text {
+                                height: 24px;
+                                text: Lang.t("No plugins installed.", "未安装插件。");
+                                color: Palette.colors.muted;
+                                font-size: 10px;
+                                vertical-alignment: center;
+                            }
+
+                            for row[i] in root.plugin-rows : Rectangle {
+                                height: plugin-row-layout.preferred-height + 20px;
+                                border-radius: 8px;
+                                background: Palette.colors.raise;
+                                border-width: 1px;
+                                border-color: row.enabled ? Palette.colors.accent : Palette.colors.border;
+
+                                plugin-row-layout := VerticalLayout {
+                                    width: 100%;
+                                    padding: 10px;
+                                    spacing: 6px;
+
+                                    HorizontalLayout {
+                                        spacing: 8px;
+                                        Text {
+                                            text: row.name;
+                                            color: Palette.colors.text;
+                                            font-size: 12px;
+                                            font-weight: 600;
+                                            vertical-alignment: center;
+                                        }
+                                        Text {
+                                            text: row.version;
+                                            color: Palette.colors.muted;
+                                            font-size: 10px;
+                                            vertical-alignment: center;
+                                        }
+                                        Text {
+                                            text: row.api;
+                                            color: Palette.colors.muted;
+                                            font-size: 10px;
+                                            vertical-alignment: center;
+                                        }
+                                        Rectangle { horizontal-stretch: 1; height: 1px; background: transparent; }
+                                        Text {
+                                            text: row.status;
+                                            color: row.enabled ? Palette.colors.accent : (row.supported ? Palette.colors.subtext : Palette.colors.danger);
+                                            font-size: 10px;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+
+                                    if row.error != "" : Text {
+                                        text: row.error;
+                                        color: Palette.colors.danger;
+                                        font-size: 10px;
+                                        wrap: word-wrap;
+                                    }
+
+                                    HorizontalLayout {
+                                        spacing: 6px;
+                                        Text {
+                                            text: Lang.t("Permissions:", "权限:");
+                                            color: Palette.colors.muted;
+                                            font-size: 10px;
+                                            vertical-alignment: center;
+                                        }
+                                        Text {
+                                            horizontal-stretch: 1;
+                                            text: row.permissions;
+                                            color: Palette.colors.subtext;
+                                            font-size: 10px;
+                                            vertical-alignment: center;
+                                            wrap: word-wrap;
+                                        }
+                                    }
+                                    HorizontalLayout {
+                                        spacing: 6px;
+                                        Text {
+                                            text: Lang.t("Restart count:", "重启次数:");
+                                            color: Palette.colors.muted;
+                                            font-size: 10px;
+                                            vertical-alignment: center;
+                                        }
+                                        Text {
+                                            text: "\{row.restart-count}";
+                                            color: Palette.colors.subtext;
+                                            font-size: 10px;
+                                            vertical-alignment: center;
+                                        }
+                                        if row.assistant : Text {
+                                            text: Lang.t("assistant placeholder (no provider in v3)", "assistant 占位（v3 不实现 provider）");
+                                            color: Palette.colors.muted;
+                                            font-size: 10px;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+
+                                    HorizontalLayout {
+                                        spacing: 6px;
+                                        if row.supported && (!row.enabled || row.needs-approval) : ActionBtn {
+                                            horizontal-stretch: 1;
+                                            label: row.needs-approval
+                                                ? Lang.t("Confirm permissions", "确认权限")
+                                                : Lang.t("Enable", "启用");
+                                            clicked => { root.plugin-action("enable", row.key); }
+                                        }
+                                        if row.supported && row.enabled : ActionBtn {
+                                            horizontal-stretch: 1;
+                                            label: Lang.t("Disable", "禁用");
+                                            clicked => { root.plugin-action("disable", row.key); }
+                                        }
+                                        if row.supported : ActionBtn {
+                                            horizontal-stretch: 1;
+                                            label: Lang.t("Reload", "重载");
+                                            clicked => { root.plugin-action("reload", row.key); }
+                                        }
+                                        if row.supported : ActionBtn {
+                                            horizontal-stretch: 1;
+                                            label: Lang.t("Restart", "重启");
+                                            clicked => { root.plugin-action("restart", row.key); }
+                                        }
+                                        ActionBtn {
+                                            horizontal-stretch: 1;
+                                            label: Lang.t("Open folder", "打开目录");
+                                            clicked => { root.plugin-action("folder", row.key); }
+                                        }
+                                        if row.surface-ready && row.has-panel : ActionBtn {
+                                            horizontal-stretch: 1;
+                                            label: Lang.t("Panel…", "面板…");
+                                            clicked => { root.plugin-open-surface(row.key, "panel"); }
+                                        }
+                                        if row.surface-ready && row.has-settings : ActionBtn {
+                                            horizontal-stretch: 1;
+                                            label: Lang.t("Settings…", "设置…");
+                                            clicked => { root.plugin-open-surface(row.key, "settings"); }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        if root.plugin-confirm-visible : SettingsCard {
+                            title: Lang.t("Confirm plugin permissions", "确认插件权限");
+                            Text {
+                                text: root.plugin-confirm-name;
+                                color: Palette.colors.text;
+                                font-size: 12px;
+                                font-weight: 600;
+                            }
+                            Text {
+                                text: Lang.t("This plugin is asking for the capabilities below. The host will gate its mediated APIs, but the plugin process still runs as your user with your full system permissions. Only enable plugins you trust.", "该插件请求以下能力。宿主会 gate 它代理的 API，但插件进程仍以你的用户身份运行并拥有你的全部系统权限。只启用你信任的插件。");
+                                color: Palette.colors.danger;
+                                font-size: 10px;
+                                wrap: word-wrap;
+                            }
+                            Text {
+                                text: root.plugin-confirm-permissions;
+                                color: Palette.colors.accent;
+                                font-size: 11px;
+                                wrap: word-wrap;
+                            }
+                            HorizontalLayout {
+                                spacing: 8px;
+                                ActionBtn {
+                                    horizontal-stretch: 1;
+                                    label: Lang.t("Allow and enable", "允许并启用");
+                                    clicked => { root.plugin-confirm-enable(); }
+                                }
+                                ActionBtn {
+                                    horizontal-stretch: 1;
+                                    label: Lang.t("Cancel", "取消");
+                                    clicked => { root.plugin-confirm-cancel(); }
+                                }
+                            }
+                        }
+
+                        if root.plugin-surface-open : SettingsCard {
+                            title: root.plugin-surface-title;
+                            if root.plugin-surface-loading : Text {
+                                text: Lang.t("Requesting declarative UI from plugin…", "正在向插件请求声明式 UI…");
+                                color: Palette.colors.muted;
+                                font-size: 10px;
+                            }
+                            if root.plugin-surface-error != "" : Text {
+                                text: root.plugin-surface-error;
+                                color: Palette.colors.danger;
+                                font-size: 10px;
+                                wrap: word-wrap;
+                            }
+                            for element in root.plugin-surface-elements : VerticalLayout {
+                                width: 100%;
+                                spacing: 4px;
+                                if element.kind == "text" || element.kind == "markdown" : Text {
+                                    width: 100%;
+                                    text: element.text;
+                                    color: Palette.colors.text;
+                                    font-size: 11px;
+                                    wrap: word-wrap;
+                                }
+                                if element.kind == "list" : Text {
+                                    width: 100%;
+                                    text: element.text;
+                                    color: Palette.colors.text;
+                                    font-size: 11px;
+                                    wrap: word-wrap;
+                                }
+                                if element.kind == "input" : VerticalLayout {
+                                    width: 100%;
+                                    spacing: 2px;
+                                    Text {
+                                        text: element.label;
+                                        color: Palette.colors.subtext;
+                                        font-size: 10px;
+                                    }
+                                    Rectangle {
+                                        height: 28px;
+                                        border-radius: 5px;
+                                        background: Palette.colors.bg;
+                                        border-width: 1px;
+                                        border-color: Palette.colors.border;
+                                        TextInput {
+                                            x: 6px;
+                                            width: parent.width - 12px;
+                                            height: parent.height;
+                                            text: element.value;
+                                            single-line: true;
+                                            color: Palette.colors.text;
+                                            font-size: 11px;
+                                            vertical-alignment: center;
+                                            edited => {
+                                                root.plugin-element-input(element.id, self.text);
+                                            }
+                                        }
+                                    }
+                                }
+                                if element.kind == "button" : ActionBtn {
+                                    width: 100%;
+                                    label: element.label;
+                                    clicked => { root.plugin-element-action(element.id); }
+                                }
+                                if element.kind == "select" : HorizontalLayout {
+                                    spacing: 8px;
+                                    Text {
+                                        width: 160px;
+                                        text: element.label;
+                                        color: Palette.colors.subtext;
+                                        font-size: 10px;
+                                        vertical-alignment: center;
+                                    }
+                                    Text {
+                                        horizontal-stretch: 1;
+                                        text: element.value;
+                                        color: Palette.colors.text;
+                                        font-size: 11px;
+                                        vertical-alignment: center;
+                                    }
+                                    ActionBtn {
+                                        width: 96px;
+                                        label: Lang.t("Change", "切换");
+                                        clicked => { root.plugin-element-action(element.id); }
+                                    }
+                                }
+                                if element.kind == "progress" : VerticalLayout {
+                                    width: 100%;
+                                    spacing: 2px;
+                                    Text {
+                                        text: element.label;
+                                        color: Palette.colors.subtext;
+                                        font-size: 10px;
+                                    }
+                                    Rectangle {
+                                        width: 100%;
+                                        height: 6px;
+                                        border-radius: 3px;
+                                        background: Palette.colors.hover;
+                                        Rectangle {
+                                            width: Math.max(2px, parent.width * element.progress);
+                                            height: 100%;
+                                            border-radius: 3px;
+                                            background: Palette.colors.accent;
+                                        }
+                                    }
+                                }
+                            }
+                            ActionBtn {
+                                width: 100px;
+                                label: Lang.t("Close", "关闭");
+                                clicked => { root.plugin-surface-close(); }
+                            }
+                        }
+
+                        SettingsCard {
+                            title: Lang.t("Recent plugin activity", "最近插件活动");
+                            if root.plugin-activity-items.length == 0 : Text {
+                                height: 22px;
+                                text: Lang.t("No plugin activity yet — run a plugin command or open a tab with an event plugin installed.", "还没有插件活动 — 运行插件命令或打开安装了事件插件的标签。");
+                                color: Palette.colors.muted;
+                                font-size: 10px;
+                                vertical-alignment: center;
+                                overflow: elide;
+                            }
+                            for item[i] in root.plugin-activity-items : Text {
+                                height: 20px;
+                                text: item;
+                                color: Palette.colors.text;
+                                font-size: 10px;
+                                vertical-alignment: center;
+                                overflow: elide;
                             }
                         }
                     }
@@ -5189,7 +5461,7 @@ export component MainWindow inherits Window {
                                 wrap: word-wrap;
                             }
                             Text {
-                                text: Lang.t("• Plugins: ordinary subprocesses; permissions are declared, not sandbox-enforced.", "• 插件：以普通子进程运行；权限仅声明，未做沙箱强制。");
+                                text: Lang.t("• Plugins: API v3 only (api = 3); separate processes with capability gates + per-enable confirmation, not an OS sandbox. v1/v2 are unsupported. MCP is built in, not a plugin.", "• 插件：仅 API v3（api = 3）；独立进程，权限是 capability gate + 启用确认，不是 OS 沙箱。v1/v2 不受支持。MCP 是内嵌功能，不是插件。");
                                 color: Palette.colors.text;
                                 font-size: 10px;
                                 wrap: word-wrap;
@@ -7490,6 +7762,76 @@ export component MainWindow inherits Window {
         }
     }
 
+    // Plugin API v3 ask：terminal/clipboard 等敏感宿主请求的全局 Allow/Deny。
+    // 只有用户点 Allow 才执行；按 Esc/关闭不会被当作允许。
+    if root.plugin-approval-visible : Rectangle {
+        x: Math.max(8px, root.width - 472px);
+        y: 12px;
+        width: Math.min(460px, root.width - 16px);
+        height: plugin-approval-layout.preferred-height + 24px;
+        background: Palette.colors.raise;
+        border-radius: 10px;
+        border-width: 1px;
+        border-color: Palette.colors.danger;
+        drop-shadow-blur: 16px;
+        drop-shadow-offset-y: 4px;
+        drop-shadow-color: #000000a0;
+        z: 40;
+
+        TouchArea { width: 100%; height: 100%; }
+
+        plugin-approval-layout := VerticalLayout {
+            width: 100%;
+            padding: 12px;
+            spacing: 8px;
+            Text {
+                text: Lang.t("Plugin permission request", "插件请求授权");
+                color: Palette.colors.danger;
+                font-size: 12px;
+                font-weight: 600;
+            }
+            Text {
+                text: root.plugin-approval-plugin;
+                color: Palette.colors.text;
+                font-size: 11px;
+                font-weight: 600;
+                overflow: elide;
+            }
+            Text {
+                text: root.plugin-approval-summary;
+                color: Palette.colors.text;
+                font-size: 11px;
+                wrap: word-wrap;
+            }
+            Text {
+                text: root.plugin-approval-details;
+                color: Palette.colors.subtext;
+                font-size: 10px;
+                wrap: word-wrap;
+            }
+            Text {
+                text: Lang.t("Capability gate + explicit user confirmation, not an OS sandbox. This request expires in \{root.plugin-approval-seconds}s.", "这是 capability gate + 用户显式确认，不是 OS 沙箱。请求将在 \{root.plugin-approval-seconds} 秒后过期。");
+                color: Palette.colors.muted;
+                font-size: 9px;
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                ActionBtn {
+                    horizontal-stretch: 1;
+                    label: Lang.t("Allow once", "允许一次");
+                    clicked => { root.plugin-approval-allow(); }
+                }
+                ActionBtn {
+                    horizontal-stretch: 1;
+                    danger: true;
+                    label: Lang.t("Deny", "拒绝");
+                    clicked => { root.plugin-approval-deny(); }
+                }
+            }
+        }
+    }
+
     // 链接打开失败等短暂提示：不拦截鼠标事件，4 秒后由 Rust 清空。
     if root.link-status != "" : Rectangle {
         x: 12px;
@@ -7752,258 +8094,6 @@ export component MainWindow inherits Window {
                 height: 26px;
                 label: Lang.t("Close", "关闭");
                 clicked => { root.image-preview-open = false; }
-            }
-        }
-    }
-
-    // ---------------- AI Chat 面板 ----------------
-    // 从 Settings → Plugins 打开；独立浮层，不进入终端/设置页布局。
-    // 插件调用在 Rust 后台线程，这里只展示已提交/已返回的状态，不做假 token 流。
-    if root.ai-panel-open : Rectangle {
-        width: 100%;
-        height: 100%;
-        background: #00000080;
-
-        ai-focus := FocusScope {
-            width: 100%;
-            height: 100%;
-            init => { self.focus(); }
-            key-pressed(event) => {
-                if (event.text == "\u{1b}") {
-                    root.ai-close();
-                    return EventResult.accept;
-                }
-                EventResult.reject
-            }
-
-            // 点击遮罩关闭；卡片内部的空 TouchArea 会吃掉点击，避免误关。
-            TouchArea {
-                width: 100%;
-                height: 100%;
-                clicked => { root.ai-close(); }
-            }
-
-            Rectangle {
-                x: (parent.width - self.width) / 2;
-                y: (parent.height - self.height) / 2;
-                width: Math.min(680px, parent.width - 32px);
-                height: Math.min(580px, parent.height - 32px);
-                border-radius: 12px;
-                background: Palette.colors.bg;
-                border-width: 1px;
-                border-color: Palette.colors.border;
-                drop-shadow-blur: 30px;
-                drop-shadow-offset-y: 10px;
-                drop-shadow-color: #000000b8;
-                clip: true;
-
-                TouchArea {
-                    width: 100%;
-                    height: 100%;
-                    clicked => {}
-                }
-
-                VerticalLayout {
-                    width: 100%;
-                    height: 100%;
-                    padding: 16px;
-                    spacing: 9px;
-
-                    HorizontalLayout {
-                        spacing: 8px;
-                        Text {
-                            text: Lang.t("AI Chat (process plugin)", "AI 聊天（进程插件）");
-                            color: Palette.colors.text;
-                            font-size: 15px;
-                            font-weight: 600;
-                            vertical-alignment: center;
-                        }
-                        Rectangle {
-                            horizontal-stretch: 1;
-                            height: 1px;
-                            background: transparent;
-                        }
-                        ActionBtn {
-                            label: Lang.t("Close", "关闭");
-                            clicked => { root.ai-close(); }
-                        }
-                    }
-
-                    Text {
-                        text: Lang.t("Security: the selected plugin runs as your user with your full permissions. Tervo does not store or send API keys; each plugin owns its credentials. Review AI output before using it.", "安全提示：所选插件以你的用户身份运行，拥有你的全部权限。Tervo 不保存也不发送 API Key；凭据由各插件自行管理。使用 AI 输出前请自行核对。");
-                        color: Palette.colors.accent;
-                        font-size: 10px;
-                        wrap: word-wrap;
-                    }
-
-                    if root.ai-plugin-items.length == 0 : Text {
-                        vertical-stretch: 1;
-                        text: root.ai-empty-hint;
-                        color: Palette.colors.muted;
-                        font-size: 11px;
-                        wrap: word-wrap;
-                        vertical-alignment: top;
-                    }
-
-                    if root.ai-plugin-items.length > 0 : VerticalLayout {
-                        width: 100%;
-                        vertical-stretch: 1;
-                        spacing: 7px;
-
-                        Text {
-                            text: Lang.t("AI-capable plugins", "支持 AI 的插件");
-                            color: Palette.colors.muted;
-                            font-size: 10px;
-                            font-weight: 600;
-                        }
-                        Rectangle {
-                            // 只有一个插件时不要留 76px 的灰色空盒；按内容收缩，
-                            // 超过三条再滚动，保持面板紧凑。
-                            height: Math.min(76px, 8px + 26px * root.ai-plugin-items.length);
-                            border-radius: 6px;
-                            background: Palette.colors.surface;
-                            border-width: 1px;
-                            border-color: Palette.colors.border;
-                            clip: true;
-
-                            Flickable {
-                                width: 100%;
-                                height: 100%;
-                                interactive: true;
-                                content-width: self.width;
-                                content-height: ai-plugin-list.preferred-height + 8px;
-
-                                ai-plugin-list := VerticalLayout {
-                                    x: 4px;
-                                    y: 4px;
-                                    width: parent.width - 8px;
-                                    spacing: 2px;
-                                    for item[i] in root.ai-plugin-items : Rectangle {
-                                        height: 24px;
-                                        border-radius: 4px;
-                                        background: i == root.ai-plugin-index
-                                            ? Palette.colors.raise
-                                            : transparent;
-                                        border-width: i == root.ai-plugin-index ? 1px : 0px;
-                                        border-color: i == root.ai-plugin-index
-                                            ? Palette.colors.accent
-                                            : transparent;
-                                        Text {
-                                            x: 7px;
-                                            width: parent.width - 14px;
-                                            height: 100%;
-                                            text: item;
-                                            color: Palette.colors.text;
-                                            font-size: 10px;
-                                            vertical-alignment: center;
-                                            overflow: elide;
-                                        }
-                                        TouchArea {
-                                            width: 100%;
-                                            height: 100%;
-                                            clicked => {
-                                                if (!root.ai-busy) {
-                                                    root.ai-plugin-index = i;
-                                                    root.ai-plugin-selected(i);
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        if root.ai-plugin-detail != "" : Text {
-                            text: root.ai-plugin-detail;
-                            color: Palette.colors.muted;
-                            font-size: 10px;
-                            wrap: word-wrap;
-                        }
-
-                        SettingsTextField {
-                            text <=> root.ai-prompt;
-                            placeholder: Lang.t("Ask the selected plugin…", "向所选插件提问…");
-                            accepted(text) => {
-                                if (!root.ai-busy) {
-                                    root.ai-send(text);
-                                }
-                            }
-                        }
-
-                        HorizontalLayout {
-                            spacing: 8px;
-                            if (!root.ai-busy) : ActionBtn {
-                                width: 90px;
-                                label: Lang.t("Send", "发送");
-                                clicked => { root.ai-send(root.ai-prompt); }
-                            }
-                            if (root.ai-busy) : ActionBtn {
-                                width: 90px;
-                                label: Lang.t("Cancel", "取消");
-                                clicked => { root.ai-cancel(); }
-                            }
-                            Rectangle {
-                                horizontal-stretch: 1;
-                                height: 1px;
-                                background: transparent;
-                            }
-                        }
-
-                        if root.ai-status != "" : Text {
-                            text: root.ai-status;
-                            color: root.ai-status-error
-                                ? Palette.colors.danger
-                                : Palette.colors.subtext;
-                            font-size: 10px;
-                            wrap: word-wrap;
-                        }
-
-                        Text {
-                            text: Lang.t("Output", "输出");
-                            color: Palette.colors.muted;
-                            font-size: 10px;
-                            font-weight: 600;
-                        }
-                        Rectangle {
-                            vertical-stretch: 1;
-                            border-radius: 6px;
-                            background: Palette.colors.surface;
-                            border-width: 1px;
-                            border-color: Palette.colors.border;
-                            clip: true;
-
-                            ai-output-flick := Flickable {
-                                width: 100%;
-                                height: 100%;
-                                interactive: true;
-                                content-width: self.width;
-                                content-height: Math.max(
-                                    self.height,
-                                    ai-output-text.preferred-height + 16px
-                                );
-                                changed content-height => {
-                                    self.viewport-y = Math.max(
-                                        0px,
-                                        self.content-height - self.height
-                                    );
-                                }
-
-                                ai-output-text := Text {
-                                    x: 8px;
-                                    y: 8px;
-                                    width: parent.width - 16px;
-                                    text: root.ai-output == ""
-                                        ? Lang.t("No response yet.", "还没有回复。")
-                                        : root.ai-output;
-                                    color: root.ai-output == ""
-                                        ? Palette.colors.muted
-                                        : Palette.colors.text;
-                                    font-size: 11px;
-                                    wrap: word-wrap;
-                                }
-                            }
-                        }
-                    }
-                }
             }
         }
     }
