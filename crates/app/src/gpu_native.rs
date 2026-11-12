@@ -297,6 +297,12 @@ fn scene_clear_color(scene: &Scene) -> ([u8; 4], bool) {
     ([0, 0, 0, 255], false)
 }
 
+/// damage 契约：只有已有 target、非 full、无行 damage、无图片变化时，
+/// 才能复用上一帧 GPU image；否则必须重绘。
+fn can_reuse_gpu_target(frame: &Frame, has_target: bool) -> bool {
+    has_target && !frame.full && frame.damage.is_empty() && frame.images.is_empty()
+}
+
 /// 把真实 `Frame` 走 Scene → WGPU 分层合成，返回可交给 `PaneView.image` 的
 /// `slint::Image`。返回 `None` 时调用方必须使用 CPU `Renderer::image()`。
 pub fn pane_image(input: &PaneFrame<'_>) -> Option<slint::Image> {
@@ -349,11 +355,7 @@ pub fn pane_image(input: &PaneFrame<'_>) -> Option<slint::Image> {
 
     // 光标闪烁/纯 overlay redraw 没有终端 damage：不要重绘整张 target。
     // 只有已有可复用 GPU image 时才跳过；首帧、resize、图片帧仍走完整路径。
-    if !input.frame.full
-        && input.frame.damage.is_empty()
-        && input.frame.images.is_empty()
-        && state.panes.contains_key(&input.pane)
-    {
+    if can_reuse_gpu_target(input.frame, state.panes.contains_key(&input.pane)) {
         if let Some(image) = PANE_IMAGES.with(|images| images.borrow().get(&input.pane).cloned()) {
             return Some(image);
         }
@@ -598,6 +600,24 @@ pub fn last_stats() -> Option<SceneLayerStats> {
 mod tests {
     use super::*;
     use tervo_core::{flags, CellData, Span};
+
+    #[test]
+    fn damage_contract_reuses_only_clean_non_full_frames() {
+        let mut frame = Frame::new(4, 2);
+        assert!(!can_reuse_gpu_target(&frame, false), "没有 target 不能复用");
+        assert!(can_reuse_gpu_target(&frame, true), "无 damage 且非 full 应复用");
+
+        frame.full = true;
+        assert!(!can_reuse_gpu_target(&frame, true), "full 必须重绘");
+
+        frame.full = false;
+        frame.damage.push(tervo_core::LineDamage {
+            line: 1,
+            left: 0,
+            right: 3,
+        });
+        assert!(!can_reuse_gpu_target(&frame, true), "有 damage 必须重绘");
+    }
 
     /// The app's GPU path must consume the same resolved semantics as the CPU
     /// renderer: wide/spacer identity, hidden/dim/bold flags, selection colors.
