@@ -792,6 +792,7 @@ const SETTINGS_CATALOG: &[SettingsCatalogEntry] = &[
     SettingsCatalogEntry { cat: 1, section: "scrollbar", en: "Scrollbar policy", zh: "滚动条策略", keywords: "scrollbar always auto never policy 滚动条 策略" },
     SettingsCatalogEntry { cat: 1, section: "images", en: "Sixel inline images", zh: "Sixel 内联图片", keywords: "sixel image inline graphics 图片 内联" },
     SettingsCatalogEntry { cat: 1, section: "images", en: "iTerm2 IIP images", zh: "iTerm2 IIP 图片", keywords: "iterm2 iip osc 1337 image inline png jpeg 图片" },
+    SettingsCatalogEntry { cat: 1, section: "images", en: "Render HUD", zh: "渲染 HUD", keywords: "render hud fps frame rate frame time renderer gpu debug overlay stage0 atlas 帧率 渲染 调试 覆盖层 性能" },
     SettingsCatalogEntry { cat: 1, section: "keys", en: "Backspace / Delete binding", zh: "退格 / 删除绑定", keywords: "backspace delete ascii del control-h key encoding 退格 删除 编码" },
     SettingsCatalogEntry { cat: 2, section: "window", en: "Tab bar at bottom", zh: "标签栏置底", keywords: "tab bar position bottom top 标签栏 位置 底部" },
     SettingsCatalogEntry { cat: 2, section: "window", en: "Quake mode", zh: "Quake 模式", keywords: "quake drop down hotkey F12 下拉 模式" },
@@ -13611,6 +13612,14 @@ mod tests {
             "iip 应跳到 Terminal/Images: {:?}",
             iip.iter().map(|h| (h.cat, h.section)).collect::<Vec<_>>()
         );
+        for query in ["hud", "fps", "render hud", "帧率"] {
+            let hits = settings_search_hits(query, "en");
+            assert!(
+                hits.iter().any(|h| h.cat == 1 && h.section == "images"),
+                "query={query:?} 应跳到 Terminal/Images: {:?}",
+                hits.iter().map(|h| (h.cat, h.section)).collect::<Vec<_>>()
+            );
+        }
         let backspace = settings_search_hits("backspace", "en");
         assert!(backspace.iter().any(|h| h.cat == 1 && h.section == "keys"));
         let profiles = settings_search_hits("profile", "en");
