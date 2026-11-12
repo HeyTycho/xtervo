@@ -55,6 +55,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         },
         "scene-diff" | "scene_diff" => scene_diff_cli(&args[1..]),
         "trace-layer" | "trace_layer" => trace_layer::cli(&args[1..]),
+        "doctor" | "doctor-check" => doctor_cli(&args[1..]),
         "serve" => serve(&args[1..]),
         "help" | "-h" | "--help" => {
             println!("{}", help_text());
@@ -83,6 +84,8 @@ fn help_text() -> &'static str {
                                   比较两个 frame/scene summary JSON（默认文本）\n\
      trace-layer --input FILE     按 raw->filter->Term->Frame->framebuffer 逐层找第一处分歧\n\
                                   合成夹具 --fixture clean|images|filter-edge；--json\n\
+     doctor [--issue] [--frame FILE] [--metrics FILE]\n\
+                                  Doctor 确定性诊断；--issue 输出八节 issue markdown\n\
      serve [--socket PATH --token T]  MCP/JSON-RPC stdio server；--socket 时增加 live 工具\n\
        --cols/--rows/--wait-ms\n\
        resources: tervo://version；tools: diag_env/diag_snapshot/diag_replay/\n\
@@ -509,6 +512,30 @@ pub(crate) fn frame_json(frame: &Frame, kind: &str) -> Value {
         "images": images,
         "text": text,
     })
+}
+
+/// `tervo diag doctor`：把已有 Doctor 确定性核心暴露成 app CLI 入口。
+/// 不联系模型、不读 scrollback；只使用显式传入的 frame/metrics 文件和本进程环境。
+fn doctor_cli(args: &[String]) -> Result<(), Box<dyn Error>> {
+    let mut input = json!({});
+    if let Some(path) = opt(args, "--frame") {
+        input["frame"] = json!(path);
+    }
+    if let Some(path) = opt(args, "--metrics") {
+        input["metrics"] = json!(path);
+    }
+    let case = mcp_ext::doctor_check(&input).map_err(|e| format!("doctor: {e}"))?;
+    if args.iter().any(|a| a == "--issue") {
+        let markdown = case
+            .get("issue_draft")
+            .and_then(|draft| draft.get("markdown"))
+            .and_then(Value::as_str)
+            .ok_or("doctor case 缺少 issue_draft.markdown")?;
+        println!("{markdown}");
+    } else {
+        println!("{}", serde_json::to_string_pretty(&case)?);
+    }
+    Ok(())
 }
 
 /// 极简 MCP/JSON-RPC stdio server。非插件；随 CLI 启动，stdin/stdout 通信。
