@@ -1369,6 +1369,8 @@ export component MainWindow inherits Window {
     in-out property <bool> cfg-sixel-scrolling: true;
     /// iTerm2 IIP（OSC 1337 File）内联图片（默认开）；关闭后已有 IIP 图片清除。
     in-out property <bool> cfg-iip: true;
+    /// 渲染 HUD（FPS/renderer/GPU 计数）；设置页可开关，默认关。
+    in-out property <bool> cfg-render-hud: false;
     in-out property <bool> cfg-scrollback-unlimited: false;
     /// "always" | "auto" | "never"
     in-out property <string> cfg-scrollbar-policy: "auto";
@@ -1407,6 +1409,7 @@ export component MainWindow inherits Window {
     callback toggle-sixel();
     callback toggle-sixel-scrolling();
     callback toggle-iip();
+    callback toggle-render-hud();
     callback toggle-scrollback-unlimited();
     callback set-scrollbar-policy(string);
     callback set-backspace-binding(string);
@@ -4314,6 +4317,14 @@ export component MainWindow inherits Window {
                                 SettingsSwitch {
                                     on: root.cfg-sixel-scrolling;
                                     toggled => { root.toggle-sixel-scrolling(); }
+                                }
+                            }
+                            SettingRow {
+                                label: Lang.t("Render HUD", "渲染 HUD");
+                                description: Lang.t("Show FPS, frame time, renderer, GPU-native frames/draw calls, atlas and stage-0 uploads.", "显示 FPS、帧耗时、renderer、GPU-native 帧数/draw calls、atlas 和 stage0 上传量。");
+                                SettingsSwitch {
+                                    on: root.cfg-render-hud;
+                                    toggled => { root.toggle-render-hud(); }
                                 }
                             }
                         }

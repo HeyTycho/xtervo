@@ -2186,6 +2186,8 @@ fn sync_reload_ui(st: &mut AppState) {
     st.ui.set_cfg_sixel(st.cfg.sixel);
     st.ui.set_cfg_sixel_scrolling(st.cfg.sixel_scrolling);
     st.ui.set_cfg_iip(st.cfg.iip);
+    st.ui.set_cfg_render_hud(st.cfg.render_hud);
+    set_render_hud(st, render_hud_forced_by_env() || st.cfg.render_hud);
     st.ui
         .set_cfg_scrollback_unlimited(st.cfg.scrollback_unlimited);
     st.ui
@@ -6727,14 +6729,31 @@ fn snapshot_path(base: &Path, suffix: &str) -> PathBuf {
 /// - `TERVO_GPU_SNAPSHOT_RESIZE=1`：首张快照后程序化改窗口尺寸，1.5s 后再拍一张
 ///   （验证 resize 不黑；走 Slint `resized` 回调 + PTY resize）。
 /// - `TERVO_GPU_SNAPSHOT_EXIT=1`：拍完退出事件循环，供脚本无头跑。
-fn install_render_hud(ui: &MainWindow) {
-    let enabled = std::env::var("TERVO_RENDER_HUD").is_ok_and(|v| {
+fn render_hud_forced_by_env() -> bool {
+    std::env::var("TERVO_RENDER_HUD").is_ok_and(|v| {
         matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")
+    })
+}
+
+fn install_render_hud(_ui: &MainWindow) {
+    let forced = render_hud_forced_by_env();
+    with_app(|st| {
+        st.ui.set_cfg_render_hud(st.cfg.render_hud);
+        set_render_hud(st, forced || st.cfg.render_hud);
     });
+}
+
+/// 启动/停止 HUD 采样；重复调用幂等。设置页和环境变量都走这里。
+fn set_render_hud(st: &mut AppState, enabled: bool) {
     if !enabled {
+        st.render_hud_timer = None;
+        st.ui.set_render_hud("".into());
         return;
     }
-    let weak = ui.as_weak();
+    if st.render_hud_timer.is_some() {
+        return;
+    }
+    let weak = st.ui.as_weak();
     let mut last = Instant::now();
     let mut last_frames = render_probe::frames();
     let timer = slint::Timer::default();
@@ -6776,7 +6795,7 @@ fn install_render_hud(ui: &MainWindow) {
             }
         },
     );
-    with_app(|st| st.render_hud_timer = Some(timer));
+    st.render_hud_timer = Some(timer);
 }
 
 fn install_gpu_snapshot_hook(ui: &MainWindow) {
@@ -11559,6 +11578,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             st.cfg.save();
             eprintln!("[ui] iip={enabled}");
+        });
+    });
+
+    ui.on_toggle_render_hud(|| {
+        with_app(|st| {
+            st.cfg.render_hud = !st.cfg.render_hud;
+            st.ui.set_cfg_render_hud(st.cfg.render_hud);
+            let enabled = render_hud_forced_by_env() || st.cfg.render_hud;
+            set_render_hud(st, enabled);
+            st.cfg.save();
+            eprintln!("[ui] render_hud={} forced={}", st.cfg.render_hud, render_hud_forced_by_env());
         });
     });
 

@@ -315,6 +315,9 @@ pub struct Config {
     /// iTerm2 IIP（OSC 1337 File）内联图片（默认开）。关闭后不解析/解码 IIP，
     /// 已显示的 IIP 图片立即清除；不影响 Sixel/DA1。
     pub iip: bool,
+    /// 设置页可开关的渲染 HUD（FPS/renderer/GPU 计数）；默认关。
+    /// `TERVO_RENDER_HUD=1` 仍可强制开启，便于无配置复现。
+    pub render_hud: bool,
     /// 忽略 `scrollback` 数值，使用 [`UNLIMITED_SCROLLBACK_LINES`] 安全上限。
     /// 只对之后新建的 pane 生效（历史缓冲大小不能在会话中安全扩容）。
     pub scrollback_unlimited: bool,
@@ -405,6 +408,7 @@ impl Default for Config {
             sixel: true,
             sixel_scrolling: true,
             iip: true,
+            render_hud: false,
             scrollback_unlimited: false,
             scrollbar_policy: "auto".to_string(),
             backspace_binding: "ascii-delete".to_string(),
