@@ -2,9 +2,21 @@
 
 Tervo 的版本与 tag 规则见 `docs/RELEASING.md`。
 
+## [Unreleased]
+
+### Added
+
+- Plugin API v3 本地安装/更新/原子回滚/签名校验：目录或 zip/tar/tar.gz → staging →
+  manifest/host_abi/entry/路径/大小限制校验 → `RENAME_EXCHANGE`（不支持时两段 rename
+  回退）→ `.backup/<id>/<epoch-ms>-<version>`（默认保留 3 个）。可选 Ed25519
+  `plugin.toml.sig` + `TERVO_PLUGIN_PUBKEY`/默认公钥/设置开关；坏签名始终拒绝，
+  默认未配置公钥允许未签名。设置页 Install/Update/Rollback + source/signature 展示，
+  CLI `tervo plugins install|update|rollback|verify|list|backups|keygen|sign`。
+  不执行插件代码、不做市场/远程更新/在线 key 分发。文档 `docs/PLUGIN_INSTALL.md`。
+
 ## [0.4.0-rc.1] - 2026-11-12
 
-RC candidate: GPU damage scissor, embedded MCP live terminal control, plugin API v3, feedback bundle. WASM hot-path/local install/signing remain future work.
+RC candidate: GPU damage scissor, embedded MCP live terminal control, plugin API v3, feedback bundle. WASM hot-path remains future work.
 
 ### Added
 

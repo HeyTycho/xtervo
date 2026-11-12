@@ -43,11 +43,17 @@ base64 = "0.22.1"
 # Feedback bundles: bounded, redacted tar.gz.
 tar = "0.4"
 flate2 = "1"
+# Plugin v3 local install: zip/tar archives + Ed25519 signature verification.
+zip = { version = "2", default-features = false, features = ["deflate"] }
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+sha2 = "0.10"
+rand_core = { version = "0.6", features = ["getrandom"] }
 
 [build-dependencies]
 slint-build = { version = "1.18", default-features = false, features = ["compat-1-18"] }
 
 [dev-dependencies]
+tempfile = "3"
 # 仅测试用：MinimalSoftwareWindow + SwappedBuffers 部分重绘，验证 Slint
 # Image item 在 SharedPixelBuffer 原地更新/同指针重新赋值时不会复用旧纹理。
 i-slint-renderer-software = "1.18.1"

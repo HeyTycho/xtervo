@@ -321,6 +321,10 @@ pub struct Config {
     /// 反馈 issue 的新建页 URL；空 = 只生成本地 bundle，不打开网页。
     /// 也可以用 `TERVO_FEEDBACK_ISSUE_URL` 覆盖。不会自动上传或创建 MR。
     pub feedback_issue_url: String,
+    /// 本地安装插件时要求 Ed25519 签名（设置页 Plugins 开关）。
+    /// `TERVO_PLUGIN_REQUIRE_SIGNATURE=1` 同样会强制；默认 false（允许未签名，
+    /// 但仍会拒绝坏签名/带签名却无公钥的包）。见 docs/PLUGIN_INSTALL.md。
+    pub plugin_require_signature: bool,
     /// 忽略 `scrollback` 数值，使用 [`UNLIMITED_SCROLLBACK_LINES`] 安全上限。
     /// 只对之后新建的 pane 生效（历史缓冲大小不能在会话中安全扩容）。
     pub scrollback_unlimited: bool,
@@ -413,6 +417,7 @@ impl Default for Config {
             iip: true,
             render_hud: false,
             feedback_issue_url: String::new(),
+            plugin_require_signature: false,
             scrollback_unlimited: false,
             scrollbar_policy: "auto".to_string(),
             backspace_binding: "ascii-delete".to_string(),

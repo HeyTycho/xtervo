@@ -18,10 +18,15 @@
 //! 该模块取代旧 `plugin.rs`（v1/v2，保留为未编译 legacy 文件），不保留旧协议
 //! 代码路径。
 
+mod cli;
+pub mod install;
 mod manifest;
 mod protocol;
+pub mod signature;
 mod state;
 mod supervisor;
+#[cfg(test)]
+mod install_tests;
 #[cfg(test)]
 mod tests;
 
@@ -34,6 +39,11 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde_json::{json, Value};
 use tervo_core::WakeSignal;
 
+pub use cli::run_cli;
+pub use install::{
+    install_package, rollback_package, InstallOptions, InstallReport, RollbackOptions,
+    RollbackReport,
+};
 pub use manifest::{CommandDecl, Manifest, PluginEvent, PLUGIN_API_VERSION};
 pub use protocol::{
     render_markdown_plain, StatusPayload, SurfaceDoc, SurfaceElement, MAX_CLIPBOARD_CHARS,
@@ -235,6 +245,10 @@ pub struct PluginEntry {
     pub legacy: bool,
     pub supported: bool,
     pub reason: String,
+    /// 由本地安装器写入的元数据（手动放置的插件为 None）。
+    pub install_meta: Option<install::InstallMeta>,
+    /// 当前 `plugin.toml` + `plugin.toml.sig` 对当前公钥的实时校验结果。
+    pub signature_status: signature::SignatureStatus,
 }
 
 impl PluginEntry {
@@ -279,6 +293,14 @@ pub fn discover_plugins(dir: &Path) -> Vec<PluginEntry> {
     paths.sort();
     let mut plugins = Vec::new();
     for path in paths {
+        // `.staging` / `.backup` 与用户自建隐藏目录都不是可加载插件。
+        if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with('.'))
+        {
+            continue;
+        }
         if path.is_dir() && path.join("plugin.toml").is_file() {
             plugins.push(parse_package_dir(&path));
         } else if path.is_file()
@@ -340,6 +362,8 @@ fn parse_flat_manifest(path: &Path) -> PluginEntry {
         legacy: true,
         supported: false,
         reason: "Unsupported legacy flat manifest; Plugin API v3 requires <plugins>/<dir>/plugin.toml with api = 3 and host_abi = 3 (see docs/PLUGIN_V3.md)".to_string(),
+        install_meta: None,
+        signature_status: signature::SignatureStatus::Unsigned,
     };
     match read_manifest_value(path) {
         Ok(value) => {
@@ -374,6 +398,8 @@ fn parse_package_dir(dir: &Path) -> PluginEntry {
         legacy: false,
         supported: false,
         reason: String::new(),
+        install_meta: install::installed_meta(dir),
+        signature_status: signature::inspect_plugin_dir(dir),
     };
     let value = match read_manifest_value(&manifest_path) {
         Ok(value) => value,
@@ -452,6 +478,8 @@ fn parse_package_dir(dir: &Path) -> PluginEntry {
     entry.theme_error = theme_error;
     entry.supported = true;
     entry.reason.clear();
+    entry.install_meta = install::installed_meta(dir);
+    entry.signature_status = signature::inspect_plugin_dir(dir);
     entry
 }
 
@@ -496,6 +524,14 @@ pub struct PluginRow {
     pub assistant: bool,
     /// 面板/settings 是否可用（打开按钮据此显示）。
     pub surface_ready: bool,
+    /// 安装来源（安装器写入；手动放置显示 manual）。
+    pub source: String,
+    /// 实时签名状态（verified / unsigned / invalid / unverifiable）。
+    pub signature: String,
+    /// 是否有与当前版本不同的可回滚备份。
+    pub has_backup: bool,
+    /// 默认 Rollback 会回到的版本（无备份时为空）。
+    pub backup_version: String,
 }
 
 /// 状态栏一条（一个插件最多一条）。
@@ -801,6 +837,25 @@ impl PluginStore {
                 } else {
                     String::new()
                 };
+                let backups = id
+                    .map(|id| install::list_backups(&self.dir, id))
+                    .unwrap_or_default();
+                let rollback_target = backups
+                    .iter()
+                    .find(|backup| backup.version != entry.version)
+                    .or_else(|| backups.first());
+                let source = entry
+                    .install_meta
+                    .as_ref()
+                    .map(|meta| meta.source.clone())
+                    .unwrap_or_else(|| "manual (not installed by Tervo)".to_string());
+                let signature_label = match (&entry.signature_status, &entry.install_meta) {
+                    (signature::SignatureStatus::Unsigned, Some(meta)) => meta.signature_label(),
+                    (signature::SignatureStatus::Unsigned, None) => {
+                        "unsigned · installed manually".to_string()
+                    },
+                    (status, _) => status.label(),
+                };
                 PluginRow {
                     key: entry.key.clone(),
                     name: entry.name.clone(),
@@ -817,6 +872,15 @@ impl PluginStore {
                     has_settings,
                     assistant,
                     surface_ready: supported && approved && persisted.enabled,
+                    source: sanitize_text(&source, 320),
+                    signature: sanitize_text(&signature_label, 240),
+                    has_backup: supported
+                        && backups
+                            .iter()
+                            .any(|backup| backup.version != entry.version),
+                    backup_version: rollback_target
+                        .map(|backup| backup.version.clone())
+                        .unwrap_or_default(),
                 }
             })
             .collect()
@@ -1168,6 +1232,135 @@ impl PluginStore {
             std::thread::sleep(Duration::from_millis(20));
         }
         eprintln!("[plugin-v3] 关闭超时：仍有插件进程未退出");
+    }
+
+    /// 本地安装/更新（不执行插件代码）。成功后刷新条目；启用状态下会重载 host。
+    pub fn install_local(
+        &mut self,
+        source: &Path,
+        update: bool,
+        require_signature: bool,
+        backup_keep: usize,
+    ) -> Result<InstallReport, String> {
+        let options = InstallOptions {
+            require_signature,
+            backup_keep,
+            update,
+            ..InstallOptions::default()
+        };
+        let report = install_package(&self.dir, source, &options)?;
+        self.refresh_after_install(&report.id);
+        eprintln!(
+            "[plugin-v3] {} {} -> {}（{}，{} 文件，{} 字节）",
+            if update { "updated" } else { "installed" },
+            report.id,
+            report.version,
+            report.signature.label(),
+            report.files,
+            report.bytes
+        );
+        for warning in &report.warnings {
+            eprintln!("[plugin-v3] install warning: {warning}");
+        }
+        Ok(report)
+    }
+
+    /// 回滚到 `.backup/<id>/` 的旧版本；成功后刷新条目。
+    pub fn rollback_local(
+        &mut self,
+        key: &str,
+        to: Option<&str>,
+        require_signature: bool,
+        backup_keep: usize,
+    ) -> Result<RollbackReport, String> {
+        let id = self
+            .entry_index(key)
+            .and_then(|position| self.entries.get(position))
+            .and_then(PluginEntry::v3_key)
+            .map(str::to_string)
+            .unwrap_or_else(|| key.to_string());
+        let report = rollback_package(
+            &self.dir,
+            &id,
+            to,
+            &RollbackOptions {
+                backup_keep,
+                require_signature,
+                pubkey: None,
+                signature_config: None,
+            },
+        )?;
+        self.refresh_after_install(&id);
+        eprintln!(
+            "[plugin-v3] rollback {} {} -> {}",
+            report.id, report.from_version, report.to_version
+        );
+        for warning in &report.warnings {
+            eprintln!("[plugin-v3] rollback warning: {warning}");
+        }
+        Ok(report)
+    }
+
+    /// 安装/回滚后刷新 store：已知 id 走 reload（保留启用/确认状态）；
+    /// 新 id 重新解析目录并重建索引。被覆盖目录里的旧 id 会停止 supervisor。
+    fn refresh_after_install(&mut self, id: &str) {
+        if let Some(position) = self.index.get(id).copied() {
+            if self.state.is_enabled(id) {
+                if let Err(error) = self.reload_plugin(id) {
+                    eprintln!("[plugin-v3] {id}: 安装后 reload 失败: {error}");
+                }
+            } else {
+                // 未启用插件没有运行中的 supervisor：只重解析条目，不触发
+                // “权限需要重新确认”的 reload 通知（首次 Enable 时仍会确认）。
+                let dir = self.entries[position].dir.clone();
+                self.entries[position] = parse_package_dir(&dir);
+                self.rebuild_index();
+                self.bump_runtime();
+            }
+            return;
+        }
+        let target = self.dir.join(id);
+        let removed: Vec<String> = self
+            .entries
+            .iter()
+            .filter(|entry| entry.dir == target)
+            .filter_map(|entry| entry.v3_key().map(str::to_string))
+            .collect();
+        if !removed.is_empty() {
+            self.entries.retain(|entry| entry.dir != target);
+            for removed_id in removed {
+                if let Some(handle) = self.supervisors.remove(&removed_id) {
+                    handle.shutdown();
+                }
+            }
+        }
+        self.entries.push(parse_package_dir(&target));
+        self.entries.sort_by(|a, b| {
+            a.name
+                .to_lowercase()
+                .cmp(&b.name.to_lowercase())
+                .then(a.key.cmp(&b.key))
+        });
+        self.rebuild_index();
+        if let Some(position) = self.index.get(id).copied() {
+            if self.entries[position].supported {
+                if let Some(manifest) = self.entries[position].manifest.clone() {
+                    if self.state.is_enabled(&manifest.id)
+                        && self
+                            .state
+                            .approved_for(&manifest.id, &manifest.permission_fingerprint())
+                    {
+                        if let Err(error) = self.start_supervisor_at(position) {
+                            eprintln!(
+                                "[plugin-v3] {}: 安装后自动启动失败: {error}",
+                                manifest.id
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        self.bump_runtime();
     }
 
     pub fn open_folder(&self, key: &str) -> Result<PathBuf, String> {
