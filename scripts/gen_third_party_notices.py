@@ -52,6 +52,11 @@ def main() -> int:
         if name in OURS:
             continue
         crate = registry / f"{name}-{ver}"
+        if not (crate / "Cargo.toml").exists():
+            # [patch.crates-io] 的 vendored 依赖不在 registry；例如
+            # vendor/alacritty_terminal。没有这个 fallback 会从 notices 里静默
+            # 丢掉它。
+            crate = ROOT / "vendor" / name
         manifest = crate / "Cargo.toml"
         if not manifest.exists():
             continue
