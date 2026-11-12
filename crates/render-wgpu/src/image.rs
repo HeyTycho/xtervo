@@ -1014,12 +1014,33 @@ impl GpuImageRenderer {
             }
         }
 
+        // Partial text path: no images, non-full damage, one bounding rect.
+        // The target keeps undamaged rows; only the damaged rectangle is
+        // cleared and repainted. Images still use the full path because their
+        // quads can cross the scissor boundary.
+        let damage_rect = if scene.image_count() == 0 && !scene.damage.full {
+            scene
+                .damage
+                .bounds()
+                .filter(|rect| !rect.is_empty())
+                .map(|rect| [rect.x, rect.y, rect.w, rect.h])
+        } else {
+            None
+        };
+
         let prepared = text.prepare(target, sections)?;
         let text_passes = if prepared.glyph_count() > 0 { 2 } else { 1 };
-        let mut text_draw_calls = text.draw_backgrounds(target, clear, &prepared)?;
-        let below = self.render(target, None, &layers.below)?;
-        text_draw_calls += text.draw_glyphs(target, &prepared)?;
-        let above = self.render(target, None, &layers.above)?;
+        let (text_draw_calls, below, above) = if let Some(rect) = damage_rect {
+            let backgrounds = text.draw_backgrounds_damaged(target, clear, &prepared, rect)?;
+            let glyphs = text.draw_glyphs_damaged(target, &prepared, rect)?;
+            (backgrounds + glyphs, ImageFrameStats::default(), ImageFrameStats::default())
+        } else {
+            let mut calls = text.draw_backgrounds(target, clear, &prepared)?;
+            let below = self.render(target, None, &layers.below)?;
+            calls += text.draw_glyphs(target, &prepared)?;
+            let above = self.render(target, None, &layers.above)?;
+            (calls, below, above)
+        };
         let (text_stats, _geometry) = text.finish(prepared, text_draw_calls, text_passes);
 
         Ok(SceneLayerStats {

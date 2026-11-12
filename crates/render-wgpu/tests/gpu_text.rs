@@ -1214,3 +1214,79 @@ fn invalid_layout_is_rejected_before_rendering() {
         .expect_err("zero font size must be rejected");
     assert!(matches!(error, TextRenderError::InvalidLayout { .. }));
 }
+
+#[test]
+fn damage_scissor_matches_full_redraw_and_preserves_untouched_rows() {
+    use tervo_scene::{DamageRect, DamageRegion};
+    let mut fixture = fixture(240, 80);
+    let text_layout = layout(&fixture.renderer, 20, 0.0, 0.0);
+    let cell_h = text_layout.cell_height;
+    let cell_w = text_layout.cell_width;
+    let viewport = Viewport {
+        cell_w,
+        cell_h,
+        cols: 12,
+        rows: 4,
+    };
+
+    let make_scene = |row0: &str, damage: DamageRegion| {
+        let mut batch = TextBatch::new(1);
+        push_line(&mut batch, 0, row0, 0x00ff_ffff, 0x0011_2233, TextAttributes::default());
+        push_line(&mut batch, 1, "BBBB", 0x00ff_ffff, 0x0011_2233, TextAttributes::default());
+        let section_batch = batch.clone();
+        let scene = Scene {
+            viewport,
+            revision: 2,
+            damage,
+            selection: None,
+            search: None,
+            cursor: None,
+            layers: vec![SceneLayer {
+                z_index: TEXT_LAYER_Z,
+                items: vec![DrawItem::Text(batch)],
+            }],
+        };
+        (scene, section_batch)
+    };
+
+    let mut images = GpuImageRenderer::new(fixture.gpu.device.clone(), fixture.gpu.queue.clone());
+    let (initial, initial_batch) = make_scene("AAAA", DamageRegion::default());
+    let initial_section = TextSection::new(&initial_batch, text_layout);
+    images
+        .render_scene(&mut fixture.renderer, &fixture.target, CLEAR, &[initial_section], &initial)
+        .expect("initial full render");
+
+    let (partial, partial_batch) = make_scene(
+        "CCCC",
+        DamageRegion {
+            rects: vec![DamageRect::new(
+                0,
+                0,
+                (cell_w * 4.0).ceil() as u32,
+                cell_h.ceil() as u32,
+            )],
+            full: false,
+        },
+    );
+    let partial_section = TextSection::new(&partial_batch, text_layout);
+    images
+        .render_scene(&mut fixture.renderer, &fixture.target, CLEAR, &[partial_section], &partial)
+        .expect("partial render");
+
+    let fresh = TextTarget::new(
+        &fixture.gpu.device,
+        PhysicalSize { width: 240, height: 80 },
+    )
+    .expect("fresh target");
+    let (full, full_batch) = make_scene("CCCC", DamageRegion::full());
+    let full_section = TextSection::new(&full_batch, text_layout);
+    images
+        .render_scene(&mut fixture.renderer, &fresh, CLEAR, &[full_section], &full)
+        .expect("full final render");
+
+    let partial_pixels =
+        read_target_rgba8(&fixture.gpu.device, &fixture.gpu.queue, &fixture.target).expect("partial readback");
+    let full_pixels =
+        read_target_rgba8(&fixture.gpu.device, &fixture.gpu.queue, &fresh).expect("full readback");
+    assert_eq!(partial_pixels, full_pixels, "partial damage must match full redraw");
+}

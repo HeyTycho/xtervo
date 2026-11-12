@@ -1140,6 +1140,7 @@ impl GpuTextRenderer {
             }),
             &prepared.geometry.solids,
             &[],
+            None,
         );
         self.queue.submit(Some(encoder.finish()));
         Ok(draw_calls)
@@ -1169,6 +1170,129 @@ impl GpuTextRenderer {
             wgpu::LoadOp::Load,
             &[],
             &prepared.geometry.glyphs,
+            None,
+        );
+        self.queue.submit(Some(encoder.finish()));
+        Ok(draw_calls)
+    }
+
+    /// Clears only `rect` and draws the prepared backgrounds clipped to it.
+    ///
+    /// The target keeps its previous contents outside the rect (`LoadOp::Load`).
+    /// The clear color is painted by one solid quad because WGPU's render-pass
+    /// clear ignores scissor. Used by the damage-scissor path; images are not
+    /// allowed in this partial path (the caller falls back to a full frame).
+    pub fn draw_backgrounds_damaged(
+        &mut self,
+        target: &TextTarget,
+        clear: [u8; 4],
+        prepared: &PreparedText,
+        rect: [u32; 4],
+    ) -> Result<u32, TextRenderError> {
+        self.validate_prepared(target, prepared)?;
+        let [x, y, width, height] = rect;
+        if width == 0 || height == 0 {
+            return Ok(0);
+        }
+        let size = target.size();
+        let x = x.min(size.width);
+        let y = y.min(size.height);
+        let width = width.min(size.width.saturating_sub(x));
+        let height = height.min(size.height.saturating_sub(y));
+        if width == 0 || height == 0 {
+            return Ok(0);
+        }
+        let clear_instance = SolidInstance {
+            rect: [x as f32, y as f32, width as f32, height as f32],
+            color: [
+                f32::from(clear[0]) / 255.0,
+                f32::from(clear[1]) / 255.0,
+                f32::from(clear[2]) / 255.0,
+                f32::from(clear[3]) / 255.0,
+            ],
+        };
+        let mut clear_bytes = Vec::with_capacity(SolidInstance::BYTES as usize);
+        clear_instance.append_bytes(&mut clear_bytes);
+        let clear_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("tervo-wgpu-text-damage-clear"),
+            size: SolidInstance::BYTES,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.queue.write_buffer(&clear_buffer, 0, &clear_bytes);
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("tervo-wgpu-text-damage-backgrounds"),
+            });
+        let mut draw_calls = 0u32;
+        {
+            let color_attachments = [Some(wgpu::RenderPassColorAttachment {
+                view: target.view(),
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })];
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("tervo-wgpu-text-damage-backgrounds-pass"),
+                color_attachments: &color_attachments,
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_scissor_rect(x, y, width, height);
+            pass.set_bind_group(0, &self.bind_group, &[]);
+            pass.set_pipeline(&self.solid_pipeline);
+            pass.set_vertex_buffer(0, clear_buffer.slice(..));
+            pass.draw(0..6, 0..1);
+            draw_calls += 1;
+            if !prepared.geometry.solids.is_empty() {
+                pass.set_vertex_buffer(0, self.solid_buffer.slice(..));
+                pass.draw(0..6, 0..prepared.geometry.solids.len() as u32);
+                draw_calls += 1;
+            }
+        }
+        self.queue.submit(Some(encoder.finish()));
+        Ok(draw_calls)
+    }
+
+    /// Draws prepared glyphs clipped to `rect`, keeping the rest of the target.
+    pub fn draw_glyphs_damaged(
+        &mut self,
+        target: &TextTarget,
+        prepared: &PreparedText,
+        rect: [u32; 4],
+    ) -> Result<u32, TextRenderError> {
+        self.validate_prepared(target, prepared)?;
+        if prepared.geometry.glyphs.is_empty() {
+            return Ok(0);
+        }
+        let size = target.size();
+        let [x, y, width, height] = rect;
+        let x = x.min(size.width);
+        let y = y.min(size.height);
+        let width = width.min(size.width.saturating_sub(x));
+        let height = height.min(size.height.saturating_sub(y));
+        if width == 0 || height == 0 {
+            return Ok(0);
+        }
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("tervo-wgpu-text-damage-glyphs"),
+            });
+        let draw_calls = self.encode_pass(
+            &mut encoder,
+            target,
+            "tervo-wgpu-text-damage-glyphs-pass",
+            wgpu::LoadOp::Load,
+            &[],
+            &prepared.geometry.glyphs,
+            Some([x, y, width, height]),
         );
         self.queue.submit(Some(encoder.finish()));
         Ok(draw_calls)
@@ -1269,6 +1393,7 @@ impl GpuTextRenderer {
             }),
             &prepared.geometry.solids,
             &prepared.geometry.glyphs,
+            None,
         );
         self.queue.submit(Some(encoder.finish()));
         Ok(draw_calls)
@@ -1282,6 +1407,7 @@ impl GpuTextRenderer {
         load: wgpu::LoadOp<wgpu::Color>,
         solids: &[SolidInstance],
         glyphs: &[GlyphInstance],
+        scissor: Option<[u32; 4]>,
     ) -> u32 {
         let mut draw_calls = 0u32;
         {
@@ -1302,6 +1428,9 @@ impl GpuTextRenderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
+            if let Some([x, y, width, height]) = scissor {
+                pass.set_scissor_rect(x, y, width, height);
+            }
             pass.set_bind_group(0, &self.bind_group, &[]);
             if !solids.is_empty() {
                 pass.set_pipeline(&self.solid_pipeline);
