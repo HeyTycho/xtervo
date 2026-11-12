@@ -142,7 +142,7 @@ echo "running TERVO_GPU_NATIVE=1 (WGPU30)"
 # llvmpipe can take ~2.5s to present its first WGPU frame; give the imported
 # texture time to be sampled before take_snapshot.
 run_app gpu TERVO_GPU_NATIVE=1 TERVO_GPU_NATIVE_DEBUG=1 \
-    TERVO_GPU_SNAPSHOT_DELAY_MS=6000 \
+    TERVO_GPU_SNAPSHOT_DELAY_MS=15000 \
     TERVO_GPU_NATIVE_DUMP="$out/gpu/offscreen" \
     TERVO_GPU_SNAPSHOT="$out/gpu/snap" TERVO_GPU_SNAPSHOT_EXIT=1
 
