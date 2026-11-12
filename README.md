@@ -190,6 +190,9 @@ ls -l dist/ && file dist/tervo-stripped && ./dist/tervo-stripped --help
   panels/settings，解析为宿主渲染的声明式 UI（text/markdown/list/input/button/select/
   progress）；terminal/clipboard 请求走 capability gate + 每次 Allow/Deny，**不是 OS
   沙箱**。首次启用必须确认权限。旧 v1/v2 不兼容。MCP 是 Tervo 内嵌功能，不是插件能力。
+  本地目录/zip/tar 安装、更新、原子回滚与可选 Ed25519 签名校验（设置页或
+  `tervo plugins install/update/rollback`）见
+  [`docs/PLUGIN_INSTALL.md`](docs/PLUGIN_INSTALL.md)；不实现市场/远程自动更新。
   清单/协议/权限/限制见 [`docs/PLUGIN_V3.md`](docs/PLUGIN_V3.md)，
   示例 [`docs/examples/plugin-v3-echo/`](docs/examples/plugin-v3-echo/)。
 - Profile 外观：Settings → Profiles → Edit/New 可为每个 Local/SSH/Serial/Telnet Profile

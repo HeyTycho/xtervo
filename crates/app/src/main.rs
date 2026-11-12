@@ -1180,6 +1180,10 @@ fn plugin_row_view(row: &plugin_v3::PluginRow, lang: &str) -> PluginRowView {
         has_settings: row.has_settings,
         assistant: row.assistant,
         surface_ready: row.surface_ready,
+        source: row.source.clone().into(),
+        signature: row.signature.clone().into(),
+        has_backup: row.has_backup,
+        backup_version: row.backup_version.clone().into(),
     }
 }
 
@@ -1238,6 +1242,86 @@ fn sync_plugin_config_metadata(st: &AppState) {
         "tabbar_position": st.cfg.tabbar_position,
         "plugin_api": plugin_v3::PLUGIN_API_VERSION,
     }));
+}
+
+/// Settings → Plugins：本地安装/更新/回滚。安装过程不执行插件；成功后才刷新
+/// store（已启用的插件经 v3 host reload，不重启 Tervo）。
+fn plugin_install_action(st: &mut AppState, action: &str, key: &str, path: &str) {
+    let lang = st.cfg.lang();
+    let keep = plugin_v3::install::DEFAULT_BACKUP_KEEP;
+    match action {
+        "install" | "update" => {
+            let update = action == "update";
+            let source = path.trim();
+            if source.is_empty() {
+                set_status_toast(
+                    st,
+                    if lang == "zh" {
+                        "先选择目录/安装包，或在路径框输入路径。".to_string()
+                    } else {
+                        "Choose a folder/package or enter a path first.".to_string()
+                    },
+                );
+                return;
+            }
+            let source = config::expand_tilde(source);
+            let result = st.plugins.install_local(
+                &source,
+                update,
+                st.cfg.plugin_require_signature,
+                keep,
+            );
+            match result {
+                Ok(report) => {
+                    let message = if lang == "zh" {
+                        format!(
+                            "{} {} 已{}（签名: {}）",
+                            report.name,
+                            report.version,
+                            if update { "更新" } else { "安装" },
+                            report.signature.label()
+                        )
+                    } else {
+                        format!(
+                            "{} {} {} (signature: {})",
+                            report.name,
+                            report.version,
+                            if update { "updated" } else { "installed" },
+                            report.signature.label()
+                        )
+                    };
+                    set_status_toast(st, message);
+                    st.ui.set_plugin_install_path("".into());
+                    refresh_plugin_page(st);
+                },
+                Err(error) => set_status_toast(st, error),
+            }
+        },
+        "rollback" => match st.plugins.rollback_local(
+            key,
+            None,
+            st.cfg.plugin_require_signature,
+            keep,
+        ) {
+            Ok(report) => {
+                let message = if lang == "zh" {
+                    format!(
+                        "{} 已回滚 {} → {}",
+                        report.id, report.from_version, report.to_version
+                    )
+                } else {
+                    format!(
+                        "{} rolled back {} → {}",
+                        report.id, report.from_version, report.to_version
+                    )
+                };
+                set_status_toast(st, message);
+                refresh_plugin_page(st);
+            },
+            Err(error) => set_status_toast(st, error),
+        },
+        other => eprintln!("[ui] 未知插件安装动作 {other}"),
+    }
 }
 
 fn show_plugin_confirm(st: &mut AppState) {
@@ -2259,6 +2343,51 @@ fn pick_background_image(initial: &str) -> Result<Option<String>, String> {
     }
 }
 
+/// 选择本地插件安装源：`kind = "folder"` 选目录，`"file"` 选 zip/tar 包。
+/// 与背景图选择器一致：只传固定参数给 zenity，不拼 shell；`TERVO_FILE_DIALOG`
+/// 可覆盖可执行文件，便于无桌面测试使用 fake picker。
+fn pick_plugin_source(kind: &str, initial: &str) -> Result<Option<String>, String> {
+    let exe = std::env::var("TERVO_FILE_DIALOG").unwrap_or_else(|_| "zenity".to_string());
+    let mut cmd = std::process::Command::new(&exe);
+    cmd.arg("--file-selection");
+    match kind {
+        "folder" => {
+            cmd.args(["--directory", "--title=Tervo — choose a plugin folder"]);
+        },
+        "file" => {
+            cmd.args([
+                "--title=Tervo — choose a plugin package",
+                "--file-filter=Plugin packages | *.zip *.tar *.tgz *.tar.gz",
+            ]);
+        },
+        other => return Err(format!("未知安装源类型 {other:?}")),
+    }
+    let initial = config::expand_tilde(initial.trim());
+    let start = if initial.is_dir() {
+        initial
+    } else {
+        initial.parent().map(Path::to_path_buf).unwrap_or_default()
+    };
+    if !start.as_os_str().is_empty() {
+        cmd.arg(format!("--filename={}/", start.display()));
+    }
+    let out = cmd
+        .output()
+        .map_err(|e| format!("无法启动文件选择器 {exe}: {e}"))?;
+    if !out.status.success() {
+        return Ok(None);
+    }
+    let path = String::from_utf8(out.stdout)
+        .map_err(|_| "文件选择器返回了非 UTF-8 路径".to_string())?
+        .trim()
+        .to_string();
+    if path.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(path))
+    }
+}
+
 /// 第一次成功设置背景图且当前 opacity 仍是 100% 时自动降到的值。
 /// 否则终端底色完全不透明，背景图看起来“没生效”。
 const FIRST_BACKGROUND_OPACITY: f32 = 0.35;
@@ -2656,6 +2785,8 @@ fn sync_reload_ui(st: &mut AppState) {
     st.ui.set_cfg_sixel(st.cfg.sixel);
     st.ui.set_cfg_sixel_scrolling(st.cfg.sixel_scrolling);
     st.ui.set_cfg_iip(st.cfg.iip);
+    st.ui
+        .set_cfg_plugin_require_signature(st.cfg.plugin_require_signature);
     st.ui.set_cfg_render_hud(st.cfg.render_hud);
     set_render_hud(st, render_hud_forced_by_env() || st.cfg.render_hud);
     st.ui
@@ -10306,6 +10437,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if argv.get(1).map(String::as_str) == Some("diag") {
         return diag::run(&argv[2..]);
     }
+    // 插件本地安装/更新/回滚：无 UI，不初始化 Slint，不执行插件代码。
+    if argv.get(1).map(String::as_str) == Some("plugins") {
+        std::process::exit(plugin_v3::run_cli(&argv[2..]));
+    }
 
     logging::init();
     if argv.iter().any(|a| a == "--diagnose") {
@@ -11559,6 +11694,54 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ---- Plugin API v3：所有 UI 由宿主渲染 ----
     ui.on_plugin_action(|action, key| {
         with_app(|st| plugin_action(st, action.as_str(), key.as_str()));
+    });
+    ui.on_toggle_plugin_require_signature(|| {
+        with_app(|st| {
+            st.cfg.plugin_require_signature = !st.cfg.plugin_require_signature;
+            st.ui
+                .set_cfg_plugin_require_signature(st.cfg.plugin_require_signature);
+            st.cfg.save();
+            eprintln!(
+                "[plugin-v3] plugin_require_signature={}",
+                st.cfg.plugin_require_signature
+            );
+        });
+    });
+    let plugin_picker_weak = ui.as_weak();
+    ui.on_plugin_pick_install(move |kind| {
+        let Some(current_ui) = plugin_picker_weak.upgrade() else { return };
+        let initial = current_ui.get_plugin_install_path().to_string();
+        let kind = kind.to_string();
+        let weak = plugin_picker_weak.clone();
+        std::thread::Builder::new()
+            .name("plugin-install-picker".into())
+            .spawn(move || {
+                let result = pick_plugin_source(&kind, &initial);
+                let _ = slint::invoke_from_event_loop(move || {
+                    let Some(_ui) = weak.upgrade() else { return };
+                    with_app(|st| match result {
+                        Ok(Some(path)) => {
+                            eprintln!("[plugin-v3] 安装源选择: {path}");
+                            st.ui.set_plugin_install_path(path.as_str().into());
+                        },
+                        Ok(None) => {},
+                        Err(error) => {
+                            let message = if st.cfg.lang() == "zh" {
+                                format!("文件选择器不可用: {error}")
+                            } else {
+                                format!("File picker unavailable: {error}")
+                            };
+                            set_status_toast(st, message);
+                        },
+                    });
+                });
+            })
+            .ok();
+    });
+    ui.on_plugin_install_apply(|action, key, path| {
+        with_app(|st| {
+            plugin_install_action(st, action.as_str(), key.as_str(), path.as_str())
+        });
     });
     ui.on_plugin_confirm_enable(|| {
         with_app(confirm_plugin_enable);
@@ -13294,6 +13477,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         st.ui.set_cfg_sixel(st.cfg.sixel);
         st.ui.set_cfg_sixel_scrolling(st.cfg.sixel_scrolling);
         st.ui.set_cfg_iip(st.cfg.iip);
+        st.ui
+            .set_cfg_plugin_require_signature(st.cfg.plugin_require_signature);
         st.ui
             .set_cfg_scrollback_unlimited(st.cfg.scrollback_unlimited);
         st.ui

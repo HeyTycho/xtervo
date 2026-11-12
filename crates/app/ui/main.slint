@@ -78,6 +78,12 @@ export struct PluginRowView {
     has-settings: bool,
     assistant: bool,
     surface-ready: bool,
+    /// 本地安装来源（安装器写入；手放为 manual）
+    source: string,
+    /// verified / unsigned / invalid / unverifiable（实时校验）
+    signature: string,
+    has-backup: bool,
+    backup-version: string,
 }
 
 /// 插件只能提供这些固定声明式元素；布局/样式/控件全部由宿主决定。
@@ -1733,6 +1739,12 @@ export component MainWindow inherits Window {
     in property <string> plugin-dir: "";
     // 最近插件命令/事件活动（新→旧，最多 8 条；只读展示）
     in property <[string]> plugin-activity-items: [];
+    // 本地安装/更新/回滚路径与签名要求（不访问网络/市场）
+    in-out property <string> plugin-install-path: "";
+    in-out property <bool> cfg-plugin-require-signature: false;
+    callback plugin-pick-install(string);
+    callback plugin-install-apply(string, string, string);
+    callback toggle-plugin-require-signature();
     // ---- Plugin API v3：宿主渲染的操作/确认/surface/ask ----
     callback plugin-action(string, string);
     callback plugin-open-surface(string, string);
@@ -4914,6 +4926,48 @@ export component MainWindow inherits Window {
                                 font-size: 9px;
                                 wrap: word-wrap;
                             }
+
+                            SettingRow {
+                                label: Lang.t("Require Ed25519 signature", "要求 Ed25519 签名");
+                                description: Lang.t("Reject unsigned packages on Install/Update. Bad signatures are always rejected. Without a configured public key, unsigned remains allowed. See docs/PLUGIN_INSTALL.md.", "安装/更新时拒绝未签名包。坏签名始终拒绝；未配置公钥时仍允许未签名包。见 docs/PLUGIN_INSTALL.md。");
+                                SettingsSwitch {
+                                    on: root.cfg-plugin-require-signature;
+                                    toggled => { root.toggle-plugin-require-signature(); }
+                                }
+                            }
+                        }
+
+                        SettingsCard {
+                            title: Lang.t("Install from folder or package", "从目录或安装包安装");
+                            description: Lang.t("Local only: folder with plugin.toml, or .zip/.tar/.tar.gz. Nothing is executed during install; enable/permissions still go through the v3 host.", "仅本地：含 plugin.toml 的目录，或 .zip/.tar/.tar.gz。安装时不执行任何插件代码；启用/权限仍由 v3 host 负责。");
+                            SettingsTextField {
+                                text <=> root.plugin-install-path;
+                                placeholder: "/path/to/plugin-dir or plugin.zip";
+                            }
+                            HorizontalLayout {
+                                spacing: 6px;
+                                ActionBtn {
+                                    horizontal-stretch: 1;
+                                    label: Lang.t("Choose file…", "选择文件…");
+                                    clicked => { root.plugin-pick-install("file"); }
+                                }
+                                ActionBtn {
+                                    horizontal-stretch: 1;
+                                    label: Lang.t("Choose folder…", "选择目录…");
+                                    clicked => { root.plugin-pick-install("folder"); }
+                                }
+                                ActionBtn {
+                                    horizontal-stretch: 1;
+                                    label: Lang.t("Install", "安装");
+                                    clicked => { root.plugin-install-apply("install", "", root.plugin-install-path); }
+                                }
+                            }
+                            Text {
+                                text: Lang.t("Install writes a staging copy, validates manifest/signature/limits, then atomically swaps directories. The previous version is kept for Rollback (default 3 backups).", "安装先写 staging，校验清单/签名/大小限制，再原子替换目录。旧版本保留用于回滚（默认 3 个备份）。");
+                                color: Palette.colors.muted;
+                                font-size: 9px;
+                                wrap: word-wrap;
+                            }
                         }
 
                         SettingsCard {
@@ -5020,6 +5074,40 @@ export component MainWindow inherits Window {
                                             vertical-alignment: center;
                                         }
                                     }
+                                    HorizontalLayout {
+                                        spacing: 6px;
+                                        Text {
+                                            text: Lang.t("Source:", "来源:");
+                                            color: Palette.colors.muted;
+                                            font-size: 10px;
+                                            vertical-alignment: center;
+                                        }
+                                        Text {
+                                            horizontal-stretch: 1;
+                                            text: row.source;
+                                            color: Palette.colors.subtext;
+                                            font-size: 10px;
+                                            vertical-alignment: center;
+                                            wrap: word-wrap;
+                                        }
+                                    }
+                                    HorizontalLayout {
+                                        spacing: 6px;
+                                        Text {
+                                            text: Lang.t("Signature:", "签名:");
+                                            color: Palette.colors.muted;
+                                            font-size: 10px;
+                                            vertical-alignment: center;
+                                        }
+                                        Text {
+                                            horizontal-stretch: 1;
+                                            text: row.signature;
+                                            color: Palette.colors.subtext;
+                                            font-size: 10px;
+                                            vertical-alignment: center;
+                                            wrap: word-wrap;
+                                        }
+                                    }
 
                                     HorizontalLayout {
                                         spacing: 6px;
@@ -5044,6 +5132,18 @@ export component MainWindow inherits Window {
                                             horizontal-stretch: 1;
                                             label: Lang.t("Restart", "重启");
                                             clicked => { root.plugin-action("restart", row.key); }
+                                        }
+                                        if row.supported : ActionBtn {
+                                            horizontal-stretch: 1;
+                                            label: Lang.t("Update…", "更新…");
+                                            clicked => { root.plugin-install-apply("update", row.key, root.plugin-install-path); }
+                                        }
+                                        if row.has-backup : ActionBtn {
+                                            horizontal-stretch: 1;
+                                            label: row.backup-version == ""
+                                                ? Lang.t("Rollback", "回滚")
+                                                : Lang.t("Rollback to \{row.backup-version}", "回滚到 \{row.backup-version}");
+                                            clicked => { root.plugin-install-apply("rollback", row.key, ""); }
                                         }
                                         ActionBtn {
                                             horizontal-stretch: 1;

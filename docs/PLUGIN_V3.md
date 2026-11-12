@@ -666,8 +666,16 @@ cwd、命令行、环境变量、终端内容或凭据。事件是 notification�
 - `error`（崩溃原因、stderr 尾部、权限变化的提示）
 - `permissions`（规范化摘要；明确是声明/capability，不是沙箱）
 - `restart_count`
-- 操作：`[Enable]` `[Disable]` `[Reload]` `[Restart]` `[Open folder]`
-  （启用/权限确认后额外显示 `[Panel…]` / `[Settings…]`）
+- `source` / `signature`：本地安装来源与实时 Ed25519 校验状态
+- 操作：`[Enable]` `[Disable]` `[Reload]` `[Restart]` `[Update…]` /
+  `[Rollback to <version>]` / `[Open folder]`（启用/权限确认后额外显示
+  `[Panel…]` / `[Settings…]`）
+- 顶部：本地安装路径 + `[Choose file…]` / `[Choose folder…]` / `[Install]`，
+  以及 “Require Ed25519 signature” 开关
+
+本地安装/更新/回滚、签名格式、安全限制见
+[`docs/PLUGIN_INSTALL.md`](PLUGIN_INSTALL.md)。安装器不执行插件代码；权限确认
+仍由本节描述的 v3 host 负责。
 
 v1/v2 行：`unsupported`，`api` 显示原版本，`error` 说明
 “Unsupported Plugin API vX; Tervo v3 only loads api = 3 / host_abi = 3 …”，
@@ -842,8 +850,9 @@ v1/v2 不会加载；迁移步骤：
 ## 15. 非目标（本版本明确不做）
 
 - 插件 MCP server / MCP 代理 / 插件工具市场；
-- 托管插件市场、签名、自动更新；
+- 托管插件市场、远程自动更新、在线密钥分发/信任链；
 - 任意 Slint UI；任意 WASM 插件 API（只支持无 import 的 terminal.output_filter）；
+- 内置 AI provider 或插件 AI provider 路由；
 - 内置 AI provider 或插件 AI provider 路由；
 - 双协议 v1/v2 兼容层；
 - OS 级沙箱 / 文件系统/网络强制隔离。
