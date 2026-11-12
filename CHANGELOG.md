@@ -23,6 +23,8 @@ Tervo 的版本与 tag 规则见 `docs/RELEASING.md`。
 - `TERVO_RENDER_HUD=1` / Settings → Images → Render HUD：FPS、frame time、实际 renderer、GPU-native frames/draw calls、atlas/stage0 上传、网格尺寸。
 - `tervo diag doctor [--issue]`：确定性 Doctor 命令入口。
 - `tervo diag serve` MCP 扩展：`tervo.doctor_check`、`tervo.issue_draft`、`tervo.metrics_read`、`resources/list|read`，保留只读边界。
+- `tervo diag serve` live terminal control：list/output/send_text/send_key/run/focus/new_tab/split/scroll；close_pane/close_tab/kill 需 `TERVO_DIAG_ALLOW_DESTRUCTIVE=1`，写操作需 `TERVO_DIAG_ALLOW_WRITE=1` 与 token。
+- Settings → Help → Feedback：生成脱敏本地 tar.gz，打开配置的 issue 新建页；不自动提交 issue/MR、不 post 凭据。
 - 工业级 MaximizeController：desired/observed/pending + PropertyNotify、显式 X11 xid、超时只报错不改 target、无 WM 回退。
 
 ### Fixed
@@ -31,8 +33,6 @@ Tervo 的版本与 tag 规则见 `docs/RELEASING.md`。
 - desktop action id 改为 `new-window`，Ubuntu Dock 不再同时添加默认项和自定义项。
 - 无 terminal damage 的 redraw 复用上一帧 GPU target；有 damage 仍是完整重绘（待 0.4.0 scissor）。
 - dsh 等全屏 TUI 中滚轮/滚动条滚动时清除原生选区，避免重绘后高亮粘在错误文本上。
-- 图片图层顺序：cell 背景 → 图片 → 选区/搜索 → 字形；TUI 黑色 backing cell 不再把图片盖黑。
-
 - 图片图层顺序：cell 背景 → 图片 → 选区/搜索 → 字形；TUI 黑色 backing cell 不再把图片盖黑。
 - 灯箱按 image id 从原始 RGBA 取图，先设 source 再 open；Fit 允许放大且 >100% pixelated。
 - 新增 `scripts/e2e_image_display.sh`：自生成 Sixel，断言图片图层/黑底/滚动/灯箱首次点击/Fit/100%。
