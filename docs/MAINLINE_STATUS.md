@@ -1,6 +1,6 @@
 # Tervo Mainline Status / Mainline Audit
 
-Snapshot: 2026-11-12, branch `master`, HEAD `1865af2`
+Snapshot: 2026-11-12, branch `master`, HEAD `737e70a`
 Purpose: one place for supported features, fixes, and branch merge decisions.
 The historical inventory stays in [`FEATURE_MATRIX.md`](FEATURE_MATRIX.md);
 this file is the current mainline truth.
@@ -25,8 +25,9 @@ this file is the current mainline truth.
 - Sixel, iTerm2 IIP, Kitty graphics; source registry, crop/clip, z-order,
   below/above-text composition; Sixel bytes/2J ordering fixed.
 - Cursor remains a Slint overlay; selection highlight is Scene/CPU text color.
-- No-damage redraws reuse the previous GPU target (`can_reuse_gpu_target`).
-  Damaged frames are still full Scene/target redraws; see "Known gaps".
+- Damaged frames use a scissor/Load path for text and image passes; no-damage
+  redraws reuse the previous GPU target. Partial-vs-full pixel test lives in
+  `crates/render-wgpu/tests/gpu_text.rs`; HUD exposes partial/full/reuse counts.
 - Render HUD: Settings -> Terminal -> Images -> Render HUD, or
   `TERVO_RENDER_HUD=1`; FPS/frame time/renderer/GPU draws/atlas/stage0/grid.
 
@@ -36,19 +37,25 @@ this file is the current mainline truth.
   trace-layer|doctor`.
 - `tervo diag doctor [--issue]`: deterministic Doctor CLI.
 - Settings -> Help -> Run Doctor: deterministic findings/evidence/issue UI.
-- `tervo diag serve`: MCP stdio server, 6 read-only tools:
+- `tervo diag serve`: MCP stdio server. Read-only tools:
   `diag_env`, `diag_snapshot`, `diag_replay`, `doctor_check`, `issue_draft`,
-  `metrics_read`; `resources/list|read` exposes `tervo://version`.
+  `metrics_read`; live read tools `live_capabilities`, `live_snapshot`, `live_list`,
+  `live_output`; write-gated tools `live_send_text`, `live_send_key`, `live_run`,
+  `live_focus`, `live_new_tab`, `live_split`, `live_scroll`; destructive-gated
+  `live_close_pane`, `live_close_tab`, `live_kill`. MCP is embedded in core, not a plugin.
 - P0 filter byte-conservation audit and trace-layer; real dsh raw replay.
 - Doctor core: `tervo.diagnostic_case.v1`, evidence bundle/hash/redaction,
   issue template, status/health checks.
 
 ### Plugins / integrations
 
-- Plugin API v2: process-isolated plugins, commands, AI Chat contribution,
-  status provider, plugin settings page.
-- MCP is the external agent/tool surface; it is not a replacement for the
-  in-app plugin UI API.
+- Plugin API v3 only: process-isolated, JSON-RPC 2.0, api=3/host_abi=3,
+  permissions + first-enable confirmation, supervisor, events/status/theme,
+  declarative panels/settings, enable/disable/reload/restart. v1/v2 entries are
+  shown unsupported and never spawned.
+- Feedback button: settings → Help → Feedback creates a redacted local
+  tar.gz and opens a configured issue page; no auto API/MR.
+- MCP is the external agent/tool surface; it is not a plugin capability.
 - SSH/SFTP/Vault/Profiles integrations already in the product surface.
 
 ## Fixes merged in the current cycle
@@ -68,7 +75,13 @@ this file is the current mainline truth.
 | No-damage GPU target reuse + damage contract test | `da0a195`, `0d141c1` |
 | Kitty placement ID written as positive i32-safe range | cherry-pick `502e490` (content from `1b9d39b`) |
 | Ubuntu Dock duplicate New Window: action id `new-window` | `fe9d4f2` |
-| Damage-scissor contract/tests/gates for 0.4.0 | `843da05` |
+| Damage-scissor contract/tests/gates | `843da05` |
+| Text damage scissor + partial-vs-full test | `e12101d` |
+| Image damage scissor + HUD partial/full counters | `28c89f8` |
+| MCP live terminal control (L0/L1/L2 gated) | `b232a4e`, `d016613`, `fcbe98c` |
+| Feedback bundle/issue page | `b3b862c`, `50d4bc2`, `737e70a` |
+| Plugin API v3 host | `d5bdbbd`, `af098bc`, merge `4174519` |
+| MCP e2e stale-socket fix | `fdfae65` |
 
 ## Branch merge audit (2026-11-12)
 
@@ -81,6 +94,7 @@ Content already on mainline:
 | `agent/max-controller` | merged; revert/reapply history is expected |
 | `agent/mcp` | merged |
 | `agent/kitty-graphics` | content cherry-picked as `502e490`; branch ancestry still unmerged |
+| `agent/plugin-v3` | merged as `4174519` (v3-only host, v1/v2 unsupported) |
 | `agent/scroll-render` | superseded by mainline `7cf220b` (`row_top.max(top)` image landing fix); no code merge needed |
 | `feat/config-hotreload` | superseded by mainline `1228748`; `config_watch.rs` is present |
 | `feat/mem-converge` | image eviction fix `66ae0c6` already mainline; only optional memprobe instrumentation remains unmerged |
@@ -99,14 +113,15 @@ retained, but dirty worktrees may contain uncommitted evidence:
 
 ## Known gaps (do not claim done)
 
-- Damaged GPU frames still full Scene/target redraw; no scissor/partial image
-  pass yet. No-damage reuse is done only.
 - Selection behavior is "clear on wheel/scrollbar", not RowId-anchored content.
 - AI provider/model/streaming and full AI Doctor conversation are not implemented;
-  only deterministic Doctor + MCP tools.
-- Plugin API v3 permissions/events/UI contributions are not implemented.
+  only deterministic Doctor + MCP tools. AI Doctor is a future plugin.
+- Plugin v3 has no OS sandbox; permissions are capability gates + confirmation.
+  No market/signing/install-update, no plugin MCP, no arbitrary Slint UI.
+- WASM hot-path runtime is not implemented.
 - Wayland native, color emoji/shaping, atlas eviction, 24h soak remain open.
-- MCP is local stdio without auth token; read-only tools only.
+- MCP write tools require env switches and a token; per-harness scopes/audit
+  retention are still minimal.
 - MCP terminal-control design and planned write tools: [`MCP_TERMINAL_CONTROL.md`](MCP_TERMINAL_CONTROL.md).
 
 ## Release rules
