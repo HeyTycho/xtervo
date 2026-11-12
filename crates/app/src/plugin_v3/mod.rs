@@ -32,7 +32,11 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
-use tervo_core::WakeSignal;
+use tervo_core::{OutputFilterHandle, WakeSignal};
+
+use crate::plugin_wasm::{
+    WasmFilterRuntime, WasmFilterStatsSnapshot, WasmOutputHost,
+};
 
 pub use manifest::{CommandDecl, Manifest, PluginEvent, PLUGIN_API_VERSION};
 pub use protocol::{
@@ -420,7 +424,11 @@ fn parse_package_dir(dir: &Path) -> PluginEntry {
         entry.reason = format!("v3 清单无效: {reason}");
         return entry;
     }
-    let entry_path = match manifest::resolve_entry(dir, &manifest.entry) {
+    let entry_path = match if manifest.is_wasm() {
+        manifest::resolve_wasm_entry(dir, &manifest.entry)
+    } else {
+        manifest::resolve_entry(dir, &manifest.entry)
+    } {
         Ok(path) => path,
         Err(reason) => {
             entry.reason = format!("entry 无效: {reason}");
@@ -483,6 +491,8 @@ pub struct PluginRow {
     pub name: String,
     pub version: String,
     pub api: String,
+    /// `process` 或 `wasm`；设置页显示，便于区分热路径过滤器。
+    pub runtime: String,
     pub status: String,
     pub error: String,
     pub permissions: String,
@@ -528,6 +538,10 @@ pub struct PluginStore {
     state: PersistedState,
     state_error: Option<String>,
     supervisors: HashMap<String, SupervisorHandle>,
+    /// 已启用 WASM 输出过滤器的实例；按插件 id 索引。
+    wasm_filters: HashMap<String, Arc<WasmFilterRuntime>>,
+    /// 交给 core pane 的共享热路径句柄；Enable/Disable/Reload 原地替换。
+    wasm_host: Arc<WasmOutputHost>,
     last_errors: HashMap<String, String>,
     interns: HashMap<String, &'static str>,
     started: bool,
@@ -602,6 +616,8 @@ impl PluginStore {
             state,
             state_error,
             supervisors: HashMap::new(),
+            wasm_filters: HashMap::new(),
+            wasm_host: Arc::new(WasmOutputHost::default()),
             last_errors: HashMap::new(),
             interns: HashMap::new(),
             started: false,
@@ -618,6 +634,50 @@ impl PluginStore {
 
     pub fn state_error(&self) -> Option<&str> {
         self.state_error.as_deref()
+    }
+
+    /// 发现过至少一个 WASM 插件时返回共享热路径句柄。即使当前全部禁用也返回
+    /// 句柄：之后 Enable 会原地替换内部实例，已创建的 pane 立即生效，不需要
+    /// 重建 PTY 或重启 Tervo。
+    pub fn output_filter_handle(&self) -> Option<OutputFilterHandle> {
+        self.has_wasm_plugins()
+            .then(|| OutputFilterHandle::new(self.wasm_host.clone()))
+    }
+
+    pub fn has_wasm_plugins(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|entry| entry.manifest.as_ref().is_some_and(Manifest::is_wasm))
+    }
+
+    /// 已激活的 WASM 过滤器 id（按字典序，即热路径顺序）。
+    pub fn active_wasm_filters(&self) -> Vec<String> {
+        self.wasm_host.active_ids()
+    }
+
+    /// 热路径统计快照（测试/soak 证据）。
+    pub fn wasm_filter_stats(&self, key: &str) -> Option<WasmFilterStatsSnapshot> {
+        self.wasm_identity(key)
+            .and_then(|id| self.wasm_host.stats(id.as_str()))
+    }
+
+    fn wasm_identity(&self, key: &str) -> Option<String> {
+        self.entry_index(key)
+            .and_then(|position| self.entries.get(position))
+            .and_then(PluginEntry::v3_key)
+            .map(str::to_string)
+    }
+
+    fn stop_wasm(&mut self, id: &str) {
+        self.wasm_host.remove(id);
+        self.wasm_filters.remove(id);
+    }
+
+    fn stop_runtime(&mut self, id: &str) {
+        self.stop_wasm(id);
+        if let Some(handle) = self.supervisors.remove(id) {
+            handle.shutdown();
+        }
     }
 
     /// 注入 UI 唤醒（容量 1，后台线程只 notify，不碰 Slint）。
@@ -644,6 +704,18 @@ impl PluginStore {
             .entry_index(key)
             .and_then(|position| self.entries.get(position))
             .and_then(PluginEntry::v3_key)?;
+        if let Some(runtime) = self.wasm_host.get(id) {
+            return Some(RuntimeInfo {
+                phase: Some(if runtime.is_faulted() {
+                    Phase::Failed
+                } else {
+                    Phase::Running
+                }),
+                error: runtime.fault_error().unwrap_or_default(),
+                restart_count: 0,
+                pid: None,
+            });
+        }
         self.supervisors.get(id).map(SupervisorHandle::runtime)
     }
 
@@ -738,7 +810,7 @@ impl PluginStore {
                     .as_ref()
                     .map(|manifest| manifest.permissions.summary())
                     .unwrap_or_else(|| "—".to_string());
-                let (supported, has_panel, has_settings, assistant) = entry
+                let (supported, has_panel, has_settings, assistant, runtime_label) = entry
                     .manifest
                     .as_ref()
                     .map(|manifest| {
@@ -747,9 +819,10 @@ impl PluginStore {
                             !manifest.contributes.panels.is_empty(),
                             manifest.contributes.settings,
                             manifest.contributes.assistant_enabled(),
+                            manifest.runtime.trim().to_string(),
                         )
                     })
-                    .unwrap_or((false, false, false, false));
+                    .unwrap_or((false, false, false, false, "—".to_string()));
                 let id = entry.v3_key();
                 let persisted = id
                     .map(|id| self.state.entry(id))
@@ -759,7 +832,7 @@ impl PluginStore {
                     .is_some_and(|(id, permissions)| {
                         self.state.approved_for(id, &permissions)
                     });
-                let runtime = id.and_then(|id| self.supervisors.get(id)).map(|handle| handle.runtime());
+                let runtime = self.runtime_info(&entry.key);
                 let enabled = supported && persisted.enabled;
                 let status = if !supported {
                     if entry.legacy {
@@ -773,6 +846,8 @@ impl PluginStore {
                     "permission confirmation required".to_string()
                 } else if let Some(runtime) = &runtime {
                     runtime.phase().as_str().to_string()
+                } else if self.last_errors.contains_key(entry.key.as_str()) {
+                    "failed".to_string()
                 } else {
                     "stopped".to_string()
                 };
@@ -806,6 +881,7 @@ impl PluginStore {
                     name: entry.name.clone(),
                     version: entry.version.clone(),
                     api: entry.api_label.clone(),
+                    runtime: runtime_label,
                     status,
                     error,
                     permissions,
@@ -931,7 +1007,7 @@ impl PluginStore {
                 awaiting += 1;
                 continue;
             }
-            if let Err(error) = self.start_supervisor_at(position) {
+            if let Err(error) = self.start_plugin_at(position) {
                 eprintln!("[plugin-v3] {}: 启动失败: {error}", manifest.id);
                 self.last_errors.insert(manifest.id.clone(), error);
             } else {
@@ -943,6 +1019,77 @@ impl PluginStore {
             self.entries.len(),
             self.unsupported_count()
         );
+    }
+
+    fn start_plugin_at(&mut self, position: usize) -> Result<(), String> {
+        let manifest = self
+            .entries
+            .get(position)
+            .and_then(|entry| entry.manifest.as_ref())
+            .ok_or_else(|| "插件索引越界或不是 v3 插件".to_string())?;
+        if manifest.is_wasm() {
+            self.start_wasm_at(position)
+        } else {
+            self.start_supervisor_at(position)
+        }
+    }
+
+    /// 读取、编译并激活一个 WASM 输出过滤器。同步执行（仅 Enable/Reload 用户
+    /// 动作），热路径调用不在 UI 线程。失败时停止旧实例并记录错误；输出原样
+    /// 放行，Tervo 继续运行。
+    fn start_wasm_at(&mut self, position: usize) -> Result<(), String> {
+        let entry = self
+            .entries
+            .get(position)
+            .ok_or_else(|| "插件索引越界".to_string())?
+            .clone();
+        let manifest = entry
+            .manifest
+            .clone()
+            .ok_or_else(|| format!("{} 不是 v3 插件", entry.name))?;
+        if !manifest.is_wasm() {
+            return Err(format!("{} 不是 runtime = \"wasm\"", manifest.id));
+        }
+        if !entry.supported {
+            return Err(format!("{} 不受支持: {}", entry.name, entry.reason));
+        }
+        // runtime 可能从 process reload 成 wasm；旧 process 必须先停。
+        if let Some(handle) = self.supervisors.remove(&manifest.id) {
+            handle.shutdown();
+        }
+        // 先停旧过滤器：磁盘上的模块已经变化，不能继续跑旧实例。
+        self.stop_wasm(&manifest.id);
+        let path = entry
+            .entry_path
+            .clone()
+            .ok_or_else(|| format!("{} 缺少 .wasm entry", manifest.id))?;
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                let message = format!("读取 WASM 失败 {}: {error}", path.display());
+                self.last_errors.insert(manifest.id.clone(), message.clone());
+                return Err(message);
+            },
+        };
+        let runtime = match WasmFilterRuntime::load(&manifest.id, &bytes) {
+            Ok(runtime) => Arc::new(runtime),
+            Err(error) => {
+                let message = format!("加载 WASM 失败 {}: {error}", path.display());
+                self.last_errors.insert(manifest.id.clone(), message.clone());
+                return Err(message);
+            },
+        };
+        self.wasm_host.activate(runtime.clone());
+        self.wasm_filters.insert(manifest.id.clone(), runtime);
+        self.last_errors.remove(&manifest.id);
+        self.bump_runtime();
+        eprintln!(
+            "[plugin-v3] {}: WASM 输出过滤器已激活（{} bytes，input/output ≤ {} KiB）",
+            manifest.id,
+            bytes.len(),
+            crate::plugin_wasm::MAX_INPUT_BYTES / 1024
+        );
+        Ok(())
     }
 
     fn start_supervisor_at(&mut self, position: usize) -> Result<(), String> {
@@ -958,6 +1105,11 @@ impl PluginStore {
         if !entry.supported {
             return Err(format!("{} 不受支持: {}", entry.name, entry.reason));
         }
+        if manifest.is_wasm() {
+            return Err("WASM 插件不能启动 process supervisor".to_string());
+        }
+        // runtime 可能从 wasm reload 成 process；旧热路径实例必须先移除。
+        self.stop_wasm(&manifest.id);
         if let Some(handle) = self.supervisors.get(&manifest.id) {
             if matches!(
                 handle.phase(),
@@ -1002,7 +1154,7 @@ impl PluginStore {
         }
         self.state.set_enabled(&manifest.id, true);
         self.persist_state();
-        self.start_supervisor_at(position)?;
+        self.start_plugin_at(position)?;
         self.bump_runtime();
         Ok(EnableDecision::Approved)
     }
@@ -1013,7 +1165,7 @@ impl PluginStore {
         self.state.approve(&manifest.id, manifest.permission_fingerprint());
         self.state.set_enabled(&manifest.id, true);
         self.persist_state();
-        self.start_supervisor_at(position)?;
+        self.start_plugin_at(position)?;
         self.bump_runtime();
         eprintln!(
             "[plugin-v3] {}: 用户已确认权限 [{}]，enabled=true",
@@ -1027,9 +1179,7 @@ impl PluginStore {
         let (_, manifest) = self.v3_manifest(key)?;
         self.state.set_enabled(&manifest.id, false);
         self.persist_state();
-        if let Some(handle) = self.supervisors.remove(&manifest.id) {
-            handle.shutdown();
-        }
+        self.stop_runtime(&manifest.id);
         if let Ok(mut approvals) = self.shared.approvals.lock() {
             approvals.retain(|approval| approval.plugin_id != manifest.id);
         }
@@ -1038,7 +1188,8 @@ impl PluginStore {
         Ok(())
     }
 
-    /// 重新读盘、校验权限指纹；权限变化会停止进程并要求重新确认。
+    /// 重新读盘、校验权限指纹；权限变化会停止 runtime 并要求重新确认。
+    /// process 与 wasm 共用同一条生命周期，但分别走 supervisor / 热路径实例。
     pub fn reload_plugin(&mut self, key: &str) -> Result<(), String> {
         let position = self
             .entry_index(key)
@@ -1051,9 +1202,7 @@ impl PluginStore {
         self.rebuild_index();
         if !replacement.supported || new_id.is_none() {
             if let Some(old_id) = old_id {
-                if let Some(handle) = self.supervisors.remove(&old_id) {
-                    handle.shutdown();
-                }
+                self.stop_runtime(&old_id);
             }
             self.bump_runtime();
             let reason = replacement.reason.clone();
@@ -1063,18 +1212,14 @@ impl PluginStore {
         let new_id = new_id.unwrap();
         if let Some(old_id) = old_id {
             if old_id != new_id {
-                if let Some(handle) = self.supervisors.remove(&old_id) {
-                    handle.shutdown();
-                }
+                self.stop_runtime(&old_id);
             }
         }
         let manifest = replacement.manifest.as_ref().expect("supported manifest");
         let permissions = manifest.permission_fingerprint();
         if !self.state.approved_for(&new_id, &permissions) {
             self.state.revoke_approval(&new_id);
-            if let Some(handle) = self.supervisors.remove(&new_id) {
-                handle.shutdown();
-            }
+            self.stop_runtime(&new_id);
             self.persist_state();
             self.bump_runtime();
             push_notice(&self.shared, Notice {
@@ -1090,6 +1235,15 @@ impl PluginStore {
             return Ok(());
         }
         if self.state.is_enabled(&new_id) {
+            if manifest.is_wasm() {
+                // 编译器会同步重新读盘/实例化；失败时输出原样放行并在设置页显示错误。
+                self.start_wasm_at(position)?;
+                self.bump_runtime();
+                eprintln!("[plugin-v3] {new_id}: WASM reload 完成（Tervo 未重启）");
+                return Ok(());
+            }
+            // process：先移除可能存在的旧 wasm 实例（runtime 类型变化）。
+            self.stop_wasm(&new_id);
             if let Some(handle) = self.supervisors.get(&new_id) {
                 if matches!(
                     handle.phase(),
@@ -1103,9 +1257,7 @@ impl PluginStore {
                             return Ok(());
                         },
                         Err(error) => {
-                            if let Some(handle) = self.supervisors.remove(&new_id) {
-                                handle.shutdown();
-                            }
+                            self.stop_runtime(&new_id);
                             self.bump_runtime();
                             return Err(error);
                         },
@@ -1113,8 +1265,8 @@ impl PluginStore {
                 }
             }
             self.start_supervisor_at(position)?;
-        } else if let Some(handle) = self.supervisors.remove(&new_id) {
-            handle.shutdown();
+        } else {
+            self.stop_runtime(&new_id);
         }
         self.bump_runtime();
         eprintln!("[plugin-v3] {new_id}: reload 完成（Tervo 未重启）");
@@ -1131,6 +1283,15 @@ impl PluginStore {
             .approved_for(&manifest.id, &manifest.permission_fingerprint())
         {
             return Err("权限尚未确认；先 Enable 并确认".to_string());
+        }
+        if manifest.is_wasm() {
+            self.start_wasm_at(position)?;
+            self.bump_runtime();
+            eprintln!(
+                "[plugin-v3] {}: WASM filter 重新加载（不重启 Tervo）",
+                manifest.id
+            );
+            return Ok(());
         }
         if let Some(handle) = self.supervisors.get(&manifest.id) {
             if matches!(
@@ -1149,8 +1310,11 @@ impl PluginStore {
         Ok(())
     }
 
-    /// 关闭全部插件进程；窗口退出/Drop 调用。最多等 1.2s。
-    pub fn shutdown_processes(&self) {
+    /// 关闭全部插件进程/WASM 实例；窗口退出/Drop 调用。最多等 1.2s。
+    pub fn shutdown_processes(&mut self) {
+        // 先摘掉共享热路径，后续 actor 调用立即 passthrough；再释放实例/线程。
+        self.wasm_host.clear();
+        self.wasm_filters.clear();
         for handle in self.supervisors.values() {
             handle.shutdown();
         }

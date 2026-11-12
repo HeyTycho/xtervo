@@ -26,7 +26,9 @@
 //! - 帧数据由 UI 侧持有 `Box<Frame>` 往返复用，稳态零分配；`pull` 硬超时。
 
 use std::collections::{HashMap, VecDeque};
+use std::fmt;
 use std::io::{Read, Write};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
@@ -65,6 +67,9 @@ use crate::sixel::{rewrite_da1, SixelEvent, SixelFilter, SixelImage};
 
 const READ_CHUNK: usize = 32 * 1024;
 const PTY_QUEUE_CHUNKS: usize = 64;
+/// 端口过滤链的硬上限：任何插件输出超过 256 KiB 都按失败处理，原样放行。
+/// 与 `docs/PLUGIN_V3.md` 和 app 侧 WASM ABI 的 MAX_OUTPUT_BYTES 保持一致。
+pub const MAX_OUTPUT_FILTER_BYTES: usize = 256 * 1024;
 const CTRL_QUEUE: usize = 64;
 const EVENT_QUEUE: usize = 256;
 
@@ -82,6 +87,38 @@ const PULL_TIMEOUT: Duration = Duration::from_millis(100);
 const CTRL_REPLY_TIMEOUT: Duration = Duration::from_millis(200);
 /// ctrl 通道投递上限：actor 忙时 UI 最多等这么久，超时丢弃并计数（不无限阻塞）。
 const CTRL_SEND_TIMEOUT: Duration = Duration::from_millis(50);
+
+/// 终端输出过滤器：在 PTY bytes 进入 Sixel/IIP/Kitty/vte **之前**调用。
+///
+/// 契约（见 `docs/PLUGIN_V3.md`）：
+/// - `Some(bytes)` = 用返回的 bytes 继续解析；
+/// - `None` = 过滤器不可用/失败/被禁用，core **必须原样**放行输入；
+/// - 返回长度 > [`MAX_OUTPUT_FILTER_BYTES`] 也按失败处理，原样放行；
+/// - 实现绝不能阻塞 UI 线程；调用发生在 pane actor 线程，UI/render 只通过
+///   有界通道拉帧，不会被插件卡住。
+///
+/// core 不关心过滤器是 WASM、脚本还是测试闭包；插件权限/生命周期由 app 层
+/// 负责。过滤 panic 被 `catch_unwind` 截获，Tervo 不会因此崩溃。
+pub trait OutputFilter: Send + Sync {
+    fn filter(&self, bytes: &[u8]) -> Option<Vec<u8>>;
+}
+
+/// `PaneConfig` 里的过滤器句柄。用 newtype 是为了保留 `PaneConfig: Debug`，
+/// 同时不要求第三方过滤器实现 Debug。
+#[derive(Clone)]
+pub struct OutputFilterHandle(Arc<dyn OutputFilter>);
+
+impl OutputFilterHandle {
+    pub fn new(filter: Arc<dyn OutputFilter>) -> Self {
+        Self(filter)
+    }
+}
+
+impl fmt::Debug for OutputFilterHandle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("OutputFilterHandle(..)")
+    }
+}
 
 /// 搜索命中（视口坐标）。
 ///
@@ -406,6 +443,9 @@ pub struct PaneConfig {
     /// 启用 iTerm2 IIP（OSC 1337 File）内联图片。关闭后不解析/解码 IIP，
     /// 已显示的 IIP 图片立即清除；不影响 Sixel。
     pub iip: bool,
+    /// 可选的输出过滤器（插件 v3 WASM 热路径）。在 Sixel/IIP/Kitty/vte 之前
+    /// 运行；失败/超限时 core 原样放行输入。默认 None，零额外开销。
+    pub output_filter: Option<OutputFilterHandle>,
     /// 终端 cell 像素宽度：IIP 的 `width=/height=` 以 cell 为单位时换算像素。
     pub cell_width: u16,
     /// 终端 cell 像素高度：判断图片是否仍与视口相交，并换算 IIP cell 尺寸。
@@ -430,6 +470,7 @@ impl Default for PaneConfig {
             sixel: true,
             sixel_scrolling: true,
             iip: true,
+            output_filter: None,
             cell_width: 8,
             cell_height: 16,
         }
@@ -1163,6 +1204,7 @@ pub fn spawn(config: PaneConfig) -> std::io::Result<PaneHandle> {
         sixel_scrolling: config.sixel_scrolling,
         iip,
         iip_enabled: iip_enabled.clone(),
+        output_filter: config.output_filter.clone(),
         cell_width: config.cell_width.max(1),
         cell_height: config.cell_height.max(1),
         images: ImageStore::default(),
@@ -1362,6 +1404,8 @@ struct Actor {
     iip: IipFilter,
     /// IIP 开关：关闭时只吞序列，不解码/渲染。
     iip_enabled: Arc<AtomicBool>,
+    /// 插件输出过滤器；None 时 feed 完全走原路径。
+    output_filter: Option<OutputFilterHandle>,
     /// 终端 cell 像素宽/高（图片 cell 覆盖范围与文本擦除判定）。
     cell_width: u16,
     cell_height: u16,
@@ -2421,7 +2465,55 @@ impl Actor {
 
     /// 解析一批 PTY 字节。返回 false 表示这批字节全是 Sixel 中间数据、
     /// 没有产生可见变化，调用方无需唤醒 UI。
+    ///
+    /// 先在 actor 线程过可选输出过滤器，再进入原来的 Sixel → IIP → Kitty →
+    /// vte 管线。过滤器失败/panic/超限一律回退到**原始 bytes**，不丢字节。
     fn feed(&mut self, bytes: &[u8]) -> bool {
+        let Some(filter) = self.output_filter.as_ref() else {
+            return self.feed_filtered(bytes);
+        };
+        if bytes.is_empty() {
+            return self.feed_filtered(bytes);
+        }
+        use std::sync::atomic::Ordering::Relaxed;
+        let start = Instant::now();
+        let result = catch_unwind(AssertUnwindSafe(|| filter.0.filter(bytes)));
+        self.stats.filter_calls.fetch_add(1, Relaxed);
+        self.stats.filter_input_bytes.fetch_add(bytes.len() as u64, Relaxed);
+        self.stats
+            .filter_nanos
+            .fetch_add(start.elapsed().as_nanos().min(u64::MAX as u128) as u64, Relaxed);
+        match result {
+            Ok(Some(output)) if output.len() <= MAX_OUTPUT_FILTER_BYTES => {
+                self.stats.filter_output_bytes.fetch_add(output.len() as u64, Relaxed);
+                self.feed_filtered(&output)
+            },
+            Ok(Some(output)) => {
+                self.stats.filter_oversize.fetch_add(1, Relaxed);
+                self.stats.filter_fallbacks.fetch_add(1, Relaxed);
+                eprintln!(
+                    "[output-filter] 输出 {} bytes 超过 {} 上限，原样放行 {} bytes",
+                    output.len(),
+                    MAX_OUTPUT_FILTER_BYTES,
+                    bytes.len()
+                );
+                self.feed_filtered(bytes)
+            },
+            Ok(None) => {
+                self.stats.filter_fallbacks.fetch_add(1, Relaxed);
+                self.feed_filtered(bytes)
+            },
+            Err(_) => {
+                self.stats.filter_panics.fetch_add(1, Relaxed);
+                self.stats.filter_fallbacks.fetch_add(1, Relaxed);
+                eprintln!("[output-filter] 过滤器 panic，原样放行 {} bytes", bytes.len());
+                self.feed_filtered(bytes)
+            },
+        }
+    }
+
+    /// 原 PTY 解析管线（Sixel → IIP → Kitty → vte）。过滤器未启用时直接走这里。
+    fn feed_filtered(&mut self, bytes: &[u8]) -> bool {
         let start = Instant::now();
         use std::sync::atomic::Ordering::Relaxed;
         // 组合音标/ZWJ/VS 是零宽字符，alacritty 把它们挂到前一个格子上但**不标

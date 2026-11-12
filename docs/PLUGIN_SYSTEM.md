@@ -1,6 +1,9 @@
 > **状态更新**：Tervo Plugin API 已升级到 **v3**（只支持 `api = 3` / `host_abi = 3`）。
 > v1/v2 不再兼容、不会执行；本文中的 V1/V2 AI/MCP/JSON Lines 设计仅为历史记录。
 > 现行实现见 [`docs/PLUGIN_V3.md`](PLUGIN_V3.md)。MCP 是 Tervo 内嵌功能，不是插件能力。
+> 2026-11-12：v3 新增 **窄 WASM 热路径** `runtime = "wasm"` +
+> `terminal.output_filter`（无 import；无 WIT/组件模型/市场/签名）。本文的
+> 完整 WASM Host API/UI/命令设计仍是未实现的设计稿。
 
 # Tervo 插件系统：目标、运行时、能力类型与市场调研
 

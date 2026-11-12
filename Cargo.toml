@@ -34,6 +34,9 @@ toml = "1"
 log = "0.4"
 env_logger = "0.11"
 criterion = { version = "0.8", features = ["html_reports"] }
+# 插件 v3 WASM 热路径：只启用 JIT/运行时最小 feature；WAT 仅测试/示例编译用。
+wasmtime = { version = "34.0.2", default-features = false, features = ["cranelift", "runtime", "std"] }
+wat = "1"
 
 # 性能剖面：release 也保留符号，供 perf/flamegraph 使用
 [profile.release]

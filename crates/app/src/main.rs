@@ -19,6 +19,7 @@ mod logging;
 // every one of them.
 #[allow(dead_code)]
 mod plugin_v3;
+mod plugin_wasm;
 mod profile;
 mod quake;
 mod render;
@@ -1167,6 +1168,7 @@ fn plugin_row_view(row: &plugin_v3::PluginRow, lang: &str) -> PluginRowView {
         name: row.name.clone().into(),
         version: row.version.clone().into(),
         api: row.api.clone().into(),
+        runtime: row.runtime.clone().into(),
         status: localize_plugin_status(&row.status, lang).into(),
         error: row.error.clone().into(),
         permissions: row.permissions.clone().into(),
@@ -3096,6 +3098,9 @@ fn create_pane(
         sixel: st.cfg.sixel,
         sixel_scrolling: st.cfg.sixel_scrolling,
         iip: st.cfg.iip,
+        // 所有 pane 共享同一个 WASM host：设置页 Enable/Disable 原地生效。
+        // 没有 WASM 插件时为 None，core 热路径不增加分支之外的任何开销。
+        output_filter: st.plugins.output_filter_handle(),
         cell_width: fonts.cell_w as u16,
         cell_height: fonts.cell_h as u16,
         shell,

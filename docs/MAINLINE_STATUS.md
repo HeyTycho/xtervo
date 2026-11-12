@@ -118,7 +118,9 @@ retained, but dirty worktrees may contain uncommitted evidence:
   only deterministic Doctor + MCP tools. AI Doctor is a future plugin.
 - Plugin v3 has no OS sandbox; permissions are capability gates + confirmation.
   No market/signing/install-update, no plugin MCP, no arbitrary Slint UI.
-- WASM hot-path runtime is not implemented.
+- WASM hot-path runtime is implemented only as a no-import
+  `terminal.output_filter` (Wasmtime, `runtime = "wasm"`); no plugin commands,
+  UI, WASI, market, signing, or arbitrary WASM APIs.
 - Wayland native, color emoji/shaping, atlas eviction, 24h soak remain open.
 - MCP write tools require env switches and a token; per-harness scopes/audit
   retention are still minimal.

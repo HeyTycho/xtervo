@@ -1,0 +1,12 @@
+api = 3
+host_abi = 3
+id = "dev.tervo.wasm-filter"
+name = "WASM output filter (v3 example)"
+version = "1.0.0"
+runtime = "wasm"
+entry = "filter.wasm"
+description = "Hot-path terminal output filter: rewrites [tervo-wasm] to WASM-FILTER-OK."
+
+# WASM 的窄权限：只能请求终端输出热路径；没有文件/网络/进程/凭据。
+[permissions.terminal]
+output_filter = true
