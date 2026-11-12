@@ -16,7 +16,7 @@
 //! 安全边界：
 //! - 模块没有任何 import（无 WASI、文件、网络、进程、时钟、随机数）；
 //! - 每个实例最多 16 MiB 线性内存，单个模块最多 8 MiB；
-//! - 每次调用重置 fuel（4M）与 epoch deadline（约 20 ms）；
+//! - 每次调用重置 fuel（16M）与 epoch deadline（约 20 ms）；
 //! - 输入/输出各 256 KiB；`alloc` 指针、越界、陷阱、超时、输出超限都回退到
 //!   原始 bytes，并把该插件标记为 faulted（后续调用直接 passthrough，直到
 //!   Reload/Re-enable）；
@@ -56,7 +56,7 @@ pub const OUTPUT_OFFSET: usize = 0;
 pub const MIN_INPUT_OFFSET: usize = MAX_OUTPUT_BYTES;
 
 /// 每次调用最多消耗的 WASM 指令燃料。
-pub const FILTER_FUEL: u64 = 4_000_000;
+pub const FILTER_FUEL: u64 = 16_000_000;
 /// epoch ticker 周期与每次调用允许的 tick 数（约 20 ms 墙钟）。
 pub const EPOCH_TICK: Duration = Duration::from_millis(5);
 pub const FILTER_EPOCH_TICKS: u64 = 4;
@@ -864,6 +864,33 @@ mod tests {
         // 链中所有过滤器都不可用时返回 None，core 原样放行。
         host.remove("test.plugin");
         assert_eq!(host.filter(b"abc"), None);
+    }
+
+    #[test]
+    fn input_over_limit_faults_and_passthroughs() {
+        let runtime = load_runtime(UPPERCASE_WAT).expect("loads");
+        let too_big = vec![b'a'; MAX_INPUT_BYTES + 1];
+        assert_eq!(runtime.filter(&too_big), None);
+        assert!(runtime.is_faulted());
+        let err = runtime.fault_error().unwrap_or_default();
+        assert!(err.contains("超过"), "{err}");
+    }
+
+    #[test]
+    fn exact_max_input_is_accepted() {
+        let runtime = load_runtime(UPPERCASE_WAT).expect("loads");
+        let input = vec![b'a'; MAX_INPUT_BYTES];
+        let output = runtime.filter(&input).expect("exact cap accepted");
+        assert_eq!(output.len(), MAX_INPUT_BYTES);
+        assert!(output.iter().all(|byte| *byte == b'A'));
+        assert!(!runtime.is_faulted());
+    }
+
+    #[test]
+    fn module_size_over_limit_is_rejected_before_compile() {
+        let oversized = vec![0u8; MAX_WASM_BYTES + 1];
+        let err = WasmFilterRuntime::load("test.too-big", &oversized).unwrap_err();
+        assert!(err.contains("过大"), "{err}");
     }
 
     #[test]

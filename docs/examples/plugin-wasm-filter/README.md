@@ -54,7 +54,7 @@ TERVO_PLUGINS=$PWD/docs/examples TERVO_CONFIG=/tmp/tervo-v3-wasm.toml \
 - no imports (WASI or otherwise);
 - memory maximum ≤256 pages (16 MiB);
 - input/output ≤256 KiB per call;
-- 4,000,000 fuel and ~20 ms epoch deadline per call;
+- 16,000,000 fuel and ~20 ms epoch deadline per call;
 - alloc must return a pointer ≥262144; host verifies every address;
 - trap/timeout/oversize/out-of-bounds → original bytes pass through and the
   filter is faulted until Reload/Restart.

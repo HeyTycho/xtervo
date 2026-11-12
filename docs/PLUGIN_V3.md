@@ -469,7 +469,7 @@ UI/渲染线程从不等待 WASM；它仍只通过有界唤醒/拉帧通道取�
 | 线性内存 | 16 MiB / 256 pages |
 | 单次输入 | 256 KiB（当前 PTY 读块约 32 KiB） |
 | 单次输出 | 256 KiB |
-| fuel | 4,000,000 指令 |
+| fuel | 16,000,000 指令 |
 | epoch 墙钟 | 4 ticks × 5 ms ≈ 20 ms |
 | WASM 栈 | 512 KiB |
 | 实例/表/内存数 | 1 / 1 / 1 |
@@ -567,9 +567,10 @@ cargo test -p tervo-app --bin tervo
 ```
 
 覆盖：manifest/权限/ABI、缺导出/错签名/import 拒绝、uppercase 示例、
-WAT/WASM 示例一致性、trap、fuel/epoch 死循环、负长度、输出超限、alloc
-低指针/越界、memory.grow 上限、全链熔断 passthrough、core panic/None/超限
-回退、真实 PTY 启用转换/禁用原样/trap 回退/reload 错误。
+WAT/WASM 示例一致性、trap、fuel/epoch 死循环、输入 256 KiB 上限/恰好
+256 KiB、负长度、输出超限、模块 >8 MiB、alloc 低指针/越界、memory.grow
+上限、全链熔断 passthrough、core panic/None/超限回退、真实 PTY 启用转换/
+禁用原样/trap 回退/reload 错误。
 
 ### 6.8 非目标（本节明确不做）
 
