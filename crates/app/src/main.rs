@@ -6865,11 +6865,15 @@ fn set_render_hud(st: &mut AppState, enabled: bool) {
             .flatten()
             .unwrap_or((0, 0));
             let text = format!(
-                "FPS {fps:>5.1}  {:>5.1}ms | {} | native {}f/{}dc atlas {}up/{}B | stage0 {}f/{}B | {}x{}",
+                "FPS {fps:>5.1}  {:>5.1}ms | {} | native {}f/{}dc partial {}p full {}f reuse {}r rects {} atlas {}up/{}B | stage0 {}f/{}B | {}x{}",
                 if fps > 0.0 { 1000.0 / fps } else { 0.0 },
                 render_probe::backend_label(),
                 native.frames,
                 native.draw_calls,
+                native.partial_frames,
+                native.full_frames,
+                native.reused_frames,
+                native.damage_rects,
                 native.atlas_uploads,
                 native.atlas_uploaded_bytes,
                 uploads.frames,

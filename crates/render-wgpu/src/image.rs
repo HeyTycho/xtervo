@@ -866,6 +866,28 @@ impl GpuImageRenderer {
         clear: Option<[u8; 4]>,
         images: &[&ImageInstance],
     ) -> Result<(ImageFrameStats, ImageGeometry), ImageError> {
+        self.render_with_geometry_inner(target, clear, images, None)
+    }
+
+    /// Renders image layers clipped to an outer damage rectangle. The target
+    /// keeps its contents outside the rectangle (`LoadOp::Load`).
+    pub fn render_clipped(
+        &mut self,
+        target: &TextTarget,
+        images: &[&ImageInstance],
+        outer: [u32; 4],
+    ) -> Result<ImageFrameStats, ImageError> {
+        self.render_with_geometry_inner(target, None, images, Some(outer))
+            .map(|(stats, _)| stats)
+    }
+
+    fn render_with_geometry_inner(
+        &mut self,
+        target: &TextTarget,
+        clear: Option<[u8; 4]>,
+        images: &[&ImageInstance],
+        outer_scissor: Option<[u32; 4]>,
+    ) -> Result<(ImageFrameStats, ImageGeometry), ImageError> {
         let started = Instant::now();
         let size = target.size();
         self.write_screen(size);
@@ -946,12 +968,22 @@ impl GpuImageRenderer {
                             .get(&quad.source_id)
                             .expect("source bind group resolved before the pass");
                         pass.set_bind_group(1, bind_group, &[]);
-                        pass.set_scissor_rect(
-                            quad.scissor[0],
-                            quad.scissor[1],
-                            quad.scissor[2],
-                            quad.scissor[3],
-                        );
+                        let mut scissor = quad.scissor;
+                        if let Some([ox, oy, ow, oh]) = outer_scissor {
+                            let x = scissor[0].max(ox);
+                            let y = scissor[1].max(oy);
+                            let right = scissor[0]
+                                .saturating_add(scissor[2])
+                                .min(ox.saturating_add(ow));
+                            let bottom = scissor[1]
+                                .saturating_add(scissor[3])
+                                .min(oy.saturating_add(oh));
+                            scissor = [x, y, right.saturating_sub(x), bottom.saturating_sub(y)];
+                        }
+                        if scissor[2] == 0 || scissor[3] == 0 {
+                            continue;
+                        }
+                        pass.set_scissor_rect(scissor[0], scissor[1], scissor[2], scissor[3]);
                         pass.draw(0..6, index as u32..index as u32 + 1);
                         draw_calls += 1;
                     }
@@ -1014,11 +1046,10 @@ impl GpuImageRenderer {
             }
         }
 
-        // Partial text path: no images, non-full damage, one bounding rect.
-        // The target keeps undamaged rows; only the damaged rectangle is
-        // cleared and repainted. Images still use the full path because their
-        // quads can cross the scissor boundary.
-        let damage_rect = if scene.image_count() == 0 && !scene.damage.full {
+        // Damage-scissored path: the bounding rectangle is cleared and both
+        // text and image passes are clipped to it. Undamaged pixels stay in the
+        // target. A missing/empty damage region keeps the existing full path.
+        let damage_rect = if !scene.damage.full {
             scene
                 .damage
                 .bounds()
@@ -1032,8 +1063,10 @@ impl GpuImageRenderer {
         let text_passes = if prepared.glyph_count() > 0 { 2 } else { 1 };
         let (text_draw_calls, below, above) = if let Some(rect) = damage_rect {
             let backgrounds = text.draw_backgrounds_damaged(target, clear, &prepared, rect)?;
+            let below = self.render_clipped(target, &layers.below, rect)?;
             let glyphs = text.draw_glyphs_damaged(target, &prepared, rect)?;
-            (backgrounds + glyphs, ImageFrameStats::default(), ImageFrameStats::default())
+            let above = self.render_clipped(target, &layers.above, rect)?;
+            (backgrounds + glyphs, below, above)
         } else {
             let mut calls = text.draw_backgrounds(target, clear, &prepared)?;
             let below = self.render(target, None, &layers.below)?;

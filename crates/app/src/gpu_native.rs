@@ -36,7 +36,8 @@ use tervo_render_wgpu::{
     TextLayout, TextSection, TextTarget,
 };
 use tervo_scene::{
-    BackgroundInstance, DrawItem, PhysicalSize, Scene, SceneBuilder, Viewport, BACKGROUND_LAYER_Z,
+    BackgroundInstance, DamageRegion, DrawItem, PhysicalSize, Scene, SceneBuilder, Viewport,
+    BACKGROUND_LAYER_Z,
 };
 
 /// GPU-native 默认启用；`TERVO_CPU=1` / `TERVO_GPU=0` / `TERVO_GPU_NATIVE=0` 关闭。
@@ -100,6 +101,11 @@ static ATLAS_UPLOADED_BYTES: AtomicU64 = AtomicU64::new(0);
 static VERTEX_UPLOADED_BYTES: AtomicU64 = AtomicU64::new(0);
 static IMAGE_UPLOADS: AtomicU64 = AtomicU64::new(0);
 static IMAGE_SOURCES: AtomicU64 = AtomicU64::new(0);
+static FULL_FRAMES: AtomicU64 = AtomicU64::new(0);
+static PARTIAL_FRAMES: AtomicU64 = AtomicU64::new(0);
+static REUSED_FRAMES: AtomicU64 = AtomicU64::new(0);
+static DAMAGE_RECTS: AtomicU64 = AtomicU64::new(0);
+static PARTIAL_PIXELS: AtomicU64 = AtomicU64::new(0);
 
 /// 进程累计的 GPU-native 统计（用于快照验收/integration 证据）。
 #[derive(Clone, Copy, Debug, Default)]
@@ -111,6 +117,11 @@ pub struct NativeTotals {
     pub vertex_uploaded_bytes: u64,
     pub image_uploads: u64,
     pub image_sources: u64,
+    pub full_frames: u64,
+    pub partial_frames: u64,
+    pub reused_frames: u64,
+    pub damage_rects: u64,
+    pub partial_pixels: u64,
 }
 
 pub fn totals() -> NativeTotals {
@@ -122,6 +133,11 @@ pub fn totals() -> NativeTotals {
         vertex_uploaded_bytes: VERTEX_UPLOADED_BYTES.load(Ordering::Relaxed),
         image_uploads: IMAGE_UPLOADS.load(Ordering::Relaxed),
         image_sources: IMAGE_SOURCES.load(Ordering::Relaxed),
+        full_frames: FULL_FRAMES.load(Ordering::Relaxed),
+        partial_frames: PARTIAL_FRAMES.load(Ordering::Relaxed),
+        reused_frames: REUSED_FRAMES.load(Ordering::Relaxed),
+        damage_rects: DAMAGE_RECTS.load(Ordering::Relaxed),
+        partial_pixels: PARTIAL_PIXELS.load(Ordering::Relaxed),
     }
 }
 
@@ -332,7 +348,7 @@ pub fn pane_image(input: &PaneFrame<'_>) -> Option<slint::Image> {
         cols: input.cols,
         rows: input.rows,
     };
-    let scene = SceneBuilder::from_frame(input.frame, viewport)
+    let mut scene = SceneBuilder::from_frame(input.frame, viewport)
         .background(BackgroundInstance {
             color: input.theme_bg & 0x00ff_ffff,
         })
@@ -357,6 +373,7 @@ pub fn pane_image(input: &PaneFrame<'_>) -> Option<slint::Image> {
     // 只有已有可复用 GPU image 时才跳过；首帧、resize、图片帧仍走完整路径。
     if can_reuse_gpu_target(input.frame, state.panes.contains_key(&input.pane)) {
         if let Some(image) = PANE_IMAGES.with(|images| images.borrow().get(&input.pane).cloned()) {
+            REUSED_FRAMES.fetch_add(1, Ordering::Relaxed);
             return Some(image);
         }
     }
@@ -429,6 +446,13 @@ pub fn pane_image(input: &PaneFrame<'_>) -> Option<slint::Image> {
         );
     }
 
+    // A fresh target has no previous pixels. Never take the partial path on
+    // its first frame: force a full clear/repaint even if the incoming Frame
+    // only reports a small damage region.
+    if recreate {
+        scene.damage = DamageRegion::full();
+    }
+
     let section;
     let sections = match scene.text_batch() {
         Some(batch) => {
@@ -436,6 +460,12 @@ pub fn pane_image(input: &PaneFrame<'_>) -> Option<slint::Image> {
             std::slice::from_ref(&section)
         }
         None => &[],
+    };
+
+    let partial_rect = if !scene.damage.full {
+        scene.damage.bounds().filter(|rect| !rect.is_empty())
+    } else {
+        None
     };
 
     let stats = {
@@ -466,6 +496,13 @@ pub fn pane_image(input: &PaneFrame<'_>) -> Option<slint::Image> {
     let render_passes = text.render_passes + stats.below.render_passes + stats.above.render_passes;
     let image_quads = stats.below.images + stats.above.images;
 
+    if let Some(rect) = partial_rect {
+        PARTIAL_FRAMES.fetch_add(1, Ordering::Relaxed);
+        DAMAGE_RECTS.fetch_add(scene.damage.rects.len() as u64, Ordering::Relaxed);
+        PARTIAL_PIXELS.fetch_add(u64::from(rect.w) * u64::from(rect.h), Ordering::Relaxed);
+    } else {
+        FULL_FRAMES.fetch_add(1, Ordering::Relaxed);
+    }
     FRAMES.fetch_add(1, Ordering::Relaxed);
     DRAW_CALLS.fetch_add(u64::from(draw_calls), Ordering::Relaxed);
     ATLAS_UPLOADS.fetch_add(text.atlas_uploads, Ordering::Relaxed);
