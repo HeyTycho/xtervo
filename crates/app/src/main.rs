@@ -10607,7 +10607,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if lines == 0.0 {
                 return;
             }
-            // 约定：delta-y > 0 表示向上滚（回看历史）
+            // 约定：delta-y > 0 表示向上滚（回看历史）。
+            // 应用内 TUI（如 dsh 侧栏）滚动后屏幕内容会重画；原生选区若继续
+            // 跟随 grid 行会粘在错误文本上，因此用户主动滚轮时清除选区。
+            rt.handle.clear_selection();
             rt.handle.scroll(lines as i32);
         });
     });
@@ -10624,6 +10627,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "[ui] scrollbar pane={id} fraction={fraction:.3} offset={offset} history={} rows={}",
                 pos.history, pos.rows
             );
+            rt.handle.clear_selection();
             rt.handle.scroll_to(offset);
         });
     });
