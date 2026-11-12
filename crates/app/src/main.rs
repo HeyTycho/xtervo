@@ -808,6 +808,7 @@ const SETTINGS_CATALOG: &[SettingsCatalogEntry] = &[
     SettingsCatalogEntry { cat: 8, section: "quickstart", en: "Quick start / Keyboard shortcuts", zh: "快速开始 / 快捷键", keywords: "help getting started quick start keyboard shortcuts hotkey keybinding ctrl+t ctrl+w ctrl+f f11 settings 帮助 快速开始 快捷键 设置" },
     SettingsCatalogEntry { cat: 8, section: "paths", en: "Config & log paths", zh: "配置文件与日志", keywords: "help config log logs path directory diagnostic copy 帮助 配置 日志 路径 目录 诊断 复制" },
     SettingsCatalogEntry { cat: 8, section: "version", en: "Version information", zh: "版本信息", keywords: "help version commit build time target 帮助 版本 提交 构建 时间 目标" },
+    SettingsCatalogEntry { cat: 8, section: "version", en: "Run Doctor", zh: "运行 Doctor", keywords: "doctor diagnostics health check issue evidence 诊断 健康 检查 证据 问题" },
     SettingsCatalogEntry { cat: 8, section: "limits", en: "Known limitations / Documentation", zh: "已知限制 / 更多文档", keywords: "help limitations docs documentation ime wayland plugin sandbox soak 帮助 限制 文档 输入法 沙箱 插件" },
 ];
 
