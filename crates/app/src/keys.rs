@@ -806,6 +806,17 @@ fn encode_modify_other_keys(
             return Some(build_function(number, trailer, bits, None));
         },
         ParsedKey::Char { code, shifted, .. } => {
+            // Ctrl+C/D/Z/\ 等控制键必须保留控制字节。modifyOtherKeys 的
+            // escaped 形式会把 Ctrl+C 变成 CSI 27;5;99~，不识别该序列的 TUI
+            // 会把尾部 "99~" 当正文打印，Ctrl+C 也就无法中断。
+            // 只处理无 Alt/Shift 的 Ctrl+字母/符号；Alt/Shift 仍按协议编码。
+            if mods.ctrl && !mods.alt && !mods.shift {
+                if let Some(ch) = char::from_u32(code) {
+                    if let Some(byte) = ctrl_byte(ch) {
+                        return Some(vec![byte]);
+                    }
+                }
+            }
             if !modify_applies(level, mods) {
                 return legacy_encode(text, mods, bindings);
             }
@@ -1257,7 +1268,10 @@ mod tests {
                 .unwrap()
         };
         // level 2：所有修饰键。
-        assert_eq!(enc("a", mods(true, false, false), 2), b"\x1b[27;5;97~");
+        // 控制键保留控制字节，避免 CSI 27;5;99~ 被不识别序列的 TUI 打印成 99~。
+        assert_eq!(enc("a", mods(true, false, false), 2), vec![0x01]);
+        assert_eq!(enc("c", mods(true, false, false), 2), vec![0x03]);
+        assert_eq!(enc("d", mods(true, false, false), 2), vec![0x04]);
         assert_eq!(enc("a", mods(false, true, false), 2), b"\x1b[27;3;97~");
         // xterm escaped 形式用 shifted 字符码。
         assert_eq!(enc("A", mods(false, false, true), 2), b"\x1b[27;2;65~");
