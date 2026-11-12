@@ -389,6 +389,8 @@ struct AppState {
     resize: Option<WindowResize>,
     /// 窗口是否聚焦（100ms 轮询 winit），用于 DECSET 1004 focus 上报。
     window_focused: bool,
+    /// TERVO_RENDER_HUD 的重复计时器；None = HUD 关闭。
+    render_hud_timer: Option<slint::Timer>,
     /// Rust 侧权威的最大化 desired state；Slint 属性只做图标显示。
     window_maximized: bool,
     /// 上次同步给输入法的候选点（含 pane/DPR/锚点来源）；None 表示尚未发送。
@@ -6725,6 +6727,58 @@ fn snapshot_path(base: &Path, suffix: &str) -> PathBuf {
 /// - `TERVO_GPU_SNAPSHOT_RESIZE=1`：首张快照后程序化改窗口尺寸，1.5s 后再拍一张
 ///   （验证 resize 不黑；走 Slint `resized` 回调 + PTY resize）。
 /// - `TERVO_GPU_SNAPSHOT_EXIT=1`：拍完退出事件循环，供脚本无头跑。
+fn install_render_hud(ui: &MainWindow) {
+    let enabled = std::env::var("TERVO_RENDER_HUD").is_ok_and(|v| {
+        matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")
+    });
+    if !enabled {
+        return;
+    }
+    let weak = ui.as_weak();
+    let mut last = Instant::now();
+    let mut last_frames = render_probe::frames();
+    let timer = slint::Timer::default();
+    timer.start(
+        slint::TimerMode::Repeated,
+        Duration::from_millis(500),
+        move || {
+            let now = Instant::now();
+            let frames = render_probe::frames();
+            let elapsed = now.duration_since(last).as_secs_f64().max(0.001);
+            let fps = frames.saturating_sub(last_frames) as f64 / elapsed;
+            last = now;
+            last_frames = frames;
+            let native = gpu_native::totals();
+            let uploads = gpu_present::upload_stats();
+            let grid = with_app(|st| {
+                st.panes
+                    .values()
+                    .next()
+                    .map(|rt| (rt.renderer.cols, rt.renderer.rows))
+            })
+            .flatten()
+            .unwrap_or((0, 0));
+            let text = format!(
+                "FPS {fps:>5.1}  {:>5.1}ms | {} | native {}f/{}dc atlas {}up/{}B | stage0 {}f/{}B | {}x{}",
+                if fps > 0.0 { 1000.0 / fps } else { 0.0 },
+                render_probe::backend_label(),
+                native.frames,
+                native.draw_calls,
+                native.atlas_uploads,
+                native.atlas_uploaded_bytes,
+                uploads.frames,
+                uploads.bytes,
+                grid.0,
+                grid.1
+            );
+            if let Some(ui) = weak.upgrade() {
+                ui.set_render_hud(text.into());
+            }
+        },
+    );
+    with_app(|st| st.render_hud_timer = Some(timer));
+}
+
 fn install_gpu_snapshot_hook(ui: &MainWindow) {
     let Some(base) = std::env::var_os("TERVO_GPU_SNAPSHOT") else {
         return;
@@ -10093,6 +10147,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         link_hover_cell: None,
         resize: None,
         window_focused: true,
+        render_hud_timer: None,
         window_maximized: false,
         ime_spot: None,
         ime_spot_dirty: true,
@@ -12725,6 +12780,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     with_app(|st| st.window_maximized = initial_maximized);
     // 无头验收钩子：TERVO_GPU_SNAPSHOT=<前缀> 时定时 take_snapshot 写 PPM 并打像素统计。
     install_gpu_snapshot_hook(&ui);
+    install_render_hud(&ui);
     // RenderingSetup 可能首帧后才给出 device/queue；GPU 就绪后主动重绘一次。
     // Stage 0 和 Scene 文字链路都需要这一脚，否则首帧以后没有输入时画面
     // 会一直停在 CPU 初帧。

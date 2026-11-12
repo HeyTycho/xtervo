@@ -31,6 +31,7 @@ static NOTIFIER_REGISTERED: AtomicBool = AtomicBool::new(false);
 /// 实际发生的渲染帧数。Skia software surface 在 Slint 1.18 不触发通知器（frames=0），
 /// 而 wgpu surface 可能已渲染但拿不到 GraphicsAPI 回调；用它区分，避免误回退。
 static RENDER_FRAMES: AtomicU64 = AtomicU64::new(0);
+static BACKEND_LABEL: std::sync::OnceLock<std::sync::Mutex<String>> = std::sync::OnceLock::new();
 
 pub fn gpu_confirmed() -> bool {
     GPU_CONFIRMED.load(Ordering::Relaxed)
@@ -42,6 +43,21 @@ pub fn notifier_registered() -> bool {
 
 pub fn frames() -> u64 {
     RENDER_FRAMES.load(Ordering::Relaxed)
+}
+
+/// 实际渲染器标签，供 HUD/诊断显示（由 RenderingSetup 写入）。
+pub fn backend_label() -> String {
+    BACKEND_LABEL
+        .get()
+        .and_then(|m| m.lock().ok().map(|s| s.clone()))
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn set_backend_label(label: &str) {
+    let mutex = BACKEND_LABEL.get_or_init(|| std::sync::Mutex::new(label.to_string()));
+    if let Ok(mut guard) = mutex.lock() {
+        *guard = label.to_string();
+    }
 }
 
 const GL_VENDOR: u32 = 0x1F00;
@@ -72,6 +88,7 @@ pub fn install(window: &slint::Window, requested: &str, fell_back: bool) {
             RenderingState::RenderingSetup => {
                 match api {
                     GraphicsAPI::NativeOpenGL { get_proc_address } => {
+                        set_backend_label("skia-gl");
                         report_gl(get_proc_address, &mut st);
                     },
                     GraphicsAPI::WGPU30 { device, queue, .. } => {
@@ -79,6 +96,7 @@ pub fn install(window: &slint::Window, requested: &str, fell_back: bool) {
                         // 把它实际使用的同一 device/queue 交出来，两个链路共用；
                         // gpu_present 只存 device、gpu_native 惰性建 atlas。
                         st.gl_reported = true;
+                        set_backend_label("wgpu30");
                         GPU_CONFIRMED.store(true, Ordering::Relaxed);
                         eprintln!(
                             "[render] actual_renderer=wgpu30（Slint WGPU30；\
@@ -91,6 +109,7 @@ pub fn install(window: &slint::Window, requested: &str, fell_back: bool) {
                         // 其他 GPU surface：没有 GL_RENDERER 可读，但已经拿到 GPU
                         // surface，不能误判成 software。
                         st.gl_reported = true;
+                        set_backend_label("skia-gpu");
                         GPU_CONFIRMED.store(true, Ordering::Relaxed);
                         let kind = format!("{api:?}");
                         eprintln!("[render] actual_renderer=skia-gpu（{kind}；非 OpenGL，读不到 GL_RENDERER）");

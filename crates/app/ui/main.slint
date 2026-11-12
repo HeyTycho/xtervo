@@ -1255,6 +1255,8 @@ export component MainWindow inherits Window {
     // 链接打开失败等短暂提示（底部浮层，Rust 侧 4 秒后清空）。
     in-out property <string> link-status: "";
     // 插件状态提供者的最小状态栏（底部一行文本；空 = 隐藏，不占布局）。
+    /// TERVO_RENDER_HUD=1 时显示的渲染调试 HUD；空 = 不显示。
+    in-out property <string> render-hud: "";
     in-out property <string> plugin-status: "";
     in-out property <string> plugin-status-tooltip: "";
     // 终端右键菜单：宽度按最长标签 + 快捷键提示留足，窄窗口自动收窄；
@@ -7977,6 +7979,26 @@ export component MainWindow inherits Window {
                     }
                 }
             }
+        }
+    }
+
+    if root.render-hud != "" : Rectangle {
+        x: 8px;
+        y: root.height - 28px;
+        width: root.width - 16px;
+        height: 22px;
+        border-radius: 5px;
+        background: #000000cc;
+        clip: true;
+        Text {
+            x: 8px;
+            width: parent.width - 16px;
+            height: 100%;
+            text: root.render-hud;
+            color: #d8d8d8;
+            font-size: 10px;
+            vertical-alignment: center;
+            overflow: elide;
         }
     }
 }
