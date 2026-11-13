@@ -2,6 +2,15 @@
 
 Tervo 的版本与 tag 规则见 `docs/RELEASING.md`。
 
+## [Unreleased]
+
+### Added
+
+- 会话崩溃恢复：`restore_session_on_startup=true` 时每 2s autosave 布局，异常退出
+  通过 `session.running` marker 检测并在下次启动恢复；session 写盘 fsync，保留上一代
+  `.json.bak` 并在 primary 损坏时回退。仍然只恢复布局/cwd/Profile 关联，不恢复
+  scrollback、屏幕内容或正在运行的进程。
+
 ## [0.4.0-rc.2] - 2026-11-12
 
 RC candidate: GPU damage scissor, embedded MCP live terminal control, plugin API v3, WASM output-filter hot path, local install/update/rollback/signature, feedback bundle.

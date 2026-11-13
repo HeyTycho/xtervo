@@ -209,11 +209,13 @@ ls -l dist/ && file dist/tervo-stripped && ./dist/tervo-stripped --help
   静默信任），ProxyJump/预检失败回退终端确认。SSH 退出显示退出码/信号与 Reconnect；
   SFTP 面板支持上传/下载队列、进度、取消、失败 Retry、chmod、10s 连接超时/keepalive。
   Vault 的 Argon2id 解锁/初始化/改主密码在后台线程执行，设置页保持可重绘。
-- 会话恢复：标签栏右键 → **Restart Session** 手动恢复；Settings → Behavior 的
-  **Restore session on startup**（默认关）开启后，正常退出写快照，下次启动恢复
-  Tab 顺序/标题/分屏树/ratio/焦点/窗口网格与每个 pane 的 cwd。local Profile 关联
-  会保留；SSH/Serial/Telnet 出于安全不自动建连，回退普通 shell。快照损坏或恢复
-  失败时回退新 Tab；不恢复 scrollback/屏幕内容/运行中进程。
+- 会话恢复/崩溃恢复：标签栏右键 → **Restart Session** 手动恢复；Settings → Behavior 的
+  **Restore session on startup**（默认关）开启后，每 2s 对变化的布局做 autosave，
+  正常退出再写最终快照。启动时发现上次遗留的 running marker 会判定异常退出，并
+  恢复最近 autosave；session 写盘带 fsync，保留上一代 `.json.bak`，primary 损坏时
+  自动回退上一代。恢复 Tab 顺序/标题/分屏树/ratio/焦点/窗口网格与每个 pane 的 cwd。
+  local Profile 关联会保留；SSH/Serial/Telnet 出于安全不自动建连，回退普通 shell。
+  快照损坏且无 backup/恢复失败时回退新 Tab；不恢复 scrollback/屏幕内容/运行中进程。
 - Tabby 功能对照见 [`docs/tabby-parity.md`](docs/tabby-parity.md)；
   主题下载/自定义见 [`docs/themes.md`](docs/themes.md)，Tabby 主题机制调研见 [`docs/tabby-themes.md`](docs/tabby-themes.md)；
   度量/诊断/改进/门禁闭环见 [`docs/self-iteration.md`](docs/self-iteration.md)；
