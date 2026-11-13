@@ -510,7 +510,7 @@ TERVO_INSTANCE_DIR=/tmp/tervo-mw-e2e-test E2E_OUT=/tmp/tervo-mw-e2e-out \
 
 # 2m 内存门禁
 SOAK_SECONDS=120 CARGO_TARGET_DIR=$PWD/target ./scripts/soak_multi_window_inproc.sh
-# PASS 2m：rss +4.96MiB；threads 22->22；fds 30->30；2 窗口存活
+# PASS 2m：rss +5.2MiB（两轮 3.5–5.2MiB）；threads 22->22；fds 30->30；2 窗口存活
 ```
 
 未合 main、未 tag/打包/市场/AI。
