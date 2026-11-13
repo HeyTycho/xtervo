@@ -1,0 +1,112 @@
+{
+  "checks": [
+    {
+      "name": "autosave_v2_two_windows",
+      "detail": {
+        "tabs": {
+          "1": 2,
+          "2": 3
+        },
+        "active_tab": {
+          "1": 1,
+          "2": 2
+        },
+        "geometry": {
+          "1": {
+            "x": 60,
+            "y": 80,
+            "w": 640,
+            "h": 480
+          },
+          "2": {
+            "x": 0,
+            "y": 0,
+            "w": 1600,
+            "h": 1000
+          }
+        },
+        "maximized": {
+          "1": false,
+          "2": true
+        }
+      }
+    },
+    {
+      "name": "auto_restore_v2_two_windows",
+      "detail": {
+        "1": 2,
+        "2": 3
+      }
+    },
+    {
+      "name": "primary_close_keeps_config_watcher",
+      "detail": {
+        "remaining": 2,
+        "hot_reload": "scroll_on_output"
+      }
+    },
+    {
+      "name": "primary_close_keeps_session_writer",
+      "detail": {
+        "windows": 1,
+        "tabs": 4
+      }
+    },
+    {
+      "name": "restore_after_primary_close",
+      "detail": {
+        "windows": 1,
+        "tabs": 4
+      }
+    },
+    {
+      "name": "last_window_clean_exit",
+      "detail": {
+        "exit": 0,
+        "running_marker": "cleared",
+        "windows": 1,
+        "tabs": 4
+      }
+    },
+    {
+      "name": "explicit_restore_flag_two_windows",
+      "detail": {
+        "windows": 2,
+        "tabs": [
+          2,
+          3
+        ]
+      }
+    },
+    {
+      "name": "v1_snapshot_migrates_single_window",
+      "detail": {
+        "tabs": 2,
+        "active_tab": 1
+      }
+    },
+    {
+      "name": "partial_snapshot_skips_empty_window",
+      "detail": {
+        "windows": 1,
+        "tabs": 1,
+        "active_tab": 0
+      }
+    },
+    {
+      "name": "restore_primary_maximized",
+      "detail": {
+        "window": 1,
+        "maximized": true,
+        "tabs": 2
+      }
+    },
+    {
+      "name": "restore_switch_off_keeps_fresh_layout",
+      "detail": {
+        "tabs": 1
+      }
+    }
+  ],
+  "ok": true
+}

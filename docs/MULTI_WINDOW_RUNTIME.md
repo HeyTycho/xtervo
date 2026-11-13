@@ -169,18 +169,55 @@ A 输出后:     native_frames 16 -> 17
 
 ## 4. Session 与关闭行为
 
-- primary 仍写单窗口 session（v2 单窗口格式）；`--window`/第二窗口不写 marker。
-- 第二窗口 `opts.window=true`，不参与 autosave/退出快照。
-- 2s autosave 与退出保存仍只由 primary 执行；窗口 B 关闭不会改 session。
-- kill -9 单窗口恢复已实测：2s autosave 后 kill -9，重启恢复 3 个 tab。
+已接入产品（v2 多窗口，不再只是数据层）：
 
-已知限制（下一阶段）：
+保存：
 
 ```text
-- 多窗口 session v2 聚合保存/恢复尚未接入：两个窗口的布局不会跨重启恢复。
-- primary 关闭而 second 存活时，config watcher/autosave 随 primary AppState
-  一起停止；shared cfg 仍在，但热更新/自动保存需要移到 SharedServices。
-- 关闭 primary 后 session 退出钩子仍以 primary opts 判断，可能不写多窗口布局。
+SharedServices 持有 2s autosave Timer（不再挂在 primary AppState）
+  -> runtime::capture_restorable_snapshot_v2()
+  -> session::save_v2()（tmp + fsync + rename + 上一代 .bak）
+写入 windows[]：id / geometry / maximized / active_tab / tabs(含 splits/focus/cwd/profile)
+窗口新建、关闭（WM close / MCP close_window / 关闭按钮）立即触发一次保存
+只有 primary 进程是 writer；--window 子进程 writer=false，不写 marker/文件
+恢复期间 restoring=true 抑制 autosave，避免半恢复布局覆盖源快照
+```
+
+恢复：
+
+```text
+启动读 session::load_v2()
+  -> restorable_windows(): 按 id 排序、跳过空窗口、clamp active_tab、上限 16
+  -> primary 建快照第一个窗口的 tabs/splits/focus + geometry/maximized
+  -> 延迟 600ms 后再建 windows[1..]（先让 primary maximize 状态机绑定 XID）
+  -> 全部窗口就绪后 session::clear()（消费一次）
+v1 单窗口文件由 session::parse_snapshot 迁移为单窗口 v2（geometry=UNKNOWN，用 --cols/--rows）
+空/坏快照：load_v2 返回 None -> 普通新 Tab；部分窗口失败：跳过该窗口/该 Tab，
+  单窗口一个 Tab 都没成功时回退 new_tab_with_default，不整机失败
+--restore 与 restore_session_on_startup 语义保留；--window 永不恢复
+```
+
+生命周期：
+
+```text
+autosave Timer / config watcher 都归 SharedServices
+  -> primary 关闭而 second 存活时，session writer 与 config 热更新继续运行
+  -> 关最后一个窗口才退出事件循环、mark_clean、最终 save_session_on_exit
+关闭窗口统一走 close_window_now：remove_window -> GPU teardown -> hide/drop
+  -> 立即保存剩余窗口布局；AppState 借用内只 defer 到事件循环，不 drop 借用中的 state
+```
+
+已知限制：
+
+```text
+- 第二窗口仍只注册终端/tab/split/close/maximize 核心回调；设置页/插件面板
+  的完整回调仍是 primary 注册块（见 §6.1）。
+- 第二窗口不启动 tervo-maximize X11 状态机：Slint 1.18 的
+  WinitWindowAccessor 在多窗口启动阶段可能返回另一个窗口的 X11 handle。
+  第二窗口用 winit is_maximized 50ms 轮询回写 maximized；primary 仍走状态机。
+- 恢复窗口按快照 id 排序创建；WindowId 是新进程内重新分配的，不复用旧 id。
+- 多窗口恢复路径不依赖 TERVO_MULTI_WINDOW_INPROC（产品路径）；该开关只控制
+  手动“新建窗口”是否走 in-process。
 ```
 
 ---
@@ -193,7 +230,7 @@ A 输出后:     native_frames 16 -> 17
 CARGO_HOME=$PWD/../../.cargo \
 CARGO_TARGET_DIR=$PWD/../../target \
 CARGO_NET_OFFLINE=true cargo test -p tervo-app --bin tervo
-# test result: ok. 546 passed; 0 failed; 1 ignored
+# test result: ok. 549 passed; 0 failed; 1 ignored
 ```
 
 ### 5.2 双窗口 e2e
@@ -238,6 +275,39 @@ CARGO_TARGET_DIR=$PWD/../../target ./scripts/soak_multi_window_inproc.sh
 
 未跑 15m/30m；按 AGENTS.md 触及渲染/循环应在合并前升级。
 
+### 5.5 多窗口 session v2 e2e
+
+```bash
+CARGO_TARGET_DIR=$PWD/../../target ./scripts/e2e_multi_window_session.sh
+```
+
+Xvfb + Openbox；真实 `tervo` 进程 + live socket + `xwin` 改窗口几何/最大化：
+
+```text
+开 2 窗口、2/3 tabs、不同 geometry、窗口 2 最大化
+2s autosave 后 session.json version=2/windows=2，geometry/maximized/active_tab 正确
+kill -9 primary，重启自动恢复 2 窗口：tabs 2/3、active_tab 1/2、geometry/maximized
+primary 关闭后 second 继续 autosave（1 窗口 4 tabs）且 config 热更新继续生效
+--restore 在 restore_session_on_startup=false 时仍恢复 2 窗口
+v1 快照迁移为单窗口（2 tabs，active=1）
+空窗口 + active_tab=99 的部分快照：跳空窗口、clamp active_tab、进程不失败
+primary 最大化快照走 X11 状态机恢复
+restore_session_on_startup=false 且无 --restore 时保持新布局
+primary 关闭后 running marker 保留；最后一个窗口 WM close -> 退出码 0、
+  running marker 清除、session.json 写回 1 窗口/4 tabs
+```
+
+证据：`docs/evidence/mw-session-integration/`（report.json + soak 采样 + 关键日志）。
+
+### 5.6 2m 多窗口 session soak
+
+与 §5.4 相同的双窗口 soak，但启用 `restore_session_on_startup=true`，确认
+autosave 与两个窗口共存时 RSS/线程/FD 门禁不变。实测：
+
+```text
+120s：rss +3940KiB，threads 21 -> 21，fds 28 -> 28，2 窗口存活
+```
+
 ---
 
 ## 6. 已知限制 / 下一阶段入口
@@ -278,14 +348,24 @@ MCP audit 记录 window_id（当前只记 pane_id）
 
 ### 6.3 Session v2 多窗口
 
-下一阶段入口：
+已完成（本分支）：
 
 ```text
-runtime::capture_snapshot_v2()
-  -> session::save_v2()
-  -> 启动时按 windows[] 先建 geometry/窗口，再 restore tabs
-WindowSnapshot 已包含 id/geometry/maximized/active_tab/tabs
+SharedServices 2s autosave -> runtime::capture_restorable_snapshot_v2()
+  -> session::save_v2()（含 fsync/backup）
+启动 session::load_v2() -> SnapshotV2::restorable_windows()
+  -> primary + 其余窗口按 windows[] 恢复 geometry/maximized/active_tab/tabs/splits/focus
+v1 迁移单窗口；空/坏/部分窗口回退可用窗口；--restore/配置开关语义保留
+窗口关闭/新建立即保存；primary 关闭后 autosave/config watcher 继续运行
 ```
+
+后续（不属于本分支）：
+
+```text
+第二窗口完整回调注册（§6.1）后，可把 tervo-maximize 状态机也按 WindowId 接入；
+当前第二窗口最大化用 winit is_maximized 轮询回写。
+```
+
 
 ### 6.4 ControlServer / 单实例
 
@@ -298,10 +378,10 @@ WindowSnapshot 已包含 id/geometry/maximized/active_tab/tabs
 ## 7. 提交记录
 
 ```text
-95ff490 refactor(app): introduce WindowRegistry/SharedServices (single window)
-7d576b4 feat(app): in-process second window behind TERVO_MULTI_WINDOW_INPROC
-e39f6a0 docs(mw-runtime): architecture status, MCP window tools, evidence
-（最终 HEAD：with_app 固定回退 primary、补 MCP window 工具、刷新证据；见 git log）
+85a4994 merge: WindowRegistry/SharedServices and in-process multi-window phase 1/2
+（本分支最终 HEAD：feat(session): wire multi-window v2 save/restore into the
+product —— SharedServices autosave/watcher、v2 全窗口恢复、session e2e；
+见 git log）
 ```
 
 未合 main、未 tag、未打包、未改 `dist-preview`。

@@ -1,0 +1,71 @@
+{
+  "version": 2,
+  "windows": [
+    {
+      "id": 1,
+      "geometry": {
+        "x": 60,
+        "y": 80,
+        "w": 640,
+        "h": 480
+      },
+      "maximized": false,
+      "active_tab": 1,
+      "tabs": [
+        {
+          "title": "Terminal 1",
+          "focused": 0,
+          "tree": {
+            "kind": "leaf",
+            "cwd": "/home/user"
+          }
+        },
+        {
+          "title": "Terminal 2",
+          "focused": 0,
+          "tree": {
+            "kind": "leaf",
+            "cwd": "/home/user"
+          }
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "geometry": {
+        "x": 0,
+        "y": 0,
+        "w": 1600,
+        "h": 1000
+      },
+      "maximized": true,
+      "active_tab": 2,
+      "tabs": [
+        {
+          "title": "Terminal 1",
+          "focused": 0,
+          "tree": {
+            "kind": "leaf",
+            "cwd": "/home/user"
+          }
+        },
+        {
+          "title": "Terminal 2",
+          "focused": 0,
+          "tree": {
+            "kind": "leaf",
+            "cwd": "/home/user"
+          }
+        },
+        {
+          "title": "Terminal 3",
+          "focused": 0,
+          "tree": {
+            "kind": "leaf",
+            "cwd": "/home/user"
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -32,6 +32,13 @@ XVFB=${SOAK_XVFB:-$PERF/xvfb/usr/bin/Xvfb}
 [ -x "$XVFB" ] || fail "找不到 Xvfb"
 rm -rf "$OUT"; mkdir -p "$OUT/logs" "$OUT/runtime" "$OUT/config"
 chmod 700 "$OUT/runtime"
+# session v2 autosave 也纳入 soak：2s 写盘必须与两个窗口共存且不涨资源。
+cat >"$OUT/cfg.toml" <<'TOML'
+restore_session_on_startup = true
+cols = 80
+rows = 24
+shell = "/bin/sh"
+TOML
 "$XVFB" "$DISPLAY_NUM" -screen 0 1280x800x24 -ac -nolisten tcp >"$OUT/xvfb.log" 2>&1 &
 XVFB_PID=$!
 for _ in $(seq 1 100); do DISPLAY="$DISPLAY_NUM" xdpyinfo >/dev/null 2>&1 && break; sleep 0.05; done
