@@ -1,0 +1,1219 @@
+{
+  "seconds": 900,
+  "samples": [
+    {
+      "rss_kb": 101312,
+      "threads": 23,
+      "fds": 31,
+      "t": 0.3,
+      "windows": 2
+    },
+    {
+      "rss_kb": 104512,
+      "threads": 23,
+      "fds": 31,
+      "t": 5.6,
+      "windows": 2
+    },
+    {
+      "rss_kb": 106412,
+      "threads": 23,
+      "fds": 31,
+      "t": 10.8,
+      "windows": 2
+    },
+    {
+      "rss_kb": 106412,
+      "threads": 23,
+      "fds": 31,
+      "t": 16.0,
+      "windows": 2
+    },
+    {
+      "rss_kb": 106416,
+      "threads": 23,
+      "fds": 31,
+      "t": 21.2,
+      "windows": 2
+    },
+    {
+      "rss_kb": 106416,
+      "threads": 23,
+      "fds": 31,
+      "t": 26.5,
+      "windows": 2
+    },
+    {
+      "rss_kb": 106416,
+      "threads": 24,
+      "fds": 31,
+      "t": 31.7,
+      "windows": 2
+    },
+    {
+      "rss_kb": 106416,
+      "threads": 23,
+      "fds": 31,
+      "t": 37.0,
+      "windows": 2
+    },
+    {
+      "rss_kb": 106420,
+      "threads": 23,
+      "fds": 31,
+      "t": 42.3,
+      "windows": 2
+    },
+    {
+      "rss_kb": 106420,
+      "threads": 23,
+      "fds": 31,
+      "t": 47.5,
+      "windows": 2
+    },
+    {
+      "rss_kb": 106424,
+      "threads": 23,
+      "fds": 31,
+      "t": 52.7,
+      "windows": 2
+    },
+    {
+      "rss_kb": 106428,
+      "threads": 23,
+      "fds": 31,
+      "t": 58.0,
+      "windows": 2
+    },
+    {
+      "rss_kb": 106428,
+      "threads": 23,
+      "fds": 31,
+      "t": 63.4,
+      "windows": 2
+    },
+    {
+      "rss_kb": 106428,
+      "threads": 23,
+      "fds": 31,
+      "t": 68.7,
+      "windows": 2
+    },
+    {
+      "rss_kb": 104936,
+      "threads": 23,
+      "fds": 31,
+      "t": 74.0,
+      "windows": 2
+    },
+    {
+      "rss_kb": 106428,
+      "threads": 23,
+      "fds": 31,
+      "t": 79.3,
+      "windows": 2
+    },
+    {
+      "rss_kb": 106432,
+      "threads": 23,
+      "fds": 31,
+      "t": 84.6,
+      "windows": 2
+    },
+    {
+      "rss_kb": 106436,
+      "threads": 23,
+      "fds": 31,
+      "t": 89.9,
+      "windows": 2
+    },
+    {
+      "rss_kb": 106440,
+      "threads": 23,
+      "fds": 31,
+      "t": 95.1,
+      "windows": 2
+    },
+    {
+      "rss_kb": 106444,
+      "threads": 23,
+      "fds": 31,
+      "t": 100.4,
+      "windows": 2
+    },
+    {
+      "rss_kb": 106448,
+      "threads": 23,
+      "fds": 31,
+      "t": 105.7,
+      "windows": 2
+    },
+    {
+      "rss_kb": 106448,
+      "threads": 23,
+      "fds": 31,
+      "t": 111.0,
+      "windows": 2
+    },
+    {
+      "rss_kb": 106448,
+      "threads": 23,
+      "fds": 31,
+      "t": 116.3,
+      "windows": 2
+    },
+    {
+      "rss_kb": 106448,
+      "threads": 23,
+      "fds": 31,
+      "t": 121.6,
+      "windows": 2
+    },
+    {
+      "rss_kb": 106448,
+      "threads": 23,
+      "fds": 31,
+      "t": 126.9,
+      "windows": 2
+    },
+    {
+      "rss_kb": 106448,
+      "threads": 23,
+      "fds": 31,
+      "t": 132.2,
+      "windows": 2
+    },
+    {
+      "rss_kb": 106448,
+      "threads": 23,
+      "fds": 31,
+      "t": 137.5,
+      "windows": 2
+    },
+    {
+      "rss_kb": 106448,
+      "threads": 23,
+      "fds": 31,
+      "t": 142.8,
+      "windows": 2
+    },
+    {
+      "rss_kb": 106452,
+      "threads": 23,
+      "fds": 31,
+      "t": 148.1,
+      "windows": 2
+    },
+    {
+      "rss_kb": 106452,
+      "threads": 23,
+      "fds": 31,
+      "t": 153.4,
+      "windows": 2
+    },
+    {
+      "rss_kb": 106456,
+      "threads": 23,
+      "fds": 31,
+      "t": 158.7,
+      "windows": 2
+    },
+    {
+      "rss_kb": 106452,
+      "threads": 23,
+      "fds": 31,
+      "t": 164.0,
+      "windows": 2
+    },
+    {
+      "rss_kb": 106456,
+      "threads": 23,
+      "fds": 31,
+      "t": 169.3,
+      "windows": 2
+    },
+    {
+      "rss_kb": 106468,
+      "threads": 23,
+      "fds": 31,
+      "t": 174.6,
+      "windows": 2
+    },
+    {
+      "rss_kb": 106472,
+      "threads": 23,
+      "fds": 31,
+      "t": 179.9,
+      "windows": 2
+    },
+    {
+      "rss_kb": 104992,
+      "threads": 23,
+      "fds": 31,
+      "t": 185.2,
+      "windows": 2
+    },
+    {
+      "rss_kb": 104992,
+      "threads": 23,
+      "fds": 31,
+      "t": 190.5,
+      "windows": 2
+    },
+    {
+      "rss_kb": 106476,
+      "threads": 23,
+      "fds": 31,
+      "t": 195.8,
+      "windows": 2
+    },
+    {
+      "rss_kb": 106476,
+      "threads": 23,
+      "fds": 31,
+      "t": 201.1,
+      "windows": 2
+    },
+    {
+      "rss_kb": 106476,
+      "threads": 23,
+      "fds": 31,
+      "t": 206.5,
+      "windows": 2
+    },
+    {
+      "rss_kb": 104996,
+      "threads": 23,
+      "fds": 31,
+      "t": 211.7,
+      "windows": 2
+    },
+    {
+      "rss_kb": 106476,
+      "threads": 23,
+      "fds": 31,
+      "t": 217.0,
+      "windows": 2
+    },
+    {
+      "rss_kb": 106476,
+      "threads": 23,
+      "fds": 31,
+      "t": 222.3,
+      "windows": 2
+    },
+    {
+      "rss_kb": 106476,
+      "threads": 23,
+      "fds": 31,
+      "t": 227.5,
+      "windows": 2
+    },
+    {
+      "rss_kb": 106480,
+      "threads": 23,
+      "fds": 31,
+      "t": 232.7,
+      "windows": 2
+    },
+    {
+      "rss_kb": 106480,
+      "threads": 23,
+      "fds": 31,
+      "t": 237.9,
+      "windows": 2
+    },
+    {
+      "rss_kb": 108448,
+      "threads": 23,
+      "fds": 31,
+      "t": 243.1,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110344,
+      "threads": 23,
+      "fds": 31,
+      "t": 248.3,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110348,
+      "threads": 23,
+      "fds": 31,
+      "t": 253.5,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110348,
+      "threads": 23,
+      "fds": 31,
+      "t": 258.8,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110352,
+      "threads": 23,
+      "fds": 31,
+      "t": 264.1,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110352,
+      "threads": 23,
+      "fds": 31,
+      "t": 269.4,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110352,
+      "threads": 23,
+      "fds": 31,
+      "t": 274.7,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110352,
+      "threads": 23,
+      "fds": 31,
+      "t": 280.0,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110348,
+      "threads": 23,
+      "fds": 31,
+      "t": 285.3,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110352,
+      "threads": 23,
+      "fds": 31,
+      "t": 290.6,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110352,
+      "threads": 23,
+      "fds": 31,
+      "t": 295.9,
+      "windows": 2
+    },
+    {
+      "rss_kb": 108868,
+      "threads": 23,
+      "fds": 31,
+      "t": 301.2,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110352,
+      "threads": 23,
+      "fds": 31,
+      "t": 306.5,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110352,
+      "threads": 23,
+      "fds": 31,
+      "t": 311.8,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110352,
+      "threads": 23,
+      "fds": 31,
+      "t": 317.1,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110352,
+      "threads": 23,
+      "fds": 31,
+      "t": 322.4,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110352,
+      "threads": 23,
+      "fds": 31,
+      "t": 327.7,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110352,
+      "threads": 24,
+      "fds": 31,
+      "t": 333.1,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110352,
+      "threads": 23,
+      "fds": 31,
+      "t": 338.4,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110372,
+      "threads": 23,
+      "fds": 31,
+      "t": 343.6,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110360,
+      "threads": 23,
+      "fds": 31,
+      "t": 348.8,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110360,
+      "threads": 23,
+      "fds": 31,
+      "t": 354.0,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110360,
+      "threads": 23,
+      "fds": 31,
+      "t": 359.3,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110364,
+      "threads": 23,
+      "fds": 31,
+      "t": 364.6,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110364,
+      "threads": 23,
+      "fds": 31,
+      "t": 369.9,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110364,
+      "threads": 23,
+      "fds": 31,
+      "t": 375.2,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110364,
+      "threads": 23,
+      "fds": 31,
+      "t": 380.5,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110368,
+      "threads": 23,
+      "fds": 31,
+      "t": 385.8,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110372,
+      "threads": 23,
+      "fds": 31,
+      "t": 391.1,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110368,
+      "threads": 23,
+      "fds": 31,
+      "t": 396.4,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110368,
+      "threads": 23,
+      "fds": 31,
+      "t": 401.7,
+      "windows": 2
+    },
+    {
+      "rss_kb": 108888,
+      "threads": 23,
+      "fds": 31,
+      "t": 407.0,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110376,
+      "threads": 23,
+      "fds": 31,
+      "t": 412.3,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110372,
+      "threads": 23,
+      "fds": 31,
+      "t": 417.6,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110372,
+      "threads": 23,
+      "fds": 31,
+      "t": 422.9,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110376,
+      "threads": 23,
+      "fds": 31,
+      "t": 428.2,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110376,
+      "threads": 23,
+      "fds": 31,
+      "t": 433.4,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110380,
+      "threads": 24,
+      "fds": 31,
+      "t": 438.7,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110380,
+      "threads": 23,
+      "fds": 31,
+      "t": 444.0,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110376,
+      "threads": 23,
+      "fds": 31,
+      "t": 449.3,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110380,
+      "threads": 23,
+      "fds": 31,
+      "t": 454.6,
+      "windows": 2
+    },
+    {
+      "rss_kb": 108900,
+      "threads": 23,
+      "fds": 31,
+      "t": 459.9,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110380,
+      "threads": 23,
+      "fds": 31,
+      "t": 465.2,
+      "windows": 2
+    },
+    {
+      "rss_kb": 108900,
+      "threads": 23,
+      "fds": 31,
+      "t": 470.6,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110380,
+      "threads": 23,
+      "fds": 31,
+      "t": 475.9,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110380,
+      "threads": 23,
+      "fds": 31,
+      "t": 481.2,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110380,
+      "threads": 23,
+      "fds": 31,
+      "t": 486.5,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110380,
+      "threads": 23,
+      "fds": 31,
+      "t": 491.8,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110384,
+      "threads": 23,
+      "fds": 31,
+      "t": 497.1,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110384,
+      "threads": 23,
+      "fds": 31,
+      "t": 502.4,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110384,
+      "threads": 23,
+      "fds": 31,
+      "t": 507.7,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110384,
+      "threads": 23,
+      "fds": 31,
+      "t": 512.9,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110384,
+      "threads": 23,
+      "fds": 31,
+      "t": 518.2,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110388,
+      "threads": 23,
+      "fds": 31,
+      "t": 523.5,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110384,
+      "threads": 23,
+      "fds": 31,
+      "t": 528.8,
+      "windows": 2
+    },
+    {
+      "rss_kb": 108904,
+      "threads": 23,
+      "fds": 31,
+      "t": 534.1,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110384,
+      "threads": 23,
+      "fds": 31,
+      "t": 539.4,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110384,
+      "threads": 23,
+      "fds": 31,
+      "t": 544.6,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110388,
+      "threads": 23,
+      "fds": 31,
+      "t": 549.9,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110384,
+      "threads": 23,
+      "fds": 31,
+      "t": 555.2,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110392,
+      "threads": 23,
+      "fds": 31,
+      "t": 560.5,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110392,
+      "threads": 23,
+      "fds": 31,
+      "t": 565.8,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110392,
+      "threads": 23,
+      "fds": 31,
+      "t": 571.1,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110392,
+      "threads": 23,
+      "fds": 31,
+      "t": 576.4,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110396,
+      "threads": 23,
+      "fds": 31,
+      "t": 581.7,
+      "windows": 2
+    },
+    {
+      "rss_kb": 108920,
+      "threads": 23,
+      "fds": 31,
+      "t": 587.0,
+      "windows": 2
+    },
+    {
+      "rss_kb": 108916,
+      "threads": 23,
+      "fds": 31,
+      "t": 592.3,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110400,
+      "threads": 23,
+      "fds": 31,
+      "t": 597.6,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110400,
+      "threads": 23,
+      "fds": 31,
+      "t": 602.9,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110400,
+      "threads": 23,
+      "fds": 31,
+      "t": 608.3,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110400,
+      "threads": 23,
+      "fds": 31,
+      "t": 613.6,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110400,
+      "threads": 23,
+      "fds": 31,
+      "t": 618.9,
+      "windows": 2
+    },
+    {
+      "rss_kb": 108920,
+      "threads": 23,
+      "fds": 31,
+      "t": 624.2,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110400,
+      "threads": 23,
+      "fds": 31,
+      "t": 629.5,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110400,
+      "threads": 23,
+      "fds": 31,
+      "t": 634.8,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110400,
+      "threads": 23,
+      "fds": 31,
+      "t": 640.1,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110400,
+      "threads": 23,
+      "fds": 31,
+      "t": 645.4,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110400,
+      "threads": 23,
+      "fds": 31,
+      "t": 650.6,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110400,
+      "threads": 23,
+      "fds": 31,
+      "t": 655.9,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110400,
+      "threads": 23,
+      "fds": 31,
+      "t": 661.2,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110400,
+      "threads": 23,
+      "fds": 31,
+      "t": 666.5,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110400,
+      "threads": 23,
+      "fds": 31,
+      "t": 671.8,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110396,
+      "threads": 23,
+      "fds": 31,
+      "t": 677.1,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110400,
+      "threads": 23,
+      "fds": 31,
+      "t": 682.4,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110400,
+      "threads": 23,
+      "fds": 31,
+      "t": 687.6,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110412,
+      "threads": 23,
+      "fds": 31,
+      "t": 692.9,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110412,
+      "threads": 23,
+      "fds": 31,
+      "t": 698.2,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110416,
+      "threads": 23,
+      "fds": 31,
+      "t": 703.5,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110416,
+      "threads": 23,
+      "fds": 31,
+      "t": 708.8,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110416,
+      "threads": 23,
+      "fds": 31,
+      "t": 714.1,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110416,
+      "threads": 23,
+      "fds": 31,
+      "t": 719.4,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110416,
+      "threads": 23,
+      "fds": 31,
+      "t": 724.7,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110416,
+      "threads": 23,
+      "fds": 31,
+      "t": 730.0,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110420,
+      "threads": 23,
+      "fds": 31,
+      "t": 735.3,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110420,
+      "threads": 23,
+      "fds": 31,
+      "t": 740.5,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110420,
+      "threads": 23,
+      "fds": 31,
+      "t": 745.8,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110420,
+      "threads": 23,
+      "fds": 31,
+      "t": 751.2,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110424,
+      "threads": 23,
+      "fds": 31,
+      "t": 756.5,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110420,
+      "threads": 23,
+      "fds": 31,
+      "t": 761.8,
+      "windows": 2
+    },
+    {
+      "rss_kb": 108936,
+      "threads": 23,
+      "fds": 31,
+      "t": 767.1,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110420,
+      "threads": 23,
+      "fds": 31,
+      "t": 772.4,
+      "windows": 2
+    },
+    {
+      "rss_kb": 108944,
+      "threads": 23,
+      "fds": 31,
+      "t": 777.7,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110424,
+      "threads": 23,
+      "fds": 31,
+      "t": 783.0,
+      "windows": 2
+    },
+    {
+      "rss_kb": 108948,
+      "threads": 23,
+      "fds": 31,
+      "t": 788.3,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110424,
+      "threads": 23,
+      "fds": 31,
+      "t": 793.6,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110428,
+      "threads": 23,
+      "fds": 31,
+      "t": 798.9,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110424,
+      "threads": 23,
+      "fds": 31,
+      "t": 804.2,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110428,
+      "threads": 23,
+      "fds": 31,
+      "t": 809.5,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110424,
+      "threads": 23,
+      "fds": 31,
+      "t": 814.8,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110428,
+      "threads": 23,
+      "fds": 31,
+      "t": 820.1,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110428,
+      "threads": 23,
+      "fds": 31,
+      "t": 825.4,
+      "windows": 2
+    },
+    {
+      "rss_kb": 108948,
+      "threads": 23,
+      "fds": 31,
+      "t": 830.6,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110432,
+      "threads": 23,
+      "fds": 31,
+      "t": 835.9,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110428,
+      "threads": 23,
+      "fds": 31,
+      "t": 841.2,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110432,
+      "threads": 23,
+      "fds": 31,
+      "t": 846.5,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110428,
+      "threads": 23,
+      "fds": 31,
+      "t": 851.8,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110428,
+      "threads": 23,
+      "fds": 31,
+      "t": 857.1,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110428,
+      "threads": 23,
+      "fds": 31,
+      "t": 862.4,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110436,
+      "threads": 23,
+      "fds": 31,
+      "t": 867.7,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110432,
+      "threads": 23,
+      "fds": 31,
+      "t": 873.0,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110432,
+      "threads": 23,
+      "fds": 31,
+      "t": 878.3,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110432,
+      "threads": 23,
+      "fds": 31,
+      "t": 883.6,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110432,
+      "threads": 23,
+      "fds": 31,
+      "t": 889.0,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110432,
+      "threads": 23,
+      "fds": 31,
+      "t": 894.3,
+      "windows": 2
+    },
+    {
+      "rss_kb": 110432,
+      "threads": 23,
+      "fds": 31,
+      "t": 899.6,
+      "windows": 2
+    }
+  ],
+  "baseline": {
+    "rss_kb": 101312,
+    "threads": 23,
+    "fds": 31,
+    "t": 0.3,
+    "windows": 2
+  },
+  "final": {
+    "rss_kb": 110432,
+    "threads": 23,
+    "fds": 31,
+    "t": 899.6,
+    "windows": 2
+  },
+  "rss_growth_kb": 9120,
+  "thread_growth": 0,
+  "fd_growth": 0
+}
