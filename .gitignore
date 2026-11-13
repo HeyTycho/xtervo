@@ -11,3 +11,9 @@
 # GPU native e2e 证据/独立二进制（不提交）
 /.e2e-gpu-native/
 /.bin/
+
+# 本地临时文件（截图 crop、调试中间物）
+/.tmp
+
+# 本地预览安装包（正式产物走 dist/ 或 release artifact，不进 git）
+/dist-preview
