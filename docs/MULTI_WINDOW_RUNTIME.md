@@ -1,6 +1,6 @@
 # Tervo 多窗口 Phase 1/2 实现状态
 
-状态：**Phase 1/2 已完成；Phase 3（单实例接入 + 同进程多窗口默认）见 §8**  
+状态：**Phase 1/2/3/4 已完成并合入 main：默认单实例、同进程多窗口、session v2、共享完整回调、插件/MCP window_id。**  
 分支：Phase 1/2 `agent/mw-runtime`；Phase 3 `agent/mw-instance-integration`  
 worktree：Phase 3 `.worktrees/mw-instance-integration`  
 基线：Phase 1/2 `1c5971e`；Phase 3 `85a4994`（`merge: WindowRegistry/SharedServices and in-process multi-window phase 1/2`）  

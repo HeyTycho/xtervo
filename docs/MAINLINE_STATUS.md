@@ -12,8 +12,12 @@ this file is the current mainline truth.
 
 ### Terminal / UI
 
-- Multi-tab, split panes, profiles, session restore, multi-window (`--window`). 当前 `--window` 是进程级 MVP；目标单进程多窗口方案见
-  [`MULTI_WINDOW_ARCHITECTURE.md`](MULTI_WINDOW_ARCHITECTURE.md)。
+- Multi-tab, split panes, profiles, crash-safe session autosave, multi-window.
+  Default is a single primary process with in-process `WindowRegistry`/`WindowRuntime`
+  and shared Config/Theme/PluginHost/MCP/Vault/Session; second `tervo` calls are
+  forwarded over a 0600 Unix control socket. Session v2 restores all windows.
+  Design: [`MULTI_WINDOW_ARCHITECTURE.md`](MULTI_WINDOW_ARCHITECTURE.md) /
+  [`MULTI_WINDOW_RUNTIME.md`](MULTI_WINDOW_RUNTIME.md).
 - Settings tab: appearance/theme, terminal, window, keys, profiles, plugins,
   Vault, Help; settings search and jump.
 - Search/find, read-only, reset, save contents, selection/copy/paste, URL/OSC 8

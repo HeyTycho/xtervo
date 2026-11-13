@@ -151,9 +151,13 @@ ls -l dist/ && file dist/tervo-stripped && ./dist/tervo-stripped --help
 - 快捷键：`Ctrl+T` 新建标签、`Ctrl+Shift+N` 新建窗口、`Ctrl+W` 关闭标签。
 - 终端链接：`Ctrl+左键点击` 打开 `http` / `https` / `file` 链接（OSC 8 优先）；右键链接所在格出现
   `Open Link` / `Copy Link`，`xdg-open` 失败会在底部浮层提示并写日志。
-- 多窗口（MVP）：`Ctrl+Shift+N` / 标签栏右键 → New Window / 命令面板 `New Window`；当前是**一窗口一进程**的 MVP，目标单进程多窗口架构与迁移路线见
-  [`docs/MULTI_WINDOW_ARCHITECTURE.md`](docs/MULTI_WINDOW_ARCHITECTURE.md)。
-  会拉起一个独立的 Tervo 进程，各自拥有 Tab/PTY；窗口互不影响，Tab 暂不能跨窗口移动。
+- 多窗口（默认同进程）：`Ctrl+Shift+N` / 标签栏右键 → New Window / 命令面板 `New Window`
+  在 primary 内创建新的 Slint `MainWindow`；第二次 `tervo` 调用经 Unix control socket
+  转发给已运行的 primary，不再启动第二个主实例。每个窗口独立 Tab/PTY/focus/models，
+  共享 Config/Theme/PluginHost/MCP/Vault/Session；关闭一个窗口不影响其它窗口。
+  `--window` 作为兼容入口转发 primary；`TERVO_MULTI_WINDOW_LEGACY=1` 才回退旧子进程。
+  架构/证据见 [`docs/MULTI_WINDOW_ARCHITECTURE.md`](docs/MULTI_WINDOW_ARCHITECTURE.md)
+  与 [`docs/MULTI_WINDOW_RUNTIME.md`](docs/MULTI_WINDOW_RUNTIME.md)。Tab 跨窗口移动仍未实现。
 - 可见滚动条：右侧 overlay，支持 `scrollbar_policy = "always" | "auto" | "never"`；
   显示当前回滚位置，支持点击/拖动跳转（core 暴露非阻塞
   `PaneHandle::scroll_position()` / `scroll_to()` / `scroll_to_bottom()`）。
@@ -402,9 +406,10 @@ update-desktop-database ~/.local/share/applications 2>/dev/null || true
 - 自定义主题仍在启动时扫描，改主题文件后需要重启（热重载尚未实现）。
 - 设置页目前不含字体族/行距设置；搜索跳转定位到设置卡片而不是单个控件，键盘焦点遍历（Tab/方向键）
   仍以鼠标点击/搜索为主。旧 modal 回退是同一套控件换呈现，并非保留 2026-11 之前的旧实现。
-- 会话快照只恢复布局/标题/cwd/Profile 关联和 Tab pinned，不恢复滚动历史、屏幕内容或运行中进程；
-  自动恢复只在正常退出时写快照，崩溃/被 SIGKILL 不保证，也没有崩溃恢复守护。
-  `session.json` 全局只有一份，多窗口布局不能分别恢复；`--window` 子窗口不写快照。
+- 会话快照恢复布局/几何/标题/cwd/Profile 关联和 Tab pinned，不恢复滚动历史、屏幕内容或运行中进程。
+  `restore_session_on_startup=true` 时每 2s autosave；异常退出通过 running marker 检测并恢复。
+  session v2 保存全部窗口的 geometry/maximized/active_tab/tabs；损坏 primary 回退上一代 `.bak`。
+  SSH/Serial/Telnet 不自动重连。
 - SSH/Serial/Telnet Profile 不会随会话恢复自动重连（需要用户主动打开，避免启动即连远端）；
   恢复为普通 shell 并保留 Tab 标题/布局/cwd。
 - Tab pin 是“固定到左侧 pinned 区”，不是窗口置顶；pinned 组内顺序仍可拖动，但不能跨到

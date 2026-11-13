@@ -6,6 +6,12 @@ Tervo 的版本与 tag 规则见 `docs/RELEASING.md`。
 
 ### Added
 
+- 单进程多窗口：单实例 primary + Unix control socket；第二次 `tervo`/`--window` 转发为
+  primary 内新 `MainWindow`，不再启动第二套 Tervo/插件/MCP。`WindowRegistry`/
+  `WindowRuntime` 每窗口独立 tabs/panes/focus/models，共享 Config/Theme/PluginHost/
+  MCP/Vault/Session。179 个 UI 回调抽成共享注册；插件/MCP 增加 window_id 路由；
+  GPU 按 WindowId 引用计数，关闭一个窗口不影响其它窗口。session v2 保存/恢复全部
+  窗口的 geometry/maximized/active_tab/tabs，kill -9 可恢复多窗口布局。
 - 会话崩溃恢复：`restore_session_on_startup=true` 时每 2s autosave 布局，异常退出
   通过 `session.running` marker 检测并在下次启动恢复；session 写盘 fsync，保留上一代
   `.json.bak` 并在 primary 损坏时回退。仍然只恢复布局/cwd/Profile 关联，不恢复
