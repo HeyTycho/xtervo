@@ -325,6 +325,19 @@ pub struct Config {
     /// `TERVO_PLUGIN_REQUIRE_SIGNATURE=1` 同样会强制；默认 false（允许未签名，
     /// 但仍会拒绝坏签名/带签名却无公钥的包）。见 docs/PLUGIN_INSTALL.md。
     pub plugin_require_signature: bool,
+    // ---- MCP（内嵌功能，不是插件；additive 字段不 bump schema）----
+    /// MCP 总开关（默认 true）。关闭后不创建 live socket、不暴露 live 工具；
+    /// 离线 `tervo diag` 工具不受影响。
+    pub mcp_enabled: bool,
+    /// read 分组：capabilities/snapshot/list/output（默认 true = 默认只读）。
+    pub mcp_read: bool,
+    /// input 分组：send_text/send_key/run（默认 false）。
+    pub mcp_input: bool,
+    /// tabs 分组：new_tab/split/focus/scroll（默认 false）。
+    pub mcp_tabs: bool,
+    /// destructive 分组：close_pane/close_tab/kill（默认 false）。
+    /// 这是附加开关：close 还要求 tabs，kill 还要求 input。
+    pub mcp_destructive: bool,
     /// 忽略 `scrollback` 数值，使用 [`UNLIMITED_SCROLLBACK_LINES`] 安全上限。
     /// 只对之后新建的 pane 生效（历史缓冲大小不能在会话中安全扩容）。
     pub scrollback_unlimited: bool,
@@ -418,6 +431,11 @@ impl Default for Config {
             render_hud: false,
             feedback_issue_url: String::new(),
             plugin_require_signature: false,
+            mcp_enabled: true,
+            mcp_read: true,
+            mcp_input: false,
+            mcp_tabs: false,
+            mcp_destructive: false,
             scrollback_unlimited: false,
             scrollbar_policy: "auto".to_string(),
             backspace_binding: "ascii-delete".to_string(),
@@ -1375,6 +1393,75 @@ mod tests {
         assert!(!back.bold_is_bright);
         assert_eq!(back.bold_color_rgb(), Some(0x00fe_dcba));
         assert!(!back.bold_color_same_as_fg);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mcp_defaults_are_enabled_read_only_and_old_config_compatible() {
+        let cfg = Config::default();
+        assert!(cfg.mcp_enabled, "MCP 默认开启");
+        assert!(cfg.mcp_read, "MCP 默认只读（read 开）");
+        assert!(!cfg.mcp_input, "input 默认关");
+        assert!(!cfg.mcp_tabs, "tabs 默认关");
+        assert!(!cfg.mcp_destructive, "destructive 默认关");
+
+        // v1 旧文件没有 MCP 字段：容器级 serde(default) 必须补默认值。
+        let old: Config = toml::from_str("version = 1\ntheme = \"nord\"\n").unwrap();
+        assert!(old.mcp_enabled && old.mcp_read);
+        assert!(!old.mcp_input && !old.mcp_tabs && !old.mcp_destructive);
+        // v0 文件同样按默认补齐，且不改变既有迁移规则。
+        let v0: Config = toml::from_str("theme = \"nord\"\n").unwrap();
+        assert_eq!(v0.version, 0);
+        assert!(v0.mcp_enabled && v0.mcp_read);
+        assert!(!v0.mcp_input && !v0.mcp_tabs && !v0.mcp_destructive);
+    }
+
+    #[test]
+    fn mcp_flags_roundtrip_as_flat_toml() {
+        let dir = tmpdir("mcp-roundtrip");
+        let path = dir.join("config.toml");
+        let cfg = Config {
+            mcp_enabled: false,
+            mcp_read: false,
+            mcp_input: true,
+            mcp_tabs: true,
+            mcp_destructive: true,
+            ..Config::default()
+        };
+        cfg.save_to(&path);
+        let text = std::fs::read_to_string(&path).unwrap();
+        for line in [
+            "mcp_enabled = false",
+            "mcp_read = false",
+            "mcp_input = true",
+            "mcp_tabs = true",
+            "mcp_destructive = true",
+        ] {
+            assert!(text.contains(line), "missing {line}:\n{text}");
+        }
+        assert!(!text.contains("[mcp]"), "MCP 必须是 flat TOML:\n{text}");
+        let back = Config::load_from(&path);
+        assert!(!back.mcp_enabled && !back.mcp_read);
+        assert!(back.mcp_input && back.mcp_tabs && back.mcp_destructive);
+        // additive 字段不 bump schema，也不产生 v1 备份。
+        assert_eq!(back.version, SCHEMA_VERSION);
+        assert!(!dir.join("config.toml.v1.bak").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mcp_defaults_are_written_by_v0_migration() {
+        let dir = tmpdir("mcp-migrate");
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "theme = \"nord\"\n").unwrap();
+        let cfg = Config::load_from(&path);
+        assert!(cfg.mcp_enabled && cfg.mcp_read);
+        assert!(!cfg.mcp_input && !cfg.mcp_tabs && !cfg.mcp_destructive);
+        let migrated = std::fs::read_to_string(&path).unwrap();
+        assert!(migrated.contains("mcp_enabled = true"), "{migrated}");
+        assert!(migrated.contains("mcp_read = true"), "{migrated}");
+        assert!(migrated.contains("mcp_input = false"), "{migrated}");
+        assert!(dir.join("config.toml.v0.bak").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

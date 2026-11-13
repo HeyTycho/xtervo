@@ -230,35 +230,34 @@ damage region 增删和 coverage ppm。默认输出有界文本；`--json` 输�
 `kind=scene_diff`。frame JSON 新增 additive 的
 `damage.full/region_count/rects` 字段。
 
-## live control socket（已实现，显式 opt-in）
+## live control socket（已实现，默认开启只读）
 
-启动 Tervo 时：
+Tervo 正常启动即可（`mcp_enabled=true`，默认）：
 
 ```bash
-TERVO_DIAG_SOCKET=/run/user/$(id -u)/tervo-diag.sock TERVO_DIAG_TOKEN=$(head -c 24 /dev/urandom | base64) tervo
+tervo
+# socket: ${XDG_RUNTIME_DIR:-$HOME/.local/state}/tervo/mcp.sock  (0600)
+# token:  ${XDG_STATE_HOME:-$HOME/.local/state}/tervo/mcp.token (0600)
 ```
 
-- Unix stream，权限 0600
-- 默认不启动；未设置 env 就没有监听
+- Unix stream，权限 0600；总开关 `mcp_enabled=false` 时不创建 socket
+- 默认只读：`capabilities`、`snapshot`、`list`、`output`
+- 写/破坏性命令按 `mcp_input` / `mcp_tabs` / `mcp_destructive` 分组授权
+  （Settings → Privacy），app 端对每个请求二次校验
 - JSON Lines 请求：`{"id":1,"cmd":"capabilities","token":"..."}` / `{"cmd":"snapshot"}`
-- 只读命令：`capabilities`、`snapshot`
 - `snapshot` 经 `invoke_from_event_loop` 回 UI 线程取当前所有 pane 的 frame/cursor/images
 - 2s 超时；不阻塞渲染/输入
 
-MCP 读取 live：
+MCP bridge 无参数自动发现 socket/token：
 
 ```bash
-tervo diag serve --socket /run/user/$(id -u)/tervo-diag.sock --token "$TERVO_DIAG_TOKEN"
+tervo diag serve
 ```
 
-额外工具：
-
-```text
-tervo.live_capabilities
-tervo.live_snapshot
-```
-
-没有 socket 时 MCP 仍提供静态 env/snapshot/replay。
+`--socket` / `--token` 与 `TERVO_DIAG_SOCKET` / `TERVO_DIAG_TOKEN` 仍是
+测试/CI override。完整权限与工具列表见
+[`MCP_TERMINAL_CONTROL.md`](MCP_TERMINAL_CONTROL.md)。没有 socket 时 MCP 仍提供
+静态 env/snapshot/replay。
 
 自动验收：
 
