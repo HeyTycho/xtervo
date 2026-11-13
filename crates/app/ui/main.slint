@@ -238,6 +238,20 @@ component MenuGroupLabel inherits Rectangle {
     }
 }
 
+/// 右键菜单分隔：只画一条低对比度横线，不占菜单项高度。
+component ContextMenuDivider inherits Rectangle {
+    height: 9px;
+    background: transparent;
+    Rectangle {
+        x: 6px;
+        y: 4px;
+        width: parent.width - 12px;
+        height: 1px;
+        background: Palette.colors.border;
+        opacity: 0.55;
+    }
+}
+
 /// 终端右键菜单项：30px 行高 / 14px 标签 + 可选快捷键提示，无图标。
 /// 只在终端 pane 菜单里使用，TabBar/Profile 菜单仍用紧凑的 MenuRow（行为不变）。
 component ContextMenuRow inherits Rectangle {
@@ -1305,7 +1319,7 @@ export component MainWindow inherits Window {
     // 内容高度固定（菜单项 30px；无分组标题），超过内容区时菜单内滚动，
     // 不做整块溢出到窗口外。
     property <length> menu-width: Math.max(180px, Math.min(280px, root.width - 16px));
-    property <length> menu-content-h: root.menu-link != "" ? 462px : 402px;
+    property <length> menu-content-h: root.menu-link != "" ? 498px : 438px;
     property <length> menu-view-h: Math.max(80px,
         Math.min(root.menu-content-h, root.height - root.tabbar-height - 12px));
     // 锚点同原生菜单：优先右/下，放不下翻到左/上，再放不下才夹进窗口。
@@ -3173,6 +3187,8 @@ export component MainWindow inherits Window {
                                 picked => { root.menu-open = false; root.menu-action(root.menu-pane, 10); }
                             }
 
+                            if root.menu-link != "" : ContextMenuDivider {}
+
                             ContextMenuRow {
                                 label: Lang.t("Copy", "复制");
                                 shortcut: "Ctrl+Shift+C";
@@ -3183,6 +3199,8 @@ export component MainWindow inherits Window {
                                 shortcut: "Ctrl+Shift+V";
                                 picked => { root.menu-open = false; root.menu-action(root.menu-pane, 4); }
                             }
+
+                            ContextMenuDivider {}
 
                             ContextMenuRow {
                                 label: Lang.t("Split Right", "向右拆分");
@@ -3208,6 +3226,8 @@ export component MainWindow inherits Window {
                                 picked => { root.menu-open = false; root.menu-action(root.menu-pane, 8); }
                             }
 
+                            ContextMenuDivider {}
+
                             ContextMenuRow {
                                 label: Lang.t("Find", "查找");
                                 shortcut: "Ctrl+F";
@@ -3221,6 +3241,8 @@ export component MainWindow inherits Window {
                                 label: Lang.t("Clear", "清除");
                                 picked => { root.menu-open = false; root.menu-action(root.menu-pane, 7); }
                             }
+
+                            ContextMenuDivider {}
 
                             ContextMenuRow {
                                 label: root.menu-read-only
