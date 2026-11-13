@@ -14,6 +14,7 @@ mod keys;
 mod known_hosts;
 mod latency;
 mod logging;
+mod mcp;
 // Plugin API v3 protocol exposes a few forward-compatible helpers/limits that are
 // intentionally kept (and covered by tests) even when the current UI does not use
 // every one of them.
@@ -64,6 +65,7 @@ use x11rb::rust_connection::RustConnection;
 use crate::config::{Config, ScrollbarPolicy, UNLIMITED_SCROLLBACK_LINES};
 use crate::glyph::FontSet;
 use crate::latency::{DamageWatcher, Injector, LatencyStats};
+use crate::mcp::McpPermissions;
 use crate::render::Renderer;
 use crate::themes::{resolve_auto, ThemeData, ThemeRegistry, Variant};
 use crate::workspace::{Dir, Divider, PaneId, Rect, Tab, Workspace, SPLIT_GAP};
@@ -897,8 +899,8 @@ fn ui_text<'a>(lang: &str, en: &'a str, zh: &'a str) -> &'a str {
 }
 
 /// 设置分类显示名；下标就是 Slint 侧的 `settings-category`。
-/// 0=Appearance 1=Terminal 2=Window 3=Advanced 4=Keys 5=Plugins 6=Vault 7=Profiles 8=Help。
-const SETTINGS_CATS_EN: [&str; 9] = [
+/// 0=Appearance 1=Terminal 2=Window 3=Advanced 4=Keys 5=Plugins 6=Vault 7=Profiles 8=Help 9=Privacy。
+const SETTINGS_CATS_EN: [&str; 10] = [
     "Appearance",
     "Terminal",
     "Window",
@@ -908,13 +910,14 @@ const SETTINGS_CATS_EN: [&str; 9] = [
     "Vault",
     "Profiles",
     "Help",
+    "Privacy",
 ];
-const SETTINGS_CATS_ZH: [&str; 9] = [
-    "外观", "终端", "窗口", "高级", "快捷键", "插件", "保险库", "配置", "帮助",
+const SETTINGS_CATS_ZH: [&str; 10] = [
+    "外观", "终端", "窗口", "高级", "快捷键", "插件", "保险库", "配置", "帮助", "隐私",
 ];
 
 fn settings_cat_label(cat: i32, lang: &str) -> &'static str {
-    let i = cat.clamp(0, 8) as usize;
+    let i = cat.clamp(0, (SETTINGS_CATS_EN.len() - 1) as i32) as usize;
     if lang == "zh" {
         SETTINGS_CATS_ZH[i]
     } else {
@@ -975,9 +978,17 @@ const SETTINGS_CATALOG: &[SettingsCatalogEntry] = &[
     SettingsCatalogEntry { cat: 8, section: "version", en: "Version information", zh: "版本信息", keywords: "help version commit build time target 帮助 版本 提交 构建 时间 目标" },
     SettingsCatalogEntry { cat: 8, section: "version", en: "Run Doctor", zh: "运行 Doctor", keywords: "doctor diagnostics health check issue evidence 诊断 健康 检查 证据 问题" },
     SettingsCatalogEntry { cat: 8, section: "limits", en: "Known limitations / Documentation", zh: "已知限制 / 更多文档", keywords: "help limitations docs documentation ime wayland plugin sandbox soak 帮助 限制 文档 输入法 沙箱 插件" },
+    // MCP / Privacy：默认开启但默认只读；分组授权与 socket/token 状态。
+    SettingsCatalogEntry { cat: 9, section: "mcp", en: "MCP live control", zh: "MCP 实时控制", keywords: "mcp model context protocol live control enable disable privacy socket token 启用 关闭 控制 权限 隐私" },
+    SettingsCatalogEntry { cat: 9, section: "mcp", en: "MCP read access", zh: "MCP 读取权限", keywords: "mcp read list snapshot output capabilities readonly 只读 读取 输出 列表 快照" },
+    SettingsCatalogEntry { cat: 9, section: "mcp", en: "MCP input access", zh: "MCP 输入权限", keywords: "mcp input send text key run write terminal 输入 发送 文本 按键 写入 终端" },
+    SettingsCatalogEntry { cat: 9, section: "mcp", en: "MCP tab control", zh: "MCP 标签控制", keywords: "mcp tabs new tab split focus scroll 标签 新建 分屏 焦点 滚动" },
+    SettingsCatalogEntry { cat: 9, section: "mcp", en: "MCP destructive actions", zh: "MCP 破坏性操作", keywords: "mcp destructive close kill terminate 破坏性 关闭 终止 权限" },
+    SettingsCatalogEntry { cat: 9, section: "mcp", en: "MCP socket & token", zh: "MCP socket 与 token", keywords: "mcp socket token state path 0600 permission 路径 令牌 权限 状态" },
 ];
 
 /// 一条设置搜索命中：分类、卡片锚点、展示行（分类 · 名称）。
+#[derive(Debug)]
 struct SettingsHit {
     cat: i32,
     section: &'static str,
@@ -2615,6 +2626,12 @@ fn reconfig_summary(old: &Config, new: &Config) -> ReconfigSummary {
     if old.quake_hotkey != new.quake_hotkey {
         s.restart.push("quake_hotkey");
     }
+    // MCP 权限全部热生效：socket supervisor 与每个请求都读运行期权限。
+    hot(old.mcp_enabled != new.mcp_enabled, "mcp_enabled");
+    hot(old.mcp_read != new.mcp_read, "mcp_read");
+    hot(old.mcp_input != new.mcp_input, "mcp_input");
+    hot(old.mcp_tabs != new.mcp_tabs, "mcp_tabs");
+    hot(old.mcp_destructive != new.mcp_destructive, "mcp_destructive");
     s
 }
 
@@ -2651,8 +2668,17 @@ fn apply_external_config(st: &mut AppState, new_cfg: Config) {
     let visual_bell_changed = old.visual_bell != new_cfg.visual_bell;
     let tabbar_changed = old.tabbar_position != new_cfg.tabbar_position;
     let hotkeys_changed = old.hotkeys != new_cfg.hotkeys;
+    let mcp_changed = old.mcp_enabled != new_cfg.mcp_enabled
+        || old.mcp_read != new_cfg.mcp_read
+        || old.mcp_input != new_cfg.mcp_input
+        || old.mcp_tabs != new_cfg.mcp_tabs
+        || old.mcp_destructive != new_cfg.mcp_destructive;
 
     st.cfg = new_cfg;
+    // 先换运行期权限，再同步 UI；socket supervisor 会自行创建/移除 listener。
+    if mcp_changed {
+        mcp::apply_config(&st.cfg);
+    }
 
     if theme_changed {
         let selected = st.cfg.theme.clone();
@@ -2749,6 +2775,10 @@ fn apply_external_config(st: &mut AppState, new_cfg: Config) {
         st.ime_spot_dirty = true;
         update_ime_spot(st);
     }
+    if mcp_changed {
+        // listener 的 bind/remove 在 supervisor 线程里最多 ~100ms；稍后再刷一次状态。
+        schedule_mcp_status_refresh(&st.ui);
+    }
 
     eprintln!("[config] 已套用外部热更新: {}", summary.hot.join(", "));
     if !summary.new_pane.is_empty() {
@@ -2817,6 +2847,171 @@ fn sync_reload_ui(st: &mut AppState) {
         .set_cfg_bold_color_same_as_fg(st.cfg.bold_color_same_as_fg);
     st.ui.set_cfg_quake(st.cfg.quake_enabled);
     st.ui.set_tabbar_bottom(st.cfg.tabbar_position == "bottom");
+    sync_mcp_ui(st);
+}
+
+/// MCP 设置/状态同步到 Slint。只写属性；socket 生命周期由 diag supervisor 管。
+fn sync_mcp_ui(st: &mut AppState) {
+    st.ui.set_cfg_mcp_enabled(st.cfg.mcp_enabled);
+    st.ui.set_cfg_mcp_read(st.cfg.mcp_read);
+    st.ui.set_cfg_mcp_input(st.cfg.mcp_input);
+    st.ui.set_cfg_mcp_tabs(st.cfg.mcp_tabs);
+    st.ui.set_cfg_mcp_destructive(st.cfg.mcp_destructive);
+
+    let (permissions, socket_path, token_path, active, error, token_ready, env_write, env_destructive) =
+        match mcp::runtime() {
+            Some(runtime) => (
+                runtime.permissions(),
+                runtime.socket_path().to_path_buf(),
+                runtime.token_path().to_path_buf(),
+                runtime.active(),
+                runtime.last_error(),
+                runtime.token().is_some(),
+                runtime.env_write_override(),
+                runtime.env_destructive_override(),
+            ),
+            None => (
+                McpPermissions::from_config(&st.cfg),
+                mcp::default_socket_path(),
+                mcp::token_file_path(),
+                false,
+                None,
+                false,
+                false,
+                false,
+            ),
+        };
+    st.ui
+        .set_mcp_socket_path(socket_path.display().to_string().into());
+    st.ui
+        .set_mcp_token_path(token_path.display().to_string().into());
+    st.ui.set_mcp_active(permissions.enabled && active);
+    st.ui.set_mcp_status(
+        mcp_status_text(
+            st.cfg.lang(),
+            &permissions,
+            active,
+            token_ready,
+            error.as_deref(),
+            env_write,
+            env_destructive,
+        )
+        .into(),
+    );
+}
+
+fn mcp_status_text(
+    lang: &str,
+    permissions: &McpPermissions,
+    active: bool,
+    token_ready: bool,
+    error: Option<&str>,
+    env_write: bool,
+    env_destructive: bool,
+) -> String {
+    if !permissions.enabled {
+        return ui_text(
+            lang,
+            "Off — no live socket is created; live tools are hidden.",
+            "已关闭 — 不会创建 live socket，也不会暴露 live 工具。",
+        )
+        .to_string();
+    }
+    if !token_ready {
+        return ui_text(
+            lang,
+            "Enabled — state token unavailable; live requests are rejected (see log).",
+            "已启用 — state token 不可用，live 请求会被拒绝（见日志）。",
+        )
+        .to_string();
+    }
+    if let Some(error) = error {
+        return format!(
+            "{}: {error}",
+            ui_text(lang, "Socket unavailable", "Socket 不可用")
+        );
+    }
+    let mut groups = Vec::new();
+    if permissions.read {
+        groups.push(ui_text(lang, "read", "读取"));
+    }
+    if permissions.input {
+        groups.push(ui_text(lang, "input", "输入"));
+    }
+    if permissions.tabs {
+        groups.push(ui_text(lang, "tabs", "标签"));
+    }
+    if permissions.destructive {
+        groups.push(ui_text(lang, "destructive", "破坏性"));
+    }
+    let groups = if groups.is_empty() {
+        ui_text(lang, "no groups", "未授权任何分组").to_string()
+    } else {
+        groups.join(", ")
+    };
+    let socket = if active {
+        ui_text(lang, "socket active", "socket 已就绪")
+    } else {
+        ui_text(lang, "socket starting", "socket 启动中")
+    };
+    let mut status = format!(
+        "{} · {groups} · {socket}",
+        ui_text(lang, "Enabled", "已启用")
+    );
+    if env_write || env_destructive {
+        status.push_str(ui_text(
+            lang,
+            " · env override active",
+            " · 环境变量覆盖生效",
+        ));
+    }
+    status
+}
+
+/// listener 在 supervisor 线程里异步 bind/remove；500ms 后刷新一次状态文字。
+fn schedule_mcp_status_refresh(ui: &MainWindow) {
+    let weak = ui.as_weak();
+    slint::Timer::single_shot(Duration::from_millis(500), move || {
+        if weak.upgrade().is_some() {
+            with_app(|st| sync_mcp_ui(st));
+        }
+    });
+}
+
+#[derive(Clone, Copy)]
+enum McpSetting {
+    Enabled,
+    Read,
+    Input,
+    Tabs,
+    Destructive,
+}
+
+/// Settings → Privacy：立即写 config 并换运行期权限；socket 由 supervisor
+/// 在 100ms 内创建/移除，不需要重启 Tervo。
+fn toggle_mcp_setting(st: &mut AppState, setting: McpSetting) {
+    match setting {
+        McpSetting::Enabled => st.cfg.mcp_enabled = !st.cfg.mcp_enabled,
+        McpSetting::Read => st.cfg.mcp_read = !st.cfg.mcp_read,
+        McpSetting::Input => st.cfg.mcp_input = !st.cfg.mcp_input,
+        McpSetting::Tabs => st.cfg.mcp_tabs = !st.cfg.mcp_tabs,
+        McpSetting::Destructive => st.cfg.mcp_destructive = !st.cfg.mcp_destructive,
+    }
+    st.cfg.save();
+    mcp::apply_config(&st.cfg);
+    sync_mcp_ui(st);
+    let permissions = mcp::runtime()
+        .map(|runtime| runtime.permissions())
+        .unwrap_or_else(|| McpPermissions::from_config(&st.cfg));
+    eprintln!(
+        "[mcp] settings enabled={} read={} input={} tabs={} destructive={}",
+        permissions.enabled,
+        permissions.read,
+        permissions.input,
+        permissions.tabs,
+        permissions.destructive
+    );
+    schedule_mcp_status_refresh(&st.ui);
 }
 
 /// 退出设置搜索/清空后重算结果；展示行与“无匹配”状态跟随当前语言。
@@ -2849,6 +3044,7 @@ fn sync_language_ui(st: &mut AppState) {
     };
     st.ui.set_theme_display(theme_display.into());
     refresh_settings_results(st);
+    sync_mcp_ui(st);
 }
 
 /// 启动一次 `gsettings monitor` 监听；启动失败（非 GNOME、无 gsettings）就静默放弃。
@@ -10617,6 +10813,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("[render] requested_backend={requested_backend}（默认 GPU/Skia；可用 SLINT_BACKEND 覆盖）");
     }
     let cfg = Config::load();
+    // MCP 是内嵌功能：默认开启，启动时创建 0600 socket + state token（0600）。
+    // 这里只初始化运行期权限/路径；listener 在首帧后由 supervisor 创建。
+    let mcp_runtime = mcp::init(&cfg);
     let mut opts = parse_args(&cfg);
     // 启动自动恢复（默认关）。开启且有快照时沿用快照网格打开窗口；
     // 没有快照/解析失败时完全保持旧的启动行为（新建单 Tab）。
@@ -12460,6 +12659,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     });
 
+    ui.on_toggle_mcp_enabled(|| {
+        with_app(|st| toggle_mcp_setting(st, McpSetting::Enabled));
+    });
+    ui.on_toggle_mcp_read(|| {
+        with_app(|st| toggle_mcp_setting(st, McpSetting::Read));
+    });
+    ui.on_toggle_mcp_input(|| {
+        with_app(|st| toggle_mcp_setting(st, McpSetting::Input));
+    });
+    ui.on_toggle_mcp_tabs(|| {
+        with_app(|st| toggle_mcp_setting(st, McpSetting::Tabs));
+    });
+    ui.on_toggle_mcp_destructive(|| {
+        with_app(|st| toggle_mcp_setting(st, McpSetting::Destructive));
+    });
+
     ui.on_set_scrollbar_policy(|value| {
         with_app(|st| {
             let policy = ScrollbarPolicy::from_config(&value);
@@ -12586,6 +12801,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Help 每次进入都重取路径（TERVO_CONFIG/TERVO_LOG_DIR 可能变了）。
             if c == 8 {
                 refresh_help_info(st);
+            }
+            // Privacy/MCP 的 socket 状态由后台 supervisor 更新，进入页面时刷新。
+            if c == 9 {
+                sync_mcp_ui(st);
             }
         });
         eprintln!("[ui] settings category={c}");
@@ -13590,6 +13809,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         sync_plugin_config_metadata(st);
         refresh_plugin_page(st);
         refresh_settings_results(st);
+        sync_mcp_ui(st);
         eprintln!(
             "[plugin-v3] 设置页 {} 个插件，{} 个启用，{} 条启用命令，{} unsupported/invalid",
             st.plugins.total_count(),
@@ -13800,7 +14020,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     redraw_all();
-    diag::start_control_socket_with_control(live_diag_snapshot, live_control);
+    diag::start_control_socket_with_control(live_diag_snapshot, live_control, mcp_runtime);
+    schedule_mcp_status_refresh(&ui);
     let t_show = t_start.elapsed();
 
     if opts.exit_after_first {
@@ -14109,6 +14330,61 @@ mod tests {
         ] {
             assert!(summary.hot.contains(&field), "missing {field}: {summary:?}");
         }
+    }
+
+    #[test]
+    fn mcp_settings_are_hot_reload_and_indexed_bilingually() {
+        let old = Config::default();
+        let mut next = old.clone();
+        next.mcp_enabled = false;
+        next.mcp_read = false;
+        next.mcp_input = true;
+        next.mcp_tabs = true;
+        next.mcp_destructive = true;
+        let summary = reconfig_summary(&old, &next);
+        for field in [
+            "mcp_enabled",
+            "mcp_read",
+            "mcp_input",
+            "mcp_tabs",
+            "mcp_destructive",
+        ] {
+            assert!(summary.hot.contains(&field), "missing {field}: {summary:?}");
+        }
+        assert!(summary.new_pane.is_empty(), "{summary:?}");
+        assert!(summary.restart.is_empty(), "MCP 权限不能要求重启: {summary:?}");
+
+        // 搜索索引：中英都命中 Privacy/MCP，且分类下标是 9。
+        let en = settings_search_hits("mcp", "en");
+        assert!(
+            en.iter()
+                .any(|hit| hit.cat == 9 && hit.line.contains("Privacy · MCP")),
+            "{en:?}"
+        );
+        let zh = settings_search_hits("mcp", "zh");
+        assert!(
+            zh.iter()
+                .any(|hit| hit.cat == 9 && hit.line.contains("隐私 · MCP")),
+            "{zh:?}"
+        );
+        assert!(en.iter().all(|hit| hit.section == "mcp"));
+        assert_eq!(settings_cat_label(9, "en"), "Privacy");
+        assert_eq!(settings_cat_label(9, "zh"), "隐私");
+
+        // 状态文案双语：关闭/开启都可读且不 panic。
+        let off = McpPermissions {
+            enabled: false,
+            read: true,
+            input: false,
+            tabs: false,
+            destructive: false,
+        };
+        assert!(mcp_status_text("en", &off, false, true, None, false, false).contains("Off"));
+        assert!(mcp_status_text("zh", &off, false, true, None, false, false).contains("已关闭"));
+        let read_only = McpPermissions::default();
+        let status = mcp_status_text("zh", &read_only, true, true, None, false, false);
+        assert!(status.contains("读取"), "{status}");
+        assert!(status.contains("socket 已就绪"), "{status}");
     }
 
     #[test]

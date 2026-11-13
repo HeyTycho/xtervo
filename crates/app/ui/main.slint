@@ -550,6 +550,7 @@ enum SettingsIconKind {
     vault,
     advanced,
     help,
+    privacy,
     gear,
     search,
     chevron,
@@ -726,6 +727,28 @@ component SettingsIconView inherits Rectangle {
             x: 4px; y: 10.5px; width: 3px; height: 3px;
             border-radius: 1.5px;
             background: Palette.colors.surface;
+            border-width: 1px;
+            border-color: root.tint;
+        }
+    }
+
+    // Privacy：盾牌轮廓 + 中心锁孔（不依赖字体/emoji）。
+    if root.kind == SettingsIconKind.privacy : Rectangle {
+        width: 100%;
+        height: 100%;
+        background: transparent;
+        Path {
+            width: 100%; height: 100%;
+            commands: "M 8 1.5 L 13 3.5 L 13 8 C 13 11 10.8 12.9 8 14.5 C 5.2 12.9 3 11 3 8 L 3 3.5 Z";
+            stroke: root.tint;
+            stroke-width: 1.3px;
+            stroke-line-cap: round;
+            stroke-line-join: round;
+        }
+        Rectangle {
+            x: 6.2px; y: 6.2px; width: 3.6px; height: 3.6px;
+            border-radius: 1.8px;
+            background: transparent;
             border-width: 1px;
             border-color: root.tint;
         }
@@ -1759,6 +1782,21 @@ export component MainWindow inherits Window {
     callback plugin-pick-install(string);
     callback plugin-install-apply(string, string, string);
     callback toggle-plugin-require-signature();
+    // ---- MCP / Privacy：默认开启但默认只读；分组可热更新 ----
+    in-out property <bool> cfg-mcp-enabled: true;
+    in-out property <bool> cfg-mcp-read: true;
+    in-out property <bool> cfg-mcp-input: false;
+    in-out property <bool> cfg-mcp-tabs: false;
+    in-out property <bool> cfg-mcp-destructive: false;
+    in property <string> mcp-socket-path: "";
+    in property <string> mcp-token-path: "";
+    in property <bool> mcp-active: false;
+    in property <string> mcp-status: "";
+    callback toggle-mcp-enabled();
+    callback toggle-mcp-read();
+    callback toggle-mcp-input();
+    callback toggle-mcp-tabs();
+    callback toggle-mcp-destructive();
     // ---- Plugin API v3：宿主渲染的操作/确认/surface/ask ----
     callback plugin-action(string, string);
     callback plugin-open-surface(string, string);
@@ -3872,6 +3910,17 @@ export component MainWindow inherits Window {
                                 root.settings-category-changed(8);
                             }
                         }
+                        NavItem {
+                            label: Lang.t("Privacy", "隐私");
+                            icon: SettingsIconKind.privacy;
+                            active: root.settings-category == 9;
+                            clicked => {
+                                root.settings-focus = "";
+                                root.settings-theme-open = false;
+                                root.settings-category = 9;
+                                root.settings-category-changed(9);
+                            }
+                        }
 
                         Text {
                             height: 40px;
@@ -5636,6 +5685,114 @@ export component MainWindow inherits Window {
                             Text {
                                 text: root.help-docs;
                                 color: Palette.colors.subtext;
+                                font-size: 10px;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+                }
+
+                // ---------------- Privacy / MCP ----------------
+                if root.settings-category == 9 : Flickable {
+                    x: settings-body.content-x;
+                    y: settings-body.content-y;
+                    width: settings-body.content-w;
+                    height: settings-body.content-h;
+                    property <int> jump-token: root.settings-jump-token;
+                    interactive: true;
+                    content-width: self.width;
+                    content-height: privacy-layout.preferred-height + 10px;
+
+                    changed jump-token => {
+                        if (root.settings-focus == "mcp") {
+                            self.content-y = 0px;
+                        }
+                    }
+
+                    privacy-layout := VerticalLayout {
+                        width: 100%;
+                        spacing: 10px;
+
+                        mcp-card := SettingsCard {
+                            title: Lang.t("MCP live control", "MCP 实时控制");
+                            description: Lang.t("MCP is built into Tervo, not a plugin. The live socket is local-only (Unix socket 0600) and needs a state token. Default: enabled, read-only.", "MCP 内嵌于 Tervo，不是插件。live socket 仅限本机（Unix socket 0600）且需要 state token。默认：开启、只读。");
+                            highlighted: root.settings-focus == "mcp";
+
+                            SettingRow {
+                                label: Lang.t("Enable MCP", "启用 MCP");
+                                description: Lang.t("Off = no live socket is created and no live tools are exposed. Offline diag tools still work.", "关闭 = 不创建 live socket，也不暴露 live 工具；离线诊断工具仍可用。");
+                                SettingsSwitch {
+                                    on: root.cfg-mcp-enabled;
+                                    toggled => { root.toggle-mcp-enabled(); }
+                                }
+                            }
+                            SettingRow {
+                                label: Lang.t("Read", "读取");
+                                description: Lang.t("Read live_capabilities, live_snapshot, live_list and live_output.", "读取 live_capabilities、live_snapshot、live_list、live_output。");
+                                SettingsSwitch {
+                                    on: root.cfg-mcp-read;
+                                    toggled => { root.toggle-mcp-read(); }
+                                }
+                            }
+                            SettingRow {
+                                label: Lang.t("Input", "输入");
+                                description: Lang.t("Send text, keys or a command line: live_send_text, live_send_key, live_run.", "写入文本、按键或命令行：live_send_text、live_send_key、live_run。");
+                                SettingsSwitch {
+                                    on: root.cfg-mcp-input;
+                                    toggled => { root.toggle-mcp-input(); }
+                                }
+                            }
+                            SettingRow {
+                                label: Lang.t("Tabs & focus", "标签与焦点");
+                                description: Lang.t("Create/split/focus/scroll panes: live_new_tab, live_split, live_focus, live_scroll.", "新建、分屏、聚焦、滚动：live_new_tab、live_split、live_focus、live_scroll。");
+                                SettingsSwitch {
+                                    on: root.cfg-mcp-tabs;
+                                    toggled => { root.toggle-mcp-tabs(); }
+                                }
+                            }
+                            SettingRow {
+                                label: Lang.t("Destructive", "破坏性操作");
+                                description: Lang.t("close_pane / close_tab / kill. Also requires Tabs (close) or Input (kill).", "close_pane / close_tab / kill；还需要标签分组（关闭）或输入分组（终止）。");
+                                SettingsSwitch {
+                                    on: root.cfg-mcp-destructive;
+                                    toggled => { root.toggle-mcp-destructive(); }
+                                }
+                            }
+
+                            SettingField {
+                                label: Lang.t("Live socket", "Live socket 路径");
+                                Text {
+                                    text: root.mcp-socket-path;
+                                    color: Palette.colors.text;
+                                    font-size: 10px;
+                                    wrap: word-wrap;
+                                }
+                            }
+                            SettingField {
+                                label: Lang.t("State token", "State token 文件");
+                                Text {
+                                    text: root.mcp-token-path;
+                                    color: Palette.colors.text;
+                                    font-size: 10px;
+                                    wrap: word-wrap;
+                                }
+                                Text {
+                                    text: Lang.t("Generated automatically with mode 0600 when MCP is enabled. The token value is never written to config, logs or feedback bundles.", "启用 MCP 时自动生成，权限 0600。token 值绝不写入配置、日志或反馈包。");
+                                    color: Palette.colors.muted;
+                                    font-size: 10px;
+                                    wrap: word-wrap;
+                                }
+                            }
+
+                            Text {
+                                text: root.mcp-status;
+                                color: root.mcp-active ? Palette.colors.accent : Palette.colors.muted;
+                                font-size: 10px;
+                                wrap: word-wrap;
+                            }
+                            Text {
+                                text: Lang.t("Changes apply instantly. MCP clients must re-run tools/list after a permission change; tools/call is checked again by the app.", "修改立即生效。权限变化后 MCP 客户端需重新 tools/list；tools/call 仍由 app 端二次校验。");
+                                color: Palette.colors.muted;
                                 font-size: 10px;
                                 wrap: word-wrap;
                             }
