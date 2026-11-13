@@ -1,9 +1,11 @@
-# MCP 只读桥（M0 已实现）
+# MCP 桥：离线诊断 + live terminal control
 
-> Terminal control tools and the live control socket are specified in [`MCP_TERMINAL_CONTROL.md`](MCP_TERMINAL_CONTROL.md). Current live tools are read-only; write tools are planned/under implementation.
+> Live socket tools are documented in [`MCP_TERMINAL_CONTROL.md`](MCP_TERMINAL_CONTROL.md).
+> Read tools are default; write tools require explicit environment switches and a token.
 
-> 状态：M0 只读能力已落在现有 `tervo diag serve`（binary `tervo`），
-> 不新增独立 daemon、不监听网络。完整 CLI/协议细节见
+> 状态：`tervo diag serve` 是本地 MCP stdio bridge，不新增独立 daemon、不监听网络。
+> 未配置 live socket 时提供离线诊断；配置 `TERVO_DIAG_SOCKET` 后可读取/操作运行中的
+> Tervo。MCP 是宿主内嵌功能，不是插件。完整 CLI/协议细节见
 > [`DIAGNOSTICS.md`](DIAGNOSTICS.md#mcp-stdio已实现阶段-a)。
 
 ## 目标
@@ -123,16 +125,23 @@ scrollback。
 - snapshot/replay 保留原有“本地诊断进程”行为；新工具不调用它们
 ```
 
-## M0 限制
+## 模式与限制
 
 ```text
-- 不读取运行中的 Tervo pane/scrollback/screenshot
-- 无写工具（input/paste/keys/命令注入均不提供）
-- 无 MCP 鉴权 token / per-harness 授权，信任本地显式 spawn
-- 资源只有 tervo://version
-- 不支持 resources/subscribe；tools/resources listChanged 均为 false
-- 单线程同步处理，无并发工具调用
-- doctor/metrics 默认只读进程环境与显式输入，不接 live renderer/metrics
+离线模式（无 --socket）
+  只读 diag_env/diag_snapshot/diag_replay/doctor_check/issue_draft/metrics_read
+  diag_snapshot 会启动一次性 PTY 执行调用者给的 command
+
+live 模式（--socket）
+  live_capabilities/snapshot/list/output 默认可用
+  live_send_text/send_key/run/focus/new_tab/split/scroll 需要写开关
+  close_pane/close_tab/kill 需要破坏性开关
+  live_metrics/paste/resize/rename 当前未暴露
+
+MCP 本身无网络监听
+token 在配置 live socket 时用于鉴权；不配置 token 只能依赖 Unix socket 0600
+单线程同步处理
+resources 只有 tervo://version，不支持 subscribe
 ```
 
 后续若要读取运行中的 pane，需要显式启用 `TERVO_DIAG_SOCKET` 并补权限/限速

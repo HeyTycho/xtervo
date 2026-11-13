@@ -43,7 +43,7 @@ Vault, environment-variable, or host-process access.
 | `tervo.live_list` | Windows/tabs/panes, active pane, dimensions, title, cwd, process state |
 | `tervo.live_snapshot` | Frame summary: cursor, modes, damage, image rectangles |
 | `tervo.live_output` | Bounded output tail/range (not full scrollback) |
-| `tervo.live_metrics` | Frame time, RSS, upload bytes, threads/FDs |
+| `tervo.live_metrics` | **planned / not exposed yet** |
 
 Read limits:
 
@@ -60,12 +60,12 @@ no unbounded scrollback dump
 | Tool | Operation |
 |---|---|
 | `tervo.live_send_text` | Write text to a pane (no automatic Enter) |
-| `tervo.live_paste` | Bracketed paste into a pane |
+| `tervo.live_paste` | **planned / not exposed yet** |
 | `tervo.live_send_key` | Send key/chord: Enter, Ctrl+C, Ctrl+D, arrows, F-keys |
 | `tervo.live_run` | Write one command line + Enter; optional output/exit wait |
 | `tervo.live_focus` | Focus a tab/pane |
 | `tervo.live_scroll` | Scroll a pane's scrollback |
-| `tervo.live_resize` | Resize a pane's rows/cols |
+| `tervo.live_resize` | **planned / not exposed yet** |
 | `tervo.live_new_tab` | Create a tab |
 | `tervo.live_split` | Split a pane horizontally/vertically |
 
@@ -86,7 +86,7 @@ unknown pane/tab -> explicit error, never guess
 | `tervo.live_close_pane` | Close a pane |
 | `tervo.live_close_tab` | Close a tab |
 | `tervo.live_kill` | Send interrupt/terminate to a PTY |
-| `tervo.live_rename` | Rename a tab/pane |
+| `tervo.live_rename` | **planned / not exposed yet** |
 
 L2 is disabled by default or requires an explicit confirmation for each call.
 
@@ -152,42 +152,73 @@ write PTY while the write switch is off
 Current mainline:
 
 ```text
-tervo.diag_env
-tervo.diag_snapshot
-tervo.diag_replay
-tervo.doctor_check
-tervo.issue_draft
-tervo.metrics_read
-tervo.live_capabilities
-tervo.live_snapshot
-tervo.live_list
-tervo.live_output
-tervo.live_send_text (write-gated)
-tervo.live_send_key (write-gated)
-tervo.live_run (write-gated)
-tervo.live_focus (write-gated)
-tervo.live_new_tab (write-gated)
-tervo.live_split (write-gated)
-tervo.live_scroll (write-gated)
+offline:
+  tervo.diag_env
+  tervo.diag_snapshot
+  tervo.diag_replay
+  tervo.doctor_check
+  tervo.issue_draft
+  tervo.metrics_read
+live read:
+  tervo.live_capabilities
+  tervo.live_snapshot
+  tervo.live_list
+  tervo.live_output
+live write:
+  tervo.live_send_text
+  tervo.live_send_key
+  tervo.live_run
+  tervo.live_focus
+  tervo.live_new_tab
+  tervo.live_split
+  tervo.live_scroll
+live destructive:
+  tervo.live_close_pane
+  tervo.live_close_tab
+  tervo.live_kill
 ```
 
+Not exposed yet: `live_paste`, `live_resize`, `live_metrics`, `live_rename`.
+Per-harness token scopes and durable audit retention are still follow-up work;
+the app log records action/pane/argument bytes.
 Evidence: external Python harness connects to `TERVO_DIAG_SOCKET`, runs
-`list -> send_text -> send_key Enter -> output`, creates a tab, and verifies
-wrong-token rejection. L2 tools (close/kill/rename) are not implemented yet.
-Audit logging of every action and per-harness scopes remain follow-up work.
+`list -> send_text -> send_key Enter -> output`, creates a tab, verifies
+wrong-token rejection, and the MCP stdio bridge e2e passes.
 
 ## 7. Environment and startup
 
+Tervo（GUI）和 MCP server 是两个进程。先带 live socket 环境启动 Tervo：
+
 ```bash
 export TERVO_DIAG_SOCKET="${XDG_RUNTIME_DIR:-/tmp}/tervo-diag.sock"
-export TERVO_DIAG_TOKEN="$(head -c 24 /dev/urandom | base64)"
-export TERVO_DIAG_ALLOW_WRITE=1   # only when control is intended
-
-tervo diag serve --socket "$TERVO_DIAG_SOCKET" --token "$TERVO_DIAG_TOKEN"
+export TERVO_DIAG_TOKEN="$(head -c 24 /dev/urandom | base64 | tr -d '\n')"
+export TERVO_DIAG_ALLOW_WRITE=1          # only for L1
+export TERVO_DIAG_ALLOW_DESTRUCTIVE=0    # only for L2; keep 0 unless needed
+tervo
 ```
 
-MCP server runs on stdio; the harness spawns it explicitly. No network listener
-is opened.
+MCP client 配置（示例值要换成实际绝对路径/token）：
+
+```json
+{
+  "mcpServers": {
+    "tervo": {
+      "command": "/home/you/.local/bin/tervo",
+      "args": [
+        "diag", "serve",
+        "--socket", "/run/user/1000/tervo-diag.sock",
+        "--token", "same-token-as-the-app"
+      ],
+      "env": { "TERVO_DIAG_ALLOW_WRITE": "1" }
+    }
+  }
+}
+```
+
+MCP server 的 `TERVO_DIAG_ALLOW_WRITE` 必须也设置，否则 `tools/list` 不会出现
+写工具；L2 还需要在 MCP server 环境里设置 `TERVO_DIAG_ALLOW_DESTRUCTIVE=1`。
+
+MCP server 走 stdio，由客户端显式 spawn；没有网络监听。
 
 ## 8. Acceptance gates
 
@@ -195,14 +226,13 @@ is opened.
 read-only list/snapshot/output
 send_text + Enter -> output contains expected token
 send_key Ctrl+C -> process interrupt
-new_tab/split/focus/scroll/resize
-close/kill requires confirmation
-no token -> rejected
+new_tab/split/focus/scroll
+close/kill requires destructive switch + token
+wrong token -> rejected
 write switch off -> write tools rejected
 argument/rate limits enforced
 audit entries contain no secrets
-external harness e2e script passes
+external harness and MCP stdio e2e pass
 ```
 
-Until these pass, the document describes the planned interface, not shipped
-behavior.
+`live_paste`/`live_resize`/`live_metrics`/`live_rename` are planned, not shipped.
