@@ -58,25 +58,31 @@ files compatible (additive fields, no schema bump):
 mcp_enabled = true       # master; false = no socket, no live tools
 mcp_read = true          # capabilities/snapshot/list/output
 mcp_input = false        # send_text/send_key/run
-mcp_tabs = false         # new_tab/split/focus/scroll
-mcp_destructive = false  # close_pane/close_tab/kill (additional gate)
+mcp_tabs = false         # new_tab/new_window/split/focus/scroll
+mcp_destructive = false  # close_pane/close_tab/close_window/kill (additional gate)
 ```
 
 | Group | Commands | Notes |
 |---|---|---|
 | read | `capabilities`, `snapshot`, `list`, `output` | default on |
 | input | `send_text`, `send_key`, `run` | default off |
-| tabs | `new_tab`, `split`, `focus`, `scroll` | default off |
-| destructive | `close_pane`, `close_tab`, `kill` | default off; needs base group |
+| tabs | `new_tab`, `new_window`, `split`, `focus`, `scroll` | default off |
+| destructive | `close_pane`, `close_tab`, `close_window`, `kill` | default off; needs base group |
 
 Safe default for destructive:
 
 ```text
-close_pane / close_tab = tabs && destructive
+close_pane / close_tab / close_window = tabs && destructive
 kill                   = input && destructive
 ```
 
 Turning on `mcp_destructive` alone grants nothing.
+
+Multi-window additive fields: `list` returns `windows[]` + `active_window_id`;
+most commands accept `window_id` (default active). `new_window` opens the
+in-process second window when `TERVO_MULTI_WINDOW_INPROC=1`; `close_window`
+refuses to close the last window. `WindowId`/`PaneId` are explicit routes, not
+inferred from the active UI.
 
 Old env overrides remain for tests/CI:
 
@@ -154,6 +160,7 @@ no unbounded scrollback dump
 | `tervo.live_focus` | Focus a pane |
 | `tervo.live_scroll` | Scroll a pane's scrollback |
 | `tervo.live_new_tab` | Create a tab |
+| `tervo.live_new_window` | Open a second in-process window (flag required) |
 | `tervo.live_split` | Split a pane right/down |
 
 This is effectively shell execution through the terminal when input is granted.
@@ -176,7 +183,11 @@ records action/pane/argument bytes (never argument text or secrets).
 |---|---|
 | `tervo.live_close_pane` | Close a pane |
 | `tervo.live_close_tab` | Close a tab |
+| `tervo.live_close_window` | Close a window by `window_id` (never the last) |
 | `tervo.live_kill` | Send Ctrl+C to a PTY |
+
+All live tools accept an optional `window_id`; `live_list` returns `windows[]`
+and `active_window_id`, and each pane carries its `window_id`.
 
 L2 is disabled by default. `close_*` also needs `mcp_tabs`; `kill` also needs
 `mcp_input`. There is no per-call confirmation prompt in this version.

@@ -1,7 +1,9 @@
 # Tervo 多窗口目标架构
 
-状态：**设计稿 / 尚未实现**  
-当前实现：`tervo --window` 启动一个独立进程，多窗口 = 多进程。  
+状态：**Phase 1/2 已实现（feature flag）**  
+实现分支：`agent/mw-runtime`；细节/证据见 [`MULTI_WINDOW_RUNTIME.md`](MULTI_WINDOW_RUNTIME.md)。  
+当前默认仍是单窗口；`TERVO_MULTI_WINDOW_INPROC=1` 下支持同进程第二窗口。  
+`--window` 多进程路径保留为兼容/回退。  
 本文回答：如果要把多窗口做成产品能力，最好的方案是什么。
 
 ---
@@ -676,3 +678,32 @@ crates/app/src/main.slint      MainWindow / 菜单 / 窗口回调
 
 实现时先写 Phase 2 的 **双窗口同进程 spike**，不要先改插件/MCP 协议。  
 如果 spike 不能稳定跑两个 WGPU surface，再评估 broker；否则按本文路线推进。
+
+---
+
+## 16. Phase 1/2 实现补充（2026-11-13）
+
+已实现：
+
+```text
+WindowId / WindowRuntime / WindowRegistry / SharedServices
+单窗口路径进入 registry，行为不变
+TERVO_MULTI_WINDOW_INPROC=1 同 event loop 第二 MainWindow
+两个窗口独立 tabs/panes/focus/models；PaneId 全进程唯一
+关闭 B 只销毁 B；A 继续渲染
+Config/Theme/PluginHost/MCP/Session/Vault 共享（插件一份、MCP 一个 socket）
+gpu_present/gpu_native 按 WindowId 引用计数；关 B 后 A 仍 GPU ready
+MCP live_list 返回 windows[]；new_window/close_window 支持 window_id
+插件事件 payload additive window_id
+```
+
+仍在后续阶段：
+
+```text
+session v2 多窗口保存/恢复
+第二窗口的完整设置页/插件面板回调
+插件 command.invoke / terminal.read 的 per-window 参数
+ControlServer 单实例转发
+```
+
+详见 `docs/MULTI_WINDOW_RUNTIME.md`。

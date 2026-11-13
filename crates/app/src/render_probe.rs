@@ -80,6 +80,17 @@ struct ProbeState {
 
 /// 在 `ui.show()` 之前安装自检；不会改变渲染行为。
 pub fn install(window: &slint::Window, requested: &str, fell_back: bool) {
+    install_for(crate::runtime::WindowId::FIRST, window, requested, fell_back);
+}
+
+/// 多窗口版本：RenderingSetup/Teardown 必须带上 WindowId，GPU 状态才能按窗口
+/// 引用计数。关闭 B 的 teardown 只移除 B，不会让 A 掉回 CPU。
+pub fn install_for(
+    window_id: crate::runtime::WindowId,
+    window: &slint::Window,
+    requested: &str,
+    fell_back: bool,
+) {
     let state = Rc::new(RefCell::new(ProbeState::default()));
     let callback_state = state.clone();
     let result = window.set_rendering_notifier(move |rendering_state, api| {
@@ -99,11 +110,11 @@ pub fn install(window: &slint::Window, requested: &str, fell_back: bool) {
                         set_backend_label("wgpu30");
                         GPU_CONFIRMED.store(true, Ordering::Relaxed);
                         eprintln!(
-                            "[render] actual_renderer=wgpu30（Slint WGPU30；\
+                            "[render] {window_id} actual_renderer=wgpu30（Slint WGPU30；\
                              device/queue 与 GPU 终端链路同源）"
                         );
-                        crate::gpu_present::install(device, queue);
-                        crate::gpu_native::install(device, queue);
+                        crate::gpu_present::install_for(window_id, device, queue);
+                        crate::gpu_native::install_for(window_id, device, queue);
                     },
                     _ if !st.gl_reported => {
                         // 其他 GPU surface：没有 GL_RENDERER 可读，但已经拿到 GPU
@@ -152,9 +163,9 @@ pub fn install(window: &slint::Window, requested: &str, fell_back: bool) {
                 }
             },
             RenderingState::RenderingTeardown => {
-                crate::gpu_present::teardown();
-                crate::gpu_native::teardown();
-                eprintln!("[render] rendering teardown frame={}", st.frames);
+                crate::gpu_present::teardown_for(window_id);
+                crate::gpu_native::teardown_for(window_id);
+                eprintln!("[render] {window_id} rendering teardown frame={}", st.frames);
             },
             _ => {},
         }

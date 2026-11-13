@@ -1,0 +1,4 @@
+[ui] in-process window created id=window-2 pid=28 shared_plugins=97736797353632 mcp_socket=/home/user/AIworkspace/rusttabbyterminal/.worktrees/mw-runtime/target/multi-window-e2e/live.sock
+[runtime] closed window-2（remaining=1）
+[ui] in-process window created id=window-3 pid=28 shared_plugins=97736797353632 mcp_socket=/home/user/AIworkspace/rusttabbyterminal/.worktrees/mw-runtime/target/multi-window-e2e/live.sock
+[runtime] closed window-1（remaining=1）

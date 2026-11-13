@@ -35,10 +35,10 @@ mcp_destructive = false
 | --- | --- | --- |
 | read | `mcp_read` | `capabilities`, `snapshot`, `list`, `output` |
 | input | `mcp_input` | `send_text`, `send_key`, `run` |
-| tabs | `mcp_tabs` | `new_tab`, `split`, `focus`, `scroll` |
-| destructive | `mcp_destructive` | `close_pane`, `close_tab`, `kill` |
+| tabs | `mcp_tabs` | `new_tab`, `new_window`, `split`, `focus`, `scroll` |
+| destructive | `mcp_destructive` | `close_pane`, `close_tab`, `close_window`, `kill` |
 
-`destructive` 是附加开关：`close_pane/close_tab` 还需要 `tabs`，`kill` 还需要
+`destructive` 是附加开关：`close_pane/close_tab/close_window` 还需要 `tabs`，`kill` 还需要
 `input`。单独打开 destructive 不会授予任何破坏性工具。
 
 旧的 `TERVO_DIAG_ALLOW_WRITE=1` / `TERVO_DIAG_ALLOW_DESTRUCTIVE=1` 仍是
@@ -140,17 +140,19 @@ live 工具（仅当 `mcp_enabled=true` 且对应分组允许时出现在 `tools
 | --- | --- | --- |
 | `tervo.live_capabilities` | read | 当前分组/命令（不含 token） |
 | `tervo.live_snapshot` | read | 所有 pane 的 frame/cursor/images 元数据 |
-| `tervo.live_list` | read | pane id/title/grid/rect/focus（不返回 tab 列表） |
+| `tervo.live_list` | read | windows[]/active_window_id + pane id/title/grid/rect/focus |
 | `tervo.live_output` | read | 有界可见 pane 文本 |
 | `tervo.live_send_text` | input | 写文本，不自动 Enter |
 | `tervo.live_send_key` | input | Enter/Escape/Ctrl+C/Ctrl+D/方向键等 |
 | `tervo.live_run` | input | 写一行命令 + Enter；不额外套 shell |
 | `tervo.live_new_tab` | tabs | 新建 Tab |
+| `tervo.live_new_window` | tabs | 同进程新窗口（需 TERVO_MULTI_WINDOW_INPROC=1） |
 | `tervo.live_split` | tabs | 向右/向下分屏 |
 | `tervo.live_focus` | tabs | 聚焦 pane |
 | `tervo.live_scroll` | tabs | 滚动 scrollback |
 | `tervo.live_close_pane` | tabs + destructive | 关闭 pane |
 | `tervo.live_close_tab` | tabs + destructive | 关闭 pane 所在 Tab |
+| `tervo.live_close_window` | tabs + destructive | 按 window_id 关窗口（拒绝关最后一个） |
 | `tervo.live_kill` | input + destructive | 向 pane 发 Ctrl+C |
 
 **未实现/不暴露**：`tervo.live_paste`、`tervo.live_resize`、

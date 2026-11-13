@@ -103,6 +103,31 @@ fn main() {
         return;
     }
 
+    // --close：发送 WM_DELETE_WINDOW，等价用户点窗口关闭按钮（不杀进程）。
+    if args.iter().any(|a| a == "--close") {
+        let protocols = conn
+            .intern_atom(false, b"WM_PROTOCOLS")
+            .unwrap()
+            .reply()
+            .unwrap()
+            .atom;
+        let delete = conn
+            .intern_atom(false, b"WM_DELETE_WINDOW")
+            .unwrap()
+            .reply()
+            .unwrap()
+            .atom;
+        let event = ClientMessageEvent::new(
+            32,
+            win,
+            protocols,
+            [delete, x11rb::CURRENT_TIME, 0, 0, 0],
+        );
+        let _ = conn.send_event(false, win, EventMask::NO_EVENT, event);
+        let _ = conn.flush();
+        return;
+    }
+
     // --focus：无 WM/Openbox 未接管时显式设 X 输入焦点，自动化按键才会落到 app。
     if args.iter().any(|a| a == "--focus") {
         let _ = conn.set_input_focus(InputFocus::PARENT, win, x11rb::CURRENT_TIME);

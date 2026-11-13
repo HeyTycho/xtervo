@@ -1,0 +1,2 @@
+restored_tabs=3
+autosaved_before_kill=1
