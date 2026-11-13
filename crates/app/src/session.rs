@@ -1,11 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! 会话快照：把 tabs / 分屏树 / 每个 pane 的工作目录存盘，重启后原样拉起。
+//! 会话快照：把窗口几何 / tabs / 分屏树 / 每个 pane 的工作目录存盘，重启后原样拉起。
 //!
-//! 只存**布局与 cwd**，不存屏幕内容：历史由 shell / TUI 自己恢复，
-//! 这也让快照体积极小（一个窗口几百字节）。
+//! 当前落盘格式是 **v2 多窗口**（[`SnapshotV2`]）。v1 单窗口文件（[`Snapshot`]）
+//! 仍可读：加载时包装成单窗口 v2，供 WindowRegistry 后续接入。
 //!
-//! 纯数据 + 纯函数，不碰 Slint，便于单测；落盘用「临时文件 + rename」保证原子性，
-//! 半截文件永远不会被当成有效快照读进来（版本号也会兜底）。
+//! 只存**布局与 cwd**，不存屏幕内容 / scrollback / 运行中的进程 / 凭据：历史由
+//! shell / TUI 自己恢复，这也让快照体积极小（一个窗口几百字节）。
+//!
+//! 纯数据 + 纯函数，不碰 Slint，便于单测；落盘用「临时文件 + fsync + rename」
+//! 保证原子性，半截文件永远不会被当成有效快照读进来（版本号也会兜底），
+//! 并保留上一代 `.bak` 供损坏/未知版本时回退。
 
 use std::collections::HashMap;
 use std::io::{self, Write};
@@ -15,20 +19,148 @@ use serde::{Deserialize, Serialize};
 
 use crate::workspace::{Dir, Node, PaneId};
 
-/// 快照格式版本；结构变化就递增，旧快照被安全忽略而不是解析出错。
+/// 当前落盘格式版本：v2 多窗口。
 ///
-/// `Tree::Leaf::profile_id` 是 **additive** 字段（带 serde default）：
-/// v1 快照没有它也能读入（视为“无 Profile 关联”），所以无需 bump。
-pub const VERSION: u32 = 1;
+/// 结构变化就递增；未知版本按“损坏快照”处理（回退 `.bak` 或返回 `None`），
+/// 不会拿旧/新结构硬拼布局。
+pub const VERSION: u32 = 2;
 
+/// 旧版（v1）单窗口格式版本，只用于读取兼容。
+///
+/// v1 没有像素窗口几何；迁移时单窗口的 `geometry` 为
+/// [`WindowGeometry::UNKNOWN`]。v1 的 `cols/rows` 是字符网格，v2 没有对应
+/// 字段，因此旧 [`load`] 适配层返回 0（恢复端回退默认窗口尺寸）。
+pub const LEGACY_VERSION: u32 = 1;
+
+/// v1 单窗口迁移到 v2 时使用的窗口 id。
+///
+/// 与 WindowRegistry 的首个窗口一致（`WindowId` 从 1 开始单调递增）。
+pub const LEGACY_WINDOW_ID: u64 = 1;
+
+/// 旧版（v1）单窗口快照。
+///
+/// 磁盘上的 v1 文件仍可读：加载时由 [`SnapshotV2`] 包装成单窗口。新代码
+/// 应直接使用 [`SnapshotV2`]；本类型只作为现有调用方（未接入 WindowRegistry
+/// 的 main）的兼容 DTO。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Snapshot {
+    /// v1 格式版本。仅内存兼容字段；写盘时由 [`SnapshotV2`] 统一写
+    /// [`VERSION`]，恢复时旧适配层填 [`LEGACY_VERSION`]。
     pub version: u32,
-    /// 窗口网格（重启后按它开同样大的窗口）。
+    /// v1 的字符网格（v2 用像素几何，不再保存该字段）。
     pub cols: u16,
     pub rows: u16,
     pub active: usize,
     pub tabs: Vec<TabSnapshot>,
+}
+
+/// 窗口像素几何。
+///
+/// `w == 0 || h == 0` 表示未知：v1 迁移还没有像素坐标，恢复端应回退平台
+/// 默认尺寸，等窗口打开后的下一次 autosave 再写入真实几何。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WindowGeometry {
+    pub x: i32,
+    pub y: i32,
+    pub w: u32,
+    pub h: u32,
+}
+
+impl WindowGeometry {
+    /// 未知几何（v1 迁移使用）。
+    pub const UNKNOWN: Self = Self {
+        x: 0,
+        y: 0,
+        w: 0,
+        h: 0,
+    };
+
+    /// 是否有可用的像素尺寸。
+    #[allow(dead_code)] // WindowRegistry 接入前只有测试使用
+    pub fn is_known(self) -> bool {
+        self.w > 0 && self.h > 0
+    }
+}
+
+/// 单窗口快照。只含布局：不存进程、scrollback、凭据。
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct WindowSnapshot {
+    /// WindowRegistry 分配，进程内单调递增且不复用。
+    pub id: u64,
+    pub geometry: WindowGeometry,
+    pub maximized: bool,
+    /// 活跃 Tab 在 `tabs` 中的下标；恢复端必须 clamp 到有效范围。
+    pub active_tab: usize,
+    pub tabs: Vec<TabSnapshot>,
+}
+
+/// v2 多窗口快照。
+///
+/// 窗口在写盘和读入时都按 [`WindowSnapshot::id`] 升序稳定排序。重复的窗口
+/// id 视为损坏快照：保存拒绝，读取返回 `None`（有 `.bak` 时回退上一代）。
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SnapshotV2 {
+    pub version: u32,
+    pub windows: Vec<WindowSnapshot>,
+}
+
+impl Default for SnapshotV2 {
+    fn default() -> Self {
+        Self {
+            version: VERSION,
+            windows: Vec::new(),
+        }
+    }
+}
+
+impl SnapshotV2 {
+    /// 构造 v2 快照，并把窗口按 id 稳定排序（窗口顺序与 HashMap 遍历顺序解耦）。
+    pub fn new(mut windows: Vec<WindowSnapshot>) -> Self {
+        windows.sort_by_key(|window| window.id);
+        Self {
+            version: VERSION,
+            windows,
+        }
+    }
+
+    /// 稳定按 [`WindowSnapshot::id`] 升序排列。
+    pub fn sort_windows(&mut self) {
+        self.windows.sort_by_key(|window| window.id);
+    }
+
+    /// 兼容旧单窗口调用方：仅当恰好一个窗口时转换为 v1 DTO。
+    ///
+    /// 多窗口返回 `None`，避免旧启动路径只恢复第一个窗口后调用 [`clear`]，
+    /// 把其余窗口从磁盘上删掉。v1 的 `cols/rows` 在 v2 没有对应字段，故为 0。
+    pub fn to_legacy_single_window(&self) -> Option<Snapshot> {
+        if self.windows.len() != 1 {
+            return None;
+        }
+        let window = &self.windows[0];
+        Some(Snapshot {
+            version: LEGACY_VERSION,
+            cols: 0,
+            rows: 0,
+            active: window.active_tab,
+            tabs: window.tabs.clone(),
+        })
+    }
+}
+
+impl Snapshot {
+    /// 旧单窗口 DTO → v2。
+    ///
+    /// v1 没有像素几何，迁移窗口的 `geometry` 为 [`WindowGeometry::UNKNOWN`]；
+    /// 恢复端应使用平台默认尺寸，随后由 autosave 写入真实几何。
+    pub fn to_v2(&self) -> SnapshotV2 {
+        SnapshotV2::new(vec![WindowSnapshot {
+            id: LEGACY_WINDOW_ID,
+            geometry: WindowGeometry::UNKNOWN,
+            maximized: false,
+            active_tab: self.active,
+            tabs: self.tabs.clone(),
+        }])
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -140,7 +272,7 @@ impl Tree {
             Tree::Split { a, b, .. } => {
                 a.collect_cwds(out);
                 b.collect_cwds(out);
-            },
+            }
         }
     }
 
@@ -150,7 +282,7 @@ impl Tree {
             Tree::Split { a, b, .. } => {
                 a.collect_profiles(out);
                 b.collect_profiles(out);
-            },
+            }
         }
     }
 
@@ -176,7 +308,7 @@ impl Tree {
                 let id = *ids.get(*cursor)?;
                 *cursor += 1;
                 Some(Node::Leaf(id))
-            },
+            }
             Tree::Split { dir, ratio, a, b } => Some(Node::Split {
                 dir: (*dir).into(),
                 ratio: *ratio,
@@ -199,12 +331,19 @@ pub fn snapshot_path() -> PathBuf {
     base.join("tervo").join("session.json")
 }
 
+/// 保存旧单窗口 DTO：兼容包装，实际写 v2（单窗口）。
+///
+/// 这样未接入 WindowRegistry 的调用方不用改签名，也不会再写出 v1。
 pub fn save(snap: &Snapshot) -> io::Result<PathBuf> {
     let path = snapshot_path();
     save_to(&path, snap)?;
     Ok(path)
 }
 
+/// 读取 v1/v2 快照并适配成旧单窗口 DTO。
+///
+/// 多窗口 v2 返回 `None`（见 [`SnapshotV2::to_legacy_single_window`]），避免
+/// 旧启动路径 `clear()` 掉其它窗口；文件保持不动。
 pub fn load() -> Option<Snapshot> {
     load_from(&snapshot_path())
 }
@@ -214,11 +353,15 @@ pub fn clear() {
     let path = snapshot_path();
     let _ = std::fs::remove_file(&path);
     let _ = std::fs::remove_file(backup_path(&path));
-    let _ = std::fs::remove_file(path.with_extension("json.tmp"));
+    let _ = std::fs::remove_file(tmp_path(&path));
 }
 
 fn backup_path(path: &Path) -> PathBuf {
     path.with_extension("json.bak")
+}
+
+fn tmp_path(path: &Path) -> PathBuf {
+    path.with_extension("json.tmp")
 }
 
 fn sync_parent(path: &Path) {
@@ -229,36 +372,114 @@ fn sync_parent(path: &Path) {
     }
 }
 
+fn unique_window_ids(windows: &[WindowSnapshot]) -> bool {
+    let mut ids: Vec<u64> = windows.iter().map(|window| window.id).collect();
+    ids.sort_unstable();
+    ids.windows(2).all(|pair| pair[0] != pair[1])
+}
+
+/// 保存 v2 多窗口快照（主路径）。
+#[allow(dead_code)] // WindowRegistry 接入后由 main 使用；当前由单测覆盖
+pub fn save_v2(snap: &SnapshotV2) -> io::Result<PathBuf> {
+    let path = snapshot_path();
+    save_v2_to(&path, snap)?;
+    Ok(path)
+}
+
+/// 读取 v2 多窗口快照；v1 文件会自动迁移成单窗口 v2。
+#[allow(dead_code)] // WindowRegistry 接入后由 main 使用；当前由单测覆盖
+pub fn load_v2() -> Option<SnapshotV2> {
+    load_v2_from(&snapshot_path())
+}
+
+/// 旧 API 的路径版包装：单窗口 DTO 转成 v2 后原子落盘。
 pub fn save_to(path: &Path, snap: &Snapshot) -> io::Result<()> {
+    save_v2_to(path, &snap.to_v2())
+}
+
+/// 原子写 v2：临时文件 + fsync，rename 前把当前文件复制为上一代 `.bak`，
+/// 最后 fsync 父目录。保存前校验版本与窗口 id 唯一性，拒绝写坏快照。
+pub fn save_v2_to(path: &Path, snap: &SnapshotV2) -> io::Result<()> {
+    if snap.version != VERSION {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "unsupported session snapshot version {} (expected {VERSION})",
+                snap.version
+            ),
+        ));
+    }
+    if !unique_window_ids(&snap.windows) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "duplicate window id in session snapshot",
+        ));
+    }
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let json = serde_json::to_vec_pretty(snap).map_err(io::Error::other)?;
-    // 先写临时文件 + fsync，再 rename；中途崩溃不会留下半截 JSON，
-    // 也不会把还在页缓存里的内容当成已落盘状态。
-    let tmp = path.with_extension("json.tmp");
+    // 窗口顺序稳定 sorted by WindowId，不受 HashMap 遍历顺序影响。
+    let mut ordered = snap.clone();
+    ordered.sort_windows();
+    let json = serde_json::to_vec_pretty(&ordered).map_err(io::Error::other)?;
+
+    let tmp = tmp_path(path);
     {
         let mut file = std::fs::File::create(&tmp)?;
         file.write_all(&json)?;
         file.sync_all()?;
     }
-    // Keep one previous generation. Copy is intentionally best-effort: a failed
-    // backup must not prevent a fresh snapshot from being committed.
+    // 保留上一代。备份是 best-effort：失败不能阻止新快照提交；成功时
+    // fsync 备份，避免 rename 后崩溃留下只存在于页缓存的上一代。
     if path.is_file() {
-        let _ = std::fs::copy(path, backup_path(path));
+        let backup = backup_path(path);
+        if std::fs::copy(path, &backup).is_ok() {
+            if let Ok(file) = std::fs::File::open(&backup) {
+                let _ = file.sync_all();
+            }
+        }
     }
-    std::fs::rename(&tmp, path)?;
+    if let Err(error) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(error);
+    }
     sync_parent(path);
     Ok(())
 }
 
-fn parse_snapshot(path: &Path) -> Option<Snapshot> {
-    let bytes = std::fs::read(path).ok()?;
-    let snap: Snapshot = serde_json::from_slice(&bytes).ok()?;
-    (snap.version == VERSION).then_some(snap)
+#[derive(Deserialize)]
+struct VersionProbe {
+    version: u32,
 }
 
-pub fn load_from(path: &Path) -> Option<Snapshot> {
+fn parse_snapshot(path: &Path) -> Option<SnapshotV2> {
+    let bytes = std::fs::read(path).ok()?;
+    parse_snapshot_bytes(&bytes)
+}
+
+fn parse_snapshot_bytes(bytes: &[u8]) -> Option<SnapshotV2> {
+    let probe: VersionProbe = serde_json::from_slice(bytes).ok()?;
+    match probe.version {
+        // 旧单窗口文件：结构校验交给 Snapshot，再包装成单窗口 v2。
+        LEGACY_VERSION => {
+            let legacy: Snapshot = serde_json::from_slice(bytes).ok()?;
+            Some(legacy.to_v2())
+        }
+        VERSION => {
+            let mut snap: SnapshotV2 = serde_json::from_slice(bytes).ok()?;
+            if snap.version != VERSION || !unique_window_ids(&snap.windows) {
+                return None;
+            }
+            snap.sort_windows();
+            Some(snap)
+        }
+        // 未知版本（旧版不认识的新格式 / 手改坏版本）一律当损坏。
+        _ => None,
+    }
+}
+
+/// 读取 v1（迁移为单窗口 v2）或 v2；主文件损坏/版本不符时回退上一代 `.bak`。
+pub fn load_v2_from(path: &Path) -> Option<SnapshotV2> {
     parse_snapshot(path).or_else(|| {
         // A torn/corrupt primary must not make the user lose the session when a
         // valid previous generation exists.
@@ -269,6 +490,22 @@ pub fn load_from(path: &Path) -> Option<Snapshot> {
         }
         recovered
     })
+}
+
+/// 旧 API 的路径版包装：v1/v2 → 单窗口 DTO；多窗口 v2 返回 `None`。
+pub fn load_from(path: &Path) -> Option<Snapshot> {
+    legacy_from_v2(load_v2_from(path)?)
+}
+
+fn legacy_from_v2(snap: SnapshotV2) -> Option<Snapshot> {
+    let legacy = snap.to_legacy_single_window();
+    if legacy.is_none() && !snap.windows.is_empty() {
+        eprintln!(
+            "[session] v2 快照含 {} 个窗口；旧单窗口 API 不恢复（保留文件）",
+            snap.windows.len()
+        );
+    }
+    legacy
 }
 
 fn running_path(path: &Path) -> PathBuf {
@@ -314,7 +551,9 @@ fn now_secs() -> u64 {
 
 /// 进程的当前工作目录（`/proc/<pid>/cwd`）。进程已退出时返回 None。
 pub fn cwd_of(pid: u32) -> Option<String> {
-    std::fs::read_link(format!("/proc/{pid}/cwd")).ok().map(|p| p.to_string_lossy().into_owned())
+    std::fs::read_link(format!("/proc/{pid}/cwd"))
+        .ok()
+        .map(|p| p.to_string_lossy().into_owned())
 }
 
 #[cfg(test)]
@@ -322,14 +561,72 @@ mod tests {
     use super::*;
 
     fn cwds(pairs: &[(PaneId, Option<&str>)]) -> HashMap<PaneId, Option<String>> {
-        pairs.iter().map(|(id, c)| (*id, c.map(str::to_string))).collect()
+        pairs
+            .iter()
+            .map(|(id, c)| (*id, c.map(str::to_string)))
+            .collect()
+    }
+
+    fn leaf(cwd: Option<&str>, profile_id: Option<u64>) -> Tree {
+        Tree::Leaf {
+            cwd: cwd.map(str::to_string),
+            profile_id,
+        }
+    }
+
+    fn tab(title: &str, focused: usize, pinned: bool, tree: Tree) -> TabSnapshot {
+        TabSnapshot {
+            title: title.to_string(),
+            focused,
+            pinned,
+            tree,
+        }
+    }
+
+    fn geometry(x: i32, y: i32, w: u32, h: u32) -> WindowGeometry {
+        WindowGeometry { x, y, w, h }
+    }
+
+    fn window(
+        id: u64,
+        geometry: WindowGeometry,
+        maximized: bool,
+        active_tab: usize,
+        tabs: Vec<TabSnapshot>,
+    ) -> WindowSnapshot {
+        WindowSnapshot {
+            id,
+            geometry,
+            maximized,
+            active_tab,
+            tabs,
+        }
+    }
+
+    fn v2(windows: Vec<WindowSnapshot>) -> SnapshotV2 {
+        SnapshotV2::new(windows)
+    }
+
+    fn ids(snap: &SnapshotV2) -> Vec<u64> {
+        snap.windows.iter().map(|window| window.id).collect()
+    }
+
+    fn sorted_keys(map: &serde_json::Map<String, serde_json::Value>) -> Vec<&str> {
+        let mut keys: Vec<&str> = map.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        keys
     }
 
     #[test]
     fn tree_roundtrip_preserves_shape_ratio_and_cwd() {
         // 左右分屏，右侧再上下分
-        let node = Node::leaf(1).split(1, Dir::Row, 2, 0.4).split(2, Dir::Col, 3, 0.6);
-        let snap = Tree::from_node(&node, &cwds(&[(1, Some("/tmp")), (2, None), (3, Some("/"))]));
+        let node = Node::leaf(1)
+            .split(1, Dir::Row, 2, 0.4)
+            .split(2, Dir::Col, 3, 0.6);
+        let snap = Tree::from_node(
+            &node,
+            &cwds(&[(1, Some("/tmp")), (2, None), (3, Some("/"))]),
+        );
 
         assert_eq!(snap.leaf_count(), 3);
         assert_eq!(
@@ -342,19 +639,33 @@ mod tests {
         assert_eq!(restored.panes(), vec![10, 11, 12]);
 
         let mut rects = Vec::new();
-        restored.layout(crate::workspace::Rect::new(0.0, 0.0, 1004.0, 100.0), &mut rects);
+        restored.layout(
+            crate::workspace::Rect::new(0.0, 0.0, 1004.0, 100.0),
+            &mut rects,
+        );
         assert_eq!(rects.len(), 3);
         // 右侧从 x = 1004*0.4 + gap 开始
-        assert!((rects[1].1.x - (0.4 * 1000.0 + 4.0)).abs() < 0.01, "{:?}", rects[1].1);
+        assert!(
+            (rects[1].1.x - (0.4 * 1000.0 + 4.0)).abs() < 0.01,
+            "{:?}",
+            rects[1].1
+        );
         // 右侧再按 0.6 上下分
-        assert!((rects[2].1.y - (0.6 * 96.0 + 4.0)).abs() < 0.01, "{:?}", rects[2].1);
+        assert!(
+            (rects[2].1.y - (0.6 * 96.0 + 4.0)).abs() < 0.01,
+            "{:?}",
+            rects[2].1
+        );
     }
 
     #[test]
     fn profile_ids_roundtrip_with_same_leaf_order_as_cwds() {
-        let node = Node::leaf(1).split(1, Dir::Row, 2, 0.4).split(2, Dir::Col, 3, 0.6);
-        let profiles: HashMap<PaneId, Option<u64>> =
-            [(1, Some(7)), (2, None), (3, Some(42))].into_iter().collect();
+        let node = Node::leaf(1)
+            .split(1, Dir::Row, 2, 0.4)
+            .split(2, Dir::Col, 3, 0.6);
+        let profiles: HashMap<PaneId, Option<u64>> = [(1, Some(7)), (2, None), (3, Some(42))]
+            .into_iter()
+            .collect();
         let tree = Tree::from_node_with_profiles(
             &node,
             &cwds(&[(1, Some("/tmp")), (2, None), (3, Some("/"))]),
@@ -385,7 +696,10 @@ mod tests {
         }"#;
         let snap: Snapshot = serde_json::from_str(json).unwrap();
         assert_eq!(snap.tabs[0].tree.leaf_profiles(), vec![None]);
-        assert_eq!(snap.tabs[0].tree.leaf_cwds(), vec![Some("/tmp".to_string())]);
+        assert_eq!(
+            snap.tabs[0].tree.leaf_cwds(),
+            vec![Some("/tmp".to_string())]
+        );
         // 旧快照没有 pinned：additive default -> false。
         assert!(!snap.tabs[0].pinned);
         // None/false 不写出键：保持快照体积/旧格式兼容。
@@ -396,12 +710,18 @@ mod tests {
 
     #[test]
     fn profile_id_is_skipped_when_none_but_kept_when_some() {
-        let tree = Tree::Leaf { cwd: Some("/tmp".into()), profile_id: Some(9) };
+        let tree = Tree::Leaf {
+            cwd: Some("/tmp".into()),
+            profile_id: Some(9),
+        };
         let text = serde_json::to_string(&tree).unwrap();
         assert!(text.contains("\"profile_id\":9"), "{text}");
         let back: Tree = serde_json::from_str(&text).unwrap();
         assert_eq!(back, tree);
-        let empty = Tree::Leaf { cwd: None, profile_id: None };
+        let empty = Tree::Leaf {
+            cwd: None,
+            profile_id: None,
+        };
         let text = serde_json::to_string(&empty).unwrap();
         assert!(!text.contains("profile_id"), "{text}");
     }
@@ -415,96 +735,482 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_json_roundtrip_and_version_gate() {
-        let snap = Snapshot {
+    fn v1_loads_as_single_window_v2() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.json");
+        let json = r#"{
+            "version": 1,
+            "cols": 132,
+            "rows": 43,
+            "active": 1,
+            "tabs": [
+                {
+                    "title": "Terminal 1",
+                    "focused": 0,
+                    "tree": { "kind": "leaf", "cwd": "/tmp" }
+                },
+                {
+                    "title": "Terminal 2",
+                    "focused": 1,
+                    "pinned": true,
+                    "tree": {
+                        "kind": "split",
+                        "dir": "row",
+                        "ratio": 0.5,
+                        "a": { "kind": "leaf", "cwd": "/" },
+                        "b": { "kind": "leaf", "cwd": "/home", "profile_id": 7 }
+                    }
+                }
+            ]
+        }"#;
+        std::fs::write(&path, json).unwrap();
+
+        let snap = load_v2_from(&path).expect("v1 file must load as v2");
+        assert_eq!(snap.version, VERSION);
+        assert_eq!(snap.windows.len(), 1);
+        let window = &snap.windows[0];
+        assert_eq!(window.id, LEGACY_WINDOW_ID);
+        assert_eq!(window.geometry, WindowGeometry::UNKNOWN);
+        assert_eq!(window.geometry, WindowGeometry::default());
+        assert!(!window.maximized);
+        assert_eq!(window.active_tab, 1);
+        assert_eq!(window.tabs.len(), 2);
+        assert_eq!(window.tabs[1].title, "Terminal 2");
+        assert!(window.tabs[1].pinned);
+        assert_eq!(window.tabs[1].focused, 1);
+        assert_eq!(
+            window.tabs[1].tree.leaf_cwds(),
+            vec![Some("/".to_string()), Some("/home".to_string())]
+        );
+        assert_eq!(window.tabs[1].tree.leaf_profiles(), vec![None, Some(7)]);
+
+        // 旧 API 也读得懂 v1，但字符网格没有 v2 对应字段。
+        let legacy = load_from(&path).expect("legacy adapter");
+        assert_eq!(legacy.version, LEGACY_VERSION);
+        assert_eq!(
+            (legacy.cols, legacy.rows),
+            (0, 0),
+            "v1 grid is not representable in v2"
+        );
+        assert_eq!(legacy.active, 1);
+        assert_eq!(legacy.tabs, window.tabs);
+    }
+
+    #[test]
+    fn v2_roundtrip_preserves_windows_geometry_maximized_and_tabs() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.json");
+        let first = window(
+            1,
+            geometry(-1920, 40, 1280, 720),
+            true,
+            1,
+            vec![
+                tab("A", 0, false, leaf(Some("/tmp"), None)),
+                tab("B", 0, true, leaf(None, Some(9))),
+            ],
+        );
+        let second = window(
+            2,
+            geometry(100, 120, 800, 600),
+            false,
+            0,
+            vec![tab("C", 0, false, leaf(Some("/"), None))],
+        );
+        // 输入乱序，落盘/读回都按 id 稳定排序。
+        let snap = v2(vec![second.clone(), first.clone()]);
+        save_v2_to(&path, &snap).unwrap();
+        assert!(!tmp_path(&path).exists(), "tmp file must be renamed away");
+        assert!(
+            !backup_path(&path).exists(),
+            "first save has no previous generation"
+        );
+
+        let raw: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(raw["version"].as_u64(), Some(VERSION as u64));
+        assert_eq!(raw["windows"].as_array().unwrap().len(), 2);
+        assert_eq!(raw["windows"][0]["id"].as_u64(), Some(1));
+        assert_eq!(raw["windows"][1]["id"].as_u64(), Some(2));
+        assert_eq!(raw["windows"][0]["geometry"]["x"].as_i64(), Some(-1920));
+        assert_eq!(raw["windows"][0]["geometry"]["y"].as_i64(), Some(40));
+        assert_eq!(raw["windows"][0]["geometry"]["w"].as_u64(), Some(1280));
+        assert_eq!(raw["windows"][0]["geometry"]["h"].as_u64(), Some(720));
+        assert_eq!(raw["windows"][0]["maximized"].as_bool(), Some(true));
+        assert_eq!(raw["windows"][0]["active_tab"].as_u64(), Some(1));
+        assert_eq!(raw["windows"][0]["tabs"].as_array().unwrap().len(), 2);
+        assert_eq!(raw["windows"][1]["tabs"].as_array().unwrap().len(), 1);
+
+        let back = load_v2_from(&path).expect("v2 roundtrip");
+        assert_eq!(back, v2(vec![first, second]));
+        assert_eq!(back.windows[0].geometry, geometry(-1920, 40, 1280, 720));
+        assert!(back.windows[0].maximized);
+        assert_eq!(back.windows[0].tabs.len(), 2);
+        assert_eq!(back.windows[1].tabs.len(), 1);
+
+        // 第二次保存生成上一代 .bak。
+        let newer = v2(vec![window(
+            3,
+            WindowGeometry::UNKNOWN,
+            false,
+            0,
+            Vec::new(),
+        )]);
+        save_v2_to(&path, &newer).unwrap();
+        assert!(backup_path(&path).is_file());
+        assert!(!tmp_path(&path).exists());
+        assert_eq!(load_v2_from(&path), Some(newer));
+    }
+
+    #[test]
+    fn window_order_is_normalized_by_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.json");
+        let unsorted = SnapshotV2 {
             version: VERSION,
-            cols: 120,
-            rows: 32,
-            active: 0,
-            tabs: vec![
-                TabSnapshot {
-                    title: "Terminal 1".into(),
-                    focused: 1,
-                    pinned: false,
-                    tree: Tree::from_node(
-                        &Node::leaf(1).split(1, Dir::Col, 2, 0.5),
-                        &cwds(&[(1, Some("/home/user"))]),
-                    ),
-                },
-                TabSnapshot {
-                    title: "Terminal 2".into(),
-                    focused: 0,
-                    pinned: true,
-                    tree: Tree::Leaf { cwd: None, profile_id: None },
-                },
+            windows: vec![
+                window(30, WindowGeometry::UNKNOWN, false, 0, Vec::new()),
+                window(10, WindowGeometry::UNKNOWN, false, 0, Vec::new()),
+                window(20, WindowGeometry::UNKNOWN, false, 0, Vec::new()),
             ],
         };
-        let json = serde_json::to_vec(&snap).unwrap();
-        let text = String::from_utf8(json.clone()).unwrap();
-        assert!(text.contains("\"pinned\":true"), "{text}");
-        let back: Snapshot = serde_json::from_slice(&json).unwrap();
-        assert_eq!(back, snap);
-        assert!(back.tabs[1].pinned);
+        save_v2_to(&path, &unsorted).unwrap();
+        let raw: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let raw_ids: Vec<u64> = raw["windows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|window| window["id"].as_u64().unwrap())
+            .collect();
+        assert_eq!(raw_ids, vec![10, 20, 30], "disk order must be stable");
 
-        let dir = std::env::temp_dir().join(format!("rt-session-{}", std::process::id()));
-        let path = dir.join("session.json");
-        save_to(&path, &snap).unwrap();
-        assert_eq!(load_from(&path), Some(snap.clone()));
+        let back = load_v2_from(&path).unwrap();
+        assert_eq!(ids(&back), vec![10, 20, 30]);
+        assert_eq!(ids(&SnapshotV2::new(unsorted.windows)), vec![10, 20, 30]);
+    }
 
-        // 版本不符且没有 backup → 当作没有快照，绝不拿旧结构去拼布局
-        let mut old = snap.clone();
-        old.version = VERSION - 1;
-        let old_only = dir.join("old-only.json");
-        save_to(&old_only, &old).unwrap();
-        assert!(load_from(&old_only).is_none());
+    #[test]
+    fn empty_windows_is_a_valid_v2_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.json");
+        let empty = SnapshotV2 {
+            version: VERSION,
+            windows: Vec::new(),
+        };
+        save_v2_to(&path, &empty).unwrap();
+        let raw: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(raw["windows"].as_array().unwrap().len(), 0);
+        assert_eq!(load_v2_from(&path), Some(empty));
 
-        // 版本不符的 primary + 有效 backup：回退上一代，而不是丢 session
-        save_to(&path, &old).unwrap();
-        assert!(load_from(&path).is_some(), "应回退上一代快照");
+        // 旧单窗口 API 没有窗口可恢复；文件不能被删。
+        assert!(load_from(&path).is_none());
+        assert!(path.is_file());
+    }
 
-        // 半截 primary + 有效 backup：回退上一代，而不是丢 session
-        std::fs::write(&path, b"{not json").unwrap();
-        assert!(load_from(&path).is_some(), "应回退上一代快照");
-        // 没有 backup 的坏文件仍然安全返回 None
-        let orphan = dir.join("orphan.json");
-        std::fs::write(&orphan, b"{not json").unwrap();
-        assert!(load_from(&orphan).is_none());
-        let _ = std::fs::remove_dir_all(&dir);
+    #[test]
+    fn tabs_count_is_preserved_per_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.json");
+        let snap = v2(vec![
+            window(1, WindowGeometry::UNKNOWN, false, 0, Vec::new()),
+            window(
+                2,
+                geometry(1, 2, 3, 4),
+                false,
+                2,
+                vec![
+                    tab("a", 0, false, leaf(None, None)),
+                    tab("b", 0, false, leaf(None, None)),
+                    tab("c", 0, false, leaf(None, None)),
+                ],
+            ),
+            window(
+                3,
+                geometry(5, 6, 7, 8),
+                true,
+                3,
+                vec![
+                    tab("d", 0, false, leaf(None, None)),
+                    tab("e", 0, false, leaf(None, None)),
+                    tab("f", 0, false, leaf(None, None)),
+                    tab("g", 0, false, leaf(None, None)),
+                ],
+            ),
+        ]);
+        save_v2_to(&path, &snap).unwrap();
+        let back = load_v2_from(&path).unwrap();
+        assert_eq!(
+            back.windows
+                .iter()
+                .map(|window| window.tabs.len())
+                .collect::<Vec<_>>(),
+            vec![0, 3, 4]
+        );
+        assert_eq!(back.windows[1].active_tab, 2);
+        assert_eq!(back.windows[2].active_tab, 3);
+    }
+
+    #[test]
+    fn bad_json_unknown_version_and_duplicate_ids_are_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.json");
+
+        assert!(load_v2_from(&path).is_none(), "missing file");
+        std::fs::write(&path, b"{oops").unwrap();
+        assert!(load_v2_from(&path).is_none(), "torn JSON");
+        std::fs::write(&path, br#"{"version":3,"windows":[]}"#).unwrap();
+        assert!(load_v2_from(&path).is_none(), "future version");
+        std::fs::write(&path, br#"{"version":2}"#).unwrap();
+        assert!(load_v2_from(&path).is_none(), "missing windows");
+        std::fs::write(
+            &path,
+            br#"{"version":2,"windows":[{"id":1,"geometry":{"x":0,"y":0,"w":1,"h":1},"maximized":false,"active_tab":0,"tabs":[]},{"id":1,"geometry":{"x":0,"y":0,"w":1,"h":1},"maximized":false,"active_tab":0,"tabs":[]}]}"#,
+        )
+        .unwrap();
+        assert!(load_v2_from(&path).is_none(), "duplicate window ids");
+        std::fs::write(
+            &path,
+            br#"{"version":2,"windows":[{"id":1,"geometry":{"x":0,"y":0},"maximized":false,"active_tab":0,"tabs":[]}]}"#,
+        )
+        .unwrap();
+        assert!(load_v2_from(&path).is_none(), "incomplete geometry");
+    }
+
+    #[test]
+    fn backup_fallback_restores_previous_v2_generation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.json");
+        let first = v2(vec![window(
+            1,
+            geometry(10, 20, 800, 600),
+            false,
+            0,
+            vec![tab("first", 0, false, leaf(Some("/tmp"), None))],
+        )]);
+        let second = v2(vec![window(
+            2,
+            geometry(30, 40, 1024, 768),
+            true,
+            0,
+            Vec::new(),
+        )]);
+        save_v2_to(&path, &first).unwrap();
+        save_v2_to(&path, &second).unwrap();
+        assert!(backup_path(&path).is_file());
+
+        std::fs::write(&path, b"{corrupt").unwrap();
+        assert_eq!(load_v2_from(&path), Some(first.clone()));
+        assert_eq!(
+            load_from(&path).map(|snap| snap.tabs),
+            Some(first.windows[0].tabs.clone())
+        );
+
+        // 未知版本同样回退上一代。
+        std::fs::write(&path, br#"{"version":9,"windows":[]}"#).unwrap();
+        assert_eq!(load_v2_from(&path), Some(first.clone()));
+
+        // 没有 backup 的坏主文件安全返回 None。
+        std::fs::remove_file(backup_path(&path)).unwrap();
+        std::fs::write(&path, b"{corrupt").unwrap();
+        assert!(load_v2_from(&path).is_none());
+    }
+
+    #[test]
+    fn backup_fallback_can_migrate_a_v1_previous_generation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.json");
+        let v1 = r#"{"version":1,"cols":80,"rows":24,"active":0,"tabs":[{"title":"old","focused":0,"tree":{"kind":"leaf","cwd":"/tmp"}}]}"#;
+        std::fs::write(&path, v1).unwrap();
+        let fresh = v2(vec![window(
+            1,
+            geometry(0, 0, 1200, 800),
+            false,
+            0,
+            Vec::new(),
+        )]);
+        save_v2_to(&path, &fresh).unwrap(); // v1 成为上一代
+        std::fs::write(&path, b"{torn").unwrap();
+
+        let recovered = load_v2_from(&path).expect("v1 backup must be migrated");
+        assert_eq!(recovered.windows.len(), 1);
+        assert_eq!(recovered.windows[0].geometry, WindowGeometry::UNKNOWN);
+        assert_eq!(recovered.windows[0].tabs.len(), 1);
+        assert_eq!(recovered.windows[0].tabs[0].title, "old");
+    }
+
+    #[test]
+    fn legacy_api_writes_v2_and_keeps_tabs_on_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.json");
+        let legacy = Snapshot {
+            version: LEGACY_VERSION,
+            cols: 120,
+            rows: 32,
+            active: 1,
+            tabs: vec![
+                tab("Terminal 1", 0, false, leaf(Some("/tmp"), None)),
+                tab("Terminal 2", 1, true, leaf(None, Some(7))),
+            ],
+        };
+        save_to(&path, &legacy).unwrap();
+        let raw: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(raw["version"].as_u64(), Some(VERSION as u64));
+        assert_eq!(raw["windows"].as_array().unwrap().len(), 1);
+        assert_eq!(raw["windows"][0]["tabs"].as_array().unwrap().len(), 2);
+
+        let back = load_from(&path).expect("legacy load");
+        assert_eq!(back.version, LEGACY_VERSION);
+        assert_eq!(back.active, 1);
+        assert_eq!(back.tabs, legacy.tabs);
+        assert_eq!((back.cols, back.rows), (0, 0), "v1 grid has no v2 field");
+    }
+
+    #[test]
+    fn legacy_load_refuses_multi_window_v2_and_preserves_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.json");
+        let snap = v2(vec![
+            window(
+                1,
+                WindowGeometry::UNKNOWN,
+                false,
+                0,
+                vec![tab("one", 0, false, leaf(None, None))],
+            ),
+            window(
+                2,
+                WindowGeometry::UNKNOWN,
+                false,
+                0,
+                vec![tab("two", 0, false, leaf(None, None))],
+            ),
+        ]);
+        save_v2_to(&path, &snap).unwrap();
+
+        // 旧启动路径若只恢复 window[0] 再 clear()，会删掉第二个窗口；必须拒绝。
+        assert!(load_from(&path).is_none());
+        assert!(
+            path.is_file(),
+            "legacy load must not delete multi-window data"
+        );
+        assert_eq!(load_v2_from(&path), Some(snap));
+    }
+
+    #[test]
+    fn v2_json_contains_only_layout_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.json");
+        let snap = v2(vec![window(
+            1,
+            geometry(1, 2, 3, 4),
+            false,
+            0,
+            vec![tab("T", 0, true, leaf(Some("/tmp"), Some(5)))],
+        )]);
+        save_v2_to(&path, &snap).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+
+        assert_eq!(
+            sorted_keys(value.as_object().unwrap()),
+            vec!["version", "windows"]
+        );
+        let window = value["windows"][0].as_object().unwrap();
+        assert_eq!(
+            sorted_keys(window),
+            vec!["active_tab", "geometry", "id", "maximized", "tabs"]
+        );
+        assert_eq!(
+            sorted_keys(window["geometry"].as_object().unwrap()),
+            vec!["h", "w", "x", "y"]
+        );
+        let tab = window["tabs"][0].as_object().unwrap();
+        assert_eq!(sorted_keys(tab), vec!["focused", "pinned", "title", "tree"]);
+        assert_eq!(
+            sorted_keys(tab["tree"].as_object().unwrap()),
+            vec!["cwd", "kind", "profile_id"]
+        );
+
+        // 布局之外的东西（进程/scrollback/凭据）不得进入快照。
+        let lower = text.to_ascii_lowercase();
+        for forbidden in [
+            "scrollback",
+            "pid",
+            "process",
+            "password",
+            "credential",
+            "token",
+        ] {
+            assert!(
+                !lower.contains(forbidden),
+                "must not persist {forbidden}: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn save_v2_rejects_wrong_version_and_duplicate_window_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.json");
+        let wrong = SnapshotV2 {
+            version: LEGACY_VERSION,
+            windows: Vec::new(),
+        };
+        let error = save_v2_to(&path, &wrong).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(!path.exists(), "invalid snapshot must not create a file");
+
+        let duplicate = SnapshotV2 {
+            version: VERSION,
+            windows: vec![
+                window(7, WindowGeometry::UNKNOWN, false, 0, Vec::new()),
+                window(7, WindowGeometry::UNKNOWN, false, 0, Vec::new()),
+            ],
+        };
+        assert!(save_v2_to(&path, &duplicate).is_err());
+        assert!(!path.exists());
     }
 
     #[test]
     fn bad_or_empty_snapshot_never_blocks_new_tab_fallback() {
-        let dir = std::env::temp_dir().join(format!("rt-session-fallback-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("session.json");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.json");
 
-        // 不存在 / 半截 JSON / 未来版本：都返回 None，启动方据此新建普通 Tab。
+        // 不存在 / 半截 JSON / 未知版本：都返回 None，启动方据此新建普通 Tab。
         assert!(load_from(&path).is_none());
         std::fs::write(&path, b"{oops").unwrap();
         assert!(load_from(&path).is_none());
-        let future = Snapshot {
+        let future = SnapshotV2 {
             version: VERSION + 1,
-            cols: 80,
-            rows: 24,
-            active: 0,
-            tabs: Vec::new(),
+            windows: Vec::new(),
         };
-        save_to(&path, &future).unwrap();
+        std::fs::write(&path, serde_json::to_vec(&future).unwrap()).unwrap();
+        assert!(load_v2_from(&path).is_none());
         assert!(load_from(&path).is_none());
 
-        // 合法但空 tabs：load 成功，startup 仍需检查空列表并回退新 Tab。
-        let empty = Snapshot {
+        // 合法但空 windows：v2 可读，旧单窗口 API 没有窗口可恢复。
+        let empty = SnapshotV2 {
             version: VERSION,
+            windows: Vec::new(),
+        };
+        save_v2_to(&path, &empty).unwrap();
+        assert_eq!(load_v2_from(&path), Some(empty));
+        assert!(load_from(&path).is_none());
+
+        // 旧 API 空 tabs 快照：仍然能读回，恢复端检查 tabs 后回退新 Tab。
+        let empty_tabs = Snapshot {
+            version: LEGACY_VERSION,
             cols: 80,
             rows: 24,
             active: 0,
             tabs: Vec::new(),
         };
-        save_to(&path, &empty).unwrap();
+        save_to(&path, &empty_tabs).unwrap();
         let loaded = load_from(&path).unwrap();
         assert!(loaded.tabs.is_empty());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -520,23 +1226,6 @@ mod tests {
         assert!(was_unclean_at(&path));
         std::fs::remove_file(running_path(&path)).unwrap();
         assert!(!was_unclean_at(&path));
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn save_keeps_previous_generation_for_corruption_recovery() {
-        let dir = std::env::temp_dir().join(format!("rt-session-backup-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let path = dir.join("session.json");
-        let first = Snapshot { version: VERSION, cols: 80, rows: 24, active: 0, tabs: Vec::new() };
-        let second = Snapshot { version: VERSION, cols: 120, rows: 40, active: 0, tabs: Vec::new() };
-        save_to(&path, &first).unwrap();
-        save_to(&path, &second).unwrap();
-        assert!(backup_path(&path).is_file());
-        std::fs::write(&path, b"{corrupt").unwrap();
-        let recovered = load_from(&path).expect("previous generation");
-        assert_eq!(recovered.cols, 80);
-        assert_eq!(recovered.rows, 24);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
