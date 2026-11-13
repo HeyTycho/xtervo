@@ -10,7 +10,7 @@ mod feedback;
 mod glyph;
 mod gpu_native;
 mod gpu_present;
-// 单实例 primary/secondary IPC 原型（多窗口 Phase 3）；尚未接入启动流程。
+// 单实例 primary/secondary IPC + open_window 转发（产品启动路径）。
 #[cfg(unix)]
 mod instance;
 mod keys;
@@ -69,6 +69,8 @@ use x11rb::rust_connection::RustConnection;
 
 use crate::config::{Config, ScrollbarPolicy, UNLIMITED_SCROLLBACK_LINES};
 use crate::glyph::FontSet;
+#[cfg(unix)]
+use crate::instance::{InstanceLock, InstancePaths, OpenWindowRequest, PrimaryServer};
 use crate::latency::{DamageWatcher, Injector, LatencyStats};
 use crate::mcp::McpPermissions;
 use crate::render::Renderer;
@@ -79,6 +81,13 @@ use crate::workspace::{Dir, Divider, PaneId, Rect, Tab, Workspace, SPLIT_GAP};
 /// 延迟探针使用的高辨识度字符（避免与 shell 提示符冲突）。
 const MARKER: char = 'z';
 const TITLE: &str = "Tervo";
+
+/// 显式关闭单实例：仅测试/排障/legacy fallback 使用。默认必须是 true。
+const SINGLE_INSTANCE_ENV: &str = "TERVO_SINGLE_INSTANCE";
+/// secondary 等 primary 启动 control socket / --restore 等旧 primary 退出的上限。
+const INSTANCE_CLAIM_TIMEOUT: Duration = Duration::from_secs(10);
+/// primary 的 open_window handler 等待 UI 线程真正建完窗口的上限。
+const INSTANCE_UI_ACK_TIMEOUT: Duration = Duration::from_secs(15);
 /// 必须与 ui/main.slint 里的 `tabbar-height` 保持一致。
 const TABBAR_H: f32 = 32.0;
 /// `TermMode::BRACKETED_PASTE`
@@ -560,9 +569,8 @@ fn live_control(cmd: &str, args: &serde_json::Value) -> Result<serde_json::Value
         return live_list_windows(args);
     }
     if cmd == "new_window" {
-        if !secondary::enabled() {
-            return Err("in-process multi-window is disabled (TERVO_MULTI_WINDOW_INPROC=1)".into());
-        }
+        // 默认同进程；只有显式 legacy fallback 时 MCP 也没有子进程语义，
+        // 因此这里始终走 WindowRegistry（不再依赖 TERVO_MULTI_WINDOW_INPROC）。
         let id = secondary::create_inproc_window()?;
         return Ok(serde_json::json!({"window_id": id.get()}));
     }
@@ -3691,8 +3699,22 @@ fn create_pane(
 }
 
 fn new_tab_inner(st: &mut AppState) {
+    new_tab_inner_with_cwd(st, None);
+}
+
+/// 启动/转发请求带 cwd 时的首 Tab；没有默认 Profile 才用请求 cwd，
+/// 有默认 Profile 时保持既有“新 Tab 用默认 Profile”的语义。
+pub(crate) fn new_tab_with_default_or_cwd(st: &mut AppState, cwd: Option<PathBuf>) {
+    if cwd.is_some() && default_profile_index(st).is_none() {
+        new_tab_inner_with_cwd(st, cwd);
+    } else {
+        new_tab_with_default(st);
+    }
+}
+
+fn new_tab_inner_with_cwd(st: &mut AppState, cwd: Option<PathBuf>) {
     let id = st.shared.alloc_pane_id();
-    match create_pane(st, id, st.content, None, None, None) {
+    match create_pane(st, id, st.content, cwd, None, None) {
         Ok(rt) => {
             st.next_title += 1;
             let n = st.next_title;
@@ -3718,26 +3740,35 @@ fn new_tab() {
     with_app(new_tab_with_default);
 }
 
-/// 新建窗口 = 拉起一个独立的 Tervo 进程（MVP，无单实例锁/IPC）。
-/// 在 `with_app` 借用内调用也安全：不碰 AppState，只 spawn 并写日志。
+/// 新建窗口：默认在当前 primary 进程内创建（WindowRegistry）。
+///
+/// 只有显式 `TERVO_MULTI_WINDOW_INPROC=0` / `TERVO_MULTI_WINDOW_LEGACY=1` 时
+/// 才回退到旧的多进程 `current_exe --window`。旧路径由子进程显式绕过单实例锁。
+/// 在 `with_app` 借用内调用也安全：本函数只排队，不直接碰 AppState。
 fn new_window() {
-    if secondary::enabled() {
-        static PENDING: AtomicBool = AtomicBool::new(false);
-        if PENDING.swap(true, Ordering::AcqRel) {
-            return;
+    if secondary::legacy_fallback() {
+        match window::spawn_new_window() {
+            Ok(pid) => eprintln!("[ui] new window pid={pid}（legacy subprocess fallback）"),
+            Err(e) => eprintln!("[ui] new window failed: {e}"),
         }
-        let _ = slint::invoke_from_event_loop(|| {
-            PENDING.store(false, Ordering::Release);
-            match secondary::create_inproc_window() {
-                Ok(id) => eprintln!("[ui] in-process new window id={id}"),
-                Err(error) => eprintln!("[ui] in-process new window failed: {error}"),
-            }
-        });
         return;
     }
-    match window::spawn_new_window() {
-        Ok(pid) => eprintln!("[ui] new window pid={pid}"),
-        Err(e) => eprintln!("[ui] new window failed: {e}"),
+    static PENDING: AtomicBool = AtomicBool::new(false);
+    if PENDING.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    match slint::invoke_from_event_loop(|| {
+        PENDING.store(false, Ordering::Release);
+        match secondary::create_inproc_window() {
+            Ok(id) => eprintln!("[ui] in-process new window id={id}"),
+            Err(error) => eprintln!("[ui] in-process new window failed: {error}"),
+        }
+    }) {
+        Ok(()) => {}
+        Err(error) => {
+            PENDING.store(false, Ordering::Release);
+            eprintln!("[ui] in-process new window unavailable: {error}");
+        }
     }
 }
 
@@ -9094,18 +9125,26 @@ fn install_native_window_events(ui: &MainWindow, window_id: WindowId) {
                 });
             }
             winit::event::WindowEvent::CloseRequested => {
-                // 多窗口：关闭 B 只销毁 B 的 PTY/UI/GPU surface，A 继续运行。
-                // 最后一个窗口仍走 Slint 默认 hide -> 事件循环退出 -> 主流程保存
-                // session，因此这里不提前移除，避免退出钩子拿不到 AppState。
-                if runtime::window_count() > 1 {
-                    eprintln!("[ui] {window_id} close requested（多窗口，保留其它窗口）");
-                    if let Some(runtime) = runtime::remove_window(window_id) {
-                        // Slint 1.18 的 WM close 默认只是 hide，不保证立即发
-                        // RenderingTeardown；这里显式释放该窗口的 GPU 引用。
-                        gpu_present::teardown_for(window_id);
-                        gpu_native::teardown_for(window_id);
-                        runtime.ui.hide();
-                        // runtime/state 在这里 drop：PTY、模型、插件 UI 状态随窗口释放。
+                // 多窗口：关闭任意一个只销毁该窗口的 PTY/UI/GPU surface；最后一个
+                // 仍走 Slint 默认 hide -> 事件循环退出 -> 主流程存 session。
+                // primary 窗口先关、其它窗口还在时进程不退出；session marker 仍由
+                // primary 进程管理，primary 的 autosave timer 随其 WindowRuntime
+                // 停止，最终退出仍由主流程清理 marker。
+                match window_close_action(runtime::window_count()) {
+                    WindowCloseAction::Remove => {
+                        eprintln!("[ui] {window_id} close requested（多窗口，保留其它窗口）");
+                        if let Some(runtime) = runtime::remove_window(window_id) {
+                            // Slint 1.18 的 WM close 默认只是 hide，不保证立即发
+                            // RenderingTeardown；这里显式释放该窗口的 GPU 引用。
+                            gpu_present::teardown_for(window_id);
+                            gpu_native::teardown_for(window_id);
+                            runtime.ui.hide();
+                            // runtime/state 在这里 drop：PTY、模型、插件 UI 状态
+                            // 随窗口释放；窗口自己的 timers 也在 WindowRuntime 里。
+                        }
+                    }
+                    WindowCloseAction::Quit => {
+                        eprintln!("[ui] {window_id} close requested（最后一个窗口，退出 primary）");
                     }
                 }
                 return EventResult::Propagate;
@@ -10568,7 +10607,9 @@ struct Options {
     restore: bool,
     /// 启动即全屏（F11 可切换）。
     fullscreen: bool,
-    /// 由 `window.new` 拉起的子窗口进程；仅用于日志区分，不触发自动建窗。
+    /// `--window` 兼容标记。默认会转发给已运行的 primary；没有 primary 时
+    /// 作为普通 primary 启动（会清掉此标记）。只有显式 legacy/无单实例模式
+    /// 才保留“子窗口进程”语义。
     window: bool,
 }
 
@@ -10901,7 +10942,7 @@ fn print_help() {
 --dump              连续打印帧内容 (调试)\n  \
 --restore           按上次快照恢复会话 (由 Restart 菜单调用)\n  \
 --fullscreen        启动即全屏 (F11 切换)\n  \
---window            内部：以新窗口子进程启动 (仅日志区分，不自动再建窗口)\n  \
+--window            兼容：在已运行的 primary 中新开窗口；无 primary 时正常启动\n  \
 --import-tabby PATH 无 UI：导入 Tabby config.yaml（Profile/字号/快捷键/主题）后退出\n  \
 --export-tabby PATH 无 UI：导出 Profile 为 Tabby YAML 后退出\n  \
 --diagnose          打印环境/窗口/最近日志后退出（排查右键/焦点问题）\n  \
@@ -11300,6 +11341,168 @@ fn init_window_ui(st: &mut AppState) {
     );
     eprintln!("[ui] 启动 tabbar_position={}", st.cfg.tabbar_position);}
 
+/// 启动时对单实例锁的判定结果。
+#[cfg(unix)]
+enum InstanceClaim {
+    /// 本进程持有 primary 锁；稍后 UI 平台就绪再启动 control server。
+    Primary(InstanceLock),
+    /// 显式 `TERVO_SINGLE_INSTANCE=0`：旧行为，独立进程、无 lock/server。
+    Standalone,
+}
+
+#[cfg(unix)]
+fn single_instance_disabled() -> bool {
+    std::env::var(SINGLE_INSTANCE_ENV)
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "0" | "false" | "no" | "off"
+            )
+        })
+        .unwrap_or(false)
+}
+
+/// 转发给 primary 的请求：保留当前 cwd（旧 `--window` 子进程会继承 cwd）。
+#[cfg(unix)]
+fn new_window_request() -> OpenWindowRequest {
+    let mut request = OpenWindowRequest::new();
+    if let Ok(cwd) = std::env::current_dir() {
+        if cwd.is_absolute() {
+            request = request.with_cwd(cwd);
+        }
+    }
+    request
+}
+
+/// 获取 primary 锁；锁被占用时按情况做 secondary 转发或等待 `--restore`。
+///
+/// 返回 `Primary` 后调用方必须让 guard 存活到进程退出。secondary 成功 ack 后
+/// 直接 `exit(0)`，不会走到 UI/Config/MCP/session 初始化。
+#[cfg(unix)]
+fn claim_instance_or_forward(paths: &InstancePaths, restore_requested: bool) -> InstanceClaim {
+    let deadline = Instant::now() + INSTANCE_CLAIM_TIMEOUT;
+    let mut waiting = false;
+    loop {
+        match InstanceLock::try_acquire(paths) {
+            Ok(Some(lock)) => {
+                if waiting {
+                    eprintln!("[instance] 现有 primary 已退出，本进程接管 single-instance lock");
+                }
+                return InstanceClaim::Primary(lock);
+            }
+            Ok(None) if restore_requested => {
+                // Restart Session 先 spawn 新进程再退出旧进程；新进程必须等锁
+                // 释放后成为 primary，不能把 --restore 转发成“再开一个窗口”。
+                if Instant::now() >= deadline {
+                    crate::logging::restore_stderr();
+                    eprintln!(
+                        "[instance] --restore 等待现有 primary 退出超时（{}s）；\
+                         另一个 Tervo 仍在运行：{}",
+                        INSTANCE_CLAIM_TIMEOUT.as_secs(),
+                        paths.lock_path().display()
+                    );
+                    std::process::exit(1);
+                }
+                if !waiting {
+                    crate::logging::restore_stderr();
+                    eprintln!("[instance] --restore 等待现有 primary 退出...");
+                    waiting = true;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Ok(None) => {
+                let request = new_window_request();
+                match crate::instance::forward_open_window(paths, &request) {
+                    Ok(()) => {
+                        // secondary 立刻退出；恢复原始 stderr，避免 logging tee
+                        // 线程来不及刷出，用户/脚本看不到 ack 证据。
+                        crate::logging::restore_stderr();
+                        eprintln!(
+                            "[instance] secondary: open_window ack 收到，退出 0（primary={} cwd={:?}）",
+                            paths.socket_path().display(),
+                            request.cwd
+                        );
+                        std::process::exit(0);
+                    }
+                    Err(error) if error.is_connect_retryable() && Instant::now() < deadline => {
+                        // primary 已持锁但 control.sock/token 尚未就绪：连接没有
+                        // 建立，重试不会重复开窗。只对 connect/token 失败重试。
+                        if !waiting {
+                            crate::logging::restore_stderr();
+                            eprintln!(
+                                "[instance] 已运行的 primary 正在启动，等待 {} ...",
+                                paths.socket_path().display()
+                            );
+                            waiting = true;
+                        }
+                        std::thread::sleep(Duration::from_millis(100));
+                    }
+                    Err(error) => {
+                        crate::logging::restore_stderr();
+                        eprintln!("[instance] 无法把新窗口转发给已运行的 Tervo primary: {error}");
+                        eprintln!(
+                            "[instance] 提示：确认 {} 可访问；仅排障/测试可设置 \
+                             {}=0 以独立进程启动",
+                            paths.socket_path().display(),
+                            SINGLE_INSTANCE_ENV
+                        );
+                        std::process::exit(1);
+                    }
+                }
+            }
+            Err(error) => {
+                crate::logging::restore_stderr();
+                eprintln!(
+                    "[instance] 无法初始化单实例控制目录 {}: {error}",
+                    paths.dir().display()
+                );
+                eprintln!(
+                    "[instance] 提示：设置 TERVO_INSTANCE_DIR 到可写的私有目录，或仅排障/测试时 \
+                     设置 {SINGLE_INSTANCE_ENV}=0 跳过单实例"
+                );
+                std::process::exit(1);
+            }
+        }
+    }
+}
+
+/// primary 的 `open_window` handler。运行在 control 连接线程：
+/// 请求转给 UI 线程，等窗口 `show()` 完成后才返回 Ok，server 才回 ack。
+#[cfg(unix)]
+fn open_window_handler(
+) -> impl Fn(OpenWindowRequest) -> Result<(), String> + Send + Sync + 'static {
+    move |request| {
+        let (tx, rx) = std::sync::mpsc::channel::<Result<WindowId, String>>();
+        slint::invoke_from_event_loop(move || {
+            let _ = tx.send(secondary::create_inproc_window_for(request));
+        })
+        .map_err(|error| format!("UI event loop is not available: {error}"))?;
+        match rx.recv_timeout(INSTANCE_UI_ACK_TIMEOUT) {
+            Ok(Ok(id)) => {
+                eprintln!("[instance] open_window -> in-process {id}");
+                Ok(())
+            }
+            Ok(Err(error)) => Err(error),
+            Err(_) => Err("timed out waiting for the UI thread to create the window".into()),
+        }
+    }
+}
+
+/// 关闭窗口策略：只剩一个时交给 Slint/主流程退出；否则只移除该窗口。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WindowCloseAction {
+    Remove,
+    Quit,
+}
+
+fn window_close_action(window_count: usize) -> WindowCloseAction {
+    if window_count > 1 {
+        WindowCloseAction::Remove
+    } else {
+        WindowCloseAction::Quit
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 默认 GPU/Skia：用户没有显式设置 SLINT_BACKEND 时请求 winit-skia。
     // `SLINT_BACKEND=winit-software` 仍是显式回退开关；显式设置任何值都以用户为准。
@@ -11443,6 +11646,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     env_logger::init();
+
+    // ---- 单实例 primary/secondary -------------------------------------
+    // 越早越好：secondary 必须在 Config/MCP/UI/session marker 之前退出。
+    // primary 先持锁；control server 等 Slint 平台初始化、registry 安装后再启动
+    // （open_window handler 需要 invoke_from_event_loop）。
+    #[cfg(unix)]
+    let mut instance_lock = {
+        let paths = InstancePaths::from_env();
+        if single_instance_disabled() {
+            eprintln!(
+                "[instance] {SINGLE_INSTANCE_ENV}=0：跳过单实例锁/control server（legacy/排障）"
+            );
+            None
+        } else {
+            let restore_requested = argv.iter().any(|arg| arg == "--restore");
+            match claim_instance_or_forward(&paths, restore_requested) {
+                InstanceClaim::Primary(lock) => {
+                    eprintln!(
+                        "[instance] primary lock={} pid={}",
+                        paths.lock_path().display(),
+                        std::process::id()
+                    );
+                    Some(lock)
+                }
+                InstanceClaim::Standalone => None,
+            }
+        }
+    };
+    #[cfg(not(unix))]
+    let mut instance_lock: Option<()> = None;
+
     // 必须在任何 Slint backend 初始化之前设置；放在 logging::init 之后是为了让
     // 日志里的 SLINT_BACKEND 能区分“程序默认 GPU”与“用户显式设置”。
     // TERVO_GPU=1 时不能写 SLINT_BACKEND：BackendSelector::select() 会读它，
@@ -11476,6 +11710,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 这里只初始化运行期权限/路径；listener 在首帧后由 supervisor 创建。
     let mcp_runtime = mcp::init(&cfg);
     let mut opts = parse_args(&cfg);
+    // `--window` 兼容：没有运行中的 primary 时它就是一个普通 primary 窗口，
+    // 必须正常管理 session/marker，而不是继续沿用“子窗口”语义。
+    #[cfg(unix)]
+    if instance_lock.is_some() && opts.window {
+        eprintln!("[instance] --window: 没有运行中的 primary，本进程作为 primary 启动");
+        opts.window = false;
+    }
     // 启动自动恢复（默认关）。开启且有快照时沿用快照网格打开窗口；
     // 没有快照/解析失败时完全保持旧的启动行为（新建单 Tab）。
     // 子窗口进程（--window）不参与自动恢复/退出快照：session.json 只有一份，
@@ -11686,6 +11927,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         reg.insert(runtime).expect("first window id must be free");
         reg.set_active(window_id);
     }
+    // Slint 平台/registry 已就绪：现在启动 control server。handler 只把请求
+    // 转给 UI 线程，窗口真正 show() 后才 ack secondary。
+    #[cfg(unix)]
+    let _primary_server = match instance_lock.take() {
+        Some(lock) => match PrimaryServer::start_with_lock(lock, open_window_handler()) {
+            Ok(server) => {
+                eprintln!(
+                    "[instance] primary control server listening socket={} token={}",
+                    server.paths().socket_path().display(),
+                    server.paths().token_path().display()
+                );
+                Some(server)
+            }
+            Err(error) => {
+                eprintln!("[instance] primary control server 启动失败: {error}");
+                return Err(error.into());
+            }
+        },
+        None => None,
+    };
     // 插件宿主是共享服务：只启动一次，唤醒信号使用 primary 窗口的 app_wake。
     shared.plugins.set_activity_wake(state.borrow().app_wake.clone());
     shared.plugins.with_mut(|plugins| plugins.start_process_plugins());
@@ -14463,8 +14724,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     // Slint 1.18 的 winit 后端不投递外部文件拖放，用 winit 事件桥接补齐。
     install_native_window_events(&ui, window_id);
-    // e2e/证据开关：feature flag + 显式 SECOND 时启动即建第二个窗口。
-    if secondary::enabled() && std::env::var_os("TERVO_MULTI_WINDOW_SECOND").is_some() {
+    // 仅 e2e/证据开关：启动即建第二个同进程窗口（默认路径已不需要 INPROC）。
+    if std::env::var_os("TERVO_MULTI_WINDOW_SECOND").is_some() {
         match secondary::create_inproc_window() {
             Ok(id) => eprintln!("[ui] startup second window id={id}"),
             Err(error) => eprintln!("[ui] startup second window failed: {error}"),
@@ -15899,6 +16160,17 @@ mod tests {
         assert!(!parse_args_from(&cfg, Vec::new()).window);
         // 与 spawn 侧常量一致
         assert_eq!(window::WINDOW_FLAG, "--window");
+    }
+
+    #[test]
+    fn close_strategy_removes_one_window_and_quits_on_last() {
+        assert_eq!(window_close_action(3), WindowCloseAction::Remove);
+        assert_eq!(window_close_action(2), WindowCloseAction::Remove);
+        assert_eq!(
+            window_close_action(1),
+            WindowCloseAction::Quit,
+            "关闭最后一个窗口必须交给主流程退出并清理 session marker"
+        );
     }
 
     #[test]

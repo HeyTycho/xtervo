@@ -1,0 +1,95 @@
+{
+  "checks": [
+    {
+      "name": "primary_control_socket",
+      "detail": "/tmp/tervo-si-e2e-3/tervo/control.sock"
+    },
+    {
+      "name": "primary_window",
+      "detail": {
+        "id": "0x200003",
+        "title": "Tervo",
+        "marker": "/home/user/AIworkspace/rusttabbyterminal/.worktrees/mw-instance-integration/target/single-instance-e2e/session.running"
+      }
+    },
+    {
+      "name": "second_call_forwards",
+      "detail": {
+        "windows": [
+          "0x200003",
+          "0x200008"
+        ],
+        "pid": 29
+      }
+    },
+    {
+      "name": "window_flag_forwards",
+      "detail": {
+        "windows": [
+          "0x200003",
+          "0x200008",
+          "0x20000d"
+        ]
+      }
+    },
+    {
+      "name": "ack_after_ui_window",
+      "detail": {
+        "acks": 2,
+        "created": 2
+      }
+    },
+    {
+      "name": "ctrl_shift_n_inproc",
+      "detail": {
+        "windows": [
+          "0x200003",
+          "0x200008",
+          "0x20000d",
+          "0x200012"
+        ],
+        "pid": 29
+      }
+    },
+    {
+      "name": "wrong_token_rejected",
+      "detail": {
+        "exit": 1
+      }
+    },
+    {
+      "name": "close_keeps_primary",
+      "detail": {
+        "closed": "Tervo \u2014 2",
+        "remaining": [
+          "Tervo",
+          "Tervo \u2014 3",
+          "Tervo \u2014 4"
+        ]
+      }
+    },
+    {
+      "name": "close_keeps_primary",
+      "detail": {
+        "closed": "Tervo \u2014 3",
+        "remaining": [
+          "Tervo",
+          "Tervo \u2014 4"
+        ]
+      }
+    },
+    {
+      "name": "close_primary_keeps_others",
+      "detail": {
+        "remaining": 1
+      }
+    },
+    {
+      "name": "close_last_window_quits",
+      "detail": {
+        "windows": 0
+      }
+    }
+  ],
+  "ok": true
+}

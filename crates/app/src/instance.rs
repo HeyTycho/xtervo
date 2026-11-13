@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! 单实例 primary / secondary IPC 原型（多窗口 Phase 3 的基础设施）。
 //!
-//! 本模块**不**接入 `main.rs` 启动流程，也不操作 Slint/UI。集成方负责：
+//! 本模块被 `main.rs` 产品启动路径使用：primary 在 UI 平台初始化后启动
+//! control server，secondary 转发 `open_window` 并在收到 ack 后退出。集成方负责：
 //! - 在 UI 线程创建窗口（[`OpenWindowHandler`] 在 control 连接线程上被调用，
 //!   需要用 `slint::invoke_from_event_loop` 或 channel 转给 UI 线程）；
-//! - 决定 primary / secondary 后分别调用 [`PrimaryServer::start`] 或
+//! - 决定 primary / secondary 后分别调用 [`PrimaryServer::start_with_lock`] 或
 //!   [`forward_open_window`]。
 //!
 //! 协议：
@@ -22,8 +23,6 @@
 //! `~/.local/state/tervo`、`$TMPDIR/tervo-<uid>`。退回的目录会校验
 //! owner/类型并收紧到 0700；symlink 或 owner 不符直接报错，而不是盲目使用
 //! 可预测的临时路径。
-
-#![allow(dead_code)] // 原型阶段尚未接入 main.rs 启动流程，公开 API 由 tests/集成方使用。
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Write};
@@ -52,7 +51,11 @@ const MAX_CWD_BYTES: usize = 4096;
 const MAX_ERROR_CHARS: usize = 512;
 
 /// secondary 等待 primary 连接/ack 的默认上限。
-pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(3);
+///
+/// primary 可能刚拿到锁、还在初始化首个窗口/事件循环；secondary 会先按
+/// [`forward_open_window_with_timeout`] 的连接重试策略等待，再在这个上限内等
+/// UI 线程真正建完窗口后的 ack。
+pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 /// primary 启动与 secondary 转发之间的竞态窗口：最多重试一次。
 const RETRY_DELAY: Duration = Duration::from_millis(150);
 /// accept 线程轮询间隔；Drop 时 join 最多等这么久。
@@ -75,6 +78,7 @@ impl OpenWindowRequest {
         Self::default()
     }
 
+    #[allow(dead_code)] // 协议/测试保留；CLI 目前只转发 cwd。
     pub fn with_profile(mut self, profile: impl Into<String>) -> Self {
         self.profile = Some(profile.into());
         self
@@ -157,11 +161,16 @@ impl InstancePaths {
         Self::from_dir(dir)
     }
 
-    /// 读取 `XDG_RUNTIME_DIR` / `XDG_STATE_HOME` / `HOME` / `TMPDIR`。
+    /// 读取 `TERVO_INSTANCE_DIR` / `XDG_RUNTIME_DIR` / `XDG_STATE_HOME` /
+    /// `HOME` / `TMPDIR`。
     ///
-    /// 相对路径的 XDG/HOME 环境变量视为无效（XDG spec 要求绝对路径），
-    /// 继续走 fallback。
+    /// `TERVO_INSTANCE_DIR` 是测试/高级隔离开关：显式指定整个 control 目录
+    /// （lock/token/socket 都在其中）。相对路径按无效处理，继续走 fallback。
+    /// 相对路径的 XDG/HOME 环境变量同样视为无效（XDG spec 要求绝对路径）。
     pub fn from_env() -> Self {
+        if let Some(dir) = env_absolute("TERVO_INSTANCE_DIR") {
+            return Self::from_dir(dir);
+        }
         let runtime_dir = env_absolute("XDG_RUNTIME_DIR");
         let state_home = env_absolute("XDG_STATE_HOME");
         let home = env_absolute("HOME");
@@ -272,6 +281,7 @@ impl PrimaryServer {
     ///
     /// 需要**精确**区分 primary/secondary 时，先调用
     /// [`InstanceLock::try_acquire`]，再调用 [`Self::start_with_lock`]。
+    #[allow(dead_code)] // 测试/脚本便捷入口；产品启动用 start_with_lock。
     pub fn start<H>(paths: InstancePaths, handler: H) -> io::Result<Self>
     where
         H: Fn(OpenWindowRequest) -> Result<(), String> + Send + Sync + 'static,
@@ -368,7 +378,9 @@ impl SecondaryClient {
 
     pub fn open_window(&self, request: &OpenWindowRequest) -> Result<(), ForwardError> {
         request.validate().map_err(ForwardError::InvalidRequest)?;
-        let token = read_instance_token(self.paths.token_path()).map_err(ForwardError::Token)?;
+        // 先 connect 再读 token：没有 primary 时返回明确的 Unavailable（而不是
+        // “token 缺失”误导用户以为 primary 在运行但坏了）；连接成功但 token
+        // 缺失/不安全时才报 Token。
         let socket_path = self.paths.socket_path().to_path_buf();
         let mut stream = UnixStream::connect(&socket_path).map_err(|source| {
             if is_timeout(&source) {
@@ -380,6 +392,7 @@ impl SecondaryClient {
                 }
             }
         })?;
+        let token = read_instance_token(self.paths.token_path()).map_err(ForwardError::Token)?;
         let _ = stream.set_read_timeout(Some(self.timeout));
         let _ = stream.set_write_timeout(Some(self.timeout));
 
@@ -509,6 +522,14 @@ impl std::error::Error for ForwardError {
             Self::Unavailable { source, .. } | Self::Io { source, .. } => Some(source),
             _ => None,
         }
+    }
+}
+
+impl ForwardError {
+    /// 连接尚未建立（primary 还在启动 / token 尚未写好）时可以安全重试；
+    /// 请求一旦发出去（Timeout/Protocol/Rejected）绝不能重试，避免重复开窗。
+    pub fn is_connect_retryable(&self) -> bool {
+        matches!(self, Self::Unavailable { .. } | Self::Token(_))
     }
 }
 
@@ -1099,6 +1120,44 @@ mod tests {
         assert!(paths.socket_path().exists());
         drop(server);
         assert!(!paths.socket_path().exists());
+    }
+
+    #[test]
+    fn missing_primary_reports_unavailable_without_side_effects() {
+        let root = TempDir::new().unwrap();
+        let paths = test_paths(&root);
+        let error = forward_open_window(&paths, &OpenWindowRequest::default())
+            .expect_err("no primary must fail");
+        assert!(
+            error.is_connect_retryable(),
+            "missing primary must be a retryable connect failure, got {error:?}"
+        );
+        let message = error.to_string();
+        assert!(message.contains("primary is not running"), "{message}");
+        assert!(
+            !paths.socket_path().exists(),
+            "forwarding must not create control.sock"
+        );
+    }
+
+    #[test]
+    fn handler_failure_is_rejected_and_ack_is_not_ok() {
+        let root = TempDir::new().unwrap();
+        let paths = test_paths(&root);
+        let server = PrimaryServer::start(paths.clone(), |_request| {
+            Err("window creation exploded".to_string())
+        })
+        .expect("start primary");
+
+        let error = forward_open_window(&paths, &OpenWindowRequest::default())
+            .expect_err("handler failure must not ack success");
+        match error {
+            ForwardError::Rejected(message) => {
+                assert_eq!(message, "window creation exploded")
+            }
+            other => panic!("expected rejected handler error, got {other:?}"),
+        }
+        drop(server);
     }
 
     #[test]
