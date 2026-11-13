@@ -23,13 +23,15 @@
 //!   作为像素证据（仅验证用；正常渲染路径不做 GPU→CPU 整帧拷贝）。
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use slint::wgpu_30::wgpu;
 use tervo_core::{Frame, Span};
+
+use crate::runtime::WindowId;
 use tervo_graphics::SourceId;
 use tervo_render_wgpu::{
     read_target_rgba8, write_ppm, AtlasConfig, GpuImageRenderer, GpuTextRenderer, SceneLayerStats,
@@ -95,6 +97,27 @@ struct State {
 static STATE: Mutex<Option<State>> = Mutex::new(None);
 /// 出现过不可恢复错误：本进程剩余时间一律回 CPU。
 static FAILED: Mutex<bool> = Mutex::new(false);
+/// 仍持有共享 WGPU device 的窗口。State 是惰性创建的，不能用 State 是否存在
+/// 判断窗口数：第二个窗口 setup 时 State 可能还没建。
+static CLIENTS: Mutex<Option<HashSet<WindowId>>> = Mutex::new(None);
+/// 每窗口 active pane；retain 必须按全进程并集回收。
+static PANES_BY_WINDOW: Mutex<Option<HashMap<WindowId, HashSet<u64>>>> = Mutex::new(None);
+
+fn clients() -> std::sync::MutexGuard<'static, Option<HashSet<WindowId>>> {
+    CLIENTS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn panes_by_window() -> std::sync::MutexGuard<'static, Option<HashMap<WindowId, HashSet<u64>>>> {
+    PANES_BY_WINDOW
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn window_count() -> usize {
+    clients().as_ref().map_or(0, HashSet::len)
+}
 
 static FRAMES: AtomicU64 = AtomicU64::new(0);
 static DRAW_CALLS: AtomicU64 = AtomicU64::new(0);
@@ -178,19 +201,48 @@ fn fail(reason: impl std::fmt::Display) {
 /// `RenderingSetup` 里由 `render_probe` 调用，保存 Slint 的同一 device/queue。
 ///
 /// 只保存 device/queue；glyph atlas 在首帧按 pane 的字体/字号惰性创建。
-pub fn install(device: &wgpu::Device, _queue: &wgpu::Queue) {
+pub fn install(device: &wgpu::Device, queue: &wgpu::Queue) {
+    install_for(WindowId::FIRST, device, queue);
+}
+
+/// 多窗口版本：同一 device 的 setup 只登记窗口，不清其它窗口的 atlas/target。
+pub fn install_for(window: WindowId, device: &wgpu::Device, _queue: &wgpu::Queue) {
     if !requested() || failed() {
         return;
     }
+    let mut same_device = false;
     if let Ok(mut guard) = STATE.lock() {
-        if guard.is_some() {
-            eprintln!("[gpu-native] RenderingSetup 重新安装：丢弃旧 device 上的 atlas/target");
+        if let Some(state) = guard.as_mut() {
+            if state.device == *device {
+                same_device = true;
+            } else {
+                eprintln!(
+                    "[gpu-native] {window} RenderingSetup：device 变化，丢弃旧 atlas/target"
+                );
+                *guard = None;
+                PANE_IMAGES.with(|images| images.borrow_mut().clear());
+            }
         }
-        *guard = None;
+    }
+    {
+        let mut clients = clients();
+        let set = clients.get_or_insert_with(HashSet::new);
+        set.insert(window);
+    }
+    panes_by_window()
+        .get_or_insert_with(HashMap::new)
+        .entry(window)
+        .or_default();
+    if same_device {
+        eprintln!(
+            "[gpu-native] {window} RenderingSetup：复用同一 device/atlas（{} 个窗口共享）",
+            window_count()
+        );
+        return;
     }
     let info = device.adapter_info();
     eprintln!(
-        "[gpu-native] TERVO_GPU_NATIVE=1：拿到 Slint WGPU30 同一 device/queue；\
+        "[gpu-native] TERVO_GPU_NATIVE=1：{window} 拿到 Slint WGPU30 同一 device/queue；\
          adapter={:?} backend={:?} device_type={:?}",
         info.name, info.backend, info.device_type
     );
@@ -200,7 +252,7 @@ pub fn install(device: &wgpu::Device, _queue: &wgpu::Queue) {
     slint::Timer::single_shot(std::time::Duration::from_millis(250), crate::redraw_all);
 }
 
-/// 丢弃旧 device（RenderingTeardown / 重建）。
+/// 丢弃旧 device（RenderingTeardown / 重建；无窗口上下文兼容路径）。
 pub fn teardown() {
     if let Ok(mut guard) = STATE.lock() {
         if guard.is_some() {
@@ -209,6 +261,46 @@ pub fn teardown() {
         *guard = None;
     }
     PANE_IMAGES.with(|images| images.borrow_mut().clear());
+    *clients() = None;
+    *panes_by_window() = None;
+}
+
+/// 多窗口 teardown：只回收该窗口的 target；最后一个窗口关闭才清全局 atlas。
+pub fn teardown_for(window: WindowId) {
+    let panes = panes_by_window()
+        .get_or_insert_with(HashMap::new)
+        .remove(&window)
+        .unwrap_or_default();
+    let remaining = {
+        let mut clients = clients();
+        let set = clients.get_or_insert_with(HashSet::new);
+        set.remove(&window);
+        set.len()
+    };
+    PANE_IMAGES.with(|images| {
+        images
+            .borrow_mut()
+            .retain(|pane, _| !panes.contains(pane));
+    });
+    if remaining == 0 {
+        if let Ok(mut guard) = STATE.lock() {
+            if guard.is_some() {
+                eprintln!(
+                    "[gpu-native] {window} rendering teardown：最后一个窗口，丢弃 atlas/target"
+                );
+            }
+            *guard = None;
+        }
+    } else {
+        if let Ok(mut guard) = STATE.lock() {
+            if let Some(state) = guard.as_mut() {
+                state.panes.retain(|pane, _| !panes.contains(pane));
+            }
+        }
+        eprintln!(
+            "[gpu-native] {window} rendering teardown：保留 atlas/target（{remaining} 个窗口仍存活）"
+        );
+    }
 }
 
 /// 回收已关闭 pane 的离屏 target，避免全局 HashMap 持有已删除 pane。
@@ -222,6 +314,29 @@ pub fn retain(active: &[u64]) {
         images
             .borrow_mut()
             .retain(|pane, _| active.contains(pane));
+    });
+}
+
+/// 多窗口 retain：更新该窗口的 pane 集合后按所有窗口并集回收。
+pub fn retain_for(window: WindowId, active: &[u64]) {
+    let set: HashSet<u64> = active.iter().copied().collect();
+    let union = {
+        let mut map = panes_by_window();
+        let map = map.get_or_insert_with(HashMap::new);
+        map.insert(window, set);
+        map.values()
+            .flat_map(|panes| panes.iter().copied())
+            .collect::<HashSet<_>>()
+    };
+    if let Ok(mut guard) = STATE.lock() {
+        if let Some(state) = guard.as_mut() {
+            state.panes.retain(|pane, _| union.contains(pane));
+        }
+    }
+    PANE_IMAGES.with(|images| {
+        images
+            .borrow_mut()
+            .retain(|pane, _| union.contains(pane));
     });
 }
 

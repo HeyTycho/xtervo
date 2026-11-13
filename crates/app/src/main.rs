@@ -34,6 +34,7 @@ mod render_bench;
 #[cfg(test)]
 mod render_damage_tests;
 mod render_probe;
+mod runtime;
 mod session;
 mod sftp;
 mod tabby_import;
@@ -70,6 +71,7 @@ use crate::glyph::FontSet;
 use crate::latency::{DamageWatcher, Injector, LatencyStats};
 use crate::mcp::McpPermissions;
 use crate::render::Renderer;
+use crate::runtime::{Shared, SharedServices, WindowId, WindowRegistry, WindowRuntime};
 use crate::themes::{resolve_auto, ThemeData, ThemeRegistry, Variant};
 use crate::workspace::{Dir, Divider, PaneId, Rect, Tab, Workspace, SPLIT_GAP};
 
@@ -274,13 +276,17 @@ struct AppState {
     opts: Options,
     content: Rect,
     next_title: usize,
-    cfg: Config,
+    cfg: Shared<Config>,
+    /// 本窗口身份：所有 GPU/session/插件/MCP 路由都必须显式带上它。
+    window_id: WindowId,
+    /// 每用户共享服务（Config/Theme/PluginHost/MCP/Session/Vault）。
+    shared: Rc<SharedServices>,
     /// 外部 config.toml 轮询监听；设置页保存时靠自己写入标记跳过回环。
     config_watcher: Option<config_watch::ConfigWatcher>,
     /// 当前实际生效的主题（`cfg.theme == "auto"` 时是解析后的结果）。
     resolved_theme: ThemeData,
     /// 内置 + `themes/*.toml` 自定义主题。
-    registry: ThemeRegistry,
+    registry: Shared<ThemeRegistry>,
     /// 是否已启动过系统配色监听线程（避免重复 spawn）。
     auto_watch_started: bool,
     search_open: bool,
@@ -306,14 +312,14 @@ struct AppState {
     /// 后台会话：关 Tab/Pane 时按配置保留的运行时（不 drop，子进程继续跑）
     detached: Vec<(PaneId, PaneRuntime, String)>,
     bg_model: Rc<VecModel<slint::SharedString>>,
-    profiles: profile::ProfileStore,
+    profiles: Shared<profile::ProfileStore>,
     profile_model: Rc<VecModel<ProfileRow>>,
     /// 过滤后各列表行在 `profiles.profiles` 中的原始下标（点击/编辑/删除按此映射）。
     profile_indices: Vec<usize>,
     /// Profiles 面板搜索框当前内容（空 = 显示全部）。
     profile_query: String,
     /// 加密凭据容器：启动时锁定，需在设置 → Vault 里解锁。
-    vault: vault::Vault,
+    vault: Shared<vault::Vault>,
     /// Vault 后台 KDF 任务（解锁/初始化/改密码）；Argon2 不跑 UI 线程。
     vault_job: Option<vault::VaultTask>,
     /// 正在跑的后台动作（决定成功提示文案）。
@@ -345,7 +351,7 @@ struct AppState {
     /// release 只回放这里登记过的键：快捷键/搜索框/录制中的按键 press 没进 PTY，
     /// 对应 release 也绝不能进 PTY。普通 shell（未请求协议）永远为空。
     held_keys: HashMap<PaneId, std::collections::HashSet<keys::KeyId>>,
-    plugins: plugin_v3::PluginStore,
+    plugins: Shared<plugin_v3::PluginStore>,
     /// 后台事件唤醒（插件活动/SFTP 结果共用，容量 1）：写入结果后通知 UI。
     app_wake: WakeSignal,
     /// Plugins 设置页的行模型（声明式；所有控件由宿主渲染）。
@@ -402,10 +408,6 @@ struct AppState {
     last_click: Option<(PaneId, i32, i32, std::time::Instant)>,
     /// 最近关闭的 Tab（最多 10 个），用于 Ctrl+Shift+T / 菜单重开
     closed_tabs: Vec<session::TabSnapshot>,
-    /// 最近一次成功 autosave 的快照；用于避免每 2s 重复写盘。
-    last_session_snapshot: Option<session::Snapshot>,
-    /// Restart Session 已保存快照并拉起子进程：退出钩子不要再写一次。
-    restarting: bool,
     fwd_profile_indices: Vec<usize>,
     fwd_model: Rc<VecModel<slint::SharedString>>,
     settings_result_cats: Vec<i32>,
@@ -475,10 +477,6 @@ struct AppState {
     /// X11 SHAPE 自适应圆角 worker；None = 未启动（X11 连接/线程失败，窗口保持直角）。
     corners: Option<xconn::CornerShaper>,
     clipboard: Option<arboard::Clipboard>,
-}
-
-thread_local! {
-    static APP: RefCell<Option<Rc<RefCell<AppState>>>> = const { RefCell::new(None) };
 }
 
 /// 应用内管线打点：key 回调 → 帧交到 Slint（不含 winit 帧节流与上屏）。
@@ -709,18 +707,16 @@ fn live_diag_snapshot() -> serde_json::Value {
     }))
 }
 
+/// 旧回调入口：路由到“当前窗口”（`with_state/with_window` 设置的作用域），
+/// 没有作用域时回退到 registry 的活动窗口。多窗口下不再假设进程里只有一个
+/// 全局 AppState；新代码应显式使用 [`runtime::with_window`]。
 fn with_app<R>(f: impl FnOnce(&mut AppState) -> R) -> Option<R> {
-    let app = APP.with(|c| c.borrow().clone())?;
-    // 防御性：正常路径不应重入；万一将来某个回调在借用期内又调 with_app，
-    // 这里降级为“忽略本次操作 + 报错”，而不是整个进程 panic。
-    let mut st = match app.try_borrow_mut() {
-        Ok(st) => st,
-        Err(_) => {
-            eprintln!("[app] with_app 重入（AppState 已被借用），忽略本次操作");
-            return None;
-        }
-    };
-    Some(f(&mut st))
+    runtime::with_active_window(f)
+}
+
+/// 对所有已注册窗口执行一次；配置/主题/语言等共享状态变化必须逐窗口同步。
+fn with_all_windows(mut f: impl FnMut(&mut AppState)) {
+    runtime::with_all_windows(|_id, st| f(st));
 }
 
 // ------------------------------------------------------------------ 主题
@@ -2647,8 +2643,8 @@ fn reconfig_summary(old: &Config, new: &Config) -> ReconfigSummary {
 /// 外部 `config.toml` 成功解析后套用。**绝不调用 `save`**，避免 watcher 自己
 /// 触发第二轮文件变化；设置页保存走各自现有回调，不经过这里。
 fn apply_external_config(st: &mut AppState, new_cfg: Config) {
-    let old = st.cfg.clone();
-    if old == new_cfg {
+    let old = st.cfg.with(|cfg| cfg.clone());
+    if old == st.cfg.with(|cfg| cfg.clone()) {
         // 典型情况：设置页刚 save 完、watcher 收到还没消费掉的自身写入；或只是
         // 重新格式化/改注释/换行。内容等价就不重载、不重绘。
         eprintln!("[config] 外部变更与当前配置等价，跳过套用（自身写入/仅格式变化）");
@@ -2683,7 +2679,7 @@ fn apply_external_config(st: &mut AppState, new_cfg: Config) {
         || old.mcp_tabs != new_cfg.mcp_tabs
         || old.mcp_destructive != new_cfg.mcp_destructive;
 
-    st.cfg = new_cfg;
+    *st.cfg = new_cfg;
     // 先换运行期权限，再同步 UI；socket supervisor 会自行创建/移除 listener。
     if mcp_changed {
         mcp::apply_config(&st.cfg);
@@ -5996,14 +5992,11 @@ fn reopen_closed_tab(st: &mut AppState) {
     );
 }
 
-fn capture_snapshot(st: &AppState) -> Option<session::Snapshot> {
-    if st.ws.tabs.is_empty() {
-        return None;
-    }
-    let (cols, rows) = cell_of(st.content, st.cell);
+/// 只收集布局 tabs（多窗口 v2 快照用；窗口几何由 WindowRuntime 补）。
+fn capture_tabs_snapshot(st: &AppState) -> Vec<session::TabSnapshot> {
     let mut tabs = Vec::with_capacity(st.ws.tabs.len());
     for tab in &st.ws.tabs {
-        let root = tab.root.as_ref()?;
+        let Some(root) = tab.root.as_ref() else { continue };
         let ids = root.panes();
         let mut cwds = HashMap::with_capacity(ids.len());
         let mut profiles = HashMap::with_capacity(ids.len());
@@ -6024,6 +6017,18 @@ fn capture_snapshot(st: &AppState) -> Option<session::Snapshot> {
             pinned: tab.pinned,
             tree: session::Tree::from_node_with_profiles(root, &cwds, &profiles),
         });
+    }
+    tabs
+}
+
+fn capture_snapshot(st: &AppState) -> Option<session::Snapshot> {
+    if st.ws.tabs.is_empty() {
+        return None;
+    }
+    let (cols, rows) = cell_of(st.content, st.cell);
+    let tabs = capture_tabs_snapshot(st);
+    if tabs.is_empty() {
+        return None;
     }
     Some(session::Snapshot {
         version: session::VERSION,
@@ -6095,7 +6100,7 @@ fn restart_session(st: &mut AppState) {
     }
     match cmd.spawn() {
         Ok(child) => {
-            st.restarting = true;
+            st.shared.session.with_mut(|session| session.restarting = true);
             eprintln!("[session] 已拉起新实例 pid={}，退出当前进程", child.id());
             let _ = slint::quit_event_loop();
         },
@@ -6107,16 +6112,16 @@ fn restart_session(st: &mut AppState) {
 /// power loss while avoiding a write on every cursor blink. `Snapshot` equality
 /// suppresses unchanged writes; the normal exit path still does a final save.
 fn autosave_session(st: &mut AppState) {
-    if !st.cfg.restore_session_on_startup || st.restarting || st.opts.window {
+    if !st.cfg.restore_session_on_startup || st.shared.session.restarting || st.opts.window {
         return;
     }
     let Some(snap) = capture_snapshot(st) else { return };
-    if st.last_session_snapshot.as_ref() == Some(&snap) {
+    if st.shared.session.last_snapshot.as_ref() == Some(&snap) {
         return;
     }
     match session::save(&snap) {
         Ok(path) => {
-            st.last_session_snapshot = Some(snap);
+            st.shared.session.with_mut(|session| session.last_snapshot = Some(snap));
             eprintln!(
                 "[session] autosave {}（{} 个标签 / {} 个 pane）",
                 path.display(),
@@ -6133,7 +6138,7 @@ fn autosave_session(st: &mut AppState) {
 /// `Restart Session` 已提前写好快照并拉起子进程，此时 `restarting` 为 true，
 /// 不再在退出钩子里重复写（避免与子进程的 `session::clear` 竞争）。
 fn save_session_on_exit(st: &AppState) {
-    if !st.cfg.restore_session_on_startup || st.restarting || st.opts.window {
+    if !st.cfg.restore_session_on_startup || st.shared.session.restarting || st.opts.window {
         return;
     }
     match capture_snapshot(st) {
@@ -7387,10 +7392,10 @@ fn redraw_pane_inner(st: &mut AppState, id: PaneId) {
     if gpu_present::ready() || gpu_native::ready() {
         let active: Vec<u64> = st.panes.keys().copied().collect();
         if gpu_present::ready() {
-            gpu_present::retain(&active);
+            gpu_present::retain_for(st.window_id, &active);
         }
         if gpu_native::ready() {
-            gpu_native::retain(&active);
+            gpu_native::retain_for(st.window_id, &active);
         }
     }
     let Some(rt) = st.panes.get_mut(&id) else {
@@ -8857,12 +8862,15 @@ fn drop_target_at(win: &winit::window::Window) -> Option<PaneId> {
 
 /// 原生窗口事件桥接：文件拖放（Slint 1.18 winit 后端不投递 DropArea），
 /// 以及窗口 focus / DPR 变化时的 IME 候选点重同步。
-fn install_native_window_events(ui: &MainWindow) {
+fn install_native_window_events(ui: &MainWindow, window_id: WindowId) {
     let weak = ui.as_weak();
     ui.window().on_winit_window_event(move |win, event| {
         match event {
             winit::event::WindowEvent::Focused(focused) => {
-                eprintln!("[focus] window focused={focused}");
+                eprintln!("[focus] {window_id} focused={focused}");
+                if *focused {
+                    runtime::set_active_window(window_id);
+                }
                 // 比 50ms 轮询更及时；失焦时不发，等重新获得焦点再强制补发。
                 if *focused {
                     with_app(|st| {
@@ -8918,6 +8926,19 @@ fn install_native_window_events(ui: &MainWindow) {
                     start_drag_autoscroll_timer(st);
                     eprintln!("[select] autoscroll-resume reason=pointer-entered-window");
                 });
+            }
+            winit::event::WindowEvent::CloseRequested => {
+                // 多窗口：关闭 B 只销毁 B 的 PTY/UI/GPU surface，A 继续运行。
+                // 最后一个窗口仍走 Slint 默认 hide -> 事件循环退出 -> 主流程保存
+                // session，因此这里不提前移除，避免退出钩子拿不到 AppState。
+                if runtime::window_count() > 1 {
+                    eprintln!("[ui] {window_id} close requested（多窗口，保留其它窗口）");
+                    if let Some(runtime) = runtime::remove_window(window_id) {
+                        runtime.ui.hide();
+                        // runtime/state 在这里 drop：PTY、模型、插件 UI 状态随窗口释放。
+                    }
+                }
+                return EventResult::Propagate;
             }
             winit::event::WindowEvent::ScaleFactorChanged { .. } => {
                 // DPR 变化后逻辑尺寸可能还没更新；强制按新 scale 重发 spot。
@@ -11142,7 +11163,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
     // 在 show/首帧之前安装：读取实际渲染器（Skia/GL vs winit-software）和 GL 信息。
-    render_probe::install(&ui.window(), &requested_backend, backend_fell_back);
+    let window_id = WindowId::FIRST;
+    render_probe::install_for(
+        window_id,
+        &ui.window(),
+        &requested_backend,
+        backend_fell_back,
+    );
     // --title 以前只解析不使用，窗口标题永远硬编码；现在透传到 Slint 属性。
     ui.set_window_title(opts.title.as_str().into());
     // 回退开关：TERVO_SETTINGS_LEGACY=1 时设置页退回居中 modal（同一套控件，
@@ -11226,6 +11253,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
+    // ---- 每用户共享服务（只创建一次，窗口只拿句柄）----
+    let mut shared_cfg = cfg.clone();
+    shared_cfg.theme = theme_selection.clone();
+    shared_cfg.cols = opts.cols;
+    shared_cfg.rows = opts.rows;
+    shared_cfg.font_size = opts.font_size;
+    shared_cfg.scrollback = opts.scrollback;
+    if opts.shell.is_some() {
+        shared_cfg.shell = opts.shell.clone();
+    }
+    let shared = Rc::new(SharedServices::new(
+        shared_cfg,
+        registry,
+        plugins,
+        vault::Vault::open_default(),
+        profile::ProfileStore::load(),
+        mcp_runtime,
+        runtime::SessionService::new(!opts.window),
+    ));
+    let registry_cell = Rc::new(RefCell::new(WindowRegistry::new(shared.clone())));
+    runtime::install_registry(registry_cell.clone());
+
     let state = Rc::new(RefCell::new(AppState {
         ui: ui.clone_strong(),
         ws: Workspace::new(),
@@ -11239,11 +11288,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         cell,
         echo: echo.clone(),
         opts: opts.clone(),
+        window_id,
+        shared: shared.clone(),
         content,
         next_title: 0,
         config_watcher: None,
         resolved_theme: initial_theme.clone(),
-        registry,
+        registry: shared.themes.clone_handle(),
         auto_watch_started: false,
         search_open: false,
         search_query: String::new(),
@@ -11261,11 +11312,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         pending_paste: None,
         detached: Vec::new(),
         bg_model,
-        profiles: profile::ProfileStore::load(),
+        profiles: shared.profiles.clone_handle(),
         profile_model,
         profile_indices: Vec::new(),
         profile_query: String::new(),
-        vault: vault::Vault::open_default(),
+        vault: shared.vault.clone_handle(),
         vault_job: None,
         vault_action: None,
         vault_busy: false,
@@ -11281,7 +11332,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         hotkey_ids: Vec::new(),
         hotkey_recording: None,
         held_keys: HashMap::new(),
-        plugins,
+        plugins: shared.plugins.clone_handle(),
         app_wake,
         plugin_row_model,
         plugin_activity_model,
@@ -11312,8 +11363,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         broadcast: false,
         last_click: None,
         closed_tabs: Vec::new(),
-        last_session_snapshot: None,
-        restarting: false,
         fwd_profile_indices: Vec::new(),
         fwd_model,
         settings_result_cats: Vec::new(),
@@ -11352,20 +11401,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         resize_max_apply_us: 0.0,
         corners,
         clipboard: arboard::Clipboard::new().ok(),
-        cfg: {
-            let mut c = cfg.clone();
-            c.theme = theme_selection.clone();
-            c.cols = opts.cols;
-            c.rows = opts.rows;
-            c.font_size = opts.font_size;
-            c.scrollback = opts.scrollback;
-            if opts.shell.is_some() {
-                c.shell = opts.shell.clone();
-            }
-            c
-        },
+        cfg: shared.cfg.clone_handle(),
     }));
-    APP.with(|c| *c.borrow_mut() = Some(state.clone()));
+    {
+        let runtime = WindowRuntime::new(
+            window_id,
+            ui.clone_strong(),
+            state.clone(),
+            opts.title.clone(),
+        );
+        let mut reg = registry_cell.borrow_mut();
+        reg.insert(runtime).expect("first window id must be free");
+        reg.set_active(window_id);
+    }
 
     // 后台事件唤醒（插件活动/SFTP 结果）：默认启用；A/B 诊断时关闭桥接，
     // 回到旧版纯 400ms 轮询并保留同一套日志时间戳。
@@ -12358,7 +12406,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                         if report.themes_added > 0 {
                             // 主题目录刚写入新文件：重新加载注册表并刷新设置页网格。
-                            st.registry = ThemeRegistry::load(&themes_dir);
+                            *st.registry = ThemeRegistry::load(&themes_dir);
                             for err in &st.registry.errors {
                                 eprintln!("[theme] {err}");
                             }
@@ -14188,7 +14236,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     // Slint 1.18 的 winit 后端不投递外部文件拖放，用 winit 事件桥接补齐。
-    install_native_window_events(&ui);
+    install_native_window_events(&ui, window_id);
     // GPU 自检兜底：Skia 软件 surface 会“窗口正常但全黑”，而 Slint 的
     // set_rendering_notifier 在 software surface 上不会给出 NativeOpenGL/WGPU
     // 回调。给 GPU 首帧 1s 初始化时间，仍无 GPU API 就 exec 回退软件后端。
@@ -14270,7 +14318,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     redraw_all();
-    diag::start_control_socket_with_control(live_diag_snapshot, live_control, mcp_runtime);
+    diag::start_control_socket_with_control(live_diag_snapshot, live_control, shared.mcp.clone());
     schedule_mcp_status_refresh(&ui);
     let t_show = t_start.elapsed();
 
@@ -14356,7 +14404,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 正常退出（窗口关闭/最后一个 Tab 关闭）：开关打开时写会话快照。
     let restarting = with_app(|st| {
         save_session_on_exit(st);
-        st.restarting
+        st.shared.session.restarting
     })
     .unwrap_or(false);
     if !opts.window && !restarting {

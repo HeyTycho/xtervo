@@ -14,11 +14,13 @@
 //!   resize 后纹理新建时上传整帧。
 //! - 纹理导入失败/尺寸超限：记录一次明确日志并永久回退 CPU，不每帧重试。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use slint::wgpu_30::wgpu;
+
+use crate::runtime::WindowId;
 
 /// `TERVO_CPU=1`：强制 CPU/Skia，关闭所有 GPU 路径。
 pub fn cpu_forced() -> bool {
@@ -66,6 +68,10 @@ struct State {
     device: wgpu::Device,
     queue: wgpu::Queue,
     frames: HashMap<u64, FrameSlot>,
+    /// 仍持有共享 device 的窗口。关闭一个窗口不能把其它窗口的 READY/纹理清掉。
+    windows: HashSet<WindowId>,
+    /// 每个窗口当前存在的 pane；retain 用全进程并集，不能按单窗口误删。
+    panes_by_window: HashMap<WindowId, HashSet<u64>>,
 }
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
@@ -113,6 +119,14 @@ fn fail(reason: impl std::fmt::Display) {
 ///
 /// 幂等：渲染器重建时会再次回调；只有第一次（或 device 重建时）安装。
 pub fn install(device: &wgpu::Device, queue: &wgpu::Queue) {
+    install_for(WindowId::FIRST, device, queue);
+}
+
+/// 多窗口版本：按 WindowId 登记共享 device 的持有者。
+///
+/// Slint 已经保证多窗口复用同一 WGPU device/queue；这里只在 device 真正变化
+/// （后端重建）时丢弃旧纹理。第二个窗口 setup 不得清掉第一个窗口的 frames。
+pub fn install_for(window: WindowId, device: &wgpu::Device, queue: &wgpu::Queue) {
     // Stage 0 (`TERVO_GPU=1`) 和 Stage 1 (`TERVO_GPU_NATIVE=1`) 共用 Slint 的
     // 同一个 WGPU30 device/queue；是否启用各自链路由各自 ready() 决定。
     if !requested() && !crate::gpu_native::requested() {
@@ -122,26 +136,42 @@ pub fn install(device: &wgpu::Device, queue: &wgpu::Queue) {
         Ok(g) => g,
         Err(poisoned) => poisoned.into_inner(),
     };
-    if guard.is_some() {
+    if let Some(state) = guard.as_mut() {
+        if state.device == *device && state.queue == *queue {
+            state.windows.insert(window);
+            state.panes_by_window.entry(window).or_default();
+            READY.store(true, Ordering::Release);
+            eprintln!(
+                "[gpu] {window} RenderingSetup：复用同一 WGPU30 device/queue（{} 个窗口共享）",
+                state.windows.len()
+            );
+            return;
+        }
         // Slint 可能在 suspend/resume 或后端重建时再次发 RenderingSetup，
         // 但没有成对 teardown；旧 device 的纹理不能给新 renderer 用。
-        eprintln!("[gpu] RenderingSetup 重新安装：丢弃旧 device 纹理");
+        eprintln!("[gpu] {window} RenderingSetup：device 变化，丢弃旧 device 纹理");
         *guard = None;
         READY.store(false, Ordering::Release);
     }
     let limits = device.limits();
     eprintln!(
-        "[gpu] 拿到 Slint WGPU30 同一 device/queue；max_texture_dimension_2d={} \
+        "[gpu] {window} 拿到 Slint WGPU30 同一 device/queue；max_texture_dimension_2d={} \
          max_buffer_size={}（TERVO_GPU={} stage0 CPU 纹理; TERVO_GPU_NATIVE={} Scene 文字）",
         limits.max_texture_dimension_2d,
         limits.max_buffer_size,
         requested(),
         crate::gpu_native::requested()
     );
+    let mut windows = HashSet::new();
+    windows.insert(window);
+    let mut panes_by_window = HashMap::new();
+    panes_by_window.insert(window, HashSet::new());
     *guard = Some(State {
         device: device.clone(),
         queue: queue.clone(),
         frames: HashMap::new(),
+        windows,
+        panes_by_window,
     });
     READY.store(true, Ordering::Release);
 }
@@ -161,6 +191,9 @@ pub fn forget(pane: u64) {
     if let Ok(mut guard) = STATE.lock() {
         if let Some(state) = guard.as_mut() {
             state.frames.remove(&pane);
+            for panes in state.panes_by_window.values_mut() {
+                panes.remove(&pane);
+            }
         }
     }
 }
@@ -177,7 +210,23 @@ pub fn retain(active: &[u64]) {
     }
 }
 
-/// 渲染器销毁时丢弃旧 device 上的纹理。
+/// 多窗口 retain：只更新该窗口的 pane 集合，再按所有窗口并集回收。
+pub fn retain_for(window: WindowId, active: &[u64]) {
+    if let Ok(mut guard) = STATE.lock() {
+        if let Some(state) = guard.as_mut() {
+            let set = active.iter().copied().collect::<HashSet<_>>();
+            state.panes_by_window.insert(window, set);
+            let union: HashSet<u64> = state
+                .panes_by_window
+                .values()
+                .flat_map(|panes| panes.iter().copied())
+                .collect();
+            state.frames.retain(|pane, _| union.contains(pane));
+        }
+    }
+}
+
+/// 渲染器销毁时丢弃旧 device 上的纹理（无窗口上下文；测试/兼容用）。
 pub fn teardown() {
     if let Ok(mut guard) = STATE.lock() {
         if guard.is_some() {
@@ -186,6 +235,34 @@ pub fn teardown() {
         *guard = None;
     }
     READY.store(false, Ordering::Release);
+}
+
+/// 多窗口 teardown：只移除该窗口；最后一个窗口销毁时才丢弃共享 device 纹理。
+pub fn teardown_for(window: WindowId) {
+    let mut last = false;
+    if let Ok(mut guard) = STATE.lock() {
+        if let Some(state) = guard.as_mut() {
+            state.windows.remove(&window);
+            if let Some(panes) = state.panes_by_window.remove(&window) {
+                for pane in panes {
+                    state.frames.remove(&pane);
+                }
+            }
+            if state.windows.is_empty() {
+                eprintln!("[gpu] {window} rendering teardown：最后一个窗口，丢弃 GPU 帧纹理");
+                *guard = None;
+                last = true;
+            } else {
+                eprintln!(
+                    "[gpu] {window} rendering teardown：保留共享 device/纹理（{} 个窗口仍存活）",
+                    state.windows.len()
+                );
+            }
+        }
+    }
+    if last {
+        READY.store(false, Ordering::Release);
+    }
 }
 
 /// 把本帧 CPU framebuffer 上传到该 pane 的持久纹理，并返回可显示的 Slint Image。
