@@ -1,0 +1,121 @@
+# mw-instance-integration evidence (2026-11-13)
+
+Branch: agent/mw-instance-integration
+Base: 85a4994 (main)
+Binary: worktree-private target/debug/tervo (debug, winit-software, Xvfb)
+
+## Unit
+cargo test -p tervo-app --bin tervo
+=> 551 passed; 0 failed; 1 ignored (546 baseline + 5 new)
+
+## Single-instance / multi-window e2e
+scripts/e2e_single_instance_multi_window.sh
+=> ok=True
+checks=11
+[
+  {
+    "name": "primary_control_socket",
+    "detail": "/tmp/tervo-si-e2e-3/tervo/control.sock"
+  },
+  {
+    "name": "primary_window",
+    "detail": {
+      "id": "0x200003",
+      "title": "Tervo",
+      "marker": "/home/user/AIworkspace/rusttabbyterminal/.worktrees/mw-instance-integration/target/single-instance-e2e/session.running"
+    }
+  },
+  {
+    "name": "second_call_forwards",
+    "detail": {
+      "windows": [
+        "0x200003",
+        "0x200008"
+      ],
+      "pid": 29
+    }
+  },
+  {
+    "name": "window_flag_forwards",
+    "detail": {
+      "windows": [
+        "0x200003",
+        "0x200008",
+        "0x20000d"
+      ]
+    }
+  },
+  {
+    "name": "ack_after_ui_window",
+    "detail": {
+      "acks": 2,
+      "created": 2
+    }
+  },
+  {
+    "name": "ctrl_shift_n_inproc",
+    "detail": {
+      "windows": [
+        "0x200003",
+        "0x200008",
+        "0x20000d",
+        "0x200012"
+      ],
+      "pid": 29
+    }
+  },
+  {
+    "name": "wrong_token_rejected",
+    "detail": {
+      "exit": 1
+    }
+  },
+  {
+    "name": "close_keeps_primary",
+    "detail": {
+      "closed": "Tervo — 2",
+      "remaining": [
+        "Tervo",
+        "Tervo — 3",
+        "Tervo — 4"
+      ]
+    }
+  },
+  {
+    "name": "close_keeps_primary",
+    "detail": {
+      "closed": "Tervo — 3",
+      "remaining": [
+        "Tervo",
+        "Tervo — 4"
+      ]
+    }
+  },
+  {
+    "name": "close_primary_keeps_others",
+    "detail": {
+      "remaining": 1
+    }
+  },
+  {
+    "name": "close_last_window_quits",
+    "detail": {
+      "windows": 0
+    }
+  }
+]
+
+## Existing e2e (private build)
+scripts/e2e_multi_window_inproc.sh  => PASS (incl. close primary keeps other, kill -9 recovery)
+scripts/e2e_mcp_live_control.sh     => PASS
+scripts/e2e_mcp_settings.sh         => PASS (all 12 checks)
+
+## 2m soak (default in-process path, TERVO_MULTI_WINDOW_SECOND only)
+scripts/soak_multi_window_inproc.sh
+seconds=120
+rss_growth_kb=2028
+thread_growth=0
+fd_growth=0
+baseline_threads=22 final_threads=22
+baseline_fds=30 final_fds=30
+windows=2 for every sample

@@ -1,12 +1,12 @@
 # Tervo 多窗口 Phase 1/2 实现状态
 
-状态：**Phase 1 + Phase 2 已完成（feature flag）**  
-分支：`agent/mw-runtime`  
-worktree：`.worktrees/mw-runtime`  
-基线：`1c5971e`（`merge: multi-window Slint/WGPU spike evidence`）  
+状态：**Phase 1/2 已完成；Phase 3（单实例接入 + 同进程多窗口默认）见 §8**  
+分支：Phase 1/2 `agent/mw-runtime`；Phase 3 `agent/mw-instance-integration`  
+worktree：Phase 3 `.worktrees/mw-instance-integration`  
+基线：Phase 1/2 `1c5971e`；Phase 3 `85a4994`（`merge: WindowRegistry/SharedServices and in-process multi-window phase 1/2`）  
 运行日期：2026-11-13  
-范围：WindowRegistry/SharedServices 边界、单窗口回归、flag 下同进程第二窗口、GPU 状态隔离。  
-非目标：单实例 ControlServer、session v2 多窗口恢复、插件/MCP 完整 per-window scope、打包/合 main。
+范围：WindowRegistry/SharedServices 边界、单窗口回归、同进程第二窗口、GPU 状态隔离、单实例 IPC 产品接入。  
+非目标：session v2 多窗口恢复（其他分支）、插件/MCP 完整 per-window scope、打包/合 main。
 
 ---
 
@@ -104,19 +104,37 @@ pub struct SharedServices {
 
 ---
 
-## 2. Feature flag 与操作
+## 2. 默认路径与开关
+
+Phase 3 起**默认路径**（不需要任何 env）：
 
 ```bash
-# 允许 Ctrl+Shift+N / window.new 在同进程创建第二窗口
-TERVO_MULTI_WINDOW_INPROC=1 tervo
-
-# e2e/证据：启动即打开第二个窗口（仍需 INPROC=1）
-TERVO_MULTI_WINDOW_INPROC=1 TERVO_MULTI_WINDOW_SECOND=1 tervo
+tervo                    # 第一个进程成为 primary，监听 control.sock
+tervo                    # 第二个进程转发 open_window，收到 ack 后退出 0
+tervo --window           # 兼容：同样优先转发 primary
+# Ctrl+Shift+N / window.new / MCP new_window 默认同进程新建 MainWindow
 ```
 
-关闭：窗口收到 `CloseRequested` 时，如果 registry 中还有其它窗口，只移除该
-`WindowRuntime`（停止 PTY、释放 models/timers/GPU 引用）并 hide；A 继续运行。
-关闭最后一个窗口仍走 Slint 默认 hide -> 事件循环退出 -> 主流程保存 session。
+旧行为只保留为显式 fallback / 测试：
+
+```bash
+TERVO_MULTI_WINDOW_INPROC=0 tervo   # window.new 回退到旧子进程（legacy）
+TERVO_MULTI_WINDOW_LEGACY=1 tervo   # 同上，语义更明确
+TERVO_MULTI_WINDOW_SECOND=1 tervo   # 仅 e2e：启动即建第二个同进程窗口
+TERVO_SINGLE_INSTANCE=0 tervo       # 仅排障/测试：跳过 lock/control server
+TERVO_INSTANCE_DIR=/path tervo      # 仅测试/隔离：覆盖 control 目录
+```
+
+`TERVO_MULTI_WINDOW_INPROC=1` 仍然被接受，但不再是必需开关；默认就是新架构。
+legacy 子进程由 `window::new_window_command` 注入 `TERVO_SINGLE_INSTANCE=0`，
+避免它反过来被 primary 当成 secondary 再转发。
+
+关闭（Phase 3 产品语义）：窗口收到 `CloseRequested` 时，如果 registry 中还有
+其它窗口，只移除该 `WindowRuntime`（停止 PTY、释放 models/timers/GPU 引用）并
+hide；其它窗口继续运行，包括 primary 窗口先关的情况。关闭最后一个窗口仍走
+Slint 默认 hide -> 事件循环退出 -> 主流程保存 session 并清理 running marker。
+session marker/autosave 只由 primary 进程持有；secondary 在写 marker 之前就已
+转发并退出。
 
 MCP（`live_*`）：
 
@@ -199,7 +217,7 @@ CARGO_NET_OFFLINE=true cargo test -p tervo-app --bin tervo
 ### 5.2 双窗口 e2e
 
 ```bash
-CARGO_TARGET_DIR=$PWD/../../target ./scripts/e2e_multi_window_inproc.sh
+CARGO_TARGET_DIR=$PWD/target ./scripts/e2e_multi_window_inproc.sh
 ```
 
 断言（全部 pass，证据 `target/multi-window-e2e/report.json`）：
@@ -226,7 +244,7 @@ CARGO_TARGET_DIR=$PWD/../../target ./scripts/e2e_multi_window_gpu.sh
 ### 5.4 2m 双窗口 soak
 
 ```bash
-CARGO_TARGET_DIR=$PWD/../../target ./scripts/soak_multi_window_inproc.sh
+CARGO_TARGET_DIR=$PWD/target ./scripts/soak_multi_window_inproc.sh
 ```
 
 2 个窗口持续输出，5s 采样 RSS/线程/FD；要求窗口存活、RSS 增长 ≤80MiB、
@@ -289,9 +307,11 @@ WindowSnapshot 已包含 id/geometry/maximized/active_tab/tabs
 
 ### 6.4 ControlServer / 单实例
 
-`instance.rs` 原型已存在但未接入启动流程；`--window` 仍是多进程兼容路径。
-下一阶段把 `tervo` 的 secondary 转发到 primary `open_window`，再把
-`window.new` 默认切到 in-process。
+已接入产品启动流程（Phase 3）：`tervo` 启动时先 `InstanceLock::try_acquire`；
+primary 在 Slint 平台/WindowRegistry 就绪后 `PrimaryServer::start_with_lock`；
+secondary 转发 `open_window`，primary 的 handler 用 `invoke_from_event_loop`
+把建窗请求交给 UI 线程，窗口 `show()` 完成后才 ack。`--window` 同路径优先
+转发；`window.new`/Ctrl+Shift+N 默认同进程。见 §8。
 
 ---
 
@@ -305,3 +325,96 @@ e39f6a0 docs(mw-runtime): architecture status, MCP window tools, evidence
 ```
 
 未合 main、未 tag、未打包、未改 `dist-preview`。
+
+
+---
+
+## 8. Phase 3：单实例接入 + 同进程多窗口默认（2026-11-13）
+
+分支：`agent/mw-instance-integration`（基于 main `85a4994`，未合 main）
+
+### 8.1 启动流程
+
+```text
+tervo
+  -> 无 UI 模式（--version/--help/diag/--diagnose/import/export）先返回
+  -> InstanceLock::try_acquire
+       Some(lock)  -> primary：继续 Config/MCP/UI/session
+       None        -> secondary：OpenWindowRequest{cwd} 转发 open_window
+                      -> ack 0 / 明确错误 1（不初始化 Config/MCP/UI/session）
+       --restore   -> 等待旧 primary 退出（Restart Session 的竞态）
+  -> primary 在 registry 安装后 start_with_lock(handler)
+       handler = invoke_from_event_loop(create_inproc_window_for) + 等待 UI
+  -> 首个窗口 show / event loop
+```
+
+协议仍是 `instance.rs` 的一行 JSON + token；`control.sock`/`instance.token`
+0600，目录 0700。secondary 在连接建立前失败（primary 正在启动）会重试；
+请求发出后（timeout/protocol/rejected）绝不重试，避免重复开窗。
+
+### 8.2 行为
+
+```text
+第二次 tervo / tervo --window -> 同一进程内新 MainWindow，window_id 递增
+Ctrl+Shift+N / window.new      -> 同进程新窗口；不再 current_exe().spawn
+MCP new_window                 -> 同进程新窗口（不再要求 INPROC）
+关闭非最后窗口                 -> remove_window + hide + GPU teardown
+关闭 primary 但其它窗口存活     -> 进程继续，其它窗口可继续 new_tab
+关闭最后一个窗口               -> event loop 退出 0，主流程保存/清理 session
+session running marker         -> 只在 primary 进程存活期间存在
+```
+
+### 8.3 验证与证据
+
+```bash
+# 用 worktree 私有 target：共享 target 可能被并行 agent 的二进制覆盖。
+CARGO_HOME=$PWD/../../.cargo CARGO_TARGET_DIR=$PWD/target \
+  CARGO_NET_OFFLINE=true cargo test -p tervo-app --bin tervo
+# 551 passed; 0 failed; 1 ignored（546 既有 + 5 新增）
+
+CARGO_TARGET_DIR=$PWD/target ./scripts/e2e_single_instance_multi_window.sh
+# PASS：两次 tervo 调用 1 进程 2 窗口；--window 转发；Ctrl+Shift+N；
+#       错误 token 拒绝；关 A 保 B；关 primary 保其它；关最后退出 0；
+#       marker 只属于 primary、退出后清理
+# evidence: target/single-instance-e2e/report.json
+#           docs/evidence/mw-instance-integration/
+
+CARGO_TARGET_DIR=$PWD/target ./scripts/e2e_multi_window_inproc.sh
+# PASS：多窗口/独立 PTY/焦点/关 B/关 primary/插件单进程/MCP 单 socket/kill -9 恢复
+
+CARGO_TARGET_DIR=$PWD/target ./scripts/soak_multi_window_inproc.sh
+# PASS 2m：rss_growth≈2.0MiB；threads 22->22；fds 30->30
+# evidence: target/multi-window-soak/samples.json
+#           docs/evidence/mw-instance-integration/soak-samples.json
+```
+
+MCP e2e：`e2e_mcp_live_control.sh`、`e2e_mcp_settings.sh` 均通过（debug 构建，
+Xvfb）。MCP settings 仍覆盖无 `XDG_RUNTIME_DIR` 的 state-dir fallback。
+
+### 8.4 已知限制
+
+```text
+- OpenWindowRequest.profile 尚未接入 UI profile 选择：有 profile 时明确报错，
+  不静默忽略；CLI 目前只转发 cwd。
+- 转发窗口首 Tab 的 cwd 只在没有默认 Profile 时生效；有默认 Profile 时仍按
+  Profile 打开（与 Ctrl+T 语义一致）。
+- session v2 多窗口聚合保存/恢复仍由其他分支推进；本分支只把既有的
+  单窗口 autosave/exit save 接到 primary 进程。
+- primary 窗口先关、其它窗口存活时，primary 的 autosave timer 随 WindowRuntime
+  停止；进程退出仍由主流程清理 marker，但本次不改 session 数据层，
+  剩余窗口（opts.window=true）不会写多窗口快照。
+- 设置页/插件面板完整回调仍只在 primary 注册块（第二阶段机械重构未做）。
+- legacy fallback（INPROC=0/LEGACY=1）会起独立子进程；它通过
+  TERVO_SINGLE_INSTANCE=0 绕过 primary 锁，因此不受单实例约束。只用于
+  测试/排障，不是默认路径。
+- Xvfb/llvmpipe 环境，不构成硬件 GPU 或真实桌面 WM 证据。
+```
+
+### 8.5 提交
+
+```text
+feat(instance): wire single-instance IPC and default in-process windows
+docs(mw-runtime): phase 3 instance integration evidence
+```
+
+未合 main、未 tag、未打包。
