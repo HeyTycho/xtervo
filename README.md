@@ -11,6 +11,8 @@
 > Phase 2 常用工作流已可用：标签页/分屏/右键四模式、多窗口、Tab 活动/OSC 通知、
 > 可编辑快捷键、Profile 搜索/默认/复制/每 Profile 外观、会话恢复、Tab 自动收缩/搜索、
 > Vault 加密凭据、Tabby 配置导入、外部进程插件 API v3（命令/状态/事件/声明式面板与设置）。
+> 产品定位、六条原则、非目标与 M0–M6 路标见
+> [`docs/PRODUCT_PRINCIPLES.md`](docs/PRODUCT_PRINCIPLES.md)。
 > 功能覆盖与已知差距见 [`docs/FEATURE_MATRIX.md`](docs/FEATURE_MATRIX.md) 与
 > [`docs/CLOSURE.md`](docs/CLOSURE.md)；W-02 分支验证：app **351** / core 单元 **108**
 > + smoke **25** 单测，Xvfb :139 SSH/SFTP/Vault e2e PASS（19 张截图）。
@@ -47,7 +49,7 @@
 | `crates/app` | Slint UI、字形 atlas、软件光栅化、X11 延迟探针 |
 | `scripts/` | 基准、启动/RSS、延迟/FPS、真机 GPU 验证、发布打包 |
 | `packaging/` | `.desktop` 入口与打包/安装说明 |
-| `docs/` | 架构总览（`ARCHITECTURE.md`）、Phase 0 报告、UI/视觉规范、Tabby 功能对照与主题机制调研 |
+| `docs/` | 产品原则/路标（`PRODUCT_PRINCIPLES.md`）、架构总览（`ARCHITECTURE.md`）、Phase 0 报告、UI/视觉规范、Tabby 功能对照与主题机制调研 |
 
 ## 快速开始
 
