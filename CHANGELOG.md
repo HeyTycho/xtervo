@@ -2,7 +2,9 @@
 
 Tervo 的版本与 tag 规则见 `docs/RELEASING.md`。
 
-## [Unreleased]
+## [0.5.0-rc.1] - 2026-11-14
+
+RC candidate: single-instance primary + default in-process multi-window, WindowRegistry/SharedServices, multi-window session v2, full shared UI callbacks, plugin/MCP window_id routing, WindowId-scoped GPU state. Not a stable release; hardware/Wayland and 30m gate still required.
 
 ### Added
 
