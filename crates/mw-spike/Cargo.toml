@@ -1,0 +1,16 @@
+[package]
+name = "mw-spike"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+# Spike only. Do not depend on tervo-app: the point is to prove that the
+# unmodified UI markup / Slint runtime supports two windows in one process.
+[dependencies]
+slint.workspace = true
+png = "0.18"
+
+[build-dependencies]
+slint-build = { version = "1.18", default-features = false, features = ["compat-1-18"] }

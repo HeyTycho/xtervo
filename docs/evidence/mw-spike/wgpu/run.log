@@ -1,0 +1,93 @@
+[mw-spike] mode=wgpu out=/home/user/AIworkspace/rusttabbyterminal/.worktrees/mw-spike/docs/evidence/mw-spike/wgpu hold_ms=12000 display=Some(":88")
+[gpu:B] RenderingSetup #1 adapter="llvmpipe (LLVM 15.0.7, 256 bits)" backend=Vulkan device_type=Cpu
+[gpu:B] frames=1
+[gpu:A] RenderingSetup #1 adapter="llvmpipe (LLVM 15.0.7, 256 bits)" backend=Vulkan device_type=Cpu
+[gpu:A] frames=1
+[focus:B] focused=false
+[focus:A] focused=false
+[gpu] cross-window identity: same_device=true same_queue=true same_adapter=true
+[gpu] A setup=1 B setup=1
+[focus:A] focused=true
+[shot] /home/user/AIworkspace/rusttabbyterminal/.worktrees/mw-spike/docs/evidence/mw-spike/wgpu/A_initial.png (520x340)
+[pixel] A background (3,3)=[122, 162, 247, 255] ok
+[pixel] A frame (texture created on B's device) (126,144)=[0, 255, 0, 255] ok
+[snapshot] A_initial 520x340
+[shot] /home/user/AIworkspace/rusttabbyterminal/.worktrees/mw-spike/docs/evidence/mw-spike/wgpu/B_initial.png (640x400)
+[pixel] B background (3,3)=[247, 118, 142, 255] ok
+[pixel] B frame (texture created on A's device) (126,144)=[255, 0, 0, 255] ok
+[snapshot] B_initial 640x400
+[facts] A: slint_size=520x340 visible=true winit_id=WindowId(2097167) title="" inner=520x340 has_focus=true visible=Some(true)
+[facts] B: slint_size=640x400 visible=true winit_id=WindowId(2097155) title="" inner=640x400 has_focus=false visible=Some(true)
+[callback] window=A msg="programmatic A"
+[callback] window=B msg="programmatic B"
+[focus:A] focused=false
+[focus:B] focused=true
+[resize:B] winit inner_size=640x400
+[resize] requested A 480x300; B stays 640x400
+[resize:A] winit inner_size=480x300
+[resize:B] winit inner_size=600x360
+[shot] /home/user/AIworkspace/rusttabbyterminal/.worktrees/mw-spike/docs/evidence/mw-spike/wgpu/A_after_resize.png (480x300)
+[shot] /home/user/AIworkspace/rusttabbyterminal/.worktrees/mw-spike/docs/evidence/mw-spike/wgpu/B_after_resize.png (600x360)
+[pixel] A resized bg (3,3)=[122, 162, 247, 255] ok
+[pixel] B resized bg (3,3)=[247, 118, 142, 255] ok
+[snapshot] A_after_resize 480x300
+[snapshot] B_after_resize 600x360
+[facts] A resized: winit_id=WindowId(2097167) title="" inner=480x300 has_focus=false visible=Some(true)
+[facts] B resized: winit_id=WindowId(2097155) title="" inner=600x360 has_focus=true visible=Some(true)
+[close] closing B (A frames before close=8)
+[gpu:B] RenderingTeardown #1
+[close] after B closed: A frames=10 (was 8), B teardowns=1
+[gpu:C] RenderingSetup #1 adapter="llvmpipe (LLVM 15.0.7, 256 bits)" backend=Vulkan device_type=Cpu
+[gpu:C] frames=1
+[focus:C] focused=false
+[gpu] C device equals A device after B close: true
+[shot] /home/user/AIworkspace/rusttabbyterminal/.worktrees/mw-spike/docs/evidence/mw-spike/wgpu/A_after_B_closed.png (480x300)
+[pixel] A bg after B close (3,3)=[122, 162, 247, 255] ok
+[pixel] A frame after B close (126,144)=[0, 255, 0, 255] ok
+[snapshot] A_after_B_closed 480x300
+[facts] A after B close: winit_id=WindowId(2097167) title="" inner=480x300 has_focus=false visible=Some(true)
+[shot] /home/user/AIworkspace/rusttabbyterminal/.worktrees/mw-spike/docs/evidence/mw-spike/wgpu/C_after_B_closed.png (500x320)
+[pixel] C bg (3,3)=[158, 206, 106, 255] ok
+[pixel] C frame (126,144)=[0, 0, 255, 255] ok
+[snapshot] C_after_B_closed 500x320
+[facts] C: slint_size=500x320 visible=true winit_id=WindowId(2097189) title="" inner=500x320 has_focus=false visible=Some(true)
+[callback] window=C msg="programmatic C"
+[result] shared WGPU30 device/queue across A/B/C; independent sizes; A survived B close
+[hold] PASS reached at 12003 ms; keeping both windows alive for 12000 ms for external X11 checks
+[hold] A: winit_id=WindowId(2097167) title="" inner=480x300 has_focus=false visible=Some(true)
+[hold] C: winit_id=WindowId(2097189) title="" inner=500x320 has_focus=false visible=Some(true)
+[hold] frames A=14 C=4 teardown B=1
+[hold] A: winit_id=WindowId(2097167) title="" inner=480x300 has_focus=false visible=Some(true)
+[hold] C: winit_id=WindowId(2097189) title="" inner=500x320 has_focus=false visible=Some(true)
+[hold] frames A=14 C=4 teardown B=1
+[hold] A: winit_id=WindowId(2097167) title="" inner=480x300 has_focus=false visible=Some(true)
+[hold] C: winit_id=WindowId(2097189) title="" inner=500x320 has_focus=false visible=Some(true)
+[hold] frames A=14 C=4 teardown B=1
+[hold] A: winit_id=WindowId(2097167) title="" inner=480x300 has_focus=false visible=Some(true)
+[hold] C: winit_id=WindowId(2097189) title="" inner=500x320 has_focus=false visible=Some(true)
+[hold] frames A=14 C=4 teardown B=1
+[hold] A: winit_id=WindowId(2097167) title="" inner=480x300 has_focus=false visible=Some(true)
+[hold] C: winit_id=WindowId(2097189) title="" inner=500x320 has_focus=false visible=Some(true)
+[hold] frames A=14 C=4 teardown B=1
+[hold] A: winit_id=WindowId(2097167) title="" inner=480x300 has_focus=false visible=Some(true)
+[hold] C: winit_id=WindowId(2097189) title="" inner=500x320 has_focus=false visible=Some(true)
+[hold] frames A=14 C=4 teardown B=1
+[hold] A: winit_id=WindowId(2097167) title="" inner=480x300 has_focus=false visible=Some(true)
+[hold] C: winit_id=WindowId(2097189) title="" inner=500x320 has_focus=false visible=Some(true)
+[hold] frames A=14 C=4 teardown B=1
+[hold] A: winit_id=WindowId(2097167) title="" inner=480x300 has_focus=false visible=Some(true)
+[hold] C: winit_id=WindowId(2097189) title="" inner=500x320 has_focus=false visible=Some(true)
+[hold] frames A=14 C=4 teardown B=1
+[hold] A: winit_id=WindowId(2097167) title="" inner=480x300 has_focus=false visible=Some(true)
+[hold] C: winit_id=WindowId(2097189) title="" inner=500x320 has_focus=false visible=Some(true)
+[hold] frames A=14 C=4 teardown B=1
+[hold] A: winit_id=WindowId(2097167) title="" inner=480x300 has_focus=false visible=Some(true)
+[hold] C: winit_id=WindowId(2097189) title="" inner=500x320 has_focus=false visible=Some(true)
+[hold] frames A=14 C=4 teardown B=1
+[hold] A: winit_id=WindowId(2097167) title="" inner=480x300 has_focus=false visible=Some(true)
+[hold] C: winit_id=WindowId(2097189) title="" inner=500x320 has_focus=false visible=Some(true)
+[hold] frames A=14 C=4 teardown B=1
+[hold] A: winit_id=WindowId(2097167) title="" inner=480x300 has_focus=false visible=Some(true)
+[hold] C: winit_id=WindowId(2097189) title="" inner=500x320 has_focus=false visible=Some(true)
+[hold] frames A=14 C=4 teardown B=1
+PASS mw_spike mode=wgpu out=/home/user/AIworkspace/rusttabbyterminal/.worktrees/mw-spike/docs/evidence/mw-spike/wgpu

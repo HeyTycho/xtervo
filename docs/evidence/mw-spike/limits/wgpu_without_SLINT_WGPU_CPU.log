@@ -1,0 +1,2 @@
+[mw-spike] mode=wgpu out=docs/evidence/mw-spike/limits/no-cpu hold_ms=1000 display=Some(":94")
+FAIL wgpu: require_wgpu_30/select failed: WGPU 30.x rendering was required but no GPU-backed WGPU adapter is available for the requested backends. Set SLINT_WGPU_CPU=1 to allow CPU adapters.

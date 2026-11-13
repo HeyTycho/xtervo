@@ -1,0 +1,8 @@
+== before ==
+_NET_ACTIVE_WINDOW:  not found.
+== xwin MW-Spike A --focus ==
+window = 0x20000f
+== after ==
+_NET_ACTIVE_WINDOW:  not found.
+     0x20000f "MW-Spike A": ("mw-spike" "mw-spike")  520x340+40+40  +40+40
+     0x200003 "MW-Spike B": ("mw-spike" "mw-spike")  640x400+620+40  +620+40

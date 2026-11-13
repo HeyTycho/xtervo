@@ -1,0 +1,13 @@
+== final tree ==
+
+xwininfo: Window id: 0x50d (the root window) (has no name)
+
+  Root window id: 0x50d (the root window) (has no name)
+  Parent window id: 0x0 (none)
+     3 children:
+     0x200003 "MW-Spike B": ("mw-spike" "mw-spike")  600x360+620+40  +620+40
+     0x200008 "MW-Spike A": ("mw-spike" "mw-spike")  480x300+40+40  +40+40
+     0x400000 (has no name): ()  1x1+0+0  +0+0
+
+== final active window ==
+_NET_ACTIVE_WINDOW:  not found.
