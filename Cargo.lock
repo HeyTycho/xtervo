@@ -3303,6 +3303,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "mw-spike"
+version = "0.4.0-rc.2"
+dependencies = [
+ "png",
+ "slint",
+ "slint-build",
+]
+
+[[package]]
 name = "naga"
 version = "30.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

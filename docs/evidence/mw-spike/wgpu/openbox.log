@@ -1,0 +1,5 @@
+Openbox-Message: 19:52:28.810: Unable to make directory '/home/user/.cache/openbox': Read-only file system
+Openbox-Message: Unable to make directory "/home/user/.cache/openbox/sessions": Read-only file system
+Openbox-Message: Unable to find a valid config file, using some simple defaults
+ObRender-Message: Unable to load the theme 'Clearlooks'
+Openbox-Message: Unable to load a theme.

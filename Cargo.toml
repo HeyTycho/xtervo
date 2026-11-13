@@ -9,6 +9,8 @@ members = [
     "crates/render-wgpu",
     "crates/diagnostics",
     "crates/maximize",
+    # Spike only: single-process multi-window feasibility (not shipped in tervo).
+    "crates/mw-spike",
 ]
 
 [workspace.package]
