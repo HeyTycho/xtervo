@@ -321,20 +321,126 @@ fn can_reuse_gpu_target(frame: &Frame, has_target: bool) -> bool {
     has_target && !frame.full && frame.damage.is_empty() && frame.images.is_empty()
 }
 
+/// Resolved selection/search, mirroring the cell colors built by
+/// `SceneBuilder::from_frame`.
+///
+/// These spans are not part of terminal damage: on an idle pane (cursor blink,
+/// drag selection, search navigation) `Frame::full == false` and
+/// `Frame::damage` is empty while the highlight moved. Keeping this signature
+/// per pane is what makes the GPU reuse short-circuit safe.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct HighlightSignature {
+    selection: Option<Span>,
+    search: Option<Span>,
+}
+
+impl HighlightSignature {
+    fn of(frame: &Frame) -> Self {
+        Self {
+            selection: frame.selection,
+            search: frame.search,
+        }
+    }
+}
+
+/// Decision for one incoming frame: hand back the cached image or repaint.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RenderPlan {
+    /// Cached image already matches the frame; no GPU work needed.
+    Reuse,
+    /// Repaint the target. `force_full` overrides the frame's damage because
+    /// the current pixels cannot be incrementally repaired (first frame,
+    /// resize/font-size change, highlight transition, missing image).
+    Render { force_full: bool },
+}
+
 /// Selection/search are cell colors, not terminal damage. The GPU target may
 /// only be reused when those resolved spans did not change; otherwise the old
 /// texture would keep the previous highlight forever on an idle pane.
-fn selection_or_search_changed(
-    previous_selection: Option<Span>,
-    previous_search: Option<Span>,
+fn selection_or_search_changed(previous: HighlightSignature, frame: &Frame) -> bool {
+    previous != HighlightSignature::of(frame)
+}
+
+/// Pure reuse decision behind [`render_pane_image`].
+///
+/// `previous` is the highlight signature of the frame whose pixels are in the
+/// cached target (`None` = no valid target), `has_image` whether Slint still
+/// holds that texture, and `target_size_matches` whether the cached target has
+/// the size this frame needs. Any mismatch prevents reuse **and** forces a
+/// full repaint so stale pixels are never patched over.
+fn plan_render(
+    previous: Option<HighlightSignature>,
+    has_image: bool,
+    target_size_matches: bool,
     frame: &Frame,
-) -> bool {
-    previous_selection != frame.selection || previous_search != frame.search
+) -> RenderPlan {
+    let has_target = previous.is_some();
+    let changed = previous.is_some_and(|previous| selection_or_search_changed(previous, frame));
+    if has_target
+        && has_image
+        && target_size_matches
+        && !changed
+        && can_reuse_gpu_target(frame, has_target)
+    {
+        return RenderPlan::Reuse;
+    }
+    RenderPlan::Render {
+        // A target with unknown/old content can never take the partial path.
+        force_full: !has_target || !has_image || !target_size_matches || changed,
+    }
+}
+
+/// Encode a forced full repaint in the scene damage consumed by
+/// `GpuImageRenderer::render_scene`.
+///
+/// Selection/search pixels are not represented in `Frame::damage`, and a
+/// target that was never fully painted has no valid undamaged pixels. Cell
+/// damage cannot express either case, so the only correct encoding is a full
+/// scene invalidation (an empty damage region would also take the full path,
+/// but relying on that would hide real partial damage).
+fn apply_render_plan_damage(scene: &mut Scene, force_full: bool) {
+    if force_full {
+        scene.damage = DamageRegion::full();
+    }
+}
+
+/// Drop one pane's GPU target and imported image after a CPU fallback.
+///
+/// The caller only falls back when [`pane_image`] returned `None`; the GPU
+/// texture is then older than the frame on screen. Dropping the target makes
+/// the next GPU frame rebuild it from scratch instead of reusing stale pixels
+/// or painting partial damage over them.
+fn invalidate_pane(pane: u64) {
+    let mut dropped_target = false;
+    {
+        let mut guard = STATE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(state) = guard.as_mut() {
+            dropped_target = state.panes.remove(&pane).is_some();
+        }
+    }
+    let dropped_image = PANE_IMAGES.with(|images| images.borrow_mut().remove(&pane).is_some());
+    if (dropped_target || dropped_image) && debug() {
+        eprintln!(
+            "[gpu-native] pane={pane} 回退 CPU：丢弃过期 GPU target（下一帧强制 full）"
+        );
+    }
 }
 
 /// 把真实 `Frame` 走 Scene → WGPU 分层合成，返回可交给 `PaneView.image` 的
 /// `slint::Image`。返回 `None` 时调用方必须使用 CPU `Renderer::image()`。
 pub fn pane_image(input: &PaneFrame<'_>) -> Option<slint::Image> {
+    let image = render_pane_image(input);
+    if image.is_none() {
+        // CPU fallback means this frame's pixels never reached the cached GPU
+        // target. Invalidate it so a later clean frame cannot reuse it.
+        invalidate_pane(input.pane);
+    }
+    image
+}
+
+fn render_pane_image(input: &PaneFrame<'_>) -> Option<slint::Image> {
     if !requested() || failed() {
         return None;
     }
@@ -382,41 +488,54 @@ pub fn pane_image(input: &PaneFrame<'_>) -> Option<slint::Image> {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let state = guard.as_mut()?;
 
-    let (selection_changed, previous_selection, previous_search) = state
+    let target_size = PhysicalSize { width, height };
+    let has_image = PANE_IMAGES.with(|images| images.borrow().contains_key(&input.pane));
+    let (previous, target_size_matches) = state
         .panes
         .get(&input.pane)
         .map(|pane| {
             (
-                selection_or_search_changed(pane.last_selection, pane.last_search, input.frame),
-                pane.last_selection,
-                pane.last_search,
+                Some(HighlightSignature {
+                    selection: pane.last_selection,
+                    search: pane.last_search,
+                }),
+                pane.target.size() == target_size,
             )
         })
-        .unwrap_or((false, None, None));
-    if selection_changed {
-        // Always-on diagnostic: one line per selection/search transition, never
-        // per drag cell. This is enough to tell a missed frame from a missed
-        // mouse event without asking the user to restart with env flags.
-        eprintln!(
-            "[select] pane={} selection={:?}->{:?} search={:?}->{:?} force_full",
-            input.pane,
-            previous_selection,
-            input.frame.selection,
-            previous_search,
-            input.frame.search,
-        );
+        .unwrap_or((None, false));
+    if let Some(previous) = previous {
+        if selection_or_search_changed(previous, input.frame) {
+            // Always-on diagnostic: one line per selection/search transition, never
+            // per drag cell. This is enough to tell a missed frame from a missed
+            // mouse event without asking the user to restart with env flags.
+            eprintln!(
+                "[select] pane={} selection={:?}->{:?} search={:?}->{:?} force_full",
+                input.pane,
+                previous.selection,
+                input.frame.selection,
+                previous.search,
+                input.frame.search,
+            );
+        }
     }
 
     // 光标闪烁/纯 overlay redraw 没有终端 damage：不要重绘整张 target。
-    // 只有已有可复用 GPU image 时才跳过；首帧、resize、图片帧、选区变化仍走完整路径。
-    if can_reuse_gpu_target(input.frame, state.panes.contains_key(&input.pane))
-        && !selection_changed
-    {
-        if let Some(image) = PANE_IMAGES.with(|images| images.borrow().get(&input.pane).cloned()) {
-            REUSED_FRAMES.fetch_add(1, Ordering::Relaxed);
-            return Some(image);
-        }
-    }
+    // 只有已有可复用 GPU image 时才跳过；首帧、resize、图片帧、选区/search
+    // 变化、以及回退 CPU 后的旧 target 仍走完整路径。
+    let force_full = match plan_render(previous, has_image, target_size_matches, input.frame) {
+        RenderPlan::Reuse => {
+            if let Some(image) =
+                PANE_IMAGES.with(|images| images.borrow().get(&input.pane).cloned())
+            {
+                REUSED_FRAMES.fetch_add(1, Ordering::Relaxed);
+                return Some(image);
+            }
+            // The image vanished between the check and the lookup; repaint it
+            // from scratch instead of partially patching the target.
+            true
+        },
+        RenderPlan::Render { force_full } => force_full,
+    };
 
     // Upload each immutable Frame image source at most once, then drop sources
     // that are no longer visible. This is the only image pixel upload; no
@@ -463,12 +582,11 @@ pub fn pane_image(input: &PaneFrame<'_>) -> Option<slint::Image> {
         .retain_sources(|source| visible_sources.contains(&source));
     IMAGE_SOURCES.store(visible_sources.len() as u64, Ordering::Relaxed);
 
-    let recreate = state
-        .panes
-        .get(&input.pane)
-        .is_none_or(|pane| pane.target.size() != PhysicalSize { width, height });
+    // A missing target or a target for another size/font-size cannot be partial
+    // painted. This mirrors `plan_render`'s `target_size_matches`.
+    let recreate = !target_size_matches;
     if recreate {
-        let target = match TextTarget::new(&state.device, PhysicalSize { width, height }) {
+        let target = match TextTarget::new(&state.device, target_size) {
             Ok(target) => target,
             Err(error) => {
                 drop(guard);
@@ -488,12 +606,11 @@ pub fn pane_image(input: &PaneFrame<'_>) -> Option<slint::Image> {
         );
     }
 
-    // A fresh target has no previous pixels. Never take the partial path on
-    // its first frame: force a full clear/repaint even if the incoming Frame
-    // only reports a small damage region.
-    if recreate || selection_changed {
-        scene.damage = DamageRegion::full();
-    }
+    // A fresh target has no previous pixels, and a highlight transition has no
+    // terminal line damage describing the old pixels. Never take the partial
+    // path in either case, even if the incoming Frame reports a small damage
+    // region (or none at all).
+    apply_render_plan_damage(&mut scene, recreate || force_full);
 
     let section;
     let sections = match scene.text_batch() {
@@ -555,8 +672,6 @@ pub fn pane_image(input: &PaneFrame<'_>) -> Option<slint::Image> {
 
     let pane = state.panes.get_mut(&input.pane)?;
     pane.frames += 1;
-    pane.last_selection = input.frame.selection;
-    pane.last_search = input.frame.search;
     let first = pane.frames == 1;
     // Re-import after rendering. Slint's Skia/WGPU bridge is known to show an
     // empty image when a freshly created texture is imported before its first
@@ -573,6 +688,13 @@ pub fn pane_image(input: &PaneFrame<'_>) -> Option<slint::Image> {
     PANE_IMAGES.with(|images| {
         images.borrow_mut().insert(input.pane, image.clone());
     });
+    // Commit the highlight signature only now: it describes exactly the frame
+    // whose pixels were rendered into `pane.target` and imported above. Every
+    // earlier `None` return keeps the previous signature (or invalidates it),
+    // so a later reuse decision can never claim a highlight was drawn when it
+    // was not.
+    pane.last_selection = input.frame.selection;
+    pane.last_search = input.frame.search;
 
     if first || debug() {
         eprintln!(
@@ -680,7 +802,29 @@ pub fn last_stats() -> Option<SceneLayerStats> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tervo_core::{flags, CellData, Span};
+    use tervo_core::{flags, CellData, LineDamage, Span};
+
+    fn span(start_line: u16, start_col: u16, end_line: u16, end_col: u16) -> Span {
+        Span {
+            start_line,
+            start_col,
+            end_line,
+            end_col,
+        }
+    }
+
+    fn clean_frame() -> Frame {
+        Frame::new(8, 4)
+    }
+
+    fn signature(selection: Option<Span>, search: Option<Span>) -> HighlightSignature {
+        HighlightSignature { selection, search }
+    }
+
+    const SIZE: PhysicalSize = PhysicalSize {
+        width: 80,
+        height: 40,
+    };
 
     #[test]
     fn damage_contract_reuses_only_clean_non_full_frames() {
@@ -692,7 +836,7 @@ mod tests {
         assert!(!can_reuse_gpu_target(&frame, true), "full 必须重绘");
 
         frame.full = false;
-        frame.damage.push(tervo_core::LineDamage {
+        frame.damage.push(LineDamage {
             line: 1,
             left: 0,
             right: 3,
@@ -702,22 +846,291 @@ mod tests {
 
     #[test]
     fn selection_and_search_changes_break_gpu_target_reuse() {
-        let mut frame = Frame::new(4, 2);
-        let span = Span {
-            start_line: 0,
-            start_col: 1,
-            end_line: 0,
-            end_col: 2,
-        };
-        assert!(!selection_or_search_changed(None, None, &frame));
-        frame.selection = Some(span);
-        assert!(selection_or_search_changed(None, None, &frame));
-        assert!(!selection_or_search_changed(Some(span), None, &frame));
+        let mut frame = clean_frame();
+        let selection = span(0, 1, 0, 2);
+        let empty = signature(None, None);
+        assert!(!selection_or_search_changed(empty, &frame));
+        frame.selection = Some(selection);
+        assert!(selection_or_search_changed(empty, &frame));
+        assert!(!selection_or_search_changed(
+            signature(Some(selection), None),
+            &frame
+        ));
         frame.selection = None;
-        assert!(selection_or_search_changed(Some(span), None, &frame));
-        frame.search = Some(span);
-        assert!(selection_or_search_changed(None, None, &frame));
-        assert!(!selection_or_search_changed(None, Some(span), &frame));
+        assert!(selection_or_search_changed(
+            signature(Some(selection), None),
+            &frame
+        ));
+        frame.search = Some(selection);
+        assert!(selection_or_search_changed(empty, &frame));
+        assert!(!selection_or_search_changed(
+            signature(None, Some(selection)),
+            &frame
+        ));
+        // Same rows, different end column: still a different highlight.
+        frame.search = Some(span(0, 1, 1, 2));
+        assert!(selection_or_search_changed(
+            signature(None, Some(selection)),
+            &frame
+        ));
+    }
+
+    #[test]
+    fn plan_reuses_only_for_identical_highlight_and_valid_target() {
+        let frame = clean_frame();
+        assert_eq!(
+            plan_render(Some(HighlightSignature::default()), true, true, &frame),
+            RenderPlan::Reuse,
+            "clean frame + unchanged (empty) highlight must reuse"
+        );
+
+        let mut highlighted = clean_frame();
+        highlighted.selection = Some(span(1, 0, 1, 2));
+        highlighted.search = Some(span(2, 1, 2, 2));
+        assert_eq!(
+            plan_render(
+                Some(HighlightSignature::of(&highlighted)),
+                true,
+                true,
+                &highlighted
+            ),
+            RenderPlan::Reuse,
+            "an unchanged selection/search must still take the reuse path"
+        );
+    }
+
+    #[test]
+    fn selection_change_and_clear_force_full_and_never_reuse() {
+        let previous = signature(Some(span(0, 0, 0, 1)), None);
+
+        let mut started = clean_frame();
+        started.selection = Some(span(0, 0, 0, 1));
+        assert_eq!(
+            plan_render(Some(signature(None, None)), true, true, &started),
+            RenderPlan::Render { force_full: true },
+            "None -> Some selection must repaint"
+        );
+
+        let mut moved = clean_frame();
+        moved.selection = Some(span(0, 1, 0, 2));
+        assert_eq!(
+            plan_render(Some(previous), true, true, &moved),
+            RenderPlan::Render { force_full: true },
+            "moving a selection must repaint"
+        );
+
+        let cleared = clean_frame();
+        assert_eq!(
+            plan_render(Some(previous), true, true, &cleared),
+            RenderPlan::Render { force_full: true },
+            "clearing a selection is a highlight transition too"
+        );
+    }
+
+    #[test]
+    fn search_change_and_clear_force_full_and_never_reuse() {
+        let previous = signature(None, Some(span(2, 0, 2, 2)));
+
+        let mut moved = clean_frame();
+        moved.search = Some(span(2, 1, 2, 3));
+        assert_eq!(
+            plan_render(Some(previous), true, true, &moved),
+            RenderPlan::Render { force_full: true },
+            "moving the search match must repaint"
+        );
+
+        let cleared = clean_frame();
+        assert_eq!(
+            plan_render(Some(previous), true, true, &cleared),
+            RenderPlan::Render { force_full: true },
+            "clearing the search highlight is a highlight transition too"
+        );
+    }
+
+    #[test]
+    fn first_frame_missing_image_and_wrong_size_force_full() {
+        let frame = clean_frame();
+        assert_eq!(
+            plan_render(None, false, false, &frame),
+            RenderPlan::Render { force_full: true },
+            "the first frame has no previous pixels"
+        );
+        assert_eq!(
+            plan_render(
+                Some(HighlightSignature::of(&frame)),
+                false,
+                true,
+                &frame
+            ),
+            RenderPlan::Render { force_full: true },
+            "a target without an imported image must be rebuilt"
+        );
+        assert_eq!(
+            plan_render(
+                Some(HighlightSignature::of(&frame)),
+                true,
+                false,
+                &frame
+            ),
+            RenderPlan::Render { force_full: true },
+            "resize/font-size change: cached pixels belong to another target"
+        );
+    }
+
+    #[test]
+    fn unchanged_highlight_keeps_partial_damage_path() {
+        let mut frame = clean_frame();
+        frame.damage.push(LineDamage {
+            line: 1,
+            left: 0,
+            right: 3,
+        });
+        assert_eq!(
+            plan_render(Some(HighlightSignature::of(&frame)), true, true, &frame),
+            RenderPlan::Render { force_full: false },
+            "terminal damage alone must not escalate to a full repaint"
+        );
+
+        let mut full = clean_frame();
+        full.full = true;
+        assert!(
+            matches!(
+                plan_render(Some(HighlightSignature::of(&full)), true, true, &full),
+                RenderPlan::Render { .. }
+            ),
+            "a full frame must never be reused"
+        );
+    }
+
+    #[test]
+    fn highlight_transition_overrides_partial_damage_to_full_scene() {
+        let mut frame = clean_frame();
+        frame.damage.push(LineDamage {
+            line: 0,
+            left: 0,
+            right: 1,
+        });
+        frame.selection = Some(span(2, 0, 2, 3));
+        let plan = plan_render(Some(signature(None, None)), true, true, &frame);
+        assert_eq!(plan, RenderPlan::Render { force_full: true });
+
+        let viewport = Viewport {
+            cell_w: 8.0,
+            cell_h: 16.0,
+            cols: frame.cols,
+            rows: frame.rows,
+        };
+        let mut scene = SceneBuilder::from_frame(&frame, viewport).build();
+        assert!(
+            !scene.damage.full,
+            "selection change is not terminal damage"
+        );
+        assert!(
+            scene.damage.bounds().is_some(),
+            "the frame reports exactly one damaged line"
+        );
+        apply_render_plan_damage(&mut scene, false);
+        assert!(
+            !scene.damage.full,
+            "the partial path must stay partial when nothing forces full"
+        );
+
+        apply_render_plan_damage(&mut scene, true);
+        assert!(scene.damage.full);
+        assert!(
+            scene.damage.bounds().is_none(),
+            "full damage makes render_scene take the full path"
+        );
+    }
+
+    #[test]
+    fn invalidate_pane_drops_the_cached_image() {
+        let pane = 0x5eed;
+        let buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(2, 2);
+        PANE_IMAGES.with(|images| {
+            images
+                .borrow_mut()
+                .insert(pane, slint::Image::from_rgba8(buffer));
+        });
+        assert!(PANE_IMAGES.with(|images| images.borrow().contains_key(&pane)));
+
+        invalidate_pane(pane);
+
+        assert!(
+            !PANE_IMAGES.with(|images| images.borrow().contains_key(&pane)),
+            "a CPU fallback must make the next GPU frame rebuild instead of reuse"
+        );
+    }
+
+    /// Mirrors the per-pane bookkeeping `render_pane_image` keeps between
+    /// frames: highlight signature and target size of the cached pixels, plus
+    /// whether Slint holds an imported image. Exercises the same decisions
+    /// without a GPU device.
+    #[derive(Default)]
+    struct TargetModel {
+        highlight: Option<HighlightSignature>,
+        size: Option<PhysicalSize>,
+        has_image: bool,
+    }
+
+    impl TargetModel {
+        fn plan(&self, frame: &Frame, size: PhysicalSize) -> RenderPlan {
+            plan_render(self.highlight, self.has_image, self.size == Some(size), frame)
+        }
+
+        fn step(&mut self, expected: RenderPlan, frame: &Frame, size: PhysicalSize) {
+            assert_eq!(self.plan(frame, size), expected);
+            if let RenderPlan::Render { .. } = expected {
+                self.highlight = Some(HighlightSignature::of(frame));
+                self.size = Some(size);
+                self.has_image = true;
+            }
+        }
+
+        fn invalidate(&mut self) {
+            *self = Self::default();
+        }
+    }
+
+    #[test]
+    fn pane_state_sequence_never_reuses_a_stale_target() {
+        let mut model = TargetModel::default();
+        let clean = clean_frame();
+
+        // First frame: full. The same clean frame afterwards: reuse.
+        model.step(RenderPlan::Render { force_full: true }, &clean, SIZE);
+        model.step(RenderPlan::Reuse, &clean, SIZE);
+
+        // Selection change while idle: bypass reuse and force full.
+        let mut selected = clean.clone();
+        selected.selection = Some(span(0, 0, 0, 2));
+        model.step(RenderPlan::Render { force_full: true }, &selected, SIZE);
+        model.step(RenderPlan::Reuse, &selected, SIZE);
+
+        // Clearing the selection is the same transition class.
+        model.step(RenderPlan::Render { force_full: true }, &clean, SIZE);
+        model.step(RenderPlan::Reuse, &clean, SIZE);
+
+        // Search highlight behaves identically.
+        let mut searched = clean.clone();
+        searched.search = Some(span(2, 0, 2, 3));
+        model.step(RenderPlan::Render { force_full: true }, &searched, SIZE);
+        model.step(RenderPlan::Reuse, &searched, SIZE);
+
+        // A partial frame with an unchanged highlight still uses damage.
+        let mut damaged = searched.clone();
+        damaged.damage.push(LineDamage {
+            line: 1,
+            left: 0,
+            right: 2,
+        });
+        model.step(RenderPlan::Render { force_full: false }, &damaged, SIZE);
+
+        // CPU fallback invalidates the target: even a clean frame with the
+        // same highlight must be fully repainted, never reused/partially patched.
+        model.invalidate();
+        model.step(RenderPlan::Render { force_full: true }, &searched, SIZE);
+        model.step(RenderPlan::Reuse, &searched, SIZE);
     }
 
     /// The app's GPU path must consume the same resolved semantics as the CPU
