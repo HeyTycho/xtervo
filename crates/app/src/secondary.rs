@@ -3,25 +3,23 @@
 //! `window.new` 的默认落点。
 //!
 //! 每个窗口复用 primary 的 [`crate::runtime::SharedServices`]，只创建自己的
-//! Slint `MainWindow`、模型和 `AppState`。当前回调覆盖终端交互核心
-//! （键盘/IME、选词、tab、resize、关闭/focus）；设置页/插件面板的完整回调
-//! 仍走 primary 注册块，协议层已按 [`WindowId`] 预留路由。
+//! Slint `MainWindow`、模型和 `AppState`。完整 UI 回调（键盘/IME、鼠标/选词、
+//! tab/pane 菜单、命令面板、设置页、插件页、profile/SFTP/Vault、窗口操作等）
+//! 与 primary 共用 [`crate::register_window_callbacks`]；闭包只捕获
+//! [`WindowId`]，通过 `runtime::with_window` 显式路由，不共享任何窗口模型。
 //!
 //! 旧的“每个窗口一个子进程”路径只在显式 fallback 时保留：
 //! `TERVO_MULTI_WINDOW_INPROC=0`（或 `TERVO_MULTI_WINDOW_LEGACY=1`）。
 
-use std::cell::RefCell;
-use std::rc::Rc;
 use std::time::Duration;
 
 use slint::winit_030::WinitWindowAccessor;
 use slint::ComponentHandle;
-use tervo_core::{MouseAction, MouseButton, MouseEvent};
 
 use crate::instance::OpenWindowRequest;
 use crate::runtime::{self, WindowId, WindowRuntime};
-use crate::workspace::{Rect, SPLIT_GAP};
-use crate::{AppState, Drag, MainWindow, TABBAR_H};
+use crate::workspace::Rect;
+use crate::{MainWindow, TABBAR_H};
 
 /// 旧的多进程窗口路径只是显式 fallback；默认（变量不存在或为真）走同进程。
 ///
@@ -124,7 +122,6 @@ pub fn create_inproc_window_for(request: OpenWindowRequest) -> Result<WindowId, 
         content,
         initial_theme,
     );
-    install_core_callbacks(&ui, state.clone(), window_id);
     let runtime = WindowRuntime::new(
         window_id,
         ui.clone_strong(),
@@ -143,6 +140,9 @@ pub fn create_inproc_window_for(request: OpenWindowRequest) -> Result<WindowId, 
         reg.get(window_id)
             .ok_or_else(|| "registered window vanished".to_string())?
     };
+    // 完整窗口回调（键盘/IME/鼠标/菜单/设置页/插件/profile/SFTP/窗口操作），
+    // 与 primary 共用同一注册函数；回调只捕获 WindowId，经 registry 显式路由。
+    crate::register_window_callbacks(&ui, state.clone(), window_id);
     let _ = runtime::with_state(&state, crate::init_window_ui);
     let request_cwd = request.cwd.clone();
     let _ = runtime::with_state(&state, |st| {
@@ -168,6 +168,12 @@ pub fn create_inproc_window_for(request: OpenWindowRequest) -> Result<WindowId, 
         return Err(format!("second window show: {err}"));
     }
     runtime.ui.window().request_redraw();
+    // 第二窗口也要有 X11 最大化状态机：否则 on_toggle_maximize 只有 winit
+    // fallback，无法和其它窗口/EWMH 同步。
+    let initial_maximized = runtime.ui.window().is_maximized();
+    runtime.ui.set_window_maximized(initial_maximized);
+    let _ = runtime::with_state(&state, |st| st.window_maximized = initial_maximized);
+    crate::start_maximize_when_window_ready(&runtime.ui, window_id, 0);
     eprintln!(
         "[ui] in-process window created id={} pid={} shared_plugins={} mcp_socket={}",
         window_id,
@@ -176,357 +182,6 @@ pub fn create_inproc_window_for(request: OpenWindowRequest) -> Result<WindowId, 
         shared.mcp.socket_path().display()
     );
     Ok(window_id)
-}
-
-/// 第二窗口的核心回调。所有入口都显式走 `runtime::with_state`，不依赖
-/// “当前活动窗口”猜测；回调内部调用的旧 `with_app` 会沿当前窗口作用域路由。
-fn install_core_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, _window_id: WindowId) {
-    let keylog = std::env::var("TERVO_KEYLOG").is_ok();
-    let mouselog = std::env::var("TERVO_MOUSELOG").is_ok();
-
-    {
-        let state = state.clone();
-        ui.on_key_input(move |text, ctrl, alt, shift, meta, repeat| {
-            let text = text.to_string();
-            let kind = if repeat {
-                crate::keys::KeyEventKind::Repeat
-            } else {
-                crate::keys::KeyEventKind::Press
-            };
-            let state = state.clone();
-            let _ = runtime::with_state(&state, |st| {
-                crate::handle_input(st, &text, ctrl, alt, shift, meta, kind, keylog)
-            });
-        });
-    }
-    {
-        let state = state.clone();
-        ui.on_key_release(move |text, ctrl, alt, shift, meta| {
-            let text = text.to_string();
-            let state = state.clone();
-            let _ = runtime::with_state(&state, |st| {
-                crate::handle_key_release(st, &text, ctrl, alt, shift, meta, keylog)
-            });
-        });
-    }
-    {
-        let state = state.clone();
-        ui.on_ime_commit(move |text| {
-            let text = text.to_string();
-            let state = state.clone();
-            let _ = runtime::with_state(&state, |st| {
-                crate::handle_input(
-                    st,
-                    &text,
-                    false,
-                    false,
-                    false,
-                    false,
-                    crate::keys::KeyEventKind::Press,
-                    keylog,
-                )
-            });
-        });
-    }
-
-    {
-        let state = state.clone();
-        ui.on_pane_clicked(move |id| {
-            let state = state.clone();
-            let _ = runtime::with_state(&state, |st| crate::focus_pane_inner(st, id as u64));
-        });
-    }
-
-    {
-        let state = state.clone();
-        ui.on_pane_mouse_down(move |id, x, y, button, mods| {
-            let state = state.clone();
-            let _ = runtime::with_state(&state, |st| {
-                let id = id as u64;
-                if st.search_open {
-                    crate::close_search(st);
-                }
-                crate::focus_pane_inner(st, id);
-                let (cell, wants_mouse) = {
-                    let Some(rt) = st.panes.get(&id) else { return };
-                    (crate::cell_at(rt, x, y), rt.handle.wants_mouse())
-                };
-                let modifiers = crate::mouse_mods(mods);
-                let reporting = wants_mouse && !modifiers.shift;
-                if crate::ime_click_anchor(button, wants_mouse, modifiers.shift) {
-                    st.ime_override = Some((id, cell));
-                    st.ime_spot_dirty = true;
-                    crate::update_ime_spot(st);
-                }
-                let Some(rt) = st.panes.get(&id) else { return };
-                if mouselog {
-                    eprintln!(
-                        "[mouse] secondary down pane={id} cell={cell:?} button={button} \
-                         wants={} reporting={reporting}",
-                        rt.handle.wants_mouse()
-                    );
-                }
-                let link = !reporting && modifiers.ctrl;
-                st.drag_autoscroll.stop();
-                st.drag = None;
-                if reporting {
-                    rt.handle.selection_clear();
-                    rt.handle.mouse(MouseEvent {
-                        button: crate::mouse_button(button),
-                        action: MouseAction::Press,
-                        line: cell.0,
-                        col: cell.1,
-                        modifiers,
-                    });
-                } else if !link {
-                    rt.handle.selection_start(cell.0, cell.1);
-                }
-                st.drag = Some(Drag {
-                    pane: id,
-                    start: (x, y),
-                    moved: false,
-                    cell,
-                    mouse: reporting,
-                    link,
-                    last_pointer: (x, y),
-                    autoscroll_dir: 0,
-                    autoscroll_paused: false,
-                });
-                if !reporting && !link {
-                    crate::start_drag_autoscroll_timer(st);
-                }
-            });
-        });
-    }
-
-    {
-        let state = state.clone();
-        ui.on_pane_mouse_move(move |id, x, y, _button, mods| {
-            let state = state.clone();
-            let _ = runtime::with_state(&state, |st| {
-                let id = id as u64;
-                let modifiers = crate::mouse_mods(mods);
-                let Some(drag) = st.drag.as_mut() else { return };
-                if drag.pane != id {
-                    return;
-                }
-                drag.last_pointer = (x, y);
-                if (x - drag.start.0).abs() > 4.0 || (y - drag.start.1).abs() > 4.0 {
-                    drag.moved = true;
-                }
-                let (forwarding, link, changed, cell) = {
-                    let Some(rt) = st.panes.get(&id) else { return };
-                    let cell = crate::cell_at(rt, x, y);
-                    (drag.mouse, drag.link, drag.cell != cell, cell)
-                };
-                if changed {
-                    drag.cell = cell;
-                }
-                if link || !changed {
-                    return;
-                }
-                if forwarding {
-                    if let Some(rt) = st.panes.get(&id) {
-                        rt.handle.mouse(MouseEvent {
-                            button: MouseButton::Left,
-                            action: MouseAction::Motion,
-                            line: cell.0,
-                            col: cell.1,
-                            modifiers,
-                        });
-                    }
-                } else {
-                    if let Some(rt) = st.panes.get(&id) {
-                        rt.handle.selection_extend(cell.0, cell.1);
-                    }
-                    crate::redraw_pane_inner(st, id);
-                }
-            });
-        });
-    }
-
-    {
-        let state = state.clone();
-        ui.on_pane_mouse_up(move |id, x, y, button, mods| {
-            let state = state.clone();
-            let _ = runtime::with_state(&state, |st| {
-                let id = id as u64;
-                st.drag_autoscroll.stop();
-                let Some(drag) = st.drag.take() else { return };
-                if drag.mouse {
-                    if let Some(rt) = st.panes.get(&id) {
-                        let cell = crate::cell_at(rt, x, y);
-                        rt.handle.mouse(MouseEvent {
-                            button: crate::mouse_button(button),
-                            action: MouseAction::Release,
-                            line: cell.0,
-                            col: cell.1,
-                            modifiers: crate::mouse_mods(mods),
-                        });
-                    }
-                    return;
-                }
-                if drag.link {
-                    return;
-                }
-                if !drag.moved {
-                    let Some(rt) = st.panes.get(&id) else { return };
-                    let (line_u, col_u) = crate::cell_at(rt, x, y);
-                    let (line, col) = (line_u as i32, col_u as i32);
-                    let now = std::time::Instant::now();
-                    let is_double = matches!(st.last_click, Some((p, l, c, t))
-                        if p == id && l == line && c == col
-                            && now.duration_since(t) < std::time::Duration::from_millis(400));
-                    if is_double {
-                        st.last_click = None;
-                        if let Some(rt) = st.panes.get_mut(&id) {
-                            rt.handle.select_line(line);
-                        }
-                        if st.cfg.copy_on_select {
-                            crate::copy_current_selection(st);
-                        }
-                        return;
-                    }
-                    st.last_click = Some((id, line, col, now));
-                    return;
-                }
-                if !st.cfg.copy_on_select {
-                    return;
-                }
-                let text = st
-                    .panes
-                    .get(&drag.pane)
-                    .and_then(|rt| rt.handle.copy_selection())
-                    .and_then(crate::normalize_clipboard_text);
-                if let Some(text) = text {
-                    crate::set_selection_clipboards(st, &text);
-                }
-            });
-        });
-    }
-
-    {
-        let state = state.clone();
-        ui.on_pane_scrolled(move |id, dy, x, y, mods| {
-            let state = state.clone();
-            let _ = runtime::with_state(&state, |st| {
-                let id = id as u64;
-                let Some(rt) = st.panes.get(&id) else { return };
-                let modifiers = crate::mouse_mods(mods);
-                if rt.handle.wants_mouse() && !modifiers.shift {
-                    let cell = crate::cell_at(rt, x, y);
-                    let button = if dy > 0.0 {
-                        MouseButton::WheelUp
-                    } else {
-                        MouseButton::WheelDown
-                    };
-                    rt.handle.mouse(MouseEvent {
-                        button,
-                        action: MouseAction::Press,
-                        line: cell.0,
-                        col: cell.1,
-                        modifiers,
-                    });
-                    return;
-                }
-                let ch = rt.renderer.cell_h.max(1) as f32;
-                let mut lines = (dy / ch).round();
-                if lines.abs() < 1.0 {
-                    lines = dy.signum();
-                }
-                if lines != 0.0 {
-                    rt.handle.clear_selection();
-                    rt.handle.scroll(lines as i32);
-                }
-            });
-        });
-    }
-
-    {
-        let state = state.clone();
-        ui.on_divider_dragged(move |index, x, y| {
-            let state = state.clone();
-            let _ = runtime::with_state(&state, |st| {
-                let Some(info) = st.divider_infos.get(index as usize).cloned() else {
-                    return;
-                };
-                let usable = match info.dir {
-                    crate::workspace::Dir::Row => info.parent.w - SPLIT_GAP,
-                    crate::workspace::Dir::Col => info.parent.h - SPLIT_GAP,
-                };
-                if usable <= 1.0 {
-                    return;
-                }
-                let ratio = match info.dir {
-                    crate::workspace::Dir::Row => (x - info.parent.x) / usable,
-                    crate::workspace::Dir::Col => (y - info.parent.y) / usable,
-                };
-                let Some(tab) = st.ws.tabs.get_mut(st.ws.active) else {
-                    return;
-                };
-                if let Some(root) = tab.root.as_mut() {
-                    root.set_ratio(&info.path, ratio.clamp(0.05, 0.95));
-                }
-                crate::refresh_views(st);
-                crate::redraw_visible(st);
-            });
-        });
-    }
-
-    {
-        let state = state.clone();
-        ui.on_tab_clicked(move |i| {
-            let state = state.clone();
-            let _ = runtime::with_state(&state, |st| {
-                if st.search_open {
-                    crate::close_search(st);
-                }
-                crate::set_active_tab_inner(st, i.max(0) as usize);
-            });
-        });
-    }
-    {
-        let state = state.clone();
-        ui.on_tab_closed(move |i| {
-            let state = state.clone();
-            let _ = runtime::with_state(&state, |st| {
-                crate::close_tab_inner(st, i.max(0) as usize);
-                crate::rebuild_tabs(st);
-            });
-        });
-    }
-    {
-        let state = state.clone();
-        ui.on_new_tab(move || {
-            let state = state.clone();
-            let _ = runtime::with_state(&state, |st| {
-                if st.search_open {
-                    crate::close_search(st);
-                }
-                crate::new_tab_with_default(st);
-                crate::rebuild_tabs(st);
-                crate::refresh_views(st);
-                crate::redraw_visible(st);
-            });
-        });
-    }
-    {
-        let state = state.clone();
-        ui.on_resized(move |w, h| {
-            let state = state.clone();
-            let _ = runtime::with_state(&state, |st| {
-                let w = w.max(1.0);
-                let h = (h - TABBAR_H).max(1.0);
-                if (st.content.w - w).abs() < 0.5 && (st.content.h - h).abs() < 0.5 {
-                    return;
-                }
-                st.content = Rect::new(0.0, 0.0, w, h);
-                st.ime_spot_dirty = true;
-                crate::refresh_views(st);
-                crate::redraw_visible(st);
-            });
-        });
-    }
 }
 
 fn start_timers(rt: &WindowRuntime) {
