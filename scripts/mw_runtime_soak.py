@@ -104,7 +104,7 @@ def main():
     assert thread_growth <= 8, f"threads grew {thread_growth}"
     assert fd_growth <= 24, f"fds grew {fd_growth}"
     print(
-        f"PASS 2m dual-window soak: rss_growth={rss_growth}KiB "
+        f"PASS {args.seconds}s dual-window soak: rss_growth={rss_growth}KiB "
         f"threads={baseline['threads']}->{final['threads']} "
         f"fds={baseline['fds']}->{final['fds']}"
     )

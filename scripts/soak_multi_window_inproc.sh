@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-only
 #
-# 2 分钟双窗口（同进程，默认路径）soak：两个 MainWindow + 两套 PTY 持续输出，
+# 双窗口（同进程，默认路径）soak：时长由 SOAK_SECONDS 控制（默认 120）；两个 MainWindow + 两套 PTY 持续输出，
 # 每 5s 采样 RSS/线程/FD，结束时要求两个窗口仍存活且资源无持续增长。
 # 不设置 TERVO_MULTI_WINDOW_INPROC：验证产品默认的同进程路径。
-# 只跑 2m；不替代单窗口 15m/30m 门禁。
+# 合并前至少 15m，发布候选 30m；2m 只作 smoke。
 set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 OUT=${SOAK_OUT:-$ROOT/target/multi-window-soak}
