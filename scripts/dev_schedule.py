@@ -72,7 +72,9 @@ def due(entries: list[dict], done: set[str]) -> list[dict]:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--daemon", action="store_true", help="poll until stopped")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--once", action="store_true", help="check due entries once (default)")
+    mode.add_argument("--daemon", action="store_true", help="poll until stopped")
     parser.add_argument("--interval", type=int, default=20, help="poll seconds")
     args = parser.parse_args()
 
