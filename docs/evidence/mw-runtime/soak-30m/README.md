@@ -1,10 +1,20 @@
-# Multi-window 30m soak
+# Multi-window 30m soak (clean run)
 
-Command was `SOAK_SECONDS=1800 SOAK_DISPLAY=:166 bash scripts/soak_multi_window_inproc.sh`.
-The Python sampler completed **1800s / 341 samples** with two windows alive:
-RSS +8116 KiB, threads 23->23, FDs 31->31.
+```bash
+SOAK_SECONDS=1800 SOAK_DISPLAY=:167 \
+SOAK_OUT=$PWD/.logs/soak/mw-30m-clean \
+SOAK_RUNTIME_DIR=/tmp/tervo-mw-soak-clean \
+  bash scripts/soak_multi_window_inproc.sh
+```
 
-The shell wrapper line was edited while it was running, so the wrapper printed a spurious
-`line 67: 1800: command not found`; the raw `samples.json` is the source of truth.
-A clean rerun should be done for a final release artifact if this timing bug is considered
-blocking. It is not a Tervo runtime failure.
+Result: **PASS 1800s**, 2 windows alive throughout.
+
+```text
+RSS growth:  +9212 KiB
+threads:     23 -> 23
+fds:         31 -> 31
+samples:     341
+```
+
+This is the clean rerun; the earlier 30m wrapper log with `1800: command not found`
+was caused by editing the shell script while it was executing. Runtime remained healthy.
