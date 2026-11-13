@@ -202,7 +202,8 @@ struct SshExitNotice {
     text: String,
 }
 
-struct Drag {    pane: PaneId,
+struct Drag {
+    pane: PaneId,
     start: (f32, f32),
     moved: bool,
     cell: (u16, u16),
@@ -214,6 +215,9 @@ struct Drag {    pane: PaneId,
     last_pointer: (f32, f32),
     /// 当前自动滚动方向，避免每 50ms 重复刷日志。
     autoscroll_dir: i32,
+    /// 指针已离开顶层窗口（或窗口失焦），自动滚动计时器已暂停。
+    /// 指针回到窗口内且左键仍按住时恢复；避免拖出窗口后计时器空转/继续滚动。
+    autoscroll_paused: bool,
 }
 
 /// 自绘拖边缩放：按 root 坐标差值直接改窗口大小/位置。
@@ -7667,7 +7671,10 @@ fn selection_autoscroll_tick(st: &mut AppState) {
         st.drag_autoscroll.stop();
         return;
     };
-    if drag.mouse || drag.link || !drag.moved {
+    if !selection_drag_autoscrolls(drag.mouse, drag.link, drag.moved) {
+        return;
+    }
+    if drag.autoscroll_paused {
         return;
     }
     let id = drag.pane;
@@ -7676,27 +7683,123 @@ fn selection_autoscroll_tick(st: &mut AppState) {
         st.drag_autoscroll.stop();
         return;
     };
+    // 拖出顶层窗口：停表并记住“已暂停”。窗口内（包括 tab bar/其它 pane）
+    // 仍按拖拽 pane 的边缘继续滚动；指针回来后由 move 回调恢复计时器。
+    let outside =
+        pointer_outside_window(rt.rect.x, rt.rect.y, x, y, st.content.w, st.content.h);
+    if outside {
+        st.drag_autoscroll.stop();
+        if let Some(drag) = st.drag.as_mut() {
+            if !drag.autoscroll_paused {
+                drag.autoscroll_paused = true;
+                drag.autoscroll_dir = 0;
+                eprintln!(
+                    "[select] autoscroll-stop pane={id} reason=pointer-outside-window pointer=({x:.1},{y:.1})"
+                );
+            }
+        }
+        return;
+    }
     let height = rt.renderer.height.max(1) as f32;
     let cell_h = rt.renderer.cell_h.max(1) as f32;
     let dir = selection_autoscroll_dir(y, height, cell_h);
-    if dir == 0 {
+    let pos = rt.handle.scroll_position();
+    let Some((delta, row)) =
+        selection_autoscroll_step(dir, pos.offset, pos.history, rt.grid.1 as u16)
+    else {
         if let Some(drag) = st.drag.as_mut() {
             drag.autoscroll_dir = 0;
         }
         return;
-    }
-    let row = if dir > 0 { 0 } else { rt.grid.1.saturating_sub(1) };
+    };
     let col = cell_at(rt, x, y).1;
     if let Some(drag) = st.drag.as_mut() {
         if drag.autoscroll_dir != dir {
             drag.autoscroll_dir = dir;
-            eprintln!("[select] autoscroll pane={id} dir={dir} edge_cell={row},{col}");
+            eprintln!(
+                "[select] autoscroll pane={id} dir={dir} offset={} history={} edge_cell={row},{col}",
+                pos.offset, pos.history
+            );
         }
     }
-    rt.handle.scroll(dir);
-    rt.handle.selection_extend(row as u16, col);
+    // 已经到历史顶/最新时不再发送无效滚动，但继续把选区扩到边缘行。
+    if delta != 0 {
+        rt.handle.scroll(delta);
+    }
+    rt.handle.selection_extend(row, col);
 }
 
+/// 自动滚动步进：`(要滚的行数, 要扩到的视口行)`。
+///
+/// `dir` 来自 [`selection_autoscroll_dir`]：+1 = 向历史（上），-1 = 向最新（下）。
+/// 到达边界时只停止滚动、仍返回边缘行，保证选区能扩到视口第一/最后一行。
+fn selection_autoscroll_step(
+    dir: i32,
+    offset: usize,
+    history: usize,
+    rows: u16,
+) -> Option<(i32, u16)> {
+    let last = rows.saturating_sub(1);
+    match dir {
+        1 => Some((i32::from(offset < history), 0)),
+        -1 => Some((-i32::from(offset > 0), last)),
+        _ => None,
+    }
+}
+
+/// 只有“本地选词 + 已产生实际位移”的拖拽才运行边缘自动滚动：
+/// 转发给 PTY 的鼠标拖动、Ctrl 链接拖动、以及还没移动的按下都不滚。
+fn selection_drag_autoscrolls(mouse: bool, link: bool, moved: bool) -> bool {
+    !mouse && !link && moved
+}
+
+/// 启动 50ms 边缘自动滚动计时器。
+///
+/// 重复调用是安全的：Slint 会重置周期；暂停后（指针离开窗口）重新进入窗口
+/// 也走这里恢复。计时器本体只在拖选按下时启动，抬起/失焦/窗口关闭都会停。
+fn start_drag_autoscroll_timer(st: &mut AppState) {
+    st.drag_autoscroll.start(
+        slint::TimerMode::Repeated,
+        Duration::from_millis(50),
+        || {
+            let _ = with_app(selection_autoscroll_tick);
+        },
+    );
+}
+
+/// 取消本地选词拖拽并停表。转发给 PTY 的鼠标拖拽/链接拖拽不在这里取消：
+/// 它们没有自动滚动，仍应等待真实 release 把状态交回给 TUI。
+fn cancel_local_selection_drag(st: &mut AppState, reason: &str) -> bool {
+    if !st.drag.as_ref().is_some_and(|d| !d.mouse && !d.link) {
+        return false;
+    }
+    st.drag_autoscroll.stop();
+    if let Some(drag) = st.drag.take() {
+        eprintln!(
+            "[select] drag-cancel pane={} reason={reason} moved={}",
+            drag.pane, drag.moved
+        );
+    }
+    true
+}
+
+/// 指针（pane 内容坐标）是否已离开顶层窗口。`content_w/content_h` 是
+/// Slint 窗口内容区尺寸（高度不含 tab bar），窗口坐标 = tab bar + pane 偏移。
+fn pointer_outside_window(
+    pane_x: f32,
+    pane_y: f32,
+    x: f32,
+    y: f32,
+    content_w: f32,
+    content_h: f32,
+) -> bool {
+    if content_w <= 0.0 || content_h <= 0.0 {
+        return false;
+    }
+    let abs_x = pane_x + x;
+    let abs_y = TABBAR_H + pane_y + y;
+    abs_x < 0.0 || abs_y < 0.0 || abs_x >= content_w || abs_y >= content_h + TABBAR_H
+}
 
 fn cell_at(rt: &PaneRuntime, x: f32, y: f32) -> (u16, u16) {
     let cw = rt.renderer.cell_w.max(1) as f32;
@@ -8533,16 +8636,62 @@ fn install_native_window_events(ui: &MainWindow) {
     ui.window().on_winit_window_event(move |win, event| {
         match event {
             winit::event::WindowEvent::Focused(focused) => {
+                eprintln!("[focus] window focused={focused}");
                 // 比 50ms 轮询更及时；失焦时不发，等重新获得焦点再强制补发。
                 if *focused {
                     with_app(|st| {
                         st.ime_spot_dirty = true;
                         update_ime_spot(st);
                     });
-                } else if let Some(ui) = weak.upgrade() {
-                    // 窗口失焦：取消可能正在进行的 Tab 拖拽，并复位 ghost/插入线/让位动画。
-                    ui.invoke_cancel_drag();
+                } else {
+                    if let Some(ui) = weak.upgrade() {
+                        // 窗口失焦：取消可能正在进行的 Tab 拖拽，并复位 ghost/插入线/让位动画。
+                        ui.invoke_cancel_drag();
+                    }
+                    // 选词拖拽没有跨窗口的 release 保证（alt-tab/点其它窗口时 up 可能
+                    // 永远不到本窗口）。失焦必须主动取消 drag 并停掉 50ms 自动滚动，
+                    // 否则窗口在后台仍会持续滚动历史、且指针回来后旧 drag 会继续扩选。
+                    with_app(|st| {
+                        st.drag_autoscroll.stop();
+                        cancel_local_selection_drag(st, "window-blur");
+                    });
                 }
+            }
+            winit::event::WindowEvent::CursorLeft { .. } => {
+                // 指针离开顶层窗口：报读/转发拖拽不受影响；本地选词拖拽停掉自动
+                // 滚动（窗口内仍可继续，包括拖到 tab bar/另一个 pane 上）。
+                with_app(|st| {
+                    st.drag_autoscroll.stop();
+                    let Some(drag) = st.drag.as_mut() else { return };
+                    if drag.autoscroll_paused
+                        || !selection_drag_autoscrolls(drag.mouse, drag.link, drag.moved)
+                    {
+                        return;
+                    }
+                    drag.autoscroll_paused = true;
+                    drag.autoscroll_dir = 0;
+                    eprintln!(
+                        "[select] autoscroll-stop pane={} reason=pointer-left-window",
+                        drag.pane
+                    );
+                });
+            }
+            winit::event::WindowEvent::CursorEntered { .. } => {
+                // 左键仍按着拖回窗口：恢复计时器，继续按新的指针位置滚动。
+                with_app(|st| {
+                    let resume = st.drag.as_ref().is_some_and(|drag| {
+                        drag.autoscroll_paused
+                            && selection_drag_autoscrolls(drag.mouse, drag.link, drag.moved)
+                    });
+                    if !resume {
+                        return;
+                    }
+                    if let Some(drag) = st.drag.as_mut() {
+                        drag.autoscroll_paused = false;
+                    }
+                    start_drag_autoscroll_timer(st);
+                    eprintln!("[select] autoscroll-resume reason=pointer-entered-window");
+                });
             }
             winit::event::WindowEvent::ScaleFactorChanged { .. } => {
                 // DPR 变化后逻辑尺寸可能还没更新；强制按新 scale 重发 spot。
@@ -11068,6 +11217,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                  wants_mouse={wants_mouse} reporting={reporting} link={link}",
                 modifiers.shift
             );
+            // 上一次拖拽可能因窗口失焦/丢 release 残留；新的按下必须重置计时器，
+            // 否则旧 drag 的 50ms tick 会继续滚动/扩选到新拖拽上。
+            st.drag_autoscroll.stop();
+            if let Some(old) = st.drag.take() {
+                if !old.mouse && !old.link {
+                    eprintln!(
+                        "[select] drag-cancel pane={} reason=new-press moved={}",
+                        old.pane, old.moved
+                    );
+                }
+            }
             if reporting {
                 // 两套状态不能并存：进终端鼠标模式就清掉本地选区。
                 rt.handle.selection_clear();
@@ -11090,15 +11250,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 link,
                 last_pointer: (x, y),
                 autoscroll_dir: 0,
+                autoscroll_paused: false,
             });
             if !reporting && !link {
-                st.drag_autoscroll.start(
-                    slint::TimerMode::Repeated,
-                    Duration::from_millis(50),
-                    || {
-                        let _ = with_app(selection_autoscroll_tick);
-                    },
-                );
+                start_drag_autoscroll_timer(st);
             }
         });
     });
@@ -11109,7 +11264,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let modifiers = mouse_mods(mods);
 
             if st.drag.is_some() {
-                let (cell, forwarding, link) = {
+                let (cell, forwarding, link, resume, changed) = {
                     let Some(drag) = st.drag.as_mut() else { return };
                     if drag.pane != id {
                         return;
@@ -11119,15 +11274,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         drag.moved = true;
                     }
                     let Some(rt) = st.panes.get(&id) else { return };
-                    let cell = cell_at(rt, x, y);
-                    if drag.cell == cell {
-                        return;
+                    let inside = !pointer_outside_window(
+                        rt.rect.x,
+                        rt.rect.y,
+                        x,
+                        y,
+                        st.content.w,
+                        st.content.h,
+                    );
+                    // 拖出窗口会暂停计时器；指针回到窗口内（即使还在同一格）
+                    // 必须恢复，否则之后的边缘拖动再也不会自动滚动。仍在外面的
+                    // move 不能恢复，否则每次移动都会空转一次 tick。
+                    let resume = drag.autoscroll_paused
+                        && inside
+                        && selection_drag_autoscrolls(drag.mouse, drag.link, drag.moved);
+                    if resume {
+                        drag.autoscroll_paused = false;
                     }
-                    drag.cell = cell;
-                    (cell, drag.mouse, drag.link)
+                    let cell = cell_at(rt, x, y);
+                    let changed = drag.cell != cell;
+                    if changed {
+                        drag.cell = cell;
+                    }
+                    (cell, drag.mouse, drag.link, resume, changed)
                 };
+                if resume {
+                    start_drag_autoscroll_timer(st);
+                    eprintln!(
+                        "[select] autoscroll-resume pane={id} reason=pointer-reentered-window"
+                    );
+                }
                 if link {
                     // Ctrl 拖拽不扩选；抬起时是否打开链接由 moved 决定。
+                    return;
+                }
+                if !changed {
                     return;
                 }
                 if forwarding {
@@ -11182,8 +11363,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui.on_pane_mouse_up(move |id, x, y, button, mods| {
         let id = id as u64;
         with_app(|st| {
-            let Some(drag) = st.drag.take() else { return };
+            // 先停表再取 drag：即使 drag 已被失焦/新按下清掉，也不能留下
+            // 一个仍在 50ms tick 的计时器。
             st.drag_autoscroll.stop();
+            let Some(drag) = st.drag.take() else { return };
+            if !drag.mouse && !drag.link {
+                eprintln!(
+                    "[select] drag-end pane={id} reason=release moved={} paused={}",
+                    drag.moved, drag.autoscroll_paused
+                );
+            }
             if drag.link {
                 // Ctrl+点击（没有明显拖动）才打开；拖动过就当作取消。
                 if !drag.moved && button == 0 {
@@ -14235,6 +14424,53 @@ mod tests {
         assert_eq!(selection_autoscroll_dir(232.0, 240.0, 16.0), -1);
         assert_eq!(selection_autoscroll_dir(300.0, 240.0, 16.0), -1);
         assert_eq!(selection_autoscroll_dir(120.0, 0.0, 16.0), 0);
+        // 指针拖出窗口后坐标可以为负/超出 pane；方向仍按最近的水平边判定。
+        assert_eq!(selection_autoscroll_dir(-50.0, 240.0, 16.0), 1);
+        assert_eq!(selection_autoscroll_dir(400.0, 240.0, 16.0), -1);
+    }
+
+    #[test]
+    fn selection_autoscroll_step_clamps_at_history_limits() {
+        // 历史中间：顶部向上滚一行、底部向下滚一行。
+        assert_eq!(selection_autoscroll_step(1, 10, 100, 30), Some((1, 0)));
+        assert_eq!(selection_autoscroll_step(-1, 10, 100, 30), Some((-1, 29)));
+        // 已到历史顶：不再发 scroll，但仍把选区扩到第 0 行。
+        assert_eq!(selection_autoscroll_step(1, 100, 100, 30), Some((0, 0)));
+        assert_eq!(selection_autoscroll_step(1, 100, 100, 0), Some((0, 0)));
+        // 已在最新：不再向下滚，但仍扩到最后一行。
+        assert_eq!(selection_autoscroll_step(-1, 0, 100, 30), Some((0, 29)));
+        assert_eq!(selection_autoscroll_step(-1, 0, 0, 0), Some((0, 0)));
+        // 中间区域不滚动也不扩选区。
+        assert_eq!(selection_autoscroll_step(0, 10, 100, 30), None);
+    }
+
+    #[test]
+    fn autoscroll_only_for_local_moved_selection_drags() {
+        // 本地选词且已移动：计时器应运行。
+        assert!(selection_drag_autoscrolls(false, false, true));
+        // 未移动：不滚（否则按下不动也会滚动）。
+        assert!(!selection_drag_autoscrolls(false, false, false));
+        // 终端鼠标上报转发、Ctrl 链接：都不允许本地自动滚动。
+        assert!(!selection_drag_autoscrolls(true, false, true));
+        assert!(!selection_drag_autoscrolls(false, true, true));
+    }
+
+    #[test]
+    fn pointer_outside_window_uses_window_content_bounds() {
+        // 单 pane：pane 原点 (0,0)，窗口内容 800x600，tab bar 32。
+        // 边缘内/外必须区分，拖出窗口才能停表。
+        assert!(!pointer_outside_window(0.0, 0.0, 10.0, 10.0, 800.0, 600.0));
+        assert!(!pointer_outside_window(0.0, 0.0, 799.0, 599.0, 800.0, 600.0));
+        assert!(pointer_outside_window(0.0, 0.0, -1.0, 10.0, 800.0, 600.0));
+        assert!(pointer_outside_window(0.0, 0.0, 800.0, 10.0, 800.0, 600.0));
+        assert!(pointer_outside_window(0.0, 0.0, 10.0, 634.0, 800.0, 600.0));
+        // tab bar 上（窗口内）不算拖出窗口：拖到顶部边缘仍应自动滚动。
+        assert!(!pointer_outside_window(0.0, 0.0, 10.0, -20.0, 800.0, 600.0));
+        // 分屏右下 pane：pane 偏移要加到窗口坐标上。
+        assert!(!pointer_outside_window(400.0, 300.0, 399.0, 299.0, 800.0, 600.0));
+        assert!(pointer_outside_window(400.0, 300.0, 400.0, 10.0, 800.0, 600.0));
+        // 尚未完成布局（窗口尺寸为 0）：不误判为拖出窗口。
+        assert!(!pointer_outside_window(0.0, 0.0, 900.0, 900.0, 0.0, 0.0));
     }
 
     #[test]
