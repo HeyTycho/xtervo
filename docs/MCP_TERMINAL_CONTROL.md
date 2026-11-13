@@ -79,10 +79,12 @@ kill                   = input && destructive
 Turning on `mcp_destructive` alone grants nothing.
 
 Multi-window additive fields: `list` returns `windows[]` + `active_window_id`;
-most commands accept `window_id` (default active). `new_window` opens the
-in-process second window when `TERVO_MULTI_WINDOW_INPROC=1`; `close_window`
-refuses to close the last window. `WindowId`/`PaneId` are explicit routes, not
-inferred from the active UI.
+every live tool accepts `window_id` (default active) and validates it against
+the WindowRegistry (`unknown window_id` instead of silently falling back).
+`new_window` opens the in-process second window; `close_window` refuses to
+close the last window. The `[mcp]` audit line records the resolved window
+(`action=... window=window-N pane=...`), never command text/token. `WindowId`/
+`PaneId` are explicit routes, not inferred from the active UI.
 
 Old env overrides remain for tests/CI:
 
@@ -187,7 +189,9 @@ records action/pane/argument bytes (never argument text or secrets).
 | `tervo.live_kill` | Send Ctrl+C to a PTY |
 
 All live tools accept an optional `window_id`; `live_list` returns `windows[]`
-and `active_window_id`, and each pane carries its `window_id`.
+and `active_window_id`, and each pane carries its `window_id`. Explicit window
+ids are validated; responses echo the routed `window_id`, and `[mcp]` audit
+lines include it.
 
 L2 is disabled by default. `close_*` also needs `mcp_tabs`; `kill` also needs
 `mcp_input`. There is no per-call confirmation prompt in this version.

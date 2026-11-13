@@ -576,8 +576,15 @@ pub fn set_active_window(id: WindowId) -> bool {
     let Some(registry) = registry() else {
         return false;
     };
-    let ok = registry.borrow_mut().set_active(id);
+    let (ok, shared) = {
+        let mut registry = registry.borrow_mut();
+        let ok = registry.set_active(id);
+        (ok, registry.shared())
+    };
     if ok {
+        // 插件宿主在后台线程解析“缺省 window_id=active”，这里同步一份；
+        // 不能让 supervisor 自己猜当前窗口。
+        shared.plugins.set_active_window(Some(id.get()));
         eprintln!("[runtime] active window={id}");
     }
     ok
@@ -590,8 +597,16 @@ pub fn window_count() -> usize {
 /// 从 registry 移除窗口并返回其 runtime；调用方负责 hide/drop 顺序。
 pub fn remove_window(id: WindowId) -> Option<Rc<WindowRuntime>> {
     let registry = registry()?;
-    let runtime = registry.borrow_mut().remove(id);
+    let (runtime, shared) = {
+        let mut registry = registry.borrow_mut();
+        let runtime = registry.remove(id);
+        let active = registry.active();
+        (runtime, (registry.shared(), active))
+    };
     if runtime.is_some() {
+        let (shared, active) = shared;
+        shared.plugins.set_active_window(active.map(|id| id.get()));
+        shared.plugins.forget_window(id.get());
         eprintln!("[runtime] closed {id}（remaining={}）", window_count());
     }
     runtime

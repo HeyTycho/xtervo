@@ -105,6 +105,8 @@ pub struct Notice {
     pub plugin_name: String,
     pub text: String,
     pub level: String,
+    /// 目标窗口；`None` = 未解析（UI 回退 active）。
+    pub window_id: Option<u64>,
 }
 
 /// 插件推送/宿主请求得到的声明式 UI 文档。
@@ -116,6 +118,11 @@ pub struct SurfaceUpdate {
     pub surface: String,
     pub panel: Option<String>,
     pub doc: SurfaceDoc,
+    /// 目标窗口；surface 的两级 key 是 `(window_id, surface)`。
+    pub window_id: Option<u64>,
+    /// true = 插件主动 `ui.render` 推送（可在目标窗口没有打开 surface 时显示）；
+    /// false = 对宿主 `surface.render` 请求的回复。
+    pub pushed: bool,
 }
 
 /// terminal/clipboard ask：等待用户 Allow/Deny。
@@ -129,6 +136,8 @@ pub struct ApprovalRequest {
     pub details: String,
     pub params: Value,
     pub deadline: Instant,
+    /// 发起请求的窗口；Allow/Deny 必须路由回该窗口执行。
+    pub window_id: Option<u64>,
 }
 
 impl ApprovalRequest {
@@ -145,6 +154,8 @@ impl ApprovalRequest {
 pub struct HostSnapshot {
     pub host_version: String,
     pub config_metadata: Value,
+    /// UI 线程维护的活动窗口；supervisor 线程解析“缺省 window_id=active”用。
+    pub active_window_id: Option<u64>,
 }
 
 pub type WakeSlot = Arc<Mutex<Option<Arc<WakeSignal>>>>;
@@ -637,6 +648,7 @@ impl PluginStore {
             host: Arc::new(Mutex::new(HostSnapshot {
                 host_version: env!("CARGO_PKG_VERSION").to_string(),
                 config_metadata: json!({}),
+                active_window_id: None,
             })),
             status_revision: Arc::new(AtomicU64::new(0)),
             runtime_revision: Arc::new(AtomicU64::new(0)),
@@ -732,6 +744,21 @@ impl PluginStore {
         if let Ok(mut host) = self.shared.host.lock() {
             host.config_metadata = metadata;
         }
+    }
+
+    /// UI 线程同步活动窗口；supervisor 用它解析缺省 `window_id`。
+    pub fn set_active_window(&self, window_id: Option<u64>) {
+        if let Ok(mut host) = self.shared.host.lock() {
+            host.active_window_id = window_id;
+        }
+    }
+
+    pub fn active_window(&self) -> Option<u64> {
+        self.shared
+            .host
+            .lock()
+            .ok()
+            .and_then(|host| host.active_window_id)
     }
 
     /// 运行状态（测试/诊断）；key 为 UI 行 key（v3 = manifest.id）。
@@ -970,6 +997,13 @@ impl PluginStore {
             .unwrap_or_default()
     }
 
+    /// 只取目标窗口的提示；其它窗口的留在队列里，避免先轮询的窗口吞掉。
+    pub fn take_notices_for(&self, window_id: u64, active: Option<u64>) -> Vec<Notice> {
+        take_matching(&self.shared.notices, |notice| {
+            window_matches_target(notice.window_id, window_id, active)
+        })
+    }
+
     pub fn take_surfaces(&self) -> Vec<SurfaceUpdate> {
         self.shared
             .surfaces
@@ -978,12 +1012,91 @@ impl PluginStore {
             .unwrap_or_default()
     }
 
+    /// 只取 `(window_id, surface)` 目标窗口的 surface 更新。
+    pub fn take_surfaces_for(&self, window_id: u64, active: Option<u64>) -> Vec<SurfaceUpdate> {
+        take_matching(&self.shared.surfaces, |update| {
+            window_matches_target(update.window_id, window_id, active)
+        })
+    }
+
     pub fn pending_approvals(&self) -> Vec<ApprovalRequest> {
         self.shared
             .approvals
             .lock()
             .map(|approvals| approvals.iter().cloned().collect())
             .unwrap_or_default()
+    }
+
+    /// 该窗口应展示的 ask；不消费队列（Allow/Deny 后由 resolve 移除）。
+    pub fn pending_approvals_for(&self, window_id: u64, active: Option<u64>) -> Vec<ApprovalRequest> {
+        self.shared
+            .approvals
+            .lock()
+            .map(|approvals| {
+                approvals
+                    .iter()
+                    .filter(|approval| {
+                        window_matches_target(approval.window_id, window_id, active)
+                    })
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// 关闭窗口时清理该窗口的 surface/status/notice/ask，避免残留状态串到新窗口。
+    ///
+    /// 返回被取消的 ask 数；对应的插件请求收到 `UNAVAILABLE (window closed)`，
+    /// 不会永远挂着等超时。
+    pub fn forget_window(&self, window_id: u64) -> usize {
+        let dropped_approvals: Vec<ApprovalRequest> = {
+            match self.shared.approvals.lock() {
+                Ok(mut approvals) => {
+                    let mut kept = VecDeque::with_capacity(approvals.len());
+                    let mut dropped = Vec::new();
+                    for approval in approvals.drain(..) {
+                        if approval.window_id == Some(window_id) {
+                            dropped.push(approval);
+                        } else {
+                            kept.push_back(approval);
+                        }
+                    }
+                    *approvals = kept;
+                    dropped
+                },
+                Err(_) => Vec::new(),
+            }
+        };
+        let status_changed = match self.shared.statuses.lock() {
+            Ok(mut statuses) => {
+                let before = statuses.len();
+                statuses.retain(|(_, window), _| *window != Some(window_id));
+                statuses.len() != before
+            },
+            Err(_) => false,
+        };
+        if let Ok(mut surfaces) = self.shared.surfaces.lock() {
+            surfaces.retain(|update| update.window_id != Some(window_id));
+        }
+        if let Ok(mut notices) = self.shared.notices.lock() {
+            notices.retain(|notice| notice.window_id != Some(window_id));
+        }
+        if status_changed {
+            self.shared.status_revision.fetch_add(1, Ordering::SeqCst);
+        }
+        notify_wake(&self.shared.wake);
+        for approval in &dropped_approvals {
+            let _ = self.resolve_host_request(
+                &approval.plugin_id,
+                approval.request_id,
+                HostOutcome::Unavailable("window closed".to_string()),
+            );
+        }
+        eprintln!(
+            "[plugin-v3] forget window={window_id} surfaces/status/notices cleared，取消 ask={}",
+            dropped_approvals.len()
+        );
+        dropped_approvals.len()
     }
 
     /// UI 对 ask 的最终答复（terminal/clipboard 的实际读写由 UI 线程完成）。
@@ -1008,7 +1121,17 @@ impl PluginStore {
             })
     }
 
+    /// 全部状态（诊断/测试用）；产品 UI 用 [`Self::status_snapshot_for_window`]。
     pub fn status_snapshot(&self) -> (u64, Vec<StatusItem>) {
+        self.status_snapshot_inner(None)
+    }
+
+    /// 该窗口的状态栏：全局状态（status.get 轮询）+ 该窗口的 ui.status 覆盖。
+    pub fn status_snapshot_for_window(&self, window_id: u64) -> (u64, Vec<StatusItem>) {
+        self.status_snapshot_inner(Some(window_id))
+    }
+
+    fn status_snapshot_inner(&self, window_id: Option<u64>) -> (u64, Vec<StatusItem>) {
         let revision = self.status_revision();
         let statuses = self
             .shared
@@ -1016,9 +1139,26 @@ impl PluginStore {
             .lock()
             .map(|statuses| statuses.clone())
             .unwrap_or_default();
-        let mut items: Vec<StatusItem> = statuses
+        // 每个插件在目标窗口只显示一条：窗口专属状态覆盖全局状态。
+        let mut effective: HashMap<String, (Option<u64>, StatusPayload)> = HashMap::new();
+        for ((plugin_id, target), status) in statuses {
+            let relevant = match window_id {
+                Some(window) => target.is_none() || target == Some(window),
+                None => true,
+            };
+            if !relevant {
+                continue;
+            }
+            match effective.get(&plugin_id) {
+                Some((existing, _)) if existing.is_some() && target.is_none() => {},
+                _ => {
+                    effective.insert(plugin_id.clone(), (target, status));
+                },
+            }
+        }
+        let mut items: Vec<StatusItem> = effective
             .into_iter()
-            .filter_map(|(plugin_id, status)| {
+            .filter_map(|(plugin_id, (_, status))| {
                 let entry = self
                     .entries
                     .iter()
@@ -1291,6 +1431,7 @@ impl PluginStore {
                 plugin_name: manifest.name.clone(),
                 text: "Permissions changed or were not confirmed. Click Enable to review and confirm before the plugin runs.".to_string(),
                 level: "warn".to_string(),
+                window_id: None,
             });
             eprintln!(
                 "[plugin-v3] {new_id}: reload 后权限需要重新确认 [{}]",
@@ -1623,10 +1764,20 @@ impl PluginStore {
     }
 
     /// UI 运行命令：识别 → 发 supervisor → 独立线程等结果；立即返回。
+    ///
+    /// `window_id` 是发起命令的窗口；插件收到 `command.invoke.window_id` 后可用
+    /// 它把 `terminal.read/write`、`ui.render`、`ui.notify` 路由回同一窗口。
+    /// `None` 回退到宿主记录的 active window（旧调用点兼容）。
     pub fn spawn_command(&self, full_id: &str) -> bool {
+        self.spawn_command_for(full_id, None)
+    }
+
+    /// 带窗口上下文运行插件命令。
+    pub fn spawn_command_for(&self, full_id: &str, window_id: Option<u64>) -> bool {
         let Some((manifest, decl)) = self.find_command(full_id) else {
             return false;
         };
+        let window_id = window_id.or_else(|| self.active_window());
         let plugin_id = manifest.id.clone();
         let plugin_name = manifest.name.clone();
         let command_id = decl.id.clone();
@@ -1638,6 +1789,7 @@ impl PluginStore {
                 plugin_name,
                 text: message.clone(),
                 level: "error".to_string(),
+                window_id,
             });
             record_activity(&self.shared, &plugin_id, &action, "unavailable", &message);
             return true;
@@ -1649,6 +1801,7 @@ impl PluginStore {
                 plugin_name,
                 text: message.clone(),
                 level: "error".to_string(),
+                window_id,
             });
             record_activity(&self.shared, &plugin_id, &action, "unavailable", &message);
             return true;
@@ -1659,6 +1812,7 @@ impl PluginStore {
             .send(SupervisorMsg::Command {
                 command: command_id.clone(),
                 args: Vec::new(),
+                window_id,
                 reply: reply_tx,
             })
             .is_err()
@@ -1669,6 +1823,7 @@ impl PluginStore {
                 plugin_name,
                 text: message.clone(),
                 level: "error".to_string(),
+                window_id,
             });
             record_activity(&self.shared, &plugin_id, &action, "unavailable", &message);
             return true;
@@ -1702,6 +1857,7 @@ impl PluginStore {
                     plugin_name: plugin_name_for_thread,
                     text: sanitize_text(&text, 300),
                     level: if outcome.ok() { "info".to_string() } else { "error".to_string() },
+                    window_id,
                 });
                 notify_wake(&shared.wake);
             })
@@ -1783,6 +1939,19 @@ impl PluginStore {
         surface: &str,
         panel: Option<String>,
     ) -> Result<(), String> {
+        self.request_surface_for(plugin_id, surface, panel, None)
+    }
+
+    /// 带窗口上下文请求 surface；`surface.render.window_id` 会回传插件，
+    /// 返回的 `SurfaceUpdate` 也带同一 window_id。
+    pub fn request_surface_for(
+        &self,
+        plugin_id: &str,
+        surface: &str,
+        panel: Option<String>,
+        window_id: Option<u64>,
+    ) -> Result<(), String> {
+        let window_id = window_id.or_else(|| self.active_window());
         let entry = self
             .entries
             .iter()
@@ -1828,6 +1997,7 @@ impl PluginStore {
             .send(SupervisorMsg::Render {
                 surface: surface.clone(),
                 panel: panel.clone(),
+                window_id,
                 reply: reply_tx,
             })
             .map_err(|_| "插件 supervisor 已退出".to_string())?;
@@ -1854,6 +2024,8 @@ impl PluginStore {
                                 surface: surface_for_thread,
                                 panel,
                                 doc,
+                                window_id,
+                                pushed: false,
                             });
                         }
                         notify_wake(&shared.wake);
@@ -1864,6 +2036,7 @@ impl PluginStore {
                             plugin_name,
                             text: format!("UI render failed: {}", sanitize_text(&error, 300)),
                             level: "error".to_string(),
+                            window_id,
                         });
                     },
                 }
@@ -1873,11 +2046,17 @@ impl PluginStore {
     }
 
     /// UI 控件动作 -> 插件 `ui.action` notification；不等待回复。
-    pub fn send_ui_action(
+    pub fn send_ui_action(&self, plugin_id: &str, surface: &str, panel: Option<String>, element: &str, action: &str, value: Option<String>) -> bool {
+        self.send_ui_action_for(plugin_id, surface, panel, None, element, action, value)
+    }
+
+    /// 带窗口上下文发送 UI 动作；插件可据此只更新该窗口的面板。
+    pub fn send_ui_action_for(
         &self,
         plugin_id: &str,
         surface: &str,
         panel: Option<String>,
+        window_id: Option<u64>,
         element: &str,
         action: &str,
         value: Option<String>,
@@ -1893,6 +2072,7 @@ impl PluginStore {
             .send(SupervisorMsg::Action {
                 surface: surface.to_string(),
                 panel,
+                window_id: window_id.or_else(|| self.active_window()),
                 element: element.to_string(),
                 action: action.to_string(),
                 value,
@@ -1930,6 +2110,36 @@ impl PluginStore {
             .map(|entry| (entry.dir.display().to_string(), entry.reason.clone()))
             .collect()
     }
+}
+
+/// 目标窗口匹配：显式 id 必须精确命中；缺省（None）落到 active 窗口。
+///
+/// 两个窗口的轮询都会调用 `take_*_for`；不匹配的条目必须留在共享队列里。
+pub fn window_matches_target(target: Option<u64>, window_id: u64, active: Option<u64>) -> bool {
+    match target {
+        Some(id) => id == window_id,
+        None => active == Some(window_id),
+    }
+}
+
+fn take_matching<T>(
+    queue: &Arc<Mutex<VecDeque<T>>>,
+    predicate: impl Fn(&T) -> bool,
+) -> Vec<T> {
+    let Ok(mut queue) = queue.lock() else {
+        return Vec::new();
+    };
+    let mut taken = Vec::new();
+    let mut kept = VecDeque::with_capacity(queue.len());
+    for item in queue.drain(..) {
+        if predicate(&item) {
+            taken.push(item);
+        } else {
+            kept.push_back(item);
+        }
+    }
+    *queue = kept;
+    taken
 }
 
 impl Drop for PluginStore {

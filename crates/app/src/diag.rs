@@ -1442,7 +1442,14 @@ fn handle_conn(
             },
             Some(command) => {
                 if !permissions.allows_command(command) {
-                    eprintln!("[mcp] denied action={command}");
+                    let audit_window = req
+                        .get("args")
+                        .and_then(|args| args.get("window_id"))
+                        .cloned()
+                        .unwrap_or(Value::Null);
+                    eprintln!(
+                        "[mcp] denied action={command} window={audit_window}"
+                    );
                     reply_error(
                         &mut stream,
                         &id,

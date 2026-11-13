@@ -551,10 +551,46 @@ fn spawn_app_wake_bridge(rx: crossbeam_channel::Receiver<()>) {
     }
 }
 
+/// 解析 live 命令的可选 `window_id`：不传 = None（缺省 active），显式值必须
+/// 命中 WindowRegistry，否则命令失败而不是悄悄改到别的窗口。
+fn live_window_arg(args: &serde_json::Value) -> Result<Option<WindowId>, String> {
+    let value = match args.get("window_id") {
+        None | Some(serde_json::Value::Null) => return Ok(None),
+        Some(value) => value,
+    };
+    let raw = value
+        .as_u64()
+        .filter(|raw| *raw >= 1)
+        .ok_or_else(|| "window_id must be a positive integer".to_string())?;
+    let id = WindowId::new(raw);
+    let known = runtime::registry()
+        .map(|registry| registry.borrow().get(id).is_some())
+        .unwrap_or(false);
+    if !known {
+        return Err(format!("unknown window_id {raw}"));
+    }
+    Ok(Some(id))
+}
+
+fn live_target_window(args: &serde_json::Value) -> Result<WindowId, String> {
+    live_window_arg(args)?
+        .or_else(runtime::current_window)
+        .or_else(|| runtime::registry().and_then(|registry| registry.borrow().active()))
+        .ok_or_else(|| "no active window".to_string())
+}
+
+fn live_audit(cmd: &str, window: Option<WindowId>, pane: Option<u64>, bytes: usize) {
+    // Audit sink 是普通 Tervo 日志；绝不记录命令文本/token。
+    match window {
+        Some(id) => eprintln!("[mcp] action={cmd} window={id} pane={pane:?} arg_bytes={bytes}"),
+        None => eprintln!("[mcp] action={cmd} window=active pane={pane:?} arg_bytes={bytes}"),
+    }
+}
+
 /// live control socket 的写操作入口；只在 UI 线程调用。
 fn live_control(cmd: &str, args: &serde_json::Value) -> Result<serde_json::Value, String> {
-    // Audit: never log command text or secrets; only the action and bounded
-    // size/shape metadata. The normal Tervo log file is the audit sink.
+    // Audit: never log command text or secrets; only the action, target window
+    // and bounded size/shape metadata. The normal Tervo log file is the audit sink.
     let pane = args.get("pane_id").and_then(serde_json::Value::as_u64);
     let bytes = args
         .get("text")
@@ -562,54 +598,36 @@ fn live_control(cmd: &str, args: &serde_json::Value) -> Result<serde_json::Value
         .and_then(serde_json::Value::as_str)
         .map(str::len)
         .unwrap_or(0);
-    eprintln!(
-        "[mcp] action={cmd} pane={:?} arg_bytes={bytes}",
-        pane
-    );
     if cmd == "list" {
-        return live_list_windows(args);
+        let requested = live_window_arg(args)?;
+        let audit_window = requested
+            .or_else(|| runtime::registry().and_then(|registry| registry.borrow().active()));
+        live_audit(cmd, audit_window, pane, bytes);
+        return live_list_windows(args, requested);
     }
     if cmd == "new_window" {
+        live_audit(cmd, None, None, 0);
         // 默认同进程；只有显式 legacy fallback 时 MCP 也没有子进程语义，
         // 因此这里始终走 WindowRegistry（不再依赖 TERVO_MULTI_WINDOW_INPROC）。
         let id = secondary::create_inproc_window()?;
+        eprintln!("[mcp] action=new_window created window={id}");
         return Ok(serde_json::json!({"window_id": id.get()}));
     }
     if cmd == "close_window" {
-        let raw = args
-            .get("window_id")
-            .and_then(serde_json::Value::as_u64)
+        let id = live_window_arg(args)?
             .ok_or_else(|| "window_id required for close_window".to_string())?;
-        let id = WindowId::new(raw);
+        live_audit(cmd, Some(id), pane, bytes);
         if runtime::window_count() <= 1 {
             return Err("refusing to close the last window; quit the window instead".into());
         }
-        let known = runtime::registry()
-            .map(|reg| reg.borrow().get(id).is_some())
-            .unwrap_or(false);
-        if !known {
-            return Err(format!("unknown window_id {raw}"));
-        }
         close_window_now(id, "mcp-close");
-        return Ok(serde_json::json!({"window_id": raw, "remaining": runtime::window_count()}));
+        return Ok(
+            serde_json::json!({"window_id": id.get(), "remaining": runtime::window_count()}),
+        );
     }
-    let window = match args.get("window_id").and_then(serde_json::Value::as_u64) {
-        Some(raw) => {
-            let id = WindowId::new(raw);
-            if runtime::registry()
-                .map(|reg| reg.borrow().get(id).is_some())
-                .unwrap_or(false)
-            {
-                id
-            } else {
-                return Err(format!("unknown window_id {raw}"));
-            }
-        },
-        None => runtime::current_window()
-            .or_else(|| runtime::registry().and_then(|reg| reg.borrow().active()))
-            .ok_or_else(|| "no active window".to_string())?,
-    };
-    runtime::with_window(window, |st| match cmd {
+    let window = live_target_window(args)?;
+    live_audit(cmd, Some(window), pane, bytes);
+    let value = runtime::with_window(window, |st| match cmd {
         "output" => {
             let pane = args.get("pane_id").and_then(serde_json::Value::as_u64)
                 .ok_or_else(|| "pane_id required".to_string())?;
@@ -722,11 +740,27 @@ fn live_control(cmd: &str, args: &serde_json::Value) -> Result<serde_json::Value
             Ok(serde_json::json!({"pane_id":pane,"signal":"Ctrl+C"}))
         },
         _ => Err(format!("unknown control command {cmd}")),
-    }).unwrap_or_else(|| Err("app unavailable".into()))
+    })
+    .unwrap_or_else(|| Err("app unavailable".into()))?;
+    // 响应里回显实际路由到的窗口（additive；bridge 可据此校验）。
+    let mut value = value;
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "window_id".to_string(),
+            serde_json::json!(window.get()),
+        );
+    }
+    Ok(value)
 }
 
 /// MCP `list`：返回所有窗口 + 每窗口 panes；`active_window_id` 不含猜测。
-fn live_list_windows(args: &serde_json::Value) -> Result<serde_json::Value, String> {
+///
+/// `requested` 是调用方显式给的 window_id（已校验存在）；顶层 `panes` 兼容
+/// 旧 bridge，指向该窗口，缺省 active。
+fn live_list_windows(
+    _args: &serde_json::Value,
+    requested: Option<WindowId>,
+) -> Result<serde_json::Value, String> {
     let Some(registry) = runtime::registry() else {
         return Err("window registry unavailable".into());
     };
@@ -798,9 +832,8 @@ fn live_list_windows(args: &serde_json::Value) -> Result<serde_json::Value, Stri
         }));
     }
     // 兼容旧 bridge：顶层 panes = 目标窗口（显式 window_id 或 active）。
-    let target = args
-        .get("window_id")
-        .and_then(serde_json::Value::as_u64)
+    let target = requested
+        .map(|id| id.get())
         .and_then(|raw| windows.iter().find(|w| w["window_id"] == raw).cloned())
         .or_else(|| windows.iter().find(|w| w["active"] == true).cloned());
     let panes = target
@@ -1708,10 +1741,12 @@ fn open_plugin_surface(st: &mut AppState, key: &str, kind: &str) {
     st.ui.set_plugin_surface_open(true);
     st.ui.set_plugin_surface_loading(true);
     st.ui.set_plugin_surface_error("".into());
-    if let Err(error) = st
-        .plugins
-        .request_surface(&manifest.id, surface_kind, panel)
-    {
+    if let Err(error) = st.plugins.request_surface_for(
+        &manifest.id,
+        surface_kind,
+        panel,
+        Some(st.window_id.get()),
+    ) {
         st.ui.set_plugin_surface_loading(false);
         st.ui.set_plugin_surface_error(error.clone().into());
         set_status_toast(st, error);
@@ -1725,6 +1760,24 @@ fn resolve_plugin_approval(st: &mut AppState, allow: bool) {
         return;
     };
     refresh_plugin_approval_ui(st);
+    // Allow/Deny 必须由请求窗口处理；别的窗口不能代为执行 terminal/clipboard。
+    if approval
+        .window_id
+        .is_some_and(|window| window != st.window_id.get())
+    {
+        eprintln!(
+            "[plugin-v3] {}: 忽略 {} 的 ask（请求窗口 {:?}，当前 {}）",
+            approval.plugin_id, approval.method, approval.window_id, st.window_id
+        );
+        st.plugins.resolve_host_request(
+            &approval.plugin_id,
+            approval.request_id,
+            plugin_v3::HostOutcome::Unavailable(
+                "approval belongs to another window".to_string(),
+            ),
+        );
+        return;
+    }
     let params = approval.params.clone();
     // stale ask：插件已停止/已撤销/已超时，绝不执行 terminal/clipboard 副作用。
     let still_pending = st
@@ -1760,7 +1813,19 @@ fn resolve_plugin_approval(st: &mut AppState, allow: bool) {
     }
     let outcome = match approval.method.as_str() {
         "terminal.read" => match plugin_terminal_tail(st, &params) {
-            Ok(value) => plugin_v3::HostOutcome::Ok(value),
+            Ok(value) => {
+                eprintln!(
+                    "[plugin-v3] {}: terminal.read applied window={} bytes={}",
+                    approval.plugin_id,
+                    st.window_id,
+                    value
+                        .get("text")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::len)
+                        .unwrap_or(0)
+                );
+                plugin_v3::HostOutcome::Ok(value)
+            },
             Err(error) => plugin_v3::HostOutcome::Unavailable(error),
         },
         "terminal.write" => {
@@ -1786,8 +1851,9 @@ fn resolve_plugin_approval(st: &mut AppState, allow: bool) {
             };
             runtime.handle.input(text.as_bytes());
             eprintln!(
-                "[plugin-v3] {}: terminal.write applied bytes={}",
+                "[plugin-v3] {}: terminal.write applied window={} bytes={}",
                 approval.plugin_id,
+                st.window_id,
                 text.len()
             );
             plugin_v3::HostOutcome::Ok(serde_json::json!({}))
@@ -1900,11 +1966,17 @@ fn refresh_plugin_activity(st: &mut AppState, force: bool) {
 fn refresh_plugin_ui(st: &mut AppState) {
     // context.config_metadata 只包含这些非敏感字段；不读取环境变量/Vault。
     sync_plugin_config_metadata(st);
+    // supervisor 解析“缺省 window_id=active”用；registry 不在时保持上次值。
+    let active_window = runtime::registry()
+        .and_then(|registry| registry.borrow().active())
+        .map(|id| id.get());
+    st.plugins.set_active_window(active_window);
+    let window_id = st.window_id.get();
     // 活动列表按 revision 增量刷新（后台线程 push 后唤醒）。
     refresh_plugin_activity(st, false);
 
-    // 命令结果 / 插件 ui.notify：浮层显示最新一条；完整内容在活动日志。
-    let notices = st.plugins.take_notices();
+    // 命令结果 / 插件 ui.notify：只取目标窗口；其它窗口的留在队列里。
+    let notices = st.plugins.take_notices_for(window_id, active_window);
     if let Some(last) = notices.last() {
         let prefix = match last.level.as_str() {
             "error" => "error: ",
@@ -1920,11 +1992,18 @@ fn refresh_plugin_ui(st: &mut AppState) {
             st.ui
                 .set_plugin_surface_error(msg.clone().into());
         }
+        eprintln!(
+            "[plugin-v3] notice window={} plugin={} level={} chars={}",
+            st.window_id,
+            last.plugin_id,
+            last.level,
+            last.text.chars().count()
+        );
         set_status_toast(st, msg);
     }
 
-    // 状态栏：多个插件用 " · " 合并；只保留第一条可点击命令。
-    let (status_rev, items) = st.plugins.status_snapshot();
+    // 状态栏：只显示全局状态 + 本窗口专属 ui.status。
+    let (status_rev, items) = st.plugins.status_snapshot_for_window(window_id);
     if status_rev != st.plugin_status_revision {
         st.plugin_status_revision = status_rev;
         let text = items
@@ -1940,6 +2019,12 @@ fn refresh_plugin_ui(st: &mut AppState) {
         st.plugin_status_command = items
             .iter()
             .find_map(|item| item.command.clone());
+        if !text.is_empty() {
+            eprintln!(
+                "[plugin-v3] status window={} text={:?}",
+                st.window_id, text
+            );
+        }
         st.ui.set_plugin_status(text.as_str().into());
         st.ui.set_plugin_status_tooltip(tooltip.as_str().into());
     }
@@ -1961,8 +2046,10 @@ fn refresh_plugin_ui(st: &mut AppState) {
         }
     }
 
-    // 声明式 surface 更新：只接受当前打开的那个 (plugin, surface)。
-    for update in st.plugins.take_surfaces() {
+    // 声明式 surface 更新：两级 key 是 (window_id, surface)；只接受本窗口
+    // 且当前打开的那个 (plugin, surface)。插件 push 到没有打开 surface 的
+    // 显式目标窗口时，在该窗口显示（不会覆盖别的窗口）。
+    for update in st.plugins.take_surfaces_for(window_id, active_window) {
         let matches = st.plugin_surface.as_ref().is_some_and(|surface| {
             surface.plugin_id == update.plugin_id && surface.surface == update.surface
         });
@@ -1973,11 +2060,33 @@ fn refresh_plugin_ui(st: &mut AppState) {
                 surface.plugin_name = update.plugin_name;
             }
             update_plugin_surface_model(st);
+            continue;
+        }
+        if update.pushed
+            && update.window_id == Some(window_id)
+            && st.plugin_surface.is_none()
+        {
+            eprintln!(
+                "[plugin-v3] {} surface={} window={} opened by ui.render",
+                update.plugin_id, update.surface, st.window_id
+            );
+            st.plugin_surface = Some(PluginSurfaceState {
+                plugin_id: update.plugin_id,
+                plugin_name: update.plugin_name,
+                surface: update.surface,
+                panel: update.panel,
+                doc: update.doc,
+            });
+            st.ui.set_plugin_surface_loading(false);
+            st.ui.set_plugin_surface_error("".into());
+            update_plugin_surface_model(st);
         }
     }
 
-    // terminal/clipboard ask：一次展示一个；UI 不在时 supervisor 端也会超时。
-    let approvals = st.plugins.pending_approvals();
+    // terminal/clipboard ask：只展示本窗口的请求；Allow/Deny 路由回同一窗口。
+    let approvals = st
+        .plugins
+        .pending_approvals_for(window_id, active_window);
     if let Some(current) = &st.plugin_approval {
         let still_pending = approvals.iter().any(|approval| {
             approval.plugin_id == current.plugin_id
@@ -1992,6 +2101,10 @@ fn refresh_plugin_ui(st: &mut AppState) {
             .into_iter()
             .find(|approval| approval.seconds_left() > 0)
         {
+            eprintln!(
+                "[plugin-v3] {}: ask {} shown in window={window_id}",
+                approval.plugin_id, approval.method
+            );
             st.plugin_approval = Some(approval);
         }
     }
@@ -2163,10 +2276,11 @@ fn plugin_surface_action(st: &mut AppState, element_id: &str) {
     let plugin_id = surface.plugin_id.clone();
     let surface_kind = surface.surface.clone();
     let panel = surface.panel.clone();
-    st.plugins.send_ui_action(
+    st.plugins.send_ui_action_for(
         &plugin_id,
         &surface_kind,
         panel,
+        Some(st.window_id.get()),
         element_id,
         action,
         value,
@@ -2195,10 +2309,11 @@ fn plugin_surface_input(st: &mut AppState, element_id: &str, value: String) {
     let plugin_id = surface.plugin_id.clone();
     let surface_kind = surface.surface.clone();
     let panel = surface.panel.clone();
-    st.plugins.send_ui_action(
+    st.plugins.send_ui_action_for(
         &plugin_id,
         &surface_kind,
         panel,
+        Some(st.window_id.get()),
         element_id,
         "change",
         Some(value),
@@ -6427,6 +6542,7 @@ fn close_window_now(id: WindowId, reason: &str) {
         let _ = slint::quit_event_loop();
         return;
     }
+    // remove_window 会清理插件的 per-window surface/status/ask（窗口 id 不复用）。
     let Some(window_runtime) = runtime::remove_window(id) else {
         return;
     };
@@ -9522,7 +9638,11 @@ fn open_palette(st: &mut AppState) {
     st.ui.set_palette_query("".into());
     st.ui.set_palette_open(true);
     refresh_palette(st);
-    eprintln!("[ui] palette open items={}", st.palette_ids.len());
+    eprintln!(
+        "[ui] palette open window={} items={}",
+        st.window_id,
+        st.palette_ids.len()
+    );
 }
 
 fn palette_move(st: &mut AppState, delta: i32) {
@@ -9541,7 +9661,7 @@ fn palette_accept(st: &mut AppState) {
     let id = st.palette_ids.get(idx).cloned();
     st.ui.set_palette_open(false);
     if let Some(id) = id {
-        eprintln!("[ui] run command {id}");
+        eprintln!("[ui] run command {id} window={}", st.window_id);
         run_command(st, &id);
     }
 }
@@ -9625,8 +9745,11 @@ fn run_command(st: &mut AppState, id: &str) {
         other => {
             // 插件命令统一走 unknown 分支：spawn_command 只接受已启用插件声明的完整 ID，
             // 在后台线程执行，UI 线程立即返回。
-            if st.plugins.spawn_command(other) {
-                eprintln!("[plugin] 已提交后台执行 {other}");
+            if st
+                .plugins
+                .spawn_command_for(other, Some(st.window_id.get()))
+            {
+                eprintln!("[plugin] 已提交后台执行 {other} window={}", st.window_id);
             } else {
                 eprintln!("[ui] 未知命令 {other}");
             }

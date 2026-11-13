@@ -171,11 +171,15 @@ pub enum SupervisorMsg {
     Command {
         command: String,
         args: Vec<String>,
+        /// 发起命令的窗口；写入 `command.invoke.window_id`。
+        window_id: Option<u64>,
         reply: Sender<CommandOutcome>,
     },
     Render {
         surface: String,
         panel: Option<String>,
+        /// 打开 surface 的窗口；写入 `surface.render.window_id`。
+        window_id: Option<u64>,
         reply: Sender<Result<SurfaceDoc, String>>,
     },
     Event {
@@ -185,6 +189,8 @@ pub enum SupervisorMsg {
     Action {
         surface: String,
         panel: Option<String>,
+        /// 发起动作的窗口；写入 `ui.action.window_id`。
+        window_id: Option<u64>,
         element: String,
         action: String,
         value: Option<String>,
@@ -212,7 +218,8 @@ pub enum HostOutcome {
 pub struct SupervisorShared {
     pub activity: Arc<Mutex<ActivityLog>>,
     pub notices: Arc<Mutex<VecDeque<Notice>>>,
-    pub statuses: Arc<Mutex<HashMap<String, StatusPayload>>>,
+    /// key = (plugin_id, window_id)；window_id=None 表示全局状态。
+    pub statuses: Arc<Mutex<HashMap<(String, Option<u64>), StatusPayload>>>,
     pub surfaces: Arc<Mutex<VecDeque<SurfaceUpdate>>>,
     pub approvals: Arc<Mutex<VecDeque<ApprovalRequest>>>,
     pub host: Arc<Mutex<HostSnapshot>>,
@@ -300,8 +307,9 @@ struct Pending {
 struct PendingHost {
     rpc_id: RpcId,
     deadline: Instant,
-    #[allow(dead_code)]
     method: String,
+    /// 该 ask 的目标窗口；同一窗口同方法只允许一个未决 ask（多窗口可并行）。
+    window_id: Option<u64>,
 }
 
 enum ReaderEvent {
@@ -316,6 +324,7 @@ struct ApprovalDraft {
     summary: String,
     details: String,
     params: Value,
+    window_id: Option<u64>,
 }
 
 // ---------------------------------------------------------------- 启动/主循环
@@ -741,7 +750,7 @@ fn run_instance(
                         *config = *new_config;
                         break InstanceExit::Reload;
                     },
-                    Ok(SupervisorMsg::Command { command, args, reply }) => {
+                    Ok(SupervisorMsg::Command { command, args, window_id, reply }) => {
                         if !initialized || shutting_down.is_some() {
                             let _ = reply.send(CommandOutcome::Unavailable(
                                 "插件尚未就绪或正在关闭".to_string(),
@@ -752,9 +761,11 @@ fn run_instance(
                         let params = json!({
                             "command": command,
                             "args": args,
+                            "window_id": window_id,
                             "context": {
                                 "host_version": env!("CARGO_PKG_VERSION"),
                                 "api": super::manifest::PLUGIN_API_VERSION,
+                                "window_id": window_id,
                             },
                         });
                         if let Err(e) = send_json(
@@ -785,10 +796,11 @@ fn run_instance(
                             break InstanceExit::Crash;
                         }
                     },
-                    Ok(SupervisorMsg::Action { surface, panel, element, action, value }) => {
+                    Ok(SupervisorMsg::Action { surface, panel, window_id, element, action, value }) => {
                         if !initialized || shutting_down.is_some() { continue; }
                         let mut params = json!({
                             "surface": surface,
+                            "window_id": window_id,
                             "element": element,
                             "action": action,
                         });
@@ -802,13 +814,13 @@ fn run_instance(
                             break InstanceExit::Crash;
                         }
                     },
-                    Ok(SupervisorMsg::Render { surface, panel, reply }) => {
+                    Ok(SupervisorMsg::Render { surface, panel, window_id, reply }) => {
                         if !initialized || shutting_down.is_some() {
                             let _ = reply.send(Err("插件尚未就绪或正在关闭".to_string()));
                             continue;
                         }
                         let id = next_request_id(&next_id);
-                        let mut params = json!({ "surface": surface });
+                        let mut params = json!({ "surface": surface, "window_id": window_id });
                         if let Some(panel) = panel.clone() { params["panel"] = json!(panel); }
                         if let Err(e) = send_json(
                             &mut writer,
@@ -939,7 +951,8 @@ fn run_instance(
                                         match result.as_ref().map(parse_status_payload) {
                                             Some(Ok(status)) => {
                                                 status_failures = 0;
-                                                publish_status(shared, &config.id, Some(status));
+                                                let window = status.window_id;
+                                                publish_status(shared, &config.id, window, Some(status));
                                             },
                                             Some(Err(e)) => {
                                                 eprintln!("[plugin-v3] {}: status.get 结果非法: {e}", config.id);
@@ -1191,7 +1204,7 @@ fn run_instance(
             options.max_line_bytes,
         );
     }
-    publish_status(shared, &config.id, None);
+    clear_plugin_status(shared, &config.id);
     kill_child(&mut child);
     let tail = stderr_tail.lock().map(|tail| tail.clone()).unwrap_or_default();
     if !tail.trim().is_empty() {
@@ -1287,6 +1300,17 @@ fn handle_host_request(
             "插件尚未完成 initialize/initialized",
         );
     }
+    // additive：任何插件 -> 宿主方法都可带 window_id；缺省回退 active。
+    // 显式 id 是否存在由 UI 线程校验（supervisor 线程不持有 WindowRegistry）。
+    let window_id = match protocol::parse_window_id(params) {
+        Ok(raw) => resolve_window_id(shared, raw),
+        Err(error) => {
+            return HostRequestAction::Respond(protocol::error(
+                &rpc_id,
+                &RpcError::new(error_code::INVALID_PARAMS, format!("{method}.{error}")),
+            ))
+        },
+    };
     match method {
         protocol::M_UI_NOTIFY => {
             let payload = match parse_notify_payload(params) {
@@ -1309,8 +1333,15 @@ fn handle_host_request(
                 plugin_name: config.name.clone(),
                 text: payload.text.clone(),
                 level: payload.level,
+                window_id,
             });
-            record_activity(shared, &config.id, "ui.notify", "ok", &payload.text);
+            record_activity(
+                shared,
+                &config.id,
+                "ui.notify",
+                "ok",
+                &format!("window={window_id:?} {}", payload.text),
+            );
             HostRequestAction::Respond(protocol::result(&rpc_id, json!({})))
         },
         protocol::M_UI_STATUS => {
@@ -1340,7 +1371,14 @@ fn handle_host_request(
                     ));
                 }
             }
-            publish_status(shared, &config.id, Some(status));
+            publish_status(shared, &config.id, window_id, Some(status));
+            record_activity(
+                shared,
+                &config.id,
+                "ui.status",
+                "ok",
+                &format!("window={window_id:?}"),
+            );
             HostRequestAction::Respond(protocol::result(&rpc_id, json!({})))
         },
         protocol::M_UI_RENDER => {
@@ -1404,10 +1442,23 @@ fn handle_host_request(
                 SurfaceUpdate {
                     plugin_id: config.id.clone(),
                     plugin_name: config.name.clone(),
-                    surface,
-                    panel,
+                    surface: surface.clone(),
+                    panel: panel.clone(),
                     doc,
+                    window_id,
+                    pushed: true,
                 },
+            );
+            record_activity(
+                shared,
+                &config.id,
+                "ui.render",
+                "ok",
+                &format!("window={window_id:?} surface={surface}"),
+            );
+            eprintln!(
+                "[plugin-v3] {}: ui.render window={window_id:?} surface={surface} panel={panel:?}",
+                config.id
             );
             HostRequestAction::Respond(protocol::result(&rpc_id, json!({"accepted": true})))
         },
@@ -1441,10 +1492,13 @@ fn handle_host_request(
                 );
             }
             let limits = parse_terminal_read_params(params);
-            if pending_host.values().any(|p| p.method == protocol::M_TERMINAL_READ) {
+            if pending_host
+                .values()
+                .any(|p| p.method == protocol::M_TERMINAL_READ && p.window_id == window_id)
+            {
                 return HostRequestAction::Respond(protocol::error(
                     &rpc_id,
-                    &RpcError::new(error_code::RATE_LIMITED, "已有 terminal.read 等待确认"),
+                    &RpcError::new(error_code::RATE_LIMITED, "该窗口已有 terminal.read 等待确认"),
                 ));
             }
             let draft = ApprovalDraft {
@@ -1458,6 +1512,7 @@ fn handle_host_request(
                     "max_lines": limits.max_lines,
                     "max_bytes": limits.max_bytes,
                 }),
+                window_id,
             };
             queue_approval(
                 shared,
@@ -1490,6 +1545,7 @@ fn handle_host_request(
                 summary: format!("Write {} bytes to the focused terminal", text.len()),
                 details: format!("Preview (control characters escaped): {}", escape_preview(&text, 300)),
                 params: json!({ "text": text }),
+                window_id,
             };
             queue_approval(shared, config, id_num, rpc_id, pending_host, options, draft)
         },
@@ -1505,6 +1561,7 @@ fn handle_host_request(
                 summary: "Read the system clipboard".to_string(),
                 details: "The host returns clipboard text only; images are not exposed.".to_string(),
                 params: json!({}),
+                window_id,
             };
             queue_approval(shared, config, id_num, rpc_id, pending_host, options, draft)
         },
@@ -1529,6 +1586,7 @@ fn handle_host_request(
                 summary: format!("Write {} characters to the system clipboard", text.chars().count()),
                 details: format!("Preview (control characters escaped): {}", escape_preview(&text, 300)),
                 params: json!({ "text": text }),
+                window_id,
             };
             queue_approval(shared, config, id_num, rpc_id, pending_host, options, draft)
         },
@@ -1568,12 +1626,21 @@ fn queue_approval(
         details: draft.details,
         params: draft.params,
         deadline: now + options.approval_timeout,
+        window_id: draft.window_id,
     };
+    eprintln!(
+        "[plugin-v3] {}: ask {} window={:?} request={id_num}",
+        config.id,
+        draft.method,
+        draft.window_id
+    );
     let queued = {
         match shared.approvals.lock() {
             Ok(mut approvals) => {
                 if approvals.iter().any(|a| {
-                    a.plugin_id == config.id && a.method == request.method
+                    a.plugin_id == config.id
+                        && a.method == request.method
+                        && a.window_id == request.window_id
                 }) || approvals.len() >= 16 {
                     false
                 } else {
@@ -1601,6 +1668,7 @@ fn queue_approval(
         rpc_id,
         deadline: request.deadline,
         method: request.method,
+        window_id: request.window_id,
     });
     super::notify_wake(&shared.wake);
     HostRequestAction::Pending
@@ -1621,6 +1689,7 @@ fn handle_host_notification(
     shared: &SupervisorShared,
     notify_window: &mut VecDeque<Instant>,
 ) -> Result<(), String> {
+    let window_id = resolve_window_id(shared, protocol::parse_window_id(params)?);
     match method {
         protocol::M_UI_NOTIFY => {
             let payload = parse_notify_payload(params)?;
@@ -1632,6 +1701,7 @@ fn handle_host_notification(
                 plugin_name: config.name.clone(),
                 text: payload.text,
                 level: payload.level,
+                window_id,
             });
             Ok(())
         },
@@ -1645,7 +1715,7 @@ fn handle_host_notification(
                     return Err(format!("status.command {command:?} 未声明"));
                 }
             }
-            publish_status(shared, &config.id, Some(status));
+            publish_status(shared, &config.id, window_id, Some(status));
             Ok(())
         },
         protocol::M_UI_RENDER => Err("ui.render 必须用 request（带 id）发送".to_string()),
@@ -1709,19 +1779,55 @@ fn escape_preview(text: &str, max: usize) -> String {
 
 // ---------------------------------------------------------------- 共享状态发布
 
-fn publish_status(shared: &SupervisorShared, plugin_id: &str, status: Option<StatusPayload>) {
+/// 插件进程退出/重启：清掉它在所有窗口的 status，避免陈旧窗口状态一直显示。
+fn clear_plugin_status(shared: &SupervisorShared, plugin_id: &str) {
     let changed = match shared.statuses.lock() {
         Ok(mut statuses) => {
-            let previous = statuses.get(plugin_id).cloned();
+            let before = statuses.len();
+            statuses.retain(|(id, _), _| id != plugin_id);
+            statuses.len() != before
+        },
+        Err(_) => false,
+    };
+    if changed {
+        shared.status_revision.fetch_add(1, Ordering::SeqCst);
+        super::notify_wake(&shared.wake);
+    }
+}
+
+/// 缺省 window_id = UI 线程维护的 active window。
+fn resolve_window_id(shared: &SupervisorShared, raw: Option<u64>) -> Option<u64> {
+    raw.or_else(|| {
+        shared
+            .host
+            .lock()
+            .ok()
+            .and_then(|host| host.active_window_id)
+    })
+}
+
+/// 状态 key 是 `(plugin_id, window_id)`：`None` = 全局（status.get 轮询），
+/// `Some(id)` = 该窗口专属 ui.status。
+fn publish_status(
+    shared: &SupervisorShared,
+    plugin_id: &str,
+    window_id: Option<u64>,
+    status: Option<StatusPayload>,
+) {
+    let key = (plugin_id.to_string(), window_id);
+    let changed = match shared.statuses.lock() {
+        Ok(mut statuses) => {
+            let previous = statuses.get(&key).cloned();
             match status {
-                Some(status) => {
-                    statuses.insert(plugin_id.to_string(), status);
+                Some(mut status) => {
+                    status.window_id = window_id;
+                    statuses.insert(key.clone(), status);
                 },
                 None => {
-                    statuses.remove(plugin_id);
+                    statuses.remove(&key);
                 },
             }
-            previous != statuses.get(plugin_id).cloned()
+            previous != statuses.get(&key).cloned()
         },
         Err(_) => false,
     };

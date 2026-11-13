@@ -62,7 +62,11 @@ const COMMANDS: &[&str] = &[
     "badjson",
     "longline",
     "terminal-read",
+    "terminal-read-window",
     "terminal-write",
+    "notify-window",
+    "status-window",
+    "panel-window",
     "clipboard-read",
     "push-status",
     "context",
@@ -143,14 +147,23 @@ def handle_response(msg):
     pending = _pending.pop(msg.get("id"), None)
     if pending is None:
         return
-    kind, command_id = pending
+    kind, command_id, window = pending
     if "error" in msg:
         error = msg["error"]
         respond(command_id, {"ok": False, "message": "%s: %s" % (kind, error.get("message", "error"))})
     else:
         result = msg.get("result") or {}
         if kind == "terminal.read":
-            respond(command_id, {"ok": True, "message": "READ:" + str(result.get("text", ""))})
+            text = str(result.get("text", ""))
+            if window is not None:
+                send({"jsonrpc": "2.0", "method": "ui.notify", "params": {
+                    "text": "READWIN[%s]:%s" % (window, text),
+                    "level": "info",
+                    "window_id": window,
+                }})
+                respond(command_id, {"ok": True, "message": "READWIN[%s]" % window})
+            else:
+                respond(command_id, {"ok": True, "message": "READ:" + text})
         elif kind == "context.version":
             respond(command_id, {"ok": True, "message": "HOST:" + str(result.get("host_version"))})
         elif kind == "clipboard.read":
@@ -170,6 +183,7 @@ def handle(msg):
         pass
     elif method == "command.invoke":
         command = params.get("command")
+        window = params.get("window_id")
         if command == "greet":
             respond(rid, {"ok": True, "message": "hello-v3"})
         elif command == "slow":
@@ -183,19 +197,47 @@ def handle(msg):
             sys.stdout.flush()
         elif command == "terminal-read":
             pending = request("terminal.read", {"max_lines": 5, "max_bytes": 4096})
-            _pending[pending] = ("terminal.read", rid)
+            _pending[pending] = ("terminal.read", rid, None)
+        elif command == "terminal-read-window":
+            body = {"max_lines": 5, "max_bytes": 4096}
+            if window is not None:
+                body["window_id"] = window
+            pending = request("terminal.read", body)
+            _pending[pending] = ("terminal.read", rid, window)
         elif command == "terminal-write":
-            pending = request("terminal.write", {"text": "echo hello\n"})
-            _pending[pending] = ("terminal.write", rid)
+            body = {"text": "echo hello\n"}
+            if window is not None:
+                body["window_id"] = window
+            pending = request("terminal.write", body)
+            _pending[pending] = ("terminal.write", rid, window)
         elif command == "clipboard-read":
             pending = request("clipboard.read", {})
-            _pending[pending] = ("clipboard.read", rid)
+            _pending[pending] = ("clipboard.read", rid, None)
         elif command == "context":
             pending = request("context.version", {})
-            _pending[pending] = ("context.version", rid)
+            _pending[pending] = ("context.version", rid, None)
         elif command == "notify":
             send({"jsonrpc": "2.0", "method": "ui.notify", "params": {"text": "plugin-notify", "level": "info"}})
             respond(rid, {"ok": True, "message": "notified"})
+        elif command == "notify-window":
+            body = {"text": "notify-window", "level": "info"}
+            if window is not None:
+                body["window_id"] = window
+            send({"jsonrpc": "2.0", "method": "ui.notify", "params": body})
+            respond(rid, {"ok": True, "message": "notified-window"})
+        elif command == "status-window":
+            body = {"text": "status-window-%s" % window, "command": "greet"}
+            if window is not None:
+                body["window_id"] = window
+            send({"jsonrpc": "2.0", "method": "ui.status", "params": body})
+            respond(rid, {"ok": True, "message": "status-window"})
+        elif command == "panel-window":
+            elements = [{"type": "text", "text": "panel-window-%s" % window}]
+            body = {"surface": "panel", "panel": "main", "title": "PANEL[%s]" % window, "elements": elements}
+            if window is not None:
+                body["window_id"] = window
+            pending = request("ui.render", body)
+            _pending[pending] = ("ui.render", rid, window)
         elif command == "push-status":
             send({"jsonrpc": "2.0", "method": "ui.status", "params": {"text": "pushed-status", "command": "greet"}})
             respond(rid, {"ok": True, "message": "status pushed"})
@@ -210,10 +252,10 @@ def handle(msg):
                 {"type": "progress", "label": "P", "value": 0.5},
             ]
             pending = request("ui.render", {"surface": "panel", "panel": "main", "title": "Test panel", "elements": elements})
-            _pending[pending] = ("ui.render", rid)
+            _pending[pending] = ("ui.render", rid, None)
         elif command == "credentials":
             pending = request("credentials.get", {})
-            _pending[pending] = ("credentials.get", rid)
+            _pending[pending] = ("credentials.get", rid, None)
         else:
             respond(rid, {"ok": False, "message": "unknown command"})
     elif method == "status.get":
@@ -1412,6 +1454,295 @@ fn wasm_reload_and_broken_module_error_are_reported_without_crash() {
     assert_eq!(row_of(&store, "dev.tervo.wasm-filter").status, "running");
     assert!(store.active_wasm_filters().contains(&"dev.tervo.wasm-filter".to_string()));
 
+    store.shutdown_processes();
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[cfg(unix)]
+#[test]
+fn window_id_routes_commands_reads_surfaces_status_and_cleanup() {
+    let root = tmpdir("window-routing");
+    install_plugin(
+        &root,
+        "plugin",
+        &manifest("dev.test.window", "1.0.0", true, false, true),
+        0.0,
+    );
+    let state = root.join("state.toml");
+    let mut store = load(&root, &state, fast_options());
+    enable(&mut store, "dev.test.window");
+    assert!(wait_phase(
+        &store,
+        "dev.test.window",
+        Phase::Running,
+        Duration::from_secs(3)
+    ));
+    let pid = store
+        .runtime_info("dev.test.window")
+        .and_then(|info| info.pid)
+        .expect("plugin pid");
+    store.set_active_window(Some(1));
+
+    // ---- window 1: command.invoke.window_id -> terminal.read ask 记录窗口
+    assert!(store.spawn_command_for(
+        "plugin.dev.test.window.terminal-read-window",
+        Some(1)
+    ));
+    assert!(wait_until(
+        || store
+            .pending_approvals_for(1, Some(1))
+            .iter()
+            .any(|approval| approval.window_id == Some(1)),
+        Duration::from_secs(3)
+    ));
+    assert!(
+        store.pending_approvals_for(2, Some(1)).is_empty(),
+        "window 2 must not see window 1's ask"
+    );
+    let approval = store.pending_approvals_for(1, Some(1)).remove(0);
+    assert_eq!(approval.method, "terminal.read");
+    assert!(store.resolve_host_request(
+        "dev.test.window",
+        approval.request_id,
+        HostOutcome::Ok(json!({"text": "tail-A"})),
+    ));
+    assert!(wait_until(
+        || store
+            .take_notices_for(1, Some(1))
+            .iter()
+            .any(|notice| notice.text.contains("READWIN[1]:tail-A")),
+        Duration::from_secs(3)
+    ));
+    assert!(
+        store.take_notices_for(2, Some(1)).is_empty(),
+        "window 1 notification must not leak into window 2"
+    );
+
+    // ---- window 2: 同一插件进程，显式 window_id 路由到另一个窗口
+    assert!(store.spawn_command_for(
+        "plugin.dev.test.window.terminal-read-window",
+        Some(2)
+    ));
+    assert!(wait_until(
+        || store
+            .pending_approvals_for(2, Some(1))
+            .iter()
+            .any(|approval| approval.window_id == Some(2)),
+        Duration::from_secs(3)
+    ));
+    assert!(store.pending_approvals_for(1, Some(1)).is_empty());
+    let approval = store.pending_approvals_for(2, Some(1)).remove(0);
+    assert!(store.resolve_host_request(
+        "dev.test.window",
+        approval.request_id,
+        HostOutcome::Ok(json!({"text": "tail-B"})),
+    ));
+    assert!(wait_until(
+        || store
+            .take_notices_for(2, Some(1))
+            .iter()
+            .any(|notice| notice.text.contains("READWIN[2]:tail-B")),
+        Duration::from_secs(3)
+    ));
+    assert!(store.take_notices_for(1, Some(1)).is_empty());
+    assert_eq!(
+        store.runtime_info("dev.test.window").unwrap().pid,
+        Some(pid),
+        "two windows must share one plugin process"
+    );
+
+    // ---- 宿主请求 surface：只回到请求窗口
+    store
+        .request_surface_for(
+            "dev.test.window",
+            "panel",
+            Some("main".to_string()),
+            Some(1),
+        )
+        .unwrap();
+    let window1_surfaces = wait_for_surfaces(&store, 1, Some(1));
+    assert!(
+        window1_surfaces.iter().any(|surface| {
+            surface.window_id == Some(1) && surface.surface == "panel:main"
+        }),
+        "{window1_surfaces:?}"
+    );
+    assert!(store.take_surfaces_for(2, Some(1)).is_empty());
+
+    // ---- 插件主动 ui.render：显式 window_id=2，不覆盖 window 1
+    assert!(store.spawn_command_for(
+        "plugin.dev.test.window.panel-window",
+        Some(2)
+    ));
+    let window2_surfaces = wait_for_surfaces(&store, 2, Some(1));
+    let pushed = window2_surfaces
+        .iter()
+        .find(|surface| surface.window_id == Some(2))
+        .expect("pushed surface for window 2");
+    assert!(pushed.pushed, "plugin push must be marked pushed");
+    assert_eq!(pushed.doc.title, "PANEL[2]");
+    assert!(store.take_surfaces_for(1, Some(1)).is_empty());
+
+    // ---- ui.status 按窗口；status.get 的全局状态仍对两个窗口可见
+    assert!(store.spawn_command_for(
+        "plugin.dev.test.window.status-window",
+        Some(1)
+    ));
+    assert!(wait_until(
+        || store
+            .status_snapshot_for_window(1)
+            .1
+            .iter()
+            .any(|status| status.text == "status-window-1"),
+        Duration::from_secs(3)
+    ));
+    assert!(
+        !store
+            .status_snapshot_for_window(2)
+            .1
+            .iter()
+            .any(|status| status.text == "status-window-1"),
+        "window 1 status must not appear in window 2"
+    );
+    assert!(store
+        .status_snapshot_for_window(2)
+        .1
+        .iter()
+        .any(|status| status.text == "status-ready"));
+
+    // ---- 关闭窗口 2：清理它的 surface/status/ask
+    assert!(store.spawn_command_for(
+        "plugin.dev.test.window.panel-window",
+        Some(2)
+    ));
+    let _ = wait_for_surfaces(&store, 2, Some(1));
+    assert!(store.spawn_command_for(
+        "plugin.dev.test.window.terminal-read-window",
+        Some(2)
+    ));
+    assert!(wait_until(
+        || !store.pending_approvals_for(2, Some(1)).is_empty(),
+        Duration::from_secs(3)
+    ));
+    let cancelled = store.forget_window(2);
+    assert_eq!(cancelled, 1, "pending ask for the closed window is cancelled");
+    assert!(store.pending_approvals_for(2, Some(1)).is_empty());
+    assert!(store.take_surfaces_for(2, Some(1)).is_empty());
+    assert!(!store
+        .status_snapshot_for_window(2)
+        .1
+        .iter()
+        .any(|status| status.text.starts_with("status-window-")));
+    // 全局 status.get 不受窗口关闭影响
+    assert!(store
+        .status_snapshot_for_window(1)
+        .1
+        .iter()
+        .any(|status| status.text.starts_with("status-window-1")));
+    assert_eq!(store.phase("dev.test.window"), Some(Phase::Running));
+    store.shutdown_processes();
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[cfg(unix)]
+fn wait_for_surfaces(
+    store: &PluginStore,
+    window_id: u64,
+    active: Option<u64>,
+) -> Vec<SurfaceUpdate> {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut all = Vec::new();
+    while Instant::now() < deadline {
+        all.extend(store.take_surfaces_for(window_id, active));
+        if !all.is_empty() {
+            return all;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    all
+}
+
+#[test]
+fn window_target_matching_is_exact_for_explicit_ids() {
+    assert!(window_matches_target(Some(2), 2, Some(1)));
+    assert!(!window_matches_target(Some(2), 1, Some(1)));
+    assert!(window_matches_target(None, 1, Some(1)));
+    assert!(!window_matches_target(None, 2, Some(1)));
+}
+
+#[cfg(unix)]
+#[test]
+fn concurrent_asks_route_back_to_their_own_window() {
+    let root = tmpdir("window-asks");
+    install_plugin(
+        &root,
+        "plugin",
+        &manifest("dev.test.asks", "1.0.0", true, false, false),
+        0.0,
+    );
+    let state = root.join("state.toml");
+    let mut store = load(&root, &state, fast_options());
+    enable(&mut store, "dev.test.asks");
+    assert!(wait_phase(
+        &store,
+        "dev.test.asks",
+        Phase::Running,
+        Duration::from_secs(3)
+    ));
+    store.set_active_window(Some(1));
+    assert!(store.spawn_command_for(
+        "plugin.dev.test.asks.terminal-read-window",
+        Some(1)
+    ));
+    assert!(store.spawn_command_for(
+        "plugin.dev.test.asks.terminal-read-window",
+        Some(2)
+    ));
+    assert!(wait_until(
+        || {
+            !store.pending_approvals_for(1, Some(1)).is_empty()
+                && !store.pending_approvals_for(2, Some(1)).is_empty()
+        },
+        Duration::from_secs(3)
+    ));
+    assert_eq!(store.pending_approvals().len(), 2);
+    let ask1 = store.pending_approvals_for(1, Some(1)).remove(0);
+    let ask2 = store.pending_approvals_for(2, Some(1)).remove(0);
+    assert_eq!(ask1.window_id, Some(1));
+    assert_eq!(ask2.window_id, Some(2));
+    assert_ne!(ask1.request_id, ask2.request_id);
+    assert_eq!(
+        store.pending_approvals_for(1, Some(1))[0].request_id,
+        ask1.request_id
+    );
+
+    // 先回复 window 2，再回复 window 1：回复只回到各自请求。
+    assert!(store.resolve_host_request(
+        "dev.test.asks",
+        ask2.request_id,
+        HostOutcome::Ok(json!({"text": "tail-two"})),
+    ));
+    assert!(wait_until(
+        || store
+            .take_notices_for(2, Some(1))
+            .iter()
+            .any(|notice| notice.text.contains("READWIN[2]:tail-two")),
+        Duration::from_secs(3)
+    ));
+    assert!(store.take_notices_for(1, Some(1)).is_empty());
+    assert!(store.resolve_host_request(
+        "dev.test.asks",
+        ask1.request_id,
+        HostOutcome::Ok(json!({"text": "tail-one"})),
+    ));
+    assert!(wait_until(
+        || store
+            .take_notices_for(1, Some(1))
+            .iter()
+            .any(|notice| notice.text.contains("READWIN[1]:tail-one")),
+        Duration::from_secs(3)
+    ));
+    assert!(store.pending_approvals().is_empty());
     store.shutdown_processes();
     let _ = std::fs::remove_dir_all(&root);
 }
