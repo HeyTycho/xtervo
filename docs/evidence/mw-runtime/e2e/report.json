@@ -1,0 +1,73 @@
+{
+  "checks": [
+    {
+      "name": "two_mainwindows_one_process",
+      "detail": {
+        "windows": [
+          1,
+          2
+        ],
+        "panes": [
+          1,
+          2
+        ]
+      }
+    },
+    {
+      "name": "independent_tabs",
+      "detail": {
+        "1": 2,
+        "2": 2
+      }
+    },
+    {
+      "name": "independent_pty_output",
+      "detail": {
+        "pane_a": 3,
+        "pane_b": 4
+      }
+    },
+    {
+      "name": "pane_route_not_global",
+      "detail": "unknown pane 4"
+    },
+    {
+      "name": "focus_routes_active_window",
+      "detail": {
+        "a": "0x200008",
+        "b": "0x200003"
+      }
+    },
+    {
+      "name": "close_b_keeps_a",
+      "detail": {
+        "remaining": 1,
+        "tabs": 3
+      }
+    },
+    {
+      "name": "close_primary_keeps_c",
+      "detail": {
+        "remaining": 3,
+        "tabs": 2
+      }
+    },
+    {
+      "name": "one_plugin_process",
+      "detail": {
+        "path": "/home/user/AIworkspace/rusttabbyterminal/.worktrees/mw-runtime/target/multi-window-e2e/plugins/mwprobe/plugin.py",
+        "count": 1
+      }
+    },
+    {
+      "name": "one_mcp_socket",
+      "detail": {
+        "ready_log_lines": 1,
+        "sockets": [
+          "/home/user/AIworkspace/rusttabbyterminal/.worktrees/mw-runtime/target/multi-window-e2e/live.sock"
+        ]
+      }
+    }
+  ],
+  "ok": true
+}

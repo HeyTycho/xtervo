@@ -200,6 +200,8 @@ sleep 0.5
 start_recovery
 TABS=$(live_recovery list '{}' | python3 -c 'import json,sys; d=json.load(sys.stdin)["data"]; print(sum(w["tabs"] for w in d["windows"]))')
 [ "$TABS" -ge 2 ] || fail "kill -9 重启后只恢复 $TABS 个 tab（期望 >=2）"
+printf 'restored_tabs=%s\nautosaved_before_kill=1\n' "$TABS" >"$REC/recovery.txt"
+grep -E '异常退出|autosave|已按快照恢复' "$REC/app.log" >"$REC/recovery.log" || true
 pass "kill -9 single-window recovery ($TABS tabs)"
 kill "$RECOVERY_PID" 2>/dev/null
 wait "$RECOVERY_PID" 2>/dev/null

@@ -6257,7 +6257,11 @@ fn restart_session(st: &mut AppState) {
 /// power loss while avoiding a write on every cursor blink. `Snapshot` equality
 /// suppresses unchanged writes; the normal exit path still does a final save.
 fn autosave_session(st: &mut AppState) {
-    if !st.cfg.restore_session_on_startup || st.shared.session.restarting || st.opts.window {
+    if !st.shared.session.writer
+        || !st.cfg.restore_session_on_startup
+        || st.shared.session.restarting
+        || st.opts.window
+    {
         return;
     }
     let Some(snap) = capture_snapshot(st) else { return };
@@ -6283,7 +6287,11 @@ fn autosave_session(st: &mut AppState) {
 /// `Restart Session` 已提前写好快照并拉起子进程，此时 `restarting` 为 true，
 /// 不再在退出钩子里重复写（避免与子进程的 `session::clear` 竞争）。
 fn save_session_on_exit(st: &AppState) {
-    if !st.cfg.restore_session_on_startup || st.shared.session.restarting || st.opts.window {
+    if !st.shared.session.writer
+        || !st.cfg.restore_session_on_startup
+        || st.shared.session.restarting
+        || st.opts.window
+    {
         return;
     }
     match capture_snapshot(st) {
@@ -6382,6 +6390,7 @@ fn focus_pane_inner(st: &mut AppState, id: PaneId) {
         return;
     }
     st.ws.tabs[idx].focused = id;
+    runtime::note_pane_focus(st.window_id, id);
     // 显式切 pane：即使新旧 pane 光标屏幕坐标恰好相同也要让输入法重收 spot。
     st.ime_spot_dirty = true;
     refresh_views(st);
@@ -11508,7 +11517,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 插件发现提前到主题加载之前：声明式 Theme Pack（可选）要并入主题列表；
     // 此时只读 manifest，不启动任何插件进程。
-    let mut plugins = plugin_v3::PluginStore::load();
+    let plugins = plugin_v3::PluginStore::load();
 
     // 内置 + 用户自定义主题 + 插件声明的主题；加载失败只记录，不阻塞启动。
     let mut registry = ThemeRegistry::load(&ThemeRegistry::default_dir());
@@ -13786,7 +13795,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .spawn(move || {
                 let result = pick_background_image(&initial);
                 let _ = slint::invoke_from_event_loop(move || {
-                    let Some(ui) = weak.upgrade() else { return };
+                    let Some(_ui) = weak.upgrade() else { return };
                     with_app(|st| match result {
                         Ok(Some(path)) => {
                             eprintln!("[theme] 文件选择器选择背景图: {path}");
@@ -14544,6 +14553,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     redraw_all();
     diag::start_control_socket_with_control(live_diag_snapshot, live_control, shared.mcp.clone());
     schedule_mcp_status_refresh(&ui);
+    // 之后 primary 窗口的生命周期只由 WindowRegistry/AppState 持有；这样
+    // 关闭 primary 而 second 仍存活时，MainWindow/PTY/GPU 能真正 drop。
+    drop(ui);
     let t_show = t_start.elapsed();
 
     if opts.exit_after_first {

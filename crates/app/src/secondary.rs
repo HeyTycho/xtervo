@@ -117,11 +117,12 @@ pub fn create_inproc_window() -> Result<WindowId, String> {
         .ui
         .window()
         .set_position(slint::PhysicalPosition::new(offset, offset));
+    // 先装原生事件再 show：首批 Focused/close 事件不能丢。
+    crate::install_native_window_events(&runtime.ui, window_id);
     runtime
         .ui
         .show()
         .map_err(|err| format!("second window show: {err}"))?;
-    crate::install_native_window_events(&runtime.ui, window_id);
     runtime.ui.window().request_redraw();
     eprintln!(
         "[ui] in-process window created id={} pid={} shared_plugins={} mcp_socket={}",

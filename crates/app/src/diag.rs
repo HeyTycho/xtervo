@@ -928,7 +928,7 @@ fn mcp_tools(commands: &[String]) -> Value {
 
 /// 单个 live 工具的 MCP 定义。命令集合来自 app 的 capabilities。
 fn live_tool(command: &str) -> Option<Value> {
-    let tool = match command {
+    let mut tool = match command {
         "capabilities" => json!({
             "name": "tervo.live_capabilities",
             "description": "Read the running Tervo MCP permission groups and commands.",
@@ -1012,6 +1012,16 @@ fn live_tool(command: &str) -> Option<Value> {
             "description": "Close the tab containing a pane. Requires MCP tabs + destructive.",
             "inputSchema": {"type": "object", "properties": {"pane_id": {"type": "integer"}}, "required": ["pane_id"]}
         }),
+        "new_window" => json!({
+            "name": "tervo.live_new_window",
+            "description": "Open a second in-process window (requires TERVO_MULTI_WINDOW_INPROC=1). Requires MCP tabs.",
+            "inputSchema": {"type": "object", "properties": {}}
+        }),
+        "close_window" => json!({
+            "name": "tervo.live_close_window",
+            "description": "Close a window by window_id; refuses the last window. Requires MCP tabs + destructive.",
+            "inputSchema": {"type": "object", "properties": {"window_id": {"type": "integer"}}}
+        }),
         "kill" => json!({
             "name": "tervo.live_kill",
             "description": "Send Ctrl+C to a pane. Requires MCP input + destructive.",
@@ -1019,6 +1029,17 @@ fn live_tool(command: &str) -> Option<Value> {
         }),
         _ => return None,
     };
+    // 多窗口 additive 参数：所有 live 工具都接受可选 window_id（缺省 active）。
+    if let Some(properties) = tool
+        .get_mut("inputSchema")
+        .and_then(|schema| schema.get_mut("properties"))
+        .and_then(Value::as_object_mut)
+    {
+        properties.insert(
+            "window_id".to_string(),
+            json!({"type": "integer", "description": "Target WindowId; defaults to the active window."}),
+        );
+    }
     Some(tool)
 }
 
@@ -1089,10 +1110,12 @@ fn mcp_call(req: &Value, live: &mut LiveTarget) -> Value {
         "tervo.live_run" => live.exchange("run", &args, false).map_err(|e| e.into()),
         "tervo.live_focus" => live.exchange("focus", &args, false).map_err(|e| e.into()),
         "tervo.live_new_tab" => live.exchange("new_tab", &args, false).map_err(|e| e.into()),
+        "tervo.live_new_window" => live.exchange("new_window", &args, false).map_err(|e| e.into()),
         "tervo.live_split" => live.exchange("split", &args, false).map_err(|e| e.into()),
         "tervo.live_scroll" => live.exchange("scroll", &args, false).map_err(|e| e.into()),
         "tervo.live_close_pane" => live.exchange("close_pane", &args, false).map_err(|e| e.into()),
         "tervo.live_close_tab" => live.exchange("close_tab", &args, false).map_err(|e| e.into()),
+        "tervo.live_close_window" => live.exchange("close_window", &args, false).map_err(|e| e.into()),
         "tervo.live_kill" => live.exchange("kill", &args, false).map_err(|e| e.into()),
         _ => return mcp_error(-32602, "unknown tool"),
     };
@@ -1631,14 +1654,18 @@ mod tests {
         // tabs + destructive：close 出现，kill（还要 input）不出现。
         let close = vec![
             "new_tab".to_string(),
+            "new_window".to_string(),
             "split".to_string(),
             "close_pane".to_string(),
             "close_tab".to_string(),
+            "close_window".to_string(),
         ];
         let close_tools = mcp_tools(&close);
         let names = tool_names(&close_tools);
         assert!(names.contains(&"tervo.live_close_pane"));
         assert!(names.contains(&"tervo.live_close_tab"));
+        assert!(names.contains(&"tervo.live_new_window"));
+        assert!(names.contains(&"tervo.live_close_window"));
         assert!(!names.contains(&"tervo.live_kill"));
         assert!(!names.contains(&"tervo.live_send_text"));
 

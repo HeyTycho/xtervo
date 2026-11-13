@@ -1,0 +1,31 @@
+{
+  "before": {
+    "native_frames": 16,
+    "native_ready": true,
+    "present_frames": 0,
+    "present_ready": true,
+    "present_windows": [
+      1,
+      2
+    ]
+  },
+  "after_close": {
+    "native_frames": 16,
+    "native_ready": true,
+    "present_frames": 0,
+    "present_ready": true,
+    "present_windows": [
+      1
+    ]
+  },
+  "later": {
+    "native_frames": 17,
+    "native_ready": true,
+    "present_frames": 0,
+    "present_ready": true,
+    "present_windows": [
+      1
+    ]
+  },
+  "ok": true
+}

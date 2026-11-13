@@ -230,12 +230,6 @@ impl SharedServices {
         id
     }
 
-    /// 恢复路径观察已有 id，保证后续分配不冲突。
-    pub fn observe_pane_id(&self, id: u64) {
-        self.next_pane_id
-            .set(self.next_pane_id.get().max(id.saturating_add(1)));
-    }
-
     /// 诊断身份：确认两个窗口拿到的是同一份服务，而不是各自 load 的副本。
     pub fn identities(&self) -> serde_json::Value {
         serde_json::json!({
@@ -376,6 +370,7 @@ impl WindowRegistry {
         self.windows.len()
     }
 
+    #[allow(dead_code)] // registry 完整性 API；测试/后续控制面使用
     pub fn is_empty(&self) -> bool {
         self.windows.is_empty()
     }
@@ -503,6 +498,15 @@ pub fn window_for_pane(pane: u64) -> Option<WindowId> {
     None
 }
 
+/// 记录窗口最近聚焦的 pane（插件 pane-focus / 后续 per-window scope 用）。
+pub fn note_pane_focus(id: WindowId, pane: crate::workspace::PaneId) {
+    if let Some(registry) = registry() {
+        if let Some(runtime) = registry.borrow().get(id) {
+            runtime.last_focused_pane.set(Some(pane));
+        }
+    }
+}
+
 /// 设置活动窗口（focus/点击时调用）；返回是否仍存在。
 pub fn set_active_window(id: WindowId) -> bool {
     let Some(registry) = registry() else {
@@ -537,6 +541,10 @@ pub fn all_pane_ids() -> Vec<u64> {
 }
 
 /// 所有窗口的 session 快照（按 WindowId 排序）。
+///
+/// Phase 4 接入多窗口保存；当前先保留可测试的纯函数，避免 session v2 结构在
+/// 重构中被丢掉。
+#[allow(dead_code)]
 pub fn capture_snapshot_v2() -> SnapshotV2 {
     let mut windows = Vec::new();
     let Some(registry) = registry() else {

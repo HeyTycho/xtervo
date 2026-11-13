@@ -1,0 +1,4 @@
+[gpu] BackendSelector::require_wgpu_30(...).select() = OK（等待 RenderingSetup 的 device/queue）
+[gpu] window-1 RenderingSetup：复用同一 WGPU30 device/queue（2 个窗口共享）
+[gpu] window-2 rendering teardown：保留共享 device/纹理（1 个窗口仍存活）
+[gpu-native] window-2 rendering teardown：保留 atlas/target（1 个窗口仍存活）

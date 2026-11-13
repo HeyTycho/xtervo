@@ -192,6 +192,21 @@ def main() -> int:
     assert live.ok("list")["windows"][0]["tabs"] == 3
     check("close_b_keeps_a", {"remaining": 1, "tabs": 3})
 
+    # 反向：开新窗口 C，关掉 primary(1)，C 必须继续可用（A 的 PTY 被回收）。
+    new_id = live.ok("new_window")["window_id"]
+    assert new_id == 3, new_id
+    wait_for(lambda: len(live.ok("list")["windows"]) == 2, label="window C created")
+    live.ok("close_window", {"window_id": 1})
+    data = wait_for(
+        lambda: (lambda d: d if len(d["windows"]) == 1 else None)(live.ok("list")),
+        label="primary closed",
+    )
+    assert data["windows"][0]["window_id"] == new_id, data
+    assert os.kill(args.pid, 0) is None
+    live.ok("new_tab", {"window_id": new_id})
+    assert live.ok("list")["windows"][0]["tabs"] == 2
+    check("close_primary_keeps_c", {"remaining": new_id, "tabs": 2})
+
     # Plugin host / MCP socket are per-process, not per-window.
     if args.plugin:
         count = count_processes(args.plugin)
