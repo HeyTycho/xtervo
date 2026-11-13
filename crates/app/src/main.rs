@@ -399,6 +399,8 @@ struct AppState {
     last_click: Option<(PaneId, i32, i32, std::time::Instant)>,
     /// 最近关闭的 Tab（最多 10 个），用于 Ctrl+Shift+T / 菜单重开
     closed_tabs: Vec<session::TabSnapshot>,
+    /// 最近一次成功 autosave 的快照；用于避免每 2s 重复写盘。
+    last_session_snapshot: Option<session::Snapshot>,
     /// Restart Session 已保存快照并拉起子进程：退出钩子不要再写一次。
     restarting: bool,
     fwd_profile_indices: Vec<usize>,
@@ -6098,6 +6100,31 @@ fn restart_session(st: &mut AppState) {
     }
 }
 
+/// Periodic crash-safe snapshot. The 2s cadence bounds data loss for kill -9 /
+/// power loss while avoiding a write on every cursor blink. `Snapshot` equality
+/// suppresses unchanged writes; the normal exit path still does a final save.
+fn autosave_session(st: &mut AppState) {
+    if !st.cfg.restore_session_on_startup || st.restarting || st.opts.window {
+        return;
+    }
+    let Some(snap) = capture_snapshot(st) else { return };
+    if st.last_session_snapshot.as_ref() == Some(&snap) {
+        return;
+    }
+    match session::save(&snap) {
+        Ok(path) => {
+            st.last_session_snapshot = Some(snap);
+            eprintln!(
+                "[session] autosave {}（{} 个标签 / {} 个 pane）",
+                path.display(),
+                st.ws.tabs.len(),
+                st.panes.len()
+            );
+        },
+        Err(error) => eprintln!("[session] autosave 失败: {error}"),
+    }
+}
+
 /// 正常退出时按开关写会话快照；无 Tab 时清掉旧快照，避免下次恢复幽灵布局。
 ///
 /// `Restart Session` 已提前写好快照并拉起子进程，此时 `restarting` 为 true，
@@ -10971,6 +10998,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 子窗口进程（--window）不参与自动恢复/退出快照：session.json 只有一份，
     // 让任意子窗口覆盖主窗口布局会在下次启动恢复错窗口。
     let auto_restore = cfg.restore_session_on_startup && !opts.restore && !opts.window;
+    // The marker is written before any UI starts and removed only by a normal
+    // exit. A leftover marker therefore means this is a crash/kill recovery.
+    let unclean = !opts.window && session::was_unclean();
+    if unclean {
+        eprintln!(
+            "[session] 检测到上次异常退出；{}",
+            if auto_restore {
+                "尝试恢复最近 autosave"
+            } else {
+                "restore_session_on_startup=false，保留新启动布局"
+            }
+        );
+    }
+    if !opts.window {
+        if let Err(error) = session::mark_running() {
+            eprintln!("[session] 写 running marker 失败: {error}");
+        }
+    }
     if auto_restore {
         if let Some(snap) = session::load() {
             if snap.cols > 0 && snap.rows > 0 {
@@ -11264,6 +11309,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         broadcast: false,
         last_click: None,
         closed_tabs: Vec::new(),
+        last_session_snapshot: None,
         restarting: false,
         fwd_profile_indices: Vec::new(),
         fwd_model,
@@ -13880,6 +13926,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         poll_events,
     );
 
+    // Crash-safe session autosave. Timer is forgotten deliberately: it must live
+    // for the whole event loop, and dropping a Slint Timer stops it.
+    let session_timer = slint::Timer::default();
+    session_timer.start(
+        slint::TimerMode::Repeated,
+        Duration::from_secs(2),
+        || {
+            let _ = with_app(autosave_session);
+        },
+    );
+    std::mem::forget(session_timer);
+
     // 多 Tab + 窗口 resize 会反复重建 pane 帧缓冲/alacritty 行存储；glibc 默认把
     // 已 free 的几 MB 堆块留在 arena 不归还，RSS 曲线会持续缓慢上涨后才平台。
     // 低频显式归还已释放页（只影响 allocator，不触碰任何仍存活的终端状态）。
@@ -14293,7 +14351,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _keepalive = (poll_timer, state);
     let run_result = slint::run_event_loop();
     // 正常退出（窗口关闭/最后一个 Tab 关闭）：开关打开时写会话快照。
-    with_app(|st| save_session_on_exit(st));
+    let restarting = with_app(|st| {
+        save_session_on_exit(st);
+        st.restarting
+    })
+    .unwrap_or(false);
+    if !opts.window && !restarting {
+        session::mark_clean();
+    }
     stop_auto_watcher();
     // 显式停止并 join 轮询线程，避免退出阶段还有回调投递。
     with_app(|st| st.config_watcher.take());

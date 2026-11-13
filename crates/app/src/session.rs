@@ -8,7 +8,7 @@
 //! 半截文件永远不会被当成有效快照读进来（版本号也会兜底）。
 
 use std::collections::HashMap;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -211,7 +211,22 @@ pub fn load() -> Option<Snapshot> {
 
 /// 消费掉快照：恢复成功后调用，避免下次手动 `--restore` 又拉一遍旧布局。
 pub fn clear() {
-    let _ = std::fs::remove_file(snapshot_path());
+    let path = snapshot_path();
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(backup_path(&path));
+    let _ = std::fs::remove_file(path.with_extension("json.tmp"));
+}
+
+fn backup_path(path: &Path) -> PathBuf {
+    path.with_extension("json.bak")
+}
+
+fn sync_parent(path: &Path) {
+    if let Some(parent) = path.parent() {
+        if let Ok(dir) = std::fs::File::open(parent) {
+            let _ = dir.sync_all();
+        }
+    }
 }
 
 pub fn save_to(path: &Path, snap: &Snapshot) -> io::Result<()> {
@@ -219,16 +234,82 @@ pub fn save_to(path: &Path, snap: &Snapshot) -> io::Result<()> {
         std::fs::create_dir_all(dir)?;
     }
     let json = serde_json::to_vec_pretty(snap).map_err(io::Error::other)?;
-    // 先写临时文件再 rename：中途崩溃不会留下半截 JSON。
+    // 先写临时文件 + fsync，再 rename；中途崩溃不会留下半截 JSON，
+    // 也不会把还在页缓存里的内容当成已落盘状态。
     let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, json)?;
-    std::fs::rename(&tmp, path)
+    {
+        let mut file = std::fs::File::create(&tmp)?;
+        file.write_all(&json)?;
+        file.sync_all()?;
+    }
+    // Keep one previous generation. Copy is intentionally best-effort: a failed
+    // backup must not prevent a fresh snapshot from being committed.
+    if path.is_file() {
+        let _ = std::fs::copy(path, backup_path(path));
+    }
+    std::fs::rename(&tmp, path)?;
+    sync_parent(path);
+    Ok(())
 }
 
-pub fn load_from(path: &Path) -> Option<Snapshot> {
+fn parse_snapshot(path: &Path) -> Option<Snapshot> {
     let bytes = std::fs::read(path).ok()?;
     let snap: Snapshot = serde_json::from_slice(&bytes).ok()?;
     (snap.version == VERSION).then_some(snap)
+}
+
+pub fn load_from(path: &Path) -> Option<Snapshot> {
+    parse_snapshot(path).or_else(|| {
+        // A torn/corrupt primary must not make the user lose the session when a
+        // valid previous generation exists.
+        let backup = backup_path(path);
+        let recovered = parse_snapshot(&backup);
+        if recovered.is_some() {
+            eprintln!("[session] 主快照损坏/版本不符，已回退 {}", backup.display());
+        }
+        recovered
+    })
+}
+
+fn running_path(path: &Path) -> PathBuf {
+    path.with_extension("running")
+}
+
+/// Write an unclean-shutdown marker before the UI starts. It is removed only by
+/// a normal exit; a crash/kill leaves it behind for the next launch.
+pub fn mark_running() -> io::Result<()> {
+    mark_running_at(&snapshot_path())
+}
+
+fn mark_running_at(path: &Path) -> io::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let marker = running_path(path);
+    let mut file = std::fs::File::create(&marker)?;
+    writeln!(file, "pid={} started={}", std::process::id(), now_secs())?;
+    file.sync_all()?;
+    Ok(())
+}
+
+pub fn mark_clean() {
+    let _ = std::fs::remove_file(running_path(&snapshot_path()));
+}
+
+/// True only when a previous process left the running marker behind.
+pub fn was_unclean() -> bool {
+    was_unclean_at(&snapshot_path())
+}
+
+fn was_unclean_at(path: &Path) -> bool {
+    running_path(path).is_file()
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 /// 进程的当前工作目录（`/proc/<pid>/cwd`）。进程已退出时返回 None。
@@ -370,15 +451,24 @@ mod tests {
         save_to(&path, &snap).unwrap();
         assert_eq!(load_from(&path), Some(snap.clone()));
 
-        // 版本不符 → 当作没有快照，绝不拿旧结构去拼布局
+        // 版本不符且没有 backup → 当作没有快照，绝不拿旧结构去拼布局
         let mut old = snap.clone();
         old.version = VERSION - 1;
-        save_to(&path, &old).unwrap();
-        assert!(load_from(&path).is_none());
+        let old_only = dir.join("old-only.json");
+        save_to(&old_only, &old).unwrap();
+        assert!(load_from(&old_only).is_none());
 
-        // 半截文件也不能 panic
+        // 版本不符的 primary + 有效 backup：回退上一代，而不是丢 session
+        save_to(&path, &old).unwrap();
+        assert!(load_from(&path).is_some(), "应回退上一代快照");
+
+        // 半截 primary + 有效 backup：回退上一代，而不是丢 session
         std::fs::write(&path, b"{not json").unwrap();
-        assert!(load_from(&path).is_none());
+        assert!(load_from(&path).is_some(), "应回退上一代快照");
+        // 没有 backup 的坏文件仍然安全返回 None
+        let orphan = dir.join("orphan.json");
+        std::fs::write(&orphan, b"{not json").unwrap();
+        assert!(load_from(&orphan).is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -414,6 +504,39 @@ mod tests {
         save_to(&path, &empty).unwrap();
         let loaded = load_from(&path).unwrap();
         assert!(loaded.tabs.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn running_marker_reports_unclean_and_clean_exit() {
+        let dir = std::env::temp_dir().join(format!("rt-session-running-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("session.json");
+        assert!(!was_unclean_at(&path));
+        mark_running_at(&path).unwrap();
+        assert!(was_unclean_at(&path));
+        // A second mark is harmless and updates the pid line.
+        mark_running_at(&path).unwrap();
+        assert!(was_unclean_at(&path));
+        std::fs::remove_file(running_path(&path)).unwrap();
+        assert!(!was_unclean_at(&path));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_keeps_previous_generation_for_corruption_recovery() {
+        let dir = std::env::temp_dir().join(format!("rt-session-backup-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("session.json");
+        let first = Snapshot { version: VERSION, cols: 80, rows: 24, active: 0, tabs: Vec::new() };
+        let second = Snapshot { version: VERSION, cols: 120, rows: 40, active: 0, tabs: Vec::new() };
+        save_to(&path, &first).unwrap();
+        save_to(&path, &second).unwrap();
+        assert!(backup_path(&path).is_file());
+        std::fs::write(&path, b"{corrupt").unwrap();
+        let recovered = load_from(&path).expect("previous generation");
+        assert_eq!(recovered.cols, 80);
+        assert_eq!(recovered.rows, 24);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
