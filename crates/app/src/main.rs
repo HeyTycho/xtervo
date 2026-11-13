@@ -210,6 +210,10 @@ struct Drag {    pane: PaneId,
     mouse: bool,
     /// Ctrl+左键：不开选区，抬起时解析并打开链接。
     link: bool,
+    /// 最近一次指针位置（内容区坐标），用于边缘自动滚动。
+    last_pointer: (f32, f32),
+    /// 当前自动滚动方向，避免每 50ms 重复刷日志。
+    autoscroll_dir: i32,
 }
 
 /// 自绘拖边缩放：按 root 坐标差值直接改窗口大小/位置。
@@ -452,6 +456,8 @@ struct AppState {
     cursor_blink_on: bool,
     /// 光标闪烁计时器；`cursor_blink=off` 时停掉，空闲零开销。
     cursor_blink_timer: slint::Timer,
+    /// 选中拖到上下边缘时的自动滚动计时器；只在拖选期间运行。
+    drag_autoscroll: slint::Timer,
     resize_in_progress: bool,
     /// 最近一次 resize apply 的最大耗时（profile 汇总）。
     resize_max_apply_us: f64,
@@ -7637,6 +7643,61 @@ fn take_snapshot_and_log(ui: &MainWindow, path: &Path) {
 
 // --------------------------------------------------------------- 选择/搜索
 
+/// Pointer in the top/bottom edge band: +1 = scroll into history (up),
+/// -1 = scroll toward latest (down), 0 = no autoscroll.
+fn selection_autoscroll_dir(pointer_y: f32, height: f32, cell_h: f32) -> i32 {
+    if height <= 0.0 || cell_h <= 0.0 {
+        return 0;
+    }
+    let edge = (cell_h * 0.75).max(1.0);
+    if pointer_y <= edge {
+        1
+    } else if pointer_y >= height - edge {
+        -1
+    } else {
+        0
+    }
+}
+
+/// Runs while a local text selection drag is held at the top/bottom edge.
+/// Scroll and extend are sent in order; the actor reads the new display_offset
+/// when it processes the extension, so the selection keeps following history.
+fn selection_autoscroll_tick(st: &mut AppState) {
+    let Some(drag) = st.drag.as_ref() else {
+        st.drag_autoscroll.stop();
+        return;
+    };
+    if drag.mouse || drag.link || !drag.moved {
+        return;
+    }
+    let id = drag.pane;
+    let (x, y) = drag.last_pointer;
+    let Some(rt) = st.panes.get(&id) else {
+        st.drag_autoscroll.stop();
+        return;
+    };
+    let height = rt.renderer.height.max(1) as f32;
+    let cell_h = rt.renderer.cell_h.max(1) as f32;
+    let dir = selection_autoscroll_dir(y, height, cell_h);
+    if dir == 0 {
+        if let Some(drag) = st.drag.as_mut() {
+            drag.autoscroll_dir = 0;
+        }
+        return;
+    }
+    let row = if dir > 0 { 0 } else { rt.grid.1.saturating_sub(1) };
+    let col = cell_at(rt, x, y).1;
+    if let Some(drag) = st.drag.as_mut() {
+        if drag.autoscroll_dir != dir {
+            drag.autoscroll_dir = dir;
+            eprintln!("[select] autoscroll pane={id} dir={dir} edge_cell={row},{col}");
+        }
+    }
+    rt.handle.scroll(dir);
+    rt.handle.selection_extend(row as u16, col);
+}
+
+
 fn cell_at(rt: &PaneRuntime, x: f32, y: f32) -> (u16, u16) {
     let cw = rt.renderer.cell_w.max(1) as f32;
     let ch = rt.renderer.cell_h.max(1) as f32;
@@ -10889,6 +10950,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         bell_timer: slint::Timer::default(),
         cursor_blink_on: true,
         cursor_blink_timer: slint::Timer::default(),
+        drag_autoscroll: slint::Timer::default(),
         resize_in_progress: false,
         resize_max_apply_us: 0.0,
         corners,
@@ -11001,6 +11063,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             // Ctrl+左键只在“非鼠标上报”时是打开链接；上报模式仍把 Ctrl 位传给 TUI。
             let link = !reporting && modifiers.ctrl;
+            eprintln!(
+                "[select] down pane={id} cell={cell:?} button={button} shift={} \
+                 wants_mouse={wants_mouse} reporting={reporting} link={link}",
+                modifiers.shift
+            );
             if reporting {
                 // 两套状态不能并存：进终端鼠标模式就清掉本地选区。
                 rt.handle.selection_clear();
@@ -11021,7 +11088,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 cell,
                 mouse: reporting,
                 link,
+                last_pointer: (x, y),
+                autoscroll_dir: 0,
             });
+            if !reporting && !link {
+                st.drag_autoscroll.start(
+                    slint::TimerMode::Repeated,
+                    Duration::from_millis(50),
+                    || {
+                        let _ = with_app(selection_autoscroll_tick);
+                    },
+                );
+            }
         });
     });
 
@@ -11036,6 +11114,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if drag.pane != id {
                         return;
                     }
+                    drag.last_pointer = (x, y);
                     if (x - drag.start.0).abs() > 4.0 || (y - drag.start.1).abs() > 4.0 {
                         drag.moved = true;
                     }
@@ -11104,6 +11183,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let id = id as u64;
         with_app(|st| {
             let Some(drag) = st.drag.take() else { return };
+            st.drag_autoscroll.stop();
             if drag.link {
                 // Ctrl+点击（没有明显拖动）才打开；拖动过就当作取消。
                 if !drag.moved && button == 0 {
@@ -11152,6 +11232,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     });
                 }
                 return;
+            }
+            if !drag.mouse {
+                let up_cell = st.panes.get(&id).map(|rt| cell_at(rt, x, y));
+                eprintln!(
+                    "[select] up pane={id} cell={up_cell:?} moved={} copy_on_select={}",
+                    drag.moved,
+                    st.cfg.copy_on_select
+                );
             }
             if !drag.moved {
                 // 双击选行：同一 pane、同一格、400ms 内的第二次左键抬起。
@@ -14137,6 +14225,16 @@ mod tests {
         assert!(!is_modifier_artifact("\u{1b}", false, false, false)); // Esc
         assert!(!is_modifier_artifact("\n", true, false, false)); // Ctrl+Enter
         assert!(!is_modifier_artifact("你", false, false, false));
+    }
+
+    #[test]
+    fn selection_autoscroll_triggers_only_on_vertical_edges() {
+        assert_eq!(selection_autoscroll_dir(0.0, 240.0, 16.0), 1);
+        assert_eq!(selection_autoscroll_dir(8.0, 240.0, 16.0), 1);
+        assert_eq!(selection_autoscroll_dir(120.0, 240.0, 16.0), 0);
+        assert_eq!(selection_autoscroll_dir(232.0, 240.0, 16.0), -1);
+        assert_eq!(selection_autoscroll_dir(300.0, 240.0, 16.0), -1);
+        assert_eq!(selection_autoscroll_dir(120.0, 0.0, 16.0), 0);
     }
 
     #[test]

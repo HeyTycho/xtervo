@@ -29,7 +29,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use slint::wgpu_30::wgpu;
-use tervo_core::Frame;
+use tervo_core::{Frame, Span};
 use tervo_graphics::SourceId;
 use tervo_render_wgpu::{
     read_target_rgba8, write_ppm, AtlasConfig, GpuImageRenderer, GpuTextRenderer, SceneLayerStats,
@@ -73,6 +73,8 @@ struct PaneTarget {
     target: TextTarget,
     frames: u64,
     dump_written: bool,
+    last_selection: Option<Span>,
+    last_search: Option<Span>,
 }
 
 // `slint::Image` is deliberately UI-thread-local (it contains `*mut ()`), so
@@ -319,6 +321,17 @@ fn can_reuse_gpu_target(frame: &Frame, has_target: bool) -> bool {
     has_target && !frame.full && frame.damage.is_empty() && frame.images.is_empty()
 }
 
+/// Selection/search are cell colors, not terminal damage. The GPU target may
+/// only be reused when those resolved spans did not change; otherwise the old
+/// texture would keep the previous highlight forever on an idle pane.
+fn selection_or_search_changed(
+    previous_selection: Option<Span>,
+    previous_search: Option<Span>,
+    frame: &Frame,
+) -> bool {
+    previous_selection != frame.selection || previous_search != frame.search
+}
+
 /// 把真实 `Frame` 走 Scene → WGPU 分层合成，返回可交给 `PaneView.image` 的
 /// `slint::Image`。返回 `None` 时调用方必须使用 CPU `Renderer::image()`。
 pub fn pane_image(input: &PaneFrame<'_>) -> Option<slint::Image> {
@@ -369,9 +382,36 @@ pub fn pane_image(input: &PaneFrame<'_>) -> Option<slint::Image> {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let state = guard.as_mut()?;
 
+    let (selection_changed, previous_selection, previous_search) = state
+        .panes
+        .get(&input.pane)
+        .map(|pane| {
+            (
+                selection_or_search_changed(pane.last_selection, pane.last_search, input.frame),
+                pane.last_selection,
+                pane.last_search,
+            )
+        })
+        .unwrap_or((false, None, None));
+    if selection_changed {
+        // Always-on diagnostic: one line per selection/search transition, never
+        // per drag cell. This is enough to tell a missed frame from a missed
+        // mouse event without asking the user to restart with env flags.
+        eprintln!(
+            "[select] pane={} selection={:?}->{:?} search={:?}->{:?} force_full",
+            input.pane,
+            previous_selection,
+            input.frame.selection,
+            previous_search,
+            input.frame.search,
+        );
+    }
+
     // 光标闪烁/纯 overlay redraw 没有终端 damage：不要重绘整张 target。
-    // 只有已有可复用 GPU image 时才跳过；首帧、resize、图片帧仍走完整路径。
-    if can_reuse_gpu_target(input.frame, state.panes.contains_key(&input.pane)) {
+    // 只有已有可复用 GPU image 时才跳过；首帧、resize、图片帧、选区变化仍走完整路径。
+    if can_reuse_gpu_target(input.frame, state.panes.contains_key(&input.pane))
+        && !selection_changed
+    {
         if let Some(image) = PANE_IMAGES.with(|images| images.borrow().get(&input.pane).cloned()) {
             REUSED_FRAMES.fetch_add(1, Ordering::Relaxed);
             return Some(image);
@@ -442,6 +482,8 @@ pub fn pane_image(input: &PaneFrame<'_>) -> Option<slint::Image> {
                 target,
                 frames: 0,
                 dump_written: false,
+                last_selection: None,
+                last_search: None,
             },
         );
     }
@@ -449,7 +491,7 @@ pub fn pane_image(input: &PaneFrame<'_>) -> Option<slint::Image> {
     // A fresh target has no previous pixels. Never take the partial path on
     // its first frame: force a full clear/repaint even if the incoming Frame
     // only reports a small damage region.
-    if recreate {
+    if recreate || selection_changed {
         scene.damage = DamageRegion::full();
     }
 
@@ -513,6 +555,8 @@ pub fn pane_image(input: &PaneFrame<'_>) -> Option<slint::Image> {
 
     let pane = state.panes.get_mut(&input.pane)?;
     pane.frames += 1;
+    pane.last_selection = input.frame.selection;
+    pane.last_search = input.frame.search;
     let first = pane.frames == 1;
     // Re-import after rendering. Slint's Skia/WGPU bridge is known to show an
     // empty image when a freshly created texture is imported before its first
@@ -654,6 +698,26 @@ mod tests {
             right: 3,
         });
         assert!(!can_reuse_gpu_target(&frame, true), "有 damage 必须重绘");
+    }
+
+    #[test]
+    fn selection_and_search_changes_break_gpu_target_reuse() {
+        let mut frame = Frame::new(4, 2);
+        let span = Span {
+            start_line: 0,
+            start_col: 1,
+            end_line: 0,
+            end_col: 2,
+        };
+        assert!(!selection_or_search_changed(None, None, &frame));
+        frame.selection = Some(span);
+        assert!(selection_or_search_changed(None, None, &frame));
+        assert!(!selection_or_search_changed(Some(span), None, &frame));
+        frame.selection = None;
+        assert!(selection_or_search_changed(Some(span), None, &frame));
+        frame.search = Some(span);
+        assert!(selection_or_search_changed(None, None, &frame));
+        assert!(!selection_or_search_changed(None, Some(span), &frame));
     }
 
     /// The app's GPU path must consume the same resolved semantics as the CPU
