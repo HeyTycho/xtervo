@@ -366,6 +366,12 @@ impl WindowRegistry {
         self.active
     }
 
+    /// 创建顺序中的第一个窗口（primary）。旧 `with_app` 在没有回调作用域时
+    /// 固定回退到它，而不是猜“当前活动窗口”。
+    pub fn primary_id(&self) -> Option<WindowId> {
+        self.order.first().copied()
+    }
+
     pub fn len(&self) -> usize {
         self.windows.len()
     }
@@ -469,8 +475,24 @@ pub fn with_state<R>(
 }
 
 /// 当前/活动窗口；没有显式作用域时回退到 registry.active。
+///
+/// MCP 的“缺省 window_id = active”用这个；旧 UI 回调不要用它猜窗口。
 pub fn with_active_window<R>(f: impl FnOnce(&mut AppState) -> R) -> Option<R> {
     let id = current_window().or_else(|| registry()?.borrow().active())?;
+    with_window(id, f)
+}
+
+/// 旧 `with_app` 的确定性回退：回调作用域优先，否则 primary；primary 已关闭
+/// 时才落到 active。这样 primary 的旧回调不会在 B 聚焦时误改 B。
+pub fn with_primary_window<R>(f: impl FnOnce(&mut AppState) -> R) -> Option<R> {
+    let id = match current_window() {
+        Some(id) => id,
+        None => {
+            let registry = registry()?;
+            let guard = registry.borrow();
+            guard.primary_id().or_else(|| guard.active())?
+        },
+    };
     with_window(id, f)
 }
 

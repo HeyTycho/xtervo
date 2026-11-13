@@ -76,7 +76,9 @@ window_for_pane(pane_id)                       // PTY 线程只带 pane id
 
 `with_state/with_window` 进入时设置 thread-local 当前窗口作用域，退出恢复。
 因此回调内部继续调用旧 `with_app()` 会沿当前窗口路由，不会盲猜全局 `APP`。
-`APP` 单例已删除。
+`APP` 单例已删除；没有作用域时 `with_app` **固定回退 primary**（primary 已关闭
+才落到 active），所以 primary 的旧回调不会在 B 聚焦时误改 B。新回调一律使用
+`with_state/with_window`。
 
 ### 1.3 SharedServices
 
@@ -231,7 +233,7 @@ CARGO_TARGET_DIR=$PWD/../../target ./scripts/soak_multi_window_inproc.sh
 线程 ≤+8、FD ≤+24。最终实现实测（`docs/evidence/mw-runtime/soak/`）：
 
 ```text
-120s：rss +3516KiB，threads 22 -> 21，fds 28 -> 28，2 窗口存活
+120s：rss +3520KiB，threads 21 -> 21，fds 28 -> 28，2 窗口存活
 ```
 
 未跑 15m/30m；按 AGENTS.md 触及渲染/循环应在合并前升级。
@@ -298,7 +300,8 @@ WindowSnapshot 已包含 id/geometry/maximized/active_tab/tabs
 ```text
 95ff490 refactor(app): introduce WindowRegistry/SharedServices (single window)
 7d576b4 feat(app): in-process second window behind TERVO_MULTI_WINDOW_INPROC
-（后续提交：docs/evidence）
+e39f6a0 docs(mw-runtime): architecture status, MCP window tools, evidence
+（最终 HEAD：with_app 固定回退 primary、补 MCP window 工具、刷新证据；见 git log）
 ```
 
 未合 main、未 tag、未打包、未改 `dist-preview`。

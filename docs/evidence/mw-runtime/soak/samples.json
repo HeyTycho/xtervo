@@ -2,182 +2,182 @@
   "seconds": 120,
   "samples": [
     {
-      "rss_kb": 100436,
-      "threads": 22,
-      "fds": 28,
-      "t": 0.3,
-      "windows": 2
-    },
-    {
-      "rss_kb": 102088,
+      "rss_kb": 100892,
       "threads": 21,
       "fds": 28,
-      "t": 5.6,
+      "t": 0.2,
       "windows": 2
     },
     {
-      "rss_kb": 103924,
+      "rss_kb": 102556,
+      "threads": 21,
+      "fds": 28,
+      "t": 5.5,
+      "windows": 2
+    },
+    {
+      "rss_kb": 102892,
       "threads": 21,
       "fds": 28,
       "t": 10.8,
       "windows": 2
     },
     {
-      "rss_kb": 103924,
+      "rss_kb": 104380,
       "threads": 21,
       "fds": 28,
       "t": 16.1,
       "windows": 2
     },
     {
-      "rss_kb": 103928,
+      "rss_kb": 104384,
       "threads": 21,
       "fds": 28,
       "t": 21.4,
       "windows": 2
     },
     {
-      "rss_kb": 103932,
+      "rss_kb": 104388,
       "threads": 21,
       "fds": 28,
-      "t": 26.7,
+      "t": 26.8,
       "windows": 2
     },
     {
-      "rss_kb": 103932,
+      "rss_kb": 104392,
       "threads": 21,
       "fds": 28,
-      "t": 32.0,
+      "t": 32.1,
       "windows": 2
     },
     {
-      "rss_kb": 103936,
+      "rss_kb": 104392,
       "threads": 21,
       "fds": 28,
-      "t": 37.3,
+      "t": 37.4,
       "windows": 2
     },
     {
-      "rss_kb": 103936,
+      "rss_kb": 104392,
       "threads": 21,
       "fds": 28,
-      "t": 42.6,
+      "t": 42.7,
       "windows": 2
     },
     {
-      "rss_kb": 103936,
+      "rss_kb": 104392,
       "threads": 21,
       "fds": 28,
-      "t": 47.9,
+      "t": 48.0,
       "windows": 2
     },
     {
-      "rss_kb": 103944,
+      "rss_kb": 104400,
       "threads": 21,
       "fds": 28,
       "t": 53.2,
       "windows": 2
     },
     {
-      "rss_kb": 103944,
+      "rss_kb": 104396,
       "threads": 21,
       "fds": 28,
       "t": 58.5,
       "windows": 2
     },
     {
-      "rss_kb": 103944,
+      "rss_kb": 102916,
       "threads": 21,
       "fds": 28,
       "t": 63.8,
       "windows": 2
     },
     {
-      "rss_kb": 103944,
+      "rss_kb": 102908,
       "threads": 21,
       "fds": 28,
-      "t": 69.1,
+      "t": 69.0,
       "windows": 2
     },
     {
-      "rss_kb": 103944,
+      "rss_kb": 104396,
       "threads": 21,
       "fds": 28,
-      "t": 74.4,
+      "t": 74.3,
       "windows": 2
     },
     {
-      "rss_kb": 103944,
+      "rss_kb": 104396,
       "threads": 21,
       "fds": 28,
-      "t": 79.7,
+      "t": 79.6,
       "windows": 2
     },
     {
-      "rss_kb": 103944,
+      "rss_kb": 104392,
       "threads": 21,
       "fds": 28,
-      "t": 85.0,
+      "t": 84.9,
       "windows": 2
     },
     {
-      "rss_kb": 103948,
+      "rss_kb": 104396,
       "threads": 21,
       "fds": 28,
-      "t": 90.3,
+      "t": 90.2,
       "windows": 2
     },
     {
-      "rss_kb": 103948,
+      "rss_kb": 104392,
       "threads": 21,
       "fds": 28,
-      "t": 95.6,
+      "t": 95.5,
       "windows": 2
     },
     {
-      "rss_kb": 103944,
+      "rss_kb": 104400,
       "threads": 21,
       "fds": 28,
-      "t": 100.9,
+      "t": 100.8,
       "windows": 2
     },
     {
-      "rss_kb": 103952,
+      "rss_kb": 104412,
       "threads": 21,
       "fds": 28,
-      "t": 106.2,
+      "t": 106.1,
       "windows": 2
     },
     {
-      "rss_kb": 103952,
+      "rss_kb": 104408,
       "threads": 21,
       "fds": 28,
-      "t": 111.6,
+      "t": 111.4,
       "windows": 2
     },
     {
-      "rss_kb": 103952,
+      "rss_kb": 104412,
       "threads": 21,
       "fds": 28,
-      "t": 116.9,
+      "t": 116.7,
       "windows": 2
     }
   ],
   "baseline": {
-    "rss_kb": 100436,
-    "threads": 22,
+    "rss_kb": 100892,
+    "threads": 21,
     "fds": 28,
-    "t": 0.3,
+    "t": 0.2,
     "windows": 2
   },
   "final": {
-    "rss_kb": 103952,
+    "rss_kb": 104412,
     "threads": 21,
     "fds": 28,
-    "t": 116.9,
+    "t": 116.7,
     "windows": 2
   },
-  "rss_growth_kb": 3516,
-  "thread_growth": -1,
+  "rss_growth_kb": 3520,
+  "thread_growth": 0,
   "fd_growth": 0
 }

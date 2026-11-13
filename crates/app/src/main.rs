@@ -824,7 +824,7 @@ fn live_diag_snapshot() -> serde_json::Value {
 }
 
 fn with_app<R>(f: impl FnOnce(&mut AppState) -> R) -> Option<R> {
-    runtime::with_active_window(f)
+    runtime::with_primary_window(f)
 }
 
 /// 对所有已注册窗口执行一次；配置/主题/语言等共享状态变化必须逐窗口同步。

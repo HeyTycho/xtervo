@@ -84,8 +84,8 @@ CARGO_TARGET_DIR=/home/user/AIworkspace/rusttabbyterminal/target \
 ```text
 duration=120s
 baseline: rss=100588KiB threads=21 fds=28 windows=2
-final:    rss=~104104KiB threads=21 fds=28 windows=2
-growth:   rss=+3516KiB, threads=-1, fds=0
+final:    rss=~104108KiB threads=21 fds=28 windows=2
+growth:   rss=+3520KiB, threads=0, fds=0
 PASS 2m dual-window soak
 ```
 
