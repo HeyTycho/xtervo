@@ -10,6 +10,9 @@ mod feedback;
 mod glyph;
 mod gpu_native;
 mod gpu_present;
+// 单实例 primary/secondary IPC 原型（多窗口 Phase 3）；尚未接入启动流程。
+#[cfg(unix)]
+mod instance;
 mod keys;
 mod known_hosts;
 mod latency;
