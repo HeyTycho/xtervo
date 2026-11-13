@@ -5,6 +5,9 @@ Purpose: one place for supported features, fixes, and branch merge decisions.
 The historical inventory stays in [`FEATURE_MATRIX.md`](FEATURE_MATRIX.md);
 this file is the current mainline truth.
 
+产品定位、六条原则、非目标和 M0–M6 路标见
+[`PRODUCT_PRINCIPLES.md`](PRODUCT_PRINCIPLES.md)。
+
 ## Supported surface (mainline)
 
 ### Terminal / UI
