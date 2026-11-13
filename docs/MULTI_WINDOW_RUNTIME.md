@@ -276,6 +276,9 @@ resized / native focus / close / IME
 下一阶段：把 primary 回调注册块抽成 `register_window_callbacks(wid, state)`，
 每个闭包显式带 WindowId；这项是机械重构，但需要逐回调 e2e。
 
+> Phase 3.5 已解决：179 个回调已抽成共享注册函数，闭包经
+> `runtime::with_window(window_id, ...)` 显式路由。见 §9。
+
 ### 6.2 插件/MCP 协议
 
 已完成：
@@ -403,7 +406,8 @@ Xvfb）。MCP settings 仍覆盖无 `XDG_RUNTIME_DIR` 的 state-dir fallback。
 - primary 窗口先关、其它窗口存活时，primary 的 autosave timer 随 WindowRuntime
   停止；进程退出仍由主流程清理 marker，但本次不改 session 数据层，
   剩余窗口（opts.window=true）不会写多窗口快照。
-- 设置页/插件面板完整回调仍只在 primary 注册块（第二阶段机械重构未做）。
+- 设置页/插件面板完整回调仍只在 primary 注册块（第二阶段机械重构未做；
+  Phase 3.5 已解决，见 §9）。
 - legacy fallback（INPROC=0/LEGACY=1）会起独立子进程；它通过
   TERVO_SINGLE_INSTANCE=0 绕过 primary 锁，因此不受单实例约束。只用于
   测试/排障，不是默认路径。
@@ -418,3 +422,171 @@ docs(mw-runtime): phase 3 instance integration evidence
 ```
 
 未合 main、未 tag、未打包。
+
+---
+
+## 9. Phase 3.5：完整窗口回调（2026-11-13）
+
+分支：`agent/mw-callbacks`；worktree：`.worktrees/mw-callbacks`；基线：main `9819d95`
+（WindowRegistry/单实例/默认同进程多窗口）。
+范围：把 primary 的 179 个 `ui.on_*` 回调抽成共享注册函数，让 secondary 成为
+完整窗口；不改 session v2 / 单实例协议；未合 main、未 tag、未打包。
+
+### 9.1 结构
+
+```text
+crates/app/src/main.rs
+  fn register_window_callbacks(ui, state, window_id)
+    - 179 个 ui.on_*（键盘/IME/鼠标/滚动/选择/tab/pane 菜单/命令面板/
+      搜索/tab search/设置页全部分类与搜索/插件页与 surface/profile/
+      SFTP/Vault/hostkey/SSH/paste/rename/save/背景图/主题/光标/粗体/
+      字号/回滚/MCP 开关/最大化/quake/窗口关闭…）
+    - 每个闭包只捕获 WindowId（Copy），状态访问一律
+      runtime::with_window(window_id, ...)
+    - 注册时的窗口初始化（主题展示/字号/回滚/quake 开关/render HUD）
+      用 runtime::with_state(&state, ...)
+  main()
+    - registry.insert(primary) 后调用 register_window_callbacks
+    - Quake 全局热键 listener 仍是进程级，只注册一次
+crates/app/src/secondary.rs
+  - 删除私有 install_core_callbacks；
+  - WindowRuntime 注册后调用同一个 crate::register_window_callbacks；
+  - show() 后启动该窗口的 X11 最大化状态机并同步初始 maximized。
+```
+
+回调闭包不持有 `Rc<RefCell<AppState>>`，避免 Slint component ↔ AppState 的
+强引用环；窗口关闭时 registry 移除 `WindowRuntime` 即可释放 PTY/模型/timer。
+`runtime::with_window` 在窗口已移除时返回 `None`，迟到的定时器不会误改别的窗口。
+
+覆盖计数（源码级单测
+`tests::all_primary_callbacks_live_in_shared_registration` 强制）：
+
+```text
+ui.on_* registration      179（全部在共享函数内）
+with_app(                 0（共享函数内）
+runtime::with_window      196 处
+```
+
+### 9.2 定时器 / 异步回调
+
+原先定时器回调里无作用域的 `with_app` 会固定落到 primary。现在按窗口路由：
+
+```text
+400ms  poll_events_for(state)             每窗口一份（插件/SFTP/Vault/hostkey）
+500ms  schedule_mcp_status_refresh(wid)   MCP socket 状态
+100ms  sftp_op_timer(wid)                 SFTP 元数据操作
+16ms/200ms resize redraw/finalize(wid)
+50ms   drag autoscroll(wid)
+30ms   bell flash(wid)
+cursor blink(wid) / render HUD(wid)
+app wake  -> runtime::with_all_windows(plugin/SFTP/Vault 结果)
+auto theme watcher -> runtime::with_all_windows(共享主题变化)
+```
+
+文件拖放按全局唯一 `PaneId` 用 `runtime::window_for_pane` 路由到所属窗口；
+native drop 的 hover 命中测试显式带 `window_id`。
+
+### 9.3 关闭行为
+
+```text
+UI ✕ / on_close_window -> request_close
+  需要确认 -> 该窗口 confirm（accept 后走同一路径）
+  多窗口   -> 立即 remove_window + GPU teardown（路由/计数马上正确）+
+              hide；WindowRuntime drop 延后到回调返回（避免在 Slint 回调栈
+              上销毁正在执行的 component）
+  最后一个 -> quit_event_loop，主流程保存/清理 session
+WM CloseRequested -> 既有 install_native_window_events 路径不变
+MCP close_window  -> 既有实现不变（要求 window_id + destructive）
+```
+
+移除延后到回调返回之后，避免在 Slint 控件回调栈上 drop 最后一个 MainWindow
+强引用；被移除窗口的 UI 状态/模型不会再被另一个窗口看到。
+
+### 9.4 双窗口语义
+
+```text
+窗口私有：MainWindow、所有 Slint model、tabs/panes/focus、设置页 category/
+        搜索结果、命令面板 items、插件页 rows、profile/SFTP/Vault job。
+进程共享：Config、ThemeRegistry、PluginStore（每插件一个子进程）、Vault、
+        ProfileStore、MCP runtime/socket/token、SessionService。
+```
+
+MCP `list` 增加 additive 字段：
+
+```json
+{"windows":[{"window_id":1,"shared":{...},"ui":{
+  "settings_open":true,"settings_category":5,"settings_results":0,
+  "palette_open":false,"palette_items":10,"plugin_rows":1,
+  "profiles_open":false,"sftp_open":false,"search_open":false,...}}]}
+```
+
+`shared` 是 `SharedServices::identities()`；两个窗口必须相等，e2e 用它证明
+配置/插件/Vault/profile/MCP 只有一份。
+
+### 9.5 验证与证据
+
+```bash
+CARGO_HOME=$PWD/../../.cargo CARGO_TARGET_DIR=$PWD/../../target \
+  CARGO_NET_OFFLINE=true cargo test -p tervo-app --bin tervo
+# test result: ok. 553 passed; 0 failed; 1 ignored
+# 551 既有 + 2 新增源码级结构测试
+
+CARGO_TARGET_DIR=$PWD/../../target ./scripts/e2e_multi_window_callbacks.sh
+# PASS shared_services_one_copy
+# PASS settings_opens_in_window_1_only
+# PASS plugin_page_window_1
+# PASS palette_opens_in_window_2_only / palette_runs_settings_in_window_2
+# PASS both_windows_on_plugin_page
+# PASS settings_category_models_independent
+# PASS settings_search_stays_in_window
+# PASS palette_roundtrip_window_1 / after_settings
+# PASS close_primary_keeps_window_2_ui
+# PASS remaining_window_accepts_new_tab
+# PASS plugin_host_single_process / both_windows_registered_shared_callbacks
+# evidence: target/multi-window-callbacks/report.json
+
+CARGO_TARGET_DIR=$PWD/../../target ./scripts/e2e_multi_window_inproc.sh
+# PASS 既有 Phase 3 多窗口 + kill -9 恢复（未回归）
+
+CARGO_TARGET_DIR=$PWD/../../target ./scripts/soak_multi_window_inproc.sh
+# PASS 2m：rss_growth=3628KiB；threads 23->23；fds 31->31
+
+TERVO_BIN_DIR=$PWD/../../target/debug ./scripts/e2e_settings_i18n.sh
+# PASS：单窗口设置页/搜索/分类/语言/热更新/右键/TabBar 菜单/legacy 未回归
+
+CARGO_TARGET_DIR=$PWD/../../target ./scripts/e2e_single_instance_multi_window.sh
+# PASS：两次 tervo / --window / Ctrl+Shift+N 转发；错误 token 拒绝；
+#       close A 保 B；close primary 保其它；close 最后一个退出 0；
+#       marker 只属于 primary、退出后清理（未改 instance 协议）
+```
+
+### 9.6 已知限制 / 未做
+
+```text
+- 15m/30m soak 未跑：本分支改了回调注册与 timer 路由，未改渲染热路径；
+  合并 main 前按 AGENTS.md 升级 15m。
+- 另一个窗口已打开的设置页不会实时重绘 mirror：配置数据是共享一份
+  （窗口 A toggle 后 cfg 对所有窗口生效），但 B 的 Slint 属性/checkbox
+  仍显示旧值，重新进入设置页/刷新时一致。主题/背景图/语言这类已写入共享
+  cfg 的变更也只在触发窗口立即应用到渲染，其它窗口在下一次主题刷新/重开
+  时一致。未做跨窗口属性广播。
+- 插件 surface/permissions 仍是窗口私有 UI 状态（AppState），插件宿主共享；
+  (window_id, surface) 两级协议 key 未做（见 §6.2）。
+- MCP command.invoke / terminal.read/write 的 window_id 透传仍未做。
+- session v2 多窗口保存/恢复未改（见 §6.3/其他分支）。
+- IME 真实输入法上屏无法在 Xvfb 验证；键盘路径已 e2e，IME 回调与 primary
+  共用同一注册函数。
+- profile 编辑/SFTP/Vault/hostkey 的逐项交互没有单独 e2e：它们与 primary
+  共用同一批已注册闭包，双窗口 e2e 覆盖设置页/命令面板/插件页/关闭语义。
+- 第二窗口最大化只接入同一 X11 状态机并同步初始状态；双窗口 EWMH 行为
+  未做专门 e2e。
+```
+
+### 9.7 提交
+
+```text
+feat(mw): share full window callback registration between windows
+test(mw): dual-window settings/palette/plugin e2e + phase 3.5 docs
+```
+
+未合 main、未 tag、未打包、未改 dist-preview。
