@@ -78,6 +78,7 @@ impl OpenWindowRequest {
         Self::default()
     }
 
+    #[allow(dead_code)] // 协议/测试保留；CLI 目前只转发 cwd。
     pub fn with_profile(mut self, profile: impl Into<String>) -> Self {
         self.profile = Some(profile.into());
         self
@@ -280,6 +281,7 @@ impl PrimaryServer {
     ///
     /// 需要**精确**区分 primary/secondary 时，先调用
     /// [`InstanceLock::try_acquire`]，再调用 [`Self::start_with_lock`]。
+    #[allow(dead_code)] // 测试/脚本便捷入口；产品启动用 start_with_lock。
     pub fn start<H>(paths: InstancePaths, handler: H) -> io::Result<Self>
     where
         H: Fn(OpenWindowRequest) -> Result<(), String> + Send + Sync + 'static,
