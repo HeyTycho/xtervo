@@ -195,6 +195,9 @@ pub struct SharedServices {
     /// MCP 只有一个 runtime/socket/token；`Arc` 供 socket 线程持有。
     pub mcp: Arc<McpRuntime>,
     pub session: Shared<SessionService>,
+    /// 全进程唯一 PaneId 分配器。插件/MCP/session 都靠 PaneId 路由，不能让
+    /// 每个窗口各自从 1 开始（否则 window_id+pane_id 仍然撞车）。
+    next_pane_id: Cell<u64>,
 }
 
 impl SharedServices {
@@ -216,7 +219,21 @@ impl SharedServices {
             profiles: Shared::new(profiles),
             mcp,
             session: Shared::new(session),
+            next_pane_id: Cell::new(1),
         }
+    }
+
+    /// 分配全进程唯一的 PaneId；不复用，避免旧事件/插件消息命中新 pane。
+    pub fn alloc_pane_id(&self) -> u64 {
+        let id = self.next_pane_id.get().max(1);
+        self.next_pane_id.set(id.saturating_add(1));
+        id
+    }
+
+    /// 恢复路径观察已有 id，保证后续分配不冲突。
+    pub fn observe_pane_id(&self, id: u64) {
+        self.next_pane_id
+            .set(self.next_pane_id.get().max(id.saturating_add(1)));
     }
 
     /// 诊断身份：确认两个窗口拿到的是同一份服务，而不是各自 load 的副本。
@@ -471,6 +488,19 @@ pub fn with_all_windows(mut f: impl FnMut(WindowId, &mut AppState)) {
     for id in ids {
         let _ = with_window(id, |st| f(id, st));
     }
+}
+
+/// 按全局唯一 PaneId 找窗口。PTY 后台线程只带 pane id，不能靠“当前活动窗口”。
+pub fn window_for_pane(pane: u64) -> Option<WindowId> {
+    let registry = registry()?;
+    let runtimes = registry.borrow().runtimes();
+    for runtime in runtimes {
+        let state = runtime.state.clone();
+        if state.try_borrow().ok().is_some_and(|st| st.panes.contains_key(&pane)) {
+            return Some(runtime.id);
+        }
+    }
+    None
 }
 
 /// 设置活动窗口（focus/点击时调用）；返回是否仍存在。

@@ -56,14 +56,14 @@ impl McpGroup {
         match self {
             Self::Read => &["capabilities", "snapshot", "list", "output"],
             Self::Input => &["send_text", "send_key", "run"],
-            Self::Tabs => &["new_tab", "split", "focus", "scroll"],
-            Self::Destructive => &["close_pane", "close_tab", "kill"],
+            Self::Tabs => &["new_tab", "new_window", "split", "focus", "scroll"],
+            Self::Destructive => &["close_pane", "close_tab", "close_window", "kill"],
         }
     }
 }
 
 /// 全部 socket 命令的稳定顺序；`capabilities` 只在 read 分组允许时出现。
-pub const ALL_COMMANDS: [&str; 14] = [
+pub const ALL_COMMANDS: [&str; 16] = [
     "capabilities",
     "snapshot",
     "list",
@@ -72,11 +72,13 @@ pub const ALL_COMMANDS: [&str; 14] = [
     "send_key",
     "run",
     "new_tab",
+    "new_window",
     "split",
     "focus",
     "scroll",
     "close_pane",
     "close_tab",
+    "close_window",
     "kill",
 ];
 
@@ -86,8 +88,10 @@ pub fn group_for_command(command: &str) -> Option<McpGroup> {
     match command {
         "capabilities" | "snapshot" | "list" | "output" => Some(McpGroup::Read),
         "send_text" | "send_key" | "run" => Some(McpGroup::Input),
-        "new_tab" | "split" | "focus" | "scroll" => Some(McpGroup::Tabs),
-        "close_pane" | "close_tab" | "kill" => Some(McpGroup::Destructive),
+        "new_tab" | "new_window" | "split" | "focus" | "scroll" => Some(McpGroup::Tabs),
+        "close_pane" | "close_tab" | "close_window" | "kill" => {
+            Some(McpGroup::Destructive)
+        },
         _ => None,
     }
 }
@@ -146,9 +150,9 @@ impl McpPermissions {
         match command {
             "capabilities" | "snapshot" | "list" | "output" => self.read,
             "send_text" | "send_key" | "run" => self.input,
-            "new_tab" | "split" | "focus" | "scroll" => self.tabs,
+            "new_tab" | "new_window" | "split" | "focus" | "scroll" => self.tabs,
             // destructive 不是“再加一个分组就全开”：close 需要 tabs，kill 需要 input。
-            "close_pane" | "close_tab" => self.tabs && self.destructive,
+            "close_pane" | "close_tab" | "close_window" => self.tabs && self.destructive,
             "kill" => self.input && self.destructive,
             _ => false,
         }
@@ -203,13 +207,13 @@ impl McpPermissions {
                 Some("read disabled (enable MCP read)")
             },
             "send_text" | "send_key" | "run" => Some("input disabled (enable MCP input)"),
-            "new_tab" | "split" | "focus" | "scroll" => {
+            "new_tab" | "new_window" | "split" | "focus" | "scroll" => {
                 Some("tabs disabled (enable MCP tabs)")
             },
-            "close_pane" | "close_tab" if !self.tabs => {
+            "close_pane" | "close_tab" | "close_window" if !self.tabs => {
                 Some("tabs disabled (destructive close also requires MCP tabs)")
             },
-            "close_pane" | "close_tab" => {
+            "close_pane" | "close_tab" | "close_window" => {
                 Some("destructive disabled (enable MCP destructive)")
             },
             "kill" if !self.input => {
@@ -753,7 +757,7 @@ mod tests {
         let tabs_only = perms(false, false, true, false);
         assert_eq!(
             tabs_only.commands(),
-            vec!["new_tab", "split", "focus", "scroll"]
+            vec!["new_tab", "new_window", "split", "focus", "scroll"]
         );
         assert!(!tabs_only.allows_command("close_pane"));
     }
@@ -770,12 +774,14 @@ mod tests {
         let close = perms(false, false, true, true);
         assert!(close.allows_command("close_pane"));
         assert!(close.allows_command("close_tab"));
+        assert!(close.allows_command("close_window"));
         assert!(!close.allows_command("kill"));
 
         let kill = perms(false, true, false, true);
         assert!(kill.allows_command("kill"));
         assert!(!kill.allows_command("close_pane"));
         assert!(!kill.allows_command("close_tab"));
+        assert!(!kill.allows_command("close_window"));
     }
 
     #[test]

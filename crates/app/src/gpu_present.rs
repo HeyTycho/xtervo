@@ -176,6 +176,20 @@ pub fn install_for(window: WindowId, device: &wgpu::Device, queue: &wgpu::Queue)
     READY.store(true, Ordering::Release);
 }
 
+/// 当前仍持有共享 device 的窗口（诊断/证据用；顺序不稳定）。
+pub fn windows() -> Vec<WindowId> {
+    let guard = match STATE.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    let mut out: Vec<WindowId> = guard
+        .as_ref()
+        .map(|state| state.windows.iter().copied().collect())
+        .unwrap_or_default();
+    out.sort();
+    out
+}
+
 /// 取 Slint WGPU30 实际使用的 device/queue（与 GPU-native 链路同源）。
 ///
 /// 返回 clone 的 handle；Slint 在 RenderingSetup 之前返回 None。

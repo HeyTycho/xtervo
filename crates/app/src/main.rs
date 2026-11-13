@@ -35,6 +35,7 @@ mod render_bench;
 mod render_damage_tests;
 mod render_probe;
 mod runtime;
+mod secondary;
 mod session;
 mod sftp;
 mod tabby_import;
@@ -512,6 +513,8 @@ fn event_wake_enabled() -> bool {
 static CORE_EVENT_WAKES: AtomicUsize = AtomicUsize::new(0);
 static APP_EVENT_WAKES: AtomicUsize = AtomicUsize::new(0);
 static PERIODIC_POLLS: AtomicUsize = AtomicUsize::new(0);
+/// 实际请求的 Slint 后端（第二窗口安装 render notifier 用）。
+static REQUESTED_BACKEND: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
 /// 把后台唤醒信号桥接到 Slint 事件循环。
 ///
@@ -553,17 +556,50 @@ fn live_control(cmd: &str, args: &serde_json::Value) -> Result<serde_json::Value
         "[mcp] action={cmd} pane={:?} arg_bytes={bytes}",
         pane
     );
-    with_app(|st| match cmd {
-        "list" => Ok(serde_json::json!({
-            "schema":"tervo.control.v1",
-            "panes": st.panes.iter().map(|(id, rt)| serde_json::json!({
-                "pane_id": id,
-                "title": rt.title,
-                "grid": [rt.grid.0, rt.grid.1],
-                "rect": [rt.rect.x, rt.rect.y, rt.rect.w, rt.rect.h],
-                "focused": st.ws.active_tab().map(|t| t.focused) == Some(*id),
-            })).collect::<Vec<_>>(),
-        })),
+    if cmd == "list" {
+        return live_list_windows(args);
+    }
+    if cmd == "new_window" {
+        if !secondary::enabled() {
+            return Err("in-process multi-window is disabled (TERVO_MULTI_WINDOW_INPROC=1)".into());
+        }
+        let id = secondary::create_inproc_window()?;
+        return Ok(serde_json::json!({"window_id": id.get()}));
+    }
+    if cmd == "close_window" {
+        let raw = args
+            .get("window_id")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| "window_id required for close_window".to_string())?;
+        let id = WindowId::new(raw);
+        if runtime::window_count() <= 1 {
+            return Err("refusing to close the last window; quit the window instead".into());
+        }
+        let runtime = runtime::remove_window(id)
+            .ok_or_else(|| format!("unknown window_id {raw}"))?;
+        gpu_present::teardown_for(id);
+        gpu_native::teardown_for(id);
+        runtime.ui.hide();
+        drop(runtime);
+        return Ok(serde_json::json!({"window_id": raw, "remaining": runtime::window_count()}));
+    }
+    let window = match args.get("window_id").and_then(serde_json::Value::as_u64) {
+        Some(raw) => {
+            let id = WindowId::new(raw);
+            if runtime::registry()
+                .map(|reg| reg.borrow().get(id).is_some())
+                .unwrap_or(false)
+            {
+                id
+            } else {
+                return Err(format!("unknown window_id {raw}"));
+            }
+        },
+        None => runtime::current_window()
+            .or_else(|| runtime::registry().and_then(|reg| reg.borrow().active()))
+            .ok_or_else(|| "no active window".to_string())?,
+    };
+    runtime::with_window(window, |st| match cmd {
         "output" => {
             let pane = args.get("pane_id").and_then(serde_json::Value::as_u64)
                 .ok_or_else(|| "pane_id required".to_string())?;
@@ -679,37 +715,114 @@ fn live_control(cmd: &str, args: &serde_json::Value) -> Result<serde_json::Value
     }).unwrap_or_else(|| Err("app unavailable".into()))
 }
 
-/// live control socket 的 snapshot：只在 UI 线程调用。
-fn live_diag_snapshot() -> serde_json::Value {
-    with_app(|st| {
-        let active = st.ws.active_tab().map(|t| t.focused);
-        let mut panes = Vec::new();
-        for (id, rt) in &st.panes {
-            let mut f = diag::frame_json(&rt.frame, "live");
-            f["pane_id"] = serde_json::json!(id);
-            f["title"] = serde_json::json!(rt.title);
-            f["active"] = serde_json::json!(Some(*id) == active);
-            f["grid"] = serde_json::json!([rt.grid.0, rt.grid.1]);
-            panes.push(f);
-        }
-        serde_json::json!({
-            "schema": "tervo.diag.v1",
-            "kind": "live",
-            "version": BUILD_VERSION,
-            "commit": BUILD_COMMIT,
-            "target": BUILD_TARGET,
-            "active_pane": active,
+/// MCP `list`：返回所有窗口 + 每窗口 panes；`active_window_id` 不含猜测。
+fn live_list_windows(args: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let Some(registry) = runtime::registry() else {
+        return Err("window registry unavailable".into());
+    };
+    let active = registry.borrow().active();
+    let runtimes = registry.borrow().runtimes();
+    let mut windows = Vec::new();
+    for rt in runtimes {
+        let state = rt.state.clone();
+        let Ok(st) = state.try_borrow() else { continue };
+        let focused = st.ws.active_tab().map(|t| t.focused);
+        let panes: Vec<serde_json::Value> = st
+            .panes
+            .iter()
+            .map(|(id, pane)| {
+                serde_json::json!({
+                    "window_id": rt.id.get(),
+                    "pane_id": id,
+                    "title": pane.title,
+                    "grid": [pane.grid.0, pane.grid.1],
+                    "rect": [pane.rect.x, pane.rect.y, pane.rect.w, pane.rect.h],
+                    "focused": focused == Some(*id),
+                })
+            })
+            .collect();
+        windows.push(serde_json::json!({
+            "window_id": rt.id.get(),
+            "title": rt.title.borrow().clone(),
+            "active": active == Some(rt.id),
+            "tabs": st.ws.tabs.len(),
             "panes": panes,
-        })
-    })
-    .unwrap_or_else(|| serde_json::json!({
-        "schema":"tervo.diag.v1","kind":"live","error":"app unavailable"
+        }));
+    }
+    // 兼容旧 bridge：顶层 panes = 目标窗口（显式 window_id 或 active）。
+    let target = args
+        .get("window_id")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|raw| windows.iter().find(|w| w["window_id"] == raw).cloned())
+        .or_else(|| windows.iter().find(|w| w["active"] == true).cloned());
+    let panes = target
+        .as_ref()
+        .and_then(|w| w.get("panes"))
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!([]));
+    Ok(serde_json::json!({
+        "schema": "tervo.control.v1",
+        "active_window_id": active.map(|id| id.get()),
+        "windows": windows,
+        "panes": panes,
     }))
 }
 
-/// 旧回调入口：路由到“当前窗口”（`with_state/with_window` 设置的作用域），
-/// 没有作用域时回退到 registry 的活动窗口。多窗口下不再假设进程里只有一个
-/// 全局 AppState；新代码应显式使用 [`runtime::with_window`]。
+/// live control socket 的 snapshot：只在 UI 线程调用。
+fn live_diag_snapshot() -> serde_json::Value {
+    let Some(registry) = runtime::registry() else {
+        return serde_json::json!({
+            "schema":"tervo.diag.v1","kind":"live","error":"app unavailable"
+        });
+    };
+    let active_window = registry.borrow().active();
+    let runtimes = registry.borrow().runtimes();
+    let mut windows = Vec::new();
+    let mut all_panes = Vec::new();
+    for rt in runtimes {
+        let state = rt.state.clone();
+        let Ok(st) = state.try_borrow() else { continue };
+        let active = st.ws.active_tab().map(|t| t.focused);
+        let mut panes = Vec::new();
+        for (id, pane) in &st.panes {
+            let mut f = diag::frame_json(&pane.frame, "live");
+            f["window_id"] = serde_json::json!(rt.id.get());
+            f["pane_id"] = serde_json::json!(id);
+            f["title"] = serde_json::json!(pane.title);
+            f["active"] = serde_json::json!(Some(*id) == active);
+            f["grid"] = serde_json::json!([pane.grid.0, pane.grid.1]);
+            panes.push(f.clone());
+            all_panes.push(f);
+        }
+        windows.push(serde_json::json!({
+            "window_id": rt.id.get(),
+            "title": rt.title.borrow().clone(),
+            "active": active_window == Some(rt.id),
+            "tabs": st.ws.tabs.len(),
+            "active_pane": active,
+            "panes": panes,
+        }));
+    }
+    serde_json::json!({
+        "schema": "tervo.diag.v1",
+        "kind": "live",
+        "version": BUILD_VERSION,
+        "commit": BUILD_COMMIT,
+        "target": BUILD_TARGET,
+        "active_window_id": active_window.map(|id| id.get()),
+        "gpu": {
+            "present_ready": gpu_present::ready(),
+            "native_ready": gpu_native::ready(),
+            "present_windows": gpu_present::windows().iter().map(|id| id.get()).collect::<Vec<_>>(),
+            "present_frames": gpu_present::upload_stats().frames,
+            "native_frames": gpu_native::totals().frames,
+        },
+        "windows": windows,
+        // 兼容旧 MCP/诊断调用方：所有窗口 pane 平铺。
+        "panes": all_panes,
+    })
+}
+
 fn with_app<R>(f: impl FnOnce(&mut AppState) -> R) -> Option<R> {
     runtime::with_active_window(f)
 }
@@ -1864,6 +1977,16 @@ fn dispatch_plugin_event(
     event: plugin_v3::PluginEvent,
     payload: serde_json::Value,
 ) {
+    // 窗口上下文占位：v3 协议 additive 字段，旧插件忽略即可；新插件应读取
+    // `window_id`，不能靠宿主“当前窗口”猜测。命令/terminal.read 的 window_id
+    // 路由在下一阶段接入 supervisor 请求参数。
+    let mut payload = payload;
+    if let Some(object) = payload.as_object_mut() {
+        object.insert(
+            "window_id".to_string(),
+            serde_json::json!(st.window_id.get()),
+        );
+    }
     let _ = st.plugins.spawn_event(event, &payload);
 }
 
@@ -2644,12 +2767,20 @@ fn reconfig_summary(old: &Config, new: &Config) -> ReconfigSummary {
 /// 触发第二轮文件变化；设置页保存走各自现有回调，不经过这里。
 fn apply_external_config(st: &mut AppState, new_cfg: Config) {
     let old = st.cfg.with(|cfg| cfg.clone());
-    if old == st.cfg.with(|cfg| cfg.clone()) {
+    if old == new_cfg {
         // 典型情况：设置页刚 save 完、watcher 收到还没消费掉的自身写入；或只是
         // 重新格式化/改注释/换行。内容等价就不重载、不重绘。
         eprintln!("[config] 外部变更与当前配置等价，跳过套用（自身写入/仅格式变化）");
         return;
     }
+    apply_external_config_from(st, old, new_cfg);
+}
+
+/// 已经由 SharedServices 统一替换配置后，逐窗口同步 UI/终端状态。
+///
+/// 不能再用 `st.cfg == new_cfg` 提前返回：调用方已把共享配置写成新值，第二
+/// 个窗口仍需要应用字体/语言/主题等 per-window 状态。
+fn apply_external_config_from(st: &mut AppState, old: Config, new_cfg: Config) {
     let summary = reconfig_summary(&old, &new_cfg);
     let language_changed = old.lang() != new_cfg.lang();
     let theme_changed = old.theme != new_cfg.theme
@@ -3560,7 +3691,7 @@ fn create_pane(
 }
 
 fn new_tab_inner(st: &mut AppState) {
-    let id = st.ws.alloc_id();
+    let id = st.shared.alloc_pane_id();
     match create_pane(st, id, st.content, None, None, None) {
         Ok(rt) => {
             st.next_title += 1;
@@ -3590,6 +3721,20 @@ fn new_tab() {
 /// 新建窗口 = 拉起一个独立的 Tervo 进程（MVP，无单实例锁/IPC）。
 /// 在 `with_app` 借用内调用也安全：不碰 AppState，只 spawn 并写日志。
 fn new_window() {
+    if secondary::enabled() {
+        static PENDING: AtomicBool = AtomicBool::new(false);
+        if PENDING.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let _ = slint::invoke_from_event_loop(|| {
+            PENDING.store(false, Ordering::Release);
+            match secondary::create_inproc_window() {
+                Ok(id) => eprintln!("[ui] in-process new window id={id}"),
+                Err(error) => eprintln!("[ui] in-process new window failed: {error}"),
+            }
+        });
+        return;
+    }
     match window::spawn_new_window() {
         Ok(pid) => eprintln!("[ui] new window pid={pid}"),
         Err(e) => eprintln!("[ui] new window failed: {e}"),
@@ -4162,7 +4307,7 @@ fn open_profile_tab_now(st: &mut AppState, index: usize, allow_askpass: bool) {
             return;
         },
     };
-    let id = st.ws.alloc_id();
+    let id = st.shared.alloc_pane_id();
     let tab_title = spec.name.clone();
     let kind = spec.kind.clone();
     match create_pane(st, id, st.content, None, Some(&spec), askpass) {
@@ -5717,7 +5862,7 @@ fn duplicate_tab(st: &mut AppState, index: usize) {
     let leaf_cwds = tree.leaf_cwds();
     let leaf_profiles = tree.leaf_profiles();
     eprintln!("[ws] duplicate tab={index} panes={}", leaf_cwds.len());
-    let new_ids: Vec<PaneId> = (0..leaf_cwds.len()).map(|_| st.ws.alloc_id()).collect();
+    let new_ids: Vec<PaneId> = (0..leaf_cwds.len()).map(|_| st.shared.alloc_pane_id()).collect();
     let Some(new_root) = tree.assign(&new_ids) else {
         return;
     };
@@ -5918,7 +6063,7 @@ fn restore_pane_launch(
 fn restore_tab_snapshot(st: &mut AppState, tab_snap: &session::TabSnapshot) -> Option<usize> {
     let cwds = tab_snap.tree.leaf_cwds();
     let profiles = tab_snap.tree.leaf_profiles();
-    let ids: Vec<PaneId> = (0..cwds.len()).map(|_| st.ws.alloc_id()).collect();
+    let ids: Vec<PaneId> = (0..cwds.len()).map(|_| st.shared.alloc_pane_id()).collect();
     let Some(root) = tab_snap.tree.assign(&ids) else {
         eprintln!("[session] 布局与 pane 数量不符，跳过该标签");
         return None;
@@ -6214,7 +6359,7 @@ fn split_pane_inner(st: &mut AppState, id: PaneId, dir: Dir) {
             (rect.h / 2.0).max(1.0),
         ),
     };
-    let new_id = st.ws.alloc_id();
+    let new_id = st.shared.alloc_pane_id();
     match create_pane(st, new_id, new_rect, None, None, None) {
         Ok(rt) => {
             st.panes.insert(new_id, rt);
@@ -6231,20 +6376,22 @@ fn split_pane(id: PaneId, dir: Dir) {
     with_app(|st| split_pane_inner(st, id, dir));
 }
 
+fn focus_pane_inner(st: &mut AppState, id: PaneId) {
+    let Some(idx) = st.ws.tab_of(id) else { return };
+    if st.ws.tabs[idx].focused == id {
+        return;
+    }
+    st.ws.tabs[idx].focused = id;
+    // 显式切 pane：即使新旧 pane 光标屏幕坐标恰好相同也要让输入法重收 spot。
+    st.ime_spot_dirty = true;
+    refresh_views(st);
+    let win = st.window_focused;
+    sync_terminal_focus(st, win);
+    update_ime_spot(st);
+}
+
 fn focus_pane(id: PaneId) {
-    with_app(|st| {
-        let Some(idx) = st.ws.tab_of(id) else { return };
-        if st.ws.tabs[idx].focused == id {
-            return;
-        }
-        st.ws.tabs[idx].focused = id;
-        // 显式切 pane：即使新旧 pane 光标屏幕坐标恰好相同也要让输入法重收 spot。
-        st.ime_spot_dirty = true;
-        refresh_views(st);
-        let win = st.window_focused;
-        sync_terminal_focus(st, win);
-        update_ime_spot(st);
-    });
+    with_app(|st| focus_pane_inner(st, id));
 }
 
 /// 把窗口/ pane 焦点同步给启用了 DECSET 1004 的终端。
@@ -6360,18 +6507,18 @@ fn sync_maximize_from_state_machine(st: &mut AppState) {
 /// None（这就是旧启动逻辑在 X11 上偶尔拿不到 xid 的原因）。每 50ms 重试，直到
 /// winit 给出 Xlib/Xcb handle；最多 2s，之后明确回退 winit。重试只用于窗口
 /// 句柄就绪，不参与最大化状态判断。
-fn start_maximize_when_window_ready(ui: &MainWindow, attempt: u32) {
+fn start_maximize_when_window_ready(ui: &MainWindow, window_id: WindowId, attempt: u32) {
     let xid = ui.window().with_winit_window(winit_window_x11_id).flatten();
     if let Some(id) = xid {
         let on_event = move |_snapshot: tervo_maximize::MaximizeSnapshot| {
             let _ = slint::invoke_from_event_loop(move || {
-                with_app(sync_maximize_from_state_machine);
+                runtime::with_window(window_id, sync_maximize_from_state_machine);
             });
         };
         match tervo_maximize::MaximizeRuntime::start(id, on_event) {
             Ok(runtime) => {
                 let snapshot = runtime.snapshot();
-                with_app(|st| {
+                runtime::with_window(window_id, |st| {
                     st.window_maximized = snapshot.desired;
                     st.ui.set_window_maximized(snapshot.desired);
                     request_window_corners(
@@ -6405,7 +6552,7 @@ fn start_maximize_when_window_ready(ui: &MainWindow, attempt: u32) {
     let weak = ui.as_weak();
     slint::Timer::single_shot(Duration::from_millis(50), move || {
         if let Some(ui) = weak.upgrade() {
-            start_maximize_when_window_ready(&ui, attempt + 1);
+            start_maximize_when_window_ready(&ui, window_id, attempt + 1);
         }
     });
 }
@@ -7105,7 +7252,16 @@ fn redraw_pane(id: PaneId) {
             PIPE_SAMPLES.lock().unwrap().push(t.elapsed());
         }
     }
-    with_app(|st| redraw_pane_inner(st, id));
+    // PTY 后台线程只带 pane id。PaneId 全进程唯一，必须按它路由到所属窗口；
+    // 继续用 with_app 会在 B 聚焦时把 A 的输出画到 B（A 永不更新）。
+    match runtime::window_for_pane(id) {
+        Some(window) => {
+            let _ = runtime::with_window(window, |st| redraw_pane_inner(st, id));
+        },
+        None => {
+            with_app(|st| redraw_pane_inner(st, id));
+        },
+    }
 }
 
 /// IME 候选点去重键。
@@ -7633,7 +7789,8 @@ fn apply_font_size(st: &mut AppState) -> bool {
 }
 
 fn redraw_all() {
-    let ids: Vec<PaneId> = with_app(|st| st.panes.keys().copied().collect()).unwrap_or_default();
+    // 所有窗口都重绘；不能只取 active window 的 pane。
+    let ids = runtime::all_pane_ids();
     for id in ids {
         redraw_pane(id);
     }
@@ -8873,7 +9030,7 @@ fn install_native_window_events(ui: &MainWindow, window_id: WindowId) {
                 }
                 // 比 50ms 轮询更及时；失焦时不发，等重新获得焦点再强制补发。
                 if *focused {
-                    with_app(|st| {
+                    runtime::with_window(window_id, |st| {
                         st.ime_spot_dirty = true;
                         update_ime_spot(st);
                     });
@@ -8885,7 +9042,7 @@ fn install_native_window_events(ui: &MainWindow, window_id: WindowId) {
                     // 选词拖拽没有跨窗口的 release 保证（alt-tab/点其它窗口时 up 可能
                     // 永远不到本窗口）。失焦必须主动取消 drag 并停掉 50ms 自动滚动，
                     // 否则窗口在后台仍会持续滚动历史、且指针回来后旧 drag 会继续扩选。
-                    with_app(|st| {
+                    runtime::with_window(window_id, |st| {
                         st.drag_autoscroll.stop();
                         cancel_local_selection_drag(st, "window-blur");
                     });
@@ -8894,7 +9051,7 @@ fn install_native_window_events(ui: &MainWindow, window_id: WindowId) {
             winit::event::WindowEvent::CursorLeft { .. } => {
                 // 指针离开顶层窗口：报读/转发拖拽不受影响；本地选词拖拽停掉自动
                 // 滚动（窗口内仍可继续，包括拖到 tab bar/另一个 pane 上）。
-                with_app(|st| {
+                runtime::with_window(window_id, |st| {
                     st.drag_autoscroll.stop();
                     let Some(drag) = st.drag.as_mut() else { return };
                     if drag.autoscroll_paused
@@ -8912,7 +9069,7 @@ fn install_native_window_events(ui: &MainWindow, window_id: WindowId) {
             }
             winit::event::WindowEvent::CursorEntered { .. } => {
                 // 左键仍按着拖回窗口：恢复计时器，继续按新的指针位置滚动。
-                with_app(|st| {
+                runtime::with_window(window_id, |st| {
                     let resume = st.drag.as_ref().is_some_and(|drag| {
                         drag.autoscroll_paused
                             && selection_drag_autoscrolls(drag.mouse, drag.link, drag.moved)
@@ -8934,6 +9091,10 @@ fn install_native_window_events(ui: &MainWindow, window_id: WindowId) {
                 if runtime::window_count() > 1 {
                     eprintln!("[ui] {window_id} close requested（多窗口，保留其它窗口）");
                     if let Some(runtime) = runtime::remove_window(window_id) {
+                        // Slint 1.18 的 WM close 默认只是 hide，不保证立即发
+                        // RenderingTeardown；这里显式释放该窗口的 GPU 引用。
+                        gpu_present::teardown_for(window_id);
+                        gpu_native::teardown_for(window_id);
                         runtime.ui.hide();
                         // runtime/state 在这里 drop：PTY、模型、插件 UI 状态随窗口释放。
                     }
@@ -8942,7 +9103,7 @@ fn install_native_window_events(ui: &MainWindow, window_id: WindowId) {
             }
             winit::event::WindowEvent::ScaleFactorChanged { .. } => {
                 // DPR 变化后逻辑尺寸可能还没更新；强制按新 scale 重发 spot。
-                with_app(|st| {
+                runtime::with_window(window_id, |st| {
                     st.ime_spot_dirty = true;
                     update_ime_spot(st);
                 });
@@ -8964,7 +9125,7 @@ fn install_native_window_events(ui: &MainWindow, window_id: WindowId) {
                 let target = win
                     .with_winit_window(drop_target_at)
                     .flatten()
-                    .or_else(|| with_app(|st| st.ws.active_tab().map(|t| t.focused)).flatten());
+                    .or_else(|| runtime::with_window(window_id, |st| st.ws.active_tab().map(|t| t.focused)).flatten());
                 if let Some(ui) = weak.upgrade() {
                     ui.set_drop_hover_pane(-1);
                 }
@@ -10270,8 +10431,15 @@ fn ring_bell(audible_bell: bool, bell_count: u32) {
 /// CoreEvent 唤醒回调（UI 事件循环线程）：只做语义事件，不跑周期任务。
 fn on_core_event_wake() {
     CORE_EVENT_WAKES.fetch_add(1, Ordering::Relaxed);
-    let (audible_bell, bell_count) = with_app(drain_core_events).unwrap_or((false, 0));
-    ring_bell(audible_bell, bell_count);
+    // 事件来自任意窗口的 pane；必须逐窗口 drain，不能只处理 active window。
+    let mut audible = false;
+    let mut bells = 0u32;
+    runtime::with_all_windows(|_id, st| {
+        let (a, b) = drain_core_events(st);
+        audible |= a;
+        bells = bells.saturating_add(b);
+    });
+    ring_bell(audible, bells);
 }
 
 /// 插件活动 / SFTP 后台结果唤醒回调：立即收结果；周期兜底仍在 400ms timer。
@@ -10296,19 +10464,32 @@ fn on_app_event_wake() {
 ///
 /// 事件唤醒是低延迟路径，本函数仍是必需的兜底（唤醒丢失、合并窗口、超时与
 /// 周期性刷新都靠它），但不会因为事件多就变成高频轮询。
+fn poll_events_inner(st: &mut AppState) -> (bool, u32) {
+    let bells = drain_core_events(st);
+    refresh_plugin_ui(st);
+    poll_sftp_transfer(st);
+    poll_sftp_op(st);
+    poll_hostkey_check(st);
+    poll_vault(st);
+    bells
+}
+
 fn poll_events() {
     PERIODIC_POLLS.fetch_add(1, Ordering::Relaxed);
-    let (audible_bell, bell_count) = with_app(|st| {
-        let bells = drain_core_events(st);
-        refresh_plugin_ui(st);
-        poll_sftp_transfer(st);
-        poll_sftp_op(st);
-        poll_hostkey_check(st);
-        poll_vault(st);
-        bells
-    })
-    .unwrap_or((false, 0));
+    let (audible_bell, bell_count) = with_app(poll_events_inner).unwrap_or((false, 0));
     ring_bell(audible_bell, bell_count);
+}
+
+/// 第二窗口的 400ms 轮询：显式按 state 路由，不依赖“当前活动窗口”。
+fn poll_events_for(state: Rc<RefCell<AppState>>) {
+    PERIODIC_POLLS.fetch_add(1, Ordering::Relaxed);
+    if std::env::var_os("TERVO_MW_DEBUG").is_some() {
+        let id = state.borrow().window_id;
+        eprintln!("[poll] {id}");
+    }
+    let state_for_poll = state.clone();
+    let bells = runtime::with_state(&state_for_poll, poll_events_inner).unwrap_or((false, 0));
+    ring_bell(bells.0, bells.1);
 }
 
 /// 活动 pane 收到 BEL：闪一下边框（`visual_bell = false` 时完全不做）。
@@ -10842,6 +11023,274 @@ fn exec_software_fallback(requested: &str) -> ! {
     std::process::exit(3);
 }
 
+/// 构造一个窗口自己的模型 + `AppState`。
+///
+/// 单窗口（WindowId(1)）和第二窗口走同一路径；共享服务只通过句柄注入，
+/// 这里不会重新 load Config/PluginStore/Vault/ProfileStore，也不会启动插件进程。
+#[allow(clippy::too_many_arguments)]
+fn build_window_state(
+    ui: &MainWindow,
+    shared: Rc<SharedServices>,
+    window_id: WindowId,
+    opts: &Options,
+    fonts: Rc<FontSet>,
+    cell: (usize, usize),
+    win_w: f32,
+    win_h: f32,
+    content: Rect,
+    initial_theme: ThemeData,
+) -> Rc<RefCell<AppState>> {
+    ui.window()
+        .set_size(slint::PhysicalSize::new(win_w as u32, win_h as u32));
+
+    // 所有 Slint model 都是窗口私有的；两个窗口共享同一个 Rust 模型会串台。
+    let pane_model = Rc::new(VecModel::<PaneView>::default());
+    let tab_model = Rc::new(VecModel::<TabView>::default());
+    let divider_model = Rc::new(VecModel::<DividerView>::default());
+    ui.set_panes(ModelRc::from(pane_model.clone()));
+    ui.set_tabs(ModelRc::from(tab_model.clone()));
+    ui.set_dividers(ModelRc::from(divider_model.clone()));
+
+    let echo = Arc::new(AtomicUsize::new(0));
+    let palette_model = Rc::new(VecModel::<slint::SharedString>::default());
+    ui.set_palette_items(ModelRc::from(palette_model.clone()));
+    let tab_search_model = Rc::new(VecModel::<slint::SharedString>::default());
+    ui.set_tabsearch_items(ModelRc::from(tab_search_model.clone()));
+    let bg_model = Rc::new(VecModel::<slint::SharedString>::default());
+    ui.set_background_items(ModelRc::from(bg_model.clone()));
+    let profile_model = Rc::new(VecModel::<ProfileRow>::default());
+    ui.set_profile_items(ModelRc::from(profile_model.clone()));
+    let sftp_model = Rc::new(VecModel::<slint::SharedString>::default());
+    ui.set_sftp_items(ModelRc::from(sftp_model.clone()));
+    let sftp_queue_model = Rc::new(VecModel::<slint::SharedString>::default());
+    ui.set_sftp_queue(ModelRc::from(sftp_queue_model.clone()));
+    let hotkey_model = Rc::new(VecModel::<HotkeyRow>::default());
+    ui.set_hotkey_rows(ModelRc::from(hotkey_model.clone()));
+    let plugin_row_model = Rc::new(VecModel::<PluginRowView>::default());
+    ui.set_plugin_rows(ModelRc::from(plugin_row_model.clone()));
+    let plugin_activity_model = Rc::new(VecModel::<slint::SharedString>::default());
+    ui.set_plugin_activity_items(ModelRc::from(plugin_activity_model.clone()));
+    let plugin_surface_model = Rc::new(VecModel::<PluginUiElement>::default());
+    ui.set_plugin_surface_elements(ModelRc::from(plugin_surface_model.clone()));
+    let settings_model = Rc::new(VecModel::<slint::SharedString>::default());
+    ui.set_settings_results(ModelRc::from(settings_model.clone()));
+    let fwd_model = Rc::new(VecModel::<slint::SharedString>::default());
+    ui.set_fwd_items(ModelRc::from(fwd_model.clone()));
+    let profile_menu_model = Rc::new(VecModel::<slint::SharedString>::default());
+    ui.set_profilemenu_items(ModelRc::from(profile_menu_model.clone()));
+
+    let (app_wake, app_wake_rx) = WakeSignal::new();
+    if event_wake_enabled() {
+        spawn_app_wake_bridge(app_wake_rx);
+    } else {
+        drop(app_wake_rx);
+    }
+    let command_registry = commands::builtin();
+    // 圆角 worker 只依赖 X11；多个窗口各自持有自己的 SHAPE worker（默认关闭）。
+    let corners = if std::env::var_os("TERVO_CORNERS").is_none()
+        || std::env::var_os("TERVO_NO_CORNERS").is_some()
+    {
+        None
+    } else {
+        xconn::CornerShaper::spawn(&opts.title).ok()
+    };
+    let state = Rc::new(RefCell::new(AppState {
+        ui: ui.clone_strong(),
+        ws: Workspace::new(),
+        panes: HashMap::new(),
+        pane_model,
+        tab_model,
+        pane_rows: HashMap::new(),
+        divider_model: divider_model.clone(),
+        divider_infos: Vec::new(),
+        fonts,
+        cell,
+        echo: echo.clone(),
+        opts: opts.clone(),
+        window_id,
+        shared: shared.clone(),
+        content,
+        next_title: 0,
+        config_watcher: None,
+        resolved_theme: initial_theme.clone(),
+        registry: shared.themes.clone_handle(),
+        auto_watch_started: false,
+        search_open: false,
+        search_query: String::new(),
+        search_match_case: false,
+        search_regex: false,
+        save_pane: None,
+        commands: command_registry,
+        palette_ids: Vec::new(),
+        palette_model,
+        tab_search_indices: Vec::new(),
+        tab_search_model,
+        tab_search_query: String::new(),
+        palette_sel: 0,
+        drag: None,
+        pending_paste: None,
+        detached: Vec::new(),
+        bg_model,
+        profiles: shared.profiles.clone_handle(),
+        profile_model,
+        profile_indices: Vec::new(),
+        profile_query: String::new(),
+        vault: shared.vault.clone_handle(),
+        vault_job: None,
+        vault_action: None,
+        vault_busy: false,
+        vault_clear_armed: false,
+        hostkey_job: None,
+        hostkey_pending: None,
+        hostkey_prompt: None,
+        hostkey_verified: std::collections::HashSet::new(),
+        ssh_exit: None,
+        sftp_profiles: Vec::new(),
+        sftp_model,
+        hotkey_model,
+        hotkey_ids: Vec::new(),
+        hotkey_recording: None,
+        held_keys: HashMap::new(),
+        plugins: shared.plugins.clone_handle(),
+        app_wake: app_wake.clone(),
+        plugin_row_model,
+        plugin_activity_model,
+        plugin_surface_model,
+        plugin_activity_revision: 0,
+        plugin_status_revision: 0,
+        plugin_runtime_revision: 0,
+        plugin_status_command: None,
+        plugin_confirm: None,
+        plugin_surface: None,
+        plugin_approval: None,
+        last_plugin_focus: None,
+        sftp_delete_armed: false,
+        sftp_transfer: None,
+        sftp_current_request: None,
+        sftp_queue: sftp::TransferQueue::new(),
+        sftp_queue_model,
+        sftp_last_failed: None,
+        sftp_transfer_state: sftp::TransferState::idle(),
+        sftp_op: None,
+        sftp_op_timer: slint::Timer::default(),
+        quake_visible: false,
+        quake_saved: None,
+        profile_menu_indices: Vec::new(),
+        profile_menu_model,
+        right_down: None,
+        menu_link: String::new(),
+        broadcast: false,
+        last_click: None,
+        closed_tabs: Vec::new(),
+        fwd_profile_indices: Vec::new(),
+        fwd_model,
+        settings_result_cats: Vec::new(),
+        settings_result_sections: Vec::new(),
+        settings_jump_token: 0,
+        settings_jump_timer: slint::Timer::default(),
+        settings_model,
+        hover_cell: None,
+        link_hover_cell: None,
+        resize: None,
+        window_focused: true,
+        render_hud_timer: None,
+        window_maximized: false,
+        maximize: None,
+        ime_spot: None,
+        ime_spot_dirty: true,
+        ime_override: None,
+        wm_resize: false,
+        wm_release_pending: false,
+        xresize: None,
+        resize_events: 0,
+        resize_applied: 0,
+        resize_pending: None,
+        resize_apply_scheduled: false,
+        resize_apply: slint::Timer::default(),
+        last_resize_event: None,
+        wm_resize_saw_configure: false,
+        resize_redraw_scheduled: false,
+        resize_redraw: slint::Timer::default(),
+        resize_finalize: slint::Timer::default(),
+        bell_timer: slint::Timer::default(),
+        cursor_blink_on: true,
+        cursor_blink_timer: slint::Timer::default(),
+        drag_autoscroll: slint::Timer::default(),
+        resize_in_progress: false,
+        resize_max_apply_us: 0.0,
+        corners,
+        clipboard: arboard::Clipboard::new().ok(),
+        cfg: shared.cfg.clone_handle(),
+    }));
+    state
+}
+
+/// 单窗口/第二窗口共用的 UI 初始状态同步（只改 Slint 属性，不写盘）。
+fn init_window_ui(st: &mut AppState) {
+
+    st.ui.set_cfg_copy_on_select(st.cfg.copy_on_select);
+    st.ui.set_cfg_confirm_close(st.cfg.confirm_close);
+    st.ui
+        .set_cfg_restore_session(st.cfg.restore_session_on_startup);
+    st.ui.set_cfg_confirm_paste(st.cfg.confirm_multiline_paste);
+    st.ui
+        .set_cfg_desktop_notifications(st.cfg.desktop_notifications);
+    st.ui.set_cfg_visual_bell(st.cfg.visual_bell);
+    // 光标/粗体外观（GNOME Terminal 基础项）
+    st.ui
+        .set_cfg_cursor_shape(st.cfg.cursor_shape.clone().into());
+    st.ui
+        .set_cfg_cursor_blink(st.cfg.cursor_blink.clone().into());
+    st.ui
+        .set_cfg_cursor_color(st.cfg.cursor_color.clone().into());
+    st.ui
+        .set_cfg_cursor_text_color(st.cfg.cursor_text_color.clone().into());
+    st.ui.set_cfg_bold_is_bright(st.cfg.bold_is_bright);
+    st.ui.set_cfg_bold_color(st.cfg.bold_color.clone().into());
+    st.ui
+        .set_cfg_bold_color_same_as_fg(st.cfg.bold_color_same_as_fg);
+    configure_cursor_blink(st);
+    st.ui.set_cfg_audible_bell(st.cfg.audible_bell);
+    st.ui.set_cfg_scroll_output(st.cfg.scroll_on_output);
+    st.ui.set_cfg_scroll_keystroke(st.cfg.scroll_on_keystroke);
+    st.ui.set_cfg_sixel(st.cfg.sixel);
+    st.ui.set_cfg_sixel_scrolling(st.cfg.sixel_scrolling);
+    st.ui.set_cfg_iip(st.cfg.iip);
+    st.ui
+        .set_cfg_plugin_require_signature(st.cfg.plugin_require_signature);
+    st.ui
+        .set_cfg_scrollback_unlimited(st.cfg.scrollback_unlimited);
+    st.ui
+        .set_cfg_scrollbar_policy(st.cfg.scrollbar_policy().as_str().into());
+    st.ui
+        .set_cfg_backspace_binding(st.cfg.key_bindings().backspace.as_str().into());
+    st.ui
+        .set_cfg_delete_binding(st.cfg.key_bindings().delete.as_str().into());
+    st.ui.set_tabbar_bottom(st.cfg.tabbar_position == "bottom");
+    st.ui
+        .set_settings_path(Config::path().display().to_string().as_str().into());
+    refresh_help_info(st);
+    init_background(st);
+    // 测试/对比用：启动即隐藏背景，测量 cover 缩放成本（不影响正常路径）。
+    if std::env::var_os("TERVO_TEST_SUSPEND_BG").is_some() {
+        st.ui.set_background_suspended(true);
+    }
+    st.ui.set_language(st.cfg.lang().into());
+    refresh_hotkeys(st);
+    refresh_vault_ui(st);
+    sync_plugin_config_metadata(st);
+    refresh_plugin_page(st);
+    refresh_settings_results(st);
+    sync_mcp_ui(st);
+    eprintln!(
+        "[plugin-v3] 设置页 {} 个插件，{} 个启用，{} 条启用命令，{} unsupported/invalid",
+        st.plugins.total_count(),
+        st.plugins.enabled_count(),
+        st.plugins.enabled_command_count(),
+        st.plugins.unsupported_count()
+    );
+    eprintln!("[ui] 启动 tabbar_position={}", st.cfg.tabbar_position);}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 默认 GPU/Skia：用户没有显式设置 SLINT_BACKEND 时请求 winit-skia。
     // `SLINT_BACKEND=winit-software` 仍是显式回退开关；显式设置任何值都以用户为准。
@@ -10875,6 +11324,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         auto_software_no_drm = true;
     }
 
+    let _ = REQUESTED_BACKEND.set(requested_backend.clone());
     let t_start = Instant::now();
     let argv: Vec<String> = std::env::args().collect();
     if let Some(pos) = argv.iter().position(|a| a == "--sftp-probe") {
@@ -11181,78 +11631,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("[ui] settings ui={}", if settings_legacy { "legacy-modal" } else { "tab" });
     ui.window().set_size(slint::PhysicalSize::new(win_w as u32, win_h as u32));
 
-    let pane_model = Rc::new(VecModel::<PaneView>::default());
-    let tab_model = Rc::new(VecModel::<TabView>::default());
-    let divider_model = Rc::new(VecModel::<DividerView>::default());
-    ui.set_panes(ModelRc::from(pane_model.clone()));
-    ui.set_tabs(ModelRc::from(tab_model.clone()));
-    ui.set_dividers(ModelRc::from(divider_model.clone()));
-
-    let echo = Arc::new(AtomicUsize::new(0));
-    let palette_model = Rc::new(VecModel::<slint::SharedString>::default());
-    ui.set_palette_items(ModelRc::from(palette_model.clone()));
-    let tab_search_model = Rc::new(VecModel::<slint::SharedString>::default());
-    ui.set_tabsearch_items(ModelRc::from(tab_search_model.clone()));
-    let bg_model = Rc::new(VecModel::<slint::SharedString>::default());
-    ui.set_background_items(ModelRc::from(bg_model.clone()));
-    let profile_model = Rc::new(VecModel::<ProfileRow>::default());
-    ui.set_profile_items(ModelRc::from(profile_model.clone()));
-    let sftp_model = Rc::new(VecModel::<slint::SharedString>::default());
-    ui.set_sftp_items(ModelRc::from(sftp_model.clone()));
-    let sftp_queue_model = Rc::new(VecModel::<slint::SharedString>::default());
-    ui.set_sftp_queue(ModelRc::from(sftp_queue_model.clone()));
-    let hotkey_model = Rc::new(VecModel::<HotkeyRow>::default());
-    ui.set_hotkey_rows(ModelRc::from(hotkey_model.clone()));
-    let plugin_row_model = Rc::new(VecModel::<PluginRowView>::default());
-    ui.set_plugin_rows(ModelRc::from(plugin_row_model.clone()));
-    let plugin_activity_model = Rc::new(VecModel::<slint::SharedString>::default());
-    ui.set_plugin_activity_items(ModelRc::from(plugin_activity_model.clone()));
-    let plugin_surface_model = Rc::new(VecModel::<PluginUiElement>::default());
-    ui.set_plugin_surface_elements(ModelRc::from(plugin_surface_model.clone()));
-    let settings_model = Rc::new(VecModel::<slint::SharedString>::default());
-    ui.set_settings_results(ModelRc::from(settings_model.clone()));
-    let fwd_model = Rc::new(VecModel::<slint::SharedString>::default());
-    ui.set_fwd_items(ModelRc::from(fwd_model.clone()));
-    let profile_menu_model = Rc::new(VecModel::<slint::SharedString>::default());
-    ui.set_profilemenu_items(ModelRc::from(profile_menu_model.clone()));
-
-    // 插件发现（只读 manifest，不启动进程）。v3 命令不进静态 Registry：Palette
-    // 打开时把已启用插件的命令与内置命令合并，Enable/Disable 后无需重启 Tervo。
-    // `app_wake` 同时供插件活动与 SFTP 后台结果使用：后台线程写完通道后立即
-    // 叫醒 UI；400ms 轮询仍保留作为兜底。默认开启，A/B 诊断见 event_wake_enabled。
-    let (app_wake, app_wake_rx) = WakeSignal::new();
-    plugins.set_activity_wake(app_wake.clone());
-    // 已启用且权限已确认的插件在后台启动/握手，不阻塞首屏。
-    plugins.start_process_plugins();
-    let command_registry = commands::builtin();
-    eprintln!(
-        "[plugin-v3] 发现 {} 个插件（{} unsupported/invalid，{} 条启用命令）",
-        plugins.total_count(),
-        plugins.unsupported_count(),
-        plugins.enabled_command_count()
-    );
-    for (path, reason) in &plugins.skipped() {
-        eprintln!("[plugin-v3] 跳过 {path}: {reason}");
-    }
-
-    // 圆角 worker 只依赖 X11；连不上/没有 SHAPE 时记录日志并保持直角，不阻塞 UI。
-    // SHAPE 圆角与部分 WM 的 maximize/minimize/live-resize 组合会留下过期 mask
-    //（露桌面、右上角按钮点不到）。默认关闭；需要时用 TERVO_CORNERS=1 显式开启。
-    let corners = if std::env::var_os("TERVO_CORNERS").is_none()
-        || std::env::var_os("TERVO_NO_CORNERS").is_some()
-    {
-        eprintln!("[corners] 默认关闭（TERVO_CORNERS=1 可开启 SHAPE 圆角）");
-        None
-    } else {
-        match xconn::CornerShaper::spawn(&opts.title) {
-            Ok(shaper) => Some(shaper),
-            Err(e) => {
-                eprintln!("[corners] {e}");
-                None
-            }
-        }
-    };
-
     // ---- 每用户共享服务（只创建一次，窗口只拿句柄）----
     let mut shared_cfg = cfg.clone();
     shared_cfg.theme = theme_selection.clone();
@@ -11275,134 +11653,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let registry_cell = Rc::new(RefCell::new(WindowRegistry::new(shared.clone())));
     runtime::install_registry(registry_cell.clone());
 
-    let state = Rc::new(RefCell::new(AppState {
-        ui: ui.clone_strong(),
-        ws: Workspace::new(),
-        panes: HashMap::new(),
-        pane_model,
-        tab_model,
-        pane_rows: HashMap::new(),
-        divider_model: divider_model.clone(),
-        divider_infos: Vec::new(),
+    // 模型/AppState 构造已抽到 `build_window_state`，单窗口与第二窗口共用同一条路径。
+    let state = build_window_state(
+        &ui,
+        shared.clone(),
+        window_id,
+        &opts,
         fonts,
         cell,
-        echo: echo.clone(),
-        opts: opts.clone(),
-        window_id,
-        shared: shared.clone(),
+        win_w,
+        win_h,
         content,
-        next_title: 0,
-        config_watcher: None,
-        resolved_theme: initial_theme.clone(),
-        registry: shared.themes.clone_handle(),
-        auto_watch_started: false,
-        search_open: false,
-        search_query: String::new(),
-        search_match_case: false,
-        search_regex: false,
-        save_pane: None,
-        commands: command_registry,
-        palette_ids: Vec::new(),
-        palette_model,
-        tab_search_indices: Vec::new(),
-        tab_search_model,
-        tab_search_query: String::new(),
-        palette_sel: 0,
-        drag: None,
-        pending_paste: None,
-        detached: Vec::new(),
-        bg_model,
-        profiles: shared.profiles.clone_handle(),
-        profile_model,
-        profile_indices: Vec::new(),
-        profile_query: String::new(),
-        vault: shared.vault.clone_handle(),
-        vault_job: None,
-        vault_action: None,
-        vault_busy: false,
-        vault_clear_armed: false,
-        hostkey_job: None,
-        hostkey_pending: None,
-        hostkey_prompt: None,
-        hostkey_verified: std::collections::HashSet::new(),
-        ssh_exit: None,
-        sftp_profiles: Vec::new(),
-        sftp_model,
-        hotkey_model,
-        hotkey_ids: Vec::new(),
-        hotkey_recording: None,
-        held_keys: HashMap::new(),
-        plugins: shared.plugins.clone_handle(),
-        app_wake,
-        plugin_row_model,
-        plugin_activity_model,
-        plugin_surface_model,
-        plugin_activity_revision: 0,
-        plugin_status_revision: 0,
-        plugin_runtime_revision: 0,
-        plugin_status_command: None,
-        plugin_confirm: None,
-        plugin_surface: None,
-        plugin_approval: None,
-        last_plugin_focus: None,
-        sftp_delete_armed: false,
-        sftp_transfer: None,
-        sftp_current_request: None,
-        sftp_queue: sftp::TransferQueue::new(),
-        sftp_queue_model,
-        sftp_last_failed: None,
-        sftp_transfer_state: sftp::TransferState::idle(),
-        sftp_op: None,
-        sftp_op_timer: slint::Timer::default(),
-        quake_visible: false,
-        quake_saved: None,
-        profile_menu_indices: Vec::new(),
-        profile_menu_model,
-        right_down: None,
-        menu_link: String::new(),
-        broadcast: false,
-        last_click: None,
-        closed_tabs: Vec::new(),
-        fwd_profile_indices: Vec::new(),
-        fwd_model,
-        settings_result_cats: Vec::new(),
-        settings_result_sections: Vec::new(),
-        settings_jump_token: 0,
-        settings_jump_timer: slint::Timer::default(),
-        settings_model,
-        hover_cell: None,
-        link_hover_cell: None,
-        resize: None,
-        window_focused: true,
-        render_hud_timer: None,
-        window_maximized: false,
-        maximize: None,
-        ime_spot: None,
-        ime_spot_dirty: true,
-        ime_override: None,
-        wm_resize: false,
-        wm_release_pending: false,
-        xresize: None,
-        resize_events: 0,
-        resize_applied: 0,
-        resize_pending: None,
-        resize_apply_scheduled: false,
-        resize_apply: slint::Timer::default(),
-        last_resize_event: None,
-        wm_resize_saw_configure: false,
-        resize_redraw_scheduled: false,
-        resize_redraw: slint::Timer::default(),
-        resize_finalize: slint::Timer::default(),
-        bell_timer: slint::Timer::default(),
-        cursor_blink_on: true,
-        cursor_blink_timer: slint::Timer::default(),
-        drag_autoscroll: slint::Timer::default(),
-        resize_in_progress: false,
-        resize_max_apply_us: 0.0,
-        corners,
-        clipboard: arboard::Clipboard::new().ok(),
-        cfg: shared.cfg.clone_handle(),
-    }));
+        initial_theme.clone(),
+    );
     {
         let runtime = WindowRuntime::new(
             window_id,
@@ -11414,15 +11677,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         reg.insert(runtime).expect("first window id must be free");
         reg.set_active(window_id);
     }
-
-    // 后台事件唤醒（插件活动/SFTP 结果）：默认启用；A/B 诊断时关闭桥接，
-    // 回到旧版纯 400ms 轮询并保留同一套日志时间戳。
-    if event_wake_enabled() {
-        spawn_app_wake_bridge(app_wake_rx);
-    } else {
-        drop(app_wake_rx);
-        eprintln!("[event] TERVO_EVENT_WAKE=0：禁用事件唤醒，仅 400ms 轮询（A/B 诊断）");
-    }
+    // 插件宿主是共享服务：只启动一次，唤醒信号使用 primary 窗口的 app_wake。
+    shared.plugins.set_activity_wake(state.borrow().app_wake.clone());
+    shared.plugins.with_mut(|plugins| plugins.start_process_plugins());
 
     // ---- 回调 ----
     let keylog = std::env::var("TERVO_KEYLOG").is_ok();
@@ -13971,23 +14228,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ---- OSC 标题轮询 ----
     let poll_timer = slint::Timer::default();
+    let poll_state = state.clone();
     poll_timer.start(
         slint::TimerMode::Repeated,
         Duration::from_millis(400),
-        poll_events,
+        move || poll_events_for(poll_state.clone()),
     );
 
     // Crash-safe session autosave. Timer is forgotten deliberately: it must live
     // for the whole event loop, and dropping a Slint Timer stops it.
     let session_timer = slint::Timer::default();
+    let autosave_state = state.clone();
     session_timer.start(
         slint::TimerMode::Repeated,
         Duration::from_secs(2),
-        || {
-            let _ = with_app(autosave_session);
+        move || {
+            let state = autosave_state.clone();
+            let _ = runtime::with_state(&state, autosave_session);
         },
     );
-    std::mem::forget(session_timer);
 
     // 多 Tab + 窗口 resize 会反复重建 pane 帧缓冲/alacritty 行存储；glibc 默认把
     // 已 free 的几 MB 堆块留在 arena 不归还，RSS 曲线会持续缓慢上涨后才平台。
@@ -14027,18 +14286,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // DECSET 1004：窗口焦点变化及时同步给 TUI（50ms 轮询）。
     let focus_timer = slint::Timer::default();
+    let focus_state = state.clone();
     focus_timer.start(
         slint::TimerMode::Repeated,
         Duration::from_millis(50),
-        || {
-            let win = with_app(|st| {
+        move || {
+            let state = focus_state.clone();
+            let win = runtime::with_state(&state, |st| {
                 st.ui
                     .window()
                     .with_winit_window(|w| w.has_focus())
                     .unwrap_or(true)
             })
             .unwrap_or(true);
-            with_app(|st| {
+            let state = focus_state.clone();
+            let _ = runtime::with_state(&state, |st| {
                 let was_focused = st.window_focused;
                 sync_terminal_focus(st, win);
                 if win && !was_focused {
@@ -14051,73 +14313,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             });
         },
     );
+    // 计时器属于窗口生命周期：关掉 primary 而 second 仍存活时，必须能随
+    // WindowRuntime 一起 drop，不能只留在 main 的局部变量里。
+    if let Some(rt) = registry_cell.borrow().get(window_id) {
+        rt.keep_timer(poll_timer);
+        rt.keep_timer(session_timer);
+        rt.keep_timer(focus_timer);
+    }
 
-    // 设置开关的初始状态
-    with_app(|st| {
-        st.ui.set_cfg_copy_on_select(st.cfg.copy_on_select);
-        st.ui.set_cfg_confirm_close(st.cfg.confirm_close);
-        st.ui
-            .set_cfg_restore_session(st.cfg.restore_session_on_startup);
-        st.ui.set_cfg_confirm_paste(st.cfg.confirm_multiline_paste);
-        st.ui
-            .set_cfg_desktop_notifications(st.cfg.desktop_notifications);
-        st.ui.set_cfg_visual_bell(st.cfg.visual_bell);
-        // 光标/粗体外观（GNOME Terminal 基础项）
-        st.ui
-            .set_cfg_cursor_shape(st.cfg.cursor_shape.clone().into());
-        st.ui
-            .set_cfg_cursor_blink(st.cfg.cursor_blink.clone().into());
-        st.ui
-            .set_cfg_cursor_color(st.cfg.cursor_color.clone().into());
-        st.ui
-            .set_cfg_cursor_text_color(st.cfg.cursor_text_color.clone().into());
-        st.ui.set_cfg_bold_is_bright(st.cfg.bold_is_bright);
-        st.ui.set_cfg_bold_color(st.cfg.bold_color.clone().into());
-        st.ui
-            .set_cfg_bold_color_same_as_fg(st.cfg.bold_color_same_as_fg);
-        configure_cursor_blink(st);
-        st.ui.set_cfg_audible_bell(st.cfg.audible_bell);
-        st.ui.set_cfg_scroll_output(st.cfg.scroll_on_output);
-        st.ui.set_cfg_scroll_keystroke(st.cfg.scroll_on_keystroke);
-        st.ui.set_cfg_sixel(st.cfg.sixel);
-        st.ui.set_cfg_sixel_scrolling(st.cfg.sixel_scrolling);
-        st.ui.set_cfg_iip(st.cfg.iip);
-        st.ui
-            .set_cfg_plugin_require_signature(st.cfg.plugin_require_signature);
-        st.ui
-            .set_cfg_scrollback_unlimited(st.cfg.scrollback_unlimited);
-        st.ui
-            .set_cfg_scrollbar_policy(st.cfg.scrollbar_policy().as_str().into());
-        st.ui
-            .set_cfg_backspace_binding(st.cfg.key_bindings().backspace.as_str().into());
-        st.ui
-            .set_cfg_delete_binding(st.cfg.key_bindings().delete.as_str().into());
-        st.ui.set_tabbar_bottom(st.cfg.tabbar_position == "bottom");
-        st.ui
-            .set_settings_path(Config::path().display().to_string().as_str().into());
-        refresh_help_info(st);
-        init_background(st);
-        // 测试/对比用：启动即隐藏背景，测量 cover 缩放成本（不影响正常路径）。
-        if std::env::var_os("TERVO_TEST_SUSPEND_BG").is_some() {
-            st.ui.set_background_suspended(true);
-        }
-        st.ui.set_language(st.cfg.lang().into());
-        refresh_hotkeys(st);
-        refresh_vault_ui(st);
-        sync_plugin_config_metadata(st);
-        refresh_plugin_page(st);
-        refresh_settings_results(st);
-        sync_mcp_ui(st);
-        eprintln!(
-            "[plugin-v3] 设置页 {} 个插件，{} 个启用，{} 条启用命令，{} unsupported/invalid",
-            st.plugins.total_count(),
-            st.plugins.enabled_count(),
-            st.plugins.enabled_command_count(),
-            st.plugins.unsupported_count()
-        );
-        eprintln!("[ui] 启动 tabbar_position={}", st.cfg.tabbar_position);
-    });
-
+    // 设置开关的初始状态（所有窗口共用同一份配置）。
+    with_app(init_window_ui);
     // ---- 外部 config.toml 热更新监听 ----
     // 基线在 watcher 启动时采样，不主动触发一次；只有启动之后的内容变化才套用。
     let cfg_path = Config::path();
@@ -14130,7 +14335,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 eprintln!("[config] 热更新事件已过期（文件又被修改），跳过旧配置");
                 return;
             }
-            with_app(|st| apply_external_config(st, cfg));
+            // 配置是共享服务：先替换唯一 cfg，再逐窗口应用。不能只 with_app
+            // 改“当前窗口”，否则另一个窗口看不到热更新。
+            let Some(shared) = runtime::registry().map(|reg| reg.borrow().shared()) else {
+                return;
+            };
+            let old = shared.cfg.with(|current| current.clone());
+            if old == cfg {
+                return;
+            }
+            shared.cfg.replace(cfg.clone());
+            runtime::with_all_windows(|_id, st| {
+                apply_external_config_from(st, old.clone(), cfg.clone());
+            });
         })
         .is_err()
         {
@@ -14215,7 +14432,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let initial_maximized = ui.window().is_maximized();
     ui.set_window_maximized(initial_maximized);
     with_app(|st| st.window_maximized = initial_maximized);
-    start_maximize_when_window_ready(&ui, 0);
+    start_maximize_when_window_ready(&ui, window_id, 0);
     // 无头验收钩子：TERVO_GPU_SNAPSHOT=<前缀> 时定时 take_snapshot 写 PPM 并打像素统计。
     install_gpu_snapshot_hook(&ui);
     install_render_hud(&ui);
@@ -14237,6 +14454,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     // Slint 1.18 的 winit 后端不投递外部文件拖放，用 winit 事件桥接补齐。
     install_native_window_events(&ui, window_id);
+    // e2e/证据开关：feature flag + 显式 SECOND 时启动即建第二个窗口。
+    if secondary::enabled() && std::env::var_os("TERVO_MULTI_WINDOW_SECOND").is_some() {
+        match secondary::create_inproc_window() {
+            Ok(id) => eprintln!("[ui] startup second window id={id}"),
+            Err(error) => eprintln!("[ui] startup second window failed: {error}"),
+        }
+    }
     // GPU 自检兜底：Skia 软件 surface 会“窗口正常但全黑”，而 Slint 的
     // set_rendering_notifier 在 software surface 上不会给出 NativeOpenGL/WGPU
     // 回调。给 GPU 首帧 1s 初始化时间，仍无 GPU API 就 exec 回退软件后端。
@@ -14388,7 +14612,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if let Some(n) = opts.latency {
-        let echo = echo.clone();
+        let echo = with_app(|st| st.echo.clone()).unwrap_or_else(|| Arc::new(AtomicUsize::new(0)));
         std::thread::Builder::new()
             .name("latency-probe".into())
             .spawn(move || run_latency_probe(n, echo, TITLE.to_string()))?;
@@ -14399,7 +14623,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .spawn(move || run_fps_probe(secs, TITLE.to_string()))?;
     }
 
-    let _keepalive = (poll_timer, state);
+    // 主流程不再持有 AppState/Timer 的所有权；它们归 WindowRegistry。
+    drop(state);
     let run_result = slint::run_event_loop();
     // 正常退出（窗口关闭/最后一个 Tab 关闭）：开关打开时写会话快照。
     let restarting = with_app(|st| {
