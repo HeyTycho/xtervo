@@ -309,12 +309,38 @@ pub fn format_command_result(value: &Value) -> (bool, String) {
     }
 }
 
+/// 可选的窗口路由参数。
+///
+/// 协议保持 additive：不带 `window_id` 时由宿主解析为当前活动窗口；显式值必须
+/// 是 >= 1 的整数。显式窗口不存在时由 UI 层拒绝/丢弃（supervisor 线程不持有
+/// WindowRegistry）。
+pub fn parse_window_id(params: &Value) -> Result<Option<u64>, String> {
+    let Some(object) = params.as_object() else {
+        return Ok(None);
+    };
+    let Some(value) = object.get("window_id") else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    let raw = value
+        .as_u64()
+        .ok_or_else(|| "window_id 必须是正整数".to_string())?;
+    if raw == 0 {
+        return Err("window_id 必须 >= 1".into());
+    }
+    Ok(Some(raw))
+}
+
 /// `status.get` / `ui.status` 的结果。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StatusPayload {
     pub text: String,
     pub tooltip: String,
     pub command: Option<String>,
+    /// 状态所属窗口；`None` = 所有窗口共用（status.get 轮询的默认结果）。
+    pub window_id: Option<u64>,
 }
 
 pub fn parse_status_payload(value: &Value) -> Result<StatusPayload, String> {
@@ -343,7 +369,8 @@ pub fn parse_status_payload(value: &Value) -> Result<StatusPayload, String> {
     if command.as_ref().is_some_and(|command| command.chars().count() > 128) {
         return Err("status.command 超过 128 字符".into());
     }
-    Ok(StatusPayload { text: text.to_string(), tooltip, command })
+    let window_id = parse_window_id(value)?;
+    Ok(StatusPayload { text: text.to_string(), tooltip, command, window_id })
 }
 
 /// `ui.notify` 参数。
@@ -351,6 +378,8 @@ pub fn parse_status_payload(value: &Value) -> Result<StatusPayload, String> {
 pub struct NotifyPayload {
     pub text: String,
     pub level: String,
+    /// 目标窗口；`None` = 宿主活动窗口。
+    pub window_id: Option<u64>,
 }
 
 pub fn parse_notify_payload(params: &Value) -> Result<NotifyPayload, String> {
@@ -372,7 +401,8 @@ pub fn parse_notify_payload(params: &Value) -> Result<NotifyPayload, String> {
         "info" | "warn" | "error" => level,
         other => return Err(format!("ui.notify.level 不支持 {other:?}")),
     };
-    Ok(NotifyPayload { text: text.to_string(), level: level.to_string() })
+    let window_id = parse_window_id(params)?;
+    Ok(NotifyPayload { text: text.to_string(), level: level.to_string(), window_id })
 }
 
 /// `terminal.read` 参数（被宿主 clamp）。
@@ -949,4 +979,34 @@ mod tests {
         assert_eq!(defaults.max_lines, 80);
         assert_eq!(defaults.max_bytes, 32 * 1024);
     }
+    #[test]
+    fn window_id_is_additive_validated_and_optional() {
+        assert_eq!(parse_window_id(&json!({})).unwrap(), None);
+        assert_eq!(parse_window_id(&json!({"window_id": null})).unwrap(), None);
+        assert_eq!(parse_window_id(&json!({"window_id": 1})).unwrap(), Some(1));
+        assert_eq!(parse_window_id(&json!({"window_id": 42})).unwrap(), Some(42));
+        assert!(parse_window_id(&json!({"window_id": 0})).is_err());
+        assert!(parse_window_id(&json!({"window_id": -1})).is_err());
+        assert!(parse_window_id(&json!({"window_id": "2"})).is_err());
+
+        let notify = parse_notify_payload(&json!({
+            "text": "hello",
+            "window_id": 3,
+        }))
+        .unwrap();
+        assert_eq!(notify.window_id, Some(3));
+        let status = parse_status_payload(&json!({
+            "text": "ready",
+            "window_id": 2,
+        }))
+        .unwrap();
+        assert_eq!(status.window_id, Some(2));
+        assert_eq!(
+            parse_status_payload(&json!({"text": "ready"}))
+                .unwrap()
+                .window_id,
+            None
+        );
+    }
+
 }

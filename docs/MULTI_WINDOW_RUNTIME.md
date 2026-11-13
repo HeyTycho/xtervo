@@ -343,25 +343,37 @@ resized / native focus / close / IME
 
 设置页、插件面板、profile 编辑器、SFTP/Quake/菜单等完整回调仍只在 primary
 注册块。第二窗口能跑终端与 tab/split（快捷键路径），但设置面板交互不完整。
+插件/MCP per-window 分支为第二窗口补了 palette + ask Allow/Deny 的最小回调
+（见 §6.2），其余仍由共享回调注册处理。
 下一阶段：把 primary 回调注册块抽成 `register_window_callbacks(wid, state)`，
 每个闭包显式带 WindowId；这项是机械重构，但需要逐回调 e2e。
 
-### 6.2 插件/MCP 协议
+### 6.2 插件/MCP 协议（本分支完成 per-window routing）
 
 已完成：
 
 ```text
-plugin event payload + window_id（additive）
-MCP list/new_window/close_window + window_id 参数
+插件事件 payload + window_id（additive）
+command.invoke.window_id = 发起命令的窗口
+插件 -> 宿主 terminal.read/write、clipboard.read/write、ui.notify、
+  ui.status、ui.render 支持 window_id（缺省 supervisor 解析为 active）
+宿主 -> 插件 surface.render / ui.action 回传 window_id
+terminal/clipboard ask 记录 window_id；Allow/Deny 只在请求窗口展示/执行
+surface/status key：(window_id, surface) / (plugin, window_id)
+关闭窗口清理该窗口 surface/status/notice 并取消未决 ask
+MCP 所有 live 工具校验显式 window_id；缺省 active；audit 行包含 window
+MCP list 返回 windows[] + active_window_id；close_window 拒绝最后一个窗口
 PaneId 全局唯一
 ```
 
-未完成：
+说明：
 
 ```text
-command.invoke / terminal.read / terminal.write 的 window_id 透传
-插件 panel/surface 的 (window_id, surface) 两级 key
-MCP audit 记录 window_id（当前只记 pane_id）
+- 显式 window_id 不存在时：插件 request 返回错误/ask 不会被别的窗口执行；
+  notification/ui.render 由目标窗口消费，其它窗口不显示。
+- 插件 push ui.render 到显式目标窗口且该窗口未打开 surface 时，在该窗口
+  显示；不会覆盖另一个窗口已打开的 panel。
+- 第二窗口的 palette/ask 回调是本分支补的最小集合；完整设置页回调仍见 §6.1。
 ```
 
 ### 6.3 Session v2 多窗口
@@ -402,6 +414,11 @@ secondary 转发 `open_window`，primary 的 handler 用 `invoke_from_event_loop
 （本分支最终 HEAD：feat(session): wire multi-window v2 save/restore into the
 product —— SharedServices autosave/watcher、v2 全窗口恢复、session e2e；
 见 git log）
+
+per-window routing 分支（基于 48fef38）：
+feat(plugin/mcp): per-window routing for plugin host calls and live tools
+—— command.invoke/read/write/clipboard/notify/status/render + (window,surface)
+两级 key、ask 窗口路由、MCP 全工具 window 校验/audit、双窗口插件 + MCP e2e
 ```
 
 未合 main、未 tag、未打包、未改 `dist-preview`。
@@ -470,6 +487,33 @@ CARGO_TARGET_DIR=$PWD/target ./scripts/soak_multi_window_inproc.sh
 
 MCP e2e：`e2e_mcp_live_control.sh`、`e2e_mcp_settings.sh` 均通过（debug 构建，
 Xvfb）。MCP settings 仍覆盖无 `XDG_RUNTIME_DIR` 的 state-dir fallback。
+
+### 8.5 插件/MCP per-window 路由（本分支）
+
+```bash
+# 单测（worktree 私有 target，避免并行 agent 覆盖二进制）
+CARGO_HOME=$PWD/../../.cargo CARGO_TARGET_DIR=$PWD/target \
+  cargo test -p tervo-app --bin tervo
+# 558 passed; 0 failed; 1 ignored（554 基线 + 4 新增）
+
+# 插件双窗口 e2e：真实 Python v3 子进程 + XTest 点击 Allow
+./scripts/e2e_plugin_window_routing.sh
+# PASS：一个插件进程；command.invoke 窗口；两窗口分别 read 自己的 pane；
+#       两窗口各自 panel 不互相覆盖；status 按窗口；关窗口清理；
+#       MCP 显式 window 校验/审计；拒绝关闭最后一个窗口
+
+# 多窗口 MCP e2e（扩展所有 live 工具显式 window 校验 + audit + 默认 active）
+TERVO_INSTANCE_DIR=/tmp/tervo-mw-e2e-test E2E_OUT=/tmp/tervo-mw-e2e-out \
+  CARGO_TARGET_DIR=$PWD/target ./scripts/e2e_multi_window_inproc.sh
+# PASS：input/focus/split/new_tab/close_pane/close_tab + 全部未知 window 拒绝 +
+#       [mcp] audit window=window-N + 缺省 window=active + kill -9 恢复
+
+# 2m 内存门禁
+SOAK_SECONDS=120 CARGO_TARGET_DIR=$PWD/target ./scripts/soak_multi_window_inproc.sh
+# PASS 2m：rss +4.96MiB；threads 22->22；fds 30->30；2 窗口存活
+```
+
+未合 main、未 tag/打包/市场/AI。
 
 ### 8.4 已知限制
 

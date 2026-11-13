@@ -580,6 +580,61 @@ fn install_core_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, window_
         });
     }
 
+    // 插件 per-window 路由的最小回调集合：本窗口 palette 能执行插件命令，
+    // 本窗口能确认 terminal.read/write。完整设置页/插件 surface 回调由
+    // §6.1 的共享回调注册负责，这里不复制整块。
+    {
+        let state = state.clone();
+        ui.on_palette_query_changed(move |_| {
+            let state = state.clone();
+            let _ = runtime::with_state(&state, crate::refresh_palette);
+        });
+    }
+    {
+        let state = state.clone();
+        ui.on_palette_move(move |delta| {
+            let state = state.clone();
+            let _ = runtime::with_state(&state, |st| crate::palette_move(st, delta));
+        });
+    }
+    {
+        let state = state.clone();
+        ui.on_palette_accept(move || {
+            let state = state.clone();
+            let _ = runtime::with_state(&state, crate::palette_accept);
+        });
+    }
+    {
+        let state = state.clone();
+        ui.on_palette_cancel(move || {
+            let state = state.clone();
+            let _ = runtime::with_state(&state, |st| st.ui.set_palette_open(false));
+        });
+    }
+    {
+        let state = state.clone();
+        ui.on_palette_pick(move |index| {
+            let state = state.clone();
+            let _ = runtime::with_state(&state, |st| {
+                st.ui.set_palette_selected(index.max(0));
+                crate::palette_accept(st);
+            });
+        });
+    }
+    {
+        let state = state.clone();
+        ui.on_plugin_approval_allow(move || {
+            let state = state.clone();
+            let _ = runtime::with_state(&state, |st| crate::resolve_plugin_approval(st, true));
+        });
+    }
+    {
+        let state = state.clone();
+        ui.on_plugin_approval_deny(move || {
+            let state = state.clone();
+            let _ = runtime::with_state(&state, |st| crate::resolve_plugin_approval(st, false));
+        });
+    }
     // 生命周期回调：第二窗口的关闭按钮/确认框/最大化必须作用在自己身上，
     // 不能沿用 primary 的旧 `with_app` 缺省路由。
     {

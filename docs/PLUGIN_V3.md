@@ -260,6 +260,14 @@ API Key**。声明 assistant 不会让插件获得任何 AI 能力。
 `ping` 每 **30s** 一次，超时 **5s**；连续 2 次 ping 超时会重启。
 `surface.render` 超时 **5s**。
 
+多窗口（additive）：
+
+- `command.invoke.params.window_id` = 发起命令的窗口；
+- `surface.render.params.window_id` / `ui.action.params.window_id` = 该 surface
+  所属窗口；插件回传 per-window 内容时用这个值；
+- 缺少 window_id 时宿主回退到当前 active window。窗口 id 从 1 开始单调递增，
+  关闭后不复用；不存在的显式 id 不会落到别的窗口。
+
 `status.get` / `ui.status` 结果：
 
 ```json
@@ -289,6 +297,17 @@ ask 的方法只能是 request（不能是 notification）。
 | `clipboard.read` | request | `clipboard` + 每次 ask | `{text}` |
 | `clipboard.write` | request | `clipboard` + 每次 ask | `{}` |
 | `credentials.get` | request | 永不 | 总是 `-32002 unsupported` |
+
+`terminal.read` / `terminal.write` / `clipboard.read` / `clipboard.write` /
+`ui.notify` / `ui.status` / `ui.render` 的 params 都可以带可选
+`window_id`（整数 ≥1，缺省 active）：
+
+- ask（terminal/clipboard）记录窗口；Allow/Deny 只在该窗口展示，并且只在该
+  窗口的焦点 terminal 上执行；
+- `ui.notify` / `ui.status` / `ui.render` 只显示在目标窗口；
+- `ui.render` 带显式 `window_id` 且目标窗口还没打开该插件的 surface 时，宿主
+  在该窗口打开；不会覆盖其它窗口已打开的 panel；
+- `window_id` 不存在时 request 返回错误；notification 被丢弃，不跨窗口显示。
 
 `context.config_metadata` 只返回：
 

@@ -166,6 +166,91 @@ def main() -> int:
     assert not cross.get("ok"), f"cross-window pane lookup must fail: {cross}"
     check("pane_route_not_global", cross.get("error"))
 
+    # ---- 所有 live 工具都校验/记录显式 window_id
+    # send_text / send_key / scroll / kill 路由到 window 2 的 pane。
+    live.ok("send_text", {"window_id": 2, "pane_id": pane2, "text": "echo SEND2_MARK\n"})
+    time.sleep(0.8)
+    assert "SEND2_MARK" in live.ok("output", {"window_id": 2, "pane_id": pane2})["text"]
+    live.ok("send_text", {"window_id": 2, "pane_id": pane2, "text": "echo KEY2_MARK"})
+    live.ok("send_key", {"window_id": 2, "pane_id": pane2, "key": "Enter"})
+    time.sleep(0.8)
+    assert "KEY2_MARK" in live.ok("output", {"window_id": 2, "pane_id": pane2})["text"]
+    live.ok("scroll", {"window_id": 2, "pane_id": pane2, "lines": -2})
+    live.ok("kill", {"window_id": 2, "pane_id": pane2})
+    check("input_tools_route_by_window", {"window": 2, "pane": pane2})
+
+    # split 只改变 window 2；window 1 pane 集合不变。
+    before1 = {p["pane_id"] for p in window_by_id(list_windows(live), 1)["panes"]}
+    before2 = len(window_by_id(list_windows(live), 2)["panes"])
+    live.ok("split", {"window_id": 2, "pane_id": pane2, "direction": "right"})
+    time.sleep(0.4)
+    data = list_windows(live)
+    target2 = window_by_id(data, 2)
+    assert len(target2["panes"]) == before2 + 1, target2
+    assert {p["pane_id"] for p in window_by_id(data, 1)["panes"]} == before1
+    check("split_scoped_to_window", {"window_2_panes": len(target2["panes"])})
+
+    # focus 只在目标窗口内改变焦点（pane2 与 split 出的新 pane 同一 active tab）。
+    focus_pane = pane2
+    live.ok("focus", {"window_id": 2, "pane_id": focus_pane})
+    focused2 = [p["pane_id"] for p in window_by_id(list_windows(live), 2)["panes"] if p.get("focused")]
+    assert focused2 == [focus_pane], focused2
+    check("focus_scoped_to_window", {"pane": focus_pane})
+
+    # new_tab / close_tab / close_pane 显式窗口；不影响另一个窗口的 tabs。
+    tabs1 = window_by_id(list_windows(live), 1)["tabs"]
+    panes_before = {p["pane_id"] for p in window_by_id(list_windows(live), 2)["panes"]}
+    live.ok("new_tab", {"window_id": 2})
+    data = list_windows(live)
+    assert window_by_id(data, 2)["tabs"] == 3, data
+    assert window_by_id(data, 1)["tabs"] == tabs1, data
+    panes_after = {p["pane_id"] for p in window_by_id(data, 2)["panes"]}
+    created = panes_after - panes_before
+    assert len(created) == 1, (created, panes_before, panes_after)
+    live.ok("close_pane", {"window_id": 2, "pane_id": created.pop()})
+    data = list_windows(live)
+    assert window_by_id(data, 2)["tabs"] == 2, data
+    remaining = window_by_id(data, 2)["panes"][0]["pane_id"]
+    live.ok("close_tab", {"window_id": 2, "pane_id": remaining})
+    data = list_windows(live)
+    assert window_by_id(data, 2)["tabs"] == 1, data
+    assert window_by_id(data, 1)["tabs"] == tabs1, data
+    check("tab_pane_tools_scoped_to_window", {"window_1_tabs": tabs1})
+
+    # 未知/非法 window_id 对所有 live 工具都报错，不会悄悄落到 active。
+    for cmd, extra in [
+        ("output", {"pane_id": pane2}),
+        ("send_text", {"pane_id": pane2, "text": "x"}),
+        ("new_tab", {}),
+        ("split", {"pane_id": pane2}),
+        ("close_window", {}),
+    ]:
+        bad = live.call(cmd, {"window_id": 99, **extra})
+        assert not bad.get("ok"), (cmd, bad)
+        assert "unknown window_id" in bad.get("error", ""), (cmd, bad)
+    bad = live.call("list", {"window_id": 0})
+    assert not bad.get("ok"), bad
+    check("all_live_tools_validate_window_id")
+
+    # audit：每个 live 动作必须带 window=window-N（list 也记录显式/active）。
+    log_so_far = pathlib.Path(args.log).read_text(errors="replace")
+    for cmd, window in [
+        ("output", "window-2"),
+        ("send_text", "window-2"),
+        ("send_key", "window-2"),
+        ("scroll", "window-2"),
+        ("kill", "window-2"),
+        ("split", "window-2"),
+        ("focus", "window-2"),
+        ("new_tab", "window-2"),
+        ("close_pane", "window-2"),
+        ("close_tab", "window-2"),
+        ("output", "window-1"),
+    ]:
+        needle = f"[mcp] action={cmd} window={window}"
+        assert needle in log_so_far, f"missing audit line: {needle}"
+    check("mcp_audit_has_window_id", {"commands": 11})
+
     wins = x11_windows(args.display)
     win_a = wins.get("Tervo")
     win_b = wins.get("Tervo — 2")
@@ -180,6 +265,21 @@ def main() -> int:
     subprocess.run([args.xwin, win_a, "--focus"], check=False)
     wait_for(lambda: active() == 1, label="active window 1")
     check("focus_routes_active_window", {"a": win_a, "b": win_b})
+
+    # 缺省 window_id = active：同一个 pane_id 只有在 active 窗口正确时才能解析。
+    subprocess.run([args.xwin, win_b, "--focus"], check=False)
+    wait_for(lambda: active() == 2, label="active window 2 again")
+    data = list_windows(live)
+    pane2_now = [p["pane_id"] for p in window_by_id(data, 2)["panes"] if p.get("focused")][0]
+    default_b = live.ok("output", {"pane_id": pane2_now})
+    assert default_b.get("window_id") == 2, default_b
+    subprocess.run([args.xwin, win_a, "--focus"], check=False)
+    wait_for(lambda: active() == 1, label="active window 1 again")
+    data = list_windows(live)
+    pane1_now = [p["pane_id"] for p in window_by_id(data, 1)["panes"] if p.get("focused")][0]
+    default_a = live.ok("output", {"pane_id": pane1_now})
+    assert default_a.get("window_id") == 1, default_a
+    check("default_window_is_active", {"window_2": default_b["window_id"], "window_1": default_a["window_id"]})
 
     # Close B via MCP live_close_window (window_id route). A must stay alive/usable.
     live.ok("close_window", {"window_id": 2})
