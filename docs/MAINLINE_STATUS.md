@@ -12,7 +12,8 @@ this file is the current mainline truth.
 
 ### Terminal / UI
 
-- Multi-tab, split panes, profiles, session restore, multi-window (`--window`).
+- Multi-tab, split panes, profiles, session restore, multi-window (`--window`). 当前 `--window` 是进程级 MVP；目标单进程多窗口方案见
+  [`MULTI_WINDOW_ARCHITECTURE.md`](MULTI_WINDOW_ARCHITECTURE.md)。
 - Settings tab: appearance/theme, terminal, window, keys, profiles, plugins,
   Vault, Help; settings search and jump.
 - Search/find, read-only, reset, save contents, selection/copy/paste, URL/OSC 8

@@ -151,7 +151,8 @@ ls -l dist/ && file dist/tervo-stripped && ./dist/tervo-stripped --help
 - 快捷键：`Ctrl+T` 新建标签、`Ctrl+Shift+N` 新建窗口、`Ctrl+W` 关闭标签。
 - 终端链接：`Ctrl+左键点击` 打开 `http` / `https` / `file` 链接（OSC 8 优先）；右键链接所在格出现
   `Open Link` / `Copy Link`，`xdg-open` 失败会在底部浮层提示并写日志。
-- 多窗口（MVP）：`Ctrl+Shift+N` / 标签栏右键 → New Window / 命令面板 `New Window`
+- 多窗口（MVP）：`Ctrl+Shift+N` / 标签栏右键 → New Window / 命令面板 `New Window`；当前是**一窗口一进程**的 MVP，目标单进程多窗口架构与迁移路线见
+  [`docs/MULTI_WINDOW_ARCHITECTURE.md`](docs/MULTI_WINDOW_ARCHITECTURE.md)。
   会拉起一个独立的 Tervo 进程，各自拥有 Tab/PTY；窗口互不影响，Tab 暂不能跨窗口移动。
 - 可见滚动条：右侧 overlay，支持 `scrollbar_policy = "always" | "auto" | "never"`；
   显示当前回滚位置，支持点击/拖动跳转（core 暴露非阻塞
