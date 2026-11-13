@@ -765,6 +765,36 @@ fn live_list_windows(args: &serde_json::Value) -> Result<serde_json::Value, Stri
                 "h": rt.geometry().h,
             },
             "panes": panes,
+            // 两个窗口必须指向同一份 SharedServices（Config/Theme/Plugin/Vault/
+            // Profile/Session/MCP）；e2e 断言这些 identity 相等。
+            "shared": st.shared.identities(),
+            // 每个窗口自己的 UI/模型状态：e2e 用它证明设置页/命令面板/插件页
+            // 确实开在目标窗口，且两个窗口的模型不共享。
+            "ui": {
+                "settings_open": st.ui.get_settings_open(),
+                "settings_tab_open": st.ui.get_settings_tab_open(),
+                "settings_category": st.ui.get_settings_category(),
+                "settings_query": st.ui.get_settings_query().to_string(),
+                "settings_results": st.settings_model.row_count(),
+                "palette_open": st.ui.get_palette_open(),
+                "palette_selected": st.ui.get_palette_selected(),
+                "palette_items": st.palette_model.row_count(),
+                "tabsearch_open": st.ui.get_tabsearch_open(),
+                "tabsearch_items": st.tab_search_model.row_count(),
+                "profiles_open": st.ui.get_profiles_open(),
+                "profile_form_open": st.ui.get_profile_form_open(),
+                "profile_rows": st.profile_model.row_count(),
+                "sftp_open": st.ui.get_sftp_open(),
+                "fwd_open": st.ui.get_fwd_open(),
+                "search_open": st.ui.get_search_open(),
+                "confirm_open": st.ui.get_confirm_open(),
+                "rename_open": st.ui.get_rename_open(),
+                "paste_open": st.ui.get_paste_open(),
+                "save_open": st.ui.get_save_open(),
+                "plugin_surface_open": st.ui.get_plugin_surface_open(),
+                "plugin_rows": st.plugin_row_model.row_count(),
+                "image_preview_open": st.ui.get_image_preview_open(),
+            },
         }));
     }
     // 兼容旧 bridge：顶层 panes = 目标窗口（显式 window_id 或 active）。
@@ -843,11 +873,6 @@ fn live_diag_snapshot() -> serde_json::Value {
 
 fn with_app<R>(f: impl FnOnce(&mut AppState) -> R) -> Option<R> {
     runtime::with_primary_window(f)
-}
-
-/// 对所有已注册窗口执行一次；配置/主题/语言等共享状态变化必须逐窗口同步。
-fn with_all_windows(mut f: impl FnMut(&mut AppState)) {
-    runtime::with_all_windows(|_id, st| f(st));
 }
 
 // ------------------------------------------------------------------ 主题
@@ -2931,7 +2956,7 @@ fn apply_external_config_from(st: &mut AppState, old: Config, new_cfg: Config) {
     }
     if mcp_changed {
         // listener 的 bind/remove 在 supervisor 线程里最多 ~100ms；稍后再刷一次状态。
-        schedule_mcp_status_refresh(&st.ui);
+        schedule_mcp_status_refresh(st.window_id);
     }
 
     eprintln!("[config] 已套用外部热更新: {}", summary.hot.join(", "));
@@ -3123,12 +3148,9 @@ fn mcp_status_text(
 }
 
 /// listener 在 supervisor 线程里异步 bind/remove；500ms 后刷新一次状态文字。
-fn schedule_mcp_status_refresh(ui: &MainWindow) {
-    let weak = ui.as_weak();
+fn schedule_mcp_status_refresh(window_id: WindowId) {
     slint::Timer::single_shot(Duration::from_millis(500), move || {
-        if weak.upgrade().is_some() {
-            with_app(|st| sync_mcp_ui(st));
-        }
+        let _ = runtime::with_window(window_id, sync_mcp_ui);
     });
 }
 
@@ -3165,7 +3187,7 @@ fn toggle_mcp_setting(st: &mut AppState, setting: McpSetting) {
         permissions.tabs,
         permissions.destructive
     );
-    schedule_mcp_status_refresh(&st.ui);
+    schedule_mcp_status_refresh(st.window_id);
 }
 
 /// 退出设置搜索/清空后重算结果；展示行与“无匹配”状态跟随当前语言。
@@ -3267,7 +3289,7 @@ fn watch_system_scheme() {
     let mut lines = BufReader::new(stdout).lines();
     while let Some(Ok(_line)) = lines.next() {
         let notified = slint::invoke_from_event_loop(|| {
-            with_app(|st| {
+            runtime::with_all_windows(|_id, st| {
                 // 用户已切到具体主题：停止跟随。
                 if !is_auto_theme(&st.cfg.theme) {
                     return;
@@ -3744,10 +3766,6 @@ fn new_tab_inner_with_cwd(st: &mut AppState, cwd: Option<PathBuf>) {
         }
         Err(e) => eprintln!("创建 pane 失败: {e}"),
     }
-}
-
-fn new_tab() {
-    with_app(new_tab_with_default);
 }
 
 /// 新建窗口：默认在当前 primary 进程内创建（WindowRegistry）。
@@ -5391,11 +5409,12 @@ fn sftp_start_op(st: &mut AppState, command: sftp::SftpCommand, status: &str) {
     // 立刻把 op-active 写进 UI：否则用户看不到 Cancel（慢连接尤其明显）。
     sftp_show_transfer(st);
     // 操作期间 100ms 收一次结果；完成/失败即 stop，空闲时零开销。
+    let window_id = st.window_id;
     st.sftp_op_timer.start(
         slint::TimerMode::Repeated,
         Duration::from_millis(100),
-        || {
-            with_app(|st| poll_sftp_op(st));
+        move || {
+            let _ = runtime::with_window(window_id, poll_sftp_op);
         },
     );
 }
@@ -5773,10 +5792,6 @@ fn close_tab_inner(st: &mut AppState, index: usize) {
     redraw_visible(st);
 }
 
-fn close_tab(index: usize) {
-    with_app(|st| close_tab_inner(st, index));
-}
-
 /// 重命名输入清洗：去首尾空白、拒绝空标题、限制长度（避免把 TabBar 撑坏）。
 fn sanitize_tab_title(text: &str) -> Option<String> {
     let t = text.trim();
@@ -6022,10 +6037,6 @@ fn close_pane_inner(st: &mut AppState, id: PaneId) {
         "[ws] close pane={id} emptied={emptied} panes={panes} model_rows={} rects={rects:?}",
         st.pane_model.row_count()
     );
-}
-
-fn close_pane(id: PaneId) {
-    with_app(|st| close_pane_inner(st, id));
 }
 
 // --------------------------------------------------------------- 会话快照
@@ -6368,10 +6379,6 @@ fn split_pane_inner(st: &mut AppState, id: PaneId, dir: Dir) {
     }
 }
 
-fn split_pane(id: PaneId, dir: Dir) {
-    with_app(|st| split_pane_inner(st, id, dir));
-}
-
 fn focus_pane_inner(st: &mut AppState, id: PaneId) {
     let Some(idx) = st.ws.tab_of(id) else { return };
     if st.ws.tabs[idx].focused == id {
@@ -6385,10 +6392,6 @@ fn focus_pane_inner(st: &mut AppState, id: PaneId) {
     let win = st.window_focused;
     sync_terminal_focus(st, win);
     update_ime_spot(st);
-}
-
-fn focus_pane(id: PaneId) {
-    with_app(|st| focus_pane_inner(st, id));
 }
 
 /// 把窗口/ pane 焦点同步给启用了 DECSET 1004 的终端。
@@ -6465,29 +6468,31 @@ fn request_close(st: &mut AppState) {
         st.ui.set_confirm_open(true);
         return;
     }
-    if runtime::window_count() > 1 {
-        // 多窗口：只关当前窗口，其它窗口和共享服务继续运行。
-        defer_close_window(window_id);
-    } else {
-        // 最后一个窗口：退出事件循环，主流程负责最终保存 + 清 running marker。
+    close_current_window(st);
+}
+
+/// 关闭一个窗口：多窗口时只移除本窗口（PTY/模型/timer/GPU 引用随
+/// `WindowRuntime` 释放），其它窗口继续运行；最后一个窗口才退出事件循环。
+///
+/// registry 移除立即完成（`window_count`/焦点/MCP 路由马上正确），但
+/// `WindowRuntime` 的 drop 延后到回调返回之后：本函数由 Slint 控件回调进入，
+/// 立即 drop 最后一个 `MainWindow` 强引用会在回调栈上销毁正在执行的对象。
+fn close_current_window(st: &mut AppState) {
+    let window_id = st.window_id;
+    if runtime::window_count() <= 1 {
         let _ = slint::quit_event_loop();
+        return;
     }
-}
-
-fn confirm_accept_inner(st: &mut AppState) {
-    st.ui.set_confirm_open(false);
-    match st.pending_close_window.take() {
-        Some(id) if runtime::window_count() > 1 => defer_close_window(id),
-        // 最后一个窗口（或旧的无 pending 路径）：保持原来的退出语义。
-        _ => {
-            let _ = slint::quit_event_loop();
-        },
+    eprintln!("[ui] {window_id} close（保留其它窗口）");
+    let runtime = runtime::remove_window(window_id);
+    gpu_present::teardown_for(window_id);
+    gpu_native::teardown_for(window_id);
+    let _ = st.ui.hide();
+    if let Some(runtime) = runtime {
+        // Timer 回调只要求 'static（不需要 Send），且只在 UI 线程执行；用它把
+        // Rc<WindowRuntime> 的 drop 排到当前 Slint 回调返回之后。
+        slint::Timer::single_shot(Duration::ZERO, move || drop(runtime));
     }
-}
-
-fn confirm_cancel_inner(st: &mut AppState) {
-    st.pending_close_window = None;
-    st.ui.set_confirm_open(false);
 }
 
 /// 通知后台 worker 重算 X11 SHAPE 圆角。
@@ -6714,10 +6719,6 @@ fn toggle_fullscreen(st: &AppState) {
     eprintln!("[ui] fullscreen={next}");
 }
 
-fn set_active_tab(index: usize) {
-    with_app(|st| set_active_tab_inner(st, index));
-}
-
 fn set_active_tab_inner(st: &mut AppState, index: usize) {
     if index >= st.ws.tabs.len() || st.ws.active == index {
         return;
@@ -6860,11 +6861,12 @@ fn schedule_resize_redraw(st: &mut AppState, immediate: bool) {
         return;
     }
     st.resize_redraw_scheduled = true;
+    let window_id = st.window_id;
     st.resize_redraw.start(
         slint::TimerMode::SingleShot,
         Duration::from_millis(16),
-        || {
-            with_app(|st| {
+        move || {
+            runtime::with_window(window_id, |st| {
                 st.resize_redraw_scheduled = false;
                 st.ui.window().request_redraw();
             });
@@ -6874,11 +6876,12 @@ fn schedule_resize_redraw(st: &mut AppState, immediate: bool) {
 
 /// 拖动停止 200ms 后：恢复背景图、做最终重绘、打印汇总。
 fn schedule_resize_finalize(st: &mut AppState) {
+    let window_id = st.window_id;
     st.resize_finalize.start(
         slint::TimerMode::SingleShot,
         Duration::from_millis(200),
-        || {
-            with_app(|st| {
+        move || {
+            runtime::with_window(window_id, |st| {
                 // 定时器是 single-shot；如果 200ms 内又来了 configure，重新计时。
                 if st
                     .last_resize_event
@@ -7323,8 +7326,7 @@ fn frozen_cursor_blink_phase() -> Option<bool> {
 }
 
 /// 光标闪烁半周期：只切换 overlay 的 `cursor-visible`，终端帧不重绘。
-fn tick_cursor_blink() {
-    with_app(|st| {
+fn tick_cursor_blink(st: &mut AppState) {
         if !needs_cursor_blink(st) {
             st.cursor_blink_timer.stop();
             st.cursor_blink_on = true;
@@ -7333,7 +7335,6 @@ fn tick_cursor_blink() {
         }
         st.cursor_blink_on = !st.cursor_blink_on;
         refresh_cursor_views(st);
-    });
 }
 
 /// 按配置/Profile 启停闪烁计时器；没有 pane 需要闪时停掉，空闲零唤醒。
@@ -7351,10 +7352,13 @@ fn configure_cursor_blink(st: &mut AppState) {
         if st.cursor_blink_timer.running() {
             st.cursor_blink_timer.restart();
         } else {
+            let window_id = st.window_id;
             st.cursor_blink_timer.start(
                 slint::TimerMode::Repeated,
                 Duration::from_millis(config::CURSOR_BLINK_MS),
-                tick_cursor_blink,
+                move || {
+                    let _ = runtime::with_window(window_id, tick_cursor_blink);
+                },
             );
         }
     } else {
@@ -7373,10 +7377,13 @@ fn ensure_cursor_blink_timer(st: &mut AppState) {
     let need = needs_cursor_blink(st);
     if need && !st.cursor_blink_timer.running() {
         st.cursor_blink_on = true;
+        let window_id = st.window_id;
         st.cursor_blink_timer.start(
             slint::TimerMode::Repeated,
             Duration::from_millis(config::CURSOR_BLINK_MS),
-            tick_cursor_blink,
+            move || {
+                let _ = runtime::with_window(window_id, tick_cursor_blink);
+            },
         );
     } else if !need && st.cursor_blink_timer.running() {
         st.cursor_blink_timer.stop();
@@ -7958,12 +7965,10 @@ fn render_hud_forced_by_env() -> bool {
     })
 }
 
-fn install_render_hud(_ui: &MainWindow) {
+fn install_render_hud(st: &mut AppState) {
     let forced = render_hud_forced_by_env();
-    with_app(|st| {
-        st.ui.set_cfg_render_hud(st.cfg.render_hud);
-        set_render_hud(st, forced || st.cfg.render_hud);
-    });
+    st.ui.set_cfg_render_hud(st.cfg.render_hud);
+    set_render_hud(st, forced || st.cfg.render_hud);
 }
 
 /// 启动/停止 HUD 采样；重复调用幂等。设置页和环境变量都走这里。
@@ -7977,6 +7982,7 @@ fn set_render_hud(st: &mut AppState, enabled: bool) {
         return;
     }
     let weak = st.ui.as_weak();
+    let window_id = st.window_id;
     let mut last = Instant::now();
     let mut last_frames = render_probe::frames();
     let timer = slint::Timer::default();
@@ -7992,7 +7998,7 @@ fn set_render_hud(st: &mut AppState, enabled: bool) {
             last_frames = frames;
             let native = gpu_native::totals();
             let uploads = gpu_present::upload_stats();
-            let grid = with_app(|st| {
+            let grid = runtime::with_window(window_id, |st| {
                 st.panes
                     .values()
                     .next()
@@ -8284,11 +8290,12 @@ fn selection_drag_autoscrolls(mouse: bool, link: bool, moved: bool) -> bool {
 /// 重复调用是安全的：Slint 会重置周期；暂停后（指针离开窗口）重新进入窗口
 /// 也走这里恢复。计时器本体只在拖选按下时启动，抬起/失焦/窗口关闭都会停。
 fn start_drag_autoscroll_timer(st: &mut AppState) {
+    let window_id = st.window_id;
     st.drag_autoscroll.start(
         slint::TimerMode::Repeated,
         Duration::from_millis(50),
-        || {
-            let _ = with_app(selection_autoscroll_tick);
+        move || {
+            let _ = runtime::with_window(window_id, selection_autoscroll_tick);
         },
     );
 }
@@ -8785,7 +8792,7 @@ fn clear_link_hover(st: &mut AppState, id: PaneId) {
 /// 底部短暂状态浮层；4 秒后自动清空。调用方可在任意线程（内部切回 UI 线程）。
 fn show_link_status(msg: String) {
     let _ = slint::invoke_from_event_loop(move || {
-        with_app(|st| set_status_toast(st, msg));
+        runtime::with_active_window(|st| set_status_toast(st, msg));
     });
 }
 
@@ -9108,7 +9115,12 @@ fn drop_paths_text(paths: &[PathBuf]) -> String {
 
 /// 把拖入的文件/目录插入目标 pane：尊重 bracketed paste 模式，末尾带空格。
 fn drop_files_into_pane(id: PaneId, paths: &[PathBuf]) {
-    with_app(|st| {
+    // PaneId 全进程唯一：拖放结果必须落到该 pane 所属窗口，不能落到 primary。
+    let Some(window_id) = runtime::window_for_pane(id) else {
+        eprintln!("[ui] drop pane={id} 已关闭，忽略");
+        return;
+    };
+    runtime::with_window(window_id, |st| {
         let Some(rt) = st.panes.get(&id) else { return };
         if rt.handle.read_only() {
             eprintln!("[readonly] pane={id} 丢弃拖放文件 {}", paths.len());
@@ -9132,7 +9144,7 @@ fn drop_files_into_pane(id: PaneId, paths: &[PathBuf]) {
 /// Slint 1.18 的 winit 后端不把 winit 的 `DroppedFile`/`HoveredFile` 转成
 /// `DataTransfer`，拿不到 DropEvent 里的位置；这里直接查 X11 root 指针，
 /// 再换算到 Slint 逻辑坐标。非 X11（Wayland）返回 None。
-fn drop_target_at(win: &winit::window::Window) -> Option<PaneId> {
+fn drop_target_at(win: &winit::window::Window, window_id: WindowId) -> Option<PaneId> {
     if !winit_window_is_x11(win) {
         return None;
     }
@@ -9143,7 +9155,7 @@ fn drop_target_at(win: &winit::window::Window) -> Option<PaneId> {
     let scale = win.scale_factor() as f32;
     let x = (rx - inner.x) as f32 / scale;
     let y = (ry - inner.y) as f32 / scale;
-    with_app(|st| {
+    runtime::with_window(window_id, |st| {
         let tab = st.ws.active_tab()?;
         let rects: Vec<(PaneId, Rect)> = tab
             .panes()
@@ -9246,7 +9258,9 @@ fn install_native_window_events(ui: &MainWindow, window_id: WindowId) {
                 });
             }
             winit::event::WindowEvent::HoveredFile(_) => {
-                let target = win.with_winit_window(drop_target_at).flatten();
+                let target = win
+                    .with_winit_window(|win| drop_target_at(win, window_id))
+                    .flatten();
                 if let Some(ui) = weak.upgrade() {
                     ui.set_drop_hover_pane(target.map(|id| id as i32).unwrap_or(-1));
                 }
@@ -9260,7 +9274,7 @@ fn install_native_window_events(ui: &MainWindow, window_id: WindowId) {
             }
             winit::event::WindowEvent::DroppedFile(path) => {
                 let target = win
-                    .with_winit_window(drop_target_at)
+                    .with_winit_window(|win| drop_target_at(win, window_id))
                     .flatten()
                     .or_else(|| runtime::with_window(window_id, |st| st.ws.active_tab().map(|t| t.focused)).flatten());
                 if let Some(ui) = weak.upgrade() {
@@ -9273,7 +9287,7 @@ fn install_native_window_events(ui: &MainWindow, window_id: WindowId) {
                 eprintln!("[ui] native drop pane={id} path={}", path.display());
                 drop_files_into_pane(id, std::slice::from_ref(path));
                 // 拖到哪个 pane 就聚焦哪个，随后输入落到刚插入的路径上。
-                focus_pane(id);
+                runtime::with_window(window_id, |st| focus_pane_inner(st, id));
             }
             _ => {}
         }
@@ -10582,7 +10596,7 @@ fn on_core_event_wake() {
 /// 插件活动 / SFTP 后台结果唤醒回调：立即收结果；周期兜底仍在 400ms timer。
 fn on_app_event_wake() {
     APP_EVENT_WAKES.fetch_add(1, Ordering::Relaxed);
-    with_app(|st| {
+    runtime::with_all_windows(|_id, st| {
         // 插件命令/事件在后台线程写活动日志；这里按 revision 增量刷新设置页/
         // 状态栏/结果浮层。所有操作非阻塞。
         refresh_plugin_ui(st);
@@ -10643,16 +10657,18 @@ fn flash_bell(st: &mut AppState, id: PaneId) {
     rt.bell_until = Some(Instant::now() + Duration::from_millis(BELL_FLASH_MS));
     refresh_pane_view(st, id);
     // 已经在跑就重置计时；到期没有新的闪烁时 tick 会 stop。
+    let window_id = st.window_id;
     st.bell_timer.start(
         slint::TimerMode::Repeated,
         Duration::from_millis(30),
-        tick_bell_flash,
+        move || {
+            let _ = runtime::with_window(window_id, tick_bell_flash);
+        },
     );
 }
 
 /// 清除到期的视觉铃闪烁；全部清完就停掉 30ms timer，空闲时零开销。
-fn tick_bell_flash() {
-    with_app(|st| {
+fn tick_bell_flash(st: &mut AppState) {
         let now = Instant::now();
         let expired: Vec<PaneId> = st
             .panes
@@ -10674,7 +10690,6 @@ fn tick_bell_flash() {
         if !still_flashing {
             st.bell_timer.stop();
         }
-    });
 }
 
 #[derive(Default, Clone, Debug)]
@@ -11003,7 +11018,9 @@ fn open_help_directory(
             Err(msg) => {
                 eprintln!("[help] open {kind} failed: {msg}");
                 let _ = slint::invoke_from_event_loop(move || {
-                    with_app(|st| st.ui.set_help_status(msg.as_str().into()));
+                    runtime::with_active_window(|st| {
+                        st.ui.set_help_status(msg.as_str().into());
+                    });
                 });
             },
         }
@@ -11429,6 +11446,2583 @@ fn init_window_ui(st: &mut AppState) {
         st.plugins.unsupported_count()
     );
     eprintln!("[ui] 启动 tabbar_position={}", st.cfg.tabbar_position);}
+
+/// primary 与 secondary 共用的完整窗口回调注册。
+///
+/// 闭包内所有 `AppState` 访问都走 `runtime::with_window(window_id, ...)`，显式携带
+/// 窗口身份；不再调用无作用域的 `with_app` 去猜窗口。这样两个窗口各自注册同一套
+/// 键盘/IME/鼠标/菜单/设置页/插件页/profile/SFTP 回调，而配置/插件/Vault/MCP
+/// 仍来自同一个 [`SharedServices`]。
+fn register_window_callbacks(
+    ui: &MainWindow,
+    state: Rc<RefCell<AppState>>,
+    window_id: WindowId,
+) {
+    eprintln!("[ui] {window_id} register window callbacks");
+
+    // ---- 回调 ----
+    let keylog = std::env::var("TERVO_KEYLOG").is_ok();
+    // 鼠标链路排查：TERVO_MOUSELOG=1 打印「命中哪格 / 是否上报」。
+    let mouselog = std::env::var("TERVO_MOUSELOG").is_ok();
+    ui.on_key_input(move |text, ctrl, alt, shift, meta, repeat| {
+        let text = text.to_string();
+        if keylog {
+            eprintln!(
+                "[key] {:?} ctrl={ctrl} alt={alt} shift={shift} meta={meta} repeat={repeat}",
+                text
+            );
+        }
+        let kind = if repeat {
+            keys::KeyEventKind::Repeat
+        } else {
+            keys::KeyEventKind::Press
+        };
+        runtime::with_window(window_id, |st| handle_input(st, &text, ctrl, alt, shift, meta, kind, keylog));
+    });
+
+    // kitty release：只有应用请求 REPORT_EVENT_TYPES 且 press 进过 PTY 才回放。
+    ui.on_key_release(move |text, ctrl, alt, shift, meta| {
+        let text = text.to_string();
+        if keylog {
+            eprintln!(
+                "[key] release {:?} ctrl={ctrl} alt={alt} shift={shift} meta={meta}",
+                text
+            );
+        }
+        runtime::with_window(window_id, |st| handle_key_release(st, &text, ctrl, alt, shift, meta, keylog));
+    });
+
+    // IME 上屏（中文/emoji）单独走一条路：没有修饰键语义，也不能触发 Ctrl 快捷键。
+    ui.on_ime_commit(move |text| {
+        let text = text.to_string();
+        if keylog {
+            eprintln!("[ime] {:?}", text);
+        }
+        runtime::with_window(window_id, |st| {
+            handle_input(
+                st,
+                &text,
+                false,
+                false,
+                false,
+                false,
+                keys::KeyEventKind::Press,
+                keylog,
+            )
+        });
+    });
+
+    ui.on_pane_mouse_down(move |id, x, y, button, mods| {
+        let id = id as u64;
+        runtime::with_window(window_id, |st| {
+            // 点击终端属于“find 之外”：先收起查找条，再按正常点击处理。
+            if st.search_open {
+                close_search(st);
+            }
+            let (cell, wants_mouse) = {
+                let Some(rt) = st.panes.get(&id) else { return };
+                (cell_at(rt, x, y), rt.handle.wants_mouse())
+            };
+            let modifiers = mouse_mods(mods);
+            // Shift 是「绕过鼠标上报、改成本地选词」的惯例逃生门（xterm/gnome-terminal 同款）。
+            let reporting = wants_mouse && !modifiers.shift;
+            if ime_click_anchor(button, wants_mouse, modifiers.shift) {
+                // dsh 的 Btw 侧栏 composer 只画反色 caret，不移动硬件光标；
+                // 记住点击格，IME 候选才会贴到右侧输入框。
+                st.ime_override = Some((id, cell));
+                // 每次点击都强制重发：输入法可能已丢弃旧 spot（例如刚从别的窗口回来）。
+                st.ime_spot_dirty = true;
+                update_ime_spot(st);
+            }
+            let Some(rt) = st.panes.get(&id) else { return };
+            if mouselog {
+                eprintln!(
+                    "[mouse] down pane={id} cell={cell:?} button={button} mods={mods} \
+                     wants={} reporting={reporting}",
+                    rt.handle.wants_mouse()
+                );
+            }
+            // Ctrl+左键只在“非鼠标上报”时是打开链接；上报模式仍把 Ctrl 位传给 TUI。
+            let link = !reporting && modifiers.ctrl;
+            eprintln!(
+                "[select] down pane={id} cell={cell:?} button={button} shift={} \
+                 wants_mouse={wants_mouse} reporting={reporting} link={link}",
+                modifiers.shift
+            );
+            // 上一次拖拽可能因窗口失焦/丢 release 残留；新的按下必须重置计时器，
+            // 否则旧 drag 的 50ms tick 会继续滚动/扩选到新拖拽上。
+            st.drag_autoscroll.stop();
+            if let Some(old) = st.drag.take() {
+                if !old.mouse && !old.link {
+                    eprintln!(
+                        "[select] drag-cancel pane={} reason=new-press moved={}",
+                        old.pane, old.moved
+                    );
+                }
+            }
+            if reporting {
+                // 两套状态不能并存：进终端鼠标模式就清掉本地选区。
+                rt.handle.selection_clear();
+                rt.handle.mouse(MouseEvent {
+                    button: mouse_button(button),
+                    action: MouseAction::Press,
+                    line: cell.0,
+                    col: cell.1,
+                    modifiers,
+                });
+            } else if !link {
+                rt.handle.selection_start(cell.0, cell.1);
+            }
+            st.drag = Some(Drag {
+                pane: id,
+                start: (x, y),
+                moved: false,
+                cell,
+                mouse: reporting,
+                link,
+                last_pointer: (x, y),
+                autoscroll_dir: 0,
+                autoscroll_paused: false,
+            });
+            if !reporting && !link {
+                start_drag_autoscroll_timer(st);
+            }
+        });
+    });
+
+    ui.on_pane_mouse_move(move |id, x, y, _button, mods| {
+        let id = id as u64;
+        runtime::with_window(window_id, |st| {
+            let modifiers = mouse_mods(mods);
+
+            if st.drag.is_some() {
+                let (cell, forwarding, link, resume, changed) = {
+                    let Some(drag) = st.drag.as_mut() else { return };
+                    if drag.pane != id {
+                        return;
+                    }
+                    drag.last_pointer = (x, y);
+                    if (x - drag.start.0).abs() > 4.0 || (y - drag.start.1).abs() > 4.0 {
+                        drag.moved = true;
+                    }
+                    let Some(rt) = st.panes.get(&id) else { return };
+                    let inside = !pointer_outside_window(
+                        rt.rect.x,
+                        rt.rect.y,
+                        x,
+                        y,
+                        st.content.w,
+                        st.content.h,
+                    );
+                    // 拖出窗口会暂停计时器；指针回到窗口内（即使还在同一格）
+                    // 必须恢复，否则之后的边缘拖动再也不会自动滚动。仍在外面的
+                    // move 不能恢复，否则每次移动都会空转一次 tick。
+                    let resume = drag.autoscroll_paused
+                        && inside
+                        && selection_drag_autoscrolls(drag.mouse, drag.link, drag.moved);
+                    if resume {
+                        drag.autoscroll_paused = false;
+                    }
+                    let cell = cell_at(rt, x, y);
+                    let changed = drag.cell != cell;
+                    if changed {
+                        drag.cell = cell;
+                    }
+                    (cell, drag.mouse, drag.link, resume, changed)
+                };
+                if resume {
+                    start_drag_autoscroll_timer(st);
+                    eprintln!(
+                        "[select] autoscroll-resume pane={id} reason=pointer-reentered-window"
+                    );
+                }
+                if link {
+                    // Ctrl 拖拽不扩选；抬起时是否打开链接由 moved 决定。
+                    return;
+                }
+                if !changed {
+                    return;
+                }
+                if forwarding {
+                    if let Some(rt) = st.panes.get(&id) {
+                        rt.handle.mouse(MouseEvent {
+                            button: MouseButton::Left,
+                            action: MouseAction::Motion,
+                            line: cell.0,
+                            col: cell.1,
+                            modifiers,
+                        });
+                    }
+                } else {
+                    if let Some(rt) = st.panes.get(&id) {
+                        rt.handle.selection_extend(cell.0, cell.1);
+                    }
+                    redraw_pane_inner(st, id);
+                }
+                return;
+            }
+
+            // 无按键悬停（1003）：只有声明 MOUSE_MOTION 的应用需要，按格去重防刷屏。
+            let Some(rt) = st.panes.get(&id) else { return };
+            if !rt.handle.wants_motion() {
+                return;
+            }
+            let cell = cell_at(rt, x, y);
+            if st.hover_cell == Some((id, cell)) {
+                return;
+            }
+            st.hover_cell = Some((id, cell));
+            rt.handle.mouse(MouseEvent {
+                button: MouseButton::None,
+                action: MouseAction::Motion,
+                line: cell.0,
+                col: cell.1,
+                modifiers,
+            });
+        });
+    });
+
+    // 链接 hover：只改指针/悬停状态，不拉帧不重绘终端。Rust 侧按格去重。
+    ui.on_pane_hover(move |id, x, y| {
+        let id = id as u64;
+        runtime::with_window(window_id, |st| update_link_hover(st, id, x, y));
+    });
+    ui.on_pane_unhover(move |id| {
+        let id = id as u64;
+        runtime::with_window(window_id, |st| clear_link_hover(st, id));
+    });
+
+    ui.on_pane_mouse_up(move |id, x, y, button, mods| {
+        let id = id as u64;
+        runtime::with_window(window_id, |st| {
+            // 先停表再取 drag：即使 drag 已被失焦/新按下清掉，也不能留下
+            // 一个仍在 50ms tick 的计时器。
+            st.drag_autoscroll.stop();
+            let Some(drag) = st.drag.take() else { return };
+            if !drag.mouse && !drag.link {
+                eprintln!(
+                    "[select] drag-end pane={id} reason=release moved={} paused={}",
+                    drag.moved, drag.autoscroll_paused
+                );
+            }
+            if drag.link {
+                // Ctrl+点击（没有明显拖动）才打开；拖动过就当作取消。
+                if !drag.moved && button == 0 {
+                    let (target, remote, cwd, cell) = {
+                        let Some(rt) = st.panes.get(&id) else { return };
+                        let cell = cell_at(rt, x, y);
+                        (
+                            frame_target_at(&rt.frame, cell.0, cell.1),
+                            rt.remote,
+                            pane_cwd(rt),
+                            cell,
+                        )
+                    };
+                    match target {
+                        Some(target) => {
+                            eprintln!(
+                                "[link] ctrl+click pane={id} cell={},{} kind={} text={:?}",
+                                cell.0,
+                                cell.1,
+                                target.kind_label(),
+                                target.text()
+                            );
+                            open_target(&target, cwd.as_deref(), remote);
+                        },
+                        None => {
+                            if mouselog {
+                                eprintln!(
+                                    "[link] ctrl+click pane={id} cell={},{} 无链接",
+                                    cell.0, cell.1
+                                );
+                            }
+                        },
+                    }
+                }
+                return;
+            }
+            if drag.mouse {
+                if let Some(rt) = st.panes.get(&id) {
+                    let cell = cell_at(rt, x, y);
+                    rt.handle.mouse(MouseEvent {
+                        button: mouse_button(button),
+                        action: MouseAction::Release,
+                        line: cell.0,
+                        col: cell.1,
+                        modifiers: mouse_mods(mods),
+                    });
+                }
+                return;
+            }
+            if !drag.mouse {
+                let up_cell = st.panes.get(&id).map(|rt| cell_at(rt, x, y));
+                eprintln!(
+                    "[select] up pane={id} cell={up_cell:?} moved={} copy_on_select={}",
+                    drag.moved,
+                    st.cfg.copy_on_select
+                );
+            }
+            if !drag.moved {
+                // 双击选行：同一 pane、同一格、400ms 内的第二次左键抬起。
+                let Some(rt) = st.panes.get(&id) else { return };
+                let (line_u, col_u) = cell_at(rt, x, y);
+                let (line, col) = (line_u as i32, col_u as i32);
+                let now = std::time::Instant::now();
+                let is_double = matches!(st.last_click, Some((p, l, c, t))
+                    if p == id && l == line && c == col && now.duration_since(t) < std::time::Duration::from_millis(400));
+                if is_double {
+                    st.last_click = None;
+                    if let Some(rt) = st.panes.get_mut(&id) {
+                        rt.handle.select_line(line);
+                    }
+                    eprintln!("[ui] double-click select line={line} pane={id}");
+                    if st.cfg.copy_on_select {
+                        copy_current_selection(st);
+                    }
+                    return;
+                }
+                st.last_click = Some((id, line, col, now));
+                return;
+            }
+            // 关闭 Copy on select 时只保留高亮，不写剪贴板
+            if !st.cfg.copy_on_select {
+                return;
+            }
+            let text = st
+                .panes
+                .get(&drag.pane)
+                .and_then(|rt| rt.handle.copy_selection())
+                .and_then(normalize_clipboard_text);
+            if let Some(text) = text {
+                set_selection_clipboards(st, &text);
+            }
+        });
+    });
+
+    ui.on_pane_scrolled(move |id, dy, x, y, mods| {
+        let id = id as u64;
+        runtime::with_window(window_id, |st| {
+            let Some(rt) = st.panes.get(&id) else { return };
+            let modifiers = mouse_mods(mods);
+
+            // 终端要鼠标：滚轮变成 64/65 上报（tmux 翻页、vim 滚动才生效）。
+            if rt.handle.wants_mouse() && !modifiers.shift {
+                let cell = cell_at(rt, x, y);
+                let button = if dy > 0.0 {
+                    MouseButton::WheelUp
+                } else {
+                    MouseButton::WheelDown
+                };
+                rt.handle.mouse(MouseEvent {
+                    button,
+                    action: MouseAction::Press,
+                    line: cell.0,
+                    col: cell.1,
+                    modifiers,
+                });
+                return;
+            }
+
+            let ch = rt.renderer.cell_h.max(1) as f32;
+            let mut lines = (dy / ch).round();
+            if lines.abs() < 1.0 {
+                lines = dy.signum();
+            }
+            if lines == 0.0 {
+                return;
+            }
+            // 约定：delta-y > 0 表示向上滚（回看历史）。
+            // 应用内 TUI（如 dsh 侧栏）滚动后屏幕内容会重画；原生选区若继续
+            // 跟随 grid 行会粘在错误文本上，因此用户主动滚轮时清除选区。
+            rt.handle.clear_selection();
+            rt.handle.scroll(lines as i32);
+        });
+    });
+
+    ui.on_pane_scrollbar(move |id, fraction| {
+        let id = id as u64;
+        runtime::with_window(window_id, |st| {
+            let Some(rt) = st.panes.get(&id) else { return };
+            let pos = rt.handle.scroll_position();
+            let track_px = rt.renderer.height.max(1) as f32;
+            let min_thumb = (SCROLLBAR_MIN_THUMB_PX / track_px).clamp(0.0, 1.0);
+            let offset = pos.offset_for_track_fraction(fraction, min_thumb);
+            eprintln!(
+                "[ui] scrollbar pane={id} fraction={fraction:.3} offset={offset} history={} rows={}",
+                pos.history, pos.rows
+            );
+            rt.handle.clear_selection();
+            rt.handle.scroll_to(offset);
+        });
+    });
+
+    // 拖放只接受文件/目录；其他 payload（纯文本/图片）不抢，交回平台。
+    ui.on_can_drop_files(|data| data.has_file_paths());
+    ui.on_files_dropped(|id, data| {
+        let paths: Vec<PathBuf> = match data.file_paths() {
+            Ok(paths) => paths.map(|p| p.to_path_buf()).collect(),
+            Err(e) => {
+                eprintln!("[ui] drop 无法读取文件列表: {e:?}");
+                return;
+            }
+        };
+        if paths.is_empty() {
+            return;
+        }
+        drop_files_into_pane(id as u64, &paths);
+    });
+
+    ui.on_divider_dragged(move |index, x, y| {
+        runtime::with_window(window_id, |st| {
+            let Some(info) = st.divider_infos.get(index as usize).cloned() else {
+                return;
+            };
+            let usable = match info.dir {
+                Dir::Row => info.parent.w - SPLIT_GAP,
+                Dir::Col => info.parent.h - SPLIT_GAP,
+            };
+            if usable <= 1.0 {
+                return;
+            }
+            let ratio = match info.dir {
+                Dir::Row => (x - info.parent.x) / usable,
+                Dir::Col => (y - info.parent.y) / usable,
+            };
+            let changed = {
+                let Some(tab) = st.ws.active_tab_mut() else {
+                    return;
+                };
+                let Some(root) = tab.root.as_mut() else {
+                    return;
+                };
+                root.set_ratio(&info.path, ratio)
+            };
+            if changed {
+                refresh_views(st);
+                redraw_visible(st);
+            }
+        });
+    });
+
+    ui.on_start_window_resize(move |dir| {
+        runtime::with_window(window_id, |st| {
+            ensure_resize_conn(st);
+            st.wm_resize = false;
+            st.wm_release_pending = false;
+            st.wm_resize_saw_configure = false;
+            st.last_resize_event = None;
+            // 先记录自绘起点。即使 WM 路径随后失败/没接管，drag 回调也能无缝回退，
+            // 不会出现“按了边角却完全拖不动”。
+            if let Some(pointer) = resize_pointer(st) {
+                let pos = st.ui.window().position();
+                let size = st.ui.window().size();
+                st.resize = Some(WindowResize {
+                    dir,
+                    pointer,
+                    pos: (pos.x, pos.y),
+                    size: (size.width, size.height),
+                    since: Instant::now(),
+                });
+            } else {
+                st.resize = None;
+            }
+            if start_wm_live_resize(st, dir) {
+                st.wm_resize = true;
+                return;
+            }
+            if st.resize.is_none() {
+                eprintln!("[ui] 自绘 resize 无法启动：X11 指针不可用");
+            } else {
+                eprintln!("[ui] 自绘 resize dir={dir}");
+            }
+        });
+    });
+
+    ui.on_window_resize_drag(move || {
+        runtime::with_window(window_id, |st| {
+            // 松开左键后的 move 不能继续 resize：WM grab 可能让 Slint 收不到 up。
+            if st.wm_resize || st.resize.is_some() {
+                if let Some(ctx) = st.xresize.as_ref() {
+                    if let Some((_, _, mask)) =
+                        crate::xconn::query_pointer_with_mask(&ctx.conn, ctx.root)
+                    {
+                        if !crate::xconn::button1_down(mask) {
+                            finish_window_resize(st, "pointer-up");
+                            return;
+                        }
+                    }
+                }
+            }
+            if st.wm_resize {
+                let Some(r) = st.resize else { return };
+                let now = st.ui.window().size();
+                let wm_acted = (now.width, now.height) != r.size;
+                // WM 可能仍在驱动 live resize，也可能只是比我们晚一帧。判断依据：
+                // 真实尺寸变化、最近一次 configure、或按下后还没超过首个 configure
+                // 的宽限；三者都没有才回退自绘。不能只看按下后是否过了 150ms——
+                // GPU 首帧/渲染排队会让 configure 晚到。
+                if wm_acted
+                    || !wm_resize_timed_out(
+                        st.wm_resize_saw_configure,
+                        st.last_resize_event.map(|t| t.elapsed()),
+                        r.since.elapsed(),
+                    )
+                {
+                    return;
+                }
+                eprintln!("[ui] WM live resize 未接管指针，回退自绘 resize");
+                st.wm_resize = false;
+            }
+            let Some(r) = st.resize else { return };
+            let Some((px, py)) = resize_pointer(st) else {
+                return;
+            };
+            let dx = px - r.pointer.0;
+            let dy = py - r.pointer.1;
+
+            let left = matches!(r.dir, 0 | 6 | 7);
+            let right = matches!(r.dir, 2 | 3 | 4);
+            let top = matches!(r.dir, 0 | 1 | 2);
+            let bottom = matches!(r.dir, 4 | 5 | 6);
+
+            let mut x = r.pos.0;
+            let mut y = r.pos.1;
+            let mut w = r.size.0 as i32;
+            let mut h = r.size.1 as i32;
+            if left {
+                x += dx;
+                w -= dx;
+            }
+            if right {
+                w += dx;
+            }
+            if top {
+                y += dy;
+                h -= dy;
+            }
+            if bottom {
+                h += dy;
+            }
+
+            const MIN_W: i32 = 320;
+            const MIN_H: i32 = 200;
+            if w < MIN_W {
+                if left {
+                    x -= MIN_W - w;
+                }
+                w = MIN_W;
+            }
+            if h < MIN_H {
+                if top {
+                    y -= MIN_H - h;
+                }
+                h = MIN_H;
+            }
+
+            let want = slint::PhysicalSize::new(w as u32, h as u32);
+            if st.ui.window().size() != want {
+                st.ui.window().set_size(want);
+            }
+            if left || top {
+                let want = slint::PhysicalPosition::new(x, y);
+                if st.ui.window().position() != want {
+                    st.ui.window().set_position(want);
+                }
+            }
+        });
+    });
+
+    ui.on_end_window_resize(move || {
+        runtime::with_window(window_id, |st| finish_window_resize(st, "callback"));
+    });
+
+    ui.on_input_trace(move |kind, id, x, y| {
+        runtime::with_window(window_id, |st| {
+            eprintln!(
+                "[trace] {kind} pane={id} at {x:.0},{y:.0} win_pos={:?} win_size={:?} content={:.0}x{:.0}",
+                st.ui.window().position(),
+                st.ui.window().size(),
+                st.content.w,
+                st.content.h
+            );
+        });
+    });
+
+    ui.on_pane_clicked(move |id| {
+        runtime::with_window(window_id, |st| focus_pane_inner(st, id.max(0) as u64));
+    });
+
+    // 灯箱只接收 id，从 UI 缓存里取原始 RGBA。先设 source 再 open，避免
+    // 第一次点击时 source 还是 0×0，出现灰面板/无图；第二次才显示。
+    ui.on_image_open(move |pane_id, image_id| {
+        runtime::with_window(window_id, |st| {
+            let id = image_id as u64;
+            let image = {
+                let Some(rt) = st.panes.get_mut(&(pane_id as u64)) else { return };
+                let source_id = rt.inline_hits.get(&id).map(|source| source.source_id);
+                match source_id {
+                    Some(source_id) => {
+                        let mut image = cached_image_source(rt, source_id);
+                        if image.is_none() {
+                            image = rt.handle.image_rgba(source_id).map(|(w, h, rgba)| {
+                                let image = image_from_source(w, h, &rgba);
+                                rt.inline_cache.insert(source_id, image.clone());
+                                image
+                            });
+                        }
+                        match image {
+                            Some(image) => image,
+                            None => {
+                                eprintln!(
+                                    "[image] preview source missing placement={id} source={source_id}"
+                                );
+                                return;
+                            },
+                        }
+                    },
+                    None => {
+                        // 兼容旧调用方传 source ID 的路径。
+                        let mut image = cached_image_source(rt, id);
+                        if image.is_none() {
+                            image = rt.handle.image_rgba(id).map(|(w, h, rgba)| {
+                                let image = image_from_source(w, h, &rgba);
+                                rt.inline_cache.insert(id, image.clone());
+                                image
+                            });
+                        }
+                        match image {
+                            Some(image) => image,
+                            None => {
+                                eprintln!("[image] preview source missing id={image_id}");
+                                return;
+                            },
+                        }
+                    },
+                }
+            };
+            st.ui.set_image_preview_open(false);
+            st.ui.set_image_preview_source(image);
+            st.ui.set_image_preview_fit(true);
+            st.ui.set_image_preview_zoom(1.0);
+            st.ui.set_image_preview_open(true);
+            eprintln!("[image] preview open id={image_id}");
+        });
+    });
+
+    ui.on_menu_dismissed(move || {
+        eprintln!("[ui] menu dismissed");
+        // 右键菜单/遮罩会抢走 IME 焦点；关闭后必须还给终端，否则 TUI 无法输入。
+        runtime::with_window(window_id, |st| st.ui.invoke_focus_terminal());
+    });
+
+    ui.on_pane_right_clicked(move |id, x, y| {
+        runtime::with_window(window_id, |st| {
+            let id = id as u64;
+            if let Some(idx) = st.ws.tab_of(id) {
+                st.ws.tabs[idx].focused = id;
+                refresh_views(st);
+            }
+            let mode = st.cfg.effective_right_click().to_string();
+            st.right_down = Some((id, std::time::Instant::now(), x, y));
+            eprintln!("[ui] right-down pane={id} mode={mode}");
+            if mode == "menu" {
+                open_pane_menu(st, id, x, y);
+            } else if mode == "off" {
+                // off = 完全不拦截：TUI 需要右键时把 press 转发给 PTY。
+                if let Some(rt) = st.panes.get(&id) {
+                    if rt.handle.wants_mouse() {
+                        let cell = cell_at(rt, x, y);
+                        rt.handle.mouse(MouseEvent {
+                            button: MouseButton::Right,
+                            action: MouseAction::Press,
+                            line: cell.0,
+                            col: cell.1,
+                            modifiers: Modifiers::default(),
+                        });
+                    }
+                }
+            }
+        });
+    });
+
+    // 右键抬起：paste/clipboard 用 250ms 区分短按（执行）与长按（弹菜单）。
+    ui.on_pane_right_up(move |id, _x, _y| {
+        runtime::with_window(window_id, |st| {
+            let id = id as u64;
+            let Some((down_id, at, dx, dy)) = st.right_down.take() else {
+                return;
+            };
+            if down_id != id {
+                return;
+            }
+            let mode = st.cfg.effective_right_click().to_string();
+            let short = at.elapsed() < Duration::from_millis(250);
+            match mode.as_str() {
+                "paste" => {
+                    if short {
+                        paste_into_focused(st);
+                    } else {
+                        open_pane_menu(st, id, dx, dy);
+                    }
+                }
+                "clipboard" => {
+                    if short {
+                        copy_or_paste(st);
+                    } else {
+                        open_pane_menu(st, id, dx, dy);
+                    }
+                }
+                _ => {}
+            }
+            eprintln!("[ui] right-up pane={id} mode={mode} short={short}");
+        });
+    });
+
+    ui.on_pane_middle_click(move |_id| {
+        runtime::with_window(window_id, |st| {
+            if st.cfg.paste_on_middle_click {
+                paste_primary_into_focused(st);
+                eprintln!("[ui] middle-click paste");
+            }
+        });
+    });
+
+    // 分隔线/边缘发起的右键：按内容区坐标找最近的 pane。
+    ui.on_pane_right_clicked_at(move |x, y| {
+        runtime::with_window(window_id, |st| {
+            let rects: Vec<(PaneId, Rect)> = {
+                let Some(tab) = st.ws.active_tab() else {
+                    return;
+                };
+                tab.panes()
+                    .into_iter()
+                    .filter_map(|id| st.panes.get(&id).map(|rt| (id, rt.rect)))
+                    .collect()
+            };
+            if let Some(id) = nearest_pane(&rects, x, y) {
+                open_pane_menu(st, id, x, y);
+            }
+        });
+    });
+
+    ui.on_menu_action(move |id, action| {
+        eprintln!("[ui] menu action pane={id} action={action}");
+        let id = id as u64;
+        match action {
+            0 => {
+                runtime::with_window(window_id, |st| split_pane_inner(st, id, Dir::Row));
+            },
+            1 => {
+                runtime::with_window(window_id, |st| split_pane_inner(st, id, Dir::Col));
+            },
+            2 => {
+                runtime::with_window(window_id, |st| close_pane_inner(st, id));
+            },
+            3 => {
+                runtime::with_window(window_id, copy_current_selection);
+            }
+            4 => {
+                runtime::with_window(window_id, paste_into_focused);
+            }
+            5 => {
+                runtime::with_window(window_id, |st| run_command(st, "terminal.find"));
+            }
+            6 => {
+                runtime::with_window(window_id, |st| run_command(st, "terminal.select-all"));
+            }
+            7 => {
+                runtime::with_window(window_id, |st| run_command(st, "terminal.clear"));
+            }
+            8 => {
+                runtime::with_window(window_id, |st| {
+                    st.broadcast = !st.broadcast;
+                    st.ui.set_broadcast(st.broadcast);
+                    let panes = st.ws.active_tab().map(|t| t.panes().len()).unwrap_or(0);
+                    if st.broadcast && panes < 2 {
+                        eprintln!("[ui] broadcast=on，但当前 Tab 只有 1 个 pane");
+                    } else {
+                        eprintln!("[ui] broadcast={} panes={panes}", st.broadcast);
+                    }
+                });
+            }
+            9 => {
+                runtime::with_window(window_id, |st| {
+                    let text = st.menu_link.clone();
+                    if text.is_empty() {
+                        eprintln!("[link] Open Link：当前菜单没有链接");
+                        return;
+                    }
+                    // 菜单只保存展示文本；path 不会与 http(s)/file URI 混淆。
+                    let target = if is_allowed_uri(&text) {
+                        LinkTarget::Uri(text)
+                    } else {
+                        LinkTarget::Path(text)
+                    };
+                    let (cwd, remote) = match st.panes.get(&id) {
+                        Some(rt) => (pane_cwd(rt), rt.remote),
+                        None => (None, false),
+                    };
+                    eprintln!(
+                        "[link] menu open kind={} text={:?}",
+                        target.kind_label(),
+                        target.text()
+                    );
+                    open_target(&target, cwd.as_deref(), remote);
+                });
+            }
+            10 => {
+                runtime::with_window(window_id, |st| {
+                    let text = st.menu_link.clone();
+                    if !text.is_empty() {
+                        eprintln!("[link] copy link={text:?}");
+                        set_clipboard(st, &text);
+                    }
+                });
+            }
+            11 => {
+                runtime::with_window(window_id, |st| toggle_read_only(st, Some(id)));
+            }
+            12 => {
+                runtime::with_window(window_id, |st| reset_pane(st, id, false));
+            }
+            13 => {
+                runtime::with_window(window_id, |st| reset_pane(st, id, true));
+            }
+            14 => {
+                runtime::with_window(window_id, |st| open_save_contents(st, id));
+            }
+            _ => {}
+        }
+        // Save Contents 需要把焦点交给输入路径的 TextInput，不能抢回终端。
+        if action != 14 {
+            runtime::with_window(window_id, |st| st.ui.invoke_focus_terminal());
+        }
+    });
+
+    ui.on_plugin_status_clicked(move || {
+        runtime::with_window(window_id, |st| {
+            if let Some(command) = st.plugin_status_command.clone() {
+                eprintln!("[plugin-v3] 状态栏点击 → {command}");
+                run_command(st, &command);
+            }
+        });
+    });
+
+    // ---- Plugin API v3：所有 UI 由宿主渲染 ----
+    ui.on_plugin_action(move |action, key| {
+        runtime::with_window(window_id, |st| plugin_action(st, action.as_str(), key.as_str()));
+    });
+    ui.on_toggle_plugin_require_signature(move || {
+        runtime::with_window(window_id, |st| {
+            st.cfg.plugin_require_signature = !st.cfg.plugin_require_signature;
+            st.ui
+                .set_cfg_plugin_require_signature(st.cfg.plugin_require_signature);
+            st.cfg.save();
+            eprintln!(
+                "[plugin-v3] plugin_require_signature={}",
+                st.cfg.plugin_require_signature
+            );
+        });
+    });
+    let plugin_picker_weak = ui.as_weak();
+    ui.on_plugin_pick_install(move |kind| {
+        let Some(current_ui) = plugin_picker_weak.upgrade() else { return };
+        let initial = current_ui.get_plugin_install_path().to_string();
+        let kind = kind.to_string();
+        let weak = plugin_picker_weak.clone();
+        std::thread::Builder::new()
+            .name("plugin-install-picker".into())
+            .spawn(move || {
+                let result = pick_plugin_source(&kind, &initial);
+                let _ = slint::invoke_from_event_loop(move || {
+                    let Some(_ui) = weak.upgrade() else { return };
+                    runtime::with_window(window_id, |st| match result {
+                        Ok(Some(path)) => {
+                            eprintln!("[plugin-v3] 安装源选择: {path}");
+                            st.ui.set_plugin_install_path(path.as_str().into());
+                        },
+                        Ok(None) => {},
+                        Err(error) => {
+                            let message = if st.cfg.lang() == "zh" {
+                                format!("文件选择器不可用: {error}")
+                            } else {
+                                format!("File picker unavailable: {error}")
+                            };
+                            set_status_toast(st, message);
+                        },
+                    });
+                });
+            })
+            .ok();
+    });
+    ui.on_plugin_install_apply(move |action, key, path| {
+        runtime::with_window(window_id, |st| {
+            plugin_install_action(st, action.as_str(), key.as_str(), path.as_str())
+        });
+    });
+    ui.on_plugin_confirm_enable(move || {
+        runtime::with_window(window_id, confirm_plugin_enable);
+    });
+    ui.on_plugin_confirm_cancel(move || {
+        runtime::with_window(window_id, cancel_plugin_enable);
+    });
+    ui.on_plugin_open_surface(move |key, kind| {
+        runtime::with_window(window_id, |st| open_plugin_surface(st, key.as_str(), kind.as_str()));
+    });
+    ui.on_plugin_surface_close(move || {
+        runtime::with_window(window_id, close_plugin_surface);
+    });
+    ui.on_plugin_element_action(move |element| {
+        runtime::with_window(window_id, |st| plugin_surface_action(st, element.as_str()));
+    });
+    ui.on_plugin_element_input(move |element, value| {
+        runtime::with_window(window_id, |st| plugin_surface_input(st, element.as_str(), value.to_string()));
+    });
+    ui.on_plugin_approval_allow(move || {
+        runtime::with_window(window_id, |st| resolve_plugin_approval(st, true));
+    });
+    ui.on_plugin_approval_deny(move || {
+        runtime::with_window(window_id, |st| resolve_plugin_approval(st, false));
+    });
+
+    ui.on_tab_rename(move |index| {
+        runtime::with_window(window_id, |st| open_rename(st, index.max(0) as usize));
+    });
+
+    ui.on_rename_committed(move |index, text| {
+        runtime::with_window(window_id, |st| {
+            let idx = index.max(0) as usize;
+            if let Some(title) = sanitize_tab_title(text.as_str()) {
+                if let Some(tab) = st.ws.tabs.get_mut(idx) {
+                    tab.title = title;
+                    eprintln!("[ws] rename tab={idx} → {:?}", tab.title);
+                }
+            }
+            st.ui.set_rename_open(false);
+            rebuild_tabs(st);
+        });
+    });
+
+    ui.on_rename_cancelled(move || {
+        runtime::with_window(window_id, |st| st.ui.set_rename_open(false));
+    });
+
+    ui.on_fwd_select(move |index| {
+        runtime::with_window(window_id, |st| {
+            st.ui.set_fwd_profile(index.max(0));
+            refresh_forwards(st);
+        });
+    });
+
+    ui.on_fwd_add(move || {
+        runtime::with_window(window_id, |st| fwd_add(st));
+    });
+
+    ui.on_fwd_delete(move |index| {
+        runtime::with_window(window_id, |st| fwd_delete(st, index.max(0) as usize));
+    });
+
+    ui.on_fwd_close(|| {});
+
+    ui.on_config_import_tabby(move || {
+        runtime::with_window(window_id, |st| {
+            let path = tabby_config_path();
+            let themes_dir = ThemeRegistry::default_dir();
+            let status = match std::fs::read_to_string(&path) {
+                Ok(text) => match tabby_import::import_yaml(
+                    &text,
+                    &mut st.profiles,
+                    &mut st.cfg,
+                    &themes_dir,
+                ) {
+                    Ok(report) => {
+                        st.profiles.save();
+                        refresh_profiles(st);
+                        if let Some(fs) = report.font_size {
+                            st.cfg.font_size = fs.clamp(8.0, 40.0);
+                            apply_font_size(st);
+                        }
+                        if report.font_size.is_some() || report.hotkeys_added > 0 {
+                            st.cfg.save();
+                        }
+                        if report.hotkeys_added > 0 {
+                            refresh_hotkeys(st);
+                        }
+                        if report.themes_added > 0 {
+                            // 主题目录刚写入新文件：重新加载注册表并刷新设置页网格。
+                            *st.registry = ThemeRegistry::load(&themes_dir);
+                            for err in &st.registry.errors {
+                                eprintln!("[theme] {err}");
+                            }
+                            st.ui.set_theme_choices(theme_choices(&st.registry));
+                        }
+                        let lang = st.cfg.lang();
+                        let mut msg = if lang == "zh" {
+                            format!(
+                                "已从 {} 导入 {} 个 Profile、{} 条快捷键、{} 个主题\
+                                 （Profile 跳过 {}，快捷键未映射 {} / 跳过 {}，主题跳过 {}）",
+                                path.display(),
+                                report.added,
+                                report.hotkeys_added,
+                                report.themes_added,
+                                report.skipped.len(),
+                                report.hotkeys_unmapped.len(),
+                                report.hotkeys_skipped.len(),
+                                report.themes_skipped.len()
+                            )
+                        } else {
+                            format!(
+                                "Imported {} profiles, {} shortcuts, {} themes from {} \
+                                 (profiles skipped {}, hotkeys unmapped {} / skipped {}, themes skipped {})",
+                                report.added,
+                                report.hotkeys_added,
+                                report.themes_added,
+                                path.display(),
+                                report.skipped.len(),
+                                report.hotkeys_unmapped.len(),
+                                report.hotkeys_skipped.len(),
+                                report.themes_skipped.len()
+                            )
+                        };
+                        let first_skip = report
+                            .skipped
+                            .first()
+                            .map(|(name, why)| format!("{name} ({why})"))
+                            .or_else(|| {
+                                report
+                                    .hotkeys_skipped
+                                    .first()
+                                    .map(|(id, why)| format!("{id} ({why})"))
+                            })
+                            .or_else(|| {
+                                report
+                                    .themes_skipped
+                                    .first()
+                                    .map(|(name, why)| format!("{name} ({why})"))
+                            });
+                        if let Some(skip) = first_skip {
+                            if lang == "zh" {
+                                msg.push_str(&format!("；首个跳过：{skip}"));
+                            } else {
+                                msg.push_str(&format!("; first skipped: {skip}"));
+                            }
+                        }
+                        eprintln!("[tabby] {msg}");
+                        msg
+                    }
+                    Err(e) => {
+                        if st.cfg.lang() == "zh" {
+                            format!("导入失败: {e}")
+                        } else {
+                            format!("Import failed: {e}")
+                        }
+                    },
+                },
+                Err(e) => {
+                    if st.cfg.lang() == "zh" {
+                        format!("读不到 {}: {e}", path.display())
+                    } else {
+                        format!("Cannot read {}: {e}", path.display())
+                    }
+                }
+            };
+            st.ui.set_config_status(status.as_str().into());
+        });
+    });
+
+    ui.on_config_export_tabby(move || {
+        runtime::with_window(window_id, |st| {
+            let path = Config::path().with_file_name("tabby-profiles.yaml");
+            let yaml = tabby_import::export_yaml(&st.profiles);
+            let status = match std::fs::write(&path, yaml) {
+                Ok(()) => {
+                    let msg = if st.cfg.lang() == "zh" {
+                        format!(
+                            "已导出 {} 个 Profile → {}",
+                            st.profiles.profiles.len(),
+                            path.display()
+                        )
+                    } else {
+                        format!(
+                            "Exported {} profiles → {}",
+                            st.profiles.profiles.len(),
+                            path.display()
+                        )
+                    };
+                    eprintln!("[tabby] {msg}");
+                    msg
+                }
+                Err(e) => {
+                    if st.cfg.lang() == "zh" {
+                        format!("导出失败: {e}")
+                    } else {
+                        format!("Export failed: {e}")
+                    }
+                }
+            };
+            st.ui.set_config_status(status.as_str().into());
+        });
+    });
+
+    ui.on_sftp_list(move || {
+        runtime::with_window(window_id, |st| sftp_do_list(st));
+    });
+
+    ui.on_sftp_pick(move |index| {
+        runtime::with_window(window_id, |st| {
+            st.ui.set_sftp_selected(index.max(0));
+            st.sftp_delete_armed = false;
+        });
+    });
+
+    ui.on_sftp_download(move || {
+        runtime::with_window(window_id, |st| sftp_do_download(st));
+    });
+
+    ui.on_sftp_upload(move || {
+        runtime::with_window(window_id, |st| sftp_do_upload(st));
+    });
+
+    ui.on_sftp_cancel(move || {
+        runtime::with_window(window_id, |st| sftp_cancel_active(st));
+    });
+
+    ui.on_sftp_chmod(move || {
+        runtime::with_window(window_id, |st| sftp_do_chmod(st));
+    });
+
+    ui.on_sftp_retry(move || {
+        runtime::with_window(window_id, |st| sftp_retry_failed(st));
+    });
+
+    ui.on_sftp_clear_queue(move || {
+        runtime::with_window(window_id, |st| sftp_clear_queue(st));
+    });
+
+    ui.on_sftp_mkdir(move || {
+        runtime::with_window(window_id, |st| sftp_do_mkdir(st));
+    });
+
+    ui.on_sftp_rename(move || {
+        runtime::with_window(window_id, |st| sftp_do_rename(st));
+    });
+
+    ui.on_sftp_delete(move || {
+        runtime::with_window(window_id, |st| sftp_do_delete(st));
+    });
+
+    ui.on_sftp_close(|| {});
+
+    ui.on_profile_open(move |index| {
+        runtime::with_window(window_id, |st| {
+            if let Some(store_index) = profile_row_to_store(st, index) {
+                open_profile_tab(st, store_index);
+            }
+        });
+    });
+
+    ui.on_profile_new(move || {
+        runtime::with_window(window_id, |st| open_profile_form(st));
+    });
+
+    ui.on_profile_edit(move |index| {
+        runtime::with_window(window_id, |st| {
+            if let Some(store_index) = profile_row_to_store(st, index) {
+                edit_profile_form(st, store_index);
+            }
+        });
+    });
+
+    ui.on_profile_filter(move |query| {
+        runtime::with_window(window_id, |st| {
+            st.profile_query = query.to_string();
+            refresh_profiles(st);
+            eprintln!(
+                "[profile] filter={:?} items={}",
+                st.profile_query,
+                st.profile_indices.len()
+            );
+        });
+    });
+
+    // 星标：点已默认的项 = 取消默认（回退系统 shell）；点其他项 = 切换默认。
+    ui.on_profile_set_default(move |index| {
+        runtime::with_window(window_id, |st| {
+            let Some(store_index) = profile_row_to_store(st, index) else {
+                return;
+            };
+            let Some(id) = st.profiles.profiles.get(store_index).map(|p| p.id) else {
+                return;
+            };
+            st.cfg.default_profile_id = if st.cfg.default_profile_id == id {
+                0
+            } else {
+                id
+            };
+            st.cfg.save();
+            refresh_profiles(st);
+            if st.cfg.default_profile_id == 0 {
+                eprintln!("[profile] 已清除默认 Profile（新 Tab 用系统 shell）");
+            } else {
+                eprintln!(
+                    "[profile] 默认 Profile id={id} name={:?}",
+                    st.profiles
+                        .profiles
+                        .get(store_index)
+                        .map(|p| p.name.as_str())
+                        .unwrap_or("")
+                );
+            }
+        });
+    });
+
+    ui.on_profile_duplicate(move |index| {
+        runtime::with_window(window_id, |st| {
+            let Some(store_index) = profile_row_to_store(st, index) else {
+                return;
+            };
+            let Some(source_id) = st.profiles.profiles.get(store_index).map(|p| p.id) else {
+                return;
+            };
+            match st.profiles.duplicate(source_id) {
+                Ok(id) => {
+                    st.profiles.save();
+                    refresh_profiles(st);
+                    eprintln!(
+                        "[profile] 复制 id={source_id} → id={id} name={:?}（共 {}）",
+                        st.profiles.get(id).map(|p| p.name.as_str()).unwrap_or(""),
+                        st.profiles.profiles.len()
+                    );
+                }
+                Err(e) => eprintln!("[profile] 复制 id={source_id} 失败: {e}"),
+            }
+        });
+    });
+
+    ui.on_profile_form_save(move || {
+        runtime::with_window(window_id, |st| save_profile_form(st));
+    });
+
+    ui.on_profile_form_cancel(move || {
+        runtime::with_window(window_id, |st| {
+            st.ui.set_form_error("".into());
+            refocus_after_modal(st);
+        });
+    });
+
+    ui.on_hostkey_trust(move || {
+        runtime::with_window(window_id, |st| hostkey_trust(st));
+    });
+    ui.on_hostkey_once(move || {
+        runtime::with_window(window_id, |st| hostkey_once(st));
+    });
+    ui.on_hostkey_cancel(move || {
+        runtime::with_window(window_id, |st| hostkey_cancel(st));
+    });
+
+    ui.on_ssh_exit_reconnect(move || {
+        runtime::with_window(window_id, |st| reconnect_ssh_exit(st));
+    });
+    ui.on_ssh_exit_dismiss(move || {
+        runtime::with_window(window_id, |st| dismiss_ssh_exit(st));
+    });
+
+    ui.on_profile_delete(move |index| {
+        runtime::with_window(window_id, |st| {
+            let Some(store_index) = profile_row_to_store(st, index) else {
+                return;
+            };
+            let Some(p) = st.profiles.profiles.get(store_index).map(|p| p.id) else {
+                return;
+            };
+            if st.profiles.remove(p) {
+                // 删除的是默认项时必须回退 0，否则新 Tab 会一直解析失败。
+                let cleared = clear_default_after_remove(&mut st.cfg, p);
+                st.profiles.save();
+                if cleared {
+                    st.cfg.save();
+                    eprintln!("[profile] 默认 Profile id={p} 已删除，回退系统 shell");
+                }
+                refresh_profiles(st);
+                eprintln!("[profile] 删除 id={p}（剩 {}）", st.profiles.profiles.len());
+            }
+        });
+    });
+
+    // 面板内控件（搜索框）拿过焦点；关闭后必须还给设置 FocusScope 或终端 IME，
+    // 否则 Esc/按键全丢（设置页叠在下面时尤其明显）。
+    ui.on_profiles_close(move || {
+        runtime::with_window(window_id, |st| {
+            refocus_after_modal(st);
+            eprintln!("[profile] panel closed");
+        });
+    });
+
+    ui.on_vault_set_master(move || {
+        runtime::with_window(window_id, |st| vault_set_master_password(st));
+    });
+
+    ui.on_vault_unlock(move || {
+        runtime::with_window(window_id, |st| vault_unlock(st));
+    });
+
+    ui.on_vault_lock(move || {
+        runtime::with_window(window_id, |st| vault_lock(st));
+    });
+
+    ui.on_vault_clear(move || {
+        runtime::with_window(window_id, |st| vault_clear(st));
+    });
+
+    ui.on_bg_reattach(move |index| {
+        runtime::with_window(window_id, |st| reattach_background(st, index.max(0) as usize));
+    });
+
+    ui.on_bg_close(|| {});
+
+    ui.on_paste_accept(move || {
+        runtime::with_window(window_id, |st| {
+            st.ui.set_paste_open(false);
+            if let Some(text) = st.pending_paste.take() {
+                deliver_paste(st, &text);
+            }
+        });
+    });
+
+    ui.on_paste_always(move || {
+        runtime::with_window(window_id, |st| {
+            st.cfg.confirm_multiline_paste = false;
+            st.ui.set_cfg_confirm_paste(false);
+            st.cfg.save();
+            st.ui.set_paste_open(false);
+            if let Some(text) = st.pending_paste.take() {
+                deliver_paste(st, &text);
+            }
+        });
+    });
+
+    ui.on_paste_cancel(move || {
+        runtime::with_window(window_id, |st| {
+            st.pending_paste = None;
+            st.ui.set_paste_open(false);
+        });
+    });
+
+    ui.on_set_right_click(move |mode| {
+        runtime::with_window(window_id, |st| {
+            let mode = mode.to_string();
+            if !["menu", "paste", "clipboard", "off"].contains(&mode.as_str()) {
+                return;
+            }
+            st.cfg.right_click = mode.clone();
+            // 旧字段统一折算到新字段，之后不再写回 true。
+            st.cfg.right_click_paste = false;
+            st.ui.set_cfg_right_click(mode.as_str().into());
+            st.cfg.save();
+            eprintln!("[ui] right_click={mode}");
+        });
+    });
+
+    ui.on_toggle_paste_middle(move || {
+        runtime::with_window(window_id, |st| {
+            st.cfg.paste_on_middle_click = !st.cfg.paste_on_middle_click;
+            st.ui.set_cfg_paste_middle(st.cfg.paste_on_middle_click);
+            st.cfg.save();
+            eprintln!(
+                "[ui] paste_on_middle_click={}",
+                st.cfg.paste_on_middle_click
+            );
+        });
+    });
+
+    ui.on_toggle_confirm_paste(move || {
+        runtime::with_window(window_id, |st| {
+            st.cfg.confirm_multiline_paste = !st.cfg.confirm_multiline_paste;
+            st.ui.set_cfg_confirm_paste(st.cfg.confirm_multiline_paste);
+            st.ui
+                .set_cfg_right_click(st.cfg.effective_right_click().into());
+            st.ui.set_cfg_paste_middle(st.cfg.paste_on_middle_click);
+            st.cfg.save();
+            eprintln!(
+                "[ui] confirm_multiline_paste={}",
+                st.cfg.confirm_multiline_paste
+            );
+        });
+    });
+
+    ui.on_toggle_desktop_notifications(move || {
+        runtime::with_window(window_id, |st| {
+            st.cfg.desktop_notifications = !st.cfg.desktop_notifications;
+            st.ui
+                .set_cfg_desktop_notifications(st.cfg.desktop_notifications);
+            st.cfg.save();
+            eprintln!(
+                "[ui] desktop_notifications={}",
+                st.cfg.desktop_notifications
+            );
+        });
+    });
+
+    ui.on_toggle_visual_bell(move || {
+        runtime::with_window(window_id, |st| {
+            st.cfg.visual_bell = !st.cfg.visual_bell;
+            st.ui.set_cfg_visual_bell(st.cfg.visual_bell);
+            if !st.cfg.visual_bell {
+                // 关掉时立即清掉所有进行中的闪烁，避免残留边框。
+                for rt in st.panes.values_mut() {
+                    rt.bell_until = None;
+                }
+                st.bell_timer.stop();
+                refresh_all_pane_views(st);
+            }
+            st.cfg.save();
+            eprintln!("[ui] visual_bell={}", st.cfg.visual_bell);
+        });
+    });
+
+    ui.on_toggle_audible_bell(move || {
+        runtime::with_window(window_id, |st| {
+            st.cfg.audible_bell = !st.cfg.audible_bell;
+            st.ui.set_cfg_audible_bell(st.cfg.audible_bell);
+            st.cfg.save();
+            eprintln!("[ui] audible_bell={}", st.cfg.audible_bell);
+        });
+    });
+
+    ui.on_toggle_scroll_output(move || {
+        runtime::with_window(window_id, |st| {
+            st.cfg.scroll_on_output = !st.cfg.scroll_on_output;
+            st.ui.set_cfg_scroll_output(st.cfg.scroll_on_output);
+            // 已存在的 pane 立即生效（actor 侧字段），不只影响新 pane。
+            let enabled = st.cfg.scroll_on_output;
+            for rt in st.panes.values() {
+                rt.handle.set_scroll_on_output(enabled);
+            }
+            // 后台保留的会话重新接管时也应使用新配置。
+            for (_, rt, _) in &st.detached {
+                rt.handle.set_scroll_on_output(enabled);
+            }
+            st.cfg.save();
+            eprintln!("[ui] scroll_on_output={enabled}");
+        });
+    });
+
+    ui.on_toggle_scroll_keystroke(move || {
+        runtime::with_window(window_id, |st| {
+            st.cfg.scroll_on_keystroke = !st.cfg.scroll_on_keystroke;
+            st.ui.set_cfg_scroll_keystroke(st.cfg.scroll_on_keystroke);
+            st.cfg.save();
+            eprintln!("[ui] scroll_on_keystroke={}", st.cfg.scroll_on_keystroke);
+        });
+    });
+
+    ui.on_toggle_sixel(move || {
+        runtime::with_window(window_id, |st| {
+            st.cfg.sixel = !st.cfg.sixel;
+            st.ui.set_cfg_sixel(st.cfg.sixel);
+            let enabled = st.cfg.sixel;
+            for rt in st.panes.values() {
+                rt.handle.set_sixel(enabled);
+            }
+            for (_, rt, _) in &st.detached {
+                rt.handle.set_sixel(enabled);
+            }
+            st.cfg.save();
+            eprintln!("[ui] sixel={enabled}");
+        });
+    });
+
+    ui.on_toggle_sixel_scrolling(move || {
+        runtime::with_window(window_id, |st| {
+            st.cfg.sixel_scrolling = !st.cfg.sixel_scrolling;
+            st.ui.set_cfg_sixel_scrolling(st.cfg.sixel_scrolling);
+            let scrolling = st.cfg.sixel_scrolling;
+            for rt in st.panes.values() {
+                rt.handle.set_sixel_scrolling(scrolling);
+            }
+            for (_, rt, _) in &st.detached {
+                rt.handle.set_sixel_scrolling(scrolling);
+            }
+            st.cfg.save();
+            eprintln!("[ui] sixel_scrolling={scrolling}");
+        });
+    });
+
+    ui.on_toggle_iip(move || {
+        runtime::with_window(window_id, |st| {
+            st.cfg.iip = !st.cfg.iip;
+            st.ui.set_cfg_iip(st.cfg.iip);
+            let enabled = st.cfg.iip;
+            for rt in st.panes.values() {
+                rt.handle.set_iip(enabled);
+            }
+            for (_, rt, _) in &st.detached {
+                rt.handle.set_iip(enabled);
+            }
+            st.cfg.save();
+            eprintln!("[ui] iip={enabled}");
+        });
+    });
+
+    ui.on_toggle_render_hud(move || {
+        runtime::with_window(window_id, |st| {
+            st.cfg.render_hud = !st.cfg.render_hud;
+            st.ui.set_cfg_render_hud(st.cfg.render_hud);
+            let enabled = render_hud_forced_by_env() || st.cfg.render_hud;
+            set_render_hud(st, enabled);
+            st.cfg.save();
+            eprintln!("[ui] render_hud={} forced={}", st.cfg.render_hud, render_hud_forced_by_env());
+        });
+    });
+
+    ui.on_toggle_scrollback_unlimited(move || {
+        runtime::with_window(window_id, |st| {
+            st.cfg.scrollback_unlimited = !st.cfg.scrollback_unlimited;
+            st.ui
+                .set_cfg_scrollback_unlimited(st.cfg.scrollback_unlimited);
+            st.cfg.save();
+            eprintln!(
+                "[ui] scrollback_unlimited={} effective={} (仅新 pane)",
+                st.cfg.scrollback_unlimited,
+                st.cfg.effective_scrollback()
+            );
+        });
+    });
+
+    ui.on_toggle_mcp_enabled(move || {
+        runtime::with_window(window_id, |st| toggle_mcp_setting(st, McpSetting::Enabled));
+    });
+    ui.on_toggle_mcp_read(move || {
+        runtime::with_window(window_id, |st| toggle_mcp_setting(st, McpSetting::Read));
+    });
+    ui.on_toggle_mcp_input(move || {
+        runtime::with_window(window_id, |st| toggle_mcp_setting(st, McpSetting::Input));
+    });
+    ui.on_toggle_mcp_tabs(move || {
+        runtime::with_window(window_id, |st| toggle_mcp_setting(st, McpSetting::Tabs));
+    });
+    ui.on_toggle_mcp_destructive(move || {
+        runtime::with_window(window_id, |st| toggle_mcp_setting(st, McpSetting::Destructive));
+    });
+
+    ui.on_set_scrollbar_policy(move |value| {
+        runtime::with_window(window_id, |st| {
+            let policy = ScrollbarPolicy::from_config(&value);
+            st.cfg.scrollbar_policy = policy.as_str().to_string();
+            st.ui.set_cfg_scrollbar_policy(policy.as_str().into());
+            refresh_all_pane_views(st);
+            st.cfg.save();
+            eprintln!("[ui] scrollbar_policy={}", policy.as_str());
+        });
+    });
+
+    ui.on_set_backspace_binding(move |value| {
+        runtime::with_window(window_id, |st| {
+            let binding = keys::BackspaceBinding::from_config(&value);
+            st.cfg.backspace_binding = binding.as_str().to_string();
+            st.ui.set_cfg_backspace_binding(binding.as_str().into());
+            st.cfg.save();
+            eprintln!("[ui] backspace_binding={}", binding.as_str());
+        });
+    });
+
+    ui.on_set_delete_binding(move |value| {
+        runtime::with_window(window_id, |st| {
+            let binding = keys::DeleteBinding::from_config(&value);
+            st.cfg.delete_binding = binding.as_str().to_string();
+            st.ui.set_cfg_delete_binding(binding.as_str().into());
+            st.cfg.save();
+            eprintln!("[ui] delete_binding={}", binding.as_str());
+        });
+    });
+
+    ui.on_settings_open_path(move || {
+        runtime::with_window(window_id, |_st| {
+            let path = Config::path();
+            let dir = path
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| path.clone());
+            eprintln!("[ui] open config folder {}", dir.display());
+            // 复用 shell-safe 的 xdg-open helper：单个参数、失败显示浮层、不 panic。
+            let shown = dir.display().to_string();
+            open_with_xdg(dir.into_os_string(), shown, "path");
+        });
+    });
+
+    ui.on_settings_help_open(move |kind| {
+        runtime::with_window(window_id, |st| {
+            let info = help_info();
+            let lang = st.cfg.lang();
+            let is_logs = kind.as_str() == "logs";
+            let kind_static: &'static str = if is_logs { "logs" } else { "config" };
+            let dir = if is_logs { info.log_dir } else { info.config_dir };
+            if let Err(msg) = open_help_directory(dir, kind_static, lang) {
+                st.ui.set_help_status(msg.as_str().into());
+            }
+        });
+    });
+
+    ui.on_run_doctor(move || {
+        runtime::with_window(window_id, |st| {
+            st.ui.set_doctor_status("Running deterministic Doctor…".into());
+            match diag::doctor_markdown() {
+                Ok(markdown) => {
+                    st.ui.set_doctor_text(markdown.into());
+                    st.ui.set_doctor_open(true);
+                    st.ui.set_doctor_status("".into());
+                },
+                Err(error) => st.ui.set_doctor_status(error.into()),
+            }
+        });
+    });
+
+    ui.on_close_doctor(move || {
+        runtime::with_window(window_id, |st| {
+            st.ui.set_doctor_open(false);
+            st.ui.set_doctor_text("".into());
+        });
+    });
+
+    ui.on_create_feedback(move || {
+        runtime::with_window(window_id, |st| {
+            let description = st.ui.get_feedback_text().to_string();
+            match feedback::create_bundle(&description) {
+                Ok(bundle) => {
+                    let url = std::env::var("TERVO_FEEDBACK_ISSUE_URL")
+                        .ok()
+                        .filter(|v| !v.trim().is_empty())
+                        .unwrap_or_else(|| st.cfg.feedback_issue_url.clone());
+                    let result = if url.trim().is_empty() {
+                        bundle
+                            .parent()
+                            .ok_or_else(|| "bundle parent missing".to_string())
+                            .and_then(feedback::open_folder)
+                            .map(|()| format!("Bundle: {}", bundle.display()))
+                    } else {
+                        feedback::open_issue(&url, &bundle)
+                            .map(|()| format!("Bundle: {} (issue page opened)", bundle.display()))
+                    };
+                    st.ui.set_feedback_status(match result {
+                        Ok(message) => message.into(),
+                        Err(error) => format!("Feedback error: {error}").into(),
+                    });
+                },
+                Err(error) => st.ui.set_feedback_status(format!("Feedback error: {error}").into()),
+            }
+        });
+    });
+
+    ui.on_settings_help_copy_diagnostics(move || {
+        runtime::with_window(window_id, |st| copy_help_diagnostics(st));
+    });
+
+    ui.on_settings_category_changed(move |c| {
+        runtime::with_window(window_id, |st| {
+            if c == 6 {
+                refresh_vault_ui(st);
+            } else {
+                st.vault_clear_armed = false;
+            }
+            // Profiles 分类直接读 profile-model；每次进入都刷新（含搜索清空）。
+            if c == 7 {
+                refresh_profiles(st);
+            }
+            // Help 每次进入都重取路径（TERVO_CONFIG/TERVO_LOG_DIR 可能变了）。
+            if c == 8 {
+                refresh_help_info(st);
+            }
+            // Privacy/MCP 的 socket 状态由后台 supervisor 更新，进入页面时刷新。
+            if c == 9 {
+                sync_mcp_ui(st);
+            }
+        });
+        eprintln!("[ui] settings category={c}");
+        if c != 4 {
+            // 离开 Hotkeys 页时结束录制，避免在别的页面上吞键盘。
+            runtime::with_window(window_id, |st| {
+                if st.hotkey_recording.is_some() {
+                    cancel_hotkey_edit(st);
+                }
+            });
+        }
+    });
+
+    ui.on_settings_filter(move |query| {
+        runtime::with_window(window_id, |st| {
+            let q = query.to_string();
+            st.ui.set_settings_query(q.as_str().into());
+            let hits = settings_search_hits(&q, st.cfg.lang());
+            st.settings_result_cats = hits.iter().map(|h| h.cat).collect();
+            st.settings_result_sections = hits.iter().map(|h| h.section).collect();
+            st.settings_model
+                .set_vec(hits.into_iter().map(|h| h.line.into()).collect::<Vec<_>>());
+            eprintln!("[ui] settings filter q={q:?} hits={}", st.settings_result_cats.len());
+        });
+    });
+
+    ui.on_settings_open_result(move |index| {
+        runtime::with_window(window_id, |st| {
+            let idx = index.max(0) as usize;
+            if let Some(cat) = st.settings_result_cats.get(idx) {
+                st.ui.set_settings_category(*cat);
+                eprintln!("[ui] settings goto cat={cat}");
+            }
+            if let Some(section) = st.settings_result_sections.get(idx) {
+                // 先下发锚点再自增 token，保证 Slint 的 changed 处理器看到新锚点。
+                st.ui.set_settings_focus((*section).into());
+                st.settings_jump_token = st.settings_jump_token.wrapping_add(1);
+                st.ui.set_settings_jump_token(st.settings_jump_token);
+                // 首次下发的同一轮 Fluent 布局里卡片 y 可能还是 0；80ms 后
+                // 再 bump 一次 token，让 Slint 在布局完成后再滚一次（幂等）。
+                let weak = st.ui.as_weak();
+                st.settings_jump_timer.start(
+                    slint::TimerMode::SingleShot,
+                    Duration::from_millis(80),
+                    move || {
+                        if let Some(ui) = weak.upgrade() {
+                            let next = ui.get_settings_jump_token().wrapping_add(1);
+                            ui.set_settings_jump_token(next);
+                        }
+                    },
+                );
+                eprintln!("[ui] settings jump section={section}");
+            }
+            st.ui.set_settings_query("".into());
+            st.settings_model.set_vec(Vec::<slint::SharedString>::new());
+        });
+    });
+
+    ui.on_settings_manage_profiles(move || {
+        runtime::with_window(window_id, |st| {
+            refresh_profiles(st);
+            open_profiles_panel(st);
+        });
+    });
+
+    ui.on_settings_toggled(move |open| {
+        if open {
+            runtime::with_window(window_id, |st| {
+                if st.search_open {
+                    close_search(st);
+                }
+            });
+        }
+        runtime::with_window(window_id, |st| {
+            if open {
+                refresh_vault_ui(st);
+                if st.ui.get_settings_category() == 7 {
+                    refresh_profiles(st);
+                }
+                st.ui.set_settings_focus("".into());
+            } else {
+                st.vault_clear_armed = false;
+                st.ui.set_settings_focus("".into());
+            }
+        });
+        eprintln!("[ui] settings open={open}");
+        runtime::with_window(window_id, |st| {
+            if !open {
+                // 关闭设置时退出录制，并确保终端重新拿到键盘焦点。
+                st.hotkey_recording = None;
+                st.ui.set_hotkey_recording_row(-1);
+                st.ui.set_hotkey_error("".into());
+                st.ui.invoke_focus_terminal();
+            }
+        });
+    });
+
+    ui.on_hotkey_start_edit(move |index| {
+        runtime::with_window(window_id, |st| start_hotkey_edit(st, index));
+    });
+
+    ui.on_hotkey_cancel_edit(move || {
+        runtime::with_window(window_id, |st| cancel_hotkey_edit(st));
+    });
+
+    ui.on_hotkey_reset(move |index| {
+        runtime::with_window(window_id, |st| reset_hotkey(st, index));
+    });
+
+    ui.on_hotkey_reset_all(move || {
+        runtime::with_window(window_id, |st| reset_all_hotkeys(st));
+    });
+
+    ui.on_toggle_copy_on_select(move || {
+        runtime::with_window(window_id, |st| {
+            st.cfg.copy_on_select = !st.cfg.copy_on_select;
+            st.ui.set_cfg_copy_on_select(st.cfg.copy_on_select);
+            st.cfg.save();
+            eprintln!("[ui] copy_on_select={}", st.cfg.copy_on_select);
+        });
+    });
+
+    ui.on_toggle_confirm_close(move || {
+        runtime::with_window(window_id, |st| {
+            st.cfg.confirm_close = !st.cfg.confirm_close;
+            st.ui.set_cfg_confirm_close(st.cfg.confirm_close);
+            st.cfg.save();
+            eprintln!("[ui] confirm_close={}", st.cfg.confirm_close);
+        });
+    });
+
+    ui.on_toggle_restore_session(move || {
+        runtime::with_window(window_id, |st| {
+            st.cfg.restore_session_on_startup = !st.cfg.restore_session_on_startup;
+            st.ui
+                .set_cfg_restore_session(st.cfg.restore_session_on_startup);
+            st.cfg.save();
+            eprintln!(
+                "[ui] restore_session_on_startup={}（下次启动生效；正常退出时写快照）",
+                st.cfg.restore_session_on_startup
+            );
+        });
+    });
+
+    ui.on_tabsearch_open_requested(move || {
+        let _ = runtime::with_window(window_id, open_tab_search);
+    });
+    ui.on_tabsearch_query_changed(move |_q| {
+        runtime::with_window(window_id, |st| {
+            st.tab_search_query = st.ui.get_tabsearch_query().to_string();
+            refresh_tab_search(st);
+        });
+    });
+    ui.on_tabsearch_move(move |delta| {
+        let _ = runtime::with_window(window_id, |st| tab_search_move(st, delta));
+    });
+    ui.on_tabsearch_accept(move || {
+        let _ = runtime::with_window(window_id, tab_search_accept);
+    });
+    ui.on_tabsearch_cancel(move || {
+        let _ = runtime::with_window(window_id, close_tab_search);
+    });
+    ui.on_tabsearch_pick(move |row| {
+        let _ = runtime::with_window(window_id, |st| tab_search_pick(st, row.max(0) as usize));
+    });
+
+    ui.on_palette_query_changed(move |_q| {
+        runtime::with_window(window_id, |st| refresh_palette(st));
+    });
+
+    ui.on_palette_move(move |delta| {
+        runtime::with_window(window_id, |st| palette_move(st, delta));
+    });
+
+    ui.on_palette_accept(move || {
+        runtime::with_window(window_id, |st| palette_accept(st));
+    });
+
+    ui.on_palette_cancel(move || {
+        runtime::with_window(window_id, |st| st.ui.set_palette_open(false));
+    });
+
+    ui.on_palette_pick(move |index| {
+        runtime::with_window(window_id, |st| {
+            st.ui.set_palette_selected(index.max(0));
+            palette_accept(st);
+        });
+    });
+
+    ui.on_search_toggle_case(move || {
+        runtime::with_window(window_id, toggle_search_case);
+    });
+
+    ui.on_search_toggle_regex(move || {
+        runtime::with_window(window_id, toggle_search_regex);
+    });
+
+    // TextInput 的编辑（键入/退格/粘贴/鼠标输入）都会回调 edited；文本以 UI 为准。
+    ui.on_search_edited(move || {
+        runtime::with_window(window_id, search_edited);
+    });
+
+    // Enter / Shift+Enter：从当前命中继续向前/向后，并刷新 index/total。
+    ui.on_search_next(move |forward| {
+        runtime::with_window(window_id, |st| run_search(st, forward));
+    });
+
+    // Esc：关闭搜索条并把 IME/键盘焦点还给终端。
+    ui.on_search_close(move || {
+        runtime::with_window(window_id, close_search);
+    });
+
+    ui.on_save_commit(move |path| {
+        runtime::with_window(window_id, |st| save_contents_commit(st, path.as_str()));
+    });
+
+    ui.on_save_cancel(move || {
+        runtime::with_window(window_id, cancel_save_contents);
+    });
+
+    ui.on_tab_reorder(move |from, drag_x, strip_w| {
+        runtime::with_window(window_id, |st| {
+            let n = st.ws.tabs.len();
+            st.ui.set_drop_index(-1);
+            st.ui.set_drop_gap(-1);
+            st.ui.set_drop_valid(false);
+            if n < 2 || from < 0 {
+                return;
+            }
+            let from = from as usize;
+            if from >= n {
+                return;
+            }
+            let target =
+                drag_target_in_group(drag_x, strip_w, n, st.ws.pinned_count(), from);
+            let Some(target) = target else {
+                eprintln!("[ui] tab drop blocked from={from} x={drag_x:.1} strip={strip_w:.1}");
+                return;
+            };
+            if st.ws.move_tab(from, target) {
+                eprintln!("[ws] reorder tab {from} → {target}");
+                rebuild_tabs(st);
+            }
+        });
+    });
+
+    // 拖拽过程中只更新落点属性；不重建 Tab 模型/TouchArea，避免每帧重排。
+    ui.on_tab_drag_move(move |from, drag_x, strip_w| {
+        runtime::with_window(window_id, |st| {
+            let n = st.ws.tabs.len();
+            if from < 0 || from as usize >= n {
+                st.ui.set_drop_index(-1);
+                st.ui.set_drop_gap(-1);
+                st.ui.set_drop_valid(false);
+                return;
+            }
+            let from = from as usize;
+            let target =
+                drag_target_in_group(drag_x, strip_w, n, st.ws.pinned_count(), from);
+            let gap: i32 = target
+                .map(|t| drag_gap_index(from, t) as i32)
+                .unwrap_or(-1);
+            let prev = (st.ui.get_drop_index(), st.ui.get_drop_gap(), st.ui.get_drop_valid());
+            st.ui.set_drop_index(target.map(|t| t as i32).unwrap_or(-1));
+            st.ui.set_drop_gap(gap);
+            st.ui.set_drop_valid(target.is_some());
+            if prev != (target.map(|t| t as i32).unwrap_or(-1), gap, target.is_some()) {
+                eprintln!(
+                    "[ui] tab drag from={from} x={drag_x:.1} strip={strip_w:.1} target={} gap={gap}",
+                    target.map(|t| t.to_string()).unwrap_or_else(|| "blocked".into())
+                );
+            }
+        });
+    });
+
+    ui.on_tab_drag_cancelled(move || {
+        runtime::with_window(window_id, |st| {
+            st.ui.set_drop_index(-1);
+            st.ui.set_drop_gap(-1);
+            st.ui.set_drop_valid(false);
+        });
+        eprintln!("[ui] tab drag cancelled");
+    });
+
+    ui.on_tab_context(move |index, x| {
+        eprintln!("[ui] tab context index={index} x={x:.1}");
+        runtime::with_window(window_id, |st| {
+            st.ui.set_tabctx_index(index);
+            st.ui.set_tabctx_x(x);
+            st.ui.set_tabctx_open(true);
+        });
+    });
+
+    ui.on_tab_menu_action(move |index, action| {
+        eprintln!("[ui] tab action={action} index={index}");
+        runtime::with_window(window_id, |st| {
+            let index = index.max(0) as usize;
+            match action {
+                0 => close_tab_inner(st, index),
+                1 => close_other_tabs(st, index),
+                2 => duplicate_tab(st, index),
+                3 => open_rename(st, index),
+                4 => close_tabs_left(st, index),
+                5 => close_tabs_right(st, index),
+                // 6 = Pin/Unpin 切换（additive；旧 ID 0..5 不变）
+                6 => toggle_tab_pin(st, index),
+                _ => {}
+            }
+        });
+    });
+
+    ui.on_tabbar_context(move |x, y| {
+        eprintln!("[ui] tabbar menu at {x},{y}");
+        runtime::with_window(window_id, |st| {
+            st.ui.set_tabmenu_x(x);
+            st.ui.set_tabmenu_y(y);
+            st.ui.set_tabmenu_open(true);
+        });
+    });
+
+    ui.on_tabbar_menu_action(move |action| {
+        eprintln!("[ui] tabbar action={action}");
+        runtime::with_window(window_id, |st| match action {
+            0 => {} // 置顶由 Slint 侧直接切换（绑定 Window.always-on-top）
+            1 => {
+                new_tab_with_default(st);
+                rebuild_tabs(st);
+            }
+            13 => new_window(),
+            2 => {
+                st.ui.set_settings_open(true);
+            }
+            3 => {
+                let _ = slint::quit_event_loop();
+            }
+            4 => restart_session(st),
+            5 => open_palette(st),
+            7 => reattach_last_background(st),
+            8 => open_background_panel(st),
+            9 => open_profiles_panel(st),
+            10 => open_sftp_panel(st),
+            11 => open_forwards_panel(st),
+            6 => {
+                st.cfg.tabbar_position = if st.cfg.tabbar_position == "bottom" {
+                    "top".into()
+                } else {
+                    "bottom".into()
+                };
+                st.ui.set_tabbar_bottom(st.cfg.tabbar_position == "bottom");
+                st.cfg.save();
+                // 内容区在窗口内的纵向偏移变了：候选点必须重新下发。
+                st.ime_spot_dirty = true;
+                update_ime_spot(st);
+                eprintln!("[ui] tabbar_position={}", st.cfg.tabbar_position);
+            }
+            _ => {}
+        });
+    });
+
+    ui.on_close_window(move || {
+        runtime::with_window(window_id, |st| request_close(st));
+    });
+
+    ui.on_confirm_accept(move || {
+        runtime::with_window(window_id, |st| {
+            st.ui.set_confirm_open(false);
+            close_current_window(st);
+        });
+    });
+
+    ui.on_confirm_cancel(move || {
+        eprintln!("[ui] close cancelled");
+        runtime::with_window(window_id, |st| st.ui.set_confirm_open(false));
+    });
+
+    // 每个窗口自己的主题展示/字号/回滚行数/Quake 开关初始状态。
+    // 配置本身是 SharedServices 里唯一一份，这里只同步 UI mirror。
+    let state_handle = state.clone();
+    runtime::with_state(&state_handle, |st| {
+        let auto = is_auto_theme(&st.cfg.theme);
+        let theme = st.resolved_theme.clone();
+        st.ui.set_theme_name(if auto {
+            AUTO_THEME.into()
+        } else {
+            theme.id.as_str().into()
+        });
+        st.ui.set_auto_resolved(if auto {
+            theme.label.as_str().into()
+        } else {
+            "".into()
+        });
+        st.ui.set_theme_display(if auto {
+            format!(
+                "{} · {}",
+                ui_text(st.cfg.lang(), "Auto", "自动"),
+                theme.label
+            )
+            .into()
+        } else {
+            theme.label.as_str().into()
+        });
+        st.ui
+            .global::<Palette>()
+            .set_colors(slint_theme(&theme.ui));
+        st.ui.set_theme_choices(theme_choices(&st.registry));
+        st.ui.set_font_size(st.cfg.font_size as i32);
+        st.ui.set_scrollback(st.cfg.scrollback as i32);
+        st.ui.set_cfg_quake(st.cfg.quake_enabled);
+        install_render_hud(st);
+    });
+
+    ui.on_set_theme(move |name| {
+        eprintln!("[theme] 选择 -> {name}");
+        runtime::with_window(window_id, |st| apply_theme(st, name.as_str()));
+    });
+
+    // Settings → Appearance → Language：立即切换静态文案（Slint 侧已先改
+    // root.language），Rust 侧再重建动态列表并写回 config；无需重启。
+    ui.on_language_changed(move |code| {
+        runtime::with_window(window_id, |st| {
+            let next = config::normalize_language(code.as_str());
+            if st.cfg.language == next {
+                return;
+            }
+            st.cfg.language = next.clone();
+            st.cfg.save();
+            sync_language_ui(st);
+            eprintln!("[ui] language={next}");
+        });
+    });
+
+    // Appearance：背景图路径（空 = 关闭）。合法路径输入过程中即时加载/写盘；
+    // 非法路径只在回车/失焦提交时显示错误，并保留上一张已生效背景（回退）。
+    ui.on_background_image_changed(move |path| {
+        runtime::with_window(window_id, |st| {
+            commit_background_path(st, path.as_str(), false);
+        });
+    });
+    ui.on_background_image_commit(move |path| {
+        runtime::with_window(window_id, |st| {
+            commit_background_path(st, path.as_str(), true);
+        });
+    });
+
+    let image_picker_weak = ui.as_weak();
+    ui.on_background_image_browse(move || {
+        let Some(current_ui) = image_picker_weak.upgrade() else { return };
+        let initial = current_ui.get_background_image_path().to_string();
+        let weak = image_picker_weak.clone();
+        std::thread::Builder::new()
+            .name("image-picker".into())
+            .spawn(move || {
+                let result = pick_background_image(&initial);
+                let _ = slint::invoke_from_event_loop(move || {
+                    let Some(_ui) = weak.upgrade() else { return };
+                    runtime::with_window(window_id, |st| match result {
+                        Ok(Some(path)) => {
+                            eprintln!("[theme] 文件选择器选择背景图: {path}");
+                            st.ui.set_background_image_path(path.as_str().into());
+                            commit_background_path(st, &path, true);
+                        }
+                        Ok(None) => {}
+                        Err(e) => {
+                            let err = e.clone();
+                            let msg = if st.cfg.lang() == "zh" {
+                                e
+                            } else {
+                                format!("Image picker unavailable: {e}")
+                            };
+                            st.ui.set_background_image_error(msg.into());
+                            eprintln!("[theme] 背景图选择器失败: {err}");
+                        }
+                    });
+                });
+            })
+            .ok();
+    });
+
+    // 拖动时只预览（重绘终端帧），松手才写盘，避免每一帧都原子写 config.toml。
+    // 无背景图时不改有效 alpha（见 renderer_opacity），所以不会把纯色终端拖灰。
+    ui.on_background_opacity_preview(move |value| {
+        runtime::with_window(window_id, |st| {
+            let value = config::clamp_opacity(value);
+            st.cfg.background_opacity = value;
+            sync_renderer_opacity(st);
+        });
+    });
+
+    ui.on_background_opacity_changed(move |value| {
+        runtime::with_window(window_id, |st| {
+            let value = config::clamp_opacity(value);
+            st.cfg.background_opacity = value;
+            st.ui.set_background_opacity(value);
+            sync_renderer_opacity(st);
+            st.cfg.save();
+            eprintln!("[theme] background_opacity={value:.2}（仅终端默认背景）");
+        });
+    });
+
+    // 遮罩层只影响背景图，由 Slint 直接改属性完成即时预览；松手才落盘。
+    ui.on_background_dim_preview(move |value| {
+        runtime::with_window(window_id, |st| {
+            st.cfg.background_dim = config::clamp_dim(value);
+        });
+    });
+
+    ui.on_background_dim_changed(move |value| {
+        runtime::with_window(window_id, |st| {
+            let value = config::clamp_dim(value);
+            st.cfg.background_dim = value;
+            st.ui.set_background_dim(value);
+            st.cfg.save();
+            eprintln!("[theme] background_dim={value:.2}");
+        });
+    });
+
+    // ---- Appearance：光标形状/闪烁/颜色 + 粗体（GNOME Terminal 基础项）----
+    // 形状/颜色只影响光标 overlay，不重绘终端帧；闪烁用 UI timer 切换 overlay 可见性。
+    ui.on_set_cursor_shape(move |shape| {
+        runtime::with_window(window_id, |st| {
+            let next = config::normalize_cursor_shape(shape.as_str());
+            if st.cfg.cursor_shape == next {
+                return;
+            }
+            st.cfg.cursor_shape = next.clone();
+            st.ui.set_cfg_cursor_shape(next.as_str().into());
+            apply_cursor_settings(st);
+            st.cfg.save();
+            eprintln!("[appearance] cursor_shape={next}");
+        });
+    });
+
+    ui.on_set_cursor_blink(move |mode| {
+        runtime::with_window(window_id, |st| {
+            let next = config::normalize_cursor_blink(mode.as_str());
+            if st.cfg.cursor_blink == next {
+                return;
+            }
+            st.cfg.cursor_blink = next.clone();
+            st.ui.set_cfg_cursor_blink(next.as_str().into());
+            configure_cursor_blink(st);
+            st.cfg.save();
+            eprintln!("[appearance] cursor_blink={next}");
+        });
+    });
+
+    // 输入过程中空串=跟随主题、合法 #RGB/#RRGGBB 即时生效；半截/非法输入不写配置。
+    ui.on_cursor_color_changed(move |text| {
+        runtime::with_window(window_id, |st| {
+            let raw = text.as_str();
+            let next = if raw.trim().is_empty() {
+                String::new()
+            } else {
+                let Some(color) = config::normalize_hex_color(raw) else {
+                    return;
+                };
+                color
+            };
+            if st.cfg.cursor_color == next {
+                return;
+            }
+            st.cfg.cursor_color = next.clone();
+            apply_cursor_settings(st);
+            st.cfg.save();
+            eprintln!("[appearance] cursor_color={next:?}");
+        });
+    });
+
+    ui.on_cursor_text_color_changed(move |text| {
+        runtime::with_window(window_id, |st| {
+            let raw = text.as_str();
+            let next = if raw.trim().is_empty() {
+                String::new()
+            } else {
+                let Some(color) = config::normalize_hex_color(raw) else {
+                    return;
+                };
+                color
+            };
+            if st.cfg.cursor_text_color == next {
+                return;
+            }
+            st.cfg.cursor_text_color = next.clone();
+            apply_cursor_settings(st);
+            st.cfg.save();
+            eprintln!("[appearance] cursor_text_color={next:?}");
+        });
+    });
+
+    ui.on_toggle_bold_is_bright(move || {
+        runtime::with_window(window_id, |st| {
+            st.cfg.bold_is_bright = !st.cfg.bold_is_bright;
+            st.ui.set_cfg_bold_is_bright(st.cfg.bold_is_bright);
+            apply_bold_settings(st);
+            st.cfg.save();
+            eprintln!("[appearance] bold_is_bright={}", st.cfg.bold_is_bright);
+        });
+    });
+
+    ui.on_bold_color_changed(move |text| {
+        runtime::with_window(window_id, |st| {
+            let raw = text.as_str();
+            let next = if raw.trim().is_empty() {
+                String::new()
+            } else {
+                let Some(color) = config::normalize_hex_color(raw) else {
+                    return;
+                };
+                color
+            };
+            if st.cfg.bold_color == next {
+                return;
+            }
+            st.cfg.bold_color = next.clone();
+            apply_bold_settings(st);
+            st.cfg.save();
+            eprintln!("[appearance] bold_color={next:?}");
+        });
+    });
+
+    ui.on_toggle_bold_color_same_as_fg(move || {
+        runtime::with_window(window_id, |st| {
+            st.cfg.bold_color_same_as_fg = !st.cfg.bold_color_same_as_fg;
+            st.ui
+                .set_cfg_bold_color_same_as_fg(st.cfg.bold_color_same_as_fg);
+            apply_bold_settings(st);
+            st.cfg.save();
+            eprintln!(
+                "[appearance] bold_color_same_as_fg={}",
+                st.cfg.bold_color_same_as_fg
+            );
+        });
+    });
+
+    ui.on_bump_font_size(move |delta| {
+        runtime::with_window(window_id, |st| {
+            let new = (st.cfg.font_size + delta as f32).clamp(8.0, 32.0);
+            if (new - st.cfg.font_size).abs() < 0.1 {
+                return;
+            }
+            st.cfg.font_size = new;
+            st.ui.set_font_size(new as i32);
+            st.cfg.save();
+            apply_font_size(st);
+        });
+    });
+
+    ui.on_bump_scrollback(move |delta| {
+        runtime::with_window(window_id, |st| {
+            // 无限滚动下点 +/-：视为用户要改回固定值，先关闭 unlimited。
+            if st.cfg.scrollback_unlimited {
+                st.cfg.scrollback_unlimited = false;
+                st.ui.set_cfg_scrollback_unlimited(false);
+            }
+            let new = (st.cfg.scrollback as i64 + delta as i64)
+                .clamp(500, UNLIMITED_SCROLLBACK_LINES as i64) as usize;
+            st.cfg.scrollback = new;
+            st.ui.set_scrollback(new as i32);
+            st.cfg.save();
+        });
+    });
+
+    {
+        let weak = ui.as_weak();
+        ui.on_minimize_window(move || {
+            if let Some(ui) = weak.upgrade() {
+                ui.window().set_minimized(true);
+            }
+        });
+    }
+
+    {
+        let weak = ui.as_weak();
+        ui.on_max_pointer_down(|| eprintln!("[ui] max-pointer-down"));
+        ui.on_toggle_maximize(move || {
+            if let Some(ui) = weak.upgrade() {
+                // X11：MaximizeController 是唯一权威。click 只翻转 desired，
+                // 发送/PropertyNotify 确认/外部同步都在 worker，UI 只显示 target。
+                let from_controller = runtime::with_window(window_id, |st| {
+                    let target = st.maximize.as_ref()?.click();
+                    st.window_maximized = target;
+                    Some(target)
+                })
+                .flatten();
+                if let Some(target) = from_controller {
+                    ui.set_window_maximized(target);
+                    runtime::with_window(window_id, |st| {
+                        request_window_corners(
+                            st,
+                            None,
+                            Some(xconn::CornerState {
+                                maximized: target,
+                                fullscreen: st.ui.window().is_fullscreen(),
+                            }),
+                        );
+                    });
+                    eprintln!("[maximize] ui click target={target}");
+                    return;
+                }
+                // 非 X11 / 状态机启动失败：保留 winit 原生路径；不按标题找窗口。
+                let target = runtime::with_window(window_id, |st| {
+                    st.window_maximized = !st.window_maximized;
+                    st.window_maximized
+                })
+                .unwrap_or_else(|| !ui.get_window_maximized());
+                ui.set_window_maximized(target);
+                ui.window().set_maximized(target);
+                eprintln!("[maximize] fallback winit target={target}");
+            }
+        });
+    }
+
+    ui.on_tab_clicked(move |i| {
+        runtime::with_window(window_id, |st| {
+            if st.search_open {
+                close_search(st);
+            }
+        });
+        runtime::with_window(window_id, |st| set_active_tab_inner(st, i.max(0) as usize));
+    });
+    ui.on_tab_closed(move |i| {
+        runtime::with_window(window_id, |st| close_tab_inner(st, i.max(0) as usize));
+    });
+    ui.on_new_tab(move || {
+        runtime::with_window(window_id, |st| {
+            if st.search_open {
+                close_search(st);
+            }
+        });
+        runtime::with_window(window_id, new_tab_with_default);
+    });
+
+    ui.on_profilemenu_menu(move || {
+        runtime::with_window(window_id, open_profile_menu);
+    });
+
+    ui.on_profilemenu_pick(move |index| {
+        runtime::with_window(window_id, |st| {
+            st.ui.set_profilemenu_open(false);
+            let index = index.max(0) as usize;
+            eprintln!("[ui] profile pick={index}");
+            if let Some(&profile_index) = st.profile_menu_indices.get(index) {
+                open_profile_tab(st, profile_index);
+            }
+        });
+    });
+
+    ui.on_profilemenu_manage(move || {
+        runtime::with_window(window_id, |st| {
+            st.ui.set_profilemenu_open(false);
+            open_profiles_panel(st);
+        });
+    });
+
+    ui.on_toggle_quake(move || {
+        runtime::with_window(window_id, |st| {
+            st.cfg.quake_enabled = !st.cfg.quake_enabled;
+            st.ui.set_cfg_quake(st.cfg.quake_enabled);
+            if !st.cfg.quake_enabled && st.quake_visible {
+                if let Some((pos, size)) = st.quake_saved.take() {
+                    st.ui.window().set_size(size);
+                    st.ui.window().set_position(pos);
+                }
+                st.quake_visible = false;
+            }
+            st.cfg.save();
+            eprintln!("[ui] quake_enabled={}", st.cfg.quake_enabled);
+        });
+    });
+
+    ui.on_resized(move |w, h| {
+        runtime::with_window(window_id, |st| {
+            // WM live resize 期间指针被 WM grab，winit/Slint 收不到真实 ButtonRelease；
+            // TouchArea 会一直保持 pressed/grabbed，后续点击会继续命中旧方向。
+            // 收到第一帧由 WM 驱动的 resize 后，异步补发一次 PointerReleased 清理状态。
+            if st.wm_resize && !st.wm_release_pending {
+                st.wm_release_pending = true;
+                let weak = st.ui.as_weak();
+                slint::Timer::single_shot(Duration::ZERO, move || {
+                    let Some(ui) = weak.upgrade() else { return };
+                    let still_wm =
+                        matches!(runtime::with_window(window_id, |st| st.wm_resize && st.wm_release_pending), Some(true));
+                    if still_wm {
+                        ui.window().dispatch_event(
+                            slint::platform::WindowEvent::PointerReleased {
+                                position: slint::LogicalPosition::new(0.0, 0.0),
+                                button: slint::platform::PointerEventButton::Left,
+                            },
+                        );
+                    }
+                });
+            }
+            // w/h 是 Slint 逻辑像素；worker 按 scale_factor 换算物理像素并节流去重。
+            request_window_corners(st, Some((w, h)), None);
+            let w = w.max(1.0);
+            let h = (h - TABBAR_H).max(1.0);
+            // configure 本身就是“WM/窗口系统正在动”的证据；即使尺寸和上一帧
+            // 相同也刷新时间戳，watchdog 不会把它误判成 WM 没接管。
+            st.last_resize_event = Some(Instant::now());
+            if st.wm_resize {
+                st.wm_resize_saw_configure = true;
+            }
+            if (st.content.w - w).abs() < 0.5 && (st.content.h - h).abs() < 0.5 {
+                return;
+            }
+            // 窗口尺寸/DPR 变化：即使光标格相对窗口没动，也让输入法重收 spot。
+            st.ime_spot_dirty = true;
+            let old_w = st.content.w;
+            let was_resizing = st.resize_in_progress;
+            // 只有用户正在拖动边/角（WM live resize 或自绘 resize）才隐藏背景/做
+            // resize 收尾；最大化、字体变化等程序化 set_size 不应让背景闪一下。
+            let live_drag = st.wm_resize || st.resize.is_some();
+            st.resize_events = st.resize_events.saturating_add(1);
+            st.resize_pending = Some((w, h));
+            // UI 布局必须每个 configure 立即更新：缩小时如果晚一帧，右上角按钮
+            // 还在旧宽度的右边界外，会被新窗口裁掉，下一帧才“吐出来”。
+            st.content = Rect::new(0.0, 0.0, w, h);
+            refresh_views_layout(st);
+            if live_drag {
+                st.resize_in_progress = true;
+            }
+            // resize 期间隐藏**大窗口**的背景图，避免 Skia 每帧对整张图做 cover
+            // 缩放（2560x1440 llvmpipe 实测每帧省约 2ms）。小窗口收益小、闪一下
+            // 不划算，故按面积设阈值；停下 200ms 后自动恢复。字符帧不缩放，仍是 1:1。
+            // TERVO_RESIZE_KEEP_BG=1 可关闭该优化，用于 A/B 性能对比。
+            const RESIZE_BG_SUSPEND_AREA: f32 = 1_500_000.0;
+            if live_drag
+                && w * h > RESIZE_BG_SUSPEND_AREA
+                && st.ui.get_has_background_image()
+                && std::env::var_os("TERVO_RESIZE_KEEP_BG").is_none()
+            {
+                if !st.ui.get_background_suspended()
+                    && std::env::var_os("TERVO_RESIZE_PROFILE").is_some()
+                {
+                    eprintln!("[ui] resize 期间隐藏背景图（减少 cover 缩放）");
+                }
+                st.ui.set_background_suspended(true);
+            }
+            // 缩小必须立即重绘，否则旧帧的右上角按钮会露在窗口外一帧；放大可以
+            // 合并到 60fps（没有裁切风险），避免高速拖动把渲染线程灌满。
+            schedule_resize_redraw(
+                st,
+                should_redraw_resize_immediately(old_w, w, was_resizing),
+            );
+            if live_drag {
+                schedule_resize_finalize(st);
+            }
+            // terminal grid/PTY/字符重绘仍 16ms 合并，避免高速拖动把 UI 线程灌满。
+            if !st.resize_apply_scheduled {
+                st.resize_apply_scheduled = true;
+                st.resize_apply.start(
+                    slint::TimerMode::SingleShot,
+                    Duration::from_millis(16),
+                    move || {
+                        runtime::with_window(window_id, |st| {
+                            st.resize_apply_scheduled = false;
+                            let Some((w, h)) = st.resize_pending.take() else { return };
+                            st.content = Rect::new(0.0, 0.0, w, h);
+                            let t0 = Instant::now();
+                            refresh_views(st);
+                            let t_layout = t0.elapsed();
+                            redraw_visible(st);
+                            let total = t0.elapsed();
+                            let cost_us = total.as_secs_f64() * 1_000_000.0;
+                            st.resize_applied = st.resize_applied.saturating_add(1);
+                            st.resize_max_apply_us = st.resize_max_apply_us.max(cost_us);
+                            // apply 更新了 pane 图像，必须安排一次重绘；此时布局
+                            // 已是新尺寸，不会出现按钮晚一帧。
+                            schedule_resize_redraw(st, false);
+                            if std::env::var_os("TERVO_RESIZE_PROFILE").is_some() {
+                                eprintln!(
+                                    "[ui] resize apply events={} cost={:.1}ms layout={:.1}ms redraw={:.1}ms content={:.0}x{:.0}",
+                                    st.resize_events,
+                                    total.as_secs_f64() * 1000.0,
+                                    t_layout.as_secs_f64() * 1000.0,
+                                    (total - t_layout).as_secs_f64() * 1000.0,
+                                    st.content.w,
+                                    st.content.h
+                                );
+                            }
+                            st.resize_events = 0;
+                        });
+                    },
+                );
+            }
+        });
+    });
+}
 
 /// 启动时对单实例锁的判定结果。
 #[cfg(unix)]
@@ -12085,2516 +14679,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     shared.plugins.set_activity_wake(state.borrow().app_wake.clone());
     shared.plugins.with_mut(|plugins| plugins.start_process_plugins());
 
-    // ---- 回调 ----
-    let keylog = std::env::var("TERVO_KEYLOG").is_ok();
-    // 鼠标链路排查：TERVO_MOUSELOG=1 打印「命中哪格 / 是否上报」。
-    let mouselog = std::env::var("TERVO_MOUSELOG").is_ok();
-    ui.on_key_input(move |text, ctrl, alt, shift, meta, repeat| {
-        let text = text.to_string();
-        if keylog {
-            eprintln!(
-                "[key] {:?} ctrl={ctrl} alt={alt} shift={shift} meta={meta} repeat={repeat}",
-                text
-            );
-        }
-        let kind = if repeat {
-            keys::KeyEventKind::Repeat
-        } else {
-            keys::KeyEventKind::Press
-        };
-        with_app(|st| handle_input(st, &text, ctrl, alt, shift, meta, kind, keylog));
-    });
+    register_window_callbacks(&ui, state.clone(), window_id);
 
-    // kitty release：只有应用请求 REPORT_EVENT_TYPES 且 press 进过 PTY 才回放。
-    ui.on_key_release(move |text, ctrl, alt, shift, meta| {
-        let text = text.to_string();
-        if keylog {
-            eprintln!(
-                "[key] release {:?} ctrl={ctrl} alt={alt} shift={shift} meta={meta}",
-                text
-            );
-        }
-        with_app(|st| handle_key_release(st, &text, ctrl, alt, shift, meta, keylog));
-    });
-
-    // IME 上屏（中文/emoji）单独走一条路：没有修饰键语义，也不能触发 Ctrl 快捷键。
-    ui.on_ime_commit(move |text| {
-        let text = text.to_string();
-        if keylog {
-            eprintln!("[ime] {:?}", text);
-        }
-        with_app(|st| {
-            handle_input(
-                st,
-                &text,
-                false,
-                false,
-                false,
-                false,
-                keys::KeyEventKind::Press,
-                keylog,
-            )
-        });
-    });
-
-    ui.on_pane_mouse_down(move |id, x, y, button, mods| {
-        let id = id as u64;
-        with_app(|st| {
-            // 点击终端属于“find 之外”：先收起查找条，再按正常点击处理。
-            if st.search_open {
-                close_search(st);
-            }
-            let (cell, wants_mouse) = {
-                let Some(rt) = st.panes.get(&id) else { return };
-                (cell_at(rt, x, y), rt.handle.wants_mouse())
-            };
-            let modifiers = mouse_mods(mods);
-            // Shift 是「绕过鼠标上报、改成本地选词」的惯例逃生门（xterm/gnome-terminal 同款）。
-            let reporting = wants_mouse && !modifiers.shift;
-            if ime_click_anchor(button, wants_mouse, modifiers.shift) {
-                // dsh 的 Btw 侧栏 composer 只画反色 caret，不移动硬件光标；
-                // 记住点击格，IME 候选才会贴到右侧输入框。
-                st.ime_override = Some((id, cell));
-                // 每次点击都强制重发：输入法可能已丢弃旧 spot（例如刚从别的窗口回来）。
-                st.ime_spot_dirty = true;
-                update_ime_spot(st);
-            }
-            let Some(rt) = st.panes.get(&id) else { return };
-            if mouselog {
-                eprintln!(
-                    "[mouse] down pane={id} cell={cell:?} button={button} mods={mods} \
-                     wants={} reporting={reporting}",
-                    rt.handle.wants_mouse()
-                );
-            }
-            // Ctrl+左键只在“非鼠标上报”时是打开链接；上报模式仍把 Ctrl 位传给 TUI。
-            let link = !reporting && modifiers.ctrl;
-            eprintln!(
-                "[select] down pane={id} cell={cell:?} button={button} shift={} \
-                 wants_mouse={wants_mouse} reporting={reporting} link={link}",
-                modifiers.shift
-            );
-            // 上一次拖拽可能因窗口失焦/丢 release 残留；新的按下必须重置计时器，
-            // 否则旧 drag 的 50ms tick 会继续滚动/扩选到新拖拽上。
-            st.drag_autoscroll.stop();
-            if let Some(old) = st.drag.take() {
-                if !old.mouse && !old.link {
-                    eprintln!(
-                        "[select] drag-cancel pane={} reason=new-press moved={}",
-                        old.pane, old.moved
-                    );
-                }
-            }
-            if reporting {
-                // 两套状态不能并存：进终端鼠标模式就清掉本地选区。
-                rt.handle.selection_clear();
-                rt.handle.mouse(MouseEvent {
-                    button: mouse_button(button),
-                    action: MouseAction::Press,
-                    line: cell.0,
-                    col: cell.1,
-                    modifiers,
-                });
-            } else if !link {
-                rt.handle.selection_start(cell.0, cell.1);
-            }
-            st.drag = Some(Drag {
-                pane: id,
-                start: (x, y),
-                moved: false,
-                cell,
-                mouse: reporting,
-                link,
-                last_pointer: (x, y),
-                autoscroll_dir: 0,
-                autoscroll_paused: false,
-            });
-            if !reporting && !link {
-                start_drag_autoscroll_timer(st);
-            }
-        });
-    });
-
-    ui.on_pane_mouse_move(|id, x, y, _button, mods| {
-        let id = id as u64;
-        with_app(|st| {
-            let modifiers = mouse_mods(mods);
-
-            if st.drag.is_some() {
-                let (cell, forwarding, link, resume, changed) = {
-                    let Some(drag) = st.drag.as_mut() else { return };
-                    if drag.pane != id {
-                        return;
-                    }
-                    drag.last_pointer = (x, y);
-                    if (x - drag.start.0).abs() > 4.0 || (y - drag.start.1).abs() > 4.0 {
-                        drag.moved = true;
-                    }
-                    let Some(rt) = st.panes.get(&id) else { return };
-                    let inside = !pointer_outside_window(
-                        rt.rect.x,
-                        rt.rect.y,
-                        x,
-                        y,
-                        st.content.w,
-                        st.content.h,
-                    );
-                    // 拖出窗口会暂停计时器；指针回到窗口内（即使还在同一格）
-                    // 必须恢复，否则之后的边缘拖动再也不会自动滚动。仍在外面的
-                    // move 不能恢复，否则每次移动都会空转一次 tick。
-                    let resume = drag.autoscroll_paused
-                        && inside
-                        && selection_drag_autoscrolls(drag.mouse, drag.link, drag.moved);
-                    if resume {
-                        drag.autoscroll_paused = false;
-                    }
-                    let cell = cell_at(rt, x, y);
-                    let changed = drag.cell != cell;
-                    if changed {
-                        drag.cell = cell;
-                    }
-                    (cell, drag.mouse, drag.link, resume, changed)
-                };
-                if resume {
-                    start_drag_autoscroll_timer(st);
-                    eprintln!(
-                        "[select] autoscroll-resume pane={id} reason=pointer-reentered-window"
-                    );
-                }
-                if link {
-                    // Ctrl 拖拽不扩选；抬起时是否打开链接由 moved 决定。
-                    return;
-                }
-                if !changed {
-                    return;
-                }
-                if forwarding {
-                    if let Some(rt) = st.panes.get(&id) {
-                        rt.handle.mouse(MouseEvent {
-                            button: MouseButton::Left,
-                            action: MouseAction::Motion,
-                            line: cell.0,
-                            col: cell.1,
-                            modifiers,
-                        });
-                    }
-                } else {
-                    if let Some(rt) = st.panes.get(&id) {
-                        rt.handle.selection_extend(cell.0, cell.1);
-                    }
-                    redraw_pane_inner(st, id);
-                }
-                return;
-            }
-
-            // 无按键悬停（1003）：只有声明 MOUSE_MOTION 的应用需要，按格去重防刷屏。
-            let Some(rt) = st.panes.get(&id) else { return };
-            if !rt.handle.wants_motion() {
-                return;
-            }
-            let cell = cell_at(rt, x, y);
-            if st.hover_cell == Some((id, cell)) {
-                return;
-            }
-            st.hover_cell = Some((id, cell));
-            rt.handle.mouse(MouseEvent {
-                button: MouseButton::None,
-                action: MouseAction::Motion,
-                line: cell.0,
-                col: cell.1,
-                modifiers,
-            });
-        });
-    });
-
-    // 链接 hover：只改指针/悬停状态，不拉帧不重绘终端。Rust 侧按格去重。
-    ui.on_pane_hover(|id, x, y| {
-        let id = id as u64;
-        with_app(|st| update_link_hover(st, id, x, y));
-    });
-    ui.on_pane_unhover(|id| {
-        let id = id as u64;
-        with_app(|st| clear_link_hover(st, id));
-    });
-
-    ui.on_pane_mouse_up(move |id, x, y, button, mods| {
-        let id = id as u64;
-        with_app(|st| {
-            // 先停表再取 drag：即使 drag 已被失焦/新按下清掉，也不能留下
-            // 一个仍在 50ms tick 的计时器。
-            st.drag_autoscroll.stop();
-            let Some(drag) = st.drag.take() else { return };
-            if !drag.mouse && !drag.link {
-                eprintln!(
-                    "[select] drag-end pane={id} reason=release moved={} paused={}",
-                    drag.moved, drag.autoscroll_paused
-                );
-            }
-            if drag.link {
-                // Ctrl+点击（没有明显拖动）才打开；拖动过就当作取消。
-                if !drag.moved && button == 0 {
-                    let (target, remote, cwd, cell) = {
-                        let Some(rt) = st.panes.get(&id) else { return };
-                        let cell = cell_at(rt, x, y);
-                        (
-                            frame_target_at(&rt.frame, cell.0, cell.1),
-                            rt.remote,
-                            pane_cwd(rt),
-                            cell,
-                        )
-                    };
-                    match target {
-                        Some(target) => {
-                            eprintln!(
-                                "[link] ctrl+click pane={id} cell={},{} kind={} text={:?}",
-                                cell.0,
-                                cell.1,
-                                target.kind_label(),
-                                target.text()
-                            );
-                            open_target(&target, cwd.as_deref(), remote);
-                        },
-                        None => {
-                            if mouselog {
-                                eprintln!(
-                                    "[link] ctrl+click pane={id} cell={},{} 无链接",
-                                    cell.0, cell.1
-                                );
-                            }
-                        },
-                    }
-                }
-                return;
-            }
-            if drag.mouse {
-                if let Some(rt) = st.panes.get(&id) {
-                    let cell = cell_at(rt, x, y);
-                    rt.handle.mouse(MouseEvent {
-                        button: mouse_button(button),
-                        action: MouseAction::Release,
-                        line: cell.0,
-                        col: cell.1,
-                        modifiers: mouse_mods(mods),
-                    });
-                }
-                return;
-            }
-            if !drag.mouse {
-                let up_cell = st.panes.get(&id).map(|rt| cell_at(rt, x, y));
-                eprintln!(
-                    "[select] up pane={id} cell={up_cell:?} moved={} copy_on_select={}",
-                    drag.moved,
-                    st.cfg.copy_on_select
-                );
-            }
-            if !drag.moved {
-                // 双击选行：同一 pane、同一格、400ms 内的第二次左键抬起。
-                let Some(rt) = st.panes.get(&id) else { return };
-                let (line_u, col_u) = cell_at(rt, x, y);
-                let (line, col) = (line_u as i32, col_u as i32);
-                let now = std::time::Instant::now();
-                let is_double = matches!(st.last_click, Some((p, l, c, t))
-                    if p == id && l == line && c == col && now.duration_since(t) < std::time::Duration::from_millis(400));
-                if is_double {
-                    st.last_click = None;
-                    if let Some(rt) = st.panes.get_mut(&id) {
-                        rt.handle.select_line(line);
-                    }
-                    eprintln!("[ui] double-click select line={line} pane={id}");
-                    if st.cfg.copy_on_select {
-                        copy_current_selection(st);
-                    }
-                    return;
-                }
-                st.last_click = Some((id, line, col, now));
-                return;
-            }
-            // 关闭 Copy on select 时只保留高亮，不写剪贴板
-            if !st.cfg.copy_on_select {
-                return;
-            }
-            let text = st
-                .panes
-                .get(&drag.pane)
-                .and_then(|rt| rt.handle.copy_selection())
-                .and_then(normalize_clipboard_text);
-            if let Some(text) = text {
-                set_selection_clipboards(st, &text);
-            }
-        });
-    });
-
-    ui.on_pane_scrolled(|id, dy, x, y, mods| {
-        let id = id as u64;
-        with_app(|st| {
-            let Some(rt) = st.panes.get(&id) else { return };
-            let modifiers = mouse_mods(mods);
-
-            // 终端要鼠标：滚轮变成 64/65 上报（tmux 翻页、vim 滚动才生效）。
-            if rt.handle.wants_mouse() && !modifiers.shift {
-                let cell = cell_at(rt, x, y);
-                let button = if dy > 0.0 {
-                    MouseButton::WheelUp
-                } else {
-                    MouseButton::WheelDown
-                };
-                rt.handle.mouse(MouseEvent {
-                    button,
-                    action: MouseAction::Press,
-                    line: cell.0,
-                    col: cell.1,
-                    modifiers,
-                });
-                return;
-            }
-
-            let ch = rt.renderer.cell_h.max(1) as f32;
-            let mut lines = (dy / ch).round();
-            if lines.abs() < 1.0 {
-                lines = dy.signum();
-            }
-            if lines == 0.0 {
-                return;
-            }
-            // 约定：delta-y > 0 表示向上滚（回看历史）。
-            // 应用内 TUI（如 dsh 侧栏）滚动后屏幕内容会重画；原生选区若继续
-            // 跟随 grid 行会粘在错误文本上，因此用户主动滚轮时清除选区。
-            rt.handle.clear_selection();
-            rt.handle.scroll(lines as i32);
-        });
-    });
-
-    ui.on_pane_scrollbar(|id, fraction| {
-        let id = id as u64;
-        with_app(|st| {
-            let Some(rt) = st.panes.get(&id) else { return };
-            let pos = rt.handle.scroll_position();
-            let track_px = rt.renderer.height.max(1) as f32;
-            let min_thumb = (SCROLLBAR_MIN_THUMB_PX / track_px).clamp(0.0, 1.0);
-            let offset = pos.offset_for_track_fraction(fraction, min_thumb);
-            eprintln!(
-                "[ui] scrollbar pane={id} fraction={fraction:.3} offset={offset} history={} rows={}",
-                pos.history, pos.rows
-            );
-            rt.handle.clear_selection();
-            rt.handle.scroll_to(offset);
-        });
-    });
-
-    // 拖放只接受文件/目录；其他 payload（纯文本/图片）不抢，交回平台。
-    ui.on_can_drop_files(|data| data.has_file_paths());
-    ui.on_files_dropped(|id, data| {
-        let paths: Vec<PathBuf> = match data.file_paths() {
-            Ok(paths) => paths.map(|p| p.to_path_buf()).collect(),
-            Err(e) => {
-                eprintln!("[ui] drop 无法读取文件列表: {e:?}");
-                return;
-            }
-        };
-        if paths.is_empty() {
-            return;
-        }
-        drop_files_into_pane(id as u64, &paths);
-    });
-
-    ui.on_divider_dragged(|index, x, y| {
-        with_app(|st| {
-            let Some(info) = st.divider_infos.get(index as usize).cloned() else {
-                return;
-            };
-            let usable = match info.dir {
-                Dir::Row => info.parent.w - SPLIT_GAP,
-                Dir::Col => info.parent.h - SPLIT_GAP,
-            };
-            if usable <= 1.0 {
-                return;
-            }
-            let ratio = match info.dir {
-                Dir::Row => (x - info.parent.x) / usable,
-                Dir::Col => (y - info.parent.y) / usable,
-            };
-            let changed = {
-                let Some(tab) = st.ws.active_tab_mut() else {
-                    return;
-                };
-                let Some(root) = tab.root.as_mut() else {
-                    return;
-                };
-                root.set_ratio(&info.path, ratio)
-            };
-            if changed {
-                refresh_views(st);
-                redraw_visible(st);
-            }
-        });
-    });
-
-    ui.on_start_window_resize(|dir| {
-        with_app(|st| {
-            ensure_resize_conn(st);
-            st.wm_resize = false;
-            st.wm_release_pending = false;
-            st.wm_resize_saw_configure = false;
-            st.last_resize_event = None;
-            // 先记录自绘起点。即使 WM 路径随后失败/没接管，drag 回调也能无缝回退，
-            // 不会出现“按了边角却完全拖不动”。
-            if let Some(pointer) = resize_pointer(st) {
-                let pos = st.ui.window().position();
-                let size = st.ui.window().size();
-                st.resize = Some(WindowResize {
-                    dir,
-                    pointer,
-                    pos: (pos.x, pos.y),
-                    size: (size.width, size.height),
-                    since: Instant::now(),
-                });
-            } else {
-                st.resize = None;
-            }
-            if start_wm_live_resize(st, dir) {
-                st.wm_resize = true;
-                return;
-            }
-            if st.resize.is_none() {
-                eprintln!("[ui] 自绘 resize 无法启动：X11 指针不可用");
-            } else {
-                eprintln!("[ui] 自绘 resize dir={dir}");
-            }
-        });
-    });
-
-    ui.on_window_resize_drag(|| {
-        with_app(|st| {
-            // 松开左键后的 move 不能继续 resize：WM grab 可能让 Slint 收不到 up。
-            if st.wm_resize || st.resize.is_some() {
-                if let Some(ctx) = st.xresize.as_ref() {
-                    if let Some((_, _, mask)) =
-                        crate::xconn::query_pointer_with_mask(&ctx.conn, ctx.root)
-                    {
-                        if !crate::xconn::button1_down(mask) {
-                            finish_window_resize(st, "pointer-up");
-                            return;
-                        }
-                    }
-                }
-            }
-            if st.wm_resize {
-                let Some(r) = st.resize else { return };
-                let now = st.ui.window().size();
-                let wm_acted = (now.width, now.height) != r.size;
-                // WM 可能仍在驱动 live resize，也可能只是比我们晚一帧。判断依据：
-                // 真实尺寸变化、最近一次 configure、或按下后还没超过首个 configure
-                // 的宽限；三者都没有才回退自绘。不能只看按下后是否过了 150ms——
-                // GPU 首帧/渲染排队会让 configure 晚到。
-                if wm_acted
-                    || !wm_resize_timed_out(
-                        st.wm_resize_saw_configure,
-                        st.last_resize_event.map(|t| t.elapsed()),
-                        r.since.elapsed(),
-                    )
-                {
-                    return;
-                }
-                eprintln!("[ui] WM live resize 未接管指针，回退自绘 resize");
-                st.wm_resize = false;
-            }
-            let Some(r) = st.resize else { return };
-            let Some((px, py)) = resize_pointer(st) else {
-                return;
-            };
-            let dx = px - r.pointer.0;
-            let dy = py - r.pointer.1;
-
-            let left = matches!(r.dir, 0 | 6 | 7);
-            let right = matches!(r.dir, 2 | 3 | 4);
-            let top = matches!(r.dir, 0 | 1 | 2);
-            let bottom = matches!(r.dir, 4 | 5 | 6);
-
-            let mut x = r.pos.0;
-            let mut y = r.pos.1;
-            let mut w = r.size.0 as i32;
-            let mut h = r.size.1 as i32;
-            if left {
-                x += dx;
-                w -= dx;
-            }
-            if right {
-                w += dx;
-            }
-            if top {
-                y += dy;
-                h -= dy;
-            }
-            if bottom {
-                h += dy;
-            }
-
-            const MIN_W: i32 = 320;
-            const MIN_H: i32 = 200;
-            if w < MIN_W {
-                if left {
-                    x -= MIN_W - w;
-                }
-                w = MIN_W;
-            }
-            if h < MIN_H {
-                if top {
-                    y -= MIN_H - h;
-                }
-                h = MIN_H;
-            }
-
-            let want = slint::PhysicalSize::new(w as u32, h as u32);
-            if st.ui.window().size() != want {
-                st.ui.window().set_size(want);
-            }
-            if left || top {
-                let want = slint::PhysicalPosition::new(x, y);
-                if st.ui.window().position() != want {
-                    st.ui.window().set_position(want);
-                }
-            }
-        });
-    });
-
-    ui.on_end_window_resize(|| {
-        with_app(|st| finish_window_resize(st, "callback"));
-    });
-
-    ui.on_input_trace(|kind, id, x, y| {
-        with_app(|st| {
-            eprintln!(
-                "[trace] {kind} pane={id} at {x:.0},{y:.0} win_pos={:?} win_size={:?} content={:.0}x{:.0}",
-                st.ui.window().position(),
-                st.ui.window().size(),
-                st.content.w,
-                st.content.h
-            );
-        });
-    });
-
-    ui.on_pane_clicked(|id| focus_pane(id as u64));
-
-    // 灯箱只接收 id，从 UI 缓存里取原始 RGBA。先设 source 再 open，避免
-    // 第一次点击时 source 还是 0×0，出现灰面板/无图；第二次才显示。
-    ui.on_image_open(|pane_id, image_id| {
-        with_app(|st| {
-            let id = image_id as u64;
-            let image = {
-                let Some(rt) = st.panes.get_mut(&(pane_id as u64)) else { return };
-                let source_id = rt.inline_hits.get(&id).map(|source| source.source_id);
-                match source_id {
-                    Some(source_id) => {
-                        let mut image = cached_image_source(rt, source_id);
-                        if image.is_none() {
-                            image = rt.handle.image_rgba(source_id).map(|(w, h, rgba)| {
-                                let image = image_from_source(w, h, &rgba);
-                                rt.inline_cache.insert(source_id, image.clone());
-                                image
-                            });
-                        }
-                        match image {
-                            Some(image) => image,
-                            None => {
-                                eprintln!(
-                                    "[image] preview source missing placement={id} source={source_id}"
-                                );
-                                return;
-                            },
-                        }
-                    },
-                    None => {
-                        // 兼容旧调用方传 source ID 的路径。
-                        let mut image = cached_image_source(rt, id);
-                        if image.is_none() {
-                            image = rt.handle.image_rgba(id).map(|(w, h, rgba)| {
-                                let image = image_from_source(w, h, &rgba);
-                                rt.inline_cache.insert(id, image.clone());
-                                image
-                            });
-                        }
-                        match image {
-                            Some(image) => image,
-                            None => {
-                                eprintln!("[image] preview source missing id={image_id}");
-                                return;
-                            },
-                        }
-                    },
-                }
-            };
-            st.ui.set_image_preview_open(false);
-            st.ui.set_image_preview_source(image);
-            st.ui.set_image_preview_fit(true);
-            st.ui.set_image_preview_zoom(1.0);
-            st.ui.set_image_preview_open(true);
-            eprintln!("[image] preview open id={image_id}");
-        });
-    });
-
-    ui.on_menu_dismissed(|| {
-        eprintln!("[ui] menu dismissed");
-        // 右键菜单/遮罩会抢走 IME 焦点；关闭后必须还给终端，否则 TUI 无法输入。
-        with_app(|st| st.ui.invoke_focus_terminal());
-    });
-
-    ui.on_pane_right_clicked(|id, x, y| {
-        with_app(|st| {
-            let id = id as u64;
-            if let Some(idx) = st.ws.tab_of(id) {
-                st.ws.tabs[idx].focused = id;
-                refresh_views(st);
-            }
-            let mode = st.cfg.effective_right_click().to_string();
-            st.right_down = Some((id, std::time::Instant::now(), x, y));
-            eprintln!("[ui] right-down pane={id} mode={mode}");
-            if mode == "menu" {
-                open_pane_menu(st, id, x, y);
-            } else if mode == "off" {
-                // off = 完全不拦截：TUI 需要右键时把 press 转发给 PTY。
-                if let Some(rt) = st.panes.get(&id) {
-                    if rt.handle.wants_mouse() {
-                        let cell = cell_at(rt, x, y);
-                        rt.handle.mouse(MouseEvent {
-                            button: MouseButton::Right,
-                            action: MouseAction::Press,
-                            line: cell.0,
-                            col: cell.1,
-                            modifiers: Modifiers::default(),
-                        });
-                    }
-                }
-            }
-        });
-    });
-
-    // 右键抬起：paste/clipboard 用 250ms 区分短按（执行）与长按（弹菜单）。
-    ui.on_pane_right_up(|id, _x, _y| {
-        with_app(|st| {
-            let id = id as u64;
-            let Some((down_id, at, dx, dy)) = st.right_down.take() else {
-                return;
-            };
-            if down_id != id {
-                return;
-            }
-            let mode = st.cfg.effective_right_click().to_string();
-            let short = at.elapsed() < Duration::from_millis(250);
-            match mode.as_str() {
-                "paste" => {
-                    if short {
-                        paste_into_focused(st);
-                    } else {
-                        open_pane_menu(st, id, dx, dy);
-                    }
-                }
-                "clipboard" => {
-                    if short {
-                        copy_or_paste(st);
-                    } else {
-                        open_pane_menu(st, id, dx, dy);
-                    }
-                }
-                _ => {}
-            }
-            eprintln!("[ui] right-up pane={id} mode={mode} short={short}");
-        });
-    });
-
-    ui.on_pane_middle_click(|_id| {
-        with_app(|st| {
-            if st.cfg.paste_on_middle_click {
-                paste_primary_into_focused(st);
-                eprintln!("[ui] middle-click paste");
-            }
-        });
-    });
-
-    // 分隔线/边缘发起的右键：按内容区坐标找最近的 pane。
-    ui.on_pane_right_clicked_at(|x, y| {
-        with_app(|st| {
-            let rects: Vec<(PaneId, Rect)> = {
-                let Some(tab) = st.ws.active_tab() else {
-                    return;
-                };
-                tab.panes()
-                    .into_iter()
-                    .filter_map(|id| st.panes.get(&id).map(|rt| (id, rt.rect)))
-                    .collect()
-            };
-            if let Some(id) = nearest_pane(&rects, x, y) {
-                open_pane_menu(st, id, x, y);
-            }
-        });
-    });
-
-    ui.on_menu_action(|id, action| {
-        eprintln!("[ui] menu action pane={id} action={action}");
-        let id = id as u64;
-        match action {
-            0 => split_pane(id, Dir::Row),
-            1 => split_pane(id, Dir::Col),
-            2 => close_pane(id),
-            3 => {
-                with_app(copy_current_selection);
-            }
-            4 => {
-                with_app(paste_into_focused);
-            }
-            5 => {
-                with_app(|st| run_command(st, "terminal.find"));
-            }
-            6 => {
-                with_app(|st| run_command(st, "terminal.select-all"));
-            }
-            7 => {
-                with_app(|st| run_command(st, "terminal.clear"));
-            }
-            8 => {
-                with_app(|st| {
-                    st.broadcast = !st.broadcast;
-                    st.ui.set_broadcast(st.broadcast);
-                    let panes = st.ws.active_tab().map(|t| t.panes().len()).unwrap_or(0);
-                    if st.broadcast && panes < 2 {
-                        eprintln!("[ui] broadcast=on，但当前 Tab 只有 1 个 pane");
-                    } else {
-                        eprintln!("[ui] broadcast={} panes={panes}", st.broadcast);
-                    }
-                });
-            }
-            9 => {
-                with_app(|st| {
-                    let text = st.menu_link.clone();
-                    if text.is_empty() {
-                        eprintln!("[link] Open Link：当前菜单没有链接");
-                        return;
-                    }
-                    // 菜单只保存展示文本；path 不会与 http(s)/file URI 混淆。
-                    let target = if is_allowed_uri(&text) {
-                        LinkTarget::Uri(text)
-                    } else {
-                        LinkTarget::Path(text)
-                    };
-                    let (cwd, remote) = match st.panes.get(&id) {
-                        Some(rt) => (pane_cwd(rt), rt.remote),
-                        None => (None, false),
-                    };
-                    eprintln!(
-                        "[link] menu open kind={} text={:?}",
-                        target.kind_label(),
-                        target.text()
-                    );
-                    open_target(&target, cwd.as_deref(), remote);
-                });
-            }
-            10 => {
-                with_app(|st| {
-                    let text = st.menu_link.clone();
-                    if !text.is_empty() {
-                        eprintln!("[link] copy link={text:?}");
-                        set_clipboard(st, &text);
-                    }
-                });
-            }
-            11 => {
-                with_app(|st| toggle_read_only(st, Some(id)));
-            }
-            12 => {
-                with_app(|st| reset_pane(st, id, false));
-            }
-            13 => {
-                with_app(|st| reset_pane(st, id, true));
-            }
-            14 => {
-                with_app(|st| open_save_contents(st, id));
-            }
-            _ => {}
-        }
-        // Save Contents 需要把焦点交给输入路径的 TextInput，不能抢回终端。
-        if action != 14 {
-            with_app(|st| st.ui.invoke_focus_terminal());
-        }
-    });
-
-    ui.on_plugin_status_clicked(|| {
-        with_app(|st| {
-            if let Some(command) = st.plugin_status_command.clone() {
-                eprintln!("[plugin-v3] 状态栏点击 → {command}");
-                run_command(st, &command);
-            }
-        });
-    });
-
-    // ---- Plugin API v3：所有 UI 由宿主渲染 ----
-    ui.on_plugin_action(|action, key| {
-        with_app(|st| plugin_action(st, action.as_str(), key.as_str()));
-    });
-    ui.on_toggle_plugin_require_signature(|| {
-        with_app(|st| {
-            st.cfg.plugin_require_signature = !st.cfg.plugin_require_signature;
-            st.ui
-                .set_cfg_plugin_require_signature(st.cfg.plugin_require_signature);
-            st.cfg.save();
-            eprintln!(
-                "[plugin-v3] plugin_require_signature={}",
-                st.cfg.plugin_require_signature
-            );
-        });
-    });
-    let plugin_picker_weak = ui.as_weak();
-    ui.on_plugin_pick_install(move |kind| {
-        let Some(current_ui) = plugin_picker_weak.upgrade() else { return };
-        let initial = current_ui.get_plugin_install_path().to_string();
-        let kind = kind.to_string();
-        let weak = plugin_picker_weak.clone();
-        std::thread::Builder::new()
-            .name("plugin-install-picker".into())
-            .spawn(move || {
-                let result = pick_plugin_source(&kind, &initial);
-                let _ = slint::invoke_from_event_loop(move || {
-                    let Some(_ui) = weak.upgrade() else { return };
-                    with_app(|st| match result {
-                        Ok(Some(path)) => {
-                            eprintln!("[plugin-v3] 安装源选择: {path}");
-                            st.ui.set_plugin_install_path(path.as_str().into());
-                        },
-                        Ok(None) => {},
-                        Err(error) => {
-                            let message = if st.cfg.lang() == "zh" {
-                                format!("文件选择器不可用: {error}")
-                            } else {
-                                format!("File picker unavailable: {error}")
-                            };
-                            set_status_toast(st, message);
-                        },
-                    });
-                });
-            })
-            .ok();
-    });
-    ui.on_plugin_install_apply(|action, key, path| {
-        with_app(|st| {
-            plugin_install_action(st, action.as_str(), key.as_str(), path.as_str())
-        });
-    });
-    ui.on_plugin_confirm_enable(|| {
-        with_app(confirm_plugin_enable);
-    });
-    ui.on_plugin_confirm_cancel(|| {
-        with_app(cancel_plugin_enable);
-    });
-    ui.on_plugin_open_surface(|key, kind| {
-        with_app(|st| open_plugin_surface(st, key.as_str(), kind.as_str()));
-    });
-    ui.on_plugin_surface_close(|| {
-        with_app(close_plugin_surface);
-    });
-    ui.on_plugin_element_action(|element| {
-        with_app(|st| plugin_surface_action(st, element.as_str()));
-    });
-    ui.on_plugin_element_input(|element, value| {
-        with_app(|st| plugin_surface_input(st, element.as_str(), value.to_string()));
-    });
-    ui.on_plugin_approval_allow(|| {
-        with_app(|st| resolve_plugin_approval(st, true));
-    });
-    ui.on_plugin_approval_deny(|| {
-        with_app(|st| resolve_plugin_approval(st, false));
-    });
-
-    ui.on_tab_rename(|index| {
-        with_app(|st| open_rename(st, index.max(0) as usize));
-    });
-
-    ui.on_rename_committed(|index, text| {
-        with_app(|st| {
-            let idx = index.max(0) as usize;
-            if let Some(title) = sanitize_tab_title(text.as_str()) {
-                if let Some(tab) = st.ws.tabs.get_mut(idx) {
-                    tab.title = title;
-                    eprintln!("[ws] rename tab={idx} → {:?}", tab.title);
-                }
-            }
-            st.ui.set_rename_open(false);
-            rebuild_tabs(st);
-        });
-    });
-
-    ui.on_rename_cancelled(|| {
-        with_app(|st| st.ui.set_rename_open(false));
-    });
-
-    ui.on_fwd_select(|index| {
-        with_app(|st| {
-            st.ui.set_fwd_profile(index.max(0));
-            refresh_forwards(st);
-        });
-    });
-
-    ui.on_fwd_add(|| {
-        with_app(|st| fwd_add(st));
-    });
-
-    ui.on_fwd_delete(|index| {
-        with_app(|st| fwd_delete(st, index.max(0) as usize));
-    });
-
-    ui.on_fwd_close(|| {});
-
-    ui.on_config_import_tabby(|| {
-        with_app(|st| {
-            let path = tabby_config_path();
-            let themes_dir = ThemeRegistry::default_dir();
-            let status = match std::fs::read_to_string(&path) {
-                Ok(text) => match tabby_import::import_yaml(
-                    &text,
-                    &mut st.profiles,
-                    &mut st.cfg,
-                    &themes_dir,
-                ) {
-                    Ok(report) => {
-                        st.profiles.save();
-                        refresh_profiles(st);
-                        if let Some(fs) = report.font_size {
-                            st.cfg.font_size = fs.clamp(8.0, 40.0);
-                            apply_font_size(st);
-                        }
-                        if report.font_size.is_some() || report.hotkeys_added > 0 {
-                            st.cfg.save();
-                        }
-                        if report.hotkeys_added > 0 {
-                            refresh_hotkeys(st);
-                        }
-                        if report.themes_added > 0 {
-                            // 主题目录刚写入新文件：重新加载注册表并刷新设置页网格。
-                            *st.registry = ThemeRegistry::load(&themes_dir);
-                            for err in &st.registry.errors {
-                                eprintln!("[theme] {err}");
-                            }
-                            st.ui.set_theme_choices(theme_choices(&st.registry));
-                        }
-                        let lang = st.cfg.lang();
-                        let mut msg = if lang == "zh" {
-                            format!(
-                                "已从 {} 导入 {} 个 Profile、{} 条快捷键、{} 个主题\
-                                 （Profile 跳过 {}，快捷键未映射 {} / 跳过 {}，主题跳过 {}）",
-                                path.display(),
-                                report.added,
-                                report.hotkeys_added,
-                                report.themes_added,
-                                report.skipped.len(),
-                                report.hotkeys_unmapped.len(),
-                                report.hotkeys_skipped.len(),
-                                report.themes_skipped.len()
-                            )
-                        } else {
-                            format!(
-                                "Imported {} profiles, {} shortcuts, {} themes from {} \
-                                 (profiles skipped {}, hotkeys unmapped {} / skipped {}, themes skipped {})",
-                                report.added,
-                                report.hotkeys_added,
-                                report.themes_added,
-                                path.display(),
-                                report.skipped.len(),
-                                report.hotkeys_unmapped.len(),
-                                report.hotkeys_skipped.len(),
-                                report.themes_skipped.len()
-                            )
-                        };
-                        let first_skip = report
-                            .skipped
-                            .first()
-                            .map(|(name, why)| format!("{name} ({why})"))
-                            .or_else(|| {
-                                report
-                                    .hotkeys_skipped
-                                    .first()
-                                    .map(|(id, why)| format!("{id} ({why})"))
-                            })
-                            .or_else(|| {
-                                report
-                                    .themes_skipped
-                                    .first()
-                                    .map(|(name, why)| format!("{name} ({why})"))
-                            });
-                        if let Some(skip) = first_skip {
-                            if lang == "zh" {
-                                msg.push_str(&format!("；首个跳过：{skip}"));
-                            } else {
-                                msg.push_str(&format!("; first skipped: {skip}"));
-                            }
-                        }
-                        eprintln!("[tabby] {msg}");
-                        msg
-                    }
-                    Err(e) => {
-                        if st.cfg.lang() == "zh" {
-                            format!("导入失败: {e}")
-                        } else {
-                            format!("Import failed: {e}")
-                        }
-                    },
-                },
-                Err(e) => {
-                    if st.cfg.lang() == "zh" {
-                        format!("读不到 {}: {e}", path.display())
-                    } else {
-                        format!("Cannot read {}: {e}", path.display())
-                    }
-                }
-            };
-            st.ui.set_config_status(status.as_str().into());
-        });
-    });
-
-    ui.on_config_export_tabby(|| {
-        with_app(|st| {
-            let path = Config::path().with_file_name("tabby-profiles.yaml");
-            let yaml = tabby_import::export_yaml(&st.profiles);
-            let status = match std::fs::write(&path, yaml) {
-                Ok(()) => {
-                    let msg = if st.cfg.lang() == "zh" {
-                        format!(
-                            "已导出 {} 个 Profile → {}",
-                            st.profiles.profiles.len(),
-                            path.display()
-                        )
-                    } else {
-                        format!(
-                            "Exported {} profiles → {}",
-                            st.profiles.profiles.len(),
-                            path.display()
-                        )
-                    };
-                    eprintln!("[tabby] {msg}");
-                    msg
-                }
-                Err(e) => {
-                    if st.cfg.lang() == "zh" {
-                        format!("导出失败: {e}")
-                    } else {
-                        format!("Export failed: {e}")
-                    }
-                }
-            };
-            st.ui.set_config_status(status.as_str().into());
-        });
-    });
-
-    ui.on_sftp_list(|| {
-        with_app(|st| sftp_do_list(st));
-    });
-
-    ui.on_sftp_pick(|index| {
-        with_app(|st| {
-            st.ui.set_sftp_selected(index.max(0));
-            st.sftp_delete_armed = false;
-        });
-    });
-
-    ui.on_sftp_download(|| {
-        with_app(|st| sftp_do_download(st));
-    });
-
-    ui.on_sftp_upload(|| {
-        with_app(|st| sftp_do_upload(st));
-    });
-
-    ui.on_sftp_cancel(|| {
-        with_app(|st| sftp_cancel_active(st));
-    });
-
-    ui.on_sftp_chmod(|| {
-        with_app(|st| sftp_do_chmod(st));
-    });
-
-    ui.on_sftp_retry(|| {
-        with_app(|st| sftp_retry_failed(st));
-    });
-
-    ui.on_sftp_clear_queue(|| {
-        with_app(|st| sftp_clear_queue(st));
-    });
-
-    ui.on_sftp_mkdir(|| {
-        with_app(|st| sftp_do_mkdir(st));
-    });
-
-    ui.on_sftp_rename(|| {
-        with_app(|st| sftp_do_rename(st));
-    });
-
-    ui.on_sftp_delete(|| {
-        with_app(|st| sftp_do_delete(st));
-    });
-
-    ui.on_sftp_close(|| {});
-
-    ui.on_profile_open(|index| {
-        with_app(|st| {
-            if let Some(store_index) = profile_row_to_store(st, index) {
-                open_profile_tab(st, store_index);
-            }
-        });
-    });
-
-    ui.on_profile_new(|| {
-        with_app(|st| open_profile_form(st));
-    });
-
-    ui.on_profile_edit(|index| {
-        with_app(|st| {
-            if let Some(store_index) = profile_row_to_store(st, index) {
-                edit_profile_form(st, store_index);
-            }
-        });
-    });
-
-    ui.on_profile_filter(|query| {
-        with_app(|st| {
-            st.profile_query = query.to_string();
-            refresh_profiles(st);
-            eprintln!(
-                "[profile] filter={:?} items={}",
-                st.profile_query,
-                st.profile_indices.len()
-            );
-        });
-    });
-
-    // 星标：点已默认的项 = 取消默认（回退系统 shell）；点其他项 = 切换默认。
-    ui.on_profile_set_default(|index| {
-        with_app(|st| {
-            let Some(store_index) = profile_row_to_store(st, index) else {
-                return;
-            };
-            let Some(id) = st.profiles.profiles.get(store_index).map(|p| p.id) else {
-                return;
-            };
-            st.cfg.default_profile_id = if st.cfg.default_profile_id == id {
-                0
-            } else {
-                id
-            };
-            st.cfg.save();
-            refresh_profiles(st);
-            if st.cfg.default_profile_id == 0 {
-                eprintln!("[profile] 已清除默认 Profile（新 Tab 用系统 shell）");
-            } else {
-                eprintln!(
-                    "[profile] 默认 Profile id={id} name={:?}",
-                    st.profiles
-                        .profiles
-                        .get(store_index)
-                        .map(|p| p.name.as_str())
-                        .unwrap_or("")
-                );
-            }
-        });
-    });
-
-    ui.on_profile_duplicate(|index| {
-        with_app(|st| {
-            let Some(store_index) = profile_row_to_store(st, index) else {
-                return;
-            };
-            let Some(source_id) = st.profiles.profiles.get(store_index).map(|p| p.id) else {
-                return;
-            };
-            match st.profiles.duplicate(source_id) {
-                Ok(id) => {
-                    st.profiles.save();
-                    refresh_profiles(st);
-                    eprintln!(
-                        "[profile] 复制 id={source_id} → id={id} name={:?}（共 {}）",
-                        st.profiles.get(id).map(|p| p.name.as_str()).unwrap_or(""),
-                        st.profiles.profiles.len()
-                    );
-                }
-                Err(e) => eprintln!("[profile] 复制 id={source_id} 失败: {e}"),
-            }
-        });
-    });
-
-    ui.on_profile_form_save(|| {
-        with_app(|st| save_profile_form(st));
-    });
-
-    ui.on_profile_form_cancel(|| {
-        with_app(|st| {
-            st.ui.set_form_error("".into());
-            refocus_after_modal(st);
-        });
-    });
-
-    ui.on_hostkey_trust(|| {
-        with_app(|st| hostkey_trust(st));
-    });
-    ui.on_hostkey_once(|| {
-        with_app(|st| hostkey_once(st));
-    });
-    ui.on_hostkey_cancel(|| {
-        with_app(|st| hostkey_cancel(st));
-    });
-
-    ui.on_ssh_exit_reconnect(|| {
-        with_app(|st| reconnect_ssh_exit(st));
-    });
-    ui.on_ssh_exit_dismiss(|| {
-        with_app(|st| dismiss_ssh_exit(st));
-    });
-
-    ui.on_profile_delete(|index| {
-        with_app(|st| {
-            let Some(store_index) = profile_row_to_store(st, index) else {
-                return;
-            };
-            let Some(p) = st.profiles.profiles.get(store_index).map(|p| p.id) else {
-                return;
-            };
-            if st.profiles.remove(p) {
-                // 删除的是默认项时必须回退 0，否则新 Tab 会一直解析失败。
-                let cleared = clear_default_after_remove(&mut st.cfg, p);
-                st.profiles.save();
-                if cleared {
-                    st.cfg.save();
-                    eprintln!("[profile] 默认 Profile id={p} 已删除，回退系统 shell");
-                }
-                refresh_profiles(st);
-                eprintln!("[profile] 删除 id={p}（剩 {}）", st.profiles.profiles.len());
-            }
-        });
-    });
-
-    // 面板内控件（搜索框）拿过焦点；关闭后必须还给设置 FocusScope 或终端 IME，
-    // 否则 Esc/按键全丢（设置页叠在下面时尤其明显）。
-    ui.on_profiles_close(|| {
-        with_app(|st| {
-            refocus_after_modal(st);
-            eprintln!("[profile] panel closed");
-        });
-    });
-
-    ui.on_vault_set_master(|| {
-        with_app(|st| vault_set_master_password(st));
-    });
-
-    ui.on_vault_unlock(|| {
-        with_app(|st| vault_unlock(st));
-    });
-
-    ui.on_vault_lock(|| {
-        with_app(|st| vault_lock(st));
-    });
-
-    ui.on_vault_clear(|| {
-        with_app(|st| vault_clear(st));
-    });
-
-    ui.on_bg_reattach(|index| {
-        with_app(|st| reattach_background(st, index.max(0) as usize));
-    });
-
-    ui.on_bg_close(|| {});
-
-    ui.on_paste_accept(|| {
-        with_app(|st| {
-            st.ui.set_paste_open(false);
-            if let Some(text) = st.pending_paste.take() {
-                deliver_paste(st, &text);
-            }
-        });
-    });
-
-    ui.on_paste_always(|| {
-        with_app(|st| {
-            st.cfg.confirm_multiline_paste = false;
-            st.ui.set_cfg_confirm_paste(false);
-            st.cfg.save();
-            st.ui.set_paste_open(false);
-            if let Some(text) = st.pending_paste.take() {
-                deliver_paste(st, &text);
-            }
-        });
-    });
-
-    ui.on_paste_cancel(|| {
-        with_app(|st| {
-            st.pending_paste = None;
-            st.ui.set_paste_open(false);
-        });
-    });
-
-    ui.on_set_right_click(|mode| {
-        with_app(|st| {
-            let mode = mode.to_string();
-            if !["menu", "paste", "clipboard", "off"].contains(&mode.as_str()) {
-                return;
-            }
-            st.cfg.right_click = mode.clone();
-            // 旧字段统一折算到新字段，之后不再写回 true。
-            st.cfg.right_click_paste = false;
-            st.ui.set_cfg_right_click(mode.as_str().into());
-            st.cfg.save();
-            eprintln!("[ui] right_click={mode}");
-        });
-    });
-
-    ui.on_toggle_paste_middle(|| {
-        with_app(|st| {
-            st.cfg.paste_on_middle_click = !st.cfg.paste_on_middle_click;
-            st.ui.set_cfg_paste_middle(st.cfg.paste_on_middle_click);
-            st.cfg.save();
-            eprintln!(
-                "[ui] paste_on_middle_click={}",
-                st.cfg.paste_on_middle_click
-            );
-        });
-    });
-
-    ui.on_toggle_confirm_paste(|| {
-        with_app(|st| {
-            st.cfg.confirm_multiline_paste = !st.cfg.confirm_multiline_paste;
-            st.ui.set_cfg_confirm_paste(st.cfg.confirm_multiline_paste);
-            st.ui
-                .set_cfg_right_click(st.cfg.effective_right_click().into());
-            st.ui.set_cfg_paste_middle(st.cfg.paste_on_middle_click);
-            st.cfg.save();
-            eprintln!(
-                "[ui] confirm_multiline_paste={}",
-                st.cfg.confirm_multiline_paste
-            );
-        });
-    });
-
-    ui.on_toggle_desktop_notifications(|| {
-        with_app(|st| {
-            st.cfg.desktop_notifications = !st.cfg.desktop_notifications;
-            st.ui
-                .set_cfg_desktop_notifications(st.cfg.desktop_notifications);
-            st.cfg.save();
-            eprintln!(
-                "[ui] desktop_notifications={}",
-                st.cfg.desktop_notifications
-            );
-        });
-    });
-
-    ui.on_toggle_visual_bell(|| {
-        with_app(|st| {
-            st.cfg.visual_bell = !st.cfg.visual_bell;
-            st.ui.set_cfg_visual_bell(st.cfg.visual_bell);
-            if !st.cfg.visual_bell {
-                // 关掉时立即清掉所有进行中的闪烁，避免残留边框。
-                for rt in st.panes.values_mut() {
-                    rt.bell_until = None;
-                }
-                st.bell_timer.stop();
-                refresh_all_pane_views(st);
-            }
-            st.cfg.save();
-            eprintln!("[ui] visual_bell={}", st.cfg.visual_bell);
-        });
-    });
-
-    ui.on_toggle_audible_bell(|| {
-        with_app(|st| {
-            st.cfg.audible_bell = !st.cfg.audible_bell;
-            st.ui.set_cfg_audible_bell(st.cfg.audible_bell);
-            st.cfg.save();
-            eprintln!("[ui] audible_bell={}", st.cfg.audible_bell);
-        });
-    });
-
-    ui.on_toggle_scroll_output(|| {
-        with_app(|st| {
-            st.cfg.scroll_on_output = !st.cfg.scroll_on_output;
-            st.ui.set_cfg_scroll_output(st.cfg.scroll_on_output);
-            // 已存在的 pane 立即生效（actor 侧字段），不只影响新 pane。
-            let enabled = st.cfg.scroll_on_output;
-            for rt in st.panes.values() {
-                rt.handle.set_scroll_on_output(enabled);
-            }
-            // 后台保留的会话重新接管时也应使用新配置。
-            for (_, rt, _) in &st.detached {
-                rt.handle.set_scroll_on_output(enabled);
-            }
-            st.cfg.save();
-            eprintln!("[ui] scroll_on_output={enabled}");
-        });
-    });
-
-    ui.on_toggle_scroll_keystroke(|| {
-        with_app(|st| {
-            st.cfg.scroll_on_keystroke = !st.cfg.scroll_on_keystroke;
-            st.ui.set_cfg_scroll_keystroke(st.cfg.scroll_on_keystroke);
-            st.cfg.save();
-            eprintln!("[ui] scroll_on_keystroke={}", st.cfg.scroll_on_keystroke);
-        });
-    });
-
-    ui.on_toggle_sixel(|| {
-        with_app(|st| {
-            st.cfg.sixel = !st.cfg.sixel;
-            st.ui.set_cfg_sixel(st.cfg.sixel);
-            let enabled = st.cfg.sixel;
-            for rt in st.panes.values() {
-                rt.handle.set_sixel(enabled);
-            }
-            for (_, rt, _) in &st.detached {
-                rt.handle.set_sixel(enabled);
-            }
-            st.cfg.save();
-            eprintln!("[ui] sixel={enabled}");
-        });
-    });
-
-    ui.on_toggle_sixel_scrolling(|| {
-        with_app(|st| {
-            st.cfg.sixel_scrolling = !st.cfg.sixel_scrolling;
-            st.ui.set_cfg_sixel_scrolling(st.cfg.sixel_scrolling);
-            let scrolling = st.cfg.sixel_scrolling;
-            for rt in st.panes.values() {
-                rt.handle.set_sixel_scrolling(scrolling);
-            }
-            for (_, rt, _) in &st.detached {
-                rt.handle.set_sixel_scrolling(scrolling);
-            }
-            st.cfg.save();
-            eprintln!("[ui] sixel_scrolling={scrolling}");
-        });
-    });
-
-    ui.on_toggle_iip(|| {
-        with_app(|st| {
-            st.cfg.iip = !st.cfg.iip;
-            st.ui.set_cfg_iip(st.cfg.iip);
-            let enabled = st.cfg.iip;
-            for rt in st.panes.values() {
-                rt.handle.set_iip(enabled);
-            }
-            for (_, rt, _) in &st.detached {
-                rt.handle.set_iip(enabled);
-            }
-            st.cfg.save();
-            eprintln!("[ui] iip={enabled}");
-        });
-    });
-
-    ui.on_toggle_render_hud(|| {
-        with_app(|st| {
-            st.cfg.render_hud = !st.cfg.render_hud;
-            st.ui.set_cfg_render_hud(st.cfg.render_hud);
-            let enabled = render_hud_forced_by_env() || st.cfg.render_hud;
-            set_render_hud(st, enabled);
-            st.cfg.save();
-            eprintln!("[ui] render_hud={} forced={}", st.cfg.render_hud, render_hud_forced_by_env());
-        });
-    });
-
-    ui.on_toggle_scrollback_unlimited(|| {
-        with_app(|st| {
-            st.cfg.scrollback_unlimited = !st.cfg.scrollback_unlimited;
-            st.ui
-                .set_cfg_scrollback_unlimited(st.cfg.scrollback_unlimited);
-            st.cfg.save();
-            eprintln!(
-                "[ui] scrollback_unlimited={} effective={} (仅新 pane)",
-                st.cfg.scrollback_unlimited,
-                st.cfg.effective_scrollback()
-            );
-        });
-    });
-
-    ui.on_toggle_mcp_enabled(|| {
-        with_app(|st| toggle_mcp_setting(st, McpSetting::Enabled));
-    });
-    ui.on_toggle_mcp_read(|| {
-        with_app(|st| toggle_mcp_setting(st, McpSetting::Read));
-    });
-    ui.on_toggle_mcp_input(|| {
-        with_app(|st| toggle_mcp_setting(st, McpSetting::Input));
-    });
-    ui.on_toggle_mcp_tabs(|| {
-        with_app(|st| toggle_mcp_setting(st, McpSetting::Tabs));
-    });
-    ui.on_toggle_mcp_destructive(|| {
-        with_app(|st| toggle_mcp_setting(st, McpSetting::Destructive));
-    });
-
-    ui.on_set_scrollbar_policy(|value| {
-        with_app(|st| {
-            let policy = ScrollbarPolicy::from_config(&value);
-            st.cfg.scrollbar_policy = policy.as_str().to_string();
-            st.ui.set_cfg_scrollbar_policy(policy.as_str().into());
-            refresh_all_pane_views(st);
-            st.cfg.save();
-            eprintln!("[ui] scrollbar_policy={}", policy.as_str());
-        });
-    });
-
-    ui.on_set_backspace_binding(|value| {
-        with_app(|st| {
-            let binding = keys::BackspaceBinding::from_config(&value);
-            st.cfg.backspace_binding = binding.as_str().to_string();
-            st.ui.set_cfg_backspace_binding(binding.as_str().into());
-            st.cfg.save();
-            eprintln!("[ui] backspace_binding={}", binding.as_str());
-        });
-    });
-
-    ui.on_set_delete_binding(|value| {
-        with_app(|st| {
-            let binding = keys::DeleteBinding::from_config(&value);
-            st.cfg.delete_binding = binding.as_str().to_string();
-            st.ui.set_cfg_delete_binding(binding.as_str().into());
-            st.cfg.save();
-            eprintln!("[ui] delete_binding={}", binding.as_str());
-        });
-    });
-
-    ui.on_settings_open_path(|| {
-        with_app(|_st| {
-            let path = Config::path();
-            let dir = path
-                .parent()
-                .map(|p| p.to_path_buf())
-                .unwrap_or_else(|| path.clone());
-            eprintln!("[ui] open config folder {}", dir.display());
-            // 复用 shell-safe 的 xdg-open helper：单个参数、失败显示浮层、不 panic。
-            let shown = dir.display().to_string();
-            open_with_xdg(dir.into_os_string(), shown, "path");
-        });
-    });
-
-    ui.on_settings_help_open(|kind| {
-        with_app(|st| {
-            let info = help_info();
-            let lang = st.cfg.lang();
-            let is_logs = kind.as_str() == "logs";
-            let kind_static: &'static str = if is_logs { "logs" } else { "config" };
-            let dir = if is_logs { info.log_dir } else { info.config_dir };
-            if let Err(msg) = open_help_directory(dir, kind_static, lang) {
-                st.ui.set_help_status(msg.as_str().into());
-            }
-        });
-    });
-
-    ui.on_run_doctor(|| {
-        with_app(|st| {
-            st.ui.set_doctor_status("Running deterministic Doctor…".into());
-            match diag::doctor_markdown() {
-                Ok(markdown) => {
-                    st.ui.set_doctor_text(markdown.into());
-                    st.ui.set_doctor_open(true);
-                    st.ui.set_doctor_status("".into());
-                },
-                Err(error) => st.ui.set_doctor_status(error.into()),
-            }
-        });
-    });
-
-    ui.on_close_doctor(|| {
-        with_app(|st| {
-            st.ui.set_doctor_open(false);
-            st.ui.set_doctor_text("".into());
-        });
-    });
-
-    ui.on_create_feedback(|| {
-        with_app(|st| {
-            let description = st.ui.get_feedback_text().to_string();
-            match feedback::create_bundle(&description) {
-                Ok(bundle) => {
-                    let url = std::env::var("TERVO_FEEDBACK_ISSUE_URL")
-                        .ok()
-                        .filter(|v| !v.trim().is_empty())
-                        .unwrap_or_else(|| st.cfg.feedback_issue_url.clone());
-                    let result = if url.trim().is_empty() {
-                        bundle
-                            .parent()
-                            .ok_or_else(|| "bundle parent missing".to_string())
-                            .and_then(feedback::open_folder)
-                            .map(|()| format!("Bundle: {}", bundle.display()))
-                    } else {
-                        feedback::open_issue(&url, &bundle)
-                            .map(|()| format!("Bundle: {} (issue page opened)", bundle.display()))
-                    };
-                    st.ui.set_feedback_status(match result {
-                        Ok(message) => message.into(),
-                        Err(error) => format!("Feedback error: {error}").into(),
-                    });
-                },
-                Err(error) => st.ui.set_feedback_status(format!("Feedback error: {error}").into()),
-            }
-        });
-    });
-
-    ui.on_settings_help_copy_diagnostics(|| {
-        with_app(|st| copy_help_diagnostics(st));
-    });
-
-    ui.on_settings_category_changed(|c| {
-        with_app(|st| {
-            if c == 6 {
-                refresh_vault_ui(st);
-            } else {
-                st.vault_clear_armed = false;
-            }
-            // Profiles 分类直接读 profile-model；每次进入都刷新（含搜索清空）。
-            if c == 7 {
-                refresh_profiles(st);
-            }
-            // Help 每次进入都重取路径（TERVO_CONFIG/TERVO_LOG_DIR 可能变了）。
-            if c == 8 {
-                refresh_help_info(st);
-            }
-            // Privacy/MCP 的 socket 状态由后台 supervisor 更新，进入页面时刷新。
-            if c == 9 {
-                sync_mcp_ui(st);
-            }
-        });
-        eprintln!("[ui] settings category={c}");
-        if c != 4 {
-            // 离开 Hotkeys 页时结束录制，避免在别的页面上吞键盘。
-            with_app(|st| {
-                if st.hotkey_recording.is_some() {
-                    cancel_hotkey_edit(st);
-                }
-            });
-        }
-    });
-
-    ui.on_settings_filter(|query| {
-        with_app(|st| {
-            let q = query.to_string();
-            st.ui.set_settings_query(q.as_str().into());
-            let hits = settings_search_hits(&q, st.cfg.lang());
-            st.settings_result_cats = hits.iter().map(|h| h.cat).collect();
-            st.settings_result_sections = hits.iter().map(|h| h.section).collect();
-            st.settings_model
-                .set_vec(hits.into_iter().map(|h| h.line.into()).collect::<Vec<_>>());
-            eprintln!("[ui] settings filter q={q:?} hits={}", st.settings_result_cats.len());
-        });
-    });
-
-    ui.on_settings_open_result(|index| {
-        with_app(|st| {
-            let idx = index.max(0) as usize;
-            if let Some(cat) = st.settings_result_cats.get(idx) {
-                st.ui.set_settings_category(*cat);
-                eprintln!("[ui] settings goto cat={cat}");
-            }
-            if let Some(section) = st.settings_result_sections.get(idx) {
-                // 先下发锚点再自增 token，保证 Slint 的 changed 处理器看到新锚点。
-                st.ui.set_settings_focus((*section).into());
-                st.settings_jump_token = st.settings_jump_token.wrapping_add(1);
-                st.ui.set_settings_jump_token(st.settings_jump_token);
-                // 首次下发的同一轮 Fluent 布局里卡片 y 可能还是 0；80ms 后
-                // 再 bump 一次 token，让 Slint 在布局完成后再滚一次（幂等）。
-                let weak = st.ui.as_weak();
-                st.settings_jump_timer.start(
-                    slint::TimerMode::SingleShot,
-                    Duration::from_millis(80),
-                    move || {
-                        if let Some(ui) = weak.upgrade() {
-                            let next = ui.get_settings_jump_token().wrapping_add(1);
-                            ui.set_settings_jump_token(next);
-                        }
-                    },
-                );
-                eprintln!("[ui] settings jump section={section}");
-            }
-            st.ui.set_settings_query("".into());
-            st.settings_model.set_vec(Vec::<slint::SharedString>::new());
-        });
-    });
-
-    ui.on_settings_manage_profiles(|| {
-        with_app(|st| {
-            refresh_profiles(st);
-            open_profiles_panel(st);
-        });
-    });
-
-    ui.on_settings_toggled(|open| {
-        if open {
-            with_app(|st| {
-                if st.search_open {
-                    close_search(st);
-                }
-            });
-        }
-        with_app(|st| {
-            if open {
-                refresh_vault_ui(st);
-                if st.ui.get_settings_category() == 7 {
-                    refresh_profiles(st);
-                }
-                st.ui.set_settings_focus("".into());
-            } else {
-                st.vault_clear_armed = false;
-                st.ui.set_settings_focus("".into());
-            }
-        });
-        eprintln!("[ui] settings open={open}");
-        with_app(|st| {
-            if !open {
-                // 关闭设置时退出录制，并确保终端重新拿到键盘焦点。
-                st.hotkey_recording = None;
-                st.ui.set_hotkey_recording_row(-1);
-                st.ui.set_hotkey_error("".into());
-                st.ui.invoke_focus_terminal();
-            }
-        });
-    });
-
-    ui.on_hotkey_start_edit(|index| {
-        with_app(|st| start_hotkey_edit(st, index));
-    });
-
-    ui.on_hotkey_cancel_edit(|| {
-        with_app(|st| cancel_hotkey_edit(st));
-    });
-
-    ui.on_hotkey_reset(|index| {
-        with_app(|st| reset_hotkey(st, index));
-    });
-
-    ui.on_hotkey_reset_all(|| {
-        with_app(|st| reset_all_hotkeys(st));
-    });
-
-    ui.on_toggle_copy_on_select(|| {
-        with_app(|st| {
-            st.cfg.copy_on_select = !st.cfg.copy_on_select;
-            st.ui.set_cfg_copy_on_select(st.cfg.copy_on_select);
-            st.cfg.save();
-            eprintln!("[ui] copy_on_select={}", st.cfg.copy_on_select);
-        });
-    });
-
-    ui.on_toggle_confirm_close(|| {
-        with_app(|st| {
-            st.cfg.confirm_close = !st.cfg.confirm_close;
-            st.ui.set_cfg_confirm_close(st.cfg.confirm_close);
-            st.cfg.save();
-            eprintln!("[ui] confirm_close={}", st.cfg.confirm_close);
-        });
-    });
-
-    ui.on_toggle_restore_session(|| {
-        with_app(|st| {
-            st.cfg.restore_session_on_startup = !st.cfg.restore_session_on_startup;
-            st.ui
-                .set_cfg_restore_session(st.cfg.restore_session_on_startup);
-            st.cfg.save();
-            eprintln!(
-                "[ui] restore_session_on_startup={}（下次启动生效；正常退出时写快照）",
-                st.cfg.restore_session_on_startup
-            );
-        });
-    });
-
-    ui.on_tabsearch_open_requested(|| {
-        let _ = with_app(open_tab_search);
-    });
-    ui.on_tabsearch_query_changed(|_q| {
-        with_app(|st| {
-            st.tab_search_query = st.ui.get_tabsearch_query().to_string();
-            refresh_tab_search(st);
-        });
-    });
-    ui.on_tabsearch_move(|delta| {
-        let _ = with_app(|st| tab_search_move(st, delta));
-    });
-    ui.on_tabsearch_accept(|| {
-        let _ = with_app(tab_search_accept);
-    });
-    ui.on_tabsearch_cancel(|| {
-        let _ = with_app(close_tab_search);
-    });
-    ui.on_tabsearch_pick(|row| {
-        let _ = with_app(|st| tab_search_pick(st, row.max(0) as usize));
-    });
-
-    ui.on_palette_query_changed(|_q| {
-        with_app(|st| refresh_palette(st));
-    });
-
-    ui.on_palette_move(|delta| {
-        with_app(|st| palette_move(st, delta));
-    });
-
-    ui.on_palette_accept(|| {
-        with_app(|st| palette_accept(st));
-    });
-
-    ui.on_palette_cancel(|| {
-        with_app(|st| st.ui.set_palette_open(false));
-    });
-
-    ui.on_palette_pick(|index| {
-        with_app(|st| {
-            st.ui.set_palette_selected(index.max(0));
-            palette_accept(st);
-        });
-    });
-
-    ui.on_search_toggle_case(|| {
-        with_app(toggle_search_case);
-    });
-
-    ui.on_search_toggle_regex(|| {
-        with_app(toggle_search_regex);
-    });
-
-    // TextInput 的编辑（键入/退格/粘贴/鼠标输入）都会回调 edited；文本以 UI 为准。
-    ui.on_search_edited(|| {
-        with_app(search_edited);
-    });
-
-    // Enter / Shift+Enter：从当前命中继续向前/向后，并刷新 index/total。
-    ui.on_search_next(|forward| {
-        with_app(|st| run_search(st, forward));
-    });
-
-    // Esc：关闭搜索条并把 IME/键盘焦点还给终端。
-    ui.on_search_close(|| {
-        with_app(close_search);
-    });
-
-    ui.on_save_commit(|path| {
-        with_app(|st| save_contents_commit(st, path.as_str()));
-    });
-
-    ui.on_save_cancel(|| {
-        with_app(cancel_save_contents);
-    });
-
-    ui.on_tab_reorder(|from, drag_x, strip_w| {
-        with_app(|st| {
-            let n = st.ws.tabs.len();
-            st.ui.set_drop_index(-1);
-            st.ui.set_drop_gap(-1);
-            st.ui.set_drop_valid(false);
-            if n < 2 || from < 0 {
-                return;
-            }
-            let from = from as usize;
-            if from >= n {
-                return;
-            }
-            let target =
-                drag_target_in_group(drag_x, strip_w, n, st.ws.pinned_count(), from);
-            let Some(target) = target else {
-                eprintln!("[ui] tab drop blocked from={from} x={drag_x:.1} strip={strip_w:.1}");
-                return;
-            };
-            if st.ws.move_tab(from, target) {
-                eprintln!("[ws] reorder tab {from} → {target}");
-                rebuild_tabs(st);
-            }
-        });
-    });
-
-    // 拖拽过程中只更新落点属性；不重建 Tab 模型/TouchArea，避免每帧重排。
-    ui.on_tab_drag_move(|from, drag_x, strip_w| {
-        with_app(|st| {
-            let n = st.ws.tabs.len();
-            if from < 0 || from as usize >= n {
-                st.ui.set_drop_index(-1);
-                st.ui.set_drop_gap(-1);
-                st.ui.set_drop_valid(false);
-                return;
-            }
-            let from = from as usize;
-            let target =
-                drag_target_in_group(drag_x, strip_w, n, st.ws.pinned_count(), from);
-            let gap: i32 = target
-                .map(|t| drag_gap_index(from, t) as i32)
-                .unwrap_or(-1);
-            let prev = (st.ui.get_drop_index(), st.ui.get_drop_gap(), st.ui.get_drop_valid());
-            st.ui.set_drop_index(target.map(|t| t as i32).unwrap_or(-1));
-            st.ui.set_drop_gap(gap);
-            st.ui.set_drop_valid(target.is_some());
-            if prev != (target.map(|t| t as i32).unwrap_or(-1), gap, target.is_some()) {
-                eprintln!(
-                    "[ui] tab drag from={from} x={drag_x:.1} strip={strip_w:.1} target={} gap={gap}",
-                    target.map(|t| t.to_string()).unwrap_or_else(|| "blocked".into())
-                );
-            }
-        });
-    });
-
-    ui.on_tab_drag_cancelled(|| {
-        with_app(|st| {
-            st.ui.set_drop_index(-1);
-            st.ui.set_drop_gap(-1);
-            st.ui.set_drop_valid(false);
-        });
-        eprintln!("[ui] tab drag cancelled");
-    });
-
-    ui.on_tab_context(|index, x| {
-        eprintln!("[ui] tab context index={index} x={x:.1}");
-        with_app(|st| {
-            st.ui.set_tabctx_index(index);
-            st.ui.set_tabctx_x(x);
-            st.ui.set_tabctx_open(true);
-        });
-    });
-
-    ui.on_tab_menu_action(|index, action| {
-        eprintln!("[ui] tab action={action} index={index}");
-        with_app(|st| {
-            let index = index.max(0) as usize;
-            match action {
-                0 => close_tab_inner(st, index),
-                1 => close_other_tabs(st, index),
-                2 => duplicate_tab(st, index),
-                3 => open_rename(st, index),
-                4 => close_tabs_left(st, index),
-                5 => close_tabs_right(st, index),
-                // 6 = Pin/Unpin 切换（additive；旧 ID 0..5 不变）
-                6 => toggle_tab_pin(st, index),
-                _ => {}
-            }
-        });
-    });
-
-    ui.on_tabbar_context(|x, y| {
-        eprintln!("[ui] tabbar menu at {x},{y}");
-        with_app(|st| {
-            st.ui.set_tabmenu_x(x);
-            st.ui.set_tabmenu_y(y);
-            st.ui.set_tabmenu_open(true);
-        });
-    });
-
-    ui.on_tabbar_menu_action(|action| {
-        eprintln!("[ui] tabbar action={action}");
-        with_app(|st| match action {
-            0 => {} // 置顶由 Slint 侧直接切换（绑定 Window.always-on-top）
-            1 => {
-                new_tab_with_default(st);
-                rebuild_tabs(st);
-            }
-            13 => new_window(),
-            2 => {
-                st.ui.set_settings_open(true);
-            }
-            3 => {
-                let _ = slint::quit_event_loop();
-            }
-            4 => restart_session(st),
-            5 => open_palette(st),
-            7 => reattach_last_background(st),
-            8 => open_background_panel(st),
-            9 => open_profiles_panel(st),
-            10 => open_sftp_panel(st),
-            11 => open_forwards_panel(st),
-            6 => {
-                st.cfg.tabbar_position = if st.cfg.tabbar_position == "bottom" {
-                    "top".into()
-                } else {
-                    "bottom".into()
-                };
-                st.ui.set_tabbar_bottom(st.cfg.tabbar_position == "bottom");
-                st.cfg.save();
-                // 内容区在窗口内的纵向偏移变了：候选点必须重新下发。
-                st.ime_spot_dirty = true;
-                update_ime_spot(st);
-                eprintln!("[ui] tabbar_position={}", st.cfg.tabbar_position);
-            }
-            _ => {}
-        });
-    });
-
-    ui.on_close_window(|| {
-        with_app(|st| request_close(st));
-    });
-
-    ui.on_confirm_accept(|| {
-        with_app(confirm_accept_inner);
-    });
-
-    ui.on_confirm_cancel(|| {
-        eprintln!("[ui] close cancelled");
-        with_app(confirm_cancel_inner);
-    });
-
-    {
-        let auto = is_auto_theme(&theme_selection);
-        ui.set_theme_name(if auto { AUTO_THEME.into() } else { initial_theme.id.as_str().into() });
-        ui.set_auto_resolved(if auto { initial_theme.label.as_str().into() } else { "".into() });
-        ui.set_theme_display(if auto {
-            format!(
-                "{} · {}",
-                ui_text(cfg.lang(), "Auto", "自动"),
-                initial_theme.label
-            )
-            .into()
-        } else {
-            initial_theme.label.as_str().into()
-        });
-        ui.global::<Palette>().set_colors(slint_theme(&initial_theme.ui));
-        ui.set_theme_choices(theme_choices(&state.borrow().registry));
-    }
-    ui.set_font_size(state.borrow().cfg.font_size as i32);
-    ui.set_scrollback(state.borrow().cfg.scrollback as i32);
-
-    ui.on_set_theme(|name| {
-        eprintln!("[theme] 选择 -> {name}");
-        with_app(|st| apply_theme(st, name.as_str()));
-    });
-
-    // Settings → Appearance → Language：立即切换静态文案（Slint 侧已先改
-    // root.language），Rust 侧再重建动态列表并写回 config；无需重启。
-    ui.on_language_changed(|code| {
-        with_app(|st| {
-            let next = config::normalize_language(code.as_str());
-            if st.cfg.language == next {
-                return;
-            }
-            st.cfg.language = next.clone();
-            st.cfg.save();
-            sync_language_ui(st);
-            eprintln!("[ui] language={next}");
-        });
-    });
-
-    // Appearance：背景图路径（空 = 关闭）。合法路径输入过程中即时加载/写盘；
-    // 非法路径只在回车/失焦提交时显示错误，并保留上一张已生效背景（回退）。
-    ui.on_background_image_changed(|path| {
-        with_app(|st| {
-            commit_background_path(st, path.as_str(), false);
-        });
-    });
-    ui.on_background_image_commit(|path| {
-        with_app(|st| {
-            commit_background_path(st, path.as_str(), true);
-        });
-    });
-
-    let image_picker_weak = ui.as_weak();
-    ui.on_background_image_browse(move || {
-        let Some(current_ui) = image_picker_weak.upgrade() else { return };
-        let initial = current_ui.get_background_image_path().to_string();
-        let weak = image_picker_weak.clone();
-        std::thread::Builder::new()
-            .name("image-picker".into())
-            .spawn(move || {
-                let result = pick_background_image(&initial);
-                let _ = slint::invoke_from_event_loop(move || {
-                    let Some(_ui) = weak.upgrade() else { return };
-                    with_app(|st| match result {
-                        Ok(Some(path)) => {
-                            eprintln!("[theme] 文件选择器选择背景图: {path}");
-                            st.ui.set_background_image_path(path.as_str().into());
-                            commit_background_path(st, &path, true);
-                        }
-                        Ok(None) => {}
-                        Err(e) => {
-                            let err = e.clone();
-                            let msg = if st.cfg.lang() == "zh" {
-                                e
-                            } else {
-                                format!("Image picker unavailable: {e}")
-                            };
-                            st.ui.set_background_image_error(msg.into());
-                            eprintln!("[theme] 背景图选择器失败: {err}");
-                        }
-                    });
-                });
-            })
-            .ok();
-    });
-
-    // 拖动时只预览（重绘终端帧），松手才写盘，避免每一帧都原子写 config.toml。
-    // 无背景图时不改有效 alpha（见 renderer_opacity），所以不会把纯色终端拖灰。
-    ui.on_background_opacity_preview(|value| {
-        with_app(|st| {
-            let value = config::clamp_opacity(value);
-            st.cfg.background_opacity = value;
-            sync_renderer_opacity(st);
-        });
-    });
-
-    ui.on_background_opacity_changed(|value| {
-        with_app(|st| {
-            let value = config::clamp_opacity(value);
-            st.cfg.background_opacity = value;
-            st.ui.set_background_opacity(value);
-            sync_renderer_opacity(st);
-            st.cfg.save();
-            eprintln!("[theme] background_opacity={value:.2}（仅终端默认背景）");
-        });
-    });
-
-    // 遮罩层只影响背景图，由 Slint 直接改属性完成即时预览；松手才落盘。
-    ui.on_background_dim_preview(|value| {
-        with_app(|st| {
-            st.cfg.background_dim = config::clamp_dim(value);
-        });
-    });
-
-    ui.on_background_dim_changed(|value| {
-        with_app(|st| {
-            let value = config::clamp_dim(value);
-            st.cfg.background_dim = value;
-            st.ui.set_background_dim(value);
-            st.cfg.save();
-            eprintln!("[theme] background_dim={value:.2}");
-        });
-    });
-
-    // ---- Appearance：光标形状/闪烁/颜色 + 粗体（GNOME Terminal 基础项）----
-    // 形状/颜色只影响光标 overlay，不重绘终端帧；闪烁用 UI timer 切换 overlay 可见性。
-    ui.on_set_cursor_shape(|shape| {
-        with_app(|st| {
-            let next = config::normalize_cursor_shape(shape.as_str());
-            if st.cfg.cursor_shape == next {
-                return;
-            }
-            st.cfg.cursor_shape = next.clone();
-            st.ui.set_cfg_cursor_shape(next.as_str().into());
-            apply_cursor_settings(st);
-            st.cfg.save();
-            eprintln!("[appearance] cursor_shape={next}");
-        });
-    });
-
-    ui.on_set_cursor_blink(|mode| {
-        with_app(|st| {
-            let next = config::normalize_cursor_blink(mode.as_str());
-            if st.cfg.cursor_blink == next {
-                return;
-            }
-            st.cfg.cursor_blink = next.clone();
-            st.ui.set_cfg_cursor_blink(next.as_str().into());
-            configure_cursor_blink(st);
-            st.cfg.save();
-            eprintln!("[appearance] cursor_blink={next}");
-        });
-    });
-
-    // 输入过程中空串=跟随主题、合法 #RGB/#RRGGBB 即时生效；半截/非法输入不写配置。
-    ui.on_cursor_color_changed(|text| {
-        with_app(|st| {
-            let raw = text.as_str();
-            let next = if raw.trim().is_empty() {
-                String::new()
-            } else {
-                let Some(color) = config::normalize_hex_color(raw) else {
-                    return;
-                };
-                color
-            };
-            if st.cfg.cursor_color == next {
-                return;
-            }
-            st.cfg.cursor_color = next.clone();
-            apply_cursor_settings(st);
-            st.cfg.save();
-            eprintln!("[appearance] cursor_color={next:?}");
-        });
-    });
-
-    ui.on_cursor_text_color_changed(|text| {
-        with_app(|st| {
-            let raw = text.as_str();
-            let next = if raw.trim().is_empty() {
-                String::new()
-            } else {
-                let Some(color) = config::normalize_hex_color(raw) else {
-                    return;
-                };
-                color
-            };
-            if st.cfg.cursor_text_color == next {
-                return;
-            }
-            st.cfg.cursor_text_color = next.clone();
-            apply_cursor_settings(st);
-            st.cfg.save();
-            eprintln!("[appearance] cursor_text_color={next:?}");
-        });
-    });
-
-    ui.on_toggle_bold_is_bright(|| {
-        with_app(|st| {
-            st.cfg.bold_is_bright = !st.cfg.bold_is_bright;
-            st.ui.set_cfg_bold_is_bright(st.cfg.bold_is_bright);
-            apply_bold_settings(st);
-            st.cfg.save();
-            eprintln!("[appearance] bold_is_bright={}", st.cfg.bold_is_bright);
-        });
-    });
-
-    ui.on_bold_color_changed(|text| {
-        with_app(|st| {
-            let raw = text.as_str();
-            let next = if raw.trim().is_empty() {
-                String::new()
-            } else {
-                let Some(color) = config::normalize_hex_color(raw) else {
-                    return;
-                };
-                color
-            };
-            if st.cfg.bold_color == next {
-                return;
-            }
-            st.cfg.bold_color = next.clone();
-            apply_bold_settings(st);
-            st.cfg.save();
-            eprintln!("[appearance] bold_color={next:?}");
-        });
-    });
-
-    ui.on_toggle_bold_color_same_as_fg(|| {
-        with_app(|st| {
-            st.cfg.bold_color_same_as_fg = !st.cfg.bold_color_same_as_fg;
-            st.ui
-                .set_cfg_bold_color_same_as_fg(st.cfg.bold_color_same_as_fg);
-            apply_bold_settings(st);
-            st.cfg.save();
-            eprintln!(
-                "[appearance] bold_color_same_as_fg={}",
-                st.cfg.bold_color_same_as_fg
-            );
-        });
-    });
-
-    ui.on_bump_font_size(|delta| {
-        with_app(|st| {
-            let new = (st.cfg.font_size + delta as f32).clamp(8.0, 32.0);
-            if (new - st.cfg.font_size).abs() < 0.1 {
-                return;
-            }
-            st.cfg.font_size = new;
-            st.ui.set_font_size(new as i32);
-            st.cfg.save();
-            apply_font_size(st);
-        });
-    });
-
-    ui.on_bump_scrollback(|delta| {
-        with_app(|st| {
-            // 无限滚动下点 +/-：视为用户要改回固定值，先关闭 unlimited。
-            if st.cfg.scrollback_unlimited {
-                st.cfg.scrollback_unlimited = false;
-                st.ui.set_cfg_scrollback_unlimited(false);
-            }
-            let new = (st.cfg.scrollback as i64 + delta as i64)
-                .clamp(500, UNLIMITED_SCROLLBACK_LINES as i64) as usize;
-            st.cfg.scrollback = new;
-            st.ui.set_scrollback(new as i32);
-            st.cfg.save();
-        });
-    });
-
-    {
-        let weak = ui.as_weak();
-        ui.on_minimize_window(move || {
-            if let Some(ui) = weak.upgrade() {
-                ui.window().set_minimized(true);
-            }
-        });
-    }
-
-    {
-        let weak = ui.as_weak();
-        ui.on_max_pointer_down(|| eprintln!("[ui] max-pointer-down"));
-        ui.on_toggle_maximize(move || {
-            if let Some(ui) = weak.upgrade() {
-                toggle_maximize_for(&ui, window_id);
-            }
-        });
-    }
-
-    ui.on_tab_clicked(|i| {
-        with_app(|st| {
-            if st.search_open {
-                close_search(st);
-            }
-        });
-        set_active_tab(i as usize);
-    });
-    ui.on_tab_closed(|i| close_tab(i as usize));
-    ui.on_new_tab(|| {
-        with_app(|st| {
-            if st.search_open {
-                close_search(st);
-            }
-        });
-        new_tab();
-    });
-
-    ui.on_profilemenu_menu(|| {
-        with_app(open_profile_menu);
-    });
-
-    ui.on_profilemenu_pick(|index| {
-        with_app(|st| {
-            st.ui.set_profilemenu_open(false);
-            let index = index.max(0) as usize;
-            eprintln!("[ui] profile pick={index}");
-            if let Some(&profile_index) = st.profile_menu_indices.get(index) {
-                open_profile_tab(st, profile_index);
-            }
-        });
-    });
-
-    ui.on_profilemenu_manage(|| {
-        with_app(|st| {
-            st.ui.set_profilemenu_open(false);
-            open_profiles_panel(st);
-        });
-    });
-
-    // Quake 全局热键：X11 被动 grab；Wayland 下会返回错误并只打日志。
+    // Quake 全局热键是进程级 service：只注册一次，不随窗口数量增长。
     if let Err(e) = quake::spawn_listener(&cfg.quake_hotkey, || {
         let _ = slint::invoke_from_event_loop(toggle_quake);
     }) {
         eprintln!("[quake] {e}");
     }
-    ui.set_cfg_quake(cfg.quake_enabled);
 
-    ui.on_toggle_quake(|| {
-        with_app(|st| {
-            st.cfg.quake_enabled = !st.cfg.quake_enabled;
-            st.ui.set_cfg_quake(st.cfg.quake_enabled);
-            if !st.cfg.quake_enabled && st.quake_visible {
-                if let Some((pos, size)) = st.quake_saved.take() {
-                    st.ui.window().set_size(size);
-                    st.ui.window().set_position(pos);
-                }
-                st.quake_visible = false;
-            }
-            st.cfg.save();
-            eprintln!("[ui] quake_enabled={}", st.cfg.quake_enabled);
-        });
-    });
-
-    ui.on_resized(|w, h| {
-        with_app(|st| {
-            // WM live resize 期间指针被 WM grab，winit/Slint 收不到真实 ButtonRelease；
-            // TouchArea 会一直保持 pressed/grabbed，后续点击会继续命中旧方向。
-            // 收到第一帧由 WM 驱动的 resize 后，异步补发一次 PointerReleased 清理状态。
-            if st.wm_resize && !st.wm_release_pending {
-                st.wm_release_pending = true;
-                let weak = st.ui.as_weak();
-                slint::Timer::single_shot(Duration::ZERO, move || {
-                    let Some(ui) = weak.upgrade() else { return };
-                    let still_wm =
-                        matches!(with_app(|st| st.wm_resize && st.wm_release_pending), Some(true));
-                    if still_wm {
-                        ui.window().dispatch_event(
-                            slint::platform::WindowEvent::PointerReleased {
-                                position: slint::LogicalPosition::new(0.0, 0.0),
-                                button: slint::platform::PointerEventButton::Left,
-                            },
-                        );
-                    }
-                });
-            }
-            // w/h 是 Slint 逻辑像素；worker 按 scale_factor 换算物理像素并节流去重。
-            request_window_corners(st, Some((w, h)), None);
-            let w = w.max(1.0);
-            let h = (h - TABBAR_H).max(1.0);
-            // configure 本身就是“WM/窗口系统正在动”的证据；即使尺寸和上一帧
-            // 相同也刷新时间戳，watchdog 不会把它误判成 WM 没接管。
-            st.last_resize_event = Some(Instant::now());
-            if st.wm_resize {
-                st.wm_resize_saw_configure = true;
-            }
-            if (st.content.w - w).abs() < 0.5 && (st.content.h - h).abs() < 0.5 {
-                return;
-            }
-            // 窗口尺寸/DPR 变化：即使光标格相对窗口没动，也让输入法重收 spot。
-            st.ime_spot_dirty = true;
-            let old_w = st.content.w;
-            let was_resizing = st.resize_in_progress;
-            // 只有用户正在拖动边/角（WM live resize 或自绘 resize）才隐藏背景/做
-            // resize 收尾；最大化、字体变化等程序化 set_size 不应让背景闪一下。
-            let live_drag = st.wm_resize || st.resize.is_some();
-            st.resize_events = st.resize_events.saturating_add(1);
-            st.resize_pending = Some((w, h));
-            // UI 布局必须每个 configure 立即更新：缩小时如果晚一帧，右上角按钮
-            // 还在旧宽度的右边界外，会被新窗口裁掉，下一帧才“吐出来”。
-            st.content = Rect::new(0.0, 0.0, w, h);
-            refresh_views_layout(st);
-            if live_drag {
-                st.resize_in_progress = true;
-            }
-            // resize 期间隐藏**大窗口**的背景图，避免 Skia 每帧对整张图做 cover
-            // 缩放（2560x1440 llvmpipe 实测每帧省约 2ms）。小窗口收益小、闪一下
-            // 不划算，故按面积设阈值；停下 200ms 后自动恢复。字符帧不缩放，仍是 1:1。
-            // TERVO_RESIZE_KEEP_BG=1 可关闭该优化，用于 A/B 性能对比。
-            const RESIZE_BG_SUSPEND_AREA: f32 = 1_500_000.0;
-            if live_drag
-                && w * h > RESIZE_BG_SUSPEND_AREA
-                && st.ui.get_has_background_image()
-                && std::env::var_os("TERVO_RESIZE_KEEP_BG").is_none()
-            {
-                if !st.ui.get_background_suspended()
-                    && std::env::var_os("TERVO_RESIZE_PROFILE").is_some()
-                {
-                    eprintln!("[ui] resize 期间隐藏背景图（减少 cover 缩放）");
-                }
-                st.ui.set_background_suspended(true);
-            }
-            // 缩小必须立即重绘，否则旧帧的右上角按钮会露在窗口外一帧；放大可以
-            // 合并到 60fps（没有裁切风险），避免高速拖动把渲染线程灌满。
-            schedule_resize_redraw(
-                st,
-                should_redraw_resize_immediately(old_w, w, was_resizing),
-            );
-            if live_drag {
-                schedule_resize_finalize(st);
-            }
-            // terminal grid/PTY/字符重绘仍 16ms 合并，避免高速拖动把 UI 线程灌满。
-            if !st.resize_apply_scheduled {
-                st.resize_apply_scheduled = true;
-                st.resize_apply.start(
-                    slint::TimerMode::SingleShot,
-                    Duration::from_millis(16),
-                    move || {
-                        with_app(|st| {
-                            st.resize_apply_scheduled = false;
-                            let Some((w, h)) = st.resize_pending.take() else { return };
-                            st.content = Rect::new(0.0, 0.0, w, h);
-                            let t0 = Instant::now();
-                            refresh_views(st);
-                            let t_layout = t0.elapsed();
-                            redraw_visible(st);
-                            let total = t0.elapsed();
-                            let cost_us = total.as_secs_f64() * 1_000_000.0;
-                            st.resize_applied = st.resize_applied.saturating_add(1);
-                            st.resize_max_apply_us = st.resize_max_apply_us.max(cost_us);
-                            // apply 更新了 pane 图像，必须安排一次重绘；此时布局
-                            // 已是新尺寸，不会出现按钮晚一帧。
-                            schedule_resize_redraw(st, false);
-                            if std::env::var_os("TERVO_RESIZE_PROFILE").is_some() {
-                                eprintln!(
-                                    "[ui] resize apply events={} cost={:.1}ms layout={:.1}ms redraw={:.1}ms content={:.0}x{:.0}",
-                                    st.resize_events,
-                                    total.as_secs_f64() * 1000.0,
-                                    t_layout.as_secs_f64() * 1000.0,
-                                    (total - t_layout).as_secs_f64() * 1000.0,
-                                    st.content.w,
-                                    st.content.h
-                                );
-                            }
-                            st.resize_events = 0;
-                        });
-                    },
-                );
-            }
-        });
-    });
 
     // ---- OSC 标题轮询 ----
     let poll_timer = slint::Timer::default();
@@ -14811,7 +14904,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     start_maximize_when_window_ready(&ui, window_id, 0);
     // 无头验收钩子：TERVO_GPU_SNAPSHOT=<前缀> 时定时 take_snapshot 写 PPM 并打像素统计。
     install_gpu_snapshot_hook(&ui);
-    install_render_hud(&ui);
     // RenderingSetup 可能首帧后才给出 device/queue；GPU 就绪后主动重绘一次。
     // Stage 0 和 Scene 文字链路都需要这一脚，否则首帧以后没有输入时画面
     // 会一直停在 CPU 初帧。
@@ -14962,7 +15054,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     redraw_all();
     diag::start_control_socket_with_control(live_diag_snapshot, live_control, shared.mcp.clone());
-    schedule_mcp_status_refresh(&ui);
+    schedule_mcp_status_refresh(window_id);
     // 之后 primary 窗口的生命周期只由 WindowRegistry/AppState 持有；这样
     // 关闭 primary 而 second 仍存活时，MainWindow/PTY/GPU 能真正 drop。
     drop(ui);
@@ -16308,6 +16400,44 @@ mod tests {
         assert!(!parse_args_from(&cfg, Vec::new()).window);
         // 与 spawn 侧常量一致
         assert_eq!(window::WINDOW_FLAG, "--window");
+    }
+
+    #[test]
+    fn all_primary_callbacks_live_in_shared_registration() {
+        let src = include_str!("main.rs");
+        let start = src
+            .find("fn register_window_callbacks(")
+            .expect("shared registration fn must exist");
+        let rest = &src[start..];
+        let end = rest
+            .find("\n/// 启动时对单实例锁的判定结果。")
+            .expect("shared registration fn must be followed by instance code");
+        let body = &rest[..end];
+        // 全部 UI 回调都在共享注册函数里，不允许 secondary 另抄一份。
+        assert_eq!(
+            body.matches("\n    ui.on_").count(),
+            src.matches("\n    ui.on_").count(),
+            "some ui.on_* registration escaped register_window_callbacks"
+        );
+        assert!(
+            !body.contains("with_app("),
+            "shared callbacks must use runtime::with_window(window_id, ...), not unscoped with_app"
+        );
+        assert!(body.matches("runtime::with_window(window_id").count() >= 150);
+    }
+
+    #[test]
+    fn secondary_window_reuses_shared_callback_registration() {
+        let src = include_str!("secondary.rs");
+        assert!(src.contains("crate::register_window_callbacks"));
+        assert!(
+            !src.contains("install_core_callbacks"),
+            "secondary must not keep a private callback installer"
+        );
+        assert!(
+            !src.contains("ui.on_"),
+            "secondary must not duplicate any ui.on_* handler"
+        );
     }
 
     #[test]
