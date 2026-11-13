@@ -291,8 +291,9 @@ struct AppState {
     window_id: WindowId,
     /// 每用户共享服务（Config/Theme/PluginHost/MCP/Session/Vault）。
     shared: Rc<SharedServices>,
-    /// 外部 config.toml 轮询监听；设置页保存时靠自己写入标记跳过回环。
-    config_watcher: Option<config_watch::ConfigWatcher>,
+    /// 确认关闭后要关掉的窗口。主窗口和 second 都可能有自己的确认弹窗；
+    /// 存 id 而不是布尔值，避免确认框打开期间焦点切换关错窗口。
+    pending_close_window: Option<WindowId>,
     /// 当前实际生效的主题（`cfg.theme == "auto"` 时是解析后的结果）。
     resolved_theme: ThemeData,
     /// 内置 + `themes/*.toml` 自定义主题。
@@ -583,12 +584,13 @@ fn live_control(cmd: &str, args: &serde_json::Value) -> Result<serde_json::Value
         if runtime::window_count() <= 1 {
             return Err("refusing to close the last window; quit the window instead".into());
         }
-        let runtime = runtime::remove_window(id)
-            .ok_or_else(|| format!("unknown window_id {raw}"))?;
-        gpu_present::teardown_for(id);
-        gpu_native::teardown_for(id);
-        runtime.ui.hide();
-        drop(runtime);
+        let known = runtime::registry()
+            .map(|reg| reg.borrow().get(id).is_some())
+            .unwrap_or(false);
+        if !known {
+            return Err(format!("unknown window_id {raw}"));
+        }
+        close_window_now(id, "mcp-close");
         return Ok(serde_json::json!({"window_id": raw, "remaining": runtime::window_count()}));
     }
     let window = match args.get("window_id").and_then(serde_json::Value::as_u64) {
@@ -754,6 +756,14 @@ fn live_list_windows(args: &serde_json::Value) -> Result<serde_json::Value, Stri
             "title": rt.title.borrow().clone(),
             "active": active == Some(rt.id),
             "tabs": st.ws.tabs.len(),
+            "active_tab": st.ws.active,
+            "maximized": st.window_maximized,
+            "geometry": {
+                "x": rt.geometry().x,
+                "y": rt.geometry().y,
+                "w": rt.geometry().w,
+                "h": rt.geometry().h,
+            },
             "panes": panes,
         }));
     }
@@ -6197,49 +6207,37 @@ fn capture_tabs_snapshot(st: &AppState) -> Vec<session::TabSnapshot> {
     tabs
 }
 
-fn capture_snapshot(st: &AppState) -> Option<session::Snapshot> {
-    if st.ws.tabs.is_empty() {
-        return None;
-    }
-    let (cols, rows) = cell_of(st.content, st.cell);
-    let tabs = capture_tabs_snapshot(st);
-    if tabs.is_empty() {
-        return None;
-    }
-    Some(session::Snapshot {
-        version: session::VERSION,
-        cols: cols as u16,
-        rows: rows as u16,
-        active: st.ws.active,
-        tabs,
-    })
-}
-
-/// 保存快照 → 拉起新进程（带 `--restore`）→ 退出当前进程。
+/// 保存多窗口快照 → 拉起新进程（带 `--restore`）→ 退出当前进程。
 fn restart_session(st: &mut AppState) {
-    let Some(snap) = capture_snapshot(st) else {
+    // 当前窗口的 AppState 正被 `with_app` 可变借用，必须显式传进去，否则
+    // capture 会跳过它、只保存其它窗口。
+    let snapshot = runtime::capture_restorable_snapshot_v2_with_window(st.window_id, st);
+    if snapshot.windows.is_empty() {
         eprintln!("[session] 没有可保存的布局，取消重启");
         return;
-    };
-    match session::save(&snap) {
+    }
+    let (cols, rows) = cell_of(st.content, st.cell);
+    match session::save_v2(&snapshot) {
         Ok(path) => {
-            let cwds: Vec<String> = snap
-                .tabs
+            let tabs: usize = snapshot.windows.iter().map(|w| w.tabs.len()).sum();
+            let panes: usize = snapshot
+                .windows
                 .iter()
-                .flat_map(|t| t.tree.leaf_cwds())
-                .map(|c| c.unwrap_or_else(|| "?".into()))
-                .collect();
+                .flat_map(|w| w.tabs.iter())
+                .map(|t| t.tree.leaf_count())
+                .sum();
             eprintln!(
-                "[session] 已保存 {}（{} 个标签 / {} 个 pane）cwd={cwds:?}",
+                "[session] 重启前已保存 {}（{} 个窗口 / {} 个标签 / {} 个 pane）",
                 path.display(),
-                snap.tabs.len(),
-                snap.tabs.iter().map(|t| t.tree.leaf_count()).sum::<usize>()
+                snapshot.windows.len(),
+                tabs,
+                panes
             )
-        }
+        },
         Err(e) => {
             eprintln!("[session] 保存失败，取消重启: {e}");
             return;
-        }
+        },
     }
 
     let exe = match std::env::current_exe() {
@@ -6252,9 +6250,9 @@ fn restart_session(st: &mut AppState) {
     let mut cmd = std::process::Command::new(exe);
     cmd.arg("--restore")
         .arg("--cols")
-        .arg(snap.cols.to_string())
+        .arg(cols.to_string())
         .arg("--rows")
-        .arg(snap.rows.to_string())
+        .arg(rows.to_string())
         .arg("--font-size")
         .arg(st.opts.font_size.to_string())
         .arg("--scrollback")
@@ -6284,70 +6282,12 @@ fn restart_session(st: &mut AppState) {
     }
 }
 
-/// Periodic crash-safe snapshot. The 2s cadence bounds data loss for kill -9 /
-/// power loss while avoiding a write on every cursor blink. `Snapshot` equality
-/// suppresses unchanged writes; the normal exit path still does a final save.
-fn autosave_session(st: &mut AppState) {
-    if !st.shared.session.writer
-        || !st.cfg.restore_session_on_startup
-        || st.shared.session.restarting
-        || st.opts.window
-    {
-        return;
-    }
-    let Some(snap) = capture_snapshot(st) else { return };
-    if st.shared.session.last_snapshot.as_ref() == Some(&snap) {
-        return;
-    }
-    match session::save(&snap) {
-        Ok(path) => {
-            st.shared.session.with_mut(|session| session.last_snapshot = Some(snap));
-            eprintln!(
-                "[session] autosave {}（{} 个标签 / {} 个 pane）",
-                path.display(),
-                st.ws.tabs.len(),
-                st.panes.len()
-            );
-        },
-        Err(error) => eprintln!("[session] autosave 失败: {error}"),
-    }
-}
-
-/// 正常退出时按开关写会话快照；无 Tab 时清掉旧快照，避免下次恢复幽灵布局。
+/// 按一个窗口快照重建 tabs/panes；成功返回 true。
 ///
-/// `Restart Session` 已提前写好快照并拉起子进程，此时 `restarting` 为 true，
-/// 不再在退出钩子里重复写（避免与子进程的 `session::clear` 竞争）。
-fn save_session_on_exit(st: &AppState) {
-    if !st.shared.session.writer
-        || !st.cfg.restore_session_on_startup
-        || st.shared.session.restarting
-        || st.opts.window
-    {
-        return;
-    }
-    match capture_snapshot(st) {
-        Some(snap) => match session::save(&snap) {
-            Ok(path) => eprintln!(
-                "[session] 退出时已保存 {}（{} 个标签 / {} 个 pane）",
-                path.display(),
-                snap.tabs.len(),
-                snap.tabs.iter().map(|t| t.tree.leaf_count()).sum::<usize>()
-            ),
-            Err(e) => eprintln!("[session] 退出时保存快照失败（下次启动回退新 Tab）: {e}"),
-        },
-        None => {
-            session::clear();
-            eprintln!("[session] 退出时没有 Tab，已清除旧快照");
-        },
-    }
-}
-
-/// 按快照重建 tabs/panes；成功返回 true。
-fn restore_session(st: &mut AppState) -> bool {
-    let Some(snap) = session::load() else {
-        return false;
-    };
-    if snap.tabs.is_empty() {
+/// 逐 Tab 恢复：单个 Tab 的 pane 创建失败只跳过该 Tab，不抛弃整个窗口；
+/// 一个 Tab 都没成功时返回 false，调用方回退一个新 Tab（不整机失败）。
+fn restore_window_snapshot(st: &mut AppState, window: &session::WindowSnapshot) -> bool {
+    if window.tabs.is_empty() {
         return false;
     }
 
@@ -6356,22 +6296,39 @@ fn restore_session(st: &mut AppState) -> bool {
     st.panes.clear();
     st.pane_rows.clear();
 
-    for tab_snap in &snap.tabs {
-        restore_tab_snapshot(st, tab_snap);
+    let wanted_active = window.active_tab.min(window.tabs.len() - 1);
+    let mut active_restored = None;
+    let mut restored = 0usize;
+    for (original, tab_snap) in window.tabs.iter().enumerate() {
+        if let Some(index) = restore_tab_snapshot(st, tab_snap) {
+            if original == wanted_active {
+                active_restored = Some(index);
+            }
+            restored += 1;
+        } else {
+            eprintln!(
+                "[session] 窗口 {} 的标签 {:?} 恢复失败，跳过",
+                window.id, tab_snap.title
+            );
+        }
     }
 
-    if st.ws.tabs.is_empty() {
+    if restored == 0 {
         return false;
     }
-    st.ws.active = snap.active.min(st.ws.tabs.len() - 1);
+    st.ws.active = active_restored.unwrap_or_else(|| wanted_active.min(st.ws.tabs.len() - 1));
     // 旧/坏快照可能把 pinned 放在 unpinned 后面；恢复后按组稳定归位。
     st.ws.normalize_pinned();
     st.next_title = st.ws.tabs.len();
     refresh_views(st);
     rebuild_tabs(st);
     redraw_visible(st);
-    // 快照只消费一次：恢复成功就删掉，避免下次手动 --restore 又拉旧布局
-    session::clear();
+    eprintln!(
+        "[session] 窗口 {} 恢复完成：{restored}/{} 个标签 active={}",
+        window.id,
+        window.tabs.len(),
+        st.ws.active
+    );
     true
 }
 
@@ -6460,21 +6417,77 @@ fn needs_close_confirm(tabs: usize, panes: usize, enabled: bool) -> bool {
     enabled && (tabs > 1 || panes > 1)
 }
 
+/// 立即关闭一个窗口。必须从事件循环回调/延迟任务调用：如果调用方正持有该
+/// 窗口的 AppState 可变借用，drop runtime 会释放仍被借用的 RefCell。
+fn close_window_now(id: WindowId, reason: &str) {
+    if runtime::window_count() <= 1 {
+        let _ = slint::quit_event_loop();
+        return;
+    }
+    let Some(window_runtime) = runtime::remove_window(id) else {
+        return;
+    };
+    gpu_present::teardown_for(id);
+    gpu_native::teardown_for(id);
+    let _ = window_runtime.ui.hide();
+    drop(window_runtime);
+    // 窗口布局变化立即落盘。writer/timer 在 SharedServices 里：primary 关闭后
+    // 剩余窗口仍会继续 autosave，这里只是让磁盘尽快反映新的窗口集合。
+    let _ = runtime::save_session_snapshot(reason, false);
+    eprintln!(
+        "[ui] {id} closed（{reason}，remaining={}）",
+        runtime::window_count()
+    );
+}
+
+/// 从 UI 回调里安全地关闭当前窗口：延迟到回调返回、借用释放后执行。
+fn defer_close_window(id: WindowId) {
+    let _ = slint::invoke_from_event_loop(move || close_window_now(id, "close-request"));
+}
+
 fn request_close(st: &mut AppState) {
     let tabs = st.ws.tabs.len();
     let panes: usize = st.ws.tabs.iter().map(|t| t.panes().len()).sum();
+    let window_id = st.window_id;
     eprintln!(
-        "[ui] close requested: tabs={tabs} panes={panes} confirm={}",
+        "[ui] close requested: window={window_id} tabs={tabs} panes={panes} confirm={}",
         st.cfg.confirm_close
     );
     if needs_close_confirm(tabs, panes, st.cfg.confirm_close) {
-        let text = format!("将结束 {tabs} 个标签、{panes} 个终端会话，子进程会被终止。");
-        eprintln!("[ui] close confirm: tabs={tabs} panes={panes}");
+        let text = if runtime::window_count() > 1 {
+            format!("将结束该窗口的 {tabs} 个标签、{panes} 个终端会话（其它窗口保留）。")
+        } else {
+            format!("将结束 {tabs} 个标签、{panes} 个终端会话，子进程会被终止。")
+        };
+        eprintln!("[ui] close confirm: window={window_id} tabs={tabs} panes={panes}");
+        st.pending_close_window = Some(window_id);
         st.ui.set_confirm_text(text.as_str().into());
         st.ui.set_confirm_open(true);
         return;
     }
-    let _ = slint::quit_event_loop();
+    if runtime::window_count() > 1 {
+        // 多窗口：只关当前窗口，其它窗口和共享服务继续运行。
+        defer_close_window(window_id);
+    } else {
+        // 最后一个窗口：退出事件循环，主流程负责最终保存 + 清 running marker。
+        let _ = slint::quit_event_loop();
+    }
+}
+
+fn confirm_accept_inner(st: &mut AppState) {
+    st.ui.set_confirm_open(false);
+    match st.pending_close_window.take() {
+        Some(id) if runtime::window_count() > 1 => defer_close_window(id),
+        // 最后一个窗口（或旧的无 pending 路径）：保持原来的退出语义。
+        _ => {
+            let _ = slint::quit_event_loop();
+        },
+    }
+}
+
+fn confirm_cancel_inner(st: &mut AppState) {
+    st.pending_close_window = None;
+    st.ui.set_confirm_open(false);
 }
 
 /// 通知后台 worker 重算 X11 SHAPE 圆角。
@@ -6595,6 +6608,91 @@ fn start_maximize_when_window_ready(ui: &MainWindow, window_id: WindowId, attemp
             start_maximize_when_window_ready(&ui, window_id, attempt + 1);
         }
     });
+}
+
+/// 让恢复中的窗口进入快照记录的最大化状态。
+///
+/// `set_maximized` 在 X11 上是 WM 异步处理的；400ms 后如果 maximize 状态机
+/// 已就绪且仍不是 desired，就通过状态机再请求一次，避免恢复后掉回普通窗口。
+fn restore_window_geometry(
+    ui: &MainWindow,
+    window_id: WindowId,
+    window: &session::WindowSnapshot,
+) {
+    let geometry = window.geometry;
+    if geometry.is_known() {
+        ui.window().set_size(slint::PhysicalSize::new(geometry.w, geometry.h));
+        ui.window()
+            .set_position(slint::PhysicalPosition::new(geometry.x, geometry.y));
+    }
+    if window.maximized {
+        ui.window().set_maximized(true);
+        let _ = runtime::with_window(window_id, |st| {
+            st.window_maximized = true;
+            st.ui.set_window_maximized(true);
+        });
+        let weak = ui.as_weak();
+        slint::Timer::single_shot(Duration::from_millis(400), move || {
+            let Some(ui) = weak.upgrade() else { return };
+            let handled = runtime::with_window(window_id, |st| {
+                let Some(maximize) = st.maximize.as_ref() else {
+                    return false;
+                };
+                if !st.window_maximized {
+                    eprintln!("[session] {window_id} 恢复最大化（走 X11 状态机）");
+                    let target = maximize.click();
+                    st.window_maximized = target;
+                    st.ui.set_window_maximized(target);
+                }
+                true
+            });
+            if handled != Some(true) {
+                // 非 X11 / 状态机启动失败：保留 winit 原生路径。
+                ui.window().set_maximized(true);
+            }
+        });
+    }
+    eprintln!(
+        "[session] {window_id} 恢复 geometry=({},{} {}x{}) maximized={}",
+        geometry.x, geometry.y, geometry.w, geometry.h, window.maximized
+    );
+}
+
+/// 切换指定窗口最大化。primary/second 共用同一套 X11 状态机逻辑，不再依赖
+/// “当前窗口”猜测。
+fn toggle_maximize_for(ui: &MainWindow, window_id: WindowId) {
+    // X11：MaximizeController 是唯一权威。click 只翻转 desired，
+    // 发送/PropertyNotify 确认/外部同步都在 worker，UI 只显示 target。
+    let from_controller = runtime::with_window(window_id, |st| {
+        let target = st.maximize.as_ref()?.click();
+        st.window_maximized = target;
+        Some(target)
+    })
+    .flatten();
+    if let Some(target) = from_controller {
+        ui.set_window_maximized(target);
+        let _ = runtime::with_window(window_id, |st| {
+            request_window_corners(
+                st,
+                None,
+                Some(xconn::CornerState {
+                    maximized: target,
+                    fullscreen: st.ui.window().is_fullscreen(),
+                }),
+            );
+        });
+        eprintln!("[maximize] {window_id} ui click target={target}");
+        return;
+    }
+    // 非 X11 / 状态机启动失败：保留 winit 原生路径；不按标题找窗口。
+    let target = runtime::with_window(window_id, |st| {
+        st.window_maximized = !st.window_maximized;
+        st.window_maximized
+    })
+    .unwrap_or_else(|| !ui.get_window_maximized());
+    ui.set_window_maximized(target);
+    ui.window().set_maximized(target);
+    eprintln!("[maximize] {window_id} fallback winit target={target}");
 }
 
 /// F11 / --fullscreen：切换全屏。
@@ -9125,27 +9223,18 @@ fn install_native_window_events(ui: &MainWindow, window_id: WindowId) {
                 });
             }
             winit::event::WindowEvent::CloseRequested => {
-                // 多窗口：关闭任意一个只销毁该窗口的 PTY/UI/GPU surface；最后一个
-                // 仍走 Slint 默认 hide -> 事件循环退出 -> 主流程存 session。
-                // primary 窗口先关、其它窗口还在时进程不退出；session marker 仍由
-                // primary 进程管理，primary 的 autosave timer 随其 WindowRuntime
-                // 停止，最终退出仍由主流程清理 marker。
-                match window_close_action(runtime::window_count()) {
-                    WindowCloseAction::Remove => {
-                        eprintln!("[ui] {window_id} close requested（多窗口，保留其它窗口）");
-                        if let Some(runtime) = runtime::remove_window(window_id) {
-                            // Slint 1.18 的 WM close 默认只是 hide，不保证立即发
-                            // RenderingTeardown；这里显式释放该窗口的 GPU 引用。
-                            gpu_present::teardown_for(window_id);
-                            gpu_native::teardown_for(window_id);
-                            runtime.ui.hide();
-                            // runtime/state 在这里 drop：PTY、模型、插件 UI 状态
-                            // 随窗口释放；窗口自己的 timers 也在 WindowRuntime 里。
-                        }
+                // 多窗口：关闭 B 只销毁 B 的 PTY/UI/GPU surface，A 继续运行。
+                // close_window_now 会立即保存剩余窗口布局；最后一个显式退出，
+                // 让主流程完成最终 save + mark_clean。
+                if runtime::window_count() > 1 {
+                    eprintln!("[ui] {window_id} close requested（多窗口，保留其它窗口）");
+                    close_window_now(window_id, "wm-close");
+                } else {
+                    eprintln!("[ui] {window_id} close requested（最后一个窗口，退出）");
+                    if let Some(ui) = weak.upgrade() {
+                        let _ = ui.hide();
                     }
-                    WindowCloseAction::Quit => {
-                        eprintln!("[ui] {window_id} close requested（最后一个窗口，退出 primary）");
-                    }
+                    let _ = slint::quit_event_loop();
                 }
                 return EventResult::Propagate;
             }
@@ -11161,7 +11250,7 @@ fn build_window_state(
         shared: shared.clone(),
         content,
         next_title: 0,
-        config_watcher: None,
+        pending_close_window: None,
         resolved_theme: initial_theme.clone(),
         registry: shared.themes.clone_handle(),
         auto_watch_started: false,
@@ -11741,13 +11830,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     if auto_restore {
-        if let Some(snap) = session::load() {
-            if snap.cols > 0 && snap.rows > 0 {
-                opts.cols = snap.cols;
-                opts.rows = snap.rows;
+        // v1 的字符网格没有 v2 对应字段，只用于沿用旧启动尺寸；多窗口 v2
+        // 返回 None（几何在 windows[] 里）。
+        if let Some((cols, rows)) = session::legacy_grid() {
+            if cols > 0 && rows > 0 {
+                opts.cols = cols;
+                opts.rows = rows;
             }
         }
     }
+    // 多窗口 v2 恢复计划：`--restore` 显式请求或配置开启。子窗口进程
+    // （--window）永不恢复，避免递归建窗。
+    let restore_requested = !opts.window && (opts.restore || auto_restore);
+    let restore_snapshot = if restore_requested {
+        session::load_v2()
+    } else {
+        None
+    };
+    let restore_windows = restore_snapshot
+        .as_ref()
+        .map(|snap| snap.restorable_windows())
+        .unwrap_or_default();
+    if let Some(snap) = &restore_snapshot {
+        eprintln!(
+            "[session] 读取 v{} 快照：{} 个窗口，其中 {} 个可恢复{}",
+            snap.version,
+            snap.windows.len(),
+            restore_windows.len(),
+            if restore_windows.is_empty() {
+                "（回退新 Tab）"
+            } else {
+                ""
+            }
+        );
+    }
+    let primary_restore = restore_windows.first().cloned();
     if opts.window {
         // 子窗口进程：仅日志区分。这里刻意不做任何“再建窗口”的动作，避免递归启动。
         eprintln!(
@@ -11793,9 +11910,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let fonts = Rc::new(FontSet::load(opts.font_size).ok_or("找不到等宽字体")?);
     let cell = (fonts.cell_w, fonts.cell_h);
-    let win_w = opts.cols as f32 * cell.0 as f32;
-    let win_h = opts.rows as f32 * cell.1 as f32 + TABBAR_H;
-    let content = Rect::new(0.0, 0.0, win_w, win_h - TABBAR_H);
+    // v2 快照有像素几何时优先用它开窗；v1/未知几何回退 --cols/--rows。
+    let primary_geometry = primary_restore
+        .as_ref()
+        .map(|window| window.geometry)
+        .filter(|geometry| geometry.is_known());
+    let (win_w, win_h) = match primary_geometry {
+        Some(geometry) => (geometry.w as f32, geometry.h as f32),
+        None => (
+            opts.cols as f32 * cell.0 as f32,
+            opts.rows as f32 * cell.1 as f32 + TABBAR_H,
+        ),
+    };
+    let content = Rect::new(0.0, 0.0, win_w, (win_h - TABBAR_H).max(1.0));
     let t_font = t_start.elapsed();
 
     // 后端初始化失败时显式重试软件渲染。注意：大多数 GPU/renderer 失败会被
@@ -11902,6 +12029,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ));
     let registry_cell = Rc::new(RefCell::new(WindowRegistry::new(shared.clone())));
     runtime::install_registry(registry_cell.clone());
+    // 恢复期间先抑制 autosave：逐窗口建 tab 的过程中写到一半的布局不能
+    // 覆盖磁盘上原快照；全部窗口就绪后再开启。
+    shared.session.with_mut(|session| {
+        session.restoring = restore_requested;
+        session.last_snapshot = None;
+    });
+    shared.start_session_autosave();
 
     // 模型/AppState 构造已抽到 `build_window_state`，单窗口与第二窗口共用同一条路径。
     let state = build_window_state(
@@ -13982,15 +14116,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     ui.on_confirm_accept(|| {
-        with_app(|st| {
-            st.ui.set_confirm_open(false);
-            let _ = slint::quit_event_loop();
-        });
+        with_app(confirm_accept_inner);
     });
 
     ui.on_confirm_cancel(|| {
         eprintln!("[ui] close cancelled");
-        with_app(|st| st.ui.set_confirm_open(false));
+        with_app(confirm_cancel_inner);
     });
 
     {
@@ -14278,38 +14409,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ui.on_max_pointer_down(|| eprintln!("[ui] max-pointer-down"));
         ui.on_toggle_maximize(move || {
             if let Some(ui) = weak.upgrade() {
-                // X11：MaximizeController 是唯一权威。click 只翻转 desired，
-                // 发送/PropertyNotify 确认/外部同步都在 worker，UI 只显示 target。
-                let from_controller = with_app(|st| {
-                    let target = st.maximize.as_ref()?.click();
-                    st.window_maximized = target;
-                    Some(target)
-                })
-                .flatten();
-                if let Some(target) = from_controller {
-                    ui.set_window_maximized(target);
-                    with_app(|st| {
-                        request_window_corners(
-                            st,
-                            None,
-                            Some(xconn::CornerState {
-                                maximized: target,
-                                fullscreen: st.ui.window().is_fullscreen(),
-                            }),
-                        );
-                    });
-                    eprintln!("[maximize] ui click target={target}");
-                    return;
-                }
-                // 非 X11 / 状态机启动失败：保留 winit 原生路径；不按标题找窗口。
-                let target = with_app(|st| {
-                    st.window_maximized = !st.window_maximized;
-                    st.window_maximized
-                })
-                .unwrap_or_else(|| !ui.get_window_maximized());
-                ui.set_window_maximized(target);
-                ui.window().set_maximized(target);
-                eprintln!("[maximize] fallback winit target={target}");
+                toggle_maximize_for(&ui, window_id);
             }
         });
     }
@@ -14505,18 +14605,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         move || poll_events_for(poll_state.clone()),
     );
 
-    // Crash-safe session autosave. Timer is forgotten deliberately: it must live
-    // for the whole event loop, and dropping a Slint Timer stops it.
-    let session_timer = slint::Timer::default();
-    let autosave_state = state.clone();
-    session_timer.start(
-        slint::TimerMode::Repeated,
-        Duration::from_secs(2),
-        move || {
-            let state = autosave_state.clone();
-            let _ = runtime::with_state(&state, autosave_session);
-        },
-    );
+    // Session autosave 不在这里创建：它归 SharedServices，primary 关闭后仍要
+    // 为剩余窗口写盘。启动见 `shared.start_session_autosave()`。
 
     // 多 Tab + 窗口 resize 会反复重建 pane 帧缓冲/alacritty 行存储；glibc 默认把
     // 已 free 的几 MB 堆块留在 arena 不归还，RSS 曲线会持续缓慢上涨后才平台。
@@ -14587,7 +14677,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // WindowRuntime 一起 drop，不能只留在 main 的局部变量里。
     if let Some(rt) = registry_cell.borrow().get(window_id) {
         rt.keep_timer(poll_timer);
-        rt.keep_timer(session_timer);
         rt.keep_timer(focus_timer);
     }
 
@@ -14625,7 +14714,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }) {
         Ok(watcher) => {
-            with_app(|st| st.config_watcher = Some(watcher));
+            // 监听器归 SharedServices：primary 关闭后只要还有窗口，热更新继续。
+            shared.set_config_watcher(watcher);
             eprintln!(
                 "[config] 热更新监听已启动: {} ({}ms 轮询，mtime/hash)",
                 cfg_path.display(),
@@ -14644,7 +14734,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let restored = with_app(|st| {
         // 手动 Restart Session（--restore）或配置开启的启动自动恢复；
         // 没有快照/全部恢复失败时走下面的 new_tab_inner，保证总有一个可用 Tab。
-        let restored = (opts.restore || auto_restore) && restore_session(st);
+        let restored = primary_restore
+            .as_ref()
+            .is_some_and(|window| restore_window_snapshot(st, window));
         if !restored {
             // 首次启动也必须尊重 default_profile_id；之前只有 Ctrl+T 走默认 Profile，
             // 导致 SSH 默认 Profile 启动后落到本地 shell。
@@ -14662,7 +14754,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             )
         })
         .unwrap_or((0, 0));
-        eprintln!("[session] 已按快照恢复：{tabs} 个标签 / {panes} 个 pane");
+        eprintln!("[session] 已按快照恢复 primary：{tabs} 个标签 / {panes} 个 pane");
     }
 
     // ---- 可选：帧时钟 spike ----
@@ -14696,10 +14788,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // ---- 首帧 ----
+    // 位置要在 map 前尽量设一次（部分 WM 在 map 时重新居中）；show 之后再
+    // 按真实客户端尺寸/最大化状态校正。
+    if let Some(window) = &primary_restore {
+        if window.geometry.is_known() {
+            ui.window().set_position(slint::PhysicalPosition::new(
+                window.geometry.x,
+                window.geometry.y,
+            ));
+        }
+    }
     ui.show()?;
+    if let Some(window) = &primary_restore {
+        restore_window_geometry(&ui, window_id, window);
+    }
     // 先按 winit 当前状态显示图标；X11 状态机在拿到 raw handle 后启动，
     // 再用 EWMH 初始查询校正。不要用窗口几何/_NET_WORKAREA 推断最大化。
-    let initial_maximized = ui.window().is_maximized();
+    let initial_maximized =
+        ui.window().is_maximized() || primary_restore.as_ref().is_some_and(|w| w.maximized);
     ui.set_window_maximized(initial_maximized);
     with_app(|st| st.window_maximized = initial_maximized);
     start_maximize_when_window_ready(&ui, window_id, 0);
@@ -14724,13 +14830,56 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     // Slint 1.18 的 winit 后端不投递外部文件拖放，用 winit 事件桥接补齐。
     install_native_window_events(&ui, window_id);
-    // 仅 e2e/证据开关：启动即建第二个同进程窗口（默认路径已不需要 INPROC）。
-    if std::env::var_os("TERVO_MULTI_WINDOW_SECOND").is_some() {
-        match secondary::create_inproc_window() {
-            Ok(id) => eprintln!("[ui] startup second window id={id}"),
-            Err(error) => eprintln!("[ui] startup second window failed: {error}"),
-        }
+    // 恢复其余窗口。产品恢复路径不依赖 TERVO_MULTI_WINDOW_INPROC：v2 快照里
+    // 有几个可恢复窗口就建几个。每个窗口的 Tab 恢复失败只回退该窗口的新 Tab。
+    //
+    // 延迟 600ms 再建第二个原生窗口：Slint 1.18 的 WinitWindowAccessor 在
+    // 多窗口启动阶段可能还没绑定到正确的 winit window；primary 的 maximize
+    // 状态机（50ms 重试拿 X11 handle）必须先完成，否则会 attach 到错误的
+    // xid。这个延迟只影响启动恢复，不影响单窗口路径。
+    if restore_requested {
+        let shared = shared.clone();
+        let restore_windows = restore_windows.clone();
+        slint::Timer::single_shot(Duration::from_millis(600), move || {
+            let mut restored_extra = 0usize;
+            for window in restore_windows.iter().skip(1) {
+                match secondary::create_inproc_window_restored(window) {
+                    Ok(id) => {
+                        restored_extra += 1;
+                        eprintln!("[session] 恢复窗口 {} -> {id}", window.id);
+                    },
+                    Err(error) => eprintln!(
+                        "[session] 窗口 {} 创建失败（跳过，不整机失败）: {error}",
+                        window.id
+                    ),
+                }
+            }
+            // 快照只消费一次：恢复成功就删掉，避免下次手动 --restore 又拉旧布局。
+            // 恢复期间 autosave 被抑制；这里放开后 2s 内会用当前可用布局重写。
+            if restored || restored_extra > 0 {
+                session::clear();
+            }
+            shared.session.with_mut(|session| session.restoring = false);
+            eprintln!(
+                "[session] 多窗口恢复完成：{}/{} 个窗口",
+                restored as usize + restored_extra,
+                restore_windows.len()
+            );
+        });
+    } else {
+        shared.session.with_mut(|session| session.restoring = false);
     }
+    // e2e/证据开关：feature flag + 显式 SECOND 时启动即建第二个窗口。
+    // 同样延迟 600ms，让 primary 的 maximize 状态机先绑定正确的 X11 handle。
+    if restore_windows.is_empty()
+        && std::env::var_os("TERVO_MULTI_WINDOW_SECOND").is_some()
+    {
+        slint::Timer::single_shot(Duration::from_millis(600), move || {
+            match secondary::create_inproc_window() {
+                Ok(id) => eprintln!("[ui] startup second window id={id}"),
+                Err(error) => eprintln!("[ui] startup second window failed: {error}"),
+            }
+        });    }
     // GPU 自检兜底：Skia 软件 surface 会“窗口正常但全黑”，而 Slint 的
     // set_rendering_notifier 在 software surface 上不会给出 NativeOpenGL/WGPU
     // 回调。给 GPU 首帧 1s 初始化时间，仍无 GPU API 就 exec 回退软件后端。
@@ -14899,18 +15048,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 主流程不再持有 AppState/Timer 的所有权；它们归 WindowRegistry。
     drop(state);
     let run_result = slint::run_event_loop();
-    // 正常退出（窗口关闭/最后一个 Tab 关闭）：开关打开时写会话快照。
-    let restarting = with_app(|st| {
-        save_session_on_exit(st);
-        st.shared.session.restarting
-    })
-    .unwrap_or(false);
+    // 正常退出（最后一个窗口关闭/最后一个 Tab 关闭）：写一次当前多窗口布局。
+    // primary 提前关闭时 autosave 已由 SharedServices 继续运行，这里只做最终落盘。
+    shared.stop_session_autosave();
+    runtime::save_session_on_exit();
+    let restarting = shared.session.with(|session| session.restarting);
     if !opts.window && !restarting {
         session::mark_clean();
     }
     stop_auto_watcher();
     // 显式停止并 join 轮询线程，避免退出阶段还有回调投递。
-    with_app(|st| st.config_watcher.take());
+    shared.stop_config_watcher();
     run_result?;
     Ok(())
 }

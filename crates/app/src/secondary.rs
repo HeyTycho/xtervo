@@ -56,9 +56,10 @@ fn env_falsey(value: &str) -> bool {
     )
 }
 
-/// 无请求参数的兼容入口：等价于空 [`OpenWindowRequest`]。
+/// 在当前 UI 线程创建第二窗口；必须由事件循环回调调用（不能在
+/// `with_app` 借用期间调用）。默认新建一个 Tab。
 pub fn create_inproc_window() -> Result<WindowId, String> {
-    create_inproc_window_for(OpenWindowRequest::new())
+    create_inproc_window_impl(None, OpenWindowRequest::new())
 }
 
 /// 在当前 UI 线程按 primary 转发来的请求创建窗口；必须由事件循环回调调用
@@ -72,6 +73,24 @@ pub fn create_inproc_window_for(request: OpenWindowRequest) -> Result<WindowId, 
     if request.profile.is_some() {
         return Err("open_window profile selection is not supported yet".into());
     }
+    create_inproc_window_impl(None, request)
+}
+
+/// 按 v2 快照恢复一个窗口（geometry/maximized/tabs/splits/focus）。
+///
+/// 恢复路径不依赖 `TERVO_MULTI_WINDOW_INPROC`：产品启动只要有 v2 多窗口
+/// 快照就应恢复全部窗口。单个 Tab 恢复失败由 `crate::restore_window_snapshot`
+/// 跳过；一个都没成功时回退一个普通新 Tab，不让整机启动失败。
+pub fn create_inproc_window_restored(
+    window: &crate::session::WindowSnapshot,
+) -> Result<WindowId, String> {
+    create_inproc_window_impl(Some(window), OpenWindowRequest::new())
+}
+
+fn create_inproc_window_impl(
+    restore: Option<&crate::session::WindowSnapshot>,
+    request: OpenWindowRequest,
+) -> Result<WindowId, String> {
     let registry = runtime::registry().ok_or_else(|| "window registry unavailable".to_string())?;
     let (shared, window_id) = {
         let mut reg = registry.borrow_mut();
@@ -85,9 +104,18 @@ pub fn create_inproc_window_for(request: OpenWindowRequest) -> Result<WindowId, 
     opts.window = true;
     opts.title = format!("{} — {}", opts.title, window_id.get());
     let cell = (fonts.cell_w, fonts.cell_h);
-    let win_w = opts.cols.max(20) as f32 * cell.0 as f32;
-    let win_h = opts.rows.max(5) as f32 * cell.1 as f32 + TABBAR_H;
-    let content = Rect::new(0.0, 0.0, win_w, win_h - TABBAR_H);
+    // v2 快照有像素几何时按快照开窗；v1/未知几何回退字符网格默认尺寸。
+    let (win_w, win_h) = match restore
+        .map(|window| window.geometry)
+        .filter(|geometry| geometry.is_known())
+    {
+        Some(geometry) => (geometry.w as f32, geometry.h as f32),
+        None => (
+            opts.cols.max(20) as f32 * cell.0 as f32,
+            opts.rows.max(5) as f32 * cell.1 as f32 + TABBAR_H,
+        ),
+    };
+    let content = Rect::new(0.0, 0.0, win_w, (win_h - TABBAR_H).max(1.0));
     let initial_theme = {
         let cfg = shared.cfg.with(|cfg| cfg.clone());
         let selected = crate::normalize_selection(&shared.themes, &cfg.theme);
@@ -145,32 +173,56 @@ pub fn create_inproc_window_for(request: OpenWindowRequest) -> Result<WindowId, 
     };
     let _ = runtime::with_state(&state, crate::init_window_ui);
     let request_cwd = request.cwd.clone();
+    let restored = restore
+        .map(|window| {
+            runtime::with_state(&state, |st| crate::restore_window_snapshot(st, window))
+                .unwrap_or(false)
+        })
+        .unwrap_or(false);
     let _ = runtime::with_state(&state, |st| {
-        crate::new_tab_with_default_or_cwd(st, request_cwd);
+        if !restored {
+            crate::new_tab_with_default_or_cwd(st, request_cwd);
+        }
         crate::rebuild_tabs(st);
         crate::refresh_views(st);
         crate::redraw_visible(st);
     });
     start_timers(&runtime);
-    let offset = 40 + (runtime::window_count().saturating_sub(1) as i32) * 40;
+    // 恢复窗口用快照位置；新窗口走层叠偏移。
+    let position = restore
+        .map(|window| window.geometry)
+        .filter(|geometry| geometry.is_known())
+        .map(|geometry| (geometry.x, geometry.y))
+        .unwrap_or_else(|| {
+            let offset = 40 + (runtime::window_count().saturating_sub(1) as i32) * 40;
+            (offset, offset)
+        });
     runtime
         .ui
         .window()
-        .set_position(slint::PhysicalPosition::new(offset, offset));
+        .set_position(slint::PhysicalPosition::new(position.0, position.1));
     // 先装原生事件再 show：首批 Focused/close 事件不能丢。
     crate::install_native_window_events(&runtime.ui, window_id);
     if let Err(err) = runtime.ui.show() {
-        // show 失败时不能把半初始化的 WindowRuntime 留在 registry 里：否则
-        // primary 会以为窗口存在，后续 open_window/关闭语义都会错。
+        // show 失败时不能把半初始化的 WindowRuntime 留在 registry 里。
         let _ = runtime::remove_window(window_id);
         crate::gpu_present::teardown_for(window_id);
         crate::gpu_native::teardown_for(window_id);
         return Err(format!("second window show: {err}"));
     }
+    if let Some(window) = restore {
+        crate::restore_window_geometry(&runtime.ui, window_id, window);
+    }
+    // 第二窗口不启动 maximize 状态机：Slint 1.18 的 WinitWindowAccessor 在
+    // 多窗口下可能返回另一个窗口的 X11 handle，状态机会操作错窗口。
     runtime.ui.window().request_redraw();
+    // 新窗口/恢复窗口都触发一次布局保存。恢复期间 SharedServices 会因
+    // restoring=true 跳过，避免半恢复布局覆盖源快照。
+    let _ = runtime::save_session_snapshot("window-new", false);
     eprintln!(
-        "[ui] in-process window created id={} pid={} shared_plugins={} mcp_socket={}",
+        "[ui] in-process window created id={} restored={} pid={} shared_plugins={} mcp_socket={}",
         window_id,
+        restored,
         std::process::id(),
         shared.identities()["plugins"],
         shared.mcp.socket_path().display()
@@ -180,7 +232,7 @@ pub fn create_inproc_window_for(request: OpenWindowRequest) -> Result<WindowId, 
 
 /// 第二窗口的核心回调。所有入口都显式走 `runtime::with_state`，不依赖
 /// “当前活动窗口”猜测；回调内部调用的旧 `with_app` 会沿当前窗口作用域路由。
-fn install_core_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, _window_id: WindowId) {
+fn install_core_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, window_id: WindowId) {
     let keylog = std::env::var("TERVO_KEYLOG").is_ok();
     let mouselog = std::env::var("TERVO_MOUSELOG").is_ok();
 
@@ -527,6 +579,38 @@ fn install_core_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, _window
             });
         });
     }
+
+    // 生命周期回调：第二窗口的关闭按钮/确认框/最大化必须作用在自己身上，
+    // 不能沿用 primary 的旧 `with_app` 缺省路由。
+    {
+        let state = state.clone();
+        ui.on_close_window(move || {
+            let state = state.clone();
+            let _ = runtime::with_state(&state, crate::request_close);
+        });
+    }
+    {
+        let state = state.clone();
+        ui.on_confirm_accept(move || {
+            let state = state.clone();
+            let _ = runtime::with_state(&state, crate::confirm_accept_inner);
+        });
+    }
+    {
+        let state = state.clone();
+        ui.on_confirm_cancel(move || {
+            let state = state.clone();
+            let _ = runtime::with_state(&state, crate::confirm_cancel_inner);
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        ui.on_toggle_maximize(move || {
+            if let Some(ui) = weak.upgrade() {
+                crate::toggle_maximize_for(&ui, window_id);
+            }
+        });
+    }
 }
 
 fn start_timers(rt: &WindowRuntime) {
@@ -559,6 +643,15 @@ fn start_timers(rt: &WindowRuntime) {
                 crate::sync_terminal_focus(st, win);
                 if win && !was_focused {
                     st.ime_spot_dirty = true;
+                }
+                // 第二窗口没有独立的 maximize 状态机（WinitWindowAccessor 在
+                // 多窗口下可能给错 X11 handle）。用本窗口的 winit 状态轮询：
+                // 用户点 WM 标题栏最大化/还原、恢复 snapshot 后的 WM 异步确认
+                // 都能回写到 session 的 maximized 字段。
+                let maximized = st.ui.window().is_maximized();
+                if st.window_maximized != maximized {
+                    st.window_maximized = maximized;
+                    st.ui.set_window_maximized(maximized);
                 }
                 crate::update_ime_spot(st);
             });

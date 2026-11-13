@@ -94,6 +94,36 @@ pub struct WindowSnapshot {
     pub tabs: Vec<TabSnapshot>,
 }
 
+/// 一次恢复最多创建多少个窗口。
+///
+/// 快照是用户可编辑的纯文本文件；限制窗口数避免损坏/恶意文件让启动阶段
+/// 无限创建原生窗口。超出的窗口在恢复时跳过并记日志，不影响前 16 个。
+pub const MAX_RESTORE_WINDOWS: usize = 16;
+
+impl WindowSnapshot {
+    /// 是否有可恢复的 Tab。空窗口（例如刚创建、还没建 Tab 就崩溃）不参与
+    /// 布局恢复：恢复一个空窗口不如让用户从主窗口继续。
+    pub fn is_restorable(&self) -> bool {
+        !self.tabs.is_empty()
+    }
+
+    /// 活跃 Tab 下标 clamp 到有效范围；空窗口返回 0。
+    pub fn clamped_active_tab(&self) -> usize {
+        if self.tabs.is_empty() {
+            0
+        } else {
+            self.active_tab.min(self.tabs.len() - 1)
+        }
+    }
+
+    /// 恢复用副本：clamp active_tab，布局字段原样保留。
+    pub fn normalized_for_restore(&self) -> Self {
+        let mut window = self.clone();
+        window.active_tab = window.clamped_active_tab();
+        window
+    }
+}
+
 /// v2 多窗口快照。
 ///
 /// 窗口在写盘和读入时都按 [`WindowSnapshot::id`] 升序稳定排序。重复的窗口
@@ -132,6 +162,7 @@ impl SnapshotV2 {
     ///
     /// 多窗口返回 `None`，避免旧启动路径只恢复第一个窗口后调用 [`clear`]，
     /// 把其余窗口从磁盘上删掉。v1 的 `cols/rows` 在 v2 没有对应字段，故为 0。
+    #[allow(dead_code)] // 启动路径已改读 v2；兼容旧调用方/测试保留
     pub fn to_legacy_single_window(&self) -> Option<Snapshot> {
         if self.windows.len() != 1 {
             return None;
@@ -144,6 +175,29 @@ impl SnapshotV2 {
             active: window.active_tab,
             tabs: window.tabs.clone(),
         })
+    }
+
+    /// 恢复计划：按窗口 id 排序、跳过空窗口、clamp active_tab、限制窗口数。
+    ///
+    /// 部分窗口损坏（空 tabs / 下标越界）只跳过该窗口或修正下标，不返回错误：
+    /// 启动路径必须总能拿到一个可用布局。真正的 pane 创建失败由 UI 层逐 Tab
+    /// 跳过并回退新 Tab。
+    pub fn restorable_windows(&self) -> Vec<WindowSnapshot> {
+        let mut windows: Vec<WindowSnapshot> = self
+            .windows
+            .iter()
+            .filter(|window| window.is_restorable())
+            .map(WindowSnapshot::normalized_for_restore)
+            .collect();
+        windows.sort_by_key(|window| window.id);
+        if windows.len() > MAX_RESTORE_WINDOWS {
+            eprintln!(
+                "[session] 快照含 {} 个窗口，超过恢复上限 {MAX_RESTORE_WINDOWS}，忽略其余窗口",
+                windows.len()
+            );
+            windows.truncate(MAX_RESTORE_WINDOWS);
+        }
+        windows
     }
 }
 
@@ -348,6 +402,20 @@ pub fn load() -> Option<Snapshot> {
     load_from(&snapshot_path())
 }
 
+/// 只读 v1 文件的字符网格，用于迁移启动尺寸。
+///
+/// v2/未知版本/坏文件返回 `None`；不会像 [`load`] 那样对多窗口 v2 打
+/// “旧 API 不恢复”日志（启动探测阶段没有必要）。
+pub fn legacy_grid() -> Option<(u16, u16)> {
+    let bytes = std::fs::read(snapshot_path()).ok()?;
+    let probe: VersionProbe = serde_json::from_slice(&bytes).ok()?;
+    if probe.version != LEGACY_VERSION {
+        return None;
+    }
+    let legacy: Snapshot = serde_json::from_slice(&bytes).ok()?;
+    Some((legacy.cols, legacy.rows))
+}
+
 /// 消费掉快照：恢复成功后调用，避免下次手动 `--restore` 又拉一遍旧布局。
 pub fn clear() {
     let path = snapshot_path();
@@ -463,6 +531,7 @@ fn parse_snapshot_bytes(bytes: &[u8]) -> Option<SnapshotV2> {
         // 旧单窗口文件：结构校验交给 Snapshot，再包装成单窗口 v2。
         LEGACY_VERSION => {
             let legacy: Snapshot = serde_json::from_slice(bytes).ok()?;
+            eprintln!("[session] v1 单窗口快照已迁移为 v2 内存模型");
             Some(legacy.to_v2())
         }
         VERSION => {
@@ -888,6 +957,122 @@ mod tests {
         let back = load_v2_from(&path).unwrap();
         assert_eq!(ids(&back), vec![10, 20, 30]);
         assert_eq!(ids(&SnapshotV2::new(unsorted.windows)), vec![10, 20, 30]);
+    }
+
+    #[test]
+    fn restorable_windows_skip_empty_and_clamp_active_tab() {
+        let snap = v2(vec![
+            window(
+                3,
+                geometry(-10, 20, 900, 700),
+                true,
+                9, // 越界：必须 clamp 到最后一个 tab
+                vec![
+                    tab("a", 1, false, leaf(Some("/tmp"), None)),
+                    tab("b", 0, false, leaf(None, None)),
+                ],
+            ),
+            // 刚创建还没建 Tab 的空窗口：不恢复，避免启动多个空壳窗口。
+            window(1, geometry(0, 0, 800, 600), false, 0, Vec::new()),
+            window(
+                2,
+                geometry(30, 40, 1024, 768),
+                false,
+                0,
+                vec![tab("c", 0, false, leaf(None, None))],
+            ),
+        ]);
+
+        let plan = snap.restorable_windows();
+        assert_eq!(ids(&SnapshotV2::new(plan.clone())), vec![2, 3]);
+        assert_eq!(plan[0].active_tab, 0);
+        assert_eq!(plan[1].active_tab, 1, "active_tab must be clamped");
+        assert_eq!(plan[1].geometry, geometry(-10, 20, 900, 700));
+        assert!(plan[1].maximized);
+        assert_eq!(plan[1].tabs.len(), 2);
+        // 原快照不被恢复计划修改。
+        assert_eq!(
+            snap.windows
+                .iter()
+                .find(|window| window.id == 3)
+                .map(|window| window.active_tab),
+            Some(9)
+        );
+    }
+
+    #[test]
+    fn restorable_windows_are_capped_for_corrupt_files() {
+        let windows = (1..=MAX_RESTORE_WINDOWS as u64 + 3)
+            .map(|id| {
+                window(
+                    id,
+                    WindowGeometry::UNKNOWN,
+                    false,
+                    0,
+                    vec![tab("t", 0, false, leaf(None, None))],
+                )
+            })
+            .collect();
+        let plan = v2(windows).restorable_windows();
+        assert_eq!(plan.len(), MAX_RESTORE_WINDOWS);
+        assert_eq!(plan[0].id, 1);
+        assert_eq!(
+            plan.last().map(|window| window.id),
+            Some(MAX_RESTORE_WINDOWS as u64)
+        );
+    }
+
+    #[test]
+    fn v1_file_roundtrips_through_v2_disk_format() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.json");
+        let json = r#"{
+            "version": 1,
+            "cols": 100,
+            "rows": 30,
+            "active": 1,
+            "tabs": [
+                {
+                    "title": "one",
+                    "focused": 0,
+                    "tree": { "kind": "leaf", "cwd": "/tmp" }
+                },
+                {
+                    "title": "two",
+                    "focused": 1,
+                    "tree": {
+                        "kind": "split",
+                        "dir": "col",
+                        "ratio": 0.3,
+                        "a": { "kind": "leaf", "cwd": "/" },
+                        "b": { "kind": "leaf", "cwd": "/home" }
+                    }
+                }
+            ]
+        }"#;
+        std::fs::write(&path, json).unwrap();
+
+        let migrated = load_v2_from(&path).expect("v1 migration");
+        assert_eq!(migrated.version, VERSION);
+        assert_eq!(migrated.windows.len(), 1);
+        assert_eq!(migrated.windows[0].geometry, WindowGeometry::UNKNOWN);
+        assert_eq!(migrated.windows[0].active_tab, 1);
+        assert_eq!(migrated.windows[0].tabs.len(), 2);
+
+        // v1 → v2 落盘 → 再读：内容不变，版本变成 2。
+        save_v2_to(&path, &migrated).unwrap();
+        let raw: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(raw["version"].as_u64(), Some(VERSION as u64));
+        assert!(raw.get("windows").is_some());
+        assert!(raw.get("cols").is_none(), "v2 must not write v1 grid");
+        let back = load_v2_from(&path).unwrap();
+        assert_eq!(back, migrated);
+        assert_eq!(
+            back.restorable_windows()[0].geometry,
+            WindowGeometry::UNKNOWN,
+            "v1 has no pixel geometry; restore must use platform defaults"
+        );
     }
 
     #[test]

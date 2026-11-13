@@ -103,6 +103,43 @@ fn main() {
         return;
     }
 
+    // --maximize / --unmaximize：按 EWMH 向 root 发 _NET_WM_STATE ClientMessage。
+    // e2e 用它模拟用户点最大化（无 WM 时不会生效，脚本会检测 _NET_SUPPORTING_WM_CHECK）。
+    let maximize = args.iter().any(|a| a == "--maximize");
+    let unmaximize = args.iter().any(|a| a == "--unmaximize");
+    if maximize || unmaximize {
+        let net_state = conn
+            .intern_atom(false, b"_NET_WM_STATE")
+            .unwrap()
+            .reply()
+            .unwrap()
+            .atom;
+        let max_vert = conn
+            .intern_atom(false, b"_NET_WM_STATE_MAXIMIZED_VERT")
+            .unwrap()
+            .reply()
+            .unwrap()
+            .atom;
+        let max_horz = conn
+            .intern_atom(false, b"_NET_WM_STATE_MAXIMIZED_HORZ")
+            .unwrap()
+            .reply()
+            .unwrap()
+            .atom;
+        let action = if maximize { 1 } else { 0 };
+        let mask = EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY;
+        let event = ClientMessageEvent::new(
+            32,
+            win,
+            net_state,
+            [action, max_vert, max_horz, 1, 0],
+        );
+        let _ = conn.send_event(false, root, mask, event);
+        let _ = conn.flush();
+        std::thread::sleep(Duration::from_millis(150));
+        return;
+    }
+
     // --close：发送 WM_DELETE_WINDOW，等价用户点窗口关闭按钮（不杀进程）。
     if args.iter().any(|a| a == "--close") {
         let protocols = conn

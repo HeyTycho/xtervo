@@ -26,10 +26,12 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::config::Config;
+use crate::config_watch::ConfigWatcher;
 use crate::mcp::McpRuntime;
 use crate::plugin_v3::PluginStore;
 use crate::profile::ProfileStore;
-use crate::session::{Snapshot, SnapshotV2, WindowGeometry, WindowSnapshot};
+use crate::session;
+use crate::session::{SnapshotV2, WindowGeometry, WindowSnapshot};
 use crate::themes::ThemeRegistry;
 use crate::vault::Vault;
 use slint::ComponentHandle;
@@ -163,12 +165,14 @@ impl<T: Default> Default for Shared<T> {
 /// 会话写盘状态：由 SharedServices 唯一持有，所有窗口共享。
 #[derive(Default)]
 pub struct SessionService {
-    /// 最近一次成功 autosave 的快照；用于避免每 2s 重复写盘。
-    pub last_snapshot: Option<Snapshot>,
+    /// 最近一次成功写盘的 v2 快照；用于避免每 2s 重复写盘。
+    pub last_snapshot: Option<SnapshotV2>,
     /// Restart Session 已写好快照并拉起子进程：退出钩子不要覆盖。
     pub restarting: bool,
-    /// 快照写入者是否 primary（子窗口不写 marker/文件）。
+    /// 快照写入者是否 primary（子窗口进程不写 marker/文件）。
     pub writer: bool,
+    /// 启动恢复期间抑制 autosave，避免半恢复布局覆盖磁盘上的原快照。
+    pub restoring: bool,
 }
 
 impl SessionService {
@@ -177,6 +181,7 @@ impl SessionService {
             last_snapshot: None,
             restarting: false,
             writer,
+            restoring: false,
         }
     }
 }
@@ -195,6 +200,12 @@ pub struct SharedServices {
     /// MCP 只有一个 runtime/socket/token；`Arc` 供 socket 线程持有。
     pub mcp: Arc<McpRuntime>,
     pub session: Shared<SessionService>,
+    /// 外部 config.toml 监听器。生命周期属于服务层而不是某个窗口：primary
+    /// 关闭后只要还有窗口存活，热更新就必须继续工作。
+    config_watcher: RefCell<Option<ConfigWatcher>>,
+    /// 2s autosave 计时器。同样属于服务层：primary 的 AppState 被 drop 后，
+    /// 剩余窗口仍要持续写多窗口布局。
+    session_timer: RefCell<Option<slint::Timer>>,
     /// 全进程唯一 PaneId 分配器。插件/MCP/session 都靠 PaneId 路由，不能让
     /// 每个窗口各自从 1 开始（否则 window_id+pane_id 仍然撞车）。
     next_pane_id: Cell<u64>,
@@ -219,8 +230,39 @@ impl SharedServices {
             profiles: Shared::new(profiles),
             mcp,
             session: Shared::new(session),
+            config_watcher: RefCell::new(None),
+            session_timer: RefCell::new(None),
             next_pane_id: Cell::new(1),
         }
+    }
+
+    /// 启动 2s 会话 autosave。计时器由 SharedServices 持有，因此 primary
+    /// 窗口关闭、只剩 second 时仍然继续写盘。
+    pub fn start_session_autosave(&self) {
+        if self.session_timer.borrow().is_some() {
+            return;
+        }
+        let timer = slint::Timer::default();
+        timer.start(
+            slint::TimerMode::Repeated,
+            std::time::Duration::from_secs(2),
+            autosave_session_tick,
+        );
+        *self.session_timer.borrow_mut() = Some(timer);
+        eprintln!("[session] autosave 已启动（SharedServices，2s）");
+    }
+
+    pub fn stop_session_autosave(&self) {
+        self.session_timer.borrow_mut().take();
+    }
+
+    /// config.toml 监听器归服务层所有；primary 的 AppState 不持有它。
+    pub fn set_config_watcher(&self, watcher: ConfigWatcher) {
+        *self.config_watcher.borrow_mut() = Some(watcher);
+    }
+
+    pub fn stop_config_watcher(&self) {
+        self.config_watcher.borrow_mut().take();
     }
 
     /// 分配全进程唯一的 PaneId；不复用，避免旧事件/插件消息命中新 pane。
@@ -564,9 +606,9 @@ pub fn all_pane_ids() -> Vec<u64> {
 
 /// 所有窗口的 session 快照（按 WindowId 排序）。
 ///
-/// Phase 4 接入多窗口保存；当前先保留可测试的纯函数，避免 session v2 结构在
-/// 重构中被丢掉。
-#[allow(dead_code)]
+/// 只收集纯数据；不写盘、不校验。调用方必须确保没有窗口正处于 `&mut
+/// AppState` 借用中（timer / 事件循环回调之外），否则该窗口会被 `try_borrow`
+/// 跳过。窗口关闭/新建后的保存都通过 `invoke_from_event_loop` 延迟到借用之外。
 pub fn capture_snapshot_v2() -> SnapshotV2 {
     let mut windows = Vec::new();
     let Some(registry) = registry() else {
@@ -574,11 +616,127 @@ pub fn capture_snapshot_v2() -> SnapshotV2 {
     };
     for runtime in registry.borrow().runtimes() {
         let state = runtime.state.clone();
-        if let Ok(st) = state.try_borrow() {
-            windows.push(runtime.snapshot(&st));
+        match state.try_borrow() {
+            Ok(st) => windows.push(runtime.snapshot(&st)),
+            Err(_) => eprintln!(
+                "[session] capture 跳过 {}（AppState 正被借用）",
+                runtime.id
+            ),
         };
     }
     SnapshotV2::new(windows)
+}
+
+/// 可恢复的快照：只有带 Tab 的窗口，active_tab 已 clamp。
+pub fn capture_restorable_snapshot_v2() -> SnapshotV2 {
+    restorable_snapshot(capture_snapshot_v2())
+}
+
+/// 在某个窗口的 `with_app` 借用内捕获全量快照。
+///
+/// 当前窗口的 `AppState` 已经被可变借用，不能再 `try_borrow`；调用方把 `st`
+/// 传进来，其余窗口正常采集。Restart Session 必须用这个版本，否则会漏掉
+/// 正在触发菜单的那个 primary 窗口。
+pub fn capture_restorable_snapshot_v2_with_window(
+    current_id: WindowId,
+    current: &AppState,
+) -> SnapshotV2 {
+    let mut windows = Vec::new();
+    let Some(registry) = registry() else {
+        return SnapshotV2::default();
+    };
+    for runtime in registry.borrow().runtimes() {
+        if runtime.id == current_id {
+            windows.push(runtime.snapshot(current));
+            continue;
+        }
+        let state = runtime.state.clone();
+        match state.try_borrow() {
+            Ok(st) => windows.push(runtime.snapshot(&st)),
+            Err(_) => eprintln!(
+                "[session] capture 跳过 {}（AppState 正被借用）",
+                runtime.id
+            ),
+        };
+    }
+    restorable_snapshot(SnapshotV2::new(windows))
+}
+
+fn restorable_snapshot(mut snap: SnapshotV2) -> SnapshotV2 {
+    snap.windows.retain(WindowSnapshot::is_restorable);
+    for window in &mut snap.windows {
+        window.active_tab = window.clamped_active_tab();
+    }
+    snap
+}
+
+fn session_save_allowed(shared: &SharedServices) -> bool {
+    let (writer, restarting, restoring) =
+        shared.session.with(|s| (s.writer, s.restarting, s.restoring));
+    writer
+        && !restarting
+        && !restoring
+        && shared.cfg.with(|cfg| cfg.restore_session_on_startup)
+}
+
+/// 立即保存一次多窗口快照。`force=false` 时和上次成功快照相同就不写。
+///
+/// 只由 writer（primary 进程）调用；所有窗口共享同一份 SharedServices，所以
+/// primary 关闭后剩余窗口仍能继续保存。写盘走 `session::save_v2`，保留
+/// tmp+fsync+rename 与上一代 `.bak`。
+pub fn save_session_snapshot(reason: &str, force: bool) -> bool {
+    let Some(registry) = registry() else {
+        return false;
+    };
+    let shared = registry.borrow().shared();
+    if !session_save_allowed(&shared) {
+        return false;
+    }
+    let snapshot = capture_restorable_snapshot_v2();
+    if snapshot.windows.is_empty() {
+        if reason == "exit" {
+            session::clear();
+            eprintln!("[session] {reason}: 没有可保存的窗口，已清除旧快照");
+        }
+        return false;
+    }
+    if !force {
+        let unchanged = shared
+            .session
+            .with(|session| session.last_snapshot.as_ref() == Some(&snapshot));
+        if unchanged {
+            return true;
+        }
+    }
+    match session::save_v2(&snapshot) {
+        Ok(path) => {
+            let windows = snapshot.windows.len();
+            let tabs: usize = snapshot.windows.iter().map(|w| w.tabs.len()).sum();
+            shared
+                .session
+                .with_mut(|session| session.last_snapshot = Some(snapshot));
+            eprintln!(
+                "[session] {reason}: 已保存 {}（{} 个窗口 / {} 个标签）",
+                path.display(),
+                windows,
+                tabs
+            );
+            true
+        },
+        Err(error) => {
+            eprintln!("[session] {reason}: 保存失败: {error}");
+            false
+        },
+    }
+}
+
+fn autosave_session_tick() {
+    let _ = save_session_snapshot("autosave", false);
+}
+
+/// 正常退出/最后一个窗口关闭时调用：强制写一次，没有窗口则清旧快照。
+pub fn save_session_on_exit() {
+    let _ = save_session_snapshot("exit", true);
 }
 
 #[cfg(test)]
@@ -628,6 +786,7 @@ mod tests {
         let session = SessionService::new(true);
         assert!(session.writer);
         assert!(!session.restarting);
+        assert!(!session.restoring);
         assert!(session.last_snapshot.is_none());
     }
 }

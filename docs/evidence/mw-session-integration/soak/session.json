@@ -1,0 +1,47 @@
+{
+  "version": 2,
+  "windows": [
+    {
+      "id": 1,
+      "geometry": {
+        "x": 0,
+        "y": 0,
+        "w": 720,
+        "h": 560
+      },
+      "maximized": false,
+      "active_tab": 0,
+      "tabs": [
+        {
+          "title": "Terminal 1",
+          "focused": 0,
+          "tree": {
+            "kind": "leaf",
+            "cwd": "/home/user"
+          }
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "geometry": {
+        "x": 80,
+        "y": 80,
+        "w": 720,
+        "h": 560
+      },
+      "maximized": false,
+      "active_tab": 0,
+      "tabs": [
+        {
+          "title": "Terminal 1",
+          "focused": 0,
+          "tree": {
+            "kind": "leaf",
+            "cwd": "/home/user"
+          }
+        }
+      ]
+    }
+  ]
+}
