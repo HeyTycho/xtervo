@@ -1350,20 +1350,41 @@ fn count_search_matches<T: EventListener>(
     (index, total)
 }
 
-fn selection_span<T: EventListener>(term: &Term<T>, rows: usize, offset: usize) -> Option<Span> {
+fn selection_span<T: EventListener>(
+    term: &Term<T>,
+    rows: usize,
+    cols: usize,
+    offset: usize,
+) -> Option<Span> {
     let range = term.selection.as_ref()?.to_range(term)?;
+    if rows == 0 || cols == 0 {
+        return None;
+    }
     let off = offset as i32;
-    let start_line = range.start.line.0 + off;
-    let end_line = range.end.line.0 + off;
+    let mut start_line = range.start.line.0 + off;
+    let mut end_line = range.end.line.0 + off;
     if end_line < 0 || start_line >= rows as i32 {
         return None;
     }
-    let clamp = |l: i32| l.clamp(0, rows as i32 - 1) as u16;
+    let mut start_col = range.start.column.0;
+    let mut end_col = range.end.column.0;
+    // 选区一端在视口外：被裁掉的是整行/多行，可见端必须从边界列开始/结束，
+    // 不能沿用另一端格子的列。否则跨页拖选时顶部/底部可见行会丢字母，
+    // 极端情况下 start_col > end_col 会让整行高亮消失（看起来像「选不了」）。
+    if start_line < 0 {
+        start_line = 0;
+        start_col = 0;
+    }
+    if end_line >= rows as i32 {
+        end_line = rows as i32 - 1;
+        end_col = cols - 1;
+    }
+    let clamp_line = |l: i32| l.clamp(0, rows as i32 - 1) as u16;
     Some(Span {
-        start_line: clamp(start_line),
-        start_col: range.start.column.0 as u16,
-        end_line: clamp(end_line),
-        end_col: range.end.column.0 as u16,
+        start_line: clamp_line(start_line),
+        start_col: start_col.min(cols - 1) as u16,
+        end_line: clamp_line(end_line),
+        end_col: end_col.min(cols - 1) as u16,
     })
 }
 
@@ -3086,8 +3107,19 @@ impl Actor {
             },
             Ctrl::Scroll(lines) => {
                 if lines != 0 {
-                    self.term.scroll_display(Scroll::Delta(lines));
-                    self.wake.notify();
+                    // 不能把 UI 传来的任意 i32 直接交给 `Grid::scroll_display`：
+                    // 上游是 `display_offset as i32 + count`，大 delta（触摸板/
+                    // 滚动条拖拽/测试的 i32::MAX）会 i32 溢出 panic。这里先按
+                    // i64 夹到 [0, history]，再只发真正需要的 delta。
+                    let current = self.term.grid().display_offset();
+                    let history = self.term.grid().history_size();
+                    let target = (current as i64 + lines as i64).clamp(0, history as i64);
+                    let delta =
+                        (target - current as i64).clamp(i32::MIN as i64, i32::MAX as i64) as i32;
+                    if delta != 0 {
+                        self.term.scroll_display(Scroll::Delta(delta));
+                        self.wake.notify();
+                    }
                 }
                 true
             },
@@ -3632,7 +3664,7 @@ pub fn fill_frame<T: EventListener>(
     }
 
     let offset = display_offset;
-    frame.selection = selection_span(term, rows, offset);
+    frame.selection = selection_span(term, rows, cols, offset);
     frame.search = search;
 
     let cursor = term.grid().cursor.point;
