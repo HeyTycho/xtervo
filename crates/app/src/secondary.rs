@@ -1,10 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! Phase 2：`TERVO_MULTI_WINDOW_INPROC=1` 下的同进程第二窗口。
+//! 同进程多窗口：`tervo --window` / 第二次 `tervo` 调用 / Ctrl+Shift+N /
+//! `window.new` 的默认落点。
 //!
-//! 第二窗口复用 primary 的 [`crate::runtime::SharedServices`]，只创建自己的
+//! 每个窗口复用 primary 的 [`crate::runtime::SharedServices`]，只创建自己的
 //! Slint `MainWindow`、模型和 `AppState`。当前回调覆盖终端交互核心
 //! （键盘/IME、选词、tab、resize、关闭/focus）；设置页/插件面板的完整回调
 //! 仍走 primary 注册块，协议层已按 [`WindowId`] 预留路由。
+//!
+//! 旧的“每个窗口一个子进程”路径只在显式 fallback 时保留：
+//! `TERVO_MULTI_WINDOW_INPROC=0`（或 `TERVO_MULTI_WINDOW_LEGACY=1`）。
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -14,25 +18,60 @@ use slint::winit_030::WinitWindowAccessor;
 use slint::ComponentHandle;
 use tervo_core::{MouseAction, MouseButton, MouseEvent};
 
+use crate::instance::OpenWindowRequest;
 use crate::runtime::{self, WindowId, WindowRuntime};
 use crate::workspace::{Rect, SPLIT_GAP};
 use crate::{AppState, Drag, MainWindow, TABBAR_H};
 
-/// `TERVO_MULTI_WINDOW_INPROC=1`：新窗口走同进程路径，而不是 spawn 新进程。
-pub fn enabled() -> bool {
-    std::env::var("TERVO_MULTI_WINDOW_INPROC")
-        .map(|v| {
-            matches!(
-                v.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        })
-        .unwrap_or(false)
+/// 旧的多进程窗口路径只是显式 fallback；默认（变量不存在或为真）走同进程。
+///
+/// `TERVO_MULTI_WINDOW_INPROC=0/false/no/off` 或 `TERVO_MULTI_WINDOW_LEGACY=1`
+/// 时，`window.new` 才会 `current_exe --window` 起子进程。单实例 IPC 仍默认
+/// 开启；legacy 子进程由 `window::new_window_command` 显式绕过锁。
+pub fn legacy_fallback() -> bool {
+    legacy_fallback_from(
+        std::env::var("TERVO_MULTI_WINDOW_LEGACY").ok(),
+        std::env::var("TERVO_MULTI_WINDOW_INPROC").ok(),
+    )
 }
 
-/// 在当前 UI 线程创建第二窗口；必须由事件循环回调调用（不能在
-/// `with_app` 借用期间调用）。
+fn legacy_fallback_from(legacy: Option<String>, inproc: Option<String>) -> bool {
+    if legacy.as_deref().is_some_and(env_truthy) {
+        return true;
+    }
+    inproc.as_deref().is_some_and(|value| env_falsey(value))
+}
+
+fn env_truthy(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+fn env_falsey(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "0" | "false" | "no" | "off"
+    )
+}
+
+/// 无请求参数的兼容入口：等价于空 [`OpenWindowRequest`]。
 pub fn create_inproc_window() -> Result<WindowId, String> {
+    create_inproc_window_for(OpenWindowRequest::new())
+}
+
+/// 在当前 UI 线程按 primary 转发来的请求创建窗口；必须由事件循环回调调用
+/// （不能在 `with_app` 借用期间调用）。
+///
+/// 返回时窗口已经 `show()`，调用方可以据此 ack secondary。请求里的 `cwd`
+/// 只用于新窗口的首个本地 shell（配置了默认 Profile 时仍尊重 Profile）；
+/// `profile` 选择尚未接入 UI，会明确报错而不是静默忽略。
+pub fn create_inproc_window_for(request: OpenWindowRequest) -> Result<WindowId, String> {
+    request.validate()?;
+    if request.profile.is_some() {
+        return Err("open_window profile selection is not supported yet".into());
+    }
     let registry = runtime::registry().ok_or_else(|| "window registry unavailable".to_string())?;
     let (shared, window_id) = {
         let mut reg = registry.borrow_mut();
@@ -105,8 +144,9 @@ pub fn create_inproc_window() -> Result<WindowId, String> {
             .ok_or_else(|| "registered window vanished".to_string())?
     };
     let _ = runtime::with_state(&state, crate::init_window_ui);
+    let request_cwd = request.cwd.clone();
     let _ = runtime::with_state(&state, |st| {
-        crate::new_tab_with_default(st);
+        crate::new_tab_with_default_or_cwd(st, request_cwd);
         crate::rebuild_tabs(st);
         crate::refresh_views(st);
         crate::redraw_visible(st);
@@ -119,10 +159,14 @@ pub fn create_inproc_window() -> Result<WindowId, String> {
         .set_position(slint::PhysicalPosition::new(offset, offset));
     // 先装原生事件再 show：首批 Focused/close 事件不能丢。
     crate::install_native_window_events(&runtime.ui, window_id);
-    runtime
-        .ui
-        .show()
-        .map_err(|err| format!("second window show: {err}"))?;
+    if let Err(err) = runtime.ui.show() {
+        // show 失败时不能把半初始化的 WindowRuntime 留在 registry 里：否则
+        // primary 会以为窗口存在，后续 open_window/关闭语义都会错。
+        let _ = runtime::remove_window(window_id);
+        crate::gpu_present::teardown_for(window_id);
+        crate::gpu_native::teardown_for(window_id);
+        return Err(format!("second window show: {err}"));
+    }
     runtime.ui.window().request_redraw();
     eprintln!(
         "[ui] in-process window created id={} pid={} shared_plugins={} mcp_socket={}",
@@ -521,4 +565,19 @@ fn start_timers(rt: &WindowRuntime) {
         },
     );
     rt.keep_timer(focus);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_path_is_inproc_and_legacy_is_explicit() {
+        assert!(!legacy_fallback_from(None, None));
+        assert!(!legacy_fallback_from(Some("0".into()), None));
+        assert!(!legacy_fallback_from(Some("off".into()), Some("1".into())));
+        assert!(legacy_fallback_from(None, Some("0".into())));
+        assert!(legacy_fallback_from(None, Some("false".into())));
+        assert!(legacy_fallback_from(Some("1".into()), Some("1".into())));
+    }
 }

@@ -1,13 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! 多窗口 MVP：一个窗口 = 一个独立的 Tervo 进程。
+//! Legacy 多进程窗口 fallback。默认路径已经是同进程 WindowRegistry：
+//! `tervo` 的 secondary 转发 `open_window`，`window.new`/Ctrl+Shift+N 在 UI
+//! 线程新建 MainWindow，不再 spawn 子进程。
 //!
-//! 不引入单实例锁，也没有跨进程 IPC：每个窗口有自己的 Tab/PTY/事件循环，
-//! 关掉一个不影响另一个。新窗口通过 `std::env::current_exe()` 重新拉起自身，
-//! 子进程只带 `--window` 标记（用于日志区分），不继承父进程的 CLI 参数，
-//! 因此 `--restore` 这类一次性参数不会传进新窗口，也不会自动再建窗口。
-//!
-//! 配置并发：不引入单实例锁/文件锁。`Config::save` 本身是原子写，多个窗口
-//! 同时改配置时“最后写入者生效”（可能覆盖掉另一次修改），这是 MVP 接受的限制。
+//! 只有显式 `TERVO_MULTI_WINDOW_INPROC=0` / `TERVO_MULTI_WINDOW_LEGACY=1`
+//! 才走这里。子进程带 `TERVO_SINGLE_INSTANCE=0` 绕过 primary 锁，否则它会
+//! 被当成 secondary 转发回父进程、不会开窗。配置并发仍是“最后写入者生效”。
 
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -15,10 +13,14 @@ use std::process::{Command, Stdio};
 /// 子窗口进程标记：只用于日志区分，不触发任何自动新建窗口逻辑。
 pub const WINDOW_FLAG: &str = "--window";
 
+/// legacy 子进程必须绕过单实例锁，否则 `--window` 会被转发回父进程。
+pub const LEGACY_BYPASS_ENV: &str = "TERVO_SINGLE_INSTANCE";
+
 /// 构造“新窗口”命令行。纯逻辑，便于单测（测试不真正 spawn）。
 pub fn new_window_command(exe: &Path) -> Command {
     let mut cmd = Command::new(exe);
     cmd.arg(WINDOW_FLAG);
+    cmd.env(LEGACY_BYPASS_ENV, "0");
     // 新进程启动后会建立自己的日志文件；stdout/stderr 不能继承父进程——
     // 父进程的 stderr 在 logging::init 后是 log tee 的管道，继承会混淆两份日志。
     cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
@@ -63,6 +65,25 @@ mod tests {
         let args: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
         // 只带标记：父进程的 --restore/--shell 等一次性参数不能漏给新窗口。
         assert_eq!(args, vec![std::ffi::OsStr::new(WINDOW_FLAG)]);
+    }
+
+    #[test]
+    fn legacy_child_bypasses_single_instance_lock() {
+        let cmd = new_window_command(Path::new("/opt/tervo/bin/tervo"));
+        let envs: Vec<(String, Option<String>)> = cmd
+            .get_envs()
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().into_owned(),
+                    value.map(|v| v.to_string_lossy().into_owned()),
+                )
+            })
+            .collect();
+        assert!(
+            envs.iter()
+                .any(|(key, value)| { key == LEGACY_BYPASS_ENV && value.as_deref() == Some("0") }),
+            "legacy child must not become secondary: {envs:?}"
+        );
     }
 
     #[test]
