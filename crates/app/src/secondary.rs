@@ -85,6 +85,22 @@ pub fn create_inproc_window_restored(
     create_inproc_window_impl(Some(window), OpenWindowRequest::new())
 }
 
+/// 去掉历史累积的 `— <数字>` 后缀，得到窗口的基础标题。
+///
+/// 只在后缀是纯数字时裁剪，用户自己的 `--title "Tervo — dev"` 不会被误伤。
+fn base_window_title(title: &str) -> &str {
+    let mut current = title.trim_end();
+    while let Some((head, tail)) = current.rsplit_once(" — ") {
+        let tail = tail.trim();
+        if !tail.is_empty() && tail.chars().all(|ch| ch.is_ascii_digit()) {
+            current = head.trim_end();
+        } else {
+            break;
+        }
+    }
+    current
+}
+
 fn create_inproc_window_impl(
     restore: Option<&crate::session::WindowSnapshot>,
     request: OpenWindowRequest,
@@ -100,7 +116,10 @@ fn create_inproc_window_impl(
         .ok_or_else(|| "no active window".to_string())?;
     let mut opts = opts;
     opts.window = true;
-    opts.title = format!("{} — {}", opts.title, window_id.get());
+    // 多窗口统一标题：`WM_NAME` 只保留基础名（默认 `Tervo`）。旧行为把内部
+    // `WindowId` 拼进标题，且每个新窗口又克隆“当前活动窗口”的 opts，于是每开一个
+    // 窗口就自我累积成 `Tervo — 2 — 3 …`，任务栏/Alt-Tab 里很吵。
+    opts.title = base_window_title(&opts.title).to_string();
     let cell = (fonts.cell_w, fonts.cell_h);
     // v2 快照有像素几何时按快照开窗；v1/未知几何回退字符网格默认尺寸。
     let (win_w, win_h) = match restore
@@ -292,5 +311,16 @@ mod tests {
         assert!(legacy_fallback_from(None, Some("0".into())));
         assert!(legacy_fallback_from(None, Some("false".into())));
         assert!(legacy_fallback_from(Some("1".into()), Some("1".into())));
+    }
+
+    #[test]
+    fn window_title_drops_accumulated_id_suffixes() {
+        assert_eq!(base_window_title("Tervo"), "Tervo");
+        assert_eq!(base_window_title("Tervo — 2"), "Tervo");
+        assert_eq!(base_window_title("Tervo — 2 — 3"), "Tervo");
+        // 用户自定义标题里的非数字后缀保留
+        assert_eq!(base_window_title("Tervo — dev"), "Tervo — dev");
+        assert_eq!(base_window_title("My — terminal — 12"), "My — terminal");
+        assert_eq!(base_window_title("Tervo — 2 "), "Tervo");
     }
 }
