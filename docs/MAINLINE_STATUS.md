@@ -1,6 +1,6 @@
 # Tervo Mainline Status / Mainline Audit
 
-Snapshot: 2026-11-14, branch `main`, HEAD `8a8856a` (v0.5.0-rc.1 multi-window)
+Snapshot: 2026-11-14, branch `main`, HEAD `v0.5.0` (multi-window stable candidate)
 Purpose: one place for supported features, fixes, and branch merge decisions.
 The historical inventory stays in [`FEATURE_MATRIX.md`](FEATURE_MATRIX.md);
 this file is the current mainline truth.
