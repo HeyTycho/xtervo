@@ -2,6 +2,16 @@
 
 Tervo 的版本与 tag 规则见 `docs/RELEASING.md`。
 
+## [Unreleased]
+
+### Fixed
+
+- 多窗口标题不再把内部 window id 拼进 `WM_NAME`：新建窗口的标题曾是
+  `Tervo — 2`，且每个新窗口从“当前活动窗口”克隆 opts，导致继续累积成
+  `Tervo — 2 — 3`。现在所有窗口统一为基础标题（默认 `Tervo`），只裁掉纯数字的
+  ` — N` 后缀，用户自定义标题不受影响（`crates/app/src/secondary.rs`，
+  单测 `window_title_drops_accumulated_id_suffixes`）。
+
 ## [0.5.0] - 2026-11-14
 
 Stable release: single-instance primary + default in-process multi-window, WindowRegistry/SharedServices, multi-window session v2, full shared UI callbacks, plugin/MCP window_id routing, WindowId-scoped GPU state. Clean 30m dual-window soak PASS.
