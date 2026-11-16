@@ -1,6 +1,6 @@
 # Tervo Mainline Status / Mainline Audit
 
-Snapshot: 2026-11-14, branch `main`, HEAD `v0.5.0` (multi-window stable candidate)
+Snapshot: 2026-11-16, branch `main`, HEAD `6102bb9` (`v0.5.0`, stable multi-window)
 Purpose: one place for supported features, fixes, and branch merge decisions.
 The historical inventory stays in [`FEATURE_MATRIX.md`](FEATURE_MATRIX.md);
 this file is the current mainline truth.
@@ -143,13 +143,20 @@ retained, but dirty worktrees may contain uncommitted evidence:
   `terminal.output_filter` (Wasmtime, `runtime = "wasm"`); no plugin commands,
   UI, WASI, market, signing, or arbitrary WASM APIs.
 - Wayland native, color emoji/shaping, atlas eviction, 24h soak remain open.
+- **Split regression (0.5.0): a freshly split pane never repaints.** Its `Term` has
+  content and damage (`live_output` returns the prompt, `live_snapshot` shows
+  `generation=6 / damage.w=0`) but only one frame is ever pulled
+  (`frame rev=2 / glyphs=0`), so the pane stays blank. Reproduces from the
+  keyboard shortcut and from MCP `split`. Needs a failing test first (ACT-034).
+- **Session recovery covers layout/cwd/Profile only** — no scrollback, screen
+  content, or running processes; no crash-loop breaker / safe mode, and no
+  ENOSPC / permission / truncated-log recovery matrix (ACT-035/ACT-036).
 - MCP write tools require env switches and a token; per-harness scopes/audit
   retention are still minimal.
 - MCP terminal-control design and planned write tools: [`MCP_TERMINAL_CONTROL.md`](MCP_TERMINAL_CONTROL.md).
 
 ## Release rules
 
-`v0.3.1` is the canonical existing release. `v0.3.1-gpu-rc1..6` are local
-non-standard previews and must not be pushed as releases. The next functional
-version is `0.4.0`; use `v0.4.0-rc.N` for pre-releases and build from an exact
-clean tag with `scripts/package.sh`.
+`v0.5.0`（`6102bb9`，2026-11-14）是当前稳定版。`v0.3.1` 及 `v0.3.1-gpu-rc1..6`
+是历史版本，其中 gpu-rc 系列为本地非标准预览，不得当 release 推送。下一个功能版本为
+`0.6.0`；预发布用 `v0.6.0-rc.N`，从干净 tag 出发用 `scripts/package.sh` 构建。

@@ -1,5 +1,10 @@
 # 最终交付报告（Tervo）
 
+> **2026-11-16 注：本报告是 2026-11-05 的历史快照，数字与“未做”清单已过时**
+> （Vault、Quake、插件运行时、多窗口、MCP 在 0.4/0.5 已落地）。当前状态请看
+> [`MAINLINE_STATUS.md`](MAINLINE_STATUS.md)、[`CLOSURE.md`](CLOSURE.md)、
+> [`CHANGELOG.md`](../CHANGELOG.md)。
+
 > 本报告对应 30 轮 goal 的收尾验收（2026-11-05，最后一轮）。
 > 结论先说：**这是一个能日常跑起来的 Slint/X11 终端工作区，但不是官方 Tabby 的完整替代品。**
 > 功能矩阵仍有 105 条 `not_started`；剩余大头（插件运行时、内建 SSH/SFTP 协议栈、

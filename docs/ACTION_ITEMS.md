@@ -1,12 +1,34 @@
 # 行动清单（ACTION_ITEMS）
 
-> 当前完成度与剩余差距的汇总见 [`CLOSURE.md`](CLOSURE.md)（228 条主条目：implemented 23 / partial 76 / needs_verification 17 / not_started 105 / unsupported 7，加权 28.6%）。
+> **2026-11-16 对账**：本清单是 2026-11-05 的计划快照，**没有逐条重审**。已交付项以
+> [`MAINLINE_STATUS.md`](MAINLINE_STATUS.md) 与 [`CHANGELOG.md`](../CHANGELOG.md) 为准，
+> 条目状态以 [`FEATURE_MATRIX.md`](FEATURE_MATRIX.md) 为准。当前矩阵：244 条
+> （implemented 57 / partial 115 / needs_verification 14 / not_started 51 / unsupported 7，
+> 加权 48.4%，`python3 scripts/matrix_stats.py`）。对账见 §0，新增待办见 §8。
 
-> 生成日期：2026-11-05 ｜ 依据：[`FEATURE_MATRIX.md`](FEATURE_MATRIX.md)（228 条，20.2% 加权覆盖）、[`UI_INTERACTION_MATRIX.md`](UI_INTERACTION_MATRIX.md)、[`TABBY_UPSTREAM_AUDIT.md`](TABBY_UPSTREAM_AUDIT.md)、[`COMPATIBILITY_MATRIX.md`](COMPATIBILITY_MATRIX.md)。
+> 生成日期：2026-11-05（v0.5.0 后对账 2026-11-16）｜ 依据：[`FEATURE_MATRIX.md`](FEATURE_MATRIX.md)（244 条，48.4% 加权覆盖）、[`UI_INTERACTION_MATRIX.md`](UI_INTERACTION_MATRIX.md)、[`TABBY_UPSTREAM_AUDIT.md`](TABBY_UPSTREAM_AUDIT.md)、[`COMPATIBILITY_MATRIX.md`](COMPATIBILITY_MATRIX.md)。
 > 排序原则：需求 D 部分的实施顺序（UI 壳 → 工作区 → 终端 → 连接 → 设置/插件/平台），同层按“用户每天可感知 + 是否阻塞后续”排序。预估：S ≤ 0.5 天，M 1–3 天，L > 3 天（单人熟手）。
 > **P0 前 10 项以 UI 壳/工作区交互为主**（仅 ACT-002 是为解除 UI 行为待核而插入的上游审计）；连接、插件、安全排在后面。每项验收标准均可执行/可观察，不以“代码写完”作为完成。
 
-## 0. 先做验收，不重复造轮子（已有实现只需补测）
+## 0. 交付对账（2026-11-16，只核有发布证据的项）
+
+| 行动 | 现状 | 证据 |
+|---|---|---|
+| ACT-008 Session Registry | ✅ 进程内 `WindowRegistry`/`WindowRuntime` + 共享服务，session v2 保存多窗口 | CHANGELOG 0.5.0；`docs/MULTI_WINDOW_RUNTIME.md` |
+| ACT-009 关闭生命周期 | ◐ detach/reattach 与 `close_action`/`confirm_close` 已有；“三策略各有测试”未补 | `config.rs`；`[session] detach/reattach` 日志 |
+| ACT-010 Command Palette | ✅ 命令表 + 面板 + 真实分发 | `commands.rs`；`live_snapshot.ui.palette_open` |
+| ACT-012 Hotkeys 设置页 | ✅ 录制/冲突校验/持久化 | `main.rs` `hotkey_recording`、`commands::validate_override` |
+| ACT-013 终端菜单/搜索 | ◐ 菜单与大小写/正则已有；匹配计数、缩放 HUD 未做 | `main.rs` 搜索路径、`config.rs` |
+| ACT-014 粘贴安全 | ✅ 多行确认 / copy-on-select / 右键粘贴 / bracketed | `config.rs` 字段、`keys.rs` |
+| ACT-015 超链接 UI | ✅ hover + Ctrl+点击 + 路径存在性提示 | `main.rs` `[link]` 日志 |
+| ACT-021 多窗口 | ◐ 多窗口已发版；Tab 跨窗口拖动未做 | CHANGELOG 0.5.0 |
+| ACT-024 SFTP/转发 | ◐ SFTP mkdir/rename/rm 已有；进度/取消、转发启停待做 | `crates/app/src/sftp.rs:324-333` |
+| ACT-027 Vault | ✅ Vault 存储 + 设置页 | `crates/app/src/vault.rs`；`MAINLINE_STATUS.md` |
+| ACT-028/029 插件 | ✅ v3 宿主 + 本地安装/回滚/签名 + 管理器 UI。**偏差**：走 JSON-RPC 2.0，不是原计划的 WIT | CHANGELOG 0.4.0-rc.2 |
+| ACT-031 诊断/日志 | ✅ doctor / metrics / observability / 脱敏反馈包 | CHANGELOG 0.4.0-rc.2 |
+| ACT-032 性能/打包 | ◐ 30m soak 与 RSS/CPU 已过；P95 / 吞吐 / 24h 待做 | CHANGELOG 0.5.0 |
+
+## 0.1 先做验收，不重复造轮子（已有实现只需补测）
 
 以下功能代码已存在且有部分记录，**不要重写**；先按验收步骤补证据，缺口用最小补丁修（标“需小修”的才动代码）。
 
@@ -116,3 +138,13 @@ ACT-002 上游审计 ──（解除 21 条 needs_verification 的决策阻塞�
 4. 不要在没有 Session 抽象时做“后台保留/重连/自动恢复”。
 5. 不要承诺“兼容 Tabby 插件”；先按 `COMPATIBILITY_MATRIX.md` 的 L0–L4 分级逐项验证。
 6. 不要把需求文档当上游证据；所有 `U-AUDIT` 条目等 ACT-002 收敛后再改状态。
+
+## 8. v0.6 候选（2026-11-16 新增，未排期）
+
+| ID | 标题 | 现状 / 为什么 | 验收标准 | 预估 |
+|---|---|---|---|---|
+| ACT-034 | 分屏新 pane 首帧不重绘（回归） | 0.5.0 可复现：`split` 后 Term 有内容（`live_output` 读到 `➜  ~`）、`live_snapshot` 有 damage（`w=0`、`generation=6`），但日志只有 `frame rev=2 / glyphs=0` 一帧，界面空白到下一位外力重绘。键盘分屏与 MCP `split` 都复现 | 先补失败测试：socket `split` → 等待提示符 → 断言该 pane 的 frame rev 增长且 damage 被消费；修复后 4-pane 手动回归 | M |
+| ACT-035 | 恢复矩阵（破坏面注入） | 现在只有 kill -9 一条 e2e；ENOSPC / 权限拒绝 / JSON 截断 / 配置损坏 全无测试 | `scripts/` 增加注入式 e2e：每类破坏面各一条，断言不丢旧快照且能回退 `.bak` | M |
+| ACT-036 | crash marker + safe mode | 全仓只有 `docs/DEV_SCHEDULE.md:56` 一行计划，代码 0 实现；崩溃循环没有熔断 | 连续 N 次异常退出 → 下次启动进入安全模式（禁用插件/GPU/WASM），并在 UI 说明原因；单测 + e2e | L |
+| ACT-037 | 文档对账常态化 | `CLOSURE.md` / 本文件长期落后于发版（本次已对账到 v0.5.0） | 发版清单里加一步：跑 `scripts/matrix_stats.py`、更新 CLOSURE 统计与 ACT 状态，否则 CI 失败 | S |
+| ACT-038 | MCP 允许面收尾 | `mcp_tabs` 已按需打开；`mcp_destructive` 仍关闭，close/kill 走不通 | 明确默认值策略并写进 `docs/MCP.md`：哪些给默认开、哪些必须显式开 | S |
