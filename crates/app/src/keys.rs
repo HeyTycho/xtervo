@@ -14,15 +14,38 @@
 //! - xterm modifyOtherKeys：`CSI > 4 ; level m`，带修饰的普通键/功能键走
 //!   `CSI 27 ; mod ; code ~` 或规范功能键序列。
 //!
-//! 已知限制（不伪造）：
+//! 已知限制（不伪造，详见 `docs/KEYBOARD_LIMITATIONS.md`）：
 //! - Slint `KeyEvent` 只给 text + modifiers，没有 physical key；base layout key
-//!   （标准 PC-101 下的键）无法可靠推导，因此只上报 shifted key。
-//! - caps lock / num lock 不在 Slint modifiers 里，运行时恒为 0；编码函数支持
-//!   这两个 bit（单元测试覆盖），但 UI 拿不到锁状态。
+//!   （标准 PC-101 下的键）无法可靠推导，因此 `REPORT_ALTERNATE_KEYS` 只上报
+//!   shifted key，见 [`BASE_LAYOUT_KEY_SUPPORTED`]。
+//! - caps lock / num lock 不在 Slint modifiers 里；X11 下由 `xconn::LockProbe`
+//!   查 keymask 补齐（120ms 缓存），Wayland 原生/无 X11 时显式降级为 false。
+//! - IME：仅 X11/XIM 路径（隐藏 TextInput 宿主），Wayland text-input-v3、
+//!   preedit 候选窗定位、多字符 commit → 快捷键等缺口见限制文档。
 
 use tervo_core::KeyboardFlags;
 
 use crate::commands::{Chord, Mods};
+
+/// Slint 的 `KeyEvent` 只有 text + modifiers，没有 physical key（TERM-016）。
+///
+/// 因此 kitty `REPORT_ALTERNATE_KEYS` 的 **base layout key** 无法上报，只能给
+/// shifted key。这里把它写成显式常量而不是“静默少一位”，上层在收到
+/// `REPORT_ALTERNATE_KEYS` 时调用 [`note_base_layout_degraded`] 记录一次。
+/// IME 侧的已知缺口见 `docs/KEYBOARD_LIMITATIONS.md`。
+pub const BASE_LAYOUT_KEY_SUPPORTED: bool = false;
+
+/// 首次请求 alternate keys 时记录一次降级说明（不刷屏）。
+pub fn note_base_layout_degraded() {
+    use std::sync::Once;
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        eprintln!(
+            "[keyboard] base layout key 不可用（Slint KeyEvent 无 physical key）；\
+             REPORT_ALTERNATE_KEYS 降级为仅 shifted key"
+        );
+    });
+}
 
 const UP: char = '\u{F700}';
 const DOWN: char = '\u{F701}';
@@ -340,7 +363,8 @@ pub enum KeyEventKind {
     Release,
 }
 
-/// Slint 能提供的修饰键。caps/num lock 目前拿不到（见模块文档）。
+/// 一次按键的修饰键。ctrl/alt/shift/meta 来自 Slint；
+/// caps/num lock 由 X11 探测补齐（拿不到时显式 false，见模块文档）。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct KeyModifiers {
     pub ctrl: bool,
@@ -348,9 +372,9 @@ pub struct KeyModifiers {
     pub shift: bool,
     /// Windows/Command（Slint 的 meta）。
     pub meta: bool,
-    /// 运行时恒 false；保留给编码与测试。
+    /// X11 keymask 的 LockMask；Wayland 原生回落 false。
     pub caps_lock: bool,
-    /// 运行时恒 false；保留给编码与测试。
+    /// 按修饰键映射查到的 Num Lock mask；查不到回落 false。
     pub num_lock: bool,
 }
 
@@ -1344,6 +1368,21 @@ mod tests {
         assert_eq!(key_id("\u{F71B}"), Some(KeyId::Special(SpecialKey::F(24))));
         assert_eq!(key_id("ab"), None);
         assert_eq!(key_id("\u{1}"), None);
+    }
+
+    #[test]
+    fn alternate_keys_degrade_is_explicit_and_shifted_only() {
+        // TERM-016：base layout key 明确不可用，不能假装支持。
+        assert!(!BASE_LAYOUT_KEY_SUPPORTED);
+        // 应用请求 alternate keys 时，CSI-u 只带 shifted key（没有 base layout 字段）。
+        let b = KeyBindings::default();
+        let flags = KeyboardFlags::DISAMBIGUATE_ESC_CODES | KeyboardFlags::REPORT_ALTERNATE_KEYS;
+        let mods = KeyModifiers { ctrl: true, ..KeyModifiers::default() };
+        let out = encode_key_event("!", mods, KeyEventKind::Press, flags, 0, b).unwrap();
+        assert_eq!(out, b"\x1b[33;5u", "只上报 shifted key，不能编造 base layout key");
+        // 记录降级说明是幂等的，可在真实按键路径反复调用。
+        note_base_layout_degraded();
+        note_base_layout_degraded();
     }
 
     #[test]

@@ -1490,3 +1490,148 @@ mod tests {
         }
     }
 }
+
+// ---------------------------------------------------------------- 锁键状态（TERM-016）
+
+/// Caps Lock / Num Lock 的运行时状态。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LockState {
+    pub caps_lock: bool,
+    pub num_lock: bool,
+}
+
+/// 从 X11 `QueryPointer` 的 keymask 解析锁键（纯函数，单测覆盖）。
+///
+/// X11 固定用 `LockMask`（bit 1）表示 Caps Lock；Num Lock 在标准布局是
+/// Mod2，但**不保证**，所以 `num_mask` 由修饰键映射查出来（见 [`num_lock_mask`]）。
+pub fn lock_state_from_mask(mask: u16, num_mask: u16) -> LockState {
+    LockState {
+        caps_lock: mask & 0x0002 != 0,
+        num_lock: num_mask != 0 && mask & num_mask != 0,
+    }
+}
+
+/// 查 Num_Lock keysym 落在哪个修饰键 mask；查不到回退 Mod2（标准布局）。
+fn num_lock_mask(conn: &RustConnection) -> u16 {
+    use x11rb::connection::Connection as _;
+    use x11rb::protocol::xproto::ConnectionExt as _;
+    const NUM_LOCK_KEYSYM: u32 = 0xff7f;
+    const FALLBACK_MOD2: u16 = 1 << 4;
+
+    let Some(mapping) = conn.get_modifier_mapping().ok().and_then(|c| c.reply().ok()) else {
+        return FALLBACK_MOD2;
+    };
+    let per_mod = mapping.keycodes_per_modifier() as usize;
+    if per_mod == 0 {
+        return FALLBACK_MOD2;
+    }
+    let setup = conn.setup();
+    let min = setup.min_keycode;
+    let count = setup.max_keycode.saturating_sub(min) as usize + 1;
+    let Some(kbd) = conn
+        .get_keyboard_mapping(min, count as u8)
+        .ok()
+        .and_then(|c| c.reply().ok())
+    else {
+        return FALLBACK_MOD2;
+    };
+    let per_key = kbd.keysyms_per_keycode as usize;
+    if per_key == 0 {
+        return FALLBACK_MOD2;
+    }
+    for (mod_idx, row) in mapping.keycodes.chunks(per_mod).enumerate() {
+        for &keycode in row {
+            if keycode == 0 {
+                continue;
+            }
+            let idx = (keycode.saturating_sub(min) as usize) * per_key;
+            if kbd
+                .keysyms
+                .get(idx..idx + per_key)
+                .is_some_and(|syms| syms.contains(&NUM_LOCK_KEYSYM))
+            {
+                return 1u16 << mod_idx;
+            }
+        }
+    }
+    FALLBACK_MOD2
+}
+
+/// 锁键探针：持有一条 X11 连接，按 120ms 缓存查询 `QueryPointer` 的 keymask。
+///
+/// 每次按键都 round-trip 一次 X server 会拖慢输入；锁键切换频率极低，
+/// 120ms 缓存足够（Caps Lock 按下后的第一个键也能看到新状态）。
+pub struct LockProbe {
+    conn: RustConnection,
+    root: u32,
+    num_mask: u16,
+    last: Option<(Instant, LockState)>,
+}
+
+impl LockProbe {
+    /// 连接失败（无 DISPLAY / Wayland 原生 / 无 Xauthority）返回 None：
+    /// 调用方按“锁键恒 false”显式降级，并在启动日志里记录。
+    pub fn new() -> Option<Self> {
+        use x11rb::connection::Connection as _;
+        let (conn, screen_num) = connect().ok()?;
+        let root = conn.setup().roots.get(screen_num)?.root;
+        let num_mask = num_lock_mask(&conn);
+        Some(Self { conn, root, num_mask, last: None })
+    }
+
+    pub fn state(&mut self) -> LockState {
+        use x11rb::protocol::xproto::ConnectionExt as _;
+        const CACHE: Duration = Duration::from_millis(120);
+        if let Some((at, state)) = self.last {
+            if at.elapsed() < CACHE {
+                return state;
+            }
+        }
+        let mask = self
+            .conn
+            .query_pointer(self.root)
+            .ok()
+            .and_then(|cookie| cookie.reply().ok())
+            .map(|reply| reply.mask.bits())
+            .unwrap_or(0);
+        let state = lock_state_from_mask(mask, self.num_mask);
+        self.last = Some((Instant::now(), state));
+        state
+    }
+}
+
+#[cfg(test)]
+mod lock_state_tests {
+    use super::*;
+
+    #[test]
+    fn lock_state_mask_decoding() {
+        // LockMask=2 表示 Caps Lock；Num Lock 用查出来的 mask（这里模拟 Mod2=16）。
+        assert_eq!(
+            lock_state_from_mask(0, 16),
+            LockState { caps_lock: false, num_lock: false }
+        );
+        assert_eq!(
+            lock_state_from_mask(2, 16),
+            LockState { caps_lock: true, num_lock: false }
+        );
+        assert_eq!(
+            lock_state_from_mask(16, 16),
+            LockState { caps_lock: false, num_lock: true }
+        );
+        assert_eq!(
+            lock_state_from_mask(2 | 16 | 4, 16),
+            LockState { caps_lock: true, num_lock: true }
+        );
+        // 查不到 Num Lock mask 时不能把任意状态误报成 num lock。
+        assert_eq!(
+            lock_state_from_mask(0xff, 0),
+            LockState { caps_lock: true, num_lock: false }
+        );
+        // 非标准布局：Num Lock 落在 Mod3(bit 5) 也要正确。
+        assert_eq!(
+            lock_state_from_mask(1 << 5, 1 << 5),
+            LockState { caps_lock: false, num_lock: true }
+        );
+    }
+}

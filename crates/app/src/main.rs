@@ -782,6 +782,8 @@ struct AppState {
     /// pressed/grabbed；收到第一帧 WM resize 后补发一次 PointerReleased 清理状态。
     wm_release_pending: bool,
     xresize: Option<ResizeCtx>,
+    /// Caps/Num Lock 探针（TERM-016）：X11 下按 120ms 缓存查询 keymask。
+    lock_probe: Option<xconn::LockProbe>,
     resize_events: u32,
     resize_applied: u32,
     resize_pending: Option<(f32, f32)>,
@@ -12132,6 +12134,29 @@ fn note_broadcast_key(
     }
 }
 
+/// 当前 Caps/Num Lock 状态（TERM-016）。
+///
+/// X11 下用 `QueryPointer` 的 keymask（120ms 缓存）；拿不到 X11（Wayland 原生 /
+/// 无 Xauthority）时显式降级为 false 并记录一次——kitty CSI-u 的 caps/num 位
+/// 会保持 0，而不是伪造状态。
+fn current_lock_state(st: &mut AppState) -> xconn::LockState {
+    if st.lock_probe.is_none() {
+        st.lock_probe = xconn::LockProbe::new();
+        if st.lock_probe.is_none() {
+            use std::sync::Once;
+            static ONCE: Once = Once::new();
+            ONCE.call_once(|| {
+                eprintln!(
+                    "[keyboard] caps/num lock 状态不可用（无 X11 连接）；\
+                     CSI-u 只上报 ctrl/alt/shift/super"
+                );
+            });
+            return xconn::LockState::default();
+        }
+    }
+    st.lock_probe.as_mut().map(|probe| probe.state()).unwrap_or_default()
+}
+
 /// 统一的输入分发：物理按键与 IME 上屏都走这里。
 /// `ctrl/alt/shift/meta` 对 IME 提交恒为 false，避免把中文误判成快捷键。
 /// `kind` 区分 press/repeat；release 走 [`handle_key_release`]。
@@ -12333,6 +12358,7 @@ fn handle_input(
     }
     let key_bindings = st.cfg.key_bindings();
     let scroll_on_keystroke = st.cfg.scroll_on_keystroke;
+    let lock_state = current_lock_state(st);
     let held_keys = &mut st.held_keys;
     let panes = &mut st.panes;
     for target in targets {
@@ -12348,9 +12374,15 @@ fn handle_input(
                     alt,
                     shift,
                     meta,
-                    ..keys::KeyModifiers::default()
+                    caps_lock: lock_state.caps_lock,
+                    num_lock: lock_state.num_lock,
                 };
                 let flags = rt.handle.keyboard_flags();
+                // TERM-016：应用请求 alternate keys 时，base layout key 不可用
+                // （Slint 无 physical key），显式记录一次降级。
+                if flags.contains(tervo_core::KeyboardFlags::REPORT_ALTERNATE_KEYS) {
+                    keys::note_base_layout_degraded();
+                }
                 let modify_level =
                     if flags.is_empty() { rt.handle.modify_other_keys() } else { 0 };
                 let encoded = keys::encode_key_event(
@@ -13646,6 +13678,7 @@ fn build_window_state(
         wm_resize: false,
         wm_release_pending: false,
         xresize: None,
+        lock_probe: None,
         resize_events: 0,
         resize_applied: 0,
         resize_pending: None,
