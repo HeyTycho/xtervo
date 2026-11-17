@@ -636,6 +636,24 @@ mod tests {
     }
 
     #[test]
+    fn sidebar_command_is_registered_with_bindable_default() {
+        let r = builtin();
+        let cmd = r.get("view.sidebar").expect("view.sidebar 必须注册");
+        assert_eq!(cmd.title, "Toggle Sidebar");
+        assert_eq!(cmd.category, Category::View);
+        let chord = Chord::parse("ctrl+shift+b").unwrap();
+        // 默认键能被兜底分发解析到，且没有别的命令抢同一个键
+        assert_eq!(r.default_command_for_chord(&chord), Some("view.sidebar"));
+        let hits: Vec<_> = r
+            .all()
+            .iter()
+            .filter(|c| c.default_shortcut == Some("ctrl+shift+b"))
+            .map(|c| c.id)
+            .collect();
+        assert_eq!(hits, vec!["view.sidebar"]);
+    }
+
+    #[test]
     fn window_new_is_registered_with_default_shortcut() {
         let r = builtin();
         let cmd = r.get("window.new").expect("window.new 必须注册");
