@@ -96,6 +96,10 @@ DURATION=2m BIN=$PWD/target/release/tervo SOAK_NO_SHOTS=1 \
   Xvfb 里 XSetInputFocus + XTEST 实测能切侧栏（日志出现 `[ui] sidebar_visible=`）。
   注意：无 WM 的 Xvfb 里不设焦点则按键丢失。
 
+## 4.5 今晚开工单
+
+功能优先、测试后置的执行顺序与欠账清单见 **`docs/EVENING_START.md`**（F1–F10）。
+
 ## 5. 续跑前先确认的三个选择
 
 1. 直接提交 `main`（当前做法，每卡一 commit）还是走 `AGENTS.md` 的 worktree + 审查合并。

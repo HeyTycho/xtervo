@@ -1,0 +1,65 @@
+# 今晚开工单（功能优先，测试后置）
+
+用户决定：**先把功能堆叠完成，测试/门禁后补**。本文件是 18:00（或即刻开工）后的执行顺序。
+
+## 0. 规则调整（今晚有效）
+
+```text
+保留：cargo check 必须过（不能留编译不过的树）、每个功能一个 commit
+跳过：新增单测、e2e、2m/15m soak —— 全部记到 §5 的欠账清单
+底线：不删既有测试；已有测试必须仍然全绿（回归保护）
+```
+
+## 1. 功能堆叠顺序（每项 1 个 commit，做完即提交）
+
+| # | 功能 | 落点 | 预估 |
+|---|---|---|---|
+| F1 | `Backend::{Pty,Plugin}` + `spawn_with_transport` | `crates/core/src/pane.rs` | 40m |
+| F2 | `TransportReader` 适配 + 写端分支（Plugin 走 `transport.write_all`） | 同上 | 30m |
+| F3 | 数据面：`SOCK_SEQPACKET` 长度前缀收发（`[u32 len][payload]`） | 新 `crates/app/src/transport_io.rs` | 60m |
+| F4 | `terminal_transport` 权限：首次确认 + 审计日志 + 单 pane 256KiB 有界 | `permissions`/plugin host | 45m |
+| F5 | SSH 插件骨架：manifest + 启动 + `ssh` 子进程桥接（密码/agent） | `plugins/ssh/` | 90m |
+| F6 | Serial 插件（`/dev/tty*` + baud） | `plugins/serial/` | 45m |
+| F7 | Telnet 插件（host/port + 简单 IAC 过滤） | `plugins/telnet/` | 45m |
+| F8 | Connection Manager：已存连接列表 + 连接/断开/重连 | 侧栏或面板 | 90m |
+| F9 | 顶部 Toolbar（先把 IME 坐标链里的 `TABBAR_H` 换成运行时常量） | `main.slint` + `main.rs` | 90m |
+| F10 | safe mode 收尾：GPU/WASM 显式降级 + 熔断动作 | `main.rs` | 45m |
+
+合计约 10 小时；F1–F7 是主线，F8–F10 视剩余时间。
+
+## 2. 每项完成判据（不跑测试也能验的）
+
+```text
+F1/F2   cargo check 过 + 现有 core 144 单测仍全绿
+F3      手写小工具：插件侧发 1MiB，宿主 panic-free 收齐（日志计数）
+F4      权限拒绝时日志明确、pane 不创建
+F5–F7   真实连一次（本机 sshd / socat 虚拟串口 / telnet 服务）
+F8      UI 点一遍，截图
+F9      截图 + IME 候选位置 sanity（若无输入法可跳过）
+F10     伪造 crash 计数，看日志与 pill
+```
+
+## 3. 中断保护
+
+- 每个 commit 前必须 `cargo check -p tervo-app -p tervo-core` 通过；
+- 若某个功能做不完：**回退未提交改动**（`git checkout -- .`），保证树是绿的再收工；
+- 每完成一项，在本文件表格里打勾并写 commit 号。
+
+## 4. 18:00 开场指令（复制即用）
+
+```text
+读 docs/EVENING_START.md 与 docs/TRANSPORT_WIRING.md，
+按 F1 开始堆功能；跳过新增测试与 soak，但 cargo check 与既有测试必须绿。
+每完成一项就 commit 并在 EVENING_START 表格里打勾。
+```
+
+## 5. 欠账清单（测试后补）
+
+```text
+[ ] F1/F2  transport 后端的 vte 渲染测试（红字 + resize + EOF）
+[ ] F3     数据面吞吐/背压测试
+[ ] F4     权限拒绝用例
+[ ] F5-F7  插件 e2e（sshd / socat / telnetd）
+[ ] F8-F10 回归 e2e + 截图基线
+[ ] 全量：cargo test、2m soak ×N、15m soak、docs 对账
+```
