@@ -308,6 +308,13 @@ pub struct Config {
     pub paste_on_middle_click: bool,
     /// TabBar 位置："top" | "bottom"。
     pub tabbar_position: String,
+    /// 本地 shell OSC 标题前缀（默认空）。只影响本地 pane；远端标题留给连接插件。
+    pub title_prefix: String,
+    /// 本地 shell OSC 标题后缀（默认空）。
+    pub title_suffix: String,
+    /// 本地 shell OSC 标题过滤器：`;` 分隔的字面替换规则，`from=>to`；
+    /// 没有 `=>` 的规则表示删除该子串。先过滤，再拼前后缀。
+    pub title_filter: String,
     /// Tab 非活动时收到 OSC 9/777/BEL 是否调用 notify-send（默认开）。
     pub desktop_notifications: bool,
     /// 活动 pane 收到 BEL 时是否闪一下边框（视觉铃，默认开）。
@@ -440,6 +447,9 @@ impl Default for Config {
             right_click: "menu".to_string(),
             paste_on_middle_click: true,
             tabbar_position: "top".to_string(),
+            title_prefix: String::new(),
+            title_suffix: String::new(),
+            title_filter: String::new(),
             desktop_notifications: true,
             visual_bell: true,
             audible_bell: false,

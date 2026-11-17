@@ -11525,6 +11525,34 @@ fn apply_osc52(st: &mut AppState, pane: PaneId, request: ClipboardRequest) {
     }
 }
 
+/// 本地 shell 的 OSC 标题规则：filter → prefix → suffix（UI-TAB-008）。
+///
+/// `filter` 用 `;` 分隔多条字面规则：`from=>to` 替换，裸 `from` 删除；
+/// 过滤后为空则回退原始标题，避免把标题整条抹掉。远端 pane 不调用本函数
+/// （SSH/串口标题由连接插件决定）。
+fn apply_title_rules(raw: &str, prefix: &str, suffix: &str, filter: &str) -> String {
+    let mut title = raw.to_string();
+    for rule in filter.split(';') {
+        let rule = rule.trim();
+        if rule.is_empty() {
+            continue;
+        }
+        match rule.split_once("=>") {
+            Some((from, to)) => {
+                if !from.is_empty() {
+                    title = title.replace(from, to);
+                }
+            },
+            None => title = title.replace(rule, ""),
+        }
+    }
+    let trimmed = title.trim();
+    if trimmed.is_empty() {
+        return raw.trim().to_string();
+    }
+    format!("{prefix}{trimmed}{suffix}")
+}
+
 /// 处理已排队的 CoreEvent（标题/Bell/OSC52/通知/进度/Cwd）。
 ///
 /// 事件唤醒与 400ms 兜底都调用它；每次 drain 到空，保证不丢、不重复。
@@ -11568,12 +11596,23 @@ fn drain_core_events(st: &mut AppState) -> (bool, u32) {
         for ev in events {
             match ev {
                 CoreEvent::Title(t) => {
-                    if !t.is_empty() && rt.title != t {
+                    // 本地 shell 应用标题规则；远端标题保持原样（连接插件负责）。
+                    let display = if rt.remote {
+                        t.clone()
+                    } else {
+                        apply_title_rules(
+                            &t,
+                            &st.cfg.title_prefix,
+                            &st.cfg.title_suffix,
+                            &st.cfg.title_filter,
+                        )
+                    };
+                    if !display.is_empty() && rt.title != display {
                         eprintln!(
-                            "[event] ts_ms={} pane={id} kind=title title={t:?}",
+                            "[event] ts_ms={} pane={id} kind=title raw={t:?} title={display:?}",
                             logging::now_ms()
                         );
-                        rt.title = t;
+                        rt.title = display;
                         titles_dirty = true;
                         if !is_active {
                             // 后台 Tab 的标题变化（长命令/目录切换）算后台活动；
@@ -17338,6 +17377,24 @@ mod tests {
         // never：有历史也隐藏。
         let (visible, y, h) = scrollbar_geometry(ScrollbarPolicy::Never, scrollable, 0.1, track);
         assert!(!visible && y == 0.0 && h == 0.0);
+    }
+
+    #[test]
+    fn title_rules_filter_prefix_suffix() {
+        assert_eq!(apply_title_rules("bash", "", "", ""), "bash");
+        assert_eq!(apply_title_rules("  bash  ", "", "", ""), "bash");
+        assert_eq!(apply_title_rules("bash", "[", "]", ""), "[bash]");
+        // filter：替换 + 裸规则删除，多条以 ; 分隔
+        assert_eq!(
+            apply_title_rules("~/src/tervo - fish", "", "", "~/=>; - fish=>"),
+            "src/tervo"
+        );
+        assert_eq!(
+            apply_title_rules("user@host: ~/proj", "● ", "", "user@host: =>"),
+            "● ~/proj"
+        );
+        // 过滤把标题清空时回退原始标题（不产生空 Tab 标题）
+        assert_eq!(apply_title_rules("bash", "", "", "bash"), "bash");
     }
 
     #[test]
