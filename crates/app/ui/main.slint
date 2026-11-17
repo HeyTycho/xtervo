@@ -1565,6 +1565,8 @@ export component MainWindow inherits Window {
     in-out property <string> form-baud: "";
     // 外观（可选；空 = 继承全局）：字号 / 主题 / 光标形状 / 闪烁 / 滚动历史。
     in-out property <string> form-font-size: "";
+    /// 绑定到该 Profile 的快捷键（单段，如 ctrl+alt+p）；空 = 不绑定。
+    in-out property <string> form-hotkey: "";
     in-out property <string> form-theme: "";
     in-out property <string> form-cursor-shape: "";
     in-out property <string> form-cursor-blink: "";
@@ -6571,6 +6573,10 @@ export component MainWindow inherits Window {
             FormRow {
                 height: 26px;
                 label: Lang.t("Theme", "主题"); text <=> root.form-theme;
+            }
+            FormRow {
+                height: 26px;
+                label: Lang.t("Hotkey", "热键"); text <=> root.form-hotkey;
             }
         }
 

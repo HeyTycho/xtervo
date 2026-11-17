@@ -4758,6 +4758,7 @@ fn open_profile_form(st: &mut AppState) {
     st.ui.set_form_cursor_shape("".into());
     st.ui.set_form_cursor_blink("".into());
     st.ui.set_form_scrollback("".into());
+    st.ui.set_form_hotkey("".into());
     st.ui.set_form_error("".into());
     st.ui.set_profile_form_open(true);
     eprintln!("[profile] 打开新建表单 name={name:?} shell={shell:?} cwd={cwd:?}");
@@ -4830,6 +4831,7 @@ fn edit_profile_form(st: &mut AppState, index: usize) {
             .as_str()
             .into(),
     );
+    st.ui.set_form_hotkey(p.hotkey.as_str().into());
     st.ui.set_form_error("".into());
     st.ui.set_profile_form_open(true);
     eprintln!(
@@ -4847,6 +4849,7 @@ fn save_profile_form(st: &mut AppState) {
     let mut p = profile::Profile {
         name,
         kind: kind.to_string(),
+        hotkey: st.ui.get_form_hotkey().trim().to_string(),
         ..profile::Profile::default()
     };
     match kind {

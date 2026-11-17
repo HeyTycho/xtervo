@@ -673,6 +673,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn add_rejects_hotkey_without_modifier_via_validate() {
+        // 表单保存走 ProfileStore::add/update -> profile.validate()，这里锁住这条链路。
+        let mut store = ProfileStore::default();
+        let mut p = Profile::default();
+        p.name = "risky".into();
+        p.hotkey = "shift+x".into();
+        let err = store.add(p).unwrap_err();
+        assert!(err.contains("Ctrl 或 Alt"), "{err}");
+        assert!(store.profiles.is_empty(), "校验失败不能写入 store");
+
+        let mut ok = Profile::default();
+        ok.name = "fine".into();
+        ok.hotkey = "ctrl+alt+k".into();
+        let id = store.add(ok).expect("合法热键应能保存");
+        assert_eq!(store.profiles.len(), 1);
+        assert_eq!(store.profiles[0].hotkey, "ctrl+alt+k");
+        assert!(id >= 1);
+    }
+
+    #[test]
     fn profile_hotkey_parses_roundtrips_and_rejects_risky_bindings() {
         let mut p = Profile::default();
         assert!(p.hotkey_chord().is_none(), "空绑定 = 无热键");
