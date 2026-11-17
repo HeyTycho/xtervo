@@ -58,7 +58,9 @@ DURATION=2m BIN=$PWD/target/release/tervo SOAK_NO_SHOTS=1 \
 - **沙箱里 `/run/user/1000` 只读**：soak/实例需要 `XDG_RUNTIME_DIR` + `TERVO_INSTANCE_DIR` 指到可写目录。
 - **MCP 参数必须放 `args`**；平铺会被忽略（曾因此收到 `pane_id required`）。
 - **窗口标题累积**：已修（`secondary.rs::base_window_title`），别再往 `WM_NAME` 拼 id。
-- **commands 默认键不参与分发**：写新命令时绑了 `Some("ctrl+…")` 也不会触发，先看 ACT-048 备注。
+- ~~commands 默认键不参与分发~~ 已补兜底分发；`view.sidebar` 已绑 `ctrl+shift+b`，
+  Xvfb 里 XSetInputFocus + XTEST 实测能切侧栏（日志出现 `[ui] sidebar_visible=`）。
+  注意：无 WM 的 Xvfb 里不设焦点则按键丢失。
 
 ## 5. 续跑前先确认的三个选择
 

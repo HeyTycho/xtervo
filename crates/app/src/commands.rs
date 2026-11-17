@@ -587,7 +587,7 @@ pub fn builtin() -> Registry {
         ("terminal.save-contents", "Save Contents…", Category::Terminal, None),
         ("view.command-palette", "Command Palette", Category::View, Some("ctrl+shift+p")),
         ("view.toggle-fullscreen", "Toggle Fullscreen", Category::View, Some("f11")),
-        ("view.sidebar", "Toggle Sidebar", Category::View, None),
+        ("view.sidebar", "Toggle Sidebar", Category::View, Some("ctrl+shift+b")),
         ("view.toggle-quake", "Toggle Quake Mode", Category::View, None),
         ("view.zoom-in", "Zoom In", Category::View, Some("ctrl+plus")),
         ("view.zoom-out", "Zoom Out", Category::View, Some("ctrl+minus")),
