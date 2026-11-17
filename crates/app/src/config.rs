@@ -146,6 +146,14 @@ pub fn normalize_language(input: &str) -> String {
     }
 }
 
+/// 侧栏宽度夹取：200–360 逻辑像素；NaN/非有限值回 240，结果取整。
+fn clamp_sidebar_width(width: f32) -> f32 {
+    if !width.is_finite() {
+        return 240.0;
+    }
+    width.clamp(200.0, 360.0).round()
+}
+
 /// 夹取到 0.0–1.0 并四舍五入到两位小数；NaN/∞ 回退到 1.0。
 pub fn clamp_opacity(v: f32) -> f32 {
     if !v.is_finite() {
@@ -388,6 +396,13 @@ pub struct Config {
     pub quake_height: f32,
     /// 关闭 Tab/Pane 时对会话的处理："end" 结束进程 | "background" 保留后台可重连。
     pub close_action: String,
+    // ---- 工作区壳（Sidebar / Toolbar / 状态区）----
+    /// 侧栏是否展开。false（默认）= 布局与 0.5.0 完全一致，不占一像素。
+    pub sidebar_visible: bool,
+    /// 侧栏宽度（逻辑像素，界面按 200–360 夹取）。
+    pub sidebar_width: f32,
+    /// 侧栏分区：0 = Profiles，1 = Sessions，2 = Plugins（界面按 0–2 夹取）。
+    pub sidebar_section: u8,
     /// 用户自定义快捷键：`[[hotkeys]]` 表，命令 ID + 规范小写 chord。
     /// 空 = 全部使用命令表默认绑定；旧配置没有该字段时按空处理。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -456,6 +471,9 @@ impl Default for Config {
             quake_width: 0.7,
             quake_height: 0.5,
             close_action: "end".to_string(),
+            sidebar_visible: false,
+            sidebar_width: 240.0,
+            sidebar_section: 0,
             hotkeys: Vec::new(),
             extra: toml::Table::new(),
         }
@@ -547,6 +565,16 @@ impl Config {
     }
 
     /// 解析后的滚动条策略；未知值按 `auto`。
+    /// 侧栏宽度：夹到 200–360，NaN 回默认 240。
+    pub fn sidebar_width(&self) -> f32 {
+        clamp_sidebar_width(self.sidebar_width)
+    }
+
+    /// 侧栏分区：夹到 0–2（未知值回 Profiles）。
+    pub fn sidebar_section(&self) -> u8 {
+        self.sidebar_section.min(2)
+    }
+
     pub fn scrollbar_policy(&self) -> ScrollbarPolicy {
         ScrollbarPolicy::from_config(&self.scrollbar_policy)
     }
@@ -765,6 +793,51 @@ mod tests {
         assert!(text.contains("restore_session_on_startup = true"), "{text}");
         assert!(Config::load_from(&path).restore_session_on_startup);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sidebar_defaults_off_and_clamps() {
+        let cfg = Config::default();
+        assert!(!cfg.sidebar_visible, "侧栏默认必须关，布局与 0.5.0 一致");
+        assert!((cfg.sidebar_width() - 240.0).abs() < f32::EPSILON);
+        assert_eq!(cfg.sidebar_section(), 0);
+
+        // 宽度夹取 200–360，NaN 回 240，结果取整
+        for (raw, want) in [(100.0, 200.0), (999.0, 360.0), (240.4, 240.0),
+                            (300.6, 301.0), (f32::NAN, 240.0), (f32::INFINITY, 240.0)] {
+            let mut c = Config::default();
+            c.sidebar_width = raw;
+            assert!((c.sidebar_width() - want).abs() < f32::EPSILON,
+                    "width {raw} -> {} want {want}", c.sidebar_width());
+        }
+        // 分区夹取 0–2
+        let mut c = Config::default();
+        c.sidebar_section = 9;
+        assert_eq!(c.sidebar_section(), 2);
+    }
+
+    #[test]
+    fn sidebar_fields_roundtrip_and_old_config_uses_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let mut cfg = Config::default();
+        cfg.sidebar_visible = true;
+        cfg.sidebar_width = 312.0;
+        cfg.sidebar_section = 2;
+        let text = toml::to_string_pretty(&cfg).unwrap();
+        std::fs::write(&path, &text).unwrap();
+        let back = Config::load_from(&path);
+        assert!(back.sidebar_visible);
+        assert!((back.sidebar_width - 312.0).abs() < f32::EPSILON);
+        assert_eq!(back.sidebar_section, 2);
+
+        // 旧配置没有这三个键 -> serde(default) 补齐，不报错、不改写文件
+        let old = "version = 1\nfont_size = 15.0\n";
+        std::fs::write(&path, old).unwrap();
+        let old_cfg = Config::load_from(&path);
+        assert!(!old_cfg.sidebar_visible);
+        assert!((old_cfg.sidebar_width() - 240.0).abs() < f32::EPSILON);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), old);
     }
 
     #[test]
