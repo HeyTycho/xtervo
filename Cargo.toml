@@ -31,6 +31,8 @@ parking_lot = "0.12"
 crossbeam-channel = "0.5"
 # 与 alacritty 相同的 Unicode 宽度表：组合字符/emoji 宽度与零宽判定。
 unicode-width = "0.2"
+# 双击选词的词边界（UAX#29）：已在依赖图/lock 中（slint 等传递依赖）。
+unicode-segmentation = "1"
 serde = { version = "1", features = ["derive"] }
 toml = "1"
 log = "0.4"

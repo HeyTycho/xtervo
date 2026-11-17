@@ -549,8 +549,8 @@ struct AppState {
     menu_link: String,
     /// 广播输入：开启后键入同时发给当前 Tab 的所有 pane
     broadcast: bool,
-    /// 上次左键点击 (pane, 行, 列, 时间)：用于 400ms 内的双击选行
-    last_click: Option<(PaneId, i32, i32, std::time::Instant)>,
+    /// 上次左键点击 (pane, 行, 列, 时间, 连击数)：用于 400ms 内双击选词/三击选行
+    last_click: Option<(PaneId, i32, i32, std::time::Instant, u8)>,
     /// 最近关闭的 Tab（最多 10 个），用于 Ctrl+Shift+T / 菜单重开
     closed_tabs: Vec<session::TabSnapshot>,
     /// 最近使用 Tab 栈（MRU 在 0，存 Tab 的代表 pane id）。`tab.last` 用；
@@ -12304,25 +12304,50 @@ fn register_window_callbacks(
                 );
             }
             if !drag.moved {
-                // 双击选行：同一 pane、同一格、400ms 内的第二次左键抬起。
-                let Some(rt) = st.panes.get(&id) else { return };
-                let (line_u, col_u) = cell_at(rt, x, y);
+                // 多击选词/选行：同一 pane、同一格、400ms 内的连续左键抬起。
+                // 第 2 击选 Unicode 词，第 3 击选整行（沿用 core 的 SelectLine）。
+                let Some((line_u, col_u)) = st.panes.get(&id).map(|rt| cell_at(rt, x, y))
+                else {
+                    return;
+                };
                 let (line, col) = (line_u as i32, col_u as i32);
                 let now = std::time::Instant::now();
-                let is_double = matches!(st.last_click, Some((p, l, c, t))
-                    if p == id && l == line && c == col && now.duration_since(t) < std::time::Duration::from_millis(400));
-                if is_double {
-                    st.last_click = None;
+                let streak = match st.last_click {
+                    Some((p, l, c, t, n))
+                        if p == id
+                            && l == line
+                            && c == col
+                            && now.duration_since(t) < std::time::Duration::from_millis(400) =>
+                    {
+                        n.saturating_add(1)
+                    },
+                    _ => 1,
+                };
+                if streak == 2 {
                     if let Some(rt) = st.panes.get_mut(&id) {
-                        rt.handle.select_line(line);
+                        rt.handle.select_word(line_u, col_u);
                     }
-                    eprintln!("[ui] double-click select line={line} pane={id}");
+                    eprintln!(
+                        "[ui] double-click select word line={line} col={col} pane={id}"
+                    );
+                    st.last_click = Some((id, line, col, now, 2));
                     if st.cfg.copy_on_select {
                         copy_current_selection(st);
                     }
                     return;
                 }
-                st.last_click = Some((id, line, col, now));
+                if streak >= 3 {
+                    if let Some(rt) = st.panes.get_mut(&id) {
+                        rt.handle.select_line(line);
+                    }
+                    eprintln!("[ui] triple-click select line={line} pane={id}");
+                    st.last_click = None;
+                    if st.cfg.copy_on_select {
+                        copy_current_selection(st);
+                    }
+                    return;
+                }
+                st.last_click = Some((id, line, col, now, 1));
                 return;
             }
             // 关闭 Copy on select 时只保留高亮，不写剪贴板

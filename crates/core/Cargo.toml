@@ -14,6 +14,8 @@ crossbeam-channel.workspace = true
 log.workspace = true
 # 与 alacritty 相同的宽度表：识别零宽组合字符/ZWJ/变体选择符，按需整帧刷新。
 unicode-width.workspace = true
+# 双击选词的 UAX#29 词边界。
+unicode-segmentation.workspace = true
 # iTerm2 IIP（OSC 1337 File）图片解码：PNG 用 png，JPEG 用轻量纯 Rust zune-jpeg。
 png = "0.18"
 zune-jpeg = "0.5"
