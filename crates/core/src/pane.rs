@@ -1084,8 +1084,41 @@ impl Drop for PaneHandle {
     }
 }
 
+/// pane 的字节后端。
+///
+/// `Pty` 是唯一的产品路径（行为与接线前逐字一致）；`Plugin` 接收插件宿主
+/// 提供的任意字节通道，让 SSH/Serial/Telnet 插件不需要改 core 的解析路径。
+pub enum Backend {
+    Pty,
+    Plugin(Box<dyn crate::transport::PaneTransport>),
+}
+
 /// 启动一个 pane：PTY + shell + 专属 actor 线程。
+///
+/// 等价于 `spawn_with_transport(config, Backend::Pty)`，现有调用点行为不变。
 pub fn spawn(config: PaneConfig) -> std::io::Result<PaneHandle> {
+    spawn_with_transport(config, Backend::Pty)
+}
+
+/// 用指定后端启动 pane。
+///
+/// F1 只引入 seam：`Backend::Pty` 继续走原来的 openpty/shell 路径；
+/// `Backend::Plugin` 的读写接线（pump_reader / transport.write_all）在 F2 完成。
+pub fn spawn_with_transport(
+    config: PaneConfig,
+    backend: Backend,
+) -> std::io::Result<PaneHandle> {
+    match backend {
+        Backend::Pty => spawn_pty(config),
+        Backend::Plugin(_transport) => Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "plugin transport backend 尚未接线",
+        )),
+    }
+}
+
+/// PTY 后端实现（原 `spawn` 主体，逐字保留）。
+fn spawn_pty(config: PaneConfig) -> std::io::Result<PaneHandle> {
     let size = GridSize::new(config.cols as usize, config.rows as usize);
 
     let pty_system = native_pty_system();
