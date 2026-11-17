@@ -2015,14 +2015,14 @@ export component MainWindow inherits Window {
         root.reveal-active-tab();
     }
 
-    /// 把活动 Tab（若为最后一个，连同 +/Profile）滚进视口；只写 content-x，
-    /// 不建立绑定，用户仍可拖拽/滚轮自由滚动。
+    /// 把活动 Tab 滚进视口；只写 content-x，不建立绑定，
+    /// 用户仍可拖拽/滚轮自由滚动。+/Profile 固定在视口外，不参与 reveal。
     public function reveal-active-tab() {
         if (root.active-tab-width > 0px) {
             let view = tab-flick.width;
             let margin = 8px;
             let left = root.active-tab-left;
-            let right = left + root.active-tab-width + (root.active-tab-last ? 58px : 0px);
+            let right = left + root.active-tab-width;
             let visible-left = -tab-flick.content-x;
             if (left - margin < visible-left) {
                 tab-flick.content-x = -(left - margin);
@@ -2116,10 +2116,10 @@ export component MainWindow inherits Window {
     property <length> active-tab-left: 0px;
     property <length> active-tab-width: 0px;
     property <bool> active-tab-last: false;
-    // Tab 自动收缩：把扣除左侧搜索/品牌、+、Profile、窗口按钮后的宽度均分给 Tab。
+    // Tab 自动收缩：把扣除左侧搜索/品牌、固定 +/Profile、窗口按钮后的宽度均分给 Tab。
     // 52px 是可读下限（标题至少保留几个字符）；再窄就横向滚动，并把活动 Tab 滚进视口。
     property <length> tab-width-cap: Math.max(52px, Math.min(180px,
-        (root.width - 266px - 4px * root.tabs.length) / Math.max(1, root.tabs.length)));
+        (root.width - 322px - 4px * root.tabs.length) / Math.max(1, root.tabs.length)));
 
     Rectangle {
         width: 100%;
@@ -2207,11 +2207,11 @@ export component MainWindow inherits Window {
             // Tab 条放进 Flickable：视口固定，内容再宽也不会把窗口的 preferred/min 宽度撑大。
             // 支持拖拽和滚轮横向滚动；活动 Tab 变化/窗口变化时自动滚进视口。
             tab-flick := Flickable {
-                // 左侧 58px 留给固定的搜索/品牌图标；滚动内容从图标右侧开始，
-                // 不会钻到图标下面（活动 Tab 自动 reveal 时也安全）。
+                // 左侧 58px 留给固定的搜索/品牌图标；右侧再留 56px 给固定的
+                // +/Profile，滚动内容只含 Tab，活动 Tab 居中时按钮仍在视口内。
                 x: 58px;
                 y: 0px;
-                width: parent.width - 198px;
+                width: parent.width - 254px;
                 height: parent.height;
                 interactive: true;
                 content-width: tab-strip.preferred-width;
@@ -2627,68 +2627,75 @@ export component MainWindow inherits Window {
                     }
                 }
 
-                Rectangle {
-                    height: 22px;
-                    width: 24px;
-                    border-radius: 5px;
-                    background: new-hit.has-hover ? Palette.colors.raise : transparent;
-                    animate background { duration: 120ms; }
+            }
+            }
 
-                    new-hit := TouchArea {
-                        clicked => {
-                            if (root.settings-open) {
-                                root.suspend-settings();
-                            }
-                            // LOCAL-004：`+` 下拉 = 默认 Tab + 按 Profile 开 Tab。
-                            root.profilemenu-x = self.absolute-position.x;
-                            root.profilemenu-show-new-tab = true;
-                            root.profilemenu-open = true;
-                            root.profilemenu-menu();
+            // `+` 与 Profile 按钮固定在 TabBar 右侧，不随 Tab 横向滚动：
+            // 活动 Tab 居中/滚到中间时也不会把按钮挤出视口（UI-TAB-013）。
+            Rectangle {
+                x: parent.width - 196px;
+                y: 4px;
+                width: 24px;
+                height: 24px;
+                border-radius: 5px;
+                background: new-hit.has-hover ? Palette.colors.raise : transparent;
+                animate background { duration: 120ms; }
+
+                new-hit := TouchArea {
+                    clicked => {
+                        if (root.settings-open) {
+                            root.suspend-settings();
                         }
-                    }
-
-                    Text {
-                        text: "+";
-                        color: Palette.colors.text;
-                        font-size: 16px;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                        width: 100%;
-                        height: 100%;
+                        // LOCAL-004：`+` 下拉 = 默认 Tab + 按 Profile 开 Tab。
+                        root.profilemenu-x = self.absolute-position.x;
+                        root.profilemenu-show-new-tab = true;
+                        root.profilemenu-open = true;
+                        root.profilemenu-menu();
                     }
                 }
 
-                // Profile 选择器：独立图标（Tabby 风格），不在 + 的下拉里
-                Rectangle {
-                    height: 22px;
-                    width: 26px;
-                    border-radius: 5px;
-                    background: profile-menu-hit.has-hover ? Palette.colors.raise : transparent;
-                    animate background { duration: 120ms; }
-
-                    profile-menu-hit := TouchArea {
-                        clicked => {
-                            if (root.settings-open) {
-                                root.suspend-settings();
-                            }
-                            root.profilemenu-x = self.absolute-position.x;
-                            root.profilemenu-show-new-tab = false;
-                            root.profilemenu-open = true;
-                            root.profilemenu-menu();
-                        }
-                    }
-
-                    Text {
-                        text: ">_";
-                        color: Palette.colors.subtext;
-                        font-size: 11px;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                        width: 100%;
-                        height: 100%;
-                    }
+                Text {
+                    text: "+";
+                    color: Palette.colors.text;
+                    font-size: 16px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    width: 100%;
+                    height: 100%;
                 }
             }
+
+            // Profile 选择器：独立图标（Tabby 风格），同样固定在 + 右侧。
+            Rectangle {
+                x: parent.width - 168px;
+                y: 4px;
+                width: 26px;
+                height: 24px;
+                border-radius: 5px;
+                background: profile-menu-hit.has-hover ? Palette.colors.raise : transparent;
+                animate background { duration: 120ms; }
+
+                profile-menu-hit := TouchArea {
+                    clicked => {
+                        if (root.settings-open) {
+                            root.suspend-settings();
+                        }
+                        root.profilemenu-x = self.absolute-position.x;
+                        root.profilemenu-show-new-tab = false;
+                        root.profilemenu-open = true;
+                        root.profilemenu-menu();
+                    }
+                }
+
+                Text {
+                    text: ">_";
+                    color: Palette.colors.subtext;
+                    font-size: 11px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    width: 100%;
+                    height: 100%;
+                }
             }
 
             // 横向滚动条：仅在 Tab + 按钮溢出时出现，提示可拖拽/滚轮滚动。
