@@ -99,7 +99,7 @@ F7 Telnet 插件             45m
 判据来自 core Frame dump（TERM_FRAME_DUMP）与 MCP list 的 pane 信息。
 ```
 
-## 5. 今晚的完成判据
+## 5. 今晚的完成判据（已达成 82.2%，2026-11-17 19:5x）
 
 ```text
 硬指标：核心 69.2% → ≥78%（Wave 1–4 完成，含 pane 拖拽与录制 API）
