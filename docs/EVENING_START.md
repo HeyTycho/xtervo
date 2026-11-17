@@ -25,6 +25,7 @@
 | F9 | 顶部 Toolbar（先把 IME 坐标链里的 `TABBAR_H` 换成运行时常量） | `main.slint` + `main.rs` | 90m |
 | F10 | safe mode 收尾：GPU/WASM 显式降级 + 熔断动作 | `main.rs` | 45m |
 | F11 | **截图功能**（见 §6） | 新 `crates/app/src/screenshot.rs` | 45m |
+| F12 | **工作区补完**（见 §7，用户确认有需求） | `workspaces.rs` + 设置页 + 启动 | 2–3h |
 
 合计约 10 小时；F1–F7 是主线，F8–F10 视剩余时间。
 
@@ -148,3 +149,42 @@ x11rb   0.14   （features: xtest, damage, shape, randr —— 可 get_image 抓
 - **遮挡/未映射**：X11 抓的是窗口 drawable，被挡住时可能拿到陈旧内容；截图前先 `map`/raise 或提示。
 - **HiDPI**：窗口物理像素 vs Slint 逻辑像素要乘 scale_factor，否则截出来一半。
 - **安全**：截图会包含屏幕内容，写入前不弹确认，但路径固定在 Pictures 且日志只记路径不记内容。
+
+## 7. F12 工作区补完（用户确认按 A 方案做）
+
+现状（v1，已实现）：`workspaces.rs` 数据层（命名布局复用 `session::Tree`、独立
+`workspaces.toml`、原子写、容错、4 条单测）；命令 `workspace.save`（自动取 Tab 标题命名）、
+`workspace.open`（恢复成新 Tab）、命令面板里的 `Workspace: <name>` 选择器；
+e2e：预置 two-up → 面板选中 → 1 tab/1 pane 变 2 tabs/3 panes。
+
+不足：没有命名弹窗、没有管理 UI、只存单个 Tab、不能启动自动打开。
+
+### 拆解
+
+| 步骤 | 内容 | 估时 |
+|---|---|---|
+| F12.1 | 命名弹窗：保存时预填 Tab 标题、可编辑、重名提示（复用现有表单弹窗样式） | 40m |
+| F12.2 | 设置页「工作区」列表：名字 / pane 数 / 创建时间 / 打开 / 重命名 / 删除 | 60m |
+| F12.3 | 启动恢复：config `workspace_on_start`（空 = 不恢复），启动时打开对应工作区 | 30m |
+| F12.4 | （可选）整窗多 Tab 快照：`WorkspaceStore` 升 version 2，存 Tab 列表而非单树 | 60m |
+
+### 验收
+
+```text
+[ ] 保存时可输入名字；重名给出提示并允许覆盖/改名
+[ ] 设置页列出工作区，能打开/重命名/删除，操作后 workspaces.toml 立即更新
+[ ] config.workspace_on_start 设置后，重启自动打开且失败时回退普通启动并报错
+[ ] 删除当前正在使用的工作区不崩溃（只删记录，不动已开的 Tab）
+[ ] e2e：保存 → 设置页可见 → 重命名 → 删除 → 启动自动打开（Xvfb + XTEST）
+```
+
+### 为什么值得做
+
+- 分屏布局每次重开是真实痛点，v1 已经证明了恢复路径可靠（复用 session 恢复）；
+- 它和"连接插件"天然互补：一个工作区 = 一组 SSH/本地 pane 的布局，连上连接管理后价值更高；
+- 成本低（数据层已在，缺的是 UI 入口与两个字段）。
+
+### 优先级建议
+
+如果按"终端本体优先"（连接插件不算核心），F12 可以插到 F5 之前做；
+如果按"连接差异化优先"，保持 F1–F7 在前、F12 放夜里后段。
