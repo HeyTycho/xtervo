@@ -57,7 +57,16 @@ nc          ✓（可以当最简 TCP 回显：nc -lk 127.0.0.1 2324）
 ```
 
 结论：**Serial 用 socat PTY 对、Telnet 用 busybox telnetd/nc 都能本地闭环；
-SSH 必须用远端或装 sshd**——这一条要在 18:00 前跟用户确认好，否则 F5 会卡住。
+SSH 用**远端机器**（用户已定）。
+
+本机现状（已核对）：
+- `~/.config/tervo/` 下**没有 profiles.toml**（还没有保存过任何 Profile）；
+- `~/.ssh/config` 里只有一个 Host：`ssh.example.test`；
+- `SSH_AUTH_SOCK=<agent socket>`（agent 可用），`~/.ssh` 有 ed25519/rsa 公钥；
+- known_hosts 已配置。
+
+F5 联调就用 `ssh.example.test`（或你临时指定的主机）建 Profile：
+F9 步骤前不要动 UI，先用 `ssh` 命令行确认 `BatchMode=yes` 能通，再让插件走同一条路径。
 
 ## 3. 中断保护
 
