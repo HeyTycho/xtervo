@@ -179,8 +179,8 @@ ACT-002 上游审计 ──（解除 21 条 needs_verification 的决策阻塞�
 | ACT-035 | 恢复矩阵（破坏面注入） | — | 已补：写失败（EACCES，ENOSPC 同路径）保留旧快照且无 tmp 残留、主文件截断回退 `.bak`、`.bak` 也坏返回 None、config 坏 TOML 不覆盖原文件（原有）、kill -9 多窗口 e2e（原有）。缺：真实 ENOSPC 注入（需 tmpfs/配额） | 剩余只差 ENOSPC 真注入；其余断言已在 `session::tests::write_failure_keeps_previous_snapshot_and_leaves_no_tmp` / `truncated_primary_recovers_from_previous_generation` | S |
 | ACT-036 | crash marker + safe mode | — | 0 实现；崩溃循环无熔断 | 连续 N 次异常退出 → 安全模式（禁插件/GPU/WASM）并在 UI 说明原因；单测 + e2e | L |
 | ACT-051 | 平台/性能深度 | — | 已知缺口 | Wayland 原生、emoji shaping、atlas 驱逐、P95/吞吐/24h soak 各有一份可复现数据 | L |
-| ACT-037 | 文档对账常态化 | — | 本次已对账到 v0.5.0 | 发版清单加一步：跑 `scripts/matrix_stats.py` + 更新 CLOSURE/ACT，否则 CI 失败 | S |
-| ACT-038 | MCP 允许面收尾 | — | `mcp_tabs` 已开，`mcp_destructive` 仍关 | 默认值策略写进 `docs/MCP.md`：哪些默认开、哪些必须显式开 | S |
+| ACT-037 | 文档对账常态化 | — | 已加 `scripts/check_docs_counts.py`（CLOSURE vs 矩阵，漂移退出 1，`--fix` 可回写）并写进 RELEASING §4.1 第 5 步 | 发版清单加一步：跑 `scripts/matrix_stats.py` + 更新 CLOSURE/ACT，否则 CI 失败 | S |
+| ACT-038 | MCP 允许面收尾 | — | 文档已补“默认只开 read / 分组与依赖 / 请求格式必须用 `args` / window_id 路由 / 未知 pane 必须报错”；`mcp_tabs` 已开、`mcp_destructive` 仍关 | 默认值策略写进 `docs/MCP.md`：哪些默认开、哪些必须显式开 | S |
 
 ### 8.4 依赖与顺序
 

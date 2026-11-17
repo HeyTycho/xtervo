@@ -706,6 +706,11 @@ fn live_control(cmd: &str, args: &serde_json::Value) -> Result<serde_json::Value
                 "right" => Dir::Row, "down" => Dir::Col,
                 _ => return Err("direction must be right/down".into()),
             };
+            // 窗口路由可能把命令送到不含该 pane 的窗口：这里必须显式报错，
+            // 否则 split_pane_inner 静默 return，调用方却收到 ok=true。
+            if !st.panes.contains_key(&pane) {
+                return Err(format!("unknown pane {pane} in window {}", st.window_id.get()));
+            }
             split_pane_inner(st, pane, dir);
             Ok(serde_json::json!({"pane_id":pane,"direction":format!("{dir:?}")}))
         },

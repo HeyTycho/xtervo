@@ -147,6 +147,15 @@ DURATION=2m ./scripts/soak.sh
 
 3. 更新 `CHANGELOG.md`，把 `Unreleased` 收到版本号下。
 4. 更新 `docs/RETEST_CHECKLIST.md` 的预期版本与已知限制。
+5. **文档对账**（ACT-037）：
+
+```bash
+python3 scripts/matrix_stats.py            # 矩阵现算
+python3 scripts/check_docs_counts.py       # CLOSURE 数字必须与矩阵一致，否则退出 1
+```
+
+不一致时先手工改 `CLOSURE.md` §2/§3 与 `ACTION_ITEMS.md` 的状态，或对 §2 用
+`--fix`；**不要**只改一处。上线前这两条必须 PASS。
 
 ### 4.2 升版本
 

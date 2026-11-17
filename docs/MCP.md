@@ -29,6 +29,22 @@ mcp_destructive = false
 - `mcp_enabled=false` 是硬关闭：即使设置了 `TERVO_DIAG_SOCKET` 也不会创建
   socket；MCP 只剩离线诊断工具。
 
+### 请求格式与窗口路由
+
+每个连接一行 JSON；**命令参数必须放在 `args` 里**，平铺字段会被忽略：
+
+```json
+{"id": 3, "cmd": "split", "token": "<mcp.token>", "args": {"pane_id": 1, "direction": "right"}}
+```
+
+- `token` 读 `~/.local/state/tervo/mcp.token`（0600）；socket 在
+  `$XDG_RUNTIME_DIR/tervo/mcp.sock`（0600）。
+- 可选 `args.window_id`：不传 = 当前活动窗口；显式值必须命中 WindowRegistry，否则报
+  `unknown window_id`（不会悄悄改到别的窗口）。
+- pane 不存在于目标窗口时，写命令必须返回 `unknown pane N in window W`，不能回
+  `ok: true`（`split` 曾有此问题，2026-11-16 修复）。
+- 响应固定是 `{"id", "ok", "data"|"error"}`；`error` 不含 token/命令文本。
+
 权限分组：
 
 | 分组 | 配置键 | socket commands |
