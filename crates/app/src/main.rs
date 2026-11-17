@@ -439,6 +439,10 @@ struct AppState {
     commands: commands::Registry,
     /// 命名工作区（保存的分屏布局，ACT-047）
     workspaces: workspaces::WorkspaceStore,
+    /// 每个 Profile 已自动重连的次数（ACT-047 断线重连；app 重启清零）。
+    reconnect_attempts: HashMap<u64, u32>,
+    /// 待触发的重连定时器必须持有，Slint 的 Timer drop 后不再触发。
+    reconnect_timer: Option<slint::Timer>,
     /// Palette 当前展示项对应的命令 ID（与 palette_model 同序）
     palette_ids: Vec<String>,
     palette_model: Rc<VecModel<slint::SharedString>>,
@@ -4722,6 +4726,56 @@ fn note_ssh_exit(
     st.ui.set_ssh_exit_text(text.as_str().into());
     st.ui.set_ssh_exit_reconnectable(profile_id.is_some());
     st.ui.set_ssh_exit_open(true);
+
+    // 自动重连（ACT-047 v1）：退避 2s/5s/10s，第 4 次放弃；计数在 app 会话内累计
+    //（手动重开不会清零，见 NIGHT_PROGRESS 的已知限制）。
+    if profile.auto_reconnect {
+        let attempt = {
+            let slot = st.reconnect_attempts.entry(profile.id).or_insert(0);
+            *slot = slot.saturating_add(1);
+            *slot
+        };
+        match profile::Profile::reconnect_delay(attempt) {
+            Some(delay) => {
+                let pid = profile.id;
+                let secs = delay.as_secs();
+                eprintln!(
+                    "[ssh] 自动重连 profile={pid} 第 {attempt} 次，{secs}s 后（{}）",
+                    profile.name
+                );
+                let msg = if st.cfg.lang() == "zh" {
+                    format!("{} 断开，{secs}s 后自动重连（第 {attempt} 次）", profile.name)
+                } else {
+                    format!("{} disconnected; reconnecting in {secs}s (#{attempt})", profile.name)
+                };
+                st.ui.set_status_items(ModelRc::from(Rc::new(VecModel::from(vec![
+                    slint::SharedString::from(msg),
+                ]))));
+                let timer = slint::Timer::default();
+                timer.start(slint::TimerMode::SingleShot, delay, move || {
+                    if let Some(window) = runtime::current_window() {
+                        let _ = runtime::with_window(window, |st| {
+                            if let Some(index) =
+                                st.profiles.profiles.iter().position(|p| p.id == pid)
+                            {
+                                eprintln!("[ssh] 自动重连触发 profile={pid}");
+                                open_profile_tab(st, index);
+                            }
+                        });
+                    }
+                });
+                st.reconnect_timer = Some(timer);
+            },
+            None => {
+                eprintln!(
+                    "[ssh] 自动重连 profile={} 已连续 {} 次失败，停止",
+                    profile.id,
+                    attempt.saturating_sub(1)
+                );
+                st.reconnect_attempts.remove(&profile.id);
+            },
+        }
+    }
 }
 
 fn dismiss_ssh_exit(st: &mut AppState) {
@@ -11645,6 +11699,8 @@ fn build_window_state(
         bg_model,
         profiles: shared.profiles.clone_handle(),
         workspaces: workspaces::WorkspaceStore::load(),
+        reconnect_attempts: HashMap::new(),
+        reconnect_timer: None,
         profile_model,
         profile_indices: Vec::new(),
         profile_query: String::new(),

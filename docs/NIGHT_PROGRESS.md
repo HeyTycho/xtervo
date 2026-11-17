@@ -41,8 +41,8 @@ DURATION=2m BIN=$PWD/target/release/tervo SOAK_NO_SHOTS=1 \
 
 ```text
 1. ~~ACT-048 前置：把 commands.rs 的 default_shortcut 接进键盘分发~~ ✅（已在 PTY 写入前兜底）
-2. ACT-047 设置页：Profile 热键绑定输入（可复用 hotkey_recording 录制流程）
-3. ACT-047 剩余：分屏布局存成 Workspace、断线重连策略
+2. ~~ACT-047 设置页 Profile 热键绑定输入~~ ✅（表单 Hotkey 行）
+3. ~~ACT-047 Workspace 保存/打开/选择器~~ ✅ ｜ ~~断线重连 v1~~ ✅（仅 ssh）
 4. ACT-046 剩余：独立顶部 Toolbar（需先修 IME 坐标链里的 TABBAR_H 常量）、
    Connection Manager（与 ACT-041 合并）、插件注入点
 5. ACT-036 剩余：crash marker + safe mode + 崩溃循环熔断

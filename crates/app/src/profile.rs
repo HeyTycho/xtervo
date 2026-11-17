@@ -29,6 +29,9 @@ pub struct Profile {
     /// 稳定 ID（文件内唯一；删除后不复用）。
     pub id: u64,
     pub name: String,
+    /// 连接意外结束时是否自动重连（仅 ssh/telnet/serial 有意义；默认关）。
+    #[serde(default)]
+    pub auto_reconnect: bool,
     /// 绑定到该 Profile 的快捷键（单段，形如 `ctrl+alt+1`）；空 = 不绑定。
     /// 必须带 ctrl/alt 之一，避免吞掉普通输入；非法值在 `validate` 里拒绝。
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -204,6 +207,7 @@ impl Default for Profile {
         Self {
             id: 0,
             name: String::new(),
+            auto_reconnect: false,
             hotkey: String::new(),
             kind: default_kind(),
             shell: String::new(),
@@ -375,6 +379,17 @@ impl Profile {
     }
 
     /// 按类型校验必填项（本地 Profile 几乎不校验，SSH/Serial 必须有目标）。
+    /// 第 `attempt` 次自动重连的等待时间；超过 `MAX_RECONNECT_ATTEMPTS` 返回
+    /// `None`（停止重连）。纯函数，便于单测；调用方负责真正调度定时器。
+    pub fn reconnect_delay(attempt: u32) -> Option<std::time::Duration> {
+        Some(std::time::Duration::from_secs(match attempt {
+            0 | 1 => 2,
+            2 => 5,
+            3 => 10,
+            _ => return None,
+        }))
+    }
+
     /// 解析绑定的快捷键；空串或非法值返回 `None`（非法值另由 `validate` 拒绝）。
     ///
     /// 只接受单段 chord：Profile 热键要能一次按键直接开 Tab，不做 multi-chord。
@@ -671,6 +686,29 @@ impl ProfileStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reconnect_backoff_is_bounded_and_monotonic() {
+        use std::time::Duration;
+        assert_eq!(Profile::reconnect_delay(1), Some(Duration::from_secs(2)));
+        assert_eq!(Profile::reconnect_delay(2), Some(Duration::from_secs(5)));
+        assert_eq!(Profile::reconnect_delay(3), Some(Duration::from_secs(10)));
+        assert_eq!(Profile::reconnect_delay(4), None, "第 4 次应停止重连");
+        assert!(Profile::reconnect_delay(1) < Profile::reconnect_delay(2));
+        assert!(Profile::reconnect_delay(2) < Profile::reconnect_delay(3));
+        // 默认关，且磁盘往返保留
+        let p = Profile::default();
+        assert!(!p.auto_reconnect);
+        let mut on = Profile::default();
+        on.auto_reconnect = true;
+        let dir = tmpdir("reconnect");
+        let path = dir.join("profiles.toml");
+        let mut store = ProfileStore::default();
+        on.name = "prod".into();
+        store.add(on).unwrap();
+        store.save_to(&path);
+        assert!(ProfileStore::load_from(&path).profiles[0].auto_reconnect);
+    }
 
     #[test]
     fn add_rejects_hotkey_without_modifier_via_validate() {
