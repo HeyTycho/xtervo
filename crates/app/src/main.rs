@@ -14848,6 +14848,16 @@ fn register_window_callbacks(
                                 msg.push_str(&format!("; first skipped: {skip}"));
                             }
                         }
+                        // SESS-009：明确不导入的类别（插件配置/UI 主题 CSS/自定义 CSS/凭据）
+                        // 必须出现在用户可见状态行里，不能只打日志。
+                        let not_imported = report.not_imported_summary(lang == "zh");
+                        if !not_imported.is_empty() {
+                            msg.push_str("；");
+                            msg.push_str(&not_imported);
+                            for item in &report.not_imported {
+                                eprintln!("[tabby] 不导入 [{}] {}", item.category, item.detail);
+                            }
+                        }
                         eprintln!("[tabby] {msg}");
                         msg
                     }

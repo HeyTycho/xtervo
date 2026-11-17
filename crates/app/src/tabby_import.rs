@@ -57,6 +57,58 @@ pub struct ImportReport {
     pub themes_renamed: usize,
     /// (主题名, 跳过原因)
     pub themes_skipped: Vec<(String, String)>,
+    /// 明确**不导入**的类别（插件配置 / UI 主题 CSS / 密码凭据）。
+    ///
+    /// 与 `skipped`（想导但失败了）不同：这些内容在当前 Tervo 里没有对应模型，
+    /// 报告出来是为了不让用户以为“导入成功 = 全都搬过来了”。
+    pub not_imported: Vec<NotImported>,
+}
+
+/// 一条“明确不导入”的报告项。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NotImported {
+    /// 稳定类别：`plugin-config` / `ui-theme-css` / `custom-css` / `credentials`。
+    pub category: String,
+    /// 用户可见说明（含来源字段，绝不回显密码值）。
+    pub detail: String,
+}
+
+impl ImportReport {
+    /// 单行“明确未导入”摘要（空 = 没有此类内容）。给设置页状态行用。
+    pub fn not_imported_summary(&self, zh: bool) -> String {
+        if self.not_imported.is_empty() {
+            return String::new();
+        }
+        let kinds: Vec<&str> = {
+            let mut v: Vec<&str> = Vec::new();
+            for item in &self.not_imported {
+                if !v.contains(&item.category.as_str()) {
+                    v.push(item.category.as_str());
+                }
+            }
+            v
+        };
+        let names = kinds
+            .iter()
+            .map(|c| match (*c, zh) {
+                ("plugin-config", true) => "插件配置",
+                ("plugin-config", false) => "plugin configs",
+                ("ui-theme-css", true) => "UI 主题 CSS",
+                ("ui-theme-css", false) => "UI theme CSS",
+                ("custom-css", true) => "自定义 CSS",
+                ("custom-css", false) => "custom CSS",
+                ("credentials", true) => "密码/凭据",
+                ("credentials", false) => "passwords/credentials",
+                (other, _) => other,
+            })
+            .collect::<Vec<_>>()
+            .join(if zh { "、" } else { ", " });
+        if zh {
+            format!("明确不导入 {} 项（{names}）", self.not_imported.len())
+        } else {
+            format!("{} item(s) intentionally not imported ({names})", self.not_imported.len())
+        }
+    }
 }
 
 /// Tabby 命令 id → Tervo 命令 id。
@@ -228,7 +280,98 @@ pub fn import_yaml(
 
     import_hotkeys(root.get("hotkeys"), cfg, &mut report);
     import_themes(root.get("terminal"), themes_dir, &mut report);
+    report.not_imported = detect_not_imported(&root);
     Ok(report)
+}
+
+/// 扫描 Tabby 配置里**明确不支持**的内容，生成不兼容报告。
+///
+/// 只报告“用户可能以为导成功了”的东西：插件配置、UI 主题（插件 CSS）、
+/// 自定义 CSS、密码类字段。终端配色（colorScheme/customColorSchemes）会被
+/// 导入，不在此列。密码类字段只输出路径，绝不输出值。
+fn detect_not_imported(root: &Value) -> Vec<NotImported> {
+    let mut out = Vec::new();
+    // 1) 插件配置：Tabby 的 plugins/pluginConfig 是各插件的自由 JSON，没有稳定 schema。
+    for key in ["plugins", "pluginConfig", "pluginConfigs", "pluginsConfig"] {
+        if let Some(v) = root.get(key) {
+            if !v.is_null() {
+                out.push(NotImported {
+                    category: "plugin-config".into(),
+                    detail: format!(
+                        "{key}: Tabby 插件配置依赖插件自身 schema，Tervo 无对应插件模型"
+                    ),
+                });
+            }
+        }
+    }
+    // 2) UI 主题：只有主题名，实际 CSS 在 npm 插件里，无法从 config.yaml 取到。
+    if let Some(theme) = root
+        .get("appearance")
+        .and_then(|a| a.get("theme"))
+        .and_then(Value::as_str)
+    {
+        let theme = theme.trim();
+        if !theme.is_empty() && !theme.eq_ignore_ascii_case("Follow the color scheme") {
+            out.push(NotImported {
+                category: "ui-theme-css".into(),
+                detail: format!(
+                    "appearance.theme = {theme:?}: UI 主题 CSS 由 Tabby 插件提供，未导入"
+                ),
+            });
+        }
+    }
+    // 3) 自定义 CSS：只作用于 Tabby 的 Electron DOM，无法映射到终端网格。
+    if let Some(css) = root
+        .get("appearance")
+        .and_then(|a| a.get("css"))
+        .and_then(Value::as_str)
+    {
+        let chars = css.trim().chars().count();
+        if chars > 0 {
+            out.push(NotImported {
+                category: "custom-css".into(),
+                detail: format!("appearance.css: {chars} 字符自定义 CSS 仅作用于 Tabby UI，未导入"),
+            });
+        }
+    }
+    // 4) 密码/凭据字段：Tervo 只接受 Vault 加密保存，绝不会把明文搬进 profiles.toml。
+    let mut secrets = Vec::new();
+    collect_secret_paths(root, String::new(), &mut secrets);
+    for path in secrets.into_iter().take(8) {
+        out.push(NotImported {
+            category: "credentials".into(),
+            detail: format!("{path}: 凭据字段不导入（请在 Vault 中重新保存）"),
+        });
+    }
+    out
+}
+
+/// 递归找密码类字段路径；只输出路径，不输出值。
+fn collect_secret_paths(value: &Value, prefix: String, out: &mut Vec<String>) {
+    match value {
+        Value::Mapping(map) => {
+            for (k, v) in map {
+                let Some(key) = k.as_str() else { continue };
+                let path = if prefix.is_empty() { key.to_string() } else { format!("{prefix}.{key}") };
+                let lower = key.to_ascii_lowercase();
+                let is_secret = lower.contains("password")
+                    || lower.contains("secret")
+                    || lower.contains("passphrase")
+                    || matches!(lower.as_str(), "privatekeydata" | "keydata");
+                if is_secret && !v.is_null() {
+                    out.push(path.clone());
+                    continue;
+                }
+                collect_secret_paths(v, path, out);
+            }
+        },
+        Value::Sequence(seq) => {
+            for (idx, v) in seq.iter().enumerate() {
+                collect_secret_paths(v, format!("{prefix}[{idx}]"), out);
+            }
+        },
+        _ => {},
+    }
 }
 
 // ---------------------------------------------------------------- 快捷键
@@ -1216,5 +1359,63 @@ terminal:
             ansi16: [0; 16],
         };
         assert!(theme_toml(&scheme).unwrap().contains("variant = \"light\""));
+    }
+
+    #[test]
+    fn unsupported_tabby_sections_produce_explicit_not_imported_report() {
+        let dir = temp_dir("not-imported");
+        let mut store = ProfileStore::default();
+        let mut cfg = Config::default();
+        let yaml = r#"
+version: 1
+appearance:
+  theme: Hype
+  css: |
+    .tab-bar { background: #000; }
+plugins:
+  - name: tabby-ssh
+    config: { keepalive: 30 }
+  - name: tabby-docker
+profiles:
+  - name: Local
+    type: local
+    options:
+      shell: /bin/zsh
+      password: hunter2-super-secret
+terminal:
+  fontSize: 15
+"#;
+        let r = import_yaml(yaml, &mut store, &mut cfg, &dir).unwrap();
+        // 受支持的 Profile 仍然导入；不受支持的部分只进报告，不阻塞。
+        assert_eq!(r.added, 1, "{r:?}");
+        let cats: Vec<&str> = r.not_imported.iter().map(|i| i.category.as_str()).collect();
+        assert!(cats.contains(&"plugin-config"), "{:?}", r.not_imported);
+        assert!(cats.contains(&"ui-theme-css"), "{:?}", r.not_imported);
+        assert!(cats.contains(&"custom-css"), "{:?}", r.not_imported);
+        assert!(cats.contains(&"credentials"), "{:?}", r.not_imported);
+
+        // 报告给用户看，但绝不能回显密码值。
+        let joined = r
+            .not_imported
+            .iter()
+            .map(|i| format!("{} / {}", i.category, i.detail))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(joined.contains("profiles[0].options.password"), "{joined}");
+        assert!(!joined.contains("hunter2"), "报告不能包含密码明文: {joined}");
+        assert!(joined.contains("Hype"), "UI 主题名可用于提示: {joined}");
+        // 摘要区分中英文，且按类别去重。
+        let zh = r.not_imported_summary(true);
+        assert!(zh.contains("插件配置") && zh.contains("密码/凭据"), "{zh}");
+        let en = r.not_imported_summary(false);
+        assert!(en.contains("plugin configs") && en.contains("passwords"), "{en}");
+
+        // 干净的 Tabby 配置不应出现“未导入”噪音。
+        let mut s2 = ProfileStore::default();
+        let mut c2 = Config::default();
+        let clean = import_yaml(sample_profiles(), &mut s2, &mut c2, &dir).unwrap();
+        assert!(clean.not_imported.is_empty(), "{:?}", clean.not_imported);
+        assert!(clean.not_imported_summary(true).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
