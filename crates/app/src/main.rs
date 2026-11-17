@@ -110,6 +110,19 @@ fn toggle_sidebar_math(content: Rect, cfg: &mut crate::config::Config) -> Rect {
     content_rect(win_w, win_h, sidebar_width_of(cfg))
 }
 
+/// 翻转侧栏可见性并立即重排（命令面板与设置页开关共用）。
+fn toggle_sidebar(st: &mut AppState) {
+    st.content = toggle_sidebar_math(st.content, &mut st.cfg);
+    st.ui.set_cfg_sidebar_visible(st.cfg.sidebar_visible);
+    st.ui.set_sidebar_visible(st.cfg.sidebar_visible);
+    let w = sidebar_width_of(&st.cfg);
+    st.ui.set_sidebar_width(w);
+    refresh_views(st);
+    redraw_visible(st);
+    st.cfg.save();
+    eprintln!("[ui] sidebar_visible={}（宽 {}px）", st.cfg.sidebar_visible, w);
+}
+
 /// 终端内容区矩形（TabBar 之下、侧栏之右）。`st.content` 的坐标系原点固定为
 /// 内容区左上角，所以侧栏只影响宽度，不影响 pane 自己的坐标。
 fn content_rect(win_w: f32, win_h: f32, sidebar_w: f32) -> Rect {
@@ -9733,6 +9746,7 @@ fn run_command(st: &mut AppState, id: &str) {
         "tab.search" => open_tab_search(st),
         "tab.duplicate" => duplicate_tab(st, st.ws.active),
         "tab.reopen-closed" => reopen_closed_tab(st),
+        "view.sidebar" => toggle_sidebar(st),
         "pane.split-right" => {
             if let Some(focused) = st.ws.active_tab().map(|t| t.focused) {
                 split_pane_inner(st, focused, Dir::Row);
@@ -13492,18 +13506,7 @@ fn register_window_callbacks(
 
     ui.on_toggle_sidebar_visible(move || {
         runtime::with_window(window_id, |st| {
-            st.content = toggle_sidebar_math(st.content, &mut st.cfg);
-            st.ui.set_cfg_sidebar_visible(st.cfg.sidebar_visible);
-            st.ui.set_sidebar_visible(st.cfg.sidebar_visible);
-            let w = sidebar_width_of(&st.cfg);
-            st.ui.set_sidebar_width(w);
-            refresh_views(st);
-            redraw_visible(st);
-            st.cfg.save();
-            eprintln!(
-                "[ui] sidebar_visible={}（宽 {}px）",
-                st.cfg.sidebar_visible, w
-            );
+            toggle_sidebar(st);
         });
     });
 
