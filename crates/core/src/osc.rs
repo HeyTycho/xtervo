@@ -926,6 +926,76 @@ mod tests {
     }
 
     #[test]
+    fn every_split_point_of_known_osc_is_equivalent() {
+        // 分包边界可以落在任意字节：引导符 / ESC / ] / 正文 / ST 两字节之间。
+        let cases: [&[u8]; 6] = [
+            b"\x1b]9;4;1;42\x07",
+            b"\x1b]9;hi\x1b\\",
+            b"\x1b]52;c;aGk=\x07",
+            b"\x1b]133;D;3\x07",
+            b"\x1b]777;notify;t;b\x07",
+            b"\x1b]7;file:///tmp/x%20y\x07",
+        ];
+        for seq in cases {
+            let want = scan(seq);
+            assert!(!want.is_empty(), "基线序列应产生事件: {seq:?}");
+            for split in 0..=seq.len() {
+                let mut scanner = OscScanner::new();
+                let mut out = Vec::new();
+                scanner.feed(&seq[..split], &mut out);
+                scanner.feed(&seq[split..], &mut out);
+                assert_eq!(out, want, "split={split} seq={seq:?}");
+                // 分三片也必须一致（正文中间再切一刀）。
+                let mut scanner = OscScanner::new();
+                let mut out = Vec::new();
+                let mid = split + (seq.len() - split) / 2;
+                scanner.feed(&seq[..split], &mut out);
+                scanner.feed(&seq[split..mid.max(split)], &mut out);
+                scanner.feed(&seq[mid.max(split)..], &mut out);
+                assert_eq!(out, want, "three-way split={split} seq={seq:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn oversized_osc_recovers_and_emits_only_later_events() {
+        // 16 KiB 上限：超长正文整条丢弃，不产生半截事件；结束后下一条正常上报。
+        let mut scanner = OscScanner::new();
+        let mut out = Vec::new();
+        scanner.feed(b"\x1b]9;", &mut out);
+        let chunk = vec![b'a'; 4096];
+        for _ in 0..(MAX_OSC_BYTES / 4096 + 2) {
+            scanner.feed(&chunk, &mut out);
+        }
+        assert!(out.is_empty(), "超长 OSC 不应提前上报");
+        scanner.feed(b"\x07\x1b]9;after\x07", &mut out);
+        assert_eq!(
+            out,
+            vec![CoreEvent::Notification(Notification {
+                title: String::new(),
+                body: "after".to_string(),
+            })],
+            "超长序列之后的 OSC 必须恢复正常"
+        );
+    }
+
+    #[test]
+    fn osc_aborted_by_escape_never_reports_partial_body() {
+        // OSC 内 ESC + 非 `\\`：整条丢弃（包括已收集的正文）。
+        assert!(scan(b"\x1b]9;partial\x1bq").is_empty());
+        // 连续 ESC（等待是否构成 ST）不进入正文；最后 `\\` 仍按 ST 正常结束，
+        // 正文只保留 ESC 之前的字节。
+        assert_eq!(
+            scan(b"\x1b]9;x\x1b\x1b\\"),
+            vec![CoreEvent::Notification(Notification {
+                title: String::new(),
+                body: "x".to_string(),
+            })],
+            "ESC ESC 不应污染正文"
+        );
+    }
+
+    #[test]
     fn incomplete_sequences_never_panic() {
         assert!(scan(b"\x1b]9;4;1;50").is_empty());
         assert!(scan(b"\x1b]777;notify").is_empty());
