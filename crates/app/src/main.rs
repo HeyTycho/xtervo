@@ -40,6 +40,10 @@ mod session;
 mod sftp;
 mod tabby_import;
 mod themes;
+// Transport 数据面/权限骨架（ACT-052 F3/F4）：纯函数与门禁数据结构，
+// 产品启用流程尚未接它；接线前保持显式 allow(dead_code)。
+#[allow(dead_code)]
+mod transport_io;
 mod vault;
 mod workspaces;
 mod window;
