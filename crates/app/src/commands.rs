@@ -570,6 +570,7 @@ pub fn builtin() -> Registry {
         ("tab.close", "Close Tab", Category::Workspace, Some("ctrl+w")),
         ("tab.next", "Next Tab", Category::Workspace, Some("ctrl+tab")),
         ("tab.prev", "Previous Tab", Category::Workspace, Some("ctrl+shift+tab")),
+        ("tab.last", "Last Used Tab", Category::Workspace, Some("ctrl+shift+l")),
         ("tab.duplicate", "Duplicate Tab", Category::Workspace, None),
         ("tab.reopen-closed", "Reopen Closed Tab", Category::Workspace, Some("ctrl+shift+t")),
         ("tab.rename", "Rename Tab", Category::Workspace, None),

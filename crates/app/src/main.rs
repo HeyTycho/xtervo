@@ -553,6 +553,9 @@ struct AppState {
     last_click: Option<(PaneId, i32, i32, std::time::Instant)>,
     /// 最近关闭的 Tab（最多 10 个），用于 Ctrl+Shift+T / 菜单重开
     closed_tabs: Vec<session::TabSnapshot>,
+    /// 最近使用 Tab 栈（MRU 在 0，存 Tab 的代表 pane id）。`tab.last` 用；
+    /// 只在 rebuild_tabs 里按当前 active 更新，覆盖点击/快捷键/新建/恢复等路径。
+    tab_lru: Vec<PaneId>,
     fwd_profile_indices: Vec<usize>,
     fwd_model: Rc<VecModel<slint::SharedString>>,
     settings_result_cats: Vec<i32>,
@@ -1376,6 +1379,7 @@ fn command_title(lang: &str, id: &str, fallback: &'static str) -> &'static str {
         "tab.close" => "关闭标签",
         "tab.next" => "下一个标签",
         "tab.prev" => "上一个标签",
+        "tab.last" => "上一个使用的标签",
         "tab.duplicate" => "复制标签",
         "tab.reopen-closed" => "重新打开已关闭标签",
         "tab.rename" => "重命名标签",
@@ -7194,6 +7198,50 @@ fn switch_tab_number(st: &mut AppState, n: usize) {
     }
 }
 
+/// Tab 的稳定标识：取最小 pane id（pane id 单调递增、不复用）。
+///
+/// LRU 存这个 id 而不是下标：Tab 重排/关闭后下标会变，但 pane id 仍能用
+/// `Workspace::tab_of` 找回所属 Tab。
+fn tab_key(tab: &Tab) -> Option<PaneId> {
+    tab.root.as_ref()?.panes().into_iter().min()
+}
+
+/// 把当前 active Tab 记为 MRU 并清掉已关闭 Tab 的 key。
+///
+/// 放在 `rebuild_tabs` 里调用：所有激活路径（点击、Ctrl+Tab、tab.last、
+/// 新建/恢复/关闭）都会重建标签模型，因此无需在每个 `ws.active =` 处重复登记。
+fn touch_tab_lru(st: &mut AppState) {
+    let Some(key) = st.ws.active_tab().and_then(tab_key) else {
+        st.tab_lru.clear();
+        return;
+    };
+    st.tab_lru.retain(|k| *k != key);
+    st.tab_lru.insert(0, key);
+    let live: Vec<PaneId> = st.ws.tabs.iter().filter_map(tab_key).collect();
+    st.tab_lru.retain(|k| live.contains(k));
+    st.tab_lru.truncate(64);
+}
+
+/// `tab.last`：切到最近使用、且不是当前 Tab 的那一个。
+///
+/// 切换后 `touch_tab_lru` 会把新 Tab 提到栈顶，旧的仍在第二位，
+/// 因此连续执行 `tab.last` 会在最近两个 Tab 之间来回切换。
+fn switch_to_last_tab(st: &mut AppState) {
+    let current = st.ws.active_tab().and_then(tab_key);
+    let target = st
+        .tab_lru
+        .iter()
+        .filter(|k| Some(**k) != current)
+        .find_map(|k| st.ws.tab_of(*k));
+    match target {
+        Some(index) => {
+            eprintln!("[ws] tab.last → {index}");
+            set_active_tab_inner(st, index);
+        },
+        None => eprintln!("[ws] tab.last: 没有上一个使用的 Tab"),
+    }
+}
+
 // ------------------------------------------------------------------- resize 收尾
 
 /// WM watchdog：最近不再有 configure、且按下后已超过宽限，才算没接管。
@@ -7560,6 +7608,7 @@ fn rows_can_update_in_place(
 }
 
 fn rebuild_tabs(st: &mut AppState) {
+    touch_tab_lru(st);
     let active = st.ws.active;
     let tabs: Vec<TabView> = st
         .ws
@@ -9965,6 +10014,7 @@ fn run_command(st: &mut AppState, id: &str) {
         "tab.close" => close_tab_inner(st, st.ws.active),
         "tab.next" => switch_tab_relative(st, 1),
         "tab.prev" => switch_tab_relative(st, -1),
+        "tab.last" => switch_to_last_tab(st),
         "tab.search" => open_tab_search(st),
         "tab.duplicate" => duplicate_tab(st, st.ws.active),
         "tab.reopen-closed" => reopen_closed_tab(st),
@@ -11828,6 +11878,7 @@ fn build_window_state(
         broadcast: false,
         last_click: None,
         closed_tabs: Vec::new(),
+        tab_lru: Vec::new(),
         fwd_profile_indices: Vec::new(),
         fwd_model,
         settings_result_cats: Vec::new(),
