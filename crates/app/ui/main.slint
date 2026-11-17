@@ -1494,6 +1494,8 @@ export component MainWindow inherits Window {
     in-out property <bool> cfg-confirm-close: true;
     /// 启动时自动恢复上次退出快照（默认关 = 保持旧行为）。
     in-out property <bool> cfg-restore-session: false;
+    /// SESS-006：恢复边界文案（布局/cwd/本地 Profile 会恢复；进程/历史/远端连接不会）。
+    in-out property <string> restore-note: "";
     in-out property <bool> cfg-sidebar-visible: false;
     callback toggle-sidebar-visible();
     in-out property <bool> cfg-confirm-paste: true;
@@ -4695,6 +4697,13 @@ export component MainWindow inherits Window {
                                     on: root.cfg-restore-session;
                                     toggled => { root.toggle-restore-session(); }
                                 }
+                            }
+                            Text {
+                                text: root.restore-note;
+                                color: Palette.colors.subtext;
+                                font-size: 10px;
+                                wrap: word-wrap;
+                                visible: root.restore-note != "";
                             }
                             SettingRow {
                                 label: Lang.t("Sidebar", "侧栏");

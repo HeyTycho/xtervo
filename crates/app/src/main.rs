@@ -3661,6 +3661,8 @@ fn apply_external_config_from(st: &mut AppState, old: Config, new_cfg: Config) {
 /// 外部热更新后同步设置页控件状态。只改 Slint 属性，不触发回调、不写盘。
 fn sync_reload_ui(st: &mut AppState) {
     st.ui.set_language(st.cfg.lang().into());
+    st.ui
+        .set_restore_note(session::restore_boundaries_text(st.cfg.lang() == "zh").as_str().into());
     st.ui.set_sidebar_visible(st.cfg.sidebar_visible);
     st.ui.set_sidebar_width(sidebar_width_of(&st.cfg));
     st.ui.set_cfg_sidebar_visible(st.cfg.sidebar_visible);
@@ -3892,6 +3894,8 @@ fn refresh_settings_results(st: &mut AppState) {
 fn sync_language_ui(st: &mut AppState) {
     let lang = st.cfg.lang().to_string();
     st.ui.set_language(lang.as_str().into());
+    st.ui
+        .set_restore_note(session::restore_boundaries_text(lang == "zh").as_str().into());
     refresh_hotkeys(st);
     refresh_plugin_page(st);
     refresh_vault_ui(st);
@@ -7454,10 +7458,11 @@ fn restore_window_snapshot(st: &mut AppState, window: &session::WindowSnapshot) 
     rebuild_tabs(st);
     redraw_visible(st);
     eprintln!(
-        "[session] 窗口 {} 恢复完成：{restored}/{} 个标签 active={}",
+        "[session] 窗口 {} 恢复完成：{restored}/{} 个标签 active={}；边界：{}",
         window.id,
         window.tabs.len(),
-        st.ws.active
+        st.ws.active,
+        session::restore_boundaries_text(st.cfg.lang() == "zh")
     );
     true
 }
@@ -13729,6 +13734,9 @@ fn init_window_ui(st: &mut AppState) {
         st.ui.set_background_suspended(true);
     }
     st.ui.set_language(st.cfg.lang().into());
+    // SESS-006：明确“恢复会话”恢复的是布局/配置，不是运行中的进程。
+    st.ui
+        .set_restore_note(session::restore_boundaries_text(st.cfg.lang() == "zh").as_str().into());
     refresh_hotkeys(st);
     refresh_vault_ui(st);
     sync_plugin_config_metadata(st);
