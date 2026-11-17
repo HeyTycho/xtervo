@@ -1414,6 +1414,8 @@ export component MainWindow inherits Window {
     in-out property <bool> profilemenu-open: false;
     in-out property <length> profilemenu-x: 0px;
     in property <[string]> profilemenu-items: [];
+    /// `+` 打开下拉时置 true：Rust 会在第一行插入“新建默认 Tab”。
+    in-out property <bool> profilemenu-show-new-tab: false;
     callback profilemenu-menu();
     callback profilemenu-pick(int);
     callback profilemenu-manage();
@@ -1540,6 +1542,8 @@ export component MainWindow inherits Window {
     in-out property <string> form-shell: "";
     in-out property <string> form-args: "";
     in-out property <string> form-cwd: "";
+    /// 每行一个 `KEY=VALUE`（仅 local；空 = 不追加环境变量）。
+    in-out property <string> form-env: "";
     in-out property <string> form-host: "";
     in-out property <string> form-port: "";
     in-out property <string> form-user: "";
@@ -1584,9 +1588,13 @@ export component MainWindow inherits Window {
     callback hostkey-trust();
     callback hostkey-once();
     callback hostkey-cancel();
-    // SSH 会话结束提示 + 重连（不自动改写用户默认行为）
+    // 会话结束 / 启动失败提示 + 重启（不自动改写用户默认行为；LOCAL-005）
     in-out property <bool> ssh-exit-open: false;
+    /// 横幅标题：“SSH session ended” / “Session ended” / “Launch failed”。
+    in-out property <string> ssh-exit-title: "SSH session ended";
     in-out property <string> ssh-exit-text: "";
+    /// Restart/Retry 按钮文案（空 = 不可重试，不显示按钮）。
+    in-out property <string> ssh-exit-action-label: "Reconnect";
     in-out property <bool> ssh-exit-reconnectable: false;
     callback ssh-exit-reconnect();
     callback ssh-exit-dismiss();
@@ -1984,6 +1992,16 @@ export component MainWindow inherits Window {
     in-out property <string> save-status: "";
     callback save-commit(string);
     callback save-cancel();
+
+    // 保存布局为命名 Workspace（SESS-003）：预填 Tab 标题、重名提示、Esc 取消。
+    in-out property <bool> workspace-save-open: false;
+    in-out property <string> workspace-save-name: "";
+    /// 重名/空名提示（由 Rust 在输入变化时更新）。
+    in-out property <string> workspace-save-hint: "";
+    in-out property <string> workspace-save-status: "";
+    callback workspace-save-check(string);
+    callback workspace-save-commit(string);
+    callback workspace-save-cancel();
     /// IME 候选窗锚点：聚焦 pane 光标的像素位置（内容区坐标，由 Rust 侧更新）。
     in-out property <length> ime-x: 0px;
     in-out property <length> ime-y: 0px;
@@ -2532,7 +2550,11 @@ export component MainWindow inherits Window {
                             if (root.settings-open) {
                                 root.suspend-settings();
                             }
-                            root.new-tab();
+                            // LOCAL-004：`+` 下拉 = 默认 Tab + 按 Profile 开 Tab。
+                            root.profilemenu-x = self.absolute-position.x;
+                            root.profilemenu-show-new-tab = true;
+                            root.profilemenu-open = true;
+                            root.profilemenu-menu();
                         }
                     }
 
@@ -2561,6 +2583,7 @@ export component MainWindow inherits Window {
                                 root.suspend-settings();
                             }
                             root.profilemenu-x = self.absolute-position.x;
+                            root.profilemenu-show-new-tab = false;
                             root.profilemenu-open = true;
                             root.profilemenu-menu();
                         }
@@ -6415,7 +6438,7 @@ export component MainWindow inherits Window {
     if root.profile-form-open : Rectangle {
         x: (root.width - 440px) / 2;
         // local/serial/telnet 用紧凑高度；SSH 展开 password/转发/跳板时需要更高。
-        property <length> form-h: root.form-kind == 1 ? 700px : 440px;
+        property <length> form-h: root.form-kind == 1 ? 700px : (root.form-kind == 0 ? 490px : 440px);
         y: (root.height - form-h) / 2 < 8px ? 8px : (root.height - form-h) / 2;
         width: 440px;
         height: form-h;
@@ -6472,11 +6495,13 @@ export component MainWindow inherits Window {
         }
 
         if root.form-kind == 0 : VerticalLayout {
-            x: 16px; y: 116px; width: 408px; height: 130px;
+            x: 16px; y: 116px; width: 408px; height: 168px;
             spacing: 12px;
             FormRow { label: "Shell"; text <=> root.form-shell; }
             FormRow { label: Lang.t("Args", "参数"); text <=> root.form-args; }
             FormRow { label: Lang.t("Cwd", "工作目录"); text <=> root.form-cwd; }
+            // LOCAL-004：每个 Profile 自带环境变量（KEY=VALUE，每行一个）。
+            FormRow { label: Lang.t("Env", "环境变量"); text <=> root.form-env; }
         }
 
         if root.form-kind == 1 : VerticalLayout {
@@ -6530,7 +6555,7 @@ export component MainWindow inherits Window {
         // 绝对定位在不同类型间固定：local 在字段下方，SSH 留出 password 展开空间。
         VerticalLayout {
             x: 16px;
-            y: root.form-kind == 0 ? 232px : (root.form-kind == 1 ? 510px : 196px);
+            y: root.form-kind == 0 ? 290px : (root.form-kind == 1 ? 510px : 196px);
             width: 408px;
             height: 110px;
             spacing: 6px;
@@ -6795,7 +6820,7 @@ export component MainWindow inherits Window {
 
         Text {
             x: 14px; y: 8px; width: 456px; height: 20px;
-            text: "SSH session ended";
+            text: root.ssh-exit-title;
             color: Palette.colors.danger;
             font-size: 13px;
             font-weight: 600;
@@ -6830,7 +6855,7 @@ export component MainWindow inherits Window {
             background: ssh-exit-reconnect-hit.has-hover ? Palette.colors.danger : Palette.colors.accent;
             ssh-exit-reconnect-hit := TouchArea { clicked => { root.ssh-exit-reconnect(); } }
             Text {
-                text: "Reconnect";
+                text: root.ssh-exit-action-label;
                 color: Palette.colors.accent-text;
                 font-size: 11px;
                 font-weight: 600;
@@ -8185,7 +8210,137 @@ export component MainWindow inherits Window {
         }
     }
 
-    // 通用状态条目：在插件状态栏之上叠一行 pill（只读文本，不改变终端布局）。
+    // 保存布局为命名 Workspace：与 Save Contents 同款弹窗，输入即名字。
+    if root.workspace-save-open : Rectangle {
+        width: 100%;
+        height: 100%;
+        background: #00000080;
+
+        // 吃掉点击，避免穿透到终端误触；不点外部关闭（防误丢输入）。
+        TouchArea {
+            width: 100%;
+            height: 100%;
+            pointer-event(event) => { EventResult.accept; }
+        }
+
+        Rectangle {
+            x: (root.width - self.width) / 2;
+            y: (root.height - self.height) / 2;
+            width: Math.min(460px, root.width - 24px);
+            height: 258px;
+            background: Palette.colors.raise;
+            border-radius: 10px;
+            border-width: 1px;
+            border-color: Palette.colors.border;
+            drop-shadow-blur: 24px;
+            drop-shadow-offset-y: 8px;
+            drop-shadow-color: #000000c0;
+
+            VerticalLayout {
+                padding: 16px;
+                spacing: 9px;
+
+                Text {
+                    text: Lang.t("Save layout as workspace", "保存布局为工作区");
+                    color: Palette.colors.text;
+                    font-size: 15px;
+                    font-weight: 600;
+                }
+                Text {
+                    text: Lang.t("Stores this tab's split layout, each pane's cwd and profile (no running processes).", "保存当前 Tab 的分屏布局、各 pane 的工作目录与 Profile（不含运行中的进程）。");
+                    color: Palette.colors.muted;
+                    font-size: 11px;
+                    wrap: word-wrap;
+                }
+                TextInput {
+                    height: 30px;
+                    text <=> root.workspace-save-name;
+                    single-line: true;
+                    color: Palette.colors.text;
+                    font-size: 13px;
+                    // 预填 Tab 标题并全选：直接键入 = 替换，Enter 保存，Esc 取消。
+                    init => { self.focus(); self.select-all(); }
+                    changed text => { root.workspace-save-check(self.text); }
+                    key-pressed(event) => {
+                        if (event.text == "\u{a}" || event.text == "\u{d}") {
+                            root.workspace-save-commit(self.text);
+                            return EventResult.accept;
+                        }
+                        if (event.text == "\u{1b}") {
+                            root.workspace-save-open = false;
+                            root.workspace-save-cancel();
+                            return EventResult.accept;
+                        }
+                        EventResult.reject
+                    }
+                }
+                Text {
+                    text: root.workspace-save-hint;
+                    color: Palette.colors.danger;
+                    font-size: 11px;
+                    wrap: word-wrap;
+                    visible: root.workspace-save-hint != "";
+                }
+                Text {
+                    text: root.workspace-save-status;
+                    color: Palette.colors.danger;
+                    font-size: 11px;
+                    wrap: word-wrap;
+                    visible: root.workspace-save-status != "";
+                }
+                Rectangle {
+                    horizontal-stretch: 1;
+                    height: 1px;
+                    background: transparent;
+                }
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: 8px;
+
+                    Rectangle {
+                        width: 88px; height: 28px; border-radius: 6px;
+                        background: ws-save-cancel-hit.has-hover ? Palette.colors.hover : Palette.colors.raise;
+                        border-width: 1px;
+                        border-color: Palette.colors.border;
+                        ws-save-cancel-hit := TouchArea {
+                            clicked => {
+                                root.workspace-save-open = false;
+                                root.workspace-save-cancel();
+                            }
+                        }
+                        Text {
+                            text: Lang.t("Cancel", "取消");
+                            color: Palette.colors.text;
+                            font-size: 12px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                            width: 100%;
+                            height: 100%;
+                        }
+                    }
+                    Rectangle {
+                        width: 88px; height: 28px; border-radius: 6px;
+                        background: ws-save-commit-hit.has-hover ? Palette.colors.muted : Palette.colors.accent;
+                        ws-save-commit-hit := TouchArea {
+                            clicked => { root.workspace-save-commit(root.workspace-save-name); }
+                        }
+                        Text {
+                            text: Lang.t("Save", "保存");
+                            color: Palette.colors.accent-text;
+                            font-size: 12px;
+                            font-weight: 600;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                            width: 100%;
+                            height: 100%;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+        // 通用状态条目：在插件状态栏之上叠一行 pill（只读文本，不改变终端布局）。
     if root.status-items.length > 0 : HorizontalLayout {
         x: 8px;
         y: (root.tabbar-bottom ? root.height - root.tabbar-height - 24px : root.height - 24px)

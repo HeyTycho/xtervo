@@ -280,6 +280,10 @@ pub struct Config {
     /// 新 Tab（`+` / Ctrl+T / 命令 `tab.new`）默认使用的 Profile ID。
     /// 0 = 未设置，使用系统默认 shell；ID 已失效时同样回退（不自动改写用户配置）。
     pub default_profile_id: u64,
+    /// 按**名字**指定默认 Profile（手写 config.toml 用，避免去查内部 ID）。
+    /// 与 `default_profile_id` 二选一：ID 命中时优先；名字匹配不区分大小写。
+    /// 空 = 未设置；名字不存在时回退系统 shell。
+    pub default_profile: String,
     pub cols: u16,
     pub rows: u16,
     /// 关闭窗口时若有多个会话，先弹确认（默认开）。
@@ -424,6 +428,7 @@ impl Default for Config {
             scrollback: 2000,
             shell: None,
             default_profile_id: 0,
+            default_profile: String::new(),
             cols: 120,
             rows: 32,
             confirm_close: true,
