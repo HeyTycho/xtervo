@@ -8258,7 +8258,8 @@ export component MainWindow inherits Window {
                     single-line: true;
                     color: Palette.colors.text;
                     font-size: 13px;
-                    init => { self.focus(); }
+                    // 预填 Tab 标题并全选：直接键入 = 替换，Enter 保存，Esc 取消。
+                    init => { self.focus(); self.select-all(); }
                     changed text => { root.workspace-save-check(self.text); }
                     key-pressed(event) => {
                         if (event.text == "\u{a}" || event.text == "\u{d}") {

@@ -213,6 +213,9 @@ fn open_workspace_save_dialog(st: &mut AppState) {
 fn check_workspace_name(st: &mut AppState, raw: &str) {
     let existing: Vec<String> = st.workspaces.workspaces.iter().map(|w| w.name.clone()).collect();
     let hint = workspace_name_hint(raw, &existing, st.cfg.lang() == "zh");
+    if !hint.is_empty() {
+        eprintln!("[workspace] 名字提示: {hint}");
+    }
     st.ui.set_workspace_save_hint(hint.as_str().into());
     st.ui.set_workspace_save_status("".into());
 }
@@ -256,6 +259,8 @@ fn commit_workspace_save(st: &mut AppState, raw: &str) {
         format!("Saved workspace \"{name}\"")
     };
     set_status_toast(st, msg);
+    // 弹窗关闭后键盘焦点回终端：否则 Ctrl+Shift+P/Ctrl+T 等热键要再点一下才生效。
+    st.ui.invoke_focus_terminal();
 }
 
 fn cancel_workspace_save(st: &mut AppState) {
