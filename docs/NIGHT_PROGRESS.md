@@ -34,7 +34,8 @@ DURATION=2m BIN=$PWD/target/release/tervo SOAK_NO_SHOTS=1 \
 | ACT-047 Profile 热键 | 模型+分发+校验+冲突提示 | `profile::tests::profile_hotkey_*`、`commands::default_command_for_chord` |
 | ACT-036 | 恢复提示已做（状态 pill） | 伪造 `session.running` 可见 |
 
-回退点：本地 tag `v0.6.0-dev.1`（未发布、未推送）。
+回退点：本地 tag `v0.6.0-dev.1`（侧栏壳 + Profile 热键）与
+**`v0.6.0-dev.2`（当前 HEAD：命令默认键分发 + 侧栏快捷键 e2e + release 2m 门禁 PASS）**，均未发布、未推送。
 
 ## 3. 未完成（按建议顺序）
 
