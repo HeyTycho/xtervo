@@ -52,6 +52,31 @@ DURATION=2m BIN=$PWD/target/release/tervo SOAK_NO_SHOTS=1 \
 7. ACT-049 插件生态、ACT-050 终端小件、ACT-051 平台/性能（24h、Wayland、emoji）
 ```
 
+## 3.1 safe mode 实施配方（下一会话可直接照做）
+
+现状：连续崩溃计数与状态区告警已就绪（`session::bump_crash_streak`，≥3 次提示），
+但**还没有真正降级启动**。最小可用版本：
+
+```text
+1. main() 在 `let compact` 附近（compute unclean 的地方，约 main.rs `let unclean = ...`）
+   把 streak 提前算出来并保存，避免后面 bump 两次：
+     let streak = if unclean { session::bump_crash_streak() } else { session::reset_crash_streak(); 0 };
+     let safe_mode = streak >= 3;
+   同时删掉 build_window_state 之后那段重复的 bump。
+2. 门禁点：`plugin_v3::PluginStore::load()`（main.rs 约 14757）之前
+     let plugins = if safe_mode { PluginStore::empty() } else { PluginStore::load() };
+   （若没有 empty()，就加一个只返回空 store 的构造函数；不要复用 load_from(不存在路径)，
+     那会打一堆 io 错误日志。）
+3. GPU/WASM：WASM 过滤器只由插件注册，插件不加载即自动关闭；GPU 降级可以先不做，
+   等有真实崩溃栈证据再决定要不要强制 `TERVO_GPU_NATIVE=0`。
+4. UI：状态区 pill 已有；safe mode 生效时文案改为
+   “安全模式：本次未加载插件（连续 N 次异常退出）”。
+5. 验收：伪造 `session.running` + `session.crashes=3` 启动，断言
+   - 日志出现 `[safe-mode] 连续 3 次异常退出：本次不加载插件`
+   - `list` 能正常出窗口、pane 可交互
+   - 退出后 `session.crashes` 清零
+```
+
 ## 4. 坑位（都踩过，别再踩）
 
 - **日志只打首帧**：`[gpu-native] pane=…` 只在 `frames == 1` 或 `TERVO_GPU_NATIVE_DEBUG` 时输出，
