@@ -101,7 +101,9 @@ GPU-native Scene（Sixel/IIP/Kitty 进 GPU）。逐条状态仍以矩阵行和�
 
 ## 5. 未闭环项与原因（2026-11-16 复核）
 
-1. **分屏首帧不重绘（回归，0.5.0 可复现）**：`split` 之后新 pane 的 Term 已有内容
+1. **分屏首帧不重绘（观察项；0.5.0 隔离环境不可复现）**：原证据来自 0.4.0-rc.2，
+   0.5.0 在 Xvfb 下单/双窗口 split 都能正常绘制（`target/repro_split*.py`）。以下为原始记录：
+   `split` 之后新 pane 的 Term 已有内容
    （`live_output` 能读到 `➜  ~`）、也有 damage，但帧不再重建，界面空白到下一次外力
    重绘。证据：`live_snapshot` 显示 `generation=6` 而 `damage.w=0`，日志只有
    `frame rev=2 / glyphs=0` 一帧。修之前必须先补失败测试。

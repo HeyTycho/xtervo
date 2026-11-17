@@ -143,7 +143,10 @@ retained, but dirty worktrees may contain uncommitted evidence:
   `terminal.output_filter` (Wasmtime, `runtime = "wasm"`); no plugin commands,
   UI, WASI, market, signing, or arbitrary WASM APIs.
 - Wayland native, color emoji/shaping, atlas eviction, 24h soak remain open.
-- **Split regression (0.5.0): a freshly split pane never repaints.** Its `Term` has
+- **Split repaint: not reproducible on 0.5.0 in headless Xvfb** (single and dual window;
+  `target/repro_split.py` / `repro_split_bg.py` show the new pane painting). The earlier
+  evidence came from a 0.4.0-rc.2 build. Re-check under a real compositor before calling
+  it fixed. Original record: a freshly split pane never repainted — its `Term` has
   content and damage (`live_output` returns the prompt, `live_snapshot` shows
   `generation=6 / damage.w=0`) but only one frame is ever pulled
   (`frame rev=2 / glyphs=0`), so the pane stays blank. Reproduces from the
