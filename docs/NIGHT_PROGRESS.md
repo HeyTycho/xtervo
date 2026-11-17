@@ -48,6 +48,7 @@ DURATION=2m BIN=$PWD/target/release/tervo SOAK_NO_SHOTS=1 \
    Connection Manager（与 ACT-041 合并）、插件注入点
 5. ACT-036 剩余：crash marker + safe mode + 崩溃循环熔断
 6. ACT-052 transport seam：`PaneTransport` + `SocketPairTransport` + `SplitTransport` + `pump_reader` ✅
+   **接线施工单见 `docs/TRANSPORT_WIRING.md`**（18:00 起按 §1→§5 机械执行）
    （`crates/core/src/transport.rs`，4 条单测）；剩 PaneHandle 接线、宿主权限/审计/限流，
    再上 SSH/Serial/Telnet 插件（ACT-039..045）
 7. ACT-049 插件生态、ACT-050 终端小件、ACT-051 平台/性能（24h、Wayland、emoji）
