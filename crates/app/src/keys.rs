@@ -169,15 +169,18 @@ fn ctrl_byte(ch: char) -> Option<u8> {
 ///
 /// 返回 None 表示这个事件不构成可绑定按键：空文本、修饰键本身（X11 会把
 /// Ctrl/Shift/Alt 也作为 key-pressed 上报）、IME 多字文本等。
-pub fn chord_from_key_event(text: &str, ctrl: bool, alt: bool, shift: bool) -> Option<Chord> {
-    let key = key_name(text)?;
-    Some(Chord {
-        mods: Mods { ctrl, shift, alt, meta: false },
-        key,
-    })
+pub fn chord_from_key_event(
+    text: &str,
+    ctrl: bool,
+    alt: bool,
+    shift: bool,
+    meta: bool,
+) -> Option<Chord> {
+    let key = key_name(text, ctrl)?;
+    Some(Chord { mods: Mods { ctrl, shift, alt, meta }, key })
 }
 
-fn key_name(text: &str) -> Option<String> {
+fn key_name(text: &str, ctrl: bool) -> Option<String> {
     match text {
         "" => return None,
         // 0x10..=0x18：Shift/Ctrl/Alt/AltGr/CapsLock/右 Shift/右 Ctrl/Meta/右 Meta
@@ -214,6 +217,14 @@ fn key_name(text: &str) -> Option<String> {
     // 可打印 ASCII 单字符：小写化（Shift 已单独记录在 mods 里）。
     if c.is_ascii_graphic() {
         return Some(c.to_ascii_lowercase().to_string());
+    }
+    // Ctrl+字母在部分 X11 布局下会折叠成控制字符（Ctrl+Shift+A → ^A）。
+    // 只有 ctrl 按下时才映射回字母，避免把终端里的控制字符当快捷键。
+    if ctrl {
+        let code = c as u32;
+        if (1..=26).contains(&code) {
+            return Some(((b'a' + (code as u8 - 1)) as char).to_string());
+        }
     }
     None
 }
@@ -988,41 +999,60 @@ mod tests {
 
     #[test]
     fn key_event_to_chord() {
-        let c = chord_from_key_event("t", true, false, true).unwrap();
+        let c = chord_from_key_event("t", true, false, true, false).unwrap();
         assert_eq!(c.canonical(), "ctrl+shift+t");
-        let c = chord_from_key_event("T", true, false, true).unwrap();
+        let c = chord_from_key_event("T", true, false, true, false).unwrap();
         assert_eq!(c.canonical(), "ctrl+shift+t", "Shift 文本大小写应归一");
 
-        let c = chord_from_key_event("\u{F70E}", false, false, false).unwrap();
+        let c = chord_from_key_event("\u{F70E}", false, false, false, false).unwrap();
         assert_eq!(c.canonical(), "f11");
-        let c = chord_from_key_event("\u{F703}", true, false, true).unwrap();
+        let c = chord_from_key_event("\u{F703}", true, false, true, false).unwrap();
         assert_eq!(c.canonical(), "ctrl+shift+right");
-        let c = chord_from_key_event("\t", true, false, false).unwrap();
+        let c = chord_from_key_event("\t", true, false, false, false).unwrap();
         assert_eq!(c.canonical(), "ctrl+tab");
-        let c = chord_from_key_event(" ", false, true, false).unwrap();
+        let c = chord_from_key_event(" ", false, true, false, false).unwrap();
         assert_eq!(c.canonical(), "alt+space");
-        assert_eq!(chord_from_key_event("\u{1b}", false, false, false).unwrap().key, "escape");
-        assert_eq!(chord_from_key_event("\u{8}", false, false, false).unwrap().key, "backspace");
-        assert_eq!(chord_from_key_event("\u{7f}", false, false, false).unwrap().key, "delete");
+        assert_eq!(chord_from_key_event("\u{1b}", false, false, false, false).unwrap().key, "escape");
+        assert_eq!(chord_from_key_event("\u{8}", false, false, false, false).unwrap().key, "backspace");
+        assert_eq!(chord_from_key_event("\u{7f}", false, false, false, false).unwrap().key, "delete");
 
         // "+" 的规范格式是 `ctrl++`，和 parser 约定一致
-        let c = chord_from_key_event("+", true, false, true).unwrap();
+        let c = chord_from_key_event("+", true, false, true, false).unwrap();
         assert_eq!(c.canonical(), "ctrl+shift++");
         assert_eq!(crate::commands::Chord::parse(&c.canonical()).unwrap(), c);
     }
 
     #[test]
+    fn key_event_to_chord_includes_meta_and_control_folding() {
+        // Meta/Super 以前被硬编码丢弃；现在进入 chord 才能录制/分发。
+        let c = chord_from_key_event("\n", false, false, false, true).unwrap();
+        assert_eq!(c.canonical(), "meta+enter");
+        assert!(c.is_bindable());
+        let c = chord_from_key_event("k", false, false, false, true).unwrap();
+        assert_eq!(c.canonical(), "meta+k");
+
+        // 部分 X11 布局把 Ctrl+Shift+A 折成 ^A；仍然要能命中 tab.search。
+        let c = chord_from_key_event("\u{1}", true, false, true, false).unwrap();
+        assert_eq!(c.canonical(), "ctrl+shift+a");
+        // 没有 ctrl 时控制字符不是快捷键。
+        assert_eq!(chord_from_key_event("\u{1}", false, false, false, false), None);
+        // Ctrl+C（^C）映射成字母键，但没有任何默认绑定会抢走它。
+        let c = chord_from_key_event("\u{3}", true, false, false, false).unwrap();
+        assert_eq!(c.canonical(), "ctrl+c");
+    }
+
+    #[test]
     fn key_event_rejects_modifiers_and_unsupported_text() {
         for artifact in ["\u{10}", "\u{11}", "\u{12}", "\u{13}", "\u{17}"] {
-            assert_eq!(chord_from_key_event(artifact, true, false, false), None);
+            assert_eq!(chord_from_key_event(artifact, true, false, false, false), None);
         }
-        assert_eq!(chord_from_key_event("", false, false, false), None);
+        assert_eq!(chord_from_key_event("", false, false, false, false), None);
         // IME 多字提交 / 非 ASCII 暂不作为快捷键
-        assert_eq!(chord_from_key_event("你好", false, false, false), None);
-        assert_eq!(chord_from_key_event("ab", false, false, false), None);
-        assert_eq!(chord_from_key_event("你", false, false, false), None);
+        assert_eq!(chord_from_key_event("你好", false, false, false, false), None);
+        assert_eq!(chord_from_key_event("ab", false, false, false, false), None);
+        assert_eq!(chord_from_key_event("你", false, false, false, false), None);
         // F25 不在支持范围
-        assert_eq!(chord_from_key_event("\u{F71C}", false, false, false), None);
+        assert_eq!(chord_from_key_event("\u{F71C}", false, false, false, false), None);
     }
 
     // ------------------------------------------------------------ protocol

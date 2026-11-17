@@ -1862,6 +1862,8 @@ export component MainWindow inherits Window {
     /// 正在录制的行下标；-1 = 未录制
     in-out property <int> hotkey-recording-row: -1;
     in property <int> hotkey-conflict-count: 0;
+    /// 两段录制模式：开 = 先按第一段再按第二段（Enter 保存单段）。
+    in-out property <bool> hotkey-record-two: false;
     in-out property <string> hotkey-error: "";
     in-out property <string> hotkey-status: "";
     callback hotkey-start-edit(int);
@@ -4989,7 +4991,7 @@ export component MainWindow inherits Window {
 
                         SettingsCard {
                             title: Lang.t("Keyboard shortcuts", "键盘快捷键");
-                            description: Lang.t("Click Edit, then press a single chord. Esc cancels; Backspace restores the default.", "点击“编辑”后按单个组合键。Esc 取消；退格键恢复默认。");
+                            description: Lang.t("Click Edit, then press a chord. Turn on 2-chord to record two chords (Enter saves one). Esc cancels; Backspace restores the default.", "点击“编辑”后按组合键。开启“两段”可录两段（Enter 保存单段）。Esc 取消；退格键恢复默认。");
 
                             HorizontalLayout {
                                 height: 22px;
@@ -5012,6 +5014,16 @@ export component MainWindow inherits Window {
                                     font-size: 10px;
                                     vertical-alignment: center;
                                 }
+                                Text {
+                                    text: Lang.t("2-chord", "两段");
+                                    color: Palette.colors.muted;
+                                    font-size: 9px;
+                                    vertical-alignment: center;
+                                }
+                                SettingsSwitch {
+                                    on: root.hotkey-record-two;
+                                    toggled => { root.hotkey-record-two = !root.hotkey-record-two; }
+                                }
                                 ChoiceBtn {
                                     width: 72px;
                                     height: 22px;
@@ -5022,7 +5034,7 @@ export component MainWindow inherits Window {
                             }
 
                             if root.hotkey-recording-row >= 0 : Text {
-                                text: Lang.t("Recording: press Ctrl/Alt/Shift + key · Esc cancel · Backspace reset", "录制中：按 Ctrl/Alt/Shift + 键 · Esc 取消 · 退格键恢复");
+                                text: Lang.t("Recording: press Ctrl/Alt/Shift/Meta + key · Esc cancel · Backspace reset", "录制中：按 Ctrl/Alt/Shift/Meta + 键 · Esc 取消 · 退格键恢复");
                                 color: Palette.colors.accent;
                                 font-size: 10px;
                                 wrap: word-wrap;
@@ -5114,7 +5126,7 @@ export component MainWindow inherits Window {
                                 wrap: word-wrap;
                             }
                             Text {
-                                text: Lang.t("Single chord: Ctrl/Alt/Meta + key, or F1–F24. Conflicting chords are rejected; multi-chord sequences (Ctrl+K Ctrl+T) are not supported.", "单个组合键：Ctrl/Alt/Meta + 键，或 F1–F24。拒绝冲突组合；不支持多段序列（Ctrl+K Ctrl+T）。");
+                                text: Lang.t("Chord: Ctrl/Alt/Meta + key, or F1–F24. 2-chord sequences (Ctrl+K Ctrl+T) are supported. Conflicting chords (including prefix) are rejected.", "组合键：Ctrl/Alt/Meta + 键，或 F1–F24。支持两段序列（Ctrl+K Ctrl+T）；相同或前缀冲突会被拒绝。");
                                 color: Palette.colors.muted;
                                 font-size: 9px;
                                 wrap: word-wrap;
