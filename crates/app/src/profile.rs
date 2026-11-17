@@ -67,6 +67,13 @@ pub struct Profile {
     pub proxy_jump: String,
     /// 是否请求 ssh agent forwarding（`ssh -A`）。
     pub agent_forward: bool,
+    /// SSH 后端：空 = 旧路径（PTY 里跑系统 ssh）；`plugin` = 走
+    /// `Backend::Plugin` 的 transport seam（官方 SSH 插件 POC）。
+    ///
+    /// 手写 `kind = "plugin-ssh"` 的 POC 配置在加载时会被归一化成
+    /// `kind = "ssh"` + `transport = "plugin"`，两种写法等价。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub transport: String,
     // ---- serial ----
     pub serial_port: String,
     pub baud: u32,
@@ -101,6 +108,9 @@ pub fn validate_forward(spec: &str) -> Result<(), String> {
 
 /// 支持的 Profile 类型（字符串值即配置里的 `kind`）。
 pub const KINDS: [&str; 4] = ["local", "ssh", "serial", "telnet"];
+
+/// SSH transport 后端标记：`transport = "plugin"` 走 `Backend::Plugin`。
+pub const PLUGIN_TRANSPORT: &str = "plugin";
 
 /// 校验远程转发规格：`[绑定地址:]端口:主机:端口`，端口 1–65535。
 ///
@@ -226,6 +236,7 @@ impl Default for Profile {
             dynamic_forwards: Vec::new(),
             proxy_jump: String::new(),
             agent_forward: false,
+            transport: String::new(),
             serial_port: String::new(),
             baud: 115200,
             font_size: None,
@@ -266,6 +277,26 @@ impl Profile {
             .map(|s| s.trim().to_ascii_lowercase())
             .filter(|s| !s.is_empty());
         self.scrollback = self.scrollback.filter(|n| *n > 0);
+    }
+
+    /// SSH 是否走 `Backend::Plugin` transport seam（官方 SSH 插件 POC）。
+    ///
+    /// `transport = "plugin"` 是主开关；`kind = "plugin-ssh"` 只是手写配置的
+    /// 兼容写法（加载时由 [`Self::normalize_plugin_kind`] 归一化）。
+    pub fn is_plugin_ssh(&self) -> bool {
+        self.kind == "ssh" && self.transport.trim().eq_ignore_ascii_case(PLUGIN_TRANSPORT)
+    }
+
+    /// 把旧式 `kind = "plugin-ssh"` 归一化成 `kind = "ssh"` + `transport = "plugin"`。
+    ///
+    /// 只在内存里转换，不改写用户文件（v2 的 `transport` 字段是 additive 的）。
+    pub fn normalize_plugin_kind(&mut self) {
+        if self.kind.trim().eq_ignore_ascii_case("plugin-ssh") {
+            self.kind = "ssh".to_string();
+            self.transport = PLUGIN_TRANSPORT.to_string();
+        } else if self.kind == "ssh" && !self.transport.trim().is_empty() {
+            self.transport = self.transport.trim().to_ascii_lowercase();
+        }
     }
 
     /// 有效字号；`None` = 继承全局 `config.font_size`。
@@ -465,6 +496,14 @@ impl Profile {
                     validate_dynamic_forward(f)?;
                 }
                 validate_proxy_jump(&self.proxy_jump)?;
+                if !self.transport.trim().is_empty()
+                    && !self.transport.trim().eq_ignore_ascii_case(PLUGIN_TRANSPORT)
+                {
+                    return Err(format!(
+                        "未知 SSH 后端: {}（只支持空 = 系统 ssh PTY，或 plugin）",
+                        self.transport
+                    ));
+                }
             },
             "serial" => {
                 if self.serial_port.trim().is_empty() {
@@ -555,6 +594,8 @@ impl ProfileStore {
             }
             // v1 没有 kind 字段：serde default 已补成 local，这里补版本并写回
             for p in &mut store.profiles {
+                // 先归一化 `plugin-ssh`，否则下一步会把它当成未知 kind 丢掉。
+                p.normalize_plugin_kind();
                 if !KINDS.contains(&p.kind.as_str()) {
                     p.kind = default_kind();
                 }
@@ -569,6 +610,7 @@ impl ProfileStore {
         // 外观字段是 additive 的：旧 v2 文件缺字段 -> None（继承全局）；
         // 手写文件里的空串/越界字号在内存里归一，不改写原文件。
         for p in &mut store.profiles {
+            p.normalize_plugin_kind();
             p.normalize_appearance();
         }
         store.fix_ids();
@@ -762,6 +804,65 @@ mod tests {
         assert_eq!(back.profiles.len(), 1);
         assert_eq!(back.profiles[0].hotkey, "ctrl+alt+p");
         assert_eq!(back.profiles[0].hotkey_chord(), p.hotkey_chord());
+    }
+
+    #[test]
+    fn plugin_ssh_transport_flag_roundtrips_and_validates() {
+        let dir = tmpdir("plugin-ssh");
+        let path = dir.join("profiles.toml");
+        let mut p = Profile {
+            kind: "ssh".into(),
+            host: "example.test".into(),
+            user: "alice".into(),
+            auth: "agent".into(),
+            transport: PLUGIN_TRANSPORT.into(),
+            ..Profile::default()
+        };
+        p.validate().expect("ssh + transport=plugin 合法");
+        assert!(p.is_plugin_ssh());
+
+        let mut store = ProfileStore::default();
+        store.profiles.push(p);
+        store.next_id = 2;
+        store.save_to(&path);
+        let back = ProfileStore::load_from(&path);
+        assert_eq!(back.profiles[0].transport, PLUGIN_TRANSPORT);
+        assert!(back.profiles[0].is_plugin_ssh());
+
+        // 未知后端/非 ssh kind 必须被拒绝，不能悄悄退化成别的连接方式。
+        let mut bad = back.profiles[0].clone();
+        bad.transport = "wishful".into();
+        assert!(bad.validate().unwrap_err().contains("未知 SSH 后端"));
+        let mut wrong_kind = back.profiles[0].clone();
+        wrong_kind.kind = "local".into();
+        assert!(!wrong_kind.is_plugin_ssh(), "local Profile 不能走 SSH plugin");
+    }
+
+    #[test]
+    fn legacy_plugin_ssh_kind_is_normalized_on_load() {
+        let dir = tmpdir("plugin-ssh-kind");
+        let path = dir.join("profiles.toml");
+        std::fs::write(
+            &path,
+            r#"version = 2
+next_id = 2
+
+[[profiles]]
+id = 1
+name = "poc"
+kind = "plugin-ssh"
+host = "example.test"
+port = 22
+user = "alice"
+auth = "agent"
+"#,
+        )
+        .unwrap();
+        let store = ProfileStore::load_from(&path);
+        assert_eq!(store.profiles.len(), 1);
+        assert_eq!(store.profiles[0].kind, "ssh");
+        assert_eq!(store.profiles[0].transport, PLUGIN_TRANSPORT);
+        assert!(store.profiles[0].is_plugin_ssh());
     }
 
     fn tmpdir(tag: &str) -> PathBuf {

@@ -939,6 +939,10 @@ pub fn builtin() -> Registry {
         bind("session.restart", "Restart Session", Category::Session, None),
         bind("session.reattach", "Reattach Background Session", Category::Session, None),
         bind("settings.open", "Open Settings", Category::Settings, None),
+        // 官方 SSH 插件 POC：ssh.connect 走 Backend::Plugin 打开 Profile 连接。
+        // 官方 SSH 插件 POC：`ssh.connect` 开第一个 SSH Profile；调色板里
+        // `ssh.connect:<id|name>` 精确指定 Profile（走 Backend::Plugin）。
+        bind("ssh.connect", "Connect SSH (Plugin POC)", Category::Session, None),
     ];
     for command in cmds {
         r.register(command).expect("内置命令 ID 不能重复");

@@ -1,0 +1,8 @@
+[plugin-ssh-probe] profile=refused-plugin id=2 host=127.0.0.1 user=nobody auth=agent transport=plugin
+[2m[plugin-ssh] 正在连接 nobody@127.0.0.1:1 …[0m
+
+[1;31m[plugin-ssh] 连接失败：nobody@127.0.0.1:1（ssh 退出码 255）[0m
+[31mssh: connect to host 127.0.0.1 port 1: Connection refused
+[0m
+
+[plugin-ssh-probe] bytes=212 phase=failed detail=ssh 退出码 255
