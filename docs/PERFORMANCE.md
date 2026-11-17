@@ -180,8 +180,37 @@ log       fatal=0 errors=1 xvfb_errors=1
 ```
 
 解读与后续：这 2 分钟含预热（字体 atlas、22 个 Tab 模型、首次合成都在这段），
-**不能**当作泄漏结论；门禁判定 PASS，且线程/FD 均已稳定。要区分“预热”与“泄漏”，
-需要 15m 跑一次并看后半段斜率（ACT-051）。证据：`.logs/soak/20261117-125130/`。
+**不能**当作泄漏结论；门禁判定 PASS，且线程/FD 均已稳定。证据：`.logs/soak/20261117-125130/`。
+
+### 2.5.1 15m soak（同场景，`20261117-125403`）
+
+```text
+RSS       460.5 → 526.6 MiB（+66.1 MiB，+3.15 MiB/min，R²=0.29）
+PSS       450.3 → 516.3 MiB（峰值 534.8）
+CPU       avg 7.7% / max 10.6%      threads/fds  112/97（全程不变）
+coverage  tabs=22 splits=3 settings=34/272 find=67 copy=132 resize=168/168
+commands  sent=536 shell_lag=0     log  fatal=0
+```
+
+结论：斜率从 2m 的 47 MiB/min 掉到 3.15 MiB/min，且线性拟合 R²=0.29
+（更像预热后的台阶而不是稳定泄漏）；线程/FD 不变。**24h 仍需单独验收**。
+
+### 2.5.2 吞吐与帧延迟（同日，`cargo bench` / `bench_render.sh`）
+
+```text
+PTY→可见 10 MiB 端到端   178.35 ms  ≈ 56.1 MiB/s   （目标 ≥50 MiB/s ✅）
+criterion 提示相对历史基线 +78%（p<0.01），但同日并行/单独两次都是 ~178ms，
+说明历史基线来自更早的构建/环境，需要重新基线化（不是 0.5.0 引入）
+
+200x50 网格，CPU 渲染路径：
+  single_row   damage  ~35.9 µs p95 39.9 µs（vs legacy full 1626 µs，45×）
+  typing_burst damage  ~34.9 µs p95 37.1 µs（45×）
+  full_200x50                    1610 µs p95 1663 µs
+  scroll                         1621 µs（整行重绘，无加速）
+```
+
+结论：P95 帧延迟目标（≤50 ms）远未触顶（0.04–1.7 ms 量级）；滚动是唯一
+“整屏重绘”路径，后续若优化优先看它。
 
 ## 3. 4 pane 测量步骤（可复现）
 
