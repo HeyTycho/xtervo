@@ -22,6 +22,9 @@ from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "scripts"))
+
+from scope_tiers import TIER_ORDER, tier_of  # noqa: E402
 STATUS_ORDER = ["implemented", "partial", "needs_verification", "not_started", "unsupported"]
 STATUS_ZH = {
     "implemented": "已实现",
@@ -187,6 +190,32 @@ def tone(status: str) -> str:
 
 def build_html() -> str:
     matrix = parse_matrix()
+    for row in matrix:
+        row["tier"] = tier_of(row["id"])
+    tier_stats: dict[str, dict[str, int]] = {}
+    for row in matrix:
+        bucket = tier_stats.setdefault(row["tier"], {})
+        bucket[row["status"]] = bucket.get(row["status"], 0) + 1
+
+    def tier_weighted(bucket: dict[str, int]) -> str:
+        total = sum(bucket.values())
+        score = (
+            bucket.get("implemented", 0)
+            + bucket.get("partial", 0) * 0.5
+            + bucket.get("needs_verification", 0) * 0.25
+        )
+        return f"{score / max(total, 1) * 100:.1f}%"
+
+    core_bucket = {
+        status: tier_stats.get("P0 核心终端", {}).get(status, 0)
+        + tier_stats.get("P0 基础连接", {}).get(status, 0)
+        for status in STATUS_ORDER
+    }
+    scope_bucket = {
+        status: core_bucket.get(status, 0) + tier_stats.get("P1 工作区与设置", {}).get(status, 0)
+        for status in STATUS_ORDER
+    }
+
     sections = parse_action_items()
     plan = parse_plan()
     counts, weighted = official_stats(matrix)
@@ -260,6 +289,34 @@ def build_html() -> str:
     commit_rows = "".join(
         f"<li><code>{esc(c['hash'])}</code><span class='muted'>{esc(c['date'])}</span> {esc(c['subject'])}</li>"
         for c in commits
+    )
+
+    tier_table_rows = "".join(
+        f"<tr><td>{esc(tier)}</td><td>{sum(tier_stats.get(tier, {}).values())}</td>"
+        + "".join(f"<td>{tier_stats.get(tier, {}).get(status, 0)}</td>" for status in STATUS_ORDER)
+        + f"<td><b>{tier_weighted(tier_stats.get(tier, {}))}</b></td></tr>"
+        for tier in TIER_ORDER
+    )
+
+    def p3_note(item_id: str) -> str:
+        if item_id.startswith("PLUG-"):
+            return "不做：Node/Angular 兼容层与 v3 插件路线冲突，只保留扫描并标记"
+        if item_id.startswith("ZMODEM") or item_id.startswith("UI-SER-008"):
+            return "不做：需内建协议状态机 + 文件 UI，留给第三方插件"
+        if item_id.startswith("THEME-007"):
+            return "不做：CSS 主题无法等价映射"
+        if item_id.startswith("UI-QUAKE"):
+            return "降级 P2：已有 3 条实现，剩余受 Wayland 全局热键限制"
+        if item_id.startswith("PLAT-"):
+            return "按目标平台决定，不阻塞核心"
+        return "观察"
+
+    p3_rows = [row for row in matrix if row["tier"].startswith("P3")]
+    p3_table_rows = "".join(
+        f"<tr><td><code>{esc(row['id'])}</code></td><td>{esc(clean_md(row['feature'])[:70])}</td>"
+        f"<td><span class='badge {tone(row['status'])}'>{STATUS_ZH.get(row['status'], row['status'])}</span></td>"
+        f"<td class='muted small'>{esc(p3_note(row['id']))}</td></tr>"
+        for row in p3_rows
     )
 
     chips = "".join(
@@ -340,11 +397,14 @@ def build_html() -> str:
     <div class="kpi"><b style="color:var(--warn)">{partial}</b><span>部分实现</span></div>
     <div class="kpi"><b style="color:var(--idle)">{not_started}</b><span>未开始</span></div>
     <div class="kpi"><b>{needs_verif}</b><span>待核实</span></div>
-    <div class="kpi"><b>{weighted}</b><span>加权完成度</span></div>
+    <div class="kpi"><b>{weighted}</b><span>全量加权（244 条）</span></div>
+    <div class="kpi"><b style="color:var(--info)">{tier_weighted(core_bucket)}</b><span>P0 核心加权（{sum(core_bucket.values())} 条）</span></div>
+    <div class="kpi"><b style="color:var(--info)">{tier_weighted(scope_bucket)}</b><span>P0+P1 加权（{sum(scope_bucket.values())} 条）</span></div>
   </div>
 
   <nav class="tabs">
     <button class="active" data-pane="road">🗺 0.6 路标（{sum(len(s['cards']) for s in sections)} 张卡）</button>
+    <button data-pane="scope">🧭 范围审视（必要性分档）</button>
     <button data-pane="plan">🌙 今晚计划（{len(plan)} 项）</button>
     <button data-pane="matrix">📊 产品矩阵（{len(matrix)} 条）</button>
     <button data-pane="commits">🧾 最近提交（{len(commits)}）</button>
@@ -352,6 +412,26 @@ def build_html() -> str:
 
   <section class="pane active" id="pane-road">
     {''.join(card_html(s) for s in sections)}
+  </section>
+
+  <section class="pane" id="pane-scope">
+    <p class="muted">矩阵是<b>上游 Tabby 能力审计</b>，不是产品必须清单。按必要性重新分档后，
+      真正要做的是 P0+P1（{sum(scope_bucket.values())} 条）；P3 建议不做或降级。</p>
+    <table>
+      <thead><tr><th>档位</th><th>条目</th><th>已实现</th><th>部分</th><th>待核实</th><th>未开始</th><th>不做</th><th>加权</th></tr></thead>
+      <tbody>{tier_table_rows}</tbody>
+    </table>
+    <h3 style="margin-top:22px">P3：不建议做 / 观察（{len(p3_rows)} 条）</h3>
+    <table>
+      <thead><tr><th>ID</th><th>内容</th><th>状态</th><th>建议</th></tr></thead>
+      <tbody>{p3_table_rows}</tbody>
+    </table>
+    <h3 style="margin-top:22px">结论</h3>
+    <ul class="muted">
+      <li>“未完成”不等于“必须做”：51 条 not_started 里 13 条是 P0 连接主干、15 条 P1、8 条 P2、6 条 P3。</li>
+      <li>真实完成度：核心终端 {tier_weighted(tier_stats.get('P0 核心终端', {}))}，P0 合计 {tier_weighted(core_bucket)}，P0+P1 {tier_weighted(scope_bucket)}，全量 {weighted}。</li>
+      <li>最该投入的是 P0 基础连接（SSH/Serial/Telnet），它们全挂在 ACT-052 transport seam 之后。</li>
+    </ul>
   </section>
 
   <section class="pane" id="pane-plan">
@@ -390,6 +470,12 @@ def build_html() -> str:
     tabs.forEach(x => x.classList.toggle('active', x === b));
     panes.forEach(p => p.classList.toggle('active', p.id === 'pane-' + b.dataset.pane));
   }});
+
+  const initial = location.hash.replace('#', '');
+  if (initial) {{
+    const target = Array.from(tabs).find(x => x.dataset.pane === initial);
+    if (target) target.click();
+  }}
 
   const q = document.getElementById('q');
   const rows = Array.from(document.querySelectorAll('#matrix tbody tr'));
