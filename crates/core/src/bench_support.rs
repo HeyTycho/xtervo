@@ -220,16 +220,30 @@ mod tests {
         let mut sim = TermSim::new(12, 2, 10);
         sim.advance("👨\u{200D}👩\u{200D}👧X".as_bytes());
         let f = sim.pull();
-        // alacritty 0.26 的网格按**码位**计宽：每个 emoji 占 2 格，ZWJ 宽 0，
-        // 挂在各自前面的 emoji 格上。因此 3 个 emoji 是 6 格，不是 2 格。
-        // 本仓库不改 alacritty 的宽度判定，渲染层按这个网格逐字回退，不额外撑格。
+        use crate::frame::flags;
+        // 👨‍👩‍👧 是一个 grapheme cluster：ZWJ 之后的组件并入基准格，整个簇只占
+        // 2 格（旧行为：网格按码位计宽，每个 emoji 各占 2 格 → 6 格）。
         assert_eq!(f.cell(0, 0).char(), '👨');
-        assert_eq!(f.zerowidth_at(0, 0), &['\u{200D}']);
-        assert_eq!(f.cell(0, 2).char(), '👩');
-        assert_eq!(f.zerowidth_at(0, 2), &['\u{200D}']);
-        assert_eq!(f.cell(0, 4).char(), '👧');
-        assert_eq!(f.cell(0, 6).char(), 'X');
-        assert_eq!(f.cursor.col, 7, "3×2 格 + X，ZWJ 本身没有多占格子");
+        assert_eq!(f.zerowidth_at(0, 0), &['\u{200D}', '👩', '\u{200D}', '👧']);
+        assert!(f.cell(0, 0).has(flags::WIDE_CHAR), "簇仍按宽字符占 2 格");
+        assert!(f.cell(0, 1).has(flags::WIDE_CHAR_SPACER));
+        assert_eq!(f.cell(0, 2).char(), 'X', "簇之后的下一个字符紧接在第 2 格");
+        assert_eq!(f.zerowidth_at(0, 2), &[]);
+        assert_eq!(f.cursor.col, 3, "2 格簇 + X；不再按 3×2 格推进");
+    }
+
+    #[test]
+    fn zwj_cluster_wraps_as_two_cells() {
+        // 4 列终端放 2 格簇 + 2 个窄字符，不应因为 3 个 emoji 各占 2 格而折行。
+        let mut sim = TermSim::new(4, 2, 10);
+        sim.advance("👨\u{200D}👩\u{200D}👧XY".as_bytes());
+        let f = sim.pull();
+        assert_eq!(f.cell(0, 0).char(), '👨');
+        assert_eq!(f.cell(0, 2).char(), 'X');
+        assert_eq!(f.cell(0, 3).char(), 'Y');
+        assert_eq!(f.cursor.line, 0, "2 格簇没有把后续字符挤到下一行");
+        // 第 4 列写满后 alacritty 只置 input_needs_wrap，不越界推进列号。
+        assert_eq!(f.cursor.col, 3);
     }
 
     #[test]

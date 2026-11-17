@@ -305,6 +305,19 @@ pub struct Config {
     /// `theme = "auto"` 时浅色侧使用的主题 id（省略时优先用 auto_dark 的 pair）。
     pub auto_light: Option<String>,
     pub font_size: f32,
+    /// 主字体族：字体文件路径（`/path/x.ttf`）或族名（按文件名匹配，如
+    /// `"JetBrains Mono"`）。空 = 内置 JetBrains Mono → DejaVu Sans Mono 链。
+    pub font_family: String,
+    /// 字重（100–900）：挑主字体里最接近这个字重的 face；≥600 时普通文本也用
+    /// 粗体 face。非法值归一成 400。
+    pub font_weight: u16,
+    /// 行距倍数（1.0 = 字体自然行高）：调大后 cell 变高、PTY 行数变少。
+    pub line_height: f32,
+    /// 额外字间距（像素，可为负）：直接加在 cell 宽度上。
+    pub letter_spacing: f32,
+    /// 渲染缩放（1.0 = 按 `font_size` 光栅化）：只改字形像素大小，不改逻辑字号；
+    /// cell 尺寸按缩放后的 advance 重算。
+    pub render_scale: f32,
     /// 历史缓冲行数（对新 pane 生效）。
     pub scrollback: usize,
     pub shell: Option<String>,
@@ -467,6 +480,11 @@ impl Default for Config {
             auto_dark: None,
             auto_light: None,
             font_size: 15.0,
+            font_family: String::new(),
+            font_weight: 400,
+            line_height: 1.0,
+            letter_spacing: 0.0,
+            render_scale: 1.0,
             scrollback: 2000,
             shell: None,
             default_profile_id: 0,
@@ -604,6 +622,24 @@ impl Config {
         normalize_color_field(&mut self.cursor_color, "cursor_color");
         normalize_color_field(&mut self.cursor_text_color, "cursor_text_color");
         normalize_color_field(&mut self.bold_color, "bold_color");
+        // 字体外观：手写配置可能给出 0/负数/NaN，统一夹到安全范围（与
+        // `glyph::FontOptions::normalized` 同一组范围，避免 UI 显示和实际生效不一致）。
+        self.font_family = self.font_family.trim().to_string();
+        if !(100..=900).contains(&self.font_weight) {
+            self.font_weight = 400;
+        }
+        if !self.line_height.is_finite() {
+            self.line_height = 1.0;
+        }
+        self.line_height = self.line_height.clamp(0.8, 2.5);
+        if !self.letter_spacing.is_finite() {
+            self.letter_spacing = 0.0;
+        }
+        self.letter_spacing = self.letter_spacing.clamp(-4.0, 16.0);
+        if !self.render_scale.is_finite() {
+            self.render_scale = 1.0;
+        }
+        self.render_scale = self.render_scale.clamp(0.5, 3.0);
     }
 
     /// 实际下发给新 pane 的 scrollback 行数：开启无限滚动时使用安全上限。
@@ -716,6 +752,10 @@ impl Config {
             clamp_opacity(self.background_opacity),
         );
         let text = format_float_line(text, "background_dim", clamp_dim(self.background_dim));
+        // 字体外观的小数也固定两位，避免 1 与 1.0 反复改写文件。
+        let text = format_float_line(text, "line_height", self.line_height);
+        let text = format_float_line(text, "letter_spacing", self.letter_spacing);
+        let text = format_float_line(text, "render_scale", self.render_scale);
         let tmp = path.with_extension("toml.tmp");
         if let Err(e) = std::fs::write(&tmp, &text) {
             eprintln!("[config] 写入 {} 失败: {e}", tmp.display());

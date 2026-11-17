@@ -16,7 +16,7 @@
 //! VS16 变体是 1 格），彩色位图只负责在既有格子内绘制并裁剪，不改变宽度语义。
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::OnceLock;
 
@@ -621,10 +621,212 @@ fn is_cjk(ch: char) -> bool {
     )
 }
 
+/// 字体外观配置：族 / 字重 / 行距 / 字间距 / 渲染缩放。
+///
+/// 与 `Config` 解耦，Profile（只覆盖字号）和测试都能复用；5 个字段全部参与
+/// cell 尺寸计算，任意一个变化都要重建 `FontSet` 并按新 cell 重排。
+#[derive(Clone, Debug, PartialEq)]
+pub struct FontOptions {
+    /// 空 = 内置等宽字体链；否则是字体文件路径或族名（按文件名匹配）。
+    pub family: String,
+    /// 100–900；≥600 时普通文本也用粗体 face。
+    pub weight: u16,
+    /// 行距倍数（1.0 = 字体自然行高）。
+    pub line_height: f32,
+    /// 额外字间距（像素，可为负）。
+    pub letter_spacing: f32,
+    /// 渲染缩放：只改字形像素大小，不改逻辑字号。
+    pub render_scale: f32,
+}
+
+impl Default for FontOptions {
+    fn default() -> Self {
+        Self {
+            family: String::new(),
+            weight: 400,
+            line_height: 1.0,
+            letter_spacing: 0.0,
+            render_scale: 1.0,
+        }
+    }
+}
+
+impl FontOptions {
+    /// 从用户配置取字体外观（热重载/新建 pane/设置页共用唯一入口）。
+    pub fn from_config(cfg: &crate::config::Config) -> Self {
+        Self {
+            family: cfg.font_family.clone(),
+            weight: cfg.font_weight,
+            line_height: cfg.line_height,
+            letter_spacing: cfg.letter_spacing,
+            render_scale: cfg.render_scale,
+        }
+        .normalized()
+    }
+
+    /// 夹到安全范围：NaN/越界回默认，避免 0 高 cell 或无限大的 atlas。
+    pub fn normalized(mut self) -> Self {
+        if !(100..=900).contains(&self.weight) {
+            self.weight = 400;
+        }
+        if !self.line_height.is_finite() {
+            self.line_height = 1.0;
+        }
+        self.line_height = self.line_height.clamp(0.8, 2.5);
+        if !self.letter_spacing.is_finite() {
+            self.letter_spacing = 0.0;
+        }
+        self.letter_spacing = self.letter_spacing.clamp(-4.0, 16.0);
+        if !self.render_scale.is_finite() {
+            self.render_scale = 1.0;
+        }
+        self.render_scale = self.render_scale.clamp(0.5, 3.0);
+        self.family = self.family.trim().to_string();
+        self
+    }
+}
+
+/// 族名/文件名归一：只留字母数字并小写（`JetBrains Mono` ↔ `JetBrainsMono-Medium`）。
+fn normalize_font_name(name: &str) -> String {
+    name.chars()
+        .flat_map(|c| c.to_lowercase())
+        .filter(|c| c.is_alphanumeric())
+        .collect()
+}
+
+/// 从文件名猜字重；没有关键词按 400。
+///
+/// 顺序重要：`extrabold` 里也含 `bold`、`ultralight` 里也含 `light`。
+fn file_weight(stem: &str) -> u16 {
+    const TABLE: &[(&str, u16)] = &[
+        ("ultralight", 200),
+        ("extralight", 200),
+        ("semilight", 350),
+        ("demilight", 350),
+        ("extrabold", 800),
+        ("ultrabold", 800),
+        ("semibold", 600),
+        ("demibold", 600),
+        ("thin", 100),
+        ("light", 300),
+        ("medium", 500),
+        ("book", 400),
+        ("regular", 400),
+        ("normal", 400),
+        ("black", 900),
+        ("heavy", 900),
+        ("bold", 700),
+    ];
+    let name = normalize_font_name(stem);
+    for (key, weight) in TABLE {
+        if name.contains(key) {
+            return *weight;
+        }
+    }
+    400
+}
+
+fn file_is_italic(stem: &str) -> bool {
+    let name = normalize_font_name(stem);
+    name.contains("italic") || name.contains("oblique")
+}
+
+/// 系统 + 用户字体目录的文件索引（路径, 归一化文件名），首次使用时建立。
+///
+/// 只读文件名、不解析字体：解析一个 CJK 字体要几十到上百 MB，族名匹配用不到。
+fn font_file_index() -> &'static Vec<(String, String)> {
+    static INDEX: OnceLock<Vec<(String, String)>> = OnceLock::new();
+    INDEX.get_or_init(|| {
+        fn walk(dir: &Path, depth: usize, out: &mut Vec<(String, String)>) {
+            if depth > 4 {
+                return;
+            }
+            let Ok(entries) = std::fs::read_dir(dir) else { return };
+            for entry in entries.flatten() {
+                let Ok(meta) = entry.metadata() else { continue };
+                let path = entry.path();
+                if meta.is_dir() {
+                    walk(&path, depth + 1, out);
+                    continue;
+                }
+                if !meta.is_file() {
+                    continue;
+                }
+                let Some(ext) = path.extension().and_then(|e| e.to_str()) else { continue };
+                if !matches!(ext.to_ascii_lowercase().as_str(), "ttf" | "otf" | "ttc") {
+                    continue;
+                }
+                let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else { continue };
+                let norm = normalize_font_name(stem);
+                if norm.is_empty() {
+                    continue;
+                }
+                out.push((path.to_string_lossy().into_owned(), norm));
+            }
+        }
+        let mut out = Vec::new();
+        for dir in FONT_SCAN_DIRS {
+            walk(Path::new(dir), 0, &mut out);
+        }
+        if let Some(home) = std::env::var_os("HOME") {
+            let home = PathBuf::from(home);
+            for rel in [".local/share/fonts", ".fonts"] {
+                walk(&home.join(rel), 0, &mut out);
+            }
+        }
+        out
+    })
+}
+
+/// 用户配置的字体族 → 四个 face 路径。
+///
+/// 支持直接给字体文件路径，或给族名（在系统/用户字体目录里按文件名匹配，
+/// 如 `JetBrains Mono` 命中 `JetBrainsMono-Medium.ttf`）。找不到返回 `None`，
+/// 调用方回退内置链并打日志。
+fn resolve_family(family: &str, weight: u16) -> Option<[String; 4]> {
+    let family = family.trim();
+    if family.is_empty() {
+        return None;
+    }
+    if Path::new(family).is_file() {
+        let path = family.to_string();
+        return Some([path.clone(), path.clone(), path.clone(), path]);
+    }
+    let needle = normalize_font_name(family);
+    if needle.is_empty() {
+        return None;
+    }
+    let mut files: Vec<(String, u16, bool)> = Vec::new();
+    for (path, stem) in font_file_index() {
+        if stem.contains(&needle) {
+            files.push((path.clone(), file_weight(stem), file_is_italic(stem)));
+        }
+    }
+    let first = files.first()?.0.clone();
+    let pick = |italic: bool, want: u16| -> Option<String> {
+        files
+            .iter()
+            .filter(|(_, _, is_italic)| *is_italic == italic)
+            .min_by_key(|(_, file_weight, _)| (*file_weight as i32 - want as i32).abs())
+            .map(|(path, _, _)| path.clone())
+    };
+    let regular = pick(false, weight).unwrap_or_else(|| first.clone());
+    let bold = pick(false, weight.max(700)).unwrap_or_else(|| regular.clone());
+    let italic = pick(true, weight).unwrap_or_else(|| regular.clone());
+    let bold_italic = pick(true, weight.max(700)).unwrap_or_else(|| bold.clone());
+    Some([regular, bold, italic, bold_italic])
+}
+
+/// 取第 `index` 个 face，缺失时回退到 `fallback` 那份文件（不画 tofu、不 panic）。
+fn load_face(paths: &[String; 4], index: usize, fallback: usize) -> Option<Font> {
+    load_font(&paths[index]).or_else(|| load_font(&paths[fallback]))
+}
+
 pub struct FontSet {
     faces: [Font; 4],
     /// 回退链：首次遇到主字体缺字时才建立（只建立空壳，字体本身仍逐个按需解析）。
     fallback: OnceLock<Fallback>,
+    /// 实际光栅化字号（逻辑字号 × `render_scale`）。
     pub size: f32,
     pub cell_w: usize,
     pub cell_h: usize,
@@ -634,36 +836,78 @@ pub struct FontSet {
     pub font_path: String,
     /// CPU 实际加载的四个 face 路径；GPU-native atlas 用同一组文件保证
     /// 字形 coverage/字重与 CPU 基线可比。
-    pub font_paths: [&'static str; 4],
+    pub font_paths: [String; 4],
 }
 
 impl FontSet {
+    /// 兼容入口：默认字体外观（内置链 / 400 / 1.0 / 0 / 1.0）。
     pub fn load(size: f32) -> Option<Self> {
-        for cand in FONT_SETS {
-            let Some(regular) = load_font(cand.regular) else { continue };
-            let bold = load_font(cand.bold).unwrap_or_else(|| load_font(cand.regular).unwrap());
-            let italic = load_font(cand.italic).unwrap_or_else(|| load_font(cand.regular).unwrap());
-            let bold_italic =
-                load_font(cand.bold_italic).unwrap_or_else(|| load_font(cand.regular).unwrap());
+        Self::load_with(size, &FontOptions::default())
+    }
 
-            let adv = regular.metrics('M', size).advance_width;
-            let line = regular.horizontal_line_metrics(size)?;
+    /// 按外观配置加载字体集并计算 cell 尺寸。
+    ///
+    /// `size` 是逻辑字号：光栅化与度量用 `size * render_scale`，cell 宽再叠加
+    /// `letter_spacing`、cell 高再乘 `line_height`。任一字段变化都要重建
+    /// `FontSet` 并按新 cell 重排（见 app 的 `apply_font_settings`）。
+    pub fn load_with(size: f32, opts: &FontOptions) -> Option<Self> {
+        let opts = opts.clone().normalized();
+        let px = (size * opts.render_scale).clamp(4.0, 512.0);
+        let candidates: Vec<[String; 4]> = match resolve_family(&opts.family, opts.weight) {
+            Some(paths) => vec![paths],
+            None => {
+                if !opts.family.is_empty() {
+                    eprintln!("[font] 找不到字体族 {:?}，回退内置等宽字体链", opts.family);
+                }
+                FONT_SETS
+                    .iter()
+                    .map(|cand| {
+                        [
+                            cand.regular.to_string(),
+                            cand.bold.to_string(),
+                            cand.italic.to_string(),
+                            cand.bold_italic.to_string(),
+                        ]
+                    })
+                    .collect()
+            },
+        };
+
+        for paths in candidates {
+            let regular = load_face(&paths, 0, 0)?;
+            let bold = load_face(&paths, 1, 0)?;
+            let italic = load_face(&paths, 2, 0)?;
+            let bold_italic = load_face(&paths, 3, 1)?;
+
+            let metrics = &regular;
+            let adv = metrics.metrics('M', px).advance_width + opts.letter_spacing;
+            let line = metrics.horizontal_line_metrics(px)?;
             let cell_w = adv.round().max(1.0) as usize;
             // +2：给上伸部/下伸部留 1px 余量，避免首行字形被裁
-            let cell_h = line.new_line_size.round().max(1.0) as usize + 2;
-            let baseline = line.ascent.round() as i32 + 1;
+            let natural_h = line.new_line_size;
+            let cell_h = (natural_h * opts.line_height).round().max(1.0) as usize + 2;
+            // 行距多出来的高度上下均分，基线跟着下移，字形不贴上/下一行。
+            let extra = (cell_h as f32 - natural_h - 2.0).max(0.0);
+            let baseline = line.ascent.round() as i32 + 1 + (extra / 2.0).round() as i32;
+
+            // 字重 ≥600：默认文本也用粗体 face，配置字重才真的“看得见”。
+            let faces = if opts.weight >= 600 {
+                [load_face(&paths, 1, 0)?, bold, italic, bold_italic]
+            } else {
+                [regular, bold, italic, bold_italic]
+            };
 
             // 回退字体按需加载：这里连候选列表都还没建立，只显示 ASCII 的会话
             // 不解析任何 CJK/符号字体（wqy-microhei 解析后约占 170 MB）。
             return Some(Self {
-                faces: [regular, bold, italic, bold_italic],
+                faces,
                 fallback: OnceLock::new(),
-                size,
+                size: px,
                 cell_w,
                 cell_h,
                 baseline,
-                font_path: cand.regular.to_string(),
-                font_paths: [cand.regular, cand.bold, cand.italic, cand.bold_italic],
+                font_path: paths[0].clone(),
+                font_paths: paths,
             });
         }
         None
@@ -1441,6 +1685,48 @@ mod tests {
             eprintln!("跳过：没有可用字体");
         }
         f
+    }
+
+    #[test]
+    fn font_options_drive_cell_metrics() {
+        let opts = FontOptions::default();
+        let Some(plain) = FontSet::load_with(15.0, &opts) else { return };
+
+        let tall = FontSet::load_with(15.0, &FontOptions { line_height: 1.5, ..opts.clone() })
+            .expect("行距不影响字体加载");
+        assert!(tall.cell_h > plain.cell_h, "行距调大必须加高 cell");
+        assert_eq!(tall.cell_w, plain.cell_w, "行距不改 cell 宽");
+        assert!(tall.baseline > plain.baseline, "多出来的行高应把基线下移");
+
+        let wide = FontSet::load_with(15.0, &FontOptions { letter_spacing: 3.0, ..opts.clone() })
+            .expect("字间距不影响字体加载");
+        assert_eq!(wide.cell_w, plain.cell_w + 3, "字间距直接加在 cell 宽上");
+
+        let scaled = FontSet::load_with(15.0, &FontOptions { render_scale: 2.0, ..opts.clone() })
+            .expect("渲染缩放不影响字体加载");
+        assert!(scaled.size > plain.size, "渲染缩放改的是光栅化字号");
+        assert!(scaled.cell_w > plain.cell_w, "渲染缩放必须放大 cell");
+    }
+
+    #[test]
+    fn custom_font_family_resolves_by_name() {
+        // 系统没有这个字体时跳过：族名匹配依赖字体目录里的真实文件。
+        if !Path::new("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf").exists() {
+            eprintln!("跳过：系统没有 DejaVu Sans Mono");
+            return;
+        }
+        let opts = FontOptions { family: "DejaVu Sans Mono".into(), ..FontOptions::default() };
+        let Some(resolved) = FontSet::load_with(15.0, &opts) else {
+            panic!("族名 DejaVu Sans Mono 应能解析");
+        };
+        assert!(
+            resolved.font_path.to_lowercase().contains("dejavu"),
+            "族名应按文件名命中 DejaVu，实际 {}",
+            resolved.font_path
+        );
+        // 找不到的族名必须回退内置链，而不是加载失败。
+        let missing = FontOptions { family: "No Such Font Family".into(), ..FontOptions::default() };
+        assert!(FontSet::load_with(15.0, &missing).is_some(), "未知族名应回退内置字体链");
     }
 
     #[test]

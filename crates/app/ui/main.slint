@@ -1769,6 +1769,18 @@ export component MainWindow inherits Window {
     property <bool> pinned: false;
     callback bump-font-size(int);
     callback bump-scrollback(int);
+    // 字体外观（族/字重/行距/字间距/渲染缩放）：改动立即重算 cell 尺寸并重排；
+    // 由 Rust 侧夹到安全范围后写回 config，失败则保持旧值。
+    in-out property <string> cfg-font-family: "";
+    in-out property <int> cfg-font-weight: 400;
+    in-out property <float> cfg-line-height: 1.0;
+    in-out property <float> cfg-letter-spacing: 0;
+    in-out property <float> cfg-render-scale: 1.0;
+    callback set-font-family(string);
+    callback bump-font-weight(int);
+    callback bump-line-height(float);
+    callback bump-letter-spacing(float);
+    callback bump-render-scale(float);
     in-out property <bool> settings-open: false;
     /// Settings Tab 是否仍存在于标签栏。settings-open=false 但 tab-open=true
     /// 表示用户切到了终端：设置只 suspend，不销毁；点齿轮 Tab 可回来。
@@ -4538,6 +4550,55 @@ export component MainWindow inherits Window {
                                     text: "\{root.font-size} px";
                                     minus => { root.bump-font-size(-1); }
                                     plus => { root.bump-font-size(1); }
+                                }
+                            }
+                            SettingField {
+                                label: Lang.t("Font family", "字体族");
+                                description: Lang.t("Family name or font file path. Empty = built-in JetBrains Mono / DejaVu Sans Mono. Enter to apply.", "族名或字体文件路径。留空 = 内置 JetBrains Mono / DejaVu Sans Mono；回车应用。");
+                                SettingsTextField {
+                                    text <=> root.cfg-font-family;
+                                    placeholder: Lang.t("built-in monospace", "内置等宽字体");
+                                    clearable: true;
+                                    commit-on-blur: true;
+                                    accepted(t) => { root.set-font-family(t); }
+                                    blurred(t) => { root.set-font-family(t); }
+                                    cleared => { root.set-font-family(""); }
+                                }
+                            }
+                            SettingField {
+                                label: Lang.t("Font weight", "字重");
+                                description: Lang.t("100–900; 600+ also renders default text bold.", "100–900；≥600 时普通文本也用粗体。");
+                                Stepper {
+                                    text: "\{root.cfg-font-weight}";
+                                    minus => { root.bump-font-weight(-100); }
+                                    plus => { root.bump-font-weight(100); }
+                                }
+                            }
+                            SettingField {
+                                label: Lang.t("Line height", "行距");
+                                description: Lang.t("Multiplier of the font's natural line height (0.8–2.5).", "字体自然行高的倍数（0.8–2.5）。");
+                                Stepper {
+                                    text: "\{Math.round(root.cfg-line-height * 100) / 100}×";
+                                    minus => { root.bump-line-height(-0.1); }
+                                    plus => { root.bump-line-height(0.1); }
+                                }
+                            }
+                            SettingField {
+                                label: Lang.t("Letter spacing", "字间距");
+                                description: Lang.t("Extra pixels added to every cell (-4–16).", "每格额外像素（-4–16）。");
+                                Stepper {
+                                    text: "\{Math.round(root.cfg-letter-spacing * 100) / 100} px";
+                                    minus => { root.bump-letter-spacing(-0.5); }
+                                    plus => { root.bump-letter-spacing(0.5); }
+                                }
+                            }
+                            SettingField {
+                                label: Lang.t("Render scale", "渲染缩放");
+                                description: Lang.t("Scales glyph rasterization only; logical font size stays the same (0.5–3).", "只缩放字形光栅化，逻辑字号不变（0.5–3）。");
+                                Stepper {
+                                    text: "\{Math.round(root.cfg-render-scale * 100) / 100}×";
+                                    minus => { root.bump-render-scale(-0.05); }
+                                    plus => { root.bump-render-scale(0.05); }
                                 }
                             }
                             SettingField {

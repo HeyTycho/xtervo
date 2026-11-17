@@ -47,6 +47,10 @@ pub const SEMANTIC_ESCAPE_CHARS: &str = ",│`|:\"' ()[]{}<>\t";
 /// Max size of the keyboard modes.
 const KEYBOARD_MODE_STACK_MAX_DEPTH: usize = TITLE_STACK_MAX_DEPTH;
 
+/// ZERO WIDTH JOINER：把前后两个 emoji 合成一个 grapheme cluster。
+const ZWJ: char = '\u{200D}';
+
+
 /// Default tab interval, corresponding to terminfo `it` value.
 const INITIAL_TABSTOPS: usize = 8;
 
@@ -327,6 +331,23 @@ pub struct Term<T> {
 
     /// Config directly for the terminal.
     config: Config,
+
+    /// Tervo: ZWJ grapheme cluster 的锚点。
+    ///
+    /// `👨‍👩‍👧` 这类 ZWJ 序列在网格里只占一个簇宽（2 格），但 vte 是按码位
+    /// 逐个喂给 [`Term::input`] 的。收到 ZWJ 时先记下它挂到的基准格，随后到的
+    /// 组件码位并入同一格而不是新开宽字格，光标/折行/选区坐标因此保持不变。
+    zwj_anchor: Option<ZwjAnchor>,
+}
+
+/// ZWJ 簇锚点：基准字符所在格 + 基准字符本身。
+///
+/// 记录基准字符是为了在真正合并前确认锚点仍然有效：滚动/清屏/resize 之后
+/// 同一格可能已经被别的内容覆盖，此时必须放弃合并而不是把组件塞进错的格子。
+#[derive(Clone, Copy, Debug)]
+struct ZwjAnchor {
+    point: Point,
+    base: char,
 }
 
 /// Configuration options for the [`Term`].
@@ -441,6 +462,7 @@ impl<T> Term<T> {
             selection: Default::default(),
             title: Default::default(),
             mode: Default::default(),
+            zwj_anchor: None,
         }
     }
 
@@ -699,6 +721,9 @@ impl<T> Term<T> {
 
         // Reset scrolling region.
         self.scroll_region = Line(0)..Line(self.screen_lines() as i32);
+
+        // Tervo: 行列都变了，ZWJ 簇的锚点可能指向别的格，直接作废。
+        self.zwj_anchor = None;
 
         // Resize damage information.
         self.damage.resize(num_cols, num_lines);
@@ -1028,6 +1053,22 @@ impl<T> Term<T> {
         ));
     }
 
+    /// Tervo: ZWJ 簇锚点是否仍然指向簇的基准格。
+    ///
+    /// 滚动/resize/清屏/换行都可能让锚点过期；宁可放弃合并（组件按普通宽字符
+    /// 新开格），也不能把组件写进一个已经不属于它的格子。
+    #[inline]
+    fn zwj_anchor_is_valid(&self, anchor: ZwjAnchor) -> bool {
+        let Point { line, column } = anchor.point;
+        if line < Line(0) || line.0 as usize >= self.screen_lines() || column.0 >= self.columns() {
+            return false;
+        }
+        let cell = &self.grid[line][column];
+        cell.c == anchor.base
+            && !cell.flags.contains(Flags::WIDE_CHAR_SPACER)
+            && cell.zerowidth().is_some_and(|zw| zw.last() == Some(&ZWJ))
+    }
+
     #[inline]
     fn damage_cursor(&mut self) {
         // The normal cursor coordinates are always in viewport.
@@ -1077,6 +1118,25 @@ impl<T: EventListener> Handler for Term<T> {
             None => return,
         };
 
+        // Tervo: 让 ZWJ 序列整体只占一个簇宽（`👨‍👩‍👧` 2 格而不是 6 格）。
+        //
+        // ZWJ 之后的组件码位宽度也是 2，但它是同一个 grapheme cluster 的一部分：
+        // 并入 ZWJ 挂到的基准格，不新开宽字格、光标也不前进，因此后续的折行、
+        // 选区、链接锚点仍然按“一个 2 格宽字符”计算。
+        if width > 0 && c != ZWJ {
+            if let Some(anchor) = self.zwj_anchor.take() {
+                if self.zwj_anchor_is_valid(anchor) {
+                    self.grid[anchor.point.line][anchor.point.column].push_zerowidth(c);
+                    // 零宽写入本身不产生 damage；簇内容变化必须让帧刷新看到。
+                    self.damage.damage_point(Point::new(
+                        anchor.point.line.0.max(0) as usize,
+                        anchor.point.column,
+                    ));
+                    return;
+                }
+            }
+        }
+
         // Handle zero-width characters.
         if width == 0 {
             // Get previous column.
@@ -1092,6 +1152,14 @@ impl<T: EventListener> Handler for Term<T> {
             }
 
             self.grid[line][column].push_zerowidth(c);
+            // Tervo: 记住 ZWJ 挂到的基准格，下一个组件码位并入这一格。
+            if c == ZWJ {
+                let base = self.grid[line][column].c;
+                self.zwj_anchor = (!base.is_whitespace()).then_some(ZwjAnchor {
+                    point: Point::new(line, column),
+                    base,
+                });
+            }
             return;
         }
 
