@@ -43,6 +43,7 @@ use alacritty_terminal::index::{Direction, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::cell::{Cell, Flags};
 use alacritty_terminal::term::search::{RegexIter, RegexSearch};
+use alacritty_terminal::term::color::COUNT as COLOR_COUNT;
 use alacritty_terminal::term::{Config as TermConfig, Osc52, Term, TermDamage, TermMode};
 use alacritty_terminal::vte::ansi::{ClearMode, Handler, Processor, Rgb};
 use crossbeam_channel::{bounded, Receiver, SendTimeoutError, Sender, TrySendError};
@@ -360,6 +361,19 @@ fn note_write_drop(stats: &PaneStats, bytes: usize) {
     }
 }
 
+/// OSC 4/10/11/12 查询的格式化闭包（由 vte 给出，xterm 格式已固化在闭包里）。
+type ColorReply = Arc<dyn Fn(Rgb) -> String + Sync + Send + 'static>;
+
+/// 当前 chunk 内积压的颜色查询回包。
+///
+/// vte 在 `Processor::advance` 内部同步回调 Listener，这一刻 actor 还借不到
+/// `Term`；先入队，等同一批字节解析完再由 actor 按 **Term 的运行时颜色**
+/// （OSC 4/10/11/12 设置过的值）回包，最后回退到主题 Palette。
+type PendingColors = Arc<Mutex<Vec<(usize, ColorReply)>>>;
+
+/// 单批字节内最多缓存这么多条颜色查询，防止远端刷屏撑爆内存。
+const MAX_PENDING_COLOR_REPLIES: usize = 64;
+
 /// 事件监听器：只做「转发到有界通道」，绝不阻塞解析线程。
 #[derive(Clone)]
 struct Listener {
@@ -367,10 +381,10 @@ struct Listener {
     events: EventSink,
     write_queue: Arc<WriteQueue>,
     stats: Arc<PaneStats>,
-    /// 当前调色板：OSC 4/10/11/12 查询要按主题回真实颜色。
-    palette: Arc<RwLock<Palette>>,
     /// Sixel 开关：开启时把 alacritty 的 Primary DA 回应加上参数 4。
     sixel: Arc<AtomicBool>,
+    /// OSC 颜色查询：vte 回调时 Term 不可借，先攒起来交给 actor 回包。
+    pending_colors: PendingColors,
 }
 
 impl EventListener for Listener {
@@ -397,18 +411,13 @@ impl EventListener for Listener {
             },
             Event::Exit | Event::ChildExit(_) => self.events.send(CoreEvent::Exited),
             Event::Wakeup => self.wake.notify(),
-            // OSC 4/10/11/12 查询：把当前主题颜色按 xterm 格式回写给 PTY。
+            // OSC 4/10/11/12 查询：入队等 actor 用 Term 的运行时颜色回包。
+            // 不能在这里直接读 Palette：`OSC 4;1;rgb:..` 设置只存在 Term.colors
+            // 里，紧跟其后的查询必须看到新值（同一批字节也要成立）。
             Event::ColorRequest(index, format) => {
-                let palette = self.palette.read();
-                let Some(rgb) = palette.at(index) else { return };
-                let reply = format(Rgb {
-                    r: (rgb >> 16) as u8,
-                    g: (rgb >> 8) as u8,
-                    b: rgb as u8,
-                });
-                let len = reply.len();
-                if let Err(PushError::Full) = self.write_queue.push(reply.into_bytes()) {
-                    note_write_drop(&self.stats, len);
+                let mut pending = self.pending_colors.lock();
+                if pending.len() < MAX_PENDING_COLOR_REPLIES {
+                    pending.push((index, format));
                 }
             },
             _ => {},
@@ -1200,13 +1209,14 @@ pub fn spawn_with_transport(
     let shared_palette = Arc::new(RwLock::new(config.palette.clone()));
     let sixel_enabled = Arc::new(AtomicBool::new(config.sixel));
     let iip_enabled = Arc::new(AtomicBool::new(config.iip));
+    let pending_colors: PendingColors = Arc::new(Mutex::new(Vec::new()));
     let listener = Listener {
         wake: wake_signal,
         events: events_sink,
         write_queue: write_queue.clone(),
         stats: stats.clone(),
-        palette: shared_palette.clone(),
         sixel: sixel_enabled.clone(),
+        pending_colors: pending_colors.clone(),
     };
 
     // ---- 读线程：PTY 与插件 transport 共用 pump_reader（只 read + 有界 send）----
@@ -1289,6 +1299,7 @@ pub fn spawn_with_transport(
         pull_tx,
         pull_rx: pull_rx.clone(),
         palette,
+        pending_colors,
         stats: stats_actor,
         control,
         size,
@@ -1610,6 +1621,8 @@ struct Actor {
     /// 保证 actor 永远不因 UI 超时而阻塞。
     pull_rx: Receiver<(u64, Box<Frame>)>,
     palette: Arc<RwLock<Palette>>,
+    /// 与 Listener 共享的 OSC 颜色查询队列，在每批 vte 字节后回包。
+    pending_colors: PendingColors,
     stats: Arc<PaneStats>,
     /// 后端控制面：PTY 走 `MasterPty::resize`，插件走 `TransportControl`。
     control: BackendControl,
@@ -2916,6 +2929,9 @@ impl Actor {
         }
         let keyboard_actions = self.scan_keyboard_modes(chunk);
         self.advance_vte(chunk);
+        // 颜色查询必须在 vte 之后回包：同一批字节里的 OSC 4 设置已经写进
+        // Term.colors，查询要返回设置后的值。
+        self.flush_color_requests();
         let cursor = self.term.grid().cursor.point;
         // ECH 已经过 vte。常见场景一次性发出：`CUP -> ECH`，此时光标仍在
         // 被擦矩形的右端；按 ECH 宽度取光标左侧区域，不删除同行其他图片。
@@ -2949,6 +2965,38 @@ impl Actor {
         let total = self.term.grid().total_lines() as u64 & 0xffff_ffff;
         self.grid_lines
             .store((hist << 32) | total, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// 回写本批字节里积压的 OSC 4/10/11/12 查询。
+    ///
+    /// 解析顺序：`Term.colors()[index]`（OSC 4/10/11/12 设置过的运行时颜色）
+    /// 优先，缺省回退到当前主题 [`Palette`]。Term 是唯一的真相源，所以
+    /// `OSC 104/110/111/112` 复位后自然回到主题色，无需额外状态。
+    fn flush_color_requests(&mut self) {
+        let pending: Vec<(usize, ColorReply)> = {
+            let mut queue = self.pending_colors.lock();
+            if queue.is_empty() {
+                return;
+            }
+            std::mem::take(&mut *queue)
+        };
+        let palette = self.palette.read();
+        let colors = self.term.colors();
+        for (index, format) in pending {
+            let rgb = match (index < COLOR_COUNT).then(|| colors[index]).flatten() {
+                Some(rgb) => rgb,
+                None => match palette.at(index) {
+                    Some(v) => Rgb {
+                        r: (v >> 16) as u8,
+                        g: (v >> 8) as u8,
+                        b: v as u8,
+                    },
+                    None => continue,
+                },
+            };
+            let reply = format(rgb);
+            self.write_input(reply.as_bytes());
+        }
     }
 
     /// 把字节交给 vte，并刷新 grid 行数诊断快照（RowId 锚点不再需要 Tervo
@@ -3735,6 +3783,34 @@ pub fn fill_frame<T: EventListener>(
     frame.skipped = false;
     frame.damage.clear();
     frame.full = false;
+
+    // OSC 4/10/11/12 设置的颜色只存在 `Term::colors()`；Frame 的取色全部走
+    // Palette。有覆盖时克隆一份调色板叠加，热路径（无覆盖）零额外分配。
+    let effective_palette = {
+        let colors = term.colors();
+        let mut dirty = false;
+        for i in 0..COLOR_COUNT {
+            if colors[i].is_some() {
+                dirty = true;
+                break;
+            }
+        }
+        if dirty {
+            let mut p = palette.clone();
+            for i in 0..COLOR_COUNT {
+                if let Some(rgb) = colors[i] {
+                    let packed = (u32::from(rgb.r) << 16)
+                        | (u32::from(rgb.g) << 8)
+                        | u32::from(rgb.b);
+                    p.set_rgb(i, packed);
+                }
+            }
+            Some(p)
+        } else {
+            None
+        }
+    };
+    let palette = effective_palette.as_ref().unwrap_or(palette);
 
     let display_offset = term.grid().display_offset();
     // 滚动历史可见时行号与视口不再一一对应；配色切换等场景要求强制整屏。

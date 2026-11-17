@@ -216,3 +216,182 @@ fn wait_mouse_mode(handle: &PaneHandle, timeout: Duration) {
     }
     panic!("5s 内没有看到 1000/1006 模式位");
 }
+
+// ------------------------------------- 1002 右键拖动 / 1003 悬停（TERM-010）
+
+#[test]
+fn sgr_right_drag_under_1002_keeps_button_two() {
+    // 1002（按住拖动）下右键必须始终是键码 2；移动加 32，松开用 m。
+    let mode = TermMode::MOUSE_DRAG | TermMode::SGR_MOUSE;
+    assert_eq!(
+        text(&mouse::encode(ev(MouseButton::Right, MouseAction::Press, 1, 2), mode).unwrap()),
+        "\x1b[<2;3;2M"
+    );
+    assert_eq!(
+        text(&mouse::encode(ev(MouseButton::Right, MouseAction::Motion, 1, 3), mode).unwrap()),
+        "\x1b[<34;4;2M"
+    );
+    assert_eq!(
+        text(&mouse::encode(ev(MouseButton::Right, MouseAction::Release, 1, 3), mode).unwrap()),
+        "\x1b[<2;4;2m"
+    );
+    // 中键同理（键码 1 / 33）。
+    assert_eq!(
+        text(&mouse::encode(ev(MouseButton::Middle, MouseAction::Motion, 0, 0), mode).unwrap()),
+        "\x1b[<33;1;1M"
+    );
+}
+
+#[test]
+fn sgr_hover_under_1003_is_button_three() {
+    let mode = TermMode::MOUSE_MOTION | TermMode::SGR_MOUSE;
+    assert_eq!(
+        text(&mouse::encode(ev(MouseButton::None, MouseAction::Motion, 4, 5), mode).unwrap()),
+        "\x1b[<35;6;5M"
+    );
+    // 1003 下按键拖动仍用真实键码 + 32。
+    assert_eq!(
+        text(&mouse::encode(ev(MouseButton::Left, MouseAction::Motion, 0, 0), mode).unwrap()),
+        "\x1b[<32;1;1M"
+    );
+}
+
+/// 1002 + 1006 真 PTY：右键按下 → 拖动 → 松开，逐字节比对。
+#[test]
+fn actor_reports_right_drag_under_1002() {
+    let dir = std::env::temp_dir().join(format!("rt-mouse-1002-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let out = dir.join("drag.bin");
+    let script = format!(
+        "printf '\\033[?1002h\\033[?1006h'; stty raw -echo 2>/dev/null; dd bs=1 count=28 of={} 2>/dev/null; printf DONE",
+        out.display()
+    );
+    let handle = spawn(PaneConfig {
+        cols: 20,
+        rows: 5,
+        scrollback: 10,
+        shell: Some("/bin/sh".to_string()),
+        args: vec!["-c".to_string(), script],
+        ..PaneConfig::default()
+    })
+    .expect("spawn pane");
+    wait_mouse_mode(&handle, Duration::from_secs(5));
+
+    handle.mouse(ev(MouseButton::Right, MouseAction::Press, 1, 2));
+    handle.mouse(ev(MouseButton::Right, MouseAction::Motion, 1, 3));
+    handle.mouse(ev(MouseButton::Right, MouseAction::Release, 1, 3));
+
+    let got = wait_file(&out, 28);
+    assert_eq!(text(&got), "\x1b[<2;3;2M\x1b[<34;4;2M\x1b[<2;4;2m");
+    drop(handle);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 1003 + 1006 真 PTY：无按键悬停上报键码 3 + 32。
+#[test]
+fn actor_reports_hover_under_1003() {
+    let dir = std::env::temp_dir().join(format!("rt-mouse-1003-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let out = dir.join("hover.bin");
+    let script = format!(
+        "printf '\\033[?1003h\\033[?1006h'; stty raw -echo 2>/dev/null; dd bs=1 count=10 of={} 2>/dev/null; printf DONE",
+        out.display()
+    );
+    let handle = spawn(PaneConfig {
+        cols: 20,
+        rows: 5,
+        scrollback: 10,
+        shell: Some("/bin/sh".to_string()),
+        args: vec!["-c".to_string(), script],
+        ..PaneConfig::default()
+    })
+    .expect("spawn pane");
+    wait_mouse_mode(&handle, Duration::from_secs(5));
+    assert!(handle.wants_motion(), "1003 应声明悬停上报");
+
+    handle.mouse(ev(MouseButton::None, MouseAction::Motion, 4, 5));
+
+    let got = wait_file(&out, 10);
+    assert_eq!(text(&got), "\x1b[<35;6;5M");
+    drop(handle);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ------------------------------------- Bracketed Paste（TERM-010）
+
+/// 2004 模式位跟随 `?2004h/l`（app 的 `paste_payload` 依据它决定是否包 200~/201~）。
+#[test]
+fn bracketed_paste_mode_bit_follows_enable_disable() {
+    let handle = spawn(PaneConfig {
+        cols: 20,
+        rows: 5,
+        scrollback: 10,
+        shell: Some("/bin/sh".to_string()),
+        args: vec![
+            "-c".to_string(),
+            "printf '\\033[?2004h'; sleep 0.4; printf '\\033[?2004l'; sleep 1".to_string(),
+        ],
+        ..PaneConfig::default()
+    })
+    .expect("spawn pane");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !handle.mode().contains(TermMode::BRACKETED_PASTE) {
+        assert!(Instant::now() < deadline, "?2004h 后模式位未置位");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    while handle.mode().contains(TermMode::BRACKETED_PASTE) {
+        assert!(Instant::now() < deadline, "?2004l 后模式位未清除");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// 端到端：子进程开 2004 后，app 侧拼好的 `200~` 包裹字节原样到达 PTY。
+///
+/// core 不负责包裹（app 的 `paste_payload` 在拿到 BRACKETED_PASTE 位后拼），
+/// 这里锁定 core 的职责：模式位可读 + 输入字节不转义、不拆分。
+#[test]
+fn bracketed_paste_payload_reaches_pty_verbatim() {
+    let dir = std::env::temp_dir().join(format!("rt-mouse-paste-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let out = dir.join("paste.bin");
+    let script = format!(
+        "printf '\\033[?2004h'; stty raw -echo 2>/dev/null; dd bs=1 count=15 of={} 2>/dev/null; printf DONE",
+        out.display()
+    );
+    let handle = spawn(PaneConfig {
+        cols: 20,
+        rows: 5,
+        scrollback: 10,
+        shell: Some("/bin/sh".to_string()),
+        args: vec!["-c".to_string(), script],
+        ..PaneConfig::default()
+    })
+    .expect("spawn pane");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !handle.mode().contains(TermMode::BRACKETED_PASTE) {
+        assert!(Instant::now() < deadline, "2004 模式位未就绪");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    handle.input(b"\x1b[200~a\nb\x1b[201~");
+    let got = wait_file(&out, 15);
+    assert_eq!(got, b"\x1b[200~a\nb\x1b[201~");
+    drop(handle);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn wait_file(path: &std::path::Path, count: usize) -> Vec<u8> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut got = Vec::new();
+    while Instant::now() < deadline {
+        got = std::fs::read(path).unwrap_or_default();
+        if got.len() >= count {
+            return got;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    panic!("PTY 字节未到齐（期望 {count}，收到 {}）: {got:?}", got.len());
+}

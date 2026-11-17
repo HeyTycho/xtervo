@@ -705,6 +705,35 @@ impl Palette {
         }
     }
 
+    /// 运行时改色（OSC 4/10/11/12 设置）：索引语义与 [`Palette::at`] 一致。
+    ///
+    /// 只改本 pane 的 Palette 副本；返回 false 表示索引不可改（> 258 的
+    /// 暗色/亮前景等由主题固定，xterm 的 OSC 4 参数上限 255 也不会到这里）。
+    pub fn set_rgb(&mut self, index: usize, rgb: u32) -> bool {
+        match index {
+            0..=255 => {
+                self.table[index] = rgb;
+                true
+            },
+            256 => {
+                self.fg = rgb;
+                self.table[NamedColor::Foreground as usize] = rgb;
+                true
+            },
+            257 => {
+                self.bg = rgb;
+                self.table[NamedColor::Background as usize] = rgb;
+                true
+            },
+            258 => {
+                self.cursor = rgb;
+                self.table[NamedColor::Cursor as usize] = rgb;
+                true
+            },
+            _ => false,
+        }
+    }
+
     #[inline]
     pub fn table(&self) -> &[u32; COUNT] {
         &self.table
@@ -714,6 +743,33 @@ impl Palette {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn set_rgb_overrides_indexed_and_named_slots() {
+        let mut p = Palette::default();
+        let before = p.at(1).unwrap();
+        assert!(p.set_rgb(1, 0x00ff_0000));
+        assert_eq!(p.at(1), Some(0x00ff_0000));
+        assert_ne!(p.at(1), Some(before));
+
+        let fg = p.fg;
+        assert!(p.set_rgb(256, 0x0011_2233));
+        assert_eq!(p.fg, 0x0011_2233);
+        assert_eq!(p.at(256), Some(0x0011_2233));
+        assert_eq!(p.resolve(Color::Named(NamedColor::Foreground)), 0x0011_2233);
+        assert_ne!(p.fg, fg);
+
+        assert!(p.set_rgb(257, 0x0033_4455));
+        assert_eq!(p.bg, 0x0033_4455);
+        assert_eq!(p.at(257), Some(0x0033_4455));
+        assert!(p.set_rgb(258, 0x0066_7788));
+        assert_eq!(p.cursor, 0x0066_7788);
+        assert_eq!(p.at(258), Some(0x0066_7788));
+
+        // 暗色/亮前景等索引由主题固定，OSC 4 的 u8 索引也不会到这里。
+        assert!(!p.set_rgb(259, 0x00ff_ffff));
+        assert!(!p.set_rgb(999, 0x00ff_ffff));
+    }
 
     #[test]
     fn indexed_256_grayscale() {
