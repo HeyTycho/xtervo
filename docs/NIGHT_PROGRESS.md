@@ -40,6 +40,9 @@ DURATION=2m BIN=$PWD/target/release/tervo SOAK_NO_SHOTS=1 \
 
 ## 3. 未完成（按建议顺序）
 
+> **2026-11-17 用户确认的排序：先把核心终端做到 ≥80%，再做连接插件与其它。**
+> 核心清单见 [`CORE_TO_80.md`](CORE_TO_80.md)（17 条：5 条未开始 + 12 条高感知 partial）。
+
 ```text
 1. ~~ACT-048 前置：把 commands.rs 的 default_shortcut 接进键盘分发~~ ✅（已在 PTY 写入前兜底）
 2. ~~ACT-047 设置页 Profile 热键绑定输入~~ ✅（表单 Hotkey 行）
