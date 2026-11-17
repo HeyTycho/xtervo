@@ -1588,9 +1588,13 @@ export component MainWindow inherits Window {
     callback hostkey-trust();
     callback hostkey-once();
     callback hostkey-cancel();
-    // SSH 会话结束提示 + 重连（不自动改写用户默认行为）
+    // 会话结束 / 启动失败提示 + 重启（不自动改写用户默认行为；LOCAL-005）
     in-out property <bool> ssh-exit-open: false;
+    /// 横幅标题：“SSH session ended” / “Session ended” / “Launch failed”。
+    in-out property <string> ssh-exit-title: "SSH session ended";
     in-out property <string> ssh-exit-text: "";
+    /// Restart/Retry 按钮文案（空 = 不可重试，不显示按钮）。
+    in-out property <string> ssh-exit-action-label: "Reconnect";
     in-out property <bool> ssh-exit-reconnectable: false;
     callback ssh-exit-reconnect();
     callback ssh-exit-dismiss();
@@ -6806,7 +6810,7 @@ export component MainWindow inherits Window {
 
         Text {
             x: 14px; y: 8px; width: 456px; height: 20px;
-            text: "SSH session ended";
+            text: root.ssh-exit-title;
             color: Palette.colors.danger;
             font-size: 13px;
             font-weight: 600;
@@ -6841,7 +6845,7 @@ export component MainWindow inherits Window {
             background: ssh-exit-reconnect-hit.has-hover ? Palette.colors.danger : Palette.colors.accent;
             ssh-exit-reconnect-hit := TouchArea { clicked => { root.ssh-exit-reconnect(); } }
             Text {
-                text: "Reconnect";
+                text: root.ssh-exit-action-label;
                 color: Palette.colors.accent-text;
                 font-size: 11px;
                 font-weight: 600;

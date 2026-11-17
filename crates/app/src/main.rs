@@ -340,11 +340,25 @@ struct ImageSource {
     data: Arc<[u8]>,
 }
 
-/// SSH 会话结束提示：记录 pane/Profile，重连时复用同一格。
+/// 会话结束 / 启动失败提示（LOCAL-005）：记录 pane/Profile 与重试动作。
 struct SshExitNotice {
-    pane: PaneId,
+    /// 出问题的 pane；启动失败（还没建出 pane）时是 `None`。
+    pane: Option<PaneId>,
     profile_id: Option<u64>,
     text: String,
+    retry: RetryAction,
+}
+
+/// 横幅 “Restart/Retry” 按钮的动作。
+enum RetryAction {
+    /// 进程已退出：在同一个 pane 里重新启动（保留 Tab/分屏布局）。
+    RestartPane,
+    /// 启动失败（还没有 pane）：重开默认 Tab。
+    NewTab { cwd: Option<PathBuf> },
+    /// 启动失败（还没有 pane）：重开该 Profile。
+    ProfileTab { index: usize },
+    /// 不可重试，只显示提示。
+    None,
 }
 
 struct Drag {
@@ -4014,6 +4028,8 @@ pub(crate) fn new_tab_with_default_or_cwd(st: &mut AppState, cwd: Option<PathBuf
 
 fn new_tab_inner_with_cwd(st: &mut AppState, cwd: Option<PathBuf>) {
     let id = st.shared.alloc_pane_id();
+    // 启动失败时 Retry 要能原样重来（cwd 会被 create_pane 吃掉）。
+    let retry_cwd = cwd.clone();
     match create_pane(st, id, st.content, cwd, None, None) {
         Ok(rt) => {
             st.next_title += 1;
@@ -4032,7 +4048,19 @@ fn new_tab_inner_with_cwd(st: &mut AppState, cwd: Option<PathBuf>) {
             rebuild_tabs(st);
             redraw_pane_inner(st, id);
         }
-        Err(e) => eprintln!("创建 pane 失败: {e}"),
+        Err(e) => {
+            eprintln!("创建 pane 失败: {e}");
+            let zh = st.cfg.lang() == "zh";
+            let title = if zh { "启动失败" } else { "Launch failed" };
+            let text = if zh {
+                format!("Shell 启动失败: {e}；检查 Shell 路径/工作目录/权限后点 Retry，或关闭提示。")
+            } else {
+                format!(
+                    "Failed to launch shell: {e}; check the shell path/cwd/permissions, then Retry or dismiss."
+                )
+            };
+            show_session_notice(st, None, None, title, text, RetryAction::NewTab { cwd: retry_cwd });
+        },
     }
 }
 
@@ -4744,11 +4772,82 @@ fn open_profile_tab_now(st: &mut AppState, index: usize, allow_askpass: bool) {
                 st.panes.get(&id).map(|rt| rt.cell)
             );
         },
-        Err(e) => eprintln!("[profile] 打开 {:?} 失败: {e}", spec.name),
+        Err(e) => {
+            eprintln!("[profile] 打开 {:?} 失败: {e}", spec.name);
+            let zh = st.cfg.lang() == "zh";
+            let title = if zh { "启动失败" } else { "Launch failed" };
+            let text = if zh {
+                format!("Profile「{}」启动失败: {e}；点 Retry 重试，或关闭提示。", spec.name)
+            } else {
+                format!("Profile \"{}\" failed to launch: {e}; Retry or dismiss.", spec.name)
+            };
+            show_session_notice(
+                st,
+                None,
+                Some(spec.id),
+                title,
+                text,
+                RetryAction::ProfileTab { index },
+            );
+        },
     }
 }
 
-/// SSH 进程结束：只对 SSH Profile 弹横幅（本地 shell/串口退出不打扰）。
+/// 弹/更新会话提示横幅（LOCAL-005）：启动失败、进程退出、PTY 关闭共用。
+///
+/// 以前只有 SSH Profile 有横幅，本地 shell 退出/启动失败只打 stderr，用户看到
+/// 的是“黑屏/没反应”。现在所有 pane 都有可见状态，并给 Restart/Retry + 关闭建议。
+fn show_session_notice(
+    st: &mut AppState,
+    pane: Option<PaneId>,
+    profile_id: Option<u64>,
+    title: &str,
+    text: String,
+    retry: RetryAction,
+) {
+    let retryable = !matches!(retry, RetryAction::None);
+    let action = match &retry {
+        RetryAction::RestartPane => "Restart",
+        RetryAction::NewTab { .. } | RetryAction::ProfileTab { .. } => "Retry",
+        RetryAction::None => "",
+    };
+    eprintln!(
+        "[session] ts_ms={} notice pane={pane:?} profile={profile_id:?} retryable={retryable} text={text:?}",
+        logging::now_ms()
+    );
+    st.ssh_exit = Some(SshExitNotice {
+        pane,
+        profile_id,
+        text: text.clone(),
+        retry,
+    });
+    st.ui.set_ssh_exit_title(title.into());
+    st.ui.set_ssh_exit_text(text.as_str().into());
+    st.ui.set_ssh_exit_action_label(action.into());
+    st.ui.set_ssh_exit_reconnectable(retryable);
+    st.ui.set_ssh_exit_open(true);
+}
+
+/// Profile 的展示位置（ssh/telnet 主机、串口设备、本地 shell）。
+fn profile_location(p: &profile::Profile) -> String {
+    match p.kind.as_str() {
+        "ssh" | "telnet" => {
+            let host = p.host.trim();
+            if host.is_empty() {
+                p.name.clone()
+            } else {
+                format!("{host}{}", if p.port == 0 { String::new() } else { format!(":{}", p.port) })
+            }
+        },
+        "serial" => p.serial_port.clone(),
+        _ => {
+            let shell = shell_basename(Some(p.shell.as_str()).filter(|s| !s.is_empty()));
+            shell
+        },
+    }
+}
+
+/// 会话结束（进程退出 / PTY 关闭 / 信号终止）：对所有 pane 弹可见提示。
 fn note_ssh_exit(
     st: &mut AppState,
     pane: PaneId,
@@ -4756,80 +4855,108 @@ fn note_ssh_exit(
     code: u32,
     signal: Option<String>,
 ) {
-    let Some(profile) = profile_id.and_then(|id| st.profiles.get(id)).cloned() else {
-        return;
+    let zh = st.cfg.lang() == "zh";
+    let profile = profile_id.and_then(|id| st.profiles.get(id)).cloned();
+    let pane_where = st
+        .panes
+        .get(&pane)
+        .map(|rt| {
+            if rt.title.is_empty() {
+                format!("pane {pane}")
+            } else {
+                rt.title.clone()
+            }
+        })
+        .unwrap_or_else(|| format!("pane {pane}"));
+    let exit = match signal.as_deref() {
+        Some(sig) if zh => format!("进程被信号终止（{sig}）"),
+        Some(sig) => format!("terminated by signal {sig}"),
+        None if zh => format!("退出码 {code}"),
+        None => format!("exit code {code}"),
     };
-    if profile.kind != "ssh" {
-        return;
-    }
-    let text = match signal.as_deref() {
-        Some(signal) => format!("{}（{}）· 进程被信号终止: {signal}", profile.name, profile.host),
-        None => format!("{}（{}）· 退出码 {code}", profile.name, profile.host),
+    let text = match &profile {
+        Some(p) => {
+            let location = profile_location(p);
+            if zh {
+                format!(
+                    "{}（{}）· {exit}。点 Restart 重新启动，或关闭该 Tab 后重开。",
+                    p.name, location
+                )
+            } else {
+                format!(
+                    "{} ({location}) · {exit}. Click Restart to relaunch, or close this tab and reopen it.",
+                    p.name
+                )
+            }
+        },
+        None if zh => {
+            format!("本地 Shell「{pane_where}」· {exit}。点 Restart 重新启动，或关闭该 Tab。")
+        },
+        None => {
+            format!(
+                "Local shell \"{pane_where}\" · {exit}. Click Restart to relaunch, or close this tab."
+            )
+        },
     };
+    let title = if zh { "会话已结束" } else { "Session ended" };
     eprintln!(
-        "[ssh] ts_ms={} pane={pane} profile={} host={} exit={code} signal={:?}",
+        "[session] ts_ms={} pane={pane} profile={:?} exit={code} signal={:?}",
         logging::now_ms(),
-        profile.id,
-        profile.host.trim(),
+        profile.as_ref().map(|p| p.id),
         signal
     );
-    st.ssh_exit = Some(SshExitNotice {
-        pane,
-        profile_id,
-        text: text.clone(),
-    });
-    st.ui.set_ssh_exit_text(text.as_str().into());
-    st.ui.set_ssh_exit_reconnectable(profile_id.is_some());
-    st.ui.set_ssh_exit_open(true);
+    show_session_notice(st, Some(pane), profile_id, title, text, RetryAction::RestartPane);
 
-    // 自动重连（ACT-047 v1）：退避 2s/5s/10s，第 4 次放弃；计数在 app 会话内累计
-    //（手动重开不会清零，见 NIGHT_PROGRESS 的已知限制）。
-    if profile.auto_reconnect {
-        let attempt = {
-            let slot = st.reconnect_attempts.entry(profile.id).or_insert(0);
-            *slot = slot.saturating_add(1);
-            *slot
-        };
-        match profile::Profile::reconnect_delay(attempt) {
-            Some(delay) => {
-                let pid = profile.id;
-                let secs = delay.as_secs();
-                eprintln!(
-                    "[ssh] 自动重连 profile={pid} 第 {attempt} 次，{secs}s 后（{}）",
-                    profile.name
-                );
-                let msg = if st.cfg.lang() == "zh" {
-                    format!("{} 断开，{secs}s 后自动重连（第 {attempt} 次）", profile.name)
-                } else {
-                    format!("{} disconnected; reconnecting in {secs}s (#{attempt})", profile.name)
-                };
-                st.ui.set_status_items(ModelRc::from(Rc::new(VecModel::from(vec![
-                    slint::SharedString::from(msg),
-                ]))));
-                let timer = slint::Timer::default();
-                timer.start(slint::TimerMode::SingleShot, delay, move || {
-                    if let Some(window) = runtime::current_window() {
-                        let _ = runtime::with_window(window, |st| {
-                            if let Some(index) =
-                                st.profiles.profiles.iter().position(|p| p.id == pid)
-                            {
-                                eprintln!("[ssh] 自动重连触发 profile={pid}");
-                                open_profile_tab_manual(st, index);
-                            }
-                        });
-                    }
-                });
-                st.reconnect_timer = Some(timer);
-            },
-            None => {
-                eprintln!(
-                    "[ssh] 自动重连 profile={} 已连续 {} 次失败，停止",
-                    profile.id,
-                    attempt.saturating_sub(1)
-                );
-                st.reconnect_attempts.remove(&profile.id);
-            },
-        }
+    // 自动重连（ACT-047 v1，仅 SSH Profile）：退避 2s/5s/10s，第 4 次放弃；
+    // 计数在 app 会话内累计（手动重开不会清零，见 NIGHT_PROGRESS 的已知限制）。
+    let Some(profile) = profile else {
+        return;
+    };
+    if profile.kind != "ssh" || !profile.auto_reconnect {
+        return;
+    }
+    let attempt = {
+        let slot = st.reconnect_attempts.entry(profile.id).or_insert(0);
+        *slot = slot.saturating_add(1);
+        *slot
+    };
+    match profile::Profile::reconnect_delay(attempt) {
+        Some(delay) => {
+            let pid = profile.id;
+            let secs = delay.as_secs();
+            eprintln!(
+                "[ssh] 自动重连 profile={pid} 第 {attempt} 次，{secs}s 后（{}）",
+                profile.name
+            );
+            let msg = if st.cfg.lang() == "zh" {
+                format!("{} 断开，{secs}s 后自动重连（第 {attempt} 次）", profile.name)
+            } else {
+                format!("{} disconnected; reconnecting in {secs}s (#{attempt})", profile.name)
+            };
+            st.ui.set_status_items(ModelRc::from(Rc::new(VecModel::from(vec![
+                slint::SharedString::from(msg),
+            ]))));
+            let timer = slint::Timer::default();
+            timer.start(slint::TimerMode::SingleShot, delay, move || {
+                if let Some(window) = runtime::current_window() {
+                    let _ = runtime::with_window(window, |st| {
+                        if let Some(index) = st.profiles.profiles.iter().position(|p| p.id == pid) {
+                            eprintln!("[ssh] 自动重连触发 profile={pid}");
+                            open_profile_tab_manual(st, index);
+                        }
+                    });
+                }
+            });
+            st.reconnect_timer = Some(timer);
+        },
+        None => {
+            eprintln!(
+                "[ssh] 自动重连 profile={} 已连续 {} 次失败，停止",
+                profile.id,
+                attempt.saturating_sub(1)
+            );
+            st.reconnect_attempts.remove(&profile.id);
+        },
     }
 }
 
@@ -4837,26 +4964,68 @@ fn dismiss_ssh_exit(st: &mut AppState) {
     st.ssh_exit = None;
     st.ui.set_ssh_exit_open(false);
     st.ui.set_ssh_exit_text("".into());
+    st.ui.set_ssh_exit_title("".into());
+    st.ui.set_ssh_exit_action_label("".into());
 }
 
-/// 重连：复用原 pane 的格子/外观，按当前 Profile 配置重新拉起 ssh。
-///
-/// 不自动循环重连（避免断网时刷屏/打爆服务器）；主密码在 Vault 里且已解锁时
-/// 仍走 askpass。主机密钥变更由 ssh 自己拒绝（askpass 对非密码 prompt 回答 no）。
+/// 横幅上的重试按钮：按提示来源分派（重启 pane / 重开默认 Tab / 重开 Profile）。
 fn reconnect_ssh_exit(st: &mut AppState) {
     let Some(notice) = st.ssh_exit.take() else {
         return;
     };
     st.ui.set_ssh_exit_open(false);
+    match notice.retry {
+        RetryAction::None => {},
+        RetryAction::NewTab { cwd } => {
+            eprintln!("[session] retry: new default tab cwd={cwd:?}");
+            new_tab_inner_with_cwd(st, cwd);
+        },
+        RetryAction::ProfileTab { index } => {
+            eprintln!("[session] retry: profile tab index={index}");
+            open_profile_tab_now(st, index, true);
+        },
+        RetryAction::RestartPane => restart_exited_pane(st, notice),
+    }
+}
+
+/// 在同一 pane 里重启：Profile 走原 spec 重建，系统 shell 直接重开默认 shell。
+///
+/// 不自动循环重连（避免断网时刷屏/打爆服务器）；主密码在 Vault 里且已解锁时
+/// 仍走 askpass。主机密钥变更由 ssh 自己拒绝（askpass 对非密码 prompt 回答 no）。
+fn restart_exited_pane(st: &mut AppState, notice: SshExitNotice) {
+    let Some(pane) = notice.pane else {
+        return;
+    };
+    let Some(rect) = st.panes.get(&pane).map(|rt| rt.rect) else {
+        eprintln!("[session] 重启失败：pane {pane} 已关闭");
+        return;
+    };
+    let zh = st.cfg.lang() == "zh";
     let Some(profile_id) = notice.profile_id else {
+        // 系统 shell / 无 Profile 的本地 pane：同格重开默认 shell。
+        st.panes.remove(&pane);
+        match create_pane(st, pane, rect, None, None, None) {
+            Ok(rt) => {
+                st.panes.insert(pane, rt);
+                refresh_views(st);
+                rebuild_tabs(st);
+                redraw_pane_inner(st, pane);
+                eprintln!("[session] 已重启本地 shell pane={pane}");
+            },
+            Err(e) => {
+                let text = if zh {
+                    format!("Shell 重启失败: {e}；检查 Shell 路径/权限后点 Retry，或关闭提示。")
+                } else {
+                    format!("Failed to relaunch shell: {e}; check the shell path/permissions, then Retry or dismiss.")
+                };
+                let title = if zh { "启动失败" } else { "Launch failed" };
+                show_session_notice(st, None, None, title, text, RetryAction::NewTab { cwd: None });
+            },
+        }
         return;
     };
     let Some(index) = st.profiles.profiles.iter().position(|p| p.id == profile_id) else {
         eprintln!("[ssh] 重连失败：Profile {profile_id} 已被删除");
-        return;
-    };
-    let Some(rect) = st.panes.get(&notice.pane).map(|rt| rt.rect) else {
-        eprintln!("[ssh] 重连失败：pane {} 已关闭", notice.pane);
         return;
     };
     let (spec, askpass) = match build_profile_launch_with(st, index, true) {
@@ -4866,43 +5035,51 @@ fn reconnect_ssh_exit(st: &mut AppState) {
             return;
         },
         Err(e) => {
-            let text = format!("重连失败: {}", e.message());
-            eprintln!("[ssh] {text}");
-            st.ssh_exit = Some(SshExitNotice {
-                pane: notice.pane,
-                profile_id: Some(profile_id),
-                text: text.clone(),
-            });
-            st.ui.set_ssh_exit_text(text.as_str().into());
-            st.ui.set_ssh_exit_reconnectable(true);
-            st.ui.set_ssh_exit_open(true);
+            let text = if zh {
+                format!("重连失败: {}；点 Retry 再试，或关闭提示。", e.message())
+            } else {
+                format!("Reconnect failed: {}; Retry or dismiss.", e.message())
+            };
+            let title = if zh { "启动失败" } else { "Launch failed" };
+            show_session_notice(
+                st,
+                Some(pane),
+                Some(profile_id),
+                title,
+                text,
+                RetryAction::RestartPane,
+            );
             return;
         },
     };
     // 旧 runtime 已经退出；换掉它但保留 pane id（Tab/分屏布局不变）。
-    st.panes.remove(&notice.pane);
-    match create_pane(st, notice.pane, rect, None, Some(&spec), askpass) {
+    st.panes.remove(&pane);
+    match create_pane(st, pane, rect, None, Some(&spec), askpass) {
         Ok(rt) => {
-            st.panes.insert(notice.pane, rt);
-            if let Some(tab) = st.ws.tabs.iter_mut().find(|t| t.panes().contains(&notice.pane)) {
+            st.panes.insert(pane, rt);
+            if let Some(tab) = st.ws.tabs.iter_mut().find(|t| t.panes().contains(&pane)) {
                 tab.title = spec.name.clone();
             }
             refresh_views(st);
             rebuild_tabs(st);
-            redraw_pane_inner(st, notice.pane);
-            eprintln!("[ssh] 已重连 pane={} profile={profile_id}", notice.pane);
+            redraw_pane_inner(st, pane);
+            eprintln!("[ssh] 已重连 pane={pane} profile={profile_id}");
         },
         Err(e) => {
-            let text = format!("重连失败: {e}");
-            eprintln!("[ssh] {text}");
-            st.ssh_exit = Some(SshExitNotice {
-                pane: notice.pane,
-                profile_id: Some(profile_id),
-                text: text.clone(),
-            });
-            st.ui.set_ssh_exit_text(text.as_str().into());
-            st.ui.set_ssh_exit_reconnectable(true);
-            st.ui.set_ssh_exit_open(true);
+            let text = if zh {
+                format!("重连失败: {e}；点 Retry 再试，或关闭提示。")
+            } else {
+                format!("Reconnect failed: {e}; Retry or dismiss.")
+            };
+            let title = if zh { "启动失败" } else { "Launch failed" };
+            show_session_notice(
+                st,
+                Some(pane),
+                Some(profile_id),
+                title,
+                text,
+                RetryAction::RestartPane,
+            );
         },
     }
 }
@@ -6804,7 +6981,17 @@ fn split_pane_inner(st: &mut AppState, id: PaneId, dir: Dir) {
             refresh_views(st);
             redraw_visible(st);
         }
-        Err(e) => eprintln!("分屏失败: {e}"),
+        Err(e) => {
+            eprintln!("分屏失败: {e}");
+            let zh = st.cfg.lang() == "zh";
+            let title = if zh { "启动失败" } else { "Launch failed" };
+            let text = if zh {
+                format!("新分屏启动失败: {e}；检查 Shell 路径/权限后可重试分屏，或关闭提示。")
+            } else {
+                format!("Failed to launch the new split: {e}; check the shell path/permissions and try splitting again.")
+            };
+            show_session_notice(st, None, None, title, text, RetryAction::None);
+        },
     }
 }
 
@@ -11128,8 +11315,31 @@ fn on_app_event_wake() {
 ///
 /// 事件唤醒是低延迟路径，本函数仍是必需的兜底（唤醒丢失、合并窗口、超时与
 /// 周期性刷新都靠它），但不会因为事件多就变成高频轮询。
+/// 兜底：子进程已退出但 `Exited` 事件丢失/未等到时，也要弹出可见状态（LOCAL-005）。
+///
+/// `Exited` 与 `try_wait` 之间有时序窗口：事件到达时子进程还没回收，
+/// `try_exit_code()` 返回 None，之后不会再有第二个 Exited。这里每轮补一次。
+fn poll_silent_exits(st: &mut AppState) {
+    let mut found: Vec<(PaneId, Option<u64>, u32, Option<String>)> = Vec::new();
+    for (id, rt) in st.panes.iter_mut() {
+        if rt.exit_notified {
+            continue;
+        }
+        if let Some((code, signal)) = rt.handle.try_exit_code() {
+            rt.exit_code = Some(code as i32);
+            rt.exit_signal = signal.clone();
+            rt.exit_notified = true;
+            found.push((*id, rt.profile_id, code, signal));
+        }
+    }
+    for (id, profile_id, code, signal) in found {
+        note_ssh_exit(st, id, profile_id, code, signal);
+    }
+}
+
 fn poll_events_inner(st: &mut AppState) -> (bool, u32) {
     let bells = drain_core_events(st);
+    poll_silent_exits(st);
     refresh_plugin_ui(st);
     poll_sftp_transfer(st);
     poll_sftp_op(st);
