@@ -41,6 +41,7 @@ mod sftp;
 mod tabby_import;
 mod themes;
 mod vault;
+mod workspaces;
 mod window;
 mod workspace;
 mod xconn;
