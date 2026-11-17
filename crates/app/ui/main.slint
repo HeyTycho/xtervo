@@ -1353,7 +1353,8 @@ export component MainWindow inherits Window {
     // 内容高度固定（菜单项 30px；无分组标题），超过内容区时菜单内滚动，
     // 不做整块溢出到窗口外。
     property <length> menu-width: Math.max(180px, Math.min(280px, root.width - 16px));
-    property <length> menu-content-h: root.menu-link != "" ? 498px : 438px;
+    property <length> menu-content-h: (root.menu-link != "" ? 498px : 438px)
+        + (root.pane-undo-available ? 30px : 0px);
     property <length> menu-view-h: Math.max(80px,
         Math.min(root.menu-content-h, root.height - root.tabbar-height - 12px));
     // 锚点同原生菜单：优先右/下，放不下翻到左/上，再放不下才夹进窗口。
@@ -1404,6 +1405,16 @@ export component MainWindow inherits Window {
     callback pane-scrolled(int, length, length, length, int);
     /// 滚动条交互：pane id + track 归一化位置（0=顶部/最旧，1=底部/最新）。
     callback pane-scrollbar(int, float);
+    /// Pane 拖拽重排（UI-PANE-008）：start 带源 pane + 内容区坐标，
+    /// move/end 由 Rust 做落点命中；cancelled = Esc/窗口失焦。
+    callback pane-drag-start(int, length, length);
+    callback pane-drag-move(length, length);
+    callback pane-drag-end();
+    callback pane-drag-cancelled();
+    /// 广播危险命令二次确认（UI-PANE-011）。
+    callback bcast-danger-send();
+    callback bcast-danger-focused();
+    callback bcast-danger-cancel();
     /// 拖入文件/目录：Slint 把平台 DataTransfer 原样交给 Rust 解路径。
     pure callback can-drop-files(data-transfer) -> bool;
     callback files-dropped(int, data-transfer);
@@ -1492,6 +1503,21 @@ export component MainWindow inherits Window {
     callback bold-color-changed(string);
     callback toggle-bold-color-same-as-fg();
     in-out property <bool> broadcast: false;
+    // Pane 拖拽重排（UI-PANE-008）：pane id；-1 = 无。落点由 Rust 命中/高亮。
+    in-out property <int> pane-drag-from: -1;
+    in-out property <int> pane-drag-target: -1;
+    /// 拖拽 ghost 的内容区坐标（Rust 每次 move 更新）。
+    in-out property <length> pane-drag-x: 0px;
+    in-out property <length> pane-drag-y: 0px;
+    /// 是否还有可撤销的 pane 交换（Ctrl+Alt+Z / 右键菜单）。
+    in-out property <bool> pane-undo-available: false;
+    // 广播危险命令（UI-PANE-011）：输入侧实时警示 + Enter/粘贴前二次确认。
+    in-out property <bool> bcast-danger-open: false;
+    in-out property <string> bcast-danger-command: "";
+    in-out property <string> bcast-danger-reason: "";
+    in-out property <int> bcast-danger-panes: 0;
+    /// 非空时顶部显示红色警示条（正在输入破坏性命令）。
+    in-out property <string> broadcast-warning: "";
     callback toggle-copy-on-select();
     callback toggle-confirm-close();
     callback toggle-restore-session();
@@ -1879,6 +1905,12 @@ export component MainWindow inherits Window {
             root.drop-gap = -1;
             root.drop-valid = false;
             root.tab-drag-cancelled();
+        }
+        // Pane 拖拽重排：Esc/失焦时清掉源/落点，Rust 丢弃未提交的交换。
+        if (root.pane-drag-from >= 0) {
+            root.pane-drag-from = -1;
+            root.pane-drag-target = -1;
+            root.pane-drag-cancelled();
         }
     }
 
@@ -2923,7 +2955,7 @@ export component MainWindow inherits Window {
                             root.image-preview-open = false;
                             return EventResult.accept;
                         }
-                        if (event.text == "\u{1b}" && (root.drag-tab >= 0 || root.drag-active)) {
+                        if (event.text == "\u{1b}" && (root.drag-tab >= 0 || root.drag-active || root.pane-drag-from >= 0)) {
                             root.cancel-drag();
                             return EventResult.accept;
                         }
@@ -3000,7 +3032,8 @@ export component MainWindow inherits Window {
 
                     // Read Only 角标：不拦截鼠标事件，选区/滚动照常工作。
                     if p.read-only : Rectangle {
-                        x: Math.max(6px, p.w - 76px);
+                        // 多 pane 时右上角留给拖拽手柄，角标整体左移 24px。
+                        x: Math.max(6px, p.w - (root.panes.length > 1 ? 110px : 76px));
                         y: 6px;
                         width: 68px;
                         height: 18px;
@@ -3136,6 +3169,95 @@ export component MainWindow inherits Window {
                             root.pane-scrolled(p.id, event.delta-y, pane-hit.mouse-x, pane-hit.mouse-y,
                                 (event.modifiers.shift ? 1 : 0) + (event.modifiers.alt ? 2 : 0) + (event.modifiers.control ? 4 : 0));
                             EventResult.accept
+                        }
+                    }
+
+                    // ---------------- Pane 拖拽重排（UI-PANE-008） ----------------
+                    // 右上角小拖拽手柄：只在多 pane 时出现，不挡终端点击（独立 TouchArea）。
+                    // 命中/落点仍在 Rust 侧做，与 divider 拖拽共用“内容区坐标 → 最近 pane”。
+                    if root.panes.length > 1 : Rectangle {
+                        x: p.w - 34px;
+                        y: 4px;
+                        width: 16px;
+                        height: 16px;
+                        border-radius: 4px;
+                        background: (handle-hit.has-hover || root.pane-drag-from == p.id)
+                            ? Palette.colors.accent
+                            : Palette.colors.raise.with-alpha(0.72);
+                        border-width: 1px;
+                        border-color: root.pane-drag-from == p.id
+                            ? Palette.colors.accent
+                            : Palette.colors.border;
+
+                        Text {
+                            text: "⠿";
+                            color: (handle-hit.has-hover || root.pane-drag-from == p.id)
+                                ? Palette.colors.accent-text
+                                : Palette.colors.subtext;
+                            font-size: 12px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                            width: 100%;
+                            height: 100%;
+                        }
+
+                        handle-hit := TouchArea {
+                            mouse-cursor: move;
+                            pointer-event(event) => {
+                                if (event.kind == PointerEventKind.down) {
+                                    if (event.button == PointerEventButton.left) {
+                                        root.pane-drag-x = p.x + p.w - 34px + self.mouse-x;
+                                        root.pane-drag-y = p.y + 4px + self.mouse-y;
+                                        root.pane-drag-start(p.id, root.pane-drag-x, root.pane-drag-y);
+                                        return EventResult.accept;
+                                    }
+                                    return EventResult.reject;
+                                }
+                                if (event.kind == PointerEventKind.move) {
+                                    if (root.pane-drag-from == p.id) {
+                                        root.pane-drag-x = p.x + p.w - 34px + self.mouse-x;
+                                        root.pane-drag-y = p.y + 4px + self.mouse-y;
+                                        root.pane-drag-move(root.pane-drag-x, root.pane-drag-y);
+                                        return EventResult.accept;
+                                    }
+                                }
+                                if (event.kind == PointerEventKind.up) {
+                                    if (root.pane-drag-from == p.id) {
+                                        root.pane-drag-end();
+                                        return EventResult.accept;
+                                    }
+                                }
+                                EventResult.reject
+                            }
+                        }
+                    }
+
+                    // 源 pane 压暗、目标 pane 高亮；松手才真正交换，Esc/失焦 = 取消。
+                    if root.pane-drag-from == p.id : Rectangle {
+                        x: 0px;
+                        y: 0px;
+                        width: 100%;
+                        height: 100%;
+                        background: #00000040;
+                    }
+                    if root.pane-drag-from >= 0 && root.pane-drag-target == p.id : Rectangle {
+                        x: 0px;
+                        y: 0px;
+                        width: 100%;
+                        height: 100%;
+                        background: Palette.colors.accent.with-alpha(0.16);
+                        border-width: 2px;
+                        border-color: Palette.colors.accent;
+
+                        Text {
+                            text: Lang.t("Swap panes", "交换窗格");
+                            color: Palette.colors.accent;
+                            font-size: 11px;
+                            font-weight: 600;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                            width: 100%;
+                            height: 100%;
                         }
                     }
 
@@ -3403,6 +3525,12 @@ export component MainWindow inherits Window {
                                 shortcut: "Ctrl+Shift+W";
                                 danger: true;
                                 picked => { root.menu-open = false; root.menu-action(root.menu-pane, 2); }
+                            }
+                            // 拖拽重排后的撤销：只在有可撤销交换时出现，避免空菜单项。
+                            if root.pane-undo-available : ContextMenuRow {
+                                label: Lang.t("Undo Pane Move", "撤销窗格移动");
+                                shortcut: "Ctrl+Alt+Z";
+                                picked => { root.menu-open = false; root.menu-action(root.menu-pane, 15); }
                             }
                             ContextMenuRow {
                                 label: root.broadcast
@@ -8489,6 +8617,171 @@ export component MainWindow inherits Window {
             font-size: 12px;
             vertical-alignment: center;
             overflow: elide;
+        }
+    }
+
+    // ---------------- 广播危险命令警示（UI-PANE-011） ----------------
+    // 广播多 pane 时正在输入破坏性命令：顶部常驻红条，回车前还会弹二次确认。
+    if root.broadcast-warning != "" : Rectangle {
+        x: 12px;
+        y: (root.tabbar-bottom ? 0px : root.tabbar-height) + 8px;
+        width: root.width - 24px;
+        height: 30px;
+        background: Palette.colors.raise;
+        border-radius: 6px;
+        border-width: 1px;
+        border-color: Palette.colors.danger;
+        drop-shadow-blur: 8px;
+        drop-shadow-offset-y: 3px;
+        drop-shadow-color: #000000a8;
+
+        Text {
+            x: 10px;
+            width: parent.width - 20px;
+            height: parent.height;
+            text: "⚠ " + root.broadcast-warning;
+            color: Palette.colors.danger;
+            font-size: 12px;
+            font-weight: 600;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+
+    // ---------------- Pane 拖拽 ghost（UI-PANE-008） ----------------
+    // 半透明小牌跟随指针；不挂 TouchArea，不抢事件。
+    if root.pane-drag-from >= 0 : Rectangle {
+        x: Math.max(4px, Math.min(root.pane-drag-x
+            + (root.sidebar-visible ? root.sidebar-width : 0px) + 10px, root.width - 120px));
+        y: Math.max(4px, Math.min(root.pane-drag-y
+            + (root.tabbar-bottom ? 0px : root.tabbar-height) + 10px, root.height - 34px));
+        width: 106px;
+        height: 26px;
+        opacity: 0.9;
+        border-radius: 6px;
+        border-width: 1px;
+        border-color: Palette.colors.accent;
+        background: Palette.colors.raise;
+        drop-shadow-blur: 10px;
+        drop-shadow-offset-y: 3px;
+        drop-shadow-color: #00000088;
+
+        Text {
+            width: 100%;
+            height: 100%;
+            text: root.pane-drag-target >= 0
+                ? Lang.t("Release to swap", "松开交换")
+                : Lang.t("Drop on a pane", "拖到目标窗格");
+            color: Palette.colors.accent;
+            font-size: 11px;
+            font-weight: 600;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+
+    // 广播危险命令二次确认：确认前那一次 Enter/粘贴不写任何 PTY。
+    if root.bcast-danger-open : Rectangle {
+        x: (root.width - 460px) / 2;
+        y: (root.height - 230px) / 2;
+        width: 460px;
+        height: 230px;
+        background: Palette.colors.raise;
+        border-radius: 10px;
+        border-width: 1px;
+        border-color: Palette.colors.danger;
+        drop-shadow-blur: 24px;
+        drop-shadow-offset-y: 8px;
+        drop-shadow-color: #000000c0;
+
+        VerticalLayout {
+            padding: 16px;
+            spacing: 10px;
+
+            Text {
+                text: Lang.t("Broadcast: destructive command?", "广播：危险命令？");
+                color: Palette.colors.danger;
+                font-size: 15px;
+                font-weight: 600;
+            }
+            Text {
+                text: Lang.t("This will be sent to ALL \{root.bcast-danger-panes} panes in this tab.", "这条输入会发给当前 Tab 的全部 \{root.bcast-danger-panes} 个窗格。");
+                color: Palette.colors.text;
+                font-size: 12px;
+                wrap: word-wrap;
+            }
+            Text {
+                text: root.bcast-danger-reason;
+                color: Palette.colors.danger;
+                font-size: 11px;
+                wrap: word-wrap;
+            }
+            Text {
+                text: root.bcast-danger-command;
+                color: Palette.colors.subtext;
+                font-size: 12px;
+                wrap: word-wrap;
+                overflow: elide;
+            }
+
+            HorizontalLayout {
+                alignment: end;
+                spacing: 8px;
+
+                Rectangle {
+                    width: 78px; height: 28px; border-radius: 6px;
+                    background: bcast-cancel-hit.has-hover ? Palette.colors.hover : Palette.colors.raise;
+                    border-width: 1px;
+                    border-color: Palette.colors.border;
+                    bcast-cancel-hit := TouchArea {
+                        clicked => { root.bcast-danger-open = false; root.bcast-danger-cancel(); }
+                    }
+                    Text {
+                        text: Lang.t("Cancel", "取消");
+                        color: Palette.colors.text;
+                        font-size: 12px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        width: 100%;
+                        height: 100%;
+                    }
+                }
+                Rectangle {
+                    width: 112px; height: 28px; border-radius: 6px;
+                    background: bcast-focused-hit.has-hover ? Palette.colors.hover : Palette.colors.raise;
+                    border-width: 1px;
+                    border-color: Palette.colors.border;
+                    bcast-focused-hit := TouchArea {
+                        clicked => { root.bcast-danger-open = false; root.bcast-danger-focused(); }
+                    }
+                    Text {
+                        text: Lang.t("This pane only", "只发当前窗格");
+                        color: Palette.colors.text;
+                        font-size: 12px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        width: 100%;
+                        height: 100%;
+                    }
+                }
+                Rectangle {
+                    width: 112px; height: 28px; border-radius: 6px;
+                    background: bcast-send-hit.has-hover ? Palette.colors.danger : Palette.colors.accent;
+                    bcast-send-hit := TouchArea {
+                        clicked => { root.bcast-danger-open = false; root.bcast-danger-send(); }
+                    }
+                    Text {
+                        text: Lang.t("Send to all", "全部发送");
+                        color: Palette.colors.accent-text;
+                        font-size: 12px;
+                        font-weight: 600;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        width: 100%;
+                        height: 100%;
+                    }
+                }
+            }
         }
     }
 
