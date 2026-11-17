@@ -2,6 +2,7 @@
 mod activity;
 mod askpass;
 mod bell;
+mod broadcast;
 mod commands;
 mod config;
 mod config_watch;
@@ -465,6 +466,22 @@ struct WindowResize {
     since: Instant,
 }
 
+/// 广播输入命中破坏性命令后，等用户二次确认的那一次输入。
+#[derive(Clone, Debug)]
+enum PendingBroadcast {
+    /// 一次 Enter（press/repeat 都可能）。
+    Enter {
+        text: String,
+        ctrl: bool,
+        alt: bool,
+        shift: bool,
+        meta: bool,
+        kind: keys::KeyEventKind,
+    },
+    /// 一段粘贴文本。
+    Paste(String),
+}
+
 struct ResizeCtx {
     conn: RustConnection,
     root: u32,
@@ -639,6 +656,15 @@ struct AppState {
     menu_link: String,
     /// 广播输入：开启后键入同时发给当前 Tab 的所有 pane
     broadcast: bool,
+    /// 开启广播时当前 Tab 的 pane 集合：与活动 Tab 完全不相交 = 已切 Tab。
+    /// 用集合相交而不是单个 key，关掉同 Tab 的一个 pane 不会误判为切 Tab。
+    broadcast_scope: Vec<PaneId>,
+    /// 广播输入行缓冲：只用于识别 rm -rf 等破坏性命令（Enter 时二次确认）。
+    broadcast_line: String,
+    /// 用户已确认这次破坏性命令：下一次 Enter 直接放行，避免反复弹窗。
+    broadcast_danger_ack: bool,
+    /// 等确认的广播输入（弹窗期间不进 PTY）。
+    pending_broadcast: Option<PendingBroadcast>,
     /// 上次左键点击 (pane, 行, 列, 时间, 连击数)：用于 400ms 内双击选词/三击选行
     last_click: Option<(PaneId, i32, i32, std::time::Instant, u8)>,
     /// 最近关闭的 Tab（最多 10 个），用于 Ctrl+Shift+T / 菜单重开
@@ -7918,6 +7944,17 @@ fn refresh_views_impl(st: &mut AppState, resize_terminals: bool) {
         st.divider_model.set_vec(views);
     }
 
+    // 广播作用域（UI-PANE-011）：切 Tab 自动重置；pane 数降到 1 也自动关闭。
+    // refresh_views 覆盖点击/快捷键/新建/恢复/关闭等全部激活路径。
+    if st.broadcast {
+        let current = st.ws.active_tab().map(|t| t.panes()).unwrap_or_default();
+        if current.len() < 2 {
+            set_broadcast(st, false, "single-pane");
+        } else if !current.iter().any(|id| st.broadcast_scope.contains(id)) {
+            set_broadcast(st, false, "tab-switch");
+        }
+    }
+
     // pane 数变化（开/关 Tab、分屏）时按全局预算收缩 scrollback。
     apply_scrollback_budget(st);
     // 分屏/切 pane/Tab 切换/Tab 栏换边最终都会刷新布局：候选点跟着新矩形走。
@@ -9853,33 +9890,54 @@ fn needs_paste_confirm(text: &str, enabled: bool) -> bool {
     enabled && text.contains('\n')
 }
 
-fn deliver_paste(st: &mut AppState, text: &str) {
+/// 把粘贴文本写进指定 pane（调用方负责只读/危险命令门禁）。
+fn deliver_paste_targets(st: &mut AppState, text: &str, targets: &[PaneId], reason: &str) {
     let normalized = normalize_paste(text);
+    if targets.is_empty() {
+        return;
+    }
+    if targets.len() > 1 {
+        eprintln!(
+            "[ui] broadcast paste to {} panes reason={reason} bytes={}",
+            targets.len(),
+            normalized.len()
+        );
+    }
+    for &target in targets {
+        let Some((read_only, bracketed)) = st
+            .panes
+            .get(&target)
+            .map(|rt| (rt.handle.read_only(), rt.frame.mode & BRACKETED_PASTE != 0))
+        else {
+            continue;
+        };
+        if read_only {
+            eprintln!(
+                "[readonly] pane={target} 丢弃粘贴 bytes={}",
+                normalized.len()
+            );
+            set_status_toast(st, "Read Only: paste ignored".to_string());
+            continue;
+        }
+        let payload = paste_payload(&normalized, bracketed);
+        eprintln!("[ui] paste pane={target} bytes={} bracketed={bracketed}", payload.len());
+        if let Some(rt) = st.panes.get_mut(&target) {
+            rt.handle.input(&payload);
+        }
+    }
+}
+
+fn deliver_paste(st: &mut AppState, text: &str) {
+    let targets = broadcast_targets(st);
+    deliver_paste_targets(st, text, &targets, "paste");
+}
+
+/// 只发焦点 pane（危险命令弹窗选 “This pane only”）。
+fn deliver_paste_to_focused(st: &mut AppState, text: &str) {
     let Some(focused) = st.ws.active_tab().map(|t| t.focused) else {
         return;
     };
-    if st
-        .panes
-        .get(&focused)
-        .is_some_and(|rt| rt.handle.read_only())
-    {
-        eprintln!(
-            "[readonly] pane={focused} 丢弃粘贴 bytes={}",
-            normalized.len()
-        );
-        set_status_toast(st, "Read Only: paste ignored".to_string());
-        return;
-    }
-    let bracketed = st
-        .panes
-        .get(&focused)
-        .map(|rt| rt.frame.mode & BRACKETED_PASTE != 0)
-        .unwrap_or(false);
-    let payload = paste_payload(&normalized, bracketed);
-    eprintln!("[ui] paste bytes={} bracketed={bracketed}", payload.len());
-    if let Some(rt) = st.panes.get_mut(&focused) {
-        rt.handle.input(&payload);
-    }
+    deliver_paste_targets(st, text, &[focused], "focused-only");
 }
 
 /// shell 单引号转义：除单引号外的字符全部按字面保留（`$`、空格、`;` 等都不展开）。
@@ -10105,6 +10163,24 @@ fn paste_text_into_focused(st: &mut AppState, text: &str) {
         if st.panes.get(&id).is_some_and(|rt| rt.handle.read_only()) {
             eprintln!("[readonly] pane={id} 丢弃粘贴 bytes={}", text.len());
             set_status_toast(st, "Read Only: paste ignored".to_string());
+            return;
+        }
+    }
+    // 广播到多个 pane 时，破坏性粘贴必须先确认（UI-PANE-011）：
+    // 一次粘贴 = N 个 pane 同时拿到 `rm -rf` 之类命令，误触代价太大。
+    if broadcast_multi(st) {
+        if let Some(reason) = broadcast::dangerous_reason(text) {
+            let panes = st.ws.active_tab().map(|t| t.panes().len()).unwrap_or(0);
+            let preview: String = text.trim().chars().take(240).collect();
+            eprintln!(
+                "[broadcast] 危险粘贴待确认 reason={reason} bytes={} panes={panes}",
+                text.len()
+            );
+            st.pending_broadcast = Some(PendingBroadcast::Paste(text.to_string()));
+            st.ui.set_bcast_danger_command(preview.into());
+            st.ui.set_bcast_danger_reason(reason.into());
+            st.ui.set_bcast_danger_panes(panes as i32);
+            st.ui.set_bcast_danger_open(true);
             return;
         }
     }
@@ -10776,6 +10852,131 @@ fn key_scrolls_to_bottom(scroll_on_keystroke: bool, pos: ScrollPosition) -> bool
     scroll_on_keystroke && pos.offset > 0
 }
 
+// ------------------------------------------------- 广播输入安全（UI-PANE-011）
+
+/// 当前是否真的处于“多 pane 广播”状态：所有危险命令保护都以它为前提。
+fn broadcast_multi(st: &AppState) -> bool {
+    st.broadcast && st.ws.active_tab().is_some_and(|t| t.panes().len() > 1)
+}
+
+/// 广播目标：多 pane 时全部 pane，否则只发焦点 pane（与旧行为一致）。
+fn broadcast_targets(st: &AppState) -> Vec<PaneId> {
+    let Some(tab) = st.ws.active_tab() else {
+        return Vec::new();
+    };
+    if st.broadcast && tab.panes().len() > 1 {
+        tab.panes()
+    } else {
+        vec![tab.focused]
+    }
+}
+
+/// 统一切换广播：同步 UI、清空危险命令行缓冲/待确认输入/顶部警示条。
+fn set_broadcast(st: &mut AppState, on: bool, reason: &str) {
+    let changed = st.broadcast != on;
+    st.broadcast = on;
+    st.broadcast_scope = if on {
+        st.ws.active_tab().map(|t| t.panes()).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    st.broadcast_line.clear();
+    st.broadcast_danger_ack = false;
+    if !on {
+        st.pending_broadcast = None;
+        st.ui.set_bcast_danger_open(false);
+    }
+    st.ui.set_broadcast(on);
+    st.ui.set_broadcast_warning("".into());
+    if changed {
+        let panes = st.ws.active_tab().map(|t| t.panes().len()).unwrap_or(0);
+        eprintln!("[ui] broadcast={on} panes={panes} reason={reason}");
+    }
+}
+
+/// 正在输入的破坏性命令 → 顶部警示条文案；空 = 没有警示。
+fn broadcast_warning_text(line: &str) -> String {
+    match broadcast::dangerous_reason(line) {
+        Some(reason) => format!(
+            "Broadcast ON · {reason} · Enter needs confirmation / Enter 需要二次确认"
+        ),
+        None => String::new(),
+    }
+}
+
+/// 广播输入行缓冲：只服务破坏性命令识别，不改变实际发给 PTY 的字节。
+fn note_broadcast_key(
+    st: &mut AppState,
+    text: &str,
+    ctrl: bool,
+    alt: bool,
+    shift: bool,
+    meta: bool,
+    kind: keys::KeyEventKind,
+    keylog: bool,
+) {
+    match text {
+        "\r" | "\n" => {
+            let line = st.broadcast_line.trim().to_string();
+            if !st.broadcast_danger_ack {
+                if let Some(reason) = broadcast::dangerous_reason(&line) {
+                    let panes = st.ws.active_tab().map(|t| t.panes().len()).unwrap_or(0);
+                    eprintln!("[broadcast] 危险命令待确认 reason={reason} line={line:?}");
+                    st.pending_broadcast = Some(PendingBroadcast::Enter {
+                        text: text.to_string(),
+                        ctrl,
+                        alt,
+                        shift,
+                        meta,
+                        kind,
+                    });
+                    st.ui.set_bcast_danger_command(line.into());
+                    st.ui.set_bcast_danger_reason(reason.into());
+                    st.ui.set_bcast_danger_panes(panes as i32);
+                    st.ui.set_bcast_danger_open(true);
+                    st.ui.set_broadcast_warning(reason.into());
+                    return;
+                }
+            }
+            // 已确认或普通命令：回车放行，行缓冲归零。
+            st.broadcast_danger_ack = false;
+            st.broadcast_line.clear();
+            st.ui.set_broadcast_warning("".into());
+        },
+        "\u{7f}" | "\u{8}" => {
+            st.broadcast_line.pop();
+            let warning = broadcast_warning_text(&st.broadcast_line);
+            st.ui.set_broadcast_warning(warning.into());
+        },
+        _ if ctrl => {
+            // Ctrl+C / Ctrl+U 会清掉 shell 当前行，行缓冲跟着清。
+            if text.eq_ignore_ascii_case("c") || text.eq_ignore_ascii_case("u") {
+                st.broadcast_line.clear();
+                st.broadcast_danger_ack = false;
+                st.ui.set_broadcast_warning("".into());
+            }
+        },
+        _ if !alt && !text.is_empty() && text.chars().any(|c| !c.is_control()) => {
+            for c in text.chars() {
+                if c.is_control() {
+                    continue;
+                }
+                st.broadcast_line.push(c);
+            }
+            if st.broadcast_line.chars().count() > 512 {
+                let tail: Vec<char> = st.broadcast_line.chars().rev().take(512).collect();
+                st.broadcast_line = tail.into_iter().rev().collect();
+            }
+            let warning = broadcast_warning_text(&st.broadcast_line);
+            if !warning.is_empty() && keylog {
+                eprintln!("[broadcast] warning line={:?}", st.broadcast_line);
+            }
+            st.ui.set_broadcast_warning(warning.into());
+        },
+        _ => {},
+    }
+}
+
 /// 统一的输入分发：物理按键与 IME 上屏都走这里。
 /// `ctrl/alt/shift/meta` 对 IME 提交恒为 false，避免把中文误判成快捷键。
 /// `kind` 区分 press/repeat；release 走 [`handle_key_release`]。
@@ -11046,18 +11247,19 @@ fn handle_input(
         }
     }
 
+    // 广播危险命令保护：只维护当前输入行；命中破坏性命令时 Enter 先弹确认，
+    // 确认前一个字节都不写 PTY（普通输入路径完全不变）。
+    if broadcast_multi(st) {
+        note_broadcast_key(st, text, ctrl, alt, shift, meta, kind, keylog);
+        if st.pending_broadcast.is_some() {
+            return;
+        }
+    }
+
     if PIPE_ON.load(Ordering::Relaxed) {
         *LAST_KEY.lock().unwrap() = Some(Instant::now());
     }
-    let Some(tab) = st.ws.active_tab() else {
-        return;
-    };
-    let focused = tab.focused;
-    let targets: Vec<PaneId> = if st.broadcast && tab.panes().len() > 1 {
-        tab.panes()
-    } else {
-        vec![focused]
-    };
+    let targets: Vec<PaneId> = broadcast_targets(st);
     if st.broadcast && targets.len() > 1 && keylog {
         eprintln!("[send] broadcast to {} panes", targets.len());
     }
@@ -11154,15 +11356,7 @@ fn handle_key_release(
     if st.hotkey_recording.is_some() || st.search_open {
         return;
     }
-    let Some(tab) = st.ws.active_tab() else {
-        return;
-    };
-    let focused = tab.focused;
-    let targets: Vec<PaneId> = if st.broadcast && tab.panes().len() > 1 {
-        tab.panes()
-    } else {
-        vec![focused]
-    };
+    let targets: Vec<PaneId> = broadcast_targets(st);
     let mods =
         keys::KeyModifiers { ctrl, alt, shift, meta, ..keys::KeyModifiers::default() };
     let key_bindings = st.cfg.key_bindings();
@@ -12261,6 +12455,10 @@ fn build_window_state(
         right_down: None,
         menu_link: String::new(),
         broadcast: false,
+        broadcast_scope: Vec::new(),
+        broadcast_line: String::new(),
+        broadcast_danger_ack: false,
+        pending_broadcast: None,
         last_click: None,
         closed_tabs: Vec::new(),
         tab_lru: Vec::new(),
@@ -12884,6 +13082,73 @@ fn register_window_callbacks(
         });
     });
 
+    // 广播危险命令二次确认（UI-PANE-011）：确认前那次 Enter/粘贴不进任何 PTY。
+    ui.on_bcast_danger_send(move || {
+        runtime::with_window(window_id, |st| {
+            let Some(pending) = st.pending_broadcast.take() else {
+                return;
+            };
+            match pending {
+                PendingBroadcast::Enter { text, ctrl, alt, shift, meta, kind } => {
+                    // 已确认：下一次 Enter 直接放行（不再弹同一个窗）。
+                    st.broadcast_danger_ack = true;
+                    eprintln!(
+                        "[broadcast] 用户确认发送到全部 pane line={:?}",
+                        st.broadcast_line
+                    );
+                    handle_input(st, &text, ctrl, alt, shift, meta, kind, false);
+                },
+                PendingBroadcast::Paste(text) => {
+                    st.broadcast_line.clear();
+                    st.ui.set_broadcast_warning("".into());
+                    let targets = broadcast_targets(st);
+                    eprintln!("[broadcast] 用户确认粘贴到 {} 个 pane", targets.len());
+                    deliver_paste_targets(st, &text, &targets, "bcast-confirm");
+                },
+            }
+        });
+    });
+    ui.on_bcast_danger_focused(move || {
+        runtime::with_window(window_id, |st| {
+            let Some(pending) = st.pending_broadcast.take() else {
+                return;
+            };
+            st.broadcast_line.clear();
+            st.ui.set_broadcast_warning("".into());
+            match pending {
+                PendingBroadcast::Enter { text, ctrl, alt, shift, meta, kind } => {
+                    // 只发焦点 pane：临时关掉广播，让 handle_input 走单 pane 路径。
+                    let was = st.broadcast;
+                    st.broadcast = false;
+                    st.broadcast_danger_ack = true;
+                    handle_input(st, &text, ctrl, alt, shift, meta, kind, false);
+                    st.broadcast = was;
+                    eprintln!("[broadcast] 用户选择只发当前 pane");
+                },
+                PendingBroadcast::Paste(text) => {
+                    eprintln!("[broadcast] 用户选择只粘贴到当前 pane");
+                    deliver_paste_to_focused(st, &text);
+                },
+            }
+        });
+    });
+    ui.on_bcast_danger_cancel(move || {
+        runtime::with_window(window_id, |st| {
+            let was_paste = matches!(st.pending_broadcast, Some(PendingBroadcast::Paste(_)));
+            st.pending_broadcast = None;
+            st.broadcast_danger_ack = false;
+            if was_paste {
+                // 粘贴取消：一个字节都不写；行缓冲本来就是干净的。
+                st.ui.set_broadcast_warning("".into());
+                eprintln!("[broadcast] 危险粘贴已取消");
+            } else {
+                // 已经敲在终端行里的命令保留缓冲：再按 Enter 会重新确认，
+                // Ctrl+C/Ctrl+U 清行时缓冲同步清空。
+                eprintln!("[broadcast] 危险命令未执行，等待用户修改/清行");
+            }
+        });
+    });
+
     ui.on_start_window_resize(move |dir| {
         runtime::with_window(window_id, |st| {
             ensure_resize_conn(st);
@@ -13215,14 +13480,21 @@ fn register_window_callbacks(
             }
             8 => {
                 runtime::with_window(window_id, |st| {
-                    st.broadcast = !st.broadcast;
-                    st.ui.set_broadcast(st.broadcast);
-                    let panes = st.ws.active_tab().map(|t| t.panes().len()).unwrap_or(0);
-                    if st.broadcast && panes < 2 {
-                        eprintln!("[ui] broadcast=on，但当前 Tab 只有 1 个 pane");
-                    } else {
-                        eprintln!("[ui] broadcast={} panes={panes}", st.broadcast);
+                    if st.broadcast {
+                        set_broadcast(st, false, "menu");
+                        return;
                     }
+                    let panes = st.ws.active_tab().map(|t| t.panes().len()).unwrap_or(0);
+                    if panes < 2 {
+                        // 单 pane 广播没有意义：直接拒绝，避免“开了但只发一个”的假状态。
+                        eprintln!("[ui] broadcast=on 被拒绝：当前 Tab 只有 {panes} 个 pane");
+                        set_status_toast(
+                            st,
+                            "Broadcast needs 2+ panes / 广播至少需要 2 个窗格".to_string(),
+                        );
+                        return;
+                    }
+                    set_broadcast(st, true, "menu");
                 });
             }
             9 => {
@@ -17851,5 +18123,20 @@ mod tests {
         // 防御性：core 理论上不会给出 index=0/total>0；UI 至少不能显示 0/N。
         let partial = SearchHit { index: 0, total: 5, ..hit };
         assert_eq!(search_count_label(Some(&partial)), "1/5");
+    }
+
+    #[test]
+    fn broadcast_warning_follows_the_destructive_command_line() {
+        // 打字过程中行缓冲从空 → 危险 → 被 Ctrl+U 清空，警示条必须同步变化。
+        assert!(broadcast_warning_text("").is_empty());
+        assert!(broadcast_warning_text("cargo test").is_empty());
+        let warn = broadcast_warning_text("rm -rf /");
+        assert!(warn.contains("rm -rf"), "{warn}");
+        assert!(warn.contains("Enter"), "必须提示回车需要确认: {warn}");
+        // 引号内只是打印文本，不应吓人。
+        assert!(broadcast_warning_text("echo 'rm -rf /'").is_empty());
+        // 多行粘贴预览里任意一条命令是破坏性的就警示。
+        let warn = broadcast_warning_text("set -e\nmkfs.ext4 /dev/sda1");
+        assert!(warn.contains("mkfs"), "{warn}");
     }
 }
