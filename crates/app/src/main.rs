@@ -716,6 +716,9 @@ struct AppState {
     /// “+” 下拉各行对应的 Profile store 下标；`None` = “新建默认 Tab” 行
     /// （只有 “+” 下拉会插入该行，侧栏 Profile 列表全是 `Some`）。
     profile_menu_indices: Vec<Option<usize>>,
+    /// 未过滤的完整下拉行（`None` = “新建默认 Tab” 行 + 文案）。
+    /// 菜单打开时按搜索词过滤，`profile_menu_indices` 始终对应可见行。
+    profile_menu_all: Vec<(Option<usize>, String)>,
     profile_menu_model: Rc<VecModel<slint::SharedString>>,
     /// 右键按下的 pane/时间/内容区坐标：paste/clipboard 模式用抬起时间判断长按。
     right_down: Option<(PaneId, std::time::Instant, f32, f32)>,
@@ -1489,6 +1492,7 @@ const SETTINGS_CATALOG: &[SettingsCatalogEntry] = &[
     SettingsCatalogEntry { cat: 1, section: "scrollback", en: "Unlimited scrollback", zh: "无限回滚", keywords: "unlimited scrollback history cap memory 无限 历史 内存" },
     SettingsCatalogEntry { cat: 1, section: "behavior", en: "Copy on select", zh: "选中即复制", keywords: "copy select clipboard 复制 选区" },
     SettingsCatalogEntry { cat: 1, section: "behavior", en: "Confirm before closing", zh: "关闭前确认", keywords: "confirm close window exit 确认 关闭" },
+    SettingsCatalogEntry { cat: 1, section: "behavior", en: "When closing a tab", zh: "关闭标签时会话", keywords: "close tab session end background detach keep 关闭 标签 会话 后台 保留" },
     SettingsCatalogEntry { cat: 1, section: "behavior", en: "Restore session on startup", zh: "启动时恢复会话", keywords: "restore session startup workspace tabs splits cwd 会话 恢复 启动" },
     SettingsCatalogEntry { cat: 1, section: "behavior", en: "Confirm multi-line paste", zh: "多行粘贴前确认", keywords: "paste multiline confirm 粘贴 确认 多行" },
     SettingsCatalogEntry { cat: 1, section: "behavior", en: "Right click", zh: "右键", keywords: "right click menu paste clipboard 右键" },
@@ -1578,6 +1582,9 @@ fn command_title(lang: &str, id: &str, fallback: &'static str) -> &'static str {
         "tab.new" => "新建标签",
         "tab.search" => "搜索标签",
         "tab.close" => "关闭标签",
+        "tab.close-others" => "关闭其他标签",
+        "tab.close-left" => "关闭左侧标签",
+        "tab.close-right" => "关闭右侧标签",
         "tab.next" => "下一个标签",
         "tab.prev" => "上一个标签",
         "tab.last" => "上一个使用的标签",
@@ -3803,6 +3810,7 @@ fn sync_reload_ui(st: &mut AppState) {
     st.ui.set_background_dim(st.cfg.background_dim);
     st.ui.set_cfg_copy_on_select(st.cfg.copy_on_select);
     st.ui.set_cfg_confirm_close(st.cfg.confirm_close);
+    st.ui.set_cfg_close_action(st.cfg.close_action.as_str().into());
     st.ui
         .set_cfg_restore_session(st.cfg.restore_session_on_startup);
     st.ui.set_cfg_confirm_paste(st.cfg.confirm_multiline_paste);
@@ -4737,15 +4745,29 @@ fn refresh_profiles(st: &mut AppState) {
 /// 再看 `default_profile` 名字（SESS-002：手写 config.toml 无需查 ID）。
 /// 名字匹配不区分大小写，`default_profile_id == 0` 且名字为空 = 系统 shell。
 fn default_profile_index(st: &AppState) -> Option<usize> {
-    if let Some(index) = st.profiles.default_index(st.cfg.default_profile_id) {
-        return Some(index);
+    resolve_default_profile_index(
+        &st.profiles.profiles,
+        st.cfg.default_profile_id,
+        &st.cfg.default_profile,
+    )
+}
+
+/// [`default_profile_index`] 的纯函数内核，便于单测 ID / 名字两条解析路径。
+fn resolve_default_profile_index(
+    profiles: &[profile::Profile],
+    default_id: u64,
+    default_name: &str,
+) -> Option<usize> {
+    if default_id != 0 {
+        if let Some(index) = profiles.iter().position(|p| p.id == default_id) {
+            return Some(index);
+        }
     }
-    let name = st.cfg.default_profile.trim();
+    let name = default_name.trim();
     if name.is_empty() {
         return None;
     }
-    st.profiles
-        .profiles
+    profiles
         .iter()
         .position(|p| p.name.eq_ignore_ascii_case(name))
 }
@@ -4873,8 +4895,7 @@ fn rebuild_profile_choices(st: &mut AppState) {
 }
 
 fn rebuild_profile_choices_for(st: &mut AppState, with_new_tab: bool) {
-    let mut items: Vec<slint::SharedString> = Vec::new();
-    let mut indices: Vec<Option<usize>> = Vec::new();
+    let mut all: Vec<(Option<usize>, String)> = Vec::new();
     if with_new_tab {
         let zh = st.cfg.lang() == "zh";
         let label = match default_profile_index(st) {
@@ -4894,8 +4915,7 @@ fn rebuild_profile_choices_for(st: &mut AppState, with_new_tab: bool) {
                 }
             },
         };
-        items.push(label.into());
-        indices.push(None);
+        all.push((None, label));
     }
     for (i, p) in st.profiles.profiles.iter().enumerate() {
         let kind = match p.kind.as_str() {
@@ -4904,8 +4924,7 @@ fn rebuild_profile_choices_for(st: &mut AppState, with_new_tab: bool) {
             "telnet" => "Telnet",
             _ => "Local",
         };
-        items.push(profile_choice_label(kind, &p.name, &p.hotkey).into());
-        indices.push(Some(i));
+        all.push((Some(i), profile_choice_label(kind, &p.name, &p.hotkey)));
         // 热键冲突提示：Profile 热键与命令默认绑定时不去改任何一方，只明确告警
         //（实际按下时命令 override 优先，Profile 热键会打不中，必须让用户知道）。
         if let Some(chord) = p.hotkey_chord() {
@@ -4917,8 +4936,95 @@ fn rebuild_profile_choices_for(st: &mut AppState, with_new_tab: bool) {
             }
         }
     }
-    st.profile_menu_indices = indices;
+    st.profile_menu_all = all;
+    apply_profile_menu_filter(st);
+}
+
+/// Profile 菜单搜索：大小写不敏感的文案子串匹配；空查询返回全部。
+/// 纯函数便于单测（"new tab" 行与 Profile 行都参与匹配）。
+fn profile_menu_filtered_entries(
+    all: &[(Option<usize>, String)],
+    query: &str,
+) -> Vec<(Option<usize>, String)> {
+    let q = query.trim().to_lowercase();
+    if q.is_empty() {
+        return all.to_vec();
+    }
+    all.iter()
+        .filter(|(_, label)| label.to_lowercase().contains(&q))
+        .cloned()
+        .collect()
+}
+
+/// 按当前搜索词重建可见行，并把选中项夹到合法范围（空结果 = -1）。
+fn apply_profile_menu_filter(st: &mut AppState) {
+    // 只有菜单打开时才应用搜索词：侧栏复用同一份模型，不能继承一次
+    // 未提交的菜单搜索把侧栏列表也过滤掉。
+    let query = if st.ui.get_profilemenu_open() {
+        st.ui.get_profilemenu_query().to_string()
+    } else {
+        String::new()
+    };
+    let filtered = profile_menu_filtered_entries(&st.profile_menu_all, &query);
+    st.profile_menu_indices = filtered.iter().map(|(index, _)| *index).collect();
+    let items: Vec<slint::SharedString> = filtered
+        .iter()
+        .map(|(_, label)| slint::SharedString::from(label.as_str()))
+        .collect();
     st.profile_menu_model.set_vec(items);
+    let len = filtered.len();
+    let selected = st.ui.get_profilemenu_selected();
+    let next = if len == 0 {
+        -1
+    } else {
+        selected.clamp(0, len as i32 - 1)
+    };
+    st.ui.set_profilemenu_selected(next);
+    eprintln!(
+        "[ui] profile menu filter query={query:?} items={len} selected={next}"
+    );
+}
+
+/// 选中项上下移动：循环滚动；空列表保持 -1。
+fn profile_menu_move(st: &mut AppState, delta: i32) {
+    let len = st.profile_menu_indices.len() as i32;
+    if len == 0 {
+        st.ui.set_profilemenu_selected(-1);
+        return;
+    }
+    let cur = st.ui.get_profilemenu_selected().max(0);
+    let next = ((cur + delta) % len + len) % len;
+    st.ui.set_profilemenu_selected(next);
+}
+
+/// 执行当前选中行：设置页/侧栏/`+` 下拉共用。
+fn profile_menu_pick(st: &mut AppState, index: usize) {
+    st.ui.set_profilemenu_open(false);
+    let Some(row) = st.profile_menu_indices.get(index).copied() else {
+        return;
+    };
+    match row {
+        Some(profile_index) => open_profile_tab_manual(st, profile_index),
+        None => {
+            eprintln!("[ui] new-tab menu: default tab");
+            new_tab_with_default(st);
+        },
+    }
+}
+
+/// 接受当前高亮行（Enter）。没有高亮/空结果时什么也不做。
+fn profile_menu_accept(st: &mut AppState) {
+    let index = st.ui.get_profilemenu_selected();
+    if index >= 0 {
+        profile_menu_pick(st, index as usize);
+    }
+}
+
+/// 取消菜单（Esc / 搜索框 Esc）：关菜单、清搜索、焦点还给终端。
+fn close_profile_menu(st: &mut AppState) {
+    st.ui.set_profilemenu_open(false);
+    st.ui.set_profilemenu_query("".into());
+    st.ui.invoke_focus_terminal();
 }
 
 /// 构建 Profile 选择菜单。
@@ -4930,6 +5036,9 @@ fn open_profile_menu(st: &mut AppState) {
     let with_new_tab = st.ui.get_profilemenu_show_new_tab();
     // 只对本次打开生效：侧栏 `profiles.open` 等其它入口不应继承上一次 `+` 的行。
     st.ui.set_profilemenu_show_new_tab(false);
+    // 每次打开都清空搜索并把高亮放回第一行。
+    st.ui.set_profilemenu_query("".into());
+    st.ui.set_profilemenu_selected(0);
     rebuild_profile_choices_for(st, with_new_tab);
     st.ui.set_profilemenu_open(true);
     eprintln!(
@@ -7426,8 +7535,21 @@ fn restore_pane_launch(
     st: &AppState,
     profile_id: Option<u64>,
 ) -> (Option<profile::Profile>, Option<askpass::Askpass>) {
-    let Some(profile_id) = profile_id else {
-        return (None, None);
+    // UI-TAB-001：快照没记录 Profile（旧快照 / 普通 shell Tab）时，会话恢复
+    // 与启动首 Tab、Ctrl+T 一样尊重默认 Profile，而不是一律落回系统 shell。
+    let profile_id = match profile_id {
+        Some(id) => id,
+        None => match default_profile_index(st) {
+            Some(index) => {
+                let p = &st.profiles.profiles[index];
+                eprintln!(
+                    "[session] 快照未记录 Profile，按默认 Profile id={} name={:?} 恢复",
+                    p.id, p.name
+                );
+                p.id
+            },
+            None => return (None, None),
+        },
     };
     let Some(index) = st.profiles.profiles.iter().position(|p| p.id == profile_id) else {
         eprintln!("[session] Profile id={profile_id} 已删除，回退普通 shell");
@@ -7787,6 +7909,56 @@ fn needs_close_confirm(tabs: usize, panes: usize, enabled: bool) -> bool {
     enabled && (tabs > 1 || panes > 1)
 }
 
+/// 关闭确认弹窗里列出的会话名（UI-WIN-008）。
+///
+/// 每个 Tab 一行；多窗格的 Tab 标注窗格数，避免用户以为只是一次 shell。
+/// 超过 `max` 行时只列前 `max - 1` 行并加一条汇总，弹窗高度不会被撑爆。
+fn close_confirm_session_lines(
+    tabs: &[(String, usize)],
+    lang: &str,
+    max: usize,
+) -> Vec<String> {
+    let max = max.max(1);
+    let shown = if tabs.len() > max {
+        max.saturating_sub(1)
+    } else {
+        tabs.len()
+    };
+    let mut lines = Vec::with_capacity(shown + 1);
+    for (title, panes) in tabs.iter().take(shown) {
+        let title = title.trim();
+        let title = if title.is_empty() { "Terminal" } else { title };
+        if *panes > 1 {
+            if lang == "zh" {
+                lines.push(format!("{title} · {panes} 个窗格"));
+            } else {
+                lines.push(format!("{title} · {panes} panes"));
+            }
+        } else {
+            lines.push(title.to_string());
+        }
+    }
+    if tabs.len() > shown {
+        let rest = tabs.len() - shown;
+        if lang == "zh" {
+            lines.push(format!("… 还有 {rest} 个会话"));
+        } else {
+            lines.push(format!("… and {rest} more"));
+        }
+    }
+    lines
+}
+
+/// 关闭 Tab/Pane 的会话处理：只认 `background`，其余（含旧配置/手写错值）
+/// 一律按 `end` 处理，避免非法值让关闭路径变成“既不结束也不保留”的悬空状态。
+fn normalize_close_action(value: &str) -> &'static str {
+    if value == "background" {
+        "background"
+    } else {
+        "end"
+    }
+}
+
 /// 立即关闭一个窗口。必须从事件循环回调/延迟任务调用：如果调用方正持有该
 /// 窗口的 AppState 可变借用，drop runtime 会释放仍被借用的 RefCell。
 fn close_window_now(id: WindowId, reason: &str) {
@@ -7830,8 +8002,21 @@ fn request_close(st: &mut AppState) {
         } else {
             format!("将结束 {tabs} 个标签、{panes} 个终端会话，子进程会被终止。")
         };
-        eprintln!("[ui] close confirm: window={window_id} tabs={tabs} panes={panes}");
+        // 列出具体会话名，用户能确认自己关的是哪几个 shell（多窗格的 Tab 标数量）。
+        let sessions: Vec<(String, usize)> = st
+            .ws
+            .tabs
+            .iter()
+            .map(|tab| (tab.title.clone(), tab.panes().len()))
+            .collect();
+        let names = close_confirm_session_lines(&sessions, st.cfg.lang(), 6);
+        eprintln!(
+            "[ui] close confirm: window={window_id} tabs={tabs} panes={panes} names={names:?}"
+        );
+        let model: Vec<slint::SharedString> = names.into_iter().map(Into::into).collect();
         st.pending_close_window = Some(window_id);
+        st.ui
+            .set_confirm_sessions(ModelRc::from(Rc::new(VecModel::from(model))));
         st.ui.set_confirm_text(text.as_str().into());
         st.ui.set_confirm_open(true);
         return;
@@ -11696,6 +11881,9 @@ fn run_command(st: &mut AppState, id: &str) {
             rebuild_tabs(st);
         }
         "tab.close" => close_tab_inner(st, st.ws.active),
+        "tab.close-others" => close_other_tabs(st, st.ws.active),
+        "tab.close-left" => close_tabs_left(st, st.ws.active),
+        "tab.close-right" => close_tabs_right(st, st.ws.active),
         "tab.next" => switch_tab_relative(st, 1),
         "tab.prev" => switch_tab_relative(st, -1),
         "tab.last" => switch_to_last_tab(st),
@@ -13886,6 +14074,7 @@ fn build_window_state(
         quake_visible: false,
         quake_saved: None,
         profile_menu_indices: Vec::new(),
+        profile_menu_all: Vec::new(),
         profile_menu_model,
         right_down: None,
         menu_link: String::new(),
@@ -13968,6 +14157,7 @@ fn init_window_ui(st: &mut AppState) {
 
     st.ui.set_cfg_copy_on_select(st.cfg.copy_on_select);
     st.ui.set_cfg_confirm_close(st.cfg.confirm_close);
+    st.ui.set_cfg_close_action(st.cfg.close_action.as_str().into());
     st.ui
         .set_cfg_restore_session(st.cfg.restore_session_on_startup);
     st.ui.set_cfg_confirm_paste(st.cfg.confirm_multiline_paste);
@@ -16024,6 +16214,17 @@ fn register_window_callbacks(
         });
     });
 
+    // UI-WIN-008：close_action 之前只能在 config.toml 手改，设置页补入口。
+    ui.on_set_close_action(move |value| {
+        runtime::with_window(window_id, |st| {
+            let action = normalize_close_action(value.as_str());
+            st.cfg.close_action = action.to_string();
+            st.ui.set_cfg_close_action(action.into());
+            st.cfg.save();
+            eprintln!("[ui] close_action={action}");
+        });
+    });
+
     ui.on_toggle_sidebar_visible(move || {
         runtime::with_window(window_id, |st| {
             toggle_sidebar(st);
@@ -16715,19 +16916,29 @@ fn register_window_callbacks(
     });
     ui.on_profilemenu_pick(move |index| {
         runtime::with_window(window_id, |st| {
-            st.ui.set_profilemenu_open(false);
             let index = index.max(0) as usize;
             eprintln!("[ui] profile pick={index}");
-            if let Some(row) = st.profile_menu_indices.get(index).copied() {
-                match row {
-                    Some(profile_index) => open_profile_tab_manual(st, profile_index),
-                    None => {
-                        eprintln!("[ui] new-tab menu: default tab");
-                        new_tab_with_default(st);
-                    },
-                }
-            }
+            profile_menu_pick(st, index);
         });
+    });
+
+    // UI-TAB-002：菜单内搜索 + ↑↓/Enter/Esc。过滤在 Rust 侧做，可见行
+    // 与 profile_menu_indices 永远同序，pick 不会点到过滤前的错行。
+    ui.on_profilemenu_query_changed(move |query| {
+        runtime::with_window(window_id, |st| {
+            st.ui.set_profilemenu_query(query);
+            st.ui.set_profilemenu_selected(0);
+            apply_profile_menu_filter(st);
+        });
+    });
+    ui.on_profilemenu_move(move |delta| {
+        runtime::with_window(window_id, |st| profile_menu_move(st, delta));
+    });
+    ui.on_profilemenu_accept(move || {
+        runtime::with_window(window_id, profile_menu_accept);
+    });
+    ui.on_profilemenu_cancel(move || {
+        runtime::with_window(window_id, close_profile_menu);
     });
 
     ui.on_profilemenu_manage(move || {
@@ -19119,6 +19330,44 @@ mod tests {
     }
 
     #[test]
+    fn close_confirm_lists_session_names_with_pane_counts() {
+        let tabs = vec![
+            ("Terminal 1".to_string(), 1),
+            ("build".to_string(), 2),
+            ("  ".to_string(), 1),
+        ];
+        assert_eq!(
+            close_confirm_session_lines(&tabs, "en", 6),
+            vec!["Terminal 1", "build · 2 panes", "Terminal"]
+        );
+        assert_eq!(
+            close_confirm_session_lines(&tabs, "zh", 6),
+            vec!["Terminal 1", "build · 2 个窗格", "Terminal"]
+        );
+        // 超长列表截断：max-1 行明细 + 一行汇总，弹窗最多 6 行。
+        let many: Vec<(String, usize)> = (0..10)
+            .map(|i| (format!("tab-{i}"), 1))
+            .collect();
+        let lines = close_confirm_session_lines(&many, "en", 6);
+        assert_eq!(lines.len(), 6);
+        assert_eq!(lines[0], "tab-0");
+        assert_eq!(lines[4], "tab-4");
+        assert_eq!(lines[5], "… and 5 more");
+        // 没有 Tab（异常路径）不产生空行。
+        assert!(close_confirm_session_lines(&[], "en", 6).is_empty());
+    }
+
+    #[test]
+    fn close_action_is_whitelisted_when_set_from_ui() {
+        // 设置页只应写入两个合法值；非法输入回退 end（与配置默认一致）。
+        assert_eq!(normalize_close_action("background"), "background");
+        assert_eq!(normalize_close_action("end"), "end");
+        assert_eq!(normalize_close_action("Background"), "end");
+        assert_eq!(normalize_close_action("keep"), "end");
+        assert_eq!(normalize_close_action(""), "end");
+    }
+
+    #[test]
     fn tab_title_sanitizing() {
         assert_eq!(sanitize_tab_title("  work  "), Some("work".to_string()));
         assert_eq!(sanitize_tab_title("我的终端"), Some("我的终端".to_string()));
@@ -19215,6 +19464,54 @@ mod tests {
         rows.insert(4, 1);
         assert!(!rows_can_update_in_place(2, &rows, &[4, 3]));
         assert!(rows_can_update_in_place(2, &rows, &[3, 4]));
+    }
+
+    #[test]
+    fn profile_menu_filter_matches_labels_and_keeps_store_indices() {
+        let all = vec![
+            (None, "New tab (default: local-a)".to_string()),
+            (Some(2), "Local · local-a  (ctrl+alt+1)".to_string()),
+            (Some(5), "SSH · Build Host".to_string()),
+        ];
+        // 空查询 / 纯空白 = 全部
+        assert_eq!(profile_menu_filtered_entries(&all, "").len(), 3);
+        assert_eq!(profile_menu_filtered_entries(&all, "   ").len(), 3);
+        // 大小写不敏感、同时匹配 new-tab 行与 Profile 行
+        let local = profile_menu_filtered_entries(&all, "LOCAL");
+        assert_eq!(local.len(), 2);
+        assert_eq!(local[0].0, None);
+        assert_eq!(local[1].0, Some(2));
+        // 按主机名过滤后，可见行下标对应的 store 下标不能错位
+        let ssh = profile_menu_filtered_entries(&all, "build");
+        assert_eq!(ssh.len(), 1);
+        assert_eq!(ssh[0].0, Some(5));
+        // 无匹配 = 空，菜单显示空态而不是旧结果
+        assert!(profile_menu_filtered_entries(&all, "no-such-profile").is_empty());
+    }
+
+    #[test]
+    fn default_profile_resolves_by_id_then_name() {
+        let mk = |id: u64, name: &str| profile::Profile {
+            id,
+            name: name.to_string(),
+            ..profile::Profile::default()
+        };
+        let profiles = vec![mk(3, "local-a"), mk(7, "Build Host")];
+        // 稳定 ID 优先
+        assert_eq!(resolve_default_profile_index(&profiles, 7, ""), Some(1));
+        // ID 失效时回退手写名字（大小写/空白不敏感），SESS-002
+        assert_eq!(
+            resolve_default_profile_index(&profiles, 99, "  build host "),
+            Some(1)
+        );
+        assert_eq!(resolve_default_profile_index(&profiles, 0, "LOCAL-A"), Some(0));
+        // 都没设置 / 都失效 = 系统 shell
+        assert_eq!(resolve_default_profile_index(&profiles, 0, ""), None);
+        assert_eq!(
+            resolve_default_profile_index(&profiles, 42, "missing"),
+            None
+        );
+        assert_eq!(resolve_default_profile_index(&[], 0, "local-a"), None);
     }
 
     #[test]

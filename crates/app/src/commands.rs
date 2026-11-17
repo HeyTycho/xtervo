@@ -913,6 +913,10 @@ pub fn builtin() -> Registry {
         bind("terminal.reset-and-clear", "Reset and Clear", Category::Terminal, None),
         bind("terminal.save-contents", "Save Contents…", Category::Terminal, None),
         bind("pane.toggle-zoom", "Toggle Pane Zoom", Category::Pane, Some("ctrl+shift+m")),
+        // UI-TAB-006：关闭范围操作的默认键（快捷键/面板/Hotkeys 共用）。
+        bind("tab.close-others", "Close Other Tabs", Category::Workspace, Some("ctrl+alt+w")),
+        bind("tab.close-left", "Close Tabs to the Left", Category::Workspace, Some("ctrl+alt+left")),
+        bind("tab.close-right", "Close Tabs to the Right", Category::Workspace, Some("ctrl+alt+right")),
         // TERM-015：pane 级会话录制。录制状态/buffer 在 core，UI 只调用。
         bind("terminal.recording-start", "Start Recording", Category::Terminal, None),
         bind("terminal.recording-stop", "Stop Recording", Category::Terminal, None),
@@ -999,6 +1003,40 @@ mod tests {
             .map(|c| c.id)
             .collect();
         assert_eq!(hits, vec!["view.sidebar"]);
+    }
+
+    #[test]
+    fn tab_scope_close_commands_have_distinct_shortcuts() {
+        let r = builtin();
+        // UI-TAB-006：关闭其它/左/右不再只有右键菜单，命令面板与全局快捷键共用。
+        for (id, shortcut, key) in [
+            ("tab.close-others", "ctrl+alt+w", "w"),
+            ("tab.close-left", "ctrl+alt+left", "left"),
+            ("tab.close-right", "ctrl+alt+right", "right"),
+        ] {
+            let cmd = r.get(id).unwrap_or_else(|| panic!("{id} 必须注册"));
+            assert_eq!(cmd.category, Category::Workspace);
+            assert_eq!(cmd.default_shortcut, Some(shortcut));
+            let chord = Chord::parse(shortcut).unwrap();
+            assert_eq!(chord.key, key);
+            assert_eq!(r.default_command_for_chord(&chord), Some(id));
+            // 同一个 chord 只能落在一个命令上（兜底分发是 1:1 的）。
+            let hits = r
+                .all()
+                .iter()
+                .filter(|c| c.default_shortcut == Some(shortcut))
+                .count();
+            assert_eq!(hits, 1, "{shortcut} 不应被多个命令占用");
+        }
+        // 既有 Close Tab / Reopen 仍保留原绑定，改动不能踩到它们。
+        assert_eq!(
+            r.get("tab.close").and_then(|c| c.default_shortcut),
+            Some("ctrl+w")
+        );
+        assert_eq!(
+            r.get("tab.reopen-closed").and_then(|c| c.default_shortcut),
+            Some("ctrl+shift+t")
+        );
     }
 
     #[test]
