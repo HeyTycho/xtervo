@@ -87,6 +87,27 @@ fn pack(c: u32) -> u32 {
     r | g << 8 | b << 16 | 0xff00_0000
 }
 
+/// 零宽标记里真正需要逐字绘制的那部分。
+///
+/// 组合音标/变体选择符都是“叠在基字形上”的零宽字符，照原样返回。ZWJ（U+200D）
+/// 之后的组件是同一个 grapheme cluster 的后半段（`👨‍👩‍👧` 里的 👩/👧）：渲染层
+/// 没有 shaping，逐个叠画只会互相覆盖，还会撑出 2 格宽字符的范围。这里把它们
+/// 过滤掉，只留簇的第一个字形；网格宽度由 core 的 cell 写入层保证。
+fn visible_marks<'a>(marks: &'a [char]) -> impl Iterator<Item = char> + 'a {
+    let mut joined = false;
+    marks.iter().copied().filter(move |mark| {
+        if *mark == '\u{200D}' {
+            joined = true;
+            return false;
+        }
+        if joined {
+            joined = false;
+            return false;
+        }
+        true
+    })
+}
+
 /// 背景不透明度（0.0–1.0）→ 默认背景 alpha（0..=255）。
 ///
 /// 纯函数，便于不启动 GUI 验证。0 = 完全透出背景图，1 = 主题纯色。
@@ -759,6 +780,9 @@ impl Renderer {
     ///
     /// fontdue 没有 GPOS mark attachment，不能直接按字体锚点定位；这里把标记
     /// 位图的水平中心对齐基字形的墨迹中心。ZWJ/VS 等控制符没有可见字形，跳过。
+    ///
+    /// ZWJ 簇（`👨‍👩‍👧`）没有 shaping，逐个组件叠画只会互相覆盖，因此只画簇里
+    /// 的第一个字形：网格宽度由 core 保证是 1 个宽字符，见 [`visible_marks`]。
     fn blit_marks(
         &mut self,
         x0: i32,
@@ -770,7 +794,7 @@ impl Renderer {
         span: usize,
     ) {
         let total = (span * self.cell_w) as i32;
-        for &mark in marks {
+        for mark in visible_marks(marks) {
             if is_zero_width_control(mark) {
                 continue;
             }
@@ -871,7 +895,7 @@ impl Renderer {
         span: usize,
     ) {
         let total = (span * cell_w) as i32;
-        for &mark in marks {
+        for mark in visible_marks(marks) {
             if is_zero_width_control(mark) {
                 continue;
             }
@@ -2387,6 +2411,37 @@ mod tests {
         // 且不能越过第 6 格。
         assert!(ink(&renderer, 0, 6 * cell_w, 0, cell_h) > 0, "ZWJ 家族没有可见字形");
         assert_eq!(ink(&renderer, 6 * cell_w, 8 * cell_w, 0, cell_h), 0, "ZWJ 渲染撑破网格");
+    }
+
+    #[test]
+    fn zwj_cluster_renders_inside_one_wide_cell() {
+        let Some(fonts) = FontSet::load(15.0) else { return };
+        let cell_w = fonts.cell_w;
+        let cell_h = fonts.cell_h;
+        let mut renderer = Renderer::new(
+            Rc::new(fonts),
+            6,
+            1,
+            Theme::default().bg(),
+            Theme::default().cursor(),
+            1.0,
+        );
+        // core 把 👨‍👩‍👧 合并进同一格：基准格带全部组件，占 2 格。
+        let mut wide = CellData::default();
+        wide.ch = '👨' as u32;
+        wide.fg = 0x00ffffff;
+        wide.bg = Theme::default().bg();
+        wide.flags = flags::WIDE_CHAR;
+        let mut frame = blank_frame(6, 1);
+        frame.full = true;
+        frame.put_zerowidth(0, wide, None, &['\u{200D}', '👩', '\u{200D}', '👧']);
+        let mut spacer = CellData::default();
+        spacer.flags = flags::WIDE_CHAR_SPACER;
+        frame.put(1, spacer, None);
+        renderer.draw(&frame);
+
+        assert!(ink(&renderer, 0, 2 * cell_w, 0, cell_h) > 0, "簇没有可见字形");
+        assert_eq!(ink(&renderer, 2 * cell_w, 6 * cell_w, 0, cell_h), 0, "簇渲染撑破 2 格");
     }
 
     #[test]

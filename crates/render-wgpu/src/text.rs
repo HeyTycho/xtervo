@@ -615,10 +615,22 @@ fn build_frame(
             let baseline_y = y0 + layout.baseline.round();
             let mut advance_index = 0i32;
             let mut base_center: Option<f32> = None;
+            let mut joined = false;
 
             for ch in cell.text.chars() {
                 if ch.is_control() {
                     frame.skipped_control += 1;
+                    continue;
+                }
+                // ZWJ 簇的后半段（`👨‍👩‍👧` 里的 👩/👧）：它们和基准字符合成同一个
+                // grapheme cluster，网格里只有 2 格。没有 shaping 时逐个画会把宽字
+                // 形推进 2 格、冲出本格；只画簇的第一个字形，和 CPU 渲染器一致。
+                if ch == '\u{200D}' {
+                    joined = true;
+                    continue;
+                }
+                if joined {
+                    joined = false;
                     continue;
                 }
                 if is_zero_width(ch) {
