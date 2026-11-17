@@ -9796,6 +9796,14 @@ fn refresh_palette(st: &mut AppState) {
             .into_iter()
             .map(|(id, title)| (title, id.to_string())),
     );
+    // 已保存的工作区：每个一条 `workspace.open:<name>`，在面板里直接选（选择器）。
+    let q = query.trim().to_lowercase();
+    for ws in &st.workspaces.workspaces {
+        let title = format!("Workspace: {}", ws.name);
+        if q.is_empty() || title.to_lowercase().contains(&q) {
+            entries.push((title, format!("workspace.open:{}", ws.name)));
+        }
+    }
     entries.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
     entries.truncate(10);
     st.palette_ids = entries.iter().map(|(_, id)| id.clone()).collect();
@@ -9840,6 +9848,11 @@ fn palette_accept(st: &mut AppState) {
 
 /// 执行一条命令。ID 与 `commands::builtin()` 一一对应。
 fn run_command(st: &mut AppState, id: &str) {
+    // 面板里的工作区条目：`workspace.open:<name>`（动态 id，不在静态命令表里）。
+    if let Some(name) = id.strip_prefix("workspace.open:") {
+        open_workspace(st, name);
+        return;
+    }
     match id {
         "window.new" => new_window(),
         "tab.new" => {
