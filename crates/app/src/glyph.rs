@@ -16,6 +16,7 @@
 //! VS16 变体是 1 格），彩色位图只负责在既有格子内绘制并裁剪，不改变宽度语义。
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::rc::Rc;
 use std::sync::OnceLock;
 
@@ -759,6 +760,77 @@ impl FontSet {
     }
 }
 
+/// 常见字体安装目录（系统 + 用户）。
+///
+/// Nerd Fonts 很少由发行版打包到内置候选路径，多数用户装在
+/// `~/.local/share/fonts` 或 `/usr/local/share/fonts`。这里只列目录，扫描
+/// 逻辑见 [`discover_icon_fonts`]；目录不存在时直接跳过。
+const FONT_SCAN_DIRS: &[&str] = &[
+    "/usr/local/share/fonts",
+    "/usr/share/fonts",
+    "/usr/share/fonts/truetype",
+    "/usr/share/fonts/opentype",
+];
+
+/// 文件名里带这些标记的字体才算图标字体，避免把整套 CJK 字体也登记成图标候选。
+const ICON_FONT_MARKERS: &[&str] = &["nerd", "powerline", "symbols-nerd"];
+
+/// 扫描字体目录，返回看起来是 Nerd Font / Powerline 补丁字体的路径。
+///
+/// 只做文件名匹配，不解析字体（解析开销在第 3 步 `Fallback` 建立后按需发生）；
+/// 每次建立回退链只调用一次，且限制目录项预算，避免在巨大的字体目录上卡启动。
+fn discover_icon_fonts() -> Vec<String> {
+    let mut dirs: Vec<std::path::PathBuf> =
+        FONT_SCAN_DIRS.iter().map(std::path::PathBuf::from).collect();
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = std::path::PathBuf::from(home);
+        dirs.push(home.join(".local/share/fonts"));
+        dirs.push(home.join(".fonts"));
+    }
+    let mut budget = 4096usize;
+    let mut found: Vec<String> = Vec::new();
+    for dir in &dirs {
+        scan_icon_fonts(dir, 0, &mut budget, &mut found);
+        if budget == 0 {
+            break;
+        }
+    }
+    found.sort();
+    found.dedup();
+    found.truncate(32);
+    if fontlog() && !found.is_empty() {
+        eprintln!("[font] 扫描到 {} 个 Nerd/Powerline 图标字体: {:?}", found.len(), found);
+    }
+    found
+}
+
+fn scan_icon_fonts(dir: &Path, depth: usize, budget: &mut usize, out: &mut Vec<String>) {
+    if depth > 3 || *budget == 0 {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        if *budget == 0 {
+            return;
+        }
+        *budget -= 1;
+        let path = entry.path();
+        let Ok(ft) = entry.file_type() else { continue };
+        if ft.is_dir() {
+            scan_icon_fonts(&path, depth + 1, budget, out);
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+        let is_font = name.ends_with(".ttf") || name.ends_with(".otf") || name.ends_with(".ttc");
+        if !is_font || !ICON_FONT_MARKERS.iter().any(|m| name.contains(m)) {
+            continue;
+        }
+        if let Some(s) = path.to_str() {
+            out.push(s.to_string());
+        }
+    }
+}
+
 /// 建立回退链：内置候选 + `TERVO_FALLBACK_FONTS` 追加项。
 ///
 /// 环境变量格式：`:` 分隔的字体路径，可带 `#face_index`（TTC），例如
@@ -805,6 +877,20 @@ fn load_fallback() -> Fallback {
                 env: true,
             });
         }
+    }
+    // 用户机器上装的 Nerd Font / Powerline 字体：内置路径只覆盖发行版包名，
+    // 常见安装位置（~/.local/share/fonts、~/.fonts、/usr/local/share/fonts）
+    // 里的文件此前完全看不到。这里按文件名扫描一遍，作为 ICON 组候选追加。
+    // 只登记路径、不解析字体；真正用到私用区图标时才逐个 load。
+    for path in discover_icon_fonts() {
+        specs.push(Spec {
+            path,
+            index: 0,
+            bold: None,
+            group: GROUP_ICON,
+            color_only: false,
+            env: false,
+        });
     }
     // CJK 回退字体优先按文件大小升序：fontdue 解析一个 18 MB TTC 会常驻上百 MB，
     // 先用 3.8 MB 的 Droid 覆盖绝大多数汉字，避免为个别生僻字直接解析最大字体。
@@ -1112,6 +1198,13 @@ impl GlyphCache {
             // atlas 满：继续换下一个字体也放不下，直接放弃本帧。
             return None;
         }
+        // Powerline 分隔符（U+E0B0–E0B7）不依赖任何字体：没装 Nerd Font /
+        // Powerline 补丁字体时按格子几何合成，避免提示符里出现一串占位框。
+        if let Some((metrics, bitmap)) = synthetic_powerline(fonts, ch, span) {
+            if let Some(glyph) = self.insert_bitmap(metrics, &bitmap) {
+                return Some(glyph);
+            }
+        }
         None
     }
 
@@ -1206,6 +1299,136 @@ fn rasterize_fit(
         return None;
     }
     Some((metrics, bitmap))
+}
+
+/// Powerline 分隔符的形状（U+E0B0–E0B7，ampersand/powerline 补丁字体的标准码位）。
+#[derive(Clone, Copy)]
+enum PowerlineShape {
+    /// U+E0B0：右向实心三角（左边缘贴满，右边缘收成尖）
+    RightSolid,
+    /// U+E0B1：右向细线三角
+    RightThin,
+    /// U+E0B2：左向实心三角
+    LeftSolid,
+    /// U+E0B3：左向细线三角
+    LeftThin,
+    /// U+E0B4：右向实心半圆
+    RightRound,
+    /// U+E0B5：左向实心半圆
+    LeftRound,
+    /// U+E0B6：右向半圆描边
+    RightRoundThin,
+    /// U+E0B7：左向半圆描边
+    LeftRoundThin,
+}
+
+fn powerline_shape(ch: char) -> Option<PowerlineShape> {
+    Some(match ch as u32 {
+        0xE0B0 => PowerlineShape::RightSolid,
+        0xE0B1 => PowerlineShape::RightThin,
+        0xE0B2 => PowerlineShape::LeftSolid,
+        0xE0B3 => PowerlineShape::LeftThin,
+        0xE0B4 => PowerlineShape::RightRound,
+        0xE0B5 => PowerlineShape::LeftRound,
+        0xE0B6 => PowerlineShape::RightRoundThin,
+        0xE0B7 => PowerlineShape::LeftRoundThin,
+        _ => return None,
+    })
+}
+
+/// 合成一个 Powerline 字形位图；几何按格子像素尺寸算，与字号/字体无关。
+///
+/// 形状贴满整格（左/右三角的尖在中线，半圆直径等于格高），因此相邻格拼接
+/// 时不会出现缝隙。用 4×4 超采样做抗锯齿，成本只在首次见到该码位时付一次。
+fn synthetic_powerline(
+    fonts: &FontSet,
+    ch: char,
+    span: usize,
+) -> Option<(fontdue::Metrics, Vec<u8>)> {
+    let shape = powerline_shape(ch)?;
+    let w = fonts.cell_w.max(1) * span.max(1);
+    let h = fonts.cell_h.max(1);
+    let bitmap = powerline_bitmap(shape, w, h);
+    // 贴格子左上角：xmin=0 且 advance == span*cell_w（renderer 的居中 pad 变 0），
+    // ymin = baseline - h 让 top = -baseline，正好落在行顶。
+    let metrics = fontdue::Metrics {
+        xmin: 0,
+        ymin: fonts.baseline - h as i32,
+        width: w,
+        height: h,
+        advance_width: w as f32,
+        advance_height: h as f32,
+        ..Default::default()
+    };
+    Some((metrics, bitmap))
+}
+
+const POWERLINE_SS: usize = 4;
+
+fn powerline_bitmap(shape: PowerlineShape, w: usize, h: usize) -> Vec<u8> {
+    let mut out = vec![0u8; w * h];
+    for y in 0..h {
+        for x in 0..w {
+            let mut hits = 0u32;
+            for sy in 0..POWERLINE_SS {
+                for sx in 0..POWERLINE_SS {
+                    let fx = x as f32 + (sx as f32 + 0.5) / POWERLINE_SS as f32;
+                    let fy = y as f32 + (sy as f32 + 0.5) / POWERLINE_SS as f32;
+                    if powerline_inside(shape, fx, fy, w as f32, h as f32) {
+                        hits += 1;
+                    }
+                }
+            }
+            let cover = hits * 255 / (POWERLINE_SS * POWERLINE_SS) as u32;
+            out[y * w + x] = cover as u8;
+        }
+    }
+    out
+}
+
+fn powerline_inside(shape: PowerlineShape, x: f32, y: f32, w: f32, h: f32) -> bool {
+    let mid = h / 2.0;
+    // 细线形状的线宽（像素）：1.2px 在 9×20 的格子上线宽与实心三角一致。
+    let half_line = 0.6;
+    // 三角在高度 y 处的水平宽度：中线处等于整格宽，两端收到 0。
+    let tri = w * (1.0 - ((y - mid) / mid).abs());
+    let dist_to_seg = |x0: f32, y0: f32, x1: f32, y1: f32| {
+        let (dx, dy) = (x1 - x0, y1 - y0);
+        let len2 = dx * dx + dy * dy;
+        let t = if len2 <= f32::EPSILON {
+            0.0
+        } else {
+            (((x - x0) * dx + (y - y0) * dy) / len2).clamp(0.0, 1.0)
+        };
+        let (px, py) = (x0 + t * dx, y0 + t * dy);
+        ((x - px).powi(2) + (y - py).powi(2)).sqrt()
+    };
+    match shape {
+        PowerlineShape::RightSolid => tri > 0.0 && x <= tri,
+        PowerlineShape::LeftSolid => tri > 0.0 && x >= w - tri,
+        // 只画斜边：竖边是格子边界，贴上去会和终端背景/相邻块连成一片。
+        PowerlineShape::RightThin => {
+            dist_to_seg(0.0, 0.0, w, mid) <= half_line
+                || dist_to_seg(0.0, h, w, mid) <= half_line
+        },
+        PowerlineShape::LeftThin => {
+            dist_to_seg(w, 0.0, 0.0, mid) <= half_line
+                || dist_to_seg(w, h, 0.0, mid) <= half_line
+        },
+        PowerlineShape::RightRound | PowerlineShape::LeftRound => {
+            let cx = if matches!(shape, PowerlineShape::RightRound) { 0.0 } else { w };
+            ((x - cx).powi(2) + (y - mid).powi(2)).sqrt() <= mid
+        },
+        PowerlineShape::RightRoundThin | PowerlineShape::LeftRoundThin => {
+            let cx = if matches!(shape, PowerlineShape::RightRoundThin) {
+                0.0
+            } else {
+                w
+            };
+            let d = ((x - cx).powi(2) + (y - mid).powi(2)).sqrt();
+            (mid - 2.0 * half_line..=mid).contains(&d)
+        },
+    }
 }
 
 #[cfg(test)]
