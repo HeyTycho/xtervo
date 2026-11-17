@@ -594,7 +594,8 @@ pub struct PaneHandle {
     pull_seq: AtomicU64,
     /// 上一帧是否超时/跳帧；下一次 pull 用它强制整屏，保证不因迟到帧漏画。
     pull_needs_full: AtomicBool,
-    child: Box<dyn portable_pty::Child + Send + Sync>,
+    /// PTY 子进程；插件 transport 没有子进程（`None`）。
+    child: Option<Box<dyn portable_pty::Child + Send + Sync>>,
     #[allow(dead_code)]
     threads: Vec<JoinHandle<()>>,
     pub grid: GridSize,
@@ -602,8 +603,9 @@ pub struct PaneHandle {
 }
 
 impl PaneHandle {
+    /// 后端进程 pid；插件 transport 没有子进程，返回 `None`。
     pub fn pid(&self) -> Option<u32> {
-        self.child.process_id()
+        self.child.as_ref().and_then(|child| child.process_id())
     }
 
     /// 送键盘输入。**永不阻塞 UI**：直接进 16 MiB 有界写 backlog；只有 backlog
@@ -1062,7 +1064,12 @@ impl PaneHandle {
     /// `Exited` 事件只表示 PTY 关闭，UI 需要退出状态给用户看（SSH 断线时
     /// 常见 255）；这里直接 `try_wait` 拿 OS 状态，不阻塞事件循环。
     pub fn try_exit_code(&mut self) -> Option<(u32, Option<String>)> {
-        match self.child.try_wait() {
+        // 插件 transport 没有子进程：连接关闭只走 CoreEvent::Exited，
+        // 具体退出原因由插件自己的事件上报。
+        let Some(child) = self.child.as_mut() else {
+            return None;
+        };
+        match child.try_wait() {
             Ok(Some(status)) => {
                 self.exited = true;
                 Some((status.exit_code(), status.signal().map(str::to_string)))
@@ -1073,14 +1080,18 @@ impl PaneHandle {
 
     pub fn kill(&mut self) {
         self.send_ctrl(Ctrl::Shutdown);
-        let _ = self.child.kill();
+        if let Some(child) = self.child.as_mut() {
+            let _ = child.kill();
+        }
     }
 }
 
 impl Drop for PaneHandle {
     fn drop(&mut self) {
         self.send_ctrl(Ctrl::Shutdown);
-        let _ = self.child.kill();
+        if let Some(child) = self.child.as_mut() {
+            let _ = child.kill();
+        }
     }
 }
 
@@ -1102,67 +1113,32 @@ pub fn spawn(config: PaneConfig) -> std::io::Result<PaneHandle> {
 
 /// 用指定后端启动 pane。
 ///
-/// F1 只引入 seam：`Backend::Pty` 继续走原来的 openpty/shell 路径；
-/// `Backend::Plugin` 的读写接线（pump_reader / transport.write_all）在 F2 完成。
+/// `Backend::Pty` 走原来的 openpty/shell 路径；`Backend::Plugin` 只替换字节
+/// 通道，后面的有界队列、[`pump_reader`]、writer backlog 与 actor 完全共用。
+/// EOF 统一由 [`pump_reader`] 发 `Ctrl::PtyClosed`；插件通道没有子进程，
+/// [`PaneHandle::try_exit_code`] 返回 `None`（退出状态由连接插件自己上报）。
 pub fn spawn_with_transport(
     config: PaneConfig,
     backend: Backend,
 ) -> std::io::Result<PaneHandle> {
-    match backend {
-        Backend::Pty => spawn_pty(config),
-        Backend::Plugin(_transport) => Err(std::io::Error::new(
-            std::io::ErrorKind::Unsupported,
-            "plugin transport backend 尚未接线",
-        )),
-    }
-}
-
-/// PTY 后端实现（原 `spawn` 主体，逐字保留）。
-fn spawn_pty(config: PaneConfig) -> std::io::Result<PaneHandle> {
     let size = GridSize::new(config.cols as usize, config.rows as usize);
 
-    let pty_system = native_pty_system();
-    let pair = pty_system
-        .openpty(PtySize {
-            rows: config.rows,
-            cols: config.cols,
-            pixel_width: config.cols.saturating_mul(config.cell_width.max(1)),
-            pixel_height: config.rows.saturating_mul(config.cell_height.max(1)),
-        })
-        .map_err(|e| std::io::Error::other(e.to_string()))?;
-
-    let PtyPair { master, slave } = pair;
-
-    let shell = config
-        .shell
-        .clone()
-        .or_else(|| std::env::var("SHELL").ok())
-        .unwrap_or_else(|| "/bin/bash".to_string());
-    let mut cmd = CommandBuilder::new(&shell);
-    for arg in &config.args {
-        cmd.arg(arg);
-    }
-    if let Some(cwd) = &config.cwd {
-        cmd.cwd(cwd);
-    }
-    for (k, v) in &config.env {
-        cmd.env(k, v);
-    }
-    cmd.env("TERM", "xterm-256color");
-    cmd.env("COLORTERM", "truecolor");
-
-    let child = slave
-        .spawn_command(cmd)
-        .map_err(|e| std::io::Error::other(e.to_string()))?;
-    // slave 必须立刻关闭，否则 PTY 永远不会 EOF。
-    drop(slave);
-
-    let mut reader = master
-        .try_clone_reader()
-        .map_err(|e| std::io::Error::other(e.to_string()))?;
-    let mut writer = master
-        .take_writer()
-        .map_err(|e| std::io::Error::other(e.to_string()))?;
+    // 读端/写端/控制半边在两种后端下类型一致，后面的通道与 actor 代码完全共用。
+    let (reader, mut writer, child, control) = match backend {
+        Backend::Pty => {
+            let (reader, writer, child, master) = spawn_pty_io(&config)?;
+            (reader, writer, Some(child), BackendControl::Pty { master })
+        },
+        Backend::Plugin(transport) => {
+            let halves = transport.into_halves()?;
+            (
+                halves.reader,
+                halves.writer,
+                None,
+                BackendControl::Plugin(halves.control),
+            )
+        },
+    };
 
     // ---- 有界通道 ----
     let (pty_tx, pty_rx) = bounded::<Vec<u8>>(PTY_QUEUE_CHUNKS);
@@ -1186,15 +1162,15 @@ fn spawn_pty(config: PaneConfig) -> std::io::Result<PaneHandle> {
         sixel: sixel_enabled.clone(),
     };
 
-    // ---- PTY 读线程：只 read + 有界 send ----
-    // 循环体抽成 `pump_reader`：现在喂的是 PTY，将来喂插件 transport（ACT-052），
-    // 两者共用同一段“有界背压、绝不丢字节”的逻辑，不必为后端分叉。
+    // ---- 读线程：PTY 与插件 transport 共用 pump_reader（只 read + 有界 send）----
+    // 两种后端共用同一段“有界背压、绝不丢字节”的逻辑；EOF（`Ok(0)`）统一由
+    // `pump_reader` 发 `Ctrl::PtyClosed`，actor 侧的收尾路径也完全一致。
     let ctrl_tx_reader = ctrl_tx.clone();
     let reader_thread = thread::Builder::new()
         .name("pty-reader".into())
         .spawn(move || pump_reader(reader, pty_tx, ctrl_tx_reader))?;
 
-    // ---- PTY 写线程 ----
+    // ---- 写线程：PTY master writer 或插件 transport 写半边 ----
     let writer_queue = write_queue.clone();
     let writer_thread = thread::Builder::new()
         .name("pty-writer".into())
@@ -1265,7 +1241,7 @@ fn spawn_pty(config: PaneConfig) -> std::io::Result<PaneHandle> {
         pull_rx: pull_rx.clone(),
         palette,
         stats: stats_actor,
-        master,
+        control,
         size,
         wake: listener.wake.clone(),
         events: listener.events.clone(),
@@ -1310,6 +1286,64 @@ fn spawn_pty(config: PaneConfig) -> std::io::Result<PaneHandle> {
         grid: size,
         exited: false,
     })
+}
+
+/// 打开 PTY + 启动 shell：返回读端/写端/子进程/master。
+///
+/// 原 `spawn` 的开头部分原样搬入；PTY 尺寸、环境、`TERM` 与关闭 slave 的
+/// 顺序都不变，保证默认路径行为逐字一致。
+fn spawn_pty_io(
+    config: &PaneConfig,
+) -> std::io::Result<(
+    Box<dyn Read + Send>,
+    Box<dyn Write + Send>,
+    Box<dyn portable_pty::Child + Send + Sync>,
+    Box<dyn MasterPty + Send>,
+)> {
+    let pty_system = native_pty_system();
+    let pair = pty_system
+        .openpty(PtySize {
+            rows: config.rows,
+            cols: config.cols,
+            pixel_width: config.cols.saturating_mul(config.cell_width.max(1)),
+            pixel_height: config.rows.saturating_mul(config.cell_height.max(1)),
+        })
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
+
+    let PtyPair { master, slave } = pair;
+
+    let shell = config
+        .shell
+        .clone()
+        .or_else(|| std::env::var("SHELL").ok())
+        .unwrap_or_else(|| "/bin/bash".to_string());
+    let mut cmd = CommandBuilder::new(&shell);
+    for arg in &config.args {
+        cmd.arg(arg);
+    }
+    if let Some(cwd) = &config.cwd {
+        cmd.cwd(cwd);
+    }
+    for (k, v) in &config.env {
+        cmd.env(k, v);
+    }
+    cmd.env("TERM", "xterm-256color");
+    cmd.env("COLORTERM", "truecolor");
+
+    let child = slave
+        .spawn_command(cmd)
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
+    // slave 必须立刻关闭，否则 PTY 永远不会 EOF。
+    drop(slave);
+
+    let reader = master
+        .try_clone_reader()
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
+    let writer = master
+        .take_writer()
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
+
+    Ok((reader, writer, child, master))
 }
 
 /// 搜索 query → alacritty RegexSearch 模式。
@@ -1453,6 +1487,37 @@ fn advance_and_publish_grid_lines<T: EventListener>(
     }
 }
 
+/// actor 侧的后端控制面：PTY 用 `MasterPty::resize`，插件用 `TransportControl`。
+///
+/// PTY 的 `close` 是空操作：actor drop 时 master 自然关闭，与接线前一致。
+enum BackendControl {
+    Pty { master: Box<dyn MasterPty + Send> },
+    Plugin(Box<dyn crate::transport::TransportControl + Send>),
+}
+
+impl BackendControl {
+    /// 网格尺寸变化：PTY 额外带像素尺寸（按当前 cell 尺寸换算），失败忽略。
+    fn resize(&mut self, cols: u16, rows: u16, cell_width: u16, cell_height: u16) {
+        match self {
+            Self::Pty { master } => {
+                let _ = master.resize(PtySize {
+                    rows,
+                    cols,
+                    pixel_width: cols.saturating_mul(cell_width.max(1)),
+                    pixel_height: rows.saturating_mul(cell_height.max(1)),
+                });
+            },
+            Self::Plugin(control) => control.resize(cols, rows),
+        }
+    }
+
+    fn close(&mut self) {
+        if let Self::Plugin(control) = self {
+            control.close();
+        }
+    }
+}
+
 struct Actor {
     term: Term<Listener>,
     /// 当前生效的 alacritty 配置（动态 scrollback 预算用）。
@@ -1495,7 +1560,8 @@ struct Actor {
     pull_rx: Receiver<(u64, Box<Frame>)>,
     palette: Arc<RwLock<Palette>>,
     stats: Arc<PaneStats>,
-    master: Box<dyn MasterPty + Send>,
+    /// 后端控制面：PTY 走 `MasterPty::resize`，插件走 `TransportControl`。
+    control: BackendControl,
     size: GridSize,
     wake: WakeSignal,
     events: EventSink,
@@ -2433,6 +2499,9 @@ impl Drop for Actor {
         // actor 退出（Shutdown / ctrl 通道断开）时唤醒并结束 pty-writer，避免
         // 慢 shell 场景下 writer 永远等在 Condvar 上。
         self.write_queue.close();
+        // 插件 transport：关掉 socket，阻塞在 read 的读线程随之 EOF 退出。
+        // PTY：master 随 Actor 一起 drop（与接线前一致，不需要显式 close）。
+        self.control.close();
     }
 }
 
@@ -3388,12 +3457,7 @@ impl Actor {
                 self.kitty_store
                     .retune_cells(self.cell_width, self.cell_height);
                 self.store_grid_lines();
-                let _ = self.master.resize(PtySize {
-                    rows,
-                    cols,
-                    pixel_width: cols.saturating_mul(self.cell_width.max(1)),
-                    pixel_height: rows.saturating_mul(self.cell_height.max(1)),
-                });
+                self.control.resize(cols, rows, self.cell_width, self.cell_height);
                 self.wake.notify();
                 true
             },
