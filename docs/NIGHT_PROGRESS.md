@@ -8,7 +8,7 @@
 ```text
 cargo test -p tervo-app --bin tervo     569 passed / 0 failed / 1 ignored
 cargo test -p tervo-core                25 + 12 passed
-DURATION=2m soak（sandbox 需可写目录）   PASS（.logs/soak/20261117-133652）
+DURATION=2m soak（sandbox 需可写目录）   PASS（.logs/soak/20261117-133652；release 构建 8ed890f 复跑 PASS：RSS 355.0→392.8MiB，线程/FD 不变）
 DURATION=15m soak                        PASS（RSS +3.15 MiB/min，R²=0.29，线程/FD 不变）
 PTY→可见 10 MiB                          178.35 ms ≈ 56.1 MiB/s
 渲染 P95（200x50）                       damage 路径 37–40 µs；full 1.66 ms
