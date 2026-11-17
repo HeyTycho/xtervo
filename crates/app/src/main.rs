@@ -4142,7 +4142,7 @@ fn new_tab_with_default(st: &mut AppState) {
         Some(index) => {
             let id = st.profiles.profiles[index].id;
             eprintln!("[profile] 新 Tab 使用默认 Profile id={id} index={index}");
-            open_profile_tab(st, index);
+            open_profile_tab_manual(st, index);
         }
         None => new_tab_inner(st),
     }
@@ -4451,6 +4451,16 @@ fn build_profile_launch_with(
 /// SSH Profile 会先做 known_hosts 预检（后台，最多 10s，可取消）：首次连接 /
 /// 主机密钥变更时弹窗让用户明确选择，绝不静默信任；同一条连接配置在一次进程内
 /// 预检通过后缓存，后续快速打开。其它 kind 直接打开。
+/// 用户**主动**打开 Profile：先清掉自动重连计数，再走正常开 Tab。
+///
+/// 自动重连自己调用 `open_profile_tab`（不清计数），否则计数被自己清零会无限重试。
+fn open_profile_tab_manual(st: &mut AppState, index: usize) {
+    if let Some(id) = st.profiles.profiles.get(index).map(|p| p.id) {
+        st.reconnect_attempts.remove(&id);
+    }
+    open_profile_tab(st, index);
+}
+
 fn open_profile_tab(st: &mut AppState, index: usize) {
     let Some(p) = st.profiles.profiles.get(index).cloned() else {
         eprintln!("[profile] 打开失败: Profile 不存在");
@@ -4759,7 +4769,7 @@ fn note_ssh_exit(
                                 st.profiles.profiles.iter().position(|p| p.id == pid)
                             {
                                 eprintln!("[ssh] 自动重连触发 profile={pid}");
-                                open_profile_tab(st, index);
+                                open_profile_tab_manual(st, index);
                             }
                         });
                     }
@@ -10348,7 +10358,7 @@ fn handle_input(
                 .position(|p| p.hotkey_chord().as_ref() == Some(&chord))
             {
                 eprintln!("[hotkey] profile {index} ← {chord}");
-                open_profile_tab(st, index);
+                open_profile_tab_manual(st, index);
                 return;
             }
         }
@@ -13058,7 +13068,7 @@ fn register_window_callbacks(
     ui.on_profile_open(move |index| {
         runtime::with_window(window_id, |st| {
             if let Some(store_index) = profile_row_to_store(st, index) {
-                open_profile_tab(st, store_index);
+                open_profile_tab_manual(st, store_index);
             }
         });
     });
@@ -14335,7 +14345,7 @@ fn register_window_callbacks(
             let index = index.max(0) as usize;
             if let Some(&profile_index) = st.profile_menu_indices.get(index) {
                 eprintln!("[ui] sidebar profile pick={index} profile={profile_index}");
-                open_profile_tab(st, profile_index);
+                open_profile_tab_manual(st, profile_index);
             }
         });
     });
@@ -14345,7 +14355,7 @@ fn register_window_callbacks(
             let index = index.max(0) as usize;
             eprintln!("[ui] profile pick={index}");
             if let Some(&profile_index) = st.profile_menu_indices.get(index) {
-                open_profile_tab(st, profile_index);
+                open_profile_tab_manual(st, profile_index);
             }
         });
     });
