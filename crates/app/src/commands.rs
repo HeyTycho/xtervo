@@ -608,6 +608,9 @@ pub fn builtin() -> Registry {
         ("view.zoom-reset", "Reset Zoom", Category::View, Some("ctrl+0")),
         ("session.restart", "Restart Session", Category::Session, None),
         ("session.reattach", "Reattach Background Session", Category::Session, None),
+        // 官方 SSH 插件 POC：`ssh.connect` 开第一个 SSH Profile；调色板里
+        // `ssh.connect:<id|name>` 精确指定 Profile（走 Backend::Plugin）。
+        ("ssh.connect", "Connect SSH (Plugin POC)", Category::Session, None),
         ("settings.open", "Open Settings", Category::Settings, None),
     ];
     for (id, title, category, shortcut) in cmds {

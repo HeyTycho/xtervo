@@ -39,6 +39,7 @@ mod runtime;
 mod secondary;
 mod session;
 mod sftp;
+mod ssh_plugin;
 mod tabby_import;
 mod themes;
 // Transport 数据面/权限骨架（ACT-052 F3/F4）：纯函数与门禁数据结构，
@@ -66,10 +67,10 @@ use slint::winit_030::{winit, EventResult, WinitWindowAccessor};
 use slint::{Model, ModelRc, VecModel};
 use tervo_core::{
     link::{is_allowed_uri, strip_path_position},
-    spawn, ClipboardRequest, ClipboardSelection, CoreEvent, Frame, LinkKind, Modifiers,
-    MouseAction, MouseButton, MouseEvent, Notification, Palette as TermPalette, PaneConfig,
-    PaneHandle, ProgressState, ScrollPosition, SearchHit, SearchOptions, ShellMark, Theme,
-    UiColors, WakeSignal,
+    spawn, spawn_with_transport, Backend, ClipboardRequest, ClipboardSelection, CoreEvent, Frame,
+    LinkKind, Modifiers, MouseAction, MouseButton, MouseEvent, Notification,
+    Palette as TermPalette, PaneConfig, PaneHandle, ProgressState, ScrollPosition, SearchHit,
+    SearchOptions, ShellMark, Theme, UiColors, WakeSignal,
 };
 use x11rb::connection::Connection;
 use x11rb::rust_connection::RustConnection;
@@ -4298,7 +4299,7 @@ fn create_pane(
         st.cfg.bold_color_rgb(),
         st.cfg.bold_color_same_as_fg,
     );
-    let handle = spawn(PaneConfig {
+    let config = PaneConfig {
         cols: cols as u16,
         rows: rows as u16,
         scrollback,
@@ -4317,7 +4318,23 @@ fn create_pane(
         palette,
         cwd,
         env,
-    })?;
+    };
+    // 官方 SSH 插件 POC：`transport = "plugin"` 的 SSH Profile 不经过 PTY，
+    // 直接把系统 ssh 子进程包成 PaneTransport（Backend::Plugin）。本地 pane /
+    // 老 SSH Profile 的路径与参数逐字不变。
+    let handle = match profile.filter(|p| p.is_plugin_ssh()) {
+        Some(p) => {
+            let transport = ssh_plugin::SshPluginTransport::start(p)?;
+            eprintln!(
+                "[plugin-ssh] pane backend=plugin profile={} host={} user={}",
+                p.id,
+                p.host.trim(),
+                p.user.trim()
+            );
+            spawn_with_transport(config, Backend::Plugin(Box::new(transport)))?
+        },
+        None => spawn(config)?,
+    };
 
     let wake = handle.wake_receiver();
     // 语义事件唤醒与内容拉帧唤醒分开：内容 wake 只重绘该 pane，事件 wake 走
@@ -5173,6 +5190,89 @@ fn open_profile_tab_now(st: &mut AppState, index: usize, allow_askpass: bool) {
             return;
         },
     };
+    open_profile_spec_tab(st, index, spec, askpass);
+}
+
+/// `ssh.connect <profile-id|name>` / `TERVO_PLUGIN_SSH_CONNECT`：
+/// 强制用官方 SSH 插件后端（`Backend::Plugin`）打开该 Profile。
+///
+/// 与普通打开的区别只有 `transport = "plugin"`：先按既有逻辑构造 ssh spec，
+/// 再克隆一份标上 plugin；Profile 本身不改写、不落盘。
+fn open_plugin_ssh_tab(st: &mut AppState, index: usize) {
+    let Some(profile) = st.profiles.profiles.get(index).cloned() else {
+        eprintln!("[plugin-ssh] 打开失败: Profile {index} 不存在");
+        return;
+    };
+    if profile.kind != "ssh" {
+        eprintln!(
+            "[plugin-ssh] Profile {} 不是 SSH（kind={}），拒绝用 SSH transport 打开",
+            profile.name, profile.kind
+        );
+        return;
+    }
+    let (mut spec, askpass) = match build_profile_launch_with(st, index, true) {
+        Ok(v) => v,
+        Err(err) => {
+            eprintln!("[plugin-ssh] Profile {} 启动参数构建失败: {}", profile.name, err.message());
+            return;
+        },
+    };
+    spec.transport = profile::PLUGIN_TRANSPORT.to_string();
+    eprintln!("[plugin-ssh] ssh.connect profile={} id={}", spec.name, spec.id);
+    open_profile_spec_tab(st, index, spec, askpass);
+}
+
+/// 按 id（数字）或名字找 Profile 下标；精确名字优先，其次大小写不敏感。
+fn profile_selector_index(st: &AppState, selector: &str) -> Option<usize> {
+    let selector = selector.trim();
+    if selector.is_empty() {
+        return None;
+    }
+    if let Ok(id) = selector.parse::<u64>() {
+        if let Some(idx) = st.profiles.profiles.iter().position(|p| p.id == id) {
+            return Some(idx);
+        }
+    }
+    st.profiles
+        .profiles
+        .iter()
+        .position(|p| p.name == selector)
+        .or_else(|| {
+            st.profiles
+                .profiles
+                .iter()
+                .position(|p| p.name.eq_ignore_ascii_case(selector))
+        })
+}
+
+/// 命令/启动环境变量共用的 `ssh.connect` 入口。
+fn connect_ssh_plugin(st: &mut AppState, selector: &str) -> bool {
+    match profile_selector_index(st, selector) {
+        Some(index) => {
+            open_plugin_ssh_tab(st, index);
+            true
+        },
+        None => {
+            eprintln!("[plugin-ssh] 找不到 Profile: {selector}");
+            false
+        },
+    }
+}
+
+/// 解析 `ssh.connect` 命令的参数：`:id`、` id`、` id name` 都接受；返回
+/// `Some("")` 表示裸命令（打开第一个 SSH Profile），其它命令返回 `None`。
+fn ssh_connect_selector(id: &str) -> Option<&str> {
+    let rest = id.strip_prefix("ssh.connect")?;
+    Some(rest.trim_start_matches([':', ' ']).trim())
+}
+
+/// 打开一个已经构造好 spec 的 Profile Tab（普通路径与插件路径共用）。
+fn open_profile_spec_tab(
+    st: &mut AppState,
+    index: usize,
+    spec: profile::Profile,
+    askpass: Option<askpass::Askpass>,
+) {
     let id = st.shared.alloc_pane_id();
     let tab_title = spec.name.clone();
     let kind = spec.kind.clone();
@@ -11274,6 +11374,13 @@ fn refresh_palette(st: &mut AppState) {
             entries.push((title, format!("workspace.open:{}", ws.name)));
         }
     }
+    // 官方 SSH 插件 POC：每个 SSH Profile 一条 `ssh.connect:<id>`（走 transport seam）。
+    for p in st.profiles.profiles.iter().filter(|p| p.kind == "ssh") {
+        let title = format!("SSH (plugin): {}", p.name);
+        if q.is_empty() || title.to_lowercase().contains(&q) {
+            entries.push((title, format!("ssh.connect:{}", p.id)));
+        }
+    }
     entries.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
     entries.truncate(10);
     st.palette_ids = entries.iter().map(|(_, id)| id.clone()).collect();
@@ -11321,6 +11428,20 @@ fn run_command(st: &mut AppState, id: &str) {
     // 面板里的工作区条目：`workspace.open:<name>`（动态 id，不在静态命令表里）。
     if let Some(name) = id.strip_prefix("workspace.open:") {
         open_workspace(st, name);
+        return;
+    }
+    // 官方 SSH 插件 POC：`ssh.connect:<id|name>`（调色板动态条目）与
+    // `ssh.connect <id|name>`（手输/测试）都走 transport seam。
+    if let Some(selector) = ssh_connect_selector(id) {
+        if selector.is_empty() {
+            // 裸命令：取第一个 SSH Profile（调色板另有带 id 的精确条目）。
+            match st.profiles.profiles.iter().position(|p| p.kind == "ssh") {
+                Some(index) => open_plugin_ssh_tab(st, index),
+                None => eprintln!("[plugin-ssh] 还没有保存过 SSH Profile"),
+            }
+        } else {
+            connect_ssh_plugin(st, selector);
+        }
         return;
     }
     match id {
@@ -16628,6 +16749,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(pos) = argv.iter().position(|a| a == "--sftp-probe") {
         std::process::exit(run_sftp_probe(&argv[pos + 1..]));
     }
+    // 官方 SSH 插件 POC 的无 GUI 复现入口：走与 pane 相同的 transport，
+    // 把远端 banner/错误原样打到 stdout。GUI 路径见 TERVO_PLUGIN_SSH_CONNECT。
+    if let Some(pos) = argv.iter().position(|a| a == "--plugin-ssh-probe") {
+        std::process::exit(ssh_plugin::run_probe(&argv[pos + 1..]));
+    }
     // 版本信息必须在 logging/后端初始化之前返回：`--version` 不能写日志、
     // 不能建窗口，脚本才能在没有 DISPLAY 的打包/安装环境里安全调用。
     if argv.iter().any(|a| a == "-V" || a == "--version") {
@@ -17300,6 +17426,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         restored
     })
     .unwrap_or(false);
+    // 官方 SSH 插件 POC 的 GUI e2e 入口：启动首 Tab 后按 id/name 打开一个
+    // `Backend::Plugin` SSH pane（不点 UI 也能复现 banner/错误可见）。
+    if let Ok(selector) = std::env::var("TERVO_PLUGIN_SSH_CONNECT") {
+        with_app(|st| {
+            if connect_ssh_plugin(st, &selector) {
+                rebuild_tabs(st);
+            }
+        });
+    }
     if restored {
         let (tabs, panes) = with_app(|st| {
             (
@@ -19245,6 +19380,16 @@ mod tests {
         // 防御性：core 理论上不会给出 index=0/total>0；UI 至少不能显示 0/N。
         let partial = SearchHit { index: 0, total: 5, ..hit };
         assert_eq!(search_count_label(Some(&partial)), "1/5");
+    }
+
+    #[test]
+    fn ssh_connect_command_selector_accepts_id_and_name_forms() {
+        assert_eq!(ssh_connect_selector("ssh.connect"), Some(""));
+        assert_eq!(ssh_connect_selector("ssh.connect:7"), Some("7"));
+        assert_eq!(ssh_connect_selector("ssh.connect 7"), Some("7"));
+        assert_eq!(ssh_connect_selector("ssh.connect: my profile "), Some("my profile"));
+        assert_eq!(ssh_connect_selector("ssh.disconnect"), None);
+        assert_eq!(ssh_connect_selector("tab.new"), None);
     }
 
     #[test]
