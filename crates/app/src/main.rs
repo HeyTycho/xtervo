@@ -639,10 +639,13 @@ struct AppState {
     menu_link: String,
     /// 广播输入：开启后键入同时发给当前 Tab 的所有 pane
     broadcast: bool,
-    /// 上次左键点击 (pane, 行, 列, 时间)：用于 400ms 内的双击选行
-    last_click: Option<(PaneId, i32, i32, std::time::Instant)>,
+    /// 上次左键点击 (pane, 行, 列, 时间, 连击数)：用于 400ms 内双击选词/三击选行
+    last_click: Option<(PaneId, i32, i32, std::time::Instant, u8)>,
     /// 最近关闭的 Tab（最多 10 个），用于 Ctrl+Shift+T / 菜单重开
     closed_tabs: Vec<session::TabSnapshot>,
+    /// 最近使用 Tab 栈（MRU 在 0，存 Tab 的代表 pane id）。`tab.last` 用；
+    /// 只在 rebuild_tabs 里按当前 active 更新，覆盖点击/快捷键/新建/恢复等路径。
+    tab_lru: Vec<PaneId>,
     fwd_profile_indices: Vec<usize>,
     fwd_model: Rc<VecModel<slint::SharedString>>,
     settings_result_cats: Vec<i32>,
@@ -1466,8 +1469,11 @@ fn command_title(lang: &str, id: &str, fallback: &'static str) -> &'static str {
         "tab.close" => "关闭标签",
         "tab.next" => "下一个标签",
         "tab.prev" => "上一个标签",
+        "tab.last" => "上一个使用的标签",
         "tab.duplicate" => "复制标签",
         "tab.reopen-closed" => "重新打开已关闭标签",
+        "tab.rename" => "重命名标签",
+        "tab.rename-undo" => "撤销标签重命名",
         "pane.split-right" => "向右拆分",
         "pane.split-down" => "向下拆分",
         "pane.close" => "关闭窗格",
@@ -1484,6 +1490,8 @@ fn command_title(lang: &str, id: &str, fallback: &'static str) -> &'static str {
         "view.command-palette" => "命令面板",
         "view.toggle-fullscreen" => "切换全屏",
         "view.toggle-quake" => "切换 Quake 模式",
+        "view.scroll-top" => "滚动到顶部",
+        "view.scroll-bottom" => "滚动到底部",
         "view.zoom-in" => "放大",
         "view.zoom-out" => "缩小",
         "view.zoom-reset" => "重置缩放",
@@ -6516,6 +6524,21 @@ fn open_rename(st: &mut AppState, index: usize) {
     st.ui.set_rename_open(true);
 }
 
+/// 撤销最近一次 Tab 重命名：恢复 `prev_title`，并把当前标题记成新的“旧标题”，
+/// 因此连续执行可在两个标题之间来回切换。
+fn undo_tab_rename(st: &mut AppState, index: usize) {
+    let Some(tab) = st.ws.tabs.get_mut(index) else {
+        return;
+    };
+    let Some(prev) = tab.prev_title.take() else {
+        eprintln!("[ws] rename undo tab={index}: 没有可撤销的重命名");
+        return;
+    };
+    let current = std::mem::replace(&mut tab.title, prev);
+    tab.prev_title = Some(current);
+    eprintln!("[ws] rename undo tab={index} → {:?}", tab.title);
+}
+
 /// 关闭 keep 左侧的所有 Tab；keep 本身保留并保持激活。
 fn close_tabs_left(st: &mut AppState, keep: usize) {
     if keep == 0 || keep >= st.ws.tabs.len() {
@@ -6666,6 +6689,7 @@ fn duplicate_tab(st: &mut AppState, index: usize) {
             focused: focused_new,
             grid: HashMap::new(),
             pinned,
+            prev_title: None,
         },
     );
     st.ws.active = index + 1;
@@ -6859,6 +6883,7 @@ fn restore_tab_snapshot(st: &mut AppState, tab_snap: &session::TabSnapshot) -> O
         focused,
         grid: HashMap::new(),
         pinned: tab_snap.pinned,
+        prev_title: None,
     });
     eprintln!(
         "[session] restore tab {tab_title:?} pinned={} index={index}",
@@ -7535,6 +7560,50 @@ fn switch_tab_number(st: &mut AppState, n: usize) {
     }
 }
 
+/// Tab 的稳定标识：取最小 pane id（pane id 单调递增、不复用）。
+///
+/// LRU 存这个 id 而不是下标：Tab 重排/关闭后下标会变，但 pane id 仍能用
+/// `Workspace::tab_of` 找回所属 Tab。
+fn tab_key(tab: &Tab) -> Option<PaneId> {
+    tab.root.as_ref()?.panes().into_iter().min()
+}
+
+/// 把当前 active Tab 记为 MRU 并清掉已关闭 Tab 的 key。
+///
+/// 放在 `rebuild_tabs` 里调用：所有激活路径（点击、Ctrl+Tab、tab.last、
+/// 新建/恢复/关闭）都会重建标签模型，因此无需在每个 `ws.active =` 处重复登记。
+fn touch_tab_lru(st: &mut AppState) {
+    let Some(key) = st.ws.active_tab().and_then(tab_key) else {
+        st.tab_lru.clear();
+        return;
+    };
+    st.tab_lru.retain(|k| *k != key);
+    st.tab_lru.insert(0, key);
+    let live: Vec<PaneId> = st.ws.tabs.iter().filter_map(tab_key).collect();
+    st.tab_lru.retain(|k| live.contains(k));
+    st.tab_lru.truncate(64);
+}
+
+/// `tab.last`：切到最近使用、且不是当前 Tab 的那一个。
+///
+/// 切换后 `touch_tab_lru` 会把新 Tab 提到栈顶，旧的仍在第二位，
+/// 因此连续执行 `tab.last` 会在最近两个 Tab 之间来回切换。
+fn switch_to_last_tab(st: &mut AppState) {
+    let current = st.ws.active_tab().and_then(tab_key);
+    let target = st
+        .tab_lru
+        .iter()
+        .filter(|k| Some(**k) != current)
+        .find_map(|k| st.ws.tab_of(*k));
+    match target {
+        Some(index) => {
+            eprintln!("[ws] tab.last → {index}");
+            set_active_tab_inner(st, index);
+        },
+        None => eprintln!("[ws] tab.last: 没有上一个使用的 Tab"),
+    }
+}
+
 // ------------------------------------------------------------------- resize 收尾
 
 /// WM watchdog：最近不再有 configure、且按下后已超过宽限，才算没接管。
@@ -7901,6 +7970,7 @@ fn rows_can_update_in_place(
 }
 
 fn rebuild_tabs(st: &mut AppState) {
+    touch_tab_lru(st);
     let active = st.ws.active;
     let tabs: Vec<TabView> = st
         .ws
@@ -10306,9 +10376,17 @@ fn run_command(st: &mut AppState, id: &str) {
         "tab.close" => close_tab_inner(st, st.ws.active),
         "tab.next" => switch_tab_relative(st, 1),
         "tab.prev" => switch_tab_relative(st, -1),
+        "tab.last" => switch_to_last_tab(st),
         "tab.search" => open_tab_search(st),
         "tab.duplicate" => duplicate_tab(st, st.ws.active),
         "tab.reopen-closed" => reopen_closed_tab(st),
+        "tab.rename" => open_rename(st, st.ws.active),
+        "tab.rename-undo" => {
+            undo_tab_rename(st, st.ws.active);
+            rebuild_tabs(st);
+        },
+        "view.scroll-top" => scroll_focused_pane(st, true),
+        "view.scroll-bottom" => scroll_focused_pane(st, false),
         "view.sidebar" => toggle_sidebar(st),
         "workspace.save" => open_workspace_save_dialog(st),
         "workspace.list" => {
@@ -10398,6 +10476,27 @@ fn run_command(st: &mut AppState, id: &str) {
             }
         }
     }
+}
+
+/// 聚焦 pane 滚到历史顶/底（`view.scroll-top` / `view.scroll-bottom`）。
+///
+/// `scroll_to` 的偏移约定：0 = 最新内容（底部），`history` = 最旧（顶部）。
+/// 与滚轮/滚动条一致：主动滚动会清掉原生选区，避免高亮粘在旧格子。
+fn scroll_focused_pane(st: &mut AppState, to_top: bool) {
+    let Some(id) = focused_pane(st) else { return };
+    let Some(rt) = st.panes.get(&id) else { return };
+    let pos = rt.handle.scroll_position();
+    let offset = if to_top { pos.history } else { 0 };
+    if pos.offset == offset {
+        return;
+    }
+    rt.handle.clear_selection();
+    rt.handle.scroll_to(offset);
+    eprintln!(
+        "[ui] scroll-to-{} pane={id} offset={offset} history={}",
+        if to_top { "top" } else { "bottom" },
+        pos.history
+    );
 }
 
 fn open_search(st: &mut AppState) {
@@ -12164,6 +12263,7 @@ fn build_window_state(
         broadcast: false,
         last_click: None,
         closed_tabs: Vec::new(),
+        tab_lru: Vec::new(),
         fwd_profile_indices: Vec::new(),
         fwd_model,
         settings_result_cats: Vec::new(),
@@ -12589,25 +12689,50 @@ fn register_window_callbacks(
                 );
             }
             if !drag.moved {
-                // 双击选行：同一 pane、同一格、400ms 内的第二次左键抬起。
-                let Some(rt) = st.panes.get(&id) else { return };
-                let (line_u, col_u) = cell_at(rt, x, y);
+                // 多击选词/选行：同一 pane、同一格、400ms 内的连续左键抬起。
+                // 第 2 击选 Unicode 词，第 3 击选整行（沿用 core 的 SelectLine）。
+                let Some((line_u, col_u)) = st.panes.get(&id).map(|rt| cell_at(rt, x, y))
+                else {
+                    return;
+                };
                 let (line, col) = (line_u as i32, col_u as i32);
                 let now = std::time::Instant::now();
-                let is_double = matches!(st.last_click, Some((p, l, c, t))
-                    if p == id && l == line && c == col && now.duration_since(t) < std::time::Duration::from_millis(400));
-                if is_double {
-                    st.last_click = None;
+                let streak = match st.last_click {
+                    Some((p, l, c, t, n))
+                        if p == id
+                            && l == line
+                            && c == col
+                            && now.duration_since(t) < std::time::Duration::from_millis(400) =>
+                    {
+                        n.saturating_add(1)
+                    },
+                    _ => 1,
+                };
+                if streak == 2 {
                     if let Some(rt) = st.panes.get_mut(&id) {
-                        rt.handle.select_line(line);
+                        rt.handle.select_word(line_u, col_u);
                     }
-                    eprintln!("[ui] double-click select line={line} pane={id}");
+                    eprintln!(
+                        "[ui] double-click select word line={line} col={col} pane={id}"
+                    );
+                    st.last_click = Some((id, line, col, now, 2));
                     if st.cfg.copy_on_select {
                         copy_current_selection(st);
                     }
                     return;
                 }
-                st.last_click = Some((id, line, col, now));
+                if streak >= 3 {
+                    if let Some(rt) = st.panes.get_mut(&id) {
+                        rt.handle.select_line(line);
+                    }
+                    eprintln!("[ui] triple-click select line={line} pane={id}");
+                    st.last_click = None;
+                    if st.cfg.copy_on_select {
+                        copy_current_selection(st);
+                    }
+                    return;
+                }
+                st.last_click = Some((id, line, col, now, 1));
                 return;
             }
             // 关闭 Copy on select 时只保留高亮，不写剪贴板
@@ -13247,10 +13372,19 @@ fn register_window_callbacks(
     ui.on_rename_committed(move |index, text| {
         runtime::with_window(window_id, |st| {
             let idx = index.max(0) as usize;
-            if let Some(title) = sanitize_tab_title(text.as_str()) {
-                if let Some(tab) = st.ws.tabs.get_mut(idx) {
-                    tab.title = title;
-                    eprintln!("[ws] rename tab={idx} → {:?}", tab.title);
+            if let Some(tab) = st.ws.tabs.get_mut(idx) {
+                if text.trim().is_empty() {
+                    // 清空标题后提交 = 恢复重命名前的标题（撤销的第二种入口）。
+                    if let Some(prev) = tab.prev_title.take() {
+                        let current = std::mem::replace(&mut tab.title, prev);
+                        tab.prev_title = Some(current);
+                        eprintln!("[ws] rename undo via empty tab={idx} → {:?}", tab.title);
+                    }
+                } else if let Some(title) = sanitize_tab_title(text.as_str()) {
+                    if tab.title != title {
+                        tab.prev_title = Some(std::mem::replace(&mut tab.title, title));
+                        eprintln!("[ws] rename tab={idx} → {:?}", tab.title);
+                    }
                 }
             }
             st.ui.set_rename_open(false);

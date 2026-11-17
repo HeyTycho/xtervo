@@ -5287,6 +5287,7 @@ dependencies = [
  "png",
  "portable-pty",
  "tokio",
+ "unicode-segmentation",
  "unicode-width",
  "zune-jpeg",
 ]

@@ -41,13 +41,14 @@ use alacritty_terminal::index::{Column, Line, Point};
 use alacritty_terminal::grid::Scroll;
 use alacritty_terminal::index::{Direction, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
-use alacritty_terminal::term::cell::Cell;
+use alacritty_terminal::term::cell::{Cell, Flags};
 use alacritty_terminal::term::search::{RegexIter, RegexSearch};
 use alacritty_terminal::term::{Config as TermConfig, Osc52, Term, TermDamage, TermMode};
 use alacritty_terminal::vte::ansi::{ClearMode, Handler, Processor, Rgb};
 use crossbeam_channel::{bounded, Receiver, SendTimeoutError, Sender, TrySendError};
 use parking_lot::{Condvar, Mutex, RwLock};
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtyPair, PtySize};
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::event::{ClipboardSelection, CoreEvent, EventSink, PaneStats, WakeSignal};
 use crate::frame::{
@@ -506,6 +507,8 @@ enum Ctrl {
     ClearSelection,
     /// 选中视口内某一行（双击选行）。
     SelectLine(i32),
+    /// 选中视口内某格所在的 Unicode 词（双击选词）。
+    SelectWord { line: u16, col: u16 },
     /// 清屏并清回滚（终端“Clear”语义）。
     ClearScreen,
     /// 复位终端状态（RIS 语义：模式/光标/字符集/滚动区/标题栈等）。
@@ -843,6 +846,14 @@ impl PaneHandle {
     /// 选中视口内第 `line` 行（双击选行；`line` 是视口坐标，0 = 顶行）。
     pub fn select_line(&self, line: i32) {
         self.send_ctrl(Ctrl::SelectLine(line));
+    }
+
+    /// 选中视口内 (line, col) 所在的 Unicode 词（双击选词）。
+    ///
+    /// 词边界按 UAX#29（`unicode-segmentation`）在整行文本上计算，宽字符/
+    /// 零宽组合字符按一个 cell 簇处理；空白处双击清空选区。
+    pub fn select_word(&self, line: u16, col: u16) {
+        self.send_ctrl(Ctrl::SelectWord { line, col });
     }
 
     /// 清屏 + 清回滚；下一次拉帧强制整屏。
@@ -3069,6 +3080,68 @@ impl Actor {
         Point::new(Line(line - offset), Column(col))
     }
 
+    /// (line, col) 所在 Unicode 词的起止格（同一行内，Simple 选区语义：end 含该格）。
+    ///
+    /// 词边界用 `unicode-segmentation`（UAX#29）在整行文本上算，再把字符簇映射
+    /// 回列号：宽字符占两列、零宽组合字符并到基字符，避免按 `char` 直接切列。
+    /// 返回 None 表示点在空白上（调用方清空选区）。
+    fn word_range(&self, point: Point) -> Option<(Point, Point)> {
+        let cols = self.term.columns();
+        if cols == 0 {
+            return None;
+        }
+        let row = &self.term.grid()[point.line];
+        let mut text = String::new();
+        // (字符簇起始 byte offset, 起始列, 占几列)
+        let mut spans: Vec<(usize, usize, usize)> = Vec::new();
+        for c in 0..cols {
+            let cell = &row[Column(c)];
+            if cell
+                .flags
+                .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+            {
+                continue;
+            }
+            let byte = text.len();
+            text.push(cell.c);
+            if let Some(zw) = cell.zerowidth() {
+                for ch in zw {
+                    text.push(*ch);
+                }
+            }
+            let width = if cell.flags.contains(Flags::WIDE_CHAR) { 2 } else { 1 };
+            spans.push((byte, c, width));
+        }
+        let hit = spans
+            .iter()
+            .position(|(_, start, width)| (*start..start + width).contains(&point.column.0))?;
+        let byte_hit = spans[hit].0;
+
+        let mut seg_start = 0;
+        let (seg_start, seg_end, seg_text) = text
+            .split_word_bounds()
+            .find_map(|part| {
+                let start = seg_start;
+                let end = start + part.len();
+                seg_start = end;
+                (start..end).contains(&byte_hit).then_some((start, end, part))
+            })?;
+        if seg_text.chars().all(char::is_whitespace) {
+            return None;
+        }
+        // 落在该段内的字符簇（宽字符只取基格，选区向右包含整格）。
+        let first = spans
+            .iter()
+            .position(|(byte, _, _)| *byte >= seg_start && *byte < seg_end)?;
+        let last = spans
+            .iter()
+            .rposition(|(byte, _, _)| *byte >= seg_start && *byte < seg_end)?;
+        Some((
+            Point::new(point.line, Column(spans[first].1)),
+            Point::new(point.line, Column(spans[last].1)),
+        ))
+    }
+
     fn search(
         &mut self,
         query: &str,
@@ -3364,6 +3437,27 @@ impl Actor {
                 }
                 self.term.selection = Some(sel);
                 self.sel_anchor = Some(start);
+                // 选区高亮要立刻重绘
+                self.force_full = true;
+                self.wake.notify();
+                true
+            },
+            Ctrl::SelectWord { line, col } => {
+                let point = self.viewport_point(line, col);
+                match self.word_range(point) {
+                    Some((start, end)) => {
+                        let mut sel = Selection::new(SelectionType::Simple, start, Side::Left);
+                        // 单字符词 start == end：仍要更新 end 的 side，否则被判定为空选区。
+                        sel.update(end, Side::Right);
+                        self.term.selection = Some(sel);
+                        self.sel_anchor = Some(start);
+                    },
+                    // 双击空白 = 取消选区，避免旧高亮留在屏幕上。
+                    None => {
+                        self.term.selection = None;
+                        self.sel_anchor = None;
+                    },
+                }
                 // 选区高亮要立刻重绘
                 self.force_full = true;
                 self.wake.notify();
