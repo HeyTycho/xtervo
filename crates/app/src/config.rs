@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use tervo_core::CursorShape;
 
-use crate::commands::{Chord, HotkeyOverride};
+use crate::commands::{self, HotkeyOverride};
 use crate::keys::{BackspaceBinding, DeleteBinding, KeyBindings};
 
 /// 当前配置结构版本。改动字段语义/结构时递增，并在 [`Config::migrate`] 里补迁移步骤。
@@ -687,10 +687,11 @@ impl Config {
     /// `version` 较旧就在后台触发迁移写回（那会被监听器误判成外部修改）。
     pub(crate) fn parse_text(text: &str) -> Result<Self, toml::de::Error> {
         let mut cfg: Config = toml::from_str(text)?;
-        // 手写配置也统一成规范小写 chord；非法项原样保留（分发时忽略）。
+        // 手写配置也统一成规范小写 chord（支持两段 `ctrl+k ctrl+t`）；
+        // 非法项原样保留（分发时忽略，启动期由 repair_hotkey_overrides 清理）。
         for over in &mut cfg.hotkeys {
-            if let Ok(chord) = Chord::parse(&over.chord) {
-                over.chord = chord.canonical();
+            if let Ok(shortcut) = commands::Shortcut::parse(&over.chord) {
+                over.chord = shortcut.canonical();
             }
         }
         // 外观字段是 additive 的：旧配置缺字段走 serde default，手写别名/大小写
@@ -1339,6 +1340,24 @@ mod tests {
         .unwrap();
         let cfg = Config::load_from(&path);
         assert_eq!(cfg.hotkeys[0].chord, "ctrl+shift+n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn multi_chord_hotkeys_are_canonicalized() {
+        let dir = tmpdir("hotkeys-multi");
+        let path = dir.join("config.toml");
+        std::fs::write(
+            &path,
+            "version = 1\n[[hotkeys]]\ncommand = \"tab.new\"\nchord = \"Ctrl + K Ctrl + T\"\n",
+        )
+        .unwrap();
+        let cfg = Config::load_from(&path);
+        assert_eq!(cfg.hotkeys[0].chord, "ctrl+k ctrl+t");
+        // 规范格式再解析仍是同一序列（分发/校验共用）。
+        let back = commands::Shortcut::parse(&cfg.hotkeys[0].chord).unwrap();
+        assert_eq!(back.chords.len(), 2);
+        assert_eq!(back.canonical(), "ctrl+k ctrl+t");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

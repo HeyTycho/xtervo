@@ -73,6 +73,45 @@ pub struct Command {
     pub category: Category,
     /// 默认快捷键（解析失败视为没有，启动时会报警）。
     pub default_shortcut: Option<&'static str>,
+    /// 同一命令的附加默认绑定（例如 `Ctrl+=` 与 `Ctrl++` 都放大）。
+    ///
+    /// 这些绑定只用于分发/冲突检测/展示，不会出现在 `default_shortcut` 里；
+    /// 用户 override 仍然只替换主绑定。
+    pub extra_shortcuts: &'static [&'static str],
+    /// 全局命令：分发早于搜索框与终端输入（F2/F11/Tab 导航等）。
+    ///
+    /// 非全局命令在搜索框打开时不触发，与旧硬编码路径的顺序保持一致。
+    pub global: bool,
+}
+
+/// 构造命令的简写（无别名、非全局）。
+fn bind(
+    id: &'static str,
+    title: &'static str,
+    category: Category,
+    default_shortcut: Option<&'static str>,
+) -> Command {
+    Command { id, title, category, default_shortcut, extra_shortcuts: &[], global: false }
+}
+
+/// 全局命令：搜索框打开/终端输入时也优先按命令表分发。
+fn global_bind(
+    id: &'static str,
+    title: &'static str,
+    category: Category,
+    default_shortcut: Option<&'static str>,
+) -> Command {
+    Command { global: true, ..bind(id, title, category, default_shortcut) }
+}
+
+impl Command {
+    /// 主绑定 + 附加绑定的解析结果（非法项被忽略）。
+    fn default_shortcuts(&self) -> impl Iterator<Item = Shortcut> + '_ {
+        self.default_shortcut
+            .into_iter()
+            .chain(self.extra_shortcuts.iter().copied())
+            .filter_map(|text| Shortcut::parse(text).ok())
+    }
 }
 
 /// 快捷键冲突：同一个绑定落在多个命令上。
@@ -139,11 +178,11 @@ impl Registry {
         self.commands.is_empty()
     }
 
-    /// 有默认快捷键的命令（解析成功才算）。
+    /// 有默认快捷键的命令（主绑定 + 附加绑定，解析成功才算）。
     pub fn bindings(&self) -> Vec<(Shortcut, &'static str)> {
         self.commands
             .iter()
-            .filter_map(|c| c.default_shortcut.and_then(|s| Shortcut::parse(s).ok().map(|sc| (sc, c.id))))
+            .flat_map(|c| c.default_shortcuts().map(move |sc| (sc, c.id)))
             .collect()
     }
 
@@ -157,39 +196,53 @@ impl Registry {
         overrides.iter().rev().find(|o| o.command == command_id)
     }
 
+    /// 用户覆盖的完整快捷键（支持 1–2 段）；未知命令/非法配置返回 None。
+    pub fn override_shortcut_for(
+        &self,
+        command_id: &str,
+        overrides: &[HotkeyOverride],
+    ) -> Option<Shortcut> {
+        self.get(command_id)?;
+        self.override_for(command_id, overrides)
+            .and_then(|o| Shortcut::parse(&o.chord).ok())
+    }
+
     /// 某条命令当前生效的绑定：合法 override 优先，否则回退到默认。
     pub fn effective_shortcut(
         &self,
         command_id: &str,
         overrides: &[HotkeyOverride],
     ) -> Option<Shortcut> {
-        let command = self.get(command_id)?;
-        if let Some(chord) = self
-            .override_for(command_id, overrides)
-            .and_then(|o| Chord::parse(&o.chord).ok())
-        {
-            return Some(Shortcut { chords: vec![chord] });
+        if let Some(shortcut) = self.override_shortcut_for(command_id, overrides) {
+            return Some(shortcut);
         }
-        command
+        self.get(command_id)?
             .default_shortcut
             .and_then(|s| Shortcut::parse(s).ok())
     }
 
     /// 全部命令当前生效的绑定（未知命令 / 非法 chord 的 override 被忽略）。
+    ///
+    /// 有 override 时只返回 override（主绑定被替换）；没有时返回主绑定与附加绑定。
     pub fn effective_bindings(&self, overrides: &[HotkeyOverride]) -> Vec<EffectiveBinding> {
-        self.commands
-            .iter()
-            .filter_map(|command| {
-                let custom = self
-                    .override_for(command.id, overrides)
-                    .and_then(|o| Chord::parse(&o.chord).ok())
-                    .map(|chord| Shortcut { chords: vec![chord] });
-                let shortcut = custom
-                    .clone()
-                    .or_else(|| command.default_shortcut.and_then(|s| Shortcut::parse(s).ok()))?;
-                Some(EffectiveBinding { command_id: command.id, shortcut, custom: custom.is_some() })
-            })
-            .collect()
+        let mut out = Vec::new();
+        for command in &self.commands {
+            if let Some(custom) = self
+                .override_for(command.id, overrides)
+                .and_then(|o| Shortcut::parse(&o.chord).ok())
+            {
+                out.push(EffectiveBinding {
+                    command_id: command.id,
+                    shortcut: custom,
+                    custom: true,
+                });
+                continue;
+            }
+            for shortcut in command.default_shortcuts() {
+                out.push(EffectiveBinding { command_id: command.id, shortcut, custom: false });
+            }
+        }
+        out
     }
 
     /// 检测重复绑定（同一快捷键落在多个命令上）；包含用户 override。
@@ -240,14 +293,56 @@ impl Registry {
         Ok(chord)
     }
 
+    /// 校验一条 1–2 段快捷键能否保存（Hotkeys 页录制用，支持 multi-chord）。
+    ///
+    /// 冲突规则：完全相同或前缀重叠都拒绝；命令自己的旧绑定会被替换，不算冲突。
+    pub fn validate_override_shortcut(
+        &self,
+        command_id: &str,
+        shortcut_text: &str,
+        overrides: &[HotkeyOverride],
+    ) -> Result<Shortcut, String> {
+        self.get(command_id).ok_or_else(|| format!("未知命令: {command_id}"))?;
+        let shortcut = Shortcut::parse(shortcut_text)?;
+        if !shortcut.is_bindable() {
+            return Err("快捷键需要 Ctrl/Alt/Meta，或使用 F1–F24".to_string());
+        }
+        for binding in self.effective_bindings(overrides) {
+            if binding.command_id == command_id {
+                continue;
+            }
+            if shortcuts_overlap(&binding.shortcut, &shortcut) {
+                let title =
+                    self.get(binding.command_id).map(|c| c.title).unwrap_or(binding.command_id);
+                return Err(format!("冲突：{title} 已使用 {}", binding.shortcut));
+            }
+        }
+        Ok(shortcut)
+    }
+
     /// 某个单段 chord 是否已被命令的**默认**绑定占用（Profile 热键冲突提示用）。
     ///
-    /// 只看 `default_shortcut`，不读用户 override —— 冲突提示是给用户看的，
-    /// 而 override 本身就是用户自己的选择。
+    /// 只看 `default_shortcut`/`extra_shortcuts`，不读用户 override —— 冲突提示
+    /// 是给用户看的，而 override 本身就是用户自己的选择。
     pub fn default_command_for_chord(&self, chord: &Chord) -> Option<&'static str> {
         self.all().iter().find_map(|command| {
-            let default = command.default_shortcut.and_then(|s| Shortcut::parse(s).ok())?;
-            (default.chords.len() == 1 && default.chords[0] == *chord).then_some(command.id)
+            command
+                .default_shortcuts()
+                .find(|shortcut| shortcut.single_chord() == Some(chord))
+                .map(|_| command.id)
+        })
+    }
+
+    /// 全局命令的默认绑定（F2/F11/Tab 导航等），分发早于搜索框/终端输入。
+    pub fn global_default_for_chord(&self, chord: &Chord) -> Option<&'static str> {
+        self.all().iter().find_map(|command| {
+            if !command.global {
+                return None;
+            }
+            command
+                .default_shortcuts()
+                .find(|shortcut| shortcut.single_chord() == Some(chord))
+                .map(|_| command.id)
         })
     }
 
@@ -264,11 +359,58 @@ impl Registry {
         }
         for over in overrides.iter().rev() {
             let Some(command) = self.get(&over.command) else { continue };
-            if Chord::parse(&over.chord).is_ok_and(|bound| bound == *chord) {
+            // 两段快捷键不参与单键分发，由 pending + command_for_sequence 处理。
+            if Shortcut::parse(&over.chord)
+                .is_ok_and(|bound| bound.single_chord() == Some(chord))
+            {
                 return Some(command.id);
             }
         }
         None
+    }
+
+    /// multi-chord 分发：第一段是否应该“等待第二段”。
+    ///
+    /// 只在“存在两段绑定以它为前缀、且它本身不是任何单段绑定”时返回 true，
+    /// 避免把普通的单键命令延迟两秒。
+    pub fn multi_chord_prefix(&self, first: &Chord, overrides: &[HotkeyOverride]) -> bool {
+        if !first.is_bindable() {
+            return false;
+        }
+        let bindings = self.effective_bindings(overrides);
+        let is_prefix = bindings.iter().any(|binding| {
+            binding.shortcut.chords.len() == 2 && binding.shortcut.chords[0] == *first
+        });
+        let is_complete = bindings
+            .iter()
+            .any(|binding| binding.shortcut.single_chord() == Some(first));
+        is_prefix && !is_complete
+    }
+
+    /// multi-chord 分发：完整的 1–2 段序列命中哪条命令（override 优先于默认）。
+    pub fn command_for_sequence(
+        &self,
+        chords: &[Chord],
+        overrides: &[HotkeyOverride],
+    ) -> Option<&'static str> {
+        let wanted = Shortcut { chords: chords.to_vec() };
+        let bindings = self.effective_bindings(overrides);
+        if let Some(binding) =
+            bindings.iter().rev().find(|binding| binding.custom && binding.shortcut == wanted)
+        {
+            return Some(binding.command_id);
+        }
+        self.default_command_for_sequence(&wanted)
+    }
+
+    /// 默认绑定里等于给定序列的命令（Hotkeys 页展示/分发共用）。
+    pub fn default_command_for_sequence(&self, wanted: &Shortcut) -> Option<&'static str> {
+        self.commands.iter().find_map(|command| {
+            command
+                .default_shortcuts()
+                .any(|shortcut| shortcut == *wanted)
+                .then_some(command.id)
+        })
     }
 
     /// 分发用：这个 chord 是否是某条命令**已被改走**的旧默认键。
@@ -284,8 +426,8 @@ impl Registry {
             if default.chords.len() != 1 || default.chords[0] != *chord {
                 return None;
             }
-            let bound = Chord::parse(&self.override_for(command.id, overrides)?.chord).ok()?;
-            (bound != *chord && bound.is_bindable()).then_some(command.id)
+            let bound = Shortcut::parse(&self.override_for(command.id, overrides)?.chord).ok()?;
+            (bound.single_chord() != Some(chord) && bound.is_bindable()).then_some(command.id)
         })
     }
 
@@ -354,11 +496,28 @@ fn score_in(text: &str, query: &[char]) -> Option<i32> {
     (qi == query.len()).then_some(score)
 }
 
+/// 两条快捷键是否重叠：完全相同，或一条是另一条的前缀（multi-chord 的第一段）。
+///
+/// 前缀也算冲突：按了第一段后分发会等待第二段（见 `multi_chord_prefix`），
+/// 若同一 chord 还是另一条命令的完整绑定，那条命令就永远等不到触发。
+pub fn shortcuts_overlap(a: &Shortcut, b: &Shortcut) -> bool {
+    let n = a.chords.len().min(b.chords.len());
+    a.chords[..n] == b.chords[..n]
+}
+
 impl Shortcut {
+    /// 所有段都必须可绑定（multi-chord 的每一段都带 Ctrl/Alt/Meta 或功能键）。
+    pub fn is_bindable(&self) -> bool {
+        !self.chords.is_empty() && self.chords.iter().all(Chord::is_bindable)
+    }
+
     /// 解析 `ctrl+shift+p` 或 `ctrl+k ctrl+t`（空格分隔多段、`+` 连接修饰键）。
     pub fn parse(text: &str) -> Result<Self, String> {
+        // 手写配置常见 `Ctrl + K Ctrl + T`：先去掉 `+` 两侧空白，再按空白分段，
+        // 否则每个 "Ctrl" 都会被当成一段（缺少主键）。
+        let compact = text.replace(" + ", "+").replace("+ ", "+").replace(" +", "+");
         let chords: Result<Vec<Chord>, String> =
-            text.split_whitespace().map(Chord::parse).collect();
+            compact.split_whitespace().map(Chord::parse).collect();
         let chords = chords?;
         if chords.is_empty() {
             return Err("空快捷键".into());
@@ -521,6 +680,8 @@ fn normalize_key(key: &str) -> Result<String, String> {
             | "end"
             | "pageup"
             | "pagedown"
+            | "print"
+            | "pause"
             | "up"
             | "down"
             | "left"
@@ -553,6 +714,16 @@ pub fn set_override(overrides: &mut Vec<HotkeyOverride>, command: &str, chord: &
     overrides.push(HotkeyOverride::new(command, chord));
 }
 
+/// 写入/替换某命令的 1–2 段快捷键 override（规范格式，空格分隔两段）。
+pub fn set_override_shortcut(
+    overrides: &mut Vec<HotkeyOverride>,
+    command: &str,
+    shortcut: &Shortcut,
+) {
+    overrides.retain(|o| o.command != command);
+    overrides.push(HotkeyOverride { command: command.to_string(), chord: shortcut.canonical() });
+}
+
 /// 清除某命令的 override；返回是否真的删掉了。
 pub fn clear_override(overrides: &mut Vec<HotkeyOverride>, command: &str) -> bool {
     let before = overrides.len();
@@ -560,59 +731,217 @@ pub fn clear_override(overrides: &mut Vec<HotkeyOverride>, command: &str) -> boo
     overrides.len() != before
 }
 
+/// 一条被自动修复掉的快捷键配置（KEY-003）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OverrideRepair {
+    pub command: String,
+    pub chord: String,
+    /// `unknown-command` / `invalid-shortcut` / `not-bindable` /
+    /// `duplicate-command` / `conflict`。
+    pub reason: &'static str,
+}
+
+/// 启动/热重载时自动修复手改 `[[hotkeys]]` 的重复与非法项。
+///
+/// 规则与运行时分发语义一致：**后写的条目优先**（`override_for` 取最后一条）。
+/// 从尾部向前扫描，保留第一条合法且不与已保留项冲突的配置；被丢弃的原因
+/// 返回给调用方记录日志/写回配置。未知命令、非法 chord、不可绑定单键
+/// （无修饰普通字符）、同一命令重复、与已保留项相同或前缀冲突都会被清掉。
+pub fn repair_hotkey_overrides(
+    registry: &Registry,
+    overrides: &mut Vec<HotkeyOverride>,
+) -> Vec<OverrideRepair> {
+    let mut kept: Vec<HotkeyOverride> = Vec::new();
+    let mut kept_shortcuts: Vec<Shortcut> = Vec::new();
+    let mut repairs: Vec<OverrideRepair> = Vec::new();
+    for over in overrides.iter().rev() {
+        let shortcut = Shortcut::parse(&over.chord).ok();
+        let reason = if registry.get(&over.command).is_none() {
+            Some("unknown-command")
+        } else if kept.iter().any(|k| k.command == over.command) {
+            Some("duplicate-command")
+        } else {
+            match &shortcut {
+                None => Some("invalid-shortcut"),
+                Some(shortcut) if !shortcut.is_bindable() => Some("not-bindable"),
+                Some(shortcut)
+                    if kept_shortcuts
+                        .iter()
+                        .any(|kept| shortcuts_overlap(kept, shortcut)) =>
+                {
+                    Some("conflict")
+                },
+                Some(_) => None,
+            }
+        };
+        match (reason, shortcut) {
+            (None, Some(shortcut)) => {
+                kept.push(over.clone());
+                kept_shortcuts.push(shortcut);
+            }
+            (reason, _) => repairs.push(OverrideRepair {
+                command: over.command.clone(),
+                chord: over.chord.clone(),
+                reason: reason.unwrap_or("invalid-shortcut"),
+            }),
+        }
+    }
+    kept.reverse();
+    repairs.reverse();
+    *overrides = kept;
+    repairs
+}
+
+/// 桌面环境常见保留键（KEY-003 提示用；不阻止保存，只警告）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReservedShortcut {
+    /// 规范小写 chord（`meta+l`）；`ctrl+alt+f1..f12` 用特殊条目表示。
+    pub chord: &'static str,
+    /// 典型占用者（桌面环境/输入法）。
+    pub owner: &'static str,
+    /// 中文说明（UI 提示 + 日志）。
+    pub note: &'static str,
+}
+
+/// Wayland 合成器/桌面环境/输入法的保留键清单。
+///
+/// 这些键由 DE 在客户端之前截获，绑到 Typer 里通常永远不会触发；录制时给出
+/// 警告，但**不阻止保存**（用户可能用非 GNOME/KDE 环境或改过 DE 设置）。
+pub const PLATFORM_RESERVED: &[ReservedShortcut] = &[
+    ReservedShortcut { chord: "meta+l", owner: "GNOME/KDE", note: "锁屏" },
+    ReservedShortcut { chord: "meta+d", owner: "GNOME", note: "显示桌面" },
+    ReservedShortcut { chord: "meta+tab", owner: "GNOME", note: "切换窗口/活动" },
+    ReservedShortcut { chord: "meta+space", owner: "IBus/fcitx", note: "切换输入法" },
+    ReservedShortcut { chord: "meta+v", owner: "GNOME 扩展", note: "剪贴板历史" },
+    ReservedShortcut { chord: "meta+1", owner: "GNOME", note: "Dock 第 1 个应用" },
+    ReservedShortcut { chord: "meta+2", owner: "GNOME", note: "Dock 第 2 个应用" },
+    ReservedShortcut { chord: "meta+3", owner: "GNOME", note: "Dock 第 3 个应用" },
+    ReservedShortcut { chord: "meta+4", owner: "GNOME", note: "Dock 第 4 个应用" },
+    ReservedShortcut { chord: "meta+5", owner: "GNOME", note: "Dock 第 5 个应用" },
+    ReservedShortcut { chord: "meta+6", owner: "GNOME", note: "Dock 第 6 个应用" },
+    ReservedShortcut { chord: "meta+7", owner: "GNOME", note: "Dock 第 7 个应用" },
+    ReservedShortcut { chord: "meta+8", owner: "GNOME", note: "Dock 第 8 个应用" },
+    ReservedShortcut { chord: "meta+9", owner: "GNOME", note: "Dock 第 9 个应用" },
+    ReservedShortcut { chord: "alt+tab", owner: "桌面环境", note: "切换窗口" },
+    ReservedShortcut { chord: "alt+f4", owner: "桌面环境", note: "关闭窗口" },
+    ReservedShortcut { chord: "alt+space", owner: "桌面环境", note: "窗口菜单" },
+    ReservedShortcut { chord: "ctrl+alt+t", owner: "GNOME/KDE", note: "打开终端" },
+    ReservedShortcut { chord: "ctrl+alt+delete", owner: "桌面环境", note: "注销/锁屏" },
+    ReservedShortcut { chord: "ctrl+alt+left", owner: "桌面环境", note: "切换工作区" },
+    ReservedShortcut { chord: "ctrl+alt+right", owner: "桌面环境", note: "切换工作区" },
+    ReservedShortcut { chord: "ctrl+alt+up", owner: "桌面环境", note: "切换工作区" },
+    ReservedShortcut { chord: "ctrl+alt+down", owner: "桌面环境", note: "切换工作区" },
+    ReservedShortcut { chord: "print", owner: "桌面环境", note: "截图" },
+    ReservedShortcut {
+        chord: "ctrl+alt+f1..f12",
+        owner: "systemd/X11",
+        note: "切换虚拟终端（切走后无法回到 Typer）",
+    },
+];
+
+/// 某个 chord 是否被桌面环境保留；命中返回清单条目（含占用者与说明）。
+pub fn platform_reserved_for(chord: &Chord) -> Option<&'static ReservedShortcut> {
+    let canonical = chord.canonical();
+    if let Some(hit) = PLATFORM_RESERVED.iter().find(|entry| entry.chord == canonical) {
+        return Some(hit);
+    }
+    // Ctrl+Alt+F1–F12：切 VT，最危险的绑定。
+    if chord.mods.ctrl && chord.mods.alt && !chord.mods.shift && !chord.mods.meta {
+        if let Some(n) = chord.key.strip_prefix('f').and_then(|n| n.parse::<u8>().ok()) {
+            if (1..=12).contains(&n) {
+                return PLATFORM_RESERVED.last();
+            }
+        }
+    }
+    None
+}
+
+/// 一条快捷键（两段时看第一段）是否踩到平台保留键。
+pub fn platform_reserved_for_shortcut(shortcut: &Shortcut) -> Option<&'static ReservedShortcut> {
+    shortcut.chords.first().and_then(platform_reserved_for)
+}
+
 /// 内置命令集：一个用户可见操作对应一条。
+///
+/// 分发顺序由命令表决定：
+/// - `global_bind`：搜索框打开也生效（F2 重命名、F11 全屏、Ctrl+Tab/Ctrl+1–9 导航）；
+/// - 其余命令：搜索框关闭后、终端编码之前分发；
+/// - `extra_shortcuts`：同一命令的等价默认键（如 `Ctrl+=` 与 `Ctrl++`）。
 pub fn builtin() -> Registry {
     let mut r = Registry::new();
     let cmds = [
-        ("window.new", "New Window", Category::Window, Some("ctrl+shift+n")),
-        ("tab.new", "New Tab", Category::Workspace, Some("ctrl+t")),
-        ("tab.search", "Search Tabs", Category::Workspace, Some("ctrl+shift+a")),
-        ("tab.close", "Close Tab", Category::Workspace, Some("ctrl+w")),
-        ("tab.next", "Next Tab", Category::Workspace, Some("ctrl+tab")),
-        ("tab.prev", "Previous Tab", Category::Workspace, Some("ctrl+shift+tab")),
-        ("tab.last", "Last Used Tab", Category::Workspace, Some("ctrl+shift+l")),
-        ("tab.duplicate", "Duplicate Tab", Category::Workspace, None),
-        ("tab.reopen-closed", "Reopen Closed Tab", Category::Workspace, Some("ctrl+shift+t")),
-        ("tab.rename", "Rename Tab", Category::Workspace, None),
-        ("tab.rename-undo", "Undo Tab Rename", Category::Workspace, Some("ctrl+shift+z")),
-        ("pane.split-right", "Split Right", Category::Pane, Some("ctrl+shift+e")),
-        ("pane.split-down", "Split Down", Category::Pane, Some("ctrl+shift+d")),
-        ("pane.close", "Close Pane", Category::Pane, Some("ctrl+shift+w")),
-        ("pane.undo-swap", "Undo Pane Move", Category::Pane, Some("ctrl+alt+z")),
-        ("pane.focus-next", "Focus Next Pane", Category::Pane, Some("ctrl+shift+right")),
-        ("terminal.copy", "Copy", Category::Terminal, Some("ctrl+shift+c")),
-        ("terminal.paste", "Paste", Category::Terminal, Some("ctrl+shift+v")),
-        ("terminal.find", "Find", Category::Terminal, Some("ctrl+f")),
-        ("terminal.clear", "Clear Screen", Category::Terminal, None),
-        ("terminal.select-all", "Select All", Category::Terminal, None),
-        ("terminal.toggle-read-only", "Toggle Read Only", Category::Terminal, None),
-        ("terminal.toggle-broadcast", "Toggle Broadcast Input", Category::Terminal, None),
-        ("terminal.reset", "Reset Terminal", Category::Terminal, None),
-        ("terminal.reset-and-clear", "Reset and Clear", Category::Terminal, None),
-        ("terminal.save-contents", "Save Contents…", Category::Terminal, None),
+        bind("window.new", "New Window", Category::Window, Some("ctrl+shift+n")),
+        bind("tab.new", "New Tab", Category::Workspace, Some("ctrl+t")),
+        bind("tab.search", "Search Tabs", Category::Workspace, Some("ctrl+shift+a")),
+        bind("tab.close", "Close Tab", Category::Workspace, Some("ctrl+w")),
+        global_bind("tab.next", "Next Tab", Category::Workspace, Some("ctrl+tab")),
+        global_bind("tab.prev", "Previous Tab", Category::Workspace, Some("ctrl+shift+tab")),
+        bind("tab.last", "Last Used Tab", Category::Workspace, Some("ctrl+shift+l")),
+        bind("tab.duplicate", "Duplicate Tab", Category::Workspace, None),
+        bind("tab.reopen-closed", "Reopen Closed Tab", Category::Workspace, Some("ctrl+shift+t")),
+        global_bind("tab.rename", "Rename Tab", Category::Workspace, Some("f2")),
+        bind("tab.rename-undo", "Undo Tab Rename", Category::Workspace, Some("ctrl+shift+z")),
+        // Ctrl+1–9：跳转到第 n 个 Tab。全部是全局命令（搜索框开着也能切 Tab）。
+        global_bind("tab.select-1", "Select Tab 1", Category::Workspace, Some("ctrl+1")),
+        global_bind("tab.select-2", "Select Tab 2", Category::Workspace, Some("ctrl+2")),
+        global_bind("tab.select-3", "Select Tab 3", Category::Workspace, Some("ctrl+3")),
+        global_bind("tab.select-4", "Select Tab 4", Category::Workspace, Some("ctrl+4")),
+        global_bind("tab.select-5", "Select Tab 5", Category::Workspace, Some("ctrl+5")),
+        global_bind("tab.select-6", "Select Tab 6", Category::Workspace, Some("ctrl+6")),
+        global_bind("tab.select-7", "Select Tab 7", Category::Workspace, Some("ctrl+7")),
+        global_bind("tab.select-8", "Select Tab 8", Category::Workspace, Some("ctrl+8")),
+        global_bind("tab.select-9", "Select Tab 9", Category::Workspace, Some("ctrl+9")),
+        bind("pane.split-right", "Split Right", Category::Pane, Some("ctrl+shift+e")),
+        bind("pane.split-down", "Split Down", Category::Pane, Some("ctrl+shift+d")),
+        bind("pane.close", "Close Pane", Category::Pane, Some("ctrl+shift+w")),
+        bind("pane.undo-swap", "Undo Pane Move", Category::Pane, Some("ctrl+alt+z")),
+        // 方向聚焦：旧硬编码 Ctrl+Shift+方向键的等价命令。`pane.focus-next`
+        // 作为“循环下一个”保留在命令表里，但不占用默认键（避免与右键冲突）。
+        bind("pane.focus-next", "Focus Next Pane", Category::Pane, None),
+        bind("pane.focus-left", "Focus Pane Left", Category::Pane, Some("ctrl+shift+left")),
+        bind("pane.focus-right", "Focus Pane Right", Category::Pane, Some("ctrl+shift+right")),
+        bind("pane.focus-up", "Focus Pane Up", Category::Pane, Some("ctrl+shift+up")),
+        bind("pane.focus-down", "Focus Pane Down", Category::Pane, Some("ctrl+shift+down")),
+        bind("terminal.copy", "Copy", Category::Terminal, Some("ctrl+shift+c")),
+        bind("terminal.paste", "Paste", Category::Terminal, Some("ctrl+shift+v")),
+        bind("terminal.find", "Find", Category::Terminal, Some("ctrl+f")),
+        bind("terminal.clear", "Clear Screen", Category::Terminal, None),
+        bind("terminal.select-all", "Select All", Category::Terminal, None),
+        bind("terminal.toggle-read-only", "Toggle Read Only", Category::Terminal, None),
+        bind("terminal.toggle-broadcast", "Toggle Broadcast Input", Category::Terminal, None),
+        bind("terminal.reset", "Reset Terminal", Category::Terminal, None),
+        bind("terminal.reset-and-clear", "Reset and Clear", Category::Terminal, None),
+        bind("terminal.save-contents", "Save Contents…", Category::Terminal, None),
         // TERM-015：pane 级会话录制。录制状态/buffer 在 core，UI 只调用。
-        ("terminal.recording-start", "Start Recording", Category::Terminal, None),
-        ("terminal.recording-stop", "Stop Recording", Category::Terminal, None),
-        ("terminal.recording-export", "Export Recording…", Category::Terminal, None),
-        ("view.command-palette", "Command Palette", Category::View, Some("ctrl+shift+p")),
-        ("view.toggle-fullscreen", "Toggle Fullscreen", Category::View, Some("f11")),
-        ("view.sidebar", "Toggle Sidebar", Category::View, Some("ctrl+shift+b")),
-        ("view.toggle-quake", "Toggle Quake Mode", Category::View, None),
-        ("view.scroll-top", "Scroll to Top", Category::View, Some("ctrl+shift+home")),
-        ("view.scroll-bottom", "Scroll to Bottom", Category::View, Some("ctrl+shift+end")),
-        ("workspace.save", "Save Layout as Workspace", Category::View, None),
-        ("workspace.list", "List Workspaces", Category::View, None),
-        ("workspace.open", "Open Last Workspace", Category::View, None),
-        ("view.zoom-in", "Zoom In", Category::View, Some("ctrl+plus")),
-        ("view.zoom-out", "Zoom Out", Category::View, Some("ctrl+minus")),
-        ("view.zoom-reset", "Reset Zoom", Category::View, Some("ctrl+0")),
-        ("session.restart", "Restart Session", Category::Session, None),
-        ("session.reattach", "Reattach Background Session", Category::Session, None),
-        ("settings.open", "Open Settings", Category::Settings, None),
+        bind("terminal.recording-start", "Start Recording", Category::Terminal, None),
+        bind("terminal.recording-stop", "Stop Recording", Category::Terminal, None),
+        bind("terminal.recording-export", "Export Recording…", Category::Terminal, None),
+        bind("view.command-palette", "Command Palette", Category::View, Some("ctrl+shift+p")),
+        global_bind("view.toggle-fullscreen", "Toggle Fullscreen", Category::View, Some("f11")),
+        bind("view.sidebar", "Toggle Sidebar", Category::View, Some("ctrl+shift+b")),
+        bind("view.toggle-quake", "Toggle Quake Mode", Category::View, None),
+        bind("view.scroll-top", "Scroll to Top", Category::View, Some("ctrl+shift+home")),
+        bind("view.scroll-bottom", "Scroll to Bottom", Category::View, Some("ctrl+shift+end")),
+        bind("workspace.save", "Save Layout as Workspace", Category::View, None),
+        bind("workspace.list", "List Workspaces", Category::View, None),
+        bind("workspace.open", "Open Last Workspace", Category::View, None),
+        // GNOME Terminal 同时支持 Ctrl++ 与 Ctrl+=（有些键盘/布局只送后者）。
+        Command {
+            // 旧硬编码在 Ctrl+Shift 下也接受“+”（shift+= 的真实文本）。
+            extra_shortcuts: &["ctrl+=", "ctrl+shift++"],
+            ..bind("view.zoom-in", "Zoom In", Category::View, Some("ctrl+plus"))
+        },
+        Command {
+            extra_shortcuts: &["ctrl+-"],
+            ..bind("view.zoom-out", "Zoom Out", Category::View, Some("ctrl+minus"))
+        },
+        bind("view.zoom-reset", "Reset Zoom", Category::View, Some("ctrl+0")),
+        bind("session.restart", "Restart Session", Category::Session, None),
+        bind("session.reattach", "Reattach Background Session", Category::Session, None),
+        bind("settings.open", "Open Settings", Category::Settings, None),
     ];
-    for (id, title, category, shortcut) in cmds {
-        r.register(Command { id, title, category, default_shortcut: shortcut })
-            .expect("内置命令 ID 不能重复");
+    for command in cmds {
+        r.register(command).expect("内置命令 ID 不能重复");
     }
     r
 }
@@ -683,8 +1012,8 @@ mod tests {
     #[test]
     fn duplicate_id_is_rejected() {
         let mut r = Registry::new();
-        r.register(Command { id: "a.b", title: "A", category: Category::View, default_shortcut: None }).unwrap();
-        assert!(r.register(Command { id: "a.b", title: "B", category: Category::View, default_shortcut: None }).is_err());
+        r.register(bind("a.b", "A", Category::View, None)).unwrap();
+        assert!(r.register(bind("a.b", "B", Category::View, None)).is_err());
     }
 
     #[test]
@@ -762,27 +1091,9 @@ mod tests {
 
     fn test_registry() -> Registry {
         let mut r = Registry::new();
-        r.register(Command {
-            id: "x.one",
-            title: "One",
-            category: Category::View,
-            default_shortcut: Some("ctrl+1"),
-        })
-        .unwrap();
-        r.register(Command {
-            id: "x.two",
-            title: "Two",
-            category: Category::View,
-            default_shortcut: Some("ctrl+2"),
-        })
-        .unwrap();
-        r.register(Command {
-            id: "x.three",
-            title: "Three",
-            category: Category::View,
-            default_shortcut: None,
-        })
-        .unwrap();
+        r.register(bind("x.one", "One", Category::View, Some("ctrl+1"))).unwrap();
+        r.register(bind("x.two", "Two", Category::View, Some("ctrl+2"))).unwrap();
+        r.register(bind("x.three", "Three", Category::View, None)).unwrap();
         r
     }
 
@@ -855,8 +1166,8 @@ mod tests {
     #[test]
     fn conflict_detection() {
         let mut r = Registry::new();
-        r.register(Command { id: "x.one", title: "One", category: Category::View, default_shortcut: Some("ctrl+shift+x") }).unwrap();
-        r.register(Command { id: "x.two", title: "Two", category: Category::View, default_shortcut: Some("ctrl+shift+x") }).unwrap();
+        r.register(bind("x.one", "One", Category::View, Some("ctrl+shift+x"))).unwrap();
+        r.register(bind("x.two", "Two", Category::View, Some("ctrl+shift+x"))).unwrap();
         let conflicts = r.conflicts();
         assert_eq!(conflicts.len(), 1);
         assert_eq!(conflicts[0].command_ids, vec!["x.one", "x.two"]);
@@ -948,6 +1259,274 @@ mod tests {
             let cmd = r.get(id).unwrap_or_else(|| panic!("缺少命令 {id}"));
             assert_eq!(cmd.category, Category::Terminal);
             assert!(cmd.default_shortcut.is_none(), "{id} 不应占用默认快捷键");
+        }
+    }
+
+    #[test]
+    fn global_commands_replace_former_hardcoded_entries() {
+        let r = builtin();
+        // 旧硬编码 F2/F11/Tab 导航现在都是命令表里的 global 命令。
+        for (chord, id) in [
+            ("f2", "tab.rename"),
+            ("f11", "view.toggle-fullscreen"),
+            ("ctrl+tab", "tab.next"),
+            ("ctrl+shift+tab", "tab.prev"),
+            ("ctrl+1", "tab.select-1"),
+            ("ctrl+5", "tab.select-5"),
+            ("ctrl+9", "tab.select-9"),
+        ] {
+            let chord = Chord::parse(chord).unwrap();
+            assert_eq!(r.global_default_for_chord(&chord), Some(id), "{chord}");
+            assert_eq!(r.default_command_for_chord(&chord), Some(id), "{chord}");
+        }
+        // 非全局命令仍走“搜索框之后”的分发，不会被提到搜索框前面。
+        for (chord, id) in [
+            ("ctrl+shift+c", "terminal.copy"),
+            ("ctrl+t", "tab.new"),
+            ("ctrl+f", "terminal.find"),
+        ] {
+            let chord = Chord::parse(chord).unwrap();
+            assert_eq!(r.global_default_for_chord(&chord), None, "{chord}");
+            assert_eq!(r.default_command_for_chord(&chord), Some(id), "{chord}");
+        }
+    }
+
+    #[test]
+    fn command_table_covers_former_hardcoded_ctrl_blocks() {
+        // 这两张表就是旧 `handle_input` 里 `if ctrl && shift` / `if ctrl`
+        // 两段 match 的全集；迁到命令表后一条都不能丢。
+        let r = builtin();
+        for (chord, id) in [
+            ("ctrl+shift+c", "terminal.copy"),
+            ("ctrl+shift+v", "terminal.paste"),
+            ("ctrl+shift+p", "view.command-palette"),
+            ("ctrl+shift+a", "tab.search"),
+            ("ctrl+shift+n", "window.new"),
+            ("ctrl+shift+e", "pane.split-right"),
+            ("ctrl+shift+d", "pane.split-down"),
+            ("ctrl+shift+w", "pane.close"),
+            ("ctrl+shift+t", "tab.reopen-closed"),
+            ("ctrl+shift+left", "pane.focus-left"),
+            ("ctrl+shift+right", "pane.focus-right"),
+            ("ctrl+shift+up", "pane.focus-up"),
+            ("ctrl+shift+down", "pane.focus-down"),
+            ("ctrl+shift++", "view.zoom-in"),
+            ("ctrl+t", "tab.new"),
+            ("ctrl+w", "tab.close"),
+            ("ctrl+f", "terminal.find"),
+            ("ctrl+=", "view.zoom-in"),
+            ("ctrl++", "view.zoom-in"),
+            ("ctrl+-", "view.zoom-out"),
+            ("ctrl+0", "view.zoom-reset"),
+        ] {
+            let chord = Chord::parse(chord).unwrap();
+            assert_eq!(
+                r.default_command_for_chord(&chord),
+                Some(id),
+                "{chord} 应分发到 {id}"
+            );
+        }
+        // 别名不产生冲突（同一命令的多个默认键）。
+        assert!(r.conflicts().is_empty());
+    }
+
+    #[test]
+    fn extra_shortcuts_are_listed_effective_and_dispatched() {
+        let r = builtin();
+        let zoom = r.get("view.zoom-in").unwrap();
+        assert_eq!(zoom.default_shortcut, Some("ctrl+plus"));
+        assert_eq!(zoom.extra_shortcuts, &["ctrl+=", "ctrl+shift++"]);
+        let listed: Vec<String> = r
+            .bindings()
+            .into_iter()
+            .filter(|(_, id)| *id == "view.zoom-in")
+            .map(|(sc, _)| sc.canonical())
+            .collect();
+        assert_eq!(listed, vec!["ctrl++", "ctrl+=", "ctrl+shift++"]);
+
+        // 生效绑定（Hotkeys 页/冲突检测）也包含附加键；主绑定仍优先展示。
+        let effective: Vec<String> = r
+            .effective_bindings(&[])
+            .into_iter()
+            .filter(|b| b.command_id == "view.zoom-in")
+            .map(|b| b.shortcut.canonical())
+            .collect();
+        assert_eq!(effective.len(), 3);
+        assert_eq!(
+            r.effective_shortcut("view.zoom-in", &[]).unwrap().canonical(),
+            "ctrl++"
+        );
+    }
+
+    #[test]
+    fn shortcut_overlap_covers_equality_and_prefix() {
+        let single = Shortcut::parse("ctrl+k").unwrap();
+        let multi = Shortcut::parse("ctrl+k ctrl+t").unwrap();
+        let other = Shortcut::parse("ctrl+t").unwrap();
+        assert!(shortcuts_overlap(&single, &multi), "前缀也是冲突");
+        assert!(shortcuts_overlap(&multi, &single));
+        assert!(shortcuts_overlap(&single, &single));
+        assert!(!shortcuts_overlap(&single, &other));
+        assert!(!shortcuts_overlap(&multi, &other));
+
+        // 两段的每一段都必须可绑定。
+        assert!(multi.is_bindable());
+        assert!(!Shortcut::parse("ctrl+k a").unwrap().is_bindable());
+        // 手写空格的单段/两段都能解析。
+        assert_eq!(
+            Shortcut::parse("Ctrl + K Ctrl + T").unwrap().canonical(),
+            "ctrl+k ctrl+t"
+        );
+        assert_eq!(Shortcut::parse("Ctrl + Shift + N").unwrap().canonical(), "ctrl+shift+n");
+    }
+
+    #[test]
+    fn multi_chord_validation_storage_and_dispatch() {
+        let r = test_registry();
+        let mut overrides = Vec::new();
+        let multi = r.validate_override_shortcut("x.two", "ctrl+k ctrl+t", &overrides).unwrap();
+        assert_eq!(multi.canonical(), "ctrl+k ctrl+t");
+        set_override_shortcut(&mut overrides, "x.two", &multi);
+        assert_eq!(
+            r.override_shortcut_for("x.two", &overrides).unwrap().canonical(),
+            "ctrl+k ctrl+t"
+        );
+        assert_eq!(
+            r.effective_shortcut("x.two", &overrides).unwrap().canonical(),
+            "ctrl+k ctrl+t"
+        );
+
+        // 第一段要等第二段；普通单段命令（x.one 的 ctrl+1）不该被延迟。
+        let first = Chord::parse("ctrl+k").unwrap();
+        assert!(r.multi_chord_prefix(&first, &overrides));
+        assert!(!r.multi_chord_prefix(&Chord::parse("ctrl+2").unwrap(), &overrides));
+
+        // 完整序列命中 override；只按第一段不算执行。
+        let second = Chord::parse("ctrl+t").unwrap();
+        assert_eq!(
+            r.command_for_sequence(&[first.clone(), second.clone()], &overrides),
+            Some("x.two")
+        );
+        assert_eq!(r.command_for_sequence(&[first.clone()], &overrides), None);
+        // 单键 override 不再参与 multi 前缀。
+        assert!(!r.multi_chord_prefix(&Chord::parse("ctrl+shift+y").unwrap(), &overrides));
+
+        // 相同序列 → 冲突；与已有单段前缀重叠 → 也冲突。
+        assert!(r.validate_override_shortcut("x.one", "ctrl+k ctrl+t", &overrides).is_err());
+        let err = r.validate_override_shortcut("x.one", "ctrl+k", &overrides).unwrap_err();
+        assert!(err.contains("冲突"), "{err}");
+        // 改自己的键不算冲突（两段换一段）。
+        assert!(r.validate_override_shortcut("x.two", "ctrl+shift+y", &overrides).is_ok());
+    }
+
+    #[test]
+    fn multi_chord_override_does_not_hijack_single_chord_dispatch() {
+        let r = test_registry();
+        let mut overrides = Vec::new();
+        set_override_shortcut(
+            &mut overrides,
+            "x.one",
+            &Shortcut::parse("ctrl+k ctrl+t").unwrap(),
+        );
+        // override_command_for_chord 只认单段；两段由 command_for_sequence 处理。
+        assert_eq!(
+            r.override_command_for_chord(&Chord::parse("ctrl+k").unwrap(), &overrides),
+            None
+        );
+        assert_eq!(
+            r.command_for_sequence(
+                &[Chord::parse("ctrl+k").unwrap(), Chord::parse("ctrl+t").unwrap()],
+                &overrides
+            ),
+            Some("x.one")
+        );
+        // 旧默认键仍被吞掉（改键语义不变）。
+        assert_eq!(
+            r.suppressed_default(&Chord::parse("ctrl+1").unwrap(), &overrides),
+            Some("x.one")
+        );
+    }
+
+    #[test]
+    fn repair_hotkey_overrides_drops_invalid_duplicate_and_conflicting_entries() {
+        let r = builtin();
+        let mut overrides = vec![
+            // 后写的重复命令优先（与 override_for 语义一致）。
+            HotkeyOverride { command: "tab.new".into(), chord: "ctrl+alt+n".into() },
+            HotkeyOverride { command: "tab.new".into(), chord: "ctrl+alt+m".into() },
+            // 未知命令 / 非法 / 无修饰普通字符。
+            HotkeyOverride { command: "nope.command".into(), chord: "ctrl+alt+x".into() },
+            HotkeyOverride { command: "tab.close".into(), chord: "ctrl+banana".into() },
+            HotkeyOverride { command: "tab.search".into(), chord: "a".into() },
+            // 同一命令重复：后写的 tab.rename ctrl+alt+shift+r 优先。
+            HotkeyOverride { command: "tab.rename".into(), chord: "ctrl+alt+r".into() },
+            HotkeyOverride { command: "tab.rename".into(), chord: "ctrl+alt+shift+r".into() },
+            // 与保留项冲突（后写的 terminal.copy ctrl+alt+m 优先，tab.new 这条被丢）。
+            HotkeyOverride { command: "terminal.copy".into(), chord: "ctrl+alt+m".into() },
+        ];
+        let repairs = repair_hotkey_overrides(&r, &mut overrides);
+        // 保留下来的：tab.new(ctrl+alt+n)、tab.rename(ctrl+alt+shift+r)、terminal.copy(ctrl+alt+m)。
+        assert_eq!(overrides.len(), 3, "修复结果: {overrides:?}");
+        let kept: Vec<(&str, &str)> =
+            overrides.iter().map(|o| (o.command.as_str(), o.chord.as_str())).collect();
+        assert_eq!(
+            kept,
+            vec![
+                ("tab.new", "ctrl+alt+n"),
+                ("tab.rename", "ctrl+alt+shift+r"),
+                ("terminal.copy", "ctrl+alt+m"),
+            ]
+        );
+        let reasons: Vec<&str> = repairs.iter().map(|r| r.reason).collect();
+        assert!(reasons.contains(&"duplicate-command"), "{reasons:?}");
+        assert!(reasons.contains(&"unknown-command"), "{reasons:?}");
+        assert!(reasons.contains(&"invalid-shortcut"), "{reasons:?}");
+        assert!(reasons.contains(&"not-bindable"), "{reasons:?}");
+        assert!(reasons.contains(&"conflict"), "{reasons:?}");
+        // 修复结果必须无冲突、与分发一致。
+        assert!(r.effective_conflicts(&overrides).is_empty());
+
+        // 健康配置不被改动。
+        let mut clean = vec![HotkeyOverride { command: "tab.new".into(), chord: "ctrl+alt+n".into() }];
+        assert!(repair_hotkey_overrides(&r, &mut clean).is_empty());
+        assert_eq!(clean.len(), 1);
+
+        // 两段绑定：前缀重叠也算冲突。
+        let mut prefix = vec![
+            HotkeyOverride { command: "tab.new".into(), chord: "ctrl+k".into() },
+            HotkeyOverride { command: "terminal.copy".into(), chord: "ctrl+k ctrl+t".into() },
+        ];
+        let repairs = repair_hotkey_overrides(&r, &mut prefix);
+        assert_eq!(prefix.len(), 1, "{prefix:?}");
+        assert_eq!(prefix[0].command, "terminal.copy", "后写优先");
+        assert_eq!(repairs[0].reason, "conflict");
+    }
+
+    #[test]
+    fn platform_reserved_table_covers_common_desktop_shortcuts() {
+        let reserved = |text: &str| platform_reserved_for(&Chord::parse(text).unwrap()).is_some();
+        assert!(reserved("meta+l"));
+        assert!(reserved("alt+f4"));
+        assert!(reserved("ctrl+alt+t"));
+        assert!(reserved("ctrl+alt+f5"));
+        assert!(reserved("meta+3"));
+        // 普通应用快捷键不应被误报。
+        assert!(!reserved("ctrl+t"));
+        assert!(!reserved("ctrl+shift+c"));
+        assert!(!reserved("f11"));
+        // 两段快捷键看第一段。
+        let multi = Shortcut::parse("alt+tab ctrl+t").unwrap();
+        assert!(platform_reserved_for_shortcut(&multi).is_some());
+        // 清单里的 chord 都能解析（防止拼写错误导致永远不提示）。
+        for entry in PLATFORM_RESERVED {
+            if entry.chord.contains("..") {
+                continue;
+            }
+            assert!(
+                Chord::parse(entry.chord).is_ok(),
+                "保留键表里的 {} 无法解析",
+                entry.chord
+            );
         }
     }
 

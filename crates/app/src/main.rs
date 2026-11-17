@@ -659,6 +659,10 @@ struct AppState {
     hotkey_ids: Vec<String>,
     /// 正在录制的命令 ID；Some 时所有按键只用于录制
     hotkey_recording: Option<String>,
+    /// 两段录制模式（Hotkeys 页开关）下已按下的第一段；None = 等第一段。
+    hotkey_pending: Option<commands::Chord>,
+    /// 键盘分发的 multi-chord 前缀：Ctrl+K 之后 2s 内等第二段。
+    pending_chord: Option<(commands::Chord, std::time::Instant)>,
     /// kitty REPORT_EVENT_TYPES 下已经转发给各 pane 的按键身份。
     ///
     /// release 只回放这里登记过的键：快捷键/搜索框/录制中的按键 press 没进 PTY，
@@ -778,6 +782,8 @@ struct AppState {
     /// pressed/grabbed；收到第一帧 WM resize 后补发一次 PointerReleased 清理状态。
     wm_release_pending: bool,
     xresize: Option<ResizeCtx>,
+    /// Caps/Num Lock 探针（TERM-016）：X11 下按 120ms 缓存查询 keymask。
+    lock_probe: Option<xconn::LockProbe>,
     resize_events: u32,
     resize_applied: u32,
     resize_pending: Option<(f32, f32)>,
@@ -1808,34 +1814,32 @@ fn plugin_command_for_chord(st: &AppState, chord: &commands::Chord) -> Option<St
 }
 
 /// 录制只保存“内置命令或已启用插件命令”的绑定；冲突（内置/插件）直接拒绝。
-fn validate_hotkey_binding(
+///
+/// 支持 1–2 段：内置命令走 `validate_override_shortcut`（相同/前缀都算冲突），
+/// 插件命令目前只有单段 chord，同样按前缀规则比较。
+fn validate_hotkey_shortcut(
     st: &AppState,
     id: &str,
-    chord_text: &str,
-) -> Result<commands::Chord, String> {
+    shortcut_text: &str,
+) -> Result<commands::Shortcut, String> {
     let plugins = plugin_hotkeys(st);
     if st.commands.get(id).is_none() && !plugins.iter().any(|plugin| plugin.id == id) {
         return Err(format!("未知命令: {id}"));
     }
-    let chord = commands::Chord::parse(chord_text)?;
-    if !chord.is_bindable() {
+    let shortcut = commands::Shortcut::parse(shortcut_text)?;
+    if !shortcut.is_bindable() {
         return Err("快捷键需要 Ctrl/Alt/Meta，或使用 F1–F24".to_string());
     }
-    let wanted = chord.canonical();
     for binding in st.commands.effective_bindings(&st.cfg.hotkeys) {
         // 命令自己的旧绑定会被这次 override 替换，不算冲突。
         if binding.command_id == id {
             continue;
         }
-        if binding
-            .shortcut
-            .single_chord()
-            .is_some_and(|bound| bound.canonical() == wanted)
-        {
+        if commands::shortcuts_overlap(&binding.shortcut, &shortcut) {
             return Err(format!(
                 "冲突：{} 已使用 {}",
                 hotkey_command_title(st, binding.command_id),
-                chord
+                binding.shortcut
             ));
         }
     }
@@ -1843,18 +1847,16 @@ fn validate_hotkey_binding(
         if plugin.id == id {
             continue;
         }
-        if plugin
-            .effective
-            .as_ref()
-            .is_some_and(|bound| bound.canonical() == wanted)
-        {
+        let Some(bound) = plugin.effective.as_ref() else { continue };
+        let single = commands::Shortcut { chords: vec![bound.clone()] };
+        if commands::shortcuts_overlap(&single, &shortcut) {
             return Err(format!(
                 "冲突：{}: {} 已使用 {}",
-                plugin.plugin, plugin.title, chord
+                plugin.plugin, plugin.title, bound
             ));
         }
     }
-    Ok(chord)
+    Ok(shortcut)
 }
 
 /// 重新计算 Hotkeys 页（保存/重置后调用），并同步录制行状态。
@@ -2887,14 +2889,25 @@ fn localize_hotkey_error(lang: &str, err: String) -> String {
 }
 
 /// 进入录制：先让终端 IME 宿主拿回焦点，否则按键会落在设置搜索框里。
+///
+/// Hotkeys 页顶部有「两段录制」开关：关 = 旧行为（一次按键立即保存单段），
+/// 开 = 先存第一段、再按第二段（Enter 保存单段，Esc 取消）。
 fn start_hotkey_edit(st: &mut AppState, index: i32) {
     let Some(id) = st.hotkey_ids.get(index.max(0) as usize).cloned() else {
         return;
     };
     let title = hotkey_title(st, &id);
+    let two_chord = st.ui.get_hotkey_record_two();
     st.hotkey_recording = Some(id.clone());
+    st.hotkey_pending = None;
     st.ui.set_hotkey_error("".into());
-    let status = if st.cfg.lang() == "zh" {
+    let status = if two_chord {
+        if st.cfg.lang() == "zh" {
+            format!("录制「{title}」：按第一段组合键（Esc 取消）")
+        } else {
+            format!("Recording \"{title}\": press the first chord (Esc cancels)")
+        }
+    } else if st.cfg.lang() == "zh" {
         format!("录制「{title}」：按下新的组合键")
     } else {
         format!("Recording \"{title}\": press a new chord")
@@ -2902,7 +2915,7 @@ fn start_hotkey_edit(st: &mut AppState, index: i32) {
     st.ui.set_hotkey_status(status.into());
     st.ui.set_hotkey_recording_row(index.max(0));
     st.ui.invoke_focus_terminal();
-    eprintln!("[hotkey] record start {id}");
+    eprintln!("[hotkey] record start {id} two_chord={two_chord}");
 }
 
 fn cancel_hotkey_edit(st: &mut AppState) {
@@ -2911,9 +2924,78 @@ fn cancel_hotkey_edit(st: &mut AppState) {
             .set_hotkey_status(ui_text(st.cfg.lang(), "Recording cancelled", "已取消录制").into());
         eprintln!("[hotkey] record cancel");
     }
+    st.hotkey_pending = None;
     st.ui.set_hotkey_error("".into());
     st.ui.set_hotkey_recording_row(-1);
     st.ui.invoke_focus_terminal();
+}
+
+/// 录制中退格/删除：恢复该命令的默认绑定并结束录制。
+fn reset_recording_hotkey(st: &mut AppState, id: &str) {
+    let title = hotkey_title(st, id);
+    let removed = commands::clear_override(&mut st.cfg.hotkeys, id);
+    if removed {
+        st.cfg.save();
+    }
+    st.hotkey_recording = None;
+    st.hotkey_pending = None;
+    st.ui.set_hotkey_error("".into());
+    let status = if st.cfg.lang() == "zh" {
+        format!("{title} 已恢复默认")
+    } else {
+        format!("{title} reset to default")
+    };
+    st.ui.set_hotkey_status(status.into());
+    refresh_hotkeys(st);
+    st.ui.invoke_focus_terminal();
+    eprintln!("[hotkey] record clear {id} removed={removed}");
+}
+
+/// 校验并保存一条 1–2 段快捷键；失败只显示错误并保持录制（方便再按一个）。
+fn commit_hotkey_shortcut(st: &mut AppState, id: &str, shortcut: &commands::Shortcut) {
+    let text = shortcut.canonical();
+    match validate_hotkey_shortcut(st, id, &text) {
+        Ok(shortcut) => {
+            let title = hotkey_title(st, id);
+            commands::set_override_shortcut(&mut st.cfg.hotkeys, id, &shortcut);
+            st.cfg.save();
+            st.hotkey_recording = None;
+            st.hotkey_pending = None;
+            st.ui.set_hotkey_error("".into());
+            let mut status = if st.cfg.lang() == "zh" {
+                format!("{title} → {}（已保存）", shortcut)
+            } else {
+                format!("{title} → {} (saved)", shortcut)
+            };
+            // KEY-003：桌面环境保留键只提示、不阻止保存。
+            if let Some(reserved) = commands::platform_reserved_for_shortcut(&shortcut) {
+                if st.cfg.lang() == "zh" {
+                    status.push_str(&format!(
+                        "\n⚠ {} 通常被 {} 占用（{}），可能永远收不到",
+                        shortcut.chords[0], reserved.owner, reserved.note
+                    ));
+                } else {
+                    status.push_str(&format!(
+                        "\n⚠ {} is usually reserved by {} ({}); it may never reach Typer",
+                        shortcut.chords[0], reserved.owner, reserved.note
+                    ));
+                }
+                eprintln!(
+                    "[hotkey] warning {id} {} reserved by {} ({})",
+                    shortcut.chords[0], reserved.owner, reserved.note
+                );
+            }
+            st.ui.set_hotkey_status(status.into());
+            refresh_hotkeys(st);
+            st.ui.invoke_focus_terminal();
+            eprintln!("[hotkey] saved {id} = {text}");
+        }
+        Err(err) => {
+            eprintln!("[hotkey] rejected {id} {text:?}: {err}");
+            let err = localize_hotkey_error(st.cfg.lang(), err);
+            st.ui.set_hotkey_error(err.into());
+        }
+    }
 }
 
 fn reset_hotkey(st: &mut AppState, index: i32) {
@@ -2929,6 +3011,7 @@ fn reset_hotkey(st: &mut AppState, index: i32) {
         st.hotkey_recording = None;
         st.ui.invoke_focus_terminal();
     }
+    st.hotkey_pending = None;
     st.ui.set_hotkey_error("".into());
     let status = if st.cfg.lang() == "zh" {
         format!("{title} 已恢复默认")
@@ -2947,6 +3030,7 @@ fn reset_all_hotkeys(st: &mut AppState) {
         st.cfg.save();
     }
     st.hotkey_recording = None;
+    st.hotkey_pending = None;
     st.ui.set_hotkey_error("".into());
     let status = if st.cfg.lang() == "zh" {
         format!("已重置 {count} 条自定义快捷键")
@@ -2959,65 +3043,107 @@ fn reset_all_hotkeys(st: &mut AppState) {
     eprintln!("[hotkey] reset all count={count}");
 }
 
-/// 录制中的按键：Esc 取消、Backspace/Delete 恢复默认，其余组合保存。
+/// 录制中的按键。
+///
+/// 单段模式（默认）：与旧版一致，一次组合键立即保存；Esc 取消、退格恢复默认。
+/// 两段模式（Hotkeys 页开关）：第一段只暂存，第二段到达后保存 `第一条 第二条`；
+/// 第二段前按 Enter 保存单段，退格清除第一段，Esc 取消。
 ///
 /// 冲突/非法组合只显示错误并保持录制，方便用户直接再按一个；不会触发任何命令。
-fn record_hotkey_key(st: &mut AppState, text: &str, ctrl: bool, alt: bool, shift: bool) {
+fn record_hotkey_key(
+    st: &mut AppState,
+    text: &str,
+    ctrl: bool,
+    alt: bool,
+    shift: bool,
+    meta: bool,
+) {
     let Some(id) = st.hotkey_recording.clone() else {
         return;
     };
-    if !ctrl && !alt && !shift {
-        if text == "\u{1b}" {
-            cancel_hotkey_edit(st);
-            return;
-        }
-        if text == "\u{8}" || text == "\u{7f}" {
-            let title = hotkey_title(st, &id);
-            let removed = commands::clear_override(&mut st.cfg.hotkeys, &id);
-            if removed {
-                st.cfg.save();
-            }
-            st.hotkey_recording = None;
-            st.ui.set_hotkey_error("".into());
-            let status = if st.cfg.lang() == "zh" {
-                format!("{title} 已恢复默认")
-            } else {
-                format!("{title} reset to default")
-            };
-            st.ui.set_hotkey_status(status.into());
-            refresh_hotkeys(st);
-            st.ui.invoke_focus_terminal();
-            eprintln!("[hotkey] record clear {id} removed={removed}");
-            return;
-        }
+    let lang = st.cfg.lang().to_string();
+    let two_chord = st.ui.get_hotkey_record_two();
+    let plain = !ctrl && !alt && !shift && !meta;
+    if plain && text == "\u{1b}" {
+        cancel_hotkey_edit(st);
+        return;
     }
-    let Some(chord) = keys::chord_from_key_event(text, ctrl, alt, shift) else {
+    let erase = plain && (text == "\u{8}" || text == "\u{7f}");
+    let enter = plain && (text == "\n" || text == "\r");
+
+    if two_chord {
+        if let Some(first) = st.hotkey_pending.clone() {
+            if enter {
+                let single = commands::Shortcut { chords: vec![first] };
+                commit_hotkey_shortcut(st, &id, &single);
+                return;
+            }
+            if erase {
+                st.hotkey_pending = None;
+                st.ui.set_hotkey_error("".into());
+                let status = ui_text(
+                    &lang,
+                    "First chord cleared; press the first chord again (Esc cancels)",
+                    "已清除第一段；重新按第一段（Esc 取消）",
+                );
+                st.ui.set_hotkey_status(status.into());
+                eprintln!("[hotkey] record first-chord cleared {id}");
+                return;
+            }
+            let Some(second) = keys::chord_from_key_event(text, ctrl, alt, shift, meta) else {
+                return;
+            };
+            if !second.is_bindable() {
+                let err = ui_text(
+                    &lang,
+                    "Second chord needs Ctrl/Alt/Meta or F1–F24",
+                    "第二段需要 Ctrl/Alt/Meta，或 F1–F24",
+                );
+                st.ui.set_hotkey_error(err.into());
+                return;
+            }
+            let shortcut = commands::Shortcut { chords: vec![first, second] };
+            commit_hotkey_shortcut(st, &id, &shortcut);
+            return;
+        }
+        if erase {
+            reset_recording_hotkey(st, &id);
+            return;
+        }
+        let Some(chord) = keys::chord_from_key_event(text, ctrl, alt, shift, meta) else {
+            return;
+        };
+        if !chord.is_bindable() {
+            let err = ui_text(
+                &lang,
+                "First chord needs Ctrl/Alt/Meta or F1–F24",
+                "第一段需要 Ctrl/Alt/Meta，或 F1–F24",
+            );
+            st.ui.set_hotkey_error(err.into());
+            return;
+        }
+        st.hotkey_pending = Some(chord.clone());
+        st.ui.set_hotkey_error("".into());
+        let title = hotkey_title(st, &id);
+        let status = if lang == "zh" {
+            format!("「{title}」第一段 {chord}；再按第二段，或 Enter 保存单段")
+        } else {
+            format!("\"{title}\" first chord {chord}; press a second chord, or Enter to save one chord")
+        };
+        st.ui.set_hotkey_status(status.into());
+        eprintln!("[hotkey] record first {id} = {chord}");
+        return;
+    }
+
+    // 单段模式：保持旧行为。
+    if erase {
+        reset_recording_hotkey(st, &id);
+        return;
+    }
+    let Some(chord) = keys::chord_from_key_event(text, ctrl, alt, shift, meta) else {
         return;
     };
-    let canonical = chord.canonical();
-    match validate_hotkey_binding(st, &id, &canonical) {
-        Ok(chord) => {
-            let title = hotkey_title(st, &id);
-            commands::set_override(&mut st.cfg.hotkeys, &id, &chord);
-            st.cfg.save();
-            st.hotkey_recording = None;
-            st.ui.set_hotkey_error("".into());
-            let status = if st.cfg.lang() == "zh" {
-                format!("{title} → {}（已保存）", chord)
-            } else {
-                format!("{title} → {} (saved)", chord)
-            };
-            st.ui.set_hotkey_status(status.into());
-            refresh_hotkeys(st);
-            st.ui.invoke_focus_terminal();
-            eprintln!("[hotkey] saved {id} = {canonical}");
-        }
-        Err(err) => {
-            eprintln!("[hotkey] rejected {id} {canonical:?}: {err}");
-            let err = localize_hotkey_error(st.cfg.lang(), err);
-            st.ui.set_hotkey_error(err.into());
-        }
-    }
+    commit_hotkey_shortcut(st, &id, &commands::Shortcut { chords: vec![chord] });
 }
 
 fn theme_choices(reg: &ThemeRegistry) -> ModelRc<ThemeChoice> {
@@ -11337,6 +11463,12 @@ fn run_command(st: &mut AppState, id: &str) {
         "tab.duplicate" => duplicate_tab(st, st.ws.active),
         "tab.reopen-closed" => reopen_closed_tab(st),
         "tab.rename" => open_rename(st, st.ws.active),
+        // Ctrl+1–9：命令表用 9 条稳定 ID 表达旧硬编码的“跳到第 n 个 Tab”。
+        "tab.select-1" | "tab.select-2" | "tab.select-3" | "tab.select-4" | "tab.select-5"
+        | "tab.select-6" | "tab.select-7" | "tab.select-8" | "tab.select-9" => {
+            let n = id.as_bytes()[id.len() - 1] as usize - b'0' as usize;
+            switch_tab_number(st, n);
+        }
         "tab.rename-undo" => {
             undo_tab_rename(st, st.ws.active);
             rebuild_tabs(st);
@@ -11373,6 +11505,10 @@ fn run_command(st: &mut AppState, id: &str) {
             }
         }
         "pane.undo-swap" => undo_pane_swap(st),
+        "pane.focus-left" => focus_pane_dir(st, -1.0, 0.0),
+        "pane.focus-right" => focus_pane_dir(st, 1.0, 0.0),
+        "pane.focus-up" => focus_pane_dir(st, 0.0, -1.0),
+        "pane.focus-down" => focus_pane_dir(st, 0.0, 1.0),
         "pane.focus-next" => {
             let (panes, focused) = match st.ws.active_tab() {
                 Some(t) => (t.panes(), t.focused),
@@ -11998,6 +12134,29 @@ fn note_broadcast_key(
     }
 }
 
+/// 当前 Caps/Num Lock 状态（TERM-016）。
+///
+/// X11 下用 `QueryPointer` 的 keymask（120ms 缓存）；拿不到 X11（Wayland 原生 /
+/// 无 Xauthority）时显式降级为 false 并记录一次——kitty CSI-u 的 caps/num 位
+/// 会保持 0，而不是伪造状态。
+fn current_lock_state(st: &mut AppState) -> xconn::LockState {
+    if st.lock_probe.is_none() {
+        st.lock_probe = xconn::LockProbe::new();
+        if st.lock_probe.is_none() {
+            use std::sync::Once;
+            static ONCE: Once = Once::new();
+            ONCE.call_once(|| {
+                eprintln!(
+                    "[keyboard] caps/num lock 状态不可用（无 X11 连接）；\
+                     CSI-u 只上报 ctrl/alt/shift/super"
+                );
+            });
+            return xconn::LockState::default();
+        }
+    }
+    st.lock_probe.as_mut().map(|probe| probe.state()).unwrap_or_default()
+}
+
 /// 统一的输入分发：物理按键与 IME 上屏都走这里。
 /// `ctrl/alt/shift/meta` 对 IME 提交恒为 false，避免把中文误判成快捷键。
 /// `kind` 区分 press/repeat；release 走 [`handle_key_release`]。
@@ -12020,14 +12179,46 @@ fn handle_input(
 
     // 快捷键录制优先于一切分发：录制中按键只用于录制，不能触发原快捷键或写入 PTY。
     if st.hotkey_recording.is_some() {
-        record_hotkey_key(st, text, ctrl, alt, shift);
+        record_hotkey_key(st, text, ctrl, alt, shift, meta);
         return;
+    }
+
+    // multi-chord：第一段已在等第二段（`Registry::multi_chord_prefix`）。
+    // 2s 内按到完整序列就执行；超时/不匹配就丢弃第一段，当前键继续正常分发。
+    // 第一段绝不会被“吞掉后无事发生”——只有存在两段绑定且它本身不是任何
+    // 单段绑定时才会进入等待。
+    if let Some((first, at)) = st.pending_chord.take() {
+        const MULTI_CHORD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+        if at.elapsed() <= MULTI_CHORD_TIMEOUT {
+            if let Some(second) = keys::chord_from_key_event(text, ctrl, alt, shift, meta) {
+                let seq = [first.clone(), second.clone()];
+                if let Some(id) = st.commands.command_for_sequence(&seq, &st.cfg.hotkeys) {
+                    if keylog {
+                        eprintln!("[hotkey] multi {id} ← {first} {second}");
+                    }
+                    run_command(st, id);
+                    return;
+                }
+            }
+        }
+        if keylog {
+            eprintln!("[hotkey] multi-chord 前缀 {first} 未完成（超时或按键不匹配），已丢弃");
+        }
+    }
+    if let Some(chord) = keys::chord_from_key_event(text, ctrl, alt, shift, meta) {
+        if st.commands.multi_chord_prefix(&chord, &st.cfg.hotkeys) {
+            st.pending_chord = Some((chord.clone(), std::time::Instant::now()));
+            if keylog {
+                eprintln!("[hotkey] multi-chord 前缀 {chord}，等待第二段");
+            }
+            return;
+        }
     }
 
     // 用户 override 必须在硬编码默认键之前处理；命中即 return，避免同一按键触发两次。
     // 配置为空时完全跳过，保证无自定义快捷键时按键路径零变化。
     if !st.cfg.hotkeys.is_empty() {
-        if let Some(chord) = keys::chord_from_key_event(text, ctrl, alt, shift) {
+        if let Some(chord) = keys::chord_from_key_event(text, ctrl, alt, shift, meta) {
             if let Some(id) = st
                 .commands
                 .override_command_for_chord(&chord, &st.cfg.hotkeys)
@@ -12051,7 +12242,7 @@ fn handle_input(
     // Profile 热键：一次按键直接开对应 Profile 的 Tab。放在命令 override 之后、
     // 硬编码默认键之前——用户自定义命令优先，其余按键再按 Profile 绑定匹配。
     if st.profiles.profiles.iter().any(|p| !p.hotkey.is_empty()) {
-        if let Some(chord) = keys::chord_from_key_event(text, ctrl, alt, shift) {
+        if let Some(chord) = keys::chord_from_key_event(text, ctrl, alt, shift, meta) {
             if let Some(index) = st
                 .profiles
                 .profiles
@@ -12065,32 +12256,17 @@ fn handle_input(
         }
     }
 
-    // F11：全屏切换
-    if text == "\u{F70E}" {
-        toggle_fullscreen(st);
-        return;
-    }
-
-    // F2：重命名当前 Tab（Slint 特殊键编码见 keys.rs）
+    // 全局命令（F2 重命名 / F11 全屏 / Ctrl+Tab / Ctrl+1–9 跳 Tab）：
+    // 入口不再是硬编码按键，而是命令表里的 `global` 命令；搜索框打开、
+    // 终端要字符时都优先按 Registry 分发。旧硬编码与此同序，行为不变。
     // 已经在 with_app 的借用内，不能再 with_app（同 F11 的崩溃根因）。
-    if text == "\u{F705}" {
-        open_rename(st, st.ws.active);
-        return;
-    }
-
-    // Tab 导航在任何输入状态下都生效（含搜索框开着时）
-    if ctrl && !alt {
-        if text == "\t" {
-            switch_tab_relative(st, if shift { -1 } else { 1 });
-            return;
-        }
-        if !shift {
-            if let Some(c) = text.chars().next() {
-                if ('1'..='9').contains(&c) {
-                    switch_tab_number(st, c as usize - '0' as usize);
-                    return;
-                }
+    if let Some(chord) = keys::chord_from_key_event(text, ctrl, alt, shift, meta) {
+        if let Some(id) = st.commands.global_default_for_chord(&chord) {
+            if keylog {
+                eprintln!("[hotkey] global {id} ← {chord}");
             }
+            run_command(st, id);
+            return;
         }
     }
 
@@ -12136,127 +12312,11 @@ fn handle_input(
         return;
     }
 
-    if ctrl && shift {
-        match text.to_ascii_lowercase().as_str() {
-            "c" => {
-                copy_current_selection(st);
-                return;
-            }
-            "v" => {
-                paste_into_focused(st);
-                return;
-            }
-            "p" => {
-                open_palette(st);
-                return;
-            }
-            "a" => {
-                open_tab_search(st);
-                return;
-            }
-            // 部分 X11 文本映射会把 Ctrl+Shift+A 折成控制字符 ^A；仍按 Search Tabs 处理。
-            "\u{1}" => {
-                open_tab_search(st);
-                return;
-            }
-            "n" => {
-                new_window();
-                return;
-            }
-            "e" => {
-                if let Some(focused) = st.ws.active_tab().map(|t| t.focused) {
-                    split_pane_inner(st, focused, Dir::Row);
-                }
-                return;
-            }
-            "d" => {
-                if let Some(focused) = st.ws.active_tab().map(|t| t.focused) {
-                    split_pane_inner(st, focused, Dir::Col);
-                }
-                return;
-            }
-            "w" => {
-                if let Some(focused) = st.ws.active_tab().map(|t| t.focused) {
-                    close_pane_inner(st, focused);
-                }
-                return;
-            }
-            "t" => {
-                reopen_closed_tab(st);
-                return;
-            }
-            "\u{F700}" => {
-                focus_pane_dir(st, 0.0, -1.0);
-                return;
-            }
-            "\u{F701}" => {
-                focus_pane_dir(st, 0.0, 1.0);
-                return;
-            }
-            "\u{F702}" => {
-                focus_pane_dir(st, -1.0, 0.0);
-                return;
-            }
-            "\u{F703}" => {
-                focus_pane_dir(st, 1.0, 0.0);
-                return;
-            }
-            "+" => {
-                zoom_font(st, 1.0);
-                return;
-            }
-            _ => {}
-        }
-    }
-
-    if ctrl {
-        match text {
-            "t" => {
-                new_tab_with_default(st);
-                rebuild_tabs(st);
-                return;
-            }
-            "w" => {
-                let idx = st.ws.active;
-                close_tab_inner(st, idx);
-                return;
-            }
-            "f" => {
-                open_search(st);
-                return;
-            }
-            "=" | "+" => {
-                zoom_font(st, 1.0);
-                return;
-            }
-            "-" => {
-                zoom_font(st, -1.0);
-                return;
-            }
-            "0" => {
-                reset_font(st);
-                return;
-            }
-            _ => {}
-        }
-    }
-
-    // 插件 v3 命令的快捷键（清单 keybinding + 用户 override）：放在内置硬编码分发
-    // **之后**，内置键（Ctrl+T 等）永远优先；`when` 上下文不成立的命令不触发。
-    if let Some(chord) = keys::chord_from_key_event(text, ctrl, alt, shift) {
-        if let Some(id) = plugin_command_for_chord(st, &chord) {
-            if keylog {
-                eprintln!("[plugin] 快捷键 {id} ← {chord}");
-            }
-            run_command(st, &id);
-            return;
-        }
-    }
-
-    // 命令表默认键兜底：内置硬编码与插件默认键都没接走时，再按 commands.rs 的
-    // `default_shortcut` 匹配一次。否则快捷键设置页列出的默认键会“按了没反应”。
-    // 只认可绑定 chord（带 Ctrl/Alt 等修饰），普通字符仍原样进终端。
-    if let Some(chord) = keys::chord_from_key_event(text, ctrl, alt, shift) {
+    // 命令表默认键：替换原先 `Ctrl` / `Ctrl+Shift` 两段硬编码 match。
+    // 全部内置快捷键都来自 `commands::builtin()` 的 `default_shortcut` /
+    // `extra_shortcuts`，改键、冲突检测、菜单提示因此只有一份真相。
+    // 顺序与旧路径一致：搜索框优先（上面的分支），其余键先内置命令、后插件。
+    if let Some(chord) = keys::chord_from_key_event(text, ctrl, alt, shift, meta) {
         if chord.is_bindable() {
             if let Some(id) = st.commands.default_command_for_chord(&chord) {
                 if keylog {
@@ -12265,6 +12325,18 @@ fn handle_input(
                 run_command(st, id);
                 return;
             }
+        }
+    }
+
+    // 插件 v3 命令的快捷键（清单 keybinding + 用户 override）：放在内置硬编码分发
+    // **之后**，内置键（Ctrl+T 等）永远优先；`when` 上下文不成立的命令不触发。
+    if let Some(chord) = keys::chord_from_key_event(text, ctrl, alt, shift, meta) {
+        if let Some(id) = plugin_command_for_chord(st, &chord) {
+            if keylog {
+                eprintln!("[plugin] 快捷键 {id} ← {chord}");
+            }
+            run_command(st, &id);
+            return;
         }
     }
 
@@ -12286,6 +12358,7 @@ fn handle_input(
     }
     let key_bindings = st.cfg.key_bindings();
     let scroll_on_keystroke = st.cfg.scroll_on_keystroke;
+    let lock_state = current_lock_state(st);
     let held_keys = &mut st.held_keys;
     let panes = &mut st.panes;
     for target in targets {
@@ -12301,9 +12374,15 @@ fn handle_input(
                     alt,
                     shift,
                     meta,
-                    ..keys::KeyModifiers::default()
+                    caps_lock: lock_state.caps_lock,
+                    num_lock: lock_state.num_lock,
                 };
                 let flags = rt.handle.keyboard_flags();
+                // TERM-016：应用请求 alternate keys 时，base layout key 不可用
+                // （Slint 无 physical key），显式记录一次降级。
+                if flags.contains(tervo_core::KeyboardFlags::REPORT_ALTERNATE_KEYS) {
+                    keys::note_base_layout_degraded();
+                }
                 let modify_level =
                     if flags.is_empty() { rt.handle.modify_other_keys() } else { 0 };
                 let encoded = keys::encode_key_event(
@@ -13538,6 +13617,8 @@ fn build_window_state(
         hotkey_model,
         hotkey_ids: Vec::new(),
         hotkey_recording: None,
+        hotkey_pending: None,
+        pending_chord: None,
         held_keys: HashMap::new(),
         plugins: shared.plugins.clone_handle(),
         app_wake: app_wake.clone(),
@@ -13597,6 +13678,7 @@ fn build_window_state(
         wm_resize: false,
         wm_release_pending: false,
         xresize: None,
+        lock_probe: None,
         resize_events: 0,
         resize_applied: 0,
         resize_pending: None,
@@ -13617,6 +13699,25 @@ fn build_window_state(
         clipboard: arboard::Clipboard::new().ok(),
         cfg: shared.cfg.clone_handle(),
     }));
+    // KEY-003：手改 config 的重复/未知/非法/前缀冲突绑定在启动时自动修复
+    // （后写优先，与运行时分发语义一致），清掉后写回并记录原因。
+    {
+        let mut st = state.borrow_mut();
+        let repairs = {
+            // 同一结构体的不相交字段借用：commands 只读、cfg.hotkeys 可写。
+            let AppState { commands, cfg, .. } = &mut *st;
+            commands::repair_hotkey_overrides(commands, &mut cfg.hotkeys)
+        };
+        if !repairs.is_empty() {
+            for repair in &repairs {
+                eprintln!(
+                    "[hotkey] auto-repair {} {} ({})",
+                    repair.command, repair.chord, repair.reason
+                );
+            }
+            st.cfg.save();
+        }
+    }
     state
 }
 

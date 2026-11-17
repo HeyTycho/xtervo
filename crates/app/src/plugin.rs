@@ -2763,6 +2763,8 @@ impl PluginStore {
                     title: &*Box::leak(title.into_boxed_str()),
                     category: commands::Category::Plugin,
                     default_shortcut: shortcut,
+                    extra_shortcuts: &[],
+                    global: false,
                 };
                 match registry.register(command) {
                     Ok(()) => registered += 1,

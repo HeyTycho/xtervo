@@ -14,15 +14,38 @@
 //! - xterm modifyOtherKeys：`CSI > 4 ; level m`，带修饰的普通键/功能键走
 //!   `CSI 27 ; mod ; code ~` 或规范功能键序列。
 //!
-//! 已知限制（不伪造）：
+//! 已知限制（不伪造，详见 `docs/KEYBOARD_LIMITATIONS.md`）：
 //! - Slint `KeyEvent` 只给 text + modifiers，没有 physical key；base layout key
-//!   （标准 PC-101 下的键）无法可靠推导，因此只上报 shifted key。
-//! - caps lock / num lock 不在 Slint modifiers 里，运行时恒为 0；编码函数支持
-//!   这两个 bit（单元测试覆盖），但 UI 拿不到锁状态。
+//!   （标准 PC-101 下的键）无法可靠推导，因此 `REPORT_ALTERNATE_KEYS` 只上报
+//!   shifted key，见 [`BASE_LAYOUT_KEY_SUPPORTED`]。
+//! - caps lock / num lock 不在 Slint modifiers 里；X11 下由 `xconn::LockProbe`
+//!   查 keymask 补齐（120ms 缓存），Wayland 原生/无 X11 时显式降级为 false。
+//! - IME：仅 X11/XIM 路径（隐藏 TextInput 宿主），Wayland text-input-v3、
+//!   preedit 候选窗定位、多字符 commit → 快捷键等缺口见限制文档。
 
 use tervo_core::KeyboardFlags;
 
 use crate::commands::{Chord, Mods};
+
+/// Slint 的 `KeyEvent` 只有 text + modifiers，没有 physical key（TERM-016）。
+///
+/// 因此 kitty `REPORT_ALTERNATE_KEYS` 的 **base layout key** 无法上报，只能给
+/// shifted key。这里把它写成显式常量而不是“静默少一位”，上层在收到
+/// `REPORT_ALTERNATE_KEYS` 时调用 [`note_base_layout_degraded`] 记录一次。
+/// IME 侧的已知缺口见 `docs/KEYBOARD_LIMITATIONS.md`。
+pub const BASE_LAYOUT_KEY_SUPPORTED: bool = false;
+
+/// 首次请求 alternate keys 时记录一次降级说明（不刷屏）。
+pub fn note_base_layout_degraded() {
+    use std::sync::Once;
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        eprintln!(
+            "[keyboard] base layout key 不可用（Slint KeyEvent 无 physical key）；\
+             REPORT_ALTERNATE_KEYS 降级为仅 shifted key"
+        );
+    });
+}
 
 const UP: char = '\u{F700}';
 const DOWN: char = '\u{F701}';
@@ -169,15 +192,18 @@ fn ctrl_byte(ch: char) -> Option<u8> {
 ///
 /// 返回 None 表示这个事件不构成可绑定按键：空文本、修饰键本身（X11 会把
 /// Ctrl/Shift/Alt 也作为 key-pressed 上报）、IME 多字文本等。
-pub fn chord_from_key_event(text: &str, ctrl: bool, alt: bool, shift: bool) -> Option<Chord> {
-    let key = key_name(text)?;
-    Some(Chord {
-        mods: Mods { ctrl, shift, alt, meta: false },
-        key,
-    })
+pub fn chord_from_key_event(
+    text: &str,
+    ctrl: bool,
+    alt: bool,
+    shift: bool,
+    meta: bool,
+) -> Option<Chord> {
+    let key = key_name(text, ctrl)?;
+    Some(Chord { mods: Mods { ctrl, shift, alt, meta }, key })
 }
 
-fn key_name(text: &str) -> Option<String> {
+fn key_name(text: &str, ctrl: bool) -> Option<String> {
     match text {
         "" => return None,
         // 0x10..=0x18：Shift/Ctrl/Alt/AltGr/CapsLock/右 Shift/右 Ctrl/Meta/右 Meta
@@ -214,6 +240,14 @@ fn key_name(text: &str) -> Option<String> {
     // 可打印 ASCII 单字符：小写化（Shift 已单独记录在 mods 里）。
     if c.is_ascii_graphic() {
         return Some(c.to_ascii_lowercase().to_string());
+    }
+    // Ctrl+字母在部分 X11 布局下会折叠成控制字符（Ctrl+Shift+A → ^A）。
+    // 只有 ctrl 按下时才映射回字母，避免把终端里的控制字符当快捷键。
+    if ctrl {
+        let code = c as u32;
+        if (1..=26).contains(&code) {
+            return Some(((b'a' + (code as u8 - 1)) as char).to_string());
+        }
     }
     None
 }
@@ -329,7 +363,8 @@ pub enum KeyEventKind {
     Release,
 }
 
-/// Slint 能提供的修饰键。caps/num lock 目前拿不到（见模块文档）。
+/// 一次按键的修饰键。ctrl/alt/shift/meta 来自 Slint；
+/// caps/num lock 由 X11 探测补齐（拿不到时显式 false，见模块文档）。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct KeyModifiers {
     pub ctrl: bool,
@@ -337,9 +372,9 @@ pub struct KeyModifiers {
     pub shift: bool,
     /// Windows/Command（Slint 的 meta）。
     pub meta: bool,
-    /// 运行时恒 false；保留给编码与测试。
+    /// X11 keymask 的 LockMask；Wayland 原生回落 false。
     pub caps_lock: bool,
-    /// 运行时恒 false；保留给编码与测试。
+    /// 按修饰键映射查到的 Num Lock mask；查不到回落 false。
     pub num_lock: bool,
 }
 
@@ -988,41 +1023,60 @@ mod tests {
 
     #[test]
     fn key_event_to_chord() {
-        let c = chord_from_key_event("t", true, false, true).unwrap();
+        let c = chord_from_key_event("t", true, false, true, false).unwrap();
         assert_eq!(c.canonical(), "ctrl+shift+t");
-        let c = chord_from_key_event("T", true, false, true).unwrap();
+        let c = chord_from_key_event("T", true, false, true, false).unwrap();
         assert_eq!(c.canonical(), "ctrl+shift+t", "Shift 文本大小写应归一");
 
-        let c = chord_from_key_event("\u{F70E}", false, false, false).unwrap();
+        let c = chord_from_key_event("\u{F70E}", false, false, false, false).unwrap();
         assert_eq!(c.canonical(), "f11");
-        let c = chord_from_key_event("\u{F703}", true, false, true).unwrap();
+        let c = chord_from_key_event("\u{F703}", true, false, true, false).unwrap();
         assert_eq!(c.canonical(), "ctrl+shift+right");
-        let c = chord_from_key_event("\t", true, false, false).unwrap();
+        let c = chord_from_key_event("\t", true, false, false, false).unwrap();
         assert_eq!(c.canonical(), "ctrl+tab");
-        let c = chord_from_key_event(" ", false, true, false).unwrap();
+        let c = chord_from_key_event(" ", false, true, false, false).unwrap();
         assert_eq!(c.canonical(), "alt+space");
-        assert_eq!(chord_from_key_event("\u{1b}", false, false, false).unwrap().key, "escape");
-        assert_eq!(chord_from_key_event("\u{8}", false, false, false).unwrap().key, "backspace");
-        assert_eq!(chord_from_key_event("\u{7f}", false, false, false).unwrap().key, "delete");
+        assert_eq!(chord_from_key_event("\u{1b}", false, false, false, false).unwrap().key, "escape");
+        assert_eq!(chord_from_key_event("\u{8}", false, false, false, false).unwrap().key, "backspace");
+        assert_eq!(chord_from_key_event("\u{7f}", false, false, false, false).unwrap().key, "delete");
 
         // "+" 的规范格式是 `ctrl++`，和 parser 约定一致
-        let c = chord_from_key_event("+", true, false, true).unwrap();
+        let c = chord_from_key_event("+", true, false, true, false).unwrap();
         assert_eq!(c.canonical(), "ctrl+shift++");
         assert_eq!(crate::commands::Chord::parse(&c.canonical()).unwrap(), c);
     }
 
     #[test]
+    fn key_event_to_chord_includes_meta_and_control_folding() {
+        // Meta/Super 以前被硬编码丢弃；现在进入 chord 才能录制/分发。
+        let c = chord_from_key_event("\n", false, false, false, true).unwrap();
+        assert_eq!(c.canonical(), "meta+enter");
+        assert!(c.is_bindable());
+        let c = chord_from_key_event("k", false, false, false, true).unwrap();
+        assert_eq!(c.canonical(), "meta+k");
+
+        // 部分 X11 布局把 Ctrl+Shift+A 折成 ^A；仍然要能命中 tab.search。
+        let c = chord_from_key_event("\u{1}", true, false, true, false).unwrap();
+        assert_eq!(c.canonical(), "ctrl+shift+a");
+        // 没有 ctrl 时控制字符不是快捷键。
+        assert_eq!(chord_from_key_event("\u{1}", false, false, false, false), None);
+        // Ctrl+C（^C）映射成字母键，但没有任何默认绑定会抢走它。
+        let c = chord_from_key_event("\u{3}", true, false, false, false).unwrap();
+        assert_eq!(c.canonical(), "ctrl+c");
+    }
+
+    #[test]
     fn key_event_rejects_modifiers_and_unsupported_text() {
         for artifact in ["\u{10}", "\u{11}", "\u{12}", "\u{13}", "\u{17}"] {
-            assert_eq!(chord_from_key_event(artifact, true, false, false), None);
+            assert_eq!(chord_from_key_event(artifact, true, false, false, false), None);
         }
-        assert_eq!(chord_from_key_event("", false, false, false), None);
+        assert_eq!(chord_from_key_event("", false, false, false, false), None);
         // IME 多字提交 / 非 ASCII 暂不作为快捷键
-        assert_eq!(chord_from_key_event("你好", false, false, false), None);
-        assert_eq!(chord_from_key_event("ab", false, false, false), None);
-        assert_eq!(chord_from_key_event("你", false, false, false), None);
+        assert_eq!(chord_from_key_event("你好", false, false, false, false), None);
+        assert_eq!(chord_from_key_event("ab", false, false, false, false), None);
+        assert_eq!(chord_from_key_event("你", false, false, false, false), None);
         // F25 不在支持范围
-        assert_eq!(chord_from_key_event("\u{F71C}", false, false, false), None);
+        assert_eq!(chord_from_key_event("\u{F71C}", false, false, false, false), None);
     }
 
     // ------------------------------------------------------------ protocol
@@ -1314,6 +1368,21 @@ mod tests {
         assert_eq!(key_id("\u{F71B}"), Some(KeyId::Special(SpecialKey::F(24))));
         assert_eq!(key_id("ab"), None);
         assert_eq!(key_id("\u{1}"), None);
+    }
+
+    #[test]
+    fn alternate_keys_degrade_is_explicit_and_shifted_only() {
+        // TERM-016：base layout key 明确不可用，不能假装支持。
+        assert!(!BASE_LAYOUT_KEY_SUPPORTED);
+        // 应用请求 alternate keys 时，CSI-u 只带 shifted key（没有 base layout 字段）。
+        let b = KeyBindings::default();
+        let flags = KeyboardFlags::DISAMBIGUATE_ESC_CODES | KeyboardFlags::REPORT_ALTERNATE_KEYS;
+        let mods = KeyModifiers { ctrl: true, ..KeyModifiers::default() };
+        let out = encode_key_event("!", mods, KeyEventKind::Press, flags, 0, b).unwrap();
+        assert_eq!(out, b"\x1b[33;5u", "只上报 shifted key，不能编造 base layout key");
+        // 记录降级说明是幂等的，可在真实按键路径反复调用。
+        note_base_layout_degraded();
+        note_base_layout_degraded();
     }
 
     #[test]
