@@ -73,7 +73,7 @@ use tervo_core::{
 use x11rb::connection::Connection;
 use x11rb::rust_connection::RustConnection;
 
-use crate::config::{Config, ScrollbarPolicy, UNLIMITED_SCROLLBACK_LINES};
+use crate::config::{Config, ScrollbarPolicy, TerminalMenuItem, UNLIMITED_SCROLLBACK_LINES};
 use crate::glyph::FontSet;
 #[cfg(unix)]
 use crate::instance::{InstanceLock, InstancePaths, OpenWindowRequest, PrimaryServer};
@@ -511,6 +511,16 @@ struct PluginSurfaceState {
     doc: plugin_v3::SurfaceDoc,
 }
 
+/// 保存弹窗的目标类型：同一个路径输入框复用于文本快照与录制导出。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum SaveKind {
+    /// `PaneHandle::contents()` 的文本快照（既有 Save Contents）。
+    #[default]
+    Contents,
+    /// `PaneHandle::export_recording()` 的原始字节导出（TERM-015）。
+    Recording,
+}
+
 struct AppState {
     ui: MainWindow,
     ws: Workspace,
@@ -546,8 +556,10 @@ struct AppState {
     /// 查找选项：区分大小写 / 正则。
     search_match_case: bool,
     search_regex: bool,
-    /// Save Contents 弹窗打开时锁定的 pane（右键菜单可能不是焦点 pane）。
+    /// Save Contents / Export Recording 弹窗打开时锁定的 pane。
     save_pane: Option<PaneId>,
+    /// 弹窗目标：文本快照（Save Contents）或录制导出（TERM-015）。
+    save_kind: SaveKind,
     /// 命令表（Command Palette / 快捷键分发共用）
     commands: commands::Registry,
     /// 命名工作区（保存的分屏布局，ACT-047）
@@ -1045,6 +1057,7 @@ fn live_list_windows(
             .panes
             .iter()
             .map(|(id, pane)| {
+                let recording = pane.handle.recording_status();
                 serde_json::json!({
                     "window_id": rt.id.get(),
                     "pane_id": id,
@@ -1052,6 +1065,15 @@ fn live_list_windows(
                     "grid": [pane.grid.0, pane.grid.1],
                     "rect": [pane.rect.x, pane.rect.y, pane.rect.w, pane.rect.h],
                     "focused": focused == Some(*id),
+                    // TERM-015：录制状态在 core，MCP/diag 只读快照。
+                    "recording": {
+                        "active": recording.active,
+                        "bytes": recording.bytes,
+                        "capacity": recording.capacity,
+                        "dropped_bytes": recording.dropped_bytes,
+                        "started_at": recording.started_at,
+                        "stopped_at": recording.stopped_at,
+                    },
                 })
             })
             .collect();
@@ -1525,6 +1547,10 @@ fn command_title(lang: &str, id: &str, fallback: &'static str) -> &'static str {
         "terminal.reset" => "重置终端",
         "terminal.reset-and-clear" => "重置并清空",
         "terminal.save-contents" => "保存内容…",
+        "terminal.recording-start" => "开始录制",
+        "terminal.recording-stop" => "停止录制",
+        "terminal.recording-export" => "导出录制…",
+        "terminal.toggle-broadcast" => "切换广播输入",
         "view.command-palette" => "命令面板",
         "view.toggle-fullscreen" => "切换全屏",
         "view.toggle-quake" => "切换 Quake 模式",
@@ -3164,6 +3190,8 @@ fn reconfig_summary(old: &Config, new: &Config) -> ReconfigSummary {
     hot(old.delete_binding != new.delete_binding, "delete_binding");
     hot(old.close_action != new.close_action, "close_action");
     hot(old.hotkeys != new.hotkeys, "hotkeys");
+    // 菜单表在下一次右键打开时重建，外部编辑 config.toml 无需重启。
+    hot(old.terminal_menu != new.terminal_menu, "terminal_menu");
     hot(old.quake_enabled != new.quake_enabled, "quake_enabled");
     hot(
         old.quake_width != new.quake_width || old.quake_height != new.quake_height,
@@ -9392,6 +9420,314 @@ fn focus_pane_dir(st: &mut AppState, dx: f32, dy: f32) {
     }
 }
 
+/// pane 右键菜单的内置默认顺序（UI-TERM-013 改造前逐项一致）。
+///
+/// `"-"` = 分隔线。改这里时同步 [`builtin_menu_meta`] 的本地化标签/危险标记；
+/// 用户可用 `config.toml` 的 `[[terminal_menu]]` 表整体替换（顺序即配置顺序），
+/// 插件 `[[commands]] menu = true` 的装饰项始终追加在末尾。
+const DEFAULT_TERMINAL_MENU: &[&str] = &[
+    "link.open",
+    "link.copy",
+    "-",
+    "terminal.copy",
+    "terminal.paste",
+    "-",
+    "pane.split-right",
+    "pane.split-down",
+    "pane.close",
+    "pane.undo-swap",
+    "terminal.toggle-broadcast",
+    "-",
+    "terminal.find",
+    "terminal.select-all",
+    "terminal.clear",
+    "-",
+    "terminal.toggle-read-only",
+    "terminal.reset",
+    "terminal.reset-and-clear",
+    "terminal.save-contents",
+];
+
+/// 内置菜单项的本地化标签与危险标记：`(英文, 中文, danger)`。
+///
+/// 菜单顺序不在这个函数里；未列出的 ID 回退到命令表标题（插件命令则是
+/// 插件清单标题）。Broadcast/Read Only 的 ON/OFF 后缀在构建时动态追加。
+fn builtin_menu_meta(id: &str) -> Option<(&'static str, &'static str, bool)> {
+    Some(match id {
+        "link.open" => ("Open Link", "打开链接", false),
+        "link.copy" => ("Copy Link", "复制链接", false),
+        "terminal.copy" => ("Copy", "复制", false),
+        "terminal.paste" => ("Paste", "粘贴", false),
+        "pane.split-right" => ("Split Right", "向右拆分", false),
+        "pane.split-down" => ("Split Down", "向下拆分", false),
+        "pane.close" => ("Close Pane", "关闭窗格", true),
+        "pane.undo-swap" => ("Undo Pane Move", "撤销窗格移动", false),
+        "terminal.toggle-broadcast" => ("Broadcast Input", "广播输入", false),
+        "terminal.find" => ("Find", "查找", false),
+        "terminal.select-all" => ("Select All", "全选", false),
+        "terminal.clear" => ("Clear", "清除", false),
+        "terminal.toggle-read-only" => ("Read Only", "只读", false),
+        "terminal.reset" => ("Reset", "重置", false),
+        "terminal.reset-and-clear" => ("Reset and Clear", "重置并清空", false),
+        "terminal.save-contents" => ("Save Contents…", "保存内容…", false),
+        "terminal.recording-start" => ("Start Recording", "开始录制", false),
+        "terminal.recording-stop" => ("Stop Recording", "停止录制", false),
+        "terminal.recording-export" => ("Export Recording…", "导出录制…", false),
+        _ => return None,
+    })
+}
+
+/// 一条待渲染的菜单项（Slint `MenuEntry` 的宿主侧等价物）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalMenuSpec {
+    label: String,
+    shortcut: String,
+    danger: bool,
+    active: bool,
+    separator: bool,
+    command: String,
+}
+
+impl TerminalMenuSpec {
+    fn separator() -> Self {
+        Self {
+            label: String::new(),
+            shortcut: String::new(),
+            danger: false,
+            active: false,
+            separator: true,
+            command: String::new(),
+        }
+    }
+
+    fn item(
+        command: String,
+        label: String,
+        shortcut: String,
+        danger: bool,
+        active: bool,
+    ) -> Self {
+        Self { label, shortcut, danger, active, separator: false, command }
+    }
+}
+
+/// 命令当前生效的快捷键提示（含 `[[hotkeys]]` 覆盖）；没有绑定 = 空字符串。
+fn command_shortcut_label(st: &AppState, id: &str) -> String {
+    st.commands
+        .effective_shortcut(id, &st.cfg.hotkeys)
+        .map(|shortcut| shortcut.to_string())
+        .unwrap_or_default()
+}
+
+/// 把一条 ID 加入菜单表。`cfg` 只在该项来自 `[[terminal_menu]]` 时存在，
+/// 用于覆盖标签/快捷键/danger；内置默认项传 None。
+fn push_terminal_menu_entry(
+    st: &AppState,
+    specs: &mut Vec<TerminalMenuSpec>,
+    pane: PaneId,
+    id: &str,
+    cfg: Option<&TerminalMenuItem>,
+) {
+    if id == "-" || id == "separator" {
+        // 链接项被跳过时，紧随其后的分隔线不能变成菜单首行/连续分隔线。
+        if !specs.is_empty() && !specs.last().is_some_and(|spec| spec.separator) {
+            specs.push(TerminalMenuSpec::separator());
+        }
+        return;
+    }
+    // 链接项只在右键那一格命中链接时出现（与改造前的条件一致）。
+    if id.starts_with("link.") && st.menu_link.is_empty() {
+        return;
+    }
+    let zh = st.cfg.lang() == "zh";
+    let meta = builtin_menu_meta(id);
+    let mut label = cfg
+        .map(|entry| entry.label.trim())
+        .filter(|label| !label.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            meta.map(|(en, zh_label, _)| if zh { zh_label } else { en }.to_string())
+        })
+        .or_else(|| st.commands.get(id).map(|command| command.title.to_string()))
+        .unwrap_or_else(|| id.to_string());
+
+    // 状态类菜单项：标签带 ON/OFF，并用 accent 淡底提示当前状态。
+    let mut active = false;
+    match id {
+        "terminal.toggle-broadcast" => {
+            active = st.broadcast;
+            let suffix = if st.broadcast {
+                if zh { "：开" } else { ": ON" }
+            } else if zh {
+                "：关"
+            } else {
+                ": OFF"
+            };
+            label.push_str(suffix);
+        }
+        "terminal.toggle-read-only" => {
+            active = st.panes.get(&pane).is_some_and(|rt| rt.handle.read_only());
+            let suffix = if active {
+                if zh { "：开" } else { ": ON" }
+            } else if zh {
+                "：关"
+            } else {
+                ": OFF"
+            };
+            label.push_str(suffix);
+        }
+        _ => {}
+    }
+
+    let shortcut = cfg
+        .map(|entry| entry.shortcut.trim())
+        .filter(|shortcut| !shortcut.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| command_shortcut_label(st, id));
+    let danger = cfg
+        .and_then(|entry| entry.danger)
+        .or_else(|| meta.map(|(_, _, danger)| danger))
+        .unwrap_or(false);
+    specs.push(TerminalMenuSpec::item(
+        id.to_string(),
+        label,
+        shortcut,
+        danger,
+        active,
+    ));
+}
+
+/// 构建 pane 菜单表 + 内容高度（30px/项、9px/分隔线、上下各 6px padding）。
+///
+/// 顺序：config `[[terminal_menu]]`（非空时整体替换默认表）→ 插件装饰项。
+fn build_terminal_menu(st: &mut AppState, pane: PaneId) -> (Vec<TerminalMenuSpec>, f32) {
+    let config_menu = st.cfg.terminal_menu.clone();
+    let mut specs = Vec::new();
+    if config_menu.is_empty() {
+        for id in DEFAULT_TERMINAL_MENU {
+            // 没有可撤销的 pane 交换时不显示该项（避免灰着也占一行）。
+            if *id == "pane.undo-swap" && st.pane_swap_undo.is_empty() {
+                continue;
+            }
+            push_terminal_menu_entry(st, &mut specs, pane, id, None);
+        }
+    } else {
+        for entry in &config_menu {
+            if entry.separator
+                || entry.id.trim() == "-"
+                || entry.id.trim() == "separator"
+            {
+                if !specs.is_empty() && !specs.last().is_some_and(|spec| spec.separator) {
+                    specs.push(TerminalMenuSpec::separator());
+                }
+                continue;
+            }
+            let id = entry.id.trim();
+            if id.is_empty() {
+                eprintln!("[menu] 跳过没有 id 的 terminal_menu 项（分隔线用 separator = true）");
+                continue;
+            }
+            push_terminal_menu_entry(st, &mut specs, pane, id, Some(entry));
+        }
+    }
+
+    // 配置表若以分隔线结尾，插件装饰点之前不应出现连续/尾部虚分隔线。
+    if specs.last().is_some_and(|spec| spec.separator) {
+        specs.pop();
+    }
+
+    // 插件装饰点：enabled + 权限已确认的 `menu = true` 命令追加到末尾。
+    // 与 config/默认表重复的 ID 不重复出现。
+    let plugin_items: Vec<(String, String)> = st
+        .plugins
+        .menu_commands()
+        .into_iter()
+        .map(|(id, title)| (id.to_string(), title))
+        .filter(|(id, _)| !specs.iter().any(|spec| !spec.separator && spec.command == *id))
+        .collect();
+    if !plugin_items.is_empty() {
+        if !specs.is_empty() && !specs.last().is_some_and(|spec| spec.separator) {
+            specs.push(TerminalMenuSpec::separator());
+        }
+        for (command, title) in plugin_items {
+            specs.push(TerminalMenuSpec::item(
+                command,
+                title,
+                String::new(),
+                false,
+                false,
+            ));
+        }
+    }
+
+    let height = 12.0
+        + specs
+            .iter()
+            .map(|spec| if spec.separator { 9.0 } else { 30.0 })
+            .sum::<f32>();
+    (specs, height)
+}
+
+/// 菜单点击 → 命令。pane 目标命令用右键的 pane；其余走既有命令表
+/// （`terminal.copy/paste/find/...` 保持改造前“作用于焦点 pane”的行为）。
+fn run_menu_command(st: &mut AppState, pane: PaneId, command: &str) {
+    match command {
+        "link.open" => {
+            let text = st.menu_link.clone();
+            if text.is_empty() {
+                eprintln!("[link] Open Link：当前菜单没有链接");
+                return;
+            }
+            // 菜单只保存展示文本；path 不会与 http(s)/file URI 混淆。
+            let target = if is_allowed_uri(&text) {
+                LinkTarget::Uri(text)
+            } else {
+                LinkTarget::Path(text)
+            };
+            let (cwd, remote) = match st.panes.get(&pane) {
+                Some(rt) => (pane_cwd(rt), rt.remote),
+                None => (None, false),
+            };
+            eprintln!(
+                "[link] menu open kind={} text={:?}",
+                target.kind_label(),
+                target.text()
+            );
+            open_target(&target, cwd.as_deref(), remote);
+        }
+        "link.copy" => {
+            let text = st.menu_link.clone();
+            if !text.is_empty() {
+                eprintln!("[link] copy link={text:?}");
+                set_clipboard(st, &text);
+            }
+        }
+        "pane.split-right" => split_pane_inner(st, pane, Dir::Row),
+        "pane.split-down" => split_pane_inner(st, pane, Dir::Col),
+        "pane.close" => close_pane_inner(st, pane),
+        "terminal.toggle-read-only" => toggle_read_only(st, Some(pane)),
+        "terminal.reset" => reset_pane(st, pane, false),
+        "terminal.reset-and-clear" => reset_pane(st, pane, true),
+        "terminal.save-contents" => open_save_contents(st, pane),
+        "terminal.recording-start" => start_recording_on(st, Some(pane)),
+        "terminal.recording-stop" => stop_recording_on(st, Some(pane)),
+        "terminal.recording-export" => open_export_recording(st, pane),
+        other => run_command(st, other),
+    }
+}
+
+/// Broadcast Input 开关（菜单/命令表共用）。
+fn toggle_broadcast(st: &mut AppState) {
+    st.broadcast = !st.broadcast;
+    st.ui.set_broadcast(st.broadcast);
+    let panes = st.ws.active_tab().map(|t| t.panes().len()).unwrap_or(0);
+    if st.broadcast && panes < 2 {
+        eprintln!("[ui] broadcast=on，但当前 Tab 只有 1 个 pane");
+    } else {
+        eprintln!("[ui] broadcast={} panes={panes}", st.broadcast);
+    }
+}
+
 fn open_pane_menu(st: &mut AppState, id: PaneId, x: f32, y: f32) {
     // 菜单打开时顺带解析“右键那一格”的链接：OSC 8 优先、普通 URL/本地路径兜底。
     // x/y 是内容区坐标，pane rect 也是内容区坐标；超出 pane 时不给链接。
@@ -9410,13 +9746,31 @@ fn open_pane_menu(st: &mut AppState, id: PaneId, x: f32, y: f32) {
         target.as_ref().map(LinkTarget::kind_label)
     );
     st.menu_link = link.clone();
-    st.ui.set_menu_link(link.as_str().into());
+    // 表驱动：每次打开都重建（config 热更新与插件启停立即生效）。
+    let (specs, height) = build_terminal_menu(st, id);
+    let entries: Vec<MenuEntry> = specs
+        .into_iter()
+        .map(|spec| MenuEntry {
+            label: spec.label.into(),
+            shortcut: spec.shortcut.into(),
+            danger: spec.danger,
+            active: spec.active,
+            separator: spec.separator,
+            command: spec.command.into(),
+        })
+        .collect();
+    let rows = entries.len();
+    let items = entries.iter().filter(|entry| !entry.separator).count();
     st.ui
-        .set_menu_read_only(st.panes.get(&id).is_some_and(|rt| rt.handle.read_only()));
+        .set_menu_items(ModelRc::from(Rc::new(VecModel::from(entries))));
+    st.ui.set_menu_content_h(height);
     st.ui.set_menu_pane(id as i32);
     st.ui.set_menu_x(x);
     st.ui.set_menu_y(y);
     st.ui.set_menu_open(true);
+    eprintln!(
+        "[ui] pane menu open pane={id} items={items} rows={rows} height={height:.0}"
+    );
 }
 
 /// 点到矩形的最短距离平方（点在矩形内为 0）。
@@ -10686,11 +11040,20 @@ fn run_command(st: &mut AppState, id: &str) {
             }
         }
         "terminal.toggle-read-only" => toggle_read_only(st, focused_pane(st)),
+        "terminal.toggle-broadcast" => toggle_broadcast(st),
         "terminal.reset" => reset_focused_pane(st, false),
         "terminal.reset-and-clear" => reset_focused_pane(st, true),
         "terminal.save-contents" => {
             if let Some(id) = focused_pane(st) {
                 open_save_contents(st, id);
+            }
+        }
+        // TERM-015：会话录制（pane 级；状态/buffer 在 core）。
+        "terminal.recording-start" => start_recording_on(st, focused_pane(st)),
+        "terminal.recording-stop" => stop_recording_on(st, focused_pane(st)),
+        "terminal.recording-export" => {
+            if let Some(id) = focused_pane(st) {
+                open_export_recording(st, id);
             }
         }
         "view.command-palette" => open_palette(st),
@@ -10841,7 +11204,6 @@ fn toggle_read_only(st: &mut AppState, pane: Option<PaneId>) {
         None => return,
     };
     refresh_pane_view(st, id);
-    st.ui.set_menu_read_only(on);
     eprintln!("[ui] read-only pane={id} on={on}");
     set_status_toast(st, format!("Read Only: {}", if on { "ON" } else { "OFF" }));
 }
@@ -10923,18 +11285,33 @@ fn save_contents_file(
     Ok(path)
 }
 
+/// 录制导出的默认路径：`$HOME/tervo-recording-<epoch>.raw`（原始字节）。
+fn default_recording_path(stamp: u64) -> PathBuf {
+    if let Some(home) = std::env::var_os("HOME").filter(|h| !h.is_empty()) {
+        PathBuf::from(home).join(format!("tervo-recording-{stamp}.raw"))
+    } else {
+        std::env::temp_dir().join(format!("tervo-recording-{stamp}.raw"))
+    }
+}
+
+/// 当前时间戳（秒）；Save Contents / Export Recording 的默认文件名共用。
+fn now_stamp() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 /// Save Contents 入口：锁存目标 pane，给出明确默认路径，由 UI 弹窗编辑/确认。
 fn open_save_contents(st: &mut AppState, pane: PaneId) {
     if !st.panes.contains_key(&pane) {
         set_status_toast(st, "Save Contents: pane 不存在".to_string());
         return;
     }
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let path = default_save_path(stamp);
+    let path = default_save_path(now_stamp());
     st.save_pane = Some(pane);
+    st.save_kind = SaveKind::Contents;
+    st.ui.set_save_title("Save Contents".into());
     st.ui.set_save_path(path.to_string_lossy().as_ref().into());
     st.ui.set_save_status("".into());
     st.ui.set_save_open(true);
@@ -10944,49 +11321,161 @@ fn open_save_contents(st: &mut AppState, pane: PaneId) {
     );
 }
 
-fn save_contents_commit(st: &mut AppState, raw: &str) {
-    let Some(pane) = st.save_pane else {
-        st.ui.set_save_status("Save Contents: 没有目标 pane".into());
+/// 导出录制入口（TERM-015）：同一个路径弹窗，写的是 core 里累积的原始字节。
+fn open_export_recording(st: &mut AppState, pane: PaneId) {
+    let Some(rt) = st.panes.get(&pane) else {
+        set_status_toast(st, "Export Recording: pane 不存在".to_string());
         return;
     };
-    let Some(text) = st.panes.get(&pane).and_then(|rt| rt.handle.contents()) else {
-        let msg = "读取终端内容失败（会话可能已结束）";
-        eprintln!("[ui] save-contents error pane={pane} path={raw:?} error={msg}");
-        st.ui.set_save_status(msg.into());
+    let status = rt.handle.recording_status();
+    if status.bytes == 0 && status.started_at.is_none() {
+        set_status_toast(st, "Export Recording: 该 pane 还没有录制".to_string());
+        eprintln!("[ui] export-recording skipped pane={pane} reason=no-recording");
+        return;
+    }
+    let path = default_recording_path(now_stamp());
+    st.save_pane = Some(pane);
+    st.save_kind = SaveKind::Recording;
+    st.ui.set_save_title("Export Recording".into());
+    st.ui.set_save_path(path.to_string_lossy().as_ref().into());
+    st.ui.set_save_status("".into());
+    st.ui.set_save_open(true);
+    eprintln!(
+        "[ui] export-recording open pane={pane} bytes={} active={} path={}",
+        status.bytes,
+        status.active,
+        path.display()
+    );
+}
+
+/// 开始录制（pane 级；状态和 buffer 都在 core）。
+fn start_recording_on(st: &mut AppState, pane: Option<PaneId>) {
+    let Some(id) = pane.or_else(|| st.ws.active_tab().map(|t| t.focused)) else {
+        return;
+    };
+    let Some(rt) = st.panes.get(&id) else { return };
+    let status = rt.handle.start_recording();
+    eprintln!(
+        "[rec] start pane={id} capacity={} started_at={:?}",
+        status.capacity, status.started_at
+    );
+    set_status_toast(st, "Recording started (raw output)".to_string());
+}
+
+/// 停止录制；保留 buffer 供导出。
+fn stop_recording_on(st: &mut AppState, pane: Option<PaneId>) {
+    let Some(id) = pane.or_else(|| st.ws.active_tab().map(|t| t.focused)) else {
+        return;
+    };
+    let Some(rt) = st.panes.get(&id) else { return };
+    let status = rt.handle.stop_recording();
+    eprintln!(
+        "[rec] stop pane={id} bytes={} chunks={} dropped={}",
+        status.bytes, status.chunks, status.dropped_bytes
+    );
+    set_status_toast(
+        st,
+        format!(
+            "Recording stopped: {} bytes{}",
+            status.bytes,
+            if status.dropped_bytes > 0 {
+                format!(" ({} dropped at cap)", status.dropped_bytes)
+            } else {
+                String::new()
+            }
+        ),
+    );
+}
+
+/// 弹窗提交（Enter/保存）：按 `save_kind` 分派到文本快照或录制导出。
+fn save_contents_commit(st: &mut AppState, raw: &str) {
+    let Some(pane) = st.save_pane else {
+        st.ui.set_save_status("Save: 没有目标 pane".into());
         return;
     };
     let home = std::env::var_os("HOME")
         .filter(|h| !h.is_empty())
         .map(PathBuf::from);
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    match save_contents_file(raw, &text, home.as_deref(), &cwd) {
-        Ok(path) => {
-            st.save_pane = None;
-            st.ui.set_save_open(false);
-            st.ui.set_save_status("".into());
-            eprintln!(
-                "[ui] save-contents ok pane={pane} path={} bytes={}",
-                path.display(),
-                text.len()
-            );
-            set_status_toast(
-                st,
-                format!("Saved {} bytes to {}", text.len(), path.display()),
-            );
-            st.ui.invoke_focus_terminal();
+    match st.save_kind {
+        SaveKind::Contents => {
+            let Some(text) = st.panes.get(&pane).and_then(|rt| rt.handle.contents()) else {
+                let msg = "读取终端内容失败（会话可能已结束）";
+                eprintln!("[ui] save-contents error pane={pane} path={raw:?} error={msg}");
+                st.ui.set_save_status(msg.into());
+                return;
+            };
+            match save_contents_file(raw, &text, home.as_deref(), &cwd) {
+                Ok(path) => {
+                    close_save_dialog(st);
+                    eprintln!(
+                        "[ui] save-contents ok pane={pane} path={} bytes={}",
+                        path.display(),
+                        text.len()
+                    );
+                    set_status_toast(
+                        st,
+                        format!("Saved {} bytes to {}", text.len(), path.display()),
+                    );
+                }
+                Err(err) => {
+                    eprintln!("[ui] save-contents error pane={pane} path={raw:?} error={err}");
+                    st.ui.set_save_status(err.as_str().into());
+                }
+            }
         }
-        Err(err) => {
-            eprintln!("[ui] save-contents error pane={pane} path={raw:?} error={err}");
-            st.ui.set_save_status(err.as_str().into());
+        SaveKind::Recording => {
+            let Some(rt) = st.panes.get(&pane) else {
+                let msg = "导出失败：pane 已关闭，录制 buffer 随会话释放";
+                st.ui.set_save_status(msg.into());
+                return;
+            };
+            let path = match resolve_save_path(raw, home.as_deref(), &cwd) {
+                Ok(path) => path,
+                Err(err) => {
+                    st.ui.set_save_status(err.as_str().into());
+                    return;
+                }
+            };
+            match rt.handle.export_recording(&path) {
+                Ok(exported) => {
+                    close_save_dialog(st);
+                    eprintln!(
+                        "[rec] export pane={pane} path={} bytes={} active={}",
+                        exported.path.display(),
+                        exported.bytes,
+                        exported.active
+                    );
+                    set_status_toast(
+                        st,
+                        format!(
+                            "Exported recording: {} bytes to {}",
+                            exported.bytes,
+                            exported.path.display()
+                        ),
+                    );
+                }
+                Err(err) => {
+                    let msg = format!("写入 {} 失败：{err}", path.display());
+                    eprintln!("[ui] export-recording error pane={pane} path={raw:?} error={err}");
+                    st.ui.set_save_status(msg.into());
+                }
+            }
         }
     }
 }
 
-fn cancel_save_contents(st: &mut AppState) {
+/// 关闭保存弹窗并复位状态（焦点还给终端）。
+fn close_save_dialog(st: &mut AppState) {
     st.save_pane = None;
+    st.save_kind = SaveKind::default();
     st.ui.set_save_open(false);
     st.ui.set_save_status("".into());
     st.ui.invoke_focus_terminal();
+}
+
+fn cancel_save_contents(st: &mut AppState) {
+    close_save_dialog(st);
 }
 
 // ------------------------------------------------------------------- 事件
@@ -12555,6 +13044,7 @@ fn build_window_state(
         search_match_case: false,
         search_regex: false,
         save_pane: None,
+        save_kind: SaveKind::default(),
         commands: command_registry,
         palette_ids: Vec::new(),
         palette_model,
@@ -13630,106 +14120,16 @@ fn register_window_callbacks(
         });
     });
 
-    ui.on_menu_action(move |id, action| {
-        eprintln!("[ui] menu action pane={id} action={action}");
+    // UI-TERM-013：菜单项由 Rust 表驱动生成（config + 插件装饰点），UI 只回传
+    // 目标 pane 与命令 ID；内置 pane 命令按右键的 pane 执行，其余走命令表。
+    ui.on_menu_command(move |id, command| {
+        eprintln!("[ui] menu command pane={id} command={command}");
         let id = id as u64;
-        match action {
-            0 => {
-                runtime::with_window(window_id, |st| split_pane_inner(st, id, Dir::Row));
-            },
-            1 => {
-                runtime::with_window(window_id, |st| split_pane_inner(st, id, Dir::Col));
-            },
-            2 => {
-                runtime::with_window(window_id, |st| close_pane_inner(st, id));
-            },
-            3 => {
-                runtime::with_window(window_id, copy_current_selection);
-            }
-            4 => {
-                runtime::with_window(window_id, paste_into_focused);
-            }
-            5 => {
-                runtime::with_window(window_id, |st| run_command(st, "terminal.find"));
-            }
-            6 => {
-                runtime::with_window(window_id, |st| run_command(st, "terminal.select-all"));
-            }
-            7 => {
-                runtime::with_window(window_id, |st| run_command(st, "terminal.clear"));
-            }
-            8 => {
-                runtime::with_window(window_id, |st| {
-                    if st.broadcast {
-                        set_broadcast(st, false, "menu");
-                        return;
-                    }
-                    let panes = st.ws.active_tab().map(|t| t.panes().len()).unwrap_or(0);
-                    if panes < 2 {
-                        // 单 pane 广播没有意义：直接拒绝，避免“开了但只发一个”的假状态。
-                        eprintln!("[ui] broadcast=on 被拒绝：当前 Tab 只有 {panes} 个 pane");
-                        set_status_toast(
-                            st,
-                            "Broadcast needs 2+ panes / 广播至少需要 2 个窗格".to_string(),
-                        );
-                        return;
-                    }
-                    set_broadcast(st, true, "menu");
-                });
-            }
-            9 => {
-                runtime::with_window(window_id, |st| {
-                    let text = st.menu_link.clone();
-                    if text.is_empty() {
-                        eprintln!("[link] Open Link：当前菜单没有链接");
-                        return;
-                    }
-                    // 菜单只保存展示文本；path 不会与 http(s)/file URI 混淆。
-                    let target = if is_allowed_uri(&text) {
-                        LinkTarget::Uri(text)
-                    } else {
-                        LinkTarget::Path(text)
-                    };
-                    let (cwd, remote) = match st.panes.get(&id) {
-                        Some(rt) => (pane_cwd(rt), rt.remote),
-                        None => (None, false),
-                    };
-                    eprintln!(
-                        "[link] menu open kind={} text={:?}",
-                        target.kind_label(),
-                        target.text()
-                    );
-                    open_target(&target, cwd.as_deref(), remote);
-                });
-            }
-            10 => {
-                runtime::with_window(window_id, |st| {
-                    let text = st.menu_link.clone();
-                    if !text.is_empty() {
-                        eprintln!("[link] copy link={text:?}");
-                        set_clipboard(st, &text);
-                    }
-                });
-            }
-            11 => {
-                runtime::with_window(window_id, |st| toggle_read_only(st, Some(id)));
-            }
-            12 => {
-                runtime::with_window(window_id, |st| reset_pane(st, id, false));
-            }
-            13 => {
-                runtime::with_window(window_id, |st| reset_pane(st, id, true));
-            }
-            14 => {
-                runtime::with_window(window_id, |st| open_save_contents(st, id));
-            }
-            15 => {
-                runtime::with_window(window_id, |st| undo_pane_swap(st));
-            }
-            _ => {}
-        }
-        // Save Contents 需要把焦点交给输入路径的 TextInput，不能抢回终端。
-        if action != 14 {
+        let command = command.to_string();
+        runtime::with_window(window_id, |st| run_menu_command(st, id, &command));
+        // Save Contents / Export Recording 需要把焦点交给输入路径的 TextInput，
+        // 不能抢回终端；其它菜单命令沿用改造前行为，关闭菜单即还焦点。
+        if command != "terminal.save-contents" && command != "terminal.recording-export" {
             runtime::with_window(window_id, |st| st.ui.invoke_focus_terminal());
         }
     });

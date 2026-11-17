@@ -377,6 +377,11 @@ pub struct CommandDecl {
     pub title: String,
     #[serde(default)]
     pub description: String,
+    /// true = 宿主把这条命令作为**终端右键菜单装饰项**追加到菜单末尾
+    /// （UI-TERM-013 插件装饰点）；点击后以完整命令 ID 回调宿主命令通道。
+    /// 仍需插件 enabled + 权限已确认；旧清单缺字段 = false。
+    #[serde(default)]
+    pub menu: bool,
 }
 
 impl CommandDecl {

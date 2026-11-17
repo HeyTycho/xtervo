@@ -1776,6 +1776,43 @@ impl PluginStore {
             .collect()
     }
 
+    /// 终端右键菜单装饰项：enabled + 权限已确认且 `[[commands]] menu = true`。
+    ///
+    /// 与 [`Self::palette_commands`] 同一条命令通道：宿主把完整 ID 放进菜单，
+    /// 点击后走 `run_command` → [`Self::spawn_command_for`]。插件只声明
+    /// “加一项”，菜单位置/样式由宿主决定。
+    pub fn menu_commands(&mut self) -> Vec<(&'static str, String)> {
+        let mut found: Vec<(String, String)> = Vec::new();
+        for entry in &self.entries {
+            let Some(manifest) = &entry.manifest else {
+                continue;
+            };
+            if !entry.supported
+                || !self.state.is_enabled(&manifest.id)
+                || !self
+                    .state
+                    .approved_for(&manifest.id, &manifest.permission_fingerprint())
+            {
+                continue;
+            }
+            for command in &manifest.commands {
+                if !command.menu {
+                    continue;
+                }
+                found.push((
+                    manifest.full_command_id(&command.id),
+                    command.title.clone(),
+                ));
+            }
+        }
+        found.sort_by_key(|(_, title)| title.to_lowercase());
+        found.truncate(12);
+        found
+            .into_iter()
+            .map(|(id, title)| (self.intern(&id), title))
+            .collect()
+    }
+
     /// UI 运行命令：识别 → 发 supervisor → 独立线程等结果；立即返回。
     ///
     /// `window_id` 是发起命令的窗口；插件收到 `command.invoke.window_id` 后可用

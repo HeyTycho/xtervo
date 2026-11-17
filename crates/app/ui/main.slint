@@ -60,6 +60,17 @@ export struct HotkeyRow {
     conflict: bool,
 }
 
+/// 终端右键菜单的一行（UI-TERM-013：表驱动，Rust 按 config + 插件注册生成）。
+export struct MenuEntry {
+    label: string,
+    shortcut: string,
+    danger: bool,
+    active: bool,
+    separator: bool,
+    /// 点击时回调给 Rust 的命令 ID（内置命令 / 插件完整 ID / link.* 特殊 ID）。
+    command: string,
+}
+
 /// Settings → Plugins 的一行：v3 行带操作按钮；v1/v2 行 supported=false。
 export struct PluginRowView {
     key: string,
@@ -239,19 +250,6 @@ component MenuGroupLabel inherits Rectangle {
 }
 
 /// 右键菜单分隔：只画一条低对比度横线，不占菜单项高度。
-component ContextMenuDivider inherits Rectangle {
-    height: 9px;
-    background: transparent;
-    Rectangle {
-        x: 6px;
-        y: 4px;
-        width: parent.width - 12px;
-        height: 1px;
-        background: Palette.colors.border;
-        opacity: 0.55;
-    }
-}
-
 /// 终端右键菜单项：30px 行高 / 14px 标签 + 可选快捷键提示，无图标。
 /// 只在终端 pane 菜单里使用，TabBar/Profile 菜单仍用紧凑的 MenuRow（行为不变）。
 component ContextMenuRow inherits Rectangle {
@@ -315,6 +313,34 @@ component ContextMenuRow inherits Rectangle {
         horizontal-alignment: right;
         vertical-alignment: center;
         opacity: 0.92;
+    }
+}
+
+/// 菜单表的一行：普通项复用 ContextMenuRow，separator=true 时画分隔线。
+/// 高度与 Rust 侧 menu-content-h 的计算保持一致（30px / 9px）。
+component ContextMenuEntry inherits Rectangle {
+    in property <MenuEntry> entry;
+    callback picked(string);
+
+    height: entry.separator ? 9px : 30px;
+
+    if entry.separator : Rectangle {
+        x: 6px;
+        y: 4px;
+        width: parent.width - 12px;
+        height: 1px;
+        background: Palette.colors.border;
+        opacity: 0.55;
+    }
+
+    if !entry.separator : ContextMenuRow {
+        width: 100%;
+        height: 100%;
+        label: entry.label;
+        shortcut: entry.shortcut;
+        danger: entry.danger;
+        active: entry.active;
+        picked => { root.picked(entry.command); }
     }
 }
 
@@ -1330,11 +1356,10 @@ export component MainWindow inherits Window {
     in-out property <bool> menu-open: false;
     in property <length> menu-x: 0px;
     in property <length> menu-y: 0px;
+    /// 菜单作用的目标 pane（回调时原样带回 Rust）。
     in property <int> menu-pane: -1;
-    // 右键那格命中的链接（OSC 8 优先，普通 URL 兜底）；空 = 不显示 Open/Copy Link。
-    in-out property <string> menu-link: "";
-    /// 右键目标 pane 当前是否 Read Only（菜单项标签由 Rust 在开菜单时写入）。
-    in property <bool> menu-read-only: false;
+    /// 表驱动菜单项：Rust 每次打开菜单时按 config + 插件装饰点重建。
+    in property <[MenuEntry]> menu-items: [];
     // 链接打开失败等短暂提示（底部浮层，Rust 侧 4 秒后清空）。
     in-out property <string> link-status: "";
     // 插件状态提供者的最小状态栏（底部一行文本；空 = 隐藏，不占布局）。
@@ -1350,11 +1375,10 @@ export component MainWindow inherits Window {
     in property <[string]> status-items: [];
     in-out property <string> plugin-status-tooltip: "";
     // 终端右键菜单：宽度按最长标签 + 快捷键提示留足，窄窗口自动收窄；
-    // 内容高度固定（菜单项 30px；无分组标题），超过内容区时菜单内滚动，
-    // 不做整块溢出到窗口外。
+    // 内容高度由 Rust 按菜单表计算（30px/项 + 9px/分隔线 + 12px padding），
+    // 超过内容区时菜单内滚动，不做整块溢出到窗口外。
     property <length> menu-width: Math.max(180px, Math.min(280px, root.width - 16px));
-    property <length> menu-content-h: (root.menu-link != "" ? 498px : 438px)
-        + (root.pane-undo-available ? 30px : 0px);
+    in property <length> menu-content-h: 438px;
     property <length> menu-view-h: Math.max(80px,
         Math.min(root.menu-content-h, root.height - root.tabbar-height - 12px));
     // 锚点同原生菜单：优先右/下，放不下翻到左/上，再放不下才夹进窗口。
@@ -1394,7 +1418,8 @@ export component MainWindow inherits Window {
     callback menu-dismissed();
     /// 由分隔线/边缘等非 pane 控件发起：按内容区坐标找最近的 pane 开菜单
     callback pane-right-clicked-at(length, length);
-    callback menu-action(int, int);
+    /// 表驱动菜单点击：pane 目标 + 命令 ID（内置/插件/link.*）。
+    callback menu-command(int, string);
     callback pane-mouse-down(int, length, length, int, int);
     callback pane-mouse-move(int, length, length, int, int);
     callback pane-mouse-up(int, length, length, int, int);
@@ -2020,6 +2045,8 @@ export component MainWindow inherits Window {
 
     // Save Contents：Slint 1.18 没有原生文件对话框，这里用显式路径输入 + 错误提示。
     in-out property <bool> save-open: false;
+    /// 弹窗标题：Save Contents（文本快照）/ Export Recording（TERM-015 原始字节）。
+    in-out property <string> save-title: "Save Contents";
     in-out property <string> save-path: "";
     in-out property <string> save-status: "";
     callback save-commit(string);
@@ -3486,96 +3513,14 @@ export component MainWindow inherits Window {
                             padding: 6px;
                             spacing: 0px;
 
-                            if root.menu-link != "" : ContextMenuRow {
-                                label: Lang.t("Open Link", "打开链接");
-                                picked => { root.menu-open = false; root.menu-action(root.menu-pane, 9); }
-                            }
-                            if root.menu-link != "" : ContextMenuRow {
-                                label: Lang.t("Copy Link", "复制链接");
-                                picked => { root.menu-open = false; root.menu-action(root.menu-pane, 10); }
-                            }
-
-                            if root.menu-link != "" : ContextMenuDivider {}
-
-                            ContextMenuRow {
-                                label: Lang.t("Copy", "复制");
-                                shortcut: "Ctrl+Shift+C";
-                                picked => { root.menu-open = false; root.menu-action(root.menu-pane, 3); }
-                            }
-                            ContextMenuRow {
-                                label: Lang.t("Paste", "粘贴");
-                                shortcut: "Ctrl+Shift+V";
-                                picked => { root.menu-open = false; root.menu-action(root.menu-pane, 4); }
-                            }
-
-                            ContextMenuDivider {}
-
-                            ContextMenuRow {
-                                label: Lang.t("Split Right", "向右拆分");
-                                shortcut: "Ctrl+Shift+E";
-                                picked => { root.menu-open = false; root.menu-action(root.menu-pane, 0); }
-                            }
-                            ContextMenuRow {
-                                label: Lang.t("Split Down", "向下拆分");
-                                shortcut: "Ctrl+Shift+D";
-                                picked => { root.menu-open = false; root.menu-action(root.menu-pane, 1); }
-                            }
-                            ContextMenuRow {
-                                label: Lang.t("Close Pane", "关闭窗格");
-                                shortcut: "Ctrl+Shift+W";
-                                danger: true;
-                                picked => { root.menu-open = false; root.menu-action(root.menu-pane, 2); }
-                            }
-                            // 拖拽重排后的撤销：只在有可撤销交换时出现，避免空菜单项。
-                            if root.pane-undo-available : ContextMenuRow {
-                                label: Lang.t("Undo Pane Move", "撤销窗格移动");
-                                shortcut: "Ctrl+Alt+Z";
-                                picked => { root.menu-open = false; root.menu-action(root.menu-pane, 15); }
-                            }
-                            ContextMenuRow {
-                                label: root.broadcast
-                                    ? Lang.t("Broadcast Input: ON", "广播输入：开")
-                                    : Lang.t("Broadcast Input: OFF", "广播输入：关");
-                                active: root.broadcast;
-                                picked => { root.menu-open = false; root.menu-action(root.menu-pane, 8); }
-                            }
-
-                            ContextMenuDivider {}
-
-                            ContextMenuRow {
-                                label: Lang.t("Find", "查找");
-                                shortcut: "Ctrl+F";
-                                picked => { root.menu-open = false; root.menu-action(root.menu-pane, 5); }
-                            }
-                            ContextMenuRow {
-                                label: Lang.t("Select All", "全选");
-                                picked => { root.menu-open = false; root.menu-action(root.menu-pane, 6); }
-                            }
-                            ContextMenuRow {
-                                label: Lang.t("Clear", "清除");
-                                picked => { root.menu-open = false; root.menu-action(root.menu-pane, 7); }
-                            }
-
-                            ContextMenuDivider {}
-
-                            ContextMenuRow {
-                                label: root.menu-read-only
-                                    ? Lang.t("Read Only: ON", "只读：开")
-                                    : Lang.t("Read Only: OFF", "只读：关");
-                                active: root.menu-read-only;
-                                picked => { root.menu-open = false; root.menu-action(root.menu-pane, 11); }
-                            }
-                            ContextMenuRow {
-                                label: Lang.t("Reset", "重置");
-                                picked => { root.menu-open = false; root.menu-action(root.menu-pane, 12); }
-                            }
-                            ContextMenuRow {
-                                label: Lang.t("Reset and Clear", "重置并清空");
-                                picked => { root.menu-open = false; root.menu-action(root.menu-pane, 13); }
-                            }
-                            ContextMenuRow {
-                                label: Lang.t("Save Contents…", "保存内容…");
-                                picked => { root.menu-open = false; root.menu-action(root.menu-pane, 14); }
+                            // UI-TERM-013：菜单项来自 Rust 的 MenuEntry 模型
+                            //（内置默认表 / config `[[terminal_menu]]` / 插件装饰点）。
+                            for item in root.menu-items : ContextMenuEntry {
+                                entry: item;
+                                picked(command) => {
+                                    root.menu-open = false;
+                                    root.menu-command(root.menu-pane, command);
+                                }
                             }
                         }
                     }
@@ -8242,7 +8187,7 @@ export component MainWindow inherits Window {
                 spacing: 9px;
 
                 Text {
-                    text: "Save Contents";
+                    text: root.save-title;
                     color: Palette.colors.text;
                     font-size: 15px;
                     font-weight: 600;

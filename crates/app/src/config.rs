@@ -258,6 +258,37 @@ pub fn resolve_background_image(input: &str) -> Result<Option<PathBuf>, String> 
     }
 }
 
+/// `[[terminal_menu]]`：pane 右键菜单的一项（表驱动，按出现顺序排列）。
+///
+/// 语义：`terminal_menu` 非空时**整张菜单按这里的顺序生成**（替换内置默认表）——
+/// 删一项 = 不写它；排序 = 调整顺序；加一项 = 写一个新的 `id`（内置命令、
+/// 插件命令 `<plugin-id>.<command>` 或配置里自定义的 command ID）。
+/// 空数组/缺省 = 使用内置默认菜单（行为与改造前逐项一致）。
+///
+/// 内置特殊 ID：
+/// - `link.open` / `link.copy`：右键命中链接时才显示（与默认菜单一致）；
+/// - `terminal.toggle-broadcast` / `terminal.toggle-read-only`：标签带 ON/OFF；
+/// - `pane.*` / `terminal.*`：既有命令表 ID；
+/// - `separator = true`（或 `id = "-"`/`"separator"`）：分隔线。
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalMenuItem {
+    /// 命令 ID；分隔线项可留空（`separator = true`）。
+    #[serde(default)]
+    pub id: String,
+    /// 覆盖显示标签；空 = 取内置本地化标签或命令标题。
+    #[serde(default)]
+    pub label: String,
+    /// 覆盖快捷键提示；空 = 取命令当前生效绑定（含 `[[hotkeys]]` 覆盖）。
+    #[serde(default)]
+    pub shortcut: String,
+    /// 破坏性项标红；`None` = 沿用内置默认（如 Close Pane 为 true）。
+    #[serde(default)]
+    pub danger: Option<bool>,
+    /// true = 分隔线（忽略 `id`）。
+    #[serde(default)]
+    pub separator: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -411,6 +442,10 @@ pub struct Config {
     /// 空 = 全部使用命令表默认绑定；旧配置没有该字段时按空处理。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hotkeys: Vec<HotkeyOverride>,
+    /// pane 右键菜单表（UI-TERM-013）：非空时按此顺序替换内置菜单。
+    /// 空 = 内置默认菜单（默认行为不变）；插件声明的菜单项始终追加在末尾。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub terminal_menu: Vec<TerminalMenuItem>,
     /// 本版本不认识的键，原样保留（前向兼容）。
     #[serde(flatten)]
     pub extra: toml::Table,
@@ -480,6 +515,7 @@ impl Default for Config {
             sidebar_width: 240.0,
             sidebar_section: 0,
             hotkeys: Vec::new(),
+            terminal_menu: Vec::new(),
             extra: toml::Table::new(),
         }
     }
@@ -1308,6 +1344,45 @@ mod tests {
     fn empty_hotkeys_are_omitted_from_toml() {
         let text = toml::to_string_pretty(&Config::default()).unwrap();
         assert!(!text.contains("hotkeys"), "{text}");
+    }
+
+    #[test]
+    fn terminal_menu_table_roundtrips_and_default_is_empty() {
+        // 默认空表 = 内置菜单（默认行为不变），且不往用户 config 里写噪音。
+        assert!(Config::default().terminal_menu.is_empty());
+        let text = toml::to_string_pretty(&Config::default()).unwrap();
+        assert!(!text.contains("terminal_menu"), "{text}");
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"[[terminal_menu]]
+id = "terminal.copy"
+label = "Copy Text"
+shortcut = "Ctrl+C"
+
+[[terminal_menu]]
+separator = true
+
+[[terminal_menu]]
+id = "terminal.recording-start"
+danger = true
+"#,
+        )
+        .unwrap();
+        let cfg = Config::load_from(&path);
+        assert_eq!(cfg.terminal_menu.len(), 3, "config 表按文件顺序读入");
+        assert_eq!(cfg.terminal_menu[0].id, "terminal.copy");
+        assert_eq!(cfg.terminal_menu[0].label, "Copy Text");
+        assert_eq!(cfg.terminal_menu[0].shortcut, "Ctrl+C");
+        assert!(cfg.terminal_menu[1].separator);
+        assert_eq!(cfg.terminal_menu[2].id, "terminal.recording-start");
+        assert_eq!(cfg.terminal_menu[2].danger, Some(true));
+
+        cfg.save_to(&path);
+        let again = Config::load_from(&path);
+        assert_eq!(again.terminal_menu, cfg.terminal_menu);
     }
 
     #[test]

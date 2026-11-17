@@ -84,7 +84,11 @@ fn manifest(
 ) -> String {
     let commands: String = COMMANDS
         .iter()
-        .map(|command| format!("[[commands]]\nid = \"{command}\"\ntitle = \"{command}\"\n"))
+        .map(|command| {
+            // "context" 声明为菜单装饰项（UI-TERM-013）：宿主菜单应能看到它。
+            let menu = if *command == "context" { "menu = true\n" } else { "" };
+            format!("[[commands]]\nid = \"{command}\"\ntitle = \"{command}\"\n{menu}")
+        })
         .collect();
     format!(
         r#"api = 3
@@ -1053,6 +1057,13 @@ fn reload_refreshes_manifest_without_restarting_host_and_permission_change_requi
             .iter()
             .any(|(_, title)| title.contains("Reloaded Greet")),
         "{palette:?}"
+    );
+    // 声明了 menu = true 的命令只进右键菜单装饰点，不要求用户改配置。
+    let menu = store.menu_commands();
+    assert!(
+        menu.iter()
+            .any(|(id, title)| title == "context" && id.ends_with(".context")),
+        "{menu:?}"
     );
 
     // 权限变化：reload 必须停止旧进程并要求重新确认，不能静默继承授权。
