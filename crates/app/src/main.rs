@@ -1480,6 +1480,7 @@ const SETTINGS_CATALOG: &[SettingsCatalogEntry] = &[
     SettingsCatalogEntry { cat: 1, section: "scrollback", en: "Unlimited scrollback", zh: "无限回滚", keywords: "unlimited scrollback history cap memory 无限 历史 内存" },
     SettingsCatalogEntry { cat: 1, section: "behavior", en: "Copy on select", zh: "选中即复制", keywords: "copy select clipboard 复制 选区" },
     SettingsCatalogEntry { cat: 1, section: "behavior", en: "Confirm before closing", zh: "关闭前确认", keywords: "confirm close window exit 确认 关闭" },
+    SettingsCatalogEntry { cat: 1, section: "behavior", en: "When closing a tab", zh: "关闭标签时会话", keywords: "close tab session end background detach keep 关闭 标签 会话 后台 保留" },
     SettingsCatalogEntry { cat: 1, section: "behavior", en: "Restore session on startup", zh: "启动时恢复会话", keywords: "restore session startup workspace tabs splits cwd 会话 恢复 启动" },
     SettingsCatalogEntry { cat: 1, section: "behavior", en: "Confirm multi-line paste", zh: "多行粘贴前确认", keywords: "paste multiline confirm 粘贴 确认 多行" },
     SettingsCatalogEntry { cat: 1, section: "behavior", en: "Right click", zh: "右键", keywords: "right click menu paste clipboard 右键" },
@@ -3675,6 +3676,7 @@ fn sync_reload_ui(st: &mut AppState) {
     st.ui.set_background_dim(st.cfg.background_dim);
     st.ui.set_cfg_copy_on_select(st.cfg.copy_on_select);
     st.ui.set_cfg_confirm_close(st.cfg.confirm_close);
+    st.ui.set_cfg_close_action(st.cfg.close_action.as_str().into());
     st.ui
         .set_cfg_restore_session(st.cfg.restore_session_on_startup);
     st.ui.set_cfg_confirm_paste(st.cfg.confirm_multiline_paste);
@@ -7495,6 +7497,56 @@ fn needs_close_confirm(tabs: usize, panes: usize, enabled: bool) -> bool {
     enabled && (tabs > 1 || panes > 1)
 }
 
+/// 关闭确认弹窗里列出的会话名（UI-WIN-008）。
+///
+/// 每个 Tab 一行；多窗格的 Tab 标注窗格数，避免用户以为只是一次 shell。
+/// 超过 `max` 行时只列前 `max - 1` 行并加一条汇总，弹窗高度不会被撑爆。
+fn close_confirm_session_lines(
+    tabs: &[(String, usize)],
+    lang: &str,
+    max: usize,
+) -> Vec<String> {
+    let max = max.max(1);
+    let shown = if tabs.len() > max {
+        max.saturating_sub(1)
+    } else {
+        tabs.len()
+    };
+    let mut lines = Vec::with_capacity(shown + 1);
+    for (title, panes) in tabs.iter().take(shown) {
+        let title = title.trim();
+        let title = if title.is_empty() { "Terminal" } else { title };
+        if *panes > 1 {
+            if lang == "zh" {
+                lines.push(format!("{title} · {panes} 个窗格"));
+            } else {
+                lines.push(format!("{title} · {panes} panes"));
+            }
+        } else {
+            lines.push(title.to_string());
+        }
+    }
+    if tabs.len() > shown {
+        let rest = tabs.len() - shown;
+        if lang == "zh" {
+            lines.push(format!("… 还有 {rest} 个会话"));
+        } else {
+            lines.push(format!("… and {rest} more"));
+        }
+    }
+    lines
+}
+
+/// 关闭 Tab/Pane 的会话处理：只认 `background`，其余（含旧配置/手写错值）
+/// 一律按 `end` 处理，避免非法值让关闭路径变成“既不结束也不保留”的悬空状态。
+fn normalize_close_action(value: &str) -> &'static str {
+    if value == "background" {
+        "background"
+    } else {
+        "end"
+    }
+}
+
 /// 立即关闭一个窗口。必须从事件循环回调/延迟任务调用：如果调用方正持有该
 /// 窗口的 AppState 可变借用，drop runtime 会释放仍被借用的 RefCell。
 fn close_window_now(id: WindowId, reason: &str) {
@@ -7538,8 +7590,21 @@ fn request_close(st: &mut AppState) {
         } else {
             format!("将结束 {tabs} 个标签、{panes} 个终端会话，子进程会被终止。")
         };
-        eprintln!("[ui] close confirm: window={window_id} tabs={tabs} panes={panes}");
+        // 列出具体会话名，用户能确认自己关的是哪几个 shell（多窗格的 Tab 标数量）。
+        let sessions: Vec<(String, usize)> = st
+            .ws
+            .tabs
+            .iter()
+            .map(|tab| (tab.title.clone(), tab.panes().len()))
+            .collect();
+        let names = close_confirm_session_lines(&sessions, st.cfg.lang(), 6);
+        eprintln!(
+            "[ui] close confirm: window={window_id} tabs={tabs} panes={panes} names={names:?}"
+        );
+        let model: Vec<slint::SharedString> = names.into_iter().map(Into::into).collect();
         st.pending_close_window = Some(window_id);
+        st.ui
+            .set_confirm_sessions(ModelRc::from(Rc::new(VecModel::from(model))));
         st.ui.set_confirm_text(text.as_str().into());
         st.ui.set_confirm_open(true);
         return;
@@ -13634,6 +13699,7 @@ fn init_window_ui(st: &mut AppState) {
 
     st.ui.set_cfg_copy_on_select(st.cfg.copy_on_select);
     st.ui.set_cfg_confirm_close(st.cfg.confirm_close);
+    st.ui.set_cfg_close_action(st.cfg.close_action.as_str().into());
     st.ui
         .set_cfg_restore_session(st.cfg.restore_session_on_startup);
     st.ui.set_cfg_confirm_paste(st.cfg.confirm_multiline_paste);
@@ -15579,6 +15645,17 @@ fn register_window_callbacks(
             st.ui.set_cfg_confirm_close(st.cfg.confirm_close);
             st.cfg.save();
             eprintln!("[ui] confirm_close={}", st.cfg.confirm_close);
+        });
+    });
+
+    // UI-WIN-008：close_action 之前只能在 config.toml 手改，设置页补入口。
+    ui.on_set_close_action(move |value| {
+        runtime::with_window(window_id, |st| {
+            let action = normalize_close_action(value.as_str());
+            st.cfg.close_action = action.to_string();
+            st.ui.set_cfg_close_action(action.into());
+            st.cfg.save();
+            eprintln!("[ui] close_action={action}");
         });
     });
 
@@ -18660,6 +18737,44 @@ mod tests {
         assert!(needs_close_confirm(1, 3, true));
         // 用户在配置里关掉确认
         assert!(!needs_close_confirm(5, 9, false));
+    }
+
+    #[test]
+    fn close_confirm_lists_session_names_with_pane_counts() {
+        let tabs = vec![
+            ("Terminal 1".to_string(), 1),
+            ("build".to_string(), 2),
+            ("  ".to_string(), 1),
+        ];
+        assert_eq!(
+            close_confirm_session_lines(&tabs, "en", 6),
+            vec!["Terminal 1", "build · 2 panes", "Terminal"]
+        );
+        assert_eq!(
+            close_confirm_session_lines(&tabs, "zh", 6),
+            vec!["Terminal 1", "build · 2 个窗格", "Terminal"]
+        );
+        // 超长列表截断：max-1 行明细 + 一行汇总，弹窗最多 6 行。
+        let many: Vec<(String, usize)> = (0..10)
+            .map(|i| (format!("tab-{i}"), 1))
+            .collect();
+        let lines = close_confirm_session_lines(&many, "en", 6);
+        assert_eq!(lines.len(), 6);
+        assert_eq!(lines[0], "tab-0");
+        assert_eq!(lines[4], "tab-4");
+        assert_eq!(lines[5], "… and 5 more");
+        // 没有 Tab（异常路径）不产生空行。
+        assert!(close_confirm_session_lines(&[], "en", 6).is_empty());
+    }
+
+    #[test]
+    fn close_action_is_whitelisted_when_set_from_ui() {
+        // 设置页只应写入两个合法值；非法输入回退 end（与配置默认一致）。
+        assert_eq!(normalize_close_action("background"), "background");
+        assert_eq!(normalize_close_action("end"), "end");
+        assert_eq!(normalize_close_action("Background"), "end");
+        assert_eq!(normalize_close_action("keep"), "end");
+        assert_eq!(normalize_close_action(""), "end");
     }
 
     #[test]

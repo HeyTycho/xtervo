@@ -1480,6 +1480,8 @@ export component MainWindow inherits Window {
     // 关闭确认弹窗
     in-out property <bool> confirm-open: false;
     in-out property <string> confirm-text: "";
+    /// 将受影响的会话名（每个 Tab 一行，多窗格标注数量）；由 Rust 侧填充。
+    in-out property <[string]> confirm-sessions: [];
     callback confirm-accept();
     callback confirm-cancel();
     // Tab 重命名：内联输入框（Enter 提交 / Esc 取消）
@@ -1492,6 +1494,8 @@ export component MainWindow inherits Window {
     // 设置项开关状态（由 Rust 侧从 Config 下发）
     in-out property <bool> cfg-copy-on-select: true;
     in-out property <bool> cfg-confirm-close: true;
+    /// 关闭 Tab/Pane 时会话处理："end"（结束进程）| "background"（保留可重连）。
+    in-out property <string> cfg-close-action: "end";
     /// 启动时自动恢复上次退出快照（默认关 = 保持旧行为）。
     in-out property <bool> cfg-restore-session: false;
     in-out property <bool> cfg-sidebar-visible: false;
@@ -1553,6 +1557,7 @@ export component MainWindow inherits Window {
     in-out property <string> broadcast-warning: "";
     callback toggle-copy-on-select();
     callback toggle-confirm-close();
+    callback set-close-action(string);
     callback toggle-restore-session();
     callback toggle-confirm-paste();
     callback set-right-click(string);
@@ -4676,6 +4681,16 @@ export component MainWindow inherits Window {
                                 SettingsSwitch {
                                     on: root.cfg-confirm-close;
                                     toggled => { root.toggle-confirm-close(); }
+                                }
+                            }
+                            SettingField {
+                                label: Lang.t("When closing a tab", "关闭标签时会话");
+                                description: Lang.t("End the shell, or keep it in Background Sessions for reattach.", "结束 shell，或保留到后台会话列表等待重连。");
+                                Segmented {
+                                    options: [Lang.t("End session", "结束会话"), Lang.t("Keep in background", "后台保留")];
+                                    values: ["end", "background"];
+                                    value: root.cfg-close-action;
+                                    picked(v) => { root.set-close-action(v); }
                                 }
                             }
                             SettingRow {
@@ -8005,10 +8020,12 @@ export component MainWindow inherits Window {
     }
 
     if root.confirm-open : Rectangle {
+        // 会话名最多列 6 行（Rust 侧同样截断），弹窗随行数增高。
+        property <length> sessions-h: Math.min(root.confirm-sessions.length, 6) * 17px;
         x: (root.width - 340px) / 2;
-        y: (root.height - 150px) / 2;
+        y: Math.max(8px, (root.height - (150px + self.sessions-h)) / 2);
         width: 340px;
-        height: 150px;
+        height: 150px + self.sessions-h;
         background: Palette.colors.raise;
         border-radius: 10px;
         border-width: 1px;
@@ -8032,6 +8049,15 @@ export component MainWindow inherits Window {
                 color: Palette.colors.subtext;
                 font-size: 12px;
                 wrap: word-wrap;
+            }
+            for session[i] in root.confirm-sessions : Text {
+                text: session;
+                color: Palette.colors.text;
+                font-size: 11px;
+                overflow: elide;
+                // 第一行加一点与说明文字的间距，后续行紧贴。
+                height: 15px;
+                vertical-alignment: center;
             }
             HorizontalLayout {
                 alignment: end;
