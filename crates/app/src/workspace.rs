@@ -221,6 +221,23 @@ pub struct Divider {
 }
 
 
+/// UI-PANE-007：最大化单个 pane 的**视图**布局（纯函数，便于单测）。
+///
+/// 只在 `pane` 确实属于当前布局时返回 `Some`：pane 独占整个内容区、分隔条全部
+/// 隐藏。分屏树与比例不变，因此不改 Session/快照；传错 pane id 返回 `None`，
+/// 调用方保持原布局。
+pub fn zoom_layout(
+    pane: PaneId,
+    content: Rect,
+    rects: &[(PaneId, Rect)],
+    dividers: &[Divider],
+) -> Option<(Vec<(PaneId, Rect)>, Vec<Divider>)> {
+    if !rects.iter().any(|(id, _)| *id == pane) {
+        return None;
+    }
+    Some((vec![(pane, content)], Vec::new()))
+}
+
 /// 一个标签页。
 #[derive(Clone, Debug)]
 pub struct Tab {
@@ -769,5 +786,25 @@ mod tests {
         assert_eq!(titles(&ws), vec!["p", "p2", "u"]);
         assert_eq!(ws.active, 2);
         assert_eq!(ws.tabs[ws.active].title, "u");
+    }
+
+    #[test]
+    fn zoom_layout_collapses_view_without_touching_split_tree() {
+        let content = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let rects = vec![
+            (1, Rect::new(0.0, 0.0, 400.0, 600.0)),
+            (2, Rect::new(400.0, 0.0, 400.0, 600.0)),
+        ];
+        let dividers = vec![Divider {
+            path: vec![],
+            rect: Rect::new(399.0, 0.0, 2.0, 600.0),
+            parent: content,
+            dir: Dir::Row,
+        }];
+        let (zoomed, bars) = zoom_layout(2, content, &rects, &dividers).expect("pane 存在");
+        assert_eq!(zoomed, vec![(2, content)], "最大化 pane 独占内容区");
+        assert!(bars.is_empty(), "最大化时不显示分隔条");
+        assert_eq!(rects.len(), 2, "原布局不被修改，还原靠它");
+        assert!(zoom_layout(99, content, &rects, &dividers).is_none(), "陌生 pane 不改布局");
     }
 }

@@ -576,6 +576,7 @@ pub fn builtin() -> Registry {
         ("tab.rename", "Rename Tab", Category::Workspace, None),
         ("tab.rename-undo", "Undo Tab Rename", Category::Workspace, Some("ctrl+shift+z")),
         ("pane.split-right", "Split Right", Category::Pane, Some("ctrl+shift+e")),
+        ("pane.toggle-zoom", "Toggle Pane Zoom", Category::Pane, Some("ctrl+shift+m")),
         ("pane.split-down", "Split Down", Category::Pane, Some("ctrl+shift+d")),
         ("pane.close", "Close Pane", Category::Pane, Some("ctrl+shift+w")),
         ("pane.undo-swap", "Undo Pane Move", Category::Pane, Some("ctrl+alt+z")),

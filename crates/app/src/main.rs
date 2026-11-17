@@ -718,6 +718,8 @@ struct AppState {
     menu_link: String,
     /// 广播输入：开启后键入同时发给当前 Tab 的所有 pane
     broadcast: bool,
+    /// UI-PANE-007：被最大化的 pane（纯视图状态；不写快照、不改分屏树）。
+    zoomed: Option<PaneId>,
     /// 开启广播时当前 Tab 的 pane 集合：与活动 Tab 完全不相交 = 已切 Tab。
     /// 用集合相交而不是单个 key，关掉同 Tab 的一个 pane 不会误判为切 Tab。
     broadcast_scope: Vec<PaneId>,
@@ -7469,6 +7471,11 @@ fn restore_window_snapshot(st: &mut AppState, window: &session::WindowSnapshot) 
 
 fn split_pane_inner(st: &mut AppState, id: PaneId, dir: Dir) {
     eprintln!("[ws] split pane={id} dir={dir:?}");
+    // 最大化时新增的 pane 会被挡住；先还原，保证用户立刻看到新分屏。
+    if st.zoomed.is_some() {
+        st.zoomed = None;
+        st.ui.set_pane_zoomed(false);
+    }
     let Some(tab_index) = st.ws.tab_of(id) else {
         return;
     };
@@ -8226,7 +8233,7 @@ fn refresh_views_impl(st: &mut AppState, resize_terminals: bool) {
     if st.content.w < 1.0 || st.content.h < 1.0 {
         return;
     }
-    let (rects, focused, dividers) = {
+    let (mut rects, focused, mut dividers) = {
         let Some(tab) = st.ws.active_tab() else {
             return;
         };
@@ -8238,6 +8245,30 @@ fn refresh_views_impl(st: &mut AppState, resize_terminals: bool) {
         }
         (rects, tab.focused, dividers)
     };
+
+    // UI-PANE-007：最大化只是视图折叠。pane 关了 / 焦点换到别的 pane / 切 Tab
+    // 都自动还原，避免“看不见的 pane 收键盘”。分屏树与比例始终不动。
+    if let Some(zoom) = st.zoomed {
+        let live = st.panes.contains_key(&zoom);
+        let in_tab = st
+            .ws
+            .active_tab()
+            .map(|t| t.panes().contains(&zoom))
+            .unwrap_or(false);
+        if !live || !in_tab || focused != zoom {
+            st.zoomed = None;
+            eprintln!("[pane] zoom cleared pane={zoom} live={live} in_tab={in_tab}");
+        }
+    }
+    if let Some(zoom) = st.zoomed {
+        if let Some((zr, zd)) = workspace::zoom_layout(zoom, st.content, &rects, &dividers) {
+            rects = zr;
+            dividers = zd;
+        }
+    }
+    if st.ui.get_pane_zoomed() != st.zoomed.is_some() {
+        st.ui.set_pane_zoomed(st.zoomed.is_some());
+    }
 
     for (id, rect) in &rects {
         if let Some(rt) = st.panes.get_mut(id) {
@@ -11379,6 +11410,32 @@ fn palette_accept(st: &mut AppState) {
 }
 
 /// 执行一条命令。ID 与 `commands::builtin()` 一一对应。
+/// UI-PANE-007：最大化/还原聚焦 pane（Ctrl+Shift+M）。
+///
+/// 只改 `st.zoomed` 视图状态：不修改 `Tab.root`、比例或快照，因此重启后
+/// 布局与最大化前完全一致（除非用户本来就要保存那个布局）。
+fn toggle_pane_zoom(st: &mut AppState) {
+    let Some(tab) = st.ws.active_tab() else {
+        return;
+    };
+    let focused = tab.focused;
+    let pane_count = tab.panes().len();
+    if st.zoomed == Some(focused) {
+        st.zoomed = None;
+        eprintln!("[pane] zoom off pane={focused}");
+    } else if pane_count < 2 {
+        eprintln!("[pane] zoom ignored: 当前 Tab 只有一个 pane");
+        return;
+    } else {
+        st.zoomed = Some(focused);
+        eprintln!("[pane] zoom on pane={focused} panes={pane_count}");
+    }
+    refresh_views(st);
+    redraw_visible(st);
+    let win = st.window_focused;
+    sync_terminal_focus(st, win);
+}
+
 fn run_command(st: &mut AppState, id: &str) {
     // 面板里的工作区条目：`workspace.open:<name>`（动态 id，不在静态命令表里）。
     if let Some(name) = id.strip_prefix("workspace.open:") {
@@ -11435,6 +11492,7 @@ fn run_command(st: &mut AppState, id: &str) {
             }
         }
         "pane.undo-swap" => undo_pane_swap(st),
+        "pane.toggle-zoom" => toggle_pane_zoom(st),
         "pane.focus-next" => {
             let (panes, focused) = match st.ws.active_tab() {
                 Some(t) => (t.panes(), t.focused),
@@ -13630,6 +13688,7 @@ fn build_window_state(
         right_down: None,
         menu_link: String::new(),
         broadcast: false,
+        zoomed: None,
         broadcast_scope: Vec::new(),
         broadcast_line: String::new(),
         broadcast_danger_ack: false,

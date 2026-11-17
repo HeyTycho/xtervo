@@ -1538,6 +1538,8 @@ export component MainWindow inherits Window {
     callback bold-color-changed(string);
     callback toggle-bold-color-same-as-fg();
     in-out property <bool> broadcast: false;
+    /// UI-PANE-007：当前聚焦 pane 是否最大化（纯视图状态，不写会话快照）。
+    in-out property <bool> pane-zoomed: false;
     // Pane 拖拽重排（UI-PANE-008）：pane id；-1 = 无。落点由 Rust 命中/高亮。
     in-out property <int> pane-drag-from: -1;
     in-out property <int> pane-drag-target: -1;
@@ -8745,6 +8747,33 @@ export component MainWindow inherits Window {
             text: root.link-status;
             color: Palette.colors.text;
             font-size: 12px;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+
+    // ---------------- Pane 最大化提示（UI-PANE-007） ----------------
+    // 最大化/还原不弹确认：常驻小提示告诉用户当前处于最大化与还原键。
+    if root.pane-zoomed : Rectangle {
+        x: 12px;
+        y: (root.tabbar-bottom ? 0px : root.tabbar-height) + 8px;
+        width: 236px;
+        height: 26px;
+        background: Palette.colors.raise;
+        border-radius: 6px;
+        border-width: 1px;
+        border-color: Palette.colors.accent;
+        drop-shadow-blur: 8px;
+        drop-shadow-offset-y: 3px;
+        drop-shadow-color: #000000a8;
+
+        Text {
+            x: 10px;
+            width: parent.width - 20px;
+            height: parent.height;
+            text: Lang.t("⛶ Pane maximized · Ctrl+Shift+M to restore", "⛶ 窗格已最大化 · Ctrl+Shift+M 还原");
+            color: Palette.colors.text;
+            font-size: 11px;
             vertical-alignment: center;
             overflow: elide;
         }
