@@ -1,7 +1,9 @@
 # 传输插件（Transport Plugin）设计
 
 状态：**进行中（2026-11-17）**。POC 第一步已落地：`crates/core/src/transport.rs`
-的 `PaneTransport` trait + `SocketPairTransport` 参考实现（含 2 条单测），**尚未接线**；
+的 `PaneTransport` trait + `SocketPairTransport` 与读写分离的 `SplitTransport`
+（3 条单测），**尚未接线**；`SplitTransport` 是为 PTY（读/写两条线程各持句柄）与
+插件 socket 共用同一条 trait 铺的路；
 下一步是 actor 侧走 trait、宿主侧权限/审计/限流。
 目标：把 SSH / Serial / Telnet 做成**官方、可卸载**的插件，核心只保留一条通用传输 seam。
 

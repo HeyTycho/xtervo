@@ -88,6 +88,48 @@ impl PaneTransport for SocketPairTransport {
     }
 }
 
+/// 读写分离的实现：PTY 的读端/写端本来就是两条线程各持一个句柄，
+/// 插件 socket 也常常是「一读一写」。泛型化后 PTY 与插件可以共用同一条 trait。
+pub struct SplitTransport<R, W> {
+    reader: R,
+    writer: W,
+    size: (u16, u16),
+    closed: Arc<AtomicBool>,
+}
+
+impl<R, W> SplitTransport<R, W> {
+    pub fn new(reader: R, writer: W) -> Self {
+        Self { reader, writer, size: (0, 0), closed: Arc::new(AtomicBool::new(false)) }
+    }
+
+    /// 最近一次 `resize` 的 (cols, rows)。
+    pub fn size(&self) -> (u16, u16) {
+        self.size
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Relaxed)
+    }
+}
+
+impl<R: std::io::Read + Send, W: std::io::Write + Send> PaneTransport for SplitTransport<R, W> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.reader.read(buf)
+    }
+
+    fn write_all(&mut self, data: &[u8]) -> io::Result<()> {
+        self.writer.write_all(data)
+    }
+
+    fn resize(&mut self, cols: u16, rows: u16) {
+        self.size = (cols, rows);
+    }
+
+    fn close(&mut self) {
+        self.closed.store(true, Ordering::Relaxed);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -121,6 +163,31 @@ mod tests {
             .set_read_timeout(Some(Duration::from_millis(500)))
             .unwrap();
         assert_eq!(plugin.read(&mut tail).unwrap_or(0), 0);
+    }
+
+    #[test]
+    fn split_transport_works_with_independent_read_and_write_halves() {
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        let mut t = SplitTransport::new(ours.try_clone().unwrap(), ours);
+        assert!(!t.is_closed());
+        assert_eq!(t.size(), (0, 0));
+
+        // 下游写 -> pane 读
+        (&theirs).write_all(b"out\n").unwrap();
+        let mut buf = [0u8; 16];
+        let n = t.read(&mut buf).unwrap();
+        assert_eq!(&buf[..n], b"out\n");
+
+        // pane 写 -> 下游读
+        t.write_all(b"in").unwrap();
+        let mut back = [0u8; 8];
+        let n = (&theirs).read(&mut back).unwrap();
+        assert_eq!(&back[..n], b"in");
+
+        t.resize(80, 24);
+        assert_eq!(t.size(), (80, 24));
+        t.close();
+        assert!(t.is_closed());
     }
 
     #[test]
