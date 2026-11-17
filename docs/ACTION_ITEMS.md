@@ -176,7 +176,7 @@ ACT-002 上游审计 ──（解除 21 条 needs_verification 的决策阻塞�
 | ACT-049 | 插件生态：旧插件 sidecar + 插件注册点 | PLUG-007..012、KEY-006、NOTIFY-006、SEC-005、UI-TERM-013 | 只有 v3 宿主，v1/v2 unsupported | sidecar 起停/超时/崩溃隔离；`tabby-core`/`tabby-terminal`/`tabby-local` 最小 shim；插件注册的命令/设置/进度在 UI 可见；凭据默认不可读 | L |
 | ACT-050 | 终端小件：录制 API、同窗多本地 Profile、Pane 拖拽重排 | TERM-015、LOCAL-004、UI-PANE-008 | 无 | 会话录制可导出；同一窗口可开不同本地 shell；pane 可拖拽重排/跨窗口移动 | M |
 | ACT-034 | 分屏新 pane 首帧不重绘（**观察项，0.5.0 不可复现**） | — | 原证据（`w=0`、只有 `rev=2` 一帧）全部来自 **0.4.0-rc.2**；0.5.0 在隔离 Xvfb 下复现失败：单窗口 split 右侧 `right_text_px=47469`、双窗口后台窗口 split `8040`，均正常绘制（`target/repro_split*.py`）。日志只打首帧，早前“无新帧”的推论不成立 | 仍在真实合成器（mutter）多窗口 + 遮挡场景复验一次；若复现再按失败测试修 | S |
-| ACT-035 | 恢复矩阵（破坏面注入） | — | 只有 kill -9 一条 e2e | ENOSPC / 权限拒绝 / JSON 截断 / 配置损坏 各一条注入 e2e，断言不丢旧快照且能回退 `.bak` | M |
+| ACT-035 | 恢复矩阵（破坏面注入） | — | 已补：写失败（EACCES，ENOSPC 同路径）保留旧快照且无 tmp 残留、主文件截断回退 `.bak`、`.bak` 也坏返回 None、config 坏 TOML 不覆盖原文件（原有）、kill -9 多窗口 e2e（原有）。缺：真实 ENOSPC 注入（需 tmpfs/配额） | 剩余只差 ENOSPC 真注入；其余断言已在 `session::tests::write_failure_keeps_previous_snapshot_and_leaves_no_tmp` / `truncated_primary_recovers_from_previous_generation` | S |
 | ACT-036 | crash marker + safe mode | — | 0 实现；崩溃循环无熔断 | 连续 N 次异常退出 → 安全模式（禁插件/GPU/WASM）并在 UI 说明原因；单测 + e2e | L |
 | ACT-051 | 平台/性能深度 | — | 已知缺口 | Wayland 原生、emoji shaping、atlas 驱逐、P95/吞吐/24h soak 各有一份可复现数据 | L |
 | ACT-037 | 文档对账常态化 | — | 本次已对账到 v0.5.0 | 发版清单加一步：跑 `scripts/matrix_stats.py` + 更新 CLOSURE/ACT，否则 CI 失败 | S |

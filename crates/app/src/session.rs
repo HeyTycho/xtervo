@@ -1359,6 +1359,70 @@ mod tests {
         assert!(!path.exists());
     }
 
+    /// 写盘失败（权限拒绝；ENOSPC 走同一条 tmp 写入错误路径）时：
+    /// 旧快照原样保留、不留下半截 tmp、读回仍是上一代。
+    #[test]
+    fn write_failure_keeps_previous_snapshot_and_leaves_no_tmp() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            // root 下 0o500 目录依然可写，跳过而不是假失败。
+            if unsafe { libc::geteuid() } == 0 {
+                return;
+            }
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("session.json");
+            let good = SnapshotV2 {
+                version: VERSION,
+                windows: vec![window(1, WindowGeometry::UNKNOWN, false, 0, Vec::new())],
+            };
+            save_v2_to(&path, &good).unwrap();
+            let before = std::fs::read(&path).unwrap();
+
+            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o500))
+                .unwrap();
+            let newer = SnapshotV2 {
+                version: VERSION,
+                windows: vec![window(2, WindowGeometry::UNKNOWN, false, 0, Vec::new())],
+            };
+            let error = save_v2_to(&path, &newer).unwrap_err();
+            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))
+                .unwrap();
+
+            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+            assert_eq!(std::fs::read(&path).unwrap(), before, "旧快照必须原样保留");
+            assert_eq!(load_v2_from(&path), Some(good));
+            assert!(!tmp_path(&path).exists(), "失败后不能留下 tmp 文件");
+        }
+    }
+
+    /// 主快照被截断 → 回退上一代 `.bak`；`.bak` 也坏 → None（不崩）。
+    #[test]
+    fn truncated_primary_recovers_from_previous_generation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.json");
+        let first = SnapshotV2 {
+            version: VERSION,
+            windows: vec![window(1, WindowGeometry::UNKNOWN, false, 0, Vec::new())],
+        };
+        let second = SnapshotV2 {
+            version: VERSION,
+            windows: vec![window(2, WindowGeometry::UNKNOWN, false, 0, Vec::new())],
+        };
+        save_v2_to(&path, &first).unwrap();
+        save_v2_to(&path, &second).unwrap();
+        assert!(backup_path(&path).is_file(), "第二次保存应生成上一代 .bak");
+        assert_eq!(load_v2_from(&path), Some(second));
+
+        // 半截 JSON：解析失败，回退 .bak
+        std::fs::write(&path, b"{\"version\":2,\"windows\":[").unwrap();
+        assert_eq!(load_v2_from(&path), Some(first.clone()));
+
+        // 主文件与备份都坏：返回 None，启动方回退新 Tab
+        std::fs::write(backup_path(&path), b"garbage").unwrap();
+        assert!(load_v2_from(&path).is_none());
+    }
+
     #[test]
     fn bad_or_empty_snapshot_never_blocks_new_tab_fallback() {
         let dir = tempfile::tempdir().unwrap();
