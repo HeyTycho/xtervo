@@ -3124,6 +3124,9 @@ fn reconfig_summary(old: &Config, new: &Config) -> ReconfigSummary {
     if old.default_profile_id != new.default_profile_id {
         s.new_pane.push("default_profile_id");
     }
+    if old.default_profile != new.default_profile {
+        s.new_pane.push("default_profile");
+    }
     if old.restore_session_on_startup != new.restore_session_on_startup {
         s.restart.push("restore_session_on_startup");
     }
@@ -4213,7 +4216,7 @@ fn refresh_profiles(st: &mut AppState) {
             })
         })
         .collect();
-    let default_info = match st.profiles.default_index(default_id) {
+    let default_info = match default_profile_index(st) {
         Some(i) => {
             if lang == "zh" {
                 format!("新标签默认：{}", st.profiles.profiles[i].name)
@@ -4228,9 +4231,23 @@ fn refresh_profiles(st: &mut AppState) {
     st.ui.set_profile_default_info(default_info.as_str().into());
 }
 
-/// 默认 Profile 的 store 下标；未设置 / ID 已失效时返回 None（回退默认 shell）。
+/// 默认 Profile 的 store 下标；未设置 / 失效时返回 None（回退默认 shell）。
+///
+/// 两种写法：`default_profile_id`（UI 星标写入的稳定 ID）优先；ID 未命中时
+/// 再看 `default_profile` 名字（SESS-002：手写 config.toml 无需查 ID）。
+/// 名字匹配不区分大小写，`default_profile_id == 0` 且名字为空 = 系统 shell。
 fn default_profile_index(st: &AppState) -> Option<usize> {
-    st.profiles.default_index(st.cfg.default_profile_id)
+    if let Some(index) = st.profiles.default_index(st.cfg.default_profile_id) {
+        return Some(index);
+    }
+    let name = st.cfg.default_profile.trim();
+    if name.is_empty() {
+        return None;
+    }
+    st.profiles
+        .profiles
+        .iter()
+        .position(|p| p.name.eq_ignore_ascii_case(name))
 }
 
 /// 面板行号 → store 下标。过滤/删除后行号可能失效，越界一律忽略。
@@ -13482,6 +13499,9 @@ fn register_window_callbacks(
             } else {
                 id
             };
+            // UI 星标是唯一可信来源：清掉手写的名字别名，避免 id 清空后
+            // `default_profile` 又把旧项“复活”成默认。
+            st.cfg.default_profile.clear();
             st.cfg.save();
             refresh_profiles(st);
             if st.cfg.default_profile_id == 0 {
