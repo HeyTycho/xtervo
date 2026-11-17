@@ -297,10 +297,32 @@ fn content_rect(win_w: f32, win_h: f32, sidebar_w: f32) -> Rect {
 }
 /// `TermMode::BRACKETED_PASTE`
 const BRACKETED_PASTE: u32 = 1 << 4;
+/// `TermMode::APP_CURSOR`：备用屏滚轮转方向键时用 SS3（`ESC O A`）前缀。
+const APP_CURSOR: u32 = 1 << 1;
+/// `TermMode::ALT_SCREEN`：备用屏没有回滚历史，滚轮要转成方向键给 TUI。
+const ALT_SCREEN: u32 = 1 << 12;
+/// 单次滚轮事件最多合成多少个方向键（触控板惯性滚动不刷屏）。
+const ALT_SCROLL_MAX_STEPS: usize = 10;
 /// 视觉铃边框闪一下的时长；到期由 30ms timer 清除。
 const BELL_FLASH_MS: u64 = 180;
 /// 滚动条 thumb 的最小像素高度（长 scrollback 时仍可抓取）。
 const SCROLLBAR_MIN_THUMB_PX: f32 = 24.0;
+
+/// 备用屏滚轮 → 方向键（xterm 的 alternate scroll；vim/less/man 生效）。
+///
+/// 备用屏没有 scrollback，`Grid::scroll_display` 改了 offset 也看不到历史；
+/// 与 alacritty 一致把滚轮折算成 Up/Down 键写回 PTY。`APP_CURSOR`（DECCKM）
+/// 决定 CSI/SS3 前缀，否则 vim 会收到它不认识的键序。
+fn alt_screen_scroll_payload(mode: u32, up: bool, steps: usize) -> Vec<u8> {
+    let prefix = if mode & APP_CURSOR != 0 { b'O' } else { b'[' };
+    let arrow = if up { b'A' } else { b'B' };
+    let steps = steps.clamp(1, ALT_SCROLL_MAX_STEPS);
+    let mut out = Vec::with_capacity(steps * 3);
+    for _ in 0..steps {
+        out.extend_from_slice(&[0x1b, prefix, arrow]);
+    }
+    out
+}
 
 /// 一个 pane 的外观覆盖（Profile 显式值 > 全局 Config；`None` = 继承）。
 ///
@@ -14125,6 +14147,15 @@ fn register_window_callbacks(
             if lines == 0.0 {
                 return;
             }
+            // UI-TERM-009：备用屏（vim/less/man）没有 scrollback，滚格转成
+            // 方向键写回 TUI。优先于 history 滚动，否则备用屏滚轮完全没反应。
+            if rt.frame.mode & ALT_SCREEN != 0 {
+                let payload =
+                    alt_screen_scroll_payload(rt.frame.mode, lines > 0.0, lines.abs() as usize);
+                rt.handle.clear_selection();
+                rt.handle.input(&payload);
+                return;
+            }
             // 约定：delta-y > 0 表示向上滚（回看历史）。
             // 应用内 TUI（如 dsh 侧栏）滚动后屏幕内容会重画；原生选区若继续
             // 跟随 grid 行会粘在错误文本上，因此用户主动滚轮时清除选区。
@@ -18498,6 +18529,23 @@ mod tests {
         // never：有历史也隐藏。
         let (visible, y, h) = scrollbar_geometry(ScrollbarPolicy::Never, scrollable, 0.1, track);
         assert!(!visible && y == 0.0 && h == 0.0);
+    }
+
+    #[test]
+    fn alt_screen_wheel_emits_arrows_and_respects_app_cursor() {
+        assert_eq!(alt_screen_scroll_payload(ALT_SCREEN, true, 1), b"\x1b[A");
+        assert_eq!(alt_screen_scroll_payload(ALT_SCREEN, false, 1), b"\x1b[B");
+        // DECCKM（APP_CURSOR）下用 SS3 前缀，vim 才能识别。
+        assert_eq!(
+            alt_screen_scroll_payload(ALT_SCREEN | APP_CURSOR, false, 2),
+            b"\x1bOB\x1bOB"
+        );
+        // 0 步按 1 步处理；超大惯性滚动夹到上限。
+        assert_eq!(alt_screen_scroll_payload(0, true, 0), b"\x1b[A");
+        assert_eq!(
+            alt_screen_scroll_payload(0, true, usize::MAX).len(),
+            ALT_SCROLL_MAX_STEPS * 3
+        );
     }
 
     #[test]

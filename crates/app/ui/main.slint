@@ -3401,9 +3401,9 @@ export component MainWindow inherits Window {
                     // 只有 scrollback 超出视口时出现；track 与终端网格等高，
                     // 不吃掉右侧字符区域的布局（overlay，不改变 pane 尺寸）。
                     if p.scrollbar-visible : Rectangle {
-                        // 右侧留 3px 给窗口 resize 命中带（最外 5px），
-                        // overlay 本体 9px 宽，thumb 居中偏内。
-                        x: p.w - 12px;
+                        // UI-TERM-009：窗口右侧最外 5px 是 resize 命中带，overlay
+                        // 必须整体让开它（此前只留 3px，最右 2px 点滚动条会变 resize）。
+                        x: p.w - 14px;
                         y: 0px;
                         width: 9px;
                         height: p.scrollbar-track-h;
