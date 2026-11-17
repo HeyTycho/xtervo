@@ -1320,6 +1320,9 @@ export component MainWindow inherits Window {
     in property <bool> sidebar-visible: false;
     in property <length> sidebar-width: 0px;
     in-out property <bool> sidebar-drag-active: false;
+    /// 侧栏 Profiles 列表（与 "+" 下拉共用同一份模型）
+    in property <[string]> sidebar-items: [];
+    callback sidebar-item-clicked(int);
     /// 窗口最大化状态（由 Rust 同步，避免按钮直接读异步 WM 状态）。
     in-out property <bool> window-maximized: false;
     in-out property <bool> menu-open: false;
@@ -2763,11 +2766,27 @@ export component MainWindow inherits Window {
                     font-weight: 600;
                 }
                 Text {
-                    text: Lang.t("Profiles and sessions will appear here.",
-                                 "Profiles 和会话列表将出现在这里。");
+                    text: Lang.t("Profiles", "配置");
                     color: Palette.colors.muted;
                     font-size: 11px;
-                    wrap: word-wrap;
+                }
+                for item[i] in root.sidebar-items : Rectangle {
+                    height: 26px;
+                    background: sidebar-row.has-hover ? Palette.colors.hover : transparent;
+                    border-radius: 4px;
+                    sidebar-row := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.sidebar-item-clicked(i); }
+                    }
+                    Text {
+                        x: 8px;
+                        text: item;
+                        color: Palette.colors.subtext;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                        width: parent.width - 16px;
+                        overflow: elide;
+                    }
                 }
                 Rectangle { vertical-stretch: 1; background: transparent; }
             }

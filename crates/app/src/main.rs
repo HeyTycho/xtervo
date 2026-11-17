@@ -4109,8 +4109,11 @@ fn toggle_quake_inner(st: &mut AppState) {
     eprintln!("[quake] show {w}x{h} at {x},0");
 }
 
-/// 构建 Profile 选择菜单（+ 旁边独立图标；不包含“新建默认 Tab”）。
-fn open_profile_menu(st: &mut AppState) {
+/// 重建 Profile 候选项（"+" 下拉与侧栏 Profiles 列表共用）。
+///
+/// 以前只在 `open_profile_menu` 里构建，侧栏复用同一份模型时列表会是空的；
+/// 现在启动/侧栏可见/Profile 变更都调用它。
+fn rebuild_profile_choices(st: &mut AppState) {
     let mut items: Vec<slint::SharedString> = Vec::new();
     let mut indices = Vec::new();
     for (i, p) in st.profiles.profiles.iter().enumerate() {
@@ -4125,6 +4128,11 @@ fn open_profile_menu(st: &mut AppState) {
     }
     st.profile_menu_indices = indices;
     st.profile_menu_model.set_vec(items);
+}
+
+/// 构建 Profile 选择菜单（+ 旁边独立图标；不包含“新建默认 Tab”）。
+fn open_profile_menu(st: &mut AppState) {
+    rebuild_profile_choices(st);
     st.ui.set_profilemenu_open(true);
     eprintln!(
         "[ui] profile menu profiles={}",
@@ -11382,6 +11390,8 @@ fn build_window_state(
     ui.set_fwd_items(ModelRc::from(fwd_model.clone()));
     let profile_menu_model = Rc::new(VecModel::<slint::SharedString>::default());
     ui.set_profilemenu_items(ModelRc::from(profile_menu_model.clone()));
+    // 侧栏 Profiles 列表复用同一份模型（"+"/Ctrl+T 下拉与侧栏永远一致）。
+    ui.set_sidebar_items(ModelRc::from(profile_menu_model.clone()));
 
     let (app_wake, app_wake_rx) = WakeSignal::new();
     if event_wake_enabled() {
@@ -14048,6 +14058,15 @@ fn register_window_callbacks(
         runtime::with_window(window_id, open_profile_menu);
     });
 
+    ui.on_sidebar_item_clicked(move |index| {
+        runtime::with_window(window_id, |st| {
+            let index = index.max(0) as usize;
+            if let Some(&profile_index) = st.profile_menu_indices.get(index) {
+                eprintln!("[ui] sidebar profile pick={index} profile={profile_index}");
+                open_profile_tab(st, profile_index);
+            }
+        });
+    });
     ui.on_profilemenu_pick(move |index| {
         runtime::with_window(window_id, |st| {
             st.ui.set_profilemenu_open(false);
@@ -14839,6 +14858,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
         let mut reg = registry_cell.borrow_mut();
         reg.insert(runtime).expect("first window id must be free");
+        // 侧栏可见时启动就把 Profiles 候选项填好（否则要等点 "+" 才有内容）。
+        if state.borrow().cfg.sidebar_visible {
+            let mut st = state.borrow_mut();
+            rebuild_profile_choices(&mut st);
+        }
         reg.set_active(window_id);
     }
     // Slint 平台/registry 已就绪：现在启动 control server。handler 只把请求
