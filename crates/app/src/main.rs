@@ -65,9 +65,10 @@ use std::time::{Duration, Instant};
 use slint::winit_030::{winit, EventResult, WinitWindowAccessor};
 use slint::{Model, ModelRc, VecModel};
 use tervo_core::{
-    link::is_allowed_uri, spawn, ClipboardRequest, ClipboardSelection, CoreEvent, Frame, LinkKind,
-    Modifiers, MouseAction, MouseButton, MouseEvent, Notification, Palette as TermPalette,
-    PaneConfig, PaneHandle, ProgressState, ScrollPosition, SearchHit, SearchOptions, Theme,
+    link::{is_allowed_uri, strip_path_position},
+    spawn, ClipboardRequest, ClipboardSelection, CoreEvent, Frame, LinkKind, Modifiers,
+    MouseAction, MouseButton, MouseEvent, Notification, Palette as TermPalette, PaneConfig,
+    PaneHandle, ProgressState, ScrollPosition, SearchHit, SearchOptions, ShellMark, Theme,
     UiColors, WakeSignal,
 };
 use x11rb::connection::Connection;
@@ -344,6 +345,46 @@ impl PaneAppearance {
     }
 }
 
+/// OSC 133 提示符/命令阶段；只做解析与状态记录，不注入任何 shell 脚本。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum ShellPhase {
+    #[default]
+    Unknown,
+    /// `A`：提示符开始（上一条命令输出结束）。
+    Prompt,
+    /// `B`：用户正在输入命令。
+    Input,
+    /// `C`：命令已提交、输出进行中。
+    Output,
+}
+
+impl ShellPhase {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Prompt => "prompt",
+            Self::Input => "input",
+            Self::Output => "output",
+        }
+    }
+}
+
+/// 单个 pane 的 shell integration 状态（LOCAL-006）。
+///
+/// 数据来源只有终端字节流：OSC 7（cwd）与 OSC 133（提示符/命令/退出码）。
+/// 不做自动安装、不改用户 shell 启动文件；没有 integration 的 shell 保持原样，
+/// 链接解析的回退路径仍是 `/proc/<pid>/cwd`。
+#[derive(Default)]
+struct ShellIntegration {
+    phase: ShellPhase,
+    /// 最近一次 `OSC 133;D;[code]` 的退出码；命令结束但没给码时为 None。
+    last_exit: Option<i32>,
+    /// 已完成命令数（诊断用；后续 Tab 状态/通知可直接消费）。
+    commands: u64,
+    /// `OSC 7` 报告的当前目录；优先于 `/proc/<pid>/cwd` 用于本地路径解析。
+    cwd: Option<PathBuf>,
+}
+
 struct PaneRuntime {
     handle: PaneHandle,
     renderer: Renderer,
@@ -401,6 +442,8 @@ struct PaneRuntime {
     exit_notified: bool,
     /// 鼠标正悬停在可点击链接上（Slint mouse-cursor / 避免每帧重绘终端）。
     link_hover: bool,
+    /// OSC 7/133 shell integration 状态（cwd、提示符阶段、最近退出码）。
+    shell: ShellIntegration,
     /// 上一帧是否由 `TERVO_GPU_NATIVE` 出图。GPU 失败切回 CPU 时必须强制
     /// 整屏重绘，因为 GPU 期间没有维护 CPU 双缓冲的 damage 历史。
     gpu_native_active: bool,
@@ -4382,6 +4425,7 @@ fn create_pane(
         exit_signal: None,
         exit_notified: false,
         link_hover: false,
+        shell: ShellIntegration::default(),
         gpu_native_active: false,
         _askpass: askpass,
     })
@@ -10130,7 +10174,8 @@ fn frame_target_at(frame: &Frame, row: u16, col: u16) -> Option<LinkTarget> {
         }
         eprintln!("[link] 拒绝不安全的 OSC 8 URI: {uri:?}（cell={row},{col}）");
     }
-    let (kind, text) = frame.link_at(row, col)?;
+    // 用折行拼接版本：URL/路径被终端硬折行拆开时仍能整段命中。
+    let (kind, text) = frame.link_at_wrapped(row, col)?;
     match kind {
         LinkKind::Url => {
             if is_allowed_uri(&text) {
@@ -10140,7 +10185,9 @@ fn frame_target_at(frame: &Frame, row: u16, col: u16) -> Option<LinkTarget> {
                 None
             }
         }
-        LinkKind::Path => Some(LinkTarget::Path(text)),
+        // `file:line:col` 只打开文件本身：xdg-open 不支持行号跳转，
+        // 但至少要落到存在的文件上；位置信息保留在识别层（Link.line/col）。
+        LinkKind::Path => Some(LinkTarget::Path(strip_path_position(&text).to_string())),
         LinkKind::Ipv4 => None,
     }
 }
@@ -10157,10 +10204,12 @@ fn home_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-/// 把行内路径文本解析成绝对路径；只为 `~` 展开 HOME，不执行任何 shell。
+/// 把行内路径文本解析成绝对路径；只展开 `~` / `~user`，不执行任何 shell。
 ///
-/// 相对路径以 pane 的 shell cwd 为基准（`/proc/<pid>/cwd`），不依赖 Tervo
-/// 进程自己的 cwd，避免 `cd /tmp` 后点 `./a` 打开到错误目录。
+/// 允许空格（引号内路径，例如 `"/tmp/my notes.txt"`）：调用方只接受单参数
+/// `xdg-open`，不拼 shell，所以空格没有注入风险。
+/// 相对路径以 pane 的 shell cwd 为基准（OSC 7 优先，其次 `/proc/<pid>/cwd`），
+/// 不依赖 Tervo 进程自己的 cwd，避免 `cd /tmp` 后点 `./a` 打开到错误目录。
 fn resolve_local_path(
     text: &str,
     cwd: Option<&Path>,
@@ -10169,8 +10218,8 @@ fn resolve_local_path(
     if text.is_empty() {
         return Err("路径为空".to_string());
     }
-    if text.chars().any(|c| c.is_control() || c.is_whitespace() || c == '\0') {
-        return Err("路径含空白或控制字符".to_string());
+    if text.chars().any(char::is_control) {
+        return Err("路径含控制字符".to_string());
     }
     if text == "~" {
         return home.map(Path::to_path_buf).ok_or_else(|| "无法展开 ~：HOME 未设置".to_string());
@@ -10179,12 +10228,40 @@ fn resolve_local_path(
         let home = home.ok_or_else(|| "无法展开 ~：HOME 未设置".to_string())?;
         return Ok(home.join(rest));
     }
+    if let Some(rest) = text.strip_prefix('~') {
+        // `~user/path`：用户不存在时不猜 HOME，直接报错（不落回 Tervo 进程 HOME）。
+        let (user, tail) = rest.split_once('/').map_or((rest, ""), |(u, t)| (u, t));
+        let user_home =
+            user_home_dir(user).ok_or_else(|| format!("无法展开 ~{user}：用户不存在"))?;
+        return Ok(if tail.is_empty() { user_home } else { user_home.join(tail) });
+    }
     let path = Path::new(text);
     if path.is_absolute() {
         return Ok(path.to_path_buf());
     }
     let cwd = cwd.ok_or_else(|| "无法确定当前 shell 目录".to_string())?;
     Ok(cwd.join(path))
+}
+
+/// `~user` 的 home：读 `/etc/passwd`（纯文本、无新依赖、不执行 shell）。
+///
+/// 只取第 1 段用户名与第 6 段 home；格式不对的行直接跳过。NSS 扩展用户
+/// （LDAP/SSSD）不会出现在 `/etc/passwd`，此时返回 None 由调用方报错。
+fn user_home_dir(user: &str) -> Option<PathBuf> {
+    if user.is_empty() {
+        return None;
+    }
+    let passwd = std::fs::read_to_string("/etc/passwd").ok()?;
+    passwd.lines().find_map(|line| {
+        let mut fields = line.split(':');
+        let name = fields.next()?;
+        let _password = fields.next()?;
+        let _uid = fields.next()?;
+        let _gid = fields.next()?;
+        let _gecos = fields.next()?;
+        let home = fields.next()?;
+        (name == user && !home.is_empty()).then(|| PathBuf::from(home))
+    })
 }
 
 /// 打开前检查本地路径是否存在且可读；返回给用户的失败原因（不含路径）。
@@ -10212,12 +10289,16 @@ fn inspect_local_path(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// pane shell 的当前目录；拿不到时退回 Tervo 进程 cwd。
+/// pane shell 的当前目录。
+///
+/// 优先用 shell 自己通过 OSC 7 报告的 cwd（`cd` 立刻可见），其次读
+/// `/proc/<pid>/cwd`，都没有才退回 Tervo 进程 cwd。OSC 7 只在本地/远端 shell
+/// 主动发送时更新，不改变没有 integration 的会话行为。
 fn pane_cwd(rt: &PaneRuntime) -> Option<PathBuf> {
-    rt.handle
-        .pid()
-        .and_then(session::cwd_of)
-        .map(PathBuf::from)
+    rt.shell
+        .cwd
+        .clone()
+        .or_else(|| rt.handle.pid().and_then(session::cwd_of).map(PathBuf::from))
         .or_else(|| std::env::current_dir().ok())
 }
 
@@ -12598,9 +12679,40 @@ fn drain_core_events(st: &mut AppState) -> (bool, u32) {
                     }
                 }
                 CoreEvent::Cwd(cwd) => {
+                    // OSC 7 是 shell 报告的**真实** cwd（含用户 `cd` 后的路径），
+                    // 比 /proc/<pid>/cwd 更可靠：路径解析优先用它。
                     eprintln!(
                         "[ui] ts_ms={} cwd pane={id} tab={tab:?} path={cwd:?}",
                         logging::now_ms()
+                    );
+                    rt.shell.cwd = Some(PathBuf::from(cwd));
+                }
+                CoreEvent::Shell(mark) => {
+                    match mark {
+                        ShellMark::PromptStart => rt.shell.phase = ShellPhase::Prompt,
+                        ShellMark::InputStart => rt.shell.phase = ShellPhase::Input,
+                        ShellMark::OutputStart => rt.shell.phase = ShellPhase::Output,
+                        ShellMark::CommandFinished { exit_code } => {
+                            rt.shell.phase = ShellPhase::Prompt;
+                            rt.shell.last_exit = exit_code;
+                            rt.shell.commands = rt.shell.commands.saturating_add(1);
+                            eprintln!(
+                                "[shell] ts_ms={} pane={id} tab={tab:?} kind=command-finished exit={exit_code:?} commands={}",
+                                logging::now_ms(),
+                                rt.shell.commands
+                            );
+                            // 命令完成事件：非活动 Tab 上的失败命令给一个完成标记，
+                            // 让用户切回 Tab 时能看到“有命令跑完/失败”，不弹窗。
+                            if !is_active {
+                                rt.activity.completed = true;
+                                tabs_dirty = true;
+                            }
+                        },
+                    }
+                    eprintln!(
+                        "[shell] ts_ms={} pane={id} tab={tab:?} phase={} ",
+                        logging::now_ms(),
+                        rt.shell.phase.label()
                     );
                 }
                 CoreEvent::Clipboard(request) => clipboard_events.push((id, request)),
@@ -18763,9 +18875,24 @@ mod tests {
         assert!(resolve_local_path("./x", None, Some(&home))
             .unwrap_err()
             .contains("shell 目录"));
-        assert!(resolve_local_path("/tmp/a b", Some(&cwd), Some(&home))
+        // 行为变更（UI-TERM-011）：引号内路径允许空格，打开仍是单参数、不拼 shell。
+        assert_eq!(
+            resolve_local_path("/tmp/a b", Some(&cwd), Some(&home)).unwrap(),
+            PathBuf::from("/tmp/a b")
+        );
+        assert!(resolve_local_path("/tmp/a\nb", Some(&cwd), Some(&home))
             .unwrap_err()
-            .contains("空白"));
+            .contains("控制字符"));
+        // `~user` 从 /etc/passwd 展开；未知用户报错而不是回退 Tervo 的 HOME。
+        assert!(resolve_local_path("~tervo-nosuch-user/x", Some(&cwd), Some(&home))
+            .unwrap_err()
+            .contains("用户不存在"));
+        if let Some(root_home) = user_home_dir("root") {
+            assert_eq!(
+                resolve_local_path("~root/x", Some(&cwd), Some(&home)).unwrap(),
+                root_home.join("x")
+            );
+        }
     }
 
     #[test]

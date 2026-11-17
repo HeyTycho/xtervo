@@ -52,6 +52,21 @@ pub enum ClipboardSelection {
     Primary,
 }
 
+/// OSC 133 shell integration 标记（只解析事件，不安装 shell 脚本）。
+///
+/// 约定来自 xterm/VS Code 的语义：
+/// - `A`：提示符开始（上一命令输出结束）；
+/// - `B`：用户输入开始；
+/// - `C`：命令已提交、输出开始；
+/// - `D;[exit]`：命令结束（可选退出码）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShellMark {
+    PromptStart,
+    InputStart,
+    OutputStart,
+    CommandFinished { exit_code: Option<i32> },
+}
+
 /// 远端通过 OSC 52 请求的剪贴板操作，由 UI 线程实际执行。
 ///
 /// 只传文本：控制序列的 base64 已在 core 解析时解码并校验；读写系统剪贴板
@@ -79,6 +94,8 @@ pub enum CoreEvent {
     Notification(Notification),
     /// OSC 7;file://host/path（cwd）。MVP 只上报，不改变会话行为。
     Cwd(String),
+    /// OSC 133;A/B/C/D：shell integration 提示符/命令/退出码。
+    Shell(ShellMark),
     /// OSC 52：远端读写/清空剪贴板或 PRIMARY。
     Clipboard(ClipboardRequest),
     /// PTY 读到 EOF / 子进程退出。

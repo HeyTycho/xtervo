@@ -3,12 +3,14 @@
 //!
 //! `alacritty_terminal` 0.26 的 `vte::ansi::Handler` 没有 `osc_dispatch` 钩子
 //! （OSC 9 / 777 在 vte 内部直接丢弃），所以 actor 在把字节喂给 `Term` 的同时，
-//! 让本模块用一个小状态机扫一遍原始字节。它只关心通知/进度/cwd，不参与网格解析。
+//! 让本模块用一个小状态机扫一遍原始字节。它只关心通知/进度/cwd/shell integration，
+//! 不参与网格解析。
 //!
 //! 所有解析函数只接收字节切片：非法/越界/超长输入一律忽略，绝不 panic。
 
 use crate::event::{
     ClipboardRequest, ClipboardSelection, CoreEvent, Notification, Progress, ProgressState,
+    ShellMark,
 };
 
 /// 单个 OSC 序列的缓冲上限（通知正文可能较长，但绝不允许无限增长）。
@@ -170,7 +172,8 @@ impl OscScanner {
 
 /// 解析一条 OSC 的全部参数（已按 `;` 切分，第 0 项是 OSC 编号）。
 ///
-/// 只处理通知相关编号：7（cwd）、9（iTerm2 通知/进度）、52（剪贴板）、777（notify）。
+/// 只处理通知相关编号：7（cwd）、9（iTerm2 通知/进度）、52（剪贴板）、
+/// 133（shell integration）、777（notify）。
 /// 其他 OSC（0/2 标题、4 颜色、8 超链接…）交给 alacritty，返回 None。
 pub fn parse_osc(params: &[&[u8]]) -> Option<CoreEvent> {
     match *params.first()? {
@@ -178,8 +181,32 @@ pub fn parse_osc(params: &[&[u8]]) -> Option<CoreEvent> {
         b"52" => parse_osc52(params),
         b"777" => parse_osc777(params),
         b"7" => params.get(1).and_then(|uri| parse_cwd(uri)).map(CoreEvent::Cwd),
+        b"133" => parse_shell_mark(params).map(CoreEvent::Shell),
         _ => None,
     }
+}
+
+/// `OSC 133;A|B|C|D[;exit_code]`。
+///
+/// 未知子命令（`P` 等扩展）忽略；`D` 的退出码只接受有界整数，
+/// 缺省/非法都按 `None` 上报（命令完成但退出码未知）。
+fn parse_shell_mark(params: &[&[u8]]) -> Option<ShellMark> {
+    match *params.get(1)? {
+        b"A" => Some(ShellMark::PromptStart),
+        b"B" => Some(ShellMark::InputStart),
+        b"C" => Some(ShellMark::OutputStart),
+        b"D" => Some(ShellMark::CommandFinished {
+            exit_code: params.get(2).and_then(|raw| parse_exit_code(raw)),
+        }),
+        _ => None,
+    }
+}
+
+/// OSC 133;D 的退出码：只接受 -255..=255 的十进制整数，非法值回退 `None`。
+fn parse_exit_code(raw: &[u8]) -> Option<i32> {
+    let text = std::str::from_utf8(raw).ok()?;
+    let code: i32 = text.trim().parse().ok()?;
+    (-255..=255).contains(&code).then_some(code)
 }
 
 /// `OSC 9;4;state;percent` 或 `OSC 9;message`。
@@ -634,9 +661,46 @@ mod tests {
     }
 
     #[test]
+    fn osc133_shell_integration_marks() {
+        assert_eq!(scan(b"\x1b]133;A\x07"), vec![CoreEvent::Shell(ShellMark::PromptStart)]);
+        assert_eq!(scan(b"\x1b]133;B\x07"), vec![CoreEvent::Shell(ShellMark::InputStart)]);
+        assert_eq!(scan(b"\x1b]133;C\x07"), vec![CoreEvent::Shell(ShellMark::OutputStart)]);
+        assert_eq!(
+            scan(b"\x1b]133;D;0\x07"),
+            vec![CoreEvent::Shell(ShellMark::CommandFinished { exit_code: Some(0) })]
+        );
+        assert_eq!(
+            scan(b"\x1b]133;D;130\x1b\\"),
+            vec![CoreEvent::Shell(ShellMark::CommandFinished { exit_code: Some(130) })]
+        );
+        // 没有退出码 / 非法退出码 / 未知子命令：要么 None 要么忽略。
+        assert_eq!(
+            scan(b"\x1b]133;D\x07"),
+            vec![CoreEvent::Shell(ShellMark::CommandFinished { exit_code: None })]
+        );
+        assert_eq!(
+            scan(b"\x1b]133;D;abc\x07"),
+            vec![CoreEvent::Shell(ShellMark::CommandFinished { exit_code: None })]
+        );
+        assert_eq!(
+            scan(b"\x1b]133;D;9999\x07"),
+            vec![CoreEvent::Shell(ShellMark::CommandFinished { exit_code: None })]
+        );
+        assert!(scan(b"\x1b]133;P;k=v\x07").is_empty());
+        // 跨 chunk 的 133 标记也要拼起来。
+        let mut scanner = OscScanner::new();
+        let mut out = Vec::new();
+        scanner.feed(b"\x1b]133;D;", &mut out);
+        assert!(out.is_empty());
+        scanner.feed(b"7\x07", &mut out);
+        assert_eq!(out, vec![CoreEvent::Shell(ShellMark::CommandFinished { exit_code: Some(7) })]);
+    }
+
+    #[test]
     fn unrelated_osc_and_invalid_utf8_are_ignored() {
         assert!(scan(b"\x1b]0;window title\x07").is_empty());
-        assert!(scan(b"\x1b]133;A\x07").is_empty());
+        // OSC 133 已接入 shell integration 事件流（本轮行为变更，旧断言为 is_empty）。
+        assert_eq!(scan(b"\x1b]133;A\x07"), vec![CoreEvent::Shell(ShellMark::PromptStart)]);
         // 非 UTF-8 正文用替换字符，不 panic
         assert_eq!(
             scan(b"\x1b]9;ok\xff\x07"),

@@ -10,6 +10,8 @@
 //!
 //! [`Frame::url_at`]: crate::Frame::url_at
 
+use std::sync::{Arc, Mutex, OnceLock};
+
 /// 链接类型。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LinkKind {
@@ -22,12 +24,19 @@ pub enum LinkKind {
 }
 
 /// 一处命中。`start..=end` 是字符下标（闭区间）。
+///
+/// `text` 是**完整匹配文本**：对 `file:line:col` 这类带位置后缀的路径，
+/// `text` 含后缀，打开前用 [`Link::path_text`] 取纯路径。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Link {
     pub kind: LinkKind,
     pub start: u16,
     pub end: u16,
     pub text: String,
+    /// `file:line:col` 的行号（仅 Path；`text` 仍含后缀）。
+    pub line: Option<u32>,
+    /// `file:line:col` 的列号（仅 Path）。
+    pub col: Option<u32>,
 }
 
 impl Link {
@@ -35,6 +44,47 @@ impl Link {
     pub fn contains(&self, col: u16) -> bool {
         self.start <= col && col <= self.end
     }
+
+    /// 构造一条链接（插件 [`Linkifier`] 用；位置后缀留空）。
+    pub fn new(kind: LinkKind, start: u16, end: u16, text: String) -> Self {
+        Self { kind, start, end, text, line: None, col: None }
+    }
+
+    /// 去掉 `:line[:col]` 位置后缀后的纯路径；非 Path 返回全文。
+    pub fn path_text(&self) -> &str {
+        strip_path_position(&self.text)
+    }
+}
+
+/// 去掉 `file:line:col` / `file:line` 的位置后缀，返回纯路径。
+pub fn strip_path_position(text: &str) -> &str {
+    let (path, _, _) = split_position(text);
+    path
+}
+
+/// 只剥离位置后缀，不做“像不像路径”的判断。
+fn split_position(text: &str) -> (&str, Option<u32>, Option<u32>) {
+    let mut rest = text;
+    let mut first = None;
+    if let Some((prefix, n)) = trailing_num(rest) {
+        first = Some(n);
+        rest = prefix;
+    }
+    // 两级后缀：右为列、左为行；一级后缀按“行号”处理。
+    match trailing_num(rest) {
+        Some((prefix, line)) => (prefix, Some(line), first),
+        None => (rest, first, None),
+    }
+}
+
+/// 末尾 `:<数字>`；返回（前缀，数值）。多于 7 位视为普通文本而不是行号。
+fn trailing_num(s: &str) -> Option<(&str, u32)> {
+    let idx = s.rfind(':')?;
+    let digits = s.get(idx + 1..)?;
+    if digits.is_empty() || digits.len() > 7 || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some((&s[..idx], digits.parse().ok()?))
 }
 
 /// 行尾常粘上的标点：识别时去掉，但括号要配对处理。
@@ -76,11 +126,24 @@ pub fn scan(text: &str) -> Vec<Link> {
             i += 1;
             continue;
         }
+        let (line, col) = if kind == LinkKind::Path {
+            match parse_path(&text) {
+                Some(pos) => pos,
+                None => {
+                    i += 1;
+                    continue;
+                },
+            }
+        } else {
+            (None, None)
+        };
         out.push(Link {
             kind,
             start: i as u16,
             end: end as u16,
             text,
+            line,
+            col,
         });
         i = end + 1;
     }
@@ -203,6 +266,26 @@ fn is_path_boundary(chars: &[char], i: usize) -> bool {
     }
 }
 
+/// 紧贴在路径起点前的引号（`"…"` / `'…'` / `` `…` ``）。
+///
+/// 引号内允许空格，这是“带空格路径”的识别入口；只有**紧贴**起点的引号才算，
+/// 正文里随便一个引号不会把整段文字变成路径。
+fn quote_at(chars: &[char], i: usize) -> Option<char> {
+    match i.checked_sub(1).map(|p| chars[p]) {
+        Some(q @ ('"' | '\'' | '`')) => Some(q),
+        _ => None,
+    }
+}
+
+/// `~user` 用户名允许的字符。
+fn is_user_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.')
+}
+
+/// 扫描一个候选路径 token 的长度（不含引号壳）。
+///
+/// 起点比 URL 宽：普通文件名（grep/编译器输出 `src/main.rs:12:3`）也先收集，
+/// 真正的形状校验在 [`parse_path`] 里做。行尾标点仍由 [`trim_end`] 去掉。
 fn path_len(chars: &[char], i: usize) -> Option<usize> {
     if !is_path_boundary(chars, i) {
         return None;
@@ -212,28 +295,82 @@ fn path_len(chars: &[char], i: usize) -> Option<usize> {
     let starts = match chars.get(i) {
         // `//` 是 scheme 分隔符，不当作路径起点
         Some('/') => next != Some('/'),
-        Some('~') => next == Some('/'),
+        // `~/…`（HOME）或 `~user[/…]`
+        Some('~') => next == Some('/') || next.is_some_and(is_user_char),
         Some('.') => next == Some('/') || (next == Some('.') && next2 == Some('/')),
-        _ => false,
+        // 相对文件名：只有后面带 `:line` 时才会被 parse_path 接受。
+        Some(c) => c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '~'),
+        None => false,
     };
     if !starts {
         return None;
     }
+    let quote = quote_at(chars, i);
     let mut len = 0;
     while i + len < chars.len() {
         let c = chars[i + len];
-        if c.is_whitespace() || matches!(c, '"' | '\'' | '<' | '>' | '|' | '*' | '?' | ';' | ',' | ')') {
-            break;
+        match quote {
+            Some(q) => {
+                if c == q || c.is_control() {
+                    break;
+                }
+            },
+            None => {
+                if c.is_whitespace()
+                    || matches!(
+                        c,
+                        '"' | '\'' | '<' | '>' | '|' | '*' | '?' | ';' | ',' | ')'
+                    )
+                {
+                    break;
+                }
+            },
         }
         len += 1;
     }
-    // 必须长得像路径：绝对路径 / home / 相对路径；单个 `/`、`./` 不算
-    let candidate: String = chars[i..i + len].iter().collect();
-    let looks_like_path = candidate.starts_with('/')
-        || candidate.starts_with("~/")
-        || candidate.starts_with("./")
-        || candidate.starts_with("../");
-    (len >= 2 && looks_like_path).then_some(len)
+    (len > 0).then_some(len)
+}
+
+/// 校验候选路径并拆出 `:line:col` 后缀。
+///
+/// 接受：绝对路径、`~/…`、`~user[/…]`、`./`/`../` 相对路径，以及
+/// grep/编译器风格“相对文件名 + `:line`”（`src/main.rs:12:3`、`foo.rs:7`）。
+fn parse_path(text: &str) -> Option<(Option<u32>, Option<u32>)> {
+    let (path, line, col) = split_position(text);
+    if path.len() < 2 || path.starts_with("//") || path.starts_with("/~") {
+        return None;
+    }
+    let shaped = path.starts_with('/')
+        || path.starts_with("~/")
+        || path.starts_with("./")
+        || path.starts_with("../")
+        || (path.starts_with('~') && valid_user_path(path))
+        || (line.is_some() && looks_like_relative_file(path));
+    shaped.then_some((line, col))
+}
+
+/// `~user[/path]`：用户名非空且只含 [`is_user_char`]。
+fn valid_user_path(path: &str) -> bool {
+    let Some(rest) = path.strip_prefix('~') else { return false };
+    let user = rest.split('/').next().unwrap_or_default();
+    !user.is_empty() && user.chars().all(is_user_char)
+}
+
+/// grep / 编译器输出里的相对文件名，至少要求字母与 `.` 或 `/`。
+fn looks_like_relative_file(path: &str) -> bool {
+    if path.is_empty() || path.starts_with('-') || path.starts_with('.') && path.len() == 1 {
+        return false;
+    }
+    let base = path.rsplit('/').next().unwrap_or(path);
+    let sane = path.chars().all(|c| {
+        c.is_alphanumeric() || matches!(c, '.' | '_' | '-' | '/' | '+' | '@' | '~' | '\\')
+    });
+    let has_alpha = path.chars().any(|c| c.is_alphabetic());
+    // 扩展名必须带字母：`v1.2.3:4` 这类版本文本不能被当成“文件第 4 行”。
+    let ext_ok = base
+        .rsplit_once('.')
+        .is_some_and(|(_, ext)| !ext.is_empty() && ext.len() <= 16 && ext.chars().any(|c| c.is_ascii_alphabetic()));
+    sane && has_alpha && (ext_ok || path.contains('/'))
 }
 
 /// 去掉尾随标点；`)` 只在括号不配对时才去掉。
@@ -256,6 +393,48 @@ fn trim_end(chars: &[char], start: usize, mut end: usize, kind: LinkKind) -> usi
         break;
     }
     end
+}
+
+/// 插件 Linkifier 扩展点：在内置识别**没有命中**时补充自定义链接。
+///
+/// 这是纯识别层扩展，不参与打开策略：插件返回的链接仍要经过 app 的
+/// scheme 白名单与本地路径存在性检查。实现必须是线程安全的（点击/hover
+/// 发生在 UI 线程，但注册可能来自插件加载线程）。
+pub trait Linkifier: Send + Sync {
+    /// 输入是一行可见文本；返回的 `Link.start/end` 按**字符**下标（闭区间）。
+    fn scan(&self, line: &str) -> Vec<Link>;
+}
+
+static LINKIFIERS: OnceLock<Mutex<Vec<Arc<dyn Linkifier>>>> = OnceLock::new();
+
+fn linkifiers() -> &'static Mutex<Vec<Arc<dyn Linkifier>>> {
+    LINKIFIERS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn lock_linkifiers() -> std::sync::MutexGuard<'static, Vec<Arc<dyn Linkifier>>> {
+    // 插件 Linkifier 里 panic 不应让“识别链接”永久失效。
+    linkifiers().lock().unwrap_or_else(|poison| poison.into_inner())
+}
+
+/// 注册插件 Linkifier；同一份 `Arc` 不重复注册。返回是否新增。
+pub fn register_linkifier(linkifier: Arc<dyn Linkifier>) -> bool {
+    let mut list = lock_linkifiers();
+    if list.iter().any(|l| Arc::ptr_eq(l, &linkifier)) {
+        return false;
+    }
+    list.push(linkifier);
+    true
+}
+
+/// 卸载全部插件 Linkifier（插件重载 / 测试清理）。
+pub fn clear_linkifiers() {
+    lock_linkifiers().clear();
+}
+
+/// 在内置规则无命中时运行已注册的插件 Linkifier；顺序按注册顺序。
+pub fn scan_custom(line: &str) -> Vec<Link> {
+    let list = lock_linkifiers();
+    list.iter().flat_map(|linkifier| linkifier.scan(line)).collect()
 }
 
 #[cfg(test)]
@@ -420,6 +599,90 @@ mod tests {
         let slice: String = line.chars().skip(link.start as usize).take((link.end - link.start + 1) as usize).collect();
         assert_eq!(slice, "https://a.io/y");
         assert!(link.contains(link.start) && link.contains(link.end));
+    }
+
+    #[test]
+    fn quoted_paths_allow_spaces() {
+        assert_eq!(texts(r#"open "/tmp/my notes.txt""#), vec!["/tmp/my notes.txt"]);
+        assert_eq!(texts(r#"see '/home/u/a b/c.log'"#), vec!["/home/u/a b/c.log"]);
+        // 引号里不是路径的句子不该变成链接。
+        assert!(texts(r#""hello world""#).is_empty());
+        // 反引号同样按路径壳处理（markdown/日志常见）。
+        assert_eq!(texts("`/var/tmp/a b.csv`"), vec!["/var/tmp/a b.csv"]);
+    }
+
+    #[test]
+    fn tilde_user_paths() {
+        assert_eq!(texts("cd ~alice/work"), vec!["~alice/work"]);
+        assert_eq!(texts("home ~bob"), vec!["~bob"]);
+        // `~` 单独出现不算链接；`~/` 仍是 HOME。
+        assert!(texts("~ done").is_empty());
+        assert_eq!(texts("cd ~/x"), vec!["~/x"]);
+    }
+
+    #[test]
+    fn file_line_col_suffix() {
+        let found = scan("src/main.rs:12:3: error[E0308]");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].kind, LinkKind::Path);
+        assert_eq!(found[0].text, "src/main.rs:12:3");
+        assert_eq!(found[0].path_text(), "src/main.rs");
+        assert_eq!((found[0].line, found[0].col), (Some(12), Some(3)));
+        // 只有行号时 line=Some、col=None。
+        let line_only = scan("foo.rs:7: bad");
+        assert_eq!(line_only.len(), 1);
+        assert_eq!(line_only[0].path_text(), "foo.rs");
+        assert_eq!((line_only[0].line, line_only[0].col), (Some(7), None));
+        // 绝对路径同样支持位置后缀。
+        let abs = scan("/tmp/a.rs:1:2");
+        assert_eq!(abs[0].path_text(), "/tmp/a.rs");
+        // 没有行号后缀的裸文件名不识别；版本/时间不是文件行号。
+        assert!(texts("main.rs").is_empty());
+        assert!(texts("12:34:56 done").is_empty());
+        assert!(texts("v1.2.3:4").is_empty());
+        assert_eq!(strip_path_position("/tmp/a.rs:12:3"), "/tmp/a.rs");
+        assert_eq!(strip_path_position("/tmp/a.rs:12"), "/tmp/a.rs");
+        assert_eq!(strip_path_position("/tmp/a:b.rs"), "/tmp/a:b.rs");
+    }
+
+    #[test]
+    fn plugin_linkifiers_extend_scan_without_touching_builtin() {
+        use std::sync::Arc;
+        struct AtLink;
+        impl Linkifier for AtLink {
+            fn scan(&self, line: &str) -> Vec<Link> {
+                line.find("@@").map(|i| {
+                    Link::new(LinkKind::Path, i as u16, (i + 1) as u16, "@@plugin".to_string())
+                }).into_iter().collect()
+            }
+        }
+        use crate::Frame;
+        clear_linkifiers();
+        let at = Arc::new(AtLink);
+        assert!(register_linkifier(at.clone()));
+        assert!(!register_linkifier(at), "同一份 Arc 不重复注册");
+        assert_eq!(scan_custom("see @@plugin").len(), 1);
+        // 内置 scan 不因插件注册而改变。
+        assert!(scan("see @@plugin").is_empty());
+        // 插件在 Frame::link_at 的内置规则无命中时兜底。
+        let mut f = Frame::new(20, 1);
+        put_frame_text(&mut f, "see @@plugin");
+        assert_eq!(
+            f.link_at(0, 4),
+            Some((LinkKind::Path, "@@plugin".to_string()))
+        );
+        clear_linkifiers();
+        assert!(scan_custom("see @@plugin").is_empty());
+    }
+
+    /// link.rs 没有 Frame helper，单独造一行。
+    fn put_frame_text(f: &mut crate::Frame, text: &str) {
+        use crate::CellData;
+        for (col, ch) in text.chars().enumerate() {
+            let mut cell = CellData::default();
+            cell.ch = ch as u32;
+            f.put(col, cell, None);
+        }
     }
 
     #[test]
