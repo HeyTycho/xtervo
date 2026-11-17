@@ -154,7 +154,7 @@ ACT-002 上游审计 ──（解除 21 条 needs_verification 的决策阻塞�
 |---|---|---|---|---|---|
 | ACT-039 | SSH 建连/认证骨架（russh 试点，替掉系统 ssh） | SSH-001/003/004 | 现在是“系统 `ssh` 跑在 PTY 里”的 v1 | 建连/断开/超时/keepalive/重连；密码 + 私钥 + 加密私钥口令 + agent；错误可读 | L |
 | ACT-040 | known_hosts + 别名/历史 + 连接阶段诊断 | SSH-015、OPS-002 | 应用层无 known_hosts | 首次确认与变更告警；DNS→TCP→握手→认证 分阶段定位；单测 + 本地 sshd 集成 | M |
-| ACT-041 | Connection Manager + SSH Profile 编辑 + 失败重试/进度 | UI-NAV-001/002/003/006/007/008、SSH-002、UI-PROF-007/008 | 只有 TabBar 菜单里的 Profiles | 入口常驻；连接中/失败/取消三态；编辑回填；Sidebar 可显隐 | M |
+| ACT-041 | Connection Manager + SSH Profile 编辑 + 失败重试/进度（UI 依赖 `WORKSPACE_SHELL.md` §5 第 5 步） | UI-NAV-001/002/003/006/007/008、SSH-002、UI-PROF-007/008 | 只有 TabBar 菜单里的 Profiles | 入口常驻；连接中/失败/取消三态；编辑回填；Sidebar 可显隐 | M |
 | ACT-052 | Transport seam（POC）：`PaneTransport` + socketpair 数据面 + `terminal_transport` 权限 | — | 现在插件无法提供 pane 后端（只有 `terminal.read/write`） | 测试插件以 socketpair 当 transport 跑通 pane 字节流；吞吐 ≥20 MiB/s、回显 p95 ≤5ms、30m 无增长 | M |
 | ACT-042 | SSH 进阶：ProxyJump/X11/持久转发/Login Scripts/算法 | SSH-008/010/012/013/014、UI-SSH-008 | 全缺 | 两跳连通；转发随连接恢复；脚本顺序/等待/延时/失败处理；算法入口可见 | L |
 
@@ -170,7 +170,7 @@ ACT-002 上游审计 ──（解除 21 条 needs_verification 的决策阻塞�
 
 | ID | 任务 | 覆盖条目 | 现状 | 验收标准 | 规模 |
 |---|---|---|---|---|---|
-| ACT-046 | 工作区 UI 壳：Sidebar / Toolbar / 状态区 / Tooltip | UI-NAV-001/002/006/007/008 | 无 | 显隐 + 宽度；按钮分组与禁用态；状态区（连接/进度/完成）；所有图标有 tooltip/无障碍标签 | M |
+| ACT-046 | 工作区 UI 壳：Sidebar / Toolbar / 状态区 / Tooltip（设计见 [`WORKSPACE_SHELL.md`](WORKSPACE_SHELL.md)） | UI-NAV-001/002/006/007/008 | 无 | 显隐 + 宽度；按钮分组与禁用态；状态区（连接/进度/完成）；所有图标有 tooltip/无障碍标签 | M |
 | ACT-047 | Profile 快捷键 + 布局存成 Workspace + 断线重连策略 | SESS-002/003/007、KEY-004、UI-PROF-009 | Profile 模型已有，绑定与 workspace 无 | Profile 可绑热键；分裂布局存为 workspace 并可恢复；断开后的状态提示与重连策略可配置 | M |
 | ACT-048 | 设置页收尾：Config Sync、SSH 高级项、插件动态设置页 | UI-SET-006/009/013 | 设置页 15 条里 12 条 partial | 三块各有入口，即时生效或明确“重启后生效”；插件卸载后的配置清理策略写明 | M |
 | ACT-049 | 插件生态：旧插件 sidecar + 插件注册点 | PLUG-007..012、KEY-006、NOTIFY-006、SEC-005、UI-TERM-013 | 只有 v3 宿主，v1/v2 unsupported | sidecar 起停/超时/崩溃隔离；`tabby-core`/`tabby-terminal`/`tabby-local` 最小 shim；插件注册的命令/设置/进度在 UI 可见；凭据默认不可读 | L |
