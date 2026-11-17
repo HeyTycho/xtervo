@@ -6,7 +6,7 @@
 ## 1. 验证基线（本轮实测）
 
 ```text
-cargo test -p tervo-app --bin tervo     569 passed / 0 failed / 1 ignored
+cargo test -p tervo-app --bin tervo     571 passed / 0 failed / 1 ignored
 cargo test -p tervo-core                25 + 12 passed
 DURATION=2m soak（sandbox 需可写目录）   PASS（.logs/soak/20261117-133652；release 构建 8ed890f 复跑 PASS：RSS 355.0→392.8MiB，线程/FD 不变）
 DURATION=15m soak                        PASS（RSS +3.15 MiB/min，R²=0.29，线程/FD 不变）
@@ -32,7 +32,7 @@ DURATION=2m BIN=$PWD/target/release/tervo SOAK_NO_SHOTS=1 \
 | ACT-038 MCP | 完成（文档 + `split` 未知 pane 报错） | `docs/MCP.md`「请求格式与窗口路由」 |
 | ACT-046 工作区壳 | 侧栏可用：config/骨架/拖宽/Profile 列表/设置开关/状态 pill/工具行/命令 | `.logs/sidebar_*.png`、`.logs/status_unclean.png` |
 | ACT-047 Profile 热键 | 模型+分发+校验+冲突提示 | `profile::tests::profile_hotkey_*`、`commands::default_command_for_chord` |
-| ACT-036 | 恢复提示已做（状态 pill） | 伪造 `session.running` 可见 |
+| ACT-036 | 恢复提示 + **连续崩溃计数**（≥3 次状态区告警） | `session::tests::crash_streak_bumps_on_unclean_and_resets_on_clean`；伪造 `session.running` 可见 pill |
 
 回退点：本地 tag `v0.6.0-dev.1`（侧栏壳 + Profile 热键）与
 **`v0.6.0-dev.2`（当前 HEAD：命令默认键分发 + 侧栏快捷键 e2e + release 2m 门禁 PASS）**，均未发布、未推送。
