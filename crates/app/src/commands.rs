@@ -589,6 +589,8 @@ pub fn builtin() -> Registry {
         ("view.toggle-fullscreen", "Toggle Fullscreen", Category::View, Some("f11")),
         ("view.sidebar", "Toggle Sidebar", Category::View, Some("ctrl+shift+b")),
         ("view.toggle-quake", "Toggle Quake Mode", Category::View, None),
+        ("workspace.save", "Save Layout as Workspace", Category::View, None),
+        ("workspace.list", "List Workspaces", Category::View, None),
         ("view.zoom-in", "Zoom In", Category::View, Some("ctrl+plus")),
         ("view.zoom-out", "Zoom Out", Category::View, Some("ctrl+minus")),
         ("view.zoom-reset", "Reset Zoom", Category::View, Some("ctrl+0")),

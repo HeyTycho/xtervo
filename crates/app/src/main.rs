@@ -112,6 +112,53 @@ fn toggle_sidebar_math(content: Rect, cfg: &mut crate::config::Config) -> Rect {
 }
 
 /// 翻转侧栏可见性并立即重排（命令面板与设置页开关共用）。
+/// 把当前 Tab 的分屏布局存成命名工作区（`workspace.save` 命令）。
+///
+/// 名字由 Tab 标题派生并去重；只存布局（树 + cwd + profile 关联），不存进程。
+fn save_current_workspace(st: &mut AppState) {
+    let Some(tab) = st.ws.active_tab() else {
+        return;
+    };
+    let Some(root) = tab.root.as_ref() else {
+        return;
+    };
+    let ids = root.panes();
+    let mut cwds = HashMap::with_capacity(ids.len());
+    let mut profiles = HashMap::with_capacity(ids.len());
+    for id in &ids {
+        let cwd = st
+            .panes
+            .get(id)
+            .and_then(|rt| rt.handle.pid())
+            .and_then(session::cwd_of);
+        cwds.insert(*id, cwd);
+        profiles.insert(*id, st.panes.get(id).and_then(|rt| rt.profile_id));
+    }
+    let tree = session::Tree::from_node_with_profiles(root, &cwds, &profiles);
+    let title = tab.title.clone();
+    let existing: Vec<String> = st.workspaces.workspaces.iter().map(|w| w.name.clone()).collect();
+    let name = workspaces::unique_name(&title, &existing);
+    if let Err(e) = st.workspaces.upsert(workspaces::Workspace { name: name.clone(), tree }) {
+        eprintln!("[workspace] 保存失败: {e}");
+        return;
+    }
+    st.workspaces.save();
+    eprintln!(
+        "[workspace] 已保存「{name}」（{} 个 pane，共 {} 个工作区）",
+        ids.len(),
+        st.workspaces.workspaces.len()
+    );
+    let msg = if st.cfg.lang() == "zh" {
+        format!("已保存工作区「{name}」")
+    } else {
+        format!("Saved workspace \"{name}\"")
+    };
+    st.ui
+        .set_status_items(ModelRc::from(Rc::new(VecModel::from(vec![
+            slint::SharedString::from(msg),
+        ]))));
+}
+
 fn toggle_sidebar(st: &mut AppState) {
     st.content = toggle_sidebar_math(st.content, &mut st.cfg);
     st.ui.set_cfg_sidebar_visible(st.cfg.sidebar_visible);
@@ -350,6 +397,8 @@ struct AppState {
     save_pane: Option<PaneId>,
     /// 命令表（Command Palette / 快捷键分发共用）
     commands: commands::Registry,
+    /// 命名工作区（保存的分屏布局，ACT-047）
+    workspaces: workspaces::WorkspaceStore,
     /// Palette 当前展示项对应的命令 ID（与 palette_model 同序）
     palette_ids: Vec<String>,
     palette_model: Rc<VecModel<slint::SharedString>>,
@@ -9764,6 +9813,12 @@ fn run_command(st: &mut AppState, id: &str) {
         "tab.duplicate" => duplicate_tab(st, st.ws.active),
         "tab.reopen-closed" => reopen_closed_tab(st),
         "view.sidebar" => toggle_sidebar(st),
+        "workspace.save" => save_current_workspace(st),
+        "workspace.list" => {
+            let names: Vec<String> =
+                st.workspaces.workspaces.iter().map(|w| w.name.clone()).collect();
+            eprintln!("[workspace] 已保存: {names:?}");
+        },
         "pane.split-right" => {
             if let Some(focused) = st.ws.active_tab().map(|t| t.focused) {
                 split_pane_inner(st, focused, Dir::Row);
@@ -11529,6 +11584,7 @@ fn build_window_state(
         detached: Vec::new(),
         bg_model,
         profiles: shared.profiles.clone_handle(),
+        workspaces: workspaces::WorkspaceStore::load(),
         profile_model,
         profile_indices: Vec::new(),
         profile_query: String::new(),

@@ -143,6 +143,40 @@ impl WorkspaceStore {
     }
 }
 
+/// 由 Tab 标题派生唯一工作区名：去掉空白/路径分隔符，重名时追加 `-2`、`-3`…
+///
+/// 抽成纯函数是为了单测；调用方只需把现有名字列表传进来。
+pub fn unique_name(base: &str, existing: &[String]) -> String {
+    let cleaned: String = base
+        .trim()
+        .chars()
+        .map(|c| if c.is_whitespace() || c == '/' || c == '\\' { ' ' } else { c })
+        .collect();
+    let cleaned = cleaned.trim();
+    let base = if cleaned.is_empty() { "workspace" } else { cleaned };
+    if !existing.iter().any(|n| n.eq_ignore_ascii_case(base)) {
+        return base.to_string();
+    }
+    let mut n = 2;
+    loop {
+        let candidate = format!("{base}-{n}");
+        if !existing.iter().any(|e| e.eq_ignore_ascii_case(&candidate)) {
+            return candidate;
+        }
+        n += 1;
+        if n > 999 {
+            return format!("{base}-{}", now_seed());
+        }
+    }
+}
+
+fn now_seed() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -171,6 +205,16 @@ mod tests {
         assert!(store.remove("Dev"));
         assert!(store.workspaces.is_empty());
         assert!(!store.remove("dev"));
+    }
+
+    #[test]
+    fn unique_name_sanitizes_and_dedupes_case_insensitively() {
+        assert_eq!(unique_name("my layout", &[]), "my layout");
+        assert_eq!(unique_name("  ", &[]), "workspace");
+        assert_eq!(unique_name("a/b", &[]), "a b");
+        let existing = vec!["dev".to_string(), "dev-2".to_string()];
+        // 保留用户原始大小写，只按不区分大小写去重
+        assert_eq!(unique_name("DEV", &existing), "DEV-3");
     }
 
     #[test]
