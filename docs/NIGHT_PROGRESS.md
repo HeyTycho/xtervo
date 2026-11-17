@@ -52,10 +52,11 @@ DURATION=2m BIN=$PWD/target/release/tervo SOAK_NO_SHOTS=1 \
 7. ACT-049 插件生态、ACT-050 终端小件、ACT-051 平台/性能（24h、Wayland、emoji）
 ```
 
-## 3.1 safe mode 实施配方（下一会话可直接照做）
+## 3.1 safe mode（v1 已实现，配方留档）
 
-现状：连续崩溃计数与状态区告警已就绪（`session::bump_crash_streak`，≥3 次提示），
-但**还没有真正降级启动**。最小可用版本：
+现状：**v1 已落地**——连续 ≥3 次异常退出时，本次启动用
+`PluginStore::suppressed_for_safe_mode()` 屏蔽所有插件并打 `[safe-mode]` 日志；
+状态区 pill 仍在。剩下的只有 GPU/WASM 显式降级与“恢复正常启动”入口。
 
 ```text
 1. main() 在 `let compact` 附近（compute unclean 的地方，约 main.rs `let unclean = ...`）
@@ -83,6 +84,9 @@ DURATION=2m BIN=$PWD/target/release/tervo SOAK_NO_SHOTS=1 \
   不能拿“没有新日志行”判断没重绘；要用像素（`scripts/e2e_split_repaint.py`）。
 - **XWD 解码**：`xwd` 头 `byte_order=0` 是 LSBFirst，按大端读会把 R/G 换位、蓝通道拿到 alpha(=255)，
   整屏发蓝。必须按 `byte_order` 选 `'<I'`/`'>I'`，并尊重 `bits_per_pixel`。
+- **后端回退会 exec 自身**：无头/GPU 初始化失败时同一 pid 会重跑一遍启动并再写一次
+  启动头，任何“每次启动 +1”的计数都会被算两次；计数需带时间戳去重（`session.crashes`
+  现在是 `<次数> <unix 秒>`，10 秒内重复 bump 视为同一次启动）。
 - **沙箱里 `/run/user/1000` 只读**：soak/实例需要 `XDG_RUNTIME_DIR` + `TERVO_INSTANCE_DIR` 指到可写目录。
 - **MCP 参数必须放 `args`**；平铺会被忽略（曾因此收到 `pane_id required`）。
 - **窗口标题累积**：已修（`secondary.rs::base_window_title`），别再往 `WM_NAME` 拼 id。

@@ -620,6 +620,19 @@ impl PluginStore {
         Self::load_from(&Self::dir(), &Self::state_path())
     }
 
+    /// 安全模式：照常读 manifest/状态（设置页仍能看到列表），但**不保留任何条目**，
+    /// 因此不会启动插件进程。用于连续多次异常退出后的降级启动（ACT-036）。
+    pub fn suppressed_for_safe_mode() -> Self {
+        let mut store = Self::load();
+        let count = store.entries.len();
+        store.entries.clear();
+        store.index.clear();
+        if count > 0 {
+            eprintln!("[safe-mode] 已屏蔽 {count} 个插件（连续异常退出降级）");
+        }
+        store
+    }
+
     pub fn load_from(dir: &Path, state_path: &Path) -> Self {
         Self::load_with_options(dir, state_path, SupervisorOptions::default())
     }

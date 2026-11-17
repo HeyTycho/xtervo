@@ -14703,6 +14703,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         );
     }
+    // 连续异常退出计数只在**这里** bump 一次；后面窗口创建只读结果，
+    // 避免同一进程里重复累加（曾差点写成两处）。
+    // 启动可能因渲染后端回退而重跑一遍（同一 pid 会写两次启动头），
+    // 计数必须幂等，否则一次启动会累加 2、很快误判成 safe mode。
+    static CRASH_STREAK: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
+    let crash_streak = *CRASH_STREAK.get_or_init(|| {
+        if unclean {
+            session::bump_crash_streak()
+        } else {
+            session::reset_crash_streak();
+            0
+        }
+    });
+    let safe_mode = crash_streak >= 3;
+    if safe_mode {
+        eprintln!(
+            "[safe-mode] 连续 {crash_streak} 次异常退出：本次不加载插件（GPU/WASM 保持默认）"
+        );
+    }
     if !opts.window {
         if let Err(error) = session::mark_running() {
             eprintln!("[session] 写 running marker 失败: {error}");
@@ -14754,7 +14773,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 插件发现提前到主题加载之前：声明式 Theme Pack（可选）要并入主题列表；
     // 此时只读 manifest，不启动任何插件进程。
-    let plugins = plugin_v3::PluginStore::load();
+    let plugins = if safe_mode {
+        plugin_v3::PluginStore::suppressed_for_safe_mode()
+    } else {
+        plugin_v3::PluginStore::load()
+    };
 
     // 内置 + 用户自定义主题 + 插件声明的主题；加载失败只记录，不阻塞启动。
     let mut registry = ThemeRegistry::load(&ThemeRegistry::default_dir());
@@ -14947,17 +14970,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut st = state.borrow_mut();
             rebuild_profile_choices(&mut st);
         }
-        // 崩溃连击（ACT-036 前置）：连续异常退出次数决定是否该降级启动。
-        // 真正 safe mode 尚未实现，这里只记录事实 + 在状态区提示，避免“静默崩”。
-        let streak = if unclean {
-            crate::session::bump_crash_streak()
-        } else {
-            crate::session::reset_crash_streak();
-            0
-        };
-        if streak >= 3 {
-            eprintln!("[session] 连续 {streak} 次异常退出：safe mode 尚未实现，建议先禁用插件/关 GPU 排查");
-        }
+        // 计数在 main 开头已经 bump 过，这里只用结果（不重复累加）。
+        let streak = crash_streak;
         // 异常退出提示（ACT-036 的“恢复提示”第一步）：只提示，不自动改布局。
         if unclean {
             let st = state.borrow();

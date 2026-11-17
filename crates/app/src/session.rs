@@ -626,16 +626,27 @@ pub fn bump_crash_streak() -> u8 {
 
 fn bump_crash_streak_at(path: &Path) -> u8 {
     let file = crash_streak_path(path);
-    let previous = std::fs::read_to_string(&file)
+    // 文件格式：`<次数> <unix 秒>`；只有第一个字段是语义值，旧格式（纯数字）兼容。
+    let (previous, bumped_at) = std::fs::read_to_string(&file)
         .ok()
-        .and_then(|text| text.trim().parse::<u8>().ok())
-        .unwrap_or(0);
+        .map(|text| {
+            let mut parts = text.split_whitespace();
+            let count = parts.next().and_then(|v| v.parse::<u8>().ok()).unwrap_or(0);
+            let at = parts.next().and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+            (count, at)
+        })
+        .unwrap_or((0, 0));
+    let now = now_secs();
+    // 后端回退会 exec 自身（同 pid、静态量失效），10 秒内视为同一次启动，不再累加。
+    if bumped_at != 0 && now.saturating_sub(bumped_at) <= 10 {
+        return previous;
+    }
     let next = previous.saturating_add(1);
     if let Some(dir) = file.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
     if let Ok(mut out) = std::fs::File::create(&file) {
-        let _ = writeln!(out, "{next}");
+        let _ = writeln!(out, "{next} {now}");
         let _ = out.sync_all();
     }
     next
@@ -647,9 +658,14 @@ pub fn crash_streak() -> u8 {
 }
 
 fn crash_streak_at(path: &Path) -> u8 {
+    // 文件可能是 `<次数> <unix 秒>`（新）或纯数字（旧），都只取第一个字段。
     std::fs::read_to_string(crash_streak_path(path))
         .ok()
-        .and_then(|text| text.trim().parse::<u8>().ok())
+        .and_then(|text| {
+            text.split_whitespace()
+                .next()
+                .and_then(|first| first.parse::<u8>().ok())
+        })
         .unwrap_or(0)
 }
 
@@ -1514,15 +1530,25 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("session.json");
         assert_eq!(crash_streak_at(&path), 0);
+
+        // 第一次异常退出：0 -> 1
         assert_eq!(bump_crash_streak_at(&path), 1);
+        // 同一次启动内的重复调用（后端回退会 exec 自身）不再累加
+        assert_eq!(bump_crash_streak_at(&path), 1);
+
+        // 模拟“下一次启动”：把时间戳改成很久以前，才会继续累加
+        std::fs::write(crash_streak_path(&path), b"1 1").unwrap();
         assert_eq!(bump_crash_streak_at(&path), 2);
         assert_eq!(crash_streak_at(&path), 2);
-        // 饱和：不会因为文件被手改大而溢出
+
+        // 饱和：手改成 255 也不会溢出（旧格式无时间戳，允许立即 +1）
         std::fs::write(crash_streak_path(&path), b"255").unwrap();
         assert_eq!(bump_crash_streak_at(&path), 255);
+
         // 正常退出清零
         let _ = std::fs::remove_file(crash_streak_path(&path));
         assert_eq!(crash_streak_at(&path), 0);
+
         // 坏内容按 0 处理
         std::fs::write(crash_streak_path(&path), b"nonsense").unwrap();
         assert_eq!(crash_streak_at(&path), 0);
