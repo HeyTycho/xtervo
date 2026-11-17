@@ -106,3 +106,56 @@ F7 Telnet 插件             45m
 加分：≥80%（Wave 5 + 机动补 1–2 条 partial）
 纪律：不把 partial 硬改成 implemented —— CLOSURE 的 evidence 检查会拦
 ```
+
+## 6. 「今晚 99%」可行性分析（2026-11-17 用户目标）
+
+### 99% 的定义与算术
+
+核心 100 条里：45 已实现、48 部分、5 未开始、1 待核实、1 明确不做（Windows 专属）。
+
+```text
+要达到 99%：99 条必须按 1.0 计分
+  → 48 条 partial 全部补成 implemented（+24 分）
+  → 5 条 not_started 全部实现（+5 分）
+  → 1 条 needs_verification 落实
+  → 剩下 1 条 unsupported（LOCAL-007 Windows 专属）计 0
+  = 99/100 = 99%
+```
+
+### 今晚做不到的两个原因
+
+**原因一：工作量**。48 条 partial 平均 1–2 小时，合计 **45–70 小时**；
+今晚 18:00–08:00 只有 14 小时，且要留回归/门禁时间。
+
+**原因二：13 条卡在前提条件上，不是“写代码”能解决的**：
+
+| 卡点 | 条目 | 前提 |
+|---|---|---|
+| 连接插件未做 | UI-TAB-008、UI-TAB-009、UI-TERM-011、TERM-012、SESS-006 | SSH/Telnet 落地后才有“连接状态/远端标题/远端路径” |
+| Wayland / IME 环境 | UI-TERM-001、TERM-016、UI-WIN-001 | 需要 Wayland 会话 + fcitx5 才能验候选窗像素 |
+| 真机 GPU / 合成器 | UI-WIN-005、UI-TERM-014、UI-TERM-020、UI-TERM-021 | NVIDIA 真机 + mutter 多窗口遮挡场景 |
+| 上游待核 | UI-WIN-007 | 需要上游源码/文档确认竖排 TabBar |
+
+这 13 条即使今晚通宵，也只能停留在 partial（除非伪造证据——CLOSURE 的证据检查会拦）。
+
+### 今晚的真实上限
+
+14 小时按“平均 1.2 小时/条”算，最多完成 **10–12 条** partial（+5–6 分）：
+**69.2% → 74.2–75.2%**；加上 Wave 4/5 的两条 not_started（pane 拖拽、录制 API，各 +1）
+和插件命令上下文（+1），到 **77–79%** 已经是极限。
+
+### 给出到 99% 的现实路线
+
+| 阶段 | 目标 | 主要内容 | 估时 |
+|---|---|---|---|
+| 今晚 | 79–80% | CORE_TO_80 的 17 条 + pane 拖拽 + 录制 + 插件上下文 | 14h |
+| 第 2 晚 | 88–90% | 剩下 ~20 条可独立完成的 partial（SESS/UI-TAB/LOCAL/KEY 为主） | 12h |
+| 第 3 晚 | 94–95% | 重活：emoji grapheme、Nerd Font/Powerline、字体可配、链接识别打磨 | 12h |
+| 第 4 晚 | 99% | 连接插件（解除 5 条阻塞）+ Wayland/fcitx 环境验证（解除 4 条）+ 真机 GPU（解除 4 条） | 12h+ |
+
+### 建议的口径
+
+```text
+对外承诺：今晚 80%（硬指标），两周内 99%（依赖连接插件与真机环境）
+不接受：把 partial 改成 implemented 来凑数；CLOSURE 的 evidence 检查与 check_docs_counts 会拦
+```
