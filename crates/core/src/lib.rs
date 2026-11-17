@@ -18,6 +18,7 @@ pub mod osc;
 pub mod palette;
 pub mod pane;
 pub mod sixel;
+pub mod transport;
 
 pub use event::{
     ClipboardRequest, ClipboardSelection, CoreEvent, EventSink, Notification, PaneStats, Progress,

@@ -46,7 +46,8 @@ DURATION=2m BIN=$PWD/target/release/tervo SOAK_NO_SHOTS=1 \
 4. ACT-046 剩余：独立顶部 Toolbar（需先修 IME 坐标链里的 TABBAR_H 常量）、
    Connection Manager（与 ACT-041 合并）、插件注入点
 5. ACT-036 剩余：crash marker + safe mode + 崩溃循环熔断
-6. ACT-052 transport seam（夜间主菜）→ ACT-039/040/041/042/043/044/045
+6. ACT-052 transport seam：trait + socketpair 参考实现 ✅（`crates/core/src/transport.rs`）；
+   剩 actor 接线、权限/审计/限流 → 再上 SSH/Serial/Telnet 插件（ACT-039..045）
 7. ACT-049 插件生态、ACT-050 终端小件、ACT-051 平台/性能（24h、Wayland、emoji）
 ```
 
