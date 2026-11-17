@@ -1394,6 +1394,8 @@ fn command_title(lang: &str, id: &str, fallback: &'static str) -> &'static str {
         "view.command-palette" => "命令面板",
         "view.toggle-fullscreen" => "切换全屏",
         "view.toggle-quake" => "切换 Quake 模式",
+        "view.scroll-top" => "滚动到顶部",
+        "view.scroll-bottom" => "滚动到底部",
         "view.zoom-in" => "放大",
         "view.zoom-out" => "缩小",
         "view.zoom-reset" => "重置缩放",
@@ -9947,6 +9949,8 @@ fn run_command(st: &mut AppState, id: &str) {
         "tab.search" => open_tab_search(st),
         "tab.duplicate" => duplicate_tab(st, st.ws.active),
         "tab.reopen-closed" => reopen_closed_tab(st),
+        "view.scroll-top" => scroll_focused_pane(st, true),
+        "view.scroll-bottom" => scroll_focused_pane(st, false),
         "view.sidebar" => toggle_sidebar(st),
         "workspace.save" => save_current_workspace(st),
         "workspace.list" => {
@@ -10036,6 +10040,27 @@ fn run_command(st: &mut AppState, id: &str) {
             }
         }
     }
+}
+
+/// 聚焦 pane 滚到历史顶/底（`view.scroll-top` / `view.scroll-bottom`）。
+///
+/// `scroll_to` 的偏移约定：0 = 最新内容（底部），`history` = 最旧（顶部）。
+/// 与滚轮/滚动条一致：主动滚动会清掉原生选区，避免高亮粘在旧格子。
+fn scroll_focused_pane(st: &mut AppState, to_top: bool) {
+    let Some(id) = focused_pane(st) else { return };
+    let Some(rt) = st.panes.get(&id) else { return };
+    let pos = rt.handle.scroll_position();
+    let offset = if to_top { pos.history } else { 0 };
+    if pos.offset == offset {
+        return;
+    }
+    rt.handle.clear_selection();
+    rt.handle.scroll_to(offset);
+    eprintln!(
+        "[ui] scroll-to-{} pane={id} offset={offset} history={}",
+        if to_top { "top" } else { "bottom" },
+        pos.history
+    );
 }
 
 fn open_search(st: &mut AppState) {
