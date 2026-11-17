@@ -8,7 +8,8 @@
 ```text
 cargo test -p tervo-app --bin tervo     571 passed / 0 failed / 1 ignored
 cargo test -p tervo-core --lib           144 passed（含 4 条 transport/pump_reader）
-DURATION=2m soak（sandbox 需可写目录）   PASS（.logs/soak/20261117-133652；release 8ed890f PASS（RSS 355.0→392.8MiB）；HEAD 复跑 PASS（357.4→391.2MiB，线程 112/FD 97 不变，fatal=0））
+DURATION=2m soak（sandbox 需可写目录）   PASS ×4：.logs/soak/20261117-133652 / 135443(HEAD 8ed890f)
+                                        / 此前两次；最新 HEAD(e431deb) PASS：RSS 355.6→392.6MiB，线程 112/FD 97 不变，fatal=0）
 DURATION=15m soak                        PASS（RSS +3.15 MiB/min，R²=0.29，线程/FD 不变）
 PTY→可见 10 MiB                          178.35 ms ≈ 56.1 MiB/s
 渲染 P95（200x50）                       damage 路径 37–40 µs；full 1.66 ms
