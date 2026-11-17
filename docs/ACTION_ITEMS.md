@@ -139,12 +139,54 @@ ACT-002 上游审计 ──（解除 21 条 needs_verification 的决策阻塞�
 5. 不要承诺“兼容 Tabby 插件”；先按 `COMPATIBILITY_MATRIX.md` 的 L0–L4 分级逐项验证。
 6. 不要把需求文档当上游证据；所有 `U-AUDIT` 条目等 ACT-002 收敛后再改状态。
 
-## 8. v0.6 候选（2026-11-16 新增，未排期）
+## 8. 0.6 待办（按轨道归并，2026-11-16）
 
-| ID | 标题 | 现状 / 为什么 | 验收标准 | 预估 |
-|---|---|---|---|---|
-| ACT-034 | 分屏新 pane 首帧不重绘（回归） | 0.5.0 可复现：`split` 后 Term 有内容（`live_output` 读到 `➜  ~`）、`live_snapshot` 有 damage（`w=0`、`generation=6`），但日志只有 `frame rev=2 / glyphs=0` 一帧，界面空白到下一位外力重绘。键盘分屏与 MCP `split` 都复现 | 先补失败测试：socket `split` → 等待提示符 → 断言该 pane 的 frame rev 增长且 damage 被消费；修复后 4-pane 手动回归 | M |
-| ACT-035 | 恢复矩阵（破坏面注入） | 现在只有 kill -9 一条 e2e；ENOSPC / 权限拒绝 / JSON 截断 / 配置损坏 全无测试 | `scripts/` 增加注入式 e2e：每类破坏面各一条，断言不丢旧快照且能回退 `.bak` | M |
-| ACT-036 | crash marker + safe mode | 全仓只有 `docs/DEV_SCHEDULE.md:56` 一行计划，代码 0 实现；崩溃循环没有熔断 | 连续 N 次异常退出 → 下次启动进入安全模式（禁用插件/GPU/WASM），并在 UI 说明原因；单测 + e2e | L |
-| ACT-037 | 文档对账常态化 | `CLOSURE.md` / 本文件长期落后于发版（本次已对账到 v0.5.0） | 发版清单里加一步：跑 `scripts/matrix_stats.py`、更新 CLOSURE 统计与 ACT 状态，否则 CI 失败 | S |
-| ACT-038 | MCP 允许面收尾 | `mcp_tabs` 已按需打开；`mcp_destructive` 仍关闭，close/kill 走不通 | 明确默认值策略并写进 `docs/MCP.md`：哪些给默认开、哪些必须显式开 | S |
+> 归并口径：**传输后端 + 它的 UI 归一条轨**，跨后端共享的壳/配置/插件/可靠性归“通用”。
+> 51 条 `not_started` + 关键 `partial` + 6 条矩阵外缺口（可靠性/平台/流程）→ **18 张卡**：
+> SSH 轨 4、串口/Telnet 轨 3、通用轨 11。
+> 括号内是 `FEATURE_MATRIX.md` 的条目号，便于回查证据与限制。
+
+### 8.1 SSH 轨（C3 + 连接入口）
+
+| ID | 任务 | 覆盖条目 | 现状 | 验收标准 | 规模 |
+|---|---|---|---|---|---|
+| ACT-039 | SSH 建连/认证骨架（russh 试点，替掉系统 ssh） | SSH-001/003/004 | 现在是“系统 `ssh` 跑在 PTY 里”的 v1 | 建连/断开/超时/keepalive/重连；密码 + 私钥 + 加密私钥口令 + agent；错误可读 | L |
+| ACT-040 | known_hosts + 别名/历史 + 连接阶段诊断 | SSH-015、OPS-002 | 应用层无 known_hosts | 首次确认与变更告警；DNS→TCP→握手→认证 分阶段定位；单测 + 本地 sshd 集成 | M |
+| ACT-041 | Connection Manager + SSH Profile 编辑 + 失败重试/进度 | UI-NAV-001/002/003/006/007/008、SSH-002、UI-PROF-007/008 | 只有 TabBar 菜单里的 Profiles | 入口常驻；连接中/失败/取消三态；编辑回填；Sidebar 可显隐 | M |
+| ACT-042 | SSH 进阶：ProxyJump/X11/持久转发/Login Scripts/算法 | SSH-008/010/012/013/014、UI-SSH-008 | 全缺 | 两跳连通；转发随连接恢复；脚本顺序/等待/延时/失败处理；算法入口可见 | L |
+
+### 8.2 串口 / Telnet 轨（C6 + C7 + B9）
+
+| ID | 任务 | 覆盖条目 | 现状 | 验收标准 | 规模 |
+|---|---|---|---|---|---|
+| ACT-043 | 串口后端：枚举、参数、读写缓冲、拔插重连 | SERIAL-001/002/003/007/008 | 系统 socat 桥接 | 枚举→打开→波特率/数据位/校验/停止位/流控→拔插识别→自动重连；高频数据不丢字节 | M |
+| ACT-044 | 串口 UI：参数编辑、设备刷新、重连开关 | UI-SER-002/006 | 无 | 参数表可编辑并持久化；刷新设备列表；重连状态可见 | S |
+| ACT-045 | Telnet 后端 + IAC 协商 | TELNET-001/002/003 | 无（当普通 TCP 处理） | 建连/断开/重连；IAC 协商不泄露给终端；与 Terminal Engine 对接 | M |
+
+### 8.3 通用轨（壳 / Profile / 设置 / 插件 / 终端 / 可靠性 / 平台）
+
+| ID | 任务 | 覆盖条目 | 现状 | 验收标准 | 规模 |
+|---|---|---|---|---|---|
+| ACT-046 | 工作区 UI 壳：Sidebar / Toolbar / 状态区 / Tooltip | UI-NAV-001/002/006/007/008 | 无 | 显隐 + 宽度；按钮分组与禁用态；状态区（连接/进度/完成）；所有图标有 tooltip/无障碍标签 | M |
+| ACT-047 | Profile 快捷键 + 布局存成 Workspace + 断线重连策略 | SESS-002/003/007、KEY-004、UI-PROF-009 | Profile 模型已有，绑定与 workspace 无 | Profile 可绑热键；分裂布局存为 workspace 并可恢复；断开后的状态提示与重连策略可配置 | M |
+| ACT-048 | 设置页收尾：Config Sync、SSH 高级项、插件动态设置页 | UI-SET-006/009/013 | 设置页 15 条里 12 条 partial | 三块各有入口，即时生效或明确“重启后生效”；插件卸载后的配置清理策略写明 | M |
+| ACT-049 | 插件生态：旧插件 sidecar + 插件注册点 | PLUG-007..012、KEY-006、NOTIFY-006、SEC-005、UI-TERM-013 | 只有 v3 宿主，v1/v2 unsupported | sidecar 起停/超时/崩溃隔离；`tabby-core`/`tabby-terminal`/`tabby-local` 最小 shim；插件注册的命令/设置/进度在 UI 可见；凭据默认不可读 | L |
+| ACT-050 | 终端小件：录制 API、同窗多本地 Profile、Pane 拖拽重排 | TERM-015、LOCAL-004、UI-PANE-008 | 无 | 会话录制可导出；同一窗口可开不同本地 shell；pane 可拖拽重排/跨窗口移动 | M |
+| ACT-034 | 分屏新 pane 首帧不重绘（回归） | — | 0.5.0 可复现：`live_output` 有内容、`live_snapshot` 有 damage（`w=0`、`generation=6`），但只有 `frame rev=2 / glyphs=0` 一帧 | 先补失败测试：socket `split` → 等提示符 → 断言 frame rev 增长且 damage 被消费；4-pane 手动回归 | M |
+| ACT-035 | 恢复矩阵（破坏面注入） | — | 只有 kill -9 一条 e2e | ENOSPC / 权限拒绝 / JSON 截断 / 配置损坏 各一条注入 e2e，断言不丢旧快照且能回退 `.bak` | M |
+| ACT-036 | crash marker + safe mode | — | 0 实现；崩溃循环无熔断 | 连续 N 次异常退出 → 安全模式（禁插件/GPU/WASM）并在 UI 说明原因；单测 + e2e | L |
+| ACT-051 | 平台/性能深度 | — | 已知缺口 | Wayland 原生、emoji shaping、atlas 驱逐、P95/吞吐/24h soak 各有一份可复现数据 | L |
+| ACT-037 | 文档对账常态化 | — | 本次已对账到 v0.5.0 | 发版清单加一步：跑 `scripts/matrix_stats.py` + 更新 CLOSURE/ACT，否则 CI 失败 | S |
+| ACT-038 | MCP 允许面收尾 | — | `mcp_tabs` 已开，`mcp_destructive` 仍关 | 默认值策略写进 `docs/MCP.md`：哪些默认开、哪些必须显式开 | S |
+
+### 8.4 依赖与顺序
+
+```text
+ACT-039/040（后端 + known_hosts）
+        └─ ACT-041（Connection Manager，需要 Profile 字段稳定）
+                └─ ACT-042（进阶能力）
+ACT-046（工作区壳）── 与 ACT-041 共享侧栏/状态区，先壳后入口，避免返工
+ACT-043/045（串口/Telnet 后端）── ACT-044 紧随其后
+ACT-049（旧插件桥）── 独立轨，依赖 v3 宿主稳定，可与 SSH 轨并行
+ACT-034/035/036（可靠性）── 随时可插队，优先级高于新功能
+```
