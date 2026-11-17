@@ -585,6 +585,7 @@ pub fn builtin() -> Registry {
         ("terminal.clear", "Clear Screen", Category::Terminal, None),
         ("terminal.select-all", "Select All", Category::Terminal, None),
         ("terminal.toggle-read-only", "Toggle Read Only", Category::Terminal, None),
+        ("terminal.toggle-broadcast", "Toggle Broadcast Input", Category::Terminal, None),
         ("terminal.reset", "Reset Terminal", Category::Terminal, None),
         ("terminal.reset-and-clear", "Reset and Clear", Category::Terminal, None),
         ("terminal.save-contents", "Save Contents…", Category::Terminal, None),

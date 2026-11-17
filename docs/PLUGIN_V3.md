@@ -137,6 +137,7 @@ description = "Return a hello message"
 [[commands]]
 id = "panel"
 title = "Echo: Render panel"
+menu = true                  # 可选：作为终端右键菜单装饰项追加（UI-TERM-013）
 ```
 
 ### 3.1 顶层字段
@@ -153,7 +154,7 @@ title = "Echo: Render panel"
 | `description` | 否 | ≤512 字符 |
 | `permissions` | 否 | 见上 |
 | `contributes` | 否 | 见上 |
-| `commands` | 否 | 每个 `id`/`title` 必需，`description` 可选；id 唯一 |
+| `commands` | 否 | 每个 `id`/`title` 必需，`description` 可选；`menu = true` 表示追加到终端右键菜单（宿主决定位置/样式，点击回调完整命令 ID）；id 唯一 |
 
 `runtime = "wasm"` 只允许 `[permissions.terminal] output_filter = true`，
 且不能声明 commands/status/events/theme/panels/settings/assistant；详见第 6 节。
