@@ -142,6 +142,8 @@ ACT-002 上游审计 ──（解除 21 条 needs_verification 的决策阻塞�
 ## 8. 0.6 待办（按轨道归并，2026-11-16）
 
 > 归并口径：**传输后端 + 它的 UI 归一条轨**，跨后端共享的壳/配置/插件/可靠性归“通用”。
+> 方向（2026-11-16）：SSH / Serial / Telnet 按 [`PLUGIN_TRANSPORT.md`](PLUGIN_TRANSPORT.md)
+> 做**官方可卸载插件**，核心只留 transport seam（ACT-052）。
 > 51 条 `not_started` + 关键 `partial` + 6 条矩阵外缺口（可靠性/平台/流程）→ **18 张卡**：
 > SSH 轨 4、串口/Telnet 轨 3、通用轨 11。
 > 括号内是 `FEATURE_MATRIX.md` 的条目号，便于回查证据与限制。
@@ -153,6 +155,7 @@ ACT-002 上游审计 ──（解除 21 条 needs_verification 的决策阻塞�
 | ACT-039 | SSH 建连/认证骨架（russh 试点，替掉系统 ssh） | SSH-001/003/004 | 现在是“系统 `ssh` 跑在 PTY 里”的 v1 | 建连/断开/超时/keepalive/重连；密码 + 私钥 + 加密私钥口令 + agent；错误可读 | L |
 | ACT-040 | known_hosts + 别名/历史 + 连接阶段诊断 | SSH-015、OPS-002 | 应用层无 known_hosts | 首次确认与变更告警；DNS→TCP→握手→认证 分阶段定位；单测 + 本地 sshd 集成 | M |
 | ACT-041 | Connection Manager + SSH Profile 编辑 + 失败重试/进度 | UI-NAV-001/002/003/006/007/008、SSH-002、UI-PROF-007/008 | 只有 TabBar 菜单里的 Profiles | 入口常驻；连接中/失败/取消三态；编辑回填；Sidebar 可显隐 | M |
+| ACT-052 | Transport seam（POC）：`PaneTransport` + socketpair 数据面 + `terminal_transport` 权限 | — | 现在插件无法提供 pane 后端（只有 `terminal.read/write`） | 测试插件以 socketpair 当 transport 跑通 pane 字节流；吞吐 ≥20 MiB/s、回显 p95 ≤5ms、30m 无增长 | M |
 | ACT-042 | SSH 进阶：ProxyJump/X11/持久转发/Login Scripts/算法 | SSH-008/010/012/013/014、UI-SSH-008 | 全缺 | 两跳连通；转发随连接恢复；脚本顺序/等待/延时/失败处理；算法入口可见 | L |
 
 ### 8.2 串口 / Telnet 轨（C6 + C7 + B9）
