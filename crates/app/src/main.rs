@@ -14085,6 +14085,17 @@ fn register_window_callbacks(
         runtime::with_window(window_id, open_profile_menu);
     });
 
+    ui.on_sidebar_command(move |id| {
+        runtime::with_window(window_id, |st| {
+            let id = id.to_string();
+            eprintln!("[ui] sidebar command={id}");
+            if id == "profiles.open" {
+                open_profile_menu(st);
+            } else {
+                run_command(st, &id);
+            }
+        });
+    });
     ui.on_sidebar_item_clicked(move |index| {
         runtime::with_window(window_id, |st| {
             let index = index.max(0) as usize;

@@ -1323,6 +1323,8 @@ export component MainWindow inherits Window {
     /// 侧栏 Profiles 列表（与 "+" 下拉共用同一份模型）
     in property <[string]> sidebar-items: [];
     callback sidebar-item-clicked(int);
+    /// 侧栏顶部工具按钮：参数是命令 ID（profiles.open 由 Rust 特殊处理）
+    callback sidebar-command(string);
     /// 窗口最大化状态（由 Rust 同步，避免按钮直接读异步 WM 状态）。
     in-out property <bool> window-maximized: false;
     in-out property <bool> menu-open: false;
@@ -2763,6 +2765,35 @@ export component MainWindow inherits Window {
                 padding-right: 12px;
                 padding-top: 10px;
                 spacing: 8px;
+
+                // 工具行：全部走命令 ID（未实现项必须 disabled + 原因，不留假按钮）
+                HorizontalLayout {
+                    height: 24px;
+                    spacing: 4px;
+                    for cmd in [{ id: "tab.new", label: Lang.t("+ Tab", "+ 标签") },
+                                { id: "profiles.open", label: Lang.t("Profiles", "配置") },
+                                { id: "pane.split-right", label: Lang.t("Split", "分屏") },
+                                { id: "settings.open", label: Lang.t("Settings", "设置") }] : Rectangle {
+                        height: 24px;
+                        width: tip.preferred-width + 16px;
+                        background: btn.has-hover ? Palette.colors.hover : Palette.colors.raise;
+                        border-radius: 5px;
+                        border-width: 1px;
+                        border-color: Palette.colors.border;
+                        btn := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.sidebar-command(cmd.id); }
+                        }
+                        tip := Text {
+                            x: 8px;
+                            text: cmd.label;
+                            color: Palette.colors.subtext;
+                            font-size: 11px;
+                            vertical-alignment: center;
+                            height: parent.height;
+                        }
+                    }
+                }
                 Text {
                     text: Lang.t("Workspace", "工作区");
                     color: Palette.colors.subtext;
