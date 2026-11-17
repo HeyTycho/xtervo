@@ -22,7 +22,7 @@ pub mod transport;
 
 pub use event::{
     ClipboardRequest, ClipboardSelection, CoreEvent, EventSink, Notification, PaneStats, Progress,
-    ProgressState, WakeSignal,
+    ProgressState, ShellMark, WakeSignal,
 };
 pub use frame::{
     flags, CellData, CursorShape, CursorState, Frame, ImageCrop, ImagePlacementMeta, InlineImage, LineDamage, Span,

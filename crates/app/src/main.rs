@@ -67,8 +67,8 @@ use tervo_core::{
     link::{is_allowed_uri, strip_path_position},
     spawn, ClipboardRequest, ClipboardSelection, CoreEvent, Frame, LinkKind, Modifiers,
     MouseAction, MouseButton, MouseEvent, Notification, Palette as TermPalette, PaneConfig,
-    PaneHandle, ProgressState, ScrollPosition, SearchHit, SearchOptions, Theme, UiColors,
-    WakeSignal,
+    PaneHandle, ProgressState, ScrollPosition, SearchHit, SearchOptions, ShellMark, Theme,
+    UiColors, WakeSignal,
 };
 use x11rb::connection::Connection;
 use x11rb::rust_connection::RustConnection;
@@ -344,6 +344,46 @@ impl PaneAppearance {
     }
 }
 
+/// OSC 133 提示符/命令阶段；只做解析与状态记录，不注入任何 shell 脚本。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum ShellPhase {
+    #[default]
+    Unknown,
+    /// `A`：提示符开始（上一条命令输出结束）。
+    Prompt,
+    /// `B`：用户正在输入命令。
+    Input,
+    /// `C`：命令已提交、输出进行中。
+    Output,
+}
+
+impl ShellPhase {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Prompt => "prompt",
+            Self::Input => "input",
+            Self::Output => "output",
+        }
+    }
+}
+
+/// 单个 pane 的 shell integration 状态（LOCAL-006）。
+///
+/// 数据来源只有终端字节流：OSC 7（cwd）与 OSC 133（提示符/命令/退出码）。
+/// 不做自动安装、不改用户 shell 启动文件；没有 integration 的 shell 保持原样，
+/// 链接解析的回退路径仍是 `/proc/<pid>/cwd`。
+#[derive(Default)]
+struct ShellIntegration {
+    phase: ShellPhase,
+    /// 最近一次 `OSC 133;D;[code]` 的退出码；命令结束但没给码时为 None。
+    last_exit: Option<i32>,
+    /// 已完成命令数（诊断用；后续 Tab 状态/通知可直接消费）。
+    commands: u64,
+    /// `OSC 7` 报告的当前目录；优先于 `/proc/<pid>/cwd` 用于本地路径解析。
+    cwd: Option<PathBuf>,
+}
+
 struct PaneRuntime {
     handle: PaneHandle,
     renderer: Renderer,
@@ -401,6 +441,8 @@ struct PaneRuntime {
     exit_notified: bool,
     /// 鼠标正悬停在可点击链接上（Slint mouse-cursor / 避免每帧重绘终端）。
     link_hover: bool,
+    /// OSC 7/133 shell integration 状态（cwd、提示符阶段、最近退出码）。
+    shell: ShellIntegration,
     /// 上一帧是否由 `TERVO_GPU_NATIVE` 出图。GPU 失败切回 CPU 时必须强制
     /// 整屏重绘，因为 GPU 期间没有维护 CPU 双缓冲的 damage 历史。
     gpu_native_active: bool,
@@ -4094,6 +4136,7 @@ fn create_pane(
         exit_signal: None,
         exit_notified: false,
         link_hover: false,
+        shell: ShellIntegration::default(),
         gpu_native_active: false,
         _askpass: askpass,
     })
@@ -9411,12 +9454,16 @@ fn inspect_local_path(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// pane shell 的当前目录；拿不到时退回 Tervo 进程 cwd。
+/// pane shell 的当前目录。
+///
+/// 优先用 shell 自己通过 OSC 7 报告的 cwd（`cd` 立刻可见），其次读
+/// `/proc/<pid>/cwd`，都没有才退回 Tervo 进程 cwd。OSC 7 只在本地/远端 shell
+/// 主动发送时更新，不改变没有 integration 的会话行为。
 fn pane_cwd(rt: &PaneRuntime) -> Option<PathBuf> {
-    rt.handle
-        .pid()
-        .and_then(session::cwd_of)
-        .map(PathBuf::from)
+    rt.shell
+        .cwd
+        .clone()
+        .or_else(|| rt.handle.pid().and_then(session::cwd_of).map(PathBuf::from))
         .or_else(|| std::env::current_dir().ok())
 }
 
@@ -11450,13 +11497,42 @@ fn drain_core_events(st: &mut AppState) -> (bool, u32) {
                     }
                 }
                 CoreEvent::Cwd(cwd) => {
+                    // OSC 7 是 shell 报告的**真实** cwd（含用户 `cd` 后的路径），
+                    // 比 /proc/<pid>/cwd 更可靠：路径解析优先用它。
                     eprintln!(
                         "[ui] ts_ms={} cwd pane={id} tab={tab:?} path={cwd:?}",
                         logging::now_ms()
                     );
+                    rt.shell.cwd = Some(PathBuf::from(cwd));
                 }
-                // OSC 133 事件由后续提交接入 shell integration 状态。
-                CoreEvent::Shell(_) => {}
+                CoreEvent::Shell(mark) => {
+                    match mark {
+                        ShellMark::PromptStart => rt.shell.phase = ShellPhase::Prompt,
+                        ShellMark::InputStart => rt.shell.phase = ShellPhase::Input,
+                        ShellMark::OutputStart => rt.shell.phase = ShellPhase::Output,
+                        ShellMark::CommandFinished { exit_code } => {
+                            rt.shell.phase = ShellPhase::Prompt;
+                            rt.shell.last_exit = exit_code;
+                            rt.shell.commands = rt.shell.commands.saturating_add(1);
+                            eprintln!(
+                                "[shell] ts_ms={} pane={id} tab={tab:?} kind=command-finished exit={exit_code:?} commands={}",
+                                logging::now_ms(),
+                                rt.shell.commands
+                            );
+                            // 命令完成事件：非活动 Tab 上的失败命令给一个完成标记，
+                            // 让用户切回 Tab 时能看到“有命令跑完/失败”，不弹窗。
+                            if !is_active {
+                                rt.activity.completed = true;
+                                tabs_dirty = true;
+                            }
+                        },
+                    }
+                    eprintln!(
+                        "[shell] ts_ms={} pane={id} tab={tab:?} phase={} ",
+                        logging::now_ms(),
+                        rt.shell.phase.label()
+                    );
+                }
                 CoreEvent::Clipboard(request) => clipboard_events.push((id, request)),
                 CoreEvent::Exited => {
                     // Exited 可能由多个来源重复上报；只有真正等到子进程退出且
