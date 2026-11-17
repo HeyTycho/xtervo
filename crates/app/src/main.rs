@@ -1378,6 +1378,8 @@ fn command_title(lang: &str, id: &str, fallback: &'static str) -> &'static str {
         "tab.prev" => "上一个标签",
         "tab.duplicate" => "复制标签",
         "tab.reopen-closed" => "重新打开已关闭标签",
+        "tab.rename" => "重命名标签",
+        "tab.rename-undo" => "撤销标签重命名",
         "pane.split-right" => "向右拆分",
         "pane.split-down" => "向下拆分",
         "pane.close" => "关闭窗格",
@@ -6166,6 +6168,21 @@ fn open_rename(st: &mut AppState, index: usize) {
     st.ui.set_rename_open(true);
 }
 
+/// 撤销最近一次 Tab 重命名：恢复 `prev_title`，并把当前标题记成新的“旧标题”，
+/// 因此连续执行可在两个标题之间来回切换。
+fn undo_tab_rename(st: &mut AppState, index: usize) {
+    let Some(tab) = st.ws.tabs.get_mut(index) else {
+        return;
+    };
+    let Some(prev) = tab.prev_title.take() else {
+        eprintln!("[ws] rename undo tab={index}: 没有可撤销的重命名");
+        return;
+    };
+    let current = std::mem::replace(&mut tab.title, prev);
+    tab.prev_title = Some(current);
+    eprintln!("[ws] rename undo tab={index} → {:?}", tab.title);
+}
+
 /// 关闭 keep 左侧的所有 Tab；keep 本身保留并保持激活。
 fn close_tabs_left(st: &mut AppState, keep: usize) {
     if keep == 0 || keep >= st.ws.tabs.len() {
@@ -6316,6 +6333,7 @@ fn duplicate_tab(st: &mut AppState, index: usize) {
             focused: focused_new,
             grid: HashMap::new(),
             pinned,
+            prev_title: None,
         },
     );
     st.ws.active = index + 1;
@@ -6509,6 +6527,7 @@ fn restore_tab_snapshot(st: &mut AppState, tab_snap: &session::TabSnapshot) -> O
         focused,
         grid: HashMap::new(),
         pinned: tab_snap.pinned,
+        prev_title: None,
     });
     eprintln!(
         "[session] restore tab {tab_title:?} pinned={} index={index}",
@@ -9949,6 +9968,11 @@ fn run_command(st: &mut AppState, id: &str) {
         "tab.search" => open_tab_search(st),
         "tab.duplicate" => duplicate_tab(st, st.ws.active),
         "tab.reopen-closed" => reopen_closed_tab(st),
+        "tab.rename" => open_rename(st, st.ws.active),
+        "tab.rename-undo" => {
+            undo_tab_rename(st, st.ws.active);
+            rebuild_tabs(st);
+        },
         "view.scroll-top" => scroll_focused_pane(st, true),
         "view.scroll-bottom" => scroll_focused_pane(st, false),
         "view.sidebar" => toggle_sidebar(st),
@@ -12887,10 +12911,19 @@ fn register_window_callbacks(
     ui.on_rename_committed(move |index, text| {
         runtime::with_window(window_id, |st| {
             let idx = index.max(0) as usize;
-            if let Some(title) = sanitize_tab_title(text.as_str()) {
-                if let Some(tab) = st.ws.tabs.get_mut(idx) {
-                    tab.title = title;
-                    eprintln!("[ws] rename tab={idx} → {:?}", tab.title);
+            if let Some(tab) = st.ws.tabs.get_mut(idx) {
+                if text.trim().is_empty() {
+                    // 清空标题后提交 = 恢复重命名前的标题（撤销的第二种入口）。
+                    if let Some(prev) = tab.prev_title.take() {
+                        let current = std::mem::replace(&mut tab.title, prev);
+                        tab.prev_title = Some(current);
+                        eprintln!("[ws] rename undo via empty tab={idx} → {:?}", tab.title);
+                    }
+                } else if let Some(title) = sanitize_tab_title(text.as_str()) {
+                    if tab.title != title {
+                        tab.prev_title = Some(std::mem::replace(&mut tab.title, title));
+                        eprintln!("[ws] rename tab={idx} → {:?}", tab.title);
+                    }
                 }
             }
             st.ui.set_rename_open(false);

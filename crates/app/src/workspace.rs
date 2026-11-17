@@ -213,6 +213,8 @@ pub struct Tab {
     pub grid: std::collections::HashMap<PaneId, (usize, usize)>,
     /// Pin 到标签栏左侧固定区。会话快照 additive 保存，旧快照视为未 Pin。
     pub pinned: bool,
+    /// 重命名前的标题（仅内存，不进会话快照）：供「撤销重命名」恢复。
+    pub prev_title: Option<String>,
 }
 
 impl Tab {
@@ -223,6 +225,7 @@ impl Tab {
             focused: id,
             grid: std::collections::HashMap::new(),
             pinned: false,
+            prev_title: None,
         }
     }
 
