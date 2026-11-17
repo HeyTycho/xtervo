@@ -73,7 +73,7 @@ use x11rb::connection::Connection;
 use x11rb::rust_connection::RustConnection;
 
 use crate::config::{Config, ScrollbarPolicy, UNLIMITED_SCROLLBACK_LINES};
-use crate::glyph::FontSet;
+use crate::glyph::{FontOptions, FontSet};
 #[cfg(unix)]
 use crate::instance::{InstanceLock, InstancePaths, OpenWindowRequest, PrimaryServer};
 use crate::latency::{DamageWatcher, Injector, LatencyStats};
@@ -3054,6 +3054,11 @@ fn reconfig_summary(old: &Config, new: &Config) -> ReconfigSummary {
         "theme",
     );
     hot(old.font_size != new.font_size, "font_size");
+    hot(old.font_family != new.font_family, "font_family");
+    hot(old.font_weight != new.font_weight, "font_weight");
+    hot(old.line_height != new.line_height, "line_height");
+    hot(old.letter_spacing != new.letter_spacing, "letter_spacing");
+    hot(old.render_scale != new.render_scale, "render_scale");
     hot(
         old.background_image != new.background_image,
         "background_image",
@@ -3185,7 +3190,21 @@ fn apply_external_config_from(st: &mut AppState, old: Config, new_cfg: Config) {
     let theme_changed = old.theme != new_cfg.theme
         || old.auto_dark != new_cfg.auto_dark
         || old.auto_light != new_cfg.auto_light;
-    let font_changed = old.font_size != new_cfg.font_size;
+    let font_changed = old.font_size != new_cfg.font_size
+        || old.font_family != new_cfg.font_family
+        || old.font_weight != new_cfg.font_weight
+        || old.line_height != new_cfg.line_height
+        || old.letter_spacing != new_cfg.letter_spacing
+        || old.render_scale != new_cfg.render_scale;
+    // 应用失败时要把 6 个字体字段一起回滚，否则设置页显示的是“已保存但没生效”的值。
+    let old_font = (
+        old.font_size,
+        old.font_family.clone(),
+        old.font_weight,
+        old.line_height,
+        old.letter_spacing,
+        old.render_scale,
+    );
     let bg_image_changed = old.background_image != new_cfg.background_image;
     let bg_opacity_changed = old.background_opacity != new_cfg.background_opacity;
     let scroll_output_changed = old.scroll_on_output != new_cfg.scroll_on_output;
@@ -3226,9 +3245,15 @@ fn apply_external_config_from(st: &mut AppState, old: Config, new_cfg: Config) {
 
     if font_changed {
         let requested = st.cfg.font_size;
-        if !apply_font_size(st) {
-            eprintln!("[config] 外部 font_size={requested} 应用失败，保留旧字号");
-            st.cfg.font_size = old.font_size;
+        if !apply_font_settings(st) {
+            eprintln!("[config] 外部字体配置应用失败（font_size={requested}），保留旧值");
+            let (size, family, weight, line_height, letter_spacing, render_scale) = old_font;
+            st.cfg.font_size = size;
+            st.cfg.font_family = family;
+            st.cfg.font_weight = weight;
+            st.cfg.line_height = line_height;
+            st.cfg.letter_spacing = letter_spacing;
+            st.cfg.render_scale = render_scale;
         }
     }
 
@@ -3943,13 +3968,17 @@ fn create_pane(
     // per-profile 外观：字号决定渲染字符尺寸/PTY 网格；空 = 继承全局。
     let mut appearance = profile.map(PaneAppearance::from_profile).unwrap_or_default();
     let fonts = match appearance.font_size {
-        Some(size) if (size - st.cfg.font_size).abs() > f32::EPSILON => match FontSet::load(size) {
-            Some(fonts) => Rc::new(fonts),
-            None => {
-                eprintln!("[profile] Profile 字号 {size} 加载字体失败，回退全局字号");
-                appearance.font_size = None;
-                st.fonts.clone()
-            },
+        Some(size) if (size - st.cfg.font_size).abs() > f32::EPSILON => {
+            // Profile 只覆盖字号；族/字重/行距/字间距/缩放继承全局配置。
+            let opts = FontOptions::from_config(&st.cfg);
+            match FontSet::load_with(size, &opts) {
+                Some(fonts) => Rc::new(fonts),
+                None => {
+                    eprintln!("[profile] Profile 字号 {size} 加载字体失败，回退全局字号");
+                    appearance.font_size = None;
+                    st.fonts.clone()
+                },
+            }
         },
         _ => st.fonts.clone(),
     };
@@ -8643,7 +8672,7 @@ fn zoom_font(st: &mut AppState, delta: f32) {
         return;
     }
     st.cfg.font_size = next;
-    apply_font_size(st);
+    apply_font_settings(st);
     st.cfg.save();
     eprintln!("[ui] font_size={next}");
 }
@@ -8653,15 +8682,62 @@ fn reset_font(st: &mut AppState) {
         return;
     }
     st.cfg.font_size = 15.0;
-    apply_font_size(st);
+    apply_font_settings(st);
     st.cfg.save();
     eprintln!("[ui] font_size=15（重置）");
 }
 
-/// 字号变更：重建字体集与所有 pane 的渲染器，再按新网格重排。
-fn apply_font_size(st: &mut AppState) -> bool {
-    let Some(fonts) = FontSet::load(st.cfg.font_size) else {
-        eprintln!("[config] 字体加载失败，字号变更忽略");
+/// 同步设置页的字体外观 mirror（Rust 侧改完 config 后调用）。
+fn sync_font_form_ui(st: &AppState) {
+    st.ui.set_cfg_font_family(st.cfg.font_family.clone().into());
+    st.ui.set_cfg_font_weight(st.cfg.font_weight as i32);
+    st.ui.set_cfg_line_height(st.cfg.line_height);
+    st.ui.set_cfg_letter_spacing(st.cfg.letter_spacing);
+    st.ui.set_cfg_render_scale(st.cfg.render_scale);
+}
+
+/// 设置页改字体外观：写 config → 重建字体集/cell → 重排；失败回滚旧值。
+///
+/// 返回 false 表示字体加载失败（config/UI 都保持旧值，屏幕不会半更新）。
+fn apply_font_form(st: &mut AppState, mutate: impl FnOnce(&mut Config)) -> bool {
+    let before = (
+        st.cfg.font_family.clone(),
+        st.cfg.font_weight,
+        st.cfg.line_height,
+        st.cfg.letter_spacing,
+        st.cfg.render_scale,
+    );
+    mutate(&mut st.cfg);
+    // 与 config 归一化同一组范围：UI 显示值必须就是实际生效值。
+    let opts = FontOptions::from_config(&st.cfg);
+    st.cfg.font_family = opts.family.clone();
+    st.cfg.font_weight = opts.weight;
+    st.cfg.line_height = opts.line_height;
+    st.cfg.letter_spacing = opts.letter_spacing;
+    st.cfg.render_scale = opts.render_scale;
+    if !apply_font_settings(st) {
+        let (family, weight, line_height, letter_spacing, render_scale) = before;
+        st.cfg.font_family = family;
+        st.cfg.font_weight = weight;
+        st.cfg.line_height = line_height;
+        st.cfg.letter_spacing = letter_spacing;
+        st.cfg.render_scale = render_scale;
+        sync_font_form_ui(st);
+        return false;
+    }
+    st.cfg.save();
+    sync_font_form_ui(st);
+    true
+}
+
+/// 字体外观变更：重建字体集与所有 pane 的渲染器，再按新网格重排。
+///
+/// 覆盖字号 + 5 个外观字段（族/字重/行距/字间距/渲染缩放）：任意一个变化都会
+/// 改变 cell 尺寸，必须走这里才能同时更新 PTY 网格、渲染器与帧缓冲。
+fn apply_font_settings(st: &mut AppState) -> bool {
+    let opts = FontOptions::from_config(&st.cfg);
+    let Some(fonts) = FontSet::load_with(st.cfg.font_size, &opts) else {
+        eprintln!("[config] 字体加载失败，字体变更忽略");
         return false;
     };
     let global_fonts = Rc::new(fonts);
@@ -8669,7 +8745,8 @@ fn apply_font_size(st: &mut AppState) -> bool {
     st.fonts = global_fonts.clone();
     let global_size = st.cfg.font_size;
 
-    // 每个不同的 Profile 字号只加载一次字体集（同一字号的多个 pane 共享）。
+    // 每个不同的 Profile 字号只加载一次字体集（同一字号的多个 pane 共享）；
+    // 族/字重/行距/字间距/缩放继承全局配置。
     let mut sizes: Vec<u32> = st
         .panes
         .values()
@@ -8682,7 +8759,7 @@ fn apply_font_size(st: &mut AppState) -> bool {
     let mut cache: HashMap<u32, Rc<FontSet>> = HashMap::new();
     for bits in sizes {
         let size = f32::from_bits(bits);
-        match FontSet::load(size) {
+        match FontSet::load_with(size, &opts) {
             Some(fonts) => {
                 cache.insert(bits, Rc::new(fonts));
             },
@@ -13429,7 +13506,7 @@ fn register_window_callbacks(
                         refresh_profiles(st);
                         if let Some(fs) = report.font_size {
                             st.cfg.font_size = fs.clamp(8.0, 40.0);
-                            apply_font_size(st);
+                            apply_font_settings(st);
                         }
                         if report.font_size.is_some() || report.hotkeys_added > 0 {
                             st.cfg.save();
@@ -14549,6 +14626,7 @@ fn register_window_callbacks(
             .set_colors(slint_theme(&theme.ui));
         st.ui.set_theme_choices(theme_choices(&st.registry));
         st.ui.set_font_size(st.cfg.font_size as i32);
+        sync_font_form_ui(st);
         st.ui.set_scrollback(st.cfg.scrollback as i32);
         st.ui.set_cfg_quake(st.cfg.quake_enabled);
         install_render_hud(st);
@@ -14786,7 +14864,49 @@ fn register_window_callbacks(
             st.cfg.font_size = new;
             st.ui.set_font_size(new as i32);
             st.cfg.save();
-            apply_font_size(st);
+            apply_font_settings(st);
+        });
+    });
+
+    ui.on_set_font_family(move |family| {
+        runtime::with_window(window_id, |st| {
+            let server = family.to_string();
+            if !apply_font_form(st, move |cfg| cfg.font_family = server) {
+                eprintln!("[appearance] 字体族 {family:?} 应用失败，保留旧值");
+            }
+        });
+    });
+
+    ui.on_bump_font_weight(move |delta| {
+        runtime::with_window(window_id, |st| {
+            apply_font_form(st, move |cfg| {
+                cfg.font_weight = (cfg.font_weight as i32 + delta).clamp(100, 900) as u16;
+            });
+        });
+    });
+
+    ui.on_bump_line_height(move |delta| {
+        runtime::with_window(window_id, |st| {
+            apply_font_form(st, move |cfg| {
+                // 0.1 步进：先乘 10 取整，避免浮点累积成 1.0999999。
+                cfg.line_height = ((cfg.line_height + delta) * 10.0).round() / 10.0;
+            });
+        });
+    });
+
+    ui.on_bump_letter_spacing(move |delta| {
+        runtime::with_window(window_id, |st| {
+            apply_font_form(st, move |cfg| {
+                cfg.letter_spacing = ((cfg.letter_spacing + delta) * 2.0).round() / 2.0;
+            });
+        });
+    });
+
+    ui.on_bump_render_scale(move |delta| {
+        runtime::with_window(window_id, |st| {
+            apply_font_form(st, move |cfg| {
+                cfg.render_scale = ((cfg.render_scale + delta) * 20.0).round() / 20.0;
+            });
         });
     });
 
@@ -15570,7 +15690,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         cfg.auto_light.as_deref(),
     );
 
-    let fonts = Rc::new(FontSet::load(opts.font_size).ok_or("找不到等宽字体")?);
+    let font_opts = FontOptions::from_config(&cfg);
+    let fonts = Rc::new(
+        FontSet::load_with(opts.font_size, &font_opts).ok_or("找不到等宽字体")?,
+    );
     let cell = (fonts.cell_w, fonts.cell_h);
     // v2 快照有像素几何时优先用它开窗；v1/未知几何回退 --cols/--rows。
     let primary_geometry = primary_restore

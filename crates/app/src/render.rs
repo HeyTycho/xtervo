@@ -521,7 +521,12 @@ impl Renderer {
 
     /// CPU `FontSet` 的四个 face 路径（GPU-native atlas 复用同一组文件）。
     pub fn font_paths(&self) -> [&str; 4] {
-        self.fonts.font_paths
+        [
+            self.fonts.font_paths[0].as_str(),
+            self.fonts.font_paths[1].as_str(),
+            self.fonts.font_paths[2].as_str(),
+            self.fonts.font_paths[3].as_str(),
+        ]
     }
 
     /// 字号（px），GPU atlas 用同一栅格化尺寸。
