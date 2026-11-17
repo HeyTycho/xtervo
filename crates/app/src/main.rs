@@ -10127,6 +10127,23 @@ fn handle_input(
         }
     }
 
+    // Profile 热键：一次按键直接开对应 Profile 的 Tab。放在命令 override 之后、
+    // 硬编码默认键之前——用户自定义命令优先，其余按键再按 Profile 绑定匹配。
+    if st.profiles.profiles.iter().any(|p| !p.hotkey.is_empty()) {
+        if let Some(chord) = keys::chord_from_key_event(text, ctrl, alt, shift) {
+            if let Some(index) = st
+                .profiles
+                .profiles
+                .iter()
+                .position(|p| p.hotkey_chord().as_ref() == Some(&chord))
+            {
+                eprintln!("[hotkey] profile {index} ← {chord}");
+                open_profile_tab(st, index);
+                return;
+            }
+        }
+    }
+
     // F11：全屏切换
     if text == "\u{F70E}" {
         toggle_fullscreen(st);

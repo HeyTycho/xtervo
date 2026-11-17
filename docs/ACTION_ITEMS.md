@@ -171,7 +171,7 @@ ACT-002 上游审计 ──（解除 21 条 needs_verification 的决策阻塞�
 | ID | 任务 | 覆盖条目 | 现状 | 验收标准 | 规模 |
 |---|---|---|---|---|---|
 | ACT-046 | 工作区 UI 壳：Sidebar / Toolbar / 状态区 / Tooltip（设计见 [`WORKSPACE_SHELL.md`](WORKSPACE_SHELL.md)） | UI-NAV-001/002/006/007/008 | 分步：① config 字段（`sidebar_visible/width/section` + 夹取，默认关）② 侧栏骨架（240px 栏 + 内容区让位 + 启动/热更新接线，截图 `.logs/sidebar_on/off.png`）。待做：独立顶部 Toolbar（v1 已在侧栏顶部）、Connection Manager、插件注入点 | 关闭时与 0.5.0 像素一致（已截图对比）；打开时内容区右移且 pane 网格重算 | M |
-| ACT-047 | Profile 快捷键 + 布局存成 Workspace + 断线重连策略 | SESS-002/003/007、KEY-004、UI-PROF-009 | Profile 模型已有，绑定与 workspace 无 | Profile 可绑热键；分裂布局存为 workspace 并可恢复；断开后的状态提示与重连策略可配置 | M |
+| ACT-047 | Profile 快捷键 + 布局存成 Workspace + 断线重连策略 | SESS-002/003/007、KEY-004、UI-PROF-009 | Profile 模型已有；**热键模型+分发已完成**（`hotkey` 字段、单段 chord 解析、必须带 Ctrl/Alt、按键优先级在命令 override 之后/默认键之前，单测通过）；缺设置页里的绑定输入框、Workspace 布局保存、断线重连策略 | Profile 可绑热键；分裂布局存为 workspace 并可恢复；断开后的状态提示与重连策略可配置 | M |
 | ACT-048 | 设置页收尾：Config Sync、SSH 高级项、插件动态设置页 | UI-SET-006/009/013 | 设置页 15 条里 12 条 partial | 三块各有入口，即时生效或明确“重启后生效”；插件卸载后的配置清理策略写明 | M |
 | ACT-049 | 插件生态：旧插件 sidecar + 插件注册点 | PLUG-007..012、KEY-006、NOTIFY-006、SEC-005、UI-TERM-013 | 只有 v3 宿主，v1/v2 unsupported | sidecar 起停/超时/崩溃隔离；`tabby-core`/`tabby-terminal`/`tabby-local` 最小 shim；插件注册的命令/设置/进度在 UI 可见；凭据默认不可读 | L |
 | ACT-050 | 终端小件：录制 API、同窗多本地 Profile、Pane 拖拽重排 | TERM-015、LOCAL-004、UI-PANE-008 | 无 | 会话录制可导出；同一窗口可开不同本地 shell；pane 可拖拽重排/跨窗口移动 | M |

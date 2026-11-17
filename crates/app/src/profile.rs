@@ -29,6 +29,10 @@ pub struct Profile {
     /// 稳定 ID（文件内唯一；删除后不复用）。
     pub id: u64,
     pub name: String,
+    /// 绑定到该 Profile 的快捷键（单段，形如 `ctrl+alt+1`）；空 = 不绑定。
+    /// 必须带 ctrl/alt 之一，避免吞掉普通输入；非法值在 `validate` 里拒绝。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub hotkey: String,
     /// `local` | `ssh` | `serial` | `telnet`（v1 没有该字段，迁移时补 local）。
     pub kind: String,
     // ---- local ----
@@ -200,6 +204,7 @@ impl Default for Profile {
         Self {
             id: 0,
             name: String::new(),
+            hotkey: String::new(),
             kind: default_kind(),
             shell: String::new(),
             args: Vec::new(),
@@ -370,7 +375,29 @@ impl Profile {
     }
 
     /// 按类型校验必填项（本地 Profile 几乎不校验，SSH/Serial 必须有目标）。
+    /// 解析绑定的快捷键；空串或非法值返回 `None`（非法值另由 `validate` 拒绝）。
+    ///
+    /// 只接受单段 chord：Profile 热键要能一次按键直接开 Tab，不做 multi-chord。
+    pub fn hotkey_chord(&self) -> Option<crate::commands::Chord> {
+        let text = self.hotkey.trim();
+        if text.is_empty() {
+            return None;
+        }
+        crate::commands::Chord::parse(text).ok()
+    }
+
     pub fn validate(&self) -> Result<(), String> {
+        if !self.hotkey.trim().is_empty() {
+            let chord = self
+                .hotkey_chord()
+                .ok_or_else(|| format!("非法快捷键: {}", self.hotkey))?;
+            if !(chord.mods.ctrl || chord.mods.alt) {
+                return Err(format!(
+                    "快捷键必须包含 Ctrl 或 Alt，避免吞掉普通输入: {}",
+                    self.hotkey
+                ));
+            }
+        }
         if !KINDS.contains(&self.kind.as_str()) {
             return Err(format!("未知 Profile 类型: {}", self.kind));
         }
@@ -644,6 +671,40 @@ impl ProfileStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn profile_hotkey_parses_roundtrips_and_rejects_risky_bindings() {
+        let mut p = Profile::default();
+        assert!(p.hotkey_chord().is_none(), "空绑定 = 无热键");
+
+        p.hotkey = "ctrl+alt+1".into();
+        let chord = p.hotkey_chord().expect("应能解析");
+        assert!(chord.mods.ctrl && chord.mods.alt);
+        assert_eq!(chord.key, "1");
+        p.validate().expect("带 Ctrl+Alt 的绑定合法");
+
+        // 非法组合键
+        p.hotkey = "ctrl+nonsense".into();
+        assert!(p.hotkey_chord().is_none());
+        assert!(p.validate().unwrap_err().contains("非法快捷键"));
+
+        // 没有 Ctrl/Alt 会吞普通输入
+        p.hotkey = "shift+x".into();
+        assert!(p.validate().unwrap_err().contains("Ctrl 或 Alt"));
+
+        // 磁盘往返保留 hotkey
+        p.hotkey = "ctrl+alt+p".into();
+        let dir = tmpdir("hotkey");
+        let path = dir.join("profiles.toml");
+        let mut store = ProfileStore::default();
+        store.profiles.push(p.clone());
+        store.next_id = 2;
+        store.save_to(&path);
+        let back = ProfileStore::load_from(&path);
+        assert_eq!(back.profiles.len(), 1);
+        assert_eq!(back.profiles[0].hotkey, "ctrl+alt+p");
+        assert_eq!(back.profiles[0].hotkey_chord(), p.hotkey_chord());
+    }
 
     fn tmpdir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("rt-prof-{}-{tag}", std::process::id()));
