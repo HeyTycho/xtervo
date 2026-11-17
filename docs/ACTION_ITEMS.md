@@ -177,7 +177,7 @@ ACT-002 上游审计 ──（解除 21 条 needs_verification 的决策阻塞�
 | ACT-050 | 终端小件：录制 API、同窗多本地 Profile、Pane 拖拽重排 | TERM-015、LOCAL-004、UI-PANE-008 | 无 | 会话录制可导出；同一窗口可开不同本地 shell；pane 可拖拽重排/跨窗口移动 | M |
 | ACT-034 | 分屏新 pane 首帧不重绘（**观察项，0.5.0 不可复现**） | — | 原证据（`w=0`、只有 `rev=2` 一帧）全部来自 **0.4.0-rc.2**；0.5.0 在隔离 Xvfb 下复现失败：单窗口 split 右侧 `right_text_px=47469`、双窗口后台窗口 split `8040`，均正常绘制（`target/repro_split*.py`）。日志只打首帧，早前“无新帧”的推论不成立 | 仍在真实合成器（mutter）多窗口 + 遮挡场景复验一次；若复现再按失败测试修 | S |
 | ACT-035 | 恢复矩阵（破坏面注入） | — | 已补：写失败（EACCES，ENOSPC 同路径）保留旧快照且无 tmp 残留、主文件截断回退 `.bak`、`.bak` 也坏返回 None、config 坏 TOML 不覆盖原文件（原有）、kill -9 多窗口 e2e（原有）。缺：真实 ENOSPC 注入（需 tmpfs/配额） | 剩余只差 ENOSPC 真注入；其余断言已在 `session::tests::write_failure_keeps_previous_snapshot_and_leaves_no_tmp` / `truncated_primary_recovers_from_previous_generation` | S |
-| ACT-036 | crash marker + safe mode | — | 已做“恢复提示”：异常退出在状态区显示 pill（`status-items`，自动恢复开/关两种文案）；崩溃循环熔断与 safe mode 仍未实现 | 连续 N 次异常退出 → 安全模式（禁插件/GPU/WASM）并在 UI 说明原因；单测 + e2e | L |
+| ACT-036 | crash marker + safe mode | — | 已做：恢复提示 pill + **连续崩溃计数**（`session.bump_crash_streak/reset_crash_streak`，≥3 次时状态区与日志明确提示“safe mode 未实现，建议禁用插件”）；真正的 safe mode 降级启动（禁插件/GPU/WASM）仍未实现 | 连续 N 次异常退出 → 安全模式（禁插件/GPU/WASM）并在 UI 说明原因；单测 + e2e | L |
 | ACT-051 | 平台/性能深度 | — | P95/吞吐/15m 已测（`PERFORMANCE.md` §2.5）；Wayland、emoji shaping、atlas 驱逐、24h 未做 | 剩余四项各有一份可复现数据 | L |
 | ACT-037 | 文档对账常态化 | — | 已加 `scripts/check_docs_counts.py`（CLOSURE vs 矩阵，漂移退出 1，`--fix` 可回写）并写进 RELEASING §4.1 第 5 步 | 发版清单加一步：跑 `scripts/matrix_stats.py` + 更新 CLOSURE/ACT，否则 CI 失败 | S |
 | ACT-038 | MCP 允许面收尾 | — | 文档已补“默认只开 read / 分组与依赖 / 请求格式必须用 `args` / window_id 路由 / 未知 pane 必须报错”；`mcp_tabs` 已开、`mcp_destructive` 仍关 | 默认值策略写进 `docs/MCP.md`：哪些默认开、哪些必须显式开 | S |

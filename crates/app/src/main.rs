@@ -14947,12 +14947,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut st = state.borrow_mut();
             rebuild_profile_choices(&mut st);
         }
+        // 崩溃连击（ACT-036 前置）：连续异常退出次数决定是否该降级启动。
+        // 真正 safe mode 尚未实现，这里只记录事实 + 在状态区提示，避免“静默崩”。
+        let streak = if unclean {
+            crate::session::bump_crash_streak()
+        } else {
+            crate::session::reset_crash_streak();
+            0
+        };
+        if streak >= 3 {
+            eprintln!("[session] 连续 {streak} 次异常退出：safe mode 尚未实现，建议先禁用插件/关 GPU 排查");
+        }
         // 异常退出提示（ACT-036 的“恢复提示”第一步）：只提示，不自动改布局。
         if unclean {
             let st = state.borrow();
             let lang_zh = st.cfg.lang() == "zh";
             let msg = if auto_restore {
                 if lang_zh { "上次异常退出，已按 autosave 恢复布局" } else { "Recovered layout from the last unclean exit" }
+            } else if streak >= 3 {
+                if lang_zh {
+                    "连续异常退出 3 次以上；safe mode 尚未实现，建议先禁用插件排查"
+                } else {
+                    "3+ unclean exits in a row; safe mode is not implemented yet — try disabling plugins"
+                }
             } else if lang_zh {
                 "上次异常退出；启动时恢复未开启"
             } else {

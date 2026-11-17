@@ -611,6 +611,53 @@ fn was_unclean_at(path: &Path) -> bool {
     running_path(path).is_file()
 }
 
+/// 崩溃连击计数的落盘位置（与 running marker 同目录）。
+fn crash_streak_path(path: &Path) -> PathBuf {
+    path.with_extension("crashes")
+}
+
+/// 连续异常退出次数：启动时若检测到上次 unclean 就 +1，正常退出清零。
+///
+/// 这是 safe mode 的前置数据：连续 N 次崩溃应当降级启动（禁插件/GPU/WASM），
+/// 但降级策略本身还没实现，这里只负责把事实记准、并在 UI 里提示。
+pub fn bump_crash_streak() -> u8 {
+    bump_crash_streak_at(&snapshot_path())
+}
+
+fn bump_crash_streak_at(path: &Path) -> u8 {
+    let file = crash_streak_path(path);
+    let previous = std::fs::read_to_string(&file)
+        .ok()
+        .and_then(|text| text.trim().parse::<u8>().ok())
+        .unwrap_or(0);
+    let next = previous.saturating_add(1);
+    if let Some(dir) = file.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Ok(mut out) = std::fs::File::create(&file) {
+        let _ = writeln!(out, "{next}");
+        let _ = out.sync_all();
+    }
+    next
+}
+
+/// 读当前连击数（0 = 没有记录）。
+pub fn crash_streak() -> u8 {
+    crash_streak_at(&snapshot_path())
+}
+
+fn crash_streak_at(path: &Path) -> u8 {
+    std::fs::read_to_string(crash_streak_path(path))
+        .ok()
+        .and_then(|text| text.trim().parse::<u8>().ok())
+        .unwrap_or(0)
+}
+
+/// 正常退出清除连击。
+pub fn reset_crash_streak() {
+    let _ = std::fs::remove_file(crash_streak_path(&snapshot_path()));
+}
+
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1460,6 +1507,25 @@ mod tests {
         save_to(&path, &empty_tabs).unwrap();
         let loaded = load_from(&path).unwrap();
         assert!(loaded.tabs.is_empty());
+    }
+
+    #[test]
+    fn crash_streak_bumps_on_unclean_and_resets_on_clean() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.json");
+        assert_eq!(crash_streak_at(&path), 0);
+        assert_eq!(bump_crash_streak_at(&path), 1);
+        assert_eq!(bump_crash_streak_at(&path), 2);
+        assert_eq!(crash_streak_at(&path), 2);
+        // 饱和：不会因为文件被手改大而溢出
+        std::fs::write(crash_streak_path(&path), b"255").unwrap();
+        assert_eq!(bump_crash_streak_at(&path), 255);
+        // 正常退出清零
+        let _ = std::fs::remove_file(crash_streak_path(&path));
+        assert_eq!(crash_streak_at(&path), 0);
+        // 坏内容按 0 处理
+        std::fs::write(crash_streak_path(&path), b"nonsense").unwrap();
+        assert_eq!(crash_streak_at(&path), 0);
     }
 
     #[test]
