@@ -4132,6 +4132,19 @@ fn toggle_quake_inner(st: &mut AppState) {
     eprintln!("[quake] show {w}x{h} at {x},0");
 }
 
+/// Profile 候选项文案：`Local · 名字`，绑了热键就加 `  (ctrl+alt+1)`。
+/// 用纯 ASCII 括号：`⌨` 在默认字体里是缺字形（会显示成豆腐块）。
+///
+/// 抽成纯函数是为了单测（下拉与侧栏共用同一份文案，不能两处各写一遍）。
+fn profile_choice_label(kind: &str, name: &str, hotkey: &str) -> String {
+    let hotkey = hotkey.trim();
+    if hotkey.is_empty() {
+        format!("{kind} · {name}")
+    } else {
+        format!("{kind} · {name}  ({hotkey})")
+    }
+}
+
 /// 重建 Profile 候选项（"+" 下拉与侧栏 Profiles 列表共用）。
 ///
 /// 以前只在 `open_profile_menu` 里构建，侧栏复用同一份模型时列表会是空的；
@@ -4146,7 +4159,7 @@ fn rebuild_profile_choices(st: &mut AppState) {
             "telnet" => "Telnet",
             _ => "Local",
         };
-        items.push(format!("{kind} · {}", p.name).into());
+        items.push(profile_choice_label(kind, &p.name, &p.hotkey).into());
         indices.push(i);
         // 热键冲突提示：Profile 热键与命令默认绑定时不去改任何一方，只明确告警
         //（实际按下时命令 override 优先，Profile 热键会打不中，必须让用户知道）。
@@ -15621,6 +15634,16 @@ mod tests {
         let closed = toggle_sidebar_math(open, &mut cfg);
         assert!(!cfg.sidebar_visible);
         assert_eq!((closed.w, closed.h), (start.w, start.h));
+    }
+
+    #[test]
+    fn profile_choice_label_shows_hotkey_only_when_bound() {
+        assert_eq!(profile_choice_label("Local", "zsh", ""), "Local · zsh");
+        assert_eq!(profile_choice_label("Local", "zsh", "   "), "Local · zsh");
+        assert_eq!(
+            profile_choice_label("SSH", "prod-web", "ctrl+alt+p"),
+            "SSH · prod-web  (ctrl+alt+p)"
+        );
     }
 
     #[test]
