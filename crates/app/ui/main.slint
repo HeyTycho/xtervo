@@ -261,15 +261,17 @@ component ContextMenuRow inherits Rectangle {
     in property <string> shortcut: "";
     /// 状态类菜单项（Read Only / Broadcast）开启时用 accent 淡底提示。
     in property <bool> active: false;
+    /// 键盘导航当前选中行（UI-TERM-004）：与 hover 用同一高亮，鼠标移动不抢选中。
+    in property <bool> selected: false;
     in property <bool> danger: false;
     callback picked();
 
     height: 30px;
     border-radius: 5px;
-    background: hit.has-hover ? Palette.colors.hover : transparent;
+    background: hit.has-hover || root.selected ? Palette.colors.hover : transparent;
 
     // 状态项：轻量 accent 洗色，不压过文字对比度。
-    if root.active && !hit.has-hover : Rectangle {
+    if root.active && !hit.has-hover && !root.selected : Rectangle {
         width: 100%;
         height: 100%;
         border-radius: 5px;
@@ -283,7 +285,7 @@ component ContextMenuRow inherits Rectangle {
         clicked => { root.picked(); }
     }
 
-    // 悬停左侧标记；关闭 pane 用 danger 色提示破坏性。
+    // 悬停/键盘选中左侧标记；关闭 pane 用 danger 色提示破坏性。
     Rectangle {
         x: 2px;
         y: 9px;
@@ -291,7 +293,7 @@ component ContextMenuRow inherits Rectangle {
         height: 12px;
         border-radius: 1px;
         background: root.danger ? Palette.colors.danger : Palette.colors.accent;
-        visible: hit.has-hover;
+        visible: hit.has-hover || root.selected;
     }
 
     Text {
@@ -324,6 +326,8 @@ component ContextMenuRow inherits Rectangle {
 /// 高度与 Rust 侧 menu-content-h 的计算保持一致（30px / 9px）。
 component ContextMenuEntry inherits Rectangle {
     in property <MenuEntry> entry;
+    /// 键盘导航当前选中行（UI-TERM-004）。
+    in property <bool> selected: false;
     callback picked(string);
 
     height: entry.separator ? 9px : 30px;
@@ -344,6 +348,7 @@ component ContextMenuEntry inherits Rectangle {
         shortcut: entry.shortcut;
         danger: entry.danger;
         active: entry.active;
+        selected: root.selected;
         picked => { root.picked(entry.command); }
     }
 }
@@ -1368,6 +1373,12 @@ export component MainWindow inherits Window {
     in property <int> menu-pane: -1;
     /// 表驱动菜单项：Rust 每次打开菜单时按 config + 插件装饰点重建。
     in property <[MenuEntry]> menu-items: [];
+    /// 键盘导航当前选中行（含分隔线的数组下标；-1 = 无）。
+    in property <int> menu-selected: -1;
+    /// 被选中行的内容 y（Rust 按 30px/项、9px/分隔线算好），用于窄窗口自动滚动。
+    in property <length> menu-reveal-y: 0px;
+    /// 每次键盘移动选中行自增，Flickable 的 changed 处理器据此滚到可见区。
+    in-out property <int> menu-reveal-token: 0;
     // 链接打开失败等短暂提示（底部浮层，Rust 侧 4 秒后清空）。
     in-out property <string> link-status: "";
     // 插件状态提供者的最小状态栏（底部一行文本；空 = 隐藏，不占布局）。
@@ -3560,6 +3571,17 @@ export component MainWindow inherits Window {
                         content-width: parent.width;
                         content-height: menu-list.preferred-height;
 
+                        // UI-TERM-004：键盘上下移动选中行时把它滚进视口。
+                        // 只有 token 变化才改 viewport-y，滚轮仍由 Flickable 处理。
+                        property <int> nav-reveal-token: root.menu-reveal-token;
+                        changed nav-reveal-token => {
+                            if (root.menu-reveal-y < self.viewport-y) {
+                                self.viewport-y = root.menu-reveal-y;
+                            } else if (root.menu-reveal-y + 30px > self.viewport-y + self.height) {
+                                self.viewport-y = root.menu-reveal-y + 30px - self.height;
+                            }
+                        }
+
                         menu-list := VerticalLayout {
                             x: 0px;
                             y: 0px;
@@ -3569,8 +3591,9 @@ export component MainWindow inherits Window {
 
                             // UI-TERM-013：菜单项来自 Rust 的 MenuEntry 模型
                             //（内置默认表 / config `[[terminal_menu]]` / 插件装饰点）。
-                            for item in root.menu-items : ContextMenuEntry {
+                            for item[i] in root.menu-items : ContextMenuEntry {
                                 entry: item;
+                                selected: i == root.menu-selected;
                                 picked(command) => {
                                     root.menu-open = false;
                                     root.menu-command(root.menu-pane, command);

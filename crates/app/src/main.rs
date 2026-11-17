@@ -738,6 +738,8 @@ struct AppState {
     right_down: Option<(PaneId, std::time::Instant, f32, f32)>,
     /// 打开右键菜单时命中的链接（空 = 当前格没有可打开链接）。
     menu_link: String,
+    /// 终端右键菜单的键盘导航状态（UI-TERM-004）；None = 菜单没开/无导航。
+    menu_nav: Option<MenuNav>,
     /// 广播输入：开启后键入同时发给当前 Tab 的所有 pane
     broadcast: bool,
     /// 开启广播时当前 Tab 的 pane 集合：与活动 Tab 完全不相交 = 已切 Tab。
@@ -9824,6 +9826,12 @@ const DEFAULT_TERMINAL_MENU: &[&str] = &[
     "terminal.reset",
     "terminal.reset-and-clear",
     "terminal.save-contents",
+    "-",
+    // UI-TERM-004：Profile 入口 + 字号缩放（与 Ctrl+=/-/0、命令面板共用实现）。
+    "profile.open",
+    "view.zoom-in",
+    "view.zoom-out",
+    "view.zoom-reset",
 ];
 
 /// 内置菜单项的本地化标签与危险标记：`(英文, 中文, danger)`。
@@ -9851,6 +9859,10 @@ fn builtin_menu_meta(id: &str) -> Option<(&'static str, &'static str, bool)> {
         "terminal.recording-start" => ("Start Recording", "开始录制", false),
         "terminal.recording-stop" => ("Stop Recording", "停止录制", false),
         "terminal.recording-export" => ("Export Recording…", "导出录制…", false),
+        "profile.open" => ("Profiles…", "配置…", false),
+        "view.zoom-in" => ("Zoom In", "放大", false),
+        "view.zoom-out" => ("Zoom Out", "缩小", false),
+        "view.zoom-reset" => ("Reset Zoom", "重置缩放", false),
         _ => return None,
     })
 }
@@ -9887,6 +9899,112 @@ impl TerminalMenuSpec {
     ) -> Self {
         Self { label, shortcut, danger, active, separator: false, command }
     }
+}
+
+/// 终端右键菜单的键盘导航状态（UI-TERM-004）。
+///
+/// `specs` 是打开菜单时的快照（含分隔线），`selected` 是数组下标；
+/// 键盘移动只认可选项，分隔线永远跳过。
+struct MenuNav {
+    pane: PaneId,
+    specs: Vec<TerminalMenuSpec>,
+    selected: usize,
+}
+
+/// 从 `from` 往 `delta` 方向找下一个可选项；到边界返回 None（不循环）。
+fn menu_step(specs: &[TerminalMenuSpec], from: Option<usize>, delta: isize) -> Option<usize> {
+    if specs.is_empty() || delta == 0 {
+        return None;
+    }
+    let mut idx = match from {
+        Some(i) => i as isize,
+        None => {
+            if delta > 0 {
+                -1
+            } else {
+                specs.len() as isize
+            }
+        }
+    };
+    loop {
+        let next = idx + delta;
+        if next < 0 || next as usize >= specs.len() {
+            return None;
+        }
+        if !specs[next as usize].separator {
+            return Some(next as usize);
+        }
+        idx = next;
+    }
+}
+
+/// 选中行的内容 y（菜单 padding 6px + 30px/项 + 9px/分隔线），与 Slint 一致。
+fn menu_row_offset(specs: &[TerminalMenuSpec], index: usize) -> f32 {
+    let mut y = 6.0;
+    for spec in specs.iter().take(index) {
+        y += if spec.separator { 9.0 } else { 30.0 };
+    }
+    y
+}
+
+/// 打开菜单时重置键盘选中：第一/最后一个可选项。返回 false 表示菜单没有可选项。
+fn menu_reset_selection(st: &mut AppState, pane: PaneId, specs: &[TerminalMenuSpec]) -> bool {
+    let Some(first) = menu_step(specs, None, 1) else {
+        st.menu_nav = None;
+        return false;
+    };
+    st.menu_nav = Some(MenuNav::new(pane, specs.to_vec(), first));
+    st.ui.set_menu_selected(first as i32);
+    st.ui.set_menu_reveal_y(menu_row_offset(specs, first));
+    let token = st.ui.get_menu_reveal_token().wrapping_add(1);
+    st.ui.set_menu_reveal_token(token);
+    true
+}
+
+impl MenuNav {
+    fn new(pane: PaneId, specs: Vec<TerminalMenuSpec>, selected: usize) -> Self {
+        Self { pane, specs, selected }
+    }
+}
+
+/// 键盘移动选中行并通知 Slint 滚到可见区；到边界保持不动。
+fn menu_navigate(st: &mut AppState, delta: isize) {
+    let Some(nav) = st.menu_nav.as_mut() else { return };
+    let Some(next) = menu_step(&nav.specs, Some(nav.selected), delta) else {
+        return;
+    };
+    nav.selected = next;
+    let y = menu_row_offset(&nav.specs, next);
+    st.ui.set_menu_selected(next as i32);
+    st.ui.set_menu_reveal_y(y);
+    let token = st.ui.get_menu_reveal_token().wrapping_add(1);
+    st.ui.set_menu_reveal_token(token);
+    eprintln!("[menu] keyboard select idx={next} y={y:.0}");
+}
+
+/// 回车：执行当前选中项。先取命令/目标再清状态，避免借用 AppState 期间回调。
+fn menu_activate(st: &mut AppState) {
+    let Some(nav) = st.menu_nav.as_ref() else { return };
+    let Some(spec) = nav.specs.get(nav.selected) else {
+        return;
+    };
+    if spec.separator || spec.command.is_empty() {
+        return;
+    }
+    let pane = nav.pane;
+    let command = spec.command.clone();
+    let label = spec.label.clone();
+    close_menu_ui(st);
+    eprintln!("[menu] keyboard activate {label:?} → {command}");
+    run_menu_command(st, pane, &command);
+    st.ui.invoke_focus_terminal();
+}
+
+/// 关闭菜单并清掉键盘导航状态（Esc/回车/点外部/点菜单项共用）。
+fn close_menu_ui(st: &mut AppState) {
+    st.menu_nav = None;
+    st.ui.set_menu_open(false);
+    st.ui.set_menu_selected(-1);
 }
 
 /// 命令当前生效的快捷键提示（含 `[[hotkeys]]` 覆盖）；没有绑定 = 空字符串。
@@ -10090,6 +10208,8 @@ fn run_menu_command(st: &mut AppState, pane: PaneId, command: &str) {
         "terminal.recording-start" => start_recording_on(st, Some(pane)),
         "terminal.recording-stop" => stop_recording_on(st, Some(pane)),
         "terminal.recording-export" => open_export_recording(st, pane),
+        // Profiles 面板（与侧栏 profiles.open 同一个入口，参数是右键 pane 不再使用）。
+        "profile.open" => open_profiles_panel(st),
         other => run_command(st, other),
     }
 }
@@ -10127,7 +10247,8 @@ fn open_pane_menu(st: &mut AppState, id: PaneId, x: f32, y: f32) {
     // 表驱动：每次打开都重建（config 热更新与插件启停立即生效）。
     let (specs, height) = build_terminal_menu(st, id);
     let entries: Vec<MenuEntry> = specs
-        .into_iter()
+        .iter()
+        .cloned()
         .map(|spec| MenuEntry {
             label: spec.label.into(),
             shortcut: spec.shortcut.into(),
@@ -10146,6 +10267,8 @@ fn open_pane_menu(st: &mut AppState, id: PaneId, x: f32, y: f32) {
     st.ui.set_menu_x(x);
     st.ui.set_menu_y(y);
     st.ui.set_menu_open(true);
+    // 键盘导航从第一项开始；菜单已开时再次右键也会重建并回到首项。
+    menu_reset_selection(st, id, &specs);
     eprintln!(
         "[ui] pane menu open pane={id} items={items} rows={rows} height={height:.0}"
     );
@@ -12076,6 +12199,32 @@ fn handle_input(
         return;
     }
 
+    // 终端右键菜单的键盘导航（UI-TERM-004）：菜单打开时 Up/Down/Enter/Esc
+    // 归菜单，不进 PTY、也不触发全局快捷键。Esc 正常情况下由 Slint 先处理，
+    // 这里兜底（菜单回调被绕过时仍能退出）。
+    if st.menu_nav.is_some() {
+        match text {
+            "\u{1b}" => {
+                close_menu_ui(st);
+                st.ui.invoke_focus_terminal();
+                return;
+            }
+            "\u{F700}" => {
+                menu_navigate(st, -1);
+                return;
+            }
+            "\u{F701}" => {
+                menu_navigate(st, 1);
+                return;
+            }
+            "\n" | "\r" => {
+                menu_activate(st);
+                return;
+            }
+            _ => {}
+        }
+    }
+
     // 用户 override 必须在硬编码默认键之前处理；命中即 return，避免同一按键触发两次。
     // 配置为空时完全跳过，保证无自定义快捷键时按键路径零变化。
     if !st.cfg.hotkeys.is_empty() {
@@ -13619,6 +13768,7 @@ fn build_window_state(
         profile_menu_model,
         right_down: None,
         menu_link: String::new(),
+        menu_nav: None,
         broadcast: false,
         broadcast_scope: Vec::new(),
         broadcast_line: String::new(),
@@ -14548,7 +14698,12 @@ fn register_window_callbacks(
     ui.on_menu_dismissed(move || {
         eprintln!("[ui] menu dismissed");
         // 右键菜单/遮罩会抢走 IME 焦点；关闭后必须还给终端，否则 TUI 无法输入。
-        runtime::with_window(window_id, |st| st.ui.invoke_focus_terminal());
+        runtime::with_window(window_id, |st| {
+            // 外部点击/Esc 关闭也要清掉键盘导航，否则 Up/Down 会继续被吞。
+            st.menu_nav = None;
+            st.ui.set_menu_selected(-1);
+            st.ui.invoke_focus_terminal();
+        });
     });
 
     ui.on_pane_right_clicked(move |id, x, y| {
@@ -14648,6 +14803,8 @@ fn register_window_callbacks(
         let id = id as u64;
         let command = command.to_string();
         runtime::with_window(window_id, |st| run_menu_command(st, id, &command));
+        // 点菜单行后清掉键盘导航状态（Slint 已把 menu-open 置 false）。
+        runtime::with_window(window_id, |st| st.menu_nav = None);
         // Save Contents / Export Recording 需要把焦点交给输入路径的 TextInput，
         // 不能抢回终端；其它菜单命令沿用改造前行为，关闭菜单即还焦点。
         if command != "terminal.save-contents" && command != "terminal.recording-export" {
@@ -18769,6 +18926,45 @@ mod tests {
         assert!(!needs_paste_confirm("a\nb", false));
         // 单独 \r 不算多行（单行回车粘贴不烦人）
         assert!(!needs_paste_confirm("a\rb", true));
+    }
+
+    fn sample_menu_specs() -> Vec<TerminalMenuSpec> {
+        vec![
+            TerminalMenuSpec::item("a".into(), "A".into(), String::new(), false, false),
+            TerminalMenuSpec::separator(),
+            TerminalMenuSpec::item("b".into(), "B".into(), String::new(), false, false),
+            TerminalMenuSpec::item("c".into(), "C".into(), String::new(), true, false),
+            TerminalMenuSpec::separator(),
+        ]
+    }
+
+    #[test]
+    fn menu_step_skips_separators_and_stops_at_edges() {
+        let specs = sample_menu_specs();
+        // 从无选中开始：向下第一项、向上最后一项。
+        assert_eq!(menu_step(&specs, None, 1), Some(0));
+        assert_eq!(menu_step(&specs, None, -1), Some(3));
+        // 分隔线永远跳过。
+        assert_eq!(menu_step(&specs, Some(0), 1), Some(2));
+        assert_eq!(menu_step(&specs, Some(2), 1), Some(3));
+        // 边界不循环。
+        assert_eq!(menu_step(&specs, Some(3), 1), None);
+        assert_eq!(menu_step(&specs, Some(0), -1), None);
+        // 空表 / 全分隔线 / delta=0。
+        assert_eq!(menu_step(&[], None, 1), None);
+        let seps = vec![TerminalMenuSpec::separator()];
+        assert_eq!(menu_step(&seps, None, 1), None);
+        assert_eq!(menu_step(&specs, Some(2), 0), None);
+    }
+
+    #[test]
+    fn menu_row_offset_matches_slint_heights() {
+        let specs = sample_menu_specs();
+        assert_eq!(menu_row_offset(&specs, 0), 6.0);
+        assert_eq!(menu_row_offset(&specs, 1), 36.0);
+        assert_eq!(menu_row_offset(&specs, 2), 45.0);
+        assert_eq!(menu_row_offset(&specs, 3), 75.0);
+        assert_eq!(menu_row_offset(&specs, 4), 105.0);
     }
 
     #[test]
