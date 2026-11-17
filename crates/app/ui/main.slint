@@ -1319,6 +1319,7 @@ export component MainWindow inherits Window {
     /// 工作区侧栏（ACT-046）：默认关闭；关闭时内容区与 0.5.0 逐像素一致。
     in property <bool> sidebar-visible: false;
     in property <length> sidebar-width: 0px;
+    in-out property <bool> sidebar-drag-active: false;
     /// 窗口最大化状态（由 Rust 同步，避免按钮直接读异步 WM 状态）。
     in-out property <bool> window-maximized: false;
     in-out property <bool> menu-open: false;
@@ -1368,6 +1369,9 @@ export component MainWindow inherits Window {
     callback input-trace(string, int, length, length);
     /// 拖动分屏分隔条：index + 内容区坐标
     callback divider-dragged(int, length, length);
+    /// 侧栏右边缘拖宽：参数是窗口内绝对 x（逻辑像素），Rust 侧夹 200–360
+    callback sidebar-dragged(length);
+    callback sidebar-drag-finished();
     /// 无边框窗口拖边缩放：0=左上 1=上 2=右上 3=右 4=右下 5=下 6=左下 7=左
     callback start-window-resize(int);
     callback window-resize-drag();
@@ -2766,6 +2770,34 @@ export component MainWindow inherits Window {
                     wrap: word-wrap;
                 }
                 Rectangle { vertical-stretch: 1; background: transparent; }
+            }
+
+            // 右边缘拖宽条（4px）：悬停显示左右拉伸光标，按下进入拖拽态
+            Rectangle {
+                x: parent.width - 4px;
+                width: 4px;
+                height: 100%;
+                background: sidebar-drag-active ? Palette.colors.accent : transparent;
+                TouchArea {
+                    mouse-cursor: ew-resize;
+                    pointer-event(event) => {
+                        if (event.kind == PointerEventKind.down
+                            && event.button == PointerEventButton.left) {
+                            root.sidebar-drag-active = true;
+                            return EventResult.accept;
+                        }
+                        if (event.kind == PointerEventKind.up) {
+                            root.sidebar-drag-active = false;
+                            root.sidebar-drag-finished();
+                            return EventResult.accept;
+                        }
+                        if (event.kind == PointerEventKind.move && self.pressed) {
+                            root.sidebar-dragged(self.absolute-position.x);
+                            return EventResult.accept;
+                        }
+                        return EventResult.reject;
+                    }
+                }
             }
         }
 

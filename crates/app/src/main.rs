@@ -12020,6 +12020,35 @@ fn register_window_callbacks(
         drop_files_into_pane(id as u64, &paths);
     });
 
+    // 侧栏右边缘拖宽：只改逻辑宽度，再让内容区让位并重排 pane。
+    ui.on_sidebar_dragged(move |x| {
+        runtime::with_window(window_id, |st| {
+            if !st.cfg.sidebar_visible {
+                return;
+            }
+            let want = crate::config::clamp_sidebar_width(x as f32);
+            if (want - sidebar_width_of(&st.cfg)).abs() < 1.0 {
+                return;
+            }
+            st.cfg.sidebar_width = want;
+            st.ui.set_sidebar_width(want);
+            // 用当前内容区反推窗口逻辑宽度，避免再走一遍 DPI 换算。
+            let old_sw = sidebar_width_of(&st.cfg);
+            let win_w = st.content.w + old_sw;
+            let win_h = st.content.h + TABBAR_H;
+            st.content = content_rect(win_w, win_h, want);
+            refresh_views(st);
+            redraw_visible(st);
+        });
+    });
+    ui.on_sidebar_drag_finished(move || {
+        runtime::with_window(window_id, |st| {
+            if st.cfg.sidebar_visible {
+                st.cfg.save();
+            }
+        });
+    });
+
     ui.on_divider_dragged(move |index, x, y| {
         runtime::with_window(window_id, |st| {
             let Some(info) = st.divider_infos.get(index as usize).cloned() else {

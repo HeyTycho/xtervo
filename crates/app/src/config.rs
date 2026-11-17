@@ -147,7 +147,7 @@ pub fn normalize_language(input: &str) -> String {
 }
 
 /// 侧栏宽度夹取：200–360 逻辑像素；NaN/非有限值回 240，结果取整。
-fn clamp_sidebar_width(width: f32) -> f32 {
+pub fn clamp_sidebar_width(width: f32) -> f32 {
     if !width.is_finite() {
         return 240.0;
     }
