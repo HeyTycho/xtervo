@@ -93,6 +93,24 @@ impl Node {
         }
     }
 
+    /// 交换两个叶子的 pane id，分屏树结构与所有 ratio 原样保留。
+    ///
+    /// 拖拽重排只换“哪个 pane 占哪个格子”，不重建 Split：因此手动拖过的
+    /// 分隔条比例不会因为交换而跳回 50%。
+    pub fn swapped(&self, a: PaneId, b: PaneId) -> Node {
+        match self {
+            Node::Leaf(leaf) if *leaf == a => Node::Leaf(b),
+            Node::Leaf(leaf) if *leaf == b => Node::Leaf(a),
+            Node::Leaf(leaf) => Node::Leaf(*leaf),
+            Node::Split { dir, ratio, a: left, b: right } => Node::Split {
+                dir: *dir,
+                ratio: *ratio,
+                a: Box::new(left.swapped(a, b)),
+                b: Box::new(right.swapped(a, b)),
+            },
+        }
+    }
+
     pub fn panes(&self) -> Vec<PaneId> {
         let mut out = Vec::new();
         self.collect(&mut out);
@@ -255,6 +273,21 @@ impl Tab {
 
     pub fn panes(&self) -> Vec<PaneId> {
         self.root.as_ref().map(|r| r.panes()).unwrap_or_default()
+    }
+
+    /// 交换同一 Tab 内两个 pane 的位置；返回是否真的发生交换。
+    ///
+    /// 只改叶子 id：pane 的 PTY/运行时/网格尺寸都跟着 PaneId 走，不需要重启。
+    pub fn swap_panes(&mut self, a: PaneId, b: PaneId) -> bool {
+        if a == b {
+            return false;
+        }
+        let Some(root) = &self.root else { return false };
+        if !(root.contains(a) && root.contains(b)) {
+            return false;
+        }
+        self.root = Some(root.swapped(a, b));
+        true
     }
 }
 
@@ -473,6 +506,49 @@ mod tests {
         let node = Node::leaf(1).split(1, Dir::Row, 2, 0.999);
         let r = rects(&node, 1000.0, 100.0);
         assert!(r[1].1.w >= (1000.0 - SPLIT_GAP) * MIN_RATIO - 0.01);
+    }
+
+    #[test]
+    fn swap_panes_keeps_split_ratios_and_geometry() {
+        // 先左右 30/70，再把右侧上下 40/60；交换左 pane(1) 与右下 pane(3)。
+        let mut node = Node::leaf(1).split(1, Dir::Row, 2, 0.3);
+        node = node.split(2, Dir::Col, 3, 0.4);
+        let before = rects(&node, 1000.0, 500.0);
+        let before_dividers = {
+            let mut out = Vec::new();
+            node.dividers(Rect::new(0.0, 0.0, 1000.0, 500.0), &mut out);
+            out
+        };
+        let swapped = node.swapped(1, 3);
+        assert_eq!(swapped.panes(), vec![3, 2, 1]);
+        // 几何/比例完全不变：交换只换 id，不重排 Split。
+        let after = rects(&swapped, 1000.0, 500.0);
+        for ((id, r), (old_id, old_r)) in after.iter().zip(before.iter()) {
+            assert_eq!(*r, *old_r, "pane {id} 不应改变格子几何（原 {old_id}）");
+        }
+        let after_dividers = {
+            let mut out = Vec::new();
+            swapped.dividers(Rect::new(0.0, 0.0, 1000.0, 500.0), &mut out);
+            out
+        };
+        assert_eq!(before_dividers, after_dividers, "分隔条比例必须原样保留");
+
+        // 同一对 id 再交换一次回到原布局。
+        let back = swapped.swapped(1, 3);
+        let mut back_dividers = Vec::new();
+        back.dividers(Rect::new(0.0, 0.0, 1000.0, 500.0), &mut back_dividers);
+        assert_eq!(back_dividers, before_dividers);
+    }
+
+    #[test]
+    fn swap_panes_rejects_missing_or_same_pane() {
+        let mut tab = Tab::single(1, "t");
+        tab.split(1, Dir::Row, 2);
+        assert!(!tab.swap_panes(1, 1), "自己和自己不算交换");
+        assert!(!tab.swap_panes(1, 99), "不在树里的 pane 不交换");
+        assert!(tab.swap_panes(1, 2));
+        assert_eq!(tab.panes(), vec![2, 1]);
+        assert_eq!(tab.focused, 1, "焦点跟着 pane 身份走，不换成格子");
     }
 
     #[test]

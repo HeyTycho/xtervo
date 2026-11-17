@@ -466,6 +466,13 @@ struct WindowResize {
     since: Instant,
 }
 
+/// Pane 拖拽重排：源 pane + 当前落点（None = 松手不交换）。
+#[derive(Clone, Debug)]
+struct PaneDrag {
+    source: PaneId,
+    target: Option<PaneId>,
+}
+
 /// 广播输入命中破坏性命令后，等用户二次确认的那一次输入。
 #[derive(Clone, Debug)]
 enum PendingBroadcast {
@@ -665,6 +672,10 @@ struct AppState {
     broadcast_danger_ack: bool,
     /// 等确认的广播输入（弹窗期间不进 PTY）。
     pending_broadcast: Option<PendingBroadcast>,
+    /// 最近成功交换的 pane 对（拖拽重排的撤销栈，最多 20 步）。
+    pane_swap_undo: Vec<(PaneId, PaneId)>,
+    /// 正在拖拽重排的 pane；None = 没有进行中的 pane 拖拽。
+    pane_drag: Option<PaneDrag>,
     /// 上次左键点击 (pane, 行, 列, 时间, 连击数)：用于 400ms 内双击选词/三击选行
     last_click: Option<(PaneId, i32, i32, std::time::Instant, u8)>,
     /// 最近关闭的 Tab（最多 10 个），用于 Ctrl+Shift+T / 菜单重开
@@ -1503,6 +1514,7 @@ fn command_title(lang: &str, id: &str, fallback: &'static str) -> &'static str {
         "pane.split-right" => "向右拆分",
         "pane.split-down" => "向下拆分",
         "pane.close" => "关闭窗格",
+        "pane.undo-swap" => "撤销窗格移动",
         "pane.focus-next" => "聚焦下一个窗格",
         "terminal.copy" => "复制",
         "terminal.paste" => "粘贴",
@@ -7944,6 +7956,20 @@ fn refresh_views_impl(st: &mut AppState, resize_terminals: bool) {
         st.divider_model.set_vec(views);
     }
 
+    // pane 关闭后清理撤销栈里的陈旧记录，右键菜单的“撤销窗格移动”才不会空点。
+    if !st.pane_swap_undo.is_empty() {
+        let live: Vec<(PaneId, PaneId)> = st
+            .pane_swap_undo
+            .iter()
+            .copied()
+            .filter(|(a, b)| st.panes.contains_key(a) && st.panes.contains_key(b))
+            .collect();
+        if live.len() != st.pane_swap_undo.len() {
+            st.pane_swap_undo = live;
+            sync_pane_undo_ui(st);
+        }
+    }
+
     // 广播作用域（UI-PANE-011）：切 Tab 自动重置；pane 数降到 1 也自动关闭。
     // refresh_views 覆盖点击/快捷键/新建/恢复/关闭等全部激活路径。
     if st.broadcast {
@@ -7961,6 +7987,142 @@ fn refresh_views_impl(st: &mut AppState, resize_terminals: bool) {
     update_ime_spot(st);
     // 新建/关闭 Profile pane 后，按“是否还有 pane 需要闪烁”启停计时器。
     ensure_cursor_blink_timer(st);
+}
+
+/// 当前 Tab 的 pane 矩形（内容区坐标）；拖拽落点命中复用 `nearest_pane`。
+fn pane_rects(st: &AppState) -> Vec<(PaneId, Rect)> {
+    let Some(tab) = st.ws.active_tab() else {
+        return Vec::new();
+    };
+    tab.panes()
+        .into_iter()
+        .filter_map(|id| st.panes.get(&id).map(|rt| (id, rt.rect)))
+        .collect()
+}
+
+fn reset_pane_drag_ui(st: &mut AppState) {
+    st.ui.set_pane_drag_from(-1);
+    st.ui.set_pane_drag_target(-1);
+}
+
+fn sync_pane_undo_ui(st: &mut AppState) {
+    st.ui.set_pane_undo_available(!st.pane_swap_undo.is_empty());
+}
+
+/// 交换两个 pane（拖拽重排）：只换叶子 id，分屏树/所有比例保持不变。
+fn swap_panes_inner(st: &mut AppState, a: PaneId, b: PaneId, reason: &str) -> bool {
+    if a == b {
+        return false;
+    }
+    let Some(tab_index) = st.ws.tab_of(a) else {
+        return false;
+    };
+    if st.ws.tab_of(b) != Some(tab_index) {
+        return false;
+    }
+    if !st.ws.tabs[tab_index].swap_panes(a, b) {
+        return false;
+    }
+    st.pane_swap_undo.push((a, b));
+    if st.pane_swap_undo.len() > 20 {
+        st.pane_swap_undo.remove(0);
+    }
+    sync_pane_undo_ui(st);
+    eprintln!(
+        "[pane] swap {a} <-> {b} reason={reason} order={:?}",
+        st.ws.tabs[tab_index].panes()
+    );
+    refresh_views(st);
+    redraw_visible(st);
+    true
+}
+
+/// 撤销最近一次 pane 交换（Ctrl+Alt+Z / 右键菜单）。
+///
+/// 只撤销**当前 Tab** 的交换：栈里可能还留着其它 Tab 的记录（切 Tab 不会清栈），
+/// 在错误的 Tab 上静默改它只会让人困惑。已关闭 pane 的陈旧记录顺手清掉。
+fn undo_pane_swap(st: &mut AppState) {
+    let live: Vec<(PaneId, PaneId)> = st
+        .pane_swap_undo
+        .iter()
+        .copied()
+        .filter(|(a, b)| st.ws.tab_of(*a).is_some_and(|tab| Some(tab) == st.ws.tab_of(*b)))
+        .collect();
+    st.pane_swap_undo = live;
+    let active = st.ws.active;
+    let target = st
+        .pane_swap_undo
+        .iter()
+        .rposition(|(a, _)| st.ws.tab_of(*a) == Some(active));
+    let Some(index) = target else {
+        sync_pane_undo_ui(st);
+        eprintln!("[pane] undo swap: 当前 Tab 没有可撤销的交换");
+        return;
+    };
+    let (a, b) = st.pane_swap_undo.remove(index);
+    if st.ws.tabs[active].swap_panes(a, b) {
+        eprintln!("[pane] undo swap {a} <-> {b} reason=undo");
+        refresh_views(st);
+        redraw_visible(st);
+    }
+    sync_pane_undo_ui(st);
+}
+
+fn pane_drag_start(st: &mut AppState, id: PaneId, x: f32, y: f32) {
+    let some_tab_has = st
+        .ws
+        .active_tab()
+        .is_some_and(|t| t.panes().len() > 1 && t.panes().contains(&id));
+    if !some_tab_has {
+        return;
+    }
+    st.pane_drag = Some(PaneDrag { source: id, target: None });
+    st.ui.set_pane_drag_from(id as i32);
+    st.ui.set_pane_drag_target(-1);
+    st.ui.set_pane_drag_x(x);
+    st.ui.set_pane_drag_y(y);
+    eprintln!("[pane] drag start pane={id} at ({x:.1},{y:.1})");
+}
+
+fn pane_drag_move(st: &mut AppState, x: f32, y: f32) {
+    let Some(source) = st.pane_drag.as_ref().map(|d| d.source) else {
+        return;
+    };
+    let target = nearest_pane(&pane_rects(st), x, y).filter(|t| *t != source);
+    let changed = st.pane_drag.as_ref().is_some_and(|d| d.target != target);
+    if changed {
+        if let Some(drag) = st.pane_drag.as_mut() {
+            drag.target = target;
+        }
+        st.ui.set_pane_drag_target(target.map(|t| t as i32).unwrap_or(-1));
+    }
+    st.ui.set_pane_drag_x(x);
+    st.ui.set_pane_drag_y(y);
+}
+
+fn pane_drag_end(st: &mut AppState) {
+    let Some(drag) = st.pane_drag.take() else {
+        return;
+    };
+    reset_pane_drag_ui(st);
+    match drag.target {
+        Some(target) if target != drag.source => {
+            if swap_panes_inner(st, drag.source, target, "drag") {
+                set_status_toast(
+                    st,
+                    "Panes swapped — Ctrl+Alt+Z to undo / 已交换，Ctrl+Alt+Z 撤销".to_string(),
+                );
+            }
+        },
+        _ => eprintln!("[pane] drag end pane={} no target", drag.source),
+    }
+}
+
+fn pane_drag_cancel(st: &mut AppState) {
+    if let Some(drag) = st.pane_drag.take() {
+        eprintln!("[pane] drag cancelled pane={}", drag.source);
+    }
+    reset_pane_drag_ui(st);
 }
 
 /// 全进程 scrollback 行数预算：22 Tab + 4 pane（25 pane）时每 pane 约 960 行。
@@ -10492,6 +10654,7 @@ fn run_command(st: &mut AppState, id: &str) {
                 close_pane_inner(st, focused);
             }
         }
+        "pane.undo-swap" => undo_pane_swap(st),
         "pane.focus-next" => {
             let (panes, focused) = match st.ws.active_tab() {
                 Some(t) => (t.panes(), t.focused),
@@ -12459,6 +12622,8 @@ fn build_window_state(
         broadcast_line: String::new(),
         broadcast_danger_ack: false,
         pending_broadcast: None,
+        pane_swap_undo: Vec::new(),
+        pane_drag: None,
         last_click: None,
         closed_tabs: Vec::new(),
         tab_lru: Vec::new(),
@@ -13082,6 +13247,21 @@ fn register_window_callbacks(
         });
     });
 
+    // Pane 拖拽重排（UI-PANE-008）：命中/落点复用 divider/右键同款
+    // “内容区坐标 → 最近 pane”；松手才交换，Esc/失焦走 cancelled。
+    ui.on_pane_drag_start(move |id, x, y| {
+        runtime::with_window(window_id, |st| pane_drag_start(st, id as u64, x, y));
+    });
+    ui.on_pane_drag_move(move |x, y| {
+        runtime::with_window(window_id, |st| pane_drag_move(st, x, y));
+    });
+    ui.on_pane_drag_end(move || {
+        runtime::with_window(window_id, |st| pane_drag_end(st));
+    });
+    ui.on_pane_drag_cancelled(move || {
+        runtime::with_window(window_id, |st| pane_drag_cancel(st));
+    });
+
     // 广播危险命令二次确认（UI-PANE-011）：确认前那次 Enter/粘贴不进任何 PTY。
     ui.on_bcast_danger_send(move || {
         runtime::with_window(window_id, |st| {
@@ -13542,6 +13722,9 @@ fn register_window_callbacks(
             }
             14 => {
                 runtime::with_window(window_id, |st| open_save_contents(st, id));
+            }
+            15 => {
+                runtime::with_window(window_id, |st| undo_pane_swap(st));
             }
             _ => {}
         }

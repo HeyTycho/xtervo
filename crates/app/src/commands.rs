@@ -578,6 +578,7 @@ pub fn builtin() -> Registry {
         ("pane.split-right", "Split Right", Category::Pane, Some("ctrl+shift+e")),
         ("pane.split-down", "Split Down", Category::Pane, Some("ctrl+shift+d")),
         ("pane.close", "Close Pane", Category::Pane, Some("ctrl+shift+w")),
+        ("pane.undo-swap", "Undo Pane Move", Category::Pane, Some("ctrl+alt+z")),
         ("pane.focus-next", "Focus Next Pane", Category::Pane, Some("ctrl+shift+right")),
         ("terminal.copy", "Copy", Category::Terminal, Some("ctrl+shift+c")),
         ("terminal.paste", "Paste", Category::Terminal, Some("ctrl+shift+v")),
