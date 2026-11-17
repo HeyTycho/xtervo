@@ -487,6 +487,16 @@ struct PluginSurfaceState {
     doc: plugin_v3::SurfaceDoc,
 }
 
+/// 保存弹窗的目标类型：同一个路径输入框复用于文本快照与录制导出。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum SaveKind {
+    /// `PaneHandle::contents()` 的文本快照（既有 Save Contents）。
+    #[default]
+    Contents,
+    /// `PaneHandle::export_recording()` 的原始字节导出（TERM-015）。
+    Recording,
+}
+
 struct AppState {
     ui: MainWindow,
     ws: Workspace,
@@ -522,8 +532,10 @@ struct AppState {
     /// 查找选项：区分大小写 / 正则。
     search_match_case: bool,
     search_regex: bool,
-    /// Save Contents 弹窗打开时锁定的 pane（右键菜单可能不是焦点 pane）。
+    /// Save Contents / Export Recording 弹窗打开时锁定的 pane。
     save_pane: Option<PaneId>,
+    /// 弹窗目标：文本快照（Save Contents）或录制导出（TERM-015）。
+    save_kind: SaveKind,
     /// 命令表（Command Palette / 快捷键分发共用）
     commands: commands::Registry,
     /// 命名工作区（保存的分屏布局，ACT-047）
@@ -1008,6 +1020,7 @@ fn live_list_windows(
             .panes
             .iter()
             .map(|(id, pane)| {
+                let recording = pane.handle.recording_status();
                 serde_json::json!({
                     "window_id": rt.id.get(),
                     "pane_id": id,
@@ -1015,6 +1028,15 @@ fn live_list_windows(
                     "grid": [pane.grid.0, pane.grid.1],
                     "rect": [pane.rect.x, pane.rect.y, pane.rect.w, pane.rect.h],
                     "focused": focused == Some(*id),
+                    // TERM-015：录制状态在 core，MCP/diag 只读快照。
+                    "recording": {
+                        "active": recording.active,
+                        "bytes": recording.bytes,
+                        "capacity": recording.capacity,
+                        "dropped_bytes": recording.dropped_bytes,
+                        "started_at": recording.started_at,
+                        "stopped_at": recording.stopped_at,
+                    },
                 })
             })
             .collect();
@@ -10454,6 +10476,14 @@ fn run_command(st: &mut AppState, id: &str) {
                 open_save_contents(st, id);
             }
         }
+        // TERM-015：会话录制（pane 级；状态/buffer 在 core）。
+        "terminal.recording-start" => start_recording_on(st, focused_pane(st)),
+        "terminal.recording-stop" => stop_recording_on(st, focused_pane(st)),
+        "terminal.recording-export" => {
+            if let Some(id) = focused_pane(st) {
+                open_export_recording(st, id);
+            }
+        }
         "view.command-palette" => open_palette(st),
         "view.toggle-fullscreen" => toggle_fullscreen(st),
         "view.toggle-quake" => toggle_quake_inner(st),
@@ -10684,18 +10714,33 @@ fn save_contents_file(
     Ok(path)
 }
 
+/// 录制导出的默认路径：`$HOME/tervo-recording-<epoch>.raw`（原始字节）。
+fn default_recording_path(stamp: u64) -> PathBuf {
+    if let Some(home) = std::env::var_os("HOME").filter(|h| !h.is_empty()) {
+        PathBuf::from(home).join(format!("tervo-recording-{stamp}.raw"))
+    } else {
+        std::env::temp_dir().join(format!("tervo-recording-{stamp}.raw"))
+    }
+}
+
+/// 当前时间戳（秒）；Save Contents / Export Recording 的默认文件名共用。
+fn now_stamp() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 /// Save Contents 入口：锁存目标 pane，给出明确默认路径，由 UI 弹窗编辑/确认。
 fn open_save_contents(st: &mut AppState, pane: PaneId) {
     if !st.panes.contains_key(&pane) {
         set_status_toast(st, "Save Contents: pane 不存在".to_string());
         return;
     }
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let path = default_save_path(stamp);
+    let path = default_save_path(now_stamp());
     st.save_pane = Some(pane);
+    st.save_kind = SaveKind::Contents;
+    st.ui.set_save_title("Save Contents".into());
     st.ui.set_save_path(path.to_string_lossy().as_ref().into());
     st.ui.set_save_status("".into());
     st.ui.set_save_open(true);
@@ -10705,49 +10750,161 @@ fn open_save_contents(st: &mut AppState, pane: PaneId) {
     );
 }
 
-fn save_contents_commit(st: &mut AppState, raw: &str) {
-    let Some(pane) = st.save_pane else {
-        st.ui.set_save_status("Save Contents: 没有目标 pane".into());
+/// 导出录制入口（TERM-015）：同一个路径弹窗，写的是 core 里累积的原始字节。
+fn open_export_recording(st: &mut AppState, pane: PaneId) {
+    let Some(rt) = st.panes.get(&pane) else {
+        set_status_toast(st, "Export Recording: pane 不存在".to_string());
         return;
     };
-    let Some(text) = st.panes.get(&pane).and_then(|rt| rt.handle.contents()) else {
-        let msg = "读取终端内容失败（会话可能已结束）";
-        eprintln!("[ui] save-contents error pane={pane} path={raw:?} error={msg}");
-        st.ui.set_save_status(msg.into());
+    let status = rt.handle.recording_status();
+    if status.bytes == 0 && status.started_at.is_none() {
+        set_status_toast(st, "Export Recording: 该 pane 还没有录制".to_string());
+        eprintln!("[ui] export-recording skipped pane={pane} reason=no-recording");
+        return;
+    }
+    let path = default_recording_path(now_stamp());
+    st.save_pane = Some(pane);
+    st.save_kind = SaveKind::Recording;
+    st.ui.set_save_title("Export Recording".into());
+    st.ui.set_save_path(path.to_string_lossy().as_ref().into());
+    st.ui.set_save_status("".into());
+    st.ui.set_save_open(true);
+    eprintln!(
+        "[ui] export-recording open pane={pane} bytes={} active={} path={}",
+        status.bytes,
+        status.active,
+        path.display()
+    );
+}
+
+/// 开始录制（pane 级；状态和 buffer 都在 core）。
+fn start_recording_on(st: &mut AppState, pane: Option<PaneId>) {
+    let Some(id) = pane.or_else(|| st.ws.active_tab().map(|t| t.focused)) else {
+        return;
+    };
+    let Some(rt) = st.panes.get(&id) else { return };
+    let status = rt.handle.start_recording();
+    eprintln!(
+        "[rec] start pane={id} capacity={} started_at={:?}",
+        status.capacity, status.started_at
+    );
+    set_status_toast(st, "Recording started (raw output)".to_string());
+}
+
+/// 停止录制；保留 buffer 供导出。
+fn stop_recording_on(st: &mut AppState, pane: Option<PaneId>) {
+    let Some(id) = pane.or_else(|| st.ws.active_tab().map(|t| t.focused)) else {
+        return;
+    };
+    let Some(rt) = st.panes.get(&id) else { return };
+    let status = rt.handle.stop_recording();
+    eprintln!(
+        "[rec] stop pane={id} bytes={} chunks={} dropped={}",
+        status.bytes, status.chunks, status.dropped_bytes
+    );
+    set_status_toast(
+        st,
+        format!(
+            "Recording stopped: {} bytes{}",
+            status.bytes,
+            if status.dropped_bytes > 0 {
+                format!(" ({} dropped at cap)", status.dropped_bytes)
+            } else {
+                String::new()
+            }
+        ),
+    );
+}
+
+/// 弹窗提交（Enter/保存）：按 `save_kind` 分派到文本快照或录制导出。
+fn save_contents_commit(st: &mut AppState, raw: &str) {
+    let Some(pane) = st.save_pane else {
+        st.ui.set_save_status("Save: 没有目标 pane".into());
         return;
     };
     let home = std::env::var_os("HOME")
         .filter(|h| !h.is_empty())
         .map(PathBuf::from);
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    match save_contents_file(raw, &text, home.as_deref(), &cwd) {
-        Ok(path) => {
-            st.save_pane = None;
-            st.ui.set_save_open(false);
-            st.ui.set_save_status("".into());
-            eprintln!(
-                "[ui] save-contents ok pane={pane} path={} bytes={}",
-                path.display(),
-                text.len()
-            );
-            set_status_toast(
-                st,
-                format!("Saved {} bytes to {}", text.len(), path.display()),
-            );
-            st.ui.invoke_focus_terminal();
+    match st.save_kind {
+        SaveKind::Contents => {
+            let Some(text) = st.panes.get(&pane).and_then(|rt| rt.handle.contents()) else {
+                let msg = "读取终端内容失败（会话可能已结束）";
+                eprintln!("[ui] save-contents error pane={pane} path={raw:?} error={msg}");
+                st.ui.set_save_status(msg.into());
+                return;
+            };
+            match save_contents_file(raw, &text, home.as_deref(), &cwd) {
+                Ok(path) => {
+                    close_save_dialog(st);
+                    eprintln!(
+                        "[ui] save-contents ok pane={pane} path={} bytes={}",
+                        path.display(),
+                        text.len()
+                    );
+                    set_status_toast(
+                        st,
+                        format!("Saved {} bytes to {}", text.len(), path.display()),
+                    );
+                }
+                Err(err) => {
+                    eprintln!("[ui] save-contents error pane={pane} path={raw:?} error={err}");
+                    st.ui.set_save_status(err.as_str().into());
+                }
+            }
         }
-        Err(err) => {
-            eprintln!("[ui] save-contents error pane={pane} path={raw:?} error={err}");
-            st.ui.set_save_status(err.as_str().into());
+        SaveKind::Recording => {
+            let Some(rt) = st.panes.get(&pane) else {
+                let msg = "导出失败：pane 已关闭，录制 buffer 随会话释放";
+                st.ui.set_save_status(msg.into());
+                return;
+            };
+            let path = match resolve_save_path(raw, home.as_deref(), &cwd) {
+                Ok(path) => path,
+                Err(err) => {
+                    st.ui.set_save_status(err.as_str().into());
+                    return;
+                }
+            };
+            match rt.handle.export_recording(&path) {
+                Ok(exported) => {
+                    close_save_dialog(st);
+                    eprintln!(
+                        "[rec] export pane={pane} path={} bytes={} active={}",
+                        exported.path.display(),
+                        exported.bytes,
+                        exported.active
+                    );
+                    set_status_toast(
+                        st,
+                        format!(
+                            "Exported recording: {} bytes to {}",
+                            exported.bytes,
+                            exported.path.display()
+                        ),
+                    );
+                }
+                Err(err) => {
+                    let msg = format!("写入 {} 失败：{err}", path.display());
+                    eprintln!("[ui] export-recording error pane={pane} path={raw:?} error={err}");
+                    st.ui.set_save_status(msg.into());
+                }
+            }
         }
     }
 }
 
-fn cancel_save_contents(st: &mut AppState) {
+/// 关闭保存弹窗并复位状态（焦点还给终端）。
+fn close_save_dialog(st: &mut AppState) {
     st.save_pane = None;
+    st.save_kind = SaveKind::default();
     st.ui.set_save_open(false);
     st.ui.set_save_status("".into());
     st.ui.invoke_focus_terminal();
+}
+
+fn cancel_save_contents(st: &mut AppState) {
+    close_save_dialog(st);
 }
 
 // ------------------------------------------------------------------- 事件
@@ -12198,6 +12355,7 @@ fn build_window_state(
         search_match_case: false,
         search_regex: false,
         save_pane: None,
+        save_kind: SaveKind::default(),
         commands: command_registry,
         palette_ids: Vec::new(),
         palette_model,

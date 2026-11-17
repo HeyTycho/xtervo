@@ -17,6 +17,7 @@ pub mod mouse;
 pub mod osc;
 pub mod palette;
 pub mod pane;
+pub mod recording;
 pub mod sixel;
 pub mod transport;
 
@@ -32,6 +33,9 @@ pub use link::{is_allowed_uri, Link, LinkKind};
 pub use mouse::{Modifiers, MouseAction, MouseButton, MouseEvent};
 pub use bench_support::TermSim;
 pub use palette::{Palette, PaletteSpec, Theme, UiColors};
+pub use recording::{
+    Recorder, RecordingExport, RecordingStatus, DEFAULT_RECORDING_CAPACITY_BYTES,
+};
 pub use pane::fill_frame;
 pub use pane::{
     spawn, spawn_with_transport, Backend, GridSize, OutputFilter, OutputFilterHandle, PaneConfig,

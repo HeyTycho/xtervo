@@ -64,6 +64,7 @@ use crate::kitty_graphics::{
 use crate::mouse::{self, MouseEvent};
 use crate::osc::OscScanner;
 use crate::palette::Palette;
+use crate::recording::{Recorder, RecorderHandle, RecordingExport, RecordingStatus};
 use crate::sixel::{rewrite_da1, SixelEvent, SixelFilter, SixelImage};
 
 const READ_CHUNK: usize = 32 * 1024;
@@ -591,6 +592,8 @@ pub struct PaneHandle {
     scroll: Arc<std::sync::atomic::AtomicU64>,
     /// Read Only：true 时 UI 输入/粘贴/鼠标上报都不写 PTY（选区/滚动仍走 ctrl）。
     read_only: Arc<std::sync::atomic::AtomicBool>,
+    /// 会话录制器（PTY **原始输出**，TERM-015）；actor 写、UI 只调用 API 读。
+    recorder: RecorderHandle,
     /// 网格行数快照（high 32 = history_size，low 32 = total_lines），诊断用。
     grid_lines: Arc<std::sync::atomic::AtomicU64>,
     /// 下一次拉帧的请求 ID（只由 UI 线程递增）。
@@ -673,6 +676,39 @@ impl PaneHandle {
     /// 当前是否 Read Only（无锁）。
     pub fn read_only(&self) -> bool {
         self.read_only.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// 开始会话录制（TERM-015）：清空上一段 buffer，此后 actor 收到的 PTY
+    /// **原始输出字节**（含转义序列/图片协议）持续累积到上限。
+    ///
+    /// 与 [`Self::contents`]（一次性文本快照）不同：录制是 pane 级、跨时间的；
+    /// 状态与 buffer 都在 core，UI/插件只读 [`Self::recording_status`]。
+    pub fn start_recording(&self) -> RecordingStatus {
+        self.recorder.start()
+    }
+
+    /// 停止录制；已录 buffer 保留，可稍后 [`Self::export_recording`]。
+    pub fn stop_recording(&self) -> RecordingStatus {
+        self.recorder.stop()
+    }
+
+    /// 当前录制状态快照（是否录制/字节数/起止时间/超限丢弃数）。
+    pub fn recording_status(&self) -> RecordingStatus {
+        self.recorder.status()
+    }
+
+    /// 导出录制 buffer 到文件（字节原样写盘）。录制中导出是快照语义，
+    /// 不停止录制；文件父目录必须已存在。
+    pub fn export_recording(
+        &self,
+        path: impl AsRef<std::path::Path>,
+    ) -> std::io::Result<RecordingExport> {
+        self.recorder.export(path.as_ref())
+    }
+
+    /// 当前录制 buffer 的克隆（给 MCP/诊断上报用，不改变录制状态）。
+    pub fn recording_snapshot(&self) -> Vec<u8> {
+        self.recorder.snapshot()
     }
 
     /// 诊断用：`(history_size, total_lines)`（当前网格；备用屏只含可见行）。
@@ -1223,6 +1259,8 @@ pub fn spawn_with_transport(
         term.grid().history_size(),
     )));
     let read_only = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    // 录制 buffer 按需增长（默认关闭）：64 MiB 上限只在真正录制时才会分配。
+    let recorder = Arc::new(Recorder::default());
     let grid_lines = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let mut iip = IipFilter::new();
     iip.set_cell_size(config.cell_width.max(1), config.cell_height.max(1));
@@ -1263,6 +1301,7 @@ pub fn spawn_with_transport(
         cursor_bits: cursor_bits.clone(),
         scroll: scroll.clone(),
         read_only: read_only.clone(),
+        recorder: recorder.clone(),
         sel_anchor: None,
         pty_closed: false,
         force_full: false,
@@ -1289,6 +1328,7 @@ pub fn spawn_with_transport(
         cursor_bits,
         scroll,
         read_only,
+        recorder,
         grid_lines: grid_lines.clone(),
         pull_seq: AtomicU64::new(0),
         pull_needs_full: AtomicBool::new(false),
@@ -1590,6 +1630,8 @@ struct Actor {
     scroll: Arc<std::sync::atomic::AtomicU64>,
     /// Read Only 原子标志：actor 写 PTY 前再检查一次，丢弃已入队的输入。
     read_only: Arc<std::sync::atomic::AtomicBool>,
+    /// 会话录制器：在输出过滤器/解析之前抓 PTY 原始字节。
+    recorder: RecorderHandle,
     /// 选区锚点（网格坐标）；反向选择时用来保持两端 side 一致。
     sel_anchor: Option<Point>,
     pty_closed: bool,
@@ -2617,6 +2659,9 @@ impl Actor {
     /// 先在 actor 线程过可选输出过滤器，再进入原来的 Sixel → IIP → Kitty →
     /// vte 管线。过滤器失败/panic/超限一律回退到**原始 bytes**，不丢字节。
     fn feed(&mut self, bytes: &[u8]) -> bool {
+        // 会话录制抓**过滤器之前**的 PTY 原始字节：导出的文件就是终端收到的
+        // 字节流本身（含 Sixel/IIP/Kitty 序列），不因显示管线而改写。
+        self.recorder.record(bytes);
         let Some(filter) = self.output_filter.as_ref() else {
             return self.feed_filtered(bytes);
         };

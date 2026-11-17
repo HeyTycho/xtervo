@@ -1988,6 +1988,8 @@ export component MainWindow inherits Window {
 
     // Save Contents：Slint 1.18 没有原生文件对话框，这里用显式路径输入 + 错误提示。
     in-out property <bool> save-open: false;
+    /// 弹窗标题：Save Contents（文本快照）/ Export Recording（TERM-015 原始字节）。
+    in-out property <string> save-title: "Save Contents";
     in-out property <string> save-path: "";
     in-out property <string> save-status: "";
     callback save-commit(string);
@@ -8114,7 +8116,7 @@ export component MainWindow inherits Window {
                 spacing: 9px;
 
                 Text {
-                    text: "Save Contents";
+                    text: root.save-title;
                     color: Palette.colors.text;
                     font-size: 15px;
                     font-weight: 600;
