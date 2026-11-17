@@ -1378,6 +1378,8 @@ export component MainWindow inherits Window {
     in-out property <string> doctor-status: "";
     callback run-doctor();
     callback close-doctor();
+    /// 屏内缩放 HUD：放大/缩小/重置时显示百分比，Rust 侧短暂延时后清空。
+    in-out property <string> zoom-hud: "";
     in-out property <string> plugin-status: "";
     /// 通用状态条目（连接/进度/异常恢复提示等）；空 = 不占布局。
     in property <[string]> status-items: [];
@@ -8663,6 +8665,37 @@ export component MainWindow inherits Window {
             font-size: 12px;
             vertical-alignment: center;
             overflow: elide;
+        }
+    }
+
+    // 屏内缩放 HUD（UI-TERM-012）：放大/缩小/重置后短暂显示百分比，
+    // 不占布局、不抢焦点；1.2s 后由 Rust 清空。位置在终端区顶部居中。
+    if root.zoom-hud != "" : Rectangle {
+        x: (root.width - self.width) / 2;
+        // 广播危险命令红条占顶部时下移，避免 HUD 被盖住。
+        y: (root.tabbar-bottom ? 0px : root.tabbar-height)
+            + (root.broadcast-warning != "" ? 44px : 10px);
+        width: 84px;
+        height: 30px;
+        background: Palette.colors.raise.with-alpha(0.94);
+        border-radius: 8px;
+        border-width: 1px;
+        border-color: Palette.colors.accent.with-alpha(0.55);
+        drop-shadow-blur: 10px;
+        drop-shadow-offset-y: 3px;
+        drop-shadow-color: #000000a8;
+
+        Text {
+            x: 0px;
+            y: 0px;
+            width: parent.width;
+            height: parent.height;
+            text: root.zoom-hud;
+            color: Palette.colors.text;
+            font-size: 15px;
+            font-weight: 600;
+            horizontal-alignment: center;
+            vertical-alignment: center;
         }
     }
 

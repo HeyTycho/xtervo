@@ -9150,6 +9150,7 @@ fn zoom_font(st: &mut AppState, delta: f32) {
     st.cfg.font_size = next;
     apply_font_settings(st);
     st.cfg.save();
+    show_zoom_hud(st);
     eprintln!("[ui] font_size={next}");
 }
 
@@ -9160,7 +9161,36 @@ fn reset_font(st: &mut AppState) {
     st.cfg.font_size = 15.0;
     apply_font_settings(st);
     st.cfg.save();
+    show_zoom_hud(st);
     eprintln!("[ui] font_size=15（重置）");
+}
+
+/// 缩放基准字号（100%）；HUD 只做展示，不改变缩放/持久化逻辑。
+const ZOOM_BASE_FONT_SIZE: f32 = 15.0;
+/// 屏内 zoom HUD 的显示时长（UI-TERM-012）。
+const ZOOM_HUD_MS: u64 = 1200;
+
+/// 当前字号相对基准的百分比（15 → 100%，16 → 107%）。
+fn zoom_percent(font_size: f32) -> i32 {
+    (font_size / ZOOM_BASE_FONT_SIZE * 100.0).round() as i32
+}
+
+/// 屏内 zoom HUD：放大/缩小/重置后短暂显示百分比，随后自动清空。
+///
+/// 快速连按时旧 timer 可能提前清掉新 HUD，因此每次递增全局 token；timer
+/// 只在 token 仍是最后一次时清空，避免“连按两下只显示半秒”。
+static ZOOM_HUD_TOKEN: AtomicUsize = AtomicUsize::new(0);
+
+fn show_zoom_hud(st: &mut AppState) {
+    let token = ZOOM_HUD_TOKEN.fetch_add(1, Ordering::Relaxed) + 1;
+    st.ui
+        .set_zoom_hud(format!("{}%", zoom_percent(st.cfg.font_size)).into());
+    let ui = st.ui.clone_strong();
+    slint::Timer::single_shot(Duration::from_millis(ZOOM_HUD_MS), move || {
+        if ZOOM_HUD_TOKEN.load(Ordering::Relaxed) == token {
+            ui.set_zoom_hud("".into());
+        }
+    });
 }
 
 /// 同步设置页的字体外观 mirror（Rust 侧改完 config 后调用）。
@@ -16103,6 +16133,7 @@ fn register_window_callbacks(
             st.ui.set_font_size(new as i32);
             st.cfg.save();
             apply_font_settings(st);
+            show_zoom_hud(st);
         });
     });
 
@@ -18485,6 +18516,16 @@ mod tests {
         );
         // 过滤把标题清空时回退原始标题（不产生空 Tab 标题）
         assert_eq!(apply_title_rules("bash", "", "", "bash"), "bash");
+    }
+
+    #[test]
+    fn zoom_percent_uses_15px_baseline() {
+        assert_eq!(zoom_percent(15.0), 100);
+        assert_eq!(zoom_percent(16.0), 107);
+        assert_eq!(zoom_percent(17.0), 113);
+        assert_eq!(zoom_percent(18.0), 120);
+        assert_eq!(zoom_percent(8.0), 53);
+        assert_eq!(zoom_percent(40.0), 267);
     }
 
     #[test]
