@@ -18570,6 +18570,109 @@ mod tests {
         assert_eq!(wrapped.len(), "x\ry".len() + 12);
     }
 
+    /// 内容里自带 `201`（甚至 `200~`/`201~` 字样）时也只在首尾各包一次，
+    /// 不能按文本搜索/替换，粘贴内容必须逐字节保留。
+    #[test]
+    fn bracketed_paste_payload_keeps_inner_201_text() {
+        let text = "printf '201'; echo 200~ 201~ 201\nsecond 201 line";
+        let normalized = normalize_paste(text);
+        let payload = paste_payload(&normalized, true);
+        assert_eq!(normalized, text.replace('\n', "\r"));
+        assert_eq!(&payload[6..payload.len() - 6], normalized.as_bytes());
+        assert_eq!(payload.len(), normalized.len() + 12);
+        // 首尾 marker 各一次；正文里的“201”不会多出 marker。
+        assert_eq!(payload.iter().filter(|&&b| b == 0x1b).count(), 2);
+        assert!(payload.windows(3).any(|w| w == b"201"));
+    }
+
+    /// UI-TERM-008 端到端：真实 PTY 里子进程先 DECSET 2004，再切 raw 读字节；
+    /// `paste_payload` 写进 PaneHandle 后，子进程必须收到完整的 200~/201~ 包裹，
+    /// 且内容里的 `201` 原样保留（用文件落盘做逐字节断言，不靠终端回显猜）。
+    #[test]
+    fn bracketed_paste_reaches_child_over_pty_with_201_content() {
+        let dir = std::env::temp_dir().join(format!(
+            "tervo-paste-e2e-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let out = dir.join("paste.bin");
+        let text = "echo 201; echo '201~' ; printf 200\nline 201 end";
+        let payload = paste_payload(&normalize_paste(text), true);
+        // 子进程：宣告 bracketed paste → 切 raw（不做行缓冲/回显）→ 收满
+        // payload 字节数写文件 → 结束。READY 保证 raw 已生效再写输入。
+        let script = format!(
+            "printf '\\033[?2004h'; stty raw -echo; printf 'READY'; \
+             dd bs=1 count={} of={} 2>/dev/null; printf '\\033[?2004l'",
+            payload.len(),
+            out.display()
+        );
+        let handle = spawn(PaneConfig {
+            cols: 80,
+            rows: 24,
+            scrollback: 200,
+            shell: Some("/bin/bash".to_string()),
+            args: vec!["-c".to_string(), script],
+            ..PaneConfig::default()
+        })
+        .expect("spawn bash pty");
+
+        let screen = |frame: &Frame| {
+            (0..frame.rows)
+                .map(|row| {
+                    let line: String = frame.row(row).iter().map(|c| c.char()).collect();
+                    format!("{}\n", line.trim_end())
+                })
+                .collect::<String>()
+        };
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let mut frame = handle.new_frame();
+        loop {
+            frame = handle.pull(frame);
+            let ready = (0..frame.rows).any(|row| {
+                let line: String = frame.row(row).iter().map(|c| c.char()).collect();
+                line.contains("READY")
+            });
+            if frame.mode & BRACKETED_PASTE != 0 && ready {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "等待 bracketed paste 模式/READY 超时，当前屏幕:\n{}",
+                screen(&frame)
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        handle.input(&payload);
+
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            if let Ok(bytes) = std::fs::read(&out) {
+                if bytes.len() >= payload.len() {
+                    assert_eq!(bytes, payload, "子进程收到的字节必须与 payload 一致");
+                    assert!(bytes.starts_with(b"\x1b[200~"));
+                    assert!(bytes.ends_with(b"\x1b[201~"));
+                    assert!(
+                        bytes.windows(3).any(|w| w == b"201"),
+                        "正文里的 201 必须保留"
+                    );
+                    break;
+                }
+            }
+            assert!(
+                Instant::now() < deadline,
+                "等待子进程收到 {} 字节超时（已收到 {:?} 字节）",
+                payload.len(),
+                std::fs::read(&out).map(|b| b.len())
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn paste_confirm_only_for_multiline_when_enabled() {
         assert!(!needs_paste_confirm("one line", true));
