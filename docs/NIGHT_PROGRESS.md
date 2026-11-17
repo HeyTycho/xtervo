@@ -39,8 +39,7 @@ DURATION=2m BIN=$PWD/target/release/tervo SOAK_NO_SHOTS=1 \
 ## 3. 未完成（按建议顺序）
 
 ```text
-1. ACT-048 前置：把 commands.rs 的 default_shortcut 接进键盘分发
-   （现在默认键只用于列表显示，实际靠硬编码 + override；见 ACTION_ITEMS ACT-048 备注）
+1. ~~ACT-048 前置：把 commands.rs 的 default_shortcut 接进键盘分发~~ ✅（已在 PTY 写入前兜底）
 2. ACT-047 设置页：Profile 热键绑定输入（可复用 hotkey_recording 录制流程）
 3. ACT-047 剩余：分屏布局存成 Workspace、断线重连策略
 4. ACT-046 剩余：独立顶部 Toolbar（需先修 IME 坐标链里的 TABBAR_H 常量）、

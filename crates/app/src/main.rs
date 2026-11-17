@@ -10356,6 +10356,21 @@ fn handle_input(
         }
     }
 
+    // 命令表默认键兜底：内置硬编码与插件默认键都没接走时，再按 commands.rs 的
+    // `default_shortcut` 匹配一次。否则快捷键设置页列出的默认键会“按了没反应”。
+    // 只认可绑定 chord（带 Ctrl/Alt 等修饰），普通字符仍原样进终端。
+    if let Some(chord) = keys::chord_from_key_event(text, ctrl, alt, shift) {
+        if chord.is_bindable() {
+            if let Some(id) = st.commands.default_command_for_chord(&chord) {
+                if keylog {
+                    eprintln!("[hotkey] default {id} ← {chord}");
+                }
+                run_command(st, id);
+                return;
+            }
+        }
+    }
+
     if PIPE_ON.load(Ordering::Relaxed) {
         *LAST_KEY.lock().unwrap() = Some(Instant::now());
     }
