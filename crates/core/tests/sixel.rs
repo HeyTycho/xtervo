@@ -472,3 +472,25 @@ fn sixel_clear_screen_removes_images() {
     assert!(frame_text(&frame).trim().is_empty());
     let _ = std::fs::remove_file(path);
 }
+
+#[test]
+fn ech_at_image_left_edge_erases_that_image_only() {
+    let _serial = SIXEL_TEST_LOCK.lock().unwrap();
+    // 回归：ECH 从光标列开始向右擦、光标不动。旧实现按“光标左侧”取矩形，
+    // 当图片正好贴在 ECH 起点那一格时会漏擦（图片留在屏上）。
+    // 这里第 2 行放两张图（cell 4 与 cell 20），随后 CUP 到 cell 4 发 `CSI 1 X`。
+    let path = temp_payload("ech-left-edge", &two_images_sixel());
+    let script = format!(
+        "printf 'L1\\r\\n'; printf '%s' '\x1b[2;5H'; cat '{p}'; sleep 1; \
+         printf '%s' '\x1b[2;21H'; cat '{p}'; sleep 1; \
+         printf '%s' '\x1b[2;5H\x1b[1X'; sleep 1",
+        p = path.display()
+    );
+    let handle = spawn(sh(&script)).expect("spawn pane");
+    let frame = wait_for(&handle, Duration::from_secs(8), |f| f.images.len() == 2);
+    assert_eq!(frame.images[1].col, 20, "第二张图应锚在 cell 20");
+    // ECH 擦掉 cell 4 的图，cell 20 的图必须保留。
+    let frame = wait_for(&handle, Duration::from_secs(8), |f| f.images.len() == 1);
+    assert_eq!(frame.images[0].col, 20, "只应擦掉与 ECH 相交的图片");
+    let _ = std::fs::remove_file(path);
+}

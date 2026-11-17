@@ -1683,6 +1683,16 @@ fn erase_char_params(bytes: &[u8], after: usize, out: &mut Vec<Option<u16>>) -> 
     !out.is_empty()
 }
 
+/// ECH 擦除的 cell 区间（左闭右开）。
+///
+/// alacritty 的 ECH 从光标列开始向右擦除 `Ps` 格、光标不移动；参数缺省为 1，
+/// 超出屏宽时夹到列数。图片擦除必须用同一几何，否则贴左边缘的图会漏擦。
+fn ech_erase_range(cursor_col: usize, cells: Option<u16>, cols: usize) -> (usize, usize) {
+    let width = cells.unwrap_or(1).max(1) as usize;
+    let start = cursor_col.min(cols);
+    (start, start.saturating_add(width).min(cols))
+}
+
 /// 会清空整屏/切换备用屏、因而必须清除内联图片的转义序列。
 ///
 /// 粗粒度清屏（Escape 2J/3J、进入/离开备用屏、RIS）会清全部图片。
@@ -2917,16 +2927,23 @@ impl Actor {
         let keyboard_actions = self.scan_keyboard_modes(chunk);
         self.advance_vte(chunk);
         let cursor = self.term.grid().cursor.point;
-        // ECH 已经过 vte。常见场景一次性发出：`CUP -> ECH`，此时光标仍在
-        // 被擦矩形的右端；按 ECH 宽度取光标左侧区域，不删除同行其他图片。
+        // ECH 已经过 vte。alacritty 的 ECH 从光标列开始向右擦、光标不移动；
+        // 常见 TUI 一次性发出 `CUP -> ECH`，此时 chunk 末尾光标仍指向被擦区域
+        // 左端。按「光标列 + 参数宽度」取矩形，不能取光标左侧（会擦错一格、
+        // 漏掉贴左边缘的图片）。
         let samples = self.image_clear.ech.clone();
         if had_ech && !full_clear {
             let grid = self.term.grid();
             let off = grid.display_offset() as i64;
             for erase in samples.into_iter().rev() {
-                let cells = (erase.unwrap_or(1).max(1) as usize).min(self.term.columns());
-                let end = cursor.column.0.saturating_add(1);
-                let start = end.saturating_sub(cells);
+                let (start, end) = ech_erase_range(
+                    cursor.column.0,
+                    erase,
+                    self.term.columns(),
+                );
+                if start >= end {
+                    continue;
+                }
                 self.images.erase_viewport_rectangle(
                     grid,
                     cursor.line.0 as i64 + off,
@@ -4367,6 +4384,19 @@ mod tests {
         let new = (store.images[0].id, store.images[0].source_id);
         assert!(new.0 > old.0, "placement ID 在 clear 后仍必须单调");
         assert!(new.1 > old.1, "source ID 在 clear 后仍必须单调");
+    }
+
+    #[test]
+    fn ech_erase_range_starts_at_cursor_and_clamps() {
+        // CSI X：缺省 1 格，从光标列开始（不是光标左侧）。
+        assert_eq!(ech_erase_range(4, None, 10), (4, 5));
+        assert_eq!(ech_erase_range(4, Some(3), 10), (4, 7));
+        // 0 也按 1 格；超出屏宽夹到 cols。
+        assert_eq!(ech_erase_range(0, Some(0), 10), (0, 1));
+        assert_eq!(ech_erase_range(8, Some(9), 10), (8, 10));
+        // 光标在最后一行末尾/列数之外不能越界。
+        assert_eq!(ech_erase_range(10, Some(2), 10), (10, 10));
+        assert_eq!(ech_erase_range(usize::MAX, Some(1), 10), (10, 10));
     }
 
     #[test]
