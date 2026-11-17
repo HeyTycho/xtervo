@@ -112,6 +112,46 @@ fn toggle_sidebar_math(content: Rect, cfg: &mut crate::config::Config) -> Rect {
 }
 
 /// 翻转侧栏可见性并立即重排（命令面板与设置页开关共用）。
+/// 打开命名工作区：把保存的布局恢复成一个新 Tab（`workspace.open` 命令）。
+///
+/// 复用 session 恢复路径（`restore_tab_snapshot`）——这条路径已经处理了
+/// “布局与 pane 数不符”“profile 失效回退普通 shell”等情况，不要再写一套。
+fn open_workspace(st: &mut AppState, name: &str) {
+    let Some(ws) = st.workspaces.get(name).cloned() else {
+        eprintln!("[workspace] 没有名为「{name}」的工作区");
+        return;
+    };
+    let leaf_count = ws.tree.leaf_count();
+    if leaf_count == 0 {
+        eprintln!("[workspace] 「{name}」没有 pane，忽略");
+        return;
+    }
+    let snap = session::TabSnapshot {
+        title: ws.name.clone(),
+        focused: 0,
+        pinned: false,
+        tree: ws.tree.clone(),
+    };
+    match restore_tab_snapshot(st, &snap) {
+        Some(index) => {
+            set_active_tab_inner(st, index);
+            rebuild_tabs(st);
+            refresh_views(st);
+            redraw_visible(st);
+            eprintln!("[workspace] 已打开「{name}」（{leaf_count} 个 pane）");
+            let msg = if st.cfg.lang() == "zh" {
+                format!("已打开工作区「{name}」")
+            } else {
+                format!("Opened workspace \"{name}\"")
+            };
+            st.ui.set_status_items(ModelRc::from(Rc::new(VecModel::from(vec![
+                slint::SharedString::from(msg),
+            ]))));
+        },
+        None => eprintln!("[workspace] 「{name}」布局恢复失败"),
+    }
+}
+
 /// 把当前 Tab 的分屏布局存成命名工作区（`workspace.save` 命令）。
 ///
 /// 名字由 Tab 标题派生并去重；只存布局（树 + cwd + profile 关联），不存进程。
@@ -9818,6 +9858,13 @@ fn run_command(st: &mut AppState, id: &str) {
             let names: Vec<String> =
                 st.workspaces.workspaces.iter().map(|w| w.name.clone()).collect();
             eprintln!("[workspace] 已保存: {names:?}");
+        },
+        "workspace.open" => {
+            // 没有选择器时先打开“最近保存的一个”，名字列表见 workspace.list。
+            match st.workspaces.workspaces.last().map(|w| w.name.clone()) {
+                Some(name) => open_workspace(st, &name),
+                None => eprintln!("[workspace] 还没有保存过工作区"),
+            }
         },
         "pane.split-right" => {
             if let Some(focused) = st.ws.active_tab().map(|t| t.focused) {

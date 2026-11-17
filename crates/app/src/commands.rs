@@ -591,6 +591,7 @@ pub fn builtin() -> Registry {
         ("view.toggle-quake", "Toggle Quake Mode", Category::View, None),
         ("workspace.save", "Save Layout as Workspace", Category::View, None),
         ("workspace.list", "List Workspaces", Category::View, None),
+        ("workspace.open", "Open Last Workspace", Category::View, None),
         ("view.zoom-in", "Zoom In", Category::View, Some("ctrl+plus")),
         ("view.zoom-out", "Zoom Out", Category::View, Some("ctrl+minus")),
         ("view.zoom-reset", "Reset Zoom", Category::View, Some("ctrl+0")),
