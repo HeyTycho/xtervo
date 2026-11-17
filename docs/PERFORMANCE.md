@@ -157,6 +157,32 @@ CARGO_TARGET_DIR=$PWD/.target-render ./scripts/bench_render.sh
 - Sixel 是独立 overlay，不写入终端帧，因此不参与 damage；滚动历史（`display_offset≠0`）
   仍由 core 强制 full。
 - 只在 Xvfb/llvmpipe + `winit-software` 验证；真机 GPU 的 detach 频率/帧时间未验收。
+## 2.5 v0.5.0 压力 soak 基线（2026-11-16，headless Xvfb :143 + Openbox）
+
+命令（沙箱里 `/run/user/1000` 只读时需给可写目录）：
+
+```bash
+DURATION=2m BIN=$PWD/target/release/tervo SOAK_NO_SHOTS=1 \
+  XDG_RUNTIME_DIR=/tmp/soak-rt TERVO_INSTANCE_DIR=/tmp/tervo-inst ./scripts/soak.sh
+```
+
+结果（commit `ff607db`，22 tabs + 3 splits + 设置/搜索/复制/resize 场景）：
+
+```text
+verdict   PASS
+duration  120s（warmup 40s，实际 134s）
+RSS       354.7 → 392.4 MiB（+37.7 MiB，49 采样区间 R²=0.99）
+PSS       344.0 → 382.1 MiB（峰值 399.2）
+CPU       avg 7.6% / max 9.6%
+threads   112 → 112      fds 97 → 97
+coverage  tabs=22 splits=3 settings=5/40 find=9 copy=16 resize=23/23
+log       fatal=0 errors=1 xvfb_errors=1
+```
+
+解读与后续：这 2 分钟含预热（字体 atlas、22 个 Tab 模型、首次合成都在这段），
+**不能**当作泄漏结论；门禁判定 PASS，且线程/FD 均已稳定。要区分“预热”与“泄漏”，
+需要 15m 跑一次并看后半段斜率（ACT-051）。证据：`.logs/soak/20261117-125130/`。
+
 ## 3. 4 pane 测量步骤（可复现）
 
 ```bash
