@@ -1923,6 +1923,8 @@ export component MainWindow inherits Window {
     callback plugin-approval-allow();
     callback plugin-approval-deny();
     in-out property <string> config-status: "";
+    /// SESS-008：配置版本/迁移备份检查结果（中英文单行）。
+    in-out property <string> config-report: "";
     // Vault（加密凭据）
     in-out property <string> vault-status: "";
     /// true = 后台 Argon2id 正在跑；设置页仍可重绘/滚动，按钮由 Rust 侧防重入。
@@ -1938,6 +1940,9 @@ export component MainWindow inherits Window {
     callback vault-clear();
     callback config-import-tabby();
     callback config-export-tabby();
+    callback config-export();
+    callback config-import();
+    callback config-restore-backup();
     callback settings-open-path();
     callback settings-help-open(string);
     callback settings-help-copy-diagnostics();
@@ -4941,12 +4946,46 @@ export component MainWindow inherits Window {
                                     clicked => { root.config-export-tabby(); }
                                 }
                             }
+                            HorizontalLayout {
+                                spacing: 6px;
+                                ActionBtn {
+                                    horizontal-stretch: 1;
+                                    label: Lang.t("Export Config", "导出配置");
+                                    font-size: 10px;
+                                    clicked => { root.config-export(); }
+                                }
+                                ActionBtn {
+                                    horizontal-stretch: 1;
+                                    label: Lang.t("Import Config", "导入配置");
+                                    font-size: 10px;
+                                    clicked => { root.config-import(); }
+                                }
+                                ActionBtn {
+                                    horizontal-stretch: 1;
+                                    label: Lang.t("Restore Backup", "恢复备份");
+                                    font-size: 10px;
+                                    clicked => { root.config-restore-backup(); }
+                                }
+                            }
+                            Text {
+                                text: root.config-report;
+                                color: Palette.colors.subtext;
+                                font-size: 10px;
+                                wrap: word-wrap;
+                                visible: root.config-report != "";
+                            }
                             Text {
                                 text: root.config-status;
                                 color: Palette.colors.muted;
                                 font-size: 10px;
                                 wrap: word-wrap;
                                 visible: root.config-status != "";
+                            }
+                            Text {
+                                text: Lang.t("Import/export use config-export.toml next to config.toml and only touch files; restart Tervo to apply. Migrations always keep a config.toml.v<from>.bak.", "导入/导出使用 config.toml 同目录的 config-export.toml，只改文件；重启 Tervo 后生效。迁移始终保留 config.toml.v<旧版本>.bak。");
+                                color: Palette.colors.muted;
+                                font-size: 10px;
+                                wrap: word-wrap;
                             }
                             Text {
                                 text: Lang.t("Passwords and private keys never live in the plain config; SSH passwords go to the encrypted Vault.", "密码与私钥绝不写入明文配置；SSH 密码保存在加密保险库。");
