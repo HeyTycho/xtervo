@@ -4195,7 +4195,6 @@ fn refresh_background(st: &mut AppState) {
 /// 列表模型只带展示字段；所有操作回调用 `profile_indices` 映射回真实 Profile，
 /// 避免过滤后 “点第 0 行却打开第 0 个 store 项” 的错位。
 fn refresh_profiles(st: &mut AppState) {
-    let default_id = st.cfg.default_profile_id;
     let lang = st.cfg.lang();
     let kind_label = |kind: &str| -> String {
         match kind {
@@ -4205,6 +4204,8 @@ fn refresh_profiles(st: &mut AppState) {
         }
     };
     let indices = profile::filter_indices(&st.profiles.profiles, &st.profile_query);
+    // 星标以解析结果为准：id 或 default_profile 名字命中的那一行都显示 ★。
+    let resolved_default = default_profile_index(st);
     let items: Vec<ProfileRow> = indices
         .iter()
         .filter_map(|&i| {
@@ -4212,7 +4213,7 @@ fn refresh_profiles(st: &mut AppState) {
             Some(ProfileRow {
                 id: p.id as i32,
                 label: format!("[{}] {}", kind_label(&p.kind), p.name).into(),
-                is_default: default_id != 0 && p.id == default_id,
+                is_default: resolved_default == Some(i),
             })
         })
         .collect();
@@ -5086,9 +5087,11 @@ fn restart_exited_pane(st: &mut AppState, notice: SshExitNotice) {
     let zh = st.cfg.lang() == "zh";
     let Some(profile_id) = notice.profile_id else {
         // 系统 shell / 无 Profile 的本地 pane：同格重开默认 shell。
-        st.panes.remove(&pane);
+        // 先建新 runtime 再替换旧 runtime：创建失败时 Tab 里仍有旧 pane（最后一帧），
+        // 不会留下指向空 pane 的布局。
         match create_pane(st, pane, rect, None, None, None) {
             Ok(rt) => {
+                st.panes.remove(&pane);
                 st.panes.insert(pane, rt);
                 refresh_views(st);
                 rebuild_tabs(st);
@@ -5136,9 +5139,10 @@ fn restart_exited_pane(st: &mut AppState, notice: SshExitNotice) {
         },
     };
     // 旧 runtime 已经退出；换掉它但保留 pane id（Tab/分屏布局不变）。
-    st.panes.remove(&pane);
+    // 同样先创建成功再替换，失败时旧 pane 继续兜住布局。
     match create_pane(st, pane, rect, None, Some(&spec), askpass) {
         Ok(rt) => {
+            st.panes.remove(&pane);
             st.panes.insert(pane, rt);
             if let Some(tab) = st.ws.tabs.iter_mut().find(|t| t.panes().contains(&pane)) {
                 tab.title = spec.name.clone();
