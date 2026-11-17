@@ -4,7 +4,9 @@
 的 `PaneTransport` trait + `SocketPairTransport` 与读写分离的 `SplitTransport`
 （3 条单测），**尚未接线**；`SplitTransport` 是为 PTY（读/写两条线程各持句柄）与
 插件 socket 共用同一条 trait 铺的路；
-下一步是 actor 侧走 trait、宿主侧权限/审计/限流。
+PTY 读循环也已抽成 `pump_reader<R: Read>`（单测覆盖字节转发 + `Ok(0)` 收尾），
+这就是将来喂插件 transport 的那个函数；下一步是宿主侧权限/审计/限流，再把
+`PaneHandle` 的读端换成 `PaneTransport`。
 目标：把 SSH / Serial / Telnet 做成**官方、可卸载**的插件，核心只保留一条通用传输 seam。
 
 ## 1. 为什么现在还不能“直接做成插件”

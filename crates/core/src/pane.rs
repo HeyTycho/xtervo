@@ -535,6 +535,34 @@ enum Ctrl {
     Shutdown,
 }
 
+/// 读后端（PTY 或插件 transport）→ 有界队列。
+///
+/// 契约（ACT-052 的 seam 语义，已有单测）：
+/// - `Ok(0)` = 对端关闭，退出并通知 actor `Ctrl::PtyClosed`；
+/// - `Interrupted` 重试，其它错误直接收尾；
+/// - 发送失败（actor 已退出）立即停止，绝不空转。
+fn pump_reader<R: std::io::Read>(
+    mut reader: R,
+    pty_tx: Sender<Vec<u8>>,
+    ctrl_tx: Sender<Ctrl>,
+) {
+    let mut buf = vec![0u8; READ_CHUNK];
+    loop {
+        match reader.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                // 有界阻塞：背压回内核，绝不丢字节、绝不做 UI 工作。
+                if pty_tx.send(buf[..n].to_vec()).is_err() {
+                    break;
+                }
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        }
+    }
+    let _ = ctrl_tx.send(Ctrl::PtyClosed);
+}
+
 /// UI 侧持有的单 pane 句柄。
 pub struct PaneHandle {
     /// 与 pty-writer 共享的有界字节 backlog：键盘/粘贴直接进入，不经过 actor，
@@ -1126,26 +1154,12 @@ pub fn spawn(config: PaneConfig) -> std::io::Result<PaneHandle> {
     };
 
     // ---- PTY 读线程：只 read + 有界 send ----
+    // 循环体抽成 `pump_reader`：现在喂的是 PTY，将来喂插件 transport（ACT-052），
+    // 两者共用同一段“有界背压、绝不丢字节”的逻辑，不必为后端分叉。
     let ctrl_tx_reader = ctrl_tx.clone();
     let reader_thread = thread::Builder::new()
         .name("pty-reader".into())
-        .spawn(move || {
-            let mut buf = vec![0u8; READ_CHUNK];
-            loop {
-                match reader.read(&mut buf) {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        // 有界阻塞：背压回内核，绝不丢字节、绝不做 UI 工作。
-                        if pty_tx.send(buf[..n].to_vec()).is_err() {
-                            break;
-                        }
-                    },
-                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                    Err(_) => break,
-                }
-            }
-            let _ = ctrl_tx_reader.send(Ctrl::PtyClosed);
-        })?;
+        .spawn(move || pump_reader(reader, pty_tx, ctrl_tx_reader))?;
 
     // ---- PTY 写线程 ----
     let writer_queue = write_queue.clone();
@@ -3679,6 +3693,34 @@ pub fn fill_frame<T: EventListener>(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn pump_reader_forwards_bytes_then_reports_pty_closed() {
+        use std::io::Write;
+        use std::os::unix::net::UnixStream;
+        let (mut writer, reader) = UnixStream::pair().unwrap();
+        let (tx, rx) = crossbeam_channel::bounded::<Vec<u8>>(8);
+        let (ctrl_tx, ctrl_rx) = crossbeam_channel::bounded::<Ctrl>(8);
+        let handle = std::thread::spawn(move || pump_reader(reader, tx, ctrl_tx));
+
+        writer.write_all(b"abc").unwrap();
+        writer.write_all(b"defg").unwrap();
+        // 两次 write 可能被合成一次 read（流式语义），按字节数收齐再断言。
+        let mut got = Vec::new();
+        while got.len() < 7 {
+            let chunk = rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+            got.extend_from_slice(&chunk);
+        }
+        assert_eq!(got, b"abcdefg");
+
+        // 写端关闭 -> Ok(0) -> 退出并发 Ctrl::PtyClosed
+        drop(writer);
+        handle.join().unwrap();
+        assert!(matches!(
+            ctrl_rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap(),
+            Ctrl::PtyClosed
+        ));
+    }
+
     use super::*;
 
     fn test_image(w: u32, h: u32) -> SixelImage {
