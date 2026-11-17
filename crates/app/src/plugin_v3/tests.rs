@@ -1051,7 +1051,7 @@ fn reload_refreshes_manifest_without_restarting_host_and_permission_change_requi
         Duration::from_secs(2)
     ));
     assert!(wait_phase(&store, "dev.test.reload", Phase::Running, Duration::from_secs(3)));
-    let palette = store.palette_commands("reloaded");
+    let palette = store.palette_commands("reloaded", &CommandContext::default());
     assert!(
         palette
             .iter()
