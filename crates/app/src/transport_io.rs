@@ -92,3 +92,175 @@ pub fn declared_payload_len(datagram: &[u8]) -> Option<usize> {
     }
     Some(u32::from_le_bytes([datagram[0], datagram[1], datagram[2], datagram[3]]) as usize)
 }
+
+// ---------------------------------------------------------------- 权限骨架（F4）
+
+/// `permissions.terminal_transport` 门禁错误。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransportGateError {
+    /// 用户尚未确认“允许插件提供终端字节流”。
+    NotConfirmed,
+    /// 同一套 transport 同时只能服务一个 pane（不能跨 pane 读写）。
+    PaneLimit { max: usize },
+    /// 单 pane 读/写缓冲超过 256 KiB。
+    BufferLimit { read: usize, write: usize, max: usize },
+}
+
+impl fmt::Display for TransportGateError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotConfirmed => f.write_str("terminal_transport permission not confirmed"),
+            Self::PaneLimit { max } => {
+                write!(f, "terminal_transport pane limit reached (max {max})")
+            },
+            Self::BufferLimit { read, write, max } => write!(
+                f,
+                "terminal_transport buffer limit: read {read} / write {write} > {max} bytes"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for TransportGateError {}
+
+/// 审计动作；只记元数据，不记 payload / 凭据。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransportAuditAction {
+    Confirm,
+    Revoke,
+    Open,
+    Close,
+    Reject,
+}
+
+/// 一条 transport 审计记录。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TransportAuditEntry {
+    /// 单调递增序号；首次记录为 1。
+    pub seq: u64,
+    /// 关联 pane；确认/撤销等全局动作记 0。
+    pub pane_id: u64,
+    pub action: TransportAuditAction,
+    pub allowed: bool,
+    /// 简短原因，不含任何用户数据。
+    pub detail: &'static str,
+}
+
+/// `permissions.terminal_transport` 的权限骨架：确认 + 审计 + 单 pane 上限。
+///
+/// 只做数据结构与门禁函数，**不改插件启用流程**。真正接线时：
+/// 1. 用户首次启用 transport 插件 → [`Self::confirm`]；
+/// 2. `transport.open` 前 → [`Self::authorize_open`]；
+/// 3. 数据面每帧 → [`Self::check_buffers`]，超限断开并报 `transport.error`；
+/// 4. `transport.close` / pane 关闭 → [`Self::close`]。
+#[derive(Debug, Default)]
+pub struct TerminalTransportPermission {
+    confirmed: bool,
+    pane: Option<u64>,
+    audit: Vec<TransportAuditEntry>,
+    next_seq: u64,
+}
+
+impl TerminalTransportPermission {
+    /// 同一套 transport 同时最多服务 1 个 pane（不能跨 pane）。
+    pub const MAX_OPEN_PANES: usize = 1;
+    /// 单 pane 读/写缓冲各 ≤ 256 KiB。
+    pub const MAX_BUFFER_BYTES: usize = MAX_FRAME_PAYLOAD;
+
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn is_confirmed(&self) -> bool {
+        self.confirmed
+    }
+
+    /// 当前被授权的 pane（未打开时为 `None`）。
+    pub fn open_pane(&self) -> Option<u64> {
+        self.pane
+    }
+
+    /// 用户首次启用时确认。重复确认幂等，但每次都会留审计。
+    pub fn confirm(&mut self) {
+        self.confirmed = true;
+        self.record(0, TransportAuditAction::Confirm, true, "user confirmed");
+    }
+
+    /// 撤销授权：清空已打开 pane，后续 `authorize_open` 全部拒绝。
+    pub fn revoke(&mut self) {
+        self.confirmed = false;
+        self.pane = None;
+        self.record(0, TransportAuditAction::Revoke, true, "permission revoked");
+    }
+
+    /// `transport.open` 门禁：未确认 / 超单 pane 上限都拒绝并记审计。
+    ///
+    /// 同一个 pane 重复 open 视为幂等（插件重连自己的 pane），不占第二个名额。
+    pub fn authorize_open(&mut self, pane_id: u64) -> Result<(), TransportGateError> {
+        if !self.confirmed {
+            self.record(
+                pane_id,
+                TransportAuditAction::Reject,
+                false,
+                "permission not confirmed",
+            );
+            return Err(TransportGateError::NotConfirmed);
+        }
+        if self.pane.is_some_and(|open| open != pane_id) {
+            self.record(pane_id, TransportAuditAction::Reject, false, "pane limit");
+            return Err(TransportGateError::PaneLimit { max: Self::MAX_OPEN_PANES });
+        }
+        self.pane = Some(pane_id);
+        self.record(pane_id, TransportAuditAction::Open, true, "transport open");
+        Ok(())
+    }
+
+    /// 关闭当前 pane 的授权（幂等；非当前 pane 不会误清空别人）。
+    pub fn close(&mut self, pane_id: u64) {
+        if self.pane == Some(pane_id) {
+            self.pane = None;
+            self.record(pane_id, TransportAuditAction::Close, true, "transport close");
+        }
+    }
+
+    /// 数据面缓冲门禁：读/写各不得超过 [`Self::MAX_BUFFER_BYTES`]。
+    ///
+    /// 超限不是“截断后继续”，调用方必须断开 transport 并报 `transport.error`。
+    pub fn check_buffers(
+        &mut self,
+        read_bytes: usize,
+        write_bytes: usize,
+    ) -> Result<(), TransportGateError> {
+        if read_bytes > Self::MAX_BUFFER_BYTES || write_bytes > Self::MAX_BUFFER_BYTES {
+            self.record(0, TransportAuditAction::Reject, false, "buffer limit");
+            return Err(TransportGateError::BufferLimit {
+                read: read_bytes,
+                write: write_bytes,
+                max: Self::MAX_BUFFER_BYTES,
+            });
+        }
+        Ok(())
+    }
+
+    /// 已有审计记录（按发生顺序）。
+    pub fn audit(&self) -> &[TransportAuditEntry] {
+        &self.audit
+    }
+
+    fn record(
+        &mut self,
+        pane_id: u64,
+        action: TransportAuditAction,
+        allowed: bool,
+        detail: &'static str,
+    ) {
+        self.next_seq = self.next_seq.wrapping_add(1);
+        self.audit.push(TransportAuditEntry {
+            seq: self.next_seq,
+            pane_id,
+            action,
+            allowed,
+            detail,
+        });
+    }
+}
