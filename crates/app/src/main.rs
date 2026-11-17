@@ -582,8 +582,9 @@ struct AppState {
     /// 输入法可能丢弃过期的 XNSpotLocation，即使坐标没变也要重发一次。
     ime_spot_dirty: bool,
     /// mouse-reporting TUI（dsh 侧栏等）不移动硬件光标时，用最近一次点击的格子
-    /// 作为 IME 候选锚点；否则输入法只能停在左侧 chat 光标。
-    ime_override: Option<(PaneId, (u16, u16))>,
+    /// 作为 IME 候选锚点；同时记住点击时的硬件光标，光标一动就作废（见
+    /// `ime_anchor_cell`），否则候选框会黏在点击处、不跟真实输入位置。
+    ime_override: Option<(PaneId, (u16, u16), (u16, u16))>,
     /// 本次边/角拖动已交给 WM/compositor（winit drag_resize）。
     /// true 时 drag 回调不再每帧 query_pointer + set_size；若 150ms 内 WM 没有
     /// 产生尺寸变化，drag 回调会解除它并回退自绘，保证 resize 不会“按了没反应”。
@@ -7832,6 +7833,21 @@ fn ime_click_anchor(button: i32, wants_mouse: bool, shift: bool) -> bool {
 /// preedit spot；这里直接调 winit `set_ime_cursor_area`，使用**窗口坐标**
 /// （内容区 + tabbar 偏移）。逻辑像素交给 winit，由它按 DPR 转物理像素；
 /// 去重键同时记录物理坐标与 DPR，缩放变化不会被误判成“没动”。
+/// IME 候选锚点：点击格只在“硬件光标自点击以来没动过”时有效，否则跟真实光标。
+///
+/// 背景：普通应用（编辑器/终端里的 TUI 输入框）点击后光标会随输入移动，候选框必须
+/// 跟着光标；只有像 dsh 侧栏 composer 这种“自绘 caret、从不移动硬件光标”的 TUI
+/// 才需要退回点击格。之前无条件优先点击格，导致候选框黏在鼠标位置。
+fn ime_anchor_cell(
+    click: Option<((u16, u16), (u16, u16))>,
+    cursor: (u16, u16),
+) -> (u16, u16) {
+    match click {
+        Some((cell, cursor_at_click)) if cursor_at_click == cursor => cell,
+        _ => cursor,
+    }
+}
+
 fn update_ime_spot(st: &mut AppState) {
     use slint::winit_030::winit::dpi::{LogicalPosition, LogicalSize};
 
@@ -7846,16 +7862,15 @@ fn update_ime_spot(st: &mut AppState) {
         // TUI 已关闭鼠标上报：点击锚点不应再压过真实硬件光标。
         st.ime_override = None;
     }
-    let mouse_anchor = st
+    let cursor = rt.handle.cursor_pos();
+    let click = st
         .ime_override
-        .filter(|(pid, _)| *pid == focused)
-        .map(|(_, cell)| cell);
-    let (line, col) = mouse_anchor
-        .map(|(l, c)| (l as usize, c as usize))
-        .unwrap_or_else(|| {
-            let (l, c) = rt.handle.cursor_pos();
-            (l as usize, c as usize)
-        });
+        .filter(|(pid, _, _)| *pid == focused)
+        .map(|(_, cell, at)| (cell, at));
+    let (line, col) = ime_anchor_cell(click, cursor);
+    let (line, col) = (line as usize, col as usize);
+    // 光标已经动过：点击锚点作废，别让它一直压着真实光标（用户反馈的正是这个）。
+    let stale_click = matches!(click, Some((_, at)) if at != cursor);
     let content_y = if st.cfg.tabbar_position == "bottom" {
         0.0
     } else {
@@ -7870,13 +7885,16 @@ fn update_ime_spot(st: &mut AppState) {
         (line, col),
         content_y,
         scale,
-        mouse_anchor.is_some(),
+        click.is_some() && !stale_click,
     );
     // 普通 50ms 轮询按完整键去重；pane/Tab/resize/focus 变化由 dirty 强制重发。
     if !st.ime_spot_dirty && st.ime_spot == Some(key) {
         return;
     }
     st.ime_spot = Some(key);
+    if stale_click {
+        st.ime_override = None;
+    }
 
     let x = key.logical_x_milli as f64 / 1000.0;
     let y = key.logical_y_milli as f64 / 1000.0;
@@ -11942,9 +11960,9 @@ fn register_window_callbacks(
             if st.search_open {
                 close_search(st);
             }
-            let (cell, wants_mouse) = {
+            let (cell, wants_mouse, cursor_at_click) = {
                 let Some(rt) = st.panes.get(&id) else { return };
-                (cell_at(rt, x, y), rt.handle.wants_mouse())
+                (cell_at(rt, x, y), rt.handle.wants_mouse(), rt.handle.cursor_pos())
             };
             let modifiers = mouse_mods(mods);
             // Shift 是「绕过鼠标上报、改成本地选词」的惯例逃生门（xterm/gnome-terminal 同款）。
@@ -11952,7 +11970,7 @@ fn register_window_callbacks(
             if ime_click_anchor(button, wants_mouse, modifiers.shift) {
                 // dsh 的 Btw 侧栏 composer 只画反色 caret，不移动硬件光标；
                 // 记住点击格，IME 候选才会贴到右侧输入框。
-                st.ime_override = Some((id, cell));
+                st.ime_override = Some((id, cell, cursor_at_click));
                 // 每次点击都强制重发：输入法可能已丢弃旧 spot（例如刚从别的窗口回来）。
                 st.ime_spot_dirty = true;
                 update_ime_spot(st);
@@ -15820,6 +15838,16 @@ mod tests {
         let closed = toggle_sidebar_math(open, &mut cfg);
         assert!(!cfg.sidebar_visible);
         assert_eq!((closed.w, closed.h), (start.w, start.h));
+    }
+
+    #[test]
+    fn ime_anchor_follows_cursor_once_it_moves() {
+        // 没有点击：跟真实光标
+        assert_eq!(ime_anchor_cell(None, (3, 7)), (3, 7));
+        // 点击后光标没动（自绘 caret 的 TUI）：用点击格
+        assert_eq!(ime_anchor_cell(Some(((10, 2), (3, 7))), (3, 7)), (10, 2));
+        // 光标动过：点击锚点作废，跟光标（用户反馈的 bug）
+        assert_eq!(ime_anchor_cell(Some(((10, 2), (3, 7))), (4, 0)), (4, 0));
     }
 
     #[test]
