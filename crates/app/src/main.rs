@@ -4593,15 +4593,29 @@ fn refresh_profiles(st: &mut AppState) {
 /// 再看 `default_profile` 名字（SESS-002：手写 config.toml 无需查 ID）。
 /// 名字匹配不区分大小写，`default_profile_id == 0` 且名字为空 = 系统 shell。
 fn default_profile_index(st: &AppState) -> Option<usize> {
-    if let Some(index) = st.profiles.default_index(st.cfg.default_profile_id) {
-        return Some(index);
+    resolve_default_profile_index(
+        &st.profiles.profiles,
+        st.cfg.default_profile_id,
+        &st.cfg.default_profile,
+    )
+}
+
+/// [`default_profile_index`] 的纯函数内核，便于单测 ID / 名字两条解析路径。
+fn resolve_default_profile_index(
+    profiles: &[profile::Profile],
+    default_id: u64,
+    default_name: &str,
+) -> Option<usize> {
+    if default_id != 0 {
+        if let Some(index) = profiles.iter().position(|p| p.id == default_id) {
+            return Some(index);
+        }
     }
-    let name = st.cfg.default_profile.trim();
+    let name = default_name.trim();
     if name.is_empty() {
         return None;
     }
-    st.profiles
-        .profiles
+    profiles
         .iter()
         .position(|p| p.name.eq_ignore_ascii_case(name))
 }
@@ -7142,8 +7156,21 @@ fn restore_pane_launch(
     st: &AppState,
     profile_id: Option<u64>,
 ) -> (Option<profile::Profile>, Option<askpass::Askpass>) {
-    let Some(profile_id) = profile_id else {
-        return (None, None);
+    // UI-TAB-001：快照没记录 Profile（旧快照 / 普通 shell Tab）时，会话恢复
+    // 与启动首 Tab、Ctrl+T 一样尊重默认 Profile，而不是一律落回系统 shell。
+    let profile_id = match profile_id {
+        Some(id) => id,
+        None => match default_profile_index(st) {
+            Some(index) => {
+                let p = &st.profiles.profiles[index];
+                eprintln!(
+                    "[session] 快照未记录 Profile，按默认 Profile id={} name={:?} 恢复",
+                    p.id, p.name
+                );
+                p.id
+            },
+            None => return (None, None),
+        },
     };
     let Some(index) = st.profiles.profiles.iter().position(|p| p.id == profile_id) else {
         eprintln!("[session] Profile id={profile_id} 已删除，回退普通 shell");
@@ -18874,6 +18901,31 @@ mod tests {
         rows.insert(4, 1);
         assert!(!rows_can_update_in_place(2, &rows, &[4, 3]));
         assert!(rows_can_update_in_place(2, &rows, &[3, 4]));
+    }
+
+    #[test]
+    fn default_profile_resolves_by_id_then_name() {
+        let mk = |id: u64, name: &str| profile::Profile {
+            id,
+            name: name.to_string(),
+            ..profile::Profile::default()
+        };
+        let profiles = vec![mk(3, "local-a"), mk(7, "Build Host")];
+        // 稳定 ID 优先
+        assert_eq!(resolve_default_profile_index(&profiles, 7, ""), Some(1));
+        // ID 失效时回退手写名字（大小写/空白不敏感），SESS-002
+        assert_eq!(
+            resolve_default_profile_index(&profiles, 99, "  build host "),
+            Some(1)
+        );
+        assert_eq!(resolve_default_profile_index(&profiles, 0, "LOCAL-A"), Some(0));
+        // 都没设置 / 都失效 = 系统 shell
+        assert_eq!(resolve_default_profile_index(&profiles, 0, ""), None);
+        assert_eq!(
+            resolve_default_profile_index(&profiles, 42, "missing"),
+            None
+        );
+        assert_eq!(resolve_default_profile_index(&[], 0, "local-a"), None);
     }
 
     #[test]
