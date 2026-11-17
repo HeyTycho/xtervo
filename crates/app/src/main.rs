@@ -540,8 +540,9 @@ struct AppState {
     /// Quake 模式窗口当前是否可见；以及进入 Quake 前的普通几何（退出时恢复）
     quake_visible: bool,
     quake_saved: Option<(slint::PhysicalPosition, slint::PhysicalSize)>,
-    /// “+” 下拉里各 Profile 在 store 中的下标（第 0 项是默认新 Tab）
-    profile_menu_indices: Vec<usize>,
+    /// “+” 下拉各行对应的 Profile store 下标；`None` = “新建默认 Tab” 行
+    /// （只有 “+” 下拉会插入该行，侧栏 Profile 列表全是 `Some`）。
+    profile_menu_indices: Vec<Option<usize>>,
     profile_menu_model: Rc<VecModel<slint::SharedString>>,
     /// 右键按下的 pane/时间/内容区坐标：paste/clipboard 模式用抬起时间判断长按。
     right_down: Option<(PaneId, std::time::Instant, f32, f32)>,
@@ -3766,14 +3767,21 @@ fn cell_of(rect: Rect, cell: (usize, usize)) -> (usize, usize) {
 
 // ---------------------------------------------------------------- 生命周期
 
-fn shell_name(opts: &Options) -> String {
-    let path = opts.shell.clone().or_else(|| std::env::var("SHELL").ok());
-    path.as_deref()
+/// pane 初始标题用的 shell 名：只看**这个 pane 实际启动的 shell**。
+///
+/// 以前固定读全局 `Options.shell`/$SHELL，导致同窗多 Profile 时标题全一样
+/// （LOCAL-004：去掉“全局单一 shell”假设）。空 shell = PTY 默认登录 shell，
+/// 退回 $SHELL 的文件名。
+fn shell_basename(shell: Option<&str>) -> String {
+    let fallback = std::env::var("SHELL").ok();
+    shell
+        .or(fallback.as_deref())
         .and_then(|s| {
-            std::path::Path::new(s)
+            Path::new(s)
                 .file_name()
                 .map(|f| f.to_string_lossy().to_string())
         })
+        .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "shell".to_string())
 }
 
@@ -3845,6 +3853,8 @@ fn create_pane(
         },
         _ => st.fonts.clone(),
     };
+    // 标题跟着本 pane 的 shell 走，而不是全局 Options.shell。
+    let pane_title = shell_basename(shell.as_deref());
     let (cols, rows) = cell_of(rect, (fonts.cell_w, fonts.cell_h));
     let theme = theme_for_selection(&st.registry, &st.cfg, appearance.theme.as_deref())
         .unwrap_or_else(|| st.resolved_theme.clone());
@@ -3974,7 +3984,7 @@ fn create_pane(
         cursor: (0, 0),
         focus_sent: None,
         rect: Rect::new(0.0, 0.0, 0.0, 0.0),
-        title: shell_name(&st.opts),
+        title: pane_title,
         activity: activity::PaneActivity::default(),
         notification: None,
         bell_until: None,
@@ -4244,9 +4254,38 @@ fn profile_choice_label(kind: &str, name: &str, hotkey: &str) -> String {
 ///
 /// 以前只在 `open_profile_menu` 里构建，侧栏复用同一份模型时列表会是空的；
 /// 现在启动/侧栏可见/Profile 变更都调用它。
+///
+/// `with_new_tab=true` 时在最前面插一行“新建默认 Tab”（LOCAL-004：`+` 菜单
+/// 既能按 Profile 开 Tab，也保留“开默认 Tab”这一项）。
 fn rebuild_profile_choices(st: &mut AppState) {
+    rebuild_profile_choices_for(st, false);
+}
+
+fn rebuild_profile_choices_for(st: &mut AppState, with_new_tab: bool) {
     let mut items: Vec<slint::SharedString> = Vec::new();
-    let mut indices = Vec::new();
+    let mut indices: Vec<Option<usize>> = Vec::new();
+    if with_new_tab {
+        let zh = st.cfg.lang() == "zh";
+        let label = match default_profile_index(st) {
+            Some(index) => {
+                let name = st.profiles.profiles[index].name.clone();
+                if zh {
+                    format!("新标签（默认：{name}）")
+                } else {
+                    format!("New tab (default: {name})")
+                }
+            },
+            None => {
+                if zh {
+                    "新标签（系统 Shell）".to_string()
+                } else {
+                    "New tab (system shell)".to_string()
+                }
+            },
+        };
+        items.push(label.into());
+        indices.push(None);
+    }
     for (i, p) in st.profiles.profiles.iter().enumerate() {
         let kind = match p.kind.as_str() {
             "ssh" => "SSH",
@@ -4255,7 +4294,7 @@ fn rebuild_profile_choices(st: &mut AppState) {
             _ => "Local",
         };
         items.push(profile_choice_label(kind, &p.name, &p.hotkey).into());
-        indices.push(i);
+        indices.push(Some(i));
         // 热键冲突提示：Profile 热键与命令默认绑定时不去改任何一方，只明确告警
         //（实际按下时命令 override 优先，Profile 热键会打不中，必须让用户知道）。
         if let Some(chord) = p.hotkey_chord() {
@@ -4271,12 +4310,17 @@ fn rebuild_profile_choices(st: &mut AppState) {
     st.profile_menu_model.set_vec(items);
 }
 
-/// 构建 Profile 选择菜单（+ 旁边独立图标；不包含“新建默认 Tab”）。
+/// 构建 Profile 选择菜单。
+///
+/// `+` 与旁边独立图标共用这个下拉：`+` 会置 `profilemenu-show-new-tab`，于是
+/// 菜单第一行是“新建默认 Tab”，其余行按 Profile 打开（LOCAL-004）；独立图标
+/// 只列 Profile，保持原有语义。
 fn open_profile_menu(st: &mut AppState) {
-    rebuild_profile_choices(st);
+    let with_new_tab = st.ui.get_profilemenu_show_new_tab();
+    rebuild_profile_choices_for(st, with_new_tab);
     st.ui.set_profilemenu_open(true);
     eprintln!(
-        "[ui] profile menu profiles={}",
+        "[ui] profile menu profiles={} new_tab_row={with_new_tab}",
         st.profile_menu_indices.len()
     );
 }
@@ -4892,6 +4936,7 @@ fn open_profile_form(st: &mut AppState) {
     st.ui.set_form_shell(shell.as_str().into());
     st.ui.set_form_args("".into());
     st.ui.set_form_cwd(cwd.as_str().into());
+    st.ui.set_form_env("".into());
     st.ui.set_form_host("".into());
     st.ui.set_form_port("22".into());
     st.ui
@@ -4935,6 +4980,13 @@ fn edit_profile_form(st: &mut AppState, index: usize) {
     st.ui.set_form_args(p.args.join(" ").as_str().into());
     st.ui
         .set_form_cwd(p.cwd.clone().unwrap_or_default().as_str().into());
+    let env_text = p
+        .env
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    st.ui.set_form_env(env_text.as_str().into());
     st.ui.set_form_host(p.host.as_str().into());
     st.ui.set_form_port(p.port.to_string().as_str().into());
     st.ui.set_form_user(p.user.as_str().into());
@@ -5059,6 +5111,31 @@ fn save_profile_form(st: &mut AppState) {
                 .collect();
             let cwd = st.ui.get_form_cwd().to_string();
             p.cwd = (!cwd.trim().is_empty()).then(|| cwd.trim().to_string());
+            // LOCAL-004：Profile 自带的 env（每行 KEY=VALUE）。解析错误留在表单里，
+            // 不写盘，避免“看起来保存了其实没生效”。
+            let raw_env = st.ui.get_form_env().to_string();
+            let mut env: Vec<(String, String)> = Vec::new();
+            for line in raw_env.lines() {
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
+                }
+                let Some((key, value)) = line.split_once('=') else {
+                    let msg = format!("环境变量应为 KEY=VALUE（每行一个），实际: {line}");
+                    st.ui.set_form_error(msg.as_str().into());
+                    eprintln!("[profile] {msg}");
+                    return;
+                };
+                let key = key.trim();
+                if key.is_empty() || key.chars().any(char::is_whitespace) {
+                    let msg = format!("环境变量名不合法: {key:?}（不能为空或含空白）");
+                    st.ui.set_form_error(msg.as_str().into());
+                    eprintln!("[profile] {msg}");
+                    return;
+                }
+                env.push((key.to_string(), value.to_string()));
+            }
+            p.env = env;
         }
     }
     // ---- 外观（可选；空 = 继承全局）----
@@ -14361,9 +14438,14 @@ fn register_window_callbacks(
     ui.on_sidebar_item_clicked(move |index| {
         runtime::with_window(window_id, |st| {
             let index = index.max(0) as usize;
-            if let Some(&profile_index) = st.profile_menu_indices.get(index) {
-                eprintln!("[ui] sidebar profile pick={index} profile={profile_index}");
-                open_profile_tab_manual(st, profile_index);
+            if let Some(row) = st.profile_menu_indices.get(index).copied() {
+                match row {
+                    Some(profile_index) => {
+                        eprintln!("[ui] sidebar profile pick={index} profile={profile_index}");
+                        open_profile_tab_manual(st, profile_index);
+                    },
+                    None => new_tab_with_default(st),
+                }
             }
         });
     });
@@ -14372,8 +14454,14 @@ fn register_window_callbacks(
             st.ui.set_profilemenu_open(false);
             let index = index.max(0) as usize;
             eprintln!("[ui] profile pick={index}");
-            if let Some(&profile_index) = st.profile_menu_indices.get(index) {
-                open_profile_tab_manual(st, profile_index);
+            if let Some(row) = st.profile_menu_indices.get(index).copied() {
+                match row {
+                    Some(profile_index) => open_profile_tab_manual(st, profile_index),
+                    None => {
+                        eprintln!("[ui] new-tab menu: default tab");
+                        new_tab_with_default(st);
+                    },
+                }
             }
         });
     });

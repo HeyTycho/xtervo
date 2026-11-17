@@ -1414,6 +1414,8 @@ export component MainWindow inherits Window {
     in-out property <bool> profilemenu-open: false;
     in-out property <length> profilemenu-x: 0px;
     in property <[string]> profilemenu-items: [];
+    /// `+` 打开下拉时置 true：Rust 会在第一行插入“新建默认 Tab”。
+    in-out property <bool> profilemenu-show-new-tab: false;
     callback profilemenu-menu();
     callback profilemenu-pick(int);
     callback profilemenu-manage();
@@ -1540,6 +1542,8 @@ export component MainWindow inherits Window {
     in-out property <string> form-shell: "";
     in-out property <string> form-args: "";
     in-out property <string> form-cwd: "";
+    /// 每行一个 `KEY=VALUE`（仅 local；空 = 不追加环境变量）。
+    in-out property <string> form-env: "";
     in-out property <string> form-host: "";
     in-out property <string> form-port: "";
     in-out property <string> form-user: "";
@@ -2532,7 +2536,11 @@ export component MainWindow inherits Window {
                             if (root.settings-open) {
                                 root.suspend-settings();
                             }
-                            root.new-tab();
+                            // LOCAL-004：`+` 下拉 = 默认 Tab + 按 Profile 开 Tab。
+                            root.profilemenu-x = self.absolute-position.x;
+                            root.profilemenu-show-new-tab = true;
+                            root.profilemenu-open = true;
+                            root.profilemenu-menu();
                         }
                     }
 
@@ -2561,6 +2569,7 @@ export component MainWindow inherits Window {
                                 root.suspend-settings();
                             }
                             root.profilemenu-x = self.absolute-position.x;
+                            root.profilemenu-show-new-tab = false;
                             root.profilemenu-open = true;
                             root.profilemenu-menu();
                         }
@@ -6415,7 +6424,7 @@ export component MainWindow inherits Window {
     if root.profile-form-open : Rectangle {
         x: (root.width - 440px) / 2;
         // local/serial/telnet 用紧凑高度；SSH 展开 password/转发/跳板时需要更高。
-        property <length> form-h: root.form-kind == 1 ? 700px : 440px;
+        property <length> form-h: root.form-kind == 1 ? 700px : (root.form-kind == 0 ? 480px : 440px);
         y: (root.height - form-h) / 2 < 8px ? 8px : (root.height - form-h) / 2;
         width: 440px;
         height: form-h;
@@ -6472,11 +6481,13 @@ export component MainWindow inherits Window {
         }
 
         if root.form-kind == 0 : VerticalLayout {
-            x: 16px; y: 116px; width: 408px; height: 130px;
+            x: 16px; y: 116px; width: 408px; height: 168px;
             spacing: 12px;
             FormRow { label: "Shell"; text <=> root.form-shell; }
             FormRow { label: Lang.t("Args", "参数"); text <=> root.form-args; }
             FormRow { label: Lang.t("Cwd", "工作目录"); text <=> root.form-cwd; }
+            // LOCAL-004：每个 Profile 自带环境变量（KEY=VALUE，每行一个）。
+            FormRow { label: Lang.t("Env", "环境变量"); text <=> root.form-env; }
         }
 
         if root.form-kind == 1 : VerticalLayout {
@@ -6530,7 +6541,7 @@ export component MainWindow inherits Window {
         // 绝对定位在不同类型间固定：local 在字段下方，SSH 留出 password 展开空间。
         VerticalLayout {
             x: 16px;
-            y: root.form-kind == 0 ? 232px : (root.form-kind == 1 ? 510px : 196px);
+            y: root.form-kind == 0 ? 290px : (root.form-kind == 1 ? 510px : 196px);
             width: 408px;
             height: 110px;
             spacing: 6px;
