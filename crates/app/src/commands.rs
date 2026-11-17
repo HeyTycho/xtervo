@@ -680,6 +680,8 @@ fn normalize_key(key: &str) -> Result<String, String> {
             | "end"
             | "pageup"
             | "pagedown"
+            | "print"
+            | "pause"
             | "up"
             | "down"
             | "left"
@@ -727,6 +729,136 @@ pub fn clear_override(overrides: &mut Vec<HotkeyOverride>, command: &str) -> boo
     let before = overrides.len();
     overrides.retain(|o| o.command != command);
     overrides.len() != before
+}
+
+/// 一条被自动修复掉的快捷键配置（KEY-003）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OverrideRepair {
+    pub command: String,
+    pub chord: String,
+    /// `unknown-command` / `invalid-shortcut` / `not-bindable` /
+    /// `duplicate-command` / `conflict`。
+    pub reason: &'static str,
+}
+
+/// 启动/热重载时自动修复手改 `[[hotkeys]]` 的重复与非法项。
+///
+/// 规则与运行时分发语义一致：**后写的条目优先**（`override_for` 取最后一条）。
+/// 从尾部向前扫描，保留第一条合法且不与已保留项冲突的配置；被丢弃的原因
+/// 返回给调用方记录日志/写回配置。未知命令、非法 chord、不可绑定单键
+/// （无修饰普通字符）、同一命令重复、与已保留项相同或前缀冲突都会被清掉。
+pub fn repair_hotkey_overrides(
+    registry: &Registry,
+    overrides: &mut Vec<HotkeyOverride>,
+) -> Vec<OverrideRepair> {
+    let mut kept: Vec<HotkeyOverride> = Vec::new();
+    let mut kept_shortcuts: Vec<Shortcut> = Vec::new();
+    let mut repairs: Vec<OverrideRepair> = Vec::new();
+    for over in overrides.iter().rev() {
+        let shortcut = Shortcut::parse(&over.chord).ok();
+        let reason = if registry.get(&over.command).is_none() {
+            Some("unknown-command")
+        } else if kept.iter().any(|k| k.command == over.command) {
+            Some("duplicate-command")
+        } else {
+            match &shortcut {
+                None => Some("invalid-shortcut"),
+                Some(shortcut) if !shortcut.is_bindable() => Some("not-bindable"),
+                Some(shortcut)
+                    if kept_shortcuts
+                        .iter()
+                        .any(|kept| shortcuts_overlap(kept, shortcut)) =>
+                {
+                    Some("conflict")
+                },
+                Some(_) => None,
+            }
+        };
+        match (reason, shortcut) {
+            (None, Some(shortcut)) => {
+                kept.push(over.clone());
+                kept_shortcuts.push(shortcut);
+            }
+            (reason, _) => repairs.push(OverrideRepair {
+                command: over.command.clone(),
+                chord: over.chord.clone(),
+                reason: reason.unwrap_or("invalid-shortcut"),
+            }),
+        }
+    }
+    kept.reverse();
+    repairs.reverse();
+    *overrides = kept;
+    repairs
+}
+
+/// 桌面环境常见保留键（KEY-003 提示用；不阻止保存，只警告）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReservedShortcut {
+    /// 规范小写 chord（`meta+l`）；`ctrl+alt+f1..f12` 用特殊条目表示。
+    pub chord: &'static str,
+    /// 典型占用者（桌面环境/输入法）。
+    pub owner: &'static str,
+    /// 中文说明（UI 提示 + 日志）。
+    pub note: &'static str,
+}
+
+/// Wayland 合成器/桌面环境/输入法的保留键清单。
+///
+/// 这些键由 DE 在客户端之前截获，绑到 Typer 里通常永远不会触发；录制时给出
+/// 警告，但**不阻止保存**（用户可能用非 GNOME/KDE 环境或改过 DE 设置）。
+pub const PLATFORM_RESERVED: &[ReservedShortcut] = &[
+    ReservedShortcut { chord: "meta+l", owner: "GNOME/KDE", note: "锁屏" },
+    ReservedShortcut { chord: "meta+d", owner: "GNOME", note: "显示桌面" },
+    ReservedShortcut { chord: "meta+tab", owner: "GNOME", note: "切换窗口/活动" },
+    ReservedShortcut { chord: "meta+space", owner: "IBus/fcitx", note: "切换输入法" },
+    ReservedShortcut { chord: "meta+v", owner: "GNOME 扩展", note: "剪贴板历史" },
+    ReservedShortcut { chord: "meta+1", owner: "GNOME", note: "Dock 第 1 个应用" },
+    ReservedShortcut { chord: "meta+2", owner: "GNOME", note: "Dock 第 2 个应用" },
+    ReservedShortcut { chord: "meta+3", owner: "GNOME", note: "Dock 第 3 个应用" },
+    ReservedShortcut { chord: "meta+4", owner: "GNOME", note: "Dock 第 4 个应用" },
+    ReservedShortcut { chord: "meta+5", owner: "GNOME", note: "Dock 第 5 个应用" },
+    ReservedShortcut { chord: "meta+6", owner: "GNOME", note: "Dock 第 6 个应用" },
+    ReservedShortcut { chord: "meta+7", owner: "GNOME", note: "Dock 第 7 个应用" },
+    ReservedShortcut { chord: "meta+8", owner: "GNOME", note: "Dock 第 8 个应用" },
+    ReservedShortcut { chord: "meta+9", owner: "GNOME", note: "Dock 第 9 个应用" },
+    ReservedShortcut { chord: "alt+tab", owner: "桌面环境", note: "切换窗口" },
+    ReservedShortcut { chord: "alt+f4", owner: "桌面环境", note: "关闭窗口" },
+    ReservedShortcut { chord: "alt+space", owner: "桌面环境", note: "窗口菜单" },
+    ReservedShortcut { chord: "ctrl+alt+t", owner: "GNOME/KDE", note: "打开终端" },
+    ReservedShortcut { chord: "ctrl+alt+delete", owner: "桌面环境", note: "注销/锁屏" },
+    ReservedShortcut { chord: "ctrl+alt+left", owner: "桌面环境", note: "切换工作区" },
+    ReservedShortcut { chord: "ctrl+alt+right", owner: "桌面环境", note: "切换工作区" },
+    ReservedShortcut { chord: "ctrl+alt+up", owner: "桌面环境", note: "切换工作区" },
+    ReservedShortcut { chord: "ctrl+alt+down", owner: "桌面环境", note: "切换工作区" },
+    ReservedShortcut { chord: "print", owner: "桌面环境", note: "截图" },
+    ReservedShortcut {
+        chord: "ctrl+alt+f1..f12",
+        owner: "systemd/X11",
+        note: "切换虚拟终端（切走后无法回到 Typer）",
+    },
+];
+
+/// 某个 chord 是否被桌面环境保留；命中返回清单条目（含占用者与说明）。
+pub fn platform_reserved_for(chord: &Chord) -> Option<&'static ReservedShortcut> {
+    let canonical = chord.canonical();
+    if let Some(hit) = PLATFORM_RESERVED.iter().find(|entry| entry.chord == canonical) {
+        return Some(hit);
+    }
+    // Ctrl+Alt+F1–F12：切 VT，最危险的绑定。
+    if chord.mods.ctrl && chord.mods.alt && !chord.mods.shift && !chord.mods.meta {
+        if let Some(n) = chord.key.strip_prefix('f').and_then(|n| n.parse::<u8>().ok()) {
+            if (1..=12).contains(&n) {
+                return PLATFORM_RESERVED.last();
+            }
+        }
+    }
+    None
+}
+
+/// 一条快捷键（两段时看第一段）是否踩到平台保留键。
+pub fn platform_reserved_for_shortcut(shortcut: &Shortcut) -> Option<&'static ReservedShortcut> {
+    shortcut.chords.first().and_then(platform_reserved_for)
 }
 
 /// 内置命令集：一个用户可见操作对应一条。
@@ -1313,6 +1445,89 @@ mod tests {
             r.suppressed_default(&Chord::parse("ctrl+1").unwrap(), &overrides),
             Some("x.one")
         );
+    }
+
+    #[test]
+    fn repair_hotkey_overrides_drops_invalid_duplicate_and_conflicting_entries() {
+        let r = builtin();
+        let mut overrides = vec![
+            // 后写的重复命令优先（与 override_for 语义一致）。
+            HotkeyOverride { command: "tab.new".into(), chord: "ctrl+alt+n".into() },
+            HotkeyOverride { command: "tab.new".into(), chord: "ctrl+alt+m".into() },
+            // 未知命令 / 非法 / 无修饰普通字符。
+            HotkeyOverride { command: "nope.command".into(), chord: "ctrl+alt+x".into() },
+            HotkeyOverride { command: "tab.close".into(), chord: "ctrl+banana".into() },
+            HotkeyOverride { command: "tab.search".into(), chord: "a".into() },
+            // 同一命令重复：后写的 tab.rename ctrl+alt+shift+r 优先。
+            HotkeyOverride { command: "tab.rename".into(), chord: "ctrl+alt+r".into() },
+            HotkeyOverride { command: "tab.rename".into(), chord: "ctrl+alt+shift+r".into() },
+            // 与保留项冲突（后写的 terminal.copy ctrl+alt+m 优先，tab.new 这条被丢）。
+            HotkeyOverride { command: "terminal.copy".into(), chord: "ctrl+alt+m".into() },
+        ];
+        let repairs = repair_hotkey_overrides(&r, &mut overrides);
+        // 保留下来的：tab.new(ctrl+alt+n)、tab.rename(ctrl+alt+shift+r)、terminal.copy(ctrl+alt+m)。
+        assert_eq!(overrides.len(), 3, "修复结果: {overrides:?}");
+        let kept: Vec<(&str, &str)> =
+            overrides.iter().map(|o| (o.command.as_str(), o.chord.as_str())).collect();
+        assert_eq!(
+            kept,
+            vec![
+                ("tab.new", "ctrl+alt+n"),
+                ("tab.rename", "ctrl+alt+shift+r"),
+                ("terminal.copy", "ctrl+alt+m"),
+            ]
+        );
+        let reasons: Vec<&str> = repairs.iter().map(|r| r.reason).collect();
+        assert!(reasons.contains(&"duplicate-command"), "{reasons:?}");
+        assert!(reasons.contains(&"unknown-command"), "{reasons:?}");
+        assert!(reasons.contains(&"invalid-shortcut"), "{reasons:?}");
+        assert!(reasons.contains(&"not-bindable"), "{reasons:?}");
+        assert!(reasons.contains(&"conflict"), "{reasons:?}");
+        // 修复结果必须无冲突、与分发一致。
+        assert!(r.effective_conflicts(&overrides).is_empty());
+
+        // 健康配置不被改动。
+        let mut clean = vec![HotkeyOverride { command: "tab.new".into(), chord: "ctrl+alt+n".into() }];
+        assert!(repair_hotkey_overrides(&r, &mut clean).is_empty());
+        assert_eq!(clean.len(), 1);
+
+        // 两段绑定：前缀重叠也算冲突。
+        let mut prefix = vec![
+            HotkeyOverride { command: "tab.new".into(), chord: "ctrl+k".into() },
+            HotkeyOverride { command: "terminal.copy".into(), chord: "ctrl+k ctrl+t".into() },
+        ];
+        let repairs = repair_hotkey_overrides(&r, &mut prefix);
+        assert_eq!(prefix.len(), 1, "{prefix:?}");
+        assert_eq!(prefix[0].command, "terminal.copy", "后写优先");
+        assert_eq!(repairs[0].reason, "conflict");
+    }
+
+    #[test]
+    fn platform_reserved_table_covers_common_desktop_shortcuts() {
+        let reserved = |text: &str| platform_reserved_for(&Chord::parse(text).unwrap()).is_some();
+        assert!(reserved("meta+l"));
+        assert!(reserved("alt+f4"));
+        assert!(reserved("ctrl+alt+t"));
+        assert!(reserved("ctrl+alt+f5"));
+        assert!(reserved("meta+3"));
+        // 普通应用快捷键不应被误报。
+        assert!(!reserved("ctrl+t"));
+        assert!(!reserved("ctrl+shift+c"));
+        assert!(!reserved("f11"));
+        // 两段快捷键看第一段。
+        let multi = Shortcut::parse("alt+tab ctrl+t").unwrap();
+        assert!(platform_reserved_for_shortcut(&multi).is_some());
+        // 清单里的 chord 都能解析（防止拼写错误导致永远不提示）。
+        for entry in PLATFORM_RESERVED {
+            if entry.chord.contains("..") {
+                continue;
+            }
+            assert!(
+                Chord::parse(entry.chord).is_ok(),
+                "保留键表里的 {} 无法解析",
+                entry.chord
+            );
+        }
     }
 
     #[test]

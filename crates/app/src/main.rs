@@ -2960,11 +2960,29 @@ fn commit_hotkey_shortcut(st: &mut AppState, id: &str, shortcut: &commands::Shor
             st.hotkey_recording = None;
             st.hotkey_pending = None;
             st.ui.set_hotkey_error("".into());
-            let status = if st.cfg.lang() == "zh" {
+            let mut status = if st.cfg.lang() == "zh" {
                 format!("{title} → {}（已保存）", shortcut)
             } else {
                 format!("{title} → {} (saved)", shortcut)
             };
+            // KEY-003：桌面环境保留键只提示、不阻止保存。
+            if let Some(reserved) = commands::platform_reserved_for_shortcut(&shortcut) {
+                if st.cfg.lang() == "zh" {
+                    status.push_str(&format!(
+                        "\n⚠ {} 通常被 {} 占用（{}），可能永远收不到",
+                        shortcut.chords[0], reserved.owner, reserved.note
+                    ));
+                } else {
+                    status.push_str(&format!(
+                        "\n⚠ {} is usually reserved by {} ({}); it may never reach Typer",
+                        shortcut.chords[0], reserved.owner, reserved.note
+                    ));
+                }
+                eprintln!(
+                    "[hotkey] warning {id} {} reserved by {} ({})",
+                    shortcut.chords[0], reserved.owner, reserved.note
+                );
+            }
             st.ui.set_hotkey_status(status.into());
             refresh_hotkeys(st);
             st.ui.invoke_focus_terminal();
@@ -13648,6 +13666,25 @@ fn build_window_state(
         clipboard: arboard::Clipboard::new().ok(),
         cfg: shared.cfg.clone_handle(),
     }));
+    // KEY-003：手改 config 的重复/未知/非法/前缀冲突绑定在启动时自动修复
+    // （后写优先，与运行时分发语义一致），清掉后写回并记录原因。
+    {
+        let mut st = state.borrow_mut();
+        let repairs = {
+            // 同一结构体的不相交字段借用：commands 只读、cfg.hotkeys 可写。
+            let AppState { commands, cfg, .. } = &mut *st;
+            commands::repair_hotkey_overrides(commands, &mut cfg.hotkeys)
+        };
+        if !repairs.is_empty() {
+            for repair in &repairs {
+                eprintln!(
+                    "[hotkey] auto-repair {} {} ({})",
+                    repair.command, repair.chord, repair.reason
+                );
+            }
+            st.cfg.save();
+        }
+    }
     state
 }
 
