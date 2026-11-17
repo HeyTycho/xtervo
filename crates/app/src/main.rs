@@ -298,10 +298,32 @@ fn content_rect(win_w: f32, win_h: f32, sidebar_w: f32) -> Rect {
 }
 /// `TermMode::BRACKETED_PASTE`
 const BRACKETED_PASTE: u32 = 1 << 4;
+/// `TermMode::APP_CURSOR`：备用屏滚轮转方向键时用 SS3（`ESC O A`）前缀。
+const APP_CURSOR: u32 = 1 << 1;
+/// `TermMode::ALT_SCREEN`：备用屏没有回滚历史，滚轮要转成方向键给 TUI。
+const ALT_SCREEN: u32 = 1 << 12;
+/// 单次滚轮事件最多合成多少个方向键（触控板惯性滚动不刷屏）。
+const ALT_SCROLL_MAX_STEPS: usize = 10;
 /// 视觉铃边框闪一下的时长；到期由 30ms timer 清除。
 const BELL_FLASH_MS: u64 = 180;
 /// 滚动条 thumb 的最小像素高度（长 scrollback 时仍可抓取）。
 const SCROLLBAR_MIN_THUMB_PX: f32 = 24.0;
+
+/// 备用屏滚轮 → 方向键（xterm 的 alternate scroll；vim/less/man 生效）。
+///
+/// 备用屏没有 scrollback，`Grid::scroll_display` 改了 offset 也看不到历史；
+/// 与 alacritty 一致把滚轮折算成 Up/Down 键写回 PTY。`APP_CURSOR`（DECCKM）
+/// 决定 CSI/SS3 前缀，否则 vim 会收到它不认识的键序。
+fn alt_screen_scroll_payload(mode: u32, up: bool, steps: usize) -> Vec<u8> {
+    let prefix = if mode & APP_CURSOR != 0 { b'O' } else { b'[' };
+    let arrow = if up { b'A' } else { b'B' };
+    let steps = steps.clamp(1, ALT_SCROLL_MAX_STEPS);
+    let mut out = Vec::with_capacity(steps * 3);
+    for _ in 0..steps {
+        out.extend_from_slice(&[0x1b, prefix, arrow]);
+    }
+    out
+}
 
 /// 一个 pane 的外观覆盖（Profile 显式值 > 全局 Config；`None` = 继承）。
 ///
@@ -724,6 +746,8 @@ struct AppState {
     right_down: Option<(PaneId, std::time::Instant, f32, f32)>,
     /// 打开右键菜单时命中的链接（空 = 当前格没有可打开链接）。
     menu_link: String,
+    /// 终端右键菜单的键盘导航状态（UI-TERM-004）；None = 菜单没开/无导航。
+    menu_nav: Option<MenuNav>,
     /// 广播输入：开启后键入同时发给当前 Tab 的所有 pane
     broadcast: bool,
     /// UI-PANE-007：被最大化的 pane（纯视图状态；不写快照、不改分屏树）。
@@ -9654,6 +9678,7 @@ fn zoom_font(st: &mut AppState, delta: f32) {
     st.cfg.font_size = next;
     apply_font_settings(st);
     st.cfg.save();
+    show_zoom_hud(st);
     eprintln!("[ui] font_size={next}");
 }
 
@@ -9664,7 +9689,36 @@ fn reset_font(st: &mut AppState) {
     st.cfg.font_size = 15.0;
     apply_font_settings(st);
     st.cfg.save();
+    show_zoom_hud(st);
     eprintln!("[ui] font_size=15（重置）");
+}
+
+/// 缩放基准字号（100%）；HUD 只做展示，不改变缩放/持久化逻辑。
+const ZOOM_BASE_FONT_SIZE: f32 = 15.0;
+/// 屏内 zoom HUD 的显示时长（UI-TERM-012）。
+const ZOOM_HUD_MS: u64 = 1200;
+
+/// 当前字号相对基准的百分比（15 → 100%，16 → 107%）。
+fn zoom_percent(font_size: f32) -> i32 {
+    (font_size / ZOOM_BASE_FONT_SIZE * 100.0).round() as i32
+}
+
+/// 屏内 zoom HUD：放大/缩小/重置后短暂显示百分比，随后自动清空。
+///
+/// 快速连按时旧 timer 可能提前清掉新 HUD，因此每次递增全局 token；timer
+/// 只在 token 仍是最后一次时清空，避免“连按两下只显示半秒”。
+static ZOOM_HUD_TOKEN: AtomicUsize = AtomicUsize::new(0);
+
+fn show_zoom_hud(st: &mut AppState) {
+    let token = ZOOM_HUD_TOKEN.fetch_add(1, Ordering::Relaxed) + 1;
+    st.ui
+        .set_zoom_hud(format!("{}%", zoom_percent(st.cfg.font_size)).into());
+    let ui = st.ui.clone_strong();
+    slint::Timer::single_shot(Duration::from_millis(ZOOM_HUD_MS), move || {
+        if ZOOM_HUD_TOKEN.load(Ordering::Relaxed) == token {
+            ui.set_zoom_hud("".into());
+        }
+    });
 }
 
 /// 同步设置页的字体外观 mirror（Rust 侧改完 config 后调用）。
@@ -10276,6 +10330,12 @@ const DEFAULT_TERMINAL_MENU: &[&str] = &[
     "terminal.reset",
     "terminal.reset-and-clear",
     "terminal.save-contents",
+    "-",
+    // UI-TERM-004：Profile 入口 + 字号缩放（与 Ctrl+=/-/0、命令面板共用实现）。
+    "profile.open",
+    "view.zoom-in",
+    "view.zoom-out",
+    "view.zoom-reset",
 ];
 
 /// 内置菜单项的本地化标签与危险标记：`(英文, 中文, danger)`。
@@ -10303,6 +10363,10 @@ fn builtin_menu_meta(id: &str) -> Option<(&'static str, &'static str, bool)> {
         "terminal.recording-start" => ("Start Recording", "开始录制", false),
         "terminal.recording-stop" => ("Stop Recording", "停止录制", false),
         "terminal.recording-export" => ("Export Recording…", "导出录制…", false),
+        "profile.open" => ("Profiles…", "配置…", false),
+        "view.zoom-in" => ("Zoom In", "放大", false),
+        "view.zoom-out" => ("Zoom Out", "缩小", false),
+        "view.zoom-reset" => ("Reset Zoom", "重置缩放", false),
         _ => return None,
     })
 }
@@ -10339,6 +10403,112 @@ impl TerminalMenuSpec {
     ) -> Self {
         Self { label, shortcut, danger, active, separator: false, command }
     }
+}
+
+/// 终端右键菜单的键盘导航状态（UI-TERM-004）。
+///
+/// `specs` 是打开菜单时的快照（含分隔线），`selected` 是数组下标；
+/// 键盘移动只认可选项，分隔线永远跳过。
+struct MenuNav {
+    pane: PaneId,
+    specs: Vec<TerminalMenuSpec>,
+    selected: usize,
+}
+
+/// 从 `from` 往 `delta` 方向找下一个可选项；到边界返回 None（不循环）。
+fn menu_step(specs: &[TerminalMenuSpec], from: Option<usize>, delta: isize) -> Option<usize> {
+    if specs.is_empty() || delta == 0 {
+        return None;
+    }
+    let mut idx = match from {
+        Some(i) => i as isize,
+        None => {
+            if delta > 0 {
+                -1
+            } else {
+                specs.len() as isize
+            }
+        }
+    };
+    loop {
+        let next = idx + delta;
+        if next < 0 || next as usize >= specs.len() {
+            return None;
+        }
+        if !specs[next as usize].separator {
+            return Some(next as usize);
+        }
+        idx = next;
+    }
+}
+
+/// 选中行的内容 y（菜单 padding 6px + 30px/项 + 9px/分隔线），与 Slint 一致。
+fn menu_row_offset(specs: &[TerminalMenuSpec], index: usize) -> f32 {
+    let mut y = 6.0;
+    for spec in specs.iter().take(index) {
+        y += if spec.separator { 9.0 } else { 30.0 };
+    }
+    y
+}
+
+/// 打开菜单时重置键盘选中：第一/最后一个可选项。返回 false 表示菜单没有可选项。
+fn menu_reset_selection(st: &mut AppState, pane: PaneId, specs: &[TerminalMenuSpec]) -> bool {
+    let Some(first) = menu_step(specs, None, 1) else {
+        st.menu_nav = None;
+        return false;
+    };
+    st.menu_nav = Some(MenuNav::new(pane, specs.to_vec(), first));
+    st.ui.set_menu_selected(first as i32);
+    st.ui.set_menu_reveal_y(menu_row_offset(specs, first));
+    let token = st.ui.get_menu_reveal_token().wrapping_add(1);
+    st.ui.set_menu_reveal_token(token);
+    true
+}
+
+impl MenuNav {
+    fn new(pane: PaneId, specs: Vec<TerminalMenuSpec>, selected: usize) -> Self {
+        Self { pane, specs, selected }
+    }
+}
+
+/// 键盘移动选中行并通知 Slint 滚到可见区；到边界保持不动。
+fn menu_navigate(st: &mut AppState, delta: isize) {
+    let Some(nav) = st.menu_nav.as_mut() else { return };
+    let Some(next) = menu_step(&nav.specs, Some(nav.selected), delta) else {
+        return;
+    };
+    nav.selected = next;
+    let y = menu_row_offset(&nav.specs, next);
+    st.ui.set_menu_selected(next as i32);
+    st.ui.set_menu_reveal_y(y);
+    let token = st.ui.get_menu_reveal_token().wrapping_add(1);
+    st.ui.set_menu_reveal_token(token);
+    eprintln!("[menu] keyboard select idx={next} y={y:.0}");
+}
+
+/// 回车：执行当前选中项。先取命令/目标再清状态，避免借用 AppState 期间回调。
+fn menu_activate(st: &mut AppState) {
+    let Some(nav) = st.menu_nav.as_ref() else { return };
+    let Some(spec) = nav.specs.get(nav.selected) else {
+        return;
+    };
+    if spec.separator || spec.command.is_empty() {
+        return;
+    }
+    let pane = nav.pane;
+    let command = spec.command.clone();
+    let label = spec.label.clone();
+    close_menu_ui(st);
+    eprintln!("[menu] keyboard activate {label:?} → {command}");
+    run_menu_command(st, pane, &command);
+    st.ui.invoke_focus_terminal();
+}
+
+/// 关闭菜单并清掉键盘导航状态（Esc/回车/点外部/点菜单项共用）。
+fn close_menu_ui(st: &mut AppState) {
+    st.menu_nav = None;
+    st.ui.set_menu_open(false);
+    st.ui.set_menu_selected(-1);
 }
 
 /// 命令当前生效的快捷键提示（含 `[[hotkeys]]` 覆盖）；没有绑定 = 空字符串。
@@ -10542,6 +10712,8 @@ fn run_menu_command(st: &mut AppState, pane: PaneId, command: &str) {
         "terminal.recording-start" => start_recording_on(st, Some(pane)),
         "terminal.recording-stop" => stop_recording_on(st, Some(pane)),
         "terminal.recording-export" => open_export_recording(st, pane),
+        // Profiles 面板（与侧栏 profiles.open 同一个入口，参数是右键 pane 不再使用）。
+        "profile.open" => open_profiles_panel(st),
         other => run_command(st, other),
     }
 }
@@ -10579,7 +10751,8 @@ fn open_pane_menu(st: &mut AppState, id: PaneId, x: f32, y: f32) {
     // 表驱动：每次打开都重建（config 热更新与插件启停立即生效）。
     let (specs, height) = build_terminal_menu(st, id);
     let entries: Vec<MenuEntry> = specs
-        .into_iter()
+        .iter()
+        .cloned()
         .map(|spec| MenuEntry {
             label: spec.label.into(),
             shortcut: spec.shortcut.into(),
@@ -10598,6 +10771,8 @@ fn open_pane_menu(st: &mut AppState, id: PaneId, x: f32, y: f32) {
     st.ui.set_menu_x(x);
     st.ui.set_menu_y(y);
     st.ui.set_menu_open(true);
+    // 键盘导航从第一项开始；菜单已开时再次右键也会重建并回到首项。
+    menu_reset_selection(st, id, &specs);
     eprintln!(
         "[ui] pane menu open pane={id} items={items} rows={rows} height={height:.0}"
     );
@@ -12644,6 +12819,32 @@ fn handle_input(
         }
     }
 
+    // 终端右键菜单的键盘导航（UI-TERM-004）：菜单打开时 Up/Down/Enter/Esc
+    // 归菜单，不进 PTY、也不触发全局快捷键。Esc 正常情况下由 Slint 先处理，
+    // 这里兜底（菜单回调被绕过时仍能退出）。
+    if st.menu_nav.is_some() {
+        match text {
+            "\u{1b}" => {
+                close_menu_ui(st);
+                st.ui.invoke_focus_terminal();
+                return;
+            }
+            "\u{F700}" => {
+                menu_navigate(st, -1);
+                return;
+            }
+            "\u{F701}" => {
+                menu_navigate(st, 1);
+                return;
+            }
+            "\n" | "\r" => {
+                menu_activate(st);
+                return;
+            }
+            _ => {}
+        }
+    }
+
     // 用户 override 必须在硬编码默认键之前处理；命中即 return，避免同一按键触发两次。
     // 配置为空时完全跳过，保证无自定义快捷键时按键路径零变化。
     if !st.cfg.hotkeys.is_empty() {
@@ -14078,6 +14279,7 @@ fn build_window_state(
         profile_menu_model,
         right_down: None,
         menu_link: String::new(),
+        menu_nav: None,
         broadcast: false,
         zoomed: None,
         broadcast_scope: Vec::new(),
@@ -14632,6 +14834,15 @@ fn register_window_callbacks(
             if lines == 0.0 {
                 return;
             }
+            // UI-TERM-009：备用屏（vim/less/man）没有 scrollback，滚格转成
+            // 方向键写回 TUI。优先于 history 滚动，否则备用屏滚轮完全没反应。
+            if rt.frame.mode & ALT_SCREEN != 0 {
+                let payload =
+                    alt_screen_scroll_payload(rt.frame.mode, lines > 0.0, lines.abs() as usize);
+                rt.handle.clear_selection();
+                rt.handle.input(&payload);
+                return;
+            }
             // 约定：delta-y > 0 表示向上滚（回看历史）。
             // 应用内 TUI（如 dsh 侧栏）滚动后屏幕内容会重画；原生选区若继续
             // 跟随 grid 行会粘在错误文本上，因此用户主动滚轮时清除选区。
@@ -15024,7 +15235,12 @@ fn register_window_callbacks(
     ui.on_menu_dismissed(move || {
         eprintln!("[ui] menu dismissed");
         // 右键菜单/遮罩会抢走 IME 焦点；关闭后必须还给终端，否则 TUI 无法输入。
-        runtime::with_window(window_id, |st| st.ui.invoke_focus_terminal());
+        runtime::with_window(window_id, |st| {
+            // 外部点击/Esc 关闭也要清掉键盘导航，否则 Up/Down 会继续被吞。
+            st.menu_nav = None;
+            st.ui.set_menu_selected(-1);
+            st.ui.invoke_focus_terminal();
+        });
     });
 
     ui.on_pane_right_clicked(move |id, x, y| {
@@ -15124,6 +15340,8 @@ fn register_window_callbacks(
         let id = id as u64;
         let command = command.to_string();
         runtime::with_window(window_id, |st| run_menu_command(st, id, &command));
+        // 点菜单行后清掉键盘导航状态（Slint 已把 menu-open 置 false）。
+        runtime::with_window(window_id, |st| st.menu_nav = None);
         // Save Contents / Export Recording 需要把焦点交给输入路径的 TextInput，
         // 不能抢回终端；其它菜单命令沿用改造前行为，关闭菜单即还焦点。
         if command != "terminal.save-contents" && command != "terminal.recording-export" {
@@ -16755,6 +16973,7 @@ fn register_window_callbacks(
             st.ui.set_font_size(new as i32);
             st.cfg.save();
             apply_font_settings(st);
+            show_zoom_hud(st);
         });
     });
 
@@ -19146,6 +19365,23 @@ mod tests {
     }
 
     #[test]
+    fn alt_screen_wheel_emits_arrows_and_respects_app_cursor() {
+        assert_eq!(alt_screen_scroll_payload(ALT_SCREEN, true, 1), b"\x1b[A");
+        assert_eq!(alt_screen_scroll_payload(ALT_SCREEN, false, 1), b"\x1b[B");
+        // DECCKM（APP_CURSOR）下用 SS3 前缀，vim 才能识别。
+        assert_eq!(
+            alt_screen_scroll_payload(ALT_SCREEN | APP_CURSOR, false, 2),
+            b"\x1bOB\x1bOB"
+        );
+        // 0 步按 1 步处理；超大惯性滚动夹到上限。
+        assert_eq!(alt_screen_scroll_payload(0, true, 0), b"\x1b[A");
+        assert_eq!(
+            alt_screen_scroll_payload(0, true, usize::MAX).len(),
+            ALT_SCROLL_MAX_STEPS * 3
+        );
+    }
+
+    #[test]
     fn title_rules_filter_prefix_suffix() {
         assert_eq!(apply_title_rules("bash", "", "", ""), "bash");
         assert_eq!(apply_title_rules("  bash  ", "", "", ""), "bash");
@@ -19161,6 +19397,16 @@ mod tests {
         );
         // 过滤把标题清空时回退原始标题（不产生空 Tab 标题）
         assert_eq!(apply_title_rules("bash", "", "", "bash"), "bash");
+    }
+
+    #[test]
+    fn zoom_percent_uses_15px_baseline() {
+        assert_eq!(zoom_percent(15.0), 100);
+        assert_eq!(zoom_percent(16.0), 107);
+        assert_eq!(zoom_percent(17.0), 113);
+        assert_eq!(zoom_percent(18.0), 120);
+        assert_eq!(zoom_percent(8.0), 53);
+        assert_eq!(zoom_percent(40.0), 267);
     }
 
     #[test]
@@ -19246,6 +19492,109 @@ mod tests {
         assert_eq!(wrapped.len(), "x\ry".len() + 12);
     }
 
+    /// 内容里自带 `201`（甚至 `200~`/`201~` 字样）时也只在首尾各包一次，
+    /// 不能按文本搜索/替换，粘贴内容必须逐字节保留。
+    #[test]
+    fn bracketed_paste_payload_keeps_inner_201_text() {
+        let text = "printf '201'; echo 200~ 201~ 201\nsecond 201 line";
+        let normalized = normalize_paste(text);
+        let payload = paste_payload(&normalized, true);
+        assert_eq!(normalized, text.replace('\n', "\r"));
+        assert_eq!(&payload[6..payload.len() - 6], normalized.as_bytes());
+        assert_eq!(payload.len(), normalized.len() + 12);
+        // 首尾 marker 各一次；正文里的“201”不会多出 marker。
+        assert_eq!(payload.iter().filter(|&&b| b == 0x1b).count(), 2);
+        assert!(payload.windows(3).any(|w| w == b"201"));
+    }
+
+    /// UI-TERM-008 端到端：真实 PTY 里子进程先 DECSET 2004，再切 raw 读字节；
+    /// `paste_payload` 写进 PaneHandle 后，子进程必须收到完整的 200~/201~ 包裹，
+    /// 且内容里的 `201` 原样保留（用文件落盘做逐字节断言，不靠终端回显猜）。
+    #[test]
+    fn bracketed_paste_reaches_child_over_pty_with_201_content() {
+        let dir = std::env::temp_dir().join(format!(
+            "tervo-paste-e2e-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let out = dir.join("paste.bin");
+        let text = "echo 201; echo '201~' ; printf 200\nline 201 end";
+        let payload = paste_payload(&normalize_paste(text), true);
+        // 子进程：宣告 bracketed paste → 切 raw（不做行缓冲/回显）→ 收满
+        // payload 字节数写文件 → 结束。READY 保证 raw 已生效再写输入。
+        let script = format!(
+            "printf '\\033[?2004h'; stty raw -echo; printf 'READY'; \
+             dd bs=1 count={} of={} 2>/dev/null; printf '\\033[?2004l'",
+            payload.len(),
+            out.display()
+        );
+        let handle = spawn(PaneConfig {
+            cols: 80,
+            rows: 24,
+            scrollback: 200,
+            shell: Some("/bin/bash".to_string()),
+            args: vec!["-c".to_string(), script],
+            ..PaneConfig::default()
+        })
+        .expect("spawn bash pty");
+
+        let screen = |frame: &Frame| {
+            (0..frame.rows)
+                .map(|row| {
+                    let line: String = frame.row(row).iter().map(|c| c.char()).collect();
+                    format!("{}\n", line.trim_end())
+                })
+                .collect::<String>()
+        };
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let mut frame = handle.new_frame();
+        loop {
+            frame = handle.pull(frame);
+            let ready = (0..frame.rows).any(|row| {
+                let line: String = frame.row(row).iter().map(|c| c.char()).collect();
+                line.contains("READY")
+            });
+            if frame.mode & BRACKETED_PASTE != 0 && ready {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "等待 bracketed paste 模式/READY 超时，当前屏幕:\n{}",
+                screen(&frame)
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        handle.input(&payload);
+
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            if let Ok(bytes) = std::fs::read(&out) {
+                if bytes.len() >= payload.len() {
+                    assert_eq!(bytes, payload, "子进程收到的字节必须与 payload 一致");
+                    assert!(bytes.starts_with(b"\x1b[200~"));
+                    assert!(bytes.ends_with(b"\x1b[201~"));
+                    assert!(
+                        bytes.windows(3).any(|w| w == b"201"),
+                        "正文里的 201 必须保留"
+                    );
+                    break;
+                }
+            }
+            assert!(
+                Instant::now() < deadline,
+                "等待子进程收到 {} 字节超时（已收到 {:?} 字节）",
+                payload.len(),
+                std::fs::read(&out).map(|b| b.len())
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn paste_confirm_only_for_multiline_when_enabled() {
         assert!(!needs_paste_confirm("one line", true));
@@ -19253,6 +19602,45 @@ mod tests {
         assert!(!needs_paste_confirm("a\nb", false));
         // 单独 \r 不算多行（单行回车粘贴不烦人）
         assert!(!needs_paste_confirm("a\rb", true));
+    }
+
+    fn sample_menu_specs() -> Vec<TerminalMenuSpec> {
+        vec![
+            TerminalMenuSpec::item("a".into(), "A".into(), String::new(), false, false),
+            TerminalMenuSpec::separator(),
+            TerminalMenuSpec::item("b".into(), "B".into(), String::new(), false, false),
+            TerminalMenuSpec::item("c".into(), "C".into(), String::new(), true, false),
+            TerminalMenuSpec::separator(),
+        ]
+    }
+
+    #[test]
+    fn menu_step_skips_separators_and_stops_at_edges() {
+        let specs = sample_menu_specs();
+        // 从无选中开始：向下第一项、向上最后一项。
+        assert_eq!(menu_step(&specs, None, 1), Some(0));
+        assert_eq!(menu_step(&specs, None, -1), Some(3));
+        // 分隔线永远跳过。
+        assert_eq!(menu_step(&specs, Some(0), 1), Some(2));
+        assert_eq!(menu_step(&specs, Some(2), 1), Some(3));
+        // 边界不循环。
+        assert_eq!(menu_step(&specs, Some(3), 1), None);
+        assert_eq!(menu_step(&specs, Some(0), -1), None);
+        // 空表 / 全分隔线 / delta=0。
+        assert_eq!(menu_step(&[], None, 1), None);
+        let seps = vec![TerminalMenuSpec::separator()];
+        assert_eq!(menu_step(&seps, None, 1), None);
+        assert_eq!(menu_step(&specs, Some(2), 0), None);
+    }
+
+    #[test]
+    fn menu_row_offset_matches_slint_heights() {
+        let specs = sample_menu_specs();
+        assert_eq!(menu_row_offset(&specs, 0), 6.0);
+        assert_eq!(menu_row_offset(&specs, 1), 36.0);
+        assert_eq!(menu_row_offset(&specs, 2), 45.0);
+        assert_eq!(menu_row_offset(&specs, 3), 75.0);
+        assert_eq!(menu_row_offset(&specs, 4), 105.0);
     }
 
     #[test]
