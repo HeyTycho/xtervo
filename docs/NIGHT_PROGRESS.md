@@ -7,7 +7,7 @@
 
 ```text
 cargo test -p tervo-app --bin tervo     571 passed / 0 failed / 1 ignored
-cargo test -p tervo-core                25 + 12 passed
+cargo test -p tervo-core --lib           144 passed（含 4 条 transport/pump_reader）
 DURATION=2m soak（sandbox 需可写目录）   PASS（.logs/soak/20261117-133652；release 8ed890f PASS（RSS 355.0→392.8MiB）；HEAD 复跑 PASS（357.4→391.2MiB，线程 112/FD 97 不变，fatal=0））
 DURATION=15m soak                        PASS（RSS +3.15 MiB/min，R²=0.29，线程/FD 不变）
 PTY→可见 10 MiB                          178.35 ms ≈ 56.1 MiB/s
@@ -46,8 +46,9 @@ DURATION=2m BIN=$PWD/target/release/tervo SOAK_NO_SHOTS=1 \
 4. ACT-046 剩余：独立顶部 Toolbar（需先修 IME 坐标链里的 TABBAR_H 常量）、
    Connection Manager（与 ACT-041 合并）、插件注入点
 5. ACT-036 剩余：crash marker + safe mode + 崩溃循环熔断
-6. ACT-052 transport seam：trait + socketpair 参考实现 ✅（`crates/core/src/transport.rs`）；
-   剩 actor 接线、权限/审计/限流 → 再上 SSH/Serial/Telnet 插件（ACT-039..045）
+6. ACT-052 transport seam：`PaneTransport` + `SocketPairTransport` + `SplitTransport` + `pump_reader` ✅
+   （`crates/core/src/transport.rs`，4 条单测）；剩 PaneHandle 接线、宿主权限/审计/限流，
+   再上 SSH/Serial/Telnet 插件（ACT-039..045）
 7. ACT-049 插件生态、ACT-050 终端小件、ACT-051 平台/性能（24h、Wayland、emoji）
 ```
 
