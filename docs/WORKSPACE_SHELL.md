@@ -1,6 +1,6 @@
 # 工作区壳：Sidebar / Toolbar / 状态区（ACT-046 + ACT-041 前置）
 
-状态：**进行中（2026-11-17）**。已完成 ① config 字段 ② 侧栏骨架 ③ 右边缘拖宽 + 宽度持久化 + Profiles 列表（复用下沉后的 `rebuild_profile_choices`，启动即填充，点击开 Tab）（默认关，截图见
+状态：**进行中（2026-11-17）**。已完成 ① config 字段 ② 侧栏骨架 ④ 设置页开关 ⑤ 状态区 pill 行 ③ 右边缘拖宽 + 宽度持久化 + Profiles 列表（复用下沉后的 `rebuild_profile_choices`，启动即填充，点击开 Tab）（默认关，截图见
 `.logs/sidebar_on.png` / `.logs/sidebar_off.png`）；待做 ③ 拖宽 + Profiles 列表 ④ Toolbar
 ⑤ 状态区 ⑥ Connection Manager ⑦ 插件注入点。目标是把“入口”从 TabBar 菜单
 升级成常驻壳，并让 Connection Manager / 插件条目有地方挂。

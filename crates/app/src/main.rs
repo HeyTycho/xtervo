@@ -14891,6 +14891,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut st = state.borrow_mut();
             rebuild_profile_choices(&mut st);
         }
+        // 异常退出提示（ACT-036 的“恢复提示”第一步）：只提示，不自动改布局。
+        if unclean {
+            let st = state.borrow();
+            let lang_zh = st.cfg.lang() == "zh";
+            let msg = if auto_restore {
+                if lang_zh { "上次异常退出，已按 autosave 恢复布局" } else { "Recovered layout from the last unclean exit" }
+            } else if lang_zh {
+                "上次异常退出；启动时恢复未开启"
+            } else {
+                "Last exit was unclean; startup restore is off"
+            };
+            st.ui.set_status_items(ModelRc::from(Rc::new(VecModel::from(
+                vec![slint::SharedString::from(msg)],
+            ))));
+        }
         reg.set_active(window_id);
     }
     // Slint 平台/registry 已就绪：现在启动 control server。handler 只把请求

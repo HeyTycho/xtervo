@@ -1344,6 +1344,8 @@ export component MainWindow inherits Window {
     callback run-doctor();
     callback close-doctor();
     in-out property <string> plugin-status: "";
+    /// 通用状态条目（连接/进度/异常恢复提示等）；空 = 不占布局。
+    in property <[string]> status-items: [];
     in-out property <string> plugin-status-tooltip: "";
     // 终端右键菜单：宽度按最长标签 + 快捷键提示留足，窄窗口自动收窄；
     // 内容高度固定（菜单项 30px；无分组标题），超过内容区时菜单内滚动，
@@ -8142,6 +8144,34 @@ export component MainWindow inherits Window {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    // 通用状态条目：在插件状态栏之上叠一行 pill（只读文本，不改变终端布局）。
+    if root.status-items.length > 0 : HorizontalLayout {
+        x: 8px;
+        y: (root.tabbar-bottom ? root.height - root.tabbar-height - 24px : root.height - 24px)
+           - 26px;
+        height: 22px;
+        spacing: 6px;
+        alignment: start;
+        for item[i] in root.status-items : Rectangle {
+            height: 22px;
+            width: Math.min(360px, item-text.preferred-width + 18px);
+            background: Palette.colors.surface;
+            border-radius: 6px;
+            border-width: 1px;
+            border-color: Palette.colors.border;
+            opacity: 0.94;
+            item-text := Text {
+                x: 9px;
+                height: parent.height;
+                text: item;
+                color: Palette.colors.subtext;
+                font-size: 11px;
+                vertical-alignment: center;
+                overflow: elide;
             }
         }
     }
