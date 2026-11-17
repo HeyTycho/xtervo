@@ -711,6 +711,9 @@ struct AppState {
     /// “+” 下拉各行对应的 Profile store 下标；`None` = “新建默认 Tab” 行
     /// （只有 “+” 下拉会插入该行，侧栏 Profile 列表全是 `Some`）。
     profile_menu_indices: Vec<Option<usize>>,
+    /// 未过滤的完整下拉行（`None` = “新建默认 Tab” 行 + 文案）。
+    /// 菜单打开时按搜索词过滤，`profile_menu_indices` 始终对应可见行。
+    profile_menu_all: Vec<(Option<usize>, String)>,
     profile_menu_model: Rc<VecModel<slint::SharedString>>,
     /// 右键按下的 pane/时间/内容区坐标：paste/clipboard 模式用抬起时间判断长按。
     right_down: Option<(PaneId, std::time::Instant, f32, f32)>,
@@ -4743,8 +4746,7 @@ fn rebuild_profile_choices(st: &mut AppState) {
 }
 
 fn rebuild_profile_choices_for(st: &mut AppState, with_new_tab: bool) {
-    let mut items: Vec<slint::SharedString> = Vec::new();
-    let mut indices: Vec<Option<usize>> = Vec::new();
+    let mut all: Vec<(Option<usize>, String)> = Vec::new();
     if with_new_tab {
         let zh = st.cfg.lang() == "zh";
         let label = match default_profile_index(st) {
@@ -4764,8 +4766,7 @@ fn rebuild_profile_choices_for(st: &mut AppState, with_new_tab: bool) {
                 }
             },
         };
-        items.push(label.into());
-        indices.push(None);
+        all.push((None, label));
     }
     for (i, p) in st.profiles.profiles.iter().enumerate() {
         let kind = match p.kind.as_str() {
@@ -4774,8 +4775,7 @@ fn rebuild_profile_choices_for(st: &mut AppState, with_new_tab: bool) {
             "telnet" => "Telnet",
             _ => "Local",
         };
-        items.push(profile_choice_label(kind, &p.name, &p.hotkey).into());
-        indices.push(Some(i));
+        all.push((Some(i), profile_choice_label(kind, &p.name, &p.hotkey)));
         // 热键冲突提示：Profile 热键与命令默认绑定时不去改任何一方，只明确告警
         //（实际按下时命令 override 优先，Profile 热键会打不中，必须让用户知道）。
         if let Some(chord) = p.hotkey_chord() {
@@ -4787,8 +4787,95 @@ fn rebuild_profile_choices_for(st: &mut AppState, with_new_tab: bool) {
             }
         }
     }
-    st.profile_menu_indices = indices;
+    st.profile_menu_all = all;
+    apply_profile_menu_filter(st);
+}
+
+/// Profile 菜单搜索：大小写不敏感的文案子串匹配；空查询返回全部。
+/// 纯函数便于单测（"new tab" 行与 Profile 行都参与匹配）。
+fn profile_menu_filtered_entries(
+    all: &[(Option<usize>, String)],
+    query: &str,
+) -> Vec<(Option<usize>, String)> {
+    let q = query.trim().to_lowercase();
+    if q.is_empty() {
+        return all.to_vec();
+    }
+    all.iter()
+        .filter(|(_, label)| label.to_lowercase().contains(&q))
+        .cloned()
+        .collect()
+}
+
+/// 按当前搜索词重建可见行，并把选中项夹到合法范围（空结果 = -1）。
+fn apply_profile_menu_filter(st: &mut AppState) {
+    // 只有菜单打开时才应用搜索词：侧栏复用同一份模型，不能继承一次
+    // 未提交的菜单搜索把侧栏列表也过滤掉。
+    let query = if st.ui.get_profilemenu_open() {
+        st.ui.get_profilemenu_query().to_string()
+    } else {
+        String::new()
+    };
+    let filtered = profile_menu_filtered_entries(&st.profile_menu_all, &query);
+    st.profile_menu_indices = filtered.iter().map(|(index, _)| *index).collect();
+    let items: Vec<slint::SharedString> = filtered
+        .iter()
+        .map(|(_, label)| slint::SharedString::from(label.as_str()))
+        .collect();
     st.profile_menu_model.set_vec(items);
+    let len = filtered.len();
+    let selected = st.ui.get_profilemenu_selected();
+    let next = if len == 0 {
+        -1
+    } else {
+        selected.clamp(0, len as i32 - 1)
+    };
+    st.ui.set_profilemenu_selected(next);
+    eprintln!(
+        "[ui] profile menu filter query={query:?} items={len} selected={next}"
+    );
+}
+
+/// 选中项上下移动：循环滚动；空列表保持 -1。
+fn profile_menu_move(st: &mut AppState, delta: i32) {
+    let len = st.profile_menu_indices.len() as i32;
+    if len == 0 {
+        st.ui.set_profilemenu_selected(-1);
+        return;
+    }
+    let cur = st.ui.get_profilemenu_selected().max(0);
+    let next = ((cur + delta) % len + len) % len;
+    st.ui.set_profilemenu_selected(next);
+}
+
+/// 执行当前选中行：设置页/侧栏/`+` 下拉共用。
+fn profile_menu_pick(st: &mut AppState, index: usize) {
+    st.ui.set_profilemenu_open(false);
+    let Some(row) = st.profile_menu_indices.get(index).copied() else {
+        return;
+    };
+    match row {
+        Some(profile_index) => open_profile_tab_manual(st, profile_index),
+        None => {
+            eprintln!("[ui] new-tab menu: default tab");
+            new_tab_with_default(st);
+        },
+    }
+}
+
+/// 接受当前高亮行（Enter）。没有高亮/空结果时什么也不做。
+fn profile_menu_accept(st: &mut AppState) {
+    let index = st.ui.get_profilemenu_selected();
+    if index >= 0 {
+        profile_menu_pick(st, index as usize);
+    }
+}
+
+/// 取消菜单（Esc / 搜索框 Esc）：关菜单、清搜索、焦点还给终端。
+fn close_profile_menu(st: &mut AppState) {
+    st.ui.set_profilemenu_open(false);
+    st.ui.set_profilemenu_query("".into());
+    st.ui.invoke_focus_terminal();
 }
 
 /// 构建 Profile 选择菜单。
@@ -4800,6 +4887,9 @@ fn open_profile_menu(st: &mut AppState) {
     let with_new_tab = st.ui.get_profilemenu_show_new_tab();
     // 只对本次打开生效：侧栏 `profiles.open` 等其它入口不应继承上一次 `+` 的行。
     st.ui.set_profilemenu_show_new_tab(false);
+    // 每次打开都清空搜索并把高亮放回第一行。
+    st.ui.set_profilemenu_query("".into());
+    st.ui.set_profilemenu_selected(0);
     rebuild_profile_choices_for(st, with_new_tab);
     st.ui.set_profilemenu_open(true);
     eprintln!(
@@ -13665,6 +13755,7 @@ fn build_window_state(
         quake_visible: false,
         quake_saved: None,
         profile_menu_indices: Vec::new(),
+        profile_menu_all: Vec::new(),
         profile_menu_model,
         right_down: None,
         menu_link: String::new(),
@@ -16377,19 +16468,29 @@ fn register_window_callbacks(
     });
     ui.on_profilemenu_pick(move |index| {
         runtime::with_window(window_id, |st| {
-            st.ui.set_profilemenu_open(false);
             let index = index.max(0) as usize;
             eprintln!("[ui] profile pick={index}");
-            if let Some(row) = st.profile_menu_indices.get(index).copied() {
-                match row {
-                    Some(profile_index) => open_profile_tab_manual(st, profile_index),
-                    None => {
-                        eprintln!("[ui] new-tab menu: default tab");
-                        new_tab_with_default(st);
-                    },
-                }
-            }
+            profile_menu_pick(st, index);
         });
+    });
+
+    // UI-TAB-002：菜单内搜索 + ↑↓/Enter/Esc。过滤在 Rust 侧做，可见行
+    // 与 profile_menu_indices 永远同序，pick 不会点到过滤前的错行。
+    ui.on_profilemenu_query_changed(move |query| {
+        runtime::with_window(window_id, |st| {
+            st.ui.set_profilemenu_query(query);
+            st.ui.set_profilemenu_selected(0);
+            apply_profile_menu_filter(st);
+        });
+    });
+    ui.on_profilemenu_move(move |delta| {
+        runtime::with_window(window_id, |st| profile_menu_move(st, delta));
+    });
+    ui.on_profilemenu_accept(move || {
+        runtime::with_window(window_id, profile_menu_accept);
+    });
+    ui.on_profilemenu_cancel(move || {
+        runtime::with_window(window_id, close_profile_menu);
     });
 
     ui.on_profilemenu_manage(move || {
@@ -18901,6 +19002,29 @@ mod tests {
         rows.insert(4, 1);
         assert!(!rows_can_update_in_place(2, &rows, &[4, 3]));
         assert!(rows_can_update_in_place(2, &rows, &[3, 4]));
+    }
+
+    #[test]
+    fn profile_menu_filter_matches_labels_and_keeps_store_indices() {
+        let all = vec![
+            (None, "New tab (default: local-a)".to_string()),
+            (Some(2), "Local · local-a  (ctrl+alt+1)".to_string()),
+            (Some(5), "SSH · Build Host".to_string()),
+        ];
+        // 空查询 / 纯空白 = 全部
+        assert_eq!(profile_menu_filtered_entries(&all, "").len(), 3);
+        assert_eq!(profile_menu_filtered_entries(&all, "   ").len(), 3);
+        // 大小写不敏感、同时匹配 new-tab 行与 Profile 行
+        let local = profile_menu_filtered_entries(&all, "LOCAL");
+        assert_eq!(local.len(), 2);
+        assert_eq!(local[0].0, None);
+        assert_eq!(local[1].0, Some(2));
+        // 按主机名过滤后，可见行下标对应的 store 下标不能错位
+        let ssh = profile_menu_filtered_entries(&all, "build");
+        assert_eq!(ssh.len(), 1);
+        assert_eq!(ssh[0].0, Some(5));
+        // 无匹配 = 空，菜单显示空态而不是旧结果
+        assert!(profile_menu_filtered_entries(&all, "no-such-profile").is_empty());
     }
 
     #[test]

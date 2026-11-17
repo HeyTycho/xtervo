@@ -201,11 +201,26 @@ export struct ProfileRow {
 
 component MenuRow inherits Rectangle {
     in property <string> label;
+    /// 键盘高亮行（Profile 菜单 ↑↓ 用；其它菜单保持 false）。
+    in property <bool> selected: false;
     callback picked();
 
     height: 28px;
     border-radius: 4px;
-    background: hit.has-hover ? Palette.colors.hover : transparent;
+    background: hit.has-hover
+        ? Palette.colors.hover
+        : (root.selected ? Palette.colors.bg : transparent);
+
+    // 高亮行左侧 accent 标记：不依赖背景色差，键盘选择一眼可见。
+    Rectangle {
+        visible: root.selected;
+        x: 2px;
+        y: 6px;
+        width: 2px;
+        height: 16px;
+        border-radius: 1px;
+        background: Palette.colors.accent;
+    }
 
     hit := TouchArea {
         clicked => { root.picked(); }
@@ -1460,9 +1475,17 @@ export component MainWindow inherits Window {
     in property <[string]> profilemenu-items: [];
     /// `+` 打开下拉时置 true：Rust 会在第一行插入“新建默认 Tab”。
     in-out property <bool> profilemenu-show-new-tab: false;
+    /// 菜单内搜索词（UI-TAB-002）；Rust 按它过滤可见行。
+    in-out property <string> profilemenu-query: "";
+    /// 键盘高亮行（可见行下标，-1 = 空结果）。
+    in-out property <int> profilemenu-selected: -1;
     callback profilemenu-menu();
     callback profilemenu-pick(int);
     callback profilemenu-manage();
+    callback profilemenu-query-changed(string);
+    callback profilemenu-move(int);
+    callback profilemenu-accept();
+    callback profilemenu-cancel();
     callback resized(length, length);
     callback close-window();
     callback minimize-window();
@@ -3617,6 +3640,8 @@ export component MainWindow inherits Window {
             pointer-event(event) => {
                 if (event.kind == PointerEventKind.down) {
                     root.profilemenu-open = false;
+                    root.profilemenu-query = "";
+                    root.focus-terminal();
                     root.menu-dismissed();
                     return EventResult.accept;
                 }
@@ -3626,12 +3651,14 @@ export component MainWindow inherits Window {
     }
 
     if root.profilemenu-open : Rectangle {
-        x: Math.max(0px, Math.min(root.profilemenu-x, root.width - 220px));
+        // n 个 Profile 行 + 分隔线 + Manage 行 + 搜索框/内边距；超出窗口高度才滚。
+        x: Math.max(0px, Math.min(root.profilemenu-x, root.width - 240px));
         y: root.tabbar-bottom
             ? root.height - root.tabbar-height - self.height
             : root.tabbar-height;
-        width: 220px;
-        height: Math.min(root.profilemenu-items.length * 28px + 40px, root.height - root.tabbar-height - 8px);
+        width: 240px;
+        height: Math.min(Math.max(28px, root.profilemenu-items.length * 28px + 29px) + 66px,
+            root.height - root.tabbar-height - 8px);
         background: Palette.colors.raise;
         border-radius: 8px;
         border-width: 1px;
@@ -3645,9 +3672,48 @@ export component MainWindow inherits Window {
             padding: 4px;
             spacing: 0px;
 
-            for item[i] in root.profilemenu-items : MenuRow {
-                label: item;
-                picked => { root.profilemenu-open = false; root.profilemenu-pick(i); }
+            // 搜索框：打开即聚焦，输入实时过滤；↑↓ 选择、Enter 打开、Esc 关闭。
+            Rectangle {
+                height: 28px;
+                border-radius: 4px;
+                background: Palette.colors.bg;
+
+                TextInput {
+                    x: 6px;
+                    width: parent.width - 12px;
+                    height: parent.height;
+                    text <=> root.profilemenu-query;
+                    single-line: true;
+                    color: Palette.colors.text;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                    init => { self.focus(); }
+                    edited => { root.profilemenu-query-changed(self.text); }
+                    key-pressed(event) => {
+                        if (event.text == "\u{1b}") {
+                            root.profilemenu-cancel();
+                            return EventResult.accept;
+                        }
+                        if (event.text == "\u{F700}") { root.profilemenu-move(-1); return EventResult.accept; }
+                        if (event.text == "\u{F701}") { root.profilemenu-move(1); return EventResult.accept; }
+                        if (event.text == "\u{a}" || event.text == "\u{d}") {
+                            root.profilemenu-accept();
+                            return EventResult.accept;
+                        }
+                        EventResult.reject
+                    }
+                }
+
+                Text {
+                    x: 6px;
+                    width: parent.width - 12px;
+                    height: parent.height;
+                    text: Lang.t("Search profiles…", "搜索配置…");
+                    color: Palette.colors.muted;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                    visible: root.profilemenu-query == "";
+                }
             }
 
             Rectangle {
@@ -3655,11 +3721,67 @@ export component MainWindow inherits Window {
                 background: Palette.colors.border;
             }
 
-            MenuRow {
-                label: Lang.t("Manage Profiles…", "管理配置…");
-                picked => { root.profilemenu-open = false; root.profilemenu-manage(); }
+            // Profile 多时列表内部滚动；键盘高亮行始终自动滚进视口。
+            Flickable {
+                height: Math.max(28px,
+                    Math.min(root.profilemenu-items.length * 28px + 58px,
+                        root.height - root.tabbar-height - 45px));
+                content-width: self.width;
+                content-height: Math.max(28px, root.profilemenu-items.length * 28px + 29px);
+                interactive: true;
+                // 键盘 ↑↓ 移动高亮时把该行滚进视口。用双向绑定保证
+                // root.profilemenu-selected（Rust 侧 set）变化时这里立刻收到，
+                // 普通单向绑定是惰性的，changed 可能不触发。
+                in-out property <int> selected-row <=> root.profilemenu-selected;
+                changed selected-row => {
+                    if (self.selected-row >= 0) {
+                        let row-y = self.selected-row * 28px;
+                        // Flickable 的 content-y 是负的滚动偏移，可视区顶部 =
+                        // -content-y（与 tab search/settings 的符号约定一致）。
+                        let visible-top = -self.content-y;
+                        if (row-y < visible-top) {
+                            self.content-y = -row-y;
+                        } else if (row-y + 28px > visible-top + self.height) {
+                            self.content-y = -(row-y + 28px - self.height);
+                        }
+                    }
+                }
+
+                VerticalLayout {
+                    padding: 0px;
+                    spacing: 0px;
+
+                    for item[i] in root.profilemenu-items : MenuRow {
+                        label: item;
+                        selected: i == root.profilemenu-selected;
+                        picked => { root.profilemenu-open = false; root.profilemenu-pick(i); }
+                    }
+
+                    // 过滤后空结果提示（不占行高、不能点）。
+                    if root.profilemenu-items.length == 0 : Rectangle {
+                        height: 40px;
+                        Text {
+                            x: 10px;
+                            text: Lang.t("No matching profiles", "没有匹配的配置");
+                            color: Palette.colors.muted;
+                            font-size: 11px;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    Rectangle {
+                        height: 1px;
+                        background: Palette.colors.border;
+                    }
+
+                    MenuRow {
+                        label: Lang.t("Manage Profiles…", "管理配置…");
+                        picked => { root.profilemenu-open = false; root.profilemenu-manage(); }
+                    }
+                }
             }
         }
+
     }
 
     // 点菜单外的任意位置关闭 TabBar / Tab 菜单（此前只能点菜单项，菜单会一直留着）。
