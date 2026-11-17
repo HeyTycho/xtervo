@@ -1569,6 +1569,9 @@ fn command_title(lang: &str, id: &str, fallback: &'static str) -> &'static str {
         "tab.new" => "新建标签",
         "tab.search" => "搜索标签",
         "tab.close" => "关闭标签",
+        "tab.close-others" => "关闭其他标签",
+        "tab.close-left" => "关闭左侧标签",
+        "tab.close-right" => "关闭右侧标签",
         "tab.next" => "下一个标签",
         "tab.prev" => "上一个标签",
         "tab.last" => "上一个使用的标签",
@@ -11330,6 +11333,9 @@ fn run_command(st: &mut AppState, id: &str) {
             rebuild_tabs(st);
         }
         "tab.close" => close_tab_inner(st, st.ws.active),
+        "tab.close-others" => close_other_tabs(st, st.ws.active),
+        "tab.close-left" => close_tabs_left(st, st.ws.active),
+        "tab.close-right" => close_tabs_right(st, st.ws.active),
         "tab.next" => switch_tab_relative(st, 1),
         "tab.prev" => switch_tab_relative(st, -1),
         "tab.last" => switch_to_last_tab(st),
@@ -12209,7 +12215,10 @@ fn handle_input(
         }
     }
 
-    if ctrl {
+    // 注意：必须排除 Alt。Ctrl+Alt+W / Ctrl+Alt+Left 等是命令表里的新默认键
+    // （tab.close-others / tab.close-left），若这里不判 alt 会被 Ctrl+W 之类
+    // 的硬编码提前吞掉，命令兜底分发永远看不到这些组合。
+    if ctrl && !alt {
         match text {
             "t" => {
                 new_tab_with_default(st);
