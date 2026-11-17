@@ -17,3 +17,6 @@
 
 # 本地预览安装包（正式产物走 dist/ 或 release artifact，不进 git）
 /dist-preview
+
+# python cache
+scripts/__pycache__/
