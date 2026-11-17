@@ -4135,6 +4135,16 @@ fn rebuild_profile_choices(st: &mut AppState) {
         };
         items.push(format!("{kind} · {}", p.name).into());
         indices.push(i);
+        // 热键冲突提示：Profile 热键与命令默认绑定时不去改任何一方，只明确告警
+        //（实际按下时命令 override 优先，Profile 热键会打不中，必须让用户知道）。
+        if let Some(chord) = p.hotkey_chord() {
+            if let Some(command) = st.commands.default_command_for_chord(&chord) {
+                eprintln!(
+                    "[profile] 热键冲突：{} 已绑定命令 {command}，Profile「{}」的 {chord} 不会触发",
+                    p.hotkey, p.name
+                );
+            }
+        }
     }
     st.profile_menu_indices = indices;
     st.profile_menu_model.set_vec(items);

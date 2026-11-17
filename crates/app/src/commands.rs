@@ -240,6 +240,17 @@ impl Registry {
         Ok(chord)
     }
 
+    /// 某个单段 chord 是否已被命令的**默认**绑定占用（Profile 热键冲突提示用）。
+    ///
+    /// 只看 `default_shortcut`，不读用户 override —— 冲突提示是给用户看的，
+    /// 而 override 本身就是用户自己的选择。
+    pub fn default_command_for_chord(&self, chord: &Chord) -> Option<&'static str> {
+        self.all().iter().find_map(|command| {
+            let default = command.default_shortcut.and_then(|s| Shortcut::parse(s).ok())?;
+            (default.chords.len() == 1 && default.chords[0] == *chord).then_some(command.id)
+        })
+    }
+
     /// 分发用：找到当前按键 chord 命中的 override 命令（只认用户覆盖，按配置倒序）。
     ///
     /// 未知命令、非法 chord、无修饰的普通字符都跳过；普通字符不允许抢走终端输入。
@@ -611,6 +622,16 @@ mod tests {
                 Shortcut::parse(s).unwrap_or_else(|e| panic!("{} 的快捷键 {s} 解析失败: {e}", c.id));
             }
         }
+    }
+
+    #[test]
+    fn default_command_for_chord_finds_known_bindings() {
+        let r = builtin();
+        let chord = Chord::parse("ctrl+shift+e").unwrap();
+        assert_eq!(r.default_command_for_chord(&chord), Some("pane.split-right"));
+        // 无修饰普通字符不该命中任何命令（也拿不到终端之外的含义）
+        let plain = Chord::parse("e").unwrap();
+        assert_eq!(r.default_command_for_chord(&plain), None);
     }
 
     #[test]
