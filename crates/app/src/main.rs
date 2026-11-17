@@ -64,10 +64,11 @@ use std::time::{Duration, Instant};
 use slint::winit_030::{winit, EventResult, WinitWindowAccessor};
 use slint::{Model, ModelRc, VecModel};
 use tervo_core::{
-    link::is_allowed_uri, spawn, ClipboardRequest, ClipboardSelection, CoreEvent, Frame, LinkKind,
-    Modifiers, MouseAction, MouseButton, MouseEvent, Notification, Palette as TermPalette,
-    PaneConfig, PaneHandle, ProgressState, ScrollPosition, SearchHit, SearchOptions, Theme,
-    UiColors, WakeSignal,
+    link::{is_allowed_uri, strip_path_position},
+    spawn, ClipboardRequest, ClipboardSelection, CoreEvent, Frame, LinkKind, Modifiers,
+    MouseAction, MouseButton, MouseEvent, Notification, Palette as TermPalette, PaneConfig,
+    PaneHandle, ProgressState, ScrollPosition, SearchHit, SearchOptions, Theme, UiColors,
+    WakeSignal,
 };
 use x11rb::connection::Connection;
 use x11rb::rust_connection::RustConnection;
@@ -9295,7 +9296,8 @@ fn frame_target_at(frame: &Frame, row: u16, col: u16) -> Option<LinkTarget> {
         }
         eprintln!("[link] 拒绝不安全的 OSC 8 URI: {uri:?}（cell={row},{col}）");
     }
-    let (kind, text) = frame.link_at(row, col)?;
+    // 用折行拼接版本：URL/路径被终端硬折行拆开时仍能整段命中。
+    let (kind, text) = frame.link_at_wrapped(row, col)?;
     match kind {
         LinkKind::Url => {
             if is_allowed_uri(&text) {
@@ -9305,7 +9307,9 @@ fn frame_target_at(frame: &Frame, row: u16, col: u16) -> Option<LinkTarget> {
                 None
             }
         }
-        LinkKind::Path => Some(LinkTarget::Path(text)),
+        // `file:line:col` 只打开文件本身：xdg-open 不支持行号跳转，
+        // 但至少要落到存在的文件上；位置信息保留在识别层（Link.line/col）。
+        LinkKind::Path => Some(LinkTarget::Path(strip_path_position(&text).to_string())),
         LinkKind::Ipv4 => None,
     }
 }
@@ -9322,10 +9326,12 @@ fn home_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-/// 把行内路径文本解析成绝对路径；只为 `~` 展开 HOME，不执行任何 shell。
+/// 把行内路径文本解析成绝对路径；只展开 `~` / `~user`，不执行任何 shell。
 ///
-/// 相对路径以 pane 的 shell cwd 为基准（`/proc/<pid>/cwd`），不依赖 Tervo
-/// 进程自己的 cwd，避免 `cd /tmp` 后点 `./a` 打开到错误目录。
+/// 允许空格（引号内路径，例如 `"/tmp/my notes.txt"`）：调用方只接受单参数
+/// `xdg-open`，不拼 shell，所以空格没有注入风险。
+/// 相对路径以 pane 的 shell cwd 为基准（OSC 7 优先，其次 `/proc/<pid>/cwd`），
+/// 不依赖 Tervo 进程自己的 cwd，避免 `cd /tmp` 后点 `./a` 打开到错误目录。
 fn resolve_local_path(
     text: &str,
     cwd: Option<&Path>,
@@ -9334,8 +9340,8 @@ fn resolve_local_path(
     if text.is_empty() {
         return Err("路径为空".to_string());
     }
-    if text.chars().any(|c| c.is_control() || c.is_whitespace() || c == '\0') {
-        return Err("路径含空白或控制字符".to_string());
+    if text.chars().any(char::is_control) {
+        return Err("路径含控制字符".to_string());
     }
     if text == "~" {
         return home.map(Path::to_path_buf).ok_or_else(|| "无法展开 ~：HOME 未设置".to_string());
@@ -9344,12 +9350,40 @@ fn resolve_local_path(
         let home = home.ok_or_else(|| "无法展开 ~：HOME 未设置".to_string())?;
         return Ok(home.join(rest));
     }
+    if let Some(rest) = text.strip_prefix('~') {
+        // `~user/path`：用户不存在时不猜 HOME，直接报错（不落回 Tervo 进程 HOME）。
+        let (user, tail) = rest.split_once('/').map_or((rest, ""), |(u, t)| (u, t));
+        let user_home =
+            user_home_dir(user).ok_or_else(|| format!("无法展开 ~{user}：用户不存在"))?;
+        return Ok(if tail.is_empty() { user_home } else { user_home.join(tail) });
+    }
     let path = Path::new(text);
     if path.is_absolute() {
         return Ok(path.to_path_buf());
     }
     let cwd = cwd.ok_or_else(|| "无法确定当前 shell 目录".to_string())?;
     Ok(cwd.join(path))
+}
+
+/// `~user` 的 home：读 `/etc/passwd`（纯文本、无新依赖、不执行 shell）。
+///
+/// 只取第 1 段用户名与第 6 段 home；格式不对的行直接跳过。NSS 扩展用户
+/// （LDAP/SSSD）不会出现在 `/etc/passwd`，此时返回 None 由调用方报错。
+fn user_home_dir(user: &str) -> Option<PathBuf> {
+    if user.is_empty() {
+        return None;
+    }
+    let passwd = std::fs::read_to_string("/etc/passwd").ok()?;
+    passwd.lines().find_map(|line| {
+        let mut fields = line.split(':');
+        let name = fields.next()?;
+        let _password = fields.next()?;
+        let _uid = fields.next()?;
+        let _gid = fields.next()?;
+        let _gecos = fields.next()?;
+        let home = fields.next()?;
+        (name == user && !home.is_empty()).then(|| PathBuf::from(home))
+    })
 }
 
 /// 打开前检查本地路径是否存在且可读；返回给用户的失败原因（不含路径）。
@@ -11421,6 +11455,8 @@ fn drain_core_events(st: &mut AppState) -> (bool, u32) {
                         logging::now_ms()
                     );
                 }
+                // OSC 133 事件由后续提交接入 shell integration 状态。
+                CoreEvent::Shell(_) => {}
                 CoreEvent::Clipboard(request) => clipboard_events.push((id, request)),
                 CoreEvent::Exited => {
                     // Exited 可能由多个来源重复上报；只有真正等到子进程退出且
@@ -17496,9 +17532,24 @@ mod tests {
         assert!(resolve_local_path("./x", None, Some(&home))
             .unwrap_err()
             .contains("shell 目录"));
-        assert!(resolve_local_path("/tmp/a b", Some(&cwd), Some(&home))
+        // 行为变更（UI-TERM-011）：引号内路径允许空格，打开仍是单参数、不拼 shell。
+        assert_eq!(
+            resolve_local_path("/tmp/a b", Some(&cwd), Some(&home)).unwrap(),
+            PathBuf::from("/tmp/a b")
+        );
+        assert!(resolve_local_path("/tmp/a\nb", Some(&cwd), Some(&home))
             .unwrap_err()
-            .contains("空白"));
+            .contains("控制字符"));
+        // `~user` 从 /etc/passwd 展开；未知用户报错而不是回退 Tervo 的 HOME。
+        assert!(resolve_local_path("~tervo-nosuch-user/x", Some(&cwd), Some(&home))
+            .unwrap_err()
+            .contains("用户不存在"));
+        if let Some(root_home) = user_home_dir("root") {
+            assert_eq!(
+                resolve_local_path("~root/x", Some(&cwd), Some(&home)).unwrap(),
+                root_home.join("x")
+            );
+        }
     }
 
     #[test]

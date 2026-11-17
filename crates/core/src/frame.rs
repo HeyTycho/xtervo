@@ -12,7 +12,7 @@ use std::sync::Arc;
 use alacritty_terminal::term::cell::{Cell, Flags};
 use alacritty_terminal::vte::ansi::CursorShape as VteCursorShape;
 
-use crate::link::{scan, LinkKind};
+use crate::link::{scan, scan_custom, LinkKind};
 use crate::palette::Palette;
 
 /// 单元格标志位，数值与 `alacritty_terminal::term::cell::Flags` 的 bits 一一对应。
@@ -455,10 +455,71 @@ impl Frame {
         if char_idx == u32::MAX {
             return None;
         }
-        scan(&text).into_iter().find_map(|link| {
+        if let Some(hit) = scan(&text).into_iter().find_map(|link| {
+            (link.start as u32 <= char_idx && char_idx <= link.end as u32)
+                .then_some((link.kind, link.text))
+        }) {
+            return Some(hit);
+        }
+        // 内置规则无命中时交给插件 Linkifier（扩展点；打开策略仍在 app 层）。
+        scan_custom(&text).into_iter().find_map(|link| {
             (link.start as u32 <= char_idx && char_idx <= link.end as u32)
                 .then_some((link.kind, link.text))
         })
+    }
+
+    /// 同 [`Frame::link_at`]，但会把**硬折行**断开的一行链接拼起来再识别。
+    ///
+    /// 终端宽字符/URL 超过一行时会被拆到下一行；只看单行会把 `https://exa`
+    /// 和 `mple.com/x` 当成两个无关文本。这里在点击/hover 时按行边界做**启发式**
+    /// 拼接：
+    /// - 上一行最后一个非空字符紧贴行尾、当前行第 0 列非空 → 取上一行行尾 token；
+    /// - 当前行最后一个非空字符紧贴行尾、下一行第 0 列非空 → 取下一行行首 token；
+    /// - 拼接后仍用同一套 [`scan`] 识别，命中区间必须覆盖点击列。
+    ///
+    /// 只有两端都“填满行”时才拼接，正常分段文本（行尾是空白）不会被误连。
+    /// 单行识别有结果且没贴边界时直接返回，不做任何拼接。
+    pub fn link_at_wrapped(&self, row: usize, col: usize) -> Option<(LinkKind, String)> {
+        if row >= self.rows || col >= self.cols {
+            return None;
+        }
+        let single = self.link_at(row, col);
+        let (cur, char_of_col) = self.row_text_and_columns(row);
+        let Some(char_idx) = char_of_col.get(col).copied().filter(|c| *c != u32::MAX) else {
+            return single;
+        };
+        let cur_chars: Vec<char> = cur.chars().collect();
+        let prev_text = (row > 0).then(|| self.row_text_and_columns(row - 1).0);
+        let next_text = (row + 1 < self.rows).then(|| self.row_text_and_columns(row + 1).0);
+        let prev_tail = prev_text.as_deref().and_then(wrap_tail).unwrap_or("");
+        let next_head = next_text.as_deref().and_then(wrap_head).unwrap_or("");
+        let click = char_idx as usize;
+        let links = scan(&cur);
+        let clicked = links
+            .iter()
+            .find(|l| l.start as usize <= click && click <= l.end as usize);
+        let ends_at_row_end = clicked.is_some_and(|l| l.end as usize + 1 >= last_non_space(&cur_chars));
+        let starts_at_row_start = clicked.is_some_and(|l| l.start == 0);
+        // 只有链接贴在本行边界、或本行根本没有单行命中时，才值得拼接。
+        let worth_joining = single.is_none()
+            || (ends_at_row_end && !next_head.is_empty())
+            || (starts_at_row_start && !prev_tail.is_empty());
+        if !worth_joining || (prev_tail.is_empty() && next_head.is_empty()) {
+            return single;
+        }
+        let prefix_chars = prev_tail.chars().count();
+        let mut joined = String::with_capacity(prev_tail.len() + cur.len() + next_head.len());
+        joined.push_str(prev_tail);
+        joined.push_str(&cur);
+        joined.push_str(next_head);
+        let click = click + prefix_chars;
+        scan(&joined)
+            .into_iter()
+            .find_map(|link| {
+                (link.start as usize <= click && click <= link.end as usize)
+                    .then_some((link.kind, link.text))
+            })
+            .or(single)
     }
 
     /// 取某格上的普通 URL（行内文本识别，不支持 OSC 8；调用方应先查
@@ -513,6 +574,29 @@ impl Frame {
     pub fn needs_full_redraw(&self) -> bool {
         self.full || self.damage.len() > self.rows / 2
     }
+}
+
+/// 硬折行拼接：上一行行尾 token（行尾必须是**填满**的非空白）。
+fn wrap_tail(text: &str) -> Option<&str> {
+    if text.chars().last().map_or(true, char::is_whitespace) {
+        return None;
+    }
+    let tail = text.rsplit_once(|c: char| c.is_whitespace()).map_or(text, |(_, tail)| tail);
+    (!tail.is_empty()).then_some(tail)
+}
+
+/// 硬折行拼接：下一行行首 token（行首非空白；遇到第一个空白截断）。
+fn wrap_head(text: &str) -> Option<&str> {
+    if text.chars().next().map_or(true, char::is_whitespace) {
+        return None;
+    }
+    let head = text.split_once(|c: char| c.is_whitespace()).map_or(text, |(head, _)| head);
+    (!head.is_empty()).then_some(head)
+}
+
+/// 最后一个非空白字符之后的下标（与字符下标比较用）。
+fn last_non_space(chars: &[char]) -> usize {
+    chars.iter().rposition(|c| !c.is_whitespace()).map_or(0, |i| i + 1)
 }
 
 #[cfg(test)]
@@ -656,6 +740,36 @@ mod tests {
         assert_eq!(f.url_at(0, end), None, "url_at 不返回路径");
         assert_eq!(f.link_at(0, 0), None, "中文前缀不是路径");
         assert_eq!(f.link_at(0, 2), None, "空格不是路径");
+    }
+
+    #[test]
+    fn link_at_wrapped_stitches_hard_wrapped_url() {
+        // 20 列：第一行正好填满 URL 前缀（行尾无空白），第二行是续行开头。
+        let mut f = Frame::new(20, 3);
+        put_text(&mut f, 0, 0, "https://example.com/");
+        put_text(&mut f, 1, 0, "very/long/path");
+        let want = Some((LinkKind::Url, "https://example.com/very/long/path".to_string()));
+        assert_eq!(f.link_at_wrapped(0, 3), want, "点第一行也要拼上续行");
+        assert_eq!(f.link_at_wrapped(1, 3), want, "点续行要拼上前缀");
+        // 单行 API 行为不变：只返回本行能看到的半截。
+        assert_eq!(
+            f.link_at(0, 3),
+            Some((LinkKind::Url, "https://example.com/".to_string()))
+        );
+    }
+
+    #[test]
+    fn link_at_wrapped_does_not_join_non_wrapped_rows() {
+        // 行尾是空白（没有硬折行）：不允许把下一行拼进来。
+        let mut f = Frame::new(30, 3);
+        put_text(&mut f, 0, 0, "see https://a.io/x");
+        put_text(&mut f, 1, 0, "next/line.txt");
+        assert_eq!(
+            f.link_at_wrapped(0, 5),
+            Some((LinkKind::Url, "https://a.io/x".to_string()))
+        );
+        // 续行开头不是 URL 的一部分：点它不应变成上一行的链接。
+        assert_eq!(f.link_at_wrapped(1, 2), None);
     }
 
     #[test]
