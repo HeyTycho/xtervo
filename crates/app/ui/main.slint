@@ -6438,7 +6438,7 @@ export component MainWindow inherits Window {
     if root.profile-form-open : Rectangle {
         x: (root.width - 440px) / 2;
         // local/serial/telnet 用紧凑高度；SSH 展开 password/转发/跳板时需要更高。
-        property <length> form-h: root.form-kind == 1 ? 700px : (root.form-kind == 0 ? 480px : 440px);
+        property <length> form-h: root.form-kind == 1 ? 700px : (root.form-kind == 0 ? 490px : 440px);
         y: (root.height - form-h) / 2 < 8px ? 8px : (root.height - form-h) / 2;
         width: 440px;
         height: form-h;
