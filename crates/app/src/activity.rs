@@ -18,6 +18,11 @@ pub struct PaneActivity {
     pub attention: bool,
     /// 进度刚刚清除（用于 Tab 上的完成标记），切 Tab 时清除。
     pub completed: bool,
+    /// 后台活动（Tab 非活动时收到标题/进度等语义事件），切 Tab 时清除。
+    /// 非活动 Tab 里仍有进行中的进度也会由 `rebuild_tabs` 算作后台活动。
+    pub background: bool,
+    /// 会话失败（非零退出码 / 被信号终止 / OSC 进度错误），切 Tab 时清除。
+    pub failed: bool,
 }
 
 /// 一个 Tab 聚合后的活动状态。
@@ -26,6 +31,8 @@ pub struct TabActivity {
     pub progress: Progress,
     pub attention: bool,
     pub completed: bool,
+    pub background: bool,
+    pub failed: bool,
 }
 
 /// 多 Pane 时选“最需要被看见”的进度：错误 > 进行中 > 暂停 > 不确定。
@@ -46,6 +53,8 @@ pub fn aggregate<'a>(panes: impl IntoIterator<Item = &'a PaneActivity>) -> TabAc
     for pane in panes {
         out.attention |= pane.attention;
         out.completed |= pane.completed;
+        out.background |= pane.background;
+        out.failed |= pane.failed;
         if pane.progress.state != ProgressState::Clear {
             let priority = progress_priority(pane.progress.state);
             if chosen.is_none_or(|(best, _)| priority > best) {
@@ -189,9 +198,15 @@ mod tests {
         a.attention = true;
         let mut b = pane(ProgressState::Clear, None);
         b.completed = true;
-        let agg = aggregate(&[a, b]);
+        let mut c = pane(ProgressState::Clear, None);
+        c.background = true;
+        let mut d = pane(ProgressState::Clear, None);
+        d.failed = true;
+        let agg = aggregate(&[a, b, c, d]);
         assert!(agg.attention);
         assert!(agg.completed);
+        assert!(agg.background);
+        assert!(agg.failed);
         assert_eq!(agg.progress.state, ProgressState::Clear);
     }
 

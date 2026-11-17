@@ -170,6 +170,10 @@ export struct TabView {
     attention: bool,
     /// 刚完成（进度从有到清除）的完成标记
     completed: bool,
+    /// 后台活动（非活动 Tab 收到输出/标题/进度）；切到该 Tab 时清除
+    background: bool,
+    /// 会话失败（非零退出 / 信号终止 / OSC 进度错误）；切到该 Tab 时清除
+    failed: bool,
     /// Pin 在左侧固定区（Tab 级，不是窗口置顶）。
     pinned: bool,
 }
@@ -1315,6 +1319,10 @@ export component MainWindow inherits Window {
     /// winit 的 HoveredFile/DroppedFile 桥接并写这个属性做高亮。
     in-out property <int> drop-hover-pane: -1;
     in property <[TabView]> tabs;
+    /// Tab 状态 tooltip：悬停 Tab 时在标签栏旁说明 ●/✕/▸/✓/进度 的含义。
+    in-out property <bool> tab-status-tip-visible: false;
+    in-out property <string> tab-status-tip-text: "";
+    in-out property <length> tab-status-tip-x: 0px;
     in property <length> tabbar-height: 32px;
     /// 工作区侧栏（ACT-046）：默认关闭；关闭时内容区与 0.5.0 逐像素一致。
     in property <bool> sidebar-visible: false;
@@ -2194,10 +2202,37 @@ export component MainWindow inherits Window {
                         property <bool> is-active: tab.active
                             && !(root.settings-open && !root.settings-legacy);
                         property <bool> show-status: tab.attention || tab.completed
+                            || tab.failed || tab.background
                             || tab.progress-state == 2 || tab.progress-label != "";
-                        // 窄 Tab 不预留整块状态区：状态压成右侧小点，标题优先占满。
+                        // 窄 Tab 不预留整块状态区：状态压成右侧小字形，标题优先占满。
                         property <bool> show-status-text: show-status && parent.width >= 64px;
                         property <bool> show-close: tab-hit.has-hover || parent.width >= 84px;
+                        // 非纯颜色状态标记：字形本身就能区分状态，颜色只是辅助。
+                        property <string> status-glyph: tab.attention ? "●"
+                            : (tab.failed || tab.progress-state == 2 ? "✕"
+                            : (tab.background ? "▸"
+                            : (tab.completed && tab.progress-state == 0 ? "✓" : "")));
+                        property <string> status-tooltip: tab.attention
+                            ? Lang.t("Unread notification", "未读通知")
+                            : (tab.failed || tab.progress-state == 2
+                                ? Lang.t("Session failed", "会话失败")
+                                : (tab.background
+                                    ? Lang.t("Background activity", "后台活动")
+                                    : (tab.completed && tab.progress-state == 0
+                                        ? Lang.t("Completed in background", "后台完成")
+                                        : (tab.progress-label != ""
+                                            ? Lang.t("Progress reported by the terminal", "终端报告了进度")
+                                            : ""))));
+                        property <bool> status-hover: tab-hit.has-hover;
+                        // 悬停 Tab 时把当前状态解释写到标签栏下方（状态字形不是纯颜色，
+                        // tooltip 说明具体含义；离开即隐藏）。
+                        changed status-hover => {
+                            root.tab-status-tip-visible = self.status-hover && status-glyph != "";
+                            if (self.status-hover && status-glyph != "") {
+                                root.tab-status-tip-text = status-tooltip;
+                                root.tab-status-tip-x = tab-hit.absolute-position.x + tab-hit.width / 2;
+                            }
+                        }
 
                         changed is-active => {
                             if (is-active) {
@@ -2247,53 +2282,29 @@ export component MainWindow inherits Window {
                             }
                         }
 
-                        // 未读通知点（Tab 非活动时由 Rust 置位，切到该 Tab 清除）
+                        // 状态字形：● 未读 / ✕ 失败 / ▸ 后台活动 / ✓ 后台完成。
                         Text {
-                            visible: tab.attention && show-status-text;
-                            x: parent.width - 44px;
+                            visible: show-status-text && status-glyph != "";
+                            x: parent.width - 46px;
                             y: 0px;
-                            width: 18px;
+                            width: 20px;
                             height: 22px;
-                            text: "●";
-                            color: Palette.colors.accent;
-                            font-size: 9px;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                        }
-
-                        // 错误标记
-                        Text {
-                            visible: !tab.attention && tab.progress-state == 2 && show-status-text;
-                            x: parent.width - 44px;
-                            y: 0px;
-                            width: 18px;
-                            height: 22px;
-                            text: "!";
-                            color: Palette.colors.danger;
-                            font-size: 12px;
+                            text: status-glyph;
+                            color: (tab.failed || tab.progress-state == 2)
+                                ? Palette.colors.danger
+                                : (tab.background
+                                    ? Palette.colors.text
+                                    : (tab.attention || tab.completed
+                                        ? Palette.colors.accent : Palette.colors.muted));
+                            font-size: 11px;
                             font-weight: 700;
                             horizontal-alignment: center;
                             vertical-alignment: center;
                         }
 
-                        // 完成标记（进度从有到清除；切 Tab 时清除）
+                        // 百分比文本（有合法 percent 时；状态字形优先）
                         Text {
-                            visible: !tab.attention && tab.progress-state == 0 && tab.completed
-                                && show-status-text;
-                            x: parent.width - 44px;
-                            y: 0px;
-                            width: 18px;
-                            height: 22px;
-                            text: "✓";
-                            color: Palette.colors.accent;
-                            font-size: 11px;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                        }
-
-                        // 百分比文本（有合法 percent 时）
-                        Text {
-                            visible: !tab.attention && tab.progress-state != 2
+                            visible: !tab.attention && !tab.failed && !tab.background
                                 && !tab.completed && tab.progress-label != ""
                                 && show-status-text;
                             x: parent.width - 48px;
@@ -2307,19 +2318,21 @@ export component MainWindow inherits Window {
                             vertical-alignment: center;
                         }
 
-                        // 窄 Tab 的状态压缩为 4px 小点，不挤占标题宽度。
-                        Rectangle {
-                            visible: show-status && !show-status-text;
-                            x: parent.width - 7px;
-                            y: 4px;
-                            width: 4px;
-                            height: 4px;
-                            border-radius: 2px;
-                            background: tab.attention
-                                ? Palette.colors.accent
-                                : (tab.progress-state == 2
-                                    ? Palette.colors.danger
-                                    : (tab.completed ? Palette.colors.accent : Palette.colors.muted));
+                        // 窄 Tab 的状态也保留字形（不是纯颜色小点），只是缩小字号。
+                        Text {
+                            visible: show-status && !show-status-text && status-glyph != "";
+                            x: parent.width - 11px;
+                            y: 0px;
+                            width: 10px;
+                            height: 22px;
+                            text: status-glyph;
+                            color: (tab.failed || tab.progress-state == 2)
+                                ? Palette.colors.danger
+                                : (tab.background ? Palette.colors.text : Palette.colors.accent);
+                            font-size: 8px;
+                            font-weight: 700;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
                         }
 
                         // Tab 级 Pin 角标：pinned Tab 才有；标题相应右移。
@@ -2772,6 +2785,33 @@ export component MainWindow inherits Window {
                 }
             }
         }
+        }
+
+        // Tab 状态 tooltip：悬停 Tab 时说明状态字形含义；离开 Tab 即隐藏。
+        // 放在标签栏外层（未 clip），不会被 32px 的标签栏裁掉。
+        if root.tab-status-tip-visible && root.tab-status-tip-text != "" : Rectangle {
+            x: Math.max(6px, Math.min(root.width - tab-status-tip.width - 10px,
+                root.tab-status-tip-x - tab-status-tip.width / 2));
+            y: root.tabbar-bottom
+                ? root.height - root.tabbar-height - 26px
+                : root.tabbar-height + 4px;
+            width: Math.min(root.width - 20px, tab-status-tip.preferred-width + 16px);
+            height: 22px;
+            border-radius: 5px;
+            background: Palette.colors.raise;
+            border-width: 1px;
+            border-color: Palette.colors.border;
+
+            tab-status-tip := Text {
+                x: 8px;
+                width: parent.width - 16px;
+                height: parent.height;
+                text: root.tab-status-tip-text;
+                color: Palette.colors.text;
+                font-size: 11px;
+                vertical-alignment: center;
+                overflow: elide;
+            }
         }
 
         // ---------------- 工作区侧栏 ----------------

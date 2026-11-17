@@ -7667,9 +7667,16 @@ fn set_active_tab_inner(st: &mut AppState, index: usize) {
         let Some(rt) = st.panes.get_mut(&id) else {
             continue;
         };
-        if rt.activity.attention || rt.activity.completed || rt.notification.is_some() {
+        if rt.activity.attention
+            || rt.activity.completed
+            || rt.activity.background
+            || rt.activity.failed
+            || rt.notification.is_some()
+        {
             rt.activity.attention = false;
             rt.activity.completed = false;
+            rt.activity.background = false;
+            rt.activity.failed = false;
             rt.notification = None;
             cleared += 1;
         }
@@ -8187,6 +8194,10 @@ fn rebuild_tabs(st: &mut AppState) {
                 progress_label: activity::progress_label(agg.progress).into(),
                 attention: agg.attention,
                 completed: agg.completed,
+                // 非活动 Tab 仍在跑进度 = 后台活动；失败含 OSC 9;4 错误态。
+                background: agg.background
+                    || (i != active && agg.progress.state != ProgressState::Clear),
+                failed: agg.failed || agg.progress.state == ProgressState::Error,
                 pinned: t.pinned,
             }
         })
@@ -11564,6 +11575,12 @@ fn drain_core_events(st: &mut AppState) -> (bool, u32) {
                         );
                         rt.title = t;
                         titles_dirty = true;
+                        if !is_active {
+                            // 后台 Tab 的标题变化（长命令/目录切换）算后台活动；
+                            // 切到该 Tab 时清除。
+                            rt.activity.background = true;
+                            tabs_dirty = true;
+                        }
                     }
                 }
                 CoreEvent::Progress(progress) => {
@@ -11572,6 +11589,9 @@ fn drain_core_events(st: &mut AppState) -> (bool, u32) {
                     // 进度从“有”变为清除 = 完成；活动 Tab 不放完成标记，避免打扰。
                     rt.activity.completed =
                         progress.state == ProgressState::Clear && had_progress && !is_active;
+                    if !is_active && progress.state != ProgressState::Clear {
+                        rt.activity.background = true;
+                    }
                     tabs_dirty = true;
                     eprintln!(
                         "[ui] ts_ms={} tab progress pane={id} tab={tab:?} state={:?} percent={:?}",
@@ -11630,6 +11650,10 @@ fn drain_core_events(st: &mut AppState) -> (bool, u32) {
                             rt.exit_code = Some(code as i32);
                             rt.exit_signal = signal.clone();
                             rt.exit_notified = true;
+                            if code != 0 || signal.is_some() {
+                                rt.activity.failed = true;
+                                tabs_dirty = true;
+                            }
                             exited_panes.push((id, rt.profile_id, code, signal));
                         }
                     }
@@ -11718,6 +11742,7 @@ fn on_app_event_wake() {
 /// `try_exit_code()` 返回 None，之后不会再有第二个 Exited。这里每轮补一次。
 fn poll_silent_exits(st: &mut AppState) {
     let mut found: Vec<(PaneId, Option<u64>, u32, Option<String>)> = Vec::new();
+    let mut failed = false;
     for (id, rt) in st.panes.iter_mut() {
         if rt.exit_notified {
             continue;
@@ -11726,11 +11751,18 @@ fn poll_silent_exits(st: &mut AppState) {
             rt.exit_code = Some(code as i32);
             rt.exit_signal = signal.clone();
             rt.exit_notified = true;
+            if code != 0 || signal.is_some() {
+                rt.activity.failed = true;
+                failed = true;
+            }
             found.push((*id, rt.profile_id, code, signal));
         }
     }
     for (id, profile_id, code, signal) in found {
         note_ssh_exit(st, id, profile_id, code, signal);
+    }
+    if failed {
+        rebuild_tabs(st);
     }
 }
 
