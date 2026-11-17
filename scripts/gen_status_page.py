@@ -206,11 +206,7 @@ def build_html() -> str:
         )
         return f"{score / max(total, 1) * 100:.1f}%"
 
-    core_bucket = {
-        status: tier_stats.get("P0 核心终端", {}).get(status, 0)
-        + tier_stats.get("P0 基础连接", {}).get(status, 0)
-        for status in STATUS_ORDER
-    }
+    core_bucket = {status: tier_stats.get("P0 核心终端", {}).get(status, 0) for status in STATUS_ORDER}
     scope_bucket = {
         status: core_bucket.get(status, 0) + tier_stats.get("P1 工作区与设置", {}).get(status, 0)
         for status in STATUS_ORDER
@@ -306,17 +302,17 @@ def build_html() -> str:
         if item_id.startswith("THEME-007"):
             return "不做：CSS 主题无法等价映射"
         if item_id.startswith("UI-QUAKE"):
-            return "降级 P2：已有 3 条实现，剩余受 Wayland 全局热键限制"
+            return "降级保留：已有 3 条实现，不做 Wayland 全局热键适配"
         if item_id.startswith("PLAT-"):
             return "按目标平台决定，不阻塞核心"
         return "观察"
 
-    p3_rows = [row for row in matrix if row["tier"].startswith("P3")]
+    p4_rows = [row for row in matrix if row["tier"].startswith("P4")]
     p3_table_rows = "".join(
         f"<tr><td><code>{esc(row['id'])}</code></td><td>{esc(clean_md(row['feature'])[:70])}</td>"
         f"<td><span class='badge {tone(row['status'])}'>{STATUS_ZH.get(row['status'], row['status'])}</span></td>"
         f"<td class='muted small'>{esc(p3_note(row['id']))}</td></tr>"
-        for row in p3_rows
+        for row in p4_rows
     )
 
     chips = "".join(
@@ -398,13 +394,13 @@ def build_html() -> str:
     <div class="kpi"><b style="color:var(--idle)">{not_started}</b><span>未开始</span></div>
     <div class="kpi"><b>{needs_verif}</b><span>待核实</span></div>
     <div class="kpi"><b>{weighted}</b><span>全量加权（244 条）</span></div>
-    <div class="kpi"><b style="color:var(--info)">{tier_weighted(core_bucket)}</b><span>P0 核心加权（{sum(core_bucket.values())} 条）</span></div>
-    <div class="kpi"><b style="color:var(--info)">{tier_weighted(scope_bucket)}</b><span>P0+P1 加权（{sum(scope_bucket.values())} 条）</span></div>
+    <div class="kpi"><b style="color:var(--info)">{tier_weighted(core_bucket)}</b><span>终端本体加权（{sum(core_bucket.values())} 条）</span></div>
+    <div class="kpi"><b style="color:var(--info)">{tier_weighted(scope_bucket)}</b><span>终端+工作区（{sum(scope_bucket.values())} 条）</span></div>
   </div>
 
   <nav class="tabs">
     <button class="active" data-pane="road">🗺 0.6 路标（{sum(len(s['cards']) for s in sections)} 张卡）</button>
-    <button data-pane="scope">🧭 范围审视（必要性分档）</button>
+    <button data-pane="scope">🧭 范围审视（什么算核心）</button>
     <button data-pane="plan">🌙 今晚计划（{len(plan)} 项）</button>
     <button data-pane="matrix">📊 产品矩阵（{len(matrix)} 条）</button>
     <button data-pane="commits">🧾 最近提交（{len(commits)}）</button>
@@ -415,22 +411,23 @@ def build_html() -> str:
   </section>
 
   <section class="pane" id="pane-scope">
-    <p class="muted">矩阵是<b>上游 Tabby 能力审计</b>，不是产品必须清单。按必要性重新分档后，
-      真正要做的是 P0+P1（{sum(scope_bucket.values())} 条）；P3 建议不做或降级。</p>
+    <p class="muted">矩阵是<b>上游 Tabby 能力审计</b>，不是需求清单。<b>SSH/Serial/Telnet 是官方插件（可卸载），
+      不算核心</b>；我们也不追求和 Tabby 一一对应。所以“核心完成度”只看 P0 终端本体。</p>
     <table>
       <thead><tr><th>档位</th><th>条目</th><th>已实现</th><th>部分</th><th>待核实</th><th>未开始</th><th>不做</th><th>加权</th></tr></thead>
       <tbody>{tier_table_rows}</tbody>
     </table>
-    <h3 style="margin-top:22px">P3：不建议做 / 观察（{len(p3_rows)} 条）</h3>
+    <h3 style="margin-top:22px">P4：不建议做 / 观察（{len(p4_rows)} 条）</h3>
     <table>
       <thead><tr><th>ID</th><th>内容</th><th>状态</th><th>建议</th></tr></thead>
       <tbody>{p3_table_rows}</tbody>
     </table>
     <h3 style="margin-top:22px">结论</h3>
     <ul class="muted">
-      <li>“未完成”不等于“必须做”：51 条 not_started 里 13 条是 P0 连接主干、15 条 P1、8 条 P2、6 条 P3。</li>
-      <li>真实完成度：核心终端 {tier_weighted(tier_stats.get('P0 核心终端', {}))}，P0 合计 {tier_weighted(core_bucket)}，P0+P1 {tier_weighted(scope_bucket)}，全量 {weighted}。</li>
-      <li>最该投入的是 P0 基础连接（SSH/Serial/Telnet），它们全挂在 ACT-052 transport seam 之后。</li>
+      <li>核心完成度只看 P0 终端本体：{tier_weighted(tier_stats.get('P0 核心终端', {}))}；加上工作区体验是 {tier_weighted(scope_bucket)}。</li>
+      <li>连接插件（SSH/Serial/Telnet/SFTP）{tier_weighted(tier_stats.get('P2 连接插件（可选）', {}))}，<b>不装也能用</b>，不该混进核心数字。</li>
+      <li>不追 Tabby 全等：Node/Angular 插件兼容、Zmodem、CSS 主题、WinSCP 都不做；我们自己做 Workspace/状态区/Safe mode/transport seam。</li>
+      <li>51 条 not_started：9 条 P0 边角、15 条工作区、15 条连接插件、6 条高级、6 条不建议。</li>
     </ul>
   </section>
 

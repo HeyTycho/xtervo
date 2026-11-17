@@ -25,27 +25,22 @@ ROOT = Path(__file__).resolve().parent.parent
 
 # 顺序敏感：先匹配到的档位生效。
 RULES: list[tuple[str, tuple[str, ...]]] = [
-    # 生态兼容重赌注：Node sidecar + Angular WebView，投入大、与 v3 插件路线冲突
-    ("P3 不建议/观察", ("PLUG-007", "PLUG-008", "PLUG-009", "PLUG-010", "PLUG-011", "PLUG-012", "PLUG-013")),
-    ("P3 不建议/观察", ("ZMODEM-", "UI-SER-008", "THEME-007", "UI-QUAKE-")),
-    # 平台/发布：按目标平台决定，不阻塞核心体验
-    ("P3 不建议/观察", ("PLAT-",)),
-    # 高级连接：ProxyJump/X11/Login Scripts/算法、串口 Hex/换行/Zmodem
-    ("P2 高级连接", ("SSH-006", "SSH-008", "SSH-010", "SSH-012", "SSH-013", "SSH-014", "UI-SSH-008")),
-    ("P2 高级连接", ("SERIAL-004", "SERIAL-005", "SERIAL-006", "SERIAL-009", "SERIAL-010", "TELNET-004", "UI-SER-")),
-    # 核心终端
+    # P4 不建议：生态兼容重赌注、上游条件项、明确不做的外部集成
+    ("P4 不建议/观察", ("PLUG-007", "PLUG-008", "PLUG-009", "PLUG-010", "PLUG-011", "PLUG-012", "PLUG-013")),
+    ("P4 不建议/观察", ("ZMODEM-", "UI-SER-008", "THEME-007", "UI-QUAKE-", "PLAT-")),
+    # P3 高级连接：连接后端的“重度用户”能力，默认不做
+    ("P3 高级连接", ("SSH-006", "SSH-008", "SSH-010", "SSH-012", "SSH-013", "SSH-014", "SSH-016", "UI-SSH-008")),
+    ("P3 高级连接", ("SERIAL-004", "SERIAL-005", "SERIAL-006", "SERIAL-009", "SERIAL-010", "TELNET-004")),
+    # P0 核心终端：不做就不是一个合格的终端（与连接后端无关）
     ("P0 核心终端", ("TERM-", "UI-TERM-", "KEY-", "UI-PANE-", "UI-TAB-", "UI-WIN-", "LOCAL-", "SESS-")),
-    # 基础连接后端（SSH/Serial/Telnet 主干 + SFTP）
-    ("P0 基础连接", ("SSH-001", "SSH-002", "SSH-003", "SSH-004", "SSH-005", "SSH-015")),
-    ("P0 基础连接", ("SERIAL-001", "SERIAL-002", "SERIAL-003", "SERIAL-007", "SERIAL-008")),
-    ("P0 基础连接", ("TELNET-001", "TELNET-002", "TELNET-003", "SFTP-")),
-    # 工作区/设置/通知/安全/诊断
-    ("P1 工作区与设置", ("UI-NAV-", "UI-PROF-", "UI-SET-", "UI-PLUG-", "NOTIFY-", "SEC-", "OPS-", "UI-SSH-")),
-    ("P1 工作区与设置", ("THEME-",)),
+    # P2 连接插件（可选）：SSH/Serial/Telnet/SFTP —— 官方插件，可卸载，不装也完全能用
+    ("P2 连接插件（可选）", ("SSH-", "UI-SSH-", "SERIAL-", "UI-SER-", "TELNET-", "SFTP-")),
+    # P1 工作区与设置：决定“好不好用”的壳与体验
+    ("P1 工作区与设置", ("UI-NAV-", "UI-PROF-", "UI-SET-", "UI-PLUG-", "NOTIFY-", "SEC-", "OPS-", "THEME-")),
 ]
 
-FALLBACK = "P2 高级连接"
-TIER_ORDER = ["P0 核心终端", "P0 基础连接", "P1 工作区与设置", "P2 高级连接", "P3 不建议/观察"]
+FALLBACK = "P1 工作区与设置"
+TIER_ORDER = ["P0 核心终端", "P1 工作区与设置", "P2 连接插件（可选）", "P3 高级连接", "P4 不建议/观察"]
 STATUSES = ["implemented", "partial", "needs_verification", "not_started", "unsupported"]
 
 
@@ -80,7 +75,6 @@ def stats(rows: list[tuple[str, str, str]]) -> dict[str, dict]:
     out: dict[str, dict] = {tier: Counter() for tier in TIER_ORDER}
     for item_id, _feature, status in rows:
         out[tier_of(item_id)][status] += 1
-        out[tier_of(item_id)]["total"] += 1
     return out
 
 
@@ -106,20 +100,27 @@ def main() -> int:
     for tier in TIER_ORDER:
         c = per_tier[tier]
         print(
-            f"| {tier} | {c['total']} | {c.get('implemented',0)} | {c.get('partial',0)} | "
+            f"| {tier} | {sum(c.values())} | {c.get('implemented',0)} | {c.get('partial',0)} | "
             f"{c.get('needs_verification',0)} | {c.get('not_started',0)} | {c.get('unsupported',0)} | {weighted(c):.1f}% |"
         )
-    core = per_tier["P0 核心终端"] + per_tier["P0 基础连接"]
-    core_total = core["total"]
+    core = per_tier["P0 核心终端"]
+    core_total = sum(core.values())
     core_done = core.get("implemented", 0) + core.get("partial", 0) * 0.5 + core.get("needs_verification", 0) * 0.25
     print()
-    print(f"P0 合计 {core_total} 条，加权 {core_done / max(core_total,1) * 100:.1f}%")
-    scope = sum(per_tier[t]["total"] for t in ("P0 核心终端", "P0 基础连接", "P1 工作区与设置"))
-    scope_done = sum(
-        per_tier[t].get("implemented", 0) + per_tier[t].get("partial", 0) * 0.5 + per_tier[t].get("needs_verification", 0) * 0.25
-        for t in ("P0 核心终端", "P0 基础连接", "P1 工作区与设置")
+    print(f"P0 终端本体 {core_total} 条，加权 {core_done / max(core_total,1) * 100:.1f}%")
+
+    ux = per_tier["P1 工作区与设置"] + core
+    ux_total = sum(ux.values())
+    ux_done = sum(
+        (per_tier[t].get("implemented", 0) + per_tier[t].get("partial", 0) * 0.5 + per_tier[t].get("needs_verification", 0) * 0.25)
+        for t in ("P0 核心终端", "P1 工作区与设置")
     )
-    print(f"P0+P1 合计 {scope} 条（占 {scope/len(rows)*100:.0f}%），加权 {scope_done/scope*100:.1f}%")
+    print(f"终端+工作区 {ux_total} 条，加权 {ux_done / max(ux_total,1) * 100:.1f}%")
+
+    conn = per_tier["P2 连接插件（可选）"]
+    conn_total = sum(conn.values())
+    conn_done = conn.get("implemented", 0) + conn.get("partial", 0) * 0.5 + conn.get("needs_verification", 0) * 0.25
+    print(f"连接插件（可选）{conn_total} 条，加权 {conn_done / max(conn_total,1) * 100:.1f}%（不装也能用）")
 
     if "--ids" in sys.argv:
         want = sys.argv[sys.argv.index("--ids") + 1]
