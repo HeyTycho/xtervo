@@ -143,17 +143,24 @@ impl WorkspaceStore {
     }
 }
 
-/// 由 Tab 标题派生唯一工作区名：去掉空白/路径分隔符，重名时追加 `-2`、`-3`…
+/// 清理工作区名：空白与路径分隔符换成空格，再 trim。
 ///
-/// 抽成纯函数是为了单测；调用方只需把现有名字列表传进来。
-pub fn unique_name(base: &str, existing: &[String]) -> String {
+/// 命名弹窗用它预填 Tab 标题（SESS-003），`unique_name` 也复用它。
+pub fn sanitize_name(base: &str) -> String {
     let cleaned: String = base
         .trim()
         .chars()
         .map(|c| if c.is_whitespace() || c == '/' || c == '\\' { ' ' } else { c })
         .collect();
-    let cleaned = cleaned.trim();
-    let base = if cleaned.is_empty() { "workspace" } else { cleaned };
+    cleaned.trim().to_string()
+}
+
+/// 由 Tab 标题派生唯一工作区名：去掉空白/路径分隔符，重名时追加 `-2`、`-3`…
+///
+/// 抽成纯函数是为了单测；调用方只需把现有名字列表传进来。
+pub fn unique_name(base: &str, existing: &[String]) -> String {
+    let cleaned = sanitize_name(base);
+    let base = if cleaned.is_empty() { "workspace" } else { cleaned.as_str() };
     if !existing.iter().any(|n| n.eq_ignore_ascii_case(base)) {
         return base.to_string();
     }

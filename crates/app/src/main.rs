@@ -152,16 +152,10 @@ fn open_workspace(st: &mut AppState, name: &str) {
     }
 }
 
-/// 把当前 Tab 的分屏布局存成命名工作区（`workspace.save` 命令）。
-///
-/// 名字由 Tab 标题派生并去重；只存布局（树 + cwd + profile 关联），不存进程。
-fn save_current_workspace(st: &mut AppState) {
-    let Some(tab) = st.ws.active_tab() else {
-        return;
-    };
-    let Some(root) = tab.root.as_ref() else {
-        return;
-    };
+/// 当前 Tab 的分屏树 + 每个叶子的 cwd/Profile（保存布局用）。
+fn collect_workspace_tree(st: &AppState) -> Option<(session::Tree, usize, String)> {
+    let tab = st.ws.active_tab()?;
+    let root = tab.root.as_ref()?;
     let ids = root.panes();
     let mut cwds = HashMap::with_capacity(ids.len());
     let mut profiles = HashMap::with_capacity(ids.len());
@@ -175,28 +169,100 @@ fn save_current_workspace(st: &mut AppState) {
         profiles.insert(*id, st.panes.get(id).and_then(|rt| rt.profile_id));
     }
     let tree = session::Tree::from_node_with_profiles(root, &cwds, &profiles);
-    let title = tab.title.clone();
+    Some((tree, ids.len(), tab.title.clone()))
+}
+
+/// 命名弹窗的重名/空名提示；空串 = 可以保存。
+fn workspace_name_hint(raw: &str, existing: &[String], zh: bool) -> String {
+    let name = raw.trim();
+    if name.is_empty() {
+        return if zh {
+            "名字不能为空".to_string()
+        } else {
+            "Name is required".to_string()
+        };
+    }
+    if existing.iter().any(|n| n.eq_ignore_ascii_case(name)) {
+        if zh {
+            format!("已存在「{name}」，保存将覆盖该工作区")
+        } else {
+            format!("\"{name}\" already exists; saving will overwrite it")
+        }
+    } else {
+        String::new()
+    }
+}
+
+/// 打开“保存布局为工作区”命名弹窗（SESS-003）：预填当前 Tab 标题。
+fn open_workspace_save_dialog(st: &mut AppState) {
+    let Some(tab) = st.ws.active_tab() else {
+        set_status_toast(st, "Save layout: 没有活动 Tab".to_string());
+        return;
+    };
+    let prefill = workspaces::sanitize_name(&tab.title);
     let existing: Vec<String> = st.workspaces.workspaces.iter().map(|w| w.name.clone()).collect();
-    let name = workspaces::unique_name(&title, &existing);
+    let hint = workspace_name_hint(&prefill, &existing, st.cfg.lang() == "zh");
+    st.ui.set_workspace_save_name(prefill.as_str().into());
+    st.ui.set_workspace_save_hint(hint.as_str().into());
+    st.ui.set_workspace_save_status("".into());
+    st.ui.set_workspace_save_open(true);
+    eprintln!("[workspace] 保存布局弹窗预填 name={prefill:?} hint={hint:?}");
+}
+
+/// 输入框变化：只刷新重名提示，不写盘。
+fn check_workspace_name(st: &mut AppState, raw: &str) {
+    let existing: Vec<String> = st.workspaces.workspaces.iter().map(|w| w.name.clone()).collect();
+    let hint = workspace_name_hint(raw, &existing, st.cfg.lang() == "zh");
+    st.ui.set_workspace_save_hint(hint.as_str().into());
+    st.ui.set_workspace_save_status("".into());
+}
+
+/// 提交命名弹窗：校验 → 收集当前 Tab 布局 → 写盘（同名覆盖）。
+fn commit_workspace_save(st: &mut AppState, raw: &str) {
+    let name = raw.trim().to_string();
+    if name.is_empty() {
+        st.ui
+            .set_workspace_save_status("工作区名字不能为空".into());
+        return;
+    }
+    let Some((tree, panes, tab_title)) = collect_workspace_tree(st) else {
+        st.ui
+            .set_workspace_save_status("当前 Tab 没有可保存的布局".into());
+        return;
+    };
+    let overwrite = st.workspaces.get(&name).is_some();
     if let Err(e) = st.workspaces.upsert(workspaces::Workspace { name: name.clone(), tree }) {
         eprintln!("[workspace] 保存失败: {e}");
+        st.ui.set_workspace_save_status(e.as_str().into());
         return;
     }
     st.workspaces.save();
+    st.ui.set_workspace_save_open(false);
+    st.ui.set_workspace_save_hint("".into());
+    st.ui.set_workspace_save_status("".into());
     eprintln!(
-        "[workspace] 已保存「{name}」（{} 个 pane，共 {} 个工作区）",
-        ids.len(),
+        "[workspace] 已保存「{name}」（tab={tab_title:?} {panes} 个 pane，共 {} 个工作区，覆盖={overwrite}）",
         st.workspaces.workspaces.len()
     );
     let msg = if st.cfg.lang() == "zh" {
-        format!("已保存工作区「{name}」")
+        if overwrite {
+            format!("已覆盖工作区「{name}」")
+        } else {
+            format!("已保存工作区「{name}」")
+        }
+    } else if overwrite {
+        format!("Overwrote workspace \"{name}\"")
     } else {
         format!("Saved workspace \"{name}\"")
     };
-    st.ui
-        .set_status_items(ModelRc::from(Rc::new(VecModel::from(vec![
-            slint::SharedString::from(msg),
-        ]))));
+    set_status_toast(st, msg);
+}
+
+fn cancel_workspace_save(st: &mut AppState) {
+    st.ui.set_workspace_save_open(false);
+    st.ui.set_workspace_save_hint("".into());
+    st.ui.set_workspace_save_status("".into());
+    st.ui.invoke_focus_terminal();
 }
 
 fn toggle_sidebar(st: &mut AppState) {
@@ -10212,7 +10278,7 @@ fn run_command(st: &mut AppState, id: &str) {
         "tab.duplicate" => duplicate_tab(st, st.ws.active),
         "tab.reopen-closed" => reopen_closed_tab(st),
         "view.sidebar" => toggle_sidebar(st),
-        "workspace.save" => save_current_workspace(st),
+        "workspace.save" => open_workspace_save_dialog(st),
         "workspace.list" => {
             let names: Vec<String> =
                 st.workspaces.workspaces.iter().map(|w| w.name.clone()).collect();
@@ -14116,6 +14182,16 @@ fn register_window_callbacks(
 
     ui.on_save_cancel(move || {
         runtime::with_window(window_id, cancel_save_contents);
+    });
+
+    ui.on_workspace_save_check(move |name| {
+        runtime::with_window(window_id, |st| check_workspace_name(st, name.as_str()));
+    });
+    ui.on_workspace_save_commit(move |name| {
+        runtime::with_window(window_id, |st| commit_workspace_save(st, name.as_str()));
+    });
+    ui.on_workspace_save_cancel(move || {
+        runtime::with_window(window_id, cancel_workspace_save);
     });
 
     ui.on_tab_reorder(move |from, drag_x, strip_w| {

@@ -1992,6 +1992,16 @@ export component MainWindow inherits Window {
     in-out property <string> save-status: "";
     callback save-commit(string);
     callback save-cancel();
+
+    // 保存布局为命名 Workspace（SESS-003）：预填 Tab 标题、重名提示、Esc 取消。
+    in-out property <bool> workspace-save-open: false;
+    in-out property <string> workspace-save-name: "";
+    /// 重名/空名提示（由 Rust 在输入变化时更新）。
+    in-out property <string> workspace-save-hint: "";
+    in-out property <string> workspace-save-status: "";
+    callback workspace-save-check(string);
+    callback workspace-save-commit(string);
+    callback workspace-save-cancel();
     /// IME 候选窗锚点：聚焦 pane 光标的像素位置（内容区坐标，由 Rust 侧更新）。
     in-out property <length> ime-x: 0px;
     in-out property <length> ime-y: 0px;
@@ -8200,7 +8210,136 @@ export component MainWindow inherits Window {
         }
     }
 
-    // 通用状态条目：在插件状态栏之上叠一行 pill（只读文本，不改变终端布局）。
+    // 保存布局为命名 Workspace：与 Save Contents 同款弹窗，输入即名字。
+    if root.workspace-save-open : Rectangle {
+        width: 100%;
+        height: 100%;
+        background: #00000080;
+
+        // 吃掉点击，避免穿透到终端误触；不点外部关闭（防误丢输入）。
+        TouchArea {
+            width: 100%;
+            height: 100%;
+            pointer-event(event) => { EventResult.accept; }
+        }
+
+        Rectangle {
+            x: (root.width - self.width) / 2;
+            y: (root.height - self.height) / 2;
+            width: Math.min(460px, root.width - 24px);
+            height: 258px;
+            background: Palette.colors.raise;
+            border-radius: 10px;
+            border-width: 1px;
+            border-color: Palette.colors.border;
+            drop-shadow-blur: 24px;
+            drop-shadow-offset-y: 8px;
+            drop-shadow-color: #000000c0;
+
+            VerticalLayout {
+                padding: 16px;
+                spacing: 9px;
+
+                Text {
+                    text: Lang.t("Save layout as workspace", "保存布局为工作区");
+                    color: Palette.colors.text;
+                    font-size: 15px;
+                    font-weight: 600;
+                }
+                Text {
+                    text: Lang.t("Stores this tab's split layout, each pane's cwd and profile (no running processes).", "保存当前 Tab 的分屏布局、各 pane 的工作目录与 Profile（不含运行中的进程）。");
+                    color: Palette.colors.muted;
+                    font-size: 11px;
+                    wrap: word-wrap;
+                }
+                TextInput {
+                    height: 30px;
+                    text <=> root.workspace-save-name;
+                    single-line: true;
+                    color: Palette.colors.text;
+                    font-size: 13px;
+                    init => { self.focus(); }
+                    changed text => { root.workspace-save-check(self.text); }
+                    key-pressed(event) => {
+                        if (event.text == "\u{a}" || event.text == "\u{d}") {
+                            root.workspace-save-commit(self.text);
+                            return EventResult.accept;
+                        }
+                        if (event.text == "\u{1b}") {
+                            root.workspace-save-open = false;
+                            root.workspace-save-cancel();
+                            return EventResult.accept;
+                        }
+                        EventResult.reject
+                    }
+                }
+                Text {
+                    text: root.workspace-save-hint;
+                    color: Palette.colors.danger;
+                    font-size: 11px;
+                    wrap: word-wrap;
+                    visible: root.workspace-save-hint != "";
+                }
+                Text {
+                    text: root.workspace-save-status;
+                    color: Palette.colors.danger;
+                    font-size: 11px;
+                    wrap: word-wrap;
+                    visible: root.workspace-save-status != "";
+                }
+                Rectangle {
+                    horizontal-stretch: 1;
+                    height: 1px;
+                    background: transparent;
+                }
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: 8px;
+
+                    Rectangle {
+                        width: 88px; height: 28px; border-radius: 6px;
+                        background: ws-save-cancel-hit.has-hover ? Palette.colors.hover : Palette.colors.raise;
+                        border-width: 1px;
+                        border-color: Palette.colors.border;
+                        ws-save-cancel-hit := TouchArea {
+                            clicked => {
+                                root.workspace-save-open = false;
+                                root.workspace-save-cancel();
+                            }
+                        }
+                        Text {
+                            text: Lang.t("Cancel", "取消");
+                            color: Palette.colors.text;
+                            font-size: 12px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                            width: 100%;
+                            height: 100%;
+                        }
+                    }
+                    Rectangle {
+                        width: 88px; height: 28px; border-radius: 6px;
+                        background: ws-save-commit-hit.has-hover ? Palette.colors.muted : Palette.colors.accent;
+                        ws-save-commit-hit := TouchArea {
+                            clicked => { root.workspace-save-commit(root.workspace-save-name); }
+                        }
+                        Text {
+                            text: Lang.t("Save", "保存");
+                            color: Palette.colors.accent-text;
+                            font-size: 12px;
+                            font-weight: 600;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                            width: 100%;
+                            height: 100%;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+        // 通用状态条目：在插件状态栏之上叠一行 pill（只读文本，不改变终端布局）。
     if root.status-items.length > 0 : HorizontalLayout {
         x: 8px;
         y: (root.tabbar-bottom ? root.height - root.tabbar-height - 24px : root.height - 24px)
