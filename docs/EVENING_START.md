@@ -39,6 +39,26 @@ F9      截图 + IME 候选位置 sanity（若无输入法可跳过）
 F10     伪造 crash 计数，看日志与 pill
 ```
 
+## 2.5 本机测试台（已实测，省得半夜找环境）
+
+```bash
+sshd        MISSING（本机没有 openssh-server）→ SSH 插件联调三选一：
+            a) 用你现有的远端（profiles.toml 里的 staging 之类）
+            b) sudo apt install openssh-server 后连 127.0.0.1
+            c) 只验证错误路径（ssh 连不存在的端口 → 插件应上报 transport.error）
+ssh client  /usr/bin/ssh ✓
+socat       /usr/bin/socat ✓  → 串口插件测试用虚拟串口对：
+            socat -d -d pty,raw,echo=0 pty,raw,echo=0
+            （实测输出 /dev/pts/0 <-> /dev/pts/1）
+真实串口    /dev/ttyUSB*、/dev/ttyACM* 都不存在 → 只能靠 socat PTY 对
+telnetd     system 版 MISSING，但 busybox 有 telnetd applet ✓ →
+            busybox telnetd -l /bin/sh -p 2323
+nc          ✓（可以当最简 TCP 回显：nc -lk 127.0.0.1 2324）
+```
+
+结论：**Serial 用 socat PTY 对、Telnet 用 busybox telnetd/nc 都能本地闭环；
+SSH 必须用远端或装 sshd**——这一条要在 18:00 前跟用户确认好，否则 F5 会卡住。
+
 ## 3. 中断保护
 
 - 每个 commit 前必须 `cargo check -p tervo-app -p tervo-core` 通过；
