@@ -369,7 +369,7 @@ impl Contributes {
     }
 }
 
-/// `[[commands]]`：声明式命令；宿主负责 Palette 展示与调用。
+/// `[[commands]]`：声明式命令；宿主负责 Palette 展示、Hotkeys 绑定与调用。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CommandDecl {
@@ -377,6 +377,17 @@ pub struct CommandDecl {
     pub title: String,
     #[serde(default)]
     pub description: String,
+    /// 默认快捷键（单段 chord，如 `ctrl+shift+g`）；空 = 只在 Command Palette 出现。
+    ///
+    /// 宿主会在 Hotkeys 页列出这条绑定，用户仍可像内置命令一样覆盖/重置。
+    #[serde(default)]
+    pub keybinding: String,
+    /// 命令上下文条件（`when`），如 `terminalFocus && !settingsOpen`。
+    ///
+    /// 语法见 [`super::context::WhenExpr`]；空 = 总是可用。条件不满足时命令不出现在
+    /// Palette，按键也不会触发。
+    #[serde(default)]
+    pub when: String,
 }
 
 impl CommandDecl {
@@ -390,6 +401,23 @@ impl CommandDecl {
         }
         if self.description.chars().count() > 512 {
             return Err(format!("commands.{} description 超过 512 字符", self.id));
+        }
+        if !self.keybinding.trim().is_empty() {
+            let shortcut = crate::commands::Shortcut::parse(self.keybinding.trim())
+                .map_err(|e| format!("commands.{} keybinding 非法: {e}", self.id))?;
+            let chord = shortcut.single_chord().ok_or_else(|| {
+                format!("commands.{} keybinding 只支持单段组合键", self.id)
+            })?;
+            if !chord.is_bindable() {
+                return Err(format!(
+                    "commands.{} keybinding 需要 Ctrl/Alt/Meta 或 F1–F24（否则会抢走终端输入）",
+                    self.id
+                ));
+            }
+        }
+        if !self.when.trim().is_empty() {
+            super::context::WhenExpr::parse(&self.when)
+                .map_err(|e| format!("commands.{} when 非法: {e}", self.id))?;
         }
         Ok(())
     }

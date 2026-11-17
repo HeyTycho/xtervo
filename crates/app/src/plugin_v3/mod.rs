@@ -19,6 +19,7 @@
 //! 代码路径。
 
 mod cli;
+pub mod context;
 pub mod install;
 mod manifest;
 mod protocol;
@@ -44,6 +45,7 @@ use crate::plugin_wasm::{
 };
 
 pub use cli::run_cli;
+pub use context::{CommandContext, WhenExpr};
 pub use install::{
     install_package, rollback_package, InstallOptions, InstallReport, RollbackOptions,
     RollbackReport,
@@ -571,6 +573,33 @@ pub struct StatusItem {
 pub enum EnableDecision {
     Approved,
     NeedsApproval { permissions: Vec<String> },
+}
+
+/// 已启用且权限已确认的插件命令（Palette / Hotkeys 页 / 按键分发共用）。
+///
+/// 每次调用都从 `entries` + 持久化状态现算：Disable/Reload 后下一次查询即失效，
+/// 不需要单独维护一份“已注册命令”缓存，也就不存在清理遗漏。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PluginCommandRef {
+    pub full_id: String,
+    pub plugin_id: String,
+    pub plugin_name: String,
+    pub title: String,
+    pub description: String,
+    /// 清单默认快捷键（canonical 小写格式）；空 = 未绑定。
+    pub keybinding: Option<String>,
+    /// `when` 条件原文；空 = 总是可用。
+    pub when: String,
+}
+
+/// 清单 `when` 对当前上下文是否成立；解析过的非法表达式按 false（不可用）处理，
+/// 避免坏清单让命令在错误上下文里执行。
+pub fn command_when_allows(decl: &CommandDecl, ctx: &CommandContext) -> bool {
+    let when = decl.when.trim();
+    if when.is_empty() {
+        return true;
+    }
+    WhenExpr::parse(when).map(|expr| expr.eval(ctx)).unwrap_or(false)
 }
 
 // ---------------------------------------------------------------- PluginStore
@@ -1738,9 +1767,13 @@ impl PluginStore {
         leaked
     }
 
-    /// Palette 可用的插件命令（仅 enabled + 已确认权限）。字符串 interning 只为
-    /// 兼容现有 `&'static str` 命令表；同一 id 重复 reload 不会再次泄漏。
-    pub fn palette_commands(&mut self, query: &str) -> Vec<(&'static str, String)> {
+    /// Palette 可用的插件命令（仅 enabled + 已确认权限 + `when` 成立）。字符串
+    /// interning 只为兼容现有 `&'static str` 命令表；同一 id 重复 reload 不会再次泄漏。
+    pub fn palette_commands(
+        &mut self,
+        query: &str,
+        ctx: &CommandContext,
+    ) -> Vec<(&'static str, String)> {
         let query = query.trim().to_lowercase();
         let mut found: Vec<(String, String)> = Vec::new();
         for entry in &self.entries {
@@ -1756,6 +1789,9 @@ impl PluginStore {
                 continue;
             }
             for command in &manifest.commands {
+                if !command_when_allows(command, ctx) {
+                    continue;
+                }
                 let title = command.title.clone();
                 let description = command.description.clone();
                 let full_id = manifest.full_command_id(&command.id);
@@ -1763,6 +1799,7 @@ impl PluginStore {
                     || title.to_lowercase().contains(&query)
                     || description.to_lowercase().contains(&query)
                     || full_id.to_lowercase().contains(&query)
+                    || manifest.name.to_lowercase().contains(&query)
                 {
                     found.push((full_id, title));
                 }
@@ -1774,6 +1811,59 @@ impl PluginStore {
             .into_iter()
             .map(|(id, title)| (self.intern(&id), title))
             .collect()
+    }
+
+    /// 已启用 + 已确认权限的插件命令快照（Hotkeys 页与按键分发用）。
+    ///
+    /// Disable/Reload 后再次调用即返回新集合；这里不保留任何注册表缓存。
+    pub fn command_refs(&self) -> Vec<PluginCommandRef> {
+        let mut refs: Vec<PluginCommandRef> = Vec::new();
+        for entry in &self.entries {
+            let Some(manifest) = &entry.manifest else {
+                continue;
+            };
+            if !entry.supported
+                || !self.state.is_enabled(&manifest.id)
+                || !self
+                    .state
+                    .approved_for(&manifest.id, &manifest.permission_fingerprint())
+            {
+                continue;
+            }
+            for command in &manifest.commands {
+                let keybinding = command.keybinding.trim();
+                let keybinding = if keybinding.is_empty() {
+                    None
+                } else {
+                    crate::commands::Shortcut::parse(keybinding)
+                        .ok()
+                        .and_then(|shortcut| shortcut.single_chord().map(|chord| chord.canonical()))
+                };
+                refs.push(PluginCommandRef {
+                    full_id: manifest.full_command_id(&command.id),
+                    plugin_id: manifest.id.clone(),
+                    plugin_name: manifest.name.clone(),
+                    title: command.title.clone(),
+                    description: command.description.clone(),
+                    keybinding,
+                    when: command.when.trim().to_string(),
+                });
+            }
+        }
+        refs.sort_by(|a, b| {
+            a.plugin_name
+                .to_lowercase()
+                .cmp(&b.plugin_name.to_lowercase())
+                .then_with(|| a.title.to_lowercase().cmp(&b.title.to_lowercase()))
+                .then_with(|| a.full_id.cmp(&b.full_id))
+        });
+        refs
+    }
+
+    /// 这条插件命令当前是否可执行（存在、启用、权限确认、`when` 成立）。
+    pub fn command_allowed(&self, full_id: &str, ctx: &CommandContext) -> bool {
+        self.find_command(full_id)
+            .is_some_and(|(_, decl)| command_when_allows(&decl, ctx))
     }
 
     /// UI 运行命令：识别 → 发 supervisor → 独立线程等结果；立即返回。

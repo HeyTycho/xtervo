@@ -576,10 +576,10 @@ struct AppState {
     sftp_profiles: Vec<usize>,
     sftp_model: Rc<VecModel<slint::SharedString>>,
     hotkey_model: Rc<VecModel<HotkeyRow>>,
-    /// 与 hotkey_model 同序的命令 ID
-    hotkey_ids: Vec<&'static str>,
+    /// 与 hotkey_model 同序的命令 ID（内置 + 已启用插件命令）
+    hotkey_ids: Vec<String>,
     /// 正在录制的命令 ID；Some 时所有按键只用于录制
-    hotkey_recording: Option<&'static str>,
+    hotkey_recording: Option<String>,
     /// kitty REPORT_EVENT_TYPES 下已经转发给各 pane 的按键身份。
     ///
     /// release 只回放这里登记过的键：快捷键/搜索框/录制中的按键 press 没进 PTY，
@@ -1555,17 +1555,212 @@ fn hotkey_rows(
     (summary, rows, ids)
 }
 
+/// UI 线程构造的插件命令上下文（Palette / Hotkeys / 按键分发共用）。
+fn command_context(st: &AppState) -> plugin_v3::CommandContext {
+    let tab = st.ws.active_tab();
+    let panel_open = st.ui.get_settings_open()
+        || st.ui.get_palette_open()
+        || st.ui.get_tabsearch_open()
+        || st.ui.get_search_open()
+        || st.ui.get_profiles_open()
+        || st.ui.get_sftp_open()
+        || st.ui.get_rename_open()
+        || st.ui.get_confirm_open()
+        || st.ui.get_plugin_surface_open();
+    plugin_v3::CommandContext {
+        terminal_focus: !panel_open,
+        settings_open: st.ui.get_settings_open(),
+        palette_open: st.ui.get_palette_open(),
+        tab_search_open: st.ui.get_tabsearch_open(),
+        sidebar_open: st.cfg.sidebar_visible,
+        tab_count: st.ws.tabs.len(),
+        pane_count: tab.map(|tab| tab.panes().len()).unwrap_or(0),
+        active_tab_pinned: tab.map(|tab| tab.pinned).unwrap_or(false),
+    }
+}
+
+/// 一条插件命令的生效绑定：用户 override 优先，其次清单默认 `keybinding`。
+struct PluginHotkey {
+    id: String,
+    plugin: String,
+    title: String,
+    effective: Option<commands::Chord>,
+    custom: bool,
+}
+
+/// 当前启用且权限已确认的插件命令绑定。Disable/Reload 后随时重算，不做缓存。
+fn plugin_hotkeys(st: &AppState) -> Vec<PluginHotkey> {
+    st.plugins
+        .command_refs()
+        .into_iter()
+        .map(|command| {
+            let default_chord = command
+                .keybinding
+                .as_deref()
+                .and_then(|text| commands::Chord::parse(text).ok());
+            let custom_chord = st
+                .cfg
+                .hotkeys
+                .iter()
+                .rev()
+                .find(|over| over.command == command.full_id)
+                .and_then(|over| commands::Chord::parse(&over.chord).ok());
+            let custom = custom_chord.is_some();
+            let effective = custom_chord.or(default_chord);
+            PluginHotkey {
+                id: command.full_id,
+                plugin: command.plugin_name,
+                title: command.title,
+                effective,
+                custom,
+            }
+        })
+        .collect()
+}
+
+/// Hotkeys 页/录制提示用的标题：内置命令按语言翻译，插件命令带插件名。
+fn hotkey_command_title(st: &AppState, id: &str) -> String {
+    if let Some(command) = st.commands.get(id) {
+        return command_title(st.cfg.lang(), command.id, command.title).to_string();
+    }
+    plugin_hotkeys(st)
+        .into_iter()
+        .find(|plugin| plugin.id == id)
+        .map(|plugin| format!("{}: {}", plugin.plugin, plugin.title))
+        .unwrap_or_else(|| id.to_string())
+}
+
+/// 内置 + 插件命令合并后的 Hotkeys 页数据；额外返回冲突组数。
+fn merged_hotkey_rows(st: &AppState) -> (String, Vec<HotkeyRow>, Vec<String>, usize) {
+    let lang = st.cfg.lang();
+    let (mut summary, mut rows, _) = hotkey_rows(&st.commands, &st.cfg.hotkeys, lang);
+    let plugins = plugin_hotkeys(st);
+    // 生效绑定按 canonical chord 分组：内置与插件、插件与插件之间的重复都标冲突。
+    let mut groups: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
+    for binding in st.commands.effective_bindings(&st.cfg.hotkeys) {
+        if let Some(chord) = binding.shortcut.single_chord() {
+            groups.entry(chord.canonical()).or_default().push(binding.command_id.to_string());
+        }
+    }
+    for plugin in &plugins {
+        if let Some(chord) = &plugin.effective {
+            groups.entry(chord.canonical()).or_default().push(plugin.id.clone());
+        }
+    }
+    let mut conflict_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut conflict_groups = 0usize;
+    for ids in groups.values().filter(|ids| ids.len() > 1) {
+        conflict_groups += 1;
+        conflict_ids.extend(ids.iter().cloned());
+    }
+    for row in &mut rows {
+        row.conflict = conflict_ids.contains(row.command.as_str());
+    }
+    let plugin_count = plugins.len();
+    let mut ids: Vec<String> = rows.iter().map(|row| row.command.to_string()).collect();
+    for plugin in plugins {
+        let conflict = conflict_ids.contains(&plugin.id);
+        let chord = plugin
+            .effective
+            .as_ref()
+            .map(|chord| chord.to_string())
+            .unwrap_or_else(|| ui_text(lang, "(none)", "（无）").to_string());
+        ids.push(plugin.id.clone());
+        rows.push(HotkeyRow {
+            command: plugin.id.into(),
+            title: format!("{}: {}", plugin.plugin, plugin.title).into(),
+            chord: chord.into(),
+            custom: plugin.custom,
+            conflict,
+        });
+    }
+    if plugin_count > 0 {
+        if lang == "zh" {
+            summary.push_str(&format!(" · {plugin_count} 条插件命令"));
+        } else {
+            summary.push_str(&format!(" · {plugin_count} plugin commands"));
+        }
+    }
+    (summary, rows, ids, conflict_groups)
+}
+
+/// 分发：当前 chord 命中的插件命令（`when` 上下文必须成立）。
+fn plugin_command_for_chord(st: &AppState, chord: &commands::Chord) -> Option<String> {
+    let wanted = chord.canonical();
+    let ctx = command_context(st);
+    plugin_hotkeys(st)
+        .into_iter()
+        .find(|plugin| {
+            plugin
+                .effective
+                .as_ref()
+                .is_some_and(|bound| bound.canonical() == wanted)
+                && st.plugins.command_allowed(&plugin.id, &ctx)
+        })
+        .map(|plugin| plugin.id)
+}
+
+/// 录制只保存“内置命令或已启用插件命令”的绑定；冲突（内置/插件）直接拒绝。
+fn validate_hotkey_binding(
+    st: &AppState,
+    id: &str,
+    chord_text: &str,
+) -> Result<commands::Chord, String> {
+    let plugins = plugin_hotkeys(st);
+    if st.commands.get(id).is_none() && !plugins.iter().any(|plugin| plugin.id == id) {
+        return Err(format!("未知命令: {id}"));
+    }
+    let chord = commands::Chord::parse(chord_text)?;
+    if !chord.is_bindable() {
+        return Err("快捷键需要 Ctrl/Alt/Meta，或使用 F1–F24".to_string());
+    }
+    let wanted = chord.canonical();
+    for binding in st.commands.effective_bindings(&st.cfg.hotkeys) {
+        // 命令自己的旧绑定会被这次 override 替换，不算冲突。
+        if binding.command_id == id {
+            continue;
+        }
+        if binding
+            .shortcut
+            .single_chord()
+            .is_some_and(|bound| bound.canonical() == wanted)
+        {
+            return Err(format!(
+                "冲突：{} 已使用 {}",
+                hotkey_command_title(st, binding.command_id),
+                chord
+            ));
+        }
+    }
+    for plugin in plugins {
+        if plugin.id == id {
+            continue;
+        }
+        if plugin
+            .effective
+            .as_ref()
+            .is_some_and(|bound| bound.canonical() == wanted)
+        {
+            return Err(format!(
+                "冲突：{}: {} 已使用 {}",
+                plugin.plugin, plugin.title, chord
+            ));
+        }
+    }
+    Ok(chord)
+}
+
 /// 重新计算 Hotkeys 页（保存/重置后调用），并同步录制行状态。
 fn refresh_hotkeys(st: &mut AppState) {
-    let (summary, rows, ids) = hotkey_rows(&st.commands, &st.cfg.hotkeys, st.cfg.lang());
+    let (summary, rows, ids, conflicts) = merged_hotkey_rows(st);
     st.hotkey_ids = ids;
     st.hotkey_model.set_vec(rows);
     st.ui.set_hotkey_summary(summary.as_str().into());
-    let conflicts = st.commands.effective_conflicts(&st.cfg.hotkeys).len();
     st.ui.set_hotkey_conflict_count(conflicts as i32);
     let recording = st
         .hotkey_recording
-        .and_then(|id| st.hotkey_ids.iter().position(|x| *x == id))
+        .as_ref()
+        .and_then(|id| st.hotkey_ids.iter().position(|x| x == id))
         .map(|i| i as i32)
         .unwrap_or(-1);
     st.ui.set_hotkey_recording_row(recording);
@@ -2451,6 +2646,9 @@ fn plugin_action(st: &mut AppState, action: &str, key: &str) {
         close_plugin_surface(st);
     }
     refresh_plugin_page(st);
+    // Enable/Disable/Reload/Restart 都会改变可用命令集合：Hotkeys 页立即重算
+    // （禁用插件的行/键绑定/冲突标记消失，重新启用后恢复）。
+    refresh_hotkeys(st);
 }
 
 fn confirm_plugin_enable(st: &mut AppState) {
@@ -2478,6 +2676,7 @@ fn confirm_plugin_enable(st: &mut AppState) {
     }
     show_plugin_confirm(st);
     refresh_plugin_page(st);
+    refresh_hotkeys(st);
 }
 
 fn cancel_plugin_enable(st: &mut AppState) {
@@ -2558,10 +2757,8 @@ fn plugin_surface_input(st: &mut AppState, element_id: &str, value: String) {
     );
 }
 
-fn hotkey_title(reg: &commands::Registry, lang: &str, id: &str) -> String {
-    reg.get(id)
-        .map(|c| command_title(lang, c.id, c.title).to_string())
-        .unwrap_or_else(|| id.to_string())
+fn hotkey_title(st: &AppState, id: &str) -> String {
+    hotkey_command_title(st, id)
 }
 
 /// 命令层只产出中文的快捷键校验错误；英文界面下做最小映射，
@@ -2584,11 +2781,11 @@ fn localize_hotkey_error(lang: &str, err: String) -> String {
 
 /// 进入录制：先让终端 IME 宿主拿回焦点，否则按键会落在设置搜索框里。
 fn start_hotkey_edit(st: &mut AppState, index: i32) {
-    let Some(id) = st.hotkey_ids.get(index.max(0) as usize).copied() else {
+    let Some(id) = st.hotkey_ids.get(index.max(0) as usize).cloned() else {
         return;
     };
-    let title = hotkey_title(&st.commands, st.cfg.lang(), id);
-    st.hotkey_recording = Some(id);
+    let title = hotkey_title(st, &id);
+    st.hotkey_recording = Some(id.clone());
     st.ui.set_hotkey_error("".into());
     let status = if st.cfg.lang() == "zh" {
         format!("录制「{title}」：按下新的组合键")
@@ -2613,15 +2810,15 @@ fn cancel_hotkey_edit(st: &mut AppState) {
 }
 
 fn reset_hotkey(st: &mut AppState, index: i32) {
-    let Some(id) = st.hotkey_ids.get(index.max(0) as usize).copied() else {
+    let Some(id) = st.hotkey_ids.get(index.max(0) as usize).cloned() else {
         return;
     };
-    let title = hotkey_title(&st.commands, st.cfg.lang(), id);
-    let removed = commands::clear_override(&mut st.cfg.hotkeys, id);
+    let title = hotkey_title(st, &id);
+    let removed = commands::clear_override(&mut st.cfg.hotkeys, &id);
     if removed {
         st.cfg.save();
     }
-    if st.hotkey_recording == Some(id) {
+    if st.hotkey_recording.as_deref() == Some(id.as_str()) {
         st.hotkey_recording = None;
         st.ui.invoke_focus_terminal();
     }
@@ -2659,7 +2856,7 @@ fn reset_all_hotkeys(st: &mut AppState) {
 ///
 /// 冲突/非法组合只显示错误并保持录制，方便用户直接再按一个；不会触发任何命令。
 fn record_hotkey_key(st: &mut AppState, text: &str, ctrl: bool, alt: bool, shift: bool) {
-    let Some(id) = st.hotkey_recording else {
+    let Some(id) = st.hotkey_recording.clone() else {
         return;
     };
     if !ctrl && !alt && !shift {
@@ -2668,8 +2865,8 @@ fn record_hotkey_key(st: &mut AppState, text: &str, ctrl: bool, alt: bool, shift
             return;
         }
         if text == "\u{8}" || text == "\u{7f}" {
-            let title = hotkey_title(&st.commands, st.cfg.lang(), id);
-            let removed = commands::clear_override(&mut st.cfg.hotkeys, id);
+            let title = hotkey_title(st, &id);
+            let removed = commands::clear_override(&mut st.cfg.hotkeys, &id);
             if removed {
                 st.cfg.save();
             }
@@ -2691,13 +2888,10 @@ fn record_hotkey_key(st: &mut AppState, text: &str, ctrl: bool, alt: bool, shift
         return;
     };
     let canonical = chord.canonical();
-    match st
-        .commands
-        .validate_override(id, &canonical, &st.cfg.hotkeys)
-    {
+    match validate_hotkey_binding(st, &id, &canonical) {
         Ok(chord) => {
-            let title = hotkey_title(&st.commands, st.cfg.lang(), id);
-            commands::set_override(&mut st.cfg.hotkeys, id, &chord);
+            let title = hotkey_title(st, &id);
+            commands::set_override(&mut st.cfg.hotkeys, &id, &chord);
             st.cfg.save();
             st.hotkey_recording = None;
             st.ui.set_hotkey_error("".into());
@@ -10304,9 +10498,10 @@ fn refresh_palette(st: &mut AppState) {
         .into_iter()
         .map(|command| (command.title.to_string(), command.id.to_string()))
         .collect();
+    let command_ctx = command_context(st);
     entries.extend(
         st.plugins
-            .palette_commands(&query)
+            .palette_commands(&query, &command_ctx)
             .into_iter()
             .map(|(id, title)| (title, id.to_string())),
     );
@@ -10464,8 +10659,13 @@ fn run_command(st: &mut AppState, id: &str) {
         "session.reattach" => reattach_last_background(st),
         "settings.open" => st.ui.set_settings_open(true),
         other => {
-            // 插件命令统一走 unknown 分支：spawn_command 只接受已启用插件声明的完整 ID，
-            // 在后台线程执行，UI 线程立即返回。
+            // 插件命令统一走 unknown 分支：必须存在、已启用、权限已确认且 `when`
+            // 上下文成立；spawn_command 在后台线程执行，UI 线程立即返回。
+            let ctx = command_context(st);
+            if !st.plugins.command_allowed(other, &ctx) {
+                eprintln!("[ui] 未知命令或上下文不可用 {other}");
+                return;
+            }
             if st
                 .plugins
                 .spawn_command_for(other, Some(st.window_id.get()))
@@ -11019,14 +11219,14 @@ fn handle_input(
         }
     }
 
-    // 插件声明的默认快捷键：放在内置硬编码分发**之后**，内置键（Ctrl+T 等）永远优先，
-    // 插件只能使用内置未占用的组合；用户 override 已在更前面处理。
+    // 插件 v3 命令的快捷键（清单 keybinding + 用户 override）：放在内置硬编码分发
+    // **之后**，内置键（Ctrl+T 等）永远优先；`when` 上下文不成立的命令不触发。
     if let Some(chord) = keys::chord_from_key_event(text, ctrl, alt, shift) {
-        if let Some(id) = st.commands.plugin_default_for_chord(&chord) {
+        if let Some(id) = plugin_command_for_chord(st, &chord) {
             if keylog {
                 eprintln!("[plugin] 快捷键 {id} ← {chord}");
             }
-            run_command(st, id);
+            run_command(st, &id);
             return;
         }
     }
