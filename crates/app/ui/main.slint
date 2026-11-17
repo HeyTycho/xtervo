@@ -1494,6 +1494,8 @@ export component MainWindow inherits Window {
     in-out property <bool> cfg-confirm-close: true;
     /// 启动时自动恢复上次退出快照（默认关 = 保持旧行为）。
     in-out property <bool> cfg-restore-session: false;
+    /// SESS-006：恢复边界文案（布局/cwd/本地 Profile 会恢复；进程/历史/远端连接不会）。
+    in-out property <string> restore-note: "";
     in-out property <bool> cfg-sidebar-visible: false;
     callback toggle-sidebar-visible();
     in-out property <bool> cfg-confirm-paste: true;
@@ -1536,6 +1538,8 @@ export component MainWindow inherits Window {
     callback bold-color-changed(string);
     callback toggle-bold-color-same-as-fg();
     in-out property <bool> broadcast: false;
+    /// UI-PANE-007：当前聚焦 pane 是否最大化（纯视图状态，不写会话快照）。
+    in-out property <bool> pane-zoomed: false;
     // Pane 拖拽重排（UI-PANE-008）：pane id；-1 = 无。落点由 Rust 命中/高亮。
     in-out property <int> pane-drag-from: -1;
     in-out property <int> pane-drag-target: -1;
@@ -1596,6 +1600,10 @@ export component MainWindow inherits Window {
     // Profile 表单（新建）
     in-out property <bool> profile-form-open: false;
     in-out property <string> form-name: "";
+    /// LOCAL-003：自定义 Tab 标题（空 = 用名称）。
+    in-out property <string> form-title: "";
+    /// LOCAL-003：「测试起始目录」的即时结果（不参与保存）。
+    in-out property <string> form-cwd-hint: "";
     /// 0=local 1=ssh 2=serial 3=telnet
     in-out property <int> form-kind: 0;
     in-out property <string> form-shell: "";
@@ -1635,6 +1643,7 @@ export component MainWindow inherits Window {
     in-out property <string> form-cursor-blink: "";
     in-out property <string> form-scrollback: "";
     in-out property <string> form-error: "";
+    callback profile-test-cwd(string);
     callback profile-form-save();
     callback profile-form-cancel();
     // known_hosts 主机密钥预检（首次/变更时弹出，绝不静默信任）
@@ -1920,6 +1929,8 @@ export component MainWindow inherits Window {
     callback plugin-approval-allow();
     callback plugin-approval-deny();
     in-out property <string> config-status: "";
+    /// SESS-008：配置版本/迁移备份检查结果（中英文单行）。
+    in-out property <string> config-report: "";
     // Vault（加密凭据）
     in-out property <string> vault-status: "";
     /// true = 后台 Argon2id 正在跑；设置页仍可重绘/滚动，按钮由 Rust 侧防重入。
@@ -1935,6 +1946,9 @@ export component MainWindow inherits Window {
     callback vault-clear();
     callback config-import-tabby();
     callback config-export-tabby();
+    callback config-export();
+    callback config-import();
+    callback config-restore-backup();
     callback settings-open-path();
     callback settings-help-open(string);
     callback settings-help-copy-diagnostics();
@@ -4688,6 +4702,13 @@ export component MainWindow inherits Window {
                                     toggled => { root.toggle-restore-session(); }
                                 }
                             }
+                            Text {
+                                text: root.restore-note;
+                                color: Palette.colors.subtext;
+                                font-size: 10px;
+                                wrap: word-wrap;
+                                visible: root.restore-note != "";
+                            }
                             SettingRow {
                                 label: Lang.t("Sidebar", "侧栏");
                                 description: Lang.t("Show the workspace sidebar with profiles (off by default).",
@@ -4938,12 +4959,46 @@ export component MainWindow inherits Window {
                                     clicked => { root.config-export-tabby(); }
                                 }
                             }
+                            HorizontalLayout {
+                                spacing: 6px;
+                                ActionBtn {
+                                    horizontal-stretch: 1;
+                                    label: Lang.t("Export Config", "导出配置");
+                                    font-size: 10px;
+                                    clicked => { root.config-export(); }
+                                }
+                                ActionBtn {
+                                    horizontal-stretch: 1;
+                                    label: Lang.t("Import Config", "导入配置");
+                                    font-size: 10px;
+                                    clicked => { root.config-import(); }
+                                }
+                                ActionBtn {
+                                    horizontal-stretch: 1;
+                                    label: Lang.t("Restore Backup", "恢复备份");
+                                    font-size: 10px;
+                                    clicked => { root.config-restore-backup(); }
+                                }
+                            }
+                            Text {
+                                text: root.config-report;
+                                color: Palette.colors.subtext;
+                                font-size: 10px;
+                                wrap: word-wrap;
+                                visible: root.config-report != "";
+                            }
                             Text {
                                 text: root.config-status;
                                 color: Palette.colors.muted;
                                 font-size: 10px;
                                 wrap: word-wrap;
                                 visible: root.config-status != "";
+                            }
+                            Text {
+                                text: Lang.t("Import/export use config-export.toml next to config.toml and only touch files; restart Tervo to apply. Migrations always keep a config.toml.v<from>.bak.", "导入/导出使用 config.toml 同目录的 config-export.toml，只改文件；重启 Tervo 后生效。迁移始终保留 config.toml.v<旧版本>.bak。");
+                                color: Palette.colors.muted;
+                                font-size: 10px;
+                                wrap: word-wrap;
                             }
                             Text {
                                 text: Lang.t("Passwords and private keys never live in the plain config; SSH passwords go to the encrypted Vault.", "密码与私钥绝不写入明文配置；SSH 密码保存在加密保险库。");
@@ -6675,9 +6730,17 @@ export component MainWindow inherits Window {
             }
         }
 
-        FormRow {
+        HorizontalLayout {
             x: 16px; y: 80px; width: 408px; height: 26px;
-            label: Lang.t("Name", "名称"); text <=> root.form-name;
+            spacing: 8px;
+            FormRow {
+                width: 198px;
+                label: Lang.t("Name", "名称"); text <=> root.form-name;
+            }
+            FormRow {
+                width: 202px;
+                label: Lang.t("Title", "标题"); text <=> root.form-title;
+            }
         }
 
         if root.form-kind == 0 : VerticalLayout {
@@ -6685,9 +6748,32 @@ export component MainWindow inherits Window {
             spacing: 12px;
             FormRow { label: "Shell"; text <=> root.form-shell; }
             FormRow { label: Lang.t("Args", "参数"); text <=> root.form-args; }
-            FormRow { label: Lang.t("Cwd", "工作目录"); text <=> root.form-cwd; }
+            HorizontalLayout {
+                height: 26px;
+                spacing: 8px;
+                FormRow {
+                    width: 324px;
+                    label: Lang.t("Cwd", "工作目录"); text <=> root.form-cwd;
+                }
+                ActionBtn {
+                    width: 76px;
+                    font-size: 10px;
+                    label: Lang.t("Test", "测试");
+                    clicked => { root.profile-test-cwd(root.form-cwd); }
+                }
+            }
             // LOCAL-004：每个 Profile 自带环境变量（KEY=VALUE，每行一个）。
             FormRow { label: Lang.t("Env", "环境变量"); text <=> root.form-env; }
+        }
+
+        if root.form-kind == 0 : Text {
+            x: 16px; y: 258px; width: 408px; height: 22px;
+            text: root.form-cwd-hint;
+            color: root.form-cwd-hint.starts-with("✓") ? Palette.colors.accent : Palette.colors.danger;
+            font-size: 10px;
+            vertical-alignment: center;
+            overflow: elide;
+            visible: root.form-cwd-hint != "";
         }
 
         if root.form-kind == 1 : VerticalLayout {
@@ -8673,6 +8759,33 @@ export component MainWindow inherits Window {
             text: root.link-status;
             color: Palette.colors.text;
             font-size: 12px;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+
+    // ---------------- Pane 最大化提示（UI-PANE-007） ----------------
+    // 最大化/还原不弹确认：常驻小提示告诉用户当前处于最大化与还原键。
+    if root.pane-zoomed : Rectangle {
+        x: 12px;
+        y: (root.tabbar-bottom ? 0px : root.tabbar-height) + 8px;
+        width: 236px;
+        height: 26px;
+        background: Palette.colors.raise;
+        border-radius: 6px;
+        border-width: 1px;
+        border-color: Palette.colors.accent;
+        drop-shadow-blur: 8px;
+        drop-shadow-offset-y: 3px;
+        drop-shadow-color: #000000a8;
+
+        Text {
+            x: 10px;
+            width: parent.width - 20px;
+            height: parent.height;
+            text: Lang.t("⛶ Pane maximized · Ctrl+Shift+M to restore", "⛶ 窗格已最大化 · Ctrl+Shift+M 还原");
+            color: Palette.colors.text;
+            font-size: 11px;
             vertical-alignment: center;
             overflow: elide;
         }

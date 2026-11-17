@@ -912,6 +912,7 @@ pub fn builtin() -> Registry {
         bind("terminal.reset", "Reset Terminal", Category::Terminal, None),
         bind("terminal.reset-and-clear", "Reset and Clear", Category::Terminal, None),
         bind("terminal.save-contents", "Save Contents…", Category::Terminal, None),
+        bind("pane.toggle-zoom", "Toggle Pane Zoom", Category::Pane, Some("ctrl+shift+m")),
         // TERM-015：pane 级会话录制。录制状态/buffer 在 core，UI 只调用。
         bind("terminal.recording-start", "Start Recording", Category::Terminal, None),
         bind("terminal.recording-stop", "Stop Recording", Category::Terminal, None),

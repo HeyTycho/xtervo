@@ -373,6 +373,67 @@ impl Tree {
     }
 }
 
+/// 会话恢复能做什么、不能做什么（SESS-006）。
+///
+/// “恢复会话”恢复的是**布局 + cwd + 本地 Profile 的启动配置**；重启后每个 pane
+/// 都是新的 shell 进程，不恢复运行中的进程/历史，也不自动连 SSH/Serial/Telnet。
+/// UI 用它生成明确标注，避免把“布局恢复”误解成“进程续跑”。
+pub struct RestoreBoundaries {
+    /// 会恢复的内容（面向用户的一句话）。
+    pub restored: [&'static str; 3],
+    /// 不会恢复的内容；进程/历史/远端连接各一条。
+    pub not_restored: [&'static str; 3],
+}
+
+/// 中英文恢复边界说明；纯静态文案，方便单测锁口径。
+pub fn restore_boundaries(zh: bool) -> RestoreBoundaries {
+    if zh {
+        RestoreBoundaries {
+            restored: [
+                "分屏布局与比例",
+                "每个 pane 的工作目录",
+                "本地 Profile 的启动配置（shell/参数/env/外观）",
+            ],
+            not_restored: [
+                "运行中的进程：重启后是新的 shell",
+                "滚动历史与屏幕内容",
+                "SSH/Serial/Telnet 连接：不自动建连",
+            ],
+        }
+    } else {
+        RestoreBoundaries {
+            restored: [
+                "Split layout and ratios",
+                "Working directory of each pane",
+                "Local profile launch settings (shell/args/env/appearance)",
+            ],
+            not_restored: [
+                "Running processes: a restart starts a new shell",
+                "Scrollback and screen contents",
+                "SSH/Serial/Telnet connections: never auto-connect",
+            ],
+        }
+    }
+}
+
+/// 单行完整说明（设置页/日志共用）：`布局+cwd+Profile；不恢复 …`。
+pub fn restore_boundaries_text(zh: bool) -> String {
+    let b = restore_boundaries(zh);
+    if zh {
+        format!(
+            "恢复：{}。不恢复：{}。",
+            b.restored.join("、"),
+            b.not_restored.join("；")
+        )
+    } else {
+        format!(
+            "Restored: {}. Not restored: {}.",
+            b.restored.join(", "),
+            b.not_restored.join("; ")
+        )
+    }
+}
+
 /// 快照文件路径：`TERVO_SESSION` 优先（测试/多实例用），否则 XDG 状态目录。
 pub fn snapshot_path() -> PathBuf {
     if let Some(p) = std::env::var_os("TERVO_SESSION") {
@@ -1582,5 +1643,29 @@ mod tests {
     fn cwd_of_dead_pid_is_none() {
         // 1 号进程的 cwd 可能不可读，但绝不会 panic；这里只验证不 panic 的语义。
         let _ = cwd_of(u32::MAX);
+    }
+
+    #[test]
+    fn restore_boundaries_distinguish_layout_from_processes_and_connections() {
+        for zh in [true, false] {
+            let b = restore_boundaries(zh);
+            assert_eq!(b.restored.len(), 3);
+            assert_eq!(b.not_restored.len(), 3);
+            let text = restore_boundaries_text(zh);
+            // 关键口径必须出现在用户可见文案里：新 shell / 历史 / 远端不自动连。
+            if zh {
+                assert!(text.contains("新的 shell"), "{text}");
+                assert!(text.contains("滚动历史"), "{text}");
+                assert!(text.contains("不自动建连"), "{text}");
+                assert!(text.contains("分屏布局"), "{text}");
+            } else {
+                assert!(text.contains("new shell"), "{text}");
+                assert!(text.contains("Scrollback"), "{text}");
+                assert!(text.contains("never auto-connect"), "{text}");
+                assert!(text.contains("Split layout"), "{text}");
+            }
+        }
+        // 文案本身不得暗示“恢复进程”。
+        assert!(!restore_boundaries_text(true).contains("恢复进程"));
     }
 }

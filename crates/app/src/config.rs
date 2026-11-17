@@ -782,6 +782,153 @@ impl Config {
     }
 }
 
+/// 配置文件的“健康检查 + 迁移报告”（SESS-008）。
+///
+/// 只描述文件本身，不携带任何 secret：设置页用它显示当前版本、是否存在
+/// 迁移前备份、以及能否一键回滚。`version = None` 表示文件不存在/读不了。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ConfigInspection {
+    pub path: PathBuf,
+    pub version: Option<u32>,
+    pub current_version: u32,
+    /// 迁移前备份（`config.toml.v<from>.bak`，优先取版本最大的一个）。
+    pub backup: Option<PathBuf>,
+    /// 备份里记录的旧版本号（从文件名解析）。
+    pub backup_version: Option<u32>,
+    /// 解析失败原因（原文件保持不动）。
+    pub parse_error: Option<String>,
+}
+
+impl ConfigInspection {
+    /// 中英文单行报告；空 = 一切正常且没有可回滚备份。
+    pub fn summary(&self, zh: bool) -> String {
+        let mut parts: Vec<String> = Vec::new();
+        match (&self.parse_error, self.version) {
+            (Some(err), _) => parts.push(if zh {
+                format!("配置文件解析失败（本次用默认值，原文件未改）：{err}")
+            } else {
+                format!("Config parse failed (defaults used, file untouched): {err}")
+            }),
+            (None, Some(v)) if v > self.current_version => parts.push(if zh {
+                format!("配置版本 v{v} 高于程序支持的 v{}，本次忽略", self.current_version)
+            } else {
+                format!("Config v{v} is newer than supported v{}; ignored", self.current_version)
+            }),
+            (None, Some(v)) if v < self.current_version => parts.push(if zh {
+                format!("配置仍为 v{v}（程序 v{}）；下次启动会先备份再迁移", self.current_version)
+            } else {
+                format!("Config v{v} (program v{}); next start backs up then migrates", self.current_version)
+            }),
+            _ => {},
+        }
+        if let (Some(backup), Some(from)) = (&self.backup, self.backup_version) {
+            parts.push(if zh {
+                format!("可回滚：迁移前备份 v{from} → {}", backup.display())
+            } else {
+                format!("Rollback available: pre-migration v{from} backup → {}", backup.display())
+            });
+        }
+        parts.join(if zh { "；" } else { "; " })
+    }
+}
+
+impl Config {
+    /// 检查磁盘上的配置文件（不修改、不迁移）。设置页打开时调用。
+    pub fn inspect_file(path: &Path) -> ConfigInspection {
+        let mut out = ConfigInspection {
+            path: path.to_path_buf(),
+            version: None,
+            current_version: SCHEMA_VERSION,
+            backup: None,
+            backup_version: None,
+            parse_error: None,
+        };
+        let text = match std::fs::read_to_string(path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return out,
+            Err(e) => {
+                out.parse_error = Some(e.to_string());
+                return out;
+            },
+        };
+        match Self::parse_text(&text) {
+            Ok(cfg) => out.version = Some(cfg.version),
+            Err(e) => out.parse_error = Some(e.to_string()),
+        }
+        // 迁移备份名与 config.rs 里的 backup_path 一致：`<name>.v<from>.bak`。
+        if let (Some(dir), Some(name)) = (path.parent(), path.file_name()) {
+            let prefix = format!("{}.v", name.to_string_lossy());
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                let mut best: Option<(u32, PathBuf)> = None;
+                for entry in entries.flatten() {
+                    let file = entry.file_name();
+                    let file = file.to_string_lossy();
+                    let Some(rest) = file.strip_prefix(&prefix) else { continue };
+                    let Some(ver) = rest.strip_suffix(".bak") else { continue };
+                    let Ok(ver) = ver.parse::<u32>() else { continue };
+                    if best.as_ref().map(|(v, _)| ver > *v).unwrap_or(true) {
+                        best = Some((ver, entry.path()));
+                    }
+                }
+                if let Some((ver, p)) = best {
+                    out.backup = Some(p);
+                    out.backup_version = Some(ver);
+                }
+            }
+        }
+        out
+    }
+
+    /// 导出当前内存配置（含已知字段的规范化值）到指定路径。
+    ///
+    /// 与 `save_to` 不同：不标记 config-watch 自己写，避免把导出文件
+    /// 误当成生效配置；也不做默认路径推断。
+    pub fn export_to(&self, path: &Path) -> Result<(), String> {
+        let text = toml::to_string_pretty(self).map_err(|e| format!("序列化失败: {e}"))?;
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| format!("创建目录失败: {e}"))?;
+        }
+        std::fs::write(path, text).map_err(|e| format!("写入 {} 失败: {e}", path.display()))
+    }
+
+    /// 从导出文件读取并校验版本（不写入生效路径）。
+    ///
+    /// 版本比程序新时拒绝：避免用未来格式覆盖当前配置（字段会被 serde 丢弃）。
+    pub fn import_from(path: &Path) -> Result<Self, String> {
+        let text = std::fs::read_to_string(path)
+            .map_err(|e| format!("读不到 {}: {e}", path.display()))?;
+        let cfg = Self::parse_text(&text).map_err(|e| format!("配置解析失败: {e}"))?;
+        if cfg.version > SCHEMA_VERSION {
+            return Err(format!(
+                "配置版本 v{} 比程序支持的 v{SCHEMA_VERSION} 新，拒绝导入",
+                cfg.version
+            ));
+        }
+        Ok(cfg)
+    }
+
+    /// 把最新的迁移前备份恢复成 `path`（覆盖当前配置）；返回被使用的备份路径。
+    ///
+    /// 只做文件复制，不自动应用：主进程下次启动读取 `path` 时生效。
+    pub fn restore_latest_backup(path: &Path) -> Result<PathBuf, String> {
+        let inspection = Self::inspect_file(path);
+        let Some(backup) = inspection.backup else {
+            return Err("没有找到迁移前备份（config.toml.v*.bak）".into());
+        };
+        let bytes = std::fs::read(&backup)
+            .map_err(|e| format!("读备份 {} 失败: {e}", backup.display()))?;
+        // 先确认备份本身是可解析的配置，避免把坏文件盖上去了。
+        let text = String::from_utf8_lossy(&bytes);
+        Self::parse_text(&text)
+            .map_err(|e| format!("备份 {} 不可解析，未覆盖: {e}", backup.display()))?;
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| format!("创建目录失败: {e}"))?;
+        }
+        std::fs::write(path, bytes).map_err(|e| format!("恢复 {} 失败: {e}", path.display()))?;
+        Ok(backup)
+    }
+}
+
 /// 归一化颜色字段：空保持空（跟随主题），合法值写成 `#rrggbb`，非法值清空并
 /// 在日志里提示一次——不让手写错误把光标/粗体颜色变成不可诊断的“没生效”。
 fn normalize_color_field(field: &mut String, key: &str) {
@@ -1684,6 +1831,85 @@ danger = true
         assert!(migrated.contains("mcp_read = true"), "{migrated}");
         assert!(migrated.contains("mcp_input = false"), "{migrated}");
         assert!(dir.join("config.toml.v0.bak").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn inspection_reports_version_backup_and_parse_error() {
+        let dir = tmpdir("inspect");
+        let path = dir.join("config.toml");
+        // 不存在：不算错误，版本未知。
+        let missing = Config::inspect_file(&path);
+        assert_eq!(missing.version, None);
+        assert!(missing.backup.is_none());
+        assert!(missing.summary(true).is_empty());
+
+        std::fs::write(&path, "language = \"zh\"\nversion = 1\n").unwrap();
+        let ok = Config::inspect_file(&path);
+        assert_eq!(ok.version, Some(1));
+        assert_eq!(ok.current_version, SCHEMA_VERSION);
+        assert!(ok.parse_error.is_none());
+
+        // 迁移备份按版本号取最大者。
+        std::fs::write(dir.join("config.toml.v0.bak"), "version = 0\n").unwrap();
+        std::fs::write(dir.join("config.toml.v3.bak"), "version = 3\n").unwrap();
+        let with_backup = Config::inspect_file(&path);
+        assert_eq!(with_backup.backup_version, Some(3));
+        assert!(with_backup.summary(true).contains("可回滚"));
+        assert!(with_backup.summary(false).contains("Rollback"));
+
+        // 坏文件：报告解析错误且明确“原文件未改”。
+        std::fs::write(&path, "oops = [").unwrap();
+        let broken = Config::inspect_file(&path);
+        assert!(broken.parse_error.is_some());
+        assert!(broken.summary(true).contains("原文件未改"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn export_import_roundtrip_and_version_gate() {
+        let dir = tmpdir("export");
+        let export = dir.join("config-export.toml");
+        let mut cfg = Config::default();
+        cfg.language = "zh".into();
+        cfg.font_size = 15.0;
+        cfg.export_to(&export).unwrap();
+
+        let imported = Config::import_from(&export).unwrap();
+        assert_eq!(imported.language, "zh");
+        assert_eq!(imported.font_size, 15.0);
+        assert_eq!(imported.version, SCHEMA_VERSION);
+
+        // 未来版本拒绝导入（避免字段被静默丢弃）。
+        std::fs::write(&export, format!("version = {}\n", SCHEMA_VERSION + 1)).unwrap();
+        let err = Config::import_from(&export).unwrap_err();
+        assert!(err.contains("拒绝导入"), "{err}");
+        // 坏 TOML 拒绝。
+        std::fs::write(&export, "version = [").unwrap();
+        assert!(Config::import_from(&export).is_err());
+        // 不存在的文件给可读错误。
+        assert!(Config::import_from(&dir.join("nope.toml")).is_err());
+    }
+
+    #[test]
+    fn restore_latest_backup_overwrites_only_after_validation() {
+        let dir = tmpdir("restore");
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "version = 1\nlanguage = \"en\"\n").unwrap();
+        std::fs::write(dir.join("config.toml.v0.bak"), "version = 0\nlanguage = \"zh\"\n").unwrap();
+        let used = Config::restore_latest_backup(&path).unwrap();
+        assert_eq!(used.file_name().unwrap(), "config.toml.v0.bak");
+        let restored = std::fs::read_to_string(&path).unwrap();
+        assert!(restored.contains("zh"), "{restored}");
+
+        // 坏备份不能覆盖当前配置。
+        std::fs::write(&path, "version = 1\nlanguage = \"en\"\n").unwrap();
+        std::fs::write(dir.join("config.toml.v0.bak"), "broken = [").unwrap();
+        assert!(Config::restore_latest_backup(&path).is_err());
+        assert!(std::fs::read_to_string(&path).unwrap().contains("en"));
+        // 没有备份时明确报错。
+        std::fs::remove_file(dir.join("config.toml.v0.bak")).unwrap();
+        assert!(Config::restore_latest_backup(&path).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

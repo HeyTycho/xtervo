@@ -723,6 +723,8 @@ struct AppState {
     menu_link: String,
     /// 广播输入：开启后键入同时发给当前 Tab 的所有 pane
     broadcast: bool,
+    /// UI-PANE-007：被最大化的 pane（纯视图状态；不写快照、不改分屏树）。
+    zoomed: Option<PaneId>,
     /// 开启广播时当前 Tab 的 pane 集合：与活动 Tab 完全不相交 = 已切 Tab。
     /// 用集合相交而不是单个 key，关掉同 Tab 的一个 pane 不会误判为切 Tab。
     broadcast_scope: Vec<PaneId>,
@@ -3788,6 +3790,8 @@ fn apply_external_config_from(st: &mut AppState, old: Config, new_cfg: Config) {
 /// 外部热更新后同步设置页控件状态。只改 Slint 属性，不触发回调、不写盘。
 fn sync_reload_ui(st: &mut AppState) {
     st.ui.set_language(st.cfg.lang().into());
+    st.ui
+        .set_restore_note(session::restore_boundaries_text(st.cfg.lang() == "zh").as_str().into());
     st.ui.set_sidebar_visible(st.cfg.sidebar_visible);
     st.ui.set_sidebar_width(sidebar_width_of(&st.cfg));
     st.ui.set_cfg_sidebar_visible(st.cfg.sidebar_visible);
@@ -4019,6 +4023,8 @@ fn refresh_settings_results(st: &mut AppState) {
 fn sync_language_ui(st: &mut AppState) {
     let lang = st.cfg.lang().to_string();
     st.ui.set_language(lang.as_str().into());
+    st.ui
+        .set_restore_note(session::restore_boundaries_text(lang == "zh").as_str().into());
     refresh_hotkeys(st);
     refresh_plugin_page(st);
     refresh_vault_ui(st);
@@ -5400,7 +5406,8 @@ fn open_profile_spec_tab(
     askpass: Option<askpass::Askpass>,
 ) {
     let id = st.shared.alloc_pane_id();
-    let tab_title = spec.name.clone();
+    // LOCAL-003：自定义标题优先；空标题回退 Profile 名，避免出现空 Tab。
+    let tab_title = spec.effective_title().to_string();
     let kind = spec.kind.clone();
     match create_pane(st, id, st.content, None, Some(&spec), askpass) {
         Ok(rt) => {
@@ -5749,6 +5756,26 @@ fn restart_exited_pane(st: &mut AppState, notice: SshExitNotice) {
     }
 }
 
+/// SESS-008：把配置版本/迁移备份检查结果推给设置页（只读，不改文件）。
+fn refresh_config_report(st: &mut AppState) {
+    let inspection = Config::inspect_file(&Config::path());
+    let zh = st.cfg.lang() == "zh";
+    let report = inspection.summary(zh);
+    eprintln!(
+        "[config] inspect path={} version={:?} current={} backup={:?} report={report:?}",
+        inspection.path.display(),
+        inspection.version,
+        inspection.current_version,
+        inspection.backup.as_ref().map(|p| p.display().to_string())
+    );
+    st.ui.set_config_report(report.into());
+}
+
+/// 配置导出文件：与 config.toml 同目录的固定名字，导入/导出共用一个路径。
+fn config_export_path() -> std::path::PathBuf {
+    Config::path().with_file_name("config-export.toml")
+}
+
 /// 打开新建表单：预填一个不冲突的名字、当前 shell、聚焦 pane 的 cwd。
 fn open_profile_form(st: &mut AppState) {
     let base = "profile".to_string();
@@ -5774,6 +5801,8 @@ fn open_profile_form(st: &mut AppState) {
         .unwrap_or_default();
     st.ui.set_form_edit_id(-1);
     st.ui.set_form_name(name.as_str().into());
+    st.ui.set_form_title("".into());
+    st.ui.set_form_cwd_hint("".into());
     st.ui.set_form_kind(0);
     st.ui.set_form_shell(shell.as_str().into());
     st.ui.set_form_args("".into());
@@ -5817,6 +5846,8 @@ fn edit_profile_form(st: &mut AppState, index: usize) {
         .unwrap_or(0);
     st.ui.set_form_edit_id(p.id as i32);
     st.ui.set_form_name(p.name.as_str().into());
+    st.ui.set_form_title(p.title.clone().unwrap_or_default().as_str().into());
+    st.ui.set_form_cwd_hint("".into());
     st.ui.set_form_kind(kind_idx as i32);
     st.ui.set_form_shell(p.shell.as_str().into());
     st.ui.set_form_args(p.args.join(" ").as_str().into());
@@ -5889,6 +5920,34 @@ fn edit_profile_form(st: &mut AppState, index: usize) {
     );
 }
 
+/// LOCAL-003：表单里的「测试」按钮——只检查起始目录，不改表单内容也不保存。
+///
+/// 成功/失败都写进 `form-cwd-hint`（表单里单独一行提示），不覆盖保存错误。
+fn test_profile_cwd_form(st: &mut AppState) {
+    let raw = st.ui.get_form_cwd().to_string();
+    let lang = st.cfg.lang();
+    match profile::test_start_dir(&raw) {
+        Ok(path) => {
+            let msg = if lang == "zh" {
+                format!("✓ 目录可用：{}", path.display())
+            } else {
+                format!("✓ Directory usable: {}", path.display())
+            };
+            st.ui.set_form_cwd_hint(msg.into());
+            eprintln!("[profile] cwd test ok path={}", path.display());
+        },
+        Err(e) => {
+            let msg = if lang == "zh" {
+                format!("✗ {e}")
+            } else {
+                format!("✗ {e}（cwd must be an existing local directory）")
+            };
+            st.ui.set_form_cwd_hint(msg.into());
+            eprintln!("[profile] cwd test failed: {e}");
+        },
+    }
+}
+
 fn save_profile_form(st: &mut AppState) {
     let kind_idx = st.ui.get_form_kind().clamp(0, 3) as usize;
     let kind = profile::KINDS[kind_idx];
@@ -5897,6 +5956,10 @@ fn save_profile_form(st: &mut AppState) {
     let edit_id = st.ui.get_form_edit_id();
     let mut p = profile::Profile {
         name,
+        title: {
+            let t = st.ui.get_form_title().trim().to_string();
+            (!t.is_empty()).then_some(t)
+        },
         kind: kind.to_string(),
         hotkey: st.ui.get_form_hotkey().trim().to_string(),
         ..profile::Profile::default()
@@ -7623,16 +7686,22 @@ fn restore_window_snapshot(st: &mut AppState, window: &session::WindowSnapshot) 
     rebuild_tabs(st);
     redraw_visible(st);
     eprintln!(
-        "[session] 窗口 {} 恢复完成：{restored}/{} 个标签 active={}",
+        "[session] 窗口 {} 恢复完成：{restored}/{} 个标签 active={}；边界：{}",
         window.id,
         window.tabs.len(),
-        st.ws.active
+        st.ws.active,
+        session::restore_boundaries_text(st.cfg.lang() == "zh")
     );
     true
 }
 
 fn split_pane_inner(st: &mut AppState, id: PaneId, dir: Dir) {
     eprintln!("[ws] split pane={id} dir={dir:?}");
+    // 最大化时新增的 pane 会被挡住；先还原，保证用户立刻看到新分屏。
+    if st.zoomed.is_some() {
+        st.zoomed = None;
+        st.ui.set_pane_zoomed(false);
+    }
     let Some(tab_index) = st.ws.tab_of(id) else {
         return;
     };
@@ -8390,7 +8459,7 @@ fn refresh_views_impl(st: &mut AppState, resize_terminals: bool) {
     if st.content.w < 1.0 || st.content.h < 1.0 {
         return;
     }
-    let (rects, focused, dividers) = {
+    let (mut rects, focused, mut dividers) = {
         let Some(tab) = st.ws.active_tab() else {
             return;
         };
@@ -8402,6 +8471,30 @@ fn refresh_views_impl(st: &mut AppState, resize_terminals: bool) {
         }
         (rects, tab.focused, dividers)
     };
+
+    // UI-PANE-007：最大化只是视图折叠。pane 关了 / 焦点换到别的 pane / 切 Tab
+    // 都自动还原，避免“看不见的 pane 收键盘”。分屏树与比例始终不动。
+    if let Some(zoom) = st.zoomed {
+        let live = st.panes.contains_key(&zoom);
+        let in_tab = st
+            .ws
+            .active_tab()
+            .map(|t| t.panes().contains(&zoom))
+            .unwrap_or(false);
+        if !live || !in_tab || focused != zoom {
+            st.zoomed = None;
+            eprintln!("[pane] zoom cleared pane={zoom} live={live} in_tab={in_tab}");
+        }
+    }
+    if let Some(zoom) = st.zoomed {
+        if let Some((zr, zd)) = workspace::zoom_layout(zoom, st.content, &rects, &dividers) {
+            rects = zr;
+            dividers = zd;
+        }
+    }
+    if st.ui.get_pane_zoomed() != st.zoomed.is_some() {
+        st.ui.set_pane_zoomed(st.zoomed.is_some());
+    }
 
     for (id, rect) in &rects {
         if let Some(rt) = st.panes.get_mut(id) {
@@ -11550,6 +11643,32 @@ fn palette_accept(st: &mut AppState) {
 }
 
 /// 执行一条命令。ID 与 `commands::builtin()` 一一对应。
+/// UI-PANE-007：最大化/还原聚焦 pane（Ctrl+Shift+M）。
+///
+/// 只改 `st.zoomed` 视图状态：不修改 `Tab.root`、比例或快照，因此重启后
+/// 布局与最大化前完全一致（除非用户本来就要保存那个布局）。
+fn toggle_pane_zoom(st: &mut AppState) {
+    let Some(tab) = st.ws.active_tab() else {
+        return;
+    };
+    let focused = tab.focused;
+    let pane_count = tab.panes().len();
+    if st.zoomed == Some(focused) {
+        st.zoomed = None;
+        eprintln!("[pane] zoom off pane={focused}");
+    } else if pane_count < 2 {
+        eprintln!("[pane] zoom ignored: 当前 Tab 只有一个 pane");
+        return;
+    } else {
+        st.zoomed = Some(focused);
+        eprintln!("[pane] zoom on pane={focused} panes={pane_count}");
+    }
+    refresh_views(st);
+    redraw_visible(st);
+    let win = st.window_focused;
+    sync_terminal_focus(st, win);
+}
+
 fn run_command(st: &mut AppState, id: &str) {
     // 面板里的工作区条目：`workspace.open:<name>`（动态 id，不在静态命令表里）。
     if let Some(name) = id.strip_prefix("workspace.open:") {
@@ -11630,6 +11749,7 @@ fn run_command(st: &mut AppState, id: &str) {
         "pane.focus-right" => focus_pane_dir(st, 1.0, 0.0),
         "pane.focus-up" => focus_pane_dir(st, 0.0, -1.0),
         "pane.focus-down" => focus_pane_dir(st, 0.0, 1.0),
+        "pane.toggle-zoom" => toggle_pane_zoom(st),
         "pane.focus-next" => {
             let (panes, focused) = match st.ws.active_tab() {
                 Some(t) => (t.panes(), t.focused),
@@ -13770,6 +13890,7 @@ fn build_window_state(
         right_down: None,
         menu_link: String::new(),
         broadcast: false,
+        zoomed: None,
         broadcast_scope: Vec::new(),
         broadcast_line: String::new(),
         broadcast_danger_ack: false,
@@ -13886,6 +14007,7 @@ fn init_window_ui(st: &mut AppState) {
     st.ui.set_tabbar_bottom(st.cfg.tabbar_position == "bottom");
     st.ui
         .set_settings_path(Config::path().display().to_string().as_str().into());
+    refresh_config_report(st);
     refresh_help_info(st);
     init_background(st);
     // 测试/对比用：启动即隐藏背景，测量 cover 缩放成本（不影响正常路径）。
@@ -13893,6 +14015,9 @@ fn init_window_ui(st: &mut AppState) {
         st.ui.set_background_suspended(true);
     }
     st.ui.set_language(st.cfg.lang().into());
+    // SESS-006：明确“恢复会话”恢复的是布局/配置，不是运行中的进程。
+    st.ui
+        .set_restore_note(session::restore_boundaries_text(st.cfg.lang() == "zh").as_str().into());
     refresh_hotkeys(st);
     refresh_vault_ui(st);
     sync_plugin_config_metadata(st);
@@ -15033,6 +15158,16 @@ fn register_window_callbacks(
                                 msg.push_str(&format!("; first skipped: {skip}"));
                             }
                         }
+                        // SESS-009：明确不导入的类别（插件配置/UI 主题 CSS/自定义 CSS/凭据）
+                        // 必须出现在用户可见状态行里，不能只打日志。
+                        let not_imported = report.not_imported_summary(lang == "zh");
+                        if !not_imported.is_empty() {
+                            msg.push_str("；");
+                            msg.push_str(&not_imported);
+                            for item in &report.not_imported {
+                                eprintln!("[tabby] 不导入 [{}] {}", item.category, item.detail);
+                            }
+                        }
                         eprintln!("[tabby] {msg}");
                         msg
                     }
@@ -15087,6 +15222,92 @@ fn register_window_callbacks(
                 }
             };
             st.ui.set_config_status(status.as_str().into());
+        });
+    });
+
+    ui.on_config_export(move || {
+        runtime::with_window(window_id, |st| {
+            let path = config_export_path();
+            let status = match st.cfg.with(|c| c.export_to(&path)) {
+                Ok(()) => {
+                    let msg = if st.cfg.lang() == "zh" {
+                        format!("已导出当前配置 → {}（导入时读同一路径）", path.display())
+                    } else {
+                        format!("Exported current config → {} (import reads the same path)", path.display())
+                    };
+                    eprintln!("[config] {msg}");
+                    msg
+                },
+                Err(e) => {
+                    let msg = if st.cfg.lang() == "zh" {
+                        format!("导出配置失败: {e}")
+                    } else {
+                        format!("Export config failed: {e}")
+                    };
+                    eprintln!("[config] {msg}");
+                    msg
+                },
+            };
+            st.ui.set_config_status(status.into());
+            refresh_config_report(st);
+        });
+    });
+
+    ui.on_config_import(move || {
+        runtime::with_window(window_id, |st| {
+            let src = config_export_path();
+            let status = match Config::import_from(&src) {
+                Ok(imported) => {
+                    // 只写文件、不原地替换 Shared<Config>：字体/主题/快捷键的
+                    // 半应用状态比重启一次更难排查。下一次启动读取时生效。
+                    imported.save_to(&Config::path());
+                    let msg = if st.cfg.lang() == "zh" {
+                        format!("已导入 {} → {}；重启 Tervo 后生效", src.display(), Config::path().display())
+                    } else {
+                        format!("Imported {} → {}; restart Tervo to apply", src.display(), Config::path().display())
+                    };
+                    eprintln!("[config] {msg}");
+                    msg
+                },
+                Err(e) => {
+                    let msg = if st.cfg.lang() == "zh" {
+                        format!("导入配置失败: {e}")
+                    } else {
+                        format!("Import config failed: {e}")
+                    };
+                    eprintln!("[config] {msg}");
+                    msg
+                },
+            };
+            st.ui.set_config_status(status.into());
+            refresh_config_report(st);
+        });
+    });
+
+    ui.on_config_restore_backup(move || {
+        runtime::with_window(window_id, |st| {
+            let status = match Config::restore_latest_backup(&Config::path()) {
+                Ok(used) => {
+                    let msg = if st.cfg.lang() == "zh" {
+                        format!("已用迁移前备份 {} 覆盖配置；重启 Tervo 后生效", used.display())
+                    } else {
+                        format!("Restored {} over config; restart Tervo to apply", used.display())
+                    };
+                    eprintln!("[config] {msg}");
+                    msg
+                },
+                Err(e) => {
+                    let msg = if st.cfg.lang() == "zh" {
+                        format!("恢复备份失败: {e}")
+                    } else {
+                        format!("Restore backup failed: {e}")
+                    };
+                    eprintln!("[config] {msg}");
+                    msg
+                },
+            };
+            st.ui.set_config_status(status.into());
+            refresh_config_report(st);
         });
     });
 
@@ -15230,6 +15451,14 @@ fn register_window_callbacks(
 
     ui.on_profile_form_save(move || {
         runtime::with_window(window_id, |st| save_profile_form(st));
+    });
+
+    ui.on_profile_test_cwd(move |raw| {
+        // 用回调参数而不是读表单：UI 侧可能还没同步最后一段输入。
+        runtime::with_window(window_id, |st| {
+            st.ui.set_form_cwd(raw.clone());
+            test_profile_cwd_form(st);
+        });
     });
 
     ui.on_profile_form_cancel(move || {
