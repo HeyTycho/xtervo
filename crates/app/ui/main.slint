@@ -1316,6 +1316,9 @@ export component MainWindow inherits Window {
     in-out property <int> drop-hover-pane: -1;
     in property <[TabView]> tabs;
     in property <length> tabbar-height: 32px;
+    /// 工作区侧栏（ACT-046）：默认关闭；关闭时内容区与 0.5.0 逐像素一致。
+    in property <bool> sidebar-visible: false;
+    in property <length> sidebar-width: 0px;
     /// 窗口最大化状态（由 Rust 同步，避免按钮直接读异步 WM 状态）。
     in-out property <bool> window-maximized: false;
     in-out property <bool> menu-open: false;
@@ -2733,10 +2736,44 @@ export component MainWindow inherits Window {
         }
         }
 
+        // ---------------- 工作区侧栏 ----------------
+        Rectangle {
+            visible: root.sidebar-visible;
+            x: 0px;
+            y: root.tabbar-bottom ? 0px : root.tabbar-height;
+            width: root.sidebar-width;
+            height: root.height - root.tabbar-height;
+            background: Palette.colors.bg;
+            border-color: Palette.colors.border;
+            border-width: root.sidebar-width > 0px ? 1px : 0px;
+
+            VerticalLayout {
+                padding-left: 12px;
+                padding-right: 12px;
+                padding-top: 10px;
+                spacing: 8px;
+                Text {
+                    text: Lang.t("Workspace", "工作区");
+                    color: Palette.colors.subtext;
+                    font-size: 13px;
+                    font-weight: 600;
+                }
+                Text {
+                    text: Lang.t("Profiles and sessions will appear here.",
+                                 "Profiles 和会话列表将出现在这里。");
+                    color: Palette.colors.muted;
+                    font-size: 11px;
+                    wrap: word-wrap;
+                }
+                Rectangle { vertical-stretch: 1; background: transparent; }
+            }
+        }
+
         // ---------------- 分屏内容区 ----------------
         Rectangle {
+            x: root.sidebar-visible ? root.sidebar-width : 0px;
+            width: root.width - (root.sidebar-visible ? root.sidebar-width : 0px);
             y: root.tabbar-bottom ? 0px : root.tabbar-height;
-            width: 100%;
             height: root.height - root.tabbar-height;
             // 有背景图时让终端帧的透明背景直接透出图片；否则保持主题底色。
             background: root.has-background-image ? transparent : Palette.colors.bg;

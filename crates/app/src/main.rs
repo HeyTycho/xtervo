@@ -90,6 +90,24 @@ const INSTANCE_CLAIM_TIMEOUT: Duration = Duration::from_secs(10);
 const INSTANCE_UI_ACK_TIMEOUT: Duration = Duration::from_secs(15);
 /// 必须与 ui/main.slint 里的 `tabbar-height` 保持一致。
 const TABBAR_H: f32 = 32.0;
+
+/// 侧栏宽度（逻辑像素）：只在 `sidebar_visible` 时占位，否则 0 —— 默认关闭时
+/// 布局与 0.5.0 逐像素一致。
+fn sidebar_width_of(cfg: &crate::config::Config) -> f32 {
+    if cfg.sidebar_visible {
+        cfg.sidebar_width()
+    } else {
+        0.0
+    }
+}
+
+/// 终端内容区矩形（TabBar 之下、侧栏之右）。`st.content` 的坐标系原点固定为
+/// 内容区左上角，所以侧栏只影响宽度，不影响 pane 自己的坐标。
+fn content_rect(win_w: f32, win_h: f32, sidebar_w: f32) -> Rect {
+    let w = (win_w - sidebar_w).max(1.0);
+    let h = (win_h - TABBAR_H).max(1.0);
+    Rect::new(0.0, 0.0, w, h)
+}
 /// `TermMode::BRACKETED_PASTE`
 const BRACKETED_PASTE: u32 = 1 << 4;
 /// 视觉铃边框闪一下的时长；到期由 30ms timer 清除。
@@ -3097,6 +3115,8 @@ fn apply_external_config_from(st: &mut AppState, old: Config, new_cfg: Config) {
 /// 外部热更新后同步设置页控件状态。只改 Slint 属性，不触发回调、不写盘。
 fn sync_reload_ui(st: &mut AppState) {
     st.ui.set_language(st.cfg.lang().into());
+    st.ui.set_sidebar_visible(st.cfg.sidebar_visible);
+    st.ui.set_sidebar_width(sidebar_width_of(&st.cfg));
     st.ui.set_font_size(st.cfg.font_size as i32);
     st.ui.set_scrollback(st.cfg.scrollback as i32);
     st.ui
@@ -14058,14 +14078,19 @@ fn register_window_callbacks(
             // w/h 是 Slint 逻辑像素；worker 按 scale_factor 换算物理像素并节流去重。
             request_window_corners(st, Some((w, h)), None);
             let w = w.max(1.0);
-            let h = (h - TABBAR_H).max(1.0);
+            let h = h.max(1.0);
+            let sidebar_w = sidebar_width_of(&st.cfg);
+            let content_w = (w - sidebar_w).max(1.0);
+            let content_h = (h - TABBAR_H).max(1.0);
             // configure 本身就是“WM/窗口系统正在动”的证据；即使尺寸和上一帧
             // 相同也刷新时间戳，watchdog 不会把它误判成 WM 没接管。
             st.last_resize_event = Some(Instant::now());
             if st.wm_resize {
                 st.wm_resize_saw_configure = true;
             }
-            if (st.content.w - w).abs() < 0.5 && (st.content.h - h).abs() < 0.5 {
+            if (st.content.w - content_w).abs() < 0.5
+                && (st.content.h - content_h).abs() < 0.5
+            {
                 return;
             }
             // 窗口尺寸/DPR 变化：即使光标格相对窗口没动，也让输入法重收 spot。
@@ -14079,7 +14104,7 @@ fn register_window_callbacks(
             st.resize_pending = Some((w, h));
             // UI 布局必须每个 configure 立即更新：缩小时如果晚一帧，右上角按钮
             // 还在旧宽度的右边界外，会被新窗口裁掉，下一帧才“吐出来”。
-            st.content = Rect::new(0.0, 0.0, w, h);
+            st.content = content_rect(w, h, sidebar_w);
             refresh_views_layout(st);
             if live_drag {
                 st.resize_in_progress = true;
@@ -14120,7 +14145,8 @@ fn register_window_callbacks(
                         runtime::with_window(window_id, |st| {
                             st.resize_apply_scheduled = false;
                             let Some((w, h)) = st.resize_pending.take() else { return };
-                            st.content = Rect::new(0.0, 0.0, w, h);
+                            let sidebar_w = sidebar_width_of(&st.cfg);
+                            st.content = content_rect(w, h, sidebar_w);
                             let t0 = Instant::now();
                             refresh_views(st);
                             let t_layout = t0.elapsed();
@@ -14644,7 +14670,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             opts.rows as f32 * cell.1 as f32 + TABBAR_H,
         ),
     };
-    let content = Rect::new(0.0, 0.0, win_w, (win_h - TABBAR_H).max(1.0));
+    let content = content_rect(win_w, win_h, sidebar_width_of(&cfg));
     let t_font = t_start.elapsed();
 
     // 后端初始化失败时显式重试软件渲染。注意：大多数 GPU/renderer 失败会被
@@ -14721,6 +14747,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     // --title 以前只解析不使用，窗口标题永远硬编码；现在透传到 Slint 属性。
     ui.set_window_title(opts.title.as_str().into());
+    // 工作区侧栏（ACT-046）：默认关闭时 `sidebar-width` 为 0，内容区与 0.5.0 一致。
+    ui.set_sidebar_visible(cfg.sidebar_visible);
+    ui.set_sidebar_width(sidebar_width_of(&cfg));
     // 回退开关：TERVO_SETTINGS_LEGACY=1 时设置页退回居中 modal（同一套控件，
     // 只是不再占用 Tab/内容区）。默认走新的 Settings Tab。
     let settings_legacy = std::env::var("TERVO_SETTINGS_LEGACY")
@@ -15395,6 +15424,24 @@ fn run_fps_probe(secs: f64, title: String) {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn content_rect_reserves_sidebar_only_when_visible() {
+        let mut cfg = Config::default();
+        assert_eq!(sidebar_width_of(&cfg), 0.0, "默认关闭时侧栏不占位");
+        let r = content_rect(1000.0, 800.0, sidebar_width_of(&cfg));
+        assert_eq!((r.w, r.h), (1000.0, 800.0 - TABBAR_H));
+
+        cfg.sidebar_visible = true; // 默认宽度 240
+        let r = content_rect(1000.0, 800.0, sidebar_width_of(&cfg));
+        assert_eq!((r.w, r.h), (760.0, 800.0 - TABBAR_H));
+
+        // 极窄窗口不能出现 0/负宽度
+        let r = content_rect(100.0, 800.0, 240.0);
+        assert_eq!(r.w, 1.0);
+    }
+
     use super::*;
 
     #[test]

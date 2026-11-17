@@ -1,6 +1,8 @@
 # 工作区壳：Sidebar / Toolbar / 状态区（ACT-046 + ACT-041 前置）
 
-状态：**设计（2026-11-16），未实现**；夜间施工用。目标是把“入口”从 TabBar 菜单
+状态：**进行中（2026-11-17）**。已完成 ① config 字段 ② 侧栏骨架（默认关，截图见
+`.logs/sidebar_on.png` / `.logs/sidebar_off.png`）；待做 ③ 拖宽 + Profiles 列表 ④ Toolbar
+⑤ 状态区 ⑥ Connection Manager ⑦ 插件注入点。目标是把“入口”从 TabBar 菜单
 升级成常驻壳，并让 Connection Manager / 插件条目有地方挂。
 
 ## 1. 验收（摘自 ACTION_ITEMS §8）
