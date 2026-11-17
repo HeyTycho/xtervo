@@ -16,6 +16,7 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -100,6 +101,10 @@ impl Inner {
 #[derive(Debug)]
 pub struct Recorder {
     inner: Mutex<Inner>,
+    /// 无锁快路径：未录制时 `record` 只读这个 bool，不碰 `Mutex`。
+    /// 与 `Inner.active` 的写入顺序见 `start`/`stop`：两个标志短暂不一致时
+    /// `record` 的锁内二次检查会丢弃或照常追加，不会写坏 buffer。
+    recording: AtomicBool,
 }
 
 impl Default for Recorder {
@@ -121,6 +126,7 @@ impl Recorder {
                 started_at: None,
                 stopped_at: None,
             }),
+            recording: AtomicBool::new(false),
         }
     }
 
@@ -133,6 +139,7 @@ impl Recorder {
         inner.chunks = 0;
         inner.started_at = Some(now_epoch_secs());
         inner.stopped_at = None;
+        self.recording.store(true, Ordering::Relaxed);
         inner.status()
     }
 
@@ -143,6 +150,7 @@ impl Recorder {
             inner.active = false;
             inner.stopped_at = Some(now_epoch_secs());
         }
+        self.recording.store(false, Ordering::Relaxed);
         inner.status()
     }
 
@@ -155,10 +163,11 @@ impl Recorder {
         inner.chunks = 0;
         inner.started_at = None;
         inner.stopped_at = None;
+        self.recording.store(false, Ordering::Relaxed);
     }
 
     pub fn is_recording(&self) -> bool {
-        self.inner.lock().active
+        self.recording.load(Ordering::Relaxed)
     }
 
     /// 只读状态快照。
@@ -171,7 +180,8 @@ impl Recorder {
     /// 超限时只追加放得下的前缀（buffer 始终是 PTY 字节流的连续前缀），
     /// 剩余部分计入 `dropped_bytes`，不会产生“半截转义序列”之外的错位。
     pub fn record(&self, bytes: &[u8]) {
-        if bytes.is_empty() {
+        // 关闭录制的常见路径：一次 relaxed load，不加锁、不分配。
+        if bytes.is_empty() || !self.recording.load(Ordering::Relaxed) {
             return;
         }
         let mut inner = self.inner.lock();
