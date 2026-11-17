@@ -1444,6 +1444,8 @@ export component MainWindow inherits Window {
     in-out property <bool> cfg-confirm-close: true;
     /// 启动时自动恢复上次退出快照（默认关 = 保持旧行为）。
     in-out property <bool> cfg-restore-session: false;
+    in-out property <bool> cfg-sidebar-visible: false;
+    callback toggle-sidebar-visible();
     in-out property <bool> cfg-confirm-paste: true;
     in-out property <string> cfg-right-click: "menu";
     in-out property <bool> cfg-paste-middle: true;
@@ -4450,6 +4452,15 @@ export component MainWindow inherits Window {
                                 SettingsSwitch {
                                     on: root.cfg-restore-session;
                                     toggled => { root.toggle-restore-session(); }
+                                }
+                            }
+                            SettingRow {
+                                label: Lang.t("Sidebar", "侧栏");
+                                description: Lang.t("Show the workspace sidebar with profiles (off by default).",
+                                                    "显示工作区侧栏（Profile 列表），默认关闭。");
+                                SettingsSwitch {
+                                    on: root.cfg-sidebar-visible;
+                                    toggled => { root.toggle-sidebar-visible(); }
                                 }
                             }
                             SettingRow {

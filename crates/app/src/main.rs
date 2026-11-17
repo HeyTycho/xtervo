@@ -101,6 +101,15 @@ fn sidebar_width_of(cfg: &crate::config::Config) -> f32 {
     }
 }
 
+/// 翻转侧栏可见性，返回新的内容区（纯函数：窗口逻辑宽度由旧内容区 + 旧栏宽反推）。
+fn toggle_sidebar_math(content: Rect, cfg: &mut crate::config::Config) -> Rect {
+    let old_sw = sidebar_width_of(cfg);
+    let win_w = content.w + old_sw;
+    let win_h = content.h + TABBAR_H;
+    cfg.sidebar_visible = !cfg.sidebar_visible;
+    content_rect(win_w, win_h, sidebar_width_of(cfg))
+}
+
 /// 终端内容区矩形（TabBar 之下、侧栏之右）。`st.content` 的坐标系原点固定为
 /// 内容区左上角，所以侧栏只影响宽度，不影响 pane 自己的坐标。
 fn content_rect(win_w: f32, win_h: f32, sidebar_w: f32) -> Rect {
@@ -3117,6 +3126,7 @@ fn sync_reload_ui(st: &mut AppState) {
     st.ui.set_language(st.cfg.lang().into());
     st.ui.set_sidebar_visible(st.cfg.sidebar_visible);
     st.ui.set_sidebar_width(sidebar_width_of(&st.cfg));
+    st.ui.set_cfg_sidebar_visible(st.cfg.sidebar_visible);
     st.ui.set_font_size(st.cfg.font_size as i32);
     st.ui.set_scrollback(st.cfg.scrollback as i32);
     st.ui
@@ -13453,6 +13463,23 @@ fn register_window_callbacks(
         });
     });
 
+    ui.on_toggle_sidebar_visible(move || {
+        runtime::with_window(window_id, |st| {
+            st.content = toggle_sidebar_math(st.content, &mut st.cfg);
+            st.ui.set_cfg_sidebar_visible(st.cfg.sidebar_visible);
+            st.ui.set_sidebar_visible(st.cfg.sidebar_visible);
+            let w = sidebar_width_of(&st.cfg);
+            st.ui.set_sidebar_width(w);
+            refresh_views(st);
+            redraw_visible(st);
+            st.cfg.save();
+            eprintln!(
+                "[ui] sidebar_visible={}（宽 {}px）",
+                st.cfg.sidebar_visible, w
+            );
+        });
+    });
+
     ui.on_toggle_restore_session(move || {
         runtime::with_window(window_id, |st| {
             st.cfg.restore_session_on_startup = !st.cfg.restore_session_on_startup;
@@ -14798,6 +14825,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 工作区侧栏（ACT-046）：默认关闭时 `sidebar-width` 为 0，内容区与 0.5.0 一致。
     ui.set_sidebar_visible(cfg.sidebar_visible);
     ui.set_sidebar_width(sidebar_width_of(&cfg));
+    ui.set_cfg_sidebar_visible(cfg.sidebar_visible);
     // 回退开关：TERVO_SETTINGS_LEGACY=1 时设置页退回居中 modal（同一套控件，
     // 只是不再占用 Tab/内容区）。默认走新的 Settings Tab。
     let settings_legacy = std::env::var("TERVO_SETTINGS_LEGACY")
@@ -15478,6 +15506,20 @@ fn run_fps_probe(secs: f64, title: String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn toggle_sidebar_math_roundtrips_and_keeps_window_width() {
+        let mut cfg = Config::default();
+        let start = content_rect(1000.0, 800.0, sidebar_width_of(&cfg));
+        // 开：内容区让出 240，窗口逻辑宽度不变
+        let open = toggle_sidebar_math(start, &mut cfg);
+        assert!(cfg.sidebar_visible);
+        assert_eq!((open.w, open.h), (760.0, 800.0 - TABBAR_H));
+        // 关：回到原样
+        let closed = toggle_sidebar_math(open, &mut cfg);
+        assert!(!cfg.sidebar_visible);
+        assert_eq!((closed.w, closed.h), (start.w, start.h));
+    }
 
     #[test]
     fn content_rect_reserves_sidebar_only_when_visible() {
