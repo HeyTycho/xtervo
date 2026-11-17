@@ -5174,7 +5174,8 @@ fn open_profile_tab_now(st: &mut AppState, index: usize, allow_askpass: bool) {
         },
     };
     let id = st.shared.alloc_pane_id();
-    let tab_title = spec.name.clone();
+    // LOCAL-003：自定义标题优先；空标题回退 Profile 名，避免出现空 Tab。
+    let tab_title = spec.effective_title().to_string();
     let kind = spec.kind.clone();
     match create_pane(st, id, st.content, None, Some(&spec), askpass) {
         Ok(rt) => {
@@ -5548,6 +5549,8 @@ fn open_profile_form(st: &mut AppState) {
         .unwrap_or_default();
     st.ui.set_form_edit_id(-1);
     st.ui.set_form_name(name.as_str().into());
+    st.ui.set_form_title("".into());
+    st.ui.set_form_cwd_hint("".into());
     st.ui.set_form_kind(0);
     st.ui.set_form_shell(shell.as_str().into());
     st.ui.set_form_args("".into());
@@ -5591,6 +5594,8 @@ fn edit_profile_form(st: &mut AppState, index: usize) {
         .unwrap_or(0);
     st.ui.set_form_edit_id(p.id as i32);
     st.ui.set_form_name(p.name.as_str().into());
+    st.ui.set_form_title(p.title.clone().unwrap_or_default().as_str().into());
+    st.ui.set_form_cwd_hint("".into());
     st.ui.set_form_kind(kind_idx as i32);
     st.ui.set_form_shell(p.shell.as_str().into());
     st.ui.set_form_args(p.args.join(" ").as_str().into());
@@ -5663,6 +5668,34 @@ fn edit_profile_form(st: &mut AppState, index: usize) {
     );
 }
 
+/// LOCAL-003：表单里的「测试」按钮——只检查起始目录，不改表单内容也不保存。
+///
+/// 成功/失败都写进 `form-cwd-hint`（表单里单独一行提示），不覆盖保存错误。
+fn test_profile_cwd_form(st: &mut AppState) {
+    let raw = st.ui.get_form_cwd().to_string();
+    let lang = st.cfg.lang();
+    match profile::test_start_dir(&raw) {
+        Ok(path) => {
+            let msg = if lang == "zh" {
+                format!("✓ 目录可用：{}", path.display())
+            } else {
+                format!("✓ Directory usable: {}", path.display())
+            };
+            st.ui.set_form_cwd_hint(msg.into());
+            eprintln!("[profile] cwd test ok path={}", path.display());
+        },
+        Err(e) => {
+            let msg = if lang == "zh" {
+                format!("✗ {e}")
+            } else {
+                format!("✗ {e}（cwd must be an existing local directory）")
+            };
+            st.ui.set_form_cwd_hint(msg.into());
+            eprintln!("[profile] cwd test failed: {e}");
+        },
+    }
+}
+
 fn save_profile_form(st: &mut AppState) {
     let kind_idx = st.ui.get_form_kind().clamp(0, 3) as usize;
     let kind = profile::KINDS[kind_idx];
@@ -5671,6 +5704,10 @@ fn save_profile_form(st: &mut AppState) {
     let edit_id = st.ui.get_form_edit_id();
     let mut p = profile::Profile {
         name,
+        title: {
+            let t = st.ui.get_form_title().trim().to_string();
+            (!t.is_empty()).then_some(t)
+        },
         kind: kind.to_string(),
         hotkey: st.ui.get_form_hotkey().trim().to_string(),
         ..profile::Profile::default()
@@ -15008,6 +15045,14 @@ fn register_window_callbacks(
 
     ui.on_profile_form_save(move || {
         runtime::with_window(window_id, |st| save_profile_form(st));
+    });
+
+    ui.on_profile_test_cwd(move |raw| {
+        // 用回调参数而不是读表单：UI 侧可能还没同步最后一段输入。
+        runtime::with_window(window_id, |st| {
+            st.ui.set_form_cwd(raw.clone());
+            test_profile_cwd_form(st);
+        });
     });
 
     ui.on_profile_form_cancel(move || {

@@ -1596,6 +1596,10 @@ export component MainWindow inherits Window {
     // Profile 表单（新建）
     in-out property <bool> profile-form-open: false;
     in-out property <string> form-name: "";
+    /// LOCAL-003：自定义 Tab 标题（空 = 用名称）。
+    in-out property <string> form-title: "";
+    /// LOCAL-003：「测试起始目录」的即时结果（不参与保存）。
+    in-out property <string> form-cwd-hint: "";
     /// 0=local 1=ssh 2=serial 3=telnet
     in-out property <int> form-kind: 0;
     in-out property <string> form-shell: "";
@@ -1635,6 +1639,7 @@ export component MainWindow inherits Window {
     in-out property <string> form-cursor-blink: "";
     in-out property <string> form-scrollback: "";
     in-out property <string> form-error: "";
+    callback profile-test-cwd(string);
     callback profile-form-save();
     callback profile-form-cancel();
     // known_hosts 主机密钥预检（首次/变更时弹出，绝不静默信任）
@@ -6663,9 +6668,17 @@ export component MainWindow inherits Window {
             }
         }
 
-        FormRow {
+        HorizontalLayout {
             x: 16px; y: 80px; width: 408px; height: 26px;
-            label: Lang.t("Name", "名称"); text <=> root.form-name;
+            spacing: 8px;
+            FormRow {
+                width: 198px;
+                label: Lang.t("Name", "名称"); text <=> root.form-name;
+            }
+            FormRow {
+                width: 202px;
+                label: Lang.t("Title", "标题"); text <=> root.form-title;
+            }
         }
 
         if root.form-kind == 0 : VerticalLayout {
@@ -6673,9 +6686,32 @@ export component MainWindow inherits Window {
             spacing: 12px;
             FormRow { label: "Shell"; text <=> root.form-shell; }
             FormRow { label: Lang.t("Args", "参数"); text <=> root.form-args; }
-            FormRow { label: Lang.t("Cwd", "工作目录"); text <=> root.form-cwd; }
+            HorizontalLayout {
+                height: 26px;
+                spacing: 8px;
+                FormRow {
+                    width: 324px;
+                    label: Lang.t("Cwd", "工作目录"); text <=> root.form-cwd;
+                }
+                ActionBtn {
+                    width: 76px;
+                    font-size: 10px;
+                    label: Lang.t("Test", "测试");
+                    clicked => { root.profile-test-cwd(root.form-cwd); }
+                }
+            }
             // LOCAL-004：每个 Profile 自带环境变量（KEY=VALUE，每行一个）。
             FormRow { label: Lang.t("Env", "环境变量"); text <=> root.form-env; }
+        }
+
+        if root.form-kind == 0 : Text {
+            x: 16px; y: 258px; width: 408px; height: 22px;
+            text: root.form-cwd-hint;
+            color: root.form-cwd-hint.starts-with("✓") ? Palette.colors.accent : Palette.colors.danger;
+            font-size: 10px;
+            vertical-alignment: center;
+            overflow: elide;
+            visible: root.form-cwd-hint != "";
         }
 
         if root.form-kind == 1 : VerticalLayout {

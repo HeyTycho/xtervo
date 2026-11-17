@@ -29,6 +29,12 @@ pub struct Profile {
     /// 稳定 ID（文件内唯一；删除后不复用）。
     pub id: u64,
     pub name: String,
+    /// 自定义 Tab 标题（LOCAL-003）；`None` = 用 `name`。
+    ///
+    /// 只影响新开 Tab 的标题，不影响 Profile 的管理/默认项识别；会话快照
+    /// 保存的是 Tab 标题本身，因此恢复后标题保持用户看到的样子。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     /// 连接意外结束时是否自动重连（仅 ssh/telnet/serial 有意义；默认关）。
     #[serde(default)]
     pub auto_reconnect: bool,
@@ -154,6 +160,24 @@ pub fn validate_proxy_jump(spec: &str) -> Result<(), String> {
 }
 
 
+/// 校验“起始目录”是否真的可用（LOCAL-003 表单测试按钮）。
+///
+/// 只做本地文件系统检查：展开 `~`、确认是目录、返回规范化路径。空串表示
+/// 继承 shell 默认目录，但测试按钮需要用户明确输入才有意义，故空串报错。
+/// 不做 canonicalize：符号链接指向的目录也是用户会 cd 进去的目录。
+pub fn test_start_dir(raw: &str) -> Result<PathBuf, String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Err("起始目录为空（留空 = 用 shell 默认目录）".into());
+    }
+    let path = crate::config::expand_tilde(raw);
+    match std::fs::metadata(&path) {
+        Ok(meta) if meta.is_dir() => Ok(path),
+        Ok(_) => Err(format!("{} 不是目录", path.display())),
+        Err(e) => Err(format!("无法访问 {}: {e}", path.display())),
+    }
+}
+
 /// 光标形状是否是可识别的别名（与 [`CursorShape::from_name`] 的接受集合同步）。
 fn known_cursor_shape(name: &str) -> bool {
     matches!(
@@ -207,6 +231,7 @@ impl Default for Profile {
         Self {
             id: 0,
             name: String::new(),
+            title: None,
             auto_reconnect: false,
             hotkey: String::new(),
             kind: default_kind(),
@@ -243,6 +268,11 @@ impl Profile {
     /// 校验失败的原始值（例如 `font_size = 0`）会在 [`Profile::validate`] 里被
     /// 拒绝；这里只做“读盘后恢复到可运行状态”的兜底，不静默改写用户文件。
     pub fn normalize_appearance(&mut self) {
+        self.title = self
+            .title
+            .take()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
         self.font_size = self
             .font_size
             .filter(|v| v.is_finite() && *v > 0.0)
@@ -266,6 +296,15 @@ impl Profile {
             .map(|s| s.trim().to_ascii_lowercase())
             .filter(|s| !s.is_empty());
         self.scrollback = self.scrollback.filter(|n| *n > 0);
+    }
+
+    /// 新开 Tab 使用的标题：自定义标题优先，否则 Profile 名。
+    pub fn effective_title(&self) -> &str {
+        self.title
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(self.name.as_str())
     }
 
     /// 有效字号；`None` = 继承全局 `config.font_size`。
@@ -1513,5 +1552,69 @@ env = []
         let mut s = ProfileStore::default();
         assert!(s.duplicate(42).is_err());
         assert!(s.profiles.is_empty());
+    }
+
+    #[test]
+    fn custom_title_overrides_tab_title_and_roundtrips() {
+        // 空/空白 = 用 Profile 名（不写出一条空标题）。
+        let mut p = sample("work");
+        assert_eq!(p.effective_title(), "work");
+        p.title = Some("  ".into());
+        p.normalize_appearance();
+        assert_eq!(p.title, None);
+        assert_eq!(p.effective_title(), "work");
+
+        // 自定义标题进 Tab、进磁盘、原样读回。
+        let dir = tmpdir("title");
+        let path = dir.join("profiles.toml");
+        let mut s = ProfileStore::default();
+        s.add(Profile {
+            name: "work".into(),
+            title: Some("  prod deploy  ".into()),
+            shell: "/bin/zsh".into(),
+            ..Profile::default()
+        })
+        .unwrap();
+        assert_eq!(s.profiles[0].effective_title(), "prod deploy");
+        s.save_to(&path);
+        let back = ProfileStore::load_from(&path);
+        assert_eq!(back.profiles[0].title.as_deref(), Some("prod deploy"));
+        assert_eq!(back.profiles[0].effective_title(), "prod deploy");
+
+        // 没有 title 的旧文件保持继承 name，且读盘不改写原文件。
+        let old = r#"
+version = 2
+next_id = 2
+
+[[profiles]]
+id = 1
+name = "legacy"
+kind = "local"
+"#;
+        std::fs::write(&path, old).unwrap();
+        let store = ProfileStore::load_from(&path);
+        assert_eq!(store.profiles[0].title, None);
+        assert_eq!(store.profiles[0].effective_title(), "legacy");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), old);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_start_dir_reports_dir_file_and_missing() {
+        let dir = tmpdir("cwd-test");
+        assert!(test_start_dir("").unwrap_err().contains("为空"));
+        assert!(test_start_dir("   ").is_err());
+        let ok = test_start_dir(dir.to_str().unwrap()).unwrap();
+        assert_eq!(ok, dir);
+
+        let file = dir.join("not-a-dir");
+        std::fs::write(&file, b"x").unwrap();
+        assert!(test_start_dir(file.to_str().unwrap())
+            .unwrap_err()
+            .contains("不是目录"));
+
+        let missing = dir.join("nope");
+        assert!(test_start_dir(missing.to_str().unwrap()).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
