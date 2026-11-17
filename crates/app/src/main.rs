@@ -4429,6 +4429,8 @@ fn rebuild_profile_choices_for(st: &mut AppState, with_new_tab: bool) {
 /// 只列 Profile，保持原有语义。
 fn open_profile_menu(st: &mut AppState) {
     let with_new_tab = st.ui.get_profilemenu_show_new_tab();
+    // 只对本次打开生效：侧栏 `profiles.open` 等其它入口不应继承上一次 `+` 的行。
+    st.ui.set_profilemenu_show_new_tab(false);
     rebuild_profile_choices_for(st, with_new_tab);
     st.ui.set_profilemenu_open(true);
     eprintln!(
