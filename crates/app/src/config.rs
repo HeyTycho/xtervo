@@ -335,6 +335,13 @@ pub struct Config {
     /// 启动时自动按上次退出快照恢复 Tab/分屏/cwd（默认 false = 只保留手动
     /// Restart Session）。只在正常退出时写快照；崩溃不保证恢复。
     pub restore_session_on_startup: bool,
+    /// 断线自动重连的最大次数（SESS-007；默认 3，0 = 关闭）。仍要求 Profile
+    /// 打开 `auto_reconnect`；策略适用于所有连接类型，不只 SSH。
+    pub reconnect_max_attempts: u32,
+    /// 每次自动重连前的退避（毫秒；默认 2000/5000/10000）。列表短于次数时
+    /// 重复最后一项；条目夹取到 100ms–10min。
+    #[serde(default = "default_reconnect_backoff_ms")]
+    pub reconnect_backoff_ms: Vec<u64>,
     /// 拖选后自动复制（默认开）。
     pub copy_on_select: bool,
     /// 多行粘贴前确认（默认开）。
@@ -471,6 +478,10 @@ pub struct Config {
     pub extra: toml::Table,
 }
 
+fn default_reconnect_backoff_ms() -> Vec<u64> {
+    crate::connection::DEFAULT_BACKOFF_MS.to_vec()
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -493,6 +504,8 @@ impl Default for Config {
             rows: 32,
             confirm_close: true,
             restore_session_on_startup: false,
+            reconnect_max_attempts: crate::connection::DEFAULT_MAX_ATTEMPTS,
+            reconnect_backoff_ms: default_reconnect_backoff_ms(),
             copy_on_select: true,
             confirm_multiline_paste: true,
             osc52: "allow".to_string(),
@@ -584,6 +597,14 @@ impl Config {
     /// 未知值仍按默认 allow，避免写错一个词就让功能整体失效。
     pub fn osc52_allowed(&self) -> bool {
         !self.osc52.trim().eq_ignore_ascii_case("deny")
+    }
+
+    /// SESS-007：生效的自动重连策略（次数/退避都在 config 里；读入时夹取）。
+    pub fn reconnect_policy(&self) -> crate::connection::ReconnectPolicy {
+        crate::connection::ReconnectPolicy::from_config(
+            self.reconnect_max_attempts,
+            &self.reconnect_backoff_ms,
+        )
     }
 
     /// 生效的光标形状。配置非法时回退 block（GNOME 默认）。
@@ -1031,6 +1052,39 @@ mod tests {
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("restore_session_on_startup = true"), "{text}");
         assert!(Config::load_from(&path).restore_session_on_startup);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reconnect_policy_defaults_roundtrip_and_clamps() {
+        use crate::connection::ReconnectPolicy;
+        let cfg = Config::default();
+        assert_eq!(cfg.reconnect_max_attempts, 3);
+        assert_eq!(cfg.reconnect_backoff_ms, vec![2000, 5000, 10000]);
+        assert_eq!(cfg.reconnect_policy(), ReconnectPolicy::default());
+
+        let dir = tmpdir("reconnect-policy");
+        let path = dir.join("config.toml");
+        let cfg = Config {
+            reconnect_max_attempts: 5,
+            reconnect_backoff_ms: vec![500, 1500],
+            ..Config::default()
+        };
+        cfg.save_to(&path);
+        let back = Config::load_from(&path);
+        assert_eq!(back.reconnect_max_attempts, 5);
+        assert_eq!(back.reconnect_backoff_ms, vec![500, 1500]);
+        // 列表短于次数：重复最后一项；第 6 次停止。
+        let policy = back.reconnect_policy();
+        assert_eq!(policy.delay(2), Some(std::time::Duration::from_millis(1500)));
+        assert_eq!(policy.delay(5), Some(std::time::Duration::from_millis(1500)));
+        assert_eq!(policy.delay(6), None);
+
+        // 旧配置没有这两个键：serde default 必须给出历史 2/5/10 行为。
+        std::fs::write(&path, "language = \"en\"\n").unwrap();
+        let old = Config::load_from(&path);
+        assert_eq!(old.reconnect_max_attempts, 3);
+        assert_eq!(old.reconnect_backoff_ms, vec![2000, 5000, 10000]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
