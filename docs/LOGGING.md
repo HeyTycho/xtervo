@@ -62,16 +62,21 @@ tervo --diagnose
 `TERVO_RENDER_PROFILE=1` 时每个 pane 拉帧后打印一行（P1-06 起字段）：
 
 ```
-[render] pane=1 grid=100x30 full=false rows=1 copy=0 full_redraws=1 damage_rows=1 draw=0.01ms image=0.00ms detach=false bytes=2376000
+[render] pane=1 grid=100x30 full=false rows=1 copy=0 full_redraws=1 damage_rows=1 draw=0.01ms image=0.00ms detach=false pool=3 grows=1 detaches=1 bytes=2376000
 ```
 
 - `full`：**渲染器最终判定**是否整屏（首帧/resize/主题/滚动历史/大范围 damage）；
 - `rows`：本帧实际重绘的终端行数；单行输出/按键应为 1；
-- `copy`：双缓冲轮换时从旧 buffer 补齐的“上一帧脏行”数；整屏后首帧可能接近行数；
+- `copy`：帧缓冲池轮换时从旧块补齐的行数（最近「池大小-1」帧脏行的并集，跳过本帧
+  脏行）；整屏后首帧可能接近行数，池越大越多；
 - `full_redraws`：进程内累计整屏次数；连续按键不应增长；
 - `damage_rows`：core 报告的 `frame.damage` 条数（不含选区/搜索派生行）；
-- `detach=true`：目标 buffer 仍被 Slint 持有，触发了一次整块 CoW（正确但会变慢；
-  正常单帧节奏下应为 false）。
+- `detach=true`：目标 buffer 仍被 Slint 持有，触发了一次整块 CoW（正确但会变慢）。
+  正常单帧节奏下应为 false；持续 true 会让池自动扩容；
+- `pool`：帧缓冲池大小（默认 2；观测到 detach 后扩到 3/4，resize 沿用学到的深度）；
+- `grows`：本池扩容次数（resize 会重建池并清零）；
+- `detaches`：进程内累计整块 CoW 帧数。正常环境应是 0；若持续增长说明持有深度
+  超过池上限 4，见 `docs/PERFORMANCE.md` §2.4。
 
 ## 右键问题怎么读日志
 

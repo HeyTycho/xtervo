@@ -10048,7 +10048,8 @@ fn redraw_pane_inner(st: &mut AppState, id: PaneId) {
     if render_profile() && !rt.gpu_native_active {
         eprintln!(
             "[render] pane={id} grid={}x{} full={} rows={} copy={} full_redraws={} \
-             damage_rows={} draw={:.2}ms image={:.2}ms detach={} bytes={}",
+             damage_rows={} draw={:.2}ms image={:.2}ms detach={} pool={} grows={} \
+             detaches={} bytes={}",
             frame.cols,
             frame.rows,
             rt.renderer.last_draw_full,
@@ -10059,6 +10060,9 @@ fn redraw_pane_inner(st: &mut AppState, id: PaneId) {
             rt.renderer.last_draw_us,
             rt.renderer.last_image_us,
             rt.renderer.last_buffer_detached,
+            rt.renderer.buffer_pool_len,
+            rt.renderer.buffer_growths,
+            rt.renderer.buffer_detaches,
             rt.renderer.width * rt.renderer.height * 4
         );
         let gpu_rows = gpu_after.rows.saturating_sub(gpu_before.rows);
