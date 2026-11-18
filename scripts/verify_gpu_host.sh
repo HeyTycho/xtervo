@@ -93,7 +93,7 @@ if [ "$CHECK" = "1" ]; then
     # 3) GPU-native 链路真的建立（adapter/backend）
     if grep -q "\[gpu-native\] TERVO_GPU_NATIVE=1" "$OUT/run.log" 2>/dev/null; then
         line=$(grep -m1 "\[gpu-native\] TERVO_GPU_NATIVE=1" "$OUT/run.log")
-        ok "GPU-native 生效：$(printf '%s' "$line" | grep -oE 'adapter=[^ ]+ backend=[^ ]+ device_type=[^ ]+' | head -1)"
+        ok "GPU-native 生效：$(printf '%s' "$line" | sed -E 's/.*device\/queue；//')"
     elif printf '%s' "${renderer:-}" | grep -qiE "skia|wgpu|gl|gpu"; then
         if grep -q "WGPU 显示链路初始化失败" "$OUT/run.log" 2>/dev/null; then
             echo "WARN  WGPU 显示链路初始化失败，但 Skia GPU renderer 仍生效（TERVO_GPU_NATIVE 属实验路径）"
