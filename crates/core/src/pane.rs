@@ -1360,6 +1360,7 @@ pub fn spawn_with_transport(
         modify_other_keys: modify_other_keys.clone(),
         keyboard_flags: keyboard_flags.clone(),
         shell_pgid,
+        keyboard_set_seen: false,
         cursor_bits: cursor_bits.clone(),
         scroll: scroll.clone(),
         read_only: read_only.clone(),
@@ -1690,6 +1691,10 @@ struct Actor {
     keyboard_flags: Arc<AtomicU8>,
     /// 直接子进程（shell）的进程组 id：`tcgetpgrp` 回到它表示前台命令已退出。
     shell_pgid: i32,
+    /// 本轮前台切换排空输出时，新应用是否自己设置了键盘协议。
+    /// `prev_dead` 复位前必须先看它：codex→git→codex 时，父应用可能
+    /// 在子进程退出后的同一批输出里重新声明 flags，不能反手清掉。
+    keyboard_set_seen: bool,
     /// 光标快照，供 IME/焦点同步（不依赖 UI 拉帧）。
     cursor_bits: Arc<std::sync::atomic::AtomicU64>,
     /// 滚动位置快照（打包 offset/history），供 UI 无阻塞查询。
@@ -2634,6 +2639,20 @@ impl Drop for Actor {
     }
 }
 
+/// 前台切换后是否要清掉键盘协议。
+///
+/// 回到 shell 或旧前台 pgrp 已死（应用崩溃/被 kill）时通常要清；但如果新前台
+/// 应用在同一批输出里已经自己声明了 flags（codex→git→codex 返回父 TUI），
+/// 它自己的协议优先，不能反手清掉。
+fn should_reset_foreground_keyboard(
+    pgid: i32,
+    shell_pgid: i32,
+    prev_dead: bool,
+    keyboard_set_seen: bool,
+) -> bool {
+    (pgid == shell_pgid || prev_dead) && !keyboard_set_seen
+}
+
 impl Actor {
     fn run(mut self) {
         let pty = self.pty_rx.clone();
@@ -2710,9 +2729,15 @@ impl Actor {
         for action in actions {
             match action {
                 KeyboardAction::SetKeyboardFlags(flags) => {
+                    if flags != 0 {
+                        self.keyboard_set_seen = true;
+                    }
                     self.keyboard_flags.store(flags, Ordering::Relaxed);
                 },
                 KeyboardAction::SetModifyOtherKeys(level) => {
+                    if level != 0 {
+                        self.keyboard_set_seen = true;
+                    }
                     self.modify_other_keys.store(level, Ordering::Relaxed);
                 },
                 KeyboardAction::Reply(reply) => self.write_input(&reply),
@@ -3748,10 +3773,21 @@ impl Actor {
                 // 设回 7”。进入新前台命令（上一个 pgrp 仍活着）不复位，
                 // 否则可能与新应用首批输出里的 `CSI > flags u` 抢顺序。
                 if pgid == self.shell_pgid || prev_dead {
+                    self.keyboard_set_seen = false;
                     while let Ok(bytes) = self.pty_rx.try_recv() {
                         self.feed(&bytes);
                     }
-                    self.reset_foreground_keyboard();
+                    // 新前台应用可能在同一批输出里已经声明了 flags
+                    // （codex→git→codex 返回父 TUI）。它自己设置的协议优先，
+                    // 不能按“旧 pgrp 已死”反手清掉。
+                    if should_reset_foreground_keyboard(
+                        pgid,
+                        self.shell_pgid,
+                        prev_dead,
+                        self.keyboard_set_seen,
+                    ) {
+                        self.reset_foreground_keyboard();
+                    }
                 }
                 true
             },
@@ -4112,6 +4148,19 @@ pub fn fill_frame<T: EventListener>(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn foreground_reset_respects_new_app_keyboard_set() {
+        // 子进程退出、父 TUI 回到前台：旧 pgrp 已死，且父应用没重新声明 -> 复位。
+        assert!(should_reset_foreground_keyboard(42, 7, true, false));
+        // 父应用在同一批输出里重新声明 flags -> 保留，不能反手清掉。
+        assert!(!should_reset_foreground_keyboard(42, 7, true, true));
+        // 回到 shell：无论 prev 是否活着都复位（shell 不继承应用协议）。
+        assert!(should_reset_foreground_keyboard(7, 7, false, false));
+        assert!(!should_reset_foreground_keyboard(7, 7, false, true));
+        // 新应用启动、旧 pgrp 仍活着：不清（避免和它首批 flags 抢顺序）。
+        assert!(!should_reset_foreground_keyboard(42, 7, false, false));
+    }
     #[test]
     fn pump_reader_forwards_bytes_then_reports_pty_closed() {
         use std::io::Write;

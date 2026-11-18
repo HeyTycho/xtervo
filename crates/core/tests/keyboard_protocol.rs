@@ -274,8 +274,11 @@ try:
 except OSError:
     pass
 # Keep the intermediate TUI in the foreground while the test observes reset.
-with open(marker, "w") as fh:
+# Atomic publish: the marker must already contain data when it appears.
+tmp = marker + ".tmp"
+with open(tmp, "w") as fh:
     fh.write("1" if os.tcgetpgrp(0) == os.getpgrp() else "0")
+os.replace(tmp, marker)
 sys.stdout.write("intermediate-done\n")
 sys.stdout.flush()
 time.sleep(5)
@@ -311,15 +314,16 @@ time.sleep(5)
     // 等中间层 TUI 重新拿到前台（它还会再活 5s），确认不是“shell 已经抢回”。
     let marker = dir.join("parent.ready");
     let start = Instant::now();
-    while !marker.exists() {
+    let mut marker_value = String::new();
+    while marker_value != "0" && marker_value != "1" {
         if start.elapsed() > Duration::from_secs(5) {
-            panic!("中间层 TUI 没有重新拿到前台");
+            panic!("中间层 TUI 没有重新拿到前台（marker={marker_value:?}）");
         }
+        marker_value = std::fs::read_to_string(&marker).unwrap_or_default();
         std::thread::sleep(Duration::from_millis(5));
     }
     assert_eq!(
-        std::fs::read_to_string(&marker).unwrap_or_default(),
-        "1",
+        marker_value, "1",
         "中间层 TUI 没有重新拿到前台，测试场景无效"
     );
 

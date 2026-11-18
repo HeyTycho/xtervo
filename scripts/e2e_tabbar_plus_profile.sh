@@ -126,7 +126,7 @@ grep -Fq '[ws] new tab: tabs=1' "$OUT/app.log" || fail "初始 Tab 数量不是 
 
 echo "== 1. + 直接新建默认 Tab（不弹 Profile 菜单）=="
 MENUS_BEFORE=$(grep -c '\[ui\] profile menu' "$OUT/app.log" || true)
-click 187 16 0.8
+click 181 16 0.8
 grep -Fq '[ws] new tab: tabs=2' "$OUT/app.log" || fail "+ 没有直接新建 Tab"
 MENUS_AFTER=$(grep -c '\[ui\] profile menu' "$OUT/app.log" || true)
 [ "$MENUS_BEFORE" = "$MENUS_AFTER" ] || fail "+ 仍然打开了 Profile 菜单"

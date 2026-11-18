@@ -7580,6 +7580,18 @@ fn reattach_last_background(st: &mut AppState) {
     reattach_background(st, st.detached.len() - 1);
 }
 
+/// 关闭一个 Tab 后 active 的新下标。
+///
+/// 关闭 active 左侧的 Tab 时必须左移一位；否则会切到原来的下一个 Tab，
+/// 用户看到的是“关掉别的 Tab，当前 Tab 却跳了”。
+fn active_after_close(active: usize, closed: usize, remaining: usize) -> usize {
+    if remaining == 0 {
+        return 0;
+    }
+    let next = if closed < active { active.saturating_sub(1) } else { active };
+    next.min(remaining - 1)
+}
+
 fn close_tab_inner(st: &mut AppState, index: usize) {
     if index >= st.ws.tabs.len() {
         return;
@@ -7613,7 +7625,7 @@ fn close_tab_inner(st: &mut AppState, index: usize) {
         let _ = slint::quit_event_loop();
         return;
     }
-    st.ws.active = st.ws.active.min(st.ws.tabs.len() - 1);
+    st.ws.active = active_after_close(st.ws.active, index, st.ws.tabs.len());
     refresh_views(st);
     rebuild_tabs(st);
     redraw_visible(st);
@@ -19472,6 +19484,22 @@ fn run_fps_probe(secs: f64, title: String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn active_tab_stays_on_same_tab_when_closing_to_its_left() {
+        // [A,B,C]，active=B(1)，关 A：B 左移到 0，不能跳到 C(1)。
+        assert_eq!(active_after_close(1, 0, 2), 0);
+        // [A,B,C]，active=C(2)，关 A：C 左移到 1。
+        assert_eq!(active_after_close(2, 0, 2), 1);
+        // 关 active 自己：原下一个 Tab 落到同一 index。
+        assert_eq!(active_after_close(1, 1, 2), 1);
+        // 关 active 右侧：active 不变。
+        assert_eq!(active_after_close(1, 2, 2), 1);
+        // 关最后一个 active：回退到前一个。
+        assert_eq!(active_after_close(3, 3, 3), 2);
+        // remaining=0 由调用方退出事件循环。
+        assert_eq!(active_after_close(0, 0, 0), 0);
+    }
 
     #[test]
     fn toggle_sidebar_math_roundtrips_and_keeps_window_width() {

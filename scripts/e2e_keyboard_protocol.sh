@@ -138,10 +138,12 @@ KITTY_RESP=1b5b3f30751b5b3f3375
 KITTY_KEYS=1b5b39373b35751b5b39373b353a3375621b5b313b32411b5b313b323a3341
 # modify query: CSI > 4 ; 2 m
 MODIFY_RESP=1b5b3e343b326d
-# Ctrl+A（level 2）+ b + Shift+Up
-MODIFY_KEYS=1b5b32373b353b39377e621b5b313b3241
-# legacy：Ctrl+A=0x01 + b + Up(无修饰)
-LEGACY_KEYS=01621b5b41
+# Ctrl+A（level 2）+ b + Shift+Up。
+# Ctrl+字母/控制键按设计保留原始控制字节（避免 CSI 27;5;99~ 被不识别的 TUI
+# 打印成 "99~"，Ctrl+C 也就无法中断），所以这里期望 0x01 而不是 CSI-u。
+MODIFY_KEYS=01621b5b313b3241
+# legacy：Ctrl+A=0x01 + b + Shift+Up（Shift 仍按 xterm 修饰导航键编码）
+LEGACY_KEYS=01621b5b313b3241
 
 echo "== 1) kitty protocol =="
 run_case kitty kitty auto
