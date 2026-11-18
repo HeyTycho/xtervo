@@ -108,7 +108,21 @@ grim -g "$(slurp)" /tmp/ime.png        # 或整屏 grim /tmp/ime.png
 ### 4.3 UI-WIN-005：真机 GPU 流畅度
 
 > **注意**：agent 沙箱里看不到 `/dev/dri`/NVIDIA 设备节点（bwrap 隔离），所以这条必须在**宿主机**上跑。
-> 仓库提供一键脚本：`./scripts/verify_gpu_host.sh`（只读，产物在 `.logs/gpu-host-verify/`）。
+> 仓库提供一键脚本：`./scripts/verify_gpu_host.sh`（只读，产物在 `.logs/gpu-host-verify/`）；
+> 加 `--check` 直接输出 PASS/FAIL（退出码 0/1），不用自己看日志：
+
+```bash
+./scripts/verify_gpu_host.sh --check
+# PASS  GPU 可见：NVIDIA GeForce RTX 4060
+# PASS  未回退：actual_renderer=winit-skia
+# PASS  GPU 渲染生效：actual_renderer=winit-skia
+# PASS  damage 路径 draw_p95=36.9µs（阈值 <500µs）
+# PASS  full 200x50 total_p50=1603µs（阈值 <5000µs）
+# RESULT: PASS（UI-WIN-005 的真机 GPU 部分可转 implemented）
+```
+
+判定阈值：damage 路径 `draw_p95_us < 500`、`full_200x50 total_p50_us < 5000`；
+WGPU 显示链路失败但 Skia GPU 仍生效时只给 WARN（`TERVO_GPU_NATIVE` 属实验路径）。
 
 
 **需要**：有可用驱动的 NVIDIA/AMD/Intel GPU 机器（`nvidia-smi -L` 或 `vulkaninfo --summary` 正常）。
