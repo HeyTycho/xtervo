@@ -35,3 +35,9 @@ harness = false
 [[test]]
 name = "vt_compat_suite"
 harness = false
+
+# TERM-002：确定性 fuzz 目标（自带 RNG/语料/有界内存断言，无 cargo-fuzz 依赖）。
+# 默认参数在 `cargo test -p tervo-core` 里 1–2 秒跑完，可加 --long 做 soak。
+[[test]]
+name = "vt_fuzz_target"
+harness = false

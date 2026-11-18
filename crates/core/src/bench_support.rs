@@ -5,6 +5,7 @@
 //! `Term + Processor + fill_frame` 单独拿出来，便于隔离测量解析与取帧成本。
 
 use alacritty_terminal::event::VoidListener;
+use alacritty_terminal::grid::Scroll;
 use alacritty_terminal::term::{Config as TermConfig, Term};
 use alacritty_terminal::vte::ansi::Processor;
 
@@ -76,6 +77,17 @@ impl TermSim {
 
     pub fn cols(&self) -> usize {
         self.size.cols
+    }
+
+    /// 回滚历史行数（TERM-002 fuzz 的有界性断言用）。
+    ///
+    /// `Grid` 没有公开 `history_size`；把显示偏移临时推到顶部再读回，
+    /// 不改内容，随后复位到底部。只在测试/诊断路径调用。
+    pub fn history_lines(&mut self) -> usize {
+        self.term.scroll_display(Scroll::Top);
+        let lines = self.term.grid().display_offset();
+        self.term.scroll_display(Scroll::Bottom);
+        lines
     }
 
     pub fn rows(&self) -> usize {
