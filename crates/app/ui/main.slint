@@ -1509,20 +1509,15 @@ export component MainWindow inherits Window {
     callback tab-clicked(int);
     callback tab-closed(int);
     callback new-tab();
-    // “+” 下拉：默认新 Tab + 各 Profile
+    // `>_` 打开 Profile 选择菜单（纯列表；`+` 不再复用这个下拉）。
     in-out property <bool> profilemenu-open: false;
     in-out property <length> profilemenu-x: 0px;
     in property <[string]> profilemenu-items: [];
-    /// `+` 打开下拉时置 true：Rust 会在第一行插入“新建默认 Tab”。
-    in-out property <bool> profilemenu-show-new-tab: false;
-    /// 菜单内搜索词（UI-TAB-002）；Rust 按它过滤可见行。
-    in-out property <string> profilemenu-query: "";
-    /// 键盘高亮行（可见行下标，-1 = 空结果）。
+    /// 键盘高亮行（可见行下标，-1 = 未选择/空列表）。
     in-out property <int> profilemenu-selected: -1;
     callback profilemenu-menu();
     callback profilemenu-pick(int);
     callback profilemenu-manage();
-    callback profilemenu-query-changed(string);
     callback profilemenu-move(int);
     callback profilemenu-accept();
     callback profilemenu-cancel();
@@ -2811,11 +2806,8 @@ export component MainWindow inherits Window {
                             if (root.settings-open) {
                                 root.suspend-settings();
                             }
-                            // LOCAL-004：`+` 下拉 = 默认 Tab + 按 Profile 开 Tab。
-                            root.profilemenu-x = self.absolute-position.x;
-                            root.profilemenu-show-new-tab = true;
-                            root.profilemenu-open = true;
-                            root.profilemenu-menu();
+                            // 旧行为：`+` 直接新建默认 Tab；Profile 选择走右侧 >_。
+                            root.new-tab();
                         }
                     }
 
@@ -2844,7 +2836,6 @@ export component MainWindow inherits Window {
                                 root.suspend-settings();
                             }
                             root.profilemenu-x = self.absolute-position.x;
-                            root.profilemenu-show-new-tab = false;
                             root.profilemenu-open = true;
                             root.profilemenu-menu();
                         }
@@ -3395,10 +3386,7 @@ export component MainWindow inherits Window {
                             if (root.settings-open) {
                                 root.suspend-settings();
                             }
-                            root.profilemenu-x = self.absolute-position.x;
-                            root.profilemenu-show-new-tab = true;
-                            root.profilemenu-open = true;
-                            root.profilemenu-menu();
+                            root.new-tab();
                         }
                     }
                     Text {
@@ -3426,7 +3414,6 @@ export component MainWindow inherits Window {
                                 root.suspend-settings();
                             }
                             root.profilemenu-x = self.absolute-position.x;
-                            root.profilemenu-show-new-tab = false;
                             root.profilemenu-open = true;
                             root.profilemenu-menu();
                         }
@@ -4303,7 +4290,6 @@ export component MainWindow inherits Window {
             pointer-event(event) => {
                 if (event.kind == PointerEventKind.down) {
                     root.profilemenu-open = false;
-                    root.profilemenu-query = "";
                     root.focus-terminal();
                     root.menu-dismissed();
                     return EventResult.accept;
@@ -4314,7 +4300,7 @@ export component MainWindow inherits Window {
     }
 
     if root.profilemenu-open : Rectangle {
-        // n 个 Profile 行 + 分隔线 + Manage 行 + 搜索框/内边距；超出窗口高度才滚。
+        // n 个 Profile 行 + 分隔线 + Manage 行 + 内边距；超出窗口高度才滚。
         x: Math.max(0px, Math.min(root.profilemenu-x, root.width - 240px));
         y: root.tabbar-vertical
             ? root.height - self.height - 8px
@@ -4322,7 +4308,7 @@ export component MainWindow inherits Window {
                 ? root.height - root.tabbar-height - self.height
                 : root.tabbar-height);
         width: 240px;
-        height: Math.min(Math.max(28px, root.profilemenu-items.length * 28px + 29px) + 66px,
+        height: Math.min(Math.max(28px, root.profilemenu-items.length * 28px + 29px) + 8px,
             root.height - root.chrome-top - root.chrome-bottom - 8px);
         background: Palette.colors.raise;
         border-radius: 8px;
@@ -4333,63 +4319,16 @@ export component MainWindow inherits Window {
         drop-shadow-color: #000000b0;
         clip: true;
 
+        // 纯列表：↑↓ 移动高亮、Enter 打开、Esc 关闭；没有搜索框。
+        // 键盘由 Rust `handle_input` 处理：菜单不抢 FocusScope，终端始终能收到键。
         VerticalLayout {
             padding: 4px;
             spacing: 0px;
 
-            // 搜索框：打开即聚焦，输入实时过滤；↑↓ 选择、Enter 打开、Esc 关闭。
-            Rectangle {
-                height: 28px;
-                border-radius: 4px;
-                background: Palette.colors.bg;
-
-                TextInput {
-                    x: 6px;
-                    width: parent.width - 12px;
-                    height: parent.height;
-                    text <=> root.profilemenu-query;
-                    single-line: true;
-                    color: Palette.colors.text;
-                    font-size: 12px;
-                    vertical-alignment: center;
-                    init => { self.focus(); }
-                    edited => { root.profilemenu-query-changed(self.text); }
-                    key-pressed(event) => {
-                        if (event.text == "\u{1b}") {
-                            root.profilemenu-cancel();
-                            return EventResult.accept;
-                        }
-                        if (event.text == "\u{F700}") { root.profilemenu-move(-1); return EventResult.accept; }
-                        if (event.text == "\u{F701}") { root.profilemenu-move(1); return EventResult.accept; }
-                        if (event.text == "\u{a}" || event.text == "\u{d}") {
-                            root.profilemenu-accept();
-                            return EventResult.accept;
-                        }
-                        EventResult.reject
-                    }
-                }
-
-                Text {
-                    x: 6px;
-                    width: parent.width - 12px;
-                    height: parent.height;
-                    text: Lang.t("Search profiles…", "搜索配置…");
-                    color: Palette.colors.muted;
-                    font-size: 12px;
-                    vertical-alignment: center;
-                    visible: root.profilemenu-query == "";
-                }
-            }
-
-            Rectangle {
-                height: 1px;
-                background: Palette.colors.border;
-            }
-
             // Profile 多时列表内部滚动；键盘高亮行始终自动滚进视口。
             Flickable {
                 height: Math.max(28px,
-                    Math.min(root.profilemenu-items.length * 28px + 58px,
+                    Math.min(root.profilemenu-items.length * 28px + 29px,
                         root.height - root.chrome-top - root.chrome-bottom - 45px));
                 content-width: self.width;
                 content-height: Math.max(28px, root.profilemenu-items.length * 28px + 29px);
@@ -4422,12 +4361,12 @@ export component MainWindow inherits Window {
                         picked => { root.profilemenu-open = false; root.profilemenu-pick(i); }
                     }
 
-                    // 过滤后空结果提示（不占行高、不能点）。
+                    // 没有 Profile 时的空态（不占额外行高、不能点）。
                     if root.profilemenu-items.length == 0 : Rectangle {
                         height: 40px;
                         Text {
                             x: 10px;
-                            text: Lang.t("No matching profiles", "没有匹配的配置");
+                            text: Lang.t("No profiles yet", "还没有配置");
                             color: Palette.colors.muted;
                             font-size: 11px;
                             vertical-alignment: center;
@@ -4446,7 +4385,6 @@ export component MainWindow inherits Window {
                 }
             }
         }
-
     }
 
     // 点菜单外的任意位置关闭 TabBar / Tab 菜单（此前只能点菜单项，菜单会一直留着）。

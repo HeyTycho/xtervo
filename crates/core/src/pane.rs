@@ -545,6 +545,11 @@ enum Ctrl {
         force_full: bool,
     },
     PtyClosed,
+    /// 前台进程组变化（子命令启动/退出）。只有回到 shell（`pgid` 等于
+    /// 直接子进程）时才处理：应用崩溃/被 kill 时没来得及 `CSI < u` 复位
+    /// kitty flags，shell 会把后续按键按 CSI-u 回显成乱码。进入前台命令
+    /// 不复位，避免和该命令首批输出里的 `CSI > flags u` 抢顺序。
+    ForegroundChanged { pgid: i32 },
     Shutdown,
 }
 
@@ -558,12 +563,28 @@ fn pump_reader<R: std::io::Read>(
     mut reader: R,
     pty_tx: Sender<Vec<u8>>,
     ctrl_tx: Sender<Ctrl>,
+    fg_fd: Option<std::os::unix::io::RawFd>,
 ) {
     let mut buf = vec![0u8; READ_CHUNK];
+    // 前台进程组快照：PTY 后端传入 master 的 dup；插件 transport 为 None。
+    // 子命令退出后 pgrp 回到 shell，读线程在下一次输出（shell prompt）时
+    // 通知 actor 复位 kitty/modifyOtherKeys，避免崩溃应用留下的 flags 把
+    // shell 输入变成 CSI-u 乱码。
+    let mut last_pgrp = fg_fd
+        .map(|fd| unsafe { libc::tcgetpgrp(fd) })
+        .unwrap_or(0)
+        .max(0);
     loop {
         match reader.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
+                if let Some(fd) = fg_fd {
+                    let pgrp = unsafe { libc::tcgetpgrp(fd) };
+                    if pgrp > 0 && pgrp != last_pgrp {
+                        last_pgrp = pgrp;
+                        let _ = ctrl_tx.send(Ctrl::ForegroundChanged { pgid: pgrp });
+                    }
+                }
                 // 有界阻塞：背压回内核，绝不丢字节、绝不做 UI 工作。
                 if pty_tx.send(buf[..n].to_vec()).is_err() {
                     break;
@@ -572,6 +593,10 @@ fn pump_reader<R: std::io::Read>(
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(_) => break,
         }
+    }
+    if let Some(fd) = fg_fd {
+        // 只关闭本线程持有的 dup；master 本体仍归 actor。
+        unsafe { libc::close(fd) };
     }
     let _ = ctrl_tx.send(Ctrl::PtyClosed);
 }
@@ -1196,6 +1221,14 @@ pub fn spawn_with_transport(
         },
     };
 
+    // PTY 直接子进程是 session leader，其 pid 即 shell 的进程组 id；
+    // 前台 pgrp 回到它表示子命令结束。插件 transport 没有子进程，保持 0。
+    let shell_pgid = child
+        .as_ref()
+        .and_then(|c| c.process_id())
+        .map(|pid| pid as i32)
+        .unwrap_or(0);
+
     // ---- 有界通道 ----
     let (pty_tx, pty_rx) = bounded::<Vec<u8>>(PTY_QUEUE_CHUNKS);
     let (ctrl_tx, ctrl_rx) = bounded::<Ctrl>(CTRL_QUEUE);
@@ -1222,10 +1255,18 @@ pub fn spawn_with_transport(
     // ---- 读线程：PTY 与插件 transport 共用 pump_reader（只 read + 有界 send）----
     // 两种后端共用同一段“有界背压、绝不丢字节”的逻辑；EOF（`Ok(0)`）统一由
     // `pump_reader` 发 `Ctrl::PtyClosed`，actor 侧的收尾路径也完全一致。
+    // PTY 额外把 master dup 一份给读线程，用 tcgetpgrp 观察前台命令退出。
+    let fg_fd = match &control {
+        BackendControl::Pty { master } => master.as_raw_fd().and_then(|fd| {
+            let dup = unsafe { libc::dup(fd) };
+            (dup >= 0).then_some(dup)
+        }),
+        BackendControl::Plugin(_) => None,
+    };
     let ctrl_tx_reader = ctrl_tx.clone();
     let reader_thread = thread::Builder::new()
         .name("pty-reader".into())
-        .spawn(move || pump_reader(reader, pty_tx, ctrl_tx_reader))?;
+        .spawn(move || pump_reader(reader, pty_tx, ctrl_tx_reader, fg_fd))?;
 
     // ---- 写线程：PTY master writer 或插件 transport 写半边 ----
     let writer_queue = write_queue.clone();
@@ -1309,6 +1350,7 @@ pub fn spawn_with_transport(
         mode_bits: mode_bits.clone(),
         modify_other_keys: modify_other_keys.clone(),
         keyboard_flags: keyboard_flags.clone(),
+        shell_pgid,
         cursor_bits: cursor_bits.clone(),
         scroll: scroll.clone(),
         read_only: read_only.clone(),
@@ -1637,6 +1679,8 @@ struct Actor {
     modify_other_keys: Arc<AtomicU8>,
     /// kitty flags 快照（含 main/alternate screen 栈；见 [`PaneHandle::keyboard_flags`]）。
     keyboard_flags: Arc<AtomicU8>,
+    /// 直接子进程（shell）的进程组 id：`tcgetpgrp` 回到它表示前台命令已退出。
+    shell_pgid: i32,
     /// 光标快照，供 IME/焦点同步（不依赖 UI 拉帧）。
     cursor_bits: Arc<std::sync::atomic::AtomicU64>,
     /// 滚动位置快照（打包 offset/history），供 UI 无阻塞查询。
@@ -3364,6 +3408,25 @@ impl Actor {
         self.wake.notify();
     }
 
+    /// 前台命令退出/切换：应用崩溃或被 kill 时不会发 `CSI < u` 或关闭
+    /// modifyOtherKeys，留下的增强键盘状态会让 shell 把后续按键回显成
+    /// `9;5:3u`/`7;129u` 这类可见乱码。回到 shell 前台时一并复位。
+    fn reset_foreground_keyboard(&mut self) {
+        use std::sync::atomic::Ordering::Relaxed;
+        let had_flags = self.keyboard_flags.load(Relaxed) != 0;
+        let had_modify = self.modify_other_keys.load(Relaxed) != 0;
+        self.keyboard.reset();
+        self.keyboard_flags.store(0, Relaxed);
+        self.modify_other_keys.store(0, Relaxed);
+        if had_flags || had_modify {
+            eprintln!(
+                "[keyboard] 前台进程变化：复位 kitty flags={} modifyOtherKeys={}",
+                u8::from(had_flags),
+                u8::from(had_modify)
+            );
+        }
+    }
+
     /// 全部内容（回滚 + 视口）转成文本；末尾补一个换行（与常见抓取工具一致）。
     fn contents(&self) -> String {
         let text = self.term.bounds_to_string(
@@ -3668,6 +3731,19 @@ impl Actor {
                 self.store_grid_lines();
                 self.control.resize(cols, rows, self.cell_width, self.cell_height);
                 self.wake.notify();
+                true
+            },
+            Ctrl::ForegroundChanged { pgid } => {
+                // 只处理“回到 shell”：先把队列里子进程最后的输出喂完
+                //（可能包含它延迟发出的 `CSI < u`/set），再复位，避免
+                //“先复位后又被最后一块输出设回 7”。进入前台命令不复位，
+                // 否则可能与新应用首批输出里的 `CSI > flags u` 抢顺序。
+                if pgid == self.shell_pgid {
+                    while let Ok(bytes) = self.pty_rx.try_recv() {
+                        self.feed(&bytes);
+                    }
+                    self.reset_foreground_keyboard();
+                }
                 true
             },
             Ctrl::PtyClosed => {
@@ -4034,7 +4110,7 @@ mod tests {
         let (mut writer, reader) = UnixStream::pair().unwrap();
         let (tx, rx) = crossbeam_channel::bounded::<Vec<u8>>(8);
         let (ctrl_tx, ctrl_rx) = crossbeam_channel::bounded::<Ctrl>(8);
-        let handle = std::thread::spawn(move || pump_reader(reader, tx, ctrl_tx));
+        let handle = std::thread::spawn(move || pump_reader(reader, tx, ctrl_tx, None));
 
         writer.write_all(b"abc").unwrap();
         writer.write_all(b"defg").unwrap();

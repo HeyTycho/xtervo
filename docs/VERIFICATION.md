@@ -29,7 +29,7 @@ check_doc_links:   checked: broken=0
 ```bash
 cargo build --release -p tervo-app
 cargo test -p tervo-core                 # 含 VT 兼容套件与 fuzz（约 1s 默认轮次）
-cargo test -p tervo-app --bin tervo      # 期望 667 passed / 2 ignored
+cargo test -p tervo-app --bin tervo      # 期望 666 passed / 2 ignored
 ./scripts/selfcheck.sh                   # 构建 + 单测 + 启动预算
 RUN_IME=1 ./scripts/selfcheck.sh         # 加中文冒烟
 ```
@@ -148,6 +148,7 @@ damage 路径 P95 约 37–40 µs；full 200x50 约 1.66 ms；PTY→可见 10 Mi
 
 | 功能 | 操作 | 期望 |
 |---|---|---|
+| TabBar `+` / `>_` | 一键运行 `./scripts/e2e_tabbar_plus_profile.sh` | `+` 直接开默认 Tab；`>_` 纯 Profile 列表、↓+Enter 可打开第二个 Profile；截图在 `.logs/tabbar-plus-profile/e2e/shots/` |
 | 分屏拖拽 | 两个 pane，拖右上角手柄到另一个 pane | 交换位置，`Ctrl+Alt+Z` 可撤销 |
 | 广播危险命令 | 开广播输入（右键菜单），输入 `rm -rf /` 回车 | 红条 + 二次确认，可只发当前 pane |
 | 工作区 | 命令面板 `Save Layout as Workspace` → 起名 → 设置页 Workspaces 列表 | 可打开/重命名/删除/导出 JSON |
@@ -155,6 +156,7 @@ damage 路径 P95 约 37–40 µs；full 200x50 约 1.66 ms；PTY→可见 10 Mi
 | 录制 | 命令面板 `Start Recording` → 跑点输出 → `Export Recording…` | 导出原始字节，重放能看到颜色/图片序列 |
 | 菜单装饰 | 安装示例插件（`docs/examples/plugin-v3-echo`），清单加 `menu = true` | 右键菜单末尾出现该命令 |
 | 安全模式 | `echo 3 > ~/.local/state/tervo/session.crashes` + 留 `session.running` 后启动 | 日志 `[safe-mode]`，本次不加载插件 |
+| 崩溃应用后的键盘 | shell 里跑 `sh -c 'printf "\033[>7u"; kill -9 $$'`，回到提示符后按 `Ctrl+G` | 屏幕不出现 `7;5u`/`9;5:3u` 等 CSI-u 尾巴；日志有 `[keyboard] 前台进程变化：复位 …` |
 | 内联图片 | `img2sixel`/`chafa` 输出图片；点击图片 | 位置正确，灯箱可缩放 |
 
 ## 6. 证据在哪

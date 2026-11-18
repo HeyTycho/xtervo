@@ -6,6 +6,18 @@ Tervo 的版本与 tag 规则见 `docs/RELEASING.md`。
 
 ### Fixed
 
+- TabBar 恢复旧交互：`+` 直接新建默认 Tab（不再弹 Profile 下拉）；`>_` 只做
+  Profile 选择，菜单去掉搜索框，键盘 ↑↓/Enter/Esc 保留；菜单不再抢
+  FocusScope，关闭后终端输入立即可用。11-17 的 LOCAL-004 把 `+` 改成下拉、
+  20:20 又给菜单加搜索，用户侧表现为“+ 不新建默认 Tab、菜单多出搜索”。
+  （`crates/app/ui/main.slint`、`crates/app/src/main.rs`，
+  `scripts/e2e_tabbar_plus_profile.sh`）
+- 应用崩溃/被 kill 后不会再出现键盘乱码：子命令把 kitty flags 留在 7
+  （disambiguate + event types + alternate keys），shell 收到 `CSI-u` 后回显，
+  终端吃掉 `ESC[` 只剩 `9;5:3u`/`7;129u` 这类尾巴。现在读线程用
+  `tcgetpgrp` 观察前台进程组，回到 shell 时复位 kitty/modifyOtherKeys
+  （`crates/core/src/pane.rs`，真实 PTY 回归测试
+  `foreground_command_exit_resets_stale_kitty_flags`）。
 - 多窗口标题不再把内部 window id 拼进 `WM_NAME`：新建窗口的标题曾是
   `Tervo — 2`，且每个新窗口从“当前活动窗口”克隆 opts，导致继续累积成
   `Tervo — 2 — 3`。现在所有窗口统一为基础标题（默认 `Tervo`），只裁掉纯数字的

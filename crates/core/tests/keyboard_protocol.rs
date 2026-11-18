@@ -199,3 +199,46 @@ fn protocol_off_answers_nothing() {
     assert_eq!(handle.modify_other_keys(), 0);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// 应用崩溃/被 kill 时不会发 `CSI < u`。子命令退出、shell 回到前台后，
+/// 必须复位残留的 kitty flags，否则 shell 会把按键回显成 `9;5:3u` 这类乱码。
+#[test]
+fn foreground_command_exit_resets_stale_kitty_flags() {
+    let handle = spawn(PaneConfig {
+        cols: 80,
+        rows: 24,
+        scrollback: 200,
+        keyboard_protocol: true,
+        shell: Some("/bin/sh".to_string()),
+        ..PaneConfig::default()
+    })
+    .expect("spawn interactive shell");
+
+    // 等交互 shell 起来并打印首个 prompt。
+    std::thread::sleep(Duration::from_millis(300));
+
+    // 子进程设置 flags=7 后退出；shell 随后回到前台。
+    handle.input(b"sh -c 'printf \"\\033[>7u\"; sleep 0.3'\n");
+
+    let start = Instant::now();
+    while handle.keyboard_flags().bits() != 7 {
+        if start.elapsed() > Duration::from_secs(5) {
+            panic!(
+                "未观察到子进程设置的 flags=7，当前 {}",
+                handle.keyboard_flags().bits()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    let start = Instant::now();
+    while handle.keyboard_flags().bits() != 0 {
+        if start.elapsed() > Duration::from_secs(5) {
+            panic!(
+                "前台命令退出后 flags 未复位为 0，当前 {}",
+                handle.keyboard_flags().bits()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
