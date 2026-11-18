@@ -12,7 +12,12 @@
 //! - **安全上限**：单个文件 20 MiB、单图 16 MP / 单边 16384 px。非法/超限数据
 //!   只丢图（序列本身仍被吞掉），绝不 panic、绝不让图片字节进入网格。
 //! - **尺寸参数**：`inline=1`、`name`、`width`/`height`（cell 数、`px`、`auto`）、
-//!   `preserveAspectRatio`。未声明 `inline=1` 的文件只下载不显示，因此直接忽略。
+//!   `preserveAspectRatio`。
+//! - **非内联图策略**：iTerm2 协议里 `inline` 缺省为 0，`inline=0`/缺省表示
+//!   “只下载、不显示”。Tervo 不实现文件下载，因此这类 `File=` 一律忽略
+//!   （序列仍被吞掉，绝不进入网格），但会发一条 [`IipEvent::Ignored`] 让 UI
+//!   提示/记录，避免客户端参数写错时静默丢图。参数语法非法、base64/图片损坏、
+//!   超限等仍按防御策略静默丢弃（不属于“合法但非内联”这一可解释分支）。
 //!
 //! 解码输出是**非预乘** RGBA（未覆盖的像素 alpha=0），由 Slint 统一预乘。
 
@@ -67,12 +72,44 @@ impl std::fmt::Debug for IipImage {
     }
 }
 
+/// 忽略一条合法 `OSC 1337;File=` 的原因。
+///
+/// 两者都表示 iTerm2 语义下的“只下载不显示”；Tervo 不下载文件，所以只提示。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IipIgnoreReason {
+    /// 参数里完全没有 `inline`：协议缺省为 0。
+    MissingInline,
+    /// 显式 `inline=0`。
+    InlineDisabled,
+}
+
+impl IipIgnoreReason {
+    /// 稳定的诊断标签（日志/测试用；UI 文案由 app 决定）。
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::MissingInline => "missing-inline",
+            Self::InlineDisabled => "inline-0",
+        }
+    }
+}
+
+/// 一条被忽略的非内联 IIP 通知。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IipNotice {
+    pub reason: IipIgnoreReason,
+    /// `name` 参数解码后的文件名（若有）；便于定位是哪个客户端/文件。
+    pub name: Option<String>,
+}
+
 /// 过滤结果：交给 vte 的普通字节，或一张已按光标锚定的图片，顺序与输入一致。
 pub enum IipEvent {
     /// 原样交给 vte / OscScanner 的字节（已剔除 IIP OSC）。
     Pass(Vec<u8>),
     /// 一张解码成功的图片；锚点由 actor 在收到该事件时读取当前光标。
     Image(IipImage),
+    /// 语法合法的 `File=` 但不是内联图（inline 缺省/0）：序列已被吞掉，
+    /// UI 可提示“已忽略”。`decode = false`（IIP 关闭）时不产生该事件。
+    Ignored(IipNotice),
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -100,6 +137,8 @@ enum SizeSpec {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct FileArgs {
     inline: bool,
+    /// 参数里是否真的出现过 `inline=`；区分“缺省（按协议=0）”与显式 `inline=0`。
+    inline_present: bool,
     width: SizeSpec,
     height: SizeSpec,
     preserve_aspect_ratio: bool,
@@ -111,6 +150,7 @@ impl Default for FileArgs {
     fn default() -> Self {
         Self {
             inline: false,
+            inline_present: false,
             width: SizeSpec::Auto,
             height: SizeSpec::Auto,
             preserve_aspect_ratio: true,
@@ -434,8 +474,10 @@ impl IipFilter {
 
     fn finish(&mut self, aborted: bool, out: &mut Vec<IipEvent>) {
         if !aborted && self.decode && !self.overflow {
-            if let Some(image) = decode_body(&self.body, self.cell_w, self.cell_h) {
-                out.push(IipEvent::Image(image));
+            match decode_body_outcome(&self.body, self.cell_w, self.cell_h, MAX_FILE_BYTES) {
+                BodyOutcome::Image(image) => out.push(IipEvent::Image(image)),
+                BodyOutcome::Ignored(notice) => out.push(IipEvent::Ignored(notice)),
+                BodyOutcome::Dropped => {},
             }
         }
         self.body.clear();
@@ -468,7 +510,10 @@ fn parse_file_args(raw: &[u8]) -> Option<FileArgs> {
         }
         let (key, value) = part.split_once('=')?;
         match key.trim().to_ascii_lowercase().as_str() {
-            "inline" => args.inline = parse_switch(value)?,
+            "inline" => {
+                args.inline = parse_switch(value)?;
+                args.inline_present = true;
+            },
             "width" => args.width = parse_size(value)?,
             "height" => args.height = parse_size(value)?,
             "preserveaspectratio" => args.preserve_aspect_ratio = parse_switch(value)?,
@@ -482,8 +527,9 @@ fn parse_file_args(raw: &[u8]) -> Option<FileArgs> {
             _ => {},
         }
     }
-    // iTerm2 协议里 inline 缺省为 0：只下载、不显示。没有 inline=1 就不是内联图。
-    args.inline.then_some(args)
+    // iTerm2 协议里 inline 缺省为 0：只下载、不显示。是否内联由调用方决定：
+    // 这里只做语法解析，`finish`/`decode_body_outcome` 负责忽略并通知。
+    Some(args)
 }
 
 fn parse_switch(value: &str) -> Option<bool> {
@@ -511,27 +557,67 @@ fn parse_size(value: &str) -> Option<SizeSpec> {
     Some(if px { SizeSpec::Px(number) } else { SizeSpec::Cells(number) })
 }
 
-/// 参数 + `:` + base64 → 已缩放的 RGBA 图片。
-fn decode_body(body: &[u8], cell_w: u32, cell_h: u32) -> Option<IipImage> {
-    decode_body_limited(body, cell_w, cell_h, MAX_FILE_BYTES)
+/// 一条 `File=` body 的处理结果。
+enum BodyOutcome {
+    Image(IipImage),
+    /// 合法 `File=` 但非内联图（inline 缺省/0）。
+    Ignored(IipNotice),
+    /// 参数/载荷/图片非法或超限：按防御策略静默丢弃。
+    Dropped,
 }
 
+/// 仅供测试：带自定义文件上限的同步解码；生产路径走 `decode_body_outcome`。
+#[cfg(test)]
 fn decode_body_limited(
     body: &[u8],
     cell_w: u32,
     cell_h: u32,
     max_file_bytes: usize,
 ) -> Option<IipImage> {
-    let colon = body.iter().position(|&b| b == b':')?;
-    let (args_raw, payload) = body.split_at(colon);
-    let payload = payload.get(1..)?;
-    if payload.is_empty() {
-        return None;
+    match decode_body_outcome(body, cell_w, cell_h, max_file_bytes) {
+        BodyOutcome::Image(image) => Some(image),
+        BodyOutcome::Ignored(_) | BodyOutcome::Dropped => None,
     }
-    let args = parse_file_args(args_raw)?;
+}
+
+fn decode_body_outcome(
+    body: &[u8],
+    cell_w: u32,
+    cell_h: u32,
+    max_file_bytes: usize,
+) -> BodyOutcome {
+    let Some(colon) = body.iter().position(|&b| b == b':') else {
+        return BodyOutcome::Dropped;
+    };
+    let (args_raw, payload) = body.split_at(colon);
+    let Some(payload) = payload.get(1..) else {
+        return BodyOutcome::Dropped;
+    };
+    let Some(args) = parse_file_args(args_raw) else {
+        // 参数语法非法（未知开关值、非法 base64 name 以外的问题）不属于
+        // “合法但非内联”，保持静默丢弃，避免把畸形数据当成用户可修正的提示。
+        return BodyOutcome::Dropped;
+    };
+    if !args.inline {
+        return BodyOutcome::Ignored(IipNotice {
+            reason: if args.inline_present {
+                IipIgnoreReason::InlineDisabled
+            } else {
+                IipIgnoreReason::MissingInline
+            },
+            name: args.name,
+        });
+    }
+    if payload.is_empty() {
+        return BodyOutcome::Dropped;
+    }
     // 严格 base64：拒绝非法字符/长度/补位以及非零的尾部未用位。
-    let file = decode_base64_bounded(payload, max_file_bytes, true)?;
-    let (natural_w, natural_h, rgba) = decode_image(&file)?;
+    let Some(file) = decode_base64_bounded(payload, max_file_bytes, true) else {
+        return BodyOutcome::Dropped;
+    };
+    let Some((natural_w, natural_h, rgba)) = decode_image(&file) else {
+        return BodyOutcome::Dropped;
+    };
     let (width, height) = fit_size(
         natural_w,
         natural_h,
@@ -543,9 +629,9 @@ fn decode_body_limited(
     );
     let rgba = resize_rgba(&rgba, natural_w, natural_h, width, height);
     if rgba.len() != width as usize * height as usize * 4 {
-        return None;
+        return BodyOutcome::Dropped;
     }
-    Some(IipImage { width, height, rgba, name: args.name })
+    BodyOutcome::Image(IipImage { width, height, rgba, name: args.name })
 }
 
 fn valid_dimensions(width: u32, height: u32) -> bool {
@@ -866,12 +952,42 @@ mod tests {
                         match event {
                             IipEvent::Pass(bytes) => pass.extend_from_slice(&bytes),
                             IipEvent::Image(image) => images.push(image),
+                            // 非内联图：序列被吞掉，无可见输出；本 helper 只关心
+                            // pass/image，通知由 feed_chunks_notices 断言。
+                            IipEvent::Ignored(_) => {},
                         }
                     }
                 },
             }
         }
         (pass, images)
+    }
+
+    /// 与 [`feed_chunks`] 相同，但额外收集非内联 IIP 通知。
+    fn feed_chunks_notices(
+        chunks: &[&[u8]],
+        decode: bool,
+    ) -> (Vec<u8>, Vec<IipImage>, Vec<IipNotice>) {
+        let mut filter = IipFilter::new();
+        filter.set_cell_size(10, 20);
+        let mut pass = Vec::new();
+        let mut images = Vec::new();
+        let mut notices = Vec::new();
+        for chunk in chunks {
+            match filter.feed(chunk, decode) {
+                None => pass.extend_from_slice(chunk),
+                Some(events) => {
+                    for event in events {
+                        match event {
+                            IipEvent::Pass(bytes) => pass.extend_from_slice(&bytes),
+                            IipEvent::Image(image) => images.push(image),
+                            IipEvent::Ignored(notice) => notices.push(notice),
+                        }
+                    }
+                },
+            }
+        }
+        (pass, images, notices)
     }
 
     #[test]
@@ -1069,6 +1185,73 @@ mod tests {
             let (pass, images) = feed_chunks(&[&image_osc(args, &rgba_png())], true);
             assert!(pass.is_empty(), "args={args}");
             assert!(images.is_empty(), "args={args}");
+        }
+    }
+
+    /// 非内联 IIP 的用户可见策略：序列照样吞掉（不进网格），但必须产生一条
+    /// `Ignored` 通知，区分配置缺省 `inline` 与显式 `inline=0`，并带上 name。
+    #[test]
+    fn non_inline_iip_emits_one_notice_and_never_an_image() {
+        let cases: [(&str, IipIgnoreReason, Option<&str>); 4] = [
+            ("", IipIgnoreReason::MissingInline, None),
+            ("inline=0", IipIgnoreReason::InlineDisabled, None),
+            ("name=cGljLnBuZw==", IipIgnoreReason::MissingInline, Some("pic.png")),
+            ("inline=0;name=Zm9v", IipIgnoreReason::InlineDisabled, Some("foo")),
+        ];
+        for (args, reason, name) in cases {
+            let osc = image_osc(args, &rgba_png());
+            let mut input = b"<".to_vec();
+            input.extend_from_slice(&osc);
+            input.push(b'>');
+
+            let (pass, images, notices) = feed_chunks_notices(&[&input], true);
+            assert_eq!(pass, b"<>", "args={args}");
+            assert!(images.is_empty(), "args={args}");
+            assert_eq!(notices.len(), 1, "args={args}: {notices:?}");
+            assert_eq!(notices[0].reason, reason, "args={args}");
+            assert_eq!(notices[0].name.as_deref(), name, "args={args}");
+
+            // 跨 chunk（逐字节 / 3 字节切）不能重复通知，也不能漏字节。
+            for chunk in [1usize, 3] {
+                let chunks: Vec<&[u8]> = input.chunks(chunk).collect();
+                let (pass, images, notices) = feed_chunks_notices(&chunks, true);
+                assert_eq!(pass, b"<>", "args={args} chunk={chunk}");
+                assert!(images.is_empty(), "args={args} chunk={chunk}");
+                assert_eq!(notices.len(), 1, "args={args} chunk={chunk}: {notices:?}");
+            }
+        }
+
+        // inline=1 不产生“忽略”通知。
+        let (pass, images, notices) =
+            feed_chunks_notices(&[&image_osc("inline=1", &rgba_png())], true);
+        assert!(pass.is_empty());
+        assert_eq!(images.len(), 1);
+        assert!(notices.is_empty());
+    }
+
+    /// 通知只在 IIP 开启时产生；空载荷但参数合法仍按“非内联”提示；
+    /// 参数语法非法保持静默丢弃（没有可解释的协议含义）。
+    #[test]
+    fn non_inline_iip_notice_respects_switch_and_malformed_args() {
+        // IIP 关闭：只吞，不解码也不提示。
+        let (pass, images, notices) =
+            feed_chunks_notices(&[&image_osc("inline=0", &rgba_png())], false);
+        assert!(pass.is_empty() && images.is_empty() && notices.is_empty());
+
+        // 空载荷 + inline=0：参数合法，仍提示一次。
+        let (pass, images, notices) =
+            feed_chunks_notices(&[b"\x1b]1337;File=inline=0:\x07"], true);
+        assert!(pass.is_empty() && images.is_empty());
+        assert_eq!(notices.len(), 1);
+        assert_eq!(notices[0].reason, IipIgnoreReason::InlineDisabled);
+
+        // 畸形参数：不看图片、不通知，序列仍被吞掉。
+        for args in ["inline=true", "inline=1;width=abc", "no-equals"] {
+            let (pass, images, notices) =
+                feed_chunks_notices(&[&image_osc(args, &rgba_png())], true);
+            assert!(pass.is_empty(), "args={args}");
+            assert!(images.is_empty(), "args={args}");
+            assert!(notices.is_empty(), "args={args}: {notices:?}");
         }
     }
 

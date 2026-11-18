@@ -42,4 +42,4 @@ pub use pane::{
     PaneHandle, ScrollPosition, SearchHit, SearchOptions, MAX_OUTPUT_FILTER_BYTES,
 };
 pub use sixel::{SixelEvent, SixelFilter, SixelImage};
-pub use iip::{IipEvent, IipFilter, IipImage};
+pub use iip::{IipEvent, IipFilter, IipIgnoreReason, IipImage, IipNotice};

@@ -2820,6 +2820,11 @@ impl Actor {
                     self.image_clear.tail.clear();
                     changed = true;
                 },
+                IipEvent::Ignored(notice) => {
+                    // 非内联图（inline 缺省/0）：序列已吞掉，不产生帧变化；
+                    // 只上报语义事件，UI 负责日志/状态提示且可自行限流。
+                    self.events.send(CoreEvent::IipIgnored(notice));
+                },
             }
         }
         (changed, parsed)
