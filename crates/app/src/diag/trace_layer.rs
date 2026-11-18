@@ -547,7 +547,9 @@ impl<'a> PipelineBuilder<'a> {
                         IipEvent::Image(image) => {
                             self.stats.iip_images += 1;
                             self.record_image(ProtocolKind::Iip, image.width, image.height, None);
-                        }
+                        },
+                        // 非内联图：序列已吞掉、没有可见图；诊断管线只统计实际图。
+                        IipEvent::Ignored(_) => {},
                     }
                 }
             }

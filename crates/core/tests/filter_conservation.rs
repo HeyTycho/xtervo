@@ -31,6 +31,8 @@ struct Output {
     pass: Vec<u8>,
     sixel_images: usize,
     iip_images: usize,
+    /// 合法但非内联（inline 缺省/0）的 IIP：无图、无 pass，只发通知。
+    iip_ignored: usize,
     kitty_commands: usize,
     kitty_errors: usize,
 }
@@ -40,6 +42,7 @@ impl Output {
         self.pass.append(&mut other.pass);
         self.sixel_images += other.sixel_images;
         self.iip_images += other.iip_images;
+        self.iip_ignored += other.iip_ignored;
         self.kitty_commands += other.kitty_commands;
         self.kitty_errors += other.kitty_errors;
     }
@@ -90,6 +93,7 @@ impl Pipeline {
                     }
                 },
                 IipEvent::Image(_) => out.iip_images += 1,
+                IipEvent::Ignored(_) => out.iip_ignored += 1,
             }
         }
     }

@@ -69,9 +69,9 @@ use slint::{Model, ModelRc, VecModel};
 use tervo_core::{
     link::{is_allowed_uri, strip_path_position},
     spawn, spawn_with_transport, Backend, ClipboardRequest, ClipboardSelection, CoreEvent, Frame,
-    LinkKind, Modifiers, MouseAction, MouseButton, MouseEvent, Notification,
-    Palette as TermPalette, PaneConfig, PaneHandle, ProgressState, ScrollPosition, SearchHit,
-    SearchOptions, ShellMark, Theme, UiColors, WakeSignal,
+    IipIgnoreReason, IipNotice, LinkKind, Modifiers, MouseAction, MouseButton, MouseEvent,
+    Notification, Palette as TermPalette, PaneConfig, PaneHandle, ProgressState, ScrollPosition,
+    SearchHit, SearchOptions, ShellMark, Theme, UiColors, WakeSignal,
 };
 use x11rb::connection::Connection;
 use x11rb::rust_connection::RustConnection;
@@ -1082,6 +1082,9 @@ struct AppState {
     resize_max_apply_us: f64,
     /// X11 SHAPE 自适应圆角 worker；None = 未启动（X11 连接/线程失败，窗口保持直角）。
     corners: Option<xconn::CornerShaper>,
+    /// 上一次“非内联 IIP 已忽略”提示的时间：日志与状态 toast 共用节流，
+    /// 避免恶意/循环输出 `OSC 1337;File=inline=0` 时刷爆事件循环与界面。
+    last_iip_notice: Option<Instant>,
     clipboard: Option<arboard::Clipboard>,
 }
 
@@ -11624,9 +11627,23 @@ fn show_link_status(msg: String) {
     });
 }
 
+/// 非内联 IIP 的用户可见文案（状态栏 toast；详细原因写 `[iip]` 日志）。
+///
+/// 与 core 的协议语义对齐：`inline` 缺省/0 是“只下载、不显示”，而 Tervo
+/// 不实现文件下载，所以明确告诉用户“已忽略”，而不是静默丢图。
+fn iip_ignored_status(notice: &IipNotice) -> String {
+    match notice.reason {
+        IipIgnoreReason::MissingInline => {
+            "IIP: 图片缺少 inline=1，已忽略（Tervo 不下载文件）".to_string()
+        },
+        IipIgnoreReason::InlineDisabled => {
+            "IIP: 图片 inline=0，已忽略（Tervo 不下载文件）".to_string()
+        },
+    }
+}
+
 /// 已在 UI 线程时的状态浮层版本（Read Only / Save Contents 等直接调用）。
-fn set_status_toast(st: &mut AppState, msg: String) {
-    st.ui.set_link_status(msg.as_str().into());
+fn set_status_toast(st: &mut AppState, msg: String) {    st.ui.set_link_status(msg.as_str().into());
     let ui = st.ui.clone_strong();
     slint::Timer::single_shot(Duration::from_secs(4), move || {
         ui.set_link_status("".into());
@@ -13798,6 +13815,8 @@ fn drain_core_events(st: &mut AppState) -> (bool, u32) {
     // OSC 52 需要读写 st 的剪贴板状态，不能在内层 `rt` 可变借用期间处理；
     // 先收集 (pane, request)，等 pane 遍历结束后统一消费。
     let mut clipboard_events: Vec<(PaneId, ClipboardRequest)> = Vec::new();
+    // 非内联 IIP：core 只上报，日志/状态提示在 pane 借用结束后统一做。
+    let mut iip_notices: Vec<(PaneId, IipNotice)> = Vec::new();
     let mut bell_panes: Vec<PaneId> = Vec::new();
     // 远端进程退出：先收集，等 pane 可变借用结束后再改 AppState UI 状态。
     let mut exited_panes: Vec<(PaneId, Option<u64>, u32, Option<String>)> = Vec::new();
@@ -13933,6 +13952,7 @@ fn drain_core_events(st: &mut AppState) -> (bool, u32) {
                     );
                 }
                 CoreEvent::Clipboard(request) => clipboard_events.push((id, request)),
+                CoreEvent::IipIgnored(notice) => iip_notices.push((id, notice)),
                 CoreEvent::Exited => {
                     // Exited 可能由多个来源重复上报；只有真正等到子进程退出且
                     // 本轮还没提示过时才记一次。
@@ -13952,6 +13972,25 @@ fn drain_core_events(st: &mut AppState) -> (bool, u32) {
                 },
                 CoreEvent::ResetTitle | CoreEvent::CursorBlinkChange => {}
             }
+        }
+    }
+    if !iip_notices.is_empty() {
+        // 合法但非内联的 IIP（inline 缺省/0）：Tervo 只支持 inline=1，不做
+        // 文件下载。序列已在 core 吞掉；这里给一次用户可见提示 + 诊断日志。
+        // 5s 节流：循环发图/恶意输出不会刷爆事件循环或状态栏。
+        const IIP_NOTICE_THROTTLE: Duration = Duration::from_secs(5);
+        let now = Instant::now();
+        if st.last_iip_notice.is_none_or(|last| now.duration_since(last) >= IIP_NOTICE_THROTTLE) {
+            st.last_iip_notice = Some(now);
+            let (pane, notice) = &iip_notices[0];
+            eprintln!(
+                "[iip] ts_ms={} pane={pane} kind=ignored reason={} name={:?} count={}",
+                logging::now_ms(),
+                notice.reason.label(),
+                notice.name,
+                iip_notices.len()
+            );
+            set_status_toast(st, iip_ignored_status(notice));
         }
     }
     for (id, request) in clipboard_events {
@@ -14874,6 +14913,7 @@ fn build_window_state(
         resize_in_progress: false,
         resize_max_apply_us: 0.0,
         corners,
+        last_iip_notice: None,
         clipboard: arboard::Clipboard::new().ok(),
         cfg: shared.cfg.clone_handle(),
     }));
@@ -21319,5 +21359,26 @@ mod tests {
         // 多行粘贴预览里任意一条命令是破坏性的就警示。
         let warn = broadcast_warning_text("set -e\nmkfs.ext4 /dev/sda1");
         assert!(warn.contains("mkfs"), "{warn}");
+    }
+
+    #[test]
+    fn iip_ignored_status_distinguishes_missing_and_inline_zero() {
+        // 两种“非内联”都要有用户可见的同一类提示，且说明 Tervo 不下载文件；
+        // 文案必须能区分缺失 inline=1 与显式 inline=0，方便排查客户端参数。
+        let missing = iip_ignored_status(&IipNotice {
+            reason: IipIgnoreReason::MissingInline,
+            name: Some("pic.png".into()),
+        });
+        let zero = iip_ignored_status(&IipNotice {
+            reason: IipIgnoreReason::InlineDisabled,
+            name: None,
+        });
+        assert!(missing.contains("inline=1"), "{missing}");
+        assert!(zero.contains("inline=0"), "{zero}");
+        for msg in [&missing, &zero] {
+            assert!(msg.contains("已忽略"), "{msg}");
+            assert!(msg.contains("不下载文件"), "{msg}");
+        }
+        assert_ne!(missing, zero);
     }
 }
