@@ -2,7 +2,7 @@
 
 状态：**阶段 A 已落地（2026-11-10）**。
 
-排障前先读事故复盘：[`POSTMORTEM_2026-11-11_RENDER_RESIDUE.md`](POSTMORTEM_2026-11-11_RENDER_RESIDUE.md)。
+排障前先读事故复盘：[`POSTMORTEM_2026-11-11_RENDER_RESIDUE.md`](archive/POSTMORTEM_2026-11-11_RENDER_RESIDUE.md)。
 
 ```text
 tervo diag env --json

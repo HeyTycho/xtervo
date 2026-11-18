@@ -8,7 +8,7 @@
 [`ALACRITTY_ROW_ID.md`](ALACRITTY_ROW_ID.md)。
 
 排障/分层定位纪律见
-[`POSTMORTEM_2026-11-11_RENDER_RESIDUE.md`](POSTMORTEM_2026-11-11_RENDER_RESIDUE.md)。
+[`POSTMORTEM_2026-11-11_RENDER_RESIDUE.md`](archive/POSTMORTEM_2026-11-11_RENDER_RESIDUE.md)。
 当前实现是 legacy CPU Frame 与目标 Scene/Renderer 的迁移期；两者语义不一致时，
 以事故复盘的“分层阶梯”为准，禁止把目标架构的约束当成 legacy 路径已满足。
 

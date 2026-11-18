@@ -226,5 +226,5 @@ Environment notes:
   zero-copy single-render-pass path.
 - **Text prototype scope**: ASCII only; no shaping/combining marks, images,
   cursor, z-order, atlas eviction, or app integration. See
-  [`docs/WGPU_TEXT_ATLAS_PROTOTYPE.md`](../../docs/WGPU_TEXT_ATLAS_PROTOTYPE.md)
+  [`docs/WGPU_TEXT_ATLAS_PROTOTYPE.md`](../../docs/archive/WGPU_TEXT_ATLAS_PROTOTYPE.md)
   for the full report and evidence.

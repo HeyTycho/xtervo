@@ -11,7 +11,7 @@
 > 最后更新：2026-11-16。
 
 > 历史快照（勿引用）：2026-11-05 第 30 轮为 228 条 / 23 implemented / 加权 28.6%；
-> 交付摘要见 [`FINAL_REPORT.md`](FINAL_REPORT.md)。
+> 交付摘要见 [`FINAL_REPORT.md`](archive/FINAL_REPORT.md)。
 
 ## 1. 口径
 

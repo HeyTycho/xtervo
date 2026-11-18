@@ -31,4 +31,4 @@ echo "== 延迟 =="
 echo "== 60FPS =="
 "$BIN" --cols 120 --rows 32 --fps 8 | grep -E '^\{' | tee docs/gpu-fps.json
 
-echo "完成。把 docs/gpu-*.json 回填到 docs/phase0-report.md。"
+echo "完成。把 docs/gpu-*.json 回填到 docs/archive/phase0-report.md。"

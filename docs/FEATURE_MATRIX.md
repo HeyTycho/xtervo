@@ -13,7 +13,7 @@
 > UI-TERM-010 升为 implemented，B6 计数改为 implemented=9 / partial=9 / not_started=1
 > （本节只改该行，未重算文件顶部历史总量），证据见 [`terminal-menu-find.md`](terminal-menu-find.md)。
 > 2026-11-06 增补（`feat/sixel`）：Sixel 内联图片（UI-TERM-020 / TERM-020），B/C 各 +1 条 partial；
-> 证据见本文件对应行与 [`self-iteration.md`](self-iteration.md)。
+> 证据见本文件对应行与 [`self-iteration.md`](archive/self-iteration.md)。
 > 2026-11-06 增补（`feat/iip-image`）：iTerm2 IIP 内联图片（OSC 1337 File，UI-TERM-021），
 > C1 增至 17 条（partial=11）；与 Sixel 独立开关、共用 overlay/滚动/resize 机制，不新增 DA1。
 > 2026-11-06 增补（`feat/settings-ui`）：设置改为无 PTY 的 **Settings Tab**（可回退 legacy modal），
@@ -24,7 +24,7 @@
 > UI-SSH-003/004、SFTP-002/003 的证据/限制已更新（见 `self-iteration.md` 本轮记录）。
 > 2026-11-06 增补（`feat/context-menu`）：UI-TERM-004 pane 右键菜单改为 14px/30px 分组菜单
 > （Link/Clipboard/Pane/View/Session + 16px 线性图标 + 真实快捷键提示 + 窄窗 Flickable 滚动），
-> 动作 ID/回调/hit area/outside-close 不变；证据见 [`self-iteration.md`](self-iteration.md) 与
+> 动作 ID/回调/hit area/outside-close 不变；证据见 [`self-iteration.md`](archive/self-iteration.md) 与
 > `scripts/e2e_context_menu.sh`（Xvfb :135）。
 > 2026-11-06 增补（`feat/url-paths`）：URL/OSC 8 hover 手型（按格去重、不拉帧不重绘终端）、
 > 本地路径 Ctrl+click（`~`/相对路径解析 + 存在/权限检查 + 失败浮层）、远端 Profile 路径不本地打开；

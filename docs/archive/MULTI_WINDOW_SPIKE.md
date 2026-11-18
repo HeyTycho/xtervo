@@ -142,7 +142,7 @@ Callback 各自触发：
 [callback] window=C msg="programmatic C"
 ```
 
-![two windows](evidence/mw-spike/wgpu/snapshots_side_by_side.png)
+![two windows](../evidence/mw-spike/wgpu/snapshots_side_by_side.png)
 
 *图：Slint `Window::take_snapshot()` 的两张独立快照拼接。WGPU/Vulkan surface 在
 Xvfb 下不能被 XGetImage 截取（见 §4.3），所以这里不用 X11 root screenshot。*
@@ -283,8 +283,8 @@ Callback：
 [snapshot] MainWindow_B 700x480
 ```
 
-![MainWindow A](evidence/mw-spike/mainwindow/MainWindow_A.png)
-![MainWindow B](evidence/mw-spike/mainwindow/MainWindow_B.png)
+![MainWindow A](../evidence/mw-spike/mainwindow/MainWindow_A.png)
+![MainWindow B](../evidence/mw-spike/mainwindow/MainWindow_B.png)
 
 A 的整窗背景红色是 **故意的 Palette 隔离测试**：只改 A 的 `Palette.colors.bg`
 为红色，B 保持默认 Tokyo Night。全局单例实测是 per-instance：

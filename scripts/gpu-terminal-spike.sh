@@ -10,7 +10,7 @@
 #   DISPLAY_NUM=:78 TERVO_XVFB=/path/to/Xvfb scripts/gpu-terminal-spike.sh
 #
 # 本机没有系统 Xvfb 时，可先用 apt-get download + dpkg-deb -x 解到
-# `.xvfb-local/`（见 docs/GPU_TERMINAL_SLINT_SPIKE.md），脚本会自动使用它。
+# `.xvfb-local/`（见 docs/archive/GPU_TERMINAL_SLINT_SPIKE.md），脚本会自动使用它。
 set -euo pipefail
 
 root="$(git rev-parse --show-toplevel)"

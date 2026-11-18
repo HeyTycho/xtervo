@@ -4,7 +4,7 @@
 
 - `10df3dd` test(core)：审计测试、真实 raw fixtures、只读访问器；7 个已知
   失败测试 `#[ignore]` 隔离，证据见
-  [`docs/evidence/filter-audit-2026-11-11/`](evidence/filter-audit-2026-11-11/pre-fix-failing-tests.txt)。
+  [`docs/evidence/filter-audit-2026-11-11/`](../evidence/filter-audit-2026-11-11/pre-fix-failing-tests.txt)。
 - `be14f08` fix(core)：修复 F1/F2/F3，全部测试去掉 `#[ignore]` 并通过。
 
 ## 0. 结论
@@ -85,12 +85,12 @@ len(I) == len(所有 Pass) + len(显式消费的完整图片序列) + held
 | 管线镜像防漂移 | `pipeline_mirror_matches_pane_source` |
 
 真实 raw fixture 来源与再生成命令见
-[`crates/core/tests/fixtures/README.md`](../crates/core/tests/fixtures/README.md)。
+[`crates/core/tests/fixtures/README.md`](../../crates/core/tests/fixtures/README.md)。
 
 ### 2.1 全量真实 raw 验证
 
 把 `app-to-host.raw` 完整 302517 字节过同一管线（临时 probe，源码与输出见
-[`docs/evidence/filter-audit-2026-11-11/`](evidence/filter-audit-2026-11-11/full-dsh-raw-replay.txt)）：
+[`docs/evidence/filter-audit-2026-11-11/`](../evidence/filter-audit-2026-11-11/full-dsh-raw-replay.txt)）：
 
 ```text
 raw=302517  apcs=70  apc_bytes=234629  expected_pass=67888
@@ -105,7 +105,7 @@ single chunk: pass==expected, held=0, kitty cmds=14, errors=0
 
 复现全部失败：`cargo test -p tervo-core --test filter_conservation -- --ignored`，
 完整输出见
-[`docs/evidence/filter-audit-2026-11-11/pre-fix-failing-tests.txt`](evidence/filter-audit-2026-11-11/pre-fix-failing-tests.txt)
+[`docs/evidence/filter-audit-2026-11-11/pre-fix-failing-tests.txt`](../evidence/filter-audit-2026-11-11/pre-fix-failing-tests.txt)
 （7 failed）。
 
 ### F1 [High] Sixel filter 不识别 UTF-8 续字节，普通文本会触发 C1 状态机
@@ -202,7 +202,7 @@ cargo test -p tervo-core
 把 `面`（E9 9D A2）+ BEL 终止 Sixel + `AFTER-TEXT` 从真实 bash/PTY 打进去。
 在 `10df3dd` 的旧 sixel.rs 上 8s 超时、Frame 只剩 `面`（后文被 vte 的 DCS
 状态吞掉，证据见
-[`pre-fix-pty-cjk-sixel.txt`](evidence/filter-audit-2026-11-11/pre-fix-pty-cjk-sixel.txt)）；
+[`pre-fix-pty-cjk-sixel.txt`](../evidence/filter-audit-2026-11-11/pre-fix-pty-cjk-sixel.txt)）；
 修复后通过。
 
 ## 5. 测试命令

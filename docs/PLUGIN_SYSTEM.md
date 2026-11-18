@@ -542,7 +542,7 @@ Tervo 只提供可选 UI 插件显示轮次/测试/批准，不让 UI 进程改�
 ## 10. 相关文档
 
 - [`FEATURE_MATRIX.md`](FEATURE_MATRIX.md)
-- [`self-iteration.md`](self-iteration.md)
+- [`self-iteration.md`](archive/self-iteration.md)
 - [`STABILITY_REPORT.md`](STABILITY_REPORT.md)
 - [`tabby-parity.md`](tabby-parity.md)
 - [`themes.md`](themes.md)

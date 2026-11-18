@@ -67,7 +67,7 @@
 
 ## 排障纪律（强制）
 
-完整复盘见 [`docs/POSTMORTEM_2026-11-11_RENDER_RESIDUE.md`](docs/POSTMORTEM_2026-11-11_RENDER_RESIDUE.md)。
+完整复盘见 [`docs/POSTMORTEM_2026-11-11_RENDER_RESIDUE.md`](docs/archive/POSTMORTEM_2026-11-11_RENDER_RESIDUE.md)。
 
 ```text
 1. 先复现，保留 raw / Frame dump / 截图，不让用户反复重启。

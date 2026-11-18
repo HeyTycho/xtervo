@@ -34,7 +34,7 @@ RUN_IME=1 ./scripts/selfcheck.sh  # 加中文 IME 冒烟（需要 X11 + fcitx/ib
 - 退出码非 0 = 有测试失败、启动预算/空闲 RSS 超阈值、或测试数量异常减少（防“删测试过关”）
 - DISPLAY 不可用时启动预算与 RSS 段自动跳过，不因此判定失败
 
-基线门禁在 [`docs/selfcheck-baseline.json`](selfcheck-baseline.json)：
+基线门禁在 [`docs/selfcheck-baseline.json`](../selfcheck-baseline.json)：
 `ready_ms_max` / `first_damage_ms_max` / `idle_rss_mb_max` / 各套件最少用例数。
 `idle_rss_mb_max` 按字体惰性加载后的实测值留约 35% 余量（实测 46–52 MB → 70 MB），
 防止 CJK 回退字体被重新变成启动时全量解析。
@@ -102,7 +102,7 @@ RUN_IME=1 ./scripts/selfcheck.sh  # 加中文 IME 冒烟（需要 X11 + fcitx/ib
    目标与 30 秒 smoke fuzz；把崩溃样本固化成测试。
 
 再往后：会话恢复、Profile、分屏拖动、SSH/Serial、Wayland IME、emoji/连字、脏矩形上传。
-完整功能盘点见 [`tabby-parity.md`](tabby-parity.md)。
+完整功能盘点见 [`tabby-parity.md`](../tabby-parity.md)。
 
 ## 4. 一句话使用方式
 
@@ -534,7 +534,7 @@ cargo bench -p tervo-core --bench pty_throughput
     时解锁则同步删除旧凭据。
   - 设置左侧导航新增 Vault 页（状态/路径、Set/Change、Unlock、Lock、Clear 二次确认、
     错误/提示）；启动时默认锁定；连接已保存密码但 Vault 锁定时跳到该页提示解锁。
-  - 文档：新增 [`VAULT.md`](VAULT.md)，更新 FEATURE_MATRIX 的 SEC-001..006、UI-SET-010、
+  - 文档：新增 [`VAULT.md`](../VAULT.md)，更新 FEATURE_MATRIX 的 SEC-001..006、UI-SET-010、
     UI-SSH-001 与 B7/C12 计数。
 - **测试**：`cargo test -p tervo-app --bin tervo` → **108 passed**。新增 vault 7 例
   （roundtrip/锁定读写、错密码+损坏/截断/空文件、无明文+0600、改主密码、拒覆盖+Clear、
@@ -686,7 +686,7 @@ cargo bench -p tervo-core --bench pty_throughput
 - **测试**：`cargo test -p tervo-app --bin tervo` → **146 passed**（新增 14 例：旧+新共存、
   v1 解析/字段/api/非法 entry/符号链接/重名/命令 id 重复/非法 key、命名空间注册与禁用、
   外部 shell 脚本的 env/stdin JSON/stdout/stderr/cwd/退出码/超时 kill/spawn 错误）。
-- **文档**：新增 [`PLUGIN_API.md`](PLUGIN_API.md)（目录/清单/协议/权限/限制/手工验证）；
+- **文档**：新增 [`PLUGIN_API.md`](../PLUGIN_API.md)（目录/清单/协议/权限/限制/手工验证）；
   更新 FEATURE_MATRIX UI-PLUG-001..007、PLUG-001..006、SEC-005 与 B11/C13 计数。
 - **限制**：不做 Tabby/JS/WASM 兼容；无结果回传 UI、无常驻生命周期/事件/安装卸载/升级/
   热重载；无权限模型/沙箱（插件=当前用户普通子进程）；超时固定 10s；未启动 GUI
@@ -769,7 +769,7 @@ cargo bench -p tervo-core --bench pty_throughput
   stderr 回退/超时/signal/spawn-error）、
   `spawn_command_records_activity_and_spawn_error`（命令成功与 entry 丢失）。
   未启动 GUI。
-- **文档**：更新 [`PLUGIN_API.md`](PLUGIN_API.md)（events 字段/事件协议/payload/
+- **文档**：更新 [`PLUGIN_API.md`](../PLUGIN_API.md)（events 字段/事件协议/payload/
   最近活动/限制/手工验证）、FEATURE_MATRIX UI-PLUG-001/002/003/005/007 与
   PLUG-001/002/003/005（测试数 172）。
 - **限制**：只有三个固定生命周期事件，无任意事件订阅/取消/去重/合并，也没有
@@ -2120,7 +2120,7 @@ cargo bench -p tervo-core --bench pty_throughput
     `off v0.1.0 — disabled`、`status ... running`、最近活动；
   - 脚本还断言状态栏点击执行 command、Theme Pack 日志、
     `[plugin] crash: 已禁用`、`enabled=false` 插件没有 `常驻进程就绪`。
-- **文档**：重写 [`PLUGIN_API.md`](PLUGIN_API.md)（两种 runtime/清单/协议/生命周期/
+- **文档**：重写 [`PLUGIN_API.md`](../PLUGIN_API.md)（两种 runtime/清单/协议/生命周期/
   权限/状态/主题/测试/限制）；PLUGIN_SYSTEM 增加 V1 落地状态；README 外部进程插件 V1；
   FEATURE_MATRIX UI-SET-008 / UI-PLUG-001..005/007 / PLUG-001..005 / OPS-003 更新为
   实际实现、测试与限制。
