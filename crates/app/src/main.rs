@@ -152,6 +152,7 @@ fn open_workspace(st: &mut AppState, name: &str) {
             } else {
                 format!("Opened workspace \"{name}\"")
             };
+            set_workspace_status(st, &msg);
             st.ui.set_status_items(ModelRc::from(Rc::new(VecModel::from(vec![
                 slint::SharedString::from(msg),
             ]))));
@@ -210,6 +211,19 @@ fn open_workspace_save_dialog(st: &mut AppState) {
     let prefill = workspaces::sanitize_name(&tab.title);
     let existing: Vec<String> = st.workspaces.workspaces.iter().map(|w| w.name.clone()).collect();
     let hint = workspace_name_hint(&prefill, &existing, st.cfg.lang() == "zh");
+    let zh = st.cfg.lang() == "zh";
+    st.workspace_rename_from = None;
+    st.ui.set_workspace_save_mode("save".into());
+    st.ui.set_workspace_save_title(if zh { "保存布局为工作区" } else { "Save layout as workspace" }.into());
+    st.ui.set_workspace_save_description(
+        if zh {
+            "保存当前 Tab 的分屏布局、各 pane 的工作目录与 Profile（不含运行中的进程）。"
+        } else {
+            "Stores this tab's split layout, each pane's cwd and profile (no running processes)."
+        }
+        .into(),
+    );
+    st.ui.set_workspace_save_action(if zh { "保存" } else { "Save" }.into());
     st.ui.set_workspace_save_name(prefill.as_str().into());
     st.ui.set_workspace_save_hint(hint.as_str().into());
     st.ui.set_workspace_save_status("".into());
@@ -220,7 +234,11 @@ fn open_workspace_save_dialog(st: &mut AppState) {
 /// 输入框变化：只刷新重名提示，不写盘。
 fn check_workspace_name(st: &mut AppState, raw: &str) {
     let existing: Vec<String> = st.workspaces.workspaces.iter().map(|w| w.name.clone()).collect();
-    let hint = workspace_name_hint(raw, &existing, st.cfg.lang() == "zh");
+    let zh = st.cfg.lang() == "zh";
+    let hint = match &st.workspace_rename_from {
+        Some(old) => workspace_rename_hint(raw, &existing, old, zh),
+        None => workspace_name_hint(raw, &existing, zh),
+    };
     if !hint.is_empty() {
         eprintln!("[workspace] 名字提示: {hint}");
     }
@@ -242,12 +260,17 @@ fn commit_workspace_save(st: &mut AppState, raw: &str) {
         return;
     };
     let overwrite = st.workspaces.get(&name).is_some();
-    if let Err(e) = st.workspaces.upsert(workspaces::Workspace { name: name.clone(), tree }) {
+    if let Err(e) = st.workspaces.upsert(workspaces::Workspace {
+        name: name.clone(),
+        tree,
+        ..workspaces::Workspace::default()
+    }) {
         eprintln!("[workspace] 保存失败: {e}");
         st.ui.set_workspace_save_status(e.as_str().into());
         return;
     }
     st.workspaces.save();
+    refresh_workspace_rows(st);
     st.ui.set_workspace_save_open(false);
     st.ui.set_workspace_save_hint("".into());
     st.ui.set_workspace_save_status("".into());
@@ -266,16 +289,215 @@ fn commit_workspace_save(st: &mut AppState, raw: &str) {
     } else {
         format!("Saved workspace \"{name}\"")
     };
+    set_workspace_status(st, &msg);
     set_status_toast(st, msg);
     // 弹窗关闭后键盘焦点回终端：否则 Ctrl+Shift+P/Ctrl+T 等热键要再点一下才生效。
     st.ui.invoke_focus_terminal();
 }
 
 fn cancel_workspace_save(st: &mut AppState) {
+    st.workspace_rename_from = None;
     st.ui.set_workspace_save_open(false);
     st.ui.set_workspace_save_hint("".into());
     st.ui.set_workspace_save_status("".into());
     st.ui.invoke_focus_terminal();
+}
+
+/// 把 workspaces.toml 的内容同步到设置页列表模型。
+fn refresh_workspace_rows(st: &mut AppState) {
+    let rows: Vec<WorkspaceRow> = st
+        .workspaces
+        .workspaces
+        .iter()
+        .map(|ws| WorkspaceRow {
+            name: ws.name.as_str().into(),
+            panes: ws.pane_count() as i32,
+            created: ws.created_label().into(),
+        })
+        .collect();
+    eprintln!(
+        "[workspace] 列表 rows={} names={:?}",
+        rows.len(),
+        rows.iter().map(|r| r.name.to_string()).collect::<Vec<_>>()
+    );
+    st.workspace_model.set_vec(rows);
+}
+
+/// 工作区操作结果行（设置页卡片底部；下一次操作覆盖）。
+fn set_workspace_status(st: &mut AppState, msg: impl AsRef<str>) {
+    st.ui.set_workspace_status(msg.as_ref().into());
+}
+
+fn workspace_name_at(st: &AppState, index: usize) -> Option<String> {
+    st.workspaces.workspaces.get(index).map(|ws| ws.name.clone())
+}
+
+/// 重命名弹窗的重名提示：排除旧名字本身（只改大小写允许）。
+fn workspace_rename_hint(raw: &str, existing: &[String], old: &str, zh: bool) -> String {
+    let name = raw.trim();
+    if name.is_empty() {
+        return if zh { "名字不能为空".to_string() } else { "Name is required".to_string() };
+    }
+    if existing
+        .iter()
+        .any(|n| !n.eq_ignore_ascii_case(old) && n.eq_ignore_ascii_case(name))
+    {
+        if zh {
+            format!("已存在「{name}」，请换一个名字")
+        } else {
+            format!("\"{name}\" already exists; choose another name")
+        }
+    } else {
+        String::new()
+    }
+}
+
+/// 打开“重命名工作区”弹窗（复用保存弹窗，只换文案与提交分支）。
+fn open_workspace_rename_dialog(st: &mut AppState, index: usize) {
+    let Some(name) = workspace_name_at(st, index) else {
+        set_workspace_status(st, "Rename: 工作区不存在");
+        return;
+    };
+    let zh = st.cfg.lang() == "zh";
+    st.workspace_rename_from = Some(name.clone());
+    st.ui.set_workspace_save_mode("rename".into());
+    st.ui.set_workspace_save_title(if zh { "重命名工作区" } else { "Rename workspace" }.into());
+    st.ui.set_workspace_save_description(
+        if zh {
+            "只改保存记录的名字；布局、创建时间和已经打开的 Tab 都不变。"
+        } else {
+            "Changes only the saved record's name; layout, creation time and open tabs stay untouched."
+        }
+        .into(),
+    );
+    st.ui.set_workspace_save_action(if zh { "重命名" } else { "Rename" }.into());
+    st.ui.set_workspace_save_name(name.as_str().into());
+    st.ui.set_workspace_save_hint("".into());
+    st.ui.set_workspace_save_status("".into());
+    st.ui.set_workspace_save_open(true);
+    eprintln!("[workspace] 重命名弹窗 name={name:?}");
+}
+
+/// 提交重命名：store 层负责重名/空名/控制字符校验。
+fn commit_workspace_rename(st: &mut AppState, raw: &str) {
+    let Some(old) = st.workspace_rename_from.clone() else {
+        return;
+    };
+    let zh = st.cfg.lang() == "zh";
+    match st.workspaces.rename(&old, raw) {
+        Ok(new) => {
+            st.workspaces.save();
+            refresh_workspace_rows(st);
+            st.workspace_rename_from = None;
+            st.ui.set_workspace_save_open(false);
+            st.ui.set_workspace_save_hint("".into());
+            st.ui.set_workspace_save_status("".into());
+            let msg = if zh {
+                format!("已把「{old}」重命名为「{new}」（打开的 Tab 不受影响）")
+            } else {
+                format!("Renamed \"{old}\" to \"{new}\" (open tabs unaffected)")
+            };
+            set_workspace_status(st, &msg);
+            eprintln!("[workspace] 已重命名 {old:?} -> {new:?}");
+            st.ui.invoke_focus_terminal();
+        },
+        Err(err) => {
+            eprintln!("[workspace] 重命名失败 {old:?} -> {raw:?}: {err}");
+            st.ui.set_workspace_save_status(err.as_str().into());
+        },
+    }
+}
+
+/// 保存弹窗提交入口：按是否有 `workspace_rename_from` 分派保存/重命名。
+fn commit_workspace_dialog(st: &mut AppState, raw: &str) {
+    if st.workspace_rename_from.is_some() {
+        commit_workspace_rename(st, raw);
+    } else {
+        commit_workspace_save(st, raw);
+    }
+}
+
+/// 删除前确认；只删 workspaces.toml 记录，不关闭任何正在运行的 Tab。
+fn ask_delete_workspace(st: &mut AppState, index: usize) {
+    let Some(name) = workspace_name_at(st, index) else {
+        set_workspace_status(st, "Delete: 工作区不存在");
+        return;
+    };
+    st.workspace_delete_name = Some(name.clone());
+    st.ui.set_workspace_delete_name(name.as_str().into());
+    st.ui.set_workspace_delete_open(true);
+    eprintln!("[workspace] 删除确认 name={name:?}");
+}
+
+fn confirm_delete_workspace(st: &mut AppState) {
+    let Some(name) = st.workspace_delete_name.take() else {
+        return;
+    };
+    let zh = st.cfg.lang() == "zh";
+    st.ui.set_workspace_delete_open(false);
+    st.ui.set_workspace_delete_name("".into());
+    if st.workspaces.remove(&name) {
+        st.workspaces.save();
+        refresh_workspace_rows(st);
+        let msg = if zh {
+            format!("已删除工作区「{name}」；已打开的 Tab 继续运行，未结束任何会话")
+        } else {
+            format!(
+                "Deleted workspace \"{name}\"; tabs already opened keep running — no session was ended"
+            )
+        };
+        set_workspace_status(st, &msg);
+        eprintln!("[workspace] 已删除 {name:?}（未关闭任何 Tab）");
+    } else {
+        let msg = if zh {
+            format!("工作区「{name}」不存在，可能已被删除")
+        } else {
+            format!("Workspace \"{name}\" no longer exists")
+        };
+        set_workspace_status(st, &msg);
+        eprintln!("[workspace] 删除失败 name={name:?} reason=missing");
+    }
+}
+
+fn cancel_delete_workspace(st: &mut AppState) {
+    st.workspace_delete_name = None;
+    st.ui.set_workspace_delete_open(false);
+    st.ui.set_workspace_delete_name("".into());
+}
+
+/// 导出工作区 JSON 的默认路径：`$HOME/tervo-workspace-<safe-name>.json`。
+fn default_workspace_export_path(name: &str) -> PathBuf {
+    let safe: String = workspaces::sanitize_name(name)
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+        .collect();
+    let safe = if safe.is_empty() { "workspace".to_string() } else { safe };
+    let file = format!("tervo-workspace-{safe}.json");
+    if let Some(home) = std::env::var_os("HOME").filter(|h| !h.is_empty()) {
+        PathBuf::from(home).join(file)
+    } else {
+        std::env::temp_dir().join(file)
+    }
+}
+
+/// 导出工作区为 JSON（UI-PANE-010）：复用 Save Contents 的路径弹窗。
+fn open_workspace_export(st: &mut AppState, index: usize) {
+    let Some(name) = workspace_name_at(st, index) else {
+        set_workspace_status(st, "Export: 工作区不存在");
+        return;
+    };
+    if st.workspaces.get(&name).is_none() {
+        set_workspace_status(st, "Export: 工作区不存在");
+        return;
+    }
+    let path = default_workspace_export_path(&name);
+    st.save_workspace = Some(name.clone());
+    st.save_kind = SaveKind::Workspace;
+    st.ui.set_save_title("Export Workspace JSON".into());
+    st.ui.set_save_path(path.to_string_lossy().as_ref().into());
+    st.ui.set_save_status("".into());
+    st.ui.set_save_open(true);
+    eprintln!("[workspace] 导出打开 name={name:?} path={}", path.display());
 }
 
 fn toggle_sidebar(st: &mut AppState) {
@@ -589,6 +811,8 @@ enum SaveKind {
     Contents,
     /// `PaneHandle::export_recording()` 的原始字节导出（TERM-015）。
     Recording,
+    /// 工作区布局 JSON 导出（UI-PANE-010）；名字锁存在 `save_workspace`。
+    Workspace,
 }
 
 struct AppState {
@@ -634,6 +858,14 @@ struct AppState {
     commands: commands::Registry,
     /// 命名工作区（保存的分屏布局，ACT-047）
     workspaces: workspaces::WorkspaceStore,
+    /// 设置页工作区列表（名字/pane 数/创建时间）。
+    workspace_model: Rc<VecModel<WorkspaceRow>>,
+    /// 重命名弹窗正在改的旧名字；None = 当前弹窗是“保存”。
+    workspace_rename_from: Option<String>,
+    /// 删除确认弹窗的目标名字。
+    workspace_delete_name: Option<String>,
+    /// 导出工作区 JSON 时锁存的名字（SaveKind::Workspace）。
+    save_workspace: Option<String>,
     /// 每个 Profile 已自动重连的次数（ACT-047 断线重连；app 重启清零）。
     reconnect_attempts: HashMap<u64, u32>,
     /// 待触发的重连定时器必须持有，Slint 的 Timer drop 后不再触发。
@@ -12038,12 +12270,28 @@ fn refresh_palette(st: &mut AppState) {
             .into_iter()
             .map(|(id, title)| (title, id.to_string())),
     );
-    // 已保存的工作区：每个一条 `workspace.open:<name>`，在面板里直接选（选择器）。
+    // 已保存的工作区：打开/重命名/删除/导出各一条动态条目，面板里可直接选。
     let q = query.trim().to_lowercase();
     for ws in &st.workspaces.workspaces {
-        let title = format!("Workspace: {}", ws.name);
-        if q.is_empty() || title.to_lowercase().contains(&q) {
-            entries.push((title, format!("workspace.open:{}", ws.name)));
+        let actions = [
+            (format!("Workspace: {}", ws.name), format!("workspace.open:{}", ws.name)),
+            (
+                format!("Rename Workspace: {}", ws.name),
+                format!("workspace.rename:{}", ws.name),
+            ),
+            (
+                format!("Delete Workspace: {}", ws.name),
+                format!("workspace.delete:{}", ws.name),
+            ),
+            (
+                format!("Export Workspace JSON: {}", ws.name),
+                format!("workspace.export:{}", ws.name),
+            ),
+        ];
+        for (title, id) in actions {
+            if q.is_empty() || title.to_lowercase().contains(&q) {
+                entries.push((title, id));
+            }
         }
     }
     // 官方 SSH 插件 POC：每个 SSH Profile 一条 `ssh.connect:<id>`（走 transport seam）。
@@ -12123,9 +12371,30 @@ fn toggle_pane_zoom(st: &mut AppState) {
 }
 
 fn run_command(st: &mut AppState, id: &str) {
-    // 面板里的工作区条目：`workspace.open:<name>`（动态 id，不在静态命令表里）。
+    // 面板里的工作区条目：动态 id（不在静态命令表里）。
     if let Some(name) = id.strip_prefix("workspace.open:") {
         open_workspace(st, name);
+        return;
+    }
+    if let Some(name) = id.strip_prefix("workspace.rename:") {
+        match st.workspaces.workspaces.iter().position(|w| w.name == name) {
+            Some(index) => open_workspace_rename_dialog(st, index),
+            None => eprintln!("[workspace] 重命名目标不存在 name={name:?}"),
+        }
+        return;
+    }
+    if let Some(name) = id.strip_prefix("workspace.delete:") {
+        match st.workspaces.workspaces.iter().position(|w| w.name == name) {
+            Some(index) => ask_delete_workspace(st, index),
+            None => eprintln!("[workspace] 删除目标不存在 name={name:?}"),
+        }
+        return;
+    }
+    if let Some(name) = id.strip_prefix("workspace.export:") {
+        match st.workspaces.workspaces.iter().position(|w| w.name == name) {
+            Some(index) => open_workspace_export(st, index),
+            None => eprintln!("[workspace] 导出目标不存在 name={name:?}"),
+        }
         return;
     }
     // 官方 SSH 插件 POC：`ssh.connect:<id|name>`（调色板动态条目）与
@@ -12591,14 +12860,51 @@ fn stop_recording_on(st: &mut AppState, pane: Option<PaneId>) {
 
 /// 弹窗提交（Enter/保存）：按 `save_kind` 分派到文本快照或录制导出。
 fn save_contents_commit(st: &mut AppState, raw: &str) {
-    let Some(pane) = st.save_pane else {
-        st.ui.set_save_status("Save: 没有目标 pane".into());
-        return;
-    };
     let home = std::env::var_os("HOME")
         .filter(|h| !h.is_empty())
         .map(PathBuf::from);
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    // 工作区 JSON 导出不需要 pane；单独分支，避免被“没有目标 pane”挡住。
+    if st.save_kind == SaveKind::Workspace {
+        let Some(name) = st.save_workspace.clone() else {
+            st.ui.set_save_status("Export: 没有目标工作区".into());
+            return;
+        };
+        let json = match st.workspaces.export_json(&name) {
+            Ok(json) => json,
+            Err(err) => {
+                eprintln!("[workspace] 导出失败 name={name:?}: {err}");
+                st.ui.set_save_status(err.as_str().into());
+                return;
+            },
+        };
+        match save_contents_file(raw, &json, home.as_deref(), &cwd) {
+            Ok(path) => {
+                close_save_dialog(st);
+                let msg = if st.cfg.lang() == "zh" {
+                    format!("已导出工作区「{name}」→ {}", path.display())
+                } else {
+                    format!("Exported workspace \"{name}\" to {}", path.display())
+                };
+                set_workspace_status(st, &msg);
+                eprintln!(
+                    "[workspace] 导出成功 name={name:?} path={} bytes={}",
+                    path.display(),
+                    json.len()
+                );
+                set_status_toast(st, msg);
+            },
+            Err(err) => {
+                eprintln!("[workspace] 导出写盘失败 name={name:?} path={raw:?}: {err}");
+                st.ui.set_save_status(err.as_str().into());
+            },
+        }
+        return;
+    }
+    let Some(pane) = st.save_pane else {
+        st.ui.set_save_status("Save: 没有目标 pane".into());
+        return;
+    };
     match st.save_kind {
         SaveKind::Contents => {
             let Some(text) = st.panes.get(&pane).and_then(|rt| rt.handle.contents()) else {
@@ -12664,12 +12970,15 @@ fn save_contents_commit(st: &mut AppState, raw: &str) {
                 }
             }
         }
+        // 已在上面的提前返回分支处理。
+        SaveKind::Workspace => {},
     }
 }
 
 /// 关闭保存弹窗并复位状态（焦点还给终端）。
 fn close_save_dialog(st: &mut AppState) {
     st.save_pane = None;
+    st.save_workspace = None;
     st.save_kind = SaveKind::default();
     st.ui.set_save_open(false);
     st.ui.set_save_status("".into());
@@ -14271,6 +14580,8 @@ fn build_window_state(
     ui.set_background_items(ModelRc::from(bg_model.clone()));
     let profile_model = Rc::new(VecModel::<ProfileRow>::default());
     ui.set_profile_items(ModelRc::from(profile_model.clone()));
+    let workspace_model = Rc::new(VecModel::<WorkspaceRow>::default());
+    ui.set_workspace_items(ModelRc::from(workspace_model.clone()));
     let sftp_model = Rc::new(VecModel::<slint::SharedString>::default());
     ui.set_sftp_items(ModelRc::from(sftp_model.clone()));
     let sftp_queue_model = Rc::new(VecModel::<slint::SharedString>::default());
@@ -14347,6 +14658,10 @@ fn build_window_state(
         bg_model,
         profiles: shared.profiles.clone_handle(),
         workspaces: workspaces::WorkspaceStore::load(),
+        workspace_model,
+        workspace_rename_from: None,
+        workspace_delete_name: None,
+        save_workspace: None,
         reconnect_attempts: HashMap::new(),
         reconnect_timer: None,
         profile_model,
@@ -14470,6 +14785,8 @@ fn build_window_state(
             }
             st.cfg.save();
         }
+        // 设置页工作区列表：启动时把 workspaces.toml 里的条目填进模型。
+        refresh_workspace_rows(&mut st);
     }
     state
 }
@@ -16662,10 +16979,42 @@ fn register_window_callbacks(
         runtime::with_window(window_id, |st| check_workspace_name(st, name.as_str()));
     });
     ui.on_workspace_save_commit(move |name| {
-        runtime::with_window(window_id, |st| commit_workspace_save(st, name.as_str()));
+        runtime::with_window(window_id, |st| commit_workspace_dialog(st, name.as_str()));
     });
     ui.on_workspace_save_cancel(move || {
         runtime::with_window(window_id, cancel_workspace_save);
+    });
+    // UI-PANE-010：设置页工作区列表的打开/重命名/删除/导出。
+    ui.on_workspace_save_current(move || {
+        runtime::with_window(window_id, open_workspace_save_dialog);
+    });
+    ui.on_workspace_open_row(move |row| {
+        runtime::with_window(window_id, |st| {
+            if let Some(name) = workspace_name_at(st, row.max(0) as usize) {
+                open_workspace(st, &name);
+            }
+        });
+    });
+    ui.on_workspace_rename_row(move |row| {
+        runtime::with_window(window_id, |st| {
+            open_workspace_rename_dialog(st, row.max(0) as usize);
+        });
+    });
+    ui.on_workspace_delete_row(move |row| {
+        runtime::with_window(window_id, |st| {
+            ask_delete_workspace(st, row.max(0) as usize);
+        });
+    });
+    ui.on_workspace_export_row(move |row| {
+        runtime::with_window(window_id, |st| {
+            open_workspace_export(st, row.max(0) as usize);
+        });
+    });
+    ui.on_workspace_delete_confirm(move || {
+        runtime::with_window(window_id, confirm_delete_workspace);
+    });
+    ui.on_workspace_delete_cancel(move || {
+        runtime::with_window(window_id, cancel_delete_workspace);
     });
 
     ui.on_tab_reorder(move |from, drag_x, strip_w| {

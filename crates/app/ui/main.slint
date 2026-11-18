@@ -240,6 +240,15 @@ component MenuRow inherits Rectangle {
     }
 }
 
+/// 设置页工作区列表的一行：名字/pane 数/创建时间（全部由 Rust 算好）。
+export struct WorkspaceRow {
+    name: string,
+    /// 布局里的 pane 数（split 树的叶子数）。
+    panes: int,
+    /// `YYYY-MM-DD HH:MM UTC`；旧记录没有创建时间时为 “—”。
+    created: string,
+}
+
 /// 菜单分组标题：13px semi-bold 次级色；非首组顶部画一条 1px 分隔线。
 component MenuGroupLabel inherits Rectangle {
     in property <string> label;
@@ -2139,7 +2148,13 @@ export component MainWindow inherits Window {
     callback save-cancel();
 
     // 保存布局为命名 Workspace（SESS-003）：预填 Tab 标题、重名提示、Esc 取消。
+    // 同一个弹窗复用为“重命名工作区”（SESS-003/UI-PANE-010）：标题/描述/按钮
+    // 文案由 Rust 下发，提交回调按 mode 分派。
     in-out property <bool> workspace-save-open: false;
+    in-out property <string> workspace-save-mode: "save";
+    in-out property <string> workspace-save-title: "Save layout as workspace";
+    in-out property <string> workspace-save-description: "Stores this tab's split layout, each pane's cwd and profile (no running processes).";
+    in-out property <string> workspace-save-action: "Save";
     in-out property <string> workspace-save-name: "";
     /// 重名/空名提示（由 Rust 在输入变化时更新）。
     in-out property <string> workspace-save-hint: "";
@@ -2147,6 +2162,21 @@ export component MainWindow inherits Window {
     callback workspace-save-check(string);
     callback workspace-save-commit(string);
     callback workspace-save-cancel();
+
+    // 工作区管理列表（UI-PANE-010）：名字 / pane 数 / 创建时间 + 打开/重命名/删除/导出。
+    in-out property <[WorkspaceRow]> workspace-items: [];
+    /// 列表下方操作结果（保存/重命名/删除/导出后短暂显示）。
+    in-out property <string> workspace-status: "";
+    callback workspace-save-current();
+    callback workspace-open-row(int);
+    callback workspace-rename-row(int);
+    callback workspace-delete-row(int);
+    callback workspace-export-row(int);
+    /// 删除确认弹窗：只删 workspaces.toml 里的记录，不动已经打开的 Tab。
+    in-out property <bool> workspace-delete-open: false;
+    in-out property <string> workspace-delete-name: "";
+    callback workspace-delete-confirm();
+    callback workspace-delete-cancel();
     /// IME 候选窗锚点：聚焦 pane 光标的像素位置（内容区坐标，由 Rust 侧更新）。
     in-out property <length> ime-x: 0px;
     in-out property <length> ime-y: 0px;
@@ -5534,6 +5564,127 @@ export component MainWindow inherits Window {
                             }
                         }
                     }
+
+                    // ---------------- Workspaces（UI-PANE-010 / SESS-003） ----------------
+                    SettingsCard {
+                        title: Lang.t("Workspaces", "工作区");
+                        description: Lang.t("Named split layouts. Open restores a new tab; rename/delete only touch the saved record, never running tabs.", "已保存的命名分屏布局。打开会恢复成新标签；重命名/删除只改保存记录，不动正在运行的标签。");
+                        highlighted: root.settings-focus == "workspaces";
+
+                        if root.workspace-items.length == 0 : Text {
+                            height: 28px;
+                            text: Lang.t("No saved workspaces yet — save the current tab layout below.", "还没有保存的工作区 — 在下方保存当前标签布局。");
+                            color: Palette.colors.muted;
+                            font-size: 11px;
+                            vertical-alignment: center;
+                        }
+
+                        for ws[i] in root.workspace-items : Rectangle {
+                            height: 46px;
+                            border-radius: 6px;
+                            background: ws-row-hit.has-hover ? Palette.colors.hover : transparent;
+
+                            ws-row-hit := TouchArea {
+                                x: 0px;
+                                y: 0px;
+                                width: parent.width - 264px;
+                                height: parent.height;
+                                clicked => { root.workspace-open-row(i); }
+                            }
+
+                            Text {
+                                x: 8px;
+                                y: 4px;
+                                width: parent.width - 272px;
+                                height: 19px;
+                                text: ws.name;
+                                color: Palette.colors.text;
+                                font-size: 12px;
+                                font-weight: 600;
+                                vertical-alignment: center;
+                                overflow: elide;
+                            }
+                            Text {
+                                x: 8px;
+                                y: 23px;
+                                width: parent.width - 272px;
+                                height: 17px;
+                                text: ws.panes == 1
+                                    ? Lang.t("1 pane · created \{ws.created}", "1 个 pane · 创建于 \{ws.created}")
+                                    : Lang.t("\{ws.panes} panes · created \{ws.created}", "\{ws.panes} 个 pane · 创建于 \{ws.created}");
+                                color: Palette.colors.muted;
+                                font-size: 10px;
+                                vertical-alignment: center;
+                                overflow: elide;
+                            }
+
+                            ChoiceBtn {
+                                x: parent.width - 252px;
+                                y: 12px;
+                                width: 54px;
+                                height: 22px;
+                                font-size: 9px;
+                                label: Lang.t("Open", "打开");
+                                clicked => { root.workspace-open-row(i); }
+                            }
+                            ChoiceBtn {
+                                x: parent.width - 194px;
+                                y: 12px;
+                                width: 58px;
+                                height: 22px;
+                                font-size: 9px;
+                                label: Lang.t("Rename", "重命名");
+                                clicked => { root.workspace-rename-row(i); }
+                            }
+                            ChoiceBtn {
+                                x: parent.width - 132px;
+                                y: 12px;
+                                width: 58px;
+                                height: 22px;
+                                font-size: 9px;
+                                label: Lang.t("Export", "导出");
+                                clicked => { root.workspace-export-row(i); }
+                            }
+                            Rectangle {
+                                x: parent.width - 66px;
+                                y: 12px;
+                                width: 58px;
+                                height: 22px;
+                                border-radius: 5px;
+                                background: ws-del.has-hover ? Palette.colors.danger : Palette.colors.raise;
+                                border-width: 1px;
+                                border-color: Palette.colors.border;
+                                Text {
+                                    text: Lang.t("Delete", "删除");
+                                    color: ws-del.has-hover ? Palette.colors.accent-text : Palette.colors.muted;
+                                    font-size: 9px;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                    width: 100%;
+                                    height: 100%;
+                                }
+                                ws-del := TouchArea {
+                                    clicked => { root.workspace-delete-row(i); }
+                                }
+                            }
+                        }
+
+                        HorizontalLayout {
+                            spacing: 6px;
+                            ActionBtn {
+                                horizontal-stretch: 1;
+                                label: Lang.t("Save current layout as workspace…", "保存当前布局为工作区…");
+                                font-size: 10px;
+                                clicked => { root.workspace-save-current(); }
+                            }
+                        }
+                        if root.workspace-status != "" : Text {
+                            text: root.workspace-status;
+                            color: Palette.colors.subtext;
+                            font-size: 10px;
+                            wrap: word-wrap;
+                        }
+                    }
                 }
 
                 // ---------------- Plugins (API v3) ----------------
@@ -8563,6 +8714,108 @@ export component MainWindow inherits Window {
     }
 
     // Save Contents：没有原生文件对话框，显式路径 + 错误提示的最小实现。
+    // 删除工作区确认：只删 workspaces.toml 记录；已经打开的 Tab 不受影响。
+    if root.workspace-delete-open : Rectangle {
+        width: 100%;
+        height: 100%;
+        background: #00000080;
+
+        TouchArea {
+            width: 100%;
+            height: 100%;
+            pointer-event(event) => { EventResult.accept; }
+        }
+
+        Rectangle {
+            x: (root.width - self.width) / 2;
+            y: (root.height - self.height) / 2;
+            width: Math.min(430px, root.width - 24px);
+            height: 190px;
+            background: Palette.colors.raise;
+            border-radius: 10px;
+            border-width: 1px;
+            border-color: Palette.colors.border;
+            drop-shadow-blur: 24px;
+            drop-shadow-offset-y: 8px;
+            drop-shadow-color: #000000c0;
+
+            VerticalLayout {
+                padding: 16px;
+                spacing: 9px;
+
+                Text {
+                    text: Lang.t("Delete workspace?", "删除工作区？");
+                    color: Palette.colors.text;
+                    font-size: 15px;
+                    font-weight: 600;
+                }
+                Text {
+                    text: Lang.t("Delete \"\{root.workspace-delete-name}\" from the saved workspace list?", "从工作区列表删除「\{root.workspace-delete-name}」？");
+                    color: Palette.colors.subtext;
+                    font-size: 12px;
+                    wrap: word-wrap;
+                }
+                Text {
+                    text: Lang.t("Only the saved layout is removed. Tabs already opened from it keep running; nothing is killed.", "只删除保存的布局记录；已经由它打开的 Tab 继续运行，不会关闭任何会话。");
+                    color: Palette.colors.muted;
+                    font-size: 10px;
+                    wrap: word-wrap;
+                }
+                Rectangle {
+                    horizontal-stretch: 1;
+                    height: 1px;
+                    background: transparent;
+                }
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: 8px;
+
+                    Rectangle {
+                        width: 88px; height: 28px; border-radius: 6px;
+                        background: ws-del-cancel-hit.has-hover ? Palette.colors.hover : Palette.colors.raise;
+                        border-width: 1px;
+                        border-color: Palette.colors.border;
+                        ws-del-cancel-hit := TouchArea {
+                            clicked => {
+                                root.workspace-delete-open = false;
+                                root.workspace-delete-cancel();
+                            }
+                        }
+                        Text {
+                            text: Lang.t("Cancel", "取消");
+                            color: Palette.colors.text;
+                            font-size: 12px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                            width: 100%;
+                            height: 100%;
+                        }
+                    }
+                    Rectangle {
+                        width: 88px; height: 28px; border-radius: 6px;
+                        background: ws-del-ok-hit.has-hover ? Palette.colors.muted : Palette.colors.danger;
+                        ws-del-ok-hit := TouchArea {
+                            clicked => {
+                                root.workspace-delete-open = false;
+                                root.workspace-delete-confirm();
+                            }
+                        }
+                        Text {
+                            text: Lang.t("Delete", "删除");
+                            color: Palette.colors.accent-text;
+                            font-size: 12px;
+                            font-weight: 600;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                            width: 100%;
+                            height: 100%;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // 活动 Tab 的连接状态 pill（SESS-007）：右下角，非纯颜色字形 + 文案。
     // Connected 用 ●，Connecting 用 …，Disconnected 用 ○，Failed 用 ✕。
     if root.connection-label != "" : Rectangle {
@@ -8751,13 +9004,13 @@ export component MainWindow inherits Window {
                 spacing: 9px;
 
                 Text {
-                    text: Lang.t("Save layout as workspace", "保存布局为工作区");
+                    text: root.workspace-save-title;
                     color: Palette.colors.text;
                     font-size: 15px;
                     font-weight: 600;
                 }
                 Text {
-                    text: Lang.t("Stores this tab's split layout, each pane's cwd and profile (no running processes).", "保存当前 Tab 的分屏布局、各 pane 的工作目录与 Profile（不含运行中的进程）。");
+                    text: root.workspace-save-description;
                     color: Palette.colors.muted;
                     font-size: 11px;
                     wrap: word-wrap;
@@ -8835,7 +9088,7 @@ export component MainWindow inherits Window {
                             clicked => { root.workspace-save-commit(root.workspace-save-name); }
                         }
                         Text {
-                            text: Lang.t("Save", "保存");
+                            text: root.workspace-save-action;
                             color: Palette.colors.accent-text;
                             font-size: 12px;
                             font-weight: 600;
