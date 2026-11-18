@@ -67,7 +67,7 @@ say "启动独立实例 Tervo（会在你桌面上新开一个窗口）"
 BEFORE=$(xwininfo -root -tree 2>/dev/null | awk '/"Tervo"/{print $1}' | tr '\n' ' ')
 TMP_INST=/tmp/tervo-ime-verify
 rm -rf "$TMP_INST"; mkdir -p "$TMP_INST"
-TERVO_KEYLOG=1 TERVO_INSTANCE_DIR="$TMP_INST" \
+TERVO_KEYLOG=1 TERVO_IME_LOG=1 TERVO_INSTANCE_DIR="$TMP_INST" \
     "$BIN" --cols 100 --rows 30 >"$OUT/keylog.log" 2>&1 &
 APP_PID=$!
 cleanup() { kill "$APP_PID" 2>/dev/null || true; }
@@ -213,6 +213,15 @@ fi
 
 echo
 cat "$OUT/summary.txt" 2>/dev/null || true
+if [ "$fail" -gt 0 ]; then
+    echo "--- 诊断 ---"
+    echo "XMODIFIERS=${XMODIFIERS:-<unset>} GTK_IM_MODULE=${GTK_IM_MODULE:-<unset>}"
+    (flatpak ps 2>/dev/null | grep -i fcitx) || echo "flatpak: 没有 fcitx 进程"
+    pgrep -a fcitx5 2>/dev/null || echo "native: 没有 fcitx5 进程"
+    awk -F'"' '/[Ff]citx/{print "  window: "$2" id="$1}' "$OUT/windows.txt" 2>/dev/null | head -5
+    echo "--- keylog 里所有 [ime] 行 ---"
+    grep -a "\[ime\]" "$OUT/keylog.log" | head -5 || echo "（没有）"
+fi
 echo "截图：$OUT/root.png  日志：$OUT/keylog.log  窗口树：$OUT/windows.txt"
 
 if [ "$KEEP" = 0 ]; then cleanup; trap - EXIT; else echo "（--keep：Tervo 保持打开，pid=$APP_PID）"; trap - EXIT; fi
