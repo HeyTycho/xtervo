@@ -93,78 +93,48 @@ for _ in $(seq 1 40); do
 done
 note "map state: $(xwininfo -id "$WID" 2>/dev/null | grep 'Map State' | xargs || echo unknown)"
 
-say "点击终端中部并输入 nihao + 空格（XTEST）"
-python3 - "$WID" "$WX" "$WY" "$WW" "$WH" <<'PY'
-import ctypes, ctypes.util, sys, time
-wid, x, y, w, h = sys.argv[1], *map(int, sys.argv[2:6])
-x11 = ctypes.CDLL(ctypes.util.find_library("X11"))
-xtst = ctypes.CDLL(ctypes.util.find_library("Xtst"))
-x11.XOpenDisplay.restype = ctypes.c_void_p
-x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
-x11.XStringToKeysym.restype = ctypes.c_ulong
-x11.XStringToKeysym.argtypes = [ctypes.c_char_p]
-x11.XKeysymToKeycode.restype = ctypes.c_ubyte
-x11.XKeysymToKeycode.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
-x11.XFlush.argtypes = [ctypes.c_void_p]
-x11.XSync.argtypes = [ctypes.c_void_p, ctypes.c_int]
-x11.XRaiseWindow.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
-x11.XSetInputFocus.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
-# 窗口可能刚 map / 被 WM reparent：忽略 X 错误，别让 BadMatch 直接退出
-ERRHANDLER = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p)
-def _noop_err(dpy, event):
-    return 0
-_handler = ERRHANDLER(_noop_err)
-x11.XSetErrorHandler.restype = ctypes.c_void_p
-x11.XSetErrorHandler.argtypes = [ERRHANDLER]
-x11.XSetErrorHandler(_handler)
-xtst.XTestFakeMotionEvent.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_ulong]
-xtst.XTestFakeButtonEvent.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_int, ctypes.c_ulong]
-xtst.XTestFakeKeyEvent.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_int, ctypes.c_ulong]
+say "把窗口挪到空闲区域并激活，然后输入 nihao"
+HELPER="$PWD/scripts/_xt_helper.py"
+python3 "$HELPER" --display "$DISPLAY" "$WID" "move:1700,120" "activate" || true
+NEWGEO=$(xwininfo -id "$WID" | awk '/Absolute upper-left X/{x=$4} /Absolute upper-left Y/{y=$4} /Width:/{w=$2} /Height:/{h=$2} END{printf "%d %d %d %d", x,y,w,h}')
+read -r WX WY WW WH <<<"$NEWGEO"
+note "移动后 geometry=${WX},${WY} ${WW}x${WH}"
+cx=$(( WX + WW / 2 )); cy=$(( WY + WH / 2 ))
+python3 "$HELPER" --display "$DISPLAY" "$WID" "click:$cx,$cy" "type:nihao" "sleep:0.6" || true
 
-d = x11.XOpenDisplay(None)
-win = int(wid, 16)
-x11.XRaiseWindow(d, win)
-x11.XSetInputFocus(d, win, 1, 0)   # 失败也继续：点击同样会把焦点给窗口
-x11.XSync(d, 0); time.sleep(0.3)
-cx, cy = x + w // 2, y + h // 2
-xtst.XTestFakeMotionEvent(d, -1, cx, cy, 0)
-xtst.XTestFakeButtonEvent(d, 1, 1, 0); xtst.XTestFakeButtonEvent(d, 1, 0, 0)
-x11.XSync(d, 0); time.sleep(0.4)
-
-kc = lambda name: x11.XKeysymToKeycode(d, x11.XStringToKeysym(name.encode()))
-def tap(name, delay=0.06):
-    k = kc(name)
-    xtst.XTestFakeKeyEvent(d, k, 1, 0); x11.XFlush(d); time.sleep(delay)
-    xtst.XTestFakeKeyEvent(d, k, 0, 0); x11.XFlush(d); time.sleep(delay)
-
-for ch in "nihao":
-    tap(ch)
-time.sleep(0.4)   # 等候选窗出现
-x11.XSync(d, 0)
-PY
-
-# 候选窗还开着时先截图
-sleep 0.3
-note "截图是整屏（含其他窗口）；只看候选窗位置，看完可删 .logs/ime-verify"
+# 候选窗还开着时截图
 xwd -root -silent -out "$OUT/root.xwd" 2>/dev/null || true
 python3 scripts/xwd2png.py "$OUT/root.xwd" "$OUT/root.png" >/dev/null 2>&1 || true
 xwininfo -root -tree >"$OUT/windows.txt" 2>/dev/null || true
 
-# 选词（空格），让 IME 提交
-python3 - <<'PY'
-import ctypes, ctypes.util, time
-x11 = ctypes.CDLL(ctypes.util.find_library("X11")); xtst = ctypes.CDLL(ctypes.util.find_library("Xtst"))
-x11.XOpenDisplay.restype = ctypes.c_void_p; x11.XOpenDisplay.argtypes=[ctypes.c_char_p]
-x11.XStringToKeysym.restype = ctypes.c_ulong; x11.XStringToKeysym.argtypes=[ctypes.c_char_p]
-x11.XKeysymToKeycode.restype = ctypes.c_ubyte; x11.XKeysymToKeycode.argtypes=[ctypes.c_void_p, ctypes.c_ulong]
-x11.XFlush.argtypes=[ctypes.c_void_p]; x11.XSync.argtypes=[ctypes.c_void_p, ctypes.c_int]
-xtst.XTestFakeKeyEvent.argtypes=[ctypes.c_void_p, ctypes.c_uint, ctypes.c_int, ctypes.c_ulong]
-d = x11.XOpenDisplay(None)
-k = x11.XKeysymToKeycode(d, x11.XStringToKeysym(b"space"))
-xtst.XTestFakeKeyEvent(d, k, 1, 0); x11.XFlush(d); time.sleep(0.08)
-xtst.XTestFakeKeyEvent(d, k, 0, 0); x11.XFlush(d); x11.XSync(d, 0)
-time.sleep(0.6)
-PY
+say "尝试三种上屏方式（空格 / 数字 1 / 点第一个候选）"
+try_commit() {
+    local before
+    before=$(grep -acE '\[ime\] "' "$OUT/keylog.log" 2>/dev/null || true)
+    python3 "$HELPER" --display "$DISPLAY" "$WID" "$@" >/dev/null 2>&1 || true
+    sleep 0.6
+    local after
+    after=$(grep -acE '\[ime\] "' "$OUT/keylog.log" 2>/dev/null || true)
+    [ "${after:-0}" -gt "${before:-0}" ]
+}
+found=0
+if try_commit "key:space"; then found=1; note "空格上屏成功"; fi
+if [ "$found" = 0 ] && try_commit "type:nihao" "sleep:0.4" "key:1"; then found=1; note "数字 1 上屏成功"; fi
+if [ "$found" = 0 ]; then
+    # 点候选窗第一个候选项（几何在下面解析，这里用当前窗口树里最小的 fcitx 窗口）
+    CANDID=$(awk -F'"' '/[Ff]citx/{print $1}' "$OUT/windows.txt" | awk '{print $1}' | head -1)
+    if [ -n "$CANDID" ]; then
+        CINFO=$(xwininfo -id "$CANDID" 2>/dev/null || true)
+        CXS=$(echo "$CINFO" | awk '/Absolute upper-left X/{print $4}')
+        CYS=$(echo "$CINFO" | awk '/Absolute upper-left Y/{print $4}')
+        CHH=$(echo "$CINFO" | awk '/Height:/{print $2}')
+        if [ -n "$CXS" ] && [ -n "$CYS" ]; then
+            if try_commit "type:nihao" "sleep:0.4" "click:$((CXS + 40)),$((CYS + ${CHH:-80} * 3 / 5))"; then
+                found=1; note "点击候选上屏成功"
+            fi
+        fi
+    fi
+fi
 
 say "解析日志与窗口"
 CJK=$(grep -aE '\[ime\] "' "$OUT/keylog.log" | grep -aP '[^\x00-\x7F]' | tail -1 || true)

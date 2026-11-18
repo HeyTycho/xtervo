@@ -21,6 +21,8 @@ x11.XQueryTree.argtypes = [ctypes.c_void_p, ctypes.c_ulong,
                            ctypes.POINTER(ctypes.POINTER(ctypes.c_ulong)),
                            ctypes.POINTER(ctypes.c_uint)]
 x11.XMoveWindow.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int, ctypes.c_int]
+x11.XSetInputFocus.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
+x11.XSetInputFocus.restype = ctypes.c_int
 x11.XRaiseWindow.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
 x11.XFlush.argtypes = [ctypes.c_void_p]
 x11.XSync.argtypes = [ctypes.c_void_p, ctypes.c_int]
@@ -50,7 +52,19 @@ ERRHANDLER = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p)
 
 
 def main() -> int:
-    dpy = x11.XOpenDisplay(None)
+    # 安全护栏：必须显式指定 --display，绝不允许回退到当前会话的 $DISPLAY。
+    # 之前就是这里漏了，helper 拿 :1 + Xvfb 的窗口 id，按键打进了用户正在用的终端。
+    if "--display" not in sys.argv:
+        print("refuse: 必须显式传 --display :N（禁止隐式使用 $DISPLAY）", file=sys.stderr)
+        return 2
+    idx = sys.argv.index("--display")
+    try:
+        disp = sys.argv[idx + 1]
+    except IndexError:
+        print("refuse: --display 缺少值", file=sys.stderr)
+        return 2
+    del sys.argv[idx:idx + 2]
+    dpy = x11.XOpenDisplay(disp.encode())
     if not dpy:
         print("no display", file=sys.stderr)
         return 1
@@ -98,6 +112,7 @@ def main() -> int:
             ev.data[1] = 0
             x11.XSendEvent(dpy, root, 0, (1 << 19) | (1 << 20), ctypes.byref(ev))
             x11.XRaiseWindow(dpy, wid)
+            x11.XSetInputFocus(dpy, wid, 1, 0)   # 无 WM 时也能拿到键盘焦点
             x11.XSync(dpy, 0)
             time.sleep(0.3)
         elif kind == "click":
@@ -109,7 +124,8 @@ def main() -> int:
             time.sleep(0.3)
         elif kind == "type":
             for ch in value:
-                name = {" ": "space", "-": "minus", ".": "period"}.get(ch, ch)
+                name = {" ": "space", "-": "minus", ".": "period", "\\": "backslash",
+                        "'": "apostrophe", "/": "slash", "|": "bar", ";": "semicolon"}.get(ch, ch)
                 kc = x11.XKeysymToKeycode(dpy, x11.XStringToKeysym(name.encode()))
                 xtst.XTestFakeKeyEvent(dpy, kc, 1, 0); x11.XFlush(dpy); time.sleep(0.05)
                 xtst.XTestFakeKeyEvent(dpy, kc, 0, 0); x11.XFlush(dpy); time.sleep(0.05)
