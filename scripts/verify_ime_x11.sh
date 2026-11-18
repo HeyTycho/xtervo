@@ -87,6 +87,11 @@ done
 GEO=$(xwininfo -id "$WID" | awk '/Absolute upper-left X/{x=$4} /Absolute upper-left Y/{y=$4} /Width:/{w=$2} /Height:/{h=$2} END{printf "%d %d %d %d", x,y,w,h}')
 read -r WX WY WW WH <<<"$GEO"
 note "window=$WID geometry=${WX},${WY} ${WW}x${WH}"
+for _ in $(seq 1 40); do
+    xwininfo -id "$WID" 2>/dev/null | grep -q "Map State: IsViewable" && break
+    sleep 0.25
+done
+note "map state: $(xwininfo -id "$WID" 2>/dev/null | grep 'Map State' | xargs || echo unknown)"
 
 say "点击终端中部并输入 nihao + 空格（XTEST）"
 python3 - "$WID" "$WX" "$WY" "$WW" "$WH" <<'PY'
@@ -104,13 +109,23 @@ x11.XFlush.argtypes = [ctypes.c_void_p]
 x11.XSync.argtypes = [ctypes.c_void_p, ctypes.c_int]
 x11.XRaiseWindow.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
 x11.XSetInputFocus.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
+# 窗口可能刚 map / 被 WM reparent：忽略 X 错误，别让 BadMatch 直接退出
+ERRHANDLER = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p)
+def _noop_err(dpy, event):
+    return 0
+_handler = ERRHANDLER(_noop_err)
+x11.XSetErrorHandler.restype = ctypes.c_void_p
+x11.XSetErrorHandler.argtypes = [ERRHANDLER]
+x11.XSetErrorHandler(_handler)
 xtst.XTestFakeMotionEvent.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_ulong]
 xtst.XTestFakeButtonEvent.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_int, ctypes.c_ulong]
 xtst.XTestFakeKeyEvent.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_int, ctypes.c_ulong]
 
 d = x11.XOpenDisplay(None)
 win = int(wid, 16)
-x11.XRaiseWindow(d, win); x11.XSetInputFocus(d, win, 1, 0); x11.XSync(d, 0); time.sleep(0.3)
+x11.XRaiseWindow(d, win)
+x11.XSetInputFocus(d, win, 1, 0)   # 失败也继续：点击同样会把焦点给窗口
+x11.XSync(d, 0); time.sleep(0.3)
 cx, cy = x + w // 2, y + h // 2
 xtst.XTestFakeMotionEvent(d, -1, cx, cy, 0)
 xtst.XTestFakeButtonEvent(d, 1, 1, 0); xtst.XTestFakeButtonEvent(d, 1, 0, 0)
