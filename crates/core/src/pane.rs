@@ -545,14 +545,7 @@ enum Ctrl {
         force_full: bool,
     },
     PtyClosed,
-    /// 前台进程组变化（子命令启动/退出）。回到 shell（`pgid` 等于直接
-    /// 子进程）或**上一个前台进程组已经消失**时复位：应用崩溃/被 kill 时
-    /// 没来得及 `CSI < u` 复位 kitty flags，shell 会把后续按键按 CSI-u
-    /// 回显成乱码。`prev_dead` 覆盖“应用是中间层 TUI 的子进程”的情况
-    /// （例如 dsh 里跑 codex：codex 退出后前台回到 dsh，而不是 shell）。
-    /// 进入新前台命令（上一个 pgrp 仍活着）不复位，避免和它首批输出里的
-    /// `CSI > flags u` 抢顺序。
-    ForegroundChanged { pgid: i32, prev_dead: bool },
+
     Shutdown,
 }
 
@@ -565,17 +558,17 @@ enum Ctrl {
 fn note_foreground_pgrp(
     fd: std::os::unix::io::RawFd,
     last_pgrp: &mut i32,
-    ctrl_tx: &Sender<Ctrl>,
+    pty_tx: &Sender<(Vec<u8>, i32)>,
 ) {
     let pgrp = unsafe { libc::tcgetpgrp(fd) }.max(0);
     if pgrp <= 0 || pgrp == *last_pgrp {
         return;
     }
-    let prev_dead = *last_pgrp > 0
-        && unsafe { libc::kill(-*last_pgrp, 0) } == -1
-        && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
-    *last_pgrp = pgrp;
-    let _ = ctrl_tx.send(Ctrl::ForegroundChanged { pgid: pgrp, prev_dead });
+    // 零长度 chunk 与 PTY 输出走同一条有序队列：actor 不会把“回到 shell”
+    // 排到已经入队的下一个应用输出之后，也不会把旧 reset 套到新 chunk 上。
+    if pty_tx.send((Vec::new(), pgrp)).is_ok() {
+        *last_pgrp = pgrp;
+    }
 }
 
 fn pump_reader<R: std::io::Read>(
@@ -597,7 +590,7 @@ fn pump_reader<R: std::io::Read>(
             let mut pfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
             let rc = unsafe { libc::poll(&mut pfd, 1, 100) };
             if rc == 0 {
-                note_foreground_pgrp(fd, &mut last_pgrp, &ctrl_tx);
+                note_foreground_pgrp(fd, &mut last_pgrp, &pty_tx);
                 continue;
             }
             if rc < 0 {
@@ -616,8 +609,8 @@ fn pump_reader<R: std::io::Read>(
                     .map(|fd| unsafe { libc::tcgetpgrp(fd) })
                     .unwrap_or(0)
                     .max(0);
-                // 数据 chunk 不在这里发 ForegroundChanged：不能让它排到 chunk
-                // 前面。actor 按 chunk 携带的 pgrp 在 feed 之后处理切换。
+                // 数据 chunk 的具体切换由 actor 按 chunk 携带的 pgrp 在 feed
+                // 之后处理；reader 只更新 last_pgrp，避免重复/抢序。
                 if chunk_pgrp > 0 {
                     last_pgrp = chunk_pgrp;
                 }
@@ -2679,9 +2672,10 @@ fn should_reset_foreground_keyboard(
     owner_pgid: i32,
     prev_dead: bool,
 ) -> bool {
-    // 回到 shell：shell 不应继承任何应用的增强键盘状态。
+    // 回到 shell：继承自子应用的 flags 要清；但 shell 自己在 prompt 里
+    // 声明了 kitty/modifyOtherKeys 时（owner == shell）必须保留。
     if pgid == shell_pgid {
-        return true;
+        return owner_pgid != shell_pgid;
     }
     // 还没人声明过：沿用“旧 pgrp 已死”的判断（兼容无 flags 的场景）。
     if owner_pgid == 0 {
@@ -2740,7 +2734,7 @@ impl Actor {
                             let previous = self.current_pgid;
                             self.current_pgid = chunk_pgid;
                             let changed = chunk_pgid > 0 && chunk_pgid != previous;
-                            if self.feed(&b) {
+                            if !b.is_empty() && self.feed(&b) {
                                 self.wake.notify();
                             }
                             if changed {
@@ -3841,18 +3835,6 @@ impl Actor {
                 self.wake.notify();
                 true
             },
-            Ctrl::ForegroundChanged { pgid, prev_dead } => {
-                // 先把队列里子进程最后的输出喂完（可能包含它延迟发出的
-                // `CSI < u`/set），再复位，避免“先复位后又被最后一块输出
-                // 设回 7”。进入新前台命令（上一个 pgrp 仍活着）不复位，
-                // 否则可能与新应用首批输出里的 `CSI > flags u` 抢顺序。
-                while let Ok((bytes, chunk_pgid)) = self.pty_rx.try_recv() {
-                    self.current_pgid = chunk_pgid;
-                    self.feed(&bytes);
-                }
-                self.foreground_changed(pgid, prev_dead);
-                true
-            },
             Ctrl::PtyClosed => {
                 // 关键：EOF 之后 PTY 队列里可能还压着若干块数据，必须排空再收尾。
                 while let Ok((bytes, chunk_pgid)) = self.pty_rx.try_recv() {
@@ -4217,6 +4199,8 @@ mod tests {
         // 回到 shell 总是复位（shell 不继承应用协议）。
         assert!(should_reset_foreground_keyboard(7, 7, 0, false));
         assert!(should_reset_foreground_keyboard(7, 7, 42, false));
+        // shell 自己在 prompt 里声明了协议：保留，不反手清掉。
+        assert!(!should_reset_foreground_keyboard(7, 7, 7, false));
         // 声明 flags 的 owner 回到前台：保留。
         assert!(!should_reset_foreground_keyboard(42, 7, 42, true));
         // owner 已消失（不存在的 pgrp）：复位。

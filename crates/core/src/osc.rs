@@ -80,24 +80,28 @@ impl OscScanner {
     /// 扫描一段 PTY 字节，把识别出的通知类事件追加到 `out`。
     pub fn feed(&mut self, bytes: &[u8], out: &mut Vec<CoreEvent>) {
         for &b in bytes {
-            if self.utf8_remaining > 0 {
-                if (0x80..=0xBF).contains(&b) {
-                    // OSC 载荷允许 UTF-8：续字节要原样进 buf，只是不解释成 C1。
+            // OscEscape 是“已看到 ESC、等 ST 的 \”状态：多字节字符应让整条
+            // OSC 按损坏丢弃，不能让后面的 \ 被误认成终止符。
+            if !matches!(self.state, State::OscEscape) {
+                if self.utf8_remaining > 0 {
+                    if (0x80..=0xBF).contains(&b) {
+                        // OSC 载荷允许 UTF-8：续字节要原样进 buf，只是不解释成 C1。
+                        if matches!(self.state, State::Osc) {
+                            self.push(b);
+                        }
+                        self.utf8_remaining -= 1;
+                        continue;
+                    }
+                    // 非法 UTF-8：放弃这个序列，按普通字节继续。
+                    self.utf8_remaining = 0;
+                }
+                if let Some(n) = utf8_lead_len(b) {
                     if matches!(self.state, State::Osc) {
                         self.push(b);
                     }
-                    self.utf8_remaining -= 1;
+                    self.utf8_remaining = n;
                     continue;
                 }
-                // 非法 UTF-8：放弃这个序列，按普通字节继续。
-                self.utf8_remaining = 0;
-            }
-            if let Some(n) = utf8_lead_len(b) {
-                if matches!(self.state, State::Osc) {
-                    self.push(b);
-                }
-                self.utf8_remaining = n;
-                continue;
             }
             self.state = match self.state {
                 State::Ground => match b {
@@ -129,7 +133,10 @@ impl OscScanner {
                         self.finish_osc(out);
                         State::Ground
                     },
-                    0x1b => State::OscEscape,
+                    0x1b => {
+                        self.utf8_remaining = 0;
+                        State::OscEscape
+                    },
                     0x9c => {
                         self.finish_osc(out);
                         State::Ground
@@ -699,6 +706,17 @@ mod tests {
             scanner.feed(&[*b], &mut out);
         }
         assert_eq!(out, vec![CoreEvent::Bell]);
+    }
+
+    #[test]
+    fn osc_utf8_between_esc_and_st_is_malformed_not_terminated() {
+        // ESC 之后出现 UTF-8 多字节字符：整条 OSC 损坏，后面的 \ 不是 ST。
+        let mut scanner = OscScanner::new();
+        let mut out = Vec::new();
+        for b in b"\x1b]9;hi\x1b\xE4\xBD\xA0\\" {
+            scanner.feed(&[*b], &mut out);
+        }
+        assert!(out.is_empty(), "malformed OSC must be discarded: {out:?}");
     }
 
     #[test]

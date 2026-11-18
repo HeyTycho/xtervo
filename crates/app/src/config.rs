@@ -1038,8 +1038,11 @@ impl Config {
                 Err(e) => return Err(format!("创建恢复临时文件 {} 失败: {e}", tmp.display())),
             }
         };
-        file.write_all(&bytes)
-            .map_err(|e| format!("写恢复临时文件 {} 失败: {e}", tmp.display()))?;
+        if let Err(e) = file.write_all(&bytes) {
+            drop(file);
+            let _ = std::fs::remove_file(&tmp);
+            return Err(format!("写恢复临时文件 {} 失败: {e}", tmp.display()));
+        }
         drop(file);
         if let Err(e) = std::fs::rename(&tmp, path) {
             let _ = std::fs::remove_file(&tmp);
