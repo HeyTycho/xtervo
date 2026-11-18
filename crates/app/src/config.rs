@@ -350,7 +350,10 @@ pub struct Config {
     pub right_click: String,
     /// 中键粘贴（Tabby 默认开）。
     pub paste_on_middle_click: bool,
-    /// TabBar 位置："top" | "bottom"。
+    /// TabBar 位置："top" | "bottom" | "left" | "right"。
+    ///
+    /// 四向与上游 Tabby 的 `appearance.tabsLocation` 一致（Top/Bottom/Left/Right）；
+    /// 左/右为竖排 TabBar。未知值按 `top` 处理，见 [`Config::tabbar_pos`]。
     pub tabbar_position: String,
     /// 本地 shell OSC 标题前缀（默认空）。只影响本地 pane；远端标题留给连接插件。
     pub title_prefix: String,
@@ -549,6 +552,55 @@ impl Default for Config {
     }
 }
 
+/// TabBar 四向位置（UI-WIN-007）。
+///
+/// 上游 Tabby 的 `appearance.tabsLocation` 同样是 Top/Bottom/Left/Right 四选一，
+/// 且 `left`/`right` 走竖排 tab-bar（`hasVerticalTabs()`）。Tervo 保持同名语义，
+/// 但配置键沿用已有的 `tabbar_position`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TabbarPos {
+    Top,
+    Bottom,
+    Left,
+    Right,
+}
+
+impl TabbarPos {
+    /// 宽松解析：大小写/首尾空白不影响；未知值回退 `top`。
+    pub fn from_config(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "bottom" => Self::Bottom,
+            "left" => Self::Left,
+            "right" => Self::Right,
+            _ => Self::Top,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Top => "top",
+            Self::Bottom => "bottom",
+            Self::Left => "left",
+            Self::Right => "right",
+        }
+    }
+
+    /// 左/右 = 竖排 TabBar：占窗口宽度，内容区横向让位。
+    pub fn is_vertical(self) -> bool {
+        matches!(self, Self::Left | Self::Right)
+    }
+
+    /// 下一个方向（菜单循环：top → bottom → left → right → top）。
+    pub fn cycle(self) -> Self {
+        match self {
+            Self::Top => Self::Bottom,
+            Self::Bottom => Self::Left,
+            Self::Left => Self::Right,
+            Self::Right => Self::Top,
+        }
+    }
+}
+
 impl Config {
     pub fn path() -> PathBuf {
         if let Ok(p) = std::env::var("TERVO_CONFIG") {
@@ -655,6 +707,11 @@ impl Config {
     /// 侧栏宽度：夹到 200–360，NaN 回默认 240。
     pub fn sidebar_width(&self) -> f32 {
         clamp_sidebar_width(self.sidebar_width)
+    }
+
+    /// 解析后的 TabBar 位置；未知/空值回退 `top`（旧配置仍可用）。
+    pub fn tabbar_pos(&self) -> TabbarPos {
+        TabbarPos::from_config(&self.tabbar_position)
     }
 
     /// 侧栏分区：夹到 0–2（未知值回 Profiles）。
@@ -1263,6 +1320,45 @@ mod tests {
         assert_eq!(c.osc52, "allow", "OSC 52 默认放行");
         assert!(c.osc52_allowed());
         assert_eq!(c.version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn tabbar_position_accepts_upstream_four_directions() {
+        let mut c = Config::default();
+        assert_eq!(c.tabbar_pos(), TabbarPos::Top);
+        for (raw, want, vertical) in [
+            ("top", TabbarPos::Top, false),
+            ("bottom", TabbarPos::Bottom, false),
+            ("left", TabbarPos::Left, true),
+            ("right", TabbarPos::Right, true),
+            // 宽松解析：大小写/空白；未知值回退 top，不破坏旧配置。
+            (" LEFT ", TabbarPos::Left, true),
+            ("Right", TabbarPos::Right, true),
+            ("sideways", TabbarPos::Top, false),
+            ("", TabbarPos::Top, false),
+        ] {
+            c.tabbar_position = raw.to_string();
+            assert_eq!(c.tabbar_pos(), want, "raw={raw:?}");
+            assert_eq!(c.tabbar_pos().is_vertical(), vertical, "raw={raw:?}");
+            assert_eq!(TabbarPos::from_config(want.as_str()), want);
+        }
+        // 菜单循环覆盖四向且回到起点。
+        let mut pos = TabbarPos::Top;
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            seen.push(pos);
+            pos = pos.cycle();
+        }
+        assert_eq!(
+            seen,
+            vec![
+                TabbarPos::Top,
+                TabbarPos::Bottom,
+                TabbarPos::Left,
+                TabbarPos::Right
+            ]
+        );
+        assert_eq!(pos, TabbarPos::Top);
     }
 
     #[test]

@@ -75,7 +75,9 @@ use tervo_core::{
 use x11rb::connection::Connection;
 use x11rb::rust_connection::RustConnection;
 
-use crate::config::{Config, ScrollbarPolicy, TerminalMenuItem, UNLIMITED_SCROLLBACK_LINES};
+use crate::config::{
+    Config, ScrollbarPolicy, TabbarPos, TerminalMenuItem, UNLIMITED_SCROLLBACK_LINES,
+};
 use crate::glyph::{FontOptions, FontSet};
 #[cfg(unix)]
 use crate::instance::{InstanceLock, InstancePaths, OpenWindowRequest, PrimaryServer};
@@ -98,6 +100,9 @@ const INSTANCE_CLAIM_TIMEOUT: Duration = Duration::from_secs(10);
 const INSTANCE_UI_ACK_TIMEOUT: Duration = Duration::from_secs(15);
 /// 必须与 ui/main.slint 里的 `tabbar-height` 保持一致。
 const TABBAR_H: f32 = 32.0;
+/// 竖排 TabBar 宽度（逻辑像素）：必须与 ui/main.slint 的 `tabbar-width` 一致。
+/// 左/右模式占窗口横向空间，终端内容区相应变窄。
+const TABBAR_W: f32 = 200.0;
 
 /// 侧栏宽度（逻辑像素）：只在 `sidebar_visible` 时占位，否则 0 —— 默认关闭时
 /// 布局与 0.5.0 逐像素一致。
@@ -109,13 +114,22 @@ fn sidebar_width_of(cfg: &crate::config::Config) -> f32 {
     }
 }
 
+/// 由内容区反推窗口尺寸（窗口逻辑宽度/高度 = 内容区 + 对应方向的 chrome）。
+fn window_size_of(content: Rect, cfg: &crate::config::Config) -> (f32, f32) {
+    let tabbar = cfg.tabbar_pos();
+    let extra_w = if tabbar.is_vertical() { TABBAR_W } else { 0.0 };
+    let extra_h = if tabbar.is_vertical() { 0.0 } else { TABBAR_H };
+    (
+        content.w + sidebar_width_of(cfg) + extra_w,
+        content.h + extra_h,
+    )
+}
+
 /// 翻转侧栏可见性，返回新的内容区（纯函数：窗口逻辑宽度由旧内容区 + 旧栏宽反推）。
 fn toggle_sidebar_math(content: Rect, cfg: &mut crate::config::Config) -> Rect {
-    let old_sw = sidebar_width_of(cfg);
-    let win_w = content.w + old_sw;
-    let win_h = content.h + TABBAR_H;
+    let (win_w, win_h) = window_size_of(content, cfg);
     cfg.sidebar_visible = !cfg.sidebar_visible;
-    content_rect(win_w, win_h, sidebar_width_of(cfg))
+    content_rect(win_w, win_h, sidebar_width_of(cfg), cfg.tabbar_pos())
 }
 
 /// 翻转侧栏可见性并立即重排（命令面板与设置页开关共用）。
@@ -289,11 +303,19 @@ fn toggle_sidebar(st: &mut AppState) {
     eprintln!("[ui] sidebar_visible={}（宽 {}px）", st.cfg.sidebar_visible, w);
 }
 
-/// 终端内容区矩形（TabBar 之下、侧栏之右）。`st.content` 的坐标系原点固定为
-/// 内容区左上角，所以侧栏只影响宽度，不影响 pane 自己的坐标。
-fn content_rect(win_w: f32, win_h: f32, sidebar_w: f32) -> Rect {
-    let w = (win_w - sidebar_w).max(1.0);
-    let h = (win_h - TABBAR_H).max(1.0);
+/// 终端内容区矩形（TabBar 非占位侧之外、侧栏之右）。`st.content` 的坐标系原点
+/// 固定为内容区左上角，所以侧栏/TabBar 只影响宽高，不影响 pane 自己的坐标。
+///
+/// - 上/下：内容区高度扣掉 `TABBAR_H`；
+/// - 左/右：内容区宽度扣掉竖排 `TABBAR_W`（高度占满）。
+fn content_rect(win_w: f32, win_h: f32, sidebar_w: f32, tabbar: TabbarPos) -> Rect {
+    let (chrome_w, chrome_h) = if tabbar.is_vertical() {
+        (TABBAR_W, 0.0)
+    } else {
+        (0.0, TABBAR_H)
+    };
+    let w = (win_w - sidebar_w - chrome_w).max(1.0);
+    let h = (win_h - chrome_h).max(1.0);
     Rect::new(0.0, 0.0, w, h)
 }
 /// `TermMode::BRACKETED_PASTE`
@@ -3795,6 +3817,16 @@ fn apply_external_config_from(st: &mut AppState, old: Config, new_cfg: Config) {
         sync_language_ui(st);
     }
     if tabbar_changed {
+        // 位置改变会改变内容区尺寸：按旧内容区反推窗口，再按新位置重算。
+        let (win_w, win_h) = window_size_of(st.content, &old);
+        st.content = content_rect(
+            win_w,
+            win_h,
+            sidebar_width_of(&st.cfg),
+            st.cfg.tabbar_pos(),
+        );
+        refresh_views_layout(st);
+        refresh_views(st);
         st.ime_spot_dirty = true;
         update_ime_spot(st);
     }
@@ -3875,7 +3907,8 @@ fn sync_reload_ui(st: &mut AppState) {
     st.ui
         .set_cfg_bold_color_same_as_fg(st.cfg.bold_color_same_as_fg);
     st.ui.set_cfg_quake(st.cfg.quake_enabled);
-    st.ui.set_tabbar_bottom(st.cfg.tabbar_position == "bottom");
+    st.ui
+        .set_tabbar_position(st.cfg.tabbar_pos().as_str().into());
     sync_mcp_ui(st);
 }
 
@@ -9336,11 +9369,20 @@ fn update_ime_spot(st: &mut AppState) {
     let (line, col) = (line as usize, col as usize);
     // 光标已经动过：点击锚点作废，别让它一直压着真实光标（用户反馈的正是这个）。
     let stale_click = matches!(click, Some((_, at)) if at != cursor);
-    let content_y = if st.cfg.tabbar_position == "bottom" {
-        0.0
-    } else {
+    let tabbar = st.cfg.tabbar_pos();
+    // 内容区在窗口内的纵向偏移：上=TabBar 高度；下/左/右=0。
+    let content_y = if tabbar == TabbarPos::Top {
         TABBAR_H
+    } else {
+        0.0
     };
+    // 内容区横向原点：竖排 TabBar + 侧栏。Slint 的隐藏 TextInput 在内容区内，
+    // 只需内容局部坐标；winit 的候选窗锚点要窗口坐标，所以下面再加回这段偏移。
+    let content_x = if tabbar == TabbarPos::Left {
+        TABBAR_W
+    } else {
+        0.0
+    } + sidebar_width_of(&st.cfg);
     let scale = st.ui.window().scale_factor() as f64;
     let key = ime_spot_key(
         focused,
@@ -9369,7 +9411,7 @@ fn update_ime_spot(st: &mut AppState) {
     // 真正的候选窗位置由 winit 直接设置。
     st.ui.set_ime_x(x as f32);
     st.ui.set_ime_y((y - content_y as f64) as f32);
-    let pos = LogicalPosition::new(x, y);
+    let pos = LogicalPosition::new(x + content_x as f64, y);
     let size = LogicalSize::new(w, h);
     let sent = st
         .ui
@@ -9387,6 +9429,22 @@ fn update_ime_spot(st: &mut AppState) {
             key.physical_x, key.physical_y, scale, key.anchored
         );
     }
+}
+
+/// 切换 TabBar 位置（上/下/左/右）并立即重排。
+///
+/// 位置改变会改变内容区矩形（上/下扣高度，左/右扣宽度），所以必须同步更新
+/// `st.content`、Slint 属性和所有 pane 的网格/PTY 尺寸；只改 UI 属性会让终端
+/// 继续按旧宽高渲染，右侧/底部出现错位。
+fn apply_tabbar_pos(st: &mut AppState, pos: TabbarPos) {
+    let (win_w, win_h) = window_size_of(st.content, &st.cfg);
+    st.cfg.tabbar_position = pos.as_str().to_string();
+    st.ui.set_tabbar_position(pos.as_str().into());
+    st.content = content_rect(win_w, win_h, sidebar_width_of(&st.cfg), pos);
+    refresh_views_layout(st);
+    refresh_views(st);
+    st.ime_spot_dirty = true;
+    update_ime_spot(st);
 }
 
 /// 把 core 帧里的 Sixel 图片同步成 Slint Image overlay。
@@ -14396,7 +14454,8 @@ fn init_window_ui(st: &mut AppState) {
         .set_cfg_backspace_binding(st.cfg.key_bindings().backspace.as_str().into());
     st.ui
         .set_cfg_delete_binding(st.cfg.key_bindings().delete.as_str().into());
-    st.ui.set_tabbar_bottom(st.cfg.tabbar_position == "bottom");
+    st.ui
+        .set_tabbar_position(st.cfg.tabbar_pos().as_str().into());
     st.ui
         .set_settings_path(Config::path().display().to_string().as_str().into());
     refresh_config_report(st);
@@ -14890,17 +14949,21 @@ fn register_window_callbacks(
             if !st.cfg.sidebar_visible {
                 return;
             }
-            let want = crate::config::clamp_sidebar_width(x as f32);
+            // 竖排 TabBar 在侧栏外侧：先扣掉它，右边缘 x 才是侧栏宽度。
+            let chrome_left = if st.cfg.tabbar_pos() == TabbarPos::Left {
+                TABBAR_W
+            } else {
+                0.0
+            };
+            let want = crate::config::clamp_sidebar_width(x as f32 - chrome_left);
             if (want - sidebar_width_of(&st.cfg)).abs() < 1.0 {
                 return;
             }
+            // 先按旧侧栏反推窗口逻辑宽度，再改宽度，避免把新宽度重复加一次。
+            let (win_w, win_h) = window_size_of(st.content, &st.cfg);
             st.cfg.sidebar_width = want;
             st.ui.set_sidebar_width(want);
-            // 用当前内容区反推窗口逻辑宽度，避免再走一遍 DPI 换算。
-            let old_sw = sidebar_width_of(&st.cfg);
-            let win_w = st.content.w + old_sw;
-            let win_h = st.content.h + TABBAR_H;
-            st.content = content_rect(win_w, win_h, want);
+            st.content = content_rect(win_w, win_h, want, st.cfg.tabbar_pos());
             refresh_views(st);
             redraw_visible(st);
         });
@@ -16648,6 +16711,18 @@ fn register_window_callbacks(
         });
     });
 
+    ui.on_tabbar_position_set(move |pos| {
+        runtime::with_window(window_id, |st| {
+            let next = TabbarPos::from_config(&pos);
+            if st.cfg.tabbar_pos() == next {
+                return;
+            }
+            apply_tabbar_pos(st, next);
+            st.cfg.save();
+            eprintln!("[ui] tabbar_position={}", st.cfg.tabbar_position);
+        });
+    });
+
     ui.on_tabbar_menu_action(move |action| {
         eprintln!("[ui] tabbar action={action}");
         runtime::with_window(window_id, |st| match action {
@@ -16671,16 +16746,9 @@ fn register_window_callbacks(
             10 => open_sftp_panel(st),
             11 => open_forwards_panel(st),
             6 => {
-                st.cfg.tabbar_position = if st.cfg.tabbar_position == "bottom" {
-                    "top".into()
-                } else {
-                    "bottom".into()
-                };
-                st.ui.set_tabbar_bottom(st.cfg.tabbar_position == "bottom");
+                let next = st.cfg.tabbar_pos().cycle();
+                apply_tabbar_pos(st, next);
                 st.cfg.save();
-                // 内容区在窗口内的纵向偏移变了：候选点必须重新下发。
-                st.ime_spot_dirty = true;
-                update_ime_spot(st);
                 eprintln!("[ui] tabbar_position={}", st.cfg.tabbar_position);
             }
             _ => {}
@@ -17210,8 +17278,8 @@ fn register_window_callbacks(
             let w = w.max(1.0);
             let h = h.max(1.0);
             let sidebar_w = sidebar_width_of(&st.cfg);
-            let content_w = (w - sidebar_w).max(1.0);
-            let content_h = (h - TABBAR_H).max(1.0);
+            let content = content_rect(w, h, sidebar_w, st.cfg.tabbar_pos());
+            let (content_w, content_h) = (content.w, content.h);
             // configure 本身就是“WM/窗口系统正在动”的证据；即使尺寸和上一帧
             // 相同也刷新时间戳，watchdog 不会把它误判成 WM 没接管。
             st.last_resize_event = Some(Instant::now());
@@ -17234,7 +17302,7 @@ fn register_window_callbacks(
             st.resize_pending = Some((w, h));
             // UI 布局必须每个 configure 立即更新：缩小时如果晚一帧，右上角按钮
             // 还在旧宽度的右边界外，会被新窗口裁掉，下一帧才“吐出来”。
-            st.content = content_rect(w, h, sidebar_w);
+            st.content = content_rect(w, h, sidebar_w, st.cfg.tabbar_pos());
             refresh_views_layout(st);
             if live_drag {
                 st.resize_in_progress = true;
@@ -17276,7 +17344,7 @@ fn register_window_callbacks(
                             st.resize_apply_scheduled = false;
                             let Some((w, h)) = st.resize_pending.take() else { return };
                             let sidebar_w = sidebar_width_of(&st.cfg);
-                            st.content = content_rect(w, h, sidebar_w);
+                            st.content = content_rect(w, h, sidebar_w, st.cfg.tabbar_pos());
                             let t0 = Instant::now();
                             refresh_views(st);
                             let t_layout = t0.elapsed();
@@ -17827,11 +17895,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (win_w, win_h) = match primary_geometry {
         Some(geometry) => (geometry.w as f32, geometry.h as f32),
         None => (
-            opts.cols as f32 * cell.0 as f32,
-            opts.rows as f32 * cell.1 as f32 + TABBAR_H,
+            opts.cols as f32 * cell.0 as f32
+                + if cfg.tabbar_pos().is_vertical() { TABBAR_W } else { 0.0 },
+            opts.rows as f32 * cell.1 as f32
+                + if cfg.tabbar_pos().is_vertical() { 0.0 } else { TABBAR_H },
         ),
     };
-    let content = content_rect(win_w, win_h, sidebar_width_of(&cfg));
+    let content = content_rect(win_w, win_h, sidebar_width_of(&cfg), cfg.tabbar_pos());
     let t_font = t_start.elapsed();
 
     // 后端初始化失败时显式重试软件渲染。注意：大多数 GPU/renderer 失败会被
@@ -18628,7 +18698,7 @@ mod tests {
     #[test]
     fn toggle_sidebar_math_roundtrips_and_keeps_window_width() {
         let mut cfg = Config::default();
-        let start = content_rect(1000.0, 800.0, sidebar_width_of(&cfg));
+        let start = content_rect(1000.0, 800.0, sidebar_width_of(&cfg), cfg.tabbar_pos());
         // 开：内容区让出 240，窗口逻辑宽度不变
         let open = toggle_sidebar_math(start, &mut cfg);
         assert!(cfg.sidebar_visible);
@@ -18663,16 +18733,47 @@ mod tests {
     fn content_rect_reserves_sidebar_only_when_visible() {
         let mut cfg = Config::default();
         assert_eq!(sidebar_width_of(&cfg), 0.0, "默认关闭时侧栏不占位");
-        let r = content_rect(1000.0, 800.0, sidebar_width_of(&cfg));
+        let r = content_rect(1000.0, 800.0, sidebar_width_of(&cfg), cfg.tabbar_pos());
         assert_eq!((r.w, r.h), (1000.0, 800.0 - TABBAR_H));
 
         cfg.sidebar_visible = true; // 默认宽度 240
-        let r = content_rect(1000.0, 800.0, sidebar_width_of(&cfg));
+        let r = content_rect(1000.0, 800.0, sidebar_width_of(&cfg), cfg.tabbar_pos());
         assert_eq!((r.w, r.h), (760.0, 800.0 - TABBAR_H));
 
         // 极窄窗口不能出现 0/负宽度
-        let r = content_rect(100.0, 800.0, 240.0);
+        let r = content_rect(100.0, 800.0, 240.0, TabbarPos::Top);
         assert_eq!(r.w, 1.0);
+    }
+
+    #[test]
+    fn tabbar_four_directions_reserve_the_right_chrome() {
+        // 上/下扣高度，左/右扣宽度；窗口尺寸可由内容区反推回来。
+        for (pos, want) in [
+            (TabbarPos::Top, (1000.0, 800.0 - TABBAR_H)),
+            (TabbarPos::Bottom, (1000.0, 800.0 - TABBAR_H)),
+            (TabbarPos::Left, (1000.0 - TABBAR_W, 800.0)),
+            (TabbarPos::Right, (1000.0 - TABBAR_W, 800.0)),
+        ] {
+            let r = content_rect(1000.0, 800.0, 0.0, pos);
+            assert_eq!((r.w, r.h), want, "{pos:?}");
+            let mut cfg = Config::default();
+            cfg.tabbar_position = pos.as_str().to_string();
+            assert_eq!(window_size_of(r, &cfg), (1000.0, 800.0), "{pos:?}");
+        }
+
+        // 竖排 + 侧栏：两者都从宽度里扣，高度占满。
+        let r = content_rect(1000.0, 800.0, 240.0, TabbarPos::Left);
+        assert_eq!((r.w, r.h), (1000.0 - TABBAR_W - 240.0, 800.0));
+
+        // 侧栏开关在竖排模式下也要保持窗口宽度不变。
+        let mut cfg = Config::default();
+        cfg.tabbar_position = "right".into();
+        let start = content_rect(1000.0, 800.0, sidebar_width_of(&cfg), cfg.tabbar_pos());
+        let open = toggle_sidebar_math(start, &mut cfg);
+        assert!(cfg.sidebar_visible);
+        assert_eq!((open.w, open.h), (760.0 - TABBAR_W, 800.0));
+        let closed = toggle_sidebar_math(open, &mut cfg);
+        assert_eq!((closed.w, closed.h), (start.w, start.h));
     }
 
     use super::*;

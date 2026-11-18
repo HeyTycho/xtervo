@@ -18,8 +18,7 @@ use slint::ComponentHandle;
 
 use crate::instance::OpenWindowRequest;
 use crate::runtime::{self, WindowId, WindowRuntime};
-use crate::workspace::Rect;
-use crate::{MainWindow, TABBAR_H};
+use crate::{MainWindow, TABBAR_H, TABBAR_W};
 
 /// 旧的多进程窗口路径只是显式 fallback；默认（变量不存在或为真）走同进程。
 ///
@@ -127,12 +126,23 @@ fn create_inproc_window_impl(
         .filter(|geometry| geometry.is_known())
     {
         Some(geometry) => (geometry.w as f32, geometry.h as f32),
-        None => (
-            opts.cols.max(20) as f32 * cell.0 as f32,
-            opts.rows.max(5) as f32 * cell.1 as f32 + TABBAR_H,
-        ),
+        None => {
+            let vertical = shared.cfg.with(|cfg| cfg.tabbar_pos().is_vertical());
+            (
+                opts.cols.max(20) as f32 * cell.0 as f32 + if vertical { TABBAR_W } else { 0.0 },
+                opts.rows.max(5) as f32 * cell.1 as f32 + if vertical { 0.0 } else { TABBAR_H },
+            )
+        }
     };
-    let content = Rect::new(0.0, 0.0, win_w, (win_h - TABBAR_H).max(1.0));
+    let content = {
+        let cfg = shared.cfg.with(|cfg| cfg.clone());
+        crate::content_rect(
+            win_w,
+            win_h,
+            crate::sidebar_width_of(&cfg),
+            cfg.tabbar_pos(),
+        )
+    };
     let initial_theme = {
         let cfg = shared.cfg.with(|cfg| cfg.clone());
         let selected = crate::normalize_selection(&shared.themes, &cfg.theme);
