@@ -616,8 +616,10 @@ fn pump_reader<R: std::io::Read>(
                     .map(|fd| unsafe { libc::tcgetpgrp(fd) })
                     .unwrap_or(0)
                     .max(0);
-                if let Some(fd) = fg_fd {
-                    note_foreground_pgrp(fd, &mut last_pgrp, &ctrl_tx);
+                // 数据 chunk 不在这里发 ForegroundChanged：不能让它排到 chunk
+                // 前面。actor 按 chunk 携带的 pgrp 在 feed 之后处理切换。
+                if chunk_pgrp > 0 {
+                    last_pgrp = chunk_pgrp;
                 }
                 // 有界阻塞：背压回内核，绝不丢字节、绝不做 UI 工作。
                 if pty_tx.send((buf[..n].to_vec(), chunk_pgrp)).is_err() {
@@ -2695,6 +2697,23 @@ fn should_reset_foreground_keyboard(
 }
 
 impl Actor {
+    /// 前台 pgrp 变化后，按 flags 的 owner 决定是否复位。
+    /// 数据 chunk 路径在 feed 之后调用，保证“先处理旧应用最后输出，再复位”。
+    fn foreground_changed(&mut self, pgid: i32, prev_dead: bool) {
+        if pgid != self.shell_pgid && !prev_dead {
+            return;
+        }
+        if should_reset_foreground_keyboard(
+            pgid,
+            self.shell_pgid,
+            self.keyboard_owner_pgid,
+            prev_dead,
+        ) {
+            self.keyboard_owner_pgid = 0;
+            self.reset_foreground_keyboard();
+        }
+    }
+
     fn run(mut self) {
         let pty = self.pty_rx.clone();
         let ctrl = self.ctrl_rx.clone();
@@ -2718,9 +2737,18 @@ impl Actor {
                         // Sixel payload 分块到达时 feed 返回 false：没有新内容，
                         // 不应为每 32 KiB 图片数据触发一次整帧重绘。
                         Ok((b, chunk_pgid)) => {
+                            let previous = self.current_pgid;
                             self.current_pgid = chunk_pgid;
+                            let changed = chunk_pgid > 0 && chunk_pgid != previous;
                             if self.feed(&b) {
                                 self.wake.notify();
+                            }
+                            if changed {
+                                let prev_dead = previous > 0
+                                    && (unsafe { libc::kill(-previous, 0) }) == -1
+                                    && std::io::Error::last_os_error().raw_os_error()
+                                        == Some(libc::ESRCH);
+                                self.foreground_changed(chunk_pgid, prev_dead);
                             }
                         },
                         Err(_) => self.pty_closed = true,
@@ -3818,24 +3846,11 @@ impl Actor {
                 // `CSI < u`/set），再复位，避免“先复位后又被最后一块输出
                 // 设回 7”。进入新前台命令（上一个 pgrp 仍活着）不复位，
                 // 否则可能与新应用首批输出里的 `CSI > flags u` 抢顺序。
-                if pgid == self.shell_pgid || prev_dead {
-                    while let Ok((bytes, chunk_pgid)) = self.pty_rx.try_recv() {
-                        self.current_pgid = chunk_pgid;
-                        self.feed(&bytes);
-                    }
-                    // 按“谁声明了 flags”判断，而不是“本轮见过 set”：
-                    // codex 的 chunk 写 owner=codex；回到 codex 时保留，
-                    // 退出到 shell/dsh 时按 owner 是否存活复位。
-                    if should_reset_foreground_keyboard(
-                        pgid,
-                        self.shell_pgid,
-                        self.keyboard_owner_pgid,
-                        prev_dead,
-                    ) {
-                        self.keyboard_owner_pgid = 0;
-                        self.reset_foreground_keyboard();
-                    }
+                while let Ok((bytes, chunk_pgid)) = self.pty_rx.try_recv() {
+                    self.current_pgid = chunk_pgid;
+                    self.feed(&bytes);
                 }
+                self.foreground_changed(pgid, prev_dead);
                 true
             },
             Ctrl::PtyClosed => {

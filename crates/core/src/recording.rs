@@ -14,9 +14,10 @@
 //! - 导出拿快照后释放锁再写文件，不阻塞 actor；
 //! - 停止后保留 buffer，允许“先停止、后导出”；再次开始会清空上一段录制。
 
+use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -212,11 +213,23 @@ impl Recorder {
             let inner = self.inner.lock();
             (inner.bytes.clone(), inner.active)
         };
-        // 先写临时文件再 rename：目标已存在时，写失败不能把旧录制截断。
-        let tmp = path.with_extension("raw.export.tmp");
-        let mut file = match std::fs::File::create(&tmp) {
-            Ok(file) => file,
-            Err(e) => return Err(e),
+        // 先写同目录唯一临时文件再 rename：目标已存在时，写失败不能把旧录制
+        // 截断；with_extension 可能让 temp 与目标同名（目标本身以 .tmp 结尾）。
+        let (tmp, mut file) = loop {
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let seq = EXPORT_SEQ.fetch_add(1, Ordering::Relaxed);
+            let tmp = path.with_file_name(format!(
+                ".{name}.{}.{seq}.export.tmp",
+                std::process::id()
+            ));
+            match OpenOptions::new().write(true).create_new(true).open(&tmp) {
+                Ok(file) => break (tmp, file),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(e),
+            }
         };
         if let Err(e) = file.write_all(&bytes).and_then(|()| file.flush()) {
             let _ = std::fs::remove_file(&tmp);
@@ -237,6 +250,8 @@ impl Recorder {
 
 /// 共享录制器句柄（[`crate::PaneHandle`] 内部使用）。
 pub type RecorderHandle = Arc<Recorder>;
+
+static EXPORT_SEQ: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(test)]
 mod tests {

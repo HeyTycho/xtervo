@@ -667,3 +667,24 @@ fn placement_metadata_is_paired_by_id_not_vector_index() {
     assert_eq!(second.source_rect, Rect::new(5.0, 0.0, 10.0, 10.0));
     assert_eq!((second.cells_w, second.cells_h), (1, 1));
 }
+
+#[test]
+fn image_source_id_is_namespaced_per_pane() {
+    let mut frame = Frame::new(10, 5);
+    frame.images.push(image(1, 70, 700, 0, 0, 40, 20, -1, false));
+
+    // 单 pane/旧路径默认 namespace=0，source id 不变。
+    let plain = SceneBuilder::from_frame(&frame, viewport(10, 5)).build();
+    assert_eq!(image_at(&plain, 1).source_id, SourceId(70));
+
+    // 两个 pane 的 ImageStore 都从 1 开始；namespace 必须让同一本地 id 不撞车。
+    let pane1 = SceneBuilder::from_frame(&frame, viewport(10, 5))
+        .source_namespace(1)
+        .build();
+    let pane2 = SceneBuilder::from_frame(&frame, viewport(10, 5))
+        .source_namespace(2)
+        .build();
+    assert_eq!(image_at(&pane1, 1).source_id, SourceId::namespaced(1, 70));
+    assert_eq!(image_at(&pane2, 1).source_id, SourceId::namespaced(2, 70));
+    assert_ne!(image_at(&pane1, 1).source_id, image_at(&pane2, 1).source_id);
+}

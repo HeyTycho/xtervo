@@ -82,6 +82,10 @@ impl OscScanner {
         for &b in bytes {
             if self.utf8_remaining > 0 {
                 if (0x80..=0xBF).contains(&b) {
+                    // OSC 载荷允许 UTF-8：续字节要原样进 buf，只是不解释成 C1。
+                    if matches!(self.state, State::Osc) {
+                        self.push(b);
+                    }
                     self.utf8_remaining -= 1;
                     continue;
                 }
@@ -89,6 +93,9 @@ impl OscScanner {
                 self.utf8_remaining = 0;
             }
             if let Some(n) = utf8_lead_len(b) {
+                if matches!(self.state, State::Osc) {
+                    self.push(b);
+                }
                 self.utf8_remaining = n;
                 continue;
             }
@@ -692,6 +699,23 @@ mod tests {
             scanner.feed(&[*b], &mut out);
         }
         assert_eq!(out, vec![CoreEvent::Bell]);
+    }
+
+    #[test]
+    fn osc9_preserves_utf8_payload_across_chunks() {
+        // 你 = E4 BD A0；OSC 9 正文必须逐字节保留，不能被 UTF-8 守卫吞掉。
+        let mut scanner = OscScanner::new();
+        let mut out = Vec::new();
+        for b in b"\x1b]9;\xE4\xBD\xA0\x07" {
+            scanner.feed(&[*b], &mut out);
+        }
+        assert_eq!(
+            out,
+            vec![CoreEvent::Notification(Notification {
+                title: String::new(),
+                body: "你".to_string(),
+            })]
+        );
     }
 
     #[test]

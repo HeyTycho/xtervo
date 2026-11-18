@@ -9,7 +9,9 @@
 //!
 //! 解析失败时绝不覆盖原文件：宁可本次用默认值，也要把用户的坏文件留在原处给人看。
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use tervo_core::CursorShape;
@@ -1014,10 +1016,31 @@ impl Config {
             std::fs::create_dir_all(dir).map_err(|e| format!("创建目录失败: {e}"))?;
         }
         // 和 save_to 一样走临时文件 + rename：恢复过程中写失败/磁盘满不能把
-        // 当前配置截断成空文件或半截文件。
-        let tmp = path.with_extension("toml.restore.tmp");
-        std::fs::write(&tmp, &bytes)
+        // 当前配置截断成空文件或半截文件。临时文件名必须唯一且绝不能等于目标
+        // （自定义 path 本身可能以 .restore.tmp 结尾）。
+        let (tmp, mut file) = loop {
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let seq = RESTORE_SEQ.fetch_add(1, Ordering::Relaxed);
+            let tmp = path.with_file_name(format!(
+                ".{name}.{}.{seq}.restore.tmp",
+                std::process::id()
+            ));
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&tmp)
+            {
+                Ok(file) => break (tmp, file),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(format!("创建恢复临时文件 {} 失败: {e}", tmp.display())),
+            }
+        };
+        file.write_all(&bytes)
             .map_err(|e| format!("写恢复临时文件 {} 失败: {e}", tmp.display()))?;
+        drop(file);
         if let Err(e) = std::fs::rename(&tmp, path) {
             let _ = std::fs::remove_file(&tmp);
             return Err(format!("恢复 {} 失败: {e}", path.display()));
@@ -1025,6 +1048,8 @@ impl Config {
         Ok(backup)
     }
 }
+
+static RESTORE_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// 归一化颜色字段：空保持空（跟随主题），合法值写成 `#rrggbb`，非法值清空并
 /// 在日志里提示一次——不让手写错误把光标/粗体颜色变成不可诊断的“没生效”。

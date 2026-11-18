@@ -455,7 +455,7 @@ fn image_instance(
         layer_z,
         ImageInstance {
             placement_id: PlacementId(image.id),
-            source_id: SourceId((source_namespace << 32) | (image.source_id & 0xffff_ffff)),
+            source_id: SourceId::namespaced(source_namespace, image.source_id),
             source_rect,
             source_size: (image.width, image.height),
             destination,

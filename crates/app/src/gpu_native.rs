@@ -699,7 +699,7 @@ fn render_pane_image(input: &PaneFrame<'_>) -> Option<slint::Image> {
         }
         // 每个 pane 的 ImageStore 都从 1 开始分配 source_id；GPU 纹理注册表是
         // 进程级共享的，必须把 pane id 拼进高位，否则两个 pane 的第一张图撞车。
-        let source = SourceId((input.pane << 32) | (image.source_id & 0xffff_ffff));
+        let source = SourceId::namespaced(input.pane, image.source_id);
         let expected = image.width as usize * image.height as usize * 4;
         if image.data.len() != expected {
             drop(guard);
