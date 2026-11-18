@@ -191,12 +191,18 @@ export struct TabView {
 
 /// Profiles 面板的一行：过滤/星标都在 Rust 侧算好，UI 只负责画。
 export struct ProfileRow {
-    /// Profile 稳定 ID（调试/未来扩展用）
+    /// Profile 稳定 ID（调试/未来扩展用；分组标题行 = -1）
     id: int,
-    /// 形如 `[local] work`
+    /// Profile 行：形如 `[local] work`；分组标题行：`▾ Work (2)`。
     label: string,
     /// 是否为“新 Tab 默认 Profile”（行首星标）
     is-default: bool,
+    /// 分组标题行（点击折叠/展开，不提供打开/编辑/删除）
+    is-header: bool,
+    /// 该分组当前是否折叠（只对 is-header 有意义）
+    collapsed: bool,
+    /// 所属分组名；`""` = 未分组。标题行点击时原样回传给 Rust。
+    group: string,
 }
 
 component MenuRow inherits Rectangle {
@@ -1631,18 +1637,28 @@ export component MainWindow inherits Window {
     in-out property <string> profile-query: "";
     /// 面板底部提示：新 Tab 默认使用的 Profile（或系统 shell）。
     in property <string> profile-default-info: "";
+    /// 自有格式导入/导出状态行（成功/失败原因 + 路径）。
+    in property <string> profile-io-status: "";
     callback profile-open(int);
     callback profile-new();
     callback profile-delete(int);
     callback profile-set-default(int);
     callback profile-duplicate(int);
     callback profile-filter(string);
+    /// 点击分组标题：折叠/展开该组（参数为分组名，`""` = 未分组）。
+    callback profile-toggle-group(string);
+    /// 导出自有格式（不含密码，Vault 引用单独标注）。
+    callback profile-export();
+    /// 导入自有格式（重名自动改名，坏条目跳过并报告）。
+    callback profile-import();
     callback profiles-close();
     // Profile 表单（新建）
     in-out property <bool> profile-form-open: false;
     in-out property <string> form-name: "";
     /// LOCAL-003：自定义 Tab 标题（空 = 用名称）。
     in-out property <string> form-title: "";
+    /// SESS-001：设置页分组名（空 = 未分组）。
+    in-out property <string> form-group: "";
     /// LOCAL-003：「测试起始目录」的即时结果（不参与保存）。
     in-out property <string> form-cwd-hint: "";
     /// 0=local 1=ssh 2=serial 3=telnet
@@ -5400,28 +5416,37 @@ export component MainWindow inherits Window {
                                 for item[i] in root.profile-items : Rectangle {
                                     height: 34px;
                                     border-radius: 6px;
-                                    background: profile-row-hit.has-hover ? Palette.colors.hover : transparent;
+                                    background: !item.is-header && profile-row-hit.has-hover
+                                        ? Palette.colors.hover
+                                        : transparent;
 
                                     profile-row-hit := TouchArea {
                                         x: 0px;
                                         y: 0px;
-                                        width: parent.width - 108px;
+                                        width: item.is-header ? parent.width : parent.width - 108px;
                                         height: parent.height;
-                                        clicked => { root.profile-open(i); }
+                                        clicked => {
+                                            if item.is-header {
+                                                root.profile-toggle-group(item.group);
+                                            } else {
+                                                root.profile-open(i);
+                                            }
+                                        }
                                     }
 
                                     Text {
-                                        x: 8px;
-                                        width: parent.width - 122px;
+                                        x: item.is-header ? 4px : 8px;
+                                        width: item.is-header ? parent.width - 8px : parent.width - 122px;
                                         height: parent.height;
                                         text: item.label;
-                                        color: Palette.colors.text;
-                                        font-size: 12px;
+                                        color: item.is-header ? Palette.colors.subtext : Palette.colors.text;
+                                        font-size: item.is-header ? 11px : 12px;
+                                        font-weight: item.is-header ? 600 : 400;
                                         vertical-alignment: center;
                                         overflow: elide;
                                     }
 
-                                    Rectangle {
+                                    if !item.is-header : Rectangle {
                                         x: parent.width - 104px;
                                         y: 5px;
                                         width: 26px;
@@ -5442,7 +5467,7 @@ export component MainWindow inherits Window {
                                         }
                                     }
 
-                                    ChoiceBtn {
+                                    if !item.is-header : ChoiceBtn {
                                         x: parent.width - 76px;
                                         y: 6px;
                                         width: 42px;
@@ -5452,7 +5477,7 @@ export component MainWindow inherits Window {
                                         clicked => { root.profile-edit(i); }
                                     }
 
-                                    Rectangle {
+                                    if !item.is-header : Rectangle {
                                         x: parent.width - 30px;
                                         y: 5px;
                                         width: 24px;
@@ -5499,8 +5524,35 @@ export component MainWindow inherits Window {
                                     clicked => { root.settings-manage-profiles(); }
                                 }
                             }
+                            HorizontalLayout {
+                                spacing: 6px;
+                                ActionBtn {
+                                    horizontal-stretch: 1;
+                                    label: Lang.t("Export profiles…", "导出配置…");
+                                    font-size: 10px;
+                                    clicked => { root.profile-export(); }
+                                }
+                                ActionBtn {
+                                    horizontal-stretch: 1;
+                                    label: Lang.t("Import profiles…", "导入配置…");
+                                    font-size: 10px;
+                                    clicked => { root.profile-import(); }
+                                }
+                            }
+                            if root.profile-io-status != "" : Text {
+                                text: root.profile-io-status;
+                                color: Palette.colors.subtext;
+                                font-size: 10px;
+                                wrap: word-wrap;
+                            }
                             Text {
-                                text: Lang.t("The full Profiles panel adds search and duplicate; it opens above this page.", "完整配置面板还提供搜索与复制；它会在此页之上打开。");
+                                text: Lang.t("Export/import uses Tervo's own versioned format (profiles-export.toml). Files never contain passwords: vault-backed credentials are only marked as references and must be re-entered after import.", "导出/导入使用 Tervo 自有版本化格式（profiles-export.toml）。文件绝不含密码：Vault 凭据只标注为引用，导入后需重新输入。");
+                                color: Palette.colors.muted;
+                                font-size: 10px;
+                                wrap: word-wrap;
+                            }
+                            Text {
+                                text: Lang.t("The full Profiles panel adds search, group folding and duplicate; it opens above this page.", "完整配置面板还提供搜索、分组折叠与复制；它会在此页之上打开。");
                                 color: Palette.colors.muted;
                                 font-size: 10px;
                                 wrap: word-wrap;
@@ -6654,24 +6706,33 @@ export component MainWindow inherits Window {
                 for item[i] in root.profile-items : Rectangle {
                     height: 30px;
                     border-radius: 4px;
-                    background: profile-pick-hit.has-hover ? Palette.colors.hover : transparent;
+                    background: !item.is-header && profile-pick-hit.has-hover
+                        ? Palette.colors.hover
+                        : transparent;
 
                     Text {
-                        x: 30px;
-                        width: parent.width - 114px;
+                        x: item.is-header ? 4px : 30px;
+                        width: item.is-header ? parent.width - 8px : parent.width - 114px;
                         text: item.label;
-                        color: Palette.colors.text;
-                        font-size: 12px;
+                        color: item.is-header ? Palette.colors.subtext : Palette.colors.text;
+                        font-size: item.is-header ? 11px : 12px;
+                        font-weight: item.is-header ? 600 : 400;
                         vertical-alignment: center;
                         overflow: elide;
                     }
 
                     profile-pick-hit := TouchArea {
-                        clicked => { root.profile-open(i); }
+                        clicked => {
+                            if item.is-header {
+                                root.profile-toggle-group(item.group);
+                            } else {
+                                root.profile-open(i);
+                            }
+                        }
                     }
 
                     // 星标：★ = 新 Tab 默认 Profile；点击切换/取消。
-                    Rectangle {
+                    if !item.is-header : Rectangle {
                         x: 2px; y: 3px;
                         width: 24px; height: 24px;
                         border-radius: 4px;
@@ -6693,7 +6754,7 @@ export component MainWindow inherits Window {
                     }
 
                     // Duplicate：复制该行 Profile（名字自动 `(copy N)` 去重）。
-                    Rectangle {
+                    if !item.is-header : Rectangle {
                         x: parent.width - 82px; y: 3px;
                         width: 30px; height: 24px;
                         border-radius: 4px;
@@ -6714,7 +6775,7 @@ export component MainWindow inherits Window {
                         }
                     }
 
-                    Rectangle {
+                    if !item.is-header : Rectangle {
                         x: parent.width - 52px;
                         y: 3px;
                         width: 22px;
@@ -6737,7 +6798,7 @@ export component MainWindow inherits Window {
                         }
                     }
 
-                    Rectangle {
+                    if !item.is-header : Rectangle {
                         x: parent.width - 26px;
                         y: 3px;
                         width: 22px;
@@ -6903,11 +6964,18 @@ export component MainWindow inherits Window {
             x: 16px; y: 80px; width: 408px; height: 26px;
             spacing: 8px;
             FormRow {
-                width: 198px;
+                width: 150px;
+                label-width: 42px;
                 label: Lang.t("Name", "名称"); text <=> root.form-name;
             }
             FormRow {
-                width: 202px;
+                width: 130px;
+                label-width: 42px;
+                label: Lang.t("Group", "分组"); text <=> root.form-group;
+            }
+            FormRow {
+                width: 112px;
+                label-width: 34px;
                 label: Lang.t("Title", "标题"); text <=> root.form-title;
             }
         }
