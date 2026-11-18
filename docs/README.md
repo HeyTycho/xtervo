@@ -96,6 +96,7 @@
 | [最大化按钮：工业级状态机与验收门禁](archive/MAXIMIZE_ENGINEERING.md) | 状态：已实现（2026-11-11，agent/max-controller）。 独立 crate |
 | [单进程多窗口 Spike（Slint 1.18.1 + WGPU30）](archive/MULTI_WINDOW_SPIKE.md) | 状态：spike 完成，gate 通过（有条件） |
 | [2026-11-11 渲染残留事故复盘](archive/POSTMORTEM_2026-11-11_RENDER_RESIDUE.md) | 状态：已修复，当前 release b5c8c6f0fcba 干净；本文是排障纪律，不是事后解释。 |
+| [2026-11-18 输入焦点事故复盘](archive/POSTMORTEM_2026-11-18_INPUT_FOCUS.md) | Profile 菜单 FocusScope 吞键/不归还焦点；已修复并补“菜单打开时普通键仍到终端”的 e2e。 |
 | [Tervo 最终人工复测清单](archive/RETEST_CHECKLIST.md) | text |
 | [Wayland 原生支持 Spike（W-06）](archive/WAYLAND_SPIKE.md) | --- |
 | [WGPU 文字 / Glyph Atlas 原型（2026-11-11）](archive/WGPU_TEXT_ATLAS_PROTOTYPE.md) | 分支：agent/wgpu-text |
