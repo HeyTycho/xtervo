@@ -149,9 +149,21 @@ CARGO_TARGET_DIR=$PWD/.target-render ./scripts/bench_render.sh
 
 **已知限制**：
 
-- 仍是两块 CPU 持久帧。若 Slint 连续两帧以上未消费旧 `Image`，写入目标 buffer 会触发
-  `SharedPixelBuffer` 整块 CoW（release 100x30 约 0.6 ms；2560x1413 会更大）。此时只保证
-  正确性，不保证 damage 成本；正常单帧节奏下 `detach=false`。
+- ~~仍是两块 CPU 持久帧，Slint 连续两帧以上未消费旧 `Image` 时每帧整块 CoW。~~
+  **2026-11-18 `feat/damage-cow` 已改为按需扩池**：`FrameBuffers` 现在是 2–4 块的池，
+  观测到 detach（= 渲染端持有帧数 ≥ 池大小）后扩一块（新块内容 = 当前帧，插到轮换
+  队首，history 补空集合），并把学到的持有深度带到 `resize_grid` 之后；之后每帧只
+  按「最近 池大小-1 帧的 damage 行并集」做局部提交。整块 CoW 只剩“发现深度”的那
+  一帧（每进程/每池重建 ≤1 次），计入 `Renderer::buffer_detaches` 并通过 profile
+  `detach=/pool=/grows=/detaches=` 暴露；池上限 4（超出仍正确，退回 CoW 并计数）。
+  证据（headless，无 Xvfb 环境）：
+  `two_frame_hold_grows_pool_instead_of_cow_every_rotation`（2 帧持有，24 帧单行
+  damage：旧实现 23 帧整块 CoW → 现在 1 帧爬坡、稳态 0，且每帧逐像素等于整屏参考）；
+  `hold_deeper_than_pool_cap_stays_pixel_correct`（持有 6 帧 > 池上限：允许 CoW，像素
+  仍逐像素一致）；`soak_damage_pool_memory_is_bounded`（2m、16.4 万帧、684 次 resize：
+  RSS 42–54 MB 持平、threads=2、fds=4 不变、池稳定 3 块、整块 CoW 共 1 次）。
+  本轮沙箱没有 Xvfb/合成器，`:137` GUI e2e 未重跑（池行为由单测 + soak + 逐像素差分
+  覆盖；真机 GPU/compositor 的持有深度仍需在 NVIDIA 环境复测）。
 - Skia 仍整张纹理上传（Slint 1.18 没有安全持久 GPU texture API）；本次只省 CPU
   raster/blend/行复制，不改变纹理上传。
 - Sixel 是独立 overlay，不写入终端帧，因此不参与 damage；滚动历史（`display_offset≠0`）

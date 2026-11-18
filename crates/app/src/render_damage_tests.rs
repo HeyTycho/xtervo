@@ -618,3 +618,496 @@ fn partial_redraw_does_not_detach_shared_buffers() {
     }
     drop(front);
 }
+
+/// 模拟「渲染端落后 k 帧」：始终持有最近 `hold` 张 Image，然后连续做单行 damage。
+/// 返回逐帧的 detach 标记。
+fn run_with_frame_hold(
+    fonts: &Rc<FontSet>,
+    renderer: &mut Renderer,
+    frame: &mut Frame,
+    hold: usize,
+    steps: usize,
+) -> Vec<bool> {
+    let mut held: Vec<slint::Image> = (0..hold).map(|_| renderer.image()).collect();
+    let mut detaches = Vec::with_capacity(steps);
+    for i in 0..steps {
+        let row = i % ROWS;
+        for col in 0..COLS {
+            put(frame, row, col, (b'a' + (i % 26) as u8) as char, 0x00cdd6f4);
+        }
+        damage_line(frame, row);
+        renderer.draw_without_cursor(frame);
+        assert_eq!(renderer.last_draw_rows, 1, "第 {i} 帧应只重绘一行");
+        assert_matches_fresh_redraw(renderer, fonts, frame, &format!("持有 {hold} 帧 seq={i}"));
+        detaches.push(renderer.last_buffer_detached);
+        // 池稳定后每帧提交的是「最近 池大小-1 帧的 damage 行」，不是整屏：
+        // 池 3 时同步 2 行 + 栅格化 1 行，仍远小于一帧 6 行。
+        if renderer.buffer_pool_len >= 3 {
+            let budget = (renderer.buffer_pool_len - 1) as u32;
+            assert!(
+                renderer.last_copied_rows <= budget,
+                "第 {i} 帧同步 {} 行，超过池深度预算 {budget}",
+                renderer.last_copied_rows
+            );
+            assert!(
+                renderer.last_copied_rows + renderer.last_draw_rows < ROWS as u32,
+                "第 {i} 帧提交的不是 damage 行（复制 {} + 重绘 {} >= {ROWS} 行）",
+                renderer.last_copied_rows,
+                renderer.last_draw_rows
+            );
+        }
+        held.push(renderer.image());
+        if held.len() > hold {
+            held.remove(0);
+        }
+    }
+    detaches
+}
+
+/// 尾部稳态不允许再有整块 CoW（爬坡阶段的 detach 见各个测试）。
+fn assert_steady_state(fonts: &Rc<FontSet>, renderer: &Renderer, detaches: &[bool], label: &str) {
+    let tail = &detaches[detaches.len().saturating_sub(8)..];
+    let bad = tail.iter().filter(|d| **d).count();
+    assert_eq!(bad, 0, "{label}：稳态仍有 {bad} 帧整块 CoW（池={}）", renderer.buffer_pool_len);
+    let _ = fonts;
+}
+
+#[test]
+fn two_frame_hold_grows_pool_instead_of_cow_every_rotation() {
+    // 模拟「Slint/合成器落后 2 帧」：上一帧和上上帧的 Image 都还没释放。
+    // 2 块缓冲轮换回上上帧那块时必然被共享，`make_mut_bytes` 只能整块 CoW——
+    // 旧实现 24 帧里 23 帧整块 CoW。这里要求：观测到之后扩池，之后每帧退化为
+    // 「1 行同步 + 1 行栅格化」，且像素与整屏参考逐像素一致。
+    let Some(fonts) = fonts() else { return };
+    let mut renderer = renderer(&fonts, COLS, ROWS);
+    let mut frame = blank(COLS, ROWS);
+    for row in 0..ROWS {
+        put(&mut frame, row, 1, 'A', 0x00ff_ffff);
+    }
+    frame.full = true;
+    renderer.draw_without_cursor(&frame);
+
+    let detaches = run_with_frame_hold(&fonts, &mut renderer, &mut frame, 2, 24);
+    let total = detaches.iter().filter(|d| **d).count();
+    assert_steady_state(&fonts, &renderer, &detaches, "持有 2 帧");
+    assert_eq!(renderer.buffer_pool_len, 3, "持有 2 帧需要 3 块缓冲");
+    assert_eq!(renderer.buffer_growths, 1);
+    // 爬坡只应付一次整块 CoW（Slint 不暴露 refcount，无法写前判定）；
+    // 之后 23 帧全是「同步 damage 行 + 栅格化 damage 行」。
+    assert_eq!(total, 1, "发现持有 >1 帧只应付出一次整块 CoW，之后按行提交");
+    assert_eq!(renderer.buffer_detaches, 1);
+}
+
+#[test]
+fn three_frame_hold_grows_pool_to_four() {
+    let Some(fonts) = fonts() else { return };
+    let mut renderer = renderer(&fonts, COLS, ROWS);
+    let mut frame = blank(COLS, ROWS);
+    for row in 0..ROWS {
+        put(&mut frame, row, 2, 'B', 0x00a6e3a1);
+    }
+    frame.full = true;
+    renderer.draw_without_cursor(&frame);
+
+    let detaches = run_with_frame_hold(&fonts, &mut renderer, &mut frame, 3, 24);
+    assert_steady_state(&fonts, &renderer, &detaches, "持有 3 帧");
+    assert_eq!(renderer.buffer_pool_len, 4, "池上限 4：持有 3 帧应扩到 4 块");
+    // 每次扩一块只会在「发现那一刻」付一次 CoW：2→3、3→4 共两次。
+    assert_eq!(detaches.iter().filter(|d| **d).count(), 2);
+}
+
+#[test]
+fn hold_deeper_than_pool_cap_stays_pixel_correct() {
+    // 超过池上限（4 块 → 只能容忍 3 帧）时允许退回整块 CoW，但**不能花屏**：
+    // 逐像素仍必须等于整屏参考，且 detach 要计数暴露而不是静默。
+    let Some(fonts) = fonts() else { return };
+    let mut renderer = renderer(&fonts, COLS, ROWS);
+    let mut frame = blank(COLS, ROWS);
+    for row in 0..ROWS {
+        put(&mut frame, row, 3, 'C', 0x00f38ba8);
+    }
+    frame.full = true;
+    renderer.draw_without_cursor(&frame);
+
+    let detaches = run_with_frame_hold(&fonts, &mut renderer, &mut frame, 6, 20);
+    let total = detaches.iter().filter(|d| **d).count();
+    assert_eq!(renderer.buffer_pool_len, 4, "池不应超过上限");
+    assert!(total > 0, "超过池深度必须仍有 detach 计数");
+    assert_eq!(renderer.buffer_detaches as usize, total);
+}
+
+#[test]
+fn theme_change_after_growth_still_matches_fresh_redraw() {
+    // 扩池后整屏重绘（主题/滚动历史）要重置历史：其它块整体过期，轮换时
+    // 必须整块同步，否则会留下上一主题的旧行。
+    let Some(fonts) = fonts() else { return };
+    let mut renderer = renderer(&fonts, COLS, ROWS);
+    let mut frame = blank(COLS, ROWS);
+    for row in 0..ROWS {
+        put(&mut frame, row, 4, 'D', 0x00f9e2af);
+    }
+    frame.full = true;
+    renderer.draw_without_cursor(&frame);
+    let _ = run_with_frame_hold(&fonts, &mut renderer, &mut frame, 2, 6);
+    assert_eq!(renderer.buffer_pool_len, 3);
+
+    let theme = Theme::default();
+    renderer.set_theme(theme.bg(), theme.cursor());
+    renderer.draw_without_cursor(&frame);
+    assert!(renderer.last_draw_full);
+    assert_matches_fresh_redraw(&renderer, &fonts, &frame, "扩池后主题切换");
+
+    // 整屏之后立刻单行 damage：其它块缺「全部行」，必须补齐。
+    put(&mut frame, 5, 0, 'E', 0x00cdd6f4);
+    damage_line(&mut frame, 5);
+    renderer.draw_without_cursor(&frame);
+    assert_matches_fresh_redraw(&renderer, &fonts, &frame, "扩池后整屏再单行");
+}
+
+#[test]
+fn resize_keeps_learned_pool_depth() {
+    // 学到「渲染端持有 2 帧」之后 resize：新池直接按深度+1 分配，不该再重新
+    // 爬坡（否则每次拖窗口都会在 resize 后付一次整块 CoW）。
+    let Some(fonts) = fonts() else { return };
+    let mut renderer = renderer(&fonts, COLS, ROWS);
+    let mut frame = blank(COLS, ROWS);
+    for row in 0..ROWS {
+        put(&mut frame, row, 5, 'F', 0x00f9e2af);
+    }
+    frame.full = true;
+    renderer.draw_without_cursor(&frame);
+    let _ = run_with_frame_hold(&fonts, &mut renderer, &mut frame, 2, 8);
+    assert_eq!(renderer.buffer_pool_len, 3);
+
+    renderer.resize_grid(COLS, ROWS);
+    assert_eq!(renderer.buffer_pool_len, 3, "resize 后应沿用学到的池深度");
+    frame.full = true;
+    renderer.draw_without_cursor(&frame);
+    assert!(!renderer.last_buffer_detached);
+
+    // resize 之后仍然持有 2 帧：稳态不能再整块 CoW。
+    let mut held: Vec<slint::Image> = vec![renderer.image()];
+    for i in 0..10 {
+        let row = i % ROWS;
+        put(&mut frame, row, i % COLS, (b'a' + (i % 26) as u8) as char, 0x00cdd6f4);
+        damage_line(&mut frame, row);
+        renderer.draw_without_cursor(&frame);
+        assert!(!renderer.last_buffer_detached, "resize 后第 {i} 帧又整块 CoW");
+        assert_matches_fresh_redraw(&renderer, &fonts, &frame, &format!("resize 后 seq={i}"));
+        held.push(renderer.image());
+        if held.len() > 2 {
+            held.remove(0);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 内存门禁：帧缓冲池 + damage 提交的 2m/15m soak。
+//
+// 环境里没有 Xvfb/合成器（`scripts/soak.sh` 起不来 :143），所以这里对**本次
+// 改动的那一层**做无头 soak：持续单行 damage + 渲染端落后 2 帧 + 周期整屏/
+// resize，采样 RSS/VmHWM/线程/FD，并周期性做逐像素差分。用法：
+//
+//   TERVO_RENDER_SOAK_SECS=120 \
+//     cargo test -p tervo-app --bin tervo --offline soak_damage_pool -- --ignored --nocapture
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "linux")]
+fn proc_status_kb(field: &str) -> Option<u64> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    for line in status.lines() {
+        if let Some(rest) = line.strip_prefix(field) {
+            return rest.split_whitespace().next()?.parse().ok();
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn proc_fd_count() -> usize {
+    std::fs::read_dir("/proc/self/fd").map(|d| d.count()).unwrap_or(0)
+}
+
+#[test]
+#[ignore = "内存门禁：设置 TERVO_RENDER_SOAK_SECS 后手动跑（--ignored --nocapture）"]
+fn soak_damage_pool_memory_is_bounded() {
+    let secs: u64 = match std::env::var("TERVO_RENDER_SOAK_SECS").ok().and_then(|v| v.parse().ok())
+    {
+        Some(s) if s > 0 => s,
+        _ => {
+            eprintln!("[soak] TERVO_RENDER_SOAK_SECS 未设置，跳过");
+            return;
+        }
+    };
+    let Some(fonts) = fonts() else {
+        eprintln!("[soak] 没有可用字体，跳过");
+        return;
+    };
+    const SOAK_COLS: usize = 110;
+    const SOAK_ROWS: usize = 34;
+    let mut renderer = renderer(&fonts, SOAK_COLS, SOAK_ROWS);
+    let mut frame = blank(SOAK_COLS, SOAK_ROWS);
+    // 预置一段带内容的画面（与真实回滚区一样继续往行里写）。
+    for row in 0..SOAK_ROWS {
+        for col in 0..SOAK_COLS {
+            put(&mut frame, row, col, (b'a' + (col % 26) as u8) as char, 0x00cdd6f4);
+        }
+    }
+    frame.full = true;
+    renderer.draw_without_cursor(&frame);
+
+    let start = std::time::Instant::now();
+    let budget = std::time::Duration::from_secs(secs);
+    // 模拟渲染端落后 2 帧：始终多持有一张 Image（池因此扩到 3）。
+    let mut held: Vec<slint::Image> = vec![renderer.image(), renderer.image()];
+    let mut frame_no: u64 = 0;
+    let mut next_sample = 0.0f64;
+    let mut rss_samples: Vec<(f64, u64)> = Vec::new();
+    let (mut fd_base, mut thread_base) = (0usize, 0u64);
+    let mut max_pool = renderer.buffer_pool_len;
+    let mut pixel_checks = 0u32;
+
+    while start.elapsed() < budget {
+        frame_no += 1;
+        let elapsed = start.elapsed().as_secs_f64();
+        if elapsed >= next_sample {
+            next_sample = elapsed + 5.0;
+            let rss = proc_status_kb("VmRSS:").unwrap_or(0);
+            let hwm = proc_status_kb("VmHWM:").unwrap_or(0);
+            let threads = proc_status_kb("Threads:").unwrap_or(0);
+            let fds = proc_fd_count();
+            if fd_base == 0 {
+                fd_base = fds;
+                thread_base = threads;
+            }
+            rss_samples.push((elapsed, rss));
+            max_pool = max_pool.max(renderer.buffer_pool_len);
+            eprintln!(
+                "[soak] t={elapsed:.0}s rss={rss}kB hwm={hwm}kB threads={threads} fds={fds} \
+                 pool={} grows={} detaches={} copied={} drawn={}",
+                renderer.buffer_pool_len,
+                renderer.buffer_growths,
+                renderer.buffer_detaches,
+                renderer.last_copied_rows,
+                renderer.last_draw_rows,
+            );
+        }
+
+        // 每 240 帧一次 resize（换尺寸 = 重新分配池）；每 120 帧一次整屏
+        // （滚动历史/主题）；其余都是单行 damage。
+        if frame_no % 240 == 0 {
+            let cols = SOAK_COLS - 10 * ((frame_no / 240) % 3) as usize;
+            renderer.resize_grid(cols, SOAK_ROWS);
+            frame = blank(cols, SOAK_ROWS);
+            for row in 0..SOAK_ROWS {
+                for col in 0..cols {
+                    put(&mut frame, row, col, (b'0' + (col % 10) as u8) as char, 0x00a6e3a1);
+                }
+            }
+            frame.full = true;
+        } else if frame_no % 120 == 0 {
+            frame.full = true;
+        } else {
+            let row = (frame_no as usize) % SOAK_ROWS;
+            for col in 0..frame.cols {
+                put(&mut frame, row, col, (b'a' + (frame_no % 26) as u8) as char, 0x00cdd6f4);
+            }
+            damage_line(&mut frame, row);
+        }
+        renderer.draw_without_cursor(&frame);
+        held.push(renderer.image());
+        if held.len() > 2 {
+            held.remove(0);
+        }
+        max_pool = max_pool.max(renderer.buffer_pool_len);
+
+        // 周期性逐像素差分：memcpy 出来的行错位/残影只有对拍能发现。
+        if frame_no % 300 == 0 {
+            assert_matches_fresh_redraw(&renderer, &fonts, &frame, "soak 对拍");
+            pixel_checks += 1;
+        }
+    }
+
+    let end_rss = proc_status_kb("VmRSS:").unwrap_or(0);
+    let end_fds = proc_fd_count();
+    let end_threads = proc_status_kb("Threads:").unwrap_or(0);
+    // 前 1/4 的峰值当基线：允许池扩容/分配器热身的固定台阶，之后必须持平。
+    let warm = rss_samples.len() / 4;
+    let base = rss_samples
+        .iter()
+        .take(warm.max(1))
+        .map(|(_, rss)| *rss)
+        .max()
+        .unwrap_or(end_rss);
+    eprintln!(
+        "[soak] done frames={frame_no} pixel_checks={pixel_checks} base_rss={base}kB \
+         end_rss={end_rss}kB max_pool={max_pool} grows={} detaches={} fds={end_fds}",
+        renderer.buffer_growths, renderer.buffer_detaches
+    );
+    assert!(pixel_checks > 0, "soak 没跑到差分检查（时长太短）");
+    assert_eq!(max_pool, 3, "落后 2 帧时池应稳定在 3 块，实际 {max_pool}");
+    assert!(
+        renderer.buffer_growths <= 2,
+        "整个 soak 只该扩容一次（resize 沿用学到的深度，不再爬坡），实际 {}",
+        renderer.buffer_growths
+    );
+    assert!(
+        renderer.buffer_detaches <= 2,
+        "整个 soak 只该在最初发现持有深度时付 1 次整块 CoW，实际 {}",
+        renderer.buffer_detaches
+    );
+    assert!(
+        end_rss <= base + 32 * 1024,
+        "RSS 从 {base}kB 涨到 {end_rss}kB（>32MB）：帧缓冲池泄漏"
+    );
+    assert_eq!(end_fds, fd_base, "FD 数量变化：{fd_base} -> {end_fds}");
+    assert_eq!(end_threads, thread_base, "线程数变化：{thread_base} -> {end_threads}");
+}
+
+fn lcg(seed: &mut u64) -> usize {
+    *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    (*seed >> 33) as usize
+}
+
+#[test]
+fn random_damage_sequence_with_frame_hold_matches_fresh_redraw() {
+    // 伪随机交错「单行/多行 damage、整屏、无变化帧、选区、内联图片移动/删除、
+    // resize」，全程模拟渲染端持有 2 帧。每一步都要求与整屏参考逐像素一致：
+    // 池轮换 + history 的不变式只要少同步一行就会留下残影。
+    use std::sync::Arc;
+    use tervo_core::InlineImage;
+
+    let Some(fonts) = fonts() else { return };
+    let mut renderer = renderer(&fonts, COLS, ROWS);
+    let mut frame = blank(COLS, ROWS);
+    for row in 0..ROWS {
+        for col in 0..COLS {
+            put(&mut frame, row, col, 'x', 0x00cdd6f4);
+        }
+    }
+    frame.full = true;
+    renderer.draw_without_cursor(&frame);
+
+    let mut held: Vec<slint::Image> = vec![renderer.image(), renderer.image()];
+    let mut seed: u64 = 0x5eed;
+    let cell_w = fonts.cell_w as u32;
+    let cell_h = fonts.cell_h as u32;
+    let mut image: Option<InlineImage> = None;
+
+    for step in 0..140 {
+        let op = lcg(&mut seed) % 10;
+        match op {
+            0..=4 => {
+                let row = lcg(&mut seed) % frame.rows;
+                let ch = (b'a' + (lcg(&mut seed) % 26) as u8) as char;
+                let col = lcg(&mut seed) % frame.cols;
+                put(&mut frame, row, col, ch, 0x00f38ba8);
+                damage_line(&mut frame, row);
+            },
+            5 => {
+                // 多行 damage（仍可能被判成 full）。
+                frame.full = false;
+                frame.damage.clear();
+                for _ in 0..2 {
+                    let row = lcg(&mut seed) % frame.rows;
+                    for col in 0..frame.cols {
+                        let ch = (b'0' + (lcg(&mut seed) % 10) as u8) as char;
+                        put(&mut frame, row, col, ch, 0x00a6e3a1);
+                    }
+                    frame.damage.push(tervo_core::LineDamage {
+                        line: row as u16,
+                        left: 0,
+                        right: frame.cols as u16 - 1,
+                    });
+                }
+            },
+            6 => {
+                frame.full = true;
+            },
+            7 => {
+                // 真·无变化帧：没有 damage，也不改 cell。
+                frame.full = false;
+                frame.damage.clear();
+            },
+            8 => {
+                frame.selection = if frame.selection.is_some() {
+                    None
+                } else {
+                    let a = lcg(&mut seed) % frame.rows;
+                    let b = lcg(&mut seed) % frame.rows;
+                    Some(Span {
+                        start_line: a.min(b) as u16,
+                        start_col: 0,
+                        end_line: a.max(b) as u16,
+                        end_col: 3,
+                    })
+                };
+            },
+            _ => {
+                // 内联图片：出现 → 挪行 → 删除。
+                match image.as_mut() {
+                    None => {
+                        let img = InlineImage {
+                            id: 11,
+                            source_id: 11,
+                            row_id: 11,
+                            row: (lcg(&mut seed) % frame.rows) as i32,
+                            col: (lcg(&mut seed) % frame.cols.max(1)) as u16,
+                            width: cell_w * 2,
+                            height: cell_h * 2,
+                            data: Arc::from(vec![0u8, 128, 255, 255].repeat((cell_w * 2 * cell_h * 2) as usize)),
+                            z_index: -1,
+                            above_text: false,
+                        };
+                        frame.images.push(img.clone());
+                        image = Some(img);
+                    },
+                    Some(img) => {
+                        if lcg(&mut seed) % 2 == 0 {
+                            img.row = (lcg(&mut seed) % frame.rows) as i32;
+                            frame.images[0] = img.clone();
+                        } else {
+                            frame.images.clear();
+                            image = None;
+                        }
+                    },
+                }
+                frame.full = false;
+                frame.damage.clear();
+            },
+        }
+
+        renderer.draw_without_cursor(&frame);
+        assert_matches_fresh_redraw(&renderer, &fonts, &frame, &format!("随机 seq={step} op={op}"));
+        held.push(renderer.image());
+        if held.len() > 2 {
+            held.remove(0);
+        }
+        if renderer.buffer_pool_len >= 3 {
+            assert!(
+                !renderer.last_buffer_detached,
+                "随机 seq={step}：池已扩到 {} 仍整块 CoW",
+                renderer.buffer_pool_len
+            );
+        }
+
+        // 每 20 步 resize 一次（重新分配池，history 必须重建）。
+        if step > 0 && step % 20 == 0 {
+            let cols = 18 + 2 * (lcg(&mut seed) % 4);
+            let rows = 5 + lcg(&mut seed) % 3;
+            renderer.resize_grid(cols, rows);
+            frame = blank(cols, rows);
+            for row in 0..rows {
+                for col in 0..cols {
+                    put(&mut frame, row, col, 'z', 0x00f9e2af);
+                }
+            }
+            frame.full = true;
+            frame.images.clear();
+            image = None;
+            renderer.draw_without_cursor(&frame);
+            assert_matches_fresh_redraw(&renderer, &fonts, &frame, &format!("随机 resize seq={step}"));
+        }
+    }
+    drop(held);
+}

@@ -2,14 +2,20 @@
 //! 终端网格 → RGBA 像素缓冲的软件光栅化。
 //!
 //! Phase 0 目的：把「Slint + Skia 能否以 60 FPS 承载整屏终端帧」这件事量出来。
-//! 现在使用**双缓冲持久帧**：两块 `SharedPixelBuffer` 隔帧交替写入，`Image`
-//! 只做 refcount clone，不再每帧整屏 memcpy。
+//! 现在使用**帧缓冲池**（默认 2 块，观测到渲染端落后 >1 帧时按需扩到 3–4 块）：
+//! 池内 `SharedPixelBuffer` 轮流写入，`Image` 只做 refcount clone，不再每帧整屏
+//! memcpy。
 //!
-//! damage 恢复：新 buffer 是「上上帧」的内容，缺上一帧的改动。因此每次轮换只把
-//! **上一帧实际重绘过的行**从旧 buffer 复制过来，再栅格化本帧 damage 行；两边
-//! 始终相差不超过一帧，旧行不会丢也不会花屏。全屏重绘（首帧/resize/主题/滚动
-//! 历史）不需要复制，直接把所有行画进新 buffer，并把“全部行”记为下一帧要同步
-//! 的集合。单行输出/按键因此只 raster + 复制 1 行，而不是整屏。
+//! damage 恢复：目标块是「池大小-1 帧前」的内容，缺这些帧的改动。因此每次轮换
+//! 只把 **history 里记录的重绘行并集**从上一帧（active）复制过来，再栅格化本帧
+//! damage 行；两边始终只差这些行，旧行不会丢也不会花屏。全屏重绘（首帧/resize/
+//! 主题/滚动历史）不需要复制，直接把所有行画进目标块，并把“全部行”记进 history。
+//! 单行输出/按键因此只 raster + 复制 1–2 行，而不是整屏。
+//!
+//! 为什么需要扩池：`SharedPixelBuffer` 不暴露 refcount，Slint 持有旧 `Image`
+//! 多于池深度时 `make_mut_bytes` 只能整块 CoW（正确但每帧 4K 一帧 ≈ 20 MB 拷贝）。
+//! 池在观测到 detach 后按需扩一块，并把学到的持有深度带过 resize；整块 CoW 只剩
+//! “发现深度”的那一帧，计入 `buffer_detaches`。
 
 use std::rc::Rc;
 
@@ -186,33 +192,90 @@ fn blend_color(fg: u32, bg: u32) -> u32 {
     ch(0) | ch(8) << 8 | ch(16) << 16 | 0xff00_0000
 }
 
-/// 双缓冲帧：交替写入两块 `SharedPixelBuffer`，把“每帧整屏 memcpy 进 Slint
-/// Image”降为一次 refcount clone。
+/// 帧缓冲池：把「每帧整屏 memcpy 进 Slint Image」降为一次 refcount clone。
 ///
-/// 为什么是两块：Slint 的 `Image` 持有它自己的 `SharedPixelBuffer` 引用，UI 还在
-/// 显示上一帧时不能原地改。隔帧使用另一块，上一块的 `Image` 已被下一次属性赋值
-/// 释放，`make_mut_bytes` 就能原地写（`make_mut_slice` 在仍共享时会 detach，
-/// 这里用 `last_detached` 记录并在 profiling 日志里暴露，绝不假设）。
+/// 为什么不止一块：Slint 的 `Image` 持有 `SharedPixelBuffer` 的引用，UI 还在显示
+/// 某一帧时不能原地改那块内存。默认 2 块（与旧双缓冲行为一致）：本帧写 A 时
+/// `Image` 持有 B，轮换到 B 时 A 已被下一次属性赋值释放，`make_mut_bytes` 原地
+/// 写，不产生整块 CoW。
 ///
-/// 两块缓冲的内容始终只差**上一帧重绘过的行**：轮换到旧 buffer 时先把这些行从
-/// 当前 buffer 复制过去（见 [`Renderer::draw_impl`]），再画本帧 damage。这样
-/// 单行更新只处理一行，不会为了补齐新 buffer 再整屏 raster 一次。
+/// 但这不是保证：渲染线程/合成器可能落后不止一帧（GPU 后端把上传排到下一轮、
+/// Skia 线程化栅格化），此时轮换到的块仍被持有，`make_mut` 只能整块 CoW ——
+/// 内容正确，但 4K 一帧就是 20 MB 的额外拷贝。`SharedPixelBuffer` 不暴露
+/// refcount，无法在写之前判定共享；因此在**观测到 detach 之后**按需扩池
+/// （[`FrameBuffers::maybe_grow`]），把「渲染端落后 k 帧」变成「池里有 k+1 块」，
+/// 之后每帧只按 damage 行做局部提交。池上限 [`POOL_CAP`]（默认 2 块的 2 倍），
+/// 超过上限的持有深度仍然正确，只是退回整块 CoW 并计数暴露。
+///
+/// 池内各块的内容只差**最近 `池大小-1` 帧重绘过的行**：`history` 按帧保存这些
+/// 行集合，轮换到旧块时把集合里的行从 active 复制过去（本帧要重绘的行跳过），
+/// 再画本帧 damage。复制多了只会多写一遍最新内容（永远正确），复制少了才会
+/// 留残影，所以这里宁可保守。
 struct FrameBuffers {
-    buffers: [slint::SharedPixelBuffer<slint::Rgba8Pixel>; 2],
+    buffers: Vec<slint::SharedPixelBuffer<slint::Rgba8Pixel>>,
+    /// 最近写入的那块（= `order.back()`）。
     active: usize,
+    /// 写入顺序：front 是最久没写过的块（本帧目标），back 是 active。
+    order: std::collections::VecDeque<usize>,
+    /// 最近 `buffers.len()-1` 帧实际重绘过的行（front 最旧），与 [`Self::order`]
+    /// 一一对应：轮换到某块时要同步的正是这些集合的并集。
+    history: std::collections::VecDeque<Vec<usize>>,
+    /// 复用的行标记，用来求 history 各集合的并集（避免每帧分配 HashSet）。
+    sync_mark: Vec<u32>,
+    sync_gen: u32,
     /// 最近一次 `make_mut_bytes` 是否发生了 detach（仍被共享）。
     detached: bool,
+    /// 本帧观测到 detach：下一帧按需扩池。
+    grow_pending: bool,
+    /// 扩池次数（profile/测试用）。
+    growths: u32,
 }
+
+/// 池上限：4 块。按 3000x1800 的窗口算，多出来的两块是 ~43 MB 上限；
+/// 只有真的观测到渲染端落后 >2 帧才会走到这里，默认仍是 2 块。
+const POOL_CAP: usize = 4;
 
 impl FrameBuffers {
     /// 只分配、不填充：首帧/换尺寸后 `draw()` 会整屏重绘，空白像素会被完整覆盖。
-    /// 这样 resize 时省掉 2×整屏 `fill` 的写带宽。
-    fn new(width: usize, height: usize) -> Self {
-        let buffers = [
-            slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(width as u32, height as u32),
-            slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(width as u32, height as u32),
-        ];
-        Self { buffers, active: 0, detached: false }
+    /// 这样 resize 时省掉整屏 `fill` 的写带宽。
+    ///
+    /// `pool_len` 至少 2；`Renderer` 会把「学到的持有深度+1」带过 resize，
+    /// 这样改窗口大小之后不用重新爬坡（否则每次 resize 都会付一次整块 CoW）。
+    fn new(width: usize, height: usize, pool_len: usize) -> Self {
+        let pool_len = pool_len.clamp(2, POOL_CAP);
+        let mut buffers = Vec::with_capacity(pool_len);
+        for _ in 0..pool_len {
+            buffers.push(slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(
+                width as u32,
+                height as u32,
+            ));
+        }
+        // 首帧整屏重绘，写哪块都行：front 当目标、back 当 active。
+        let order: std::collections::VecDeque<usize> =
+            (1..pool_len).rev().chain(std::iter::once(0)).collect();
+        let mut history = std::collections::VecDeque::with_capacity(pool_len - 1);
+        for _ in 0..pool_len - 1 {
+            history.push_back(Vec::new());
+        }
+        Self {
+            buffers,
+            active: 0,
+            order,
+            history,
+            sync_mark: Vec::new(),
+            sync_gen: 0,
+            detached: false,
+            grow_pending: false,
+            growths: 0,
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.buffers.len()
+    }
+
+    fn growths(&self) -> u32 {
+        self.growths
     }
 
     fn fill_all(&mut self, color: u32) {
@@ -230,52 +293,99 @@ impl FrameBuffers {
         let before = self.buffers[self.active].as_bytes().as_ptr();
         let bytes = self.buffers[self.active].make_mut_bytes();
         // 一帧里 fill_row/fill_rect/blit 会多次调用；只要有一次 detach 就要
-        // 保留这个事实，供 profile 判断双缓冲是否真的省掉了整屏拷贝。
+        // 保留这个事实，供 profile 判断池大小是否还够。
         self.detached |= bytes.as_ptr() != before;
         bytemuck::cast_slice_mut(bytes)
     }
 
-    /// 把 `active` 切换到另一块 buffer。
-    fn rotate(&mut self) {
-        self.active = (self.active + 1) % 2;
+    /// 观测到 detach 后扩一块：新块内容 = active（最新一帧），插到 order 最前
+    /// 当下一帧目标，history 前面补空集合保持「长度 = 块数-1」。
+    ///
+    /// 空集合意味着「新块已经和 active 一样，无需同步行」，之后每帧照常记录
+    /// 并轮换，不变式自然恢复。返回是否扩了池。
+    fn maybe_grow(&mut self) -> bool {
+        if !self.grow_pending {
+            return false;
+        }
+        self.grow_pending = false;
+        if self.buffers.len() >= POOL_CAP {
+            return false;
+        }
+        let (w, h) =
+            (self.buffers[self.active].width(), self.buffers[self.active].height());
+        let mut fresh = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(w, h);
+        // 独享的新块：这次拷贝是扩池的一次性成本，换掉之后每帧的整块 CoW。
+        fresh.make_mut_bytes().copy_from_slice(self.buffers[self.active].as_bytes());
+        self.buffers.push(fresh);
+        let idx = self.buffers.len() - 1;
+        self.order.push_front(idx);
+        self.history.push_front(Vec::new());
+        debug_assert_eq!(self.history.len() + 1, self.buffers.len());
+        self.growths += 1;
+        true
     }
 
-    /// 轮换后补齐新 buffer：把上一帧重绘过的 cell 行从 `src` 复制到当前 buffer。
+    /// 选本帧写入目标：最久没写过的块（order.front），写完变成 active。
+    /// 返回上一帧的 active 下标（同步行的来源）。
+    fn rotate(&mut self) -> usize {
+        let prev = self.active;
+        let target = self.order.pop_front().expect("frame buffer pool is never empty");
+        self.order.push_back(target);
+        self.active = target;
+        prev
+    }
+
+    /// 把 `src`（上一帧 active）里**需要同步**的行复制到本帧目标。
     ///
-    /// 本帧已标记为脏的行会被 `draw_row` 完整覆盖，跳过复制省一次写带宽。
-    /// 返回实际复制的行数（profile/测试用）。若目标 buffer 仍被 Slint 持有，
-    /// `make_mut_bytes` 会 detach 一次（整块 CoW），内容仍是正确的旧帧。
-    fn copy_rows_from(
-        &mut self,
-        src: usize,
-        cell_h: usize,
-        dirty_flags: &[bool],
-        rows: &[usize],
-    ) -> u32 {
+    /// 需要同步的行 = `history` 各集合的并集（最多 `池大小-1` 帧的改动，去重后
+    /// 恰好等于真正过期的行）。本帧已标记为脏的行会被 `draw_row` 完整覆盖，跳过。
+    /// 返回实际复制的行数（profile/测试用）。
+    fn copy_rows_from(&mut self, src: usize, cell_h: usize, dirty_flags: &[bool]) -> u32 {
         let dst = self.active;
-        if src == dst || rows.is_empty() || cell_h == 0 {
+        let rows = self.buffers[dst].height() as usize / cell_h.max(1);
+        if src == dst || cell_h == 0 || self.history.is_empty() {
             return 0;
+        }
+        let n = rows;
+        // 求并集：sync_mark 用代数比，避免每帧清零。
+        self.sync_gen = self.sync_gen.wrapping_add(1);
+        if self.sync_gen == 0 {
+            self.sync_mark.iter_mut().for_each(|m| *m = 0);
+            self.sync_gen = 1;
+        }
+        if self.sync_mark.len() < n {
+            self.sync_mark.resize(n, 0);
+        }
+        let gen = self.sync_gen;
+        for set in &self.history {
+            for &row in set {
+                if row < n {
+                    self.sync_mark[row] = gen;
+                }
+            }
         }
         let width = self.buffers[dst].width() as usize;
         let row_bytes = width * 4 * cell_h;
-        let (src_buf, dst_buf) = match (src, dst) {
-            (0, 1) => {
-                let (lo, hi) = self.buffers.split_at_mut(1);
-                (&lo[0], &mut hi[0])
-            },
-            (1, 0) => {
-                let (lo, hi) = self.buffers.split_at_mut(1);
-                (&hi[0], &mut lo[0])
-            },
-            _ => return 0,
+        let (src_bytes, dst_bytes) = {
+            let (src_buf, dst_buf) = if src < dst {
+                let (lo, hi) = self.buffers.split_at_mut(dst);
+                (&lo[src], &mut hi[0])
+            } else {
+                let (lo, hi) = self.buffers.split_at_mut(src);
+                (&hi[0], &mut lo[dst])
+            };
+            let src_bytes = src_buf.as_bytes();
+            let before = dst_buf.as_bytes().as_ptr();
+            let dst_bytes = dst_buf.make_mut_bytes();
+            self.detached |= dst_bytes.as_ptr() != before;
+            (src_bytes, dst_bytes)
         };
-        let src_bytes = src_buf.as_bytes();
-        let before = dst_buf.as_bytes().as_ptr();
-        let dst_bytes = dst_buf.make_mut_bytes();
-        self.detached |= dst_bytes.as_ptr() != before;
         let mut copied = 0;
-        for &row in rows {
+        for row in 0..n {
             if dirty_flags.get(row).copied().unwrap_or(false) {
+                continue;
+            }
+            if self.sync_mark.get(row).copied().unwrap_or(0) != gen {
                 continue;
             }
             let start = row * row_bytes;
@@ -287,6 +397,40 @@ impl FrameBuffers {
             copied += 1;
         }
         copied
+    }
+
+    /// 整屏重绘后重置历史：本帧所有行都是新的，其它块相对 active 缺的正是
+    /// 「全部行」，每个历史槽都记成全部行（多复制是安全侧）。槽位复用，滚动
+    /// 历史这种连续整屏的负载不会每帧分配。
+    fn history_after_full(&mut self, rows: usize) {
+        let keep = self.buffers.len().saturating_sub(1);
+        while self.history.len() > keep {
+            self.history.pop_back();
+        }
+        while self.history.len() < keep {
+            self.history.push_back(Vec::new());
+        }
+        for slot in &mut self.history {
+            slot.clear();
+            slot.extend(0..rows);
+        }
+        debug_assert_eq!(self.history.len() + 1, self.buffers.len());
+    }
+
+    /// 记录本帧重绘过的行，保持 `history.len() == buffers.len()-1`。
+    ///
+    /// 出一帧删一帧：溢出时弹出最旧的集合并**复用它**当新槽，稳态下每帧
+    /// 零分配（soak 门禁里 RSS 必须持平）。
+    fn record_changed_rows(&mut self, rows: &[usize]) {
+        let mut slot = if self.history.len() >= self.buffers.len().saturating_sub(1) {
+            self.history.pop_front().unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        slot.clear();
+        slot.extend_from_slice(rows);
+        self.history.push_back(slot);
+        debug_assert_eq!(self.history.len() + 1, self.buffers.len());
     }
 
     fn image(&self) -> slint::Image {
@@ -353,8 +497,11 @@ pub struct Renderer {
     dirty_flags: Vec<bool>,
     /// 本帧实际重绘的行（升序）。
     dirty_rows: Vec<usize>,
-    /// 上一帧重绘过的行：轮换 buffer 时只需同步这些行。
-    prev_changed_rows: Vec<usize>,
+    /// 帧缓冲池大小（2 = 旧双缓冲；观测到渲染端落后 >1 帧后按需扩到 3/4）。
+    pub buffer_pool_len: usize,
+    /// 观测到的「渲染端持有多深的旧帧」（1 = 只持有上一帧）。resize 重新分配
+    /// 池时沿用这个深度，避免每次改窗口大小都重新爬坡付整块 CoW。
+    hold_depth: usize,
     /// 上一帧参与合成（含透明像素）的内联图片。
     prev_images: Vec<ImageLayerEntry>,
     /// 统计
@@ -365,6 +512,10 @@ pub struct Renderer {
     /// 轮换时从旧 buffer 复制过来的行数。
     pub last_copied_rows: u32,
     pub full_redraws: u64,
+    /// 池扩容次数（观测到渲染端持有 >1 帧后触发）。
+    pub buffer_growths: u32,
+    /// 写入时仍被共享、被迫整块 CoW 的帧数（应为 0；扩到上限仍不足才 >0）。
+    pub buffer_detaches: u64,
     /// 最近一次 `draw`/`image` 的耗时（毫秒，仅用于 TERVO_RENDER_PROFILE 日志）。
     pub last_draw_us: f64,
     pub last_image_us: f64,
@@ -394,7 +545,7 @@ impl Renderer {
             cell_h,
             width,
             height,
-            buffer: FrameBuffers::new(width, height),
+            buffer: FrameBuffers::new(width, height, 2),
             fonts,
             glyphs: GlyphCache::default(),
             default_bg,
@@ -411,13 +562,16 @@ impl Renderer {
             last_search: None,
             dirty_flags: vec![false; rows],
             dirty_rows: Vec::with_capacity(rows),
-            prev_changed_rows: Vec::with_capacity(rows),
             prev_images: Vec::new(),
             last_draw_cells: 0,
             last_draw_rows: 0,
             last_draw_full: false,
             last_copied_rows: 0,
             full_redraws: 0,
+            buffer_pool_len: 2,
+            hold_depth: 1,
+            buffer_growths: 0,
+            buffer_detaches: 0,
             last_draw_us: 0.0,
             last_image_us: 0.0,
             last_buffer_detached: false,
@@ -432,7 +586,6 @@ impl Renderer {
         self.buffer.fill_all(self.default_bg);
         self.force_full = true;
         self.drawn_cursor = None;
-        self.prev_changed_rows.clear();
         self.last_selection = None;
         self.last_search = None;
     }
@@ -445,7 +598,6 @@ impl Renderer {
         self.buffer.fill_all(self.default_bg);
         self.force_full = true;
         self.drawn_cursor = None;
-        self.prev_changed_rows.clear();
         self.last_selection = None;
         self.last_search = None;
     }
@@ -551,7 +703,6 @@ impl Renderer {
     pub fn force_full_redraw(&mut self) {
         self.force_full = true;
         self.dirty_rows.clear();
-        self.prev_changed_rows.clear();
         self.last_selection = None;
         self.last_search = None;
     }
@@ -573,10 +724,12 @@ impl Renderer {
         self.rows = rows;
         self.width = cols * self.cell_w;
         self.height = rows * self.cell_h;
-        self.buffer = FrameBuffers::new(self.width, self.height);
+        // 学到了持有深度就按深度+1 分配：resize 之后不用重新爬坡。
+        self.buffer =
+            FrameBuffers::new(self.width, self.height, (self.hold_depth + 1).min(POOL_CAP));
+        self.buffer_pool_len = self.buffer.len();
         self.force_full = true;
         self.drawn_cursor = None;
-        self.prev_changed_rows.clear();
         self.dirty_flags.clear();
         self.dirty_flags.resize(rows, false);
         self.last_selection = None;
@@ -1673,15 +1826,16 @@ impl Renderer {
             self.force_full = false;
             self.full_redraws += 1;
             self.last_draw_full = true;
-            // 全屏重绘不依赖旧缓冲内容；切到另一块，避免与 Slint 当前持有的
-            // Image 共用同一块内存（写前 detach 会多一次整屏 CoW）。
+            // 全屏重绘不依赖旧缓冲内容；切到最久没写过的块，避免与 Slint 当前
+            // 持有的 Image 共用同一块内存（写前 detach 会多一次整屏 CoW）。
             self.buffer.rotate();
             for row in 0..self.rows {
                 self.draw_row(frame, &below_images, &above_images, row);
             }
             self.last_draw_rows = self.rows as u32;
-            self.prev_changed_rows.clear();
-            self.prev_changed_rows.extend(0..self.rows);
+            // 其它块现在整体过期：每个历史槽都记成「全部行」，之后轮换时按整块
+            // 同步一次（多复制是安全侧，少复制才会留残影）。
+            self.buffer.history_after_full(self.rows);
         } else {
             // 行级脏标记：damage + 选区/搜索高亮新旧 span + 光标格。
             self.dirty_flags.clear();
@@ -1735,23 +1889,19 @@ impl Renderer {
                 }
             }
 
-            // 新 buffer 停留在两帧前，缺上一帧的改动：只复制上一帧重绘过的行。
-            // 本帧要重绘的行会被 draw_row 完整覆盖，跳过复制。
-            let prev_active = self.buffer.active;
-            self.buffer.rotate();
-            self.last_copied_rows = self.buffer.copy_rows_from(
-                prev_active,
-                self.cell_h,
-                &self.dirty_flags,
-                &self.prev_changed_rows,
-            );
+            // 目标块停留在「池大小-1」帧前，缺这些帧的改动：先按历史集合把行
+            // 从 active 同步过来（本帧要重绘的行跳过），再只栅格化 damage 行。
+            // 若上一帧观测到 detach（渲染端持有超过池深度的旧帧），先扩池。
+            self.buffer.maybe_grow();
+            let prev_active = self.buffer.rotate();
+            self.last_copied_rows =
+                self.buffer.copy_rows_from(prev_active, self.cell_h, &self.dirty_flags);
             for i in 0..self.dirty_rows.len() {
                 let row = self.dirty_rows[i];
                 self.draw_row(frame, &below_images, &above_images, row);
             }
             self.last_draw_rows = self.dirty_rows.len() as u32;
-            self.prev_changed_rows.clear();
-            self.prev_changed_rows.extend_from_slice(&self.dirty_rows);
+            self.buffer.record_changed_rows(&self.dirty_rows);
         }
 
         if with_cursor {
@@ -1768,6 +1918,15 @@ impl Renderer {
             .collect();
         self.last_draw_us = started.elapsed().as_secs_f64() * 1000.0;
         self.last_buffer_detached = self.buffer.detached;
+        self.buffer_pool_len = self.buffer.len();
+        self.buffer_growths = self.buffer.growths();
+        if self.buffer.detached {
+            self.buffer_detaches += 1;
+            // 写目标时仍被共享 = 渲染端持有帧数 >= 池大小：记住这个深度、
+            // 下一帧扩池，把整块 CoW 换成「多一块 buffer + 每帧按行提交」。
+            self.hold_depth = self.buffer_pool_len.max(1);
+            self.buffer.grow_pending = true;
+        }
     }
 
     /// 把当前双缓冲帧交给 Slint：refcount clone，正常路径无整屏 memcpy。
