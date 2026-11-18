@@ -7600,6 +7600,10 @@ fn close_tab_inner(st: &mut AppState, index: usize) {
         }
     }
     st.ws.tabs.remove(index);
+    eprintln!(
+        "[ws] close tab={index} remaining={} title={tab_title:?}",
+        st.ws.tabs.len()
+    );
     dispatch_plugin_event(
         st,
         plugin_v3::PluginEvent::TabClose,
@@ -9418,7 +9422,15 @@ fn rebuild_tabs(st: &mut AppState) {
     st.ui.set_drop_index(-1);
     st.ui.set_drop_gap(-1);
     st.ui.set_drop_valid(false);
-    st.tab_model.set_vec(tabs);
+    // Tab 标题会被前台 TUI 的 spinner 以 10–20Hz 刷新（Codex 重连、dsh 工作态）。
+    // 行数不变时 set_row_data 原地更新，避免无谓地重建 Repeater 行。
+    if st.tab_model.row_count() == tabs.len() {
+        for (i, tab) in tabs.into_iter().enumerate() {
+            st.tab_model.set_row_data(i, tab);
+        }
+    } else {
+        st.tab_model.set_vec(tabs);
+    }
 }
 
 /// 重绘当前可见的 pane（切换 tab / 布局变化后）。

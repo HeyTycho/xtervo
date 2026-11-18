@@ -545,11 +545,14 @@ enum Ctrl {
         force_full: bool,
     },
     PtyClosed,
-    /// 前台进程组变化（子命令启动/退出）。只有回到 shell（`pgid` 等于
-    /// 直接子进程）时才处理：应用崩溃/被 kill 时没来得及 `CSI < u` 复位
-    /// kitty flags，shell 会把后续按键按 CSI-u 回显成乱码。进入前台命令
-    /// 不复位，避免和该命令首批输出里的 `CSI > flags u` 抢顺序。
-    ForegroundChanged { pgid: i32 },
+    /// 前台进程组变化（子命令启动/退出）。回到 shell（`pgid` 等于直接
+    /// 子进程）或**上一个前台进程组已经消失**时复位：应用崩溃/被 kill 时
+    /// 没来得及 `CSI < u` 复位 kitty flags，shell 会把后续按键按 CSI-u
+    /// 回显成乱码。`prev_dead` 覆盖“应用是中间层 TUI 的子进程”的情况
+    /// （例如 dsh 里跑 codex：codex 退出后前台回到 dsh，而不是 shell）。
+    /// 进入新前台命令（上一个 pgrp 仍活着）不复位，避免和它首批输出里的
+    /// `CSI > flags u` 抢顺序。
+    ForegroundChanged { pgid: i32, prev_dead: bool },
     Shutdown,
 }
 
@@ -581,8 +584,14 @@ fn pump_reader<R: std::io::Read>(
                 if let Some(fd) = fg_fd {
                     let pgrp = unsafe { libc::tcgetpgrp(fd) };
                     if pgrp > 0 && pgrp != last_pgrp {
+                        // 上一个前台进程组是否已经消失：codex/git 之类子进程
+                        // 退出后，tcgetpgrp 会先回到中间层 TUI（不是 shell）。
+                        let prev_dead = last_pgrp > 0
+                            && unsafe { libc::kill(-last_pgrp, 0) } == -1
+                            && std::io::Error::last_os_error().raw_os_error()
+                                == Some(libc::ESRCH);
                         last_pgrp = pgrp;
-                        let _ = ctrl_tx.send(Ctrl::ForegroundChanged { pgid: pgrp });
+                        let _ = ctrl_tx.send(Ctrl::ForegroundChanged { pgid: pgrp, prev_dead });
                     }
                 }
                 // 有界阻塞：背压回内核，绝不丢字节、绝不做 UI 工作。
@@ -3733,12 +3742,12 @@ impl Actor {
                 self.wake.notify();
                 true
             },
-            Ctrl::ForegroundChanged { pgid } => {
-                // 只处理“回到 shell”：先把队列里子进程最后的输出喂完
-                //（可能包含它延迟发出的 `CSI < u`/set），再复位，避免
-                //“先复位后又被最后一块输出设回 7”。进入前台命令不复位，
+            Ctrl::ForegroundChanged { pgid, prev_dead } => {
+                // 先把队列里子进程最后的输出喂完（可能包含它延迟发出的
+                // `CSI < u`/set），再复位，避免“先复位后又被最后一块输出
+                // 设回 7”。进入新前台命令（上一个 pgrp 仍活着）不复位，
                 // 否则可能与新应用首批输出里的 `CSI > flags u` 抢顺序。
-                if pgid == self.shell_pgid {
+                if pgid == self.shell_pgid || prev_dead {
                     while let Ok(bytes) = self.pty_rx.try_recv() {
                         self.feed(&bytes);
                     }

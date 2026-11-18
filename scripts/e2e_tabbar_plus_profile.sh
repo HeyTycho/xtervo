@@ -157,4 +157,33 @@ sleep 0.8
 grep -Fq '[profile] open "beta"' "$OUT/app.log" || fail "键盘导航没有打开 beta"
 shot 05-profile-beta-opened
 
-echo "PASS: TabBar +/>_ 旧交互（shots: $OUT/shots）"
+echo "== 4. 3 Tab + 标题 spinner：点 Tab 必须切换，不能误关 =="
+# 当前 2 个 Tab（原始 + beta）；再开一个，spinner 跑在第三个 Tab 里。
+key t --ctrl
+sleep 1.0
+grep -Fq '[ws] new tab: tabs=3' "$OUT/app.log" || fail "没有到 3 个 Tab"
+SPIN="$OUT/home/spin.py"
+cat >"$SPIN" <<'PY'
+import sys, time
+i = 0
+while True:
+    i += 1
+    sys.stdout.write("\033]0;spin-%s\007" % ("A" if i % 2 else "B"))
+    sys.stdout.flush()
+    time.sleep(0.05)
+PY
+key "python3 $SPIN"
+sleep 0.3
+key --key enter
+sleep 0.8
+grep -Fq 'kind=title raw="spin-' "$OUT/app.log" || fail "标题 spinner 没跑起来"
+# tab0 标题 "Terminal 1"：84–99px 宽时 x=100 都属于 Tab 本体，不是 close。
+click 100 16 0.8
+grep -Fq '[ws] active tab=0' "$OUT/app.log" || fail "标题 spinner 时点 Tab 没有切换（疑似点到 close）"
+shot 06-spinner-tab0-active
+# tab0 标题变成 "sh" 后宽 84px，close 在 120–140；x=138 命中关闭按钮。
+click 138 16 0.8
+grep -Fq '[ws] close tab=0' "$OUT/app.log" || fail "标题 spinner 时点 close 没有关闭 Tab"
+shot 07-spinner-tab0-closed
+
+echo "PASS: TabBar +/>_ 旧交互 + 标题 spinner 下点击（shots: $OUT/shots）"

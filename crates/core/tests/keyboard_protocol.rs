@@ -5,6 +5,7 @@
 //! 断言方式与 `osc52.rs` 一致：子进程用 `dd` 把 PTY 输入落盘，测试读文件；
 //! 不依赖屏幕解析，也不伪造数据。
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -241,4 +242,97 @@ fn foreground_command_exit_resets_stale_kitty_flags() {
         }
         std::thread::sleep(Duration::from_millis(5));
     }
+}
+
+/// 应用是“中间层 TUI 的子进程”（例如 dsh 里跑 codex）时，子进程退出后
+/// 前台回到中间层 TUI，而不是 shell。旧逻辑只认 `pgid == shell_pgid`，
+/// 会把 codex 留下的 flags 一直带到 dsh 里，dsh 收到 CSI-u 后显示成
+/// `9;5:3u`/`7;129u` 乱码。现在“上一个前台 pgrp 已消失”也要复位。
+#[test]
+fn intermediate_tui_child_exit_resets_stale_kitty_flags() {
+    let dir = out_dir("intermediate");
+    let script = dir.join("tui.py");
+    let mut f = std::fs::File::create(&script).unwrap();
+    f.write_all(
+        br#"import os, signal, sys, time
+signal.signal(signal.SIGTTOU, signal.SIG_IGN)
+marker = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), "parent.ready")
+child = os.fork()
+if child == 0:
+    os.setpgid(0, 0)
+    try:
+        os.tcsetpgrp(0, os.getpgrp())
+    except OSError:
+        pass
+    os.write(1, b"\x1b[>7u")
+    sys.stdout.flush()
+    time.sleep(0.3)
+    os._exit(0)
+os.waitpid(child, 0)
+try:
+    os.tcsetpgrp(0, os.getpgrp())
+except OSError:
+    pass
+# Keep the intermediate TUI in the foreground while the test observes reset.
+with open(marker, "w") as fh:
+    fh.write("1" if os.tcgetpgrp(0) == os.getpgrp() else "0")
+sys.stdout.write("intermediate-done\n")
+sys.stdout.flush()
+time.sleep(5)
+"#,
+    )
+    .unwrap();
+    drop(f);
+
+    let handle = spawn(PaneConfig {
+        cols: 80,
+        rows: 24,
+        scrollback: 200,
+        keyboard_protocol: true,
+        shell: Some("/bin/sh".to_string()),
+        ..PaneConfig::default()
+    })
+    .expect("spawn interactive shell");
+    std::thread::sleep(Duration::from_millis(300));
+
+    handle.input(format!("python3 {}\n", script.display()).as_bytes());
+
+    let start = Instant::now();
+    while handle.keyboard_flags().bits() != 7 {
+        if start.elapsed() > Duration::from_secs(5) {
+            panic!(
+                "未观察到中间层子进程设置的 flags=7，当前 {}",
+                handle.keyboard_flags().bits()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    // 等中间层 TUI 重新拿到前台（它还会再活 5s），确认不是“shell 已经抢回”。
+    let marker = dir.join("parent.ready");
+    let start = Instant::now();
+    while !marker.exists() {
+        if start.elapsed() > Duration::from_secs(5) {
+            panic!("中间层 TUI 没有重新拿到前台");
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(
+        std::fs::read_to_string(&marker).unwrap_or_default(),
+        "1",
+        "中间层 TUI 没有重新拿到前台，测试场景无效"
+    );
+
+    // 中间层仍在前台且还活着：必须在 2s 内复位，不能等 shell 回来。
+    let start = Instant::now();
+    while handle.keyboard_flags().bits() != 0 {
+        if start.elapsed() > Duration::from_secs(2) {
+            panic!(
+                "中间层 TUI 仍在前台时 flags 未复位（当前 {}）",
+                handle.keyboard_flags().bits()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }

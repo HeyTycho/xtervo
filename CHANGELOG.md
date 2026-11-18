@@ -6,6 +6,21 @@ Tervo 的版本与 tag 规则见 `docs/RELEASING.md`。
 
 ### Fixed
 
+- 标题 spinner（Codex 重连、dsh 工作态）期间 Tab 切不动/误关：`tab-box.width`
+  依赖 `tab-area.preferred-width`，而后者又受 width 约束，形成循环绑定；标题
+  10–20Hz 刷新时宽度会从自然值一级级缩到 52px 下限，close 按钮滑到 Tab 中间，
+  点 Tab 就变成关 Tab。现在用独立 `Text` 量标题自然宽度、下限提到 84px，并在
+  行数不变时 `set_row_data` 原地更新 Tab 模型（避免 Repeater 反复重建）。
+  新增 e2e：3 Tab + 标题 spinner 下点击 Tab 必须切换、点 close 必须关闭
+  （`crates/app/ui/main.slint`、`crates/app/src/main.rs`、
+  `scripts/e2e_tabbar_plus_profile.sh`）。
+- 中间层 TUI 的子进程退出后键盘 flags 未复位：codex 在 dsh 等 TUI 里运行，
+  codex 退出/崩溃后前台进程组回到 dsh 而不是 shell；旧逻辑只认
+  `pgid == shell_pgid`，残留的 kitty/modifyOtherKeys 会让 dsh 收到
+  `9;5:3u`/`7;129u` 并显示成乱码。现在上一个前台 pgrp 已消失（ESRCH）时
+  也复位；进入新命令（旧 pgrp 仍活着）保持原行为，避免和新应用首批
+  `CSI > flags u` 抢顺序（`crates/core/src/pane.rs`，PTY 回归测试
+  `intermediate_tui_child_exit_resets_stale_kitty_flags`）。
 - TabBar 恢复旧交互：`+` 直接新建默认 Tab（不再弹 Profile 下拉）；`>_` 只做
   Profile 选择，菜单去掉搜索框，键盘 ↑↓/Enter/Esc 保留；菜单不再抢
   FocusScope，关闭后终端输入立即可用。11-17 的 LOCAL-004 把 `+` 改成下拉、

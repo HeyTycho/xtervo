@@ -2248,8 +2248,9 @@ export component MainWindow inherits Window {
     property <length> active-tab-width: 0px;
     property <bool> active-tab-last: false;
     // Tab 自动收缩：把扣除左侧搜索/品牌、固定 +/Profile、窗口按钮后的宽度均分给 Tab。
-    // 52px 是可读下限（标题至少保留几个字符）；再窄就横向滚动，并把活动 Tab 滚进视口。
-    property <length> tab-width-cap: Math.max(52px, Math.min(180px,
+    // 84px 是可读下限（标题至少保留几个字符，close 不挤到中间）；再窄就横向滚动，
+    // 并把活动 Tab 滚进视口。
+    property <length> tab-width-cap: Math.max(84px, Math.min(180px,
         (root.width - 266px - 4px * root.tabs.length) / Math.max(1, root.tabs.length)));
 
     Rectangle {
@@ -2412,9 +2413,24 @@ export component MainWindow inherits Window {
                     tab-box := Rectangle {
                         x: parent.insert-gap;
                         height: parent.height;
+                        property <bool> is-active: tab.active
+                            && !(root.settings-open && !root.settings-legacy);
+                        // 标题自然宽度必须用独立 Text 量：`tab-area.preferred-width`
+                        // 受 tab-box.width 约束，和 width 形成循环依赖。标题 spinner
+                        // 每次刷新都会重绑一次，宽度会从自然值一级级缩到 52px 下限，
+                        // close 按钮随之滑到 Tab 中间——点 Tab 变成关 Tab。
+                        title-measure := Text {
+                            visible: false;
+                            text: tab.title;
+                            font-size: root.tab-width-cap < 60px ? 10px : 12px;
+                            font-weight: is-active ? 600 : 400;
+                        }
                         // 自动收缩：少量 Tab 按标题宽度，多 Tab 均分可用宽度；
-                        // 52px 下限后横向滚动（活动 Tab 会被滚进视口）。
-                        width: Math.max(52px, Math.min(root.tab-width-cap, tab-area.preferred-width + 36px));
+                        // 84px 下限后横向滚动（活动 Tab 会被滚进视口）。
+                        // 下限不能再低：52px 时 close 占掉右侧 20px，标题一短
+                        // （shell 把标题设成 "sh"）Tab 就缩到 52px，close 正好
+                        // 落在 Tab 中间，点击切 Tab 变成关 Tab。
+                        width: Math.max(84px, Math.min(root.tab-width-cap, title-measure.preferred-width + 36px));
                         animate width { duration: 140ms; easing: ease-out; }
                         border-radius: 6px;
                         background: is-active
@@ -2424,8 +2440,6 @@ export component MainWindow inherits Window {
                         border-width: 1px;
                         border-color: is-active ? Palette.colors.border : transparent;
 
-                        property <bool> is-active: tab.active
-                            && !(root.settings-open && !root.settings-legacy);
                         property <bool> show-status: tab.attention || tab.completed
                             || tab.failed || tab.background
                             || tab.connection-state >= 2
