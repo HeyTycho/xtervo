@@ -1440,19 +1440,22 @@ export component MainWindow inherits Window {
     property <length> menu-width: Math.max(180px, Math.min(280px, root.width - 16px));
     in property <length> menu-content-h: 438px;
     property <length> menu-view-h: Math.max(80px,
-        Math.min(root.menu-content-h, root.height - root.tabbar-height - 12px));
+        Math.min(root.menu-content-h,
+            root.height - root.chrome-top - root.chrome-bottom - 12px));
     // 锚点同原生菜单：优先右/下，放不下翻到左/上，再放不下才夹进窗口。
     property <length> menu-left: root.menu-x + root.menu-width + 8px <= root.width
         ? root.menu-x
         : (root.menu-x - root.menu-width >= 8px
             ? root.menu-x - root.menu-width
             : Math.max(8px, Math.min(root.menu-x, root.width - root.menu-width - 8px)));
-    property <length> menu-top: root.menu-y + root.menu-view-h + 8px <= root.height - root.tabbar-height
+    property <length> menu-top: root.menu-y + root.menu-view-h + 8px
+        <= root.height - root.chrome-top - root.chrome-bottom
         ? root.menu-y
         : (root.menu-y - root.menu-view-h >= 0px
             ? root.menu-y - root.menu-view-h
             : Math.max(6px,
-                Math.min(root.menu-y, root.height - root.tabbar-height - root.menu-view-h - 6px)));
+                Math.min(root.menu-y,
+                    root.height - root.chrome-top - root.chrome-bottom - root.menu-view-h - 6px)));
 
     callback key-input(string, bool, bool, bool, bool, bool);
     // press/release 配对：只有 kitty REPORT_EVENT_TYPES 且 press 进过 PTY 才回放。
@@ -1532,6 +1535,8 @@ export component MainWindow inherits Window {
     callback language-changed(string);
     callback tabbar-context(length, length);
     callback tabbar-menu-action(int);
+    /// 设置页四向按钮：参数是 "top" | "bottom" | "left" | "right"。
+    callback tabbar-position-set(string);
     /// 点击插件状态栏：Rust 执行状态项声明的命令（无 command 时忽略）。
     callback plugin-status-clicked();
     in-out property <bool> tabmenu-open: false;
@@ -1843,6 +1848,8 @@ export component MainWindow inherits Window {
     // 单个 Tab 的右键菜单（窗口坐标）
     in-out property <bool> tabctx-open: false;
     in-out property <length> tabctx-x: 0px;
+    /// 竖排 Tab 的右键锚点 y（窗口坐标）；上/下模式不用它。
+    in-out property <length> tabctx-y: 0px;
     in-out property <int> tabctx-index: -1;
     property <bool> tabctx-pinned: root.tabctx-index >= 0 && root.tabctx-index < root.tabs.length
         ? root.tabs[root.tabctx-index].pinned
@@ -2216,9 +2223,31 @@ export component MainWindow inherits Window {
     changed width => { root.resized(root.width, root.height); }
     changed height => { root.resized(root.width, root.height); }
 
-    // TabBar 位置可切（上/下）：用绝对定位而不是 VerticalLayout，
-    // 否则元素的布局顺序没法在运行时反转。
-    in-out property <bool> tabbar-bottom: false;
+    // TabBar 位置（UI-WIN-007）：上/下/左/右，四向与上游 Tabby
+    // `appearance.tabsLocation` 一致。左/右改为竖排整列，内容区横向让位。
+    // 用绝对定位而不是 VerticalLayout，否则元素顺序没法在运行时反转。
+    in-out property <string> tabbar-position: "top";
+    property <bool> tabbar-top: root.tabbar-position == "top";
+    property <bool> tabbar-bottom: root.tabbar-position == "bottom";
+    property <bool> tabbar-left: root.tabbar-position == "left";
+    property <bool> tabbar-right: root.tabbar-position == "right";
+    property <bool> tabbar-vertical: root.tabbar-left || root.tabbar-right;
+    // 竖排 TabBar 宽度；必须与 Rust `TABBAR_W` 保持一致。
+    in property <length> tabbar-width: 200px;
+    // 四向 chrome（窗口内被 TabBar 占用的边）与内容区矩形。
+    // 侧栏在竖排模式下紧贴 TabBar 内侧，所以内容区 x 要把两者都算进去。
+    property <length> chrome-left: root.tabbar-left ? root.tabbar-width : 0px;
+    property <length> chrome-right: root.tabbar-right ? root.tabbar-width : 0px;
+    property <length> chrome-top: root.tabbar-top ? root.tabbar-height : 0px;
+    property <length> chrome-bottom: root.tabbar-bottom ? root.tabbar-height : 0px;
+    property <length> content-x: root.chrome-left
+        + (root.sidebar-visible ? root.sidebar-width : 0px);
+    property <length> content-y: root.chrome-top;
+    property <length> content-w: Math.max(1px,
+        root.width - root.chrome-left - root.chrome-right
+            - (root.sidebar-visible ? root.sidebar-width : 0px));
+    property <length> content-h: Math.max(1px,
+        root.height - root.chrome-top - root.chrome-bottom);
     // 最近一次活动 Tab 在滚动内容中的位置（由 Tab 自己上报）。
     property <length> active-tab-left: 0px;
     property <length> active-tab-width: 0px;
@@ -2254,12 +2283,17 @@ export component MainWindow inherits Window {
 
         // ---------------- 标签栏 ----------------
         Rectangle {
+            x: root.tabbar-left ? 0px
+                : (root.tabbar-right ? root.width - root.tabbar-width : 0px);
             y: root.tabbar-bottom ? root.height - root.tabbar-height : 0px;
-            width: 100%;
-            height: root.tabbar-height;
+            width: root.tabbar-vertical ? root.tabbar-width : parent.width;
+            height: root.tabbar-vertical ? parent.height : root.tabbar-height;
             clip: true;
-            // 极轻的上下渐变 + 顶部高光，避免整条纯色的“塑料感”
-            background: @linear-gradient(180deg, Palette.colors.surface 0%, Palette.colors.bg 100%);
+            // 极轻的渐变 + 高光，避免整条纯色的“塑料感”。
+            // 竖排时渐变方向跟着转 90°。
+            background: root.tabbar-vertical
+                ? @linear-gradient(90deg, Palette.colors.surface 0%, Palette.colors.bg 100%)
+                : @linear-gradient(180deg, Palette.colors.surface 0%, Palette.colors.bg 100%);
             horizontal-stretch: 0;
 
             Rectangle {
@@ -2269,16 +2303,27 @@ export component MainWindow inherits Window {
                 background: #ffffff0d;
             }
 
-            // 底部分隔线
+            // 底部分隔线（上/下模式）
             Rectangle {
+                visible: !root.tabbar-vertical;
                 y: parent.height - 1px;
                 width: 100%;
                 height: 1px;
                 background: Palette.colors.border;
             }
 
-            // 品牌图标
+            // 竖排分隔线：TabBar 与内容区之间
+            Rectangle {
+                visible: root.tabbar-vertical;
+                x: root.tabbar-left ? parent.width - 1px : 0px;
+                width: 1px;
+                height: 100%;
+                background: Palette.colors.border;
+            }
+
+            // 品牌图标（上/下模式；竖排模式有独立表头）
             Image {
+                visible: !root.tabbar-vertical;
                 x: 32px;
                 y: 6px;
                 width: 18px;
@@ -2287,8 +2332,9 @@ export component MainWindow inherits Window {
                 image-fit: contain;
             }
 
-            // 没有原生标题栏：整条标签栏空白处可拖动窗口
+            // 没有原生标题栏：整条标签栏空白处可拖动窗口（上/下模式）
             WindowMoveArea {
+                visible: !root.tabbar-vertical;
                 width: 100%;
                 height: 100%;
 
@@ -2314,6 +2360,7 @@ export component MainWindow inherits Window {
             // Tab 条放进 Flickable：视口固定，内容再宽也不会把窗口的 preferred/min 宽度撑大。
             // 支持拖拽和滚轮横向滚动；活动 Tab 变化/窗口变化时自动滚进视口。
             tab-flick := Flickable {
+                visible: !root.tabbar-vertical;
                 // 左侧 58px 留给固定的搜索/品牌图标；右侧再留 56px 给固定的
                 // +/Profile，滚动内容只含 Tab，活动 Tab 居中时按钮仍在视口内。
                 x: 58px;
@@ -2758,6 +2805,7 @@ export component MainWindow inherits Window {
             // `+` 与 Profile 按钮固定在 TabBar 右侧，不随 Tab 横向滚动：
             // 活动 Tab 居中/滚到中间时也不会把按钮挤出视口（UI-TAB-013）。
             Rectangle {
+                visible: !root.tabbar-vertical;
                 x: parent.width - 196px;
                 y: 4px;
                 width: 24px;
@@ -2792,6 +2840,7 @@ export component MainWindow inherits Window {
 
             // Profile 选择器：独立图标（Tabby 风格），同样固定在 + 右侧。
             Rectangle {
+                visible: !root.tabbar-vertical;
                 x: parent.width - 168px;
                 y: 4px;
                 width: 26px;
@@ -2828,7 +2877,8 @@ export component MainWindow inherits Window {
                 property <length> bar-w: Math.min(tab-flick.width - 4px,
                     Math.max(18px,
                         tab-flick.width * tab-flick.width / Math.max(1px, tab-flick.content-width)));
-                visible: tab-flick.content-width > tab-flick.width + 1px;
+                visible: !root.tabbar-vertical
+                    && tab-flick.content-width > tab-flick.width + 1px;
                 x: 59px + (-tab-flick.content-x)
                     / Math.max(1px, tab-flick.content-width - tab-flick.width)
                     * Math.max(0px, tab-flick.width - self.bar-w - 2px);
@@ -2841,6 +2891,7 @@ export component MainWindow inherits Window {
 
         // 最左侧 Tab 搜索按钮（Chrome 风格）：搜索当前窗口所有 Tab
         Rectangle {
+            visible: !root.tabbar-vertical;
             x: 4px;
             y: 4px;
             width: 24px;
@@ -2888,6 +2939,7 @@ export component MainWindow inherits Window {
 
         // 设置
         win-gear := TouchArea {
+            visible: !root.tabbar-vertical;
             x: parent.width - 132px;
             y: 4px;
             width: 28px;
@@ -2922,6 +2974,7 @@ export component MainWindow inherits Window {
 
         // 窗口按钮（无边框后必须自带）
         win-min := TouchArea {
+            visible: !root.tabbar-vertical;
             x: parent.width - 100px;
             y: 4px;
             width: 28px;
@@ -2946,6 +2999,7 @@ export component MainWindow inherits Window {
         }
 
         win-max := TouchArea {
+            visible: !root.tabbar-vertical;
             x: parent.width - 68px;
             y: 4px;
             width: 28px;
@@ -2970,6 +3024,7 @@ export component MainWindow inherits Window {
         }
 
         win-close := TouchArea {
+            visible: !root.tabbar-vertical;
             x: parent.width - 36px;
             y: 4px;
             width: 28px;
@@ -2993,6 +3048,505 @@ export component MainWindow inherits Window {
                 }
             }
         }
+
+            // ---------------- 竖排 TabBar（左/右，UI-WIN-007） ----------------
+            // 布局：顶部品牌/搜索固定 → 中间 Tab 列 Flickable 纵向滚动 →
+            // 底部 +/Profile/设置/窗口按钮固定。上/下模式的控件全部隐藏，
+            // 两套布局互斥，所以不会同时抢鼠标事件。
+            if root.tabbar-vertical : Rectangle {
+                x: 0px;
+                y: 0px;
+                width: 100%;
+                height: 100%;
+                background: transparent;
+
+                // 顶部空白处可拖动窗口；右键打开标签栏菜单（置顶/新窗口等）。
+                WindowMoveArea {
+                    x: 0px;
+                    y: 0px;
+                    width: 100%;
+                    height: 42px;
+                }
+                vtab-header-hit := TouchArea {
+                    x: 30px;
+                    y: 0px;
+                    width: parent.width - 60px;
+                    height: 42px;
+                    pointer-event(event) => {
+                        if (event.kind == PointerEventKind.up
+                            && event.button == PointerEventButton.right) {
+                            root.tabbar-context(
+                                root.tabbar-left
+                                    ? root.tabbar-width + 8px
+                                    : root.width - root.tabbar-width + 8px,
+                                Math.max(8px, Math.min(
+                                    self.absolute-position.y + self.mouse-y,
+                                    root.height - 404px)));
+                            return EventResult.accept;
+                        }
+                        EventResult.reject
+                    }
+                }
+
+                // 品牌图标
+                Image {
+                    x: 14px;
+                    y: 12px;
+                    width: 18px;
+                    height: 18px;
+                    source: @image-url("../../../assets/icon-small.png");
+                    image-fit: contain;
+                }
+
+                // 竖排模式也保留 Tab 搜索（Chrome 风格放大镜）
+                Rectangle {
+                    x: parent.width - 34px;
+                    y: 9px;
+                    width: 24px;
+                    height: 24px;
+                    border-radius: 5px;
+                    background: vtabsearch-btn.has-hover
+                        ? Palette.colors.hover : Palette.colors.raise;
+
+                    vtabsearch-btn := TouchArea {
+                        clicked => {
+                            root.tabsearch-query = "";
+                            root.tabsearch-open = true;
+                            root.tabsearch-open-requested();
+                        }
+                    }
+                    Rectangle {
+                        x: 6px;
+                        y: 5px;
+                        width: 10px;
+                        height: 10px;
+                        border-radius: 5px;
+                        border-width: 1.5px;
+                        border-color: Palette.colors.text;
+                        background: transparent;
+                    }
+                    Path {
+                        x: 15px;
+                        y: 14px;
+                        width: 7px;
+                        height: 7px;
+                        commands: "M 0 0 L 5 5";
+                        stroke: Palette.colors.text;
+                        stroke-width: 1.5px;
+                        stroke-line-cap: round;
+                    }
+                }
+
+                // 中间 Tab 列：只滚动 Tab，不滚动固定按钮。
+                vtab-scroll := Rectangle {
+                    x: 6px;
+                    y: 44px;
+                    width: parent.width - 12px;
+                    height: parent.height - 90px;
+                    clip: true;
+                    background: transparent;
+
+                    vtab-flick := Flickable {
+                        width: 100%;
+                        height: 100%;
+                        interactive: true;
+                        content-width: parent.width;
+                        content-height: vtab-strip.preferred-height;
+
+                        vtab-strip := VerticalLayout {
+                            width: parent.width;
+                            spacing: 2px;
+                            alignment: start;
+
+                            for tab[i] in root.tabs : Rectangle {
+                                height: 30px;
+                                width: vtab-strip.width;
+                                border-radius: 5px;
+                                background: vtab-active
+                                    ? Palette.colors.bg
+                                    : (vtab-hit.has-hover
+                                        ? Palette.colors.raise : transparent);
+                                border-width: 1px;
+                                border-color: vtab-active
+                                    ? Palette.colors.border : transparent;
+
+                                property <bool> vtab-active: tab.active
+                                    && !(root.settings-open && !root.settings-legacy);
+                                property <bool> vtab-status: tab.attention || tab.completed
+                                    || tab.failed || tab.background
+                                    || tab.progress-state == 2 || tab.progress-label != "";
+                                property <string> vtab-glyph: tab.attention ? "●"
+                                    : (tab.failed || tab.progress-state == 2 ? "✕"
+                                    : (tab.background ? "▸"
+                                    : (tab.completed && tab.progress-state == 0 ? "✓" : "")));
+
+                                // 活动 Tab 自动滚进视口（新建/切换后不必手动滚）。
+                                // active 变化和布局 y 变化都要扶正：新建 Tab 时
+                                // active 先于 VerticalLayout 算出行位置触发。
+                                changed vtab-active => {
+                                    if (vtab-active) {
+                                        let top = -vtab-flick.content-y;
+                                        // 注意用 self.y（行在内容里的位置），
+                                        // parent 是 VerticalLayout，不是本行。
+                                        if (self.y < top) {
+                                            vtab-flick.content-y = -self.y;
+                                        } else if (self.y + self.height
+                                            > top + vtab-flick.height) {
+                                            vtab-flick.content-y = -(self.y
+                                                + self.height - vtab-flick.height);
+                                        }
+                                    }
+                                }
+                                changed y => {
+                                    if (vtab-active) {
+                                        let top = -vtab-flick.content-y;
+                                        if (self.y < top) {
+                                            vtab-flick.content-y = -self.y;
+                                        } else if (self.y + self.height
+                                            > top + vtab-flick.height) {
+                                            vtab-flick.content-y = -(self.y
+                                                + self.height - vtab-flick.height);
+                                        }
+                                    }
+                                }
+
+                                // 激活态左侧强调线
+                                Rectangle {
+                                    visible: vtab-active;
+                                    x: 0px;
+                                    y: 5px;
+                                    width: 2px;
+                                    height: parent.height - 10px;
+                                    border-radius: 1px;
+                                    background: Palette.colors.accent;
+                                }
+
+                                if tab.pinned : PinIcon {
+                                    x: 8px;
+                                    y: 10px;
+                                    tint: vtab-active
+                                        ? Palette.colors.accent : Palette.colors.muted;
+                                }
+
+                                // 状态字形（●/✕/▸/✓）；标题相应右移。
+                                Text {
+                                    visible: vtab-status && vtab-glyph != "";
+                                    x: tab.pinned ? 24px : 8px;
+                                    y: 0px;
+                                    width: 12px;
+                                    height: 30px;
+                                    text: vtab-glyph;
+                                    color: (tab.failed || tab.progress-state == 2)
+                                        ? Palette.colors.danger
+                                        : (tab.background
+                                            ? Palette.colors.text : Palette.colors.accent);
+                                    font-size: 9px;
+                                    font-weight: 700;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+
+                                vtab-label := Text {
+                                    x: (tab.pinned ? 24px : 8px)
+                                        + (vtab-status ? 14px : 0px);
+                                    width: parent.width - self.x - 28px;
+                                    height: parent.height;
+                                    text: tab.title;
+                                    color: vtab-active
+                                        ? Palette.colors.text : Palette.colors.muted;
+                                    font-size: 12px;
+                                    font-weight: vtab-active ? 600 : 400;
+                                    overflow: elide;
+                                    vertical-alignment: center;
+                                }
+
+                                // 关闭按钮：悬停或激活时显示，固定在行尾。
+                                vtab-close := TouchArea {
+                                    visible: vtab-hit.has-hover || vtab-active;
+                                    x: parent.width - 24px;
+                                    y: 3px;
+                                    width: 20px;
+                                    height: 24px;
+                                    clicked => { root.tab-closed(i); }
+
+                                    Rectangle {
+                                        x: 1px;
+                                        y: 3px;
+                                        width: 18px;
+                                        height: 18px;
+                                        border-radius: 9px;
+                                        background: vtab-close.has-hover
+                                            ? Palette.colors.hover : transparent;
+                                    }
+                                    Text {
+                                        text: "×";
+                                        color: vtab-close.has-hover
+                                            ? Palette.colors.danger : Palette.colors.muted;
+                                        font-size: 14px;
+                                        width: 100%;
+                                        height: 100%;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                vtab-hit := TouchArea {
+                                    clicked => {
+                                        root.tabctx-open = false;
+                                        if (root.settings-open) {
+                                            root.suspend-settings();
+                                        }
+                                        root.tab-clicked(i);
+                                    }
+                                    double-clicked => { root.tab-rename(i); }
+                                    pointer-event(event) => {
+                                        if (event.kind == PointerEventKind.down
+                                            && event.button == PointerEventButton.right) {
+                                            root.tabctx-y = self.absolute-position.y + self.mouse-y;
+                                            root.tab-context(i,
+                                                root.tabbar-left
+                                                    ? root.tabbar-width + 6px
+                                                    : root.width - root.tabbar-width - 196px);
+                                            return EventResult.accept;
+                                        }
+                                        EventResult.reject
+                                    }
+                                }
+                            }
+
+                            // Settings Tab：与上/下模式一致，是可关闭的固定入口。
+                            if root.settings-tab-open && !root.settings-legacy : Rectangle {
+                                height: 30px;
+                                width: vtab-strip.width;
+                                border-radius: 5px;
+                                background: root.settings-open
+                                    ? Palette.colors.bg : Palette.colors.raise;
+                                border-width: 1px;
+                                border-color: root.settings-open
+                                    ? Palette.colors.border : transparent;
+
+                                Rectangle {
+                                    visible: root.settings-open;
+                                    x: 0px;
+                                    y: 5px;
+                                    width: 2px;
+                                    height: parent.height - 10px;
+                                    border-radius: 1px;
+                                    background: Palette.colors.accent;
+                                }
+                                SettingsIconView {
+                                    x: 8px;
+                                    y: 7px;
+                                    kind: SettingsIconKind.gear;
+                                    tint: root.settings-open
+                                        ? Palette.colors.accent : Palette.colors.muted;
+                                }
+                                Text {
+                                    x: 28px;
+                                    width: parent.width - 52px;
+                                    height: parent.height;
+                                    text: Lang.t("Settings", "设置");
+                                    color: root.settings-open
+                                        ? Palette.colors.text : Palette.colors.muted;
+                                    font-size: 12px;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                }
+                                TouchArea {
+                                    x: 0px;
+                                    y: 0px;
+                                    width: parent.width - 24px;
+                                    height: parent.height;
+                                    clicked => { root.resume-settings(); }
+                                }
+                                vtab-settings-close := TouchArea {
+                                    x: parent.width - 24px;
+                                    y: 3px;
+                                    width: 20px;
+                                    height: 24px;
+                                    clicked => { root.close-settings(); }
+                                    Text {
+                                        text: "×";
+                                        color: vtab-settings-close.has-hover
+                                            ? Palette.colors.danger : Palette.colors.muted;
+                                        font-size: 14px;
+                                        width: 100%;
+                                        height: 100%;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 底部固定控制区：+ / Profile / 设置 / 最小化 / 最大化 / 关闭。
+                Rectangle {
+                    y: parent.height - 44px;
+                    width: 100%;
+                    height: 1px;
+                    background: Palette.colors.border;
+                }
+
+                Rectangle {
+                    x: 6px;
+                    y: parent.height - 38px;
+                    width: 28px;
+                    height: 28px;
+                    border-radius: 5px;
+                    background: vtab-new-hit.has-hover
+                        ? Palette.colors.raise : transparent;
+                    vtab-new-hit := TouchArea {
+                        clicked => {
+                            if (root.settings-open) {
+                                root.suspend-settings();
+                            }
+                            root.profilemenu-x = self.absolute-position.x;
+                            root.profilemenu-show-new-tab = true;
+                            root.profilemenu-open = true;
+                            root.profilemenu-menu();
+                        }
+                    }
+                    Text {
+                        text: "+";
+                        color: Palette.colors.text;
+                        font-size: 16px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        width: 100%;
+                        height: 100%;
+                    }
+                }
+
+                Rectangle {
+                    x: 36px;
+                    y: parent.height - 38px;
+                    width: 28px;
+                    height: 28px;
+                    border-radius: 5px;
+                    background: vtab-profile-hit.has-hover
+                        ? Palette.colors.raise : transparent;
+                    vtab-profile-hit := TouchArea {
+                        clicked => {
+                            if (root.settings-open) {
+                                root.suspend-settings();
+                            }
+                            root.profilemenu-x = self.absolute-position.x;
+                            root.profilemenu-show-new-tab = false;
+                            root.profilemenu-open = true;
+                            root.profilemenu-menu();
+                        }
+                    }
+                    Text {
+                        text: ">_";
+                        color: Palette.colors.subtext;
+                        font-size: 11px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        width: 100%;
+                        height: 100%;
+                    }
+                }
+
+                Rectangle {
+                    x: 66px;
+                    y: parent.height - 38px;
+                    width: 28px;
+                    height: 28px;
+                    border-radius: 5px;
+                    background: vtab-gear-hit.has-hover
+                        ? Palette.colors.hover : Palette.colors.raise;
+                    vtab-gear-hit := TouchArea {
+                        clicked => {
+                            if (root.settings-open) {
+                                root.close-settings();
+                            } else if (root.settings-tab-open) {
+                                root.resume-settings();
+                            } else {
+                                root.settings-open = true;
+                                root.settings-tab-open = true;
+                                root.settings-toggled(true);
+                            }
+                        }
+                    }
+                    SettingsIconView {
+                        x: 6px;
+                        y: 6px;
+                        kind: SettingsIconKind.gear;
+                        tint: root.settings-open
+                            ? Palette.colors.accent : Palette.colors.text;
+                    }
+                }
+
+                Rectangle {
+                    x: 102px;
+                    y: parent.height - 38px;
+                    width: 28px;
+                    height: 28px;
+                    border-radius: 5px;
+                    background: vtab-min-hit.has-hover
+                        ? Palette.colors.hover : Palette.colors.raise;
+                    vtab-min-hit := TouchArea {
+                        clicked => { root.minimize-window(); }
+                    }
+                    Text {
+                        text: "─";
+                        color: Palette.colors.text;
+                        font-size: 12px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        width: 100%;
+                        height: 100%;
+                    }
+                }
+
+                Rectangle {
+                    x: 130px;
+                    y: parent.height - 38px;
+                    width: 28px;
+                    height: 28px;
+                    border-radius: 5px;
+                    background: vtab-max-hit.has-hover
+                        ? Palette.colors.hover : Palette.colors.raise;
+                    vtab-max-hit := TouchArea {
+                        clicked => { root.toggle-maximize(); }
+                    }
+                    Text {
+                        text: root.window-maximized ? "❐" : "□";
+                        color: Palette.colors.text;
+                        font-size: 11px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        width: 100%;
+                        height: 100%;
+                    }
+                }
+
+                Rectangle {
+                    x: 158px;
+                    y: parent.height - 38px;
+                    width: 28px;
+                    height: 28px;
+                    border-radius: 5px;
+                    background: vtab-close-hit.has-hover
+                        ? Palette.colors.danger : Palette.colors.raise;
+                    vtab-close-hit := TouchArea {
+                        clicked => { root.close-window(); }
+                    }
+                    Text {
+                        text: "✕";
+                        color: vtab-close-hit.has-hover
+                            ? Palette.colors.bg : Palette.colors.text;
+                        font-size: 12px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        width: 100%;
+                        height: 100%;
+                    }
+                }
+            }
         }
 
         // Tab 状态 tooltip：悬停 Tab 时说明状态字形含义；离开 Tab 即隐藏。
@@ -3000,9 +3554,11 @@ export component MainWindow inherits Window {
         if root.tab-status-tip-visible && root.tab-status-tip-text != "" : Rectangle {
             x: Math.max(6px, Math.min(root.width - tab-status-tip.width - 10px,
                 root.tab-status-tip-x - tab-status-tip.width / 2));
-            y: root.tabbar-bottom
-                ? root.height - root.tabbar-height - 26px
-                : root.tabbar-height + 4px;
+            y: root.tabbar-vertical
+                ? root.height - root.chrome-bottom - 70px
+                : (root.tabbar-bottom
+                    ? root.height - root.tabbar-height - 26px
+                    : root.tabbar-height + 4px);
             width: Math.min(root.width - 20px, tab-status-tip.preferred-width + 16px);
             height: 22px;
             border-radius: 5px;
@@ -3025,10 +3581,11 @@ export component MainWindow inherits Window {
         // ---------------- 工作区侧栏 ----------------
         Rectangle {
             visible: root.sidebar-visible;
-            x: 0px;
-            y: root.tabbar-bottom ? 0px : root.tabbar-height;
+            // 竖排 TabBar 在外侧；侧栏紧贴其内侧，纵向占满可用内容区。
+            x: root.chrome-left;
+            y: root.chrome-top;
             width: root.sidebar-width;
-            height: root.height - root.tabbar-height;
+            height: root.content-h;
             background: Palette.colors.bg;
             border-color: Palette.colors.border;
             border-width: root.sidebar-width > 0px ? 1px : 0px;
@@ -3130,10 +3687,10 @@ export component MainWindow inherits Window {
 
         // ---------------- 分屏内容区 ----------------
         Rectangle {
-            x: root.sidebar-visible ? root.sidebar-width : 0px;
-            width: root.width - (root.sidebar-visible ? root.sidebar-width : 0px);
-            y: root.tabbar-bottom ? 0px : root.tabbar-height;
-            height: root.height - root.tabbar-height;
+            x: root.content-x;
+            width: root.content-w;
+            y: root.content-y;
+            height: root.content-h;
             // 有背景图时让终端帧的透明背景直接透出图片；否则保持主题底色。
             background: root.has-background-image ? transparent : Palette.colors.bg;
 
@@ -3767,12 +4324,14 @@ export component MainWindow inherits Window {
     if root.profilemenu-open : Rectangle {
         // n 个 Profile 行 + 分隔线 + Manage 行 + 搜索框/内边距；超出窗口高度才滚。
         x: Math.max(0px, Math.min(root.profilemenu-x, root.width - 240px));
-        y: root.tabbar-bottom
-            ? root.height - root.tabbar-height - self.height
-            : root.tabbar-height;
+        y: root.tabbar-vertical
+            ? root.height - self.height - 8px
+            : (root.tabbar-bottom
+                ? root.height - root.tabbar-height - self.height
+                : root.tabbar-height);
         width: 240px;
         height: Math.min(Math.max(28px, root.profilemenu-items.length * 28px + 29px) + 66px,
-            root.height - root.tabbar-height - 8px);
+            root.height - root.chrome-top - root.chrome-bottom - 8px);
         background: Palette.colors.raise;
         border-radius: 8px;
         border-width: 1px;
@@ -3839,7 +4398,7 @@ export component MainWindow inherits Window {
             Flickable {
                 height: Math.max(28px,
                     Math.min(root.profilemenu-items.length * 28px + 58px,
-                        root.height - root.tabbar-height - 45px));
+                        root.height - root.chrome-top - root.chrome-bottom - 45px));
                 content-width: self.width;
                 content-height: Math.max(28px, root.profilemenu-items.length * 28px + 29px);
                 interactive: true;
@@ -3962,7 +4521,14 @@ export component MainWindow inherits Window {
                 picked => { root.tabmenu-open = false; root.tabbar-menu-action(5); }
             }
             MenuRow {
-                label: root.tabbar-bottom ? Lang.t("Tab Bar: Bottom", "标签栏：底部") : Lang.t("Tab Bar: Top", "标签栏：顶部");
+                // 点一次循环：top → bottom → left → right → top；label 显示当前值。
+                label: root.tabbar-position == "bottom"
+                    ? Lang.t("Tab Bar: Bottom", "标签栏：底部")
+                    : (root.tabbar-position == "left"
+                        ? Lang.t("Tab Bar: Left", "标签栏：左侧")
+                        : (root.tabbar-position == "right"
+                            ? Lang.t("Tab Bar: Right", "标签栏：右侧")
+                            : Lang.t("Tab Bar: Top", "标签栏：顶部")));
                 picked => { root.tabmenu-open = false; root.tabbar-menu-action(6); }
             }
             MenuRow {
@@ -3995,7 +4561,11 @@ export component MainWindow inherits Window {
     if root.tabctx-open : Rectangle {
         x: Math.max(0px, Math.min(root.tabctx-x, root.width - 180px));
         // 7 行 × 28px + 6×2px spacing + 上下 padding 8 = 216px。
-        y: root.tabbar-bottom ? root.height - root.tabbar-height - 216px : root.tabbar-height;
+        y: root.tabbar-vertical
+            ? Math.max(8px, Math.min(root.tabctx-y, root.height - 224px))
+            : (root.tabbar-bottom
+                ? root.height - root.tabbar-height - 216px
+                : root.tabbar-height);
         width: 190px;
         height: 216px;
         background: Palette.colors.raise;
@@ -4046,10 +4616,10 @@ export component MainWindow inherits Window {
     // 默认：窗口内的 Settings Tab（占满 TabBar 下方内容区，不创建 PTY、不进 workspace）。
     // TERVO_SETTINGS_LEGACY=1：同一套控件退回居中 modal（顶部有 LEGACY 标记）。
     if root.settings-open : Rectangle {
-        x: 0px;
-        y: root.tabbar-bottom ? 0px : root.tabbar-height;
-        width: root.width;
-        height: root.height - root.tabbar-height;
+        x: root.chrome-left;
+        y: root.chrome-top;
+        width: root.width - root.chrome-left - root.chrome-right;
+        height: root.content-h;
         background: root.settings-legacy ? #00000080 : Palette.colors.bg;
 
         // legacy 模式点遮罩关闭；Tab 模式下没有遮罩。
@@ -5109,11 +5679,30 @@ export component MainWindow inherits Window {
                             title: Lang.t("Window & Tab bar", "窗口与标签栏");
                             highlighted: root.settings-focus == "window";
                             SettingRow {
-                                label: Lang.t("Tab bar at bottom", "标签栏置底");
-                                description: Lang.t("Move the tab strip below the terminal content.", "把标签条移到终端内容下方。");
-                                SettingsSwitch {
-                                    on: root.tabbar-bottom;
-                                    toggled => { root.tabbar-menu-action(6); }
+                                label: Lang.t("Tab bar position", "标签栏位置");
+                                description: Lang.t("Top, bottom, or a vertical strip on the left/right (matches Tabby's Tabs location).", "上、下，或左右竖排（与 Tabby 的 Tabs location 一致）。");
+                                HorizontalLayout {
+                                    spacing: 4px;
+                                    ActionBtn {
+                                        width: 48px;
+                                        label: Lang.t("Top", "顶部");
+                                        clicked => { root.tabbar-position-set("top"); }
+                                    }
+                                    ActionBtn {
+                                        width: 48px;
+                                        label: Lang.t("Bottom", "底部");
+                                        clicked => { root.tabbar-position-set("bottom"); }
+                                    }
+                                    ActionBtn {
+                                        width: 48px;
+                                        label: Lang.t("Left", "左侧");
+                                        clicked => { root.tabbar-position-set("left"); }
+                                    }
+                                    ActionBtn {
+                                        width: 48px;
+                                        label: Lang.t("Right", "右侧");
+                                        clicked => { root.tabbar-position-set("right"); }
+                                    }
                                 }
                             }
                             SettingRow {
@@ -8258,10 +8847,12 @@ export component MainWindow inherits Window {
     }
 
     if root.tabsearch-open : Rectangle {
-        x: 4px;
-        y: root.tabbar-bottom
-            ? root.height - root.tabbar-height - self.height - 4px
-            : root.tabbar-height + 4px;
+        x: root.tabbar-left ? root.tabbar-width + 8px : 4px;
+        y: root.tabbar-vertical
+            ? root.chrome-top + 4px
+            : (root.tabbar-bottom
+                ? root.height - root.tabbar-height - self.height - 4px
+                : root.tabbar-height + 4px);
         width: Math.min(340px, root.width - 8px);
         height: 49px + root.tabsearch-list-height;
         background: Palette.colors.raise;
@@ -8601,8 +9192,8 @@ export component MainWindow inherits Window {
     }
 
     if root.rename-open : Rectangle {
-        x: 32px;
-        y: root.tabbar-height + 8px;
+        x: root.chrome-left + 32px;
+        y: root.chrome-top + 8px;
         width: 260px;
         height: 40px;
         background: Palette.colors.raise;
@@ -8649,8 +9240,8 @@ export component MainWindow inherits Window {
     }
 
     if root.search-open : Rectangle {
-        x: root.width - 388px;
-        y: root.tabbar-height + 8px;
+        x: root.width - 388px - root.chrome-right;
+        y: root.chrome-top + 8px;
         width: 360px;
         height: 62px;
         background: Palette.colors.raise;
@@ -9173,9 +9764,9 @@ export component MainWindow inherits Window {
 
         // 通用状态条目：在插件状态栏之上叠一行 pill（只读文本，不改变终端布局）。
     if root.status-items.length > 0 : HorizontalLayout {
-        x: 8px;
-        y: (root.tabbar-bottom ? root.height - root.tabbar-height - 24px : root.height - 24px)
-           - 26px;
+        x: root.tabbar-vertical ? root.chrome-left + 8px : 8px;
+        y: root.height - root.chrome-bottom - 24px - 26px
+            - (root.tabbar-vertical ? 44px : 0px);
         height: 22px;
         spacing: 6px;
         alignment: start;
@@ -9201,8 +9792,9 @@ export component MainWindow inherits Window {
 
     // 插件状态栏：只显示文本（tooltip/command 由 Rust 保存），不改变终端布局。
     if root.plugin-status != "" : Rectangle {
-        x: 8px;
-        y: root.tabbar-bottom ? root.height - root.tabbar-height - 24px : root.height - 24px;
+        x: root.tabbar-vertical ? root.chrome-left + 8px : 8px;
+        y: root.height - root.chrome-bottom - 24px
+            - (root.tabbar-vertical ? 44px : 0px);
         height: 20px;
         width: Math.min(560px, root.width - 16px);
         background: Palette.colors.surface;
@@ -9298,9 +9890,11 @@ export component MainWindow inherits Window {
 
     // 链接打开失败等短暂提示：不拦截鼠标事件，4 秒后由 Rust 清空。
     if root.link-status != "" : Rectangle {
-        x: 12px;
+        x: root.tabbar-vertical ? root.chrome-left + 12px : 12px;
         // 插件状态栏可见时浮层上移，避免盖住状态文本。
-        y: root.plugin-status != "" ? root.height - 84px : root.height - 54px;
+        y: root.plugin-status != ""
+            ? root.height - 84px - (root.tabbar-vertical ? 44px : 0px)
+            : root.height - 54px - (root.tabbar-vertical ? 44px : 0px);
         width: root.width - 24px;
         height: 36px;
         background: Palette.colors.raise;
@@ -9327,7 +9921,7 @@ export component MainWindow inherits Window {
     // 最大化/还原不弹确认：常驻小提示告诉用户当前处于最大化与还原键。
     if root.pane-zoomed : Rectangle {
         x: 12px;
-        y: (root.tabbar-bottom ? 0px : root.tabbar-height) + 8px;
+        y: root.chrome-top + 8px;
         width: 236px;
         height: 26px;
         background: Palette.colors.raise;
@@ -9355,7 +9949,7 @@ export component MainWindow inherits Window {
     if root.zoom-hud != "" : Rectangle {
         x: (root.width - self.width) / 2;
         // 广播危险命令红条占顶部时下移，避免 HUD 被盖住。
-        y: (root.tabbar-bottom ? 0px : root.tabbar-height)
+        y: root.chrome-top
             + (root.broadcast-warning != "" ? 44px : 10px);
         width: 84px;
         height: 30px;
@@ -9385,7 +9979,7 @@ export component MainWindow inherits Window {
     // 广播多 pane 时正在输入破坏性命令：顶部常驻红条，回车前还会弹二次确认。
     if root.broadcast-warning != "" : Rectangle {
         x: 12px;
-        y: (root.tabbar-bottom ? 0px : root.tabbar-height) + 8px;
+        y: root.chrome-top + 8px;
         width: root.width - 24px;
         height: 30px;
         background: Palette.colors.raise;
@@ -9413,9 +10007,9 @@ export component MainWindow inherits Window {
     // 半透明小牌跟随指针；不挂 TouchArea，不抢事件。
     if root.pane-drag-from >= 0 : Rectangle {
         x: Math.max(4px, Math.min(root.pane-drag-x
-            + (root.sidebar-visible ? root.sidebar-width : 0px) + 10px, root.width - 120px));
+            + root.content-x + 10px, root.width - 120px));
         y: Math.max(4px, Math.min(root.pane-drag-y
-            + (root.tabbar-bottom ? 0px : root.tabbar-height) + 10px, root.height - 34px));
+            + root.chrome-top + 10px, root.height - 34px));
         width: 106px;
         height: 26px;
         opacity: 0.9;
