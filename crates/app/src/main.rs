@@ -650,8 +650,11 @@ struct AppState {
     bg_model: Rc<VecModel<slint::SharedString>>,
     profiles: Shared<profile::ProfileStore>,
     profile_model: Rc<VecModel<ProfileRow>>,
-    /// 过滤后各列表行在 `profiles.profiles` 中的原始下标（点击/编辑/删除按此映射）。
-    profile_indices: Vec<usize>,
+    /// 每个列表行在 `profiles.profiles` 中的下标；分组标题行 = None。
+    /// 所有点击/编辑/删除回调都先经过这里，避免过滤/折叠后行号错位。
+    profile_row_targets: Vec<Option<usize>>,
+    /// 已折叠的分组名（`""` = 未分组）；折叠状态只保存在本次进程内。
+    collapsed_groups: std::collections::BTreeSet<String>,
     /// Profiles 面板搜索框当前内容（空 = 显示全部）。
     profile_query: String,
     /// 加密凭据容器：启动时锁定，需在设置 → Vault 里解锁。
@@ -4721,34 +4724,115 @@ fn refresh_background(st: &mut AppState) {
     st.bg_model.set_vec(items);
 }
 
-/// 刷新 Profiles 面板：按搜索词过滤，并记录每个可见行对应的 store 下标。
+/// 设置页 Profiles 列表的一行（分组标题或 Profile），只含展示字段。
 ///
-/// 列表模型只带展示字段；所有操作回调用 `profile_indices` 映射回真实 Profile，
-/// 避免过滤后 “点第 0 行却打开第 0 个 store 项” 的错位。
+/// Slint 的 `ProfileRow` 由 `refresh_profiles` 从这个结构一一映射；测试直接锁
+/// 这个纯函数，保证分组标题/折叠/搜索后的行号映射不依赖 UI 运行时。
+#[derive(Clone, Debug, PartialEq)]
+struct ProfileListRow {
+    /// store 下标；分组标题行 = None。
+    store_index: Option<usize>,
+    label: String,
+    is_default: bool,
+    is_header: bool,
+    collapsed: bool,
+    /// 所属分组名（`""` = 未分组）；标题行点击折叠时回传给 Rust。
+    group: String,
+}
+
+/// 把 Profile 列表折叠成「分组标题 + 行」序列，并返回每行对应的 store 下标。
+///
+/// 规则：
+/// - 命名分组按名字排序，未分组最后（见 `profile::grouped_indices`）；
+/// - 只有存在命名分组时才插入标题行；全部未分组时保持旧版平铺列表；
+/// - 折叠的组只发标题行，不发行；
+/// - `targets` 与 `rows` 同序，标题行为 None，回调据此忽略误点。
+fn build_profile_rows(
+    profiles: &[profile::Profile],
+    query: &str,
+    collapsed: &std::collections::BTreeSet<String>,
+    resolved_default: Option<usize>,
+    kind_label: impl Fn(&str) -> String,
+    ungrouped_label: &str,
+) -> (Vec<ProfileListRow>, Vec<Option<usize>>) {
+    let buckets = profile::grouped_indices(profiles, query);
+    let show_headers = buckets.iter().any(|b| b.name.is_some());
+    let mut rows = Vec::new();
+    let mut targets = Vec::new();
+    for bucket in buckets {
+        let group = bucket.name.clone().unwrap_or_default();
+        let is_collapsed = collapsed.contains(&group);
+        if show_headers {
+            let display = bucket.name.as_deref().unwrap_or(ungrouped_label);
+            let marker = if is_collapsed { "▸" } else { "▾" };
+            rows.push(ProfileListRow {
+                store_index: None,
+                label: format!("{marker} {display} ({})", bucket.indices.len()),
+                is_default: false,
+                is_header: true,
+                collapsed: is_collapsed,
+                group: group.clone(),
+            });
+            targets.push(None);
+            if is_collapsed {
+                continue;
+            }
+        }
+        for index in bucket.indices {
+            let Some(p) = profiles.get(index) else {
+                continue;
+            };
+            rows.push(ProfileListRow {
+                store_index: Some(index),
+                label: format!("[{}] {}", kind_label(&p.kind), p.name),
+                is_default: resolved_default == Some(index),
+                is_header: false,
+                collapsed: false,
+                group: group.clone(),
+            });
+            targets.push(Some(index));
+        }
+    }
+    (rows, targets)
+}
+
+/// 刷新 Profiles 面板：按搜索词过滤、按分组折叠，并记录每个可见行对应的
+/// store 下标。
+///
+/// 列表模型只带展示字段；所有操作回调用 `profile_row_targets` 映射回真实
+/// Profile，避免过滤/折叠后 “点第 0 行却打开第 0 个 store 项” 的错位。
 fn refresh_profiles(st: &mut AppState) {
     let lang = st.cfg.lang();
-    let kind_label = |kind: &str| -> String {
-        match kind {
+    // 星标以解析结果为准：id 或 default_profile 名字命中的那一行都显示 ★。
+    let resolved_default = default_profile_index(st);
+    let (rows, targets) = build_profile_rows(
+        &st.profiles.profiles,
+        &st.profile_query,
+        &st.collapsed_groups,
+        resolved_default,
+        |kind| match kind {
             "local" => ui_text(lang, "local", "本地").to_string(),
             "serial" => ui_text(lang, "serial", "串口").to_string(),
             other => other.to_string(),
-        }
-    };
-    let indices = profile::filter_indices(&st.profiles.profiles, &st.profile_query);
-    // 星标以解析结果为准：id 或 default_profile 名字命中的那一行都显示 ★。
-    let resolved_default = default_profile_index(st);
-    let items: Vec<ProfileRow> = indices
+        },
+        ui_text(lang, "Ungrouped", "未分组"),
+    );
+    let items: Vec<ProfileRow> = rows
         .iter()
-        .filter_map(|&i| {
-            let p = st.profiles.profiles.get(i)?;
-            Some(ProfileRow {
-                id: p.id as i32,
-                label: format!("[{}] {}", kind_label(&p.kind), p.name).into(),
-                is_default: resolved_default == Some(i),
-            })
+        .map(|row| ProfileRow {
+            id: row
+                .store_index
+                .and_then(|i| st.profiles.profiles.get(i))
+                .map(|p| p.id as i32)
+                .unwrap_or(-1),
+            label: row.label.clone().into(),
+            is_default: row.is_default,
+            is_header: row.is_header,
+            collapsed: row.collapsed,
+            group: row.group.clone().into(),
         })
         .collect();
-    let default_info = match default_profile_index(st) {
+    let default_info = match resolved_default {
         Some(i) => {
             if lang == "zh" {
                 format!("新标签默认：{}", st.profiles.profiles[i].name)
@@ -4758,7 +4842,7 @@ fn refresh_profiles(st: &mut AppState) {
         },
         None => ui_text(lang, "New tab default: system shell", "新标签默认：系统 Shell").to_string(),
     };
-    st.profile_indices = indices;
+    st.profile_row_targets = targets;
     st.profile_model.set_vec(items);
     st.ui.set_profile_default_info(default_info.as_str().into());
 }
@@ -4798,7 +4882,10 @@ fn resolve_default_profile_index(
 
 /// 面板行号 → store 下标。过滤/删除后行号可能失效，越界一律忽略。
 fn profile_row_to_store(st: &AppState, row: i32) -> Option<usize> {
-    st.profile_indices.get(row.max(0) as usize).copied()
+    st.profile_row_targets
+        .get(row.max(0) as usize)
+        .copied()
+        .flatten()
 }
 
 /// 新建 Tab：默认 Profile 有效时用它打开，否则保持原来的默认 shell 行为。
@@ -5077,7 +5164,11 @@ fn open_profiles_panel(st: &mut AppState) {
     st.ui.set_profile_query("".into());
     refresh_profiles(st);
     st.ui.set_profiles_open(true);
-    eprintln!("[profile] panel items={}", st.profile_indices.len());
+    eprintln!(
+        "[profile] panel rows={} profiles={}",
+        st.profile_row_targets.len(),
+        st.profile_row_targets.iter().filter(|x| x.is_some()).count()
+    );
 }
 
 /// 关闭叠在设置页之上的模态（Profiles/Profile 表单）后恢复键盘焦点：
@@ -5909,6 +6000,14 @@ fn config_export_path() -> std::path::PathBuf {
     Config::path().with_file_name("config-export.toml")
 }
 
+/// 自有格式 Profile 导出文件：与 profiles.toml 同目录的固定名字。
+///
+/// 无文件选择器（与 config 导入/导出同款）；`--export-profiles` /
+/// `--import-profiles` 默认也读写这个路径，便于脚本/复现。
+fn profile_bundle_path() -> std::path::PathBuf {
+    profile::ProfileStore::path().with_file_name("profiles-export.toml")
+}
+
 /// 打开新建表单：预填一个不冲突的名字、当前 shell、聚焦 pane 的 cwd。
 fn open_profile_form(st: &mut AppState) {
     let base = "profile".to_string();
@@ -5935,6 +6034,7 @@ fn open_profile_form(st: &mut AppState) {
     st.ui.set_form_edit_id(-1);
     st.ui.set_form_name(name.as_str().into());
     st.ui.set_form_title("".into());
+    st.ui.set_form_group("".into());
     st.ui.set_form_cwd_hint("".into());
     st.ui.set_form_kind(0);
     st.ui.set_form_shell(shell.as_str().into());
@@ -5980,6 +6080,7 @@ fn edit_profile_form(st: &mut AppState, index: usize) {
     st.ui.set_form_edit_id(p.id as i32);
     st.ui.set_form_name(p.name.as_str().into());
     st.ui.set_form_title(p.title.clone().unwrap_or_default().as_str().into());
+    st.ui.set_form_group(p.group.as_str().into());
     st.ui.set_form_cwd_hint("".into());
     st.ui.set_form_kind(kind_idx as i32);
     st.ui.set_form_shell(p.shell.as_str().into());
@@ -6094,6 +6195,7 @@ fn save_profile_form(st: &mut AppState) {
             (!t.is_empty()).then_some(t)
         },
         kind: kind.to_string(),
+        group: st.ui.get_form_group().trim().to_string(),
         hotkey: st.ui.get_form_hotkey().trim().to_string(),
         ..profile::Profile::default()
     };
@@ -13986,6 +14088,9 @@ fn print_help() {
 --window            兼容：在已运行的 primary 中新开窗口；无 primary 时正常启动\n  \
 --import-tabby PATH 无 UI：导入 Tabby config.yaml（Profile/字号/快捷键/主题）后退出\n  \
 --export-tabby PATH 无 UI：导出 Profile 为 Tabby YAML 后退出\n  \
+--export-profiles PATH 无 UI：导出自有格式 Profile（含版本号，不含密码）后退出\n  \
+--import-profiles PATH 无 UI：导入自有格式 Profile 后退出\n  \
+--profile-rows [QUERY] 内部探针：打印设置页 Profile 行（分组/折叠）后退出\n  \
 --diagnose          打印环境/窗口/最近日志后退出（排查右键/焦点问题）\n  \
   diag [env|snapshot|replay|trace|metrics|observability|scene-diff]  harness 可调用 JSON 诊断（tervo diag help）\n  \
 -V, --version       显示版本、git commit 与构建时间\n  \
@@ -14230,7 +14335,8 @@ fn build_window_state(
         reconnect_attempts: HashMap::new(),
         reconnect_timer: None,
         profile_model,
-        profile_indices: Vec::new(),
+        profile_row_targets: Vec::new(),
+        collapsed_groups: std::collections::BTreeSet::new(),
         profile_query: String::new(),
         vault: shared.vault.clone_handle(),
         vault_job: None,
@@ -15795,8 +15901,140 @@ fn register_window_callbacks(
             eprintln!(
                 "[profile] filter={:?} items={}",
                 st.profile_query,
-                st.profile_indices.len()
+                st.profile_row_targets.iter().filter(|x| x.is_some()).count()
             );
+        });
+    });
+
+    // 分组标题点击：折叠/展开该组。`group` 是分组名，`""` = 未分组；
+    // 空组不存在标题行，因此不会产生不可见的折叠状态。
+    ui.on_profile_toggle_group(move |group| {
+        runtime::with_window(window_id, |st| {
+            let group = group.to_string();
+            if !st.collapsed_groups.remove(&group) {
+                st.collapsed_groups.insert(group.clone());
+            }
+            refresh_profiles(st);
+            eprintln!(
+                "[profile] toggle group={group:?} collapsed={} rows={}",
+                st.collapsed_groups.contains(&group),
+                st.profile_row_targets.len()
+            );
+        });
+    });
+
+    // 自有格式导出：写到固定路径（与 config 导出同款，无文件选择器），
+    // 状态行显示数量/路径；导出文件不含密码，Vault 引用单独标注。
+    ui.on_profile_export(move || {
+        runtime::with_window(window_id, |st| {
+            let path = profile_bundle_path();
+            let status = match profile::export_bundle(&st.profiles) {
+                Ok(text) => match std::fs::write(&path, text) {
+                    Ok(()) => {
+                        let vault_refs = st
+                            .profiles
+                            .profiles
+                            .iter()
+                            .filter(|p| p.save_password)
+                            .count();
+                        let msg = if st.cfg.lang() == "zh" {
+                            format!(
+                                "已导出 {} 个 Profile → {}（不含密码；{} 条 Vault 引用仅标注）",
+                                st.profiles.profiles.len(),
+                                path.display(),
+                                vault_refs
+                            )
+                        } else {
+                            format!(
+                                "Exported {} profiles → {} (no passwords; {} vault refs annotated)",
+                                st.profiles.profiles.len(),
+                                path.display(),
+                                vault_refs
+                            )
+                        };
+                        eprintln!("[profile] {msg}");
+                        msg
+                    },
+                    Err(e) => {
+                        let msg = if st.cfg.lang() == "zh" {
+                            format!("导出失败（{}）: {e}", path.display())
+                        } else {
+                            format!("Export failed ({}): {e}", path.display())
+                        };
+                        eprintln!("[profile] {msg}");
+                        msg
+                    },
+                },
+                Err(e) => {
+                    let msg = format!("导出失败: {e}");
+                    eprintln!("[profile] {msg}");
+                    msg
+                },
+            };
+            st.ui.set_profile_io_status(status.as_str().into());
+        });
+    });
+
+    // 自有格式导入：读同一路径；重名自动 `(copy N)`，失败条目只跳过并报告。
+    ui.on_profile_import(move || {
+        runtime::with_window(window_id, |st| {
+            let path = profile_bundle_path();
+            let status = match std::fs::read_to_string(&path) {
+                Ok(text) => match profile::import_bundle(&text, &mut st.profiles) {
+                    Ok(report) => {
+                        st.profiles.save();
+                        refresh_profiles(st);
+                        let lang = st.cfg.lang();
+                        let mut msg = if lang == "zh" {
+                            format!(
+                                "已从 {} 导入 {} 个 Profile（重命名 {}，跳过 {}，Vault 引用 {} 条需重新输入密码）",
+                                path.display(),
+                                report.added,
+                                report.renamed,
+                                report.skipped.len(),
+                                report.vault_refs
+                            )
+                        } else {
+                            format!(
+                                "Imported {} profiles from {} (renamed {}, skipped {}, {} vault refs need re-entry)",
+                                report.added,
+                                path.display(),
+                                report.renamed,
+                                report.skipped.len(),
+                                report.vault_refs
+                            )
+                        };
+                        if let Some((name, why)) = report.skipped.first() {
+                            if lang == "zh" {
+                                msg.push_str(&format!("；首个跳过：{name}（{why}）"));
+                            } else {
+                                msg.push_str(&format!("; first skipped: {name} ({why})"));
+                            }
+                        }
+                        eprintln!("[profile] {msg}");
+                        msg
+                    },
+                    Err(e) => {
+                        let msg = if st.cfg.lang() == "zh" {
+                            format!("导入失败: {e}")
+                        } else {
+                            format!("Import failed: {e}")
+                        };
+                        eprintln!("[profile] {msg}");
+                        msg
+                    },
+                },
+                Err(e) => {
+                    let msg = if st.cfg.lang() == "zh" {
+                        format!("读不到 {}: {e}", path.display())
+                    } else {
+                        format!("Cannot read {}: {e}", path.display())
+                    };
+                    eprintln!("[profile] {msg}");
+                    msg
+                },
+            };
+            st.ui.set_profile_io_status(status.as_str().into());
         });
     });
 
@@ -17546,6 +17784,85 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .and_then(|i| argv.get(i + 1))
             .map(std::path::PathBuf::from)
     };
+    // 自有 Profile 交换格式（SESS-001）：无 UI 导入/导出，便于脚本与复现。
+    if let Some(path) = arg_value("--export-profiles") {
+        let store = profile::ProfileStore::load();
+        let text = match profile::export_bundle(&store) {
+            Ok(text) => text,
+            Err(e) => {
+                eprintln!("[profile] 导出失败: {e}");
+                std::process::exit(1);
+            },
+        };
+        std::fs::write(&path, text)?;
+        let vault_refs = store.profiles.iter().filter(|p| p.save_password).count();
+        println!(
+            "[profile] 导出 {} 个 Profile → {}（不含密码；Vault 引用 {} 条仅标注）",
+            store.profiles.len(),
+            path.display(),
+            vault_refs
+        );
+        return Ok(());
+    }
+    if let Some(path) = arg_value("--import-profiles") {
+        let text = std::fs::read_to_string(&path)?;
+        let mut store = profile::ProfileStore::load();
+        let report = match profile::import_bundle(&text, &mut store) {
+            Ok(report) => report,
+            Err(e) => {
+                eprintln!("[profile] 导入失败: {e}");
+                std::process::exit(1);
+            },
+        };
+        store.save();
+        println!(
+            "[profile] 从 {} 导入 {} 个 Profile（重命名 {}，跳过 {}，Vault 引用 {} 条需重新输入密码）",
+            path.display(),
+            report.added,
+            report.renamed,
+            report.skipped.len(),
+            report.vault_refs
+        );
+        for (name, why) in &report.skipped {
+            println!("[profile] 跳过 {name}: {why}");
+        }
+        return Ok(());
+    }
+    // 内部探针：打印设置页 Profile 列表实际下发给 Slint 的行（分组标题/折叠）。
+    // 用法：`tervo --profile-rows [QUERY] [--collapsed GROUP]`
+    if let Some(pos) = argv.iter().position(|a| a == "--profile-rows") {
+        let query = argv
+            .get(pos + 1)
+            .filter(|a| !a.starts_with('-'))
+            .cloned()
+            .unwrap_or_default();
+        let mut collapsed = std::collections::BTreeSet::new();
+        if let Some(group) = arg_value("--collapsed") {
+            collapsed.insert(group.to_string_lossy().to_string());
+        }
+        let store = profile::ProfileStore::load();
+        let (rows, targets) = build_profile_rows(
+            &store.profiles,
+            &query,
+            &collapsed,
+            None,
+            |kind| kind.to_string(),
+            "Ungrouped",
+        );
+        println!(
+            "[profile-rows] query={query:?} profiles={} rows={} collapsed={:?}",
+            store.profiles.len(),
+            rows.len(),
+            collapsed
+        );
+        for (row, target) in rows.iter().zip(targets.iter()) {
+            println!(
+                "[profile-rows] target={:?} default={} header={} collapsed={} group={:?} label={:?}",
+                target, row.is_default, row.is_header, row.collapsed, row.group, row.label
+            );
+        }
+        return Ok(());
+    }
     if let Some(path) = arg_value("--export-tabby") {
         let store = profile::ProfileStore::load();
         let yaml = tabby_import::export_yaml(&store);
@@ -19875,6 +20192,93 @@ mod tests {
         assert_eq!(ssh[0].0, Some(5));
         // 无匹配 = 空，菜单显示空态而不是旧结果
         assert!(profile_menu_filtered_entries(&all, "no-such-profile").is_empty());
+    }
+
+    #[test]
+    fn profile_rows_group_headers_collapse_and_keep_store_targets() {
+        let mk = |id: u64, name: &str, group: &str| profile::Profile {
+            id,
+            name: name.to_string(),
+            group: group.to_string(),
+            ..profile::Profile::default()
+        };
+        let profiles = vec![
+            mk(1, "zeta", "Work"),
+            mk(2, "alpha", ""),
+            mk(3, "beta", "Work"),
+            mk(4, "gamma", "Lab"),
+        ];
+        let (rows, targets) = build_profile_rows(
+            &profiles,
+            "",
+            &std::collections::BTreeSet::new(),
+            Some(3),
+            |kind| kind.to_string(),
+            "Ungrouped",
+        );
+        let labels: Vec<&str> = rows.iter().map(|r| r.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            vec![
+                "▾ Lab (1)",
+                "[local] gamma",
+                "▾ Work (2)",
+                "[local] zeta",
+                "[local] beta",
+                "▾ Ungrouped (1)",
+                "[local] alpha",
+            ]
+        );
+        assert_eq!(
+            targets,
+            vec![None, Some(3), None, Some(0), Some(2), None, Some(1)]
+        );
+        assert!(rows[1].is_default, "星标跟随解析后的默认下标");
+
+        // 折叠 Work：只保留标题行，targets 与 rows 仍同序。
+        let mut collapsed = std::collections::BTreeSet::new();
+        collapsed.insert("Work".to_string());
+        let (rows, targets) = build_profile_rows(
+            &profiles,
+            "",
+            &collapsed,
+            None,
+            |kind| kind.to_string(),
+            "Ungrouped",
+        );
+        let work = rows
+            .iter()
+            .find(|r| r.is_header && r.group == "Work")
+            .expect("Work 标题行必须保留");
+        assert!(work.collapsed);
+        assert_eq!(work.label, "▸ Work (2)");
+        assert!(rows.iter().all(|r| r.store_index != Some(0) && r.store_index != Some(2)));
+        assert_eq!(rows.len(), targets.len());
+        assert_eq!(targets.iter().filter(|t| t.is_some()).count(), 2);
+
+        // 搜索命中的组仍带标题；无命中的组不产生空标题。
+        let (rows, _) = build_profile_rows(
+            &profiles,
+            "lab",
+            &std::collections::BTreeSet::new(),
+            None,
+            |kind| kind.to_string(),
+            "Ungrouped",
+        );
+        assert_eq!(rows.len(), 2, "只有 Lab 标题 + gamma");
+
+        // 全部未分组：保持旧版平铺列表（无标题行），不打扰没有分组的用户。
+        let flat = vec![mk(1, "a", ""), mk(2, "b", "")];
+        let (rows, targets) = build_profile_rows(
+            &flat,
+            "",
+            &std::collections::BTreeSet::new(),
+            None,
+            |kind| kind.to_string(),
+            "Ungrouped",
+        );
+        assert!(rows.iter().all(|r| !r.is_header));
+        assert_eq!(targets, vec![Some(0), Some(1)]);
     }
 
     #[test]

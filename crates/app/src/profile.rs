@@ -35,6 +35,12 @@ pub struct Profile {
     /// 保存的是 Tab 标题本身，因此恢复后标题保持用户看到的样子。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// 设置页分组名（SESS-001）；空串/空白 = 未分组（显示在最后）。
+    ///
+    /// additive 字段：旧 `profiles.toml` 没有该键时 serde 补空串，读盘不会因为
+    /// 这个字段升级版本，也不会改写用户文件。分组只是管理视图，不影响启动参数。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub group: String,
     /// 连接意外结束时是否自动重连（仅 ssh/telnet/serial 有意义；默认关）。
     #[serde(default)]
     pub auto_reconnect: bool,
@@ -206,6 +212,9 @@ pub fn default_kind() -> String {
 /// 规则：空查询（含全空白）返回全部；否则对 `name` / `host` / `kind` 做
 /// **大小写不敏感**的子串匹配。返回下标而不是克隆，面板点击时仍能定位到
 /// 唯一的 Profile（即使过滤后列表顺序/数量变化）。
+///
+/// SESS-001：分组名也参与匹配（搜 "work" 能直接找到 work 组里的 Profile），
+/// 这是对 name/host/kind 的 additive 扩展，原有三种匹配语义不变。
 pub fn filter_indices(profiles: &[Profile], query: &str) -> Vec<usize> {
     let needle = query.trim().to_lowercase();
     if needle.is_empty() {
@@ -218,9 +227,56 @@ pub fn filter_indices(profiles: &[Profile], query: &str) -> Vec<usize> {
             p.name.to_lowercase().contains(&needle)
                 || p.host.to_lowercase().contains(&needle)
                 || p.kind.to_lowercase().contains(&needle)
+                || p.effective_group()
+                    .is_some_and(|g| g.to_lowercase().contains(&needle))
         })
         .map(|(i, _)| i)
         .collect()
+}
+
+/// 设置页的一个分组桶：`name = None` 表示未分组（永远排在最后）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GroupBucket {
+    pub name: Option<String>,
+    pub indices: Vec<usize>,
+}
+
+/// 把（已过滤的）Profile 按 `group` 分桶，供设置页画分组标题/折叠。
+///
+/// - 命名分组按名字 **大小写不敏感** 排序（同名大小写不同仍算两个组，
+///   因为用户可能有意区分；排序时用原字符串打破平局）；
+/// - 未分组（空/空白 group）固定最后，保持 store 顺序；
+/// - 组内保持 store 顺序；
+/// - 过滤后为空的组不产生标题行。
+pub fn grouped_indices(profiles: &[Profile], query: &str) -> Vec<GroupBucket> {
+    let filtered = filter_indices(profiles, query);
+    let mut named: Vec<(String, Vec<usize>)> = Vec::new();
+    let mut ungrouped: Vec<usize> = Vec::new();
+    for i in filtered {
+        match profiles.get(i).and_then(Profile::effective_group) {
+            Some(name) => {
+                if let Some((_, indices)) = named.iter_mut().find(|(n, _)| n == name) {
+                    indices.push(i);
+                } else {
+                    named.push((name.to_string(), vec![i]));
+                }
+            },
+            None => ungrouped.push(i),
+        }
+    }
+    named.sort_by(|a, b| {
+        a.0.to_lowercase()
+            .cmp(&b.0.to_lowercase())
+            .then_with(|| a.0.cmp(&b.0))
+    });
+    let mut out: Vec<GroupBucket> = named
+        .into_iter()
+        .map(|(name, indices)| GroupBucket { name: Some(name), indices })
+        .collect();
+    if !ungrouped.is_empty() {
+        out.push(GroupBucket { name: None, indices: ungrouped });
+    }
+    out
 }
 
 /// 复制 Profile 时生成不冲突的名字：`原名 (copy 1)`、`原名 (copy 2)`……
@@ -242,6 +298,7 @@ impl Default for Profile {
             id: 0,
             name: String::new(),
             title: None,
+            group: String::new(),
             auto_reconnect: false,
             hotkey: String::new(),
             kind: default_kind(),
@@ -274,6 +331,20 @@ impl Default for Profile {
 }
 
 impl Profile {
+    /// 归一化分组名：去首尾空白；空串 = 未分组。
+    ///
+    /// 分组只是展示/管理维度，不影响启动参数，因此读盘时静默 trim 即可，
+    /// 不需要像端口/字号那样把用户文件判为坏文件。
+    pub fn normalize_group(&mut self) {
+        self.group = self.group.trim().to_string();
+    }
+
+    /// 有效分组名；空白视为未分组（`None`）。
+    pub fn effective_group(&self) -> Option<&str> {
+        let group = self.group.trim();
+        (!group.is_empty()).then_some(group)
+    }
+
     /// 归一化外观字段：去空白、空串 → `None`（继承全局）、字号夹取到 8–40。
     ///
     /// 校验失败的原始值（例如 `font_size = 0`）会在 [`Profile::validate`] 里被
@@ -636,6 +707,7 @@ impl ProfileStore {
             for p in &mut store.profiles {
                 // 先归一化 `plugin-ssh`，否则下一步会把它当成未知 kind 丢掉。
                 p.normalize_plugin_kind();
+                p.normalize_group();
                 if !KINDS.contains(&p.kind.as_str()) {
                     p.kind = default_kind();
                 }
@@ -651,6 +723,7 @@ impl ProfileStore {
         // 手写文件里的空串/越界字号在内存里归一，不改写原文件。
         for p in &mut store.profiles {
             p.normalize_plugin_kind();
+            p.normalize_group();
             p.normalize_appearance();
         }
         store.fix_ids();
@@ -694,6 +767,7 @@ impl ProfileStore {
         if self.profiles.iter().any(|p| p.name == name) {
             return Err(format!("已存在同名 Profile: {name}"));
         }
+        profile.normalize_group();
         profile.validate()?;
         profile.normalize_appearance();
         let id = self.next_id.max(1);
@@ -715,6 +789,7 @@ impl ProfileStore {
         }
         updated.id = id;
         updated.name = name;
+        updated.normalize_group();
         updated.validate()?;
         updated.normalize_appearance();
         let slot = self.profiles.iter_mut().find(|p| p.id == id).ok_or("Profile 不存在")?;
@@ -763,6 +838,154 @@ impl ProfileStore {
         self.next_id = self.next_id.max(max_id + 1).max(1);
         self.version = VERSION;
     }
+}
+
+// ---------------------------------------------------------------- 自有导入/导出格式
+
+/// 自有 Profile 交换格式的标识（写在导出文件 `format` 字段）。
+pub const BUNDLE_FORMAT: &str = "tervo.profiles";
+/// 自有交换格式版本；导入只接受 1..=BUNDLE_VERSION，未来版本明确拒绝。
+pub const BUNDLE_VERSION: u32 = 1;
+
+/// 导出文件里对 Vault 凭据的 **引用**（绝不含密码/密文）。
+///
+/// Vault 明文密码从不出现在 `profiles.toml`，也不会出现在导出文件里；
+/// 这里只标注“该 Profile 曾经有密码保存在本机 Vault”，导入方需要重新输入。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VaultRef {
+    /// 导出时该 Profile 的本地 ID（导入后会重新分配，仅用于对照）。
+    pub profile_id: u64,
+    pub profile: String,
+    /// 固定 `password`（当前唯一需要 Vault 的字段）。
+    pub field: String,
+    /// 在本机 `vault.enc` 中的键：JSON map 的 profile_id。
+    pub vault_key: String,
+    /// 永远 false：导出文件不含任何明文/密文凭据。
+    pub exported: bool,
+}
+
+impl VaultRef {
+    fn new(profile: &Profile) -> Self {
+        Self {
+            profile_id: profile.id,
+            profile: profile.name.clone(),
+            field: "password".to_string(),
+            vault_key: format!("profile:{}", profile.id),
+            exported: false,
+        }
+    }
+}
+
+/// 自有 Profile 交换文件（TOML）。
+///
+/// 只包含 Profile 本身 + Vault 引用说明；`save_password` 在导出时强制写 false，
+/// 导入时也强制忽略，避免“配置说有密码、Vault 里其实没有”的假状态。
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ProfileBundle {
+    pub format: String,
+    pub version: u32,
+    /// 导出程序标识（仅用于排障，不参与导入校验）。
+    pub exported_by: String,
+    pub profiles: Vec<Profile>,
+    /// 被外置到 Vault 的凭据引用（单独标注，不含凭据）。
+    pub vault_refs: Vec<VaultRef>,
+}
+
+impl Default for ProfileBundle {
+    fn default() -> Self {
+        Self {
+            format: BUNDLE_FORMAT.to_string(),
+            version: BUNDLE_VERSION,
+            exported_by: format!("tervo {}", env!("CARGO_PKG_VERSION")),
+            profiles: Vec::new(),
+            vault_refs: Vec::new(),
+        }
+    }
+}
+
+/// 自有格式导入结果：成功数、重命名数、跳过原因、Vault 引用数。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BundleImportReport {
+    pub added: usize,
+    /// 因为与已有 Profile 重名而被改名的数量（`name (copy N)`）。
+    pub renamed: usize,
+    /// 校验失败被跳过的 `(名字, 原因)`；不静默丢弃。
+    pub skipped: Vec<(String, String)>,
+    /// 导出文件中标注的 Vault 引用数（提示用户需要重新输入密码）。
+    pub vault_refs: usize,
+}
+
+/// 导出自有格式（含版本号，绝不包含密码）。
+///
+/// - `format = "tervo.profiles"`、`version = 1`；
+/// - `save_password` 一律写成 false，避免导入方误以为凭据随文件迁移；
+/// - 原本 `save_password = true` 的 Profile 在 `[[vault_refs]]` 单独标注
+///   （profile id/name + vault 键），只说明“曾保存在本机 Vault”，不含密码。
+pub fn export_bundle(store: &ProfileStore) -> Result<String, String> {
+    let mut bundle = ProfileBundle::default();
+    for source in &store.profiles {
+        let mut p = source.clone();
+        if p.save_password {
+            bundle.vault_refs.push(VaultRef::new(source));
+            p.save_password = false;
+        }
+        bundle.profiles.push(p);
+    }
+    toml::to_string_pretty(&bundle).map_err(|e| format!("序列化失败: {e}"))
+}
+
+/// 导入自有格式：校验 format/version，逐条 `ProfileStore::add`。
+///
+/// 语义：
+/// - 未来版本（`version > BUNDLE_VERSION`）与错误 `format` 整体拒绝，不改 store；
+/// - 单条 Profile 校验失败只跳过并记录原因，其余照常导入；
+/// - 重名自动改成 `name (copy N)`，不覆盖已有 Profile；
+/// - 导入的 ID 一律重新分配、`save_password` 强制 false（凭据不随文件走）。
+pub fn import_bundle(
+    text: &str,
+    store: &mut ProfileStore,
+) -> Result<BundleImportReport, String> {
+    let mut bundle: ProfileBundle =
+        toml::from_str(text).map_err(|e| format!("解析 Tervo Profile 导出文件失败: {e}"))?;
+    if bundle.format != BUNDLE_FORMAT {
+        return Err(format!(
+            "不是 Tervo Profile 导出文件（format={:?}，期望 {BUNDLE_FORMAT:?}）",
+            bundle.format
+        ));
+    }
+    if bundle.version == 0 || bundle.version > BUNDLE_VERSION {
+        return Err(format!(
+            "不支持的导出格式版本 v{}（本程序支持 v{BUNDLE_VERSION}）",
+            bundle.version
+        ));
+    }
+    let mut report = BundleImportReport {
+        vault_refs: bundle.vault_refs.len(),
+        ..BundleImportReport::default()
+    };
+    for mut p in bundle.profiles.drain(..) {
+        p.id = 0;
+        // 凭据不随导出文件走：无论文件里写了什么，导入后都必须重新输入。
+        p.save_password = false;
+        p.normalize_group();
+        let original = p.name.trim().to_string();
+        let renamed = store.profiles.iter().any(|q| q.name == original);
+        if renamed {
+            p.name = duplicate_name(&original, &store.profiles);
+        }
+        let display_name = p.name.clone();
+        match store.add(p) {
+            Ok(_) => {
+                report.added += 1;
+                if renamed {
+                    report.renamed += 1;
+                }
+            },
+            Err(e) => report.skipped.push((display_name, e)),
+        }
+    }
+    Ok(report)
 }
 
 #[cfg(test)]
@@ -1718,5 +1941,169 @@ kind = "local"
         let missing = dir.join("nope");
         assert!(test_start_dir(missing.to_str().unwrap()).is_err());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn group_is_additive_normalized_and_legacy_file_untouched() {
+        // 旧 v2 profiles.toml 没有 group：读入 = 未分组，且不改写原文件。
+        let dir = tmpdir("group-legacy");
+        let path = dir.join("profiles.toml");
+        let old = r#"
+version = 2
+next_id = 2
+
+[[profiles]]
+id = 1
+name = "legacy"
+kind = "local"
+"#;
+        std::fs::write(&path, old).unwrap();
+        let store = ProfileStore::load_from(&path);
+        assert_eq!(store.profiles[0].group, "");
+        assert_eq!(store.profiles[0].effective_group(), None);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), old, "旧文件不该被改写");
+
+        // 新字段：add/update 去空白，落盘后原样读回。
+        let mut s = ProfileStore::default();
+        let id = s
+            .add(Profile { name: "work".into(), group: "  Team A  ".into(), ..Profile::default() })
+            .unwrap();
+        assert_eq!(s.get(id).unwrap().group, "Team A");
+        assert_eq!(s.get(id).unwrap().effective_group(), Some("Team A"));
+        s.save_to(&path);
+        let back = ProfileStore::load_from(&path);
+        assert_eq!(back.profiles[0].group, "Team A");
+
+        let mut edited = s.get(id).unwrap().clone();
+        edited.group = "   ".into();
+        s.update(id, edited).unwrap();
+        assert_eq!(s.get(id).unwrap().group, "", "空白分组 = 未分组");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn grouped_indices_orders_named_groups_then_ungrouped_and_filters() {
+        let profiles = vec![
+            Profile { name: "alpha".into(), group: "Work".into(), ..Profile::default() },
+            Profile { name: "beta".into(), ..Profile::default() },
+            Profile { name: "gamma".into(), group: "work".into(), ..Profile::default() },
+            Profile { name: "delta".into(), group: "Lab".into(), ..Profile::default() },
+            Profile { name: "epsilon".into(), group: "Work".into(), ..Profile::default() },
+            Profile {
+                name: "prod".into(),
+                group: "Lab".into(),
+                kind: "ssh".into(),
+                host: "example".into(),
+                user: "u".into(),
+                ..Profile::default()
+            },
+        ];
+        let buckets = grouped_indices(&profiles, "");
+        let names: Vec<Option<&str>> = buckets.iter().map(|b| b.name.as_deref()).collect();
+        assert_eq!(
+            names,
+            vec![Some("Lab"), Some("Work"), Some("work"), None],
+            "命名分组按大小写不敏感排序，未分组最后"
+        );
+        assert_eq!(buckets[0].indices, vec![3, 5]);
+        assert_eq!(buckets[1].indices, vec![0, 4]);
+        assert_eq!(buckets[2].indices, vec![2]);
+        assert_eq!(buckets[3].indices, vec![1]);
+
+        // 搜索：分组名参与匹配；空过滤组不产生标题。
+        let by_group = grouped_indices(&profiles, "WORK");
+        let names: Vec<Option<&str>> = by_group.iter().map(|b| b.name.as_deref()).collect();
+        assert_eq!(names, vec![Some("Work"), Some("work")]);
+        assert_eq!(by_group[0].indices, vec![0, 4]);
+        assert_eq!(by_group[1].indices, vec![2]);
+
+        // 原 name/host/kind 搜索语义不变。
+        assert_eq!(filter_indices(&profiles, "delta"), vec![3]);
+        assert_eq!(filter_indices(&profiles, "EXAMPLE"), vec![5]);
+        assert_eq!(filter_indices(&profiles, "ssh"), vec![5]);
+        assert!(grouped_indices(&profiles, "no-such-thing").is_empty());
+    }
+
+    #[test]
+    fn bundle_export_marks_vault_refs_and_never_carries_secrets() {
+        let mut store = ProfileStore::default();
+        store
+            .add(Profile {
+                name: "prod".into(),
+                group: "Ops".into(),
+                kind: "ssh".into(),
+                host: "prod.example".into(),
+                user: "yt".into(),
+                auth: "password".into(),
+                save_password: true,
+                ..Profile::default()
+            })
+            .unwrap();
+        store.add(Profile { name: "dev".into(), ..Profile::default() }).unwrap();
+
+        let text = export_bundle(&store).expect("导出应成功");
+        let bundle: ProfileBundle = toml::from_str(&text).expect("导出文件必须可解析");
+        assert_eq!(bundle.format, BUNDLE_FORMAT);
+        assert_eq!(bundle.version, BUNDLE_VERSION);
+        assert_eq!(bundle.profiles.len(), 2);
+        assert_eq!(bundle.vault_refs.len(), 1);
+        let vault = &bundle.vault_refs[0];
+        assert_eq!((vault.profile.as_str(), vault.field.as_str()), ("prod", "password"));
+        assert_eq!(vault.vault_key, "profile:1");
+        assert!(!vault.exported, "导出文件不含凭据");
+        assert!(bundle.profiles.iter().all(|p| !p.save_password), "save_password 必须写 false");
+        assert!(bundle.profiles.iter().any(|p| p.group == "Ops"));
+        assert!(
+            !text.lines().any(|l| l.trim_start().starts_with("password")),
+            "导出文件不能出现密码字段/值"
+        );
+        assert!(text.contains("[[vault_refs]]"), "Vault 引用必须单独标注");
+    }
+
+    #[test]
+    fn bundle_import_renames_duplicates_skips_bad_and_rejects_future_version() {
+        let bundle = ProfileBundle {
+            profiles: vec![
+                Profile {
+                    name: "work".into(),
+                    group: "Team".into(),
+                    shell: "/bin/zsh".into(),
+                    ..Profile::default()
+                },
+                // 故意留一个校验不过的 SSH Profile：导入应只跳过这一条并报告原因。
+                Profile {
+                    name: "broken-ssh".into(),
+                    kind: "ssh".into(),
+                    host: String::new(),
+                    user: String::new(),
+                    ..Profile::default()
+                },
+            ],
+            ..ProfileBundle::default()
+        };
+        let text = toml::to_string_pretty(&bundle).unwrap();
+
+        let mut target = ProfileStore::default();
+        target.add(Profile { name: "work".into(), ..Profile::default() }).unwrap();
+        let report = import_bundle(&text, &mut target).expect("合法导出文件应能导入");
+        assert_eq!(report.added, 1);
+        assert_eq!(report.renamed, 1);
+        assert_eq!(report.skipped.len(), 1);
+        assert_eq!(report.skipped[0].0, "broken-ssh");
+        assert_eq!(target.profiles.len(), 2);
+        let imported = target.profiles.iter().find(|p| p.name == "work (copy 1)").unwrap();
+        assert_eq!(imported.group, "Team");
+        assert_eq!(imported.shell, "/bin/zsh");
+        assert!(!imported.save_password);
+
+        // 未来版本 / 错误 format：整体拒绝且不动 store。
+        let before = target.profiles.len();
+        let future = text.replace("version = 1", "version = 99");
+        let err = import_bundle(&future, &mut target).unwrap_err();
+        assert!(err.contains("版本"), "{err}");
+        let wrong = text.replace(BUNDLE_FORMAT, "some.other.format");
+        let err = import_bundle(&wrong, &mut target).unwrap_err();
+        assert!(err.contains("不是 Tervo"), "{err}");
+        assert_eq!(target.profiles.len(), before, "拒绝路径不能部分写入");
     }
 }
