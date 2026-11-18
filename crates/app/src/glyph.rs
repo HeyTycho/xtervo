@@ -1349,10 +1349,23 @@ impl GlyphCache {
         if let Some(g) = self.map.get(&(ch, style, span)) {
             return *g;
         }
+        // 先限额再栅格化：旧顺序是“插入→超限清空 atlas→返回旧坐标”，
+        // 本次刚栅格化的字形会被清掉，增量渲染下该格一直空白。
+        if self.map.len() >= MAX_MONO_GLYPHS {
+            self.clear_mono_atlas();
+        }
         let glyph = self.rasterize(fonts, ch, style, span as usize);
         self.map.insert((ch, style, span), glyph);
         self.enforce_limits();
         glyph
+    }
+
+    fn clear_mono_atlas(&mut self) {
+        self.map.clear();
+        self.atlas.fill(0);
+        self.pen_x = 0;
+        self.pen_y = 0;
+        self.row_h = 0;
     }
 
     /// 缓存达到上限时整体丢弃并复用 atlas，而不是让内存随码位种类线性增长。
@@ -1361,11 +1374,7 @@ impl GlyphCache {
     /// 远达不到上限，因此不会触发。
     fn enforce_limits(&mut self) {
         if self.map.len() > MAX_MONO_GLYPHS {
-            self.map.clear();
-            self.atlas.fill(0);
-            self.pen_x = 0;
-            self.pen_y = 0;
-            self.row_h = 0;
+            self.clear_mono_atlas();
         }
         if self.color_map.len() > MAX_COLOR_GLYPHS {
             self.color_map.clear();
@@ -1503,6 +1512,9 @@ impl GlyphCache {
         let key = (ch, style, span);
         if let Some(g) = self.map.get(&key) {
             return *g;
+        }
+        if self.map.len() >= MAX_MONO_GLYPHS {
+            self.clear_mono_atlas();
         }
         let limit = (span.max(1) as usize * fonts.cell_w) as f32;
         let font = &fonts.faces[style.idx()];

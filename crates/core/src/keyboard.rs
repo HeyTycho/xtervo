@@ -149,6 +149,16 @@ const MAX_CSI_BYTES: usize = 64;
 /// 流式扫描键盘协议 CSI + 维护 kitty flags 栈。
 ///
 /// `enabled == false`（配置 `keyboard_protocol = "off"`）时完全不解析、不回包。
+/// UTF-8 前导字节 → 后续续字节数；非前导字节返回 None。
+fn utf8_lead_len(b: u8) -> Option<u8> {
+    match b {
+        0xC2..=0xDF => Some(1),
+        0xE0..=0xEF => Some(2),
+        0xF0..=0xF4 => Some(3),
+        _ => None,
+    }
+}
+
 pub(crate) struct KeyboardScanner {
     enabled: bool,
     /// xterm modifyOtherKeys 等级（全局，不随备用屏切换）。
@@ -159,6 +169,9 @@ pub(crate) struct KeyboardScanner {
     state: State,
     csi: Vec<u8>,
     csi_overflow: bool,
+    /// 当前 UTF-8 多字节序列还剩几个续字节。终端输出是 UTF-8；0x90/0x9B 等
+    /// 续字节不是 C1 控制符，不能进入 String/Csi 状态吞掉后续 kitty 序列。
+    utf8_remaining: u8,
 }
 
 impl KeyboardScanner {
@@ -172,6 +185,7 @@ impl KeyboardScanner {
             state: State::Ground,
             csi: Vec::new(),
             csi_overflow: false,
+            utf8_remaining: 0,
         }
     }
 
@@ -194,6 +208,7 @@ impl KeyboardScanner {
         self.state = State::Ground;
         self.csi.clear();
         self.csi_overflow = false;
+        self.utf8_remaining = 0;
     }
 
     pub(crate) fn feed(&mut self, bytes: &[u8], out: &mut Vec<KeyboardAction>) {
@@ -201,6 +216,18 @@ impl KeyboardScanner {
             return;
         }
         for &b in bytes {
+            if self.utf8_remaining > 0 {
+                if (0x80..=0xBF).contains(&b) {
+                    self.utf8_remaining -= 1;
+                    continue;
+                }
+                // 非法 UTF-8：放弃这个序列，按普通字节继续。
+                self.utf8_remaining = 0;
+            }
+            if let Some(n) = utf8_lead_len(b) {
+                self.utf8_remaining = n;
+                continue;
+            }
             self.state = match self.state {
                 State::Ground => match b {
                     0x1b => State::Escape,
@@ -520,6 +547,19 @@ mod tests {
 
     fn reply_kitty(flags: u8) -> KeyboardAction {
         KeyboardAction::Reply(format!("\x1b[?{flags}u").into_bytes())
+    }
+
+    #[test]
+    fn utf8_continuation_does_not_swallow_kitty_set() {
+        // А = D0 90；旧扫描器把 0x90 当 DCS 进入 String，吞掉后面的 kitty set。
+        assert_eq!(scan(b"\xD0\x90\x1b[>7u"), vec![set(7)]);
+        // 你 = E4 BD A0；逐字节分块同样不能吞。
+        let mut scanner = KeyboardScanner::new(true);
+        let mut out = Vec::new();
+        for b in b"\xE4\xBD\xA0\x1b[>3u" {
+            scanner.feed(&[*b], &mut out);
+        }
+        assert_eq!(out, vec![set(3)]);
     }
 
     #[test]

@@ -34,6 +34,7 @@ use crate::session;
 use crate::session::{SnapshotV2, WindowGeometry, WindowSnapshot};
 use crate::themes::ThemeRegistry;
 use crate::vault::Vault;
+use crate::workspaces::WorkspaceStore;
 use slint::ComponentHandle;
 
 use crate::AppState;
@@ -197,6 +198,8 @@ pub struct SharedServices {
     pub vault: Shared<Vault>,
     /// profile 列表：同一份数据，避免两个窗口各自 save 覆盖。
     pub profiles: Shared<ProfileStore>,
+    /// 命名 Workspace：同一份数据，避免两个窗口各自 load/save 互相覆盖。
+    pub workspaces: Shared<WorkspaceStore>,
     /// MCP 只有一个 runtime/socket/token；`Arc` 供 socket 线程持有。
     pub mcp: Arc<McpRuntime>,
     pub session: Shared<SessionService>,
@@ -219,6 +222,7 @@ impl SharedServices {
         plugins: PluginStore,
         vault: Vault,
         profiles: ProfileStore,
+        workspaces: WorkspaceStore,
         mcp: Arc<McpRuntime>,
         session: SessionService,
     ) -> Self {
@@ -228,6 +232,7 @@ impl SharedServices {
             plugins: Shared::new(plugins),
             vault: Shared::new(vault),
             profiles: Shared::new(profiles),
+            workspaces: Shared::new(workspaces),
             mcp,
             session: Shared::new(session),
             config_watcher: RefCell::new(None),
@@ -745,6 +750,40 @@ pub fn save_session_snapshot(reason: &str, force: bool) -> bool {
     }
 }
 
+/// 恢复完成后的“消费快照”写：忽略 `restore_session_on_startup` 门禁，
+/// 用当前恢复出的布局原子覆盖旧快照（save_v2 会保留上一代 `.bak`）。
+/// 写失败时**不**删除旧快照：宁可下次再恢复一次，也不能把唯一布局删掉。
+pub fn save_session_snapshot_after_restore(reason: &str) -> bool {
+    let Some(registry) = registry() else {
+        return false;
+    };
+    let shared = registry.borrow().shared();
+    let snapshot = capture_restorable_snapshot_v2();
+    if snapshot.windows.is_empty() {
+        return false;
+    }
+    match session::save_v2(&snapshot) {
+        Ok(path) => {
+            let windows = snapshot.windows.len();
+            let tabs: usize = snapshot.windows.iter().map(|w| w.tabs.len()).sum();
+            shared
+                .session
+                .with_mut(|session| session.last_snapshot = Some(snapshot));
+            eprintln!(
+                "[session] {reason}: 已保存 {}（{} 个窗口 / {} 个标签）",
+                path.display(),
+                windows,
+                tabs
+            );
+            true
+        },
+        Err(error) => {
+            eprintln!("[session] {reason}: 保存失败，保留旧快照: {error}");
+            false
+        },
+    }
+}
+
 fn autosave_session_tick() {
     let _ = save_session_snapshot("autosave", false);
 }
@@ -757,6 +796,21 @@ pub fn save_session_on_exit() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn workspace_store_is_shared_between_window_handles() {
+        let store = Shared::new(WorkspaceStore::default());
+        let a = store.clone_handle();
+        let b = store.clone_handle();
+        a.with_mut(|s| {
+            s.workspaces.push(crate::workspaces::Workspace {
+                name: "shared".into(),
+                ..Default::default()
+            })
+        });
+        assert_eq!(b.with(|s| s.workspaces.len()), 1);
+        assert_eq!(b.with(|s| s.workspaces[0].name.clone()), "shared");
+    }
 
     #[test]
     fn window_ids_start_at_one_and_never_reuse() {

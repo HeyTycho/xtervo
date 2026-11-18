@@ -63,7 +63,10 @@ if [ -z "$XVFB" ]; then
 fi
 [ -n "$XVFB" ] && [ -x "$XVFB" ] || die "Xvfb not found (set E2E_XVFB_BIN)"
 
-rm -rf "$OUT"
+if [ -n "${E2E_OUT:-}" ] && [ -e "$OUT" ]; then
+  die "E2E_OUT=$OUT 已存在；拒绝删除调用者目录。请换一个新目录或先手动清理。"
+fi
+rm -rf -- "$OUT"
 mkdir -p "$OUT"/{shots,home,logs}
 
 # --- payload: Kitty transmit chunks, placement, then scroll lines -----------

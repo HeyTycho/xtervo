@@ -6,6 +6,21 @@ Tervo 的版本与 tag 规则见 `docs/RELEASING.md`。
 
 ### Fixed
 
+- 全仓 review（2026-11-18）后的安全/数据/输入修复：
+  - OSC 52：远端 pane 默认禁止查询本机剪贴板（新配置 `osc52_remote_read=false`）；
+    `osc52` 未知值按 deny，不再 fail-open。剪贴板复制日志只记长度，不记内容。
+  - 原子写：config 备份恢复、录制导出改临时文件 + rename；畸形 Xresources
+    颜色不再在 UTF-8 字符中间切片 panic；e2e 拒绝删除已存在的 `E2E_OUT`。
+  - 多窗口：WorkspaceStore 移入 `SharedServices` 单例；恢复成功后先写新快照
+    再消费旧快照；重开失败把快照放回栈；桌面通知限 4 个在飞 +
+    2s 超时；关闭非 primary 窗口最后一个 Tab/pane 只关窗口，不再退出整个进程。
+  - 输入：keyboard/OSC 扫描器跳过 UTF-8 续字节（中文/Cyrillic 不再吞掉
+    kitty/OSC 序列）；PTY chunk 携带 pgrp，键盘 flags 按 owner pgrp 复位，
+    并加 100ms 前台 pgrp 监视线程。
+  - GPU：图片 SourceId 按 pane 命名空间；字体切换重建 atlas；Stage 0 的
+    dirty cell 行展开为 `cell_h` 像素行；glyph cache 先限额再返回字形。
+  - 测试：TabBar/keyboard/pin-drag/single-instance 多窗口 e2e 适配并复跑；
+    新增 UTF-8 扫描器、Xresources、shared workspace、最后 Tab 关窗等回归。
 - 标题 spinner（Codex 重连、dsh 工作态）期间 Tab 切不动/误关：`tab-box.width`
   依赖 `tab-area.preferred-width`，而后者又受 width 约束，形成循环绑定；标题
   10–20Hz 刷新时宽度会从自然值一级级缩到 52px 下限，close 按钮滑到 Tab 中间，

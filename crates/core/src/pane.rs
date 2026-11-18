@@ -562,40 +562,65 @@ enum Ctrl {
 /// - `Ok(0)` = 对端关闭，退出并通知 actor `Ctrl::PtyClosed`；
 /// - `Interrupted` 重试，其它错误直接收尾；
 /// - 发送失败（actor 已退出）立即停止，绝不空转。
+fn note_foreground_pgrp(
+    fd: std::os::unix::io::RawFd,
+    last_pgrp: &mut i32,
+    ctrl_tx: &Sender<Ctrl>,
+) {
+    let pgrp = unsafe { libc::tcgetpgrp(fd) }.max(0);
+    if pgrp <= 0 || pgrp == *last_pgrp {
+        return;
+    }
+    let prev_dead = *last_pgrp > 0
+        && unsafe { libc::kill(-*last_pgrp, 0) } == -1
+        && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+    *last_pgrp = pgrp;
+    let _ = ctrl_tx.send(Ctrl::ForegroundChanged { pgid: pgrp, prev_dead });
+}
+
 fn pump_reader<R: std::io::Read>(
     mut reader: R,
-    pty_tx: Sender<Vec<u8>>,
+    pty_tx: Sender<(Vec<u8>, i32)>,
     ctrl_tx: Sender<Ctrl>,
     fg_fd: Option<std::os::unix::io::RawFd>,
 ) {
     let mut buf = vec![0u8; READ_CHUNK];
     // 前台进程组快照：PTY 后端传入 master 的 dup；插件 transport 为 None。
-    // 子命令退出后 pgrp 回到 shell，读线程在下一次输出（shell prompt）时
-    // 通知 actor 复位 kitty/modifyOtherKeys，避免崩溃应用留下的 flags 把
-    // shell 输入变成 CSI-u 乱码。
     let mut last_pgrp = fg_fd
         .map(|fd| unsafe { libc::tcgetpgrp(fd) })
         .unwrap_or(0)
         .max(0);
     loop {
+        // PTY：100ms 超时也要检查前台 pgrp。否则短命子进程退出、shell/TUI
+        // 没有新输出时，“回到中间层 TUI”的切换会被漏掉，残留键盘 flags。
+        if let Some(fd) = fg_fd {
+            let mut pfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+            let rc = unsafe { libc::poll(&mut pfd, 1, 100) };
+            if rc == 0 {
+                note_foreground_pgrp(fd, &mut last_pgrp, &ctrl_tx);
+                continue;
+            }
+            if rc < 0 {
+                let error = std::io::Error::last_os_error();
+                if error.kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+            }
+        }
         match reader.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
+                // 每个 chunk 带上读取时的前台 pgrp：actor 在 feed 之前更新
+                // current_pgid，键盘 flags 的 owner 才能按“谁声明的”归属。
+                let chunk_pgrp = fg_fd
+                    .map(|fd| unsafe { libc::tcgetpgrp(fd) })
+                    .unwrap_or(0)
+                    .max(0);
                 if let Some(fd) = fg_fd {
-                    let pgrp = unsafe { libc::tcgetpgrp(fd) };
-                    if pgrp > 0 && pgrp != last_pgrp {
-                        // 上一个前台进程组是否已经消失：codex/git 之类子进程
-                        // 退出后，tcgetpgrp 会先回到中间层 TUI（不是 shell）。
-                        let prev_dead = last_pgrp > 0
-                            && unsafe { libc::kill(-last_pgrp, 0) } == -1
-                            && std::io::Error::last_os_error().raw_os_error()
-                                == Some(libc::ESRCH);
-                        last_pgrp = pgrp;
-                        let _ = ctrl_tx.send(Ctrl::ForegroundChanged { pgid: pgrp, prev_dead });
-                    }
+                    note_foreground_pgrp(fd, &mut last_pgrp, &ctrl_tx);
                 }
                 // 有界阻塞：背压回内核，绝不丢字节、绝不做 UI 工作。
-                if pty_tx.send(buf[..n].to_vec()).is_err() {
+                if pty_tx.send((buf[..n].to_vec(), chunk_pgrp)).is_err() {
                     break;
                 }
             },
@@ -1239,7 +1264,7 @@ pub fn spawn_with_transport(
         .unwrap_or(0);
 
     // ---- 有界通道 ----
-    let (pty_tx, pty_rx) = bounded::<Vec<u8>>(PTY_QUEUE_CHUNKS);
+    let (pty_tx, pty_rx) = bounded::<(Vec<u8>, i32)>(PTY_QUEUE_CHUNKS);
     let (ctrl_tx, ctrl_rx) = bounded::<Ctrl>(CTRL_QUEUE);
     let (pull_tx, pull_rx) = bounded::<(u64, Box<Frame>)>(1);
     let (events_sink, events_rx, events_wake_rx) = EventSink::new_with_wake(EVENT_QUEUE);
@@ -1360,7 +1385,8 @@ pub fn spawn_with_transport(
         modify_other_keys: modify_other_keys.clone(),
         keyboard_flags: keyboard_flags.clone(),
         shell_pgid,
-        keyboard_set_seen: false,
+        current_pgid: shell_pgid,
+        keyboard_owner_pgid: 0,
         cursor_bits: cursor_bits.clone(),
         scroll: scroll.clone(),
         read_only: read_only.clone(),
@@ -1666,7 +1692,7 @@ struct Actor {
     query_tail: Vec<u8>,
     /// 清屏/备用屏切换检测：这些序列让 alacritty 清屏，图片也必须一起清。
     image_clear: ImageClearScanner,
-    pty_rx: Receiver<Vec<u8>>,
+    pty_rx: Receiver<(Vec<u8>, i32)>,
     ctrl_rx: Receiver<Ctrl>,
     pull_tx: Sender<(u64, Box<Frame>)>,
     /// 拉帧响应通道的接收端克隆：仅在容量 1 被迟到响应占住时由 actor 自行排空，
@@ -1691,10 +1717,11 @@ struct Actor {
     keyboard_flags: Arc<AtomicU8>,
     /// 直接子进程（shell）的进程组 id：`tcgetpgrp` 回到它表示前台命令已退出。
     shell_pgid: i32,
-    /// 本轮前台切换排空输出时，新应用是否自己设置了键盘协议。
-    /// `prev_dead` 复位前必须先看它：codex→git→codex 时，父应用可能
-    /// 在子进程退出后的同一批输出里重新声明 flags，不能反手清掉。
-    keyboard_set_seen: bool,
+    /// 当前 feed 的 PTY chunk 读取时的前台 pgrp（0 = 插件 transport）。
+    current_pgid: i32,
+    /// 最近一次声明 kitty/modifyOtherKeys 的 pgrp；只有 owner 退出/回到
+    /// shell 才复位，codex→git→codex 返回父 TUI 时不会被误清。
+    keyboard_owner_pgid: i32,
     /// 光标快照，供 IME/焦点同步（不依赖 UI 拉帧）。
     cursor_bits: Arc<std::sync::atomic::AtomicU64>,
     /// 滚动位置快照（打包 offset/history），供 UI 无阻塞查询。
@@ -2647,10 +2674,24 @@ impl Drop for Actor {
 fn should_reset_foreground_keyboard(
     pgid: i32,
     shell_pgid: i32,
+    owner_pgid: i32,
     prev_dead: bool,
-    keyboard_set_seen: bool,
 ) -> bool {
-    (pgid == shell_pgid || prev_dead) && !keyboard_set_seen
+    // 回到 shell：shell 不应继承任何应用的增强键盘状态。
+    if pgid == shell_pgid {
+        return true;
+    }
+    // 还没人声明过：沿用“旧 pgrp 已死”的判断（兼容无 flags 的场景）。
+    if owner_pgid == 0 {
+        return prev_dead;
+    }
+    // 声明者回到前台：codex→git→codex，保留它自己的 flags。
+    if owner_pgid == pgid {
+        return false;
+    }
+    // 声明者已经消失（codex 退出后回到 dsh/shell）：复位。
+    (unsafe { libc::kill(-owner_pgid, 0) }) == -1
+        && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
 }
 
 impl Actor {
@@ -2676,7 +2717,12 @@ impl Actor {
                     recv(pty) -> msg => match msg {
                         // Sixel payload 分块到达时 feed 返回 false：没有新内容，
                         // 不应为每 32 KiB 图片数据触发一次整帧重绘。
-                        Ok(b) => { if self.feed(&b) { self.wake.notify(); } },
+                        Ok((b, chunk_pgid)) => {
+                            self.current_pgid = chunk_pgid;
+                            if self.feed(&b) {
+                                self.wake.notify();
+                            }
+                        },
                         Err(_) => self.pty_closed = true,
                     },
                 }
@@ -2730,13 +2776,13 @@ impl Actor {
             match action {
                 KeyboardAction::SetKeyboardFlags(flags) => {
                     if flags != 0 {
-                        self.keyboard_set_seen = true;
+                        self.keyboard_owner_pgid = self.current_pgid;
                     }
                     self.keyboard_flags.store(flags, Ordering::Relaxed);
                 },
                 KeyboardAction::SetModifyOtherKeys(level) => {
                     if level != 0 {
-                        self.keyboard_set_seen = true;
+                        self.keyboard_owner_pgid = self.current_pgid;
                     }
                     self.modify_other_keys.store(level, Ordering::Relaxed);
                 },
@@ -3773,19 +3819,20 @@ impl Actor {
                 // 设回 7”。进入新前台命令（上一个 pgrp 仍活着）不复位，
                 // 否则可能与新应用首批输出里的 `CSI > flags u` 抢顺序。
                 if pgid == self.shell_pgid || prev_dead {
-                    self.keyboard_set_seen = false;
-                    while let Ok(bytes) = self.pty_rx.try_recv() {
+                    while let Ok((bytes, chunk_pgid)) = self.pty_rx.try_recv() {
+                        self.current_pgid = chunk_pgid;
                         self.feed(&bytes);
                     }
-                    // 新前台应用可能在同一批输出里已经声明了 flags
-                    // （codex→git→codex 返回父 TUI）。它自己设置的协议优先，
-                    // 不能按“旧 pgrp 已死”反手清掉。
+                    // 按“谁声明了 flags”判断，而不是“本轮见过 set”：
+                    // codex 的 chunk 写 owner=codex；回到 codex 时保留，
+                    // 退出到 shell/dsh 时按 owner 是否存活复位。
                     if should_reset_foreground_keyboard(
                         pgid,
                         self.shell_pgid,
+                        self.keyboard_owner_pgid,
                         prev_dead,
-                        self.keyboard_set_seen,
                     ) {
+                        self.keyboard_owner_pgid = 0;
                         self.reset_foreground_keyboard();
                     }
                 }
@@ -3793,7 +3840,8 @@ impl Actor {
             },
             Ctrl::PtyClosed => {
                 // 关键：EOF 之后 PTY 队列里可能还压着若干块数据，必须排空再收尾。
-                while let Ok(bytes) = self.pty_rx.try_recv() {
+                while let Ok((bytes, chunk_pgid)) = self.pty_rx.try_recv() {
+                    self.current_pgid = chunk_pgid;
                     self.feed(&bytes);
                 }
                 // 不要立刻退出：子进程退出后 UI 仍可能拉取最后一帧并展示退出状态。
@@ -4150,23 +4198,24 @@ pub fn fill_frame<T: EventListener>(
 mod tests {
 
     #[test]
-    fn foreground_reset_respects_new_app_keyboard_set() {
-        // 子进程退出、父 TUI 回到前台：旧 pgrp 已死，且父应用没重新声明 -> 复位。
-        assert!(should_reset_foreground_keyboard(42, 7, true, false));
-        // 父应用在同一批输出里重新声明 flags -> 保留，不能反手清掉。
-        assert!(!should_reset_foreground_keyboard(42, 7, true, true));
-        // 回到 shell：无论 prev 是否活着都复位（shell 不继承应用协议）。
-        assert!(should_reset_foreground_keyboard(7, 7, false, false));
-        assert!(!should_reset_foreground_keyboard(7, 7, false, true));
-        // 新应用启动、旧 pgrp 仍活着：不清（避免和它首批 flags 抢顺序）。
-        assert!(!should_reset_foreground_keyboard(42, 7, false, false));
+    fn foreground_reset_respects_flags_owner() {
+        // 回到 shell 总是复位（shell 不继承应用协议）。
+        assert!(should_reset_foreground_keyboard(7, 7, 0, false));
+        assert!(should_reset_foreground_keyboard(7, 7, 42, false));
+        // 声明 flags 的 owner 回到前台：保留。
+        assert!(!should_reset_foreground_keyboard(42, 7, 42, true));
+        // owner 已消失（不存在的 pgrp）：复位。
+        assert!(should_reset_foreground_keyboard(43, 7, i32::MAX - 1, true));
+        // owner 未知：沿用 prev_dead。
+        assert!(should_reset_foreground_keyboard(43, 7, 0, true));
+        assert!(!should_reset_foreground_keyboard(43, 7, 0, false));
     }
     #[test]
     fn pump_reader_forwards_bytes_then_reports_pty_closed() {
         use std::io::Write;
         use std::os::unix::net::UnixStream;
         let (mut writer, reader) = UnixStream::pair().unwrap();
-        let (tx, rx) = crossbeam_channel::bounded::<Vec<u8>>(8);
+        let (tx, rx) = crossbeam_channel::bounded::<(Vec<u8>, i32)>(8);
         let (ctrl_tx, ctrl_rx) = crossbeam_channel::bounded::<Ctrl>(8);
         let handle = std::thread::spawn(move || pump_reader(reader, tx, ctrl_tx, None));
 
@@ -4175,7 +4224,7 @@ mod tests {
         // 两次 write 可能被合成一次 read（流式语义），按字节数收齐再断言。
         let mut got = Vec::new();
         while got.len() < 7 {
-            let chunk = rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+            let (chunk, _pgid) = rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
             got.extend_from_slice(&chunk);
         }
         assert_eq!(got, b"abcdefg");

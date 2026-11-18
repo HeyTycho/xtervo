@@ -19,7 +19,11 @@ XVFB=${E2E_XVFB_BIN:-$ROOT/.perf/xvfb/usr/bin/Xvfb}
 [ -x "$BIN" ] || { echo "缺少 $BIN；先 cargo build -p tervo-app --bin tervo" >&2; exit 2; }
 [ -x "$XVFB" ] || { echo "缺少 Xvfb: $XVFB" >&2; exit 2; }
 
-rm -rf "$OUT"; mkdir -p "$OUT/home"
+if [ -n "${E2E_OUT:-}" ] && [ -e "$OUT" ]; then
+    echo "E2E_OUT=$OUT 已存在；拒绝删除调用者目录。请换一个新目录或先手动清理。" >&2
+    exit 2
+fi
+rm -rf -- "$OUT"; mkdir -p "$OUT/home"
 SOCK="$OUT/diag.sock"; TOKEN=test-token-$RANDOM
 APP_PID=""; XVFB_PID=""
 cleanup() {

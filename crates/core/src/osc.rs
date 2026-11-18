@@ -42,11 +42,23 @@ enum State {
     StringEscape,
 }
 
+/// UTF-8 前导字节 → 后续续字节数；非前导字节返回 None。
+fn utf8_lead_len(b: u8) -> Option<u8> {
+    match b {
+        0xC2..=0xDF => Some(1),
+        0xE0..=0xEF => Some(2),
+        0xF0..=0xF4 => Some(3),
+        _ => None,
+    }
+}
+
 /// 流式 OSC/BEL 扫描器；跨 PTY chunk 的序列由内部状态拼接。
 pub struct OscScanner {
     state: State,
     buf: Vec<u8>,
     overflow: bool,
+    /// UTF-8 多字节序列剩余续字节数；0x90/0x9B 等续字节不是 C1 控制符。
+    utf8_remaining: u8,
 }
 
 impl Default for OscScanner {
@@ -57,12 +69,29 @@ impl Default for OscScanner {
 
 impl OscScanner {
     pub fn new() -> Self {
-        Self { state: State::Ground, buf: Vec::new(), overflow: false }
+        Self {
+            state: State::Ground,
+            buf: Vec::new(),
+            overflow: false,
+            utf8_remaining: 0,
+        }
     }
 
     /// 扫描一段 PTY 字节，把识别出的通知类事件追加到 `out`。
     pub fn feed(&mut self, bytes: &[u8], out: &mut Vec<CoreEvent>) {
         for &b in bytes {
+            if self.utf8_remaining > 0 {
+                if (0x80..=0xBF).contains(&b) {
+                    self.utf8_remaining -= 1;
+                    continue;
+                }
+                // 非法 UTF-8：放弃这个序列，按普通字节继续。
+                self.utf8_remaining = 0;
+            }
+            if let Some(n) = utf8_lead_len(b) {
+                self.utf8_remaining = n;
+                continue;
+            }
             self.state = match self.state {
                 State::Ground => match b {
                     0x07 => {
@@ -644,6 +673,25 @@ mod tests {
         scanner.feed(b"\x1b", &mut out);
         scanner.feed(b"]777;notify;t;b\x07", &mut out);
         assert_eq!(out.len(), 1);
+    }
+
+    #[test]
+    fn utf8_continuation_is_not_c1_dcs() {
+        // А = D0 90；0x90 是续字节，不是 DCS。BEL 和 OSC 7 必须保留。
+        assert_eq!(
+            scan(b"\xD0\x90\x07\x1b]7;file://host/home/user/project\x07"),
+            vec![
+                CoreEvent::Bell,
+                CoreEvent::Cwd("/home/user/project".to_string())
+            ]
+        );
+        // 逐字节分块：你 = E4 BD A0。
+        let mut scanner = OscScanner::new();
+        let mut out = Vec::new();
+        for b in b"\xE4\xBD\xA0\x07" {
+            scanner.feed(&[*b], &mut out);
+        }
+        assert_eq!(out, vec![CoreEvent::Bell]);
     }
 
     #[test]

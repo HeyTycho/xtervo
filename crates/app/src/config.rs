@@ -348,9 +348,14 @@ pub struct Config {
     pub confirm_multiline_paste: bool,
     /// OSC 52 剪贴板："allow"（默认）| "deny"。
     ///
-    /// 允许时远端程序可通过 OSC 52 写本机剪贴板/PRIMARY，也可查询剪贴板并经
-    /// PTY 回写；不需要时设 `"deny"` 关闭两个方向。未知值按默认 `allow` 处理。
+    /// 允许时远端程序可通过 OSC 52 写本机剪贴板/PRIMARY；查询（读本机剪贴板）
+    /// 还要求 `osc52_remote_read = true`。不需要时设 `"deny"` 关闭两个方向。
     pub osc52: String,
+    /// 是否允许**远端** pane 通过 OSC 52 查询本机剪贴板（默认 false）。
+    ///
+    /// 本地 shell 的 OSC 52 查询不受影响；SSH/远端 transport 默认拒绝，避免
+    /// 远端进程静默读取本机剪贴板（密码/令牌）。
+    pub osc52_remote_read: bool,
     /// 右键直接粘贴（旧字段，保留用于迁移；新配置用 `right_click`）。
     pub right_click_paste: bool,
     /// Tabby 式右键模式：menu | paste | clipboard | off。
@@ -512,6 +517,7 @@ impl Default for Config {
             copy_on_select: true,
             confirm_multiline_paste: true,
             osc52: "allow".to_string(),
+            osc52_remote_read: false,
             right_click_paste: false,
             right_click: "menu".to_string(),
             paste_on_middle_click: true,
@@ -645,10 +651,15 @@ impl Config {
         }
     }
 
-    /// OSC 52 是否放行。默认 allow；只有显式 `deny`（不区分大小写）才拒绝，
-    /// 未知值仍按默认 allow，避免写错一个词就让功能整体失效。
+    /// OSC 52 是否放行（写/清）。只认显式 `allow`；`deny` 和未知值都拒绝。
     pub fn osc52_allowed(&self) -> bool {
-        !self.osc52.trim().eq_ignore_ascii_case("deny")
+        self.osc52.trim().eq_ignore_ascii_case("allow")
+    }
+
+    /// OSC 52 查询（读本机剪贴板）是否放行。远端 pane 默认拒绝，需要
+    /// `osc52_remote_read = true`；本地 pane 只受 `osc52` 总开关限制。
+    pub fn osc52_read_allowed(&self, remote: bool) -> bool {
+        self.osc52_allowed() && (!remote || self.osc52_remote_read)
     }
 
     /// SESS-007：生效的自动重连策略（次数/退避都在 config 里；读入时夹取）。
@@ -1002,7 +1013,15 @@ impl Config {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| format!("创建目录失败: {e}"))?;
         }
-        std::fs::write(path, bytes).map_err(|e| format!("恢复 {} 失败: {e}", path.display()))?;
+        // 和 save_to 一样走临时文件 + rename：恢复过程中写失败/磁盘满不能把
+        // 当前配置截断成空文件或半截文件。
+        let tmp = path.with_extension("toml.restore.tmp");
+        std::fs::write(&tmp, &bytes)
+            .map_err(|e| format!("写恢复临时文件 {} 失败: {e}", tmp.display()))?;
+        if let Err(e) = std::fs::rename(&tmp, path) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(format!("恢复 {} 失败: {e}", path.display()));
+        }
         Ok(backup)
     }
 }
@@ -1519,11 +1538,18 @@ mod tests {
         assert!(!cfg.osc52_allowed());
         let cfg: Config = toml::from_str("version = 1\nosc52 = \"ALLOW\"\n").unwrap();
         assert!(cfg.osc52_allowed());
-        // 拼错/未知值按默认 allow；空值也按默认。
+        // 拼错/未知值一律拒绝，不再 fail-open。
         let cfg: Config = toml::from_str("version = 1\nosc52 = \"nope\"\n").unwrap();
-        assert!(cfg.osc52_allowed());
+        assert!(!cfg.osc52_allowed());
         let cfg: Config = toml::from_str("version = 1\n").unwrap();
         assert_eq!(cfg.osc52, "allow", "旧配置缺 osc52 时默认 allow");
+        assert!(!cfg.osc52_remote_read, "远端查询默认关闭");
+
+        // 写默认可；远端查询默认不可，显式开启后可以；本地查询不受影响。
+        assert!(cfg.osc52_read_allowed(false));
+        assert!(!cfg.osc52_read_allowed(true));
+        let cfg = Config { osc52_remote_read: true, ..cfg };
+        assert!(cfg.osc52_read_allowed(true));
 
         let dir = tmpdir("osc52");
         let path = dir.join("config.toml");

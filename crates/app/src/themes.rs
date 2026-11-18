@@ -651,10 +651,13 @@ fn parse_xcolor(s: &str) -> Option<u32> {
         let parts: Vec<&str> = rest.split('/').collect();
         if parts.len() == 3 {
             let ch = |p: &str| {
-                let v = if p.len() >= 2 {
-                    u32::from_str_radix(&p[..p.len().min(4)], 16).ok()?
+                // rgb: 分量是 ASCII 十六进制；先按字符取前 4 位，绝不能用
+                // &p[..min(4)] 切在 UTF-8 字符中间（畸形 Xresources 会 panic）。
+                let digits: String = p.chars().take(4).collect();
+                let v = if digits.chars().count() >= 2 {
+                    u32::from_str_radix(&digits, 16).ok()?
                 } else {
-                    u32::from_str_radix(p, 16).ok()? * 17
+                    u32::from_str_radix(&digits, 16).ok()? * 17
                 };
                 Some((v.min(0xffff) >> 8) as u32)
             };
@@ -856,6 +859,13 @@ danger = "#f38ba8"
     fn parse(s: &str, stem: &str) -> Result<ThemeData, String> {
         let raw: RawTheme = toml::from_str(s).map_err(|e| e.to_string())?;
         parse_raw(stem, raw)
+    }
+
+    #[test]
+    fn malformed_xresources_component_does_not_panic() {
+        // é 占两个字节；旧实现 &p[..4] 会切在字符中间并 panic。
+        assert_eq!(parse_xcolor("rgb:aaaé/00/00"), None);
+        assert_eq!(parse_xcolor("rgb:ffff/0000/0000"), Some(0x00ff_0000));
     }
 
     #[test]

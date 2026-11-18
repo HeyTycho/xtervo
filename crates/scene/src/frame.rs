@@ -73,6 +73,8 @@ pub struct FrameSceneBuilder<'a> {
     damage: Option<DamageRegion>,
     background: Option<BackgroundInstance>,
     style: SelectionStyle,
+    /// 图片 source ID 的命名空间（GPU 多 pane 时用 pane id）。
+    source_namespace: u64,
 }
 
 impl<'a> FrameSceneBuilder<'a> {
@@ -85,7 +87,15 @@ impl<'a> FrameSceneBuilder<'a> {
             damage: None,
             background: None,
             style: SelectionStyle::default(),
+            source_namespace: 0,
         }
+    }
+
+    /// Overrides the scene revision. Defaults to [`Frame::generation`].
+    /// 给图片 source ID 加命名空间；默认 0 保持单 pane/测试行为不变。
+    pub fn source_namespace(mut self, namespace: u64) -> Self {
+        self.source_namespace = namespace;
+        self
     }
 
     /// Overrides the scene revision. Defaults to [`Frame::generation`].
@@ -129,6 +139,7 @@ impl<'a> FrameSceneBuilder<'a> {
             damage,
             background,
             style,
+            source_namespace,
         } = self;
 
         let mut layers: BTreeMap<i32, Vec<DrawItem>> = BTreeMap::new();
@@ -148,7 +159,9 @@ impl<'a> FrameSceneBuilder<'a> {
         // Frame.images already has protocol paint order. Pushing in that order keeps ties
         // deterministic; BTreeMap fixes the cross-layer order.
         for image in &frame.images {
-            if let Some((layer_z, instance)) = image_instance(frame, viewport, image) {
+            if let Some((layer_z, instance)) =
+                image_instance(frame, viewport, image, source_namespace)
+            {
                 layers
                     .entry(layer_z)
                     .or_default()
@@ -368,6 +381,7 @@ fn image_instance(
     frame: &Frame,
     viewport: Viewport,
     image: &InlineImage,
+    source_namespace: u64,
 ) -> Option<(i32, ImageInstance)> {
     if image.width == 0 || image.height == 0 {
         return None;
@@ -441,7 +455,7 @@ fn image_instance(
         layer_z,
         ImageInstance {
             placement_id: PlacementId(image.id),
-            source_id: SourceId(image.source_id),
+            source_id: SourceId((source_namespace << 32) | (image.source_id & 0xffff_ffff)),
             source_rect,
             source_size: (image.width, image.height),
             destination,

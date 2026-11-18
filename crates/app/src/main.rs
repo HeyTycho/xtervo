@@ -285,6 +285,7 @@ fn commit_workspace_save(st: &mut AppState, raw: &str) {
     }
     st.workspaces.save();
     refresh_workspace_rows(st);
+    refresh_workspace_rows_elsewhere(st.window_id);
     st.ui.set_workspace_save_open(false);
     st.ui.set_workspace_save_hint("".into());
     st.ui.set_workspace_save_status("".into());
@@ -335,6 +336,20 @@ fn refresh_workspace_rows(st: &mut AppState) {
         rows.iter().map(|r| r.name.to_string()).collect::<Vec<_>>()
     );
     st.workspace_model.set_vec(rows);
+}
+
+/// 共享 WorkspaceStore 变更后，刷新其它窗口的设置页列表；当前窗口由调用方刷新。
+fn refresh_workspace_rows_elsewhere(current: WindowId) {
+    let Some(registry) = runtime::registry() else {
+        return;
+    };
+    let ids = registry.borrow().ids();
+    for id in ids {
+        if id == current {
+            continue;
+        }
+        let _ = runtime::with_window(id, refresh_workspace_rows);
+    }
 }
 
 /// 工作区操作结果行（设置页卡片底部；下一次操作覆盖）。
@@ -402,6 +417,7 @@ fn commit_workspace_rename(st: &mut AppState, raw: &str) {
         Ok(new) => {
             st.workspaces.save();
             refresh_workspace_rows(st);
+            refresh_workspace_rows_elsewhere(st.window_id);
             st.workspace_rename_from = None;
             st.ui.set_workspace_save_open(false);
             st.ui.set_workspace_save_hint("".into());
@@ -453,6 +469,7 @@ fn confirm_delete_workspace(st: &mut AppState) {
     if st.workspaces.remove(&name) {
         st.workspaces.save();
         refresh_workspace_rows(st);
+    refresh_workspace_rows_elsewhere(st.window_id);
         let msg = if zh {
             format!("已删除工作区「{name}」；已打开的 Tab 继续运行，未结束任何会话")
         } else {
@@ -878,8 +895,8 @@ struct AppState {
     save_kind: SaveKind,
     /// 命令表（Command Palette / 快捷键分发共用）
     commands: commands::Registry,
-    /// 命名工作区（保存的分屏布局，ACT-047）
-    workspaces: workspaces::WorkspaceStore,
+    /// 命名工作区（保存的分屏布局，ACT-047）；所有窗口共享同一份。
+    workspaces: Shared<workspaces::WorkspaceStore>,
     /// 设置页工作区列表（名字/pane 数/创建时间）。
     workspace_model: Rc<VecModel<WorkspaceRow>>,
     /// 重命名弹窗正在改的旧名字；None = 当前弹窗是“保存”。
@@ -3841,6 +3858,10 @@ fn reconfig_summary(old: &Config, new: &Config) -> ReconfigSummary {
     hot(old.copy_on_select != new.copy_on_select, "copy_on_select");
     hot(old.confirm_close != new.confirm_close, "confirm_close");
     hot(old.osc52 != new.osc52, "osc52");
+    hot(
+        old.osc52_remote_read != new.osc52_remote_read,
+        "osc52_remote_read",
+    );
     hot(
         old.tabbar_position != new.tabbar_position,
         "tabbar_position",
@@ -7622,7 +7643,8 @@ fn close_tab_inner(st: &mut AppState, index: usize) {
         plugin_v3::tab_close_payload(&tab_title),
     );
     if st.ws.tabs.is_empty() {
-        let _ = slint::quit_event_loop();
+        // 多窗口时只关本窗口，不能结束整个进程（其它窗口的 PTY 还在跑）。
+        close_current_window(st);
         return;
     }
     st.ws.active = active_after_close(st.ws.active, index, st.ws.tabs.len());
@@ -7869,7 +7891,8 @@ fn close_pane_inner(st: &mut AppState, id: PaneId) {
             plugin_v3::tab_close_payload(&tab_title),
         );
         if st.ws.tabs.is_empty() {
-            let _ = slint::quit_event_loop();
+            // 多窗口时只关本窗口，不能结束整个进程。
+            close_current_window(st);
             return;
         }
         st.ws.active = st.ws.active.min(st.ws.tabs.len() - 1);
@@ -8044,7 +8067,9 @@ fn reopen_closed_tab(st: &mut AppState) {
         return;
     };
     let Some(index) = restore_tab_snapshot(st, &snap) else {
-        eprintln!("[ws] 重开失败: {:?}", snap.title);
+        // 恢复失败（临时 PTY/Profile 故障）：把快照放回栈顶，故障解除后还能重开。
+        eprintln!("[ws] 重开失败: {:?}（快照已保留）", snap.title);
+        st.closed_tabs.push(snap);
         return;
     };
     st.ws.active = index;
@@ -10022,13 +10047,26 @@ fn redraw_pane_inner(st: &mut AppState, id: PaneId) {
         // stage 0 只作为显式 TERVO_GPU_NATIVE=0 的兼容路径；默认 GPU-native
         // 失败时直接 CPU，绝不偷偷回“CPU framebuffer 上传”冒充 GPU。
         let gpu_image = if gpu_present::ready() && !gpu_native::requested() {
+            // dirty_rows 是 cell 行；Stage 0 上传的是像素纹理，必须展开成
+            // [row*cell_h, (row+1)*cell_h) 的像素行，否则 cell_h>1 时只刷新顶部几像素。
+            let cell_h = rt.renderer.cell_h.max(1);
+            let dirty_pixel_rows: Vec<usize> = if rt.renderer.last_draw_full {
+                Vec::new()
+            } else {
+                rt.renderer
+                    .dirty_rows()
+                    .iter()
+                    .flat_map(|&row| (row * cell_h..(row + 1) * cell_h))
+                    .filter(|&row| row < rt.renderer.height)
+                    .collect()
+            };
             gpu_present::pane_image(
                 id,
                 rt.renderer.pixels(),
                 rt.renderer.width,
                 rt.renderer.height,
                 rt.renderer.last_draw_full,
-                rt.renderer.dirty_rows(),
+                &dirty_pixel_rows,
                 !st.resize_in_progress,
             )
         } else {
@@ -11663,11 +11701,8 @@ fn with_clipboard<R>(st: &mut AppState, f: impl FnOnce(&mut arboard::Clipboard) 
 /// 写系统剪贴板；保留原有日志格式（soak 统计依赖 `[clipboard] 复制`）。
 /// 返回可读错误给 Help 页等需要展示成功/失败状态的调用方。
 fn set_clipboard_checked(st: &mut AppState, text: &str) -> Result<(), String> {
-    eprintln!(
-        "[clipboard] 复制 {} 字节: {:?}",
-        text.len(),
-        text.chars().take(40).collect::<String>()
-    );
+    // 只记长度：复制内容可能是密码/token，不能进 stderr/诊断包。
+    eprintln!("[clipboard] 复制 {} 字节", text.len());
     match with_clipboard(st, |cb| cb.set_text(text.to_string())) {
         Some(Ok(())) => Ok(()),
         Some(Err(e)) => {
@@ -13713,15 +13748,26 @@ fn apply_notification(
     true
 }
 
+/// 同时在飞的桌面通知线程/子进程上限；超过就丢弃（通知是 best-effort）。
+static NOTIFY_INFLIGHT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+const NOTIFY_MAX_INFLIGHT: usize = 4;
+
 /// 桌面通知：参数直传 notify-send，不经过 shell；未安装/无 DBus 时静默失败。
 fn send_desktop_notification(title: &str, body: &str) {
+    use std::sync::atomic::Ordering;
+    if NOTIFY_INFLIGHT.fetch_add(1, Ordering::AcqRel) >= NOTIFY_MAX_INFLIGHT {
+        NOTIFY_INFLIGHT.fetch_sub(1, Ordering::AcqRel);
+        eprintln!("[ui] notification dropped: {NOTIFY_MAX_INFLIGHT} pending");
+        return;
+    }
     let title = title.to_owned();
     let body = body.to_owned();
     // 通知可能很频繁，绝不能在 UI 线程里等 notify-send 退出。
-    let _ = std::thread::Builder::new()
+    let spawned = std::thread::Builder::new()
         .name("notify-send".into())
         .spawn(move || {
-            let _ = std::process::Command::new("notify-send")
+            let mut child = match std::process::Command::new("notify-send")
                 .arg("--app-name=Tervo")
                 .arg("--")
                 .arg(&title)
@@ -13729,8 +13775,32 @@ fn send_desktop_notification(title: &str, body: &str) {
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
-                .status();
+                .spawn()
+            {
+                Ok(child) => child,
+                Err(_) => {
+                    NOTIFY_INFLIGHT.fetch_sub(1, Ordering::AcqRel);
+                    return;
+                },
+            };
+            // 通知服务卡死时最多等 2s，然后 kill；避免线程/子进程无限累积。
+            for _ in 0..40 {
+                match child.try_wait() {
+                    Ok(Some(_)) => {
+                        NOTIFY_INFLIGHT.fetch_sub(1, Ordering::AcqRel);
+                        return;
+                    },
+                    Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),
+                    Err(_) => break,
+                }
+            }
+            let _ = child.kill();
+            let _ = child.wait();
+            NOTIFY_INFLIGHT.fetch_sub(1, Ordering::AcqRel);
         });
+    if spawned.is_err() {
+        NOTIFY_INFLIGHT.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 fn selection_label(selection: ClipboardSelection) -> &'static str {
@@ -13774,6 +13844,15 @@ fn apply_osc52(st: &mut AppState, pane: PaneId, request: ClipboardRequest) {
             }
         }
         ClipboardRequest::Load { selection } => {
+            // 查询会读本机剪贴板；远端 SSH/transport 默认拒绝，避免远端进程
+            // 静默读走密码/令牌。本地 shell 保持原行为。
+            let remote = st.panes.get(&pane).is_some_and(|rt| rt.remote);
+            if !st.cfg.osc52_read_allowed(remote) {
+                eprintln!(
+                    "[clipboard] ts_ms={ts} osc52 query denied pane={pane} remote={remote}"
+                );
+                return;
+            }
             let text = match selection {
                 ClipboardSelection::Clipboard => get_clipboard(st),
                 ClipboardSelection::Primary => get_primary(st),
@@ -14837,7 +14916,7 @@ fn build_window_state(
         detached: Vec::new(),
         bg_model,
         profiles: shared.profiles.clone_handle(),
-        workspaces: workspaces::WorkspaceStore::load(),
+        workspaces: shared.workspaces.clone_handle(),
         workspace_model,
         workspace_rename_from: None,
         workspace_delete_name: None,
@@ -18797,6 +18876,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         plugins,
         vault::Vault::open_default(),
         profile::ProfileStore::load(),
+        workspaces::WorkspaceStore::load(),
         mcp_runtime,
         runtime::SessionService::new(!opts.window),
     ));
@@ -19162,10 +19242,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     ),
                 }
             }
-            // 快照只消费一次：恢复成功就删掉，避免下次手动 --restore 又拉旧布局。
-            // 恢复期间 autosave 被抑制；这里放开后 2s 内会用当前可用布局重写。
-            if restored || restored_extra > 0 {
-                session::clear();
+            // 快照只消费一次：恢复成功后立即用当前布局原子覆盖旧快照。
+            // 不能先 clear：写失败/启动后立刻崩溃时会把唯一布局删掉。
+            if (restored || restored_extra > 0)
+                && !runtime::save_session_snapshot_after_restore("restore")
+            {
+                eprintln!("[session] 恢复后保存失败，保留旧快照");
             }
             shared.session.with_mut(|session| session.restoring = false);
             eprintln!(

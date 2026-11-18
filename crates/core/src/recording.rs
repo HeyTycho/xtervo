@@ -212,9 +212,21 @@ impl Recorder {
             let inner = self.inner.lock();
             (inner.bytes.clone(), inner.active)
         };
-        let mut file = std::fs::File::create(path)?;
-        file.write_all(&bytes)?;
-        file.flush()?;
+        // 先写临时文件再 rename：目标已存在时，写失败不能把旧录制截断。
+        let tmp = path.with_extension("raw.export.tmp");
+        let mut file = match std::fs::File::create(&tmp) {
+            Ok(file) => file,
+            Err(e) => return Err(e),
+        };
+        if let Err(e) = file.write_all(&bytes).and_then(|()| file.flush()) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e);
+        }
+        drop(file);
+        if let Err(e) = std::fs::rename(&tmp, path) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e);
+        }
         Ok(RecordingExport {
             path: path.to_path_buf(),
             bytes: bytes.len(),

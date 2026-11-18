@@ -92,6 +92,8 @@ struct State {
     images: GpuImageRenderer,
     panes: HashMap<u64, PaneTarget>,
     last_stats: Option<SceneLayerStats>,
+    /// 创建 renderer/atlas 时的字体路径；设置页换字体后必须重建。
+    font_paths: [String; 4],
 }
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
@@ -358,9 +360,42 @@ pub struct PaneFrame<'a> {
 }
 
 fn ensure_state(input: &PaneFrame<'_>) -> bool {
-    if let Ok(guard) = STATE.lock() {
-        if guard.is_some() {
-            return true;
+    if let Ok(mut guard) = STATE.lock() {
+        if let Some(state) = guard.as_mut() {
+            let same = state
+                .font_paths
+                .iter()
+                .map(String::as_str)
+                .eq(input.font_paths.iter().copied());
+            if same {
+                return true;
+            }
+            // 字体切换：保留 device/images/panes，只重建文字 renderer/atlas。
+            let Some((device, queue)) = crate::gpu_present::device_queue() else {
+                return false;
+            };
+            let paths = input.font_paths;
+            match GpuTextRenderer::with_font_paths(
+                device,
+                queue,
+                std::path::Path::new(paths[0]),
+                Some(std::path::Path::new(paths[1])),
+                Some(std::path::Path::new(paths[2])),
+                Some(std::path::Path::new(paths[3])),
+                AtlasConfig::default(),
+            ) {
+                Ok(renderer) => {
+                    state.renderer = renderer;
+                    state.font_paths = paths.map(str::to_owned);
+                    eprintln!("[gpu-native] 字体切换：已重建 atlas");
+                    return true;
+                },
+                Err(error) => {
+                    // 不能在这里调 fail()：它会再次锁 STATE，当前 guard 还活着。
+                    eprintln!("[gpu-native] 字体切换重建 atlas 失败: {error}");
+                    return false;
+                },
+            }
         }
     }
     // Device/queue 来自 `gpu_present`（同一个 `RenderingSetup` WGPU30 回调），
@@ -406,6 +441,7 @@ fn ensure_state(input: &PaneFrame<'_>) -> bool {
         images,
         panes: HashMap::new(),
         last_stats: None,
+        font_paths: input.font_paths.map(str::to_owned),
     });
     true
 }
@@ -583,6 +619,7 @@ fn render_pane_image(input: &PaneFrame<'_>) -> Option<slint::Image> {
         rows: input.rows,
     };
     let mut scene = SceneBuilder::from_frame(input.frame, viewport)
+        .source_namespace(input.pane)
         .background(BackgroundInstance {
             color: input.theme_bg & 0x00ff_ffff,
         })
@@ -660,7 +697,9 @@ fn render_pane_image(input: &PaneFrame<'_>) -> Option<slint::Image> {
         if image.width == 0 || image.height == 0 {
             continue;
         }
-        let source = SourceId(image.source_id);
+        // 每个 pane 的 ImageStore 都从 1 开始分配 source_id；GPU 纹理注册表是
+        // 进程级共享的，必须把 pane id 拼进高位，否则两个 pane 的第一张图撞车。
+        let source = SourceId((input.pane << 32) | (image.source_id & 0xffff_ffff));
         let expected = image.width as usize * image.height as usize * 4;
         if image.data.len() != expected {
             drop(guard);

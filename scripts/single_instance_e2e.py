@@ -231,11 +231,10 @@ def main() -> int:
     check("ack_after_ui_window", {"acks": len(acked), "created": len(created)})
 
     # 3) Ctrl+Shift+N creates a same-process window without spawning.
-    primary_win = next(
-        (win for win, title in wins.items() if title == "Tervo"), None
-    )
-    if primary_win is None:
-        fail(f"primary window title not found: {wins}")
+    # 所有窗口标题统一为 "Tervo"；primary 用启动时拿到的 XID，不能按标题猜。
+    primary_win = first
+    if primary_win not in wins:
+        fail(f"primary window XID missing: {primary_win} not in {sorted(wins)}")
     focused(args.display, primary_win)
     key = run(["xkey", "n", "--ctrl", "--shift"], env=env)
     if key.returncode != 0:
@@ -243,6 +242,16 @@ def main() -> int:
     wins = wait_windows(args.display, 4)
     wait_instance_processes(binary, runtime_dir, 1)
     check("ctrl_shift_n_inproc", {"windows": sorted(wins), "pid": args.pid})
+
+    # 3b) A non-primary window's last tab must close only that window.
+    target = sorted(w for w in wins if w != primary_win)[0]
+    focused(args.display, target)
+    key = run(["xkey", "w", "--ctrl"], env=env)
+    if key.returncode != 0:
+        fail(f"xkey Ctrl+W failed: {key.stderr}")
+    wins = wait_windows(args.display, 3)
+    assert primary_pid(args.pid), "primary exited after closing a non-primary window's last tab"
+    check("last_tab_closes_only_window", {"target": target, "remaining": sorted(wins)})
 
     # 4) Wrong token is rejected with a clear error and no window.
     original = token_path.read_bytes()
@@ -257,20 +266,19 @@ def main() -> int:
         fail("wrong instance token must not exit 0")
     if "unauthorized" not in (bad.stderr + bad.stdout):
         fail(f"wrong token error is not explicit: {bad.stderr!r}")
-    assert len(x11_windows(args.display)) == 4, "rejected request must not create a window"
+    # 3b 已关掉一个非 primary 窗口（4 → 3）；错误 token 不能新增窗口。
+    assert len(x11_windows(args.display)) == 3, "rejected request must not create a window"
     check("wrong_token_rejected", {"exit": bad.returncode})
 
     # 5) Close non-primary windows one by one; the primary process must stay alive.
-    titles = {title: win for win, title in wins.items()}
-    for title in ("Tervo — 2", "Tervo — 3"):
-        win = titles.get(title)
-        if win is None:
-            fail(f"expected window title {title!r}, have {sorted(titles)}")
+    # 所有窗口标题都统一为 "Tervo"，不能再用 `Tervo — N` 做键；按 XID 排除 primary。
+    # 留一个非 primary 窗口给步骤 6；其余逐个关闭。
+    others = [w for w in wins if w != primary_win]
+    for win in others[:-1]:
         close(args.display, win)
-        wait_windows(args.display, len(titles) - 1)
-        titles.pop(title)
-        assert primary_pid(args.pid), f"primary exited after closing {title}"
-        check("close_keeps_primary", {"closed": title, "remaining": sorted(titles)})
+        wins = wait_windows(args.display, len(wins) - 1)
+        assert primary_pid(args.pid), f"primary exited after closing {win}"
+        check("close_keeps_primary", {"closed": win, "remaining": sorted(wins)})
 
     # 6) Closing the original primary window keeps the remaining window alive.
     close(args.display, primary_win)
