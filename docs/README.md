@@ -7,6 +7,7 @@
 
 | 文档 | 说明 |
 |---|---|
+| [怎么验证 Tervo（验收手册）](VERIFICATION.md) | 数字复核、构建/测试/soak 门禁、三个环境卡点的逐步验证、功能冒烟清单 |
 | [Tervo 架构](ARCHITECTURE.md) | 状态：目标架构 + 当前实现边界。 |
 | [Tervo 产品原则与路标](PRODUCT_PRINCIPLES.md) | 状态：产品北极星文档。实现细节可以变，下面的定位、非目标、决策优先级 |
 | [Tervo UI / 视觉设计规范](UI_DESIGN.md) | 终端是纸，界面是页边距。 |
