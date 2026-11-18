@@ -988,6 +988,19 @@ pub fn apply_rounded_corners(
             .map_err(|e| format!("SHAPE CLIP 请求失败: {e}"))?
             .check()
             .map_err(|e| format!("SHAPE CLIP 失败: {e}"))?;
+        // BOUNDING 会成为默认输入命中区域：只设 BOUNDING 会让四角变成
+        // “点不到/拖不动”。这里把同一块 pixmap 重新填满白色并显式设为
+        // INPUT：视觉保持圆角，命中区域仍是整窗矩形（与无 SHAPE 一致）。
+        // SHAPE 请求在服务端立即拷贝区域，之后再改 pixmap 不影响已设置的
+        // BOUNDING/CLIP。
+        conn.change_gc(gc, &ChangeGCAux::new().foreground(1u32))
+            .map_err(|e| format!("重置 GC 前景色失败: {e}"))?;
+        conn.poly_fill_rectangle(pixmap, gc, &[Rectangle { x: 0, y: 0, width, height }])
+            .map_err(|e| format!("填充 INPUT 掩码失败: {e}"))?;
+        shape::mask(conn, SO::SET, SK::INPUT, window, 0, 0, pixmap)
+            .map_err(|e| format!("SHAPE INPUT 请求失败: {e}"))?
+            .check()
+            .map_err(|e| format!("SHAPE INPUT 失败: {e}"))?;
         Ok(())
     })();
 
@@ -1105,6 +1118,51 @@ impl CornerShaper {
     }
 }
 
+/// 每次 SHAPE 操作成功后缓存的 `(win, width, height, radius)`。
+///
+/// 关键不变量：**只有确认成功的请求才能进缓存**。过期 mask 的根因之一是把
+/// 失败的 clear/apply 当成已生效（例如 WM reparent/map 瞬间的 BadMatch），
+/// 之后相同 geometry 被去重跳过，旧 mask 就永久残留（窗口放大后露桌面、
+/// 四角点不到）。失败时清空缓存，下一轮 reconcile 必然重试。
+#[derive(Debug, Default)]
+struct ShapeCache {
+    applied: Option<(u32, u16, u16, u32)>,
+    /// 当前窗口是否处于“无 SHAPE”状态（BOUNDING/CLIP/INPUT 都已清除）。
+    cleared: bool,
+}
+
+impl ShapeCache {
+    fn matches(&self, key: (u32, u16, u16, u32)) -> bool {
+        self.applied == Some(key)
+    }
+
+    fn clear_ok(&mut self, key: (u32, u16, u16, u32)) {
+        self.applied = Some(key);
+        self.cleared = true;
+    }
+
+    fn apply_ok(&mut self, key: (u32, u16, u16, u32)) {
+        self.applied = Some(key);
+        self.cleared = false;
+    }
+
+    /// 请求失败/窗口状态未知：不能断言任何 mask 状态，强制下轮重试。
+    fn invalidate(&mut self) {
+        self.applied = None;
+        self.cleared = false;
+    }
+}
+
+/// 窗口当前是否 viewable（mapped 且祖先都已 map）。
+///
+/// 最小化（iconic）时窗口不可见：此时既不该对新 geometry 写 mask，也不该因
+/// 为 geometry 没变就假定旧 mask 有效。map 回来后调用方会 `invalidate` 重算。
+fn window_viewable(conn: &RustConnection, window: u32) -> Option<bool> {
+    use x11rb::protocol::xproto::{ConnectionExt as _, MapState};
+    let attrs = conn.get_window_attributes(window).ok()?.reply().ok()?;
+    Some(attrs.map_state == MapState::VIEWABLE)
+}
+
 fn run_corner_shaper(rx: Receiver<CornerRequest>, title: String) {
     use x11rb::connection::Connection as _;
     use x11rb::protocol::shape;
@@ -1141,15 +1199,16 @@ fn run_corner_shaper(rx: Receiver<CornerRequest>, title: String) {
     let mut window: Option<u32> = None;
     let mut pending: Option<CornerRequest> = None;
     let mut last_request: Option<CornerRequest> = None;
-    let mut last_applied: Option<(u32, u16, u16, u32)> = None;
     let mut last_log: Option<(u16, u16, u32, Instant)> = None;
     let mut find_failure_logged = false;
     // resize 期间保持方角，停下 SETTLE 后再补圆角：避免拖拽时每帧改 SHAPE。
     let settle = Duration::from_millis(180);
     let mut pending_round: Option<(u32, u16, u16, u32)> = None;
     let mut last_resize_at = Instant::now();
-    let mut shape_cleared = false;
+    let mut shape = ShapeCache::default();
+    let mut viewable = false;
     let mut last_clear_log = Instant::now() - Duration::from_secs(10);
+    let mut last_error_log = Instant::now() - Duration::from_secs(10);
 
     loop {
         // 1) 有等待恢复的圆角：先方角拖拽，静止 180ms 后再应用掩码。
@@ -1171,8 +1230,7 @@ fn run_corner_shaper(rx: Receiver<CornerRequest>, title: String) {
             let key = (win, width, height, radius);
             match apply_rounded_corners(&conn, win, radius) {
                 Ok(()) => {
-                    last_applied = Some(key);
-                    shape_cleared = false;
+                    shape.apply_ok(key);
                     let should_log = last_log.is_none_or(|(lw, lh, lr, at)| {
                         lw != width
                             || lh != height
@@ -1187,8 +1245,14 @@ fn run_corner_shaper(rx: Receiver<CornerRequest>, title: String) {
                     }
                 },
                 Err(e) => {
-                    eprintln!("[corners] 应用圆角失败 win=0x{win:x} {width}x{height} radius={radius}: {e}");
-                    last_applied = Some(key);
+                    // 失败不能进缓存：保持“未知”，下一轮 reconcile 重试。
+                    shape.invalidate();
+                    if last_error_log.elapsed() >= Duration::from_secs(1) {
+                        eprintln!(
+                            "[corners] 应用圆角失败（将重试）win=0x{win:x} {width}x{height} radius={radius}: {e}"
+                        );
+                        last_error_log = Instant::now();
+                    }
                 },
             }
             pending_round = None;
@@ -1211,8 +1275,21 @@ fn run_corner_shaper(rx: Receiver<CornerRequest>, title: String) {
                     None => continue,
                 },
                 Err(RecvTimeoutError::Timeout) => {
-                    // 主动核对一次 X11 真实尺寸，mask 过期就重裁。
+                    // 主动核对一次 X11 真实尺寸/可见性，mask 过期就重裁。
                     if let Some(win) = window {
+                        let now_viewable = window_viewable(&conn, win);
+                        if now_viewable == Some(false) {
+                            // 最小化/未 map：不要在不可见窗口上写新 mask；等 map
+                            // 回来后强制重算（几何可能已被 WM 改过）。
+                            viewable = false;
+                            shape.invalidate();
+                            continue;
+                        }
+                        if now_viewable == Some(true) && !viewable {
+                            // iconify → 恢复：SHAPE 状态可能已与当前几何不一致。
+                            viewable = true;
+                            shape.invalidate();
+                        }
                         let geometry = conn.get_geometry(win).ok().and_then(|c| c.reply().ok());
                         if let Some(geometry) = geometry {
                             let (w, h) = (geometry.width, geometry.height);
@@ -1231,14 +1308,38 @@ fn run_corner_shaper(rx: Receiver<CornerRequest>, title: String) {
                                 state.fullscreen,
                             );
                             let key = (win, w, h, radius);
-                            if last_applied != Some(key) {
+                            if !shape.matches(key) {
                                 if radius == 0 {
-                                    let _ = clear_rounded_corners(&conn, win);
-                                    shape_cleared = true;
-                                } else if apply_rounded_corners(&conn, win, radius).is_ok() {
-                                    shape_cleared = false;
+                                    match clear_rounded_corners(&conn, win) {
+                                        Ok(()) => shape.clear_ok(key),
+                                        Err(e) => {
+                                            shape.invalidate();
+                                            if last_error_log.elapsed()
+                                                >= Duration::from_secs(1)
+                                            {
+                                                eprintln!(
+                                                    "[corners] 清除圆角失败（将重试）win=0x{win:x} {w}x{h}: {e}"
+                                                );
+                                                last_error_log = Instant::now();
+                                            }
+                                        },
+                                    }
+                                } else {
+                                    match apply_rounded_corners(&conn, win, radius) {
+                                        Ok(()) => shape.apply_ok(key),
+                                        Err(e) => {
+                                            shape.invalidate();
+                                            if last_error_log.elapsed()
+                                                >= Duration::from_secs(1)
+                                            {
+                                                eprintln!(
+                                                    "[corners] 应用圆角失败（将重试）win=0x{win:x} {w}x{h} radius={radius}: {e}"
+                                                );
+                                                last_error_log = Instant::now();
+                                            }
+                                        },
+                                    }
                                 }
-                                last_applied = Some(key);
                             }
                         }
                     }
@@ -1266,6 +1367,17 @@ fn run_corner_shaper(rx: Receiver<CornerRequest>, title: String) {
             last_request = Some(newer);
         }
 
+        // 最小化/未 map：先不写 mask；缓存清零，map 后由轮询强制重算。
+        match window_viewable(&conn, win) {
+            Some(false) => {
+                viewable = false;
+                shape.invalidate();
+                continue;
+            },
+            Some(true) => viewable = true,
+            None => {},
+        }
+
         let state = match request.state {
             Some(state) => state,
             None => atoms
@@ -1278,28 +1390,49 @@ fn run_corner_shaper(rx: Receiver<CornerRequest>, title: String) {
         };
         let radius = corner_radius(width as u32, height as u32, state.maximized, state.fullscreen);
         let key = (win, width, height, radius);
-        if last_applied == Some(key) {
+        if shape.matches(key) {
             continue;
         }
 
         if radius == 0 {
-            // 最大化/全屏：立即清掉圆角掩码，窗口贴边。
-            if !shape_cleared {
-                if let Err(e) = clear_rounded_corners(&conn, win) {
-                    eprintln!("[corners] 清除圆角失败 win=0x{win:x}: {e}");
+            // 最大化/全屏：立即清掉圆角掩码，窗口贴边。清除失败必须保持
+            // “未知”并重试，否则会带着旧圆角 mask 铺满屏幕（四角露桌面）。
+            if !shape.cleared {
+                match clear_rounded_corners(&conn, win) {
+                    Ok(()) => shape.clear_ok(key),
+                    Err(e) => {
+                        shape.invalidate();
+                        if last_error_log.elapsed() >= Duration::from_secs(1) {
+                            eprintln!(
+                                "[corners] 清除圆角失败（将重试）win=0x{win:x}: {e}"
+                            );
+                            last_error_log = Instant::now();
+                        }
+                        continue;
+                    },
                 }
-                shape_cleared = true;
+            } else {
+                // mask 已经是“无”：只更新去重键（尺寸可能变但仍是方角）。
+                shape.clear_ok(key);
             }
-            last_applied = Some(key);
             continue;
         }
 
         // 普通 resize：第一帧立即去掉掩码，拖拽期间保持方角；停止后补圆角。
-        if !shape_cleared {
-            if let Err(e) = clear_rounded_corners(&conn, win) {
-                eprintln!("[corners] 清除圆角失败 win=0x{win:x}: {e}");
+        if !shape.cleared {
+            match clear_rounded_corners(&conn, win) {
+                Ok(()) => shape.clear_ok((win, width, height, 0)),
+                Err(e) => {
+                    // 旧 mask 仍在；不能进入 settle/apply（会以旧 mask 裁新窗口）。
+                    // 缓存保持未知，下一轮请求/轮询重试 clear。
+                    shape.invalidate();
+                    if last_error_log.elapsed() >= Duration::from_secs(1) {
+                        eprintln!("[corners] 清除圆角失败（将重试）win=0x{win:x}: {e}");
+                        last_error_log = Instant::now();
+                    }
+                    continue;
+                },
             }
-            shape_cleared = true;
             if last_clear_log.elapsed() >= Duration::from_secs(1) {
                 eprintln!("[corners] resize 中：暂时取消圆角裁剪（停下后恢复）");
                 last_clear_log = Instant::now();
@@ -1352,6 +1485,35 @@ mod tests {
         assert_eq!(resize_route(false, true), ResizeRoute::Manual);
         assert_eq!(resize_route(true, false), ResizeRoute::Manual);
         assert_eq!(resize_route(false, false), ResizeRoute::Manual);
+    }
+
+    #[test]
+    fn failed_shape_requests_are_not_cached_so_they_retry() {
+        // 回归：旧实现把失败的 clear 也记成 shape_cleared=true，之后同尺寸
+        // 去重跳过 → 最大化后旧圆角 mask 永久残留（露桌面、四角点不到）。
+        let key = (0x400003, 800, 600, 0);
+        let mut cache = ShapeCache::default();
+        cache.clear_ok(key);
+        assert!(cache.cleared && cache.matches(key));
+
+        cache.invalidate(); // 模拟 SHAPE clear 请求失败（BadMatch/BadWindow）
+        assert!(!cache.cleared, "失败不能断言已清除");
+        assert!(!cache.matches(key), "失败必须让下一轮 reconcile 重试");
+
+        // 失败后重试成功：缓存恢复，可按 key 去重。
+        cache.clear_ok(key);
+        assert!(cache.cleared && cache.matches(key));
+
+        // 应用圆角失败同样不能缓存，否则会一直保持方角/旧 mask。
+        let rounded = (0x400003, 800, 600, 12);
+        cache.invalidate();
+        assert!(!cache.matches(rounded));
+        cache.apply_ok(rounded);
+        assert!(!cache.cleared && cache.matches(rounded));
+
+        // 尺寸变化必然 miss（mask 不会随窗口 resize 自动更新）。
+        assert!(!cache.matches((0x400003, 1000, 700, 12)));
+        assert!(!cache.matches((0x400003, 800, 600, 0)));
     }
 
     #[test]
