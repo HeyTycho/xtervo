@@ -163,6 +163,20 @@ mod tests {
     }
 
     #[test]
+    fn tab_stop_cell_is_blank_not_control_char() {
+        // alacritty 把 HT 的起始格记成 '\t'；Frame 必须输出空格，否则渲染层拿
+        // 不到该字形（TERM-001：HT 只移动光标，不打印控制字符）。
+        let mut sim = TermSim::new(20, 2, 10);
+        sim.advance(b"a\tb");
+        let f = sim.pull();
+        assert_eq!(f.cell(0, 0).char(), 'a');
+        assert_eq!(f.cell(0, 1).char(), ' ', "制表位起始格必须是空白");
+        assert_eq!(f.cell(0, 7).char(), ' ');
+        assert_eq!(f.cell(0, 8).char(), 'b');
+        assert_eq!(f.cursor.col, 9);
+    }
+
+    #[test]
     fn wide_chars_keep_spacer() {
         let mut sim = TermSim::new(10, 2, 10);
         sim.advance("中文".as_bytes());

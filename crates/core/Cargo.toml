@@ -29,3 +29,9 @@ env_logger.workspace = true
 [[bench]]
 name = "pty_throughput"
 harness = false
+
+# TERM-001：自带的 VT 兼容套件（vttest/esctest 风格），自定义 harness 以便
+# 输出 PASS/FAIL/XFAIL 清单。`cargo test -p tervo-core --test vt_compat_suite`。
+[[test]]
+name = "vt_compat_suite"
+harness = false
