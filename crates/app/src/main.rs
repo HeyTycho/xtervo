@@ -19,6 +19,7 @@ mod known_hosts;
 mod latency;
 mod logging;
 mod mcp;
+mod connection;
 // Plugin API v3 protocol exposes a few forward-compatible helpers/limits that are
 // intentionally kept (and covered by tests) even when the current UI does not use
 // every one of them.
@@ -458,6 +459,9 @@ struct PaneRuntime {
     /// 当前 pane 的进程是否通过 SSH/telnet/serial Profile 启动。
     /// 远端会话里的路径不能交给本地 xdg-open，避免把远端路径当本地文件打开。
     remote: bool,
+    /// 通用连接状态（SESS-007）：本地/插件/未来 SSH 共用；Tab 标记与底部
+    /// pill 只读这里的聚合结果，不按 Profile 类型分支。
+    connection: connection::ConnectionStatus,
     /// 远端会话退出状态（进程退出后填充；SSH 断开时用于 UI 提示/重连）。
     exit_code: Option<i32>,
     exit_signal: Option<String>,
@@ -4486,6 +4490,16 @@ fn create_pane(
     // 官方 SSH 插件 POC：`transport = "plugin"` 的 SSH Profile 不经过 PTY，
     // 直接把系统 ssh 子进程包成 PaneTransport（Backend::Plugin）。本地 pane /
     // 老 SSH Profile 的路径与参数逐字不变。
+    // SESS-007：状态在 spawn 前定初值；远端/插件 transport 等首段输出。
+    let connection = if remote {
+        connection::ConnectionStatus::connecting()
+    } else {
+        connection::ConnectionStatus::connected()
+    };
+    eprintln!(
+        "[connection] pane={id} state={:?} remote={remote} source=spawn",
+        connection.state
+    );
     let handle = match profile.filter(|p| p.is_plugin_ssh()) {
         Some(p) => {
             let transport = ssh_plugin::SshPluginTransport::start(p)?;
@@ -4602,6 +4616,9 @@ fn create_pane(
         notification: None,
         bell_until: None,
         remote,
+        // 远端/插件 transport 先记 Connecting，收到首段输出后由 poll_connections
+        // 转 Connected；本地 shell spawn 成功即 Connected。
+        connection,
         exit_code: None,
         exit_signal: None,
         exit_notified: false,
@@ -5649,6 +5666,18 @@ fn profile_location(p: &profile::Profile) -> String {
     }
 }
 
+/// 进程退出 → 通用连接状态（SESS-007）。
+///
+/// 退出码 0 且无信号 = 正常结束（Disconnected）；非零/被信号杀死 = Failed。
+/// 自动重连调度会在 [`note_ssh_exit`] 里把状态改成“断开 + 第 n 次重试”。
+fn exit_connection_status(code: u32, signal: Option<&str>) -> connection::ConnectionStatus {
+    match signal {
+        Some(sig) => connection::ConnectionStatus::failed(format!("signal {sig}")),
+        None if code == 0 => connection::ConnectionStatus::disconnected("exit code 0"),
+        None => connection::ConnectionStatus::failed(format!("exit code {code}")),
+    }
+}
+
 /// 会话结束（进程退出 / PTY 关闭 / 信号终止）：对所有 pane 弹可见提示。
 fn note_ssh_exit(
     st: &mut AppState,
@@ -5709,27 +5738,54 @@ fn note_ssh_exit(
     );
     show_session_notice(st, Some(pane), profile_id, title, text, RetryAction::RestartPane);
 
-    // 自动重连（ACT-047 v1，仅 SSH Profile）：退避 2s/5s/10s，第 4 次放弃；
-    // 计数在 app 会话内累计（手动重开不会清零，见 NIGHT_PROGRESS 的已知限制）。
+    if let Some(rt) = st.panes.get(&pane) {
+        eprintln!(
+            "[connection] pane={pane} state={:?} retries={}/{} detail={:?}",
+            rt.connection.state,
+            rt.connection.retries,
+            rt.connection.max_retries,
+            rt.connection.detail
+        );
+    }
+    // 自动重连（SESS-007）：策略来自 config（次数 + 退避），不再写死 2/5/10，
+    // 也不再只认 SSH —— 任何声明了 auto_reconnect 的非本地 Profile（SSH /
+    // 插件 transport / 未来 Serial/Telnet）都走同一条路径。计数在 app 会话内
+    // 累计；每次重连会开新 Tab，旧 pane 保持 Disconnected/Failed 供用户看到。
     let Some(profile) = profile else {
         return;
     };
-    if profile.kind != "ssh" || !profile.auto_reconnect {
+    if profile.kind == "local" || !profile.auto_reconnect {
         return;
     }
+    let policy = st.cfg.reconnect_policy();
     let attempt = {
         let slot = st.reconnect_attempts.entry(profile.id).or_insert(0);
         *slot = slot.saturating_add(1);
         *slot
     };
-    match profile::Profile::reconnect_delay(attempt) {
+    match policy.delay(attempt) {
         Some(delay) => {
             let pid = profile.id;
             let secs = delay.as_secs();
             eprintln!(
-                "[ssh] 自动重连 profile={pid} 第 {attempt} 次，{secs}s 后（{}）",
-                profile.name
+                "[session] 自动重连 profile={pid} 第 {attempt}/{} 次，{secs}s 后（{}）",
+                policy.max_attempts, profile.name
             );
+            let detail = if st.cfg.lang() == "zh" {
+                format!("{secs}s 后第 {attempt}/{} 次重连", policy.max_attempts)
+            } else {
+                format!("retry {attempt}/{} in {secs}s", policy.max_attempts)
+            };
+            if let Some(rt) = st.panes.get_mut(&pane) {
+                rt.connection = rt
+                    .connection
+                    .clone()
+                    .retrying(attempt, policy.max_attempts, detail);
+                eprintln!(
+                    "[connection] pane={pane} state=disconnected retries={attempt}/{} detail=retry-scheduled",
+                    policy.max_attempts
+                );
+            }
             let msg = if st.cfg.lang() == "zh" {
                 format!("{} 断开，{secs}s 后自动重连（第 {attempt} 次）", profile.name)
             } else {
@@ -5743,7 +5799,7 @@ fn note_ssh_exit(
                 if let Some(window) = runtime::current_window() {
                     let _ = runtime::with_window(window, |st| {
                         if let Some(index) = st.profiles.profiles.iter().position(|p| p.id == pid) {
-                            eprintln!("[ssh] 自动重连触发 profile={pid}");
+                            eprintln!("[session] 自动重连触发 profile={pid}");
                             open_profile_tab_manual(st, index);
                         }
                     });
@@ -5753,10 +5809,20 @@ fn note_ssh_exit(
         },
         None => {
             eprintln!(
-                "[ssh] 自动重连 profile={} 已连续 {} 次失败，停止",
-                profile.id,
-                attempt.saturating_sub(1)
+                "[session] 自动重连 profile={} 已到上限（{}/{}），停止",
+                profile.id, attempt, policy.max_attempts
             );
+            if let Some(rt) = st.panes.get_mut(&pane) {
+                let retries = attempt.min(policy.max_attempts);
+                rt.connection = rt
+                    .connection
+                    .clone()
+                    .gave_up(retries, policy.max_attempts);
+                eprintln!(
+                    "[connection] pane={pane} state=failed retries={retries}/{} detail=retry-exhausted",
+                    policy.max_attempts
+                );
+            }
             st.reconnect_attempts.remove(&profile.id);
         },
     }
@@ -9001,6 +9067,8 @@ fn rows_can_update_in_place(
 fn rebuild_tabs(st: &mut AppState) {
     touch_tab_lru(st);
     let active = st.ws.active;
+    let zh = st.cfg.lang() == "zh";
+    let mut active_connection: Option<connection::ConnectionStatus> = None;
     let tabs: Vec<TabView> = st
         .ws
         .tabs
@@ -9014,6 +9082,22 @@ fn rebuild_tabs(st: &mut AppState) {
                     .filter_map(|id| st.panes.get(id))
                     .map(|rt| &rt.activity),
             );
+            // SESS-007：连接状态同样按 Tab 聚合，失败 > 断开 > 连接中 > 已连接。
+            let statuses: Vec<connection::ConnectionStatus> = t
+                .panes()
+                .iter()
+                .filter_map(|id| st.panes.get(id))
+                .map(|rt| rt.connection.clone())
+                .collect();
+            let conn_state = connection::aggregate(statuses.iter());
+            let conn_best = statuses
+                .iter()
+                .max_by_key(|status| status.state)
+                .map(|status| (*status).clone())
+                .unwrap_or_default();
+            if i == active {
+                active_connection = Some(conn_best.clone());
+            }
             TabView {
                 title: t.title.clone().into(),
                 active: i == active,
@@ -9027,9 +9111,18 @@ fn rebuild_tabs(st: &mut AppState) {
                     || (i != active && agg.progress.state != ProgressState::Clear),
                 failed: agg.failed || agg.progress.state == ProgressState::Error,
                 pinned: t.pinned,
+                connection_state: conn_state.code(),
+                connection_tooltip: conn_best.tooltip(zh).into(),
             }
         })
         .collect();
+    // 底部状态区 pill：只反映活动 Tab 的连接状态；None 时隐藏。
+    let active_connection = active_connection.unwrap_or_default();
+    st.ui.set_connection_state(active_connection.state.code());
+    st.ui
+        .set_connection_label(active_connection.label(zh).as_str().into());
+    st.ui
+        .set_connection_tooltip(active_connection.tooltip(zh).as_str().into());
     st.ui.set_pinned_count(st.ws.pinned_count() as i32);
     // Tab 模型重建时任何进行中的落点都不再有效（拖拽中不会触发 rebuild）。
     st.ui.set_drop_index(-1);
@@ -13433,9 +13526,10 @@ fn drain_core_events(st: &mut AppState) -> (bool, u32) {
                             rt.exit_code = Some(code as i32);
                             rt.exit_signal = signal.clone();
                             rt.exit_notified = true;
+                            rt.connection = exit_connection_status(code, signal.as_deref());
+                            tabs_dirty = true;
                             if code != 0 || signal.is_some() {
                                 rt.activity.failed = true;
-                                tabs_dirty = true;
                             }
                             exited_panes.push((id, rt.profile_id, code, signal));
                         }
@@ -13525,7 +13619,7 @@ fn on_app_event_wake() {
 /// `try_exit_code()` 返回 None，之后不会再有第二个 Exited。这里每轮补一次。
 fn poll_silent_exits(st: &mut AppState) {
     let mut found: Vec<(PaneId, Option<u64>, u32, Option<String>)> = Vec::new();
-    let mut failed = false;
+    let mut changed = false;
     for (id, rt) in st.panes.iter_mut() {
         if rt.exit_notified {
             continue;
@@ -13534,9 +13628,10 @@ fn poll_silent_exits(st: &mut AppState) {
             rt.exit_code = Some(code as i32);
             rt.exit_signal = signal.clone();
             rt.exit_notified = true;
+            rt.connection = exit_connection_status(code, signal.as_deref());
+            changed = true;
             if code != 0 || signal.is_some() {
                 rt.activity.failed = true;
-                failed = true;
             }
             found.push((*id, rt.profile_id, code, signal));
         }
@@ -13544,13 +13639,38 @@ fn poll_silent_exits(st: &mut AppState) {
     for (id, profile_id, code, signal) in found {
         note_ssh_exit(st, id, profile_id, code, signal);
     }
-    if failed {
+    if changed {
+        rebuild_tabs(st);
+    }
+}
+
+/// SESS-007：把“连接中”推进到“已连接”。
+///
+/// 远端/插件 transport 在 `create_pane` 里先记 Connecting；收到首段被 core
+/// 解析的输出（`bytes_parsed > 0`）才算连接成功。本地 shell 不经过这里。
+fn poll_connections(st: &mut AppState) {
+    let mut changed = false;
+    let ids: Vec<PaneId> = st.panes.keys().copied().collect();
+    for id in ids {
+        let Some(rt) = st.panes.get_mut(&id) else {
+            continue;
+        };
+        if rt.connection.state == connection::ConnectionState::Connecting
+            && rt.handle.stats.bytes_parsed.load(Ordering::Relaxed) > 0
+        {
+            rt.connection.note_connected();
+            changed = true;
+            eprintln!("[connection] pane={id} state=connected source=first-output");
+        }
+    }
+    if changed {
         rebuild_tabs(st);
     }
 }
 
 fn poll_events_inner(st: &mut AppState) -> (bool, u32) {
     let bells = drain_core_events(st);
+    poll_connections(st);
     poll_silent_exits(st);
     refresh_plugin_ui(st);
     poll_sftp_transfer(st);
@@ -18637,6 +18757,28 @@ mod tests {
         let closed = toggle_sidebar_math(open, &mut cfg);
         assert!(!cfg.sidebar_visible);
         assert_eq!((closed.w, closed.h), (start.w, start.h));
+    }
+
+    #[test]
+    fn exit_connection_status_maps_success_failure_and_signal() {
+        let clean = exit_connection_status(0, None);
+        assert_eq!(clean.state, connection::ConnectionState::Disconnected);
+        assert_eq!(clean.detail, "exit code 0");
+
+        let code = exit_connection_status(7, None);
+        assert_eq!(code.state, connection::ConnectionState::Failed);
+        assert_eq!(code.detail, "exit code 7");
+
+        let signal = exit_connection_status(0, Some("SIGTERM"));
+        assert_eq!(signal.state, connection::ConnectionState::Failed);
+        assert_eq!(signal.detail, "signal SIGTERM");
+
+        // 多 pane 聚合：一个失败就应该让 Tab 显示失败。
+        let states = [connection::ConnectionStatus::connected(), signal];
+        assert_eq!(
+            connection::aggregate(states.iter()),
+            connection::ConnectionState::Failed
+        );
     }
 
     #[test]

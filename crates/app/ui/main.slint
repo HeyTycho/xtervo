@@ -185,6 +185,10 @@ export struct TabView {
     background: bool,
     /// 会话失败（非零退出 / 信号终止 / OSC 进度错误）；切到该 Tab 时清除
     failed: bool,
+    /// 通用连接状态（SESS-007）：0=None 1=Connected 2=Connecting 3=Disconnected 4=Failed
+    connection-state: int,
+    /// 连接状态说明（含重试次数），悬停 Tab 时显示。
+    connection-tooltip: string,
     /// Pin 在左侧固定区（Tab 级，不是窗口置顶）。
     pinned: bool,
 }
@@ -1409,6 +1413,11 @@ export component MainWindow inherits Window {
     in-out property <string> plugin-status: "";
     /// 通用状态条目（连接/进度/异常恢复提示等）；空 = 不占布局。
     in property <[string]> status-items: [];
+    /// 活动 Tab 的连接状态 pill（SESS-007）：0=None 1=Connected 2=Connecting
+    /// 3=Disconnected 4=Failed；label 为空时整块隐藏。
+    in-out property <int> connection-state: 0;
+    in-out property <string> connection-label: "";
+    in-out property <string> connection-tooltip: "";
     in-out property <string> plugin-status-tooltip: "";
     // 终端右键菜单：宽度按最长标签 + 快捷键提示留足，窄窗口自动收窄；
     // 内容高度由 Rust 按菜单表计算（30px/项 + 9px/分隔线 + 12px padding），
@@ -2331,16 +2340,26 @@ export component MainWindow inherits Window {
                             && !(root.settings-open && !root.settings-legacy);
                         property <bool> show-status: tab.attention || tab.completed
                             || tab.failed || tab.background
+                            || tab.connection-state >= 2
                             || tab.progress-state == 2 || tab.progress-label != "";
                         // 窄 Tab 不预留整块状态区：状态压成右侧小字形，标题优先占满。
                         property <bool> show-status-text: show-status && parent.width >= 64px;
                         property <bool> show-close: tab-hit.has-hover || parent.width >= 84px;
                         // 非纯颜色状态标记：字形本身就能区分状态，颜色只是辅助。
-                        property <string> status-glyph: tab.attention ? "●"
-                            : (tab.failed || tab.progress-state == 2 ? "✕"
-                            : (tab.background ? "▸"
-                            : (tab.completed && tab.progress-state == 0 ? "✓" : "")));
-                        property <string> status-tooltip: tab.attention
+                        // 连接状态优先：✕ 失败 / ○ 断开 / … 连接中；Connected 不占位。
+                        property <string> status-glyph: tab.connection-state == 4
+                            ? "✕"
+                            : (tab.connection-state == 3
+                                ? "○"
+                                : (tab.connection-state == 2
+                                    ? "…"
+                                    : (tab.attention ? "●"
+                                    : (tab.failed || tab.progress-state == 2 ? "✕"
+                                    : (tab.background ? "▸"
+                                    : (tab.completed && tab.progress-state == 0 ? "✓" : ""))))));
+                        property <string> status-tooltip: tab.connection-state >= 2
+                            ? tab.connection-tooltip
+                            : (tab.attention
                             ? Lang.t("Unread notification", "未读通知")
                             : (tab.failed || tab.progress-state == 2
                                 ? Lang.t("Session failed", "会话失败")
@@ -2350,7 +2369,7 @@ export component MainWindow inherits Window {
                                         ? Lang.t("Completed in background", "后台完成")
                                         : (tab.progress-label != ""
                                             ? Lang.t("Progress reported by the terminal", "终端报告了进度")
-                                            : ""))));
+                                            : "")))));
                         property <bool> status-hover: tab-hit.has-hover;
                         // 悬停 Tab 时把当前状态解释写到标签栏下方（状态字形不是纯颜色，
                         // tooltip 说明具体含义；离开即隐藏）。
@@ -2418,12 +2437,16 @@ export component MainWindow inherits Window {
                             width: 20px;
                             height: 22px;
                             text: status-glyph;
-                            color: (tab.failed || tab.progress-state == 2)
+                            color: (tab.connection-state == 4 || tab.failed || tab.progress-state == 2)
                                 ? Palette.colors.danger
-                                : (tab.background
-                                    ? Palette.colors.text
-                                    : (tab.attention || tab.completed
-                                        ? Palette.colors.accent : Palette.colors.muted));
+                                : (tab.connection-state == 3
+                                    ? Palette.colors.muted
+                                    : (tab.connection-state == 2
+                                        ? Palette.colors.accent
+                                        : (tab.background
+                                            ? Palette.colors.text
+                                            : (tab.attention || tab.completed
+                                                ? Palette.colors.accent : Palette.colors.muted))));
                             font-size: 11px;
                             font-weight: 700;
                             horizontal-alignment: center;
@@ -2454,9 +2477,13 @@ export component MainWindow inherits Window {
                             width: 10px;
                             height: 22px;
                             text: status-glyph;
-                            color: (tab.failed || tab.progress-state == 2)
+                            color: (tab.connection-state == 4 || tab.failed || tab.progress-state == 2)
                                 ? Palette.colors.danger
-                                : (tab.background ? Palette.colors.text : Palette.colors.accent);
+                                : (tab.connection-state == 3
+                                    ? Palette.colors.muted
+                                    : (tab.connection-state == 2
+                                        ? Palette.colors.accent
+                                        : (tab.background ? Palette.colors.text : Palette.colors.accent)));
                             font-size: 8px;
                             font-weight: 700;
                             horizontal-alignment: center;
@@ -8536,6 +8563,37 @@ export component MainWindow inherits Window {
     }
 
     // Save Contents：没有原生文件对话框，显式路径 + 错误提示的最小实现。
+    // 活动 Tab 的连接状态 pill（SESS-007）：右下角，非纯颜色字形 + 文案。
+    // Connected 用 ●，Connecting 用 …，Disconnected 用 ○，Failed 用 ✕。
+    if root.connection-label != "" : Rectangle {
+        x: root.width - self.width - 8px;
+        y: (root.tabbar-bottom ? root.height - root.tabbar-height - 24px : root.height - 24px)
+           - 26px;
+        height: 22px;
+        width: Math.min(260px, connection-pill-text.preferred-width + 20px);
+        background: Palette.colors.surface;
+        border-radius: 6px;
+        border-width: 1px;
+        border-color: root.connection-state == 4
+            ? Palette.colors.danger
+            : Palette.colors.border;
+        opacity: 0.94;
+
+        connection-pill-text := Text {
+            x: 9px;
+            height: parent.height;
+            text: (root.connection-state == 4 ? "✕ "
+                : (root.connection-state == 3 ? "○ "
+                : (root.connection-state == 2 ? "… " : "● "))) + root.connection-label;
+            color: root.connection-state == 4
+                ? Palette.colors.danger
+                : (root.connection-state == 3 ? Palette.colors.muted : Palette.colors.subtext);
+            font-size: 11px;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+
     if root.save-open : Rectangle {
         width: 100%;
         height: 100%;
