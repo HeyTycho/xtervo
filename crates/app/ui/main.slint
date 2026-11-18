@@ -2248,9 +2248,8 @@ export component MainWindow inherits Window {
     property <length> active-tab-width: 0px;
     property <bool> active-tab-last: false;
     // Tab 自动收缩：把扣除左侧搜索/品牌、固定 +/Profile、窗口按钮后的宽度均分给 Tab。
-    // 84px 是可读下限（标题至少保留几个字符，close 不挤到中间）；再窄就横向滚动，
-    // 并把活动 Tab 滚进视口。
-    property <length> tab-width-cap: Math.max(84px, Math.min(180px,
+    // 52px 是可读下限（标题至少保留几个字符）；再窄就横向滚动，并把活动 Tab 滚进视口。
+    property <length> tab-width-cap: Math.max(52px, Math.min(180px,
         (root.width - 266px - 4px * root.tabs.length) / Math.max(1, root.tabs.length)));
 
     Rectangle {
@@ -2426,11 +2425,8 @@ export component MainWindow inherits Window {
                             font-weight: is-active ? 600 : 400;
                         }
                         // 自动收缩：少量 Tab 按标题宽度，多 Tab 均分可用宽度；
-                        // 84px 下限后横向滚动（活动 Tab 会被滚进视口）。
-                        // 下限不能再低：52px 时 close 占掉右侧 20px，标题一短
-                        // （shell 把标题设成 "sh"）Tab 就缩到 52px，close 正好
-                        // 落在 Tab 中间，点击切 Tab 变成关 Tab。
-                        width: Math.max(84px, Math.min(root.tab-width-cap, title-measure.preferred-width + 36px));
+                        // 52px 下限后横向滚动（活动 Tab 会被滚进视口）。
+                        width: Math.max(52px, Math.min(root.tab-width-cap, title-measure.preferred-width + 36px));
                         animate width { duration: 140ms; easing: ease-out; }
                         border-radius: 6px;
                         background: is-active
@@ -2446,7 +2442,10 @@ export component MainWindow inherits Window {
                             || tab.progress-state == 2 || tab.progress-label != "";
                         // 窄 Tab 不预留整块状态区：状态压成右侧小字形，标题优先占满。
                         property <bool> show-status-text: show-status && parent.width >= 64px;
-                        property <bool> show-close: tab-hit.has-hover || parent.width >= 84px;
+                        // 窄 Tab（<84px）不再 hover 就显示 close：52px 时 close 占右侧
+                        // 20px，hover 才出现的 close 会正好压在指针下，点 Tab 变成关 Tab。
+                        // 窄 Tab 只有 active 时才显示 close；inactive 时整块都是切 Tab 热区。
+                        property <bool> show-close: parent.width >= 84px || is-active;
                         // 非纯颜色状态标记：字形本身就能区分状态，颜色只是辅助。
                         // 连接状态优先：✕ 失败 / ○ 断开 / … 连接中；Connected 不占位。
                         property <string> status-glyph: tab.connection-state == 4

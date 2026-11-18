@@ -19,7 +19,7 @@ cd "$(dirname "$0")/.."
 ROOT=$PWD
 OUT=${TAB_PIN_DRAG_OUT:-$ROOT/.logs/tab-pin-drag/e2e}
 mkdir -p "$OUT/shots" "$OUT/home" "$OUT/logs" /tmp/.X11-unix
-rm -f "$OUT"/shots/*.png "$OUT"/app_*.log "$OUT/session.json"
+rm -f "$OUT"/shots/*.png "$OUT"/app_*.log "$OUT/session.json" "$OUT/session.json.bak"
 
 COMMON=$(git rev-parse --git-common-dir)
 MAIN_ROOT=$(cd "$(dirname "$COMMON")" && pwd)
@@ -201,7 +201,9 @@ stop_app_graceful
 python3 - "$OUT/session.json" <<'PY'
 import json, sys
 snap = json.load(open(sys.argv[1]))
-tabs = [(t["title"], bool(t.get("pinned", False))) for t in snap["tabs"]]
+# session v2: 顶层 windows[]；保留 v1 顶层 tabs 兼容。
+rows = snap["windows"][0]["tabs"] if snap.get("windows") else snap["tabs"]
+tabs = [(t["title"], bool(t.get("pinned", False))) for t in rows]
 assert tabs == [("T3", True), ("T4", True), ("T2", False), ("T1", False)], tabs
 print("  session pinned/order ok:", tabs)
 PY
@@ -292,7 +294,8 @@ stop_app_graceful
 python3 - "$OUT/session.json" <<'PY'
 import json, sys
 snap = json.load(open(sys.argv[1]))
-tabs = [(t["title"], bool(t.get("pinned", False))) for t in snap["tabs"]]
+rows = snap["windows"][0]["tabs"] if snap.get("windows") else snap["tabs"]
+tabs = [(t["title"], bool(t.get("pinned", False))) for t in rows]
 # 合法拖拽后：T3,T4(pinned) + T1,T2；两次跨组与 Esc 均不应改变它。
 assert tabs == [("T3", True), ("T4", True), ("T1", False), ("T2", False)], tabs
 print("  final session ok:", tabs)

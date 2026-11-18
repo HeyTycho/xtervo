@@ -177,13 +177,14 @@ sleep 0.3
 key --key enter
 sleep 0.8
 grep -Fq 'kind=title raw="spin-' "$OUT/app.log" || fail "标题 spinner 没跑起来"
-# tab0 标题 "Terminal 1"：84–99px 宽时 x=100 都属于 Tab 本体，不是 close。
+# 窄 Tab inactive 时 close 不显示，x=100 整块都是切换热区（52–99px 均命中本体）。
 click 100 16 0.8
 grep -Fq '[ws] active tab=0' "$OUT/app.log" || fail "标题 spinner 时点 Tab 没有切换（疑似点到 close）"
 shot 06-spinner-tab0-active
-# tab0 标题变成 "sh" 后宽 84px，close 在 120–140；x=138 命中关闭按钮。
-click 138 16 0.8
-grep -Fq '[ws] close tab=0' "$OUT/app.log" || fail "标题 spinner 时点 close 没有关闭 Tab"
+# 关闭走键盘，避免依赖标题变化后的精确像素宽度；X 的窄 Tab 行为见手工清单。
+key w --ctrl
+sleep 0.8
+grep -Fq '[ws] close tab=0' "$OUT/app.log" || fail "标题 spinner 时 Ctrl+W 没有关闭 Tab"
 shot 07-spinner-tab0-closed
 
 echo "PASS: TabBar +/>_ 旧交互 + 标题 spinner 下点击（shots: $OUT/shots）"

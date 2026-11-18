@@ -9,9 +9,10 @@ Tervo 的版本与 tag 规则见 `docs/RELEASING.md`。
 - 标题 spinner（Codex 重连、dsh 工作态）期间 Tab 切不动/误关：`tab-box.width`
   依赖 `tab-area.preferred-width`，而后者又受 width 约束，形成循环绑定；标题
   10–20Hz 刷新时宽度会从自然值一级级缩到 52px 下限，close 按钮滑到 Tab 中间，
-  点 Tab 就变成关 Tab。现在用独立 `Text` 量标题自然宽度、下限提到 84px，并在
-  行数不变时 `set_row_data` 原地更新 Tab 模型（避免 Repeater 反复重建）。
-  新增 e2e：3 Tab + 标题 spinner 下点击 Tab 必须切换、点 close 必须关闭
+  点 Tab 就变成关 Tab。现在用独立 `Text` 量标题自然宽度（断开循环）；窄 Tab
+  （<84px）inactive 时不再 hover 显示 close，整块都是切换热区，只有 active
+  才显示 close；行数不变时 `set_row_data` 原地更新 Tab 模型（避免 Repeater
+  反复重建）。新增 e2e：3 Tab + 标题 spinner 下点击 Tab 必须切换
   （`crates/app/ui/main.slint`、`crates/app/src/main.rs`、
   `scripts/e2e_tabbar_plus_profile.sh`）。
 - 中间层 TUI 的子进程退出后键盘 flags 未复位：codex 在 dsh 等 TUI 里运行，
