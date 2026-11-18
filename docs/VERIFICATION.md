@@ -107,6 +107,10 @@ grim -g "$(slurp)" /tmp/ime.png        # 或整屏 grim /tmp/ime.png
 
 ### 4.3 UI-WIN-005：真机 GPU 流畅度
 
+> **注意**：agent 沙箱里看不到 `/dev/dri`/NVIDIA 设备节点（bwrap 隔离），所以这条必须在**宿主机**上跑。
+> 仓库提供一键脚本：`./scripts/verify_gpu_host.sh`（只读，产物在 `.logs/gpu-host-verify/`）。
+
+
 **需要**：有可用驱动的 NVIDIA/AMD/Intel GPU 机器（`nvidia-smi -L` 或 `vulkaninfo --summary` 正常）。
 
 ```bash
