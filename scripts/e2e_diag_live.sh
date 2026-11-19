@@ -53,8 +53,17 @@ import json, socket, sys
 sock, token = sys.argv[1], sys.argv[2]
 def call(obj):
     s = socket.socket(socket.AF_UNIX); s.settimeout(4); s.connect(sock)
-    s.sendall((json.dumps(obj)+'\n').encode()); data = s.recv(500000); s.close()
-    return json.loads(data)
+    s.sendall((json.dumps(obj)+'\n').encode())
+    chunks = []
+    while True:
+        data = s.recv(65536)
+        if not data:
+            break
+        chunks.append(data)
+        if b'\n' in data:
+            break
+    s.close()
+    return json.loads(b''.join(chunks))
 r = call({'id': 1, 'cmd': 'capabilities'})
 assert r['ok'] is False and r['error'] == 'unauthorized', r
 r = call({'id': 2, 'cmd': 'capabilities', 'token': token})

@@ -128,6 +128,13 @@ impl MaximizeController {
         self.click_at(Instant::now())
     }
 
+    /// 请求无法送达 worker 时回滚 UI：不要再显示一个从未发出的 desired。
+    pub fn revert_to_observed(&mut self) {
+        self.desired = self.observed;
+        self.pending = None;
+        self.pending_since = None;
+    }
+
     fn click_at(&mut self, now: Instant) -> bool {
         self.desired = !self.desired;
         self.pending = Some(self.desired);
@@ -455,5 +462,21 @@ mod tests {
         assert_eq!(snap.desired, true);
         assert_eq!(snap.observed, false);
         assert_eq!(snap.pending, Some(true));
+    }
+}
+
+#[cfg(test)]
+mod revert_tests {
+    use super::MaximizeController;
+
+    #[test]
+    fn revert_to_observed_clears_pending_click() {
+        let mut c = MaximizeController::new(false);
+        assert!(c.click());
+        assert!(c.pending().is_some());
+        c.revert_to_observed();
+        assert!(!c.desired());
+        assert!(!c.observed());
+        assert!(c.pending().is_none());
     }
 }

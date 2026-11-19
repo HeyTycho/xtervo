@@ -18,6 +18,20 @@ fn display_number() -> Option<String> {
     Some(after_colon.split('.').next()?.to_string())
 }
 
+/// DISPLAY 的 screen 段（`:0.1` → 1）；缺省 0。
+fn display_screen() -> u32 {
+    std::env::var("DISPLAY")
+        .ok()
+        .and_then(|display| {
+            display
+                .rsplit(':')
+                .next()
+                .and_then(|rest| rest.split('.').nth(1))
+                .and_then(|screen| screen.parse().ok())
+        })
+        .unwrap_or(0)
+}
+
 fn xauthority_path() -> Option<std::path::PathBuf> {
     if let Ok(p) = std::env::var("XAUTHORITY") {
         return Some(p.into());
@@ -257,6 +271,17 @@ pub fn start_wm_resize(
 
 /// 找到属于当前进程的窗口（用 `_NET_WM_PID` 精确区分多实例）。
 pub fn find_own_window(conn: &RustConnection, root: u32, title: &str) -> Option<u32> {
+    find_own_window_sized(conn, root, title, None)
+}
+
+/// 同 [`find_own_window`]，但优先选择物理尺寸匹配 `expected` 的窗口。
+/// 同进程同标题的多个窗口靠尺寸区分，避免圆角 worker 给错窗口套 SHAPE。
+pub fn find_own_window_sized(
+    conn: &RustConnection,
+    root: u32,
+    title: &str,
+    expected: Option<(u32, u32)>,
+) -> Option<u32> {
     use x11rb::protocol::xproto::{AtomEnum, ConnectionExt};
 
     fn read_pid(conn: &RustConnection, win: u32, atom: u32) -> Option<u32> {
@@ -309,7 +334,11 @@ pub fn find_own_window(conn: &RustConnection, root: u32, title: &str) -> Option<
                             conn.get_geometry(child).ok().and_then(|c| c.reply().ok())
                         {
                             let area = geo.width as u32 * geo.height as u32;
-                            if best.is_none_or(|(a, _)| area > a) {
+                            let size_matches = expected.is_none_or(|(ew, eh)| {
+                                (geo.width as i32 - ew as i32).abs() <= 2
+                                    && (geo.height as i32 - eh as i32).abs() <= 2
+                            });
+                            if size_matches && best.is_none_or(|(a, _)| area > a) {
                                 best = Some((area, child));
                             }
                         }
@@ -388,15 +417,17 @@ pub fn button1_down(mask: u16) -> bool {
 /// 连接当前 DISPLAY：优先抽象 socket，失败再退回 x11rb 默认路径。
 pub fn connect() -> Result<(RustConnection, usize), String> {
     let display = display_number().ok_or("DISPLAY 未设置")?;
+    let screen = display_screen();
     let name = format!("/tmp/.X11-unix/X{display}");
     if let Ok(addr) = SocketAddr::from_abstract_name(name.as_bytes()) {
         if let Ok(stream) = UnixStream::connect_addr(&addr) {
             if let Ok((stream, _peer)) = DefaultStream::from_unix_stream(stream) {
                 let (auth_name, auth_data) = read_cookie(&display).unwrap_or_default();
                 if let Ok(conn) = RustConnection::connect_to_stream_with_auth_info(
-                    stream, 0, auth_name, auth_data,
+                    stream, screen as usize, auth_name, auth_data,
                 ) {
-                    return Ok((conn, 0));
+                    // 不能硬编码 screen 0：`:0.1` 的 root/尺寸属于 screen 1。
+                    return Ok((conn, screen as usize));
                 }
             }
         }
@@ -1059,6 +1090,7 @@ fn resolve_own_window(
     conn: &RustConnection,
     root: u32,
     title: &str,
+    expected: Option<(u32, u32)>,
     cached: &mut Option<u32>,
 ) -> Option<(u32, u16, u16)> {
     use x11rb::protocol::xproto::ConnectionExt as _;
@@ -1068,13 +1100,17 @@ fn resolve_own_window(
             if let Some(reply) =
                 conn.get_geometry(win).ok().and_then(|cookie| cookie.reply().ok())
             {
-                if reply.width > 0 && reply.height > 0 {
+                let size_ok = expected.is_none_or(|(ew, eh)| {
+                    (reply.width as i32 - ew as i32).abs() <= 2
+                        && (reply.height as i32 - eh as i32).abs() <= 2
+                });
+                if reply.width > 0 && reply.height > 0 && size_ok {
                     return Some((win, reply.width, reply.height));
                 }
             }
             *cached = None;
         }
-        if let Some(win) = find_own_window(conn, root, title) {
+        if let Some(win) = find_own_window_sized(conn, root, title, expected) {
             *cached = Some(win);
             if let Some(reply) =
                 conn.get_geometry(win).ok().and_then(|cookie| cookie.reply().ok())
@@ -1353,7 +1389,12 @@ fn run_corner_shaper(rx: Receiver<CornerRequest>, title: String) {
         }
         last_request = Some(request);
 
-        let Some((win, width, height)) = resolve_own_window(&conn, root, &title, &mut window)
+        let expected = (
+            physical_extent(request.logical_width, request.scale_factor),
+            physical_extent(request.logical_height, request.scale_factor),
+        );
+        let Some((win, width, height)) =
+            resolve_own_window(&conn, root, &title, Some(expected), &mut window)
         else {
             if !find_failure_logged {
                 eprintln!("[corners] 5s 内未找到本进程主窗口（X11/Wayland 后端？），圆角跳过");

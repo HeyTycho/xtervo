@@ -303,7 +303,13 @@ fn commit_workspace_save(st: &mut AppState, raw: &str) {
         st.ui.set_workspace_save_status(e.as_str().into());
         return;
     }
-    st.workspaces.borrow().save();
+    let saved = st.workspaces.borrow().save();
+
+    if let Err(e) = saved {
+        eprintln!("[workspace] 保存失败: {e}");
+        set_workspace_status(st, format!("保存工作区失败: {e}"));
+        return;
+    }
     refresh_workspace_rows(st);
     refresh_workspace_rows_elsewhere(st.window_id);
     st.ui.set_workspace_save_open(false);
@@ -452,7 +458,13 @@ fn commit_workspace_rename(st: &mut AppState, raw: &str) {
     let zh = app_lang(st) == "zh";
     match st.workspaces.with_mut(|__x| __x.rename(&old, raw)) {
         Ok(new) => {
-            st.workspaces.borrow().save();
+            let saved = st.workspaces.borrow().save();
+
+            if let Err(e) = saved {
+        eprintln!("[workspace] 保存失败: {e}");
+        set_workspace_status(st, format!("保存工作区失败: {e}"));
+        return;
+    }
             refresh_workspace_rows(st);
             refresh_workspace_rows_elsewhere(st.window_id);
             st.workspace_rename_from = None;
@@ -504,7 +516,13 @@ fn confirm_delete_workspace(st: &mut AppState) {
     st.ui.set_workspace_delete_open(false);
     st.ui.set_workspace_delete_name("".into());
     if st.workspaces.borrow_mut().remove(&name) {
-        st.workspaces.borrow().save();
+        let saved = st.workspaces.borrow().save();
+
+        if let Err(e) = saved {
+        eprintln!("[workspace] 保存失败: {e}");
+        set_workspace_status(st, format!("保存工作区失败: {e}"));
+        return;
+    }
         refresh_workspace_rows(st);
         refresh_workspace_rows_elsewhere(st.window_id);
         let msg = if zh {
@@ -1020,7 +1038,7 @@ struct AppState {
     ///
     /// release 只回放这里登记过的键：快捷键/搜索框/录制中的按键 press 没进 PTY，
     /// 对应 release 也绝不能进 PTY。普通 shell（未请求协议）永远为空。
-    held_keys: HashMap<PaneId, std::collections::HashSet<keys::KeyId>>,
+    held_keys: HashMap<PaneId, HashMap<keys::KeyId, keys::KeyModifiers>>,
     plugins: Shared<plugin_v3::PluginStore>,
     /// 后台事件唤醒（插件活动/SFTP 结果共用，容量 1）：写入结果后通知 UI。
     app_wake: WakeSignal,
@@ -12269,7 +12287,34 @@ fn get_clipboard(st: &mut AppState) -> Option<String> {
 ///
 /// 终端 PTY 只能收文本；图片必须先落盘，再把路径作为 bracketed paste
 /// 交给 TUI（dsh 会把路径识别成 `[Image #N]`）。文件名无空格，0600。
+fn cleanup_stale_clipboard_images() {
+    let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else {
+        return;
+    };
+    let now = std::time::SystemTime::now();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !name.starts_with("tervo-paste-") || !name.ends_with(".png") {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else { continue };
+        if !meta.is_file() {
+            continue;
+        }
+        let old = meta
+            .modified()
+            .ok()
+            .and_then(|m| now.duration_since(m).ok())
+            .is_some_and(|age| age > std::time::Duration::from_secs(24 * 3600));
+        if old {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
 fn write_clipboard_image(image: arboard::ImageData) -> std::io::Result<PathBuf> {
+    cleanup_stale_clipboard_images();
     if image.width == 0 || image.height == 0 || image.bytes.len() % 4 != 0 {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
@@ -14222,7 +14267,7 @@ fn handle_input(
                             if held.len() >= 64 {
                                 held.clear();
                             }
-                            held.insert(id);
+                            held.insert(id, mods);
                         }
                     }
                     rt.handle.input(bytes);
@@ -14272,7 +14317,6 @@ fn handle_key_release(
     if st.hotkey_recording.is_some() || st.search_open {
         return;
     }
-    let targets: Vec<PaneId> = broadcast_targets(st);
     let mods = keys::KeyModifiers {
         ctrl,
         alt,
@@ -14283,22 +14327,22 @@ fn handle_key_release(
     let key_bindings = st.cfg.borrow().key_bindings();
     let held_keys = &mut st.held_keys;
     let panes = &mut st.panes;
-    for target in targets {
+    let Some(id) = keys::key_id(text) else {
+        return;
+    };
+    // 按 press 时登记的 (pane, mods) 回放：切 pane/先松 Ctrl 再松字母时，
+    // release 仍发给原目标并使用 press 时的修饰键。
+    let mut releases: Vec<(PaneId, keys::KeyModifiers)> = Vec::new();
+    for (target, held) in held_keys.iter_mut() {
+        if let Some(mods) = held.remove(&id) {
+            releases.push((*target, mods));
+        }
+    }
+    for (target, mods) in releases {
         let Some(rt) = panes.get_mut(&target) else {
             continue;
         };
         if rt.handle.read_only() {
-            continue;
-        }
-        let Some(id) = keys::key_id(text) else {
-            continue;
-        };
-        // 先消费登记：即使应用刚关掉协议，也不会留下永远等不到的 release。
-        let released = held_keys
-            .get_mut(&target)
-            .map(|held| held.remove(&id))
-            .unwrap_or(false);
-        if !released {
             continue;
         }
         let flags = rt.handle.keyboard_flags();
@@ -18999,7 +19043,14 @@ fn open_window_handler() -> impl Fn(OpenWindowRequest) -> Result<(), String> + S
 {
     move |request| {
         let (tx, rx) = std::sync::mpsc::channel::<Result<WindowId, String>>();
+        // 超时后 secondary 已经收到错误；UI 队列里的闭包不能再建出一个
+        // “没人认领”的窗口。闭包执行前先检查取消位。
+        let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let cancelled_ui = cancelled.clone();
         slint::invoke_from_event_loop(move || {
+            if cancelled_ui.load(std::sync::atomic::Ordering::Acquire) {
+                return;
+            }
             let _ = tx.send(secondary::create_inproc_window_for(request));
         })
         .map_err(|error| format!("UI event loop is not available: {error}"))?;
@@ -19009,7 +19060,10 @@ fn open_window_handler() -> impl Fn(OpenWindowRequest) -> Result<(), String> + S
                 Ok(())
             }
             Ok(Err(error)) => Err(error),
-            Err(_) => Err("timed out waiting for the UI thread to create the window".into()),
+            Err(_) => {
+                cancelled.store(true, std::sync::atomic::Ordering::Release);
+                Err("timed out waiting for the UI thread to create the window".into())
+            }
         }
     }
 }
@@ -19694,10 +19748,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     register_window_callbacks(&ui, state.clone(), window_id);
 
     // Quake 全局热键是进程级 service：只注册一次，不随窗口数量增长。
-    if let Err(e) = quake::spawn_listener(&cfg.quake_hotkey, || {
-        let _ = slint::invoke_from_event_loop(toggle_quake);
-    }) {
-        eprintln!("[quake] {e}");
+    // 禁用时不要 grab：否则其它程序拿不到这个组合键，属于占用用户快捷键。
+    if cfg.quake_enabled {
+        if let Err(e) = quake::spawn_listener(&cfg.quake_hotkey, || {
+            let _ = slint::invoke_from_event_loop(toggle_quake);
+        }) {
+            eprintln!("[quake] {e}");
+        }
+    } else {
+        eprintln!("[quake] disabled; global hotkey not registered");
     }
 
     // ---- OSC 标题轮询 ----
@@ -21247,6 +21306,25 @@ mod tests {
         assert_eq!(join_remote("/", "a"), "/a");
         assert_eq!(join_remote("/tmp", "a"), "/tmp/a");
         assert_eq!(join_remote("/tmp/", "a"), "/tmp/a");
+    }
+
+    #[test]
+    fn stale_clipboard_images_are_cleaned() {
+        let dir = std::env::temp_dir();
+        let old = dir.join(format!("tervo-paste-test-old-{}.png", std::process::id()));
+        let fresh = dir.join(format!("tervo-paste-test-fresh-{}.png", std::process::id()));
+        std::fs::write(&old, b"old").unwrap();
+        std::fs::write(&fresh, b"fresh").unwrap();
+        let file = std::fs::OpenOptions::new().write(true).open(&old).unwrap();
+        file.set_modified(
+            std::time::SystemTime::now() - std::time::Duration::from_secs(25 * 3600),
+        )
+        .unwrap();
+        drop(file);
+        cleanup_stale_clipboard_images();
+        assert!(!old.exists(), "24h+ clipboard temp must be removed");
+        assert!(fresh.exists(), "fresh clipboard temp must be kept");
+        let _ = std::fs::remove_file(&fresh);
     }
 
     #[test]

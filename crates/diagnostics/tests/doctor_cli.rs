@@ -194,3 +194,17 @@ fn missing_input_file_is_a_clean_error() {
     assert_eq!(output.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&output.stderr).contains("打开"));
 }
+
+#[test]
+fn invalid_fail_on_is_a_clean_error_not_success() {
+    let dir = TempDir::new("fail-on-invalid");
+    let mut cmd = command(&dir);
+    cmd.args(["check", "--fail-on", "nope"]);
+    let output = run(cmd);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("--fail-on"),
+        "stderr must name the invalid flag: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

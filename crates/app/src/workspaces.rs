@@ -104,29 +104,28 @@ impl WorkspaceStore {
         }
     }
 
-    pub fn save(&self) {
-        self.save_to(&Self::path());
+    pub fn save(&self) -> Result<(), String> {
+        self.save_to(&Self::path())
     }
 
-    /// 原子写：临时文件 + rename；父目录自动创建。
-    pub fn save_to(&self, path: &Path) {
+    /// 原子写：临时文件 + rename；父目录自动创建。失败必须上抛给 UI，
+    /// 不能只打日志后让调用方显示“已保存”。
+    pub fn save_to(&self, path: &Path) -> Result<(), String> {
         if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
+            std::fs::create_dir_all(dir)
+                .map_err(|e| format!("创建 {} 失败: {e}", dir.display()))?;
         }
         let ordered = Self { version: VERSION, workspaces: self.workspaces.clone() };
-        let Ok(text) = toml::to_string_pretty(&ordered) else {
-            eprintln!("[workspace] 序列化失败");
-            return;
-        };
+        let text = toml::to_string_pretty(&ordered)
+            .map_err(|e| format!("序列化失败: {e}"))?;
         let tmp = path.with_extension("toml.tmp");
-        if std::fs::write(&tmp, text.as_bytes()).is_err() {
-            eprintln!("[workspace] 写临时文件失败 {}", tmp.display());
-            return;
-        }
+        std::fs::write(&tmp, text.as_bytes())
+            .map_err(|e| format!("写 {} 失败: {e}", tmp.display()))?;
         if let Err(e) = std::fs::rename(&tmp, path) {
-            eprintln!("[workspace] 提交失败 {}: {e}", path.display());
             let _ = std::fs::remove_file(&tmp);
+            return Err(format!("提交 {} 失败: {e}", path.display()));
         }
+        Ok(())
     }
 
     /// 追加或覆盖同名条目（名字按 trim 后不区分大小写比较）。

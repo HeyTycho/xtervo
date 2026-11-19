@@ -157,13 +157,19 @@ impl MaximizeRuntime {
             "[maximize] click target={} desired={} observed={} pending={:?}",
             snapshot.desired, snapshot.desired, snapshot.observed, snapshot.pending
         );
-        // worker 已退出（应用关闭/连接断开）时只留下错误，不影响 UI 翻转。
+        // worker 已退出（应用关闭/连接断开）时不能只翻转 UI：回滚到 observed，
+        // 否则按钮显示最大化但窗口实际没变，下一次点击还会按错误状态翻转。
         if self.tx.send(Command::Apply(snapshot.desired)).is_err() {
-            lock(&self.shared).note_transport_error("maximize worker 已退出，请求未发送");
+            let mut controller = lock(&self.shared);
+            controller.revert_to_observed();
+            controller.note_transport_error("maximize worker 已退出，请求未发送");
+            let reverted = controller.snapshot();
+            drop(controller);
             eprintln!(
-                "[maximize] click target={} 未发送：worker 已退出",
-                snapshot.desired
+                "[maximize] click target={} 未发送：worker 已退出，回滚到 observed={}",
+                snapshot.desired, reverted.desired
             );
+            return reverted.desired;
         }
         snapshot.desired
     }

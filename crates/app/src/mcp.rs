@@ -441,14 +441,18 @@ fn env_flag(name: &str) -> bool {
 pub fn config_enabled_from_disk() -> bool {
     match fs::read_to_string(Config::path()) {
         Ok(text) => config_enabled_from_text(&text),
-        Err(_) => true,
+        // 文件不存在 = 首次运行，沿用默认开启；存在但不可读 = 无法确认
+        // 用户是否写了 false，按安全侧关闭。
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+        Err(_) => false,
     }
 }
 
 fn config_enabled_from_text(text: &str) -> bool {
     Config::parse_text(text)
         .map(|cfg| cfg.mcp_enabled)
-        .unwrap_or(true)
+        // 坏配置无法证明用户开启过 MCP：fail closed。
+        .unwrap_or(false)
 }
 
 /// `$XDG_RUNTIME_DIR/tervo/mcp.sock`；没有 XDG_RUNTIME_DIR 时退回
@@ -522,8 +526,21 @@ pub fn prepare_socket_dir(path: &Path) -> io::Result<()> {
 }
 
 fn ensure_parent_dir(path: &Path) -> io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
     let Some(parent) = path.parent() else { return Ok(()) };
-    if parent.as_os_str().is_empty() || parent.exists() {
+    if parent.as_os_str().is_empty() {
+        return Ok(());
+    }
+    if parent.exists() {
+        // 已存在的目录可能是别人预建的（尤其是 /tmp/tervo-<uid> 回退路径）：
+        // 必须是当前用户拥有的真实目录，不能是 symlink。
+        let meta = fs::symlink_metadata(parent)?;
+        if !meta.file_type().is_dir() || meta.uid() != effective_uid() {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "token/socket directory is not owned by the current user",
+            ));
+        }
         return Ok(());
     }
     fs::create_dir_all(parent)?;
@@ -532,8 +549,12 @@ fn ensure_parent_dir(path: &Path) -> io::Result<()> {
 
 /// 读取 state token；文件必须是非 symlink 普通文件，内容非空且无空白。
 pub fn read_token_file(path: &Path) -> Option<String> {
+    use std::os::unix::fs::MetadataExt;
     let metadata = fs::symlink_metadata(path).ok()?;
-    if !metadata.file_type().is_file() || metadata.len() > MAX_TOKEN_BYTES as u64 {
+    if !metadata.file_type().is_file()
+        || metadata.uid() != effective_uid()
+        || metadata.len() > MAX_TOKEN_BYTES as u64
+    {
         return None;
     }
     let bytes = fs::read(path).ok()?;
@@ -559,10 +580,17 @@ pub fn ensure_token_file(path: &Path) -> io::Result<String> {
     ensure_parent_dir(path)?;
     match fs::symlink_metadata(path) {
         Ok(metadata) => {
-            if !metadata.file_type().is_file() {
+            use std::os::unix::fs::MetadataExt;
+            if !metadata.file_type().is_file() || metadata.uid() != effective_uid() {
                 return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "token path is not a regular file",
+                    io::ErrorKind::PermissionDenied,
+                    "token path is not a regular file owned by the current user",
+                ));
+            }
+            if metadata.len() > MAX_TOKEN_BYTES as u64 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "token file exceeds size limit",
                 ));
             }
             set_file_mode(path, 0o600)?;
@@ -924,8 +952,8 @@ mod tests {
         assert!(!config_enabled_from_text(
             "version = 1\nmcp_enabled = false\n"
         ));
-        // 坏配置按 Config::load 的默认行为：默认开启。
-        assert!(config_enabled_from_text("not valid toml"));
+        // 坏配置 fail closed：无法确认 mcp_enabled=false 时不能开服务。
+        assert!(!config_enabled_from_text("not valid toml"));
     }
 
     #[test]

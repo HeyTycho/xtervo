@@ -245,6 +245,32 @@ def x11_windows(display: str, pid: int) -> dict[str, str]:
     return {title: win for win, title in candidates}
 
 
+def x11_window_ids(display: str, pid: int) -> list[str]:
+    """同进程多窗口标题统一为 Tervo；按 _NET_WM_PID 返回排序后的 XID 列表。"""
+    out = subprocess.check_output(
+        ["xwininfo", "-root", "-tree"],
+        env={**os.environ, "DISPLAY": display},
+        text=True,
+    )
+    ids: list[str] = []
+    for line in out.splitlines():
+        match = re.search(r'(0x[0-9a-f]+) "([^"]*)"', line)
+        if not match or "Tervo" not in match.group(2):
+            continue
+        win = match.group(1)
+        prop = subprocess.run(
+            ["xprop", "-id", win, "_NET_WM_PID"],
+            env={**os.environ, "DISPLAY": display},
+            text=True,
+            capture_output=True,
+            check=False,
+        ).stdout
+        pm = re.search(r"=\s*(\d+)", prop)
+        if pm and int(pm.group(1)) == pid:
+            ids.append(win)
+    return sorted(set(ids), key=lambda w: int(w, 16))
+
+
 def xwin(args, win: str, *rest: str) -> None:
     subprocess.run(
         [args.xwin, win, *rest],
@@ -301,11 +327,10 @@ def main() -> int:
             lambda: {wid: w["tabs"] for wid, w in app.windows().items()} == {1: 2, 2: 3},
             label="independent tabs",
         )
-        wins = x11_windows(args.display, app.proc.pid)
-        assert "Tervo" in wins, wins
-        assert "Tervo — 2" in wins, wins
-        xwin(args, wins["Tervo"], "60", "80", "640", "480")
-        xwin(args, wins["Tervo — 2"], "760", "120", "700", "560")
+        wins = x11_window_ids(args.display, app.proc.pid)
+        assert len(wins) == 2, wins
+        xwin(args, wins[0], "60", "80", "640", "480")
+        xwin(args, wins[1], "760", "120", "700", "560")
         wait_for(
             lambda: (
                 abs(app.windows()[1]["geometry"]["w"] - 640) <= 2
@@ -313,7 +338,7 @@ def main() -> int:
             ),
             label="window geometry applied",
         )
-        xwin(args, wins["Tervo — 2"], "--maximize")
+        xwin(args, wins[1], "--maximize")
         wait_for(
             lambda: app.windows()[2]["maximized"] is True,
             timeout=6.0,
@@ -418,9 +443,10 @@ def main() -> int:
         check("restore_after_primary_close", {"windows": 1, "tabs": 4})
 
         # 最后一个窗口正常关闭：事件循环退出、最终保存、running marker 清除。
-        wins = x11_windows(args.display, app.proc.pid)
+        wins = x11_window_ids(args.display, app.proc.pid)
         assert "Tervo" in wins, wins
-        xwin(args, wins["Tervo"], "--close")
+        assert wins, "no Tervo window after restore"
+        xwin(args, wins[0], "--close")
         wait_for(
             lambda: app.proc.poll() is not None,
             timeout=10.0,

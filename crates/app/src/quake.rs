@@ -29,7 +29,8 @@ pub fn spawn_listener(
 
     conn.change_window_attributes(
         root,
-        &ChangeWindowAttributesAux::new().event_mask(EventMask::KEY_PRESS),
+        &ChangeWindowAttributesAux::new()
+            .event_mask(EventMask::KEY_PRESS | EventMask::KEY_RELEASE),
     )
     .map_err(|e| format!("选择 root KeyPress 失败: {e}"))?
     .check()
@@ -59,16 +60,26 @@ pub fn spawn_listener(
 
     std::thread::spawn(move || {
         let mut last = Instant::now() - Duration::from_secs(2);
+        let mut held = false;
         loop {
             match conn.wait_for_event() {
                 Ok(Event::KeyPress(ev)) if ev.detail == keycode => {
                     eprintln!("[quake] KeyPress state={:?}", ev.state);
+                    // X11 auto-repeat 是连续的 KeyPress/KeyRelease 对；按住时
+                    // 只认第一次 press，必须等 release 才允许下一次 toggle。
+                    if held {
+                        continue;
+                    }
+                    held = true;
                     let now = Instant::now();
                     if now.duration_since(last) < Duration::from_millis(250) {
                         continue;
                     }
                     last = now;
                     on_toggle();
+                },
+                Ok(Event::KeyRelease(ev)) if ev.detail == keycode => {
+                    held = false;
                 },
                 Ok(_) => {},
                 Err(e) => {

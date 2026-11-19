@@ -233,7 +233,7 @@ fn command_check(args: &Args) -> Result<u8, Box<dyn std::error::Error>> {
     let doctor = Doctor::new(build_config(args)?);
     let case = doctor.run(&input)?;
     emit_case(args, &case)?;
-    Ok(exit_code(&case, args.value("fail-on")))
+    exit_code(&case, args.value("fail-on"))
 }
 
 fn command_issue(args: &Args) -> Result<u8, Box<dyn std::error::Error>> {
@@ -249,7 +249,7 @@ fn command_issue(args: &Args) -> Result<u8, Box<dyn std::error::Error>> {
     } else {
         emit(args, &case.issue_draft.markdown)?;
     }
-    Ok(exit_code(&case, args.value("fail-on")))
+    exit_code(&case, args.value("fail-on"))
 }
 
 fn command_schema(args: &Args) -> Result<u8, Box<dyn std::error::Error>> {
@@ -504,7 +504,9 @@ fn read_tail(path: &str, max_bytes: u64) -> Result<String, Box<dyn std::error::E
     file.seek(SeekFrom::Start(start))
         .map_err(|error| CliError(format!("seek {path} 失败: {error}")))?;
     let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)
+    // seek 后文件仍可能增长；take 保证实际 I/O 也不超过 max_bytes。
+    file.take(max_bytes)
+        .read_to_end(&mut bytes)
         .map_err(|error| CliError(format!("读取 {path} 失败: {error}")))?;
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
@@ -549,15 +551,24 @@ fn emit_case(args: &Args, case: &DiagnosticCase) -> Result<(), Box<dyn std::erro
     emit(args, &text)
 }
 
-fn exit_code(case: &DiagnosticCase, fail_on: Option<&str>) -> u8 {
+fn exit_code(
+    case: &DiagnosticCase,
+    fail_on: Option<&str>,
+) -> Result<u8, Box<dyn std::error::Error>> {
     let (_, warnings, errors) = case.severity_counts();
-    match fail_on.unwrap_or("none") {
+    let code = match fail_on.unwrap_or("none") {
         "warn" if warnings + errors > 0 => 2,
         "warn" => 0,
         "error" if errors > 0 => 2,
-        "none" | "error" => 0,
-        _ => 0,
-    }
+        "error" => 0,
+        "none" => 0,
+        other => {
+            return err(format!(
+                "--fail-on 需要 none|warn|error，实际 {other:?}"
+            ))
+        },
+    };
+    Ok(code)
 }
 
 fn parse_usize(
