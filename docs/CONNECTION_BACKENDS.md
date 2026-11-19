@@ -47,16 +47,18 @@ at runtime for simple SSH/serial profiles.
 
 ## Verification (2026-11-19)
 
-- `cargo test -p tervo-app --bin tervo`: 710 passed, 0 failed, 2 ignored.
+- `cargo test -p tervo-app --bin tervo`: 726 passed, 0 failed, 2 ignored.
   - `ssh_native::integration_tests::native_ssh_connects_password_and_echoes`:
     in-process russh server + password auth + temp known_hosts + PTY/shell + echo.
   - `serial_native::pty_tests::native_serial_roundtrips_through_a_pty`:
     openpty, real `TimedOut` retry, two-way bytes.
+  - ProxyJump (two in-process SSH servers), local forward, remote forward,
+    encrypted-key passphrase and known_hosts hashed/wildcard/revoked tests.
 - Release e2e: TabBar, keyboard protocol, tab pin/drag, single-instance multi-window.
-- 15m `SOAK_STRICT=1`: PASS, RSS 576.6→671.3 MiB (+4.44 MiB/min, R²=0.32),
+- 15m `SOAK_STRICT=1`: PASS, RSS 574.0→666.8 MiB (+4.06 MiB/min, R²=0.28),
   threads 111→111, fds 121→121, fatal=0.
 - Installed `~/.local/bin/tervo` sha256
-  `d1ec335658c242b5aa7d55b1c39c305e2912ca3ff6f2856c9297d6dbd3737ba5`.
+  `fbbc7d87c668c0d5d0eadfef71e0d3702e6b0cb353d1496aa12b471553355ead`.
 
 The native SSH path is now fully in-process for config parsing, known_hosts
 lookup, authentication, transport, PTY, shell, forwarding and agent channels.
