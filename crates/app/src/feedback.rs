@@ -72,6 +72,8 @@ pub fn create_bundle(description: &str) -> Result<PathBuf, String> {
         "wayland_display": std::env::var("WAYLAND_DISPLAY").ok(),
         "session_type": std::env::var("XDG_SESSION_TYPE").ok(),
         "desktop": std::env::var("XDG_CURRENT_DESKTOP").ok(),
+        "platform_hint": crate::platform::SessionFacts::from_env().hint().label(),
+        "xwayland": crate::platform::SessionFacts::from_env().xwayland_likely(),
         "config_path": Config::path().display().to_string(),
         "logs_path": base.display().to_string(),
     });

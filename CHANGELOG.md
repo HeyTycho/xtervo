@@ -70,6 +70,27 @@ Tervo 的版本与 tag 规则见 `docs/RELEASING.md`。
   ` — N` 后缀，用户自定义标题不受影响（`crates/app/src/secondary.rs`，
   单测 `window_title_drops_accumulated_id_suffixes`）。
 
+### Added
+
+- Wayland Phase 1：新增 `platform` 能力探测（env hint + winit raw handle 二次确认），
+  `--diagnose` 区分“本进程 Wayland 窗口”与 XWayland 数据；新增隔离 headless
+  Mutter e2e（`scripts/e2e_wayland_phase1.sh`）。GNOME 46 + fcitx5 下
+  text-input-v3 已实测提交中文；Wayland 下 `slint::set_xdg_app_id("tervo")` 让
+  `.desktop`/图标/窗口分组可关联（X11 不设置，WM_CLASS 保持原值）。
+
+### Fixed
+
+- 原生 Wayland 不再假报 Quake 全局热键已注册；Wayland 下明确禁用 Quake，
+  设置页拒绝启用并提示。
+- 原生 Wayland 不再尝试 `_NET_WM_ICON`、X11 SHAPE 圆角、X11 最大化状态机、
+  X11 `own_windows`/遮挡检测，也不再为自绘 resize 连接 XWayland 指针。
+- 剪贴板不可用时打印一次可读原因（GNOME/Mutter 无 data-control、是否有
+  XWayland 回退），短行 `[clipboard] 不可用` 保持兼容。
+- Wayland 会话快照只保存尺寸（`geometry.position_known=false`），避免 `(0,0)`
+  污染共享 session 后下次 X11 恢复到左上角。
+- X11/XWayland 路径保持原行为（Quake grab、`_NET_WM_ICON`、XDND、XIM、EWMH
+  resize、PRIMARY）。
+
 ## [0.5.0] - 2026-11-14
 
 Stable release: single-instance primary + default in-process multi-window, WindowRegistry/SharedServices, multi-window session v2, full shared UI callbacks, plugin/MCP window_id routing, WindowId-scoped GPU state. Clean 30m dual-window soak PASS.

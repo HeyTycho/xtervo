@@ -146,6 +146,8 @@ fn env_json() -> Value {
         "session_type": std::env::var("XDG_SESSION_TYPE").ok(),
         "desktop": std::env::var("XDG_CURRENT_DESKTOP").ok(),
         "backend": std::env::var("SLINT_BACKEND").ok(),
+        "platform_hint": crate::platform::SessionFacts::from_env().hint().label(),
+        "xwayland": crate::platform::SessionFacts::from_env().xwayland_likely(),
         "dri": std::path::Path::new("/dev/dri").exists(),
         "config": Config::path().display().to_string(),
         "profiles": profile::ProfileStore::path().display().to_string(),

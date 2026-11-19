@@ -109,6 +109,52 @@ python3 scripts/check_doc_links.py       # 文档相对链接检查
 开发规则见 [`AGENTS.md`](AGENTS.md)（大任务 18:00 后；改动必须有失败测试/证据；
 长门禁 2m/15m/30m）。变更记录见 [`CHANGELOG.md`](CHANGELOG.md)。
 
+- 应用内：标签栏左侧品牌图标、设置面板标题图标（`assets/icon-small.png`）。
+- 窗口/任务栏图标：`_NET_WM_ICON` 由 Rust 侧直接写入（`assets/icon-64.rgba`），
+  因为 Slint 内置 `Window.icon` 在本环境下会写成空属性。
+
+## 已知限制
+
+- 终端字符光栅仍是 CPU（fontdue），但已改为双缓冲持久帧：`Image` 只做 refcount
+  clone，不再每帧整屏 `SharedPixelBuffer` 拷贝；Skia 仍会把帧上传为纹理再合成。
+  默认有 `/dev/dri` 走 Skia/GL，无 DRM 或 1s 内确认不到 GPU API 会自动回退
+  `winit-software`；真机 NVIDIA 的 GPU 帧率/延迟数据仍待用户复测。
+- tab 不能拖拽排序；分屏已有分隔条拖拽与窗口拖边缩放。
+- 文件拖放的原生桥接目前只覆盖 X11/winit：Slint 1.18.1 的 winit 后端不会把
+  `HoveredFile`/`DroppedFile` 转成 `DataTransfer`，winit 0.30.13 的 Wayland 后端
+  也没有 DnD 实现；原生 Wayland 下明确不支持，不做假 hover。视觉铃尚未跟随系统
+  reduced motion。
+- 窗口位置/大小：X11 由应用层维护；原生 Wayland 不允许客户端设置全局位置，
+  `set_position` 是 no-op，Quake 模式因此不可用（启动/设置都会明确提示）；会话
+  快照在 Wayland 只保存尺寸（`position_known=false`），不会用 `(0,0)` 污染下次 X11 恢复。
+- 剪贴板/PRIMARY：X11 与“Wayland 窗口 + XWayland”可用；纯 Wayland 需要合成器
+  提供 ext-/wlr-data-control，GNOME/Mutter 46 未提供，失败时会打印一次可读原因。
+- 窗口图标：X11 走运行时 `_NET_WM_ICON`；Wayland 由安装后的
+  `tervo.desktop` + `app_id=tervo` 关联，运行时不再尝试写图标。
+- 字体固定 JetBrains Mono（回退 DejaVu）；中文自动回退 WenQuanYi Micro Hei / Droid / Noto CJK，
+  彩色 emoji 默认开启（Noto Color Emoji CBDT/CBLC/sbix，`TERVO_COLOR_EMOJI=0` 可关），
+  暂不支持自选字体、连字，COLR/SVG 彩色 emoji 仍会回落单色/占位。
+- IME：X11 走 winit 的 XIM（fcitx5 / ibus）；原生 Wayland 走 text-input-v3，
+  GNOME 46 + fcitx5（pinyin）已实测提交中文；其他合成器/输入法仍需矩阵验证。
+  更完整的 Wayland 限制与验证见 `docs/WAYLAND_ADAPTATION.md`。
+- 主题跟随系统依赖 GNOME `gsettings`；非 GNOME 环境会回退 `gtk-theme` / `COLORFGBG` 做一次性检测。
+- 自定义主题仍在启动时扫描，改主题文件后需要重启（热重载尚未实现）。
+- 设置页目前不含字体族/行距设置；搜索跳转定位到设置卡片而不是单个控件，键盘焦点遍历（Tab/方向键）
+  仍以鼠标点击/搜索为主。旧 modal 回退是同一套控件换呈现，并非保留 2026-11 之前的旧实现。
+- 会话快照恢复布局/几何/标题/cwd/Profile 关联和 Tab pinned，不恢复滚动历史、屏幕内容或运行中进程。
+  `restore_session_on_startup=true` 时每 2s autosave；异常退出通过 running marker 检测并恢复。
+  session v2 保存全部窗口的 geometry/maximized/active_tab/tabs；损坏 primary 回退上一代 `.bak`。
+  SSH/Serial/Telnet 不自动重连。
+- SSH/Serial/Telnet Profile 不会随会话恢复自动重连（需要用户主动打开，避免启动即连远端）；
+  恢复为普通 shell 并保留 Tab 标题/布局/cwd。
+- Tab pin 是“固定到左侧 pinned 区”，不是窗口置顶；pinned 组内顺序仍可拖动，但不能跨到
+  unpinned 组；拖出窗口/跨窗口移动未实现。
+- Profile 外观覆盖是 per-pane 的“pin”：Profile 显式设置后，全局字号/主题/光标改动不会
+  刷新该 pane；清空 Profile 对应字段后新开 Tab 即回到继承。
+- 打包/发布：自动更新、崩溃报告/上传、AppImage/Flatpak/Snap、发布签名与 APT 仓库
+  本轮均未实现，也没有对应按钮；升级靠新 tar 的 `install.sh` 或新 `.deb`，回滚用
+  `install.sh --rollback`。详见 [`packaging/README.md`](packaging/README.md)。
+
 ## 许可证
 
 GPL-3.0-only，见 [`LICENSE`](LICENSE)；第三方组件与商标声明见

@@ -62,6 +62,7 @@
 | W-06 | Wayland 原生 spike | done | `.worktrees/wayland-spike` / `feat/wayland-spike` | commit `f2e16e4`；合 master `e8ef824`；`docs/WAYLAND_SPIKE.md` 576 行；纯 Wayland/Xwayland headless 实测；DnD/全局快捷键/PRIMARY 硬阻断 | 只 spike，不承诺原生完整 |
 | W-07 | 长时稳定性 soak | done | `.worktrees/soak` / `feat/soak` | `scripts/soak.sh` + `docs/SOAK.md`；2m PASS；30m 修复后 RSS 753.2→817.2 MiB（+64.0MiB，+0.78MiB/min，R²=0.13），6min 后平台；`.worktrees/mem-converge/.logs/soak/fix-30m/` | 30m PASS；不声称 24h |
 | W-08 | 全量 e2e/回归矩阵 | done | 15 个脚本（SSH/SFTP、插件、设置、Sixel/IIP、键盘、事件、渲染、P0、URL/右键等） | 功能 e2e 全 PASS；URL/WM 各一次注入竞态重跑 PASS；内存 30m 单独 PASS | 功能+内存门禁绿 |
+| W-09 | Wayland Phase 1：能力探测 + 优雅降级 | done | `.worktrees/wl-phase1` / `feat/wayland-phase1` | 新增 `platform.rs`（env hint + winit raw handle 二次确认 + Caps 门控）；Quake/图标/圆角/最大化/拖边回退/Bell/own_windows 在 Wayland 明确降级；`set_xdg_app_id=tervo`；`--diagnose` 标注 XWayland 数据；session 几何增加 `position_known` 防污染 X11；隔离 headless Mutter e2e（Wayland + 私有 XWayland）；workspace 1069 tests PASS；2m idle RSS/线程/FD 平稳 | X11 行为不变；纯 Wayland 剪贴板/DnD/全局热键明确不支持，GNOME 46 + fcitx5 IME 实测“你好”；见 `docs/WAYLAND_ADAPTATION.md` |
 | MEM-01 | 长时内存增长修复 | done | `.worktrees/mem-converge` / `feat/mem-converge` | 根因 IIP/Sixel 图片锚点 + scrollback 封顶；`66ae0c6` 合 master `0cb84e8`；30m +64.0MiB（旧 +209.6），6min 平台；app 369/core 127 | 30m PASS；诊断 commit 1bec94f 未合发布 |
 | DOC-01 | 最终人工复测清单 | done | `docs/RETEST_CHECKLIST.md` | 已填版本/哈希/e2e/30m 内存结果，待用户逐项签字 | 文档交付 |
 | DOC-02 | UI/视觉设计规范 | done | `docs/UI_DESIGN.md` | 美学、token、图标、菜单、动效、双语、2m/15m/30m 内存门禁、验收清单 | 设计与验收统一口径 |
@@ -152,3 +153,4 @@
 | 2026-11-06 21:35 | W-01 完成（feat/profile-session，未合 master）：每 Profile 外观 + session profile_id/可选启动自动恢复；app 295、workspace 489；Xvfb :136 e2e PASS；限制见 docs/self-iteration.md |
 | 2026-11-06 23:56 | W-02 + P1-08 完成（feat/ssh-sftp，未合 master）：SSH 跳板/远程+动态转发/agent forwarding/known_hosts 预检/重连；SFTP 队列/chmod/retry/cancel/10s 连接超时；Vault 后台 KDF。app 351、core smoke 25；Xvfb :139 e2e 19 张截图 PASS；限制见 docs/self-iteration.md |
 | 2026-11-09 | feat/settings-help：Settings SYSTEM 组新增 Help（第 9 分类，手绘圆形问号）；快捷键表/config+log 路径/诊断复制/编译期版本/已知限制；4 条搜索索引（help/帮助）；app 383 passed（基线 382）；`scripts/e2e_settings_help.sh` Xvfb :147 PASS（16 张截图）；未合 master |
+| 2026-11-19 21:48 | W-09 Wayland Phase 1（feat/wayland-phase1）：平台能力探测 + X11-only 能力门控；app_id=tervo；`--diagnose` 区分 XWayland；session `position_known`；隔离 headless Mutter 下 Wayland/X11/IME/剪贴板 e2e；workspace 1069 tests PASS；2m idle 内存平稳 |

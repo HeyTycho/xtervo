@@ -217,10 +217,10 @@ fn create_inproc_window_impl(
         crate::redraw_visible(st);
     });
     start_timers(&runtime);
-    // 恢复窗口用快照位置；新窗口走层叠偏移。
+    // 恢复窗口用快照位置；Wayland 快照 position_known=false，位置交给合成器。
     let position = restore
         .map(|window| window.geometry)
-        .filter(|geometry| geometry.is_known())
+        .filter(|geometry| geometry.is_known() && geometry.position_known)
         .map(|geometry| (geometry.x, geometry.y))
         .unwrap_or_else(|| {
             let offset = 40 + (runtime::window_count().saturating_sub(1) as i32) * 40;

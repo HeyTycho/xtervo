@@ -2,9 +2,9 @@
 //! 系统响铃（audible bell）。
 //!
 //! BEL 到达且 `audible_bell = true` 时：
-//! - 优先向 X server 发 `Bell` 请求（GNOME Terminal 同样走 GDK/X11 bell，
-//!   是否真的出声由桌面声音主题/`xset b` 决定）；
-//! - 没有 X11 连接（无 DISPLAY）时，如果 stderr 是终端就写一个 BEL 字节，
+//! - 原生 X11 窗口优先向 X server 发 `Bell` 请求（GNOME Terminal 同样走
+//!   GDK/X11 bell，是否真的出声由桌面声音主题/`xset b` 决定）；
+//! - 原生 Wayland 或没有 X11 连接时，如果 stderr 是终端就写一个 BEL 字节，
 //!   让启动 Tervo 的终端模拟器响铃。
 //!
 //! 两条路径都是尽力而为：失败只返回 false，不影响终端输入输出，也不阻塞
@@ -36,6 +36,11 @@ pub fn ring() -> bool {
 }
 
 fn ring_x11() -> bool {
+    // 原生 Wayland 窗口不是 X11 client：连 XWayland 发 Bell 不会有声音，还会
+    // 让调用方误以为成功而不走 stderr BEL 回退。
+    if !crate::platform::caps().x11_window_ops {
+        return false;
+    }
     X11.with(|slot| {
         let mut slot = slot.borrow_mut();
         if slot.is_none() {

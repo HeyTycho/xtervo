@@ -319,12 +319,16 @@ impl WindowRuntime {
 
     pub fn geometry(&self) -> WindowGeometry {
         let size = self.ui.window().size();
+        let position_known = crate::platform::caps().window_positioning;
         let position = self.ui.window().position();
         WindowGeometry {
-            x: position.x,
-            y: position.y,
+            // Wayland 的 position() 恒为 (0,0)；写 position_known=false，恢复端
+            // 只恢复尺寸，避免污染下一次 X11 会话的位置。
+            x: if position_known { position.x } else { 0 },
+            y: if position_known { position.y } else { 0 },
             w: size.width,
             h: size.height,
+            position_known,
         }
     }
 

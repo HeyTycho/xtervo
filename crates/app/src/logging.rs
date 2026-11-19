@@ -67,6 +67,7 @@ pub fn init() {
                 for key in [
                     "DISPLAY",
                     "WAYLAND_DISPLAY",
+                    "WAYLAND_SOCKET",
                     "XDG_SESSION_TYPE",
                     "XDG_CURRENT_DESKTOP",
                     "SLINT_BACKEND",
@@ -77,6 +78,13 @@ pub fn init() {
                 ] {
                     let _ = writeln!(f, "{key}={:?}", std::env::var(key).ok());
                 }
+                let facts = crate::platform::SessionFacts::from_env();
+                let _ = writeln!(
+                    f,
+                    "platform_hint={} xwayland={}",
+                    facts.hint().label(),
+                    facts.xwayland_likely()
+                );
                 let _ = LOG_PATH.set(path.clone());
                 tee_stderr(&path);
                 eprintln!("[log] 日志文件: {}", path.display());

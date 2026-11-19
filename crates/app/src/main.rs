@@ -35,6 +35,7 @@ mod image_layer_diff_tests;
 #[allow(dead_code)]
 mod plugin_v3;
 mod plugin_wasm;
+mod platform;
 mod profile;
 mod quake;
 mod render;
@@ -4787,6 +4788,11 @@ fn watch_system_scheme() {
 }
 
 fn ensure_resize_conn(st: &mut AppState) {
+    // 自绘 resize 依赖 X11 全局指针；Wayland 下连上 XWayland 只会拿到错误的
+    // 坐标（甚至读不到按键），所以不建立这条连接，交给 winit/xdg_toplevel。
+    if !platform::caps().x11_window_ops {
+        return;
+    }
     if st.xresize.is_some() {
         return;
     }
@@ -5671,6 +5677,13 @@ fn toggle_quake() {
 fn toggle_quake_inner(st: &mut AppState) {
     if !st.cfg.borrow().quake_enabled {
         eprintln!("[quake] 未启用（设置 → Window → Quake mode）");
+        return;
+    }
+    // 原生 Wayland：没有全局热键；winit 的 set_minimized/set_visible/focus 都是
+    // 空实现，无法做到“再按一次收起、再按一次拉下”。明确不支持，不假装成功。
+    if !platform::caps().global_hotkey {
+        eprintln!("[quake] 原生 Wayland 不支持 Quake（无全局热键，窗口隐藏/定位不可用）");
+        set_status_toast(st, "原生 Wayland 不支持 Quake 模式（无全局热键）".into());
         return;
     }
     if st.quake_visible {
@@ -10348,6 +10361,10 @@ fn request_window_corners(
     logical: Option<(f32, f32)>,
     state: Option<xconn::CornerState>,
 ) {
+    // Wayland 没有 X11 SHAPE / _NET_WM_PID；圆角由合成器决定，不能跑 xconn worker。
+    if !platform::caps().x11_corners {
+        return;
+    }
     let Some(shaper) = &st.corners else { return };
     let window = st.ui.window();
     let scale = window.scale_factor();
@@ -10409,6 +10426,38 @@ fn sync_maximize_from_state_machine(st: &mut AppState) {
 /// winit 给出 Xlib/Xcb handle；最多 2s，之后明确回退 winit。重试只用于窗口
 /// 句柄就绪，不参与最大化状态判断。
 fn start_maximize_when_window_ready(ui: &MainWindow, window_id: WindowId, attempt: u32) {
+    // 每次轮询都尝试从 raw handle 确认后端；这是唯一可信的 Wayland/X11 事实。
+    // 首次拿到 handle 时打一行日志，便于用户诊断“为什么图标/热键/圆角不同”。
+    let detected = ui
+        .window()
+        .with_winit_window(platform::detect)
+        .unwrap_or(platform::UiBackend::Unknown);
+    let first_confirm = detected != platform::UiBackend::Unknown && !platform::backend_confirmed();
+    let backend = platform::confirm(detected);
+    if first_confirm {
+        eprintln!(
+            "[platform] ui_backend={} (winit raw handle confirmed) {}",
+            backend.label(),
+            platform::SessionFacts::from_env().summary()
+        );
+    }
+    if backend == platform::UiBackend::Wayland {
+        // 原生窗口是异步创建的：raw handle 未就绪时继续轮询，拿到后打确认日志。
+        // 2s 仍未就绪则按 env hint 处理，不留下无限定时器。
+        if detected == platform::UiBackend::Unknown && attempt < 40 {
+            let weak = ui.as_weak();
+            slint::Timer::single_shot(Duration::from_millis(50), move || {
+                if let Some(ui) = weak.upgrade() {
+                    start_maximize_when_window_ready(&ui, window_id, attempt + 1);
+                }
+            });
+            return;
+        }
+        // Winit 的 set_maximized 在 Wayland 由 xdg_toplevel 处理；没有
+        // _NET_WM_STATE 可读，不需要也不应该启动 X11 状态机。
+        eprintln!("[maximize] 原生 Wayland：跳过 X11 最大化状态机，使用 winit");
+        return;
+    }
     let xid = ui.window().with_winit_window(winit_window_x11_id).flatten();
     if let Some(id) = xid {
         let on_event = move |_snapshot: tervo_maximize::MaximizeSnapshot| {
@@ -10463,10 +10512,12 @@ fn start_maximize_when_window_ready(ui: &MainWindow, window_id: WindowId, attemp
 fn restore_window_geometry(ui: &MainWindow, window_id: WindowId, window: &session::WindowSnapshot) {
     let geometry = window.geometry;
     if geometry.is_known() {
-        ui.window()
-            .set_size(slint::PhysicalSize::new(geometry.w, geometry.h));
-        ui.window()
-            .set_position(slint::PhysicalPosition::new(geometry.x, geometry.y));
+        ui.window().set_size(slint::PhysicalSize::new(geometry.w, geometry.h));
+        // Wayland 快照的 position_known=false：只恢复尺寸，位置交给合成器。
+        if geometry.position_known {
+            ui.window()
+                .set_position(slint::PhysicalPosition::new(geometry.x, geometry.y));
+        }
     }
     if window.maximized {
         ui.window().set_maximized(true);
@@ -13721,6 +13772,7 @@ fn set_clipboard_checked(st: &mut AppState, text: &str) -> Result<(), String> {
             Err(format!("clipboard write failed: {e}"))
         }
         None => {
+            platform::log_clipboard_unavailable_once();
             eprintln!("[clipboard] 不可用");
             Err("clipboard unavailable".to_string())
         }
@@ -13866,7 +13918,10 @@ fn set_primary(st: &mut AppState, text: &str) {
     }) {
         Some(Ok(())) => {}
         Some(Err(e)) => eprintln!("[clipboard] PRIMARY 写入失败: {e}"),
-        None => eprintln!("[clipboard] 不可用"),
+        None => {
+            platform::log_clipboard_unavailable_once();
+            eprintln!("[clipboard] 不可用");
+        },
     }
 }
 
@@ -13883,7 +13938,10 @@ fn clear_clipboard(st: &mut AppState) {
     match with_clipboard(st, |cb| cb.clear()) {
         Some(Ok(())) => {}
         Some(Err(e)) => eprintln!("[clipboard] 清空失败: {e}"),
-        None => eprintln!("[clipboard] 不可用"),
+        None => {
+            platform::log_clipboard_unavailable_once();
+            eprintln!("[clipboard] 不可用");
+        },
     }
 }
 
@@ -13895,7 +13953,10 @@ fn clear_primary(st: &mut AppState) {
     }) {
         Some(Ok(())) => {}
         Some(Err(e)) => eprintln!("[clipboard] PRIMARY 清空失败: {e}"),
-        None => eprintln!("[clipboard] 不可用"),
+        None => {
+            platform::log_clipboard_unavailable_once();
+            eprintln!("[clipboard] 不可用");
+        },
     }
 }
 
@@ -16576,6 +16637,7 @@ fn print_diagnostics() {
     for key in [
         "DISPLAY",
         "WAYLAND_DISPLAY",
+        "WAYLAND_SOCKET",
         "XDG_SESSION_TYPE",
         "XDG_CURRENT_DESKTOP",
         "SLINT_BACKEND",
@@ -16610,50 +16672,77 @@ fn print_diagnostics() {
         Some(p) => println!("log={}", p.display()),
         None => println!("log=(disabled)"),
     }
-    if let Some((w, h)) = xconn::screen_size() {
-        println!("screen={w}x{h}");
-    }
-    for m in xconn::monitors() {
-        println!(
-            "monitor={}x{}+{}+{} primary={}",
-            m.width, m.height, m.x, m.y, m.primary
-        );
-    }
-    if let Some((x, y, w, h)) = xconn::workarea() {
-        println!("workarea={w}x{h}+{x}+{y}");
-    }
-    if let Some((x, y)) = xconn::pointer_position() {
-        println!("pointer={x},{y}");
-    }
-    match xconn::active_window() {
-        Some(id) => match xconn::window_snapshot(id) {
-            Some(w) => println!(
-                "active_window=0x{id:x} pid={} {}x{} at {},{} viewable={} title={:?}",
-                w.pid, w.w, w.h, w.x, w.y, w.viewable, w.title
-            ),
-            None => println!("active_window=0x{id:x} (无法读取属性)"),
-        },
-        None => println!("active_window=(unknown)"),
-    }
-    println!("own windows:");
-    for w in xconn::own_windows() {
-        println!(
-            "  0x{:x} pid={} {}x{} at {},{} viewable={} title={:?}",
-            w.id, w.pid, w.w, w.h, w.x, w.y, w.viewable, w.title
-        );
-    }
-    let others: Vec<_> = xconn::tervo_windows()
-        .into_iter()
-        .filter(|w| w.pid != std::process::id())
-        .collect();
-    if !others.is_empty() {
-        println!("⚠ 其他 Tervo 实例窗口（可能挡住点击）:");
-        for w in others {
+    let session = platform::SessionFacts::from_env();
+    println!("{}", platform::diagnose_summary());
+    println!("xdg_app_id={}", platform::XDG_APP_ID);
+    let wayland_hint = session.hint() == platform::UiBackend::Wayland;
+    if session.display.as_deref().is_some_and(|v| !v.is_empty()) {
+        if wayland_hint {
+            println!(
+                "x11/xwayland view (DISPLAY={:?}; 不是本进程 Wayland 窗口，仅供参考):",
+                session.display.as_deref().unwrap_or("-")
+            );
+        } else {
+            println!(
+                "x11 view (DISPLAY={:?}; 本进程窗口):",
+                session.display.as_deref().unwrap_or("-")
+            );
+        }
+        if let Some((w, h)) = xconn::screen_size() {
+            println!("screen={w}x{h}");
+        }
+        for m in xconn::monitors() {
+            println!(
+                "monitor={}x{}+{}+{} primary={}",
+                m.width, m.height, m.x, m.y, m.primary
+            );
+        }
+        if let Some((x, y, w, h)) = xconn::workarea() {
+            println!("workarea={w}x{h}+{x}+{y}");
+        }
+        if let Some((x, y)) = xconn::pointer_position() {
+            println!("pointer={x},{y}");
+        }
+        match xconn::active_window() {
+            Some(id) => match xconn::window_snapshot(id) {
+                Some(w) => println!(
+                    "active_window=0x{id:x} pid={} {}x{} at {},{} viewable={} title={:?}",
+                    w.pid, w.w, w.h, w.x, w.y, w.viewable, w.title
+                ),
+                None => println!("active_window=0x{id:x} (无法读取属性)"),
+            },
+            None => println!("active_window=(unknown)"),
+        }
+        if wayland_hint {
+            println!("x11/xwayland own windows (仅 X11 客户端，不含本进程 Wayland 窗口):");
+        } else {
+            println!("own windows:");
+        }
+        for w in xconn::own_windows() {
             println!(
                 "  0x{:x} pid={} {}x{} at {},{} viewable={} title={:?}",
                 w.id, w.pid, w.w, w.h, w.x, w.y, w.viewable, w.title
             );
         }
+        let others: Vec<_> = xconn::tervo_windows()
+            .into_iter()
+            .filter(|w| w.pid != std::process::id())
+            .collect();
+        if !others.is_empty() {
+            if wayland_hint {
+                println!("⚠ 其他 X11 Tervo 窗口（不是本进程 Wayland 窗口）:");
+            } else {
+                println!("⚠ 其他 Tervo 实例窗口（可能挡住点击）:");
+            }
+            for w in others {
+                println!(
+                    "  0x{:x} pid={} {}x{} at {},{} viewable={} title={:?}",
+                    w.id, w.pid, w.w, w.h, w.x, w.y, w.viewable, w.title
+                );
+            }
+        }
+    } else {
+        println!("x11: DISPLAY 未设置；跳过 X11/XWayland 探测");
     }
     println!("recent log:");
     for line in logging::tail(40) {
@@ -17048,8 +17137,10 @@ fn build_window_state(
     }
     let command_registry = commands::builtin();
     // 圆角 worker 只依赖 X11；多个窗口各自持有自己的 SHAPE worker（默认关闭）。
+    // Wayland 窗口没有 X11 SHAPE，启动它只会连到 XWayland 并等不到本进程窗口。
     let corners = if std::env::var_os("TERVO_CORNERS").is_none()
         || std::env::var_os("TERVO_NO_CORNERS").is_some()
+        || !platform::caps().x11_corners
     {
         None
     } else {
@@ -17975,7 +18066,13 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
                 return;
             }
             if st.resize.is_none() {
-                eprintln!("[ui] 自绘 resize 无法启动：X11 指针不可用");
+                if platform::caps().x11_window_ops {
+                    eprintln!("[ui] 自绘 resize 无法启动：X11 指针不可用");
+                } else {
+                    eprintln!(
+                        "[ui] 原生 Wayland 无自绘 resize 回退：winit/xdg_toplevel 未接管指针"
+                    );
+                }
             } else {
                 eprintln!("[ui] 自绘 resize dir={dir}");
             }
@@ -20421,9 +20518,18 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
 
     ui.on_toggle_quake(move || {
         runtime::with_window(window_id, |st| {
-            st.cfg.borrow_mut().quake_enabled = !st.cfg.borrow_mut().quake_enabled;
-            st.ui.set_cfg_quake(st.cfg.borrow().quake_enabled);
-            if !st.cfg.borrow().quake_enabled && st.quake_visible {
+            // Wayland 下开启 Quake 只会得到“已启用但 F12 无反应”的假象；明确拒绝
+            // 启用（已启用时仍允许关闭，避免用户被困在旧配置里）。
+            let quake_enabled = st.cfg.borrow().quake_enabled;
+            if !platform::caps().global_hotkey && !quake_enabled {
+                eprintln!("[ui] 原生 Wayland 不支持 Quake；忽略启用");
+                st.ui.set_cfg_quake(false);
+                set_status_toast(st, "原生 Wayland 不支持 Quake 模式（无全局热键）".into());
+                return;
+            }
+            st.cfg.borrow_mut().quake_enabled = !quake_enabled;
+            st.ui.set_cfg_quake(!quake_enabled);
+            if !quake_enabled && st.quake_visible {
                 if let Some((pos, size)) = st.quake_saved.take() {
                     st.ui.window().set_size(size);
                     st.ui.window().set_position(pos);
@@ -21249,6 +21355,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     // 在 show/首帧之前安装：读取实际渲染器（Skia/GL vs winit-software）和 GL 信息。
     let window_id = WindowId::FIRST;
+    // Wayland 的 .desktop/图标关联依赖 app_id；Slint 在 show() 建原生窗口时读取，
+    // 因此必须在 show() 之前设置。只对 Wayland 设置：X11 上 Slint 会把它写成
+    // WM_CLASS ("", "tervo")，而现有 X11 e2e/WM 习惯是 ("tervo", "tervo")，
+    // 保持 winit 默认值（argv[0]）以避免 X11 回归。
+    if platform::SessionFacts::from_env().hint() == platform::UiBackend::Wayland {
+        match slint::set_xdg_app_id(platform::XDG_APP_ID) {
+            Ok(()) => eprintln!("[platform] xdg_app_id={}", platform::XDG_APP_ID),
+            Err(err) => eprintln!(
+                "[platform] set_xdg_app_id({}) 失败: {err}",
+                platform::XDG_APP_ID
+            ),
+        }
+    } else {
+        eprintln!("[platform] xdg_app_id 仅在 Wayland 设置；X11 保持 winit 默认 WM_CLASS");
+    }
     render_probe::install_for(
         window_id,
         &ui.window(),
@@ -21396,9 +21517,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     register_window_callbacks(&ui, state.clone(), window_id);
 
+    // 启动期能力探测：此时原生窗口可能尚未创建，用与 winit 相同的 env 规则给出
+    // hint；show() 后 start_maximize_when_window_ready 会用 raw handle 确认。
+    eprintln!(
+        "[platform] {} ui_backend={} (env hint)",
+        platform::SessionFacts::from_env().summary(),
+        platform::backend().label()
+    );
     // Quake 全局热键是进程级 service：只注册一次，不随窗口数量增长。
-    // 禁用时不要 grab：否则其它程序拿不到这个组合键，属于占用用户快捷键。
-    if cfg.quake_enabled {
+    // Wayland 没有全局键盘 grab：XWayland 的 passive grab 在原生 Wayland 窗口
+    // 聚焦时收不到键，注册成功是假阳性，必须明确不注册并说明降级路径。
+    // 禁用时也不要 grab：否则其它程序拿不到这个组合键，属于占用用户快捷键。
+    if !platform::caps().global_hotkey {
+        eprintln!(
+            "[quake] 原生 Wayland 不支持全局热键 {}；Quake 仅能从命令面板/菜单触发\
+             （合成器未提供 GlobalShortcuts portal）",
+            cfg.quake_hotkey
+        );
+    } else if cfg.quake_enabled {
         if let Err(e) = quake::spawn_listener(&cfg.quake_hotkey, || {
             let _ = slint::invoke_from_event_loop(toggle_quake);
         }) {
@@ -21612,7 +21748,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 位置要在 map 前尽量设一次（部分 WM 在 map 时重新居中）；show 之后再
     // 按真实客户端尺寸/最大化状态校正。
     if let Some(window) = &primary_restore {
-        if window.geometry.is_known() {
+        if window.geometry.is_known() && window.geometry.position_known {
             ui.window().set_position(slint::PhysicalPosition::new(
                 window.geometry.x,
                 window.geometry.y,
@@ -21720,7 +21856,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     // 启动/窗口 map 后先应用一次圆角；worker 会按 _NET_WM_PID 等本进程窗口出现。
     with_app(|st| request_window_corners(st, None, None));
-    {
+    if platform::caps().x11_window_ops {
         let wins = xconn::own_windows();
         if let Some(w) = wins.iter().find(|w| w.viewable && w.w > 100 && w.h > 100) {
             eprintln!(
@@ -21743,6 +21879,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 other.id, other.pid, other.w, other.h, other.x, other.y
             );
         }
+    } else {
+        // XWayland 里看不到本进程的 Wayland surface；这些查询只会把别的 X11
+        // 窗口/虚拟屏幕当成自己，不能用于“被遮挡/窗口位置”判断。
+        eprintln!("[ui] 原生 Wayland：跳过 X11 own_windows/遮挡检测（窗口由合成器管理）");
     }
     if opts.fullscreen {
         ui.window().set_fullscreen(true);
@@ -21766,7 +21906,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // 窗口图标兜底：Slint 内置 icon 在本环境没有写进 _NET_WM_ICON
-    {
+    if platform::caps().window_icon {
         const ICON_RGBA: &[u8] = include_bytes!("../../../assets/icon-64.rgba");
         let title_for_icon = opts.title.clone();
         std::thread::Builder::new()
@@ -21779,6 +21919,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Err(e) => eprintln!("[ui] 设置窗口图标失败: {e}"),
                 }
             })?;
+    } else {
+        // Wayland 不允许客户端写窗口图标；桌面项/图标由 app_id 关联。
+        eprintln!(
+            "[ui] 原生 Wayland 不设置 _NET_WM_ICON：图标由 .desktop + app_id={} 决定",
+            platform::XDG_APP_ID
+        );
     }
 
     redraw_all();

@@ -58,12 +58,22 @@ pub struct Snapshot {
 ///
 /// `w == 0 || h == 0` 表示未知：v1 迁移还没有像素坐标，恢复端应回退平台
 /// 默认尺寸，等窗口打开后的下一次 autosave 再写入真实几何。
+///
+/// `position_known == false` 表示只有尺寸可信：Wayland 客户端不能读写全局
+/// 位置，必须写 false，避免把 (0,0) 污染共享 session 后下次 X11 恢复到左上角。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WindowGeometry {
     pub x: i32,
     pub y: i32,
     pub w: u32,
     pub h: u32,
+    /// 旧版本没有该字段；历史快照都来自 X11，缺省按位置有效处理。
+    #[serde(default = "default_position_known")]
+    pub position_known: bool,
+}
+
+fn default_position_known() -> bool {
+    true
 }
 
 impl WindowGeometry {
@@ -73,6 +83,7 @@ impl WindowGeometry {
         y: 0,
         w: 0,
         h: 0,
+        position_known: false,
     };
 
     /// 是否有可用的像素尺寸。
@@ -777,7 +788,32 @@ mod tests {
     }
 
     fn geometry(x: i32, y: i32, w: u32, h: u32) -> WindowGeometry {
-        WindowGeometry { x, y, w, h }
+        WindowGeometry {
+            x,
+            y,
+            w,
+            h,
+            position_known: true,
+        }
+    }
+
+    #[test]
+    fn legacy_geometry_without_position_flag_is_position_known() {
+        // 旧版本 session 没有 position_known 字段；历史数据来自 X11，必须保留位置。
+        let parsed: WindowGeometry =
+            toml::from_str("x = 10\ny = 20\nw = 800\nh = 600\n").unwrap();
+        assert!(parsed.position_known);
+        assert_eq!(parsed, geometry(10, 20, 800, 600));
+    }
+
+    #[test]
+    fn wayland_geometry_roundtrips_position_unknown() {
+        let parsed: WindowGeometry = toml::from_str(
+            "x = 0\ny = 0\nw = 800\nh = 600\nposition_known = false\n",
+        )
+        .unwrap();
+        assert!(!parsed.position_known);
+        assert!(parsed.is_known());
     }
 
     fn window(
@@ -1434,7 +1470,7 @@ mod tests {
         );
         assert_eq!(
             sorted_keys(window["geometry"].as_object().unwrap()),
-            vec!["h", "w", "x", "y"]
+            vec!["h", "position_known", "w", "x", "y"]
         );
         let tab = window["tabs"][0].as_object().unwrap();
         assert_eq!(sorted_keys(tab), vec!["focused", "pinned", "title", "tree"]);
