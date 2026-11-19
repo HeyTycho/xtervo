@@ -567,7 +567,13 @@ async fn run_session(
             .agent_forward(true)
             .await
             .map_err(|error| format!("请求 agent forwarding 失败: {error}"))?;
-        await_request(&mut channel, &out, &closed).await?;
+        match await_request(&mut channel, &out, &closed).await {
+            Ok(()) => {},
+            Err(error) if error == "远端拒绝了 PTY/shell 请求" => {
+                eprintln!("[ssh-native] agent forwarding 被拒绝，继续无转发连接");
+            },
+            Err(error) => return Err(error),
+        }
     }
     channel
         .request_pty(

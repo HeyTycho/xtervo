@@ -7173,6 +7173,11 @@ fn save_profile_form(st: &mut AppState) {
     };
     match result {
         Ok(id) => {
+            if save_key_passphrase
+                && st.vault_pending_key_passphrase_remove == Some(id)
+            {
+                st.vault_pending_key_passphrase_remove = None;
+            }
             let mut vault_write_error = None;
             if save_key_passphrase && !key_passphrase.is_empty() {
                 if let Err(error) = st
