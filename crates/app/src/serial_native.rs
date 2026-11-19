@@ -18,6 +18,33 @@ use crate::profile::Profile;
 
 const READ_TIMEOUT: Duration = Duration::from_millis(100);
 
+/// 枚举系统串口；用于设置页的“串口”列表/热插拔提示。
+pub fn list_ports() -> Vec<String> {
+    match serialport::available_ports() {
+        Ok(ports) => ports
+            .into_iter()
+            .map(|port| match port.port_type {
+                serialport::SerialPortType::UsbPort(info) => format!(
+                    "{}  USB {:04x}:{:04x}{}",
+                    port.port_name,
+                    info.vid,
+                    info.pid,
+                    info.product.map(|p| format!(" {p}")).unwrap_or_default()
+                ),
+                serialport::SerialPortType::PciPort => format!("{}  PCI", port.port_name),
+                serialport::SerialPortType::BluetoothPort => {
+                    format!("{}  Bluetooth", port.port_name)
+                },
+                serialport::SerialPortType::Unknown => port.port_name,
+            })
+            .collect(),
+        Err(error) => {
+            eprintln!("[serial-native] 枚举串口失败: {error}");
+            Vec::new()
+        },
+    }
+}
+
 pub struct SerialTransport {
     reader: Box<dyn SerialPort>,
     writer: Box<dyn SerialPort>,
@@ -61,12 +88,18 @@ impl SerialTransport {
                 format!("打开串口 {port}（{baud} {}{}/{}/{}）失败: {e}", profile.data_bits, profile.parity, profile.stop_bits, profile.flow_control),
             )
         })?;
-        let writer = reader.try_clone().map_err(|e| {
+        let mut writer = reader.try_clone().map_err(|e| {
             io::Error::new(io::ErrorKind::Other, format!("复制串口写句柄 {port} 失败: {e}"))
         })?;
         let control = reader.try_clone().map_err(|e| {
             io::Error::new(io::ErrorKind::Other, format!("复制串口控制句柄 {port} 失败: {e}"))
         })?;
+        if let Err(error) = writer.write_data_terminal_ready(profile.dtr) {
+            eprintln!("[serial-native] 设置 DTR={} 失败: {error}", profile.dtr);
+        }
+        if let Err(error) = writer.write_request_to_send(profile.rts) {
+            eprintln!("[serial-native] 设置 RTS={} 失败: {error}", profile.rts);
+        }
         Ok(Self { reader, writer, control, stop: Arc::new(AtomicBool::new(false)) })
     }
 }

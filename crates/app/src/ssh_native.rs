@@ -19,8 +19,10 @@ use tervo_core::transport::{
     PaneTransport, TransportControl, TransportHalves, TransportShutdown,
 };
 
-use crate::known_hosts::{self, KnownKey};
+use crate::known_hosts::KnownKey;
+use crate::known_hosts_rs;
 use crate::profile::Profile;
+use crate::ssh_config::{self, ResolvedSsh};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 const INACTIVITY_TIMEOUT: Duration = Duration::from_secs(60);
@@ -33,6 +35,15 @@ fn pack_resize(cols: u16, rows: u16) -> u32 {
 #[inline]
 fn unpack_resize(bits: u32) -> (u16, u16) {
     ((bits >> 16) as u16, bits as u16)
+}
+
+struct ForwardGuard(Vec<tokio::task::JoinHandle<()>>);
+impl Drop for ForwardGuard {
+    fn drop(&mut self) {
+        for task in &self.0 {
+            task.abort();
+        }
+    }
 }
 
 enum Cmd {
@@ -49,79 +60,83 @@ pub struct SshNativeTransport {
     pending: Vec<u8>,
 }
 
+/// 私钥是否无需口令即可加载（供 create_pane 判断是否需要 Vault 口令）。
+pub fn key_loads_without_passphrase(profile: &Profile) -> bool {
+    let path = profile.key_path.trim();
+    !path.is_empty() && load_secret_key(Path::new(path), None).is_ok()
+}
+
 /// 当前 native 后端支持的最小 Profile 子集。端口转发/ProxyJump/agent
 /// forwarding/extra_args 需要系统 ssh 或后续 russh 实现；命中时回退系统 ssh，
 /// 而不是静默忽略用户配置。
 pub fn can_use(profile: &Profile) -> bool {
-    let basic = profile.is_native_ssh()
-        && profile.proxy_jump.trim().is_empty()
-        && profile.local_forwards.is_empty()
-        && profile.remote_forwards.is_empty()
-        && profile.dynamic_forwards.is_empty()
-        && !profile.agent_forward
-        && profile.extra_args.iter().all(|arg| arg.trim().is_empty());
-    if !basic {
+    if !profile.is_native_ssh() {
         return false;
     }
-    // 加密私钥需要 passphrase UI；native 暂不支持，回退系统 ssh 让它在
-    // 终端里提示。auth=password 的 Vault 可用性由 create_pane 再判断。
-    if profile.auth == "key" {
-        let path = profile.key_path.trim();
-        if path.is_empty() || load_secret_key(Path::new(path), None).is_err() {
-            return false;
-        }
-    }
-    // 首次连接没有 known_hosts 条目时回退系统 ssh，让用户在终端确认指纹；
-    // native 不在没有确认的情况下 TOFU 信任。
-    let effective = known_hosts::effective_ssh(profile);
-    if !effective.proxy_jump.is_empty() || !effective.proxy_command.is_empty() {
+    if !profile.extra_args.iter().all(|arg| arg.trim().is_empty()) {
         return false;
     }
-    // ssh_config 的 HostName/Port/User 别名：native 现在会用 effective 值连接，
-    // 但仍可能有 IdentityFile 等 native 未解析的选项；保守地要求 profile 与
-    // effective 一致，避免静默绕过用户配置。
-    if effective.hostname != profile.host.trim()
-        || effective.port != profile.port
-        || (!profile.user.trim().is_empty()
-            && !effective.user.is_empty()
-            && effective.user != profile.user.trim())
-    {
+    let resolved = ssh_config::resolve(profile);
+    if resolved.unsupported.is_some() || !resolved.proxy_command.is_empty() {
         return false;
     }
-    if profile.auth == "agent"
-        && std::env::var_os("SSH_AUTH_SOCK").is_none()
-    {
+    if !matches!(resolved.strict.as_str(), "ask" | "yes" | "true") {
         return false;
     }
-    if !known_hosts::revoked_keys(profile).is_empty() {
-        // 有 revoked 条目时交给系统 ssh 做完整 host-pattern 判断。
+    if profile.auth == "key" && profile.key_path.trim().is_empty() {
         return false;
     }
-    !known_hosts::local_known_entries(profile)
-        .unwrap_or_default()
-        .is_empty()
+    if profile.auth == "agent" && std::env::var_os("SSH_AUTH_SOCK").is_none() {
+        return false;
+    }
+    let lookup = known_hosts_rs::lookup(&resolved);
+    !lookup.known.is_empty() && lookup.revoked.is_empty()
 }
 
 impl SshNativeTransport {
     /// 立即返回 transport；连接/认证失败会以文本 + EOF 出现在 pane 里。
-    pub fn start(profile: &Profile, password: Option<String>, cols: u16, rows: u16) -> io::Result<Self> {
+    pub fn start(
+        profile: &Profile,
+        password: Option<String>,
+        key_passphrase: Option<String>,
+        cols: u16,
+        rows: u16,
+    ) -> io::Result<Self> {
+        let resolved = ssh_config::resolve(profile);
+        Self::start_resolved(profile, password, key_passphrase, cols, rows, resolved)
+    }
+
+    fn start_resolved(
+        profile: &Profile,
+        password: Option<String>,
+        key_passphrase: Option<String>,
+        cols: u16,
+        rows: u16,
+        resolved: ResolvedSsh,
+    ) -> io::Result<Self> {
         let profile = profile.clone();
         if profile.host.trim().is_empty() {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "SSH 主机不能为空"));
         }
-        let effective = known_hosts::effective_ssh(&profile);
-        if !effective.proxy_jump.is_empty() || !effective.proxy_command.is_empty() {
+        if let Some(reason) = &resolved.unsupported {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
-                "native SSH 不支持 ProxyJump/ProxyCommand；请用 transport=system",
+                format!("native SSH 不支持该 ssh_config 选项: {reason}"),
             ));
         }
-        let known = known_hosts::local_known_entries(&profile).unwrap_or_default();
-        let revoked = known_hosts::revoked_keys(&profile);
+        if !resolved.proxy_command.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "native SSH 不支持 ProxyCommand；请用 transport=system",
+            ));
+        }
+        let lookup = known_hosts_rs::lookup(&resolved);
+        let known = lookup.known;
+        let revoked = lookup.revoked;
         if known.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
-                " known_hosts 中没有此主机；请先用普通 SSH 确认主机密钥（或设置 transport=system）",
+                "known_hosts 中没有此主机；请先用普通 SSH 确认主机密钥（或设置 transport=system）",
             ));
         }
         let (out_tx, out_rx) = tokio::sync::mpsc::channel::<Option<Vec<u8>>>(1024);
@@ -149,9 +164,10 @@ impl SshNativeTransport {
                 let result = rt.block_on(run_session(
                     profile,
                     password,
+                    key_passphrase,
                     known,
                     revoked,
-                    effective,
+                    resolved,
                     resize_thread,
                     cols,
                     rows,
@@ -278,9 +294,11 @@ impl TransportControl for SshControl {
     }
 }
 
-struct HostKeyHandler {
+pub(crate) struct HostKeyHandler {
     known: Vec<KnownKey>,
     revoked: Vec<KnownKey>,
+    remote_targets: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u16, (String, u16)>>>,
+    agent_forward: bool,
 }
 
 impl Handler for HostKeyHandler {
@@ -311,15 +329,87 @@ impl Handler for HostKeyHandler {
             .iter()
             .any(|known| known.key_type == key_type && known.key == key_b64))
     }
+
+    async fn server_channel_open_forwarded_tcpip(
+        &mut self,
+        channel: russh::Channel<russh::client::Msg>,
+        _connected_address: &str,
+        connected_port: u32,
+        _originator_address: &str,
+        _originator_port: u32,
+        reply: russh::client::ChannelOpenHandle,
+        _session: &mut russh::client::Session,
+    ) -> Result<(), Self::Error> {
+        let target = self
+            .remote_targets
+            .lock()
+            .ok()
+            .and_then(|map| map.get(&(connected_port as u16)).cloned());
+        let Some(target) = target else { return Ok(()) };
+        reply.accept().await;
+        tokio::spawn(crate::ssh_forward::bridge_forwarded(channel, target));
+        Ok(())
+    }
+
+    async fn server_channel_open_agent_forward(
+        &mut self,
+        channel: russh::Channel<russh::client::Msg>,
+        reply: russh::client::ChannelOpenHandle,
+        _session: &mut russh::client::Session,
+    ) -> Result<(), Self::Error> {
+        if !self.agent_forward {
+            return Ok(());
+        }
+        let Some(path) = std::env::var_os("SSH_AUTH_SOCK") else { return Ok(()) };
+        let Ok(mut agent) = tokio::net::UnixStream::connect(path).await else { return Ok(()) };
+        reply.accept().await;
+        tokio::spawn(async move {
+            let mut stream = channel.into_stream();
+            let _ = tokio::io::copy_bidirectional(&mut agent, &mut stream).await;
+        });
+        Ok(())
+    }
+}
+
+fn jump_profile(profile: &Profile, spec: &str) -> Profile {
+    let (user, host, port) = parse_jump_spec(spec);
+    let mut p = profile.clone();
+    p.host = host;
+    p.port = port;
+    if let Some(user) = user {
+        p.user = user;
+    }
+    p.proxy_jump.clear();
+    p.agent_forward = false;
+    p
+}
+
+fn parse_jump_spec(spec: &str) -> (Option<String>, String, u16) {
+    let (user, rest) = match spec.rsplit_once('@') {
+        Some((user, rest)) => (Some(user.to_string()), rest),
+        None => (None, spec),
+    };
+    // 简单 IPv4/hostname；IPv6 用 [addr]:port 交给系统 ssh。
+    let (host, port) = if let Some((host, port)) = rest.rsplit_once(':') {
+        if let Ok(port) = port.parse::<u16>() {
+            (host.trim_matches(['[', ']']).to_string(), port)
+        } else {
+            (rest.to_string(), 22)
+        }
+    } else {
+        (rest.to_string(), 22)
+    };
+    (user, host, port)
 }
 
 #[allow(clippy::too_many_arguments)]
 async fn run_session(
     profile: Profile,
     password: Option<String>,
+    key_passphrase: Option<String>,
     known: Vec<KnownKey>,
     revoked: Vec<KnownKey>,
-    effective: known_hosts::EffectiveSsh,
+    resolved: ResolvedSsh,
     resize: Arc<AtomicU32>,
     cols: u16,
     rows: u16,
@@ -327,28 +417,128 @@ async fn run_session(
     mut commands: tokio::sync::mpsc::Receiver<Cmd>,
     closed: Arc<AtomicBool>,
 ) -> Result<(), String> {
-    let host = effective.hostname.clone();
-    let port = effective.port.max(1);
-    let user = if effective.user.trim().is_empty() {
+    let host = resolved.hostname.clone();
+    let port = resolved.port.max(1);
+    let user = if resolved.user.trim().is_empty() {
         std::env::var("USER").unwrap_or_else(|_| "root".into())
     } else {
-        effective.user.clone()
+        resolved.user.clone()
     };
     let config = Arc::new(client::Config {
         inactivity_timeout: Some(INACTIVITY_TIMEOUT),
         ..<_>::default()
     });
-    let handler = HostKeyHandler { known, revoked };
-    let connect = tokio::time::timeout(
-        CONNECT_TIMEOUT,
-        client::connect(config, (host.as_str(), port), handler),
-    );
-    let mut session = connect
+    let remote_targets = std::sync::Arc::new(std::sync::Mutex::new(
+        std::collections::HashMap::new(),
+    ));
+    let mut keep_sessions: Vec<client::Handle<HostKeyHandler>> = Vec::new();
+    let mut jump_session: Option<client::Handle<HostKeyHandler>> = None;
+    let jump_specs: Vec<&str> = resolved
+        .proxy_jump
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
+    for jump in jump_specs {
+        let jump_profile = jump_profile(&profile, jump);
+        let jump_resolved = ssh_config::resolve(&jump_profile);
+        if !jump_resolved.proxy_command.is_empty() {
+            return Err("native ProxyJump 的 ProxyCommand 未实现".into());
+        }
+        let jump_lookup = known_hosts_rs::lookup(&jump_resolved);
+        if jump_lookup.known.is_empty() {
+            return Err(format!(
+                "known_hosts 中没有跳板机 {}；请先用普通 SSH 确认",
+                jump_resolved.hostname
+            ));
+        }
+        let jump_handler = HostKeyHandler {
+            known: jump_lookup.known,
+            revoked: jump_lookup.revoked,
+            remote_targets: std::sync::Arc::new(std::sync::Mutex::new(
+                std::collections::HashMap::new(),
+            )),
+            agent_forward: false,
+        };
+        let mut next = if let Some(prev) = jump_session.take() {
+            let channel = prev
+                .channel_open_direct_tcpip(
+                    &jump_resolved.hostname,
+                    jump_resolved.port.max(1) as u32,
+                    "127.0.0.1",
+                    0,
+                )
+                .await
+                .map_err(|error| format!("ProxyJump 打开跳板通道失败: {error}"))?;
+            keep_sessions.push(prev);
+            tokio::time::timeout(
+                CONNECT_TIMEOUT,
+                client::connect_stream(config.clone(), channel.into_stream(), jump_handler),
+            )
+            .await
+            .map_err(|_| format!("ProxyJump {} 超时", jump_resolved.hostname))?
+            .map_err(|error| format!("ProxyJump {} 失败: {error}", jump_resolved.hostname))?
+        } else {
+            tokio::time::timeout(
+                CONNECT_TIMEOUT,
+                client::connect(
+                    config.clone(),
+                    (jump_resolved.hostname.as_str(), jump_resolved.port.max(1)),
+                    jump_handler,
+                ),
+            )
+            .await
+            .map_err(|_| format!("ProxyJump {} 超时", jump_resolved.hostname))?
+            .map_err(|error| format!("ProxyJump {} 失败: {error}", jump_resolved.hostname))?
+        };
+        authenticate(
+            &mut next,
+            &jump_profile,
+            &jump_resolved.user,
+            password.clone(),
+            key_passphrase.as_deref(),
+        )
+        .await?;
+        jump_session = Some(next);
+    }
+    let handler = HostKeyHandler {
+        known,
+        revoked,
+        remote_targets: remote_targets.clone(),
+        agent_forward: profile.agent_forward,
+    };
+    let mut session = if let Some(prev) = jump_session.take() {
+        let channel = prev
+            .channel_open_direct_tcpip(&host, port as u32, "127.0.0.1", 0)
+            .await
+            .map_err(|error| format!("经 ProxyJump 打开目标通道失败: {error}"))?;
+        keep_sessions.push(prev);
+        tokio::time::timeout(
+            CONNECT_TIMEOUT,
+            client::connect_stream(config, channel.into_stream(), handler),
+        )
+        .await
+        .map_err(|_| format!("经 ProxyJump 连接 {host}:{port} 超时"))?
+        .map_err(|error| format!("经 ProxyJump 连接 {host}:{port} 失败: {error}"))?
+    } else {
+        tokio::time::timeout(
+            CONNECT_TIMEOUT,
+            client::connect(config, (host.as_str(), port), handler),
+        )
         .await
         .map_err(|_| format!("连接 {host}:{port} 超时（{}s）", CONNECT_TIMEOUT.as_secs()))?
-        .map_err(|error| format!("连接 {host}:{port} 失败: {error}"))?;
-
-    authenticate(&mut session, &profile, &user, password).await?;
+        .map_err(|error| format!("连接 {host}:{port} 失败: {error}"))?
+    };
+    authenticate(
+        &mut session,
+        &profile,
+        &user,
+        password,
+        key_passphrase.as_deref(),
+    )
+    .await?;
+    let _keep_sessions = keep_sessions;
+    let session = Arc::new(session);
 
     let mut channel = session
         .channel_open_session()
@@ -372,8 +562,38 @@ async fn run_session(
         .await
         .map_err(|error| format!("请求远端 shell 失败: {error}"))?;
     await_request(&mut channel, &out, &closed).await?;
+    if profile.agent_forward {
+        channel
+            .agent_forward(true)
+            .await
+            .map_err(|error| format!("请求 agent forwarding 失败: {error}"))?;
+    }
+    let mut forward_tasks = Vec::new();
+    if !profile.local_forwards.is_empty() {
+        forward_tasks.extend(
+            crate::ssh_forward::spawn_local(session.clone(), &profile.local_forwards)
+                .await
+                .map_err(|error| format!("本地转发启动失败: {error}"))?,
+        );
+    }
+    if !profile.dynamic_forwards.is_empty() {
+        forward_tasks.extend(
+            crate::ssh_forward::spawn_dynamic(session.clone(), &profile.dynamic_forwards)
+                .await
+                .map_err(|error| format!("动态转发启动失败: {error}"))?,
+        );
+    }
+    if !profile.remote_forwards.is_empty() {
+        crate::ssh_forward::setup_remote(
+            &session,
+            &profile.remote_forwards,
+            &remote_targets,
+        )
+        .await?;
+    }
     let mut last_resize = unpack_resize(resize.load(Ordering::Acquire));
 
+    let _forward_guard = ForwardGuard(forward_tasks);
     loop {
         if closed.load(Ordering::Acquire) {
             let _ = session.disconnect(Disconnect::ByApplication, "", "closed").await;
@@ -488,6 +708,7 @@ async fn authenticate<H: Handler + Send>(
     profile: &Profile,
     user: &str,
     password: Option<String>,
+    key_passphrase: Option<&str>,
 ) -> Result<(), String> {
     let ok = match profile.auth.as_str() {
         "password" => {
@@ -508,7 +729,7 @@ async fn authenticate<H: Handler + Send>(
             if path.is_empty() {
                 return Err("auth=key 但 key_path 为空".into());
             }
-            let key = load_secret_key(Path::new(path), None)
+            let key = load_secret_key(Path::new(path), key_passphrase)
                 .map_err(|error| format!("加载私钥 {path} 失败: {error}"))?;
             let hash = session
                 .best_supported_rsa_hash()
@@ -558,14 +779,50 @@ mod tests {
     use crate::profile::Profile;
 
     #[test]
-    fn proxy_or_forwarding_falls_back_to_system_ssh() {
-        let mut p = Profile { kind: "ssh".into(), ..Profile::default() };
-        // 默认没有 known_hosts 条目时也会回退；这里只验证配置门槛。
-        p.proxy_jump = "jump.example".into();
+    fn parses_jump_spec() {
+        assert_eq!(
+            parse_jump_spec("alice@jump.example:2222"),
+            (Some("alice".into()), "jump.example".into(), 2222)
+        );
+        assert_eq!(
+            parse_jump_spec("jump.example"),
+            (None, "jump.example".into(), 22)
+        );
+    }
+
+    #[test]
+    fn no_known_host_disables_native() {
+        let p = Profile {
+            kind: "ssh".into(),
+            host: "no-such-host.invalid".into(),
+            ..Profile::default()
+        };
         assert!(!can_use(&p));
-        p.proxy_jump.clear();
-        p.local_forwards.push("8080:localhost:80".into());
-        assert!(!can_use(&p));
+    }
+
+    #[test]
+    fn detects_encrypted_key_and_loads_it_with_passphrase() {
+        let path = std::env::temp_dir().join(format!(
+            "tervo-enc-key-{}-{}",
+            std::process::id(),
+            crate::logging::now_ms()
+        ));
+        let status = std::process::Command::new("ssh-keygen")
+            .args(["-q", "-t", "ed25519", "-N", "s3cret", "-f"])
+            .arg(&path)
+            .status()
+            .expect("ssh-keygen for encrypted key test");
+        assert!(status.success());
+        let p = Profile {
+            kind: "ssh".into(),
+            auth: "key".into(),
+            key_path: path.display().to_string(),
+            ..Profile::default()
+        };
+        assert!(!key_loads_without_passphrase(&p));
+        assert!(load_secret_key(&path, Some("s3cret")).is_ok());
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("pub"));
     }
 
     #[test]
@@ -576,7 +833,7 @@ mod tests {
             user: "nobody".into(),
             ..Profile::default()
         };
-        let err = match SshNativeTransport::start(&p, None, 80, 24) {
+        let err = match SshNativeTransport::start(&p, None, None, 80, 24) {
             Ok(_) => panic!("missing known_hosts entry must fail"),
             Err(error) => error,
         };
@@ -592,16 +849,20 @@ mod integration_tests {
     use std::sync::mpsc;
     use std::time::Duration;
 
-    struct TestServer;
+    struct TestServer {
+        forward_to: Option<u16>,
+    }
 
     impl server::Server for TestServer {
         type Handler = TestHandler;
         fn new_client(&mut self, _: Option<std::net::SocketAddr>) -> Self::Handler {
-            TestHandler
+            TestHandler { forward_to: self.forward_to }
         }
     }
 
-    struct TestHandler;
+    struct TestHandler {
+        forward_to: Option<u16>,
+    }
 
     impl server::Handler for TestHandler {
         type Error = russh::Error;
@@ -618,6 +879,29 @@ mod integration_tests {
 
         async fn auth_password(&mut self, _user: &str, _password: &str) -> Result<Auth, Self::Error> {
             Ok(Auth::Accept)
+        }
+
+        async fn channel_open_direct_tcpip(
+            &mut self,
+            channel: russh::Channel<Msg>,
+            _host: &str,
+            _port: u32,
+            _originator_address: &str,
+            _originator_port: u32,
+            reply: server::ChannelOpenHandle,
+            _session: &mut Session,
+        ) -> Result<(), Self::Error> {
+            let Some(port) = self.forward_to else { return Ok(()) };
+            reply.accept().await;
+            tokio::spawn(async move {
+                let Ok(mut tcp) = tokio::net::TcpStream::connect(("127.0.0.1", port)).await
+                else {
+                    return;
+                };
+                let mut stream = channel.into_stream();
+                let _ = tokio::io::copy_bidirectional(&mut tcp, &mut stream).await;
+            });
+            Ok(())
         }
 
         async fn pty_request(
@@ -651,6 +935,10 @@ mod integration_tests {
             data: &[u8],
             session: &mut Session,
         ) -> Result<(), Self::Error> {
+            // 跳板机的 direct-tcpip 通道由 copy_bidirectional 处理，不能再走 echo。
+            if self.forward_to.is_some() {
+                return Ok(());
+            }
             if data == b"quit" {
                 session.close(channel)?;
             } else {
@@ -692,7 +980,9 @@ mod integration_tests {
             ..<_>::default()
         });
         rt.spawn(async move {
-            let _ = TestServer.run_on_socket(config, &listener).await;
+            let _ = TestServer { forward_to: None }
+                .run_on_socket(config, &listener)
+                .await;
         });
 
         let profile = Profile {
@@ -709,8 +999,29 @@ mod integration_tests {
             ],
             ..Profile::default()
         };
-        let transport = SshNativeTransport::start(&profile, Some("pw".into()), 80, 24)
-            .expect("start native ssh");
+        let resolved = ResolvedSsh {
+            hostname: "127.0.0.1".into(),
+            port: addr.port(),
+            user: "tester".into(),
+            proxy_jump: String::new(),
+            proxy_command: String::new(),
+            strict: "ask".into(),
+            user_known_hosts: vec![known.clone()],
+            global_known_hosts: Vec::new(),
+            host_key_alias: None,
+            forward_agent: false,
+            identity_files: Vec::new(),
+            unsupported: None,
+        };
+        let transport = SshNativeTransport::start_resolved(
+            &profile,
+            Some("pw".into()),
+            None,
+            80,
+            24,
+            resolved,
+        )
+        .expect("start native ssh");
         let (mut tx, mut rx) = (transport, ());
         let _ = &mut rx;
         let mut buf = [0u8; 256];
@@ -732,6 +1043,226 @@ mod integration_tests {
             echo.extend_from_slice(&buf[..n]);
         }
         tx.close();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn start_test_server(
+        rt: &tokio::runtime::Runtime,
+        forward_to: Option<u16>,
+    ) -> (std::net::SocketAddr, String) {
+        let listener = rt.block_on(tokio::net::TcpListener::bind(("127.0.0.1", 0))).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let dir = std::env::temp_dir().join(format!(
+            "tervo-native-ssh-srv-{}-{}",
+            std::process::id(),
+            crate::logging::now_ms()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let key_path = dir.join("hostkey");
+        let status = std::process::Command::new("ssh-keygen")
+            .args(["-q", "-t", "ed25519", "-N", "", "-f"])
+            .arg(&key_path)
+            .status()
+            .expect("ssh-keygen for test host key");
+        assert!(status.success());
+        let key = load_secret_key(&key_path, None).expect("load test host key");
+        let public = key.public_key().to_openssh().unwrap();
+        let config = Arc::new(server::Config {
+            keys: vec![key],
+            inactivity_timeout: Some(Duration::from_secs(30)),
+            ..<_>::default()
+        });
+        rt.spawn(async move {
+            let _ = TestServer { forward_to }
+                .run_on_socket(config, &listener)
+                .await;
+        });
+        (addr, public)
+    }
+
+    #[test]
+    fn native_ssh_proxy_jump_reaches_target() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let (target_addr, target_pub) = start_test_server(&rt, None);
+        let (jump_addr, jump_pub) = start_test_server(&rt, Some(target_addr.port()));
+        let dir = std::env::temp_dir().join(format!(
+            "tervo-native-ssh-proxy-{}-{}",
+            std::process::id(),
+            crate::logging::now_ms()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let known = dir.join("known_hosts");
+        let target_key = target_pub.split_whitespace().nth(1).unwrap();
+        let jump_key = jump_pub.split_whitespace().nth(1).unwrap();
+        std::fs::write(
+            &known,
+            format!(
+                "[127.0.0.1]:{} ssh-ed25519 {target_key}\n[127.0.0.1]:{} ssh-ed25519 {jump_key}\n",
+                target_addr.port(),
+                jump_addr.port()
+            ),
+        )
+        .unwrap();
+        let config = dir.join("config");
+        std::fs::write(
+            &config,
+            format!(
+                "Host *\n UserKnownHostsFile {}\n StrictHostKeyChecking yes\n",
+                known.display()
+            ),
+        )
+        .unwrap();
+        let old = std::env::var_os("TERVO_SSH_CONFIG");
+        std::env::set_var("TERVO_SSH_CONFIG", &config);
+        let profile = Profile {
+            kind: "ssh".into(),
+            host: "127.0.0.1".into(),
+            port: target_addr.port(),
+            user: "tester".into(),
+            auth: "password".into(),
+            proxy_jump: format!("tester@127.0.0.1:{}", jump_addr.port()),
+            ..Profile::default()
+        };
+        let resolved = ResolvedSsh {
+            hostname: "127.0.0.1".into(),
+            port: target_addr.port(),
+            user: "tester".into(),
+            proxy_jump: format!("tester@127.0.0.1:{}", jump_addr.port()),
+            proxy_command: String::new(),
+            strict: "ask".into(),
+            user_known_hosts: vec![known.clone()],
+            global_known_hosts: Vec::new(),
+            host_key_alias: None,
+            forward_agent: false,
+            identity_files: Vec::new(),
+            unsupported: None,
+        };
+        let transport = SshNativeTransport::start_resolved(
+            &profile,
+            Some("pw".into()),
+            None,
+            80,
+            24,
+            resolved,
+        )
+        .expect("start proxy jump");
+        let mut transport = transport;
+        let mut buf = [0u8; 256];
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut got = Vec::new();
+        while !got.windows(5).any(|w| w == b"READY") {
+            assert!(std::time::Instant::now() < deadline, "no READY via jump");
+            let n = transport.read(&mut buf).expect("read via jump");
+            assert!(n > 0, "EOF via jump: {:?}", String::from_utf8_lossy(&got));
+            got.extend_from_slice(&buf[..n]);
+        }
+        transport.write_all(b"jump-ok").unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut echo = Vec::new();
+        while !echo.windows(7).any(|w| w == b"jump-ok") {
+            assert!(std::time::Instant::now() < deadline, "no echo via jump");
+            let n = transport.read(&mut buf).expect("read echo via jump");
+            assert!(n > 0, "EOF before echo via jump");
+            echo.extend_from_slice(&buf[..n]);
+        }
+        transport.close();
+        match old {
+            Some(value) => std::env::set_var("TERVO_SSH_CONFIG", value),
+            None => std::env::remove_var("TERVO_SSH_CONFIG"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn native_ssh_local_forward_reaches_local_echo() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let echo_listener = rt.block_on(tokio::net::TcpListener::bind(("127.0.0.1", 0))).unwrap();
+        let echo_port = echo_listener.local_addr().unwrap().port();
+        rt.spawn(async move {
+            loop {
+                let Ok((mut tcp, _)) = echo_listener.accept().await else { break };
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 256];
+                    loop {
+                        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                        let Ok(n) = tcp.read(&mut buf).await else { break };
+                        if n == 0 || tcp.write_all(&buf[..n]).await.is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
+        });
+        let (addr, public) = start_test_server(&rt, Some(echo_port));
+        let dir = std::env::temp_dir().join(format!(
+            "tervo-native-ssh-lf-{}-{}",
+            std::process::id(),
+            crate::logging::now_ms()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let known = dir.join("known_hosts");
+        let key = public.split_whitespace().nth(1).unwrap();
+        std::fs::write(
+            &known,
+            format!("[127.0.0.1]:{} ssh-ed25519 {key}\n", addr.port()),
+        )
+        .unwrap();
+        let probe = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let local_port = probe.local_addr().unwrap().port();
+        drop(probe);
+        let profile = Profile {
+            kind: "ssh".into(),
+            host: "127.0.0.1".into(),
+            port: addr.port(),
+            user: "tester".into(),
+            auth: "password".into(),
+            local_forwards: vec![format!("127.0.0.1:{local_port}:127.0.0.1:{echo_port}")],
+            ..Profile::default()
+        };
+        let resolved = ResolvedSsh {
+            hostname: "127.0.0.1".into(),
+            port: addr.port(),
+            user: "tester".into(),
+            proxy_jump: String::new(),
+            proxy_command: String::new(),
+            strict: "ask".into(),
+            user_known_hosts: vec![known],
+            global_known_hosts: Vec::new(),
+            host_key_alias: None,
+            forward_agent: false,
+            identity_files: Vec::new(),
+            unsupported: None,
+        };
+        let mut transport = SshNativeTransport::start_resolved(
+            &profile,
+            Some("pw".into()),
+            None,
+            80,
+            24,
+            resolved,
+        )
+        .expect("start local forward");
+        let mut buf = [0u8; 256];
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut got = Vec::new();
+        while !got.windows(5).any(|w| w == b"READY") {
+            assert!(std::time::Instant::now() < deadline, "no READY local forward");
+            let n = transport.read(&mut buf).expect("read READY");
+            assert!(n > 0);
+            got.extend_from_slice(&buf[..n]);
+        }
+        let local = std::net::TcpStream::connect(("127.0.0.1", local_port))
+            .expect("connect local forward");
+        local.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        use std::io::{Read, Write};
+        (&local).write_all(b"local-fwd").unwrap();
+        let mut echoed = [0u8; 16];
+        let n = (&local).read(&mut echoed).expect("read local forward echo");
+        assert_eq!(&echoed[..n], b"local-fwd");
+        transport.close();
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

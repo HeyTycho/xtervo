@@ -462,6 +462,21 @@ impl Vault {
         }
     }
 
+    /// 加密私钥 passphrase 使用独立 slot，避免和登录密码互相覆盖。
+    const KEY_PASSPHRASE_SLOT: u64 = 1 << 63;
+
+    pub fn set_key_passphrase(&mut self, profile_id: u64, passphrase: &str) -> Result<(), VaultError> {
+        self.set(profile_id ^ Self::KEY_PASSPHRASE_SLOT, passphrase)
+    }
+
+    pub fn get_key_passphrase(&self, profile_id: u64) -> Result<String, VaultError> {
+        self.get(profile_id ^ Self::KEY_PASSPHRASE_SLOT)
+    }
+
+    pub fn has_key_passphrase(&self, profile_id: u64) -> Result<bool, VaultError> {
+        self.contains(profile_id ^ Self::KEY_PASSPHRASE_SLOT)
+    }
+
     /// 读取密码；锁定/未初始化返回错误。
     pub fn get(&self, profile_id: u64) -> Result<String, VaultError> {
         match &self.state {
@@ -1560,6 +1575,23 @@ mod tests {
         assert_eq!(reopened.get(1).unwrap(), secret());
         assert_eq!(reopened.get(2).unwrap(), "child-secret", "跨进程更新不能被丢");
         assert_eq!(reopened.get(3).unwrap(), "parent-secret");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn key_passphrase_uses_separate_slot() {
+        let dir = tmpdir("key-passphrase");
+        let path = dir.join("vault.enc");
+        let mut v = Vault::new(&path);
+        v.initialize(master()).unwrap();
+        v.set_key_passphrase(7, "key-secret").unwrap();
+        v.set(7, "login-secret").unwrap();
+        assert_eq!(v.get_key_passphrase(7).unwrap(), "key-secret");
+        assert_eq!(v.get(7).unwrap(), "login-secret");
+        assert!(v.has_key_passphrase(7).unwrap());
+        v.remove(7 ^ Vault::KEY_PASSPHRASE_SLOT).unwrap();
+        assert!(!v.has_key_passphrase(7).unwrap());
+        assert_eq!(v.get(7).unwrap(), "login-secret");
         let _ = fs::remove_dir_all(&dir);
     }
 

@@ -26,6 +26,8 @@ fn default_serial_data_bits() -> u8 { 8 }
 fn default_serial_parity() -> String { "none".into() }
 fn default_serial_stop_bits() -> u8 { 1 }
 fn default_serial_flow() -> String { "none".into() }
+fn default_serial_dtr() -> bool { true }
+fn default_serial_rts() -> bool { true }
 
 /// 一个本地 Profile：决定新 Tab 用什么 shell / 参数 / 起始目录 / 环境变量。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -70,6 +72,9 @@ pub struct Profile {
     pub key_path: String,
     /// `auth=password` 时是否把密码保存到 Vault（默认 false；明文密码永不落 profiles.toml）。
     pub save_password: bool,
+    /// `auth=key` 时是否把加密私钥的 passphrase 保存到 Vault（不落 profiles.toml）。
+    #[serde(default)]
+    pub save_key_passphrase: bool,
     /// 传给 ssh 的追加参数（如 -o UserKnownHostsFile=... / -o StrictHostKeyChecking=yes）。
     pub extra_args: Vec<String>,
     /// 本地端口转发，每项形如 `8080:localhost:80` → `ssh -L 8080:localhost:80`。
@@ -106,6 +111,12 @@ pub struct Profile {
     /// none | software | hardware；默认 none。
     #[serde(default = "default_serial_flow")]
     pub flow_control: String,
+    /// 打开串口后是否立即拉高 DTR；默认 true。
+    #[serde(default = "default_serial_dtr")]
+    pub dtr: bool,
+    /// 打开串口后是否立即拉高 RTS；默认 true。
+    #[serde(default = "default_serial_rts")]
+    pub rts: bool,
     // ---- 外观（None / 空 = 继承全局 Config；对所有 kind 生效）----
     /// 该 Profile 打开的 pane 使用的字号；`None` = 继承 `config.font_size`。
     pub font_size: Option<f32>,
@@ -329,6 +340,7 @@ impl Default for Profile {
             auth: "agent".to_string(),
             key_path: String::new(),
             save_password: false,
+            save_key_passphrase: false,
             extra_args: Vec::new(),
             local_forwards: Vec::new(),
             remote_forwards: Vec::new(),
@@ -342,6 +354,8 @@ impl Default for Profile {
             parity: "none".into(),
             stop_bits: 1,
             flow_control: "none".into(),
+            dtr: true,
+            rts: true,
             font_size: None,
             theme: None,
             cursor_shape: None,

@@ -1669,6 +1669,7 @@ export component MainWindow inherits Window {
     callback profile-export();
     /// 导入自有格式（重名自动改名，坏条目跳过并报告）。
     callback profile-import();
+    callback serial-refresh();
     callback profiles-close();
     // Profile 表单（新建）
     in-out property <bool> profile-form-open: false;
@@ -1691,6 +1692,9 @@ export component MainWindow inherits Window {
     in-out property <string> form-user: "";
     in-out property <string> form-auth: "";
     in-out property <string> form-key: "";
+    in-out property <string> form-key-passphrase: "";
+    in-out property <bool> form-save-key-passphrase: false;
+    in-out property <bool> form-key-passphrase-saved: false;
     /// 仅 auth=password 时使用；不回填已有密码，空 = 保留 Vault 原值。
     in-out property <string> form-password: "";
     in-out property <bool> form-save-password: false;
@@ -1713,6 +1717,9 @@ export component MainWindow inherits Window {
     in-out property <string> form-serial-parity: "none";
     in-out property <string> form-serial-stop-bits: "1";
     in-out property <string> form-serial-flow-control: "none";
+    in-out property <string> form-serial-ports: "";
+    in-out property <bool> form-serial-dtr: true;
+    in-out property <bool> form-serial-rts: true;
     // 外观（可选；空 = 继承全局）：字号 / 主题 / 光标形状 / 闪烁 / 滚动历史。
     in-out property <string> form-font-size: "";
     /// 绑定到该 Profile 的快捷键（单段，如 ctrl+alt+p）；空 = 不绑定。
@@ -7623,9 +7630,9 @@ export component MainWindow inherits Window {
     if root.profile-form-open : Rectangle {
         x: (root.width - 440px) / 2;
         // local/serial/telnet 用紧凑高度；SSH 展开 password/转发/跳板时需要更高。
-        property <length> form-h: root.form-kind == 1 ? 700px : (root.form-kind == 0 ? 490px : (root.form-kind == 2 ? Math.min(560px, root.height - 16px) : 440px));
+        property <length> form-h: root.form-kind == 1 ? 700px : (root.form-kind == 0 ? 490px : (root.form-kind == 2 ? Math.min(700px, root.height - 16px) : 440px));
         // 串口字段可滚动；footer（Save/Cancel）固定在底部，短窗口下不重叠。
-        property <length> serial-body-h: Math.max(80px, Math.min(216px, form-h - 266px));
+        property <length> serial-body-h: Math.max(100px, Math.min(338px, form-h - 300px));
         y: (root.height - form-h) / 2 < 8px ? 8px : (root.height - form-h) / 2;
         width: 440px;
         height: form-h;
@@ -7730,13 +7737,32 @@ export component MainWindow inherits Window {
         }
 
         if root.form-kind == 1 : VerticalLayout {
-            x: 16px; y: 116px; width: 408px; height: 380px;
+            x: 16px; y: 116px; width: 408px; height: 440px;
             spacing: 5px;
             FormRow { label: Lang.t("Host", "主机"); text <=> root.form-host; }
             FormRow { label: Lang.t("Port", "端口"); text <=> root.form-port; }
             FormRow { label: Lang.t("User", "用户名"); text <=> root.form-user; }
             FormRow { label: Lang.t("Auth", "认证"); text <=> root.form-auth; }
             FormRow { label: Lang.t("Key", "密钥"); text <=> root.form-key; }
+            if root.form-auth == "key" : VerticalLayout {
+                spacing: 5px;
+                FormRow {
+                    label: Lang.t("Passphrase", "口令");
+                    text <=> root.form-key-passphrase;
+                    masked: true;
+                }
+                ToggleRow {
+                    label: Lang.t("Save passphrase to Vault", "保存口令到保险库");
+                    on: root.form-save-key-passphrase;
+                    toggled => { root.form-save-key-passphrase = !root.form-save-key-passphrase; }
+                }
+                Text {
+                    height: 14px;
+                    text: root.form-key-passphrase-saved ? Lang.t("Passphrase already in Vault; leave blank to keep.", "保险库已有口令；留空表示保留。") : "";
+                    color: Palette.colors.subtext;
+                    font-size: 10px;
+                }
+            }
             if root.form-auth == "password" : VerticalLayout {
                 spacing: 5px;
                 FormRow {
@@ -7765,18 +7791,65 @@ export component MainWindow inherits Window {
         if root.form-kind == 2 : Flickable {
             x: 16px; y: 116px; width: 408px; height: serial-body-h;
             viewport-width: 408px;
-            viewport-height: 216px;
+            viewport-height: 338px;
             interactive: true;
             VerticalLayout {
                 width: 408px;
-                height: 216px;
-                spacing: 12px;
+                height: 338px;
+                spacing: 8px;
                 FormRow { label: Lang.t("Serial", "串口"); text <=> root.form-serial-port; }
                 FormRow { label: Lang.t("Baud", "波特率"); text <=> root.form-baud; }
                 FormRow { label: Lang.t("Data bits", "数据位"); text <=> root.form-serial-data-bits; }
                 FormRow { label: Lang.t("Parity", "校验位"); text <=> root.form-serial-parity; }
                 FormRow { label: Lang.t("Stop bits", "停止位"); text <=> root.form-serial-stop-bits; }
                 FormRow { label: Lang.t("Flow control", "流控"); text <=> root.form-serial-flow-control; }
+                HorizontalLayout {
+                    height: 26px;
+                    spacing: 8px;
+                    Text {
+                        width: 64px;
+                        text: Lang.t("Detected", "已检测");
+                        color: Palette.colors.subtext;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        horizontal-stretch: 1;
+                        text: root.form-serial-ports;
+                        color: Palette.colors.text;
+                        font-size: 11px;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                    Rectangle {
+                        width: 64px;
+                        height: 26px;
+                        border-radius: 4px;
+                        background: Palette.colors.bg;
+                        border-width: 1px;
+                        border-color: Palette.colors.border;
+                        Text {
+                            width: 100%;
+                            height: 100%;
+                            text: Lang.t("Refresh", "刷新");
+                            color: Palette.colors.text;
+                            font-size: 11px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                        TouchArea { clicked => { root.serial-refresh(); } }
+                    }
+                }
+                ToggleRow {
+                    label: Lang.t("DTR", "数据终端就绪");
+                    on: root.form-serial-dtr;
+                    toggled => { root.form-serial-dtr = !root.form-serial-dtr; }
+                }
+                ToggleRow {
+                    label: Lang.t("RTS", "请求发送");
+                    on: root.form-serial-rts;
+                    toggled => { root.form-serial-rts = !root.form-serial-rts; }
+                }
             }
         }
 
@@ -7791,7 +7864,7 @@ export component MainWindow inherits Window {
         // 绝对定位在不同类型间固定：local 在字段下方，SSH 留出 password 展开空间。
         VerticalLayout {
             x: 16px;
-            y: root.form-kind == 0 ? 290px : (root.form-kind == 1 ? 510px : (root.form-kind == 2 ? 340px : 196px));
+            y: root.form-kind == 0 ? 290px : (root.form-kind == 1 ? 570px : (root.form-kind == 2 ? 340px : 196px));
             width: 408px;
             height: 110px;
             spacing: 6px;

@@ -17,6 +17,9 @@ mod connection;
 mod instance;
 mod keys;
 mod known_hosts;
+mod known_hosts_rs;
+mod ssh_config;
+mod ssh_forward;
 mod serial_native;
 mod ssh_native;
 mod latency;
@@ -1180,6 +1183,7 @@ struct AppState {
     resize_finalize: slint::Timer,
     /// 视觉铃到期清除（30ms 重复；没有闪烁时停止）。
     bell_timer: slint::Timer,
+    serial_scan_timer: slint::Timer,
     /// 光标闪烁相位：true = 显示；无闪烁/闪烁关闭时恒 true。
     cursor_blink_on: bool,
     /// 光标闪烁计时器；`cursor_blink=off` 时停掉，空闲零开销。
@@ -5093,6 +5097,11 @@ fn create_pane(
     } else if let Some(p) = profile.filter(|p| {
         ssh_native::can_use(p)
             && (p.auth != "password" || st.vault.with(|vault| vault.get(p.id)).is_ok())
+            && (p.auth != "key"
+                || ssh_native::key_loads_without_passphrase(p)
+                || st
+                    .vault
+                    .with(|vault| vault.has_key_passphrase(p.id).unwrap_or(false)))
     }) {
         let password = if p.auth == "password" {
             match st.vault.with(|vault| vault.get(p.id)) {
@@ -5106,9 +5115,17 @@ fn create_pane(
         } else {
             None
         };
+        let key_passphrase = if p.auth == "key" {
+            st.vault
+                .with(|vault| vault.get_key_passphrase(p.id))
+                .ok()
+        } else {
+            None
+        };
         let transport = ssh_native::SshNativeTransport::start(
             p,
             password,
+            key_passphrase,
             config.cols,
             config.rows,
         )?;
@@ -6710,6 +6727,46 @@ fn profile_bundle_path() -> std::path::PathBuf {
     profile::ProfileStore::path().with_file_name("profiles-export.toml")
 }
 
+/// 设置页串口列表：用第一个 token（设备路径）填到表单空字段。
+fn refresh_serial_ports(st: &mut AppState) {
+    let ports = serial_native::list_ports();
+    let text = if ports.is_empty() {
+        "(none)".to_string()
+    } else {
+        ports.join("  |  ")
+    };
+    if st.ui.get_form_serial_port().trim().is_empty() {
+        if let Some(first) = ports.first() {
+            let path = first.split_whitespace().next().unwrap_or("");
+            if !path.is_empty() {
+                st.ui.set_form_serial_port(path.into());
+            }
+        }
+    }
+    st.ui.set_form_serial_ports(text.into());
+}
+
+fn start_serial_scan(st: &mut AppState) {
+    let window_id = st.window_id;
+    st.serial_scan_timer.start(
+        slint::TimerMode::Repeated,
+        Duration::from_millis(1500),
+        move || {
+            let _ = runtime::with_window(window_id, poll_serial_ports);
+        },
+    );
+}
+
+fn poll_serial_ports(st: &mut AppState) {
+    if !st.ui.get_profile_form_open() {
+        st.serial_scan_timer.stop();
+        return;
+    }
+    if st.ui.get_form_kind() == 2 {
+        refresh_serial_ports(st);
+    }
+}
+
 /// 打开新建表单：预填一个不冲突的名字、当前 shell、聚焦 pane 的 cwd。
 fn open_profile_form(st: &mut AppState) {
     let base = "profile".to_string();
@@ -6750,6 +6807,9 @@ fn open_profile_form(st: &mut AppState) {
         .set_form_user(std::env::var("USER").unwrap_or_default().as_str().into());
     st.ui.set_form_auth("agent".into());
     st.ui.set_form_key("".into());
+    st.ui.set_form_key_passphrase("".into());
+    st.ui.set_form_save_key_passphrase(false);
+    st.ui.set_form_key_passphrase_saved(false);
     st.ui.set_form_password("".into());
     st.ui.set_form_save_password(false);
     st.ui.set_form_extra("".into());
@@ -6764,6 +6824,9 @@ fn open_profile_form(st: &mut AppState) {
     st.ui.set_form_serial_parity("none".into());
     st.ui.set_form_serial_stop_bits("1".into());
     st.ui.set_form_serial_flow_control("none".into());
+    st.ui.set_form_serial_ports("".into());
+    st.ui.set_form_serial_dtr(true);
+    st.ui.set_form_serial_rts(true);
     st.ui.set_form_font_size("".into());
     st.ui.set_form_theme("".into());
     st.ui.set_form_cursor_shape("".into());
@@ -6772,6 +6835,8 @@ fn open_profile_form(st: &mut AppState) {
     st.ui.set_form_hotkey("".into());
     st.ui.set_form_error("".into());
     st.ui.set_profile_form_open(true);
+    start_serial_scan(st);
+    refresh_serial_ports(st);
     eprintln!("[profile] 打开新建表单 name={name:?} shell={shell:?} cwd={cwd:?}");
 }
 
@@ -6807,6 +6872,11 @@ fn edit_profile_form(st: &mut AppState, index: usize) {
     st.ui.set_form_user(p.user.as_str().into());
     st.ui.set_form_auth(p.auth.as_str().into());
     st.ui.set_form_key(p.key_path.as_str().into());
+    st.ui.set_form_key_passphrase("".into());
+    st.ui.set_form_save_key_passphrase(p.save_key_passphrase);
+    st.ui.set_form_key_passphrase_saved(
+        st.vault.with(|vault| vault.has_key_passphrase(p.id).unwrap_or(false)),
+    );
     // 密码绝不回填到 UI；勾选状态反映配置，真正密码只在 Vault 解锁时可写入。
     st.ui.set_form_password("".into());
     st.ui.set_form_save_password(p.save_password);
@@ -6825,6 +6895,8 @@ fn edit_profile_form(st: &mut AppState, index: usize) {
     st.ui.set_form_serial_parity(p.parity.as_str().into());
     st.ui.set_form_serial_stop_bits(p.stop_bits.to_string().as_str().into());
     st.ui.set_form_serial_flow_control(p.flow_control.as_str().into());
+    st.ui.set_form_serial_dtr(p.dtr);
+    st.ui.set_form_serial_rts(p.rts);
     st.ui.set_form_font_size(
         p.font_size
             .map(|v| v.to_string())
@@ -6848,6 +6920,8 @@ fn edit_profile_form(st: &mut AppState, index: usize) {
     st.ui.set_form_hotkey(p.hotkey.as_str().into());
     st.ui.set_form_error("".into());
     st.ui.set_profile_form_open(true);
+    start_serial_scan(st);
+    refresh_serial_ports(st);
     eprintln!(
         "[profile] 编辑表单 id={} name={:?} kind={}",
         p.id, p.name, p.kind
@@ -6906,6 +6980,7 @@ fn save_profile_form(st: &mut AppState) {
             p.user = st.ui.get_form_user().to_string();
             p.auth = st.ui.get_form_auth().to_string();
             p.key_path = st.ui.get_form_key().to_string();
+            p.save_key_passphrase = st.ui.get_form_save_key_passphrase();
             p.extra_args = st
                 .ui
                 .get_form_extra()
@@ -6940,6 +7015,8 @@ fn save_profile_form(st: &mut AppState) {
             p.parity = st.ui.get_form_serial_parity().trim().to_ascii_lowercase();
             p.stop_bits = st.ui.get_form_serial_stop_bits().trim().parse::<u8>().unwrap_or(0);
             p.flow_control = st.ui.get_form_serial_flow_control().trim().to_ascii_lowercase();
+            p.dtr = st.ui.get_form_serial_dtr();
+            p.rts = st.ui.get_form_serial_rts();
         }
         "telnet" => {
             p.host = st.ui.get_form_host().to_string();
@@ -7020,6 +7097,9 @@ fn save_profile_form(st: &mut AppState) {
         trim_opt(st.ui.get_form_cursor_blink().to_string()).map(|s| s.to_ascii_lowercase());
     p.scrollback = scrollback;
 
+    let key_passphrase = st.ui.get_form_key_passphrase().to_string();
+    let save_key_passphrase = kind == "ssh" && p.auth == "key" && p.save_key_passphrase;
+
     // ---- Vault 密码：只在 auth=password 且勾选保存时处理 ----
     let password = st.ui.get_form_password().to_string();
     let save_checked = st.ui.get_form_save_password();
@@ -7091,6 +7171,14 @@ fn save_profile_form(st: &mut AppState) {
     match result {
         Ok(id) => {
             let mut vault_write_error = None;
+            if save_key_passphrase && !key_passphrase.is_empty() {
+                if let Err(error) = st
+                    .vault
+                    .with_mut(|vault| vault.set_key_passphrase(id, &key_passphrase))
+                {
+                    vault_write_error = Some(format!("密钥口令写入 Vault 失败: {error}"));
+                }
+            }
             if save_password && !password.is_empty() {
                 if let Err(e) = st.vault.borrow_mut().set(id, &password) {
                     vault_write_error = Some(format!("密码写入 Vault 失败: {e}"));
@@ -7126,6 +7214,7 @@ fn save_profile_form(st: &mut AppState) {
             st.profiles.borrow().save();
             refresh_profiles(st);
             st.ui.set_profile_form_open(false);
+            st.serial_scan_timer.stop();
             st.ui.set_form_password("".into());
             st.ui.set_form_save_password(false);
             st.ui.set_form_error("".into());
@@ -15752,6 +15841,7 @@ fn build_window_state(
         resize_redraw: slint::Timer::default(),
         resize_finalize: slint::Timer::default(),
         bell_timer: slint::Timer::default(),
+        serial_scan_timer: slint::Timer::default(),
         cursor_blink_on: true,
         cursor_blink_timer: slint::Timer::default(),
         drag_autoscroll: slint::Timer::default(),
@@ -17279,6 +17369,10 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
                 edit_profile_form(st, store_index);
             }
         });
+    });
+
+    ui.on_serial_refresh(move || {
+        runtime::with_window(window_id, |st| refresh_serial_ports(st));
     });
 
     ui.on_profile_filter(move |query| {
