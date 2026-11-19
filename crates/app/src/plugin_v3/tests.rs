@@ -63,9 +63,12 @@ const COMMANDS: &[&str] = &[
     "longline",
     "terminal-read",
     "terminal-read-window",
+    "terminal-read-fake-windows",
     "terminal-write",
     "notify-window",
     "status-window",
+    "spam-fake-status",
+    "stderr-crash",
     "panel-window",
     "clipboard-read",
     "push-status",
@@ -129,6 +132,7 @@ import time
 
 STATUS_DELAY = __STATUS_DELAY__
 IGNORE_PING = False
+FREEZE_AFTER_INIT = False
 PROTOCOL = 3
 _next = 100
 _pending = {}
@@ -183,6 +187,9 @@ def handle(msg):
     params = msg.get("params") or {}
     if method == "initialize":
         respond(rid, {"protocol_version": PROTOCOL})
+        if FREEZE_AFTER_INIT:
+            # 模拟停读 stdin 的插件：握手后不再消费宿主写入。
+            time.sleep(3600)
     elif method == "initialized":
         pass
     elif method == "command.invoke":
@@ -208,6 +215,30 @@ def handle(msg):
                 body["window_id"] = window
             pending = request("terminal.read", body)
             _pending[pending] = ("terminal.read", rid, window)
+        elif command == "terminal-read-fake-windows":
+            # 伪造窗口 id 的 ask：不应占用审批队列，也不应阻止随后合法窗口的 ask。
+            for index in range(20):
+                request("terminal.read", {
+                    "max_lines": 1,
+                    "max_bytes": 16,
+                    "window_id": 1000 + index,
+                })
+            respond(rid, {"ok": True, "message": "fake-windows-sent"})
+        elif command == "spam-fake-status":
+            for index in range(10000):
+                send({"jsonrpc": "2.0", "method": "ui.status", "params": {
+                    "text": "spam-status",
+                    "command": "greet",
+                    "window_id": 10000 + index,
+                }})
+            respond(rid, {"ok": True, "message": "spam-status-sent"})
+        elif command == "stderr-crash":
+            sys.stderr.write("\x1b[31mred-alert\x1b[0m\rEVIL\r\n")
+            sys.stderr.write("second\x1b[2Jline\n")
+            sys.stderr.flush()
+            # 给 stderr 读线程时间读取，再退出触发 crash 路径。
+            time.sleep(0.25)
+            sys.exit(7)
         elif command == "terminal-write":
             body = {"text": "echo hello\n"}
             if window is not None:
@@ -1493,6 +1524,7 @@ fn window_id_routes_commands_reads_surfaces_status_and_cleanup() {
         .and_then(|info| info.pid)
         .expect("plugin pid");
     store.set_active_window(Some(1));
+    store.set_known_windows(&[1, 2]);
 
     // ---- window 1: command.invoke.window_id -> terminal.read ask 记录窗口
     assert!(store.spawn_command_for(
@@ -1701,6 +1733,7 @@ fn concurrent_asks_route_back_to_their_own_window() {
         Duration::from_secs(3)
     ));
     store.set_active_window(Some(1));
+    store.set_known_windows(&[1, 2]);
     assert!(store.spawn_command_for(
         "plugin.dev.test.asks.terminal-read-window",
         Some(1)
@@ -1754,6 +1787,375 @@ fn concurrent_asks_route_back_to_their_own_window() {
         Duration::from_secs(3)
     ));
     assert!(store.pending_approvals().is_empty());
+    store.shutdown_processes();
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+// ---------------------------------------------------------------- P1/P2 回归测试
+
+/// 测试进程退出时兜底杀掉 sleep 中的假插件，避免失败用例留下孤儿进程。
+#[cfg(unix)]
+struct KillOnDrop(Option<u32>);
+
+#[cfg(unix)]
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        if let Some(pid) = self.0.take() {
+            // SAFETY: pid 来自 child.id()，只会向该进程组发 SIGKILL。
+            unsafe {
+                libc::kill(-(pid as i32), libc::SIGKILL);
+                libc::kill(pid as i32, libc::SIGKILL);
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+fn process_gone(pid: u32) -> bool {
+    // SAFETY: signal 0 只做存在性检查，不递送信号。
+    let result = unsafe { libc::kill(pid as i32, 0) };
+    result == -1
+        && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+}
+
+/// [P1] 插件停读 stdin 时，宿主写线程不能阻塞 supervisor：命令按 deadline 超时，
+/// shutdown 有界返回，旧子进程被回收。
+#[cfg(unix)]
+#[test]
+fn frozen_stdin_command_times_out_and_shutdown_kills_process() {
+    let root = tmpdir("stdin-freeze");
+    let dir = install_plugin(
+        &root,
+        "plugin",
+        &manifest("dev.test.frozen", "1.0.0", false, false, false),
+        0.0,
+    );
+    let script = std::fs::read_to_string(dir.join("main.py"))
+        .unwrap()
+        .replace("FREEZE_AFTER_INIT = False", "FREEZE_AFTER_INIT = True");
+    write_executable(&dir.join("main.py"), &script);
+    let state = root.join("state.toml");
+    let mut options = fast_options();
+    options.command_timeout = Duration::from_millis(300);
+    options.ping_interval = Duration::from_secs(60);
+    let mut store = load(&root, &state, options);
+    enable(&mut store, "dev.test.frozen");
+    assert!(wait_phase(
+        &store,
+        "dev.test.frozen",
+        Phase::Running,
+        Duration::from_secs(3)
+    ));
+    let pid = store
+        .runtime_info("dev.test.frozen")
+        .and_then(|info| info.pid)
+        .expect("plugin pid");
+    let _guard = KillOnDrop(Some(pid));
+
+    let handle = store
+        .supervisors
+        .get("dev.test.frozen")
+        .expect("supervisor handle");
+    // 先塞一条 200 KiB 事件填满管道（子进程停读后 write(2) 会阻塞），
+    // 再发一条 200 KiB 命令：修复前 supervisor 卡在事件 write_all 上，
+    // 命令永远等不到 deadline；修复后命令在 300ms 后超时。
+    let blob = "y".repeat(200 * 1024);
+    assert!(handle
+        .tx
+        .send(SupervisorMsg::Event {
+            event: PluginEvent::Startup,
+            payload: json!({ "blob": blob }),
+        })
+        .is_ok());
+    let (reply_tx, reply_rx) = crossbeam_channel::bounded(1);
+    assert!(handle
+        .tx
+        .send(SupervisorMsg::Command {
+            command: "greet".to_string(),
+            args: vec!["x".repeat(200 * 1024)],
+            window_id: None,
+            reply: reply_tx,
+        })
+        .is_ok());
+    let outcome = reply_rx
+        .recv_timeout(Duration::from_secs(3))
+        .expect("停读 stdin 时命令必须按 deadline 返回，而不是让 supervisor 阻塞");
+    assert_eq!(
+        outcome,
+        CommandOutcome::Timeout,
+        "停读 stdin 应表现为命令 deadline 超时"
+    );
+    assert!(
+        wait_until(|| process_gone(pid), Duration::from_secs(2)),
+        "命令超时后旧插件进程必须被回收（pid={pid}）"
+    );
+
+    let started = Instant::now();
+    store.shutdown_processes();
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "停读 stdin 时 shutdown 必须 ≤2s，实际 {elapsed:?}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// [P1] 插件伪造 window_id 的 ask 必须立即拒绝，不能占满审批队列或阻止合法 ask。
+#[cfg(unix)]
+#[test]
+fn fake_window_asks_do_not_occupy_approval_slots() {
+    let root = tmpdir("fake-ask-window");
+    install_plugin(
+        &root,
+        "plugin",
+        &manifest("dev.test.fakeask", "1.0.0", true, false, false),
+        0.0,
+    );
+    let state = root.join("state.toml");
+    let mut store = load(&root, &state, fast_options());
+    enable(&mut store, "dev.test.fakeask");
+    assert!(wait_phase(
+        &store,
+        "dev.test.fakeask",
+        Phase::Running,
+        Duration::from_secs(3)
+    ));
+    store.set_active_window(Some(1));
+
+    assert!(store.spawn_command("plugin.dev.test.fakeask.terminal-read-fake-windows"));
+    assert!(wait_activity(&store, "fake-windows-sent", Duration::from_secs(5)));
+    std::thread::sleep(Duration::from_millis(100));
+    let approvals = store.pending_approvals();
+    assert!(
+        approvals.iter().all(|approval| !matches!(
+            approval.window_id,
+            Some(window) if (1000..=1019).contains(&window)
+        )),
+        "伪造窗口的 ask 不应进入审批队列: {approvals:?}"
+    );
+    assert!(
+        store.pending_approvals().is_empty(),
+        "20 个伪造窗口 ask 必须全部立即拒绝，不能占审批位"
+    );
+
+    // 随后的合法 ask 仍必须能排队、能答复。
+    assert!(store.spawn_command_for(
+        "plugin.dev.test.fakeask.terminal-read-window",
+        Some(1)
+    ));
+    assert!(wait_until(
+        || !store.pending_approvals_for(1, Some(1)).is_empty(),
+        Duration::from_secs(3)
+    ));
+    assert_eq!(
+        store.pending_approvals().len(),
+        1,
+        "只应有合法窗口的 ask: {:?}",
+        store.pending_approvals()
+    );
+    let approval = store.pending_approvals_for(1, Some(1)).remove(0);
+    assert!(store.resolve_host_request(
+        "dev.test.fakeask",
+        approval.request_id,
+        HostOutcome::Ok(json!({"text": "legal-tail"})),
+    ));
+    assert!(wait_until(
+        || store
+            .take_notices_for(1, Some(1))
+            .iter()
+            .any(|notice| notice.text.contains("READWIN[1]:legal-tail")),
+        Duration::from_secs(3)
+    ));
+    store.shutdown_processes();
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// [P1] 插件自选 window_id 不能无界增长 status map：未知窗口拒绝、每插件最多 2 个
+/// 窗口专属状态、UI 快照不 clone 全表。
+#[cfg(unix)]
+#[test]
+fn fake_window_status_ids_do_not_grow_status_map() {
+    let root = tmpdir("fake-status-window");
+    install_plugin(
+        &root,
+        "plugin",
+        &manifest("dev.test.fakestatus", "1.0.0", false, false, true),
+        0.0,
+    );
+    let state = root.join("state.toml");
+    let mut store = load(&root, &state, fast_options());
+    enable(&mut store, "dev.test.fakestatus");
+    assert!(wait_phase(
+        &store,
+        "dev.test.fakestatus",
+        Phase::Running,
+        Duration::from_secs(3)
+    ));
+    store.set_active_window(Some(1));
+
+    assert!(store.spawn_command("plugin.dev.test.fakestatus.spam-fake-status"));
+    assert!(wait_activity(&store, "spam-status-sent", Duration::from_secs(10)));
+
+    let statuses = store.shared.statuses.lock().expect("statuses");
+    let from_this_plugin: Vec<(Option<u64>, String)> = statuses
+        .iter()
+        .filter(|((plugin, _), _)| plugin == "dev.test.fakestatus")
+        .map(|((_, window), status)| (*window, status.text.clone()))
+        .collect();
+    assert!(
+        from_this_plugin
+            .iter()
+            .all(|(window, _)| window.is_none() || *window == Some(1)),
+        "未知窗口 status 必须被拒绝，实际 key: {from_this_plugin:?}"
+    );
+    let explicit = from_this_plugin
+        .iter()
+        .filter(|(window, _)| window.is_some())
+        .count();
+    assert!(
+        explicit <= 2,
+        "每插件窗口专属 status 上限 2，实际 {explicit}"
+    );
+    assert!(
+        statuses.len() <= 3,
+        "10k 伪造窗口后 status map 必须有界，实际 {}",
+        statuses.len()
+    );
+    drop(statuses);
+
+    // status 轮询的全局状态仍然可见，窗口快照也不复制全表。
+    assert!(wait_until(
+        || store
+            .status_snapshot_for_window(1)
+            .1
+            .iter()
+            .any(|status| status.text == "status-ready"),
+        Duration::from_secs(3)
+    ));
+
+    // 真实窗口也不能让单插件的窗口专属 status 超过 2 条：按窗口 id 升序驱逐。
+    store.set_known_windows(&[1, 2, 3, 4]);
+    store.set_active_window(Some(1));
+    for window in [1u64, 2, 3, 4] {
+        assert!(store.spawn_command_for(
+            "plugin.dev.test.fakestatus.status-window",
+            Some(window)
+        ));
+    }
+    assert!(wait_until(
+        || store.shared.statuses.lock().is_ok_and(|statuses| {
+            statuses
+                .keys()
+                .any(|(plugin, window)| plugin == "dev.test.fakestatus" && *window == Some(4))
+        }),
+        Duration::from_secs(3)
+    ));
+    let statuses = store.shared.statuses.lock().expect("statuses");
+    let mut explicit: Vec<u64> = statuses
+        .keys()
+        .filter(|(plugin, window)| plugin == "dev.test.fakestatus" && window.is_some())
+        .filter_map(|(_, window)| *window)
+        .collect();
+    explicit.sort_unstable();
+    assert_eq!(
+        explicit,
+        vec![3, 4],
+        "每插件最多 2 个窗口专属 status，最旧（最小 id）先驱逐"
+    );
+    drop(statuses);
+    assert!(store.known_windows() == vec![1, 2, 3, 4]);
+    store.shutdown_processes();
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// [P2] 插件 stderr 里的 ESC/CR 必须在进入 UI/日志前被清理。
+#[cfg(unix)]
+#[test]
+fn plugin_stderr_control_bytes_are_stripped_from_ui() {
+    let root = tmpdir("stderr-sanitize");
+    install_plugin(
+        &root,
+        "plugin",
+        &manifest("dev.test.stderr", "1.0.0", false, false, false),
+        0.0,
+    );
+    let state = root.join("state.toml");
+    let mut options = fast_options();
+    options.max_restarts = 0;
+    let mut store = load(&root, &state, options);
+    enable(&mut store, "dev.test.stderr");
+    assert!(wait_phase(
+        &store,
+        "dev.test.stderr",
+        Phase::Running,
+        Duration::from_secs(3)
+    ));
+    assert!(store.spawn_command("plugin.dev.test.stderr.stderr-crash"));
+    assert!(wait_phase(
+        &store,
+        "dev.test.stderr",
+        Phase::Failed,
+        Duration::from_secs(5)
+    ));
+    let info = store.runtime_info("dev.test.stderr").expect("runtime");
+    assert!(
+        info.error.contains("red-alert"),
+        "stderr 文本应保留可见内容: {}",
+        info.error
+    );
+    assert!(
+        !info.error.contains('\x1b')
+            && !info.error.contains('\r')
+            && !info.error.contains("[31m")
+            && !info.error.contains("[2J"),
+        "stderr 的 ESC/CR/ANSI 不能原样进入 runtime error: {:?}",
+        info.error
+    );
+    let row = row_of(&store, "dev.test.stderr");
+    assert!(
+        !row.error.contains('\x1b')
+            && !row.error.contains('\r')
+            && !row.error.contains("[31m"),
+        "stderr 的 ESC/CR/ANSI 不能原样进入设置页: {:?}",
+        row.error
+    );
+    store.shutdown_processes();
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// [P2] Enable 读取 WASM 时必须先 stat：发现后文件被放大/不可读也不能整读。
+#[cfg(unix)]
+#[test]
+fn oversized_wasm_is_rejected_from_metadata_without_reading() {
+    let root = tmpdir("wasm-oversize");
+    // 先在发现阶段放一个合法小模块，再在 Enable 前把文件放大并设为不可读。
+    let dir = install_wasm_plugin(&root, &example_wasm());
+    let state = root.join("state.toml");
+    let mut store = load(&root, &state, fast_options());
+    let wasm_path = dir.join("filter.wasm");
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&wasm_path)
+        .unwrap();
+    file.set_len((crate::plugin_wasm::MAX_WASM_BYTES + 1) as u64)
+        .unwrap();
+    drop(file);
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&wasm_path, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+    let error = store
+        .confirm_enable("dev.tervo.wasm-filter")
+        .expect_err("超限 WASM 必须被拒绝");
+    let _ = std::fs::set_permissions(&wasm_path, std::fs::Permissions::from_mode(0o600));
+    assert!(
+        error.contains("过大") || error.contains("上限"),
+        "应按文件大小直接拒绝，而不是读取失败: {error}"
+    );
+    assert!(
+        !error.contains("Permission denied"),
+        "超限文件不应被打开读取: {error}"
+    );
+    assert!(store.active_wasm_filters().is_empty());
     store.shutdown_processes();
     let _ = std::fs::remove_dir_all(&root);
 }

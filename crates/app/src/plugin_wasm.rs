@@ -29,6 +29,8 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::io::Read;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread::{self, JoinHandle};
@@ -518,6 +520,38 @@ fn clip_error(error: &str) -> String {
     out.trim().to_string()
 }
 
+/// 读取 `.wasm` 模块：先 stat，超过上限直接拒绝；文件最多读 `max + 1` 字节，
+/// 避免 Enable 时把任意大的文件整块读进 UI 线程。
+pub(crate) fn read_wasm_module(path: &Path, max: usize) -> Result<Vec<u8>, String> {
+    let metadata = std::fs::metadata(path).map_err(|error| {
+        format!("读取 WASM 元数据失败 {}: {error}", path.display())
+    })?;
+    if metadata.len() > max as u64 {
+        return Err(format!(
+            "WASM 模块过大（{} bytes，上限 {max}）: {}",
+            metadata.len(),
+            path.display()
+        ));
+    }
+    let file = std::fs::File::open(path)
+        .map_err(|error| format!("读取 WASM 失败 {}: {error}", path.display()))?;
+    read_capped(file, max)
+        .map_err(|error| format!("读取 WASM 失败 {}: {error}", path.display()))
+}
+
+/// 从 reader 最多读 `max + 1` 字节；多出的 1 字节只用于判断是否超限。
+fn read_capped<R: Read>(reader: R, max: usize) -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::with_capacity((max + 1).min(64 * 1024));
+    reader
+        .take(max as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    if bytes.len() > max {
+        return Err(format!("WASM 模块过大（超过 {max} bytes 上限）"));
+    }
+    Ok(bytes)
+}
+
 /// 已启用 WASM 输出过滤器的有序链（按插件 id 排序，保证确定性）。
 ///
 /// `Arc<WasmOutputHost>` 在创建 pane 时交给 core；Enable/Disable/Reload 只替换
@@ -884,6 +918,37 @@ mod tests {
         assert_eq!(output.len(), MAX_INPUT_BYTES);
         assert!(output.iter().all(|byte| *byte == b'A'));
         assert!(!runtime.is_faulted());
+    }
+
+    #[test]
+    fn module_read_is_capped_at_max_plus_one_byte() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        struct CountingReader<R> {
+            inner: R,
+            count: Rc<Cell<usize>>,
+        }
+        impl<R: Read> Read for CountingReader<R> {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                let read = self.inner.read(buf)?;
+                self.count.set(self.count.get() + read);
+                Ok(read)
+            }
+        }
+
+        let count = Rc::new(Cell::new(0));
+        let reader = CountingReader {
+            inner: std::io::repeat(b'x').take(64 * 1024 * 1024),
+            count: count.clone(),
+        };
+        let error = read_capped(reader, MAX_WASM_BYTES).expect_err("超限模块必须被拒绝");
+        assert!(error.contains("过大"), "{error}");
+        assert_eq!(
+            count.get(),
+            MAX_WASM_BYTES + 1,
+            "读取必须封顶 MAX+1 字节，不能把超限文件整块读完"
+        );
     }
 
     #[test]
