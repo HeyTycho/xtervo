@@ -3976,7 +3976,9 @@ export component MainWindow inherits Window {
                     color: transparent;
                     selection-foreground-color: transparent;
                     selection-background-color: transparent;
-                    text-cursor-width: 0px;
+                    // 不为 0：Slint 在 Enable 时会用这个宽度发一次 cursor area；
+                    // 0 宽候选窗可能被输入法当成无效。真正的位置仍由 Rust 重发。
+                    text-cursor-width: 2px;
                     init => { self.focus(); }
 
                     key-pressed(event) => {
@@ -3984,7 +3986,11 @@ export component MainWindow inherits Window {
                         // 这些键归输入法，一个字节都不能写进 PTY
                         //（这正是之前“回车没用 / 键盘像失灵”的根源）。
                         if (self.preedit-text != "") {
-                            return EventResult.reject;
+                            // 组合期按键已经由输入法消费；这里必须 accept 把事件
+                            // 吞掉。reject 会让 Slint TextInput 继续内置编辑，把
+                            // 拼音字母/空格插入 text 并触发 edited，最终写进 PTY，
+                            // 表现为“终端里出现裸拼音、中文上不了屏”。
+                            return EventResult.accept;
                         }
                         if (event.text == "\u{1b}" && root.image-preview-open) {
                             root.image-preview-open = false;
@@ -4010,7 +4016,11 @@ export component MainWindow inherits Window {
                     // Rust 侧用 press 登记表过滤快捷键/搜索框，普通 shell 零变化。
                     key-released(event) => {
                         if (self.preedit-text != "") {
-                            return EventResult.reject;
+                            // 组合期按键已经由输入法消费；这里必须 accept 把事件
+                            // 吞掉。reject 会让 Slint TextInput 继续内置编辑，把
+                            // 拼音字母/空格插入 text 并触发 edited，最终写进 PTY，
+                            // 表现为“终端里出现裸拼音、中文上不了屏”。
+                            return EventResult.accept;
                         }
                         root.key-release(event.text, event.modifiers.control, event.modifiers.alt, event.modifiers.shift, event.modifiers.meta);
                         EventResult.accept

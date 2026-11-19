@@ -80,6 +80,12 @@ Tervo 的版本与 tag 规则见 `docs/RELEASING.md`。
 
 ### Fixed
 
+- Tervo 中文输入（Wayland text-input-v3）：组合期 `key-pressed` 改为 `accept`
+  吞掉按键，避免 `reject` 让 Slint TextInput 继续内置编辑、把拼音字母/空格
+  写进 PTY；监听 winit `Ime::Enabled` 后才清 `ime_spot_dirty` 并重发
+  `set_ime_cursor_area`（此前窗口获焦时 area 在 enable 之前发出被丢弃，且
+  dirty 被错误清除、不再重发）；Palette 关闭、窗口重新获焦、新建 Tab 后恢复
+  隐藏 TextInput 焦点；隐藏输入框 cursor width 改为非 0。
 - 安装到 `~/.local` 等用户级 prefix 时，桌面项改写成该 prefix 的绝对
   `Exec/TryExec`。此前 `TryExec=tervo` 在 GNOME 会话 PATH 不含
   `~/.local/bin` 时会被当成“命令不存在”，Activities 里搜不到 Tervo。

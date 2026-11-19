@@ -1207,6 +1207,9 @@ struct AppState {
     /// 强制下一次 IME 同步重新下发（pane/Tab 切换、resize、窗口 focus/DPR 变化）。
     /// 输入法可能丢弃过期的 XNSpotLocation，即使坐标没变也要重发一次。
     ime_spot_dirty: bool,
+    /// 原生窗口是否已真正 Enable text-input（winit `Ime::Enabled`）。
+    /// `set_ime_cursor_area` 在 enable 之前会被 winit 静默丢弃，不能据此清 dirty。
+    ime_enabled: bool,
     /// mouse-reporting TUI（dsh 侧栏等）不移动硬件光标时，用最近一次点击的格子
     /// 作为 IME 候选锚点；同时记住点击时的硬件光标，光标一动就作废（见
     /// `ime_anchor_cell`），否则候选框会黏在点击处、不跟真实输入位置。
@@ -5439,6 +5442,11 @@ fn new_tab_inner_with_cwd(st: &mut AppState, cwd: Option<PathBuf>) {
             refresh_views(st);
             rebuild_tabs(st);
             redraw_pane_inner(st, id);
+            // 新 Tab 的隐藏 TextInput 需要重新拿焦点，否则 Ctrl+T 后中文输入失效。
+            st.ui.invoke_focus_terminal();
+            update_ime_spot(st);
+            let window_focused = st.window_focused;
+            sync_terminal_focus(st, window_focused);
         }
         Err(e) => {
             eprintln!("创建 pane 失败: {e}");
@@ -11811,6 +11819,28 @@ fn ime_anchor_cell(click: Option<((u16, u16), (u16, u16))>, cursor: (u16, u16)) 
     }
 }
 
+/// 当前是否有会自己持有 TextInput 焦点的覆盖层；有则不能把焦点抢回终端。
+fn overlay_owns_ime_focus(st: &AppState) -> bool {
+    st.search_open
+        || st.ui.get_settings_open()
+        || st.ui.get_settings_tab_open()
+        || st.ui.get_palette_open()
+        || st.ui.get_tabsearch_open()
+        || st.ui.get_rename_open()
+        || st.ui.get_profiles_open()
+        || st.ui.get_profile_form_open()
+}
+
+/// 窗口从失焦恢复时，Slint 的隐藏 TextInput 可能已经没有焦点；只补 spot 不够，
+/// 必须重新 `ime.focus()` 才能让 winit 再发一次 Enable。有设置/搜索/Palette 等
+/// 输入框覆盖层时不动，避免抢走用户正在输入的焦点。
+fn restore_terminal_ime_focus_if_idle(st: &mut AppState) {
+    if overlay_owns_ime_focus(st) {
+        return;
+    }
+    st.ui.invoke_focus_terminal();
+}
+
 fn update_ime_spot(st: &mut AppState) {
     use slint::winit_030::winit::dpi::{LogicalPosition, LogicalSize};
 
@@ -11883,8 +11913,9 @@ fn update_ime_spot(st: &mut AppState) {
         .window()
         .with_winit_window(|window| window.set_ime_cursor_area(pos, size))
         .is_some();
-    if sent {
-        // 只有真的交给 winit 才清 dirty；窗口还没建好时下次轮询会重试。
+    if sent && st.ime_enabled {
+        // 只有 text-input 已经 Enable，winit 才会真正发 set_cursor_rectangle。
+        // Enable 之前调用会被丢弃；保持 dirty，等 Ime::Enabled 后再发一次。
         st.ime_spot_dirty = false;
     }
     if std::env::var_os("TERVO_IME_LOG").is_some() {
@@ -14266,6 +14297,7 @@ fn install_native_window_events(ui: &MainWindow, window_id: WindowId) {
                 if *focused {
                     runtime::with_window(window_id, |st| {
                         st.ime_spot_dirty = true;
+                        restore_terminal_ime_focus_if_idle(st);
                         update_ime_spot(st);
                     });
                 } else {
@@ -14280,6 +14312,26 @@ fn install_native_window_events(ui: &MainWindow, window_id: WindowId) {
                         st.drag_autoscroll.stop();
                         cancel_local_selection_drag(st, "window-blur");
                     });
+                }
+            }
+            winit::event::WindowEvent::Ime(ime) => {
+                // text-input-v3 的 Enable 发生在 Slint 处理 FocusIn 之后；只有这时
+                // set_ime_cursor_area 才会被 winit 接受。收到 Enabled 后强制重发 spot。
+                match ime {
+                    winit::event::Ime::Enabled => {
+                        runtime::with_window(window_id, |st| {
+                            st.ime_enabled = true;
+                            st.ime_spot_dirty = true;
+                            update_ime_spot(st);
+                        });
+                    },
+                    winit::event::Ime::Disabled => {
+                        runtime::with_window(window_id, |st| {
+                            st.ime_enabled = false;
+                            st.ime_spot_dirty = true;
+                        });
+                    },
+                    _ => {},
                 }
             }
             winit::event::WindowEvent::CursorLeft { .. } => {
@@ -14691,6 +14743,10 @@ fn palette_accept(st: &mut AppState) {
     let idx = st.ui.get_palette_selected().max(0) as usize;
     let id = st.palette_ids.get(idx).cloned();
     st.ui.set_palette_open(false);
+    // Palette 的 TextInput 随浮层销毁，Slint 不会自动把焦点还给隐藏 IME。
+    st.ui.invoke_focus_terminal();
+    st.ime_spot_dirty = true;
+    update_ime_spot(st);
     if let Some(id) = id {
         eprintln!("[ui] run command {id} window={}", st.window_id);
         run_command(st, &id);
@@ -17359,6 +17415,7 @@ fn build_window_state(
         maximize: None,
         ime_spot: None,
         ime_spot_dirty: true,
+        ime_enabled: false,
         ime_override: None,
         wm_resize: false,
         wm_resize_dir: None,
@@ -19911,7 +19968,12 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
     });
 
     ui.on_palette_cancel(move || {
-        runtime::with_window(window_id, |st| st.ui.set_palette_open(false));
+        runtime::with_window(window_id, |st| {
+            st.ui.set_palette_open(false);
+            st.ui.invoke_focus_terminal();
+            st.ime_spot_dirty = true;
+            update_ime_spot(st);
+        });
     });
 
     ui.on_palette_pick(move |index| {
@@ -21709,8 +21771,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let was_focused = st.window_focused;
                 sync_terminal_focus(st, win);
                 if win && !was_focused {
-                    // 输入法在失焦期间可能丢弃旧 spot；重新获得焦点时强制补发。
+                    // 输入法在失焦期间可能丢弃旧 spot；重新获得焦点时强制补发，
+                    // 并确保隐藏 TextInput 重新拿焦（winit 才会再发 Ime::Enabled）。
                     st.ime_spot_dirty = true;
+                    restore_terminal_ime_focus_if_idle(st);
                 }
                 // dsh 侧栏可能只移动终端光标、不产生内容重绘；独立轮询光标，
                 // 不能只等 redraw_visible 才更新 IME spot。

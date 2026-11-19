@@ -71,7 +71,7 @@ x11/xwayland own windows (仅 X11 客户端，不含本进程 Wayland 窗口):
 |---|---|---|---|
 | 启动 / PTY / 软件渲染 | ✅ | ✅ | 不适配 |
 | Skia/EGL、全屏、`xdg_toplevel.resize` | ✅（llvmpipe 可验证协议；真实 GPU 需本机驱动） | ✅ | 不改渲染路径 |
-| IME（text-input-v3 + fcitx5） | ✅ 实测提交“你好” | ✅ XIM 原路径 | 不改输入路径；保留隐藏 TextInput |
+| IME（text-input-v3 + fcitx5） | ✅ 实测提交“你好”；组合期按键 sink、`Ime::Enabled` 后重发 area、Palette/获焦恢复焦点 | ✅ XIM 原路径 | 保留隐藏 TextInput；不在 enable 前清 dirty |
 | 剪贴板 / PRIMARY（应用内 OSC52/复制） | ⚠️ 仅 `DISPLAY` 存在时 arboard 回退 XWayland；纯 Wayland ❌ | ✅ | 失败时打印一次可读原因，短行日志保持 `[clipboard] 不可用` |
 | 文件拖放 | ❌ winit 0.30.13 Wayland 后端无 DnD | ✅ XDND 原路径 | 不伪造 hover；启动只记录能力 |
 | 全局热键 / Quake | ❌ 无协议；XWayland grab 对 Wayland 窗口是假阳性 | ✅ 被动 grab 原路径 | Wayland 不注册；设置里拒绝启用并 toast；菜单触发提示不支持 |
