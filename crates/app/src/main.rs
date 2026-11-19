@@ -42,6 +42,8 @@ mod session;
 mod sftp;
 mod ssh_plugin;
 mod tabby_import;
+#[cfg(test)]
+mod test_support;
 mod themes;
 // Transport 数据面/权限骨架（ACT-052 F3/F4）：纯函数与门禁数据结构，
 // 产品启用流程尚未接它；接线前保持显式 allow(dead_code)。

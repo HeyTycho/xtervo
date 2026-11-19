@@ -6,12 +6,10 @@
 //! 整屏参考渲染逐像素比较。任何图片 placement/row/crop 计算的偏差都会表现
 //! 为像素不一致，而不是依赖 dsh 的真实会话才能暴露。
 
-use std::rc::Rc;
-
 use tervo_core::{CellData, Frame, ImageCrop, ImagePlacementMeta, InlineImage, LineDamage, Theme};
 
-use crate::glyph::FontSet;
 use crate::render::Renderer;
+use crate::test_support::require_test_fonts;
 
 const COLS: usize = 24;
 const ROWS: usize = 8;
@@ -148,10 +146,7 @@ fn random_spec(rng: &mut Lcg, id: u64) -> ImgSpec {
 
 #[test]
 fn partial_image_sequence_matches_full_redraw() {
-    let Some(fonts) = FontSet::load(15.0) else {
-        return;
-    };
-    let fonts = Rc::new(fonts);
+    let fonts = require_test_fonts();
     let theme = Theme::default();
     for seed in 0..96u64 {
         let mut rng = Lcg(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ 0xdead_beef);
@@ -248,10 +243,7 @@ fn partial_image_sequence_matches_full_redraw() {
 
 #[test]
 fn negative_row_image_is_cleared_when_it_scrolls_out() {
-    let Some(fonts) = FontSet::load(15.0) else {
-        return;
-    };
-    let fonts = Rc::new(fonts);
+    let fonts = require_test_fonts();
     let theme = Theme::default();
     let mut renderer = Renderer::new(fonts.clone(), COLS, ROWS, theme.bg(), theme.cursor(), 1.0);
     let mut reference = Renderer::new(fonts, COLS, ROWS, theme.bg(), theme.cursor(), 1.0);
@@ -295,10 +287,7 @@ fn negative_row_image_is_cleared_when_it_scrolls_out() {
 /// 不在 row_span 内，滚出视口后不会被清理。
 #[test]
 fn clipped_top_image_lands_on_its_real_rows() {
-    let Some(fonts) = FontSet::load(15.0) else {
-        return;
-    };
-    let fonts = Rc::new(fonts);
+    let fonts = require_test_fonts();
     let theme = Theme::default();
     let mut renderer = Renderer::new(fonts, 6, 6, theme.bg(), theme.cursor(), 1.0);
     let cell_w = renderer.cell_w as u32;
