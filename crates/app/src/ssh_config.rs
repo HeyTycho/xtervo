@@ -77,9 +77,13 @@ pub fn resolve_jump(profile: &Profile) -> ResolvedSsh {
         Some(path) if !path.is_empty() => vec![PathBuf::from(path)],
         _ => default_config_paths(),
     };
+    resolve_jump_with_paths(profile, &paths)
+}
+
+fn resolve_jump_with_paths(profile: &Profile, paths: &[PathBuf]) -> ResolvedSsh {
     let mut raw = Raw::default();
     let mut active = true;
-    for path in &paths {
+    for path in paths {
         let root = config_root(path);
         parse_file(path, profile.host.trim(), &mut raw, &mut active, &root, 0);
     }
@@ -564,7 +568,7 @@ mod tests {
     fn jump_port_defaults_to_22_without_config() {
         let mut p = profile("jump");
         p.port = 0;
-        let r = resolve_jump(&p);
+        let r = resolve_jump_with_paths(&p, &[]);
         assert_eq!(r.port, 22);
     }
 

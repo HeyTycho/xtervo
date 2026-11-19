@@ -360,9 +360,7 @@ impl Handler for HostKeyHandler {
             .ok()
             .and_then(|map| {
                 let key = (connected_address.to_string(), connected_port as u16);
-                map.get(&key)
-                    .or_else(|| map.get(&(connected_address.to_string(), 0)))
-                    .cloned()
+                map.get(&key).cloned()
             });
         let Some(target) = target else { return Ok(()) };
         reply.accept().await;
@@ -1318,9 +1316,9 @@ mod integration_tests {
         local.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
         use std::io::{Read, Write};
         (&local).write_all(b"local-fwd").unwrap();
-        let mut echoed = [0u8; 16];
-        let n = (&local).read(&mut echoed).expect("read local forward echo");
-        assert_eq!(&echoed[..n], b"local-fwd");
+        let mut echoed = [0u8; 9];
+        (&local).read_exact(&mut echoed).expect("read local forward echo");
+        assert_eq!(&echoed, b"local-fwd");
         transport.close();
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1404,9 +1402,9 @@ mod integration_tests {
         remote.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
         use std::io::{Read, Write};
         remote.write_all(b"remote-fwd").unwrap();
-        let mut echoed = [0u8; 16];
-        let n = remote.read(&mut echoed).expect("read remote forward echo");
-        assert_eq!(&echoed[..n], b"remote-fwd");
+        let mut echoed = [0u8; 10];
+        remote.read_exact(&mut echoed).expect("read remote forward echo");
+        assert_eq!(&echoed, b"remote-fwd");
         transport.close();
         let _ = std::fs::remove_dir_all(&dir);
     }

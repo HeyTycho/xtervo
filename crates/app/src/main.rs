@@ -1017,6 +1017,7 @@ struct AppState {
     vault_action: Option<VaultAction>,
     /// `true` 时 Vault 页显示“正在派生密钥”，按钮由 Rust 侧防重入。
     vault_busy: bool,
+    vault_pending_key_passphrase_remove: Option<u64>,
     /// Clear vault 需要点两次确认。
     vault_clear_armed: bool,
     /// SSH 连接前的 known_hosts 后台预检。
@@ -7180,11 +7181,15 @@ fn save_profile_form(st: &mut AppState) {
                 {
                     vault_write_error = Some(format!("密钥口令写入 Vault 失败: {error}"));
                 }
-            } else if !save_key_passphrase && !st.vault_busy {
-                match st.vault.with_mut(|vault| vault.remove_key_passphrase(id)) {
-                    Ok(_) => {}
-                    Err(vault::VaultError::Locked | vault::VaultError::NotInitialized) => {}
-                    Err(error) => eprintln!("[vault] 删除 Profile {id} 的密钥口令失败: {error}"),
+            } else if !save_key_passphrase {
+                if st.vault_busy {
+                    st.vault_pending_key_passphrase_remove = Some(id);
+                } else {
+                    match st.vault.with_mut(|vault| vault.remove_key_passphrase(id)) {
+                        Ok(_) => {}
+                        Err(vault::VaultError::Locked | vault::VaultError::NotInitialized) => {}
+                        Err(error) => eprintln!("[vault] 删除 Profile {id} 的密钥口令失败: {error}"),
+                    }
                 }
             }
             if save_password && !password.is_empty() {
@@ -7317,6 +7322,21 @@ fn start_vault_task(st: &mut AppState, action: VaultAction, task: vault::VaultTa
     eprintln!("[vault] 后台 KDF 开始 action={action:?}");
 }
 
+fn flush_pending_key_passphrase_removal(st: &mut AppState) {
+    let Some(id) = st.vault_pending_key_passphrase_remove.take() else {
+        return;
+    };
+    if st.vault_busy {
+        st.vault_pending_key_passphrase_remove = Some(id);
+        return;
+    }
+    match st.vault.with_mut(|vault| vault.remove_key_passphrase(id)) {
+        Ok(_) => eprintln!("[vault] 后台 rekey 结束后删除 Profile {id} 的密钥口令"),
+        Err(vault::VaultError::Locked | vault::VaultError::NotInitialized) => {}
+        Err(error) => eprintln!("[vault] 删除 Profile {id} 的密钥口令失败: {error}"),
+    }
+}
+
 /// Vault 后台任务轮询：成功才 adopt；失败保持原锁定状态。
 fn poll_vault(st: &mut AppState) {
     let Some(job) = st.vault_job.as_ref() else {
@@ -7329,6 +7349,7 @@ fn poll_vault(st: &mut AppState) {
             st.vault.borrow_mut().adopt(session);
             st.vault_job = None;
             st.vault_busy = false;
+            flush_pending_key_passphrase_removal(st);
             let action = st.vault_action.take();
             refresh_vault_ui(st);
             match action {
@@ -7370,6 +7391,7 @@ fn poll_vault(st: &mut AppState) {
         Ok(vault::VaultTaskOutcome::Err(e)) => {
             st.vault_job = None;
             st.vault_busy = false;
+            flush_pending_key_passphrase_removal(st);
             st.vault_action = None;
             if e == vault::VaultError::NotInitialized {
                 st.vault.borrow_mut().refresh_status();
@@ -7381,6 +7403,7 @@ fn poll_vault(st: &mut AppState) {
         Err(TryRecvError::Disconnected) => {
             st.vault_job = None;
             st.vault_busy = false;
+            flush_pending_key_passphrase_removal(st);
             st.vault_action = None;
             refresh_vault_ui(st);
             vault_fail(
@@ -15763,6 +15786,7 @@ fn build_window_state(
         vault_job: None,
         vault_action: None,
         vault_busy: false,
+        vault_pending_key_passphrase_remove: None,
         vault_clear_armed: false,
         hostkey_job: None,
         hostkey_pending: None,
