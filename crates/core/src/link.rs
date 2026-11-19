@@ -448,6 +448,9 @@ mod tests {
     use std::sync::mpsc;
     use std::time::Duration;
 
+    /// linkifier 是进程级全局表；测试并行时 clear/register 会互相干扰。
+    static LINK_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     struct Reentrant;
 
     impl Linkifier for Reentrant {
@@ -467,6 +470,7 @@ mod tests {
 
     #[test]
     fn linkifier_callback_can_register_without_deadlock() {
+        let _guard = LINK_TEST_LOCK.lock().unwrap();
         clear_linkifiers();
         register_linkifier(Arc::new(Reentrant));
         let (tx, rx) = mpsc::channel();
@@ -685,6 +689,7 @@ mod tests {
 
     #[test]
     fn plugin_linkifiers_extend_scan_without_touching_builtin() {
+        let _guard = LINK_TEST_LOCK.lock().unwrap();
         use std::sync::Arc;
         struct AtLink;
         impl Linkifier for AtLink {
