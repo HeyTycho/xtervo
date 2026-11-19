@@ -213,16 +213,21 @@ mod pty_tests {
             ..Profile::default()
         };
         let mut transport = SerialTransport::open(&p).expect("open pty via serialport");
-        // 空闲超过 read timeout 后仍必须继续读，不能把 TimedOut 当 EOF/错误。
-        std::thread::sleep(READ_TIMEOUT + Duration::from_millis(120));
-        let msg = b"NATIVE-SERIAL";
-        let written = unsafe {
-            libc::write(master, msg.as_ptr().cast(), msg.len())
-        };
-        assert_eq!(written, msg.len() as isize);
+        // 读先开始，另一个线程在超过 READ_TIMEOUT 后才写；确保实际走到
+        // TimedOut 重试分支，而不是数据已经就绪。
+        let master_w = unsafe { libc::dup(master) };
+        assert!(master_w >= 0);
+        let writer = std::thread::spawn(move || {
+            std::thread::sleep(READ_TIMEOUT + Duration::from_millis(150));
+            let msg = b"NATIVE-SERIAL";
+            let written = unsafe { libc::write(master_w, msg.as_ptr().cast(), msg.len()) };
+            unsafe { libc::close(master_w) };
+            assert_eq!(written, msg.len() as isize);
+        });
         let mut buf = [0u8; 32];
-        let n = transport.read(&mut buf).expect("read native serial");
-        assert_eq!(&buf[..n], msg);
+        let n = transport.read(&mut buf).expect("read native serial after idle timeout");
+        writer.join().unwrap();
+        assert_eq!(&buf[..n], b"NATIVE-SERIAL");
 
         transport.write_all(b"REPLY").unwrap();
         let mut reply = [0u8; 16];

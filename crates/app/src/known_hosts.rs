@@ -344,22 +344,32 @@ pub fn parse_known_hosts_lines(text: &str) -> Vec<KnownKey> {
 ///
 /// OpenSSH 的 revocation 是“某 host 的某 key 被撤销”；native SSH 不做完整
 /// host-pattern 匹配，因此只要 key 出现在 @revoked 行就拒绝，宁可回退系统 ssh。
+fn parse_revoked_line(line: &str) -> Option<KnownKey> {
+    let line = line.trim();
+    let rest = line.strip_prefix("@revoked")?.trim_start();
+    if rest.is_empty() {
+        return None;
+    }
+    let mut parts = rest.split_whitespace();
+    let _host = parts.next()?;
+    let key_type = parts.next()?;
+    let key = parts.next()?;
+    Some(KnownKey {
+        key_type: key_type.to_string(),
+        key: key.to_string(),
+        fingerprint: KnownKey::fallback_fingerprint(key_type, key),
+    })
+}
+
 pub fn revoked_keys(profile: &Profile) -> Vec<KnownKey> {
     let effective = effective_ssh(profile);
     let mut out = Vec::new();
     for file in &effective.files {
         let Ok(text) = std::fs::read_to_string(file) else { continue };
         for line in text.lines() {
-            let line = line.trim();
-            let Some(rest) = line.strip_prefix("@revoked ") else { continue };
-            let mut parts = rest.split_whitespace();
-            let _host = parts.next();
-            let (Some(key_type), Some(key)) = (parts.next(), parts.next()) else { continue };
-            out.push(KnownKey {
-                key_type: key_type.to_string(),
-                key: key.to_string(),
-                fingerprint: KnownKey::fallback_fingerprint(key_type, key),
-            });
+            if let Some(key) = parse_revoked_line(line) {
+                out.push(key);
+            }
         }
     }
     out
@@ -886,6 +896,15 @@ proxyjump jump@bastion:2200
         );
         assert_eq!(no_alias.spec, "[127.0.0.1]:2222");
         assert!(no_alias.proxy_jump.is_empty());
+    }
+
+    #[test]
+    fn revoked_key_parses_space_and_tab_markers() {
+        let key = parse_revoked_line("@revoked example.com ssh-ed25519 AAAA").unwrap();
+        assert_eq!(key.key_type, "ssh-ed25519");
+        let tab = parse_revoked_line("@revoked\texample.com\tssh-ed25519\tBBBB").unwrap();
+        assert_eq!(tab.key, "BBBB");
+        assert!(parse_revoked_line("@cert-authority example.com ssh-ed25519 AAAA").is_none());
     }
 
     #[test]

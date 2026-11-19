@@ -7,7 +7,7 @@
 
 use std::io::{self, Read, Write};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -25,6 +25,16 @@ use crate::profile::Profile;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 const INACTIVITY_TIMEOUT: Duration = Duration::from_secs(60);
 
+#[inline]
+fn pack_resize(cols: u16, rows: u16) -> u32 {
+    (u32::from(cols) << 16) | u32::from(rows)
+}
+
+#[inline]
+fn unpack_resize(bits: u32) -> (u16, u16) {
+    ((bits >> 16) as u16, bits as u16)
+}
+
 enum Cmd {
     Data(Vec<u8>),
     Resize(u16, u16),
@@ -35,6 +45,7 @@ pub struct SshNativeTransport {
     output: tokio::sync::mpsc::Receiver<Option<Vec<u8>>>,
     commands: tokio::sync::mpsc::Sender<Cmd>,
     closed: Arc<AtomicBool>,
+    resize: Arc<AtomicU32>,
     pending: Vec<u8>,
 }
 
@@ -114,7 +125,9 @@ impl SshNativeTransport {
         let (out_tx, out_rx) = tokio::sync::mpsc::channel::<Option<Vec<u8>>>(1024);
         let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(256);
         let closed = Arc::new(AtomicBool::new(false));
+        let resize = Arc::new(AtomicU32::new(pack_resize(cols, rows)));
         let closed_thread = closed.clone();
+        let resize_thread = resize.clone();
         std::thread::Builder::new()
             .name("ssh-native".into())
             .spawn(move || {
@@ -137,6 +150,7 @@ impl SshNativeTransport {
                     known,
                     revoked,
                     effective,
+                    resize_thread,
                     cols,
                     rows,
                     out_tx.clone(),
@@ -151,7 +165,7 @@ impl SshNativeTransport {
                 let _ = out_tx.blocking_send(None);
             })
             .map_err(|error| io::Error::other(format!("创建 ssh-native 线程失败: {error}")))?;
-        Ok(Self { output: out_rx, commands: cmd_tx, closed, pending: Vec::new() })
+        Ok(Self { output: out_rx, commands: cmd_tx, closed, resize, pending: Vec::new() })
     }
 }
 
@@ -176,6 +190,7 @@ impl PaneTransport for SshNativeTransport {
     }
 
     fn resize(&mut self, cols: u16, rows: u16) {
+        self.resize.store(pack_resize(cols, rows), Ordering::Release);
         let _ = self.commands.try_send(Cmd::Resize(cols, rows));
     }
 
@@ -185,13 +200,17 @@ impl PaneTransport for SshNativeTransport {
     }
 
     fn into_halves(self: Box<Self>) -> io::Result<TransportHalves> {
-        let SshNativeTransport { output, commands, closed, pending } = *self;
+        let SshNativeTransport { output, commands, closed, resize, pending } = *self;
         let shutdown_cmd = commands.clone();
         let shutdown_closed = closed.clone();
         Ok(TransportHalves {
             reader: Box::new(SshReader { output, pending, pos: 0 }),
             writer: Box::new(SshWriter { commands: commands.clone() }),
-            control: Box::new(SshControl { commands, closed: closed.clone() }),
+            control: Box::new(SshControl {
+                commands,
+                closed: closed.clone(),
+                resize: resize.clone(),
+            }),
             shutdown: TransportShutdown::new(move || {
                 shutdown_closed.store(true, Ordering::Release);
                 let _ = shutdown_cmd.try_send(Cmd::Close);
@@ -243,10 +262,12 @@ impl Write for SshWriter {
 struct SshControl {
     commands: tokio::sync::mpsc::Sender<Cmd>,
     closed: Arc<AtomicBool>,
+    resize: Arc<AtomicU32>,
 }
 
 impl TransportControl for SshControl {
     fn resize(&mut self, cols: u16, rows: u16) {
+        self.resize.store(pack_resize(cols, rows), Ordering::Release);
         let _ = self.commands.try_send(Cmd::Resize(cols, rows));
     }
     fn close(&mut self) {
@@ -297,6 +318,7 @@ async fn run_session(
     known: Vec<KnownKey>,
     revoked: Vec<KnownKey>,
     effective: known_hosts::EffectiveSsh,
+    resize: Arc<AtomicU32>,
     cols: u16,
     rows: u16,
     out: tokio::sync::mpsc::Sender<Option<Vec<u8>>>,
@@ -342,12 +364,13 @@ async fn run_session(
         )
         .await
         .map_err(|error| format!("请求远端 PTY 失败: {error}"))?;
-    await_request(&mut channel, &out).await?;
+    await_request(&mut channel, &out, &closed).await?;
     channel
         .request_shell(true)
         .await
         .map_err(|error| format!("请求远端 shell 失败: {error}"))?;
-    await_request(&mut channel, &out).await?;
+    await_request(&mut channel, &out, &closed).await?;
+    let mut last_resize = unpack_resize(resize.load(Ordering::Acquire));
 
     loop {
         if closed.load(Ordering::Acquire) {
@@ -409,6 +432,11 @@ async fn run_session(
                     let _ = session.disconnect(Disconnect::ByApplication, "", "closed").await;
                     return Ok(());
                 }
+                let (cols, rows) = unpack_resize(resize.load(Ordering::Acquire));
+                if (cols, rows) != last_resize {
+                    let _ = channel.window_change(cols as u32, rows as u32, 0, 0).await;
+                    last_resize = (cols, rows);
+                }
             }
         }
     }
@@ -418,9 +446,14 @@ async fn run_session(
 async fn await_request(
     channel: &mut russh::Channel<russh::client::Msg>,
     out: &tokio::sync::mpsc::Sender<Option<Vec<u8>>>,
+    closed: &AtomicBool,
 ) -> Result<(), String> {
     loop {
-        match channel.wait().await {
+        if closed.load(Ordering::Acquire) {
+            return Err("pane 已关闭".into());
+        }
+        tokio::select! {
+            message = channel.wait() => match message {
             Some(ChannelMsg::Success) => return Ok(()),
             Some(ChannelMsg::Failure) => return Err("远端拒绝了 PTY/shell 请求".into()),
             Some(ChannelMsg::Data { data }) => {
@@ -432,6 +465,12 @@ async fn await_request(
                 return Err("远端在 PTY/shell 确认前关闭了通道".into())
             },
             _ => {},
+            },
+            _ = tokio::time::sleep(Duration::from_millis(200)) => {
+                if closed.load(Ordering::Acquire) {
+                    return Err("pane 已关闭".into());
+                }
+            }
         }
     }
 }

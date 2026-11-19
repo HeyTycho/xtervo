@@ -7623,7 +7623,7 @@ export component MainWindow inherits Window {
     if root.profile-form-open : Rectangle {
         x: (root.width - 440px) / 2;
         // local/serial/telnet 用紧凑高度；SSH 展开 password/转发/跳板时需要更高。
-        property <length> form-h: root.form-kind == 1 ? 700px : (root.form-kind == 0 ? 490px : (root.form-kind == 2 ? 620px : 440px));
+        property <length> form-h: root.form-kind == 1 ? 700px : (root.form-kind == 0 ? 490px : (root.form-kind == 2 ? Math.min(560px, root.height - 16px) : 440px));
         y: (root.height - form-h) / 2 < 8px ? 8px : (root.height - form-h) / 2;
         width: 440px;
         height: form-h;
@@ -7761,7 +7761,7 @@ export component MainWindow inherits Window {
         }
 
         if root.form-kind == 2 : VerticalLayout {
-            x: 16px; y: 116px; width: 408px; height: 260px;
+            x: 16px; y: 116px; width: 408px; height: 216px;
             spacing: 12px;
             FormRow { label: Lang.t("Serial", "串口"); text <=> root.form-serial-port; }
             FormRow { label: Lang.t("Baud", "波特率"); text <=> root.form-baud; }
@@ -7782,10 +7782,11 @@ export component MainWindow inherits Window {
         // 绝对定位在不同类型间固定：local 在字段下方，SSH 留出 password 展开空间。
         VerticalLayout {
             x: 16px;
-            y: root.form-kind == 0 ? 290px : (root.form-kind == 1 ? 510px : (root.form-kind == 2 ? 390px : 196px));
+            y: root.form-kind == 0 ? 290px : (root.form-kind == 1 ? 510px : (root.form-kind == 2 ? 340px : 196px));
             width: 408px;
             height: 110px;
             spacing: 6px;
+            visible: root.form-kind != 2 || form-h >= 540px;
 
             Text {
                 height: 14px;
