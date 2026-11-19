@@ -33,3 +33,20 @@ DTR/RTS/control-line status are not implemented yet.
 The `.deb` packaging should eventually declare `openssh-client`/`socat` only
 for users who rely on the fallbacks. The native build does not require either
 at runtime for simple SSH/serial profiles.
+
+## Verification (2026-11-19)
+
+- `cargo test -p tervo-app --bin tervo`: 710 passed, 0 failed, 2 ignored.
+  - `ssh_native::integration_tests::native_ssh_connects_password_and_echoes`:
+    in-process russh server + password auth + temp known_hosts + PTY/shell + echo.
+  - `serial_native::pty_tests::native_serial_roundtrips_through_a_pty`:
+    openpty, real `TimedOut` retry, two-way bytes.
+- Release e2e: TabBar, keyboard protocol, tab pin/drag, single-instance multi-window.
+- 15m `SOAK_STRICT=1`: PASS, RSS 576.6→671.3 MiB (+4.44 MiB/min, R²=0.32),
+  threads 111→111, fds 121→121, fatal=0.
+- Installed `~/.local/bin/tervo` sha256
+  `d1ec335658c242b5aa7d55b1c39c305e2912ca3ff6f2856c9297d6dbd3737ba5`.
+
+Residual external tools in the native SSH path: `ssh -G` (effective
+host/port/user/known_hosts paths) and `ssh-keygen -F` (local known_hosts
+lookup). Authentication, transport, PTY, shell and data are in-process russh.
