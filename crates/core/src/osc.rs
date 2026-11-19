@@ -152,10 +152,13 @@ impl OscScanner {
                         State::Ground
                     },
                     0x1b => State::OscEscape,
-                    // ESC 后面不是 `\`：整条 OSC 视为损坏并丢弃。
+                    // ESC 后面不是 `\`：整条 OSC 视为损坏并丢弃。若 b 是
+                    // UTF-8 前导字节，记住后续续字节，别让 0x9B/0x9C 在
+                    // Ground 里被误当成 C1 控制符吞掉下一条序列。
                     _ => {
                         self.buf.clear();
                         self.overflow = false;
+                        self.utf8_remaining = utf8_lead_len(b).unwrap_or(0);
                         State::Ground
                     },
                 },
@@ -717,6 +720,14 @@ mod tests {
             scanner.feed(&[*b], &mut out);
         }
         assert!(out.is_empty(), "malformed OSC must be discarded: {out:?}");
+
+        // 丢弃后仍要跟踪续字节：U+26DB = E2 9B 9B，0x9B 不能把扫描器带进 Csi。
+        let mut scanner = OscScanner::new();
+        let mut out = Vec::new();
+        for b in b"\x1b]9;hi\x1b\xE2\x9B\x9B\x1b]7;file://host/tmp\x07" {
+            scanner.feed(&[*b], &mut out);
+        }
+        assert_eq!(out, vec![CoreEvent::Cwd("/tmp".to_string())]);
     }
 
     #[test]

@@ -2672,10 +2672,11 @@ fn should_reset_foreground_keyboard(
     owner_pgid: i32,
     prev_dead: bool,
 ) -> bool {
-    // 回到 shell：继承自子应用的 flags 要清；但 shell 自己在 prompt 里
-    // 声明了 kitty/modifyOtherKeys 时（owner == shell）必须保留。
+    // 回到 shell：一律清。chunk 的 pgrp 是读取时采样，子进程最后一批输出
+    // 可能被标成 shell；无法可靠区分“shell 自己声明”与“子进程缓冲输出”，
+    // 安全侧选择清掉，避免 shell 收到它没请求的增强按键序列。
     if pgid == shell_pgid {
-        return owner_pgid != shell_pgid;
+        return true;
     }
     // 还没人声明过：沿用“旧 pgrp 已死”的判断（兼容无 flags 的场景）。
     if owner_pgid == 0 {
@@ -4199,8 +4200,8 @@ mod tests {
         // 回到 shell 总是复位（shell 不继承应用协议）。
         assert!(should_reset_foreground_keyboard(7, 7, 0, false));
         assert!(should_reset_foreground_keyboard(7, 7, 42, false));
-        // shell 自己在 prompt 里声明了协议：保留，不反手清掉。
-        assert!(!should_reset_foreground_keyboard(7, 7, 7, false));
+        // 即使 owner 被采样成 shell（子进程缓冲输出），也按 shell 复位。
+        assert!(should_reset_foreground_keyboard(7, 7, 7, false));
         // 声明 flags 的 owner 回到前台：保留。
         assert!(!should_reset_foreground_keyboard(42, 7, 42, true));
         // owner 已消失（不存在的 pgrp）：复位。
