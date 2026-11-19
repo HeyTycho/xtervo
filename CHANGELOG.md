@@ -80,6 +80,11 @@ Tervo 的版本与 tag 规则见 `docs/RELEASING.md`。
 
 ### Fixed
 
+- Wayland 拖边/拖角 resize 后，合成器会吃掉 pointer-up，Slint `ResizeHandle`
+  一直保持 pressed，后续鼠标点击被边缘抓手吞掉（典型表现：Ctrl+T 新建 Tab 后
+  鼠标不正常）。现在按 resize 方向把补发的 PointerReleased 落到原抓手命中区，
+  并在 Wayland 下用 900ms idle watchdog 兜底收尾；新建 Tab 前也会清理未结束的
+  resize/hover/drag 状态。
 - 原生 Wayland 不再假报 Quake 全局热键已注册；Wayland 下明确禁用 Quake，
   设置页拒绝启用并提示。
 - 原生 Wayland 不再尝试 `_NET_WM_ICON`、X11 SHAPE 圆角、X11 最大化状态机、

@@ -81,6 +81,7 @@ x11/xwayland own windows (仅 X11 客户端，不含本进程 Wayland 窗口):
 | 最大化状态机 | ⚠️ 交给 winit/xdg_toplevel | ✅ `_NET_WM_STATE` 状态机 | Wayland 明确跳过，不再空转 2s |
 | SHAPE 圆角 | ❌ 合成器绘制 | ✅ 原 worker | Wayland 不 spawn、不查询 |
 | 拖边 resize 自绘回退 | ❌ 无 X11 全局指针 | ✅ 原逻辑 | Wayland 不建 xresize，只用 winit `drag_resize_window` |
+| resize 收尾 | ⚠️ pointer-up 可能被合成器吃掉 | ✅ 真实指针查询 | 按方向把补发的 PointerReleased 落到原抓手；900ms idle watchdog 兜底；新建 Tab 前清理未结束状态 |
 | Bell | ⚠️ stderr BEL 回退 | ✅ X11 Bell | Wayland 不连 XWayland 假成功 |
 | 会话几何 | 只存尺寸，`position_known=false` | 存位置 | 避免 Wayland 的 `(0,0)` 污染下次 X11 恢复 |
 

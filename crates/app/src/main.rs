@@ -1215,6 +1215,9 @@ struct AppState {
     /// true 时 drag 回调不再每帧 query_pointer + set_size；若 150ms 内 WM 没有
     /// 产生尺寸变化，drag 回调会解除它并回退自绘，保证 resize 不会“按了没反应”。
     wm_resize: bool,
+    /// 本次 WM/compositor resize 的方向（0..7）。Wayland 收不到 pointer-up 时，
+    /// 用它计算仍在边缘抓手内的坐标来补发 PointerReleased；X11 有真实指针时不用。
+    wm_resize_dir: Option<i32>,
     /// WM 接管后指针被它 grab，Slint 收不到真实 ButtonRelease，TouchArea 会一直
     /// pressed/grabbed；收到第一帧 WM resize 后补发一次 PointerReleased 清理状态。
     wm_release_pending: bool,
@@ -4809,12 +4812,33 @@ fn resize_pointer(st: &AppState) -> Option<(i32, i32)> {
         .and_then(|ctx| crate::xconn::query_pointer(&ctx.conn, ctx.root))
 }
 
+/// WM live resize 期间 pointer-up 可能被合成器吃掉，Slint 的 ResizeHandle 会一直
+/// 保持 pressed/grab。补发 PointerReleased 时必须落在**原方向抓手**的命中区内；
+/// 旧的固定 (0,0) 只会命中左上角/窗口外，Wayland 下等于没清。
+fn resize_release_point(dir: i32, width: f32, height: f32) -> (f32, f32) {
+    let max_x = (width - 1.0).max(0.0);
+    let max_y = (height - 1.0).max(0.0);
+    let (x, y) = match dir {
+        0 => (2.0, 2.0),
+        1 => (width / 2.0, 2.0),
+        2 => (max_x - 1.0, 2.0),
+        3 => (max_x - 1.0, height / 2.0),
+        4 => (max_x - 1.0, max_y - 1.0),
+        5 => (width / 2.0, max_y - 1.0),
+        6 => (2.0, max_y - 1.0),
+        7 => (2.0, height / 2.0),
+        _ => (width / 2.0, height / 2.0),
+    };
+    (x.clamp(0.0, max_x), y.clamp(0.0, max_y))
+}
+
 /// 自绘/ WM resize 共用的收尾：清 Rust 状态，并补发一次 PointerReleased 清理
 /// Slint TouchArea 的 pressed/抓取状态。WM live resize 期间 mouse-up 可能被
 /// WM grab 吃掉；如果只清 Rust 状态，ResizeHandle 仍认为按着，后续每次 move
 /// 都会继续 set_size，表现为“松开左键后还能放缩窗口”。
 fn finish_window_resize(st: &mut AppState, reason: &str) {
     let was_active = st.wm_resize || st.resize.is_some();
+    let dir = st.wm_resize_dir.take();
     st.wm_resize = false;
     st.wm_release_pending = false;
     st.resize = None;
@@ -4825,19 +4849,30 @@ fn finish_window_resize(st: &mut AppState, reason: &str) {
     if st.resize_in_progress {
         schedule_resize_finalize(st);
     }
-    // 用当前指针位置补发，命中原来的 ResizeHandle；0,0 会落到窗口外/别的控件，
-    // 不会清掉 TouchArea 的 pressed 状态。
-    let local = resize_pointer(st).map(|(px, py)| {
-        let pos = st.ui.window().position();
-        let scale = st.ui.window().scale_factor().max(0.1) as f32;
-        let size = st.ui.window().size();
-        let max_x = (size.width as f32 / scale - 1.0).max(0.0);
-        let max_y = (size.height as f32 / scale - 1.0).max(0.0);
-        (
-            ((px as f32 - pos.x as f32) / scale).clamp(0.0, max_x),
-            ((py as f32 - pos.y as f32) / scale).clamp(0.0, max_y),
-        )
-    });
+    let scale = st.ui.window().scale_factor().max(0.1) as f32;
+    let size = st.ui.window().size();
+    let logical_w = (size.width as f32 / scale).max(1.0);
+    let logical_h = (size.height as f32 / scale).max(1.0);
+    // X11：用真实全局指针换算到窗口内，命中原来的 ResizeHandle。
+    // Wayland：没有 X11 指针（xresize 已被门控），用记录的方向算边缘点；
+    // 否则 pointer-up 被合成器吃掉后，TouchArea 会永远保持 pressed。
+    let local = resize_pointer(st)
+        .map(|(px, py)| {
+            let pos = st.ui.window().position();
+            let max_x = (logical_w - 1.0).max(0.0);
+            let max_y = (logical_h - 1.0).max(0.0);
+            (
+                ((px as f32 - pos.x as f32) / scale).clamp(0.0, max_x),
+                ((py as f32 - pos.y as f32) / scale).clamp(0.0, max_y),
+            )
+        })
+        .or_else(|| {
+            if platform::caps().x11_window_ops {
+                None
+            } else {
+                dir.map(|d| resize_release_point(d, logical_w, logical_h))
+            }
+        });
     if let Some((x, y)) = local {
         // 不能在 with_app 借用期间同步 dispatch：Slint 会立刻回调 resize/up
         // callback，再进 with_app 变成重入，操作被丢弃（鼠标松开后状态卡住）。
@@ -5371,6 +5406,19 @@ pub(crate) fn new_tab_with_default_or_cwd(st: &mut AppState, cwd: Option<PathBuf
 }
 
 fn new_tab_inner_with_cwd(st: &mut AppState, cwd: Option<PathBuf>) {
+    // Ctrl+T 可能发生在窗口拖边/抓手仍处于 pressed 时（Wayland 的 pointer-up
+    // 会被合成器 resize grab 吃掉）。新 Tab 前先收尾，避免后续鼠标事件继续
+    // 命中旧 ResizeHandle，表现为“新建 Tab 后鼠标不正常”。
+    if st.wm_resize || st.resize.is_some() {
+        finish_window_resize(st, "new-tab");
+    }
+    st.wm_resize_dir = None;
+    if st.link_hover_cell.take().is_some() {
+        set_link_cursor(st, false);
+    }
+    st.ui.set_drop_hover_pane(-1);
+    st.drag = None;
+
     let id = st.shared.alloc_pane_id();
     // 启动失败时 Retry 要能原样重来（cwd 会被 create_pane 吃掉）。
     let retry_cwd = cwd.clone();
@@ -10782,6 +10830,36 @@ fn wm_resize_timed_out(
         return false;
     }
     !since_last_configure.is_some_and(|d| d < timeout)
+}
+
+/// Wayland 合成器 resize 期间 pointer-up 可能被 compositor grab 吃掉；Slint 的
+/// ResizeHandle 会一直 pressed，后续点击被它吞掉。这里在 configure 停止 900ms
+/// 后主动收尾并补发 PointerReleased（坐标由 `wm_resize_dir` 算到原抓手内）。
+/// X11 不用：它有自己的 pointer 查询 / 自绘回退路径，不能被定时器提前结束。
+fn schedule_wayland_resize_watchdog(ui: &MainWindow, window_id: WindowId) {
+    let weak = ui.as_weak();
+    slint::Timer::single_shot(Duration::from_millis(250), move || {
+        let Some(ui) = weak.upgrade() else { return };
+        let still = runtime::with_window(window_id, |st| {
+            if !st.wm_resize {
+                return false;
+            }
+            let idle = st
+                .last_resize_event
+                .map(|t| t.elapsed())
+                .unwrap_or(Duration::MAX);
+            if idle >= Duration::from_millis(900) {
+                finish_window_resize(st, "wayland-idle");
+                false
+            } else {
+                true
+            }
+        })
+        .unwrap_or(false);
+        if still {
+            schedule_wayland_resize_watchdog(&ui, window_id);
+        }
+    });
 }
 
 /// 缩小/首次 configure 必须立即重绘；放大可以合并到 60fps。拆成纯函数便于回归测试。
@@ -17283,6 +17361,7 @@ fn build_window_state(
         ime_spot_dirty: true,
         ime_override: None,
         wm_resize: false,
+        wm_resize_dir: None,
         wm_release_pending: false,
         xresize: None,
         lock_probe: None,
@@ -18041,6 +18120,12 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
 
     ui.on_start_window_resize(move |dir| {
         runtime::with_window(window_id, |st| {
+            // 上一次 WM resize 可能因 pointer-up 被合成器吃掉而没收到 stop；
+            // 重新开始前先收尾，避免 TouchArea/状态叠加。
+            if st.wm_resize || st.resize.is_some() {
+                finish_window_resize(st, "restart");
+            }
+            st.wm_resize_dir = None;
             ensure_resize_conn(st);
             st.wm_resize = false;
             st.wm_release_pending = false;
@@ -18063,6 +18148,13 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
             }
             if start_wm_live_resize(st, dir) {
                 st.wm_resize = true;
+                st.wm_resize_dir = Some(dir);
+                // Wayland 没有 X11 指针可判断 button-up；由 watchdog 在 configure
+                // 停止后收尾，避免 ResizeHandle 永远保持 pressed。
+                if !platform::caps().x11_window_ops {
+                    st.last_resize_event = Some(Instant::now());
+                    schedule_wayland_resize_watchdog(&st.ui, window_id);
+                }
                 return;
             }
             if st.resize.is_none() {
@@ -20548,6 +20640,12 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
             // 收到第一帧由 WM 驱动的 resize 后，异步补发一次 PointerReleased 清理状态。
             if st.wm_resize && !st.wm_release_pending {
                 st.wm_release_pending = true;
+                // 补发位置必须落在本次方向对应的抓手内；固定 (0,0) 只会命中
+                // 左上角/窗口外，Wayland 下等于没清 pressed 状态。
+                let release_pos = st
+                    .wm_resize_dir
+                    .map(|dir| resize_release_point(dir, w.max(1.0), h.max(1.0)))
+                    .unwrap_or((0.0, 0.0));
                 let weak = st.ui.as_weak();
                 slint::Timer::single_shot(Duration::ZERO, move || {
                     let Some(ui) = weak.upgrade() else { return };
@@ -20556,7 +20654,10 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
                     if still_wm {
                         ui.window().dispatch_event(
                             slint::platform::WindowEvent::PointerReleased {
-                                position: slint::LogicalPosition::new(0.0, 0.0),
+                                position: slint::LogicalPosition::new(
+                                    release_pos.0,
+                                    release_pos.1,
+                                ),
                                 button: slint::platform::PointerEventButton::Left,
                             },
                         );
@@ -22470,6 +22571,25 @@ mod tests {
         // 真的停了（>800ms 没有 configure）才允许回退。
         assert!(wm_resize_timed_out(true, Some(ms(801)), ms(900)));
         assert!(wm_resize_timed_out(true, None, ms(900)));
+    }
+
+    #[test]
+    fn resize_release_point_hits_the_matching_edge_handle() {
+        let (w, h) = (1000.0f32, 700.0f32);
+        // 上/下/左/右 必须落在 ResizeHandle 的 5px 命中区内，而不是窗口角/外部。
+        let (x, y) = resize_release_point(1, w, h);
+        assert!(y <= 5.0 && (6.0..=w - 6.0).contains(&x), "top: {x},{y}");
+        let (x, y) = resize_release_point(5, w, h);
+        assert!(y >= h - 5.0 && (6.0..=w - 6.0).contains(&x), "bottom: {x},{y}");
+        let (x, y) = resize_release_point(7, w, h);
+        assert!(x <= 5.0 && (6.0..=h - 6.0).contains(&y), "left: {x},{y}");
+        let (x, y) = resize_release_point(3, w, h);
+        assert!(x >= w - 5.0 && (6.0..=h - 6.0).contains(&y), "right: {x},{y}");
+        // 角抓手 8px：四个角都要落在 [0,w]x[0,h] 内。
+        for dir in [0, 2, 4, 6] {
+            let (x, y) = resize_release_point(dir, w, h);
+            assert!((0.0..w).contains(&x) && (0.0..h).contains(&y), "corner {dir}: {x},{y}");
+        }
     }
 
     #[test]
