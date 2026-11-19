@@ -12,6 +12,7 @@ mod glyph;
 mod gpu_native;
 mod gpu_present;
 // 单实例 primary/secondary IPC + open_window 转发（产品启动路径）。
+mod connection;
 #[cfg(unix)]
 mod instance;
 mod keys;
@@ -19,18 +20,17 @@ mod known_hosts;
 mod latency;
 mod logging;
 mod mcp;
-mod connection;
 // Plugin API v3 protocol exposes a few forward-compatible helpers/limits that are
 // intentionally kept (and covered by tests) even when the current UI does not use
 // every one of them.
+#[cfg(test)]
+mod image_layer_diff_tests;
 #[allow(dead_code)]
 mod plugin_v3;
 mod plugin_wasm;
 mod profile;
 mod quake;
 mod render;
-#[cfg(test)]
-mod image_layer_diff_tests;
 #[cfg(test)]
 mod render_bench;
 #[cfg(test)]
@@ -48,9 +48,9 @@ mod themes;
 #[allow(dead_code)]
 mod transport_io;
 mod vault;
-mod workspaces;
 mod window;
 mod workspace;
+mod workspaces;
 mod xconn;
 
 slint::include_modules!();
@@ -139,7 +139,7 @@ fn toggle_sidebar_math(content: Rect, cfg: &mut crate::config::Config) -> Rect {
 /// 复用 session 恢复路径（`restore_tab_snapshot`）——这条路径已经处理了
 /// “布局与 pane 数不符”“profile 失效回退普通 shell”等情况，不要再写一套。
 fn open_workspace(st: &mut AppState, name: &str) {
-    let Some(ws) = st.workspaces.get(name).cloned() else {
+    let Some(ws) = st.workspaces.borrow().get(name).cloned() else {
         eprintln!("[workspace] 没有名为「{name}」的工作区");
         return;
     };
@@ -161,16 +161,17 @@ fn open_workspace(st: &mut AppState, name: &str) {
             refresh_views(st);
             redraw_visible(st);
             eprintln!("[workspace] 已打开「{name}」（{leaf_count} 个 pane）");
-            let msg = if st.cfg.lang() == "zh" {
+            let msg = if app_lang(st) == "zh" {
                 format!("已打开工作区「{name}」")
             } else {
                 format!("Opened workspace \"{name}\"")
             };
             set_workspace_status(st, &msg);
-            st.ui.set_status_items(ModelRc::from(Rc::new(VecModel::from(vec![
-                slint::SharedString::from(msg),
-            ]))));
-        },
+            st.ui
+                .set_status_items(ModelRc::from(Rc::new(VecModel::from(vec![
+                    slint::SharedString::from(msg),
+                ]))));
+        }
         None => eprintln!("[workspace] 「{name}」布局恢复失败"),
     }
 }
@@ -223,12 +224,25 @@ fn open_workspace_save_dialog(st: &mut AppState) {
         return;
     };
     let prefill = workspaces::sanitize_name(&tab.title);
-    let existing: Vec<String> = st.workspaces.workspaces.iter().map(|w| w.name.clone()).collect();
-    let hint = workspace_name_hint(&prefill, &existing, st.cfg.lang() == "zh");
-    let zh = st.cfg.lang() == "zh";
+    let existing: Vec<String> = st
+        .workspaces
+        .borrow()
+        .workspaces
+        .iter()
+        .map(|w| w.name.clone())
+        .collect();
+    let hint = workspace_name_hint(&prefill, &existing, app_lang(st) == "zh");
+    let zh = app_lang(st) == "zh";
     st.workspace_rename_from = None;
     st.ui.set_workspace_save_mode("save".into());
-    st.ui.set_workspace_save_title(if zh { "保存布局为工作区" } else { "Save layout as workspace" }.into());
+    st.ui.set_workspace_save_title(
+        if zh {
+            "保存布局为工作区"
+        } else {
+            "Save layout as workspace"
+        }
+        .into(),
+    );
     st.ui.set_workspace_save_description(
         if zh {
             "保存当前 Tab 的分屏布局、各 pane 的工作目录与 Profile（不含运行中的进程）。"
@@ -237,7 +251,8 @@ fn open_workspace_save_dialog(st: &mut AppState) {
         }
         .into(),
     );
-    st.ui.set_workspace_save_action(if zh { "保存" } else { "Save" }.into());
+    st.ui
+        .set_workspace_save_action(if zh { "保存" } else { "Save" }.into());
     st.ui.set_workspace_save_name(prefill.as_str().into());
     st.ui.set_workspace_save_hint(hint.as_str().into());
     st.ui.set_workspace_save_status("".into());
@@ -247,8 +262,14 @@ fn open_workspace_save_dialog(st: &mut AppState) {
 
 /// 输入框变化：只刷新重名提示，不写盘。
 fn check_workspace_name(st: &mut AppState, raw: &str) {
-    let existing: Vec<String> = st.workspaces.workspaces.iter().map(|w| w.name.clone()).collect();
-    let zh = st.cfg.lang() == "zh";
+    let existing: Vec<String> = st
+        .workspaces
+        .borrow()
+        .workspaces
+        .iter()
+        .map(|w| w.name.clone())
+        .collect();
+    let zh = app_lang(st) == "zh";
     let hint = match &st.workspace_rename_from {
         Some(old) => workspace_rename_hint(raw, &existing, old, zh),
         None => workspace_name_hint(raw, &existing, zh),
@@ -264,8 +285,7 @@ fn check_workspace_name(st: &mut AppState, raw: &str) {
 fn commit_workspace_save(st: &mut AppState, raw: &str) {
     let name = raw.trim().to_string();
     if name.is_empty() {
-        st.ui
-            .set_workspace_save_status("工作区名字不能为空".into());
+        st.ui.set_workspace_save_status("工作区名字不能为空".into());
         return;
     }
     let Some((tree, panes, tab_title)) = collect_workspace_tree(st) else {
@@ -273,8 +293,8 @@ fn commit_workspace_save(st: &mut AppState, raw: &str) {
             .set_workspace_save_status("当前 Tab 没有可保存的布局".into());
         return;
     };
-    let overwrite = st.workspaces.get(&name).is_some();
-    if let Err(e) = st.workspaces.upsert(workspaces::Workspace {
+    let overwrite = st.workspaces.borrow().get(&name).is_some();
+    if let Err(e) = st.workspaces.borrow_mut().upsert(workspaces::Workspace {
         name: name.clone(),
         tree,
         ..workspaces::Workspace::default()
@@ -283,7 +303,7 @@ fn commit_workspace_save(st: &mut AppState, raw: &str) {
         st.ui.set_workspace_save_status(e.as_str().into());
         return;
     }
-    st.workspaces.save();
+    st.workspaces.borrow().save();
     refresh_workspace_rows(st);
     refresh_workspace_rows_elsewhere(st.window_id);
     st.ui.set_workspace_save_open(false);
@@ -291,9 +311,9 @@ fn commit_workspace_save(st: &mut AppState, raw: &str) {
     st.ui.set_workspace_save_status("".into());
     eprintln!(
         "[workspace] 已保存「{name}」（tab={tab_title:?} {panes} 个 pane，共 {} 个工作区，覆盖={overwrite}）",
-        st.workspaces.workspaces.len()
+        st.workspaces.borrow().workspaces.len()
     );
-    let msg = if st.cfg.lang() == "zh" {
+    let msg = if app_lang(st) == "zh" {
         if overwrite {
             format!("已覆盖工作区「{name}」")
         } else {
@@ -322,6 +342,7 @@ fn cancel_workspace_save(st: &mut AppState) {
 fn refresh_workspace_rows(st: &mut AppState) {
     let rows: Vec<WorkspaceRow> = st
         .workspaces
+        .borrow()
         .workspaces
         .iter()
         .map(|ws| WorkspaceRow {
@@ -358,14 +379,22 @@ fn set_workspace_status(st: &mut AppState, msg: impl AsRef<str>) {
 }
 
 fn workspace_name_at(st: &AppState, index: usize) -> Option<String> {
-    st.workspaces.workspaces.get(index).map(|ws| ws.name.clone())
+    st.workspaces
+        .borrow()
+        .workspaces
+        .get(index)
+        .map(|ws| ws.name.clone())
 }
 
 /// 重命名弹窗的重名提示：排除旧名字本身（只改大小写允许）。
 fn workspace_rename_hint(raw: &str, existing: &[String], old: &str, zh: bool) -> String {
     let name = raw.trim();
     if name.is_empty() {
-        return if zh { "名字不能为空".to_string() } else { "Name is required".to_string() };
+        return if zh {
+            "名字不能为空".to_string()
+        } else {
+            "Name is required".to_string()
+        };
     }
     if existing
         .iter()
@@ -387,10 +416,17 @@ fn open_workspace_rename_dialog(st: &mut AppState, index: usize) {
         set_workspace_status(st, "Rename: 工作区不存在");
         return;
     };
-    let zh = st.cfg.lang() == "zh";
+    let zh = app_lang(st) == "zh";
     st.workspace_rename_from = Some(name.clone());
     st.ui.set_workspace_save_mode("rename".into());
-    st.ui.set_workspace_save_title(if zh { "重命名工作区" } else { "Rename workspace" }.into());
+    st.ui.set_workspace_save_title(
+        if zh {
+            "重命名工作区"
+        } else {
+            "Rename workspace"
+        }
+        .into(),
+    );
     st.ui.set_workspace_save_description(
         if zh {
             "只改保存记录的名字；布局、创建时间和已经打开的 Tab 都不变。"
@@ -399,7 +435,8 @@ fn open_workspace_rename_dialog(st: &mut AppState, index: usize) {
         }
         .into(),
     );
-    st.ui.set_workspace_save_action(if zh { "重命名" } else { "Rename" }.into());
+    st.ui
+        .set_workspace_save_action(if zh { "重命名" } else { "Rename" }.into());
     st.ui.set_workspace_save_name(name.as_str().into());
     st.ui.set_workspace_save_hint("".into());
     st.ui.set_workspace_save_status("".into());
@@ -412,10 +449,10 @@ fn commit_workspace_rename(st: &mut AppState, raw: &str) {
     let Some(old) = st.workspace_rename_from.clone() else {
         return;
     };
-    let zh = st.cfg.lang() == "zh";
-    match st.workspaces.rename(&old, raw) {
+    let zh = app_lang(st) == "zh";
+    match st.workspaces.with_mut(|__x| __x.rename(&old, raw)) {
         Ok(new) => {
-            st.workspaces.save();
+            st.workspaces.borrow().save();
             refresh_workspace_rows(st);
             refresh_workspace_rows_elsewhere(st.window_id);
             st.workspace_rename_from = None;
@@ -430,11 +467,11 @@ fn commit_workspace_rename(st: &mut AppState, raw: &str) {
             set_workspace_status(st, &msg);
             eprintln!("[workspace] 已重命名 {old:?} -> {new:?}");
             st.ui.invoke_focus_terminal();
-        },
+        }
         Err(err) => {
             eprintln!("[workspace] 重命名失败 {old:?} -> {raw:?}: {err}");
             st.ui.set_workspace_save_status(err.as_str().into());
-        },
+        }
     }
 }
 
@@ -463,13 +500,13 @@ fn confirm_delete_workspace(st: &mut AppState) {
     let Some(name) = st.workspace_delete_name.take() else {
         return;
     };
-    let zh = st.cfg.lang() == "zh";
+    let zh = app_lang(st) == "zh";
     st.ui.set_workspace_delete_open(false);
     st.ui.set_workspace_delete_name("".into());
-    if st.workspaces.remove(&name) {
-        st.workspaces.save();
+    if st.workspaces.borrow_mut().remove(&name) {
+        st.workspaces.borrow().save();
         refresh_workspace_rows(st);
-    refresh_workspace_rows_elsewhere(st.window_id);
+        refresh_workspace_rows_elsewhere(st.window_id);
         let msg = if zh {
             format!("已删除工作区「{name}」；已打开的 Tab 继续运行，未结束任何会话")
         } else {
@@ -500,9 +537,19 @@ fn cancel_delete_workspace(st: &mut AppState) {
 fn default_workspace_export_path(name: &str) -> PathBuf {
     let safe: String = workspaces::sanitize_name(name)
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect();
-    let safe = if safe.is_empty() { "workspace".to_string() } else { safe };
+    let safe = if safe.is_empty() {
+        "workspace".to_string()
+    } else {
+        safe
+    };
     let file = format!("tervo-workspace-{safe}.json");
     if let Some(home) = std::env::var_os("HOME").filter(|h| !h.is_empty()) {
         PathBuf::from(home).join(file)
@@ -517,7 +564,7 @@ fn open_workspace_export(st: &mut AppState, index: usize) {
         set_workspace_status(st, "Export: 工作区不存在");
         return;
     };
-    if st.workspaces.get(&name).is_none() {
+    if st.workspaces.borrow().get(&name).is_none() {
         set_workspace_status(st, "Export: 工作区不存在");
         return;
     }
@@ -532,15 +579,20 @@ fn open_workspace_export(st: &mut AppState, index: usize) {
 }
 
 fn toggle_sidebar(st: &mut AppState) {
-    st.content = toggle_sidebar_math(st.content, &mut st.cfg);
-    st.ui.set_cfg_sidebar_visible(st.cfg.sidebar_visible);
-    st.ui.set_sidebar_visible(st.cfg.sidebar_visible);
-    let w = sidebar_width_of(&st.cfg);
+    st.content = toggle_sidebar_math(st.content, &mut *st.cfg.borrow_mut());
+    st.ui
+        .set_cfg_sidebar_visible(st.cfg.borrow().sidebar_visible);
+    st.ui.set_sidebar_visible(st.cfg.borrow().sidebar_visible);
+    let w = sidebar_width_of(&st.cfg.borrow());
     st.ui.set_sidebar_width(w);
     refresh_views(st);
     redraw_visible(st);
-    st.cfg.save();
-    eprintln!("[ui] sidebar_visible={}（宽 {}px）", st.cfg.sidebar_visible, w);
+    st.cfg.borrow().save();
+    eprintln!(
+        "[ui] sidebar_visible={}（宽 {}px）",
+        st.cfg.borrow().sidebar_visible,
+        w
+    );
 }
 
 /// 终端内容区矩形（TabBar 非占位侧之外、侧栏之右）。`st.content` 的坐标系原点
@@ -1144,7 +1196,10 @@ fn render_profile() -> bool {
 fn event_wake_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| match std::env::var("TERVO_EVENT_WAKE") {
-        Ok(v) => !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "off"),
+        Ok(v) => !matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "off"
+        ),
         Err(_) => true,
     })
 }
@@ -1165,20 +1220,22 @@ static REQUESTED_BACKEND: std::sync::OnceLock<String> = std::sync::OnceLock::new
 /// `rx` 断开（AppState/所有发送端释放）后线程自行退出，不留后台空转。
 fn spawn_app_wake_bridge(rx: crossbeam_channel::Receiver<()>) {
     let pending = Arc::new(AtomicBool::new(false));
-    let spawned = std::thread::Builder::new().name("app-wake".into()).spawn(move || {
-        while rx.recv().is_ok() {
-            if pending.swap(true, Ordering::AcqRel) {
-                continue;
+    let spawned = std::thread::Builder::new()
+        .name("app-wake".into())
+        .spawn(move || {
+            while rx.recv().is_ok() {
+                if pending.swap(true, Ordering::AcqRel) {
+                    continue;
+                }
+                let pending = pending.clone();
+                let _ = slint::invoke_from_event_loop(move || {
+                    // 先清 pending 再处理：drain 期间到达的新事件还能再排一次回调；
+                    // 处理函数只做非阻塞 try_recv / revision 去重，重复回调无副作用。
+                    pending.store(false, Ordering::Release);
+                    on_app_event_wake();
+                });
             }
-            let pending = pending.clone();
-            let _ = slint::invoke_from_event_loop(move || {
-                // 先清 pending 再处理：drain 期间到达的新事件还能再排一次回调；
-                // 处理函数只做非阻塞 try_recv / revision 去重，重复回调无副作用。
-                pending.store(false, Ordering::Release);
-                on_app_event_wake();
-            });
-        }
-    });
+        });
     if let Err(e) = spawned {
         eprintln!("[event] app wake 桥接线程启动失败: {e}");
     }
@@ -1262,15 +1319,26 @@ fn live_control(cmd: &str, args: &serde_json::Value) -> Result<serde_json::Value
     live_audit(cmd, Some(window), pane, bytes);
     let value = runtime::with_window(window, |st| match cmd {
         "output" => {
-            let pane = args.get("pane_id").and_then(serde_json::Value::as_u64)
+            let pane = args
+                .get("pane_id")
+                .and_then(serde_json::Value::as_u64)
                 .ok_or_else(|| "pane_id required".to_string())?;
-            let rt = st.panes.get(&pane).ok_or_else(|| format!("unknown pane {pane}"))?;
-            let max = args.get("max_bytes").and_then(serde_json::Value::as_u64).unwrap_or(65536).min(262144) as usize;
+            let rt = st
+                .panes
+                .get(&pane)
+                .ok_or_else(|| format!("unknown pane {pane}"))?;
+            let max = args
+                .get("max_bytes")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(65536)
+                .min(262144) as usize;
             let mut text = String::new();
             for line in 0..rt.frame.rows {
                 for col in 0..rt.frame.cols {
                     let cell = rt.frame.cell(line, col);
-                    if cell.ch != 0 { text.push(char::from_u32(cell.ch).unwrap_or('?')); }
+                    if cell.ch != 0 {
+                        text.push(char::from_u32(cell.ch).unwrap_or('?'));
+                    }
                 }
                 text.push('\n');
             }
@@ -1282,47 +1350,84 @@ fn live_control(cmd: &str, args: &serde_json::Value) -> Result<serde_json::Value
                 "text": String::from_utf8_lossy(&bytes[start..]).to_string(),
                 "truncated": start > 0,
             }))
-        },
+        }
         "send_text" => {
-            let pane = args.get("pane_id").and_then(serde_json::Value::as_u64)
+            let pane = args
+                .get("pane_id")
+                .and_then(serde_json::Value::as_u64)
                 .ok_or_else(|| "pane_id required".to_string())?;
-            let text = args.get("text").and_then(serde_json::Value::as_str)
+            let text = args
+                .get("text")
+                .and_then(serde_json::Value::as_str)
                 .ok_or_else(|| "text required".to_string())?;
-            if text.len() > 65536 { return Err("text too large".into()); }
-            let rt = st.panes.get(&pane).ok_or_else(|| format!("unknown pane {pane}"))?;
+            if text.len() > 65536 {
+                return Err("text too large".into());
+            }
+            let rt = st
+                .panes
+                .get(&pane)
+                .ok_or_else(|| format!("unknown pane {pane}"))?;
             rt.handle.input(text.as_bytes());
             Ok(serde_json::json!({"pane_id":pane,"bytes":text.len()}))
-        },
+        }
         "send_key" => {
-            let pane = args.get("pane_id").and_then(serde_json::Value::as_u64)
+            let pane = args
+                .get("pane_id")
+                .and_then(serde_json::Value::as_u64)
                 .ok_or_else(|| "pane_id required".to_string())?;
-            let key = args.get("key").and_then(serde_json::Value::as_str)
+            let key = args
+                .get("key")
+                .and_then(serde_json::Value::as_str)
                 .ok_or_else(|| "key required".to_string())?;
             let bytes: &[u8] = match key {
-                "Enter" => b"\r", "Tab" => b"\t", "Escape" => b"\x1b",
-                "Ctrl+C" => b"\x03", "Ctrl+D" => b"\x04", "Ctrl+Z" => b"\x1a",
-                "Up" => b"\x1b[A", "Down" => b"\x1b[B", "Right" => b"\x1b[C", "Left" => b"\x1b[D",
+                "Enter" => b"\r",
+                "Tab" => b"\t",
+                "Escape" => b"\x1b",
+                "Ctrl+C" => b"\x03",
+                "Ctrl+D" => b"\x04",
+                "Ctrl+Z" => b"\x1a",
+                "Up" => b"\x1b[A",
+                "Down" => b"\x1b[B",
+                "Right" => b"\x1b[C",
+                "Left" => b"\x1b[D",
                 _ => return Err(format!("unknown key {key}")),
             };
-            let rt = st.panes.get(&pane).ok_or_else(|| format!("unknown pane {pane}"))?;
+            let rt = st
+                .panes
+                .get(&pane)
+                .ok_or_else(|| format!("unknown pane {pane}"))?;
             rt.handle.input(bytes);
             Ok(serde_json::json!({"pane_id":pane,"key":key}))
-        },
+        }
         "run" => {
-            let pane = args.get("pane_id").and_then(serde_json::Value::as_u64)
+            let pane = args
+                .get("pane_id")
+                .and_then(serde_json::Value::as_u64)
                 .ok_or_else(|| "pane_id required".to_string())?;
-            let command = args.get("command").and_then(serde_json::Value::as_str)
+            let command = args
+                .get("command")
+                .and_then(serde_json::Value::as_str)
                 .ok_or_else(|| "command required".to_string())?;
-            if command.len() > 65536 || command.contains(['\r','\n','\0']) { return Err("invalid command".into()); }
-            let rt = st.panes.get(&pane).ok_or_else(|| format!("unknown pane {pane}"))?;
+            if command.len() > 65536 || command.contains(['\r', '\n', '\0']) {
+                return Err("invalid command".into());
+            }
+            let rt = st
+                .panes
+                .get(&pane)
+                .ok_or_else(|| format!("unknown pane {pane}"))?;
             rt.handle.input(command.as_bytes());
             rt.handle.input(b"\r");
             Ok(serde_json::json!({"pane_id":pane,"command_bytes":command.len()}))
-        },
+        }
         "focus" => {
-            let pane = args.get("pane_id").and_then(serde_json::Value::as_u64)
+            let pane = args
+                .get("pane_id")
+                .and_then(serde_json::Value::as_u64)
                 .ok_or_else(|| "pane_id required".to_string())?;
-            let idx = st.ws.tab_of(pane).ok_or_else(|| format!("unknown pane {pane}"))?;
+            let idx = st
+                .ws
+                .tab_of(pane)
+                .ok_or_else(|| format!("unknown pane {pane}"))?;
             st.ws.tabs[idx].focused = pane;
             st.ime_spot_dirty = true;
             refresh_views(st);
@@ -1330,63 +1435,94 @@ fn live_control(cmd: &str, args: &serde_json::Value) -> Result<serde_json::Value
             sync_terminal_focus(st, win);
             update_ime_spot(st);
             Ok(serde_json::json!({"pane_id":pane}))
-        },
-        "new_tab" => { new_tab_inner(st); Ok(serde_json::json!({"ok":true})) },
+        }
+        "new_tab" => {
+            new_tab_inner(st);
+            Ok(serde_json::json!({"ok":true}))
+        }
         "split" => {
-            let pane = args.get("pane_id").and_then(serde_json::Value::as_u64)
+            let pane = args
+                .get("pane_id")
+                .and_then(serde_json::Value::as_u64)
                 .ok_or_else(|| "pane_id required".to_string())?;
-            let dir = match args.get("direction").and_then(serde_json::Value::as_str).unwrap_or("right") {
-                "right" => Dir::Row, "down" => Dir::Col,
+            let dir = match args
+                .get("direction")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("right")
+            {
+                "right" => Dir::Row,
+                "down" => Dir::Col,
                 _ => return Err("direction must be right/down".into()),
             };
             // 窗口路由可能把命令送到不含该 pane 的窗口：这里必须显式报错，
             // 否则 split_pane_inner 静默 return，调用方却收到 ok=true。
             if !st.panes.contains_key(&pane) {
-                return Err(format!("unknown pane {pane} in window {}", st.window_id.get()));
+                return Err(format!(
+                    "unknown pane {pane} in window {}",
+                    st.window_id.get()
+                ));
             }
             split_pane_inner(st, pane, dir);
             Ok(serde_json::json!({"pane_id":pane,"direction":format!("{dir:?}")}))
-        },
+        }
         "scroll" => {
-            let pane = args.get("pane_id").and_then(serde_json::Value::as_u64)
+            let pane = args
+                .get("pane_id")
+                .and_then(serde_json::Value::as_u64)
                 .ok_or_else(|| "pane_id required".to_string())?;
-            let lines = args.get("lines").and_then(serde_json::Value::as_i64)
+            let lines = args
+                .get("lines")
+                .and_then(serde_json::Value::as_i64)
                 .ok_or_else(|| "lines required".to_string())?;
-            let rt = st.panes.get(&pane).ok_or_else(|| format!("unknown pane {pane}"))?;
+            let rt = st
+                .panes
+                .get(&pane)
+                .ok_or_else(|| format!("unknown pane {pane}"))?;
             rt.handle.scroll(lines as i32);
             Ok(serde_json::json!({"pane_id":pane,"lines":lines}))
-        },
+        }
         "close_pane" => {
-            let pane = args.get("pane_id").and_then(serde_json::Value::as_u64)
+            let pane = args
+                .get("pane_id")
+                .and_then(serde_json::Value::as_u64)
                 .ok_or_else(|| "pane_id required".to_string())?;
-            if !st.panes.contains_key(&pane) { return Err(format!("unknown pane {pane}")); }
+            if !st.panes.contains_key(&pane) {
+                return Err(format!("unknown pane {pane}"));
+            }
             close_pane_inner(st, pane);
             Ok(serde_json::json!({"pane_id":pane}))
-        },
+        }
         "close_tab" => {
-            let pane = args.get("pane_id").and_then(serde_json::Value::as_u64)
+            let pane = args
+                .get("pane_id")
+                .and_then(serde_json::Value::as_u64)
                 .ok_or_else(|| "pane_id required".to_string())?;
-            let idx = st.ws.tab_of(pane).ok_or_else(|| format!("unknown pane {pane}"))?;
+            let idx = st
+                .ws
+                .tab_of(pane)
+                .ok_or_else(|| format!("unknown pane {pane}"))?;
             close_tab_inner(st, idx);
             Ok(serde_json::json!({"pane_id":pane,"tab":idx}))
-        },
+        }
         "kill" => {
-            let pane = args.get("pane_id").and_then(serde_json::Value::as_u64)
+            let pane = args
+                .get("pane_id")
+                .and_then(serde_json::Value::as_u64)
                 .ok_or_else(|| "pane_id required".to_string())?;
-            let rt = st.panes.get(&pane).ok_or_else(|| format!("unknown pane {pane}"))?;
+            let rt = st
+                .panes
+                .get(&pane)
+                .ok_or_else(|| format!("unknown pane {pane}"))?;
             rt.handle.input(b"\x03");
             Ok(serde_json::json!({"pane_id":pane,"signal":"Ctrl+C"}))
-        },
+        }
         _ => Err(format!("unknown control command {cmd}")),
     })
     .unwrap_or_else(|| Err("app unavailable".into()))?;
     // 响应里回显实际路由到的窗口（additive；bridge 可据此校验）。
     let mut value = value;
     if let Some(object) = value.as_object_mut() {
-        object.insert(
-            "window_id".to_string(),
-            serde_json::json!(window.get()),
-        );
+        object.insert("window_id".to_string(), serde_json::json!(window.get()));
     }
     Ok(value)
 }
@@ -1680,7 +1816,7 @@ fn theme_for_selection(
         None => {
             eprintln!("[profile] 未知主题 {selected:?}，该 pane 回退全局主题");
             None
-        },
+        }
     }
 }
 
@@ -1732,6 +1868,10 @@ fn tabby_config_path() -> std::path::PathBuf {
 }
 
 /// 界面文案二选一：`lang == "zh"` 用中文，否则英文（未知语言已在 config 层回退）。
+fn app_lang(st: &AppState) -> &'static str {
+    st.cfg.with(|cfg| cfg.lang())
+}
+
 fn ui_text<'a>(lang: &str, en: &'a str, zh: &'a str) -> &'a str {
     if lang == "zh" {
         zh
@@ -1755,7 +1895,16 @@ const SETTINGS_CATS_EN: [&str; 10] = [
     "Privacy",
 ];
 const SETTINGS_CATS_ZH: [&str; 10] = [
-    "外观", "终端", "窗口", "高级", "快捷键", "插件", "保险库", "配置", "帮助", "隐私",
+    "外观",
+    "终端",
+    "窗口",
+    "高级",
+    "快捷键",
+    "插件",
+    "保险库",
+    "配置",
+    "帮助",
+    "隐私",
 ];
 
 fn settings_cat_label(cat: i32, lang: &str) -> &'static str {
@@ -1948,7 +2097,10 @@ fn hotkey_rows(
         })
         .count();
     let summary = if lang == "zh" {
-        format!("{} 条命令 · {bound} 条已绑定 · {custom} 条自定义", cmds.len())
+        format!(
+            "{} 条命令 · {bound} 条已绑定 · {custom} 条自定义",
+            cmds.len()
+        )
     } else {
         format!("{} commands · {bound} bound · {custom} custom", cmds.len())
     };
@@ -1996,7 +2148,7 @@ fn command_context(st: &AppState) -> plugin_v3::CommandContext {
         settings_open: st.ui.get_settings_open(),
         palette_open: st.ui.get_palette_open(),
         tab_search_open: st.ui.get_tabsearch_open(),
-        sidebar_open: st.cfg.sidebar_visible,
+        sidebar_open: st.cfg.borrow().sidebar_visible,
         tab_count: st.ws.tabs.len(),
         pane_count: tab.map(|tab| tab.panes().len()).unwrap_or(0),
         active_tab_pinned: tab.map(|tab| tab.pinned).unwrap_or(false),
@@ -2015,6 +2167,7 @@ struct PluginHotkey {
 /// 当前启用且权限已确认的插件命令绑定。Disable/Reload 后随时重算，不做缓存。
 fn plugin_hotkeys(st: &AppState) -> Vec<PluginHotkey> {
     st.plugins
+        .borrow()
         .command_refs()
         .into_iter()
         .map(|command| {
@@ -2024,6 +2177,7 @@ fn plugin_hotkeys(st: &AppState) -> Vec<PluginHotkey> {
                 .and_then(|text| commands::Chord::parse(text).ok());
             let custom_chord = st
                 .cfg
+                .borrow()
                 .hotkeys
                 .iter()
                 .rev()
@@ -2045,7 +2199,7 @@ fn plugin_hotkeys(st: &AppState) -> Vec<PluginHotkey> {
 /// Hotkeys 页/录制提示用的标题：内置命令按语言翻译，插件命令带插件名。
 fn hotkey_command_title(st: &AppState, id: &str) -> String {
     if let Some(command) = st.commands.get(id) {
-        return command_title(st.cfg.lang(), command.id, command.title).to_string();
+        return command_title(app_lang(st), command.id, command.title).to_string();
     }
     plugin_hotkeys(st)
         .into_iter()
@@ -2056,19 +2210,26 @@ fn hotkey_command_title(st: &AppState, id: &str) -> String {
 
 /// 内置 + 插件命令合并后的 Hotkeys 页数据；额外返回冲突组数。
 fn merged_hotkey_rows(st: &AppState) -> (String, Vec<HotkeyRow>, Vec<String>, usize) {
-    let lang = st.cfg.lang();
-    let (mut summary, mut rows, _) = hotkey_rows(&st.commands, &st.cfg.hotkeys, lang);
+    let lang = app_lang(st);
+    let (mut summary, mut rows, _) = hotkey_rows(&st.commands, &st.cfg.borrow().hotkeys, lang);
     let plugins = plugin_hotkeys(st);
     // 生效绑定按 canonical chord 分组：内置与插件、插件与插件之间的重复都标冲突。
-    let mut groups: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
-    for binding in st.commands.effective_bindings(&st.cfg.hotkeys) {
+    let mut groups: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
+    for binding in st.commands.effective_bindings(&st.cfg.borrow().hotkeys) {
         if let Some(chord) = binding.shortcut.single_chord() {
-            groups.entry(chord.canonical()).or_default().push(binding.command_id.to_string());
+            groups
+                .entry(chord.canonical())
+                .or_default()
+                .push(binding.command_id.to_string());
         }
     }
     for plugin in &plugins {
         if let Some(chord) = &plugin.effective {
-            groups.entry(chord.canonical()).or_default().push(plugin.id.clone());
+            groups
+                .entry(chord.canonical())
+                .or_default()
+                .push(plugin.id.clone());
         }
     }
     let mut conflict_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -2119,7 +2280,7 @@ fn plugin_command_for_chord(st: &AppState, chord: &commands::Chord) -> Option<St
                 .effective
                 .as_ref()
                 .is_some_and(|bound| bound.canonical() == wanted)
-                && st.plugins.command_allowed(&plugin.id, &ctx)
+                && st.plugins.borrow().command_allowed(&plugin.id, &ctx)
         })
         .map(|plugin| plugin.id)
 }
@@ -2141,7 +2302,7 @@ fn validate_hotkey_shortcut(
     if !shortcut.is_bindable() {
         return Err("快捷键需要 Ctrl/Alt/Meta，或使用 F1–F24".to_string());
     }
-    for binding in st.commands.effective_bindings(&st.cfg.hotkeys) {
+    for binding in st.commands.effective_bindings(&st.cfg.borrow().hotkeys) {
         // 命令自己的旧绑定会被这次 override 替换，不算冲突。
         if binding.command_id == id {
             continue;
@@ -2158,8 +2319,12 @@ fn validate_hotkey_shortcut(
         if plugin.id == id {
             continue;
         }
-        let Some(bound) = plugin.effective.as_ref() else { continue };
-        let single = commands::Shortcut { chords: vec![bound.clone()] };
+        let Some(bound) = plugin.effective.as_ref() else {
+            continue;
+        };
+        let single = commands::Shortcut {
+            chords: vec![bound.clone()],
+        };
         if commands::shortcuts_overlap(&single, &shortcut) {
             return Err(format!(
                 "冲突：{}: {} 已使用 {}",
@@ -2254,43 +2419,35 @@ fn plugin_row_view(row: &plugin_v3::PluginRow, lang: &str) -> PluginRowView {
 /// 刷新 Plugins 设置页：v3 行（name/version/api/status/error/permissions/
 /// restart_count + 操作按钮）、unsupported v1/v2 行、目录与最近活动。
 fn refresh_plugin_page(st: &mut AppState) {
-    let lang = st.cfg.lang();
-    let rows = st.plugins.rows();
-    let views: Vec<PluginRowView> = rows
-        .iter()
-        .map(|row| plugin_row_view(row, lang))
-        .collect();
+    let lang = app_lang(st);
+    let rows = st.plugins.borrow().rows();
+    let views: Vec<PluginRowView> = rows.iter().map(|row| plugin_row_view(row, lang)).collect();
     st.plugin_row_model.set_vec(views);
     let summary = if lang == "zh" {
         format!(
             "{} 个插件 · {} 个已启用 · {} 条命令 · {} unsupported/invalid · API v3",
-            st.plugins.total_count(),
-            st.plugins.enabled_count(),
-            st.plugins.enabled_command_count(),
-            st.plugins.unsupported_count()
+            st.plugins.borrow().total_count(),
+            st.plugins.borrow().enabled_count(),
+            st.plugins.borrow().enabled_command_count(),
+            st.plugins.borrow().unsupported_count()
         )
     } else {
         format!(
             "{} plugins · {} enabled · {} commands · {} unsupported/invalid · API v3",
-            st.plugins.total_count(),
-            st.plugins.enabled_count(),
-            st.plugins.enabled_command_count(),
-            st.plugins.unsupported_count()
+            st.plugins.borrow().total_count(),
+            st.plugins.borrow().enabled_count(),
+            st.plugins.borrow().enabled_command_count(),
+            st.plugins.borrow().unsupported_count()
         )
     };
     st.ui.set_plugin_summary(summary.as_str().into());
-    st.ui.set_plugin_dir(
-        match st.plugins.state_error() {
-            Some(error) => format!(
-                "{} — state error: {}",
-                st.plugins.plugin_dir().display(),
-                error
-            ),
-            None => st.plugins.plugin_dir().display().to_string(),
-        }
-        .as_str()
-        .into(),
-    );
+    let state_error = st.plugins.with(|p| p.state_error().map(str::to_owned));
+    let plugin_dir = st.plugins.borrow().plugin_dir().display().to_string();
+    let dir_text = match state_error {
+        Some(error) => format!("{plugin_dir} — state error: {error}"),
+        None => plugin_dir,
+    };
+    st.ui.set_plugin_dir(dir_text.as_str().into());
     refresh_plugin_activity(st, true);
     if st.plugin_surface.is_some() {
         update_plugin_surface_model(st);
@@ -2299,11 +2456,11 @@ fn refresh_plugin_page(st: &mut AppState) {
 
 /// 向插件提供非敏感配置元数据（只读 snapshot；不读环境变量/Vault）。
 fn sync_plugin_config_metadata(st: &AppState) {
-    st.plugins.set_config_metadata(serde_json::json!({
-        "theme": st.cfg.theme,
-        "language": st.cfg.lang(),
-        "font_size": st.cfg.font_size,
-        "tabbar_position": st.cfg.tabbar_position,
+    st.plugins.borrow().set_config_metadata(serde_json::json!({
+        "theme": st.cfg.borrow().theme,
+        "language": app_lang(st),
+        "font_size": st.cfg.borrow().font_size,
+        "tabbar_position": st.cfg.borrow().tabbar_position,
         "plugin_api": plugin_v3::PLUGIN_API_VERSION,
     }));
 }
@@ -2311,7 +2468,7 @@ fn sync_plugin_config_metadata(st: &AppState) {
 /// Settings → Plugins：本地安装/更新/回滚。安装过程不执行插件；成功后才刷新
 /// store（已启用的插件经 v3 host reload，不重启 Tervo）。
 fn plugin_install_action(st: &mut AppState, action: &str, key: &str, path: &str) {
-    let lang = st.cfg.lang();
+    let lang = app_lang(st);
     let keep = plugin_v3::install::DEFAULT_BACKUP_KEEP;
     match action {
         "install" | "update" => {
@@ -2329,10 +2486,10 @@ fn plugin_install_action(st: &mut AppState, action: &str, key: &str, path: &str)
                 return;
             }
             let source = config::expand_tilde(source);
-            let result = st.plugins.install_local(
+            let result = st.plugins.borrow_mut().install_local(
                 &source,
                 update,
-                st.cfg.plugin_require_signature,
+                st.cfg.borrow().plugin_require_signature,
                 keep,
             );
             match result {
@@ -2357,16 +2514,13 @@ fn plugin_install_action(st: &mut AppState, action: &str, key: &str, path: &str)
                     set_status_toast(st, message);
                     st.ui.set_plugin_install_path("".into());
                     refresh_plugin_page(st);
-                },
+                }
                 Err(error) => set_status_toast(st, error),
             }
-        },
-        "rollback" => match st.plugins.rollback_local(
-            key,
-            None,
-            st.cfg.plugin_require_signature,
-            keep,
-        ) {
+        }
+        "rollback" => match st.plugins.with_mut(|__x| {
+            __x.rollback_local(key, None, st.cfg.borrow().plugin_require_signature, keep)
+        }) {
             Ok(report) => {
                 let message = if lang == "zh" {
                     format!(
@@ -2381,7 +2535,7 @@ fn plugin_install_action(st: &mut AppState, action: &str, key: &str, path: &str)
                 };
                 set_status_toast(st, message);
                 refresh_plugin_page(st);
-            },
+            }
             Err(error) => set_status_toast(st, error),
         },
         other => eprintln!("[ui] 未知插件安装动作 {other}"),
@@ -2391,28 +2545,26 @@ fn plugin_install_action(st: &mut AppState, action: &str, key: &str, path: &str)
 fn show_plugin_confirm(st: &mut AppState) {
     match &st.plugin_confirm {
         Some(confirm) => {
-            let lang = st.cfg.lang();
+            let lang = app_lang(st);
             let permissions = if confirm.permissions.is_empty() {
                 ui_text(lang, "No capabilities declared.", "未声明任何能力。").to_string()
             } else {
                 confirm.permissions.join(", ")
             };
             st.ui.set_plugin_confirm_visible(true);
-            st.ui
-                .set_plugin_confirm_name(confirm.name.clone().into());
-            st.ui
-                .set_plugin_confirm_permissions(permissions.into());
-        },
+            st.ui.set_plugin_confirm_name(confirm.name.clone().into());
+            st.ui.set_plugin_confirm_permissions(permissions.into());
+        }
         None => {
             st.ui.set_plugin_confirm_visible(false);
             st.ui.set_plugin_confirm_name("".into());
             st.ui.set_plugin_confirm_permissions("".into());
-        },
+        }
     }
 }
 
 fn refresh_plugin_approval_ui(st: &mut AppState) {
-    match st.plugin_approval.clone() {
+    match { st.plugin_approval.clone() } {
         Some(approval) => {
             st.ui.set_plugin_approval_visible(true);
             st.ui.set_plugin_approval_plugin(
@@ -2424,14 +2576,14 @@ fn refresh_plugin_approval_ui(st: &mut AppState) {
                 .set_plugin_approval_details(approval.details.clone().into());
             st.ui
                 .set_plugin_approval_seconds(approval.seconds_left() as i32);
-        },
+        }
         None => {
             st.ui.set_plugin_approval_visible(false);
             st.ui.set_plugin_approval_plugin("".into());
             st.ui.set_plugin_approval_summary("".into());
             st.ui.set_plugin_approval_details("".into());
             st.ui.set_plugin_approval_seconds(0);
-        },
+        }
     }
 }
 
@@ -2545,14 +2697,20 @@ fn close_plugin_surface(st: &mut AppState) {
 }
 
 fn open_plugin_surface(st: &mut AppState, key: &str, kind: &str) {
-    let Some(row) = st.plugins.rows().into_iter().find(|row| row.key == key) else {
+    let Some(row) = st
+        .plugins
+        .borrow()
+        .rows()
+        .into_iter()
+        .find(|row| row.key == key)
+    else {
         return;
     };
     if !row.supported || !row.surface_ready {
         set_status_toast(
             st,
             ui_text(
-                st.cfg.lang(),
+                app_lang(st),
                 "Plugin is not enabled or permissions are not confirmed.",
                 "插件未启用或权限未确认。",
             )
@@ -2562,6 +2720,7 @@ fn open_plugin_surface(st: &mut AppState, key: &str, kind: &str) {
     }
     let entry = st
         .plugins
+        .borrow()
         .entries()
         .iter()
         .find(|entry| entry.key == key)
@@ -2588,18 +2747,18 @@ fn open_plugin_surface(st: &mut AppState, key: &str, kind: &str) {
         },
     });
     st.plugin_surface_model.set_vec(Vec::new());
-    st.ui.set_plugin_surface_title(
-        format!("{} · {}", manifest.name, surface).into(),
-    );
+    st.ui
+        .set_plugin_surface_title(format!("{} · {}", manifest.name, surface).into());
     st.ui.set_plugin_surface_open(true);
     st.ui.set_plugin_surface_loading(true);
     st.ui.set_plugin_surface_error("".into());
-    if let Err(error) = st.plugins.request_surface_for(
+    let surface_result = st.plugins.borrow().request_surface_for(
         &manifest.id,
         surface_kind,
         panel,
         Some(st.window_id.get()),
-    ) {
+    );
+    if let Err(error) = surface_result {
         st.ui.set_plugin_surface_loading(false);
         st.ui.set_plugin_surface_error(error.clone().into());
         set_status_toast(st, error);
@@ -2622,12 +2781,10 @@ fn resolve_plugin_approval(st: &mut AppState, allow: bool) {
             "[plugin-v3] {}: 忽略 {} 的 ask（请求窗口 {:?}，当前 {}）",
             approval.plugin_id, approval.method, approval.window_id, st.window_id
         );
-        st.plugins.resolve_host_request(
+        st.plugins.borrow().resolve_host_request(
             &approval.plugin_id,
             approval.request_id,
-            plugin_v3::HostOutcome::Unavailable(
-                "approval belongs to another window".to_string(),
-            ),
+            plugin_v3::HostOutcome::Unavailable("approval belongs to another window".to_string()),
         );
         return;
     }
@@ -2635,15 +2792,17 @@ fn resolve_plugin_approval(st: &mut AppState, allow: bool) {
     // stale ask：插件已停止/已撤销/已超时，绝不执行 terminal/clipboard 副作用。
     let still_pending = st
         .plugins
+        .borrow()
         .pending_approvals()
         .iter()
         .any(|pending| {
-            pending.plugin_id == approval.plugin_id
-                && pending.request_id == approval.request_id
+            pending.plugin_id == approval.plugin_id && pending.request_id == approval.request_id
         })
         && approval.seconds_left() > 0;
-    if !still_pending || st.plugins.phase(&approval.plugin_id) != Some(plugin_v3::Phase::Running) {
-        let _ = st.plugins.resolve_host_request(
+    if !still_pending
+        || st.plugins.borrow().phase(&approval.plugin_id) != Some(plugin_v3::Phase::Running)
+    {
+        let _ = st.plugins.borrow().resolve_host_request(
             &approval.plugin_id,
             approval.request_id,
             plugin_v3::HostOutcome::Unavailable(
@@ -2653,7 +2812,7 @@ fn resolve_plugin_approval(st: &mut AppState, allow: bool) {
         return;
     }
     if !allow {
-        st.plugins.resolve_host_request(
+        st.plugins.borrow().resolve_host_request(
             &approval.plugin_id,
             approval.request_id,
             plugin_v3::HostOutcome::Denied,
@@ -2678,7 +2837,7 @@ fn resolve_plugin_approval(st: &mut AppState, allow: bool) {
                         .unwrap_or(0)
                 );
                 plugin_v3::HostOutcome::Ok(value)
-            },
+            }
             Err(error) => plugin_v3::HostOutcome::Unavailable(error),
         },
         "terminal.write" => {
@@ -2687,7 +2846,7 @@ fn resolve_plugin_approval(st: &mut AppState, allow: bool) {
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or("");
             let Some(pane) = st.ws.active_tab().map(|tab| tab.focused) else {
-                st.plugins.resolve_host_request(
+                st.plugins.borrow().resolve_host_request(
                     &approval.plugin_id,
                     approval.request_id,
                     plugin_v3::HostOutcome::Unavailable("没有焦点终端".to_string()),
@@ -2695,7 +2854,7 @@ fn resolve_plugin_approval(st: &mut AppState, allow: bool) {
                 return;
             };
             let Some(runtime) = st.panes.get(&pane) else {
-                st.plugins.resolve_host_request(
+                st.plugins.borrow().resolve_host_request(
                     &approval.plugin_id,
                     approval.request_id,
                     plugin_v3::HostOutcome::Unavailable("焦点终端不可用".to_string()),
@@ -2710,15 +2869,15 @@ fn resolve_plugin_approval(st: &mut AppState, allow: bool) {
                 text.len()
             );
             plugin_v3::HostOutcome::Ok(serde_json::json!({}))
-        },
+        }
         "clipboard.read" => match with_clipboard(st, |clipboard| clipboard.get_text()) {
             Some(Ok(text)) => {
                 let text = plugin_v3::sanitize_text(&text, plugin_v3::MAX_CLIPBOARD_CHARS);
                 plugin_v3::HostOutcome::Ok(serde_json::json!({ "text": text }))
-            },
+            }
             Some(Err(error)) => {
                 plugin_v3::HostOutcome::Unavailable(format!("读取剪贴板失败: {error}"))
-            },
+            }
             None => plugin_v3::HostOutcome::Unavailable("剪贴板不可用".to_string()),
         },
         "clipboard.write" => {
@@ -2731,22 +2890,30 @@ fn resolve_plugin_approval(st: &mut AppState, allow: bool) {
                 Some(Ok(())) => plugin_v3::HostOutcome::Ok(serde_json::json!({})),
                 Some(Err(error)) => {
                     plugin_v3::HostOutcome::Unavailable(format!("写入剪贴板失败: {error}"))
-                },
+                }
                 None => plugin_v3::HostOutcome::Unavailable("剪贴板不可用".to_string()),
             }
-        },
+        }
         other => plugin_v3::HostOutcome::Error(format!("不支持的授权请求 {other}")),
     };
     st.plugins
+        .borrow()
         .resolve_host_request(&approval.plugin_id, approval.request_id, outcome);
 }
 
 /// 从焦点终端取尾部文本；先按行再按字节限制，绝不返回 cwd/env/Vault。
-fn plugin_terminal_tail(st: &AppState, params: &serde_json::Value) -> Result<serde_json::Value, String> {
+fn plugin_terminal_tail(
+    st: &AppState,
+    params: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
     let Some(pane) = st.ws.active_tab().map(|tab| tab.focused) else {
         return Err("没有焦点终端".to_string());
     };
-    let Some(text) = st.panes.get(&pane).and_then(|runtime| runtime.handle.contents()) else {
+    let Some(text) = st
+        .panes
+        .get(&pane)
+        .and_then(|runtime| runtime.handle.contents())
+    else {
         return Err("读取终端内容失败".to_string());
     };
     let max_lines = params
@@ -2792,12 +2959,12 @@ fn plugin_terminal_tail(st: &AppState, params: &serde_json::Value) -> Result<ser
 /// revision 拉取，避免跨线程碰 Slint model。400ms 兜底仍会调用（revision
 /// 未变时直接返回）。
 fn refresh_plugin_activity(st: &mut AppState, force: bool) {
-    let (revision, lines) = st.plugins.activity_snapshot();
+    let (revision, lines) = st.plugins.borrow().activity_snapshot();
     if !force && revision == st.plugin_activity_revision {
         return;
     }
     st.plugin_activity_revision = revision;
-    let lang = st.cfg.lang();
+    let lang = app_lang(st);
     let rows: Vec<slint::SharedString> = lines
         .iter()
         .map(|line| localize_plugin_activity(line, lang).into())
@@ -2823,13 +2990,16 @@ fn refresh_plugin_ui(st: &mut AppState) {
     let active_window = runtime::registry()
         .and_then(|registry| registry.borrow().active())
         .map(|id| id.get());
-    st.plugins.set_active_window(active_window);
+    st.plugins.borrow().set_active_window(active_window);
     let window_id = st.window_id.get();
     // 活动列表按 revision 增量刷新（后台线程 push 后唤醒）。
     refresh_plugin_activity(st, false);
 
     // 命令结果 / 插件 ui.notify：只取目标窗口；其它窗口的留在队列里。
-    let notices = st.plugins.take_notices_for(window_id, active_window);
+    let notices = st
+        .plugins
+        .borrow()
+        .take_notices_for(window_id, active_window);
     if let Some(last) = notices.last() {
         let prefix = match last.level.as_str() {
             "error" => "error: ",
@@ -2842,8 +3012,7 @@ fn refresh_plugin_ui(st: &mut AppState) {
         }
         if last.level == "error" && st.ui.get_plugin_surface_loading() {
             st.ui.set_plugin_surface_loading(false);
-            st.ui
-                .set_plugin_surface_error(msg.clone().into());
+            st.ui.set_plugin_surface_error(msg.clone().into());
         }
         eprintln!(
             "[plugin-v3] notice window={} plugin={} level={} chars={}",
@@ -2856,7 +3025,7 @@ fn refresh_plugin_ui(st: &mut AppState) {
     }
 
     // 状态栏：只显示全局状态 + 本窗口专属 ui.status。
-    let (status_rev, items) = st.plugins.status_snapshot_for_window(window_id);
+    let (status_rev, items) = st.plugins.borrow().status_snapshot_for_window(window_id);
     if status_rev != st.plugin_status_revision {
         st.plugin_status_revision = status_rev;
         let text = items
@@ -2869,27 +3038,22 @@ fn refresh_plugin_ui(st: &mut AppState) {
             .find(|item| !item.tooltip.is_empty())
             .map(|item| item.tooltip.clone())
             .unwrap_or_default();
-        st.plugin_status_command = items
-            .iter()
-            .find_map(|item| item.command.clone());
+        st.plugin_status_command = items.iter().find_map(|item| item.command.clone());
         if !text.is_empty() {
-            eprintln!(
-                "[plugin-v3] status window={} text={:?}",
-                st.window_id, text
-            );
+            eprintln!("[plugin-v3] status window={} text={:?}", st.window_id, text);
         }
         st.ui.set_plugin_status(text.as_str().into());
         st.ui.set_plugin_status_tooltip(tooltip.as_str().into());
     }
 
     // 运行状态（running/restarting/disabled: 原因）变化时刷新 Plugins 设置页。
-    let runtime_rev = st.plugins.runtime_revision();
+    let runtime_rev = st.plugins.borrow().runtime_revision();
     if runtime_rev != st.plugin_runtime_revision {
         st.plugin_runtime_revision = runtime_rev;
         refresh_plugin_page(st);
         if let Some(surface) = &st.plugin_surface {
             let plugin_id = surface.plugin_id.clone();
-            let running = st.plugins.phase(&plugin_id) == Some(plugin_v3::Phase::Running);
+            let running = st.plugins.borrow().phase(&plugin_id) == Some(plugin_v3::Phase::Running);
             if !running && st.ui.get_plugin_surface_loading() {
                 st.ui.set_plugin_surface_loading(false);
                 st.ui.set_plugin_surface_error(
@@ -2902,7 +3066,11 @@ fn refresh_plugin_ui(st: &mut AppState) {
     // 声明式 surface 更新：两级 key 是 (window_id, surface)；只接受本窗口
     // 且当前打开的那个 (plugin, surface)。插件 push 到没有打开 surface 的
     // 显式目标窗口时，在该窗口显示（不会覆盖别的窗口）。
-    for update in st.plugins.take_surfaces_for(window_id, active_window) {
+    let surface_updates = st
+        .plugins
+        .borrow()
+        .take_surfaces_for(window_id, active_window);
+    for update in surface_updates {
         let matches = st.plugin_surface.as_ref().is_some_and(|surface| {
             surface.plugin_id == update.plugin_id && surface.surface == update.surface
         });
@@ -2915,10 +3083,7 @@ fn refresh_plugin_ui(st: &mut AppState) {
             update_plugin_surface_model(st);
             continue;
         }
-        if update.pushed
-            && update.window_id == Some(window_id)
-            && st.plugin_surface.is_none()
-        {
+        if update.pushed && update.window_id == Some(window_id) && st.plugin_surface.is_none() {
             eprintln!(
                 "[plugin-v3] {} surface={} window={} opened by ui.render",
                 update.plugin_id, update.surface, st.window_id
@@ -2939,11 +3104,11 @@ fn refresh_plugin_ui(st: &mut AppState) {
     // terminal/clipboard ask：只展示本窗口的请求；Allow/Deny 路由回同一窗口。
     let approvals = st
         .plugins
+        .borrow()
         .pending_approvals_for(window_id, active_window);
     if let Some(current) = &st.plugin_approval {
         let still_pending = approvals.iter().any(|approval| {
-            approval.plugin_id == current.plugin_id
-                && approval.request_id == current.request_id
+            approval.plugin_id == current.plugin_id && approval.request_id == current.request_id
         });
         if !still_pending || current.seconds_left() == 0 {
             st.plugin_approval = None;
@@ -2996,21 +3161,29 @@ fn dispatch_plugin_event(
             serde_json::json!(st.window_id.get()),
         );
     }
-    let _ = st.plugins.spawn_event(event, &payload);
+    let _ = st.plugins.borrow().spawn_event(event, &payload);
 }
 
 /// Settings → Plugins 的用户操作：生命周期不重启 Tervo。
 fn plugin_action(st: &mut AppState, action: &str, key: &str) {
-    let lang = st.cfg.lang();
+    let lang = app_lang(st);
     match action {
-        "enable" => match st.plugins.request_enable(key) {
+        "enable" => match st.plugins.with_mut(|__x| __x.request_enable(key)) {
             Ok(plugin_v3::EnableDecision::Approved) => {
-                set_status_toast(st, ui_text(lang, "Plugin enabled.", "插件已启用。").to_string());
+                set_status_toast(
+                    st,
+                    ui_text(lang, "Plugin enabled.", "插件已启用。").to_string(),
+                );
                 st.plugin_confirm = None;
                 show_plugin_confirm(st);
-            },
+            }
             Ok(plugin_v3::EnableDecision::NeedsApproval { permissions }) => {
-                let row = st.plugins.rows().into_iter().find(|row| row.key == key);
+                let row = st
+                    .plugins
+                    .borrow()
+                    .rows()
+                    .into_iter()
+                    .find(|row| row.key == key);
                 let name = row
                     .as_ref()
                     .map(|row| row.name.clone())
@@ -3021,38 +3194,38 @@ fn plugin_action(st: &mut AppState, action: &str, key: &str) {
                     permissions,
                 });
                 show_plugin_confirm(st);
-            },
+            }
             Err(error) => set_status_toast(st, error),
         },
-        "disable" => match st.plugins.disable_plugin(key) {
+        "disable" => match st.plugins.with_mut(|__x| __x.disable_plugin(key)) {
             Ok(()) => set_status_toast(
                 st,
                 ui_text(lang, "Plugin disabled.", "插件已禁用。").to_string(),
             ),
             Err(error) => set_status_toast(st, error),
         },
-        "reload" => match st.plugins.reload_plugin(key) {
+        "reload" => match st.plugins.with_mut(|__x| __x.reload_plugin(key)) {
             Ok(()) => set_status_toast(
                 st,
                 ui_text(lang, "Plugin reloaded from disk.", "插件已从磁盘重载。").to_string(),
             ),
             Err(error) => set_status_toast(st, error),
         },
-        "restart" => match st.plugins.restart_plugin(key) {
+        "restart" => match st.plugins.with_mut(|__x| __x.restart_plugin(key)) {
             Ok(()) => set_status_toast(
                 st,
                 ui_text(lang, "Plugin restarted.", "插件已重启。").to_string(),
             ),
             Err(error) => set_status_toast(st, error),
         },
-        "folder" => match st.plugins.open_folder(key) {
+        "folder" => match st.plugins.with(|__x| __x.open_folder(key)) {
             Ok(dir) => {
                 eprintln!("[plugin-v3] open folder {}", dir.display());
                 set_status_toast(
                     st,
                     ui_text(lang, "Opened plugin folder.", "已打开插件目录。").to_string(),
                 );
-            },
+            }
             Err(error) => set_status_toast(st, error),
         },
         other => eprintln!("[ui] 未知插件动作 {other}"),
@@ -3075,7 +3248,7 @@ fn confirm_plugin_enable(st: &mut AppState) {
     let Some(confirm) = st.plugin_confirm.take() else {
         return;
     };
-    match st.plugins.confirm_enable(&confirm.key) {
+    match st.plugins.with_mut(|__x| __x.confirm_enable(&confirm.key)) {
         Ok(()) => {
             eprintln!(
                 "[ui] plugin {} permissions confirmed: [{}]",
@@ -3085,13 +3258,13 @@ fn confirm_plugin_enable(st: &mut AppState) {
             set_status_toast(
                 st,
                 ui_text(
-                    st.cfg.lang(),
+                    app_lang(st),
                     "Permissions confirmed; plugin enabled.",
                     "权限已确认，插件已启用。",
                 )
                 .to_string(),
             );
-        },
+        }
         Err(error) => set_status_toast(st, error),
     }
     show_plugin_confirm(st);
@@ -3127,13 +3300,13 @@ fn plugin_surface_action(st: &mut AppState, element_id: &str) {
                 }
             }
             ("change", next)
-        },
+        }
         _ => return,
     };
     let plugin_id = surface.plugin_id.clone();
     let surface_kind = surface.surface.clone();
     let panel = surface.panel.clone();
-    st.plugins.send_ui_action_for(
+    st.plugins.borrow().send_ui_action_for(
         &plugin_id,
         &surface_kind,
         panel,
@@ -3152,7 +3325,10 @@ fn plugin_surface_input(st: &mut AppState, element_id: &str, value: String) {
     };
     let mut updated = false;
     for element in &mut surface.doc.elements {
-        if let plugin_v3::SurfaceElement::Input { id, value: current, .. } = element {
+        if let plugin_v3::SurfaceElement::Input {
+            id, value: current, ..
+        } = element
+        {
             if id == element_id {
                 *current = value.clone();
                 updated = true;
@@ -3166,7 +3342,7 @@ fn plugin_surface_input(st: &mut AppState, element_id: &str, value: String) {
     let plugin_id = surface.plugin_id.clone();
     let surface_kind = surface.surface.clone();
     let panel = surface.panel.clone();
-    st.plugins.send_ui_action_for(
+    st.plugins.borrow().send_ui_action_for(
         &plugin_id,
         &surface_kind,
         panel,
@@ -3213,12 +3389,12 @@ fn start_hotkey_edit(st: &mut AppState, index: i32) {
     st.hotkey_pending = None;
     st.ui.set_hotkey_error("".into());
     let status = if two_chord {
-        if st.cfg.lang() == "zh" {
+        if app_lang(st) == "zh" {
             format!("录制「{title}」：按第一段组合键（Esc 取消）")
         } else {
             format!("Recording \"{title}\": press the first chord (Esc cancels)")
         }
-    } else if st.cfg.lang() == "zh" {
+    } else if app_lang(st) == "zh" {
         format!("录制「{title}」：按下新的组合键")
     } else {
         format!("Recording \"{title}\": press a new chord")
@@ -3232,7 +3408,7 @@ fn start_hotkey_edit(st: &mut AppState, index: i32) {
 fn cancel_hotkey_edit(st: &mut AppState) {
     if st.hotkey_recording.take().is_some() {
         st.ui
-            .set_hotkey_status(ui_text(st.cfg.lang(), "Recording cancelled", "已取消录制").into());
+            .set_hotkey_status(ui_text(app_lang(st), "Recording cancelled", "已取消录制").into());
         eprintln!("[hotkey] record cancel");
     }
     st.hotkey_pending = None;
@@ -3244,14 +3420,14 @@ fn cancel_hotkey_edit(st: &mut AppState) {
 /// 录制中退格/删除：恢复该命令的默认绑定并结束录制。
 fn reset_recording_hotkey(st: &mut AppState, id: &str) {
     let title = hotkey_title(st, id);
-    let removed = commands::clear_override(&mut st.cfg.hotkeys, id);
+    let removed = commands::clear_override(&mut st.cfg.borrow_mut().hotkeys, id);
     if removed {
-        st.cfg.save();
+        st.cfg.borrow().save();
     }
     st.hotkey_recording = None;
     st.hotkey_pending = None;
     st.ui.set_hotkey_error("".into());
-    let status = if st.cfg.lang() == "zh" {
+    let status = if app_lang(st) == "zh" {
         format!("{title} 已恢复默认")
     } else {
         format!("{title} reset to default")
@@ -3268,19 +3444,19 @@ fn commit_hotkey_shortcut(st: &mut AppState, id: &str, shortcut: &commands::Shor
     match validate_hotkey_shortcut(st, id, &text) {
         Ok(shortcut) => {
             let title = hotkey_title(st, id);
-            commands::set_override_shortcut(&mut st.cfg.hotkeys, id, &shortcut);
-            st.cfg.save();
+            commands::set_override_shortcut(&mut st.cfg.borrow_mut().hotkeys, id, &shortcut);
+            st.cfg.borrow().save();
             st.hotkey_recording = None;
             st.hotkey_pending = None;
             st.ui.set_hotkey_error("".into());
-            let mut status = if st.cfg.lang() == "zh" {
+            let mut status = if app_lang(st) == "zh" {
                 format!("{title} → {}（已保存）", shortcut)
             } else {
                 format!("{title} → {} (saved)", shortcut)
             };
             // KEY-003：桌面环境保留键只提示、不阻止保存。
             if let Some(reserved) = commands::platform_reserved_for_shortcut(&shortcut) {
-                if st.cfg.lang() == "zh" {
+                if app_lang(st) == "zh" {
                     status.push_str(&format!(
                         "\n⚠ {} 通常被 {} 占用（{}），可能永远收不到",
                         shortcut.chords[0], reserved.owner, reserved.note
@@ -3303,7 +3479,7 @@ fn commit_hotkey_shortcut(st: &mut AppState, id: &str, shortcut: &commands::Shor
         }
         Err(err) => {
             eprintln!("[hotkey] rejected {id} {text:?}: {err}");
-            let err = localize_hotkey_error(st.cfg.lang(), err);
+            let err = localize_hotkey_error(app_lang(st), err);
             st.ui.set_hotkey_error(err.into());
         }
     }
@@ -3314,9 +3490,9 @@ fn reset_hotkey(st: &mut AppState, index: i32) {
         return;
     };
     let title = hotkey_title(st, &id);
-    let removed = commands::clear_override(&mut st.cfg.hotkeys, &id);
+    let removed = commands::clear_override(&mut st.cfg.borrow_mut().hotkeys, &id);
     if removed {
-        st.cfg.save();
+        st.cfg.borrow().save();
     }
     if st.hotkey_recording.as_deref() == Some(id.as_str()) {
         st.hotkey_recording = None;
@@ -3324,7 +3500,7 @@ fn reset_hotkey(st: &mut AppState, index: i32) {
     }
     st.hotkey_pending = None;
     st.ui.set_hotkey_error("".into());
-    let status = if st.cfg.lang() == "zh" {
+    let status = if app_lang(st) == "zh" {
         format!("{title} 已恢复默认")
     } else {
         format!("{title} reset to default")
@@ -3335,15 +3511,15 @@ fn reset_hotkey(st: &mut AppState, index: i32) {
 }
 
 fn reset_all_hotkeys(st: &mut AppState) {
-    let count = st.cfg.hotkeys.len();
+    let count = st.cfg.borrow().hotkeys.len();
     if count > 0 {
-        st.cfg.hotkeys.clear();
-        st.cfg.save();
+        st.cfg.borrow_mut().hotkeys.clear();
+        st.cfg.borrow().save();
     }
     st.hotkey_recording = None;
     st.hotkey_pending = None;
     st.ui.set_hotkey_error("".into());
-    let status = if st.cfg.lang() == "zh" {
+    let status = if app_lang(st) == "zh" {
         format!("已重置 {count} 条自定义快捷键")
     } else {
         format!("Reset {count} custom shortcuts")
@@ -3372,7 +3548,7 @@ fn record_hotkey_key(
     let Some(id) = st.hotkey_recording.clone() else {
         return;
     };
-    let lang = st.cfg.lang().to_string();
+    let lang = app_lang(st).to_string();
     let two_chord = st.ui.get_hotkey_record_two();
     let plain = !ctrl && !alt && !shift && !meta;
     if plain && text == "\u{1b}" {
@@ -3385,7 +3561,9 @@ fn record_hotkey_key(
     if two_chord {
         if let Some(first) = st.hotkey_pending.clone() {
             if enter {
-                let single = commands::Shortcut { chords: vec![first] };
+                let single = commands::Shortcut {
+                    chords: vec![first],
+                };
                 commit_hotkey_shortcut(st, &id, &single);
                 return;
             }
@@ -3413,7 +3591,9 @@ fn record_hotkey_key(
                 st.ui.set_hotkey_error(err.into());
                 return;
             }
-            let shortcut = commands::Shortcut { chords: vec![first, second] };
+            let shortcut = commands::Shortcut {
+                chords: vec![first, second],
+            };
             commit_hotkey_shortcut(st, &id, &shortcut);
             return;
         }
@@ -3439,7 +3619,9 @@ fn record_hotkey_key(
         let status = if lang == "zh" {
             format!("「{title}」第一段 {chord}；再按第二段，或 Enter 保存单段")
         } else {
-            format!("\"{title}\" first chord {chord}; press a second chord, or Enter to save one chord")
+            format!(
+                "\"{title}\" first chord {chord}; press a second chord, or Enter to save one chord"
+            )
         };
         st.ui.set_hotkey_status(status.into());
         eprintln!("[hotkey] record first {id} = {chord}");
@@ -3454,7 +3636,13 @@ fn record_hotkey_key(
     let Some(chord) = keys::chord_from_key_event(text, ctrl, alt, shift, meta) else {
         return;
     };
-    commit_hotkey_shortcut(st, &id, &commands::Shortcut { chords: vec![chord] });
+    commit_hotkey_shortcut(
+        st,
+        &id,
+        &commands::Shortcut {
+            chords: vec![chord],
+        },
+    );
 }
 
 fn theme_choices(reg: &ThemeRegistry) -> ModelRc<ThemeChoice> {
@@ -3473,12 +3661,16 @@ fn theme_choices(reg: &ThemeRegistry) -> ModelRc<ThemeChoice> {
 /// 下发实际生效的主题（不改配置与选中项；auto 监听回调走这里）。
 fn push_theme(st: &mut AppState, theme: &ThemeData) {
     st.resolved_theme = theme.clone();
-    let auto = is_auto_theme(&st.cfg.theme);
-    st.ui.set_auto_resolved(if auto { theme.label.as_str().into() } else { "".into() });
+    let auto = is_auto_theme(&st.cfg.borrow().theme);
+    st.ui.set_auto_resolved(if auto {
+        theme.label.as_str().into()
+    } else {
+        "".into()
+    });
     st.ui.set_theme_display(if auto {
         format!(
             "{} · {}",
-            ui_text(st.cfg.lang(), "Auto", "自动"),
+            ui_text(app_lang(st), "Auto", "自动"),
             theme.label
         )
         .into()
@@ -3488,21 +3680,27 @@ fn push_theme(st: &mut AppState, theme: &ThemeData) {
     st.ui.global::<Palette>().set_colors(slint_theme(&theme.ui));
     // 优先级：Profile 显式 theme > 全局 theme。Profile 选 auto 时跟随系统/全局
     // 的深色侧设置重新解析；未知 id 已在 theme_for_selection 里回退全局。
-    let registry = &st.registry;
-    let cfg = &st.cfg;
-    let bold = (cfg.bold_is_bright, cfg.bold_color_rgb(), cfg.bold_color_same_as_fg);
+    let registry = st.registry.borrow();
+    let cfg = st.cfg.borrow();
+    let bold = (
+        cfg.bold_is_bright,
+        cfg.bold_color_rgb(),
+        cfg.bold_color_same_as_fg,
+    );
     for rt in st.panes.values_mut() {
         let pane_theme = rt
             .appearance
             .theme
             .as_deref()
-            .and_then(|sel| theme_for_selection(registry, cfg, Some(sel)))
+            .and_then(|sel| theme_for_selection(&registry, &cfg, Some(sel)))
             .unwrap_or_else(|| theme.clone());
         rt.renderer
             .set_theme(pane_theme.spec.bg, pane_theme.spec.cursor);
         rt.handle
             .set_theme(pane_theme.palette().with_bold(bold.0, bold.1, bold.2));
     }
+    drop(cfg);
+    drop(registry);
     redraw_visible(st);
 }
 
@@ -3511,7 +3709,7 @@ fn push_theme(st: &mut AppState, theme: &ThemeData) {
 fn renderer_opacity(st: &AppState) -> f32 {
     // 无背景图时也允许半透明：终端帧的 alpha 直接透出桌面。是否真的透明由
     // `terminal_transparent` 控制窗口/ pane 背景；这里只负责帧 alpha。
-    config::clamp_opacity(st.cfg.background_opacity)
+    config::clamp_opacity(st.cfg.borrow().background_opacity)
 }
 
 /// 把“当前是否真的显示背景图”对应的 alpha 下发给所有 pane 并重绘。
@@ -3566,7 +3764,7 @@ fn apply_background_image(st: &mut AppState, raw: &str) -> Result<(), String> {
                 eprintln!("[theme] 背景图 {} 已加载", path.display());
                 Ok(())
             }
-            Err(_) => Err(if st.cfg.lang() == "zh" {
+            Err(_) => Err(if app_lang(st) == "zh" {
                 format!("无法解码图片（支持 PNG/JPEG/SVG）：{}", path.display())
             } else {
                 format!(
@@ -3575,7 +3773,7 @@ fn apply_background_image(st: &mut AppState, raw: &str) -> Result<(), String> {
                 )
             }),
         },
-        Err(e) => Err(localize_background_error(st.cfg.lang(), e)),
+        Err(e) => Err(localize_background_error(app_lang(st), e)),
     }
 }
 
@@ -3632,13 +3830,13 @@ fn pick_plugin_source(kind: &str, initial: &str) -> Result<Option<String>, Strin
     match kind {
         "folder" => {
             cmd.args(["--directory", "--title=Tervo — choose a plugin folder"]);
-        },
+        }
         "file" => {
             cmd.args([
                 "--title=Tervo — choose a plugin package",
                 "--file-filter=Plugin packages | *.zip *.tar *.tgz *.tar.gz",
             ]);
-        },
+        }
         other => return Err(format!("未知安装源类型 {other:?}")),
     }
     let initial = config::expand_tilde(initial.trim());
@@ -3676,14 +3874,14 @@ const FIRST_BACKGROUND_OPACITY: f32 = 0.35;
 fn commit_background_path(st: &mut AppState, raw: &str, report_error: bool) -> bool {
     let raw = raw.trim();
     if raw.is_empty() {
-        st.cfg.background_image.clear();
+        st.cfg.borrow_mut().background_image.clear();
         if let Err(e) = apply_background_image(st, "") {
             if report_error {
                 st.ui.set_background_image_error(e.into());
             }
             return false;
         }
-        st.cfg.save();
+        st.cfg.borrow().save();
         eprintln!("[theme] background_image 关闭");
         return true;
     }
@@ -3691,17 +3889,17 @@ fn commit_background_path(st: &mut AppState, raw: &str, report_error: bool) -> b
     let first_image = !st.ui.get_has_background_image();
     match apply_background_image(st, raw) {
         Ok(()) => {
-            st.cfg.background_image = raw.to_string();
-            if first_image && st.cfg.background_opacity >= 0.99 {
-                st.cfg.background_opacity = FIRST_BACKGROUND_OPACITY;
+            st.cfg.borrow_mut().background_image = raw.to_string();
+            if first_image && st.cfg.borrow().background_opacity >= 0.99 {
+                st.cfg.borrow_mut().background_opacity = FIRST_BACKGROUND_OPACITY;
                 st.ui.set_background_opacity(FIRST_BACKGROUND_OPACITY);
                 sync_renderer_opacity(st);
                 eprintln!("[theme] 首次启用背景图，opacity 自动设为 {FIRST_BACKGROUND_OPACITY:.2}");
             }
-            st.cfg.save();
+            st.cfg.borrow().save();
             eprintln!(
                 "[theme] background_image={raw} opacity={:.2}",
-                st.cfg.background_opacity
+                st.cfg.borrow().background_opacity
             );
             true
         }
@@ -3719,10 +3917,11 @@ fn commit_background_path(st: &mut AppState, raw: &str, report_error: bool) -> b
 
 /// 启动时把配置里的背景图/遮罩/透明度下发给 UI；坏路径回退为纯色并在设置页留错误。
 fn init_background(st: &mut AppState) {
-    let raw = st.cfg.background_image.clone();
+    let raw = st.cfg.borrow().background_image.clone();
     st.ui.set_background_image_path(raw.as_str().into());
-    st.ui.set_background_opacity(st.cfg.background_opacity);
-    st.ui.set_background_dim(st.cfg.background_dim);
+    st.ui
+        .set_background_opacity(st.cfg.borrow().background_opacity);
+    st.ui.set_background_dim(st.cfg.borrow().background_dim);
     if let Err(e) = apply_background_image(st, &raw) {
         eprintln!("[theme] 背景图不可用，回退纯色背景: {e}");
         st.ui.set_background_image_error(e.into());
@@ -3736,18 +3935,18 @@ fn init_background(st: &mut AppState) {
 fn install_theme_selection(st: &mut AppState, selected: &str) -> bool {
     let auto = is_auto_theme(selected);
     if auto {
-        st.cfg.theme = AUTO_THEME.to_string();
-    } else if let Some(found) = st.registry.get(selected) {
-        st.cfg.theme = found.id.clone();
+        st.cfg.borrow_mut().theme = AUTO_THEME.to_string();
+    } else if let Some(found) = st.registry.borrow().get(selected) {
+        st.cfg.borrow_mut().theme = found.id.clone();
     } else {
         eprintln!("[theme] 未知主题 {selected:?}，保持当前配置");
         return false;
     }
     let theme = resolve_theme(
-        &st.registry,
-        &st.cfg.theme,
-        st.cfg.auto_dark.as_deref(),
-        st.cfg.auto_light.as_deref(),
+        &st.registry.borrow(),
+        &st.cfg.borrow().theme,
+        st.cfg.borrow().auto_dark.as_deref(),
+        st.cfg.borrow().auto_light.as_deref(),
     );
     st.ui.set_theme_name(if auto {
         AUTO_THEME.into()
@@ -3764,7 +3963,7 @@ fn install_theme_selection(st: &mut AppState, selected: &str) -> bool {
 /// 应用用户选择的主题（"auto" 或具体 id），并写回配置。
 fn apply_theme(st: &mut AppState, selected: &str) {
     if install_theme_selection(st, selected) {
-        st.cfg.save();
+        st.cfg.borrow().save();
     }
 }
 
@@ -3907,7 +4106,10 @@ fn reconfig_summary(old: &Config, new: &Config) -> ReconfigSummary {
     hot(old.mcp_read != new.mcp_read, "mcp_read");
     hot(old.mcp_input != new.mcp_input, "mcp_input");
     hot(old.mcp_tabs != new.mcp_tabs, "mcp_tabs");
-    hot(old.mcp_destructive != new.mcp_destructive, "mcp_destructive");
+    hot(
+        old.mcp_destructive != new.mcp_destructive,
+        "mcp_destructive",
+    );
     s
 }
 
@@ -3972,37 +4174,37 @@ fn apply_external_config_from(st: &mut AppState, old: Config, new_cfg: Config) {
         || old.mcp_tabs != new_cfg.mcp_tabs
         || old.mcp_destructive != new_cfg.mcp_destructive;
 
-    *st.cfg = new_cfg;
+    st.cfg.with_mut(|cfg| *cfg = new_cfg);
     // 先换运行期权限，再同步 UI；socket supervisor 会自行创建/移除 listener。
     if mcp_changed {
-        mcp::apply_config(&st.cfg);
+        mcp::apply_config(&st.cfg.borrow());
     }
 
     if theme_changed {
-        let selected = st.cfg.theme.clone();
+        let selected = st.cfg.borrow().theme.clone();
         let before = old.theme.clone();
         if !install_theme_selection(st, &selected) {
             // 配置解析成功但主题 id 不存在：保留旧主题，其余字段仍继续套用。
-            st.cfg.theme = before;
+            st.cfg.borrow_mut().theme = before;
         }
     }
 
     if font_changed {
-        let requested = st.cfg.font_size;
+        let requested = st.cfg.borrow().font_size;
         if !apply_font_settings(st) {
             eprintln!("[config] 外部字体配置应用失败（font_size={requested}），保留旧值");
             let (size, family, weight, line_height, letter_spacing, render_scale) = old_font;
-            st.cfg.font_size = size;
-            st.cfg.font_family = family;
-            st.cfg.font_weight = weight;
-            st.cfg.line_height = line_height;
-            st.cfg.letter_spacing = letter_spacing;
-            st.cfg.render_scale = render_scale;
+            st.cfg.borrow_mut().font_size = size;
+            st.cfg.borrow_mut().font_family = family;
+            st.cfg.borrow_mut().font_weight = weight;
+            st.cfg.borrow_mut().line_height = line_height;
+            st.cfg.borrow_mut().letter_spacing = letter_spacing;
+            st.cfg.borrow_mut().render_scale = render_scale;
         }
     }
 
     if bg_image_changed {
-        let raw = st.cfg.background_image.clone();
+        let raw = st.cfg.borrow().background_image.clone();
         if let Err(e) = apply_background_image(st, &raw) {
             // 不改回 cfg.path：设置页应看到用户刚写的路径和错误，但屏幕继续用旧图。
             eprintln!("[config] 外部 background_image 无效，保留当前背景: {e}");
@@ -4013,7 +4215,7 @@ fn apply_external_config_from(st: &mut AppState, old: Config, new_cfg: Config) {
     }
 
     if scroll_output_changed {
-        let enabled = st.cfg.scroll_on_output;
+        let enabled = st.cfg.borrow().scroll_on_output;
         for rt in st.panes.values() {
             rt.handle.set_scroll_on_output(enabled);
         }
@@ -4022,7 +4224,7 @@ fn apply_external_config_from(st: &mut AppState, old: Config, new_cfg: Config) {
         }
     }
     if sixel_changed {
-        let enabled = st.cfg.sixel;
+        let enabled = st.cfg.borrow().sixel;
         for rt in st.panes.values() {
             rt.handle.set_sixel(enabled);
         }
@@ -4031,7 +4233,7 @@ fn apply_external_config_from(st: &mut AppState, old: Config, new_cfg: Config) {
         }
     }
     if sixel_scrolling_changed {
-        let enabled = st.cfg.sixel_scrolling;
+        let enabled = st.cfg.borrow().sixel_scrolling;
         for rt in st.panes.values() {
             rt.handle.set_sixel_scrolling(enabled);
         }
@@ -4040,7 +4242,7 @@ fn apply_external_config_from(st: &mut AppState, old: Config, new_cfg: Config) {
         }
     }
     if iip_changed {
-        let enabled = st.cfg.iip;
+        let enabled = st.cfg.borrow().iip;
         for rt in st.panes.values() {
             rt.handle.set_iip(enabled);
         }
@@ -4060,7 +4262,7 @@ fn apply_external_config_from(st: &mut AppState, old: Config, new_cfg: Config) {
     if bold_changed {
         apply_bold_settings(st);
     }
-    if visual_bell_changed && !st.cfg.visual_bell {
+    if visual_bell_changed && !st.cfg.borrow().visual_bell {
         for rt in st.panes.values_mut() {
             rt.bell_until = None;
         }
@@ -4081,8 +4283,8 @@ fn apply_external_config_from(st: &mut AppState, old: Config, new_cfg: Config) {
         st.content = content_rect(
             win_w,
             win_h,
-            sidebar_width_of(&st.cfg),
-            st.cfg.tabbar_pos(),
+            sidebar_width_of(&st.cfg.borrow()),
+            st.cfg.borrow().tabbar_pos(),
         );
         refresh_views_layout(st);
         refresh_views(st);
@@ -4111,97 +4313,118 @@ fn apply_external_config_from(st: &mut AppState, old: Config, new_cfg: Config) {
 
 /// 外部热更新后同步设置页控件状态。只改 Slint 属性，不触发回调、不写盘。
 fn sync_reload_ui(st: &mut AppState) {
-    st.ui.set_language(st.cfg.lang().into());
+    st.ui.set_language(app_lang(st).into());
+    st.ui.set_restore_note(
+        session::restore_boundaries_text(app_lang(st) == "zh")
+            .as_str()
+            .into(),
+    );
+    st.ui.set_sidebar_visible(st.cfg.borrow().sidebar_visible);
+    st.ui.set_sidebar_width(sidebar_width_of(&st.cfg.borrow()));
     st.ui
-        .set_restore_note(session::restore_boundaries_text(st.cfg.lang() == "zh").as_str().into());
-    st.ui.set_sidebar_visible(st.cfg.sidebar_visible);
-    st.ui.set_sidebar_width(sidebar_width_of(&st.cfg));
-    st.ui.set_cfg_sidebar_visible(st.cfg.sidebar_visible);
-    st.ui.set_font_size(st.cfg.font_size as i32);
-    st.ui.set_scrollback(st.cfg.scrollback as i32);
+        .set_cfg_sidebar_visible(st.cfg.borrow().sidebar_visible);
+    st.ui.set_font_size(st.cfg.borrow().font_size as i32);
+    st.ui.set_scrollback(st.cfg.borrow().scrollback as i32);
     st.ui
-        .set_background_image_path(st.cfg.background_image.as_str().into());
-    st.ui.set_background_opacity(st.cfg.background_opacity);
-    st.ui.set_background_dim(st.cfg.background_dim);
-    st.ui.set_cfg_copy_on_select(st.cfg.copy_on_select);
-    st.ui.set_cfg_confirm_close(st.cfg.confirm_close);
-    st.ui.set_cfg_close_action(st.cfg.close_action.as_str().into());
+        .set_background_image_path(st.cfg.borrow().background_image.as_str().into());
     st.ui
-        .set_cfg_restore_session(st.cfg.restore_session_on_startup);
-    st.ui.set_cfg_confirm_paste(st.cfg.confirm_multiline_paste);
+        .set_background_opacity(st.cfg.borrow().background_opacity);
+    st.ui.set_background_dim(st.cfg.borrow().background_dim);
+    st.ui.set_cfg_copy_on_select(st.cfg.borrow().copy_on_select);
+    st.ui.set_cfg_confirm_close(st.cfg.borrow().confirm_close);
     st.ui
-        .set_cfg_right_click(st.cfg.effective_right_click().into());
-    st.ui.set_cfg_paste_middle(st.cfg.paste_on_middle_click);
+        .set_cfg_close_action(st.cfg.borrow().close_action.as_str().into());
     st.ui
-        .set_cfg_desktop_notifications(st.cfg.desktop_notifications);
-    st.ui.set_cfg_visual_bell(st.cfg.visual_bell);
-    st.ui.set_cfg_audible_bell(st.cfg.audible_bell);
-    st.ui.set_cfg_scroll_output(st.cfg.scroll_on_output);
-    st.ui.set_cfg_scroll_keystroke(st.cfg.scroll_on_keystroke);
-    st.ui.set_cfg_sixel(st.cfg.sixel);
-    st.ui.set_cfg_sixel_scrolling(st.cfg.sixel_scrolling);
-    st.ui.set_cfg_iip(st.cfg.iip);
+        .set_cfg_restore_session(st.cfg.borrow().restore_session_on_startup);
     st.ui
-        .set_cfg_plugin_require_signature(st.cfg.plugin_require_signature);
-    st.ui.set_cfg_render_hud(st.cfg.render_hud);
-    set_render_hud(st, render_hud_forced_by_env() || st.cfg.render_hud);
+        .set_cfg_confirm_paste(st.cfg.borrow().confirm_multiline_paste);
     st.ui
-        .set_cfg_scrollback_unlimited(st.cfg.scrollback_unlimited);
+        .set_cfg_right_click(st.cfg.borrow().effective_right_click().into());
     st.ui
-        .set_cfg_scrollbar_policy(st.cfg.scrollbar_policy().as_str().into());
+        .set_cfg_paste_middle(st.cfg.borrow().paste_on_middle_click);
     st.ui
-        .set_cfg_backspace_binding(st.cfg.key_bindings().backspace.as_str().into());
+        .set_cfg_desktop_notifications(st.cfg.borrow().desktop_notifications);
+    st.ui.set_cfg_visual_bell(st.cfg.borrow().visual_bell);
+    st.ui.set_cfg_audible_bell(st.cfg.borrow().audible_bell);
     st.ui
-        .set_cfg_delete_binding(st.cfg.key_bindings().delete.as_str().into());
+        .set_cfg_scroll_output(st.cfg.borrow().scroll_on_output);
     st.ui
-        .set_cfg_cursor_shape(st.cfg.cursor_shape.clone().into());
+        .set_cfg_scroll_keystroke(st.cfg.borrow().scroll_on_keystroke);
+    st.ui.set_cfg_sixel(st.cfg.borrow().sixel);
     st.ui
-        .set_cfg_cursor_blink(st.cfg.cursor_blink.clone().into());
+        .set_cfg_sixel_scrolling(st.cfg.borrow().sixel_scrolling);
+    st.ui.set_cfg_iip(st.cfg.borrow().iip);
     st.ui
-        .set_cfg_cursor_color(st.cfg.cursor_color.clone().into());
+        .set_cfg_plugin_require_signature(st.cfg.borrow().plugin_require_signature);
+    st.ui.set_cfg_render_hud(st.cfg.borrow().render_hud);
+    set_render_hud(st, render_hud_forced_by_env() || st.cfg.borrow().render_hud);
     st.ui
-        .set_cfg_cursor_text_color(st.cfg.cursor_text_color.clone().into());
-    st.ui.set_cfg_bold_is_bright(st.cfg.bold_is_bright);
-    st.ui.set_cfg_bold_color(st.cfg.bold_color.clone().into());
+        .set_cfg_scrollback_unlimited(st.cfg.borrow().scrollback_unlimited);
     st.ui
-        .set_cfg_bold_color_same_as_fg(st.cfg.bold_color_same_as_fg);
-    st.ui.set_cfg_quake(st.cfg.quake_enabled);
+        .set_cfg_scrollbar_policy(st.cfg.borrow().scrollbar_policy().as_str().into());
     st.ui
-        .set_tabbar_position(st.cfg.tabbar_pos().as_str().into());
+        .set_cfg_backspace_binding(st.cfg.borrow().key_bindings().backspace.as_str().into());
+    st.ui
+        .set_cfg_delete_binding(st.cfg.borrow().key_bindings().delete.as_str().into());
+    st.ui
+        .set_cfg_cursor_shape(st.cfg.borrow().cursor_shape.clone().into());
+    st.ui
+        .set_cfg_cursor_blink(st.cfg.borrow().cursor_blink.clone().into());
+    st.ui
+        .set_cfg_cursor_color(st.cfg.borrow().cursor_color.clone().into());
+    st.ui
+        .set_cfg_cursor_text_color(st.cfg.borrow().cursor_text_color.clone().into());
+    st.ui.set_cfg_bold_is_bright(st.cfg.borrow().bold_is_bright);
+    st.ui
+        .set_cfg_bold_color(st.cfg.borrow().bold_color.clone().into());
+    st.ui
+        .set_cfg_bold_color_same_as_fg(st.cfg.borrow().bold_color_same_as_fg);
+    st.ui.set_cfg_quake(st.cfg.borrow().quake_enabled);
+    st.ui
+        .set_tabbar_position(st.cfg.borrow().tabbar_pos().as_str().into());
     sync_mcp_ui(st);
 }
 
 /// MCP 设置/状态同步到 Slint。只写属性；socket 生命周期由 diag supervisor 管。
 fn sync_mcp_ui(st: &mut AppState) {
-    st.ui.set_cfg_mcp_enabled(st.cfg.mcp_enabled);
-    st.ui.set_cfg_mcp_read(st.cfg.mcp_read);
-    st.ui.set_cfg_mcp_input(st.cfg.mcp_input);
-    st.ui.set_cfg_mcp_tabs(st.cfg.mcp_tabs);
-    st.ui.set_cfg_mcp_destructive(st.cfg.mcp_destructive);
+    st.ui.set_cfg_mcp_enabled(st.cfg.borrow().mcp_enabled);
+    st.ui.set_cfg_mcp_read(st.cfg.borrow().mcp_read);
+    st.ui.set_cfg_mcp_input(st.cfg.borrow().mcp_input);
+    st.ui.set_cfg_mcp_tabs(st.cfg.borrow().mcp_tabs);
+    st.ui
+        .set_cfg_mcp_destructive(st.cfg.borrow().mcp_destructive);
 
-    let (permissions, socket_path, token_path, active, error, token_ready, env_write, env_destructive) =
-        match mcp::runtime() {
-            Some(runtime) => (
-                runtime.permissions(),
-                runtime.socket_path().to_path_buf(),
-                runtime.token_path().to_path_buf(),
-                runtime.active(),
-                runtime.last_error(),
-                runtime.token().is_some(),
-                runtime.env_write_override(),
-                runtime.env_destructive_override(),
-            ),
-            None => (
-                McpPermissions::from_config(&st.cfg),
-                mcp::default_socket_path(),
-                mcp::token_file_path(),
-                false,
-                None,
-                false,
-                false,
-                false,
-            ),
-        };
+    let (
+        permissions,
+        socket_path,
+        token_path,
+        active,
+        error,
+        token_ready,
+        env_write,
+        env_destructive,
+    ) = match mcp::runtime() {
+        Some(runtime) => (
+            runtime.permissions(),
+            runtime.socket_path().to_path_buf(),
+            runtime.token_path().to_path_buf(),
+            runtime.active(),
+            runtime.last_error(),
+            runtime.token().is_some(),
+            runtime.env_write_override(),
+            runtime.env_destructive_override(),
+        ),
+        None => (
+            McpPermissions::from_config(&st.cfg.borrow()),
+            mcp::default_socket_path(),
+            mcp::token_file_path(),
+            false,
+            None,
+            false,
+            false,
+            false,
+        ),
+    };
     st.ui
         .set_mcp_socket_path(socket_path.display().to_string().into());
     st.ui
@@ -4209,7 +4432,7 @@ fn sync_mcp_ui(st: &mut AppState) {
     st.ui.set_mcp_active(permissions.enabled && active);
     st.ui.set_mcp_status(
         mcp_status_text(
-            st.cfg.lang(),
+            app_lang(st),
             &permissions,
             active,
             token_ready,
@@ -4309,18 +4532,20 @@ enum McpSetting {
 /// 在 100ms 内创建/移除，不需要重启 Tervo。
 fn toggle_mcp_setting(st: &mut AppState, setting: McpSetting) {
     match setting {
-        McpSetting::Enabled => st.cfg.mcp_enabled = !st.cfg.mcp_enabled,
-        McpSetting::Read => st.cfg.mcp_read = !st.cfg.mcp_read,
-        McpSetting::Input => st.cfg.mcp_input = !st.cfg.mcp_input,
-        McpSetting::Tabs => st.cfg.mcp_tabs = !st.cfg.mcp_tabs,
-        McpSetting::Destructive => st.cfg.mcp_destructive = !st.cfg.mcp_destructive,
+        McpSetting::Enabled => st.cfg.borrow_mut().mcp_enabled = !st.cfg.borrow_mut().mcp_enabled,
+        McpSetting::Read => st.cfg.borrow_mut().mcp_read = !st.cfg.borrow_mut().mcp_read,
+        McpSetting::Input => st.cfg.borrow_mut().mcp_input = !st.cfg.borrow_mut().mcp_input,
+        McpSetting::Tabs => st.cfg.borrow_mut().mcp_tabs = !st.cfg.borrow_mut().mcp_tabs,
+        McpSetting::Destructive => {
+            st.cfg.borrow_mut().mcp_destructive = !st.cfg.borrow_mut().mcp_destructive
+        }
     }
-    st.cfg.save();
-    mcp::apply_config(&st.cfg);
+    st.cfg.borrow().save();
+    mcp::apply_config(&st.cfg.borrow());
     sync_mcp_ui(st);
     let permissions = mcp::runtime()
         .map(|runtime| runtime.permissions())
-        .unwrap_or_else(|| McpPermissions::from_config(&st.cfg));
+        .unwrap_or_else(|| McpPermissions::from_config(&st.cfg.borrow()));
     eprintln!(
         "[mcp] settings enabled={} read={} input={} tabs={} destructive={}",
         permissions.enabled,
@@ -4335,7 +4560,7 @@ fn toggle_mcp_setting(st: &mut AppState, setting: McpSetting) {
 /// 退出设置搜索/清空后重算结果；展示行与“无匹配”状态跟随当前语言。
 fn refresh_settings_results(st: &mut AppState) {
     let q = st.ui.get_settings_query().to_string();
-    let hits = settings_search_hits(&q, st.cfg.lang());
+    let hits = settings_search_hits(&q, app_lang(st));
     st.settings_result_cats = hits.iter().map(|h| h.cat).collect();
     st.settings_result_sections = hits.iter().map(|h| h.section).collect();
     st.settings_model
@@ -4345,15 +4570,18 @@ fn refresh_settings_results(st: &mut AppState) {
 /// 语言切换/外部热更新后统一刷新：静态文案由 Slint `Lang.t` 自动重算，
 /// 这里只重建 Rust 侧动态数据（快捷键/插件/Vault/配置/搜索/主题显示名）。
 fn sync_language_ui(st: &mut AppState) {
-    let lang = st.cfg.lang().to_string();
+    let lang = app_lang(st).to_string();
     st.ui.set_language(lang.as_str().into());
-    st.ui
-        .set_restore_note(session::restore_boundaries_text(lang == "zh").as_str().into());
+    st.ui.set_restore_note(
+        session::restore_boundaries_text(lang == "zh")
+            .as_str()
+            .into(),
+    );
     refresh_hotkeys(st);
     refresh_plugin_page(st);
     refresh_vault_ui(st);
     refresh_profiles(st);
-    let theme_display = if is_auto_theme(&st.cfg.theme) {
+    let theme_display = if is_auto_theme(&st.cfg.borrow().theme) {
         format!(
             "{} · {}",
             ui_text(&lang, "Auto", "自动"),
@@ -4435,14 +4663,14 @@ fn watch_system_scheme() {
         let notified = slint::invoke_from_event_loop(|| {
             runtime::with_all_windows(|_id, st| {
                 // 用户已切到具体主题：停止跟随。
-                if !is_auto_theme(&st.cfg.theme) {
+                if !is_auto_theme(&st.cfg.borrow().theme) {
                     return;
                 }
                 let theme = resolve_theme(
-                    &st.registry,
+                    &st.registry.borrow(),
                     AUTO_THEME,
-                    st.cfg.auto_dark.as_deref(),
-                    st.cfg.auto_light.as_deref(),
+                    st.cfg.borrow().auto_dark.as_deref(),
+                    st.cfg.borrow().auto_light.as_deref(),
                 );
                 if st.resolved_theme.id != theme.id {
                     push_theme(st, &theme);
@@ -4509,12 +4737,11 @@ fn finish_window_resize(st: &mut AppState, reason: &str) {
         let weak = st.ui.as_weak();
         slint::Timer::single_shot(Duration::from_millis(0), move || {
             if let Some(ui) = weak.upgrade() {
-                ui.window().dispatch_event(
-                    slint::platform::WindowEvent::PointerReleased {
+                ui.window()
+                    .dispatch_event(slint::platform::WindowEvent::PointerReleased {
                         position: slint::LogicalPosition::new(x, y),
                         button: slint::platform::PointerEventButton::Left,
-                    },
-                );
+                    });
             }
         });
     }
@@ -4687,7 +4914,7 @@ fn create_pane(
     let shell = profile
         .map(|p| p.shell.clone())
         .filter(|s| !s.is_empty())
-        .or_else(|| st.cfg.shell.clone())
+        .or_else(|| st.cfg.borrow().shell.clone())
         // 设置/Profile 里的 shell 和 cwd 允许 `~`；SSH 远端路径不展开。
         .map(|s| {
             if remote {
@@ -4726,47 +4953,53 @@ fn create_pane(
         });
 
     // per-profile 外观：字号决定渲染字符尺寸/PTY 网格；空 = 继承全局。
-    let mut appearance = profile.map(PaneAppearance::from_profile).unwrap_or_default();
+    let mut appearance = profile
+        .map(PaneAppearance::from_profile)
+        .unwrap_or_default();
     let fonts = match appearance.font_size {
-        Some(size) if (size - st.cfg.font_size).abs() > f32::EPSILON => {
+        Some(size) if (size - st.cfg.borrow().font_size).abs() > f32::EPSILON => {
             // Profile 只覆盖字号；族/字重/行距/字间距/缩放继承全局配置。
-            let opts = FontOptions::from_config(&st.cfg);
+            let opts = FontOptions::from_config(&st.cfg.borrow());
             match FontSet::load_with(size, &opts) {
                 Some(fonts) => Rc::new(fonts),
                 None => {
                     eprintln!("[profile] Profile 字号 {size} 加载字体失败，回退全局字号");
                     appearance.font_size = None;
                     st.fonts.clone()
-                },
+                }
             }
-        },
+        }
         _ => st.fonts.clone(),
     };
     // 标题跟着本 pane 的 shell 走，而不是全局 Options.shell。
     let pane_title = shell_basename(shell.as_deref());
     let (cols, rows) = cell_of(rect, (fonts.cell_w, fonts.cell_h));
-    let theme = theme_for_selection(&st.registry, &st.cfg, appearance.theme.as_deref())
-        .unwrap_or_else(|| st.resolved_theme.clone());
+    let theme = theme_for_selection(
+        &st.registry.borrow(),
+        &st.cfg.borrow(),
+        appearance.theme.as_deref(),
+    )
+    .unwrap_or_else(|| st.resolved_theme.clone());
     let scrollback = appearance
         .scrollback
-        .unwrap_or_else(|| st.cfg.effective_scrollback());
+        .unwrap_or_else(|| st.cfg.borrow().effective_scrollback());
     let palette = theme.palette().with_bold(
-        st.cfg.bold_is_bright,
-        st.cfg.bold_color_rgb(),
-        st.cfg.bold_color_same_as_fg,
+        st.cfg.borrow().bold_is_bright,
+        st.cfg.borrow().bold_color_rgb(),
+        st.cfg.borrow().bold_color_same_as_fg,
     );
     let config = PaneConfig {
         cols: cols as u16,
         rows: rows as u16,
         scrollback,
-        scroll_on_output: st.cfg.scroll_on_output,
-        keyboard_protocol: st.cfg.keyboard_protocol_enabled(),
-        sixel: st.cfg.sixel,
-        sixel_scrolling: st.cfg.sixel_scrolling,
-        iip: st.cfg.iip,
+        scroll_on_output: st.cfg.borrow().scroll_on_output,
+        keyboard_protocol: st.cfg.borrow().keyboard_protocol_enabled(),
+        sixel: st.cfg.borrow().sixel,
+        sixel_scrolling: st.cfg.borrow().sixel_scrolling,
+        iip: st.cfg.borrow().iip,
         // 所有 pane 共享同一个 WASM host：设置页 Enable/Disable 原地生效。
         // 没有 WASM 插件时为 None，core 热路径不增加分支之外的任何开销。
-        output_filter: st.plugins.output_filter_handle(),
+        output_filter: st.plugins.borrow().output_filter_handle(),
         cell_width: fonts.cell_w as u16,
         cell_height: fonts.cell_h as u16,
         shell,
@@ -4798,7 +5031,7 @@ fn create_pane(
                 p.user.trim()
             );
             spawn_with_transport(config, Backend::Plugin(Box::new(transport)))?
-        },
+        }
         None => spawn(config)?,
     };
 
@@ -4863,9 +5096,9 @@ fn create_pane(
         renderer_opacity(st),
     );
     renderer.set_cursor_style(
-        appearance.cursor_shape(&st.cfg),
-        st.cfg.cursor_color_rgb(),
-        st.cfg.cursor_text_color_rgb(),
+        appearance.cursor_shape(&st.cfg.borrow()),
+        st.cfg.borrow().cursor_color_rgb(),
+        st.cfg.borrow().cursor_text_color_rgb(),
     );
     let mut frame = handle.new_frame();
     frame = handle.pull(frame);
@@ -4955,17 +5188,26 @@ fn new_tab_inner_with_cwd(st: &mut AppState, cwd: Option<PathBuf>) {
         }
         Err(e) => {
             eprintln!("创建 pane 失败: {e}");
-            let zh = st.cfg.lang() == "zh";
+            let zh = app_lang(st) == "zh";
             let title = if zh { "启动失败" } else { "Launch failed" };
             let text = if zh {
-                format!("Shell 启动失败: {e}；检查 Shell 路径/工作目录/权限后点 Retry，或关闭提示。")
+                format!(
+                    "Shell 启动失败: {e}；检查 Shell 路径/工作目录/权限后点 Retry，或关闭提示。"
+                )
             } else {
                 format!(
                     "Failed to launch shell: {e}; check the shell path/cwd/permissions, then Retry or dismiss."
                 )
             };
-            show_session_notice(st, None, None, title, text, RetryAction::NewTab { cwd: retry_cwd });
-        },
+            show_session_notice(
+                st,
+                None,
+                None,
+                title,
+                text,
+                RetryAction::NewTab { cwd: retry_cwd },
+            );
+        }
     }
 }
 
@@ -5104,11 +5346,11 @@ fn build_profile_rows(
 /// 列表模型只带展示字段；所有操作回调用 `profile_row_targets` 映射回真实
 /// Profile，避免过滤/折叠后 “点第 0 行却打开第 0 个 store 项” 的错位。
 fn refresh_profiles(st: &mut AppState) {
-    let lang = st.cfg.lang();
+    let lang = app_lang(st);
     // 星标以解析结果为准：id 或 default_profile 名字命中的那一行都显示 ★。
     let resolved_default = default_profile_index(st);
     let (rows, targets) = build_profile_rows(
-        &st.profiles.profiles,
+        &st.profiles.borrow().profiles,
         &st.profile_query,
         &st.collapsed_groups,
         resolved_default,
@@ -5124,7 +5366,7 @@ fn refresh_profiles(st: &mut AppState) {
         .map(|row| ProfileRow {
             id: row
                 .store_index
-                .and_then(|i| st.profiles.profiles.get(i))
+                .and_then(|i| st.profiles.borrow().profiles.get(i).cloned())
                 .map(|p| p.id as i32)
                 .unwrap_or(-1),
             label: row.label.clone().into(),
@@ -5137,12 +5379,17 @@ fn refresh_profiles(st: &mut AppState) {
     let default_info = match resolved_default {
         Some(i) => {
             if lang == "zh" {
-                format!("新标签默认：{}", st.profiles.profiles[i].name)
+                format!("新标签默认：{}", st.profiles.borrow().profiles[i].name)
             } else {
-                format!("New tab default: {}", st.profiles.profiles[i].name)
+                format!("New tab default: {}", st.profiles.borrow().profiles[i].name)
             }
-        },
-        None => ui_text(lang, "New tab default: system shell", "新标签默认：系统 Shell").to_string(),
+        }
+        None => ui_text(
+            lang,
+            "New tab default: system shell",
+            "新标签默认：系统 Shell",
+        )
+        .to_string(),
     };
     st.profile_row_targets = targets;
     st.profile_model.set_vec(items);
@@ -5156,9 +5403,9 @@ fn refresh_profiles(st: &mut AppState) {
 /// 名字匹配不区分大小写，`default_profile_id == 0` 且名字为空 = 系统 shell。
 fn default_profile_index(st: &AppState) -> Option<usize> {
     resolve_default_profile_index(
-        &st.profiles.profiles,
-        st.cfg.default_profile_id,
-        &st.cfg.default_profile,
+        &st.profiles.borrow().profiles,
+        st.cfg.borrow().default_profile_id,
+        &st.cfg.borrow().default_profile,
     )
 }
 
@@ -5197,7 +5444,7 @@ fn profile_row_to_store(st: &AppState, row: i32) -> Option<usize> {
 fn new_tab_with_default(st: &mut AppState) {
     match default_profile_index(st) {
         Some(index) => {
-            let id = st.profiles.profiles[index].id;
+            let id = st.profiles.borrow().profiles[index].id;
             eprintln!("[profile] 新 Tab 使用默认 Profile id={id} index={index}");
             open_profile_tab_manual(st, index);
         }
@@ -5222,7 +5469,7 @@ fn toggle_quake() {
 }
 
 fn toggle_quake_inner(st: &mut AppState) {
-    if !st.cfg.quake_enabled {
+    if !st.cfg.borrow().quake_enabled {
         eprintln!("[quake] 未启用（设置 → Window → Quake mode）");
         return;
     }
@@ -5239,8 +5486,8 @@ fn toggle_quake_inner(st: &mut AppState) {
     // 把 Quake 放到接缝上）。顶部/底部 panel 用 EWMH workarea 让开。
     let pos = st.ui.window().position();
     let monitors = crate::xconn::monitors();
-    let monitor = crate::xconn::monitor_at(&monitors, pos.x, pos.y)
-        .unwrap_or(crate::xconn::Monitor {
+    let monitor =
+        crate::xconn::monitor_at(&monitors, pos.x, pos.y).unwrap_or(crate::xconn::Monitor {
             x: 0,
             y: 0,
             width: crate::xconn::screen_size().map(|v| v.0).unwrap_or(1920),
@@ -5263,10 +5510,9 @@ fn toggle_quake_inner(st: &mut AppState) {
         .saturating_sub(top_inset)
         .saturating_sub(bottom_inset)
         .max(200);
-    let w = ((monitor.width as f32 * st.cfg.quake_width).round() as u32)
+    let w = ((monitor.width as f32 * st.cfg.borrow().quake_width).round() as u32)
         .clamp(320, monitor.width);
-    let h = ((avail_h as f32 * st.cfg.quake_height).round() as u32)
-        .clamp(200, avail_h);
+    let h = ((avail_h as f32 * st.cfg.borrow().quake_height).round() as u32).clamp(200, avail_h);
     let x = monitor.x + ((monitor.width.saturating_sub(w)) / 2) as i32;
     let y = monitor.y + top_inset as i32;
     if st.quake_saved.is_none() {
@@ -5302,9 +5548,9 @@ fn profile_choice_label(kind: &str, name: &str, hotkey: &str) -> String {
 /// 现在启动/侧栏可见/Profile 变更都调用它。菜单是纯 Profile 列表：
 /// `+` 走默认新 Tab，不再插入额外的 “新建默认 Tab” 行。
 fn rebuild_profile_choices(st: &mut AppState) {
-    let mut indices = Vec::with_capacity(st.profiles.profiles.len());
-    let mut items = Vec::with_capacity(st.profiles.profiles.len());
-    for (i, p) in st.profiles.profiles.iter().enumerate() {
+    let mut indices = Vec::with_capacity(st.profiles.borrow().profiles.len());
+    let mut items = Vec::with_capacity(st.profiles.borrow().profiles.len());
+    for (i, p) in st.profiles.borrow().profiles.iter().enumerate() {
         let kind = match p.kind.as_str() {
             "ssh" => "SSH",
             "serial" => "Serial",
@@ -5313,9 +5559,7 @@ fn rebuild_profile_choices(st: &mut AppState) {
         };
         indices.push(i);
         items.push(slint::SharedString::from(profile_choice_label(
-            kind,
-            &p.name,
-            &p.hotkey,
+            kind, &p.name, &p.hotkey,
         )));
         // 热键冲突提示：Profile 热键与命令默认绑定时不去改任何一方，只明确告警
         //（实际按下时命令 override 优先，Profile 热键会打不中，必须让用户知道）。
@@ -5341,7 +5585,11 @@ fn profile_menu_move(st: &mut AppState, delta: i32) {
     }
     let cur = st.ui.get_profilemenu_selected();
     let next = if cur < 0 {
-        if delta >= 0 { 0 } else { len - 1 }
+        if delta >= 0 {
+            0
+        } else {
+            len - 1
+        }
     } else {
         ((cur + delta) % len + len) % len
     };
@@ -5375,7 +5623,11 @@ fn close_profile_menu(st: &mut AppState) {
 fn open_profile_menu(st: &mut AppState) {
     // 每次打开都重建并清掉高亮：列表顺序/Profile 可能在菜单关闭期间变化。
     rebuild_profile_choices(st);
-    let selected = if st.profile_menu_indices.is_empty() { -1 } else { 0 };
+    let selected = if st.profile_menu_indices.is_empty() {
+        -1
+    } else {
+        0
+    };
     st.ui.set_profilemenu_selected(selected);
     st.ui.set_profilemenu_open(true);
     eprintln!(
@@ -5393,7 +5645,10 @@ fn open_profiles_panel(st: &mut AppState) {
     eprintln!(
         "[profile] panel rows={} profiles={}",
         st.profile_row_targets.len(),
-        st.profile_row_targets.iter().filter(|x| x.is_some()).count()
+        st.profile_row_targets
+            .iter()
+            .filter(|x| x.is_some())
+            .count()
     );
 }
 
@@ -5469,6 +5724,7 @@ fn build_profile_launch_with(
 ) -> Result<(profile::Profile, Option<askpass::Askpass>), ProfileLaunchError> {
     let p = st
         .profiles
+        .borrow()
         .profiles
         .get(index)
         .cloned()
@@ -5485,7 +5741,7 @@ fn build_profile_launch_with(
             // auth=password + 已勾选保存 → 从 Vault 取密码，用 askpass 喂给系统 ssh；
             // 未勾选保存则交给 ssh 在终端里交互式询问（不经过 Vault，不落盘）。
             if p.auth == "password" && p.save_password {
-                match st.vault.get(p.id) {
+                match st.vault.with(|__x| __x.get(p.id)) {
                     Ok(password) => {
                         // 只记布尔/长度，绝不记密码本身。
                         eprintln!(
@@ -5530,7 +5786,7 @@ fn build_profile_launch_with(
             }
             eprintln!("[profile] ssh 命令: {} {}", q.shell, q.args.join(" "));
             q
-        },
+        }
         "telnet" => {
             let (prog, args) = p.telnet_command();
             let mut q = p.clone();
@@ -5539,7 +5795,7 @@ fn build_profile_launch_with(
             q.cwd = None;
             eprintln!("[profile] telnet 命令: {} {}", q.shell, q.args.join(" "));
             q
-        },
+        }
         "serial" => {
             let (prog, args) = p.serial_command();
             let mut q = p.clone();
@@ -5548,7 +5804,7 @@ fn build_profile_launch_with(
             q.cwd = None;
             eprintln!("[profile] serial 命令: {} {}", q.shell, q.args.join(" "));
             q
-        },
+        }
         other => return Err(ProfileLaunchError::UnknownKind(other.to_string())),
     };
     Ok((spec, askpass))
@@ -5563,14 +5819,14 @@ fn build_profile_launch_with(
 ///
 /// 自动重连自己调用 `open_profile_tab`（不清计数），否则计数被自己清零会无限重试。
 fn open_profile_tab_manual(st: &mut AppState, index: usize) {
-    if let Some(id) = st.profiles.profiles.get(index).map(|p| p.id) {
+    if let Some(id) = st.profiles.borrow().profiles.get(index).map(|p| p.id) {
         st.reconnect_attempts.remove(&id);
     }
     open_profile_tab(st, index);
 }
 
 fn open_profile_tab(st: &mut AppState, index: usize) {
-    let Some(p) = st.profiles.profiles.get(index).cloned() else {
+    let Some(p) = st.profiles.borrow().profiles.get(index).cloned() else {
         eprintln!("[profile] 打开失败: Profile 不存在");
         return;
     };
@@ -5579,8 +5835,11 @@ fn open_profile_tab(st: &mut AppState, index: usize) {
         return;
     }
     // Vault 锁定要先弹解锁，没必要先做网络预检（否则用户要等两次）。
-    if p.auth == "password" && p.save_password && !st.vault.is_unlocked() {
-        prompt_vault_unlock(st, "Vault 已锁定：请先在 Vault 页解锁，再连接该 SSH Profile");
+    if p.auth == "password" && p.save_password && !st.vault.borrow().is_unlocked() {
+        prompt_vault_unlock(
+            st,
+            "Vault 已锁定：请先在 Vault 页解锁，再连接该 SSH Profile",
+        );
         return;
     }
     let cache_key = hostkey_cache_key(&p);
@@ -5603,12 +5862,7 @@ fn hostkey_cache_key(p: &profile::Profile) -> String {
     )
 }
 
-fn start_hostkey_check(
-    st: &mut AppState,
-    p: profile::Profile,
-    index: usize,
-    cache_key: String,
-) {
+fn start_hostkey_check(st: &mut AppState, p: profile::Profile, index: usize, cache_key: String) {
     // 同一时间只保留一个预检；用户连点另一个 Profile 时取消旧的。
     if let Some(old) = st.hostkey_job.take() {
         old.cancel();
@@ -5621,8 +5875,11 @@ fn start_hostkey_check(
     st.ui.set_hostkey_open(true);
     st.ui.set_hostkey_mode("checking".into());
     st.ui.set_hostkey_title("Checking host key…".into());
-    st.ui
-        .set_hostkey_detail(format!("{host}\n正在读取 known_hosts 并检查服务器公钥（最多 10s）").as_str().into());
+    st.ui.set_hostkey_detail(
+        format!("{host}\n正在读取 known_hosts 并检查服务器公钥（最多 10s）")
+            .as_str()
+            .into(),
+    );
     st.ui.set_hostkey_error("".into());
 }
 
@@ -5647,8 +5904,8 @@ fn poll_hostkey_check(st: &mut AppState) {
             } else {
                 show_hostkey_verdict(st, index, cache_key, verdict);
             }
-        },
-        Err(std::sync::mpsc::TryRecvError::Empty) => {},
+        }
+        Err(std::sync::mpsc::TryRecvError::Empty) => {}
         Err(std::sync::mpsc::TryRecvError::Disconnected) => {
             st.hostkey_job = None;
             let Some((index, cache_key)) = st.hostkey_pending.take() else {
@@ -5664,7 +5921,7 @@ fn poll_hostkey_check(st: &mut AppState) {
                     local: false,
                 },
             );
-        },
+        }
     }
 }
 
@@ -5674,7 +5931,7 @@ fn show_hostkey_verdict(
     cache_key: String,
     verdict: known_hosts::Verdict,
 ) {
-    let profile = st.profiles.profiles.get(index).cloned();
+    let profile = st.profiles.borrow().profiles.get(index).cloned();
     let host = profile
         .as_ref()
         .map(|p| format!("{}:{}", p.host.trim(), p.port))
@@ -5700,7 +5957,7 @@ fn hostkey_trust(st: &mut AppState) {
     let Some((index, cache_key, verdict)) = st.hostkey_prompt.take() else {
         return;
     };
-    let Some(profile) = st.profiles.profiles.get(index).cloned() else {
+    let Some(profile) = st.profiles.borrow().profiles.get(index).cloned() else {
         st.ui.set_hostkey_open(false);
         return;
     };
@@ -5710,7 +5967,7 @@ fn hostkey_trust(st: &mut AppState) {
         _ => {
             st.hostkey_prompt = Some((index, cache_key, verdict));
             return;
-        },
+        }
     };
     match known_hosts::trust_keys(&profile, &keys) {
         Ok(()) => {
@@ -5718,12 +5975,13 @@ fn hostkey_trust(st: &mut AppState) {
             st.ui.set_hostkey_open(false);
             st.ui.set_hostkey_error("".into());
             open_profile_tab_now(st, index, true);
-        },
+        }
         Err(e) => {
             eprintln!("[known_hosts] 写入失败: {e}");
-            st.ui.set_hostkey_error(format!("写入 known_hosts 失败: {e}").as_str().into());
+            st.ui
+                .set_hostkey_error(format!("写入 known_hosts 失败: {e}").as_str().into());
             st.hostkey_prompt = Some((index, cache_key, verdict));
-        },
+        }
     }
 }
 
@@ -5754,11 +6012,14 @@ fn open_profile_tab_now(st: &mut AppState, index: usize, allow_askpass: bool) {
         Err(err @ (ProfileLaunchError::NotFound | ProfileLaunchError::UnknownKind(_))) => {
             eprintln!("[profile] 打开失败: {}", err.message());
             return;
-        },
+        }
         Err(ProfileLaunchError::VaultLocked) => {
-            prompt_vault_unlock(st, "Vault 已锁定：请先在 Vault 页解锁，再连接该 SSH Profile");
+            prompt_vault_unlock(
+                st,
+                "Vault 已锁定：请先在 Vault 页解锁，再连接该 SSH Profile",
+            );
             return;
-        },
+        }
         Err(err @ ProfileLaunchError::Vault(_)) => {
             prompt_profile_password(
                 st,
@@ -5766,11 +6027,11 @@ fn open_profile_tab_now(st: &mut AppState, index: usize, allow_askpass: bool) {
                 &format!("{}；请解锁 Vault 并重新保存密码", err.message()),
             );
             return;
-        },
+        }
         Err(err @ ProfileLaunchError::Askpass(_)) => {
             prompt_profile_password(st, index, &err.message());
             return;
-        },
+        }
     };
     open_profile_spec_tab(st, index, spec, askpass);
 }
@@ -5781,7 +6042,7 @@ fn open_profile_tab_now(st: &mut AppState, index: usize, allow_askpass: bool) {
 /// 与普通打开的区别只有 `transport = "plugin"`：先按既有逻辑构造 ssh spec，
 /// 再克隆一份标上 plugin；Profile 本身不改写、不落盘。
 fn open_plugin_ssh_tab(st: &mut AppState, index: usize) {
-    let Some(profile) = st.profiles.profiles.get(index).cloned() else {
+    let Some(profile) = st.profiles.borrow().profiles.get(index).cloned() else {
         eprintln!("[plugin-ssh] 打开失败: Profile {index} 不存在");
         return;
     };
@@ -5795,12 +6056,19 @@ fn open_plugin_ssh_tab(st: &mut AppState, index: usize) {
     let (mut spec, askpass) = match build_profile_launch_with(st, index, true) {
         Ok(v) => v,
         Err(err) => {
-            eprintln!("[plugin-ssh] Profile {} 启动参数构建失败: {}", profile.name, err.message());
+            eprintln!(
+                "[plugin-ssh] Profile {} 启动参数构建失败: {}",
+                profile.name,
+                err.message()
+            );
             return;
-        },
+        }
     };
     spec.transport = profile::PLUGIN_TRANSPORT.to_string();
-    eprintln!("[plugin-ssh] ssh.connect profile={} id={}", spec.name, spec.id);
+    eprintln!(
+        "[plugin-ssh] ssh.connect profile={} id={}",
+        spec.name, spec.id
+    );
     open_profile_spec_tab(st, index, spec, askpass);
 }
 
@@ -5811,16 +6079,24 @@ fn profile_selector_index(st: &AppState, selector: &str) -> Option<usize> {
         return None;
     }
     if let Ok(id) = selector.parse::<u64>() {
-        if let Some(idx) = st.profiles.profiles.iter().position(|p| p.id == id) {
+        if let Some(idx) = st
+            .profiles
+            .borrow()
+            .profiles
+            .iter()
+            .position(|p| p.id == id)
+        {
             return Some(idx);
         }
     }
     st.profiles
+        .borrow()
         .profiles
         .iter()
         .position(|p| p.name == selector)
         .or_else(|| {
             st.profiles
+                .borrow()
                 .profiles
                 .iter()
                 .position(|p| p.name.eq_ignore_ascii_case(selector))
@@ -5833,11 +6109,11 @@ fn connect_ssh_plugin(st: &mut AppState, selector: &str) -> bool {
         Some(index) => {
             open_plugin_ssh_tab(st, index);
             true
-        },
+        }
         None => {
             eprintln!("[plugin-ssh] 找不到 Profile: {selector}");
             false
-        },
+        }
     }
 }
 
@@ -5890,15 +6166,21 @@ fn open_profile_spec_tab(
                 spec.effective_scrollback(),
                 st.panes.get(&id).map(|rt| rt.cell)
             );
-        },
+        }
         Err(e) => {
             eprintln!("[profile] 打开 {:?} 失败: {e}", spec.name);
-            let zh = st.cfg.lang() == "zh";
+            let zh = app_lang(st) == "zh";
             let title = if zh { "启动失败" } else { "Launch failed" };
             let text = if zh {
-                format!("Profile「{}」启动失败: {e}；点 Retry 重试，或关闭提示。", spec.name)
+                format!(
+                    "Profile「{}」启动失败: {e}；点 Retry 重试，或关闭提示。",
+                    spec.name
+                )
             } else {
-                format!("Profile \"{}\" failed to launch: {e}; Retry or dismiss.", spec.name)
+                format!(
+                    "Profile \"{}\" failed to launch: {e}; Retry or dismiss.",
+                    spec.name
+                )
             };
             show_session_notice(
                 st,
@@ -5908,7 +6190,7 @@ fn open_profile_spec_tab(
                 text,
                 RetryAction::ProfileTab { index },
             );
-        },
+        }
     }
 }
 
@@ -5955,14 +6237,21 @@ fn profile_location(p: &profile::Profile) -> String {
             if host.is_empty() {
                 p.name.clone()
             } else {
-                format!("{host}{}", if p.port == 0 { String::new() } else { format!(":{}", p.port) })
+                format!(
+                    "{host}{}",
+                    if p.port == 0 {
+                        String::new()
+                    } else {
+                        format!(":{}", p.port)
+                    }
+                )
             }
-        },
+        }
         "serial" => p.serial_port.clone(),
         _ => {
             let shell = shell_basename(Some(p.shell.as_str()).filter(|s| !s.is_empty()));
             shell
-        },
+        }
     }
 }
 
@@ -5986,8 +6275,8 @@ fn note_ssh_exit(
     code: u32,
     signal: Option<String>,
 ) {
-    let zh = st.cfg.lang() == "zh";
-    let profile = profile_id.and_then(|id| st.profiles.get(id)).cloned();
+    let zh = app_lang(st) == "zh";
+    let profile = profile_id.and_then(|id| st.profiles.borrow().get(id).cloned());
     let pane_where = st
         .panes
         .get(&pane)
@@ -6019,24 +6308,35 @@ fn note_ssh_exit(
                     p.name
                 )
             }
-        },
+        }
         None if zh => {
             format!("本地 Shell「{pane_where}」· {exit}。点 Restart 重新启动，或关闭该 Tab。")
-        },
+        }
         None => {
             format!(
                 "Local shell \"{pane_where}\" · {exit}. Click Restart to relaunch, or close this tab."
             )
-        },
+        }
     };
-    let title = if zh { "会话已结束" } else { "Session ended" };
+    let title = if zh {
+        "会话已结束"
+    } else {
+        "Session ended"
+    };
     eprintln!(
         "[session] ts_ms={} pane={pane} profile={:?} exit={code} signal={:?}",
         logging::now_ms(),
         profile.as_ref().map(|p| p.id),
         signal
     );
-    show_session_notice(st, Some(pane), profile_id, title, text, RetryAction::RestartPane);
+    show_session_notice(
+        st,
+        Some(pane),
+        profile_id,
+        title,
+        text,
+        RetryAction::RestartPane,
+    );
 
     if let Some(rt) = st.panes.get(&pane) {
         eprintln!(
@@ -6057,7 +6357,7 @@ fn note_ssh_exit(
     if profile.kind == "local" || !profile.auto_reconnect {
         return;
     }
-    let policy = st.cfg.reconnect_policy();
+    let policy = st.cfg.borrow().reconnect_policy();
     let attempt = {
         let slot = st.reconnect_attempts.entry(profile.id).or_insert(0);
         *slot = slot.saturating_add(1);
@@ -6071,34 +6371,47 @@ fn note_ssh_exit(
                 "[session] 自动重连 profile={pid} 第 {attempt}/{} 次，{secs}s 后（{}）",
                 policy.max_attempts, profile.name
             );
-            let detail = if st.cfg.lang() == "zh" {
+            let detail = if app_lang(st) == "zh" {
                 format!("{secs}s 后第 {attempt}/{} 次重连", policy.max_attempts)
             } else {
                 format!("retry {attempt}/{} in {secs}s", policy.max_attempts)
             };
             if let Some(rt) = st.panes.get_mut(&pane) {
-                rt.connection = rt
-                    .connection
-                    .clone()
-                    .retrying(attempt, policy.max_attempts, detail);
+                rt.connection =
+                    rt.connection
+                        .clone()
+                        .retrying(attempt, policy.max_attempts, detail);
                 eprintln!(
                     "[connection] pane={pane} state=disconnected retries={attempt}/{} detail=retry-scheduled",
                     policy.max_attempts
                 );
             }
-            let msg = if st.cfg.lang() == "zh" {
-                format!("{} 断开，{secs}s 后自动重连（第 {attempt} 次）", profile.name)
+            let msg = if app_lang(st) == "zh" {
+                format!(
+                    "{} 断开，{secs}s 后自动重连（第 {attempt} 次）",
+                    profile.name
+                )
             } else {
-                format!("{} disconnected; reconnecting in {secs}s (#{attempt})", profile.name)
+                format!(
+                    "{} disconnected; reconnecting in {secs}s (#{attempt})",
+                    profile.name
+                )
             };
-            st.ui.set_status_items(ModelRc::from(Rc::new(VecModel::from(vec![
-                slint::SharedString::from(msg),
-            ]))));
+            st.ui
+                .set_status_items(ModelRc::from(Rc::new(VecModel::from(vec![
+                    slint::SharedString::from(msg),
+                ]))));
             let timer = slint::Timer::default();
             timer.start(slint::TimerMode::SingleShot, delay, move || {
                 if let Some(window) = runtime::current_window() {
                     let _ = runtime::with_window(window, |st| {
-                        if let Some(index) = st.profiles.profiles.iter().position(|p| p.id == pid) {
+                        let index = st
+                            .profiles
+                            .borrow()
+                            .profiles
+                            .iter()
+                            .position(|p| p.id == pid);
+                        if let Some(index) = index {
                             eprintln!("[session] 自动重连触发 profile={pid}");
                             open_profile_tab_manual(st, index);
                         }
@@ -6106,7 +6419,7 @@ fn note_ssh_exit(
                 }
             });
             st.reconnect_timer = Some(timer);
-        },
+        }
         None => {
             eprintln!(
                 "[session] 自动重连 profile={} 已到上限（{}/{}），停止",
@@ -6114,17 +6427,14 @@ fn note_ssh_exit(
             );
             if let Some(rt) = st.panes.get_mut(&pane) {
                 let retries = attempt.min(policy.max_attempts);
-                rt.connection = rt
-                    .connection
-                    .clone()
-                    .gave_up(retries, policy.max_attempts);
+                rt.connection = rt.connection.clone().gave_up(retries, policy.max_attempts);
                 eprintln!(
                     "[connection] pane={pane} state=failed retries={retries}/{} detail=retry-exhausted",
                     policy.max_attempts
                 );
             }
             st.reconnect_attempts.remove(&profile.id);
-        },
+        }
     }
 }
 
@@ -6143,15 +6453,15 @@ fn reconnect_ssh_exit(st: &mut AppState) {
     };
     st.ui.set_ssh_exit_open(false);
     match notice.retry {
-        RetryAction::None => {},
+        RetryAction::None => {}
         RetryAction::NewTab { cwd } => {
             eprintln!("[session] retry: new default tab cwd={cwd:?}");
             new_tab_inner_with_cwd(st, cwd);
-        },
+        }
         RetryAction::ProfileTab { index } => {
             eprintln!("[session] retry: profile tab index={index}");
             open_profile_tab_now(st, index, true);
-        },
+        }
         RetryAction::RestartPane => restart_exited_pane(st, notice),
     }
 }
@@ -6168,7 +6478,7 @@ fn restart_exited_pane(st: &mut AppState, notice: SshExitNotice) {
         eprintln!("[session] 重启失败：pane {pane} 已关闭");
         return;
     };
-    let zh = st.cfg.lang() == "zh";
+    let zh = app_lang(st) == "zh";
     let Some(profile_id) = notice.profile_id else {
         // 系统 shell / 无 Profile 的本地 pane：同格重开默认 shell。
         // 先建新 runtime 再替换旧 runtime：创建失败时 Tab 里仍有旧 pane（最后一帧），
@@ -6181,7 +6491,7 @@ fn restart_exited_pane(st: &mut AppState, notice: SshExitNotice) {
                 rebuild_tabs(st);
                 redraw_pane_inner(st, pane);
                 eprintln!("[session] 已重启本地 shell pane={pane}");
-            },
+            }
             Err(e) => {
                 let text = if zh {
                     format!("Shell 重启失败: {e}；检查 Shell 路径/权限后点 Retry，或关闭提示。")
@@ -6189,21 +6499,37 @@ fn restart_exited_pane(st: &mut AppState, notice: SshExitNotice) {
                     format!("Failed to relaunch shell: {e}; check the shell path/permissions, then Retry or dismiss.")
                 };
                 let title = if zh { "启动失败" } else { "Launch failed" };
-                show_session_notice(st, None, None, title, text, RetryAction::NewTab { cwd: None });
-            },
+                show_session_notice(
+                    st,
+                    None,
+                    None,
+                    title,
+                    text,
+                    RetryAction::NewTab { cwd: None },
+                );
+            }
         }
         return;
     };
-    let Some(index) = st.profiles.profiles.iter().position(|p| p.id == profile_id) else {
+    let Some(index) = st
+        .profiles
+        .borrow()
+        .profiles
+        .iter()
+        .position(|p| p.id == profile_id)
+    else {
         eprintln!("[ssh] 重连失败：Profile {profile_id} 已被删除");
         return;
     };
     let (spec, askpass) = match build_profile_launch_with(st, index, true) {
         Ok(v) => v,
         Err(ProfileLaunchError::VaultLocked) => {
-            prompt_vault_unlock(st, "Vault 已锁定：请先在 Vault 页解锁，再重连该 SSH Profile");
+            prompt_vault_unlock(
+                st,
+                "Vault 已锁定：请先在 Vault 页解锁，再重连该 SSH Profile",
+            );
             return;
-        },
+        }
         Err(e) => {
             let text = if zh {
                 format!("重连失败: {}；点 Retry 再试，或关闭提示。", e.message())
@@ -6220,7 +6546,7 @@ fn restart_exited_pane(st: &mut AppState, notice: SshExitNotice) {
                 RetryAction::RestartPane,
             );
             return;
-        },
+        }
     };
     // 旧 runtime 已经退出；换掉它但保留 pane id（Tab/分屏布局不变）。
     // 同样先创建成功再替换，失败时旧 pane 继续兜住布局。
@@ -6235,7 +6561,7 @@ fn restart_exited_pane(st: &mut AppState, notice: SshExitNotice) {
             rebuild_tabs(st);
             redraw_pane_inner(st, pane);
             eprintln!("[ssh] 已重连 pane={pane} profile={profile_id}");
-        },
+        }
         Err(e) => {
             let text = if zh {
                 format!("重连失败: {e}；点 Retry 再试，或关闭提示。")
@@ -6251,14 +6577,14 @@ fn restart_exited_pane(st: &mut AppState, notice: SshExitNotice) {
                 text,
                 RetryAction::RestartPane,
             );
-        },
+        }
     }
 }
 
 /// SESS-008：把配置版本/迁移备份检查结果推给设置页（只读，不改文件）。
 fn refresh_config_report(st: &mut AppState) {
     let inspection = Config::inspect_file(&Config::path());
-    let zh = st.cfg.lang() == "zh";
+    let zh = app_lang(st) == "zh";
     let report = inspection.summary(zh);
     eprintln!(
         "[config] inspect path={} version={:?} current={} backup={:?} report={report:?}",
@@ -6288,12 +6614,13 @@ fn open_profile_form(st: &mut AppState) {
     let base = "profile".to_string();
     let mut name = base.clone();
     let mut n = 2;
-    while st.profiles.profiles.iter().any(|p| p.name == name) {
+    while st.profiles.borrow().profiles.iter().any(|p| p.name == name) {
         name = format!("{base}-{n}");
         n += 1;
     }
     let shell = st
         .cfg
+        .borrow()
         .shell
         .clone()
         .or_else(|| std::env::var("SHELL").ok())
@@ -6345,7 +6672,7 @@ fn open_profile_form(st: &mut AppState) {
 
 /// 打开编辑表单：回填已有 Profile 的所有字段。
 fn edit_profile_form(st: &mut AppState, index: usize) {
-    let Some(p) = st.profiles.profiles.get(index).cloned() else {
+    let Some(p) = st.profiles.borrow().profiles.get(index).cloned() else {
         return;
     };
     let kind_idx = profile::KINDS
@@ -6354,7 +6681,8 @@ fn edit_profile_form(st: &mut AppState, index: usize) {
         .unwrap_or(0);
     st.ui.set_form_edit_id(p.id as i32);
     st.ui.set_form_name(p.name.as_str().into());
-    st.ui.set_form_title(p.title.clone().unwrap_or_default().as_str().into());
+    st.ui
+        .set_form_title(p.title.clone().unwrap_or_default().as_str().into());
     st.ui.set_form_group(p.group.as_str().into());
     st.ui.set_form_cwd_hint("".into());
     st.ui.set_form_kind(kind_idx as i32);
@@ -6380,12 +6708,10 @@ fn edit_profile_form(st: &mut AppState, index: usize) {
     st.ui.set_form_extra(p.extra_args.join(" ").as_str().into());
     st.ui
         .set_form_forwards(p.local_forwards.join(" ").as_str().into());
-    st.ui.set_form_remote_forwards(
-        p.remote_forwards.join(" ").as_str().into(),
-    );
-    st.ui.set_form_dynamic_forwards(
-        p.dynamic_forwards.join(" ").as_str().into(),
-    );
+    st.ui
+        .set_form_remote_forwards(p.remote_forwards.join(" ").as_str().into());
+    st.ui
+        .set_form_dynamic_forwards(p.dynamic_forwards.join(" ").as_str().into());
     st.ui.set_form_proxy_jump(p.proxy_jump.as_str().into());
     st.ui.set_form_agent_forward(p.agent_forward);
     st.ui.set_form_serial_port(p.serial_port.as_str().into());
@@ -6399,20 +6725,10 @@ fn edit_profile_form(st: &mut AppState, index: usize) {
     );
     st.ui
         .set_form_theme(p.theme.clone().unwrap_or_default().as_str().into());
-    st.ui.set_form_cursor_shape(
-        p.cursor_shape
-            .clone()
-            .unwrap_or_default()
-            .as_str()
-            .into(),
-    );
-    st.ui.set_form_cursor_blink(
-        p.cursor_blink
-            .clone()
-            .unwrap_or_default()
-            .as_str()
-            .into(),
-    );
+    st.ui
+        .set_form_cursor_shape(p.cursor_shape.clone().unwrap_or_default().as_str().into());
+    st.ui
+        .set_form_cursor_blink(p.cursor_blink.clone().unwrap_or_default().as_str().into());
     st.ui.set_form_scrollback(
         p.scrollback
             .map(|v| v.to_string())
@@ -6434,7 +6750,7 @@ fn edit_profile_form(st: &mut AppState, index: usize) {
 /// 成功/失败都写进 `form-cwd-hint`（表单里单独一行提示），不覆盖保存错误。
 fn test_profile_cwd_form(st: &mut AppState) {
     let raw = st.ui.get_form_cwd().to_string();
-    let lang = st.cfg.lang();
+    let lang = app_lang(st);
     match profile::test_start_dir(&raw) {
         Ok(path) => {
             let msg = if lang == "zh" {
@@ -6444,7 +6760,7 @@ fn test_profile_cwd_form(st: &mut AppState) {
             };
             st.ui.set_form_cwd_hint(msg.into());
             eprintln!("[profile] cwd test ok path={}", path.display());
-        },
+        }
         Err(e) => {
             let msg = if lang == "zh" {
                 format!("✗ {e}")
@@ -6453,7 +6769,7 @@ fn test_profile_cwd_form(st: &mut AppState) {
             };
             st.ui.set_form_cwd_hint(msg.into());
             eprintln!("[profile] cwd test failed: {e}");
-        },
+        }
     }
 }
 
@@ -6570,7 +6886,7 @@ fn save_profile_form(st: &mut AppState) {
                 );
                 st.ui.set_form_error(msg.as_str().into());
                 return;
-            },
+            }
         },
     };
     let scrollback = match trim_opt(st.ui.get_form_scrollback().to_string()) {
@@ -6581,7 +6897,7 @@ fn save_profile_form(st: &mut AppState) {
                 let msg = format!("scrollback 无效: {raw}（应为正整数，留空继承全局）");
                 st.ui.set_form_error(msg.as_str().into());
                 return;
-            },
+            }
         },
     };
     p.font_size = font_size;
@@ -6598,6 +6914,7 @@ fn save_profile_form(st: &mut AppState) {
     let save_password = p.save_password;
     let previous_save = if edit_id > 0 {
         st.profiles
+            .borrow()
             .get(edit_id as u64)
             .map(|q| q.save_password)
             .unwrap_or(false)
@@ -6608,8 +6925,8 @@ fn save_profile_form(st: &mut AppState) {
     // 先做 Vault 前置校验，任何错误都不改动 ProfileStore。
     if p.save_password {
         if !password.is_empty() {
-            if !st.vault.is_unlocked() {
-                let msg = match st.vault.status() {
+            if !st.vault.borrow().is_unlocked() {
+                let msg = match st.vault.with(|__x| __x.status()) {
                     vault::VaultStatus::Uninitialized => {
                         "Vault 未初始化：请先在 Settings → Vault 设置主密码，再保存密码"
                     }
@@ -6621,7 +6938,9 @@ fn save_profile_form(st: &mut AppState) {
             }
         } else if edit_id > 0 && previous_save {
             // 编辑时留空 = 保留 Vault 里已有的密码；若已解锁则确认条目还在。
-            if st.vault.is_unlocked() && !matches!(st.vault.contains(edit_id as u64), Ok(true)) {
+            if st.vault.borrow().is_unlocked()
+                && !matches!(st.vault.borrow().contains(edit_id as u64), Ok(true))
+            {
                 let msg = "Vault 中没有该 Profile 的密码，请输入新密码后保存";
                 st.ui.set_form_error(msg.into());
                 eprintln!("[profile] {msg}");
@@ -6637,21 +6956,22 @@ fn save_profile_form(st: &mut AppState) {
 
     let result = if edit_id > 0 {
         st.profiles
+            .borrow_mut()
             .update(edit_id as u64, p)
             .map(|_| edit_id as u64)
     } else {
-        st.profiles.add(p)
+        st.profiles.borrow_mut().add(p)
     };
     match result {
         Ok(id) => {
             let mut vault_write_error = None;
             if save_password && !password.is_empty() {
-                if let Err(e) = st.vault.set(id, &password) {
+                if let Err(e) = st.vault.borrow_mut().set(id, &password) {
                     vault_write_error = Some(format!("密码写入 Vault 失败: {e}"));
                 }
             } else if !save_password && previous_save {
                 // 取消勾选：解锁时同步删除旧凭据；锁定则只能先留着，等 Clear vault 清理。
-                match st.vault.remove(id) {
+                match st.vault.with_mut(|__x| __x.remove(id)) {
                     Ok(_) => {}
                     Err(vault::VaultError::Locked | vault::VaultError::NotInitialized) => {
                         eprintln!("[vault] Vault 锁定，Profile {id} 的旧密码暂留（已被取消勾选，不再使用）");
@@ -6661,17 +6981,23 @@ fn save_profile_form(st: &mut AppState) {
             }
             if let Some(err) = vault_write_error {
                 // Profile 已进内存：避免 save_password=true 却没有密码，回退标志并落盘。
-                if let Some(profile) = st.profiles.profiles.iter_mut().find(|q| q.id == id) {
+                if let Some(profile) = st
+                    .profiles
+                    .borrow_mut()
+                    .profiles
+                    .iter_mut()
+                    .find(|q| q.id == id)
+                {
                     profile.save_password = false;
                 }
-                st.profiles.save();
+                st.profiles.borrow().save();
                 refresh_profiles(st);
                 st.ui.set_form_save_password(false);
                 st.ui.set_form_error(err.as_str().into());
                 eprintln!("[profile] {err}（Profile 已保存，但未关联密码）");
                 return;
             }
-            st.profiles.save();
+            st.profiles.borrow().save();
             refresh_profiles(st);
             st.ui.set_profile_form_open(false);
             st.ui.set_form_password("".into());
@@ -6679,8 +7005,11 @@ fn save_profile_form(st: &mut AppState) {
             st.ui.set_form_error("".into());
             refresh_vault_ui(st);
             refocus_after_modal(st);
-            eprintln!("[profile] 保存 id={id} kind={kind}（共 {}）", st.profiles.profiles.len());
-        },
+            eprintln!(
+                "[profile] 保存 id={id} kind={kind}（共 {}）",
+                st.profiles.borrow().profiles.len()
+            );
+        }
         Err(e) => {
             eprintln!("[profile] 表单校验失败: {e}");
             st.ui.set_form_error(e.as_str().into());
@@ -6719,13 +7048,13 @@ fn vault_status_text(v: &vault::Vault, lang: &str) -> String {
             } else {
                 format!("Unlocked · {} credential(s)", v.entry_count())
             }
-        },
+        }
     }
 }
 
 /// 刷新设置页 Vault 状态/路径/条数（不清空错误提示）。
 fn refresh_vault_ui(st: &mut AppState) {
-    let lang = st.cfg.lang();
+    let lang = app_lang(st);
     let status = if st.vault_busy {
         ui_text(
             lang,
@@ -6734,10 +7063,10 @@ fn refresh_vault_ui(st: &mut AppState) {
         )
         .to_string()
     } else {
-        vault_status_text(&st.vault, lang)
+        vault_status_text(&st.vault.borrow(), lang)
     };
-    let path = st.vault.path().display().to_string();
-    let entries = st.vault.entry_count() as i32;
+    let path = st.vault.borrow().path().display().to_string();
+    let entries = st.vault.borrow().entry_count() as i32;
     st.ui.set_vault_status(status.as_str().into());
     st.ui.set_vault_path(path.as_str().into());
     st.ui.set_vault_entries(entries);
@@ -6747,7 +7076,7 @@ fn refresh_vault_ui(st: &mut AppState) {
 /// 后台任务启动前统一防重入；返回 true = 已有任务在跑。
 fn vault_busy_guard(st: &mut AppState) -> bool {
     if st.vault_busy {
-        vault_fail(st, ui_text(st.cfg.lang(), "Vault is deriving a key in the background; try again shortly (this page stays usable)", "Vault 正在后台派生密钥，请稍候（设置页仍可操作）"));
+        vault_fail(st, ui_text(app_lang(st), "Vault is deriving a key in the background; try again shortly (this page stays usable)", "Vault 正在后台派生密钥，请稍候（设置页仍可操作）"));
         return true;
     }
     false
@@ -6774,44 +7103,72 @@ fn poll_vault(st: &mut AppState) {
     match job.try_recv() {
         Ok(vault::VaultTaskOutcome::Ok(session)) => {
             let entries = session.entry_count();
-            st.vault.adopt(session);
+            st.vault.borrow_mut().adopt(session);
             st.vault_job = None;
             st.vault_busy = false;
             let action = st.vault_action.take();
             refresh_vault_ui(st);
             match action {
                 Some(VaultAction::Initialize) => {
-                    vault_notice(st, ui_text(st.cfg.lang(), "Master password set; Vault is unlocked (empty vault)", "主密码已设置，Vault 已解锁（空 vault）"));
+                    vault_notice(
+                        st,
+                        ui_text(
+                            app_lang(st),
+                            "Master password set; Vault is unlocked (empty vault)",
+                            "主密码已设置，Vault 已解锁（空 vault）",
+                        ),
+                    );
                     eprintln!("[vault] 后台初始化完成");
-                },
+                }
                 Some(VaultAction::ChangeMaster) => {
-                    vault_notice(st, ui_text(st.cfg.lang(), "Master password updated; credentials re-encrypted with the new key", "主密码已更新；凭据已用新密钥重新加密"));
+                    vault_notice(
+                        st,
+                        ui_text(
+                            app_lang(st),
+                            "Master password updated; credentials re-encrypted with the new key",
+                            "主密码已更新；凭据已用新密钥重新加密",
+                        ),
+                    );
                     eprintln!("[vault] 后台改主密码完成");
-                },
+                }
                 _ => {
-                    vault_notice(st, if st.cfg.lang() == "zh" { format!("已解锁 · {entries} 条凭据") } else { format!("Unlocked · {entries} credential(s)") });
+                    vault_notice(
+                        st,
+                        if app_lang(st) == "zh" {
+                            format!("已解锁 · {entries} 条凭据")
+                        } else {
+                            format!("Unlocked · {entries} credential(s)")
+                        },
+                    );
                     eprintln!("[vault] 后台解锁完成 entries={entries}");
-                },
+                }
             }
-        },
+        }
         Ok(vault::VaultTaskOutcome::Err(e)) => {
             st.vault_job = None;
             st.vault_busy = false;
             st.vault_action = None;
             if e == vault::VaultError::NotInitialized {
-                st.vault.refresh_status();
+                st.vault.borrow_mut().refresh_status();
             }
             refresh_vault_ui(st);
             vault_fail(st, e.to_string());
-        },
-        Err(TryRecvError::Empty) => {},
+        }
+        Err(TryRecvError::Empty) => {}
         Err(TryRecvError::Disconnected) => {
             st.vault_job = None;
             st.vault_busy = false;
             st.vault_action = None;
             refresh_vault_ui(st);
-            vault_fail(st, ui_text(st.cfg.lang(), "Vault background task ended unexpectedly (no result)", "Vault 后台任务异常结束（没有结果）"));
-        },
+            vault_fail(
+                st,
+                ui_text(
+                    app_lang(st),
+                    "Vault background task ended unexpectedly (no result)",
+                    "Vault 后台任务异常结束（没有结果）",
+                ),
+            );
+        }
     }
 }
 
@@ -6838,30 +7195,39 @@ fn vault_set_master_password(st: &mut AppState) {
     }
     let master = st.ui.get_vault_password().to_string();
     if master.is_empty() {
-        vault_fail(st, ui_text(st.cfg.lang(), "Enter the master password", "请输入主密码"));
+        vault_fail(
+            st,
+            ui_text(app_lang(st), "Enter the master password", "请输入主密码"),
+        );
         return;
     }
-    let path = st.vault.path().to_path_buf();
-    match st.vault.status() {
+    let path = st.vault.borrow().path().to_path_buf();
+    match st.vault.with(|__x| __x.status()) {
         vault::VaultStatus::Uninitialized => {
             let task = vault::VaultTask::initialize(path, master, st.app_wake.clone());
             start_vault_task(st, VaultAction::Initialize, task);
-        },
+        }
         vault::VaultStatus::Unlocked => {
-            let snapshot = match st.vault.change_snapshot() {
+            let snapshot = match st.vault.with(|__x| __x.change_snapshot()) {
                 Ok(snapshot) => snapshot,
                 Err(e) => {
                     vault_fail(st, e.to_string());
                     return;
-                },
+                }
             };
-            let task =
-                vault::VaultTask::change_master(path, snapshot, master, st.app_wake.clone());
+            let task = vault::VaultTask::change_master(path, snapshot, master, st.app_wake.clone());
             start_vault_task(st, VaultAction::ChangeMaster, task);
-        },
+        }
         vault::VaultStatus::Locked => {
-            vault_fail(st, ui_text(st.cfg.lang(), "Vault is locked: unlock with the current master password before changing it", "Vault 已锁定：先用当前主密码解锁，再修改主密码"));
-        },
+            vault_fail(
+                st,
+                ui_text(
+                    app_lang(st),
+                    "Vault is locked: unlock with the current master password before changing it",
+                    "Vault 已锁定：先用当前主密码解锁，再修改主密码",
+                ),
+            );
+        }
     }
 }
 
@@ -6872,43 +7238,85 @@ fn vault_unlock(st: &mut AppState) {
     }
     let master = st.ui.get_vault_password().to_string();
     if master.is_empty() {
-        vault_fail(st, ui_text(st.cfg.lang(), "Enter the master password", "请输入主密码"));
+        vault_fail(
+            st,
+            ui_text(app_lang(st), "Enter the master password", "请输入主密码"),
+        );
         return;
     }
-    let task = vault::VaultTask::unlock(st.vault.path().to_path_buf(), master, st.app_wake.clone());
+    let task = vault::VaultTask::unlock(
+        st.vault.borrow().path().to_path_buf(),
+        master,
+        st.app_wake.clone(),
+    );
     start_vault_task(st, VaultAction::Unlock, task);
 }
 
 fn vault_lock(st: &mut AppState) {
     if st.vault_busy {
-        vault_fail(st, ui_text(st.cfg.lang(), "Vault is deriving a key; lock again when it finishes", "Vault 正在后台派生密钥，完成后再锁定"));
+        vault_fail(
+            st,
+            ui_text(
+                app_lang(st),
+                "Vault is deriving a key; lock again when it finishes",
+                "Vault 正在后台派生密钥，完成后再锁定",
+            ),
+        );
         return;
     }
-    if st.vault.status() == vault::VaultStatus::Uninitialized {
-        vault_fail(st, ui_text(st.cfg.lang(), "Vault is not initialized: set a master password first", "Vault 尚未初始化：先设置主密码"));
+    if st.vault.borrow().status() == vault::VaultStatus::Uninitialized {
+        vault_fail(
+            st,
+            ui_text(
+                app_lang(st),
+                "Vault is not initialized: set a master password first",
+                "Vault 尚未初始化：先设置主密码",
+            ),
+        );
         return;
     }
-    st.vault.lock();
+    st.vault.borrow_mut().lock();
     st.ui.set_vault_password("".into());
     st.vault_clear_armed = false;
     refresh_vault_ui(st);
-    vault_notice(st, ui_text(st.cfg.lang(), "Locked: keys/credentials in memory were discarded", "已锁定：内存中的密钥/凭据已丢弃"));
+    vault_notice(
+        st,
+        ui_text(
+            app_lang(st),
+            "Locked: keys/credentials in memory were discarded",
+            "已锁定：内存中的密钥/凭据已丢弃",
+        ),
+    );
     eprintln!("[vault] 已锁定");
 }
 
 fn vault_clear(st: &mut AppState) {
     if st.vault_busy {
-        vault_fail(st, ui_text(st.cfg.lang(), "Vault is deriving a key; clear again when it finishes", "Vault 正在后台派生密钥，完成后再清空"));
+        vault_fail(
+            st,
+            ui_text(
+                app_lang(st),
+                "Vault is deriving a key; clear again when it finishes",
+                "Vault 正在后台派生密钥，完成后再清空",
+            ),
+        );
         return;
     }
-    if !st.vault.is_unlocked() {
-        vault_fail(st, ui_text(st.cfg.lang(), "Vault is locked; cannot clear", "Vault 未解锁，无法清空"));
+    if !st.vault.borrow().is_unlocked() {
+        vault_fail(
+            st,
+            ui_text(
+                app_lang(st),
+                "Vault is locked; cannot clear",
+                "Vault 未解锁，无法清空",
+            ),
+        );
         return;
     }
     if !st.vault_clear_armed {
         st.vault_clear_armed = true;
-        let n = st.vault.entry_count();
-        let notice = if st.cfg.lang() == "zh" {
+        let n = st.vault.borrow().entry_count();
+        let notice = if app_lang(st) == "zh" {
             format!("再次点击 Clear 确认清空 {n} 条凭据（主密码保留）")
         } else {
             format!("Click Clear again to erase {n} credential(s) (master password kept)")
@@ -6917,10 +7325,17 @@ fn vault_clear(st: &mut AppState) {
         return;
     }
     st.vault_clear_armed = false;
-    match st.vault.clear() {
+    match st.vault.with_mut(|__x| __x.clear()) {
         Ok(()) => {
             refresh_vault_ui(st);
-            vault_notice(st, ui_text(st.cfg.lang(), "All credentials cleared (vault.enc and master password kept)", "已清空全部凭据（vault.enc 与主密码保留）"));
+            vault_notice(
+                st,
+                ui_text(
+                    app_lang(st),
+                    "All credentials cleared (vault.enc and master password kept)",
+                    "已清空全部凭据（vault.enc 与主密码保留）",
+                ),
+            );
             eprintln!("[vault] 已清空全部凭据");
         }
         Err(e) => vault_fail(st, e.to_string()),
@@ -6931,6 +7346,7 @@ fn vault_clear(st: &mut AppState) {
 
 fn sftp_profile_indices(st: &AppState) -> Vec<usize> {
     st.profiles
+        .borrow()
         .profiles
         .iter()
         .enumerate()
@@ -6943,7 +7359,7 @@ fn open_sftp_panel(st: &mut AppState) {
     let indices = sftp_profile_indices(st);
     let names: Vec<slint::SharedString> = indices
         .iter()
-        .map(|i| st.profiles.profiles[*i].name.clone().into())
+        .map(|i| st.profiles.borrow().profiles[*i].name.clone().into())
         .collect();
     st.sftp_profiles = indices;
     let model = Rc::new(VecModel::from(names));
@@ -6973,7 +7389,7 @@ fn open_sftp_panel(st: &mut AppState) {
 fn sftp_current_target(st: &AppState) -> Option<sftp::SftpTarget> {
     let i = st.ui.get_sftp_profile().max(0) as usize;
     let idx = *st.sftp_profiles.get(i)?;
-    sftp::SftpTarget::from_profile(&st.profiles.profiles[idx]).ok()
+    sftp::SftpTarget::from_profile(&st.profiles.borrow().profiles[idx]).ok()
 }
 
 fn sftp_set_status(st: &mut AppState, msg: &str) {
@@ -6996,8 +7412,12 @@ fn sftp_show_transfer(st: &mut AppState) {
 
 /// 刷新队列行（当前失败项可重试）、队列计数/按钮状态。
 fn refresh_sftp_queue(st: &mut AppState) {
-    let mut items: Vec<slint::SharedString> =
-        st.sftp_queue.labels(2).into_iter().map(Into::into).collect();
+    let mut items: Vec<slint::SharedString> = st
+        .sftp_queue
+        .labels(2)
+        .into_iter()
+        .map(Into::into)
+        .collect();
     if let Some(failed) = &st.sftp_last_failed {
         if st.sftp_transfer.is_none() {
             items.push(format!("失败 · 可重试: {}", failed.queue_label()).into());
@@ -7006,7 +7426,8 @@ fn refresh_sftp_queue(st: &mut AppState) {
     let count = st.sftp_queue.len() as i32;
     st.sftp_queue_model.set_vec(items);
     st.ui.set_sftp_queue_count(count);
-    st.ui.set_sftp_retry_available(st.sftp_last_failed.is_some());
+    st.ui
+        .set_sftp_retry_available(st.sftp_last_failed.is_some());
 }
 
 fn sftp_update_status(st: &mut AppState) {
@@ -7038,7 +7459,7 @@ fn sftp_launch_request(st: &mut AppState, request: sftp::TransferRequest) -> boo
                 st.sftp_queue.len()
             );
             true
-        },
+        }
         Err(e) => {
             let msg = format!("{}失败: {e}", direction.verb());
             sftp_set_status(st, &msg);
@@ -7046,7 +7467,7 @@ fn sftp_launch_request(st: &mut AppState, request: sftp::TransferRequest) -> boo
             sftp_show_transfer(st);
             refresh_sftp_queue(st);
             false
-        },
+        }
     }
 }
 
@@ -7080,7 +7501,13 @@ fn sftp_start_transfer(
     // 下载始终 get -R（普通文件安全）；上传只有本地是目录才 put -R。
     let recursive =
         direction == sftp::TransferDirection::Upload && std::path::Path::new(&local).is_dir();
-    let request = sftp::TransferRequest { direction, target, local, remote, recursive };
+    let request = sftp::TransferRequest {
+        direction,
+        target,
+        local,
+        remote,
+        recursive,
+    };
     sftp_submit_transfer(st, request);
 }
 
@@ -7213,12 +7640,16 @@ fn sftp_do_chmod(st: &mut AppState) {
         Err(e) => {
             sftp_set_status(st, &e);
             return;
-        },
+        }
     };
     let remote = remote_entry_path(&st.ui.get_sftp_remote(), &item);
     sftp_start_op(
         st,
-        sftp::SftpCommand::Chmod { target, remote, mode },
+        sftp::SftpCommand::Chmod {
+            target,
+            remote,
+            mode,
+        },
         "修改权限中…（后台）",
     );
 }
@@ -7406,7 +7837,10 @@ fn sftp_do_delete(st: &mut AppState) {
     st.sftp_delete_armed = false;
     sftp_start_op(
         st,
-        sftp::SftpCommand::Remove { target, remote: path },
+        sftp::SftpCommand::Remove {
+            target,
+            remote: path,
+        },
         "删除中…（后台）",
     );
 }
@@ -7425,63 +7859,83 @@ fn poll_sftp_op(st: &mut AppState) {
             );
             apply_sftp_outcome(st, outcome);
             sftp_show_transfer(st);
-        },
+        }
         Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => {
             st.sftp_op = None;
             st.sftp_op_timer.stop();
             eprintln!("[sftp] 后台操作异常结束（worker 没有发出结果）");
             sftp_set_status(st, "远端操作异常结束（没有结果）");
             sftp_show_transfer(st);
-        },
-        Some(Err(std::sync::mpsc::TryRecvError::Empty)) => {},
+        }
+        Some(Err(std::sync::mpsc::TryRecvError::Empty)) => {}
         None => {
             // 没有 job 时 timer 不应继续跑（防御性：避免异常路径留下空转）。
             st.sftp_op_timer.stop();
-        },
+        }
     }
 }
 
 fn apply_sftp_outcome(st: &mut AppState, outcome: sftp::SftpOutcome) {
     match outcome {
-        sftp::SftpOutcome::List { items: Ok(items), .. } => {
+        sftp::SftpOutcome::List {
+            items: Ok(items), ..
+        } => {
             st.sftp_delete_armed = false;
             let n = items.len();
             let names: Vec<slint::SharedString> = items.into_iter().map(|s| s.into()).collect();
             st.sftp_model.set_vec(names);
             st.ui.set_sftp_selected(-1);
             sftp_set_status(st, &format!("{n} 个条目"));
-        },
+        }
         sftp::SftpOutcome::List { items: Err(e), .. } => {
             sftp_set_status(st, &format!("列目录失败: {e}"));
-        },
-        sftp::SftpOutcome::Mkdir { remote, result: Ok(()) } => {
+        }
+        sftp::SftpOutcome::Mkdir {
+            remote,
+            result: Ok(()),
+        } => {
             sftp_set_status(st, &format!("已创建 {remote}"));
             sftp_do_list(st);
-        },
+        }
         sftp::SftpOutcome::Mkdir { result: Err(e), .. } => {
             sftp_set_status(st, &format!("建目录失败: {e}"));
-        },
-        sftp::SftpOutcome::Rename { from, to, result: Ok(()) } => {
+        }
+        sftp::SftpOutcome::Rename {
+            from,
+            to,
+            result: Ok(()),
+        } => {
             sftp_set_status(st, &format!("已重命名 {from} → {to}"));
             sftp_do_list(st);
-        },
+        }
         sftp::SftpOutcome::Rename { result: Err(e), .. } => {
             sftp_set_status(st, &format!("重命名失败: {e}"));
-        },
-        sftp::SftpOutcome::Remove { path, result: Ok(()) } => {
+        }
+        sftp::SftpOutcome::Remove {
+            path,
+            result: Ok(()),
+        } => {
             sftp_set_status(st, &format!("已删除 {path}"));
             sftp_do_list(st);
-        },
+        }
         sftp::SftpOutcome::Remove { result: Err(e), .. } => {
             sftp_set_status(st, &format!("删除失败: {e}"));
-        },
-        sftp::SftpOutcome::Chmod { path, mode, result: Ok(()) } => {
+        }
+        sftp::SftpOutcome::Chmod {
+            path,
+            mode,
+            result: Ok(()),
+        } => {
             // `ls -1` 不显示权限，列表内容不会变；保留成功文案而不是刷新成“N 个条目”。
             sftp_set_status(st, &format!("已把 {path} 权限改为 {mode:04o}"));
-        },
-        sftp::SftpOutcome::Chmod { path, result: Err(e), .. } => {
+        }
+        sftp::SftpOutcome::Chmod {
+            path,
+            result: Err(e),
+            ..
+        } => {
             sftp_set_status(st, &format!("修改 {path} 权限失败: {e}"));
-        },
+        }
     }
 }
 
@@ -7492,7 +7946,7 @@ fn refresh_forwards(st: &mut AppState) {
     let items: Vec<slint::SharedString> = st
         .fwd_profile_indices
         .get(idx)
-        .and_then(|i| st.profiles.profiles.get(*i))
+        .and_then(|i| st.profiles.borrow().profiles.get(*i).cloned())
         .map(|p| p.local_forwards.iter().map(|f| f.as_str().into()).collect())
         .unwrap_or_default();
     st.fwd_model.set_vec(items);
@@ -7502,7 +7956,7 @@ fn open_forwards_panel(st: &mut AppState) {
     let indices = sftp_profile_indices(st);
     let names: Vec<slint::SharedString> = indices
         .iter()
-        .map(|i| st.profiles.profiles[*i].name.clone().into())
+        .map(|i| st.profiles.borrow().profiles[*i].name.clone().into())
         .collect();
     st.fwd_profile_indices = indices;
     let model = Rc::new(VecModel::from(names));
@@ -7532,7 +7986,8 @@ fn fwd_add(st: &mut AppState) {
         st.ui.set_fwd_status(e.as_str().into());
         return;
     }
-    let Some(profile) = st.profiles.profiles.get_mut(profile_index) else {
+    let mut profiles = st.profiles.borrow_mut();
+    let Some(profile) = profiles.profiles.get_mut(profile_index) else {
         return;
     };
     if profile.local_forwards.iter().any(|f| f == &spec) {
@@ -7540,7 +7995,8 @@ fn fwd_add(st: &mut AppState) {
         return;
     }
     profile.local_forwards.push(spec.clone());
-    st.profiles.save();
+    profiles.save();
+    drop(profiles);
     st.ui.set_fwd_new("".into());
     refresh_forwards(st);
     st.ui
@@ -7553,14 +8009,16 @@ fn fwd_delete(st: &mut AppState, index: usize) {
     let Some(profile_index) = st.fwd_profile_indices.get(idx).copied() else {
         return;
     };
-    let Some(profile) = st.profiles.profiles.get_mut(profile_index) else {
+    let mut profiles = st.profiles.borrow_mut();
+    let Some(profile) = profiles.profiles.get_mut(profile_index) else {
         return;
     };
     if index >= profile.local_forwards.len() {
         return;
     }
     let spec = profile.local_forwards.remove(index);
-    st.profiles.save();
+    profiles.save();
+    drop(profiles);
     refresh_forwards(st);
     st.ui
         .set_fwd_status(format!("已删除 -L {spec}").as_str().into());
@@ -7609,7 +8067,11 @@ fn active_after_close(active: usize, closed: usize, remaining: usize) -> usize {
     if remaining == 0 {
         return 0;
     }
-    let next = if closed < active { active.saturating_sub(1) } else { active };
+    let next = if closed < active {
+        active.saturating_sub(1)
+    } else {
+        active
+    };
     next.min(remaining - 1)
 }
 
@@ -7624,7 +8086,7 @@ fn close_tab_inner(st: &mut AppState, index: usize) {
             st.closed_tabs.remove(0);
         }
     }
-    let background = st.cfg.close_action == "background";
+    let background = st.cfg.borrow().close_action == "background";
     for id in st.ws.tabs[index].panes() {
         if background {
             detach_runtime(st, id);
@@ -7748,7 +8210,7 @@ fn close_other_tabs(st: &mut AppState, keep: usize) {
             plugin_v3::tab_close_payload(title),
         );
     }
-    let background = st.cfg.close_action == "background";
+    let background = st.cfg.borrow().close_action == "background";
     for id in dropped {
         if background {
             detach_runtime(st, id);
@@ -7794,14 +8256,15 @@ fn duplicate_tab(st: &mut AppState, index: usize) {
     let leaf_cwds = tree.leaf_cwds();
     let leaf_profiles = tree.leaf_profiles();
     eprintln!("[ws] duplicate tab={index} panes={}", leaf_cwds.len());
-    let new_ids: Vec<PaneId> = (0..leaf_cwds.len()).map(|_| st.shared.alloc_pane_id()).collect();
+    let new_ids: Vec<PaneId> = (0..leaf_cwds.len())
+        .map(|_| st.shared.alloc_pane_id())
+        .collect();
     let Some(new_root) = tree.assign(&new_ids) else {
         return;
     };
     let mut created = Vec::with_capacity(new_ids.len());
     for (i, cwd) in leaf_cwds.iter().enumerate() {
-        let (profile, askpass) =
-            restore_pane_launch(st, leaf_profiles.get(i).copied().flatten());
+        let (profile, askpass) = restore_pane_launch(st, leaf_profiles.get(i).copied().flatten());
         match create_pane(
             st,
             new_ids[i],
@@ -7877,7 +8340,7 @@ fn close_pane_inner(st: &mut AppState, id: PaneId) {
     };
     let tab_title = st.ws.tabs[tab_index].title.clone();
     let emptied = st.ws.tabs[tab_index].remove(id);
-    if st.cfg.close_action == "background" {
+    if st.cfg.borrow().close_action == "background" {
         detach_runtime(st, id);
     } else {
         st.panes.remove(&id);
@@ -7960,26 +8423,32 @@ fn restore_pane_launch(
         Some(id) => id,
         None => match default_profile_index(st) {
             Some(index) => {
-                let p = &st.profiles.profiles[index];
+                let p = &st.profiles.borrow().profiles[index];
                 eprintln!(
                     "[session] 快照未记录 Profile，按默认 Profile id={} name={:?} 恢复",
                     p.id, p.name
                 );
                 p.id
-            },
+            }
             None => return (None, None),
         },
     };
-    let Some(index) = st.profiles.profiles.iter().position(|p| p.id == profile_id) else {
+    let Some(index) = st
+        .profiles
+        .borrow()
+        .profiles
+        .iter()
+        .position(|p| p.id == profile_id)
+    else {
         eprintln!("[session] Profile id={profile_id} 已删除，回退普通 shell");
         return (None, None);
     };
     // 只自动恢复 local Profile 的 shell/外观；SSH/Serial/Telnet 需要主动连接，
     // 会话恢复不自动建连（避免启动即连远端/Vault 弹窗），回退普通 shell。
-    if st.profiles.profiles[index].kind != "local" {
+    if st.profiles.borrow().profiles[index].kind != "local" {
         eprintln!(
             "[session] Profile id={profile_id} 类型为 {}，会话恢复不自动连接，回退普通 shell",
-            st.profiles.profiles[index].kind
+            st.profiles.borrow().profiles[index].kind
         );
         return (None, None);
     }
@@ -7990,14 +8459,14 @@ fn restore_pane_launch(
                 spec.name
             );
             (Some(spec), askpass)
-        },
+        }
         Err(err) => {
             eprintln!(
                 "[session] Profile id={profile_id} 启动信息不可用（{}），回退普通 shell",
                 err.message()
             );
             (None, None)
-        },
+        }
     }
 }
 
@@ -8087,7 +8556,9 @@ fn reopen_closed_tab(st: &mut AppState) {
 fn capture_tabs_snapshot(st: &AppState) -> Vec<session::TabSnapshot> {
     let mut tabs = Vec::with_capacity(st.ws.tabs.len());
     for tab in &st.ws.tabs {
-        let Some(root) = tab.root.as_ref() else { continue };
+        let Some(root) = tab.root.as_ref() else {
+            continue;
+        };
         let ids = root.panes();
         let mut cwds = HashMap::with_capacity(ids.len());
         let mut profiles = HashMap::with_capacity(ids.len());
@@ -8138,11 +8609,11 @@ fn restart_session(st: &mut AppState) {
                 tabs,
                 panes
             )
-        },
+        }
         Err(e) => {
             eprintln!("[session] 保存失败，取消重启: {e}");
             return;
-        },
+        }
     }
 
     let exe = match std::env::current_exe() {
@@ -8179,10 +8650,12 @@ fn restart_session(st: &mut AppState) {
     }
     match cmd.spawn() {
         Ok(child) => {
-            st.shared.session.with_mut(|session| session.restarting = true);
+            st.shared
+                .session
+                .with_mut(|session| session.restarting = true);
             eprintln!("[session] 已拉起新实例 pid={}，退出当前进程", child.id());
             let _ = slint::quit_event_loop();
-        },
+        }
         Err(e) => eprintln!("[session] 重启失败（保留当前窗口）: {e}"),
     }
 }
@@ -8233,7 +8706,7 @@ fn restore_window_snapshot(st: &mut AppState, window: &session::WindowSnapshot) 
         window.id,
         window.tabs.len(),
         st.ws.active,
-        session::restore_boundaries_text(st.cfg.lang() == "zh")
+        session::restore_boundaries_text(app_lang(st) == "zh")
     );
     true
 }
@@ -8277,7 +8750,7 @@ fn split_pane_inner(st: &mut AppState, id: PaneId, dir: Dir) {
         }
         Err(e) => {
             eprintln!("分屏失败: {e}");
-            let zh = st.cfg.lang() == "zh";
+            let zh = app_lang(st) == "zh";
             let title = if zh { "启动失败" } else { "Launch failed" };
             let text = if zh {
                 format!("新分屏启动失败: {e}；检查 Shell 路径/权限后可重试分屏，或关闭提示。")
@@ -8285,7 +8758,7 @@ fn split_pane_inner(st: &mut AppState, id: PaneId, dir: Dir) {
                 format!("Failed to launch the new split: {e}; check the shell path/permissions and try splitting again.")
             };
             show_session_notice(st, None, None, title, text, RetryAction::None);
-        },
+        }
     }
 }
 
@@ -8334,11 +8807,7 @@ fn needs_close_confirm(tabs: usize, panes: usize, enabled: bool) -> bool {
 ///
 /// 每个 Tab 一行；多窗格的 Tab 标注窗格数，避免用户以为只是一次 shell。
 /// 超过 `max` 行时只列前 `max - 1` 行并加一条汇总，弹窗高度不会被撑爆。
-fn close_confirm_session_lines(
-    tabs: &[(String, usize)],
-    lang: &str,
-    max: usize,
-) -> Vec<String> {
+fn close_confirm_session_lines(tabs: &[(String, usize)], lang: &str, max: usize) -> Vec<String> {
     let max = max.max(1);
     let shown = if tabs.len() > max {
         max.saturating_sub(1)
@@ -8415,9 +8884,9 @@ fn request_close(st: &mut AppState) {
     let window_id = st.window_id;
     eprintln!(
         "[ui] close requested: window={window_id} tabs={tabs} panes={panes} confirm={}",
-        st.cfg.confirm_close
+        st.cfg.borrow().confirm_close
     );
-    if needs_close_confirm(tabs, panes, st.cfg.confirm_close) {
+    if needs_close_confirm(tabs, panes, st.cfg.borrow().confirm_close) {
         let text = if runtime::window_count() > 1 {
             format!("将结束该窗口的 {tabs} 个标签、{panes} 个终端会话（其它窗口保留）。")
         } else {
@@ -8430,7 +8899,7 @@ fn request_close(st: &mut AppState) {
             .iter()
             .map(|tab| (tab.title.clone(), tab.panes().len()))
             .collect();
-        let names = close_confirm_session_lines(&sessions, st.cfg.lang(), 6);
+        let names = close_confirm_session_lines(&sessions, app_lang(st), 6);
         eprintln!(
             "[ui] close confirm: window={window_id} tabs={tabs} panes={panes} names={names:?}"
         );
@@ -8567,12 +9036,10 @@ fn start_maximize_when_window_ready(ui: &MainWindow, window_id: WindowId, attemp
                     "[maximize] runtime ready win=0x{id:x} desired={} observed={} pending={:?}",
                     snapshot.desired, snapshot.observed, snapshot.pending
                 );
-            },
+            }
             Err(err) => {
-                eprintln!(
-                    "[maximize] runtime start failed win=0x{id:x} err={err}; fallback=winit"
-                );
-            },
+                eprintln!("[maximize] runtime start failed win=0x{id:x} err={err}; fallback=winit");
+            }
         }
         return;
     }
@@ -8593,14 +9060,11 @@ fn start_maximize_when_window_ready(ui: &MainWindow, window_id: WindowId, attemp
 ///
 /// `set_maximized` 在 X11 上是 WM 异步处理的；400ms 后如果 maximize 状态机
 /// 已就绪且仍不是 desired，就通过状态机再请求一次，避免恢复后掉回普通窗口。
-fn restore_window_geometry(
-    ui: &MainWindow,
-    window_id: WindowId,
-    window: &session::WindowSnapshot,
-) {
+fn restore_window_geometry(ui: &MainWindow, window_id: WindowId, window: &session::WindowSnapshot) {
     let geometry = window.geometry;
     if geometry.is_known() {
-        ui.window().set_size(slint::PhysicalSize::new(geometry.w, geometry.h));
+        ui.window()
+            .set_size(slint::PhysicalSize::new(geometry.w, geometry.h));
         ui.window()
             .set_position(slint::PhysicalPosition::new(geometry.x, geometry.y));
     }
@@ -8840,7 +9304,7 @@ fn switch_to_last_tab(st: &mut AppState) {
         Some(index) => {
             eprintln!("[ws] tab.last → {index}");
             set_active_tab_inner(st, index);
-        },
+        }
         None => eprintln!("[ws] tab.last: 没有上一个使用的 Tab"),
     }
 }
@@ -9018,13 +9482,14 @@ fn pane_view(
 fn line_number_model(rows: usize, _cell_h: usize) -> ModelRc<slint::SharedString> {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     let enabled = *ENABLED.get_or_init(|| {
-        std::env::var("TERVO_LINE_NUMBERS").map(|v| v == "1").unwrap_or(false)
+        std::env::var("TERVO_LINE_NUMBERS")
+            .map(|v| v == "1")
+            .unwrap_or(false)
     });
     if !enabled {
         return ModelRc::from(Rc::new(VecModel::from(Vec::<slint::SharedString>::new())));
     }
-    let items: Vec<slint::SharedString> =
-        (1..=rows).map(|n| n.to_string().into()).collect();
+    let items: Vec<slint::SharedString> = (1..=rows).map(|n| n.to_string().into()).collect();
     ModelRc::from(Rc::new(VecModel::from(items)))
 }
 
@@ -9034,8 +9499,8 @@ fn refresh_pane_view(st: &mut AppState, id: PaneId) {
         return;
     };
     let focused = st.ws.active_tab().map(|t| t.focused) == Some(id);
-    let policy = st.cfg.scrollbar_policy();
-    let global_blink = st.cfg.cursor_blinking();
+    let policy = st.cfg.borrow().scrollbar_policy();
+    let global_blink = st.cfg.borrow().cursor_blinking();
     let Some(rt) = st.panes.get(&id) else { return };
     st.pane_model.set_row_data(
         row,
@@ -9114,8 +9579,8 @@ fn refresh_views_impl(st: &mut AppState, resize_terminals: bool) {
         }
     }
 
-    let policy = st.cfg.scrollbar_policy();
-    let global_blink = st.cfg.cursor_blinking();
+    let policy = st.cfg.borrow().scrollbar_policy();
+    let global_blink = st.cfg.borrow().cursor_blinking();
     let make_view = |id: &PaneId, rect: &Rect| -> Option<PaneView> {
         st.panes.get(id).map(|rt| {
             let mut view = pane_view(
@@ -9273,7 +9738,11 @@ fn undo_pane_swap(st: &mut AppState) {
         .pane_swap_undo
         .iter()
         .copied()
-        .filter(|(a, b)| st.ws.tab_of(*a).is_some_and(|tab| Some(tab) == st.ws.tab_of(*b)))
+        .filter(|(a, b)| {
+            st.ws
+                .tab_of(*a)
+                .is_some_and(|tab| Some(tab) == st.ws.tab_of(*b))
+        })
         .collect();
     st.pane_swap_undo = live;
     let active = st.ws.active;
@@ -9303,7 +9772,10 @@ fn pane_drag_start(st: &mut AppState, id: PaneId, x: f32, y: f32) {
     if !some_tab_has {
         return;
     }
-    st.pane_drag = Some(PaneDrag { source: id, target: None });
+    st.pane_drag = Some(PaneDrag {
+        source: id,
+        target: None,
+    });
     st.ui.set_pane_drag_from(id as i32);
     st.ui.set_pane_drag_target(-1);
     st.ui.set_pane_drag_x(x);
@@ -9321,7 +9793,8 @@ fn pane_drag_move(st: &mut AppState, x: f32, y: f32) {
         if let Some(drag) = st.pane_drag.as_mut() {
             drag.target = target;
         }
-        st.ui.set_pane_drag_target(target.map(|t| t as i32).unwrap_or(-1));
+        st.ui
+            .set_pane_drag_target(target.map(|t| t as i32).unwrap_or(-1));
     }
     st.ui.set_pane_drag_x(x);
     st.ui.set_pane_drag_y(y);
@@ -9340,7 +9813,7 @@ fn pane_drag_end(st: &mut AppState) {
                     "Panes swapped — Ctrl+Alt+Z to undo / 已交换，Ctrl+Alt+Z 撤销".to_string(),
                 );
             }
-        },
+        }
         _ => eprintln!("[pane] drag end pane={} no target", drag.source),
     }
 }
@@ -9398,7 +9871,7 @@ fn rows_can_update_in_place(
 fn rebuild_tabs(st: &mut AppState) {
     touch_tab_lru(st);
     let active = st.ws.active;
-    let zh = st.cfg.lang() == "zh";
+    let zh = app_lang(st) == "zh";
     let mut active_connection: Option<connection::ConnectionStatus> = None;
     let tabs: Vec<TabView> = st
         .ws
@@ -9513,8 +9986,11 @@ fn refresh_cursor_overlay(rt: &mut PaneRuntime) {
 ///
 /// 优先级：Profile 显式 cursor_shape > 全局 `config.cursor_shape`；颜色仍全局。
 fn apply_cursor_settings(st: &mut AppState) {
-    let global_shape = st.cfg.cursor_shape();
-    let (color, text_color) = (st.cfg.cursor_color_rgb(), st.cfg.cursor_text_color_rgb());
+    let global_shape = st.cfg.borrow().cursor_shape();
+    let (color, text_color) = (
+        st.cfg.borrow().cursor_color_rgb(),
+        st.cfg.borrow().cursor_text_color_rgb(),
+    );
     for rt in st.panes.values_mut() {
         let shape = rt
             .appearance
@@ -9540,25 +10016,31 @@ fn refresh_cursor_views(st: &mut AppState) {
 /// 粗体配置变化：按每个 pane 的主题重建调色板并让 core 重取整帧。
 fn apply_bold_settings(st: &mut AppState) {
     let fallback = st.resolved_theme.clone();
-    let registry = &st.registry;
-    let cfg = &st.cfg;
-    let bold = (cfg.bold_is_bright, cfg.bold_color_rgb(), cfg.bold_color_same_as_fg);
+    let registry = st.registry.borrow();
+    let cfg = st.cfg.borrow();
+    let bold = (
+        cfg.bold_is_bright,
+        cfg.bold_color_rgb(),
+        cfg.bold_color_same_as_fg,
+    );
     for rt in st.panes.values_mut() {
         let theme = rt
             .appearance
             .theme
             .as_deref()
-            .and_then(|sel| theme_for_selection(registry, cfg, Some(sel)))
+            .and_then(|sel| theme_for_selection(&registry, &cfg, Some(sel)))
             .unwrap_or_else(|| fallback.clone());
         rt.handle
             .set_theme(theme.palette().with_bold(bold.0, bold.1, bold.2));
     }
+    drop(cfg);
+    drop(registry);
     redraw_visible(st);
 }
 
 /// 是否有 pane 需要闪烁（全局开启，或任一 Profile 显式 on）。
 fn needs_cursor_blink(st: &AppState) -> bool {
-    st.cfg.cursor_blinking()
+    st.cfg.borrow().cursor_blinking()
         || st
             .panes
             .values()
@@ -9577,14 +10059,14 @@ fn frozen_cursor_blink_phase() -> Option<bool> {
 
 /// 光标闪烁半周期：只切换 overlay 的 `cursor-visible`，终端帧不重绘。
 fn tick_cursor_blink(st: &mut AppState) {
-        if !needs_cursor_blink(st) {
-            st.cursor_blink_timer.stop();
-            st.cursor_blink_on = true;
-            refresh_cursor_views(st);
-            return;
-        }
-        st.cursor_blink_on = !st.cursor_blink_on;
+    if !needs_cursor_blink(st) {
+        st.cursor_blink_timer.stop();
+        st.cursor_blink_on = true;
         refresh_cursor_views(st);
+        return;
+    }
+    st.cursor_blink_on = !st.cursor_blink_on;
+    refresh_cursor_views(st);
 }
 
 /// 按配置/Profile 启停闪烁计时器；没有 pane 需要闪时停掉，空闲零唤醒。
@@ -9652,10 +10134,10 @@ fn redraw_pane(id: PaneId) {
     match runtime::window_for_pane(id) {
         Some(window) => {
             let _ = runtime::with_window(window, |st| redraw_pane_inner(st, id));
-        },
+        }
         None => {
             with_app(|st| redraw_pane_inner(st, id));
-        },
+        }
     }
 }
 
@@ -9735,10 +10217,7 @@ fn ime_click_anchor(button: i32, wants_mouse: bool, shift: bool) -> bool {
 /// 背景：普通应用（编辑器/终端里的 TUI 输入框）点击后光标会随输入移动，候选框必须
 /// 跟着光标；只有像 dsh 侧栏 composer 这种“自绘 caret、从不移动硬件光标”的 TUI
 /// 才需要退回点击格。之前无条件优先点击格，导致候选框黏在鼠标位置。
-fn ime_anchor_cell(
-    click: Option<((u16, u16), (u16, u16))>,
-    cursor: (u16, u16),
-) -> (u16, u16) {
+fn ime_anchor_cell(click: Option<((u16, u16), (u16, u16))>, cursor: (u16, u16)) -> (u16, u16) {
     match click {
         Some((cell, cursor_at_click)) if cursor_at_click == cursor => cell,
         _ => cursor,
@@ -9768,7 +10247,7 @@ fn update_ime_spot(st: &mut AppState) {
     let (line, col) = (line as usize, col as usize);
     // 光标已经动过：点击锚点作废，别让它一直压着真实光标（用户反馈的正是这个）。
     let stale_click = matches!(click, Some((_, at)) if at != cursor);
-    let tabbar = st.cfg.tabbar_pos();
+    let tabbar = st.cfg.borrow().tabbar_pos();
     // 内容区在窗口内的纵向偏移：上=TabBar 高度；下/左/右=0。
     let content_y = if tabbar == TabbarPos::Top {
         TABBAR_H
@@ -9781,7 +10260,7 @@ fn update_ime_spot(st: &mut AppState) {
         TABBAR_W
     } else {
         0.0
-    } + sidebar_width_of(&st.cfg);
+    } + sidebar_width_of(&st.cfg.borrow());
     let scale = st.ui.window().scale_factor() as f64;
     let key = ime_spot_key(
         focused,
@@ -9836,10 +10315,10 @@ fn update_ime_spot(st: &mut AppState) {
 /// `st.content`、Slint 属性和所有 pane 的网格/PTY 尺寸；只改 UI 属性会让终端
 /// 继续按旧宽高渲染，右侧/底部出现错位。
 fn apply_tabbar_pos(st: &mut AppState, pos: TabbarPos) {
-    let (win_w, win_h) = window_size_of(st.content, &st.cfg);
-    st.cfg.tabbar_position = pos.as_str().to_string();
+    let (win_w, win_h) = window_size_of(st.content, &st.cfg.borrow());
+    st.cfg.borrow_mut().tabbar_position = pos.as_str().to_string();
     st.ui.set_tabbar_position(pos.as_str().into());
-    st.content = content_rect(win_w, win_h, sidebar_width_of(&st.cfg), pos);
+    st.content = content_rect(win_w, win_h, sidebar_width_of(&st.cfg.borrow()), pos);
     refresh_views_layout(st);
     refresh_views(st);
     st.ime_spot_dirty = true;
@@ -9929,7 +10408,16 @@ fn inline_image_sig(frame: &Frame) -> Vec<(u64, u64, i32, u16, u32, u32)> {
     frame
         .images
         .iter()
-        .map(|img| (img.id, img.source_id, img.row, img.col, img.width, img.height))
+        .map(|img| {
+            (
+                img.id,
+                img.source_id,
+                img.row,
+                img.col,
+                img.width,
+                img.height,
+            )
+        })
         .collect()
 }
 
@@ -9979,8 +10467,8 @@ fn image_from_source(width: u32, height: u32, rgba: &[u8]) -> slint::Image {
 fn redraw_pane_inner(st: &mut AppState, id: PaneId) {
     let focused = st.ws.active_tab().map(|t| t.focused) == Some(id);
     let blink_on = st.cursor_blink_on;
-    let global_blink = st.cfg.cursor_blinking();
-    let policy = st.cfg.scrollbar_policy();
+    let global_blink = st.cfg.borrow().cursor_blinking();
+    let policy = st.cfg.borrow().scrollbar_policy();
     // 回收已关闭 pane 的 GPU 纹理/离屏 target，避免全局 HashMap 持有已删除 pane。
     if gpu_present::ready() || gpu_native::ready() {
         let active: Vec<u64> = st.panes.keys().copied().collect();
@@ -10145,24 +10633,24 @@ fn redraw_pane_inner(st: &mut AppState, id: PaneId) {
 
 /// 字号缩放（Ctrl+± / Ctrl+0 与命令面板共用）。
 fn zoom_font(st: &mut AppState, delta: f32) {
-    let next = (st.cfg.font_size + delta).clamp(8.0, 40.0);
-    if (next - st.cfg.font_size).abs() < f32::EPSILON {
+    let next = (st.cfg.borrow().font_size + delta).clamp(8.0, 40.0);
+    if (next - st.cfg.borrow().font_size).abs() < f32::EPSILON {
         return;
     }
-    st.cfg.font_size = next;
+    st.cfg.borrow_mut().font_size = next;
     apply_font_settings(st);
-    st.cfg.save();
+    st.cfg.borrow().save();
     show_zoom_hud(st);
     eprintln!("[ui] font_size={next}");
 }
 
 fn reset_font(st: &mut AppState) {
-    if (st.cfg.font_size - 15.0).abs() < f32::EPSILON {
+    if (st.cfg.borrow().font_size - 15.0).abs() < f32::EPSILON {
         return;
     }
-    st.cfg.font_size = 15.0;
+    st.cfg.borrow_mut().font_size = 15.0;
     apply_font_settings(st);
-    st.cfg.save();
+    st.cfg.borrow().save();
     show_zoom_hud(st);
     eprintln!("[ui] font_size=15（重置）");
 }
@@ -10186,7 +10674,7 @@ static ZOOM_HUD_TOKEN: AtomicUsize = AtomicUsize::new(0);
 fn show_zoom_hud(st: &mut AppState) {
     let token = ZOOM_HUD_TOKEN.fetch_add(1, Ordering::Relaxed) + 1;
     st.ui
-        .set_zoom_hud(format!("{}%", zoom_percent(st.cfg.font_size)).into());
+        .set_zoom_hud(format!("{}%", zoom_percent(st.cfg.borrow().font_size)).into());
     let ui = st.ui.clone_strong();
     slint::Timer::single_shot(Duration::from_millis(ZOOM_HUD_MS), move || {
         if ZOOM_HUD_TOKEN.load(Ordering::Relaxed) == token {
@@ -10197,11 +10685,13 @@ fn show_zoom_hud(st: &mut AppState) {
 
 /// 同步设置页的字体外观 mirror（Rust 侧改完 config 后调用）。
 fn sync_font_form_ui(st: &AppState) {
-    st.ui.set_cfg_font_family(st.cfg.font_family.clone().into());
-    st.ui.set_cfg_font_weight(st.cfg.font_weight as i32);
-    st.ui.set_cfg_line_height(st.cfg.line_height);
-    st.ui.set_cfg_letter_spacing(st.cfg.letter_spacing);
-    st.ui.set_cfg_render_scale(st.cfg.render_scale);
+    st.ui
+        .set_cfg_font_family(st.cfg.borrow().font_family.clone().into());
+    st.ui
+        .set_cfg_font_weight(st.cfg.borrow().font_weight as i32);
+    st.ui.set_cfg_line_height(st.cfg.borrow().line_height);
+    st.ui.set_cfg_letter_spacing(st.cfg.borrow().letter_spacing);
+    st.ui.set_cfg_render_scale(st.cfg.borrow().render_scale);
 }
 
 /// 设置页改字体外观：写 config → 重建字体集/cell → 重排；失败回滚旧值。
@@ -10209,31 +10699,31 @@ fn sync_font_form_ui(st: &AppState) {
 /// 返回 false 表示字体加载失败（config/UI 都保持旧值，屏幕不会半更新）。
 fn apply_font_form(st: &mut AppState, mutate: impl FnOnce(&mut Config)) -> bool {
     let before = (
-        st.cfg.font_family.clone(),
-        st.cfg.font_weight,
-        st.cfg.line_height,
-        st.cfg.letter_spacing,
-        st.cfg.render_scale,
+        st.cfg.borrow().font_family.clone(),
+        st.cfg.borrow().font_weight,
+        st.cfg.borrow().line_height,
+        st.cfg.borrow().letter_spacing,
+        st.cfg.borrow().render_scale,
     );
-    mutate(&mut st.cfg);
+    mutate(&mut *st.cfg.borrow_mut());
     // 与 config 归一化同一组范围：UI 显示值必须就是实际生效值。
-    let opts = FontOptions::from_config(&st.cfg);
-    st.cfg.font_family = opts.family.clone();
-    st.cfg.font_weight = opts.weight;
-    st.cfg.line_height = opts.line_height;
-    st.cfg.letter_spacing = opts.letter_spacing;
-    st.cfg.render_scale = opts.render_scale;
+    let opts = FontOptions::from_config(&st.cfg.borrow());
+    st.cfg.borrow_mut().font_family = opts.family.clone();
+    st.cfg.borrow_mut().font_weight = opts.weight;
+    st.cfg.borrow_mut().line_height = opts.line_height;
+    st.cfg.borrow_mut().letter_spacing = opts.letter_spacing;
+    st.cfg.borrow_mut().render_scale = opts.render_scale;
     if !apply_font_settings(st) {
         let (family, weight, line_height, letter_spacing, render_scale) = before;
-        st.cfg.font_family = family;
-        st.cfg.font_weight = weight;
-        st.cfg.line_height = line_height;
-        st.cfg.letter_spacing = letter_spacing;
-        st.cfg.render_scale = render_scale;
+        st.cfg.borrow_mut().font_family = family;
+        st.cfg.borrow_mut().font_weight = weight;
+        st.cfg.borrow_mut().line_height = line_height;
+        st.cfg.borrow_mut().letter_spacing = letter_spacing;
+        st.cfg.borrow_mut().render_scale = render_scale;
         sync_font_form_ui(st);
         return false;
     }
-    st.cfg.save();
+    st.cfg.borrow().save();
     sync_font_form_ui(st);
     true
 }
@@ -10243,15 +10733,15 @@ fn apply_font_form(st: &mut AppState, mutate: impl FnOnce(&mut Config)) -> bool 
 /// 覆盖字号 + 5 个外观字段（族/字重/行距/字间距/渲染缩放）：任意一个变化都会
 /// 改变 cell 尺寸，必须走这里才能同时更新 PTY 网格、渲染器与帧缓冲。
 fn apply_font_settings(st: &mut AppState) -> bool {
-    let opts = FontOptions::from_config(&st.cfg);
-    let Some(fonts) = FontSet::load_with(st.cfg.font_size, &opts) else {
+    let opts = FontOptions::from_config(&st.cfg.borrow());
+    let Some(fonts) = FontSet::load_with(st.cfg.borrow().font_size, &opts) else {
         eprintln!("[config] 字体加载失败，字体变更忽略");
         return false;
     };
     let global_fonts = Rc::new(fonts);
     st.cell = (global_fonts.cell_w, global_fonts.cell_h);
     st.fonts = global_fonts.clone();
-    let global_size = st.cfg.font_size;
+    let global_size = st.cfg.borrow().font_size;
 
     // 每个不同的 Profile 字号只加载一次字体集（同一字号的多个 pane 共享）；
     // 族/字重/行距/字间距/缩放继承全局配置。
@@ -10270,14 +10760,14 @@ fn apply_font_settings(st: &mut AppState) -> bool {
         match FontSet::load_with(size, &opts) {
             Some(fonts) => {
                 cache.insert(bits, Rc::new(fonts));
-            },
+            }
             None => eprintln!("[config] Profile 字号 {size} 加载字体失败，回退全局字号"),
         }
     }
 
     let fallback = st.resolved_theme.clone();
-    let registry = &st.registry;
-    let cfg = &st.cfg;
+    let registry = st.registry.borrow();
+    let cfg = st.cfg.borrow();
     let opacity = renderer_opacity(st);
     let global_shape = cfg.cursor_shape();
     let (cursor_color, cursor_text_color) = (cfg.cursor_color_rgb(), cfg.cursor_text_color_rgb());
@@ -10292,20 +10782,13 @@ fn apply_font_settings(st: &mut AppState) -> bool {
             .appearance
             .theme
             .as_deref()
-            .and_then(|sel| theme_for_selection(registry, cfg, Some(sel)))
+            .and_then(|sel| theme_for_selection(&registry, &cfg, Some(sel)))
             .unwrap_or_else(|| fallback.clone());
         rt.cell = (fonts.cell_w, fonts.cell_h);
         // IIP 的 width/height 以 cell 为单位时需要最新字号；Sixel 可见性也用 cell 高。
         rt.handle
             .set_cell_size(fonts.cell_w as u16, fonts.cell_h as u16);
-        rt.renderer = Renderer::new(
-            fonts,
-            cols,
-            rows,
-            theme.spec.bg,
-            theme.spec.cursor,
-            opacity,
-        );
+        rt.renderer = Renderer::new(fonts, cols, rows, theme.spec.bg, theme.spec.cursor, opacity);
         let shape = rt
             .appearance
             .cursor_shape
@@ -10315,6 +10798,8 @@ fn apply_font_settings(st: &mut AppState) -> bool {
         rt.renderer
             .set_cursor_style(shape, cursor_color, cursor_text_color);
     }
+    drop(cfg);
+    drop(registry);
     refresh_views(st);
     redraw_visible(st);
     true
@@ -10348,14 +10833,17 @@ fn snapshot_path(base: &Path, suffix: &str) -> PathBuf {
 /// - `TERVO_GPU_SNAPSHOT_EXIT=1`：拍完退出事件循环，供脚本无头跑。
 fn render_hud_forced_by_env() -> bool {
     std::env::var("TERVO_RENDER_HUD").is_ok_and(|v| {
-        matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")
+        matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
     })
 }
 
 fn install_render_hud(st: &mut AppState) {
     let forced = render_hud_forced_by_env();
-    st.ui.set_cfg_render_hud(st.cfg.render_hud);
-    set_render_hud(st, forced || st.cfg.render_hud);
+    st.ui.set_cfg_render_hud(st.cfg.borrow().render_hud);
+    set_render_hud(st, forced || st.cfg.borrow().render_hud);
 }
 
 /// 启动/停止 HUD 采样；重复调用幂等。设置页和环境变量都走这里。
@@ -10458,7 +10946,7 @@ fn install_gpu_snapshot_hook(ui: &MainWindow) {
                     } else if exit_after {
                         slint::quit_event_loop();
                     }
-                },
+                }
                 1 => {
                     let Some(at) = resized_at_c.get() else { return };
                     if at.elapsed() < Duration::from_millis(1500) {
@@ -10469,8 +10957,8 @@ fn install_gpu_snapshot_hook(ui: &MainWindow) {
                     if exit_after {
                         slint::quit_event_loop();
                     }
-                },
-                _ => {},
+                }
+                _ => {}
             }
         },
     );
@@ -10541,7 +11029,8 @@ fn take_snapshot_and_log(ui: &MainWindow, path: &Path) {
                         text_stats.map_or(0, |stats| stats.dim_cells),
                         text_stats.map_or(0, |stats| stats.selected_cells),
                         text_stats.map_or(0, |stats| stats.searched_cells),
-                        last.as_ref().map_or(0, |stats| stats.below.images + stats.above.images),
+                        last.as_ref()
+                            .map_or(0, |stats| stats.below.images + stats.above.images),
                         true,
                         true,
                         histogram.len(),
@@ -10550,13 +11039,13 @@ fn take_snapshot_and_log(ui: &MainWindow, path: &Path) {
                             .map(|b| format!("{b:02x}"))
                             .collect::<String>()
                     )
-                },
+                }
                 Err(err) => eprintln!(
                     "[gpu-snapshot] 写 PPM 失败 path={} error={err}",
                     path.display()
                 ),
             }
-        },
+        }
         Err(err) => eprintln!(
             "[gpu-snapshot] take_snapshot 失败 path={} error={err}",
             path.display()
@@ -10604,8 +11093,7 @@ fn selection_autoscroll_tick(st: &mut AppState) {
     };
     // 拖出顶层窗口：停表并记住“已暂停”。窗口内（包括 tab bar/其它 pane）
     // 仍按拖拽 pane 的边缘继续滚动；指针回来后由 move 回调恢复计时器。
-    let outside =
-        pointer_outside_window(rt.rect.x, rt.rect.y, x, y, st.content.w, st.content.h);
+    let outside = pointer_outside_window(rt.rect.x, rt.rect.y, x, y, st.content.w, st.content.h);
     if outside {
         st.drag_autoscroll.stop();
         if let Some(drag) = st.drag.as_mut() {
@@ -10868,14 +11356,15 @@ impl TerminalMenuSpec {
         }
     }
 
-    fn item(
-        command: String,
-        label: String,
-        shortcut: String,
-        danger: bool,
-        active: bool,
-    ) -> Self {
-        Self { label, shortcut, danger, active, separator: false, command }
+    fn item(command: String, label: String, shortcut: String, danger: bool, active: bool) -> Self {
+        Self {
+            label,
+            shortcut,
+            danger,
+            active,
+            separator: false,
+            command,
+        }
     }
 }
 
@@ -10941,13 +11430,19 @@ fn menu_reset_selection(st: &mut AppState, pane: PaneId, specs: &[TerminalMenuSp
 
 impl MenuNav {
     fn new(pane: PaneId, specs: Vec<TerminalMenuSpec>, selected: usize) -> Self {
-        Self { pane, specs, selected }
+        Self {
+            pane,
+            specs,
+            selected,
+        }
     }
 }
 
 /// 键盘移动选中行并通知 Slint 滚到可见区；到边界保持不动。
 fn menu_navigate(st: &mut AppState, delta: isize) {
-    let Some(nav) = st.menu_nav.as_mut() else { return };
+    let Some(nav) = st.menu_nav.as_mut() else {
+        return;
+    };
     let Some(next) = menu_step(&nav.specs, Some(nav.selected), delta) else {
         return;
     };
@@ -10962,7 +11457,9 @@ fn menu_navigate(st: &mut AppState, delta: isize) {
 
 /// 回车：执行当前选中项。先取命令/目标再清状态，避免借用 AppState 期间回调。
 fn menu_activate(st: &mut AppState) {
-    let Some(nav) = st.menu_nav.as_ref() else { return };
+    let Some(nav) = st.menu_nav.as_ref() else {
+        return;
+    };
     let Some(spec) = nav.specs.get(nav.selected) else {
         return;
     };
@@ -10988,7 +11485,7 @@ fn close_menu_ui(st: &mut AppState) {
 /// 命令当前生效的快捷键提示（含 `[[hotkeys]]` 覆盖）；没有绑定 = 空字符串。
 fn command_shortcut_label(st: &AppState, id: &str) -> String {
     st.commands
-        .effective_shortcut(id, &st.cfg.hotkeys)
+        .effective_shortcut(id, &st.cfg.borrow().hotkeys)
         .map(|shortcut| shortcut.to_string())
         .unwrap_or_default()
 }
@@ -11013,15 +11510,13 @@ fn push_terminal_menu_entry(
     if id.starts_with("link.") && st.menu_link.is_empty() {
         return;
     }
-    let zh = st.cfg.lang() == "zh";
+    let zh = app_lang(st) == "zh";
     let meta = builtin_menu_meta(id);
     let mut label = cfg
         .map(|entry| entry.label.trim())
         .filter(|label| !label.is_empty())
         .map(str::to_string)
-        .or_else(|| {
-            meta.map(|(en, zh_label, _)| if zh { zh_label } else { en }.to_string())
-        })
+        .or_else(|| meta.map(|(en, zh_label, _)| if zh { zh_label } else { en }.to_string()))
         .or_else(|| st.commands.get(id).map(|command| command.title.to_string()))
         .unwrap_or_else(|| id.to_string());
 
@@ -11031,7 +11526,11 @@ fn push_terminal_menu_entry(
         "terminal.toggle-broadcast" => {
             active = st.broadcast;
             let suffix = if st.broadcast {
-                if zh { "：开" } else { ": ON" }
+                if zh {
+                    "：开"
+                } else {
+                    ": ON"
+                }
             } else if zh {
                 "：关"
             } else {
@@ -11042,7 +11541,11 @@ fn push_terminal_menu_entry(
         "terminal.toggle-read-only" => {
             active = st.panes.get(&pane).is_some_and(|rt| rt.handle.read_only());
             let suffix = if active {
-                if zh { "：开" } else { ": ON" }
+                if zh {
+                    "：开"
+                } else {
+                    ": ON"
+                }
             } else if zh {
                 "：关"
             } else {
@@ -11075,7 +11578,7 @@ fn push_terminal_menu_entry(
 ///
 /// 顺序：config `[[terminal_menu]]`（非空时整体替换默认表）→ 插件装饰项。
 fn build_terminal_menu(st: &mut AppState, pane: PaneId) -> (Vec<TerminalMenuSpec>, f32) {
-    let config_menu = st.cfg.terminal_menu.clone();
+    let config_menu = st.cfg.borrow().terminal_menu.clone();
     let mut specs = Vec::new();
     if config_menu.is_empty() {
         for id in DEFAULT_TERMINAL_MENU {
@@ -11087,10 +11590,7 @@ fn build_terminal_menu(st: &mut AppState, pane: PaneId) -> (Vec<TerminalMenuSpec
         }
     } else {
         for entry in &config_menu {
-            if entry.separator
-                || entry.id.trim() == "-"
-                || entry.id.trim() == "separator"
-            {
+            if entry.separator || entry.id.trim() == "-" || entry.id.trim() == "separator" {
                 if !specs.is_empty() && !specs.last().is_some_and(|spec| spec.separator) {
                     specs.push(TerminalMenuSpec::separator());
                 }
@@ -11114,10 +11614,15 @@ fn build_terminal_menu(st: &mut AppState, pane: PaneId) -> (Vec<TerminalMenuSpec
     // 与 config/默认表重复的 ID 不重复出现。
     let plugin_items: Vec<(String, String)> = st
         .plugins
+        .borrow_mut()
         .menu_commands()
         .into_iter()
         .map(|(id, title)| (id.to_string(), title))
-        .filter(|(id, _)| !specs.iter().any(|spec| !spec.separator && spec.command == *id))
+        .filter(|(id, _)| {
+            !specs
+                .iter()
+                .any(|spec| !spec.separator && spec.command == *id)
+        })
         .collect();
     if !plugin_items.is_empty() {
         if !specs.is_empty() && !specs.last().is_some_and(|spec| spec.separator) {
@@ -11158,7 +11663,7 @@ fn run_menu_command(st: &mut AppState, pane: PaneId, command: &str) {
             } else {
                 LinkTarget::Path(text)
             };
-            let (cwd, remote) = match st.panes.get(&pane) {
+            let (cwd, remote) = match { st.panes.get(&pane) } {
                 Some(rt) => (pane_cwd(rt), rt.remote),
                 None => (None, false),
             };
@@ -11215,7 +11720,10 @@ fn open_pane_menu(st: &mut AppState, id: PaneId, x: f32, y: f32) {
         let (row, col) = cell_at(rt, px, py);
         frame_target_at(&rt.frame, row, col)
     });
-    let link = target.as_ref().map(|t| t.text().to_string()).unwrap_or_default();
+    let link = target
+        .as_ref()
+        .map(|t| t.text().to_string())
+        .unwrap_or_default();
     eprintln!(
         "[ui] right click pane={id} at {x},{y} link={} kind={:?}",
         !link.is_empty(),
@@ -11247,9 +11755,7 @@ fn open_pane_menu(st: &mut AppState, id: PaneId, x: f32, y: f32) {
     st.ui.set_menu_open(true);
     // 键盘导航从第一项开始；菜单已开时再次右键也会重建并回到首项。
     menu_reset_selection(st, id, &specs);
-    eprintln!(
-        "[ui] pane menu open pane={id} items={items} rows={rows} height={height:.0}"
-    );
+    eprintln!("[ui] pane menu open pane={id} items={items} rows={rows} height={height:.0}");
 }
 
 /// 点到矩形的最短距离平方（点在矩形内为 0）。
@@ -11375,7 +11881,9 @@ fn resolve_local_path(
         return Err("路径含控制字符".to_string());
     }
     if text == "~" {
-        return home.map(Path::to_path_buf).ok_or_else(|| "无法展开 ~：HOME 未设置".to_string());
+        return home
+            .map(Path::to_path_buf)
+            .ok_or_else(|| "无法展开 ~：HOME 未设置".to_string());
     }
     if let Some(rest) = text.strip_prefix("~/") {
         let home = home.ok_or_else(|| "无法展开 ~：HOME 未设置".to_string())?;
@@ -11386,7 +11894,11 @@ fn resolve_local_path(
         let (user, tail) = rest.split_once('/').map_or((rest, ""), |(u, t)| (u, t));
         let user_home =
             user_home_dir(user).ok_or_else(|| format!("无法展开 ~{user}：用户不存在"))?;
-        return Ok(if tail.is_empty() { user_home } else { user_home.join(tail) });
+        return Ok(if tail.is_empty() {
+            user_home
+        } else {
+            user_home.join(tail)
+        });
     }
     let path = Path::new(text);
     if path.is_absolute() {
@@ -11429,9 +11941,12 @@ fn inspect_local_path(path: &Path) -> Result<(), String> {
         _ => format!("无法访问路径：{e}"),
     })?;
     // CString 失败只可能是路径里有 NUL；用安全错误而不是 panic。
-    let c_path =
-        CString::new(path.as_os_str().as_bytes()).map_err(|_| "路径含 NUL".to_string())?;
-    let mode = if meta.is_dir() { libc::R_OK | libc::X_OK } else { libc::R_OK };
+    let c_path = CString::new(path.as_os_str().as_bytes()).map_err(|_| "路径含 NUL".to_string())?;
+    let mode = if meta.is_dir() {
+        libc::R_OK | libc::X_OK
+    } else {
+        libc::R_OK
+    };
     if unsafe { libc::access(c_path.as_ptr(), mode) } != 0 {
         let err = std::io::Error::last_os_error();
         return Err(match err.kind() {
@@ -11468,7 +11983,7 @@ fn open_local_path(text: &str, cwd: Option<&Path>) {
             eprintln!("[link] {msg}");
             show_link_status(msg);
             return;
-        },
+        }
     };
     if let Err(e) = inspect_local_path(&resolved) {
         let msg = format!("无法打开路径 {}：{e}", resolved.display());
@@ -11492,7 +12007,7 @@ fn open_target(target: &LinkTarget, cwd: Option<&Path>, remote: bool) {
             let shown = uri.clone();
             eprintln!("[link] open uri={shown:?}");
             open_with_xdg(std::ffi::OsString::from(uri), shown, "uri");
-        },
+        }
         LinkTarget::Path(path) => {
             if remote {
                 let msg = format!("远程会话中的路径不会在本地打开：{path}");
@@ -11501,7 +12016,7 @@ fn open_target(target: &LinkTarget, cwd: Option<&Path>, remote: bool) {
                 return;
             }
             open_local_path(path, cwd);
-        },
+        }
     }
 }
 
@@ -11514,7 +12029,11 @@ type XdgObserver = Option<std::sync::Arc<dyn Fn(Result<(), String>) + Send + Syn
 /// - stdin/stdout 丢弃，stderr 截断后反馈；
 /// - `xdg-open` 进程失败（非 0 退出）也算失败，不能只看 spawn 是否成功。
 fn open_with_xdg(target: std::ffi::OsString, shown: String, kind: &'static str) {
-    let fail_prefix = if kind == "path" { "打开路径失败" } else { "打开链接失败" };
+    let fail_prefix = if kind == "path" {
+        "打开路径失败"
+    } else {
+        "打开链接失败"
+    };
     open_with_xdg_observed(target, shown, kind, fail_prefix.to_string(), None);
 }
 
@@ -11531,54 +12050,56 @@ fn open_with_xdg_observed(
     let thread_observer = observer.clone();
     let thread_prefix = fail_prefix.clone();
     let sep = if fail_prefix.is_ascii() { ": " } else { "：" };
-    let spawned = std::thread::Builder::new().name("xdg-open".into()).spawn(move || {
-        let target = thread_target;
-        let shown = thread_shown;
-        let result = std::process::Command::new("xdg-open")
-            .arg(&target)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped())
-            .output();
-        match result {
-            Ok(out) if out.status.success() => {
-                eprintln!("[link] xdg-open ok {kind}={shown:?}");
-                if let Some(obs) = &thread_observer {
-                    obs(Ok(()));
+    let spawned = std::thread::Builder::new()
+        .name("xdg-open".into())
+        .spawn(move || {
+            let target = thread_target;
+            let shown = thread_shown;
+            let result = std::process::Command::new("xdg-open")
+                .arg(&target)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::piped())
+                .output();
+            match result {
+                Ok(out) if out.status.success() => {
+                    eprintln!("[link] xdg-open ok {kind}={shown:?}");
+                    if let Some(obs) = &thread_observer {
+                        obs(Ok(()));
+                    }
                 }
-            },
-            Ok(out) => {
-                let detail: String = String::from_utf8_lossy(&out.stderr)
-                    .trim()
-                    .chars()
-                    .take(300)
-                    .collect();
-                let msg = if detail.is_empty() {
-                    format!("{thread_prefix}{sep}xdg-open {}", out.status)
-                } else {
-                    format!("{thread_prefix}{sep}xdg-open {} — {detail}", out.status)
-                };
-                eprintln!("[link] {msg} {kind}={shown:?}");
-                if let Some(obs) = &thread_observer {
-                    obs(Err(msg.clone()));
+                Ok(out) => {
+                    let detail: String = String::from_utf8_lossy(&out.stderr)
+                        .trim()
+                        .chars()
+                        .take(300)
+                        .collect();
+                    let msg = if detail.is_empty() {
+                        format!("{thread_prefix}{sep}xdg-open {}", out.status)
+                    } else {
+                        format!("{thread_prefix}{sep}xdg-open {} — {detail}", out.status)
+                    };
+                    eprintln!("[link] {msg} {kind}={shown:?}");
+                    if let Some(obs) = &thread_observer {
+                        obs(Err(msg.clone()));
+                    }
+                    show_link_status(msg);
                 }
-                show_link_status(msg);
-            },
-            Err(e) => {
-                let run_detail = if thread_prefix.is_ascii() {
-                    format!("could not run xdg-open ({e})")
-                } else {
-                    format!("无法运行 xdg-open（{e}）")
-                };
-                let msg = format!("{thread_prefix}{sep}{run_detail}");
-                eprintln!("[link] {msg} {kind}={shown:?}");
-                if let Some(obs) = &thread_observer {
-                    obs(Err(msg.clone()));
+                Err(e) => {
+                    let run_detail = if thread_prefix.is_ascii() {
+                        format!("could not run xdg-open ({e})")
+                    } else {
+                        format!("无法运行 xdg-open（{e}）")
+                    };
+                    let msg = format!("{thread_prefix}{sep}{run_detail}");
+                    eprintln!("[link] {msg} {kind}={shown:?}");
+                    if let Some(obs) = &thread_observer {
+                        obs(Err(msg.clone()));
+                    }
+                    show_link_status(msg);
                 }
-                show_link_status(msg);
-            },
-        }
-    });
+            }
+        });
     if let Err(e) = spawned {
         let detail = if fail_prefix.is_ascii() {
             format!("could not spawn xdg-open thread ({e})")
@@ -11597,7 +12118,11 @@ fn open_with_xdg_observed(
 /// 只在悬停状态变化时切系统指针；不触发终端帧重绘。
 fn set_link_cursor(st: &AppState, hand: bool) {
     use winit::window::CursorIcon;
-    let icon = if hand { CursorIcon::Pointer } else { CursorIcon::Default };
+    let icon = if hand {
+        CursorIcon::Pointer
+    } else {
+        CursorIcon::Default
+    };
     let _ = st.ui.window().with_winit_window(|w| w.set_cursor(icon));
     eprintln!("[link] cursor={}", if hand { "pointer" } else { "default" });
 }
@@ -11675,15 +12200,16 @@ fn iip_ignored_status(notice: &IipNotice) -> String {
     match notice.reason {
         IipIgnoreReason::MissingInline => {
             "IIP: 图片缺少 inline=1，已忽略（Tervo 不下载文件）".to_string()
-        },
+        }
         IipIgnoreReason::InlineDisabled => {
             "IIP: 图片 inline=0，已忽略（Tervo 不下载文件）".to_string()
-        },
+        }
     }
 }
 
 /// 已在 UI 线程时的状态浮层版本（Read Only / Save Contents 等直接调用）。
-fn set_status_toast(st: &mut AppState, msg: String) {    st.ui.set_link_status(msg.as_str().into());
+fn set_status_toast(st: &mut AppState, msg: String) {
+    st.ui.set_link_status(msg.as_str().into());
     let ui = st.ui.clone_strong();
     slint::Timer::single_shot(Duration::from_secs(4), move || {
         ui.set_link_status("".into());
@@ -11708,11 +12234,11 @@ fn set_clipboard_checked(st: &mut AppState, text: &str) -> Result<(), String> {
         Some(Err(e)) => {
             eprintln!("[clipboard] 写入失败: {e}");
             Err(format!("clipboard write failed: {e}"))
-        },
+        }
         None => {
             eprintln!("[clipboard] 不可用");
             Err("clipboard unavailable".to_string())
-        },
+        }
     }
 }
 
@@ -11755,10 +12281,7 @@ fn write_clipboard_image(image: arboard::ImageData) -> std::io::Result<PathBuf> 
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let path = std::env::temp_dir().join(format!(
-        "tervo-paste-{}-{stamp}.png",
-        std::process::id()
-    ));
+    let path = std::env::temp_dir().join(format!("tervo-paste-{}-{stamp}.png", std::process::id()));
     let file = {
         let mut opts = std::fs::OpenOptions::new();
         opts.write(true).create_new(true);
@@ -11769,7 +12292,11 @@ fn write_clipboard_image(image: arboard::ImageData) -> std::io::Result<PathBuf> 
         }
         opts.open(&path)?
     };
-    let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), image.width as u32, image.height as u32);
+    let mut encoder = png::Encoder::new(
+        std::io::BufWriter::new(file),
+        image.width as u32,
+        image.height as u32,
+    );
     encoder.set_color(png::ColorType::Rgba);
     encoder.set_depth(png::BitDepth::Eight);
     let mut writer = encoder.write_header()?;
@@ -11963,7 +12490,10 @@ fn deliver_paste_targets(st: &mut AppState, text: &str, targets: &[PaneId], reas
             continue;
         }
         let payload = paste_payload(&normalized, bracketed);
-        eprintln!("[ui] paste pane={target} bytes={} bracketed={bracketed}", payload.len());
+        eprintln!(
+            "[ui] paste pane={target} bytes={} bracketed={bracketed}",
+            payload.len()
+        );
         if let Some(rt) = st.panes.get_mut(&target) {
             rt.handle.input(&payload);
         }
@@ -12179,7 +12709,10 @@ fn install_native_window_events(ui: &MainWindow, window_id: WindowId) {
                 let target = win
                     .with_winit_window(|win| drop_target_at(win, window_id))
                     .flatten()
-                    .or_else(|| runtime::with_window(window_id, |st| st.ws.active_tab().map(|t| t.focused)).flatten());
+                    .or_else(|| {
+                        runtime::with_window(window_id, |st| st.ws.active_tab().map(|t| t.focused))
+                            .flatten()
+                    });
                 if let Some(ui) = weak.upgrade() {
                     ui.set_drop_hover_pane(-1);
                 }
@@ -12227,7 +12760,7 @@ fn paste_text_into_focused(st: &mut AppState, text: &str) {
             return;
         }
     }
-    if needs_paste_confirm(text, st.cfg.confirm_multiline_paste) {
+    if needs_paste_confirm(text, st.cfg.borrow().confirm_multiline_paste) {
         let lines = text.lines().count();
         let preview: String = text.lines().take(3).collect::<Vec<_>>().join("\n");
         let preview = if lines > 3 {
@@ -12426,15 +12959,19 @@ fn refresh_palette(st: &mut AppState) {
     let command_ctx = command_context(st);
     entries.extend(
         st.plugins
+            .borrow_mut()
             .palette_commands(&query, &command_ctx)
             .into_iter()
             .map(|(id, title)| (title, id.to_string())),
     );
     // 已保存的工作区：打开/重命名/删除/导出各一条动态条目，面板里可直接选。
     let q = query.trim().to_lowercase();
-    for ws in &st.workspaces.workspaces {
+    for ws in &st.workspaces.borrow().workspaces {
         let actions = [
-            (format!("Workspace: {}", ws.name), format!("workspace.open:{}", ws.name)),
+            (
+                format!("Workspace: {}", ws.name),
+                format!("workspace.open:{}", ws.name),
+            ),
             (
                 format!("Rename Workspace: {}", ws.name),
                 format!("workspace.rename:{}", ws.name),
@@ -12455,7 +12992,13 @@ fn refresh_palette(st: &mut AppState) {
         }
     }
     // 官方 SSH 插件 POC：每个 SSH Profile 一条 `ssh.connect:<id>`（走 transport seam）。
-    for p in st.profiles.profiles.iter().filter(|p| p.kind == "ssh") {
+    for p in st
+        .profiles
+        .borrow()
+        .profiles
+        .iter()
+        .filter(|p| p.kind == "ssh")
+    {
         let title = format!("SSH (plugin): {}", p.name);
         if q.is_empty() || title.to_lowercase().contains(&q) {
             entries.push((title, format!("ssh.connect:{}", p.id)));
@@ -12537,21 +13080,30 @@ fn run_command(st: &mut AppState, id: &str) {
         return;
     }
     if let Some(name) = id.strip_prefix("workspace.rename:") {
-        match st.workspaces.workspaces.iter().position(|w| w.name == name) {
+        match st
+            .workspaces
+            .with(|__x| __x.workspaces.iter().position(|w| w.name == name))
+        {
             Some(index) => open_workspace_rename_dialog(st, index),
             None => eprintln!("[workspace] 重命名目标不存在 name={name:?}"),
         }
         return;
     }
     if let Some(name) = id.strip_prefix("workspace.delete:") {
-        match st.workspaces.workspaces.iter().position(|w| w.name == name) {
+        match st
+            .workspaces
+            .with(|__x| __x.workspaces.iter().position(|w| w.name == name))
+        {
             Some(index) => ask_delete_workspace(st, index),
             None => eprintln!("[workspace] 删除目标不存在 name={name:?}"),
         }
         return;
     }
     if let Some(name) = id.strip_prefix("workspace.export:") {
-        match st.workspaces.workspaces.iter().position(|w| w.name == name) {
+        match st
+            .workspaces
+            .with(|__x| __x.workspaces.iter().position(|w| w.name == name))
+        {
             Some(index) => open_workspace_export(st, index),
             None => eprintln!("[workspace] 导出目标不存在 name={name:?}"),
         }
@@ -12562,7 +13114,10 @@ fn run_command(st: &mut AppState, id: &str) {
     if let Some(selector) = ssh_connect_selector(id) {
         if selector.is_empty() {
             // 裸命令：取第一个 SSH Profile（调色板另有带 id 的精确条目）。
-            match st.profiles.profiles.iter().position(|p| p.kind == "ssh") {
+            match st
+                .profiles
+                .with(|__x| __x.profiles.iter().position(|p| p.kind == "ssh"))
+            {
                 Some(index) => open_plugin_ssh_tab(st, index),
                 None => eprintln!("[plugin-ssh] 还没有保存过 SSH Profile"),
             }
@@ -12597,23 +13152,31 @@ fn run_command(st: &mut AppState, id: &str) {
         "tab.rename-undo" => {
             undo_tab_rename(st, st.ws.active);
             rebuild_tabs(st);
-        },
+        }
         "view.scroll-top" => scroll_focused_pane(st, true),
         "view.scroll-bottom" => scroll_focused_pane(st, false),
         "view.sidebar" => toggle_sidebar(st),
         "workspace.save" => open_workspace_save_dialog(st),
         "workspace.list" => {
-            let names: Vec<String> =
-                st.workspaces.workspaces.iter().map(|w| w.name.clone()).collect();
+            let names: Vec<String> = st
+                .workspaces
+                .borrow()
+                .workspaces
+                .iter()
+                .map(|w| w.name.clone())
+                .collect();
             eprintln!("[workspace] 已保存: {names:?}");
-        },
+        }
         "workspace.open" => {
             // 没有选择器时先打开“最近保存的一个”，名字列表见 workspace.list。
-            match st.workspaces.workspaces.last().map(|w| w.name.clone()) {
+            match st
+                .workspaces
+                .with(|__x| __x.workspaces.last().map(|w| w.name.clone()))
+            {
                 Some(name) => open_workspace(st, &name),
                 None => eprintln!("[workspace] 还没有保存过工作区"),
             }
-        },
+        }
         "pane.split-right" => {
             if let Some(focused) = st.ws.active_tab().map(|t| t.focused) {
                 split_pane_inner(st, focused, Dir::Row);
@@ -12636,7 +13199,7 @@ fn run_command(st: &mut AppState, id: &str) {
         "pane.focus-down" => focus_pane_dir(st, 0.0, 1.0),
         "pane.toggle-zoom" => toggle_pane_zoom(st),
         "pane.focus-next" => {
-            let (panes, focused) = match st.ws.active_tab() {
+            let (panes, focused) = match { st.ws.active_tab() } {
                 Some(t) => (t.panes(), t.focused),
                 None => return,
             };
@@ -12695,12 +13258,13 @@ fn run_command(st: &mut AppState, id: &str) {
             // 插件命令统一走 unknown 分支：必须存在、已启用、权限已确认且 `when`
             // 上下文成立；spawn_command 在后台线程执行，UI 线程立即返回。
             let ctx = command_context(st);
-            if !st.plugins.command_allowed(other, &ctx) {
+            if !st.plugins.borrow().command_allowed(other, &ctx) {
                 eprintln!("[ui] 未知命令或上下文不可用 {other}");
                 return;
             }
             if st
                 .plugins
+                .borrow()
                 .spawn_command_for(other, Some(st.window_id.get()))
             {
                 eprintln!("[plugin] 已提交后台执行 {other} window={}", st.window_id);
@@ -12790,7 +13354,8 @@ fn run_search(st: &mut AppState, forward: bool) {
         .map(|rt| rt.handle.search_with(&query, forward, options));
     match result {
         Some(Ok(Some(hit))) => {
-            st.ui.set_search_status(search_count_label(Some(&hit)).into());
+            st.ui
+                .set_search_status(search_count_label(Some(&hit)).into());
             st.ui.set_search_error(false);
             eprintln!(
                 "[ui] find query={query:?} forward={forward} case={} regex={} hit={hit:?} count={}/{}",
@@ -12826,7 +13391,7 @@ fn run_search(st: &mut AppState, forward: bool) {
 fn toggle_read_only(st: &mut AppState, pane: Option<PaneId>) {
     let id = pane.or_else(|| st.ws.active_tab().map(|t| t.focused));
     let Some(id) = id else { return };
-    let on = match st.panes.get(&id) {
+    let on = match { st.panes.get(&id) } {
         Some(rt) => {
             let on = !rt.handle.read_only();
             rt.handle.set_read_only(on);
@@ -13030,18 +13595,18 @@ fn save_contents_commit(st: &mut AppState, raw: &str) {
             st.ui.set_save_status("Export: 没有目标工作区".into());
             return;
         };
-        let json = match st.workspaces.export_json(&name) {
+        let json = match st.workspaces.with(|__x| __x.export_json(&name)) {
             Ok(json) => json,
             Err(err) => {
                 eprintln!("[workspace] 导出失败 name={name:?}: {err}");
                 st.ui.set_save_status(err.as_str().into());
                 return;
-            },
+            }
         };
         match save_contents_file(raw, &json, home.as_deref(), &cwd) {
             Ok(path) => {
                 close_save_dialog(st);
-                let msg = if st.cfg.lang() == "zh" {
+                let msg = if app_lang(st) == "zh" {
                     format!("已导出工作区「{name}」→ {}", path.display())
                 } else {
                     format!("Exported workspace \"{name}\" to {}", path.display())
@@ -13053,11 +13618,11 @@ fn save_contents_commit(st: &mut AppState, raw: &str) {
                     json.len()
                 );
                 set_status_toast(st, msg);
-            },
+            }
             Err(err) => {
                 eprintln!("[workspace] 导出写盘失败 name={name:?} path={raw:?}: {err}");
                 st.ui.set_save_status(err.as_str().into());
-            },
+            }
         }
         return;
     }
@@ -13065,7 +13630,7 @@ fn save_contents_commit(st: &mut AppState, raw: &str) {
         st.ui.set_save_status("Save: 没有目标 pane".into());
         return;
     };
-    match st.save_kind {
+    match { st.save_kind } {
         SaveKind::Contents => {
             let Some(text) = st.panes.get(&pane).and_then(|rt| rt.handle.contents()) else {
                 let msg = "读取终端内容失败（会话可能已结束）";
@@ -13131,7 +13696,7 @@ fn save_contents_commit(st: &mut AppState, raw: &str) {
             }
         }
         // 已在上面的提前返回分支处理。
-        SaveKind::Workspace => {},
+        SaveKind::Workspace => {}
     }
 }
 
@@ -13220,9 +13785,9 @@ fn set_broadcast(st: &mut AppState, on: bool, reason: &str) {
 /// 正在输入的破坏性命令 → 顶部警示条文案；空 = 没有警示。
 fn broadcast_warning_text(line: &str) -> String {
     match broadcast::dangerous_reason(line) {
-        Some(reason) => format!(
-            "Broadcast ON · {reason} · Enter needs confirmation / Enter 需要二次确认"
-        ),
+        Some(reason) => {
+            format!("Broadcast ON · {reason} · Enter needs confirmation / Enter 需要二次确认")
+        }
         None => String::new(),
     }
 }
@@ -13265,12 +13830,12 @@ fn note_broadcast_key(
             st.broadcast_danger_ack = false;
             st.broadcast_line.clear();
             st.ui.set_broadcast_warning("".into());
-        },
+        }
         "\u{7f}" | "\u{8}" => {
             st.broadcast_line.pop();
             let warning = broadcast_warning_text(&st.broadcast_line);
             st.ui.set_broadcast_warning(warning.into());
-        },
+        }
         _ if ctrl => {
             // Ctrl+C / Ctrl+U 会清掉 shell 当前行，行缓冲跟着清。
             if text.eq_ignore_ascii_case("c") || text.eq_ignore_ascii_case("u") {
@@ -13278,7 +13843,7 @@ fn note_broadcast_key(
                 st.broadcast_danger_ack = false;
                 st.ui.set_broadcast_warning("".into());
             }
-        },
+        }
         _ if !alt && !text.is_empty() && text.chars().any(|c| !c.is_control()) => {
             for c in text.chars() {
                 if c.is_control() {
@@ -13295,8 +13860,8 @@ fn note_broadcast_key(
                 eprintln!("[broadcast] warning line={:?}", st.broadcast_line);
             }
             st.ui.set_broadcast_warning(warning.into());
-        },
-        _ => {},
+        }
+        _ => {}
     }
 }
 
@@ -13320,7 +13885,10 @@ fn current_lock_state(st: &mut AppState) -> xconn::LockState {
             return xconn::LockState::default();
         }
     }
-    st.lock_probe.as_mut().map(|probe| probe.state()).unwrap_or_default()
+    st.lock_probe
+        .as_mut()
+        .map(|probe| probe.state())
+        .unwrap_or_default()
 }
 
 /// 统一的输入分发：物理按键与 IME 上屏都走这里。
@@ -13358,19 +13926,19 @@ fn handle_input(
             "\u{1b}" => {
                 close_profile_menu(st);
                 return;
-            },
+            }
             "\u{F700}" => {
                 profile_menu_move(st, -1);
                 return;
-            },
+            }
             "\u{F701}" => {
                 profile_menu_move(st, 1);
                 return;
-            },
+            }
             "\u{a}" | "\u{d}" => {
                 profile_menu_accept(st);
                 return;
-            },
+            }
             _ => {
                 // 菜单不抢焦点，但保险起见把焦点还给终端再继续分发。
                 st.ui.set_profilemenu_open(false);
@@ -13388,7 +13956,10 @@ fn handle_input(
         if at.elapsed() <= MULTI_CHORD_TIMEOUT {
             if let Some(second) = keys::chord_from_key_event(text, ctrl, alt, shift, meta) {
                 let seq = [first.clone(), second.clone()];
-                if let Some(id) = st.commands.command_for_sequence(&seq, &st.cfg.hotkeys) {
+                let hotkey_id = st
+                    .commands
+                    .command_for_sequence(&seq, &st.cfg.borrow().hotkeys);
+                if let Some(id) = hotkey_id {
                     if keylog {
                         eprintln!("[hotkey] multi {id} ← {first} {second}");
                     }
@@ -13402,7 +13973,10 @@ fn handle_input(
         }
     }
     if let Some(chord) = keys::chord_from_key_event(text, ctrl, alt, shift, meta) {
-        if st.commands.multi_chord_prefix(&chord, &st.cfg.hotkeys) {
+        if st
+            .commands
+            .multi_chord_prefix(&chord, &st.cfg.borrow().hotkeys)
+        {
             st.pending_chord = Some((chord.clone(), std::time::Instant::now()));
             if keylog {
                 eprintln!("[hotkey] multi-chord 前缀 {chord}，等待第二段");
@@ -13439,12 +14013,12 @@ fn handle_input(
 
     // 用户 override 必须在硬编码默认键之前处理；命中即 return，避免同一按键触发两次。
     // 配置为空时完全跳过，保证无自定义快捷键时按键路径零变化。
-    if !st.cfg.hotkeys.is_empty() {
+    if !st.cfg.borrow().hotkeys.is_empty() {
         if let Some(chord) = keys::chord_from_key_event(text, ctrl, alt, shift, meta) {
-            if let Some(id) = st
+            let override_id = st
                 .commands
-                .override_command_for_chord(&chord, &st.cfg.hotkeys)
-            {
+                .override_command_for_chord(&chord, &st.cfg.borrow().hotkeys);
+            if let Some(id) = override_id {
                 if keylog {
                     eprintln!("[hotkey] override {id} ← {chord}");
                 }
@@ -13452,7 +14026,10 @@ fn handle_input(
                 return;
             }
             // 该默认键已被用户改到别的组合：吞掉，避免旧硬编码行为残留。
-            if let Some(id) = st.commands.suppressed_default(&chord, &st.cfg.hotkeys) {
+            if let Some(id) = st
+                .commands
+                .suppressed_default(&chord, &st.cfg.borrow().hotkeys)
+            {
                 if keylog {
                     eprintln!("[hotkey] suppressed old default {id} ← {chord}");
                 }
@@ -13463,14 +14040,21 @@ fn handle_input(
 
     // Profile 热键：一次按键直接开对应 Profile 的 Tab。放在命令 override 之后、
     // 硬编码默认键之前——用户自定义命令优先，其余按键再按 Profile 绑定匹配。
-    if st.profiles.profiles.iter().any(|p| !p.hotkey.is_empty()) {
+    if st
+        .profiles
+        .borrow()
+        .profiles
+        .iter()
+        .any(|p| !p.hotkey.is_empty())
+    {
         if let Some(chord) = keys::chord_from_key_event(text, ctrl, alt, shift, meta) {
-            if let Some(index) = st
+            let profile_index = st
                 .profiles
+                .borrow()
                 .profiles
                 .iter()
-                .position(|p| p.hotkey_chord().as_ref() == Some(&chord))
-            {
+                .position(|p| p.hotkey_chord().as_ref() == Some(&chord));
+            if let Some(index) = profile_index {
                 eprintln!("[hotkey] profile {index} ← {chord}");
                 open_profile_tab_manual(st, index);
                 return;
@@ -13578,8 +14162,8 @@ fn handle_input(
     if st.broadcast && targets.len() > 1 && keylog {
         eprintln!("[send] broadcast to {} panes", targets.len());
     }
-    let key_bindings = st.cfg.key_bindings();
-    let scroll_on_keystroke = st.cfg.scroll_on_keystroke;
+    let key_bindings = st.cfg.borrow().key_bindings();
+    let scroll_on_keystroke = st.cfg.borrow().scroll_on_keystroke;
     let lock_state = current_lock_state(st);
     let held_keys = &mut st.held_keys;
     let panes = &mut st.panes;
@@ -13605,16 +14189,13 @@ fn handle_input(
                 if flags.contains(tervo_core::KeyboardFlags::REPORT_ALTERNATE_KEYS) {
                     keys::note_base_layout_degraded();
                 }
-                let modify_level =
-                    if flags.is_empty() { rt.handle.modify_other_keys() } else { 0 };
-                let encoded = keys::encode_key_event(
-                    text,
-                    mods,
-                    kind,
-                    flags,
-                    modify_level,
-                    key_bindings,
-                );
+                let modify_level = if flags.is_empty() {
+                    rt.handle.modify_other_keys()
+                } else {
+                    0
+                };
+                let encoded =
+                    keys::encode_key_event(text, mods, kind, flags, modify_level, key_bindings);
                 if let Some(bytes) = &encoded {
                     // 只有应用请求 REPORT_EVENT_TYPES、且这次 press/repeat 真的以
                     // 转义序列进入 PTY，才登记 release；普通文本键没有 CSI-u press
@@ -13679,17 +14260,26 @@ fn handle_key_release(
         return;
     }
     let targets: Vec<PaneId> = broadcast_targets(st);
-    let mods =
-        keys::KeyModifiers { ctrl, alt, shift, meta, ..keys::KeyModifiers::default() };
-    let key_bindings = st.cfg.key_bindings();
+    let mods = keys::KeyModifiers {
+        ctrl,
+        alt,
+        shift,
+        meta,
+        ..keys::KeyModifiers::default()
+    };
+    let key_bindings = st.cfg.borrow().key_bindings();
     let held_keys = &mut st.held_keys;
     let panes = &mut st.panes;
     for target in targets {
-        let Some(rt) = panes.get_mut(&target) else { continue };
+        let Some(rt) = panes.get_mut(&target) else {
+            continue;
+        };
         if rt.handle.read_only() {
             continue;
         }
-        let Some(id) = keys::key_id(text) else { continue };
+        let Some(id) = keys::key_id(text) else {
+            continue;
+        };
         // 先消费登记：即使应用刚关掉协议，也不会留下永远等不到的 release。
         let released = held_keys
             .get_mut(&target)
@@ -13749,8 +14339,7 @@ fn apply_notification(
 }
 
 /// 同时在飞的桌面通知线程/子进程上限；超过就丢弃（通知是 best-effort）。
-static NOTIFY_INFLIGHT: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
+static NOTIFY_INFLIGHT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 const NOTIFY_MAX_INFLIGHT: usize = 4;
 
 /// 桌面通知：参数直传 notify-send，不经过 shell；未安装/无 DBus 时静默失败。
@@ -13781,7 +14370,7 @@ fn send_desktop_notification(title: &str, body: &str) {
                 Err(_) => {
                     NOTIFY_INFLIGHT.fetch_sub(1, Ordering::AcqRel);
                     return;
-                },
+                }
             };
             // 通知服务卡死时最多等 2s，然后 kill；避免线程/子进程无限累积。
             for _ in 0..40 {
@@ -13789,7 +14378,7 @@ fn send_desktop_notification(title: &str, body: &str) {
                     Ok(Some(_)) => {
                         NOTIFY_INFLIGHT.fetch_sub(1, Ordering::AcqRel);
                         return;
-                    },
+                    }
                     Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),
                     Err(_) => break,
                 }
@@ -13814,10 +14403,10 @@ fn selection_label(selection: ClipboardSelection) -> &'static str {
 /// （query 同样会泄漏本机剪贴板，不能只拦写入）。
 fn apply_osc52(st: &mut AppState, pane: PaneId, request: ClipboardRequest) {
     let ts = logging::now_ms();
-    if !st.cfg.osc52_allowed() {
+    if !st.cfg.borrow().osc52_allowed() {
         eprintln!(
             "[clipboard] ts_ms={ts} osc52 denied pane={pane} osc52={:?}",
-            st.cfg.osc52
+            st.cfg.borrow().osc52
         );
         return;
     }
@@ -13847,10 +14436,8 @@ fn apply_osc52(st: &mut AppState, pane: PaneId, request: ClipboardRequest) {
             // 查询会读本机剪贴板；远端 SSH/transport 默认拒绝，避免远端进程
             // 静默读走密码/令牌。本地 shell 保持原行为。
             let remote = st.panes.get(&pane).is_some_and(|rt| rt.remote);
-            if !st.cfg.osc52_read_allowed(remote) {
-                eprintln!(
-                    "[clipboard] ts_ms={ts} osc52 query denied pane={pane} remote={remote}"
-                );
+            if !st.cfg.borrow().osc52_read_allowed(remote) {
+                eprintln!("[clipboard] ts_ms={ts} osc52 query denied pane={pane} remote={remote}");
                 return;
             }
             let text = match selection {
@@ -13891,7 +14478,7 @@ fn apply_title_rules(raw: &str, prefix: &str, suffix: &str, filter: &str) -> Str
                 if !from.is_empty() {
                     title = title.replace(from, to);
                 }
-            },
+            }
             None => title = title.replace(rule, ""),
         }
     }
@@ -13908,9 +14495,9 @@ fn apply_title_rules(raw: &str, prefix: &str, suffix: &str, filter: &str) -> Str
 /// 返回 `(是否允许响铃, 本轮 BEL 数)`，响铃由调用方在释放 `AppState` 借用后执行。
 fn drain_core_events(st: &mut AppState) -> (bool, u32) {
     let active = st.ws.active;
-    let desktop_notifications = st.cfg.desktop_notifications;
-    let visual_bell = st.cfg.visual_bell;
-    let audible_bell = st.cfg.audible_bell;
+    let desktop_notifications = st.cfg.borrow().desktop_notifications;
+    let visual_bell = st.cfg.borrow().visual_bell;
+    let audible_bell = st.cfg.borrow().audible_bell;
     let mut bell_count = 0u32;
     let tab_titles: Vec<String> = st.ws.tabs.iter().map(|t| t.title.clone()).collect();
     let pane_tab: HashMap<PaneId, usize> = st
@@ -13953,9 +14540,9 @@ fn drain_core_events(st: &mut AppState) -> (bool, u32) {
                     } else {
                         apply_title_rules(
                             &t,
-                            &st.cfg.title_prefix,
-                            &st.cfg.title_suffix,
-                            &st.cfg.title_filter,
+                            &st.cfg.borrow().title_prefix,
+                            &st.cfg.borrow().title_suffix,
+                            &st.cfg.borrow().title_filter,
                         )
                     };
                     if !display.is_empty() && rt.title != display {
@@ -14054,7 +14641,7 @@ fn drain_core_events(st: &mut AppState) -> (bool, u32) {
                                 rt.activity.completed = true;
                                 tabs_dirty = true;
                             }
-                        },
+                        }
                     }
                     eprintln!(
                         "[shell] ts_ms={} pane={id} tab={tab:?} phase={} ",
@@ -14080,7 +14667,7 @@ fn drain_core_events(st: &mut AppState) -> (bool, u32) {
                             exited_panes.push((id, rt.profile_id, code, signal));
                         }
                     }
-                },
+                }
                 CoreEvent::ResetTitle | CoreEvent::CursorBlinkChange => {}
             }
         }
@@ -14091,7 +14678,10 @@ fn drain_core_events(st: &mut AppState) -> (bool, u32) {
         // 5s 节流：循环发图/恶意输出不会刷爆事件循环或状态栏。
         const IIP_NOTICE_THROTTLE: Duration = Duration::from_secs(5);
         let now = Instant::now();
-        if st.last_iip_notice.is_none_or(|last| now.duration_since(last) >= IIP_NOTICE_THROTTLE) {
+        if st
+            .last_iip_notice
+            .is_none_or(|last| now.duration_since(last) >= IIP_NOTICE_THROTTLE)
+        {
             st.last_iip_notice = Some(now);
             let (pane, notice) = &iip_notices[0];
             eprintln!(
@@ -14268,7 +14858,7 @@ fn poll_events_for(state: Rc<RefCell<AppState>>) {
 /// 只更新视图属性，不重新拉帧/不 overlay 终端内容；重绘由 Slint 的
 /// border/opacity 动画驱动。
 fn flash_bell(st: &mut AppState, id: PaneId) {
-    if !st.cfg.visual_bell {
+    if !st.cfg.borrow().visual_bell {
         return;
     }
     let Some(rt) = st.panes.get_mut(&id) else {
@@ -14289,27 +14879,27 @@ fn flash_bell(st: &mut AppState, id: PaneId) {
 
 /// 清除到期的视觉铃闪烁；全部清完就停掉 30ms timer，空闲时零开销。
 fn tick_bell_flash(st: &mut AppState) {
-        let now = Instant::now();
-        let expired: Vec<PaneId> = st
-            .panes
-            .iter()
-            .filter(|(_, rt)| rt.bell_until.is_some_and(|until| now >= until))
-            .map(|(id, _)| *id)
-            .collect();
-        let still_flashing = st
-            .panes
-            .values()
-            .any(|rt| rt.bell_until.is_some_and(|until| now < until));
-        for id in expired {
-            let Some(rt) = st.panes.get_mut(&id) else {
-                continue;
-            };
-            rt.bell_until = None;
-            refresh_pane_view(st, id);
-        }
-        if !still_flashing {
-            st.bell_timer.stop();
-        }
+    let now = Instant::now();
+    let expired: Vec<PaneId> = st
+        .panes
+        .iter()
+        .filter(|(_, rt)| rt.bell_until.is_some_and(|until| now >= until))
+        .map(|(id, _)| *id)
+        .collect();
+    let still_flashing = st
+        .panes
+        .values()
+        .any(|rt| rt.bell_until.is_some_and(|until| now < until));
+    for id in expired {
+        let Some(rt) = st.panes.get_mut(&id) else {
+            continue;
+        };
+        rt.bell_until = None;
+        refresh_pane_view(st, id);
+    }
+    if !still_flashing {
+        st.bell_timer.stop();
+    }
 }
 
 #[derive(Default, Clone, Debug)]
@@ -14584,7 +15174,7 @@ fn help_diagnostics_text(info: &HelpInfo, lang: &str) -> String {
 /// Help 页“复制诊断信息”：成功/失败都写回 help-status，不 panic。
 fn copy_help_diagnostics(st: &mut AppState) {
     let info = help_info();
-    let lang = st.cfg.lang();
+    let lang = app_lang(st);
     let text = help_diagnostics_text(&info, lang);
     let bytes = text.len();
     match set_clipboard_checked(st, &text) {
@@ -14598,29 +15188,21 @@ fn copy_help_diagnostics(st: &mut AppState) {
                 )
                 .into(),
             );
-        },
+        }
         Err(e) => {
             eprintln!("[help] copy diagnostics ok=false bytes={bytes} error={e}");
             let msg = format!(
                 "{}{e}",
-                ui_text(
-                    lang,
-                    "Could not copy diagnostics: ",
-                    "复制诊断信息失败："
-                )
+                ui_text(lang, "Could not copy diagnostics: ", "复制诊断信息失败：")
             );
             st.ui.set_help_status(msg.as_str().into());
-        },
+        }
     }
 }
 
 /// Help 页目录按钮：校验目录后复用统一的 shell-safe `xdg-open <单参数>` helper。
 /// 打开失败（目录不存在/进程非 0/找不到 xdg-open）写回 Help 页可见状态，不 panic。
-fn open_help_directory(
-    dir: PathBuf,
-    kind: &'static str,
-    lang: &'static str,
-) -> Result<(), String> {
+fn open_help_directory(dir: PathBuf, kind: &'static str, lang: &'static str) -> Result<(), String> {
     eprintln!("[help] open {kind} path={}", dir.display());
     if !dir.is_dir() {
         let msg = format!(
@@ -14632,19 +15214,20 @@ fn open_help_directory(
         return Err(msg);
     }
     let prefix = ui_text(lang, "Could not open directory", "无法打开目录").to_string();
-    let observer: XdgObserver = Some(std::sync::Arc::new(move |result: Result<(), String>| {
-        match result {
-            Ok(()) => eprintln!("[help] open {kind} ok"),
-            Err(msg) => {
-                eprintln!("[help] open {kind} failed: {msg}");
-                let _ = slint::invoke_from_event_loop(move || {
-                    runtime::with_active_window(|st| {
-                        st.ui.set_help_status(msg.as_str().into());
+    let observer: XdgObserver =
+        Some(std::sync::Arc::new(
+            move |result: Result<(), String>| match result {
+                Ok(()) => eprintln!("[help] open {kind} ok"),
+                Err(msg) => {
+                    eprintln!("[help] open {kind} failed: {msg}");
+                    let _ = slint::invoke_from_event_loop(move || {
+                        runtime::with_active_window(|st| {
+                            st.ui.set_help_status(msg.as_str().into());
+                        });
                     });
-                });
+                }
             },
-        }
-    }));
+        ));
     let shown = dir.display().to_string();
     open_with_xdg_observed(dir.into_os_string(), shown, "path", prefix, observer);
     Ok(())
@@ -15034,7 +15617,7 @@ fn build_window_state(
         let repairs = {
             // 同一结构体的不相交字段借用：commands 只读、cfg.hotkeys 可写。
             let AppState { commands, cfg, .. } = &mut *st;
-            commands::repair_hotkey_overrides(commands, &mut cfg.hotkeys)
+            commands::repair_hotkey_overrides(commands, &mut cfg.borrow_mut().hotkeys)
         };
         if !repairs.is_empty() {
             for repair in &repairs {
@@ -15043,7 +15626,7 @@ fn build_window_state(
                     repair.command, repair.chord, repair.reason
                 );
             }
-            st.cfg.save();
+            st.cfg.borrow().save();
         }
         // 设置页工作区列表：启动时把 workspaces.toml 里的条目填进模型。
         refresh_workspace_rows(&mut st);
@@ -15053,48 +15636,53 @@ fn build_window_state(
 
 /// 单窗口/第二窗口共用的 UI 初始状态同步（只改 Slint 属性，不写盘）。
 fn init_window_ui(st: &mut AppState) {
-
-    st.ui.set_cfg_copy_on_select(st.cfg.copy_on_select);
-    st.ui.set_cfg_confirm_close(st.cfg.confirm_close);
-    st.ui.set_cfg_close_action(st.cfg.close_action.as_str().into());
+    st.ui.set_cfg_copy_on_select(st.cfg.borrow().copy_on_select);
+    st.ui.set_cfg_confirm_close(st.cfg.borrow().confirm_close);
     st.ui
-        .set_cfg_restore_session(st.cfg.restore_session_on_startup);
-    st.ui.set_cfg_confirm_paste(st.cfg.confirm_multiline_paste);
+        .set_cfg_close_action(st.cfg.borrow().close_action.as_str().into());
     st.ui
-        .set_cfg_desktop_notifications(st.cfg.desktop_notifications);
-    st.ui.set_cfg_visual_bell(st.cfg.visual_bell);
+        .set_cfg_restore_session(st.cfg.borrow().restore_session_on_startup);
+    st.ui
+        .set_cfg_confirm_paste(st.cfg.borrow().confirm_multiline_paste);
+    st.ui
+        .set_cfg_desktop_notifications(st.cfg.borrow().desktop_notifications);
+    st.ui.set_cfg_visual_bell(st.cfg.borrow().visual_bell);
     // 光标/粗体外观（GNOME Terminal 基础项）
     st.ui
-        .set_cfg_cursor_shape(st.cfg.cursor_shape.clone().into());
+        .set_cfg_cursor_shape(st.cfg.borrow().cursor_shape.clone().into());
     st.ui
-        .set_cfg_cursor_blink(st.cfg.cursor_blink.clone().into());
+        .set_cfg_cursor_blink(st.cfg.borrow().cursor_blink.clone().into());
     st.ui
-        .set_cfg_cursor_color(st.cfg.cursor_color.clone().into());
+        .set_cfg_cursor_color(st.cfg.borrow().cursor_color.clone().into());
     st.ui
-        .set_cfg_cursor_text_color(st.cfg.cursor_text_color.clone().into());
-    st.ui.set_cfg_bold_is_bright(st.cfg.bold_is_bright);
-    st.ui.set_cfg_bold_color(st.cfg.bold_color.clone().into());
+        .set_cfg_cursor_text_color(st.cfg.borrow().cursor_text_color.clone().into());
+    st.ui.set_cfg_bold_is_bright(st.cfg.borrow().bold_is_bright);
     st.ui
-        .set_cfg_bold_color_same_as_fg(st.cfg.bold_color_same_as_fg);
+        .set_cfg_bold_color(st.cfg.borrow().bold_color.clone().into());
+    st.ui
+        .set_cfg_bold_color_same_as_fg(st.cfg.borrow().bold_color_same_as_fg);
     configure_cursor_blink(st);
-    st.ui.set_cfg_audible_bell(st.cfg.audible_bell);
-    st.ui.set_cfg_scroll_output(st.cfg.scroll_on_output);
-    st.ui.set_cfg_scroll_keystroke(st.cfg.scroll_on_keystroke);
-    st.ui.set_cfg_sixel(st.cfg.sixel);
-    st.ui.set_cfg_sixel_scrolling(st.cfg.sixel_scrolling);
-    st.ui.set_cfg_iip(st.cfg.iip);
+    st.ui.set_cfg_audible_bell(st.cfg.borrow().audible_bell);
     st.ui
-        .set_cfg_plugin_require_signature(st.cfg.plugin_require_signature);
+        .set_cfg_scroll_output(st.cfg.borrow().scroll_on_output);
     st.ui
-        .set_cfg_scrollback_unlimited(st.cfg.scrollback_unlimited);
+        .set_cfg_scroll_keystroke(st.cfg.borrow().scroll_on_keystroke);
+    st.ui.set_cfg_sixel(st.cfg.borrow().sixel);
     st.ui
-        .set_cfg_scrollbar_policy(st.cfg.scrollbar_policy().as_str().into());
+        .set_cfg_sixel_scrolling(st.cfg.borrow().sixel_scrolling);
+    st.ui.set_cfg_iip(st.cfg.borrow().iip);
     st.ui
-        .set_cfg_backspace_binding(st.cfg.key_bindings().backspace.as_str().into());
+        .set_cfg_plugin_require_signature(st.cfg.borrow().plugin_require_signature);
     st.ui
-        .set_cfg_delete_binding(st.cfg.key_bindings().delete.as_str().into());
+        .set_cfg_scrollback_unlimited(st.cfg.borrow().scrollback_unlimited);
     st.ui
-        .set_tabbar_position(st.cfg.tabbar_pos().as_str().into());
+        .set_cfg_scrollbar_policy(st.cfg.borrow().scrollbar_policy().as_str().into());
+    st.ui
+        .set_cfg_backspace_binding(st.cfg.borrow().key_bindings().backspace.as_str().into());
+    st.ui
+        .set_cfg_delete_binding(st.cfg.borrow().key_bindings().delete.as_str().into());
+    st.ui
+        .set_tabbar_position(st.cfg.borrow().tabbar_pos().as_str().into());
     st.ui
         .set_settings_path(Config::path().display().to_string().as_str().into());
     refresh_config_report(st);
@@ -15104,10 +15692,13 @@ fn init_window_ui(st: &mut AppState) {
     if std::env::var_os("TERVO_TEST_SUSPEND_BG").is_some() {
         st.ui.set_background_suspended(true);
     }
-    st.ui.set_language(st.cfg.lang().into());
+    st.ui.set_language(app_lang(st).into());
     // SESS-006：明确“恢复会话”恢复的是布局/配置，不是运行中的进程。
-    st.ui
-        .set_restore_note(session::restore_boundaries_text(st.cfg.lang() == "zh").as_str().into());
+    st.ui.set_restore_note(
+        session::restore_boundaries_text(app_lang(st) == "zh")
+            .as_str()
+            .into(),
+    );
     refresh_hotkeys(st);
     refresh_vault_ui(st);
     sync_plugin_config_metadata(st);
@@ -15116,12 +15707,16 @@ fn init_window_ui(st: &mut AppState) {
     sync_mcp_ui(st);
     eprintln!(
         "[plugin-v3] 设置页 {} 个插件，{} 个启用，{} 条启用命令，{} unsupported/invalid",
-        st.plugins.total_count(),
-        st.plugins.enabled_count(),
-        st.plugins.enabled_command_count(),
-        st.plugins.unsupported_count()
+        st.plugins.borrow().total_count(),
+        st.plugins.borrow().enabled_count(),
+        st.plugins.borrow().enabled_command_count(),
+        st.plugins.borrow().unsupported_count()
     );
-    eprintln!("[ui] 启动 tabbar_position={}", st.cfg.tabbar_position);}
+    eprintln!(
+        "[ui] 启动 tabbar_position={}",
+        st.cfg.borrow().tabbar_position
+    );
+}
 
 /// primary 与 secondary 共用的完整窗口回调注册。
 ///
@@ -15129,11 +15724,7 @@ fn init_window_ui(st: &mut AppState) {
 /// 窗口身份；不再调用无作用域的 `with_app` 去猜窗口。这样两个窗口各自注册同一套
 /// 键盘/IME/鼠标/菜单/设置页/插件页/profile/SFTP 回调，而配置/插件/Vault/MCP
 /// 仍来自同一个 [`SharedServices`]。
-fn register_window_callbacks(
-    ui: &MainWindow,
-    state: Rc<RefCell<AppState>>,
-    window_id: WindowId,
-) {
+fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, window_id: WindowId) {
     eprintln!("[ui] {window_id} register window callbacks");
 
     // ---- 回调 ----
@@ -15153,7 +15744,9 @@ fn register_window_callbacks(
         } else {
             keys::KeyEventKind::Press
         };
-        runtime::with_window(window_id, |st| handle_input(st, &text, ctrl, alt, shift, meta, kind, keylog));
+        runtime::with_window(window_id, |st| {
+            handle_input(st, &text, ctrl, alt, shift, meta, kind, keylog)
+        });
     });
 
     // kitty release：只有应用请求 REPORT_EVENT_TYPES 且 press 进过 PTY 才回放。
@@ -15165,7 +15758,9 @@ fn register_window_callbacks(
                 text
             );
         }
-        runtime::with_window(window_id, |st| handle_key_release(st, &text, ctrl, alt, shift, meta, keylog));
+        runtime::with_window(window_id, |st| {
+            handle_key_release(st, &text, ctrl, alt, shift, meta, keylog)
+        });
     });
 
     // IME 上屏（中文/emoji）单独走一条路：没有修饰键语义，也不能触发 Ctrl 快捷键。
@@ -15197,7 +15792,11 @@ fn register_window_callbacks(
             }
             let (cell, wants_mouse, cursor_at_click) = {
                 let Some(rt) = st.panes.get(&id) else { return };
-                (cell_at(rt, x, y), rt.handle.wants_mouse(), rt.handle.cursor_pos())
+                (
+                    cell_at(rt, x, y),
+                    rt.handle.wants_mouse(),
+                    rt.handle.cursor_pos(),
+                )
             };
             let modifiers = mouse_mods(mods);
             // Shift 是「绕过鼠标上报、改成本地选词」的惯例逃生门（xterm/gnome-terminal 同款）。
@@ -15404,7 +16003,7 @@ fn register_window_callbacks(
                                 target.text()
                             );
                             open_target(&target, cwd.as_deref(), remote);
-                        },
+                        }
                         None => {
                             if mouselog {
                                 eprintln!(
@@ -15412,7 +16011,7 @@ fn register_window_callbacks(
                                     cell.0, cell.1
                                 );
                             }
-                        },
+                        }
                     }
                 }
                 return;
@@ -15435,19 +16034,18 @@ fn register_window_callbacks(
                 eprintln!(
                     "[select] up pane={id} cell={up_cell:?} moved={} copy_on_select={}",
                     drag.moved,
-                    st.cfg.copy_on_select
+                    st.cfg.borrow().copy_on_select
                 );
             }
             if !drag.moved {
                 // 多击选词/选行：同一 pane、同一格、400ms 内的连续左键抬起。
                 // 第 2 击选 Unicode 词，第 3 击选整行（沿用 core 的 SelectLine）。
-                let Some((line_u, col_u)) = st.panes.get(&id).map(|rt| cell_at(rt, x, y))
-                else {
+                let Some((line_u, col_u)) = st.panes.get(&id).map(|rt| cell_at(rt, x, y)) else {
                     return;
                 };
                 let (line, col) = (line_u as i32, col_u as i32);
                 let now = std::time::Instant::now();
-                let streak = match st.last_click {
+                let streak = match { st.last_click } {
                     Some((p, l, c, t, n))
                         if p == id
                             && l == line
@@ -15455,18 +16053,16 @@ fn register_window_callbacks(
                             && now.duration_since(t) < std::time::Duration::from_millis(400) =>
                     {
                         n.saturating_add(1)
-                    },
+                    }
                     _ => 1,
                 };
                 if streak == 2 {
                     if let Some(rt) = st.panes.get_mut(&id) {
                         rt.handle.select_word(line_u, col_u);
                     }
-                    eprintln!(
-                        "[ui] double-click select word line={line} col={col} pane={id}"
-                    );
+                    eprintln!("[ui] double-click select word line={line} col={col} pane={id}");
                     st.last_click = Some((id, line, col, now, 2));
-                    if st.cfg.copy_on_select {
+                    if st.cfg.borrow().copy_on_select {
                         copy_current_selection(st);
                     }
                     return;
@@ -15477,7 +16073,7 @@ fn register_window_callbacks(
                     }
                     eprintln!("[ui] triple-click select line={line} pane={id}");
                     st.last_click = None;
-                    if st.cfg.copy_on_select {
+                    if st.cfg.borrow().copy_on_select {
                         copy_current_selection(st);
                     }
                     return;
@@ -15486,7 +16082,7 @@ fn register_window_callbacks(
                 return;
             }
             // 关闭 Copy on select 时只保留高亮，不写剪贴板
-            if !st.cfg.copy_on_select {
+            if !st.cfg.borrow().copy_on_select {
                 return;
             }
             let text = st
@@ -15585,32 +16181,32 @@ fn register_window_callbacks(
     // 侧栏右边缘拖宽：只改逻辑宽度，再让内容区让位并重排 pane。
     ui.on_sidebar_dragged(move |x| {
         runtime::with_window(window_id, |st| {
-            if !st.cfg.sidebar_visible {
+            if !st.cfg.borrow().sidebar_visible {
                 return;
             }
             // 竖排 TabBar 在侧栏外侧：先扣掉它，右边缘 x 才是侧栏宽度。
-            let chrome_left = if st.cfg.tabbar_pos() == TabbarPos::Left {
+            let chrome_left = if st.cfg.borrow().tabbar_pos() == TabbarPos::Left {
                 TABBAR_W
             } else {
                 0.0
             };
             let want = crate::config::clamp_sidebar_width(x as f32 - chrome_left);
-            if (want - sidebar_width_of(&st.cfg)).abs() < 1.0 {
+            if (want - sidebar_width_of(&st.cfg.borrow())).abs() < 1.0 {
                 return;
             }
             // 先按旧侧栏反推窗口逻辑宽度，再改宽度，避免把新宽度重复加一次。
-            let (win_w, win_h) = window_size_of(st.content, &st.cfg);
-            st.cfg.sidebar_width = want;
+            let (win_w, win_h) = window_size_of(st.content, &st.cfg.borrow());
+            st.cfg.borrow_mut().sidebar_width = want;
             st.ui.set_sidebar_width(want);
-            st.content = content_rect(win_w, win_h, want, st.cfg.tabbar_pos());
+            st.content = content_rect(win_w, win_h, want, st.cfg.borrow().tabbar_pos());
             refresh_views(st);
             redraw_visible(st);
         });
     });
     ui.on_sidebar_drag_finished(move || {
         runtime::with_window(window_id, |st| {
-            if st.cfg.sidebar_visible {
-                st.cfg.save();
+            if st.cfg.borrow().sidebar_visible {
+                st.cfg.borrow().save();
             }
         });
     });
@@ -15669,7 +16265,14 @@ fn register_window_callbacks(
                 return;
             };
             match pending {
-                PendingBroadcast::Enter { text, ctrl, alt, shift, meta, kind } => {
+                PendingBroadcast::Enter {
+                    text,
+                    ctrl,
+                    alt,
+                    shift,
+                    meta,
+                    kind,
+                } => {
                     // 已确认：下一次 Enter 直接放行（不再弹同一个窗）。
                     st.broadcast_danger_ack = true;
                     eprintln!(
@@ -15677,14 +16280,14 @@ fn register_window_callbacks(
                         st.broadcast_line
                     );
                     handle_input(st, &text, ctrl, alt, shift, meta, kind, false);
-                },
+                }
                 PendingBroadcast::Paste(text) => {
                     st.broadcast_line.clear();
                     st.ui.set_broadcast_warning("".into());
                     let targets = broadcast_targets(st);
                     eprintln!("[broadcast] 用户确认粘贴到 {} 个 pane", targets.len());
                     deliver_paste_targets(st, &text, &targets, "bcast-confirm");
-                },
+                }
             }
         });
     });
@@ -15696,7 +16299,14 @@ fn register_window_callbacks(
             st.broadcast_line.clear();
             st.ui.set_broadcast_warning("".into());
             match pending {
-                PendingBroadcast::Enter { text, ctrl, alt, shift, meta, kind } => {
+                PendingBroadcast::Enter {
+                    text,
+                    ctrl,
+                    alt,
+                    shift,
+                    meta,
+                    kind,
+                } => {
                     // 只发焦点 pane：临时关掉广播，让 handle_input 走单 pane 路径。
                     let was = st.broadcast;
                     st.broadcast = false;
@@ -15704,11 +16314,11 @@ fn register_window_callbacks(
                     handle_input(st, &text, ctrl, alt, shift, meta, kind, false);
                     st.broadcast = was;
                     eprintln!("[broadcast] 用户选择只发当前 pane");
-                },
+                }
                 PendingBroadcast::Paste(text) => {
                     eprintln!("[broadcast] 用户选择只粘贴到当前 pane");
                     deliver_paste_to_focused(st, &text);
-                },
+                }
             }
         });
     });
@@ -15952,7 +16562,7 @@ fn register_window_callbacks(
                 st.ws.tabs[idx].focused = id;
                 refresh_views(st);
             }
-            let mode = st.cfg.effective_right_click().to_string();
+            let mode = st.cfg.borrow().effective_right_click().to_string();
             st.right_down = Some((id, std::time::Instant::now(), x, y));
             eprintln!("[ui] right-down pane={id} mode={mode}");
             if mode == "menu" {
@@ -15985,7 +16595,7 @@ fn register_window_callbacks(
             if down_id != id {
                 return;
             }
-            let mode = st.cfg.effective_right_click().to_string();
+            let mode = st.cfg.borrow().effective_right_click().to_string();
             let short = at.elapsed() < Duration::from_millis(250);
             match mode.as_str() {
                 "paste" => {
@@ -16010,7 +16620,7 @@ fn register_window_callbacks(
 
     ui.on_pane_middle_click(move |_id| {
         runtime::with_window(window_id, |st| {
-            if st.cfg.paste_on_middle_click {
+            if st.cfg.borrow().paste_on_middle_click {
                 paste_primary_into_focused(st);
                 eprintln!("[ui] middle-click paste");
             }
@@ -16062,23 +16672,28 @@ fn register_window_callbacks(
 
     // ---- Plugin API v3：所有 UI 由宿主渲染 ----
     ui.on_plugin_action(move |action, key| {
-        runtime::with_window(window_id, |st| plugin_action(st, action.as_str(), key.as_str()));
+        runtime::with_window(window_id, |st| {
+            plugin_action(st, action.as_str(), key.as_str())
+        });
     });
     ui.on_toggle_plugin_require_signature(move || {
         runtime::with_window(window_id, |st| {
-            st.cfg.plugin_require_signature = !st.cfg.plugin_require_signature;
+            st.cfg.borrow_mut().plugin_require_signature =
+                !st.cfg.borrow_mut().plugin_require_signature;
             st.ui
-                .set_cfg_plugin_require_signature(st.cfg.plugin_require_signature);
-            st.cfg.save();
+                .set_cfg_plugin_require_signature(st.cfg.borrow().plugin_require_signature);
+            st.cfg.borrow().save();
             eprintln!(
                 "[plugin-v3] plugin_require_signature={}",
-                st.cfg.plugin_require_signature
+                st.cfg.borrow().plugin_require_signature
             );
         });
     });
     let plugin_picker_weak = ui.as_weak();
     ui.on_plugin_pick_install(move |kind| {
-        let Some(current_ui) = plugin_picker_weak.upgrade() else { return };
+        let Some(current_ui) = plugin_picker_weak.upgrade() else {
+            return;
+        };
         let initial = current_ui.get_plugin_install_path().to_string();
         let kind = kind.to_string();
         let weak = plugin_picker_weak.clone();
@@ -16092,16 +16707,16 @@ fn register_window_callbacks(
                         Ok(Some(path)) => {
                             eprintln!("[plugin-v3] 安装源选择: {path}");
                             st.ui.set_plugin_install_path(path.as_str().into());
-                        },
-                        Ok(None) => {},
+                        }
+                        Ok(None) => {}
                         Err(error) => {
-                            let message = if st.cfg.lang() == "zh" {
+                            let message = if app_lang(st) == "zh" {
                                 format!("文件选择器不可用: {error}")
                             } else {
                                 format!("File picker unavailable: {error}")
                             };
                             set_status_toast(st, message);
-                        },
+                        }
                     });
                 });
             })
@@ -16119,7 +16734,9 @@ fn register_window_callbacks(
         runtime::with_window(window_id, cancel_plugin_enable);
     });
     ui.on_plugin_open_surface(move |key, kind| {
-        runtime::with_window(window_id, |st| open_plugin_surface(st, key.as_str(), kind.as_str()));
+        runtime::with_window(window_id, |st| {
+            open_plugin_surface(st, key.as_str(), kind.as_str())
+        });
     });
     ui.on_plugin_surface_close(move || {
         runtime::with_window(window_id, close_plugin_surface);
@@ -16128,7 +16745,9 @@ fn register_window_callbacks(
         runtime::with_window(window_id, |st| plugin_surface_action(st, element.as_str()));
     });
     ui.on_plugin_element_input(move |element, value| {
-        runtime::with_window(window_id, |st| plugin_surface_input(st, element.as_str(), value.to_string()));
+        runtime::with_window(window_id, |st| {
+            plugin_surface_input(st, element.as_str(), value.to_string())
+        });
     });
     ui.on_plugin_approval_allow(move || {
         runtime::with_window(window_id, |st| resolve_plugin_approval(st, true));
@@ -16190,34 +16809,36 @@ fn register_window_callbacks(
             let path = tabby_config_path();
             let themes_dir = ThemeRegistry::default_dir();
             let status = match std::fs::read_to_string(&path) {
-                Ok(text) => match tabby_import::import_yaml(
-                    &text,
-                    &mut st.profiles,
-                    &mut st.cfg,
-                    &themes_dir,
-                ) {
+                Ok(text) => {
+                    let imported = tabby_import::import_yaml(
+                        &text,
+                        &mut st.profiles.borrow_mut(),
+                        &mut *st.cfg.borrow_mut(),
+                        &themes_dir,
+                    );
+                    match imported {
                     Ok(report) => {
-                        st.profiles.save();
+                        st.profiles.borrow().save();
                         refresh_profiles(st);
                         if let Some(fs) = report.font_size {
-                            st.cfg.font_size = fs.clamp(8.0, 40.0);
+                            st.cfg.borrow_mut().font_size = fs.clamp(8.0, 40.0);
                             apply_font_settings(st);
                         }
                         if report.font_size.is_some() || report.hotkeys_added > 0 {
-                            st.cfg.save();
+                            st.cfg.borrow().save();
                         }
                         if report.hotkeys_added > 0 {
                             refresh_hotkeys(st);
                         }
                         if report.themes_added > 0 {
                             // 主题目录刚写入新文件：重新加载注册表并刷新设置页网格。
-                            *st.registry = ThemeRegistry::load(&themes_dir);
-                            for err in &st.registry.errors {
+                            st.registry.replace(ThemeRegistry::load(&themes_dir));
+                            for err in &st.registry.borrow().errors {
                                 eprintln!("[theme] {err}");
                             }
-                            st.ui.set_theme_choices(theme_choices(&st.registry));
+                            st.ui.set_theme_choices(theme_choices(&st.registry.borrow()));
                         }
-                        let lang = st.cfg.lang();
+                        let lang = app_lang(st);
                         let mut msg = if lang == "zh" {
                             format!(
                                 "已从 {} 导入 {} 个 Profile、{} 条快捷键、{} 个主题\
@@ -16282,15 +16903,16 @@ fn register_window_callbacks(
                         msg
                     }
                     Err(e) => {
-                        if st.cfg.lang() == "zh" {
+                        if app_lang(st) == "zh" {
                             format!("导入失败: {e}")
                         } else {
                             format!("Import failed: {e}")
                         }
-                    },
+                    }
+                }
                 },
                 Err(e) => {
-                    if st.cfg.lang() == "zh" {
+                    if app_lang(st) == "zh" {
                         format!("读不到 {}: {e}", path.display())
                     } else {
                         format!("Cannot read {}: {e}", path.display())
@@ -16304,19 +16926,19 @@ fn register_window_callbacks(
     ui.on_config_export_tabby(move || {
         runtime::with_window(window_id, |st| {
             let path = Config::path().with_file_name("tabby-profiles.yaml");
-            let yaml = tabby_import::export_yaml(&st.profiles);
+            let yaml = tabby_import::export_yaml(&st.profiles.borrow());
             let status = match std::fs::write(&path, yaml) {
                 Ok(()) => {
-                    let msg = if st.cfg.lang() == "zh" {
+                    let msg = if app_lang(st) == "zh" {
                         format!(
                             "已导出 {} 个 Profile → {}",
-                            st.profiles.profiles.len(),
+                            st.profiles.borrow().profiles.len(),
                             path.display()
                         )
                     } else {
                         format!(
                             "Exported {} profiles → {}",
-                            st.profiles.profiles.len(),
+                            st.profiles.borrow().profiles.len(),
                             path.display()
                         )
                     };
@@ -16324,7 +16946,7 @@ fn register_window_callbacks(
                     msg
                 }
                 Err(e) => {
-                    if st.cfg.lang() == "zh" {
+                    if app_lang(st) == "zh" {
                         format!("导出失败: {e}")
                     } else {
                         format!("Export failed: {e}")
@@ -16338,25 +16960,28 @@ fn register_window_callbacks(
     ui.on_config_export(move || {
         runtime::with_window(window_id, |st| {
             let path = config_export_path();
-            let status = match st.cfg.with(|c| c.export_to(&path)) {
+            let status = match { st.cfg.with(|c| c.export_to(&path)) } {
                 Ok(()) => {
-                    let msg = if st.cfg.lang() == "zh" {
+                    let msg = if app_lang(st) == "zh" {
                         format!("已导出当前配置 → {}（导入时读同一路径）", path.display())
                     } else {
-                        format!("Exported current config → {} (import reads the same path)", path.display())
+                        format!(
+                            "Exported current config → {} (import reads the same path)",
+                            path.display()
+                        )
                     };
                     eprintln!("[config] {msg}");
                     msg
-                },
+                }
                 Err(e) => {
-                    let msg = if st.cfg.lang() == "zh" {
+                    let msg = if app_lang(st) == "zh" {
                         format!("导出配置失败: {e}")
                     } else {
                         format!("Export config failed: {e}")
                     };
                     eprintln!("[config] {msg}");
                     msg
-                },
+                }
             };
             st.ui.set_config_status(status.into());
             refresh_config_report(st);
@@ -16371,23 +16996,31 @@ fn register_window_callbacks(
                     // 只写文件、不原地替换 Shared<Config>：字体/主题/快捷键的
                     // 半应用状态比重启一次更难排查。下一次启动读取时生效。
                     imported.save_to(&Config::path());
-                    let msg = if st.cfg.lang() == "zh" {
-                        format!("已导入 {} → {}；重启 Tervo 后生效", src.display(), Config::path().display())
+                    let msg = if app_lang(st) == "zh" {
+                        format!(
+                            "已导入 {} → {}；重启 Tervo 后生效",
+                            src.display(),
+                            Config::path().display()
+                        )
                     } else {
-                        format!("Imported {} → {}; restart Tervo to apply", src.display(), Config::path().display())
+                        format!(
+                            "Imported {} → {}; restart Tervo to apply",
+                            src.display(),
+                            Config::path().display()
+                        )
                     };
                     eprintln!("[config] {msg}");
                     msg
-                },
+                }
                 Err(e) => {
-                    let msg = if st.cfg.lang() == "zh" {
+                    let msg = if app_lang(st) == "zh" {
                         format!("导入配置失败: {e}")
                     } else {
                         format!("Import config failed: {e}")
                     };
                     eprintln!("[config] {msg}");
                     msg
-                },
+                }
             };
             st.ui.set_config_status(status.into());
             refresh_config_report(st);
@@ -16398,23 +17031,29 @@ fn register_window_callbacks(
         runtime::with_window(window_id, |st| {
             let status = match Config::restore_latest_backup(&Config::path()) {
                 Ok(used) => {
-                    let msg = if st.cfg.lang() == "zh" {
-                        format!("已用迁移前备份 {} 覆盖配置；重启 Tervo 后生效", used.display())
+                    let msg = if app_lang(st) == "zh" {
+                        format!(
+                            "已用迁移前备份 {} 覆盖配置；重启 Tervo 后生效",
+                            used.display()
+                        )
                     } else {
-                        format!("Restored {} over config; restart Tervo to apply", used.display())
+                        format!(
+                            "Restored {} over config; restart Tervo to apply",
+                            used.display()
+                        )
                     };
                     eprintln!("[config] {msg}");
                     msg
-                },
+                }
                 Err(e) => {
-                    let msg = if st.cfg.lang() == "zh" {
+                    let msg = if app_lang(st) == "zh" {
                         format!("恢复备份失败: {e}")
                     } else {
                         format!("Restore backup failed: {e}")
                     };
                     eprintln!("[config] {msg}");
                     msg
-                },
+                }
             };
             st.ui.set_config_status(status.into());
             refresh_config_report(st);
@@ -16497,7 +17136,10 @@ fn register_window_callbacks(
             eprintln!(
                 "[profile] filter={:?} items={}",
                 st.profile_query,
-                st.profile_row_targets.iter().filter(|x| x.is_some()).count()
+                st.profile_row_targets
+                    .iter()
+                    .filter(|x| x.is_some())
+                    .count()
             );
         });
     });
@@ -16524,48 +17166,49 @@ fn register_window_callbacks(
     ui.on_profile_export(move || {
         runtime::with_window(window_id, |st| {
             let path = profile_bundle_path();
-            let status = match profile::export_bundle(&st.profiles) {
+            let status = match profile::export_bundle(&st.profiles.borrow()) {
                 Ok(text) => match std::fs::write(&path, text) {
                     Ok(()) => {
                         let vault_refs = st
                             .profiles
+                            .borrow()
                             .profiles
                             .iter()
                             .filter(|p| p.save_password)
                             .count();
-                        let msg = if st.cfg.lang() == "zh" {
+                        let msg = if app_lang(st) == "zh" {
                             format!(
                                 "已导出 {} 个 Profile → {}（不含密码；{} 条 Vault 引用仅标注）",
-                                st.profiles.profiles.len(),
+                                st.profiles.borrow().profiles.len(),
                                 path.display(),
                                 vault_refs
                             )
                         } else {
                             format!(
                                 "Exported {} profiles → {} (no passwords; {} vault refs annotated)",
-                                st.profiles.profiles.len(),
+                                st.profiles.borrow().profiles.len(),
                                 path.display(),
                                 vault_refs
                             )
                         };
                         eprintln!("[profile] {msg}");
                         msg
-                    },
+                    }
                     Err(e) => {
-                        let msg = if st.cfg.lang() == "zh" {
+                        let msg = if app_lang(st) == "zh" {
                             format!("导出失败（{}）: {e}", path.display())
                         } else {
                             format!("Export failed ({}): {e}", path.display())
                         };
                         eprintln!("[profile] {msg}");
                         msg
-                    },
+                    }
                 },
                 Err(e) => {
                     let msg = format!("导出失败: {e}");
                     eprintln!("[profile] {msg}");
                     msg
-                },
+                }
             };
             st.ui.set_profile_io_status(status.as_str().into());
         });
@@ -16576,11 +17219,13 @@ fn register_window_callbacks(
         runtime::with_window(window_id, |st| {
             let path = profile_bundle_path();
             let status = match std::fs::read_to_string(&path) {
-                Ok(text) => match profile::import_bundle(&text, &mut st.profiles) {
+                Ok(text) => {
+                    let imported = profile::import_bundle(&text, &mut st.profiles.borrow_mut());
+                    match imported {
                     Ok(report) => {
-                        st.profiles.save();
+                        st.profiles.borrow().save();
                         refresh_profiles(st);
-                        let lang = st.cfg.lang();
+                        let lang = app_lang(st);
                         let mut msg = if lang == "zh" {
                             format!(
                                 "已从 {} 导入 {} 个 Profile（重命名 {}，跳过 {}，Vault 引用 {} 条需重新输入密码）",
@@ -16611,17 +17256,18 @@ fn register_window_callbacks(
                         msg
                     },
                     Err(e) => {
-                        let msg = if st.cfg.lang() == "zh" {
+                        let msg = if app_lang(st) == "zh" {
                             format!("导入失败: {e}")
                         } else {
                             format!("Import failed: {e}")
                         };
                         eprintln!("[profile] {msg}");
                         msg
-                    },
+                    }
+                }
                 },
                 Err(e) => {
-                    let msg = if st.cfg.lang() == "zh" {
+                    let msg = if app_lang(st) == "zh" {
                         format!("读不到 {}: {e}", path.display())
                     } else {
                         format!("Cannot read {}: {e}", path.display())
@@ -16640,25 +17286,27 @@ fn register_window_callbacks(
             let Some(store_index) = profile_row_to_store(st, index) else {
                 return;
             };
-            let Some(id) = st.profiles.profiles.get(store_index).map(|p| p.id) else {
+            let Some(id) = st.profiles.borrow().profiles.get(store_index).map(|p| p.id) else {
                 return;
             };
-            st.cfg.default_profile_id = if st.cfg.default_profile_id == id {
+            st.cfg.borrow_mut().default_profile_id = if st.cfg.borrow_mut().default_profile_id == id
+            {
                 0
             } else {
                 id
             };
             // UI 星标是唯一可信来源：清掉手写的名字别名，避免 id 清空后
             // `default_profile` 又把旧项“复活”成默认。
-            st.cfg.default_profile.clear();
-            st.cfg.save();
+            st.cfg.borrow_mut().default_profile.clear();
+            st.cfg.borrow().save();
             refresh_profiles(st);
-            if st.cfg.default_profile_id == 0 {
+            if st.cfg.borrow().default_profile_id == 0 {
                 eprintln!("[profile] 已清除默认 Profile（新 Tab 用系统 shell）");
             } else {
                 eprintln!(
                     "[profile] 默认 Profile id={id} name={:?}",
                     st.profiles
+                        .borrow()
                         .profiles
                         .get(store_index)
                         .map(|p| p.name.as_str())
@@ -16673,17 +17321,22 @@ fn register_window_callbacks(
             let Some(store_index) = profile_row_to_store(st, index) else {
                 return;
             };
-            let Some(source_id) = st.profiles.profiles.get(store_index).map(|p| p.id) else {
+            let Some(source_id) = st.profiles.borrow().profiles.get(store_index).map(|p| p.id)
+            else {
                 return;
             };
-            match st.profiles.duplicate(source_id) {
+            match st.profiles.with_mut(|__x| __x.duplicate(source_id)) {
                 Ok(id) => {
-                    st.profiles.save();
+                    st.profiles.borrow().save();
                     refresh_profiles(st);
                     eprintln!(
                         "[profile] 复制 id={source_id} → id={id} name={:?}（共 {}）",
-                        st.profiles.get(id).map(|p| p.name.as_str()).unwrap_or(""),
-                        st.profiles.profiles.len()
+                        st.profiles
+                            .borrow()
+                            .get(id)
+                            .map(|p| p.name.as_str())
+                            .unwrap_or(""),
+                        st.profiles.borrow().profiles.len()
                     );
                 }
                 Err(e) => eprintln!("[profile] 复制 id={source_id} 失败: {e}"),
@@ -16732,19 +17385,22 @@ fn register_window_callbacks(
             let Some(store_index) = profile_row_to_store(st, index) else {
                 return;
             };
-            let Some(p) = st.profiles.profiles.get(store_index).map(|p| p.id) else {
+            let Some(p) = st.profiles.borrow().profiles.get(store_index).map(|p| p.id) else {
                 return;
             };
-            if st.profiles.remove(p) {
+            if st.profiles.borrow_mut().remove(p) {
                 // 删除的是默认项时必须回退 0，否则新 Tab 会一直解析失败。
-                let cleared = clear_default_after_remove(&mut st.cfg, p);
-                st.profiles.save();
+                let cleared = clear_default_after_remove(&mut *st.cfg.borrow_mut(), p);
+                st.profiles.borrow().save();
                 if cleared {
-                    st.cfg.save();
+                    st.cfg.borrow().save();
                     eprintln!("[profile] 默认 Profile id={p} 已删除，回退系统 shell");
                 }
                 refresh_profiles(st);
-                eprintln!("[profile] 删除 id={p}（剩 {}）", st.profiles.profiles.len());
+                eprintln!(
+                    "[profile] 删除 id={p}（剩 {}）",
+                    st.profiles.borrow().profiles.len()
+                );
             }
         });
     });
@@ -16775,7 +17431,9 @@ fn register_window_callbacks(
     });
 
     ui.on_bg_reattach(move |index| {
-        runtime::with_window(window_id, |st| reattach_background(st, index.max(0) as usize));
+        runtime::with_window(window_id, |st| {
+            reattach_background(st, index.max(0) as usize)
+        });
     });
 
     ui.on_bg_close(|| {});
@@ -16791,9 +17449,9 @@ fn register_window_callbacks(
 
     ui.on_paste_always(move || {
         runtime::with_window(window_id, |st| {
-            st.cfg.confirm_multiline_paste = false;
+            st.cfg.borrow_mut().confirm_multiline_paste = false;
             st.ui.set_cfg_confirm_paste(false);
-            st.cfg.save();
+            st.cfg.borrow().save();
             st.ui.set_paste_open(false);
             if let Some(text) = st.pending_paste.take() {
                 deliver_paste(st, &text);
@@ -16814,60 +17472,64 @@ fn register_window_callbacks(
             if !["menu", "paste", "clipboard", "off"].contains(&mode.as_str()) {
                 return;
             }
-            st.cfg.right_click = mode.clone();
+            st.cfg.borrow_mut().right_click = mode.clone();
             // 旧字段统一折算到新字段，之后不再写回 true。
-            st.cfg.right_click_paste = false;
+            st.cfg.borrow_mut().right_click_paste = false;
             st.ui.set_cfg_right_click(mode.as_str().into());
-            st.cfg.save();
+            st.cfg.borrow().save();
             eprintln!("[ui] right_click={mode}");
         });
     });
 
     ui.on_toggle_paste_middle(move || {
         runtime::with_window(window_id, |st| {
-            st.cfg.paste_on_middle_click = !st.cfg.paste_on_middle_click;
-            st.ui.set_cfg_paste_middle(st.cfg.paste_on_middle_click);
-            st.cfg.save();
+            st.cfg.borrow_mut().paste_on_middle_click = !st.cfg.borrow_mut().paste_on_middle_click;
+            st.ui
+                .set_cfg_paste_middle(st.cfg.borrow().paste_on_middle_click);
+            st.cfg.borrow().save();
             eprintln!(
                 "[ui] paste_on_middle_click={}",
-                st.cfg.paste_on_middle_click
+                st.cfg.borrow().paste_on_middle_click
             );
         });
     });
 
     ui.on_toggle_confirm_paste(move || {
         runtime::with_window(window_id, |st| {
-            st.cfg.confirm_multiline_paste = !st.cfg.confirm_multiline_paste;
-            st.ui.set_cfg_confirm_paste(st.cfg.confirm_multiline_paste);
+            st.cfg.borrow_mut().confirm_multiline_paste =
+                !st.cfg.borrow_mut().confirm_multiline_paste;
             st.ui
-                .set_cfg_right_click(st.cfg.effective_right_click().into());
-            st.ui.set_cfg_paste_middle(st.cfg.paste_on_middle_click);
-            st.cfg.save();
+                .set_cfg_confirm_paste(st.cfg.borrow().confirm_multiline_paste);
+            st.ui
+                .set_cfg_right_click(st.cfg.borrow().effective_right_click().into());
+            st.ui
+                .set_cfg_paste_middle(st.cfg.borrow().paste_on_middle_click);
+            st.cfg.borrow().save();
             eprintln!(
                 "[ui] confirm_multiline_paste={}",
-                st.cfg.confirm_multiline_paste
+                st.cfg.borrow().confirm_multiline_paste
             );
         });
     });
 
     ui.on_toggle_desktop_notifications(move || {
         runtime::with_window(window_id, |st| {
-            st.cfg.desktop_notifications = !st.cfg.desktop_notifications;
+            st.cfg.borrow_mut().desktop_notifications = !st.cfg.borrow_mut().desktop_notifications;
             st.ui
-                .set_cfg_desktop_notifications(st.cfg.desktop_notifications);
-            st.cfg.save();
+                .set_cfg_desktop_notifications(st.cfg.borrow().desktop_notifications);
+            st.cfg.borrow().save();
             eprintln!(
                 "[ui] desktop_notifications={}",
-                st.cfg.desktop_notifications
+                st.cfg.borrow().desktop_notifications
             );
         });
     });
 
     ui.on_toggle_visual_bell(move || {
         runtime::with_window(window_id, |st| {
-            st.cfg.visual_bell = !st.cfg.visual_bell;
-            st.ui.set_cfg_visual_bell(st.cfg.visual_bell);
-            if !st.cfg.visual_bell {
+            st.cfg.borrow_mut().visual_bell = !st.cfg.borrow_mut().visual_bell;
+            st.ui.set_cfg_visual_bell(st.cfg.borrow().visual_bell);
+            if !st.cfg.borrow().visual_bell {
                 // 关掉时立即清掉所有进行中的闪烁，避免残留边框。
                 for rt in st.panes.values_mut() {
                     rt.bell_until = None;
@@ -16875,26 +17537,27 @@ fn register_window_callbacks(
                 st.bell_timer.stop();
                 refresh_all_pane_views(st);
             }
-            st.cfg.save();
-            eprintln!("[ui] visual_bell={}", st.cfg.visual_bell);
+            st.cfg.borrow().save();
+            eprintln!("[ui] visual_bell={}", st.cfg.borrow().visual_bell);
         });
     });
 
     ui.on_toggle_audible_bell(move || {
         runtime::with_window(window_id, |st| {
-            st.cfg.audible_bell = !st.cfg.audible_bell;
-            st.ui.set_cfg_audible_bell(st.cfg.audible_bell);
-            st.cfg.save();
-            eprintln!("[ui] audible_bell={}", st.cfg.audible_bell);
+            st.cfg.borrow_mut().audible_bell = !st.cfg.borrow_mut().audible_bell;
+            st.ui.set_cfg_audible_bell(st.cfg.borrow().audible_bell);
+            st.cfg.borrow().save();
+            eprintln!("[ui] audible_bell={}", st.cfg.borrow().audible_bell);
         });
     });
 
     ui.on_toggle_scroll_output(move || {
         runtime::with_window(window_id, |st| {
-            st.cfg.scroll_on_output = !st.cfg.scroll_on_output;
-            st.ui.set_cfg_scroll_output(st.cfg.scroll_on_output);
+            st.cfg.borrow_mut().scroll_on_output = !st.cfg.borrow_mut().scroll_on_output;
+            st.ui
+                .set_cfg_scroll_output(st.cfg.borrow().scroll_on_output);
             // 已存在的 pane 立即生效（actor 侧字段），不只影响新 pane。
-            let enabled = st.cfg.scroll_on_output;
+            let enabled = st.cfg.borrow().scroll_on_output;
             for rt in st.panes.values() {
                 rt.handle.set_scroll_on_output(enabled);
             }
@@ -16902,89 +17565,98 @@ fn register_window_callbacks(
             for (_, rt, _) in &st.detached {
                 rt.handle.set_scroll_on_output(enabled);
             }
-            st.cfg.save();
+            st.cfg.borrow().save();
             eprintln!("[ui] scroll_on_output={enabled}");
         });
     });
 
     ui.on_toggle_scroll_keystroke(move || {
         runtime::with_window(window_id, |st| {
-            st.cfg.scroll_on_keystroke = !st.cfg.scroll_on_keystroke;
-            st.ui.set_cfg_scroll_keystroke(st.cfg.scroll_on_keystroke);
-            st.cfg.save();
-            eprintln!("[ui] scroll_on_keystroke={}", st.cfg.scroll_on_keystroke);
+            st.cfg.borrow_mut().scroll_on_keystroke = !st.cfg.borrow_mut().scroll_on_keystroke;
+            st.ui
+                .set_cfg_scroll_keystroke(st.cfg.borrow().scroll_on_keystroke);
+            st.cfg.borrow().save();
+            eprintln!(
+                "[ui] scroll_on_keystroke={}",
+                st.cfg.borrow().scroll_on_keystroke
+            );
         });
     });
 
     ui.on_toggle_sixel(move || {
         runtime::with_window(window_id, |st| {
-            st.cfg.sixel = !st.cfg.sixel;
-            st.ui.set_cfg_sixel(st.cfg.sixel);
-            let enabled = st.cfg.sixel;
+            st.cfg.borrow_mut().sixel = !st.cfg.borrow_mut().sixel;
+            st.ui.set_cfg_sixel(st.cfg.borrow().sixel);
+            let enabled = st.cfg.borrow().sixel;
             for rt in st.panes.values() {
                 rt.handle.set_sixel(enabled);
             }
             for (_, rt, _) in &st.detached {
                 rt.handle.set_sixel(enabled);
             }
-            st.cfg.save();
+            st.cfg.borrow().save();
             eprintln!("[ui] sixel={enabled}");
         });
     });
 
     ui.on_toggle_sixel_scrolling(move || {
         runtime::with_window(window_id, |st| {
-            st.cfg.sixel_scrolling = !st.cfg.sixel_scrolling;
-            st.ui.set_cfg_sixel_scrolling(st.cfg.sixel_scrolling);
-            let scrolling = st.cfg.sixel_scrolling;
+            st.cfg.borrow_mut().sixel_scrolling = !st.cfg.borrow_mut().sixel_scrolling;
+            st.ui
+                .set_cfg_sixel_scrolling(st.cfg.borrow().sixel_scrolling);
+            let scrolling = st.cfg.borrow().sixel_scrolling;
             for rt in st.panes.values() {
                 rt.handle.set_sixel_scrolling(scrolling);
             }
             for (_, rt, _) in &st.detached {
                 rt.handle.set_sixel_scrolling(scrolling);
             }
-            st.cfg.save();
+            st.cfg.borrow().save();
             eprintln!("[ui] sixel_scrolling={scrolling}");
         });
     });
 
     ui.on_toggle_iip(move || {
         runtime::with_window(window_id, |st| {
-            st.cfg.iip = !st.cfg.iip;
-            st.ui.set_cfg_iip(st.cfg.iip);
-            let enabled = st.cfg.iip;
+            st.cfg.borrow_mut().iip = !st.cfg.borrow_mut().iip;
+            st.ui.set_cfg_iip(st.cfg.borrow().iip);
+            let enabled = st.cfg.borrow().iip;
             for rt in st.panes.values() {
                 rt.handle.set_iip(enabled);
             }
             for (_, rt, _) in &st.detached {
                 rt.handle.set_iip(enabled);
             }
-            st.cfg.save();
+            st.cfg.borrow().save();
             eprintln!("[ui] iip={enabled}");
         });
     });
 
     ui.on_toggle_render_hud(move || {
         runtime::with_window(window_id, |st| {
-            st.cfg.render_hud = !st.cfg.render_hud;
-            st.ui.set_cfg_render_hud(st.cfg.render_hud);
-            let enabled = render_hud_forced_by_env() || st.cfg.render_hud;
+            st.cfg.borrow_mut().render_hud = !st.cfg.borrow_mut().render_hud;
+            st.ui.set_cfg_render_hud(st.cfg.borrow().render_hud);
+            let enabled = render_hud_forced_by_env() || st.cfg.borrow().render_hud;
             set_render_hud(st, enabled);
-            st.cfg.save();
-            eprintln!("[ui] render_hud={} forced={}", st.cfg.render_hud, render_hud_forced_by_env());
+            st.cfg.borrow().save();
+            eprintln!(
+                "[ui] render_hud={} forced={}",
+                st.cfg.borrow().render_hud,
+                render_hud_forced_by_env()
+            );
         });
     });
 
     ui.on_toggle_scrollback_unlimited(move || {
         runtime::with_window(window_id, |st| {
-            st.cfg.scrollback_unlimited = !st.cfg.scrollback_unlimited;
+            st.cfg.borrow_mut().scrollback_unlimited = !st.cfg.borrow_mut().scrollback_unlimited;
             st.ui
-                .set_cfg_scrollback_unlimited(st.cfg.scrollback_unlimited);
-            st.cfg.save();
+                .set_cfg_scrollback_unlimited(st.cfg.borrow().scrollback_unlimited);
+            st.cfg.borrow().save();
             eprintln!(
                 "[ui] scrollback_unlimited={} effective={} (仅新 pane)",
-                st.cfg.scrollback_unlimited,
-                st.cfg.effective_scrollback()
+                st.cfg.borrow().scrollback_unlimited,
+                st.cfg.borrow().effective_scrollback()
             );
         });
     });
@@ -17002,16 +17674,18 @@ fn register_window_callbacks(
         runtime::with_window(window_id, |st| toggle_mcp_setting(st, McpSetting::Tabs));
     });
     ui.on_toggle_mcp_destructive(move || {
-        runtime::with_window(window_id, |st| toggle_mcp_setting(st, McpSetting::Destructive));
+        runtime::with_window(window_id, |st| {
+            toggle_mcp_setting(st, McpSetting::Destructive)
+        });
     });
 
     ui.on_set_scrollbar_policy(move |value| {
         runtime::with_window(window_id, |st| {
             let policy = ScrollbarPolicy::from_config(&value);
-            st.cfg.scrollbar_policy = policy.as_str().to_string();
+            st.cfg.borrow_mut().scrollbar_policy = policy.as_str().to_string();
             st.ui.set_cfg_scrollbar_policy(policy.as_str().into());
             refresh_all_pane_views(st);
-            st.cfg.save();
+            st.cfg.borrow().save();
             eprintln!("[ui] scrollbar_policy={}", policy.as_str());
         });
     });
@@ -17019,9 +17693,9 @@ fn register_window_callbacks(
     ui.on_set_backspace_binding(move |value| {
         runtime::with_window(window_id, |st| {
             let binding = keys::BackspaceBinding::from_config(&value);
-            st.cfg.backspace_binding = binding.as_str().to_string();
+            st.cfg.borrow_mut().backspace_binding = binding.as_str().to_string();
             st.ui.set_cfg_backspace_binding(binding.as_str().into());
-            st.cfg.save();
+            st.cfg.borrow().save();
             eprintln!("[ui] backspace_binding={}", binding.as_str());
         });
     });
@@ -17029,9 +17703,9 @@ fn register_window_callbacks(
     ui.on_set_delete_binding(move |value| {
         runtime::with_window(window_id, |st| {
             let binding = keys::DeleteBinding::from_config(&value);
-            st.cfg.delete_binding = binding.as_str().to_string();
+            st.cfg.borrow_mut().delete_binding = binding.as_str().to_string();
             st.ui.set_cfg_delete_binding(binding.as_str().into());
-            st.cfg.save();
+            st.cfg.borrow().save();
             eprintln!("[ui] delete_binding={}", binding.as_str());
         });
     });
@@ -17053,10 +17727,14 @@ fn register_window_callbacks(
     ui.on_settings_help_open(move |kind| {
         runtime::with_window(window_id, |st| {
             let info = help_info();
-            let lang = st.cfg.lang();
+            let lang = app_lang(st);
             let is_logs = kind.as_str() == "logs";
             let kind_static: &'static str = if is_logs { "logs" } else { "config" };
-            let dir = if is_logs { info.log_dir } else { info.config_dir };
+            let dir = if is_logs {
+                info.log_dir
+            } else {
+                info.config_dir
+            };
             if let Err(msg) = open_help_directory(dir, kind_static, lang) {
                 st.ui.set_help_status(msg.as_str().into());
             }
@@ -17065,13 +17743,14 @@ fn register_window_callbacks(
 
     ui.on_run_doctor(move || {
         runtime::with_window(window_id, |st| {
-            st.ui.set_doctor_status("Running deterministic Doctor…".into());
+            st.ui
+                .set_doctor_status("Running deterministic Doctor…".into());
             match diag::doctor_markdown() {
                 Ok(markdown) => {
                     st.ui.set_doctor_text(markdown.into());
                     st.ui.set_doctor_open(true);
                     st.ui.set_doctor_status("".into());
-                },
+                }
                 Err(error) => st.ui.set_doctor_status(error.into()),
             }
         });
@@ -17092,7 +17771,7 @@ fn register_window_callbacks(
                     let url = std::env::var("TERVO_FEEDBACK_ISSUE_URL")
                         .ok()
                         .filter(|v| !v.trim().is_empty())
-                        .unwrap_or_else(|| st.cfg.feedback_issue_url.clone());
+                        .unwrap_or_else(|| st.cfg.borrow().feedback_issue_url.clone());
                     let result = if url.trim().is_empty() {
                         bundle
                             .parent()
@@ -17107,8 +17786,10 @@ fn register_window_callbacks(
                         Ok(message) => message.into(),
                         Err(error) => format!("Feedback error: {error}").into(),
                     });
-                },
-                Err(error) => st.ui.set_feedback_status(format!("Feedback error: {error}").into()),
+                }
+                Err(error) => st
+                    .ui
+                    .set_feedback_status(format!("Feedback error: {error}").into()),
             }
         });
     });
@@ -17152,12 +17833,15 @@ fn register_window_callbacks(
         runtime::with_window(window_id, |st| {
             let q = query.to_string();
             st.ui.set_settings_query(q.as_str().into());
-            let hits = settings_search_hits(&q, st.cfg.lang());
+            let hits = settings_search_hits(&q, app_lang(st));
             st.settings_result_cats = hits.iter().map(|h| h.cat).collect();
             st.settings_result_sections = hits.iter().map(|h| h.section).collect();
             st.settings_model
                 .set_vec(hits.into_iter().map(|h| h.line.into()).collect::<Vec<_>>());
-            eprintln!("[ui] settings filter q={q:?} hits={}", st.settings_result_cats.len());
+            eprintln!(
+                "[ui] settings filter q={q:?} hits={}",
+                st.settings_result_cats.len()
+            );
         });
     });
 
@@ -17250,19 +17934,19 @@ fn register_window_callbacks(
 
     ui.on_toggle_copy_on_select(move || {
         runtime::with_window(window_id, |st| {
-            st.cfg.copy_on_select = !st.cfg.copy_on_select;
-            st.ui.set_cfg_copy_on_select(st.cfg.copy_on_select);
-            st.cfg.save();
-            eprintln!("[ui] copy_on_select={}", st.cfg.copy_on_select);
+            st.cfg.borrow_mut().copy_on_select = !st.cfg.borrow_mut().copy_on_select;
+            st.ui.set_cfg_copy_on_select(st.cfg.borrow().copy_on_select);
+            st.cfg.borrow().save();
+            eprintln!("[ui] copy_on_select={}", st.cfg.borrow().copy_on_select);
         });
     });
 
     ui.on_toggle_confirm_close(move || {
         runtime::with_window(window_id, |st| {
-            st.cfg.confirm_close = !st.cfg.confirm_close;
-            st.ui.set_cfg_confirm_close(st.cfg.confirm_close);
-            st.cfg.save();
-            eprintln!("[ui] confirm_close={}", st.cfg.confirm_close);
+            st.cfg.borrow_mut().confirm_close = !st.cfg.borrow_mut().confirm_close;
+            st.ui.set_cfg_confirm_close(st.cfg.borrow().confirm_close);
+            st.cfg.borrow().save();
+            eprintln!("[ui] confirm_close={}", st.cfg.borrow().confirm_close);
         });
     });
 
@@ -17270,9 +17954,9 @@ fn register_window_callbacks(
     ui.on_set_close_action(move |value| {
         runtime::with_window(window_id, |st| {
             let action = normalize_close_action(value.as_str());
-            st.cfg.close_action = action.to_string();
+            st.cfg.borrow_mut().close_action = action.to_string();
             st.ui.set_cfg_close_action(action.into());
-            st.cfg.save();
+            st.cfg.borrow().save();
             eprintln!("[ui] close_action={action}");
         });
     });
@@ -17285,13 +17969,14 @@ fn register_window_callbacks(
 
     ui.on_toggle_restore_session(move || {
         runtime::with_window(window_id, |st| {
-            st.cfg.restore_session_on_startup = !st.cfg.restore_session_on_startup;
+            st.cfg.borrow_mut().restore_session_on_startup =
+                !st.cfg.borrow_mut().restore_session_on_startup;
             st.ui
-                .set_cfg_restore_session(st.cfg.restore_session_on_startup);
-            st.cfg.save();
+                .set_cfg_restore_session(st.cfg.borrow().restore_session_on_startup);
+            st.cfg.borrow().save();
             eprintln!(
                 "[ui] restore_session_on_startup={}（下次启动生效；正常退出时写快照）",
-                st.cfg.restore_session_on_startup
+                st.cfg.borrow().restore_session_on_startup
             );
         });
     });
@@ -17427,8 +18112,7 @@ fn register_window_callbacks(
             if from >= n {
                 return;
             }
-            let target =
-                drag_target_in_group(drag_x, strip_w, n, st.ws.pinned_count(), from);
+            let target = drag_target_in_group(drag_x, strip_w, n, st.ws.pinned_count(), from);
             let Some(target) = target else {
                 eprintln!("[ui] tab drop blocked from={from} x={drag_x:.1} strip={strip_w:.1}");
                 return;
@@ -17517,12 +18201,12 @@ fn register_window_callbacks(
     ui.on_tabbar_position_set(move |pos| {
         runtime::with_window(window_id, |st| {
             let next = TabbarPos::from_config(&pos);
-            if st.cfg.tabbar_pos() == next {
+            if st.cfg.borrow().tabbar_pos() == next {
                 return;
             }
             apply_tabbar_pos(st, next);
-            st.cfg.save();
-            eprintln!("[ui] tabbar_position={}", st.cfg.tabbar_position);
+            st.cfg.borrow().save();
+            eprintln!("[ui] tabbar_position={}", st.cfg.borrow().tabbar_position);
         });
     });
 
@@ -17549,10 +18233,10 @@ fn register_window_callbacks(
             10 => open_sftp_panel(st),
             11 => open_forwards_panel(st),
             6 => {
-                let next = st.cfg.tabbar_pos().cycle();
+                let next = st.cfg.borrow().tabbar_pos().cycle();
                 apply_tabbar_pos(st, next);
-                st.cfg.save();
-                eprintln!("[ui] tabbar_position={}", st.cfg.tabbar_position);
+                st.cfg.borrow().save();
+                eprintln!("[ui] tabbar_position={}", st.cfg.borrow().tabbar_position);
             }
             _ => {}
         });
@@ -17578,7 +18262,7 @@ fn register_window_callbacks(
     // 配置本身是 SharedServices 里唯一一份，这里只同步 UI mirror。
     let state_handle = state.clone();
     runtime::with_state(&state_handle, |st| {
-        let auto = is_auto_theme(&st.cfg.theme);
+        let auto = is_auto_theme(&st.cfg.borrow().theme);
         let theme = st.resolved_theme.clone();
         st.ui.set_theme_name(if auto {
             AUTO_THEME.into()
@@ -17593,21 +18277,20 @@ fn register_window_callbacks(
         st.ui.set_theme_display(if auto {
             format!(
                 "{} · {}",
-                ui_text(st.cfg.lang(), "Auto", "自动"),
+                ui_text(app_lang(st), "Auto", "自动"),
                 theme.label
             )
             .into()
         } else {
             theme.label.as_str().into()
         });
+        st.ui.global::<Palette>().set_colors(slint_theme(&theme.ui));
         st.ui
-            .global::<Palette>()
-            .set_colors(slint_theme(&theme.ui));
-        st.ui.set_theme_choices(theme_choices(&st.registry));
-        st.ui.set_font_size(st.cfg.font_size as i32);
+            .set_theme_choices(theme_choices(&st.registry.borrow()));
+        st.ui.set_font_size(st.cfg.borrow().font_size as i32);
         sync_font_form_ui(st);
-        st.ui.set_scrollback(st.cfg.scrollback as i32);
-        st.ui.set_cfg_quake(st.cfg.quake_enabled);
+        st.ui.set_scrollback(st.cfg.borrow().scrollback as i32);
+        st.ui.set_cfg_quake(st.cfg.borrow().quake_enabled);
         install_render_hud(st);
     });
 
@@ -17621,11 +18304,11 @@ fn register_window_callbacks(
     ui.on_language_changed(move |code| {
         runtime::with_window(window_id, |st| {
             let next = config::normalize_language(code.as_str());
-            if st.cfg.language == next {
+            if st.cfg.borrow().language == next {
                 return;
             }
-            st.cfg.language = next.clone();
-            st.cfg.save();
+            st.cfg.borrow_mut().language = next.clone();
+            st.cfg.borrow().save();
             sync_language_ui(st);
             eprintln!("[ui] language={next}");
         });
@@ -17646,7 +18329,9 @@ fn register_window_callbacks(
 
     let image_picker_weak = ui.as_weak();
     ui.on_background_image_browse(move || {
-        let Some(current_ui) = image_picker_weak.upgrade() else { return };
+        let Some(current_ui) = image_picker_weak.upgrade() else {
+            return;
+        };
         let initial = current_ui.get_background_image_path().to_string();
         let weak = image_picker_weak.clone();
         std::thread::Builder::new()
@@ -17664,7 +18349,7 @@ fn register_window_callbacks(
                         Ok(None) => {}
                         Err(e) => {
                             let err = e.clone();
-                            let msg = if st.cfg.lang() == "zh" {
+                            let msg = if app_lang(st) == "zh" {
                                 e
                             } else {
                                 format!("Image picker unavailable: {e}")
@@ -17683,7 +18368,7 @@ fn register_window_callbacks(
     ui.on_background_opacity_preview(move |value| {
         runtime::with_window(window_id, |st| {
             let value = config::clamp_opacity(value);
-            st.cfg.background_opacity = value;
+            st.cfg.borrow_mut().background_opacity = value;
             sync_renderer_opacity(st);
         });
     });
@@ -17691,10 +18376,10 @@ fn register_window_callbacks(
     ui.on_background_opacity_changed(move |value| {
         runtime::with_window(window_id, |st| {
             let value = config::clamp_opacity(value);
-            st.cfg.background_opacity = value;
+            st.cfg.borrow_mut().background_opacity = value;
             st.ui.set_background_opacity(value);
             sync_renderer_opacity(st);
-            st.cfg.save();
+            st.cfg.borrow().save();
             eprintln!("[theme] background_opacity={value:.2}（仅终端默认背景）");
         });
     });
@@ -17702,16 +18387,16 @@ fn register_window_callbacks(
     // 遮罩层只影响背景图，由 Slint 直接改属性完成即时预览；松手才落盘。
     ui.on_background_dim_preview(move |value| {
         runtime::with_window(window_id, |st| {
-            st.cfg.background_dim = config::clamp_dim(value);
+            st.cfg.borrow_mut().background_dim = config::clamp_dim(value);
         });
     });
 
     ui.on_background_dim_changed(move |value| {
         runtime::with_window(window_id, |st| {
             let value = config::clamp_dim(value);
-            st.cfg.background_dim = value;
+            st.cfg.borrow_mut().background_dim = value;
             st.ui.set_background_dim(value);
-            st.cfg.save();
+            st.cfg.borrow().save();
             eprintln!("[theme] background_dim={value:.2}");
         });
     });
@@ -17721,13 +18406,13 @@ fn register_window_callbacks(
     ui.on_set_cursor_shape(move |shape| {
         runtime::with_window(window_id, |st| {
             let next = config::normalize_cursor_shape(shape.as_str());
-            if st.cfg.cursor_shape == next {
+            if st.cfg.borrow().cursor_shape == next {
                 return;
             }
-            st.cfg.cursor_shape = next.clone();
+            st.cfg.borrow_mut().cursor_shape = next.clone();
             st.ui.set_cfg_cursor_shape(next.as_str().into());
             apply_cursor_settings(st);
-            st.cfg.save();
+            st.cfg.borrow().save();
             eprintln!("[appearance] cursor_shape={next}");
         });
     });
@@ -17735,13 +18420,13 @@ fn register_window_callbacks(
     ui.on_set_cursor_blink(move |mode| {
         runtime::with_window(window_id, |st| {
             let next = config::normalize_cursor_blink(mode.as_str());
-            if st.cfg.cursor_blink == next {
+            if st.cfg.borrow().cursor_blink == next {
                 return;
             }
-            st.cfg.cursor_blink = next.clone();
+            st.cfg.borrow_mut().cursor_blink = next.clone();
             st.ui.set_cfg_cursor_blink(next.as_str().into());
             configure_cursor_blink(st);
-            st.cfg.save();
+            st.cfg.borrow().save();
             eprintln!("[appearance] cursor_blink={next}");
         });
     });
@@ -17758,12 +18443,12 @@ fn register_window_callbacks(
                 };
                 color
             };
-            if st.cfg.cursor_color == next {
+            if st.cfg.borrow().cursor_color == next {
                 return;
             }
-            st.cfg.cursor_color = next.clone();
+            st.cfg.borrow_mut().cursor_color = next.clone();
             apply_cursor_settings(st);
-            st.cfg.save();
+            st.cfg.borrow().save();
             eprintln!("[appearance] cursor_color={next:?}");
         });
     });
@@ -17779,23 +18464,26 @@ fn register_window_callbacks(
                 };
                 color
             };
-            if st.cfg.cursor_text_color == next {
+            if st.cfg.borrow().cursor_text_color == next {
                 return;
             }
-            st.cfg.cursor_text_color = next.clone();
+            st.cfg.borrow_mut().cursor_text_color = next.clone();
             apply_cursor_settings(st);
-            st.cfg.save();
+            st.cfg.borrow().save();
             eprintln!("[appearance] cursor_text_color={next:?}");
         });
     });
 
     ui.on_toggle_bold_is_bright(move || {
         runtime::with_window(window_id, |st| {
-            st.cfg.bold_is_bright = !st.cfg.bold_is_bright;
-            st.ui.set_cfg_bold_is_bright(st.cfg.bold_is_bright);
+            st.cfg.borrow_mut().bold_is_bright = !st.cfg.borrow_mut().bold_is_bright;
+            st.ui.set_cfg_bold_is_bright(st.cfg.borrow().bold_is_bright);
             apply_bold_settings(st);
-            st.cfg.save();
-            eprintln!("[appearance] bold_is_bright={}", st.cfg.bold_is_bright);
+            st.cfg.borrow().save();
+            eprintln!(
+                "[appearance] bold_is_bright={}",
+                st.cfg.borrow().bold_is_bright
+            );
         });
     });
 
@@ -17810,39 +18498,39 @@ fn register_window_callbacks(
                 };
                 color
             };
-            if st.cfg.bold_color == next {
+            if st.cfg.borrow().bold_color == next {
                 return;
             }
-            st.cfg.bold_color = next.clone();
+            st.cfg.borrow_mut().bold_color = next.clone();
             apply_bold_settings(st);
-            st.cfg.save();
+            st.cfg.borrow().save();
             eprintln!("[appearance] bold_color={next:?}");
         });
     });
 
     ui.on_toggle_bold_color_same_as_fg(move || {
         runtime::with_window(window_id, |st| {
-            st.cfg.bold_color_same_as_fg = !st.cfg.bold_color_same_as_fg;
+            st.cfg.borrow_mut().bold_color_same_as_fg = !st.cfg.borrow_mut().bold_color_same_as_fg;
             st.ui
-                .set_cfg_bold_color_same_as_fg(st.cfg.bold_color_same_as_fg);
+                .set_cfg_bold_color_same_as_fg(st.cfg.borrow().bold_color_same_as_fg);
             apply_bold_settings(st);
-            st.cfg.save();
+            st.cfg.borrow().save();
             eprintln!(
                 "[appearance] bold_color_same_as_fg={}",
-                st.cfg.bold_color_same_as_fg
+                st.cfg.borrow().bold_color_same_as_fg
             );
         });
     });
 
     ui.on_bump_font_size(move |delta| {
         runtime::with_window(window_id, |st| {
-            let new = (st.cfg.font_size + delta as f32).clamp(8.0, 32.0);
-            if (new - st.cfg.font_size).abs() < 0.1 {
+            let new = (st.cfg.borrow().font_size + delta as f32).clamp(8.0, 32.0);
+            if (new - st.cfg.borrow().font_size).abs() < 0.1 {
                 return;
             }
-            st.cfg.font_size = new;
+            st.cfg.borrow_mut().font_size = new;
             st.ui.set_font_size(new as i32);
-            st.cfg.save();
+            st.cfg.borrow().save();
             apply_font_settings(st);
             show_zoom_hud(st);
         });
@@ -17893,15 +18581,15 @@ fn register_window_callbacks(
     ui.on_bump_scrollback(move |delta| {
         runtime::with_window(window_id, |st| {
             // 无限滚动下点 +/-：视为用户要改回固定值，先关闭 unlimited。
-            if st.cfg.scrollback_unlimited {
-                st.cfg.scrollback_unlimited = false;
+            if st.cfg.borrow().scrollback_unlimited {
+                st.cfg.borrow_mut().scrollback_unlimited = false;
                 st.ui.set_cfg_scrollback_unlimited(false);
             }
-            let new = (st.cfg.scrollback as i64 + delta as i64)
+            let new = (st.cfg.borrow().scrollback as i64 + delta as i64)
                 .clamp(500, UNLIMITED_SCROLLBACK_LINES as i64) as usize;
-            st.cfg.scrollback = new;
+            st.cfg.borrow_mut().scrollback = new;
             st.ui.set_scrollback(new as i32);
-            st.cfg.save();
+            st.cfg.borrow().save();
         });
     });
 
@@ -18027,17 +18715,17 @@ fn register_window_callbacks(
 
     ui.on_toggle_quake(move || {
         runtime::with_window(window_id, |st| {
-            st.cfg.quake_enabled = !st.cfg.quake_enabled;
-            st.ui.set_cfg_quake(st.cfg.quake_enabled);
-            if !st.cfg.quake_enabled && st.quake_visible {
+            st.cfg.borrow_mut().quake_enabled = !st.cfg.borrow_mut().quake_enabled;
+            st.ui.set_cfg_quake(st.cfg.borrow().quake_enabled);
+            if !st.cfg.borrow().quake_enabled && st.quake_visible {
                 if let Some((pos, size)) = st.quake_saved.take() {
                     st.ui.window().set_size(size);
                     st.ui.window().set_position(pos);
                 }
                 st.quake_visible = false;
             }
-            st.cfg.save();
-            eprintln!("[ui] quake_enabled={}", st.cfg.quake_enabled);
+            st.cfg.borrow().save();
+            eprintln!("[ui] quake_enabled={}", st.cfg.borrow().quake_enabled);
         });
     });
 
@@ -18067,8 +18755,8 @@ fn register_window_callbacks(
             request_window_corners(st, Some((w, h)), None);
             let w = w.max(1.0);
             let h = h.max(1.0);
-            let sidebar_w = sidebar_width_of(&st.cfg);
-            let content = content_rect(w, h, sidebar_w, st.cfg.tabbar_pos());
+            let sidebar_w = sidebar_width_of(&st.cfg.borrow());
+            let content = content_rect(w, h, sidebar_w, st.cfg.borrow().tabbar_pos());
             let (content_w, content_h) = (content.w, content.h);
             // configure 本身就是“WM/窗口系统正在动”的证据；即使尺寸和上一帧
             // 相同也刷新时间戳，watchdog 不会把它误判成 WM 没接管。
@@ -18092,7 +18780,7 @@ fn register_window_callbacks(
             st.resize_pending = Some((w, h));
             // UI 布局必须每个 configure 立即更新：缩小时如果晚一帧，右上角按钮
             // 还在旧宽度的右边界外，会被新窗口裁掉，下一帧才“吐出来”。
-            st.content = content_rect(w, h, sidebar_w, st.cfg.tabbar_pos());
+            st.content = content_rect(w, h, sidebar_w, st.cfg.borrow().tabbar_pos());
             refresh_views_layout(st);
             if live_drag {
                 st.resize_in_progress = true;
@@ -18133,8 +18821,8 @@ fn register_window_callbacks(
                         runtime::with_window(window_id, |st| {
                             st.resize_apply_scheduled = false;
                             let Some((w, h)) = st.resize_pending.take() else { return };
-                            let sidebar_w = sidebar_width_of(&st.cfg);
-                            st.content = content_rect(w, h, sidebar_w, st.cfg.tabbar_pos());
+                            let sidebar_w = sidebar_width_of(&st.cfg.borrow());
+                            st.content = content_rect(w, h, sidebar_w, st.cfg.borrow().tabbar_pos());
                             let t0 = Instant::now();
                             refresh_views(st);
                             let t_layout = t0.elapsed();
@@ -18294,8 +18982,8 @@ fn claim_instance_or_forward(paths: &InstancePaths, restore_requested: bool) -> 
 /// primary 的 `open_window` handler。运行在 control 连接线程：
 /// 请求转给 UI 线程，等窗口 `show()` 完成后才返回 Ok，server 才回 ack。
 #[cfg(unix)]
-fn open_window_handler(
-) -> impl Fn(OpenWindowRequest) -> Result<(), String> + Send + Sync + 'static {
+fn open_window_handler() -> impl Fn(OpenWindowRequest) -> Result<(), String> + Send + Sync + 'static
+{
     move |request| {
         let (tx, rx) = std::sync::mpsc::channel::<Result<WindowId, String>>();
         slint::invoke_from_event_loop(move || {
@@ -18412,7 +19100,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Err(e) => {
                 eprintln!("[profile] 导出失败: {e}");
                 std::process::exit(1);
-            },
+            }
         };
         std::fs::write(&path, text)?;
         let vault_refs = store.profiles.iter().filter(|p| p.save_password).count();
@@ -18432,7 +19120,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Err(e) => {
                 eprintln!("[profile] 导入失败: {e}");
                 std::process::exit(1);
-            },
+            }
         };
         store.save();
         println!(
@@ -18732,7 +19420,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     path.display()
                 );
                 registry.add_custom(theme);
-            },
+            }
             Err(e) => eprintln!(
                 "[theme] 插件 {} 的主题 {} 加载失败: {e}",
                 plugin_name,
@@ -18752,9 +19440,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let font_opts = FontOptions::from_config(&cfg);
-    let fonts = Rc::new(
-        FontSet::load_with(opts.font_size, &font_opts).ok_or("找不到等宽字体")?,
-    );
+    let fonts = Rc::new(FontSet::load_with(opts.font_size, &font_opts).ok_or("找不到等宽字体")?);
     let cell = (fonts.cell_w, fonts.cell_h);
     // v2 快照有像素几何时优先用它开窗；v1/未知几何回退 --cols/--rows。
     let primary_geometry = primary_restore
@@ -18765,9 +19451,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(geometry) => (geometry.w as f32, geometry.h as f32),
         None => (
             opts.cols as f32 * cell.0 as f32
-                + if cfg.tabbar_pos().is_vertical() { TABBAR_W } else { 0.0 },
+                + if cfg.tabbar_pos().is_vertical() {
+                    TABBAR_W
+                } else {
+                    0.0
+                },
             opts.rows as f32 * cell.1 as f32
-                + if cfg.tabbar_pos().is_vertical() { 0.0 } else { TABBAR_H },
+                + if cfg.tabbar_pos().is_vertical() {
+                    0.0
+                } else {
+                    TABBAR_H
+                },
         ),
     };
     let content = content_rect(win_w, win_h, sidebar_width_of(&cfg), cfg.tabbar_pos());
@@ -18857,8 +19551,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
         .unwrap_or(false);
     ui.set_settings_legacy(settings_legacy);
-    eprintln!("[ui] settings ui={}", if settings_legacy { "legacy-modal" } else { "tab" });
-    ui.window().set_size(slint::PhysicalSize::new(win_w as u32, win_h as u32));
+    eprintln!(
+        "[ui] settings ui={}",
+        if settings_legacy {
+            "legacy-modal"
+        } else {
+            "tab"
+        }
+    );
+    ui.window()
+        .set_size(slint::PhysicalSize::new(win_w as u32, win_h as u32));
 
     // ---- 每用户共享服务（只创建一次，窗口只拿句柄）----
     let mut shared_cfg = cfg.clone();
@@ -18913,7 +19615,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut reg = registry_cell.borrow_mut();
         reg.insert(runtime).expect("first window id must be free");
         // 侧栏可见时启动就把 Profiles 候选项填好（否则要等点 "+" 才有内容）。
-        if state.borrow().cfg.sidebar_visible {
+        if state.borrow().cfg.borrow().sidebar_visible {
             let mut st = state.borrow_mut();
             rebuild_profile_choices(&mut st);
         }
@@ -18922,9 +19624,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // 异常退出提示（ACT-036 的“恢复提示”第一步）：只提示，不自动改布局。
         if unclean {
             let st = state.borrow();
-            let lang_zh = st.cfg.lang() == "zh";
+            let lang_zh = app_lang(&st) == "zh";
             let msg = if auto_restore {
-                if lang_zh { "上次异常退出，已按 autosave 恢复布局" } else { "Recovered layout from the last unclean exit" }
+                if lang_zh {
+                    "上次异常退出，已按 autosave 恢复布局"
+                } else {
+                    "Recovered layout from the last unclean exit"
+                }
             } else if streak >= 3 {
                 if lang_zh {
                     "连续异常退出 3 次以上；safe mode 尚未实现，建议先禁用插件排查"
@@ -18936,9 +19642,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 "Last exit was unclean; startup restore is off"
             };
-            st.ui.set_status_items(ModelRc::from(Rc::new(VecModel::from(
-                vec![slint::SharedString::from(msg)],
-            ))));
+            st.ui
+                .set_status_items(ModelRc::from(Rc::new(VecModel::from(vec![
+                    slint::SharedString::from(msg),
+                ]))));
         }
         reg.set_active(window_id);
     }
@@ -18963,8 +19670,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         None => None,
     };
     // 插件宿主是共享服务：只启动一次，唤醒信号使用 primary 窗口的 app_wake。
-    shared.plugins.set_activity_wake(state.borrow().app_wake.clone());
-    shared.plugins.with_mut(|plugins| plugins.start_process_plugins());
+    shared
+        .plugins
+        .borrow()
+        .set_activity_wake(state.borrow().app_wake.clone());
+    shared
+        .plugins
+        .with_mut(|plugins| plugins.start_process_plugins());
 
     register_window_callbacks(&ui, state.clone(), window_id);
 
@@ -18974,7 +19686,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }) {
         eprintln!("[quake] {e}");
     }
-
 
     // ---- OSC 标题轮询 ----
     let poll_timer = slint::Timer::default();
@@ -19008,19 +19719,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 只在显式设置时启动，正常使用不产生额外 timer/日志。
     if std::env::var_os("TERVO_WAKE_STATS").is_some() {
         let stats_timer = slint::Timer::default();
-        stats_timer.start(
-            slint::TimerMode::Repeated,
-            Duration::from_secs(5),
-            || {
-                eprintln!(
-                    "[wake] ts_ms={} core_event={} app_event={} periodic_400ms={}",
-                    logging::now_ms(),
-                    CORE_EVENT_WAKES.load(Ordering::Relaxed),
-                    APP_EVENT_WAKES.load(Ordering::Relaxed),
-                    PERIODIC_POLLS.load(Ordering::Relaxed),
-                );
-            },
-        );
+        stats_timer.start(slint::TimerMode::Repeated, Duration::from_secs(5), || {
+            eprintln!(
+                "[wake] ts_ms={} core_event={} app_event={} periodic_400ms={}",
+                logging::now_ms(),
+                CORE_EVENT_WAKES.load(Ordering::Relaxed),
+                APP_EVENT_WAKES.load(Ordering::Relaxed),
+                PERIODIC_POLLS.load(Ordering::Relaxed),
+            );
+        });
         std::mem::forget(stats_timer);
     }
 
@@ -19107,7 +19814,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 启动事件：应用状态就绪后、首个 Tab 创建前后台分发；失败不影响主流程。
     with_app(|st| {
-        dispatch_plugin_event(st, plugin_v3::PluginEvent::Startup, plugin_v3::startup_payload());
+        dispatch_plugin_event(
+            st,
+            plugin_v3::PluginEvent::Startup,
+            plugin_v3::startup_payload(),
+        );
     });
 
     // ---- 首个标签页 / 会话恢复 ----
@@ -19235,7 +19946,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Ok(id) => {
                         restored_extra += 1;
                         eprintln!("[session] 恢复窗口 {} -> {id}", window.id);
-                    },
+                    }
                     Err(error) => eprintln!(
                         "[session] 窗口 {} 创建失败（跳过，不整机失败）: {error}",
                         window.id
@@ -19261,15 +19972,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     // e2e/证据开关：feature flag + 显式 SECOND 时启动即建第二个窗口。
     // 同样延迟 600ms，让 primary 的 maximize 状态机先绑定正确的 X11 handle。
-    if restore_windows.is_empty()
-        && std::env::var_os("TERVO_MULTI_WINDOW_SECOND").is_some()
-    {
+    if restore_windows.is_empty() && std::env::var_os("TERVO_MULTI_WINDOW_SECOND").is_some() {
         slint::Timer::single_shot(Duration::from_millis(600), move || {
             match secondary::create_inproc_window() {
                 Ok(id) => eprintln!("[ui] startup second window id={id}"),
                 Err(error) => eprintln!("[ui] startup second window failed: {error}"),
             }
-        });    }
+        });
+    }
     // GPU 自检兜底：Skia 软件 surface 会“窗口正常但全黑”，而 Slint 的
     // set_rendering_notifier 在 software surface 上不会给出 NativeOpenGL/WGPU
     // 回调。给 GPU 首帧 1s 初始化时间，仍无 GPU API 就 exec 回退软件后端。
@@ -19814,7 +20524,10 @@ mod tests {
             assert!(summary.hot.contains(&field), "missing {field}: {summary:?}");
         }
         assert!(summary.new_pane.is_empty(), "{summary:?}");
-        assert!(summary.restart.is_empty(), "MCP 权限不能要求重启: {summary:?}");
+        assert!(
+            summary.restart.is_empty(),
+            "MCP 权限不能要求重启: {summary:?}"
+        );
 
         // 搜索索引：中英都命中 Privacy/MCP，且分类下标是 9。
         let en = settings_search_hits("mcp", "en");
@@ -20009,15 +20722,21 @@ mod tests {
         // 单 pane：pane 原点 (0,0)，窗口内容 800x600，tab bar 32。
         // 边缘内/外必须区分，拖出窗口才能停表。
         assert!(!pointer_outside_window(0.0, 0.0, 10.0, 10.0, 800.0, 600.0));
-        assert!(!pointer_outside_window(0.0, 0.0, 799.0, 599.0, 800.0, 600.0));
+        assert!(!pointer_outside_window(
+            0.0, 0.0, 799.0, 599.0, 800.0, 600.0
+        ));
         assert!(pointer_outside_window(0.0, 0.0, -1.0, 10.0, 800.0, 600.0));
         assert!(pointer_outside_window(0.0, 0.0, 800.0, 10.0, 800.0, 600.0));
         assert!(pointer_outside_window(0.0, 0.0, 10.0, 634.0, 800.0, 600.0));
         // tab bar 上（窗口内）不算拖出窗口：拖到顶部边缘仍应自动滚动。
         assert!(!pointer_outside_window(0.0, 0.0, 10.0, -20.0, 800.0, 600.0));
         // 分屏右下 pane：pane 偏移要加到窗口坐标上。
-        assert!(!pointer_outside_window(400.0, 300.0, 399.0, 299.0, 800.0, 600.0));
-        assert!(pointer_outside_window(400.0, 300.0, 400.0, 10.0, 800.0, 600.0));
+        assert!(!pointer_outside_window(
+            400.0, 300.0, 399.0, 299.0, 800.0, 600.0
+        ));
+        assert!(pointer_outside_window(
+            400.0, 300.0, 400.0, 10.0, 800.0, 600.0
+        ));
         // 尚未完成布局（窗口尺寸为 0）：不误判为拖出窗口。
         assert!(!pointer_outside_window(0.0, 0.0, 900.0, 900.0, 0.0, 0.0));
     }
@@ -20054,15 +20773,30 @@ mod tests {
 
         // 搜索索引中英都命中；展示行跟随语言，中文行不再出现英文分类名。
         let en = settings_search_hits("sixel", "en");
-        let en_line = &en.iter().find(|h| h.section == "images").expect("en sixel").line;
+        let en_line = &en
+            .iter()
+            .find(|h| h.section == "images")
+            .expect("en sixel")
+            .line;
         assert!(en_line.contains("Terminal · Sixel"), "{en_line}");
-        assert!(!en_line.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)), "{en_line}");
+        assert!(
+            !en_line
+                .chars()
+                .any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)),
+            "{en_line}"
+        );
         let zh = settings_search_hits("sixel", "zh");
-        let zh_line = &zh.iter().find(|h| h.section == "images").expect("zh sixel").line;
+        let zh_line = &zh
+            .iter()
+            .find(|h| h.section == "images")
+            .expect("zh sixel")
+            .line;
         assert!(zh_line.contains("终端 · Sixel"), "{zh_line}");
         assert!(!zh_line.contains("Terminal"), "{zh_line}");
         // 中文关键词也能搜到英文界面下的同一项。
-        assert!(settings_search_hits("光标", "en").iter().any(|h| h.cat == 0));
+        assert!(settings_search_hits("光标", "en")
+            .iter()
+            .any(|h| h.cat == 0));
         // 每个分类都有索引项，侧栏不会出现空页。
         for cat in 0..SETTINGS_CATS_EN.len() as i32 {
             assert!(
@@ -20104,13 +20838,13 @@ mod tests {
                             other => out.push(other as char),
                         }
                         i += 2;
-                    },
+                    }
                     b'"' => return Some((out, i + 1)),
                     _ => {
                         let ch = s[i..].chars().next()?;
                         out.push(ch);
                         i += ch.len_utf8();
-                    },
+                    }
                 }
             }
             None
@@ -20118,11 +20852,23 @@ mod tests {
         let mut pairs = Vec::new();
         for (idx, _) in source.match_indices("Lang.t(") {
             let after = idx + "Lang.t(".len();
-            let Some((en, pos)) = quoted(source, after) else { continue };
+            let Some((en, pos)) = quoted(source, after) else {
+                continue;
+            };
             let rest = &source[pos..];
-            let Some(comma) = rest.find(',') else { continue };
+            let Some(comma) = rest.find(',') else {
+                continue;
+            };
             let zh_start = pos + comma + 1;
-            let Some((zh, _)) = quoted(source, source[zh_start..].find('"').map(|p| zh_start + p).unwrap_or(zh_start)) else { continue };
+            let Some((zh, _)) = quoted(
+                source,
+                source[zh_start..]
+                    .find('"')
+                    .map(|p| zh_start + p)
+                    .unwrap_or(zh_start),
+            ) else {
+                continue;
+            };
             pairs.push((en, zh));
         }
         pairs
@@ -20132,14 +20878,21 @@ mod tests {
     fn settings_i18n_translation_pairs_are_clean() {
         let source = include_str!("../ui/main.slint");
         let pairs = parse_lang_pairs(source);
-        assert!(pairs.len() > 250, "Settings/菜单静态文案应全部走 Lang.t，实际 {} 对", pairs.len());
+        assert!(
+            pairs.len() > 250,
+            "Settings/菜单静态文案应全部走 Lang.t，实际 {} 对",
+            pairs.len()
+        );
         let has_cjk = |s: &str| s.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c));
         for (en, zh) in &pairs {
             // en 文案里绝不能混入中文。
             assert!(!has_cjk(en), "英文文案混入中文: {en:?}");
             // zh 文案必须有中文；ASCII DEL/Control-H 这类纯技术选项例外。
             let technical = en == "ASCII DEL (0x7F)" || en == "Control-H (0x08)";
-            assert!(has_cjk(zh) || technical, "中文文案没有中文: {en:?} -> {zh:?}");
+            assert!(
+                has_cjk(zh) || technical,
+                "中文文案没有中文: {en:?} -> {zh:?}"
+            );
         }
     }
 
@@ -20181,8 +20934,14 @@ mod tests {
                 || s.starts_with("ESC [")
                 || matches!(
                     s,
-                    "English" | "中文" | "SSH" | "Telnet" | "Shell" | "SFTP"
-                        | "ASCII DEL" | "Control-H"
+                    "English"
+                        | "中文"
+                        | "SSH"
+                        | "Telnet"
+                        | "Shell"
+                        | "SFTP"
+                        | "ASCII DEL"
+                        | "Control-H"
                 )
                 || s.starts_with('/')
         };
@@ -20196,10 +20955,18 @@ mod tests {
                 if line.trim_start().starts_with("//") {
                     continue;
                 }
-                for prop in ["text: ", "label: ", "description: ", "placeholder: ", "title: "] {
+                for prop in [
+                    "text: ",
+                    "label: ",
+                    "description: ",
+                    "placeholder: ",
+                    "title: ",
+                ] {
                     let Some(pos) = line.find(prop) else { continue };
                     let value = line[pos + prop.len()..].trim_start();
-                    let Some(value) = value.strip_prefix('"') else { continue };
+                    let Some(value) = value.strip_prefix('"') else {
+                        continue;
+                    };
                     let end = value.find('"').unwrap_or(value.len());
                     let literal = &value[..end];
                     assert!(
@@ -20307,7 +21074,9 @@ mod tests {
         let backspace = settings_search_hits("backspace", "en");
         assert!(backspace.iter().any(|h| h.cat == 1 && h.section == "keys"));
         let profiles = settings_search_hits("profile", "en");
-        assert!(profiles.iter().any(|h| h.cat == 7 && h.section == "profiles"));
+        assert!(profiles
+            .iter()
+            .any(|h| h.cat == 7 && h.section == "profiles"));
         let advanced = settings_search_hits("import", "en");
         assert!(advanced.iter().any(|h| h.cat == 3 && h.section == "config"));
         // 每个分类都必须有索引项，侧栏不会出现空页。
@@ -20489,7 +21258,10 @@ mod tests {
             height: 2,
             bytes: vec![0; 4].into(),
         };
-        assert!(write_clipboard_image(bad).is_err(), "short RGBA must be rejected");
+        assert!(
+            write_clipboard_image(bad).is_err(),
+            "short RGBA must be rejected"
+        );
     }
 
     #[test]
@@ -20656,11 +21428,23 @@ mod tests {
 
     #[test]
     fn inline_image_fits_inside_pane() {
-        assert_eq!(crate::render::fit_inline_image_size(100, 50, 200.0, 200.0), (100.0, 50.0));
-        assert_eq!(crate::render::fit_inline_image_size(400, 200, 200.0, 200.0), (200.0, 100.0));
-        assert_eq!(crate::render::fit_inline_image_size(100, 400, 200.0, 200.0), (50.0, 200.0));
+        assert_eq!(
+            crate::render::fit_inline_image_size(100, 50, 200.0, 200.0),
+            (100.0, 50.0)
+        );
+        assert_eq!(
+            crate::render::fit_inline_image_size(400, 200, 200.0, 200.0),
+            (200.0, 100.0)
+        );
+        assert_eq!(
+            crate::render::fit_inline_image_size(100, 400, 200.0, 200.0),
+            (50.0, 200.0)
+        );
         // 已经贴到右下角时只使用剩余空间，不越过 pane。
-        assert_eq!(crate::render::fit_inline_image_size(400, 200, 80.0, 200.0), (80.0, 40.0));
+        assert_eq!(
+            crate::render::fit_inline_image_size(400, 200, 80.0, 200.0),
+            (80.0, 40.0)
+        );
     }
 
     #[test]
@@ -20744,9 +21528,7 @@ mod tests {
             vec!["Terminal 1", "build · 2 个窗格", "Terminal"]
         );
         // 超长列表截断：max-1 行明细 + 一行汇总，弹窗最多 6 行。
-        let many: Vec<(String, usize)> = (0..10)
-            .map(|i| (format!("tab-{i}"), 1))
-            .collect();
+        let many: Vec<(String, usize)> = (0..10).map(|i| (format!("tab-{i}"), 1)).collect();
         let lines = close_confirm_session_lines(&many, "en", 6);
         assert_eq!(lines.len(), 6);
         assert_eq!(lines[0], "tab-0");
@@ -20923,7 +21705,9 @@ mod tests {
             .expect("Work 标题行必须保留");
         assert!(work.collapsed);
         assert_eq!(work.label, "▸ Work (2)");
-        assert!(rows.iter().all(|r| r.store_index != Some(0) && r.store_index != Some(2)));
+        assert!(rows
+            .iter()
+            .all(|r| r.store_index != Some(0) && r.store_index != Some(2)));
         assert_eq!(rows.len(), targets.len());
         assert_eq!(targets.iter().filter(|t| t.is_some()).count(), 2);
 
@@ -20967,7 +21751,10 @@ mod tests {
             resolve_default_profile_index(&profiles, 99, "  build host "),
             Some(1)
         );
-        assert_eq!(resolve_default_profile_index(&profiles, 0, "LOCAL-A"), Some(0));
+        assert_eq!(
+            resolve_default_profile_index(&profiles, 0, "LOCAL-A"),
+            Some(0)
+        );
         // 都没设置 / 都失效 = 系统 shell
         assert_eq!(resolve_default_profile_index(&profiles, 0, ""), None);
         assert_eq!(
@@ -21109,9 +21896,11 @@ mod tests {
             .unwrap_err()
             .contains("控制字符"));
         // `~user` 从 /etc/passwd 展开；未知用户报错而不是回退 Tervo 的 HOME。
-        assert!(resolve_local_path("~tervo-nosuch-user/x", Some(&cwd), Some(&home))
-            .unwrap_err()
-            .contains("用户不存在"));
+        assert!(
+            resolve_local_path("~tervo-nosuch-user/x", Some(&cwd), Some(&home))
+                .unwrap_err()
+                .contains("用户不存在")
+        );
         if let Some(root_home) = user_home_dir("root") {
             assert_eq!(
                 resolve_local_path("~root/x", Some(&cwd), Some(&home)).unwrap(),
@@ -21228,7 +22017,11 @@ mod tests {
         assert_eq!(scrollback_budget(4, 2000), 2000, "少量 pane 不收缩");
         assert_eq!(scrollback_budget(25, 2000), 960, "22 Tab+4 pane 按预算收缩");
         assert_eq!(scrollback_budget(25, 500), 500, "Profile 更小配置不被放大");
-        assert_eq!(scrollback_budget(1000, 2000), 200, "极多 pane 仍有 200 行下限");
+        assert_eq!(
+            scrollback_budget(1000, 2000),
+            200,
+            "极多 pane 仍有 200 行下限"
+        );
     }
 
     #[test]
@@ -21454,21 +22247,41 @@ mod tests {
     #[test]
     fn profile_appearance_blink_on_wakes_timer_without_global() {
         // 只验证继承/覆盖的布尔含义；计时器需要 AppState（GUI），不在单测里构造。
-        let on = PaneAppearance { cursor_blink: Some(true), ..PaneAppearance::default() };
-        let off = PaneAppearance { cursor_blink: Some(false), ..PaneAppearance::default() };
+        let on = PaneAppearance {
+            cursor_blink: Some(true),
+            ..PaneAppearance::default()
+        };
+        let off = PaneAppearance {
+            cursor_blink: Some(false),
+            ..PaneAppearance::default()
+        };
         assert!(on.cursor_blinks(false), "全局 off 时 Profile on 仍需闪烁");
         assert!(!off.cursor_blinks(true), "全局 on 时 Profile off 保持常亮");
     }
 
     #[test]
     fn search_count_label_formats_index_total_and_empty_results() {
-        let hit = SearchHit { line: 1, start_col: 2, end_col: 4, index: 3, total: 12 };
+        let hit = SearchHit {
+            line: 1,
+            start_col: 2,
+            end_col: 4,
+            index: 3,
+            total: 12,
+        };
         assert_eq!(search_count_label(Some(&hit)), "3/12");
         assert_eq!(search_count_label(None), "0/0", "无命中固定显示 0/0");
-        let empty = SearchHit { index: 0, total: 0, ..hit };
+        let empty = SearchHit {
+            index: 0,
+            total: 0,
+            ..hit
+        };
         assert_eq!(search_count_label(Some(&empty)), "0/0");
         // 防御性：core 理论上不会给出 index=0/total>0；UI 至少不能显示 0/N。
-        let partial = SearchHit { index: 0, total: 5, ..hit };
+        let partial = SearchHit {
+            index: 0,
+            total: 5,
+            ..hit
+        };
         assert_eq!(search_count_label(Some(&partial)), "1/5");
     }
 
@@ -21477,7 +22290,10 @@ mod tests {
         assert_eq!(ssh_connect_selector("ssh.connect"), Some(""));
         assert_eq!(ssh_connect_selector("ssh.connect:7"), Some("7"));
         assert_eq!(ssh_connect_selector("ssh.connect 7"), Some("7"));
-        assert_eq!(ssh_connect_selector("ssh.connect: my profile "), Some("my profile"));
+        assert_eq!(
+            ssh_connect_selector("ssh.connect: my profile "),
+            Some("my profile")
+        );
         assert_eq!(ssh_connect_selector("ssh.disconnect"), None);
         assert_eq!(ssh_connect_selector("tab.new"), None);
     }

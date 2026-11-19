@@ -145,9 +145,9 @@ fn create_inproc_window_impl(
     };
     let initial_theme = {
         let cfg = shared.cfg.with(|cfg| cfg.clone());
-        let selected = crate::normalize_selection(&shared.themes, &cfg.theme);
+        let selected = crate::normalize_selection(&shared.themes.borrow(), &cfg.theme);
         crate::resolve_theme(
-            &shared.themes,
+            &shared.themes.borrow(),
             &selected,
             cfg.auto_dark.as_deref(),
             cfg.auto_light.as_deref(),

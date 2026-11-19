@@ -18,10 +18,9 @@
 //! [`crate::with_app`] 只在回调作用域内回退到“当前窗口”，不再假设进程里只有
 //! 一个全局 `AppState`。
 
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, Ref, RefCell, RefMut};
 use std::collections::HashMap;
 use std::fmt;
-use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -87,10 +86,10 @@ impl WindowIdAllocator {
 
 /// UI 线程内的共享服务句柄。
 ///
-/// 使用 `Rc<RefCell<T>>` 保证同一份状态；`Deref/DerefMut` 让既有 `st.cfg.*`
-/// 形式的调用点不需要改成 `borrow()` 链。安全约束：`Shared<T>` 只能在 Slint
-/// UI 线程访问，且不允许在 `&mut T` 的生命周期里再取同一 `T` 的引用；Rust
-/// 借用检查器在 `st.field` 层面仍然生效，`RefCell` 只用于持有所有权。
+/// 使用 `Rc<RefCell<T>>` 保证同一份状态。访问必须走 [`Self::with`] /
+/// [`Self::with_mut`]（短借用）或 [`Self::borrow`] / [`Self::borrow_mut`]
+/// （显式 guard）；**不再实现 `Deref/DerefMut`**，避免从 `Rc::as_ptr` 造出
+/// 可重叠的 `&T`/`&mut T`（未定义行为）。
 ///
 /// 这不是 `Send/Sync` 类型：后台线程必须走 channel / UI 回调。
 pub struct Shared<T> {
@@ -114,6 +113,16 @@ impl<T> Shared<T> {
         std::mem::replace(&mut *self.inner.borrow_mut(), value)
     }
 
+    /// 显式只读 guard；调用方负责不要在同线程再 `borrow_mut`。
+    pub fn borrow(&self) -> Ref<'_, T> {
+        self.inner.borrow()
+    }
+
+    /// 显式可变 guard；调用方负责不要在同线程再 `borrow`。
+    pub fn borrow_mut(&self) -> RefMut<'_, T> {
+        self.inner.borrow_mut()
+    }
+
     pub fn with<R>(&self, f: impl FnOnce(&T) -> R) -> R {
         f(&self.inner.borrow())
     }
@@ -131,23 +140,6 @@ impl<T> Shared<T> {
 impl<T> Clone for Shared<T> {
     fn clone(&self) -> Self {
         self.clone_handle()
-    }
-}
-
-impl<T> Deref for Shared<T> {
-    type Target = T;
-
-    fn deref(&self) -> &T {
-        // SAFETY: 见类型文档。Shared 只在 UI 线程使用；返回的引用生命周期受
-        // `&self` 约束，调用方无法在 `&mut` 借用期间同时持有它。
-        unsafe { &*self.inner.as_ptr() }
-    }
-}
-
-impl<T> DerefMut for Shared<T> {
-    fn deref_mut(&mut self) -> &mut T {
-        // SAFETY: 同上；`&mut self` 保证调用点对句柄本身是独占的。
-        unsafe { &mut *self.inner.as_ptr() }
     }
 }
 
@@ -498,7 +490,7 @@ pub fn with_window<R>(id: WindowId, f: impl FnOnce(&mut AppState) -> R) -> Optio
         Err(_) => {
             eprintln!("[runtime] with_window({id}) 重入（AppState 已被借用），忽略本次操作");
             return None;
-        },
+        }
     };
     Some(f(&mut st))
 }
@@ -516,7 +508,7 @@ pub fn with_state<R>(
         Err(_) => {
             eprintln!("[runtime] with_state({id}) 重入（AppState 已被借用），忽略本次操作");
             return None;
-        },
+        }
     };
     Some(f(&mut st))
 }
@@ -538,7 +530,7 @@ pub fn with_primary_window<R>(f: impl FnOnce(&mut AppState) -> R) -> Option<R> {
             let registry = registry()?;
             let guard = registry.borrow();
             guard.primary_id().or_else(|| guard.active())?
-        },
+        }
     };
     with_window(id, f)
 }
@@ -560,7 +552,11 @@ pub fn window_for_pane(pane: u64) -> Option<WindowId> {
     let runtimes = registry.borrow().runtimes();
     for runtime in runtimes {
         let state = runtime.state.clone();
-        if state.try_borrow().ok().is_some_and(|st| st.panes.contains_key(&pane)) {
+        if state
+            .try_borrow()
+            .ok()
+            .is_some_and(|st| st.panes.contains_key(&pane))
+        {
             return Some(runtime.id);
         }
     }
@@ -589,7 +585,7 @@ pub fn set_active_window(id: WindowId) -> bool {
     if ok {
         // 插件宿主在后台线程解析“缺省 window_id=active”，这里同步一份；
         // 不能让 supervisor 自己猜当前窗口。
-        shared.plugins.set_active_window(Some(id.get()));
+        shared.plugins.borrow().set_active_window(Some(id.get()));
         eprintln!("[runtime] active window={id}");
     }
     ok
@@ -610,8 +606,11 @@ pub fn remove_window(id: WindowId) -> Option<Rc<WindowRuntime>> {
     };
     if runtime.is_some() {
         let (shared, active) = shared;
-        shared.plugins.set_active_window(active.map(|id| id.get()));
-        shared.plugins.forget_window(id.get());
+        shared
+            .plugins
+            .borrow()
+            .set_active_window(active.map(|id| id.get()));
+        shared.plugins.borrow().forget_window(id.get());
         eprintln!("[runtime] closed {id}（remaining={}）", window_count());
     }
     runtime
@@ -638,10 +637,7 @@ pub fn capture_snapshot_v2() -> SnapshotV2 {
         let state = runtime.state.clone();
         match state.try_borrow() {
             Ok(st) => windows.push(runtime.snapshot(&st)),
-            Err(_) => eprintln!(
-                "[session] capture 跳过 {}（AppState 正被借用）",
-                runtime.id
-            ),
+            Err(_) => eprintln!("[session] capture 跳过 {}（AppState 正被借用）", runtime.id),
         };
     }
     SnapshotV2::new(windows)
@@ -673,10 +669,7 @@ pub fn capture_restorable_snapshot_v2_with_window(
         let state = runtime.state.clone();
         match state.try_borrow() {
             Ok(st) => windows.push(runtime.snapshot(&st)),
-            Err(_) => eprintln!(
-                "[session] capture 跳过 {}（AppState 正被借用）",
-                runtime.id
-            ),
+            Err(_) => eprintln!("[session] capture 跳过 {}（AppState 正被借用）", runtime.id),
         };
     }
     restorable_snapshot(SnapshotV2::new(windows))
@@ -691,12 +684,10 @@ fn restorable_snapshot(mut snap: SnapshotV2) -> SnapshotV2 {
 }
 
 fn session_save_allowed(shared: &SharedServices) -> bool {
-    let (writer, restarting, restoring) =
-        shared.session.with(|s| (s.writer, s.restarting, s.restoring));
-    writer
-        && !restarting
-        && !restoring
-        && shared.cfg.with(|cfg| cfg.restore_session_on_startup)
+    let (writer, restarting, restoring) = shared
+        .session
+        .with(|s| (s.writer, s.restarting, s.restoring));
+    writer && !restarting && !restoring && shared.cfg.with(|cfg| cfg.restore_session_on_startup)
 }
 
 /// 立即保存一次多窗口快照。`force=false` 时和上次成功快照相同就不写。
@@ -742,11 +733,11 @@ pub fn save_session_snapshot(reason: &str, force: bool) -> bool {
                 tabs
             );
             true
-        },
+        }
         Err(error) => {
             eprintln!("[session] {reason}: 保存失败: {error}");
             false
-        },
+        }
     }
 }
 
@@ -776,11 +767,11 @@ pub fn save_session_snapshot_after_restore(reason: &str) -> bool {
                 tabs
             );
             true
-        },
+        }
         Err(error) => {
             eprintln!("[session] {reason}: 保存失败，保留旧快照: {error}");
             false
-        },
+        }
     }
 }
 
@@ -828,11 +819,11 @@ mod tests {
         let a = Shared::new(41u32);
         let b = a.clone_handle();
         b.with_mut(|value| *value += 1);
-        assert_eq!(*a, 42);
+        assert_eq!(*a.borrow(), 42);
         assert_eq!(a.identity(), b.identity());
         let replaced = a.replace(7);
         assert_eq!(replaced, 42);
-        assert_eq!(*b, 7);
+        assert_eq!(*b.borrow(), 7);
     }
 
     #[test]
