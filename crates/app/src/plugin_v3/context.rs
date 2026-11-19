@@ -134,7 +134,7 @@ impl WhenExpr {
         if text.is_empty() {
             return Ok(Self { expr: Expr::Always });
         }
-        let mut parser = Parser { tokens: tokenize(text)?, position: 0, source: text };
+        let mut parser = Parser { tokens: tokenize(text)?, position: 0, source: text, depth: 0 };
         let expr = parser.or_expr()?;
         if let Some(token) = parser.peek() {
             return Err(format!("when 表达式多余内容 {token:?}: {text}"));
@@ -304,7 +304,11 @@ struct Parser<'a> {
     tokens: Vec<Token>,
     position: usize,
     source: &'a str,
+    /// `unary_expr` 的递归深度；`!`/括号过深必须在 UI 线程栈溢出前拒绝。
+    depth: usize,
 }
+
+const MAX_WHEN_DEPTH: usize = 64;
 
 impl Parser<'_> {
     fn peek(&self) -> Option<&Token> {
@@ -351,6 +355,19 @@ impl Parser<'_> {
     }
 
     fn unary_expr(&mut self) -> Result<Expr, String> {
+        if self.depth >= MAX_WHEN_DEPTH {
+            return Err(format!(
+                "when 表达式嵌套超过 {MAX_WHEN_DEPTH} 层: {}",
+                self.source
+            ));
+        }
+        self.depth += 1;
+        let result = self.unary_expr_inner();
+        self.depth -= 1;
+        result
+    }
+
+    fn unary_expr_inner(&mut self) -> Result<Expr, String> {
         match self.next() {
             Some(Token::Not) => Ok(Expr::Not(Box::new(self.unary_expr()?))),
             Some(Token::LParen) => {
@@ -457,5 +474,19 @@ mod tests {
             WhenExpr::parse("tabCount > 1").unwrap().to_string(),
             "tabCount > 1"
         );
+    }
+}
+
+#[cfg(test)]
+mod depth_tests {
+    use super::WhenExpr;
+
+    #[test]
+    fn deeply_nested_when_is_rejected_not_stack_overflow() {
+        let text = format!("{}terminalFocus{}", "(".repeat(10_000), ")".repeat(10_000));
+        let err = WhenExpr::parse(&text).unwrap_err();
+        assert!(err.contains("嵌套"), "{err}");
+        let text = format!("{}terminalFocus", "!".repeat(10_000));
+        assert!(WhenExpr::parse(&text).is_err());
     }
 }

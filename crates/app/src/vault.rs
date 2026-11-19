@@ -28,6 +28,7 @@
 //!   `/proc/<pid>/environ` 观察；后续应改为继承 fd/pipe（见 `askpass.rs`）。
 
 use std::collections::BTreeMap;
+use std::io::Read;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -563,13 +564,25 @@ fn derive_key_with(
 /// 解锁的纯准备步骤：读文件 + 结构校验 + Argon2 + AEAD 解密。
 /// 不修改 `Vault`，可由后台线程调用；返回的 `Unlocked` 含明文凭据。
 fn prepare_unlock(path: &Path, master: &str) -> Result<Unlocked, VaultError> {
-    let text = match fs::read_to_string(path) {
-        Ok(t) => t,
+    // 先看文件大小再读：被替换成 GB 级文件时不能让 read_to_string 先 OOM。
+    let meta = match fs::metadata(path) {
+        Ok(meta) => meta,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             return Err(VaultError::NotInitialized);
         },
         Err(e) => return Err(VaultError::Io(e.to_string())),
     };
+    if meta.len() > MAX_FILE {
+        return Err(VaultError::Corrupt("文件超过大小上限".into()));
+    }
+    let mut file = fs::File::open(path).map_err(|e| VaultError::Io(e.to_string()))?;
+    let mut text = String::new();
+    file.take(MAX_FILE + 1)
+        .read_to_string(&mut text)
+        .map_err(|e| VaultError::Io(e.to_string()))?;
+    if text.len() as u64 > MAX_FILE {
+        return Err(VaultError::Corrupt("文件超过大小上限".into()));
+    }
     let parsed = ParsedVault::parse(&text)?;
     let key = derive_key_with(master, &parsed.salt, parsed.m_cost, parsed.t_cost, parsed.p_cost)?;
     let cipher = ChaCha20Poly1305::new(Key::from_slice(&key));
@@ -747,6 +760,11 @@ fn persist(path: &Path, unlocked: &Unlocked) -> Result<(), VaultError> {
         .encrypt(nonce, Payload { msg: &plaintext, aad: header.as_bytes() })
         .map_err(|_| VaultError::Internal("ChaCha20-Poly1305 加密失败".into()))?;
     let text = format!("{header}ciphertext={}\n", B64.encode(ciphertext));
+    if text.len() as u64 > MAX_FILE {
+        return Err(VaultError::Internal(format!(
+            "vault 写入超过 {MAX_FILE} 字节上限；请减少条目"
+        )));
+    }
     write_atomic(path, text.as_bytes())
 }
 
@@ -804,6 +822,20 @@ mod tests {
 
     fn secret() -> &'static str {
         "ssh-password-123!"
+    }
+
+    #[test]
+    fn oversized_vault_file_is_rejected_before_read() {
+        let dir = tmpdir("oversize");
+        let path = dir.join("vault.enc");
+        let file = fs::File::create(&path).unwrap();
+        file.set_len(MAX_FILE + 1).unwrap();
+        let err = match prepare_unlock(&path, master()) {
+            Err(error) => error,
+            Ok(_) => panic!("oversized vault must be rejected"),
+        };
+        assert!(matches!(err, VaultError::Corrupt(_)), "{err:?}");
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

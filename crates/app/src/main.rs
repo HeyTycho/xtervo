@@ -6954,6 +6954,19 @@ fn save_profile_form(st: &mut AppState) {
         }
     }
 
+    // Vault 后台改主密钥期间禁止写凭据：否则会用旧 key 把旧文件写回，
+    // 覆盖刚完成的新主密码文件（V1 竞态）。
+    if st.vault_busy && (save_password || previous_save) {
+        let msg = ui_text(
+            app_lang(st),
+            "Vault is deriving a key; save again when it finishes",
+            "Vault 正在后台派生密钥，完成后再保存",
+        );
+        st.ui.set_form_error(msg.into());
+        eprintln!("[vault] busy: refuse credential write for profile edit={edit_id}");
+        return;
+    }
+
     let result = if edit_id > 0 {
         st.profiles
             .borrow_mut()

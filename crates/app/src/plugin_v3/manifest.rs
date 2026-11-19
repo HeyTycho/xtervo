@@ -422,6 +422,13 @@ impl CommandDecl {
             }
         }
         if !self.when.trim().is_empty() {
+            if self.when.len() > 512 {
+                return Err(format!(
+                    "commands.{} when 过长（{} 字节，上限 512）",
+                    self.id,
+                    self.when.len()
+                ));
+            }
             super::context::WhenExpr::parse(&self.when)
                 .map_err(|e| format!("commands.{} when 非法: {e}", self.id))?;
         }
