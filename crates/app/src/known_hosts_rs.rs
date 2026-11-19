@@ -107,19 +107,14 @@ fn parse_line(line: &str) -> Option<Entry> {
 }
 
 fn candidates(resolved: &ResolvedSsh) -> Vec<String> {
-    let mut out = Vec::new();
+    // OpenSSH 只使用一个 host-key identity：HostKeyAlias 优先，否则
+    // host（22）或 [host]:port（非 22）。不能把裸 host 和带端口条目混用。
     let host = resolved.hostname.to_ascii_lowercase();
-    out.push(host.clone());
-    out.push(format!("[{host}]:{}", resolved.port));
-    out.push(host_spec(&host, resolved.port).to_ascii_lowercase());
-    if let Some(alias) = &resolved.host_key_alias {
-        if !alias.is_empty() {
-            out.push(alias.to_ascii_lowercase());
-        }
-    }
-    out.sort();
-    out.dedup();
-    out
+    let spec = match &resolved.host_key_alias {
+        Some(alias) if !alias.is_empty() => alias.to_ascii_lowercase(),
+        _ => host_spec(&host, resolved.port).to_ascii_lowercase(),
+    };
+    vec![spec]
 }
 
 fn hosts_match(patterns: &[String], candidates: &[String]) -> bool {
@@ -205,7 +200,11 @@ mod tests {
         assert!(!hosts_match(&["other.com".into()], &names));
         let r = resolved("example.com", 2222);
         assert!(hosts_match(&["[example.com]:2222".into()], &candidates(&r)));
-        assert!(!hosts_match(&["[example.com]:22".into()], &candidates(&r)));
+        assert!(!hosts_match(&["example.com".into()], &candidates(&r)));
+        let mut alias = resolved("example.com", 22);
+        alias.host_key_alias = Some("pinned-alias".into());
+        assert_eq!(candidates(&alias), vec!["pinned-alias"]);
+        assert!(!hosts_match(&["example.com".into()], &candidates(&alias)));
     }
 
     #[test]

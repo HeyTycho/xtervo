@@ -5099,9 +5099,10 @@ fn create_pane(
             && (p.auth != "password" || st.vault.with(|vault| vault.get(p.id)).is_ok())
             && (p.auth != "key"
                 || ssh_native::key_loads_without_passphrase(p)
-                || st
-                    .vault
-                    .with(|vault| vault.has_key_passphrase(p.id).unwrap_or(false)))
+                || (p.save_key_passphrase
+                    && st
+                        .vault
+                        .with(|vault| vault.has_key_passphrase(p.id).unwrap_or(false))))
     }) {
         let password = if p.auth == "password" {
             match st.vault.with(|vault| vault.get(p.id)) {
@@ -5115,7 +5116,7 @@ fn create_pane(
         } else {
             None
         };
-        let key_passphrase = if p.auth == "key" {
+        let key_passphrase = if p.auth == "key" && p.save_key_passphrase {
             st.vault
                 .with(|vault| vault.get_key_passphrase(p.id))
                 .ok()
@@ -7149,7 +7150,8 @@ fn save_profile_form(st: &mut AppState) {
 
     // Vault 后台改主密钥期间禁止写凭据：否则会用旧 key 把旧文件写回，
     // 覆盖刚完成的新主密码文件（V1 竞态）。
-    if st.vault_busy && (save_password || previous_save) {
+    let key_passphrase_dirty = save_key_passphrase && !key_passphrase.is_empty();
+    if st.vault_busy && (save_password || previous_save || key_passphrase_dirty) {
         let msg = ui_text(
             app_lang(st),
             "Vault is deriving a key; save again when it finishes",
@@ -7177,6 +7179,12 @@ fn save_profile_form(st: &mut AppState) {
                     .with_mut(|vault| vault.set_key_passphrase(id, &key_passphrase))
                 {
                     vault_write_error = Some(format!("密钥口令写入 Vault 失败: {error}"));
+                }
+            } else if !save_key_passphrase {
+                match st.vault.with_mut(|vault| vault.remove_key_passphrase(id)) {
+                    Ok(_) => {}
+                    Err(vault::VaultError::Locked | vault::VaultError::NotInitialized) => {}
+                    Err(error) => eprintln!("[vault] 删除 Profile {id} 的密钥口令失败: {error}"),
                 }
             }
             if save_password && !password.is_empty() {

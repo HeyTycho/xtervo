@@ -477,6 +477,10 @@ impl Vault {
         self.contains(profile_id ^ Self::KEY_PASSPHRASE_SLOT)
     }
 
+    pub fn remove_key_passphrase(&mut self, profile_id: u64) -> Result<bool, VaultError> {
+        self.remove(profile_id ^ Self::KEY_PASSPHRASE_SLOT)
+    }
+
     /// 读取密码；锁定/未初始化返回错误。
     pub fn get(&self, profile_id: u64) -> Result<String, VaultError> {
         match &self.state {

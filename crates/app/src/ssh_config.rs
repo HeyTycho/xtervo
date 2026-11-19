@@ -67,7 +67,21 @@ pub fn resolve_with_paths(profile: &Profile, paths: &[PathBuf]) -> ResolvedSsh {
     for path in paths {
         parse_file(path, profile.host.trim(), &mut raw, &mut active, 0);
     }
-    finish(profile, raw)
+    finish(profile, raw, true)
+}
+
+/// ProxyJump 主机：未显式给端口时允许 ssh_config 的 Port。
+pub fn resolve_jump(profile: &Profile) -> ResolvedSsh {
+    let paths = match std::env::var_os("TERVO_SSH_CONFIG") {
+        Some(path) if !path.is_empty() => vec![PathBuf::from(path)],
+        _ => default_config_paths(),
+    };
+    let mut raw = Raw::default();
+    let mut active = true;
+    for path in &paths {
+        parse_file(path, profile.host.trim(), &mut raw, &mut active, 0);
+    }
+    finish(profile, raw, false)
 }
 
 /// 测试用：直接喂文本，路径只用于 Include 相对路径。
@@ -78,15 +92,21 @@ fn resolve_with_text(profile: &Profile, texts: &[&str]) -> ResolvedSsh {
     for text in texts {
         parse_text(text, profile.host.trim(), &mut raw, &mut active, 0);
     }
-    finish(profile, raw)
+    finish(profile, raw, true)
 }
 
-fn finish(profile: &Profile, raw: Raw) -> ResolvedSsh {
+fn finish(profile: &Profile, raw: Raw, prefer_profile_port: bool) -> ResolvedSsh {
     let hostname = raw
         .hostname
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| profile.host.trim().to_string());
-    let port = raw.port.unwrap_or_else(|| profile.port.max(1));
+    // 系统 ssh 路径始终传 `-p profile.port`；native 保持一致，不能让
+    // ssh_config 的 Port 悄悄把目标改成另一个服务。
+    let port = if prefer_profile_port {
+        profile.port.max(1)
+    } else {
+        raw.port.unwrap_or_else(|| profile.port.max(1))
+    };
     let user = profile
         .user
         .trim()
@@ -114,11 +134,16 @@ fn finish(profile: &Profile, raw: Raw) -> ResolvedSsh {
                 None
             }
         });
+    let proxy_jump = if profile.proxy_jump.trim().is_empty() {
+        raw.proxy_jump.unwrap_or_default()
+    } else {
+        profile.proxy_jump.trim().to_string()
+    };
     ResolvedSsh {
         hostname,
         port,
         user,
-        proxy_jump: raw.proxy_jump.unwrap_or_default(),
+        proxy_jump,
         proxy_command: raw.proxy_command.unwrap_or_default(),
         strict,
         user_known_hosts,
@@ -253,16 +278,20 @@ fn apply_option(key: &str, value: &str, raw: &mut Raw) {
         },
         "proxyjump" => {
             if raw.proxy_jump.is_none() {
-                if value != "none" {
-                    raw.proxy_jump = Some(value.to_string());
-                }
+                raw.proxy_jump = Some(if value.eq_ignore_ascii_case("none") {
+                    String::new()
+                } else {
+                    value.to_string()
+                });
             }
         },
         "proxycommand" => {
             if raw.proxy_command.is_none() {
-                if value != "none" {
-                    raw.proxy_command = Some(value.to_string());
-                }
+                raw.proxy_command = Some(if value.eq_ignore_ascii_case("none") {
+                    String::new()
+                } else {
+                    value.to_string()
+                });
             }
         },
         "stricthostkeychecking" => {
@@ -322,7 +351,15 @@ fn expand_home(path: &str) -> PathBuf {
 fn expand_includes(value: &str, source: Option<&Path>) -> Vec<PathBuf> {
     let mut out = Vec::new();
     for token in split_words(value) {
-        let path = expand_home(&token);
+        let mut path = expand_home(&token);
+        if path.is_relative() {
+            let base = source
+                .and_then(|s| s.parent())
+                .map(Path::to_path_buf)
+                .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".ssh")))
+                .unwrap_or_else(|| PathBuf::from("/etc/ssh"));
+            path = base.join(path);
+        }
         if token.contains('*') || token.contains('?') {
             let (dir, pattern) = match path.parent() {
                 Some(dir) => (dir.to_path_buf(), path.file_name().unwrap_or_default().to_string_lossy().to_string()),
@@ -470,7 +507,8 @@ mod tests {
             &["Host alias\n HostName real.example\n Port 2200\n User alice\n"],
         );
         assert_eq!(r.hostname, "real.example");
-        assert_eq!(r.port, 2200);
+        // 系统 ssh 路径总是传 `-p profile.port`，配置文件 Port 不能改目标。
+        assert_eq!(r.port, 22);
         assert_eq!(r.user, "alice");
         assert!(r.unsupported.is_none());
     }
@@ -482,7 +520,7 @@ mod tests {
             &p,
             &["Host *\n Port 2201\nHost prod !bad\n Port 2202\n HostName h\n"],
         );
-        assert_eq!(r.port, 2201);
+        assert_eq!(r.port, 22);
         assert_eq!(r.hostname, "h");
     }
 
@@ -499,6 +537,6 @@ mod tests {
         let p = profile("h");
         let r = resolve_with_text(&p, &["Host=h\n User = \"bob\"\nPort=2222\n"]);
         assert_eq!(r.user, "bob");
-        assert_eq!(r.port, 2222);
+        assert_eq!(r.port, 22);
     }
 }

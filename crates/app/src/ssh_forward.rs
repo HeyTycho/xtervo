@@ -165,18 +165,19 @@ pub async fn spawn_dynamic(
 pub async fn setup_remote(
     handle: &Arc<client::Handle<HostKeyHandler>>,
     specs: &[String],
-    targets: &Arc<Mutex<HashMap<u16, (String, u16)>>>,
+    targets: &Arc<Mutex<HashMap<(String, u16), (String, u16)>>>,
 ) -> Result<(), String> {
     for raw in specs {
         let spec = parse_remote(raw).ok_or_else(|| format!("远程转发格式无效: {raw}"))?;
-        {
-            let mut map = targets.lock().map_err(|_| "远程转发表锁损坏".to_string())?;
-            map.insert(spec.port, (spec.target_host.clone(), spec.target_port));
-        }
-        handle
+        let assigned = handle
             .tcpip_forward(&spec.bind, spec.port as u32)
             .await
             .map_err(|error| format!("请求远程转发 {}:{} 失败: {error}", spec.bind, spec.port))?;
+        let mut map = targets.lock().map_err(|_| "远程转发表锁损坏".to_string())?;
+        map.insert(
+            (spec.bind.clone(), assigned as u16),
+            (spec.target_host.clone(), spec.target_port),
+        );
     }
     Ok(())
 }
