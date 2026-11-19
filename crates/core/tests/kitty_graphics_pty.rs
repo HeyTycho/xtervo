@@ -326,3 +326,147 @@ fn kitty_compressed_rgba_transmit_and_positive_z() {
     assert_eq!(frame.row(2)[2].char(), 'Z');
     let _ = std::fs::remove_file(path);
 }
+
+/// 把字节转成 POSIX printf 格式串（ESC/BEL/反斜杠/百分号/单引号转义）。
+fn printf_escape(bytes: &[u8]) -> String {
+    let mut out = String::new();
+    for &b in bytes {
+        match b {
+            0x1b => out.push_str("\\033"),
+            0x07 => out.push_str("\\007"),
+            b'\\' => out.push_str("\\\\"),
+            b'%' => out.push_str("%%"),
+            b'\'' => out.push_str("\\047"),
+            0x20..=0x7e => out.push(b as char),
+            _ => out.push_str(&format!("\\{:03o}", b)),
+        }
+    }
+    out
+}
+
+fn ok_reply(image: u32, placement: u32) -> Vec<u8> {
+    match placement {
+        0 => format!("\x1b_Gi={image};OK\x1b\\"),
+        p => format!("\x1b_Gi={image},p={p};OK\x1b\\"),
+    }
+    .into_bytes()
+}
+
+fn enoent_reply(image: u32, placement: u32) -> Vec<u8> {
+    format!("\x1b_Gi={image},p={placement};ENOENT:image not found\x1b\\").into_bytes()
+}
+
+fn transmit_1px(id: u32) -> Vec<u8> {
+    apc(
+        &format!("a=t,i={id},f=32,s=1,v=1,q=0"),
+        encode_base64(&[1u8, 2, 3, 255]).as_bytes(),
+    )
+}
+
+fn place_image(id: u32, placement: u32) -> Vec<u8> {
+    apc(&format!("a=p,i={id},p={placement},c=1,r=1,q=0"), b"")
+}
+
+struct KittyRun {
+    reply: Vec<u8>,
+    images: usize,
+}
+
+/// 按 `chunks` 顺序写入终端（每块之间 sleep，确保 actor 分批读取），
+/// 抓取终端回包与最终帧里的图片数量。
+fn run_kitty_chunks(tag: &str, chunks: &[Vec<u8>], reply_len: usize) -> KittyRun {
+    let dir = std::env::temp_dir().join(format!(
+        "tervo-kitty-order-{}-{tag}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let reply_path = dir.join("reply.bin");
+    let mut script = String::from("stty raw -echo; ");
+    for chunk in chunks {
+        script.push_str(&format!(
+            "printf '{}'; sleep 0.15; ",
+            printf_escape(chunk)
+        ));
+    }
+    script.push_str(&format!(
+        "printf '\\r\\nDONE\\r\\n'; sleep 0.1; timeout --foreground 5 dd bs=1 count={reply_len} of='{}' 2>/dev/null || true; stty sane; sleep 0.2",
+        reply_path.display()
+    ));
+    let handle = spawn(sh(&script)).expect("spawn pane");
+    let frame = wait_for(&handle, Duration::from_secs(5), |f| {
+        frame_text(f).contains("DONE")
+    });
+    let images = frame.images.len();
+    let start = Instant::now();
+    let reply = loop {
+        let got = std::fs::read(&reply_path).unwrap_or_default();
+        if got.len() >= reply_len || start.elapsed() > Duration::from_secs(6) {
+            break got;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let _ = std::fs::remove_dir_all(&dir);
+    KittyRun { reply, images }
+}
+
+/// O2：同一 chunk 里先 `2J` 再 transmit/place，解析器的 image index 不能被
+/// chunk 尾部的 clear 复位；后续 chunk 的 place 仍必须命中。
+#[test]
+fn kitty_clear_then_transmit_same_chunk_matches_split_chunks() {
+    let _serial = KITTY_TEST_LOCK.lock().unwrap();
+    let mut expected = ok_reply(41, 0);
+    expected.extend(ok_reply(41, 1));
+    expected.extend(ok_reply(41, 2));
+
+    let mut same_chunk = b"\x1b[2J".to_vec();
+    same_chunk.extend(transmit_1px(41));
+    same_chunk.extend(place_image(41, 1));
+    let same = run_kitty_chunks(
+        "clear-first-same",
+        &[same_chunk, place_image(41, 2)],
+        expected.len(),
+    );
+
+    let split = run_kitty_chunks(
+        "clear-first-split",
+        &[
+            b"\x1b[2J".to_vec(),
+            [transmit_1px(41), place_image(41, 1)].concat(),
+            place_image(41, 2),
+        ],
+        expected.len(),
+    );
+
+    assert_eq!(same.reply, expected, "同 chunk 清屏后 transmit/place 回包错误");
+    assert_eq!(split.reply, expected, "拆批对照回包错误");
+    assert_eq!(same.images, 2, "同 chunk：清屏后的两个 place 都必须保留");
+    assert_eq!(same.images, split.images, "同批与拆批图片数必须一致");
+}
+
+/// O2：同一 chunk 中 transmit 之后才 `2J`，图片必须已被清掉；之后的 place
+/// 必须按清屏后的 parser index 返回 ENOENT，与拆成两个 chunk 的结果一致。
+#[test]
+fn kitty_transmit_then_clear_same_chunk_matches_split_chunks() {
+    let _serial = KITTY_TEST_LOCK.lock().unwrap();
+    let mut expected = ok_reply(42, 0);
+    expected.extend(enoent_reply(42, 3));
+
+    let mut same_chunk = transmit_1px(42);
+    same_chunk.extend_from_slice(b"\x1b[2J");
+    same_chunk.extend(place_image(42, 3));
+    let same = run_kitty_chunks("clear-last-same", &[same_chunk], expected.len());
+
+    let mut split_second = b"\x1b[2J".to_vec();
+    split_second.extend(place_image(42, 3));
+    let split = run_kitty_chunks(
+        "clear-last-split",
+        &[transmit_1px(42), split_second],
+        expected.len(),
+    );
+
+    assert_eq!(same.reply, expected, "transmit 后清屏，后续 place 必须 ENOENT");
+    assert_eq!(split.reply, expected, "拆批对照回包错误");
+    assert_eq!(same.images, 0, "清屏后不得残留图片");
+    assert_eq!(same.images, split.images, "同批与拆批图片数必须一致");
+}

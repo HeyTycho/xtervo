@@ -84,6 +84,27 @@ fn read_exact(path: &Path, count: usize) -> Vec<u8> {
     }
 }
 
+/// 和 [`spawn_capture`] 相同，但把查询拆成多个 `printf` 写入（中间 sleep），
+/// 用于对照“同一 chunk”与“拆批”的颜色查询语义。
+fn spawn_capture_chunks(tag: &str, count: usize, chunks: &[&[u8]]) -> (PaneHandle, PathBuf) {
+    let dir = temp_dir(tag);
+    let out = dir.join("reply.bin");
+    let mut script = String::from("stty raw -echo; ");
+    for chunk in chunks {
+        script.push_str(&format!(
+            "printf '{}'; sleep 0.1; ",
+            printf_escape(chunk)
+        ));
+    }
+    script.push_str(&format!(
+        "timeout --foreground 5 dd bs=1 count={count} of={} 2>/dev/null",
+        out.display()
+    ));
+    let handle = spawn(sh(&script)).expect("spawn pane");
+    std::thread::sleep(Duration::from_millis(50));
+    (handle, out)
+}
+
 /// xterm 颜色回包：`rgb:rrrr/gggg/bbbb`（每通道重复两位十六进制）。
 fn rgb_reply(prefix: &str, color: u32, bel: bool) -> Vec<u8> {
     let (r, g, b) = ((color >> 16) as u8, (color >> 8) as u8, color as u8);
@@ -261,4 +282,35 @@ fn osc133_shell_marks_arrive_as_events() {
             ShellMark::CommandFinished { exit_code: Some(3) },
         ]
     );
+}
+
+/// O5：同一 chunk 内 `query → set → query`，第一个 query 必须返回 set 之前
+/// 的旧颜色，第二个返回新颜色；拆成三个 chunk 的结果必须与同 chunk 一致。
+#[test]
+fn osc4_same_chunk_query_set_query_returns_query_time_colors() {
+    let old = Palette::default().at(1).unwrap();
+    let new = 0x00ff_0000;
+    let mut want = rgb_reply("4;1", old, true);
+    want.extend(rgb_reply("4;1", new, true));
+    let query = b"\x1b]4;1;?\x07\x1b]4;1;rgb:ff/00/00\x07\x1b]4;1;?\x07";
+
+    let (_handle, out) = spawn_capture("osc4-query-set-query-same", want.len(), query);
+    let same = read_exact(&out, want.len());
+    let _ = std::fs::remove_dir_all(out.parent().unwrap());
+
+    let (_handle, out) = spawn_capture_chunks(
+        "osc4-query-set-query-split",
+        want.len(),
+        &[
+            b"\x1b]4;1;?\x07",
+            b"\x1b]4;1;rgb:ff/00/00\x07",
+            b"\x1b]4;1;?\x07",
+        ],
+    );
+    let split = read_exact(&out, want.len());
+    let _ = std::fs::remove_dir_all(out.parent().unwrap());
+
+    assert_eq!(same, want, "同 chunk：第一个 query 必须是 set 之前的旧色");
+    assert_eq!(split, want, "拆批对照回包错误");
+    assert_eq!(same, split, "同批与拆批的颜色查询结果必须一致");
 }
