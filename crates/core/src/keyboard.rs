@@ -218,6 +218,11 @@ impl KeyboardScanner {
         for &b in bytes {
             if self.utf8_remaining > 0 {
                 if (0x80..=0xBF).contains(&b) {
+                    // CSI 参数里的非 ASCII 字节不能丢：保留给 finish 校验，
+                    // 否则 `>7é` 会被“清洗”成合法 `>7` 并误改 flags。
+                    if self.state == State::Csi {
+                        self.push_csi_byte(b);
+                    }
                     self.utf8_remaining -= 1;
                     continue;
                 }
@@ -225,6 +230,9 @@ impl KeyboardScanner {
                 self.utf8_remaining = 0;
             }
             if let Some(n) = utf8_lead_len(b) {
+                if self.state == State::Csi {
+                    self.push_csi_byte(b);
+                }
                 self.utf8_remaining = n;
                 continue;
             }
@@ -265,14 +273,7 @@ impl KeyboardScanner {
                         }
                         State::Ground
                     } else {
-                        if !self.csi_overflow {
-                            if self.csi.len() < MAX_CSI_BYTES {
-                                self.csi.push(b);
-                            } else {
-                                self.csi_overflow = true;
-                                self.csi.clear();
-                            }
-                        }
+                        self.push_csi_byte(b);
                         State::Csi
                     }
                 },
@@ -304,6 +305,18 @@ impl KeyboardScanner {
     fn begin_csi(&mut self) {
         self.csi.clear();
         self.csi_overflow = false;
+    }
+
+    fn push_csi_byte(&mut self, b: u8) {
+        if self.csi_overflow {
+            return;
+        }
+        if self.csi.len() < MAX_CSI_BYTES {
+            self.csi.push(b);
+        } else {
+            self.csi_overflow = true;
+            self.csi.clear();
+        }
     }
 
     fn take_csi(&mut self) -> Option<Vec<u8>> {
@@ -547,6 +560,12 @@ mod tests {
 
     fn reply_kitty(flags: u8) -> KeyboardAction {
         KeyboardAction::Reply(format!("\x1b[?{flags}u").into_bytes())
+    }
+
+    #[test]
+    fn utf8_in_csi_parameter_is_rejected_not_stripped() {
+        // `>7é` 不是合法 kitty set；旧 UTF-8 守卫会丢掉 é 变成合法的 `>7`。
+        assert!(scan("\x1b[>7éu".as_bytes()).is_empty());
     }
 
     #[test]

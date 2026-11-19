@@ -225,7 +225,14 @@ impl Recorder {
                 ".{name}.{}.{seq}.export.tmp",
                 std::process::id()
             ));
-            match OpenOptions::new().write(true).create_new(true).open(&tmp) {
+            let mut opts = OpenOptions::new();
+            opts.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                opts.mode(0o600);
+            }
+            match opts.open(&tmp) {
                 Ok(file) => break (tmp, file),
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
                 Err(e) => return Err(e),
@@ -317,4 +324,26 @@ mod tests {
         assert_eq!(status.dropped_bytes, 4);
         assert_eq!(recorder.snapshot(), b"abcd");
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn export_preserves_private_mode() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = std::env::temp_dir().join(format!(
+        "tervo-recording-mode-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("session.raw");
+    std::fs::write(&path, b"old").unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let recorder = Recorder::new(1024);
+    recorder.start();
+    recorder.record(b"new");
+    recorder.export(&path).unwrap();
+    let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600, "export must not widen permissions, got {mode:o}");
+    let _ = std::fs::remove_dir_all(&dir);
 }

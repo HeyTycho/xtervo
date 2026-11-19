@@ -444,7 +444,6 @@ def main() -> int:
 
         # 最后一个窗口正常关闭：事件循环退出、最终保存、running marker 清除。
         wins = x11_window_ids(args.display, app.proc.pid)
-        assert "Tervo" in wins, wins
         assert wins, "no Tervo window after restore"
         xwin(args, wins[0], "--close")
         wait_for(

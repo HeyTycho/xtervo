@@ -1023,11 +1023,14 @@ impl Config {
                 ".{name}.{}.{seq}.restore.tmp",
                 std::process::id()
             ));
-            match std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&tmp)
+            let mut opts = std::fs::OpenOptions::new();
+            opts.write(true).create_new(true);
+            #[cfg(unix)]
             {
+                use std::os::unix::fs::OpenOptionsExt;
+                opts.mode(0o600);
+            }
+            match opts.open(&tmp) {
                 Ok(file) => break (tmp, file),
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
                 Err(e) => return Err(format!("创建恢复临时文件 {} 失败: {e}", tmp.display())),
@@ -2096,8 +2099,19 @@ danger = true
         let path = dir.join("config.toml");
         std::fs::write(&path, "version = 1\nlanguage = \"en\"\n").unwrap();
         std::fs::write(dir.join("config.toml.v0.bak"), "version = 0\nlanguage = \"zh\"\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
         let used = Config::restore_latest_backup(&path).unwrap();
         assert_eq!(used.file_name().unwrap(), "config.toml.v0.bak");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "restore must keep private mode, got {mode:o}");
+        }
         let restored = std::fs::read_to_string(&path).unwrap();
         assert!(restored.contains("zh"), "{restored}");
 
