@@ -15941,7 +15941,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
         });
     });
 
-    ui.on_pane_mouse_move(move |id, x, y, _button, mods| {
+    ui.on_pane_mouse_move(move |id, x, y, button, mods| {
         let id = id as u64;
         runtime::with_window(window_id, |st| {
             let modifiers = mouse_mods(mods);
@@ -15997,7 +15997,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
                 if forwarding {
                     if let Some(rt) = st.panes.get(&id) {
                         rt.handle.mouse(MouseEvent {
-                            button: MouseButton::Left,
+                            button: mouse_button(button),
                             action: MouseAction::Motion,
                             line: cell.0,
                             col: cell.1,

@@ -41,17 +41,17 @@
 | 透明度 / 背景图 / 模糊 | ⬜ | |
 | 全屏 | 🟡 | 可用最大化替代 |
 | Quake 模式（热键下拉） | ⬜ | |
-| 会话恢复（重启还原布局） | ✅ | 菜单 Restart Session：存 tabs / 分屏树 / 每个 pane 的 cwd，重启后原样拉起（不含滚动历史） |
+| 会话恢复（重启还原布局） | ⚠️ partial | 菜单 Restart Session / `--restore` / 可选 `restore_session_on_startup`：只还原 tabs、分屏树、cwd、窗口几何；不还原运行中进程/滚动历史/远端连接 |
 
 ## 连接类型
 
 | 功能 | 状态 | 说明 |
 |---|---|---|
-| SSH | ⬜ | 依赖已锁定 russh |
+| SSH | ⬜ | 无原生 russh 实现；SSH Profile 目前调用系统 `ssh`，插件 SSH 走 sidecar |
 | SSH 跳板 / 密钥 / agent | ⬜ | |
 | 端口转发 | ⬜ | |
 | SFTP 面板 | ⬜ | |
-| Serial | ⬜ | 依赖已锁定 serialport |
+| Serial | ⬜ | 未实现；Cargo 无 serialport/tokio-serial 依赖 |
 | Telnet | ⬜ | |
 | tmux 集成 | ⬜ | |
 
