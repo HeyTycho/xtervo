@@ -62,7 +62,7 @@ use crate::kitty_graphics::{
     CompositePolicy, CursorMovement, DeleteCommand, DeleteTarget, KittyCommand, KittyError,
     KittyEvent, KittyParser, PlacementCommand, SourceRect, TransmitCommand,
 };
-use crate::mouse::{self, MouseEvent};
+use crate::mouse::{self, MouseAction, MouseEvent};
 use crate::osc::OscScanner;
 use crate::palette::Palette;
 use crate::recording::{Recorder, RecorderHandle, RecordingExport, RecordingStatus};
@@ -84,6 +84,14 @@ const EVENT_QUEUE: usize = 256;
 const WRITE_BACKLOG_BYTES: usize = 16 * 1024 * 1024;
 /// backlog 的块数上限：防止大量 1 字节按键把 VecDeque 撑爆（正常键盘远小于此）。
 const WRITE_BACKLOG_CHUNKS: usize = 8192;
+/// 鼠标 press 成功入队时，为对应 release 预留的字节空间。
+///
+/// 取所有协议下 release 编码的上界：SGR 1006 最大约 19 B，UTF-8 1005
+/// 约 12 B，legacy X10 6 B；64 B 留足余量。预留不允许被普通输入占用，
+/// 保证 press 入队后 release 一定能入队（除非队列已关闭）。
+const MOUSE_RELEASE_RESERVE_BYTES: usize = 64;
+/// 每个鼠标 press 预留的块数（release 是独立的一块）。
+const MOUSE_RELEASE_RESERVE_CHUNKS: usize = 1;
 /// UI 拉帧的硬超时：actor 忙/异常时返回“跳过本帧”，绝不无限等。
 const PULL_TIMEOUT: Duration = Duration::from_millis(100);
 /// copy/search/contents 这类同步问 actor 的调用上限；超时返回空结果而不是卡 UI。
@@ -290,7 +298,30 @@ struct WriteQueue {
 struct WriteQueueState {
     queue: VecDeque<Vec<u8>>,
     bytes: usize,
+    /// 已入队、尚未 release 的鼠标 press 数；每个对应一块 release 预留。
+    mouse_reservations: usize,
     closed: bool,
+}
+
+/// 在现有队列上再放 `bytes`/`chunks`，同时为 `reservations` 个鼠标
+/// press 预留 release 空间后，是否仍在上限内。
+///
+/// 预留空间永远算进上限：普通输入不能把 release 的位置吃掉。
+fn write_queue_fits(
+    state: &WriteQueueState,
+    bytes: usize,
+    chunks: usize,
+    reservations: usize,
+) -> bool {
+    let reserved_bytes = reservations.saturating_mul(MOUSE_RELEASE_RESERVE_BYTES);
+    let reserved_chunks = reservations.saturating_mul(MOUSE_RELEASE_RESERVE_CHUNKS);
+    state.bytes.saturating_add(reserved_bytes).saturating_add(bytes) <= WRITE_BACKLOG_BYTES
+        && state
+            .queue
+            .len()
+            .saturating_add(reserved_chunks)
+            .saturating_add(chunks)
+            <= WRITE_BACKLOG_CHUNKS
 }
 
 impl WriteQueue {
@@ -299,6 +330,7 @@ impl WriteQueue {
             state: Mutex::new(WriteQueueState {
                 queue: VecDeque::new(),
                 bytes: 0,
+                mouse_reservations: 0,
                 closed: false,
             }),
             ready: Condvar::new(),
@@ -314,15 +346,78 @@ impl WriteQueue {
         if state.closed {
             return Err(PushError::Closed);
         }
-        if state.queue.len() >= WRITE_BACKLOG_CHUNKS
-            || state.bytes.saturating_add(bytes.len()) > WRITE_BACKLOG_BYTES
-        {
+        if !write_queue_fits(&state, bytes.len(), 1, state.mouse_reservations) {
             return Err(PushError::Full);
         }
         state.bytes += bytes.len();
         state.queue.push_back(bytes);
         self.ready.notify_one();
         Ok(())
+    }
+
+    /// 鼠标 press：与随后的 release 一起做容量准入。
+    ///
+    /// 入队成功时立刻为 release 预留一块 + [`MOUSE_RELEASE_RESERVE_BYTES`]
+    /// 空间；预留只由 [`Self::push_mouse_release`] /
+    /// [`Self::cancel_mouse_release_reservation`] 释放。返回 `Full` 时 press
+    /// 不会入队，稍后的 release 也会因为没有预留而失败——不会只进一半。
+    fn push_mouse_press(&self, bytes: Vec<u8>) -> Result<(), PushError> {
+        let mut state = self.state.lock();
+        if state.closed {
+            return Err(PushError::Closed);
+        }
+        let reservations = state.mouse_reservations.saturating_add(1);
+        if !write_queue_fits(&state, bytes.len(), 1, reservations) {
+            return Err(PushError::Full);
+        }
+        if !bytes.is_empty() {
+            state.bytes += bytes.len();
+            state.queue.push_back(bytes);
+            self.ready.notify_one();
+        }
+        state.mouse_reservations = reservations;
+        Ok(())
+    }
+
+    /// 鼠标 release：只有对应的 press 成功入队时才消费预留并写入。
+    ///
+    /// `press_enqueued` 由 actor 按按键记录：press 因队列满被拒后，即使
+    /// writer 随后腾出了空间，release 也必须一起丢弃，不能单独进队列
+    /// 产生孤立 release。没有对应 press 的 release 同样丢弃。
+    fn push_mouse_release(
+        &self,
+        bytes: Vec<u8>,
+        press_enqueued: bool,
+    ) -> Result<(), PushError> {
+        let mut state = self.state.lock();
+        if state.closed {
+            return Err(PushError::Closed);
+        }
+        if !press_enqueued || state.mouse_reservations == 0 {
+            // press 没进队列（或预留已被取消）：release 不能单独入队。
+            return Err(PushError::Full);
+        }
+        debug_assert!(
+            bytes.len() <= MOUSE_RELEASE_RESERVE_BYTES,
+            "鼠标 release 编码 {} B 超过预留 {MOUSE_RELEASE_RESERVE_BYTES} B",
+            bytes.len()
+        );
+        // press 已入队：reserve 容量保证放得下；即使不变量被破坏也
+        // 宁可略微超限，也不让应用卡在“按住”状态。
+        state.mouse_reservations -= 1;
+        if !bytes.is_empty() {
+            state.bytes += bytes.len();
+            state.queue.push_back(bytes);
+            self.ready.notify_one();
+        }
+        Ok(())
+    }
+
+    /// 对应的 release 不会再到达（模式关闭 / ctrl 投递失败 / Read Only）：
+    /// 释放一个 press 预留，避免容量被永久占住。没有预留时是空操作。
+    fn cancel_mouse_release_reservation(&self) {
+        let mut state = self.state.lock();
+        state.mouse_reservations = state.mouse_reservations.saturating_sub(1);
     }
 
     /// pty-writer 消费：队列空且未关闭时在 Condvar 上等待（不占 CPU）。
@@ -345,6 +440,7 @@ impl WriteQueue {
         state.closed = true;
         state.queue.clear();
         state.bytes = 0;
+        state.mouse_reservations = 0;
         self.ready.notify_all();
     }
 }
@@ -645,6 +741,9 @@ pub struct PaneHandle {
     exit_pending: Arc<std::sync::atomic::AtomicBool>,
     /// Drop 时置位：reader 的 100ms poll 循环看到后退出，不再无限阻塞。
     stop: Arc<std::sync::atomic::AtomicBool>,
+    /// 插件 transport 的独立关闭句柄：Drop 时直接调用以唤醒阻塞 read 的
+    /// 读线程；不依赖 actor 是否还能处理 `Ctrl::Shutdown`。
+    transport_shutdown: Option<crate::transport::TransportShutdown>,
     /// 语义事件唤醒（容量 1，合并）：有事件时 UI 立即 drain，400ms 仅兜底。
     events_wake_rx: Receiver<()>,
     wake_rx: Receiver<()>,
@@ -912,9 +1011,18 @@ impl PaneHandle {
     /// 上报一次鼠标事件。未启用鼠标模式 / Read Only 的 pane 自动忽略。
     pub fn mouse(&self, ev: MouseEvent) {
         if self.read_only() {
+            // 拖拽中切到 Read Only：release 不会再投递，释放 press 预留，
+            // 避免写队列容量被永久占住。
+            if ev.action == MouseAction::Release {
+                self.write_queue.cancel_mouse_release_reservation();
+            }
             return;
         }
-        self.send_ctrl(Ctrl::Mouse(ev));
+        if !self.send_ctrl(Ctrl::Mouse(ev)) && ev.action == MouseAction::Release {
+            // ctrl 投递失败（actor 忙/退出）：release 永远不会到 actor，
+            // 主动释放 press 预留。
+            self.write_queue.cancel_mouse_release_reservation();
+        }
     }
 
     /// 回写 OSC 52 查询结果（`OSC 52;Pc;<base64> ST`）到 PTY。
@@ -1202,9 +1310,20 @@ impl PaneHandle {
     }
 
     pub fn kill(&mut self) {
+        self.shutdown_transport();
         self.send_ctrl(Ctrl::Shutdown);
         if let Some(child) = self.child.as_mut() {
             let _ = child.kill();
+        }
+    }
+
+    /// 直接关闭插件 transport，唤醒阻塞在读上的 reader 线程。
+    ///
+    /// 不经过 actor：actor 忙/ctrl 队列满时 `Ctrl::Shutdown` 可能投递失败，
+    /// 而阻塞在 socket `read` 的线程只能靠底层 shutdown 退出。
+    fn shutdown_transport(&mut self) {
+        if let Some(shutdown) = self.transport_shutdown.take() {
+            shutdown.shutdown();
         }
     }
 }
@@ -1212,6 +1331,7 @@ impl PaneHandle {
 impl Drop for PaneHandle {
     fn drop(&mut self) {
         self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.shutdown_transport();
         self.send_ctrl(Ctrl::Shutdown);
         if let Some(child) = self.child.as_mut() {
             let _ = child.kill();
@@ -1248,10 +1368,12 @@ pub fn spawn_with_transport(
     let size = GridSize::new(config.cols as usize, config.rows as usize);
 
     // 读端/写端/控制半边在两种后端下类型一致，后面的通道与 actor 代码完全共用。
-    let (reader, mut writer, child, control) = match backend {
+    // 插件额外保存 halves.shutdown：PaneHandle::drop 直接调用它唤醒阻塞读，
+    // 不依赖 actor 是否还能处理 Ctrl::Shutdown。
+    let (reader, mut writer, child, control, transport_shutdown) = match backend {
         Backend::Pty => {
             let (reader, writer, child, master) = spawn_pty_io(&config)?;
-            (reader, writer, Some(child), BackendControl::Pty { master })
+            (reader, writer, Some(child), BackendControl::Pty { master }, None)
         },
         Backend::Plugin(transport) => {
             let halves = transport.into_halves()?;
@@ -1260,6 +1382,7 @@ pub fn spawn_with_transport(
                 halves.writer,
                 None,
                 BackendControl::Plugin(halves.control),
+                Some(halves.shutdown),
             )
         },
     };
@@ -1416,6 +1539,7 @@ pub fn spawn_with_transport(
         scroll: scroll.clone(),
         read_only: read_only.clone(),
         recorder: recorder.clone(),
+        mouse_presses: [None; 6],
         sel_anchor: None,
         pty_closed: false,
         force_full: false,
@@ -1435,6 +1559,7 @@ pub fn spawn_with_transport(
         events_rx,
         exit_pending,
         stop,
+        transport_shutdown,
         events_wake_rx,
         wake_rx,
         stats,
@@ -1759,6 +1884,9 @@ struct Actor {
     scroll: Arc<std::sync::atomic::AtomicU64>,
     /// Read Only 原子标志：actor 写 PTY 前再检查一次，丢弃已入队的输入。
     read_only: Arc<std::sync::atomic::AtomicBool>,
+    /// 每个按键最近一次 press 是否成功进入写队列（`None` = 没有待配对 press）。
+    /// release 只在对应 press 已入队时才写入，避免队列满时产生孤立 release。
+    mouse_presses: [Option<bool>; 6],
     /// 会话录制器：在输出过滤器/解析之前抓 PTY 原始字节。
     recorder: RecorderHandle,
     /// 选区锚点（网格坐标）；反向选择时用来保持两端 side 一致。
@@ -3030,6 +3158,48 @@ impl Actor {
         }
     }
 
+    /// 鼠标上报编码后的入队：press/release 按按键成对处理。
+    ///
+    /// 普通 press 在入队时预留 release 的槽位；roll/motion 仍按普通输入
+    /// 处理（满时丢弃是安全的，下一次事件会带最新状态）。release 只在对应
+    /// press 成功入队时才写入，因此队列满时不会出现孤立 release。
+    fn write_mouse(&mut self, ev: MouseEvent, bytes: &[u8]) {
+        if self.read_only.load(std::sync::atomic::Ordering::Relaxed) {
+            self.note_mouse_skipped(ev);
+            return;
+        }
+        let slot = ev.button.slot();
+        if ev.expects_release() {
+            let result = self.write_queue.push_mouse_press(bytes.to_vec());
+            self.mouse_presses[slot] = Some(result.is_ok());
+            if let Err(PushError::Full) = result {
+                note_write_drop(&self.stats, bytes.len());
+            }
+        } else if ev.action == MouseAction::Release {
+            let press_enqueued = self.mouse_presses[slot].take().unwrap_or(false);
+            if let Err(PushError::Full) =
+                self.write_queue.push_mouse_release(bytes.to_vec(), press_enqueued)
+            {
+                note_write_drop(&self.stats, bytes.len());
+            }
+        } else if let Err(PushError::Full) = self.write_queue.push(bytes.to_vec()) {
+            note_write_drop(&self.stats, bytes.len());
+        }
+    }
+
+    /// 鼠标事件被模式/Read Only 过滤：同步清理 press 配对状态与写队列预留。
+    fn note_mouse_skipped(&mut self, ev: MouseEvent) {
+        let slot = ev.button.slot();
+        if ev.expects_release() {
+            // press 没有进入写队列；它的 release 之后也必须丢弃。
+            self.mouse_presses[slot] = Some(false);
+        } else if ev.action == MouseAction::Release
+            && self.mouse_presses[slot].take() == Some(true)
+        {
+            self.write_queue.cancel_mouse_release_reservation();
+        }
+    }
+
     /// 旁路扫描键盘协议 CSI；只在真正交给 vte 的字节上调用。
     ///
     /// - kitty set/push/pop/query：core 自己维护 current flags + 屏幕栈；
@@ -3998,7 +4168,11 @@ impl Actor {
                 // 门禁在 actor 里：UI 可能因为模式刚变化而多转发一次，
                 // 这里以解析器最新的模式为准，未启用则静默丢弃（不写 PTY）。
                 if let Some(bytes) = mouse::encode(ev, *self.term.mode()) {
-                    self.write_input(&bytes);
+                    self.write_mouse(ev, &bytes);
+                } else {
+                    // 被模式过滤：同步 press 配对状态与预留，避免之后出现
+                    // 没有 press 的 release 或永久占用写队列容量。
+                    self.note_mouse_skipped(ev);
                 }
                 true
             },
@@ -5145,6 +5319,218 @@ mod tests {
         }
         assert!(matches!(queue.push(vec![2u8]), Err(PushError::Full)));
         queue.close();
+    }
+
+    #[test]
+    fn mouse_press_and_release_are_all_or_nothing_at_capacity() {
+        let press = b"\x1b[<0;10;5M".to_vec();
+        let release = b"\x1b[<0;10;5m".to_vec();
+        assert!(
+            release.len() <= MOUSE_RELEASE_RESERVE_BYTES,
+            "release 编码 {} B 超过预留 {MOUSE_RELEASE_RESERVE_BYTES} B",
+            release.len()
+        );
+
+        // (a) 正好放得下 press + release 预留：两者都必须成功，而且中间的
+        // 普通输入不能偷走 release 的预留空间。
+        let queue = WriteQueue::new();
+        let fill = WRITE_BACKLOG_BYTES - MOUSE_RELEASE_RESERVE_BYTES - press.len();
+        assert!(queue.push(vec![1u8; fill]).is_ok());
+        assert!(queue.push_mouse_press(press.clone()).is_ok());
+        assert!(matches!(queue.push(vec![2u8]), Err(PushError::Full)));
+        assert!(queue.push_mouse_release(release.clone(), true).is_ok());
+        assert_eq!(queue.pop().unwrap().len(), fill);
+        assert_eq!(queue.pop().unwrap(), press);
+        assert_eq!(queue.pop().unwrap(), release);
+        queue.close();
+        assert!(queue.pop().is_none());
+
+        // (b) 连 press 都放不下：press/release 必须同时失败，不能只进 release。
+        let queue = WriteQueue::new();
+        assert!(queue.push(vec![3u8; WRITE_BACKLOG_BYTES]).is_ok());
+        assert!(matches!(queue.push_mouse_press(press.clone()), Err(PushError::Full)));
+        assert!(matches!(
+            queue.push_mouse_release(release.clone(), true),
+            Err(PushError::Full)
+        ));
+        assert!(matches!(
+            queue.push_mouse_release(release.clone(), false),
+            Err(PushError::Full)
+        ));
+        assert_eq!(queue.pop().unwrap().len(), WRITE_BACKLOG_BYTES);
+        queue.close();
+        assert!(queue.pop().is_none(), "press 失败后不允许出现孤立 release");
+    }
+
+    #[test]
+    fn mouse_release_without_enqueued_press_is_dropped_even_after_drain() {
+        let press = b"\x1b[<0;10;5M".to_vec();
+        let release = b"\x1b[<0;10;5m".to_vec();
+
+        let queue = WriteQueue::new();
+        assert!(queue.push(vec![4u8; WRITE_BACKLOG_BYTES]).is_ok());
+        assert!(matches!(queue.push_mouse_press(press), Err(PushError::Full)));
+        // writer 随后把整块字节写完、腾出了空间；press 已被拒，release
+        // 仍不能单独进队列，否则应用会收到没有按下的抬起事件。
+        assert_eq!(queue.pop().unwrap().len(), WRITE_BACKLOG_BYTES);
+        assert!(matches!(
+            queue.push_mouse_release(release.clone(), true),
+            Err(PushError::Full)
+        ));
+        assert!(matches!(
+            queue.push_mouse_release(release, false),
+            Err(PushError::Full)
+        ));
+        queue.close();
+        assert!(queue.pop().is_none(), "press 被拒后不允许出现孤立 release");
+    }
+
+    #[test]
+    fn mouse_drag_full_queue_does_not_leave_orphan_release() {
+        let press = b"\x1b[<0;3;3M".to_vec();
+        let motion = b"\x1b[<32;4;4M".to_vec();
+        let release = b"\x1b[<0;4;4m".to_vec();
+
+        let queue = WriteQueue::new();
+        let fill = WRITE_BACKLOG_BYTES - MOUSE_RELEASE_RESERVE_BYTES - press.len();
+        assert!(queue.push(vec![7u8; fill]).is_ok());
+        assert!(queue.push_mouse_press(press.clone()).is_ok());
+        // 满队列时拖拽 motion 可以丢（下一次 motion 会带最新位置）；
+        // release 必须占用 press 预留的槽位，否则 TUI 会卡在拖拽态。
+        assert!(matches!(queue.push(motion), Err(PushError::Full)));
+        assert!(queue.push_mouse_release(release.clone(), true).is_ok());
+
+        assert_eq!(queue.pop().unwrap().len(), fill);
+        assert_eq!(queue.pop().unwrap(), press);
+        assert_eq!(queue.pop().unwrap(), release);
+        queue.close();
+        assert!(queue.pop().is_none(), "release 之后不允许再有孤立鼠标块");
+    }
+
+    #[test]
+    fn mouse_release_reservation_covers_every_protocol_encoding() {
+        use crate::mouse::{MouseButton, Modifiers};
+        use alacritty_terminal::term::TermMode;
+        let modes = [
+            TermMode::MOUSE_REPORT_CLICK,
+            TermMode::MOUSE_REPORT_CLICK | TermMode::SGR_MOUSE,
+            TermMode::MOUSE_REPORT_CLICK | TermMode::UTF8_MOUSE,
+            TermMode::MOUSE_DRAG | TermMode::MOUSE_MOTION | TermMode::SGR_MOUSE,
+        ];
+        for button in [MouseButton::Left, MouseButton::Middle, MouseButton::Right] {
+            let ev = MouseEvent {
+                button,
+                action: MouseAction::Release,
+                line: u16::MAX,
+                col: u16::MAX,
+                modifiers: Modifiers { shift: true, alt: true, ctrl: true },
+            };
+            for mode in modes {
+                let encoded = mouse::encode(ev, mode).expect("release 必须能编码");
+                assert!(
+                    encoded.len() <= MOUSE_RELEASE_RESERVE_BYTES,
+                    "{button:?} {mode:?} 的 release 编码 {} B 超过预留 {MOUSE_RELEASE_RESERVE_BYTES} B",
+                    encoded.len()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn dropping_pane_handle_stops_blocked_plugin_read_within_1s() {
+        use crate::transport::{
+            PaneTransport, TransportControl, TransportHalves, TransportShutdown,
+        };
+        use std::os::unix::net::UnixStream;
+
+        struct BlockingReader {
+            stream: UnixStream,
+            entered: Arc<AtomicBool>,
+            exited: Arc<AtomicBool>,
+        }
+
+        impl Read for BlockingReader {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                self.entered.store(true, Ordering::SeqCst);
+                let n = self.stream.read(buf)?;
+                self.exited.store(true, Ordering::SeqCst);
+                Ok(n)
+            }
+        }
+
+        struct NoopControl;
+        impl TransportControl for NoopControl {
+            fn resize(&mut self, _cols: u16, _rows: u16) {}
+            fn close(&mut self) {}
+        }
+
+        struct BlockingTransport {
+            reader: Option<BlockingReader>,
+            writer: Option<UnixStream>,
+            shutdown_stream: UnixStream,
+        }
+
+        impl PaneTransport for BlockingTransport {
+            fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
+                unreachable!("pane 只用 into_halves 后的 reader")
+            }
+            fn write_all(&mut self, _data: &[u8]) -> std::io::Result<()> {
+                unreachable!("pane 只用 into_halves 后的 writer")
+            }
+            fn resize(&mut self, _cols: u16, _rows: u16) {}
+            fn close(&mut self) {}
+            fn into_halves(mut self: Box<Self>) -> std::io::Result<TransportHalves> {
+                let reader = self.reader.take().expect("reader");
+                let writer = self.writer.take().expect("writer");
+                let shutdown_stream = self.shutdown_stream.try_clone()?;
+                Ok(TransportHalves {
+                    reader: Box::new(reader),
+                    writer: Box::new(writer),
+                    // 故意让 control.close 成为空操作：只有 PaneHandle::drop
+                    // 直接调用 shutdown 才能唤醒读线程，验证生产接线。
+                    control: Box::new(NoopControl),
+                    shutdown: TransportShutdown::new(move || {
+                        let _ = shutdown_stream.shutdown(std::net::Shutdown::Both);
+                    }),
+                })
+            }
+        }
+
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        let entered = Arc::new(AtomicBool::new(false));
+        let exited = Arc::new(AtomicBool::new(false));
+        let transport = BlockingTransport {
+            reader: Some(BlockingReader {
+                stream: ours.try_clone().unwrap(),
+                entered: entered.clone(),
+                exited: exited.clone(),
+            }),
+            writer: Some(ours.try_clone().unwrap()),
+            shutdown_stream: ours,
+        };
+        let handle = spawn_with_transport(
+            PaneConfig::default(),
+            Backend::Plugin(Box::new(transport)),
+        )
+        .expect("spawn plugin pane");
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !entered.load(Ordering::SeqCst) {
+            assert!(Instant::now() < deadline, "reader 未在 2s 内进入阻塞 read");
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        drop(handle);
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !exited.load(Ordering::SeqCst) {
+            assert!(
+                Instant::now() < deadline,
+                "PaneHandle drop 后 1s 内阻塞 reader 仍未退出"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+        drop(theirs);
     }
     #[test]
     fn kitty_zero_id_placements_dedup_and_cap() {

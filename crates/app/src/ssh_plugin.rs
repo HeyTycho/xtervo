@@ -30,7 +30,9 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use tervo_core::transport::{PaneTransport, TransportControl, TransportHalves};
+use tervo_core::transport::{
+    PaneTransport, TransportControl, TransportHalves, TransportShutdown,
+};
 
 use crate::profile::{Profile, ProfileStore};
 use crate::transport_io::{decode_frame, encode_frame, MAX_FRAME_PAYLOAD};
@@ -290,6 +292,15 @@ fn kill_and_wait(child: &Arc<Mutex<Child>>) {
     }
 }
 
+/// 关闭 ssh transport：标记状态、收尸、shutdown 数据 socket。
+///
+/// 控制半边 `close` 与 `TransportHalves::shutdown` 共用；必须幂等。
+fn shutdown_ssh(child: &Arc<Mutex<Child>>, socket: &UnixStream, shared: &Shared) {
+    shared.mark_closed();
+    kill_and_wait(child);
+    let _ = socket.shutdown(std::net::Shutdown::Both);
+}
+
 /// 系统 `ssh` 子进程 + 帧化 stdout 的 pane 后端。
 pub struct SshPluginTransport {
     /// `into_halves()` 会把读/写半边移交给 pane，所以这里有 `Option` 供 `take`。
@@ -480,7 +491,7 @@ impl PaneTransport for SshPluginTransport {
             io::Error::new(io::ErrorKind::BrokenPipe, "transport 已拆分")
         })?;
         let control_socket = match reader.stream.try_clone() {
-            Ok(socket) => socket,
+            Ok(socket) => Arc::new(socket),
             Err(e) => {
                 // 放回半边，让 `this` 的 Drop 仍然收尸并 shutdown。
                 this.reader = Some(reader);
@@ -488,8 +499,11 @@ impl PaneTransport for SshPluginTransport {
                 return Err(e);
             },
         };
-        // 从此刻起控制半边负责 kill；`this` 的 Drop 不能重复收尸。
+        // 从此刻起控制半边/独立 shutdown 负责 kill；`this` 的 Drop 不能重复收尸。
         this.owns_child = false;
+        let shutdown_socket = control_socket.clone();
+        let shutdown_child = this.child.clone();
+        let shutdown_shared = this.shared.clone();
         Ok(TransportHalves {
             reader: Box::new(reader),
             writer: Box::new(stdin),
@@ -499,6 +513,11 @@ impl PaneTransport for SshPluginTransport {
                 shared: this.shared.clone(),
                 resize: this.resize.clone(),
             }),
+            // PaneHandle::drop 直接调用：即使 actor 来不及处理 Ctrl::Shutdown，
+            // 也能 shutdown socket / 杀掉 ssh，唤醒阻塞中的 FrameReader。
+            shutdown: TransportShutdown::new(move || {
+                shutdown_ssh(&shutdown_child, &shutdown_socket, &shutdown_shared);
+            }),
         })
     }
 }
@@ -506,16 +525,14 @@ impl PaneTransport for SshPluginTransport {
 /// transport 的控制半边：resize 记录 + close 杀 ssh。
 struct SshControl {
     child: Arc<Mutex<Child>>,
-    socket: UnixStream,
+    socket: Arc<UnixStream>,
     shared: Arc<Shared>,
     resize: Arc<AtomicU32>,
 }
 
 impl SshControl {
     fn close_inner(&mut self) {
-        self.shared.mark_closed();
-        kill_and_wait(&self.child);
-        let _ = self.socket.shutdown(std::net::Shutdown::Both);
+        shutdown_ssh(&self.child, &self.socket, &self.shared);
     }
 }
 

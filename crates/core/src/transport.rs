@@ -51,11 +51,34 @@ pub trait TransportControl: Send {
     fn close(&mut self);
 }
 
+/// `TransportHalves` 的独立关闭句柄。
+///
+/// `into_halves` 之后，pane 的常规控制面在 actor 手里；但 `PaneHandle::drop`
+/// 可能来不及把 `Ctrl::Shutdown` 投递给 actor（actor 忙 / ctrl 队列满）。
+/// 这个句柄不经过 actor，直接关闭底层通道，唤醒阻塞在 `read` 的读线程。
+/// 实现必须幂等，且可以从任意线程调用。
+pub struct TransportShutdown {
+    shutdown: Box<dyn Fn() + Send + Sync>,
+}
+
+impl TransportShutdown {
+    pub fn new(shutdown: impl Fn() + Send + Sync + 'static) -> Self {
+        Self { shutdown: Box::new(shutdown) }
+    }
+
+    /// 关闭底层通道。重复调用必须安全。
+    pub fn shutdown(&self) {
+        (self.shutdown)();
+    }
+}
+
 /// 一条 transport 拆开后的三个半边。
 pub struct TransportHalves {
     pub reader: Box<dyn std::io::Read + Send>,
     pub writer: Box<dyn std::io::Write + Send>,
     pub control: Box<dyn TransportControl + Send>,
+    /// 生产路径的关闭句柄：`PaneHandle::drop` 直接调用，不依赖 actor。
+    pub shutdown: TransportShutdown,
 }
 
 /// POC 用参考实现：一条 `socketpair` 的一端。
@@ -106,7 +129,7 @@ fn unpack_resize(bits: u32) -> (u16, u16) {
 
 /// `SocketPairTransport` 拆开后的控制半边：resize 记到共享槽，close 关 socket。
 struct SocketPairControl {
-    stream: UnixStream,
+    stream: Arc<UnixStream>,
     size: Arc<AtomicBool>,
     last_resize: Arc<AtomicU32>,
 }
@@ -143,14 +166,19 @@ impl PaneTransport for SocketPairTransport {
     }
 
     fn into_halves(self: Box<Self>) -> io::Result<TransportHalves> {
-        // 读半边与写半边各持一个 fd；控制半边再持一个用于 shutdown。
+        // 读半边与写半边各持一个 fd；控制半边与独立 shutdown 句柄共享
+        // 第三个 fd（Arc），不额外多占一个 fd。
         let SocketPairTransport { stream, size, last_resize } = *self;
         let reader = stream.try_clone()?;
-        let control_stream = stream.try_clone()?;
+        let control_stream = Arc::new(stream.try_clone()?);
+        let shutdown_stream = control_stream.clone();
         Ok(TransportHalves {
             reader: Box::new(reader),
             writer: Box::new(stream),
             control: Box::new(SocketPairControl { stream: control_stream, size, last_resize }),
+            shutdown: TransportShutdown::new(move || {
+                let _ = shutdown_stream.shutdown(std::net::Shutdown::Both);
+            }),
         })
     }
 }
@@ -160,33 +188,34 @@ type ShutdownFn = Arc<dyn Fn() + Send + Sync>;
 
 /// 读写分离的实现：PTY 的读端/写端本来就是两条线程各持一个句柄，
 /// 插件 socket 也常常是「一读一写」。泛型化后 PTY 与插件可以共用同一条 trait。
+///
+/// `shutdown` 在构造时必须提供：拆开后 reader 已被移交给读线程，只有关闭
+/// 底层通道才能真正唤醒阻塞在 `read` 上的线程，不能退化成“只置标志”。
 pub struct SplitTransport<R, W> {
     reader: R,
     writer: W,
     /// 打包的 (cols, rows)。
     size: Arc<AtomicU32>,
     closed: Arc<AtomicBool>,
-    /// `close()` 时调用；不注册时只能置标志，无法唤醒已阻塞的读。
-    shutdown: Option<ShutdownFn>,
+    /// `close()` / `TransportHalves::shutdown` 时调用（典型实现：对底层
+    /// socket 做 `shutdown(Both)`）。必须幂等。
+    shutdown: ShutdownFn,
 }
 
 impl<R, W> SplitTransport<R, W> {
-    pub fn new(reader: R, writer: W) -> Self {
+    /// `shutdown` 必须真的关闭底层读通道（不能只置标志）。
+    pub fn new(
+        reader: R,
+        writer: W,
+        shutdown: impl Fn() + Send + Sync + 'static,
+    ) -> Self {
         Self {
             reader,
             writer,
             size: Arc::new(AtomicU32::new(0)),
             closed: Arc::new(AtomicBool::new(false)),
-            shutdown: None,
+            shutdown: Arc::new(shutdown),
         }
-    }
-
-    /// 注册关闭句柄：`close()` 会调用它（典型实现：对底层 socket 做
-    /// `shutdown(Both)`）。没有它时 `close()` 只能置 `closed` 标志，
-    /// 已经阻塞在 `read` 上的线程不会被唤醒。
-    pub fn with_shutdown(mut self, shutdown: impl Fn() + Send + Sync + 'static) -> Self {
-        self.shutdown = Some(Arc::new(shutdown));
-        self
     }
 
     /// 最近一次 `resize` 的 (cols, rows)。
@@ -200,9 +229,7 @@ impl<R, W> SplitTransport<R, W> {
 
     fn close_inner(&self) {
         self.closed.store(true, Ordering::Relaxed);
-        if let Some(shutdown) = &self.shutdown {
-            shutdown();
-        }
+        (self.shutdown)();
     }
 }
 
@@ -210,7 +237,7 @@ impl<R, W> SplitTransport<R, W> {
 struct SplitControl {
     size: Arc<AtomicU32>,
     closed: Arc<AtomicBool>,
-    shutdown: Option<ShutdownFn>,
+    shutdown: ShutdownFn,
 }
 
 impl TransportControl for SplitControl {
@@ -220,9 +247,7 @@ impl TransportControl for SplitControl {
 
     fn close(&mut self) {
         self.closed.store(true, Ordering::Relaxed);
-        if let Some(shutdown) = &self.shutdown {
-            shutdown();
-        }
+        (self.shutdown)();
     }
 }
 
@@ -247,10 +272,16 @@ impl<R: std::io::Read + Send + 'static, W: std::io::Write + Send + 'static> Pane
 
     fn into_halves(self: Box<Self>) -> io::Result<TransportHalves> {
         let SplitTransport { reader, writer, size, closed, shutdown } = *self;
+        let control_shutdown = shutdown.clone();
         Ok(TransportHalves {
             reader: Box::new(reader),
             writer: Box::new(writer),
-            control: Box::new(SplitControl { size, closed, shutdown }),
+            control: Box::new(SplitControl {
+                size,
+                closed,
+                shutdown: control_shutdown,
+            }),
+            shutdown: TransportShutdown::new(move || shutdown()),
         })
     }
 }
@@ -293,7 +324,10 @@ mod tests {
     #[test]
     fn split_transport_works_with_independent_read_and_write_halves() {
         let (ours, theirs) = UnixStream::pair().unwrap();
-        let mut t = SplitTransport::new(ours.try_clone().unwrap(), ours);
+        let wake = ours.try_clone().unwrap();
+        let mut t = SplitTransport::new(ours.try_clone().unwrap(), ours, move || {
+            let _ = wake.shutdown(std::net::Shutdown::Both);
+        });
         assert!(!t.is_closed());
         assert_eq!(t.size(), (0, 0));
 
@@ -319,11 +353,11 @@ mod tests {
     fn split_control_close_wakes_blocked_read() {
         let (ours, theirs) = UnixStream::pair().unwrap();
         let wake = ours.try_clone().unwrap();
-        let t = SplitTransport::new(ours.try_clone().unwrap(), ours)
-            .with_shutdown(move || {
-                let _ = wake.shutdown(std::net::Shutdown::Both);
-            });
-        let TransportHalves { reader, writer, mut control } = Box::new(t).into_halves().unwrap();
+        let t = SplitTransport::new(ours.try_clone().unwrap(), ours, move || {
+            let _ = wake.shutdown(std::net::Shutdown::Both);
+        });
+        let TransportHalves { reader, writer, mut control, shutdown: _ } =
+            Box::new(t).into_halves().unwrap();
 
         let (tx, rx) = std::sync::mpsc::channel();
         let reader_thread = std::thread::spawn(move || {
@@ -343,6 +377,41 @@ mod tests {
             Ok(Ok(0)) | Ok(Err(_)) => {},
             Ok(Ok(n)) => panic!("阻塞读意外返回 {n} 字节"),
             Err(e) => panic!("control.close() 没有唤醒阻塞中的 read（1s 超时）: {e}"),
+        }
+        reader_thread.join().expect("reader thread");
+    }
+
+    #[test]
+    fn transport_halves_shutdown_wakes_blocked_read() {
+        // 生产路径：`PaneHandle::drop` 持有的是 `TransportHalves::shutdown`，
+        // 不经过 actor / SplitControl，因此这里只调用它、不调用 control.close。
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        let wake = ours.try_clone().unwrap();
+        let t = SplitTransport::new(ours.try_clone().unwrap(), ours, move || {
+            let _ = wake.shutdown(std::net::Shutdown::Both);
+        });
+        let TransportHalves { reader, writer, control, shutdown } =
+            Box::new(t).into_halves().unwrap();
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let reader_thread = std::thread::spawn(move || {
+            let mut reader = reader;
+            let mut buf = [0u8; 16];
+            let _ = tx.send(reader.read(&mut buf));
+        });
+
+        // 读线程必须已经进入阻塞 read；保持 writer/control/对端存活，
+        // 排除“关 fd 导致的 EOF”这种假通过。
+        std::thread::sleep(Duration::from_millis(100));
+        shutdown.shutdown();
+        let result = rx.recv_timeout(Duration::from_secs(1));
+        drop(writer);
+        drop(control);
+        drop(theirs);
+        match result {
+            Ok(Ok(0)) | Ok(Err(_)) => {},
+            Ok(Ok(n)) => panic!("阻塞读意外返回 {n} 字节"),
+            Err(e) => panic!("TransportHalves::shutdown 没有唤醒阻塞 read（1s 超时）: {e}"),
         }
         reader_thread.join().expect("reader thread");
     }

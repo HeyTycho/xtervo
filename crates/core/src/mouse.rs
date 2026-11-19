@@ -54,6 +54,18 @@ impl MouseButton {
     fn is_wheel(self) -> bool {
         matches!(self, Self::WheelUp | Self::WheelDown)
     }
+
+    /// pane 内部 per-button press/release 状态表的下标。
+    pub(crate) fn slot(self) -> usize {
+        match self {
+            Self::Left => 0,
+            Self::Middle => 1,
+            Self::Right => 2,
+            Self::WheelUp => 3,
+            Self::WheelDown => 4,
+            Self::None => 5,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -71,6 +83,16 @@ pub struct MouseEvent {
     pub line: u16,
     pub col: u16,
     pub modifiers: Modifiers,
+}
+
+impl MouseEvent {
+    /// 这条事件之后是否会跟随一个配对的 release。
+    ///
+    /// 滚轮只有按下语义（[`encode`] 会丢弃 release），移动/悬停也不会产生
+    /// 配对 release；只有普通按键的 press 需要为 release 预留写队列空间。
+    pub fn expects_release(self) -> bool {
+        self.action == MouseAction::Press && !self.button.is_wheel()
+    }
 }
 
 /// 终端是否要求接收鼠标事件（1000/1002/1003 任一开启）。
