@@ -148,9 +148,8 @@ fn random_spec(rng: &mut Lcg, id: u64) -> ImgSpec {
 
 #[test]
 fn partial_image_sequence_matches_full_redraw() {
-    let Some(fonts) = FontSet::load(15.0) else {
-        return;
-    };
+    let fonts = FontSet::load(15.0)
+        .expect("test fonts unavailable; install JetBrains Mono/DejaVu Sans Mono to run pixel tests");
     let fonts = Rc::new(fonts);
     let theme = Theme::default();
     for seed in 0..96u64 {
@@ -248,9 +247,8 @@ fn partial_image_sequence_matches_full_redraw() {
 
 #[test]
 fn negative_row_image_is_cleared_when_it_scrolls_out() {
-    let Some(fonts) = FontSet::load(15.0) else {
-        return;
-    };
+    let fonts = FontSet::load(15.0)
+        .expect("test fonts unavailable; install JetBrains Mono/DejaVu Sans Mono to run pixel tests");
     let fonts = Rc::new(fonts);
     let theme = Theme::default();
     let mut renderer = Renderer::new(fonts.clone(), COLS, ROWS, theme.bg(), theme.cursor(), 1.0);
@@ -295,9 +293,8 @@ fn negative_row_image_is_cleared_when_it_scrolls_out() {
 /// 不在 row_span 内，滚出视口后不会被清理。
 #[test]
 fn clipped_top_image_lands_on_its_real_rows() {
-    let Some(fonts) = FontSet::load(15.0) else {
-        return;
-    };
+    let fonts = FontSet::load(15.0)
+        .expect("test fonts unavailable; install JetBrains Mono/DejaVu Sans Mono to run pixel tests");
     let fonts = Rc::new(fonts);
     let theme = Theme::default();
     let mut renderer = Renderer::new(fonts, 6, 6, theme.bg(), theme.cursor(), 1.0);

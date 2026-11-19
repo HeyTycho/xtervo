@@ -126,7 +126,8 @@ fn assert_matches_fresh_redraw(
 
 #[test]
 fn single_row_damage_redraws_only_one_row_and_keeps_others() {
-    let Some(fonts) = fonts() else { return };
+    let fonts = fonts()
+        .expect("test fonts unavailable; install JetBrains Mono/DejaVu Sans Mono to run damage tests");
     let mut renderer = renderer(&fonts, COLS, ROWS);
     let mut frame = blank(COLS, ROWS);
 
@@ -162,7 +163,8 @@ fn single_row_damage_redraws_only_one_row_and_keeps_others() {
 
 #[test]
 fn typing_burst_never_grows_full_redraws() {
-    let Some(fonts) = fonts() else { return };
+    let fonts = fonts()
+        .expect("test fonts unavailable; install JetBrains Mono/DejaVu Sans Mono to run damage tests");
     let mut renderer = renderer(&fonts, COLS, ROWS);
     let mut frame = blank(COLS, ROWS);
     frame.full = true;
@@ -182,7 +184,8 @@ fn typing_burst_never_grows_full_redraws() {
 
 #[test]
 fn full_frame_draws_every_row() {
-    let Some(fonts) = fonts() else { return };
+    let fonts = fonts()
+        .expect("test fonts unavailable; install JetBrains Mono/DejaVu Sans Mono to run damage tests");
     let mut renderer = renderer(&fonts, COLS, ROWS);
     let mut frame = blank(COLS, ROWS);
     frame.full = true;
@@ -200,7 +203,8 @@ fn full_frame_draws_every_row() {
 fn all_rows_damage_takes_full_path_even_without_frame_full() {
     // 普通屏幕滚动时 alacritty 给所有行 damage、frame.full=false；
     // 渲染器应识别为整屏，而不是逐行 blend 后再复制半屏。
-    let Some(fonts) = fonts() else { return };
+    let fonts = fonts()
+        .expect("test fonts unavailable; install JetBrains Mono/DejaVu Sans Mono to run damage tests");
     let mut renderer = renderer(&fonts, COLS, ROWS);
     let mut frame = blank(COLS, ROWS);
     frame.full = true;
@@ -216,7 +220,8 @@ fn all_rows_damage_takes_full_path_even_without_frame_full() {
 
 #[test]
 fn theme_change_forces_full_and_uses_new_background() {
-    let Some(fonts) = fonts() else { return };
+    let fonts = fonts()
+        .expect("test fonts unavailable; install JetBrains Mono/DejaVu Sans Mono to run damage tests");
     let mut renderer = renderer(&fonts, COLS, ROWS);
     let mut frame = blank(COLS, ROWS);
     frame.full = true;
@@ -242,7 +247,8 @@ fn theme_change_forces_full_and_uses_new_background() {
 
 #[test]
 fn resize_forces_full_and_allocates_new_frame() {
-    let Some(fonts) = fonts() else { return };
+    let fonts = fonts()
+        .expect("test fonts unavailable; install JetBrains Mono/DejaVu Sans Mono to run damage tests");
     let mut renderer = renderer(&fonts, COLS, ROWS);
     let mut frame = blank(COLS, ROWS);
     frame.full = true;
@@ -261,7 +267,8 @@ fn resize_forces_full_and_allocates_new_frame() {
 
 #[test]
 fn selection_change_redraws_only_old_and_new_spans() {
-    let Some(fonts) = fonts() else { return };
+    let fonts = fonts()
+        .expect("test fonts unavailable; install JetBrains Mono/DejaVu Sans Mono to run damage tests");
     let mut renderer = renderer(&fonts, COLS, ROWS);
     let mut frame = blank(COLS, ROWS);
     frame.full = true;
@@ -291,7 +298,8 @@ fn selection_change_redraws_only_old_and_new_spans() {
 
 #[test]
 fn search_change_redraws_highlighted_rows() {
-    let Some(fonts) = fonts() else { return };
+    let fonts = fonts()
+        .expect("test fonts unavailable; install JetBrains Mono/DejaVu Sans Mono to run damage tests");
     let mut renderer = renderer(&fonts, COLS, ROWS);
     let mut frame = blank(COLS, ROWS);
     frame.full = true;
@@ -323,7 +331,8 @@ fn search_change_redraws_highlighted_rows() {
 
 #[test]
 fn cursor_overlay_move_does_not_touch_frame_pixels() {
-    let Some(fonts) = fonts() else { return };
+    let fonts = fonts()
+        .expect("test fonts unavailable; install JetBrains Mono/DejaVu Sans Mono to run damage tests");
     let mut renderer = renderer(&fonts, COLS, ROWS);
     let mut frame = blank(COLS, ROWS);
     frame.cursor = CursorState {
@@ -352,7 +361,8 @@ fn cursor_overlay_move_does_not_touch_frame_pixels() {
 
 #[test]
 fn frame_cursor_path_erases_old_cursor_row_on_move() {
-    let Some(fonts) = fonts() else { return };
+    let fonts = fonts()
+        .expect("test fonts unavailable; install JetBrains Mono/DejaVu Sans Mono to run damage tests");
     let mut renderer = renderer(&fonts, COLS, ROWS);
     let mut frame = blank(COLS, ROWS);
     let cursor_color = theme().cursor();
@@ -393,7 +403,8 @@ fn frame_cursor_path_erases_old_cursor_row_on_move() {
 
 #[test]
 fn incremental_sequence_matches_fresh_full_redraw_pixel_for_pixel() {
-    let Some(fonts) = fonts() else { return };
+    let fonts = fonts()
+        .expect("test fonts unavailable; install JetBrains Mono/DejaVu Sans Mono to run damage tests");
     let mut renderer = renderer(&fonts, COLS, ROWS);
     let mut frame = blank(COLS, ROWS);
     // 第 0 行放一些基线内容，后面逐步制造 damage。
@@ -481,7 +492,8 @@ fn image_partially_above_viewport_does_not_write_outside_its_rows() {
     use std::sync::Arc;
     use tervo_core::InlineImage;
 
-    let Some(fonts) = fonts() else { return };
+    let fonts = fonts()
+        .expect("test fonts unavailable; install JetBrains Mono/DejaVu Sans Mono to run damage tests");
     let mut renderer = renderer(&fonts, COLS, ROWS);
     let mut frame = blank(COLS, ROWS);
     frame.full = true;
@@ -514,7 +526,8 @@ fn inline_image_scroll_removal_matches_fresh_full_redraw() {
     use std::sync::Arc;
     use tervo_core::{ImageCrop, ImagePlacementMeta, InlineImage};
 
-    let Some(fonts) = fonts() else { return };
+    let fonts = fonts()
+        .expect("test fonts unavailable; install JetBrains Mono/DejaVu Sans Mono to run damage tests");
     let mut renderer = renderer(&fonts, COLS, ROWS);
     let mut frame = blank(COLS, ROWS);
     for row in 0..ROWS {
@@ -567,7 +580,8 @@ fn inline_image_scroll_removal_matches_fresh_full_redraw() {
 fn tall_glyphs_do_not_leave_stale_pixels_in_neighbor_rows() {
     // 字形位图只做水平裁剪；这里用一批可能向上/下伸出的字符验证：只重绘本行
     // 也不会在相邻行留下上一帧的墨迹（与整屏参考逐像素一致）。
-    let Some(fonts) = fonts() else { return };
+    let fonts = fonts()
+        .expect("test fonts unavailable; install JetBrains Mono/DejaVu Sans Mono to run damage tests");
     let mut renderer = renderer(&fonts, 8, 5);
     let mut frame = blank(8, 5);
     for col in 0..8 {
@@ -596,7 +610,8 @@ fn tall_glyphs_do_not_leave_stale_pixels_in_neighbor_rows() {
 fn partial_redraw_does_not_detach_shared_buffers() {
     // 模拟 app：上一帧的 Image 持有 front buffer，直到本帧 draw 之后才被替换。
     // 只要轮换/复制逻辑正确，写另一块 buffer 不应触发整屏 CoW 拷贝。
-    let Some(fonts) = fonts() else { return };
+    let fonts = fonts()
+        .expect("test fonts unavailable; install JetBrains Mono/DejaVu Sans Mono to run damage tests");
     let mut renderer = renderer(&fonts, COLS, ROWS);
     let mut frame = blank(COLS, ROWS);
     frame.full = true;
@@ -678,7 +693,8 @@ fn two_frame_hold_grows_pool_instead_of_cow_every_rotation() {
     // 2 块缓冲轮换回上上帧那块时必然被共享，`make_mut_bytes` 只能整块 CoW——
     // 旧实现 24 帧里 23 帧整块 CoW。这里要求：观测到之后扩池，之后每帧退化为
     // 「1 行同步 + 1 行栅格化」，且像素与整屏参考逐像素一致。
-    let Some(fonts) = fonts() else { return };
+    let fonts = fonts()
+        .expect("test fonts unavailable; install JetBrains Mono/DejaVu Sans Mono to run damage tests");
     let mut renderer = renderer(&fonts, COLS, ROWS);
     let mut frame = blank(COLS, ROWS);
     for row in 0..ROWS {
@@ -700,7 +716,8 @@ fn two_frame_hold_grows_pool_instead_of_cow_every_rotation() {
 
 #[test]
 fn three_frame_hold_grows_pool_to_four() {
-    let Some(fonts) = fonts() else { return };
+    let fonts = fonts()
+        .expect("test fonts unavailable; install JetBrains Mono/DejaVu Sans Mono to run damage tests");
     let mut renderer = renderer(&fonts, COLS, ROWS);
     let mut frame = blank(COLS, ROWS);
     for row in 0..ROWS {
@@ -720,7 +737,8 @@ fn three_frame_hold_grows_pool_to_four() {
 fn hold_deeper_than_pool_cap_stays_pixel_correct() {
     // 超过池上限（4 块 → 只能容忍 3 帧）时允许退回整块 CoW，但**不能花屏**：
     // 逐像素仍必须等于整屏参考，且 detach 要计数暴露而不是静默。
-    let Some(fonts) = fonts() else { return };
+    let fonts = fonts()
+        .expect("test fonts unavailable; install JetBrains Mono/DejaVu Sans Mono to run damage tests");
     let mut renderer = renderer(&fonts, COLS, ROWS);
     let mut frame = blank(COLS, ROWS);
     for row in 0..ROWS {
@@ -740,7 +758,8 @@ fn hold_deeper_than_pool_cap_stays_pixel_correct() {
 fn theme_change_after_growth_still_matches_fresh_redraw() {
     // 扩池后整屏重绘（主题/滚动历史）要重置历史：其它块整体过期，轮换时
     // 必须整块同步，否则会留下上一主题的旧行。
-    let Some(fonts) = fonts() else { return };
+    let fonts = fonts()
+        .expect("test fonts unavailable; install JetBrains Mono/DejaVu Sans Mono to run damage tests");
     let mut renderer = renderer(&fonts, COLS, ROWS);
     let mut frame = blank(COLS, ROWS);
     for row in 0..ROWS {
@@ -768,7 +787,8 @@ fn theme_change_after_growth_still_matches_fresh_redraw() {
 fn resize_keeps_learned_pool_depth() {
     // 学到「渲染端持有 2 帧」之后 resize：新池直接按深度+1 分配，不该再重新
     // 爬坡（否则每次拖窗口都会在 resize 后付一次整块 CoW）。
-    let Some(fonts) = fonts() else { return };
+    let fonts = fonts()
+        .expect("test fonts unavailable; install JetBrains Mono/DejaVu Sans Mono to run damage tests");
     let mut renderer = renderer(&fonts, COLS, ROWS);
     let mut frame = blank(COLS, ROWS);
     for row in 0..ROWS {
@@ -977,7 +997,8 @@ fn random_damage_sequence_with_frame_hold_matches_fresh_redraw() {
     use std::sync::Arc;
     use tervo_core::InlineImage;
 
-    let Some(fonts) = fonts() else { return };
+    let fonts = fonts()
+        .expect("test fonts unavailable; install JetBrains Mono/DejaVu Sans Mono to run damage tests");
     let mut renderer = renderer(&fonts, COLS, ROWS);
     let mut frame = blank(COLS, ROWS);
     for row in 0..ROWS {

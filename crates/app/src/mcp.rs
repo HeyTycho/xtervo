@@ -230,6 +230,8 @@ pub struct McpRuntime {
     permissions: RwLock<McpPermissions>,
     token: Mutex<Option<String>>,
     token_path: PathBuf,
+    /// 上次看到的 token 文件 mtime；变化时按需重读（运行中替换/收紧权限）。
+    token_mtime: Mutex<Option<std::time::SystemTime>>,
     socket_path: PathBuf,
     env_token: bool,
     env_write: bool,
@@ -260,10 +262,14 @@ impl McpRuntime {
             },
             None => None,
         };
+        let token_mtime = fs::metadata(&token_path)
+            .ok()
+            .and_then(|meta| meta.modified().ok());
         let runtime = Self {
             permissions: RwLock::new(permissions),
             token: Mutex::new(token),
             token_path,
+            token_mtime: Mutex::new(token_mtime),
             socket_path,
             env_token: env_token.is_some(),
             env_write,
@@ -330,6 +336,10 @@ impl McpRuntime {
                     if old.as_deref() != Some(token.as_str()) {
                         eprintln!("[mcp] state token 已从磁盘重新加载");
                     }
+                    *self.token_mtime.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                        fs::metadata(&self.token_path)
+                            .ok()
+                            .and_then(|meta| meta.modified().ok());
                 },
                 Err(error) => {
                     let message = format!("state token 不可用: {error}");
@@ -341,6 +351,9 @@ impl McpRuntime {
     }
 
     pub fn token(&self) -> Option<String> {
+        if !self.env_token {
+            refresh_state_token(&self.token_path, &self.token_mtime, &self.token);
+        }
         self.token
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -566,6 +579,32 @@ pub fn read_token_file(path: &Path) -> Option<String> {
     let bytes = fs::read(path).ok()?;
     let text = String::from_utf8(bytes).ok()?;
     valid_token(text.trim())
+}
+
+/// 运行中 token 文件被替换/删除时重读；返回是否发生变化。
+fn refresh_state_token(
+    path: &Path,
+    seen: &std::sync::Mutex<Option<std::time::SystemTime>>,
+    token: &std::sync::Mutex<Option<String>>,
+) -> bool {
+    let mtime = fs::metadata(path).ok().and_then(|meta| meta.modified().ok());
+    {
+        let guard = seen.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if *guard == mtime {
+            return false;
+        }
+    }
+    // token 文件被删除 = 撤销；存在但无效 = None。不要继续用旧 token。
+    let next = read_token_file(path);
+    let mut guard = token.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let changed = *guard != next;
+    *guard = next;
+    let mut seen_guard = seen.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    *seen_guard = mtime;
+    if changed {
+        eprintln!("[mcp] state token 文件已变化，已重新加载/撤销");
+    }
+    changed
 }
 
 fn valid_token(token: &str) -> Option<String> {
@@ -986,6 +1025,34 @@ mod tests {
         ));
         // 坏配置 fail closed：无法确认 mcp_enabled=false 时不能开服务。
         assert!(!config_enabled_from_text("not valid toml"));
+    }
+
+    #[test]
+    fn runtime_token_reloads_when_file_changes() {
+        let dir = std::env::temp_dir().join(format!(
+            "tervo-mcp-token-reload-{}-{}",
+            std::process::id(),
+            crate::logging::now_ms()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("mcp.token");
+        let first = ensure_token_file(&path).unwrap();
+        let seen = std::sync::Mutex::new(
+            std::fs::metadata(&path)
+                .ok()
+                .and_then(|meta| meta.modified().ok()),
+        );
+        let token = std::sync::Mutex::new(Some(first.clone()));
+        assert!(!refresh_state_token(&path, &seen, &token));
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&path, "second-token\n").unwrap();
+        assert!(refresh_state_token(&path, &seen, &token));
+        assert_eq!(token.lock().unwrap().as_deref(), Some("second-token"));
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::remove_file(&path).unwrap();
+        assert!(refresh_state_token(&path, &seen, &token));
+        assert!(token.lock().unwrap().is_none());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
