@@ -152,3 +152,34 @@ file is re-enabled. Live-host findings:
 
 SSH/transport review found no P0/P1. WASM found no sandbox escape; vault has two
 P1 races/limits. All must be fixed before the single final install.
+
+## 8. 2026-11-19 收尾状态（安装门禁仍关闭）
+
+已合并到 main（按时间）：`bdd0548` → `8af72f7` → `8430583` → `c320a54` →
+`2d52928`（S7）→ `06929f3` → vault/plugin/SSH 三个 worktree → `cb02cf1` →
+`3886f68` → `07aba29` → `5a967a5`。
+
+已修并验证：
+- 全部 9 个 P0（含 S7 `Shared<T>` 移除 Deref/DerefMut）。
+- C1/C2/C4/C5/C7、O1/O3/O4/O6/O7、A1-A8（A8 脚本）、P1-P5、
+  M1/M3/M4/M5、T1-T6、R1/R2/R3/R5。
+- 插件/WASM/vault/SSH 复审：F1-F5、V1-V5、H1-H6 全部修复；
+  vault 25 tests、plugin_v3 88 tests、ssh 23 tests。
+- 证据：app 703 passed；core lib 172 + 集成全绿；TabBar/keyboard/pin/
+  single-instance 多窗口 e2e PASS；2m soak PASS（threads 111 / fds 121 不变）。
+
+仍 open（因此**没有**更新 ~/.local/bin/tervo）：
+- **O2**：清屏与 Kitty transmit 同批的解析器索引/存储顺序。
+- **O5**：OSC 调色板查询读取批末颜色（同批 query→set→query）。
+- **C3（plugin transport 部分）**：`PaneHandle` drop 已能停 PTY reader；
+  plugin transport 的阻塞 read 还需生产路径接 `SplitTransport::with_shutdown`。
+- **C6**：写队列满时鼠标 press/release 仍可能拆散。
+- **R4**：字形越界笔画与按 cell damage 的裁剪。
+- **R6**：缺字体时 image/damage 差分测试直接 return（假绿）。
+- **T7**：FEATURE_MATRIX 只修了明显冲突行并加过时提示，未逐条重写。
+- **M2（运行中磁盘 token 替换）**：配置热更新会重读，但无独立文件 watcher。
+- SSH plugin 首次连接现在会要求先用普通 SSH 确认主机密钥（安全取舍，
+  未接回 hostkey 对话框）。
+
+这些项完成并通过最终 e2e/2m soak 后，才执行唯一一次
+`install -m 755 target/release/tervo ~/.local/bin/tervo`。
