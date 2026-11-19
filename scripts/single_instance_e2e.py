@@ -108,9 +108,20 @@ def focused(display: str, win: str) -> None:
 
 
 def close(display: str, win: str) -> None:
-    result = run(["xwin", win, "--close"], env={**os.environ, "DISPLAY": display})
-    if result.returncode != 0:
-        fail(f"xwin --close {win} failed: {result.stderr}")
+    # X11/WM 偶发丢一次 WM_DELETE；重试并在窗口真正 unmap 后返回。
+    last = None
+    for _ in range(4):
+        result = run(["xwin", win, "--close"], env={**os.environ, "DISPLAY": display})
+        last = result
+        deadline = time.time() + 2.0
+        while time.time() < deadline:
+            if win not in x11_windows(display):
+                return
+            time.sleep(0.1)
+        time.sleep(0.15)
+    if last is not None and last.returncode != 0:
+        fail(f"xwin --close {win} failed: {last.stderr}")
+    fail(f"window {win} did not close after retries")
 
 
 def primary_pid(pid: int) -> bool:

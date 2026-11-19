@@ -133,12 +133,12 @@ MENUS_AFTER=$(grep -c '\[ui\] profile menu' "$OUT/app.log" || true)
 shot 02-plus-direct-new-tab
 
 echo "== 2. 关掉新 Tab，回到单 Tab 后打开 >_ Profile 菜单 =="
-# 启动日志已经有过 tabs=1；必须看本次 Ctrl+W 后新增的那一条。
-TABS1_BEFORE=$(grep -cF '[ws] new tab: tabs=1' "$OUT/app.log" || true)
+# 关闭 Tab 只写 close tab=N，不写 new tab: tabs=1；必须看本次新增的 close 日志。
+CLOSES_BEFORE=$(grep -cF '[ws] close tab=1' "$OUT/app.log" || true)
 key w --ctrl
 sleep 0.8
-TABS1_AFTER=$(grep -cF '[ws] new tab: tabs=1' "$OUT/app.log" || true)
-[ "$TABS1_AFTER" -gt "$TABS1_BEFORE" ] || fail "Ctrl+W 没回到 1 个 Tab（没有新增 tabs=1 日志）"
+CLOSES_AFTER=$(grep -cF '[ws] close tab=1' "$OUT/app.log" || true)
+[ "$CLOSES_AFTER" -gt "$CLOSES_BEFORE" ] || fail "Ctrl+W 没关掉新 Tab（没有新增 close tab=1 日志）"
 click 212 16 0.8
 grep -Fq '[ui] profile menu profiles=2' "$OUT/app.log" || fail ">_ 没有打开 Profile 菜单"
 shot 03-profile-menu-no-search
