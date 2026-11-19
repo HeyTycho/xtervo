@@ -55,6 +55,10 @@ PASS 基线（参考）：RSS 355→392 MiB/2m（+45 MiB/min 预热段），thre
 
 报告落在 `.logs/soak/<时间戳>/report.md`（含 samples.csv）。
 
+发布候选/严格门禁可在命令前加 `SOAK_STRICT=1`：线程增长 >32 或 FD 增长
+>64 会进 `issues`（FAIL）。默认仍只记 `warnings`；这是为了不改既有
+2m/15m PASS 阈值（AGENTS.md 的“不得改 soak 阈值”）。
+
 ## 4. 三个“环境卡点”怎么验（当前 97.5% 剩下的 3 条）
 
 这三条**代码已就绪，但需要特定桌面/硬件环境**；下面给出拿到环境后的完整验证步骤。

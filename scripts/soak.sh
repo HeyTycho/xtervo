@@ -970,10 +970,13 @@ elif rss_growth > 192:
 
 if rss_growth > 32 or (slope > 1.0 and r2 > 0.55):
     warnings.append(f"RSS 增长需关注：{rss_growth:.1f} MiB，斜率 {slope:.2f} MiB/min，R²={r2:.2f}")
+_strict = os.environ.get("SOAK_STRICT", "0") == "1"
 if thr_end - thr_base > 32:
-    warnings.append(f"线程数增长 {int(thr_end - thr_base)}（{int(thr_base)} -> {int(thr_end)}）")
+    _msg = f"线程数增长 {int(thr_end - thr_base)}（{int(thr_base)} -> {int(thr_end)}）"
+    (issues if _strict else warnings).append(_msg)
 if fd_end - fd_base > 64:
-    warnings.append(f"FD 增长 {int(fd_end - fd_base)}（{int(fd_base)} -> {int(fd_end)}）")
+    _msg = f"FD 增长 {int(fd_end - fd_base)}（{int(fd_base)} -> {int(fd_end)}）"
+    (issues if _strict else warnings).append(_msg)
 if log_errors > 0:
     warnings.append(f"日志出现 error/failed {log_errors} 次（不一定是致命错误，见 app.log）")
 if xvfb_errors > 0:
