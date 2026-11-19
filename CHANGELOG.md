@@ -4,6 +4,15 @@ Tervo 的版本与 tag 规则见 `docs/RELEASING.md`。
 
 ## [Unreleased]
 
+### Changed
+
+- 连接后端改为进程内库：SSH 默认走 `russh`（password/key/agent + PTY/shell +
+  resize；known_hosts 必须已确认），串口默认走 `serialport`（5-8 数据位/
+  parity/stop/flow）。ProxyJump/转发/agent-forward/extra_args/加密私钥/
+  未保存 Vault 密码/未知主机自动回退系统 `ssh`；串口打不开回退 `socat`。
+  可用 `transport = "system"` / `"socat"` 显式选择旧路径。详见
+  `docs/CONNECTION_BACKENDS.md`。
+
 ### Fixed
 
 - 全仓 review（2026-11-18）后的安全/数据/输入修复：

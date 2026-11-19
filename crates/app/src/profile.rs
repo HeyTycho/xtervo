@@ -22,6 +22,11 @@ pub const MIN_FONT_SIZE: f32 = 8.0;
 /// 见 [`MIN_FONT_SIZE`]。
 pub const MAX_FONT_SIZE: f32 = 40.0;
 
+fn default_serial_data_bits() -> u8 { 8 }
+fn default_serial_parity() -> String { "none".into() }
+fn default_serial_stop_bits() -> u8 { 1 }
+fn default_serial_flow() -> String { "none".into() }
+
 /// 一个本地 Profile：决定新 Tab 用什么 shell / 参数 / 起始目录 / 环境变量。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -89,6 +94,18 @@ pub struct Profile {
     // ---- serial ----
     pub serial_port: String,
     pub baud: u32,
+    /// 5/6/7/8；默认 8。
+    #[serde(default = "default_serial_data_bits")]
+    pub data_bits: u8,
+    /// none | even | odd；默认 none。
+    #[serde(default = "default_serial_parity")]
+    pub parity: String,
+    /// 1 | 2；默认 1。
+    #[serde(default = "default_serial_stop_bits")]
+    pub stop_bits: u8,
+    /// none | software | hardware；默认 none。
+    #[serde(default = "default_serial_flow")]
+    pub flow_control: String,
     // ---- 外观（None / 空 = 继承全局 Config；对所有 kind 生效）----
     /// 该 Profile 打开的 pane 使用的字号；`None` = 继承 `config.font_size`。
     pub font_size: Option<f32>,
@@ -321,6 +338,10 @@ impl Default for Profile {
             transport: String::new(),
             serial_port: String::new(),
             baud: 115200,
+            data_bits: 8,
+            parity: "none".into(),
+            stop_bits: 1,
+            flow_control: "none".into(),
             font_size: None,
             theme: None,
             cursor_shape: None,
@@ -386,6 +407,20 @@ impl Profile {
     /// 兼容写法（加载时由 [`Self::normalize_plugin_kind`] 归一化）。
     pub fn is_plugin_ssh(&self) -> bool {
         self.kind == "ssh" && self.transport.trim().eq_ignore_ascii_case(PLUGIN_TRANSPORT)
+    }
+
+    /// SSH 是否走进程内 russh：默认（空 transport）就是 native；
+    /// `transport = "system"` 保留系统 ssh，`plugin` 是旧 sidecar POC。
+    pub fn is_native_ssh(&self) -> bool {
+        self.kind == "ssh"
+            && (self.transport.trim().is_empty()
+                || self.transport.trim().eq_ignore_ascii_case("native"))
+    }
+
+    /// 串口是否走进程内 serialport：默认 native；`transport = "socat"` 保留旧桥接。
+    pub fn is_native_serial(&self) -> bool {
+        self.kind == "serial"
+            && !self.transport.trim().eq_ignore_ascii_case("socat")
     }
 
     /// 把旧式 `kind = "plugin-ssh"` 归一化成 `kind = "ssh"` + `transport = "plugin"`。
@@ -607,11 +642,14 @@ impl Profile {
                     validate_dynamic_forward(f)?;
                 }
                 validate_proxy_jump(&self.proxy_jump)?;
-                if !self.transport.trim().is_empty()
-                    && !self.transport.trim().eq_ignore_ascii_case(PLUGIN_TRANSPORT)
+                let transport = self.transport.trim();
+                if !transport.is_empty()
+                    && !transport.eq_ignore_ascii_case(PLUGIN_TRANSPORT)
+                    && !transport.eq_ignore_ascii_case("native")
+                    && !transport.eq_ignore_ascii_case("system")
                 {
                     return Err(format!(
-                        "未知 SSH 后端: {}（只支持空 = 系统 ssh PTY，或 plugin）",
+                        "未知 SSH 后端: {}（只支持空/native = russh，system = 系统 ssh，plugin = sidecar）",
                         self.transport
                     ));
                 }
@@ -622,6 +660,30 @@ impl Profile {
                 }
                 if self.baud == 0 {
                     return Err("波特率必须大于 0".into());
+                }
+                if !(5..=8).contains(&self.data_bits) {
+                    return Err(format!("数据位必须是 5-8，实际 {}", self.data_bits));
+                }
+                if !["none", "even", "odd"].contains(&self.parity.as_str()) {
+                    return Err(format!("校验位必须是 none/even/odd，实际 {}", self.parity));
+                }
+                if self.stop_bits != 1 && self.stop_bits != 2 {
+                    return Err(format!("停止位必须是 1 或 2，实际 {}", self.stop_bits));
+                }
+                if !["none", "software", "hardware"].contains(&self.flow_control.as_str()) {
+                    return Err(format!(
+                        "流控必须是 none/software/hardware，实际 {}",
+                        self.flow_control
+                    ));
+                }
+                if !self.transport.trim().is_empty()
+                    && !self.transport.trim().eq_ignore_ascii_case("native")
+                    && !self.transport.trim().eq_ignore_ascii_case("socat")
+                {
+                    return Err(format!(
+                        "未知串口后端: {}（只支持空/native = serialport，或 socat）",
+                        self.transport
+                    ));
                 }
             },
             "telnet" => {

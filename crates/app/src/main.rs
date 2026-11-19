@@ -17,6 +17,8 @@ mod connection;
 mod instance;
 mod keys;
 mod known_hosts;
+mod serial_native;
+mod ssh_native;
 mod latency;
 mod logging;
 mod mcp;
@@ -5060,18 +5062,66 @@ fn create_pane(
         "[connection] pane={id} state={:?} remote={remote} source=spawn",
         connection.state
     );
-    let handle = match profile.filter(|p| p.is_plugin_ssh()) {
-        Some(p) => {
-            let transport = ssh_plugin::SshPluginTransport::start(p)?;
-            eprintln!(
-                "[plugin-ssh] pane backend=plugin profile={} host={} user={}",
-                p.id,
-                p.host.trim(),
-                p.user.trim()
-            );
-            spawn_with_transport(config, Backend::Plugin(Box::new(transport)))?
+    let handle = if let Some(p) = profile.filter(|p| p.is_native_serial()) {
+        match serial_native::SerialTransport::open(p) {
+            Ok(transport) => {
+                eprintln!(
+                    "[serial-native] pane backend=serialport profile={} port={} baud={}",
+                    p.id,
+                    p.serial_port.trim(),
+                    p.baud
+                );
+                spawn_with_transport(config, Backend::Plugin(Box::new(transport)))?
+            },
+            Err(error) => {
+                eprintln!("[serial-native] 打开失败，回退 socat: {error}");
+                spawn(config)?
+            },
         }
-        None => spawn(config)?,
+    } else if let Some(p) = profile.filter(|p| {
+        ssh_native::can_use(p)
+            && (p.auth != "password" || st.vault.with(|vault| vault.get(p.id)).is_ok())
+    }) {
+        let password = if p.auth == "password" {
+            match st.vault.with(|vault| vault.get(p.id)) {
+                Ok(password) => Some(password),
+                Err(error) => {
+                    return Err(std::io::Error::other(format!(
+                        "native SSH 需要 Vault 中的密码（或设置 transport=system）: {error}"
+                    )))
+                },
+            }
+        } else {
+            None
+        };
+        let transport = ssh_native::SshNativeTransport::start(
+            p,
+            password,
+            config.cols,
+            config.rows,
+        )?;
+        eprintln!(
+            "[ssh-native] pane backend=russh profile={} host={} user={} auth={}",
+            p.id,
+            p.host.trim(),
+            p.user.trim(),
+            p.auth
+        );
+        spawn_with_transport(config, Backend::Plugin(Box::new(transport)))?
+    } else {
+        match profile.filter(|p| p.is_plugin_ssh()) {
+            Some(p) => {
+                let transport = ssh_plugin::SshPluginTransport::start(p)?;
+                eprintln!(
+                    "[plugin-ssh] pane backend=plugin profile={} host={} user={}",
+                    p.id,
+                    p.host.trim(),
+                    p.user.trim()
+                );
+                spawn_with_transport(config, Backend::Plugin(Box::new(transport)))?
+            }
+            None => spawn(config)?,
+        }
     };
 
     let wake = handle.wake_receiver();
@@ -6698,6 +6748,10 @@ fn open_profile_form(st: &mut AppState) {
     st.ui.set_form_agent_forward(false);
     st.ui.set_form_serial_port("/dev/ttyUSB0".into());
     st.ui.set_form_baud("115200".into());
+    st.ui.set_form_serial_data_bits("8".into());
+    st.ui.set_form_serial_parity("none".into());
+    st.ui.set_form_serial_stop_bits("1".into());
+    st.ui.set_form_serial_flow_control("none".into());
     st.ui.set_form_font_size("".into());
     st.ui.set_form_theme("".into());
     st.ui.set_form_cursor_shape("".into());
@@ -6755,6 +6809,10 @@ fn edit_profile_form(st: &mut AppState, index: usize) {
     st.ui.set_form_agent_forward(p.agent_forward);
     st.ui.set_form_serial_port(p.serial_port.as_str().into());
     st.ui.set_form_baud(p.baud.to_string().as_str().into());
+    st.ui.set_form_serial_data_bits(p.data_bits.to_string().as_str().into());
+    st.ui.set_form_serial_parity(p.parity.as_str().into());
+    st.ui.set_form_serial_stop_bits(p.stop_bits.to_string().as_str().into());
+    st.ui.set_form_serial_flow_control(p.flow_control.as_str().into());
     st.ui.set_form_font_size(
         p.font_size
             .map(|v| v.to_string())
@@ -6866,6 +6924,10 @@ fn save_profile_form(st: &mut AppState) {
         "serial" => {
             p.serial_port = st.ui.get_form_serial_port().to_string();
             p.baud = st.ui.get_form_baud().trim().parse::<u32>().unwrap_or(0);
+            p.data_bits = st.ui.get_form_serial_data_bits().trim().parse::<u8>().unwrap_or(0);
+            p.parity = st.ui.get_form_serial_parity().trim().to_ascii_lowercase();
+            p.stop_bits = st.ui.get_form_serial_stop_bits().trim().parse::<u8>().unwrap_or(0);
+            p.flow_control = st.ui.get_form_serial_flow_control().trim().to_ascii_lowercase();
         }
         "telnet" => {
             p.host = st.ui.get_form_host().to_string();

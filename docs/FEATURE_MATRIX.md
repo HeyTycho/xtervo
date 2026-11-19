@@ -165,7 +165,7 @@
 | UI-PROF-009 | Profile 可绑定快捷键 | U-AUDIT / 需求 B5 | 无实现 | implemented | 表单 Hotkey 行（打开/编辑/保存全通）+ `ProfileStore::add` 校验拒绝 shift+x；列表显示 (ctrl+alt+p) | 未实现 | 快捷键表只覆盖命令，无 per-Profile 绑定 |
 | UI-PROF-010 | Profile 创建/编辑按连接类型动态显示字段 | U-AUDIT / 需求 B5 | main.slint 表单按 `form-kind` 显示 Local（Shell/Args/Cwd）、SSH（Host/Port/User/Auth/Key/Password/Extra/Forwards）、Serial、Telnet 字段；所有类型共用固定位置 Appearance 区（Font/History/Cursor/Blink/Theme），SSH password 展开时表单加高到 620px | implemented | GUI：Xvfb :136 local 表单截图（`02-profile-form.png`）；SSH 字段/密码区域静态走查与动态高度表达式 | 按类型动态显示字段可用；外观区不随类型位移 | SSH 字段未按 General/Ports/Advanced 分组（见 011）；小窗口下 SSH 表单可能超出底部 |
 | UI-PROF-011 | SSH Profile 字段分组 General/Ports/Advanced/Ciphers/Login Scripts（以源码为准） | U-AUDIT（字段分组待核） | 无实现 | needs_verification | 待上游源码核实字段 | 未核实/未实现 | 当前 SSH 字段为平铺表单；Ciphers/Login Scripts 未做 |
-| UI-PROF-012 | Serial Profile：端口/波特率/数据位/校验/停止/流控/模式/换行 | U-AUDIT / 需求 B5 | Profile kind=serial：serial_port + baud；`serial_command()` 走 `socat -,raw,echo=0 <dev>,raw,echo=0,b<baud>` | partial | 真机：socat PTY 对 + 定时写 SERIAL-OK → Tab 显示连续 SERIAL-OK（.logs/serial-e2e.png） | 端口/波特率可用 | 无数据位/校验/停止位/流控/模式/换行设置；依赖系统 socat |
+| UI-PROF-012 | Serial Profile：端口/波特率/数据位/校验/停止/流控/模式/换行 | U-AUDIT / 需求 B5 | Profile kind=serial：serial_port/baud/data_bits/parity/stop_bits/flow_control；默认 `serialport` 进程内后端，设置页有对应字段；`transport=socat` 或 native 打开失败回退 socat | partial | 单测：PTY 上 `SerialTransport` 收发 `NATIVE-SERIAL`/`REPLY`；Profile 校验/roundtrip | 端口/波特率/5-8 数据位/校验/停止/流控可用；native 优先，socat 兜底 | 无端口枚举/热插拔/DTR-RTS/控制线；模式/换行仍无 UI；socat 回退只支持 8N1 |
 | UI-PROF-013 | Local Shell Profile：命令、参数、起始目录、环境变量 | U-AUDIT / 需求 B5 | profile.rs Profile 支持 shell/args/cwd/env + 可选 font_size/theme/cursor_shape/cursor_blink/scrollback；`create_pane` 以 Profile 优先（显式 cwd 覆盖 Profile cwd）；表单暴露 Shell/Args/Cwd 与共用外观区 | partial | 单测 roundtrip（shell/args/cwd/env/外观持久化、继承/迁移/校验）；Xvfb :136 e2e：打开 pretty Profile 后 `pwd=/home/user`，字号 20/cell 12x28、Latte 主题、underline/off 光标（`03-profile-applied.png`） | 命令/参数/起始目录/外观可用；env 可从 profiles.toml 手写 | 表单无 env/自定义标题字段；无逐字段实时校验；无独立 UI 级 env e2e |
 
 ### B6. Terminal View 交互（19 条）
@@ -320,7 +320,7 @@
 
 | ID | Feature | Upstream evidence | Rust implementation | Status | Test | Result | Limitation |
 |---|---|---|---|---|---|---|---|
-| SSH-001 | SSH2 建连、断开、超时、keepalive、重连 | U-AUDIT / 需求 C3 | 无实现 | not_started | 无 | 未实现 | Cargo.toml/Cargo.lock 无 russh 依赖 |
+| SSH-001 | SSH2 建连、断开、超时、keepalive、重连 | U-AUDIT / 需求 C3 | 默认 `transport=native`：russh 进程内连接/认证/PTY/shell；20s 连接超时、60s inactivity；不支持 ProxyJump/转发/agent-forward/extra_args/加密私钥，自动回退系统 ssh；`transport=system`/`plugin` 显式选择旧路径 | partial | 进程内 russh test server：password 认证 + known_hosts + PTY/shell + echo；known_hosts 缺失/不安全配置回退测试 | 简单 SSH 连接/认证/交互可用；默认不再 spawn 系统 ssh | 无 ProxyJump/端口转发/agent forwarding/加密私钥 passphrase UI；无 keepalive 配置项；无真实外部 sshd e2e |
 | SSH-002 | Connection Manager 与保存的 SSH Profiles | U-AUDIT / 需求 C3 | 无实现 | not_started | 无 | 未实现 | 无连接管理/Profile |
 | SSH-003 | 用户名/主机/端口/认证方式 | U-AUDIT / 需求 C3 | 无实现 | not_started | 无 | 未实现 | 无 SSH 配置/UI |
 | SSH-004 | 密码、私钥、加密私钥口令、SSH Agent 认证 | U-AUDIT / 需求 C3 | 无实现 | not_started | 无 | 未实现 | 无认证/Keyring/Agent |
@@ -368,9 +368,9 @@
 
 | ID | Feature | Upstream evidence | Rust implementation | Status | Test | Result | Limitation |
 |---|---|---|---|---|---|---|---|
-| SERIAL-001 | 串口枚举、端口打开/关闭 | U-AUDIT / 需求 C6 | 无实现 | not_started | 无 | 未实现 | Cargo 无 serialport/tokio-serial 依赖 |
-| SERIAL-002 | 保存多个 Serial Profiles | U-AUDIT / 需求 C6 | 无实现 | not_started | 无 | 未实现 | 无 Serial Profile |
-| SERIAL-003 | Baud Rate（含平台非标准）、Data Bits、Parity、Stop Bits、Flow Control | U-AUDIT / 需求 C6 | 无实现 | not_started | 无 | 未实现 | 无非标准波特率能力评估 |
+| SERIAL-001 | 串口枚举、端口打开/关闭 | U-AUDIT / 需求 C6 | 默认 `serialport` 进程内打开/关闭/读写；PTY 回环测试；打不开时回退 socat | partial | `SerialTransport` PTY 收发测试、缺失设备错误测试 | 端口打开/关闭/读写可用 | 端口枚举/热插拔未做（需 udev/串口枚举） |
+| SERIAL-002 | 保存多个 Serial Profiles | U-AUDIT / 需求 C6 | Profile kind=serial + 多 Profile 存储/表单 | implemented | Profile serialization/roundtrip | 可保存多个 Serial Profile | 无端口枚举选择器 |
+| SERIAL-003 | Baud Rate（含平台非标准）、Data Bits、Parity、Stop Bits、Flow Control | U-AUDIT / 需求 C6 | `serialport` 配置 baud/data_bits/parity/stop_bits/flow_control；设置页字段 | implemented | PTY 回环 + Profile 校验/roundtrip | 5-8 数据位、none/even/odd、1/2 停止位、none/software/hardware 流控 | 非标准波特率交给 serialport/驱动；未逐项真机验证 |
 | SERIAL-004 | 输入：文本、Readline、逐字节/Hex（按上游定义核验） | U-AUDIT（上游定义待核） | 无实现 | needs_verification | 待上游核实输入模式 | 未核实/未实现 | 无 Serial 输入处理 |
 | SERIAL-005 | 输出：文本、Hexdump（按上游定义核验） | U-AUDIT（上游定义待核） | 无实现 | needs_verification | 待上游核实输出模式 | 未核实/未实现 | 无 Serial 输出处理 |
 | SERIAL-006 | CR/LF/CRLF 等 Newline Conversion | U-AUDIT（上游策略待核） | 无实现 | needs_verification | 待上游核实换行策略 | 未核实/未实现 | 无换行转换 |

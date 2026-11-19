@@ -1709,6 +1709,10 @@ export component MainWindow inherits Window {
     callback profile-edit(int);
     in-out property <string> form-serial-port: "";
     in-out property <string> form-baud: "";
+    in-out property <string> form-serial-data-bits: "8";
+    in-out property <string> form-serial-parity: "none";
+    in-out property <string> form-serial-stop-bits: "1";
+    in-out property <string> form-serial-flow-control: "none";
     // 外观（可选；空 = 继承全局）：字号 / 主题 / 光标形状 / 闪烁 / 滚动历史。
     in-out property <string> form-font-size: "";
     /// 绑定到该 Profile 的快捷键（单段，如 ctrl+alt+p）；空 = 不绑定。
@@ -7761,6 +7765,10 @@ export component MainWindow inherits Window {
             spacing: 12px;
             FormRow { label: Lang.t("Serial", "串口"); text <=> root.form-serial-port; }
             FormRow { label: Lang.t("Baud", "波特率"); text <=> root.form-baud; }
+            FormRow { label: Lang.t("Data bits", "数据位"); text <=> root.form-serial-data-bits; }
+            FormRow { label: Lang.t("Parity", "校验位"); text <=> root.form-serial-parity; }
+            FormRow { label: Lang.t("Stop bits", "停止位"); text <=> root.form-serial-stop-bits; }
+            FormRow { label: Lang.t("Flow control", "流控"); text <=> root.form-serial-flow-control; }
         }
 
         if root.form-kind == 3 : VerticalLayout {
