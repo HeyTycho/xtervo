@@ -82,7 +82,9 @@ pub fn can_use(profile: &Profile) -> bool {
     // effective 一致，避免静默绕过用户配置。
     if effective.hostname != profile.host.trim()
         || effective.port != profile.port
-        || (!effective.user.is_empty() && effective.user != profile.user.trim())
+        || (!profile.user.trim().is_empty()
+            && !effective.user.is_empty()
+            && effective.user != profile.user.trim())
     {
         return false;
     }
@@ -402,7 +404,13 @@ async fn run_session(
                         }
                     }
                     Some(Cmd::Resize(cols, rows)) => {
-                        let _ = channel.window_change(cols as u32, rows as u32, 0, 0).await;
+                        if channel
+                            .window_change(cols as u32, rows as u32, 0, 0)
+                            .await
+                            .is_ok()
+                        {
+                            last_resize = (cols, rows);
+                        }
                     }
                     Some(Cmd::Close) | None => {
                         closed.store(true, Ordering::Release);
