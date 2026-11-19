@@ -179,6 +179,14 @@ if command -v desktop-file-validate >/dev/null 2>&1; then
     desktop-file-validate "$PREFIX/share/applications/tervo.desktop" >/dev/null 2>&1 \
         && pass "desktop 文件通过 desktop-file-validate" || fail "desktop 文件校验失败"
 fi
+# 用户级 prefix 不在桌面会话 PATH 里时，GNOME 会因 TryExec=tervo 隐藏应用；
+# 安装器必须写成本 prefix 的绝对路径（Exec/TryExec/--window action 都要）。
+grep -qxF "Exec=$PREFIX/bin/tervo" "$PREFIX/share/applications/tervo.desktop" \
+    && pass "desktop Exec 为绝对路径" || fail "desktop Exec 不是绝对路径"
+grep -qxF "TryExec=$PREFIX/bin/tervo" "$PREFIX/share/applications/tervo.desktop" \
+    && pass "desktop TryExec 为绝对路径" || fail "desktop TryExec 不是绝对路径"
+grep -qxF "Exec=$PREFIX/bin/tervo --window" "$PREFIX/share/applications/tervo.desktop" \
+    && pass "desktop new-window action 为绝对路径" || fail "desktop new-window action 不是绝对路径"
 smoke_gui "$PREFIX/bin/tervo" "tar-installed"
 
 # ---- 4. 配置/Profile 迁移 ------------------------------------------------

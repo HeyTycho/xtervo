@@ -80,7 +80,7 @@ PREFIX=/tmp/prefix ./scripts/install.sh          # 自定义 prefix
 | `$PREFIX/lib/tervo/versions/<version>-<commit>/tervo` | 历史版本归档（同一版本只保留首次副本） |
 | `$PREFIX/lib/tervo/manifest` | 安装清单（卸载按此删除） |
 | `$PREFIX/lib/tervo/install.sh` | 生命周期脚本（从安装后的位置回滚/卸载） |
-| `$PREFIX/share/applications/tervo.desktop` | 桌面项 |
+| `$PREFIX/share/applications/tervo.desktop` | 桌面项（安装时 `Exec/TryExec` 改写为本 prefix 的绝对路径，用户级安装不依赖登录 PATH） |
 | `$PREFIX/share/icons/hicolor/{512x512,64x64}/apps/tervo.png` | 图标 |
 | `$PREFIX/share/doc/tervo/` | LICENSE/README/THIRD_PARTY_NOTICES/LICENSING/BUILD-INFO |
 

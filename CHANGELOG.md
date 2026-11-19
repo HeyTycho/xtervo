@@ -80,6 +80,9 @@ Tervo 的版本与 tag 规则见 `docs/RELEASING.md`。
 
 ### Fixed
 
+- 安装到 `~/.local` 等用户级 prefix 时，桌面项改写成该 prefix 的绝对
+  `Exec/TryExec`。此前 `TryExec=tervo` 在 GNOME 会话 PATH 不含
+  `~/.local/bin` 时会被当成“命令不存在”，Activities 里搜不到 Tervo。
 - Wayland 拖边/拖角 resize 后，合成器会吃掉 pointer-up，Slint `ResizeHandle`
   一直保持 pressed，后续鼠标点击被边缘抓手吞掉（典型表现：Ctrl+T 新建 Tab 后
   鼠标不正常）。现在按 resize 方向把补发的 PointerReleased 落到原抓手命中区，

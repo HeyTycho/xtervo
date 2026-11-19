@@ -278,7 +278,21 @@ install_assets() { # <version> <commit> <built> <target>
     [[ -f "$icon512_src" ]] || die "缺少 512 图标：$icon512_src"
     [[ -f "$icon64_src" ]] || die "缺少 64 图标：$icon64_src"
 
-    atomic_install "$desktop_src" 644 "$DESKTOP"
+    # 用户级安装（默认 ~/.local）不一定在 GNOME/桌面会话的 PATH 里：
+    # desktop 里写 `TryExec=tervo` 会被 GNOME 当成“命令不存在”而隐藏，
+    # Activities 里搜不到。安装时把 Exec/TryExec 固化为本 prefix 的绝对路径；
+    # 系统级安装同样适用，且不依赖登录 PATH。
+    local desktop_dir desktop_tmp cur_escaped
+    desktop_dir="$(dirname -- "$DESKTOP")"
+    mkdir -p -- "$desktop_dir"
+    desktop_tmp="$(make_tmp "$desktop_dir" tervo.desktop)"
+    TMP_FILES+=("$desktop_tmp")
+    cur_escaped="${CUR//&/\\&}"
+    sed -e "s|^TryExec=tervo$|TryExec=$cur_escaped|" \
+        -e "s|^Exec=tervo$|Exec=$cur_escaped|" \
+        -e "s|^Exec=tervo --window$|Exec=$cur_escaped --window|" \
+        "$desktop_src" >"$desktop_tmp"
+    atomic_install "$desktop_tmp" 644 "$DESKTOP"
     atomic_install "$icon512_src" 644 "$ICON512"
     atomic_install "$icon64_src" 644 "$ICON64"
     atomic_install "$license_src" 644 "$DOC_DIR/LICENSE"
