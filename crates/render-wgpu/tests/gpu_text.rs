@@ -1290,3 +1290,180 @@ fn damage_scissor_matches_full_redraw_and_preserves_untouched_rows() {
         read_target_rgba8(&fixture.gpu.device, &fixture.gpu.queue, &fresh).expect("full readback");
     assert_eq!(partial_pixels, full_pixels, "partial damage must match full redraw");
 }
+
+/// R4 helper: a glyph bitmap may overhang its cell (italic faces, fallback
+/// advances that differ from the grid, combining marks). The damage path only
+/// clears/scissors the damaged cell rect, so an unclipped quad leaves ink in
+/// the neighbour cell and that residue survives a later partial repaint.
+///
+/// The base-glyph case overrides the cell width to 6px while rasterizing at
+/// 32px: the bitmap is wider than 6px by construction, so the quad overhangs
+/// unless `push_glyph_quad` clips it. The combining-mark case keeps the normal
+/// 32px grid, where the centered mark bitmap still crosses the cell edge. The
+/// partial frame then replaces that cell with a blank one and reports damage
+/// for that single cell only, exactly what a terminal line damage for one
+/// changed column produces. The result must be byte-identical to a full redraw
+/// of the same frame.
+fn assert_overhanging_glyph_damage_matches_full(
+    text: &str,
+    cell_width_override: Option<f32>,
+    min_glyphs: usize,
+    label: &str,
+) {
+    use tervo_scene::{DamageRect, DamageRegion};
+
+    let mut fixture = fixture(160, 120);
+    let mut text_layout = layout(&fixture.renderer, 32, 0.0, 0.0);
+    if let Some(cell_width) = cell_width_override {
+        text_layout.cell_width = cell_width;
+    }
+    let cell_w = text_layout.cell_width;
+    let cell_h = text_layout.cell_height;
+    let viewport = Viewport {
+        cell_w,
+        cell_h,
+        cols: 16,
+        rows: 3,
+    };
+
+    let make_scene = |text: &str, damage: DamageRegion| {
+        let mut batch = TextBatch::new(1);
+        batch.push(cell(
+            0,
+            0,
+            text,
+            0x00ff_ffff,
+            CLEAR_RGB,
+            TextAttributes {
+                italic: true,
+                ..TextAttributes::default()
+            },
+        ));
+        let section_batch = batch.clone();
+        let scene = Scene {
+            viewport,
+            revision: 2,
+            damage,
+            selection: None,
+            search: None,
+            cursor: None,
+            layers: vec![SceneLayer {
+                z_index: TEXT_LAYER_Z,
+                items: vec![DrawItem::Text(batch)],
+            }],
+        };
+        (scene, section_batch)
+    };
+
+    let mut images = GpuImageRenderer::new(fixture.gpu.device.clone(), fixture.gpu.queue.clone());
+
+    // Full frame with the overhanging glyph.
+    let (_initial, initial_batch) = make_scene(text, DamageRegion::full());
+    let (_, initial_geometry) = fixture
+        .renderer
+        .render_with_geometry(
+            &fixture.target,
+            CLEAR,
+            &[TextSection::new(&initial_batch, text_layout)],
+        )
+        .expect("initial overhanging glyph render");
+    assert!(
+        initial_geometry.glyphs.len() >= min_glyphs,
+        "{label}: expected at least {min_glyphs} glyph quads, got {}; \
+         test glyph rasterized to nothing, cannot exercise overhang",
+        initial_geometry.glyphs.len()
+    );
+
+    // Partial frame: same cell becomes blank, damage is that cell only.
+    let damage = DamageRegion {
+        rects: vec![DamageRect::new(
+            0,
+            0,
+            cell_w.ceil() as u32,
+            cell_h.ceil() as u32,
+        )],
+        full: false,
+    };
+    let (partial, partial_batch) = make_scene(" ", damage);
+    images
+        .render_scene(
+            &mut fixture.renderer,
+            &fixture.target,
+            CLEAR,
+            &[TextSection::new(&partial_batch, text_layout)],
+            &partial,
+        )
+        .expect("partial blank-cell render");
+
+    // Reference: full redraw of the same blank frame on a fresh target.
+    let fresh = TextTarget::new(
+        &fixture.gpu.device,
+        PhysicalSize {
+            width: 160,
+            height: 120,
+        },
+    )
+    .expect("fresh target");
+    let (full, full_batch) = make_scene(" ", DamageRegion::full());
+    images
+        .render_scene(
+            &mut fixture.renderer,
+            &fresh,
+            CLEAR,
+            &[TextSection::new(&full_batch, text_layout)],
+            &full,
+        )
+        .expect("full blank-frame render");
+
+    let partial_pixels = read_target_rgba8(&fixture.gpu.device, &fixture.gpu.queue, &fixture.target)
+        .expect("partial readback");
+    let full_pixels =
+        read_target_rgba8(&fixture.gpu.device, &fixture.gpu.queue, &fresh).expect("full readback");
+    if let Some(index) = partial_pixels
+        .iter()
+        .zip(&full_pixels)
+        .position(|(a, b)| a != b)
+    {
+        let pixel = index / 4;
+        let width = 160usize;
+        panic!(
+            "{label}: cell damage left glyph overhang outside the damaged cell: \
+             first diff at x={} y={} partial={:?} full={:?} (cell {}x{})",
+            pixel % width,
+            pixel / width,
+            &partial_pixels[index - index % 4..][..4],
+            &full_pixels[index - index % 4..][..4],
+            cell_w,
+            cell_h,
+        );
+    }
+
+    // Direct geometry contract: every quad must stay inside its own cell, like
+    // the CPU renderer's blit clip. This catches an overhang even when the
+    // overhang happens to land on identical background pixels.
+    for glyph in &initial_geometry.glyphs {
+        let [x, y, w, h] = glyph.rect;
+        assert!(
+            x >= 0.0 && y >= 0.0 && x + w <= cell_w + 0.01 && y + h <= cell_h + 0.01,
+            "{label}: glyph quad {:?} must be clipped to its {}x{} cell",
+            glyph.rect,
+            cell_w,
+            cell_h
+        );
+    }
+}
+
+#[test]
+fn overhanging_glyph_does_not_survive_cell_damage() {
+    assert_overhanging_glyph_damage_matches_full("M", Some(6.0), 1, "overhanging base glyph");
+}
+
+#[test]
+fn overhanging_combining_mark_is_clipped_to_base_cell_damage() {
+    // The mark is zero-width and centered on the base glyph's ink, so its
+    // bitmap is the one most likely to cross the cell edge in normal layouts.
+    // Normal 32px grid: the base `M` fits its cell, but the centered mark's
+    // bitmap extends past the cell's right edge, which is exactly the residue
+    // this regression must keep from surviving a single-cell damage pass.
+    assert_overhanging_glyph_damage_matches_full("M\u{0301}", None, 2, "combining mark");
+}

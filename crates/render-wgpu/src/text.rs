@@ -499,12 +499,26 @@ fn ensure_glyph(
     })
 }
 
-/// Emits one glyph quad. Returns the horizontal ink center for mark alignment.
+/// Emits one glyph quad clipped to its owning cell rectangle.
+///
+/// A glyph bitmap can overhang the cell grid: italic faces, fallback faces whose
+/// advance differs from the monospace cell, and centered combining marks. The
+/// damage path clears/scissors per cell rect, so any ink outside the cell would
+/// survive a partial repaint as stale strokes. Clipping the quad (and cropping
+/// its UV rectangle by the same fractions) mirrors the CPU renderer's
+/// `blit_bitmap` cell clip and keeps incremental output identical to a full
+/// redraw. Wide cells pass their full two-column span, so CJK glyphs are not
+/// cut. Returns the *unclipped* horizontal ink center for mark alignment.
+#[allow(clippy::too_many_arguments)]
 fn push_glyph_quad(
     atlas: &GlyphAtlas,
     slot: GlyphSlot,
     x: f32,
     baseline_y: f32,
+    cell_x: f32,
+    cell_width: f32,
+    cell_y: f32,
+    cell_height: f32,
     color: [f32; 4],
     frame: &mut TextGeometry,
 ) -> Option<f32> {
@@ -513,12 +527,41 @@ fn push_glyph_quad(
     }
     let left = (x + slot.xmin as f32).round();
     let top = baseline_y.round() - (slot.ymin + slot.h as i32) as f32;
+    let center = left + slot.w as f32 / 2.0;
+    let (right, bottom) = (left + slot.w as f32, top + slot.h as f32);
+
+    // Round the cell edges so clipped quads stay pixel-aligned with the damage
+    // rects, which the scene builder derives from integer cell rectangles.
+    let clipped_left = left.max(cell_x.round());
+    let clipped_top = top.max(cell_y.round());
+    let clipped_right = right.min((cell_x + cell_width).round());
+    let clipped_bottom = bottom.min((cell_y + cell_height).round());
+    if clipped_right <= clipped_left || clipped_bottom <= clipped_top {
+        // Fully outside the cell: nothing can be painted. Keep the ink center
+        // so a combining mark can still be centered on the base glyph.
+        return Some(center);
+    }
+
+    let uv = slot.uv(atlas.width(), atlas.height());
+    let u_scale = (uv[2] - uv[0]) / (right - left);
+    let v_scale = (uv[3] - uv[1]) / (bottom - top);
+    let uv = [
+        uv[0] + (clipped_left - left) * u_scale,
+        uv[1] + (clipped_top - top) * v_scale,
+        uv[0] + (clipped_right - left) * u_scale,
+        uv[1] + (clipped_bottom - top) * v_scale,
+    ];
     frame.glyphs.push(GlyphInstance {
-        rect: [left, top, slot.w as f32, slot.h as f32],
-        uv: slot.uv(atlas.width(), atlas.height()),
+        rect: [
+            clipped_left,
+            clipped_top,
+            clipped_right - clipped_left,
+            clipped_bottom - clipped_top,
+        ],
+        uv,
         color,
     });
-    Some(left + slot.w as f32 / 2.0)
+    Some(center)
 }
 
 /// Explicit hollow box for a character no font (not even `?`) covers.
@@ -646,7 +689,18 @@ fn build_frame(
                         )?;
                         if let Some(slot) = ensured.slot {
                             let mark_x = center - slot.w as f32 / 2.0;
-                            push_glyph_quad(atlas, slot, mark_x, baseline_y, foreground, &mut frame);
+                            push_glyph_quad(
+                                atlas,
+                                slot,
+                                mark_x,
+                                baseline_y,
+                                x0,
+                                span_width,
+                                y0,
+                                layout.cell_height,
+                                foreground,
+                                &mut frame,
+                            );
                         }
                     }
                     continue;
@@ -675,6 +729,15 @@ fn build_frame(
                             slot,
                             x + pad,
                             baseline_y,
+                            // Clip to the columns this character itself
+                            // advances over. A synthetic cell can hold more
+                            // than one base char ("a\tb"); each one still owns
+                            // exactly its own cell span, while the normal
+                            // one-char cell maps to `x0..x0+cell_width`.
+                            x,
+                            char_width,
+                            y0,
+                            layout.cell_height,
                             foreground,
                             &mut frame,
                         );
