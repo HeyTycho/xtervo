@@ -1392,6 +1392,8 @@ pub fn spawn_with_transport(
         kitty_store: KittyStore::default(),
         query_tail: Vec::new(),
         image_clear: ImageClearScanner::default(),
+        image_clear_split: ImageClearBoundaryScanner::default(),
+        color_queries: ColorQueryScanner::default(),
         pty_rx,
         ctrl_rx,
         pull_tx,
@@ -1717,6 +1719,10 @@ struct Actor {
     query_tail: Vec<u8>,
     /// 清屏/备用屏切换检测：这些序列让 alacritty 清屏，图片也必须一起清。
     image_clear: ImageClearScanner,
+    /// 同一 chunk 内 clear 与 Kitty APC 的字节序切分点。
+    image_clear_split: ImageClearBoundaryScanner,
+    /// OSC 调色板 query 的字节序切分点（query 必须返回当时的颜色）。
+    color_queries: ColorQueryScanner,
     pty_rx: Receiver<(Vec<u8>, i32)>,
     ctrl_rx: Receiver<Ctrl>,
     pull_tx: Sender<(u64, Box<Frame>)>,
@@ -1862,6 +1868,200 @@ impl ImageClearScanner {
             self.tail.extend_from_slice(&buf[buf.len() - keep..]);
         }
         hit
+    }
+}
+
+/// 在原始 PTY 字节流里找整屏清除序列的**结束位置**（相对本 chunk）。
+///
+/// `KittyParser::feed` 会一次性解析整块输入并更新自己的 image index；如果
+/// 同一 chunk 里 clear 之后还有 transmit，等 actor 处理到 clear 再
+/// `kitty.reset()` 就会把 parser 已登记的新图一起抹掉，而 `KittyStore`
+/// 仍保留它，后续 place 得到 ENOENT。这里先按 clear 边界把 chunk 切开，
+/// 逐段喂 parser，保证 clear 在 parser 看到之后字节之前生效。
+///
+/// 只用于切分位置：是否真的清图仍由 [`ImageClearScanner`] 在 vte 真正
+/// 收到的字节上判定。原始扫描可能把 APC payload 中的畸形 `ESC[2J` 也当成
+/// 边界，多切一刀不影响 parser 的流式状态。
+#[derive(Default)]
+struct ImageClearBoundaryScanner {
+    tail: Vec<u8>,
+}
+
+impl ImageClearBoundaryScanner {
+    fn feed(&mut self, bytes: &[u8]) -> Vec<usize> {
+        // 所有 pattern 都以 ESC 开头；tail 为空且本块没有 ESC 时不可能命中，
+        // 也不需要保留 tail（未来 pattern 只能从未来字节里的 ESC 开始）。
+        if self.tail.is_empty() && !bytes.contains(&0x1b) {
+            return Vec::new();
+        }
+        let old_len = self.tail.len();
+        let mut buf = Vec::with_capacity(old_len + bytes.len());
+        buf.extend_from_slice(&self.tail);
+        buf.extend_from_slice(bytes);
+        let mut ends = Vec::new();
+        for pattern in IMAGE_CLEAR_SEQUENCES {
+            for (i, window) in buf.windows(pattern.len()).enumerate() {
+                if window == pattern {
+                    let end = i + pattern.len();
+                    // 只切“结束于本块新字节”的位置；tail 里已处理的序列
+                    // 不能在下一块重复切分。
+                    if end > old_len {
+                        ends.push(end - old_len);
+                    }
+                }
+            }
+        }
+        ends.sort_unstable();
+        ends.dedup();
+        let keep = 32.min(buf.len());
+        self.tail.clear();
+        if keep > 0 {
+            self.tail.extend_from_slice(&buf[buf.len() - keep..]);
+        }
+        ends
+    }
+}
+
+/// OSC 4/10/11/12 调色板序列的流式扫描状态。
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum ColorQueryScan {
+    #[default]
+    Ground,
+    Escape,
+    /// `ESC ]` 之后、命令码结束（`;`）之前。
+    Code,
+    /// `Code` 里遇到 ESC，等下一个字节判断是否 ST。
+    CodeEscape,
+    /// 已确认是 OSC 4/10/11/12，等待 BEL/ST 结束。
+    Palette,
+    PaletteEscape,
+    /// 其他 OSC，等待 BEL/ST 结束。
+    Other,
+    OtherEscape,
+}
+
+/// 找到 OSC 4/10/11/12 序列的结束位置（相对本 chunk）。
+///
+/// 调色板查询必须在**当时**的 Term 颜色上回包：`Listener` 回调时借不到
+/// Term，只能先入队；若整个 chunk 解析完才 flush，同 chunk 后到的 set 会
+/// 改写前一个 query 的答案。这里按序列结束位置切段，段后立即 flush，
+/// 与拆成多个 chunk 的语义一致。
+#[derive(Default)]
+struct ColorQueryScanner {
+    state: ColorQueryScan,
+    code: Vec<u8>,
+    /// 命令码超过识别长度或含非法字节：本序列按非调色板 OSC 处理。
+    code_unknown: bool,
+}
+
+impl ColorQueryScanner {
+    fn feed(&mut self, bytes: &[u8]) -> Vec<usize> {
+        if self.state == ColorQueryScan::Ground && !bytes.contains(&0x1b) {
+            return Vec::new();
+        }
+        let mut ends = Vec::new();
+        for (i, &b) in bytes.iter().enumerate() {
+            self.state = match self.state {
+                ColorQueryScan::Ground => {
+                    if b == 0x1b {
+                        ColorQueryScan::Escape
+                    } else {
+                        ColorQueryScan::Ground
+                    }
+                },
+                ColorQueryScan::Escape => {
+                    if b == b']' {
+                        self.code.clear();
+                        self.code_unknown = false;
+                        ColorQueryScan::Code
+                    } else if b == 0x1b {
+                        // ESC ESC：第二个仍可能是 OSC 前缀。
+                        ColorQueryScan::Escape
+                    } else {
+                        ColorQueryScan::Ground
+                    }
+                },
+                ColorQueryScan::Code => {
+                    if b == b';' {
+                        let palette = !self.code_unknown
+                            && matches!(self.code.as_slice(), b"4" | b"10" | b"11" | b"12");
+                        if palette {
+                            ColorQueryScan::Palette
+                        } else {
+                            ColorQueryScan::Other
+                        }
+                    } else if b == 0x07 {
+                        ColorQueryScan::Ground
+                    } else if b == 0x1b {
+                        ColorQueryScan::CodeEscape
+                    } else if b == 0x18 || b == 0x1a {
+                        ColorQueryScan::Ground
+                    } else if self.code.len() < 8 {
+                        self.code.push(b);
+                        ColorQueryScan::Code
+                    } else {
+                        self.code_unknown = true;
+                        ColorQueryScan::Code
+                    }
+                },
+                ColorQueryScan::CodeEscape => {
+                    if b == b'\\' || b == 0x9c {
+                        ColorQueryScan::Ground
+                    } else if b == 0x1b {
+                        ColorQueryScan::CodeEscape
+                    } else {
+                        // 命令码里出现 ESC 内容：不是合法的调色板查询。
+                        ColorQueryScan::Other
+                    }
+                },
+                ColorQueryScan::Palette => match b {
+                    0x07 => {
+                        ends.push(i + 1);
+                        ColorQueryScan::Ground
+                    },
+                    0x1b => ColorQueryScan::PaletteEscape,
+                    0x9c => {
+                        ends.push(i + 1);
+                        ColorQueryScan::Ground
+                    },
+                    0x18 | 0x1a => ColorQueryScan::Ground,
+                    _ => ColorQueryScan::Palette,
+                },
+                ColorQueryScan::PaletteEscape => {
+                    if b == b'\\' {
+                        ends.push(i + 1);
+                        ColorQueryScan::Ground
+                    } else if b == 0x9c {
+                        ends.push(i + 1);
+                        ColorQueryScan::Ground
+                    } else if b == 0x1b {
+                        // ESC ESC \：后一组才是 ST。
+                        ColorQueryScan::PaletteEscape
+                    } else if b == 0x18 || b == 0x1a {
+                        ColorQueryScan::Ground
+                    } else {
+                        ColorQueryScan::Palette
+                    }
+                },
+                ColorQueryScan::Other => match b {
+                    0x07 | 0x9c | 0x18 | 0x1a => ColorQueryScan::Ground,
+                    0x1b => ColorQueryScan::OtherEscape,
+                    _ => ColorQueryScan::Other,
+                },
+                ColorQueryScan::OtherEscape => {
+                    if b == b'\\' || b == 0x9c {
+                        ColorQueryScan::Ground
+                    } else if b == 0x1b {
+                        ColorQueryScan::OtherEscape
+                    } else if b == 0x18 || b == 0x1a {
+                        ColorQueryScan::Ground
+                    } else {
+                        ColorQueryScan::Other
+                    }
+                },
+            };
+        }
+        ends
     }
 }
 
@@ -2955,6 +3155,7 @@ impl Actor {
                         self.add_sixel_image(image);
                         // 图片把字节流分成两段，清屏序列不可能跨过它。
                         self.image_clear.tail.clear();
+                        self.image_clear_split.tail.clear();
                         changed = true;
                     },
                 }
@@ -3013,6 +3214,7 @@ impl Actor {
                     self.add_iip_image(image);
                     // 图片把字节流分成两段，清屏序列不可能跨过它。
                     self.image_clear.tail.clear();
+                    self.image_clear_split.tail.clear();
                     changed = true;
                 },
                 IipEvent::Ignored(notice) => {
@@ -3092,11 +3294,47 @@ impl Actor {
         if chunk.is_empty() {
             return (false, 0);
         }
+        // 必须在 kitty.feed 之前算：clear 之后的 transmit 一旦先被 parser
+        // 登记进 image index，等 actor 处理到 clear 再 reset 就会与
+        // KittyStore 分叉（后续 place ENOENT 或清屏后图片复活）。
+        let cuts = self.image_clear_split.feed(chunk);
         if !self.kitty.has_partial_sequence() && !chunk.contains(&0x1b) {
+            // 无 ESC => 本块不可能出现 Kitty APC；clear 仍由
+            // process_vte_bytes 里的 ImageClearScanner 处理。
             self.process_vte_bytes(chunk);
             return (true, chunk.len());
         }
-        let events = self.kitty.feed(chunk);
+        if cuts.is_empty() {
+            let events = self.kitty.feed(chunk);
+            return self.process_kitty_events(events);
+        }
+        let mut changed = false;
+        let mut parsed = 0usize;
+        let mut start = 0usize;
+        for cut in cuts {
+            if cut <= start || cut > chunk.len() {
+                continue;
+            }
+            let (piece_changed, piece_parsed) =
+                self.process_kitty_segment(&chunk[start..cut]);
+            changed |= piece_changed;
+            parsed += piece_parsed;
+            start = cut;
+        }
+        if start < chunk.len() {
+            let (piece_changed, piece_parsed) = self.process_kitty_segment(&chunk[start..]);
+            changed |= piece_changed;
+            parsed += piece_parsed;
+        }
+        (changed, parsed)
+    }
+
+    fn process_kitty_segment(&mut self, segment: &[u8]) -> (bool, usize) {
+        let events = self.kitty.feed(segment);
+        self.process_kitty_events(events)
+    }
+
+    fn process_kitty_events(&mut self, events: Vec<KittyEvent>) -> (bool, usize) {
         let mut changed = false;
         let mut parsed = 0usize;
         for event in events {
@@ -3120,8 +3358,32 @@ impl Actor {
         (changed, parsed)
     }
 
-    /// 通知扫描/清屏检测/键盘协议扫描/vte 解析都只处理真正交给 vte 的字节。
+    /// 按 OSC 4/10/11/12 序列边界切段：每个 query 必须返回它当时的 Term
+    /// 颜色，不能等整批字节解析完再 flush（否则同批后到的 set 会改写答案）。
     fn process_vte_bytes(&mut self, chunk: &[u8]) {
+        if chunk.is_empty() {
+            return;
+        }
+        let cuts = self.color_queries.feed(chunk);
+        if cuts.is_empty() {
+            self.process_vte_segment(chunk);
+            return;
+        }
+        let mut start = 0usize;
+        for cut in cuts {
+            if cut <= start || cut > chunk.len() {
+                continue;
+            }
+            self.process_vte_segment(&chunk[start..cut]);
+            start = cut;
+        }
+        if start < chunk.len() {
+            self.process_vte_segment(&chunk[start..]);
+        }
+    }
+
+    /// 通知扫描/清屏检测/键盘协议扫描/vte 解析都只处理真正交给 vte 的字节。
+    fn process_vte_segment(&mut self, chunk: &[u8]) {
         if chunk.is_empty() {
             return;
         }
@@ -3139,8 +3401,8 @@ impl Actor {
         }
         let keyboard_actions = self.scan_keyboard_modes(chunk);
         self.advance_vte(chunk);
-        // 颜色查询必须在 vte 之后回包：同一批字节里的 OSC 4 设置已经写进
-        // Term.colors，查询要返回设置后的值。
+        // 颜色查询按 OSC 序列切段，段后立即回包：同一批字节里，query 之后
+        // 的 set 不能改写 query 的返回值。
         self.flush_color_requests();
         let cursor = self.term.grid().cursor.point;
         // ECH 已经过 vte。alacritty 的 ECH 从光标列开始向右擦、光标不移动；
@@ -4433,6 +4695,50 @@ mod tests {
         assert!(!scanner.feed(b"\x1b[3"));
         assert!(!scanner.feed(b"X"));
         assert_eq!(scanner.ech, vec![Some(3)]);
+    }
+
+    #[test]
+    fn image_clear_boundary_scanner_splits_once_per_sequence() {
+        let mut scanner = ImageClearBoundaryScanner::default();
+        assert!(scanner.feed(b"\x1b[").is_empty());
+        assert_eq!(
+            scanner.feed(b"2Jafter"),
+            vec![2],
+            "跨 chunk 的 2J 只在结束处切一次"
+        );
+        assert!(
+            scanner.feed(b"plain text").is_empty(),
+            "已处理的 2J 不能在下一块再次切分"
+        );
+        assert_eq!(scanner.feed(b"\x1b[3J").len(), 1);
+        assert_eq!(
+            scanner.feed(b"\x1b[2Jx\x1b[?1049h").len(),
+            2,
+            "同块两个 clear 各自产生切点"
+        );
+    }
+
+    #[test]
+    fn color_query_scanner_finds_palette_sequences() {
+        let mut scanner = ColorQueryScanner::default();
+        // query 跨 chunk：结束位置相对第二个 chunk 的字节偏移。
+        assert!(scanner.feed(b"\x1b]4;1;?").is_empty());
+        assert_eq!(scanner.feed(b"\x07rest"), vec![1]);
+        // BEL 与 ST 终止都识别。
+        assert_eq!(
+            scanner.feed(b"\x1b]10;?\x1b\\\x1b]11;?\x07"),
+            vec![8, 15]
+        );
+        // OSC 104/110 复位、OSC 52 不是调色板查询，不切分。
+        assert!(scanner
+            .feed(b"\x1b]104;1\x07\x1b]110\x07\x1b]52;c;SGVsbG8=\x07")
+            .is_empty());
+        // 同一块先 set 再 query：两个序列结束点都应切出，段后 flush 才能
+        // 让 query 看到 set 后的颜色。
+        assert_eq!(
+            scanner.feed(b"\x1b]4;1;rgb:ff/00/00\x07\x1b]4;1;?\x07"),
+            vec![19, 27]
+        );
     }
 
     #[test]
