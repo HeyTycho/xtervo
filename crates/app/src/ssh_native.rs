@@ -312,7 +312,7 @@ pub(crate) struct HostKeyHandler {
     remote_targets: std::sync::Arc<
         std::sync::Mutex<std::collections::HashMap<(String, u16), (String, u16)>>,
     >,
-    agent_forward: bool,
+    agent_forward: Arc<AtomicBool>,
 }
 
 impl Handler for HostKeyHandler {
@@ -374,7 +374,7 @@ impl Handler for HostKeyHandler {
         reply: russh::client::ChannelOpenHandle,
         _session: &mut russh::client::Session,
     ) -> Result<(), Self::Error> {
-        if !self.agent_forward {
+        if !self.agent_forward.load(Ordering::Acquire) {
             return Ok(());
         }
         let Some(path) = std::env::var_os("SSH_AUTH_SOCK") else { return Ok(()) };
@@ -476,7 +476,7 @@ async fn run_session(
             remote_targets: std::sync::Arc::new(std::sync::Mutex::new(
                 std::collections::HashMap::new(),
             )),
-            agent_forward: false,
+            agent_forward: Arc::new(AtomicBool::new(false)),
         };
         let mut next = if let Some(prev) = jump_session.take() {
             let channel = prev
@@ -519,11 +519,12 @@ async fn run_session(
         .await?;
         jump_session = Some(next);
     }
+    let agent_forward_enabled = Arc::new(AtomicBool::new(false));
     let handler = HostKeyHandler {
         known,
         revoked,
         remote_targets: remote_targets.clone(),
-        agent_forward: profile.agent_forward,
+        agent_forward: agent_forward_enabled.clone(),
     };
     let mut session = if let Some(prev) = jump_session.take() {
         let channel = prev
@@ -562,19 +563,6 @@ async fn run_session(
         .channel_open_session()
         .await
         .map_err(|error| format!("打开 SSH session 失败: {error}"))?;
-    if profile.agent_forward {
-        channel
-            .agent_forward(true)
-            .await
-            .map_err(|error| format!("请求 agent forwarding 失败: {error}"))?;
-        match await_request(&mut channel, &out, &closed).await {
-            Ok(()) => {},
-            Err(error) if error == "远端拒绝了 PTY/shell 请求" => {
-                eprintln!("[ssh-native] agent forwarding 被拒绝，继续无转发连接");
-            },
-            Err(error) => return Err(error),
-        }
-    }
     channel
         .request_pty(
             true,
@@ -588,6 +576,19 @@ async fn run_session(
         .await
         .map_err(|error| format!("请求远端 PTY 失败: {error}"))?;
     await_request(&mut channel, &out, &closed).await?;
+    if profile.agent_forward {
+        channel
+            .agent_forward(true)
+            .await
+            .map_err(|error| format!("请求 agent forwarding 失败: {error}"))?;
+        match await_request(&mut channel, &out, &closed).await {
+            Ok(()) => agent_forward_enabled.store(true, Ordering::Release),
+            Err(error) if error == "远端拒绝了 PTY/shell 请求" => {
+                eprintln!("[ssh-native] agent forwarding 被拒绝，继续无转发连接");
+            },
+            Err(error) => return Err(error),
+        }
+    }
     channel
         .request_shell(true)
         .await
@@ -911,6 +912,14 @@ mod integration_tests {
 
         async fn auth_password(&mut self, _user: &str, _password: &str) -> Result<Auth, Self::Error> {
             Ok(Auth::Accept)
+        }
+
+        async fn agent_request(
+            &mut self,
+            _channel: russh::ChannelId,
+            _session: &mut Session,
+        ) -> Result<bool, Self::Error> {
+            Ok(false)
         }
 
         async fn channel_open_direct_tcpip(
@@ -1414,4 +1423,5 @@ mod integration_tests {
         transport.close();
         let _ = std::fs::remove_dir_all(&dir);
     }
+
 }
