@@ -33,7 +33,7 @@ enum Cmd {
 
 pub struct SshNativeTransport {
     output: tokio::sync::mpsc::Receiver<Option<Vec<u8>>>,
-    commands: tokio::sync::mpsc::UnboundedSender<Cmd>,
+    commands: tokio::sync::mpsc::Sender<Cmd>,
     closed: Arc<AtomicBool>,
     pending: Vec<u8>,
 }
@@ -112,7 +112,7 @@ impl SshNativeTransport {
             ));
         }
         let (out_tx, out_rx) = tokio::sync::mpsc::channel::<Option<Vec<u8>>>(1024);
-        let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(256);
         let closed = Arc::new(AtomicBool::new(false));
         let closed_thread = closed.clone();
         std::thread::Builder::new()
@@ -171,17 +171,17 @@ impl PaneTransport for SshNativeTransport {
 
     fn write_all(&mut self, data: &[u8]) -> io::Result<()> {
         self.commands
-            .send(Cmd::Data(data.to_vec()))
+            .blocking_send(Cmd::Data(data.to_vec()))
             .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "SSH 通道已关闭"))
     }
 
     fn resize(&mut self, cols: u16, rows: u16) {
-        let _ = self.commands.send(Cmd::Resize(cols, rows));
+        let _ = self.commands.try_send(Cmd::Resize(cols, rows));
     }
 
     fn close(&mut self) {
         self.closed.store(true, Ordering::Release);
-        let _ = self.commands.send(Cmd::Close);
+        let _ = self.commands.try_send(Cmd::Close);
     }
 
     fn into_halves(self: Box<Self>) -> io::Result<TransportHalves> {
@@ -194,7 +194,7 @@ impl PaneTransport for SshNativeTransport {
             control: Box::new(SshControl { commands, closed: closed.clone() }),
             shutdown: TransportShutdown::new(move || {
                 shutdown_closed.store(true, Ordering::Release);
-                let _ = shutdown_cmd.send(Cmd::Close);
+                let _ = shutdown_cmd.try_send(Cmd::Close);
             }),
         })
     }
@@ -225,13 +225,13 @@ impl Read for SshReader {
 }
 
 struct SshWriter {
-    commands: tokio::sync::mpsc::UnboundedSender<Cmd>,
+    commands: tokio::sync::mpsc::Sender<Cmd>,
 }
 
 impl Write for SshWriter {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         self.commands
-            .send(Cmd::Data(buf.to_vec()))
+            .blocking_send(Cmd::Data(buf.to_vec()))
             .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "SSH 通道已关闭"))?;
         Ok(buf.len())
     }
@@ -241,17 +241,17 @@ impl Write for SshWriter {
 }
 
 struct SshControl {
-    commands: tokio::sync::mpsc::UnboundedSender<Cmd>,
+    commands: tokio::sync::mpsc::Sender<Cmd>,
     closed: Arc<AtomicBool>,
 }
 
 impl TransportControl for SshControl {
     fn resize(&mut self, cols: u16, rows: u16) {
-        let _ = self.commands.send(Cmd::Resize(cols, rows));
+        let _ = self.commands.try_send(Cmd::Resize(cols, rows));
     }
     fn close(&mut self) {
         self.closed.store(true, Ordering::Release);
-        let _ = self.commands.send(Cmd::Close);
+        let _ = self.commands.try_send(Cmd::Close);
     }
 }
 
@@ -300,7 +300,7 @@ async fn run_session(
     cols: u16,
     rows: u16,
     out: tokio::sync::mpsc::Sender<Option<Vec<u8>>>,
-    mut commands: tokio::sync::mpsc::UnboundedReceiver<Cmd>,
+    mut commands: tokio::sync::mpsc::Receiver<Cmd>,
     closed: Arc<AtomicBool>,
 ) -> Result<(), String> {
     let host = effective.hostname.clone();
@@ -350,12 +350,32 @@ async fn run_session(
     await_request(&mut channel, &out).await?;
 
     loop {
+        if closed.load(Ordering::Acquire) {
+            let _ = session.disconnect(Disconnect::ByApplication, "", "closed").await;
+            return Ok(());
+        }
         tokio::select! {
             cmd = commands.recv() => {
                 match cmd {
                     Some(Cmd::Data(data)) => {
-                        if let Err(error) = channel.data(&data[..]).await {
-                            return Err(format!("写 SSH 通道失败: {error}"));
+                        let mut sending = Box::pin(channel.data(&data[..]));
+                        loop {
+                            tokio::select! {
+                                result = &mut sending => {
+                                    if let Err(error) = result {
+                                        return Err(format!("写 SSH 通道失败: {error}"));
+                                    }
+                                    break;
+                                }
+                                _ = tokio::time::sleep(Duration::from_millis(200)) => {
+                                    if closed.load(Ordering::Acquire) {
+                                        let _ = session.disconnect(
+                                            Disconnect::ByApplication, "", "closed"
+                                        ).await;
+                                        return Ok(());
+                                    }
+                                }
+                            }
                         }
                     }
                     Some(Cmd::Resize(cols, rows)) => {
@@ -382,6 +402,12 @@ async fn run_session(
                         return Ok(());
                     }
                     _ => {}
+                }
+            }
+            _ = tokio::time::sleep(Duration::from_millis(200)) => {
+                if closed.load(Ordering::Acquire) {
+                    let _ = session.disconnect(Disconnect::ByApplication, "", "closed").await;
+                    return Ok(());
                 }
             }
         }
