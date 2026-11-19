@@ -13,7 +13,12 @@
   作为 AAD 一并认证，篡改头会解密失败。
 - 内存 map：`profile_id (u64) → password`；提供 `initialize/unlock/lock/change_master/set/get/remove/clear`。
 - 锁定/未初始化时 `get` 返回错误；错密码、截断、乱码、版本不符都返回错误，不 panic。
-- 文件 0600、临时文件 + `rename` 原子写；文件里不含主密码/明文密码。
+- 文件 0600；唯一临时文件（`O_EXCL|O_NOFOLLOW`）+ `rename` + 父目录 fsync 原子写；
+  加载/写入时把既有过宽权限收紧为 0600；`<vault>.lock` 上的 `flock` 串行化跨进程
+  read-modify-write（`set/remove/clear/change_master` 锁内重读并合并/校验），文件里不含
+  主密码/明文密码。
+- 并发：多个 Tervo 进程同时写同一 vault 时不会互相丢更新；另一个进程换过主密码后，
+  旧会话的写操作返回「已被其他进程修改」，需要重新解锁，不会把新文件覆盖回旧档。
 - 设置 → Vault 页：状态、路径、Master 密码输入（masked）、Set/Change、Unlock、Lock、
   Clear（两次点击确认）、错误/提示。
 - **P1-08：Argon2id 不跑 UI 线程**。`initialize/unlock/change_master` 的派生/加解密在
@@ -39,7 +44,8 @@ ciphertext=<base64(ChaCha20-Poly1305 密文 + 16B tag)>
 
 明文是 JSON 对象 `{ "<profile_id>": "<password>", ... }`。`ciphertext=` 之前的整个头部
 （含换行）是 AEAD 的 AAD。解析器对 magic/version/KDF 名称、参数范围、salt/nonce 长度、
-base64、大小上限（4 MiB）做校验，未知字段/缺少字段一律拒绝。
+base64、大小上限（4 MiB）做校验，未知字段/缺少字段一律拒绝。KDF 参数硬上限为
+m≤65536、t≤4、p≤4；超限文件在 Argon2 派生之前快速返回 Corrupt。
 
 ## 3. SSH 密码认证链路
 
@@ -132,9 +138,9 @@ base64、大小上限（4 MiB）做校验，未知字段/缺少字段一律拒�
      环境只留 fd 号。注意当前 PTY 启动链（portable-pty）会在 `pre_exec` 里关闭所有
      `fd > 2`，需要给 `spawn` 增加 fd 白名单或改由 Tervo 主进程用 Unix socket 按次下发。
 2. **解锁后主密码/凭据在进程内存**。本 MVP 未引入 `mlock`/完整 `zeroize`；后台 KDF
-   线程会覆盖自己持有的主密码副本，`Unlocked` 的 Drop 会覆盖 key 与密码字符串，AEAD
-   明文字节也在解析后清零；但分配器/崩溃转储仍可能残留。不要在不信任的机器上长时间
-   保持解锁。
+   线程会覆盖自己持有的主密码副本，`Unlocked` 的 Drop 以及 set/remove/clear 会覆盖 key
+   与被替换/删除的密码字符串，AEAD 明文 JSON 放在 Drop 时清零的缓冲区里；但分配器/
+   崩溃转储仍可能残留。不要在不信任的机器上长时间保持解锁。
 3. **没有 Secret Service/Keyring 后端**，也没有主密码找回。忘记主密码 = 无法解密。
 4. **没有空闲自动锁定/解锁弹窗**；锁定只能手动点 Lock 或退出进程。
 5. 取消「Save password to Vault」时：Vault 已解锁会同步删除旧条目；**锁定时无法删除**，
@@ -142,8 +148,8 @@ base64、大小上限（4 MiB）做校验，未知字段/缺少字段一律拒�
 6. 错密码与密文损坏在 AEAD 层不可区分，统一报「主密码错误或文件损坏」。
 7. Clear vault 清空全部凭据但保留文件与主密码；不会删除文件本身。
 8. 备份/同步工具复制的 vault.enc 同样受主密码保护；但旧版本文件不会自动轮换主密码。
-9. 文件 `vault.enc` 0600；配置目录/`profiles.toml` 的权限没有统一收紧（Linux 默认受
-   `umask` 影响）。
+9. 文件 `vault.enc` 写入/加载时强制 0600（既有 0644 会在解锁/写入时收紧）；配置目录/
+   `profiles.toml` 的权限没有统一收紧（Linux 默认受 `umask` 影响）。
 10. **known_hosts 预检是 best-effort，不是第二套 SSH 实现**：最终认证/主机密钥握手仍由
     系统 ssh 完成。Tervo 在连接前额外做一次 `ssh-keyscan` 预检，首次连接/密钥变更时弹窗，
     用户必须显式选择「Trust & connect / Update key & connect / Once in terminal」，没有

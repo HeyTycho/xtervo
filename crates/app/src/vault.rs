@@ -18,19 +18,21 @@
 //! - key = Argon2id(主密码, salt, 32B)；
 //! - 密文 = ChaCha20-Poly1305(key, nonce, JSON `{profile_id: password}`)，
 //!   AAD 是 `ciphertext=` 之前的完整头部（magic/version/KDF 参数/salt/nonce 都被认证）；
-//! - 主密码与明文密码**不落盘、不写日志**；文件权限 0600，原子写。
+//! - 主密码与明文密码**不落盘、不写日志**；文件权限 0600，唯一临时文件 +
+//!   `O_EXCL|O_NOFOLLOW` + `rename` + 父目录 fsync；`<vault>.lock` 上的 `flock`
+//!   串行化跨进程 read-modify-write，解锁/写入时把过宽权限收紧到 0600。
 //!
 //! 安全限制（务必与 `docs/VAULT.md` 保持一致）：
-//! - 解锁后密码在进程内存中；本 MVP 未做 `mlock`/zeroize 级别防护。
+//! - 解锁后密码在进程内存中；本 MVP 只做 best-effort 清零（key、明文 JSON、
+//!   被覆盖/删除的条目），未做 `mlock`/完整 zeroize 级别防护。
 //! - 未接 Linux Secret Service/Keyring；加密文件是唯一后端。
 //! - 错密码与密文损坏在 AEAD 层不可区分，统一返回「密码错误或文件损坏」。
 //! - 与 Vault 配套的 SSH askpass 仍通过子进程环境变量传密码，同用户可经
 //!   `/proc/<pid>/environ` 观察；后续应改为继承 fd/pipe（见 `askpass.rs`）。
 
 use std::collections::BTreeMap;
-use std::io::Read;
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
 use std::thread::{self, JoinHandle};
@@ -55,6 +57,11 @@ const KEY_LEN: usize = 32;
 const KDF_M_COST: u32 = 19_456;
 const KDF_T_COST: u32 = 2;
 const KDF_P_COST: u32 = 1;
+/// 头部允许的 KDF 参数硬上限：恶意文件不能要求超大内存/CPU。
+/// 当前写入档位 19456/2/1 远低于上限，保留余量但不接受离谱参数。
+const KDF_M_MAX: u32 = 65_536;
+const KDF_T_MAX: u32 = 4;
+const KDF_P_MAX: u32 = 4;
 /// 防止被塞入超大文件/超大字段拖死 UI。
 const MAX_FILE: u64 = 4 * 1024 * 1024;
 const MAX_SECRET_LEN: usize = 4096;
@@ -95,6 +102,8 @@ pub enum VaultError {
     WrongPassword,
     /// 文件结构/版本/KDF 参数不合法。
     Corrupt(String),
+    /// 文件已被另一个进程改写（主密码或凭据已变化），当前内存会话过期。
+    Stale,
     /// 输入不合法（空密码、超长等）。
     Invalid(String),
     /// 指定 Profile 没有保存密码。
@@ -113,6 +122,7 @@ impl std::fmt::Display for VaultError {
             VaultError::AlreadyInitialized => write!(f, "Vault 已存在，不能重复初始化"),
             VaultError::WrongPassword => write!(f, "主密码错误或 vault 文件已损坏"),
             VaultError::Corrupt(m) => write!(f, "vault 文件损坏: {m}"),
+            VaultError::Stale => write!(f, "Vault 已被其他进程修改，请重新解锁"),
             VaultError::Invalid(m) => write!(f, "{m}"),
             VaultError::NotFound(id) => write!(f, "Vault 中没有 Profile {id} 的密码"),
             VaultError::Io(m) => write!(f, "vault 文件读写失败: {m}"),
@@ -136,15 +146,18 @@ struct Unlocked {
     entries: BTreeMap<u64, String>,
 }
 
+impl Unlocked {
+    /// 尽力覆盖 key 与密码字符串（Rust 分配器可能仍留旧副本，见模块文档）。
+    /// Drop 与显式清理（clear/remove/覆盖）共用同一条擦除路径。
+    fn wipe(&mut self) {
+        self.key.fill(0);
+        wipe_entries(&mut self.entries);
+    }
+}
+
 impl Drop for Unlocked {
     fn drop(&mut self) {
-        // 尽力覆盖 key 与密码字符串（Rust 分配器可能仍留旧副本，见模块文档）。
-        self.key.fill(0);
-        for (_, value) in self.entries.iter_mut() {
-            unsafe {
-                value.as_bytes_mut().fill(0);
-            }
-        }
+        self.wipe();
     }
 }
 
@@ -420,19 +433,33 @@ impl Vault {
             return Err(VaultError::Locked);
         };
         validate_secret(password)?;
-        let previous = cur.entries.insert(profile_id, password.to_string());
-        if let Err(e) = persist(&self.path, cur) {
-            match previous {
-                Some(old) => {
-                    cur.entries.insert(profile_id, old);
-                },
-                None => {
-                    cur.entries.remove(&profile_id);
-                },
-            }
-            return Err(e);
+        // 跨进程串行化：锁内重读磁盘的最新状态再合并，不能拿旧快照直接覆盖。
+        let _lock = VaultLock::acquire(&self.path)?;
+        let mut merged = match read_disk_entries(&self.path, &cur.key, &cur.salt)? {
+            DiskState::Missing => cur.entries.clone(),
+            DiskState::Stale => return Err(VaultError::Stale),
+            DiskState::Current(entries) => entries,
+        };
+        let displaced = merged.insert(profile_id, password.to_string());
+        match write_store_locked(&self.path, &cur.key, &cur.salt, &merged) {
+            Ok(()) => {
+                // 内存切到磁盘合并结果；被替换的旧副本全部擦除。
+                let mut old_memory = std::mem::replace(&mut cur.entries, merged);
+                wipe_entries(&mut old_memory);
+                if let Some(mut old) = displaced {
+                    wipe_string(&mut old);
+                }
+                Ok(())
+            },
+            Err(e) => {
+                // 写失败：磁盘未变，内存保持原样；临时合并副本必须擦除。
+                wipe_entries(&mut merged);
+                if let Some(mut old) = displaced {
+                    wipe_string(&mut old);
+                }
+                Err(e)
+            },
         }
-        Ok(())
     }
 
     /// 读取密码；锁定/未初始化返回错误。
@@ -460,14 +487,31 @@ impl Vault {
         let State::Unlocked(cur) = &mut self.state else {
             return Err(VaultError::Locked);
         };
-        let Some(old) = cur.entries.remove(&profile_id) else {
+        let _lock = VaultLock::acquire(&self.path)?;
+        let mut merged = match read_disk_entries(&self.path, &cur.key, &cur.salt)? {
+            DiskState::Missing => cur.entries.clone(),
+            DiskState::Stale => return Err(VaultError::Stale),
+            DiskState::Current(entries) => entries,
+        };
+        let Some(mut removed) = merged.remove(&profile_id) else {
+            // 磁盘上已经不存在（可能被别的进程删了）：以磁盘为准同步内存即可。
+            let mut old_memory = std::mem::replace(&mut cur.entries, merged);
+            wipe_entries(&mut old_memory);
             return Ok(false);
         };
-        if let Err(e) = persist(&self.path, cur) {
-            cur.entries.insert(profile_id, old);
-            return Err(e);
+        match write_store_locked(&self.path, &cur.key, &cur.salt, &merged) {
+            Ok(()) => {
+                let mut old_memory = std::mem::replace(&mut cur.entries, merged);
+                wipe_entries(&mut old_memory);
+                wipe_string(&mut removed);
+                Ok(true)
+            },
+            Err(e) => {
+                wipe_entries(&mut merged);
+                wipe_string(&mut removed);
+                Err(e)
+            },
         }
-        Ok(true)
     }
 
     /// 清空全部凭据（保留文件与主密码），并持久化。
@@ -475,12 +519,24 @@ impl Vault {
         let State::Unlocked(cur) = &mut self.state else {
             return Err(VaultError::Locked);
         };
-        let old = std::mem::take(&mut cur.entries);
-        if let Err(e) = persist(&self.path, cur) {
-            cur.entries = old;
-            return Err(e);
+        let _lock = VaultLock::acquire(&self.path)?;
+        // 锁内确认没有别的进程换过主密码；解出的条目只用于校验，立即擦除。
+        match read_disk_entries(&self.path, &cur.key, &cur.salt)? {
+            DiskState::Missing => {},
+            DiskState::Stale => return Err(VaultError::Stale),
+            DiskState::Current(mut entries) => wipe_entries(&mut entries),
         }
-        Ok(())
+        let mut old = std::mem::take(&mut cur.entries);
+        match write_store_locked(&self.path, &cur.key, &cur.salt, &cur.entries) {
+            Ok(()) => {
+                wipe_entries(&mut old);
+                Ok(())
+            },
+            Err(e) => {
+                cur.entries = old;
+                Err(e)
+            },
+        }
     }
 }
 
@@ -534,10 +590,7 @@ fn random_array<const N: usize>() -> [u8; N] {
 
 /// 尽力覆盖堆上的主密码副本；Rust 分配器/寄存器仍可能留旧值（见模块安全限制）。
 fn zeroize_string(value: &mut String) {
-    // SAFETY: 用 0 覆盖 UTF-8 字节是合法 UTF-8（NUL 是有效字符）。
-    unsafe {
-        value.as_bytes_mut().fill(0);
-    }
+    wipe_string(value);
 }
 
 fn derive_key(master: &str, salt: &[u8]) -> Result<[u8; KEY_LEN], VaultError> {
@@ -555,50 +608,32 @@ fn derive_key_with(
         .map_err(|e| VaultError::Corrupt(format!("Argon2 参数无效: {e}")))?;
     let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
     let mut key = [0u8; KEY_LEN];
-    argon2
-        .hash_password_into(master.as_bytes(), salt, &mut key)
-        .map_err(|e| VaultError::Internal(format!("Argon2id 派生失败: {e}")))?;
+    if let Err(e) = argon2.hash_password_into(master.as_bytes(), salt, &mut key) {
+        key.fill(0);
+        return Err(VaultError::Internal(format!("Argon2id 派生失败: {e}")));
+    }
     Ok(key)
 }
 
 /// 解锁的纯准备步骤：读文件 + 结构校验 + Argon2 + AEAD 解密。
 /// 不修改 `Vault`，可由后台线程调用；返回的 `Unlocked` 含明文凭据。
 fn prepare_unlock(path: &Path, master: &str) -> Result<Unlocked, VaultError> {
-    // 先看文件大小再读：被替换成 GB 级文件时不能让 read_to_string 先 OOM。
-    let meta = match fs::metadata(path) {
-        Ok(meta) => meta,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Err(VaultError::NotInitialized);
-        },
-        Err(e) => return Err(VaultError::Io(e.to_string())),
-    };
-    if meta.len() > MAX_FILE {
-        return Err(VaultError::Corrupt("文件超过大小上限".into()));
-    }
-    let mut file = fs::File::open(path).map_err(|e| VaultError::Io(e.to_string()))?;
-    let mut text = String::new();
-    file.take(MAX_FILE + 1)
-        .read_to_string(&mut text)
-        .map_err(|e| VaultError::Io(e.to_string()))?;
-    if text.len() as u64 > MAX_FILE {
-        return Err(VaultError::Corrupt("文件超过大小上限".into()));
-    }
+    let text = read_vault_text(path)?;
     let parsed = ParsedVault::parse(&text)?;
     let key = derive_key_with(master, &parsed.salt, parsed.m_cost, parsed.t_cost, parsed.p_cost)?;
-    let cipher = ChaCha20Poly1305::new(Key::from_slice(&key));
+    // key 先放进 Unlocked：后面解密/JSON 任一步失败，Drop 都会把它清零。
+    let mut unlocked = Unlocked { key, salt: parsed.salt, entries: BTreeMap::new() };
+    let cipher = ChaCha20Poly1305::new(Key::from_slice(&unlocked.key));
     let nonce = Nonce::from_slice(&parsed.nonce);
-    let mut plaintext = cipher
-        .decrypt(nonce, Payload { msg: &parsed.ciphertext, aad: parsed.aad })
-        .map_err(|_| VaultError::WrongPassword)?;
-    let entries: BTreeMap<u64, String> = match serde_json::from_slice(&plaintext) {
-        Ok(entries) => entries,
-        Err(e) => {
-            plaintext.fill(0);
-            return Err(VaultError::Corrupt(format!("凭据 JSON 无效: {e}")));
-        },
-    };
-    plaintext.fill(0);
-    Ok(Unlocked { key, salt: parsed.salt, entries })
+    let plaintext = ZeroizeVec::new(
+        cipher
+            .decrypt(nonce, Payload { msg: &parsed.ciphertext, aad: parsed.aad })
+            .map_err(|_| VaultError::WrongPassword)?,
+    );
+    let entries: BTreeMap<u64, String> = serde_json::from_slice(plaintext.as_slice())
+        .map_err(|e| VaultError::Corrupt(format!("凭据 JSON 无效: {e}")))?;
+    unlocked.entries = entries;
+    Ok(unlocked)
 }
 
 /// 初始化的纯准备步骤：校验参数 + 派生 key + 写空 vault。
@@ -610,7 +645,12 @@ fn prepare_initialize(path: &Path, master: &str) -> Result<Unlocked, VaultError>
     let salt = random_array::<SALT_LEN>();
     let key = derive_key(master, &salt)?;
     let unlocked = Unlocked { key, salt, entries: BTreeMap::new() };
-    persist(path, &unlocked)?;
+    // Argon2 在锁外完成；锁内再查一次，避免两个进程同时 initialize 互相覆盖。
+    let _lock = VaultLock::acquire(path)?;
+    if path.exists() {
+        return Err(VaultError::AlreadyInitialized);
+    }
+    write_store_locked(path, &unlocked.key, &unlocked.salt, &unlocked.entries)?;
     Ok(unlocked)
 }
 
@@ -623,9 +663,22 @@ fn prepare_change(
     validate_master(new_master)?;
     let salt = random_array::<SALT_LEN>();
     let key = derive_key(new_master, &salt)?;
-    // current.0 在工作线程结束时 drop（key/明文清零）。
-    let next = Unlocked { key, salt, entries: current.0.entries.clone() };
-    persist(path, &next)?;
+    let mut next = Unlocked { key, salt, entries: BTreeMap::new() };
+    // 新 key 在锁外派生；锁内重读旧文件，确认快照没有过期。
+    let _lock = VaultLock::acquire(path)?;
+    let disk_entries = match read_disk_entries(path, &current.0.key, &current.0.salt)? {
+        DiskState::Missing => return Err(VaultError::NotInitialized),
+        DiskState::Stale => return Err(VaultError::Stale),
+        DiskState::Current(entries) => entries,
+    };
+    if disk_entries != current.0.entries {
+        // 别的进程在快照之后增删了凭据：不能用旧快照覆盖新条目。
+        let mut disk_entries = disk_entries;
+        wipe_entries(&mut disk_entries);
+        return Err(VaultError::Stale);
+    }
+    next.entries = disk_entries;
+    write_store_locked(path, &next.key, &next.salt, &next.entries)?;
     Ok(next)
 }
 
@@ -707,10 +760,10 @@ impl<'a> ParsedVault<'a> {
         let m_cost = m_cost.ok_or_else(|| VaultError::Corrupt("缺少 m 参数".into()))?;
         let t_cost = t_cost.ok_or_else(|| VaultError::Corrupt("缺少 t 参数".into()))?;
         let p_cost = p_cost.ok_or_else(|| VaultError::Corrupt("缺少 p 参数".into()))?;
-        // 参数上下限：防恶意文件让 Argon2 吃掉内存/CPU。
-        if !(8192..=262_144).contains(&m_cost)
-            || !(1..=16).contains(&t_cost)
-            || !(1..=8).contains(&p_cost)
+        // 参数上下限：防恶意文件让 Argon2 吃掉内存/CPU（超限在派生之前快速失败）。
+        if !(8192..=KDF_M_MAX).contains(&m_cost)
+            || !(1..=KDF_T_MAX).contains(&t_cost)
+            || !(1..=KDF_P_MAX).contains(&p_cost)
         {
             return Err(VaultError::Corrupt(format!(
                 "Argon2 参数超出允许范围: m={m_cost} t={t_cost} p={p_cost}"
@@ -744,20 +797,204 @@ fn decode_exact<const N: usize>(value: &str, name: &str) -> Result<[u8; N], Vaul
         .map_err(|_| VaultError::Corrupt(format!("{name} 长度错误（期望 {N} 字节）")))
 }
 
-/// 序列化 + 加密 + 原子写。密钥/明文只在本函数栈上短暂存在。
-fn persist(path: &Path, unlocked: &Unlocked) -> Result<(), VaultError> {
-    let plaintext = serde_json::to_vec(&unlocked.entries)
-        .map_err(|e| VaultError::Internal(format!("凭据序列化失败: {e}")))?;
+/// 尽力清零的字节缓冲：明文 JSON / 解密结果短暂存在，Drop 时覆盖。
+struct ZeroizeVec(Vec<u8>);
+
+impl ZeroizeVec {
+    fn new(bytes: Vec<u8>) -> Self {
+        Self(bytes)
+    }
+
+    fn as_slice(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl Drop for ZeroizeVec {
+    fn drop(&mut self) {
+        self.0.fill(0);
+    }
+}
+
+/// 清零一个 String 的内容（保留长度，覆盖分配器里已有的明文）。
+fn wipe_string(value: &mut String) {
+    #[cfg(test)]
+    wipe_probe::bump();
+    // SAFETY: 用 0 覆盖 UTF-8 字节是合法 UTF-8（NUL 是有效字符）。
+    unsafe {
+        value.as_bytes_mut().fill(0);
+    }
+}
+
+fn wipe_entries(entries: &mut BTreeMap<u64, String>) {
+    for value in entries.values_mut() {
+        wipe_string(value);
+    }
+}
+
+fn parent_dir(path: &Path) -> &Path {
+    path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."))
+}
+
+fn sibling_path(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(suffix);
+    PathBuf::from(name)
+}
+
+/// 跨进程写锁：`<vault>.lock` 上的独占 `flock`。
+///
+/// 所有「读磁盘 → 改内存副本 → 原子写」的入口都必须先拿这把锁，否则两个
+/// Tervo 进程会各自基于旧快照写回，互相丢更新（第二进程 / change_master）。
+struct VaultLock {
+    file: fs::File,
+}
+
+impl VaultLock {
+    fn acquire(path: &Path) -> Result<Self, VaultError> {
+        let dir = parent_dir(path);
+        fs::create_dir_all(dir)
+            .map_err(|e| VaultError::Io(format!("创建目录 {} 失败: {e}", dir.display())))?;
+        let lock_path = sibling_path(path, ".lock");
+        let mut opts = OpenOptions::new();
+        opts.read(true).write(true).create(true).truncate(false);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+            // 锁文件不接受符号链接，避免把 flock 下到别处。
+            opts.custom_flags(libc::O_NOFOLLOW);
+        }
+        let file = opts
+            .open(&lock_path)
+            .map_err(|e| VaultError::Io(format!("打开锁文件 {} 失败: {e}", lock_path.display())))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+            loop {
+                // SAFETY: file 在作用域内有效；flock 只操作 fd。
+                let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+                if rc == 0 {
+                    break;
+                }
+                let e = std::io::Error::last_os_error();
+                if e.kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(VaultError::Io(format!(
+                    "锁定 {} 失败: {e}",
+                    lock_path.display()
+                )));
+            }
+        }
+        Ok(Self { file })
+    }
+}
+
+impl Drop for VaultLock {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+            // 关闭 fd 本身会释放 flock；显式解锁让语义更清楚。
+            unsafe {
+                libc::flock(self.file.as_raw_fd(), libc::LOCK_UN);
+            }
+        }
+        #[cfg(not(unix))]
+        let _ = &self.file;
+    }
+}
+
+/// 读 vault 文本：限制大小、顺手把过宽的文件权限收紧到 0600。
+fn read_vault_text(path: &Path) -> Result<String, VaultError> {
+    let file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(VaultError::NotInitialized);
+        },
+        Err(e) => return Err(VaultError::Io(e.to_string())),
+    };
+    let meta = file.metadata().map_err(|e| VaultError::Io(e.to_string()))?;
+    if meta.len() > MAX_FILE {
+        return Err(VaultError::Corrupt("文件超过大小上限".into()));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if meta.permissions().mode() & 0o077 != 0 {
+            // 用已打开的 fd fchmod，避免路径被替换后的 TOCTOU。
+            file.set_permissions(fs::Permissions::from_mode(0o600))
+                .map_err(|e| VaultError::Io(format!("收紧 {} 权限失败: {e}", path.display())))?;
+        }
+    }
+    let mut text = String::new();
+    file.take(MAX_FILE + 1)
+        .read_to_string(&mut text)
+        .map_err(|e| VaultError::Io(e.to_string()))?;
+    if text.len() as u64 > MAX_FILE {
+        return Err(VaultError::Corrupt("文件超过大小上限".into()));
+    }
+    Ok(text)
+}
+
+enum DiskState {
+    Missing,
+    Stale,
+    Current(BTreeMap<u64, String>),
+}
+
+/// 锁内重读磁盘并用当前内存 key 解密。salt 不同说明别的进程换了主密码，
+/// 当前会话不能继续写（否则会把新主密码覆盖回旧档）。
+fn read_disk_entries(
+    path: &Path,
+    key: &[u8; KEY_LEN],
+    salt: &[u8; SALT_LEN],
+) -> Result<DiskState, VaultError> {
+    let text = match read_vault_text(path) {
+        Ok(text) => text,
+        Err(VaultError::NotInitialized) => return Ok(DiskState::Missing),
+        Err(e) => return Err(e),
+    };
+    let parsed = ParsedVault::parse(&text)?;
+    if parsed.salt != *salt {
+        return Ok(DiskState::Stale);
+    }
+    let cipher = ChaCha20Poly1305::new(Key::from_slice(key));
+    let nonce = Nonce::from_slice(&parsed.nonce);
+    let plaintext = ZeroizeVec::new(
+        cipher
+            .decrypt(nonce, Payload { msg: &parsed.ciphertext, aad: parsed.aad })
+            .map_err(|_| {
+                VaultError::Corrupt("vault 条目无法解密（文件被并发修改或已损坏）".into())
+            })?,
+    );
+    let entries: BTreeMap<u64, String> = serde_json::from_slice(plaintext.as_slice())
+        .map_err(|e| VaultError::Corrupt(format!("凭据 JSON 无效: {e}")))?;
+    Ok(DiskState::Current(entries))
+}
+
+/// 序列化 + 加密 + 唯一临时文件原子写。调用方必须持有 [`VaultLock`]。
+fn write_store_locked(
+    path: &Path,
+    key: &[u8; KEY_LEN],
+    salt: &[u8; SALT_LEN],
+    entries: &BTreeMap<u64, String>,
+) -> Result<(), VaultError> {
+    let plaintext = ZeroizeVec::new(
+        serde_json::to_vec(entries)
+            .map_err(|e| VaultError::Internal(format!("凭据序列化失败: {e}")))?,
+    );
     let nonce_bytes = random_array::<NONCE_LEN>();
     let header = format!(
         "{MAGIC} {VERSION}\nkdf=argon2id\nm={KDF_M_COST}\nt={KDF_T_COST}\np={KDF_P_COST}\nsalt={}\nnonce={}\n",
-        B64.encode(unlocked.salt),
+        B64.encode(salt),
         B64.encode(nonce_bytes)
     );
-    let cipher = ChaCha20Poly1305::new(Key::from_slice(&unlocked.key));
+    let cipher = ChaCha20Poly1305::new(Key::from_slice(key));
     let nonce = Nonce::from_slice(&nonce_bytes);
     let ciphertext = cipher
-        .encrypt(nonce, Payload { msg: &plaintext, aad: header.as_bytes() })
+        .encrypt(nonce, Payload { msg: plaintext.as_slice(), aad: header.as_bytes() })
         .map_err(|_| VaultError::Internal("ChaCha20-Poly1305 加密失败".into()))?;
     let text = format!("{header}ciphertext={}\n", B64.encode(ciphertext));
     if text.len() as u64 > MAX_FILE {
@@ -768,41 +1005,77 @@ fn persist(path: &Path, unlocked: &Unlocked) -> Result<(), VaultError> {
     write_atomic(path, text.as_bytes())
 }
 
+/// 唯一临时文件名：`<vault>.tmp.<pid>.<随机 64bit>`，不可预测、不共享。
+fn unique_temp_path(path: &Path) -> PathBuf {
+    let nonce = u64::from_le_bytes(random_array::<8>());
+    sibling_path(path, &format!(".tmp.{}.{nonce:016x}", std::process::id()))
+}
+
 fn write_atomic(path: &Path, data: &[u8]) -> Result<(), VaultError> {
-    let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
-    fs::create_dir_all(parent).map_err(|e| {
-        VaultError::Io(format!("创建目录 {} 失败: {e}", parent.display()))
-    })?;
-    let tmp = path.with_extension("enc.tmp");
+    let parent = parent_dir(path);
+    fs::create_dir_all(parent)
+        .map_err(|e| VaultError::Io(format!("创建目录 {} 失败: {e}", parent.display())))?;
+    let tmp = unique_temp_path(path);
     let mut opts = OpenOptions::new();
-    opts.write(true).create(true).truncate(true);
+    // create_new = O_CREAT|O_EXCL：不复用/不跟随别人预先放好的路径。
+    opts.write(true).create_new(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
         opts.mode(0o600);
+        opts.custom_flags(libc::O_NOFOLLOW);
     }
     let result = (|| -> Result<(), VaultError> {
         let mut file = opts
             .open(&tmp)
-            .map_err(|e| VaultError::Io(format!("打开 {} 失败: {e}", tmp.display())))?;
+            .map_err(|e| VaultError::Io(format!("创建 {} 失败: {e}", tmp.display())))?;
         file.write_all(data)
             .map_err(|e| VaultError::Io(format!("写入 {} 失败: {e}", tmp.display())))?;
-        file.sync_all()
-            .map_err(|e| VaultError::Io(format!("同步 {} 失败: {e}", tmp.display())))?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600))
+            // fd 上 fchmod：即使路径被并发替换也不会改到别的文件。
+            file.set_permissions(fs::Permissions::from_mode(0o600))
                 .map_err(|e| VaultError::Io(format!("设置权限失败: {e}")))?;
         }
+        file.sync_all()
+            .map_err(|e| VaultError::Io(format!("同步 {} 失败: {e}", tmp.display())))?;
         fs::rename(&tmp, path)
             .map_err(|e| VaultError::Io(format!("替换 {} 失败: {e}", path.display())))?;
+        // rename 只保证目录项原子；父目录 fsync 后才保证掉电不丢新名字。
+        #[cfg(unix)]
+        {
+            let dir = fs::File::open(parent)
+                .map_err(|e| VaultError::Io(format!("打开目录 {} 失败: {e}", parent.display())))?;
+            dir.sync_all().map_err(|e| {
+                VaultError::Io(format!("同步目录 {} 失败: {e}", parent.display()))
+            })?;
+        }
         Ok(())
     })();
     if result.is_err() {
         let _ = fs::remove_file(&tmp);
     }
     result
+}
+
+/// 测试探针：统计当前线程走了多少次「清零一个字符串」的路径。
+/// 用 thread_local 避免并行测试互相干扰。
+#[cfg(test)]
+mod wipe_probe {
+    use std::cell::Cell;
+
+    thread_local! {
+        static COUNT: Cell<usize> = const { Cell::new(0) };
+    }
+
+    pub(super) fn bump() {
+        COUNT.with(|c| c.set(c.get() + 1));
+    }
+
+    pub(super) fn count() -> usize {
+        COUNT.with(|c| c.get())
+    }
 }
 
 #[cfg(test)]
@@ -1225,6 +1498,313 @@ mod tests {
         );
         drop(task);
         assert!(started.elapsed() < Duration::from_secs(1), "Drop 不能阻塞 UI");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // ---- 并发/跨进程：persist 的 read-modify-write 必须串行化并合并 ----
+
+    const CHILD_PATH_ENV: &str = "TERVO_VAULT_TEST_CHILD_PATH";
+    const CHILD_MASTER_ENV: &str = "TERVO_VAULT_TEST_CHILD_MASTER";
+
+    /// 子进程 helper：正常跑测试套件时环境变量不存在，直接返回。
+    #[test]
+    fn vault_child_set_helper() {
+        let (Ok(path), Ok(master)) =
+            (std::env::var(CHILD_PATH_ENV), std::env::var(CHILD_MASTER_ENV))
+        else {
+            return;
+        };
+        let mut v = Vault::new(path);
+        v.unlock(&master).unwrap();
+        v.set(2, "child-secret").unwrap();
+    }
+
+    fn run_child_set(path: &Path) {
+        let exe = std::env::current_exe().expect("测试二进制路径");
+        let output = std::process::Command::new(exe)
+            .args(["--exact", "vault::tests::vault_child_set_helper", "--nocapture"])
+            .env(CHILD_PATH_ENV, path)
+            .env(CHILD_MASTER_ENV, master())
+            .output()
+            .expect("启动 vault 子进程");
+        assert!(
+            output.status.success(),
+            "子进程失败: status={:?}\nstdout={}\nstderr={}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn cross_process_set_merges_stale_session() {
+        let dir = tmpdir("xproc");
+        let path = dir.join("vault.enc");
+        let mut parent = Vault::new(&path);
+        parent.initialize(master()).unwrap();
+        parent.set(1, secret()).unwrap();
+
+        // 父进程保持旧的内存快照 {1}；子进程在这个快照之外写入了 profile 2。
+        parent.lock();
+        parent.unlock(master()).unwrap();
+        run_child_set(&path);
+
+        // 父进程的 set 必须锁内重读磁盘并合并，不能把子进程的 2 覆盖掉。
+        parent.set(3, "parent-secret").unwrap();
+        assert_eq!(parent.get(2).unwrap(), "child-secret", "内存也应合并子进程写入");
+        assert_eq!(parent.get(1).unwrap(), secret());
+
+        drop(parent);
+        let mut reopened = Vault::new(&path);
+        reopened.unlock(master()).unwrap();
+        assert_eq!(reopened.get(1).unwrap(), secret());
+        assert_eq!(reopened.get(2).unwrap(), "child-secret", "跨进程更新不能被丢");
+        assert_eq!(reopened.get(3).unwrap(), "parent-secret");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn two_sessions_merge_set_and_remove_updates() {
+        let dir = tmpdir("two-sessions");
+        let path = dir.join("vault.enc");
+        let mut a = Vault::new(&path);
+        a.initialize(master()).unwrap();
+        a.set(1, secret()).unwrap();
+        let mut b = Vault::new(&path);
+        b.unlock(master()).unwrap();
+
+        // a 先写 2；b 的内存仍是 {1}，但 b 写 3 时不能把 2 抹掉。
+        a.set(2, "from-a").unwrap();
+        b.set(3, "from-b").unwrap();
+        assert_eq!(b.get(2).unwrap(), "from-a");
+
+        // a 删除 1 后，b 的下一次写入仍要保持这个删除。
+        a.remove(1).unwrap();
+        b.set(4, "again-b").unwrap();
+        assert_eq!(b.get(1).unwrap_err(), VaultError::NotFound(1));
+        assert_eq!(b.get(2).unwrap(), "from-a");
+        assert_eq!(b.get(3).unwrap(), "from-b");
+        assert_eq!(b.get(4).unwrap(), "again-b");
+
+        drop((a, b));
+        let mut reopened = Vault::new(&path);
+        reopened.unlock(master()).unwrap();
+        assert_eq!(reopened.get(1).unwrap_err(), VaultError::NotFound(1));
+        assert_eq!(reopened.get(2).unwrap(), "from-a");
+        assert_eq!(reopened.get(3).unwrap(), "from-b");
+        assert_eq!(reopened.get(4).unwrap(), "again-b");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn change_master_refuses_stale_entries_snapshot() {
+        let dir = tmpdir("stale-change");
+        let path = dir.join("vault.enc");
+        let mut a = Vault::new(&path);
+        a.initialize(master()).unwrap();
+        a.set(1, secret()).unwrap();
+        let mut b = Vault::new(&path);
+        b.unlock(master()).unwrap();
+        // a 在 b 取快照之后又写了一条；b 的 change_master 不能用陈旧快照覆盖。
+        a.set(2, "newer-entry").unwrap();
+        assert_eq!(
+            b.change_master("stale new master").unwrap_err(),
+            VaultError::Stale,
+            "陈旧快照改主密码必须失败"
+        );
+        // 文件必须仍是旧主密码 + 两条完整凭据。
+        let mut reopened = Vault::new(&path);
+        reopened.unlock(master()).unwrap();
+        assert_eq!(reopened.get(1).unwrap(), secret());
+        assert_eq!(reopened.get(2).unwrap(), "newer-entry");
+        let mut wrong = Vault::new(&path);
+        assert_eq!(wrong.unlock("stale new master").unwrap_err(), VaultError::WrongPassword);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn change_master_invalidates_other_session_credentials() {
+        let dir = tmpdir("rekey-stale-session");
+        let path = dir.join("vault.enc");
+        let mut a = Vault::new(&path);
+        a.initialize(master()).unwrap();
+        a.set(1, secret()).unwrap();
+        let mut b = Vault::new(&path);
+        b.unlock(master()).unwrap();
+        a.change_master("fresh master").unwrap();
+
+        // b 还持有旧 key：再写必须被拒绝，不能把文件改回旧主密码。
+        assert_eq!(
+            b.set(2, "must-not-land").unwrap_err(),
+            VaultError::Stale,
+            "旧会话在 rekey 后不能写"
+        );
+        assert_eq!(
+            b.remove(1).unwrap_err(),
+            VaultError::Stale,
+            "旧会话在 rekey 后不能删除"
+        );
+        let mut fresh = Vault::new(&path);
+        fresh.unlock("fresh master").unwrap();
+        assert_eq!(fresh.get(1).unwrap(), secret());
+        assert_eq!(fresh.get(2).unwrap_err(), VaultError::NotFound(2));
+        let mut old = Vault::new(&path);
+        assert_eq!(old.unlock(master()).unwrap_err(), VaultError::WrongPassword);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // ---- 临时文件/权限 ----
+
+    #[cfg(unix)]
+    #[test]
+    fn persist_does_not_follow_symlinked_legacy_tmp_file() {
+        use std::os::unix::fs::symlink;
+        let dir = tmpdir("tmp-symlink");
+        let path = dir.join("vault.enc");
+        let mut v = Vault::new(&path);
+        v.initialize(master()).unwrap();
+
+        let victim = dir.join("victim.txt");
+        fs::write(&victim, b"victim-must-survive").unwrap();
+        // 旧实现的可预测临时文件路径。
+        let legacy_tmp = path.with_extension("enc.tmp");
+        symlink(&victim, &legacy_tmp).unwrap();
+
+        v.set(1, secret()).unwrap();
+        assert_eq!(
+            fs::read(&victim).unwrap(),
+            b"victim-must-survive",
+            "persist 不得跟随可预测 tmp 路径的符号链接"
+        );
+        assert!(
+            !fs::symlink_metadata(&path).unwrap().file_type().is_symlink(),
+            "vault 文件本身被替换"
+        );
+        let mut reopened = Vault::new(&path);
+        reopened.unlock(master()).unwrap();
+        assert_eq!(reopened.get(1).unwrap(), secret());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unlock_tightens_loose_vault_file_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tmpdir("loose-perms");
+        let path = dir.join("vault.enc");
+        let mut v = Vault::new(&path);
+        v.initialize(master()).unwrap();
+        v.set(1, secret()).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+
+        let mut reopened = Vault::new(&path);
+        reopened.unlock(master()).unwrap();
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "解锁/加载时必须把过宽权限收紧到 0600");
+        assert_eq!(reopened.get(1).unwrap(), secret());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // ---- 清零 ----
+
+    #[test]
+    fn clear_remove_and_overwrite_wipe_displaced_secrets() {
+        let dir = tmpdir("wipe-paths");
+        let path = dir.join("vault.enc");
+        let mut v = Vault::new(&path);
+        v.initialize(master()).unwrap();
+        v.set(1, secret()).unwrap();
+
+        let before = wipe_probe::count();
+        v.set(1, "replacement").unwrap();
+        assert!(wipe_probe::count() > before, "覆盖旧凭据时必须擦除被替换的值");
+
+        v.set(2, "second").unwrap();
+        let before = wipe_probe::count();
+        v.remove(2).unwrap();
+        assert!(wipe_probe::count() > before, "remove 必须擦除被删除的值");
+
+        v.set(3, "third").unwrap();
+        let before = wipe_probe::count();
+        v.clear().unwrap();
+        assert!(wipe_probe::count() > before, "clear 必须擦除全部凭据");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // ---- KDF 参数上限 ----
+
+    #[test]
+    fn kdf_params_above_caps_are_rejected_before_argon2() {
+        let dir = tmpdir("kdf-caps");
+        let path = dir.join("vault.enc");
+        let mut v = Vault::new(&path);
+        v.initialize(master()).unwrap();
+        v.lock();
+        let good = fs::read_to_string(&path).unwrap();
+
+        for (name, from, to) in
+            [("m", "m=19456", "m=65537"), ("t", "t=2", "t=5"), ("p", "p=1", "p=5")]
+        {
+            let bad = good.replace(from, to);
+            assert_ne!(bad, good, "{name} fixture 未替换");
+            // 直接测 parse：它不会跑 Argon2，返回 Corrupt 就证明超限在派生之前被拒。
+            let parsed = ParsedVault::parse(&bad);
+            assert!(
+                matches!(parsed, Err(VaultError::Corrupt(_))),
+                "{name} 超限必须在 Argon2 之前拒绝"
+            );
+        }
+
+        // 边界值仍允许（不误伤合理档位）。
+        let boundary = good
+            .replace("m=19456", "m=65536")
+            .replace("t=2", "t=4")
+            .replace("p=1", "p=4");
+        assert!(ParsedVault::parse(&boundary).is_ok(), "上限边界必须允许");
+
+        let p = dir.join("m-cap.enc");
+        fs::write(&p, good.replace("m=19456", "m=65537")).unwrap();
+        let mut capped = Vault::new(&p);
+        assert!(
+            matches!(capped.unlock(master()).unwrap_err(), VaultError::Corrupt(_)),
+            "unlock 也必须快速报 Corrupt"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unlocked_wipe_zeroes_key_and_entries_in_place() {
+        let mut unlocked = Unlocked {
+            key: [0x5a; KEY_LEN],
+            salt: [0; SALT_LEN],
+            entries: BTreeMap::from([(1u64, secret().to_string())]),
+        };
+        unlocked.wipe();
+        assert_eq!(unlocked.key, [0u8; KEY_LEN], "key 必须原地清零");
+        let value = unlocked.entries.get(&1).unwrap();
+        assert!(value.as_bytes().iter().all(|b| *b == 0), "凭据字节必须被清零");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn store_lock_excludes_second_handle_until_released() {
+        use std::os::unix::io::AsRawFd;
+        let dir = tmpdir("flock");
+        let path = dir.join("vault.enc");
+        let guard = VaultLock::acquire(&path).unwrap();
+        let lock_path = sibling_path(&path, ".lock");
+        let second = OpenOptions::new().read(true).write(true).open(&lock_path).unwrap();
+        // 非阻塞探测：锁被持有时第二个 fd 必须拿不到。
+        let rc = unsafe { libc::flock(second.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        assert_eq!(rc, -1, "第二个 fd 不应在锁释放前获得 flock");
+        let err = std::io::Error::last_os_error();
+        assert_eq!(err.raw_os_error(), Some(libc::EWOULDBLOCK), "应返回 EWOULDBLOCK: {err}");
+        drop(guard);
+        let rc = unsafe { libc::flock(second.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        assert_eq!(rc, 0, "释放后第二个 fd 应能获得 flock");
+        unsafe {
+            libc::flock(second.as_raw_fd(), libc::LOCK_UN);
+        }
         let _ = fs::remove_dir_all(&dir);
     }
 
