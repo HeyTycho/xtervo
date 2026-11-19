@@ -226,7 +226,8 @@ use x11rb::protocol::damage::{self, ConnectionExt as DamageExt, ReportLevel};
 
 pub struct DamageWatcher {
     rx: crossbeam_channel::Receiver<Instant>,
-    _thread: std::thread::JoinHandle<()>,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl DamageWatcher {
@@ -253,12 +254,18 @@ impl DamageWatcher {
         conn.damage_create(damage_id, win, ReportLevel::NON_EMPTY).ok()?.check().ok()?;
         conn.flush().ok()?;
 
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stop_thread = stop.clone();
         let thread = std::thread::Builder::new()
             .name("xdamage".into())
             .spawn(move || {
+                use std::sync::atomic::Ordering;
                 loop {
-                    match conn.wait_for_event() {
-                        Ok(event) => match event {
+                    if stop_thread.load(Ordering::Acquire) {
+                        break;
+                    }
+                    match conn.poll_for_event() {
+                        Ok(Some(event)) => match event {
                             x11rb::protocol::Event::DamageNotify(e) => {
                                 let _ = conn.damage_subtract(damage_id, 0u32, 0u32);
                                 let _ = conn.flush();
@@ -270,6 +277,9 @@ impl DamageWatcher {
                             },
                             _ => {},
                         },
+                        Ok(None) => {
+                            std::thread::sleep(Duration::from_millis(20));
+                        },
                         Err(_) => break,
                     }
                 }
@@ -277,7 +287,7 @@ impl DamageWatcher {
             })
             .ok()?;
 
-        Some(Self { rx, _thread: thread })
+        Some(Self { rx, stop, thread: Some(thread) })
     }
 
     pub fn recv_timeout(&self, timeout: Duration) -> Option<Instant> {
@@ -292,6 +302,15 @@ impl DamageWatcher {
     #[allow(dead_code)]
     pub fn rx(&self) -> &crossbeam_channel::Receiver<Instant> {
         &self.rx
+    }
+}
+
+impl Drop for DamageWatcher {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Release);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
     }
 }
 

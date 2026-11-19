@@ -432,10 +432,19 @@ fn load_atoms(conn: &RustConnection) -> Result<Atoms, String> {
     })
 }
 
+fn parse_display(value: &str) -> Option<(String, u32)> {
+    let after_colon = value.rsplit(':').next()?;
+    let mut parts = after_colon.split('.');
+    let number = parts.next()?.to_string();
+    if number.is_empty() || !number.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let screen = parts.next().unwrap_or("0").parse().ok()?;
+    Some((number, screen))
+}
+
 fn display_number() -> Option<String> {
-    let display = std::env::var("DISPLAY").ok()?;
-    let after_colon = display.rsplit(':').next()?;
-    Some(after_colon.split('.').next()?.to_string())
+    parse_display(&std::env::var("DISPLAY").ok()?).map(|(number, _)| number)
 }
 
 fn xauthority_path() -> Option<std::path::PathBuf> {
@@ -522,9 +531,13 @@ mod tests {
 
     #[test]
     fn display_number_parses_host_suffix() {
-        // 只测解析函数对 `:97.0` 的处理；不依赖真实 DISPLAY。
-        let value = ":97.0";
-        let after = value.rsplit(':').next().unwrap();
-        assert_eq!(after.split('.').next().unwrap(), "97");
+        // 直接调用生产解析函数，不依赖真实 DISPLAY。
+        assert_eq!(parse_display(":97.0"), Some(("97".to_string(), 0)));
+        assert_eq!(
+            parse_display("host.example:97.2"),
+            Some(("97".to_string(), 2))
+        );
+        assert_eq!(parse_display(":0"), Some(("0".to_string(), 0)));
+        assert!(parse_display("").is_none());
     }
 }

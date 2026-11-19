@@ -51,10 +51,21 @@ fi
 echo "--- keylog ---"
 grep -E '\[key\]|\[send\]' "$LOG" || true
 
-if grep -qE '\[(key|ime)\] "你好"' "$LOG"; then
-    echo "PASS: 中文上屏字节已写入 PTY"
-else
+if ! grep -qE '\[(key|ime)\] "你好"' "$LOG"; then
     echo "FAIL: 没有捕捉到中文提交。检查 fcitx5 XIM / 输入法是否处于拼音模式"
     echo "      （XMODIFIERS=${XMODIFIERS:-未设置}）"
     exit 2
 fi
+# 不能只看 UI keylog：必须确认 UTF-8 字节真的进了 PTY（[send] bytes=...）。
+python3 - "$LOG" <<'PY'
+import re, sys
+log = open(sys.argv[1], encoding="utf-8", errors="replace").read()
+sent = []
+for m in re.finditer(r"\[send\].*?bytes=\[([0-9, ]*)\]", log):
+    sent.extend(int(x) for x in m.group(1).split(",") if x.strip())
+needle = [0xE4, 0xBD, 0xA0, 0xE5, 0xA5, 0xBD]  # 你好
+if not any(sent[i:i+len(needle)] == needle for i in range(max(0, len(sent)-len(needle)+1))):
+    print("FAIL: [key]/[ime] 有中文，但 [send] 没有写入 你好 的 UTF-8 字节", file=sys.stderr)
+    sys.exit(2)
+PY
+echo "PASS: 中文上屏字节已写入 PTY"

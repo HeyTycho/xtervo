@@ -317,13 +317,19 @@ impl McpRuntime {
                 next.enabled, next.read, next.input, next.tabs, next.destructive
             );
         }
-        if next.enabled && self.token().is_none() && !self.env_token {
+        // 每次启用/权限更新都重读 state token：磁盘被替换、权限被收紧或
+        // 先禁用再启用时，不能继续用内存里的旧值。
+        if next.enabled && !self.env_token {
             match ensure_token_file(&self.token_path) {
                 Ok(token) => {
-                    *self
+                    let old = self
                         .token
                         .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(token);
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .replace(token.clone());
+                    if old.as_deref() != Some(token.as_str()) {
+                        eprintln!("[mcp] state token 已从磁盘重新加载");
+                    }
                 },
                 Err(error) => {
                     let message = format!("state token 不可用: {error}");
@@ -615,14 +621,37 @@ fn recreate_token(path: &Path) -> io::Result<String> {
 
 fn create_token(path: &Path) -> io::Result<String> {
     let token = random_token();
-    match open_token_file(path) {
-        Ok(mut file) => {
-            file.write_all(token.as_bytes())?;
-            file.write_all(b"\n")?;
-            set_file_mode(path, 0o600)?;
+    // 不能 create_new 目标路径后慢慢写：并发读者会看到空/半截 token，触发
+    // 删除重建，最终两个进程拿到不同 token。先写唯一临时文件并 fsync，
+    // 再用 hard_link 原子发布（已存在则读赢家的完整文件）。
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "mcp.token".into());
+    let tmp = path.with_file_name(format!(
+        ".{name}.{}.{}.tmp",
+        std::process::id(),
+        random_token()
+    ));
+    let write_result = (|| -> io::Result<()> {
+        let mut file = open_token_file(&tmp)?;
+        file.write_all(token.as_bytes())?;
+        file.write_all(b"\n")?;
+        file.sync_all()?;
+        set_file_mode(&tmp, 0o600)?;
+        Ok(())
+    })();
+    if let Err(error) = write_result {
+        let _ = fs::remove_file(&tmp);
+        return Err(error);
+    }
+    match fs::hard_link(&tmp, path) {
+        Ok(()) => {
+            let _ = fs::remove_file(&tmp);
             Ok(token)
         },
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            let _ = fs::remove_file(&tmp);
             let metadata = fs::symlink_metadata(path)?;
             if !metadata.file_type().is_file() {
                 return Err(io::Error::new(
@@ -636,7 +665,10 @@ fn create_token(path: &Path) -> io::Result<String> {
                 .and_then(|text| valid_token(text.trim()))
                 .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid token file"))
         },
-        Err(error) => Err(error),
+        Err(error) => {
+            let _ = fs::remove_file(&tmp);
+            Err(error)
+        },
     }
 }
 
@@ -954,6 +986,26 @@ mod tests {
         ));
         // 坏配置 fail closed：无法确认 mcp_enabled=false 时不能开服务。
         assert!(!config_enabled_from_text("not valid toml"));
+    }
+
+    #[test]
+    fn concurrent_token_creation_sees_one_valid_token() {
+        let dir = std::env::temp_dir().join(format!(
+            "tervo-mcp-token-race-{}-{}",
+            std::process::id(),
+            crate::logging::now_ms()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("mcp.token");
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let path = path.clone();
+            handles.push(std::thread::spawn(move || ensure_token_file(&path)));
+        }
+        let tokens: Vec<String> = handles.into_iter().map(|h| h.join().unwrap().unwrap()).collect();
+        assert!(tokens.windows(2).all(|w| w[0] == w[1]), "{tokens:?}");
+        assert_eq!(read_token_file(&path).as_deref(), Some(tokens[0].as_str()));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
