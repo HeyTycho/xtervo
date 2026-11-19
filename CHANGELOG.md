@@ -6,6 +6,12 @@ Tervo 的版本与 tag 规则见 `docs/RELEASING.md`。
 
 ### Changed
 
+- native SSH 不再调用 `ssh -G`/`ssh-keygen -F`：新增纯 Rust ssh_config 与
+  known_hosts 解析（hashed host、通配、`!` 否定、`@revoked`）。
+- native SSH 支持 ProxyJump（多跳）、本地/动态/远程端口转发、agent
+  forwarding；加密私钥 passphrase 走 Vault（Profile 表单可保存）。
+- Serial 设置页支持端口枚举/Refresh/1.5s 热插拔刷新，以及 DTR/RTS 开关；
+  这些参数在打开串口时应用。
 - 连接后端改为进程内库：SSH 默认走 `russh`（password/key/agent + PTY/shell +
   resize；known_hosts 必须已确认），串口默认走 `serialport`（5-8 数据位/
   parity/stop/flow）。ProxyJump/转发/agent-forward/extra_args/加密私钥/

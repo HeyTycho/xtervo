@@ -11,11 +11,17 @@ explicit fallbacks for configurations the native stack does not cover yet.
 | `system` | system `ssh` in a PTY | Full OpenSSH config, ProxyJump, forwards, extra args. |
 | `plugin` | `ssh_plugin.rs` sidecar | POC wrapper around system `ssh`. |
 
-Native SSH automatically falls back to `system` when the profile uses
-ProxyJump, local/remote/dynamic forwards, agent forwarding, `extra_args`, an
-encrypted private key, a password not saved in Vault, or has no known_hosts
-entry. Native connects directly to the host, requests a PTY, starts the shell,
-and forwards window-size changes.
+Native SSH now supports ProxyJump (including multi-hop), local/dynamic/remote
+port forwarding, and agent forwarding. It uses a pure-Rust parser for
+`~/.ssh/config` and `known_hosts` (including hashed hosts, wildcards, `!`
+negation and `@revoked`); it no longer invokes `ssh -G` or `ssh-keygen -F`.
+
+It still falls back to `system` for `extra_args`, `ProxyCommand`, `Match`
+blocks, `IdentityFile` in ssh_config, a password not saved in Vault, or a
+known_hosts entry that is missing/revoked. Encrypted private keys use the
+Vault-stored passphrase from the Profile form. Native requests a PTY, starts
+the shell, forwards window-size changes, and keeps jump sessions alive for the
+PTY's lifetime.
 
 ## Serial
 
@@ -24,9 +30,14 @@ and forwards window-size changes.
 | empty / `native` | `serialport` in-process | 5-8 data bits, none/even/odd parity, 1/2 stop bits, none/software/hardware flow control. |
 | `socat` | external `socat` PTY bridge | 8N1 only; retained as compatibility/fallback. |
 
+The Profile form lists detected ports (`serialport::available_ports`) with a
+Refresh action; a 1.5s timer refreshes the list while the form is open, so
+plug/unplug is visible without restarting. DTR and RTS can be set per profile
+and are applied when the port opens.
+
 If native serial open fails (permissions/unsupported device), Tervo logs the
-error and falls back to the socat command. Port enumeration/hotplug and
-DTR/RTS/control-line status are not implemented yet.
+error and falls back to the socat command only for 8N1/no-flow profiles.
+Control-line *status readback* (CTS/DSR/DCD) is not exposed yet.
 
 ## Packaging
 
@@ -47,6 +58,6 @@ at runtime for simple SSH/serial profiles.
 - Installed `~/.local/bin/tervo` sha256
   `d1ec335658c242b5aa7d55b1c39c305e2912ca3ff6f2856c9297d6dbd3737ba5`.
 
-Residual external tools in the native SSH path: `ssh -G` (effective
-host/port/user/known_hosts paths) and `ssh-keygen -F` (local known_hosts
-lookup). Authentication, transport, PTY, shell and data are in-process russh.
+The native SSH path is now fully in-process for config parsing, known_hosts
+lookup, authentication, transport, PTY, shell, forwarding and agent channels.
+`ssh-keygen` is only used in unit tests to generate temporary test keys.
