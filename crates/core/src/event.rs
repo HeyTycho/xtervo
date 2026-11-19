@@ -140,12 +140,22 @@ pub struct EventSink {
     tx: Sender<CoreEvent>,
     dropped: Arc<AtomicU64>,
     wake: Option<WakeSignal>,
+    /// `Exited` 不占事件队列槽：队列满时也必须让 UI 看到退出。
+    exit_pending: Arc<AtomicBool>,
 }
 
 impl EventSink {
     pub fn new(capacity: usize) -> (Self, Receiver<CoreEvent>) {
         let (tx, rx) = bounded(capacity);
-        (Self { tx, dropped: Arc::new(AtomicU64::new(0)), wake: None }, rx)
+        (
+            Self {
+                tx,
+                dropped: Arc::new(AtomicU64::new(0)),
+                wake: None,
+                exit_pending: Arc::new(AtomicBool::new(false)),
+            },
+            rx,
+        )
     }
 
     /// 带唤醒语义事件的出口：`(sink, events, wake)`。
@@ -158,14 +168,32 @@ impl EventSink {
         let (wake, wake_rx) = WakeSignal::new();
         let (tx, rx) = bounded(capacity);
         (
-            Self { tx, dropped: Arc::new(AtomicU64::new(0)), wake: Some(wake) },
+            Self {
+                tx,
+                dropped: Arc::new(AtomicU64::new(0)),
+                wake: Some(wake),
+                exit_pending: Arc::new(AtomicBool::new(false)),
+            },
             rx,
             wake_rx,
         )
     }
 
+    /// 共享给 `PaneHandle`：drain 时补齐可能因队列满而未入队的 `Exited`。
+    pub fn exit_pending_handle(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.exit_pending)
+    }
+
     #[inline]
     pub fn send(&self, event: CoreEvent) {
+        if matches!(event, CoreEvent::Exited) {
+            // 退出事件不依赖有界队列：置位后由 drain 取出一次。
+            self.exit_pending.store(true, Ordering::SeqCst);
+            if let Some(wake) = &self.wake {
+                wake.notify();
+            }
+            return;
+        }
         match self.tx.try_send(event) {
             Ok(()) => {
                 // 有界事件通道已收到事件；唤醒合并只决定 UI 何时来看，
@@ -283,6 +311,19 @@ mod tests {
         }
         assert!(rx.try_recv().is_ok());
         assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn exited_survives_full_queue() {
+        let (sink, _rx) = EventSink::new(1);
+        sink.send(CoreEvent::Bell);
+        sink.send(CoreEvent::Bell); // queue full, dropped
+        sink.send(CoreEvent::Exited);
+        assert!(
+            sink.exit_pending_handle().load(Ordering::SeqCst),
+            "Exited must be recorded outside the bounded queue"
+        );
+        assert_eq!(sink.dropped(), 1);
     }
 
     #[test]

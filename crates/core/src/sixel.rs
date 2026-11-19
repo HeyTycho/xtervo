@@ -18,6 +18,9 @@
 pub const MAX_RAW_BYTES: usize = 25 * 1024 * 1024;
 /// 单图像素上限（16 MP）。
 pub const MAX_PIXELS: usize = 16 * 1024 * 1024;
+/// 解码中间画布（idx 1B + mask 8B/像素）的硬上限，防止在最终 16M 像素检查前
+/// 先分配数百 MiB。
+const MAX_INDEX_BYTES: usize = 64 * 1024 * 1024;
 /// 单图单边像素上限。
 pub const MAX_DIMENSION: usize = 16_384;
 /// Sixel 颜色寄存器上限（0..=255）。
@@ -636,6 +639,7 @@ pub fn decode_sixel(payload: &[u8]) -> Option<SixelImage> {
     let mut x: usize = 0;
     let mut y: usize = 0;
     let mut declared: Option<(usize, usize)> = None;
+    let mut index_bytes: usize = 0;
 
     let mut i = 0usize;
     while i < payload.len() {
@@ -649,7 +653,9 @@ pub fn decode_sixel(payload: &[u8]) -> Option<SixelImage> {
                     i += 1;
                     // 重复次数可能巨大；按剩余可用宽度截断，避免空转。
                     let count = (count as usize).min(MAX_DIMENSION.saturating_sub(x)).max(1);
-                    paint(&mut bands, x, y, bits, current, count);
+                    if !paint(&mut bands, x, y, bits, current, count, &mut index_bytes) {
+                        return None;
+                    }
                     x = (x + count).min(MAX_DIMENSION);
                 }
             },
@@ -719,7 +725,9 @@ pub fn decode_sixel(payload: &[u8]) -> Option<SixelImage> {
             },
             b'?'..=b'~' => {
                 let bits = b - 0x3f;
-                paint(&mut bands, x, y, bits, current, 1);
+                if !paint(&mut bands, x, y, bits, current, 1, &mut index_bytes) {
+                    return None;
+                }
                 x = (x + 1).min(MAX_DIMENSION);
                 i += 1;
             },
@@ -771,15 +779,35 @@ pub fn decode_sixel(payload: &[u8]) -> Option<SixelImage> {
     Some(SixelImage { width: width as u32, height: height as u32, rgba })
 }
 
-fn paint(bands: &mut Vec<Band>, x: usize, y: usize, bits: u8, color: u8, count: usize) {
+fn paint(
+    bands: &mut Vec<Band>,
+    x: usize,
+    y: usize,
+    bits: u8,
+    color: u8,
+    count: usize,
+    index_bytes: &mut usize,
+) -> bool {
     let band_index = y / 6;
     if band_index > MAX_DIMENSION / 6 {
-        return;
+        return true;
     }
     if bands.len() <= band_index {
         bands.resize_with(band_index + 1, Band::default);
     }
     let band = &mut bands[band_index];
+    let end = x.saturating_add(count).min(MAX_DIMENSION);
+    let mut growth = 0usize;
+    for bit in 0..6 {
+        if bits & (1 << bit) != 0 {
+            growth = growth.saturating_add(end.saturating_sub(band.rows[bit].idx.len()));
+        }
+    }
+    // idx 1B + mask 8B/像素；先算增长再 resize，避免超限后再分配。
+    if index_bytes.saturating_add(growth.saturating_mul(9)) > MAX_INDEX_BYTES {
+        return false;
+    }
+    *index_bytes += growth.saturating_mul(9);
     for offset in 0..count {
         let px = x + offset;
         if px >= MAX_DIMENSION {
@@ -798,6 +826,7 @@ fn paint(bands: &mut Vec<Band>, x: usize, y: usize, bits: u8, color: u8, count: 
             }
         }
     }
+    true
 }
 
 #[cfg(test)]
@@ -816,6 +845,13 @@ mod tests {
             }
         }
         (pass, images)
+    }
+
+    #[test]
+    fn huge_repeated_bands_are_rejected_before_canvas_blowup() {
+        // 200 个 16000px 宽的 band：中间 idx+mask 会超过 64MiB，必须在分配前拒绝。
+        let payload = b"!16000~-".repeat(200);
+        assert!(decode_sixel(&payload).is_none());
     }
 
     /// 2x2 红/绿图案：第 1 行红、第 2 行绿；`#` 定义 RGB。

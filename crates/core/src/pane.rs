@@ -638,6 +638,7 @@ pub struct PaneHandle {
     ctrl_tx: Sender<Ctrl>,
     pull_rx: Receiver<(u64, Box<Frame>)>,
     events_rx: Receiver<CoreEvent>,
+    exit_pending: Arc<std::sync::atomic::AtomicBool>,
     /// 语义事件唤醒（容量 1，合并）：有事件时 UI 立即 drain，400ms 仅兜底。
     events_wake_rx: Receiver<()>,
     wake_rx: Receiver<()>,
@@ -1134,12 +1135,18 @@ impl PaneHandle {
     }
 
     pub fn try_event(&self) -> Option<CoreEvent> {
+        if self.exit_pending.swap(false, Ordering::SeqCst) {
+            return Some(CoreEvent::Exited);
+        }
         self.events_rx.try_recv().ok()
     }
 
     pub fn drain_events(&self, out: &mut Vec<CoreEvent>) {
         while let Ok(ev) = self.events_rx.try_recv() {
             out.push(ev);
+        }
+        if self.exit_pending.swap(false, Ordering::SeqCst) {
+            out.push(CoreEvent::Exited);
         }
     }
 
@@ -1263,6 +1270,7 @@ pub fn spawn_with_transport(
     let (ctrl_tx, ctrl_rx) = bounded::<Ctrl>(CTRL_QUEUE);
     let (pull_tx, pull_rx) = bounded::<(u64, Box<Frame>)>(1);
     let (events_sink, events_rx, events_wake_rx) = EventSink::new_with_wake(EVENT_QUEUE);
+    let exit_pending = events_sink.exit_pending_handle();
     let (wake_signal, wake_rx) = WakeSignal::new();
 
     let stats = Arc::new(PaneStats::default());
@@ -1403,6 +1411,7 @@ pub fn spawn_with_transport(
         ctrl_tx,
         pull_rx,
         events_rx,
+        exit_pending,
         events_wake_rx,
         wake_rx,
         stats,
@@ -2113,6 +2122,8 @@ impl ImageStore {
 const KITTY_SOURCE_ID_BASE: u64 = 1 << 62;
 /// Kitty placement ID 下界。`InlineImage.id` 在 Slint presenter 里会转成
 /// i32 传点击命中，因此必须保持正 i32 范围，不能像 source_id 那样用高位段。
+const MAX_KITTY_PLACEMENTS: usize = 4096;
+
 const KITTY_PLACEMENT_ID_BASE: u64 = 1 << 30;
 const MAX_KITTY_IMAGES: usize = 256;
 const MAX_KITTY_IMAGE_BYTES: usize = 64 * 1024 * 1024;
@@ -2322,6 +2333,22 @@ impl KittyStore {
             (cursor.column.0).min(cols - 1) as u16
         };
         let fixed_row = None;
+        // p=0 的重复 place（同图/同位置/同 z）只保留一份；否则每帧重放协议
+        // 都会让 placements 无界增长。p!=0 的替换已在上面按 client id 处理。
+        if place.placement_id == 0 {
+            self.placements.retain(|existing| {
+                !(existing.client_id == 0
+                    && existing.image_id == place.image_id
+                    && existing.row_id == row_id
+                    && existing.col == col
+                    && existing.source_rect == place.source_rect
+                    && existing.z_index == place.z_index)
+            });
+        }
+        if self.placements.len() >= MAX_KITTY_PLACEMENTS {
+            // 最老的 placement 先淘汰；像素预算由 resources 单独限制。
+            self.placements.remove(0);
+        }
         self.placements.push(KittyPlacement {
             id: self.next_placement_id,
             client_id: place.placement_id,
@@ -3842,6 +3869,8 @@ impl Actor {
                     self.current_pgid = chunk_pgid;
                     self.feed(&bytes);
                 }
+                // PTY 已 EOF：录制不再可能有新字节，停止并保留 buffer 供导出。
+                self.recorder.stop();
                 // 不要立刻退出：子进程退出后 UI 仍可能拉取最后一帧并展示退出状态。
                 self.pty_closed = true;
                 self.events.send(CoreEvent::Exited);
@@ -4789,4 +4818,54 @@ mod tests {
         assert!(matches!(queue.push(vec![2u8]), Err(PushError::Full)));
         queue.close();
     }
+    #[test]
+    fn kitty_zero_id_placements_dedup_and_cap() {
+        let mut store = KittyStore::default();
+        store.resources.insert(
+            1,
+            KittyResource {
+                source_id: 7,
+                width: 10,
+                height: 10,
+                data: Arc::from(vec![0u8; 400]),
+                bytes: 400,
+            },
+        );
+        let cmd = PlacementCommand {
+            image_id: 1,
+            placement_id: 0,
+            source_rect: None,
+            columns: 0,
+            rows: 0,
+            z_index: 0,
+            cursor_movement: CursorMovement::NoMove,
+            composite: CompositePolicy::BelowText,
+            quiet: 0,
+        };
+        for _ in 0..(MAX_KITTY_PLACEMENTS + 100) {
+            store.place(
+                cmd.clone(),
+                Point::new(Line(0), Column(0)),
+                1,
+                80,
+                8,
+                16,
+            );
+        }
+        // 同图/同位置/同 z 的 p=0 只保留一份，根本到不了上限。
+        assert_eq!(store.placements.len(), 1);
+        // 换不同 row_id 才增长；超过上限后必须淘汰最老项。
+        for row in 0..(MAX_KITTY_PLACEMENTS + 50) {
+            store.place(
+                cmd.clone(),
+                Point::new(Line(0), Column(0)),
+                row as u64 + 2,
+                80,
+                8,
+                16,
+            );
+        }
+        assert_eq!(store.placements.len(), MAX_KITTY_PLACEMENTS);
+    }
+
 }

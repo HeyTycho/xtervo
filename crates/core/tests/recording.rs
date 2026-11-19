@@ -83,3 +83,32 @@ fn pane_recording_captures_raw_pty_bytes_and_exports() {
     assert_eq!(restarted.bytes, 0);
     handle.stop_recording();
 }
+
+#[test]
+fn recording_stops_when_pty_reaches_eof() {
+    use tervo_core::CoreEvent;
+    let handle = spawn(PaneConfig {
+        cols: 80,
+        rows: 24,
+        scrollback: 100,
+        shell: Some("/bin/sh".to_string()),
+        args: vec!["-c".to_string(), "sleep 0.2; exit 0".to_string()],
+        ..PaneConfig::default()
+    })
+    .expect("spawn");
+    assert!(handle.start_recording().active);
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let mut events = Vec::new();
+        handle.drain_events(&mut events);
+        if events.iter().any(|e| matches!(e, CoreEvent::Exited)) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "timeout waiting for Exited");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let status = handle.recording_status();
+    assert!(!status.active, "recorder must stop at PTY EOF: {status:?}");
+    assert!(status.stopped_at.is_some());
+}

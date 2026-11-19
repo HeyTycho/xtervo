@@ -433,13 +433,51 @@ pub fn clear_linkifiers() {
 
 /// 在内置规则无命中时运行已注册的插件 Linkifier；顺序按注册顺序。
 pub fn scan_custom(line: &str) -> Vec<Link> {
-    let list = lock_linkifiers();
+    // 克隆 Arc 列表后立刻释放锁：插件的 scan 回调里如果再 register/clear
+    // linkifier，不能在同一线程重入非可重入 Mutex（会死锁）。
+    let list: Vec<Arc<dyn Linkifier>> = {
+        let guard = lock_linkifiers();
+        guard.iter().cloned().collect()
+    };
     list.iter().flat_map(|linkifier| linkifier.scan(line)).collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    struct Reentrant;
+
+    impl Linkifier for Reentrant {
+        fn scan(&self, _line: &str) -> Vec<Link> {
+            // 旧实现持锁回调，这里会死锁。
+            let _ = register_linkifier(Arc::new(Noop));
+            Vec::new()
+        }
+    }
+
+    struct Noop;
+    impl Linkifier for Noop {
+        fn scan(&self, _line: &str) -> Vec<Link> {
+            Vec::new()
+        }
+    }
+
+    #[test]
+    fn linkifier_callback_can_register_without_deadlock() {
+        clear_linkifiers();
+        register_linkifier(Arc::new(Reentrant));
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = scan_custom("https://example.com");
+            let _ = tx.send(());
+        });
+        rx.recv_timeout(Duration::from_secs(2))
+            .expect("scan_custom deadlocked while holding the linkifier lock");
+        clear_linkifiers();
+    }
 
     fn texts(line: &str) -> Vec<String> {
         scan(line).into_iter().map(|l| l.text).collect()
