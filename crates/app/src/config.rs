@@ -819,24 +819,21 @@ impl Config {
         cfg
     }
 
-    pub fn save(&self) {
-        self.save_to(&Self::path());
+    pub fn save(&self) -> Result<(), String> {
+        self.save_to(&Self::path())
     }
 
-    /// 原子写：先写临时文件再 rename，避免半截配置。
-    pub fn save_to(&self, path: &Path) {
+    /// 原子写：先写临时文件再 rename，避免半截配置。失败必须上抛，
+    /// UI 才能提示“保存失败”，而不是继续显示成功。
+    pub fn save_to(&self, path: &Path) -> Result<(), String> {
         if let Some(dir) = path.parent() {
             if !dir.as_os_str().is_empty() {
-                let _ = std::fs::create_dir_all(dir);
+                std::fs::create_dir_all(dir)
+                    .map_err(|e| format!("创建 {} 失败: {e}", dir.display()))?;
             }
         }
-        let text = match toml::to_string_pretty(self) {
-            Ok(t) => t,
-            Err(e) => {
-                eprintln!("[config] 序列化失败: {e}");
-                return;
-            },
-        };
+        let text = toml::to_string_pretty(self)
+            .map_err(|e| format!("序列化失败: {e}"))?;
         // serde/toml 只保证数值精度，不保留末尾 0；这里把两个小数配置固定成两位小数。
         let text = format_float_line(
             text,
@@ -849,17 +846,15 @@ impl Config {
         let text = format_float_line(text, "letter_spacing", self.letter_spacing);
         let text = format_float_line(text, "render_scale", self.render_scale);
         let tmp = path.with_extension("toml.tmp");
-        if let Err(e) = std::fs::write(&tmp, &text) {
-            eprintln!("[config] 写入 {} 失败: {e}", tmp.display());
-            return;
-        }
+        std::fs::write(&tmp, &text)
+            .map_err(|e| format!("写入 {} 失败: {e}", tmp.display()))?;
         if let Err(e) = std::fs::rename(&tmp, path) {
-            eprintln!("[config] 替换 {} 失败: {e}", path.display());
             let _ = std::fs::remove_file(&tmp);
-            return;
+            return Err(format!("替换 {} 失败: {e}", path.display()));
         }
         // 告诉轮询线程“这是自己写的”，避免设置页保存后又被 watcher 套用一次。
         crate::config_watch::note_own_write(path, text.as_bytes());
+        Ok(())
     }
 
     /// 逐步迁移到当前版本。新增版本时在这里追加分支，保证可以跨多个版本一次升上来。

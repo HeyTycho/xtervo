@@ -605,7 +605,7 @@ fn toggle_sidebar(st: &mut AppState) {
     st.ui.set_sidebar_width(w);
     refresh_views(st);
     redraw_visible(st);
-    st.cfg.borrow().save();
+    save_config_or_status(st);
     eprintln!(
         "[ui] sidebar_visible={}（宽 {}px）",
         st.cfg.borrow().sidebar_visible,
@@ -1886,6 +1886,16 @@ fn tabby_config_path() -> std::path::PathBuf {
 }
 
 /// 界面文案二选一：`lang == "zh"` 用中文，否则英文（未知语言已在 config 层回退）。
+fn save_config_or_status(st: &mut AppState) -> bool {
+    let result = st.cfg.borrow().save();
+    if let Err(error) = &result {
+        eprintln!("[config] 保存失败: {error}");
+        st.ui
+            .set_config_status(format!("配置保存失败: {error}").into());
+    }
+    result.is_ok()
+}
+
 fn app_lang(st: &AppState) -> &'static str {
     st.cfg.with(|cfg| cfg.lang())
 }
@@ -3449,7 +3459,7 @@ fn reset_recording_hotkey(st: &mut AppState, id: &str) {
     let title = hotkey_title(st, id);
     let removed = commands::clear_override(&mut st.cfg.borrow_mut().hotkeys, id);
     if removed {
-        st.cfg.borrow().save();
+        save_config_or_status(st);
     }
     st.hotkey_recording = None;
     st.hotkey_pending = None;
@@ -3472,7 +3482,7 @@ fn commit_hotkey_shortcut(st: &mut AppState, id: &str, shortcut: &commands::Shor
         Ok(shortcut) => {
             let title = hotkey_title(st, id);
             commands::set_override_shortcut(&mut st.cfg.borrow_mut().hotkeys, id, &shortcut);
-            st.cfg.borrow().save();
+            save_config_or_status(st);
             st.hotkey_recording = None;
             st.hotkey_pending = None;
             st.ui.set_hotkey_error("".into());
@@ -3519,7 +3529,7 @@ fn reset_hotkey(st: &mut AppState, index: i32) {
     let title = hotkey_title(st, &id);
     let removed = commands::clear_override(&mut st.cfg.borrow_mut().hotkeys, &id);
     if removed {
-        st.cfg.borrow().save();
+        save_config_or_status(st);
     }
     if st.hotkey_recording.as_deref() == Some(id.as_str()) {
         st.hotkey_recording = None;
@@ -3541,7 +3551,7 @@ fn reset_all_hotkeys(st: &mut AppState) {
     let count = st.cfg.borrow().hotkeys.len();
     if count > 0 {
         st.cfg.borrow_mut().hotkeys.clear();
-        st.cfg.borrow().save();
+        save_config_or_status(st);
     }
     st.hotkey_recording = None;
     st.hotkey_pending = None;
@@ -3908,7 +3918,7 @@ fn commit_background_path(st: &mut AppState, raw: &str, report_error: bool) -> b
             }
             return false;
         }
-        st.cfg.borrow().save();
+        save_config_or_status(st);
         eprintln!("[theme] background_image 关闭");
         return true;
     }
@@ -3923,7 +3933,7 @@ fn commit_background_path(st: &mut AppState, raw: &str, report_error: bool) -> b
                 sync_renderer_opacity(st);
                 eprintln!("[theme] 首次启用背景图，opacity 自动设为 {FIRST_BACKGROUND_OPACITY:.2}");
             }
-            st.cfg.borrow().save();
+            save_config_or_status(st);
             eprintln!(
                 "[theme] background_image={raw} opacity={:.2}",
                 st.cfg.borrow().background_opacity
@@ -3990,7 +4000,7 @@ fn install_theme_selection(st: &mut AppState, selected: &str) -> bool {
 /// 应用用户选择的主题（"auto" 或具体 id），并写回配置。
 fn apply_theme(st: &mut AppState, selected: &str) {
     if install_theme_selection(st, selected) {
-        st.cfg.borrow().save();
+        save_config_or_status(st);
     }
 }
 
@@ -4567,7 +4577,7 @@ fn toggle_mcp_setting(st: &mut AppState, setting: McpSetting) {
             st.cfg.borrow_mut().mcp_destructive = !st.cfg.borrow_mut().mcp_destructive
         }
     }
-    st.cfg.borrow().save();
+    save_config_or_status(st);
     mcp::apply_config(&st.cfg.borrow());
     sync_mcp_ui(st);
     let permissions = mcp::runtime()
@@ -10679,7 +10689,7 @@ fn zoom_font(st: &mut AppState, delta: f32) {
     }
     st.cfg.borrow_mut().font_size = next;
     apply_font_settings(st);
-    st.cfg.borrow().save();
+    save_config_or_status(st);
     show_zoom_hud(st);
     eprintln!("[ui] font_size={next}");
 }
@@ -10690,7 +10700,7 @@ fn reset_font(st: &mut AppState) {
     }
     st.cfg.borrow_mut().font_size = 15.0;
     apply_font_settings(st);
-    st.cfg.borrow().save();
+    save_config_or_status(st);
     show_zoom_hud(st);
     eprintln!("[ui] font_size=15（重置）");
 }
@@ -10763,7 +10773,7 @@ fn apply_font_form(st: &mut AppState, mutate: impl FnOnce(&mut Config)) -> bool 
         sync_font_form_ui(st);
         return false;
     }
-    st.cfg.borrow().save();
+    save_config_or_status(st);
     sync_font_form_ui(st);
     true
 }
@@ -15692,7 +15702,7 @@ fn build_window_state(
                     repair.command, repair.chord, repair.reason
                 );
             }
-            st.cfg.borrow().save();
+            save_config_or_status(&mut st);
         }
         // 设置页工作区列表：启动时把 workspaces.toml 里的条目填进模型。
         refresh_workspace_rows(&mut st);
@@ -16272,7 +16282,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
     ui.on_sidebar_drag_finished(move || {
         runtime::with_window(window_id, |st| {
             if st.cfg.borrow().sidebar_visible {
-                st.cfg.borrow().save();
+                save_config_or_status(st);
             }
         });
     });
@@ -16748,7 +16758,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
                 !st.cfg.borrow_mut().plugin_require_signature;
             st.ui
                 .set_cfg_plugin_require_signature(st.cfg.borrow().plugin_require_signature);
-            st.cfg.borrow().save();
+            save_config_or_status(st);
             eprintln!(
                 "[plugin-v3] plugin_require_signature={}",
                 st.cfg.borrow().plugin_require_signature
@@ -16891,7 +16901,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
                             apply_font_settings(st);
                         }
                         if report.font_size.is_some() || report.hotkeys_added > 0 {
-                            st.cfg.borrow().save();
+                            save_config_or_status(st);
                         }
                         if report.hotkeys_added > 0 {
                             refresh_hotkeys(st);
@@ -17364,7 +17374,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
             // UI 星标是唯一可信来源：清掉手写的名字别名，避免 id 清空后
             // `default_profile` 又把旧项“复活”成默认。
             st.cfg.borrow_mut().default_profile.clear();
-            st.cfg.borrow().save();
+            save_config_or_status(st);
             refresh_profiles(st);
             if st.cfg.borrow().default_profile_id == 0 {
                 eprintln!("[profile] 已清除默认 Profile（新 Tab 用系统 shell）");
@@ -17459,7 +17469,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
                 let cleared = clear_default_after_remove(&mut *st.cfg.borrow_mut(), p);
                 st.profiles.borrow().save();
                 if cleared {
-                    st.cfg.borrow().save();
+                    save_config_or_status(st);
                     eprintln!("[profile] 默认 Profile id={p} 已删除，回退系统 shell");
                 }
                 refresh_profiles(st);
@@ -17517,7 +17527,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
         runtime::with_window(window_id, |st| {
             st.cfg.borrow_mut().confirm_multiline_paste = false;
             st.ui.set_cfg_confirm_paste(false);
-            st.cfg.borrow().save();
+            save_config_or_status(st);
             st.ui.set_paste_open(false);
             if let Some(text) = st.pending_paste.take() {
                 deliver_paste(st, &text);
@@ -17542,7 +17552,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
             // 旧字段统一折算到新字段，之后不再写回 true。
             st.cfg.borrow_mut().right_click_paste = false;
             st.ui.set_cfg_right_click(mode.as_str().into());
-            st.cfg.borrow().save();
+            save_config_or_status(st);
             eprintln!("[ui] right_click={mode}");
         });
     });
@@ -17552,7 +17562,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
             st.cfg.borrow_mut().paste_on_middle_click = !st.cfg.borrow_mut().paste_on_middle_click;
             st.ui
                 .set_cfg_paste_middle(st.cfg.borrow().paste_on_middle_click);
-            st.cfg.borrow().save();
+            save_config_or_status(st);
             eprintln!(
                 "[ui] paste_on_middle_click={}",
                 st.cfg.borrow().paste_on_middle_click
@@ -17570,7 +17580,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
                 .set_cfg_right_click(st.cfg.borrow().effective_right_click().into());
             st.ui
                 .set_cfg_paste_middle(st.cfg.borrow().paste_on_middle_click);
-            st.cfg.borrow().save();
+            save_config_or_status(st);
             eprintln!(
                 "[ui] confirm_multiline_paste={}",
                 st.cfg.borrow().confirm_multiline_paste
@@ -17583,7 +17593,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
             st.cfg.borrow_mut().desktop_notifications = !st.cfg.borrow_mut().desktop_notifications;
             st.ui
                 .set_cfg_desktop_notifications(st.cfg.borrow().desktop_notifications);
-            st.cfg.borrow().save();
+            save_config_or_status(st);
             eprintln!(
                 "[ui] desktop_notifications={}",
                 st.cfg.borrow().desktop_notifications
@@ -17603,7 +17613,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
                 st.bell_timer.stop();
                 refresh_all_pane_views(st);
             }
-            st.cfg.borrow().save();
+            save_config_or_status(st);
             eprintln!("[ui] visual_bell={}", st.cfg.borrow().visual_bell);
         });
     });
@@ -17612,7 +17622,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
         runtime::with_window(window_id, |st| {
             st.cfg.borrow_mut().audible_bell = !st.cfg.borrow_mut().audible_bell;
             st.ui.set_cfg_audible_bell(st.cfg.borrow().audible_bell);
-            st.cfg.borrow().save();
+            save_config_or_status(st);
             eprintln!("[ui] audible_bell={}", st.cfg.borrow().audible_bell);
         });
     });
@@ -17631,7 +17641,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
             for (_, rt, _) in &st.detached {
                 rt.handle.set_scroll_on_output(enabled);
             }
-            st.cfg.borrow().save();
+            save_config_or_status(st);
             eprintln!("[ui] scroll_on_output={enabled}");
         });
     });
@@ -17641,7 +17651,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
             st.cfg.borrow_mut().scroll_on_keystroke = !st.cfg.borrow_mut().scroll_on_keystroke;
             st.ui
                 .set_cfg_scroll_keystroke(st.cfg.borrow().scroll_on_keystroke);
-            st.cfg.borrow().save();
+            save_config_or_status(st);
             eprintln!(
                 "[ui] scroll_on_keystroke={}",
                 st.cfg.borrow().scroll_on_keystroke
@@ -17660,7 +17670,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
             for (_, rt, _) in &st.detached {
                 rt.handle.set_sixel(enabled);
             }
-            st.cfg.borrow().save();
+            save_config_or_status(st);
             eprintln!("[ui] sixel={enabled}");
         });
     });
@@ -17677,7 +17687,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
             for (_, rt, _) in &st.detached {
                 rt.handle.set_sixel_scrolling(scrolling);
             }
-            st.cfg.borrow().save();
+            save_config_or_status(st);
             eprintln!("[ui] sixel_scrolling={scrolling}");
         });
     });
@@ -17693,7 +17703,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
             for (_, rt, _) in &st.detached {
                 rt.handle.set_iip(enabled);
             }
-            st.cfg.borrow().save();
+            save_config_or_status(st);
             eprintln!("[ui] iip={enabled}");
         });
     });
@@ -17704,7 +17714,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
             st.ui.set_cfg_render_hud(st.cfg.borrow().render_hud);
             let enabled = render_hud_forced_by_env() || st.cfg.borrow().render_hud;
             set_render_hud(st, enabled);
-            st.cfg.borrow().save();
+            save_config_or_status(st);
             eprintln!(
                 "[ui] render_hud={} forced={}",
                 st.cfg.borrow().render_hud,
@@ -17718,7 +17728,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
             st.cfg.borrow_mut().scrollback_unlimited = !st.cfg.borrow_mut().scrollback_unlimited;
             st.ui
                 .set_cfg_scrollback_unlimited(st.cfg.borrow().scrollback_unlimited);
-            st.cfg.borrow().save();
+            save_config_or_status(st);
             eprintln!(
                 "[ui] scrollback_unlimited={} effective={} (仅新 pane)",
                 st.cfg.borrow().scrollback_unlimited,
@@ -17751,7 +17761,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
             st.cfg.borrow_mut().scrollbar_policy = policy.as_str().to_string();
             st.ui.set_cfg_scrollbar_policy(policy.as_str().into());
             refresh_all_pane_views(st);
-            st.cfg.borrow().save();
+            save_config_or_status(st);
             eprintln!("[ui] scrollbar_policy={}", policy.as_str());
         });
     });
@@ -17761,7 +17771,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
             let binding = keys::BackspaceBinding::from_config(&value);
             st.cfg.borrow_mut().backspace_binding = binding.as_str().to_string();
             st.ui.set_cfg_backspace_binding(binding.as_str().into());
-            st.cfg.borrow().save();
+            save_config_or_status(st);
             eprintln!("[ui] backspace_binding={}", binding.as_str());
         });
     });
@@ -17771,7 +17781,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
             let binding = keys::DeleteBinding::from_config(&value);
             st.cfg.borrow_mut().delete_binding = binding.as_str().to_string();
             st.ui.set_cfg_delete_binding(binding.as_str().into());
-            st.cfg.borrow().save();
+            save_config_or_status(st);
             eprintln!("[ui] delete_binding={}", binding.as_str());
         });
     });
@@ -18002,7 +18012,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
         runtime::with_window(window_id, |st| {
             st.cfg.borrow_mut().copy_on_select = !st.cfg.borrow_mut().copy_on_select;
             st.ui.set_cfg_copy_on_select(st.cfg.borrow().copy_on_select);
-            st.cfg.borrow().save();
+            save_config_or_status(st);
             eprintln!("[ui] copy_on_select={}", st.cfg.borrow().copy_on_select);
         });
     });
@@ -18011,7 +18021,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
         runtime::with_window(window_id, |st| {
             st.cfg.borrow_mut().confirm_close = !st.cfg.borrow_mut().confirm_close;
             st.ui.set_cfg_confirm_close(st.cfg.borrow().confirm_close);
-            st.cfg.borrow().save();
+            save_config_or_status(st);
             eprintln!("[ui] confirm_close={}", st.cfg.borrow().confirm_close);
         });
     });
@@ -18022,7 +18032,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
             let action = normalize_close_action(value.as_str());
             st.cfg.borrow_mut().close_action = action.to_string();
             st.ui.set_cfg_close_action(action.into());
-            st.cfg.borrow().save();
+            save_config_or_status(st);
             eprintln!("[ui] close_action={action}");
         });
     });
@@ -18039,7 +18049,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
                 !st.cfg.borrow_mut().restore_session_on_startup;
             st.ui
                 .set_cfg_restore_session(st.cfg.borrow().restore_session_on_startup);
-            st.cfg.borrow().save();
+            save_config_or_status(st);
             eprintln!(
                 "[ui] restore_session_on_startup={}（下次启动生效；正常退出时写快照）",
                 st.cfg.borrow().restore_session_on_startup
@@ -18271,7 +18281,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
                 return;
             }
             apply_tabbar_pos(st, next);
-            st.cfg.borrow().save();
+            save_config_or_status(st);
             eprintln!("[ui] tabbar_position={}", st.cfg.borrow().tabbar_position);
         });
     });
@@ -18301,7 +18311,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
             6 => {
                 let next = st.cfg.borrow().tabbar_pos().cycle();
                 apply_tabbar_pos(st, next);
-                st.cfg.borrow().save();
+                save_config_or_status(st);
                 eprintln!("[ui] tabbar_position={}", st.cfg.borrow().tabbar_position);
             }
             _ => {}
@@ -18374,7 +18384,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
                 return;
             }
             st.cfg.borrow_mut().language = next.clone();
-            st.cfg.borrow().save();
+            save_config_or_status(st);
             sync_language_ui(st);
             eprintln!("[ui] language={next}");
         });
@@ -18445,7 +18455,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
             st.cfg.borrow_mut().background_opacity = value;
             st.ui.set_background_opacity(value);
             sync_renderer_opacity(st);
-            st.cfg.borrow().save();
+            save_config_or_status(st);
             eprintln!("[theme] background_opacity={value:.2}（仅终端默认背景）");
         });
     });
@@ -18462,7 +18472,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
             let value = config::clamp_dim(value);
             st.cfg.borrow_mut().background_dim = value;
             st.ui.set_background_dim(value);
-            st.cfg.borrow().save();
+            save_config_or_status(st);
             eprintln!("[theme] background_dim={value:.2}");
         });
     });
@@ -18478,7 +18488,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
             st.cfg.borrow_mut().cursor_shape = next.clone();
             st.ui.set_cfg_cursor_shape(next.as_str().into());
             apply_cursor_settings(st);
-            st.cfg.borrow().save();
+            save_config_or_status(st);
             eprintln!("[appearance] cursor_shape={next}");
         });
     });
@@ -18492,7 +18502,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
             st.cfg.borrow_mut().cursor_blink = next.clone();
             st.ui.set_cfg_cursor_blink(next.as_str().into());
             configure_cursor_blink(st);
-            st.cfg.borrow().save();
+            save_config_or_status(st);
             eprintln!("[appearance] cursor_blink={next}");
         });
     });
@@ -18514,7 +18524,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
             }
             st.cfg.borrow_mut().cursor_color = next.clone();
             apply_cursor_settings(st);
-            st.cfg.borrow().save();
+            save_config_or_status(st);
             eprintln!("[appearance] cursor_color={next:?}");
         });
     });
@@ -18535,7 +18545,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
             }
             st.cfg.borrow_mut().cursor_text_color = next.clone();
             apply_cursor_settings(st);
-            st.cfg.borrow().save();
+            save_config_or_status(st);
             eprintln!("[appearance] cursor_text_color={next:?}");
         });
     });
@@ -18545,7 +18555,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
             st.cfg.borrow_mut().bold_is_bright = !st.cfg.borrow_mut().bold_is_bright;
             st.ui.set_cfg_bold_is_bright(st.cfg.borrow().bold_is_bright);
             apply_bold_settings(st);
-            st.cfg.borrow().save();
+            save_config_or_status(st);
             eprintln!(
                 "[appearance] bold_is_bright={}",
                 st.cfg.borrow().bold_is_bright
@@ -18569,7 +18579,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
             }
             st.cfg.borrow_mut().bold_color = next.clone();
             apply_bold_settings(st);
-            st.cfg.borrow().save();
+            save_config_or_status(st);
             eprintln!("[appearance] bold_color={next:?}");
         });
     });
@@ -18580,7 +18590,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
             st.ui
                 .set_cfg_bold_color_same_as_fg(st.cfg.borrow().bold_color_same_as_fg);
             apply_bold_settings(st);
-            st.cfg.borrow().save();
+            save_config_or_status(st);
             eprintln!(
                 "[appearance] bold_color_same_as_fg={}",
                 st.cfg.borrow().bold_color_same_as_fg
@@ -18596,7 +18606,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
             }
             st.cfg.borrow_mut().font_size = new;
             st.ui.set_font_size(new as i32);
-            st.cfg.borrow().save();
+            save_config_or_status(st);
             apply_font_settings(st);
             show_zoom_hud(st);
         });
@@ -18655,7 +18665,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
                 .clamp(500, UNLIMITED_SCROLLBACK_LINES as i64) as usize;
             st.cfg.borrow_mut().scrollback = new;
             st.ui.set_scrollback(new as i32);
-            st.cfg.borrow().save();
+            save_config_or_status(st);
         });
     });
 
@@ -18790,7 +18800,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
                 }
                 st.quake_visible = false;
             }
-            st.cfg.borrow().save();
+            save_config_or_status(st);
             eprintln!("[ui] quake_enabled={}", st.cfg.borrow().quake_enabled);
         });
     });

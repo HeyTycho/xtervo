@@ -576,6 +576,7 @@ fn pump_reader<R: std::io::Read>(
     pty_tx: Sender<(Vec<u8>, i32)>,
     ctrl_tx: Sender<Ctrl>,
     fg_fd: Option<std::os::unix::io::RawFd>,
+    stop: Arc<std::sync::atomic::AtomicBool>,
 ) {
     let mut buf = vec![0u8; READ_CHUNK];
     // 前台进程组快照：PTY 后端传入 master 的 dup；插件 transport 为 None。
@@ -584,6 +585,9 @@ fn pump_reader<R: std::io::Read>(
         .unwrap_or(0)
         .max(0);
     loop {
+        if stop.load(std::sync::atomic::Ordering::Relaxed) {
+            break;
+        }
         // PTY：100ms 超时也要检查前台 pgrp。否则短命子进程退出、shell/TUI
         // 没有新输出时，“回到中间层 TUI”的切换会被漏掉，残留键盘 flags。
         if let Some(fd) = fg_fd {
@@ -639,6 +643,8 @@ pub struct PaneHandle {
     pull_rx: Receiver<(u64, Box<Frame>)>,
     events_rx: Receiver<CoreEvent>,
     exit_pending: Arc<std::sync::atomic::AtomicBool>,
+    /// Drop 时置位：reader 的 100ms poll 循环看到后退出，不再无限阻塞。
+    stop: Arc<std::sync::atomic::AtomicBool>,
     /// 语义事件唤醒（容量 1，合并）：有事件时 UI 立即 drain，400ms 仅兜底。
     events_wake_rx: Receiver<()>,
     wake_rx: Receiver<()>,
@@ -1205,6 +1211,7 @@ impl PaneHandle {
 
 impl Drop for PaneHandle {
     fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
         self.send_ctrl(Ctrl::Shutdown);
         if let Some(child) = self.child.as_mut() {
             let _ = child.kill();
@@ -1267,6 +1274,7 @@ pub fn spawn_with_transport(
 
     // ---- 有界通道 ----
     let (pty_tx, pty_rx) = bounded::<(Vec<u8>, i32)>(PTY_QUEUE_CHUNKS);
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let (ctrl_tx, ctrl_rx) = bounded::<Ctrl>(CTRL_QUEUE);
     let (pull_tx, pull_rx) = bounded::<(u64, Box<Frame>)>(1);
     let (events_sink, events_rx, events_wake_rx) = EventSink::new_with_wake(EVENT_QUEUE);
@@ -1301,9 +1309,21 @@ pub fn spawn_with_transport(
         BackendControl::Plugin(_) => None,
     };
     let ctrl_tx_reader = ctrl_tx.clone();
-    let reader_thread = thread::Builder::new()
+    let stop_reader = stop.clone();
+    let reader_thread = match thread::Builder::new()
         .name("pty-reader".into())
-        .spawn(move || pump_reader(reader, pty_tx, ctrl_tx_reader, fg_fd))?;
+        .spawn(move || pump_reader(reader, pty_tx, ctrl_tx_reader, fg_fd, stop_reader))
+    {
+        Ok(thread) => thread,
+        Err(error) => {
+            // spawn 失败时闭包/其捕获的 fg_fd 已被丢弃（i32 不是 RAII）；
+            // 手动关闭 dup，避免每次启动失败泄漏一个 fd。
+            if let Some(fd) = fg_fd {
+                unsafe { libc::close(fd) };
+            }
+            return Err(error);
+        },
+    };
 
     // ---- 写线程：PTY master writer 或插件 transport 写半边 ----
     let writer_queue = write_queue.clone();
@@ -1412,6 +1432,7 @@ pub fn spawn_with_transport(
         pull_rx,
         events_rx,
         exit_pending,
+        stop,
         events_wake_rx,
         wake_rx,
         stats,
@@ -4246,7 +4267,8 @@ mod tests {
         let (mut writer, reader) = UnixStream::pair().unwrap();
         let (tx, rx) = crossbeam_channel::bounded::<(Vec<u8>, i32)>(8);
         let (ctrl_tx, ctrl_rx) = crossbeam_channel::bounded::<Ctrl>(8);
-        let handle = std::thread::spawn(move || pump_reader(reader, tx, ctrl_tx, None));
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let handle = std::thread::spawn(move || pump_reader(reader, tx, ctrl_tx, None, stop));
 
         writer.write_all(b"abc").unwrap();
         writer.write_all(b"defg").unwrap();

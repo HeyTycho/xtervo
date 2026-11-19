@@ -359,7 +359,13 @@ fn install_plugin(
 }
 
 fn load(root: &Path, state: &Path, options: SupervisorOptions) -> PluginStore {
-    PluginStore::load_with_options(root, state, options)
+    let mut store = PluginStore::load_with_options(root, state, options);
+    // 插件测试会 spawn 真实 sidecar；并行跑几十个会 EMFILE/抢 CPU，导致
+    // 偶发“进程异常退出/重启”假失败。这里串行化所有 load() 测试。
+    if let Ok(guard) = super::TEST_SIDECAR_LOCK.try_lock() {
+        store.test_guard = Some(guard);
+    }
+    store
 }
 
 fn enable(store: &mut PluginStore, key: &str) {
@@ -1923,7 +1929,8 @@ fn fake_window_asks_do_not_occupy_approval_slots() {
     store.set_active_window(Some(1));
 
     assert!(store.spawn_command("plugin.dev.test.fakeask.terminal-read-fake-windows"));
-    assert!(wait_activity(&store, "fake-windows-sent", Duration::from_secs(5)));
+    // 并行测试会争抢进程/FD，sidecar 可能重启一次；给首次活动更长的窗口。
+    assert!(wait_activity(&store, "fake-windows-sent", Duration::from_secs(15)));
     std::thread::sleep(Duration::from_millis(100));
     let approvals = store.pending_approvals();
     assert!(

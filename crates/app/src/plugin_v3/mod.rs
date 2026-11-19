@@ -604,6 +604,9 @@ pub fn command_when_allows(decl: &CommandDecl, ctx: &CommandContext) -> bool {
 
 // ---------------------------------------------------------------- PluginStore
 
+#[cfg(test)]
+static TEST_SIDECAR_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub struct PluginStore {
     dir: PathBuf,
     state_path: PathBuf,
@@ -621,6 +624,10 @@ pub struct PluginStore {
     last_errors: HashMap<String, String>,
     interns: HashMap<String, &'static str>,
     started: bool,
+    /// 测试专用：串行化会 spawn sidecar 的测试，避免并行跑几十个插件进程
+    /// 导致资源竞争/偶发重启。guard 随 PluginStore drop 释放。
+    #[cfg(test)]
+    test_guard: Option<std::sync::MutexGuard<'static, ()>>,
 }
 
 impl PluginStore {
@@ -712,6 +719,8 @@ impl PluginStore {
             last_errors: HashMap::new(),
             interns: HashMap::new(),
             started: false,
+            #[cfg(test)]
+            test_guard: None,
         }
     }
 

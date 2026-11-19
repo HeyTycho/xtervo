@@ -266,7 +266,7 @@ if child == 0:
         pass
     os.write(1, b"\x1b[>7u")
     sys.stdout.flush()
-    time.sleep(0.3)
+    time.sleep(1.0)
     os._exit(0)
 os.waitpid(child, 0)
 try:
@@ -296,7 +296,22 @@ time.sleep(5)
         ..PaneConfig::default()
     })
     .expect("spawn interactive shell");
-    std::thread::sleep(Duration::from_millis(300));
+    // 等 shell 真正可输入，而不是固定 300ms（慢 CI 会在这里 flaky）。
+    handle.input(b"echo __TERVO_READY__\n");
+    let ready_deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if handle
+            .contents()
+            .is_some_and(|text| text.contains("__TERVO_READY__"))
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < ready_deadline,
+            "shell 未在 5s 内就绪"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
 
     handle.input(format!("python3 {}\n", script.display()).as_bytes());
 
