@@ -65,7 +65,8 @@ pub fn resolve_with_paths(profile: &Profile, paths: &[PathBuf]) -> ResolvedSsh {
     let mut raw = Raw::default();
     let mut active = true;
     for path in paths {
-        parse_file(path, profile.host.trim(), &mut raw, &mut active, 0);
+        let root = config_root(path);
+        parse_file(path, profile.host.trim(), &mut raw, &mut active, &root, 0);
     }
     finish(profile, raw, true)
 }
@@ -79,7 +80,8 @@ pub fn resolve_jump(profile: &Profile) -> ResolvedSsh {
     let mut raw = Raw::default();
     let mut active = true;
     for path in &paths {
-        parse_file(path, profile.host.trim(), &mut raw, &mut active, 0);
+        let root = config_root(path);
+        parse_file(path, profile.host.trim(), &mut raw, &mut active, &root, 0);
     }
     finish(profile, raw, false)
 }
@@ -89,8 +91,9 @@ pub fn resolve_jump(profile: &Profile) -> ResolvedSsh {
 fn resolve_with_text(profile: &Profile, texts: &[&str]) -> ResolvedSsh {
     let mut raw = Raw::default();
     let mut active = true;
+    let root = Path::new(".");
     for text in texts {
-        parse_text(text, profile.host.trim(), &mut raw, &mut active, 0);
+        parse_text(text, profile.host.trim(), &mut raw, &mut active, root, 0);
     }
     finish(profile, raw, true)
 }
@@ -105,7 +108,7 @@ fn finish(profile: &Profile, raw: Raw, prefer_profile_port: bool) -> ResolvedSsh
     let port = if prefer_profile_port {
         profile.port.max(1)
     } else {
-        raw.port.unwrap_or_else(|| profile.port.max(1))
+        raw.port.unwrap_or_else(|| if profile.port == 0 { 22 } else { profile.port })
     };
     let user = profile
         .user
@@ -190,18 +193,32 @@ fn default_global_known_hosts() -> Vec<PathBuf> {
     ]
 }
 
+fn config_root(path: &Path) -> PathBuf {
+    if let Some(home) = std::env::var_os("HOME") {
+        let user = PathBuf::from(home).join(".ssh");
+        if path.starts_with(&user) {
+            return user;
+        }
+    }
+    if path.starts_with("/etc/ssh") {
+        return PathBuf::from("/etc/ssh");
+    }
+    path.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."))
+}
+
 fn parse_file(
     path: &Path,
     alias: &str,
     raw: &mut Raw,
     active: &mut bool,
+    root: &Path,
     depth: usize,
 ) {
     if depth > 8 {
         return;
     }
     let Ok(text) = std::fs::read_to_string(path) else { return };
-    parse_text_inner(&text, alias, raw, active, depth, Some(path));
+    parse_text_inner(&text, alias, raw, active, depth, Some(path), root);
 }
 
 fn parse_text(
@@ -209,9 +226,10 @@ fn parse_text(
     alias: &str,
     raw: &mut Raw,
     active: &mut bool,
+    root: &Path,
     depth: usize,
 ) {
-    parse_text_inner(text, alias, raw, active, depth, None);
+    parse_text_inner(text, alias, raw, active, depth, None, root);
 }
 
 fn parse_text_inner(
@@ -221,6 +239,7 @@ fn parse_text_inner(
     active: &mut bool,
     depth: usize,
     source: Option<&Path>,
+    root: &Path,
 ) {
     for line in text.lines() {
         let line = strip_comment(line).trim();
@@ -244,8 +263,8 @@ fn parse_text_inner(
                 if !*active {
                     continue;
                 }
-                for include in expand_includes(value, source) {
-                    parse_file(&include, alias, raw, active, depth + 1);
+                for include in expand_includes(value, source, root) {
+                    parse_file(&include, alias, raw, active, root, depth + 1);
                 }
             },
             _ if *active => apply_option(&key, value, raw),
@@ -348,17 +367,12 @@ fn expand_home(path: &str) -> PathBuf {
     PathBuf::from(path)
 }
 
-fn expand_includes(value: &str, source: Option<&Path>) -> Vec<PathBuf> {
+fn expand_includes(value: &str, source: Option<&Path>, root: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     for token in split_words(value) {
         let mut path = expand_home(&token);
         if path.is_relative() {
-            let base = source
-                .and_then(|s| s.parent())
-                .map(Path::to_path_buf)
-                .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".ssh")))
-                .unwrap_or_else(|| PathBuf::from("/etc/ssh"));
-            path = base.join(path);
+            path = root.join(path);
         }
         if token.contains('*') || token.contains('?') {
             let (dir, pattern) = match path.parent() {
@@ -530,6 +544,28 @@ mod tests {
         assert!(resolve_with_text(&p, &["Match all\n Port 22\n"]).unsupported.is_some());
         assert!(resolve_with_text(&p, &["Host *\n LocalForward 8080 localhost:80\n"]).unsupported.is_some());
         assert!(resolve_with_text(&p, &["Host *\n ProxyJump jump\n"]).proxy_jump == "jump");
+    }
+
+    #[test]
+    fn proxy_none_blocks_wildcard_and_profile_jump_wins() {
+        let p = profile("alias");
+        let r = resolve_with_text(
+            &p,
+            &["Host alias\n ProxyJump none\nHost *\n ProxyJump jump.example\n"],
+        );
+        assert!(r.proxy_jump.is_empty(), "explicit none must not be overridden");
+        let mut p = profile("alias");
+        p.proxy_jump = "profile.jump".into();
+        let r = resolve_with_text(&p, &["Host *\n ProxyJump config.jump\n"]);
+        assert_eq!(r.proxy_jump, "profile.jump");
+    }
+
+    #[test]
+    fn jump_port_defaults_to_22_without_config() {
+        let mut p = profile("jump");
+        p.port = 0;
+        let r = resolve_jump(&p);
+        assert_eq!(r.port, 22);
     }
 
     #[test]

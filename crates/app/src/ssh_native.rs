@@ -359,7 +359,9 @@ impl Handler for HostKeyHandler {
             .lock()
             .ok()
             .and_then(|map| {
-                map.get(&(connected_address.to_string(), connected_port as u16))
+                let key = (connected_address.to_string(), connected_port as u16);
+                map.get(&key)
+                    .or_else(|| map.get(&(connected_address.to_string(), 0)))
                     .cloned()
             });
         let Some(target) = target else { return Ok(()) };
@@ -567,6 +569,7 @@ async fn run_session(
             .agent_forward(true)
             .await
             .map_err(|error| format!("请求 agent forwarding 失败: {error}"))?;
+        await_request(&mut channel, &out, &closed).await?;
     }
     channel
         .request_pty(
@@ -929,6 +932,42 @@ mod integration_tests {
             Ok(())
         }
 
+        async fn tcpip_forward(
+            &mut self,
+            address: &str,
+            port: &mut u32,
+            session: &mut Session,
+        ) -> Result<bool, Self::Error> {
+            let listener = tokio::net::TcpListener::bind((address, *port as u16)).await?;
+            let assigned = listener.local_addr()?.port();
+            *port = assigned as u32;
+            let handle = session.handle();
+            let bind = address.to_string();
+            tokio::spawn(async move {
+                loop {
+                    let Ok((mut tcp, origin)) = listener.accept().await else { break };
+                    let handle = handle.clone();
+                    let bind = bind.clone();
+                    tokio::spawn(async move {
+                        let Ok(channel) = handle
+                            .channel_open_forwarded_tcpip(
+                                bind,
+                                assigned as u32,
+                                origin.ip().to_string(),
+                                origin.port() as u32,
+                            )
+                            .await
+                        else {
+                            return;
+                        };
+                        let mut stream = channel.into_stream();
+                        let _ = tokio::io::copy_bidirectional(&mut tcp, &mut stream).await;
+                    });
+                }
+            });
+            Ok(true)
+        }
+
         async fn pty_request(
             &mut self,
             channel: russh::ChannelId,
@@ -1282,6 +1321,92 @@ mod integration_tests {
         let mut echoed = [0u8; 16];
         let n = (&local).read(&mut echoed).expect("read local forward echo");
         assert_eq!(&echoed[..n], b"local-fwd");
+        transport.close();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn native_ssh_remote_forward_reaches_local_echo() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let echo_listener = rt.block_on(tokio::net::TcpListener::bind(("127.0.0.1", 0))).unwrap();
+        let echo_port = echo_listener.local_addr().unwrap().port();
+        rt.spawn(async move {
+            loop {
+                let Ok((mut tcp, _)) = echo_listener.accept().await else { break };
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 256];
+                    loop {
+                        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                        let Ok(n) = tcp.read(&mut buf).await else { break };
+                        if n == 0 || tcp.write_all(&buf[..n]).await.is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
+        });
+        let (addr, public) = start_test_server(&rt, Some(0));
+        let dir = test_path("tervo-native-ssh-rf");
+        std::fs::create_dir_all(&dir).unwrap();
+        let known = dir.join("known_hosts");
+        let key = public.split_whitespace().nth(1).unwrap();
+        std::fs::write(
+            &known,
+            format!("[127.0.0.1]:{} ssh-ed25519 {key}\n", addr.port()),
+        )
+        .unwrap();
+        let probe = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let remote_port = probe.local_addr().unwrap().port();
+        drop(probe);
+        let profile = Profile {
+            kind: "ssh".into(),
+            host: "127.0.0.1".into(),
+            port: addr.port(),
+            user: "tester".into(),
+            auth: "password".into(),
+            remote_forwards: vec![format!("127.0.0.1:{remote_port}:127.0.0.1:{echo_port}")],
+            ..Profile::default()
+        };
+        let resolved = ResolvedSsh {
+            hostname: "127.0.0.1".into(),
+            port: addr.port(),
+            user: "tester".into(),
+            proxy_jump: String::new(),
+            proxy_command: String::new(),
+            strict: "ask".into(),
+            user_known_hosts: vec![known],
+            global_known_hosts: Vec::new(),
+            host_key_alias: None,
+            forward_agent: false,
+            identity_files: Vec::new(),
+            unsupported: None,
+        };
+        let mut transport = SshNativeTransport::start_resolved(
+            &profile,
+            Some("pw".into()),
+            None,
+            80,
+            24,
+            resolved,
+        )
+        .expect("start remote forward");
+        let mut buf = [0u8; 256];
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut got = Vec::new();
+        while !got.windows(5).any(|w| w == b"READY") {
+            assert!(std::time::Instant::now() < deadline, "no READY remote forward");
+            let n = transport.read(&mut buf).expect("read READY");
+            assert!(n > 0);
+            got.extend_from_slice(&buf[..n]);
+        }
+        let mut remote = std::net::TcpStream::connect(("127.0.0.1", remote_port))
+            .expect("connect remote forward");
+        remote.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        use std::io::{Read, Write};
+        remote.write_all(b"remote-fwd").unwrap();
+        let mut echoed = [0u8; 16];
+        let n = remote.read(&mut echoed).expect("read remote forward echo");
+        assert_eq!(&echoed[..n], b"remote-fwd");
         transport.close();
         let _ = std::fs::remove_dir_all(&dir);
     }

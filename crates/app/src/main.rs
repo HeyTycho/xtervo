@@ -7180,7 +7180,7 @@ fn save_profile_form(st: &mut AppState) {
                 {
                     vault_write_error = Some(format!("密钥口令写入 Vault 失败: {error}"));
                 }
-            } else if !save_key_passphrase {
+            } else if !save_key_passphrase && !st.vault_busy {
                 match st.vault.with_mut(|vault| vault.remove_key_passphrase(id)) {
                     Ok(_) => {}
                     Err(vault::VaultError::Locked | vault::VaultError::NotInitialized) => {}
