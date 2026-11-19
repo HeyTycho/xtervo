@@ -168,18 +168,24 @@ P1 races/limits. All must be fixed before the single final install.
 - 证据：app 703 passed；core lib 172 + 集成全绿；TabBar/keyboard/pin/
   single-instance 多窗口 e2e PASS；2m soak PASS（threads 111 / fds 121 不变）。
 
-仍 open（因此**没有**更新 ~/.local/bin/tervo）：
-- **O2**：清屏与 Kitty transmit 同批的解析器索引/存储顺序。
-- **O5**：OSC 调色板查询读取批末颜色（同批 query→set→query）。
-- **C3（plugin transport 部分）**：`PaneHandle` drop 已能停 PTY reader；
-  plugin transport 的阻塞 read 还需生产路径接 `SplitTransport::with_shutdown`。
-- **C6**：写队列满时鼠标 press/release 仍可能拆散。
-- **R4**：字形越界笔画与按 cell damage 的裁剪。
-- **R6**：缺字体时 image/damage 差分测试直接 return（假绿）。
-- **T7**：FEATURE_MATRIX 只修了明显冲突行并加过时提示，未逐条重写。
-- **M2（运行中磁盘 token 替换）**：配置热更新会重读，但无独立文件 watcher。
-- SSH plugin 首次连接现在会要求先用普通 SSH 确认主机密钥（安全取舍，
-  未接回 hostkey 对话框）。
+已修（2026-11-19 下午）：
+- **O2/O5**：clear/Kitty 同批按字节序切段；OSC 4/10/11/12 查询按序列位置
+  立即回包（同批 query→set→query 与拆批一致）。core 174 lib + 集成全绿。
+- **C3**：`PaneHandle` drop 保存 `TransportHalves::shutdown`，插件阻塞 read
+  1s 内唤醒；PTY reader stop 保留。
+- **C6**：鼠标 press 预留 release 槽位；press 未入队时 release 一并丢弃，
+  满队列拖拽不再留孤立 release。
+- **R4**：GPU glyph quad/UV 裁剪到字符 cell；越界笔画局部 damage 逐字节
+  与整屏重绘一致。
+- **R6**：缺字体时差分测试显式失败，不再静默 return。
+- **M2**：`token()` 校验文件 mtime，运行中替换/删除会重读或撤销。
+- **T7**：FEATURE_MATRIX 加过时提示并修正明显冲突行；tabby-parity 的
+  SSH/Serial/会话恢复已改成真实状态（完整矩阵重写仍可作为文档 backlog）。
+
+仍记录但不阻塞安装：
+- SSH plugin 首次连接要求先用普通 SSH 确认主机密钥（安全取舍，未接
+  hostkey 对话框）。
+- T7 的矩阵逐条重写（当前已修正关键冲突并加过时提示）。
 
 这些项完成并通过最终 e2e/2m soak 后，才执行唯一一次
 `install -m 755 target/release/tervo ~/.local/bin/tervo`。
