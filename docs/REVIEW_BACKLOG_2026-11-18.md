@@ -182,7 +182,18 @@ P1 races/limits. All must be fixed before the single final install.
 - **T7**：FEATURE_MATRIX 加过时提示并修正明显冲突行；tabby-parity 的
   SSH/Serial/会话恢复已改成真实状态（完整矩阵重写仍可作为文档 backlog）。
 
-仍记录但不阻塞安装：
+最终门禁（已完成）：
+- app 704 passed；core lib 174 + 集成全绿。
+- TabBar/keyboard/pin/single-instance 多窗口 e2e（debug + release）PASS。
+- 2m soak PASS；15m `SOAK_STRICT=1` soak PASS：
+  RSS 575.0→666.8 MiB（+4.01 MiB/min，R²=0.27），threads 111 / fds 121
+  不变，fatal=0。
+- Codex 最终复审（`864ebd8 → d16ec56`）无 finding；更早复审的 1 P1 + 4 P2
+  均已修复。
+- **已安装** `~/.local/bin/tervo`，sha256
+  `34afe69bead840b6e11e40f2fd5fd738ccf6cc8ff9d9bd4e49517c2411d9eb8c`。
+
+仍记录但不阻塞：
 - SSH plugin 首次连接要求先用普通 SSH 确认主机密钥（安全取舍，未接
   hostkey 对话框）。
 - T7 的矩阵逐条重写（当前已修正关键冲突并加过时提示）。
