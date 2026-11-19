@@ -31,7 +31,7 @@ mod install_tests;
 #[cfg(test)]
 mod tests;
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -685,6 +685,7 @@ impl PluginStore {
             activity: Arc::new(Mutex::new(ActivityLog::default())),
             notices: Arc::new(Mutex::new(VecDeque::new())),
             statuses: Arc::new(Mutex::new(HashMap::new())),
+            windows: Arc::new(Mutex::new(HashSet::new())),
             surfaces: Arc::new(Mutex::new(VecDeque::new())),
             approvals: Arc::new(Mutex::new(VecDeque::new())),
             host: Arc::new(Mutex::new(HostSnapshot {
@@ -789,10 +790,42 @@ impl PluginStore {
     }
 
     /// UI 线程同步活动窗口；supervisor 用它解析缺省 `window_id`。
+    /// active 窗口一定真实存在，因此同时登记到已知窗口集合。
     pub fn set_active_window(&self, window_id: Option<u64>) {
+        if let Some(window_id) = window_id {
+            self.register_window(window_id);
+        }
         if let Ok(mut host) = self.shared.host.lock() {
             host.active_window_id = window_id;
         }
+    }
+
+    /// 登记一个真实存在的窗口；插件显式 `window_id` 必须命中该集合。
+    pub fn register_window(&self, window_id: u64) {
+        if let Ok(mut windows) = self.shared.windows.lock() {
+            windows.insert(window_id);
+        }
+    }
+
+    /// UI 线程按 `WindowRegistry` 全量同步窗口集合（每次 UI 刷新调用）。
+    /// 只保留当前真实窗口，避免已关闭 id 继续被插件命中。
+    pub fn set_known_windows(&self, window_ids: &[u64]) {
+        if let Ok(mut windows) = self.shared.windows.lock() {
+            windows.clear();
+            windows.extend(window_ids.iter().copied());
+        }
+    }
+
+    /// 测试/诊断：当前登记的窗口 id（升序）。
+    pub fn known_windows(&self) -> Vec<u64> {
+        let mut windows = self
+            .shared
+            .windows
+            .lock()
+            .map(|windows| windows.iter().copied().collect::<Vec<_>>())
+            .unwrap_or_default();
+        windows.sort_unstable();
+        windows
     }
 
     pub fn active_window(&self) -> Option<u64> {
@@ -1091,6 +1124,9 @@ impl PluginStore {
     /// 返回被取消的 ask 数；对应的插件请求收到 `UNAVAILABLE (window closed)`，
     /// 不会永远挂着等超时。
     pub fn forget_window(&self, window_id: u64) -> usize {
+        if let Ok(mut windows) = self.shared.windows.lock() {
+            windows.remove(&window_id);
+        }
         let dropped_approvals: Vec<ApprovalRequest> = {
             match self.shared.approvals.lock() {
                 Ok(mut approvals) => {
@@ -1175,27 +1211,24 @@ impl PluginStore {
 
     fn status_snapshot_inner(&self, window_id: Option<u64>) -> (u64, Vec<StatusItem>) {
         let revision = self.status_revision();
-        let statuses = self
-            .shared
-            .statuses
-            .lock()
-            .map(|statuses| statuses.clone())
-            .unwrap_or_default();
-        // 每个插件在目标窗口只显示一条：窗口专属状态覆盖全局状态。
+        // 不 clone 整张 status 表：只复制目标窗口相关的条目（每插件最多 3 条），
+        // 否则插件伪造窗口 id 时 UI 每次刷新都要复制全表。
         let mut effective: HashMap<String, (Option<u64>, StatusPayload)> = HashMap::new();
-        for ((plugin_id, target), status) in statuses {
-            let relevant = match window_id {
-                Some(window) => target.is_none() || target == Some(window),
-                None => true,
-            };
-            if !relevant {
-                continue;
-            }
-            match effective.get(&plugin_id) {
-                Some((existing, _)) if existing.is_some() && target.is_none() => {},
-                _ => {
-                    effective.insert(plugin_id.clone(), (target, status));
-                },
+        if let Ok(statuses) = self.shared.statuses.lock() {
+            for ((plugin_id, target), status) in statuses.iter() {
+                let relevant = match window_id {
+                    Some(window) => target.is_none() || *target == Some(window),
+                    None => true,
+                };
+                if !relevant {
+                    continue;
+                }
+                match effective.get(plugin_id.as_str()) {
+                    Some((existing, _)) if existing.is_some() && target.is_none() => {},
+                    _ => {
+                        effective.insert(plugin_id.clone(), (*target, status.clone()));
+                    },
+                }
             }
         }
         let mut items: Vec<StatusItem> = effective
@@ -1309,12 +1342,17 @@ impl PluginStore {
             .entry_path
             .clone()
             .ok_or_else(|| format!("{} 缺少 .wasm entry", manifest.id))?;
-        let bytes = match std::fs::read(&path) {
+        // 先 stat 再读，且最多读 MAX+1 字节：发现后文件被替换/放大也不会把
+        // 整个超大文件读进 UI 线程。
+        let bytes = match crate::plugin_wasm::read_wasm_module(
+            &path,
+            crate::plugin_wasm::MAX_WASM_BYTES,
+        ) {
             Ok(bytes) => bytes,
             Err(error) => {
-                let message = format!("读取 WASM 失败 {}: {error}", path.display());
-                self.last_errors.insert(manifest.id.clone(), message.clone());
-                return Err(message);
+                // helper 的错误文本已带路径/上限信息。
+                self.last_errors.insert(manifest.id.clone(), error.clone());
+                return Err(error);
             },
         };
         let runtime = match WasmFilterRuntime::load(&manifest.id, &bytes) {

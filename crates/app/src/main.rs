@@ -2986,10 +2986,19 @@ fn refresh_plugin_activity(st: &mut AppState, force: bool) {
 fn refresh_plugin_ui(st: &mut AppState) {
     // context.config_metadata 只包含这些非敏感字段；不读取环境变量/Vault。
     sync_plugin_config_metadata(st);
-    // supervisor 解析“缺省 window_id=active”用；registry 不在时保持上次值。
-    let active_window = runtime::registry()
-        .and_then(|registry| registry.borrow().active())
-        .map(|id| id.get());
+    // supervisor 解析 window_id 用：显式 id 必须命中 registry，缺省回退 active。
+    // registry 不在时保持上次登记的窗口集合。
+    let (known_windows, active_window) = match runtime::registry() {
+        Some(registry) => {
+            let registry = registry.borrow();
+            let ids = registry.ids().iter().map(|id| id.get()).collect::<Vec<_>>();
+            (Some(ids), registry.active().map(|id| id.get()))
+        },
+        None => (None, None),
+    };
+    if let Some(known_windows) = known_windows {
+        st.plugins.borrow().set_known_windows(&known_windows);
+    }
     st.plugins.borrow().set_active_window(active_window);
     let window_id = st.window_id.get();
     // 活动列表按 revision 增量刷新（后台线程 push 后唤醒）。

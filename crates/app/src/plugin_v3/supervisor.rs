@@ -11,7 +11,7 @@
 //! supervisor 从不阻塞 UI 线程：UI 只发消息/读共享快照。任何插件故障都只在
 //! 自己的 supervisor 内处理，不会影响终端或其它插件。
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -34,6 +34,16 @@ use super::{
 };
 
 // ---------------------------------------------------------------- 配置与运行时
+
+/// 宿主 -> 插件 stdin 写队列长度。写线程独占 pipe，supervisor 只做非阻塞入队；
+/// 队列满时命令保留 pending，由 deadline 报 timeout，而不是卡住 supervisor。
+const STDIN_QUEUE_CAPACITY: usize = 16;
+/// 每个插件最多保留的窗口专属 status 数；其余窗口回退到全局 status。
+const MAX_STATUS_WINDOWS_PER_PLUGIN: usize = 2;
+/// stderr 单行进入日志/UI 前保留的可见字符数。
+const MAX_STDERR_LINE_CHARS: usize = 512;
+/// 未知窗口/通知错误只记录前几条，避免坏插件刷爆宿主日志。
+const MAX_BAD_WINDOW_LOGS: u32 = 3;
 
 /// 生产超时/上限；测试通过 [`SupervisorOptions`] 缩短，不改变生产默认值。
 #[derive(Clone, Debug)]
@@ -220,6 +230,9 @@ pub struct SupervisorShared {
     pub notices: Arc<Mutex<VecDeque<Notice>>>,
     /// key = (plugin_id, window_id)；window_id=None 表示全局状态。
     pub statuses: Arc<Mutex<HashMap<(String, Option<u64>), StatusPayload>>>,
+    /// UI 线程同步的真实窗口集合；插件显式 window_id 必须命中，防止伪造 id
+    /// 让 status/审批表无界增长。
+    pub windows: Arc<Mutex<HashSet<u64>>>,
     pub surfaces: Arc<Mutex<VecDeque<SurfaceUpdate>>>,
     pub approvals: Arc<Mutex<VecDeque<ApprovalRequest>>>,
     pub host: Arc<Mutex<HostSnapshot>>,
@@ -317,6 +330,85 @@ enum ReaderEvent {
     Eof,
     OutputLimit,
     ReadError(String),
+}
+
+#[derive(Debug)]
+enum StdinSendError {
+    /// 有界队列已满：插件没在读 stdin，消息被丢弃（命令等 deadline 超时）。
+    QueueFull,
+    /// 写线程已退出（pipe 断开）；调用方应按 crash 处理。
+    Closed,
+    /// 单行超过协议上限 / 序列化失败（宿主侧错误）。
+    TooLarge(String),
+}
+
+impl StdinSendError {
+    fn message(&self, plugin_id: &str) -> String {
+        match self {
+            Self::QueueFull => format!(
+                "插件 {plugin_id} 未读取 stdin，写队列已满（{STDIN_QUEUE_CAPACITY} 条）"
+            ),
+            Self::Closed => format!("插件 {plugin_id} stdin 写线程已退出"),
+            Self::TooLarge(reason) => reason.clone(),
+        }
+    }
+
+    fn fatal(&self) -> bool {
+        !matches!(self, Self::QueueFull)
+    }
+}
+
+/// 非阻塞 stdin 写入句柄。
+///
+/// 旧实现直接在 supervisor 线程 `write_all`：插件停读后 pipe 满，supervisor 永久
+/// 阻塞，命令 deadline/Shutdown 都无法处理。现在写线程单独阻塞，supervisor 只
+/// 做 `try_send`，并且先登记 pending 再入队。
+struct StdinWriter {
+    tx: Sender<Vec<u8>>,
+}
+
+impl StdinWriter {
+    fn spawn(stdin: ChildStdin, plugin_id: &str) -> Self {
+        let (tx, rx) = crossbeam_channel::bounded::<Vec<u8>>(STDIN_QUEUE_CAPACITY);
+        let thread_id = plugin_id.to_string();
+        std::thread::Builder::new()
+            .name(format!("plugin-v3-in-{plugin_id}"))
+            .spawn(move || {
+                let mut writer = BufWriter::new(stdin);
+                while let Ok(line) = rx.recv() {
+                    // 写失败通常意味着子进程已退出/关闭 stdin：直接结束写线程，
+                    // 读线程会看到 EOF 并让 supervisor 走 crash 路径。
+                    if writer
+                        .write_all(&line)
+                        .and_then(|_| writer.write_all(b"\n"))
+                        .and_then(|_| writer.flush())
+                        .is_err()
+                    {
+                        eprintln!("[plugin-v3] {thread_id}: stdin 写入失败，写线程退出");
+                        break;
+                    }
+                }
+            })
+            .ok();
+        // `stdin` 已 move 进线程；这里无需保留 ChildStdin。
+        Self { tx }
+    }
+
+    fn send(&self, value: &Value, max_line_bytes: usize) -> Result<(), StdinSendError> {
+        let line = serde_json::to_vec(value)
+            .map_err(|e| StdinSendError::TooLarge(format!("序列化 JSON 失败: {e}")))?;
+        if line.len() > max_line_bytes {
+            return Err(StdinSendError::TooLarge(format!(
+                "单条消息 {} 字节超过协议上限 {max_line_bytes}",
+                line.len()
+            )));
+        }
+        match self.tx.try_send(line) {
+            Ok(()) => Ok(()),
+            Err(crossbeam_channel::TrySendError::Full(_)) => Err(StdinSendError::QueueFull),
+            Err(crossbeam_channel::TrySendError::Disconnected(_)) => Err(StdinSendError::Closed),
+        }
+    }
 }
 
 struct ApprovalDraft {
@@ -620,7 +712,7 @@ fn run_instance(
         return InstanceExit::SpawnError;
     };
 
-    let mut writer = BufWriter::new(stdin);
+    let writer = StdinWriter::spawn(stdin, &config.id);
     let (reader_tx, reader_rx) = crossbeam_channel::unbounded();
     let max_line = options.max_line_bytes;
     let max_output = options.max_output_bytes;
@@ -664,17 +756,7 @@ fn run_instance(
             "assistant": config.contributes.assistant_enabled(),
         },
     });
-    if let Err(e) = send_json(
-        &mut writer,
-        &protocol::request(init_id, protocol::M_INITIALIZE, initialize_params),
-        options.max_line_bytes,
-    ) {
-        let message = format!("写入 initialize 失败: {e}");
-        set_runtime_error(runtime, &message);
-        kill_child(&mut child);
-        return InstanceExit::Crash;
-    }
-
+    // pending 必须先登记再入队：写线程/队列任一环节卡住时，命令 deadline 仍然生效。
     let mut pending: HashMap<u64, Pending> = HashMap::new();
     pending.insert(
         init_id,
@@ -683,10 +765,21 @@ fn run_instance(
             deadline: Instant::now() + options.handshake_timeout,
         },
     );
+    if let Err(e) = writer.send(
+        &protocol::request(init_id, protocol::M_INITIALIZE, initialize_params),
+        options.max_line_bytes,
+    ) {
+        let message = format!("写入 initialize 失败: {}", e.message(&config.id));
+        set_runtime_error(runtime, &message);
+        kill_child(&mut child);
+        return InstanceExit::Crash;
+    }
+
     let mut pending_host: HashMap<u64, PendingHost> = HashMap::new();
     let mut initialized = false;
     let mut shutting_down: Option<Instant> = None;
     let mut bad_lines = 0u32;
+    let mut bad_plugin_logs = 0u32;
     let mut status_failures = 0u32;
     let mut ping_failures = 0u32;
     let mut next_status = Instant::now() + options.status_interval;
@@ -699,7 +792,7 @@ fn run_instance(
                 break InstanceExit::Shutdown;
             }
             begin_shutdown(
-                &mut writer,
+                &writer,
                 &mut pending,
                 &next_id,
                 options.max_line_bytes,
@@ -735,7 +828,7 @@ fn run_instance(
                     Ok(SupervisorMsg::Shutdown) => {
                         if initialized {
                             begin_shutdown(
-                                &mut writer,
+                                &writer,
                                 &mut pending,
                                 &next_id,
                                 options.max_line_bytes,
@@ -768,32 +861,39 @@ fn run_instance(
                                 "window_id": window_id,
                             },
                         });
-                        if let Err(e) = send_json(
-                            &mut writer,
-                            &protocol::request(id, protocol::M_COMMAND_INVOKE, params),
-                            options.max_line_bytes,
-                        ) {
-                            let _ = reply.send(CommandOutcome::Unavailable(format!(
-                                "写入插件失败: {e}"
-                            )));
-                            break InstanceExit::Crash;
-                        }
+                        // pending 先登记，再入队；队列满时保留 pending 让 deadline
+                        // 报 timeout，而不是让 supervisor 等写线程。
                         pending.insert(id, Pending {
                             kind: PendingKind::Command(reply),
                             deadline: Instant::now() + options.command_timeout,
                         });
+                        if let Err(e) = writer.send(
+                            &protocol::request(id, protocol::M_COMMAND_INVOKE, params),
+                            options.max_line_bytes,
+                        ) {
+                            eprintln!(
+                                "[plugin-v3] {}: 命令入队失败: {}",
+                                config.id,
+                                e.message(&config.id)
+                            );
+                            if e.fatal() {
+                                break InstanceExit::Crash;
+                            }
+                        }
                     },
                     Ok(SupervisorMsg::Event { event, payload }) => {
                         if !initialized || shutting_down.is_some() {
                             continue;
                         }
                         let params = protocol::event_params(event, &payload);
-                        if send_json(
-                            &mut writer,
+                        if let Err(e) = writer.send(
                             &protocol::notification(protocol::M_EVENT_DELIVER, params),
                             options.max_line_bytes,
-                        ).is_err() {
-                            break InstanceExit::Crash;
+                        ) {
+                            // 事件是可丢的：队列满时直接放弃，不能让宿主阻塞。
+                            if e.fatal() {
+                                break InstanceExit::Crash;
+                            }
                         }
                     },
                     Ok(SupervisorMsg::Action { surface, panel, window_id, element, action, value }) => {
@@ -806,12 +906,13 @@ fn run_instance(
                         });
                         if let Some(panel) = panel { params["panel"] = json!(panel); }
                         if let Some(value) = value { params["value"] = json!(value); }
-                        if send_json(
-                            &mut writer,
+                        if let Err(e) = writer.send(
                             &protocol::notification(protocol::M_UI_ACTION, params),
                             options.max_line_bytes,
-                        ).is_err() {
-                            break InstanceExit::Crash;
+                        ) {
+                            if e.fatal() {
+                                break InstanceExit::Crash;
+                            }
                         }
                     },
                     Ok(SupervisorMsg::Render { surface, panel, window_id, reply }) => {
@@ -822,18 +923,23 @@ fn run_instance(
                         let id = next_request_id(&next_id);
                         let mut params = json!({ "surface": surface, "window_id": window_id });
                         if let Some(panel) = panel.clone() { params["panel"] = json!(panel); }
-                        if let Err(e) = send_json(
-                            &mut writer,
-                            &protocol::request(id, protocol::M_SURFACE_RENDER, params),
-                            options.max_line_bytes,
-                        ) {
-                            let _ = reply.send(Err(format!("写入插件失败: {e}")));
-                            break InstanceExit::Crash;
-                        }
                         pending.insert(id, Pending {
                             kind: PendingKind::Surface(reply),
                             deadline: Instant::now() + options.surface_timeout,
                         });
+                        if let Err(e) = writer.send(
+                            &protocol::request(id, protocol::M_SURFACE_RENDER, params),
+                            options.max_line_bytes,
+                        ) {
+                            eprintln!(
+                                "[plugin-v3] {}: surface.render 入队失败: {}",
+                                config.id,
+                                e.message(&config.id)
+                            );
+                            if e.fatal() {
+                                break InstanceExit::Crash;
+                            }
+                        }
                     },
                     Ok(SupervisorMsg::HostReply { id, outcome }) => {
                         let Some(host) = pending_host.remove(&id) else {
@@ -856,8 +962,15 @@ fn run_instance(
                             ),
                         };
                         remove_approval(shared, &config.id, id);
-                        if send_json(&mut writer, &response, options.max_line_bytes).is_err() {
-                            break InstanceExit::Crash;
+                        if let Err(e) = writer.send(&response, options.max_line_bytes) {
+                            eprintln!(
+                                "[plugin-v3] {}: host reply 入队失败: {}",
+                                config.id,
+                                e.message(&config.id)
+                            );
+                            if e.fatal() {
+                                break InstanceExit::Crash;
+                            }
                         }
                     },
                     Err(_) => {
@@ -900,7 +1013,11 @@ fn run_instance(
                                 match request.kind {
                                     PendingKind::Initialize => {
                                         if let Some(error) = error {
-                                            let message = format!("initialize 失败: {} ({})", error.message, error.code);
+                                            let message = format!(
+                                                "initialize 失败: {} ({})",
+                                                sanitize_plugin_text(&error.message, 400),
+                                                error.code
+                                            );
                                             set_runtime_error(runtime, &message);
                                             break InstanceExit::Protocol;
                                         }
@@ -910,11 +1027,15 @@ fn run_instance(
                                             break InstanceExit::Protocol;
                                         }
                                         initialized = true;
-                                        if send_json(
-                                            &mut writer,
+                                        if let Err(e) = writer.send(
                                             &protocol::notification(protocol::M_INITIALIZED, json!({})),
                                             options.max_line_bytes,
-                                        ).is_err() {
+                                        ) {
+                                            eprintln!(
+                                                "[plugin-v3] {}: 写入 initialized 失败: {}",
+                                                config.id,
+                                                e.message(&config.id)
+                                            );
                                             break InstanceExit::Crash;
                                         }
                                         publish_runtime(
@@ -937,7 +1058,8 @@ fn run_instance(
                                         let outcome = match (result, error) {
                                             (_, Some(error)) => CommandOutcome::Error(format!(
                                                 "{} (code {})",
-                                                error.message, error.code
+                                                sanitize_plugin_text(&error.message, 400),
+                                                error.code
                                             )),
                                             (Some(result), None) => {
                                                 let (ok, text) = format_command_result(&result);
@@ -951,29 +1073,62 @@ fn run_instance(
                                         match result.as_ref().map(parse_status_payload) {
                                             Some(Ok(status)) => {
                                                 status_failures = 0;
-                                                let window = status.window_id;
+                                                // status.get 是宿主轮询：没有显式 window_id 时
+                                                // 必须保持全局（None），不能回退 active。
+                                                let window = match status.window_id {
+                                                    Some(raw) => match resolve_window_id(shared, Some(raw)) {
+                                                        Ok(window) => window,
+                                                        Err(error) => {
+                                                            if bad_plugin_logs < MAX_BAD_WINDOW_LOGS {
+                                                                eprintln!(
+                                                                    "[plugin-v3] {}: 丢弃 status.get 结果: {error}",
+                                                                    config.id
+                                                                );
+                                                                bad_plugin_logs += 1;
+                                                            }
+                                                            continue;
+                                                        },
+                                                    },
+                                                    None => None,
+                                                };
                                                 publish_status(shared, &config.id, window, Some(status));
                                             },
                                             Some(Err(e)) => {
-                                                eprintln!("[plugin-v3] {}: status.get 结果非法: {e}", config.id);
+                                                eprintln!(
+                                                    "[plugin-v3] {}: status.get 结果非法: {}",
+                                                    config.id,
+                                                    sanitize_plugin_text(&e, 400)
+                                                );
                                             },
                                             None => {
                                                 let message = error.map(|e| e.message).unwrap_or_else(|| "空响应".into());
-                                                eprintln!("[plugin-v3] {}: status.get 失败: {message}", config.id);
+                                                eprintln!(
+                                                    "[plugin-v3] {}: status.get 失败: {}",
+                                                    config.id,
+                                                    sanitize_plugin_text(&message, 400)
+                                                );
                                             },
                                         }
                                     },
                                     PendingKind::Ping => {
                                         if let Some(error) = error {
                                             ping_failures += 1;
-                                            eprintln!("[plugin-v3] {}: ping 失败: {} ({ping_failures}/2)", config.id, error.message);
+                                            eprintln!(
+                                                "[plugin-v3] {}: ping 失败: {} ({ping_failures}/2)",
+                                                config.id,
+                                                sanitize_plugin_text(&error.message, 400)
+                                            );
                                         } else {
                                             ping_failures = 0;
                                         }
                                     },
                                     PendingKind::Surface(reply) => {
                                         let parsed = match (result, error) {
-                                            (_, Some(error)) => Err(format!("{} ({})", error.message, error.code)),
+                                            (_, Some(error)) => Err(format!(
+                                                "{} ({})",
+                                                sanitize_plugin_text(&error.message, 400),
+                                                error.code
+                                            )),
                                             (Some(result), None) => parse_surface_doc(&result),
                                             (None, None) => Err("插件返回空 UI 文档".into()),
                                         };
@@ -991,7 +1146,7 @@ fn run_instance(
                                         &id,
                                         &RpcError::new(error_code::INVALID_REQUEST, "plugin -> host request id 必须是 u64"),
                                     );
-                                    if send_json(&mut writer, &response, options.max_line_bytes).is_err() {
+                                    if writer.send(&response, options.max_line_bytes).is_err() {
                                         break InstanceExit::Crash;
                                     }
                                     continue;
@@ -1009,7 +1164,7 @@ fn run_instance(
                                     initialized,
                                 ) {
                                     HostRequestAction::Respond(value) => {
-                                        if send_json(&mut writer, &value, options.max_line_bytes).is_err() {
+                                        if writer.send(&value, options.max_line_bytes).is_err() {
                                             break InstanceExit::Crash;
                                         }
                                     },
@@ -1028,7 +1183,13 @@ fn run_instance(
                                     shared,
                                     &mut notify_window,
                                 ) {
-                                    eprintln!("[plugin-v3] {}: 忽略通知 {method}: {e}", config.id);
+                                    if bad_plugin_logs < MAX_BAD_WINDOW_LOGS {
+                                        eprintln!(
+                                            "[plugin-v3] {}: 忽略通知 {method}: {e}",
+                                            config.id
+                                        );
+                                        bad_plugin_logs += 1;
+                                    }
                                 }
                             },
                         }
@@ -1072,32 +1233,44 @@ fn run_instance(
             {
                 next_status = now + options.status_interval;
                 let id = next_request_id(&next_id);
-                if send_json(
-                    &mut writer,
-                    &protocol::request(id, protocol::M_STATUS_GET, json!({})),
-                    options.max_line_bytes,
-                ).is_err() {
-                    break InstanceExit::Crash;
-                }
                 pending.insert(id, Pending {
                     kind: PendingKind::Status,
                     deadline: now + options.status_timeout,
                 });
+                if let Err(e) = writer.send(
+                    &protocol::request(id, protocol::M_STATUS_GET, json!({})),
+                    options.max_line_bytes,
+                ) {
+                    eprintln!(
+                        "[plugin-v3] {}: status.get 入队失败: {}",
+                        config.id,
+                        e.message(&config.id)
+                    );
+                    if e.fatal() {
+                        break InstanceExit::Crash;
+                    }
+                }
             }
             if now >= next_ping {
                 next_ping = now + options.ping_interval;
                 let id = next_request_id(&next_id);
-                if send_json(
-                    &mut writer,
-                    &protocol::request(id, protocol::M_PING, json!({ "seq": id })),
-                    options.max_line_bytes,
-                ).is_err() {
-                    break InstanceExit::Crash;
-                }
                 pending.insert(id, Pending {
                     kind: PendingKind::Ping,
                     deadline: now + options.ping_timeout,
                 });
+                if let Err(e) = writer.send(
+                    &protocol::request(id, protocol::M_PING, json!({ "seq": id })),
+                    options.max_line_bytes,
+                ) {
+                    eprintln!(
+                        "[plugin-v3] {}: ping 入队失败: {}",
+                        config.id,
+                        e.message(&config.id)
+                    );
+                    if e.fatal() {
+                        break InstanceExit::Crash;
+                    }
+                }
             }
         }
 
@@ -1150,7 +1323,7 @@ fn run_instance(
                     &host.rpc_id,
                     &RpcError::new(error_code::REQUEST_TIMEOUT, "等待用户确认超时"),
                 );
-                if send_json(&mut writer, &response, options.max_line_bytes).is_err() {
+                if writer.send(&response, options.max_line_bytes).is_err() {
                     host_write_failed = true;
                     break;
                 }
@@ -1195,8 +1368,8 @@ fn run_instance(
     fail_pending(&mut pending, "插件进程已退出");
     for (id, host) in pending_host.drain() {
         remove_approval(shared, &config.id, id);
-        let _ = send_json(
-            &mut writer,
+        // 关闭路径只做非阻塞入队；写线程可能仍卡在旧 pipe 上，不能等它。
+        let _ = writer.send(
             &protocol::error(
                 &host.rpc_id,
                 &RpcError::new(error_code::UNAVAILABLE, "插件进程已退出"),
@@ -1214,7 +1387,7 @@ fn run_instance(
 }
 
 fn begin_shutdown(
-    writer: &mut BufWriter<ChildStdin>,
+    writer: &StdinWriter,
     pending: &mut HashMap<u64, Pending>,
     next_id: &Arc<AtomicU64>,
     max_line: usize,
@@ -1224,15 +1397,15 @@ fn begin_shutdown(
         return;
     }
     let id = next_request_id(next_id);
-    let _ = send_json(
-        writer,
-        &protocol::request(id, protocol::M_SHUTDOWN, json!({})),
-        max_line,
-    );
+    // 关闭请求也只入队，不等写线程；1s 后无论是否写成功都走 kill 路径。
     pending.insert(id, Pending {
         kind: PendingKind::Shutdown,
         deadline: Instant::now() + Duration::from_secs(1),
     });
+    let _ = writer.send(
+        &protocol::request(id, protocol::M_SHUTDOWN, json!({})),
+        max_line,
+    );
     *shutting_down = Some(Instant::now() + Duration::from_secs(1));
 }
 
@@ -1301,14 +1474,16 @@ fn handle_host_request(
         );
     }
     // additive：任何插件 -> 宿主方法都可带 window_id；缺省回退 active。
-    // 显式 id 是否存在由 UI 线程校验（supervisor 线程不持有 WindowRegistry）。
-    let window_id = match protocol::parse_window_id(params) {
-        Ok(raw) => resolve_window_id(shared, raw),
+    // 显式 id 必须命中 UI 线程同步过来的真实窗口集合，否则立即拒绝：不能让伪造
+    // id 占用审批队列或 status map。
+    let window_id = match parse_and_resolve_window(shared, params) {
+        Ok(raw) => raw,
         Err(error) => {
+            record_activity(shared, &config.id, method, "denied", &error);
             return HostRequestAction::Respond(protocol::error(
                 &rpc_id,
                 &RpcError::new(error_code::INVALID_PARAMS, format!("{method}.{error}")),
-            ))
+            ));
         },
     };
     match method {
@@ -1689,7 +1864,8 @@ fn handle_host_notification(
     shared: &SupervisorShared,
     notify_window: &mut VecDeque<Instant>,
 ) -> Result<(), String> {
-    let window_id = resolve_window_id(shared, protocol::parse_window_id(params)?);
+    // 未知窗口的 notification 直接丢弃，防止 status/notify 表被伪造 id 撑大。
+    let window_id = parse_and_resolve_window(shared, params)?;
     match method {
         protocol::M_UI_NOTIFY => {
             let payload = parse_notify_payload(params)?;
@@ -1795,32 +1971,92 @@ fn clear_plugin_status(shared: &SupervisorShared, plugin_id: &str) {
     }
 }
 
-/// 缺省 window_id = UI 线程维护的 active window。
-fn resolve_window_id(shared: &SupervisorShared, raw: Option<u64>) -> Option<u64> {
-    raw.or_else(|| {
-        shared
-            .host
-            .lock()
-            .ok()
-            .and_then(|host| host.active_window_id)
-    })
+/// 该窗口是否是 UI 线程当前真实存在的窗口。
+fn window_known(shared: &SupervisorShared, window_id: u64) -> bool {
+    shared
+        .windows
+        .lock()
+        .map(|windows| windows.contains(&window_id))
+        .unwrap_or(false)
+}
+
+/// 解析并校验插件给的 window_id（JSON 类型错误与未知 id 都拒绝）。
+fn parse_and_resolve_window(
+    shared: &SupervisorShared,
+    params: &Value,
+) -> Result<Option<u64>, String> {
+    resolve_window_id(shared, protocol::parse_window_id(params)?)
+}
+
+/// 解析 window_id：显式值必须命中窗口注册表，缺省回退 active window。
+///
+/// supervisor 线程不直接持有 `WindowRegistry`；UI 线程通过
+/// [`super::PluginStore::set_known_windows`] 同步窗口集合，所以插件伪造的 id
+/// 在这里被拒绝，而不是进入 status/审批表。
+fn resolve_window_id(
+    shared: &SupervisorShared,
+    raw: Option<u64>,
+) -> Result<Option<u64>, String> {
+    match raw {
+        Some(window_id) => {
+            if window_known(shared, window_id) {
+                Ok(Some(window_id))
+            } else {
+                Err(format!("未知窗口 window_id={window_id}"))
+            }
+        },
+        None => {
+            let active = shared
+                .host
+                .lock()
+                .ok()
+                .and_then(|host| host.active_window_id);
+            Ok(active.filter(|window_id| window_known(shared, *window_id)))
+        },
+    }
 }
 
 /// 状态 key 是 `(plugin_id, window_id)`：`None` = 全局（status.get 轮询），
 /// `Some(id)` = 该窗口专属 ui.status。
+///
+/// 防御性上限（即使调用方漏了 registry 检查）：
+/// - 未知窗口不插入；
+/// - 每个插件最多保留 [`MAX_STATUS_WINDOWS_PER_PLUGIN`] 个窗口专属状态，
+///   超出的按窗口 id 升序驱逐，保证 status map 不随插件输入无界增长。
 fn publish_status(
     shared: &SupervisorShared,
     plugin_id: &str,
     window_id: Option<u64>,
     status: Option<StatusPayload>,
 ) {
+    if let Some(window_id) = window_id {
+        if !window_known(shared, window_id) {
+            return;
+        }
+    }
     let key = (plugin_id.to_string(), window_id);
     let changed = match shared.statuses.lock() {
         Ok(mut statuses) => {
+            if status.is_some() && window_id.is_some() && !statuses.contains_key(&key) {
+                let mut explicit: Vec<u64> = statuses
+                    .keys()
+                    .filter(|(id, window)| id == plugin_id && window.is_some())
+                    .filter_map(|(_, window)| *window)
+                    .collect();
+                if explicit.len() >= MAX_STATUS_WINDOWS_PER_PLUGIN {
+                    explicit.sort_unstable();
+                    if let Some(evict) = explicit.first() {
+                        statuses.remove(&(plugin_id.to_string(), Some(*evict)));
+                    }
+                }
+            }
             let previous = statuses.get(&key).cloned();
             match status {
                 Some(mut status) => {
                     status.window_id = window_id;
+                    status.text = sanitize_plugin_text(&status.text, protocol::MAX_STATUS_CHARS);
+                    status.tooltip =
+                        sanitize_plugin_text(&status.tooltip, protocol::MAX_TOOLTIP_CHARS);
                     statuses.insert(key.clone(), status);
                 },
                 None => {
@@ -1877,7 +2113,7 @@ fn publish_runtime(
 
 fn set_runtime_error(runtime: &Arc<Mutex<RuntimeInfo>>, message: &str) {
     if let Ok(mut info) = runtime.lock() {
-        info.error = clip(message, 800);
+        info.error = sanitize_plugin_text(message, 800);
     }
 }
 
@@ -1888,12 +2124,54 @@ fn append_runtime_error(runtime: &Arc<Mutex<RuntimeInfo>>, extra: &str) {
         } else {
             info.error = format!("{}; {extra}", info.error);
         }
-        info.error = clip(&info.error, 800);
+        info.error = sanitize_plugin_text(&info.error, 800);
     }
 }
 
 fn clip(text: &str, max: usize) -> String {
     protocol::clip_chars(text, max)
+}
+
+/// 插件提供的文本（stderr / error.message）进入日志或 UI 前统一清洗：
+/// 先剥掉 ANSI/VT 转义序列（CSI/OSC/两字节 ESC），再把剩余控制字符替换为空格
+/// 并折叠空白。否则 ESC/CR 可以改写终端日志或伪造 UI 行。
+fn sanitize_plugin_text(text: &str, max: usize) -> String {
+    let mut visible = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch != '\u{1b}' {
+            visible.push(ch);
+            continue;
+        }
+        match chars.next() {
+            // CSI: 参数/中间字节，直到 0x40..=0x7e 的终止字节。
+            Some('[') => {
+                for c in chars.by_ref() {
+                    if ('@'..='~').contains(&c) {
+                        break;
+                    }
+                }
+            },
+            // OSC: 直到 BEL 或 ESC \。
+            Some(']') => {
+                while let Some(c) = chars.next() {
+                    if c == '\u{7}' {
+                        break;
+                    }
+                    if c == '\u{1b}' {
+                        if chars.peek() == Some(&'\\') {
+                            chars.next();
+                        }
+                        break;
+                    }
+                }
+            },
+            // 其它 ESC + 单字节序列。
+            Some(_) => {},
+            None => {},
+        }
+    }
+    super::sanitize_text(&visible, max)
 }
 
 // ---------------------------------------------------------------- 子进程 IO
@@ -1955,25 +2233,6 @@ fn kill_child(child: &mut Child) {
     }
     let _ = child.kill();
     let _ = child.wait();
-}
-
-fn send_json(
-    writer: &mut BufWriter<ChildStdin>,
-    value: &Value,
-    max_line_bytes: usize,
-) -> Result<(), String> {
-    let line = serde_json::to_string(value).map_err(|e| format!("序列化 JSON 失败: {e}"))?;
-    if line.len() > max_line_bytes {
-        return Err(format!(
-            "单条消息 {} 字节超过协议上限 {max_line_bytes}",
-            line.len()
-        ));
-    }
-    writer
-        .write_all(line.as_bytes())
-        .and_then(|_| writer.write_all(b"\n"))
-        .and_then(|_| writer.flush())
-        .map_err(|e| format!("写入插件 stdin 失败: {e}"))
 }
 
 fn read_stdout(
@@ -2063,13 +2322,15 @@ fn read_stderr(
     loop {
         match read_line_capped(&mut reader, 16 * 1024) {
             Ok(Some((line, _, _))) => {
-                if line.trim().is_empty() {
+                // 先清洗再做任何记录/保存：ESC/CR 不能进裸日志或 runtime error。
+                let line = sanitize_plugin_text(&line, MAX_STDERR_LINE_CHARS);
+                if line.is_empty() {
                     continue;
                 }
                 lines += 1;
                 // 防止坏插件用 stderr 刷爆日志：前 50 行全记，之后每 100 行记一次。
                 if lines <= 50 || lines % 100 == 0 {
-                    eprintln!("[plugin-v3] {plugin_id} stderr: {}", clip(&line, 400));
+                    eprintln!("[plugin-v3] {plugin_id} stderr: {line}");
                 }
                 if let Ok(mut tail) = tail.lock() {
                     if tail.len() + line.len() + 1 > cap {
