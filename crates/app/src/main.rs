@@ -15643,6 +15643,14 @@ fn handle_input(
         return;
     }
 
+    // 鼠标点击 dsh 等 mouse-reporting TUI 时，会把候选锚点临时设成点击格
+    // （TUI 侧栏只画反色 caret，不移动硬件光标）。用户一旦开始键盘输入，
+    // 候选窗就应回到真实终端光标，否则会一直停在鼠标箭头位置。
+    if st.ime_override.take().is_some() {
+        st.ime_spot_dirty = true;
+        update_ime_spot(st);
+    }
+
     // 快捷键录制优先于一切分发：录制中按键只用于录制，不能触发原快捷键或写入 PTY。
     if st.hotkey_recording.is_some() {
         record_hotkey_key(st, text, ctrl, alt, shift, meta);
