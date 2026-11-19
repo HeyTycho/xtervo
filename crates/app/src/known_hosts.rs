@@ -137,8 +137,16 @@ pub struct EffectiveSsh {
     pub write_file: Option<PathBuf>,
     /// 查 known_hosts 用的键：`host`、`[host]:port` 或 `HostKeyAlias` 原文。
     pub spec: String,
+    /// `ssh -G` 生效的 HostName（可能来自 ssh_config 的 Host 别名）。
+    pub hostname: String,
+    /// `ssh -G` 生效的 Port。
+    pub port: u16,
+    /// `ssh -G` 生效的 User。
+    pub user: String,
     /// `ProxyJump`（空 = 直连）；有值时无法用 keyscan 预检。
     pub proxy_jump: String,
+    /// `ProxyCommand`（空 = 无）；native 不支持。
+    pub proxy_command: String,
 }
 
 /// 用户显式配置了 no/off/accept-new：不会弹主机密钥确认，预检直接放行。
@@ -155,6 +163,8 @@ pub fn parse_ssh_g(output: &str, profile: &Profile) -> EffectiveSsh {
     let mut port = profile.port;
     let mut host_key_alias: Option<String> = None;
     let mut proxy_jump = String::new();
+    let mut proxy_command = String::new();
+    let mut user = profile.user.trim().to_string();
     for line in output.lines() {
         if let Some(v) = line.strip_prefix("stricthostkeychecking ") {
             strict = v.trim().to_ascii_lowercase();
@@ -183,6 +193,16 @@ pub fn parse_ssh_g(output: &str, profile: &Profile) -> EffectiveSsh {
             if !jump.is_empty() && jump != "none" {
                 proxy_jump = jump.to_string();
             }
+        } else if let Some(v) = line.strip_prefix("proxycommand ") {
+            let command = v.trim();
+            if !command.is_empty() && command != "none" {
+                proxy_command = command.to_string();
+            }
+        } else if let Some(v) = line.strip_prefix("user ") {
+            let value = v.trim();
+            if !value.is_empty() {
+                user = value.to_string();
+            }
         }
     }
     if files.is_empty() {
@@ -197,7 +217,17 @@ pub fn parse_ssh_g(output: &str, profile: &Profile) -> EffectiveSsh {
         Some(alias) => alias,
         None => host_spec(&hostname, port),
     };
-    EffectiveSsh { strict, files, write_file: user_files.into_iter().next(), spec, proxy_jump }
+    EffectiveSsh {
+        strict,
+        files,
+        write_file: user_files.into_iter().next(),
+        spec,
+        hostname,
+        port,
+        user,
+        proxy_jump,
+        proxy_command,
+    }
 }
 
 /// 调 `ssh -G` 取生效配置；失败时按 Profile 字段保守回退（strict=ask）。
@@ -308,6 +338,31 @@ pub fn parse_known_hosts_lines(text: &str) -> Vec<KnownKey> {
             })
         })
         .collect()
+}
+
+/// 读取 known_hosts 里的 `@revoked` 公钥（忽略 host 模式，保守地全局撤销）。
+///
+/// OpenSSH 的 revocation 是“某 host 的某 key 被撤销”；native SSH 不做完整
+/// host-pattern 匹配，因此只要 key 出现在 @revoked 行就拒绝，宁可回退系统 ssh。
+pub fn revoked_keys(profile: &Profile) -> Vec<KnownKey> {
+    let effective = effective_ssh(profile);
+    let mut out = Vec::new();
+    for file in &effective.files {
+        let Ok(text) = std::fs::read_to_string(file) else { continue };
+        for line in text.lines() {
+            let line = line.trim();
+            let Some(rest) = line.strip_prefix("@revoked ") else { continue };
+            let mut parts = rest.split_whitespace();
+            let _host = parts.next();
+            let (Some(key_type), Some(key)) = (parts.next(), parts.next()) else { continue };
+            out.push(KnownKey {
+                key_type: key_type.to_string(),
+                key: key.to_string(),
+                fingerprint: KnownKey::fallback_fingerprint(key_type, key),
+            });
+        }
+    }
+    out
 }
 
 /// 解析 `ssh-keyscan` 输出（主机名同样在首列，注释可选）。
@@ -841,7 +896,11 @@ proxyjump jump@bastion:2200
                 files: vec![PathBuf::from("/tmp/kh")],
                 write_file: Some(PathBuf::from("/tmp/kh")),
                 spec: "h".into(),
+                hostname: "h".into(),
+                port: 22,
+                user: "u".into(),
                 proxy_jump: String::new(),
+                proxy_command: String::new(),
             };
             assert!(strict_skips_prompt(&effective.strict), "{strict}");
         }

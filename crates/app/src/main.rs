@@ -5074,6 +5074,18 @@ fn create_pane(
                 spawn_with_transport(config, Backend::Plugin(Box::new(transport)))?
             },
             Err(error) => {
+                // socat 回退只配置了 8N1/no-flow；非默认 framing 回退会静默
+                // 用错参数，必须把 native 错误交给用户。
+                let can_fallback = p.data_bits == 8
+                    && p.parity.eq_ignore_ascii_case("none")
+                    && p.stop_bits == 1
+                    && p.flow_control.eq_ignore_ascii_case("none");
+                if !can_fallback {
+                    return Err(std::io::Error::other(format!(
+                        "native 串口打开失败，且 socat 回退不支持当前 {} {}/{}/{}: {error}",
+                        p.data_bits, p.parity, p.stop_bits, p.flow_control
+                    )));
+                }
                 eprintln!("[serial-native] 打开失败，回退 socat: {error}");
                 spawn(config)?
             },

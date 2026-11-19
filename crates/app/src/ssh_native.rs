@@ -62,6 +62,28 @@ pub fn can_use(profile: &Profile) -> bool {
     }
     // 首次连接没有 known_hosts 条目时回退系统 ssh，让用户在终端确认指纹；
     // native 不在没有确认的情况下 TOFU 信任。
+    let effective = known_hosts::effective_ssh(profile);
+    if !effective.proxy_jump.is_empty() || !effective.proxy_command.is_empty() {
+        return false;
+    }
+    // ssh_config 的 HostName/Port/User 别名：native 现在会用 effective 值连接，
+    // 但仍可能有 IdentityFile 等 native 未解析的选项；保守地要求 profile 与
+    // effective 一致，避免静默绕过用户配置。
+    if effective.hostname != profile.host.trim()
+        || effective.port != profile.port
+        || (!effective.user.is_empty() && effective.user != profile.user.trim())
+    {
+        return false;
+    }
+    if profile.auth == "agent"
+        && std::env::var_os("SSH_AUTH_SOCK").is_none()
+    {
+        return false;
+    }
+    if !known_hosts::revoked_keys(profile).is_empty() {
+        // 有 revoked 条目时交给系统 ssh 做完整 host-pattern 判断。
+        return false;
+    }
     !known_hosts::local_known_entries(profile)
         .unwrap_or_default()
         .is_empty()
@@ -74,7 +96,15 @@ impl SshNativeTransport {
         if profile.host.trim().is_empty() {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "SSH 主机不能为空"));
         }
+        let effective = known_hosts::effective_ssh(&profile);
+        if !effective.proxy_jump.is_empty() || !effective.proxy_command.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "native SSH 不支持 ProxyJump/ProxyCommand；请用 transport=system",
+            ));
+        }
         let known = known_hosts::local_known_entries(&profile).unwrap_or_default();
+        let revoked = known_hosts::revoked_keys(&profile);
         if known.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
@@ -105,6 +135,8 @@ impl SshNativeTransport {
                     profile,
                     password,
                     known,
+                    revoked,
+                    effective,
                     cols,
                     rows,
                     out_tx.clone(),
@@ -225,6 +257,7 @@ impl TransportControl for SshControl {
 
 struct HostKeyHandler {
     known: Vec<KnownKey>,
+    revoked: Vec<KnownKey>,
 }
 
 impl Handler for HostKeyHandler {
@@ -243,6 +276,13 @@ impl Handler for HostKeyHandler {
         let (Some(key_type), Some(key_b64)) = (parts.next(), parts.next()) else {
             return Ok(false);
         };
+        if self
+            .revoked
+            .iter()
+            .any(|revoked| revoked.key_type == key_type && revoked.key == key_b64)
+        {
+            return Ok(false);
+        }
         Ok(self
             .known
             .iter()
@@ -255,24 +295,26 @@ async fn run_session(
     profile: Profile,
     password: Option<String>,
     known: Vec<KnownKey>,
+    revoked: Vec<KnownKey>,
+    effective: known_hosts::EffectiveSsh,
     cols: u16,
     rows: u16,
     out: tokio::sync::mpsc::Sender<Option<Vec<u8>>>,
     mut commands: tokio::sync::mpsc::UnboundedReceiver<Cmd>,
     closed: Arc<AtomicBool>,
 ) -> Result<(), String> {
-    let host = profile.host.trim().to_string();
-    let port = profile.port.max(1);
-    let user = if profile.user.trim().is_empty() {
+    let host = effective.hostname.clone();
+    let port = effective.port.max(1);
+    let user = if effective.user.trim().is_empty() {
         std::env::var("USER").unwrap_or_else(|_| "root".into())
     } else {
-        profile.user.trim().to_string()
+        effective.user.clone()
     };
     let config = Arc::new(client::Config {
         inactivity_timeout: Some(INACTIVITY_TIMEOUT),
         ..<_>::default()
     });
-    let handler = HostKeyHandler { known };
+    let handler = HostKeyHandler { known, revoked };
     let connect = tokio::time::timeout(
         CONNECT_TIMEOUT,
         client::connect(config, (host.as_str(), port), handler),
@@ -290,7 +332,7 @@ async fn run_session(
         .map_err(|error| format!("打开 SSH session 失败: {error}"))?;
     channel
         .request_pty(
-            false,
+            true,
             &std::env::var("TERM").unwrap_or_else(|_| "xterm-256color".into()),
             cols.max(1) as u32,
             rows.max(1) as u32,
@@ -300,10 +342,12 @@ async fn run_session(
         )
         .await
         .map_err(|error| format!("请求远端 PTY 失败: {error}"))?;
+    await_request(&mut channel, &out).await?;
     channel
         .request_shell(true)
         .await
         .map_err(|error| format!("请求远端 shell 失败: {error}"))?;
+    await_request(&mut channel, &out).await?;
 
     loop {
         tokio::select! {
@@ -340,6 +384,28 @@ async fn run_session(
                     _ => {}
                 }
             }
+        }
+    }
+}
+
+/// 等待 PTY/shell 请求的 Success/Failure；期间到达的远端数据先送 pane。
+async fn await_request(
+    channel: &mut russh::Channel<russh::client::Msg>,
+    out: &tokio::sync::mpsc::Sender<Option<Vec<u8>>>,
+) -> Result<(), String> {
+    loop {
+        match channel.wait().await {
+            Some(ChannelMsg::Success) => return Ok(()),
+            Some(ChannelMsg::Failure) => return Err("远端拒绝了 PTY/shell 请求".into()),
+            Some(ChannelMsg::Data { data }) => {
+                if out.send(Some(data.to_vec())).await.is_err() {
+                    return Err("pane 已关闭".into());
+                }
+            },
+            Some(ChannelMsg::Eof | ChannelMsg::Close) | None => {
+                return Err("远端在 PTY/shell 确认前关闭了通道".into())
+            },
+            _ => {},
         }
     }
 }

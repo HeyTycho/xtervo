@@ -80,8 +80,8 @@ impl PaneTransport for SerialTransport {
             match self.reader.read(buf) {
                 Ok(n) => return Ok(n),
                 Err(e)
-                    if io::ErrorKind::Other == io::ErrorKind::TimedOut
-                        || io::ErrorKind::Other == io::ErrorKind::WouldBlock =>
+                    if e.kind() == io::ErrorKind::TimedOut
+                        || e.kind() == io::ErrorKind::WouldBlock =>
                 {
                     continue
                 },
@@ -128,8 +128,8 @@ impl Read for SerialReader {
             match self.port.read(buf) {
                 Ok(n) => return Ok(n),
                 Err(e)
-                    if io::ErrorKind::Other == io::ErrorKind::TimedOut
-                        || io::ErrorKind::Other == io::ErrorKind::WouldBlock =>
+                    if e.kind() == io::ErrorKind::TimedOut
+                        || e.kind() == io::ErrorKind::WouldBlock =>
                 {
                     continue
                 },
@@ -213,6 +213,8 @@ mod pty_tests {
             ..Profile::default()
         };
         let mut transport = SerialTransport::open(&p).expect("open pty via serialport");
+        // 空闲超过 read timeout 后仍必须继续读，不能把 TimedOut 当 EOF/错误。
+        std::thread::sleep(READ_TIMEOUT + Duration::from_millis(120));
         let msg = b"NATIVE-SERIAL";
         let written = unsafe {
             libc::write(master, msg.as_ptr().cast(), msg.len())
