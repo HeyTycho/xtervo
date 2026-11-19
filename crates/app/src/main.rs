@@ -12082,6 +12082,24 @@ fn image_from_source(width: u32, height: u32, rgba: &[u8]) -> slint::Image {
     slint::Image::from_rgba8(buffer)
 }
 
+/// GPU-native 离屏纹理按**物理像素**渲染：逻辑 cell（9x19）在 150% 缩放下
+/// 若仍按 9x19 出图，Slint/compositor 会把整张纹理放大 1.5 倍，文字必然发糊。
+/// 这里只放大 GPU 纹理的字号/cell/基线，`cols/rows` 与鼠标命中的逻辑网格不变；
+/// 纹理仍按逻辑尺寸显示，最终正好是 1 物理像素对 1 纹理像素。
+fn hidpi_metrics(
+    cell_w: usize,
+    cell_h: usize,
+    baseline: i32,
+    font_size: f32,
+    scale: f32,
+) -> (usize, usize, i32, f32) {
+    let scale = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
+    let cw = ((cell_w as f32) * scale).round().max(1.0) as usize;
+    let ch = ((cell_h as f32) * scale).round().max(1.0) as usize;
+    let bl = ((baseline as f32) * scale).round() as i32;
+    (cw, ch, bl, font_size * scale)
+}
+
 fn redraw_pane_inner(st: &mut AppState, id: PaneId) {
     let focused = st.ws.active_tab().map(|t| t.focused) == Some(id);
     let blink_on = st.cursor_blink_on;
@@ -12122,15 +12140,22 @@ fn redraw_pane_inner(st: &mut AppState, id: PaneId) {
     // GPU 出图。成功时**不**碰 CPU framebuffer，也不走 stage 0 纹理上传。
     // 失败返回 None 才回 CPU，并强制下一帧整屏重绘。
     let native_image = if gpu_native::ready() {
+        let (cell_w, cell_h, baseline, font_size) = hidpi_metrics(
+            rt.renderer.cell_w,
+            rt.renderer.cell_h,
+            rt.renderer.baseline(),
+            rt.renderer.font_size(),
+            st.ui.window().scale_factor() as f32,
+        );
         gpu_native::pane_image(&gpu_native::PaneFrame {
             pane: id,
             frame: &frame,
             cols: rt.renderer.cols,
             rows: rt.renderer.rows,
-            cell_w: rt.renderer.cell_w,
-            cell_h: rt.renderer.cell_h,
-            baseline: rt.renderer.baseline(),
-            font_size: rt.renderer.font_size(),
+            cell_w,
+            cell_h,
+            baseline,
+            font_size,
             font_paths: rt.renderer.font_paths(),
             theme_bg: rt.renderer.theme_bg_rgb(),
         })
@@ -22654,6 +22679,16 @@ mod tests {
             let (x, y) = resize_release_point(dir, w, h);
             assert!((0.0..w).contains(&x) && (0.0..h).contains(&y), "corner {dir}: {x},{y}");
         }
+    }
+
+    #[test]
+    fn hidpi_metrics_scale_gpu_target_to_physical_pixels() {
+        // 150%：逻辑 9x19 的字形/纹理要按 14x29 物理像素渲染，显示回逻辑尺寸。
+        assert_eq!(hidpi_metrics(9, 19, 15, 15.0, 1.5), (14, 29, 23, 22.5));
+        // 100% 不变。
+        assert_eq!(hidpi_metrics(9, 19, 15, 15.0, 1.0), (9, 19, 15, 15.0));
+        // 非法/0 缩放回退 1.0，不能产生 0 宽高。
+        assert_eq!(hidpi_metrics(9, 19, 15, 15.0, 0.0), (9, 19, 15, 15.0));
     }
 
     #[test]

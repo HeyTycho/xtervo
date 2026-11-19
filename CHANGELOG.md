@@ -86,6 +86,10 @@ Tervo 的版本与 tag 规则见 `docs/RELEASING.md`。
   `set_ime_cursor_area`（此前窗口获焦时 area 在 enable 之前发出被丢弃，且
   dirty 被错误清除、不再重发）；Palette 关闭、窗口重新获焦、新建 Tab 后恢复
   隐藏 TextInput 焦点；隐藏输入框 cursor width 改为非 0。
+- GPU-native 终端纹理按窗口 `scale_factor` 用**物理像素**渲染（字号/cell/基线
+  一起缩放，逻辑网格不变）。此前 4K + 150% 下纹理按逻辑分辨率生成，再被
+  Slint/compositor 放大 1.5×，文字明显发糊；100% 缩放行为不变。CPU/Skia
+  兜底路径仍是逻辑分辨率（见 `docs/WAYLAND_ADAPTATION.md`）。
 - 安装到 `~/.local` 等用户级 prefix 时，桌面项改写成该 prefix 的绝对
   `Exec/TryExec`。此前 `TryExec=tervo` 在 GNOME 会话 PATH 不含
   `~/.local/bin` 时会被当成“命令不存在”，Activities 里搜不到 Tervo。

@@ -71,6 +71,7 @@ x11/xwayland own windows (仅 X11 客户端，不含本进程 Wayland 窗口):
 |---|---|---|---|
 | 启动 / PTY / 软件渲染 | ✅ | ✅ | 不适配 |
 | Skia/EGL、全屏、`xdg_toplevel.resize` | ✅（llvmpipe 可验证协议；真实 GPU 需本机驱动） | ✅ | 不改渲染路径 |
+| 4K / 分数缩放 | GPU-native 按窗口 scale_factor 用物理像素渲染（字号/cell/基线一起缩放） | ✅（scale=1 不变） | CPU/Skia 兜底仍按逻辑分辨率，见下 |
 | IME（text-input-v3 + fcitx5） | ✅ 实测提交“你好”；组合期按键 sink、`Ime::Enabled` 后重发 area、Palette/获焦恢复焦点 | ✅ XIM 原路径 | 保留隐藏 TextInput；不在 enable 前清 dirty |
 | 剪贴板 / PRIMARY（应用内 OSC52/复制） | ⚠️ 仅 `DISPLAY` 存在时 arboard 回退 XWayland；纯 Wayland ❌ | ✅ | 失败时打印一次可读原因，短行日志保持 `[clipboard] 不可用` |
 | 文件拖放 | ❌ winit 0.30.13 Wayland 后端无 DnD | ✅ XDND 原路径 | 不伪造 hover；启动只记录能力 |
