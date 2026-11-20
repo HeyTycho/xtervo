@@ -270,8 +270,9 @@ click_content 300 300 1
 click_content 300 12 3
 sleep 0.35
 expect_log '[ui] right click pane=1 at 300,12 link=false'
+expect_log '[ui] pane menu open pane=1 items=17 rows=21 height=558 selected=None'
 shot menu_normal
-assert_bbox "$OUT/menu_normal.png" "$RAISE_DARK" 270 284 470 500 $W $H
+assert_bbox "$OUT/menu_normal.png" "$RAISE_DARK" 270 284 540 570 $W $H
 # 菜单锚点：x=300、y=窗口 44，不翻转。
 python3 - "$OUT/menu_normal.png" "$RAISE_DARK" <<'PY' || fail "普通菜单锚点不对（应贴右键处）"
 from PIL import Image
@@ -300,7 +301,7 @@ click_content 400 200 3
 sleep 0.35
 expect_log '[ui] right click pane=1 at 400,200 link=false'
 shot menu_selection
-assert_bbox "$OUT/menu_selection.png" "$RAISE_DARK" 270 284 470 500 $W $H
+assert_bbox "$OUT/menu_selection.png" "$RAISE_DARK" 270 284 540 570 $W $H
 close_menu
 
 echo "== 3) 链接菜单（Open Link / Copy Link 在最上组） =="
@@ -308,10 +309,10 @@ click_content 40 11 3
 sleep 0.35
 expect_log '[ui] right click pane=1 at 40,11 link=true'
 shot menu_link
-assert_bbox "$OUT/menu_link.png" "$RAISE_DARK" 270 284 550 580 $W $H
+assert_bbox "$OUT/menu_link.png" "$RAISE_DARK" 270 284 610 640 $W $H
 # Copy Link 仍走 action id 10：点击第 2 行，验证剪贴板拿到 URL。
 # 菜单：anchor(40,11) + 6 padding + Link 组标题 22 + Open Link 30 + 半行 15 = 84。
-click_abs $((ABS_X + 40 + 140)) $((ABS_Y + 32 + 84)) 1
+click_abs $((ABS_X + 40 + 140)) $((ABS_Y + 32 + 53)) 1
 sleep 0.35
 expect_log '[link] copy link='
 CLIP=$(xsel -b -o 2>/dev/null || true)
@@ -348,7 +349,7 @@ sleep 0.35
 expect_log '[ui] right click pane=1 at 804,608 link=false'
 shot menu_bottom_right
 # 菜单 280x490：x 翻到 524、y 翻到 118，全部留在窗口内。
-assert_bbox "$OUT/menu_bottom_right.png" "$RAISE_DARK" 270 284 470 500 $W $H
+assert_bbox "$OUT/menu_bottom_right.png" "$RAISE_DARK" 270 284 540 570 $W $H
 python3 - "$OUT/menu_bottom_right.png" "$RAISE_DARK" <<'PY' || fail "靠右下菜单没有向左上翻转"
 from PIL import Image
 import sys
@@ -367,7 +368,7 @@ click_content 300 12 3
 sleep 0.35
 expect_log '[ui] right click pane=1 at 300,12 link=false'
 shot menu_light
-assert_bbox "$OUT/menu_light.png" "$RAISE_LIGHT" 270 284 470 500 $W $H
+assert_bbox "$OUT/menu_light.png" "$RAISE_LIGHT" 270 284 540 570 $W $H
 close_menu
 
 echo "OK: $OUT"

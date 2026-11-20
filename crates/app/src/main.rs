@@ -11626,7 +11626,8 @@ impl TerminalMenuSpec {
 struct MenuNav {
     pane: PaneId,
     specs: Vec<TerminalMenuSpec>,
-    selected: usize,
+    /// None = 鼠标打开菜单，未选中任何行；第一次 Up/Down 才落到首/末项。
+    selected: Option<usize>,
 }
 
 /// 从 `from` 往 `delta` 方向找下一个可选项；到边界返回 None（不循环）。
@@ -11665,22 +11666,21 @@ fn menu_row_offset(specs: &[TerminalMenuSpec], index: usize) -> f32 {
     y
 }
 
-/// 打开菜单时重置键盘选中：第一/最后一个可选项。返回 false 表示菜单没有可选项。
+/// 打开菜单时只建导航状态，不默认选中任何项（鼠标打开不出现“默认高亮复制”）。
+/// 返回 false 表示菜单没有可选项。
 fn menu_reset_selection(st: &mut AppState, pane: PaneId, specs: &[TerminalMenuSpec]) -> bool {
-    let Some(first) = menu_step(specs, None, 1) else {
+    if menu_step(specs, None, 1).is_none() {
         st.menu_nav = None;
+        st.ui.set_menu_selected(-1);
         return false;
-    };
-    st.menu_nav = Some(MenuNav::new(pane, specs.to_vec(), first));
-    st.ui.set_menu_selected(first as i32);
-    st.ui.set_menu_reveal_y(menu_row_offset(specs, first));
-    let token = st.ui.get_menu_reveal_token().wrapping_add(1);
-    st.ui.set_menu_reveal_token(token);
+    }
+    st.menu_nav = Some(MenuNav::new(pane, specs.to_vec(), None));
+    st.ui.set_menu_selected(-1);
     true
 }
 
 impl MenuNav {
-    fn new(pane: PaneId, specs: Vec<TerminalMenuSpec>, selected: usize) -> Self {
+    fn new(pane: PaneId, specs: Vec<TerminalMenuSpec>, selected: Option<usize>) -> Self {
         Self {
             pane,
             specs,
@@ -11694,10 +11694,10 @@ fn menu_navigate(st: &mut AppState, delta: isize) {
     let Some(nav) = st.menu_nav.as_mut() else {
         return;
     };
-    let Some(next) = menu_step(&nav.specs, Some(nav.selected), delta) else {
+    let Some(next) = menu_step(&nav.specs, nav.selected, delta) else {
         return;
     };
-    nav.selected = next;
+    nav.selected = Some(next);
     let y = menu_row_offset(&nav.specs, next);
     st.ui.set_menu_selected(next as i32);
     st.ui.set_menu_reveal_y(y);
@@ -11711,7 +11711,10 @@ fn menu_activate(st: &mut AppState) {
     let Some(nav) = st.menu_nav.as_ref() else {
         return;
     };
-    let Some(spec) = nav.specs.get(nav.selected) else {
+    let Some(selected) = nav.selected else {
+        return;
+    };
+    let Some(spec) = nav.specs.get(selected) else {
         return;
     };
     if spec.separator || spec.command.is_empty() {
@@ -12006,7 +12009,10 @@ fn open_pane_menu(st: &mut AppState, id: PaneId, x: f32, y: f32) {
     st.ui.set_menu_open(true);
     // 键盘导航从第一项开始；菜单已开时再次右键也会重建并回到首项。
     menu_reset_selection(st, id, &specs);
-    eprintln!("[ui] pane menu open pane={id} items={items} rows={rows} height={height:.0}");
+    let selected = st.menu_nav.as_ref().and_then(|nav| nav.selected);
+    eprintln!(
+        "[ui] pane menu open pane={id} items={items} rows={rows} height={height:.0} selected={selected:?}"
+    );
 }
 
 /// 点到矩形的最短距离平方（点在矩形内为 0）。
