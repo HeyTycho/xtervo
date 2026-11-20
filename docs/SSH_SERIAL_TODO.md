@@ -63,14 +63,14 @@
 
 ### UI / SSH
 
-- [~] UI-SSH-001 Profile 编辑/认证提示：字段齐全；缺 General/Ports/Advanced/Ciphers/Login Scripts 分组。
+- [~] UI-SSH-001 Profile 编辑/认证提示：字段齐全；缺 General/Ports/Advanced/Ciphers 分组（Login Scripts 已加多行编辑）。
 - [x] UI-SSH-002 主机密钥预检/首次确认/变更告警：应用内 Trust/Update 已通；缺 known_hosts 管理 UI。
 - [~] UI-SSH-003 SFTP 面板导航：列表/路径/取消；缺上级/刷新/权限/mtime/大小列。
 - [~] UI-SSH-004 SFTP 文件操作：上传/下载/建目录/改名/删除/chmod/队列；缺覆盖确认/递归删除/断点续传。
 - [~] UI-SSH-005 传输进度：进度/Cancel/Retry；缺总大小/ETA/自动重试。
-- [~] UI-SSH-006 Port Forward 管理：表单可配 L/R/D/Jump；缺查看/启停/监听状态。
+- [x] UI-SSH-006 Port Forward 管理：当前 native SSH pane 显示 L/R/D 监听/目标/状态；L/D 可启停，R 显示服务器分配端口；删除/新增写回 Profile（下次连接生效）。系统 ssh/插件后端只编辑 Profile。
 - [~] UI-SSH-007 Jump Host：可配置/多跳；缺链路可视化、跳板独立凭据。
-- [ ] UI-SSH-008 Login Scripts：命令/顺序/延时/等待/失败处理。
+- [x] UI-SSH-008 Login Scripts：每行 `<命令>[; delay=ms][; wait=文本][; timeout=ms][; on_error=stop/continue]`，native 连接 shell 后按序发远端；in-process server 测试顺序。
 - [~] UI-SSH-009 Agent/X11 状态：agent 可配置；缺 X11、状态/失败提示。
 
 ### SSH 后端
@@ -85,11 +85,11 @@
 - [ ] SSH-008 ProxyCommand：native 未实现，回退系统 ssh。
 - [~] SSH-009 Agent forwarding：native 请求 + 门禁；缺拒绝回归/状态。
 - [ ] SSH-010 X11 Forwarding：未实现。
-- [x] SSH-011 L/R/D 转发：native 三种；缺 port 0 与管理 UI。
-- [ ] SSH-012 Persistent Port Forwards：未实现。
-- [ ] SSH-013 Login Scripts：未实现。
+- [x] SSH-011 L/R/D 转发：native 三种；远程 port 0 与 Port Forwards 管理面板（状态/启停 local+dynamic）。
+- [~] SSH-012 Persistent Port Forwards：调研结论——Profile 规则本身持久化，且自动重连会重新建会话并按 Profile 重启 L/R/D，因此“预配置并随新连接恢复”已覆盖；**独立于 pane 的常驻转发进程/断线期间保持 listener 未实现**，需要无 UI 的 forward-only session 管理器。
+- [x] SSH-013 Login Scripts：命令/顺序/延时/wait/timeout/failure 的最小模型；native 发送，不执行本地 shell。
 - [ ] SSH-014 Ciphers/算法配置：未实现。
-- [ ] SSH-015 主机别名/历史/最近连接：未实现。
+- [~] SSH-015 主机别名/历史/最近连接：成功的 SSH 连接写 `history.toml`（无凭据），`>_` 菜单顶部 ↺ 最近项；缺主机别名管理与历史清理 UI。
 - [ ] SSH-016 WinSCP：平台不支持，保持 unsupported。
 
 ### SFTP

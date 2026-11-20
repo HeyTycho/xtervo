@@ -94,6 +94,12 @@ pub struct Profile {
     /// X11 forwarding（系统 ssh 路径用 `-X`；native 暂回退系统 ssh）。
     #[serde(default)]
     pub x11_forward: bool,
+    /// Login Scripts（SSH-013）：连接 shell 后按顺序发送到**远端**的脚本行。
+    ///
+    /// 存原始文本行（格式见 `login_script` 模块），additive 字段；空 = 不执行。
+    /// 命令只会发给远端 PTY，不在本地 shell 执行。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub login_scripts: Vec<String>,
     /// SSH 后端：空 = 旧路径（PTY 里跑系统 ssh）；`plugin` = 走
     /// `Backend::Plugin` 的 transport seam（官方 SSH 插件 POC）。
     ///
@@ -359,6 +365,7 @@ impl Default for Profile {
             proxy_jump: String::new(),
             agent_forward: false,
             x11_forward: false,
+            login_scripts: Vec::new(),
             transport: String::new(),
             serial_port: String::new(),
             baud: 115200,
@@ -672,6 +679,7 @@ impl Profile {
                 for f in &self.dynamic_forwards {
                     validate_dynamic_forward(f)?;
                 }
+                crate::login_script::parse_lines(&self.login_scripts)?;
                 validate_proxy_jump(&self.proxy_jump)?;
                 let transport = self.transport.trim();
                 if !transport.is_empty()

@@ -37,10 +37,24 @@ fn unpack_resize(bits: u32) -> (u16, u16) {
     ((bits >> 16) as u16, bits as u16)
 }
 
-struct ForwardGuard(Vec<tokio::task::JoinHandle<()>>);
+#[derive(Default)]
+struct ForwardGuard(std::collections::HashMap<u64, tokio::task::JoinHandle<()>>);
+
+impl ForwardGuard {
+    fn insert(&mut self, id: u64, task: tokio::task::JoinHandle<()>) {
+        self.0.insert(id, task);
+    }
+    fn contains(&self, id: u64) -> bool {
+        self.0.contains_key(&id)
+    }
+    fn remove(&mut self, id: u64) -> Option<tokio::task::JoinHandle<()>> {
+        self.0.remove(&id)
+    }
+}
+
 impl Drop for ForwardGuard {
     fn drop(&mut self) {
-        for task in &self.0 {
+        for task in self.0.values() {
             task.abort();
         }
     }
@@ -58,6 +72,8 @@ pub struct SshNativeTransport {
     closed: Arc<AtomicBool>,
     resize: Arc<AtomicU32>,
     pending: Vec<u8>,
+    /// UI 可查询/控制本会话转发的句柄（状态共享，不持有 russh 连接）。
+    forward: crate::ssh_forward::ForwardController,
 }
 
 /// 私钥是否无需口令即可加载（供 create_pane 判断是否需要 Vault 口令）。
@@ -163,6 +179,10 @@ impl SshNativeTransport {
         let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(256);
         let closed = Arc::new(AtomicBool::new(false));
         let resize = Arc::new(AtomicU32::new(pack_resize(cols, rows)));
+        // 先建立可查询的转发表（全部 Pending/Failed）；连接成功后由会话线程
+        // 启动 listener 并写回 Active/assigned port。UI 在连接期间也能看到规则。
+        let (forward, forward_rx) = crate::ssh_forward::ForwardController::new(&profile);
+        let forward_thread = forward.clone();
         let closed_thread = closed.clone();
         let resize_thread = resize.clone();
         std::thread::Builder::new()
@@ -194,6 +214,8 @@ impl SshNativeTransport {
                     out_tx.clone(),
                     cmd_rx,
                     closed_thread,
+                    forward_thread,
+                    forward_rx,
                 ));
                 if let Err(error) = result {
                     let _ = out_tx.blocking_send(Some(
@@ -203,7 +225,19 @@ impl SshNativeTransport {
                 let _ = out_tx.blocking_send(None);
             })
             .map_err(|error| io::Error::other(format!("创建 ssh-native 线程失败: {error}")))?;
-        Ok(Self { output: out_rx, commands: cmd_tx, closed, resize, pending: Vec::new() })
+        Ok(Self {
+            output: out_rx,
+            commands: cmd_tx,
+            closed,
+            resize,
+            pending: Vec::new(),
+            forward,
+        })
+    }
+
+    /// UI 查询/控制转发的句柄；不暴露 russh session。
+    pub fn forward_control(&self) -> crate::ssh_forward::ForwardController {
+        self.forward.clone()
     }
 }
 
@@ -238,7 +272,7 @@ impl PaneTransport for SshNativeTransport {
     }
 
     fn into_halves(self: Box<Self>) -> io::Result<TransportHalves> {
-        let SshNativeTransport { output, commands, closed, resize, pending } = *self;
+        let SshNativeTransport { output, commands, closed, resize, pending, forward: _ } = *self;
         let shutdown_cmd = commands.clone();
         let shutdown_closed = closed.clone();
         Ok(TransportHalves {
@@ -441,6 +475,10 @@ async fn run_session(
     out: tokio::sync::mpsc::Sender<Option<Vec<u8>>>,
     mut commands: tokio::sync::mpsc::Receiver<Cmd>,
     closed: Arc<AtomicBool>,
+    forward: crate::ssh_forward::ForwardController,
+    mut forward_commands: tokio::sync::mpsc::UnboundedReceiver<
+        crate::ssh_forward::ForwardCommand,
+    >,
 ) -> Result<(), String> {
     let host = resolved.hostname.clone();
     let port = resolved.port.max(1);
@@ -608,32 +646,79 @@ async fn run_session(
         .await
         .map_err(|error| format!("请求远端 shell 失败: {error}"))?;
     await_request(&mut channel, &out, &closed).await?;
-    let mut forward_tasks = Vec::new();
-    if !profile.local_forwards.is_empty() {
-        forward_tasks.extend(
-            crate::ssh_forward::spawn_local(session.clone(), &profile.local_forwards)
+    // 端口转发：逐条启动并写入共享状态。单条失败只标记 Failed + pane 警告，
+    // 不再整条 SSH 会话退出（用户可在 Port Forwards 面板看到原因并停/启）。
+    let mut forward_guard = ForwardGuard::default();
+    for rule in forward.rules() {
+        if rule.error.is_some() {
+            let message = format!(
+                "-{} {} 未启动: {}",
+                rule.kind.short(),
+                rule.spec,
+                rule.error.as_deref().unwrap_or("规则无效")
+            );
+            emit_forward_warning(&out, &message).await;
+            forward.mark_failed(rule.id, rule.error.clone().unwrap_or_default());
+            continue;
+        }
+        let result = match rule.kind {
+            crate::ssh_forward::ForwardKind::Local => {
+                crate::ssh_forward::start_local(
+                    session.clone(),
+                    &rule.bind,
+                    rule.port,
+                    &rule.target_host,
+                    rule.target_port,
+                )
                 .await
-                .map_err(|error| format!("本地转发启动失败: {error}"))?,
-        );
-    }
-    if !profile.dynamic_forwards.is_empty() {
-        forward_tasks.extend(
-            crate::ssh_forward::spawn_dynamic(session.clone(), &profile.dynamic_forwards)
+                .map(|(task, bound)| {
+                    forward_guard.insert(rule.id, task);
+                    bound
+                })
+            },
+            crate::ssh_forward::ForwardKind::Dynamic => {
+                crate::ssh_forward::start_dynamic(
+                    session.clone(),
+                    &rule.bind,
+                    rule.port,
+                )
                 .await
-                .map_err(|error| format!("动态转发启动失败: {error}"))?,
-        );
-    }
-    if !profile.remote_forwards.is_empty() {
-        crate::ssh_forward::setup_remote(
-            &session,
-            &profile.remote_forwards,
-            &remote_targets,
-        )
-        .await?;
+                .map(|(task, bound)| {
+                    forward_guard.insert(rule.id, task);
+                    bound
+                })
+            },
+            crate::ssh_forward::ForwardKind::Remote => crate::ssh_forward::start_remote(
+                &session,
+                &rule.bind,
+                rule.port,
+                &rule.target_host,
+                rule.target_port,
+                &remote_targets,
+            )
+            .await,
+        };
+        match result {
+            Ok(bound) => forward.mark_active(rule.id, bound),
+            Err(error) => {
+                let message = format!(
+                    "-{} {} 启动失败: {error}",
+                    rule.kind.short(),
+                    rule.spec
+                );
+                eprintln!("[ssh-forward] {message}");
+                emit_forward_warning(&out, &message).await;
+                forward.mark_failed(rule.id, error);
+            },
+        }
     }
     let mut last_resize = unpack_resize(resize.load(Ordering::Acquire));
 
-    let _forward_guard = ForwardGuard(forward_tasks);
+    // Login Scripts（SSH-013）：远端 shell 已确认，按 Profile 顺序发送。
+    // 只写 SSH channel，不经过本地 shell。
+    run_login_scripts(&mut channel, &out, &closed, &profile.login_scripts).await?;
+
+    let mut forward_commands_open = true;
     loop {
         if closed.load(Ordering::Acquire) {
             let _ = session.disconnect(Disconnect::ByApplication, "", "closed").await;
@@ -680,6 +765,21 @@ async fn run_session(
                     }
                 }
             }
+            command = forward_commands.recv(), if forward_commands_open => {
+                match command {
+                    Some(command) => {
+                        handle_forward_command(
+                            &session,
+                            &forward,
+                            &mut forward_guard,
+                            command,
+                            &out,
+                        )
+                        .await;
+                    }
+                    None => forward_commands_open = false,
+                }
+            }
             msg = channel.wait() => {
                 match msg {
                     Some(ChannelMsg::Data { data }) => {
@@ -707,6 +807,94 @@ async fn run_session(
                 }
             }
         }
+    }
+}
+
+async fn emit_forward_warning(
+    out: &tokio::sync::mpsc::Sender<Option<Vec<u8>>>,
+    message: &str,
+) {
+    let text = format!("\r\n[ssh-forward] {message}\r\n");
+    let _ = out.send(Some(text.into_bytes())).await;
+}
+
+/// 处理 UI 发来的 local/dynamic 启停命令；remote 不支持运行时启停。
+async fn handle_forward_command(
+    session: &Arc<client::Handle<HostKeyHandler>>,
+    forward: &crate::ssh_forward::ForwardController,
+    guard: &mut ForwardGuard,
+    command: crate::ssh_forward::ForwardCommand,
+    out: &tokio::sync::mpsc::Sender<Option<Vec<u8>>>,
+) {
+    use crate::ssh_forward::{ForwardCommand, ForwardKind};
+
+    match command {
+        ForwardCommand::Start(id) => {
+            let Some(rule) = forward.rule(id) else {
+                return;
+            };
+            if guard.contains(id) {
+                let port = rule.assigned_port.unwrap_or(rule.port);
+                forward.mark_active(id, port);
+                return;
+            }
+            let started = match rule.kind {
+                ForwardKind::Local => crate::ssh_forward::start_local(
+                    session.clone(),
+                    &rule.bind,
+                    rule.port,
+                    &rule.target_host,
+                    rule.target_port,
+                )
+                .await
+                .map(|(task, bound)| {
+                    guard.insert(rule.id, task);
+                    bound
+                }),
+                ForwardKind::Dynamic => crate::ssh_forward::start_dynamic(
+                    session.clone(),
+                    &rule.bind,
+                    rule.port,
+                )
+                .await
+                .map(|(task, bound)| {
+                    guard.insert(rule.id, task);
+                    bound
+                }),
+                ForwardKind::Remote => Err("远程转发不支持当前会话运行时启动".into()),
+            };
+            match started {
+                Ok(bound) => {
+                    eprintln!(
+                        "[ssh-forward] {} {} → {} 已启动",
+                        rule.kind.short(),
+                        rule.spec,
+                        bound
+                    );
+                    forward.mark_active(id, bound);
+                },
+                Err(error) => {
+                    emit_forward_warning(
+                        out,
+                        &format!("-{} {} 启动失败: {error}", rule.kind.short(), rule.spec),
+                    )
+                    .await;
+                    forward.mark_failed(id, error);
+                },
+            }
+        },
+        ForwardCommand::Stop(id) => {
+            let Some(rule) = forward.rule(id) else {
+                return;
+            };
+            if let Some(task) = guard.remove(id) {
+                task.abort();
+                // 等 abort 真正 drop listener 再返回，避免立刻 Start 时端口仍被占。
+                let _ = task.await;
+            }
+            forward.mark_stopped(id);
+            eprintln!("[ssh-forward] {} {} 已停止", rule.kind.short(), rule.spec);
+        },
     }
 }
 
@@ -741,6 +929,120 @@ async fn await_request(
             }
         }
     }
+}
+
+/// 连接 shell 建立后按序把 Login Scripts 发给**远端** PTY。
+///
+/// 命令只写入 SSH channel；这里不启动本地 shell/`sh -c`。等待提示符时收到的
+/// 远端数据照常送 pane，用户能看到脚本执行过程。等待超时默认停止后续脚本，
+/// 但不断开 SSH 会话；`on_error=continue` 时记录警告并继续。
+async fn run_login_scripts(
+    channel: &mut russh::Channel<russh::client::Msg>,
+    out: &tokio::sync::mpsc::Sender<Option<Vec<u8>>>,
+    closed: &AtomicBool,
+    raw_lines: &[String],
+) -> Result<(), String> {
+    let steps = match crate::login_script::parse_lines(raw_lines) {
+        Ok(steps) => steps,
+        Err(error) => {
+            // Profile 保存时已校验；这里兜底（例如手写 profiles.toml）。
+            emit_login_warning(out, &error).await;
+            return Ok(());
+        },
+    };
+    if steps.is_empty() {
+        return Ok(());
+    }
+    eprintln!("[ssh-native] login scripts: {} 条", steps.len());
+    for (index, step) in steps.iter().enumerate() {
+        if closed.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let mut payload = step.command.clone().into_bytes();
+        // PTY 里的 Enter 就是 CR；追加 LF 会让部分 shell 多执行一次空行。
+        payload.push(b'\r');
+        if let Err(error) = channel.data(&payload[..]).await {
+            return Err(format!("登录脚本发送命令失败（第 {} 条）: {error}", index + 1));
+        }
+        if let Some(wait_for) = &step.wait_for {
+            let mut seen = String::new();
+            let deadline = tokio::time::Instant::now() + step.timeout;
+            let mut matched = false;
+            while !closed.load(Ordering::Acquire) {
+                let Some(remaining) = deadline.checked_duration_since(tokio::time::Instant::now())
+                else {
+                    break;
+                };
+                match tokio::time::timeout(remaining, channel.wait()).await {
+                    Ok(Some(ChannelMsg::Data { data })) => {
+                        if out.send(Some(data.to_vec())).await.is_err() {
+                            return Ok(());
+                        }
+                        seen.push_str(&String::from_utf8_lossy(&data));
+                        if seen.contains(wait_for) {
+                            matched = true;
+                            break;
+                        }
+                        // 提示符匹配窗口只需覆盖最近一段输出；限制内存，避免
+                        // 脚本等待期间远端洪水把本地缓冲吃满。
+                        if seen.len() > 64 * 1024 {
+                            let keep = seen.len() - 32 * 1024;
+                            seen.drain(..keep);
+                        }
+                    },
+                    Ok(Some(ChannelMsg::Eof | ChannelMsg::Close)) | Ok(None) => return Ok(()),
+                    Ok(Some(_)) => {},
+                    Err(_) => break,
+                }
+            }
+            if !matched && !closed.load(Ordering::Acquire) {
+                let message = format!(
+                    "第 {} 条脚本等待 {} 超时（{}ms）",
+                    index + 1,
+                    quote_for_log(wait_for),
+                    step.timeout.as_millis()
+                );
+                eprintln!("[ssh-native] {message}");
+                emit_login_warning(out, &message).await;
+                if step.continue_on_error {
+                    continue;
+                }
+                emit_login_warning(out, "已停止后续登录脚本，SSH 会话保持连接").await;
+                return Ok(());
+            }
+            // 会话在等待期间关闭：主循环无需继续。
+            if closed.load(Ordering::Acquire) {
+                return Ok(());
+            }
+        }
+        if !step.delay.is_zero() {
+            tokio::time::sleep(step.delay).await;
+        }
+    }
+    Ok(())
+}
+
+fn quote_for_log(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 2);
+    out.push('"');
+    for c in text.chars() {
+        match c {
+            '\r' => out.push_str("\\r"),
+            '\n' => out.push_str("\\n"),
+            '"' => out.push_str("\\\""),
+            _ => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+async fn emit_login_warning(
+    out: &tokio::sync::mpsc::Sender<Option<Vec<u8>>>,
+    message: &str,
+) {
+    let text = format!("\r\n[login-script] {message}\r\n");
+    let _ = out.send(Some(text.into_bytes())).await;
 }
 
 fn identity_candidates(profile: &Profile, resolved: &ResolvedSsh) -> Vec<std::path::PathBuf> {
@@ -958,17 +1260,27 @@ mod integration_tests {
 
     struct TestServer {
         forward_to: Option<u16>,
+        /// Login Scripts 测试：记录客户端通过 session channel 发来的原始字节。
+        record: Option<Arc<std::sync::Mutex<Vec<u8>>>>,
+        /// 非空时每条命令后回复该提示符（供 `wait=` 匹配）。
+        prompt: Option<String>,
     }
 
     impl server::Server for TestServer {
         type Handler = TestHandler;
         fn new_client(&mut self, _: Option<std::net::SocketAddr>) -> Self::Handler {
-            TestHandler { forward_to: self.forward_to }
+            TestHandler {
+                forward_to: self.forward_to,
+                record: self.record.clone(),
+                prompt: self.prompt.clone(),
+            }
         }
     }
 
     struct TestHandler {
         forward_to: Option<u16>,
+        record: Option<Arc<std::sync::Mutex<Vec<u8>>>>,
+        prompt: Option<String>,
     }
 
     impl server::Handler for TestHandler {
@@ -1094,6 +1406,14 @@ mod integration_tests {
             data: &[u8],
             session: &mut Session,
         ) -> Result<(), Self::Error> {
+            if let Some(record) = &self.record {
+                record.lock().unwrap().extend_from_slice(data);
+            }
+            if let Some(prompt) = &self.prompt {
+                // 命令本身不回显（真实 PTY 会回显，但这里只验证顺序/等待）。
+                session.data(channel, prompt.as_bytes().to_vec())?;
+                return Ok(());
+            }
             // 跳板机的 direct-tcpip 通道由 copy_bidirectional 处理，不能再走 echo。
             if self.forward_to.is_some() {
                 return Ok(());
@@ -1135,7 +1455,7 @@ mod integration_tests {
             ..<_>::default()
         });
         rt.spawn(async move {
-            let _ = TestServer { forward_to: None }
+            let _ = TestServer { forward_to: None, record: None, prompt: None }
                 .run_on_socket(config, &listener)
                 .await;
         });
@@ -1220,6 +1540,15 @@ mod integration_tests {
         rt: &tokio::runtime::Runtime,
         forward_to: Option<u16>,
     ) -> (std::net::SocketAddr, String) {
+        start_test_server_with(rt, forward_to, None, None)
+    }
+
+    fn start_test_server_with(
+        rt: &tokio::runtime::Runtime,
+        forward_to: Option<u16>,
+        record: Option<Arc<std::sync::Mutex<Vec<u8>>>>,
+        prompt: Option<String>,
+    ) -> (std::net::SocketAddr, String) {
         let listener = rt.block_on(tokio::net::TcpListener::bind(("127.0.0.1", 0))).unwrap();
         let addr = listener.local_addr().unwrap();
         let dir = test_path("tervo-native-ssh-srv");
@@ -1239,7 +1568,7 @@ mod integration_tests {
             ..<_>::default()
         });
         rt.spawn(async move {
-            let _ = TestServer { forward_to }
+            let _ = TestServer { forward_to, record, prompt }
                 .run_on_socket(config, &listener)
                 .await;
         });
@@ -1335,6 +1664,93 @@ mod integration_tests {
             Some(value) => std::env::set_var("TERVO_SSH_CONFIG", value),
             None => std::env::remove_var("TERVO_SSH_CONFIG"),
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn native_ssh_login_scripts_run_in_order_on_remote_shell() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let record = Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+        let (addr, public) = start_test_server_with(
+            &rt,
+            None,
+            Some(record.clone()),
+            Some("PROMPT> ".into()),
+        );
+        let dir = test_path("tervo-native-ssh-login");
+        std::fs::create_dir_all(&dir).unwrap();
+        let known = dir.join("known_hosts");
+        let key = public.split_whitespace().nth(1).unwrap();
+        std::fs::write(
+            &known,
+            format!("[127.0.0.1]:{} ssh-ed25519 {key}\n", addr.port()),
+        )
+        .unwrap();
+        let profile = Profile {
+            kind: "ssh".into(),
+            host: "127.0.0.1".into(),
+            port: addr.port(),
+            user: "tester".into(),
+            auth: "password".into(),
+            login_scripts: vec![
+                "echo first ; wait=PROMPT> ; timeout=3000".into(),
+                "echo second ; delay=10 ; wait=PROMPT> ; timeout=3000".into(),
+            ],
+            ..Profile::default()
+        };
+        let resolved = ResolvedSsh {
+            hostname: "127.0.0.1".into(),
+            port: addr.port(),
+            user: "tester".into(),
+            proxy_jump: String::new(),
+            proxy_command: String::new(),
+            keepalive_interval: None,
+            keepalive_max: 3,
+            strict: "ask".into(),
+            user_known_hosts: vec![known],
+            global_known_hosts: Vec::new(),
+            host_key_alias: None,
+            forward_agent: false,
+            identity_files: Vec::new(),
+            unsupported: None,
+        };
+        let mut transport = SshNativeTransport::start_resolved(
+            &profile,
+            Some("pw".into()),
+            None,
+            80,
+            24,
+            resolved,
+        )
+        .expect("start login-script ssh");
+        let mut buf = [0u8; 256];
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut got = Vec::new();
+        while !got.windows(5).any(|w| w == b"READY") {
+            assert!(std::time::Instant::now() < deadline, "no READY login-script ssh");
+            let n = transport.read(&mut buf).expect("read READY");
+            assert!(n > 0);
+            got.extend_from_slice(&buf[..n]);
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let text = String::from_utf8_lossy(&record.lock().unwrap()).to_string();
+            if text.contains("echo first") && text.contains("echo second") {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "server did not receive both login commands; got={text:?}"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let text = String::from_utf8_lossy(&record.lock().unwrap()).to_string();
+        let first = text.find("echo first").expect("first command recorded");
+        let second = text.find("echo second").expect("second command recorded");
+        assert!(first < second, "commands out of order: {text:?}");
+        assert!(text.contains("echo first\r"), "missing PTY Enter after first: {text:?}");
+        assert!(text.contains("echo second\r"), "missing PTY Enter after second: {text:?}");
+        transport.close();
         let _ = std::fs::remove_dir_all(&dir);
     }
 
