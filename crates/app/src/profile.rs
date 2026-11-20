@@ -30,6 +30,7 @@ fn default_serial_dtr() -> bool { true }
 fn default_serial_rts() -> bool { true }
 fn default_serial_output() -> String { "text".into() }
 fn default_serial_newline() -> String { "none".into() }
+fn default_serial_input() -> String { "text".into() }
 
 /// 一个本地 Profile：决定新 Tab 用什么 shell / 参数 / 起始目录 / 环境变量。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -128,6 +129,15 @@ pub struct Profile {
     /// 发送换行转换：none | lf | cr | crlf。
     #[serde(default = "default_serial_newline")]
     pub serial_newline: String,
+    /// 输入模式：text | readline | byte | hex（默认 text）。
+    ///
+    /// 除 hex 外都原样发送（readline 不做本地行编辑）；hex 把键入的十六进制
+    /// 字符解析成字节。additive 字段：旧文件缺省 = text。
+    #[serde(default = "default_serial_input")]
+    pub serial_input: String,
+    /// 输出每行前缀 `[HH:MM:SS.mmm] `（SERIAL-010；默认关）。
+    #[serde(default)]
+    pub serial_timestamp: bool,
     // ---- 外观（None / 空 = 继承全局 Config；对所有 kind 生效）----
     /// 该 Profile 打开的 pane 使用的字号；`None` = 继承 `config.font_size`。
     pub font_size: Option<f32>,
@@ -370,6 +380,8 @@ impl Default for Profile {
             rts: true,
             serial_output: "text".into(),
             serial_newline: "none".into(),
+            serial_input: "text".into(),
+            serial_timestamp: false,
             font_size: None,
             theme: None,
             cursor_shape: None,
@@ -717,6 +729,12 @@ impl Profile {
                     return Err(format!(
                         "串口换行转换必须是 none/lf/cr/crlf，实际 {}",
                         self.serial_newline
+                    ));
+                }
+                if !["text", "readline", "byte", "hex"].contains(&self.serial_input.as_str()) {
+                    return Err(format!(
+                        "串口输入模式必须是 text/readline/byte/hex，实际 {}",
+                        self.serial_input
                     ));
                 }
                 if !self.transport.trim().is_empty()
@@ -1771,7 +1789,8 @@ local_forwards = ["8080:localhost:80"]
     }
 
     #[test]
-    fn telnet_and_serial_commands() {        let t = Profile {
+    fn telnet_and_serial_commands() {
+        let t = Profile {
             kind: "telnet".into(),
             host: "10.0.0.1".into(),
             port: 23,
@@ -1789,6 +1808,46 @@ local_forwards = ["8080:localhost:80"]
             s.serial_command(),
             ("socat".to_string(), vec!["-,raw,echo=0".to_string(), "/dev/ttyUSB0,raw,echo=0,b115200".to_string()])
         );
+    }
+
+    #[test]
+    fn serial_input_and_timestamp_defaults_roundtrip_and_validate() {
+        // 旧 profiles.toml 缺字段：additive 默认 text / 关。
+        let old: Profile = toml::from_str(
+            r#"
+name = "serial-old"
+kind = "serial"
+serial_port = "/dev/ttyUSB0"
+baud = 115200
+"#,
+        )
+        .expect("old serial profile parses");
+        assert_eq!(old.serial_input, "text");
+        assert!(!old.serial_timestamp);
+        old.validate().expect("defaults must validate");
+
+        // 新值能落盘并读回。
+        let mut p = old.clone();
+        p.serial_input = "hex".into();
+        p.serial_timestamp = true;
+        p.validate().expect("hex + timestamp validates");
+        let dir = tmpdir("serial-input");
+        let path = dir.join("profiles.toml");
+        let mut store = ProfileStore::default();
+        store.profiles.push(p);
+        store.next_id = 2;
+        store.save_to(&path);
+        let back = ProfileStore::load_from(&path);
+        assert_eq!(back.profiles[0].serial_input, "hex");
+        assert!(back.profiles[0].serial_timestamp);
+
+        // 未知输入模式必须拒绝，不能静默退回 text。
+        for bad in ["", "line", "HEX "] {
+            let mut invalid = back.profiles[0].clone();
+            invalid.serial_input = bad.into();
+            let err = invalid.validate().unwrap_err();
+            assert!(err.contains("串口输入模式"), "{bad:?}: {err}");
+        }
     }
 
     #[test]
