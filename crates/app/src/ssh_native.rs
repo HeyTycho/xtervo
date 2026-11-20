@@ -365,7 +365,9 @@ impl Handler for HostKeyHandler {
             .ok()
             .and_then(|map| {
                 let key = (connected_address.to_string(), connected_port as u16);
-                map.get(&key).cloned()
+                map.get(&key)
+                    .or_else(|| map.get(&(connected_address.to_string(), 0)))
+                    .cloned()
             });
         let Some(target) = target else { return Ok(()) };
         reply.accept().await;

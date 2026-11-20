@@ -169,14 +169,18 @@ pub async fn setup_remote(
 ) -> Result<(), String> {
     for raw in specs {
         let spec = parse_remote(raw).ok_or_else(|| format!("远程转发格式无效: {raw}"))?;
+        // port=0 用 (bind,0) 占位，收到服务器分配端口后再补精确 key。
+        // 同一 bind 只允许一个 pending port=0，避免把服务器开的任意通道
+        // 误桥接到某个目标。
         if spec.port == 0 {
-            return Err(format!(
-                "远程转发 {} 使用端口 0（服务器分配）暂不支持，请指定固定端口",
-                spec.bind
-            ));
+            let map = targets.lock().map_err(|_| "远程转发表锁损坏".to_string())?;
+            if map.contains_key(&(spec.bind.clone(), 0)) {
+                return Err(format!(
+                    "远程转发 {} 已有待分配端口，暂不支持同一 bind 多个 port 0",
+                    spec.bind
+                ));
+            }
         }
-        // 固定端口先注册，避免服务器在 tcpip_forward 回复后立刻打开通道时
-        // handler 查不到目标。
         {
             let mut map = targets.lock().map_err(|_| "远程转发表锁损坏".to_string())?;
             map.insert(
@@ -184,7 +188,7 @@ pub async fn setup_remote(
                 (spec.target_host.clone(), spec.target_port),
             );
         }
-        let _assigned = match handle.tcpip_forward(&spec.bind, spec.port as u32).await {
+        let assigned = match handle.tcpip_forward(&spec.bind, spec.port as u32).await {
             Ok(assigned) => assigned,
             Err(error) => {
                 if let Ok(mut map) = targets.lock() {
@@ -196,6 +200,18 @@ pub async fn setup_remote(
                 ));
             }
         };
+        if assigned as u16 != spec.port {
+            let mut map = targets.lock().map_err(|_| "远程转发表锁损坏".to_string())?;
+            map.insert(
+                (spec.bind.clone(), assigned as u16),
+                (spec.target_host.clone(), spec.target_port),
+            );
+            map.remove(&(spec.bind.clone(), 0));
+        }
+        eprintln!(
+            "[ssh-forward] remote bind={} requested={} assigned={}",
+            spec.bind, spec.port, assigned
+        );
     }
     Ok(())
 }
