@@ -227,9 +227,9 @@
 | UI-SSH-003 | SFTP 面板/Tab：目录导航、上级、刷新、路径输入、列表、属性 | U-AUDIT / 需求 B8 | **SFTP 面板**（TabBar 菜单 → SFTP）：SSH Profile 选择、Remote 路径、List、条目点选；`sftp.rs` 走系统 `sftp -q -b -`；list 后台 `SftpOpJob` + 10s 硬超时/kill + **W-02 Cancel**（kill 进程组）；所有 sftp 参数带 ConnectTimeout=10/keepalive | partial | 既有 e2e + W-02 Xvfb :139 列表/元数据 Cancel 截图；`--sftp-probe` 真机（无 GUI） | 列目录/选择/元数据 Cancel 可用且 UI 不冻结 | 无“上级/刷新/属性列”；慢链路上大目录可能被 10s 截断；路径含空格等特殊字符未做 batch 转义 |
 | UI-SSH-004 | SFTP 上传/下载/建目录/重命名/删除；危险确认 | U-AUDIT / 需求 B8 | 面板 Download/Upload/Queue/New Dir/Rename/Delete/Chmod/Retry/Clear queue；传输后台 `TransferJob`（progress/get -R/put -R）；mkdir/rename/rm/chmod 后台 `SftpOpJob` + 10s 硬超时；Delete 两次确认；**W-02** 队列 FIFO、失败保留 Retry、chmod 八进制校验 | partial | 单测 queue/chmod/batch/取消/失败 27 例；W-02 e2e 队列/取消/chmod/失败+Retry 截图；既有 paramiko probe | 上传/下载（含目录）/建目录/重命名/删除/chmod/队列/重试可用且不冻结 UI | 无覆盖确认/断点续传/递归删除；取消可能留半成品；SFTP 不注入 Vault 密码；路径特殊字符未转义 |
 | UI-SSH-005 | 传输进度、速度、已传/总大小、取消、失败重试 | U-AUDIT / 需求 B8 | `sftp.rs` 后台任务 + 双读线程按 CR/LF 切行；解析 `path 42% 1.2MB 3.4MB/s`；UI 当前文件/进度条/不确定进度/Cancel；**W-02** 传输队列 + 失败提示 + Retry；WakeSignal 事件唤醒，400ms 兜底 | partial | 单测进度解析/状态机/取消/失败/唤醒/queue 等 27 例；W-02 e2e 队列进度/取消/失败/Retry 截图；既有 event-wake e2e | 开始/当前文件/完成/失败/取消/队列/重试可用；有进度行时显示百分比/速率 | OpenSSH progress 在非 tty 管道不输出，通常只能显示不确定进度；无总大小/ETA/自动重试/断点续传；取消可能留部分文件 |
-| UI-SSH-006 | Port Forward 管理：查看/添加/启停/删除，显示监听与目标 | U-AUDIT / 需求 B8 | Port Forwards 面板仍管理 `-L` 规则；**W-02** Profile 表单新增 `remote_forwards(-R)`/`dynamic_forwards(-D)`/`proxy_jump(-J)` 字段并写回 profiles.toml（下次连接生效）；SFTP 同 Profile 也使用 `-J` | partial | 单测 forward/remote/dynamic/jump 校验与 argv；W-02 SSH 表单截图 | -L/-R/-D/Jump 均可配置并生成正确 ssh 参数 | 面板只展示/编辑 -L；无启停/状态/监听展示；已连接会话需重连 |
+| UI-SSH-006 | Port Forward 管理：查看/添加/启停/删除，显示监听与目标 | U-AUDIT / 需求 B8 | **W-02 + 本次**：当前 native SSH pane 显示 L/R/D 监听/目标/状态；L/D 可运行时启停，remote 显示服务器分配端口；新增/删除写回 Profile；系统 ssh/插件后端只编辑 Profile | implemented | ssh_forward 状态单测；local/remote in-process e2e；面板 Slint 编译 | 当前会话状态/启停与 Profile 规则管理可用，不伪造未实现能力 | 系统 ssh/插件后端无法查询状态；remote 不支持运行时取消 |
 | UI-SSH-007 | Jump Host 配置入口与链路可视化/可读描述 | U-AUDIT / 需求 B8 | **W-02** Profile 表单 Jump 字段 → `ssh -J`（支持 OpenSSH 逗号多跳）；SFTP 复用 `-J`；预检遇 ProxyJump 标记 Unverifiable 并回退终端确认 | partial | profile 单测 `ssh_remote_dynamic_forwards_and_proxy_jump_become_args`；Xvfb :139 表单截图；SFTP 参数单测 | Jump Host 可配置、可连接（系统 ssh） | 无链路可视化/跳板机单独认证 UI；预检无法穿透跳板机 |
-| UI-SSH-008 | Login Scripts 编辑器：命令/顺序/延时/等待提示符（按上游核验） | U-AUDIT（字段待核） | 无实现 | not_started | 无 | 未实现 | 无登录脚本 |
+| UI-SSH-008 | Login Scripts 编辑器：命令/顺序/延时/等待提示符（按上游核验） | U-AUDIT（字段待核） | Profile SSH 表单多行编辑器；每行 `<命令>[; delay=ms][; wait=文本][; timeout=ms][; on_error=stop/continue]`；保存校验行号 | implemented | 解析单测；in-process server 命令顺序 e2e | 可编辑并随 native 连接按序发送到远端 shell | 单行分号格式；命令内字面 `;` 需转义 `\;`；无交互式确认脚本 |
 | UI-SSH-009 | X11/Agent Forwarding 状态显示与失败提示 | U-AUDIT / 需求 B8 | **W-02** Profile 增加 `agent_forward` 开关 → `ssh -A`；表单可编辑；无 X11 forwarding | partial | profile argv 单测；Xvfb :139 表单截图 | Agent forwarding 可配置/生效（系统 ssh/agent） | 无 X11 forwarding；无转发状态/失败 UI；Pageant/Windows Agent 未做 |
 
 ### B9. Serial / Telnet UI（8 条）
@@ -330,11 +330,11 @@
 | SSH-008 | Proxy Command（平台能力与安全策略核验） | U-AUDIT（能力/策略待核） | 无实现 | not_started | 无 | 未实现 | 无 ProxyCommand；安全策略未定 |
 | SSH-009 | Agent Forwarding；Linux OpenSSH Agent；后续 Pageant/Windows Agent | U-AUDIT / 需求 C3 | **W-02** `agent_forward=true` → `ssh -A`；Profile 表单开关 | partial | profile argv 单测 + e2e 表单 | Linux OpenSSH Agent forwarding 可配置 | Pageant/Windows Agent 未做；无状态显示 |
 | SSH-010 | X11 Forwarding 与自定义 X11 Display | U-AUDIT / 需求 C3 | 无实现 | not_started | 无 | 未实现 | 无 X11 forwarding |
-| SSH-011 | Local/Remote/Dynamic SOCKS 端口转发 | U-AUDIT / 需求 C3 | **W-02** Profile 支持 `local_forwards(-L)`/`remote_forwards(-R)`/`dynamic_forwards(-D)`，表单编辑并生成 ssh 参数 | implemented | profile 校验/argv 单测；e2e 表单 | 三种转发均可配置连接（系统 ssh） | 面板仅管理 -L；无启停/监听状态 |
-| SSH-012 | Persistent Port Forwards：预配置并随连接恢复 | U-AUDIT / 需求 C3 | 无实现 | not_started | 无 | 未实现 | 无转发规则/恢复 |
-| SSH-013 | Login Scripts：连接后自动执行，顺序/等待/延时/错误处理 | U-AUDIT / 需求 C3 | 无实现 | not_started | 无 | 未实现 | 无登录脚本引擎 |
+| SSH-011 | Local/Remote/Dynamic SOCKS 端口转发 | U-AUDIT / 需求 C3 | Profile 支持 L/R/D；native 全部实现，远程 port 0 已支持；`ForwardController` 暴露规则/状态，Port Forwards 面板显示监听/目标/状态并启停 local+dynamic | implemented | profile 校验/argv；ssh_forward 状态单测；local/remote in-process e2e | native 当前会话可查询/控制；remote 显示服务器分配端口；规则写回 Profile | 系统 ssh/插件后端只显示 Profile 规则；remote 不支持运行时取消 |
+| SSH-012 | Persistent Port Forwards：预配置并随连接恢复 | U-AUDIT / 需求 C3 | 调研完成：Profile 规则持久化，自动重连会重建会话并按 Profile 重启转发 | partial | 现有重连/转发测试覆盖新连接恢复 | 预配置随新连接/重连恢复 | 无独立于 pane 的常驻转发进程；断线期间 listener 不保持 |
+| SSH-013 | Login Scripts：连接后自动执行，顺序/等待/延时/错误处理 | U-AUDIT / 需求 C3 | Profile `login_scripts` 原始行；native shell 后按序发送；`command/delay/wait/timeout/on_error` 解析；多行设置编辑器 | implemented | 解析单测；in-process server 收到命令顺序 e2e | 命令只发远端 PTY，不执行本地 shell；超时默认停止后续脚本并保留会话 | 单行分号格式，命令内字面 `;` 需写 `\;`；无交互式密码/确认脚本 |
 | SSH-014 | Ciphers/算法配置入口；默认遵循系统/库安全值 | U-AUDIT / 需求 C3 | 无实现 | not_started | 无 | 未实现 | 无 SSH 算法配置 |
-| SSH-015 | SSH 主机别名、连接历史、最近连接 | U-AUDIT / 需求 C3 | 无实现 | not_started | 无 | 未实现 | 无历史/最近连接 |
+| SSH-015 | SSH 主机别名、连接历史、最近连接 | U-AUDIT / 需求 C3 | 成功 SSH 连接写 `~/.config/tervo/history.toml`（Profile/名/host/user/port/时间，无凭据）；`>_` 菜单顶部 ↺ 最近项 | partial | history 去重/上限/损坏文件/相对时间单测；菜单映射复用 Profile 下标 | 最近成功连接可见并可一键重开 | 无主机别名管理；无历史清理/固定项 UI |
 | SSH-016 | WinSCP 集成（平台/外部工具） | U-AUDIT / 需求 C3 | 无实现 | unsupported | 无 | Ubuntu 不可用 | 外部工具集成，非当前平台目标；需给出替代入口 |
 
 ### C4. SFTP 与文件传输（7 条）

@@ -456,6 +456,52 @@ component FormRow inherits HorizontalLayout {
     }
 }
 
+// 多行文本（Login Scripts）：每行一条，支持换行/折行；不参与单行表单快捷键。
+component TextAreaRow inherits VerticalLayout {
+    in property <string> label;
+    in property <string> hint: "";
+    in-out property <string> text;
+    in property <length> editor-height: 82px;
+    spacing: 4px;
+
+    Text {
+        height: 14px;
+        text: root.label;
+        color: Palette.colors.subtext;
+        font-size: 11px;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+    Rectangle {
+        height: root.editor-height;
+        border-radius: 4px;
+        background: Palette.colors.bg;
+        border-width: 1px;
+        border-color: Palette.colors.border;
+
+        TextInput {
+            x: 6px;
+            y: 4px;
+            width: parent.width - 12px;
+            height: parent.height - 8px;
+            text <=> root.text;
+            single-line: false;
+            wrap: word-wrap;
+            color: Palette.colors.text;
+            font-size: 11px;
+        }
+    }
+    Text {
+        height: 14px;
+        text: root.hint;
+        color: Palette.colors.subtext;
+        font-size: 9px;
+        vertical-alignment: center;
+        overflow: elide;
+        visible: root.hint != "";
+    }
+}
+
 // 设置面板里的开关行
 component ToggleRow inherits Rectangle {
     in property <string> label;
@@ -1870,6 +1916,8 @@ export component MainWindow inherits Window {
     in-out property <string> form-proxy-jump: "";
     in-out property <bool> form-agent-forward: false;
     in-out property <bool> form-x11-forward: false;
+    /// Login Scripts：每行一条 `命令 ; delay=ms ; wait=文本 ; timeout=ms ; on_error=...`。
+    in-out property <string> form-login-scripts: "";
     /// -1 = 新建；>0 = 正在编辑的 Profile ID
     in-out property <int> form-edit-id: -1;
     callback profile-edit(int);
@@ -1976,11 +2024,22 @@ export component MainWindow inherits Window {
     // Port Forwards 面板
     in-out property <bool> fwd-open: false;
     in property <[string]> fwd-profiles: [];
+    /// 当前 SSH pane 的转发状态（native 会话；格式由 Rust 侧生成）。
+    in property <[string]> fwd-session-items: [];
+    /// Profile 中已配置、下次连接生效的规则（带 L/R/D 前缀）。
     in property <[string]> fwd-items: [];
     in-out property <int> fwd-profile: 0;
+    in-out property <int> fwd-session-selected: -1;
+    /// 新增规则类型：0=L 1=R 2=D。
+    in-out property <int> fwd-kind: 0;
     in-out property <string> fwd-new: "";
     in-out property <string> fwd-status: "";
+    in property <string> fwd-session-note: "";
     callback fwd-select(int);
+    callback fwd-session-select(int);
+    callback fwd-start();
+    callback fwd-stop();
+    callback fwd-kind-select(int);
     callback fwd-add();
     callback fwd-delete(int);
     callback fwd-close();
@@ -7973,10 +8032,16 @@ export component MainWindow inherits Window {
             visible: root.form-cwd-hint != "";
         }
 
-        if root.form-kind == 1 : VerticalLayout {
+        if root.form-kind == 1 : Flickable {
             x: 16px; y: 116px; width: 408px; height: 440px;
-            spacing: 5px;
-            FormRow { label: Lang.t("Host", "主机"); text <=> root.form-host; }
+            content-width: 408px;
+            content-height: 610px;
+            interactive: true;
+            VerticalLayout {
+                width: 408px;
+                height: 610px;
+                spacing: 5px;
+                FormRow { label: Lang.t("Host", "主机"); text <=> root.form-host; }
             FormRow { label: Lang.t("Port", "端口"); text <=> root.form-port; }
             FormRow { label: Lang.t("User", "用户名"); text <=> root.form-user; }
             FormRow { label: Lang.t("Auth", "认证"); text <=> root.form-auth; }
@@ -8013,6 +8078,11 @@ export component MainWindow inherits Window {
                     toggled => { root.form-save-password = !root.form-save-password; }
                 }
             }
+            TextAreaRow {
+                label: Lang.t("Login scripts (one per line)", "登录脚本（每行一条）");
+                hint: "; delay=ms ; wait=text ; timeout=ms ; on_error=stop|continue";
+                text <=> root.form-login-scripts;
+            }
             FormRow { label: Lang.t("Jump", "跳板"); text <=> root.form-proxy-jump; }
             FormRow { label: Lang.t("R-Forwards", "远程转发"); text <=> root.form-remote-forwards; }
             FormRow { label: Lang.t("D-Forwards", "动态转发"); text <=> root.form-dynamic-forwards; }
@@ -8028,6 +8098,7 @@ export component MainWindow inherits Window {
             }
             FormRow { label: Lang.t("Extra", "额外参数"); text <=> root.form-extra; }
             FormRow { label: Lang.t("L-Forwards", "本地转发"); text <=> root.form-forwards; }
+            }
         }
 
         if root.form-kind == 2 : Flickable {
@@ -8991,10 +9062,10 @@ export component MainWindow inherits Window {
     }
 
     if root.fwd-open : Rectangle {
-        x: (root.width - 460px) / 2;
-        y: (root.height - 400px) / 2;
-        width: 460px;
-        height: 400px;
+        x: (root.width - 540px) / 2;
+        y: (root.height - 540px) / 2;
+        width: 540px;
+        height: 540px;
         background: Palette.colors.raise;
         border-radius: 10px;
         border-width: 1px;
@@ -9027,10 +9098,10 @@ export component MainWindow inherits Window {
 
         HorizontalLayout {
             x: 16px; y: 38px;
-            width: 428px; height: 24px;
+            width: 508px; height: 24px;
             spacing: 8px;
             for p[i] in root.fwd-profiles : ChoiceBtn {
-                width: 120px; height: 24px; font-size: 11px;
+                width: 118px; height: 24px; font-size: 11px;
                 label: p;
                 active: root.fwd-profile == i;
                 clicked => { root.fwd-profile = i; root.fwd-select(i); }
@@ -9038,112 +9109,204 @@ export component MainWindow inherits Window {
         }
 
         Text {
-            x: 16px; y: 70px;
-            width: 428px;
-            text: "规则写入 Profile，下次建立 SSH 连接时生效（当前会话需重连）";
+            x: 16px; y: 68px;
+            width: 508px; height: 28px;
+            text: root.fwd-session-note;
             color: Palette.colors.muted;
             font-size: 10px;
             wrap: word-wrap;
+            overflow: elide;
+        }
+
+        Text {
+            x: 16px; y: 100px;
+            text: Lang.t("Current session", "当前会话");
+            color: Palette.colors.subtext;
+            font-size: 11px;
+            font-weight: 600;
         }
 
         Rectangle {
-            x: 16px; y: 94px; width: 428px; height: 196px;
+            x: 16px; y: 118px; width: 508px; height: 104px;
             background: Palette.colors.bg;
             border-radius: 6px;
             border-width: 1px;
             border-color: Palette.colors.border;
+            clip: true;
 
-            VerticalLayout {
-                x: 2px; y: 2px; width: 424px; height: 192px;
-                spacing: 0px;
-
-                for item[i] in root.fwd-items : Rectangle {
-                    height: 24px;
-                    background: transparent;
-
-                    Text {
-                        x: 8px;
-                        width: parent.width - 40px;
-                        text: item;
-                        color: Palette.colors.text;
-                        font-size: 12px;
-                        vertical-alignment: center;
-                        overflow: elide;
-                    }
-
-                    Rectangle {
-                        x: parent.width - 26px;
-                        y: 2px;
-                        width: 22px;
-                        height: 20px;
-                        border-radius: 4px;
-                        background: fwd-del-hit.has-hover ? Palette.colors.danger : transparent;
-
+            Flickable {
+                x: 2px; y: 2px; width: 504px; height: 100px;
+                content-width: 504px;
+                content-height: Math.max(100px, root.fwd-session-items.length * 24px);
+                interactive: true;
+                VerticalLayout {
+                    width: 504px;
+                    height: Math.max(100px, root.fwd-session-items.length * 24px);
+                    spacing: 0px;
+                    for item[i] in root.fwd-session-items : Rectangle {
+                        height: 24px;
+                        background: root.fwd-session-selected == i ? Palette.colors.hover : transparent;
                         Text {
-                            text: "×";
-                            color: fwd-del-hit.has-hover ? Palette.colors.bg : Palette.colors.muted;
-                            font-size: 14px;
-                            horizontal-alignment: center;
+                            x: 8px;
+                            width: parent.width - 16px;
+                            text: item;
+                            color: Palette.colors.text;
+                            font-size: 11px;
                             vertical-alignment: center;
-                            width: 100%;
-                            height: 100%;
+                            overflow: elide;
                         }
-
-                        fwd-del-hit := TouchArea {
-                            clicked => { root.fwd-delete(i); }
+                        TouchArea {
+                            clicked => {
+                                root.fwd-session-selected = i;
+                                root.fwd-session-select(i);
+                            }
                         }
                     }
-
+                    if root.fwd-session-items.length == 0 : Text {
+                        x: 8px;
+                        width: parent.width - 16px;
+                        height: 24px;
+                        text: Lang.t("No native forward state for this pane", "当前 pane 没有可查询的 native 转发状态");
+                        color: Palette.colors.muted;
+                        font-size: 10px;
+                        vertical-alignment: center;
+                    }
                 }
             }
         }
 
-        FormRow {
-            x: 16px; y: 300px; width: 428px; height: 26px;
-            label: "New"; text <=> root.fwd-new;
-        }
-
-        Rectangle {
-            x: 16px; y: 334px; width: 90px; height: 26px; border-radius: 5px;
-            background: fwd-add-hit.has-hover ? Palette.colors.hover : Palette.colors.raise;
-            border-width: 1px;
-            border-color: Palette.colors.border;
-            fwd-add-hit := TouchArea { clicked => { root.fwd-add(); } }
+        HorizontalLayout {
+            x: 16px; y: 228px; width: 240px; height: 26px;
+            spacing: 8px;
+            ActionBtn {
+                width: 72px;
+                label: Lang.t("Start", "启动");
+                clicked => { root.fwd-start(); }
+            }
+            ActionBtn {
+                width: 72px;
+                label: Lang.t("Stop", "停止");
+                clicked => { root.fwd-stop(); }
+            }
             Text {
-                text: "Add rule";
-                color: Palette.colors.text;
-                font-size: 11px;
-                horizontal-alignment: center;
+                height: 26px;
+                horizontal-stretch: 1;
+                text: Lang.t("local/dynamic only", "仅 local/dynamic 可控");
+                color: Palette.colors.muted;
+                font-size: 9px;
                 vertical-alignment: center;
-                width: 100%;
-                height: 100%;
+                overflow: elide;
             }
         }
 
         Text {
-            x: 116px; y: 340px;
-            width: 236px;
-            text: root.fwd-status;
-            color: Palette.colors.muted;
-            font-size: 10px;
-            overflow: elide;
+            x: 16px; y: 262px;
+            width: 508px;
+            text: Lang.t("Profile rules (next connection)", "Profile 规则（下次连接生效）");
+            color: Palette.colors.subtext;
+            font-size: 11px;
+            font-weight: 600;
         }
 
         Rectangle {
-            x: 364px; y: 334px; width: 80px; height: 26px; border-radius: 5px;
-            background: fwd-close-hit.has-hover ? Palette.colors.hover : Palette.colors.raise;
+            x: 16px; y: 280px; width: 508px; height: 104px;
+            background: Palette.colors.bg;
+            border-radius: 6px;
             border-width: 1px;
             border-color: Palette.colors.border;
-            fwd-close-hit := TouchArea { clicked => { root.fwd-open = false; root.fwd-close(); } }
-            Text {
-                text: Lang.t("Close", "关闭");
-                color: Palette.colors.text;
-                font-size: 11px;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-                width: 100%;
-                height: 100%;
+            clip: true;
+
+            Flickable {
+                x: 2px; y: 2px; width: 504px; height: 100px;
+                content-width: 504px;
+                content-height: Math.max(100px, root.fwd-items.length * 24px);
+                interactive: true;
+                VerticalLayout {
+                    width: 504px;
+                    height: Math.max(100px, root.fwd-items.length * 24px);
+                    spacing: 0px;
+                    for item[i] in root.fwd-items : Rectangle {
+                        height: 24px;
+                        background: fwd-del-hit.has-hover ? Palette.colors.hover : transparent;
+                        Text {
+                            x: 8px;
+                            width: parent.width - 40px;
+                            text: item;
+                            color: Palette.colors.text;
+                            font-size: 11px;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                        Rectangle {
+                            x: parent.width - 26px;
+                            y: 2px;
+                            width: 22px;
+                            height: 20px;
+                            border-radius: 4px;
+                            background: fwd-del-hit.has-hover ? Palette.colors.danger : transparent;
+                            Text {
+                                text: "×";
+                                color: fwd-del-hit.has-hover ? Palette.colors.bg : Palette.colors.muted;
+                                font-size: 14px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                                width: 100%;
+                                height: 100%;
+                            }
+                            fwd-del-hit := TouchArea {
+                                clicked => { root.fwd-delete(i); }
+                            }
+                        }
+                    }
+                }
             }
+        }
+
+        HorizontalLayout {
+            x: 16px; y: 390px; width: 508px; height: 26px;
+            spacing: 6px;
+            ChoiceBtn {
+                width: 44px; height: 26px; font-size: 11px;
+                label: "L"; active: root.fwd-kind == 0;
+                clicked => { root.fwd-kind = 0; root.fwd-kind-select(0); }
+            }
+            ChoiceBtn {
+                width: 44px; height: 26px; font-size: 11px;
+                label: "R"; active: root.fwd-kind == 1;
+                clicked => { root.fwd-kind = 1; root.fwd-kind-select(1); }
+            }
+            ChoiceBtn {
+                width: 44px; height: 26px; font-size: 11px;
+                label: "D"; active: root.fwd-kind == 2;
+                clicked => { root.fwd-kind = 2; root.fwd-kind-select(2); }
+            }
+            FormRow {
+                width: 240px;
+                label-width: 32px;
+                label: "New";
+                text <=> root.fwd-new;
+            }
+            ActionBtn {
+                width: 108px;
+                label: Lang.t("Add rule", "添加规则");
+                clicked => { root.fwd-add(); }
+            }
+        }
+
+        Text {
+            x: 16px; y: 424px;
+            width: 508px; height: 28px;
+            text: root.fwd-status;
+            color: Palette.colors.muted;
+            font-size: 10px;
+            wrap: word-wrap;
+            overflow: elide;
+        }
+
+        ActionBtn {
+            x: 444px; y: 494px; width: 80px; height: 28px;
+            label: Lang.t("Close", "关闭");
+            clicked => { root.fwd-open = false; root.fwd-close(); }
         }
     }
 
