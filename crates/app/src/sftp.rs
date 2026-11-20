@@ -27,6 +27,14 @@ use tervo_core::WakeSignal;
 /// 10s 覆盖正常连上后的目录列举/建目录/改名/删除；连接卡死或远端不响应时
 /// 到点 kill 整个子进程组并返回可解释错误。UI 侧不再同步调用，见 [`SftpOpJob`]。
 pub const SFTP_TIMEOUT: Duration = Duration::from_secs(10);
+/// 递归删除的总预算。
+///
+/// OpenSSH sftp 的 `rm`/`rmdir` 都不支持递归（见 `man sftp`），安全做法是
+/// 「列目录 → 删文件/子目录 → rmdir」逐层执行。每层至少一次 sftp 连接，
+/// 因此总预算比普通元数据操作大；仍可随时 Cancel（每次调用都会 kill）。
+pub const SFTP_RECURSIVE_TIMEOUT: Duration = Duration::from_secs(120);
+/// 递归删除最大目录深度：防御异常列表/符号链接环造成无限递归。
+const RECURSIVE_DELETE_MAX_DEPTH: usize = 64;
 /// 超时 kill 后等待 reader 线程收尾的宽限；主流程最多再多等这么久。
 const KILL_GRACE: Duration = Duration::from_millis(200);
 /// 轮询子进程退出的间隔（try_wait，不做阻塞 wait）。
@@ -307,7 +315,6 @@ fn reap_after_kill(child: &mut Child) -> Option<std::process::ExitStatus> {
     }
 }
 
-/// 过滤 sftp 的提示行（`sftp> ...`）与空行，留下远端目录条目。
 /// 远端路径的父目录；根目录/空路径保持 "/"。
 pub fn parent_remote(path: &str) -> String {
     let trimmed = path.trim_end_matches('/');
@@ -320,14 +327,6 @@ pub fn parent_remote(path: &str) -> String {
     }
 }
 
-pub fn parse_list(out: &str) -> Vec<String> {
-    out.lines()
-        .map(|l| l.trim())
-        .filter(|l| !l.is_empty() && !l.starts_with("sftp>") && !l.starts_with("Connected to"))
-        .map(|l| l.to_string())
-        .collect()
-}
-
 /// sftp batch 参数转义：双引号包裹，反斜杠/双引号转义；空路径用 "."。
 /// 远端文件名可能包含空格/引号/`;`，绝不能直接拼进 batch。
 pub fn quote_batch_path(path: &str) -> String {
@@ -337,9 +336,270 @@ pub fn quote_batch_path(path: &str) -> String {
     format!("\"{}\"", path.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
-pub fn list(t: &SftpTarget, remote: &str) -> Result<Vec<String>, String> {
-    let out = t.run(&format!("ls -1 {}\n", quote_batch_path(remote)))?;
-    Ok(parse_list(&out))
+/// 过滤 sftp 的提示行（`sftp> ...`）、连接横幅与空行，留下 `ls -1` 文件名。
+pub fn parse_list(out: &str) -> Vec<String> {
+    out.lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty() && !l.starts_with("sftp>") && !l.starts_with("Connected to"))
+        .map(|l| l.to_string())
+        .collect()
+}
+
+/// 远端目录条目（`ls -l` 解析结果）。
+///
+/// `mode/size/mtime` 来自 OpenSSH sftp 的 `ls -l` 长格式；服务器不支持/输出
+/// 为空时回退 `ls -1`，此时只有 `name`，`is_dir = None`（类型未知，删除走
+/// 非递归的 rm/rmdir，绝不会因为“猜是目录”而展开整棵树）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RemoteEntry {
+    /// 文件名本身（符号链接已去掉 ` -> target`）。
+    pub name: String,
+    /// 权限/类型串，例如 `drwxr-xr-x` / `-rw-r--r--`。
+    pub mode: String,
+    pub size: Option<u64>,
+    /// 服务端格式化的时间，例如 `Nov 20 10:00` / `Nov 20  2023`。
+    pub mtime: String,
+    /// `None` = 来自 `ls -1`，类型未知。
+    pub is_dir: Option<bool>,
+    pub link_target: Option<String>,
+}
+
+impl RemoteEntry {
+    /// `ls -1` 回退条目：只有文件名，未知类型/大小/时间。
+    pub fn from_name(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            mode: String::new(),
+            size: None,
+            mtime: String::new(),
+            is_dir: None,
+            link_target: None,
+        }
+    }
+
+    /// 已确认是目录（`ls -l` 的 d 位）；符号链接不算，删除链接本身更安全。
+    pub fn is_known_dir(&self) -> bool {
+        self.is_dir == Some(true)
+    }
+
+    /// UI 行：`mode size mtime name`；`ls -1` 回退时只显示文件名。
+    ///
+    /// 不改变 `name` 字段：选中后的路径拼接始终使用真实文件名，
+    /// 不会把展示用的 mode/size 拼进远端路径。
+    pub fn display(&self) -> String {
+        if self.mode.is_empty() {
+            return self.name.clone();
+        }
+        let size = self.size.map(format_bytes).unwrap_or_else(|| "-".to_string());
+        let mtime = if self.mtime.is_empty() { "-" } else { self.mtime.as_str() };
+        let mut text = format!("{} {:>8} {} {}", self.mode, size, mtime, self.name);
+        if let Some(target) = &self.link_target {
+            text.push_str(" -> ");
+            text.push_str(target);
+        }
+        text
+    }
+}
+
+/// 按空白切分并保留每个 field 在原始行里的字节起点（用于保留文件名内部空格）。
+fn split_fields(line: &str) -> Vec<(usize, &str)> {
+    let mut fields = Vec::new();
+    let mut start = None;
+    for (index, ch) in line.char_indices() {
+        if ch.is_whitespace() {
+            if let Some(begin) = start.take() {
+                fields.push((begin, &line[begin..index]));
+            }
+        } else if start.is_none() {
+            start = Some(index);
+        }
+    }
+    if let Some(begin) = start {
+        fields.push((begin, &line[begin..]));
+    }
+    fields
+}
+
+/// OpenSSH `ls -l` 的第一个字段：文件类型 + 9 个权限位（可能多一个 ACL 标记）。
+fn looks_like_mode(mode: &str) -> bool {
+    let bytes = mode.as_bytes();
+    bytes.len() >= 10 && matches!(bytes[0], b'-' | b'd' | b'l' | b'b' | b'c' | b'p' | b's' | b'?')
+}
+
+/// 是否是长格式行（即使因 `.`/`..` 被过滤，也不应当作纯文件名）。
+fn looks_like_long_line(line: &str) -> bool {
+    let fields = split_fields(line);
+    fields.len() >= 9 && looks_like_mode(fields[0].1)
+}
+
+/// 解析单行 `ls -l`。不是长格式（提示符/普通文件名）返回 `None`。
+fn parse_long_entry(line: &str) -> Option<RemoteEntry> {
+    let fields = split_fields(line);
+    // mode nlink user group size mon day time name
+    if fields.len() < 9 || !looks_like_mode(fields[0].1) {
+        return None;
+    }
+    let mode = fields[0].1;
+    let size_token = fields[4].1.replace(',', "");
+    let size = parse_size(&size_token);
+    let mtime = format!("{} {} {}", fields[5].1, fields[6].1, fields[7].1);
+    // 从原始字节位置取 name，保留文件名内部空格；只去掉行尾 `\r`。
+    let name_raw = line[fields[8].0..].trim_end_matches('\r');
+    if name_raw.trim().is_empty() {
+        return None;
+    }
+    let mode_kind = mode.as_bytes()[0];
+    let mut name = name_raw.to_string();
+    let mut link_target = None;
+    if mode_kind == b'l' {
+        if let Some((link, target)) = name_raw.split_once(" -> ") {
+            name = link.to_string();
+            link_target = Some(target.to_string());
+        }
+    }
+    // 远端列表里的 . / .. 没有操作价值，而且容易让 Up/递归路径重复。
+    if name == "." || name == ".." {
+        return None;
+    }
+    Some(RemoteEntry {
+        name,
+        mode: mode.to_string(),
+        size,
+        mtime,
+        is_dir: Some(mode_kind == b'd'),
+        link_target,
+    })
+}
+
+/// 解析 `ls -l` 输出；无法识别的非提示行按纯文件名保留，避免静默丢条目。
+pub fn parse_list_long(out: &str) -> Vec<RemoteEntry> {
+    let mut entries = Vec::new();
+    for raw in out.lines() {
+        let line = raw.trim_start();
+        if line.trim().is_empty()
+            || line.starts_with("sftp>")
+            || line.starts_with("Connected to")
+        {
+            continue;
+        }
+        if let Some(entry) = parse_long_entry(line) {
+            entries.push(entry);
+        } else if !looks_like_long_line(line) {
+            // 不是长格式：某些服务器/假脚本会直接返回纯文件名，保留它们。
+            let name = line.trim_end();
+            if !name.is_empty() && name != "." && name != ".." {
+                entries.push(RemoteEntry::from_name(name));
+            }
+        }
+    }
+    entries
+}
+
+/// 解析 `ls -1` 输出为无名单元数据条目。
+fn parse_short_entries(out: &str) -> Vec<RemoteEntry> {
+    parse_list(out)
+        .into_iter()
+        .filter(|name| name != "." && name != "..")
+        .map(RemoteEntry::from_name)
+        .collect()
+}
+
+fn ls_long_batch(remote: &str) -> String {
+    format!("ls -l {}\n", quote_batch_path(remote))
+}
+
+fn ls_short_batch(remote: &str) -> String {
+    format!("ls -1 {}\n", quote_batch_path(remote))
+}
+
+/// `ls -l` 优先、失败/空输出回退 `ls -1`；`run` 由调用方注入超时/取消。
+fn list_entries_with<F>(remote: &str, mut run: F) -> Result<Vec<RemoteEntry>, String>
+where
+    F: FnMut(&str) -> Result<String, String>,
+{
+    match run(&ls_long_batch(remote)) {
+        Ok(out) => {
+            let entries = parse_list_long(&out);
+            if !entries.is_empty() {
+                return Ok(entries);
+            }
+            // 空目录也会走到这里；多一次 `ls -1` 是可接受的，换取对旧服务器/
+            // 假 sftp 脚本的兼容（它们可能不认识 -l，但会返回纯文件名）。
+            run(&ls_short_batch(remote)).map(|out| parse_short_entries(&out))
+        },
+        Err(first) => {
+            // 超时/取消已经 kill 子进程，再回退只会重复同一错误并浪费时间。
+            if is_terminal_sftp_error(&first) {
+                return Err(first);
+            }
+            match run(&ls_short_batch(remote)) {
+                Ok(out) => Ok(parse_short_entries(&out)),
+                Err(second) => Err(second),
+            }
+        },
+    }
+}
+
+/// 超时/取消是终止性错误：list 不再回退，递归删除也不继续下一层。
+fn is_terminal_sftp_error(message: &str) -> bool {
+    message.contains("超时") || message.contains("已取消")
+}
+
+/// 规范化远端目录：去掉尾部 `/`；根目录固定为 `/`。
+pub fn normalize_remote(path: &str) -> String {
+    let trimmed = path.trim_end_matches('/');
+    if trimmed.is_empty() {
+        "/".into()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// 覆盖检查所需的信息：已知存在/已知不存在/列表未覆盖该目录。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OverwriteRisk {
+    None,
+    Existing,
+    Unknown,
+}
+
+impl OverwriteRisk {
+    pub fn needs_confirmation(self) -> bool {
+        self != Self::None
+    }
+}
+
+/// 本地下载目标是否已存在（文件/目录/符号链接都算，取消时不得改动）。
+pub fn local_target_exists(path: &str) -> bool {
+    std::fs::symlink_metadata(path).is_ok()
+}
+
+/// 用当前远端列表判断上传目标是否已存在。
+///
+/// 只有列表目录与目标父目录一致时才能下“不存在”的结论；目录已切换/未加载
+/// 一律返回 `Unknown`，由 UI 先刷新列表或弹“可能覆盖”确认。
+pub fn overwrite_risk(
+    listed_remote: Option<&str>,
+    remote_dir: &str,
+    entries: &[RemoteEntry],
+    name: &str,
+) -> OverwriteRisk {
+    let Some(listed) = listed_remote else {
+        return OverwriteRisk::Unknown;
+    };
+    if normalize_remote(listed) != normalize_remote(remote_dir) {
+        return OverwriteRisk::Unknown;
+    }
+    if entries.iter().any(|entry| entry.name == name) {
+        OverwriteRisk::Existing
+    } else {
+        OverwriteRisk::None
+    }
+}
+
+/// 列表/上传/下载/改名/删除的 batch 入口（`ls -l` 优先，失败回退 `ls -1`）。
+pub fn list(t: &SftpTarget, remote: &str) -> Result<Vec<RemoteEntry>, String> {
+    list_entries_with(remote, |batch| t.run(batch))
 }
 
 pub fn mkdir(t: &SftpTarget, remote: &str) -> Result<(), String> {
@@ -376,6 +636,8 @@ pub enum SftpCommand {
     Mkdir { target: SftpTarget, remote: String },
     Rename { target: SftpTarget, from: String, to: String },
     Remove { target: SftpTarget, remote: String },
+    /// 递归删除目录：逐层 list/rm/rmdir，总预算 [`SFTP_RECURSIVE_TIMEOUT`]。
+    RemoveRecursive { target: SftpTarget, remote: String },
     /// `chmod <mode> <remote>`；mode 已由 UI 解析成八进制权限位。
     Chmod { target: SftpTarget, remote: String, mode: u32 },
 }
@@ -383,7 +645,7 @@ pub enum SftpCommand {
 /// 后台元数据任务的结果：带原始路径，便于 UI 写回状态文案/刷新列表。
 #[derive(Clone, Debug, PartialEq)]
 pub enum SftpOutcome {
-    List { remote: String, items: Result<Vec<String>, String> },
+    List { remote: String, items: Result<Vec<RemoteEntry>, String> },
     Mkdir { remote: String, result: Result<(), String> },
     Rename { from: String, to: String, result: Result<(), String> },
     Remove { path: String, result: Result<(), String> },
@@ -422,6 +684,19 @@ fn format_result(verb: &str, path: &str, result: &Result<(), String>) -> String 
 }
 
 impl SftpCommand {
+    /// 该命令的硬超时。递归删除需要多次 sftp 调用，使用更大的总预算。
+    pub fn timeout(&self) -> Duration {
+        match self {
+            Self::RemoveRecursive { .. } => SFTP_RECURSIVE_TIMEOUT,
+            _ => SFTP_TIMEOUT,
+        }
+    }
+
+    /// 是否递归删除（UI 进度区显示不同的超时文案）。
+    pub fn is_recursive_delete(&self) -> bool {
+        matches!(self, Self::RemoveRecursive { .. })
+    }
+
     /// 可注入程序/超时的执行入口（测试用假 sftp 脚本，避免真连网）。
     pub fn execute_with(self, program: &Path, timeout: Duration) -> SftpOutcome {
         self.execute_with_cancel(program, timeout, None)
@@ -436,14 +711,24 @@ impl SftpCommand {
     ) -> SftpOutcome {
         match self {
             Self::List { target, remote } => {
-                let items = run_program_cancel(
-                    program,
-                    &target,
-                    &format!("ls -1 {}\n", quote_batch_path(remote.as_str())),
-                    timeout,
-                    cancel,
-                )
-                .map(|out| parse_list(&out));
+                let started = Instant::now();
+                let mut run = |batch: &str| -> Result<String, String> {
+                    let remaining = timeout.saturating_sub(started.elapsed());
+                    if remaining.is_zero() {
+                        return Err(format!(
+                            "sftp 超时（{}），已终止子进程",
+                            format_timeout(timeout)
+                        ));
+                    }
+                    run_program_cancel(
+                        program,
+                        &target,
+                        batch,
+                        remaining.min(SFTP_TIMEOUT),
+                        cancel,
+                    )
+                };
+                let items = list_entries_with(&remote, &mut run);
                 SftpOutcome::List { remote, items }
             },
             Self::Mkdir { target, remote } => {
@@ -493,7 +778,7 @@ impl SftpCommand {
                                 program,
                                 &target,
                                 &format!("rmdir {}\n", quote_batch_path(remote.as_str())),
-                                remaining,
+                                remaining.min(SFTP_TIMEOUT),
                                 cancel,
                             )
                             .map(|_| ())
@@ -501,6 +786,10 @@ impl SftpCommand {
                         }
                     },
                 };
+                SftpOutcome::Remove { path: remote, result }
+            },
+            Self::RemoveRecursive { target, remote } => {
+                let result = remove_tree(program, &target, &remote, timeout, cancel);
                 SftpOutcome::Remove { path: remote, result }
             },
             Self::Chmod { target, remote, mode } => {
@@ -530,6 +819,203 @@ fn run_program_cancel(
     run_command_with_timeout_cancel(command, batch, timeout, cancel)
 }
 
+// ------------------------------------------------------------ 递归删除
+
+/// 远端路径拼接（`name` 必须是单个目录项，不能含 `/`）。
+fn join_remote_path(dir: &str, name: &str) -> String {
+    let trimmed = dir.trim_end_matches('/');
+    if trimmed.is_empty() {
+        format!("/{name}")
+    } else {
+        format!("{trimmed}/{name}")
+    }
+}
+
+/// 递归删除只接受单个目录项名：拒绝空、`.`/`..`、含 `/` 的恶意/异常列表，
+/// 防止服务端返回 `/etc` 或 `../../x` 让删除逃逸用户选中的目录。
+fn child_remote_path(dir: &str, name: &str) -> Result<String, String> {
+    if name.is_empty() || name == "." || name == ".." || name.contains('/') {
+        return Err(format!("拒绝可疑远端条目名 {name:?}（目录 {dir}），已中止删除"));
+    }
+    Ok(join_remote_path(dir, name))
+}
+
+/// 递归删除的总预算/取消检查；每次子进程调用都拿剩余预算并为单次调用封顶。
+struct DeleteBudget<'a> {
+    deadline: Instant,
+    total: Duration,
+    cancel: Option<&'a AtomicBool>,
+}
+
+impl<'a> DeleteBudget<'a> {
+    fn new(total: Duration, cancel: Option<&'a AtomicBool>) -> Self {
+        Self { deadline: Instant::now() + total, total, cancel }
+    }
+
+    fn cancelled(&self) -> bool {
+        self.cancel.is_some_and(|flag| flag.load(Ordering::SeqCst))
+    }
+
+    fn remaining(&self) -> Result<Duration, String> {
+        if self.cancelled() {
+            return Err("sftp 操作已取消".into());
+        }
+        let remaining = self.deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(format!(
+                "递归删除超时（{}），操作已中止（可能已部分删除）",
+                format_timeout(self.total)
+            ));
+        }
+        Ok(remaining)
+    }
+
+    fn run<F>(&self, run: &mut F, batch: &str) -> Result<String, String>
+    where
+        F: FnMut(&str, Duration) -> Result<String, String>,
+    {
+        let remaining = self.remaining()?;
+        let per_call = remaining.min(SFTP_TIMEOUT);
+        run(batch, per_call).map_err(|error| {
+            if self.cancelled() {
+                "sftp 操作已取消".into()
+            } else {
+                error
+            }
+        })
+    }
+}
+
+/// 生产入口：注入真实 sftp 程序；测试用 [`remove_tree_with`] 注入内存 runner。
+fn remove_tree(
+    program: &Path,
+    target: &SftpTarget,
+    root: &str,
+    timeout: Duration,
+    cancel: Option<&AtomicBool>,
+) -> Result<(), String> {
+    remove_tree_with(root, timeout, cancel, |batch, call_timeout| {
+        run_program_cancel(program, target, batch, call_timeout, cancel)
+    })
+}
+
+/// 逐层删除：先 rmdir（空目录一次完成），失败后 list，删文件/子目录，再 rmdir。
+///
+/// 不用 `rm -r`：本机 OpenSSH sftp 的 `rm` 只接受单个文件（`man sftp`），
+/// `rmdir` 也只删空目录。这里只调用这两个明确支持的命令，且每一步都经过
+/// [`quote_batch_path`]；任何一步失败都中止并返回错误，不会把失败当成功。
+fn remove_tree_with<F>(
+    root: &str,
+    timeout: Duration,
+    cancel: Option<&AtomicBool>,
+    mut run: F,
+) -> Result<(), String>
+where
+    F: FnMut(&str, Duration) -> Result<String, String>,
+{
+    let budget = DeleteBudget::new(timeout, cancel);
+    remove_tree_inner(&budget, &mut run, root, 0)
+}
+
+fn remove_tree_inner<F>(
+    budget: &DeleteBudget<'_>,
+    run: &mut F,
+    path: &str,
+    depth: usize,
+) -> Result<(), String>
+where
+    F: FnMut(&str, Duration) -> Result<String, String>,
+{
+    if depth > RECURSIVE_DELETE_MAX_DEPTH {
+        return Err(format!(
+            "递归删除超过最大深度 {RECURSIVE_DELETE_MAX_DEPTH}: {path}"
+        ));
+    }
+    // 空目录直接成功；非空目录会失败，继续列举。
+    match budget.run(run, &format!("rmdir {}\n", quote_batch_path(path))) {
+        Ok(_) => return Ok(()),
+        Err(error) if is_terminal_sftp_error(&error) => return Err(error),
+        Err(_) => {},
+    }
+    let entries = list_entries_with(path, |batch| budget.run(run, batch))?;
+    remove_children(budget, run, path, entries, depth)?;
+    budget.run(run, &format!("rmdir {}\n", quote_batch_path(path))).map(|_| ())
+}
+
+fn remove_children<F>(
+    budget: &DeleteBudget<'_>,
+    run: &mut F,
+    dir: &str,
+    entries: Vec<RemoteEntry>,
+    depth: usize,
+) -> Result<(), String>
+where
+    F: FnMut(&str, Duration) -> Result<String, String>,
+{
+    let mut files = Vec::new();
+    for entry in entries {
+        let child = child_remote_path(dir, &entry.name)?;
+        match entry.is_dir {
+            Some(true) => remove_tree_inner(budget, run, &child, depth + 1)?,
+            Some(false) => files.push(child),
+            None => remove_unknown_entry(budget, run, &child, depth + 1)?,
+        }
+    }
+    if files.is_empty() {
+        return Ok(());
+    }
+    // 同一目录的普通文件合成一个 batch（sftp 会顺序执行 rm）；失败即中止，
+    // 下一次重试会重新列目录，不会把未删的当成已删。
+    let mut batch = String::new();
+    for file in &files {
+        batch.push_str(&format!("rm {}\n", quote_batch_path(file)));
+    }
+    budget.run(run, &batch).map(|_| ())
+}
+
+/// `ls -1` 回退条目类型未知：先 rm，再 rmdir，仍失败才按目录列举递归。
+/// 这样符号链接只会被 `rm` 删除，绝不会跟随链接展开目标目录。
+fn remove_unknown_entry<F>(
+    budget: &DeleteBudget<'_>,
+    run: &mut F,
+    path: &str,
+    depth: usize,
+) -> Result<(), String>
+where
+    F: FnMut(&str, Duration) -> Result<String, String>,
+{
+    if depth > RECURSIVE_DELETE_MAX_DEPTH {
+        return Err(format!(
+            "递归删除超过最大深度 {RECURSIVE_DELETE_MAX_DEPTH}: {path}"
+        ));
+    }
+    let rm_batch = format!("rm {}\n", quote_batch_path(path));
+    let first = match budget.run(run, &rm_batch) {
+        Ok(_) => return Ok(()),
+        Err(error) if is_terminal_sftp_error(&error) => return Err(error),
+        Err(error) => error,
+    };
+    let rmdir_batch = format!("rmdir {}\n", quote_batch_path(path));
+    let second = match budget.run(run, &rmdir_batch) {
+        Ok(_) => return Ok(()),
+        Err(error) if is_terminal_sftp_error(&error) => return Err(error),
+        Err(error) => error,
+    };
+    let entries = match list_entries_with(path, |batch| budget.run(run, batch)) {
+        Ok(entries) => entries,
+        Err(list_error) => {
+            return Err(format!(
+                "删除 {path} 失败（rm: {first}; rmdir: {second}; list: {list_error}）"
+            ));
+        },
+    };
+    if entries.is_empty() {
+        return Err(format!("删除 {path} 失败（rm: {first}; rmdir: {second}）"));
+    }
+    remove_children(budget, run, path, entries, depth)?;
+    budget.run(run, &rmdir_batch).map(|_| ())
+}
+
 /// 把 UI 里的权限输入解析成八进制权限位。
 ///
 /// 接受 `644` / `0644` / `0o644` / `u=rw,go=r` 之外的纯八进制形式；
@@ -555,6 +1041,7 @@ pub fn parse_mode(input: &str) -> Result<u32, String> {
 pub struct SftpOpJob {
     pub events: Receiver<SftpOutcome>,
     cancel: Arc<AtomicBool>,
+    timeout: Duration,
     join: Option<JoinHandle<()>>,
 }
 
@@ -562,12 +1049,14 @@ impl SftpOpJob {
     /// 启动生产任务（无 UI 唤醒；测试/探针用；UI 用 [`Self::start_woken`]）。
     #[allow(dead_code)]
     pub fn start(command: SftpCommand) -> Self {
-        Self::start_inner(command, Path::new("sftp").to_path_buf(), SFTP_TIMEOUT, None)
+        let timeout = command.timeout();
+        Self::start_inner(command, Path::new("sftp").to_path_buf(), timeout, None)
     }
 
     /// 生产入口：结果（含超时）写通道后额外唤醒 UI，把完成延迟从 400ms 降到事件级。
     pub fn start_woken(command: SftpCommand, wake: WakeSignal) -> Self {
-        Self::start_inner(command, Path::new("sftp").to_path_buf(), SFTP_TIMEOUT, Some(wake))
+        let timeout = command.timeout();
+        Self::start_inner(command, Path::new("sftp").to_path_buf(), timeout, Some(wake))
     }
 
     /// 注入程序/超时的启动入口（测试/探针用；生产用 [`Self::start_woken`]）。
@@ -595,7 +1084,7 @@ impl SftpOpJob {
                 }
             }
         });
-        Self { events, cancel, join: Some(join) }
+        Self { events, cancel, timeout, join: Some(join) }
     }
 
     /// UI 线程调用：标记取消并唤醒 worker 的轮询（worker 负责 kill 子进程组）。
@@ -613,7 +1102,7 @@ impl SftpOpJob {
     /// 测试/探针：等结果并回收线程；只应在确认 worker 已结束（或可接受等待）时用。
     #[allow(dead_code)]
     pub fn wait(mut self) -> Option<SftpOutcome> {
-        let outcome = self.events.recv_timeout(SFTP_TIMEOUT + KILL_GRACE * 4).ok();
+        let outcome = self.events.recv_timeout(self.timeout + KILL_GRACE * 4).ok();
         if let Some(join) = self.join.take() {
             let _ = join.join();
         }
@@ -793,6 +1282,114 @@ impl TransferRequest {
             display_name(src),
             display_name(dst)
         )
+    }
+}
+
+/// `request_transfer` 的结果：覆盖风险明确时直接返回请求，否则先等 UI 确认。
+#[derive(Clone, Debug, PartialEq)]
+pub enum SftpSubmit {
+    Ready(TransferRequest),
+    ConfirmationRequired,
+}
+
+/// 等待用户显式确认的操作。确认前不启动传输/删除；取消只丢弃该状态。
+#[derive(Clone, Debug, PartialEq)]
+pub enum SftpConfirmation {
+    Overwrite { request: TransferRequest, existing: bool },
+    RecursiveDelete { target: SftpTarget, remote: String },
+}
+
+impl SftpConfirmation {
+    pub fn title(&self) -> &'static str {
+        match self {
+            Self::Overwrite { existing: true, .. } => "目标已存在，继续覆盖？",
+            Self::Overwrite { existing: false, .. } => "无法确认目标，继续上传？",
+            Self::RecursiveDelete { .. } => "递归删除目录？",
+        }
+    }
+
+    pub fn text(&self) -> String {
+        match self {
+            Self::Overwrite { request, existing } => {
+                let target = match request.direction {
+                    TransferDirection::Upload => &request.remote,
+                    TransferDirection::Download => &request.local,
+                };
+                if *existing {
+                    format!(
+                        "{} 目标已存在：{}\n继续{}会覆盖现有内容；取消不会改动任何文件。",
+                        request.direction.verb(),
+                        target,
+                        request.direction.verb()
+                    )
+                } else {
+                    format!(
+                        "无法确认上传目标是否存在：{}\n继续上传可能覆盖现有文件；取消不会改动任何文件。",
+                        request.remote
+                    )
+                }
+            },
+            Self::RecursiveDelete { remote, .. } => format!(
+                "将逐层删除远端目录及其全部内容：\n{remote}\n删除不可恢复；取消不会改动任何文件。"
+            ),
+        }
+    }
+
+    pub fn ok_label(&self) -> &'static str {
+        match self {
+            Self::Overwrite { .. } => "覆盖",
+            Self::RecursiveDelete { .. } => "递归删除",
+        }
+    }
+}
+
+/// 覆盖/递归删除确认状态机（纯数据，便于单测）。
+///
+/// 关键保证：`request_transfer` 遇到已存在/未知目标时**不返回可执行的请求**，
+/// 只有 UI 调 `take()` 明确确认后才把请求交给传输队列；`cancel()` 只丢弃状态，
+/// 不会触发任何文件改动。
+#[derive(Debug, Default)]
+pub struct SftpGate {
+    pending: Option<SftpConfirmation>,
+}
+
+impl SftpGate {
+    pub fn request_transfer(
+        &mut self,
+        request: TransferRequest,
+        risk: OverwriteRisk,
+    ) -> SftpSubmit {
+        if risk.needs_confirmation() {
+            self.pending = Some(SftpConfirmation::Overwrite {
+                request,
+                existing: risk == OverwriteRisk::Existing,
+            });
+            SftpSubmit::ConfirmationRequired
+        } else {
+            SftpSubmit::Ready(request)
+        }
+    }
+
+    pub fn request_recursive_delete(&mut self, target: SftpTarget, remote: String) {
+        self.pending = Some(SftpConfirmation::RecursiveDelete { target, remote });
+    }
+
+    pub fn pending(&self) -> Option<&SftpConfirmation> {
+        self.pending.as_ref()
+    }
+
+    pub fn is_pending(&self) -> bool {
+        self.pending.is_some()
+    }
+
+    /// 用户确认：取出待执行动作；第二次调用返回 `None`。
+    pub fn take(&mut self) -> Option<SftpConfirmation> {
+        self.pending.take()
+    }
+
+    /// 用户取消：丢弃待执行动作（调用方不得再执行它）。
+    pub fn cancel(&mut self) -> Option<SftpConfirmation> {
+        self.pending.take()
     }
 }
 
@@ -1291,6 +1888,7 @@ pub fn format_bytes(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::path::{Path, PathBuf};
     use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -1400,6 +1998,176 @@ mod tests {
     fn list_parsing_drops_prompts() {
         let out = "sftp> ls -1 /tmp\nfile1\nfile2\n\nConnected to host.\n";
         assert_eq!(parse_list(out), vec!["file1", "file2"]);
+    }
+
+    #[test]
+    fn parse_list_long_extracts_metadata_and_preserves_names() {
+        let out = r#"sftp> ls -l /work
+-rw-r--r--    1 yt   staff       1,234 Nov 20 10:00 report final.txt
+drwxr-xr-x    2 yt   staff        4096 Nov 19  2023 old dir
+lrwxrwxrwx    1 yt   staff           5 Nov 20 10:00 link name -> target file
+drwxr-xr-x    2 yt   staff        4096 Nov 20 10:00 .
+"#;
+        let entries = parse_list_long(out);
+        assert_eq!(entries.len(), 3, "entries={entries:?}");
+
+        let file = &entries[0];
+        assert_eq!(file.name, "report final.txt");
+        assert_eq!(file.mode, "-rw-r--r--");
+        assert_eq!(file.size, Some(1234));
+        assert_eq!(file.mtime, "Nov 20 10:00");
+        assert_eq!(file.is_dir, Some(false));
+        let display = file.display();
+        assert!(display.starts_with("-rw-r--r--"), "{display}");
+        assert!(display.contains("1.2 KB"), "{display}");
+        assert!(display.ends_with("report final.txt"), "{display}");
+
+        let dir = &entries[1];
+        assert_eq!(dir.name, "old dir");
+        assert_eq!(dir.is_dir, Some(true));
+        assert_eq!(dir.mtime, "Nov 19 2023");
+        assert_eq!(dir.size, Some(4096));
+
+        let link = &entries[2];
+        assert_eq!(link.name, "link name");
+        assert_eq!(link.link_target.as_deref(), Some("target file"));
+        assert_eq!(link.is_dir, Some(false), "符号链接不能当作目录递归");
+        assert!(link.display().ends_with("link name -> target file"));
+    }
+
+    #[test]
+    fn parse_list_long_keeps_unparsed_names_without_metadata() {
+        let entries = parse_list_long("alpha\n\nsftp> ls -l /tmp\nConnected to host.\nbeta\n");
+        let names: Vec<&str> = entries.iter().map(|entry| entry.name.as_str()).collect();
+        assert_eq!(names, vec!["alpha", "beta"]);
+        assert!(entries.iter().all(|entry| entry.mode.is_empty() && entry.is_dir.is_none()));
+    }
+
+    #[test]
+    fn overwrite_risk_uses_only_fresh_matching_list() {
+        let entries = vec![RemoteEntry::from_name("alpha.txt"), RemoteEntry::from_name("dir1")];
+        assert_eq!(
+            overwrite_risk(Some("/work/"), "/work", &entries, "alpha.txt"),
+            OverwriteRisk::Existing
+        );
+        assert_eq!(
+            overwrite_risk(Some("/work"), "/work/", &entries, "new.txt"),
+            OverwriteRisk::None
+        );
+        assert_eq!(
+            overwrite_risk(Some("/work"), "/other", &entries, "alpha.txt"),
+            OverwriteRisk::Unknown,
+            "目录切换后不能拿旧列表下不存在结论"
+        );
+        assert_eq!(
+            overwrite_risk(None, "/work", &entries, "alpha.txt"),
+            OverwriteRisk::Unknown
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_target_exists_counts_files_dirs_and_broken_links() {
+        let dir = temp_dir("local-exists");
+        let file = dir.join("target.bin");
+        assert!(!local_target_exists(file.to_str().unwrap()));
+        std::fs::write(&file, b"x").unwrap();
+        assert!(local_target_exists(file.to_str().unwrap()));
+        assert!(local_target_exists(dir.to_str().unwrap()));
+
+        let link = dir.join("link");
+        std::os::unix::fs::symlink(&file, &link).unwrap();
+        assert!(local_target_exists(link.to_str().unwrap()));
+        std::fs::remove_file(&file).unwrap();
+        assert!(
+            local_target_exists(link.to_str().unwrap()),
+            "断链也必须先确认，不能被 get 覆盖"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn overwrite_gate_requires_explicit_accept_or_cancel() {
+        let request = TransferRequest {
+            direction: TransferDirection::Upload,
+            target: target(),
+            local: "/tmp/alpha.txt".into(),
+            remote: "/work/alpha.txt".into(),
+            recursive: false,
+        };
+        let mut gate = SftpGate::default();
+        assert_eq!(
+            gate.request_transfer(request.clone(), OverwriteRisk::None),
+            SftpSubmit::Ready(request.clone())
+        );
+        assert!(!gate.is_pending());
+
+        assert_eq!(
+            gate.request_transfer(request.clone(), OverwriteRisk::Existing),
+            SftpSubmit::ConfirmationRequired
+        );
+        assert!(gate.is_pending());
+        let pending = gate.pending().expect("应进入确认状态");
+        assert!(pending.title().contains("覆盖"));
+        assert!(pending.text().contains("/work/alpha.txt"));
+        assert_eq!(pending.ok_label(), "覆盖");
+
+        // 取消只丢弃状态，不会产出可执行请求。
+        let cancelled = gate.cancel().expect("cancel 应取走待确认动作");
+        assert!(matches!(cancelled, SftpConfirmation::Overwrite { existing: true, .. }));
+        assert!(!gate.is_pending());
+        assert!(gate.take().is_none());
+    }
+
+    #[test]
+    fn overwrite_gate_confirms_unknown_target_and_accepts_once() {
+        let request = TransferRequest {
+            direction: TransferDirection::Download,
+            target: target(),
+            local: "/tmp/existing.bin".into(),
+            remote: "/work/existing.bin".into(),
+            recursive: false,
+        };
+        let mut gate = SftpGate::default();
+        assert_eq!(
+            gate.request_transfer(request.clone(), OverwriteRisk::Unknown),
+            SftpSubmit::ConfirmationRequired
+        );
+        assert!(gate.pending().unwrap().text().contains("无法确认"));
+        assert_eq!(
+            gate.take(),
+            Some(SftpConfirmation::Overwrite { request, existing: false })
+        );
+        assert!(gate.take().is_none(), "确认动作只能执行一次");
+    }
+
+    #[test]
+    fn recursive_delete_gate_names_path_and_cancels_cleanly() {
+        let mut gate = SftpGate::default();
+        gate.request_recursive_delete(target(), "/work/tree".into());
+        let pending = gate.pending().expect("应进入确认状态");
+        assert_eq!(pending.title(), "递归删除目录？");
+        assert!(pending.text().contains("/work/tree"));
+        assert_eq!(pending.ok_label(), "递归删除");
+        let cancelled = gate.cancel().expect("cancel 应取走删除动作");
+        assert!(
+            matches!(cancelled, SftpConfirmation::RecursiveDelete { remote, .. } if remote == "/work/tree")
+        );
+        assert!(gate.take().is_none());
+    }
+
+    #[test]
+    fn recursive_command_uses_extended_total_timeout() {
+        let command = SftpCommand::RemoveRecursive {
+            target: target(),
+            remote: "/work/tree".into(),
+        };
+        assert!(command.is_recursive_delete());
+        assert_eq!(command.timeout(), SFTP_RECURSIVE_TIMEOUT);
+        assert_eq!(
+            SftpCommand::List { target: target(), remote: "/".into() }.timeout(),
+            SFTP_TIMEOUT
+        );
     }
 
     // ------------------------------------------------------------ 进度解析
@@ -1582,6 +2350,101 @@ mod tests {
         assert_eq!(quote_batch_path(""), "\".\"");
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn batch_commands_quote_special_paths_everywhere() {
+        let dir = temp_dir("quote-cmds");
+        let (script, capture) = capture_batch(&dir);
+        let read = || std::fs::read_to_string(&capture).unwrap_or_default();
+        let remote = "/tmp/a b\"c\\d;e";
+        let remote2 = "/tmp/out 'x';y";
+        let quoted = quote_batch_path(remote);
+        let quoted2 = quote_batch_path(remote2);
+
+        let list = SftpCommand::List { target: target(), remote: remote.into() }
+            .execute_with(&script, Duration::from_secs(2));
+        assert!(matches!(list, SftpOutcome::List { items: Ok(_), .. }), "{list:?}");
+        assert_eq!(read(), format!("ls -l {quoted}\n"), "list 必须转义远端路径");
+
+        let _ = SftpCommand::Mkdir { target: target(), remote: remote.into() }
+            .execute_with(&script, Duration::from_secs(2));
+        assert_eq!(read(), format!("mkdir {quoted}\n"));
+
+        let _ = SftpCommand::Rename {
+            target: target(),
+            from: remote.into(),
+            to: remote2.into(),
+        }
+        .execute_with(&script, Duration::from_secs(2));
+        assert_eq!(read(), format!("rename {quoted} {quoted2}\n"));
+
+        let _ = SftpCommand::Remove { target: target(), remote: remote.into() }
+            .execute_with(&script, Duration::from_secs(2));
+        assert_eq!(read(), format!("rm {quoted}\n"));
+
+        let _ = SftpCommand::Chmod { target: target(), remote: remote.into(), mode: 0o640 }
+            .execute_with(&script, Duration::from_secs(2));
+        assert_eq!(read(), format!("chmod 0640 {quoted}\n"));
+
+        // put/get 的 batch 是纯函数，直接断言两个参数都被 quoting。
+        let upload = TransferRequest {
+            direction: TransferDirection::Upload,
+            target: target(),
+            local: remote.into(),
+            remote: remote2.into(),
+            recursive: false,
+        };
+        assert_eq!(
+            upload.batch_script(),
+            format!("progress\nput {quoted} {quoted2}\n")
+        );
+        let download = TransferRequest {
+            direction: TransferDirection::Download,
+            target: target(),
+            local: remote2.into(),
+            remote: remote.into(),
+            recursive: false,
+        };
+        assert_eq!(
+            download.batch_script(),
+            format!("progress\nget -R {quoted} {quoted2}\n")
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn list_fallback_to_short_format_still_quotes_path() {
+        let dir = temp_dir("quote-fallback");
+        let capture = dir.join("batch.txt");
+        let script = write_script(
+            &dir,
+            &format!(
+                "#!/bin/sh\nbatch=$(cat)\nprintf '%s\\n' \"$batch\" > '{}'\ncase \"$batch\" in\n  ls\\ -l*) exit 1;;\nesac\nprintf 'alpha\\nbeta\\n'\n",
+                capture.display()
+            ),
+        );
+        let remote = "/tmp/a b\"c";
+        let quoted = quote_batch_path(remote);
+        let outcome = SftpCommand::List { target: target(), remote: remote.into() }
+            .execute_with(&script, Duration::from_secs(2));
+        match outcome {
+            SftpOutcome::List { items: Ok(items), .. } => {
+                let names: Vec<&str> = items.iter().map(|entry| entry.name.as_str()).collect();
+                assert_eq!(names, vec!["alpha", "beta"]);
+                assert!(items.iter().all(|entry| entry.mode.is_empty()));
+            },
+            other => panic!("期望回退 ls -1 成功，得到 {other:?}"),
+        }
+        assert_eq!(
+            std::fs::read_to_string(&capture).unwrap(),
+            format!("ls -1 {quoted}\n"),
+            "回退分支也必须调用 quote_batch_path"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn queue_keeps_fifo_order_retry_front_and_clear() {
         let request = |name: &str, direction| TransferRequest {
@@ -1661,6 +2524,20 @@ mod tests {
         permissions.set_mode(0o755);
         std::fs::set_permissions(&path, permissions).unwrap();
         path
+    }
+
+    /// 假 sftp：把收到的 batch 原样落盘，然后成功退出。
+    #[cfg(unix)]
+    fn capture_batch(dir: &Path) -> (PathBuf, PathBuf) {
+        let capture = dir.join("batch.txt");
+        let script = write_script(
+            dir,
+            &format!(
+                "#!/bin/sh\ncat > '{}'\nprintf 'ok\\n'\n",
+                capture.display()
+            ),
+        );
+        (script, capture)
     }
 
     #[cfg(unix)]
@@ -1795,7 +2672,8 @@ mod tests {
         let outcome = job.try_recv().expect("唤醒后结果必须已在队列");
         match outcome {
             SftpOutcome::List { items: Ok(items), .. } => {
-                assert_eq!(items, vec!["one".to_string(), "two".to_string()])
+                let names: Vec<&str> = items.iter().map(|entry| entry.name.as_str()).collect();
+                assert_eq!(names, vec!["one", "two"]);
             },
             other => panic!("期望 List 成功，得到 {other:?}"),
         }
@@ -1923,7 +2801,9 @@ mod tests {
         match list {
             SftpOutcome::List { remote, items } => {
                 assert_eq!(remote, "/tmp");
-                assert_eq!(items, Ok(vec!["alpha".to_string(), "beta".to_string()]));
+                let items = items.expect("list 应成功");
+                let names: Vec<&str> = items.iter().map(|entry| entry.name.as_str()).collect();
+                assert_eq!(names, vec!["alpha", "beta"]);
             },
             other => panic!("期望 List 结果，得到 {other:?}"),
         }
@@ -1959,5 +2839,268 @@ mod tests {
             other => panic!("期望 Remove 结果，得到 {other:?}"),
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ------------------------------------------------------ 递归删除（内存假远端）
+
+    #[test]
+    fn recursive_child_paths_reject_escape_names() {
+        assert_eq!(child_remote_path("/root", "a b.txt").unwrap(), "/root/a b.txt");
+        assert_eq!(child_remote_path("/", "a").unwrap(), "/a");
+        for bad in ["", ".", "..", "/etc/passwd", "../escape", "sub/child"] {
+            assert!(
+                child_remote_path("/root", bad).is_err(),
+                "可疑条目名必须中止递归删除: {bad:?}"
+            );
+        }
+    }
+
+    fn fake_parent(path: &str) -> String {
+        let trimmed = path.trim_end_matches('/');
+        match trimmed.rfind('/') {
+            Some(0) | None => "/".into(),
+            Some(index) => trimmed[..index].to_string(),
+        }
+    }
+
+    fn fake_base(path: &str) -> &str {
+        path.trim_end_matches('/').rsplit('/').next().unwrap_or(path)
+    }
+
+    fn unquote_batch_path(input: &str) -> String {
+        let trimmed = input.trim();
+        let inner = if trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len() >= 2 {
+            &trimmed[1..trimmed.len() - 1]
+        } else {
+            trimmed
+        };
+        let mut out = String::new();
+        let mut chars = inner.chars();
+        while let Some(ch) = chars.next() {
+            if ch == '\\' {
+                if let Some(next) = chars.next() {
+                    out.push(next);
+                }
+            } else {
+                out.push(ch);
+            }
+        }
+        out
+    }
+
+    /// 内存假远端：解释 sftp batch，模拟 `rm` 遇目录失败、`rmdir` 遇非空失败。
+    #[derive(Default)]
+    struct FakeRemote {
+        dirs: BTreeSet<String>,
+        files: BTreeSet<String>,
+        links: BTreeMap<String, String>,
+        log: Vec<String>,
+        fail_rm: Option<String>,
+        /// 模拟只支持 `ls -1` 的旧服务器：`ls -l` 永远返回空输出。
+        short_only: bool,
+    }
+
+    impl FakeRemote {
+        fn dir(&mut self, path: &str) {
+            self.dirs.insert(path.to_string());
+        }
+
+        fn file(&mut self, path: &str) {
+            self.files.insert(path.to_string());
+        }
+
+        fn link(&mut self, path: &str, target: &str) {
+            self.files.insert(path.to_string());
+            self.links.insert(path.to_string(), target.to_string());
+        }
+
+        fn children(&self, parent: &str) -> Vec<String> {
+            let mut out: Vec<String> = self
+                .dirs
+                .iter()
+                .chain(self.files.iter())
+                .filter(|path| fake_parent(path) == parent)
+                .cloned()
+                .collect();
+            out.sort();
+            out
+        }
+
+        fn long_line(&self, path: &str) -> String {
+            let name = fake_base(path);
+            if self.dirs.contains(path) {
+                format!("drwxr-xr-x    2 yt yt     4096 Nov 20 10:00 {name}")
+            } else if let Some(target) = self.links.get(path) {
+                format!("lrwxrwxrwx    1 yt yt        5 Nov 20 10:00 {name} -> {target}")
+            } else {
+                format!("-rw-r--r--    1 yt yt       16 Nov 20 10:00 {name}")
+            }
+        }
+
+        fn apply(&mut self, batch: &str) -> Result<String, String> {
+            let mut output = String::new();
+            for line in batch.lines().map(str::trim).filter(|line| !line.is_empty()) {
+                self.log.push(line.to_string());
+                if let Some(rest) = line.strip_prefix("ls -l ") {
+                    let path = unquote_batch_path(rest);
+                    if !self.dirs.contains(&path) {
+                        return Err(format!("Can't ls: {path}: No such file"));
+                    }
+                    if self.short_only {
+                        continue;
+                    }
+                    for child in self.children(&path) {
+                        output.push_str(&self.long_line(&child));
+                        output.push('\n');
+                    }
+                } else if let Some(rest) = line.strip_prefix("ls -1 ") {
+                    let path = unquote_batch_path(rest);
+                    if !self.dirs.contains(&path) {
+                        return Err(format!("Can't ls: {path}: No such file"));
+                    }
+                    for child in self.children(&path) {
+                        output.push_str(fake_base(&child));
+                        output.push('\n');
+                    }
+                } else if let Some(rest) = line.strip_prefix("rmdir ") {
+                    let path = unquote_batch_path(rest);
+                    if !self.dirs.contains(&path) {
+                        return Err(format!("Couldn't remove directory: {path}"));
+                    }
+                    if !self.children(&path).is_empty() {
+                        return Err(format!("Couldn't remove directory: {path}: not empty"));
+                    }
+                    self.dirs.remove(&path);
+                } else if let Some(rest) = line.strip_prefix("rm ") {
+                    let path = unquote_batch_path(rest);
+                    if self.fail_rm.as_deref() == Some(path.as_str()) {
+                        return Err(format!("Couldn't delete file: {path}: denied"));
+                    }
+                    if !self.files.remove(&path) {
+                        return Err(format!("Couldn't delete file: {path}"));
+                    }
+                    self.links.remove(&path);
+                } else {
+                    return Err(format!("unexpected batch: {line}"));
+                }
+            }
+            Ok(output)
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recursive_delete_removes_tree_bottom_up_without_following_links() {
+        let mut fake = FakeRemote::default();
+        fake.dir("/root");
+        fake.dir("/root/sub");
+        fake.dir("/root/sub/deep");
+        fake.dir("/root/empty dir");
+        fake.dir("/outside");
+        fake.file("/root/a.txt");
+        fake.file("/root/a b.txt");
+        fake.file("/root/sub/b.txt");
+        fake.file("/root/sub/deep/c.txt");
+        fake.link("/root/link", "/outside");
+
+        remove_tree_with("/root", Duration::from_secs(5), None, |batch, timeout| {
+            let _ = timeout;
+            fake.apply(batch)
+        })
+        .expect("递归删除应成功");
+
+        assert!(!fake.dirs.contains("/root"));
+        assert!(!fake.dirs.contains("/root/sub"));
+        assert!(!fake.dirs.contains("/root/sub/deep"));
+        assert!(!fake.dirs.contains("/root/empty dir"));
+        assert!(!fake.files.contains("/root/a.txt"));
+        assert!(!fake.files.contains("/root/a b.txt"));
+        assert!(!fake.files.contains("/root/sub/b.txt"));
+        assert!(!fake.files.contains("/root/sub/deep/c.txt"));
+        assert!(!fake.files.contains("/root/link"));
+        assert!(fake.dirs.contains("/outside"), "符号链接目标不能被跟随删除");
+        assert!(fake.log.iter().any(|line| line == "rm \"/root/a b.txt\""));
+        assert!(fake.log.iter().any(|line| line == "rmdir \"/root/empty dir\""));
+        assert!(fake.log.iter().any(|line| line == "rm \"/root/link\""));
+        assert!(!fake.log.iter().any(|line| line.contains("/outside")));
+
+        let sub = fake
+            .log
+            .iter()
+            .position(|line| line == "rmdir \"/root/sub\"")
+            .expect("应先删子目录");
+        let root = fake
+            .log
+            .iter()
+            .rposition(|line| line == "rmdir \"/root\"")
+            .expect("最后删根目录");
+        assert!(sub < root, "必须自底向上 rmdir: {:?}", fake.log);
+        assert_eq!(fake.log.last().map(String::as_str), Some("rmdir \"/root\""));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recursive_delete_handles_name_only_fallback_lists() {
+        let mut fake = FakeRemote { short_only: true, ..Default::default() };
+        fake.dir("/root");
+        fake.dir("/root/sub");
+        fake.dir("/root/empty");
+        fake.file("/root/a.txt");
+        fake.file("/root/sub/b.txt");
+
+        remove_tree_with("/root", Duration::from_secs(5), None, |batch, _| fake.apply(batch))
+            .expect("只有 ls -1 时也应逐层删除");
+
+        assert!(!fake.dirs.contains("/root"));
+        assert!(!fake.dirs.contains("/root/sub"));
+        assert!(!fake.dirs.contains("/root/empty"));
+        assert!(!fake.files.contains("/root/a.txt"));
+        assert!(!fake.files.contains("/root/sub/b.txt"));
+        assert_eq!(fake.log.last().map(String::as_str), Some("rmdir \"/root\""));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recursive_delete_cancel_and_timeout_do_not_touch_files() {
+        let cancel = AtomicBool::new(true);
+        let mut calls = 0;
+        let error = remove_tree_with(
+            "/root",
+            Duration::from_secs(5),
+            Some(&cancel),
+            |_, _| {
+                calls += 1;
+                Ok(String::new())
+            },
+        )
+        .expect_err("取消后必须报错");
+        assert!(error.contains("已取消"), "{error}");
+        assert_eq!(calls, 0, "取消后不能启动任何 sftp 调用");
+
+        let mut calls = 0;
+        let error = remove_tree_with("/root", Duration::ZERO, None, |_, _| {
+            calls += 1;
+            Ok(String::new())
+        })
+        .expect_err("零预算必须超时");
+        assert!(error.contains("超时"), "{error}");
+        assert_eq!(calls, 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recursive_delete_reports_failure_and_keeps_unfinished_dirs() {
+        let mut fake = FakeRemote::default();
+        fake.dir("/root");
+        fake.file("/root/a.txt");
+        fake.file("/root/blocked.txt");
+        fake.fail_rm = Some("/root/blocked.txt".into());
+
+        let error = remove_tree_with("/root", Duration::from_secs(5), None, |batch, _| {
+            fake.apply(batch)
+        })
+        .expect_err("文件删除失败时不能报成功");
+        assert!(error.contains("blocked.txt"), "{error}");
+        assert!(fake.dirs.contains("/root"), "失败时根目录应保留，便于重试/排查");
     }
 }
