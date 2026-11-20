@@ -246,11 +246,16 @@ pub fn effective_ssh(profile: &Profile) -> EffectiveSsh {
     let mut effective = parse_ssh_g("", profile);
     // ssh -G 失败时不能用“直连”覆盖用户显式代理配置，否则 keyscan 会
     // 扫描错误端点。保留 profile 的显式值，让 assess 返回 Unverifiable。
-    if effective.proxy_jump.is_empty() && !profile.proxy_jump.trim().is_empty() {
-        effective.proxy_jump = profile.proxy_jump.trim().to_string();
+    let jump = profile.proxy_jump.trim();
+    if effective.proxy_jump.is_empty() && !jump.is_empty() && !jump.eq_ignore_ascii_case("none") {
+        effective.proxy_jump = jump.to_string();
     }
-    if effective.proxy_command.is_empty() && !profile.proxy_command.trim().is_empty() {
-        effective.proxy_command = profile.proxy_command.trim().to_string();
+    let command = profile.proxy_command.trim();
+    if effective.proxy_command.is_empty()
+        && !command.is_empty()
+        && !command.eq_ignore_ascii_case("none")
+    {
+        effective.proxy_command = command.to_string();
     }
     effective
 }
@@ -516,20 +521,15 @@ fn assess_with(
         },
     };
     if !effective.proxy_jump.is_empty() || !effective.proxy_command.is_empty() {
-        // 代理路径不能直连 keyscan；但 known_hosts 已有条目时交给 OpenSSH
-        // 在代理连接上做严格校验，保留 Vault 密码登录能力。
-        if !known.is_empty() && effective.proxy_command.is_empty() {
-            return Verdict::Known;
-        }
-        if !known.is_empty() && !effective.proxy_command.is_empty() {
-            return Verdict::Known;
-        }
+        // 代理路径不能直连 keyscan。也不能在这里返回 Known 后强制 askpass：
+        // OpenSSH 的 proxy 子进程会继承 askpass 环境，跳板机密码提示可能拿到
+        // 目标机的 Vault 密码。因此一律回退终端交互（不启用 askpass）。
         let reason = if !effective.proxy_jump.is_empty() {
             format!("配置了 ProxyJump（{}），ssh-keyscan 无法穿透跳板机", effective.proxy_jump)
         } else {
             "配置了 ProxyCommand，ssh-keyscan 不能按直连预检".to_string()
         };
-        return Verdict::Unverifiable { reason, local: false };
+        return Verdict::Unverifiable { reason, local: !known.is_empty() };
     }
     let current = match fetch_current_keys_with(profile, keyscan_program, timeout, cancel) {
         Ok(keys) => keys,
