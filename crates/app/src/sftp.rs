@@ -308,6 +308,18 @@ fn reap_after_kill(child: &mut Child) -> Option<std::process::ExitStatus> {
 }
 
 /// 过滤 sftp 的提示行（`sftp> ...`）与空行，留下远端目录条目。
+/// 远端路径的父目录；根目录/空路径保持 "/"。
+pub fn parent_remote(path: &str) -> String {
+    let trimmed = path.trim_end_matches('/');
+    if trimmed.is_empty() {
+        return "/".into();
+    }
+    match trimmed.rfind('/') {
+        Some(0) | None => "/".into(),
+        Some(index) => trimmed[..index].to_string(),
+    }
+}
+
 pub fn parse_list(out: &str) -> Vec<String> {
     out.lines()
         .map(|l| l.trim())
@@ -316,24 +328,39 @@ pub fn parse_list(out: &str) -> Vec<String> {
         .collect()
 }
 
+/// sftp batch 参数转义：双引号包裹，反斜杠/双引号转义；空路径用 "."。
+/// 远端文件名可能包含空格/引号/`;`，绝不能直接拼进 batch。
+pub fn quote_batch_path(path: &str) -> String {
+    if path.is_empty() {
+        return "\".\"".into();
+    }
+    format!("\"{}\"", path.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
 pub fn list(t: &SftpTarget, remote: &str) -> Result<Vec<String>, String> {
-    let out = t.run(&format!("ls -1 {remote}\n"))?;
+    let out = t.run(&format!("ls -1 {}\n", quote_batch_path(remote)))?;
     Ok(parse_list(&out))
 }
 
 pub fn mkdir(t: &SftpTarget, remote: &str) -> Result<(), String> {
-    t.run(&format!("mkdir {remote}\n")).map(|_| ())
+    t.run(&format!("mkdir {}\n", quote_batch_path(remote))).map(|_| ())
 }
 
 pub fn rename(t: &SftpTarget, from: &str, to: &str) -> Result<(), String> {
-    t.run(&format!("rename {from} {to}\n")).map(|_| ())
+    t.run(&format!(
+        "rename {} {}\n",
+        quote_batch_path(from),
+        quote_batch_path(to)
+    ))
+    .map(|_| ())
 }
 
 /// 删除文件；如果是目录，`rm` 失败后回退 `rmdir`（非递归，避免误删整棵树）。
 pub fn remove(t: &SftpTarget, remote: &str) -> Result<(), String> {
-    match t.run(&format!("rm {remote}\n")) {
+    let quoted = quote_batch_path(remote);
+    match t.run(&format!("rm {quoted}\n")) {
         Ok(_) => Ok(()),
-        Err(first) => t.run(&format!("rmdir {remote}\n")).map(|_| ()).map_err(|_| first),
+        Err(first) => t.run(&format!("rmdir {quoted}\n")).map(|_| ()).map_err(|_| first),
     }
 }
 
@@ -412,7 +439,7 @@ impl SftpCommand {
                 let items = run_program_cancel(
                     program,
                     &target,
-                    &format!("ls -1 {remote}\n"),
+                    &format!("ls -1 {}\n", quote_batch_path(remote.as_str())),
                     timeout,
                     cancel,
                 )
@@ -423,7 +450,7 @@ impl SftpCommand {
                 let result = run_program_cancel(
                     program,
                     &target,
-                    &format!("mkdir {remote}\n"),
+                    &format!("mkdir {}\n", quote_batch_path(remote.as_str())),
                     timeout,
                     cancel,
                 )
@@ -434,7 +461,11 @@ impl SftpCommand {
                 let result = run_program_cancel(
                     program,
                     &target,
-                    &format!("rename {from} {to}\n"),
+                    &format!(
+                        "rename {} {}\n",
+                        quote_batch_path(from.as_str()),
+                        quote_batch_path(to.as_str())
+                    ),
                     timeout,
                     cancel,
                 )
@@ -446,7 +477,7 @@ impl SftpCommand {
                 let result = match run_program_cancel(
                     program,
                     &target,
-                    &format!("rm {remote}\n"),
+                    &format!("rm {}\n", quote_batch_path(remote.as_str())),
                     timeout,
                     cancel,
                 ) {
@@ -461,7 +492,7 @@ impl SftpCommand {
                             run_program_cancel(
                                 program,
                                 &target,
-                                &format!("rmdir {remote}\n"),
+                                &format!("rmdir {}\n", quote_batch_path(remote.as_str())),
                                 remaining,
                                 cancel,
                             )
@@ -476,7 +507,7 @@ impl SftpCommand {
                 let result = run_program_cancel(
                     program,
                     &target,
-                    &format!("chmod {mode:04o} {remote}\n"),
+                    &format!("chmod {mode:04o} {}\n", quote_batch_path(remote.as_str())),
                     timeout,
                     cancel,
                 )
@@ -734,10 +765,18 @@ impl TransferRequest {
         match self.direction {
             // get <remote> <local> / put <local> <remote>
             TransferDirection::Upload => {
-                format!("progress\nput {flag}{} {}\n", self.local, self.remote)
+                format!(
+                    "progress\nput {flag}{} {}\n",
+                    quote_batch_path(&self.local),
+                    quote_batch_path(&self.remote)
+                )
             },
             TransferDirection::Download => {
-                format!("progress\nget -R {} {}\n", self.remote, self.local)
+                format!(
+                    "progress\nget -R {} {}\n",
+                    quote_batch_path(&self.remote),
+                    quote_batch_path(&self.local)
+                )
             },
         }
     }
@@ -1502,7 +1541,10 @@ mod tests {
             remote: "/remote/local.bin".into(),
             recursive: false,
         };
-        assert_eq!(download.batch_script(), "progress\nget -R /remote/local.bin /tmp/local.bin\n");
+        assert_eq!(
+            download.batch_script(),
+            "progress\nget -R \"/remote/local.bin\" \"/tmp/local.bin\"\n"
+        );
 
         let upload_file = TransferRequest {
             direction: TransferDirection::Upload,
@@ -1511,13 +1553,33 @@ mod tests {
             remote: "/remote/local.bin".into(),
             recursive: false,
         };
-        assert_eq!(upload_file.batch_script(), "progress\nput /tmp/local.bin /remote/local.bin\n");
+        assert_eq!(
+            upload_file.batch_script(),
+            "progress\nput \"/tmp/local.bin\" \"/remote/local.bin\"\n"
+        );
 
         let upload_dir = TransferRequest { recursive: true, ..upload_file };
         assert_eq!(
             upload_dir.batch_script(),
-            "progress\nput -R /tmp/local.bin /remote/local.bin\n"
+            "progress\nput -R \"/tmp/local.bin\" \"/remote/local.bin\"\n"
         );
+    }
+
+    #[test]
+    fn parent_remote_handles_root_and_nested_paths() {
+        assert_eq!(parent_remote("/"), "/");
+        assert_eq!(parent_remote(""), "/");
+        assert_eq!(parent_remote("/tmp/a"), "/tmp");
+        assert_eq!(parent_remote("/tmp/a/"), "/tmp");
+        assert_eq!(parent_remote("/tmp"), "/");
+    }
+
+    #[test]
+    fn quote_batch_path_escapes_spaces_quotes_and_backslashes() {
+        assert_eq!(quote_batch_path("/tmp/a b"), "\"/tmp/a b\"");
+        assert_eq!(quote_batch_path("/tmp/a\"b"), "\"/tmp/a\\\"b\"");
+        assert_eq!(quote_batch_path("/tmp/a\\b"), "\"/tmp/a\\\\b\"");
+        assert_eq!(quote_batch_path(""), "\".\"");
     }
 
     #[test]

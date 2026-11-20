@@ -8019,6 +8019,13 @@ fn sftp_start_op(st: &mut AppState, command: sftp::SftpCommand, status: &str) {
     );
 }
 
+fn sftp_do_up(st: &mut AppState) {
+    let current = st.ui.get_sftp_remote().to_string();
+    let parent = sftp::parent_remote(&current);
+    st.ui.set_sftp_remote(parent.as_str().into());
+    sftp_do_list(st);
+}
+
 fn sftp_do_list(st: &mut AppState) {
     if sftp_busy(st) {
         return;
@@ -17477,6 +17484,13 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
     });
 
     ui.on_sftp_list(move || {
+        runtime::with_window(window_id, |st| sftp_do_list(st));
+    });
+
+    ui.on_sftp_up(move || {
+        runtime::with_window(window_id, |st| sftp_do_up(st));
+    });
+    ui.on_sftp_refresh(move || {
         runtime::with_window(window_id, |st| sftp_do_list(st));
     });
 

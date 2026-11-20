@@ -1787,6 +1787,8 @@ export component MainWindow inherits Window {
     in property <int> sftp-transfer-percent: -1;
     in property <string> sftp-transfer-detail: "";
     callback sftp-list();
+    callback sftp-up();
+    callback sftp-refresh();
     callback sftp-pick(int);
     callback sftp-download();
     callback sftp-upload();
@@ -8295,9 +8297,41 @@ export component MainWindow inherits Window {
             }
         }
 
+        Rectangle {
+            x: 104px; y: 108px; width: 54px; height: 26px; border-radius: 5px;
+            background: sftp-up-hit.has-hover ? Palette.colors.hover : Palette.colors.raise;
+            border-width: 1px;
+            border-color: Palette.colors.border;
+            sftp-up-hit := TouchArea { clicked => { root.sftp-up(); } }
+            Text {
+                text: Lang.t("Up", "上级");
+                color: Palette.colors.text;
+                font-size: 12px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                width: 100%;
+                height: 100%;
+            }
+        }
+        Rectangle {
+            x: 166px; y: 108px; width: 74px; height: 26px; border-radius: 5px;
+            background: sftp-refresh-hit.has-hover ? Palette.colors.hover : Palette.colors.raise;
+            border-width: 1px;
+            border-color: Palette.colors.border;
+            sftp-refresh-hit := TouchArea { clicked => { root.sftp-refresh(); } }
+            Text {
+                text: Lang.t("Refresh", "刷新");
+                color: Palette.colors.text;
+                font-size: 12px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                width: 100%;
+                height: 100%;
+            }
+        }
         Text {
-            x: 104px; y: 114px;
-            width: 360px;
+            x: 248px; y: 114px;
+            width: 216px;
             text: root.sftp-status;
             color: Palette.colors.muted;
             font-size: 11px;
