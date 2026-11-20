@@ -871,26 +871,37 @@ pub fn builtin() -> Registry {
     let mut r = Registry::new();
     let cmds = [
         bind("window.new", "New Window", Category::Window, Some("ctrl+shift+n")),
-        bind("tab.new", "New Tab", Category::Workspace, Some("ctrl+t")),
+        bind("window.close", "Close Window", Category::Window, Some("ctrl+shift+q")),
+        // GNOME Terminal：Ctrl+Shift+T 新建 Tab；Ctrl+T 留给 shell 的 transpose。
+        bind("tab.new", "New Tab", Category::Workspace, Some("ctrl+shift+t")),
         bind("tab.search", "Search Tabs", Category::Workspace, Some("ctrl+shift+a")),
         bind("tab.close", "Close Tab", Category::Workspace, Some("ctrl+shift+w")),
-        global_bind("tab.next", "Next Tab", Category::Workspace, Some("ctrl+tab")),
-        global_bind("tab.prev", "Previous Tab", Category::Workspace, Some("ctrl+shift+tab")),
+        Command {
+            extra_shortcuts: &["ctrl+tab"],
+            ..global_bind("tab.next", "Next Tab", Category::Workspace, Some("ctrl+pagedown"))
+        },
+        Command {
+            extra_shortcuts: &["ctrl+shift+tab"],
+            ..global_bind("tab.prev", "Previous Tab", Category::Workspace, Some("ctrl+pageup"))
+        },
+        bind("tab.move-left", "Move Tab Left", Category::Workspace, Some("ctrl+shift+pageup")),
+        bind("tab.move-right", "Move Tab Right", Category::Workspace, Some("ctrl+shift+pagedown")),
         bind("tab.last", "Last Used Tab", Category::Workspace, Some("ctrl+shift+l")),
         bind("tab.duplicate", "Duplicate Tab", Category::Workspace, None),
-        bind("tab.reopen-closed", "Reopen Closed Tab", Category::Workspace, Some("ctrl+shift+t")),
+        bind("tab.reopen-closed", "Reopen Closed Tab", Category::Workspace, Some("ctrl+alt+shift+t")),
         global_bind("tab.rename", "Rename Tab", Category::Workspace, Some("f2")),
         bind("tab.rename-undo", "Undo Tab Rename", Category::Workspace, Some("ctrl+shift+z")),
         // Ctrl+1–9：跳转到第 n 个 Tab。全部是全局命令（搜索框开着也能切 Tab）。
-        global_bind("tab.select-1", "Select Tab 1", Category::Workspace, Some("ctrl+1")),
-        global_bind("tab.select-2", "Select Tab 2", Category::Workspace, Some("ctrl+2")),
-        global_bind("tab.select-3", "Select Tab 3", Category::Workspace, Some("ctrl+3")),
-        global_bind("tab.select-4", "Select Tab 4", Category::Workspace, Some("ctrl+4")),
-        global_bind("tab.select-5", "Select Tab 5", Category::Workspace, Some("ctrl+5")),
-        global_bind("tab.select-6", "Select Tab 6", Category::Workspace, Some("ctrl+6")),
-        global_bind("tab.select-7", "Select Tab 7", Category::Workspace, Some("ctrl+7")),
-        global_bind("tab.select-8", "Select Tab 8", Category::Workspace, Some("ctrl+8")),
-        global_bind("tab.select-9", "Select Tab 9", Category::Workspace, Some("ctrl+9")),
+        global_bind("tab.select-1", "Select Tab 1", Category::Workspace, Some("alt+1")),
+        global_bind("tab.select-2", "Select Tab 2", Category::Workspace, Some("alt+2")),
+        global_bind("tab.select-3", "Select Tab 3", Category::Workspace, Some("alt+3")),
+        global_bind("tab.select-4", "Select Tab 4", Category::Workspace, Some("alt+4")),
+        global_bind("tab.select-5", "Select Tab 5", Category::Workspace, Some("alt+5")),
+        global_bind("tab.select-6", "Select Tab 6", Category::Workspace, Some("alt+6")),
+        global_bind("tab.select-7", "Select Tab 7", Category::Workspace, Some("alt+7")),
+        global_bind("tab.select-8", "Select Tab 8", Category::Workspace, Some("alt+8")),
+        global_bind("tab.select-9", "Select Tab 9", Category::Workspace, Some("alt+9")),
+        global_bind("tab.select-10", "Select Tab 10", Category::Workspace, Some("alt+0")),
         bind("pane.split-right", "Split Right", Category::Pane, Some("ctrl+shift+e")),
         bind("pane.split-down", "Split Down", Category::Pane, Some("ctrl+shift+d")),
         bind("pane.close", "Close Pane", Category::Pane, Some("ctrl+shift+x")),
@@ -904,7 +915,7 @@ pub fn builtin() -> Registry {
         bind("pane.focus-down", "Focus Pane Down", Category::Pane, Some("ctrl+shift+down")),
         bind("terminal.copy", "Copy", Category::Terminal, Some("ctrl+shift+c")),
         bind("terminal.paste", "Paste", Category::Terminal, Some("ctrl+shift+v")),
-        bind("terminal.find", "Find", Category::Terminal, Some("ctrl+f")),
+        bind("terminal.find", "Find", Category::Terminal, Some("ctrl+shift+f")),
         bind("terminal.clear", "Clear Screen", Category::Terminal, None),
         bind("terminal.select-all", "Select All", Category::Terminal, None),
         bind("terminal.toggle-read-only", "Toggle Read Only", Category::Terminal, None),
@@ -1041,7 +1052,7 @@ mod tests {
         );
         assert_eq!(
             r.get("tab.reopen-closed").and_then(|c| c.default_shortcut),
-            Some("ctrl+shift+t")
+            Some("ctrl+alt+shift+t")
         );
     }
 
@@ -1272,10 +1283,10 @@ mod tests {
         let r = builtin();
         // 无 override 时默认键不参与“override 命中”（仍走原硬编码路径）
         assert_eq!(
-            r.override_command_for_chord(&Chord::parse("ctrl+t").unwrap(), &[]),
+            r.override_command_for_chord(&Chord::parse("ctrl+shift+t").unwrap(), &[]),
             None
         );
-        assert!(r.suppressed_default(&Chord::parse("ctrl+t").unwrap(), &[]).is_none());
+        assert!(r.suppressed_default(&Chord::parse("ctrl+shift+t").unwrap(), &[]).is_none());
 
         let mut overrides = Vec::new();
         let chord = r.validate_override("tab.new", "ctrl+alt+n", &overrides).unwrap();
@@ -1285,9 +1296,9 @@ mod tests {
             r.override_command_for_chord(&Chord::parse("ctrl+alt+n").unwrap(), &overrides),
             Some("tab.new")
         );
-        // 旧默认键被吞掉，避免 Ctrl+T 仍然新开 Tab
+        // 旧默认键被吞掉，避免 Ctrl+Shift+T 仍然新开 Tab
         assert_eq!(
-            r.suppressed_default(&Chord::parse("ctrl+t").unwrap(), &overrides),
+            r.suppressed_default(&Chord::parse("ctrl+shift+t").unwrap(), &overrides),
             Some("tab.new")
         );
         // 把别的命令绑到 ctrl+alt+n 会与 override 冲突
@@ -1318,11 +1329,12 @@ mod tests {
         for (chord, id) in [
             ("f2", "tab.rename"),
             ("f11", "view.toggle-fullscreen"),
-            ("ctrl+tab", "tab.next"),
-            ("ctrl+shift+tab", "tab.prev"),
-            ("ctrl+1", "tab.select-1"),
-            ("ctrl+5", "tab.select-5"),
-            ("ctrl+9", "tab.select-9"),
+            ("ctrl+pagedown", "tab.next"),
+            ("ctrl+pageup", "tab.prev"),
+            ("alt+1", "tab.select-1"),
+            ("alt+5", "tab.select-5"),
+            ("alt+9", "tab.select-9"),
+            ("alt+0", "tab.select-10"),
         ] {
             let chord = Chord::parse(chord).unwrap();
             assert_eq!(r.global_default_for_chord(&chord), Some(id), "{chord}");
@@ -1331,8 +1343,8 @@ mod tests {
         // 非全局命令仍走“搜索框之后”的分发，不会被提到搜索框前面。
         for (chord, id) in [
             ("ctrl+shift+c", "terminal.copy"),
-            ("ctrl+t", "tab.new"),
-            ("ctrl+f", "terminal.find"),
+            ("ctrl+shift+t", "tab.new"),
+            ("ctrl+shift+f", "terminal.find"),
         ] {
             let chord = Chord::parse(chord).unwrap();
             assert_eq!(r.global_default_for_chord(&chord), None, "{chord}");
@@ -1351,18 +1363,21 @@ mod tests {
             ("ctrl+shift+p", "view.command-palette"),
             ("ctrl+shift+a", "tab.search"),
             ("ctrl+shift+n", "window.new"),
+            ("ctrl+shift+q", "window.close"),
             ("ctrl+shift+e", "pane.split-right"),
             ("ctrl+shift+d", "pane.split-down"),
+            ("ctrl+shift+pageup", "tab.move-left"),
+            ("ctrl+shift+pagedown", "tab.move-right"),
             ("ctrl+shift+w", "tab.close"),
             ("ctrl+shift+x", "pane.close"),
-            ("ctrl+shift+t", "tab.reopen-closed"),
+            ("ctrl+alt+shift+t", "tab.reopen-closed"),
             ("ctrl+shift+left", "pane.focus-left"),
             ("ctrl+shift+right", "pane.focus-right"),
             ("ctrl+shift+up", "pane.focus-up"),
             ("ctrl+shift+down", "pane.focus-down"),
             ("ctrl+shift++", "view.zoom-in"),
-            ("ctrl+t", "tab.new"),
-            ("ctrl+f", "terminal.find"),
+            ("ctrl+shift+t", "tab.new"),
+            ("ctrl+shift+f", "terminal.find"),
             ("ctrl+=", "view.zoom-in"),
             ("ctrl++", "view.zoom-in"),
             ("ctrl+-", "view.zoom-out"),

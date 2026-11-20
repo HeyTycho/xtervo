@@ -6,6 +6,12 @@ Tervo 的版本与 tag 规则见 `docs/RELEASING.md`。
 
 ### Changed
 
+- 默认快捷键按本机 GNOME Terminal 对齐：新 Tab `Ctrl+Shift+T`、关闭 Tab
+  `Ctrl+Shift+W`、关闭窗口 `Ctrl+Shift+Q`、查找 `Ctrl+Shift+F`、上一个/下一个
+  Tab `Ctrl+PageUp/PageDown`、移动 Tab `Ctrl+Shift+PageUp/PageDown`、
+  跳到第 1–10 个 Tab `Alt+1..9/Alt+0`。`Ctrl+T`、`Ctrl+W` 等留给 shell；
+  `Ctrl+Tab/Ctrl+Shift+Tab` 保留为等价别名，重开关闭的 Tab 移到
+  `Ctrl+Alt+Shift+T`。
 - native SSH 不再调用 `ssh -G`/`ssh-keygen -F`：新增纯 Rust ssh_config 与
   known_hosts 解析（hashed host、通配、`!` 否定、`@revoked`）。
 - native SSH 支持 ProxyJump（多跳）、本地/动态/远程端口转发、agent

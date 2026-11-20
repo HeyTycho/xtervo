@@ -34,12 +34,12 @@
 | Tab 标题 | — | `TabView{title, active}`；标题来自 `poll_events` OSC 0/2，仅活动 Tab 首个 pane | 跟随 Shell/SSH 标题；前缀/后缀/过滤 | 后台 Tab/非首 pane 不更新；无前缀/过滤 | 后台 tab 执行 `printf '\033]0;X\007'`，观察标题是否变化 |
 | Tab 关闭 × | 左键单击 | `tab-closed(i)` → `close_tab_inner`，Drop PaneHandle 杀 PTY | 关闭；区分仅关视图/结束会话/后台保留 | 只有结束会话；无确认/生命周期选择 | 关闭后 `pgrep` 子 shell 应消失；检查无对话框 |
 | Tab 新建 + | 左键单击 | `new-tab()` → `new_tab_inner` | 新建 Tab；可下拉选 Profile | 仅默认 shell，无下拉 | 点击 + 新 Tab 启动默认 shell |
-| Tab 新建 | Ctrl+T | `handle_input` 捕获 `t` → `new_tab_inner` | 快捷键新建 | 已实现 | Ctrl+T 新建 |
+| Tab 新建 | Ctrl+Shift+T | `handle_input` 捕获 `t` → `new_tab_inner` | 快捷键新建 | 已实现 | Ctrl+T 新建 |
 | Tab 关闭 | Ctrl+Shift+W | 关闭当前 `st.ws.active` | 快捷键关闭（可配置） | 已实现；硬编码 | Ctrl+Shift+W 关闭当前；Ctrl+W 原样发给 shell |
 | Tab 右键 | 右键单击 Tab | **无 per-tab 处理**；不弹 Tab 菜单 | 关闭/重命名/分屏/复制等（按上游） | 缺失；只有 TabBar 空白右键 | 在 Tab 上右键，记录无菜单或落到空白菜单 |
 | Tab 双击 | 左键双击 | 无处理（`tab-hit` 只有 clicked） | 重命名（触发方式待核） | 缺失 | 双击 Tab 无重命名输入框 |
 | Tab 拖拽 | 左键拖动 | 无拖拽状态；Tab 是静态模型 | 排序；拖出窗口按上游 | 缺失 | 尝试拖动 Tab，顺序不变 |
-| Tab 键盘导航 | Ctrl+Tab/Ctrl+1..9 等 | 无处理 | 上/下一个、序号、最近 Tab | 缺失 | 逐键测试无反应 |
+| Tab 键盘导航 | Ctrl+PageUp/Down、Alt+1..0 等 | 无处理 | 上/下一个、序号、最近 Tab | 缺失 | 逐键测试无反应 |
 | Tab 中键 | 中键单击 | 无处理 | 按上游（常见为关闭） | 待核/缺失 | 中键点击 Tab 无反应 |
 
 ## 3. TabBar 空白右键菜单（窗口菜单）
@@ -82,7 +82,7 @@
 | Copy / Paste | 左键 | action 3/4；粘贴遵守多行确认与 bracketed paste | 复制/粘贴 | 已实现 | 选文本→Copy；多行→Paste 确认 |
 | Split Right / Split Down | 左键 | action 0/1 → `split_pane` | 左右/上下分屏 | 已实现 | 菜单后 pane 数 +1 |
 | Close Pane | 左键 | action 2 → `close_pane_inner` | 关闭当前 pane | 已实现 | 关闭后 pane 消失 |
-| Find | 左键 | action 5 → `terminal.find` | 打开查找条 | 已实现（Ctrl+F 同路径） | 菜单 Find 后出现查找条 |
+| Find | 左键 | action 5 → `terminal.find` | 打开查找条 | 已实现（Ctrl+Shift+F 同路径） | 菜单 Find 后出现查找条 |
 | Select All / Clear | 左键 | action 6/7 → core select-all/clear-screen | 全选/清屏 | 已实现 | 全选后复制；清屏后屏幕空 |
 | Save Contents… | 左键 | action 14 → 显式路径弹窗；core `contents()` 保存 scrollback+视口；失败红字 | 保存内容到明确路径 | 已实现最小版；非系统文件对话框 | 菜单打开弹窗→Enter→文件存在且含历史 |
 | Read Only | 左键 | action 11 → 切换当前 pane 只读；pane 角标 `READ ONLY` + 菜单标签 + 浮层 | 可切换、状态可见、关闭恢复 | 已实现；每 pane 不持久化 | 开启后键入/粘贴不写 PTY，关闭恢复 |
@@ -95,7 +95,7 @@
 
 | 控件 | 触发方式 | 当前行为 | 期望行为 | 差异 | 验收方式 |
 |---|---|---|---|---|---|
-| 搜索条 | Ctrl+F | `open_search`；右上角 360×62 浮层；查询区是 `TextInput`，打开时 `init.focus()` | 打开查找面板并聚焦 | 已实现；有真实文本光标 | Ctrl+F 出现搜索条并直接可输入（`count_2of3.png`、`reopen_focus.png`） |
+| 搜索条 | Ctrl+Shift+F | `open_search`；右上角 360×62 浮层；查询区是 `TextInput`，打开时 `init.focus()` | 打开查找面板并聚焦 | 已实现；有真实文本光标 | Ctrl+F 出现搜索条并直接可输入（`count_2of3.png`、`reopen_focus.png`） |
 | 搜索输入 | 键盘字符/退格 | TextInput 原生编辑，`edited` → Rust 增量 `run_search`；空查询清高亮并显示 `0/0` | 输入关键词 | 已实现 | 输入 `alpha` 看高亮与计数（Xvfb :127） |
 | Match case | 点击开关 / Alt+C | `search-match-case` → core `SearchOptions.match_case`；`(?-i:)` 强制区分大小写 | 大小写开关 | 已实现 | 搜 `ALPHA`：开=不命中，关=命中 |
 | Match regex | 点击开关 / Alt+R | `search-regex` 同排开关；regex 直接交给 alacritty `RegexSearch` | 正则开关 | 已实现 | 搜 `a.c` 命中 `abc`；`[` 报错 |

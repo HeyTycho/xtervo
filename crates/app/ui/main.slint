@@ -7328,9 +7328,12 @@ export component MainWindow inherits Window {
                             description: Lang.t("Default bindings; edit them in Keys. Settings lives in the tab bar gear.", "默认绑定；可在“快捷键”分类中修改。设置入口在标签栏齿轮。");
                             highlighted: root.settings-focus == "quickstart";
 
-                            HelpRow { keys: "Ctrl+T"; action: Lang.t("New tab", "新建标签页"); }
+                            HelpRow { keys: "Ctrl+Shift+T"; action: Lang.t("New tab", "新建标签页"); }
                             HelpRow { keys: "Ctrl+Shift+W"; action: Lang.t("Close current tab", "关闭当前标签页"); }
-                            HelpRow { keys: "Ctrl+F"; action: Lang.t("Find in terminal", "在终端中查找"); }
+                            HelpRow { keys: "Ctrl+PageUp / Ctrl+PageDown"; action: Lang.t("Previous / next tab", "上一个 / 下一个标签页"); }
+                            HelpRow { keys: "Ctrl+Shift+PageUp / Ctrl+Shift+PageDown"; action: Lang.t("Move tab left / right", "向左 / 向右移动标签页"); }
+                            HelpRow { keys: "Alt+1 … Alt+9 / Alt+0"; action: Lang.t("Switch to tab 1–10", "跳到第 1–10 个标签页"); }
+                            HelpRow { keys: "Ctrl+Shift+F"; action: Lang.t("Find in terminal", "在终端中查找"); }
                             HelpRow { keys: "Ctrl+Shift+C"; action: Lang.t("Copy selection", "复制选中内容"); }
                             HelpRow { keys: "Ctrl+Shift+V"; action: Lang.t("Paste clipboard", "粘贴剪贴板"); }
                             HelpRow { keys: "Ctrl+Shift+E"; action: Lang.t("Split right", "向右分屏"); }

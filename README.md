@@ -71,11 +71,13 @@ cargo build --release -p tervo-app
 | 操作 | 快捷键 |
 |---|---|
 | 命令面板 | `Ctrl+Shift+P` |
-| 新建 / 关闭标签页 | `Ctrl+T` / `Ctrl+Shift+W`（`Ctrl+W` 留给 shell 删词） |
-| 标签页 1–9 | `Ctrl+1` … `Ctrl+9` |
+| 新建 / 关闭标签页 | `Ctrl+Shift+T` / `Ctrl+Shift+W`（`Ctrl+W` 留给 shell 删词） |
+| 上 / 下一个标签页 | `Ctrl+PageUp` / `Ctrl+PageDown` |
+| 左 / 右移动标签页 | `Ctrl+Shift+PageUp` / `Ctrl+Shift+PageDown` |
+| 标签页 1–10 | `Alt+1` … `Alt+9` / `Alt+0` |
 | 向右 / 向下分屏 | `Ctrl+Shift+E` / `Ctrl+Shift+D` |
 | 复制 / 粘贴 | `Ctrl+Shift+C` / `Ctrl+Shift+V` |
-| 查找 | `Ctrl+F` |
+| 查找 | `Ctrl+Shift+F` |
 | 侧栏 | `Ctrl+Shift+B` |
 | 放大 / 还原窗格 | `Ctrl+Shift+M` |
 | 缩放 / 重置 | `Ctrl+=` `Ctrl+-` / `Ctrl+0` |

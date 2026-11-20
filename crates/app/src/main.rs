@@ -10786,6 +10786,20 @@ fn switch_tab_number(st: &mut AppState, n: usize) {
     }
 }
 
+/// Ctrl+Shift+PageUp/PageDown：在 pinned/unpinned 组内移动当前 Tab。
+fn move_active_tab(st: &mut AppState, delta: i32) {
+    let from = st.ws.active;
+    let Some(to) = from.checked_add_signed(delta as isize) else { return };
+    if to >= st.ws.tabs.len() || !st.ws.move_tab(from, to) {
+        return;
+    }
+    st.ws.active = to;
+    refresh_views(st);
+    rebuild_tabs(st);
+    redraw_visible(st);
+    restore_terminal_focus_after_tab_change(st);
+}
+
 /// Tab 的稳定标识：取最小 pane id（pane id 单调递增、不复用）。
 ///
 /// LRU 存这个 id 而不是下标：Tab 重排/关闭后下标会变，但 pane id 仍能用
@@ -14983,6 +14997,7 @@ fn run_command(st: &mut AppState, id: &str) {
     }
     match id {
         "window.new" => new_window(),
+        "window.close" => request_close(st),
         "tab.new" => {
             new_tab_with_default(st);
             rebuild_tabs(st);
@@ -14993,6 +15008,8 @@ fn run_command(st: &mut AppState, id: &str) {
         "tab.close-right" => close_tabs_right(st, st.ws.active),
         "tab.next" => switch_tab_relative(st, 1),
         "tab.prev" => switch_tab_relative(st, -1),
+        "tab.move-left" => move_active_tab(st, -1),
+        "tab.move-right" => move_active_tab(st, 1),
         "tab.last" => switch_to_last_tab(st),
         "tab.search" => open_tab_search(st),
         "tab.duplicate" => duplicate_tab(st, st.ws.active),
@@ -15004,6 +15021,7 @@ fn run_command(st: &mut AppState, id: &str) {
             let n = id.as_bytes()[id.len() - 1] as usize - b'0' as usize;
             switch_tab_number(st, n);
         }
+        "tab.select-10" => switch_tab_number(st, 10),
         "tab.rename-undo" => {
             undo_tab_rename(st, st.ws.active);
             rebuild_tabs(st);
@@ -17230,7 +17248,7 @@ fn print_help() {
   diag [env|snapshot|replay|trace|metrics|observability|scene-diff]  harness 可调用 JSON 诊断（tervo diag help）\n  \
 -V, --version       显示版本、git commit 与构建时间\n  \
 -h, --help          显示帮助\n\n\
-快捷键: Ctrl+T 新建标签 / Ctrl+Shift+N 新建窗口 / Ctrl+Shift+W 关闭 / Ctrl+F 搜索 / Ctrl+Shift+C 复制 / Ctrl+Shift+V 粘贴\n\
+快捷键: Ctrl+Shift+T 新建标签 / Ctrl+Shift+N 新建窗口 / Ctrl+Shift+W 关闭 / Ctrl+Shift+F 搜索 / Ctrl+Shift+C 复制 / Ctrl+Shift+V 粘贴\n\
 配置: ~/.config/tervo/config.toml (TERVO_CONFIG 可覆盖)\n\
 主题目录: ~/.config/tervo/themes (TERVO_THEMES_DIR 可覆盖；支持 iTerm2/WT/Alacritty/kitty/Xresources/YAML)",
         env!("CARGO_PKG_VERSION")
@@ -23466,7 +23484,7 @@ mod tests {
         assert_eq!(ids.len(), rows.len());
         assert!(rows
             .iter()
-            .any(|r| r.title == "New Tab" && r.chord == "Ctrl+T" && !r.custom));
+            .any(|r| r.title == "New Tab" && r.chord == "Ctrl+Shift+T" && !r.custom));
         assert!(rows
             .iter()
             .any(|r| r.title == "Duplicate Tab" && r.chord == "(none)"));
