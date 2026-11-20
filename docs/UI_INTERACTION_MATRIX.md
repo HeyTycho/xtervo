@@ -35,7 +35,7 @@
 | Tab 关闭 × | 左键单击 | `tab-closed(i)` → `close_tab_inner`，Drop PaneHandle 杀 PTY | 关闭；区分仅关视图/结束会话/后台保留 | 只有结束会话；无确认/生命周期选择 | 关闭后 `pgrep` 子 shell 应消失；检查无对话框 |
 | Tab 新建 + | 左键单击 | `new-tab()` → `new_tab_inner` | 新建 Tab；可下拉选 Profile | 仅默认 shell，无下拉 | 点击 + 新 Tab 启动默认 shell |
 | Tab 新建 | Ctrl+T | `handle_input` 捕获 `t` → `new_tab_inner` | 快捷键新建 | 已实现 | Ctrl+T 新建 |
-| Tab 关闭 | Ctrl+W | 关闭当前 `st.ws.active` | 快捷键关闭（可配置） | 已实现；硬编码 | Ctrl+W 关闭当前 |
+| Tab 关闭 | Ctrl+Shift+W | 关闭当前 `st.ws.active` | 快捷键关闭（可配置） | 已实现；硬编码 | Ctrl+Shift+W 关闭当前；Ctrl+W 原样发给 shell |
 | Tab 右键 | 右键单击 Tab | **无 per-tab 处理**；不弹 Tab 菜单 | 关闭/重命名/分屏/复制等（按上游） | 缺失；只有 TabBar 空白右键 | 在 Tab 上右键，记录无菜单或落到空白菜单 |
 | Tab 双击 | 左键双击 | 无处理（`tab-hit` 只有 clicked） | 重命名（触发方式待核） | 缺失 | 双击 Tab 无重命名输入框 |
 | Tab 拖拽 | 左键拖动 | 无拖拽状态；Tab 是静态模型 | 排序；拖出窗口按上游 | 缺失 | 尝试拖动 Tab，顺序不变 |

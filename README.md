@@ -71,7 +71,7 @@ cargo build --release -p tervo-app
 | 操作 | 快捷键 |
 |---|---|
 | 命令面板 | `Ctrl+Shift+P` |
-| 新建 / 关闭标签页 | `Ctrl+T` / `Ctrl+W` |
+| 新建 / 关闭标签页 | `Ctrl+T` / `Ctrl+Shift+W`（`Ctrl+W` 留给 shell 删词） |
 | 标签页 1–9 | `Ctrl+1` … `Ctrl+9` |
 | 向右 / 向下分屏 | `Ctrl+Shift+E` / `Ctrl+Shift+D` |
 | 复制 / 粘贴 | `Ctrl+Shift+C` / `Ctrl+Shift+V` |

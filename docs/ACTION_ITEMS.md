@@ -35,7 +35,7 @@
 | # | 已有实现 | 现状 | 验收方式 | 对应行动 |
 |---|---|---|---|---|
 | A1 | 无边框窗口、品牌位、TabBar、─/□/❐/✕、拖空白区、双击最大化、8 向边缘缩放 | 已实现，人工截图记录 | 启动→拖窗→双击→最小化→任务栏恢复→最大化→拖四边/四角；留 6 张截图 | ACT-001 |
-| A2 | Tab 新建（+/Ctrl+T）、切换、关闭（×/Ctrl+W） | 已实现；关闭生命周期待 ACT-009 | 开 3 Tab→切换→逐个关→关最后一个退出；检查子进程消失 | ACT-001 |
+| A2 | Tab 新建（+/Ctrl+T）、切换、关闭（×/Ctrl+Shift+W） | 已实现；关闭生命周期待 ACT-009 | 开 3 Tab→切换→逐个关→关最后一个退出；检查子进程消失 | ACT-001 |
 | A3 | 嵌套分屏、分隔线拖动（10%–90%）、Close Pane 回填、焦点转移 | 已实现，有单测/截图 | 右键 Split Right→Split Down→拖动到极限→关闭中间 pane→再分 4 pane | ACT-001 |
 | A4 | 鼠标上报 1000/1002/1003/1005/1006、Shift 绕过、滚轮 64/65 | 已有 16 例单测 + XTest；1002 右键拖动编码需小修（ACT-013） | `cargo test -p tervo-core --test mouse_report`；vim `:set mouse=a` 点击/滚轮/Shift 点击 | ACT-001、ACT-013 |
 | A5 | 拖选/跨行/反向选择/自动复制、Ctrl+Shift+C/V | 有 smoke 测试 + 人工记录 | 反向拖到行首复制；多行复制；粘贴到 `cat > /tmp/x` 比对 | ACT-001 |
@@ -60,7 +60,7 @@
 | ACT-006 ✅（2026-11-05 完成：拖拽排序；拖出窗口未做） | Tab 拖拽排序 + 拖出窗口策略 | B2-004 完全缺失；用户整理工作区只能重开 | `main.slint`、`main.rs`、`workspace.rs`、`session.rs` | 3 Tab 拖动后顺序变化并持久化；拖出按 ACT-002 结论执行（新窗口或明确 no-op 提示）；单测覆盖重排/越界 | M |
 | ACT-007 ◐（全屏 + 设置开关 + TabBar 上下位已完成；DPI 跟随与 Window 设置页待做） | 全屏 + TabBar 位置 + DPI/scale + Window 设置 | B1-005/006/007、UI-SET-011 成组缺口；影响所有用户 | `main.slint`、`main.rs`、`config.rs` | F11 全屏/退出；TabBar 四向（若上游确认）切换并持久化；scale factor 变化后 cell/布局正确；设置页可改；人工+截图 | M |
 | ACT-008 ◐（detach/reattach + 后台列表已通；独立 Registry 待做） | Session 独立重构（Registry 与 Pane/Tab 解耦） | 需求 A3 硬约束；关闭生命周期/后台保留/断线重连/自动恢复的前置 | `pane.rs`、`main.rs`、新 `session_registry.rs`、`workspace.rs` | 关 Tab 不杀 Session（可 re-attach）；Session 有稳定 ID；3 个 pane 关/开不丢 shell；单测覆盖 detach/attach/reap | L |
-| ACT-009 ◐（确认已完成；生命周期策略待做） | 关闭生命周期策略 + 关闭确认 | B1-008/B2-005；现在 ✕/Ctrl+W 直接杀进程，误关代价高 | `main.rs`、session registry、`config.rs`、`main.slint` | 设置可选“仅关视图/结束会话/后台保留”；关闭窗口/最后 Tab 有确认；取消不杀进程；三策略各有测试 | M |
+| ACT-009 ◐（确认已完成；生命周期策略待做） | 关闭生命周期策略 + 关闭确认 | B1-008/B2-005；现在 ✕/Ctrl+Shift+W 直接杀进程，误关代价高 | `main.rs`、session registry、`config.rs`、`main.slint` | 设置可选“仅关视图/结束会话/后台保留”；关闭窗口/最后 Tab 有确认；取消不杀进程；三策略各有测试 | M |
 | ACT-010 | Command Palette UI + 命令分发接线（命令表已完成） | B4-005/C9-001/005；`commands.rs` 已有 30 命令/快捷键解析/冲突检测/模糊搜索（本轮补 read-only/reset/save-contents），**不要重写**；UI 与真实分发已完成 | `commands.rs`、`main.rs`、`main.slint`、`config.rs` | Ctrl+Shift+P 打开面板，搜索/键盘选择/执行；main.rs 的 Ctrl+T/W/F/C/V 改走命令 ID；禁用态/上下文；命令绑定持久化；人工+单测 | L |
 | ACT-011 ✅（2026-11-05：6 分类导航 + 搜索跳转 + Config File；保存失败提示仍未做） | Settings 框架：导航/搜索/分类/Config File | B7 引言+14 项；单卡片无法承载后续设置 | `main.slint`、`main.rs`、`config.rs` | 左侧分类（Application/Appearance/Terminal/Color Scheme/Hotkeys/Window/Config File…）；搜索过滤；Config File 显示路径/打开目录，不显示 secret；人工 | L |
 | ACT-012 | Hotkeys 设置页（录制/冲突/multi-chord） | C9-002/003/007；命令系统完成后必须让用户改键 | `main.slint`、`main.rs`、`commands.rs`、`config.rs` | 录制单键/两段键；冲突提示；清除/恢复默认；持久化；人工+单测 | M |

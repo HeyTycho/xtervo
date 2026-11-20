@@ -873,7 +873,7 @@ pub fn builtin() -> Registry {
         bind("window.new", "New Window", Category::Window, Some("ctrl+shift+n")),
         bind("tab.new", "New Tab", Category::Workspace, Some("ctrl+t")),
         bind("tab.search", "Search Tabs", Category::Workspace, Some("ctrl+shift+a")),
-        bind("tab.close", "Close Tab", Category::Workspace, Some("ctrl+w")),
+        bind("tab.close", "Close Tab", Category::Workspace, Some("ctrl+shift+w")),
         global_bind("tab.next", "Next Tab", Category::Workspace, Some("ctrl+tab")),
         global_bind("tab.prev", "Previous Tab", Category::Workspace, Some("ctrl+shift+tab")),
         bind("tab.last", "Last Used Tab", Category::Workspace, Some("ctrl+shift+l")),
@@ -893,7 +893,7 @@ pub fn builtin() -> Registry {
         global_bind("tab.select-9", "Select Tab 9", Category::Workspace, Some("ctrl+9")),
         bind("pane.split-right", "Split Right", Category::Pane, Some("ctrl+shift+e")),
         bind("pane.split-down", "Split Down", Category::Pane, Some("ctrl+shift+d")),
-        bind("pane.close", "Close Pane", Category::Pane, Some("ctrl+shift+w")),
+        bind("pane.close", "Close Pane", Category::Pane, Some("ctrl+shift+x")),
         bind("pane.undo-swap", "Undo Pane Move", Category::Pane, Some("ctrl+alt+z")),
         // 方向聚焦：旧硬编码 Ctrl+Shift+方向键的等价命令。`pane.focus-next`
         // 作为“循环下一个”保留在命令表里，但不占用默认键（避免与右键冲突）。
@@ -1028,10 +1028,16 @@ mod tests {
                 .count();
             assert_eq!(hits, 1, "{shortcut} 不应被多个命令占用");
         }
+        // Ctrl+W 必须留给 shell 的 unix-word-rubout（删除前一个词），
+        // 否则终端里“删除”永远失灵；关闭 Tab 改用 Ctrl+Shift+W。
+        assert!(
+            r.default_command_for_chord(&Chord::parse("ctrl+w").unwrap()).is_none(),
+            "Ctrl+W 不能绑定 Tervo 命令"
+        );
         // 既有 Close Tab / Reopen 仍保留原绑定，改动不能踩到它们。
         assert_eq!(
             r.get("tab.close").and_then(|c| c.default_shortcut),
-            Some("ctrl+w")
+            Some("ctrl+shift+w")
         );
         assert_eq!(
             r.get("tab.reopen-closed").and_then(|c| c.default_shortcut),
@@ -1347,7 +1353,8 @@ mod tests {
             ("ctrl+shift+n", "window.new"),
             ("ctrl+shift+e", "pane.split-right"),
             ("ctrl+shift+d", "pane.split-down"),
-            ("ctrl+shift+w", "pane.close"),
+            ("ctrl+shift+w", "tab.close"),
+            ("ctrl+shift+x", "pane.close"),
             ("ctrl+shift+t", "tab.reopen-closed"),
             ("ctrl+shift+left", "pane.focus-left"),
             ("ctrl+shift+right", "pane.focus-right"),
@@ -1355,7 +1362,6 @@ mod tests {
             ("ctrl+shift+down", "pane.focus-down"),
             ("ctrl+shift++", "view.zoom-in"),
             ("ctrl+t", "tab.new"),
-            ("ctrl+w", "tab.close"),
             ("ctrl+f", "terminal.find"),
             ("ctrl+=", "view.zoom-in"),
             ("ctrl++", "view.zoom-in"),

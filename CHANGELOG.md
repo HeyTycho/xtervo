@@ -21,6 +21,25 @@ Tervo 的版本与 tag 规则见 `docs/RELEASING.md`。
 
 ### Fixed
 
+- TabBar 多标签布局：Tab 收缩下限从 52px 降到 32px（Chrome 同量级），
+  并给 HorizontalLayout 槽位加 min/max 约束，Tab 不会再被压到十几像素、
+  标题挤成 “Te…”；放不下后改为横向滚动。`+` / Profile 固定在 TabBar 右侧，
+  不再随 Tab 条滚走；新建 Tab 自动滚到最右；窄 Tab 隐藏 close，避免点 Tab 误关。
+  关闭大量 Tab 后横向偏移自动夹回 0，剩余 Tab 回到左侧，不再卡在右侧/被裁掉。
+  `+`/`>_` 跟随最后一个 Tab，满了才停在最右（Chrome 行为）。
+- Tab 改名：打开时全选旧标题，键入是替换而不是拼到旧标题前面（此前会出现
+  “zshTerminal 1”）；提交/取消后显式把键盘焦点还给终端。
+- 关 Tab / 关闭右侧 Tab / 切 Tab 后恢复隐藏 IME 输入框焦点，修复“界面还在、
+  但终端完全打不进字”；窄 Tab 的 active 项 hover 时仍显示 close，避免关不掉。
+- `Ctrl+W` 不再被 Tervo 抢去关 Tab，原样发给 PTY（readline 的删除前一个词）；
+  关闭 Tab 改为 `Ctrl+Shift+W`，关闭 Pane 改为 `Ctrl+Shift+X`，帮助/README/
+  交互矩阵同步。
+- 主窗口在 `show()` 前注册 winit 事件：Wayland 首轮 `Ime::Enabled` 不再丢失；
+  `focus-terminal()` 先切到辅助 FocusScope 再切回隐藏 TextInput，强制一次
+  FocusOut→FocusIn，重新触发 text-input Enable。修复“窗口能看、键盘完全
+  没反应/删除撤销都不好使”。
+- 多 Tab 横向滚动：在 TabBar 区域滚轮/触控板横滚（竖向滚轮也映射为横滚）
+  直接移动 `content-x`，不再只能靠拖拽；滚动范围夹在 0 与内容末端之间。
 - 字体加载：候选字体四套 face 不齐时（例如系统只有 DejaVu、没有 JetBrains
   Mono）继续尝试下一个候选，而不是直接判定“没有等宽字体”。修复只有 DejaVu 的
   机器上像素差分测试全红、以及默认字体链可能加载失败的问题。

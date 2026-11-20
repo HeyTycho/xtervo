@@ -2300,7 +2300,11 @@ export component MainWindow inherits Window {
     callback settings-help-open(string);
     callback settings-help-copy-diagnostics();
     /// 录制结束/关闭设置后把键盘焦点还给终端 IME 宿主，否则按键会丢失。
+    /// Slint 对“已经聚焦的同一个 item”调用 focus() 是 no-op，不会再发
+    /// text-input Enable；先切到辅助 FocusScope 强制 FocusOut，再切回 ime
+    /// 触发 FocusIn/Enable。Wayland 首轮 Enable 丢失时这是唯一可靠的重建路径。
     public function focus-terminal() {
+        ime-blur.focus();
         ime.focus();
     }
 
@@ -2355,6 +2359,31 @@ export component MainWindow inherits Window {
     changed settings-open => {
         if (root.settings-open) {
             root.settings-tab-open = true;
+        }
+    }
+
+    /// 把横向偏移夹回合法范围。Flickable 在 content-width 变小时不会自动回弹；
+    /// 关掉大量 Tab 后 content-x 仍是负值，剩下的 Tab 会卡在右侧/被裁掉。
+    public function clamp-tabbar-scroll() {
+        if (!root.tabbar-vertical) {
+            let min-x = Math.min(0px, tab-flick.width - tab-flick.content-width);
+            tab-flick.content-x = Math.max(min-x, Math.min(0px, tab-flick.content-x));
+        }
+    }
+
+    /// 滚轮/触控板滚动 Tab 条：正数向右（内容右移），负数向左。
+    public function scroll-tabbar-by(dx: length) {
+        if (!root.tabbar-vertical) {
+            let min-x = Math.min(0px, tab-flick.width - tab-flick.content-width);
+            tab-flick.content-x = Math.max(min-x, Math.min(0px, tab-flick.content-x + dx));
+        }
+    }
+
+    /// 新建 Tab 后滚到最右（Chrome 行为：新标签一定出现在可视区）。
+    public function scroll-tabbar-to-end() {
+        root.tabbar-scroll-end = true;
+        if (!root.tabbar-vertical) {
+            tab-flick.content-x = Math.min(0px, tab-flick.width - tab-flick.content-width);
         }
     }
 
@@ -2517,9 +2546,13 @@ export component MainWindow inherits Window {
     property <length> active-tab-left: 0px;
     property <length> active-tab-width: 0px;
     property <bool> active-tab-last: false;
+    // 新建 Tab 后请求滚到最右：新 Tab 出生时就是 active，Slint 不会触发
+    // `changed is-active`，单靠 note-active-tab 会停在旧位置/视口外。
+    property <bool> tabbar-scroll-end: false;
     // Tab 自动收缩：把扣除左侧搜索/品牌、固定 +/Profile、窗口按钮后的宽度均分给 Tab。
-    // 52px 是可读下限（标题至少保留几个字符）；再窄就横向滚动，并把活动 Tab 滚进视口。
-    property <length> tab-width-cap: Math.max(52px, Math.min(180px,
+    // 32px 是 Chrome 同量级的收缩下限（只剩 1-2 个标题字符/状态字形）；再窄才横向滚动，
+    // 并把活动 Tab 滚进视口。Tab 不会缩到 0，也不会把右侧固定按钮挤出窗口。
+    property <length> tab-width-cap: Math.max(32px, Math.min(180px,
         (root.width - 266px - 4px * root.tabs.length) / Math.max(1, root.tabs.length)));
 
     Rectangle {
@@ -2626,19 +2659,37 @@ export component MainWindow inherits Window {
             // 支持拖拽和滚轮横向滚动；活动 Tab 变化/窗口变化时自动滚进视口。
             tab-flick := Flickable {
                 visible: !root.tabbar-vertical;
-                // 左侧 58px 留给固定的搜索/品牌图标；滚动内容从图标右侧开始，
-                // 不会钻到图标下面（活动 Tab 自动 reveal 时也安全）。
+                // 左侧 58px 留给固定的搜索/品牌图标，右侧 200px 留给固定的
+                // +/Profile/齿轮/窗口按钮；滚动内容只在中间伸缩，不会把按钮挤没。
                 x: 58px;
                 y: 0px;
-                width: parent.width - 198px;
+                width: Math.max(1px, parent.width - 258px);
                 height: parent.height;
                 interactive: true;
                 content-width: tab-strip.preferred-width;
                 content-height: parent.height;
-                changed width => { root.reveal-active-tab(); }
+                changed width => {
+                    root.clamp-tabbar-scroll();
+                    root.reveal-active-tab();
+                }
                 // 设置 Tab 追加到末尾：打开时滚到最右，保证齿轮 Tab 可见。
                 property <bool> settings-tab-open: root.settings-tab-open;
-                changed content-width => { root.reveal-settings-tab(); }
+                // 新建/关闭 Tab 后 content-width 先更新、槽位 x 后布局；这里再
+                // reveal 一次，避免新激活的 Tab 出生时定位还没算好、停在视口外。
+                changed content-width => {
+                    // 先夹回合法范围：关闭 Tab 后 content-width 变小，Flickable
+                    // 不会自动把旧的负 content-x 弹回 0，剩下的 Tab 会卡在右侧。
+                    root.clamp-tabbar-scroll();
+                    if (root.tabbar-scroll-end) {
+                        // 完整布局后的 content-width 才是最终值，这时滚到最右。
+                        tab-flick.content-x = Math.min(0px, tab-flick.width - tab-flick.content-width);
+                        root.tabbar-scroll-end = false;
+                    } else {
+                        root.reveal-active-tab();
+                    }
+                    root.reveal-settings-tab();
+                    root.clamp-tabbar-scroll();
+                }
                 changed settings-tab-open => { root.reveal-settings-tab(); }
 
                 tab-strip := HorizontalLayout {
@@ -2654,7 +2705,13 @@ export component MainWindow inherits Window {
                     property <length> insert-gap: (root.drag-active && root.drop-valid
                         && root.drop-gap == i) ? 8px : 0px;
                     animate insert-gap { duration: 120ms; easing: ease-out; }
-                    width: tab-box.width + insert-gap;
+                    // Slint 的 HorizontalLayout 会忽略子项显式 width，只认
+                    // min/max/preferred；不写 min-width 时 46 个 Tab 会被压到
+                    // 十几像素（标题只剩 “Te…”），看起来像“挤没了”。
+                    // 把槽位锁成 tab-box 的实际宽度：多到放不下就溢出到 Flickable
+                    // 横向滚动，而不是继续压缩。
+                    min-width: tab-box.width + insert-gap;
+                    max-width: tab-box.width + insert-gap;
                     height: 22px;
                     background: transparent;
 
@@ -2686,7 +2743,7 @@ export component MainWindow inherits Window {
                             && !(root.settings-open && !root.settings-legacy);
                         // 标题自然宽度必须用独立 Text 量：`tab-area.preferred-width`
                         // 受 tab-box.width 约束，和 width 形成循环依赖。标题 spinner
-                        // 每次刷新都会重绑一次，宽度会从自然值一级级缩到 52px 下限，
+                        // 每次刷新都会重绑一次，宽度会从自然值一级级缩到 32px 下限，
                         // close 按钮随之滑到 Tab 中间——点 Tab 变成关 Tab。
                         title-measure := Text {
                             visible: false;
@@ -2695,8 +2752,8 @@ export component MainWindow inherits Window {
                             font-weight: is-active ? 600 : 400;
                         }
                         // 自动收缩：少量 Tab 按标题宽度，多 Tab 均分可用宽度；
-                        // 52px 下限后横向滚动（活动 Tab 会被滚进视口）。
-                        width: Math.max(52px, Math.min(root.tab-width-cap, title-measure.preferred-width + 36px));
+                        // 32px 下限后横向滚动（活动 Tab 会被滚进视口），不做“挤没”。
+                        width: Math.max(32px, Math.min(root.tab-width-cap, title-measure.preferred-width + 36px));
                         animate width { duration: 140ms; easing: ease-out; }
                         border-radius: 6px;
                         background: is-active
@@ -2712,10 +2769,13 @@ export component MainWindow inherits Window {
                             || tab.progress-state == 2 || tab.progress-label != "";
                         // 窄 Tab 不预留整块状态区：状态压成右侧小字形，标题优先占满。
                         property <bool> show-status-text: show-status && parent.width >= 64px;
-                        // 窄 Tab（<84px）不再 hover 就显示 close：52px 时 close 占右侧
-                        // 20px，hover 才出现的 close 会正好压在指针下，点 Tab 变成关 Tab。
-                        // 窄 Tab 只有 active 时才显示 close；inactive 时整块都是切 Tab 热区。
-                        property <bool> show-close: parent.width >= 84px || is-active;
+                        // 窄 Tab（<84px）不显示 close：32px 时 close 占右侧 20px，
+                        // 会压住标题/指针，点 Tab 变成关 Tab。窄 Tab 整块都是切换热区，
+                        // 关闭走中键/Tab 右键菜单（Chrome 窄标签同样隐藏关闭按钮）。
+                        // 宽 Tab 常显 close；窄 Tab（尤其 active）hover 时才显示，
+                        // 保证 Tab 多到 32px 时仍然关得掉，又不误触。
+                        property <bool> show-close: parent.width >= 84px
+                            || (is-active && tab-hit.has-hover);
                         // 非纯颜色状态标记：字形本身就能区分状态，颜色只是辅助。
                         // 连接状态优先：✕ 失败 / ○ 断开 / … 连接中；Connected 不占位。
                         property <string> status-glyph: tab.connection-state == 4
@@ -2873,9 +2933,10 @@ export component MainWindow inherits Window {
                                 ? (tab.pinned ? 17px : 5px)
                                 : (tab.pinned ? 20px : 8px);
                             // 窄 Tab 的 close 只在 hover 时覆盖显示，不因 hover 重排标题。
-                            width: parent.width - self.x
+                            width: Math.max(1px, parent.width - self.x
                                 - (show-close && parent.width >= 84px ? 26px : 6px)
-                                - (show-status-text ? 22px : 0px);
+                                - (show-status-text ? 22px : 0px)
+                                - (show-status && !show-status-text ? 11px : 0px));
                             text: tab.title;
                             color: is-active ? Palette.colors.text : Palette.colors.muted;
                             font-size: root.tab-width-cap < 60px ? 10px : 12px;
@@ -3077,65 +3138,74 @@ export component MainWindow inherits Window {
                     }
                 }
 
-                Rectangle {
-                    height: 22px;
-                    width: 24px;
-                    border-radius: 5px;
-                    background: new-hit.has-hover ? Palette.colors.raise : transparent;
-                    animate background { duration: 120ms; }
-
-                    new-hit := TouchArea {
-                        clicked => {
-                            if (root.settings-open) {
-                                root.suspend-settings();
-                            }
-                            // 旧行为：`+` 直接新建默认 Tab；Profile 选择走右侧 >_。
-                            root.new-tab();
-                        }
-                    }
-
-                    Text {
-                        text: "+";
-                        color: Palette.colors.text;
-                        font-size: 16px;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                        width: 100%;
-                        height: 100%;
-                    }
-                }
-
-                // Profile 选择器：独立图标（Tabby 风格），不在 + 的下拉里。
-                Rectangle {
-                    height: 22px;
-                    width: 26px;
-                    border-radius: 5px;
-                    background: profile-menu-hit.has-hover ? Palette.colors.raise : transparent;
-                    animate background { duration: 120ms; }
-
-                    profile-menu-hit := TouchArea {
-                        clicked => {
-                            if (root.settings-open) {
-                                root.suspend-settings();
-                            }
-                            root.profilemenu-x = self.absolute-position.x;
-                            root.profilemenu-open = true;
-                            root.profilemenu-menu();
-                        }
-                    }
-
-                    Text {
-                        text: ">_";
-                        color: Palette.colors.subtext;
-                        font-size: 11px;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                        width: 100%;
-                        height: 100%;
-                    }
-                }
-
             }
+            }
+
+            // Chrome 行为：`+` 紧跟最后一个 Tab；Tab 多到贴右边界后停住不再右移。
+            // 位置按滚动后的内容末端算，窗口坐标 = 视口 x + content-x + content-width。
+            plus-fixed := Rectangle {
+                x: Math.min(parent.width - 198px,
+                    tab-flick.x + tab-flick.content-x + tab-flick.content-width + 2px);
+                animate x { duration: 120ms; easing: ease-out; }
+                y: 4px;
+                height: 22px;
+                width: 24px;
+                border-radius: 5px;
+                background: new-hit.has-hover ? Palette.colors.raise : transparent;
+                animate background { duration: 120ms; }
+
+                new-hit := TouchArea {
+                    clicked => {
+                        if (root.settings-open) {
+                            root.suspend-settings();
+                        }
+                        // 旧行为：`+` 直接新建默认 Tab；Profile 选择走右侧 >_。
+                        root.new-tab();
+                    }
+                }
+
+                Text {
+                    text: "+";
+                    color: Palette.colors.text;
+                    font-size: 16px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    width: 100%;
+                    height: 100%;
+                }
+            }
+
+            // Profile 选择器紧跟 `+`，一起随最后一个 Tab 移动，满后停在最右。
+            Rectangle {
+                x: plus-fixed.x + 28px;
+                animate x { duration: 120ms; easing: ease-out; }
+                y: 4px;
+                height: 22px;
+                width: 26px;
+                border-radius: 5px;
+                background: profile-menu-hit.has-hover ? Palette.colors.raise : transparent;
+                animate background { duration: 120ms; }
+
+                profile-menu-hit := TouchArea {
+                    clicked => {
+                        if (root.settings-open) {
+                            root.suspend-settings();
+                        }
+                        root.profilemenu-x = self.absolute-position.x;
+                        root.profilemenu-open = true;
+                        root.profilemenu-menu();
+                    }
+                }
+
+                Text {
+                    text: ">_";
+                    color: Palette.colors.subtext;
+                    font-size: 11px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    width: 100%;
+                    height: 100%;
+                }
             }
 
             // 横向滚动条：仅在 Tab + 按钮溢出时出现，提示可拖拽/滚轮滚动。
@@ -3966,6 +4036,15 @@ export component MainWindow inherits Window {
                 // 隐藏的 IME 宿主。Slint 里只有 TextInput 会向 winit 申请输入法
                 // 上下文（XIM/fcitx/ibus），中文上屏经由 edited 转发给 PTY。
                 // 放在 pane 之前，保证鼠标事件仍由 pane 的 TouchArea 接收。
+                // 辅助 FocusScope：仅用于把焦点从 ime 上强制移走，制造一次
+                // FocusOut → FocusIn，让 winit 重发 text-input Enable。
+                ime-blur := FocusScope {
+                    x: 0px;
+                    y: 0px;
+                    width: 1px;
+                    height: 1px;
+                    focus-on-click: false;
+                }
                 ime := TextInput {
                     x: root.ime-x;
                     y: root.ime-y;
@@ -7203,7 +7282,7 @@ export component MainWindow inherits Window {
                             highlighted: root.settings-focus == "quickstart";
 
                             HelpRow { keys: "Ctrl+T"; action: Lang.t("New tab", "新建标签页"); }
-                            HelpRow { keys: "Ctrl+W"; action: Lang.t("Close current tab", "关闭当前标签页"); }
+                            HelpRow { keys: "Ctrl+Shift+W"; action: Lang.t("Close current tab", "关闭当前标签页"); }
                             HelpRow { keys: "Ctrl+F"; action: Lang.t("Find in terminal", "在终端中查找"); }
                             HelpRow { keys: "Ctrl+Shift+C"; action: Lang.t("Copy selection", "复制选中内容"); }
                             HelpRow { keys: "Ctrl+Shift+V"; action: Lang.t("Paste clipboard", "粘贴剪贴板"); }
@@ -9843,7 +9922,8 @@ export component MainWindow inherits Window {
             single-line: true;
             color: Palette.colors.text;
             font-size: 13px;
-            init => { self.focus(); }
+            // 打开时全选旧标题：直接键入应替换，而不是把新名字拼到旧标题前面。
+            init => { self.focus(); self.select-all(); }
             key-pressed(event) => {
                 if (event.text == "\u{a}" || event.text == "\u{d}") {
                     root.rename-committed(root.rename-index, self.text);

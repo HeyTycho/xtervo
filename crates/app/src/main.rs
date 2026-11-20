@@ -1196,6 +1196,8 @@ struct AppState {
     resize: Option<WindowResize>,
     /// 窗口是否聚焦（100ms 轮询 winit），用于 DECSET 1004 focus 上报。
     window_focused: bool,
+    /// 最近一次指针位置（逻辑像素，窗口坐标）；TabBar 滚轮命中测试用。
+    cursor: (f32, f32),
     /// TERVO_RENDER_HUD 的重复计时器；None = HUD 关闭。
     render_hud_timer: Option<slint::Timer>,
     /// Rust 侧权威的最大化 desired state；Slint 属性只做图标显示。
@@ -2065,7 +2067,7 @@ const SETTINGS_CATALOG: &[SettingsCatalogEntry] = &[
     SettingsCatalogEntry { cat: 5, section: "plugins", en: "Installed plugins", zh: "已安装插件", keywords: "plugin plugins installed list 插件 已安装" },
     SettingsCatalogEntry { cat: 6, section: "vault", en: "Vault / master password", zh: "保险库 / 主密码", keywords: "vault master password credentials 凭据 解锁 锁定 保险库 主密码" },
     SettingsCatalogEntry { cat: 7, section: "profiles", en: "Profiles", zh: "配置", keywords: "profile connection ssh serial telnet 连接 配置" },
-    SettingsCatalogEntry { cat: 8, section: "quickstart", en: "Quick start / Keyboard shortcuts", zh: "快速开始 / 快捷键", keywords: "help getting started quick start keyboard shortcuts hotkey keybinding ctrl+t ctrl+w ctrl+f f11 settings 帮助 快速开始 快捷键 设置" },
+    SettingsCatalogEntry { cat: 8, section: "quickstart", en: "Quick start / Keyboard shortcuts", zh: "快速开始 / 快捷键", keywords: "help getting started quick start keyboard shortcuts hotkey keybinding ctrl+t ctrl+shift+w ctrl+f f11 settings 帮助 快速开始 快捷键 设置" },
     SettingsCatalogEntry { cat: 8, section: "paths", en: "Config & log paths", zh: "配置文件与日志", keywords: "help config log logs path directory diagnostic copy 帮助 配置 日志 路径 目录 诊断 复制" },
     SettingsCatalogEntry { cat: 8, section: "version", en: "Version information", zh: "版本信息", keywords: "help version commit build time target 帮助 版本 提交 构建 时间 目标" },
     SettingsCatalogEntry { cat: 8, section: "version", en: "Run Doctor", zh: "运行 Doctor", keywords: "doctor diagnostics health check issue evidence 诊断 健康 检查 证据 问题" },
@@ -5441,6 +5443,9 @@ fn new_tab_inner_with_cwd(st: &mut AppState, cwd: Option<PathBuf>) {
             );
             refresh_views(st);
             rebuild_tabs(st);
+            // 新 Tab 出生即 active，Slint 不会触发 changed is-active；显式请求
+            // TabBar 滚到最右，避免 Tab 多时新建的 Tab 停在视口外。
+            st.ui.invoke_scroll_tabbar_to_end();
             redraw_pane_inner(st, id);
             // 新 Tab 的隐藏 TextInput 需要重新拿焦点，否则 Ctrl+T 后中文输入失效。
             st.ui.invoke_focus_terminal();
@@ -9580,6 +9585,7 @@ fn close_tab_inner(st: &mut AppState, index: usize) {
     refresh_views(st);
     rebuild_tabs(st);
     redraw_visible(st);
+    restore_terminal_focus_after_tab_change(st);
 }
 
 /// 重命名输入清洗：去首尾空白、拒绝空标题、限制长度（避免把 TabBar 撑坏）。
@@ -10702,6 +10708,7 @@ fn set_active_tab_inner(st: &mut AppState, index: usize) {
     update_ime_spot(st);
     let win = st.window_focused;
     sync_terminal_focus(st, win);
+    restore_terminal_focus_after_tab_change(st);
 }
 
 /// 拖拽落点：按平均槽位把指针 x（Flickable 内容坐标）换算成目标下标。
@@ -11846,6 +11853,21 @@ fn restore_terminal_ime_focus_if_idle(st: &mut AppState) {
         return;
     }
     st.ui.invoke_focus_terminal();
+}
+
+/// 关 Tab / 切 Tab / 改名结束后的统一收尾。
+///
+/// 这些路径可能经过 Tab 右键菜单、Tab 搜索或内联改名 TextInput；控件销毁后
+/// Slint 不会自动把键盘焦点还给隐藏 IME 输入框，表现为“终端还能看、但完全
+/// 打不进字”。切 Tab 本身还可能留下鼠标点击锚点，一并向真实光标收回。
+fn restore_terminal_focus_after_tab_change(st: &mut AppState) {
+    if st.ws.active_tab().is_none() || overlay_owns_ime_focus(st) {
+        return;
+    }
+    st.ui.invoke_focus_terminal();
+    st.ime_override = None;
+    st.ime_spot_dirty = true;
+    update_ime_spot(st);
 }
 
 fn update_ime_spot(st: &mut AppState) {
@@ -14377,6 +14399,45 @@ fn install_native_window_events(ui: &MainWindow, window_id: WindowId) {
                         }
                     },
                     _ => {},
+                }
+            }
+            winit::event::WindowEvent::CursorMoved { position, .. } => {
+                let scale = win.scale_factor() as f32;
+                runtime::with_window(window_id, |st| {
+                    st.cursor = (
+                        position.x as f32 / scale,
+                        position.y as f32 / scale,
+                    );
+                });
+            }
+            winit::event::WindowEvent::MouseWheel { delta, .. } => {
+                // Slint 的 Flickable 只吃拖拽；很多 Tab 时用户滚轮/触控板
+                // 横滚在 Tab 条上必须能滚，否则后面的 Tab 看似“消失”。
+                let in_tabbar = runtime::with_window(window_id, |st| {
+                    let pos = st.cfg.borrow().tabbar_pos();
+                    let h = st.ui.window().size().height as f32;
+                    match pos {
+                        TabbarPos::Top => st.cursor.1 <= TABBAR_H,
+                        TabbarPos::Bottom => st.cursor.1 >= h - TABBAR_H,
+                        _ => false,
+                    }
+                }).unwrap_or(false);
+                if in_tabbar {
+                    let scale = win.scale_factor() as f64;
+                    let dx = match delta {
+                        winit::event::MouseScrollDelta::LineDelta(x, y) => {
+                            (*x as f32 - *y as f32) * 40.0
+                        },
+                        winit::event::MouseScrollDelta::PixelDelta(p) => {
+                            (p.x / scale - p.y / scale) as f32
+                        },
+                    };
+                    if dx != 0.0 {
+                        runtime::with_window(window_id, |st| {
+                            st.ui.invoke_scroll_tabbar_by(dx);
+                        });
+                        return EventResult::PreventDefault;
+                    }
                 }
             }
             winit::event::WindowEvent::CursorLeft { .. } => {
@@ -17124,7 +17185,7 @@ fn print_help() {
   diag [env|snapshot|replay|trace|metrics|observability|scene-diff]  harness 可调用 JSON 诊断（tervo diag help）\n  \
 -V, --version       显示版本、git commit 与构建时间\n  \
 -h, --help          显示帮助\n\n\
-快捷键: Ctrl+T 新建标签 / Ctrl+Shift+N 新建窗口 / Ctrl+W 关闭 / Ctrl+F 搜索 / Ctrl+Shift+C 复制 / Ctrl+Shift+V 粘贴\n\
+快捷键: Ctrl+T 新建标签 / Ctrl+Shift+N 新建窗口 / Ctrl+Shift+W 关闭 / Ctrl+F 搜索 / Ctrl+Shift+C 复制 / Ctrl+Shift+V 粘贴\n\
 配置: ~/.config/tervo/config.toml (TERVO_CONFIG 可覆盖)\n\
 主题目录: ~/.config/tervo/themes (TERVO_THEMES_DIR 可覆盖；支持 iTerm2/WT/Alacritty/kitty/Xresources/YAML)",
         env!("CARGO_PKG_VERSION")
@@ -17463,6 +17524,7 @@ fn build_window_state(
         link_hover_cell: None,
         resize: None,
         window_focused: true,
+        cursor: (0.0, 0.0),
         render_hud_timer: None,
         window_maximized: false,
         maximize: None,
@@ -18722,11 +18784,15 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
             }
             st.ui.set_rename_open(false);
             rebuild_tabs(st);
+            restore_terminal_focus_after_tab_change(st);
         });
     });
 
     ui.on_rename_cancelled(move || {
-        runtime::with_window(window_id, |st| st.ui.set_rename_open(false));
+        runtime::with_window(window_id, |st| {
+            st.ui.set_rename_open(false);
+            restore_terminal_focus_after_tab_change(st);
+        });
     });
 
     ui.on_fwd_select(move |index| {
@@ -21973,6 +22039,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ));
         }
     }
+    // 先装原生事件再 show：Wayland 的 text-input `Ime::Enabled` 在窗口
+    // map/获焦的首轮就可能发出；主窗口此前在 show 之后才注册，首个 Enabled
+    // 被丢掉，`ime_enabled` 永远为 false，隐藏 TextInput 拿不到焦点——
+    // 表现为窗口能看、键盘完全打不进字。次窗口早已是 show 前注册。
+    install_native_window_events(&ui, window_id);
     ui.show()?;
     if let Some(window) = &primary_restore {
         restore_window_geometry(&ui, window_id, window);
@@ -22002,8 +22073,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             });
         }
     }
-    // Slint 1.18 的 winit 后端不投递外部文件拖放，用 winit 事件桥接补齐。
-    install_native_window_events(&ui, window_id);
     // 恢复其余窗口。产品恢复路径不依赖 TERVO_MULTI_WINDOW_INPROC：v2 快照里
     // 有几个可恢复窗口就建几个。每个窗口的 Tab 恢复失败只回退该窗口的新 Tab。
     //
