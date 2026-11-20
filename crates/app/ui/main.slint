@@ -2975,6 +2975,14 @@ export component MainWindow inherits Window {
                                 root.tab-rename(i);
                             }
                             pointer-event(event) => {
+                                // 中键关闭（Chrome 行为）：只在按下时处理一次。
+                                // 不能等抬起：Tab 关闭后模型重排，up 可能落到指针下
+                                // 移位过来的相邻 Tab，导致误关第二个。
+                                if (event.kind == PointerEventKind.down
+                                    && event.button == PointerEventButton.middle) {
+                                    root.tab-closed(i);
+                                    return EventResult.accept;
+                                }
                                 // 右键在按下时直接开菜单（与终端 pane 一致）：
                                 // Flickable 在 headless/WM 下可能吞掉 right-up，按下处理最稳。
                                 if (event.kind == PointerEventKind.down
@@ -3047,6 +3055,15 @@ export component MainWindow inherits Window {
                             width: 20px;
                             height: 20px;
                             clicked => { root.tab-closed(i); }
+                            // × 也是 Tab 表面：中键同样关闭（Chrome 行为），只处理按下。
+                            pointer-event(event) => {
+                                if (event.kind == PointerEventKind.down
+                                    && event.button == PointerEventButton.middle) {
+                                    root.tab-closed(i);
+                                    return EventResult.accept;
+                                }
+                                EventResult.reject
+                            }
 
                             Rectangle {
                                 x: 1px;
@@ -3608,6 +3625,15 @@ export component MainWindow inherits Window {
                                     width: 20px;
                                     height: 24px;
                                     clicked => { root.tab-closed(i); }
+                                    // × 也是 Tab 表面：中键同样关闭（Chrome 行为）。
+                                    pointer-event(event) => {
+                                        if (event.kind == PointerEventKind.down
+                                            && event.button == PointerEventButton.middle) {
+                                            root.tab-closed(i);
+                                            return EventResult.accept;
+                                        }
+                                        EventResult.reject
+                                    }
 
                                     Rectangle {
                                         x: 1px;
@@ -3640,6 +3666,13 @@ export component MainWindow inherits Window {
                                     }
                                     double-clicked => { root.tab-rename(i); }
                                     pointer-event(event) => {
+                                        // 中键关闭（Chrome 行为）：只在按下时处理一次，
+                                        // 避免 Tab 重排后 up 落到相邻 Tab 造成二次关闭。
+                                        if (event.kind == PointerEventKind.down
+                                            && event.button == PointerEventButton.middle) {
+                                            root.tab-closed(i);
+                                            return EventResult.accept;
+                                        }
                                         if (event.kind == PointerEventKind.down
                                             && event.button == PointerEventButton.right) {
                                             root.tabctx-y = self.absolute-position.y + self.mouse-y;
