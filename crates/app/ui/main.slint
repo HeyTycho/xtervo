@@ -1409,6 +1409,17 @@ export component MainWindow inherits Window {
     in property <[MenuEntry]> menu-items: [];
     /// 键盘导航当前选中行（含分隔线的数组下标；-1 = 无）。
     in property <int> menu-selected: -1;
+    in-out property <bool> serial-panel-open: false;
+    in-out property <bool> serial-dtr: true;
+    in-out property <bool> serial-rts: true;
+    in-out property <string> serial-cts: "off";
+    in-out property <string> serial-dsr: "off";
+    in-out property <string> serial-dcd: "off";
+    in-out property <string> serial-status-error: "";
+    callback serial-set-dtr(bool);
+    callback serial-set-rts(bool);
+    callback serial-break();
+    callback serial-panel-close();
     /// 被选中行的内容 y（Rust 按 30px/项、9px/分隔线算好），用于窄窗口自动滚动。
     in property <length> menu-reveal-y: 0px;
     /// 每次键盘移动选中行自增，Flickable 的 changed 处理器据此滚到可见区。
@@ -1718,6 +1729,7 @@ export component MainWindow inherits Window {
     in-out property <string> form-serial-stop-bits: "1";
     in-out property <string> form-serial-flow-control: "none";
     in-out property <string> form-serial-ports: "";
+    in-out property <[string]> form-serial-port-list: [];
     in-out property <bool> form-serial-dtr: true;
     in-out property <bool> form-serial-rts: true;
     // 外观（可选；空 = 继承全局）：字号 / 主题 / 光标形状 / 闪烁 / 滚动历史。
@@ -7633,6 +7645,7 @@ export component MainWindow inherits Window {
         property <length> form-h: root.form-kind == 1 ? 700px : (root.form-kind == 0 ? 490px : (root.form-kind == 2 ? Math.min(700px, root.height - 16px) : 440px));
         // 串口字段可滚动；footer（Save/Cancel）固定在底部，短窗口下不重叠。
         property <length> serial-body-h: Math.max(100px, Math.min(338px, form-h - 300px));
+        property <length> serial-content-h: 338px + root.form-serial-port-list.length * 34px;
         y: (root.height - form-h) / 2 < 8px ? 8px : (root.height - form-h) / 2;
         width: 440px;
         height: form-h;
@@ -7791,11 +7804,11 @@ export component MainWindow inherits Window {
         if root.form-kind == 2 : Flickable {
             x: 16px; y: 116px; width: 408px; height: serial-body-h;
             viewport-width: 408px;
-            viewport-height: 338px;
+            viewport-height: serial-content-h;
             interactive: true;
             VerticalLayout {
                 width: 408px;
-                height: 338px;
+                height: serial-content-h;
                 spacing: 8px;
                 FormRow { label: Lang.t("Serial", "串口"); text <=> root.form-serial-port; }
                 FormRow { label: Lang.t("Baud", "波特率"); text <=> root.form-baud; }
@@ -7839,6 +7852,20 @@ export component MainWindow inherits Window {
                         }
                         TouchArea { clicked => { root.serial-refresh(); } }
                     }
+                }
+                for port in root.form-serial-port-list : Rectangle {
+                    height: 26px;
+                    border-radius: 4px;
+                    background: root.form-serial-port == port ? Palette.colors.hover : transparent;
+                    Text {
+                        x: 8px; width: parent.width - 16px; height: 100%;
+                        text: port;
+                        color: Palette.colors.text;
+                        font-size: 11px;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                    TouchArea { clicked => { root.form-serial-port = port; } }
                 }
                 ToggleRow {
                     label: Lang.t("DTR", "数据终端就绪");
@@ -10466,6 +10493,66 @@ export component MainWindow inherits Window {
         }
     }
 
+
+    // 串口运行时控制面板：连接中切换 DTR/RTS、查看控制线、发 Break。
+    if root.serial-panel-open : Rectangle {
+        x: Math.max(8px, root.width - 304px);
+        y: Math.max(8px, root.height - 256px);
+        width: 288px;
+        height: 238px;
+        border-radius: 10px;
+        background: Palette.colors.raise;
+        border-width: 1px;
+        border-color: Palette.colors.border;
+        drop-shadow-blur: 20px;
+        drop-shadow-offset-y: 6px;
+        drop-shadow-color: #00000090;
+
+        Text {
+            x: 14px; y: 10px; width: 220px; height: 22px;
+            text: Lang.t("Serial Controls", "串口控制");
+            color: Palette.colors.text;
+            font-size: 14px;
+            font-weight: 600;
+            vertical-alignment: center;
+        }
+        ActionBtn {
+            x: parent.width - 62px; y: 10px; width: 48px; height: 24px;
+            label: Lang.t("Close", "关闭");
+            clicked => { root.serial-panel-close(); }
+        }
+        ToggleRow {
+            x: 14px; y: 42px; width: 260px;
+            label: Lang.t("DTR", "数据终端就绪");
+            on: root.serial-dtr;
+            toggled => { root.serial-set-dtr(!root.serial-dtr); }
+        }
+        ToggleRow {
+            x: 14px; y: 76px; width: 260px;
+            label: Lang.t("RTS", "请求发送");
+            on: root.serial-rts;
+            toggled => { root.serial-set-rts(!root.serial-rts); }
+        }
+        Text {
+            x: 14px; y: 112px; width: 260px; height: 18px;
+            text: "CTS " + root.serial-cts + "   DSR " + root.serial-dsr + "   DCD " + root.serial-dcd;
+            color: Palette.colors.subtext;
+            font-size: 11px;
+            vertical-alignment: center;
+        }
+        Text {
+            x: 14px; y: 132px; width: 260px; height: 16px;
+            text: root.serial-status-error;
+            color: Palette.colors.danger;
+            font-size: 10px;
+            overflow: elide;
+        }
+        ActionBtn {
+            x: 14px; y: 158px; width: 120px; height: 28px;
+            label: Lang.t("Send Break", "发送 Break");
+            clicked => { root.serial-break(); }
+        }
+    }
     if root.render-hud != "" : Rectangle {
         x: 8px;
         y: root.height - 28px;

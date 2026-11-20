@@ -6,10 +6,10 @@
 
 use std::io::{self, Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 
-use serialport::{DataBits, FlowControl, Parity, SerialPort, StopBits};
+use serialport::{DataBits, FlowControl, Parity, SerialPort, StopBits, TTYPort};
 use tervo_core::transport::{
     PaneTransport, TransportControl, TransportHalves, TransportShutdown,
 };
@@ -45,6 +45,91 @@ pub fn list_ports() -> Vec<String> {
     }
 }
 
+/// 串口控制线/运行时状态（UI 面板用）。
+#[derive(Clone, Debug, Default)]
+pub struct SerialStatus {
+    pub dtr: bool,
+    pub rts: bool,
+    pub cts: bool,
+    pub dsr: bool,
+    pub dcd: bool,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum SerialCmd {
+    Dtr(bool),
+    Rts(bool),
+    Break,
+}
+
+/// UI → 串口控制线程的句柄；可在连接期间切 DTR/RTS、发 Break、读状态。
+#[derive(Clone)]
+pub struct SerialControlHandle {
+    tx: mpsc::Sender<SerialCmd>,
+    status: Arc<Mutex<SerialStatus>>,
+}
+
+impl SerialControlHandle {
+    pub fn set_dtr(&self, on: bool) {
+        let _ = self.tx.send(SerialCmd::Dtr(on));
+    }
+    pub fn set_rts(&self, on: bool) {
+        let _ = self.tx.send(SerialCmd::Rts(on));
+    }
+    pub fn send_break(&self) {
+        let _ = self.tx.send(SerialCmd::Break);
+    }
+    pub fn status(&self) -> SerialStatus {
+        self.status.lock().map(|s| s.clone()).unwrap_or_default()
+    }
+}
+
+fn start_control(mut port: TTYPort, dtr: bool, rts: bool) -> SerialControlHandle {
+    let (tx, rx) = mpsc::channel();
+    let status = Arc::new(Mutex::new(SerialStatus { dtr, rts, ..Default::default() }));
+    let shared = status.clone();
+    let _ = std::thread::Builder::new()
+        .name("serial-control".into())
+        .spawn(move || {
+            let mut current = SerialStatus { dtr, rts, ..Default::default() };
+            let _ = port.write_data_terminal_ready(current.dtr);
+            let _ = port.write_request_to_send(current.rts);
+            loop {
+                let mut disconnected = false;
+                loop {
+                    match rx.try_recv() {
+                        Ok(SerialCmd::Dtr(on)) => current.dtr = on,
+                        Ok(SerialCmd::Rts(on)) => current.rts = on,
+                        Ok(SerialCmd::Break) => {
+                            if let Err(error) = port.send_break(serialport::BreakDuration::Short) {
+                                current.error = Some(format!("send break: {error}"));
+                            }
+                        },
+                        Err(mpsc::TryRecvError::Empty) => break,
+                        Err(mpsc::TryRecvError::Disconnected) => {
+                            disconnected = true;
+                            break;
+                        },
+                    }
+                }
+                if disconnected {
+                    break;
+                }
+                let _ = port.write_data_terminal_ready(current.dtr);
+                let _ = port.write_request_to_send(current.rts);
+                current.cts = port.read_clear_to_send().unwrap_or(false);
+                current.dsr = port.read_data_set_ready().unwrap_or(false);
+                current.dcd = port.read_carrier_detect().unwrap_or(false);
+                if let Ok(mut slot) = shared.lock() {
+                    *slot = current.clone();
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        });
+    SerialControlHandle { tx, status }
+}
+
 pub struct SerialTransport {
     reader: Box<dyn SerialPort>,
     writer: Box<dyn SerialPort>,
@@ -53,7 +138,7 @@ pub struct SerialTransport {
 }
 
 impl SerialTransport {
-    pub fn open(profile: &Profile) -> io::Result<Self> {
+    pub fn open(profile: &Profile) -> io::Result<(Self, SerialControlHandle)> {
         let port = profile.serial_port.trim();
         if port.is_empty() {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "串口设备不能为空"));
@@ -82,25 +167,29 @@ impl SerialTransport {
             .stop_bits(stop_bits)
             .flow_control(flow)
             .timeout(READ_TIMEOUT);
-        let reader = builder.open().map_err(|e| {
+        let native = builder.open_native().map_err(|e| {
             io::Error::new(
                 io::ErrorKind::Other,
                 format!("打开串口 {port}（{baud} {}{}/{}/{}）失败: {e}", profile.data_bits, profile.parity, profile.stop_bits, profile.flow_control),
             )
         })?;
-        let mut writer = reader.try_clone().map_err(|e| {
+        let reader = native.try_clone().map_err(|e| {
+            io::Error::new(io::ErrorKind::Other, format!("复制串口读句柄 {port} 失败: {e}"))
+        })?;
+        let writer = native.try_clone().map_err(|e| {
             io::Error::new(io::ErrorKind::Other, format!("复制串口写句柄 {port} 失败: {e}"))
         })?;
-        let control = reader.try_clone().map_err(|e| {
+        let control_port = native.try_clone_native().map_err(|e| {
             io::Error::new(io::ErrorKind::Other, format!("复制串口控制句柄 {port} 失败: {e}"))
         })?;
-        if let Err(error) = writer.write_data_terminal_ready(profile.dtr) {
-            eprintln!("[serial-native] 设置 DTR={} 失败: {error}", profile.dtr);
-        }
-        if let Err(error) = writer.write_request_to_send(profile.rts) {
-            eprintln!("[serial-native] 设置 RTS={} 失败: {error}", profile.rts);
-        }
-        Ok(Self { reader, writer, control, stop: Arc::new(AtomicBool::new(false)) })
+        let ui_control = start_control(control_port, profile.dtr, profile.rts);
+        let control = native.try_clone().map_err(|e| {
+            io::Error::new(io::ErrorKind::Other, format!("复制串口控制句柄 {port} 失败: {e}"))
+        })?;
+        Ok((
+            Self { reader, writer, control, stop: Arc::new(AtomicBool::new(false)) },
+            ui_control,
+        ))
     }
 }
 
@@ -245,7 +334,15 @@ mod pty_tests {
             baud: 115200,
             ..Profile::default()
         };
-        let mut transport = SerialTransport::open(&p).expect("open pty via serialport");
+        let (mut transport, control) =
+            SerialTransport::open(&p).expect("open pty via serialport");
+        control.set_dtr(false);
+        control.set_rts(false);
+        std::thread::sleep(Duration::from_millis(120));
+        let status = control.status();
+        assert!(!status.dtr && !status.rts);
+        control.send_break();
+        std::thread::sleep(Duration::from_millis(120));
         // 读先开始，另一个线程在超过 READ_TIMEOUT 后才写；确保实际走到
         // TimedOut 重试分支，而不是数据已经就绪。
         let master_w = unsafe { libc::dup(master) };

@@ -761,6 +761,8 @@ struct PaneRuntime {
     /// 该 pane 关联的 Profile ID（None = 默认 shell / 无关联）。会话快照用它
     /// 保留连接类型；Profile 已删除或启动失败时恢复路径回退普通 shell。
     profile_id: Option<u64>,
+    /// native 串口的运行时控制句柄（DTR/RTS/Break/状态）；非串口 pane 为 None。
+    serial_control: Option<serial_native::SerialControlHandle>,
     /// 渲染字符尺寸（Profile 字号可能不同，布局/PTY resize 必须按 pane 自己的）。
     cell: (usize, usize),
     /// 光标 overlay（app 不把光标画进终端帧，闪烁只切可见性）。
@@ -1185,6 +1187,8 @@ struct AppState {
     /// 视觉铃到期清除（30ms 重复；没有闪烁时停止）。
     bell_timer: slint::Timer,
     serial_scan_timer: slint::Timer,
+    serial_panel_pane: Option<PaneId>,
+    serial_panel_timer: slint::Timer,
     /// 光标闪烁相位：true = 显示；无闪烁/闪烁关闭时恒 true。
     cursor_blink_on: bool,
     /// 光标闪烁计时器；`cursor_blink=off` 时停掉，空闲零开销。
@@ -5067,9 +5071,11 @@ fn create_pane(
         "[connection] pane={id} state={:?} remote={remote} source=spawn",
         connection.state
     );
+    let mut serial_control = None;
     let handle = if let Some(p) = profile.filter(|p| p.is_native_serial()) {
         match serial_native::SerialTransport::open(p) {
-            Ok(transport) => {
+            Ok((transport, control)) => {
+                serial_control = Some(control);
                 eprintln!(
                     "[serial-native] pane backend=serialport profile={} port={} baud={}",
                     p.id,
@@ -5239,6 +5245,7 @@ fn create_pane(
         scrollback_limit: scrollback,
         scrollback_applied: scrollback,
         profile_id: profile.map(|p| p.id).filter(|id| *id != 0),
+        serial_control,
         cell: (fonts.cell_w, fonts.cell_h),
         cursor_image,
         cursor_rect,
@@ -6729,6 +6736,65 @@ fn profile_bundle_path() -> std::path::PathBuf {
     profile::ProfileStore::path().with_file_name("profiles-export.toml")
 }
 
+fn serial_control(st: &AppState, pane: PaneId) -> Option<serial_native::SerialControlHandle> {
+    st.panes.get(&pane).and_then(|rt| rt.serial_control.clone())
+}
+
+fn apply_serial_status(st: &mut AppState, status: &serial_native::SerialStatus) {
+    st.ui.set_serial_dtr(status.dtr);
+    st.ui.set_serial_rts(status.rts);
+    st.ui.set_serial_cts(if status.cts { "on" } else { "off" }.into());
+    st.ui.set_serial_dsr(if status.dsr { "on" } else { "off" }.into());
+    st.ui.set_serial_dcd(if status.dcd { "on" } else { "off" }.into());
+    st.ui
+        .set_serial_status_error(status.error.clone().unwrap_or_default().into());
+}
+
+fn open_serial_panel(st: &mut AppState, pane: PaneId) {
+    let Some(control) = serial_control(st, pane) else {
+        eprintln!("[serial-ui] pane={pane} 不是 native 串口，无法打开控制面板");
+        return;
+    };
+    apply_serial_status(st, &control.status());
+    st.serial_panel_pane = Some(pane);
+    st.ui.set_serial_panel_open(true);
+    let window_id = st.window_id;
+    st.serial_panel_timer.start(
+        slint::TimerMode::Repeated,
+        Duration::from_millis(100),
+        move || {
+            let _ = runtime::with_window(window_id, poll_serial_panel);
+        },
+    );
+    eprintln!("[serial-ui] panel open pane={pane}");
+}
+
+fn poll_serial_panel(st: &mut AppState) {
+    if !st.ui.get_serial_panel_open() {
+        st.serial_panel_timer.stop();
+        st.serial_panel_pane = None;
+        return;
+    }
+    let Some(pane) = st.serial_panel_pane else {
+        st.serial_panel_timer.stop();
+        st.ui.set_serial_panel_open(false);
+        return;
+    };
+    let Some(control) = serial_control(st, pane) else {
+        st.serial_panel_timer.stop();
+        st.serial_panel_pane = None;
+        st.ui.set_serial_panel_open(false);
+        return;
+    };
+    apply_serial_status(st, &control.status());
+}
+
+fn close_serial_panel(st: &mut AppState) {
+    st.serial_panel_timer.stop();
+    st.serial_panel_pane = None;
+    st.ui.set_serial_panel_open(false);
+}
+
 /// 设置页串口列表：用第一个 token（设备路径）填到表单空字段。
 fn refresh_serial_ports(st: &mut AppState) {
     let ports = serial_native::list_ports();
@@ -6746,6 +6812,14 @@ fn refresh_serial_ports(st: &mut AppState) {
         }
     }
     st.ui.set_form_serial_ports(text.into());
+    let list: Vec<slint::SharedString> = ports
+        .iter()
+        .take(8)
+        .filter_map(|entry| entry.split_whitespace().next())
+        .map(|path| path.to_string().into())
+        .collect();
+    st.ui
+        .set_form_serial_port_list(ModelRc::new(VecModel::from(list)));
 }
 
 fn start_serial_scan(st: &mut AppState) {
@@ -11864,6 +11938,26 @@ fn build_terminal_menu(st: &mut AppState, pane: PaneId) -> (Vec<TerminalMenuSpec
         specs.pop();
     }
 
+    // 串口 pane 追加运行时控制入口（不是所有 pane 都有）。
+    if st
+        .panes
+        .get(&pane)
+        .and_then(|rt| rt.serial_control.as_ref())
+        .is_some()
+        && !specs.iter().any(|spec| spec.command == "serial.controls")
+    {
+        if !specs.is_empty() && !specs.last().is_some_and(|spec| spec.separator) {
+            specs.push(TerminalMenuSpec::separator());
+        }
+        specs.push(TerminalMenuSpec::item(
+            "serial.controls".to_string(),
+            "Serial Controls…".to_string(),
+            String::new(),
+            false,
+            false,
+        ));
+    }
+
     // 插件装饰点：enabled + 权限已确认的 `menu = true` 命令追加到末尾。
     // 与 config/默认表重复的 ID 不重复出现。
     let plugin_items: Vec<(String, String)> = st
@@ -11935,6 +12029,7 @@ fn run_menu_command(st: &mut AppState, pane: PaneId, command: &str) {
                 set_clipboard(st, &text);
             }
         }
+        "serial.controls" => open_serial_panel(st, pane),
         "pane.split-right" => split_pane_inner(st, pane, Dir::Row),
         "pane.split-down" => split_pane_inner(st, pane, Dir::Col),
         "pane.close" => close_pane_inner(st, pane),
@@ -15885,6 +15980,8 @@ fn build_window_state(
         resize_finalize: slint::Timer::default(),
         bell_timer: slint::Timer::default(),
         serial_scan_timer: slint::Timer::default(),
+        serial_panel_pane: None,
+        serial_panel_timer: slint::Timer::default(),
         cursor_blink_on: true,
         cursor_blink_timer: slint::Timer::default(),
         drag_autoscroll: slint::Timer::default(),
@@ -16827,6 +16924,40 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
             st.ui.set_image_preview_open(true);
             eprintln!("[image] preview open id={image_id}");
         });
+    });
+
+    ui.on_serial_set_dtr(move |on| {
+        runtime::with_window(window_id, |st| {
+            if let Some(pane) = st.serial_panel_pane {
+                if let Some(control) = serial_control(st, pane) {
+                    control.set_dtr(on);
+                    st.ui.set_serial_dtr(on);
+                }
+            }
+        });
+    });
+    ui.on_serial_set_rts(move |on| {
+        runtime::with_window(window_id, |st| {
+            if let Some(pane) = st.serial_panel_pane {
+                if let Some(control) = serial_control(st, pane) {
+                    control.set_rts(on);
+                    st.ui.set_serial_rts(on);
+                }
+            }
+        });
+    });
+    ui.on_serial_break(move || {
+        runtime::with_window(window_id, |st| {
+            if let Some(pane) = st.serial_panel_pane {
+                if let Some(control) = serial_control(st, pane) {
+                    control.send_break();
+                    eprintln!("[serial-ui] pane={pane} send break");
+                }
+            }
+        });
+    });
+    ui.on_serial_panel_close(move || {
+        runtime::with_window(window_id, close_serial_panel);
     });
 
     ui.on_menu_dismissed(move || {
