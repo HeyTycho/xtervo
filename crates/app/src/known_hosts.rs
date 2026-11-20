@@ -147,7 +147,7 @@ pub struct EffectiveSsh {
     pub user: String,
     /// `ProxyJump`（空 = 直连）；有值时无法用 keyscan 预检。
     pub proxy_jump: String,
-    /// `ProxyCommand`（空 = 无）；native 不支持。
+    /// `ProxyCommand`（空 = 无）；有值时 keyscan 不能直连。
     pub proxy_command: String,
 }
 
@@ -506,11 +506,13 @@ fn assess_with(
             return Verdict::Unverifiable { reason: format!("读取 known_hosts 失败: {e}"), local: true };
         },
     };
-    if !effective.proxy_jump.is_empty() {
-        return Verdict::Unverifiable {
-            reason: format!("配置了 ProxyJump（{}），ssh-keyscan 无法穿透跳板机", effective.proxy_jump),
-            local: !known.is_empty(),
+    if !effective.proxy_jump.is_empty() || !effective.proxy_command.is_empty() {
+        let reason = if !effective.proxy_jump.is_empty() {
+            format!("配置了 ProxyJump（{}），ssh-keyscan 无法穿透跳板机", effective.proxy_jump)
+        } else {
+            "配置了 ProxyCommand，ssh-keyscan 不能按直连预检".to_string()
         };
+        return Verdict::Unverifiable { reason, local: !known.is_empty() };
     }
     let current = match fetch_current_keys_with(profile, keyscan_program, timeout, cancel) {
         Ok(keys) => keys,

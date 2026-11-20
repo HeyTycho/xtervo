@@ -50,6 +50,10 @@ pub struct SftpTarget {
     /// ProxyJump（跳板机）：SFTP 与 SSH Profile 共用同一条跳板配置。
     pub proxy_jump: String,
     pub extra_args: Vec<String>,
+    pub ciphers: String,
+    pub macs: String,
+    pub kex_algorithms: String,
+    pub proxy_command: String,
 }
 
 impl SftpTarget {
@@ -70,6 +74,10 @@ impl SftpTarget {
             key_path: p.key_path.trim().to_string(),
             proxy_jump: p.proxy_jump.trim().to_string(),
             extra_args: p.extra_args.clone(),
+            ciphers: p.ciphers.trim().to_string(),
+            macs: p.macs.trim().to_string(),
+            kex_algorithms: p.kex_algorithms.trim().to_string(),
+            proxy_command: p.proxy_command.trim().to_string(),
         })
     }
 
@@ -91,6 +99,17 @@ impl SftpTarget {
         if !self.proxy_jump.is_empty() {
             args.push("-J".to_string());
             args.push(self.proxy_jump.clone());
+        }
+        for (name, value) in [
+            ("Ciphers", &self.ciphers),
+            ("MACs", &self.macs),
+            ("KexAlgorithms", &self.kex_algorithms),
+            ("ProxyCommand", &self.proxy_command),
+        ] {
+            if !value.is_empty() {
+                args.push("-o".to_string());
+                args.push(format!("{name}={value}"));
+            }
         }
         args.extend(self.extra_args.iter().filter(|a| !a.trim().is_empty()).cloned());
         for option in [
@@ -954,18 +973,25 @@ fn remove_children<F>(
 where
     F: FnMut(&str, Duration) -> Result<String, String>,
 {
-    let mut files = Vec::new();
+    // 先校验整层条目类型，全部可判定后才开始删除；不能在删掉前面的子树后
+    // 才发现后面的条目类型未知。
+    let mut checked = Vec::with_capacity(entries.len());
     for entry in entries {
         let child = child_remote_path(dir, &entry.name)?;
-        match entry.is_dir {
-            Some(true) => remove_tree_inner(budget, run, &child, depth + 1)?,
-            Some(false) => files.push(child),
-            None => {
-                return Err(format!(
-                    "无法确认 {} 是目录（仅名称列表），拒绝递归删除；请先获取 ls -l 元数据",
-                    child
-                ))
-            },
+        if entry.is_dir.is_none() {
+            return Err(format!(
+                "无法确认 {} 是目录（仅名称列表），拒绝递归删除；请先获取 ls -l 元数据",
+                child
+            ));
+        }
+        checked.push((child, entry.is_dir == Some(true)));
+    }
+    let mut files = Vec::new();
+    for (child, is_dir) in checked {
+        if is_dir {
+            remove_tree_inner(budget, run, &child, depth + 1)?;
+        } else {
+            files.push(child);
         }
     }
     if files.is_empty() {
@@ -1865,6 +1891,10 @@ mod tests {
             key_path: "/home/user/.ssh/id_ed25519".into(),
             proxy_jump: String::new(),
             extra_args: vec!["-o".into(), "StrictHostKeyChecking=yes".into()],
+            ciphers: String::new(),
+            macs: String::new(),
+            kex_algorithms: String::new(),
+            proxy_command: String::new(),
         }
     }
 

@@ -8043,11 +8043,10 @@ export component MainWindow inherits Window {
         if root.form-kind == 1 : Flickable {
             x: 16px; y: 116px; width: 408px; height: 440px;
             content-width: 408px;
-            content-height: 610px;
+            content-height: ssh-form-layout.preferred-height;
             interactive: true;
-            VerticalLayout {
+            ssh-form-layout := VerticalLayout {
                 width: 408px;
-                height: 610px;
                 spacing: 5px;
                 FormRow { label: Lang.t("Host", "主机"); text <=> root.form-host; }
             FormRow { label: Lang.t("Port", "端口"); text <=> root.form-port; }
