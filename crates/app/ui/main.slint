@@ -2497,6 +2497,10 @@ export component MainWindow inherits Window {
     /// IME 候选窗锚点：聚焦 pane 光标的像素位置（内容区坐标，由 Rust 侧更新）。
     in-out property <length> ime-x: 0px;
     in-out property <length> ime-y: 0px;
+    /// 输入法是否真的在组合（由 Rust 的 winit Ime::Preedit/Commit/Disabled 维护）。
+    /// 不能只看 TextInput 的 preedit-text：焦点切换/输入法异常时它可能残留，
+    /// 导致之后所有按键都被当成“组合中”吞掉（终端完全打不进字）。
+    in-out property <bool> ime-composing: false;
 
     /// 窗口标题：CLI --title 覆盖；默认保持原品牌名。
     in-out property <string> window-title: "Tervo";
@@ -4064,7 +4068,7 @@ export component MainWindow inherits Window {
                         // 拼音组合中：回车=上屏候选、退格=删拼音、Esc=取消，
                         // 这些键归输入法，一个字节都不能写进 PTY
                         //（这正是之前“回车没用 / 键盘像失灵”的根源）。
-                        if (self.preedit-text != "") {
+                        if (root.ime-composing && self.preedit-text != "") {
                             // 组合期按键已经由输入法消费；这里必须 accept 把事件
                             // 吞掉。reject 会让 Slint TextInput 继续内置编辑，把
                             // 拼音字母/空格插入 text 并触发 edited，最终写进 PTY，
@@ -4094,7 +4098,7 @@ export component MainWindow inherits Window {
                     // 只有应用请求了 kitty REPORT_EVENT_TYPES 才会真正写 PTY；
                     // Rust 侧用 press 登记表过滤快捷键/搜索框，普通 shell 零变化。
                     key-released(event) => {
-                        if (self.preedit-text != "") {
+                        if (root.ime-composing && self.preedit-text != "") {
                             // 组合期按键已经由输入法消费；这里必须 accept 把事件
                             // 吞掉。reject 会让 Slint TextInput 继续内置编辑，把
                             // 拼音字母/空格插入 text 并触发 edited，最终写进 PTY，

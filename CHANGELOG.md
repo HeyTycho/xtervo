@@ -40,6 +40,11 @@ Tervo 的版本与 tag 规则见 `docs/RELEASING.md`。
   没反应/删除撤销都不好使”。
 - 多 Tab 横向滚动：在 TabBar 区域滚轮/触控板横滚（竖向滚轮也映射为横滚）
   直接移动 `content-x`，不再只能靠拖拽；滚动范围夹在 0 与内容末端之间。
+- IME 组合态改为由 winit `Preedit/Commit/Disabled` 权威维护（`ime-composing`）：
+  TextInput 的 `preedit-text` 在焦点切换/输入法异常时可能残留，旧逻辑会把它
+  当成“一直组合中”，吞掉之后所有按键；焦点重建时同时清组合态。
+- Tab 手动改名后置 `title_locked`，终端 OSC 标题更新不再覆盖（修复 Tab 自己
+  改名字）；空白改名/撤销解锁，快照 additive 保存 `title_locked`。
 - 字体加载：候选字体四套 face 不齐时（例如系统只有 DejaVu、没有 JetBrains
   Mono）继续尝试下一个候选，而不是直接判定“没有等宽字体”。修复只有 DejaVu 的
   机器上像素差分测试全红、以及默认字体链可能加载失败的问题。

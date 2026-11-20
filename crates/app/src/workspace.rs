@@ -250,6 +250,8 @@ pub struct Tab {
     pub pinned: bool,
     /// 重命名前的标题（仅内存，不进会话快照）：供「撤销重命名」恢复。
     pub prev_title: Option<String>,
+    /// 用户手动改过标题：终端后续的 OSC 标题更新不得覆盖它。
+    pub title_locked: bool,
 }
 
 impl Tab {
@@ -261,6 +263,7 @@ impl Tab {
             grid: std::collections::HashMap::new(),
             pinned: false,
             prev_title: None,
+            title_locked: false,
         }
     }
 

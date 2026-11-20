@@ -237,6 +237,9 @@ pub struct TabSnapshot {
     /// false 也不写出，保持旧快照体积/格式。
     #[serde(default, skip_serializing_if = "is_false")]
     pub pinned: bool,
+    /// 用户手动改过标题；恢复后继续阻止 OSC 标题覆盖。additive。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub title_locked: bool,
     pub tree: Tree,
 }
 
@@ -783,6 +786,7 @@ mod tests {
             title: title.to_string(),
             focused,
             pinned,
+            title_locked: false,
             tree,
         }
     }
@@ -804,6 +808,22 @@ mod tests {
             toml::from_str("x = 10\ny = 20\nw = 800\nh = 600\n").unwrap();
         assert!(parsed.position_known);
         assert_eq!(parsed, geometry(10, 20, 800, 600));
+    }
+
+    #[test]
+    fn tab_title_lock_is_additive_and_defaults_false() {
+        let leaf = Tree::Leaf { cwd: None, profile_id: None };
+        let mut t = tab("x", 0, false, leaf.clone());
+        assert!(!t.title_locked);
+        let plain = toml::to_string(&t).unwrap();
+        assert!(!plain.contains("title_locked"), "false 不写出，保持旧格式: {plain}");
+
+        t.title_locked = true;
+        let locked = toml::to_string(&t).unwrap();
+        assert!(locked.contains("title_locked = true"), "{locked}");
+        let back: TabSnapshot = toml::from_str(&locked).unwrap();
+        assert!(back.title_locked);
+        assert_eq!(back.title, "x");
     }
 
     #[test]

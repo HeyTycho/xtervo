@@ -162,6 +162,7 @@ fn open_workspace(st: &mut AppState, name: &str) {
         title: ws.name.clone(),
         focused: 0,
         pinned: false,
+        title_locked: true,
         tree: ws.tree.clone(),
     };
     match restore_tab_snapshot(st, &snap) {
@@ -9776,6 +9777,7 @@ fn duplicate_tab(st: &mut AppState, index: usize) {
             grid: HashMap::new(),
             pinned,
             prev_title: None,
+            title_locked: st.ws.tabs[index].title_locked,
         },
     );
     st.ws.active = index + 1;
@@ -9879,6 +9881,7 @@ fn snapshot_tab(st: &AppState, index: usize) -> Option<session::TabSnapshot> {
         title: tab.title.clone(),
         focused,
         pinned: tab.pinned,
+        title_locked: tab.title_locked,
         tree: session::Tree::from_node_with_profiles(root, &cwds, &profiles),
     })
 }
@@ -9991,6 +9994,7 @@ fn restore_tab_snapshot(st: &mut AppState, tab_snap: &session::TabSnapshot) -> O
         grid: HashMap::new(),
         pinned: tab_snap.pinned,
         prev_title: None,
+        title_locked: tab_snap.title_locked,
     });
     eprintln!(
         "[session] restore tab {tab_title:?} pinned={} index={index}",
@@ -10052,6 +10056,7 @@ fn capture_tabs_snapshot(st: &AppState) -> Vec<session::TabSnapshot> {
             title: tab.title.clone(),
             focused,
             pinned: tab.pinned,
+            title_locked: tab.title_locked,
             tree: session::Tree::from_node_with_profiles(root, &cwds, &profiles),
         });
     }
@@ -11852,6 +11857,7 @@ fn restore_terminal_ime_focus_if_idle(st: &mut AppState) {
     if overlay_owns_ime_focus(st) {
         return;
     }
+    st.ui.set_ime_composing(false);
     st.ui.invoke_focus_terminal();
 }
 
@@ -11864,6 +11870,7 @@ fn restore_terminal_focus_after_tab_change(st: &mut AppState) {
     if st.ws.active_tab().is_none() || overlay_owns_ime_focus(st) {
         return;
     }
+    st.ui.set_ime_composing(false);
     st.ui.invoke_focus_terminal();
     st.ime_override = None;
     st.ime_spot_dirty = true;
@@ -14383,9 +14390,19 @@ fn install_native_window_events(ui: &MainWindow, window_id: WindowId) {
                         runtime::with_window(window_id, |st| {
                             st.ime_enabled = false;
                             st.ime_spot_dirty = true;
+                            st.ui.set_ime_composing(false);
+                        });
+                    },
+                    winit::event::Ime::Commit(_) => {
+                        runtime::with_window(window_id, |st| {
+                            st.ui.set_ime_composing(false);
                         });
                     },
                     winit::event::Ime::Preedit(text, _) => {
+                        let composing = !text.is_empty();
+                        runtime::with_window(window_id, |st| {
+                            st.ui.set_ime_composing(composing);
+                        });
                         // 组合一开始就重发候选锚点：拼音按键在 Slint 里被 accept
                         // 吞掉，不会走 handle_input，所以不能等 commit 才清
                         // ime_override。否则鼠标点过 dsh 后，整个组合期间候选窗
@@ -16543,9 +16560,12 @@ fn drain_core_events(st: &mut AppState) -> (bool, u32) {
     if titles_dirty {
         // 保持既有行为：只把活动 Tab 首个 pane 的标题写回 Tab。
         if let Some(tab) = st.ws.tabs.get_mut(active) {
-            if let Some(first) = tab.panes().first() {
-                if let Some(rt) = st.panes.get(first) {
-                    tab.title = rt.title.clone();
+            // 用户手动重命名后，终端 OSC 标题不得再覆盖；否则 Tab 会“自己改名”。
+            if !tab.title_locked {
+                if let Some(first) = tab.panes().first() {
+                    if let Some(rt) = st.panes.get(first) {
+                        tab.title = rt.title.clone();
+                    }
                 }
             }
         }
@@ -18773,6 +18793,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
                     if let Some(prev) = tab.prev_title.take() {
                         let current = std::mem::replace(&mut tab.title, prev);
                         tab.prev_title = Some(current);
+                        tab.title_locked = false;
                         eprintln!("[ws] rename undo via empty tab={idx} → {:?}", tab.title);
                     }
                 } else if let Some(title) = sanitize_tab_title(text.as_str()) {
@@ -18780,6 +18801,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
                         tab.prev_title = Some(std::mem::replace(&mut tab.title, title));
                         eprintln!("[ws] rename tab={idx} → {:?}", tab.title);
                     }
+                    tab.title_locked = true;
                 }
             }
             st.ui.set_rename_open(false);
