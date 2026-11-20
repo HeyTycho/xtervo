@@ -390,8 +390,12 @@ impl KeyModifiers {
             | ((self.num_lock as u8) << 7)
     }
 
+    /// 是否有真正的修饰键。Caps/Num Lock 只进 `bits()` 的修饰位，
+    /// 不能单独触发 modifyOtherKeys/kitty 的 escaped 编码：否则 Num Lock
+    /// 打开时每个普通字母/退格都会变成 `CSI 27;129;…~`，dsh-tui 等不识别
+    /// 该序列的 TUI 会表现为“输入失灵、退格删不掉”。
     fn any(self) -> bool {
-        self.bits() != 0
+        self.ctrl || self.alt || self.shift || self.meta
     }
 }
 
@@ -1337,6 +1341,32 @@ mod tests {
         // level 0/未知：legacy。
         assert_eq!(enc("a", mods(true, false, false), 0), vec![0x01]);
         assert_eq!(enc("a", mods(true, false, false), 9), vec![0x01]);
+    }
+
+    #[test]
+    fn lock_keys_alone_never_escape_plain_text() {
+        let b = KeyBindings::default();
+        let enc = |text: &str, m: KeyModifiers, level: u8| {
+            encode_key_event(text, m, KeyEventKind::Press, KeyboardFlags::default(), level, b)
+                .unwrap()
+        };
+        let mut num = KeyModifiers::default();
+        num.num_lock = true;
+        let mut caps = KeyModifiers::default();
+        caps.caps_lock = true;
+        for mods in [num, caps] {
+            // level 2：锁键不是“其他修饰键”，普通字母必须保持裸字节。
+            assert_eq!(enc("a", mods, 2), b"a");
+            assert_eq!(enc("b", mods, 2), b"b");
+            // Backspace 必须保持 0x7f，不能被编成 CSI 27;129;8~。
+            assert_eq!(enc("\u{8}", mods, 2), b"\x7f");
+        }
+        // 真的按了 Shift 时，锁位仍应出现在修饰字段里
+        // shift(1) + num(128) + 1 = 130。
+        let mut shift_num = KeyModifiers::default();
+        shift_num.shift = true;
+        shift_num.num_lock = true;
+        assert_eq!(enc("A", shift_num, 2), b"\x1b[27;130;65~");
     }
 
     #[test]

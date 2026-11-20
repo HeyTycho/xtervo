@@ -53,6 +53,10 @@ Tervo 的版本与 tag 规则见 `docs/RELEASING.md`。
   区域误吞滚轮。
 - 鼠标中键（滚轮按键）点 Tab 关闭该 Tab（Chrome 行为），水平/竖排都支持；
   只在按下触发一次，避免关闭重排后抬起误关相邻 Tab。
+- 键盘编码：Caps/Num Lock 不再被当成“有修饰键”。此前 Num Lock 打开时
+  modifyOtherKeys level 2 会把普通字母/退格编成 `CSI 27;129;…~`，dsh-tui
+  等不识别该序列的 TUI 表现为“输入/退格全坏”；锁位仍保留在真正带
+  Shift/Ctrl 的转义序列修饰字段里。
 - 字体加载：候选字体四套 face 不齐时（例如系统只有 DejaVu、没有 JetBrains
   Mono）继续尝试下一个候选，而不是直接判定“没有等宽字体”。修复只有 DejaVu 的
   机器上像素差分测试全红、以及默认字体链可能加载失败的问题。
