@@ -1199,6 +1199,8 @@ struct AppState {
     window_focused: bool,
     /// 最近一次指针位置（逻辑像素，窗口坐标）；TabBar 滚轮命中测试用。
     cursor: (f32, f32),
+    /// 当前组合态从何时开始；fcitx 卡死不回调时用于 watchdog 自愈。
+    ime_composing_since: Option<std::time::Instant>,
     /// TERVO_RENDER_HUD 的重复计时器；None = HUD 关闭。
     render_hud_timer: Option<slint::Timer>,
     /// Rust 侧权威的最大化 desired state；Slint 属性只做图标显示。
@@ -11842,7 +11844,6 @@ fn ime_anchor_cell(click: Option<((u16, u16), (u16, u16))>, cursor: (u16, u16)) 
 fn overlay_owns_ime_focus(st: &AppState) -> bool {
     st.search_open
         || st.ui.get_settings_open()
-        || st.ui.get_settings_tab_open()
         || st.ui.get_palette_open()
         || st.ui.get_tabsearch_open()
         || st.ui.get_rename_open()
@@ -14383,6 +14384,8 @@ fn install_native_window_events(ui: &MainWindow, window_id: WindowId) {
                         runtime::with_window(window_id, |st| {
                             st.ime_enabled = true;
                             st.ime_spot_dirty = true;
+                            st.ui.set_ime_composing(false);
+                            st.ime_composing_since = None;
                             update_ime_spot(st);
                         });
                     },
@@ -14391,17 +14394,24 @@ fn install_native_window_events(ui: &MainWindow, window_id: WindowId) {
                             st.ime_enabled = false;
                             st.ime_spot_dirty = true;
                             st.ui.set_ime_composing(false);
+                            st.ime_composing_since = None;
                         });
                     },
                     winit::event::Ime::Commit(_) => {
                         runtime::with_window(window_id, |st| {
                             st.ui.set_ime_composing(false);
+                            st.ime_composing_since = None;
                         });
                     },
                     winit::event::Ime::Preedit(text, _) => {
                         let composing = !text.is_empty();
                         runtime::with_window(window_id, |st| {
                             st.ui.set_ime_composing(composing);
+                            if composing {
+                                st.ime_composing_since.get_or_insert_with(std::time::Instant::now);
+                            } else {
+                                st.ime_composing_since = None;
+                            }
                         });
                         // 组合一开始就重发候选锚点：拼音按键在 Slint 里被 accept
                         // 吞掉，不会走 handle_input，所以不能等 commit 才清
@@ -14419,34 +14429,48 @@ fn install_native_window_events(ui: &MainWindow, window_id: WindowId) {
                 }
             }
             winit::event::WindowEvent::CursorMoved { position, .. } => {
-                let scale = win.scale_factor() as f32;
                 runtime::with_window(window_id, |st| {
+                    let scale = st.ui.window().scale_factor().max(0.01) as f32;
                     st.cursor = (
                         position.x as f32 / scale,
                         position.y as f32 / scale,
                     );
                 });
             }
+            winit::event::WindowEvent::Moved(_) => {
+                // 窗口移动后指针相对窗口的坐标变了，但没有 CursorMoved；
+                // 先失效命中，避免在终端上滚轮时误判为 TabBar 并吞掉。
+                runtime::with_window(window_id, |st| {
+                    st.cursor = (-1.0, -1.0);
+                });
+            }
             winit::event::WindowEvent::MouseWheel { delta, .. } => {
                 // Slint 的 Flickable 只吃拖拽；很多 Tab 时用户滚轮/触控板
                 // 横滚在 Tab 条上必须能滚，否则后面的 Tab 看似“消失”。
-                let in_tabbar = runtime::with_window(window_id, |st| {
+                let (in_tabbar, scale) = runtime::with_window(window_id, |st| {
                     let pos = st.cfg.borrow().tabbar_pos();
-                    let h = st.ui.window().size().height as f32;
-                    match pos {
-                        TabbarPos::Top => st.cursor.1 <= TABBAR_H,
-                        TabbarPos::Bottom => st.cursor.1 >= h - TABBAR_H,
-                        _ => false,
-                    }
-                }).unwrap_or(false);
+                    // Window::size() 是物理像素；cursor/TABBAR_H 是逻辑像素。
+                    let scale = st.ui.window().scale_factor().max(0.01) as f32;
+                    let h = st.ui.window().size().height as f32 / scale;
+                    let (cx, cy) = st.cursor;
+                    let hit = cx >= 0.0 && cy >= 0.0
+                        && match pos {
+                            TabbarPos::Top => cy <= TABBAR_H,
+                            TabbarPos::Bottom => cy >= h - TABBAR_H && cy <= h,
+                            _ => false,
+                        };
+                    (hit, scale as f64)
+                })
+                .unwrap_or((false, 1.0));
                 if in_tabbar {
-                    let scale = win.scale_factor() as f64;
+                    // winit 正方向 = 内容向右/向下：横向 Tab 条上 x/y 应同号相加，
+                    // 不能把竖向滚轮反相（用户会觉得“滚不动/方向反”）。
                     let dx = match delta {
                         winit::event::MouseScrollDelta::LineDelta(x, y) => {
-                            (*x as f32 - *y as f32) * 40.0
+                            (*x as f32 + *y as f32) * 40.0
                         },
                         winit::event::MouseScrollDelta::PixelDelta(p) => {
-                            (p.x / scale - p.y / scale) as f32
+                            ((p.x + p.y) / scale) as f32
                         },
                     };
                     if dx != 0.0 {
@@ -14461,6 +14485,7 @@ fn install_native_window_events(ui: &MainWindow, window_id: WindowId) {
                 // 指针离开顶层窗口：报读/转发拖拽不受影响；本地选词拖拽停掉自动
                 // 滚动（窗口内仍可继续，包括拖到 tab bar/另一个 pane 上）。
                 runtime::with_window(window_id, |st| {
+                    st.cursor = (-1.0, -1.0);
                     st.drag_autoscroll.stop();
                     let Some(drag) = st.drag.as_mut() else { return };
                     if drag.autoscroll_paused
@@ -17544,7 +17569,9 @@ fn build_window_state(
         link_hover_cell: None,
         resize: None,
         window_focused: true,
-        cursor: (0.0, 0.0),
+        // 收到第一个 CursorMoved 前，滚轮不应命中 TabBar（否则吞掉终端滚动）。
+        cursor: (-1.0, -1.0),
+        ime_composing_since: None,
         render_hud_timer: None,
         window_maximized: false,
         maximize: None,
@@ -21920,6 +21947,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // dsh 侧栏可能只移动终端光标、不产生内容重绘；独立轮询光标，
                 // 不能只等 redraw_visible 才更新 IME spot。
                 update_ime_spot(st);
+                // fcitx/ibus 卡死时可能不再发 Preedit("")/Commit/Disabled：
+                // ime-composing 会永久为 true，组合期守卫吞掉所有按键。
+                // 8s 无新 Preedit 视为卡死，强制 FocusOut→FocusIn 清掉 Slint
+                // 的 preedit-text 并恢复输入。
+                if st
+                    .ime_composing_since
+                    .is_some_and(|at| at.elapsed() > Duration::from_secs(8))
+                {
+                    st.ui.set_ime_composing(false);
+                    st.ime_composing_since = None;
+                    st.ime_spot_dirty = true;
+                    restore_terminal_ime_focus_if_idle(st);
+                    eprintln!("[ime] stale preedit reset (>8s)");
+                }
             });
         },
     );

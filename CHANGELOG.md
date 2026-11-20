@@ -45,6 +45,12 @@ Tervo 的版本与 tag 规则见 `docs/RELEASING.md`。
   当成“一直组合中”，吞掉之后所有按键；焦点重建时同时清组合态。
 - Tab 手动改名后置 `title_locked`，终端 OSC 标题更新不再覆盖（修复 Tab 自己
   改名字）；空白改名/撤销解锁，快照 additive 保存 `title_locked`。
+- IME 卡死自愈：`ime-composing` 超过 8s 无新 preedit 即强制清组合态并重建
+  焦点；组合中 Ctrl/Alt/Meta 不再被吞；`Ime::Enabled`、点终端、切 Tab 都
+  复位组合态。`overlay_owns_ime_focus` 不再把挂起的 Settings Tab 当覆盖层。
+- TabBar 滚轮修正：竖向滚轮映射到横向时方向不再反；Bottom TabBar 命中按
+  逻辑像素（HiDPI 修复）；首帧/窗口移动/指针离开后失效 cursor，避免在终端
+  区域误吞滚轮。
 - 字体加载：候选字体四套 face 不齐时（例如系统只有 DejaVu、没有 JetBrains
   Mono）继续尝试下一个候选，而不是直接判定“没有等宽字体”。修复只有 DejaVu 的
   机器上像素差分测试全红、以及默认字体链可能加载失败的问题。

@@ -4068,7 +4068,9 @@ export component MainWindow inherits Window {
                         // 拼音组合中：回车=上屏候选、退格=删拼音、Esc=取消，
                         // 这些键归输入法，一个字节都不能写进 PTY
                         //（这正是之前“回车没用 / 键盘像失灵”的根源）。
-                        if (root.ime-composing && self.preedit-text != "") {
+                        if (root.ime-composing && self.preedit-text != ""
+                            && !event.modifiers.control && !event.modifiers.alt
+                            && !event.modifiers.meta) {
                             // 组合期按键已经由输入法消费；这里必须 accept 把事件
                             // 吞掉。reject 会让 Slint TextInput 继续内置编辑，把
                             // 拼音字母/空格插入 text 并触发 edited，最终写进 PTY，
@@ -4098,7 +4100,9 @@ export component MainWindow inherits Window {
                     // 只有应用请求了 kitty REPORT_EVENT_TYPES 才会真正写 PTY；
                     // Rust 侧用 press 登记表过滤快捷键/搜索框，普通 shell 零变化。
                     key-released(event) => {
-                        if (root.ime-composing && self.preedit-text != "") {
+                        if (root.ime-composing && self.preedit-text != ""
+                            && !event.modifiers.control && !event.modifiers.alt
+                            && !event.modifiers.meta) {
                             // 组合期按键已经由输入法消费；这里必须 accept 把事件
                             // 吞掉。reject 会让 Slint TextInput 继续内置编辑，把
                             // 拼音字母/空格插入 text 并触发 edited，最终写进 PTY，
@@ -4213,6 +4217,9 @@ export component MainWindow inherits Window {
                                         p.id, pane-hit.mouse-x, pane-hit.mouse-y);
                                 }
                                 if (event.button == PointerEventButton.left) {
+                                    // 点击终端视为取消组合：否则残留 preedit 会把
+                                    // 后续所有按键吞掉。
+                                    root.ime-composing = false;
                                     ime.focus();
                                     root.pane-clicked(p.id);
                                     root.pane-mouse-down(p.id, pane-hit.mouse-x, pane-hit.mouse-y, 0,
@@ -4221,6 +4228,7 @@ export component MainWindow inherits Window {
                                 }
                                 // 中键：Tabby 语义，始终由 Tervo 处理（配置开启时粘贴），不转发给 TUI。
                                 if (event.button == PointerEventButton.middle) {
+                                    root.ime-composing = false;
                                     ime.focus();
                                     root.pane-clicked(p.id);
                                     root.pane-middle-click(p.id);
@@ -4235,6 +4243,7 @@ export component MainWindow inherits Window {
                                     && root.cfg-right-click == "off") {
                                     root.input-trace("pane-right-forward", p.id,
                                         pane-hit.mouse-x, pane-hit.mouse-y);
+                                    root.ime-composing = false;
                                     ime.focus();
                                     root.pane-clicked(p.id);
                                     root.pane-mouse-down(p.id, pane-hit.mouse-x, pane-hit.mouse-y, 2,
@@ -4246,6 +4255,7 @@ export component MainWindow inherits Window {
                                 // 之前只在 up 开：down 被 reject 时 Slint 不保证把 up 再送给本 TouchArea，
                                 // 鼠标轻微移动/经过分隔线就会丢事件，表现为“有时候右键唤不出菜单”。
                                 if (event.button == PointerEventButton.right) {
+                                    root.ime-composing = false;
                                     ime.focus();
                                     root.pane-clicked(p.id);
                                     root.pane-right-clicked(p.id, p.x + pane-hit.mouse-x, p.y + pane-hit.mouse-y);
