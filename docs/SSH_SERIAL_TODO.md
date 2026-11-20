@@ -5,16 +5,16 @@
 
 ## Serial
 
-- [~] S01 端口选择：设置页显示枚举列表 + Refresh；缺下拉选择/记住设备。
+- [x] S01 端口选择：设置页检测列表可点击选择（最多 8 个）+ Refresh/1.5s 热刷新。
 - [x] S02 串口参数：baud、5–8 数据位、parity、1/2 停止位、none/software/hardware 流控。
 - [x] S03 打开/关闭/读写：native `serialport`，PTY 双向与 timeout 重试测试。
-- [ ] S04 运行时 DTR/RTS：连接中切换，而非只在打开时应用。
-- [ ] S05 控制线状态：CTS / DSR / DCD 实时显示。
-- [ ] S06 Send Break：按驱动能力发送 break。
+- [x] S04 运行时 DTR/RTS：串口右键 Serial Controls 面板，连接中切换。
+- [x] S05 控制线状态：面板 100ms 刷新 CTS/DSR/DCD。
+- [x] S06 Send Break：面板按钮，TTYPort::send_break(Short)。
 - [~] S07 拔插/重连：表单 1.5s 刷新；缺设备消失检测与自动重连。
 - [ ] S08 输入模式：Text / Readline / Byte / Hex。
-- [ ] S09 输出模式：Text / Hexdump。
-- [ ] S10 换行转换：CR / LF / CRLF / None。
+- [x] S09 输出模式：text / hexdump（16 字节/行）。
+- [x] S10 换行转换：none/lf/cr/crlf（出站）。
 - [~] S11 高频缓冲：现有 reader/writer 背压；缺高频长跑断言。
 - [ ] S12 时间戳 / Zmodem：先核实上游能力，再决定是否实现。
 
@@ -23,17 +23,17 @@
 - [x] H01 建连/认证/PTY/shell：native russh；密码、未加密私钥、agent、Vault 口令。
 - [x] H02 Profile/认证 UI：Host/Port/User/Auth/Key/Password/Vault。
 - [~] H03 known_hosts：纯 Rust 校验/首次确认；缺条目查看/删除管理 UI。
-- [ ] H04 keepalive：`ServerAliveInterval` / `ServerAliveCountMax` 映射到 russh。
-- [~] H05 IdentityFile/默认密钥：ssh_config 有 IdentityFile 时回退系统 ssh；缺 native 多密钥尝试与 `~/.ssh/id_*` 发现。
+- [x] H04 keepalive：ssh_config ServerAliveInterval/CountMax → russh。
+- [x] H05 IdentityFile/默认密钥：native 尝试 profile key、IdentityFile、~/.ssh/id_*；agent 无 socket 回退密钥。
 - [~] H06 passphrase：表单+Vault；缺口令错误/缺失时的连接内重试 UI。
 - [x] H07 ProxyJump：native 多跳；缺链路可视化/跳板独立凭据。
-- [x] H08 转发：native L/R/D + SOCKS5；缺 port 0、转发管理面板/状态。
+- [x] H08 转发：native L/R/D + SOCKS5 + 远程 port 0；转发管理 UI 由 agent/ssh-features 继续。
 - [~] H09 agent forwarding：native 请求 + 成功门禁；缺拒绝场景回归与状态 UI。
-- [~] H10 SFTP 导航：现有系统 sftp 面板；缺上级/刷新/属性列。
+- [~] H10 SFTP 导航：已加上级/刷新/路径转义；属性列由 agent/sftp 继续。
 - [~] H11 SFTP 操作：上传/下载/目录/改名/删除/chmod；缺覆盖确认、断点续传、递归删除、特殊字符转义。
 - [~] H12 传输进度：进度/取消/失败/Retry；缺总大小/ETA/自动重试。
 - [ ] H13 Login Scripts：命令/顺序/延时/等待提示符/错误处理。
-- [ ] H14 X11 Forwarding 与状态显示。
+- [~] H14 X11 Forwarding：系统 ssh `-X` 选项；native 回退；缺状态 UI。
 - [ ] H15 ProxyCommand：安全策略与实现；当前回退系统 ssh。
 - [~] H16 ssh_config：native 解析 Host/HostName/Port/User/ProxyJump/known_hosts；缺 Match、IdentityFile、导入 UI。
 - [~] H17 Connection Manager/历史：仅 Profiles；缺常驻入口、连接中/失败/取消三态、最近连接。
