@@ -733,9 +733,9 @@ impl Profile {
                 }
                 crate::login_script::parse_lines(&self.login_scripts)?;
                 validate_proxy_jump(&self.proxy_jump)?;
-                if !self.proxy_jump.trim().is_empty()
-                    && !self.proxy_command.trim().is_empty()
-                {
+                let jump_disabled = self.proxy_jump.trim().is_empty()
+                    || self.proxy_jump.trim().eq_ignore_ascii_case("none");
+                if !jump_disabled && !self.proxy_command.trim().is_empty() {
                     return Err("ProxyJump 与 ProxyCommand 只能二选一".into());
                 }
                 let transport = self.transport.trim();

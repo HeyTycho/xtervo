@@ -243,7 +243,16 @@ pub fn effective_ssh(profile: &Profile) -> EffectiveSsh {
             return parse_ssh_g(&String::from_utf8_lossy(&out.stdout), profile);
         }
     }
-    parse_ssh_g("", profile)
+    let mut effective = parse_ssh_g("", profile);
+    // ssh -G 失败时不能用“直连”覆盖用户显式代理配置，否则 keyscan 会
+    // 扫描错误端点。保留 profile 的显式值，让 assess 返回 Unverifiable。
+    if effective.proxy_jump.is_empty() && !profile.proxy_jump.trim().is_empty() {
+        effective.proxy_jump = profile.proxy_jump.trim().to_string();
+    }
+    if effective.proxy_command.is_empty() && !profile.proxy_command.trim().is_empty() {
+        effective.proxy_command = profile.proxy_command.trim().to_string();
+    }
+    effective
 }
 
 /// known_hosts 查找键：默认 22 端口不带后缀，其它端口用 `[host]:port`。
@@ -507,12 +516,20 @@ fn assess_with(
         },
     };
     if !effective.proxy_jump.is_empty() || !effective.proxy_command.is_empty() {
+        // 代理路径不能直连 keyscan；但 known_hosts 已有条目时交给 OpenSSH
+        // 在代理连接上做严格校验，保留 Vault 密码登录能力。
+        if !known.is_empty() && effective.proxy_command.is_empty() {
+            return Verdict::Known;
+        }
+        if !known.is_empty() && !effective.proxy_command.is_empty() {
+            return Verdict::Known;
+        }
         let reason = if !effective.proxy_jump.is_empty() {
             format!("配置了 ProxyJump（{}），ssh-keyscan 无法穿透跳板机", effective.proxy_jump)
         } else {
             "配置了 ProxyCommand，ssh-keyscan 不能按直连预检".to_string()
         };
-        return Verdict::Unverifiable { reason, local: !known.is_empty() };
+        return Verdict::Unverifiable { reason, local: false };
     }
     let current = match fetch_current_keys_with(profile, keyscan_program, timeout, cancel) {
         Ok(keys) => keys,
