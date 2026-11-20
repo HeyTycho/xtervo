@@ -182,6 +182,8 @@ mod tests {
             user: "u".into(),
             proxy_jump: String::new(),
             proxy_command: String::new(),
+            keepalive_interval: None,
+            keepalive_max: 3,
             strict: "ask".into(),
             user_known_hosts: Vec::new(),
             global_known_hosts: Vec::new(),

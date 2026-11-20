@@ -23,6 +23,8 @@ pub struct ResolvedSsh {
     pub host_key_alias: Option<String>,
     pub forward_agent: bool,
     pub identity_files: Vec<String>,
+    pub keepalive_interval: Option<std::time::Duration>,
+    pub keepalive_max: usize,
     /// 非空时 native 无法保持 OpenSSH 语义，调用方应回退系统 ssh。
     pub unsupported: Option<String>,
 }
@@ -49,6 +51,8 @@ struct Raw {
     host_key_alias: Option<String>,
     forward_agent: Option<bool>,
     identity_files: Vec<String>,
+    keepalive_interval: Option<u64>,
+    keepalive_max: Option<usize>,
     unsupported: Option<String>,
 }
 
@@ -125,6 +129,11 @@ fn finish(profile: &Profile, raw: Raw, prefer_profile_port: bool) -> ResolvedSsh
     let user_known_hosts = raw.user_known_hosts.unwrap_or_else(default_user_known_hosts);
     let global_known_hosts =
         raw.global_known_hosts.unwrap_or_else(default_global_known_hosts);
+    let keepalive_interval = raw
+        .keepalive_interval
+        .filter(|seconds| *seconds > 0)
+        .map(std::time::Duration::from_secs);
+    let keepalive_max = raw.keepalive_max.unwrap_or(3);
     let unsupported = raw
         .unsupported
         .or_else(|| {
@@ -134,13 +143,7 @@ fn finish(profile: &Profile, raw: Raw, prefer_profile_port: bool) -> ResolvedSsh
                 None
             }
         })
-        .or_else(|| {
-            if !raw.identity_files.is_empty() {
-                Some("IdentityFile in ssh_config".into())
-            } else {
-                None
-            }
-        });
+        ;
     let proxy_jump = if profile.proxy_jump.trim().is_empty() {
         raw.proxy_jump.unwrap_or_default()
     } else {
@@ -152,6 +155,8 @@ fn finish(profile: &Profile, raw: Raw, prefer_profile_port: bool) -> ResolvedSsh
         user,
         proxy_jump,
         proxy_command: raw.proxy_command.unwrap_or_default(),
+        keepalive_interval,
+        keepalive_max,
         strict,
         user_known_hosts,
         global_known_hosts,
@@ -340,6 +345,20 @@ fn apply_option(key: &str, value: &str, raw: &mut Raw) {
         "forwardagent" => {
             if raw.forward_agent.is_none() {
                 raw.forward_agent = Some(matches!(value.to_ascii_lowercase().as_str(), "yes" | "true"));
+            }
+        },
+        "serveraliveinterval" => {
+            if raw.keepalive_interval.is_none() {
+                if let Ok(seconds) = value.parse::<u64>() {
+                    raw.keepalive_interval = Some(seconds);
+                }
+            }
+        },
+        "serveralivecountmax" => {
+            if raw.keepalive_max.is_none() {
+                if let Ok(max) = value.parse::<usize>() {
+                    raw.keepalive_max = Some(max);
+                }
             }
         },
         "identityfile" => {
@@ -570,6 +589,19 @@ mod tests {
         p.port = 0;
         let r = resolve_jump_with_paths(&p, &[]);
         assert_eq!(r.port, 22);
+    }
+
+    #[test]
+    fn server_alive_options_parse() {
+        let p = profile("h");
+        let r = resolve_with_text(
+            &p,
+            &["Host *\n ServerAliveInterval 30\n ServerAliveCountMax 5\n"],
+        );
+        assert_eq!(r.keepalive_interval, Some(std::time::Duration::from_secs(30)));
+        assert_eq!(r.keepalive_max, 5);
+        let r = resolve_with_text(&p, &["Host *\n ServerAliveInterval 0\n"]);
+        assert_eq!(r.keepalive_interval, None);
     }
 
     #[test]

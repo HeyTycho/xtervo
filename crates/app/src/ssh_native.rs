@@ -86,7 +86,12 @@ pub fn can_use(profile: &Profile) -> bool {
     if profile.auth == "key" && profile.key_path.trim().is_empty() {
         return false;
     }
-    if profile.auth == "agent" && std::env::var_os("SSH_AUTH_SOCK").is_none() {
+    let has_agent = std::env::var_os("SSH_AUTH_SOCK").is_some();
+    let has_keys = !identity_candidates(profile, &resolved).is_empty();
+    if profile.auth == "agent" && !has_agent && !has_keys {
+        return false;
+    }
+    if profile.auth == "key" && !has_keys {
         return false;
     }
     for jump in resolved
@@ -441,6 +446,8 @@ async fn run_session(
     };
     let config = Arc::new(client::Config {
         inactivity_timeout: Some(INACTIVITY_TIMEOUT),
+        keepalive_interval: resolved.keepalive_interval,
+        keepalive_max: resolved.keepalive_max,
         ..<_>::default()
     });
     let remote_targets = std::sync::Arc::new(std::sync::Mutex::new(
@@ -512,6 +519,7 @@ async fn run_session(
         authenticate(
             &mut next,
             &jump_profile,
+            &jump_resolved,
             &jump_resolved.user,
             password.clone(),
             key_passphrase.as_deref(),
@@ -551,6 +559,7 @@ async fn run_session(
     authenticate(
         &mut session,
         &profile,
+        &resolved,
         &user,
         password,
         key_passphrase.as_deref(),
@@ -729,74 +738,133 @@ async fn await_request(
     }
 }
 
+fn identity_candidates(profile: &Profile, resolved: &ResolvedSsh) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    let explicit = profile.key_path.trim();
+    if !explicit.is_empty() {
+        out.push(std::path::PathBuf::from(explicit));
+    }
+    for path in &resolved.identity_files {
+        if !path.trim().is_empty() {
+            out.push(std::path::PathBuf::from(path));
+        }
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        let ssh = std::path::PathBuf::from(home).join(".ssh");
+        for name in ["id_ed25519", "id_ecdsa", "id_rsa"] {
+            let path = ssh.join(name);
+            if path.is_file() {
+                out.push(path);
+            }
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    out.retain(|path| seen.insert(path.clone()));
+    out
+}
+
+async fn try_public_key<H: Handler + Send>(
+    session: &mut client::Handle<H>,
+    user: &str,
+    path: &Path,
+    passphrase: Option<&str>,
+) -> Result<bool, String> {
+    let key = match load_secret_key(path, passphrase) {
+        Ok(key) => key,
+        Err(error) => return Err(format!("加载私钥 {} 失败: {error}", path.display())),
+    };
+    let hash = session
+        .best_supported_rsa_hash()
+        .await
+        .map_err(|error| format!("协商 RSA hash 失败: {error}"))?
+        .flatten();
+    let result = session
+        .authenticate_publickey(user, PrivateKeyWithHashAlg::new(Arc::new(key), hash))
+        .await
+        .map_err(|error| format!("公钥认证 {} 失败: {error}", path.display()))?;
+    Ok(result.success())
+}
+
+async fn try_agent<H: Handler + Send>(
+    session: &mut client::Handle<H>,
+    user: &str,
+) -> Result<bool, String> {
+    let mut agent = AgentClient::connect_env()
+        .await
+        .map_err(|error| format!("连接 ssh-agent 失败: {error}"))?;
+    let identities = agent
+        .request_identities()
+        .await
+        .map_err(|error| format!("读取 ssh-agent identities 失败: {error}"))?;
+    for identity in identities {
+        if let russh::keys::agent::AgentIdentity::PublicKey { key, .. } = identity {
+            if session
+                .authenticate_publickey_with(user, key, None, &mut agent)
+                .await
+                .map(|result| result.success())
+                .unwrap_or(false)
+            {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
 async fn authenticate<H: Handler + Send>(
     session: &mut client::Handle<H>,
     profile: &Profile,
+    resolved: &ResolvedSsh,
     user: &str,
     password: Option<String>,
     key_passphrase: Option<&str>,
 ) -> Result<(), String> {
-    let ok = match profile.auth.as_str() {
-        "password" => {
-            let Some(password) = password else {
-                return Err(
-                    "native SSH 密码认证需要把密码保存到 Vault（或设置 transport=system 使用系统 ssh）"
-                        .into(),
-                );
-            };
-            session
-                .authenticate_password(user, password)
-                .await
-                .map_err(|error| format!("密码认证失败: {error}"))?
-                .success()
-        },
-        "key" => {
-            let path = profile.key_path.trim();
-            if path.is_empty() {
-                return Err("auth=key 但 key_path 为空".into());
-            }
-            let key = load_secret_key(Path::new(path), key_passphrase)
-                .map_err(|error| format!("加载私钥 {path} 失败: {error}"))?;
-            let hash = session
-                .best_supported_rsa_hash()
-                .await
-                .map_err(|error| format!("协商 RSA hash 失败: {error}"))?
-                .flatten();
-            session
-                .authenticate_publickey(user, PrivateKeyWithHashAlg::new(Arc::new(key), hash))
-                .await
-                .map_err(|error| format!("公钥认证失败: {error}"))?
-                .success()
-        },
-        _ => {
-            let mut agent = AgentClient::connect_env()
-                .await
-                .map_err(|error| format!("连接 ssh-agent 失败: {error}"))?;
-            let identities = agent
-                .request_identities()
-                .await
-                .map_err(|error| format!("读取 ssh-agent identities 失败: {error}"))?;
-            let mut success = false;
-            for identity in identities {
-                if let russh::keys::agent::AgentIdentity::PublicKey { key, .. } = identity {
-                    if session
-                        .authenticate_publickey_with(user, key, None, &mut agent)
-                        .await
-                        .map(|result| result.success())
-                        .unwrap_or(false)
-                    {
-                        success = true;
-                        break;
-                    }
-                }
-            }
-            success
-        },
-    };
-    if !ok {
-        return Err(format!("SSH 认证失败（auth={}）", profile.auth));
+    if profile.auth == "password" {
+        let Some(password) = password else {
+            return Err(
+                "native SSH 密码认证需要把密码保存到 Vault（或设置 transport=system 使用系统 ssh）"
+                    .into(),
+            );
+        };
+        let ok = session
+            .authenticate_password(user, password)
+            .await
+            .map_err(|error| format!("密码认证失败: {error}"))?
+            .success();
+        if ok {
+            return Ok(());
+        }
+        return Err("SSH 密码认证失败".into());
     }
-    Ok(())
+
+    let mut last_error = None;
+    if profile.auth == "agent" && std::env::var_os("SSH_AUTH_SOCK").is_some() {
+        match try_agent(session, user).await {
+            Ok(true) => return Ok(()),
+            Ok(false) => last_error = Some("ssh-agent 没有可用身份".to_string()),
+            Err(error) => last_error = Some(error),
+        }
+    }
+    let candidates = identity_candidates(profile, resolved);
+    if candidates.is_empty() && last_error.is_none() {
+        last_error = Some("没有可用的私钥/agent 身份".to_string());
+    }
+    let mut errors = Vec::new();
+    for path in candidates {
+        match try_public_key(session, user, &path, key_passphrase).await {
+            Ok(true) => return Ok(()),
+            Ok(false) => errors.push(format!("{} 被服务器拒绝", path.display())),
+            Err(error) => errors.push(error),
+        }
+    }
+    if let Some(error) = last_error {
+        errors.push(error);
+    }
+    Err(format!(
+        "SSH 认证失败（auth={}）：{}",
+        profile.auth,
+        errors.join("; ")
+    ))
 }
 
 #[cfg(test)]
@@ -872,6 +940,7 @@ mod tests {
         };
         assert!(err.to_string().contains("known_hosts"), "{err}");
     }
+
 }
 
 #[cfg(test)]
@@ -911,6 +980,14 @@ mod integration_tests {
         }
 
         async fn auth_password(&mut self, _user: &str, _password: &str) -> Result<Auth, Self::Error> {
+            Ok(Auth::Accept)
+        }
+
+        async fn auth_publickey(
+            &mut self,
+            _user: &str,
+            _key: &russh::keys::ssh_key::PublicKey,
+        ) -> Result<Auth, Self::Error> {
             Ok(Auth::Accept)
         }
 
@@ -1078,6 +1155,8 @@ mod integration_tests {
             user: "tester".into(),
             proxy_jump: String::new(),
             proxy_command: String::new(),
+            keepalive_interval: None,
+            keepalive_max: 3,
             strict: "ask".into(),
             user_known_hosts: vec![known.clone()],
             global_known_hosts: Vec::new(),
@@ -1208,6 +1287,8 @@ mod integration_tests {
             user: "tester".into(),
             proxy_jump: format!("tester@127.0.0.1:{}", jump_addr.port()),
             proxy_command: String::new(),
+            keepalive_interval: None,
+            keepalive_max: 3,
             strict: "ask".into(),
             user_known_hosts: vec![known.clone()],
             global_known_hosts: Vec::new(),
@@ -1300,6 +1381,8 @@ mod integration_tests {
             user: "tester".into(),
             proxy_jump: String::new(),
             proxy_command: String::new(),
+            keepalive_interval: None,
+            keepalive_max: 3,
             strict: "ask".into(),
             user_known_hosts: vec![known],
             global_known_hosts: Vec::new(),
@@ -1386,6 +1469,8 @@ mod integration_tests {
             user: "tester".into(),
             proxy_jump: String::new(),
             proxy_command: String::new(),
+            keepalive_interval: None,
+            keepalive_max: 3,
             strict: "ask".into(),
             user_known_hosts: vec![known],
             global_known_hosts: Vec::new(),
@@ -1420,6 +1505,75 @@ mod integration_tests {
         let mut echoed = [0u8; 10];
         remote.read_exact(&mut echoed).expect("read remote forward echo");
         assert_eq!(&echoed, b"remote-fwd");
+        transport.close();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    #[test]
+    fn native_ssh_uses_identity_file_from_config() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let (addr, public) = start_test_server(&rt, None);
+        let dir = test_path("tervo-native-ssh-idfile");
+        std::fs::create_dir_all(&dir).unwrap();
+        let key_path = dir.join("client_key");
+        let status = std::process::Command::new("ssh-keygen")
+            .args(["-q", "-t", "ed25519", "-N", "", "-f"])
+            .arg(&key_path)
+            .status()
+            .expect("ssh-keygen for client key");
+        assert!(status.success());
+        let known = dir.join("known_hosts");
+        let host_key = public.split_whitespace().nth(1).unwrap();
+        std::fs::write(
+            &known,
+            format!("[127.0.0.1]:{} ssh-ed25519 {host_key}\n", addr.port()),
+        )
+        .unwrap();
+        let profile = Profile {
+            kind: "ssh".into(),
+            host: "127.0.0.1".into(),
+            port: addr.port(),
+            user: "tester".into(),
+            auth: "agent".into(),
+            ..Profile::default()
+        };
+        let resolved = ResolvedSsh {
+            hostname: "127.0.0.1".into(),
+            port: addr.port(),
+            user: "tester".into(),
+            proxy_jump: String::new(),
+            proxy_command: String::new(),
+            keepalive_interval: None,
+            keepalive_max: 3,
+            strict: "ask".into(),
+            user_known_hosts: vec![known],
+            global_known_hosts: Vec::new(),
+            host_key_alias: None,
+            forward_agent: false,
+            identity_files: vec![key_path.display().to_string()],
+            unsupported: None,
+        };
+        let mut transport = SshNativeTransport::start_resolved(
+            &profile,
+            None,
+            None,
+            80,
+            24,
+            resolved,
+        )
+        .expect("start identity-file ssh");
+        let mut buf = [0u8; 64];
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut got = Vec::new();
+        while !got.windows(5).any(|w| w == b"READY") {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no READY with identity file; got={:?}",
+                String::from_utf8_lossy(&got)
+            );
+            let n = transport.read(&mut buf).expect("read identity-file ssh");
+            assert!(n > 0);
+            got.extend_from_slice(&buf[..n]);
+        }
         transport.close();
         let _ = std::fs::remove_dir_all(&dir);
     }
