@@ -802,6 +802,10 @@ struct PaneRuntime {
     /// 通用连接状态（SESS-007）：本地/插件/未来 SSH 共用；Tab 标记与底部
     /// pill 只读这里的聚合结果，不按 Profile 类型分支。
     connection: connection::ConnectionStatus,
+    /// 进程内 SSH 后端的只读状态（agent forwarding / 口令失败）；非 native pane 为 None。
+    native_status: Option<Arc<ssh_native::SshNativeStatus>>,
+    /// 上一次同步到 UI 的 agent forwarding 状态，避免每个 tick 重复重建 Tab。
+    agent_forward: ssh_native::AgentForwardState,
     /// 远端会话退出状态（进程退出后填充；SSH 断开时用于 UI 提示/重连）。
     exit_code: Option<i32>,
     exit_signal: Option<String>,
@@ -833,6 +837,30 @@ struct SshExitNotice {
     profile_id: Option<u64>,
     text: String,
     retry: RetryAction,
+}
+
+/// 私钥口令弹窗要执行的动作：连接前打开 Profile，或连接失败后原 pane 重试。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum KeyPassphraseAction {
+    OpenProfile,
+    RetryPane,
+}
+
+/// known_hosts 管理面板的一行：一个 Profile 的生效 host spec。
+#[derive(Clone)]
+struct KnownHostRow {
+    profile_id: u64,
+    spec: String,
+}
+
+/// 正在等待用户输入口令的上下文。只留在内存，绝不写配置/日志。
+#[derive(Clone)]
+struct KeyPassphrasePrompt {
+    profile_index: usize,
+    profile_id: u64,
+    action: KeyPassphraseAction,
+    /// RetryPane 时目标 pane；OpenProfile 时为 None。
+    pane: Option<PaneId>,
 }
 
 /// 横幅 “Restart/Retry” 按钮的动作。
@@ -1032,6 +1060,10 @@ struct AppState {
     hostkey_verified: std::collections::HashSet<String>,
     /// 最近一个结束的 SSH 会话（用于「会话已结束 / 重连」提示）。
     ssh_exit: Option<SshExitNotice>,
+    /// 加密私钥口令弹窗的待处理上下文；口令本身只在 Slint 输入框与本函数栈上。
+    key_passphrase_prompt: Option<KeyPassphrasePrompt>,
+    /// known_hosts 管理面板当前展示的行（与 Slint 模型同序，删除回调按索引用）。
+    known_hosts_rows: Vec<KnownHostRow>,
     /// SFTP 面板里可选的 SSH Profile 索引（打开面板时快照）
     sftp_profiles: Vec<usize>,
     sftp_model: Rc<VecModel<slint::SharedString>>,
@@ -4965,6 +4997,7 @@ fn create_pane(
     cwd: Option<PathBuf>,
     profile: Option<&profile::Profile>,
     mut askpass: Option<askpass::Askpass>,
+    native_key_passphrase: Option<String>,
 ) -> std::io::Result<PaneRuntime> {
     // pane id 可能被重连复用；旧 GPU 纹理不能跨会话复用。
     gpu_present::forget(id);
@@ -5083,6 +5116,9 @@ fn create_pane(
         connection.state
     );
     let mut serial_control = None;
+    // native SSH 的只读状态句柄；不是 native 后端时保持 None。
+    let mut native_status = None;
+    let has_native_passphrase = native_key_passphrase.is_some();
     let handle = if let Some(p) = profile.filter(|p| p.is_native_serial()) {
         match serial_native::SerialTransport::open(p) {
             Ok((transport, control)) => {
@@ -5117,6 +5153,7 @@ fn create_pane(
             && (p.auth != "password" || st.vault.with(|vault| vault.get(p.id)).is_ok())
             && (p.auth != "key"
                 || ssh_native::key_loads_without_passphrase(p)
+                || has_native_passphrase
                 || (p.save_key_passphrase
                     && st
                         .vault
@@ -5134,12 +5171,21 @@ fn create_pane(
         } else {
             None
         };
-        let key_passphrase = if p.auth == "key" && p.save_key_passphrase {
-            st.vault
-                .with(|vault| vault.get_key_passphrase(p.id))
-                .ok()
+        // 弹窗输入的口令优先于 Vault；只有 profile 勾选了保存才回退 Vault。
+        // 口令只在本函数栈和连接线程里，日志只记来源标记。
+        let key_passphrase = native_key_passphrase.or_else(|| {
+            if p.auth == "key" && p.save_key_passphrase {
+                st.vault
+                    .with(|vault| vault.get_key_passphrase(p.id))
+                    .ok()
+            } else {
+                None
+            }
+        });
+        let passphrase_source = if key_passphrase.is_some() {
+            "provided"
         } else {
-            None
+            "none"
         };
         let transport = ssh_native::SshNativeTransport::start(
             p,
@@ -5148,8 +5194,9 @@ fn create_pane(
             config.cols,
             config.rows,
         )?;
+        native_status = Some(transport.status());
         eprintln!(
-            "[ssh-native] pane backend=russh profile={} host={} user={} auth={}",
+            "[ssh-native] pane backend=russh profile={} host={} user={} auth={} passphrase={passphrase_source}",
             p.id,
             p.host.trim(),
             p.user.trim(),
@@ -5278,6 +5325,8 @@ fn create_pane(
         // 远端/插件 transport 先记 Connecting，收到首段输出后由 poll_connections
         // 转 Connected；本地 shell spawn 成功即 Connected。
         connection,
+        native_status,
+        agent_forward: ssh_native::AgentForwardState::NotRequested,
         exit_code: None,
         exit_signal: None,
         exit_notified: false,
@@ -5306,7 +5355,7 @@ fn new_tab_inner_with_cwd(st: &mut AppState, cwd: Option<PathBuf>) {
     let id = st.shared.alloc_pane_id();
     // 启动失败时 Retry 要能原样重来（cwd 会被 create_pane 吃掉）。
     let retry_cwd = cwd.clone();
-    match create_pane(st, id, st.content, cwd, None, None) {
+    match create_pane(st, id, st.content, cwd, None, None, None) {
         Ok(rt) => {
             st.next_title += 1;
             let n = st.next_title;
@@ -5980,6 +6029,19 @@ fn open_profile_tab(st: &mut AppState, index: usize) {
         );
         return;
     }
+    if p.kind == "ssh"
+        && p.auth == "key"
+        && p.save_key_passphrase
+        && ssh_native::can_use(&p)
+        && ssh_native::key_needs_passphrase(&p)
+        && !st.vault.borrow().is_unlocked()
+    {
+        prompt_vault_unlock(
+            st,
+            "Vault 已锁定：请先在 Vault 页解锁，再连接该加密私钥 Profile",
+        );
+        return;
+    }
     let cache_key = hostkey_cache_key(&p);
     if st.hostkey_verified.contains(&cache_key) {
         open_profile_tab_now(st, index, true);
@@ -6144,7 +6206,134 @@ fn hostkey_cancel(st: &mut AppState) {
     eprintln!("[known_hosts] 用户取消连接");
 }
 
+/// 刷新 Settings → Advanced 的 known_hosts 管理列表。
+///
+/// 只列已保存 SSH Profile 在用户级 known_hosts 文件里的条目；每行对应一个
+/// `[host]:port` / HostKeyAlias spec，删除时只动用户文件，不碰系统文件。
+fn refresh_known_hosts(st: &mut AppState) {
+    let zh = app_lang(st) == "zh";
+    let profiles: Vec<profile::Profile> = st.profiles.borrow().profiles.clone();
+    let mut rows = Vec::new();
+    let mut labels = Vec::new();
+    for p in profiles.iter().filter(|p| p.kind == "ssh") {
+        if p.host.trim().is_empty() {
+            continue;
+        }
+        let effective = known_hosts::effective_ssh(p);
+        let Ok(keys) = known_hosts::user_known_entries(p) else {
+            continue;
+        };
+        if keys.is_empty() {
+            continue;
+        }
+        let shown = keys.iter().take(3).map(|key| key.fingerprint.clone()).collect::<Vec<_>>().join(", ");
+        let suffix = if keys.len() > 3 {
+            format!(" +{}", keys.len() - 3)
+        } else {
+            String::new()
+        };
+        labels.push(slint::SharedString::from(format!(
+            "{} · {} · {} {} · {shown}{suffix}",
+            p.name,
+            effective.spec,
+            keys.len(),
+            if zh { "个密钥" } else { "keys" },
+        )));
+        rows.push(KnownHostRow { profile_id: p.id, spec: effective.spec });
+    }
+    st.known_hosts_rows = rows;
+    let count = st.known_hosts_rows.len();
+    st.ui
+        .set_known_hosts_items(ModelRc::from(Rc::new(VecModel::from(labels))));
+    let status = if count == 0 {
+        if zh {
+            "没有已应用的 known_hosts 条目".to_string()
+        } else {
+            "No applied known_hosts entries".to_string()
+        }
+    } else if zh {
+        format!("{count} 个 Profile 有已应用条目；删除后下次连接会重新确认主机密钥")
+    } else {
+        format!(
+            "{count} profile(s) with applied entries; deletion makes the next connection re-confirm the host key"
+        )
+    };
+    st.ui.set_known_hosts_status(status.into());
+}
+
+fn refresh_known_hosts_status(st: &mut AppState, status: &str) {
+    st.ui.set_known_hosts_status(status.into());
+}
+
+fn delete_known_host_row(st: &mut AppState, index: usize) {
+    let Some(row) = st.known_hosts_rows.get(index).cloned() else {
+        return;
+    };
+    let Some(p) = st
+        .profiles
+        .borrow()
+        .profiles
+        .iter()
+        .find(|p| p.id == row.profile_id)
+        .cloned()
+    else {
+        refresh_known_hosts(st);
+        return;
+    };
+    let zh = app_lang(st) == "zh";
+    match known_hosts::remove_known_host_entries(&p, &row.spec) {
+        Ok(0) => refresh_known_hosts_status(
+            st,
+            if zh {
+                "没有找到可删除的条目（可能已被外部修改）"
+            } else {
+                "No entries removed (already changed externally?)"
+            },
+        ),
+        Ok(changed) => {
+            // 进程内预检缓存作废：下次连接重新走首次确认流程。
+            st.hostkey_verified.remove(&hostkey_cache_key(&p));
+            refresh_known_hosts(st);
+            refresh_known_hosts_status(
+                st,
+                &if zh {
+                    format!("已删除 {} 的 {} 个 known_hosts 文件条目", row.spec, changed)
+                } else {
+                    format!("Deleted entries for {} from {} file(s)", row.spec, changed)
+                },
+            );
+        },
+        Err(error) => {
+            eprintln!("[known_hosts] 管理删除失败 host={}: {error}", row.spec);
+            refresh_known_hosts_status(
+                st,
+                &if zh {
+                    format!("删除失败: {error}")
+                } else {
+                    format!("Delete failed: {error}")
+                },
+            );
+        },
+    }
+}
+
 fn open_profile_tab_now(st: &mut AppState, index: usize, allow_askpass: bool) {
+    open_profile_tab_now_with_passphrase(st, index, allow_askpass, None);
+}
+
+/// 连接前检查加密私钥：没有 Vault 口令或口令错误时先弹小窗，不把用户丢给
+/// 系统 ssh 的终端提示，也不让 native 连接以红字失败。
+fn open_profile_tab_now_with_passphrase(
+    st: &mut AppState,
+    index: usize,
+    allow_askpass: bool,
+    native_key_passphrase: Option<String>,
+) {
+    if native_key_passphrase.is_none()
+        && maybe_prompt_key_passphrase(st, index, allow_askpass)
+    {
+        return;
+    }
     let (spec, askpass) = match build_profile_launch_with(st, index, allow_askpass) {
         Ok(v) => v,
         Err(err @ (ProfileLaunchError::NotFound | ProfileLaunchError::UnknownKind(_))) => {
@@ -6171,7 +6360,258 @@ fn open_profile_tab_now(st: &mut AppState, index: usize, allow_askpass: bool) {
             return;
         }
     };
-    open_profile_spec_tab(st, index, spec, askpass);
+    open_profile_spec_tab(st, index, spec, askpass, native_key_passphrase);
+}
+
+/// 判定是否需要口令弹窗；返回 true 表示本次打开已转成交互（调用方必须 return）。
+fn maybe_prompt_key_passphrase(st: &mut AppState, index: usize, allow_askpass: bool) -> bool {
+    if !allow_askpass {
+        return false;
+    }
+    let Some(p) = st.profiles.borrow().profiles.get(index).cloned() else {
+        return false;
+    };
+    // 系统 ssh / plugin 路径不需要 native 口令；known_hosts 未确认时先走确认流程。
+    if p.kind != "ssh" || !ssh_native::can_use(&p) || !ssh_native::key_needs_passphrase(&p) {
+        return false;
+    }
+    let saved = if p.save_key_passphrase {
+        match st.vault.with(|vault| vault.get_key_passphrase(p.id)) {
+            Ok(passphrase) => Some(passphrase),
+            Err(vault::VaultError::Locked | vault::VaultError::NotInitialized) => {
+                prompt_vault_unlock(
+                    st,
+                    "Vault 已锁定：请先解锁 Vault（或取消保存口令）后重试该 SSH Profile",
+                );
+                return true;
+            },
+            Err(_) => None,
+        }
+    } else {
+        None
+    };
+    let state = ssh_native::key_passphrase_state(&p, saved.as_deref());
+    match state {
+        ssh_native::KeyPassphraseState::NotNeeded
+        | ssh_native::KeyPassphraseState::Ready => false,
+        ssh_native::KeyPassphraseState::Missing => {
+            request_key_passphrase(st, index, KeyPassphraseAction::OpenProfile, None, None);
+            true
+        },
+        ssh_native::KeyPassphraseState::Invalid => {
+            request_key_passphrase(
+                st,
+                index,
+                KeyPassphraseAction::OpenProfile,
+                None,
+                Some("Vault 中保存的口令无法解密该私钥，请重新输入"),
+            );
+            true
+        },
+    }
+}
+
+/// 打开可复用的私钥口令弹窗。口令值由 Slint 输入框持有，Rust 不落盘、不写日志。
+fn request_key_passphrase(
+    st: &mut AppState,
+    index: usize,
+    action: KeyPassphraseAction,
+    pane: Option<PaneId>,
+    initial_error: Option<&str>,
+) {
+    let Some(p) = st.profiles.borrow().profiles.get(index).cloned() else {
+        return;
+    };
+    let zh = app_lang(st) == "zh";
+    let title = match (action, zh) {
+        (KeyPassphraseAction::OpenProfile, true) => "需要私钥口令",
+        (KeyPassphraseAction::OpenProfile, false) => "Private key passphrase required",
+        (KeyPassphraseAction::RetryPane, true) => "私钥口令错误，请重试",
+        (KeyPassphraseAction::RetryPane, false) => "Private key passphrase rejected",
+    };
+    let detail = if zh {
+        format!(
+            "{} · {}@{}:{}\n私钥: {}\n\n只用于本次连接；勾选保存后写入 Vault（不是明文配置）。",
+            p.name,
+            p.user.trim(),
+            p.host.trim(),
+            p.port,
+            p.key_path.trim()
+        )
+    } else {
+        format!(
+            "{} · {}@{}:{}\nPrivate key: {}\n\nUsed for this connection only; saving writes to the encrypted Vault, never to plain config.",
+            p.name,
+            p.user.trim(),
+            p.host.trim(),
+            p.port,
+            p.key_path.trim()
+        )
+    };
+    eprintln!(
+        "[ssh-auth] 请求私钥口令 profile={} action={action:?}",
+        p.id
+    );
+    st.key_passphrase_prompt = Some(KeyPassphrasePrompt {
+        profile_index: index,
+        profile_id: p.id,
+        action,
+        pane,
+    });
+    let submit_label = match (action, zh) {
+        (KeyPassphraseAction::OpenProfile, true) => "连接",
+        (KeyPassphraseAction::OpenProfile, false) => "Connect",
+        (KeyPassphraseAction::RetryPane, true) => "重试",
+        (KeyPassphraseAction::RetryPane, false) => "Retry",
+    };
+    st.ui.set_passkey_open(true);
+    st.ui.set_passkey_title(title.into());
+    st.ui.set_passkey_detail(detail.as_str().into());
+    st.ui.set_passkey_value("".into());
+    st.ui.set_passkey_save(p.save_key_passphrase);
+    st.ui.set_passkey_error(initial_error.unwrap_or("").into());
+    st.ui.set_passkey_submit_label(submit_label.into());
+    st.ui
+        .set_passkey_focus_token(st.ui.get_passkey_focus_token().wrapping_add(1));
+}
+
+/// 让 Slint 把焦点放回口令输入框（点按钮/校验失败后）。
+fn refocus_passkey_input(st: &mut AppState) {
+    st.ui
+        .set_passkey_focus_token(st.ui.get_passkey_focus_token().wrapping_add(1));
+}
+
+/// 弹窗提交：先本地解密校验（不联网），通过后才保存 Vault/继续连接。
+fn submit_key_passphrase(st: &mut AppState) {
+    let Some(prompt) = st.key_passphrase_prompt.clone() else {
+        return;
+    };
+    let passphrase = st.ui.get_passkey_value().to_string();
+    let zh = app_lang(st) == "zh";
+    if passphrase.is_empty() {
+        st.ui.set_passkey_error(
+            if zh { "口令不能为空" } else { "Passphrase cannot be empty" }.into(),
+        );
+        refocus_passkey_input(st);
+        return;
+    }
+    let Some(p) = st
+        .profiles
+        .borrow()
+        .profiles
+        .get(prompt.profile_index)
+        .cloned()
+    else {
+        cancel_key_passphrase(st);
+        return;
+    };
+    if p.id != prompt.profile_id {
+        // Profile 列表在弹窗期间被重排/删除：按 ID 重新定位，避免把口令用到
+        // 另一条 Profile 上。
+        let Some(index) = st
+            .profiles
+            .borrow()
+            .profiles
+            .iter()
+            .position(|candidate| candidate.id == prompt.profile_id)
+        else {
+            cancel_key_passphrase(st);
+            return;
+        };
+        let mut updated = prompt.clone();
+        updated.profile_index = index;
+        st.key_passphrase_prompt = Some(updated);
+        return submit_key_passphrase(st);
+    }
+    if let Err(error) = ssh_native::validate_key_passphrase(&p, &passphrase) {
+        eprintln!("[ssh-auth] 口令校验失败 profile={}", p.id);
+        st.ui.set_passkey_error(error.into());
+        st.ui.set_passkey_value("".into());
+        refocus_passkey_input(st);
+        return;
+    }
+    if st.ui.get_passkey_save() {
+        if !st.vault.borrow().is_unlocked() {
+            st.ui.set_passkey_error(
+                if zh {
+                    "Vault 未解锁，无法保存口令；请取消勾选或先解锁 Vault"
+                } else {
+                    "Vault is locked; uncheck save or unlock the Vault first"
+                }
+                .into(),
+            );
+            st.ui.set_passkey_value("".into());
+            refocus_passkey_input(st);
+            return;
+        }
+        if let Err(error) = st
+            .vault
+            .with_mut(|vault| vault.set_key_passphrase(p.id, &passphrase))
+        {
+            eprintln!("[ssh-auth] 保存口令到 Vault 失败 profile={}: {error}", p.id);
+            st.ui.set_passkey_error(
+                format!(
+                    "{}: {error}",
+                    if zh { "保存口令失败" } else { "Saving passphrase failed" }
+                )
+                .into(),
+            );
+            st.ui.set_passkey_value("".into());
+            refocus_passkey_input(st);
+            return;
+        }
+        // 只持久化“是否保存”开关；口令本身在 Vault。
+        if !p.save_key_passphrase {
+            if let Some(profile) = st
+                .profiles
+                .borrow_mut()
+                .profiles
+                .iter_mut()
+                .find(|candidate| candidate.id == p.id)
+            {
+                profile.save_key_passphrase = true;
+            }
+            st.profiles.borrow().save();
+        }
+        eprintln!("[ssh-auth] 口令已保存到 Vault profile={}", p.id);
+    }
+    st.key_passphrase_prompt = None;
+    st.ui.set_passkey_open(false);
+    st.ui.set_passkey_value("".into());
+    st.ui.set_passkey_error("".into());
+    match prompt.action {
+        KeyPassphraseAction::OpenProfile => {
+            open_profile_tab_now_with_passphrase(
+                st,
+                prompt.profile_index,
+                true,
+                Some(passphrase),
+            );
+        },
+        KeyPassphraseAction::RetryPane => {
+            let Some(pane) = prompt.pane else { return };
+            let notice = SshExitNotice {
+                pane: Some(pane),
+                profile_id: Some(p.id),
+                text: String::new(),
+                retry: RetryAction::RestartPane,
+            };
+            restart_exited_pane_with_passphrase(st, notice, Some(passphrase));
+        },
+    }
+}
+
+fn cancel_key_passphrase(st: &mut AppState) {
+    if let Some(prompt) = st.key_passphrase_prompt.take() {
+        eprintln!(
+            "[ssh-auth] 用户取消口令输入 profile={} action={:?}",
+            prompt.profile_id, prompt.action
+        );
+    }
+    st.ui.set_passkey_open(false);
+    st.ui.set_passkey_value("".into());
+    st.ui.set_passkey_error("".into());
+    refocus_after_modal(st);
 }
 
 /// `ssh.connect <profile-id|name>` / `TERVO_PLUGIN_SSH_CONNECT`：
@@ -6207,7 +6647,7 @@ fn open_plugin_ssh_tab(st: &mut AppState, index: usize) {
         "[plugin-ssh] ssh.connect profile={} id={}",
         spec.name, spec.id
     );
-    open_profile_spec_tab(st, index, spec, askpass);
+    open_profile_spec_tab(st, index, spec, askpass, None);
 }
 
 /// 按 id（数字）或名字找 Profile 下标；精确名字优先，其次大小写不敏感。
@@ -6268,12 +6708,21 @@ fn open_profile_spec_tab(
     index: usize,
     spec: profile::Profile,
     askpass: Option<askpass::Askpass>,
+    native_key_passphrase: Option<String>,
 ) {
     let id = st.shared.alloc_pane_id();
     // LOCAL-003：自定义标题优先；空标题回退 Profile 名，避免出现空 Tab。
     let tab_title = spec.effective_title().to_string();
     let kind = spec.kind.clone();
-    match create_pane(st, id, st.content, None, Some(&spec), askpass) {
+    match create_pane(
+        st,
+        id,
+        st.content,
+        None,
+        Some(&spec),
+        askpass,
+        native_key_passphrase,
+    ) {
         Ok(rt) => {
             st.panes.insert(id, rt);
             st.ws.tabs.push(Tab::single(id, tab_title.clone()));
@@ -6476,6 +6925,42 @@ fn note_ssh_exit(
         RetryAction::RestartPane,
     );
 
+    // native 线程报告私钥口令失败：不要只留红字，直接弹可重试的口令框。
+    // 自动重连会拿同一个错口令再失败一次，这里先跳过调度。
+    let passphrase_failed = st
+        .panes
+        .get(&pane)
+        .and_then(|rt| rt.native_status.as_ref())
+        .is_some_and(|status| status.key_passphrase_failed());
+    if passphrase_failed {
+        if let Some(p) = &profile {
+            if p.auth == "key" {
+                let prompt_index = {
+                    st.profiles
+                        .borrow()
+                        .profiles
+                        .iter()
+                        .position(|candidate| candidate.id == p.id)
+                };
+                if let Some(index) = prompt_index {
+                    eprintln!("[ssh-auth] native 报告私钥口令失败，重新弹窗 profile={}", p.id);
+                    request_key_passphrase(
+                        st,
+                        index,
+                        KeyPassphraseAction::RetryPane,
+                        Some(pane),
+                        Some(if zh {
+                            "私钥加载失败：口令错误，或 Vault 中的口令已过期"
+                        } else {
+                            "Private key could not be decrypted: wrong or stale passphrase"
+                        }),
+                    );
+                    return;
+                }
+            }
+        }
+    }
+
     if let Some(rt) = st.panes.get(&pane) {
         eprintln!(
             "[connection] pane={pane} state={:?} retries={}/{} detail={:?}",
@@ -6609,6 +7094,15 @@ fn reconnect_ssh_exit(st: &mut AppState) {
 /// 不自动循环重连（避免断网时刷屏/打爆服务器）；主密码在 Vault 里且已解锁时
 /// 仍走 askpass。主机密钥变更由 ssh 自己拒绝（askpass 对非密码 prompt 回答 no）。
 fn restart_exited_pane(st: &mut AppState, notice: SshExitNotice) {
+    restart_exited_pane_with_passphrase(st, notice, None);
+}
+
+/// [`restart_exited_pane`] 的口令重试版本：用户从弹窗输入的口令只传这一次。
+fn restart_exited_pane_with_passphrase(
+    st: &mut AppState,
+    notice: SshExitNotice,
+    native_key_passphrase: Option<String>,
+) {
     let Some(pane) = notice.pane else {
         return;
     };
@@ -6621,7 +7115,7 @@ fn restart_exited_pane(st: &mut AppState, notice: SshExitNotice) {
         // 系统 shell / 无 Profile 的本地 pane：同格重开默认 shell。
         // 先建新 runtime 再替换旧 runtime：创建失败时 Tab 里仍有旧 pane（最后一帧），
         // 不会留下指向空 pane 的布局。
-        match create_pane(st, pane, rect, None, None, None) {
+        match create_pane(st, pane, rect, None, None, None, None) {
             Ok(rt) => {
                 st.panes.remove(&pane);
                 st.panes.insert(pane, rt);
@@ -6688,7 +7182,15 @@ fn restart_exited_pane(st: &mut AppState, notice: SshExitNotice) {
     };
     // 旧 runtime 已经退出；换掉它但保留 pane id（Tab/分屏布局不变）。
     // 同样先创建成功再替换，失败时旧 pane 继续兜住布局。
-    match create_pane(st, pane, rect, None, Some(&spec), askpass) {
+    match create_pane(
+        st,
+        pane,
+        rect,
+        None,
+        Some(&spec),
+        askpass,
+        native_key_passphrase,
+    ) {
         Ok(rt) => {
             st.panes.remove(&pane);
             st.panes.insert(pane, rt);
@@ -8786,6 +9288,7 @@ fn duplicate_tab(st: &mut AppState, index: usize) {
             cwd.as_ref().map(PathBuf::from),
             profile.as_ref(),
             askpass,
+            None,
         ) {
             Ok(rt) => {
                 st.panes.insert(new_ids[i], rt);
@@ -9004,6 +9507,7 @@ fn restore_tab_snapshot(st: &mut AppState, tab_snap: &session::TabSnapshot) -> O
             cwd.as_ref().map(PathBuf::from),
             profile.as_ref(),
             askpass,
+            None,
         ) {
             Ok(rt) => {
                 st.panes.insert(ids[i], rt);
@@ -9254,7 +9758,7 @@ fn split_pane_inner(st: &mut AppState, id: PaneId, dir: Dir) {
         ),
     };
     let new_id = st.shared.alloc_pane_id();
-    match create_pane(st, new_id, new_rect, None, None, None) {
+    match create_pane(st, new_id, new_rect, None, None, None, None) {
         Ok(rt) => {
             st.panes.insert(new_id, rt);
             st.ws.tabs[tab_index].split(id, dir, new_id);
@@ -10387,6 +10891,7 @@ fn rebuild_tabs(st: &mut AppState) {
     let active = st.ws.active;
     let zh = app_lang(st) == "zh";
     let mut active_connection: Option<connection::ConnectionStatus> = None;
+    let mut active_agent_forward = ssh_native::AgentForwardState::NotRequested;
     let tabs: Vec<TabView> = st
         .ws
         .tabs
@@ -10415,6 +10920,20 @@ fn rebuild_tabs(st: &mut AppState) {
                 .unwrap_or_default();
             if i == active {
                 active_connection = Some(conn_best.clone());
+                // agent forwarding 只在活动 Tab 上显示；Activity/Denied 优先于
+                // Unavailable，避免分屏里另一条无 agent 的连接把状态盖掉。
+                active_agent_forward = t
+                    .panes()
+                    .iter()
+                    .filter_map(|id| st.panes.get(id))
+                    .map(|rt| rt.agent_forward)
+                    .max_by_key(|state| match state {
+                        ssh_native::AgentForwardState::Active => 3,
+                        ssh_native::AgentForwardState::Denied => 2,
+                        ssh_native::AgentForwardState::Unavailable => 1,
+                        ssh_native::AgentForwardState::NotRequested => 0,
+                    })
+                    .unwrap_or(ssh_native::AgentForwardState::NotRequested);
             }
             TabView {
                 title: t.title.clone().into(),
@@ -10441,6 +10960,49 @@ fn rebuild_tabs(st: &mut AppState) {
         .set_connection_label(active_connection.label(zh).as_str().into());
     st.ui
         .set_connection_tooltip(active_connection.tooltip(zh).as_str().into());
+    // agent forwarding 状态单独显示，避免只藏在连接 tooltip 里；断开/失败后
+    // 不再显示旧的“已启用”，防止误导。
+    let (forward_status, forward_active) = if matches!(
+        active_connection.state,
+        connection::ConnectionState::None
+            | connection::ConnectionState::Disconnected
+            | connection::ConnectionState::Failed
+    ) {
+        (String::new(), false)
+    } else {
+        match active_agent_forward {
+            ssh_native::AgentForwardState::Active => (
+                if zh {
+                    "代理转发：已启用"
+                } else {
+                    "agent forwarding: on"
+                }
+                .to_string(),
+                true,
+            ),
+            ssh_native::AgentForwardState::Denied => (
+                if zh {
+                    "代理转发：服务器拒绝"
+                } else {
+                    "agent forwarding: denied"
+                }
+                .to_string(),
+                false,
+            ),
+            ssh_native::AgentForwardState::Unavailable => (
+                if zh {
+                    "代理转发：本机无 agent"
+                } else {
+                    "agent forwarding: no local agent"
+                }
+                .to_string(),
+                false,
+            ),
+            ssh_native::AgentForwardState::NotRequested => (String::new(), false),
+        }
+    };
+    st.ui.set_forward_status(forward_status.as_str().into());
+    st.ui.set_forward_status_active(forward_active);
     st.ui.set_pinned_count(st.ws.pinned_count() as i32);
     // Tab 模型重建时任何进行中的落点都不再有效（拖拽中不会触发 rebuild）。
     st.ui.set_drop_index(-1);
@@ -15384,6 +15946,17 @@ fn poll_connections(st: &mut AppState) {
             changed = true;
             eprintln!("[connection] pane={id} state=connected source=first-output");
         }
+        if let Some(status) = &rt.native_status {
+            let state = status.agent_forward();
+            if state != rt.agent_forward {
+                rt.agent_forward = state;
+                changed = true;
+                eprintln!(
+                    "[ssh-native] pane={id} agent_forward={:?}",
+                    state
+                );
+            }
+        }
     }
     if changed {
         rebuild_tabs(st);
@@ -16094,6 +16667,8 @@ fn build_window_state(
         hostkey_prompt: None,
         hostkey_verified: std::collections::HashSet::new(),
         ssh_exit: None,
+        key_passphrase_prompt: None,
+        known_hosts_rows: Vec::new(),
         sftp_profiles: Vec::new(),
         sftp_model,
         sftp_entries: Vec::new(),
@@ -18014,6 +18589,12 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
     ui.on_hostkey_cancel(move || {
         runtime::with_window(window_id, |st| hostkey_cancel(st));
     });
+    ui.on_passkey_submit(move || {
+        runtime::with_window(window_id, |st| submit_key_passphrase(st));
+    });
+    ui.on_passkey_cancel(move || {
+        runtime::with_window(window_id, |st| cancel_key_passphrase(st));
+    });
 
     ui.on_ssh_exit_reconnect(move || {
         runtime::with_window(window_id, |st| reconnect_ssh_exit(st));
@@ -18440,8 +19021,19 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
         runtime::with_window(window_id, |st| copy_help_diagnostics(st));
     });
 
+    ui.on_known_hosts_refresh(move || {
+        runtime::with_window(window_id, |st| refresh_known_hosts(st));
+    });
+    ui.on_known_hosts_delete(move |index| {
+        runtime::with_window(window_id, |st| delete_known_host_row(st, index.max(0) as usize));
+    });
+
     ui.on_settings_category_changed(move |c| {
         runtime::with_window(window_id, |st| {
+            if c == 3 {
+                // 每次进入 Advanced 都重新读 known_hosts（外部可能刚改过）。
+                refresh_known_hosts(st);
+            }
             if c == 6 {
                 refresh_vault_ui(st);
             } else {
