@@ -874,10 +874,14 @@ impl FontSet {
         };
 
         for paths in candidates {
-            let regular = load_face(&paths, 0, 0)?;
-            let bold = load_face(&paths, 1, 0)?;
-            let italic = load_face(&paths, 2, 0)?;
-            let bold_italic = load_face(&paths, 3, 1)?;
+            // 某个候选的四套 face 不齐（例如只装了 DejaVu、没有 JetBrains：
+            // bold_italic 会回退到同样不存在的 JetBrains Bold）时必须继续试下一个
+            // 候选，不能 `?` 直接结束整个加载。否则有可用字体的机器也会被判成
+            // “没有等宽字体”，像素差分测试全部红。
+            let Some(regular) = load_face(&paths, 0, 0) else { continue };
+            let Some(bold) = load_face(&paths, 1, 0) else { continue };
+            let Some(italic) = load_face(&paths, 2, 0) else { continue };
+            let Some(bold_italic) = load_face(&paths, 3, 1) else { continue };
 
             let metrics = &regular;
             let adv = metrics.metrics('M', px).advance_width + opts.letter_spacing;

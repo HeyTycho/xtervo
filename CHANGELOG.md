@@ -21,6 +21,9 @@ Tervo 的版本与 tag 规则见 `docs/RELEASING.md`。
 
 ### Fixed
 
+- 字体加载：候选字体四套 face 不齐时（例如系统只有 DejaVu、没有 JetBrains
+  Mono）继续尝试下一个候选，而不是直接判定“没有等宽字体”。修复只有 DejaVu 的
+  机器上像素差分测试全红、以及默认字体链可能加载失败的问题。
 - 全仓 review（2026-11-18）后的安全/数据/输入修复：
   - OSC 52：远端 pane 默认禁止查询本机剪贴板（新配置 `osc52_remote_read=false`）；
     `osc52` 未知值按 deny，不再 fail-open。剪贴板复制日志只记长度，不记内容。
