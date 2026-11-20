@@ -92,6 +92,16 @@ pub struct Profile {
     pub proxy_jump: String,
     /// 是否请求 ssh agent forwarding（`ssh -A`）。
     pub agent_forward: bool,
+    /// 可选算法列表（逗号分隔，OpenSSH `-o` 语法）；空 = 库/系统默认。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub ciphers: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub macs: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub kex_algorithms: String,
+    /// ProxyCommand（系统 ssh `-o ProxyCommand=...`；native 回退系统 ssh）。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub proxy_command: String,
     /// X11 forwarding（系统 ssh 路径用 `-X`；native 暂回退系统 ssh）。
     #[serde(default)]
     pub x11_forward: bool,
@@ -375,6 +385,10 @@ impl Default for Profile {
             proxy_jump: String::new(),
             agent_forward: false,
             x11_forward: false,
+            ciphers: String::new(),
+            macs: String::new(),
+            kex_algorithms: String::new(),
+            proxy_command: String::new(),
             login_scripts: Vec::new(),
             transport: String::new(),
             serial_port: String::new(),
@@ -585,6 +599,22 @@ impl Profile {
             args.push("-D".to_string());
             args.push(f.clone());
         }
+        if !self.ciphers.trim().is_empty() {
+            args.push("-o".into());
+            args.push(format!("Ciphers={}", self.ciphers.trim()));
+        }
+        if !self.macs.trim().is_empty() {
+            args.push("-o".into());
+            args.push(format!("MACs={}", self.macs.trim()));
+        }
+        if !self.kex_algorithms.trim().is_empty() {
+            args.push("-o".into());
+            args.push(format!("KexAlgorithms={}", self.kex_algorithms.trim()));
+        }
+        if !self.proxy_command.trim().is_empty() {
+            args.push("-o".into());
+            args.push(format!("ProxyCommand={}", self.proxy_command.trim()));
+        }
         args.extend(self.extra_args.iter().filter(|a| !a.trim().is_empty()).cloned());
         args.push(self.host.trim().to_string());
         ("ssh".to_string(), args)
@@ -681,6 +711,16 @@ impl Profile {
                 }
                 if self.auth == "key" && self.key_path.trim().is_empty() {
                     return Err("选择 key 认证时必须填私钥路径".into());
+                }
+                for (name, value) in [
+                    ("Ciphers", &self.ciphers),
+                    ("MACs", &self.macs),
+                    ("KexAlgorithms", &self.kex_algorithms),
+                    ("ProxyCommand", &self.proxy_command),
+                ] {
+                    if value.chars().any(|c| c.is_control() || c == '\n' || c == '\r') {
+                        return Err(format!("{name} 不能包含换行/控制字符"));
+                    }
                 }
                 for f in &self.local_forwards {
                     validate_forward(f)?;
@@ -1545,6 +1585,20 @@ shell = "/bin/sh"
         let mut x11 = agent.clone();
         x11.x11_forward = true;
         assert!(x11.ssh_command().1.contains(&"-X".to_string()));
+        let mut alg = agent.clone();
+        alg.ciphers = "aes256-gcm@openssh.com".into();
+        alg.macs = "hmac-sha2-256".into();
+        alg.kex_algorithms = "curve25519-sha256".into();
+        alg.proxy_command = "nc %h %p".into();
+        let args = alg.ssh_command().1;
+        for item in [
+            "Ciphers=aes256-gcm@openssh.com",
+            "MACs=hmac-sha2-256",
+            "KexAlgorithms=curve25519-sha256",
+            "ProxyCommand=nc %h %p",
+        ] {
+            assert!(args.contains(&item.to_string()), "{args:?}");
+        }
 
         let with_extra = Profile {
             kind: "ssh".into(),

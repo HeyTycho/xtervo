@@ -7518,6 +7518,10 @@ fn open_profile_form(st: &mut AppState) {
     st.ui.set_form_proxy_jump("".into());
     st.ui.set_form_agent_forward(false);
     st.ui.set_form_x11_forward(false);
+    st.ui.set_form_ciphers("".into());
+    st.ui.set_form_macs("".into());
+    st.ui.set_form_kex_algorithms("".into());
+    st.ui.set_form_proxy_command("".into());
     st.ui.set_form_login_scripts("".into());
     st.ui.set_form_serial_port("/dev/ttyUSB0".into());
     st.ui.set_form_baud("115200".into());
@@ -7595,6 +7599,10 @@ fn edit_profile_form(st: &mut AppState, index: usize) {
     st.ui.set_form_proxy_jump(p.proxy_jump.as_str().into());
     st.ui.set_form_agent_forward(p.agent_forward);
     st.ui.set_form_x11_forward(p.x11_forward);
+    st.ui.set_form_ciphers(p.ciphers.as_str().into());
+    st.ui.set_form_macs(p.macs.as_str().into());
+    st.ui.set_form_kex_algorithms(p.kex_algorithms.as_str().into());
+    st.ui.set_form_proxy_command(p.proxy_command.as_str().into());
     st.ui
         .set_form_login_scripts(p.login_scripts.join("\n").as_str().into());
     st.ui.set_form_serial_port(p.serial_port.as_str().into());
@@ -7720,6 +7728,10 @@ fn save_profile_form(st: &mut AppState) {
             p.proxy_jump = st.ui.get_form_proxy_jump().trim().to_string();
             p.agent_forward = st.ui.get_form_agent_forward();
             p.x11_forward = st.ui.get_form_x11_forward();
+            p.ciphers = st.ui.get_form_ciphers().trim().to_string();
+            p.macs = st.ui.get_form_macs().trim().to_string();
+            p.kex_algorithms = st.ui.get_form_kex_algorithms().trim().to_string();
+            p.proxy_command = st.ui.get_form_proxy_command().trim().to_string();
             p.login_scripts = st
                 .ui
                 .get_form_login_scripts()
@@ -8378,6 +8390,11 @@ fn sftp_set_status(st: &mut AppState, msg: &str) {
 
 /// 当前选中行的真实远端条目（展示行只用于渲染，路径从 name 取）。
 fn sftp_selected_entry(st: &AppState) -> Option<sftp::RemoteEntry> {
+    // 列表必须对应当前 Remote 输入框；否则用户改了目录后点旧行，
+    // 路径会按新目录拼接，可能删到没浏览过的树。要求重新 List。
+    if st.sftp_listed_remote.as_deref() != Some(st.ui.get_sftp_remote().as_str()) {
+        return None;
+    }
     let selected = st.ui.get_sftp_selected();
     st.sftp_entries.get(selected.max(0) as usize).cloned()
 }

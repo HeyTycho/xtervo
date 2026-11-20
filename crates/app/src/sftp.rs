@@ -483,7 +483,9 @@ pub fn parse_list_long(out: &str) -> Vec<RemoteEntry> {
             continue;
         }
         if let Some(entry) = parse_long_entry(line) {
-            entries.push(entry);
+            if entry.name != "." && entry.name != ".." {
+                entries.push(entry);
+            }
         } else if !looks_like_long_line(line) {
             // 不是长格式：某些服务器/假脚本会直接返回纯文件名，保留它们。
             let name = line.trim_end();
@@ -505,11 +507,11 @@ fn parse_short_entries(out: &str) -> Vec<RemoteEntry> {
 }
 
 fn ls_long_batch(remote: &str) -> String {
-    format!("ls -l {}\n", quote_batch_path(remote))
+    format!("ls -la {}\n", quote_batch_path(remote))
 }
 
 fn ls_short_batch(remote: &str) -> String {
-    format!("ls -1 {}\n", quote_batch_path(remote))
+    format!("ls -1a {}\n", quote_batch_path(remote))
 }
 
 /// `ls -l` 优先、失败/空输出回退 `ls -1`；`run` 由调用方注入超时/取消。
@@ -958,7 +960,12 @@ where
         match entry.is_dir {
             Some(true) => remove_tree_inner(budget, run, &child, depth + 1)?,
             Some(false) => files.push(child),
-            None => remove_unknown_entry(budget, run, &child, depth + 1)?,
+            None => {
+                return Err(format!(
+                    "无法确认 {} 是目录（仅名称列表），拒绝递归删除；请先获取 ls -l 元数据",
+                    child
+                ))
+            },
         }
     }
     if files.is_empty() {
@@ -973,48 +980,6 @@ where
     budget.run(run, &batch).map(|_| ())
 }
 
-/// `ls -1` 回退条目类型未知：先 rm，再 rmdir，仍失败才按目录列举递归。
-/// 这样符号链接只会被 `rm` 删除，绝不会跟随链接展开目标目录。
-fn remove_unknown_entry<F>(
-    budget: &DeleteBudget<'_>,
-    run: &mut F,
-    path: &str,
-    depth: usize,
-) -> Result<(), String>
-where
-    F: FnMut(&str, Duration) -> Result<String, String>,
-{
-    if depth > RECURSIVE_DELETE_MAX_DEPTH {
-        return Err(format!(
-            "递归删除超过最大深度 {RECURSIVE_DELETE_MAX_DEPTH}: {path}"
-        ));
-    }
-    let rm_batch = format!("rm {}\n", quote_batch_path(path));
-    let first = match budget.run(run, &rm_batch) {
-        Ok(_) => return Ok(()),
-        Err(error) if is_terminal_sftp_error(&error) => return Err(error),
-        Err(error) => error,
-    };
-    let rmdir_batch = format!("rmdir {}\n", quote_batch_path(path));
-    let second = match budget.run(run, &rmdir_batch) {
-        Ok(_) => return Ok(()),
-        Err(error) if is_terminal_sftp_error(&error) => return Err(error),
-        Err(error) => error,
-    };
-    let entries = match list_entries_with(path, |batch| budget.run(run, batch)) {
-        Ok(entries) => entries,
-        Err(list_error) => {
-            return Err(format!(
-                "删除 {path} 失败（rm: {first}; rmdir: {second}; list: {list_error}）"
-            ));
-        },
-    };
-    if entries.is_empty() {
-        return Err(format!("删除 {path} 失败（rm: {first}; rmdir: {second}）"));
-    }
-    remove_children(budget, run, path, entries, depth)?;
-    budget.run(run, &rmdir_batch).map(|_| ())
-}
 
 /// 把 UI 里的权限输入解析成八进制权限位。
 ///
@@ -2364,7 +2329,7 @@ drwxr-xr-x    2 yt   staff        4096 Nov 20 10:00 .
         let list = SftpCommand::List { target: target(), remote: remote.into() }
             .execute_with(&script, Duration::from_secs(2));
         assert!(matches!(list, SftpOutcome::List { items: Ok(_), .. }), "{list:?}");
-        assert_eq!(read(), format!("ls -l {quoted}\n"), "list 必须转义远端路径");
+        assert_eq!(read(), format!("ls -la {quoted}\n"), "list 必须转义远端路径");
 
         let _ = SftpCommand::Mkdir { target: target(), remote: remote.into() }
             .execute_with(&script, Duration::from_secs(2));
@@ -2439,7 +2404,7 @@ drwxr-xr-x    2 yt   staff        4096 Nov 20 10:00 .
         }
         assert_eq!(
             std::fs::read_to_string(&capture).unwrap(),
-            format!("ls -1 {quoted}\n"),
+            format!("ls -1a {quoted}\n"),
             "回退分支也必须调用 quote_batch_path"
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -2941,7 +2906,10 @@ drwxr-xr-x    2 yt   staff        4096 Nov 20 10:00 .
             let mut output = String::new();
             for line in batch.lines().map(str::trim).filter(|line| !line.is_empty()) {
                 self.log.push(line.to_string());
-                if let Some(rest) = line.strip_prefix("ls -l ") {
+                let long = line
+                    .strip_prefix("ls -la ")
+                    .or_else(|| line.strip_prefix("ls -l "));
+                if let Some(rest) = long {
                     let path = unquote_batch_path(rest);
                     if !self.dirs.contains(&path) {
                         return Err(format!("Can't ls: {path}: No such file"));
@@ -2953,7 +2921,10 @@ drwxr-xr-x    2 yt   staff        4096 Nov 20 10:00 .
                         output.push_str(&self.long_line(&child));
                         output.push('\n');
                     }
-                } else if let Some(rest) = line.strip_prefix("ls -1 ") {
+                } else if let Some(rest) = line
+                    .strip_prefix("ls -1a ")
+                    .or_else(|| line.strip_prefix("ls -1 "))
+                {
                     let path = unquote_batch_path(rest);
                     if !self.dirs.contains(&path) {
                         return Err(format!("Can't ls: {path}: No such file"));
@@ -3040,7 +3011,7 @@ drwxr-xr-x    2 yt   staff        4096 Nov 20 10:00 .
 
     #[cfg(unix)]
     #[test]
-    fn recursive_delete_handles_name_only_fallback_lists() {
+    fn recursive_delete_refuses_name_only_fallback_lists() {
         let mut fake = FakeRemote { short_only: true, ..Default::default() };
         fake.dir("/root");
         fake.dir("/root/sub");
@@ -3048,15 +3019,11 @@ drwxr-xr-x    2 yt   staff        4096 Nov 20 10:00 .
         fake.file("/root/a.txt");
         fake.file("/root/sub/b.txt");
 
-        remove_tree_with("/root", Duration::from_secs(5), None, |batch, _| fake.apply(batch))
-            .expect("只有 ls -1 时也应逐层删除");
-
-        assert!(!fake.dirs.contains("/root"));
-        assert!(!fake.dirs.contains("/root/sub"));
-        assert!(!fake.dirs.contains("/root/empty"));
-        assert!(!fake.files.contains("/root/a.txt"));
-        assert!(!fake.files.contains("/root/sub/b.txt"));
-        assert_eq!(fake.log.last().map(String::as_str), Some("rmdir \"/root\""));
+        let error = remove_tree_with("/root", Duration::from_secs(5), None, |batch, _| fake.apply(batch))
+            .expect_err("只有 ls -1 时类型未知，必须拒绝递归删除");
+        assert!(error.contains("无法确认"), "{error}");
+        assert!(fake.dirs.contains("/root"));
+        assert!(fake.files.contains("/root/a.txt"), "拒绝后不能删文件");
     }
 
     #[cfg(unix)]

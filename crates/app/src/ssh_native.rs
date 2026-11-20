@@ -218,7 +218,12 @@ pub fn can_use(profile: &Profile) -> bool {
     if !profile.is_native_ssh() {
         return false;
     }
-    if profile.x11_forward {
+    if profile.x11_forward
+        || !profile.proxy_command.trim().is_empty()
+        || !profile.ciphers.trim().is_empty()
+        || !profile.macs.trim().is_empty()
+        || !profile.kex_algorithms.trim().is_empty()
+    {
         return false;
     }
     if !profile.extra_args.iter().all(|arg| arg.trim().is_empty()) {
@@ -1128,7 +1133,10 @@ async fn run_login_scripts(
             return Err(format!("登录脚本发送命令失败（第 {} 条）: {error}", index + 1));
         }
         if let Some(wait_for) = &step.wait_for {
-            let mut seen = String::new();
+            // 按字节匹配/裁剪：SSH data 分块可能切在 UTF-8 中间，逐块
+            // from_utf8_lossy 会破坏中文提示符；裁剪也不能按 String 边界切。
+            let wait_bytes = wait_for.as_bytes();
+            let mut seen: Vec<u8> = Vec::new();
             let deadline = tokio::time::Instant::now() + step.timeout;
             let mut matched = false;
             while !closed.load(Ordering::Acquire) {
@@ -1141,8 +1149,8 @@ async fn run_login_scripts(
                         if out.send(Some(data.to_vec())).await.is_err() {
                             return Ok(());
                         }
-                        seen.push_str(&String::from_utf8_lossy(&data));
-                        if seen.contains(wait_for) {
+                        seen.extend_from_slice(&data);
+                        if seen.windows(wait_bytes.len()).any(|window| window == wait_bytes) {
                             matched = true;
                             break;
                         }

@@ -1916,6 +1916,10 @@ export component MainWindow inherits Window {
     in-out property <string> form-proxy-jump: "";
     in-out property <bool> form-agent-forward: false;
     in-out property <bool> form-x11-forward: false;
+    in-out property <string> form-ciphers: "";
+    in-out property <string> form-macs: "";
+    in-out property <string> form-kex-algorithms: "";
+    in-out property <string> form-proxy-command: "";
     /// Login Scripts：每行一条 `命令 ; delay=ms ; wait=文本 ; timeout=ms ; on_error=...`。
     in-out property <string> form-login-scripts: "";
     /// -1 = 新建；>0 = 正在编辑的 Profile ID
@@ -8100,6 +8104,10 @@ export component MainWindow inherits Window {
                 on: root.form-x11-forward;
                 toggled => { root.form-x11-forward = !root.form-x11-forward; }
             }
+            FormRow { label: Lang.t("Ciphers", "加密算法"); text <=> root.form-ciphers; }
+            FormRow { label: Lang.t("MACs", "MAC 算法"); text <=> root.form-macs; }
+            FormRow { label: Lang.t("KEX", "密钥交换"); text <=> root.form-kex-algorithms; }
+            FormRow { label: Lang.t("ProxyCommand", "代理命令"); text <=> root.form-proxy-command; }
             FormRow { label: Lang.t("Extra", "额外参数"); text <=> root.form-extra; }
             FormRow { label: Lang.t("L-Forwards", "本地转发"); text <=> root.form-forwards; }
             }
