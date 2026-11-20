@@ -1719,6 +1719,7 @@ export component MainWindow inherits Window {
     /// ProxyJump（-J）；空 = 直连。
     in-out property <string> form-proxy-jump: "";
     in-out property <bool> form-agent-forward: false;
+    in-out property <bool> form-x11-forward: false;
     /// -1 = 新建；>0 = 正在编辑的 Profile ID
     in-out property <int> form-edit-id: -1;
     callback profile-edit(int);
@@ -7798,6 +7799,11 @@ export component MainWindow inherits Window {
                 label: Lang.t("Agent forwarding (-A)", "代理转发（-A）");
                 on: root.form-agent-forward;
                 toggled => { root.form-agent-forward = !root.form-agent-forward; }
+            }
+            ToggleRow {
+                label: Lang.t("X11 forwarding (-X)", "X11 转发（-X）");
+                on: root.form-x11-forward;
+                toggled => { root.form-x11-forward = !root.form-x11-forward; }
             }
             FormRow { label: Lang.t("Extra", "额外参数"); text <=> root.form-extra; }
             FormRow { label: Lang.t("L-Forwards", "本地转发"); text <=> root.form-forwards; }

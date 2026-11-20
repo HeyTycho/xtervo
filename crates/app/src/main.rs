@@ -6894,6 +6894,7 @@ fn open_profile_form(st: &mut AppState) {
     st.ui.set_form_dynamic_forwards("".into());
     st.ui.set_form_proxy_jump("".into());
     st.ui.set_form_agent_forward(false);
+    st.ui.set_form_x11_forward(false);
     st.ui.set_form_serial_port("/dev/ttyUSB0".into());
     st.ui.set_form_baud("115200".into());
     st.ui.set_form_serial_data_bits("8".into());
@@ -6965,6 +6966,7 @@ fn edit_profile_form(st: &mut AppState, index: usize) {
         .set_form_dynamic_forwards(p.dynamic_forwards.join(" ").as_str().into());
     st.ui.set_form_proxy_jump(p.proxy_jump.as_str().into());
     st.ui.set_form_agent_forward(p.agent_forward);
+    st.ui.set_form_x11_forward(p.x11_forward);
     st.ui.set_form_serial_port(p.serial_port.as_str().into());
     st.ui.set_form_baud(p.baud.to_string().as_str().into());
     st.ui.set_form_serial_data_bits(p.data_bits.to_string().as_str().into());
@@ -7083,6 +7085,7 @@ fn save_profile_form(st: &mut AppState) {
                 .collect();
             p.proxy_jump = st.ui.get_form_proxy_jump().trim().to_string();
             p.agent_forward = st.ui.get_form_agent_forward();
+            p.x11_forward = st.ui.get_form_x11_forward();
         }
         "serial" => {
             p.serial_port = st.ui.get_form_serial_port().to_string();

@@ -73,6 +73,9 @@ pub fn can_use(profile: &Profile) -> bool {
     if !profile.is_native_ssh() {
         return false;
     }
+    if profile.x11_forward {
+        return false;
+    }
     if !profile.extra_args.iter().all(|arg| arg.trim().is_empty()) {
         return false;
     }
@@ -1579,5 +1582,6 @@ mod integration_tests {
         transport.close();
         let _ = std::fs::remove_dir_all(&dir);
     }
+
 
 }

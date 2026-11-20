@@ -89,6 +89,9 @@ pub struct Profile {
     pub proxy_jump: String,
     /// 是否请求 ssh agent forwarding（`ssh -A`）。
     pub agent_forward: bool,
+    /// X11 forwarding（系统 ssh 路径用 `-X`；native 暂回退系统 ssh）。
+    #[serde(default)]
+    pub x11_forward: bool,
     /// SSH 后端：空 = 旧路径（PTY 里跑系统 ssh）；`plugin` = 走
     /// `Backend::Plugin` 的 transport seam（官方 SSH 插件 POC）。
     ///
@@ -347,6 +350,7 @@ impl Default for Profile {
             dynamic_forwards: Vec::new(),
             proxy_jump: String::new(),
             agent_forward: false,
+            x11_forward: false,
             transport: String::new(),
             serial_port: String::new(),
             baud: 115200,
@@ -526,6 +530,9 @@ impl Profile {
         }
         if self.agent_forward {
             args.push("-A".to_string());
+        }
+        if self.x11_forward {
+            args.push("-X".to_string());
         }
         if !self.proxy_jump.trim().is_empty() {
             args.push("-J".to_string());
@@ -1487,6 +1494,9 @@ shell = "/bin/sh"
 
         let agent = Profile { kind: "ssh".into(), host: "h".into(), port: 22, user: "u".into(), auth: "agent".into(), ..Profile::default() };
         assert_eq!(agent.ssh_command().1, vec!["-p", "22", "-l", "u", "h"]);
+        let mut x11 = agent.clone();
+        x11.x11_forward = true;
+        assert!(x11.ssh_command().1.contains(&"-X".to_string()));
 
         let with_extra = Profile {
             kind: "ssh".into(),
