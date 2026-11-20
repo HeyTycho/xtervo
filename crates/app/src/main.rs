@@ -6892,6 +6892,11 @@ fn exit_connection_status(code: u32, signal: Option<&str>) -> connection::Connec
     }
 }
 
+/// 串口 EOF → 失败状态；详情来自 transport 记录的 device-disconnected 错误。
+fn serial_disconnect_status(detail: &str) -> connection::ConnectionStatus {
+    connection::ConnectionStatus::failed(format!("serial disconnected: {detail}"))
+}
+
 /// 会话结束（进程退出 / PTY 关闭 / 信号终止）：对所有 pane 弹可见提示。
 fn note_ssh_exit(
     st: &mut AppState,
@@ -7010,12 +7015,27 @@ fn note_ssh_exit(
     }
     // 自动重连（SESS-007）：策略来自 config（次数 + 退避），不再写死 2/5/10，
     // 也不再只认 SSH —— 任何声明了 auto_reconnect 的非本地 Profile（SSH /
-    // 插件 transport / 未来 Serial/Telnet）都走同一条路径。计数在 app 会话内
+    // 插件 transport / Serial/Telnet）都走同一条路径。计数在 app 会话内
     // 累计；每次重连会开新 Tab，旧 pane 保持 Disconnected/Failed 供用户看到。
-    let Some(profile) = profile else {
-        return;
-    };
-    if profile.kind == "local" || !profile.auto_reconnect {
+    if let Some(profile) = profile {
+        schedule_auto_reconnect(st, pane, profile);
+    }
+}
+
+/// 是否为自动重连候选：非本地 + Profile 开关打开（策略/次数由 config 决定）。
+fn auto_reconnect_eligible(profile: &profile::Profile) -> bool {
+    profile.kind != "local" && profile.auto_reconnect
+}
+
+/// 真正安排一次自动重连（`note_ssh_exit` 与串口 EOF 共用）。
+///
+/// 计数按 Profile 在 app 会话内累计；到上限后把 pane 标成 Failed 并清计数。
+fn schedule_auto_reconnect(
+    st: &mut AppState,
+    pane: PaneId,
+    profile: profile::Profile,
+) {
+    if !auto_reconnect_eligible(&profile) {
         return;
     }
     let policy = st.cfg.borrow().reconnect_policy();
@@ -7096,6 +7116,58 @@ fn note_ssh_exit(
             }
             st.reconnect_attempts.remove(&profile.id);
         }
+    }
+}
+
+/// 串口设备断开（拔线/驱动移除）→ 状态与提示。
+///
+/// 与进程退出分开：串口 transport 没有 child，`try_exit_code()` 永远 None；
+/// 旧路径因此对 serial EOF 完全不通知、也不触发 auto_reconnect。
+fn note_serial_disconnect(
+    st: &mut AppState,
+    pane: PaneId,
+    profile_id: Option<u64>,
+    detail: String,
+) {
+    let zh = app_lang(st) == "zh";
+    let profile = profile_id.and_then(|id| st.profiles.borrow().get(id).cloned());
+    eprintln!(
+        "[serial] ts_ms={} pane={pane} profile={profile_id:?} disconnected detail={detail:?}",
+        logging::now_ms()
+    );
+    let text = match &profile {
+        Some(p) => {
+            let location = profile_location(p);
+            if zh {
+                format!(
+                    "{}（{}）· 串口设备已断开（{detail}）。点 Restart 重新连接，或关闭该 Tab 后重开。",
+                    p.name, location
+                )
+            } else {
+                format!(
+                    "{} ({location}) · serial device disconnected ({detail}). Click Restart to reconnect, or close this tab.",
+                    p.name
+                )
+            }
+        }
+        None if zh => format!(
+            "串口设备已断开（{detail}）。点 Restart 重新连接，或关闭该 Tab 后重开。"
+        ),
+        None => format!(
+            "Serial device disconnected ({detail}). Click Restart to reconnect, or close this tab."
+        ),
+    };
+    let title = if zh { "串口已断开" } else { "Serial disconnected" };
+    show_session_notice(
+        st,
+        Some(pane),
+        profile_id,
+        title,
+        text,
+        RetryAction::RestartPane,
+    );
+    if let Some(profile) = profile {
+        schedule_auto_reconnect(st, pane, profile);
     }
 }
 
@@ -7455,6 +7527,8 @@ fn open_profile_form(st: &mut AppState) {
     st.ui.set_form_serial_flow_control("none".into());
     st.ui.set_form_serial_output("text".into());
     st.ui.set_form_serial_newline("none".into());
+    st.ui.set_form_serial_input("text".into());
+    st.ui.set_form_serial_timestamp(false);
     st.ui.set_form_serial_ports("".into());
     st.ui.set_form_serial_dtr(true);
     st.ui.set_form_serial_rts(true);
@@ -7531,6 +7605,8 @@ fn edit_profile_form(st: &mut AppState, index: usize) {
     st.ui.set_form_serial_flow_control(p.flow_control.as_str().into());
     st.ui.set_form_serial_output(p.serial_output.as_str().into());
     st.ui.set_form_serial_newline(p.serial_newline.as_str().into());
+    st.ui.set_form_serial_input(p.serial_input.as_str().into());
+    st.ui.set_form_serial_timestamp(p.serial_timestamp);
     st.ui.set_form_serial_dtr(p.dtr);
     st.ui.set_form_serial_rts(p.rts);
     st.ui.set_form_font_size(
@@ -7662,6 +7738,8 @@ fn save_profile_form(st: &mut AppState) {
             p.flow_control = st.ui.get_form_serial_flow_control().trim().to_ascii_lowercase();
             p.serial_output = st.ui.get_form_serial_output().trim().to_ascii_lowercase();
             p.serial_newline = st.ui.get_form_serial_newline().trim().to_ascii_lowercase();
+            p.serial_input = st.ui.get_form_serial_input().trim().to_ascii_lowercase();
+            p.serial_timestamp = st.ui.get_form_serial_timestamp();
             p.dtr = st.ui.get_form_serial_dtr();
             p.rts = st.ui.get_form_serial_rts();
         }
@@ -15934,6 +16012,9 @@ fn drain_core_events(st: &mut AppState) -> (bool, u32) {
     let mut bell_panes: Vec<PaneId> = Vec::new();
     // 远端进程退出：先收集，等 pane 可变借用结束后再改 AppState UI 状态。
     let mut exited_panes: Vec<(PaneId, Option<u64>, u32, Option<String>)> = Vec::new();
+    // 串口没有子进程：EOF（拔线/设备消失）只能靠 transport 关闭事件识别，
+    // 不能等 `try_exit_code()`（永远 None）。单独收集后走串口断开提示。
+    let mut serial_disconnects: Vec<(PaneId, Option<u64>, String)> = Vec::new();
     let ids: Vec<PaneId> = st.panes.keys().copied().collect();
     for id in ids {
         let Some(rt) = st.panes.get_mut(&id) else {
@@ -16081,6 +16162,20 @@ fn drain_core_events(st: &mut AppState) -> (bool, u32) {
                                 rt.activity.failed = true;
                             }
                             exited_panes.push((id, rt.profile_id, code, signal));
+                        } else if rt.serial_control.is_some() {
+                            // native 串口 transport 没有 child（try_exit_code → None）。
+                            // 读/写线程在设备消失时已把 device-disconnected 写进
+                            // SerialStatus；这里把 pane 标记为失败并走串口重连路径。
+                            let detail = rt
+                                .serial_control
+                                .as_ref()
+                                .and_then(|control| control.status().error)
+                                .unwrap_or_else(|| "设备已断开".to_string());
+                            rt.exit_notified = true;
+                            rt.connection = serial_disconnect_status(&detail);
+                            rt.activity.failed = true;
+                            tabs_dirty = true;
+                            serial_disconnects.push((id, rt.profile_id, detail));
                         }
                     }
                 }
@@ -16115,6 +16210,9 @@ fn drain_core_events(st: &mut AppState) -> (bool, u32) {
     }
     for (id, profile_id, code, signal) in exited_panes {
         note_ssh_exit(st, id, profile_id, code, signal);
+    }
+    for (id, profile_id, detail) in serial_disconnects {
+        note_serial_disconnect(st, id, profile_id, detail);
     }
     if titles_dirty {
         // 保持既有行为：只把活动 Tab 首个 pane 的标题写回 Tab。
@@ -21933,6 +22031,25 @@ mod tests {
             connection::aggregate(states.iter()),
             connection::ConnectionState::Failed
         );
+    }
+
+    #[test]
+    fn serial_eof_uses_failed_status_and_auto_reconnect_path() {
+        // native 串口没有 child：EOF 的 detail 来自 SerialStatus.error。
+        let status = serial_disconnect_status("设备断开（读取失败）: EIO");
+        assert_eq!(status.state, connection::ConnectionState::Failed);
+        assert!(status.detail.contains("serial disconnected"), "{}", status.detail);
+        assert!(status.detail.contains("设备断开"), "{}", status.detail);
+
+        // 自动重连开关对 serial 与非本地 Profile 生效；本地/关闭时绝不重连。
+        let mut p = profile::Profile { kind: "serial".into(), ..profile::Profile::default() };
+        assert!(!auto_reconnect_eligible(&p), "默认关闭");
+        p.auto_reconnect = true;
+        assert!(auto_reconnect_eligible(&p));
+        p.kind = "local".into();
+        assert!(!auto_reconnect_eligible(&p), "local 不自动重连");
+        p.kind = "ssh".into();
+        assert!(auto_reconnect_eligible(&p));
     }
 
     #[test]
