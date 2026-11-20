@@ -11801,6 +11801,13 @@ fn ime_click_anchor(button: i32, wants_mouse: bool, shift: bool) -> bool {
     button == 0 && wants_mouse && !shift
 }
 
+/// 非空 preedit 表示输入法已进入组合。此时必须丢掉鼠标点击锚点、重发终端
+/// 光标 spot；否则组合期间（按键被 Slint 吞掉、走不到 handle_input）候选窗
+/// 会一直停在鼠标位置。空 preedit 是组合结束/取消，不改变锚点。
+fn ime_preedit_clears_anchor(text: &str) -> bool {
+    !text.is_empty()
+}
+
 /// 把聚焦 pane 的终端光标同步给输入法候选窗。
 ///
 /// Slint 只在 TextInput 文本变化时发 IME Update，移动隐藏 TextInput 不会更新
@@ -14355,6 +14362,19 @@ fn install_native_window_events(ui: &MainWindow, window_id: WindowId) {
                             st.ime_enabled = false;
                             st.ime_spot_dirty = true;
                         });
+                    },
+                    winit::event::Ime::Preedit(text, _) => {
+                        // 组合一开始就重发候选锚点：拼音按键在 Slint 里被 accept
+                        // 吞掉，不会走 handle_input，所以不能等 commit 才清
+                        // ime_override。否则鼠标点过 dsh 后，整个组合期间候选窗
+                        // 都停在鼠标点击格，而不是终端光标。
+                        if ime_preedit_clears_anchor(&text) {
+                            runtime::with_window(window_id, |st| {
+                                st.ime_override = None;
+                                st.ime_spot_dirty = true;
+                                update_ime_spot(st);
+                            });
+                        }
                     },
                     _ => {},
                 }
@@ -24323,6 +24343,16 @@ mod tests {
         );
         assert!(!ime_click_anchor(2, true, false), "右键不改变候选点");
         assert!(!ime_click_anchor(1, true, false), "中键不改变候选点");
+    }
+
+    #[test]
+    fn ime_preedit_clears_mouse_anchor_only_while_composing() {
+        // 组合中的拼音字母会让 preedit 非空：必须清掉鼠标锚点。
+        assert!(ime_preedit_clears_anchor("n"));
+        assert!(ime_preedit_clears_anchor("nihao"));
+        assert!(ime_preedit_clears_anchor("你好"));
+        // 组合结束/取消（空 preedit）不能把后续真实鼠标锚点又清掉。
+        assert!(!ime_preedit_clears_anchor(""));
     }
 
     #[test]

@@ -80,6 +80,10 @@ Tervo 的版本与 tag 规则见 `docs/RELEASING.md`。
 
 ### Fixed
 
+- IME 候选锚点（组合期）：拼音组合开始（winit `Ime::Preedit` 非空）时就清掉
+  鼠标点击锚点并重发 `set_ime_cursor_area`。此前只在 IME commit 时清，
+  组合按键被 Slint 吞掉、走不到 `handle_input`，所以整个组合期间候选窗仍停在
+  鼠标点击格；现在候选窗从第一个拼音字母起就贴终端光标。
 - IME 候选锚点：鼠标点击 dsh 等 mouse-reporting TUI 后，候选窗会固定在该
   点击格；现在任何键盘输入都会清掉 `ime_override` 并重发 spot，候选窗回到
   真实终端光标位置，不再跟着鼠标箭头。
