@@ -39,7 +39,7 @@
 - [~] H17 Connection Manager/历史：仅 Profiles；缺常驻入口、连接中/失败/取消三态、最近连接。
 - [ ] H18 Persistent Port Forwards：规则随连接恢复。
 - [ ] H19 算法配置入口：Ciphers/MAC/KEX；默认遵循库安全值。
-- [ ] H20 SSH 证书/`@cert-authority` 信任链。
+- [~] H20 SSH 证书/`@cert-authority` 信任链：russh/ssh-key 原语可用，但 Tervo 的 known_hosts/预检/校验未接入；native 明确拒绝证书、回退系统 ssh。调研与安全实现清单见 [`SSH_CERTIFICATES.md`](SSH_CERTIFICATES.md)。
 
 ## 横切
 
@@ -78,12 +78,12 @@
 - [~] SSH-001 建连/断开/超时/keepalive/重连：native 已通；缺 keepalive 配置项、真实外部 sshd e2e。
 - [~] SSH-002 Connection Manager：Profiles 面板可用；缺常驻入口/连接中/失败/取消三态。
 - [x] SSH-003 用户名/主机/端口/认证方式：Profile + native。
-- [x] SSH-004 密码/私钥/加密私钥口令/Agent：native + Vault；缺口令重试 UI。
-- [~] SSH-005 known_hosts：native 校验 + 应用内确认；缺管理 UI/证书。
+- [x] SSH-004 密码/私钥/加密私钥口令/Agent：native + Vault；加密私钥口令重试弹窗（保存 Vault/取消/本地校验）。
+- [~] SSH-005 known_hosts：native 校验 + 应用内确认 + Settings 管理入口（查看/删除已应用条目）；证书信任链仍不支持。
 - [~] SSH-006 ssh_config：native 解析 Host/HostName/Port/User/ProxyJump/known_hosts；Match/IdentityFile/ProxyCommand 回退。
 - [x] SSH-007 Jump Hosts：native 多跳。
 - [ ] SSH-008 ProxyCommand：native 未实现，回退系统 ssh。
-- [~] SSH-009 Agent forwarding：native 请求 + 门禁；缺拒绝回归/状态。
+- [x] SSH-009 Agent forwarding：native 请求 + 门禁 + UI 状态（on/denied/no local agent）+ 拒绝回归测试（测试 server 的 `agent_request` 已修）。
 - [ ] SSH-010 X11 Forwarding：未实现。
 - [x] SSH-011 L/R/D 转发：native 三种；缺 port 0 与管理 UI。
 - [ ] SSH-012 Persistent Port Forwards：未实现。

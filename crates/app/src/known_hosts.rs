@@ -132,6 +132,8 @@ pub struct EffectiveSsh {
     pub strict: String,
     /// 参与查找的 known_hosts 文件，按 ssh 的查找顺序。
     pub files: Vec<PathBuf>,
+    /// 仅用户级 known_hosts 文件（`UserKnownHostsFile`）；管理 UI 删除只动这里。
+    pub user_files: Vec<PathBuf>,
     /// 用户级 known_hosts（`UserKnownHostsFile` 的第一个）；信任写入用它，
     /// 绝不往 `/etc/ssh/ssh_known_hosts` 这类系统文件写。
     pub write_file: Option<PathBuf>,
@@ -220,7 +222,8 @@ pub fn parse_ssh_g(output: &str, profile: &Profile) -> EffectiveSsh {
     EffectiveSsh {
         strict,
         files,
-        write_file: user_files.into_iter().next(),
+        write_file: user_files.first().cloned(),
+        user_files,
         spec,
         hostname,
         port,
@@ -295,6 +298,32 @@ pub fn local_known_entries(profile: &Profile) -> Result<Vec<KnownKey>, String> {
     let effective = effective_ssh(profile);
     let mut entries = Vec::new();
     for file in &effective.files {
+        if !file.is_file() {
+            continue;
+        }
+        let out = Command::new("ssh-keygen")
+            .arg("-F")
+            .arg(&effective.spec)
+            .arg("-f")
+            .arg(file)
+            .output();
+        let Ok(out) = out else { continue };
+        if !out.status.success() {
+            continue;
+        }
+        entries.extend(parse_known_hosts_lines(&String::from_utf8_lossy(&out.stdout)));
+    }
+    entries.sort_by(|a, b| (&a.key_type, &a.key).cmp(&(&b.key_type, &b.key)));
+    entries.dedup_by(|a, b| a.key_type == b.key_type && a.key == b.key);
+    attach_fingerprints(&mut entries);
+    Ok(entries)
+}
+
+/// 只读用户级 known_hosts 的条目（管理 UI 用；删除只动这些文件）。
+pub fn user_known_entries(profile: &Profile) -> Result<Vec<KnownKey>, String> {
+    let effective = effective_ssh(profile);
+    let mut entries = Vec::new();
+    for file in &effective.user_files {
         if !file.is_file() {
             continue;
         }
@@ -546,6 +575,47 @@ pub fn trust_keys(profile: &Profile, keys: &[KnownKey]) -> Result<(), String> {
         file.display()
     );
     Ok(())
+}
+
+/// 删除某 Profile 生效的 known_hosts 条目（`ssh-keygen -R`，覆盖明文/哈希行）。
+///
+/// 只删除 `effective.files` 里真实存在的文件，返回内容发生变化（删除过条目）的
+/// 文件数；不碰系统 known_hosts。调用方负责清掉进程内 hostkey 预检缓存。
+pub fn remove_known_host_entries(profile: &Profile, spec: &str) -> Result<usize, String> {
+    if spec.trim().is_empty() {
+        return Err("known_hosts host spec 不能为空".into());
+    }
+    let effective = effective_ssh(profile);
+    let mut changed = 0;
+    for file in &effective.user_files {
+        if !file.is_file() {
+            continue;
+        }
+        let before = std::fs::read(file).map_err(|e| format!("读取 {} 失败: {e}", file.display()))?;
+        let out = Command::new("ssh-keygen")
+            .arg("-R")
+            .arg(spec.trim())
+            .arg("-f")
+            .arg(file)
+            .output()
+            .map_err(|e| format!("运行 ssh-keygen -R 失败: {e}"))?;
+        if !out.status.success() {
+            return Err(format!(
+                "ssh-keygen -R 删除 {} 失败: {}",
+                file.display(),
+                String::from_utf8_lossy(&out.stderr).trim()
+            ));
+        }
+        let after = std::fs::read(file).map_err(|e| format!("读取 {} 失败: {e}", file.display()))?;
+        if after != before {
+            changed += 1;
+        }
+    }
+    eprintln!(
+        "[known_hosts] 管理删除 host={} files_changed={changed}",
+        spec.trim()
+    );
+    Ok(changed)
 }
 
 /// 后台预检任务：启动后立即返回；结果通过非阻塞 `try_recv` 交给 UI。
@@ -913,6 +983,7 @@ proxyjump jump@bastion:2200
             let effective = EffectiveSsh {
                 strict: strict.into(),
                 files: vec![PathBuf::from("/tmp/kh")],
+                user_files: vec![PathBuf::from("/tmp/kh")],
                 write_file: Some(PathBuf::from("/tmp/kh")),
                 spec: "h".into(),
                 hostname: "h".into(),
@@ -1114,5 +1185,33 @@ proxyjump jump@bastion:2200
             Verdict::Known
         );
         assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn known_hosts_management_lists_and_removes_only_user_entries() {
+        if !have_ssh_tools() {
+            return;
+        }
+        let dir = test_dir("manage");
+        let kh = dir.join("known_hosts");
+        std::fs::write(
+            &kh,
+            format!(
+                "example.com {KEY_A}\nother.example {KEY_B}\n@revoked example.com {KEY_RSA}\n"
+            ),
+        )
+        .unwrap();
+        let profile = profile_with_known_hosts("example.com", 22, &kh);
+        let entries = user_known_entries(&profile).expect("list user known_hosts");
+        assert_eq!(entries.len(), 1, "{entries:?}");
+        assert_eq!(entries[0].key, key(KEY_A).key);
+        let changed = remove_known_host_entries(&profile, "example.com").expect("remove");
+        assert_eq!(changed, 1);
+        let after = std::fs::read_to_string(&kh).unwrap();
+        assert!(!after.contains(KEY_A), "example.com key should be removed: {after}");
+        assert!(after.contains(KEY_B), "other host must be preserved: {after}");
+        // @revoked 是安全元数据，管理界面不把它当普通条目删除。
+        assert!(after.contains("@revoked"), "revocation metadata must be preserved");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

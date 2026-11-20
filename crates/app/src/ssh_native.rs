@@ -7,7 +7,7 @@
 
 use std::io::{self, Read, Write};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -26,6 +26,10 @@ use crate::ssh_config::{self, ResolvedSsh};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 const INACTIVITY_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// 远端用 SSH_MSG_CHANNEL_FAILURE 明确拒绝了 PTY/agent-forward 请求。
+/// 单独用常量避免 agent forwarding 误匹配其它错误文本。
+const REMOTE_REQUEST_REJECTED: &str = "远端拒绝了 PTY/shell 请求";
 
 #[inline]
 fn pack_resize(cols: u16, rows: u16) -> u32 {
@@ -58,12 +62,137 @@ pub struct SshNativeTransport {
     closed: Arc<AtomicBool>,
     resize: Arc<AtomicU32>,
     pending: Vec<u8>,
+    status: Arc<SshNativeStatus>,
+}
+
+/// 口令弹窗/自动连接共用的纯判定结果。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyPassphraseState {
+    /// 非 key 认证、没有显式密钥、或密钥本身未加密。
+    NotNeeded,
+    /// 密钥加密且没有可用口令。
+    Missing,
+    /// 有口令但加载失败（口令错误或密钥格式不受支持）。
+    Invalid,
+    /// 有口令且能加载；可以继续 native 连接。
+    Ready,
+}
+
+impl KeyPassphraseState {
+    pub fn needs_prompt(self) -> bool {
+        matches!(self, Self::Missing | Self::Invalid)
+    }
 }
 
 /// 私钥是否无需口令即可加载（供 create_pane 判断是否需要 Vault 口令）。
 pub fn key_loads_without_passphrase(profile: &Profile) -> bool {
     let path = profile.key_path.trim();
     !path.is_empty() && load_secret_key(Path::new(path), None).is_ok()
+}
+
+/// 显式 `key_path` 是否需要口令。只看 profile 自己指定的私钥；ssh_config
+/// 里的 IdentityFile/默认密钥可能各有不同口令，不能用一个输入框猜。
+pub fn key_needs_passphrase(profile: &Profile) -> bool {
+    profile.auth == "key"
+        && !profile.key_path.trim().is_empty()
+        && !key_loads_without_passphrase(profile)
+}
+
+/// 有/没有 Vault 口令时私钥处于什么状态。纯函数，不读配置、不写日志。
+pub fn key_passphrase_state(profile: &Profile, saved: Option<&str>) -> KeyPassphraseState {
+    if !key_needs_passphrase(profile) {
+        return KeyPassphraseState::NotNeeded;
+    }
+    match saved {
+        None | Some("") => KeyPassphraseState::Missing,
+        Some(passphrase) => {
+            if load_secret_key(Path::new(profile.key_path.trim()), Some(passphrase)).is_ok() {
+                KeyPassphraseState::Ready
+            } else {
+                KeyPassphraseState::Invalid
+            }
+        },
+    }
+}
+
+/// 校验用户在弹窗里输入的口令；错误文本固定，不回显口令/密钥内容。
+pub fn validate_key_passphrase(profile: &Profile, passphrase: &str) -> Result<(), String> {
+    let path = profile.key_path.trim();
+    if path.is_empty() {
+        return Err("Profile 没有指定私钥路径".into());
+    }
+    if passphrase.is_empty() {
+        return Err("口令不能为空".into());
+    }
+    load_secret_key(Path::new(path), Some(passphrase))
+        .map(|_| ())
+        .map_err(|_| "无法用该口令解密私钥（口令错误或私钥格式不受支持）".to_string())
+}
+
+/// 连接内可观测状态：agent forwarding 协商结果 + 私钥口令失败。
+///
+/// 所有字段都是原子量，UI 线程可直接读，不把口令/密钥内容带出连接线程。
+#[derive(Default)]
+pub struct SshNativeStatus {
+    agent_forward: AtomicU8,
+    key_passphrase_failed: AtomicBool,
+}
+
+/// `agent forwarding` 的协商状态。数值稳定，供 UI/日志使用。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AgentForwardState {
+    /// Profile 没开 agent forwarding。
+    #[default]
+    NotRequested,
+    /// 服务器接受了请求且本机有 SSH_AUTH_SOCK，agent channel 可以工作。
+    Active,
+    /// 服务器拒绝了 agent forwarding；连接继续，但不接受 agent channel。
+    Denied,
+    /// 服务器接受请求，但本机没有 SSH_AUTH_SOCK，无法真正转发。
+    Unavailable,
+}
+
+impl AgentForwardState {
+    pub fn code(self) -> i32 {
+        match self {
+            Self::NotRequested => 0,
+            Self::Active => 1,
+            Self::Denied => 2,
+            Self::Unavailable => 3,
+        }
+    }
+
+    fn from_code(code: u8) -> Self {
+        match code {
+            1 => Self::Active,
+            2 => Self::Denied,
+            3 => Self::Unavailable,
+            _ => Self::NotRequested,
+        }
+    }
+}
+
+impl SshNativeStatus {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn agent_forward(&self) -> AgentForwardState {
+        AgentForwardState::from_code(self.agent_forward.load(Ordering::Acquire))
+    }
+
+    fn set_agent_forward(&self, state: AgentForwardState) {
+        self.agent_forward.store(state.code() as u8, Ordering::Release);
+    }
+
+    /// 私钥在连接线程里加载失败（通常是口令错误）。UI 可据此再次弹口令框。
+    pub fn key_passphrase_failed(&self) -> bool {
+        self.key_passphrase_failed.load(Ordering::Acquire)
+    }
+
+    fn mark_key_passphrase_failed(&self) {
+        self.key_passphrase_failed.store(true, Ordering::Release);
+    }
 }
 
 /// 当前 native 后端支持的最小 Profile 子集。端口转发/ProxyJump/agent
@@ -126,6 +255,11 @@ impl SshNativeTransport {
         Self::start_resolved(profile, password, key_passphrase, cols, rows, resolved)
     }
 
+    /// 连接线程写入、UI 线程只读的状态句柄。必须在 box 成 transport 之前取。
+    pub fn status(&self) -> Arc<SshNativeStatus> {
+        self.status.clone()
+    }
+
     fn start_resolved(
         profile: &Profile,
         password: Option<String>,
@@ -134,6 +268,7 @@ impl SshNativeTransport {
         rows: u16,
         resolved: ResolvedSsh,
     ) -> io::Result<Self> {
+        let status = Arc::new(SshNativeStatus::new());
         let profile = profile.clone();
         if profile.host.trim().is_empty() {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "SSH 主机不能为空"));
@@ -165,6 +300,7 @@ impl SshNativeTransport {
         let resize = Arc::new(AtomicU32::new(pack_resize(cols, rows)));
         let closed_thread = closed.clone();
         let resize_thread = resize.clone();
+        let status_thread = status.clone();
         std::thread::Builder::new()
             .name("ssh-native".into())
             .spawn(move || {
@@ -188,6 +324,7 @@ impl SshNativeTransport {
                     known,
                     revoked,
                     resolved,
+                    status_thread,
                     resize_thread,
                     cols,
                     rows,
@@ -203,7 +340,14 @@ impl SshNativeTransport {
                 let _ = out_tx.blocking_send(None);
             })
             .map_err(|error| io::Error::other(format!("创建 ssh-native 线程失败: {error}")))?;
-        Ok(Self { output: out_rx, commands: cmd_tx, closed, resize, pending: Vec::new() })
+        Ok(Self {
+            output: out_rx,
+            commands: cmd_tx,
+            closed,
+            resize,
+            pending: Vec::new(),
+            status,
+        })
     }
 }
 
@@ -238,7 +382,7 @@ impl PaneTransport for SshNativeTransport {
     }
 
     fn into_halves(self: Box<Self>) -> io::Result<TransportHalves> {
-        let SshNativeTransport { output, commands, closed, resize, pending } = *self;
+        let SshNativeTransport { output, commands, closed, resize, pending, status: _ } = *self;
         let shutdown_cmd = commands.clone();
         let shutdown_closed = closed.clone();
         Ok(TransportHalves {
@@ -435,6 +579,7 @@ async fn run_session(
     known: Vec<KnownKey>,
     revoked: Vec<KnownKey>,
     resolved: ResolvedSsh,
+    status: Arc<SshNativeStatus>,
     resize: Arc<AtomicU32>,
     cols: u16,
     rows: u16,
@@ -528,6 +673,7 @@ async fn run_session(
             &jump_resolved.user,
             password.clone(),
             key_passphrase.as_deref(),
+            None,
         )
         .await?;
         jump_session = Some(next);
@@ -568,6 +714,7 @@ async fn run_session(
         &user,
         password,
         key_passphrase.as_deref(),
+        Some(&status),
     )
     .await?;
     let _keep_sessions = keep_sessions;
@@ -596,8 +743,22 @@ async fn run_session(
             .await
             .map_err(|error| format!("请求 agent forwarding 失败: {error}"))?;
         match await_request(&mut channel, &out, &closed).await {
-            Ok(()) => agent_forward_enabled.store(true, Ordering::Release),
-            Err(error) if error == "远端拒绝了 PTY/shell 请求" => {
+            Ok(()) if std::env::var_os("SSH_AUTH_SOCK").is_some() => {
+                // 只有服务器接受且本机真的有 agent 时才允许后续 agent channel。
+                agent_forward_enabled.store(true, Ordering::Release);
+                status.set_agent_forward(AgentForwardState::Active);
+                eprintln!("[ssh-native] agent forwarding: active");
+            },
+            Ok(()) => {
+                status.set_agent_forward(AgentForwardState::Unavailable);
+                eprintln!(
+                    "[ssh-native] agent forwarding: 服务器已接受，但本机没有 SSH_AUTH_SOCK；继续无转发连接"
+                );
+            },
+            Err(error) if error == REMOTE_REQUEST_REJECTED => {
+                // 服务器拒绝：连接继续，但 handler 的 gate 保持 false，绝不接受
+                // 服务器后续打开的 agent channel。
+                status.set_agent_forward(AgentForwardState::Denied);
                 eprintln!("[ssh-native] agent forwarding 被拒绝，继续无转发连接");
             },
             Err(error) => return Err(error),
@@ -723,7 +884,7 @@ async fn await_request(
         tokio::select! {
             message = channel.wait() => match message {
             Some(ChannelMsg::Success) => return Ok(()),
-            Some(ChannelMsg::Failure) => return Err("远端拒绝了 PTY/shell 请求".into()),
+            Some(ChannelMsg::Failure) => return Err(REMOTE_REQUEST_REJECTED.into()),
             Some(ChannelMsg::Data { data }) => {
                 if out.send(Some(data.to_vec())).await.is_err() {
                     return Err("pane 已关闭".into());
@@ -768,25 +929,39 @@ fn identity_candidates(profile: &Profile, resolved: &ResolvedSsh) -> Vec<std::pa
     out
 }
 
+enum PublicKeyAttemptError {
+    /// 本地解密/读取私钥失败（最典型的是口令错误）。
+    Load(String),
+    /// 连接/协议层失败。
+    Auth(String),
+}
+
 async fn try_public_key<H: Handler + Send>(
     session: &mut client::Handle<H>,
     user: &str,
     path: &Path,
     passphrase: Option<&str>,
-) -> Result<bool, String> {
+) -> Result<bool, PublicKeyAttemptError> {
     let key = match load_secret_key(path, passphrase) {
         Ok(key) => key,
-        Err(error) => return Err(format!("加载私钥 {} 失败: {error}", path.display())),
+        Err(error) => {
+            return Err(PublicKeyAttemptError::Load(format!(
+                "加载私钥 {} 失败: {error}",
+                path.display()
+            )))
+        },
     };
     let hash = session
         .best_supported_rsa_hash()
         .await
-        .map_err(|error| format!("协商 RSA hash 失败: {error}"))?
+        .map_err(|error| PublicKeyAttemptError::Auth(format!("协商 RSA hash 失败: {error}")))?
         .flatten();
     let result = session
         .authenticate_publickey(user, PrivateKeyWithHashAlg::new(Arc::new(key), hash))
         .await
-        .map_err(|error| format!("公钥认证 {} 失败: {error}", path.display()))?;
+        .map_err(|error| {
+            PublicKeyAttemptError::Auth(format!("公钥认证 {} 失败: {error}", path.display()))
+        })?;
     Ok(result.success())
 }
 
@@ -823,6 +998,7 @@ async fn authenticate<H: Handler + Send>(
     user: &str,
     password: Option<String>,
     key_passphrase: Option<&str>,
+    status: Option<&SshNativeStatus>,
 ) -> Result<(), String> {
     if profile.auth == "password" {
         let Some(password) = password else {
@@ -855,11 +1031,25 @@ async fn authenticate<H: Handler + Send>(
         last_error = Some("没有可用的私钥/agent 身份".to_string());
     }
     let mut errors = Vec::new();
+    let mut passphrase_load_failed = false;
     for path in candidates {
         match try_public_key(session, user, &path, key_passphrase).await {
             Ok(true) => return Ok(()),
             Ok(false) => errors.push(format!("{} 被服务器拒绝", path.display())),
-            Err(error) => errors.push(error),
+            Err(PublicKeyAttemptError::Load(error)) => {
+                // 有口令但本地解密失败：连接线程把状态交回 UI，后者可以再次
+                // 弹出口令框（Vault 里的口令可能已经过期/被外部改过）。
+                if key_passphrase.is_some() {
+                    passphrase_load_failed = true;
+                }
+                errors.push(error);
+            },
+            Err(PublicKeyAttemptError::Auth(error)) => errors.push(error),
+        }
+    }
+    if passphrase_load_failed {
+        if let Some(status) = status {
+            status.mark_key_passphrase_failed();
         }
     }
     if let Some(error) = last_error {
@@ -932,6 +1122,73 @@ mod tests {
     }
 
     #[test]
+    fn key_passphrase_state_distinguishes_missing_invalid_and_ready() {
+        let path = test_path("tervo-enc-key-state");
+        let status = std::process::Command::new("ssh-keygen")
+            .args(["-q", "-t", "ed25519", "-N", "s3cret", "-f"])
+            .arg(&path)
+            .status()
+            .expect("ssh-keygen for encrypted key state test");
+        assert!(status.success());
+        let p = Profile {
+            kind: "ssh".into(),
+            auth: "key".into(),
+            key_path: path.display().to_string(),
+            ..Profile::default()
+        };
+        assert!(key_needs_passphrase(&p));
+        assert_eq!(key_passphrase_state(&p, None), KeyPassphraseState::Missing);
+        assert_eq!(
+            key_passphrase_state(&p, Some("wrong")),
+            KeyPassphraseState::Invalid
+        );
+        assert_eq!(
+            key_passphrase_state(&p, Some("s3cret")),
+            KeyPassphraseState::Ready
+        );
+        assert!(validate_key_passphrase(&p, "wrong").is_err());
+        assert!(validate_key_passphrase(&p, "s3cret").is_ok());
+        // 未加密的私钥不应弹窗；空口令也不应被误判为可用。
+        let plain = test_path("tervo-plain-key-state");
+        let status = std::process::Command::new("ssh-keygen")
+            .args(["-q", "-t", "ed25519", "-N", "", "-f"])
+            .arg(&plain)
+            .status()
+            .expect("ssh-keygen for plain key state test");
+        assert!(status.success());
+        let plain_profile = Profile {
+            auth: "key".into(),
+            key_path: plain.display().to_string(),
+            ..p.clone()
+        };
+        assert!(!key_needs_passphrase(&plain_profile));
+        assert_eq!(
+            key_passphrase_state(&plain_profile, None),
+            KeyPassphraseState::NotNeeded
+        );
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("pub"));
+        let _ = std::fs::remove_file(&plain);
+        let _ = std::fs::remove_file(plain.with_extension("pub"));
+    }
+
+    #[test]
+    fn agent_forward_state_codes_are_stable() {
+        let status = SshNativeStatus::new();
+        assert_eq!(status.agent_forward(), AgentForwardState::NotRequested);
+        assert!(!status.key_passphrase_failed());
+        status.set_agent_forward(AgentForwardState::Denied);
+        assert_eq!(status.agent_forward(), AgentForwardState::Denied);
+        status.set_agent_forward(AgentForwardState::Active);
+        assert_eq!(status.agent_forward(), AgentForwardState::Active);
+        status.mark_key_passphrase_failed();
+        assert!(status.key_passphrase_failed());
+        assert_eq!(AgentForwardState::Active.code(), 1);
+        assert_eq!(AgentForwardState::Denied.code(), 2);
+        assert_eq!(AgentForwardState::Unavailable.code(), 3);
+    }
+
+    #[test]
     fn missing_known_host_is_rejected_before_connect() {
         let p = Profile {
             kind: "ssh".into(),
@@ -958,17 +1215,27 @@ mod integration_tests {
 
     struct TestServer {
         forward_to: Option<u16>,
+        agent_accept: bool,
+        /// 服务器主动打开 agent channel 的结果（true=客户端接受了通道）。
+        /// 用来验证“协商被拒绝后 handler 不得接受 agent channel”。
+        agent_probe: Option<tokio::sync::mpsc::Sender<bool>>,
     }
 
     impl server::Server for TestServer {
         type Handler = TestHandler;
         fn new_client(&mut self, _: Option<std::net::SocketAddr>) -> Self::Handler {
-            TestHandler { forward_to: self.forward_to }
+            TestHandler {
+                forward_to: self.forward_to,
+                agent_accept: self.agent_accept,
+                agent_probe: self.agent_probe.clone(),
+            }
         }
     }
 
     struct TestHandler {
         forward_to: Option<u16>,
+        agent_accept: bool,
+        agent_probe: Option<tokio::sync::mpsc::Sender<bool>>,
     }
 
     impl server::Handler for TestHandler {
@@ -998,10 +1265,21 @@ mod integration_tests {
 
         async fn agent_request(
             &mut self,
-            _channel: russh::ChannelId,
-            _session: &mut Session,
+            channel: russh::ChannelId,
+            session: &mut Session,
         ) -> Result<bool, Self::Error> {
-            Ok(false)
+            // russh 0.63 的 server/session.rs 在 agent_request 分支里，无论
+            // handler 返回 true/false 都会调用 **全局** request_success/failure；
+            // 但 auth-agent-req 是 channel request，客户端等的是 CHANNEL_SUCCESS/
+            // FAILURE。返回 Ok(false) 会发出一个协议层 REQUEST_FAILURE，客户端
+            // 视为异常并断开（这就是旧测试 server 的“拒绝路径异常关闭”）。
+            // 这里自己回 channel 级应答，并返回 Ok(true) 让 crate 不再发错包。
+            if self.agent_accept {
+                session.channel_success(channel)?;
+            } else {
+                session.channel_failure(channel)?;
+            }
+            Ok(true)
         }
 
         async fn channel_open_direct_tcpip(
@@ -1085,6 +1363,21 @@ mod integration_tests {
         ) -> Result<(), Self::Error> {
             session.channel_success(channel);
             session.data(channel, b"READY\r\n".to_vec())?;
+            // 模拟“服务器在 shell 起来后主动打开 agent channel”。真实服务器只有
+            // 在远端程序请求 agent 转发时才这样做；这里主动探测客户端 gate。
+            if let Some(probe) = self.agent_probe.take() {
+                let handle = session.handle();
+                tokio::spawn(async move {
+                    let accepted = tokio::time::timeout(
+                        Duration::from_secs(3),
+                        handle.channel_open_agent(),
+                    )
+                    .await
+                    .map(|result| result.is_ok())
+                    .unwrap_or(false);
+                    let _ = probe.send(accepted).await;
+                });
+            }
             Ok(())
         }
 
@@ -1135,9 +1428,13 @@ mod integration_tests {
             ..<_>::default()
         });
         rt.spawn(async move {
-            let _ = TestServer { forward_to: None }
-                .run_on_socket(config, &listener)
-                .await;
+            let _ = TestServer {
+                forward_to: None,
+                agent_accept: false,
+                agent_probe: None,
+            }
+            .run_on_socket(config, &listener)
+            .await;
         });
 
         let profile = Profile {
@@ -1205,6 +1502,29 @@ mod integration_tests {
 
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    /// 测试期间临时改环境变量，Drop 时恢复（panic 时也恢复，避免污染其它测试）。
+    struct EnvGuard {
+        key: &'static str,
+        old: Option<std::ffi::OsString>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
+            let old = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, old }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match self.old.take() {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
     fn test_path(prefix: &str) -> std::path::PathBuf {
         use std::sync::atomic::{AtomicU64, Ordering};
         static SEQ: AtomicU64 = AtomicU64::new(0);
@@ -1219,6 +1539,15 @@ mod integration_tests {
     fn start_test_server(
         rt: &tokio::runtime::Runtime,
         forward_to: Option<u16>,
+    ) -> (std::net::SocketAddr, String) {
+        start_test_server_full(rt, forward_to, false, None)
+    }
+
+    fn start_test_server_full(
+        rt: &tokio::runtime::Runtime,
+        forward_to: Option<u16>,
+        agent_accept: bool,
+        agent_probe: Option<tokio::sync::mpsc::Sender<bool>>,
     ) -> (std::net::SocketAddr, String) {
         let listener = rt.block_on(tokio::net::TcpListener::bind(("127.0.0.1", 0))).unwrap();
         let addr = listener.local_addr().unwrap();
@@ -1239,11 +1568,59 @@ mod integration_tests {
             ..<_>::default()
         });
         rt.spawn(async move {
-            let _ = TestServer { forward_to }
+            let _ = TestServer { forward_to, agent_accept, agent_probe }
                 .run_on_socket(config, &listener)
                 .await;
         });
         (addr, public)
+    }
+
+    fn write_known_hosts(dir: &Path, addr: std::net::SocketAddr, public: &str) -> std::path::PathBuf {
+        std::fs::create_dir_all(dir).unwrap();
+        let known = dir.join("known_hosts");
+        let key = public.split_whitespace().nth(1).unwrap();
+        std::fs::write(
+            &known,
+            format!("[127.0.0.1]:{} ssh-ed25519 {key}\n", addr.port()),
+        )
+        .unwrap();
+        known
+    }
+
+    fn resolved_for(addr: std::net::SocketAddr, known: std::path::PathBuf) -> ResolvedSsh {
+        ResolvedSsh {
+            hostname: "127.0.0.1".into(),
+            port: addr.port(),
+            user: "tester".into(),
+            proxy_jump: String::new(),
+            proxy_command: String::new(),
+            keepalive_interval: None,
+            keepalive_max: 3,
+            strict: "ask".into(),
+            user_known_hosts: vec![known],
+            global_known_hosts: Vec::new(),
+            host_key_alias: None,
+            forward_agent: false,
+            identity_files: Vec::new(),
+            unsupported: None,
+        }
+    }
+
+    fn read_until_ready(transport: &mut SshNativeTransport) -> Vec<u8> {
+        let mut buf = [0u8; 256];
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut got = Vec::new();
+        while !got.windows(5).any(|w| w == b"READY") {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no READY; got={:?}",
+                String::from_utf8_lossy(&got)
+            );
+            let n = transport.read(&mut buf).expect("read test ssh");
+            assert!(n > 0, "EOF before READY: {:?}", String::from_utf8_lossy(&got));
+            got.extend_from_slice(&buf[..n]);
+        }
+        got
     }
 
     #[test]
@@ -1583,5 +1960,188 @@ mod integration_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    fn read_until(transport: &mut SshNativeTransport, needle: &[u8]) -> Vec<u8> {
+        let mut buf = [0u8; 256];
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut got = Vec::new();
+        while !got.windows(needle.len()).any(|w| w == needle) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no {:?}; got={:?}",
+                String::from_utf8_lossy(needle),
+                String::from_utf8_lossy(&got)
+            );
+            let n = transport.read(&mut buf).expect("read test ssh");
+            assert!(n > 0, "EOF before {:?}", String::from_utf8_lossy(needle));
+            got.extend_from_slice(&buf[..n]);
+        }
+        got
+    }
 
+    fn encrypted_client_key(dir: &Path) -> std::path::PathBuf {
+        std::fs::create_dir_all(dir).unwrap();
+        let path = dir.join("client_key");
+        let status = std::process::Command::new("ssh-keygen")
+            .args(["-q", "-t", "ed25519", "-N", "s3cret", "-f"])
+            .arg(&path)
+            .status()
+            .expect("ssh-keygen for encrypted client key");
+        assert!(status.success());
+        path
+    }
+
+    #[test]
+    fn native_ssh_accepts_passphrase_from_prompt_and_reports_wrong_one() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let (addr, public) = start_test_server(&rt, None);
+        let dir = test_path("tervo-native-ssh-passphrase");
+        let _home = EnvGuard::set("HOME", &dir);
+        // 隔离默认密钥：错误口令必须真的失败，不能碰巧用 ~/.ssh 里的无口令
+        // 默认私钥通过测试 server 的“接受任意公钥”。
+        let key_path = encrypted_client_key(&dir);
+        let known = write_known_hosts(&dir, addr, &public);
+        let profile = Profile {
+            kind: "ssh".into(),
+            host: "127.0.0.1".into(),
+            port: addr.port(),
+            user: "tester".into(),
+            auth: "key".into(),
+            key_path: key_path.display().to_string(),
+            ..Profile::default()
+        };
+        let mut transport = SshNativeTransport::start_resolved(
+            &profile,
+            None,
+            Some("s3cret".into()),
+            80,
+            24,
+            resolved_for(addr, known.clone()),
+        )
+        .expect("start with prompt passphrase");
+        read_until_ready(&mut transport);
+        transport.close();
+
+        let mut wrong = SshNativeTransport::start_resolved(
+            &profile,
+            None,
+            Some("definitely-wrong".into()),
+            80,
+            24,
+            resolved_for(addr, known),
+        )
+        .expect("start with wrong passphrase");
+        let wrong_status = wrong.status();
+        let mut buf = [0u8; 256];
+        let mut got = Vec::new();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            assert!(std::time::Instant::now() < deadline, "wrong pass did not EOF");
+            let n = wrong.read(&mut buf).expect("read wrong-pass ssh");
+            if n == 0 {
+                break;
+            }
+            got.extend_from_slice(&buf[..n]);
+        }
+        let text = String::from_utf8_lossy(&got);
+        assert!(
+            text.contains("加载私钥") || text.contains("认证失败"),
+            "unexpected wrong-pass output: {text}"
+        );
+        // 口令本身绝不能进日志/终端输出。
+        assert!(!text.contains("definitely-wrong"), "{text}");
+        assert!(!text.contains("s3cret"), "{text}");
+        assert!(wrong_status.key_passphrase_failed());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn native_ssh_agent_forward_rejection_keeps_session_and_gates_channel() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let (probe_tx, mut probe_rx) = tokio::sync::mpsc::channel(1);
+        let (addr, public) = start_test_server_full(&rt, None, false, Some(probe_tx));
+        let dir = test_path("tervo-native-ssh-agent-denied");
+        let known = write_known_hosts(&dir, addr, &public);
+        let profile = Profile {
+            kind: "ssh".into(),
+            host: "127.0.0.1".into(),
+            port: addr.port(),
+            user: "tester".into(),
+            auth: "password".into(),
+            agent_forward: true,
+            ..Profile::default()
+        };
+        let mut transport = SshNativeTransport::start_resolved(
+            &profile,
+            Some("pw".into()),
+            None,
+            80,
+            24,
+            resolved_for(addr, known),
+        )
+        .expect("start agent-reject ssh");
+        let status = transport.status();
+        read_until_ready(&mut transport);
+        assert_eq!(status.agent_forward(), AgentForwardState::Denied);
+        let accepted = rt
+            .block_on(async {
+                tokio::time::timeout(Duration::from_secs(5), probe_rx.recv()).await
+            })
+            .expect("agent probe timed out");
+        assert_eq!(accepted, Some(false), "denied negotiation must not accept agent channel");
+        // 拒绝只影响 agent，shell 仍可用。
+        transport.write_all(b"still-alive").unwrap();
+        read_until(&mut transport, b"still-alive");
+        transport.close();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn native_ssh_agent_forward_success_is_reported_and_accepts_channel() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let (probe_tx, mut probe_rx) = tokio::sync::mpsc::channel(1);
+        let (addr, public) = start_test_server_full(&rt, None, true, Some(probe_tx));
+        let dir = test_path("tervo-native-ssh-agent-ok");
+        std::fs::create_dir_all(&dir).unwrap();
+        let sock = dir.join("agent.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                drop(stream);
+            }
+        });
+        let _sock = EnvGuard::set("SSH_AUTH_SOCK", &sock);
+        let known = write_known_hosts(&dir, addr, &public);
+        let profile = Profile {
+            kind: "ssh".into(),
+            host: "127.0.0.1".into(),
+            port: addr.port(),
+            user: "tester".into(),
+            auth: "password".into(),
+            agent_forward: true,
+            ..Profile::default()
+        };
+        let mut transport = SshNativeTransport::start_resolved(
+            &profile,
+            Some("pw".into()),
+            None,
+            80,
+            24,
+            resolved_for(addr, known),
+        )
+        .expect("start agent-accept ssh");
+        let status = transport.status();
+        read_until_ready(&mut transport);
+        assert_eq!(status.agent_forward(), AgentForwardState::Active);
+        let accepted = rt
+            .block_on(async {
+                tokio::time::timeout(Duration::from_secs(5), probe_rx.recv()).await
+            })
+            .expect("agent probe timed out");
+        assert_eq!(accepted, Some(true), "accepted negotiation should accept agent channel");
+        transport.close();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
