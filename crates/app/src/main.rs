@@ -1035,6 +1035,17 @@ struct AppState {
     /// SFTP 面板里可选的 SSH Profile 索引（打开面板时快照）
     sftp_profiles: Vec<usize>,
     sftp_model: Rc<VecModel<slint::SharedString>>,
+    /// 与 `sftp_model` 同序的真实远端条目；选中路径一律从这里取 name，
+    /// 绝不从展示行（mode size mtime name）反解析。
+    sftp_entries: Vec<sftp::RemoteEntry>,
+    /// 当前列表实际对应的远端目录；用于判断上传覆盖检查是否可信。
+    sftp_listed_remote: Option<String>,
+    /// 上传前等待后台 `ls -l` 预检的请求；确认目标状态后才入队。
+    sftp_pending_upload: Option<sftp::TransferRequest>,
+    /// 覆盖/递归删除确认状态机；Some 时 UI 显示确认卡片。
+    sftp_gate: sftp::SftpGate,
+    /// 当前远端操作的超时秒数（递归删除 120s，其它 10s）。
+    sftp_op_timeout_secs: u64,
     hotkey_model: Rc<VecModel<HotkeyRow>>,
     /// 与 hotkey_model 同序的命令 ID（内置 + 已启用插件命令）
     hotkey_ids: Vec<String>,
@@ -7699,6 +7710,11 @@ fn open_sftp_panel(st: &mut AppState) {
     let model = Rc::new(VecModel::from(names));
     st.ui.set_sftp_profiles(ModelRc::from(model));
     st.sftp_model.set_vec(Vec::<slint::SharedString>::new());
+    st.sftp_entries.clear();
+    st.sftp_listed_remote = None;
+    st.sftp_pending_upload = None;
+    st.sftp_gate = sftp::SftpGate::default();
+    sftp_hide_confirm(st);
     st.ui.set_sftp_profile(0);
     st.ui.set_sftp_selected(-1);
     st.ui.set_sftp_status(
@@ -7731,17 +7747,101 @@ fn sftp_set_status(st: &mut AppState, msg: &str) {
     eprintln!("[sftp] {msg}");
 }
 
+/// 当前选中行的真实远端条目（展示行只用于渲染，路径从 name 取）。
+fn sftp_selected_entry(st: &AppState) -> Option<sftp::RemoteEntry> {
+    let selected = st.ui.get_sftp_selected();
+    st.sftp_entries.get(selected.max(0) as usize).cloned()
+}
+
+/// 把确认状态机快照写进 Slint 属性。
+fn sftp_show_confirm(st: &mut AppState) {
+    let (open, title, text, ok) = match st.sftp_gate.pending() {
+        Some(pending) => (
+            true,
+            pending.title().to_string(),
+            pending.text(),
+            pending.ok_label().to_string(),
+        ),
+        None => (false, String::new(), String::new(), String::new()),
+    };
+    st.ui.set_sftp_confirm_open(open);
+    st.ui.set_sftp_confirm_title(title.as_str().into());
+    st.ui.set_sftp_confirm_text(text.as_str().into());
+    st.ui.set_sftp_confirm_ok(ok.as_str().into());
+}
+
+fn sftp_hide_confirm(st: &mut AppState) {
+    st.ui.set_sftp_confirm_open(false);
+    st.ui.set_sftp_confirm_title("".into());
+    st.ui.set_sftp_confirm_text("".into());
+    st.ui.set_sftp_confirm_ok("".into());
+}
+
+/// 用户明确确认后才真正入队/启动删除；`take()` 保证动作只执行一次。
+fn sftp_confirm_accept(st: &mut AppState) {
+    let Some(confirmation) = st.sftp_gate.take() else {
+        sftp_hide_confirm(st);
+        return;
+    };
+    sftp_hide_confirm(st);
+    match confirmation {
+        sftp::SftpConfirmation::Overwrite { request, .. } => {
+            sftp_submit_transfer(st, request);
+        },
+        sftp::SftpConfirmation::RecursiveDelete { target, remote } => {
+            sftp_start_op(
+                st,
+                sftp::SftpCommand::RemoveRecursive { target, remote },
+                "递归删除中…（后台，120s 超时/可取消）",
+            );
+        },
+    }
+}
+
+/// 取消确认：只丢弃待执行请求，不启动任何传输/删除。
+fn sftp_confirm_cancel(st: &mut AppState) {
+    let pending = st.sftp_gate.take();
+    sftp_hide_confirm(st);
+    match pending {
+        Some(sftp::SftpConfirmation::Overwrite { request, .. }) => {
+            sftp_set_status(st, &format!("已取消{}，未入队，文件未改动", request.direction.verb()));
+        },
+        Some(sftp::SftpConfirmation::RecursiveDelete { .. }) => {
+            sftp_set_status(st, "已取消递归删除，远端文件未改动");
+        },
+        None => sftp_set_status(st, "没有待确认的操作"),
+    }
+}
+
+/// 只有目标不存在（或用户确认覆盖）时才把请求交给传输队列。
+fn sftp_offer_transfer(st: &mut AppState, request: sftp::TransferRequest, risk: sftp::OverwriteRisk) {
+    let status = match risk {
+        sftp::OverwriteRisk::Existing => "目标已存在，请在面板中确认覆盖（尚未入队）",
+        sftp::OverwriteRisk::Unknown => "无法确认目标，请在面板中确认（尚未入队）",
+        sftp::OverwriteRisk::None => "",
+    };
+    match st.sftp_gate.request_transfer(request, risk) {
+        sftp::SftpSubmit::Ready(request) => sftp_submit_transfer(st, request),
+        sftp::SftpSubmit::ConfirmationRequired => {
+            sftp_show_confirm(st);
+            sftp_set_status(st, status);
+        },
+    }
+}
+
 /// 把状态机快照写进 Slint 属性（进度区只在 Running 时显示）。
 fn sftp_show_transfer(st: &mut AppState) {
     let active = st.sftp_transfer_state.is_active();
     let current = st.sftp_transfer_state.current.clone();
     let percent = st.sftp_transfer_state.percent_i32();
     let detail = st.sftp_transfer_state.detail_text();
+    let op_timeout = format!("{}s timeout", st.sftp_op_timeout_secs);
     st.ui.set_sftp_transfer_active(active);
     st.ui.set_sftp_transfer_name(current.as_str().into());
     st.ui.set_sftp_transfer_percent(percent);
     st.ui.set_sftp_transfer_detail(detail.as_str().into());
     st.ui.set_sftp_op_active(st.sftp_op.is_some());
+    st.ui.set_sftp_op_detail(op_timeout.as_str().into());
 }
 
 /// 刷新队列行（当前失败项可重试）、队列计数/按钮状态。
@@ -7815,34 +7915,6 @@ fn sftp_submit_transfer(st: &mut AppState, request: sftp::TransferRequest) {
         return;
     }
     sftp_launch_request(st, request);
-}
-
-/// 启动一次后台传输（从当前 UI 选择构造请求）。
-fn sftp_start_transfer(
-    st: &mut AppState,
-    direction: sftp::TransferDirection,
-    local: String,
-    remote: String,
-) {
-    if st.sftp_op.is_some() {
-        sftp_set_status(st, "远端元数据操作进行中，请稍候（10s 超时/可取消）");
-        return;
-    }
-    let Some(target) = sftp_current_target(st) else {
-        sftp_set_status(st, "请选择 SSH Profile");
-        return;
-    };
-    // 下载始终 get -R（普通文件安全）；上传只有本地是目录才 put -R。
-    let recursive =
-        direction == sftp::TransferDirection::Upload && std::path::Path::new(&local).is_dir();
-    let request = sftp::TransferRequest {
-        direction,
-        target,
-        local,
-        remote,
-        recursive,
-    };
-    sftp_submit_transfer(st, request);
 }
 
 /// 由 400ms 的 poll_events 驱动：非阻塞收事件、更新 UI、终态回收线程。
@@ -7964,8 +8036,7 @@ fn sftp_do_chmod(st: &mut AppState) {
         sftp_set_status(st, "请选择 SSH Profile");
         return;
     };
-    let sel = st.ui.get_sftp_selected();
-    let Some(item) = st.sftp_model.row_data(sel.max(0) as usize) else {
+    let Some(entry) = sftp_selected_entry(st) else {
         sftp_set_status(st, "先在列表里选一条");
         return;
     };
@@ -7976,7 +8047,7 @@ fn sftp_do_chmod(st: &mut AppState) {
             return;
         }
     };
-    let remote = remote_entry_path(&st.ui.get_sftp_remote(), &item);
+    let remote = remote_entry_path(&st.ui.get_sftp_remote(), &entry.name);
     sftp_start_op(
         st,
         sftp::SftpCommand::Chmod {
@@ -7999,8 +8070,12 @@ fn sftp_cancel_transfer(st: &mut AppState) {
 
 /// 有 SFTP 子进程/后台操作在进行时阻止并发面板操作。
 fn sftp_busy(st: &mut AppState) -> bool {
-    if st.sftp_op.is_some() {
-        sftp_set_status(st, "远端操作进行中，请稍候（10s 超时）");
+    if st.sftp_gate.is_pending() {
+        sftp_set_status(st, "请先确认或取消当前操作");
+        true
+    } else if st.sftp_op.is_some() {
+        let secs = st.sftp_op_timeout_secs;
+        sftp_set_status(st, &format!("远端操作进行中，请稍候（{secs}s 超时）"));
         true
     } else if st.sftp_transfer.is_some() {
         sftp_set_status(st, "传输进行中，完成或取消后再操作");
@@ -8012,7 +8087,12 @@ fn sftp_busy(st: &mut AppState) -> bool {
 
 /// 启动元数据后台任务：只 spawn 线程，Slint 回调立即返回，UI 不冻结。
 fn sftp_start_op(st: &mut AppState, command: sftp::SftpCommand, status: &str) {
-    eprintln!("[sftp] 后台操作开始: {command:?}（timeout=10s）");
+    let timeout = command.timeout();
+    st.sftp_op_timeout_secs = timeout.as_secs();
+    eprintln!(
+        "[sftp] 后台操作开始: {command:?}（timeout={}s）",
+        st.sftp_op_timeout_secs
+    );
     sftp_set_status(st, status);
     st.sftp_op = Some(sftp::SftpOpJob::start_woken(command, st.app_wake.clone()));
     // 立刻把 op-active 写进 UI：否则用户看不到 Cancel（慢连接尤其明显）。
@@ -8032,6 +8112,7 @@ fn sftp_do_up(st: &mut AppState) {
     let current = st.ui.get_sftp_remote().to_string();
     let parent = sftp::parent_remote(&current);
     st.ui.set_sftp_remote(parent.as_str().into());
+    st.sftp_delete_armed = false;
     sftp_do_list(st);
 }
 
@@ -8043,6 +8124,7 @@ fn sftp_do_list(st: &mut AppState) {
         sftp_set_status(st, "请选择 SSH Profile");
         return;
     };
+    st.sftp_delete_armed = false;
     let remote = st.ui.get_sftp_remote().to_string();
     sftp_start_op(
         st,
@@ -8069,29 +8151,58 @@ fn join_remote(dir: &str, name: &str) -> String {
     }
 }
 
+fn sftp_make_request(
+    st: &AppState,
+    direction: sftp::TransferDirection,
+    local: String,
+    remote: String,
+) -> Option<sftp::TransferRequest> {
+    let target = sftp_current_target(st)?;
+    // 下载始终 get -R（普通文件安全）；上传只有本地是目录才 put -R。
+    let recursive =
+        direction == sftp::TransferDirection::Upload && std::path::Path::new(&local).is_dir();
+    Some(sftp::TransferRequest {
+        direction,
+        target,
+        local,
+        remote,
+        recursive,
+    })
+}
+
 fn sftp_do_download(st: &mut AppState) {
     // 传输进行中允许继续入队（队列会依次执行）；只拒绝与元数据操作并发。
     if st.sftp_op.is_some() {
-        sftp_set_status(st, "远端元数据操作进行中，请稍候（10s 超时/可取消）");
+        sftp_set_status(st, "远端元数据操作进行中，请稍候（可取消）");
         return;
     }
     if sftp_current_target(st).is_none() {
         sftp_set_status(st, "请选择 SSH Profile");
         return;
     }
-    let sel = st.ui.get_sftp_selected();
-    let Some(item) = st.sftp_model.row_data(sel.max(0) as usize) else {
+    let Some(entry) = sftp_selected_entry(st) else {
         sftp_set_status(st, "先在列表里选一条");
         return;
     };
-    let remote = remote_entry_path(&st.ui.get_sftp_remote(), &item);
+    let remote = remote_entry_path(&st.ui.get_sftp_remote(), &entry.name);
     let local = st.ui.get_sftp_local().to_string();
-    sftp_start_transfer(st, sftp::TransferDirection::Download, local, remote);
+    let Some(request) = sftp_make_request(st, sftp::TransferDirection::Download, local, remote)
+    else {
+        sftp_set_status(st, "请选择 SSH Profile");
+        return;
+    };
+    // 本地目标是已有文件/目录/符号链接时，先确认覆盖；取消不得触碰它。
+    let risk = if sftp::local_target_exists(&request.local) {
+        sftp::OverwriteRisk::Existing
+    } else {
+        sftp::OverwriteRisk::None
+    };
+    sftp_offer_transfer(st, request, risk);
 }
 
 fn sftp_do_upload(st: &mut AppState) {
     if st.sftp_op.is_some() {
-        sftp_set_status(st, "远端元数据操作进行中，请稍候（10s 超时/可取消）");
+        sftp_set_status(st, "远端元数据操作进行中，请稍候（可取消）");
         return;
     }
     if sftp_current_target(st).is_none() {
@@ -8103,8 +8214,33 @@ fn sftp_do_upload(st: &mut AppState) {
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "upload.bin".to_string());
-    let remote = join_remote(&st.ui.get_sftp_remote(), &name);
-    sftp_start_transfer(st, sftp::TransferDirection::Upload, local, remote);
+    let dir = st.ui.get_sftp_remote().to_string();
+    let remote = join_remote(&dir, &name);
+    let Some(request) = sftp_make_request(st, sftp::TransferDirection::Upload, local, remote)
+    else {
+        sftp_set_status(st, "请选择 SSH Profile");
+        return;
+    };
+    let risk = sftp::overwrite_risk(
+        st.sftp_listed_remote.as_deref(),
+        &dir,
+        &st.sftp_entries,
+        &name,
+    );
+    match risk {
+        sftp::OverwriteRisk::Unknown if st.sftp_transfer.is_none() => {
+            // 当前目录还没列过（或已切换）：先做一次 list 预检，避免盲目覆盖。
+            st.sftp_pending_upload = Some(request);
+            sftp_do_list(st);
+            if st.sftp_op.is_some() {
+                sftp_set_status(st, "检查远端上传目标…（后台）");
+            } else {
+                st.sftp_pending_upload = None;
+            }
+        },
+        // 传输进行中无法再开 list；明确告知“可能覆盖”，让用户决定是否排队。
+        _ => sftp_offer_transfer(st, request, risk),
+    }
 }
 
 fn sftp_do_mkdir(st: &mut AppState) {
@@ -8136,8 +8272,7 @@ fn sftp_do_rename(st: &mut AppState) {
         sftp_set_status(st, "请选择 SSH Profile");
         return;
     };
-    let sel = st.ui.get_sftp_selected();
-    let Some(item) = st.sftp_model.row_data(sel.max(0) as usize) else {
+    let Some(entry) = sftp_selected_entry(st) else {
         sftp_set_status(st, "先在列表里选一条");
         return;
     };
@@ -8147,7 +8282,7 @@ fn sftp_do_rename(st: &mut AppState) {
         return;
     }
     let dir = st.ui.get_sftp_remote().to_string();
-    let from = remote_entry_path(&dir, &item);
+    let from = remote_entry_path(&dir, &entry.name);
     let to = join_remote(&dir, &name);
     sftp_start_op(
         st,
@@ -8164,12 +8299,19 @@ fn sftp_do_delete(st: &mut AppState) {
         sftp_set_status(st, "请选择 SSH Profile");
         return;
     };
-    let sel = st.ui.get_sftp_selected();
-    let Some(item) = st.sftp_model.row_data(sel.max(0) as usize) else {
+    let Some(entry) = sftp_selected_entry(st) else {
         sftp_set_status(st, "先在列表里选一条");
         return;
     };
-    let path = remote_entry_path(&st.ui.get_sftp_remote(), &item);
+    let path = remote_entry_path(&st.ui.get_sftp_remote(), &entry.name);
+    // 目录：直接弹“递归删除”确认卡片（点 Delete 不算确认，必须再点卡片按钮）。
+    if entry.is_known_dir() {
+        st.sftp_delete_armed = false;
+        st.sftp_gate.request_recursive_delete(target, path.clone());
+        sftp_show_confirm(st);
+        sftp_set_status(st, &format!("确认递归删除目录 {path}（含全部内容）"));
+        return;
+    }
     if !st.sftp_delete_armed {
         st.sftp_delete_armed = true;
         sftp_set_status(st, &format!("再点一次 Delete 确认删除 {path}"));
@@ -8219,16 +8361,31 @@ fn poll_sftp_op(st: &mut AppState) {
 fn apply_sftp_outcome(st: &mut AppState, outcome: sftp::SftpOutcome) {
     match outcome {
         sftp::SftpOutcome::List {
-            items: Ok(items), ..
+            remote,
+            items: Ok(items),
         } => {
             st.sftp_delete_armed = false;
             let n = items.len();
-            let names: Vec<slint::SharedString> = items.into_iter().map(|s| s.into()).collect();
+            let names: Vec<slint::SharedString> =
+                items.iter().map(|entry| entry.display().into()).collect();
             st.sftp_model.set_vec(names);
+            st.sftp_entries = items;
+            st.sftp_listed_remote = Some(remote);
             st.ui.set_sftp_selected(-1);
+            if let Some(request) = st.sftp_pending_upload.take() {
+                // 上传预检完成：目标存在则弹确认，不存在才真正入队。
+                sftp_resolve_pending_upload(st, request);
+                return;
+            }
             sftp_set_status(st, &format!("{n} 个条目"));
         }
         sftp::SftpOutcome::List { items: Err(e), .. } => {
+            // 列表不可信：下次上传必须先重新 list，不能拿旧缓存判断“不存在”。
+            st.sftp_listed_remote = None;
+            if st.sftp_pending_upload.take().is_some() {
+                sftp_set_status(st, &format!("无法检查远端上传目标，未上传: {e}"));
+                return;
+            }
             sftp_set_status(st, &format!("列目录失败: {e}"));
         }
         sftp::SftpOutcome::Mkdir {
@@ -8267,7 +8424,7 @@ fn apply_sftp_outcome(st: &mut AppState, outcome: sftp::SftpOutcome) {
             mode,
             result: Ok(()),
         } => {
-            // `ls -1` 不显示权限，列表内容不会变；保留成功文案而不是刷新成“N 个条目”。
+            // 列表现在带 mode；仍保留成功文案，不立即刷新成“N 个条目”。
             sftp_set_status(st, &format!("已把 {path} 权限改为 {mode:04o}"));
         }
         sftp::SftpOutcome::Chmod {
@@ -8278,6 +8435,22 @@ fn apply_sftp_outcome(st: &mut AppState, outcome: sftp::SftpOutcome) {
             sftp_set_status(st, &format!("修改 {path} 权限失败: {e}"));
         }
     }
+}
+
+/// 上传预检的 list 已返回：用真实列表判断远端目标，存在则先确认。
+fn sftp_resolve_pending_upload(st: &mut AppState, request: sftp::TransferRequest) {
+    let dir = sftp::parent_remote(&request.remote);
+    let name = request
+        .remote
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or("")
+        .to_string();
+    let listed = st.sftp_listed_remote.clone();
+    let risk = sftp::overwrite_risk(listed.as_deref(), &dir, &st.sftp_entries, &name);
+    // 列表与目标目录不一致（理论上有并发 list）时保守确认，绝不直接覆盖。
+    sftp_offer_transfer(st, request, risk);
 }
 
 // ------------------------------------------------------- Port Forwards 面板
@@ -15680,7 +15853,13 @@ fn run_sftp_probe(args: &[String]) -> i32 {
     let op = args.first().map(String::as_str).unwrap_or("");
     let remote = args.get(1).map(String::as_str).unwrap_or(".");
     let result = match op {
-        "list" => sftp::list(&target, remote).map(|items| items.join("\n")),
+        "list" => sftp::list(&target, remote).map(|items| {
+            items
+                .iter()
+                .map(sftp::RemoteEntry::display)
+                .collect::<Vec<_>>()
+                .join("\n")
+        }),
         "get" => {
             let local = args.get(2).map(String::as_str).unwrap_or("");
             sftp_probe_transfer(&target, sftp::TransferDirection::Download, local, remote)
@@ -15917,6 +16096,11 @@ fn build_window_state(
         ssh_exit: None,
         sftp_profiles: Vec::new(),
         sftp_model,
+        sftp_entries: Vec::new(),
+        sftp_listed_remote: None,
+        sftp_pending_upload: None,
+        sftp_gate: sftp::SftpGate::default(),
+        sftp_op_timeout_secs: 10,
         hotkey_model,
         hotkey_ids: Vec::new(),
         hotkey_recording: None,
@@ -17546,7 +17730,22 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
         runtime::with_window(window_id, |st| sftp_do_delete(st));
     });
 
-    ui.on_sftp_close(|| {});
+    ui.on_sftp_confirm_accept(move || {
+        runtime::with_window(window_id, |st| sftp_confirm_accept(st));
+    });
+
+    ui.on_sftp_confirm_cancel(move || {
+        runtime::with_window(window_id, |st| sftp_confirm_cancel(st));
+    });
+
+    // 关闭面板：丢弃尚未确认的请求/预检；不会启动任何传输或删除。
+    ui.on_sftp_close(move || {
+        runtime::with_window(window_id, |st| {
+            st.sftp_gate = sftp::SftpGate::default();
+            st.sftp_pending_upload = None;
+            sftp_hide_confirm(st);
+        });
+    });
 
     ui.on_profile_open(move |index| {
         runtime::with_window(window_id, |st| {

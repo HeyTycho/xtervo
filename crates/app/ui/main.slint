@@ -1789,6 +1789,13 @@ export component MainWindow inherits Window {
     in property <string> sftp-transfer-name: "";
     in property <int> sftp-transfer-percent: -1;
     in property <string> sftp-transfer-detail: "";
+    /// 覆盖/递归删除确认（状态由 Rust 的 SftpGate 持有；确认前不启动操作）。
+    in-out property <bool> sftp-confirm-open: false;
+    in property <string> sftp-confirm-title: "";
+    in property <string> sftp-confirm-text: "";
+    in property <string> sftp-confirm-ok: "";
+    /// 当前远端操作的超时提示（普通 10s；递归删除 120s）。
+    in property <string> sftp-op-detail: "10s timeout";
     callback sftp-list();
     callback sftp-up();
     callback sftp-refresh();
@@ -1803,6 +1810,8 @@ export component MainWindow inherits Window {
     callback sftp-retry();
     callback sftp-clear-queue();
     callback sftp-close();
+    callback sftp-confirm-accept();
+    callback sftp-confirm-cancel();
     // Port Forwards 面板
     in-out property <bool> fwd-open: false;
     in property <[string]> fwd-profiles: [];
@@ -8598,7 +8607,7 @@ export component MainWindow inherits Window {
 
             Text {
                 x: 250px; y: 0; width: 118px; height: 24px;
-                text: root.sftp-transfer-active ? root.sftp-transfer-detail : "10s timeout";
+                text: root.sftp-transfer-active ? root.sftp-transfer-detail : root.sftp-op-detail;
                 color: Palette.colors.muted;
                 font-size: 10px;
                 horizontal-alignment: right;
@@ -8640,6 +8649,100 @@ export component MainWindow inherits Window {
                         ? Palette.colors.muted
                         : Palette.colors.accent;
                     border-radius: 3px;
+                }
+            }
+        }
+
+        // 覆盖/递归删除确认：遮住整个面板，确认前底层按钮不可点。
+        // 取消只关闭卡片，不启动任何传输/删除。
+        if root.sftp-confirm-open : Rectangle {
+            x: 0; y: 0; width: 100%; height: 100%;
+            background: #00000070;
+
+            TouchArea {
+                width: 100%;
+                height: 100%;
+                // 吃掉面板底层点击（包括右键关闭面板）。
+                pointer-event(event) => {
+                    if (event.kind == PointerEventKind.down) {
+                        return EventResult.accept;
+                    }
+                    EventResult.reject
+                }
+            }
+
+            Rectangle {
+                x: 20px; y: 200px; width: 440px; height: 168px;
+                background: Palette.colors.raise;
+                border-radius: 8px;
+                border-width: 1px;
+                border-color: Palette.colors.border;
+                drop-shadow-blur: 18px;
+                drop-shadow-offset-y: 6px;
+                drop-shadow-color: #000000a0;
+
+                Text {
+                    x: 16px; y: 12px; width: 408px; height: 24px;
+                    text: root.sftp-confirm-title;
+                    color: Palette.colors.text;
+                    font-size: 14px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+                Text {
+                    x: 16px; y: 42px; width: 408px; height: 70px;
+                    text: root.sftp-confirm-text;
+                    color: Palette.colors.subtext;
+                    font-size: 11px;
+                    wrap: word-wrap;
+                    vertical-alignment: top;
+                }
+                HorizontalLayout {
+                    x: 16px; y: 124px;
+                    width: 408px; height: 28px;
+                    spacing: 8px;
+                    alignment: end;
+
+                    Rectangle {
+                        width: 88px; height: 28px; border-radius: 6px;
+                        background: sftp-confirm-cancel-hit.has-hover
+                            ? Palette.colors.hover
+                            : Palette.colors.raise;
+                        border-width: 1px;
+                        border-color: Palette.colors.border;
+                        sftp-confirm-cancel-hit := TouchArea {
+                            clicked => { root.sftp-confirm-cancel(); }
+                        }
+                        Text {
+                            text: Lang.t("Cancel", "取消");
+                            color: Palette.colors.text;
+                            font-size: 12px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                            width: 100%;
+                            height: 100%;
+                        }
+                    }
+                    Rectangle {
+                        width: 100px; height: 28px; border-radius: 6px;
+                        background: sftp-confirm-ok-hit.has-hover
+                            ? Palette.colors.danger
+                            : Palette.colors.accent;
+                        sftp-confirm-ok-hit := TouchArea {
+                            clicked => { root.sftp-confirm-accept(); }
+                        }
+                        Text {
+                            text: root.sftp-confirm-ok;
+                            color: Palette.colors.accent-text;
+                            font-size: 12px;
+                            font-weight: 600;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                            width: 100%;
+                            height: 100%;
+                        }
+                    }
                 }
             }
         }

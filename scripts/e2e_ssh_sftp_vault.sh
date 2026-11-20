@@ -104,12 +104,16 @@ exec sleep 300
 SH
 chmod +x "$OUT/bin/ssh"
 
-# 元数据/list 立即返回；传输打印进度后挂起（测试 Cancel）；fail-upload 失败。
+# 元数据/list 立即返回（优先 ls -l 带 mode/size/mtime）；传输打印进度后挂起（测试 Cancel）；fail-upload 失败。
 cat >"$OUT/bin/sftp" <<'SH'
 #!/bin/sh
 batch=$(cat)
 case "$batch" in
   *"/slow"*) exec sleep 300 ;;
+  *"ls -l"*) printf '%s\n' \
+      '-rw-r--r--    1 yt yt       128 Nov 20 10:00 alpha.txt' \
+      '-rw-r--r--    1 yt yt      2048 Nov 20 10:00 beta.bin' \
+      'drwxr-xr-x    2 yt yt      4096 Nov 20 10:00 dir1' ;;
   *"ls -1"*) printf 'alpha.txt\nbeta.bin\ndir1\n' ;;
   *"chmod "*) printf 'chmod ok\n' ;;
   *put*fail*) printf 'permission denied\n' >&2; exit 3 ;;
@@ -339,6 +343,10 @@ click 504 113 0.4                     # 选择 files Profile
 click 356 184 0.9                     # List
 shot 12-sftp-list
 click 400 217 0.3                     # 选中 alpha.txt
+# 本地目标用不存在的路径，避免“目标已存在”确认影响队列测试（覆盖确认另有单测）。
+DOWNLOAD_TARGET="$OUT/download-target.bin"
+rm -f "$DOWNLOAD_TARGET"
+type_into 500 408 "$DOWNLOAD_TARGET" 0.2
 click 390 473 0.4                     # Download → 开始
 click 390 473 0.5                     # Download again → 入队
 shot 13-sftp-queue
