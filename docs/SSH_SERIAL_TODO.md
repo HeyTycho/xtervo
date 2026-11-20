@@ -130,3 +130,23 @@
 - [ ] T01–T04 测试/e2e/2m+15m/Codex
 
 Phase 2/3（SFTP 完整化、转发管理、Login Scripts、X11、ProxyCommand、证书、Connection Manager、历史、算法、Zmodem、硬件/真实 sshd）不在今晚 Gate 内，按清单继续。
+
+## Final evidence (2026-11-20)
+
+- app: 773 passed, 0 failed, 2 ignored.
+- release e2e: context menu, TabBar, keyboard, pin/drag, single-instance multi-window.
+- 2m `SOAK_STRICT=1`: PASS.
+- 15m `SOAK_STRICT=1`: PASS（RSS 576.8→668.8 MiB，+3.90 MiB/min，
+  threads 111→111，fds 121→121，fatal=0）。
+- final binary: `target/release/tervo` sha256
+  `31c4c2370722b498d93c9de169a757d728adcf6b01d6ecdf8cf1cd82ef2071e3`。
+
+仍明确不支持/未闭环（不是静默失败）：
+
+- SFTP 基于系统 sftp 子进程，非内建 SSH Channel；无断点续传/大文件限速。
+- SFTP 独立 Tab/插件 API 未做；面板仍是独立 overlay。
+- Zmodem：本机无 lrzsz，未实现内建状态机。
+- SSH 证书/@cert-authority：调研完成，明确 unsupported，native 回退系统 ssh。
+- 真实外部 sshd、真实串口硬件、Windows Pageant/WinSCP 未验证。
+- Connection Manager 仅有 Profiles + 最近连接，无常驻连接管理三态视图。
+- Jump Host 无链路可视化/独立凭据；X11 无转发状态 UI。
