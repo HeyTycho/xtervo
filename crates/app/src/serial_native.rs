@@ -18,6 +18,85 @@ use crate::profile::Profile;
 
 const READ_TIMEOUT: Duration = Duration::from_millis(100);
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OutputMode {
+    Text,
+    Hexdump,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NewlineMode {
+    None,
+    Lf,
+    Cr,
+    Crlf,
+}
+
+fn parse_output(value: &str) -> OutputMode {
+    if value.eq_ignore_ascii_case("hexdump") {
+        OutputMode::Hexdump
+    } else {
+        OutputMode::Text
+    }
+}
+
+fn parse_newline(value: &str) -> NewlineMode {
+    match value.to_ascii_lowercase().as_str() {
+        "lf" => NewlineMode::Lf,
+        "cr" => NewlineMode::Cr,
+        "crlf" => NewlineMode::Crlf,
+        _ => NewlineMode::None,
+    }
+}
+
+/// 出站换行转换；CRLF 输入按一个换行处理，避免发出两个终止符。
+fn convert_newlines(data: &[u8], mode: NewlineMode) -> Vec<u8> {
+    let target: &[u8] = match mode {
+        NewlineMode::None => return data.to_vec(),
+        NewlineMode::Lf => b"\n",
+        NewlineMode::Cr => b"\r",
+        NewlineMode::Crlf => b"\r\n",
+    };
+    let mut out = Vec::with_capacity(data.len());
+    let mut i = 0;
+    while i < data.len() {
+        match data[i] {
+            b'\r' => {
+                if i + 1 < data.len() && data[i + 1] == b'\n' {
+                    i += 1;
+                }
+                out.extend_from_slice(target);
+            },
+            b'\n' => out.extend_from_slice(target),
+            byte => out.push(byte),
+        }
+        i += 1;
+    }
+    out
+}
+
+/// 每 16 字节一行：偏移、十六进制、ASCII。
+fn format_hexdump(data: &[u8], offset: &mut u64) -> Vec<u8> {
+    let mut out = Vec::new();
+    for chunk in data.chunks(16) {
+        out.extend_from_slice(format!("{:08x}  ", *offset).as_bytes());
+        for i in 0..16 {
+            if let Some(byte) = chunk.get(i) {
+                out.extend_from_slice(format!("{byte:02x} ").as_bytes());
+            } else {
+                out.extend_from_slice(b"   ");
+            }
+        }
+        out.extend_from_slice(b" |");
+        for byte in chunk {
+            out.push(if byte.is_ascii_graphic() || *byte == b' ' { *byte } else { b'.' });
+        }
+        out.extend_from_slice(b"|\r\n");
+        *offset += chunk.len() as u64;
+    }
+    out
+}
+
 /// 枚举系统串口；用于设置页的“串口”列表/热插拔提示。
 pub fn list_ports() -> Vec<String> {
     match serialport::available_ports() {
@@ -135,6 +214,8 @@ pub struct SerialTransport {
     writer: Box<dyn SerialPort>,
     control: Box<dyn SerialPort>,
     stop: Arc<AtomicBool>,
+    output: OutputMode,
+    newline: NewlineMode,
 }
 
 impl SerialTransport {
@@ -187,7 +268,14 @@ impl SerialTransport {
             io::Error::new(io::ErrorKind::Other, format!("复制串口控制句柄 {port} 失败: {e}"))
         })?;
         Ok((
-            Self { reader, writer, control, stop: Arc::new(AtomicBool::new(false)) },
+            Self {
+                reader,
+                writer,
+                control,
+                stop: Arc::new(AtomicBool::new(false)),
+                output: parse_output(&profile.serial_output),
+                newline: parse_newline(&profile.serial_newline),
+            },
             ui_control,
         ))
     }
@@ -223,11 +311,18 @@ impl PaneTransport for SerialTransport {
     }
 
     fn into_halves(self: Box<Self>) -> io::Result<TransportHalves> {
-        let SerialTransport { reader, writer, control, stop } = *self;
+        let SerialTransport { reader, writer, control, stop, output, newline } = *self;
         let shutdown_stop = stop.clone();
         Ok(TransportHalves {
-            reader: Box::new(SerialReader { port: reader, stop: stop.clone() }),
-            writer: Box::new(SerialWriter { port: writer }),
+            reader: Box::new(SerialReader {
+                port: reader,
+                stop: stop.clone(),
+                output,
+                hex_offset: 0,
+                pending: Vec::new(),
+                pos: 0,
+            }),
+            writer: Box::new(SerialWriter { port: writer, newline }),
             control: Box::new(SerialControl { port: control, stop: stop.clone() }),
             shutdown: TransportShutdown::new(move || {
                 shutdown_stop.store(true, Ordering::Release);
@@ -239,16 +334,34 @@ impl PaneTransport for SerialTransport {
 struct SerialReader {
     port: Box<dyn SerialPort>,
     stop: Arc<AtomicBool>,
+    output: OutputMode,
+    hex_offset: u64,
+    pending: Vec<u8>,
+    pos: usize,
 }
 
 impl Read for SerialReader {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if self.pos < self.pending.len() {
+            let n = (self.pending.len() - self.pos).min(buf.len());
+            buf[..n].copy_from_slice(&self.pending[self.pos..self.pos + n]);
+            self.pos += n;
+            return Ok(n);
+        }
         loop {
             if self.stop.load(Ordering::Acquire) {
                 return Ok(0);
             }
-            match self.port.read(buf) {
-                Ok(n) => return Ok(n),
+            let mut raw = [0u8; 512];
+            match self.port.read(&mut raw) {
+                Ok(n) => {
+                    self.pending = match self.output {
+                        OutputMode::Text => raw[..n].to_vec(),
+                        OutputMode::Hexdump => format_hexdump(&raw[..n], &mut self.hex_offset),
+                    };
+                    self.pos = 0;
+                    return self.read(buf);
+                },
                 Err(e)
                     if e.kind() == io::ErrorKind::TimedOut
                         || e.kind() == io::ErrorKind::WouldBlock =>
@@ -263,11 +376,14 @@ impl Read for SerialReader {
 
 struct SerialWriter {
     port: Box<dyn SerialPort>,
+    newline: NewlineMode,
 }
 
 impl Write for SerialWriter {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.port.write(buf)
+        let data = convert_newlines(buf, self.newline);
+        self.port.write_all(&data)?;
+        Ok(buf.len())
     }
     fn flush(&mut self) -> io::Result<()> {
         self.port.flush()
@@ -291,6 +407,20 @@ impl TransportControl for SerialControl {
 mod tests {
     use super::*;
     use crate::profile::Profile;
+
+    #[test]
+    fn newline_and_hexdump_helpers() {
+        assert_eq!(convert_newlines(b"a\r\nb", NewlineMode::Lf), b"a\nb");
+        assert_eq!(convert_newlines(b"a\rb", NewlineMode::Crlf), b"a\r\nb");
+        assert_eq!(convert_newlines(b"a\nb", NewlineMode::Cr), b"a\rb");
+        let mut offset = 0;
+        let dump = format_hexdump(b"AB", &mut offset);
+        let text = String::from_utf8_lossy(&dump);
+        assert!(text.contains("00000000"), "{text}");
+        assert!(text.contains("41 42"), "{text}");
+        assert!(text.contains("|AB|"), "{text}");
+        assert_eq!(offset, 2);
+    }
 
     #[test]
     fn missing_device_is_a_clean_error() {

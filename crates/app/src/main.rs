@@ -6901,6 +6901,8 @@ fn open_profile_form(st: &mut AppState) {
     st.ui.set_form_serial_parity("none".into());
     st.ui.set_form_serial_stop_bits("1".into());
     st.ui.set_form_serial_flow_control("none".into());
+    st.ui.set_form_serial_output("text".into());
+    st.ui.set_form_serial_newline("none".into());
     st.ui.set_form_serial_ports("".into());
     st.ui.set_form_serial_dtr(true);
     st.ui.set_form_serial_rts(true);
@@ -6973,6 +6975,8 @@ fn edit_profile_form(st: &mut AppState, index: usize) {
     st.ui.set_form_serial_parity(p.parity.as_str().into());
     st.ui.set_form_serial_stop_bits(p.stop_bits.to_string().as_str().into());
     st.ui.set_form_serial_flow_control(p.flow_control.as_str().into());
+    st.ui.set_form_serial_output(p.serial_output.as_str().into());
+    st.ui.set_form_serial_newline(p.serial_newline.as_str().into());
     st.ui.set_form_serial_dtr(p.dtr);
     st.ui.set_form_serial_rts(p.rts);
     st.ui.set_form_font_size(
@@ -7094,6 +7098,8 @@ fn save_profile_form(st: &mut AppState) {
             p.parity = st.ui.get_form_serial_parity().trim().to_ascii_lowercase();
             p.stop_bits = st.ui.get_form_serial_stop_bits().trim().parse::<u8>().unwrap_or(0);
             p.flow_control = st.ui.get_form_serial_flow_control().trim().to_ascii_lowercase();
+            p.serial_output = st.ui.get_form_serial_output().trim().to_ascii_lowercase();
+            p.serial_newline = st.ui.get_form_serial_newline().trim().to_ascii_lowercase();
             p.dtr = st.ui.get_form_serial_dtr();
             p.rts = st.ui.get_form_serial_rts();
         }

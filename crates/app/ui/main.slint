@@ -1729,6 +1729,8 @@ export component MainWindow inherits Window {
     in-out property <string> form-serial-parity: "none";
     in-out property <string> form-serial-stop-bits: "1";
     in-out property <string> form-serial-flow-control: "none";
+    in-out property <string> form-serial-output: "text";
+    in-out property <string> form-serial-newline: "none";
     in-out property <string> form-serial-ports: "";
     in-out property <[string]> form-serial-port-list: [];
     in-out property <bool> form-serial-dtr: true;
@@ -7824,6 +7826,8 @@ export component MainWindow inherits Window {
                 FormRow { label: Lang.t("Parity", "校验位"); text <=> root.form-serial-parity; }
                 FormRow { label: Lang.t("Stop bits", "停止位"); text <=> root.form-serial-stop-bits; }
                 FormRow { label: Lang.t("Flow control", "流控"); text <=> root.form-serial-flow-control; }
+                FormRow { label: Lang.t("Output", "输出"); text <=> root.form-serial-output; }
+                FormRow { label: Lang.t("Newline", "换行转换"); text <=> root.form-serial-newline; }
                 HorizontalLayout {
                     height: 26px;
                     spacing: 8px;

@@ -28,6 +28,8 @@ fn default_serial_stop_bits() -> u8 { 1 }
 fn default_serial_flow() -> String { "none".into() }
 fn default_serial_dtr() -> bool { true }
 fn default_serial_rts() -> bool { true }
+fn default_serial_output() -> String { "text".into() }
+fn default_serial_newline() -> String { "none".into() }
 
 /// 一个本地 Profile：决定新 Tab 用什么 shell / 参数 / 起始目录 / 环境变量。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -120,6 +122,12 @@ pub struct Profile {
     /// 打开串口后是否立即拉高 RTS；默认 true。
     #[serde(default = "default_serial_rts")]
     pub rts: bool,
+    /// 输出显示：text | hexdump。
+    #[serde(default = "default_serial_output")]
+    pub serial_output: String,
+    /// 发送换行转换：none | lf | cr | crlf。
+    #[serde(default = "default_serial_newline")]
+    pub serial_newline: String,
     // ---- 外观（None / 空 = 继承全局 Config；对所有 kind 生效）----
     /// 该 Profile 打开的 pane 使用的字号；`None` = 继承 `config.font_size`。
     pub font_size: Option<f32>,
@@ -360,6 +368,8 @@ impl Default for Profile {
             flow_control: "none".into(),
             dtr: true,
             rts: true,
+            serial_output: "text".into(),
+            serial_newline: "none".into(),
             font_size: None,
             theme: None,
             cursor_shape: None,
@@ -695,6 +705,18 @@ impl Profile {
                     return Err(format!(
                         "流控必须是 none/software/hardware，实际 {}",
                         self.flow_control
+                    ));
+                }
+                if !["text", "hexdump"].contains(&self.serial_output.as_str()) {
+                    return Err(format!(
+                        "串口输出模式必须是 text/hexdump，实际 {}",
+                        self.serial_output
+                    ));
+                }
+                if !["none", "lf", "cr", "crlf"].contains(&self.serial_newline.as_str()) {
+                    return Err(format!(
+                        "串口换行转换必须是 none/lf/cr/crlf，实际 {}",
+                        self.serial_newline
                     ));
                 }
                 if !self.transport.trim().is_empty()
