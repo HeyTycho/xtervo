@@ -1,7 +1,7 @@
 # Wayland 原生适配（Phase 1）
 
 > 分支：`feat/wayland-phase1`，基线 `6102bb9`（v0.5.0）。
-> 前置调研：[`WAYLAND_SPIKE.md`](WAYLAND_SPIKE.md)（GNOME 42 / headless 只读 spike）。
+> 前置调研：[`WAYLAND_SPIKE.md`](archive/WAYLAND_SPIKE.md)（GNOME 42 / headless 只读 spike）。
 > 本轮目标：**能力探测 + 优雅降级**，不升级 winit/Slint、不新增系统依赖；
 > X11/XWayland 行为必须与适配前一致。
 

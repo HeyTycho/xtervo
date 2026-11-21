@@ -1,6 +1,6 @@
 # Wayland 原生支持 Spike（W-06）
 
-> **后续实施见 [`WAYLAND_ADAPTATION.md`](WAYLAND_ADAPTATION.md)**（Phase 1：
+> **后续实施见 [`WAYLAND_ADAPTATION.md`](../WAYLAND_ADAPTATION.md)**（Phase 1：
 > 能力探测 + 优雅降级，GNOME 46 实测）。本文保留 2026-11 的只读 spike 结论。
 >
 > 分支：`feat/wayland-spike`，基线 `0902954`（基于 master `0902954`，未合并 master）。
