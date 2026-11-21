@@ -10793,6 +10793,7 @@ fn move_active_tab(st: &mut AppState, delta: i32) {
     if to >= st.ws.tabs.len() || !st.ws.move_tab(from, to) {
         return;
     }
+    eprintln!("[ws] move tab {from} → {to}");
     st.ws.active = to;
     refresh_views(st);
     rebuild_tabs(st);
