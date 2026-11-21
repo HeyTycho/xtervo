@@ -70,7 +70,7 @@
 | 分屏分隔线（上下） | 左键拖动 | 同上，ns-resize | 同上 | 同上 | 同上 |
 | Pane 焦点视觉 | — | 无 | 当前 Pane 有清晰边框/标记 | 缺失 | 4 pane 下无法从画面判断焦点 |
 | Pane 键盘焦点切换 | 快捷键 | 无 | 相邻 Pane 切换 | 缺失 | 按 Alt+方向等无反应 |
-| Pane 最大化/还原 | 菜单/快捷键 | 无 | 若上游有则实现 | 待核/缺失 | 检查无 zoom 菜单 |
+| Pane 最大化/还原 | 双击 pane 右上拖拽手柄 / Ctrl+Shift+M | `handle-hit.double-clicked → pane-toggle-zoom(p.id)`；`toggle_pane_zoom_for` 校验 pane 属于活动 Tab；最大化后手柄保留 | 双击最大化，再次双击还原 | 已实现 | 分屏后双击右 pane 手柄 → `[pane] zoom on pane=2`；再双击 → `[pane] zoom off pane=2` |
 | Pane 拖拽重排 | 左键拖 Pane | 无 | 移动/重排/重组 | 缺失 | 拖 Pane 无布局变化 |
 | 广播输入 | 开关/UI | 无 | 可开关、显示范围、危险提示 | 缺失 | 无广播按钮/状态 |
 

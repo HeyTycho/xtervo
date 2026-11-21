@@ -4,6 +4,12 @@ Tervo 的版本与 tag 规则见 `docs/RELEASING.md`。
 
 ## [Unreleased]
 
+### Added
+
+- Pane 右上角拖拽手柄支持**双击最大化/还原**：双击把该 pane 折叠为整块内容区，
+  再次双击还原；与 `Ctrl+Shift+M` 共用 `zoomed` 视图状态，不改布局树/比例/快照。
+  最大化时 pane 模型只剩一个视图，手柄仍保留以便还原。
+
 ### Changed
 
 - 默认快捷键按本机 GNOME Terminal 对齐：新 Tab `Ctrl+Shift+T`、关闭 Tab

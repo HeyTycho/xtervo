@@ -14922,25 +14922,51 @@ fn palette_accept(st: &mut AppState) {
 /// 只改 `st.zoomed` 视图状态：不修改 `Tab.root`、比例或快照，因此重启后
 /// 布局与最大化前完全一致（除非用户本来就要保存那个布局）。
 fn toggle_pane_zoom(st: &mut AppState) {
+    let Some(target) = st.ws.active_tab().map(|tab| tab.focused) else {
+        return;
+    };
+    toggle_pane_zoom_for(st, target);
+}
+
+/// 双击 pane 右上角拖拽手柄：最大化该 pane；再次双击还原。
+///
+/// 只改 `st.zoomed` 视图状态，不动布局树/比例/快照；点击的手柄不一定属于
+/// 当前聚焦 pane，所以先校验它属于活动 Tab，再把它设为 focused 后 zoom。
+fn toggle_pane_zoom_for(st: &mut AppState, pane: PaneId) {
+    // 双击的第一次 down 会启动 pane 拖拽；第二次 down 后拖拽 ghost/“Drop on
+    // a pane”遮罩可能仍盖住右上角手柄，导致再次双击落不到手柄上。先收掉拖拽态。
+    pane_drag_cancel(st);
     let Some(tab) = st.ws.active_tab() else {
         return;
     };
-    let focused = tab.focused;
-    let pane_count = tab.panes().len();
-    if st.zoomed == Some(focused) {
+    let panes = tab.panes();
+    if !panes.contains(&pane) {
+        return;
+    }
+    let pane_count = panes.len();
+    let turning_off = st.zoomed == Some(pane);
+    if turning_off {
         st.zoomed = None;
-        eprintln!("[pane] zoom off pane={focused}");
     } else if pane_count < 2 {
         eprintln!("[pane] zoom ignored: 当前 Tab 只有一个 pane");
         return;
     } else {
-        st.zoomed = Some(focused);
-        eprintln!("[pane] zoom on pane={focused} panes={pane_count}");
+        st.zoomed = Some(pane);
+        if let Some(tab) = st.ws.active_tab_mut() {
+            tab.focused = pane;
+        }
+    }
+    if turning_off {
+        eprintln!("[pane] zoom off pane={pane}");
+    } else {
+        eprintln!("[pane] zoom on pane={pane} panes={pane_count}");
     }
     refresh_views(st);
     redraw_visible(st);
     let win = st.window_focused;
     sync_terminal_focus(st, win);
+    st.ime_spot_dirty = true;
+    update_ime_spot(st);
 }
 
 fn run_command(st: &mut AppState, id: &str) {
@@ -18264,6 +18290,9 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
     // “内容区坐标 → 最近 pane”；松手才交换，Esc/失焦走 cancelled。
     ui.on_pane_drag_start(move |id, x, y| {
         runtime::with_window(window_id, |st| pane_drag_start(st, id as u64, x, y));
+    });
+    ui.on_pane_toggle_zoom(move |id| {
+        runtime::with_window(window_id, |st| toggle_pane_zoom_for(st, id as u64));
     });
     ui.on_pane_drag_move(move |x, y| {
         runtime::with_window(window_id, |st| pane_drag_move(st, x, y));

@@ -1703,6 +1703,8 @@ export component MainWindow inherits Window {
     /// Pane 拖拽重排（UI-PANE-008）：start 带源 pane + 内容区坐标，
     /// move/end 由 Rust 做落点命中；cancelled = Esc/窗口失焦。
     callback pane-drag-start(int, length, length);
+    /// 双击 pane 右上角拖拽手柄：最大化该 pane / 还原。
+    callback pane-toggle-zoom(int);
     callback pane-drag-move(length, length);
     callback pane-drag-end();
     callback pane-drag-cancelled();
@@ -4344,9 +4346,10 @@ export component MainWindow inherits Window {
                     }
 
                     // ---------------- Pane 拖拽重排（UI-PANE-008） ----------------
-                    // 右上角小拖拽手柄：只在多 pane 时出现，不挡终端点击（独立 TouchArea）。
+                    // 右上角小拖拽手柄：多 pane 时用于重排；最大化时 pane 模型
+                    // 只剩一个（pane-zoomed），也必须保留手柄，双击才能还原。
                     // 命中/落点仍在 Rust 侧做，与 divider 拖拽共用“内容区坐标 → 最近 pane”。
-                    if root.panes.length > 1 : Rectangle {
+                    if root.panes.length > 1 || root.pane-zoomed : Rectangle {
                         x: p.w - 34px;
                         y: 4px;
                         width: 16px;
@@ -4374,6 +4377,8 @@ export component MainWindow inherits Window {
 
                         handle-hit := TouchArea {
                             mouse-cursor: move;
+                            // 双击手柄 = 最大化/还原该 pane（不只是聚焦）。
+                            double-clicked => { root.pane-toggle-zoom(p.id); }
                             pointer-event(event) => {
                                 if (event.kind == PointerEventKind.down) {
                                     if (event.button == PointerEventButton.left) {
