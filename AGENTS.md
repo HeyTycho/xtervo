@@ -89,6 +89,26 @@ TERVO_FRAME_DUMP=/tmp/frame.txt # 每帧 Frame 文本落盘
 TERVO_SIXEL_DEBUG=1             # 图片 placement 日志
 ```
 
+## 输入 / IME 专项（2026-11-21 事故后强制）
+
+完整复盘见 [`docs/POSTMORTEM_2026-11-21_INPUT_IME.md`](docs/POSTMORTEM_2026-11-21_INPUT_IME.md)。
+
+```text
+1. 输入法组合态只能由 winit Preedit/Commit/Disabled 权威维护；
+   禁止单独用 TextInput.preedit-text 作为永久吞键条件。
+   任何“组合中”锁必须有超时自愈；Ctrl/Alt/Meta 永不吞。
+2. 没有真实 Wayland + fcitx5/RIME 的证据，不得说“输入法修好了”。
+   X11/Xvfb/Xephyr 的 XIM 不产生 text-input preedit，不能作为 IME 验收。
+3. 键盘/IME 改动必须先有失败测试：
+   stale preedit 不吞键、Num/Caps Lock 不触发转义、快捷键与平台默认逐项对齐。
+4. 先确认用户实际运行的二进制 commit（--version / 进程启动时间），
+   不在旧进程上排查。
+5. 快捷键默认值以本机平台为准，先读：
+   gsettings list-recursively org.gnome.Terminal.Legacy.Keybindings:/org/gnome/terminal/legacy/keybindings/
+   不抢 shell 自己的键（Ctrl+W/T/F 等）。
+6. 一次只改一层；连续两个修复不改变症状，停止猜，转插桩/二分。
+```
+
 ## 当前状态
 
 ```text
