@@ -1,7 +1,7 @@
 # 本轮夜班进度与续跑指引（2026-11-17）
 
 目的：把这几天连续推进的状态、证据、待办和坑位写在一处，换 session / 换人也能接着做。
-**以 `git log` 与 `docs/ACTION_ITEMS.md §8` 为准**，本文只是索引。
+**以 `git log` 与 `docs/internal/ACTION_ITEMS.md §8` 为准**，本文只是索引。
 
 ## 1. 验证基线（本轮实测）
 
@@ -41,7 +41,7 @@ DURATION=2m BIN=$PWD/target/release/xtervo SOAK_NO_SHOTS=1 \
 ## 3. 未完成（按建议顺序）
 
 > **2026-11-17 用户确认的排序：先把核心终端做到 ≥80%，再做连接插件与其它。**
-> 核心清单见 [`CORE_TO_80.md`](CORE_TO_80.md)（17 条：5 条未开始 + 12 条高感知 partial）。
+> 核心清单见 [`CORE_TO_80.md`](../CORE_TO_80.md)（17 条：5 条未开始 + 12 条高感知 partial）。
 
 ```text
 1. ~~ACT-048 前置：把 commands.rs 的 default_shortcut 接进键盘分发~~ ✅（已在 PTY 写入前兜底）
@@ -101,7 +101,7 @@ DURATION=2m BIN=$PWD/target/release/xtervo SOAK_NO_SHOTS=1 \
 
 ## 4.5 今晚开工单
 
-功能优先、测试后置的执行顺序与欠账清单见 **`docs/EVENING_START.md`**（F1–F10）。
+功能优先、测试后置的执行顺序与欠账清单见 **`docs/internal/EVENING_START.md`**（F1–F10）。
 
 ## 5. 续跑前先确认的三个选择
 

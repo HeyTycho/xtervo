@@ -93,7 +93,7 @@ F9 步骤前不要动 UI，先用 `ssh` 命令行确认 `BatchMode=yes` 能通�
 ## 4. 18:00 开场指令（复制即用）
 
 ```text
-读 docs/EVENING_START.md 与 docs/TRANSPORT_WIRING.md，
+读 docs/internal/EVENING_START.md 与 docs/TRANSPORT_WIRING.md，
 按 F1 开始堆功能；跳过新增测试与 soak，但 cargo check 与既有测试必须绿。
 每完成一项就 commit 并在 EVENING_START 表格里打勾。
 ```

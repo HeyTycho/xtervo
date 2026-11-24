@@ -260,7 +260,7 @@ PREFIX=/tmp/prefix ./scripts/install.sh        # bin + .desktop + 图标
 - **持久帧**：已去掉每帧整屏 CPU 拷贝；Skia 仍每帧上传纹理（Slint 1.18 无安全持久
   GPU texture API），这是下一步 GPU 化的主战场。
 - **未验收**：P95 帧延迟 ≤50 ms、`50 MiB/s` 吞吐、4 pane 长时间 CPU 稳定性
-  （见 `docs/ACTION_ITEMS.md` ACT-032）。当前只验收了上面的启动/RSS/空闲 CPU/体积。
+  （见 `docs/internal/ACTION_ITEMS.md` ACT-032）。当前只验收了上面的启动/RSS/空闲 CPU/体积。
 
 ## 6. 回归策略
 

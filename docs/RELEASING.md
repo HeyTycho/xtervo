@@ -18,7 +18,7 @@
 ```toml
 # Cargo.toml
 [workspace.package]
-version = "0.2.0"
+version = "0.6.0"
 ```
 
 派生位置：
@@ -49,7 +49,7 @@ xtervo 在 1.0 前采用“0.x 也要可预期”的规则：
 | 变更 | 版本 |
 |---|---|
 | Bugfix、安全修复、文档/打包修复，无行为变化 | `PATCH` `0.1.1` |
-| 新功能、明显行为变化、配置/CLI/菜单语义变化 | `MINOR` `0.2.0` |
+| 新功能、明显行为变化、配置/CLI/菜单语义变化 | `MINOR` `0.6.0` |
 | 稳定公共接口破坏（1.0 后） | `MAJOR` `1.0.0` |
 
 0.x 约定：
@@ -62,8 +62,8 @@ xtervo 在 1.0 前采用“0.x 也要可预期”的规则：
 预发布：
 
 ```text
-v0.3.0-rc.1
-v0.3.0-beta.2
+v0.6.0-rc.1
+v0.6.0-beta.2
 ```
 
 - 预发布也占版本号，不能与正式版共用 tag。
@@ -87,10 +87,10 @@ vMAJOR.MINOR.PATCH-beta.N
 示例：
 
 ```text
-v0.1.0
-v0.2.0
-v0.2.1
-v0.3.0-rc.1
+v0.5.0
+v0.6.0
+v0.6.1
+v0.7.0-rc.1
 ```
 
 ### 3.2 规则
@@ -98,7 +98,7 @@ v0.3.0-rc.1
 - 必须是 **annotated tag**：
 
 ```bash
-git tag -a v0.2.0 -m "xtervo 0.2.0"
+git tag -a v0.6.0 -m "xtervo 0.6.0"
 ```
 
 - tag 必须指向**实际构建产物的 commit**（release commit）。
@@ -109,24 +109,23 @@ git tag -a v0.2.0 -m "xtervo 0.2.0"
 - tag 推送：
 
 ```bash
-git push origin v0.2.0
+git push origin v0.6.0
 ```
 
 - 可选签名：
 
 ```bash
-git tag -s v0.2.0 -m "xtervo 0.2.0"
+git tag -s v0.6.0 -m "xtervo 0.6.0"
 ```
 
 ### 3.3 当前状态
 
 ```text
-当前版本：0.3.1
-发布产物 commit：433056b
-canonical tag：v0.3.1
-历史 tag：v0.1.0 / final-2026-11-09 / stable-*-2026-11-06（legacy，不再使用）
-下一个功能版本：0.4.0
-下一个 bugfix：0.3.2
+当前版本：0.6.0 发布线
+预发布 tag：v0.6.0-dev.N / v0.6.0-rc.N
+正式 tag：v0.6.0（发布 commit 以 BUILD-INFO 为准）
+历史 tag：v0.5.0 / v0.3.1 / v0.1.0 / final-2026-11-09 / stable-*-2026-11-06（legacy，不再使用）
+下一个功能版本：0.7.0
 ```
 
 ---
@@ -154,7 +153,7 @@ python3 scripts/matrix_stats.py            # 矩阵现算
 python3 scripts/check_docs_counts.py       # CLOSURE 数字必须与矩阵一致，否则退出 1
 ```
 
-不一致时先手工改 `CLOSURE.md` §2/§3 与 `ACTION_ITEMS.md` 的状态，或对 §2 用
+不一致时先手工改 `CLOSURE.md` §2/§3 与 `docs/internal/ACTION_ITEMS.md` 的状态，或对 §2 用
 `--fix`；**不要**只改一处。上线前这两条必须 PASS。
 
 ### 4.2 升版本
@@ -164,21 +163,21 @@ python3 scripts/check_docs_counts.py       # CLOSURE 数字必须与矩阵一致
 cargo build --workspace        # 让 Cargo.lock 更新
 cargo test --workspace --locked
 git add Cargo.toml Cargo.lock CHANGELOG.md docs/
-git commit -m "chore(release): v0.2.0"
+git commit -m "chore(release): v0.6.0"
 ```
 
 ### 4.3 打 tag
 
 ```bash
-git tag -a v0.2.0 -m "xtervo 0.2.0"
-git show v0.2.0 --stat
-git describe --tags --exact-match   # 必须输出 v0.2.0
+git tag -a v0.6.0 -m "xtervo 0.6.0"
+git show v0.6.0 --stat
+git describe --tags --exact-match   # 必须输出 v0.6.0
 ```
 
 ### 4.4 从 tag 构建
 
 ```bash
-git checkout v0.2.0
+git checkout v0.6.0
 git status --short                  # 必须为空
 ./scripts/package.sh
 ./dist/xtervo-stripped --version     # 版本/commit/built 必须匹配 tag
@@ -205,12 +204,12 @@ sha256sum -c dist/SHA256SUMS
 ## 5. Hotfix
 
 ```bash
-git checkout -b hotfix/v0.2.1 v0.2.0
+git checkout -b hotfix/v0.6.1 v0.6.0
 # 只修 bug，不夹带 feature
 cargo test --workspace --locked
-# 升 PATCH 到 0.2.1，更新 CHANGELOG
-git commit -m "chore(release): v0.2.1"
-git tag -a v0.2.1 -m "xtervo 0.2.1"
+# 升 PATCH 到 0.6.1，更新 CHANGELOG
+git commit -m "chore(release): v0.6.1"
+git tag -a v0.6.1 -m "xtervo 0.6.1"
 ./scripts/package.sh
 ```
 
@@ -232,7 +231,7 @@ git tag -a v0.2.1 -m "xtervo 0.2.1"
 ### Fixed
 ### Breaking
 
-## [0.2.0] - 2026-12-01
+## [0.6.0] - 2026-12-01
 ```
 
 - 每个用户可见变更都写；内部重构可不写。

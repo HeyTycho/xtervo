@@ -1,6 +1,6 @@
 # xtervo Mainline Status / Mainline Audit
 
-Snapshot: 2026-11-16, branch `main`, HEAD `6102bb9` (`v0.5.0`, stable multi-window)
+Snapshot: 2026-11-24, branch `main`, `v0.6.0` 发布线（不绑定 HEAD，具体以 `git log` 为准）
 Purpose: one place for supported features, fixes, and branch merge decisions.
 The historical inventory stays in [`FEATURE_MATRIX.md`](FEATURE_MATRIX.md);
 this file is the current mainline truth.
@@ -162,6 +162,7 @@ retained, but dirty worktrees may contain uncommitted evidence:
 
 ## Release rules
 
-`v0.5.0`（`6102bb9`，2026-11-14）是当前稳定版。`v0.3.1` 及 `v0.3.1-gpu-rc1..6`
-是历史版本，其中 gpu-rc 系列为本地非标准预览，不得当 release 推送。下一个功能版本为
-`0.6.0`；预发布用 `v0.6.0-rc.N`，从干净 tag 出发用 `scripts/package.sh` 构建。
+`v0.6.0` 是当前发布线（预发布 `v0.6.0-dev.N` / `v0.6.0-rc.N`）；上一稳定版为
+`v0.5.0`（`6102bb9`，2026-11-14）。`v0.3.1` 及 `v0.3.1-gpu-rc1..6`
+是历史版本，其中 gpu-rc 系列为本地非标准预览，不得当 release 推送。
+正式发布从干净 tag 出发用 `scripts/package.sh` 构建。

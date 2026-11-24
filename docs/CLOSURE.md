@@ -2,7 +2,7 @@
 
 > **状态快照：2026-11-16 · v0.5.0（`6102bb9`）。** 本页数字由
 > `python3 scripts/matrix_stats.py` 从 [`FEATURE_MATRIX.md`](FEATURE_MATRIX.md) 现算，
-> 不再手工维护；未复核的计划项见 [`ACTION_ITEMS.md`](ACTION_ITEMS.md)。
+> 不再手工维护；未复核的计划项见 [`internal/ACTION_ITEMS.md`](internal/ACTION_ITEMS.md)。
 > 发版后的“当前主线事实”以 [`MAINLINE_STATUS.md`](MAINLINE_STATUS.md) 为准，
 > 版本说明以 [`CHANGELOG.md`](../CHANGELOG.md) 为准。
 
@@ -31,13 +31,13 @@
 | 指标 | 数值 |
 |---|---|
 | 主条目 | **244** |
-| implemented | **111（45.5%）** |
-| partial | **72（29.5%）** |
+| implemented | **116（47.5%）** |
+| partial | **75（30.7%）** |
 | needs_verification | **13（5.3%）** |
-| not_started | **41（16.8%）** |
+| not_started | **33（13.5%）** |
 | unsupported | **7（2.9%）** |
-| 加权分 | **61.6%**（2026-11-05 第 30 轮为 28.6%） |
-| 证据检查 | implemented 57 条全部带测试/真机证据，脚本检查“证据过短”= 0 |
+| 加权分 | **64.2%**（2026-11-05 第 30 轮为 28.6%） |
+| 证据检查 | implemented 116 条全部带测试/真机证据，脚本检查“证据过短”= 0 |
 
 自 2026-11-05 那版快照后，v0.5.0 把这几组能力并进了矩阵计数：单进程多窗口 +
 session v2、崩溃恢复（autosave/fsync/`.bak`/`session.running` marker）、Plugin API v3

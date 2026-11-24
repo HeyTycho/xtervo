@@ -56,7 +56,7 @@ XWayland。GNOME 42（Ubuntu 22.04）上，**XWayland 是唯一完整的剪贴�
 
 实测使用了两个二进制：
 - 仓库根 `target/release/xtervo`（构建 commit `585fd21`，与基线 `0902954` 只差一个
-  `docs/TASK_BOARD.md`，代码等价）；
+  `docs/internal/TASK_BOARD.md`，代码等价）；
 - 本 worktree 自己构建的 `.target-wayland/debug/xtervo`，用于确认当前 HEAD 行为一致。
 
 日志与临时脚本在 `.logs/`（已 gitignore，不进入提交）。

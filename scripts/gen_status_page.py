@@ -6,8 +6,8 @@
 
 数据源（全部现读，不手工抄数字）：
     docs/FEATURE_MATRIX.md    产品矩阵 244 条
-    docs/ACTION_ITEMS.md §8   0.6 路标（ACT 卡片）
-    docs/EVENING_START.md     F1..F11 今晚计划
+    docs/internal/ACTION_ITEMS.md §8   0.6 路标（ACT 卡片）
+    docs/internal/EVENING_START.md     F1..F11 今晚计划
     git log                   最近提交
     scripts/matrix_stats.py   官方口径的计数与加权完成度
 """
@@ -79,7 +79,7 @@ def parse_matrix() -> list[dict]:
 
 
 def parse_action_items() -> list[dict]:
-    text = (ROOT / "docs/ACTION_ITEMS.md").read_text(encoding="utf-8")
+    text = (ROOT / "docs/internal/ACTION_ITEMS.md").read_text(encoding="utf-8")
     sections: list[dict] = []
     current: dict | None = None
     for line in text.splitlines():
@@ -105,7 +105,7 @@ def parse_action_items() -> list[dict]:
 
 
 def parse_plan() -> list[dict]:
-    text = (ROOT / "docs/EVENING_START.md").read_text(encoding="utf-8")
+    text = (ROOT / "docs/internal/EVENING_START.md").read_text(encoding="utf-8")
     plan: list[dict] = []
     for line in text.splitlines():
         if re.match(r"^\|\s*F\d+\s*\|", line):
