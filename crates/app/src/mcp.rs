@@ -16,7 +16,7 @@
 //! 仍可放宽对应分组（测试/CI 兼容），但不能绕过 `mcp_enabled=false`。
 
 use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
@@ -566,19 +566,69 @@ fn ensure_parent_dir(path: &Path) -> io::Result<()> {
     set_dir_mode(parent, 0o700)
 }
 
-/// 读取 state token；文件必须是非 symlink 普通文件，内容非空且无空白。
+/// token 目录必须只有当前用户可访问：已有目录若被放宽到 group/other 可写，
+/// 收紧到 0700；sticky 共享目录（如 `/tmp`）不能安全收紧，直接拒绝。
+/// socket 目录沿用 [`ensure_parent_dir`]，避免改用户显式指定的目录。
+fn ensure_private_parent_dir(path: &Path) -> io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    ensure_parent_dir(path)?;
+    let Some(parent) = path.parent() else { return Ok(()) };
+    if parent.as_os_str().is_empty() {
+        return Ok(());
+    }
+    let metadata = fs::symlink_metadata(parent)?;
+    if metadata.mode() & 0o022 == 0 {
+        return Ok(());
+    }
+    if metadata.mode() & 0o1000 != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "refusing a group/other-writable shared directory for the MCP token",
+        ));
+    }
+    set_dir_mode(parent, 0o700)
+}
+
+/// 读取 state token；文件必须是当前用户所有、非 symlink 且仅自己可访问的
+/// 普通文件，内容非空且无空白。
+///
+/// 用 `O_NOFOLLOW` 打开后再对 **fd** 做校验/限长读取，避免
+/// `symlink_metadata` 与 `fs::read` 之间的 symlink/owner 替换竞态；读取最多
+/// `MAX_TOKEN_BYTES + 1` 字节，文件在检查后增长也不会无界分配。
 pub fn read_token_file(path: &Path) -> Option<String> {
     use std::os::unix::fs::MetadataExt;
-    let metadata = fs::symlink_metadata(path).ok()?;
+    let file = open_token_for_read(path).ok()?;
+    let metadata = file.metadata().ok()?;
     if !metadata.file_type().is_file()
         || metadata.uid() != effective_uid()
         || metadata.len() > MAX_TOKEN_BYTES as u64
+        || metadata.mode() & 0o077 != 0
     {
         return None;
     }
-    let bytes = fs::read(path).ok()?;
+    read_token_reader(file)
+}
+
+fn read_token_reader(mut reader: impl Read) -> Option<String> {
+    let mut bytes = Vec::with_capacity(MAX_TOKEN_BYTES.min(1024));
+    reader
+        .by_ref()
+        .take(MAX_TOKEN_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() > MAX_TOKEN_BYTES {
+        return None;
+    }
     let text = String::from_utf8(bytes).ok()?;
     valid_token(text.trim())
+}
+
+fn open_token_for_read(path: &Path) -> io::Result<fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
+        .open(path)
 }
 
 /// 运行中 token 文件被替换/删除时重读；返回是否发生变化。
@@ -622,35 +672,50 @@ fn valid_token(token: &str) -> Option<String> {
 /// 自动生成/复用 state token（0600）。并发创建时 create_new 的赢家生效，
 /// 输家读取同一个文件，保证 app 和 bridge 看到相同 token。
 pub fn ensure_token_file(path: &Path) -> io::Result<String> {
-    ensure_parent_dir(path)?;
-    match fs::symlink_metadata(path) {
-        Ok(metadata) => {
-            use std::os::unix::fs::MetadataExt;
-            if !metadata.file_type().is_file() || metadata.uid() != effective_uid() {
-                return Err(io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    "token path is not a regular file owned by the current user",
-                ));
-            }
-            if metadata.len() > MAX_TOKEN_BYTES as u64 {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "token file exceeds size limit",
-                ));
-            }
-            set_file_mode(path, 0o600)?;
-            match fs::read(path) {
-                Ok(bytes) => match String::from_utf8(bytes).ok().and_then(|text| valid_token(text.trim())) {
-                    Some(token) => Ok(token),
-                    None => recreate_token(path),
-                },
-                Err(error) if error.kind() == io::ErrorKind::InvalidData => recreate_token(path),
-                Err(error) => Err(error),
+    ensure_private_parent_dir(path)?;
+    match open_token_for_read(path) {
+        Ok(file) => {
+            check_token_file(&file)?;
+            // 已有文件被放宽权限时收紧；fchmod 作用在已打开的 fd 上，
+            // 不会被路径替换成 symlink 骗到别的文件。
+            set_token_fd_mode(&file)?;
+            match read_token_reader(&file) {
+                Some(token) => Ok(token),
+                None => recreate_token(path),
             }
         },
         Err(error) if error.kind() == io::ErrorKind::NotFound => create_token(path),
         Err(error) => Err(error),
     }
+}
+
+fn check_token_file(file: &fs::File) -> io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = file.metadata()?;
+    if !metadata.file_type().is_file() || metadata.uid() != effective_uid() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "token path is not a regular file owned by the current user",
+        ));
+    }
+    if metadata.len() > MAX_TOKEN_BYTES as u64 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "token file exceeds size limit",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_token_fd_mode(file: &fs::File) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    file.set_permissions(fs::Permissions::from_mode(0o600))
+}
+
+#[cfg(not(unix))]
+fn set_token_fd_mode(_file: &fs::File) -> io::Result<()> {
+    Ok(())
 }
 
 fn recreate_token(path: &Path) -> io::Result<String> {
@@ -691,17 +756,9 @@ fn create_token(path: &Path) -> io::Result<String> {
         },
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
             let _ = fs::remove_file(&tmp);
-            let metadata = fs::symlink_metadata(path)?;
-            if !metadata.file_type().is_file() {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "token path is not a regular file",
-                ));
-            }
-            let bytes = fs::read(path)?;
-            String::from_utf8(bytes)
-                .ok()
-                .and_then(|text| valid_token(text.trim()))
+            let file = open_token_for_read(path)?;
+            check_token_file(&file)?;
+            read_token_reader(&file)
                 .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid token file"))
         },
         Err(error) => {
@@ -1114,5 +1171,78 @@ mod tests {
         let token = ensure_token_file(&path).unwrap();
         assert_eq!(token.len(), TOKEN_BYTES * 2);
         assert_eq!(ensure_token_file(&path).unwrap(), token);
+    }
+
+    #[test]
+    fn token_read_rejects_group_or_world_accessible_mode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mcp.token");
+        let token = ensure_token_file(&path).unwrap();
+
+        // 运行中有人把 token 放宽到 group/world 可读：bridge 不能再接受它。
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
+        assert_eq!(
+            read_token_file(&path),
+            None,
+            "mode 0640 token must not be accepted"
+        );
+        // app 自己的 ensure 路径会重新收紧，之后恢复可读。
+        assert_eq!(ensure_token_file(&path).unwrap(), token);
+        assert_eq!(read_token_file(&path).as_deref(), Some(token.as_str()));
+    }
+
+    #[test]
+    fn token_dir_is_tightened_or_rejected() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mcp.token");
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o775)).unwrap();
+        let token = ensure_token_file(&path).unwrap();
+        assert_eq!(
+            fs::metadata(dir.path()).unwrap().permissions().mode() & 0o777,
+            0o700,
+            "owned but group-writable token dir must be tightened"
+        );
+        assert_eq!(read_token_file(&path).as_deref(), Some(token.as_str()));
+
+        // sticky 共享目录（/tmp 语义）不能改权限，必须拒绝。
+        let shared = dir.path().join("shared");
+        fs::create_dir(&shared).unwrap();
+        fs::set_permissions(&shared, fs::Permissions::from_mode(0o1777)).unwrap();
+        let shared_token = shared.join("mcp.token");
+        assert!(
+            ensure_token_file(&shared_token).is_err(),
+            "sticky shared dir must not host the MCP token"
+        );
+        assert!(!shared_token.exists());
+    }
+
+    #[test]
+    fn token_read_is_bounded_even_for_endless_reader() {
+        struct Counting {
+            read: usize,
+            inner: std::io::Repeat,
+        }
+        impl Read for Counting {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                let n = self.inner.read(buf)?;
+                self.read += n;
+                Ok(n)
+            }
+        }
+
+        let mut reader = Counting {
+            read: 0,
+            inner: std::io::repeat(b'a'),
+        };
+        assert_eq!(read_token_reader(&mut reader), None);
+        assert_eq!(
+            reader.read,
+            MAX_TOKEN_BYTES + 1,
+            "token reader must stop at MAX_TOKEN_BYTES + 1"
+        );
     }
 }

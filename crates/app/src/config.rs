@@ -1665,8 +1665,21 @@ mod tests {
         let dir = tmpdir("nested");
         let path = dir.join("a/b/config.toml");
         let cfg = Config::default();
-        cfg.save_to(&path);
+        cfg.save_to(&path).expect("save nested config");
         assert!(path.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_failure_is_reported_to_caller() {
+        let dir = tmpdir("save-failure");
+        let blocker = dir.join("blocker");
+        std::fs::write(&blocker, b"not a directory").unwrap();
+        let path = blocker.join("config.toml");
+        let error = Config::default()
+            .save_to(&path)
+            .expect_err("save must not report success when the parent is a file");
+        assert!(error.contains("创建"), "{error}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

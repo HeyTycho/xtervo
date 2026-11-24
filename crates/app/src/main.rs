@@ -14007,6 +14007,51 @@ fn cleanup_stale_clipboard_images() {
 }
 
 fn write_clipboard_image(image: arboard::ImageData) -> std::io::Result<PathBuf> {
+    write_clipboard_image_with(image, |_path, file, image, expected| {
+        let mut encoder = png::Encoder::new(
+            std::io::BufWriter::new(file),
+            image.width as u32,
+            image.height as u32,
+        );
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header()?;
+        writer.write_image_data(&image.bytes[..expected])?;
+        writer.finish()?;
+        Ok(())
+    })
+}
+
+/// 剪贴板图片临时文件的 RAII 失败清理：只有编码成功才保留文件（TUI 会在
+/// paste 之后按路径异步读取），任何中途失败都删掉半截 PNG。
+struct PasteTempFile {
+    path: PathBuf,
+    keep: bool,
+}
+
+impl PasteTempFile {
+    fn new(path: PathBuf) -> Self {
+        Self { path, keep: false }
+    }
+}
+
+impl Drop for PasteTempFile {
+    fn drop(&mut self) {
+        if !self.keep {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
+fn write_clipboard_image_with(
+    image: arboard::ImageData,
+    encode: impl FnOnce(
+        &Path,
+        std::fs::File,
+        &arboard::ImageData,
+        usize,
+    ) -> std::io::Result<()>,
+) -> std::io::Result<PathBuf> {
     cleanup_stale_clipboard_images();
     if image.width == 0 || image.height == 0 || image.bytes.len() % 4 != 0 {
         return Err(std::io::Error::new(
@@ -14043,16 +14088,9 @@ fn write_clipboard_image(image: arboard::ImageData) -> std::io::Result<PathBuf> 
         }
         opts.open(&path)?
     };
-    let mut encoder = png::Encoder::new(
-        std::io::BufWriter::new(file),
-        image.width as u32,
-        image.height as u32,
-    );
-    encoder.set_color(png::ColorType::Rgba);
-    encoder.set_depth(png::BitDepth::Eight);
-    let mut writer = encoder.write_header()?;
-    writer.write_image_data(&image.bytes[..expected])?;
-    writer.finish()?;
+    let mut temp = PasteTempFile::new(path.clone());
+    encode(&path, file, &image, expected)?;
+    temp.keep = true;
     Ok(path)
 }
 
@@ -23598,6 +23636,38 @@ mod tests {
         assert!(
             write_clipboard_image(bad).is_err(),
             "short RGBA must be rejected"
+        );
+    }
+
+    #[test]
+    fn failed_clipboard_image_encode_removes_partial_temp() {
+        use std::sync::{Arc, Mutex};
+
+        let captured: Arc<Mutex<Option<PathBuf>>> = Arc::new(Mutex::new(None));
+        let sink = captured.clone();
+        let image = arboard::ImageData {
+            width: 2,
+            height: 1,
+            bytes: vec![255, 0, 0, 255, 0, 255, 0, 128].into(),
+        };
+        let error = write_clipboard_image_with(image, move |path, _file, _image, _expected| {
+            *sink.lock().unwrap() = Some(path.to_path_buf());
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "simulated encoder failure",
+            ))
+        })
+        .expect_err("encoder failure must surface");
+        assert_eq!(error.kind(), std::io::ErrorKind::Other);
+        let path = captured
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("closure must receive temp path");
+        assert!(
+            !path.exists(),
+            "failed clipboard encode must remove {}",
+            path.display()
         );
     }
 
