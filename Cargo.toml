@@ -18,6 +18,12 @@ version = "0.5.0"
 edition = "2021"
 rust-version = "1.85"
 license = "GPL-3.0-only"
+description = "Native terminal emulator written in Rust + Slint, focused on low memory and input latency."
+repository = "https://github.com/HeyTycho/xtervo"
+homepage = "https://github.com/HeyTycho/xtervo"
+readme = "README.md"
+keywords = ["terminal", "terminal-emulator", "slint", "rust", "pty"]
+categories = ["command-line-utilities", "gui"]
 
 [workspace.dependencies]
 alacritty_terminal = "0.26"

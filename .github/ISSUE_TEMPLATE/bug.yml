@@ -1,0 +1,93 @@
+name: Bug 报告
+description: 报告可以复现的崩溃、渲染、输入或行为问题
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。提交前请先搜索现有 issue，并确认你运行的是最新构建。
+
+        **不要粘贴主密码、Vault 文件、SSH 私钥、token、API Key、完整日志或终端回滚内容。**
+        安全漏洞请按 [SECURITY.md](https://github.com/HeyTycho/xtervo/blob/main/SECURITY.md) 私下报告，不要开公开 issue。
+
+  - type: input
+    id: version
+    attributes:
+      label: xtervo 版本与 commit
+      description: 运行 `xtervo --version`，或贴 `xtervo --diagnose` 里的版本/commit。
+      placeholder: "xtervo 0.5.0 / commit abc1234"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: 安装方式
+      options:
+        - 源码构建（cargo build --release）
+        - .deb 包
+        - tar.gz
+        - 其他 / 不确定
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: 系统与桌面环境
+      description: 发行版/版本、X11 还是 XWayland、桌面环境、GPU 或软件渲染后端。
+      placeholder: "Ubuntu 24.04, X11, GNOME 46, Skia/GL"
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 请给最小、可重复的操作序列；有脚本或命令更好。
+      placeholder: |
+        1. 打开 ...
+        2. 输入 ...
+        3. 观察到 ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望行为
+      description: 你认为正确的结果是什么？
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际行为
+      description: 实际现象、报错文本、截图或录屏（请先脱敏）。
+    validations:
+      required: true
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: 诊断信息（可选）
+      description: |
+        `xtervo --diagnose` 输出、相关 `xtervo-*.log` 片段、是否使用 tmux/vim 鼠标模式等。
+        请先删除密钥、密码、token、私有路径和终端内容。
+      render: shell
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已搜索现有 issue，未发现重复。
+          required: true
+        - label: 我已确认使用的是最新构建，并保留了可复现步骤。
+          required: true
+        - label: 我确认内容已脱敏，不含密钥、密码、token 或私有终端内容。
+          required: true
