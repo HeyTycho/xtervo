@@ -18,7 +18,10 @@ cd "$(dirname "$0")/.."
 ROOT=$PWD
 OUT=${PROFILE_E2E_OUT:-$ROOT/.logs/profile-session/e2e}
 mkdir -p "$OUT/shots" "$OUT/home" "$OUT/logs" /tmp/.X11-unix
-rm -f "$OUT"/shots/*.png "$OUT"/app_*.log "$OUT/session.json" "$OUT/config.toml"
+# 连异常退出标记一起清：残留的 session.running / session.crashes 会让 app
+# 启动时走“恢复上次 autosave”分支，和本用例自己构造的快照互相干扰。
+rm -f "$OUT"/shots/*.png "$OUT"/app_*.log "$OUT/session.json" "$OUT/session.json.bak" \
+    "$OUT/session.running" "$OUT/session.crashes" "$OUT/config.toml"
 
 COMMON=$(git rev-parse --git-common-dir)
 MAIN_ROOT=$(cd "$(dirname "$COMMON")" && pwd)
@@ -140,6 +143,22 @@ click() { "$XCLICK" "$((ABS_X + $1))" "$((ABS_Y + $2))" >/dev/null; sleep "${3:-
 focus_term() { "$XWIN" xtervo >/dev/null 2>&1 || true; sleep 0.15; }
 type_text() { focus_term; "$XKEY" "$1" >/dev/null; }
 enter() { "$XKEY" --key enter >/dev/null; }
+# Ctrl+Shift+T 是 tab.new 的默认键（Ctrl+T 留给 shell 的 transpose）。
+# Xvfb 首帧焦点未就绪时按键会丢，所以按目标 Tab 数轮询重试，而不是固定 sleep。
+new_tab_until() {  # <expected-total-tabs>
+    local want=$1 count=0
+    for _attempt in 1 2 3; do
+        "$XKEY" t --ctrl --shift >/dev/null
+        for _ in $(seq 1 25); do
+            count=$(grep -o '\[ws\] new tab: tabs=[0-9]*' "$OUT/app_A.log" | tail -1 | sed 's/.*=//')
+            [ "${count:-0}" -ge "$want" ] && return 0
+            sleep 0.1
+        done
+        focus_term
+    done
+    echo "新建 Tab 失败：期望 tabs=$want，当前 ${count:-0}" >&2
+    return 1
+}
 
 # ---------------------------------------------------------------- 准备配置
 cat >"$OUT/config.toml" <<'EOF'
@@ -182,20 +201,29 @@ click "$((W - 118))" 16 0.8                 # 设置齿轮
 click 100 320 0.8                           # Profiles 分类
 click 1005 176 0.8                          # pretty 行 Edit
 shot 02-profile-form
-click 482 204 0.3                           # SSH 类型页
-click 570 280 0.2                           # Auth 输入框
+# 表单几何（1080x736 窗口）：local 表单 440x490，左上角 (320,123)；
+# 类型页 y=123+44=167..191，SSH 按钮中心 (482,179)。当前仍是 local 表单，
+# 点的是 local 表单顶部的 SSH 页签；切过去后表单变成 440x700、左上角 (320,18)。
+click 482 179 0.3                           # SSH 类型页
+# SSH 字段从 form y=116 起、26px 行高 + 5px spacing；Auth 第 4 行中心 y=240，
+# 输入框从 x=408 开始。
+click 570 240 0.2                           # Auth 输入框
 "$XKEY" a --ctrl >/dev/null
 type_text password
 sleep 0.6
 shot 02b-profile-form-ssh
-click 613 642 0.4                           # Cancel（SSH 620px 高表单）
+# Cancel 固定在 form-h-50：SSH 表单 y=18+700-50=668..696，中心 (612,682)。
+click 612 682 0.4                           # Cancel（SSH 700px 高表单）
 click 1005 176 0.8                          # 重新打开 Edit（local 紧凑表单）
 
 echo "== 2. 表单保存外观字段 → 打开 Profile Tab =="
-click 735 411 0.2                           # History 输入框右侧（光标放到末尾）
+# local 表单 Appearance 区块 y=413：标题 14 + spacing 6 后第一行 433..459，
+# History 输入框在右列（x 约 618..744），中心 (681,446)。
+click 735 446 0.2                           # History 输入框右侧（光标放到末尾）
 for _ in 1 2 3 4; do "$XKEY" --key backspace >/dev/null; done
 type_text 6000
-click 700 552 0.7                           # Save（local 紧凑表单）
+# Save 在 local 表单 y=123+440..468=563..591，中心 (700,577)。
+click 700 577 0.7                           # Save（local 紧凑表单）
 grep -q 'scrollback = 6000' "$OUT/profiles.toml" || {
     echo "Profile 表单保存 scrollback 失败" >&2
     cat "$OUT/profiles.toml" >&2
@@ -219,8 +247,7 @@ type_text "cd /var"; enter
 sleep 1.2
 click 800 300 0.2
 type_text "cd /etc"; enter
-"$XKEY" t --ctrl >/dev/null
-sleep 1.4
+new_tab_until 3
 click 600 300 0.2
 type_text "cd /usr"; enter
 sleep 0.6
@@ -234,14 +261,17 @@ grep -q '^restore_session_on_startup = true' "$OUT/config.toml"
 sleep 1.2
 grep -q 'restore_session_on_startup' "$OUT/app_A.log"
 stop_app yes
-grep -q '\[session\] 退出时已保存' "$OUT/app_A.log"
+grep -q '\[session\] exit: 已保存' "$OUT/app_A.log"
 [ -f "$OUT/session.json" ] || { echo "退出后没有 session.json" >&2; exit 2; }
 python3 - "$OUT/session.json" <<'PY'
 import json, sys
 snap = json.load(open(sys.argv[1]))
-assert snap["version"] == 1, snap.get("version")
-assert len(snap["tabs"]) == 3, len(snap["tabs"])
-assert snap["active"] == 2, snap["active"]
+# 当前快照是 v2 多窗口结构：顶层 windows[]，单窗口才有 tabs/active_tab。
+assert snap["version"] == 2, snap.get("version")
+assert len(snap["windows"]) == 1, snap.get("windows")
+win = snap["windows"][0]
+assert len(win["tabs"]) == 3, win["tabs"]
+assert win["active_tab"] == 2, win["active_tab"]
 cwds, profiles = [], []
 def walk(t):
     if t["kind"] == "leaf":
@@ -250,7 +280,7 @@ def walk(t):
         return 1
     assert t["kind"] == "split", t
     return walk(t["a"]) + walk(t["b"])
-leaves = [walk(t["tree"]) for t in snap["tabs"]]
+leaves = [walk(t["tree"]) for t in win["tabs"]]
 # Tab 顺序：原 Terminal 1（1 leaf）、pretty（split 2 leaves）、新 Terminal 2（1 leaf）。
 assert leaves == [1, 2, 1], leaves
 assert cwds[1:4] == ["/var", "/etc", "/usr"], cwds
@@ -297,7 +327,10 @@ PY
 
 echo "== 6. 损坏快照 → 自动恢复失败回退新 Tab =="
 stop_app no
+# 产品在主快照损坏时会回退 .bak；要验证“没有可用快照时回退新 Tab”，
+# 必须连备份一起删掉，否则这里测到的是备份恢复而不是 fallback。
 printf '{broken json' >"$OUT/session.json"
+rm -f "$OUT/session.json.bak"
 start_app C
 shot 09-fallback-newtab
 grep -q '\[ws\] new tab: tabs=1' "$OUT/app_C.log"
@@ -317,6 +350,12 @@ sleep 0.7
 shot 10-settings-restore-search
 click 300 148 0.9
 shot 11-settings-restore-setting
-click 1025 234 0.7
+# 搜索跳转后 Behavior 卡片贴到内容区顶部：Restore session 行的开关中心
+# 约 (1021,321)。点完轮询配置文件，避免把磁盘写入当同步。
+click 1025 321 0.3
+for _ in $(seq 1 30); do
+    grep -q '^restore_session_on_startup = false' "$OUT/config.toml" && break
+    sleep 0.1
+done
 grep -q '^restore_session_on_startup = false' "$OUT/config.toml"
 shot 12-settings-restore-off

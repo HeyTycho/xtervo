@@ -66,6 +66,11 @@ def wait_for(pred, timeout=8.0, label="condition"):
 
 
 def x11_windows(display: str):
+    """Return ``[(title, window_id), ...]`` for every titled X11 window.
+
+    In-process windows intentionally share one base title ("xtervo"), so a
+    title-keyed dict silently drops every window but the first one.
+    """
     out = subprocess.run(
         ["xwininfo", "-root", "-tree"],
         env={**os.environ, "DISPLAY": display},
@@ -73,13 +78,16 @@ def x11_windows(display: str):
         capture_output=True,
         text=True,
     ).stdout
-    found = {}
+    found = []
+    seen = set()
     for line in out.splitlines():
         match = re.search(r'(0x[0-9a-f]+) "([^"]*)"', line)
         if not match:
             continue
         win, title = match.group(1), match.group(2)
-        found.setdefault(title, win)
+        if win not in seen:
+            seen.add(win)
+            found.append((title, win))
     return found
 
 
@@ -251,15 +259,36 @@ def main() -> int:
         assert needle in log_so_far, f"missing audit line: {needle}"
     check("mcp_audit_has_window_id", {"commands": 11})
 
-    wins = x11_windows(args.display)
-    win_a = wins.get("xtervo")
-    win_b = wins.get("xtervo — 2")
-    assert win_a and win_b, wins
     def active():
         try:
             return live.ok("list").get("active_window_id")
         except Exception:
             return None
+
+    # 产品把多窗口标题统一成基础名（都是 "xtervo"），不能再按 "xtervo — 2"
+    # 找第二个窗口。枚举所有 xtervo 顶层窗口，逐个聚焦后用 live list 的
+    # active_window_id 反查 X11 window id → in-process window id 的对应关系。
+    xtervo_wins = [
+        win for title, win in x11_windows(args.display) if title.startswith("xtervo")
+    ]
+    assert len(xtervo_wins) >= 2, xtervo_wins
+    win_by_id = {}
+    for win in xtervo_wins:
+        subprocess.run([args.xwin, win, "--focus"], check=False)
+        try:
+            wid = wait_for(
+                lambda: (lambda w: w if w in (1, 2) else None)(active()),
+                timeout=3.0,
+                label=f"active window for {win}",
+            )
+        except AssertionError:
+            continue
+        win_by_id.setdefault(wid, win)
+    assert set(win_by_id) == {1, 2}, (win_by_id, xtervo_wins)
+    win_a = win_by_id[1]
+    win_b = win_by_id[2]
+    check("x11_window_discovery", {"window_1": win_a, "window_2": win_b})
+
     subprocess.run([args.xwin, win_b, "--focus"], check=False)
     wait_for(lambda: active() == 2, label="active window 2")
     subprocess.run([args.xwin, win_a, "--focus"], check=False)
