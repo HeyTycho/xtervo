@@ -3,7 +3,7 @@
 //!
 //! 只支持 X11：Wayland 没有等价的全局热键协议，由调用方记录回退日志。
 //! 热键在独立线程里阻塞等待 KeyPress，再通过 `slint::invoke_from_event_loop`
-//! 回到 UI 线程。自动重复用 250ms 去抖过滤。
+//! 回到 UI 线程。自动重复由 [`ToggleGate`] 过滤。
 
 use std::time::{Duration, Instant};
 
@@ -15,6 +15,63 @@ use x11rb::protocol::xproto::{
 use x11rb::rust_connection::RustConnection;
 
 use crate::xconn;
+
+/// 同一热键两次 toggle 的最小间隔（防手抖/极快重复）。
+const TOGGLE_DEBOUNCE: Duration = Duration::from_millis(250);
+
+/// X11 自动重复的状态机。
+///
+/// 关闭 detectable auto-repeat 时，X11 对按住键发的是
+/// `KeyRelease + KeyPress` 对；只看“当前是否按住”会被这对假事件骗过，
+/// 在最初的 repeat delay（通常 ~660ms）之后再次 toggle。这里用
+/// release→press 的极短间隔识别自动重复对，只有真正的 release 之后
+/// 才接受下一次热键。
+#[derive(Debug)]
+struct ToggleGate {
+    held: bool,
+    last_toggle: Instant,
+    last_release: Option<Instant>,
+}
+
+impl ToggleGate {
+    fn new(now: Instant) -> Self {
+        Self {
+            held: false,
+            last_toggle: now
+                .checked_sub(Duration::from_secs(2))
+                .unwrap_or(now),
+            last_release: None,
+        }
+    }
+
+    /// 返回 true 表示这次 KeyPress 应该 toggle。
+    fn on_press(&mut self, now: Instant) -> bool {
+        if self.held {
+            return false;
+        }
+        self.held = true;
+        if let Some(release) = self.last_release {
+            if now.saturating_duration_since(release) < REPEAT_PAIR_GAP {
+                // X11 自动重复的假 release 后紧跟假 press：仍然算“按住”。
+                return false;
+            }
+        }
+        if now.saturating_duration_since(self.last_toggle) < TOGGLE_DEBOUNCE {
+            return false;
+        }
+        self.last_toggle = now;
+        true
+    }
+
+    fn on_release(&mut self, now: Instant) {
+        self.held = false;
+        self.last_release = Some(now);
+    }
+}
+
+/// 自动重复对里 release 与下一个 press 的最大间隔。真实用户按键不会
+/// 在 release 后 <30ms 内又按下；X11 repeat 对几乎是连续到达的。
+const REPEAT_PAIR_GAP: Duration = Duration::from_millis(30);
 
 /// 注册全局热键；成功后后台线程一直监听。热键格式：`F12` / `Ctrl+Shift+F12`。
 pub fn spawn_listener(
@@ -59,27 +116,17 @@ pub fn spawn_listener(
     eprintln!("[quake] 全局热键 {hotkey} 已注册");
 
     std::thread::spawn(move || {
-        let mut last = Instant::now() - Duration::from_secs(2);
-        let mut held = false;
+        let mut gate = ToggleGate::new(Instant::now());
         loop {
             match conn.wait_for_event() {
                 Ok(Event::KeyPress(ev)) if ev.detail == keycode => {
                     eprintln!("[quake] KeyPress state={:?}", ev.state);
-                    // X11 auto-repeat 是连续的 KeyPress/KeyRelease 对；按住时
-                    // 只认第一次 press，必须等 release 才允许下一次 toggle。
-                    if held {
-                        continue;
+                    if gate.on_press(Instant::now()) {
+                        on_toggle();
                     }
-                    held = true;
-                    let now = Instant::now();
-                    if now.duration_since(last) < Duration::from_millis(250) {
-                        continue;
-                    }
-                    last = now;
-                    on_toggle();
                 },
                 Ok(Event::KeyRelease(ev)) if ev.detail == keycode => {
-                    held = false;
+                    gate.on_release(Instant::now());
                 },
                 Ok(_) => {},
                 Err(e) => {
@@ -138,4 +185,48 @@ fn keysym_to_keycode(conn: &RustConnection, keysym: u32) -> Option<u8> {
         .iter()
         .position(|s| *s == keysym)
         .map(|i| min + (i / per) as u8)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn at(base: Instant, ms: u64) -> Instant {
+        base + Duration::from_millis(ms)
+    }
+
+    #[test]
+    fn auto_repeat_release_press_pairs_do_not_retoggle() {
+        let base = Instant::now();
+        let mut gate = ToggleGate::new(base - Duration::from_secs(3));
+
+        // 第一次真实按下：toggle。
+        assert!(gate.on_press(at(base, 0)));
+
+        // X11 自动重复：~660ms 后开始发 fake release + fake press 对。
+        for i in 0..10 {
+            let release = at(base, 660 + i * 33);
+            gate.on_release(release);
+            assert!(
+                !gate.on_press(release + Duration::from_millis(1)),
+                "auto-repeat pair {i} must not toggle"
+            );
+        }
+
+        // 真实松开后再次按下（间隔超过 repeat pair 阈值/去抖）才 toggle。
+        gate.on_release(at(base, 2_000));
+        assert!(gate.on_press(at(base, 2_400)));
+    }
+
+    #[test]
+    fn quick_double_press_is_debounced_until_release() {
+        let base = Instant::now();
+        let mut gate = ToggleGate::new(base - Duration::from_secs(3));
+        assert!(gate.on_press(at(base, 0)));
+        gate.on_release(at(base, 40));
+        // release→press 的 80ms 间隔不是自动重复对，但仍在去抖窗口内。
+        assert!(!gate.on_press(at(base, 120)));
+        gate.on_release(at(base, 150));
+        assert!(gate.on_press(at(base, 400)));
+    }
 }
