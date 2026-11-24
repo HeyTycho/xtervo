@@ -280,7 +280,10 @@ assert_log '\[profile\] ssh 命令: ssh'
 
 echo "== 3. SSH 退出状态 + Reconnect =="
 pkill -f '^sleep 300$' 2>/dev/null || true
-wait_log '\[ssh\] ts_ms=.*exit=137|\[ssh\] ts_ms=.*exit=' 6
+# 退出日志已从 [ssh] ts_ms=... exit= 统一成 [session]（本地 shell/SSH 共用），
+# 等价信息仍在：pane=2 + exit 码 + signal。继续断言信号终止，不降级成只看退出码。
+wait_log '\[session\] ts_ms=.*pane=2 .*exit=[0-9]+ signal=Some\("Terminated"\)' 6
+assert_log '\[connection\] pane=2 state=Failed.*detail="signal Terminated"'
 sleep 0.5
 shot 04-ssh-exit-banner
 click 1002 120 0.5                    # Reconnect
@@ -397,7 +400,7 @@ print(f"  {len(shots)} screenshots ok")
 PY
 assert_log '\[known_hosts\] 预检结果: 无法预检|\[known_hosts\] 预检结果'
 assert_log '\[ssh\] 已重连'
-assert_log '\[ssh\] ts_ms=.* signal='   # 记录退出码/信号
+assert_log '\[session\] ts_ms=.* pane=2 .*exit=[0-9]+ signal=Some\("Terminated"\)'   # 记录退出码/信号
 echo "全部通过；截图在 $OUT/shots"
 
 # 保留日志/截图供复盘；cleanup 由 trap 回收 Xvfb/app。

@@ -1974,6 +1974,19 @@ fn save_config_or_status(st: &mut AppState) -> bool {
     result.is_ok()
 }
 
+/// 反转一个布尔配置并返回新值。
+///
+/// 不能写 `st.cfg.borrow_mut().x = !st.cfg.borrow_mut().x`：赋值左侧的
+/// `RefMut` 会活到语句结束，右侧再借一次就直接 panic（RefCell already
+/// borrowed）。设置页所有开关都必须走这里，或先读后写。
+fn toggle_config_bool(cfg: &Shared<Config>, select: impl FnOnce(&mut Config) -> &mut bool) -> bool {
+    cfg.with_mut(|cfg| {
+        let slot = select(cfg);
+        *slot = !*slot;
+        *slot
+    })
+}
+
 fn app_lang(st: &AppState) -> &'static str {
     st.cfg.with(|cfg| cfg.lang())
 }
@@ -4647,14 +4660,12 @@ enum McpSetting {
 /// 在 100ms 内创建/移除，不需要重启 xtervo。
 fn toggle_mcp_setting(st: &mut AppState, setting: McpSetting) {
     match setting {
-        McpSetting::Enabled => st.cfg.borrow_mut().mcp_enabled = !st.cfg.borrow_mut().mcp_enabled,
-        McpSetting::Read => st.cfg.borrow_mut().mcp_read = !st.cfg.borrow_mut().mcp_read,
-        McpSetting::Input => st.cfg.borrow_mut().mcp_input = !st.cfg.borrow_mut().mcp_input,
-        McpSetting::Tabs => st.cfg.borrow_mut().mcp_tabs = !st.cfg.borrow_mut().mcp_tabs,
-        McpSetting::Destructive => {
-            st.cfg.borrow_mut().mcp_destructive = !st.cfg.borrow_mut().mcp_destructive
-        }
-    }
+        McpSetting::Enabled => toggle_config_bool(&st.cfg, |cfg| &mut cfg.mcp_enabled),
+        McpSetting::Read => toggle_config_bool(&st.cfg, |cfg| &mut cfg.mcp_read),
+        McpSetting::Input => toggle_config_bool(&st.cfg, |cfg| &mut cfg.mcp_input),
+        McpSetting::Tabs => toggle_config_bool(&st.cfg, |cfg| &mut cfg.mcp_tabs),
+        McpSetting::Destructive => toggle_config_bool(&st.cfg, |cfg| &mut cfg.mcp_destructive),
+    };
     save_config_or_status(st);
     mcp::apply_config(&st.cfg.borrow());
     sync_mcp_ui(st);
@@ -18849,8 +18860,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
     });
     ui.on_toggle_plugin_require_signature(move || {
         runtime::with_window(window_id, |st| {
-            st.cfg.borrow_mut().plugin_require_signature =
-                !st.cfg.borrow_mut().plugin_require_signature;
+            toggle_config_bool(&st.cfg, |cfg| &mut cfg.plugin_require_signature);
             st.ui
                 .set_cfg_plugin_require_signature(st.cfg.borrow().plugin_require_signature);
             save_config_or_status(st);
@@ -19512,12 +19522,8 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
             let Some(id) = st.profiles.borrow().profiles.get(store_index).map(|p| p.id) else {
                 return;
             };
-            st.cfg.borrow_mut().default_profile_id = if st.cfg.borrow_mut().default_profile_id == id
-            {
-                0
-            } else {
-                id
-            };
+            let current_default = st.cfg.borrow().default_profile_id;
+            st.cfg.borrow_mut().default_profile_id = if current_default == id { 0 } else { id };
             // UI 星标是唯一可信来源：清掉手写的名字别名，避免 id 清空后
             // `default_profile` 又把旧项“复活”成默认。
             st.cfg.borrow_mut().default_profile.clear();
@@ -19712,7 +19718,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
 
     ui.on_toggle_paste_middle(move || {
         runtime::with_window(window_id, |st| {
-            st.cfg.borrow_mut().paste_on_middle_click = !st.cfg.borrow_mut().paste_on_middle_click;
+            toggle_config_bool(&st.cfg, |cfg| &mut cfg.paste_on_middle_click);
             st.ui
                 .set_cfg_paste_middle(st.cfg.borrow().paste_on_middle_click);
             save_config_or_status(st);
@@ -19725,8 +19731,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
 
     ui.on_toggle_confirm_paste(move || {
         runtime::with_window(window_id, |st| {
-            st.cfg.borrow_mut().confirm_multiline_paste =
-                !st.cfg.borrow_mut().confirm_multiline_paste;
+            toggle_config_bool(&st.cfg, |cfg| &mut cfg.confirm_multiline_paste);
             st.ui
                 .set_cfg_confirm_paste(st.cfg.borrow().confirm_multiline_paste);
             st.ui
@@ -19743,7 +19748,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
 
     ui.on_toggle_desktop_notifications(move || {
         runtime::with_window(window_id, |st| {
-            st.cfg.borrow_mut().desktop_notifications = !st.cfg.borrow_mut().desktop_notifications;
+            toggle_config_bool(&st.cfg, |cfg| &mut cfg.desktop_notifications);
             st.ui
                 .set_cfg_desktop_notifications(st.cfg.borrow().desktop_notifications);
             save_config_or_status(st);
@@ -19756,7 +19761,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
 
     ui.on_toggle_visual_bell(move || {
         runtime::with_window(window_id, |st| {
-            st.cfg.borrow_mut().visual_bell = !st.cfg.borrow_mut().visual_bell;
+            toggle_config_bool(&st.cfg, |cfg| &mut cfg.visual_bell);
             st.ui.set_cfg_visual_bell(st.cfg.borrow().visual_bell);
             if !st.cfg.borrow().visual_bell {
                 // 关掉时立即清掉所有进行中的闪烁，避免残留边框。
@@ -19773,7 +19778,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
 
     ui.on_toggle_audible_bell(move || {
         runtime::with_window(window_id, |st| {
-            st.cfg.borrow_mut().audible_bell = !st.cfg.borrow_mut().audible_bell;
+            toggle_config_bool(&st.cfg, |cfg| &mut cfg.audible_bell);
             st.ui.set_cfg_audible_bell(st.cfg.borrow().audible_bell);
             save_config_or_status(st);
             eprintln!("[ui] audible_bell={}", st.cfg.borrow().audible_bell);
@@ -19782,7 +19787,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
 
     ui.on_toggle_scroll_output(move || {
         runtime::with_window(window_id, |st| {
-            st.cfg.borrow_mut().scroll_on_output = !st.cfg.borrow_mut().scroll_on_output;
+            toggle_config_bool(&st.cfg, |cfg| &mut cfg.scroll_on_output);
             st.ui
                 .set_cfg_scroll_output(st.cfg.borrow().scroll_on_output);
             // 已存在的 pane 立即生效（actor 侧字段），不只影响新 pane。
@@ -19801,7 +19806,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
 
     ui.on_toggle_scroll_keystroke(move || {
         runtime::with_window(window_id, |st| {
-            st.cfg.borrow_mut().scroll_on_keystroke = !st.cfg.borrow_mut().scroll_on_keystroke;
+            toggle_config_bool(&st.cfg, |cfg| &mut cfg.scroll_on_keystroke);
             st.ui
                 .set_cfg_scroll_keystroke(st.cfg.borrow().scroll_on_keystroke);
             save_config_or_status(st);
@@ -19814,7 +19819,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
 
     ui.on_toggle_sixel(move || {
         runtime::with_window(window_id, |st| {
-            st.cfg.borrow_mut().sixel = !st.cfg.borrow_mut().sixel;
+            toggle_config_bool(&st.cfg, |cfg| &mut cfg.sixel);
             st.ui.set_cfg_sixel(st.cfg.borrow().sixel);
             let enabled = st.cfg.borrow().sixel;
             for rt in st.panes.values() {
@@ -19830,7 +19835,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
 
     ui.on_toggle_sixel_scrolling(move || {
         runtime::with_window(window_id, |st| {
-            st.cfg.borrow_mut().sixel_scrolling = !st.cfg.borrow_mut().sixel_scrolling;
+            toggle_config_bool(&st.cfg, |cfg| &mut cfg.sixel_scrolling);
             st.ui
                 .set_cfg_sixel_scrolling(st.cfg.borrow().sixel_scrolling);
             let scrolling = st.cfg.borrow().sixel_scrolling;
@@ -19847,7 +19852,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
 
     ui.on_toggle_iip(move || {
         runtime::with_window(window_id, |st| {
-            st.cfg.borrow_mut().iip = !st.cfg.borrow_mut().iip;
+            toggle_config_bool(&st.cfg, |cfg| &mut cfg.iip);
             st.ui.set_cfg_iip(st.cfg.borrow().iip);
             let enabled = st.cfg.borrow().iip;
             for rt in st.panes.values() {
@@ -19863,7 +19868,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
 
     ui.on_toggle_render_hud(move || {
         runtime::with_window(window_id, |st| {
-            st.cfg.borrow_mut().render_hud = !st.cfg.borrow_mut().render_hud;
+            toggle_config_bool(&st.cfg, |cfg| &mut cfg.render_hud);
             st.ui.set_cfg_render_hud(st.cfg.borrow().render_hud);
             let enabled = render_hud_forced_by_env() || st.cfg.borrow().render_hud;
             set_render_hud(st, enabled);
@@ -19878,7 +19883,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
 
     ui.on_toggle_scrollback_unlimited(move || {
         runtime::with_window(window_id, |st| {
-            st.cfg.borrow_mut().scrollback_unlimited = !st.cfg.borrow_mut().scrollback_unlimited;
+            toggle_config_bool(&st.cfg, |cfg| &mut cfg.scrollback_unlimited);
             st.ui
                 .set_cfg_scrollback_unlimited(st.cfg.borrow().scrollback_unlimited);
             save_config_or_status(st);
@@ -20176,7 +20181,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
 
     ui.on_toggle_copy_on_select(move || {
         runtime::with_window(window_id, |st| {
-            st.cfg.borrow_mut().copy_on_select = !st.cfg.borrow_mut().copy_on_select;
+            toggle_config_bool(&st.cfg, |cfg| &mut cfg.copy_on_select);
             st.ui.set_cfg_copy_on_select(st.cfg.borrow().copy_on_select);
             save_config_or_status(st);
             eprintln!("[ui] copy_on_select={}", st.cfg.borrow().copy_on_select);
@@ -20185,7 +20190,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
 
     ui.on_toggle_confirm_close(move || {
         runtime::with_window(window_id, |st| {
-            st.cfg.borrow_mut().confirm_close = !st.cfg.borrow_mut().confirm_close;
+            toggle_config_bool(&st.cfg, |cfg| &mut cfg.confirm_close);
             st.ui.set_cfg_confirm_close(st.cfg.borrow().confirm_close);
             save_config_or_status(st);
             eprintln!("[ui] confirm_close={}", st.cfg.borrow().confirm_close);
@@ -20211,8 +20216,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
 
     ui.on_toggle_restore_session(move || {
         runtime::with_window(window_id, |st| {
-            st.cfg.borrow_mut().restore_session_on_startup =
-                !st.cfg.borrow_mut().restore_session_on_startup;
+            toggle_config_bool(&st.cfg, |cfg| &mut cfg.restore_session_on_startup);
             st.ui
                 .set_cfg_restore_session(st.cfg.borrow().restore_session_on_startup);
             save_config_or_status(st);
@@ -20723,7 +20727,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
 
     ui.on_toggle_bold_is_bright(move || {
         runtime::with_window(window_id, |st| {
-            st.cfg.borrow_mut().bold_is_bright = !st.cfg.borrow_mut().bold_is_bright;
+            toggle_config_bool(&st.cfg, |cfg| &mut cfg.bold_is_bright);
             st.ui.set_cfg_bold_is_bright(st.cfg.borrow().bold_is_bright);
             apply_bold_settings(st);
             save_config_or_status(st);
@@ -20757,7 +20761,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
 
     ui.on_toggle_bold_color_same_as_fg(move || {
         runtime::with_window(window_id, |st| {
-            st.cfg.borrow_mut().bold_color_same_as_fg = !st.cfg.borrow_mut().bold_color_same_as_fg;
+            toggle_config_bool(&st.cfg, |cfg| &mut cfg.bold_color_same_as_fg);
             st.ui
                 .set_cfg_bold_color_same_as_fg(st.cfg.borrow().bold_color_same_as_fg);
             apply_bold_settings(st);
@@ -22634,6 +22638,40 @@ mod tests {
         assert_eq!(active_after_close(3, 3, 3), 2);
         // remaining=0 由调用方退出事件循环。
         assert_eq!(active_after_close(0, 0, 0), 0);
+    }
+
+    #[test]
+    fn toggle_config_bool_flips_value_once_per_call() {
+        let cfg = Shared::new(Config::default());
+        assert!(!cfg.with(|cfg| cfg.audible_bell));
+        assert!(toggle_config_bool(&cfg, |cfg| &mut cfg.audible_bell));
+        assert!(cfg.with(|cfg| cfg.audible_bell));
+        assert!(!toggle_config_bool(&cfg, |cfg| &mut cfg.audible_bell));
+        assert!(!cfg.with(|cfg| cfg.audible_bell));
+    }
+
+    #[test]
+    fn config_toggles_do_not_double_borrow() {
+        // 回归：`st.cfg.borrow_mut().x = !st.cfg.borrow_mut().x` 会在左侧
+        // RefMut 未释放时再次借用，点设置页开关直接 panic（0.6.0 实测）。
+        let source = include_str!("main.rs");
+        let negated_borrow = format!("!st.cfg.{}", "borrow_mut()");
+        for (idx, line) in source.lines().enumerate() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//") {
+                continue;
+            }
+            assert!(
+                !line.contains(&negated_borrow),
+                "main.rs:{} 设置开关必须先读后写或走 toggle_config_bool，不能在同一语句里二次 borrow_mut: {trimmed}",
+                idx + 1
+            );
+            assert!(
+                line.matches("borrow_mut()").count() < 2,
+                "main.rs:{} 同一语句重复 borrow_mut: {trimmed}",
+                idx + 1
+            );
+        }
     }
 
     #[test]
