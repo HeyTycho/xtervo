@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 使用与构建文档
+    url: https://github.com/HeyTycho/xtervo/blob/main/README.md
+    about: 先看 README 的安装、构建、快捷键与已知限制，以及 docs/ 下的专题文档。
+  - name: 安全漏洞（私下报告）
+    url: https://github.com/HeyTycho/xtervo/security/advisories/new
+    about: 请不要在公开 issue 中报告安全漏洞；报告方式与威胁模型见 SECURITY.md。
