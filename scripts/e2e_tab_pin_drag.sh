@@ -19,7 +19,10 @@ cd "$(dirname "$0")/.."
 ROOT=$PWD
 OUT=${TAB_PIN_DRAG_OUT:-$ROOT/.logs/tab-pin-drag/e2e}
 mkdir -p "$OUT/shots" "$OUT/home" "$OUT/logs" /tmp/.X11-unix
-rm -f "$OUT"/shots/*.png "$OUT"/app_*.log "$OUT/session.json" "$OUT/session.json.bak"
+# 连异常退出标记一起清：残留 .running/.crashes 会让 app 启动时先尝试恢复
+# 上次 autosave，首次 Ctrl+Shift+T 有概率被启动恢复抢走。
+rm -f "$OUT"/shots/*.png "$OUT"/app_*.log "$OUT/session.json" "$OUT/session.json.bak" \
+    "$OUT/session.running" "$OUT/session.crashes"
 
 COMMON=$(git rev-parse --git-common-dir)
 MAIN_ROOT=$(cd "$(dirname "$COMMON")" && pwd)
@@ -102,6 +105,12 @@ start_app() {  # <tag>
     [ -n "$WIN" ] || { echo "启动失败（$tag）：$log" >&2; exit 2; }
     "$XWIN" xtervo 20 20 >/dev/null 2>&1 || true
     sleep 1.0
+    # 等终端首帧真正就绪再发键：只按固定 sleep 会在慢启动时丢第一击。
+    for _ in $(seq 1 100); do
+        grep -Fq 'READY TIMING' "$log" && break
+        sleep 0.05
+    done
+    grep -Fq 'READY TIMING' "$log" || { echo "终端未就绪（$tag）：$log" >&2; exit 2; }
     refresh_geom
     if [ "$W" != 1080 ] || [ "$H" != 736 ]; then
         echo "窗口 ${W}x${H} 与坐标假设 1080x736（cell 9x22 / 120x32）不符" >&2
@@ -144,6 +153,29 @@ set_title() {  # <T1>
     sleep 0.5
 }
 
+tab_count() {
+    grep -o '\[ws\] new tab: tabs=[0-9]*' "$OUT/app_A.log" | tail -1 | sed 's/.*=//'
+}
+
+# Ctrl+Shift+T 是 tab.new 默认键。Xvfb/Openbox 首帧焦点丢失时按键不会到 app，
+# 这里按“目标 Tab 总数”轮询并重发，避免固定 sleep 后静默继续跑错布局。
+new_tab_until() {  # <expected-total-tabs>
+    local want=$1 count=0
+    for _attempt in 1 2 3 4; do
+        count=$(tab_count)
+        [ "${count:-0}" -ge "$want" ] && return 0
+        focus_term
+        "$XKEY" t --ctrl --shift >/dev/null
+        for _ in $(seq 1 25); do
+            count=$(tab_count)
+            [ "${count:-0}" -ge "$want" ] && return 0
+            sleep 0.1
+        done
+    done
+    echo "新建 Tab 失败：期望 tabs=$want，当前 ${count:-0}" >&2
+    return 1
+}
+
 # 窗口内坐标（1080x736，4 个 52px Tab，间距 4，TabBar 左侧 58px）
 # slot i 靠左侧（避开 hover 才出现的 close ×）：x = 58 + i*56 + 14
 # tab_y / menu_pin_y 在 start_app 里按实际窗口位置计算。
@@ -168,10 +200,12 @@ EOF
 echo "== 1. 启动并构造 4 个有标题的 Tab =="
 start_app A
 set_title T1
+i=2
 for t in T2 T3 T4; do
-    "$XKEY" t --ctrl --shift >/dev/null
-    sleep 0.9
+    new_tab_until "$i"
+    sleep 0.3
     set_title "$t"
+    i=$((i + 1))
 done
 grep -q 'kind=title' "$OUT/app_A.log" || { echo "OSC 标题未生效" >&2; exit 2; }
 # 第一次左键坐实焦点，避免 Xvfb 首击只用于 focus。
@@ -276,11 +310,26 @@ AFTER=$(grep -c '\[ws\] reorder tab' "$OUT/app_B.log" || true)
 
 echo "== 7. 拖拽中 Esc：取消并复位，松手不排序 =="
 BEFORE=$(grep -c '\[ws\] reorder tab' "$OUT/app_B.log" || true)
+DRAG_LOGS_BEFORE=$(grep -c '\[ui\] tab drag from=3' "$OUT/app_B.log" || true)
 XCLICK_HOLD_MS=1800 "$XCLICK" "$(tab_x 3)" "$tab_y" drag "$(tab_x 2)" "$tab_y" >/dev/null 2>&1 &
 DRAG_PID=$!
-sleep 0.55
+# 固定 sleep 会在慢启动时让 Esc 早于 XTest press 到达，拖拽根本没进入
+# active 态；轮询本次拖拽的 active 日志后再注入 Esc。
+DRAG_ACTIVE=0
+for _ in $(seq 1 150); do
+    NOW=$(grep -c '\[ui\] tab drag from=3' "$OUT/app_B.log" || true)
+    if [ "${NOW:-0}" -gt "${DRAG_LOGS_BEFORE:-0}" ]; then
+        DRAG_ACTIVE=1
+        break
+    fi
+    sleep 0.05
+done
+[ "$DRAG_ACTIVE" = 1 ] || { echo "拖拽未进入 active 态，无法测试 Esc" >&2; exit 2; }
 "$XKEY" --key escape >/dev/null
-sleep 0.25
+for _ in $(seq 1 60); do
+    grep -q '\[ui\] tab drag cancelled' "$OUT/app_B.log" && break
+    sleep 0.05
+done
 shot 11-esc-cancelled
 wait "$DRAG_PID" || true
 sleep 0.4

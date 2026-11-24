@@ -131,33 +131,39 @@ fail() {
 }
 expect_log() { grep -Fq -- "$1" "$OUT/app.log" || fail "日志缺少: $1"; }
 
-# 内容区坐标：窗口左侧 tabbar 高 32px。菜单 490px 高，24 行窗口内容区 528px，
-# 在顶部附近右键时 12+490 < 528，不会翻转；改用 24 行是为了整张菜单都点得到。
+# 内容区坐标：窗口左侧 tabbar 高 32px，24 行窗口内容区 528px。
+# 右键锚点固定在内容区 y=6：菜单 558px 高时视口被夹到 516px、top 被夹到 6px；
+# 菜单变矮时 top 也等于锚点 y=6。两种情况菜单顶边都在内容区 6px，
+# 因此行中心可以从菜单顶边直接算，不必再猜翻转/夹取结果。
 PANE_X=$((ABS_X + 300))
-PANE_Y_CONTENT=12
+PANE_Y_CONTENT=6
 PANE_Y=$((ABS_Y + 32 + PANE_Y_CONTENT))
-# 无链接时 13 项：padding 6 + 分组标题 22（Clipboard/Pane/View/Session）+ 行高 30。
-# 项 index 0..12：Copy/Paste | SplitR/SplitD/Close/Broadcast | Find/SelectAll/Clear |
-# ReadOnly/Reset/ResetClear/Save；该项之前经过的分组标题数：
-# 0-1→1（Clipboard），2-5→2（+Pane），6-8→3（+View），9-12→4（+Session）。
+MENU_TOP=6
+# UI-TERM-013 后菜单是扁平表：没有分组标题，只有 6px padding、30px/项、
+# 9px/分隔线。无 link、无 undo-swap 时默认表 17 项 + 4 条分隔线，
+# 分隔线出现在非分隔项 1/5/8/12 之后（下标 0 起）：
+# 0-1 Copy/Paste | 2-5 Split/Close/Broadcast | 6-8 Find/SelectAll/Clear |
+# 9-12 ReadOnly/Reset/ResetClear/Save | 13-16 Profile/Zoom。
 menu_row_y() {
-    local i=$1 groups
-    if [ "$i" -le 1 ]; then groups=1
-    elif [ "$i" -le 5 ]; then groups=2
-    elif [ "$i" -le 8 ]; then groups=3
-    else groups=4
+    local i=$1 seps
+    if [ "$i" -le 1 ]; then seps=0
+    elif [ "$i" -le 5 ]; then seps=1
+    elif [ "$i" -le 8 ]; then seps=2
+    elif [ "$i" -le 12 ]; then seps=3
+    else seps=4
     fi
-    echo $((PANE_Y + 6 + 22 * groups + 30 * i + 15))
+    echo $((ABS_Y + 32 + MENU_TOP + 6 + 30 * i + 9 * seps + 15))
 }
 MENU_X=$((PANE_X + 50))
 open_menu() {
     click "$PANE_X" "$PANE_Y" 3
     sleep 0.25
 }
-menu_pick() {
+menu_pick() {  # <item-index> <expected-command>
     open_menu
     click "$MENU_X" "$(menu_row_y "$1")"
     sleep 0.35
+    expect_log "[ui] menu command pane=1 command=$2"
 }
 run_palette() {
     focus_pane
@@ -231,6 +237,7 @@ shot menu_open
 # Read Only 行下标 9
 click "$MENU_X" "$(menu_row_y 9)"
 sleep 0.4
+expect_log '[ui] menu command pane=1 command=terminal.toggle-read-only'
 expect_log '[ui] read-only pane=1 on=true'
 shot readonly_on
 # 点击 pane 聚焦后键入；UI 必须丢弃，不写 PTY。
@@ -248,7 +255,7 @@ sleep 0.5
 expect_log '[readonly] pane=1 丢弃粘贴'
 if [ -f "$OUT/input.txt" ] && grep -Fq 'pasted' "$OUT/input.txt"; then fail "Read Only 开启时粘贴仍写入 PTY"; fi
 # 菜单关闭
-menu_pick 9
+menu_pick 9 terminal.toggle-read-only
 sleep 0.4
 expect_log '[ui] read-only pane=1 on=false'
 focus_pane
@@ -266,7 +273,7 @@ shot readonly_off_after_input
 
 echo "== 3) Save Contents：菜单入口 / 显式默认路径 / 错误提示 =="
 # Session 组最后一项（index 12）：ReadOnly 9 / Reset 10 / ResetClear 11 / Save 12。
-menu_pick 12
+menu_pick 12 terminal.save-contents
 sleep 0.4
 expect_log '[ui] save-contents open pane=1 path='
 shot save_dialog

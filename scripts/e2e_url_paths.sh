@@ -368,10 +368,14 @@ wait_log "[ui] right click pane=1"
 assert_log 'kind=Some("path")'
 sleep 0.3
 shot menu_path
-# 新分类菜单：anchor y + 6 padding + Link 组标题 22 + Open Link 半行 15 = 43。
-# 旧脚本用内容区中心，新菜单变高后点到遮罩，会看起来像菜单没打开。
+# UI-TERM-013 后菜单是扁平表（无 Link 分组标题）：6px padding + 30px/项。
+# 右键锚点在内容区 y=11；菜单 627px 高，视口夹到 516px 后 top 夹到 6px，
+# 第一项（Open Link）中心 = 6 + 6 + 15 = 27。菜单变矮时 top=11，
+# 第一行范围为 17..47，27 仍在行内，所以这个坐标对两种夹取结果都成立。
 MENU_X=$((OK_COL * CW + 140))
-"$XCLICK" $((AX + MENU_X)) $((AY + 32 + 43)) 1 >/dev/null
+MENU_TOP=6
+"$XCLICK" $((AX + MENU_X)) $((AY + 32 + MENU_TOP + 6 + 15)) 1 >/dev/null
+wait_log "[ui] menu command pane=1 command=link.open"
 wait_log "[link] menu open kind=path"
 sleep 0.5
 AFTER_XDG=$(wc -l <"$XDG_LOG" 2>/dev/null || echo 0)
