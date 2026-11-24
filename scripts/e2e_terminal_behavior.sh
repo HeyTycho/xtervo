@@ -179,22 +179,26 @@ check_scrollbar() {
     local name=$1 expect=$2
     python3 - "$OUT/$name.png" "$expect" <<'PY'
 import sys
+from collections import Counter
 from PIL import Image
 path, expect = sys.argv[1], sys.argv[2]
 im = Image.open(path).convert("RGB")
 w, h = im.size
+# 终端背景 = 整图最常见颜色。不能再用“同高度另一列”做参照：右下角的
+# Connected 状态 chip 会伸到 w-40 附近，chip 文字让 auto 无历史时误报
+# 2/213 个 thumb 像素（实测 w-8 列 0 个差异，差异全来自 w-40 的文字）。
+bg = Counter(im.getdata()).most_common(1)[0][0]
 x = w - 8            # overlay thumb 中心列（pane 右侧 12px 起点 + 2px 内缩）
-ref_x = w - 40       # 同高度终端背景（远离滚动条）
 hits = 0
 for y in range(40, h - 6, 2):
     p = im.getpixel((x, y))
-    q = im.getpixel((ref_x, y))
-    if max(abs(p[i] - q[i]) for i in range(3)) > 8:
+    if max(abs(p[i] - bg[i]) for i in range(3)) > 8:
         hits += 1
 total = len(range(40, h - 6, 2))
-print(f"  {path.rsplit('/', 1)[-1]} thumb_pixels={hits}/{total}")
+print(f"  {path.rsplit('/', 1)[-1]} thumb_pixels={hits}/{total} bg={bg}")
 if expect == "visible":
     sys.exit(0 if hits > total * 0.8 else 1)
+# hidden 仍要求滚动条列 0 个非背景像素：不是放宽阈值，而是修掉参照列误报。
 sys.exit(0 if hits == 0 else 1)
 PY
 }
@@ -255,51 +259,58 @@ sleep 0.6
 shot settings_terminal_top
 grep -q '\[ui\] settings category=1' "$OUT/app_settings.log" || { echo "没有切到 Terminal 设置分类" >&2; exit 1; }
 
-# Unlimited scrollback 开关（首屏，switch 中心 window 1025,303）
-"$XCLICK" "$((ABS_X + 1025))" "$((ABS_Y + 303))" >/dev/null
+# 0.6.0 的 Text & history 卡片新增了字体族/字重/行距/字间距/渲染缩放，
+# Unlimited scrollback 已落到首屏之外；先滚 2 格把它和 Scrolling 卡片带进视野。
+for _ in $(seq 1 2); do
+    "$XCLICK" "$((ABS_X + 600))" "$((ABS_Y + 400))" 5 >/dev/null
+    sleep 0.15
+done
+sleep 0.3
+
+# Unlimited scrollback 开关（滚动 2 格后 switch 中心 window 1025,483）
+"$XCLICK" "$((ABS_X + 1025))" "$((ABS_Y + 483))" >/dev/null
 sleep 0.4
 grep -Fq 'scrollback_unlimited = true' "$OUT/settings.toml" || { echo "设置页没有写入 scrollback_unlimited" >&2; exit 1; }
 grep -q '\[ui\] scrollback_unlimited=true' "$OUT/app_settings.log" || { echo "设置页没有触发 unlimited 回调" >&2; exit 1; }
 shot settings_terminal_unlimited
 # 再点一次恢复固定值，避免影响后续断言
-"$XCLICK" "$((ABS_X + 1025))" "$((ABS_Y + 303))" >/dev/null
+"$XCLICK" "$((ABS_X + 1025))" "$((ABS_Y + 483))" >/dev/null
 sleep 0.3
 grep -Fq 'scrollback_unlimited = false' "$OUT/settings.toml" || { echo "unlimited 开关没有恢复 false" >&2; exit 1; }
 
-# Scrollbar Always（首屏 Scrolling 卡片，window 378,550）——Sixel Images 段之前
-# 的位置已经失效；新页把 scrollbar 放在第二张卡片，首屏即可点。
-"$XCLICK" "$((ABS_X + 378))" "$((ABS_Y + 550))" >/dev/null
+# Scrollbar Always（同一视野内 Scrolling 卡片底部分段控件，window 385,713）
+"$XCLICK" "$((ABS_X + 385))" "$((ABS_Y + 713))" >/dev/null
 sleep 0.4
 grep -Fq 'scrollbar_policy = "always"' "$OUT/settings.toml" || { echo "设置页没有写入 scrollbar_policy=always" >&2; exit 1; }
 grep -q '\[ui\] scrollbar_policy=always' "$OUT/app_settings.log" || { echo "设置页没有触发 scrollbar_policy 回调" >&2; exit 1; }
 
-# Scroll on output（同一张 Scrolling 卡片，window 1025,430）
-"$XCLICK" "$((ABS_X + 1025))" "$((ABS_Y + 430))" >/dev/null
+# Scroll on output（Scrolling 卡片第一行 switch，window 1025,599）
+"$XCLICK" "$((ABS_X + 1025))" "$((ABS_Y + 599))" >/dev/null
 sleep 0.4
 grep -Fq 'scroll_on_output = true' "$OUT/settings.toml" || { echo "设置页没有写入 scroll_on_output" >&2; exit 1; }
 grep -q '\[ui\] scroll_on_output=true' "$OUT/app_settings.log" || { echo "设置页没有触发 scroll_on_output 回调" >&2; exit 1; }
 shot settings_terminal_mid
 
-# 滚到底：Bell / Images / Key encoding 的相对位置固定
+# 滚到底：Behavior 卡片变长后需要更多滚轮；到底后 Bell / Key encoding 位置固定。
 "$XWIN" xtervo >/dev/null 2>&1 || true
-for _ in $(seq 1 12); do
+for _ in $(seq 1 24); do
     "$XCLICK" "$((ABS_X + 600))" "$((ABS_Y + 400))" 5 >/dev/null
     sleep 0.05
 done
 sleep 0.5
 shot settings_terminal_scroll
 
-# Audible bell（底部 Bell 卡片第二行 switch，window 1025,350）
-"$XCLICK" "$((ABS_X + 1025))" "$((ABS_Y + 311))" >/dev/null
+# Audible bell（底部 Bell 卡片第二行 switch，window 1025,269）
+"$XCLICK" "$((ABS_X + 1025))" "$((ABS_Y + 269))" >/dev/null
 sleep 0.4
 grep -Fq 'audible_bell = true' "$OUT/settings.toml" || { echo "设置页没有写入 audible_bell" >&2; exit 1; }
 grep -q '\[ui\] audible_bell=true' "$OUT/app_settings.log" || { echo "设置页没有触发 audible_bell 回调" >&2; exit 1; }
 
 # Backspace Control-H / Delete ASCII DEL（底部 Key encoding 两个分段控件）
-"$XCLICK" "$((ABS_X + 855))" "$((ABS_Y + 593))" >/dev/null
+"$XCLICK" "$((ABS_X + 894))" "$((ABS_Y + 597))" >/dev/null
 sleep 0.4
 grep -Fq 'backspace_binding = "control-h"' "$OUT/settings.toml" || { echo "设置页没有写入 backspace_binding" >&2; exit 1; }
-"$XCLICK" "$((ABS_X + 650))" "$((ABS_Y + 660))" >/dev/null
+"$XCLICK" "$((ABS_X + 667))" "$((ABS_Y + 662))" >/dev/null
 sleep 0.4
 grep -Fq 'delete_binding = "ascii-del"' "$OUT/settings.toml" || { echo "设置页没有写入 delete_binding" >&2; exit 1; }
 

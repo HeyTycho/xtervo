@@ -308,9 +308,14 @@ pub fn run_command_with_timeout_cancel(
 }
 
 /// 超时文案：≥1s 用秒（10s），测试里的短超时用毫秒。
+///
+/// 秒数向上取整：List 会把 10s 总预算减去已耗时后传给单次调用（剩余
+/// 9.99s），floor 会把“10s 硬超时”写成“9s”，与 UI 显示的 timeout=10s
+/// 自相矛盾。向上取整保证剩余预算仍归入它所属的整秒预算。
 fn format_timeout(timeout: Duration) -> String {
     if timeout.as_secs() >= 1 {
-        format!("{}s", timeout.as_secs())
+        let secs = timeout.as_secs() + u64::from(timeout.subsec_nanos() > 0);
+        format!("{secs}s")
     } else {
         format!("{}ms", timeout.as_millis())
     }
@@ -2971,6 +2976,17 @@ drwxr-xr-x    2 yt   staff        4096 Nov 20 10:00 .
     }
 
     // ------------------------------------------------------- 元数据超时/后台
+
+    #[test]
+    fn timeout_text_rounds_partial_seconds_up() {
+        // 10s 预算先减去已耗时，再进入单次调用；剩余 9.99s 不能显示成 9s。
+        assert_eq!(format_timeout(SFTP_TIMEOUT), "10s");
+        assert_eq!(format_timeout(Duration::from_millis(9_999)), "10s");
+        assert_eq!(format_timeout(Duration::from_millis(9_001)), "10s");
+        // 真正的亚秒超时仍用毫秒，不凑成 1s。
+        assert_eq!(format_timeout(Duration::from_millis(999)), "999ms");
+        assert_eq!(format_timeout(Duration::from_millis(250)), "250ms");
+    }
 
     #[cfg(unix)]
     #[test]
