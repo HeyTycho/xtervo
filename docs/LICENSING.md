@@ -11,7 +11,7 @@
 | 版权 | Copyright (C) 2026 xtervo contributors |
 | 依赖许可 | 全部为 GPL-3.0 兼容的宽松许可（MIT / Apache-2.0 / Zlib / BSD） |
 | 第三方声明 | [`../THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md)（369 个运行时 crate，198 份许可证文本） |
-| 商标 | 与 Tabby / Terminus 无关联；“Tabby”仅作指名对比 |
+| 商标 | 与 Tabby / Terminus 无关联；“Tabby”仅作功能参考（指名性使用） |
 
 ## 2. 为什么是 GPL-3.0-only
 
@@ -62,7 +62,7 @@ python3 scripts/gen_third_party_notices.py   # 需要本地 .cargo/registry
 ## 4. 商标与品牌
 
 - **Tabby / Terminus** 是其权利人的商标。xtervo 是独立项目，不做任何关联、赞助或背书暗示；
-  文档中提及 Tabby 仅用于功能对照与兼容性说明（指名性使用）。
+  文档中提及 Tabby 仅用于功能参考与互操作说明（指名性使用）。
 - 项目**更名**：曾用工作名 “Rust Tabby”，为避免与 Tabby 品牌混淆，现统一为 **xtervo**；
   二进制、配置目录（`~/.config/xtervo`）、环境变量（`XTERVO_*`）、桌面项均已改名。
 - **图标**：`assets/icon*.png`、`icon-64.rgba` 由 `scripts/gen_icon.py` 程序化生成

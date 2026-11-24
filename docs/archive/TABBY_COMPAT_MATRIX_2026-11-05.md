@@ -1,8 +1,9 @@
-# 旧 Tabby 插件兼容矩阵（历史评估，非目标）
+# 旧 Tabby 插件兼容矩阵（2026-11-05 归档，历史评估）
 
-> 审计日期：2026-11-05 ｜ 代码基线：`8327e20` ｜ 上游：**未核实**（网络不可用，见 [`TABBY_UPSTREAM_AUDIT.md`](TABBY_UPSTREAM_AUDIT.md)）
+> 审计日期：2026-11-05 ｜ 代码基线：`8327e20` ｜ 上游：**未核实**（网络不可用，见 [`TABBY_UPSTREAM_AUDIT.md`](../TABBY_UPSTREAM_AUDIT.md)）
 > 本文回答需求 C13：新插件 API 与旧 Tabby 插件的兼容分级。**初版基线时仓库没有插件宿主**；后续已合入 Plugin API v3 process 宿主，并新增窄 WASM `terminal.output_filter`（见 `PLUGIN_V3.md` 第 6 节）。但本文的 Tabby/Node/WebView 兼容分级仍是旧基线，未重新审计。
 > **定位**：这里只回答“当年若要兼容 Tabby 插件，差多少”，是历史评估；**不是 xtervo 的目标或路线承诺**，也不代表要补这层兼容。
+> **归档**：2026-11-24 从 `docs/COMPATIBILITY_MATRIX.md` 移入 archive，正文保持原样。
 
 ## 1. 结论
 

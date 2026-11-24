@@ -179,7 +179,7 @@ P1 races/limits. All must be fixed before the single final install.
   与整屏重绘一致。
 - **R6**：缺字体时差分测试显式失败，不再静默 return。
 - **M2**：`token()` 校验文件 mtime，运行中替换/删除会重读或撤销。
-- **T7**：FEATURE_MATRIX 加过时提示并修正明显冲突行；tabby-parity 的
+- **T7**：FEATURE_MATRIX 加过时提示并修正明显冲突行；tabby-reference 的
   SSH/Serial/会话恢复已改成真实状态（完整矩阵重写仍可作为文档 backlog）。
 
 最终门禁（已完成）：

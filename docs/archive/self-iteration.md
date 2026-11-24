@@ -1,5 +1,9 @@
 # 自我迭代方案：让终端模拟器每轮都变得更好
 
+> **历史归档（2026-11-24 注）**：本文是 2026-11 的迭代记录，正文里反复出现的 Tabby 对照
+> 是当时的背景。现在 xtervo 的定位是参考 Tabby 做一款用着顺手的终端，不追求替代或兼容；
+> 正文保持原样，只把失效链接改到新文件名。
+
 > 目标不是“让 AI 随便改代码”，而是建立一条**可度量、可回滚、有人类门禁**的改进流水线：
 > 每一轮都必须带着「失败用例 / 基线数据 / 截图」进来，带着「全部通过 + 指标不退化」出去。
 
@@ -74,7 +78,7 @@ RUN_IME=1 ./scripts/selfcheck.sh  # 加中文 IME 冒烟（需要 X11 + fcitx/ib
 2. **Implementer**：先写失败测试，再改最小代码；只动必要文件；给出 before/after 数据。
 3. **Verifier**：独立跑 `selfcheck.sh` + 相关基准 + 截图；检查 diff 是否越界、是否引入新依赖、
    是否偷偷放宽测试；不通过直接打回。
-4. **Historian**：更新基线、文档、`docs/tabby-parity.md` 状态；把经验写进本文件或注释。
+4. **Historian**：更新基线、文档、`docs/tabby-reference.md` 状态；把经验写进本文件或注释。
 
 约束：
 
@@ -102,7 +106,7 @@ RUN_IME=1 ./scripts/selfcheck.sh  # 加中文 IME 冒烟（需要 X11 + fcitx/ib
    目标与 30 秒 smoke fuzz；把崩溃样本固化成测试。
 
 再往后：会话恢复、Profile、分屏拖动、SSH/Serial、Wayland IME、emoji/连字、脏矩形上传。
-完整功能盘点见 [`tabby-parity.md`](../tabby-parity.md)。
+完整功能盘点见 [`tabby-reference.md`](../tabby-reference.md)。
 
 ## 4. 一句话使用方式
 

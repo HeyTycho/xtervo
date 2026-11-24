@@ -7,6 +7,8 @@ this file is the current mainline truth.
 
 产品定位、六条原则、非目标和 M0–M6 路标见
 [`PRODUCT_PRINCIPLES.md`](PRODUCT_PRINCIPLES.md)。
+定位一句话：参考 Tabby 等现代终端做一款用着顺手的 Linux 原生终端；
+不追求替代 Tabby、像素级复刻或插件二进制兼容。
 
 ## Supported surface (mainline)
 

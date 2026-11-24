@@ -65,9 +65,9 @@
 
 ## 2. 审计发现：现有实现/文档与需求不符（至少 3 条）
 
-1. **SSH/Serial 依赖“已锁定”不实**：`docs/tabby-parity.md` 写“依赖已锁定 russh / serialport”，但 `Cargo.toml`、`crates/*/Cargo.toml` 与 `Cargo.lock` 均无 `russh`、`serialport`、`tokio-serial`，也无相关模块。
-2. **会话恢复被写成 ✅ 过度**：`docs/tabby-parity.md` 称“重启后原样拉起”；实际只有菜单 `Restart Session` 或手动 `--restore` 才恢复布局+`cwd`，正常启动**不会**恢复，也不恢复运行中进程/滚动历史。C8-004 应为 `partial`。
-3. **Tab OSC 标题并非完整跟随**：`docs/tabby-parity.md` 标 ✅；`main.rs::poll_events` 只把**活动 Tab 的首个 pane**标题写回 `tab.title`，后台 Tab、非首 pane 不更新，且无前缀/后缀/过滤。B2-008 应为 `partial`。
+1. **SSH/Serial 依赖“已锁定”不实**：`docs/tabby-reference.md` 写“依赖已锁定 russh / serialport”，但 `Cargo.toml`、`crates/*/Cargo.toml` 与 `Cargo.lock` 均无 `russh`、`serialport`、`tokio-serial`，也无相关模块。
+2. **会话恢复被写成 ✅ 过度**：`docs/tabby-reference.md` 称“重启后原样拉起”；实际只有菜单 `Restart Session` 或手动 `--restore` 才恢复布局+`cwd`，正常启动**不会**恢复，也不恢复运行中进程/滚动历史。C8-004 应为 `partial`。
+3. **Tab OSC 标题并非完整跟随**：`docs/tabby-reference.md` 标 ✅；`main.rs::poll_events` 只把**活动 Tab 的首个 pane**标题写回 `tab.title`，后台 Tab、非首 pane 不更新，且无前缀/后缀/过滤。B2-008 应为 `partial`。
 4. ~~**全屏没有实现**~~ 已修（2026-11-05）：F11 与 `--fullscreen` 走 `Window::set_fullscreen`，实测 2560x1440 满屏，UI-WIN-006 升为 implemented。
 5. ~~**Pane 焦点没有视觉状态**~~ 已修（2026-11-05）：`main.slint` 按 `focused` 画 1px accent 边框，UI-PANE-004 升为 implemented。
 6. **鼠标 1002 拖动按钮编码错误**：`main.rs::on_pane_mouse_move` 在转发拖动时硬编码 `MouseButton::Left`；按住右键/中键拖动（1002）会被当成左键上报。鼠标上报文档只验证了左键/滚轮。
@@ -485,7 +485,7 @@
 | PLUG-010 | 兼容包/代理对象：映射 tabby-core、tabby-terminal、tabby-local 常用接口 | U-PLUGIN / 需求 C13 | 无实现 | not_started | 无 | 未实现 | 无 shim/代理层 |
 | PLUG-011 | 兼容核心非 UI：Commands/Hotkeys/Config/Color Schemes/Middleware/Profile Providers/Notifications | U-PLUGIN / 需求 C13 | 无实现 | not_started | 无 | 未实现 | 宿主侧这些能力本身多数未实现 |
 | PLUG-012 | Angular Component/Template/DI 不可直接执行；仅按需可选 WebView UI Host | U-PLUGIN / 需求 C13 | 无实现 | not_started | 无 | 未实现 | 无 WebView；默认不启浏览器运行时的边界已明确 |
-| PLUG-013 | 依赖 Electron 私有 API/原生 Node 模块/未公开 API 的插件逐个评估并标记不支持 | U-PLUGIN / 需求 C13 | 无实现 | needs_verification | 未逐个评估 | 未核实/未实现 | 无评估清单；见 COMPATIBILITY_MATRIX.md 分级 |
+| PLUG-013 | 依赖 Electron 私有 API/原生 Node 模块/未公开 API 的插件逐个评估并标记不支持 | U-PLUGIN / 需求 C13 | 无实现 | needs_verification | 未逐个评估 | 未核实/未实现 | 无评估清单；见 `archive/TABBY_COMPAT_MATRIX_2026-11-05.md` 分级 |
 
 ### C14. Logging / Diagnostics / Update / Import-Export（6 条）
 

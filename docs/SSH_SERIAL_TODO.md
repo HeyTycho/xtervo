@@ -183,7 +183,7 @@
 - `docs/SSH_SFTP.md §6/§7` 仍写 app 351 passed、SFTP 无覆盖确认/递归/特殊字符/权限列；均已过期。
 - `docs/CONNECTION_BACKENDS.md`：写 CTS/DSR/DCD 未暴露、`IdentityFile` 回退、ssh-keygen 只在单测用；与代码不符（生产删除仍调 `ssh-keygen -R`）。
 - `docs/FEATURE_MATRIX.md`：SERIAL-004..010、UI-PROF-012 仍写无实现，已过期。
-- `docs/tabby-parity.md`、`docs/COMPATIBILITY_MATRIX.md`：仍写 Serial 未实现/Cargo 无 serialport。
+- `docs/tabby-reference.md`、`docs/archive/TABBY_COMPAT_MATRIX_2026-11-05.md`：仍写 Serial 未实现/Cargo 无 serialport。
 - `docs/SSH_PLUGIN_POC.md`：仍写 Cargo.lock 无 russh、10 例测试（实际 russh 0.63.3、23 例）。
 - `docs/VERIFICATION.md`：期望 666 passed，与 773 基线不一致。
 - 本文旧版“Final evidence”的 hash/soak/e2e 不可复核，已删除；需要重跑并保留日志后再写。

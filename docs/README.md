@@ -59,12 +59,12 @@
 | [终端菜单与查找：Match case / regex、Read Only、Reset、Save Contents](terminal-menu-find.md) | crates/core/src/pane.rs： |
 | [终端 UI 基础能力：滚动条 / 视觉铃 / 拖放](terminal-ui-basics.md) | 此前 PaneHandle 只有 scroll(lines)，UI 无法知道当前回滚位置与总历史长度。 |
 | [主题：内置、自定义与直接下载现成配色](themes.md) | 设置面板（⚙）里可选 12 套，终端 16 色 + 标签栏/菜单/设置面板/搜索框同步换色： |
-| [Tabby 主题机制与 xtervo 自定义主题方案](tabby-themes.md) | Tabby 把「界面外观」和「终端配色」拆成两套独立机制，另有插件与 customCSS 两个扩展口。配置文件是 YAML：Linux ~/.config/tabby/config.yaml，… |
+| [Tabby 主题机制调研与 xtervo 主题方案](tabby-themes.md) | Tabby 把「界面外观」和「终端配色」拆成两套独立机制，另有插件与 customCSS 两个扩展口。配置文件是 YAML：Linux ~/.config/tabby/config.yaml，… |
 | [稳定交互基线（窗口 / TabBar）](STABLE.md) | 日期：2026-11-06（polish 合并后）。以下行为已经验证过，后续改动不要直接在 master 上实验： |
-| [旧 Tabby 插件兼容矩阵（历史评估，非目标）](COMPATIBILITY_MATRIX.md) | 1. 本文初版的新插件 API 基线为 0/6。后续已有 v3 process 宿主与窄 WASM 输出过滤器；WIT/任意 WASM Host API 仍未实现。本文不重写旧 Tabby 评… |
+| [旧 Tabby 插件兼容矩阵（归档，历史评估）](archive/TABBY_COMPAT_MATRIX_2026-11-05.md) | 1. 本文初版的新插件 API 基线为 0/6。后续已有 v3 process 宿主与窄 WASM 输出过滤器；WIT/任意 WASM Host API 仍未实现。本文不重写旧 Tabby 评… |
 | [Tabby 上游审计记录（TABBY_UPSTREAM_AUDIT）](TABBY_UPSTREAM_AUDIT.md) | 因此： |
-| [Tabby 插件生态参考笔记（不做兼容目标）](TABBY_PLUGIN_COMPAT.md) | 不能在 xtervo 里直接加载 Tabby 的 npm 插件。 |
-| [Tabby 功能参考表（灵感清单，非替代目标）](tabby-parity.md) | 把 Tabby 的公开功能面当作参考清单，用来看 xtervo 自己还缺什么；不追求替代或逐项对齐。 |
+| [Tabby 插件生态参考笔记（不做兼容目标）](TABBY_PLUGIN_REFERENCE.md) | 不能在 xtervo 里直接加载 Tabby 的 npm 插件。 |
+| [Tabby 功能参考（灵感清单，非替代目标）](tabby-reference.md) | 把 Tabby 的公开功能面当作参考清单，用来看 xtervo 自己还缺什么；不追求替代或逐项对齐。 |
 
 ## 状态与报告
 

@@ -10,7 +10,7 @@
 > 本清单里与“Tabby 插件兼容”绑定的历史条目（如 ACT-030 旧插件 sidecar）不再执行；
 > 只保留对日常使用有价值的借鉴与互操作（主题/配置导入）。
 
-> 生成日期：2026-11-05（v0.5.0 后对账 2026-11-16）｜ 依据：[`FEATURE_MATRIX.md`](FEATURE_MATRIX.md)（244 条，48.4% 加权覆盖）、[`UI_INTERACTION_MATRIX.md`](UI_INTERACTION_MATRIX.md)、[`TABBY_UPSTREAM_AUDIT.md`](TABBY_UPSTREAM_AUDIT.md)、[`COMPATIBILITY_MATRIX.md`](COMPATIBILITY_MATRIX.md)。
+> 生成日期：2026-11-05（v0.5.0 后对账 2026-11-16）｜ 依据：[`FEATURE_MATRIX.md`](FEATURE_MATRIX.md)（244 条，48.4% 加权覆盖）、[`UI_INTERACTION_MATRIX.md`](UI_INTERACTION_MATRIX.md)、[`TABBY_UPSTREAM_AUDIT.md`](TABBY_UPSTREAM_AUDIT.md)、[`archive/TABBY_COMPAT_MATRIX_2026-11-05.md`](archive/TABBY_COMPAT_MATRIX_2026-11-05.md)。
 > 排序原则：需求 D 部分的实施顺序（UI 壳 → 工作区 → 终端 → 连接 → 设置/插件/平台），同层按“用户每天可感知 + 是否阻塞后续”排序。预估：S ≤ 0.5 天，M 1–3 天，L > 3 天（单人熟手）。
 > **P0 前 10 项以 UI 壳/工作区交互为主**（仅 ACT-002 是为解除 UI 行为待核而插入的上游审计）；连接、插件、安全排在后面。每项验收标准均可执行/可观察，不以“代码写完”作为完成。
 
@@ -57,7 +57,7 @@
 | ID | 标题 | 为什么现在做 | 涉及文件 | 验收标准（可测） | 预估 |
 |---|---|---|---|---|---|
 | ACT-001 | UI 壳/交互验收补测（不写新功能） | D 顺序第一；已有实现缺统一、可重复的验收证据，先锁基线防止后续改动回归 | `docs/UI_INTERACTION_MATRIX.md`、`docs/FEATURE_MATRIX.md`、`scripts/selfcheck.sh`、`.logs/ui-audit/` | 按 UI 矩阵 §9 完成 6 组验收；每项留截图/录屏；A1–A13 全部有结果；至少补 3 个自动断言（焦点/标签/分屏） | M |
-| ACT-002 | 完成上游 Tabby 审计（clone + SHA + 模块逐项） | 21 条 `needs_verification` 与 30+ 条待核语义阻塞 UI 决策；不审计只能猜 | `docs/TABBY_UPSTREAM_AUDIT.md`、`docs/FEATURE_MATRIX.md`、`docs/COMPATIBILITY_MATRIX.md` | 记录上游 SHA/日期；21 条全部有文件级证据并收敛状态；14 个代表插件至少确认仓库/维护状态 | M |
+| ACT-002 | 完成上游 Tabby 审计（clone + SHA + 模块逐项） | 21 条 `needs_verification` 与 30+ 条待核语义阻塞 UI 决策；不审计只能猜 | `docs/TABBY_UPSTREAM_AUDIT.md`、`docs/FEATURE_MATRIX.md`、`docs/archive/TABBY_COMPAT_MATRIX_2026-11-05.md` | 记录上游 SHA/日期；21 条全部有文件级证据并收敛状态；14 个代表插件至少确认仓库/维护状态 | M |
 | ACT-003 ✅（2026-11-05 完成） | Pane 焦点可视状态（接入 `PaneView.focused`） | 当前 `focused` 是死字段，4 pane 下无法判断输入归属；小改动直接提升可用性 | `crates/app/ui/main.slint`、`crates/app/src/main.rs`（`refresh_views`/`PaneView`） | 4 pane 下焦点 pane 有 1px accent 边框/标题条；点击/切 Tab/分屏后立即变化；截图对比；人工步骤入矩阵 | S |
 | ACT-004 ✅（2026-11-05 完成） | Tab per-tab 右键菜单 + Close Others/Duplicate | 当前只有 TabBar 空白菜单，无法对单个 Tab 操作；B2-006/010 缺口 | `main.slint`、`main.rs`、`workspace.rs` | Tab 右键出现菜单；Close/Close Others/Duplicate 可用；仅 1 Tab 时 Close Others 禁用；Esc/点外关闭；人工+单测 | M |
 | ACT-005 ✅（2026-11-05 完成：导航 + F2/双击重命名） | Tab 键盘导航 + 重命名 | 日常高频；B2-007/011；重命名触发方式依赖 ACT-002 结论 | `main.rs`（`handle_input`）、`main.slint`、`workspace.rs`、`session.rs` | Ctrl+Tab/Shift+Ctrl+Tab/Ctrl+1..9/最近 Tab 可用；F2 或双击进入内联编辑，Enter 保存/Esc 取消；标题进快照 | M |
@@ -140,7 +140,7 @@ ACT-002 上游审计 ──（解除 21 条 needs_verification 的决策阻塞�
 2. 不要为了“看起来完整”加假按钮：未实现的功能必须 `disabled` 并显示原因（需求 A3）。
 3. 不要在没有命令注册表时给每个菜单项写独立回调。
 4. 不要在没有 Session 抽象时做“后台保留/重连/自动恢复”。
-5. 不要承诺“兼容 Tabby 插件”；`COMPATIBILITY_MATRIX.md` 的 L0–L4 只作历史评估，不按它排期。
+5. 不要承诺“兼容 Tabby 插件”；`archive/TABBY_COMPAT_MATRIX_2026-11-05.md` 的 L0–L4 只作历史评估，不按它排期。
 6. 不要把需求文档当上游证据；所有 `U-AUDIT` 条目等 ACT-002 收敛后再改状态。
 
 ## 8. 0.6 待办（按轨道归并，2026-11-16）

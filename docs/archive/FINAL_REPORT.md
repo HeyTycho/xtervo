@@ -5,6 +5,9 @@
 > [`MAINLINE_STATUS.md`](../MAINLINE_STATUS.md)、[`CLOSURE.md`](../CLOSURE.md)、
 > [`CHANGELOG.md`](../../CHANGELOG.md)。
 
+> **定位（2026-11-24 注）**：正文里的“完整替代 Tabby”是当时的验收口径，保留原样；
+> 现在 xtervo 只把 Tabby 当灵感参考，不追求替代、像素级复刻或插件兼容。
+
 > 本报告对应 30 轮 goal 的收尾验收（2026-11-05，最后一轮）。
 > 结论先说：**这是一个能日常跑起来的 Slint/X11 终端工作区，但不是官方 Tabby 的完整替代品。**
 > 功能矩阵仍有 105 条 `not_started`；剩余大头（插件运行时、内建 SSH/SFTP 协议栈、

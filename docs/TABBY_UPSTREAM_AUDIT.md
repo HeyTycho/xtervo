@@ -3,6 +3,7 @@
 > **审计日期：2026-11-05** ｜ 审计对象：Eugeny/tabby（GitHub）与 docs.tabby.sh ｜ 审计人：本仓库产品/上游审计 Agent
 > **结论先行：本轮网络不可用，未能抓取上游 README/HACKING/docs/源码，未能取得上游 commit SHA。** 下文只记录“可确认的失败事实 + 既有材料中已核的上游信息（转引）+ 待查清单”，不把需求文档的描述冒充上游证据。
 > 本仓库审计基线：起始 HEAD `0ea6231`，审计期间另一 Agent 并发提交 `b80e265`、`94baefb`、`99d7895`、`8327e20`；代码结论以已提交状态为准（链接识别/OSC 8/命令注册表已复核），工作区其余未提交改动未纳入。
+> 定位：审计 Tabby 的实现只为理解和借鉴；不代表要复刻、替代或兼容 Tabby。
 
 ## 1. 网络访问尝试记录
 
@@ -78,7 +79,7 @@
 - “Tabby 终端右键菜单固定为 Copy/Paste/Find/Clear/Profile/拆分” —— 未核实完整项。
 - “Tabby 搜索支持正则/大小写/匹配计数” —— 未核实，矩阵只写本仓库能力。
 - “Tabby 内置 150+ 主题” —— 需求文档提到“曾提到”，本轮未核实当前数量；矩阵只写本仓库 12 套 + 导入能力。
-- “某旧插件仍维护/可安装” —— 14 个代表性插件来源与现状均未核实，见 `COMPATIBILITY_MATRIX.md`。
+- “某旧插件仍维护/可安装” —— 14 个代表性插件来源与现状均未核实，见 `archive/TABBY_COMPAT_MATRIX_2026-11-05.md`。
 - 任何上游 commit SHA —— 未取得，不写。
 
 ## 6. 下次审计 SOP（网络恢复后）
@@ -88,7 +89,7 @@
 3. 按 §3 模块逐项阅读：优先 `tabby-core/src/services/config.service.ts`、`tabby-core/src/api/*`、`tabby-terminal/src/*`、`tabby-settings/src/components/*`、`tabby-plugin-manager/src/*`；UI 行为以 `.pug`/`.ts` 组件为准，API 以 `api/*.ts` 与 docs typedoc 为准。
 4. 为每个 `needs_verification` 条目记录：文件路径 + 行号/组件 + 行为结论；能截图的上游 UI 另存 `docs/upstream/`。
 5. 回填 `FEATURE_MATRIX.md` 的 Upstream evidence 与 Status，并在本文记录“已核实/仍待查”的变更。
-6. 复核 14 个代表性插件：仓库 URL、最近提交、`package.json` keyword/入口/peerDeps、使用的 Tabby API；更新 `COMPATIBILITY_MATRIX.md` 的分级。
+6. 复核 14 个代表性插件：仓库 URL、最近提交、`package.json` keyword/入口/peerDeps、使用的 Tabby API；更新 `archive/TABBY_COMPAT_MATRIX_2026-11-05.md` 的分级。
 7. 审计只读：不得把上游代码/资源复制进本仓库（引用路径与结论即可）。
 
 ## 7. 参考入口（本轮均不可达）
