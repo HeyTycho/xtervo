@@ -6,6 +6,10 @@
 > （implemented 57 / partial 115 / needs_verification 14 / not_started 51 / unsupported 7，
 > 加权 48.4%，`python3 scripts/matrix_stats.py`）。对账见 §0，新增待办见 §8。
 
+> **定位（2026-11-24）**：xtervo 是参考 Tabby 做的一款顺手终端，**不以替代或兼容 Tabby 为目标**。
+> 本清单里与“Tabby 插件兼容”绑定的历史条目（如 ACT-030 旧插件 sidecar）不再执行；
+> 只保留对日常使用有价值的借鉴与互操作（主题/配置导入）。
+
 > 生成日期：2026-11-05（v0.5.0 后对账 2026-11-16）｜ 依据：[`FEATURE_MATRIX.md`](FEATURE_MATRIX.md)（244 条，48.4% 加权覆盖）、[`UI_INTERACTION_MATRIX.md`](UI_INTERACTION_MATRIX.md)、[`TABBY_UPSTREAM_AUDIT.md`](TABBY_UPSTREAM_AUDIT.md)、[`COMPATIBILITY_MATRIX.md`](COMPATIBILITY_MATRIX.md)。
 > 排序原则：需求 D 部分的实施顺序（UI 壳 → 工作区 → 终端 → 连接 → 设置/插件/平台），同层按“用户每天可感知 + 是否阻塞后续”排序。预估：S ≤ 0.5 天，M 1–3 天，L > 3 天（单人熟手）。
 > **P0 前 10 项以 UI 壳/工作区交互为主**（仅 ACT-002 是为解除 UI 行为待核而插入的上游审计）；连接、插件、安全排在后面。每项验收标准均可执行/可观察，不以“代码写完”作为完成。
@@ -101,7 +105,7 @@
 | ACT-027 | Vault/Keyring + secret 脱敏 | C12；SSH 前必须定凭据边界 | 新 `vault.rs`、`config.rs`、`ssh.rs` | Secret Service 存储/锁定；配置/日志脱敏测试（注入假密码不出现）；插件无权限读；文件权限 0600 | L |
 | ACT-028 | 插件 Host API（WIT/权限/生命周期/扩展点） | C13-001..006；先定 API 再引 runtime | 新 `crates/plugin`、`docs/plugin-api.md` | 版本化 API；6 类最小扩展点；权限声明/拒绝；WIT 定义；宿主崩溃隔离；契约测试 | L |
 | ACT-029 | 插件管理器 UI + 包扫描/签名/权限 | B11/C13-007/008 | `main.slint`、`main.rs`、新 `plugin_manager.rs` | 扫描 keyword/入口/版本；列表/安装/卸载/启停；签名/权限展示；Open Directory；崩溃诊断；人工+夹具 | L |
-| ACT-030 | 旧插件 Node sidecar + shim + 14 插件 fixtures | C13-009..013；兼容性报告必须按插件名 | 新 `plugin-sidecar/`、`fixtures/`、`docs/COMPATIBILITY_MATRIX.md` | sidecar 启停/超时/崩溃隔离；tabby-core/terminal/local 最小 shim；14 插件逐项等级+fixture；无 UI 插件不启 Node/WebView | L |
+| ACT-030（不做） | 放弃旧插件 Node sidecar + shim + 14 插件 fixtures：2026-11-24 定位调整，不追求 Tabby 插件兼容 | — | — | — | — |
 | ACT-031 | 诊断/结构化日志/更新检查 | C14；出问题无法定位 | `main.rs`、新 `diagnostics.rs`、`scripts/` | 模块/session 关联日志；DNS/TCP/SSH 阶段；插件诊断；脱敏单测；版本/更新检查失败提示 | M |
 | ACT-032 ◐（打包/安装/4-pane RSS/空闲 CPU 已验收；P95、吞吐、长时间稳定性待做） | 性能/回归/打包验收 | A5/D2；4 pane RSS/CPU/60fps/高吞吐未验收 | `scripts/`、`docs/phase0-report.md`、`docs/selfcheck-baseline.json` | 4 pane RSS≤220MiB、空闲 CPU≤1%、P95≤50ms、60fps、50MiB/s 有界；CI 门禁；数据写文档 | M |
 | ACT-033 | 文档/矩阵持续维护 + 验收截图库 | D2 交付项；避免再次出现“文档与代码不符” | 5 份 docs、`.logs/ui-audit/` | 每次功能变更同步矩阵；`implemented` 有测试/截图；上游证据有 SHA/路径；CI 校验矩阵计数 | S |
@@ -136,7 +140,7 @@ ACT-002 上游审计 ──（解除 21 条 needs_verification 的决策阻塞�
 2. 不要为了“看起来完整”加假按钮：未实现的功能必须 `disabled` 并显示原因（需求 A3）。
 3. 不要在没有命令注册表时给每个菜单项写独立回调。
 4. 不要在没有 Session 抽象时做“后台保留/重连/自动恢复”。
-5. 不要承诺“兼容 Tabby 插件”；先按 `COMPATIBILITY_MATRIX.md` 的 L0–L4 分级逐项验证。
+5. 不要承诺“兼容 Tabby 插件”；`COMPATIBILITY_MATRIX.md` 的 L0–L4 只作历史评估，不按它排期。
 6. 不要把需求文档当上游证据；所有 `U-AUDIT` 条目等 ACT-002 收敛后再改状态。
 
 ## 8. 0.6 待办（按轨道归并，2026-11-16）

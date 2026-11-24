@@ -3,6 +3,7 @@
 # xtervo 功能矩阵（FEATURE_MATRIX）
 
 > 当前主线快照/合并审计见 [`MAINLINE_STATUS.md`](MAINLINE_STATUS.md)（2026-11-12，master `502e490`）；本文件保留历史审计，不再单独代表当前发布状态。
+> 定位：矩阵是“上游能力参考清单”，不是“要成为/替代 Tabby”的需求清单；状态只描述当前实现，不是路线承诺。
 
 
 > 审计日期：2026-11-05 ｜ 仓库：`/home/user/AIworkspace/xtervoterminal`（起始 HEAD `0ea6231`，复核到并发提交 `8327e20`） ｜ 审计方式：只读代码 + 既有文档 + 静态走查；**未执行 cargo build/test**（同仓另一 Agent 在构建）。

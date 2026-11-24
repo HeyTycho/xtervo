@@ -152,10 +152,10 @@ V1 不开放：自定义 Slint 组件、任意侧栏/面板、直接 PTY 写、�
 V2 仍不开放：任意 UI 代码、直接 PTY 写、无限制文件/网络。AI 面板是**宿主内置**的固定
 UI，只从清单读取展示元数据，不接受插件提供的 Slint 组件/布局。
 
-### 3.3 V3：市场与兼容层
+### 3.3 V3：市场与可选扩展
 
 - 签名插件市场、版本/平台分发、自动更新；
-- Tabby 插件**能力子集**兼容层（命令/主题/Profile/连接），不承诺 npm UI 插件；
+- 借鉴 Tabby 插件能力的自有扩展（命令/主题/Profile/连接）；不做 npm 插件兼容层；
 - 可选 WASM Component Model ABI；
 - 可选 native sidecar 市场（仍独立进程）。
 
@@ -345,7 +345,7 @@ description = "offline echo"   # 可选，面板说明
 
 ### 7.1 Tabby（Electron + xterm.js，npm 插件）
 
-Tabby 是最接近 xtervo 的对标：插件是 JS/TS 模块，可注册连接类型、命令、UI 组件、设置页、Profile 选项。
+Tabby 是 xtervo 的主要灵感来源之一（不是对标或替代目标）：插件是 JS/TS 模块，可注册连接类型、命令、UI 组件、设置页、Profile 选项。
 
 典型能力：
 
@@ -371,7 +371,7 @@ tabby-rdp（RDP helper）
 tabby-fit-screen
 ```
 
-Tabby 的优势是 Electron 里什么都能做；代价是包体、内存、启动、原生集成弱。xtervo 不应该复制其运行时，而应复制**能力分类**。
+Tabby 的优势是 Electron 里什么都能做；代价是包体、内存、启动、原生集成弱。xtervo 不复制其运行时，只借鉴**能力分类**。
 
 ### 7.2 Hyper（Electron/JS）
 
@@ -510,7 +510,7 @@ compact bar、配置/布局插件
 
 ```text
 1. 签名市场/安装/更新/回滚
-2. Tabby 能力子集兼容
+2. 借鉴 Tabby 能力的自有扩展（不做兼容层）
 3. 可选 WASM Component Model
 4. 性能/安全审计工具
 ```
@@ -534,7 +534,7 @@ xtervo 只提供可选 UI 插件显示轮次/测试/批准，不让 UI 进程改
 1. WASM Component Model 还是自定义 ABI？
 2. 是否支持 AssemblyScript 作为一等语言？
 3. 插件市场签名/托管由谁负责？
-4. Tabby 兼容层做到命令/主题/Profile 还是也做 UI？
+4. ~~Tabby 兼容层做到命令/主题/Profile 还是也做 UI？~~ 已定：不做兼容层，只借鉴能力分类。
 5. 是否允许插件声明自定义协议解析（安全边界）？
 6. 多插件链式 linkifier 的优先级/冲突规则？
 7. 插件 UI 插槽的版本化/废弃策略？

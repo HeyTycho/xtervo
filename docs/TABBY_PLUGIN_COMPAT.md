@@ -1,7 +1,8 @@
-# Tabby 插件生态与 xtervo 兼容路线
+# Tabby 插件生态参考笔记（不追求兼容）
 
-> 状态：研究/计划（2026-11-09）
-> 目标：回答“Tabby 热门插件有哪些、xtervo 能兼容前 10 个吗、AI 相关怎么接”。
+> 状态：参考笔记（2026-11-09 调研；2026-11-24 调整定位：参考，不是兼容路线）
+> 目的：了解 Tabby 热门插件解决什么问题、哪些用户价值值得借鉴。
+> **不加载 Tabby 的 npm 插件，也不以兼容或替代 Tabby 为目标。**
 > 相关：`docs/PLUGIN_API.md`、`docs/PLUGIN_SYSTEM.md`、`docs/TABBY_UPSTREAM_AUDIT.md`。
 
 ## 0. 结论
@@ -22,23 +23,23 @@ npm 包
 xtervo 是 Rust + Slint + 原生终端，没有 Angular/Electron/DOM，也没有 Tabby 的 service API。
 直接兼容等于把整个 Tabby renderer 运行时塞进来，体积、性能、安全都不划算。
 
-### 能做的
+### 可借鉴的
 
-**行为兼容 + 进程/MCP 适配。**
+**按用户价值借鉴，用 xtervo 自己的机制实现。**
 
 按插件实际做的事，而不是按它的 JS 代码：
 
-| 兼容层 | 做法 |
+| 借鉴方向 | xtervo 的做法 |
 |---|---|
 | 原生功能 | SSH/SFTP、分屏、搜索、主题、关闭确认等直接做进 xtervo |
 | Process Plugin | 外部进程 JSON Lines：命令、状态栏、主题、事件 |
 | ACP/MCP bridge | 让外部 AI/工具通过协议控制 xtervo 或读取上下文 |
-| AI panel | 内置 OpenAI-compatible 聊天/命令面板，替代 `tabby-ai-chat` 这类 UI 插件 |
+| AI panel | 内置 OpenAI-compatible 聊天/命令面板，覆盖 `tabby-ai-chat` 这类插件的使用场景 |
 | Declarative theme | `theme.toml` 主题包，可直接复用颜色 |
 
-因此“兼容前 10”应定义为：
+如果只挑用户价值（不是兼容清单）：
 
-> **前 10 个热门插件的核心用户价值，在 xtervo 里有等价入口/可迁移配置，而不是二进制加载。**
+> **参考前 10 个热门插件里真正有用的用法，在 xtervo 里给出自己的入口；不加载它们的 JS，也不承诺行为一致。**
 
 ---
 
@@ -46,9 +47,9 @@ xtervo 是 Rust + Slint + 原生终端，没有 Angular/Electron/DOM，也没有
 
 > 说明：npm/GitHub 没有稳定公开的“Tabby 插件下载量 Top 10”榜单；以下是按公开包名、社区文章和功能热度归类的**可见度较高类别**，不冒充精确排名。
 
-| # | 插件/类别 | 类型 | AI | 代表包/链接 | xtervo 兼容判断 |
+| # | 插件/类别 | 类型 | AI | 代表包/链接 | xtervo 参考判断 |
 |---:|---|---|---|---|---|
-| 1 | AI Chat（终端旁 LLM 对话） | UI panel | ✅ | [`tabby-ai-chat`](https://github.com/ephb/tabby-ai-chat) | 需内置 AI panel；行为可兼容 |
+| 1 | AI Chat（终端旁 LLM 对话） | UI panel | ✅ | [`tabby-ai-chat`](https://github.com/ephb/tabby-ai-chat) | 需内置 AI panel；用法可借鉴 |
 | 2 | AI Assistant / 命令提示 | UI + command | ✅ | [`tabby-ai-assistant`](https://www.npmjs.com/package/tabby-ai-assistant) | 需 AI command provider + 输入框 |
 | 3 | AI Agent（agent 会话） | UI/agent | ✅ | [`tabby-ai-agent`](https://www.npmjs.com/package/tabby-ai-agent) | 先接 CLI agent/MCP，不重做 agent |
 | 4 | MCP 控制桥 | server/bridge | ✅ | [`Tabby-MCP`](https://github.com/GentlemanHu/Tabby-MCP)、[`tabby-mcp`](https://www.npmjs.com/package/tabby-mcp) | 做 xtervo MCP server/client，高价值 |
@@ -84,11 +85,11 @@ AI panel（OpenAI-compatible endpoint）
 
 ---
 
-## 2. 兼容策略
+## 2. 实现策略（自有机制）
 
 ### 2.1 原生优先
 
-以下已经在 xtervo 核心里，优先级高于插件兼容：
+以下已经在 xtervo 核心里，优先级高于做插件兼容：
 
 ```text
 SSH/SFTP
@@ -120,7 +121,7 @@ startup/tab-open/tab-close 事件
 无热重载/安装 UI
 ```
 
-可立即兼容：
+可立即支持的场景：
 
 - Quick Commands
 - Git/Docker/构建状态
@@ -148,14 +149,14 @@ startup/tab-open/tab-close 事件
 多 provider 管理
 ```
 
-### 2.4 MCP bridge（AI 工具兼容）
+### 2.4 MCP bridge（AI 工具接入）
 
-优先级高于“兼容更多 UI 插件”：
+优先级高于“复刻更多 UI 插件”：
 
 - 让外部 agent/CLI 通过 MCP 读取 xtervo 当前 Tab/屏幕/选中文本；
 - 让 MCP 工具打开 Tab、输入命令、读取输出；
 - 权限默认只读，写操作需显式开启；
-- 与 `Tabby-MCP` 的“控制终端”价值对齐，但不复用其 Electron API。
+- 参考 `Tabby-MCP` 的“控制终端”用法，但不复用其 Electron API。
 
 ### 2.5 不做的兼容
 
@@ -168,9 +169,9 @@ Tabby service API 全量模拟
 
 ---
 
-## 3. “前 10”兼容目标
+## 3. 借鉴清单（不是兼容目标）
 
-| 目标 | 今晚 | 本月 |
+| 借鉴项 | 当时（11-09） | 后续 |
 |---|---|---|
 | AI Chat panel | MVP | 流式/历史/错误恢复 |
 | AI command suggestions | 先命令入口 | inline 提示/解释 |
@@ -186,14 +187,13 @@ Tabby service API 全量模拟
 结论：
 
 ```text
-行为层面可以覆盖 6–7/10 的核心价值；
-直接插件加载 0/10；
-AI 相关是今晚最高优先级。
+用户价值层面能覆盖 6–7/10；
+直接加载插件 0/10（也不打算做）。
 ```
 
 ---
 
-## 4. 今晚 18:00 后的执行顺序
+## 4. 当时的执行顺序（2026-11-09 历史记录）
 
 ### 18:00–18:30 冻结
 
@@ -230,7 +230,7 @@ AI 相关是今晚最高优先级。
 - AI panel 涉及网络/密钥/流式 UI，不能把 key 写日志/明文配置。
 - MCP 写操作风险高，默认只读。
 - Tabby AI 插件各自 endpoint/协议不同，只能做 OpenAI-compatible 主路径，不保证每家一致。
-- 不用“兼容 Tabby 插件”做营销；准确说法是“行为兼容/迁移指南”。
+- 不用“兼容 Tabby 插件”做宣传；准确说法是“参考其用户价值，提供自己的迁移/互操作说明”。
 
 ---
 

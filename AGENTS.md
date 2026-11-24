@@ -113,6 +113,7 @@ XTERVO_SIXEL_DEBUG=1             # 图片 placement 日志
 
 ```text
 2026-11-09 起：大任务 18:00 后
-当前待办：Tabby 插件兼容（API v2 / AI panel / MCP）
+定位：参考 Tabby 做一款用着顺手的终端，不以替代或兼容 Tabby 为目标
+当前待办：无强制项；可选增强按实际使用价值排（不做 Tabby 兼容层）
 执行时间：18:00 后
 ```
