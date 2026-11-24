@@ -1,12 +1,20 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-only
 #
-# AI Chat 面板 headless Xvfb 冒烟（无网络、无 API Key）：
-#   - Settings → Plugins → Open AI Chat 能打开宿主渲染的面板
-#   - docs/examples/ai-echo 作为 api=2 process 插件出现在列表
-#   - 输入 prompt → Enter → ai.chat 走同一 supervisor，结果追加一次
-#   - 活动/日志只记字符数，不记录 prompt/回复正文
-#   - Close 返回设置页
+# v2 AI 插件拒绝回归（Plugin API v3 host，headless Xvfb :146）。
+#
+# v3 MVP 不实现 AI provider（docs/PLUGIN_V3.md §3.2 assistant 只做占位），
+# 宿主只加载 api = 3 / host_abi = 3。本脚本用旧示例 docs/examples/ai-echo
+# （api = 2）做回归：
+#   - 被发现并明确归类为 unsupported/invalid，绝不执行
+#   - 不出现 initialize/initialized 握手、没有 ai.chat、没有 ai-echo 子进程
+#   - 设置 → Plugins 页仍能打开并显示该行（截图，状态 unsupported）
+#   - 旧的“输入 prompt → ai.chat → 回复”断言已移除：v3 下不存在这条产品路径
+#
+# 运行前可设置独立 runtime：
+#   rt=$PWD/.tmp/rt-ai-panel; mkdir -p -m 700 "$rt"
+#   env -u XTERVO_INSTANCE_DIR XDG_RUNTIME_DIR="$rt" E2E_DISPLAY=:162 \
+#       ./scripts/e2e_ai_panel.sh
 #
 # 前置构建：
 #   CARGO_HOME=... CARGO_TARGET_DIR=... cargo build -p xtervo-app \
@@ -29,7 +37,7 @@ XKEY=${E2E_XKEY:-$TARGET_DIR/debug/xkey}
 for f in "$BIN" "$XWIN" "$XCLICK" "$XKEY"; do
     [ -x "$f" ] || { echo "缺少 $f；先 cargo build -p xtervo-app --bin xtervo --bin xwin --bin xclick --bin xkey" >&2; exit 2; }
 done
-for tool in xdpyinfo xwininfo xwd ffmpeg; do
+for tool in xdpyinfo xwininfo xwd ffmpeg pgrep; do
     command -v "$tool" >/dev/null 2>&1 || { echo "缺少依赖：$tool" >&2; exit 2; }
 done
 
@@ -48,6 +56,11 @@ cp -r "$ROOT/docs/examples/ai-echo" "$OUT/plugins/ai-echo"
 chmod +x "$OUT/plugins/ai-echo/plugin.py"
 APP_LOG=$OUT/app.log
 : >"$APP_LOG"
+[ ! -e "$OUT/plugins-v3-state.toml" ] || { echo "测试目录残留 v3 状态文件" >&2; exit 2; }
+
+# 明确锁定 fixture 是 legacy v2：如果示例被误改成 v3，这个回归就失去意义。
+grep -q '^api = 2$' "$OUT/plugins/ai-echo/plugin.toml" \
+    || { echo "docs/examples/ai-echo 不再是 api = 2（当前 fixture 已不是 v2 回归）" >&2; exit 2; }
 
 XVFB_PID=""
 OB_PID=""
@@ -78,9 +91,12 @@ export HOME="$OUT/home"
 export XDG_CACHE_HOME="$OUT/home/.cache"
 export XDG_CONFIG_HOME="$OUT/home/.config"
 export XDG_DATA_HOME="$OUT/home/.local/share"
+export XDG_STATE_HOME="$OUT/home/.local/state"
+export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-$OUT/runtime}
+mkdir -p -m 700 "$XDG_RUNTIME_DIR"
 export XDG_DATA_DIRS="$PERF/openbox/usr/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
 export XDG_CONFIG_DIRS="$PERF/openbox/etc/xdg:${XDG_CONFIG_DIRS:-/etc/xdg}"
-mkdir -p "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME"
+mkdir -p "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME"
 
 if DISPLAY=$DISPLAY_NUM xdpyinfo >/dev/null 2>&1; then
     echo "复用已有 display $DISPLAY_NUM（测试结束不关闭）"
@@ -125,9 +141,28 @@ shot() {
 click() { "$XCLICK" $((ABS_X + $1)) $((ABS_Y + $2)) >/dev/null 2>&1 || true; }
 key() { "$XKEY" "$@" >/dev/null 2>&1 || true; }
 
-wait_log "[plugin] ai-echo: 常驻进程就绪" 6 || fail "ai-echo 插件未就绪"
+# 发现阶段就把 v2 归到 unsupported/invalid，且启动 0 个。
+wait_log "[plugin-v3] 已发现 1 个插件（1 unsupported/invalid），启动 0 个已确认插件，0 个等待权限确认" 8 \
+    || fail "v2 ai-echo 没有被归类为 unsupported/invalid"
+wait_log "[plugin-v3] 设置页 1 个插件，0 个启用，0 条启用命令，1 unsupported/invalid" 4 \
+    || fail "设置页没有把 v2 ai-echo 计为 unsupported/invalid"
+pass "v2 ai-echo is unsupported/invalid, 0 started"
 
-# Settings → 搜 "ai chat" → 打开 Plugins 页的 AI 卡片。
+# 绝不能执行 v2 协议：没有握手、没有 ai.chat、没有子进程。
+sleep 0.5
+if grep -Fq "ai-echo: initialize/initialized 完成" "$APP_LOG"; then
+    fail "v2 ai-echo 不应与 v3 宿主握手"
+fi
+if grep -Fq "ai.chat" "$APP_LOG"; then
+    fail "v3 宿主不应出现 ai.chat 路径"
+fi
+if pgrep -f "$OUT/plugins/ai-echo/plugin.py" >/dev/null 2>&1; then
+    fail "v2 ai-echo 进程不应被启动"
+fi
+[ ! -e "$OUT/plugins-v3-state.toml" ] || fail "未被用户启用的 v2 插件不应写入 v3 状态"
+pass "v2 plugin never executed (no handshake / ai.chat / process)"
+
+# 设置 → Plugins：旧 v2 行仍在列表里，状态 unsupported（截图证据）。
 click 60 232
 sleep 0.3
 key p --ctrl --shift
@@ -139,41 +174,13 @@ wait_log "[ui] run command settings.open" 4 || fail "设置未打开"
 sleep 0.9
 click 800 56
 sleep 0.2
-key "ai chat"
+key plugin
 sleep 0.6
 click 300 148
-wait_log "[ui] settings goto cat=5" 4 || fail "AI 搜索项没有跳到 Plugins"
-sleep 0.7
-shot settings-ai-card
-click 650 209
-wait_log "[ui] ai panel open plugins=1" 4 || fail "AI 面板未打开"
-sleep 0.4
-shot panel-empty
+wait_log "[ui] settings goto cat=5" 4 || fail "Plugins 搜索项没有跳到插件页"
+sleep 0.8
+shot settings-unsupported
+pass "settings -> Plugins shows the unsupported v2 row"
 
-# 输入 prompt（Enter 提交），插件返回确定性 echo；只追加一次。
-click 500 267
-sleep 0.2
-key "hello"
-sleep 0.2
-key --key enter
-wait_log "[plugin] ai.chat submitted plugin=ai-echo messages=1" 4 || fail "ai.chat 未提交"
-wait_log "[plugin] ai-echo: ai.chat ok" 6 || fail "ai-echo 未返回"
-wait_log "[plugin] ai.chat result plugin=ai-echo" 6 || fail "UI 未收到 AI 结果"
-sleep 0.5
-shot panel-result
-pass "AI panel opens and routes ai.chat through the process supervisor"
-
-if grep -Fq "hello" "$APP_LOG"; then
-    fail "prompt 正文不应写入应用日志"
-fi
-pass "prompt/response text is not logged"
-
-# Close 返回设置页（不关设置 Tab）。
-click 853 108
-wait_log "[ui] ai panel closed" 4 || fail "AI 面板未关闭"
-sleep 0.5
-shot panel-closed
-pass "Close returns to Settings"
-
-echo "输出：$OUT/{settings-ai-card,panel-empty,panel-result,panel-closed}.png"
+echo "输出：$OUT/settings-unsupported.png"
 echo "日志：$APP_LOG"

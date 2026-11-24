@@ -817,6 +817,9 @@ fn run_instance(
 
     let mut pending_host: HashMap<u64, PendingHost> = HashMap::new();
     let mut initialized = false;
+    // docs/PLUGIN_V3.md §7：startup 在启动早期可能先于握手完成到达，必须排队
+    // 到 initialized 之后投递；其它事件（tab-open 等）此时已过期，仍然丢弃。
+    let mut pending_startup: Option<Value> = None;
     let mut shutting_down: Option<Instant> = None;
     let mut bad_lines = 0u32;
     let mut bad_plugin_logs = 0u32;
@@ -922,7 +925,19 @@ fn run_instance(
                         }
                     },
                     Ok(SupervisorMsg::Event { event, payload }) => {
-                        if !initialized || shutting_down.is_some() {
+                        if !initialized {
+                            // startup 是“进程刚起来”的一次性事件，握手竞态不能丢；
+                            // 其余事件在握手前已过期，保持丢弃以免补发旧状态。
+                            if event == PluginEvent::Startup && pending_startup.is_none() {
+                                eprintln!(
+                                    "[plugin-v3] {}: 握手未完成，startup 事件排队",
+                                    config.id
+                                );
+                                pending_startup = Some(payload);
+                            }
+                            continue;
+                        }
+                        if shutting_down.is_some() {
                             continue;
                         }
                         let params = protocol::event_params(event, &payload);
@@ -1077,6 +1092,34 @@ fn run_instance(
                                                 e.message(&config.id)
                                             );
                                             break InstanceExit::Crash;
+                                        }
+                                        // 握手期间排队的一次性 startup 事件在
+                                        // initialized 通知之后补发，顺序与运行期一致。
+                                        if let Some(payload) = pending_startup.take() {
+                                            eprintln!(
+                                                "[plugin-v3] {}: startup 事件在 initialized 后投递",
+                                                config.id
+                                            );
+                                            let params = protocol::event_params(
+                                                PluginEvent::Startup,
+                                                &payload,
+                                            );
+                                            if let Err(e) = writer.send(
+                                                &protocol::notification(
+                                                    protocol::M_EVENT_DELIVER,
+                                                    params,
+                                                ),
+                                                options.max_line_bytes,
+                                            ) {
+                                                eprintln!(
+                                                    "[plugin-v3] {}: startup 事件入队失败: {}",
+                                                    config.id,
+                                                    e.message(&config.id)
+                                                );
+                                                if e.fatal() {
+                                                    break InstanceExit::Crash;
+                                                }
+                                            }
                                         }
                                         publish_runtime(
                                             runtime,
