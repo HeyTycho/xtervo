@@ -7,7 +7,8 @@
 #        before = XTERVO_EVENT_WAKE=0，纯 400ms 轮询（旧行为，A/B 对照）
 #   2. 语义事件延迟：OSC 标题 ×6、BEL、OSC52 query；每项日志带 epoch ms，
 #      与 shell 里 `date +%s%3N` 的发送时间戳直接相减。
-#   3. 插件 startup 活动、SFTP 上传完成：后台线程写结果后唤醒 UI 的延迟。
+#   3. v3 process 插件 startup 事件 + ui.status 活动、SFTP 上传完成：后台线程
+#      写结果后唤醒 UI 的延迟（v3 握手自带的 activity 不计入）。
 #   4. 不丢/不重复：每个事件在日志里必须恰好出现一次。
 #   5. 空闲：连续两行 `[wake]` 统计里 core/app 唤醒计数不增长，400ms 兜底仍在跑；
 #      同时对比两遍的空闲 CPU ticks / voluntary context switches。
@@ -95,11 +96,22 @@ sleep 0.3
 timeout --foreground 3 cat > "$DIR/query.bin"
 sleep 40
 '
-PLUGIN_TOML='name = "latency"
+PLUGIN_TOML='api = 3
+host_abi = 3
+id = "dev.xtervo.latency"
+name = "Latency Probe"
 version = "1.0.0"
-api = 1
-entry = "run.sh"
+runtime = "process"
+entry = "run.py"
+
+[contributes]
+commands = true
+status = true
 events = ["startup"]
+
+[[commands]]
+id = "noop"
+title = "Latency: Noop"
 '
 PROFILES_TOML='version = 2
 next_id = 2
@@ -124,21 +136,25 @@ visual_bell = true
 audible_bell = false
 '
 
-# 假 sftp：List 返回固定条目；上传/下载写进度行并在退出前记录完成时间戳。
+# 假 sftp：List 返回固定条目；上传/下载写进度行。时间戳必须在最后一行进度
+# 之前写：UI 解析 100% 行时就记 `传输结束`，先打印再 date 会得到负延迟。
 make_sftp() { # <dir>
     local dir=$1
     cat > "$dir/bin/sftp" <<SFTP
 #!/bin/sh
 input=\$(cat)
 case "\$input" in
-    *"ls -1"*)
+    # 宿主先试 ls -la 再回退 ls -1a；两者都算列目录，不能写传输完成戳。
+    *"ls -1"*|*"ls -la"*)
         printf 'probe-one\nprobe-two\n'
         ;;
-    *)
+    # 只有上传 batch（含 put）写完成时间戳；时间戳在最后一行进度之前，
+    # UI 解析 100% 后才会记“传输结束”，时间差保持非负且小。
+    *"put "*)
         printf 'fake.bin 10%% 1KB 1.0MB/s --:-- ETA\r'
         sleep 0.05
-        printf 'fake.bin 100%% 2KB 1.0MB/s 00:00\r'
         date +%s%3N > "$dir/sftp.stamp"
+        printf 'fake.bin 100%% 2KB 1.0MB/s 00:00\r'
         ;;
 esac
 exit 0
@@ -150,15 +166,74 @@ make_plugin() { # <dir>
     local dir=$1
     mkdir -p "$dir/plugins/latency"
     printf '%s' "$PLUGIN_TOML" > "$dir/plugins/latency/plugin.toml"
-    cat > "$dir/plugins/latency/run.sh" <<PLUGIN
-#!/bin/sh
-read -r _payload
-sleep 2
-date +%s%3N > "$dir/plugin.stamp"
-printf 'plugin-latency-ok\n'
-exit 0
+    # v3 的 enabled/权限确认在状态文件里（manifest 不接受 enabled 字段）。
+    cat > "$dir/plugins-v3-state.toml" <<STATE
+version = 1
+
+[plugins."dev.xtervo.latency"]
+enabled = true
+permissions_approved = true
+permissions = []
+STATE
+    # 常驻 v3 process 插件：握手后收到 startup 事件，sleep 2s 写完成时间戳，
+    # 再发 ui.status 让宿主记录插件活动并唤醒 UI。
+    cat > "$dir/plugins/latency/run.py" <<'PLUGIN'
+#!/usr/bin/env python3
+import json
+import os
+import sys
+import time
+
+STAMP = os.path.abspath(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "plugin.stamp")
+)
+
+
+def send(message):
+    sys.stdout.write(json.dumps(message, separators=(",", ":")) + "\n")
+    sys.stdout.flush()
+
+
+def respond(request_id, result):
+    send({"jsonrpc": "2.0", "id": request_id, "result": result})
+
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        message = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    if not isinstance(message, dict) or "method" not in message:
+        continue
+    method = message.get("method")
+    request_id = message.get("id")
+    params = message.get("params") or {}
+    if method == "initialize":
+        respond(request_id, {"protocol_version": 3})
+    elif method == "event.deliver" and params.get("event") == "startup":
+        time.sleep(2)
+        with open(STAMP, "w", encoding="utf-8") as fh:
+            fh.write(str(int(time.time() * 1000)))
+        send(
+            {
+                "jsonrpc": "2.0",
+                "id": 200,
+                "method": "ui.status",
+                "params": {"text": "latency ready", "command": "noop"},
+            }
+        )
+    elif method == "status.get":
+        respond(request_id, {"text": "latency ready", "command": "noop"})
+    elif method == "ping":
+        respond(request_id, {"seq": params.get("seq", 0)})
+    elif method == "shutdown":
+        respond(request_id, {"ok": True})
+        break
 PLUGIN
-    chmod +x "$dir/plugins/latency/run.sh"
+    chmod +x "$dir/plugins/latency/run.py"
 }
 
 start_app() { # <dir> <wake|before>
@@ -345,7 +420,7 @@ for mode in ("wake", "before"):
     for i in range(1, 7):
         sent = sample(stamps, f"title{i}")
         got = one(
-            rf'\[event\] ts_ms=(\d+) pane=\d+ kind=title title="wake-title-{i}"',
+            rf'\[event\] ts_ms=(\d+) pane=\d+ kind=title(?: raw="[^"]*")? title="wake-title-{i}"',
             log,
             f"OSC 标题 {i}",
             mode,
@@ -363,10 +438,28 @@ for mode in ("wake", "before"):
     if sent is not None and got is not None:
         deltas["osc52"] = got - sent
 
-    plugin_stamp = int(Path(env["PLUGIN_STAMP"]).read_text().strip())
-    got = one(r"\[ui\] ts_ms=(\d+) plugin activity rev=\d+", log, "插件活动刷新", mode)
-    if got is not None:
-        deltas["plugin"] = got - plugin_stamp
+    plugin_stamp_path = Path(env["PLUGIN_STAMP"])
+    if not plugin_stamp_path.exists():
+        failures.append(f"{mode}: 插件没有写出完成时间戳 {plugin_stamp_path}")
+        plugin_stamp = None
+    else:
+        plugin_stamp = int(plugin_stamp_path.read_text().strip())
+    # v3 握手本身也会 record_activity（lifecycle running），日志里会先出现一次
+    # 插件活动刷新。只取插件写入时间戳之后的那一次，仍要求恰好一次。
+    activity = [
+        int(ts)
+        for ts in re.findall(r"\[ui\] ts_ms=(\d+) plugin activity rev=\d+", log)
+    ]
+    if plugin_stamp is not None:
+        after_stamp = [ts for ts in activity if ts >= plugin_stamp]
+        if not after_stamp:
+            failures.append(f"{mode}: 日志里找不到插件写入时间戳后的活动刷新")
+        elif len(after_stamp) > 1:
+            failures.append(
+                f"{mode}: 插件活动刷新在时间戳后出现 {len(after_stamp)} 次（应恰好 1 次）"
+            )
+        else:
+            deltas["plugin"] = after_stamp[0] - plugin_stamp
 
     sftp_stamp = int(Path(env["SFTP_STAMP"]).read_text().strip())
     got = one(r"\[sftp\] ts_ms=(\d+) 传输结束 phase=Done", log, "SFTP 传输完成", mode)

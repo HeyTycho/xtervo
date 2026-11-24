@@ -97,15 +97,22 @@ class X11:
         return subprocess.run(list(args), env=self.env, capture_output=True, text=True, **kwargs)
 
     def windows(self):
+        """All client windows titled "xtervo", sorted by X11 id.
+
+        Multi-window intentionally gives every window the same WM_NAME (see
+        ``secondary::base_window_title``); tests must not depend on an old
+        ``"xtervo — 2"`` suffix. WM_CLASS filters out Openbox frame windows.
+        Creation order matches numeric id order: window-1 is created first.
+        """
         out = self.run("xwininfo", "-root", "-tree").stdout
-        found = {}
+        found = set()
         for line in out.splitlines():
-            match = re.search(r'(0x[0-9a-f]+) "([^"]*)"', line)
-            if not match:
-                continue
-            win, title = match.group(1), match.group(2)
-            found.setdefault(title, win)
-        return found
+            match = re.search(
+                r'(0x[0-9a-f]+) "xtervo": \("xtervo" "xtervo"\)', line
+            )
+            if match:
+                found.add(match.group(1))
+        return sorted(found, key=lambda win: int(win, 16))
 
     def geometry(self, win: str):
         out = self.run("xwininfo", "-id", win).stdout
@@ -229,10 +236,11 @@ def main() -> int:
     ids = sorted(window["window_id"] for window in data["windows"])
     assert ids == [1, 2], ids
     wins = wait_for(
-        lambda: (lambda w: w if "xtervo" in w and "xtervo — 2" in w else None)(x11.windows()),
+        lambda: (lambda w: w if len(w) >= 2 else None)(x11.windows()),
         label="two X11 windows",
     )
-    win1, win2 = wins["xtervo"], wins["xtervo — 2"]
+    assert len(wins) == 2, wins
+    win1, win2 = wins[0], wins[1]
     wait_log("initialize/initialized", timeout=15, label="plugin handshake")
     try:
         plugin_processes = wait_for(
