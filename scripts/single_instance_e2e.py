@@ -257,9 +257,9 @@ def main() -> int:
     # 3b) A non-primary window's last tab must close only that window.
     target = sorted(w for w in wins if w != primary_win)[0]
     focused(args.display, target)
-    key = run(["xkey", "w", "--ctrl"], env=env)
+    key = run(["xkey", "w", "--ctrl", "--shift"], env=env)
     if key.returncode != 0:
-        fail(f"xkey Ctrl+W failed: {key.stderr}")
+        fail(f"xkey Ctrl+Shift+W failed: {key.stderr}")
     wins = wait_windows(args.display, 3)
     assert primary_pid(args.pid), "primary exited after closing a non-primary window's last tab"
     check("last_tab_closes_only_window", {"target": target, "remaining": sorted(wins)})

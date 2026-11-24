@@ -135,10 +135,10 @@ shot 02-plus-direct-new-tab
 echo "== 2. 关掉新 Tab，回到单 Tab 后打开 >_ Profile 菜单 =="
 # 关闭 Tab 只写 close tab=N，不写 new tab: tabs=1；必须看本次新增的 close 日志。
 CLOSES_BEFORE=$(grep -cF '[ws] close tab=1' "$OUT/app.log" || true)
-key w --ctrl
+key w --ctrl --shift
 sleep 0.8
 CLOSES_AFTER=$(grep -cF '[ws] close tab=1' "$OUT/app.log" || true)
-[ "$CLOSES_AFTER" -gt "$CLOSES_BEFORE" ] || fail "Ctrl+W 没关掉新 Tab（没有新增 close tab=1 日志）"
+[ "$CLOSES_AFTER" -gt "$CLOSES_BEFORE" ] || fail "Ctrl+Shift+W 没关掉新 Tab（没有新增 close tab=1 日志）"
 click 212 16 0.8
 grep -Fq '[ui] profile menu profiles=2' "$OUT/app.log" || fail ">_ 没有打开 Profile 菜单"
 shot 03-profile-menu-no-search
@@ -162,7 +162,7 @@ shot 05-profile-beta-opened
 
 echo "== 4. 3 Tab + 标题 spinner：点 Tab 必须切换，不能误关 =="
 # 当前 2 个 Tab（原始 + beta）；再开一个，spinner 跑在第三个 Tab 里。
-key t --ctrl
+key t --ctrl --shift
 sleep 1.0
 grep -Fq '[ws] new tab: tabs=3' "$OUT/app.log" || fail "没有到 3 个 Tab"
 SPIN="$OUT/home/spin.py"
@@ -185,9 +185,9 @@ click 100 16 0.8
 grep -Fq '[ws] active tab=0' "$OUT/app.log" || fail "标题 spinner 时点 Tab 没有切换（疑似点到 close）"
 shot 06-spinner-tab0-active
 # 关闭走键盘，避免依赖标题变化后的精确像素宽度；X 的窄 Tab 行为见手工清单。
-key w --ctrl
+key w --ctrl --shift
 sleep 0.8
-grep -Fq '[ws] close tab=0' "$OUT/app.log" || fail "标题 spinner 时 Ctrl+W 没有关闭 Tab"
+grep -Fq '[ws] close tab=0' "$OUT/app.log" || fail "标题 spinner 时 Ctrl+Shift+W 没有关闭 Tab"
 shot 07-spinner-tab0-closed
 
 echo "PASS: TabBar +/>_ 旧交互 + 标题 spinner 下点击（shots: $OUT/shots）"
