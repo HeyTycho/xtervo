@@ -212,7 +212,7 @@ sleep 1.4
 shot 02-disconnected
 grep -Fq '[connection] pane=1 state=Disconnected' "$OUT/app_A.log" \
     || fail "exit 0 后状态不是 Disconnected"
-key t --ctrl
+key t --ctrl --shift
 sleep 1.0
 
 echo "== 3. 非零退出 → Failed =="
@@ -220,7 +220,7 @@ type_text 'exit 3'; enter
 sleep 1.4
 shot 03-failed
 grep -Fq 'state=Failed' "$OUT/app_A.log" || fail "exit 3 后状态不是 Failed"
-key t --ctrl
+key t --ctrl --shift
 sleep 1.0
 
 echo "== 4. 命令面板工作区动态命令 =="

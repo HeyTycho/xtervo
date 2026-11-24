@@ -154,7 +154,7 @@ focus_pane() {
 focus_pane
 
 echo "== 1) Ctrl+F 打开并聚焦；输入 alpha（增量搜索落在 2/3） =="
-key f --ctrl
+key f --ctrl --shift
 sleep 0.35
 key alpha
 sleep 0.6
@@ -264,7 +264,7 @@ shot terminal_focus
 
 echo "== 9) 再次 Ctrl+F 打开即聚焦，直接输入 alpha =="
 before=$(grep -c 'find query="alpha"' "$OUT/app.log" || true)
-key f --ctrl
+key f --ctrl --shift
 sleep 0.4
 key alpha
 sleep 0.5

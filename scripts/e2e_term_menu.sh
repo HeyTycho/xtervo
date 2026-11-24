@@ -182,7 +182,7 @@ focus_pane() {
 focus_pane
 
 echo "== 1) Find: Match case / regex / 非法 regex =="
-key f --ctrl
+key f --ctrl --shift
 sleep 0.3
 key ALPHA
 sleep 0.5
