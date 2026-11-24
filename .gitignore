@@ -20,3 +20,9 @@
 
 # python cache
 scripts/__pycache__/
+
+# 并行 worktree（本地开发用）
+/.worktrees/
+
+# 一次性 SSH/Vault e2e 截图（含桌面隐私，不提交）
+/.vaultssh2-e2e/

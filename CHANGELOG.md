@@ -4,6 +4,8 @@ xtervo 的版本与 tag 规则见 `docs/RELEASING.md`。
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-24
+
 ### Added
 
 - Pane 右上角拖拽手柄支持**双击最大化/还原**：双击把该 pane 折叠为整块内容区，
@@ -33,6 +35,11 @@ xtervo 的版本与 tag 规则见 `docs/RELEASING.md`。
 
 ### Fixed
 
+- MCP token 读取加固：`O_NOFOLLOW` 打开后对 fd 校验 owner/mode（拒绝 symlink、
+  组/其他可读、非当前用户），token 目录过宽时收紧到 0700，共享 sticky 目录直接拒绝。
+- 剪贴板图片临时文件：编码失败用 RAII 删除半截 PNG；成功文件保留给 TUI 异步读取，
+  24h 后清理。
+- Quake 热键：过滤 X11 自动重复产生的 fake release/press 对，按住 F12 不再反复 toggle。
 - 右键菜单打开时隐藏右下角状态 pill（“● Connected”/agent forwarding），关闭
   菜单后自动恢复。pill 是窗口级 overlay、菜单画在 pane 内，绘制顺序更晚的 pill
   此前会盖住窄窗口菜单的最后几行（“Reset Zoom”被挡）。`e2e_context_menu.sh`

@@ -158,7 +158,7 @@ python3 scripts/check_doc_links.py       # 文档相对链接检查
 
 开发规则见 [`AGENTS.md`](AGENTS.md)（大任务 18:00 后；改动必须有失败测试/证据；
 长门禁 2m/15m/30m）。贡献流程见
-[CONTRIBUTING.md](https://github.com/HeyTycho/xtervo/blob/main/CONTRIBUTING.md)，
+[CONTRIBUTING.md](CONTRIBUTING.md)，
 变更记录见 [`CHANGELOG.md`](CHANGELOG.md)。
 
 - 应用内：标签栏左侧品牌图标、设置面板标题图标（`assets/icon-small.png`）。
@@ -212,7 +212,7 @@ python3 scripts/check_doc_links.py       # 文档相对链接检查
 - 遇到 bug、想要的功能（Feature request / 许愿）、使用体验建议，都欢迎提
   [Issue](https://github.com/HeyTycho/xtervo/issues)。
 - 安全问题不要公开提 Issue，请按
-  [SECURITY.md](https://github.com/HeyTycho/xtervo/blob/main/SECURITY.md) 里的方式私下报告。
+  [SECURITY.md](SECURITY.md) 里的方式私下报告。
 - 提问题时请附：`xtervo --version`、发行版与桌面（X11 / Wayland）、复现步骤、相关日志
   （`~/.local/state/xtervo/logs/`）。能稳定复现的问题优先修。
 - 本项目目前只在 Ubuntu 22.04 / 24.04 实测；其他系统的报告同样欢迎，修复会按可复现性排期。
