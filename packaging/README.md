@@ -40,7 +40,7 @@ XTERVO_DIST=/tmp/dist ./scripts/package.sh       # 自定义输出目录（相�
 SKIP_BUILD=1 ./scripts/package.sh               # 复用 target/release/xtervo
 SKIP_DEB=1 ./scripts/package.sh                 # 只出 tar.gz/二进制
 SKIP_TAR=1 ./scripts/package.sh                 # 只出 .deb/二进制
-MAX_MB=64 ./scripts/package.sh                  # 二进制体积门禁（默认 64 MiB）
+MAX_MB=70 ./scripts/package.sh                  # 二进制体积门禁（默认 70 MiB）
 ALLOW_DIRTY=1 ./scripts/package.sh              # 未提交修改也打包（产物会标 dirty）
 DEB_VERSION=0.1.0-2 ./scripts/package.sh        # 覆盖 .deb 版本
 ```

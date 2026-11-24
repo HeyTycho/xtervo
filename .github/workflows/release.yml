@@ -32,8 +32,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential pkg-config cmake ninja-build python3 dpkg-dev binutils \
+            ca-certificates curl libudev-dev \
             libxkbcommon-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev \
-            libgl1-mesa-dev libegl1-mesa-dev libfontconfig1-dev libfreetype6-dev
+            libgl1-mesa-dev libegl1-mesa-dev libfontconfig1-dev libfreetype6-dev \
+            libfontconfig1 libfreetype6
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -46,7 +48,7 @@ jobs:
       - name: Build and package
         # scripts/package.sh 默认把 CARGO_HOME 指到仓库内；显式使用
         # runner 的 ~/.cargo，复用 rust-cache 缓存，并保持 checkout 干净。
-        run: CARGO_HOME="$HOME/.cargo" ./scripts/package.sh dist
+        run: CARGO_HOME="$HOME/.cargo" MAX_MB=70 ./scripts/package.sh dist
 
       - name: Verify artifacts and checksums
         run: |

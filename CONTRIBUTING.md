@@ -37,6 +37,7 @@
 sudo apt-get update
 sudo apt-get install -y \
   build-essential pkg-config cmake ninja-build python3 \
+  ca-certificates curl libudev-dev \
   libxkbcommon-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev \
   libgl1-mesa-dev libegl1-mesa-dev libfontconfig1-dev libfreetype6-dev
 ```
@@ -47,7 +48,7 @@ sudo apt-get install -y \
 sudo apt-get install -y xvfb openbox x11-utils ffmpeg
 ```
 
-Rust 使用 stable，最低版本见根 `Cargo.toml` 的 `rust-version`（当前 1.85）：
+Rust 使用 stable，最低版本见根 `Cargo.toml` 的 `rust-version`（当前 1.92）：
 
 ```bash
 rustup toolchain install stable --component rustfmt

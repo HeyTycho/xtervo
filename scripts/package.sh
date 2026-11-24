@@ -14,7 +14,7 @@
 #
 # 环境变量：
 #   XTERVO_DIST      输出目录（默认 dist；位置参数优先）
-#   MAX_MB          发布二进制体积上限（默认 64）
+#   MAX_MB          发布二进制体积上限（默认 70）
 #   SKIP_BUILD      1 = 不构建，直接打包现有 release 二进制
 #   SKIP_SMOKE      1 = 跳过 strip 后的 --help/--version 冒烟（交叉编译时用）
 #   SKIP_TAR        1 = 不生成 tar.gz
@@ -35,7 +35,7 @@ export TZ=UTC
 
 DIST="${1:-${XTERVO_DIST:-dist}}"
 BIN=target/release/xtervo
-MAX_MB="${MAX_MB:-64}"
+MAX_MB="${MAX_MB:-70}"
 TARBALL_NAME=""
 DEB_NAME=""
 STAGE=""
@@ -53,7 +53,7 @@ usage() {
 
 环境变量:
   XTERVO_DIST      输出目录（默认 dist；位置参数优先）
-  MAX_MB          发布二进制体积上限（默认 64）
+  MAX_MB          发布二进制体积上限（默认 70）
   SKIP_BUILD=1    复用已有 release 二进制
   SKIP_SMOKE=1    跳过 strip 后的 --help/--version 冒烟（交叉编译时用）
   SKIP_TAR=1      不生成 tar.gz

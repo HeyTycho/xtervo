@@ -16,7 +16,7 @@ members = [
 [workspace.package]
 version = "0.6.0"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.92"
 license = "GPL-3.0-only"
 description = "Native terminal emulator written in Rust + Slint, focused on low memory and input latency."
 repository = "https://github.com/HeyTycho/xtervo"

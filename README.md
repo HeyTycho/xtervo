@@ -76,9 +76,9 @@ Release 产物按构建机架构命名：x86_64 对应 `.deb` 的 `amd64`，aarc
 Ubuntu / Debian 构建依赖：
 
 ```bash
-sudo apt install libxkbcommon-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev \
-  libgl1-mesa-dev libegl1-mesa-dev libfontconfig1-dev libfreetype6-dev \
-  pkg-config cmake ninja-build
+sudo apt install build-essential pkg-config cmake ninja-build ca-certificates curl libudev-dev \
+  libxkbcommon-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev \
+  libgl1-mesa-dev libegl1-mesa-dev libfontconfig1-dev libfreetype6-dev
 ```
 
 ```bash
@@ -94,7 +94,7 @@ cargo build --release -p xtervo-app
 export CARGO_HOME=$PWD/.cargo
 ```
 
-运行环境：Linux（X11；Wayland 通过 XWayland），Rust 1.85+，Slint 1.18。
+运行环境：Linux（X11；Wayland 通过 XWayland），Rust 1.92+，Slint 1.18。
 有 `/dev/dri` 时默认 GPU（Skia），否则自动回退 `winit-software`。
 
 ### 打包与安装
