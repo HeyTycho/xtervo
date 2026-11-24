@@ -167,7 +167,10 @@ fn run_cat_session(path: &PathBuf) -> Duration {
             if frame_text(&frame).contains(EOF_MARKER) {
                 break;
             }
-            panic!("cat 未在 30s 内完成 (exited={exited})\n{}", frame_text(&frame));
+            panic!(
+                "cat 未在 30s 内完成 (exited={exited})\n{}",
+                frame_text(&frame)
+            );
         }
     }
     start.elapsed()

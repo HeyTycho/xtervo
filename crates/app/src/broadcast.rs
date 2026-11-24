@@ -20,30 +20,32 @@ pub fn dangerous_reason(text: &str) -> Option<&'static str> {
     for command in commands(&norm) {
         let tokens: Vec<&str> = command.split(' ').filter(|t| !t.is_empty()).collect();
         let tokens = strip_prefixes(&tokens);
-        let Some((head, args)) = tokens.split_first() else { continue };
+        let Some((head, args)) = tokens.split_first() else {
+            continue;
+        };
         let head = head.rsplit('/').next().unwrap_or(head);
         match head {
             "rm" if destructive_rm(args) => {
                 return Some("recursive force delete (rm -rf)");
-            },
+            }
             "mkfs" => return Some("format filesystem (mkfs)"),
             _ if head.starts_with("mkfs.") => return Some("format filesystem (mkfs)"),
             "dd" if args.iter().any(|a| a.starts_with("of=/dev/")) => {
                 return Some("raw write to a block device (dd of=/dev/…)");
-            },
+            }
             "fdisk" | "parted" | "wipefs" if args.iter().any(|a| a.contains("/dev/")) => {
                 return Some("partition table change");
-            },
+            }
             "shutdown" | "reboot" | "halt" | "poweroff" => {
                 return Some("power state change");
-            },
+            }
             "chmod" if recursive_world_write(args) => {
                 return Some("recursive chmod 777");
-            },
+            }
             "truncate" if truncates_to_zero(args) => {
                 return Some("truncate to zero (truncate -s 0)");
-            },
-            _ => {},
+            }
+            _ => {}
         }
     }
     // 重定向覆盖整块设备：`> /dev/sda`。命令位之外也可能出现在 `sudo tee` 前，

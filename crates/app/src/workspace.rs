@@ -35,7 +35,12 @@ impl Rect {
 #[derive(Clone, Debug)]
 pub enum Node {
     Leaf(PaneId),
-    Split { dir: Dir, ratio: f32, a: Box<Node>, b: Box<Node> },
+    Split {
+        dir: Dir,
+        ratio: f32,
+        a: Box<Node>,
+        b: Box<Node>,
+    },
 }
 
 impl Node {
@@ -53,7 +58,12 @@ impl Node {
                 b: Box::new(Node::Leaf(new_id)),
             },
             Node::Leaf(_) => self.clone(),
-            Node::Split { dir: d, ratio: r, a, b } => Node::Split {
+            Node::Split {
+                dir: d,
+                ratio: r,
+                a,
+                b,
+            } => Node::Split {
                 dir: *d,
                 ratio: *r,
                 a: Box::new(a.split(target, dir, new_id, ratio)),
@@ -71,7 +81,7 @@ impl Node {
                 } else {
                     Some(self.clone())
                 }
-            },
+            }
             Node::Split { dir, ratio, a, b } => match (a.remove(target), b.remove(target)) {
                 (Some(a), Some(b)) => Some(Node::Split {
                     dir: *dir,
@@ -102,7 +112,12 @@ impl Node {
             Node::Leaf(leaf) if *leaf == a => Node::Leaf(b),
             Node::Leaf(leaf) if *leaf == b => Node::Leaf(a),
             Node::Leaf(leaf) => Node::Leaf(*leaf),
-            Node::Split { dir, ratio, a: left, b: right } => Node::Split {
+            Node::Split {
+                dir,
+                ratio,
+                a: left,
+                b: right,
+            } => Node::Split {
                 dir: *dir,
                 ratio: *ratio,
                 a: Box::new(left.swapped(a, b)),
@@ -123,7 +138,7 @@ impl Node {
             Node::Split { a, b, .. } => {
                 a.collect(out);
                 b.collect(out);
-            },
+            }
         }
     }
 
@@ -141,7 +156,7 @@ impl Node {
                             Rect::new(rect.x, rect.y, wa, rect.h),
                             Rect::new(rect.x + wa + SPLIT_GAP, rect.y, usable - wa, rect.h),
                         )
-                    },
+                    }
                     Dir::Col => {
                         let usable = (rect.h - SPLIT_GAP).max(0.0);
                         let ha = usable * ratio;
@@ -149,11 +164,11 @@ impl Node {
                             Rect::new(rect.x, rect.y, rect.w, ha),
                             Rect::new(rect.x, rect.y + ha + SPLIT_GAP, rect.w, usable - ha),
                         )
-                    },
+                    }
                 };
                 a.layout(ra, out);
                 b.layout(rb, out);
-            },
+            }
         }
     }
 
@@ -164,7 +179,9 @@ impl Node {
     }
 
     fn collect_dividers(&self, rect: Rect, path: &mut Vec<bool>, out: &mut Vec<Divider>) {
-        let Node::Split { dir, ratio, a, b } = self else { return };
+        let Node::Split { dir, ratio, a, b } = self else {
+            return;
+        };
         let ratio = ratio.clamp(MIN_RATIO, 1.0 - MIN_RATIO);
         let (ra, rb, divider) = match dir {
             Dir::Row => {
@@ -174,7 +191,7 @@ impl Node {
                 let rb = Rect::new(rect.x + wa + SPLIT_GAP, rect.y, usable - wa, rect.h);
                 let d = Rect::new(rect.x + wa, rect.y, SPLIT_GAP, rect.h);
                 (ra, rb, d)
-            },
+            }
             Dir::Col => {
                 let usable = (rect.h - SPLIT_GAP).max(0.0);
                 let ha = usable * ratio;
@@ -182,9 +199,14 @@ impl Node {
                 let rb = Rect::new(rect.x, rect.y + ha + SPLIT_GAP, rect.w, usable - ha);
                 let d = Rect::new(rect.x, rect.y + ha, rect.w, SPLIT_GAP);
                 (ra, rb, d)
-            },
+            }
         };
-        out.push(Divider { path: path.clone(), rect: divider, parent: rect, dir: *dir });
+        out.push(Divider {
+            path: path.clone(),
+            rect: divider,
+            parent: rect,
+            dir: *dir,
+        });
         path.push(false);
         a.collect_dividers(ra, path, out);
         path.pop();
@@ -195,17 +217,18 @@ impl Node {
 
     /// 按路径设置分屏比例；返回是否命中。
     pub fn set_ratio(&mut self, path: &[bool], ratio: f32) -> bool {
-        let Node::Split { a, b, ratio: r, .. } = self else { return false };
+        let Node::Split { a, b, ratio: r, .. } = self else {
+            return false;
+        };
         match path.split_first() {
             None => {
                 *r = ratio.clamp(MIN_RATIO, 1.0 - MIN_RATIO);
                 true
-            },
+            }
             Some((false, rest)) => a.set_ratio(rest, ratio),
             Some((true, rest)) => b.set_ratio(rest, ratio),
         }
     }
-
 }
 
 /// 一条可拖拽的分隔条。
@@ -219,7 +242,6 @@ pub struct Divider {
     pub parent: Rect,
     pub dir: Dir,
 }
-
 
 /// UI-PANE-007：最大化单个 pane 的**视图**布局（纯函数，便于单测）。
 ///
@@ -320,7 +342,11 @@ pub struct Workspace {
 
 impl Workspace {
     pub fn new() -> Self {
-        Self { tabs: Vec::new(), active: 0, next_id: 1 }
+        Self {
+            tabs: Vec::new(),
+            active: 0,
+            next_id: 1,
+        }
     }
 
     pub fn alloc_id(&mut self) -> PaneId {
@@ -453,7 +479,9 @@ impl Workspace {
     }
 
     pub fn tab_of(&self, pane: PaneId) -> Option<usize> {
-        self.tabs.iter().position(|t| t.root.as_ref().is_some_and(|r| r.contains(pane)))
+        self.tabs
+            .iter()
+            .position(|t| t.root.as_ref().is_some_and(|r| r.contains(pane)))
     }
 }
 
@@ -498,7 +526,10 @@ mod tests {
         let node = Node::leaf(1).split(1, Dir::Row, 2, 0.5);
         let after = node.remove(2).expect("还剩一个");
         assert_eq!(after.panes(), vec![1]);
-        assert_eq!(rects(&after, 800.0, 600.0)[0].1, Rect::new(0.0, 0.0, 800.0, 600.0));
+        assert_eq!(
+            rects(&after, 800.0, 600.0)[0].1,
+            Rect::new(0.0, 0.0, 800.0, 600.0)
+        );
     }
 
     #[test]
@@ -508,7 +539,9 @@ mod tests {
 
     #[test]
     fn nested_split_layout_is_contained() {
-        let node = Node::leaf(1).split(1, Dir::Row, 2, 0.5).split(2, Dir::Col, 3, 0.5);
+        let node = Node::leaf(1)
+            .split(1, Dir::Row, 2, 0.5)
+            .split(2, Dir::Col, 3, 0.5);
         let r = rects(&node, 1000.0, 500.0);
         assert_eq!(r.len(), 3);
         for (_, rect) in &r {
@@ -598,7 +631,9 @@ mod tests {
     #[test]
     fn nested_dividers_have_paths() {
         // 先左右分，再把右侧上下分
-        let node = Node::leaf(1).split(1, Dir::Row, 2, 0.5).split(2, Dir::Col, 3, 0.5);
+        let node = Node::leaf(1)
+            .split(1, Dir::Row, 2, 0.5)
+            .split(2, Dir::Col, 3, 0.5);
         let mut out = Vec::new();
         node.dividers(Rect::new(0.0, 0.0, 1000.0, 500.0), &mut out);
         assert_eq!(out.len(), 2);
@@ -635,7 +670,10 @@ mod tests {
 
         // 0 → 3：其它 Tab 前移，active 跟着前移
         assert!(ws.move_tab(0, 3));
-        assert_eq!(ws.tabs.iter().map(|t| t.title.as_str()).collect::<Vec<_>>(), vec!["t1", "t2", "t3", "t0"]);
+        assert_eq!(
+            ws.tabs.iter().map(|t| t.title.as_str()).collect::<Vec<_>>(),
+            vec!["t1", "t2", "t3", "t0"]
+        );
         assert_eq!(ws.active, 1);
 
         // 3 → 0：后面的往后挪，active 回到 2
@@ -808,6 +846,9 @@ mod tests {
         assert_eq!(zoomed, vec![(2, content)], "最大化 pane 独占内容区");
         assert!(bars.is_empty(), "最大化时不显示分隔条");
         assert_eq!(rects.len(), 2, "原布局不被修改，还原靠它");
-        assert!(zoom_layout(99, content, &rects, &dividers).is_none(), "陌生 pane 不改布局");
+        assert!(
+            zoom_layout(99, content, &rects, &dividers).is_none(),
+            "陌生 pane 不改布局"
+        );
     }
 }

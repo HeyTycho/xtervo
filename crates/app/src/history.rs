@@ -64,7 +64,10 @@ pub struct ConnectionHistory {
 
 impl Default for ConnectionHistory {
     fn default() -> Self {
-        Self { version: VERSION, entries: Vec::new() }
+        Self {
+            version: VERSION,
+            entries: Vec::new(),
+        }
     }
 }
 
@@ -101,11 +104,14 @@ impl ConnectionHistory {
                 history.version = VERSION;
                 history.entries.truncate(MAX_ENTRIES);
                 history
-            },
+            }
             Err(error) => {
-                eprintln!("[history] {} 解析失败，本次用空历史（原文件未改）: {error}", path.display());
+                eprintln!(
+                    "[history] {} 解析失败，本次用空历史（原文件未改）: {error}",
+                    path.display()
+                );
                 Self::default()
-            },
+            }
         }
     }
 
@@ -124,7 +130,7 @@ impl ConnectionHistory {
             Err(error) => {
                 eprintln!("[history] 序列化失败: {error}");
                 return;
-            },
+            }
         };
         let tmp = path.with_extension("toml.tmp");
         if let Err(error) = std::fs::write(&tmp, text) {
@@ -249,7 +255,10 @@ mod tests {
         history.save_to(&path);
         let text = std::fs::read_to_string(&path).unwrap();
         for absent in ["password", "passphrase", "secret", "token"] {
-            assert!(!text.to_lowercase().contains(absent), "unexpected {absent}: {text}");
+            assert!(
+                !text.to_lowercase().contains(absent),
+                "unexpected {absent}: {text}"
+            );
         }
         let back = ConnectionHistory::load_from(&path);
         assert_eq!(back.entries, history.entries);
@@ -262,9 +271,24 @@ mod tests {
     #[test]
     fn recent_indices_map_profile_ids_and_names() {
         let profiles = vec![
-            Profile { id: 1, name: "work".into(), kind: "ssh".into(), ..Profile::default() },
-            Profile { id: 2, name: "prod".into(), kind: "ssh".into(), ..Profile::default() },
-            Profile { id: 3, name: "local".into(), kind: "local".into(), ..Profile::default() },
+            Profile {
+                id: 1,
+                name: "work".into(),
+                kind: "ssh".into(),
+                ..Profile::default()
+            },
+            Profile {
+                id: 2,
+                name: "prod".into(),
+                kind: "ssh".into(),
+                ..Profile::default()
+            },
+            Profile {
+                id: 3,
+                name: "local".into(),
+                kind: "local".into(),
+                ..Profile::default()
+            },
         ];
         let mut history = ConnectionHistory::default();
         // 名字回退：Profile 改 ID 后仍能通过名字找到。
@@ -279,10 +303,22 @@ mod tests {
 
     #[test]
     fn relative_labels_cover_ranges() {
-        assert_eq!(ConnectionHistory::relative_label(1_000, 1_000 + 5_000), "刚刚");
-        assert_eq!(ConnectionHistory::relative_label(1_000, 1_000 + 120_000), "2m");
-        assert_eq!(ConnectionHistory::relative_label(1_000, 1_000 + 7_200_000), "2h");
-        assert_eq!(ConnectionHistory::relative_label(1_000, 1_000 + 172_800_000), "2d");
+        assert_eq!(
+            ConnectionHistory::relative_label(1_000, 1_000 + 5_000),
+            "刚刚"
+        );
+        assert_eq!(
+            ConnectionHistory::relative_label(1_000, 1_000 + 120_000),
+            "2m"
+        );
+        assert_eq!(
+            ConnectionHistory::relative_label(1_000, 1_000 + 7_200_000),
+            "2h"
+        );
+        assert_eq!(
+            ConnectionHistory::relative_label(1_000, 1_000 + 172_800_000),
+            "2d"
+        );
         assert_eq!(ConnectionHistory::relative_label(2_000, 1_000), "");
     }
 }

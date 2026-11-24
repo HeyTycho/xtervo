@@ -36,13 +36,18 @@ fn xauthority_path() -> Option<std::path::PathBuf> {
     if let Ok(p) = std::env::var("XAUTHORITY") {
         return Some(p.into());
     }
-    std::env::var("HOME").ok().map(|h| std::path::PathBuf::from(h).join(".Xauthority"))
+    std::env::var("HOME")
+        .ok()
+        .map(|h| std::path::PathBuf::from(h).join(".Xauthority"))
 }
 
 /// 极简 Xauthority 解析：只取第一个与 display 号匹配的 MIT-MAGIC-COOKIE-1。
 fn read_cookie(display: &str) -> Option<(Vec<u8>, Vec<u8>)> {
     let mut data = Vec::new();
-    std::fs::File::open(xauthority_path()?).ok()?.read_to_end(&mut data).ok()?;
+    std::fs::File::open(xauthority_path()?)
+        .ok()?
+        .read_to_end(&mut data)
+        .ok()?;
 
     let mut pos = 0usize;
     let take = |pos: &mut usize, len: usize| -> Option<&[u8]> {
@@ -78,7 +83,11 @@ pub fn find_window(conn: &RustConnection, win: u32, title: &str, depth: usize) -
     use x11rb::protocol::xproto::{AtomEnum, ConnectionExt};
 
     fn read_prop(conn: &RustConnection, win: u32, atom: u32) -> Option<String> {
-        let reply = conn.get_property(false, win, atom, AtomEnum::ANY, 0, 1024).ok()?.reply().ok()?;
+        let reply = conn
+            .get_property(false, win, atom, AtomEnum::ANY, 0, 1024)
+            .ok()?
+            .reply()
+            .ok()?;
         if reply.value.is_empty() {
             None
         } else {
@@ -146,9 +155,13 @@ pub fn wm_minimize(title: &str) -> Result<(), String> {
 pub fn clear_window_shape(title: &str) {
     use x11rb::connection::Connection as _;
     use x11rb::protocol::xproto::ConnectionExt as _;
-    let Ok((conn, screen_num)) = connect() else { return };
+    let Ok((conn, screen_num)) = connect() else {
+        return;
+    };
     let root = conn.setup().roots[screen_num].root;
-    let Some(win) = find_own_window(&conn, root, title) else { return };
+    let Some(win) = find_own_window(&conn, root, title) else {
+        return;
+    };
     if let Err(e) = clear_rounded_corners(&conn, win) {
         eprintln!("[corners] 清理窗口 SHAPE 失败 win=0x{win:x}: {e}");
     } else {
@@ -229,8 +242,8 @@ pub fn start_wm_resize(
     if !wm_supports_moveresize(conn, root) {
         return Err("WM 的 _NET_SUPPORTED 不含 _NET_WM_MOVERESIZE".to_string());
     }
-    let dir = ewmh_resize_direction(direction)
-        .ok_or_else(|| format!("非法 resize 方向 {direction}"))?;
+    let dir =
+        ewmh_resize_direction(direction).ok_or_else(|| format!("非法 resize 方向 {direction}"))?;
 
     // EWMH 要 root 坐标；先查指针，避免 ungrab 后状态变化影响坐标。
     let reply = conn
@@ -252,12 +265,8 @@ pub fn start_wm_resize(
         .map_err(|e| e.to_string())?
         .atom;
     // data: x_root, y_root, direction, button(1=left), source(1=application)
-    let event = ClientMessageEvent::new(
-        32,
-        window,
-        atom,
-        [x_root as u32, y_root as u32, dir, 1, 1],
-    );
+    let event =
+        ClientMessageEvent::new(32, window, atom, [x_root as u32, y_root as u32, dir, 1, 1]);
     conn.send_event(
         false,
         root,
@@ -285,7 +294,11 @@ pub fn find_own_window_sized(
     use x11rb::protocol::xproto::{AtomEnum, ConnectionExt};
 
     fn read_pid(conn: &RustConnection, win: u32, atom: u32) -> Option<u32> {
-        let reply = conn.get_property(false, win, atom, AtomEnum::CARDINAL, 0, 1).ok()?.reply().ok()?;
+        let reply = conn
+            .get_property(false, win, atom, AtomEnum::CARDINAL, 0, 1)
+            .ok()?
+            .reply()
+            .ok()?;
         reply.value32().and_then(|mut it| it.next())
     }
 
@@ -328,7 +341,9 @@ pub fn find_own_window_sized(
                         .get_window_attributes(child)
                         .ok()
                         .and_then(|c| c.reply().ok())
-                        .is_some_and(|a| a.map_state == x11rb::protocol::xproto::MapState::VIEWABLE);
+                        .is_some_and(|a| {
+                            a.map_state == x11rb::protocol::xproto::MapState::VIEWABLE
+                        });
                     if viewable {
                         if let Some(geo) =
                             conn.get_geometry(child).ok().and_then(|c| c.reply().ok())
@@ -424,7 +439,10 @@ pub fn connect() -> Result<(RustConnection, usize), String> {
             if let Ok((stream, _peer)) = DefaultStream::from_unix_stream(stream) {
                 let (auth_name, auth_data) = read_cookie(&display).unwrap_or_default();
                 if let Ok(conn) = RustConnection::connect_to_stream_with_auth_info(
-                    stream, screen as usize, auth_name, auth_data,
+                    stream,
+                    screen as usize,
+                    auth_name,
+                    auth_data,
                 ) {
                     // 不能硬编码 screen 0：`:0.1` 的 root/尺寸属于 screen 1。
                     return Ok((conn, screen as usize));
@@ -434,7 +452,6 @@ pub fn connect() -> Result<(RustConnection, usize), String> {
     }
     x11rb::connect(None).map_err(|e| format!("X11 连接失败: {e}"))
 }
-
 
 /// 一块 XRandR monitor 的像素几何（root 坐标）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -451,7 +468,9 @@ pub fn monitors() -> Vec<Monitor> {
     use x11rb::connection::Connection;
     use x11rb::protocol::randr::ConnectionExt as _;
 
-    let Ok((conn, screen_num)) = connect() else { return Vec::new() };
+    let Ok((conn, screen_num)) = connect() else {
+        return Vec::new();
+    };
     let root = conn.setup().roots[screen_num].root;
     let mut out = Vec::new();
     if let Ok(cookie) = conn.randr_get_monitors(root, true) {
@@ -469,7 +488,13 @@ pub fn monitors() -> Vec<Monitor> {
     }
     if out.is_empty() {
         if let Some((w, h)) = screen_size() {
-            out.push(Monitor { x: 0, y: 0, width: w, height: h, primary: true });
+            out.push(Monitor {
+                x: 0,
+                y: 0,
+                width: w,
+                height: h,
+                primary: true,
+            });
         }
     }
     out
@@ -479,12 +504,7 @@ pub fn monitors() -> Vec<Monitor> {
 pub fn monitor_at(monitors: &[Monitor], x: i32, y: i32) -> Option<Monitor> {
     monitors
         .iter()
-        .find(|m| {
-            x >= m.x
-                && x < m.x + m.width as i32
-                && y >= m.y
-                && y < m.y + m.height as i32
-        })
+        .find(|m| x >= m.x && x < m.x + m.width as i32 && y >= m.y && y < m.y + m.height as i32)
         .copied()
         .or_else(|| monitors.iter().find(|m| m.primary).copied())
         .or_else(|| monitors.first().copied())
@@ -544,9 +564,21 @@ pub fn activate_own_window(title: &str) -> Option<u32> {
     let root = conn.setup().roots[screen_num].root;
     let win = find_own_window(&conn, root, title)?;
 
-    let state_atom = conn.intern_atom(false, b"_NET_WM_STATE").ok()?.reply().ok()?.atom;
-    for name in [b"_NET_WM_STATE_ABOVE".as_slice(), b"_NET_WM_STATE_STICKY".as_slice()] {
-        if let Some(atom) = conn.intern_atom(false, name).ok().and_then(|c| c.reply().ok()) {
+    let state_atom = conn
+        .intern_atom(false, b"_NET_WM_STATE")
+        .ok()?
+        .reply()
+        .ok()?
+        .atom;
+    for name in [
+        b"_NET_WM_STATE_ABOVE".as_slice(),
+        b"_NET_WM_STATE_STICKY".as_slice(),
+    ] {
+        if let Some(atom) = conn
+            .intern_atom(false, name)
+            .ok()
+            .and_then(|c| c.reply().ok())
+        {
             let event = ClientMessageEvent::new(32, win, state_atom, [1, atom.atom, 0, 1, 0]);
             let _ = conn.send_event(
                 false,
@@ -570,10 +602,7 @@ pub fn activate_own_window(title: &str) -> Option<u32> {
         }
     }
     let _ = conn.set_input_focus(InputFocus::PARENT, win, x11rb::CURRENT_TIME);
-    let _ = conn.configure_window(
-        win,
-        &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE),
-    );
+    let _ = conn.configure_window(win, &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE));
     let _ = conn.flush();
     // 同 maximize：合成事件在连接关闭前必须被 server 处理完。
     if let Ok(cookie) = conn.get_input_focus() {
@@ -589,9 +618,21 @@ pub fn active_window() -> Option<u32> {
 
     let (conn, screen_num) = connect().ok()?;
     let root = conn.setup().roots[screen_num].root;
-    let atom = conn.intern_atom(false, b"_NET_ACTIVE_WINDOW").ok()?.reply().ok()?.atom;
+    let atom = conn
+        .intern_atom(false, b"_NET_ACTIVE_WINDOW")
+        .ok()?
+        .reply()
+        .ok()?
+        .atom;
     let reply = conn
-        .get_property(false, root, atom, x11rb::protocol::xproto::AtomEnum::WINDOW, 0, 1)
+        .get_property(
+            false,
+            root,
+            atom,
+            x11rb::protocol::xproto::AtomEnum::WINDOW,
+            0,
+            1,
+        )
         .ok()?
         .reply()
         .ok()?;
@@ -626,10 +667,15 @@ pub fn own_windows() -> Vec<OwnWindow> {
     use x11rb::connection::Connection;
     use x11rb::protocol::xproto::{AtomEnum, ConnectionExt as _};
 
-    let Ok((conn, screen_num)) = connect() else { return Vec::new() };
+    let Ok((conn, screen_num)) = connect() else {
+        return Vec::new();
+    };
     let root = conn.setup().roots[screen_num].root;
     let pid = std::process::id();
-    let Some(pid_atom) = conn.intern_atom(false, b"_NET_WM_PID").ok().and_then(|c| c.reply().ok())
+    let Some(pid_atom) = conn
+        .intern_atom(false, b"_NET_WM_PID")
+        .ok()
+        .and_then(|c| c.reply().ok())
     else {
         return Vec::new();
     };
@@ -661,7 +707,12 @@ pub fn own_windows() -> Vec<OwnWindow> {
         if visited > 512 {
             break;
         }
-        let Ok(tree) = conn.query_tree(win).ok().and_then(|c| c.reply().ok()).ok_or(()) else {
+        let Ok(tree) = conn
+            .query_tree(win)
+            .ok()
+            .and_then(|c| c.reply().ok())
+            .ok_or(())
+        else {
             continue;
         };
         for child in tree.children {
@@ -676,9 +727,7 @@ pub fn own_windows() -> Vec<OwnWindow> {
                     .get_window_attributes(child)
                     .ok()
                     .and_then(|c| c.reply().ok())
-                    .is_some_and(|a| {
-                        a.map_state == x11rb::protocol::xproto::MapState::VIEWABLE
-                    });
+                    .is_some_and(|a| a.map_state == x11rb::protocol::xproto::MapState::VIEWABLE);
                 if let Some(g) = conn.get_geometry(child).ok().and_then(|c| c.reply().ok()) {
                     let pos = conn
                         .translate_coordinates(child, root, 0, 0)
@@ -701,7 +750,6 @@ pub fn own_windows() -> Vec<OwnWindow> {
     }
     out
 }
-
 
 fn window_pid(conn: &RustConnection, win: u32) -> u32 {
     use x11rb::protocol::xproto::{AtomEnum, ConnectionExt as _};
@@ -757,7 +805,11 @@ pub fn window_snapshot(id: u32) -> Option<OwnWindow> {
         .and_then(|c| c.reply().ok())
         .is_some_and(|a| a.map_state == x11rb::protocol::xproto::MapState::VIEWABLE);
     let g = conn.get_geometry(id).ok()?.reply().ok()?;
-    let pos = conn.translate_coordinates(id, conn.setup().roots[0].root, 0, 0).ok()?.reply().ok();
+    let pos = conn
+        .translate_coordinates(id, conn.setup().roots[0].root, 0, 0)
+        .ok()?
+        .reply()
+        .ok();
     Some(OwnWindow {
         id,
         pid: window_pid(&conn, id),
@@ -775,10 +827,17 @@ pub fn xtervo_windows() -> Vec<OwnWindow> {
     use x11rb::connection::Connection;
     use x11rb::protocol::xproto::ConnectionExt as _;
 
-    let Ok((conn, screen_num)) = connect() else { return Vec::new() };
+    let Ok((conn, screen_num)) = connect() else {
+        return Vec::new();
+    };
     let root = conn.setup().roots[screen_num].root;
     let mut out = Vec::new();
-    let Ok(tree) = conn.query_tree(root).ok().and_then(|c| c.reply().ok()).ok_or(()) else {
+    let Ok(tree) = conn
+        .query_tree(root)
+        .ok()
+        .and_then(|c| c.reply().ok())
+        .ok_or(())
+    else {
         return out;
     };
     for child in tree.children {
@@ -855,7 +914,11 @@ pub fn physical_extent(logical: f32, scale_factor: f32) -> u32 {
     if !logical.is_finite() || logical <= 0.0 {
         return 0;
     }
-    let scale = if scale_factor.is_finite() && scale_factor > 0.0 { scale_factor } else { 1.0 };
+    let scale = if scale_factor.is_finite() && scale_factor > 0.0 {
+        scale_factor
+    } else {
+        1.0
+    };
     (logical * scale).round().clamp(0.0, u16::MAX as f32) as u32
 }
 
@@ -903,7 +966,11 @@ pub fn corner_inset(row: u32, radius: u32) -> u32 {
     // 2*half_width = sqrt(squared)，向上取整后折算 inset。
     let ceil_half = {
         let floor = integer_sqrt(squared);
-        if floor * floor == squared { floor } else { floor + 1 }
+        if floor * floor == squared {
+            floor
+        } else {
+            floor + 1
+        }
     };
     ((2 * r + 1 - ceil_half) / 2) as u32
 }
@@ -938,10 +1005,30 @@ pub fn mask_rects(width: u32, height: u32, radius: u32) -> Vec<MaskRect> {
         let inset = inset as u16;
         let top = row as u16;
         let bottom = h - 1 - row as u16;
-        rects.push(MaskRect { x: 0, y: top as i16, width: inset, height: 1 });
-        rects.push(MaskRect { x: (w - inset) as i16, y: top as i16, width: inset, height: 1 });
-        rects.push(MaskRect { x: 0, y: bottom as i16, width: inset, height: 1 });
-        rects.push(MaskRect { x: (w - inset) as i16, y: bottom as i16, width: inset, height: 1 });
+        rects.push(MaskRect {
+            x: 0,
+            y: top as i16,
+            width: inset,
+            height: 1,
+        });
+        rects.push(MaskRect {
+            x: (w - inset) as i16,
+            y: top as i16,
+            width: inset,
+            height: 1,
+        });
+        rects.push(MaskRect {
+            x: 0,
+            y: bottom as i16,
+            width: inset,
+            height: 1,
+        });
+        rects.push(MaskRect {
+            x: (w - inset) as i16,
+            y: bottom as i16,
+            width: inset,
+            height: 1,
+        });
     }
     rects
 }
@@ -973,7 +1060,9 @@ pub fn apply_rounded_corners(
     }
     let radius = radius.min(width as u32 / 2).min(height as u32 / 2);
 
-    let pixmap = conn.generate_id().map_err(|e| format!("申请 Pixmap id 失败: {e}"))?;
+    let pixmap = conn
+        .generate_id()
+        .map_err(|e| format!("申请 Pixmap id 失败: {e}"))?;
     conn.create_pixmap(1, pixmap, window, width, height)
         .map_err(|e| format!("创建 depth=1 Pixmap 请求失败: {e}"))?
         .check()
@@ -983,14 +1072,14 @@ pub fn apply_rounded_corners(
         Err(e) => {
             let _ = conn.free_pixmap(pixmap);
             return Err(format!("申请 GC id 失败: {e}"));
-        },
+        }
     };
     let gc_cookie = match conn.create_gc(gc, pixmap, &CreateGCAux::new().foreground(1u32)) {
         Ok(c) => c,
         Err(e) => {
             let _ = conn.free_pixmap(pixmap);
             return Err(format!("创建 GC 请求失败: {e}"));
-        },
+        }
     };
     if let Err(e) = gc_cookie.check() {
         let _ = conn.free_pixmap(pixmap);
@@ -999,11 +1088,25 @@ pub fn apply_rounded_corners(
 
     let result = (|| -> Result<(), String> {
         // 白 = 保留；depth=1 下 foreground 1 即白色。
-        conn.poly_fill_rectangle(pixmap, gc, &[Rectangle { x: 0, y: 0, width, height }])
-            .map_err(|e| format!("填充白色掩码失败: {e}"))?;
+        conn.poly_fill_rectangle(
+            pixmap,
+            gc,
+            &[Rectangle {
+                x: 0,
+                y: 0,
+                width,
+                height,
+            }],
+        )
+        .map_err(|e| format!("填充白色掩码失败: {e}"))?;
         let black: Vec<Rectangle> = mask_rects(width as u32, height as u32, radius)
             .into_iter()
-            .map(|r| Rectangle { x: r.x, y: r.y, width: r.width, height: r.height })
+            .map(|r| Rectangle {
+                x: r.x,
+                y: r.y,
+                width: r.width,
+                height: r.height,
+            })
             .collect();
         if !black.is_empty() {
             conn.change_gc(gc, &ChangeGCAux::new().foreground(0u32))
@@ -1026,8 +1129,17 @@ pub fn apply_rounded_corners(
         // BOUNDING/CLIP。
         conn.change_gc(gc, &ChangeGCAux::new().foreground(1u32))
             .map_err(|e| format!("重置 GC 前景色失败: {e}"))?;
-        conn.poly_fill_rectangle(pixmap, gc, &[Rectangle { x: 0, y: 0, width, height }])
-            .map_err(|e| format!("填充 INPUT 掩码失败: {e}"))?;
+        conn.poly_fill_rectangle(
+            pixmap,
+            gc,
+            &[Rectangle {
+                x: 0,
+                y: 0,
+                width,
+                height,
+            }],
+        )
+        .map_err(|e| format!("填充 INPUT 掩码失败: {e}"))?;
         shape::mask(conn, SO::SET, SK::INPUT, window, 0, 0, pixmap)
             .map_err(|e| format!("SHAPE INPUT 请求失败: {e}"))?
             .check()
@@ -1051,7 +1163,11 @@ struct StateAtoms {
 fn load_state_atoms(conn: &RustConnection) -> Option<StateAtoms> {
     use x11rb::protocol::xproto::ConnectionExt as _;
     let atom = |name: &[u8]| -> Option<u32> {
-        conn.intern_atom(false, name).ok()?.reply().ok().map(|a| a.atom)
+        conn.intern_atom(false, name)
+            .ok()?
+            .reply()
+            .ok()
+            .map(|a| a.atom)
     };
     Some(StateAtoms {
         state: atom(b"_NET_WM_STATE")?,
@@ -1081,7 +1197,10 @@ fn query_window_state(
         maximized_vert |= atom == atoms.maximized_vert;
         fullscreen |= atom == atoms.fullscreen;
     }
-    Some(CornerState { maximized: maximized_horz && maximized_vert, fullscreen })
+    Some(CornerState {
+        maximized: maximized_horz && maximized_vert,
+        fullscreen,
+    })
 }
 
 /// 找本进程主窗口并返回物理几何；启动时窗口可能还没 map，按 100ms 重试。
@@ -1097,8 +1216,10 @@ fn resolve_own_window(
 
     for attempt in 0..CORNER_STARTUP_RETRIES {
         if let Some(win) = *cached {
-            if let Some(reply) =
-                conn.get_geometry(win).ok().and_then(|cookie| cookie.reply().ok())
+            if let Some(reply) = conn
+                .get_geometry(win)
+                .ok()
+                .and_then(|cookie| cookie.reply().ok())
             {
                 let size_ok = expected.is_none_or(|(ew, eh)| {
                     (reply.width as i32 - ew as i32).abs() <= 2
@@ -1112,8 +1233,10 @@ fn resolve_own_window(
         }
         if let Some(win) = find_own_window_sized(conn, root, title, expected) {
             *cached = Some(win);
-            if let Some(reply) =
-                conn.get_geometry(win).ok().and_then(|cookie| cookie.reply().ok())
+            if let Some(reply) = conn
+                .get_geometry(win)
+                .ok()
+                .and_then(|cookie| cookie.reply().ok())
             {
                 if reply.width > 0 && reply.height > 0 {
                     return Some((win, reply.width, reply.height));
@@ -1209,19 +1332,22 @@ fn run_corner_shaper(rx: Receiver<CornerRequest>, title: String) {
         Err(e) => {
             eprintln!("[corners] X11 连接失败，跳过圆角: {e}");
             return;
-        },
+        }
     };
     match shape::query_version(&conn)
         .map_err(|e| e.to_string())
         .and_then(|cookie| cookie.reply().map_err(|e| e.to_string()))
     {
         Ok(reply) => {
-            eprintln!("[corners] X11 SHAPE {}.{} 可用", reply.major_version, reply.minor_version)
-        },
+            eprintln!(
+                "[corners] X11 SHAPE {}.{} 可用",
+                reply.major_version, reply.minor_version
+            )
+        }
         Err(e) => {
             eprintln!("[corners] X11 SHAPE 不可用（{e}），保持直角窗口");
             return;
-        },
+        }
     }
 
     let root = conn.setup().roots[screen_num].root;
@@ -1258,8 +1384,8 @@ fn run_corner_shaper(rx: Receiver<CornerRequest>, title: String) {
                         pending_round = None;
                         last_resize_at = Instant::now();
                         continue;
-                    },
-                    Err(RecvTimeoutError::Timeout) => {},
+                    }
+                    Err(RecvTimeoutError::Timeout) => {}
                     Err(RecvTimeoutError::Disconnected) => return,
                 }
             }
@@ -1279,7 +1405,7 @@ fn run_corner_shaper(rx: Receiver<CornerRequest>, title: String) {
                         );
                         last_log = Some((width, height, radius, Instant::now()));
                     }
-                },
+                }
                 Err(e) => {
                     // 失败不能进缓存：保持“未知”，下一轮 reconcile 重试。
                     shape.invalidate();
@@ -1289,7 +1415,7 @@ fn run_corner_shaper(rx: Receiver<CornerRequest>, title: String) {
                         );
                         last_error_log = Instant::now();
                     }
-                },
+                }
             }
             pending_round = None;
             continue;
@@ -1333,8 +1459,7 @@ fn run_corner_shaper(rx: Receiver<CornerRequest>, title: String) {
                                 .as_ref()
                                 .and_then(|atoms| query_window_state(&conn, win, atoms))
                                 .unwrap_or_else(|| CornerState {
-                                    maximized: w as u32 >= root_width
-                                        && h as u32 >= root_height,
+                                    maximized: w as u32 >= root_width && h as u32 >= root_height,
                                     fullscreen: false,
                                 });
                             let radius = corner_radius(
@@ -1350,37 +1475,33 @@ fn run_corner_shaper(rx: Receiver<CornerRequest>, title: String) {
                                         Ok(()) => shape.clear_ok(key),
                                         Err(e) => {
                                             shape.invalidate();
-                                            if last_error_log.elapsed()
-                                                >= Duration::from_secs(1)
-                                            {
+                                            if last_error_log.elapsed() >= Duration::from_secs(1) {
                                                 eprintln!(
                                                     "[corners] 清除圆角失败（将重试）win=0x{win:x} {w}x{h}: {e}"
                                                 );
                                                 last_error_log = Instant::now();
                                             }
-                                        },
+                                        }
                                     }
                                 } else {
                                     match apply_rounded_corners(&conn, win, radius) {
                                         Ok(()) => shape.apply_ok(key),
                                         Err(e) => {
                                             shape.invalidate();
-                                            if last_error_log.elapsed()
-                                                >= Duration::from_secs(1)
-                                            {
+                                            if last_error_log.elapsed() >= Duration::from_secs(1) {
                                                 eprintln!(
                                                     "[corners] 应用圆角失败（将重试）win=0x{win:x} {w}x{h} radius={radius}: {e}"
                                                 );
                                                 last_error_log = Instant::now();
                                             }
-                                        },
+                                        }
                                     }
                                 }
                             }
                         }
                     }
                     continue;
-                },
+                }
                 Err(RecvTimeoutError::Disconnected) => return,
             },
         };
@@ -1414,9 +1535,9 @@ fn run_corner_shaper(rx: Receiver<CornerRequest>, title: String) {
                 viewable = false;
                 shape.invalidate();
                 continue;
-            },
+            }
             Some(true) => viewable = true,
-            None => {},
+            None => {}
         }
 
         let state = match request.state {
@@ -1429,7 +1550,12 @@ fn run_corner_shaper(rx: Receiver<CornerRequest>, title: String) {
                     fullscreen: false,
                 }),
         };
-        let radius = corner_radius(width as u32, height as u32, state.maximized, state.fullscreen);
+        let radius = corner_radius(
+            width as u32,
+            height as u32,
+            state.maximized,
+            state.fullscreen,
+        );
         let key = (win, width, height, radius);
         if shape.matches(key) {
             continue;
@@ -1444,13 +1570,11 @@ fn run_corner_shaper(rx: Receiver<CornerRequest>, title: String) {
                     Err(e) => {
                         shape.invalidate();
                         if last_error_log.elapsed() >= Duration::from_secs(1) {
-                            eprintln!(
-                                "[corners] 清除圆角失败（将重试）win=0x{win:x}: {e}"
-                            );
+                            eprintln!("[corners] 清除圆角失败（将重试）win=0x{win:x}: {e}");
                             last_error_log = Instant::now();
                         }
                         continue;
-                    },
+                    }
                 }
             } else {
                 // mask 已经是“无”：只更新去重键（尺寸可能变但仍是方角）。
@@ -1472,7 +1596,7 @@ fn run_corner_shaper(rx: Receiver<CornerRequest>, title: String) {
                         last_error_log = Instant::now();
                     }
                     continue;
-                },
+                }
             }
             if last_clear_log.elapsed() >= Duration::from_secs(1) {
                 eprintln!("[corners] resize 中：暂时取消圆角裁剪（停下后恢复）");
@@ -1512,7 +1636,11 @@ mod tests {
         // Slint ResizeHandle 的 8 个 direction 与 EWMH 完全同序，不能重排。
         let names = ["左上", "上", "右上", "右", "右下", "下", "左下", "左"];
         for (dir, name) in names.iter().enumerate() {
-            assert_eq!(ewmh_resize_direction(dir as i32), Some(dir as u32), "{name}");
+            assert_eq!(
+                ewmh_resize_direction(dir as i32),
+                Some(dir as u32),
+                "{name}"
+            );
         }
         for invalid in [-2, -1, 8, 9, 100, i32::MIN, i32::MAX] {
             assert_eq!(ewmh_resize_direction(invalid), None, "dir={invalid}");
@@ -1632,7 +1760,10 @@ mod tests {
             let mut previous = u32::MAX;
             for row in 0..radius {
                 let inset = corner_inset(row, radius);
-                assert!(inset <= previous, "r={radius} row={row} inset={inset} prev={previous}");
+                assert!(
+                    inset <= previous,
+                    "r={radius} row={row} inset={inset} prev={previous}"
+                );
                 assert!(inset <= radius);
                 previous = inset;
             }
@@ -1644,14 +1775,66 @@ mod tests {
         let rects = mask_rects(100, 80, 12);
         // 半径 12 的圆角只有前 9 行有黑色区域，每行 4 块。
         assert_eq!(rects.len(), 36);
-        assert_eq!(rects[0], MaskRect { x: 0, y: 0, width: 9, height: 1 });
-        assert_eq!(rects[1], MaskRect { x: 91, y: 0, width: 9, height: 1 });
-        assert_eq!(rects[2], MaskRect { x: 0, y: 79, width: 9, height: 1 });
-        assert_eq!(rects[3], MaskRect { x: 91, y: 79, width: 9, height: 1 });
-        assert!(rects.contains(&MaskRect { x: 0, y: 1, width: 6, height: 1 }));
-        assert!(rects.contains(&MaskRect { x: 94, y: 1, width: 6, height: 1 }));
-        assert!(rects.contains(&MaskRect { x: 0, y: 78, width: 6, height: 1 }));
-        assert!(rects.contains(&MaskRect { x: 94, y: 78, width: 6, height: 1 }));
+        assert_eq!(
+            rects[0],
+            MaskRect {
+                x: 0,
+                y: 0,
+                width: 9,
+                height: 1
+            }
+        );
+        assert_eq!(
+            rects[1],
+            MaskRect {
+                x: 91,
+                y: 0,
+                width: 9,
+                height: 1
+            }
+        );
+        assert_eq!(
+            rects[2],
+            MaskRect {
+                x: 0,
+                y: 79,
+                width: 9,
+                height: 1
+            }
+        );
+        assert_eq!(
+            rects[3],
+            MaskRect {
+                x: 91,
+                y: 79,
+                width: 9,
+                height: 1
+            }
+        );
+        assert!(rects.contains(&MaskRect {
+            x: 0,
+            y: 1,
+            width: 6,
+            height: 1
+        }));
+        assert!(rects.contains(&MaskRect {
+            x: 94,
+            y: 1,
+            width: 6,
+            height: 1
+        }));
+        assert!(rects.contains(&MaskRect {
+            x: 0,
+            y: 78,
+            width: 6,
+            height: 1
+        }));
+        assert!(rects.contains(&MaskRect {
+            x: 94,
+            y: 78,
+            width: 6,
+            height: 1
+        }));
         for rect in &rects {
             assert!(rect.x >= 0 && rect.y >= 0);
             assert!((rect.x as i32 + rect.width as i32) <= 100);
@@ -1662,8 +1845,20 @@ mod tests {
 
     #[test]
     fn monitor_at_prefers_containing_then_primary_then_first() {
-        let m0 = Monitor { x: 0, y: 0, width: 2560, height: 1440, primary: true };
-        let m1 = Monitor { x: 2560, y: 0, width: 2560, height: 1440, primary: false };
+        let m0 = Monitor {
+            x: 0,
+            y: 0,
+            width: 2560,
+            height: 1440,
+            primary: true,
+        };
+        let m1 = Monitor {
+            x: 2560,
+            y: 0,
+            width: 2560,
+            height: 1440,
+            primary: false,
+        };
         let ms = [m0, m1];
         assert_eq!(monitor_at(&ms, 10, 10), Some(m0));
         assert_eq!(monitor_at(&ms, 3000, 10), Some(m1));
@@ -1671,7 +1866,16 @@ mod tests {
         assert_eq!(monitor_at(&ms, -10, 10), Some(m0));
         assert_eq!(monitor_at(&ms, 9999, 10), Some(m0));
         // 没有 primary 时回退第一块。
-        let no_primary = [Monitor { primary: false, ..m1 }, Monitor { primary: false, ..m0 }];
+        let no_primary = [
+            Monitor {
+                primary: false,
+                ..m1
+            },
+            Monitor {
+                primary: false,
+                ..m0
+            },
+        ];
         assert_eq!(monitor_at(&no_primary, 9999, 9999), Some(no_primary[0]));
         assert_eq!(monitor_at(&[], 0, 0), None);
     }
@@ -1721,7 +1925,11 @@ fn num_lock_mask(conn: &RustConnection) -> u16 {
     const NUM_LOCK_KEYSYM: u32 = 0xff7f;
     const FALLBACK_MOD2: u16 = 1 << 4;
 
-    let Some(mapping) = conn.get_modifier_mapping().ok().and_then(|c| c.reply().ok()) else {
+    let Some(mapping) = conn
+        .get_modifier_mapping()
+        .ok()
+        .and_then(|c| c.reply().ok())
+    else {
         return FALLBACK_MOD2;
     };
     let per_mod = mapping.keycodes_per_modifier() as usize;
@@ -1779,7 +1987,12 @@ impl LockProbe {
         let (conn, screen_num) = connect().ok()?;
         let root = conn.setup().roots.get(screen_num)?.root;
         let num_mask = num_lock_mask(&conn);
-        Some(Self { conn, root, num_mask, last: None })
+        Some(Self {
+            conn,
+            root,
+            num_mask,
+            last: None,
+        })
     }
 
     pub fn state(&mut self) -> LockState {
@@ -1812,29 +2025,47 @@ mod lock_state_tests {
         // LockMask=2 表示 Caps Lock；Num Lock 用查出来的 mask（这里模拟 Mod2=16）。
         assert_eq!(
             lock_state_from_mask(0, 16),
-            LockState { caps_lock: false, num_lock: false }
+            LockState {
+                caps_lock: false,
+                num_lock: false
+            }
         );
         assert_eq!(
             lock_state_from_mask(2, 16),
-            LockState { caps_lock: true, num_lock: false }
+            LockState {
+                caps_lock: true,
+                num_lock: false
+            }
         );
         assert_eq!(
             lock_state_from_mask(16, 16),
-            LockState { caps_lock: false, num_lock: true }
+            LockState {
+                caps_lock: false,
+                num_lock: true
+            }
         );
         assert_eq!(
             lock_state_from_mask(2 | 16 | 4, 16),
-            LockState { caps_lock: true, num_lock: true }
+            LockState {
+                caps_lock: true,
+                num_lock: true
+            }
         );
         // 查不到 Num Lock mask 时不能把任意状态误报成 num lock。
         assert_eq!(
             lock_state_from_mask(0xff, 0),
-            LockState { caps_lock: true, num_lock: false }
+            LockState {
+                caps_lock: true,
+                num_lock: false
+            }
         );
         // 非标准布局：Num Lock 落在 Mod3(bit 5) 也要正确。
         assert_eq!(
             lock_state_from_mask(1 << 5, 1 << 5),
-            LockState { caps_lock: false, num_lock: true }
+            LockState {
+                caps_lock: false,
+                num_lock: true
+            }
         );
     }
 }

@@ -13,11 +13,7 @@ pub trait Renderer {
     type Frame;
 
     fn resize(&mut self, size: PhysicalSize) -> Result<(), Self::Error>;
-    fn render(
-        &mut self,
-        scene: &Scene,
-        damage: &DamageRegion,
-    ) -> Result<Self::Frame, Self::Error>;
+    fn render(&mut self, scene: &Scene, damage: &DamageRegion) -> Result<Self::Frame, Self::Error>;
     fn invalidate(&mut self, damage: &DamageRegion);
     fn device_lost(&mut self);
 }

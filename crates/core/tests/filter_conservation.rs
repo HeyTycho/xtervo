@@ -57,7 +57,11 @@ struct Pipeline {
 
 impl Pipeline {
     fn new() -> Self {
-        Self { sixel: SixelFilter::new(), iip: IipFilter::new(), kitty: KittyParser::new() }
+        Self {
+            sixel: SixelFilter::new(),
+            iip: IipFilter::new(),
+            kitty: KittyParser::new(),
+        }
     }
 
     /// 镜像 `PaneActor::feed`：Sixel 先过，Pass 字节进 IIP，再进 Kitty APC。
@@ -74,7 +78,7 @@ impl Pipeline {
                         SixelEvent::Image(_) => out.sixel_images += 1,
                     }
                 }
-            },
+            }
         }
         out
     }
@@ -91,7 +95,7 @@ impl Pipeline {
                     if !chunk.is_empty() {
                         self.feed_kitty(&chunk, out);
                     }
-                },
+                }
                 IipEvent::Image(_) => out.iip_images += 1,
                 IipEvent::Ignored(_) => out.iip_ignored += 1,
             }
@@ -144,7 +148,11 @@ fn split_at(data: &[u8], cuts: &[usize]) -> Vec<Vec<u8>> {
     let mut chunks = Vec::with_capacity(cuts.len() + 1);
     let mut start = 0;
     for &cut in cuts {
-        assert!(cut > start && cut < data.len(), "cut {cut} 不合法（len={}）", data.len());
+        assert!(
+            cut > start && cut < data.len(),
+            "cut {cut} 不合法（len={}）",
+            data.len()
+        );
         chunks.push(data[start..cut].to_vec());
         start = cut;
     }
@@ -264,12 +272,23 @@ fn plain_text_corpus() -> Vec<(&'static str, Vec<u8>)> {
         ("sgr", b"\x1b[31mred\x1b[0m plain\x1b[1Bnext".to_vec()),
         ("osc-title-bel", b"\x1b]0;my title\x07after title".to_vec()),
         ("osc-title-st", b"\x1b]2;my title\x1b\\after title".to_vec()),
-        ("osc8-link", b"\x1b]8;;https://example.com\x1b\\link\x1b]8;;\x1b\\ tail".to_vec()),
+        (
+            "osc8-link",
+            b"\x1b]8;;https://example.com\x1b\\link\x1b]8;;\x1b\\ tail".to_vec(),
+        ),
         ("dsr", b"\x1b[6n\x1b[?25l\x1b[?25h".to_vec()),
         // 真实 dsh 输出里的中文/按钮/框线：UTF-8 续字节恰好是 0x98/0x9D/
         // 0x9F/0x90/0x9B/0x9E（C1 控制符区间）。
-        ("dsh-cjk", "桌面是两块 256 色，某区域┐ ❯ ⛶ 图 目 果 实".as_bytes().to_vec()),
-        ("cyrillic", "Русский текст: АБВГДЕЖ ПРИВЕТ".as_bytes().to_vec()),
+        (
+            "dsh-cjk",
+            "桌面是两块 256 色，某区域┐ ❯ ⛶ 图 目 果 实"
+                .as_bytes()
+                .to_vec(),
+        ),
+        (
+            "cyrillic",
+            "Русский текст: АБВГДЕЖ ПРИВЕТ".as_bytes().to_vec(),
+        ),
         ("german", "Grüße, Straße, ẞ".as_bytes().to_vec()),
         ("c1-osc", b"\x9d0;c1 title\x07after".to_vec()),
         ("c1-dcs-st", b"\x90$q1;2\x9cafter".to_vec()),
@@ -300,13 +319,18 @@ fn plain_text_is_byte_identical_for_every_chunking() {
         assert_eq!(out.pass, input, "{name}: 单 chunk 输出必须逐字节等于输入");
         assert_eq!(held, 0, "{name}: 完整输入不应有暂存字节");
         assert_conserved(&input, &out, held, 0, name);
-        assert_eq!(out.sixel_images + out.iip_images + out.kitty_commands, 0, "{name}");
+        assert_eq!(
+            out.sixel_images + out.iip_images + out.kitty_commands,
+            0,
+            "{name}"
+        );
 
         for (index, chunks) in byte_splits(&input).into_iter().enumerate() {
             let refs = as_refs(&chunks);
             let (out, held) = feed_chunks(&refs);
             assert_eq!(
-                out.pass, input,
+                out.pass,
+                input,
                 "{name}: 切分 #{index}（chunks={}）破坏了逐字节守恒",
                 chunks.len()
             );
@@ -360,7 +384,12 @@ impl ImageKind {
 fn image_sequence_swallows_only_itself() {
     let prefix = b"BEFORE\r\n".to_vec();
     let suffix = b"\r\nAFTER".to_vec();
-    for kind in [ImageKind::SixelSt, ImageKind::SixelBel, ImageKind::Iip, ImageKind::Kitty] {
+    for kind in [
+        ImageKind::SixelSt,
+        ImageKind::SixelBel,
+        ImageKind::Iip,
+        ImageKind::Kitty,
+    ] {
         let seq = kind.sequence();
         let mut input = prefix.clone();
         input.extend_from_slice(&seq);
@@ -368,29 +397,39 @@ fn image_sequence_swallows_only_itself() {
         let expected: Vec<u8> = [prefix.as_slice(), suffix.as_slice()].concat();
 
         let (out, held) = feed_one(&input);
-        assert_eq!(out.pass, expected, "{}: 前后文本必须完整且顺序不变", kind.name());
+        assert_eq!(
+            out.pass,
+            expected,
+            "{}: 前后文本必须完整且顺序不变",
+            kind.name()
+        );
         assert_eq!(held, 0, "{}: 完整序列不应留暂存字节", kind.name());
         assert_conserved(&input, &out, held, seq.len(), kind.name());
         match kind {
             ImageKind::SixelSt | ImageKind::SixelBel => {
                 assert_eq!(out.sixel_images, 1, "{}: 应识别 1 张 Sixel", kind.name());
                 assert_eq!(out.iip_images, 0);
-            },
+            }
             ImageKind::Iip => {
                 assert_eq!(out.iip_images, 1, "IIP: 应识别 1 张图片");
                 assert_eq!(out.sixel_images, 0);
-            },
+            }
             ImageKind::Kitty => {
                 assert_eq!(out.kitty_commands, 1, "kitty: 应识别 1 条命令");
                 assert_eq!(out.kitty_errors, 0);
-            },
+            }
         }
 
         // 每一个切点（含逐字节 drip）都必须是同一结果。
         for (index, chunks) in byte_splits(&input).into_iter().enumerate() {
             let refs = as_refs(&chunks);
             let (chunked, held) = feed_chunks(&refs);
-            assert_eq!(chunked, out, "{}: 切分 #{index} 结果与单 chunk 不一致", kind.name());
+            assert_eq!(
+                chunked,
+                out,
+                "{}: 切分 #{index} 结果与单 chunk 不一致",
+                kind.name()
+            );
             assert_eq!(held, 0, "{}: 切分 #{index} 残留暂存字节", kind.name());
         }
         for seed in 0..64u64 {
@@ -399,7 +438,12 @@ fn image_sequence_swallows_only_itself() {
             let chunks = split_at(&input, &cuts);
             let refs = as_refs(&chunks);
             let (chunked, held) = feed_chunks(&refs);
-            assert_eq!(chunked, out, "{}: 随机切分 seed={seed} 结果不一致", kind.name());
+            assert_eq!(
+                chunked,
+                out,
+                "{}: 随机切分 seed={seed} 结果不一致",
+                kind.name()
+            );
             assert_eq!(held, 0, "{}: seed={seed} 残留暂存字节", kind.name());
         }
     }
@@ -421,7 +465,10 @@ fn multiple_images_keep_text_and_order() {
     assert_eq!(out.pass, expected);
     assert_eq!(held, 0);
     assert_conserved(&input, &out, held, seq_len, "mixed-images");
-    assert_eq!((out.sixel_images, out.iip_images, out.kitty_commands), (1, 1, 1));
+    assert_eq!(
+        (out.sixel_images, out.iip_images, out.kitty_commands),
+        (1, 1, 1)
+    );
 
     for (index, chunks) in byte_splits(&input).into_iter().enumerate() {
         let refs = as_refs(&chunks);
@@ -453,8 +500,15 @@ fn utf8_c1_continuation_then_sixel_is_not_swallowed_by_vte() {
     input.extend_from_slice(b"AFTER");
 
     let (out, _held) = feed_one(&input);
-    assert_eq!(out.pass, [text.as_slice(), b"AFTER"].concat(), "CJK 文本后紧跟 Sixel 时文本必须完整");
-    assert_eq!(out.sixel_images, 1, "Sixel 必须被识别，而不是漏给 vte 当 DCS");
+    assert_eq!(
+        out.pass,
+        [text.as_slice(), b"AFTER"].concat(),
+        "CJK 文本后紧跟 Sixel 时文本必须完整"
+    );
+    assert_eq!(
+        out.sixel_images, 1,
+        "Sixel 必须被识别，而不是漏给 vte 当 DCS"
+    );
 }
 
 #[test]
@@ -504,7 +558,10 @@ fn truncated_sixel_is_aborted_by_next_escape_sequence() {
     input.push(b'!'); // 故意截断 terminator
     input.extend_from_slice(b"\x1b[31mAFTER\x1b[0m");
     let (out, _held) = feed_one(&input);
-    assert_eq!(out.pass, b"\x1b[31mAFTER\x1b[0m", "截断 Sixel 后的 SGR 不能丢 ESC");
+    assert_eq!(
+        out.pass, b"\x1b[31mAFTER\x1b[0m",
+        "截断 Sixel 后的 SGR 不能丢 ESC"
+    );
     assert_eq!(out.sixel_images, 0);
 }
 
@@ -515,7 +572,10 @@ fn malformed_kitty_apc_does_not_swallow_following_text() {
     input.extend_from_slice(b"\x1b_Ga=t,f=24,INVALID\x1b\\");
     input.extend_from_slice(b"\x1b[32mright\x1b[0m");
     let (out, held) = feed_one(&input);
-    assert_eq!(out.pass, b"left\x1b[32mright\x1b[0m", "非法 Kitty APC 之后文本必须完整");
+    assert_eq!(
+        out.pass, b"left\x1b[32mright\x1b[0m",
+        "非法 Kitty APC 之后文本必须完整"
+    );
     assert_eq!(held, 0);
     assert!(out.kitty_commands + out.kitty_errors >= 1);
 }
@@ -557,7 +617,12 @@ fn random_chunk_boundaries_mixed_corpus_are_chunking_invariant() {
         bytes.extend_from_slice(b"\r\n");
         corpus.push((name, bytes));
     }
-    for kind in [ImageKind::SixelSt, ImageKind::SixelBel, ImageKind::Iip, ImageKind::Kitty] {
+    for kind in [
+        ImageKind::SixelSt,
+        ImageKind::SixelBel,
+        ImageKind::Iip,
+        ImageKind::Kitty,
+    ] {
         let mut bytes = b"marker\n".to_vec();
         bytes.extend_from_slice(&kind.sequence());
         bytes.extend_from_slice(b"\r\nend\n");
@@ -568,14 +633,11 @@ fn random_chunk_boundaries_mixed_corpus_are_chunking_invariant() {
         "truncated-iip",
         b"\x1b]1337;File=inline=1;garbage\x1b[0mTAIL".to_vec(),
     ));
-    corpus.push((
-        "truncated-sixel",
-        {
-            let mut v = b"\x1bPq#0;2;100;0;0AAAAAAAAA".to_vec();
-            v.extend_from_slice(b"\x1b[0mTAIL");
-            v
-        },
-    ));
+    corpus.push(("truncated-sixel", {
+        let mut v = b"\x1bPq#0;2;100;0;0AAAAAAAAA".to_vec();
+        v.extend_from_slice(b"\x1b[0mTAIL");
+        v
+    }));
 
     for (name, input) in corpus {
         let (reference, _) = feed_one(&input);
@@ -648,14 +710,20 @@ fn esc_and_osc_split_at_every_boundary() {
 #[test]
 fn pipeline_mirror_matches_pane_source() {
     let source = include_str!("../src/pane.rs");
-    let feed_start = source.find("fn feed(&mut self, bytes: &[u8]) -> bool {").expect("pane::feed");
+    let feed_start = source
+        .find("fn feed(&mut self, bytes: &[u8]) -> bool {")
+        .expect("pane::feed");
     let feed_end = source[feed_start..]
         .find("fn feed_iip")
         .map(|offset| feed_start + offset)
         .expect("pane::feed_iip");
     let feed_body = &source[feed_start..feed_end];
-    let sixel = feed_body.find("self.sixel.feed").expect("feed 必须调用 sixel");
-    let iip = feed_body.find("self.feed_iip").expect("feed 必须调用 feed_iip");
+    let sixel = feed_body
+        .find("self.sixel.feed")
+        .expect("feed 必须调用 sixel");
+    let iip = feed_body
+        .find("self.feed_iip")
+        .expect("feed 必须调用 feed_iip");
     assert!(sixel < iip, "分派顺序变化：sixel 必须早于 iip");
 
     let iip_end = source[feed_end..]
@@ -663,16 +731,21 @@ fn pipeline_mirror_matches_pane_source() {
         .map(|offset| feed_end + offset)
         .expect("pane::process_vte_chunk");
     let iip_body = &source[feed_end..iip_end];
-    assert!(iip_body.contains("self.process_vte_chunk"), "feed_iip 必须调用 process_vte_chunk");
+    assert!(
+        iip_body.contains("self.process_vte_chunk"),
+        "feed_iip 必须调用 process_vte_chunk"
+    );
 
     let chunk_end = source[iip_end..]
         .find("fn process_vte_bytes")
         .map(|offset| iip_end + offset)
         .expect("pane::process_vte_bytes");
     let chunk_body = &source[iip_end..chunk_end];
-    assert!(chunk_body.contains("self.kitty.feed"), "process_vte_chunk 必须调用 kitty.feed");
+    assert!(
+        chunk_body.contains("self.kitty.feed"),
+        "process_vte_chunk 必须调用 kitty.feed"
+    );
 }
-
 
 // ---------------------------------------------------------------- 真实 raw
 
@@ -753,7 +826,10 @@ fn real_dsh_cjk_text_slice_is_byte_identical() {
         let refs = as_refs(&chunks);
         let (chunked, held) = feed_chunks(&refs);
         assert_eq!(held, 0);
-        assert_eq!(chunked, out, "真实文本 slice 随机切分 seed={seed} 结果不一致");
+        assert_eq!(
+            chunked, out,
+            "真实文本 slice 随机切分 seed={seed} 结果不一致"
+        );
     }
 }
 
@@ -761,7 +837,11 @@ fn real_dsh_cjk_text_slice_is_byte_identical() {
 fn real_dsh_kitty_chunked_is_conserved() {
     let input = dsh_kitty_slice();
     let spans = apc_spans(input);
-    assert!(spans.len() >= 4, "fixture 应包含 m=1 分片 + m=0 尾片，实际 {}", spans.len());
+    assert!(
+        spans.len() >= 4,
+        "fixture 应包含 m=1 分片 + m=0 尾片，实际 {}",
+        spans.len()
+    );
     let swallowed: usize = spans.iter().map(|(s, e)| e - s).sum();
     let expected = without_spans(input, &spans);
 
@@ -772,7 +852,11 @@ fn real_dsh_kitty_chunked_is_conserved() {
         out.pass, expected,
         "真实 raw 的透传字节必须恰好等于输入去掉 APC 后的内容"
     );
-    assert!(out.kitty_commands >= 2, "应识别分片传输 + placement，实际 {}", out.kitty_commands);
+    assert!(
+        out.kitty_commands >= 2,
+        "应识别分片传输 + placement，实际 {}",
+        out.kitty_commands
+    );
     assert_eq!(out.sixel_images + out.iip_images, 0);
 
     // 每个 APC 内部（control/payload/ST 中间）切成两半。
@@ -797,7 +881,10 @@ fn real_dsh_kitty_chunked_is_conserved() {
         let refs = as_refs(&chunks);
         let (chunked, held) = feed_chunks(&refs);
         assert_eq!(held, 0, "seed={seed} 残留暂存");
-        assert_eq!(chunked, out, "真实 Kitty slice 随机切分 seed={seed} 结果不一致");
+        assert_eq!(
+            chunked, out,
+            "真实 Kitty slice 随机切分 seed={seed} 结果不一致"
+        );
     }
 }
 

@@ -145,9 +145,19 @@ fn single_row_damage_redraws_only_one_row_and_keeps_others() {
     assert!(!renderer.last_draw_full, "单行 damage 不应整屏");
     assert_eq!(renderer.last_draw_rows, 1, "单行 damage 只应重绘 1 行");
     // 上一帧是整屏，新 buffer 缺全部行；本帧重绘的行跳过复制，其余行补过来。
-    assert_eq!(renderer.last_copied_rows, (ROWS - 1) as u32, "整屏后的首帧要补齐未重绘行");
-    assert_eq!(renderer.full_redraws, full_redraws, "partial 不应增加 full_redraws");
-    assert!(ink_in_row(&renderer, 1) > 0, "上一帧第 1 行的 A 在换 buffer 后丢失");
+    assert_eq!(
+        renderer.last_copied_rows,
+        (ROWS - 1) as u32,
+        "整屏后的首帧要补齐未重绘行"
+    );
+    assert_eq!(
+        renderer.full_redraws, full_redraws,
+        "partial 不应增加 full_redraws"
+    );
+    assert!(
+        ink_in_row(&renderer, 1) > 0,
+        "上一帧第 1 行的 A 在换 buffer 后丢失"
+    );
     assert!(ink_in_row(&renderer, 3) > 0, "本帧第 3 行的 Z 未画出");
 
     // 再换一次行：上一帧改动的第 3 行要在轮换时复制到新 buffer。
@@ -178,7 +188,10 @@ fn typing_burst_never_grows_full_redraws() {
         assert!(!renderer.last_draw_full, "第 {i} 次按键误判为整屏");
         assert_eq!(renderer.last_draw_rows, 1, "第 {i} 次按键重绘行数不为 1");
     }
-    assert_eq!(renderer.full_redraws, before, "连续按键不应累积 full_redraws");
+    assert_eq!(
+        renderer.full_redraws, before,
+        "连续按键不应累积 full_redraws"
+    );
 }
 
 #[test]
@@ -237,7 +250,11 @@ fn theme_change_forces_full_and_uses_new_background() {
     assert_eq!(renderer.last_draw_rows, ROWS as u32);
     assert_eq!(renderer.full_redraws, before + 1);
     let empty = pixel(&renderer, renderer.width - 1, renderer.height - 1);
-    assert_eq!(empty & 0x00ff_ffff, pack(new_bg) & 0x00ff_ffff, "主题切换后背景未更新");
+    assert_eq!(
+        empty & 0x00ff_ffff,
+        pack(new_bg) & 0x00ff_ffff,
+        "主题切换后背景未更新"
+    );
     assert_eq!(empty >> 24, 255);
 }
 
@@ -272,14 +289,24 @@ fn selection_change_redraws_only_old_and_new_spans() {
     // 选区出现：第 1..=2 行。
     frame.full = false;
     frame.damage.clear();
-    frame.selection = Some(Span { start_line: 1, start_col: 0, end_line: 2, end_col: 10 });
+    frame.selection = Some(Span {
+        start_line: 1,
+        start_col: 0,
+        end_line: 2,
+        end_col: 10,
+    });
     renderer.draw_without_cursor(&frame);
     assert!(!renderer.last_draw_full);
     assert_eq!(renderer.last_draw_rows, 2);
     assert_eq!(renderer.full_redraws, full_redraws);
 
     // 选区收缩到第 4 行：旧 1..=2 行要恢复、新 4 行要高亮。
-    frame.selection = Some(Span { start_line: 4, start_col: 0, end_line: 4, end_col: 10 });
+    frame.selection = Some(Span {
+        start_line: 4,
+        start_col: 0,
+        end_line: 4,
+        end_col: 10,
+    });
     renderer.draw_without_cursor(&frame);
     assert_eq!(renderer.last_draw_rows, 3, "旧选区 2 行 + 新选区 1 行");
     assert!(!renderer.last_draw_full);
@@ -301,7 +328,12 @@ fn search_change_redraws_highlighted_rows() {
 
     frame.full = false;
     frame.damage.clear();
-    frame.search = Some(Span { start_line: 3, start_col: 0, end_line: 3, end_col: 5 });
+    frame.search = Some(Span {
+        start_line: 3,
+        start_col: 0,
+        end_line: 3,
+        end_col: 5,
+    });
     renderer.draw_without_cursor(&frame);
     assert!(!renderer.last_draw_full);
     assert_eq!(renderer.last_draw_rows, 1);
@@ -346,9 +378,16 @@ fn cursor_overlay_move_does_not_touch_frame_pixels() {
     renderer.draw_without_cursor(&frame);
 
     assert!(!renderer.last_draw_full);
-    assert_eq!(renderer.last_draw_rows, 0, "光标 overlay 移动不应重绘终端行");
+    assert_eq!(
+        renderer.last_draw_rows, 0,
+        "光标 overlay 移动不应重绘终端行"
+    );
     assert_eq!(renderer.full_redraws, full_redraws);
-    assert_eq!(renderer.pixels(), before.as_slice(), "光标 overlay 改动污染了终端帧");
+    assert_eq!(
+        renderer.pixels(),
+        before.as_slice(),
+        "光标 overlay 改动污染了终端帧"
+    );
 }
 
 #[test]
@@ -379,13 +418,15 @@ fn frame_cursor_path_erases_old_cursor_row_on_move() {
     assert!(!renderer.last_draw_full);
     assert_eq!(renderer.last_draw_rows, 2, "旧光标行 + 新光标行");
     assert!(
-        !renderer.pixels()[1 * renderer.cell_h * renderer.width..2 * renderer.cell_h * renderer.width]
+        !renderer.pixels()
+            [1 * renderer.cell_h * renderer.width..2 * renderer.cell_h * renderer.width]
             .iter()
             .any(|p| *p == cursor_px),
         "旧光标行残留光标像素"
     );
     assert!(
-        renderer.pixels()[3 * renderer.cell_h * renderer.width..4 * renderer.cell_h * renderer.width]
+        renderer.pixels()
+            [3 * renderer.cell_h * renderer.width..4 * renderer.cell_h * renderer.width]
             .iter()
             .any(|p| *p == cursor_px),
         "新光标行没有画光标"
@@ -429,7 +470,12 @@ fn incremental_sequence_matches_fresh_full_redraw_pixel_for_pixel() {
     // 3) 选区出现（无 damage，只靠 selection 变化补齐）。
     frame.full = false;
     frame.damage.clear();
-    frame.selection = Some(Span { start_line: 1, start_col: 0, end_line: 2, end_col: 9 });
+    frame.selection = Some(Span {
+        start_line: 1,
+        start_col: 0,
+        end_line: 2,
+        end_col: 9,
+    });
     renderer.draw_without_cursor(&frame);
     assert_matches_fresh_redraw(&renderer, &fonts, &frame, "选区出现");
 
@@ -440,10 +486,20 @@ fn incremental_sequence_matches_fresh_full_redraw_pixel_for_pixel() {
     assert_matches_fresh_redraw(&renderer, &fonts, &frame, "彩色背景");
 
     // 5) 搜索高亮出现，再和选区一起变化。
-    frame.search = Some(Span { start_line: 2, start_col: 2, end_line: 2, end_col: 8 });
+    frame.search = Some(Span {
+        start_line: 2,
+        start_col: 2,
+        end_line: 2,
+        end_col: 8,
+    });
     renderer.draw_without_cursor(&frame);
     assert_matches_fresh_redraw(&renderer, &fonts, &frame, "搜索高亮");
-    frame.selection = Some(Span { start_line: 0, start_col: 0, end_line: 5, end_col: 3 });
+    frame.selection = Some(Span {
+        start_line: 0,
+        start_col: 0,
+        end_line: 5,
+        end_col: 3,
+    });
     renderer.draw_without_cursor(&frame);
     assert_matches_fresh_redraw(&renderer, &fonts, &frame, "选区扩大");
 
@@ -538,7 +594,12 @@ fn inline_image_scroll_removal_matches_fresh_full_redraw() {
         placement_id: 7,
         image_id: 7,
         row_id: 7,
-        source_rect: Some(ImageCrop { x: 0, y: 1, w: 2, h: 1 }),
+        source_rect: Some(ImageCrop {
+            x: 0,
+            y: 1,
+            w: 2,
+            h: 1,
+        }),
         cells_w: 2,
         cells_h: 1,
         z_index: -1,
@@ -606,7 +667,13 @@ fn partial_redraw_does_not_detach_shared_buffers() {
 
     for i in 0..20 {
         for col in 0..COLS {
-            put(&mut frame, i % ROWS, col, (b'a' + (i % 26) as u8) as char, 0x00cdd6f4);
+            put(
+                &mut frame,
+                i % ROWS,
+                col,
+                (b'a' + (i % 26) as u8) as char,
+                0x00cdd6f4,
+            );
         }
         damage_line(&mut frame, i % ROWS);
         renderer.draw_without_cursor(&frame);
@@ -669,7 +736,11 @@ fn run_with_frame_hold(
 fn assert_steady_state(fonts: &Rc<FontSet>, renderer: &Renderer, detaches: &[bool], label: &str) {
     let tail = &detaches[detaches.len().saturating_sub(8)..];
     let bad = tail.iter().filter(|d| **d).count();
-    assert_eq!(bad, 0, "{label}：稳态仍有 {bad} 帧整块 CoW（池={}）", renderer.buffer_pool_len);
+    assert_eq!(
+        bad, 0,
+        "{label}：稳态仍有 {bad} 帧整块 CoW（池={}）",
+        renderer.buffer_pool_len
+    );
     let _ = fonts;
 }
 
@@ -712,7 +783,10 @@ fn three_frame_hold_grows_pool_to_four() {
 
     let detaches = run_with_frame_hold(&fonts, &mut renderer, &mut frame, 3, 24);
     assert_steady_state(&fonts, &renderer, &detaches, "持有 3 帧");
-    assert_eq!(renderer.buffer_pool_len, 4, "池上限 4：持有 3 帧应扩到 4 块");
+    assert_eq!(
+        renderer.buffer_pool_len, 4,
+        "池上限 4：持有 3 帧应扩到 4 块"
+    );
     // 每次扩一块只会在「发现那一刻」付一次 CoW：2→3、3→4 共两次。
     assert_eq!(detaches.iter().filter(|d| **d).count(), 2);
 }
@@ -790,10 +864,19 @@ fn resize_keeps_learned_pool_depth() {
     let mut held: Vec<slint::Image> = vec![renderer.image()];
     for i in 0..10 {
         let row = i % ROWS;
-        put(&mut frame, row, i % COLS, (b'a' + (i % 26) as u8) as char, 0x00cdd6f4);
+        put(
+            &mut frame,
+            row,
+            i % COLS,
+            (b'a' + (i % 26) as u8) as char,
+            0x00cdd6f4,
+        );
         damage_line(&mut frame, row);
         renderer.draw_without_cursor(&frame);
-        assert!(!renderer.last_buffer_detached, "resize 后第 {i} 帧又整块 CoW");
+        assert!(
+            !renderer.last_buffer_detached,
+            "resize 后第 {i} 帧又整块 CoW"
+        );
         assert_matches_fresh_redraw(&renderer, &fonts, &frame, &format!("resize 后 seq={i}"));
         held.push(renderer.image());
         if held.len() > 2 {
@@ -826,13 +909,17 @@ fn proc_status_kb(field: &str) -> Option<u64> {
 
 #[cfg(target_os = "linux")]
 fn proc_fd_count() -> usize {
-    std::fs::read_dir("/proc/self/fd").map(|d| d.count()).unwrap_or(0)
+    std::fs::read_dir("/proc/self/fd")
+        .map(|d| d.count())
+        .unwrap_or(0)
 }
 
 #[test]
 #[ignore = "内存门禁：设置 XTERVO_RENDER_SOAK_SECS 后手动跑（--ignored --nocapture）"]
 fn soak_damage_pool_memory_is_bounded() {
-    let secs: u64 = match std::env::var("XTERVO_RENDER_SOAK_SECS").ok().and_then(|v| v.parse().ok())
+    let secs: u64 = match std::env::var("XTERVO_RENDER_SOAK_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
     {
         Some(s) if s > 0 => s,
         _ => {
@@ -848,7 +935,13 @@ fn soak_damage_pool_memory_is_bounded() {
     // 预置一段带内容的画面（与真实回滚区一样继续往行里写）。
     for row in 0..SOAK_ROWS {
         for col in 0..SOAK_COLS {
-            put(&mut frame, row, col, (b'a' + (col % 26) as u8) as char, 0x00cdd6f4);
+            put(
+                &mut frame,
+                row,
+                col,
+                (b'a' + (col % 26) as u8) as char,
+                0x00cdd6f4,
+            );
         }
     }
     frame.full = true;
@@ -899,7 +992,13 @@ fn soak_damage_pool_memory_is_bounded() {
             frame = blank(cols, SOAK_ROWS);
             for row in 0..SOAK_ROWS {
                 for col in 0..cols {
-                    put(&mut frame, row, col, (b'0' + (col % 10) as u8) as char, 0x00a6e3a1);
+                    put(
+                        &mut frame,
+                        row,
+                        col,
+                        (b'0' + (col % 10) as u8) as char,
+                        0x00a6e3a1,
+                    );
                 }
             }
             frame.full = true;
@@ -908,7 +1007,13 @@ fn soak_damage_pool_memory_is_bounded() {
         } else {
             let row = (frame_no as usize) % SOAK_ROWS;
             for col in 0..frame.cols {
-                put(&mut frame, row, col, (b'a' + (frame_no % 26) as u8) as char, 0x00cdd6f4);
+                put(
+                    &mut frame,
+                    row,
+                    col,
+                    (b'a' + (frame_no % 26) as u8) as char,
+                    0x00cdd6f4,
+                );
             }
             damage_line(&mut frame, row);
         }
@@ -959,11 +1064,16 @@ fn soak_damage_pool_memory_is_bounded() {
         "RSS 从 {base}kB 涨到 {end_rss}kB（>32MB）：帧缓冲池泄漏"
     );
     assert_eq!(end_fds, fd_base, "FD 数量变化：{fd_base} -> {end_fds}");
-    assert_eq!(end_threads, thread_base, "线程数变化：{thread_base} -> {end_threads}");
+    assert_eq!(
+        end_threads, thread_base,
+        "线程数变化：{thread_base} -> {end_threads}"
+    );
 }
 
 fn lcg(seed: &mut u64) -> usize {
-    *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    *seed = seed
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
     (*seed >> 33) as usize
 }
 
@@ -1001,7 +1111,7 @@ fn random_damage_sequence_with_frame_hold_matches_fresh_redraw() {
                 let col = lcg(&mut seed) % frame.cols;
                 put(&mut frame, row, col, ch, 0x00f38ba8);
                 damage_line(&mut frame, row);
-            },
+            }
             5 => {
                 // 多行 damage（仍可能被判成 full）。
                 frame.full = false;
@@ -1018,15 +1128,15 @@ fn random_damage_sequence_with_frame_hold_matches_fresh_redraw() {
                         right: frame.cols as u16 - 1,
                     });
                 }
-            },
+            }
             6 => {
                 frame.full = true;
-            },
+            }
             7 => {
                 // 真·无变化帧：没有 damage，也不改 cell。
                 frame.full = false;
                 frame.damage.clear();
-            },
+            }
             8 => {
                 frame.selection = if frame.selection.is_some() {
                     None
@@ -1040,7 +1150,7 @@ fn random_damage_sequence_with_frame_hold_matches_fresh_redraw() {
                         end_col: 3,
                     })
                 };
-            },
+            }
             _ => {
                 // 内联图片：出现 → 挪行 → 删除。
                 match image.as_mut() {
@@ -1053,13 +1163,15 @@ fn random_damage_sequence_with_frame_hold_matches_fresh_redraw() {
                             col: (lcg(&mut seed) % frame.cols.max(1)) as u16,
                             width: cell_w * 2,
                             height: cell_h * 2,
-                            data: Arc::from(vec![0u8, 128, 255, 255].repeat((cell_w * 2 * cell_h * 2) as usize)),
+                            data: Arc::from(
+                                vec![0u8, 128, 255, 255].repeat((cell_w * 2 * cell_h * 2) as usize),
+                            ),
                             z_index: -1,
                             above_text: false,
                         };
                         frame.images.push(img.clone());
                         image = Some(img);
-                    },
+                    }
                     Some(img) => {
                         if lcg(&mut seed) % 2 == 0 {
                             img.row = (lcg(&mut seed) % frame.rows) as i32;
@@ -1068,15 +1180,20 @@ fn random_damage_sequence_with_frame_hold_matches_fresh_redraw() {
                             frame.images.clear();
                             image = None;
                         }
-                    },
+                    }
                 }
                 frame.full = false;
                 frame.damage.clear();
-            },
+            }
         }
 
         renderer.draw_without_cursor(&frame);
-        assert_matches_fresh_redraw(&renderer, &fonts, &frame, &format!("随机 seq={step} op={op}"));
+        assert_matches_fresh_redraw(
+            &renderer,
+            &fonts,
+            &frame,
+            &format!("随机 seq={step} op={op}"),
+        );
         held.push(renderer.image());
         if held.len() > 2 {
             held.remove(0);
@@ -1104,7 +1221,12 @@ fn random_damage_sequence_with_frame_hold_matches_fresh_redraw() {
             frame.images.clear();
             image = None;
             renderer.draw_without_cursor(&frame);
-            assert_matches_fresh_redraw(&renderer, &fonts, &frame, &format!("随机 resize seq={step}"));
+            assert_matches_fresh_redraw(
+                &renderer,
+                &fonts,
+                &frame,
+                &format!("随机 resize seq={step}"),
+            );
         }
     }
     drop(held);

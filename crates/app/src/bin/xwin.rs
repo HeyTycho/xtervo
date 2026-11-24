@@ -18,7 +18,11 @@ use x11rb::rust_connection::RustConnection;
 mod xconn;
 
 fn read_prop(conn: &RustConnection, win: Window, atom: u32) -> Option<String> {
-    let reply = conn.get_property(false, win, atom, AtomEnum::ANY, 0, 1024).ok()?.reply().ok()?;
+    let reply = conn
+        .get_property(false, win, atom, AtomEnum::ANY, 0, 1024)
+        .ok()?
+        .reply()
+        .ok()?;
     if reply.value.is_empty() {
         None
     } else {
@@ -62,7 +66,10 @@ fn main() {
     let mut win = None;
     // 显式 id（`xwin 0x8600005 3000 200`）：同时存在多个同名窗口时，
     // 按标题匹配会命中错的那个，自动化脚本必须能锁定具体窗口。
-    if let Some(id) = title.strip_prefix("0x").and_then(|h| u32::from_str_radix(h, 16).ok()) {
+    if let Some(id) = title
+        .strip_prefix("0x")
+        .and_then(|h| u32::from_str_radix(h, 16).ok())
+    {
         win = Some(id);
     }
     for _ in 0..50 {
@@ -90,9 +97,24 @@ fn main() {
 
     // --minimize：把 Xephyr 宿主窗口最小化，避免测试弹窗占用当前 workspace。
     if args.iter().any(|a| a == "--minimize") {
-        let wm_change = conn.intern_atom(false, b"WM_CHANGE_STATE").unwrap().reply().unwrap().atom;
-        let net_state = conn.intern_atom(false, b"_NET_WM_STATE").unwrap().reply().unwrap().atom;
-        let hidden = conn.intern_atom(false, b"_NET_WM_STATE_HIDDEN").unwrap().reply().unwrap().atom;
+        let wm_change = conn
+            .intern_atom(false, b"WM_CHANGE_STATE")
+            .unwrap()
+            .reply()
+            .unwrap()
+            .atom;
+        let net_state = conn
+            .intern_atom(false, b"_NET_WM_STATE")
+            .unwrap()
+            .reply()
+            .unwrap()
+            .atom;
+        let hidden = conn
+            .intern_atom(false, b"_NET_WM_STATE_HIDDEN")
+            .unwrap()
+            .reply()
+            .unwrap()
+            .atom;
         let mask = EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY;
         // 两种都发：GNOME/Mutter 对 EWMH 的 hidden 更可靠，WM_CHANGE_STATE 兼容老 WM。
         let iconify = ClientMessageEvent::new(32, win, wm_change, [3, 0, 0, 0, 0]);
@@ -128,12 +150,7 @@ fn main() {
             .atom;
         let action = if maximize { 1 } else { 0 };
         let mask = EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY;
-        let event = ClientMessageEvent::new(
-            32,
-            win,
-            net_state,
-            [action, max_vert, max_horz, 1, 0],
-        );
+        let event = ClientMessageEvent::new(32, win, net_state, [action, max_vert, max_horz, 1, 0]);
         let _ = conn.send_event(false, root, mask, event);
         let _ = conn.flush();
         std::thread::sleep(Duration::from_millis(150));
@@ -154,12 +171,8 @@ fn main() {
             .reply()
             .unwrap()
             .atom;
-        let event = ClientMessageEvent::new(
-            32,
-            win,
-            protocols,
-            [delete, x11rb::CURRENT_TIME, 0, 0, 0],
-        );
+        let event =
+            ClientMessageEvent::new(32, win, protocols, [delete, x11rb::CURRENT_TIME, 0, 0, 0]);
         let _ = conn.send_event(false, win, EventMask::NO_EVENT, event);
         let _ = conn.flush();
         return;
@@ -186,7 +199,12 @@ fn main() {
         let _ = conn.configure_window(win, &aux);
     }
 
-    let active = conn.intern_atom(false, b"_NET_ACTIVE_WINDOW").unwrap().reply().unwrap().atom;
+    let active = conn
+        .intern_atom(false, b"_NET_ACTIVE_WINDOW")
+        .unwrap()
+        .reply()
+        .unwrap()
+        .atom;
     let event = ClientMessageEvent::new(32, win, active, [1, x11rb::CURRENT_TIME, 0, 0, 0]);
     let _ = conn.send_event(
         false,

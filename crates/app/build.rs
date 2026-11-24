@@ -13,7 +13,12 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn git(root: &Path, args: &[&str]) -> Option<String> {
-    let out = Command::new("git").arg("-C").arg(root).args(args).output().ok()?;
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .output()
+        .ok()?;
     if !out.status.success() {
         return None;
     }
@@ -108,9 +113,8 @@ fn main() {
             .map(|s| one_line(&s))
             .unwrap_or_else(now_utc)
     };
-    let target = std::env::var("TARGET").unwrap_or_else(|_| {
-        format!("{}-{}", std::env::consts::ARCH, std::env::consts::OS)
-    });
+    let target = std::env::var("TARGET")
+        .unwrap_or_else(|_| format!("{}-{}", std::env::consts::ARCH, std::env::consts::OS));
 
     println!("cargo:rustc-env=XTERVO_GIT_COMMIT={commit}");
     println!("cargo:rustc-env=XTERVO_GIT_DIRTY={}", u8::from(dirty));

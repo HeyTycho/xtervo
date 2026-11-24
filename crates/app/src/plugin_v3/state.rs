@@ -43,9 +43,9 @@ impl PersistedState {
 
     /// 权限是否与上次确认的集合完全一致。
     pub fn approved_for(&self, id: &str, permissions: &[String]) -> bool {
-        self.plugins.get(id).is_some_and(|entry| {
-            entry.permissions_approved && entry.permissions == permissions
-        })
+        self.plugins
+            .get(id)
+            .is_some_and(|entry| entry.permissions_approved && entry.permissions == permissions)
     }
 
     pub fn set_enabled(&mut self, id: &str, enabled: bool) {
@@ -71,8 +71,13 @@ pub fn load_state(path: &Path) -> (PersistedState, Option<String>) {
         Ok(metadata) => metadata,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             return (PersistedState::default(), None)
-        },
-        Err(e) => return (PersistedState::default(), Some(format!("读取状态文件失败: {e}"))),
+        }
+        Err(e) => {
+            return (
+                PersistedState::default(),
+                Some(format!("读取状态文件失败: {e}")),
+            )
+        }
     };
     if metadata.len() > MAX_STATE_BYTES {
         return (
@@ -82,7 +87,12 @@ pub fn load_state(path: &Path) -> (PersistedState, Option<String>) {
     }
     let text = match fs::read_to_string(path) {
         Ok(text) => text,
-        Err(e) => return (PersistedState::default(), Some(format!("读取状态文件失败: {e}"))),
+        Err(e) => {
+            return (
+                PersistedState::default(),
+                Some(format!("读取状态文件失败: {e}")),
+            )
+        }
     };
     match toml::from_str::<PersistedState>(&text) {
         Ok(mut state) => {
@@ -96,7 +106,7 @@ pub fn load_state(path: &Path) -> (PersistedState, Option<String>) {
                 );
             }
             (state, None)
-        },
+        }
         Err(e) => (
             PersistedState::default(),
             Some(format!("解析状态文件失败: {e}")),
@@ -141,7 +151,10 @@ mod tests {
         let path = dir.join("state.toml");
         let mut state = PersistedState::default();
         state.set_enabled("dev.echo", true);
-        state.approve("dev.echo", vec!["clipboard".into(), "terminal_context".into()]);
+        state.approve(
+            "dev.echo",
+            vec!["clipboard".into(), "terminal_context".into()],
+        );
         save_state(&path, &state).unwrap();
         let (loaded, error) = load_state(&path);
         assert!(error.is_none(), "{error:?}");
@@ -153,7 +166,11 @@ mod tests {
         assert!(!loaded.approved_for("dev.echo", &["clipboard".to_string()]));
         assert!(!loaded.approved_for(
             "dev.echo",
-            &["clipboard".to_string(), "terminal_context".to_string(), "network".to_string()]
+            &[
+                "clipboard".to_string(),
+                "terminal_context".to_string(),
+                "network".to_string()
+            ]
         ));
         let _ = fs::remove_dir_all(&dir);
     }

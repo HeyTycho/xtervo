@@ -134,7 +134,12 @@ impl WhenExpr {
         if text.is_empty() {
             return Ok(Self { expr: Expr::Always });
         }
-        let mut parser = Parser { tokens: tokenize(text)?, position: 0, source: text, depth: 0 };
+        let mut parser = Parser {
+            tokens: tokenize(text)?,
+            position: 0,
+            source: text,
+            depth: 0,
+        };
         let expr = parser.or_expr()?;
         if let Some(token) = parser.peek() {
             return Err(format!("when 表达式多余内容 {token:?}: {text}"));
@@ -188,9 +193,9 @@ fn eval(expr: &Expr, ctx: &CommandContext) -> bool {
         Expr::Not(inner) => !eval(inner, ctx),
         Expr::And(left, right) => eval(left, ctx) && eval(right, ctx),
         Expr::Or(left, right) => eval(left, ctx) || eval(right, ctx),
-        Expr::Cmp(name, op, value) => {
-            ctx.resolve(name).is_some_and(|left| op.eval(left.as_int(), *value))
-        },
+        Expr::Cmp(name, op, value) => ctx
+            .resolve(name)
+            .is_some_and(|left| op.eval(left.as_int(), *value)),
     }
 }
 
@@ -215,15 +220,15 @@ fn tokenize(text: &str) -> Result<Vec<Token>, String> {
         match ch {
             c if c.is_whitespace() => {
                 i += 1;
-            },
+            }
             '(' => {
                 tokens.push(Token::LParen);
                 i += 1;
-            },
+            }
             ')' => {
                 tokens.push(Token::RParen);
                 i += 1;
-            },
+            }
             '!' => {
                 if chars.get(i + 1) == Some(&'=') {
                     tokens.push(Token::Cmp(CmpOp::Ne));
@@ -232,28 +237,28 @@ fn tokenize(text: &str) -> Result<Vec<Token>, String> {
                     tokens.push(Token::Not);
                     i += 1;
                 }
-            },
+            }
             '&' => {
                 if chars.get(i + 1) != Some(&'&') {
                     return Err(format!("when 表达式只支持 &&（位置 {i}）: {text}"));
                 }
                 tokens.push(Token::And);
                 i += 2;
-            },
+            }
             '|' => {
                 if chars.get(i + 1) != Some(&'|') {
                     return Err(format!("when 表达式只支持 ||（位置 {i}）: {text}"));
                 }
                 tokens.push(Token::Or);
                 i += 2;
-            },
+            }
             '=' => {
                 if chars.get(i + 1) != Some(&'=') {
                     return Err(format!("when 表达式只支持 ==（位置 {i}）: {text}"));
                 }
                 tokens.push(Token::Cmp(CmpOp::Eq));
                 i += 2;
-            },
+            }
             '>' | '<' => {
                 let ge = chars.get(i + 1) == Some(&'=');
                 let op = match (ch, ge) {
@@ -264,7 +269,7 @@ fn tokenize(text: &str) -> Result<Vec<Token>, String> {
                 };
                 tokens.push(Token::Cmp(op));
                 i += if ge { 2 } else { 1 };
-            },
+            }
             c if c.is_ascii_digit() => {
                 let start = i;
                 while i < chars.len() && chars[i].is_ascii_digit() {
@@ -275,12 +280,10 @@ fn tokenize(text: &str) -> Result<Vec<Token>, String> {
                     .parse::<i64>()
                     .map_err(|_| format!("when 表达式数字过大 {raw:?}: {text}"))?;
                 tokens.push(Token::Int(value));
-            },
+            }
             c if c.is_ascii_alphabetic() || c == '_' => {
                 let start = i;
-                while i < chars.len()
-                    && (chars[i].is_ascii_alphanumeric() || chars[i] == '_')
-                {
+                while i < chars.len() && (chars[i].is_ascii_alphanumeric() || chars[i] == '_') {
                     i += 1;
                 }
                 let name: String = chars[start..i].iter().collect();
@@ -291,10 +294,10 @@ fn tokenize(text: &str) -> Result<Vec<Token>, String> {
                     ));
                 }
                 tokens.push(Token::Ident(name));
-            },
+            }
             other => {
                 return Err(format!("when 表达式非法字符 {other:?}（位置 {i}）: {text}"));
-            },
+            }
         }
     }
     Ok(tokens)
@@ -330,7 +333,10 @@ impl Parser<'_> {
                 "when 表达式需要 {token:?}，实际 {found:?}: {}",
                 self.source
             )),
-            None => Err(format!("when 表达式意外结束（缺少 {token:?}）: {}", self.source)),
+            None => Err(format!(
+                "when 表达式意外结束（缺少 {token:?}）: {}",
+                self.source
+            )),
         }
     }
 
@@ -374,7 +380,7 @@ impl Parser<'_> {
                 let expr = self.or_expr()?;
                 self.expect(Token::RParen)?;
                 Ok(expr)
-            },
+            }
             Some(Token::Ident(name)) => {
                 if let Some(Token::Cmp(op)) = self.peek().cloned() {
                     self.next();
@@ -385,24 +391,16 @@ impl Parser<'_> {
                                 "when 表达式比较需要整数，实际 {found:?}: {}",
                                 self.source
                             ))
-                        },
-                        None => {
-                            return Err(format!(
-                                "when 表达式比较缺少整数: {}",
-                                self.source
-                            ))
-                        },
+                        }
+                        None => return Err(format!("when 表达式比较缺少整数: {}", self.source)),
                     };
                     Ok(Expr::Cmp(name, op, value))
                 } else {
                     Ok(Expr::Ident(name))
                 }
-            },
+            }
             Some(Token::Int(value)) => Ok(Expr::Cmp("true".to_string(), CmpOp::Eq, value)),
-            Some(found) => Err(format!(
-                "when 表达式意外的 {found:?}: {}",
-                self.source
-            )),
+            Some(found) => Err(format!("when 表达式意外的 {found:?}: {}", self.source)),
             None => Err(format!("when 表达式为空: {}", self.source)),
         }
     }
@@ -436,10 +434,18 @@ mod tests {
     fn booleans_and_negation() {
         assert!(WhenExpr::parse("terminalFocus").unwrap().eval(&ctx()));
         assert!(!WhenExpr::parse("!terminalFocus").unwrap().eval(&ctx()));
-        assert!(WhenExpr::parse("terminalFocus && !settingsOpen").unwrap().eval(&ctx()));
-        assert!(!WhenExpr::parse("settingsOpen || paletteOpen").unwrap().eval(&ctx()));
-        assert!(WhenExpr::parse("true").unwrap().eval(&CommandContext::default()));
-        assert!(!WhenExpr::parse("false").unwrap().eval(&CommandContext::default()));
+        assert!(WhenExpr::parse("terminalFocus && !settingsOpen")
+            .unwrap()
+            .eval(&ctx()));
+        assert!(!WhenExpr::parse("settingsOpen || paletteOpen")
+            .unwrap()
+            .eval(&ctx()));
+        assert!(WhenExpr::parse("true")
+            .unwrap()
+            .eval(&CommandContext::default()));
+        assert!(!WhenExpr::parse("false")
+            .unwrap()
+            .eval(&CommandContext::default()));
     }
 
     #[test]
@@ -447,7 +453,9 @@ mod tests {
         let ctx = ctx();
         assert!(WhenExpr::parse("tabCount > 1").unwrap().eval(&ctx));
         assert!(!WhenExpr::parse("tabCount > 3").unwrap().eval(&ctx));
-        assert!(WhenExpr::parse("paneCount >= 1 && tabCount <= 3").unwrap().eval(&ctx));
+        assert!(WhenExpr::parse("paneCount >= 1 && tabCount <= 3")
+            .unwrap()
+            .eval(&ctx));
         assert!(WhenExpr::parse("tabCount == 3").unwrap().eval(&ctx));
         assert!(WhenExpr::parse("tabCount != 2").unwrap().eval(&ctx));
     }

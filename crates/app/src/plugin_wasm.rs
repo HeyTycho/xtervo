@@ -36,11 +36,11 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use xtervo_core::{OutputFilter, MAX_OUTPUT_FILTER_BYTES};
 use wasmtime::{
     Config, Engine, ExternType, Instance, Memory, Module, OptLevel, Store, StoreLimits,
     StoreLimitsBuilder, TypedFunc, ValType,
 };
+use xtervo_core::{OutputFilter, MAX_OUTPUT_FILTER_BYTES};
 
 /// 单次过滤输入上限（与 core `MAX_OUTPUT_FILTER_BYTES` 相同）。
 pub const MAX_INPUT_BYTES: usize = 256 * 1024;
@@ -523,9 +523,8 @@ fn clip_error(error: &str) -> String {
 /// 读取 `.wasm` 模块：先 stat，超过上限直接拒绝；文件最多读 `max + 1` 字节，
 /// 避免 Enable 时把任意大的文件整块读进 UI 线程。
 pub(crate) fn read_wasm_module(path: &Path, max: usize) -> Result<Vec<u8>, String> {
-    let metadata = std::fs::metadata(path).map_err(|error| {
-        format!("读取 WASM 元数据失败 {}: {error}", path.display())
-    })?;
+    let metadata = std::fs::metadata(path)
+        .map_err(|error| format!("读取 WASM 元数据失败 {}: {error}", path.display()))?;
     if metadata.len() > max as u64 {
         return Err(format!(
             "WASM 模块过大（{} bytes，上限 {max}）: {}",
@@ -535,8 +534,7 @@ pub(crate) fn read_wasm_module(path: &Path, max: usize) -> Result<Vec<u8>, Strin
     }
     let file = std::fs::File::open(path)
         .map_err(|error| format!("读取 WASM 失败 {}: {error}", path.display()))?;
-    read_capped(file, max)
-        .map_err(|error| format!("读取 WASM 失败 {}: {error}", path.display()))
+    read_capped(file, max).map_err(|error| format!("读取 WASM 失败 {}: {error}", path.display()))
 }
 
 /// 从 reader 最多读 `max + 1` 字节；多出的 1 字节只用于判断是否超限。

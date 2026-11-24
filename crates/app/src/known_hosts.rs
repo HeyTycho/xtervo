@@ -65,7 +65,10 @@ pub enum Verdict {
     /// known_hosts 里没有该主机：首次连接。
     Unknown { current: Vec<KnownKey> },
     /// known_hosts 里该主机的某个 key 类型和服务器当前公钥不一致。
-    Changed { old: Vec<KnownKey>, new: Vec<KnownKey> },
+    Changed {
+        old: Vec<KnownKey>,
+        new: Vec<KnownKey>,
+    },
     /// 无法判断（keyscan 失败/跳板机/超时）。`local` 表示本地是否已有条目。
     Unverifiable { reason: String, local: bool },
 }
@@ -82,10 +85,10 @@ impl Verdict {
             Verdict::Known => "known_hosts 已确认".into(),
             Verdict::Unknown { current } => {
                 format!("首次连接，服务器公钥 {} 条", current.len())
-            },
+            }
             Verdict::Changed { old, new } => {
                 format!("主机密钥已变更（旧 {} 条，新 {} 条）", old.len(), new.len())
-            },
+            }
             Verdict::Unverifiable { reason, .. } => format!("无法预检主机密钥: {reason}"),
         }
     }
@@ -100,9 +103,10 @@ impl Verdict {
                     out.push_str(&format!("  {} {}\n", key.key_type, key.fingerprint));
                 }
                 out
-            },
+            }
             Verdict::Changed { old, new } => {
-                let mut out = String::from("警告：服务器出示的主机密钥与 known_hosts 记录不一致！\n");
+                let mut out =
+                    String::from("警告：服务器出示的主机密钥与 known_hosts 记录不一致！\n");
                 out.push_str("旧：\n");
                 for key in old {
                     out.push_str(&format!("  {} {}\n", key.key_type, key.fingerprint));
@@ -112,7 +116,7 @@ impl Verdict {
                     out.push_str(&format!("  {} {}\n", key.key_type, key.fingerprint));
                 }
                 out
-            },
+            }
             Verdict::Unverifiable { reason, local } => format!(
                 "{reason}\n{}",
                 if *local {
@@ -295,7 +299,10 @@ pub fn has_known_entry(profile: &Profile) -> bool {
     if strict_skips_prompt(&effective.strict) {
         return true;
     }
-    if local_known_entries(profile).map(|keys| !keys.is_empty()).unwrap_or(false) {
+    if local_known_entries(profile)
+        .map(|keys| !keys.is_empty())
+        .unwrap_or(false)
+    {
         return true;
     }
     eprintln!(
@@ -325,7 +332,9 @@ pub fn local_known_entries(profile: &Profile) -> Result<Vec<KnownKey>, String> {
         if !out.status.success() {
             continue;
         }
-        entries.extend(parse_known_hosts_lines(&String::from_utf8_lossy(&out.stdout)));
+        entries.extend(parse_known_hosts_lines(&String::from_utf8_lossy(
+            &out.stdout,
+        )));
     }
     entries.sort_by(|a, b| (&a.key_type, &a.key).cmp(&(&b.key_type, &b.key)));
     entries.dedup_by(|a, b| a.key_type == b.key_type && a.key == b.key);
@@ -351,7 +360,9 @@ pub fn user_known_entries(profile: &Profile) -> Result<Vec<KnownKey>, String> {
         if !out.status.success() {
             continue;
         }
-        entries.extend(parse_known_hosts_lines(&String::from_utf8_lossy(&out.stdout)));
+        entries.extend(parse_known_hosts_lines(&String::from_utf8_lossy(
+            &out.stdout,
+        )));
     }
     entries.sort_by(|a, b| (&a.key_type, &a.key).cmp(&(&b.key_type, &b.key)));
     entries.dedup_by(|a, b| a.key_type == b.key_type && a.key == b.key);
@@ -408,7 +419,9 @@ pub fn revoked_keys(profile: &Profile) -> Vec<KnownKey> {
     let effective = effective_ssh(profile);
     let mut out = Vec::new();
     for file in &effective.files {
-        let Ok(text) = std::fs::read_to_string(file) else { continue };
+        let Ok(text) = std::fs::read_to_string(file) else {
+            continue;
+        };
         for line in text.lines() {
             if let Some(key) = parse_revoked_line(line) {
                 out.push(key);
@@ -437,10 +450,15 @@ pub fn classify(known: &[KnownKey], current: &[KnownKey]) -> Verdict {
                 local: false,
             };
         }
-        return Verdict::Unknown { current: current.to_vec() };
+        return Verdict::Unknown {
+            current: current.to_vec(),
+        };
     }
     if current.is_empty() {
-        return Verdict::Unverifiable { reason: "没有读取到服务器公钥".into(), local: true };
+        return Verdict::Unverifiable {
+            reason: "没有读取到服务器公钥".into(),
+            local: true,
+        };
     }
     let mut changed = false;
     let mut common = 0usize;
@@ -454,7 +472,10 @@ pub fn classify(known: &[KnownKey], current: &[KnownKey]) -> Verdict {
         }
     }
     if changed {
-        Verdict::Changed { old: known.to_vec(), new: current.to_vec() }
+        Verdict::Changed {
+            old: known.to_vec(),
+            new: current.to_vec(),
+        }
     } else if common == 0 {
         // 本地只有 RSA、服务器只剩 ed25519 之类：不能拿旧条目“确认”新 key，
         // 交给用户/终端决定，避免静默接受一个从未记录过的 key 类型。
@@ -517,23 +538,37 @@ fn assess_with(
     let known = match local_known_entries(profile) {
         Ok(keys) => keys,
         Err(e) => {
-            return Verdict::Unverifiable { reason: format!("读取 known_hosts 失败: {e}"), local: true };
-        },
+            return Verdict::Unverifiable {
+                reason: format!("读取 known_hosts 失败: {e}"),
+                local: true,
+            };
+        }
     };
     if !effective.proxy_jump.is_empty() || !effective.proxy_command.is_empty() {
         // 代理路径不能直连 keyscan。也不能在这里返回 Known 后强制 askpass：
         // OpenSSH 的 proxy 子进程会继承 askpass 环境，跳板机密码提示可能拿到
         // 目标机的 Vault 密码。因此一律回退终端交互（不启用 askpass）。
         let reason = if !effective.proxy_jump.is_empty() {
-            format!("配置了 ProxyJump（{}），ssh-keyscan 无法穿透跳板机", effective.proxy_jump)
+            format!(
+                "配置了 ProxyJump（{}），ssh-keyscan 无法穿透跳板机",
+                effective.proxy_jump
+            )
         } else {
             "配置了 ProxyCommand，ssh-keyscan 不能按直连预检".to_string()
         };
-        return Verdict::Unverifiable { reason, local: !known.is_empty() };
+        return Verdict::Unverifiable {
+            reason,
+            local: !known.is_empty(),
+        };
     }
     let current = match fetch_current_keys_with(profile, keyscan_program, timeout, cancel) {
         Ok(keys) => keys,
-        Err(e) => return Verdict::Unverifiable { reason: e, local: !known.is_empty() },
+        Err(e) => {
+            return Verdict::Unverifiable {
+                reason: e,
+                local: !known.is_empty(),
+            }
+        }
     };
     classify(&known, &current)
 }
@@ -572,8 +607,9 @@ pub fn trust_keys(profile: &Profile, keys: &[KnownKey]) -> Result<(), String> {
         use std::os::unix::fs::OpenOptionsExt;
         opts.mode(0o600);
     }
-    let mut out =
-        opts.open(&file).map_err(|e| format!("打开 {} 失败: {e}", file.display()))?;
+    let mut out = opts
+        .open(&file)
+        .map_err(|e| format!("打开 {} 失败: {e}", file.display()))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -582,11 +618,15 @@ pub fn trust_keys(profile: &Profile, keys: &[KnownKey]) -> Result<(), String> {
     }
     let mut body = String::new();
     for key in keys {
-        body.push_str(&format!("{} {} {}\n", effective.spec, key.key_type, key.key));
+        body.push_str(&format!(
+            "{} {} {}\n",
+            effective.spec, key.key_type, key.key
+        ));
     }
     out.write_all(body.as_bytes())
         .map_err(|e| format!("写入 {} 失败: {e}", file.display()))?;
-    out.sync_all().map_err(|e| format!("同步 {} 失败: {e}", file.display()))?;
+    out.sync_all()
+        .map_err(|e| format!("同步 {} 失败: {e}", file.display()))?;
     eprintln!(
         "[known_hosts] 已写入 {} 条主机公钥 host={} file={}",
         keys.len(),
@@ -610,7 +650,8 @@ pub fn remove_known_host_entries(profile: &Profile, spec: &str) -> Result<usize,
         if !file.is_file() {
             continue;
         }
-        let before = std::fs::read(file).map_err(|e| format!("读取 {} 失败: {e}", file.display()))?;
+        let before =
+            std::fs::read(file).map_err(|e| format!("读取 {} 失败: {e}", file.display()))?;
         let out = Command::new("ssh-keygen")
             .arg("-R")
             .arg(spec.trim())
@@ -625,7 +666,8 @@ pub fn remove_known_host_entries(profile: &Profile, spec: &str) -> Result<usize,
                 String::from_utf8_lossy(&out.stderr).trim()
             ));
         }
-        let after = std::fs::read(file).map_err(|e| format!("读取 {} 失败: {e}", file.display()))?;
+        let after =
+            std::fs::read(file).map_err(|e| format!("读取 {} 失败: {e}", file.display()))?;
         if after != before {
             changed += 1;
         }
@@ -647,7 +689,12 @@ pub struct HostKeyJob {
 impl HostKeyJob {
     /// 生产入口：结果写通道后唤醒 UI。
     pub fn start(profile: Profile, wake: WakeSignal) -> Self {
-        Self::start_inner(profile, Path::new("ssh-keyscan").to_path_buf(), HOST_KEY_TIMEOUT, Some(wake))
+        Self::start_inner(
+            profile,
+            Path::new("ssh-keyscan").to_path_buf(),
+            HOST_KEY_TIMEOUT,
+            Some(wake),
+        )
     }
 
     /// 测试入口：注入假 keyscan / 短超时。
@@ -675,7 +722,11 @@ impl HostKeyJob {
                 }
             }
         });
-        Self { events, cancel, join: Some(join) }
+        Self {
+            events,
+            cancel,
+            join: Some(join),
+        }
     }
 
     pub fn try_recv(&self) -> Result<Verdict, mpsc::TryRecvError> {
@@ -721,8 +772,13 @@ fn run_capture(
         use std::os::unix::process::CommandExt;
         command.process_group(0);
     }
-    command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = command.spawn().map_err(|e| format!("启动 ssh-keyscan 失败: {e}"))?;
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command
+        .spawn()
+        .map_err(|e| format!("启动 ssh-keyscan 失败: {e}"))?;
 
     let (out_tx, out_rx) = mpsc::channel();
     let (err_tx, err_rx) = mpsc::channel();
@@ -748,7 +804,7 @@ fn run_capture(
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break Some(status),
-            Ok(None) => {},
+            Ok(None) => {}
             Err(_) => break None,
         }
         if cancel.is_some_and(|c| c.load(Ordering::SeqCst)) {
@@ -824,10 +880,7 @@ fn attach_fingerprints(keys: &mut [KnownKey]) {
         body.push_str(&format!("host {} {}\n", key.key_type, key.key));
     }
     let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let path = std::env::temp_dir().join(format!(
-        "xtervo-kh-{}-{unique}.txt",
-        std::process::id()
-    ));
+    let path = std::env::temp_dir().join(format!("xtervo-kh-{}-{unique}.txt", std::process::id()));
     if std::fs::write(&path, body.as_bytes()).is_err() {
         return;
     }
@@ -856,8 +909,10 @@ mod tests {
     use super::*;
 
     /// 测试用公钥（不是真实主机的密钥）。
-    const KEY_A: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKNQBVooZwwKkPSd6IMylF98NDRrI/y3pjbO8e0z53Vy";
-    const KEY_B: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    const KEY_A: &str =
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKNQBVooZwwKkPSd6IMylF98NDRrI/y3pjbO8e0z53Vy";
+    const KEY_B: &str =
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
     const KEY_RSA: &str = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQDexampleexampleexample";
 
     fn key(entry: &str) -> KnownKey {
@@ -872,7 +927,9 @@ mod tests {
         let current = vec![key(KEY_A)];
         assert_eq!(
             classify(&[], &current),
-            Verdict::Unknown { current: current.clone() }
+            Verdict::Unknown {
+                current: current.clone()
+            }
         );
         let known = vec![key(KEY_A)];
         assert_eq!(classify(&known, &current), Verdict::Known);
@@ -889,7 +946,7 @@ mod tests {
             Verdict::Changed { old, new } => {
                 assert_eq!(old[0].key, key(KEY_A).key);
                 assert_eq!(new[0].key, key(KEY_B).key);
-            },
+            }
             other => panic!("expected Changed, got {other:?}"),
         }
         assert!(verdict.detail().contains("不一致"));
@@ -944,9 +1001,7 @@ example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIok
     fn keyscan_parser_dedups_repeated_hosts() {
         let text = format!(
             "# {}\n[example.com]:2222 {}\n[example.com]:2222 {}\n",
-            "example.com:22 SSH-2.0-OpenSSH_9.6",
-            KEY_A,
-            KEY_A
+            "example.com:22 SSH-2.0-OpenSSH_9.6", KEY_A, KEY_A
         );
         let keys = parse_keyscan_lines(&text);
         assert_eq!(keys.len(), 1);
@@ -973,8 +1028,14 @@ proxyjump jump@bastion:2200
 ";
         let effective = parse_ssh_g(output, &profile);
         assert_eq!(effective.strict, "ask");
-        assert_eq!(effective.spec, "myalias", "HostKeyAlias 原文作为键，不套端口");
-        assert_eq!(effective.files, vec![PathBuf::from("/tmp/kh1"), PathBuf::from("/tmp/kh2")]);
+        assert_eq!(
+            effective.spec, "myalias",
+            "HostKeyAlias 原文作为键，不套端口"
+        );
+        assert_eq!(
+            effective.files,
+            vec![PathBuf::from("/tmp/kh1"), PathBuf::from("/tmp/kh2")]
+        );
         assert_eq!(effective.write_file.as_deref(), Some(Path::new("/tmp/kh1")));
         assert_eq!(effective.proxy_jump, "jump@bastion:2200");
         assert!(!strict_skips_prompt(&effective.strict));
@@ -1025,7 +1086,10 @@ proxyjump jump@bastion:2200
         assert_eq!(host_spec("example.com", 2222), "[example.com]:2222");
         assert_eq!(host_spec("2001:db8::1", 2222), "[2001:db8::1]:2222");
         let paths = split_ssh_paths("none /tmp/kh2   ~/.ssh/known_hosts");
-        assert_eq!(paths, vec![PathBuf::from("/tmp/kh2"), expand_home("~/.ssh/known_hosts")]);
+        assert_eq!(
+            paths,
+            vec![PathBuf::from("/tmp/kh2"), expand_home("~/.ssh/known_hosts")]
+        );
     }
 
     // ---- 依赖系统 ssh/ssh-keygen 的集成测试（缺失时跳过） ----
@@ -1036,10 +1100,8 @@ proxyjump jump@bastion:2200
     }
 
     fn test_dir(label: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "xtervo-known-hosts-{}-{label}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("xtervo-known-hosts-{}-{label}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -1109,9 +1171,14 @@ proxyjump jump@bastion:2200
         let profile = profile_with_known_hosts("example.com", 22, &kh);
         trust_keys(&profile, &[key(KEY_B)]).unwrap();
         let text = std::fs::read_to_string(&kh).unwrap();
-        assert!(!text.contains(&key(KEY_A).key), "旧 key 必须被删除: {text:?}");
+        assert!(
+            !text.contains(&key(KEY_A).key),
+            "旧 key 必须被删除: {text:?}"
+        );
         assert!(text.contains(&key(KEY_B).key));
-        assert!(text.lines().any(|l| l.starts_with("example.com ssh-ed25519 ")));
+        assert!(text
+            .lines()
+            .any(|l| l.starts_with("example.com ssh-ed25519 ")));
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -1131,18 +1198,16 @@ proxyjump jump@bastion:2200
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
         let profile = profile_with_known_hosts("example.com", 22, &dir.join("known_hosts"));
         let started = Instant::now();
-        let err = fetch_current_keys_with(
-            &profile,
-            &script,
-            Duration::from_millis(150),
-            None,
-        )
-        .unwrap_err();
+        let err = fetch_current_keys_with(&profile, &script, Duration::from_millis(150), None)
+            .unwrap_err();
         assert!(
             err.contains("超时") || err.contains("失败") || err.contains("没有返回"),
             "{err}"
         );
-        assert!(started.elapsed() < Duration::from_secs(5), "超时必须及时返回");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "超时必须及时返回"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1200,7 +1265,12 @@ proxyjump jump@bastion:2200
         };
         let started = Instant::now();
         assert_eq!(
-            assess_with(&profile, Path::new("/nonexistent/keyscan"), Duration::from_secs(1), None),
+            assess_with(
+                &profile,
+                Path::new("/nonexistent/keyscan"),
+                Duration::from_secs(1),
+                None
+            ),
             Verdict::Known
         );
         assert!(started.elapsed() < Duration::from_secs(1));
@@ -1215,9 +1285,7 @@ proxyjump jump@bastion:2200
         let kh = dir.join("known_hosts");
         std::fs::write(
             &kh,
-            format!(
-                "example.com {KEY_A}\nother.example {KEY_B}\n@revoked example.com {KEY_RSA}\n"
-            ),
+            format!("example.com {KEY_A}\nother.example {KEY_B}\n@revoked example.com {KEY_RSA}\n"),
         )
         .unwrap();
         let profile = profile_with_known_hosts("example.com", 22, &kh);
@@ -1227,10 +1295,19 @@ proxyjump jump@bastion:2200
         let changed = remove_known_host_entries(&profile, "example.com").expect("remove");
         assert_eq!(changed, 1);
         let after = std::fs::read_to_string(&kh).unwrap();
-        assert!(!after.contains(KEY_A), "example.com key should be removed: {after}");
-        assert!(after.contains(KEY_B), "other host must be preserved: {after}");
+        assert!(
+            !after.contains(KEY_A),
+            "example.com key should be removed: {after}"
+        );
+        assert!(
+            after.contains(KEY_B),
+            "other host must be preserved: {after}"
+        );
         // @revoked 是安全元数据，管理界面不把它当普通条目删除。
-        assert!(after.contains("@revoked"), "revocation metadata must be preserved");
+        assert!(
+            after.contains("@revoked"),
+            "revocation metadata must be preserved"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

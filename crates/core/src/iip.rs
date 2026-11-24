@@ -250,13 +250,13 @@ impl IipFilter {
                     ESC => {
                         self.pending.push(ESC);
                         self.state = State::Escape;
-                    },
+                    }
                     // 只有“真正独立”的 0x9D 才是 C1 OSC；UTF-8 续字节按正文放行。
                     b if b == C1_OSC && !self.looks_like_utf8_continuation() => {
                         self.pending.push(C1_OSC);
                         self.prefix.clear();
                         self.state = State::Prefix;
-                    },
+                    }
                     _ => pass.push(b),
                 },
                 State::Escape => match b {
@@ -264,16 +264,16 @@ impl IipFilter {
                         self.pending.push(b']');
                         self.prefix.clear();
                         self.state = State::Prefix;
-                    },
+                    }
                     // 连续 ESC：前一个不是 OSC，放行；当前 ESC 继续等待。
                     ESC => {
                         self.flush_pending(&mut pass);
                         self.pending.push(ESC);
-                    },
+                    }
                     _ => {
                         self.flush_pending(&mut pass);
                         self.replay_ground(b, &mut pass);
-                    },
+                    }
                 },
                 State::Prefix => {
                     if b == PREFIX[self.prefix.len()] {
@@ -305,23 +305,23 @@ impl IipFilter {
                         self.state = State::Ground;
                         self.replay_ground(b, &mut pass);
                     }
-                },
+                }
                 State::Body => match b {
                     ESC => {
                         self.pending.push(ESC);
                         self.state = State::BodyEscape;
-                    },
+                    }
                     BEL | C1_ST => {
                         self.flush_pass(&mut pass, &mut out);
                         self.finish(false, &mut out);
                         self.state = State::Ground;
-                    },
+                    }
                     // CAN/SUB 中止 OSC：丢弃整张图，但不把它当终止符解码。
                     CAN | SUB => {
                         self.flush_pass(&mut pass, &mut out);
                         self.finish(true, &mut out);
                         self.state = State::Ground;
-                    },
+                    }
                     _ => self.push_body(b),
                 },
                 State::BodyEscape => match b {
@@ -330,7 +330,7 @@ impl IipFilter {
                         self.finish(false, &mut out);
                         self.pending.clear();
                         self.state = State::Ground;
-                    },
+                    }
                     // 畸形 OSC（ESC 后不是 `\`）：丢弃图片，把 ESC 与当前字节交还
                     // 给 vte，让后续转义序列仍按原语义执行。
                     _ => {
@@ -340,14 +340,17 @@ impl IipFilter {
                         pass.push(ESC);
                         pass.push(b);
                         self.state = State::Ground;
-                    },
+                    }
                 },
             }
             self.remember_byte(b);
         }
 
         self.flush_pass(&mut pass, &mut out);
-        if self.swallowed || !out.is_empty() || !self.pending.is_empty() || self.state != State::Ground
+        if self.swallowed
+            || !out.is_empty()
+            || !self.pending.is_empty()
+            || self.state != State::Ground
         {
             Some(out)
         } else {
@@ -442,19 +445,19 @@ impl IipFilter {
             ESC => {
                 self.pending.push(ESC);
                 self.state = State::Escape;
-            },
+            }
             C1_OSC => {
                 self.pending.push(C1_OSC);
                 self.prefix.clear();
                 self.state = State::Prefix;
-            },
+            }
             _ => {
                 // 关键：`ESC x`（x 不是 `]`）里的 ESC 已放行，x 就是普通正文。
                 // 这里必须回到 Ground；遗漏会让 state 永远停在 Escape，之后
                 // 正文里的 `]` 会被误当 OSC 前缀，紧跟 ESC 时整字节被丢掉。
                 pass.push(b);
                 self.state = State::Ground;
-            },
+            }
         }
     }
 
@@ -477,7 +480,7 @@ impl IipFilter {
             match decode_body_outcome(&self.body, self.cell_w, self.cell_h, MAX_FILE_BYTES) {
                 BodyOutcome::Image(image) => out.push(IipEvent::Image(image)),
                 BodyOutcome::Ignored(notice) => out.push(IipEvent::Ignored(notice)),
-                BodyOutcome::Dropped => {},
+                BodyOutcome::Dropped => {}
             }
         }
         self.body.clear();
@@ -513,7 +516,7 @@ fn parse_file_args(raw: &[u8]) -> Option<FileArgs> {
             "inline" => {
                 args.inline = parse_switch(value)?;
                 args.inline_present = true;
-            },
+            }
             "width" => args.width = parse_size(value)?,
             "height" => args.height = parse_size(value)?,
             "preserveaspectratio" => args.preserve_aspect_ratio = parse_switch(value)?,
@@ -522,9 +525,9 @@ fn parse_file_args(raw: &[u8]) -> Option<FileArgs> {
                 args.name = decode_base64_bounded(value.trim().as_bytes(), 4096, false)
                     .and_then(|bytes| String::from_utf8(bytes).ok())
                     .filter(|name| !name.is_empty());
-            },
+            }
             // size/align/pad 等不影响本实现的布局；未知参数按协议忽略。
-            _ => {},
+            _ => {}
         }
     }
     // iTerm2 协议里 inline 缺省为 0：只下载、不显示。是否内联由调用方决定：
@@ -554,7 +557,11 @@ fn parse_size(value: &str) -> Option<SizeSpec> {
     if number == 0 {
         return None;
     }
-    Some(if px { SizeSpec::Px(number) } else { SizeSpec::Cells(number) })
+    Some(if px {
+        SizeSpec::Px(number)
+    } else {
+        SizeSpec::Cells(number)
+    })
 }
 
 /// 一条 `File=` body 的处理结果。
@@ -631,7 +638,12 @@ fn decode_body_outcome(
     if rgba.len() != width as usize * height as usize * 4 {
         return BodyOutcome::Dropped;
     }
-    BodyOutcome::Image(IipImage { width, height, rgba, name: args.name })
+    BodyOutcome::Image(IipImage {
+        width,
+        height,
+        rgba,
+        name: args.name,
+    })
 }
 
 fn valid_dimensions(width: u32, height: u32) -> bool {
@@ -656,7 +668,9 @@ fn decode_png(data: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
     let mut decoder = png::Decoder::new(Cursor::new(data));
     decoder.set_transformations(png::Transformations::normalize_to_color8());
     // 默认 64 MiB 对 16 MP RGBA + 解码行缓冲来说太紧；尺寸本身另有硬校验。
-    decoder.set_limits(png::Limits { bytes: MAX_PIXELS * 4 + 8 * 1024 * 1024 });
+    decoder.set_limits(png::Limits {
+        bytes: MAX_PIXELS * 4 + 8 * 1024 * 1024,
+    });
     let mut reader = decoder.read_info().ok()?;
     let (width, height) = reader.info().size();
     if !valid_dimensions(width, height) {
@@ -725,7 +739,7 @@ fn jpeg_to_rgba(
             ColorSpace::Luma => out.extend_from_slice(&[pixel[0], pixel[0], pixel[0], 255]),
             ColorSpace::LumaA => {
                 out.extend_from_slice(&[pixel[0], pixel[0], pixel[0], pixel[1]]);
-            },
+            }
             _ => return None,
         }
     }
@@ -737,7 +751,7 @@ fn to_rgba(buf: &[u8], color: png::ColorType, pixels: usize) -> Option<Vec<u8>> 
         png::ColorType::Rgba => {
             let bytes = pixels.checked_mul(4)?;
             buf.get(..bytes).map(|s| s.to_vec())
-        },
+        }
         png::ColorType::Rgb => expand(buf, pixels, 3, &[255]),
         png::ColorType::Grayscale => expand_gray(buf, pixels, 1),
         png::ColorType::GrayscaleAlpha => expand_gray(buf, pixels, 2),
@@ -795,9 +809,7 @@ fn fit_size(
             (Some(w), None) => w as f64 / natural_w as f64,
             (None, Some(h)) => h as f64 / natural_h as f64,
             // 同时指定时按“装进目标框”处理，保持宽高比。
-            (Some(w), Some(h)) => {
-                (w as f64 / natural_w as f64).min(h as f64 / natural_h as f64)
-            },
+            (Some(w), Some(h)) => (w as f64 / natural_w as f64).min(h as f64 / natural_h as f64),
         };
         (
             (natural_w as f64 * scale).round().max(1.0) as u64,
@@ -831,8 +843,8 @@ fn resize_rgba(src: &[u8], src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> Ve
     let axis = |dst: u32, src: u32| -> Vec<(usize, usize, u32)> {
         (0..dst)
             .map(|i| {
-                let pos = ((i as f64 + 0.5) * src as f64 / dst as f64 - 0.5)
-                    .clamp(0.0, src as f64 - 1.0);
+                let pos =
+                    ((i as f64 + 0.5) * src as f64 / dst as f64 - 0.5).clamp(0.0, src as f64 - 1.0);
                 let low = pos.floor() as usize;
                 let high = (low + 1).min(src as usize - 1);
                 let weight = ((pos - low as f64) * 256.0).round() as u32;
@@ -954,10 +966,10 @@ mod tests {
                             IipEvent::Image(image) => images.push(image),
                             // 非内联图：序列被吞掉，无可见输出；本 helper 只关心
                             // pass/image，通知由 feed_chunks_notices 断言。
-                            IipEvent::Ignored(_) => {},
+                            IipEvent::Ignored(_) => {}
                         }
                     }
-                },
+                }
             }
         }
         (pass, images)
@@ -984,7 +996,7 @@ mod tests {
                             IipEvent::Ignored(notice) => notices.push(notice),
                         }
                     }
-                },
+                }
             }
         }
         (pass, images, notices)
@@ -1195,8 +1207,16 @@ mod tests {
         let cases: [(&str, IipIgnoreReason, Option<&str>); 4] = [
             ("", IipIgnoreReason::MissingInline, None),
             ("inline=0", IipIgnoreReason::InlineDisabled, None),
-            ("name=cGljLnBuZw==", IipIgnoreReason::MissingInline, Some("pic.png")),
-            ("inline=0;name=Zm9v", IipIgnoreReason::InlineDisabled, Some("foo")),
+            (
+                "name=cGljLnBuZw==",
+                IipIgnoreReason::MissingInline,
+                Some("pic.png"),
+            ),
+            (
+                "inline=0;name=Zm9v",
+                IipIgnoreReason::InlineDisabled,
+                Some("foo"),
+            ),
         ];
         for (args, reason, name) in cases {
             let osc = image_osc(args, &rgba_png());
@@ -1239,8 +1259,7 @@ mod tests {
         assert!(pass.is_empty() && images.is_empty() && notices.is_empty());
 
         // 空载荷 + inline=0：参数合法，仍提示一次。
-        let (pass, images, notices) =
-            feed_chunks_notices(&[b"\x1b]1337;File=inline=0:\x07"], true);
+        let (pass, images, notices) = feed_chunks_notices(&[b"\x1b]1337;File=inline=0:\x07"], true);
         assert!(pass.is_empty() && images.is_empty());
         assert_eq!(notices.len(), 1);
         assert_eq!(notices[0].reason, IipIgnoreReason::InlineDisabled);
@@ -1283,7 +1302,11 @@ mod tests {
             "文件字节超过 max_file_bytes 必须丢图"
         );
 
-        let long_args = format!("inline=1;{}:{}", "x".repeat(MAX_ARGS_BYTES), encode_base64(&png));
+        let long_args = format!(
+            "inline=1;{}:{}",
+            "x".repeat(MAX_ARGS_BYTES),
+            encode_base64(&png)
+        );
         let (pass, images) = feed_chunks(&[&image_osc(&long_args, &[])], true);
         assert!(pass.is_empty());
         assert!(images.is_empty(), "参数区超限必须丢图");
@@ -1309,7 +1332,10 @@ mod tests {
             fed += junk.len();
             assert!(fed <= MAX_BODY_BYTES + junk.len(), "超限后应尽快停止保存");
         }
-        assert!(fed > MAX_BODY_BYTES, "body 应在 20 MiB 文件编码上限附近溢出");
+        assert!(
+            fed > MAX_BODY_BYTES,
+            "body 应在 20 MiB 文件编码上限附近溢出"
+        );
         assert!(filter.body.is_empty(), "超限后不应继续保留 body");
         // 溢出后继续吞到终止符，不再保存。
         let _ = filter.feed(&junk, true);
@@ -1380,14 +1406,28 @@ mod tests {
     fn truncated_or_unknown_image_formats_are_dropped_without_panic() {
         let png = rgba_png();
         let jpeg = red_jpeg();
-        assert!(decode_image(&png[..png.len() / 2]).is_none(), "截断 PNG 丢弃");
-        assert!(decode_image(&jpeg[..jpeg.len() / 2]).is_none(), "截断 JPEG 丢弃");
+        assert!(
+            decode_image(&png[..png.len() / 2]).is_none(),
+            "截断 PNG 丢弃"
+        );
+        assert!(
+            decode_image(&jpeg[..jpeg.len() / 2]).is_none(),
+            "截断 JPEG 丢弃"
+        );
         assert!(decode_image(b"GIF89a.....").is_none(), "不支持的格式丢弃");
-        assert!(decode_image(&[0xff, 0xd8, 0xff, 0, 1, 2]).is_none(), "畸形 JPEG 丢弃");
-        assert!(decode_image(b"\x89PNG\r\n\x1a\nnot-a-png").is_none(), "畸形 PNG 丢弃");
+        assert!(
+            decode_image(&[0xff, 0xd8, 0xff, 0, 1, 2]).is_none(),
+            "畸形 JPEG 丢弃"
+        );
+        assert!(
+            decode_image(b"\x89PNG\r\n\x1a\nnot-a-png").is_none(),
+            "畸形 PNG 丢弃"
+        );
         // 随机垃圾喂给两个解码器都只返回 None。
         for seed in 0u16..32 {
-            let junk: Vec<u8> = (0..256).map(|i| (i as u8).wrapping_mul(31).wrapping_add(seed as u8)).collect();
+            let junk: Vec<u8> = (0..256)
+                .map(|i| (i as u8).wrapping_mul(31).wrapping_add(seed as u8))
+                .collect();
             let _ = decode_png(&junk);
             let _ = decode_jpeg(&junk);
         }

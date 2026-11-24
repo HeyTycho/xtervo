@@ -198,7 +198,11 @@ mod tests {
         let _ = fs::create_dir_all(&dir);
         let old = std::env::var_os("XTERVO_LOG_DIR");
         std::env::set_var("XTERVO_LOG_DIR", &dir);
-        fs::write(dir.join("xtervo-1.log"), "api_key=SUPERSECRET\nplain line\n").unwrap();
+        fs::write(
+            dir.join("xtervo-1.log"),
+            "api_key=SUPERSECRET\nplain line\n",
+        )
+        .unwrap();
         let bundle = create_bundle("my api_key=SUPERSECRET").expect("bundle");
         let file = File::open(&bundle).expect("open bundle");
         let decoder = flate2::read::GzDecoder::new(file);
@@ -211,7 +215,10 @@ mod tests {
                 found_report = true;
                 let mut text = String::new();
                 entry.read_to_string(&mut text).expect("read report");
-                assert!(!text.contains("SUPERSECRET"), "description must be redacted");
+                assert!(
+                    !text.contains("SUPERSECRET"),
+                    "description must be redacted"
+                );
                 assert!(text.contains("api_key=<redacted>") || text.contains("api_key"));
             }
         }

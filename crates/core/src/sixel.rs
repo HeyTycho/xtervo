@@ -124,10 +124,7 @@ impl SixelFilter {
     pub fn in_sixel(&self) -> bool {
         matches!(
             self.state,
-            State::Sixel
-                | State::SixelEscape
-                | State::SixelOverflow
-                | State::SixelOverflowEscape
+            State::Sixel | State::SixelEscape | State::SixelOverflow | State::SixelOverflowEscape
         )
     }
 
@@ -141,8 +138,7 @@ impl SixelFilter {
     /// `decode = false`（Sixel 关闭）时仍会过滤 DCS，只是不做解码，避免关闭配置
     /// 后 BEL 终止的 Sixel 污染解析器。
     pub fn feed(&mut self, bytes: &[u8], decode: bool) -> Option<Vec<SixelEvent>> {
-        if self.state == State::Ground && self.pending.is_empty() && !contains_dcs_start(bytes)
-        {
+        if self.state == State::Ground && self.pending.is_empty() && !contains_dcs_start(bytes) {
             // 下一块的首字节可能是 UTF-8 续字节，尾部窗口必须跨块保留。
             self.remember_tail(bytes);
             return None;
@@ -160,26 +156,26 @@ impl SixelFilter {
                         self.pending.clear();
                         self.pending.push(ESC);
                         self.state = State::Escape;
-                    },
+                    }
                     0x90 if !self.looks_like_utf8_continuation() => {
                         // C1 DCS
                         self.pending.clear();
                         self.pending.push(b);
                         self.dcs_intermediate = false;
                         self.state = State::DcsHeader;
-                    },
+                    }
                     0x9d if !self.looks_like_utf8_continuation() => {
                         pass.push(b);
                         self.state = State::Osc;
-                    },
+                    }
                     0x9b if !self.looks_like_utf8_continuation() => {
                         pass.push(b);
                         self.state = State::Csi;
-                    },
+                    }
                     0x98 | 0x9e | 0x9f if !self.looks_like_utf8_continuation() => {
                         pass.push(b);
                         self.state = State::String;
-                    },
+                    }
                     _ => pass.push(b),
                 },
                 State::Escape => match b {
@@ -187,33 +183,33 @@ impl SixelFilter {
                         self.pending.push(b);
                         self.dcs_intermediate = false;
                         self.state = State::DcsHeader;
-                    },
+                    }
                     b'[' => {
                         self.flush_pending(&mut pass);
                         pass.push(b);
                         self.state = State::Csi;
-                    },
+                    }
                     b']' => {
                         self.flush_pending(&mut pass);
                         pass.push(b);
                         self.state = State::Osc;
-                    },
+                    }
                     b'X' | b'^' | b'_' => {
                         self.flush_pending(&mut pass);
                         pass.push(b);
                         self.state = State::String;
-                    },
+                    }
                     ESC => {
                         // `ESC ESC`：前一个 ESC 作为普通字节放行，新的 ESC 继续等。
                         self.flush_pending(&mut pass);
                         self.pending.push(ESC);
                         self.state = State::Escape;
-                    },
+                    }
                     _ => {
                         self.flush_pending(&mut pass);
                         pass.push(b);
                         self.state = State::Ground;
-                    },
+                    }
                 },
                 State::DcsHeader => match b {
                     ESC => {
@@ -221,26 +217,26 @@ impl SixelFilter {
                         self.flush_pending(&mut pass);
                         self.pending.push(ESC);
                         self.state = State::Escape;
-                    },
+                    }
                     0x9c => {
                         self.flush_pending(&mut pass);
                         pass.push(b);
                         self.state = State::Ground;
-                    },
+                    }
                     0x18 | 0x1a => {
                         self.flush_pending(&mut pass);
                         pass.push(b);
                         self.state = State::Ground;
-                    },
+                    }
                     0x20..=0x2f => {
                         self.pending.push(b);
                         self.dcs_intermediate = true;
                         self.cap_header(&mut pass);
-                    },
+                    }
                     0x30..=0x3f => {
                         self.pending.push(b);
                         self.cap_header(&mut pass);
-                    },
+                    }
                     0x40..=0x7e => {
                         self.pending.push(b);
                         if b == b'q' && !self.dcs_intermediate {
@@ -255,23 +251,23 @@ impl SixelFilter {
                             self.flush_pending(&mut pass);
                             self.state = State::NonSixelDcs;
                         }
-                    },
+                    }
                     _ => {
                         self.pending.push(b);
                         self.cap_header(&mut pass);
-                    },
+                    }
                 },
                 State::Sixel => match b {
                     ESC => self.state = State::SixelEscape,
                     0x9c | 0x07 => {
                         self.finish_sixel(decode, &mut out, &mut pass);
-                    },
+                    }
                     0x18 | 0x1a => {
                         // CAN/SUB 中止：丢图。
                         self.payload.clear();
                         self.swallowed = true;
                         self.state = State::Ground;
-                    },
+                    }
                     _ => {
                         self.swallowed = true;
                         self.raw_len = self.raw_len.saturating_add(1);
@@ -282,7 +278,7 @@ impl SixelFilter {
                         } else {
                             self.push_payload(b);
                         }
-                    },
+                    }
                 },
                 State::SixelEscape => {
                     if b == b'\\' {
@@ -300,13 +296,13 @@ impl SixelFilter {
                         self.pending.push(ESC);
                         continue;
                     }
-                },
+                }
                 State::SixelOverflow => match b {
                     ESC => self.state = State::SixelOverflowEscape,
                     0x9c | 0x07 | 0x18 | 0x1a => {
                         self.swallowed = true;
                         self.state = State::Ground;
-                    },
+                    }
                     _ => self.swallowed = true,
                 },
                 State::SixelOverflowEscape => {
@@ -317,64 +313,64 @@ impl SixelFilter {
                     } else {
                         self.state = State::SixelOverflow;
                     }
-                },
+                }
                 State::NonSixelDcs => {
                     pass.push(b);
                     match b {
                         ESC => self.state = State::NonSixelDcsEscape,
                         0x9c | 0x18 | 0x1a => self.state = State::Ground,
-                        _ => {},
+                        _ => {}
                     }
-                },
+                }
                 State::NonSixelDcsEscape => {
                     pass.push(b);
                     match b {
                         b'\\' => self.state = State::Ground,
-                        ESC => {},
+                        ESC => {}
                         _ => self.state = State::NonSixelDcs,
                     }
-                },
+                }
                 State::Csi => {
                     pass.push(b);
                     match b {
                         ESC => self.state = State::Escape,
                         0x40..=0x7e => self.state = State::Ground,
                         0x18 | 0x1a => self.state = State::Ground,
-                        _ => {},
+                        _ => {}
                     }
-                },
+                }
                 State::Osc => {
                     pass.push(b);
                     match b {
                         0x07 | 0x9c => self.state = State::Ground,
                         ESC => self.state = State::OscEscape,
-                        _ => {},
+                        _ => {}
                     }
-                },
+                }
                 State::OscEscape => {
                     pass.push(b);
                     match b {
                         b'\\' => self.state = State::Ground,
-                        ESC => {},
+                        ESC => {}
                         _ => self.state = State::Ground,
                     }
-                },
+                }
                 State::String => {
                     pass.push(b);
                     match b {
                         0x9c | 0x18 | 0x1a => self.state = State::Ground,
                         ESC => self.state = State::StringEscape,
-                        _ => {},
+                        _ => {}
                     }
-                },
+                }
                 State::StringEscape => {
                     pass.push(b);
                     match b {
                         b'\\' => self.state = State::Ground,
-                        ESC => {},
+                        ESC => {}
                         _ => self.state = State::String,
                     }
-                },
+                }
             }
             self.remember_byte(b);
             i += 1;
@@ -480,12 +476,7 @@ impl SixelFilter {
         self.payload.push(b);
     }
 
-    fn finish_sixel(
-        &mut self,
-        decode: bool,
-        out: &mut Vec<SixelEvent>,
-        pass: &mut Vec<u8>,
-    ) {
+    fn finish_sixel(&mut self, decode: bool, out: &mut Vec<SixelEvent>, pass: &mut Vec<u8>) {
         self.swallowed = true;
         // 事件必须严格按输入顺序：图片前的文本/2J 要先交给 vte，否则
         // ImageClearScanner 会在图片之后看到 2J，把刚放置的图片清掉。
@@ -523,7 +514,10 @@ struct Row {
 
 impl Default for Row {
     fn default() -> Self {
-        Self { idx: Vec::new(), mask: Vec::new() }
+        Self {
+            idx: Vec::new(),
+            mask: Vec::new(),
+        }
     }
 }
 
@@ -546,7 +540,9 @@ impl Row {
     #[inline]
     fn covered(&self, x: usize) -> bool {
         let word = x / 64;
-        self.mask.get(word).is_some_and(|w| w & (1u64 << (x % 64)) != 0)
+        self.mask
+            .get(word)
+            .is_some_and(|w| w & (1u64 << (x % 64)) != 0)
     }
 }
 
@@ -564,7 +560,9 @@ impl Default for Palette {
     fn default() -> Self {
         // 未定义时按黑色处理；绝大多数 Sixel 编码器（img2sixel/dsh/chafa）
         // 都会显式定义用到的寄存器。
-        Self { colors: [[0, 0, 0]; MAX_COLORS] }
+        Self {
+            colors: [[0, 0, 0]; MAX_COLORS],
+        }
     }
 }
 
@@ -575,7 +573,11 @@ impl Palette {
         } else {
             // P2=2 是 0..100 百分比；部分编码器直接发 0..255，按 >100 自动识别。
             let wide = a > 100 || b > 100 || c > 100;
-            [rgb_channel(a, wide), rgb_channel(b, wide), rgb_channel(c, wide)]
+            [
+                rgb_channel(a, wide),
+                rgb_channel(b, wide),
+                rgb_channel(c, wide),
+            ]
         };
         self.colors[index as usize] = rgb;
     }
@@ -658,17 +660,19 @@ pub fn decode_sixel(payload: &[u8]) -> Option<SixelImage> {
                     }
                     x = (x + count).min(MAX_DIMENSION);
                 }
-            },
+            }
             b'"' => {
                 i += 1;
                 let mut w = 0usize;
                 let mut h = 0usize;
                 for field in 0..4 {
-                    let Some(value) = read_u32(payload, &mut i) else { break };
+                    let Some(value) = read_u32(payload, &mut i) else {
+                        break;
+                    };
                     match field {
                         2 => w = value as usize,
                         3 => h = value as usize,
-                        _ => {},
+                        _ => {}
                     }
                     if i < payload.len() && payload[i] == b';' {
                         i += 1;
@@ -677,21 +681,24 @@ pub fn decode_sixel(payload: &[u8]) -> Option<SixelImage> {
                     }
                 }
                 if w > 0 && h > 0 {
-                    if w > MAX_DIMENSION || h > MAX_DIMENSION || w.saturating_mul(h) > MAX_PIXELS
-                    {
+                    if w > MAX_DIMENSION || h > MAX_DIMENSION || w.saturating_mul(h) > MAX_PIXELS {
                         return None;
                     }
                     declared = Some((w, h));
                 }
-            },
+            }
             b'#' => {
                 i += 1;
-                let Some(register) = read_u32(payload, &mut i) else { continue };
+                let Some(register) = read_u32(payload, &mut i) else {
+                    continue;
+                };
                 let mut params = [register, 0, 0, 0, 0];
                 let mut count = 1usize;
                 while count < 5 && i < payload.len() && payload[i] == b';' {
                     i += 1;
-                    let Some(value) = read_u32(payload, &mut i) else { break };
+                    let Some(value) = read_u32(payload, &mut i) else {
+                        break;
+                    };
                     params[count] = value;
                     count += 1;
                 }
@@ -710,11 +717,11 @@ pub fn decode_sixel(payload: &[u8]) -> Option<SixelImage> {
                     palette.define(index as u8, params[1], params[2], params[3], params[4]);
                 }
                 current = index as u8;
-            },
+            }
             b'$' => {
                 x = 0;
                 i += 1;
-            },
+            }
             b'-' => {
                 x = 0;
                 y = y.saturating_add(6);
@@ -722,7 +729,7 @@ pub fn decode_sixel(payload: &[u8]) -> Option<SixelImage> {
                     return None;
                 }
                 i += 1;
-            },
+            }
             b'?'..=b'~' => {
                 let bits = b - 0x3f;
                 if !paint(&mut bands, x, y, bits, current, 1, &mut index_bytes) {
@@ -730,7 +737,7 @@ pub fn decode_sixel(payload: &[u8]) -> Option<SixelImage> {
                 }
                 x = (x + 1).min(MAX_DIMENSION);
                 i += 1;
-            },
+            }
             // 换行/空白/其它控制字节：忽略。
             _ => i += 1,
         }
@@ -776,7 +783,11 @@ pub fn decode_sixel(payload: &[u8]) -> Option<SixelImage> {
         }
     }
 
-    Some(SixelImage { width: width as u32, height: height as u32, rgba })
+    Some(SixelImage {
+        width: width as u32,
+        height: height as u32,
+        rgba,
+    })
 }
 
 fn paint(
@@ -950,14 +961,17 @@ mod tests {
             let mut filter = SixelFilter::new();
             let mut pass = Vec::new();
             let mut images = 0;
-            for (index, part) in [&payload[..split], &payload[split..]].into_iter().enumerate() {
+            for (index, part) in [&payload[..split], &payload[split..]]
+                .into_iter()
+                .enumerate()
+            {
                 match filter.feed(part, true) {
                     // None = 本段没有 Sixel，调用方原样交给 vte。
                     None => {
                         if index == 0 || !part.is_empty() {
                             pass.extend_from_slice(part);
                         }
-                    },
+                    }
                     Some(evs) => {
                         for ev in evs {
                             match ev {
@@ -965,7 +979,7 @@ mod tests {
                                 SixelEvent::Image(_) => images += 1,
                             }
                         }
-                    },
+                    }
                 }
             }
             assert_eq!(pass, b"ab", "split={split}");
@@ -1007,9 +1021,16 @@ mod tests {
                 SixelEvent::Image(_) => kinds.push(("image", Vec::new())),
             }
         }
-        let image_pos = kinds.iter().position(|(k, _)| *k == "image").expect("image");
-        assert!(kinds[..image_pos].iter().any(|(k, b)| *k == "pass" && b.windows(4).any(|w| w == b"\x1b[2J")),
-            "2J 必须在 Image 之前交给 vte: {kinds:?}");
+        let image_pos = kinds
+            .iter()
+            .position(|(k, _)| *k == "image")
+            .expect("image");
+        assert!(
+            kinds[..image_pos]
+                .iter()
+                .any(|(k, b)| *k == "pass" && b.windows(4).any(|w| w == b"\x1b[2J")),
+            "2J 必须在 Image 之前交给 vte: {kinds:?}"
+        );
     }
 
     #[test]

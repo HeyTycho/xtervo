@@ -30,9 +30,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use xtervo_core::transport::{
-    PaneTransport, TransportControl, TransportHalves, TransportShutdown,
-};
+use xtervo_core::transport::{PaneTransport, TransportControl, TransportHalves, TransportShutdown};
 
 use crate::profile::{Profile, ProfileStore};
 use crate::transport_io::{decode_frame, encode_frame, MAX_FRAME_PAYLOAD};
@@ -99,7 +97,10 @@ pub struct SshConnectionStatus {
 
 impl SshConnectionStatus {
     fn new() -> Self {
-        Self { phase: Phase::Connecting, detail: String::new() }
+        Self {
+            phase: Phase::Connecting,
+            detail: String::new(),
+        }
     }
 }
 
@@ -152,7 +153,10 @@ impl Shared {
         self.status
             .lock()
             .map(|s| s.clone())
-            .unwrap_or(SshConnectionStatus { phase: Phase::Failed, detail: "status poisoned".into() })
+            .unwrap_or(SshConnectionStatus {
+                phase: Phase::Failed,
+                detail: "status poisoned".into(),
+            })
     }
 
     /// 收到远端输出：先置 `got_output`（在生命周期锁内），再提升 phase。
@@ -247,9 +251,10 @@ impl Shared {
     fn send_bytes(&self, sink: &mut UnixStream, payload: &[u8]) -> io::Result<()> {
         let frame = encode_frame(payload)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
-        let _guard = self.write_lock.lock().map_err(|_| {
-            io::Error::new(io::ErrorKind::Other, "transport write lock poisoned")
-        })?;
+        let _guard = self
+            .write_lock
+            .lock()
+            .map_err(|_| io::Error::new(io::ErrorKind::Other, "transport write lock poisoned"))?;
         sink.write_all(&frame)
     }
 }
@@ -330,7 +335,10 @@ impl SshPluginTransport {
             ));
         }
         if profile.host.trim().is_empty() {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "SSH 主机不能为空"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "SSH 主机不能为空",
+            ));
         }
         if profile.auth == "password" {
             return Err(io::Error::new(
@@ -362,29 +370,28 @@ impl SshPluginTransport {
             command.env("TERM", "xterm-256color");
         }
         let child = command.spawn().map_err(|e| {
-            io::Error::new(
-                e.kind(),
-                format!("启动 {program} 失败（plugin-ssh）: {e}"),
-            )
+            io::Error::new(e.kind(), format!("启动 {program} 失败（plugin-ssh）: {e}"))
         })?;
         let child = Arc::new(Mutex::new(child));
         // 从这里开始任何提前返回（包括取 stdio 失败）都必须收尸。
         let mut guard = ChildGuard::new(child.clone());
-        let (stdin, stdout, stderr) = {
-            let mut child = child.lock().map_err(|_| {
-                io::Error::new(io::ErrorKind::Other, "ssh child lock poisoned")
-            })?;
-            let stdin = child.stdin.take().ok_or_else(|| {
-                io::Error::new(io::ErrorKind::BrokenPipe, "ssh stdin 不可用")
-            })?;
-            let stdout = child.stdout.take().ok_or_else(|| {
-                io::Error::new(io::ErrorKind::BrokenPipe, "ssh stdout 不可用")
-            })?;
-            let stderr = child.stderr.take().ok_or_else(|| {
-                io::Error::new(io::ErrorKind::BrokenPipe, "ssh stderr 不可用")
-            })?;
-            (stdin, stdout, stderr)
-        };
+        let (stdin, stdout, stderr) =
+            {
+                let mut child = child
+                    .lock()
+                    .map_err(|_| io::Error::new(io::ErrorKind::Other, "ssh child lock poisoned"))?;
+                let stdin = child
+                    .stdin
+                    .take()
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "ssh stdin 不可用"))?;
+                let stdout = child.stdout.take().ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::BrokenPipe, "ssh stdout 不可用")
+                })?;
+                let stderr = child.stderr.take().ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::BrokenPipe, "ssh stderr 不可用")
+                })?;
+                (stdin, stdout, stderr)
+            };
 
         let (tx, rx) = UnixStream::pair()?;
         let mut sink = tx.try_clone()?;
@@ -467,15 +474,17 @@ impl PaneTransport for SshPluginTransport {
     }
 
     fn write_all(&mut self, data: &[u8]) -> io::Result<()> {
-        let stdin = self.stdin.as_mut().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::BrokenPipe, "transport 已拆分")
-        })?;
+        let stdin = self
+            .stdin
+            .as_mut()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "transport 已拆分"))?;
         stdin.write_all(data)?;
         stdin.flush()
     }
 
     fn resize(&mut self, cols: u16, rows: u16) {
-        self.resize.store(pack_resize(cols, rows), Ordering::Relaxed);
+        self.resize
+            .store(pack_resize(cols, rows), Ordering::Relaxed);
     }
 
     fn close(&mut self) {
@@ -484,12 +493,14 @@ impl PaneTransport for SshPluginTransport {
 
     fn into_halves(self: Box<Self>) -> io::Result<TransportHalves> {
         let mut this = *self;
-        let reader = this.reader.take().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::BrokenPipe, "transport 已拆分")
-        })?;
-        let stdin = this.stdin.take().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::BrokenPipe, "transport 已拆分")
-        })?;
+        let reader = this
+            .reader
+            .take()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "transport 已拆分"))?;
+        let stdin = this
+            .stdin
+            .take()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "transport 已拆分"))?;
         let control_socket = match reader.stream.try_clone() {
             Ok(socket) => Arc::new(socket),
             Err(e) => {
@@ -497,7 +508,7 @@ impl PaneTransport for SshPluginTransport {
                 this.reader = Some(reader);
                 this.stdin = Some(stdin);
                 return Err(e);
-            },
+            }
         };
         // 从此刻起控制半边/独立 shutdown 负责 kill；`this` 的 Drop 不能重复收尸。
         this.owns_child = false;
@@ -538,7 +549,8 @@ impl SshControl {
 
 impl TransportControl for SshControl {
     fn resize(&mut self, cols: u16, rows: u16) {
-        self.resize.store(pack_resize(cols, rows), Ordering::Relaxed);
+        self.resize
+            .store(pack_resize(cols, rows), Ordering::Relaxed);
     }
 
     fn close(&mut self) {
@@ -614,8 +626,10 @@ fn reject_unsafe_extra_args(args: &[String]) -> io::Result<()> {
         };
         if let Some(option) = option {
             let key = ssh_option_key(option);
-            if let Some(sensitive) =
-                SENSITIVE_SSH_OPTIONS.iter().copied().find(|opt| key == *opt)
+            if let Some(sensitive) = SENSITIVE_SSH_OPTIONS
+                .iter()
+                .copied()
+                .find(|opt| key == *opt)
             {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
@@ -707,9 +721,7 @@ fn timeout_message(label: &str, timeout: Duration) -> String {
 }
 
 fn failure_message(label: &str, reason: &str, stderr: &str) -> String {
-    let mut text = format!(
-        "\r\n\x1b[1;31m[plugin-ssh] 连接失败：{label}（{reason}）\x1b[0m\r\n"
-    );
+    let mut text = format!("\r\n\x1b[1;31m[plugin-ssh] 连接失败：{label}（{reason}）\x1b[0m\r\n");
     let tail = sanitize_stderr(stderr);
     if !tail.is_empty() {
         text.push_str("\x1b[31m");
@@ -729,8 +741,8 @@ fn sanitize_control(text: &str) -> String {
         match ch {
             '\n' | '\t' => out.push(ch),
             '\u{1b}' => out.push('␛'),
-            c if (c as u32) < 0x20 || c == '\u{7f}' => {},
-            c if ('\u{80}'..='\u{9f}').contains(&c) => {},
+            c if (c as u32) < 0x20 || c == '\u{7f}' => {}
+            c if ('\u{80}'..='\u{9f}').contains(&c) => {}
             c => out.push(c),
         }
     }
@@ -762,7 +774,10 @@ struct StderrTail {
 
 impl StderrTail {
     fn new(limit: usize) -> Self {
-        Self { buf: Vec::with_capacity(limit.min(4096)), limit }
+        Self {
+            buf: Vec::with_capacity(limit.min(4096)),
+            limit,
+        }
     }
 
     fn push(&mut self, chunk: &[u8]) {
@@ -771,7 +786,8 @@ impl StderrTail {
         }
         if chunk.len() >= self.limit {
             self.buf.clear();
-            self.buf.extend_from_slice(&chunk[chunk.len() - self.limit..]);
+            self.buf
+                .extend_from_slice(&chunk[chunk.len() - self.limit..]);
             return;
         }
         let overflow = self
@@ -810,7 +826,7 @@ fn spawn_stderr(
                         if let Ok(mut out) = buf.lock() {
                             out.push(&chunk[..n]);
                         }
-                    },
+                    }
                     Err(_) => break,
                 }
             }
@@ -826,66 +842,65 @@ fn spawn_pump(
     stderr_thread: JoinHandle<()>,
     label: String,
 ) -> io::Result<JoinHandle<()>> {
-    std::thread::Builder::new().name("plugin-ssh-out".into()).spawn(move || {
-        let mut buf = vec![0u8; READ_CHUNK];
-        let mut read_error: Option<io::Error> = None;
-        loop {
-            match stdout.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    shared.note_output();
-                    if shared.send_bytes(&mut sink, &buf[..n]).is_err() {
-                        // 帧写失败说明 pane 侧已关闭；退出并杀掉 ssh。
-                        read_error = Some(io::Error::new(
-                            io::ErrorKind::BrokenPipe,
-                            "pane transport closed",
-                        ));
+    std::thread::Builder::new()
+        .name("plugin-ssh-out".into())
+        .spawn(move || {
+            let mut buf = vec![0u8; READ_CHUNK];
+            let mut read_error: Option<io::Error> = None;
+            loop {
+                match stdout.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        shared.note_output();
+                        if shared.send_bytes(&mut sink, &buf[..n]).is_err() {
+                            // 帧写失败说明 pane 侧已关闭；退出并杀掉 ssh。
+                            read_error = Some(io::Error::new(
+                                io::ErrorKind::BrokenPipe,
+                                "pane transport closed",
+                            ));
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        read_error = Some(e);
                         break;
                     }
-                },
-                Err(e) => {
-                    read_error = Some(e);
-                    break;
-                },
+                }
             }
-        }
 
-        let exit = wait_for_exit(&child, Duration::from_secs(2));
-        let _ = stderr_thread.join();
-        let stderr = stderr_buf
-            .lock()
-            .map(|b| b.as_string())
-            .unwrap_or_default();
+            let exit = wait_for_exit(&child, Duration::from_secs(2));
+            let _ = stderr_thread.join();
+            let stderr = stderr_buf.lock().map(|b| b.as_string()).unwrap_or_default();
 
-        if shared.is_closed() {
-            shared.set(Phase::Closed, "closed by user");
-            let _ = shared.send(&mut sink, &closed_message("用户关闭"));
-            return;
-        }
-        // watchdog 已经发过超时文本：不重复。
-        if shared.was_notified() {
-            return;
-        }
+            if shared.is_closed() {
+                shared.set(Phase::Closed, "closed by user");
+                let _ = shared.send(&mut sink, &closed_message("用户关闭"));
+                return;
+            }
+            // watchdog 已经发过超时文本：不重复。
+            if shared.was_notified() {
+                return;
+            }
 
-        match (&exit, &read_error) {
-            (Some(status), _) if status.success() => {
-                if !shared.claim_closed("remote closed") {
-                    return;
+            match (&exit, &read_error) {
+                (Some(status), _) if status.success() => {
+                    if !shared.claim_closed("remote closed") {
+                        return;
+                    }
+                    let _ = shared.send(&mut sink, &closed_message("远端关闭"));
                 }
-                let _ = shared.send(&mut sink, &closed_message("远端关闭"));
-            },
-            _ => {
-                let reason = failure_reason(exit.as_ref(), read_error.as_ref());
-                if !shared.claim_error() {
-                    return;
+                _ => {
+                    let reason = failure_reason(exit.as_ref(), read_error.as_ref());
+                    if !shared.claim_error() {
+                        return;
+                    }
+                    shared.set(Phase::Failed, reason.clone());
+                    eprintln!("[plugin-ssh] failed host={label} reason={reason}");
+                    let _ = shared.send(&mut sink, &failure_message(&label, &reason, &stderr));
                 }
-                shared.set(Phase::Failed, reason.clone());
-                eprintln!("[plugin-ssh] failed host={label} reason={reason}");
-                let _ = shared.send(&mut sink, &failure_message(&label, &reason, &stderr));
-            },
-        }
-        let _ = sink.shutdown(std::net::Shutdown::Write);
-    })
+            }
+            let _ = sink.shutdown(std::net::Shutdown::Write);
+        })
 }
 
 fn failure_reason(exit: Option<&ExitStatus>, read_error: Option<&io::Error>) -> String {
@@ -898,7 +913,7 @@ fn failure_reason(exit: Option<&ExitStatus>, read_error: Option<&io::Error>) -> 
                     Some(sig) => format!("ssh 被信号 {sig} 终止"),
                     None => "ssh 异常退出".to_string(),
                 }
-            },
+            }
         },
         None => "ssh 未在 2s 内退出（已 kill）".to_string(),
     };
@@ -915,26 +930,31 @@ fn spawn_watchdog(
     timeout: Duration,
     label: String,
 ) -> io::Result<JoinHandle<()>> {
-    std::thread::Builder::new().name("plugin-ssh-watchdog".into()).spawn(move || {
-        let deadline = Instant::now() + timeout;
-        while Instant::now() < deadline {
-            if shared.is_closed() || shared.has_output() {
+    std::thread::Builder::new()
+        .name("plugin-ssh-watchdog".into())
+        .spawn(move || {
+            let deadline = Instant::now() + timeout;
+            while Instant::now() < deadline {
+                if shared.is_closed() || shared.has_output() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            // 最终判定与输出线程的 note_output 在同一把锁下排序：如果输出在
+            // 临界区之前到达，这里必然看到 got_output 并放弃；不存在
+            // “检查时还没输出、认领时输出刚到”而被误杀的窗口。
+            let detail = format!("{}s 无远端输出", timeout.as_secs_f32());
+            if !shared.claim_timeout(detail) {
                 return;
             }
-            std::thread::sleep(Duration::from_millis(25));
-        }
-        // 最终判定与输出线程的 note_output 在同一把锁下排序：如果输出在
-        // 临界区之前到达，这里必然看到 got_output 并放弃；不存在
-        // “检查时还没输出、认领时输出刚到”而被误杀的窗口。
-        let detail = format!("{}s 无远端输出", timeout.as_secs_f32());
-        if !shared.claim_timeout(detail) {
-            return;
-        }
-        eprintln!("[plugin-ssh] timeout host={label} after={}ms", timeout.as_millis());
-        let _ = shared.send(&mut sink, &timeout_message(&label, timeout));
-        let _ = sink.shutdown(std::net::Shutdown::Write);
-        kill_and_wait(&child);
-    })
+            eprintln!(
+                "[plugin-ssh] timeout host={label} after={}ms",
+                timeout.as_millis()
+            );
+            let _ = shared.send(&mut sink, &timeout_message(&label, timeout));
+            let _ = sink.shutdown(std::net::Shutdown::Write);
+            kill_and_wait(&child);
+        })
 }
 
 fn wait_for_exit(child: &Arc<Mutex<Child>>, timeout: Duration) -> Option<ExitStatus> {
@@ -943,7 +963,7 @@ fn wait_for_exit(child: &Arc<Mutex<Child>>, timeout: Duration) -> Option<ExitSta
         if let Ok(mut child) = child.lock() {
             match child.try_wait() {
                 Ok(Some(status)) => return Some(status),
-                Ok(None) => {},
+                Ok(None) => {}
                 Err(_) => return None,
             }
         }
@@ -1008,7 +1028,7 @@ impl FrameReader {
                         io::ErrorKind::UnexpectedEof,
                         "transport frame truncated",
                     ));
-                },
+                }
                 Ok(n) => self.payload_filled += n,
                 Err(e) => return Err(e),
             }
@@ -1063,7 +1083,7 @@ impl Read for FrameReader {
                             io::ErrorKind::UnexpectedEof,
                             "transport frame header truncated",
                         ));
-                    },
+                    }
                     Ok(n) => self.header_filled += n,
                     Err(e) => return Err(e),
                 }
@@ -1105,11 +1125,11 @@ pub fn run_probe(args: &[String]) -> i32 {
                 }
                 i += 2;
                 continue;
-            },
+            }
             other if selector.is_none() => selector = Some(other),
             other => {
                 eprintln!("[plugin-ssh-probe] 忽略未知参数: {other}");
-            },
+            }
         }
         i += 1;
     }
@@ -1124,19 +1144,14 @@ pub fn run_probe(args: &[String]) -> i32 {
     };
     println!(
         "[plugin-ssh-probe] profile={} id={} host={} user={} auth={} transport={}",
-        profile.name,
-        profile.id,
-        profile.host,
-        profile.user,
-        profile.auth,
-        profile.transport
+        profile.name, profile.id, profile.host, profile.user, profile.auth, profile.transport
     );
     let mut transport = match SshPluginTransport::start(profile) {
         Ok(t) => t,
         Err(e) => {
             eprintln!("[plugin-ssh-probe] 启动失败: {e}");
             return 1;
-        },
+        }
     };
     if let Err(e) = transport.set_read_timeout(Some(Duration::from_millis(200))) {
         eprintln!("[plugin-ssh-probe] set_read_timeout 失败: {e}");
@@ -1154,17 +1169,16 @@ pub fn run_probe(args: &[String]) -> i32 {
                 if out.write_all(&buf[..n]).and_then(|_| out.flush()).is_err() {
                     break;
                 }
-            },
+            }
             Err(e)
-                if e.kind() == io::ErrorKind::WouldBlock
-                    || e.kind() == io::ErrorKind::TimedOut =>
+                if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut =>
             {
                 continue
-            },
+            }
             Err(e) => {
                 eprintln!("\n[plugin-ssh-probe] 读取失败: {e}");
                 break;
-            },
+            }
         }
     }
     let status = transport.status();
@@ -1309,7 +1323,7 @@ mod tests {
             match SshPluginTransport::start_with_timeout(profile, timeout) {
                 Err(e) if e.to_string().contains("Text file busy") => {
                     std::thread::sleep(Duration::from_millis(25));
-                },
+                }
                 other => return other,
             }
         }
@@ -1341,7 +1355,10 @@ mod tests {
             "ServerAliveInterval=15",
             "ServerAliveCountMax=3",
         ] {
-            assert!(args.iter().any(|a| a == needle), "missing {needle}: {args:?}");
+            assert!(
+                args.iter().any(|a| a == needle),
+                "missing {needle}: {args:?}"
+            );
         }
         assert!(args.iter().any(|a| a.starts_with("ConnectTimeout=")));
         // -p/-l 仍在 host 之前，顺序不被 POC 选项破坏。
@@ -1362,43 +1379,49 @@ mod tests {
     #[test]
     fn fake_ssh_banner_reaches_pane_and_eof_closes_cleanly() {
         let fake = FakeSsh::new("printf 'Welcome to fake ssh\\r\\n'; sleep 0.1");
-        let mut t = start_fake(
-            &fake.profile(),
-            Duration::from_secs(5),
-        )
-        .expect("transport should start");
+        let mut t =
+            start_fake(&fake.profile(), Duration::from_secs(5)).expect("transport should start");
         let bytes = read_all(&mut t);
         let text = String::from_utf8_lossy(&bytes);
-        assert!(text.contains("正在连接"), "missing connecting banner: {text:?}");
-        assert!(text.contains("Welcome to fake ssh"), "missing remote banner: {text:?}");
-        assert!(text.contains("连接已关闭"), "missing close notice: {text:?}");
+        assert!(
+            text.contains("正在连接"),
+            "missing connecting banner: {text:?}"
+        );
+        assert!(
+            text.contains("Welcome to fake ssh"),
+            "missing remote banner: {text:?}"
+        );
+        assert!(
+            text.contains("连接已关闭"),
+            "missing close notice: {text:?}"
+        );
         assert_eq!(t.status().phase, Phase::Closed);
     }
 
     #[test]
     fn failed_ssh_exit_and_stderr_are_visible_in_pane() {
         let fake = FakeSsh::new("echo 'Permission denied (publickey).' >&2; exit 255");
-        let mut t = start_fake(
-            &fake.profile(),
-            Duration::from_secs(5),
-        )
-        .expect("transport should start");
+        let mut t =
+            start_fake(&fake.profile(), Duration::from_secs(5)).expect("transport should start");
         let bytes = read_all(&mut t);
         let text = String::from_utf8_lossy(&bytes);
-        assert!(text.contains("连接失败"), "missing failure banner: {text:?}");
+        assert!(
+            text.contains("连接失败"),
+            "missing failure banner: {text:?}"
+        );
         assert!(text.contains("255"), "missing exit code: {text:?}");
-        assert!(text.contains("Permission denied"), "missing stderr: {text:?}");
+        assert!(
+            text.contains("Permission denied"),
+            "missing stderr: {text:?}"
+        );
         assert_eq!(t.status().phase, Phase::Failed);
     }
 
     #[test]
     fn silent_connection_times_out_and_reports_visible_error() {
         let fake = FakeSsh::new("exec sleep 30");
-        let t = start_fake(
-            &fake.profile(),
-            Duration::from_millis(300),
-        )
-        .expect("transport should start");
+        let t = start_fake(&fake.profile(), Duration::from_millis(300))
+            .expect("transport should start");
         let status = std::thread::spawn(move || {
             let mut t = Box::new(t);
             let bytes = read_all(&mut t);
@@ -1406,18 +1429,18 @@ mod tests {
             (String::from_utf8_lossy(&bytes).to_string(), status)
         });
         let (text, status) = status.join().expect("timeout thread");
-        assert!(text.contains("连接超时"), "missing timeout banner: {text:?}");
+        assert!(
+            text.contains("连接超时"),
+            "missing timeout banner: {text:?}"
+        );
         assert_eq!(status.phase, Phase::TimedOut, "detail={}", status.detail);
     }
 
     #[test]
     fn resize_reaches_transport_backend() {
         let fake = FakeSsh::new("exec sleep 30");
-        let mut t = start_fake(
-            &fake.profile(),
-            Duration::from_secs(30),
-        )
-        .expect("transport should start");
+        let mut t =
+            start_fake(&fake.profile(), Duration::from_secs(30)).expect("transport should start");
         t.resize(120, 40);
         assert_eq!(t.last_resize(), (120, 40));
         t.close();
@@ -1426,11 +1449,8 @@ mod tests {
     #[test]
     fn close_kills_ssh_and_is_idempotent() {
         let fake = FakeSsh::new("exec sleep 30");
-        let mut t = start_fake(
-            &fake.profile(),
-            Duration::from_secs(30),
-        )
-        .expect("transport should start");
+        let mut t =
+            start_fake(&fake.profile(), Duration::from_secs(30)).expect("transport should start");
         t.close();
         t.close();
         // 关闭后读端应很快 EOF；不依赖 30s 的 ssh。
@@ -1482,7 +1502,10 @@ mod tests {
 
     #[test]
     fn plugin_ssh_kind_alias_is_normalized() {
-        let mut p = Profile { kind: "plugin-ssh".into(), ..Profile::default() };
+        let mut p = Profile {
+            kind: "plugin-ssh".into(),
+            ..Profile::default()
+        };
         p.normalize_plugin_kind();
         assert_eq!(p.kind, "ssh");
         assert_eq!(p.transport, "plugin");
@@ -1492,13 +1515,13 @@ mod tests {
     #[test]
     fn dropping_transport_without_close_kills_ssh() {
         let pidfile = temp_path("drop.pid");
-        let fake = FakeSsh::new(&format!(
-            "echo $$ > '{}'; exec sleep 30",
-            pidfile.display()
-        ));
-        let t = start_fake(&fake.profile(), Duration::from_secs(30))
-            .expect("transport should start");
-        assert!(wait_for_file(&pidfile, Duration::from_secs(2)), "fake ssh 没有起来");
+        let fake = FakeSsh::new(&format!("echo $$ > '{}'; exec sleep 30", pidfile.display()));
+        let t =
+            start_fake(&fake.profile(), Duration::from_secs(30)).expect("transport should start");
+        assert!(
+            wait_for_file(&pidfile, Duration::from_secs(2)),
+            "fake ssh 没有起来"
+        );
         let pid = read_pid(&pidfile);
         drop(t);
         assert!(
@@ -1511,13 +1534,13 @@ mod tests {
     #[test]
     fn dropping_control_half_kills_ssh() {
         let pidfile = temp_path("halves.pid");
-        let fake = FakeSsh::new(&format!(
-            "echo $$ > '{}'; exec sleep 30",
-            pidfile.display()
-        ));
-        let t = start_fake(&fake.profile(), Duration::from_secs(30))
-            .expect("transport should start");
-        assert!(wait_for_file(&pidfile, Duration::from_secs(2)), "fake ssh 没有起来");
+        let fake = FakeSsh::new(&format!("echo $$ > '{}'; exec sleep 30", pidfile.display()));
+        let t =
+            start_fake(&fake.profile(), Duration::from_secs(30)).expect("transport should start");
+        assert!(
+            wait_for_file(&pidfile, Duration::from_secs(2)),
+            "fake ssh 没有起来"
+        );
         let pid = read_pid(&pidfile);
         let halves = Box::new(t).into_halves().expect("into_halves");
         drop(halves);
@@ -1538,8 +1561,8 @@ mod tests {
             "done; ",
             "printf 'LAST-LINE\\n' >&2; exit 255"
         ));
-        let mut t = start_fake(&fake.profile(), Duration::from_secs(5))
-            .expect("transport should start");
+        let mut t =
+            start_fake(&fake.profile(), Duration::from_secs(5)).expect("transport should start");
         let bytes = read_all(&mut t);
         let text = String::from_utf8_lossy(&bytes);
         assert!(
@@ -1556,14 +1579,15 @@ mod tests {
 
     #[test]
     fn stderr_control_sequences_are_sanitized_in_pane() {
-        let fake = FakeSsh::new(
-            "printf 'pre\\033]52;c;Zm9v\\007post\\n' >&2; exit 255",
-        );
-        let mut t = start_fake(&fake.profile(), Duration::from_secs(5))
-            .expect("transport should start");
+        let fake = FakeSsh::new("printf 'pre\\033]52;c;Zm9v\\007post\\n' >&2; exit 255");
+        let mut t =
+            start_fake(&fake.profile(), Duration::from_secs(5)).expect("transport should start");
         let bytes = read_all(&mut t);
         let text = String::from_utf8_lossy(&bytes);
-        assert!(!text.contains("\x1b]52"), "OSC 52 不得原样进入 pane: {text:?}");
+        assert!(
+            !text.contains("\x1b]52"),
+            "OSC 52 不得原样进入 pane: {text:?}"
+        );
         assert!(!text.contains('\x07'), "BEL 不得原样进入 pane: {text:?}");
         assert!(
             text.contains("pre␛]52;c;Zm9vpost"),
@@ -1579,30 +1603,33 @@ mod tests {
         let label = remote_label(&p);
         assert!(!label.contains('\x1b'), "label 里不能有裸 ESC: {label:?}");
         assert!(!label.contains('\x07'), "label 里不能有 BEL: {label:?}");
-        assert!(label.contains("␛]52;c;Zm9v"), "ESC 应转成可见字符: {label:?}");
+        assert!(
+            label.contains("␛]52;c;Zm9v"),
+            "ESC 应转成可见字符: {label:?}"
+        );
         assert!(label.contains("u␛[31m@"), "user 也要 sanitize: {label:?}");
     }
 
     #[test]
     fn fake_ssh_sees_security_options_before_extra_args() {
         let argvfile = temp_path("argv");
-        let fake = FakeSsh::new(&format!(
-            "printf '%s\\n' \"$@\" > '{}'",
-            argvfile.display()
-        ));
+        let fake = FakeSsh::new(&format!("printf '%s\\n' \"$@\" > '{}'", argvfile.display()));
         let mut p = fake.profile();
         p.args = vec![
             "-o".into(),
             "SendEnv=XTERVO_TEST".into(),
             "fake.test".into(),
         ];
-        let mut t = start_fake(&p, Duration::from_secs(5))
-            .expect("transport should start");
+        let mut t = start_fake(&p, Duration::from_secs(5)).expect("transport should start");
         let _ = read_all(&mut t);
         let recorded = std::fs::read_to_string(&argvfile).expect("argv file");
         let args: Vec<&str> = recorded.lines().collect();
         let _ = std::fs::remove_file(&argvfile);
-        assert_eq!(args.last().copied(), Some("fake.test"), "host 必须最后: {args:?}");
+        assert_eq!(
+            args.last().copied(),
+            Some("fake.test"),
+            "host 必须最后: {args:?}"
+        );
         assert!(args.contains(&"-tt"), "缺少 -tt: {args:?}");
         let batch = args
             .iter()
@@ -1612,10 +1639,7 @@ mod tests {
             .iter()
             .position(|a| *a == "SendEnv=XTERVO_TEST")
             .unwrap_or_else(|| panic!("缺少 extra_args: {args:?}"));
-        assert!(
-            batch < extra,
-            "安全 -o 必须排在 extra_args 之前: {args:?}"
-        );
+        assert!(batch < extra, "安全 -o 必须排在 extra_args 之前: {args:?}");
     }
 
     #[test]
@@ -1644,7 +1668,10 @@ mod tests {
         // `-oKEY=VALUE` 连写与大小写混用同样要拦。
         let mut p = ssh_profile();
         p.extra_args = vec!["-ostricthostkeychecking=no".into()];
-        assert!(plugin_ssh_command(&p).is_err(), "attached -o 形式必须被拒绝");
+        assert!(
+            plugin_ssh_command(&p).is_err(),
+            "attached -o 形式必须被拒绝"
+        );
 
         // 换配置文件会绕过 -o 检查。
         let mut p = ssh_profile();
@@ -1733,11 +1760,8 @@ mod tests {
     #[test]
     fn watchdog_does_not_kill_connection_after_banner() {
         let fake = FakeSsh::new("printf 'banner\\n'; exec sleep 30");
-        let mut t = start_fake(
-            &fake.profile(),
-            Duration::from_millis(250),
-        )
-        .expect("transport should start");
+        let mut t = start_fake(&fake.profile(), Duration::from_millis(250))
+            .expect("transport should start");
         let mut text = Vec::new();
         let mut buf = [0u8; 4096];
         let deadline = Instant::now() + Duration::from_secs(2);

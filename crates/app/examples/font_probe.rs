@@ -14,7 +14,13 @@ fn probe(path: &str, idx: u32) {
     let read = t.elapsed();
     let mb = bytes.len() as f64 / 1024.0 / 1024.0;
     let t2 = Instant::now();
-    match Font::from_bytes(bytes, FontSettings { collection_index: idx, ..Default::default() }) {
+    match Font::from_bytes(
+        bytes,
+        FontSettings {
+            collection_index: idx,
+            ..Default::default()
+        },
+    ) {
         Ok(f) => println!(
             "{path}#{idx}: {mb:.1}MB read={read:?} parse={:?} 你={} 好={} A={}",
             t2.elapsed(),
@@ -32,6 +38,9 @@ fn main() {
     probe("/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc", 7);
     probe("/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc", 1);
     probe("/usr/share/fonts/truetype/wqy/wqy-microhei.ttc", 0);
-    probe("/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf", 0);
+    probe(
+        "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+        0,
+    );
     probe("/usr/share/fonts/truetype/arphic/uming.ttc", 0);
 }

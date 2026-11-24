@@ -49,7 +49,7 @@ pub(super) fn doctor_check(args: &Value) -> Result<Value, String> {
                 FrameSummary::from_diag_json(&value)
                     .map_err(|error| format!("invalid frame: {error}"))?,
             )
-        },
+        }
     };
     let metrics = match args.get("metrics") {
         None | Some(Value::Null) => None,
@@ -59,7 +59,7 @@ pub(super) fn doctor_check(args: &Value) -> Result<Value, String> {
                 MetricsSummary::from_diag_json(&value)
                     .map_err(|error| format!("invalid metrics: {error}"))?,
             )
-        },
+        }
     };
     let symptom = symptom_from_args(args)?;
 
@@ -93,8 +93,8 @@ pub(super) fn issue_draft(args: &Value) -> Result<Value, String> {
     if !case_value.is_object() {
         return Err("case must be a JSON object".to_string());
     }
-    let text = serde_json::to_string(case_value)
-        .map_err(|error| format!("serialize case: {error}"))?;
+    let text =
+        serde_json::to_string(case_value).map_err(|error| format!("serialize case: {error}"))?;
     let case = DiagnosticCase::from_json(&text)
         .map_err(|error| format!("invalid diagnostic case: {error}"))?;
     let draft = render_issue(&case);
@@ -138,7 +138,7 @@ pub(super) fn metrics_read(args: &Value) -> Result<Value, String> {
                 validate_allowed_env_path("log_dir", raw)?;
                 (dir, false)
             }
-        },
+        }
     };
 
     let mut stats = Vec::new();
@@ -188,12 +188,7 @@ pub(super) fn metrics_read(args: &Value) -> Result<Value, String> {
     }
 
     // Newest first, then by name so the same directory yields the same summary.
-    stats.sort_by(|left, right| {
-        right
-            .2
-            .cmp(&left.2)
-            .then_with(|| left.0.cmp(&right.0))
-    });
+    stats.sort_by(|left, right| right.2.cmp(&left.2).then_with(|| left.0.cmp(&right.0)));
     stats.truncate(MAX_LOG_FILES);
 
     let mut files = Vec::with_capacity(stats.len());
@@ -277,7 +272,7 @@ pub(super) fn read_resource(uri: &str) -> Result<Value, String> {
                     "text": text,
                 }]
             }))
-        },
+        }
         _ => Err(format!("unknown resource: {uri}")),
     }
 }
@@ -325,7 +320,9 @@ fn validate_allowed_env_path(label: &str, raw: &str) -> Result<(), String> {
         return Ok(());
     }
     if raw.chars().count() > MAX_PATH_CHARS {
-        return Err(format!("{label} is longer than {MAX_PATH_CHARS} characters"));
+        return Err(format!(
+            "{label} is longer than {MAX_PATH_CHARS} characters"
+        ));
     }
     let path = Path::new(raw);
     if !path.is_absolute() {
@@ -410,7 +407,7 @@ fn read_json_input(value: &Value, label: &str) -> Result<Value, String> {
             let text = read_text_bounded(&path, MAX_INPUT_JSON_BYTES)?;
             serde_json::from_str(&text)
                 .map_err(|error| format!("{label} file is not JSON: {error}"))
-        },
+        }
         _ => Err(format!("{label} must be a JSON object or a path string")),
     }
 }

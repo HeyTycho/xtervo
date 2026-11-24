@@ -42,18 +42,18 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         "env" | "--json" => {
             print_json(&env_json())?;
             Ok(())
-        },
+        }
         "snapshot" => snapshot(&args[1..]),
         "replay" => replay(&args[1..]),
         "trace" => trace(&args[1..]),
         "metrics" => {
             print_json(&observability_value("metrics"))?;
             Ok(())
-        },
+        }
         "observability" | "obs" => {
             print_json(&observability_value("observability"))?;
             Ok(())
-        },
+        }
         "scene-diff" | "scene_diff" => scene_diff_cli(&args[1..]),
         "trace-layer" | "trace_layer" => trace_layer::cli(&args[1..]),
         "doctor" | "doctor-check" => doctor_cli(&args[1..]),
@@ -61,7 +61,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         "help" | "-h" | "--help" => {
             println!("{}", help_text());
             Ok(())
-        },
+        }
         other => Err(format!("未知 diag 子命令: {other}（用 xtervo diag help）").into()),
     }
 }
@@ -98,7 +98,10 @@ fn help_text() -> &'static str {
 }
 
 fn opt(args: &[String], flag: &str) -> Option<String> {
-    args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).cloned()
+    args.iter()
+        .position(|a| a == flag)
+        .and_then(|i| args.get(i + 1))
+        .cloned()
 }
 
 fn num(args: &[String], flag: &str, default: usize) -> usize {
@@ -251,7 +254,10 @@ fn trace(args: &[String]) -> Result<(), Box<dyn Error>> {
     std::fs::write(&out_path, body)?;
     eprintln!(
         "[diag] trace {} frames -> {} ({} ms, last gen {:?})",
-        seq, out_path, duration, final_value.as_ref().and_then(|v| v.get("generation"))
+        seq,
+        out_path,
+        duration,
+        final_value.as_ref().and_then(|v| v.get("generation"))
     );
     Ok(())
 }
@@ -569,7 +575,9 @@ impl LiveTarget {
         if self.token.is_some() {
             return;
         }
-        let Some(path) = self.token_file.as_deref() else { return };
+        let Some(path) = self.token_file.as_deref() else {
+            return;
+        };
         if let Some(token) = crate::mcp::read_token_file(path) {
             self.token = Some(token);
         }
@@ -614,14 +622,14 @@ impl LiveTarget {
             Ok(value) => {
                 self.last_probe_error = None;
                 commands_from_capabilities(&value)
-            },
+            }
             Err(error) => {
                 if self.last_probe_error.as_deref() != Some(error.as_str()) {
                     eprintln!("[diag] live capability probe 失败: {error}");
                     self.last_probe_error = Some(error);
                 }
                 None
-            },
+            }
         }
     }
 }
@@ -645,22 +653,24 @@ fn commands_from_capabilities(value: &Value) -> Option<Vec<String>> {
 fn serve(args: &[String]) -> Result<(), Box<dyn Error>> {
     let explicit_socket = opt(args, "--socket")
         .filter(|value| !value.trim().is_empty())
-        .or_else(|| std::env::var(crate::mcp::SOCKET_ENV).ok().filter(|v| !v.is_empty()));
+        .or_else(|| {
+            std::env::var(crate::mcp::SOCKET_ENV)
+                .ok()
+                .filter(|v| !v.is_empty())
+        });
     let explicit_token = opt(args, "--token")
         .filter(|value| !value.is_empty())
-        .or_else(|| std::env::var(crate::mcp::TOKEN_ENV).ok().filter(|v| !v.is_empty()));
+        .or_else(|| {
+            std::env::var(crate::mcp::TOKEN_ENV)
+                .ok()
+                .filter(|v| !v.is_empty())
+        });
     let config_enabled = crate::mcp::config_enabled_from_disk();
     // 无参数时先指向默认路径；app 稍后启动也能在下次 tools/list 发现。
     let socket = explicit_socket.or_else(|| {
-        config_enabled.then(|| {
-            crate::mcp::default_socket_path()
-                .display()
-                .to_string()
-        })
+        config_enabled.then(|| crate::mcp::default_socket_path().display().to_string())
     });
-    let token_file = explicit_token
-        .is_none()
-        .then(crate::mcp::token_file_path);
+    let token_file = explicit_token.is_none().then(crate::mcp::token_file_path);
     eprintln!(
         "[diag] MCP live target socket={} token={} config_enabled={config_enabled}",
         socket.as_deref().unwrap_or("offline"),
@@ -703,18 +713,14 @@ where
             continue;
         }
         let response = if line.len() > MCP_MAX_REQUEST_BYTES {
-            Some(mcp_protocol_error(
-                Value::Null,
-                -32600,
-                "request too large",
-            ))
+            Some(mcp_protocol_error(Value::Null, -32600, "request too large"))
         } else {
             match serde_json::from_str::<Value>(&line) {
                 Ok(request) => mcp_handle_request(&request, &mut live),
                 Err(error) => {
                     eprintln!("[diag] MCP 坏 JSON: {error}");
                     Some(mcp_protocol_error(Value::Null, -32700, "parse error"))
-                },
+                }
             }
         };
         let Some(response) = response else { continue };
@@ -724,10 +730,7 @@ where
     Ok(())
 }
 
-fn mcp_handle_request(
-    request: &Value,
-    live: &mut LiveTarget,
-) -> Option<Value> {
+fn mcp_handle_request(request: &Value, live: &mut LiveTarget) -> Option<Value> {
     let object = match request.as_object() {
         Some(object) => object,
         None => {
@@ -736,7 +739,7 @@ fn mcp_handle_request(
                 -32600,
                 "invalid request: expected an object",
             ))
-        },
+        }
     };
     if let Some(version) = object.get("jsonrpc").and_then(Value::as_str) {
         if version != "2.0" {
@@ -763,11 +766,7 @@ fn mcp_handle_request(
     };
     let params = object.get("params").cloned().unwrap_or(Value::Null);
     if !params.is_null() && !params.is_object() {
-        return Some(mcp_protocol_error(
-            id,
-            -32602,
-            "params must be an object",
-        ));
+        return Some(mcp_protocol_error(id, -32602, "params must be an object"));
     }
     match method {
         "initialize" => Some(mcp_result(
@@ -788,14 +787,14 @@ fn mcp_handle_request(
             // 决定列表（app 端 tools/call 仍会二次校验）。
             let commands = live.commands().unwrap_or_default();
             Some(mcp_result(id, json!({"tools": mcp_tools(&commands)})))
-        },
+        }
         "tools/call" => {
             let result = mcp_call(request, live);
             Some(match result.get("error") {
                 Some(error) => json!({"jsonrpc": "2.0", "id": id, "error": error}),
                 None => mcp_result(id, result),
             })
-        },
+        }
         "resources/list" => Some(mcp_result(id, mcp_ext::resources_list())),
         "resources/read" => {
             let uri = params.get("uri").and_then(Value::as_str);
@@ -806,7 +805,7 @@ fn mcp_handle_request(
                 },
                 None => Some(mcp_protocol_error(id, -32602, "uri is required")),
             }
-        },
+        }
         _ => Some(mcp_protocol_error(id, -32601, "method not found")),
     }
 }
@@ -1051,7 +1050,10 @@ fn mcp_call(req: &Value, live: &mut LiveTarget) -> Value {
         return mcp_error(-32602, "params must be an object");
     }
     let name = params.get("name").and_then(Value::as_str).unwrap_or("");
-    let args = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
+    let args = params
+        .get("arguments")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
     if !args.is_object() {
         return mcp_error(-32602, "arguments must be an object");
     }
@@ -1074,13 +1076,16 @@ fn mcp_call(req: &Value, live: &mut LiveTarget) -> Value {
             }
             cli.extend([
                 "--shell".into(),
-                args.get("shell").and_then(Value::as_str).unwrap_or("/bin/sh").to_string(),
+                args.get("shell")
+                    .and_then(Value::as_str)
+                    .unwrap_or("/bin/sh")
+                    .to_string(),
                 "--".into(),
                 "-c".into(),
                 command,
             ]);
             snapshot_value(&cli)
-        },
+        }
         "xtervo.diag_replay" => {
             let input = match args.get("input").and_then(Value::as_str) {
                 Some(v) => v.to_string(),
@@ -1097,27 +1102,41 @@ fn mcp_call(req: &Value, live: &mut LiveTarget) -> Value {
                 cli.extend(["--wait-ms".into(), v.to_string()]);
             }
             replay_value(&cli)
-        },
+        }
         "xtervo.doctor_check" => mcp_ext::doctor_check(&args).map_err(|error| error.into()),
         "xtervo.issue_draft" => mcp_ext::issue_draft(&args).map_err(|error| error.into()),
         "xtervo.metrics_read" => mcp_ext::metrics_read(&args).map_err(|error| error.into()),
-        "xtervo.live_capabilities" => {
-            live.exchange("capabilities", &args, false).map_err(|e| e.into())
-        },
-        "xtervo.live_snapshot" => live.exchange("snapshot", &args, false).map_err(|e| e.into()),
+        "xtervo.live_capabilities" => live
+            .exchange("capabilities", &args, false)
+            .map_err(|e| e.into()),
+        "xtervo.live_snapshot" => live
+            .exchange("snapshot", &args, false)
+            .map_err(|e| e.into()),
         "xtervo.live_list" => live.exchange("list", &args, false).map_err(|e| e.into()),
         "xtervo.live_output" => live.exchange("output", &args, false).map_err(|e| e.into()),
-        "xtervo.live_send_text" => live.exchange("send_text", &args, false).map_err(|e| e.into()),
-        "xtervo.live_send_key" => live.exchange("send_key", &args, false).map_err(|e| e.into()),
+        "xtervo.live_send_text" => live
+            .exchange("send_text", &args, false)
+            .map_err(|e| e.into()),
+        "xtervo.live_send_key" => live
+            .exchange("send_key", &args, false)
+            .map_err(|e| e.into()),
         "xtervo.live_run" => live.exchange("run", &args, false).map_err(|e| e.into()),
         "xtervo.live_focus" => live.exchange("focus", &args, false).map_err(|e| e.into()),
         "xtervo.live_new_tab" => live.exchange("new_tab", &args, false).map_err(|e| e.into()),
-        "xtervo.live_new_window" => live.exchange("new_window", &args, false).map_err(|e| e.into()),
+        "xtervo.live_new_window" => live
+            .exchange("new_window", &args, false)
+            .map_err(|e| e.into()),
         "xtervo.live_split" => live.exchange("split", &args, false).map_err(|e| e.into()),
         "xtervo.live_scroll" => live.exchange("scroll", &args, false).map_err(|e| e.into()),
-        "xtervo.live_close_pane" => live.exchange("close_pane", &args, false).map_err(|e| e.into()),
-        "xtervo.live_close_tab" => live.exchange("close_tab", &args, false).map_err(|e| e.into()),
-        "xtervo.live_close_window" => live.exchange("close_window", &args, false).map_err(|e| e.into()),
+        "xtervo.live_close_pane" => live
+            .exchange("close_pane", &args, false)
+            .map_err(|e| e.into()),
+        "xtervo.live_close_tab" => live
+            .exchange("close_tab", &args, false)
+            .map_err(|e| e.into()),
+        "xtervo.live_close_window" => live
+            .exchange("close_window", &args, false)
+            .map_err(|e| e.into()),
         "xtervo.live_kill" => live.exchange("kill", &args, false).map_err(|e| e.into()),
         _ => return mcp_error(-32602, "unknown tool"),
     };
@@ -1142,9 +1161,7 @@ fn live_exchange(
     args: &Value,
     probe: bool,
 ) -> Result<Value, String> {
-    let socket = socket.ok_or(
-        "live control socket 未配置（MCP 未启用，或 xtervo 未运行）",
-    )?;
+    let socket = socket.ok_or("live control socket 未配置（MCP 未启用，或 xtervo 未运行）")?;
     let mut stream = std::os::unix::net::UnixStream::connect(socket)
         .map_err(|e| format!("连接 live socket {socket} 失败: {e}"))?;
     let _ = stream.set_read_timeout(Some(Duration::from_secs(3)));
@@ -1159,12 +1176,14 @@ fn live_exchange(
     BufReader::new(stream)
         .read_line(&mut line)
         .map_err(|e| format!("读 live socket 失败: {e}"))?;
-    let resp: Value = serde_json::from_str(line.trim())
-        .map_err(|e| format!("live socket 响应不是 JSON: {e}"))?;
+    let resp: Value =
+        serde_json::from_str(line.trim()).map_err(|e| format!("live socket 响应不是 JSON: {e}"))?;
     if resp.get("ok").and_then(Value::as_bool) != Some(true) {
         return Err(format!(
             "live socket 拒绝: {}",
-            resp.get("error").and_then(Value::as_str).unwrap_or("unknown")
+            resp.get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
         ));
     }
     Ok(resp.get("data").cloned().unwrap_or(Value::Null))
@@ -1225,7 +1244,7 @@ pub fn start_control_socket_with_control<F, G>(
                                 runtime.set_error(Some(error));
                                 std::thread::sleep(Duration::from_secs(1));
                                 continue;
-                            },
+                            }
                         }
                     }
                     let mut accept_error = None;
@@ -1238,20 +1257,16 @@ pub fn start_control_socket_with_control<F, G>(
                                     let runtime = runtime.clone();
                                     std::thread::Builder::new()
                                         .name("mcp-conn".into())
-                                        .spawn(move || {
-                                            handle_conn(stream, build, control, runtime)
-                                        })
+                                        .spawn(move || handle_conn(stream, build, control, runtime))
                                         .ok();
-                                },
-                                Err(error)
-                                    if error.kind() == std::io::ErrorKind::WouldBlock =>
-                                {
+                                }
+                                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                                     break;
-                                },
+                                }
                                 Err(error) => {
                                     accept_error = Some(error);
                                     break;
-                                },
+                                }
                             }
                         }
                     }
@@ -1294,17 +1309,15 @@ fn bind_socket(runtime: &mcp::McpRuntime) -> Result<BoundSocket, String> {
                     "live socket 已被另一个 xtervo 实例占用: {}",
                     path.display()
                 ))
-            },
+            }
             Err(_) => {
                 let _ = std::fs::remove_file(&path);
-            },
+            }
         }
     }
     let listener = std::os::unix::net::UnixListener::bind(&path)
         .map_err(|error| format!("live socket bind 失败 {}: {error}", path.display()))?;
-    if let Err(error) =
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
-    {
+    if let Err(error) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)) {
         let _ = std::fs::remove_file(&path);
         return Err(format!("live socket chmod 0600 失败: {error}"));
     }
@@ -1334,7 +1347,9 @@ fn bind_socket(runtime: &mcp::McpRuntime) -> Result<BoundSocket, String> {
 
 fn remove_socket_if_same(path: &std::path::Path, id: (u64, u64)) {
     use std::os::unix::fs::MetadataExt;
-    let Ok(metadata) = std::fs::symlink_metadata(path) else { return };
+    let Ok(metadata) = std::fs::symlink_metadata(path) else {
+        return;
+    };
     if (metadata.dev(), metadata.ino()) == id {
         let _ = std::fs::remove_file(path);
     }
@@ -1378,18 +1393,20 @@ fn handle_conn(
                 let _ = writeln!(
                     stream,
                     "{}",
-                    serde_json::to_string(
-                        &json!({"ok":false,"error":format!("bad json: {e}")})
-                    )
-                    .unwrap()
+                    serde_json::to_string(&json!({"ok":false,"error":format!("bad json: {e}")}))
+                        .unwrap()
                 );
                 continue;
-            },
+            }
         };
         let id = req.get("id").cloned().unwrap_or(Value::Null);
         let permissions = runtime.permissions();
         if !permissions.enabled {
-            reply_error(&mut stream, &id, "MCP disabled (enable MCP in Settings → Privacy)");
+            reply_error(
+                &mut stream,
+                &id,
+                "MCP disabled (enable MCP in Settings → Privacy)",
+            );
             continue;
         }
         // token 始终必需；state token 生成失败时也绝不放行。
@@ -1416,7 +1433,7 @@ fn handle_conn(
                     continue;
                 }
                 reply(&mut stream, &id, permissions.capabilities_json());
-            },
+            }
             Some("snapshot") => {
                 if !permissions.allows_command("snapshot") {
                     reply_error(
@@ -1441,7 +1458,7 @@ fn handle_conn(
                     Ok(data) => reply(&mut stream, &id, data),
                     Err(_) => reply_error(&mut stream, &id, "snapshot timeout"),
                 }
-            },
+            }
             Some(command) => {
                 if !permissions.allows_command(command) {
                     let audit_window = req
@@ -1449,9 +1466,7 @@ fn handle_conn(
                         .and_then(|args| args.get("window_id"))
                         .cloned()
                         .unwrap_or(Value::Null);
-                    eprintln!(
-                        "[mcp] denied action={command} window={audit_window}"
-                    );
+                    eprintln!("[mcp] denied action={command} window={audit_window}");
                     reply_error(
                         &mut stream,
                         &id,
@@ -1477,7 +1492,7 @@ fn handle_conn(
                     Ok(Err(error)) => reply_error(&mut stream, &id, &error),
                     Err(_) => reply_error(&mut stream, &id, "live command timeout"),
                 }
-            },
+            }
             None => reply_error(&mut stream, &id, "missing cmd"),
         }
     }
@@ -1701,7 +1716,10 @@ mod tests {
             Some(vec!["list".to_string(), "output".to_string()])
         );
         assert_eq!(commands_from_capabilities(&json!({})), None);
-        assert_eq!(commands_from_capabilities(&json!({"commands": "list"})), None);
+        assert_eq!(
+            commands_from_capabilities(&json!({"commands": "list"})),
+            None
+        );
     }
 
     #[test]
@@ -1773,10 +1791,7 @@ mod tests {
         assert_eq!(result["protocolVersion"], "2024-11-05");
         assert_eq!(result["capabilities"]["tools"]["listChanged"], false);
         assert_eq!(result["capabilities"]["resources"]["subscribe"], false);
-        assert_eq!(
-            result["capabilities"]["resources"]["listChanged"],
-            false
-        );
+        assert_eq!(result["capabilities"]["resources"]["listChanged"], false);
         assert_eq!(result["serverInfo"]["name"], "xtervo-diag");
         assert_eq!(result["serverInfo"]["version"], VERSION);
     }

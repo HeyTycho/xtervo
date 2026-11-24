@@ -34,7 +34,10 @@ mod tests {
         assert_eq!(SourceId::namespaced(2, 1), SourceId((2 << 32) | 1));
         assert_ne!(SourceId::namespaced(1, 1), SourceId::namespaced(2, 1));
         // 本地 id 超 32 位时只保留低 32 位，命名空间不被污染。
-        assert_eq!(SourceId::namespaced(1, 0x1_0000_0001), SourceId((1 << 32) | 1));
+        assert_eq!(
+            SourceId::namespaced(1, 0x1_0000_0001),
+            SourceId((1 << 32) | 1)
+        );
     }
 }
 

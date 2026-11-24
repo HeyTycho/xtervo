@@ -84,7 +84,10 @@ pub fn progress_label(progress: Progress) -> String {
     if progress.state == ProgressState::Clear {
         return String::new();
     }
-    progress.percent.map(|percent| format!("{percent}%")).unwrap_or_default()
+    progress
+        .percent
+        .map(|percent| format!("{percent}%"))
+        .unwrap_or_default()
 }
 
 /// 组装桌面通知的 (title, body)。
@@ -96,7 +99,11 @@ pub fn notification_content(tab_title: &str, notification: &Notification) -> (St
     } else {
         notification.title.as_str()
     };
-    let title = if title.trim().is_empty() { "xtervo" } else { title };
+    let title = if title.trim().is_empty() {
+        "xtervo"
+    } else {
+        title
+    };
     (
         sanitize_notification_text(title, MAX_NOTIFY_TITLE),
         sanitize_notification_text(&notification.body, MAX_NOTIFY_BODY),
@@ -105,7 +112,10 @@ pub fn notification_content(tab_title: &str, notification: &Notification) -> (St
 
 /// BEL 的统一通知内容。
 pub fn bell_notification() -> Notification {
-    Notification { title: String::new(), body: "Bell".to_string() }
+    Notification {
+        title: String::new(),
+        body: "Bell".to_string(),
+    }
 }
 
 /// 清洗通知文本：控制字符（含 NUL/ESC）丢弃，换行/制表符视作空格，
@@ -162,7 +172,10 @@ mod tests {
     use super::*;
 
     fn pane(state: ProgressState, percent: Option<u8>) -> PaneActivity {
-        PaneActivity { progress: Progress { state, percent }, ..PaneActivity::default() }
+        PaneActivity {
+            progress: Progress { state, percent },
+            ..PaneActivity::default()
+        }
     }
 
     #[test]
@@ -213,16 +226,44 @@ mod tests {
     #[test]
     fn progress_ratio_and_label() {
         assert_eq!(progress_ratio(Progress::default()), 0.0);
-        assert_eq!(progress_ratio(Progress { state: ProgressState::Indeterminate, percent: None }), 0.3);
-        assert!((progress_ratio(Progress { state: ProgressState::Normal, percent: Some(42) }) - 0.42).abs() < 0.001);
-        assert_eq!(progress_label(Progress { state: ProgressState::Normal, percent: Some(100) }), "100%");
-        assert_eq!(progress_label(Progress { state: ProgressState::Normal, percent: None }), "");
+        assert_eq!(
+            progress_ratio(Progress {
+                state: ProgressState::Indeterminate,
+                percent: None
+            }),
+            0.3
+        );
+        assert!(
+            (progress_ratio(Progress {
+                state: ProgressState::Normal,
+                percent: Some(42)
+            }) - 0.42)
+                .abs()
+                < 0.001
+        );
+        assert_eq!(
+            progress_label(Progress {
+                state: ProgressState::Normal,
+                percent: Some(100)
+            }),
+            "100%"
+        );
+        assert_eq!(
+            progress_label(Progress {
+                state: ProgressState::Normal,
+                percent: None
+            }),
+            ""
+        );
         assert_eq!(progress_label(Progress::default()), "");
     }
 
     #[test]
     fn sanitize_strips_controls_and_normalizes_space() {
-        assert_eq!(sanitize_notification_text("  a\n\tb\x00c\x1b  d  ", 100), "a bc d");
+        assert_eq!(
+            sanitize_notification_text("  a\n\tb\x00c\x1b  d  ", 100),
+            "a bc d"
+        );
         assert_eq!(sanitize_notification_text("\u{7f}ok", 100), "ok");
         assert_eq!(sanitize_notification_text("   ", 100), "");
     }
@@ -241,14 +282,23 @@ mod tests {
 
     #[test]
     fn notification_content_falls_back_to_tab_title() {
-        let note = Notification { title: String::new(), body: "done".into() };
+        let note = Notification {
+            title: String::new(),
+            body: "done".into(),
+        };
         assert_eq!(
             notification_content("Terminal 2", &note),
             ("Terminal 2".to_string(), "done".to_string())
         );
-        let note = Notification { title: "Build".into(), body: String::new() };
+        let note = Notification {
+            title: "Build".into(),
+            body: String::new(),
+        };
         assert_eq!(notification_content("Terminal 2", &note).0, "Build");
-        assert_eq!(notification_content("", &Notification::default()).0, "xtervo");
+        assert_eq!(
+            notification_content("", &Notification::default()).0,
+            "xtervo"
+        );
         assert_eq!(bell_notification().body, "Bell");
     }
 }

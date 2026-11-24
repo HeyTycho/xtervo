@@ -15,9 +15,7 @@ use russh::client::{self, Handler};
 use russh::keys::agent::client::AgentClient;
 use russh::keys::{load_secret_key, PrivateKeyWithHashAlg, PublicKeyOrCertificate};
 use russh::{ChannelMsg, Disconnect};
-use xtervo_core::transport::{
-    PaneTransport, TransportControl, TransportHalves, TransportShutdown,
-};
+use xtervo_core::transport::{PaneTransport, TransportControl, TransportHalves, TransportShutdown};
 
 use crate::known_hosts::KnownKey;
 use crate::known_hosts_rs;
@@ -127,7 +125,7 @@ pub fn key_passphrase_state(profile: &Profile, saved: Option<&str>) -> KeyPassph
             } else {
                 KeyPassphraseState::Invalid
             }
-        },
+        }
     }
 }
 
@@ -198,7 +196,8 @@ impl SshNativeStatus {
     }
 
     fn set_agent_forward(&self, state: AgentForwardState) {
-        self.agent_forward.store(state.code() as u8, Ordering::Release);
+        self.agent_forward
+            .store(state.code() as u8, Ordering::Release);
     }
 
     /// 私钥在连接线程里加载失败（通常是口令错误）。UI 可据此再次弹口令框。
@@ -292,7 +291,10 @@ impl SshNativeTransport {
         let status = Arc::new(SshNativeStatus::new());
         let profile = profile.clone();
         if profile.host.trim().is_empty() {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "SSH 主机不能为空"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "SSH 主机不能为空",
+            ));
         }
         if let Some(reason) = &resolved.unsupported {
             return Err(io::Error::new(
@@ -340,7 +342,7 @@ impl SshNativeTransport {
                         ));
                         let _ = out_tx.blocking_send(None);
                         return;
-                    },
+                    }
                 };
                 let result = rt.block_on(run_session(
                     profile,
@@ -405,7 +407,8 @@ impl PaneTransport for SshNativeTransport {
     }
 
     fn resize(&mut self, cols: u16, rows: u16) {
-        self.resize.store(pack_resize(cols, rows), Ordering::Release);
+        self.resize
+            .store(pack_resize(cols, rows), Ordering::Release);
         let _ = self.commands.try_send(Cmd::Resize(cols, rows));
     }
 
@@ -427,8 +430,14 @@ impl PaneTransport for SshNativeTransport {
         let shutdown_cmd = commands.clone();
         let shutdown_closed = closed.clone();
         Ok(TransportHalves {
-            reader: Box::new(SshReader { output, pending, pos: 0 }),
-            writer: Box::new(SshWriter { commands: commands.clone() }),
+            reader: Box::new(SshReader {
+                output,
+                pending,
+                pos: 0,
+            }),
+            writer: Box::new(SshWriter {
+                commands: commands.clone(),
+            }),
             control: Box::new(SshControl {
                 commands,
                 closed: closed.clone(),
@@ -455,7 +464,7 @@ impl Read for SshReader {
                 Some(Some(data)) => {
                     self.pending = data;
                     self.pos = 0;
-                },
+                }
                 _ => return Ok(0),
             }
         }
@@ -490,7 +499,8 @@ struct SshControl {
 
 impl TransportControl for SshControl {
     fn resize(&mut self, cols: u16, rows: u16) {
-        self.resize.store(pack_resize(cols, rows), Ordering::Release);
+        self.resize
+            .store(pack_resize(cols, rows), Ordering::Release);
         let _ = self.commands.try_send(Cmd::Resize(cols, rows));
     }
     fn close(&mut self) {
@@ -502,9 +512,8 @@ impl TransportControl for SshControl {
 pub(crate) struct HostKeyHandler {
     known: Vec<KnownKey>,
     revoked: Vec<KnownKey>,
-    remote_targets: std::sync::Arc<
-        std::sync::Mutex<std::collections::HashMap<(String, u16), (String, u16)>>,
-    >,
+    remote_targets:
+        std::sync::Arc<std::sync::Mutex<std::collections::HashMap<(String, u16), (String, u16)>>>,
     agent_forward: Arc<AtomicBool>,
 }
 
@@ -547,16 +556,12 @@ impl Handler for HostKeyHandler {
         reply: russh::client::ChannelOpenHandle,
         _session: &mut russh::client::Session,
     ) -> Result<(), Self::Error> {
-        let target = self
-            .remote_targets
-            .lock()
-            .ok()
-            .and_then(|map| {
-                let key = (connected_address.to_string(), connected_port as u16);
-                map.get(&key)
-                    .or_else(|| map.get(&(connected_address.to_string(), 0)))
-                    .cloned()
-            });
+        let target = self.remote_targets.lock().ok().and_then(|map| {
+            let key = (connected_address.to_string(), connected_port as u16);
+            map.get(&key)
+                .or_else(|| map.get(&(connected_address.to_string(), 0)))
+                .cloned()
+        });
         let Some(target) = target else { return Ok(()) };
         reply.accept().await;
         tokio::spawn(crate::ssh_forward::bridge_forwarded(channel, target));
@@ -572,8 +577,12 @@ impl Handler for HostKeyHandler {
         if !self.agent_forward.load(Ordering::Acquire) {
             return Ok(());
         }
-        let Some(path) = std::env::var_os("SSH_AUTH_SOCK") else { return Ok(()) };
-        let Ok(mut agent) = tokio::net::UnixStream::connect(path).await else { return Ok(()) };
+        let Some(path) = std::env::var_os("SSH_AUTH_SOCK") else {
+            return Ok(());
+        };
+        let Ok(mut agent) = tokio::net::UnixStream::connect(path).await else {
+            return Ok(());
+        };
         reply.accept().await;
         tokio::spawn(async move {
             let mut stream = channel.into_stream();
@@ -628,9 +637,7 @@ async fn run_session(
     mut commands: tokio::sync::mpsc::Receiver<Cmd>,
     closed: Arc<AtomicBool>,
     forward: crate::ssh_forward::ForwardController,
-    mut forward_commands: tokio::sync::mpsc::UnboundedReceiver<
-        crate::ssh_forward::ForwardCommand,
-    >,
+    mut forward_commands: tokio::sync::mpsc::UnboundedReceiver<crate::ssh_forward::ForwardCommand>,
 ) -> Result<(), String> {
     let host = resolved.hostname.clone();
     let port = resolved.port.max(1);
@@ -645,9 +652,8 @@ async fn run_session(
         keepalive_max: resolved.keepalive_max,
         ..<_>::default()
     });
-    let remote_targets = std::sync::Arc::new(std::sync::Mutex::new(
-        std::collections::HashMap::new(),
-    ));
+    let remote_targets =
+        std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
     let mut keep_sessions: Vec<client::Handle<HostKeyHandler>> = Vec::new();
     let mut jump_session: Option<client::Handle<HostKeyHandler>> = None;
     let jump_specs: Vec<&str> = resolved
@@ -793,19 +799,19 @@ async fn run_session(
                 agent_forward_enabled.store(true, Ordering::Release);
                 status.set_agent_forward(AgentForwardState::Active);
                 eprintln!("[ssh-native] agent forwarding: active");
-            },
+            }
             Ok(()) => {
                 status.set_agent_forward(AgentForwardState::Unavailable);
                 eprintln!(
                     "[ssh-native] agent forwarding: 服务器已接受，但本机没有 SSH_AUTH_SOCK；继续无转发连接"
                 );
-            },
+            }
             Err(error) if error == REMOTE_REQUEST_REJECTED => {
                 // 服务器拒绝：连接继续，但 handler 的 gate 保持 false，绝不接受
                 // 服务器后续打开的 agent channel。
                 status.set_agent_forward(AgentForwardState::Denied);
                 eprintln!("[ssh-native] agent forwarding 被拒绝，继续无转发连接");
-            },
+            }
             Err(error) => return Err(error),
         }
     }
@@ -830,54 +836,46 @@ async fn run_session(
             continue;
         }
         let result = match rule.kind {
-            crate::ssh_forward::ForwardKind::Local => {
-                crate::ssh_forward::start_local(
-                    session.clone(),
-                    &rule.bind,
-                    rule.port,
-                    &rule.target_host,
-                    rule.target_port,
-                )
-                .await
-                .map(|(task, bound)| {
-                    forward_guard.insert(rule.id, task);
-                    bound
-                })
-            },
-            crate::ssh_forward::ForwardKind::Dynamic => {
-                crate::ssh_forward::start_dynamic(
-                    session.clone(),
-                    &rule.bind,
-                    rule.port,
-                )
-                .await
-                .map(|(task, bound)| {
-                    forward_guard.insert(rule.id, task);
-                    bound
-                })
-            },
-            crate::ssh_forward::ForwardKind::Remote => crate::ssh_forward::start_remote(
-                &session,
+            crate::ssh_forward::ForwardKind::Local => crate::ssh_forward::start_local(
+                session.clone(),
                 &rule.bind,
                 rule.port,
                 &rule.target_host,
                 rule.target_port,
-                &remote_targets,
             )
-            .await,
+            .await
+            .map(|(task, bound)| {
+                forward_guard.insert(rule.id, task);
+                bound
+            }),
+            crate::ssh_forward::ForwardKind::Dynamic => {
+                crate::ssh_forward::start_dynamic(session.clone(), &rule.bind, rule.port)
+                    .await
+                    .map(|(task, bound)| {
+                        forward_guard.insert(rule.id, task);
+                        bound
+                    })
+            }
+            crate::ssh_forward::ForwardKind::Remote => {
+                crate::ssh_forward::start_remote(
+                    &session,
+                    &rule.bind,
+                    rule.port,
+                    &rule.target_host,
+                    rule.target_port,
+                    &remote_targets,
+                )
+                .await
+            }
         };
         match result {
             Ok(bound) => forward.mark_active(rule.id, bound),
             Err(error) => {
-                let message = format!(
-                    "-{} {} 启动失败: {error}",
-                    rule.kind.short(),
-                    rule.spec
-                );
+                let message = format!("-{} {} 启动失败: {error}", rule.kind.short(), rule.spec);
                 eprintln!("[ssh-forward] {message}");
                 emit_forward_warning(&out, &message).await;
                 forward.mark_failed(rule.id, error);
-            },
+            }
         }
     }
     let mut last_resize = unpack_resize(resize.load(Ordering::Acquire));
@@ -889,7 +887,9 @@ async fn run_session(
     let mut forward_commands_open = true;
     loop {
         if closed.load(Ordering::Acquire) {
-            let _ = session.disconnect(Disconnect::ByApplication, "", "closed").await;
+            let _ = session
+                .disconnect(Disconnect::ByApplication, "", "closed")
+                .await;
             return Ok(());
         }
         tokio::select! {
@@ -978,10 +978,7 @@ async fn run_session(
     }
 }
 
-async fn emit_forward_warning(
-    out: &tokio::sync::mpsc::Sender<Option<Vec<u8>>>,
-    message: &str,
-) {
+async fn emit_forward_warning(out: &tokio::sync::mpsc::Sender<Option<Vec<u8>>>, message: &str) {
     let text = format!("\r\n[ssh-forward] {message}\r\n");
     let _ = out.send(Some(text.into_bytes())).await;
 }
@@ -1019,16 +1016,14 @@ async fn handle_forward_command(
                     guard.insert(rule.id, task);
                     bound
                 }),
-                ForwardKind::Dynamic => crate::ssh_forward::start_dynamic(
-                    session.clone(),
-                    &rule.bind,
-                    rule.port,
-                )
-                .await
-                .map(|(task, bound)| {
-                    guard.insert(rule.id, task);
-                    bound
-                }),
+                ForwardKind::Dynamic => {
+                    crate::ssh_forward::start_dynamic(session.clone(), &rule.bind, rule.port)
+                        .await
+                        .map(|(task, bound)| {
+                            guard.insert(rule.id, task);
+                            bound
+                        })
+                }
                 ForwardKind::Remote => Err("远程转发不支持当前会话运行时启动".into()),
             };
             match started {
@@ -1040,7 +1035,7 @@ async fn handle_forward_command(
                         bound
                     );
                     forward.mark_active(id, bound);
-                },
+                }
                 Err(error) => {
                     emit_forward_warning(
                         out,
@@ -1048,9 +1043,9 @@ async fn handle_forward_command(
                     )
                     .await;
                     forward.mark_failed(id, error);
-                },
+                }
             }
-        },
+        }
         ForwardCommand::Stop(id) => {
             let Some(rule) = forward.rule(id) else {
                 return;
@@ -1062,7 +1057,7 @@ async fn handle_forward_command(
             }
             forward.mark_stopped(id);
             eprintln!("[ssh-forward] {} {} 已停止", rule.kind.short(), rule.spec);
-        },
+        }
     }
 }
 
@@ -1116,7 +1111,7 @@ async fn run_login_scripts(
             // Profile 保存时已校验；这里兜底（例如手写 profiles.toml）。
             emit_login_warning(out, &error).await;
             return Ok(());
-        },
+        }
     };
     if steps.is_empty() {
         return Ok(());
@@ -1130,7 +1125,10 @@ async fn run_login_scripts(
         // PTY 里的 Enter 就是 CR；追加 LF 会让部分 shell 多执行一次空行。
         payload.push(b'\r');
         if let Err(error) = channel.data(&payload[..]).await {
-            return Err(format!("登录脚本发送命令失败（第 {} 条）: {error}", index + 1));
+            return Err(format!(
+                "登录脚本发送命令失败（第 {} 条）: {error}",
+                index + 1
+            ));
         }
         if let Some(wait_for) = &step.wait_for {
             // 按字节匹配/裁剪：SSH data 分块可能切在 UTF-8 中间，逐块
@@ -1150,7 +1148,10 @@ async fn run_login_scripts(
                             return Ok(());
                         }
                         seen.extend_from_slice(&data);
-                        if seen.windows(wait_bytes.len()).any(|window| window == wait_bytes) {
+                        if seen
+                            .windows(wait_bytes.len())
+                            .any(|window| window == wait_bytes)
+                        {
                             matched = true;
                             break;
                         }
@@ -1160,9 +1161,9 @@ async fn run_login_scripts(
                             let keep = seen.len() - 32 * 1024;
                             seen.drain(..keep);
                         }
-                    },
+                    }
                     Ok(Some(ChannelMsg::Eof | ChannelMsg::Close)) | Ok(None) => return Ok(()),
-                    Ok(Some(_)) => {},
+                    Ok(Some(_)) => {}
                     Err(_) => break,
                 }
             }
@@ -1208,10 +1209,7 @@ fn quote_for_log(text: &str) -> String {
     out
 }
 
-async fn emit_login_warning(
-    out: &tokio::sync::mpsc::Sender<Option<Vec<u8>>>,
-    message: &str,
-) {
+async fn emit_login_warning(out: &tokio::sync::mpsc::Sender<Option<Vec<u8>>>, message: &str) {
     let text = format!("\r\n[login-script] {message}\r\n");
     let _ = out.send(Some(text.into_bytes())).await;
 }
@@ -1261,7 +1259,7 @@ async fn try_public_key<H: Handler + Send>(
                 "加载私钥 {} 失败: {error}",
                 path.display()
             )))
-        },
+        }
     };
     let hash = session
         .best_supported_rsa_hash()
@@ -1355,7 +1353,7 @@ async fn authenticate<H: Handler + Send>(
                     passphrase_load_failed = true;
                 }
                 errors.push(error);
-            },
+            }
             Err(PublicKeyAttemptError::Auth(error)) => errors.push(error),
         }
     }
@@ -1514,7 +1512,6 @@ mod tests {
         };
         assert!(err.to_string().contains("known_hosts"), "{err}");
     }
-
 }
 
 #[cfg(test)]
@@ -1571,7 +1568,11 @@ mod integration_tests {
             Ok(())
         }
 
-        async fn auth_password(&mut self, _user: &str, _password: &str) -> Result<Auth, Self::Error> {
+        async fn auth_password(
+            &mut self,
+            _user: &str,
+            _password: &str,
+        ) -> Result<Auth, Self::Error> {
             Ok(Auth::Accept)
         }
 
@@ -1612,11 +1613,12 @@ mod integration_tests {
             reply: server::ChannelOpenHandle,
             _session: &mut Session,
         ) -> Result<(), Self::Error> {
-            let Some(port) = self.forward_to else { return Ok(()) };
+            let Some(port) = self.forward_to else {
+                return Ok(());
+            };
             reply.accept().await;
             tokio::spawn(async move {
-                let Ok(mut tcp) = tokio::net::TcpStream::connect(("127.0.0.1", port)).await
-                else {
+                let Ok(mut tcp) = tokio::net::TcpStream::connect(("127.0.0.1", port)).await else {
                     return;
                 };
                 let mut stream = channel.into_stream();
@@ -1638,7 +1640,9 @@ mod integration_tests {
             let bind = address.to_string();
             tokio::spawn(async move {
                 loop {
-                    let Ok((mut tcp, origin)) = listener.accept().await else { break };
+                    let Ok((mut tcp, origin)) = listener.accept().await else {
+                        break;
+                    };
                     let handle = handle.clone();
                     let bind = bind.clone();
                     tokio::spawn(async move {
@@ -1688,13 +1692,11 @@ mod integration_tests {
             if let Some(probe) = self.agent_probe.take() {
                 let handle = session.handle();
                 tokio::spawn(async move {
-                    let accepted = tokio::time::timeout(
-                        Duration::from_secs(3),
-                        handle.channel_open_agent(),
-                    )
-                    .await
-                    .map(|result| result.is_ok())
-                    .unwrap_or(false);
+                    let accepted =
+                        tokio::time::timeout(Duration::from_secs(3), handle.channel_open_agent())
+                            .await
+                            .map(|result| result.is_ok())
+                            .unwrap_or(false);
                     let _ = probe.send(accepted).await;
                 });
             }
@@ -1731,7 +1733,9 @@ mod integration_tests {
     #[test]
     fn native_ssh_connects_password_and_echoes() {
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let listener = rt.block_on(tokio::net::TcpListener::bind(("127.0.0.1", 0))).unwrap();
+        let listener = rt
+            .block_on(tokio::net::TcpListener::bind(("127.0.0.1", 0)))
+            .unwrap();
         let addr = listener.local_addr().unwrap();
         let dir = test_path("xtervo-native-ssh");
         std::fs::create_dir_all(&dir).unwrap();
@@ -1748,8 +1752,11 @@ mod integration_tests {
         let key_type = parts.next().unwrap();
         let key_b64 = parts.next().unwrap();
         let known = dir.join("known_hosts");
-        std::fs::write(&known, format!("[127.0.0.1]:{} {key_type} {key_b64}\n", addr.port()))
-            .unwrap();
+        std::fs::write(
+            &known,
+            format!("[127.0.0.1]:{} {key_type} {key_b64}\n", addr.port()),
+        )
+        .unwrap();
         let config = Arc::new(server::Config {
             keys: vec![key],
             inactivity_timeout: Some(Duration::from_secs(30)),
@@ -1797,31 +1804,35 @@ mod integration_tests {
             identity_files: Vec::new(),
             unsupported: None,
         };
-        let transport = SshNativeTransport::start_resolved(
-            &profile,
-            Some("pw".into()),
-            None,
-            80,
-            24,
-            resolved,
-        )
-        .expect("start native ssh");
+        let transport =
+            SshNativeTransport::start_resolved(&profile, Some("pw".into()), None, 80, 24, resolved)
+                .expect("start native ssh");
         let (mut tx, mut rx) = (transport, ());
         let _ = &mut rx;
         let mut buf = [0u8; 256];
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         let mut got = Vec::new();
         while !got.windows(5).any(|w| w == b"READY") {
-            assert!(std::time::Instant::now() < deadline, "no READY from test sshd");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no READY from test sshd"
+            );
             let n = tx.read(&mut buf).expect("read ssh");
-            assert!(n > 0, "ssh EOF before READY; got={:?}", String::from_utf8_lossy(&got));
+            assert!(
+                n > 0,
+                "ssh EOF before READY; got={:?}",
+                String::from_utf8_lossy(&got)
+            );
             got.extend_from_slice(&buf[..n]);
         }
         tx.write_all(b"hello").unwrap();
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         let mut echo = Vec::new();
         while !echo.windows(5).any(|w| w == b"hello") {
-            assert!(std::time::Instant::now() < deadline, "no echo from test sshd");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no echo from test sshd"
+            );
             let n = tx.read(&mut buf).expect("read ssh echo");
             assert!(n > 0, "ssh EOF before echo");
             echo.extend_from_slice(&buf[..n]);
@@ -1899,7 +1910,9 @@ mod integration_tests {
         record: Option<Arc<std::sync::Mutex<Vec<u8>>>>,
         prompt: Option<String>,
     ) -> (std::net::SocketAddr, String) {
-        let listener = rt.block_on(tokio::net::TcpListener::bind(("127.0.0.1", 0))).unwrap();
+        let listener = rt
+            .block_on(tokio::net::TcpListener::bind(("127.0.0.1", 0)))
+            .unwrap();
         let addr = listener.local_addr().unwrap();
         let dir = test_path("xtervo-native-ssh-srv");
         std::fs::create_dir_all(&dir).unwrap();
@@ -1925,13 +1938,17 @@ mod integration_tests {
                 record,
                 prompt,
             }
-                .run_on_socket(config, &listener)
-                .await;
+            .run_on_socket(config, &listener)
+            .await;
         });
         (addr, public)
     }
 
-    fn write_known_hosts(dir: &Path, addr: std::net::SocketAddr, public: &str) -> std::path::PathBuf {
+    fn write_known_hosts(
+        dir: &Path,
+        addr: std::net::SocketAddr,
+        public: &str,
+    ) -> std::path::PathBuf {
         std::fs::create_dir_all(dir).unwrap();
         let known = dir.join("known_hosts");
         let key = public.split_whitespace().nth(1).unwrap();
@@ -1973,7 +1990,11 @@ mod integration_tests {
                 String::from_utf8_lossy(&got)
             );
             let n = transport.read(&mut buf).expect("read test ssh");
-            assert!(n > 0, "EOF before READY: {:?}", String::from_utf8_lossy(&got));
+            assert!(
+                n > 0,
+                "EOF before READY: {:?}",
+                String::from_utf8_lossy(&got)
+            );
             got.extend_from_slice(&buf[..n]);
         }
         got
@@ -2035,15 +2056,9 @@ mod integration_tests {
             identity_files: Vec::new(),
             unsupported: None,
         };
-        let transport = SshNativeTransport::start_resolved(
-            &profile,
-            Some("pw".into()),
-            None,
-            80,
-            24,
-            resolved,
-        )
-        .expect("start proxy jump");
+        let transport =
+            SshNativeTransport::start_resolved(&profile, Some("pw".into()), None, 80, 24, resolved)
+                .expect("start proxy jump");
         let mut transport = transport;
         let mut buf = [0u8; 256];
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
@@ -2075,12 +2090,8 @@ mod integration_tests {
     fn native_ssh_login_scripts_run_in_order_on_remote_shell() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let record = Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
-        let (addr, public) = start_test_server_with(
-            &rt,
-            None,
-            Some(record.clone()),
-            Some("PROMPT> ".into()),
-        );
+        let (addr, public) =
+            start_test_server_with(&rt, None, Some(record.clone()), Some("PROMPT> ".into()));
         let dir = test_path("xtervo-native-ssh-login");
         std::fs::create_dir_all(&dir).unwrap();
         let known = dir.join("known_hosts");
@@ -2118,20 +2129,17 @@ mod integration_tests {
             identity_files: Vec::new(),
             unsupported: None,
         };
-        let mut transport = SshNativeTransport::start_resolved(
-            &profile,
-            Some("pw".into()),
-            None,
-            80,
-            24,
-            resolved,
-        )
-        .expect("start login-script ssh");
+        let mut transport =
+            SshNativeTransport::start_resolved(&profile, Some("pw".into()), None, 80, 24, resolved)
+                .expect("start login-script ssh");
         let mut buf = [0u8; 256];
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         let mut got = Vec::new();
         while !got.windows(5).any(|w| w == b"READY") {
-            assert!(std::time::Instant::now() < deadline, "no READY login-script ssh");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no READY login-script ssh"
+            );
             let n = transport.read(&mut buf).expect("read READY");
             assert!(n > 0);
             got.extend_from_slice(&buf[..n]);
@@ -2152,8 +2160,14 @@ mod integration_tests {
         let first = text.find("echo first").expect("first command recorded");
         let second = text.find("echo second").expect("second command recorded");
         assert!(first < second, "commands out of order: {text:?}");
-        assert!(text.contains("echo first\r"), "missing PTY Enter after first: {text:?}");
-        assert!(text.contains("echo second\r"), "missing PTY Enter after second: {text:?}");
+        assert!(
+            text.contains("echo first\r"),
+            "missing PTY Enter after first: {text:?}"
+        );
+        assert!(
+            text.contains("echo second\r"),
+            "missing PTY Enter after second: {text:?}"
+        );
         transport.close();
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2161,16 +2175,22 @@ mod integration_tests {
     #[test]
     fn native_ssh_local_forward_reaches_local_echo() {
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let echo_listener = rt.block_on(tokio::net::TcpListener::bind(("127.0.0.1", 0))).unwrap();
+        let echo_listener = rt
+            .block_on(tokio::net::TcpListener::bind(("127.0.0.1", 0)))
+            .unwrap();
         let echo_port = echo_listener.local_addr().unwrap().port();
         rt.spawn(async move {
             loop {
-                let Ok((mut tcp, _)) = echo_listener.accept().await else { break };
+                let Ok((mut tcp, _)) = echo_listener.accept().await else {
+                    break;
+                };
                 tokio::spawn(async move {
                     let mut buf = [0u8; 256];
                     loop {
                         use tokio::io::{AsyncReadExt, AsyncWriteExt};
-                        let Ok(n) = tcp.read(&mut buf).await else { break };
+                        let Ok(n) = tcp.read(&mut buf).await else {
+                            break;
+                        };
                         if n == 0 || tcp.write_all(&buf[..n]).await.is_err() {
                             break;
                         }
@@ -2216,31 +2236,32 @@ mod integration_tests {
             identity_files: Vec::new(),
             unsupported: None,
         };
-        let mut transport = SshNativeTransport::start_resolved(
-            &profile,
-            Some("pw".into()),
-            None,
-            80,
-            24,
-            resolved,
-        )
-        .expect("start local forward");
+        let mut transport =
+            SshNativeTransport::start_resolved(&profile, Some("pw".into()), None, 80, 24, resolved)
+                .expect("start local forward");
         let mut buf = [0u8; 256];
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         let mut got = Vec::new();
         while !got.windows(5).any(|w| w == b"READY") {
-            assert!(std::time::Instant::now() < deadline, "no READY local forward");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no READY local forward"
+            );
             let n = transport.read(&mut buf).expect("read READY");
             assert!(n > 0);
             got.extend_from_slice(&buf[..n]);
         }
-        let local = std::net::TcpStream::connect(("127.0.0.1", local_port))
-            .expect("connect local forward");
-        local.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let local =
+            std::net::TcpStream::connect(("127.0.0.1", local_port)).expect("connect local forward");
+        local
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
         use std::io::{Read, Write};
         (&local).write_all(b"local-fwd").unwrap();
         let mut echoed = [0u8; 9];
-        (&local).read_exact(&mut echoed).expect("read local forward echo");
+        (&local)
+            .read_exact(&mut echoed)
+            .expect("read local forward echo");
         assert_eq!(&echoed, b"local-fwd");
         transport.close();
         let _ = std::fs::remove_dir_all(&dir);
@@ -2249,16 +2270,22 @@ mod integration_tests {
     #[test]
     fn native_ssh_remote_forward_reaches_local_echo() {
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let echo_listener = rt.block_on(tokio::net::TcpListener::bind(("127.0.0.1", 0))).unwrap();
+        let echo_listener = rt
+            .block_on(tokio::net::TcpListener::bind(("127.0.0.1", 0)))
+            .unwrap();
         let echo_port = echo_listener.local_addr().unwrap().port();
         rt.spawn(async move {
             loop {
-                let Ok((mut tcp, _)) = echo_listener.accept().await else { break };
+                let Ok((mut tcp, _)) = echo_listener.accept().await else {
+                    break;
+                };
                 tokio::spawn(async move {
                     let mut buf = [0u8; 256];
                     loop {
                         use tokio::io::{AsyncReadExt, AsyncWriteExt};
-                        let Ok(n) = tcp.read(&mut buf).await else { break };
+                        let Ok(n) = tcp.read(&mut buf).await else {
+                            break;
+                        };
                         if n == 0 || tcp.write_all(&buf[..n]).await.is_err() {
                             break;
                         }
@@ -2304,31 +2331,32 @@ mod integration_tests {
             identity_files: Vec::new(),
             unsupported: None,
         };
-        let mut transport = SshNativeTransport::start_resolved(
-            &profile,
-            Some("pw".into()),
-            None,
-            80,
-            24,
-            resolved,
-        )
-        .expect("start remote forward");
+        let mut transport =
+            SshNativeTransport::start_resolved(&profile, Some("pw".into()), None, 80, 24, resolved)
+                .expect("start remote forward");
         let mut buf = [0u8; 256];
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         let mut got = Vec::new();
         while !got.windows(5).any(|w| w == b"READY") {
-            assert!(std::time::Instant::now() < deadline, "no READY remote forward");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no READY remote forward"
+            );
             let n = transport.read(&mut buf).expect("read READY");
             assert!(n > 0);
             got.extend_from_slice(&buf[..n]);
         }
         let mut remote = std::net::TcpStream::connect(("127.0.0.1", remote_port))
             .expect("connect remote forward");
-        remote.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        remote
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
         use std::io::{Read, Write};
         remote.write_all(b"remote-fwd").unwrap();
         let mut echoed = [0u8; 10];
-        remote.read_exact(&mut echoed).expect("read remote forward echo");
+        remote
+            .read_exact(&mut echoed)
+            .expect("read remote forward echo");
         assert_eq!(&echoed, b"remote-fwd");
         transport.close();
         let _ = std::fs::remove_dir_all(&dir);
@@ -2377,15 +2405,9 @@ mod integration_tests {
             identity_files: vec![key_path.display().to_string()],
             unsupported: None,
         };
-        let mut transport = SshNativeTransport::start_resolved(
-            &profile,
-            None,
-            None,
-            80,
-            24,
-            resolved,
-        )
-        .expect("start identity-file ssh");
+        let mut transport =
+            SshNativeTransport::start_resolved(&profile, None, None, 80, 24, resolved)
+                .expect("start identity-file ssh");
         let mut buf = [0u8; 64];
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         let mut got = Vec::new();
@@ -2479,7 +2501,10 @@ mod integration_tests {
         let mut got = Vec::new();
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         loop {
-            assert!(std::time::Instant::now() < deadline, "wrong pass did not EOF");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "wrong pass did not EOF"
+            );
             let n = wrong.read(&mut buf).expect("read wrong-pass ssh");
             if n == 0 {
                 break;
@@ -2528,11 +2553,13 @@ mod integration_tests {
         read_until_ready(&mut transport);
         assert_eq!(status.agent_forward(), AgentForwardState::Denied);
         let accepted = rt
-            .block_on(async {
-                tokio::time::timeout(Duration::from_secs(5), probe_rx.recv()).await
-            })
+            .block_on(async { tokio::time::timeout(Duration::from_secs(5), probe_rx.recv()).await })
             .expect("agent probe timed out");
-        assert_eq!(accepted, Some(false), "denied negotiation must not accept agent channel");
+        assert_eq!(
+            accepted,
+            Some(false),
+            "denied negotiation must not accept agent channel"
+        );
         // 拒绝只影响 agent，shell 仍可用。
         transport.write_all(b"still-alive").unwrap();
         read_until(&mut transport, b"still-alive");
@@ -2579,11 +2606,13 @@ mod integration_tests {
         read_until_ready(&mut transport);
         assert_eq!(status.agent_forward(), AgentForwardState::Active);
         let accepted = rt
-            .block_on(async {
-                tokio::time::timeout(Duration::from_secs(5), probe_rx.recv()).await
-            })
+            .block_on(async { tokio::time::timeout(Duration::from_secs(5), probe_rx.recv()).await })
             .expect("agent probe timed out");
-        assert_eq!(accepted, Some(true), "accepted negotiation should accept agent channel");
+        assert_eq!(
+            accepted,
+            Some(true),
+            "accepted negotiation should accept agent channel"
+        );
         transport.close();
         let _ = std::fs::remove_dir_all(&dir);
     }

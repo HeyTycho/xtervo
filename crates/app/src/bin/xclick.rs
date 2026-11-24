@@ -36,7 +36,11 @@ fn main() {
         let setup = conn.setup();
         let min = setup.min_keycode;
         let count = setup.max_keycode.saturating_sub(min).saturating_add(1);
-        let reply = conn.get_keyboard_mapping(min, count).unwrap().reply().unwrap();
+        let reply = conn
+            .get_keyboard_mapping(min, count)
+            .unwrap()
+            .reply()
+            .unwrap();
         let per = reply.keysyms_per_keycode as usize;
         reply
             .keysyms
@@ -46,8 +50,8 @@ fn main() {
     };
     let shift_kc = shift.then(|| find_kc(0xffe1)).flatten(); // Shift_L
     let ctrl_kc = ctrl.then(|| find_kc(0xffe3)).flatten(); // Control_L
-    // 仅在显式注入修饰键时打印解析结果；普通点击/拖拽保持安静，
-    // 避免 e2e 输出被每条 xclick 的调试行淹没。
+                                                           // 仅在显式注入修饰键时打印解析结果；普通点击/拖拽保持安静，
+                                                           // 避免 e2e 输出被每条 xclick 的调试行淹没。
     if shift || ctrl {
         eprintln!("xclick: shift={shift} shift_kc={shift_kc:?} ctrl={ctrl} ctrl_kc={ctrl_kc:?}");
     }
@@ -79,17 +83,28 @@ fn main() {
     xtest::fake_input(&conn, PRESS, button, x11rb::CURRENT_TIME, root, x, y, 0).expect("press");
     conn.flush().unwrap();
     let hold = args.iter().any(|a| a == "hold");
-    std::thread::sleep(std::time::Duration::from_millis(if hold { 400 } else { 60 }));
+    std::thread::sleep(std::time::Duration::from_millis(if hold {
+        400
+    } else {
+        60
+    }));
 
     if drag {
         let x2: i16 = args.get(4).and_then(|v| v.parse().ok()).unwrap_or(x);
         let y2: i16 = args.get(5).and_then(|v| v.parse().ok()).unwrap_or(y);
-        let steps: i16 = std::env::var("XCLICK_STEPS").ok().and_then(|v| v.parse().ok()).unwrap_or(8);
-        let interval: u64 = std::env::var("XCLICK_INTERVAL_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(16);
+        let steps: i16 = std::env::var("XCLICK_STEPS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(8);
+        let interval: u64 = std::env::var("XCLICK_INTERVAL_MS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(16);
         for i in 1..=steps {
             let mx = x + (x2 - x) * i / steps;
             let my = y + (y2 - y) * i / steps;
-            xtest::fake_input(&conn, MOTION, 0, x11rb::CURRENT_TIME, root, mx, my, 0).expect("motion");
+            xtest::fake_input(&conn, MOTION, 0, x11rb::CURRENT_TIME, root, mx, my, 0)
+                .expect("motion");
             conn.flush().unwrap();
             std::thread::sleep(std::time::Duration::from_millis(interval));
         }

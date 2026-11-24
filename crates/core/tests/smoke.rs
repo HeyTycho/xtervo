@@ -119,7 +119,7 @@ fn osc_progress_notification_and_bell_are_delivered() {
                 CoreEvent::Progress(p) => progress = Some(p),
                 CoreEvent::Notification(n) => notes.push(n),
                 CoreEvent::Bell => bell = true,
-                _ => {},
+                _ => {}
             }
         }
         if progress.is_some() && notes.len() >= 2 && bell {
@@ -191,7 +191,11 @@ fn cat_10mb_streams_through_pane() {
         f.write_all(b"\r\nSMOKE-EOF-MARKER\r\n").unwrap();
         f.flush().unwrap();
     }
-    eprintln!("file = {} bytes={}", path.display(), std::fs::metadata(&path).unwrap().len());
+    eprintln!(
+        "file = {} bytes={}",
+        path.display(),
+        std::fs::metadata(&path).unwrap().len()
+    );
 
     let handle = spawn(PaneConfig {
         cols: 200,
@@ -271,7 +275,12 @@ fn wheel_scrollback_shows_history() {
     frame2 = handle.pull(frame2);
     assert!(frame2.display_offset > 0, "display_offset 未增加");
     let scrolled = frame_text(&frame2);
-    eprintln!("offset={} bottom_first={:?} scrolled_first={:?}", frame2.display_offset, bottom.lines().next(), scrolled.lines().next());
+    eprintln!(
+        "offset={} bottom_first={:?} scrolled_first={:?}",
+        frame2.display_offset,
+        bottom.lines().next(),
+        scrolled.lines().next()
+    );
     assert_ne!(scrolled, bottom, "回滚后内容应变化");
     assert!(!scrolled.contains("200"), "顶部应看到更早的行: {scrolled}");
 
@@ -302,7 +311,11 @@ fn wheel_scrollback_shows_history() {
 fn wait_scroll<F: Fn() -> bool>(handle: &PaneHandle, pred: F, what: &str) {
     let deadline = Instant::now() + Duration::from_secs(8);
     while !pred() {
-        assert!(Instant::now() < deadline, "等待超时: {what}（当前 {:?}）", handle.scroll_position());
+        assert!(
+            Instant::now() < deadline,
+            "等待超时: {what}（当前 {:?}）",
+            handle.scroll_position()
+        );
         std::thread::sleep(Duration::from_millis(5));
     }
 }
@@ -345,12 +358,19 @@ fn scroll_up_after_ready(handle: &PaneHandle) -> usize {
 
 /// 等第二批输出基本结束：history 达到阈值后连续 3 次采样不再增长。
 fn wait_output_settled(handle: &PaneHandle, min_history: usize) {
-    wait_scroll(handle, || handle.scroll_position().history >= min_history, "第二批输出");
+    wait_scroll(
+        handle,
+        || handle.scroll_position().history >= min_history,
+        "第二批输出",
+    );
     let deadline = Instant::now() + Duration::from_secs(3);
     let mut last = handle.scroll_position().history;
     let mut stable = 0;
     while stable < 3 {
-        assert!(Instant::now() < deadline, "输出迟迟不稳定（history={last}）");
+        assert!(
+            Instant::now() < deadline,
+            "输出迟迟不稳定（history={last}）"
+        );
         std::thread::sleep(Duration::from_millis(20));
         let now = handle.scroll_position().history;
         if now == last {
@@ -375,8 +395,15 @@ fn scroll_on_output_false_keeps_user_history_view() {
 
     let frame = handle.pull(handle.new_frame());
     let pos = handle.scroll_position();
-    assert!(pos.offset > 0, "scroll_on_output=false 时视图被新输出抢回底部: {pos:?}");
-    assert!(frame.display_offset > 0, "帧 offset 也应保持: {}", frame.display_offset);
+    assert!(
+        pos.offset > 0,
+        "scroll_on_output=false 时视图被新输出抢回底部: {pos:?}"
+    );
+    assert!(
+        frame.display_offset > 0,
+        "帧 offset 也应保持: {}",
+        frame.display_offset
+    );
     assert!(
         !frame_text(&frame).contains("60"),
         "上滚后不应直接看到最新输出：\n{}",
@@ -396,7 +423,11 @@ fn scroll_on_output_true_follows_new_output() {
     let frame = handle.pull(handle.new_frame());
     assert_eq!(frame.display_offset, 0, "scroll_on_output=true 应回到底部");
     assert_eq!(handle.scroll_position().offset, 0);
-    assert!(frame_text(&frame).contains("60"), "应看到最新输出：\n{}", frame_text(&frame));
+    assert!(
+        frame_text(&frame).contains("60"),
+        "应看到最新输出：\n{}",
+        frame_text(&frame)
+    );
 }
 
 #[test]
@@ -406,7 +437,11 @@ fn scroll_to_bottom_resets_offset_after_keyboard_navigation() {
     assert!(handle.scroll_position().offset > 0);
 
     handle.scroll_to_bottom();
-    wait_scroll(&handle, || handle.scroll_position().offset == 0, "scroll_to_bottom");
+    wait_scroll(
+        &handle,
+        || handle.scroll_position().offset == 0,
+        "scroll_to_bottom",
+    );
     let frame = handle.pull(handle.new_frame());
     assert_eq!(frame.display_offset, 0);
 }
@@ -426,7 +461,11 @@ fn set_scroll_on_output_takes_effect_on_existing_pane() {
 
     let frame = handle.pull(handle.new_frame());
     assert_eq!(frame.display_offset, 0, "运行时开启后输出应回到底部");
-    assert!(frame_text(&frame).contains("60"), "应看到最新输出：\n{}", frame_text(&frame));
+    assert!(
+        frame_text(&frame).contains("60"),
+        "应看到最新输出：\n{}",
+        frame_text(&frame)
+    );
 }
 
 #[test]
@@ -461,7 +500,10 @@ fn scroll_position_tracks_resize_without_blocking() {
     let _ = handle.pull(handle.new_frame());
     let resized = handle.scroll_position();
     assert_eq!(resized.rows, 6);
-    assert!(resized.history > 0, "resize 不应清掉 scrollback: {resized:?}");
+    assert!(
+        resized.history > 0,
+        "resize 不应清掉 scrollback: {resized:?}"
+    );
     assert!(resized.scrollable());
 }
 
@@ -472,7 +514,10 @@ fn selection_copy_returns_text() {
         rows: 6,
         scrollback: 100,
         shell: Some("/bin/sh".to_string()),
-        args: vec!["-c".to_string(), "printf 'alpha bravo charlie\\n'; sleep 3".to_string()],
+        args: vec![
+            "-c".to_string(),
+            "printf 'alpha bravo charlie\\n'; sleep 3".to_string(),
+        ],
         ..PaneConfig::default()
     })
     .expect("spawn");
@@ -591,7 +636,11 @@ fn backspace_erases_last_char() {
         if frame_text(&frame).contains("abc") {
             break;
         }
-        assert!(Instant::now() < deadline, "没有回显: {}", frame_text(&frame));
+        assert!(
+            Instant::now() < deadline,
+            "没有回显: {}",
+            frame_text(&frame)
+        );
         std::thread::sleep(Duration::from_millis(5));
     }
 
@@ -605,7 +654,11 @@ fn backspace_erases_last_char() {
             eprintln!("退格后: {:?}", text.lines().find(|l| !l.is_empty()));
             return;
         }
-        assert!(Instant::now() < deadline, "退格无效: {}", frame_text(&frame));
+        assert!(
+            Instant::now() < deadline,
+            "退格无效: {}",
+            frame_text(&frame)
+        );
         std::thread::sleep(Duration::from_millis(5));
     }
 }
@@ -657,7 +710,10 @@ fn select_all_copies_visible_screen() {
         rows: 6,
         scrollback: 100,
         shell: Some("/bin/sh".to_string()),
-        args: vec!["-c".to_string(), "printf 'alpha\\nbravo\\ncharlie\\n'; sleep 3".to_string()],
+        args: vec![
+            "-c".to_string(),
+            "printf 'alpha\\nbravo\\ncharlie\\n'; sleep 3".to_string(),
+        ],
         ..PaneConfig::default()
     })
     .expect("spawn");
@@ -705,7 +761,10 @@ fn clear_screen_wipes_content() {
     // Ctrl 通道 FIFO：清屏先于这次拉帧被处理
     handle.clear_screen();
     let frame = handle.pull(frame);
-    assert!(!frame_text(&frame).contains("hello"), "清屏后不应再有旧内容");
+    assert!(
+        !frame_text(&frame).contains("hello"),
+        "清屏后不应再有旧内容"
+    );
 }
 
 #[test]
@@ -715,7 +774,10 @@ fn select_line_selects_single_visible_line() {
         rows: 6,
         scrollback: 100,
         shell: Some("/bin/sh".to_string()),
-        args: vec!["-c".to_string(), "printf 'aaa\\nbbb\\n'; sleep 3".to_string()],
+        args: vec![
+            "-c".to_string(),
+            "printf 'aaa\\nbbb\\n'; sleep 3".to_string(),
+        ],
         ..PaneConfig::default()
     })
     .expect("spawn");
@@ -763,14 +825,26 @@ fn search_supports_case_and_regex_options() {
         std::thread::sleep(Duration::from_millis(5));
     }
 
-    let case = SearchOptions { match_case: true, regex: false };
-    let nocase = SearchOptions { match_case: false, regex: false };
-    let regex_case = SearchOptions { match_case: true, regex: true };
+    let case = SearchOptions {
+        match_case: true,
+        regex: false,
+    };
+    let nocase = SearchOptions {
+        match_case: false,
+        regex: false,
+    };
+    let regex_case = SearchOptions {
+        match_case: true,
+        regex: true,
+    };
 
     // 显式 Match case：大写查询不能命中 "Alpha"/"alpha"。
     handle.search_clear();
     assert!(
-        handle.search_with("ALPHA", true, case).expect("valid plain query").is_none(),
+        handle
+            .search_with("ALPHA", true, case)
+            .expect("valid plain query")
+            .is_none(),
         "Match case 开启时 ALPHA 不应命中 Alpha/alpha"
     );
 
@@ -786,7 +860,10 @@ fn search_supports_case_and_regex_options() {
     // 纯文本模式下 "." 是字面量；regex 模式下才是通配符。
     handle.search_clear();
     assert!(
-        handle.search_with("a.c", true, case).expect("valid plain query").is_none(),
+        handle
+            .search_with("a.c", true, case)
+            .expect("valid plain query")
+            .is_none(),
         "纯文本模式不应把 . 当通配符"
     );
     handle.search_clear();
@@ -801,7 +878,9 @@ fn search_supports_case_and_regex_options() {
 
     // 非法 regex 必须返回错误（UI 显示），而不是伪装成 no match。
     handle.search_clear();
-    let err = handle.search_with("[", true, regex_case).expect_err("非法 regex 应报错");
+    let err = handle
+        .search_with("[", true, regex_case)
+        .expect_err("非法 regex 应报错");
     assert!(err.contains("invalid regex"), "{err}");
     frame = handle.pull(frame);
     assert!(frame.search.is_none(), "非法 regex 不应保留旧高亮");
@@ -840,22 +919,38 @@ fn search_reports_match_index_and_total_across_scrollback() {
         .search_with("foo", true, opts)
         .expect("valid plain query")
         .expect("应命中 foo");
-    assert_eq!((first.index, first.total), (1, 3), "首个命中应为 1/3: {first:?}");
+    assert_eq!(
+        (first.index, first.total),
+        (1, 3),
+        "首个命中应为 1/3: {first:?}"
+    );
     let second = handle
         .search_with("foo", true, opts)
         .expect("valid plain query")
         .expect("应命中第二个 foo");
-    assert_eq!((second.index, second.total), (2, 3), "第二个命中应为 2/3: {second:?}");
+    assert_eq!(
+        (second.index, second.total),
+        (2, 3),
+        "第二个命中应为 2/3: {second:?}"
+    );
     let third = handle
         .search_with("foo", true, opts)
         .expect("valid plain query")
         .expect("应命中第三个 foo");
-    assert_eq!((third.index, third.total), (3, 3), "第三个命中应为 3/3: {third:?}");
+    assert_eq!(
+        (third.index, third.total),
+        (3, 3),
+        "第三个命中应为 3/3: {third:?}"
+    );
     let wrapped = handle
         .search_with("foo", true, opts)
         .expect("valid plain query")
         .expect("继续向前应绕回首个 foo");
-    assert_eq!((wrapped.index, wrapped.total), (1, 3), "绕回后应为 1/3: {wrapped:?}");
+    assert_eq!(
+        (wrapped.index, wrapped.total),
+        (1, 3),
+        "绕回后应为 1/3: {wrapped:?}"
+    );
 
     // 反向：从 1/3 往回走应回到 3/3。
     let back = handle
@@ -894,11 +989,17 @@ fn read_only_blocks_input_and_restores() {
     assert!(!handle.read_only());
     handle.set_read_only(true);
     assert!(handle.read_only());
-    assert!(!handle.try_input(b"nope\n"), "Read Only 时 try_input 必须拒绝");
+    assert!(
+        !handle.try_input(b"nope\n"),
+        "Read Only 时 try_input 必须拒绝"
+    );
     handle.input(b"blocked\n");
     std::thread::sleep(Duration::from_millis(150));
     let frame = handle.pull(handle.new_frame());
-    assert!(!frame_text(&frame).contains("blocked"), "Read Only 不能写 PTY");
+    assert!(
+        !frame_text(&frame).contains("blocked"),
+        "Read Only 不能写 PTY"
+    );
 
     handle.set_read_only(false);
     assert!(!handle.read_only());
@@ -940,15 +1041,24 @@ fn reset_clears_state_and_contents_include_scrollback() {
 
     // Save Contents 路径：contents() 要包含回滚历史，而不只是当前视口。
     let contents = handle.contents().expect("contents 应有回复");
-    assert!(contents.starts_with("1\n"), "contents 应从最旧历史开始: {contents:?}");
-    assert!(contents.contains("40\n"), "contents 应包含末尾输出: {contents:?}");
+    assert!(
+        contents.starts_with("1\n"),
+        "contents 应从最旧历史开始: {contents:?}"
+    );
+    assert!(
+        contents.contains("40\n"),
+        "contents 应包含末尾输出: {contents:?}"
+    );
 
     // 先留一个搜索高亮，Reset 必须一并清掉。
     let hit = handle.search("40", true).expect("应能找到 40");
     assert!(hit.line < 8);
     handle.reset();
     let frame = handle.pull(handle.new_frame());
-    assert!(frame_text(&frame).trim().is_empty(), "Reset 后屏幕应为空: {frame:?}");
+    assert!(
+        frame_text(&frame).trim().is_empty(),
+        "Reset 后屏幕应为空: {frame:?}"
+    );
     assert!(frame.search.is_none(), "Reset 应清除搜索高亮");
     assert_eq!(handle.scroll_position().history, 0, "Reset 应清空回滚");
     assert!(handle.contents().expect("contents 应有回复").is_empty());
@@ -967,7 +1077,10 @@ fn reset_clears_state_and_contents_include_scrollback() {
     }
     handle.reset_and_clear();
     let frame = handle.pull(handle.new_frame());
-    assert!(frame_text(&frame).trim().is_empty(), "Reset and Clear 后屏幕应为空");
+    assert!(
+        frame_text(&frame).trim().is_empty(),
+        "Reset and Clear 后屏幕应为空"
+    );
     assert_eq!(handle.scroll_position().history, 0);
 }
 

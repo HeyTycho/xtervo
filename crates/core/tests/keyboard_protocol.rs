@@ -72,10 +72,7 @@ fn dd_cmd(path: &Path, count: usize) -> String {
 fn kitty_query_gets_reply_from_pseudo_tui() {
     let dir = out_dir("query");
     let out = dir.join("reply.bin");
-    let script = format!(
-        "stty raw -echo; printf '\\033[?u'; {}",
-        dd_cmd(&out, 5)
-    );
+    let script = format!("stty raw -echo; printf '\\033[?u'; {}", dd_cmd(&out, 5));
     let _handle = spawn(sh(&script, true)).expect("spawn pane");
     let data = wait_bytes(&out, 5, Duration::from_secs(5));
     assert_eq!(data, b"\x1b[?0u", "初始 flags 必须是 0");
@@ -107,7 +104,10 @@ fn kitty_set_push_pop_query_roundtrip() {
     let start = Instant::now();
     while handle.keyboard_flags().bits() != 3 {
         if start.elapsed() > Duration::from_secs(5) {
-            panic!("flags 快照未恢复为 3，当前 {}", handle.keyboard_flags().bits());
+            panic!(
+                "flags 快照未恢复为 3，当前 {}",
+                handle.keyboard_flags().bits()
+            );
         }
         std::thread::sleep(Duration::from_millis(2));
     }
@@ -195,7 +195,10 @@ fn protocol_off_answers_nothing() {
         std::thread::sleep(Duration::from_millis(10));
     }
     let data = std::fs::read(&out).unwrap_or_default();
-    assert!(data.is_empty(), "keyboard_protocol=off 仍回了字节: {data:?}");
+    assert!(
+        data.is_empty(),
+        "keyboard_protocol=off 仍回了字节: {data:?}"
+    );
     assert_eq!(handle.keyboard_flags().bits(), 0);
     assert_eq!(handle.modify_other_keys(), 0);
     let _ = std::fs::remove_dir_all(&dir);
@@ -306,10 +309,7 @@ time.sleep(5)
         {
             break;
         }
-        assert!(
-            Instant::now() < ready_deadline,
-            "shell 未在 5s 内就绪"
-        );
+        assert!(Instant::now() < ready_deadline, "shell 未在 5s 内就绪");
         std::thread::sleep(Duration::from_millis(20));
     }
 

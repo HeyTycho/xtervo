@@ -38,11 +38,7 @@ fn frame_text(frame: &Frame) -> String {
     out
 }
 
-fn wait_for<F: Fn(&Frame) -> bool>(
-    handle: &PaneHandle,
-    timeout: Duration,
-    pred: F,
-) -> Box<Frame> {
+fn wait_for<F: Fn(&Frame) -> bool>(handle: &PaneHandle, timeout: Duration, pred: F) -> Box<Frame> {
     let start = Instant::now();
     let mut frame = handle.new_frame();
     loop {
@@ -58,10 +54,7 @@ fn wait_for<F: Fn(&Frame) -> bool>(
 }
 
 fn temp_payload(name: &str, bytes: &[u8]) -> PathBuf {
-    let path = std::env::temp_dir().join(format!(
-        "xtervo-kitty-{}-{name}.bin",
-        std::process::id()
-    ));
+    let path = std::env::temp_dir().join(format!("xtervo-kitty-{}-{name}.bin", std::process::id()));
     std::fs::write(&path, bytes).expect("write payload");
     path
 }
@@ -218,15 +211,14 @@ fn kitty_delete_placement_keeps_data_and_delete_image_drops_it() {
     place.extend_from_slice(b"\x1b[3;3H");
     place.extend(apc(
         "a=t,i=8,f=32,s=2,v=2,q=2",
-        encode_base64(&[10u8, 20, 30, 255, 40, 50, 60, 255, 70, 80, 90, 255, 100, 110, 120, 255])
-            .as_bytes(),
+        encode_base64(&[
+            10u8, 20, 30, 255, 40, 50, 60, 255, 70, 80, 90, 255, 100, 110, 120, 255,
+        ])
+        .as_bytes(),
     ));
     place.extend(apc("a=p,i=8,p=1,c=1,r=1,q=2", b""));
     let place_path = temp_payload("delete-place", &place);
-    let del_placement = temp_payload(
-        "delete-placement",
-        &apc("a=d,d=i,i=8,p=1,q=2", b""),
-    );
+    let del_placement = temp_payload("delete-placement", &apc("a=d,d=i,i=8,p=1,q=2", b""));
     let del_image = temp_payload("delete-image", &apc("a=d,d=I,i=8,q=2", b""));
     let script = format!(
         "stty raw -echo; cat '{}'; dd bs=1 count=1 of=/dev/null 2>/dev/null; cat '{}'; printf '\\r\\nPLACEMENT-GONE\\r\\n'; dd bs=1 count=1 of=/dev/null 2>/dev/null; cat '{}'; printf 'IMAGE-GONE\\r\\n'; sleep 0.4",
@@ -375,19 +367,13 @@ struct KittyRun {
 /// 按 `chunks` 顺序写入终端（每块之间 sleep，确保 actor 分批读取），
 /// 抓取终端回包与最终帧里的图片数量。
 fn run_kitty_chunks(tag: &str, chunks: &[Vec<u8>], reply_len: usize) -> KittyRun {
-    let dir = std::env::temp_dir().join(format!(
-        "xtervo-kitty-order-{}-{tag}",
-        std::process::id()
-    ));
+    let dir = std::env::temp_dir().join(format!("xtervo-kitty-order-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let reply_path = dir.join("reply.bin");
     let mut script = String::from("stty raw -echo; ");
     for chunk in chunks {
-        script.push_str(&format!(
-            "printf '{}'; sleep 0.15; ",
-            printf_escape(chunk)
-        ));
+        script.push_str(&format!("printf '{}'; sleep 0.15; ", printf_escape(chunk)));
     }
     script.push_str(&format!(
         "printf '\\r\\nDONE\\r\\n'; sleep 0.1; timeout --foreground 5 dd bs=1 count={reply_len} of='{}' 2>/dev/null || true; stty sane; sleep 0.2",
@@ -438,7 +424,10 @@ fn kitty_clear_then_transmit_same_chunk_matches_split_chunks() {
         expected.len(),
     );
 
-    assert_eq!(same.reply, expected, "同 chunk 清屏后 transmit/place 回包错误");
+    assert_eq!(
+        same.reply, expected,
+        "同 chunk 清屏后 transmit/place 回包错误"
+    );
     assert_eq!(split.reply, expected, "拆批对照回包错误");
     assert_eq!(same.images, 2, "同 chunk：清屏后的两个 place 都必须保留");
     assert_eq!(same.images, split.images, "同批与拆批图片数必须一致");
@@ -465,7 +454,10 @@ fn kitty_transmit_then_clear_same_chunk_matches_split_chunks() {
         expected.len(),
     );
 
-    assert_eq!(same.reply, expected, "transmit 后清屏，后续 place 必须 ENOENT");
+    assert_eq!(
+        same.reply, expected,
+        "transmit 后清屏，后续 place 必须 ENOENT"
+    );
     assert_eq!(split.reply, expected, "拆批对照回包错误");
     assert_eq!(same.images, 0, "清屏后不得残留图片");
     assert_eq!(same.images, split.images, "同批与拆批图片数必须一致");

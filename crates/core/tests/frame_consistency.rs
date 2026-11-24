@@ -118,7 +118,10 @@ struct Mismatch {
 impl Replay {
     fn new(cols: usize, rows: usize, scrollback: usize) -> Self {
         let size = GridSize::new(cols, rows);
-        let config = TermConfig { scrolling_history: scrollback, ..TermConfig::default() };
+        let config = TermConfig {
+            scrolling_history: scrollback,
+            ..TermConfig::default()
+        };
         let term = Term::new(config, &size, VoidListener);
         Self {
             cols,
@@ -157,7 +160,11 @@ impl Replay {
     fn check(&mut self) -> Vec<Mismatch> {
         self.steps += 1;
         let (cols, rows) = self.dimensions();
-        assert_eq!((cols, rows), (self.cols, self.rows), "term size changed without resize");
+        assert_eq!(
+            (cols, rows),
+            (self.cols, self.rows),
+            "term size changed without resize"
+        );
 
         let force_full = std::mem::take(&mut self.force_full);
         let refresh_zerowidth = std::mem::take(&mut self.refresh_zerowidth);
@@ -170,8 +177,12 @@ impl Replay {
             refresh_zerowidth,
         );
 
-        let damage: Vec<(u16, u16, u16)> =
-            self.partial.damage.iter().map(|d| (d.line, d.left, d.right)).collect();
+        let damage: Vec<(u16, u16, u16)> = self
+            .partial
+            .damage
+            .iter()
+            .map(|d| (d.line, d.left, d.right))
+            .collect();
         let mut damage_rows = vec![false; rows];
         for &(line, _, _) in &damage {
             if (line as usize) < rows {
@@ -199,7 +210,14 @@ impl Replay {
         }
 
         // ---- 强制整屏快照（唯一真相） ----
-        fill_frame(&mut self.term, &mut self.full, &self.palette, true, None, true);
+        fill_frame(
+            &mut self.term,
+            &mut self.full,
+            &self.palette,
+            true,
+            None,
+            true,
+        );
 
         let mut mismatches = Vec::new();
 
@@ -237,14 +255,20 @@ impl Replay {
         if self.partial.cursor != self.full.cursor {
             mismatches.push(self.frame_mismatch(
                 "cursor",
-                format!("partial={:?} full={:?}", self.partial.cursor, self.full.cursor),
+                format!(
+                    "partial={:?} full={:?}",
+                    self.partial.cursor, self.full.cursor
+                ),
                 &damage,
             ));
         }
         if self.partial.mode != self.full.mode {
             mismatches.push(self.frame_mismatch(
                 "mode",
-                format!("partial={:#x} full={:#x}", self.partial.mode, self.full.mode),
+                format!(
+                    "partial={:#x} full={:#x}",
+                    self.partial.mode, self.full.mode
+                ),
                 &damage,
             ));
         }
@@ -302,9 +326,9 @@ impl Replay {
                         &self.partial.cells[base + col],
                     )
                 }) || (0..cols).any(|col| {
-                        // zerowidth 变化也算需要重绘该行。
-                        self.partial.zerowidth_at(row, col) != self.partial_prev_zerowidth(row, col)
-                    });
+                    // zerowidth 变化也算需要重绘该行。
+                    self.partial.zerowidth_at(row, col) != self.partial_prev_zerowidth(row, col)
+                });
                 if changed && !damage_rows[row] {
                     mismatches.push(Mismatch {
                         step: self.steps,
@@ -588,9 +612,7 @@ fn locate_raw() -> Option<std::path::PathBuf> {
 #[test]
 fn raw_dsh_replay_matches_force_full() {
     let Some(raw_path) = locate_raw() else {
-        eprintln!(
-            "跳过：未找到 app-to-host.raw；设置 XTERVO_DSH_RAW 指向 dsh 原始输出后再跑"
-        );
+        eprintln!("跳过：未找到 app-to-host.raw；设置 XTERVO_DSH_RAW 指向 dsh 原始输出后再跑");
         return;
     };
     let bytes = std::fs::read(&raw_path).expect("读取 dsh raw");

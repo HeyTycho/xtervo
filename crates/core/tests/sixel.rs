@@ -32,11 +32,7 @@ fn frame_text(frame: &Frame) -> String {
     out
 }
 
-fn wait_for<F: Fn(&Frame) -> bool>(
-    handle: &PaneHandle,
-    timeout: Duration,
-    pred: F,
-) -> Box<Frame> {
+fn wait_for<F: Fn(&Frame) -> bool>(handle: &PaneHandle, timeout: Duration, pred: F) -> Box<Frame> {
     let start = Instant::now();
     let mut frame = handle.new_frame();
     loop {
@@ -52,10 +48,7 @@ fn wait_for<F: Fn(&Frame) -> bool>(
 }
 
 fn temp_payload(name: &str, bytes: &[u8]) -> PathBuf {
-    let path = std::env::temp_dir().join(format!(
-        "xtervo-sixel-{}-{name}.bin",
-        std::process::id()
-    ));
+    let path = std::env::temp_dir().join(format!("xtervo-sixel-{}-{name}.bin", std::process::id()));
     std::fs::write(&path, bytes).expect("write payload");
     path
 }
@@ -102,10 +95,18 @@ fn sixel_over_pty_bel_terminated_and_cross_chunk() {
 
     let frame = wait_for(&handle, Duration::from_secs(8), |f| f.images.len() >= 2);
     // 2x2 小图 + 400x500 大图（大图经过 max payload chunk 切分）。
-    let small_img = frame.images.iter().find(|i| i.width == 2 && i.height == 2).expect("2x2 image");
+    let small_img = frame
+        .images
+        .iter()
+        .find(|i| i.width == 2 && i.height == 2)
+        .expect("2x2 image");
     assert_eq!(&small_img.data[0..4], &[255, 0, 0, 255]);
     assert_eq!(&small_img.data[4..8], &[0, 255, 0, 255]);
-    let big_img = frame.images.iter().find(|i| i.width == 400 && i.height == 500).expect("big image");
+    let big_img = frame
+        .images
+        .iter()
+        .find(|i| i.width == 400 && i.height == 500)
+        .expect("big image");
     assert_eq!(big_img.data.len(), 400 * 500 * 4);
 
     // Sixel 字节没有进入网格；后续文本正常。
@@ -213,8 +214,14 @@ fn xtwinops_reports_cell_and_window_pixels() {
     let bytes = std::fs::read(&resp).unwrap_or_default();
     let text = String::from_utf8_lossy(&bytes);
     // 默认 cell=8x16；100x24 的窗口 = 800x384。
-    assert!(text.contains("\u{1b}[6;16;8t"), "缺少 cell pixel 回复: {text:?}");
-    assert!(text.contains("\u{1b}[4;384;800t"), "缺少 window pixel 回复: {text:?}");
+    assert!(
+        text.contains("\u{1b}[6;16;8t"),
+        "缺少 cell pixel 回复: {text:?}"
+    );
+    assert!(
+        text.contains("\u{1b}[4;384;800t"),
+        "缺少 window pixel 回复: {text:?}"
+    );
     let _ = std::fs::remove_file(resp);
 }
 
@@ -222,18 +229,19 @@ fn xtwinops_reports_cell_and_window_pixels() {
 fn da1_advertises_sixel_only_when_enabled() {
     let _serial = SIXEL_TEST_LOCK.lock().unwrap();
     fn check(sixel: bool, expect_hex: &str) {
-        let resp = std::env::temp_dir().join(format!(
-            "xtervo-da1-{}-{}.bin",
-            std::process::id(),
-            sixel
-        ));
+        let resp =
+            std::env::temp_dir().join(format!("xtervo-da1-{}-{}.bin", std::process::id(), sixel));
         let _ = std::fs::remove_file(&resp);
         let script = format!(
             "stty raw -echo; printf '\\033[c'; timeout --foreground 0.5 dd bs=1 count=32 of='{}' 2>/dev/null || true; stty sane; printf '\\r\\nDA1:'; od -An -tx1 '{}' | tr -d ' \\n'; printf '\\r\\nENDDA1\\r\\n'; sleep 0.4",
             resp.display(),
             resp.display()
         );
-        let handle = spawn(PaneConfig { sixel, ..sh(&script) }).expect("spawn");
+        let handle = spawn(PaneConfig {
+            sixel,
+            ..sh(&script)
+        })
+        .expect("spawn");
         let frame = wait_for(&handle, Duration::from_secs(5), |f| {
             frame_text(f).contains("ENDDA1")
         });
@@ -260,8 +268,12 @@ fn image_anchor_scrolls_with_history() {
         "printf '\\033[24;1H'; cat '{}'; printf '\\r\\n\\r\\n\\r\\n\\r\\n\\r\\nEND'; sleep 0.5",
         path.display()
     );
-    let handle = spawn(PaneConfig { cols: 40, rows: 24, ..sh(&script) })
-        .expect("spawn pane");
+    let handle = spawn(PaneConfig {
+        cols: 40,
+        rows: 24,
+        ..sh(&script)
+    })
+    .expect("spawn pane");
     let frame = wait_for(&handle, Duration::from_secs(5), |f| {
         frame_text(f).contains("END") && !f.images.is_empty()
     });
@@ -305,8 +317,15 @@ fn frame_exposes_stable_row_ids_on_full_and_partial_pulls() {
     let frame = wait_for(&handle, Duration::from_secs(5), |f| {
         frame_text(f).contains("THREE")
     });
-    assert_eq!(frame.row_ids.len(), frame.rows, "row_ids 必须与视口行数一致");
-    assert!(frame.row_ids.iter().all(|&id| id != 0), "可见行必须有非零 RowId");
+    assert_eq!(
+        frame.row_ids.len(),
+        frame.rows,
+        "row_ids 必须与视口行数一致"
+    );
+    assert!(
+        frame.row_ids.iter().all(|&id| id != 0),
+        "可见行必须有非零 RowId"
+    );
     let mut distinct = frame.row_ids.clone();
     distinct.sort_unstable();
     distinct.dedup();
@@ -336,7 +355,10 @@ fn row_reset_makes_row_id_disappear_and_drops_image() {
     assert_eq!(frame.row_ids[0], old_row_id);
 
     let frame = wait_for(&handle, Duration::from_secs(5), |f| f.images.is_empty());
-    assert!(frame.images.is_empty(), "RowId 被 reset 后 placement 必须 drop");
+    assert!(
+        frame.images.is_empty(),
+        "RowId 被 reset 后 placement 必须 drop"
+    );
     assert!(
         !frame.row_ids.contains(&old_row_id),
         "reset 的行不应再以旧 RowId 出现在视口"
@@ -464,7 +486,10 @@ fn escape_clear_screen_removes_images() {
 fn sixel_clear_screen_removes_images() {
     let _serial = SIXEL_TEST_LOCK.lock().unwrap();
     let path = temp_payload("clear", &small_sixel_bel());
-    let script = format!("cat '{}'; printf '\\r\\nX\\r\\n'; sleep 0.4", path.display());
+    let script = format!(
+        "cat '{}'; printf '\\r\\nX\\r\\n'; sleep 0.4",
+        path.display()
+    );
     let handle = spawn(sh(&script)).expect("spawn pane");
     wait_for(&handle, Duration::from_secs(5), |f| !f.images.is_empty());
     handle.clear_screen();

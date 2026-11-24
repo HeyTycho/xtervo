@@ -21,13 +21,13 @@
 mod cli;
 pub mod context;
 pub mod install;
+#[cfg(test)]
+mod install_tests;
 mod manifest;
 mod protocol;
 pub mod signature;
 mod state;
 mod supervisor;
-#[cfg(test)]
-mod install_tests;
 #[cfg(test)]
 mod tests;
 
@@ -40,9 +40,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde_json::{json, Value};
 use xtervo_core::{OutputFilterHandle, WakeSignal};
 
-use crate::plugin_wasm::{
-    WasmFilterRuntime, WasmFilterStatsSnapshot, WasmOutputHost,
-};
+use crate::plugin_wasm::{WasmFilterRuntime, WasmFilterStatsSnapshot, WasmOutputHost};
 
 pub use cli::run_cli;
 pub use context::{CommandContext, WhenExpr};
@@ -77,7 +75,8 @@ pub struct ActivityLog {
 
 impl ActivityLog {
     pub fn push(&mut self, line: String) {
-        self.entries.push_front((self.revision + 1, clip_chars(&line, 240)));
+        self.entries
+            .push_front((self.revision + 1, clip_chars(&line, 240)));
         while self.entries.len() > ACTIVITY_CAPACITY {
             self.entries.pop_back();
         }
@@ -88,7 +87,10 @@ impl ActivityLog {
     }
 
     pub fn snapshot(&self) -> (u64, Vec<String>) {
-        (self.revision, self.entries.iter().map(|(_, line)| line.clone()).collect())
+        (
+            self.revision,
+            self.entries.iter().map(|(_, line)| line.clone()).collect(),
+        )
     }
 
     pub fn revision(&self) -> u64 {
@@ -241,7 +243,12 @@ fn now_hms() -> String {
         }
     }
     let secs = secs % 86_400;
-    format!("{:02}:{:02}:{:02}", secs / 3600, (secs % 3600) / 60, secs % 60)
+    format!(
+        "{:02}:{:02}:{:02}",
+        secs / 3600,
+        (secs % 3600) / 60,
+        secs % 60
+    )
 }
 
 // ---------------------------------------------------------------- 发现
@@ -289,15 +296,17 @@ impl PluginEntry {
             entry,
             contributes: manifest.contributes.clone(),
             permissions: manifest.permissions.clone(),
-            command_ids: manifest.commands.iter().map(|command| command.id.clone()).collect(),
+            command_ids: manifest
+                .commands
+                .iter()
+                .map(|command| command.id.clone())
+                .collect(),
             command_decls: manifest.commands.clone(),
         })
     }
 
     fn permission_fingerprint(&self) -> Option<Vec<String>> {
-        self.manifest
-            .as_ref()
-            .map(Manifest::permission_fingerprint)
+        self.manifest.as_ref().map(Manifest::permission_fingerprint)
     }
 }
 
@@ -306,7 +315,9 @@ pub fn discover_plugins(dir: &Path) -> Vec<PluginEntry> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
-    let mut paths: Vec<PathBuf> = entries.filter_map(|entry| entry.ok().map(|e| e.path())).collect();
+    let mut paths: Vec<PathBuf> = entries
+        .filter_map(|entry| entry.ok().map(|e| e.path()))
+        .collect();
     paths.sort();
     let mut plugins = Vec::new();
     for path in paths {
@@ -320,9 +331,7 @@ pub fn discover_plugins(dir: &Path) -> Vec<PluginEntry> {
         }
         if path.is_dir() && path.join("plugin.toml").is_file() {
             plugins.push(parse_package_dir(&path));
-        } else if path.is_file()
-            && path.extension().is_some_and(|ext| ext == "toml")
-        {
+        } else if path.is_file() && path.extension().is_some_and(|ext| ext == "toml") {
             plugins.push(parse_flat_manifest(&path));
         }
     }
@@ -331,9 +340,8 @@ pub fn discover_plugins(dir: &Path) -> Vec<PluginEntry> {
     for plugin in &mut plugins {
         if let Some(id) = plugin.v3_key().map(str::to_string) {
             if seen.iter().any(|seen| seen == &id) {
-                let reason = format!(
-                    "重复插件 id {id:?}（另一个目录已使用该 id）；v3 要求 id 全局唯一"
-                );
+                let reason =
+                    format!("重复插件 id {id:?}（另一个目录已使用该 id）；v3 要求 id 全局唯一");
                 plugin.supported = false;
                 plugin.reason = reason.clone();
                 plugin.manifest = None;
@@ -390,11 +398,11 @@ fn parse_flat_manifest(path: &Path) -> PluginEntry {
             entry.api_label = manifest::probe_api(&value)
                 .map(|api| api.to_string())
                 .unwrap_or_else(|| "1 (legacy)".to_string());
-        },
+        }
         Err(reason) => {
             entry.api_label = "?".to_string();
             entry.reason = format!("{}; {}", reason, reason_migration());
-        },
+        }
     }
     entry
 }
@@ -423,7 +431,7 @@ fn parse_package_dir(dir: &Path) -> PluginEntry {
         Err(reason) => {
             entry.reason = reason;
             return entry;
-        },
+        }
     };
     let api = manifest::probe_api(&value);
     let (display_name, version) = manifest::legacy_display(&value, &dir_label);
@@ -447,17 +455,14 @@ fn parse_package_dir(dir: &Path) -> PluginEntry {
         Err(e) => {
             entry.reason = format!("读取 plugin.toml 失败: {e}");
             return entry;
-        },
+        }
     };
     let manifest: Manifest = match toml::from_str(&text) {
         Ok(manifest) => manifest,
         Err(e) => {
-            entry.reason = format!(
-                "v3 plugin.toml 解析失败: {e}. {}",
-                reason_migration()
-            );
+            entry.reason = format!("v3 plugin.toml 解析失败: {e}. {}", reason_migration());
             return entry;
-        },
+        }
     };
     if let Err(reason) = manifest.validate() {
         entry.reason = format!("v3 清单无效: {reason}");
@@ -472,7 +477,7 @@ fn parse_package_dir(dir: &Path) -> PluginEntry {
         Err(reason) => {
             entry.reason = format!("entry 无效: {reason}");
             return entry;
-        },
+        }
     };
     let mut theme_path = None;
     let mut theme_error = None;
@@ -486,7 +491,7 @@ fn parse_package_dir(dir: &Path) -> PluginEntry {
                     manifest.id
                 );
                 theme_error = Some(message);
-            },
+            }
         }
     }
     entry.key = manifest.id.clone();
@@ -599,7 +604,9 @@ pub fn command_when_allows(decl: &CommandDecl, ctx: &CommandContext) -> bool {
     if when.is_empty() {
         return true;
     }
-    WhenExpr::parse(when).map(|expr| expr.eval(ctx)).unwrap_or(false)
+    WhenExpr::parse(when)
+        .map(|expr| expr.eval(ctx))
+        .unwrap_or(false)
 }
 
 // ---------------------------------------------------------------- PluginStore
@@ -638,8 +645,7 @@ impl PluginStore {
         let base = std::env::var("XDG_CONFIG_HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|_| {
-                PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into()))
-                    .join(".config")
+                PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into())).join(".config")
             });
         base.join("xtervo").join("plugins")
     }
@@ -674,11 +680,7 @@ impl PluginStore {
     }
 
     /// 测试钩子：允许缩短超时；生产只使用默认值。
-    pub fn load_with_options(
-        dir: &Path,
-        state_path: &Path,
-        options: SupervisorOptions,
-    ) -> Self {
+    pub fn load_with_options(dir: &Path, state_path: &Path, options: SupervisorOptions) -> Self {
         let entries = discover_plugins(dir);
         let (state, state_error) = load_state(state_path);
         if let Some(error) = &state_error {
@@ -873,11 +875,7 @@ impl PluginStore {
     pub fn is_approved(&self, key: &str) -> bool {
         self.entry_index(key)
             .and_then(|position| self.entries.get(position))
-            .and_then(|entry| {
-                entry
-                    .v3_key()
-                    .zip(entry.permission_fingerprint())
-            })
+            .and_then(|entry| entry.v3_key().zip(entry.permission_fingerprint()))
             .is_some_and(|(id, permissions)| self.state.approved_for(id, &permissions))
     }
 
@@ -889,9 +887,10 @@ impl PluginStore {
         self.entries
             .iter()
             .filter(|entry| {
-                entry.manifest.as_ref().is_some_and(|manifest| {
-                    self.state.is_enabled(&manifest.id)
-                })
+                entry
+                    .manifest
+                    .as_ref()
+                    .is_some_and(|manifest| self.state.is_enabled(&manifest.id))
             })
             .count()
     }
@@ -1112,16 +1111,18 @@ impl PluginStore {
     }
 
     /// 该窗口应展示的 ask；不消费队列（Allow/Deny 后由 resolve 移除）。
-    pub fn pending_approvals_for(&self, window_id: u64, active: Option<u64>) -> Vec<ApprovalRequest> {
+    pub fn pending_approvals_for(
+        &self,
+        window_id: u64,
+        active: Option<u64>,
+    ) -> Vec<ApprovalRequest> {
         self.shared
             .approvals
             .lock()
             .map(|approvals| {
                 approvals
                     .iter()
-                    .filter(|approval| {
-                        window_matches_target(approval.window_id, window_id, active)
-                    })
+                    .filter(|approval| window_matches_target(approval.window_id, window_id, active))
                     .cloned()
                     .collect()
             })
@@ -1150,7 +1151,7 @@ impl PluginStore {
                     }
                     *approvals = kept;
                     dropped
-                },
+                }
                 Err(_) => Vec::new(),
             }
         };
@@ -1159,7 +1160,7 @@ impl PluginStore {
                 let before = statuses.len();
                 statuses.retain(|(_, window), _| *window != Some(window_id));
                 statuses.len() != before
-            },
+            }
             Err(_) => false,
         };
         if let Ok(mut surfaces) = self.shared.surfaces.lock() {
@@ -1198,14 +1199,15 @@ impl PluginStore {
                 !(approval.plugin_id == plugin_id && approval.request_id == request_id)
             });
         }
-        self.supervisors
-            .get(plugin_id)
-            .is_some_and(|handle| {
-                handle
-                    .tx
-                    .send(SupervisorMsg::HostReply { id: request_id, outcome })
-                    .is_ok()
-            })
+        self.supervisors.get(plugin_id).is_some_and(|handle| {
+            handle
+                .tx
+                .send(SupervisorMsg::HostReply {
+                    id: request_id,
+                    outcome,
+                })
+                .is_ok()
+        })
     }
 
     /// 全部状态（诊断/测试用）；产品 UI 用 [`Self::status_snapshot_for_window`]。
@@ -1233,10 +1235,10 @@ impl PluginStore {
                     continue;
                 }
                 match effective.get(plugin_id.as_str()) {
-                    Some((existing, _)) if existing.is_some() && target.is_none() => {},
+                    Some((existing, _)) if existing.is_some() && target.is_none() => {}
                     _ => {
                         effective.insert(plugin_id.clone(), (*target, status.clone()));
-                    },
+                    }
                 }
             }
         }
@@ -1353,24 +1355,23 @@ impl PluginStore {
             .ok_or_else(|| format!("{} 缺少 .wasm entry", manifest.id))?;
         // 先 stat 再读，且最多读 MAX+1 字节：发现后文件被替换/放大也不会把
         // 整个超大文件读进 UI 线程。
-        let bytes = match crate::plugin_wasm::read_wasm_module(
-            &path,
-            crate::plugin_wasm::MAX_WASM_BYTES,
-        ) {
-            Ok(bytes) => bytes,
-            Err(error) => {
-                // helper 的错误文本已带路径/上限信息。
-                self.last_errors.insert(manifest.id.clone(), error.clone());
-                return Err(error);
-            },
-        };
+        let bytes =
+            match crate::plugin_wasm::read_wasm_module(&path, crate::plugin_wasm::MAX_WASM_BYTES) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    // helper 的错误文本已带路径/上限信息。
+                    self.last_errors.insert(manifest.id.clone(), error.clone());
+                    return Err(error);
+                }
+            };
         let runtime = match WasmFilterRuntime::load(&manifest.id, &bytes) {
             Ok(runtime) => Arc::new(runtime),
             Err(error) => {
                 let message = format!("加载 WASM 失败 {}: {error}", path.display());
-                self.last_errors.insert(manifest.id.clone(), message.clone());
+                self.last_errors
+                    .insert(manifest.id.clone(), message.clone());
                 return Err(message);
-            },
+            }
         };
         self.wasm_host.activate(runtime.clone());
         self.wasm_filters.insert(manifest.id.clone(), runtime);
@@ -1419,18 +1420,14 @@ impl PluginStore {
             Err(error) => {
                 self.last_errors.insert(manifest.id.clone(), error.clone());
                 return Err(error);
-            },
+            }
         };
-        let handle = match spawn_supervisor(
-            config,
-            self.shared.clone(),
-            self.options.clone(),
-        ) {
+        let handle = match spawn_supervisor(config, self.shared.clone(), self.options.clone()) {
             Ok(handle) => handle,
             Err(error) => {
                 self.last_errors.insert(manifest.id.clone(), error.clone());
                 return Err(error);
-            },
+            }
         };
         self.supervisors.insert(manifest.id.clone(), handle);
         self.last_errors.remove(&manifest.id);
@@ -1455,7 +1452,8 @@ impl PluginStore {
     /// 用户在确认弹窗点 Allow：持久化权限指纹，然后启动。
     pub fn confirm_enable(&mut self, key: &str) -> Result<(), String> {
         let (position, manifest) = self.v3_manifest(key)?;
-        self.state.approve(&manifest.id, manifest.permission_fingerprint());
+        self.state
+            .approve(&manifest.id, manifest.permission_fingerprint());
         self.state.set_enabled(&manifest.id, true);
         self.persist_state();
         self.start_plugin_at(position)?;
@@ -1549,12 +1547,12 @@ impl PluginStore {
                             self.bump_runtime();
                             eprintln!("[plugin-v3] {new_id}: reload 已提交（不重启 xtervo）");
                             return Ok(());
-                        },
+                        }
                         Err(error) => {
                             self.stop_runtime(&new_id);
                             self.bump_runtime();
                             return Err(error);
-                        },
+                        }
                     }
                 }
             }
@@ -1594,13 +1592,19 @@ impl PluginStore {
             ) {
                 handle.restart();
                 self.bump_runtime();
-                eprintln!("[plugin-v3] {}: manual restart（不重启 xtervo）", manifest.id);
+                eprintln!(
+                    "[plugin-v3] {}: manual restart（不重启 xtervo）",
+                    manifest.id
+                );
                 return Ok(());
             }
         }
         self.start_supervisor_at(position)?;
         self.bump_runtime();
-        eprintln!("[plugin-v3] {}: restart 新 supervisor（不重启 xtervo）", manifest.id);
+        eprintln!(
+            "[plugin-v3] {}: restart 新 supervisor（不重启 xtervo）",
+            manifest.id
+        );
         Ok(())
     }
 
@@ -1745,10 +1749,7 @@ impl PluginStore {
                             .approved_for(&manifest.id, &manifest.permission_fingerprint())
                     {
                         if let Err(error) = self.start_supervisor_at(position) {
-                            eprintln!(
-                                "[plugin-v3] {}: 安装后自动启动失败: {error}",
-                                manifest.id
-                            );
+                            eprintln!("[plugin-v3] {}: 安装后自动启动失败: {error}", manifest.id);
                         }
                     }
                 }
@@ -1799,7 +1800,7 @@ impl PluginStore {
             Err(error) => {
                 eprintln!("[plugin-v3] 保存状态失败: {error}");
                 self.state_error = Some(error);
-            },
+            }
         }
     }
 
@@ -1883,10 +1884,7 @@ impl PluginStore {
                 if !command.menu {
                     continue;
                 }
-                found.push((
-                    manifest.full_command_id(&command.id),
-                    command.title.clone(),
-                ));
+                found.push((manifest.full_command_id(&command.id), command.title.clone()));
             }
         }
         found.sort_by_key(|(_, title)| title.to_lowercase());
@@ -1896,7 +1894,6 @@ impl PluginStore {
             .map(|(id, title)| (self.intern(&id), title))
             .collect()
     }
-
 
     /// 已启用 + 已确认权限的插件命令快照（Hotkeys 页与按键分发用）。
     ///
@@ -1972,25 +1969,31 @@ impl PluginStore {
         let action = format!("command {command_id}");
         let Some(handle) = self.supervisors.get(&plugin_id) else {
             let message = "插件进程未运行（Enable/确认权限后再试）".to_string();
-            push_notice(&self.shared, Notice {
-                plugin_id: plugin_id.clone(),
-                plugin_name,
-                text: message.clone(),
-                level: "error".to_string(),
-                window_id,
-            });
+            push_notice(
+                &self.shared,
+                Notice {
+                    plugin_id: plugin_id.clone(),
+                    plugin_name,
+                    text: message.clone(),
+                    level: "error".to_string(),
+                    window_id,
+                },
+            );
             record_activity(&self.shared, &plugin_id, &action, "unavailable", &message);
             return true;
         };
         if !handle.is_running() {
             let message = format!("插件状态为 {}，命令未执行", handle.phase().as_str());
-            push_notice(&self.shared, Notice {
-                plugin_id: plugin_id.clone(),
-                plugin_name,
-                text: message.clone(),
-                level: "error".to_string(),
-                window_id,
-            });
+            push_notice(
+                &self.shared,
+                Notice {
+                    plugin_id: plugin_id.clone(),
+                    plugin_name,
+                    text: message.clone(),
+                    level: "error".to_string(),
+                    window_id,
+                },
+            );
             record_activity(&self.shared, &plugin_id, &action, "unavailable", &message);
             return true;
         }
@@ -2006,13 +2009,16 @@ impl PluginStore {
             .is_err()
         {
             let message = "插件 supervisor 已退出".to_string();
-            push_notice(&self.shared, Notice {
-                plugin_id: plugin_id.clone(),
-                plugin_name,
-                text: message.clone(),
-                level: "error".to_string(),
-                window_id,
-            });
+            push_notice(
+                &self.shared,
+                Notice {
+                    plugin_id: plugin_id.clone(),
+                    plugin_name,
+                    text: message.clone(),
+                    level: "error".to_string(),
+                    window_id,
+                },
+            );
             record_activity(&self.shared, &plugin_id, &action, "unavailable", &message);
             return true;
         }
@@ -2036,17 +2042,21 @@ impl PluginStore {
                     outcome.label(),
                     &text,
                 );
-                eprintln!(
-                    "[plugin-v3] {full_id} {}: {text}",
-                    outcome.label()
+                eprintln!("[plugin-v3] {full_id} {}: {text}", outcome.label());
+                push_notice(
+                    &shared,
+                    Notice {
+                        plugin_id: plugin_for_thread,
+                        plugin_name: plugin_name_for_thread,
+                        text: sanitize_text(&text, 300),
+                        level: if outcome.ok() {
+                            "info".to_string()
+                        } else {
+                            "error".to_string()
+                        },
+                        window_id,
+                    },
                 );
-                push_notice(&shared, Notice {
-                    plugin_id: plugin_for_thread,
-                    plugin_name: plugin_name_for_thread,
-                    text: sanitize_text(&text, 300),
-                    level: if outcome.ok() { "info".to_string() } else { "error".to_string() },
-                    window_id,
-                });
                 notify_wake(&shared.wake);
             })
             .ok();
@@ -2150,7 +2160,9 @@ impl PluginStore {
             .as_ref()
             .ok_or_else(|| format!("插件 {plugin_id} 不是 v3"))?;
         if !self.state.is_enabled(plugin_id)
-            || !self.state.approved_for(plugin_id, &manifest.permission_fingerprint())
+            || !self
+                .state
+                .approved_for(plugin_id, &manifest.permission_fingerprint())
         {
             return Err("插件未启用或权限未确认".to_string());
         }
@@ -2160,7 +2172,7 @@ impl PluginStore {
                     return Err("插件未声明 contributes.settings".to_string());
                 }
                 ("settings".to_string(), None)
-            },
+            }
             "panel" => {
                 let panel = panel
                     .or_else(|| manifest.contributes.panels.first().cloned())
@@ -2169,7 +2181,7 @@ impl PluginStore {
                     return Err(format!("panel {panel:?} 未声明"));
                 }
                 (format!("panel:{panel}"), Some(panel))
-            },
+            }
             other => return Err(format!("未知 surface {other:?}")),
         };
         let handle = self
@@ -2177,7 +2189,10 @@ impl PluginStore {
             .get(plugin_id)
             .ok_or_else(|| "插件进程未运行".to_string())?;
         if !handle.is_running() {
-            return Err(format!("插件状态为 {}，无法渲染 UI", handle.phase().as_str()));
+            return Err(format!(
+                "插件状态为 {}，无法渲染 UI",
+                handle.phase().as_str()
+            ));
         }
         let (reply_tx, reply_rx) = crossbeam_channel::bounded(1);
         handle
@@ -2197,9 +2212,9 @@ impl PluginStore {
         std::thread::Builder::new()
             .name(format!("plugin-v3-ui-{plugin_id}"))
             .spawn(move || {
-                let result = reply_rx.recv_timeout(wait).unwrap_or_else(|_| {
-                    Err("等待 surface.render 超时".to_string())
-                });
+                let result = reply_rx
+                    .recv_timeout(wait)
+                    .unwrap_or_else(|_| Err("等待 surface.render 超时".to_string()));
                 match result {
                     Ok(doc) => {
                         if let Ok(mut surfaces) = shared.surfaces.lock() {
@@ -2217,16 +2232,19 @@ impl PluginStore {
                             });
                         }
                         notify_wake(&shared.wake);
-                    },
+                    }
                     Err(error) => {
-                        push_notice(&shared, Notice {
-                            plugin_id: plugin_id.clone(),
-                            plugin_name,
-                            text: format!("UI render failed: {}", sanitize_text(&error, 300)),
-                            level: "error".to_string(),
-                            window_id,
-                        });
-                    },
+                        push_notice(
+                            &shared,
+                            Notice {
+                                plugin_id: plugin_id.clone(),
+                                plugin_name,
+                                text: format!("UI render failed: {}", sanitize_text(&error, 300)),
+                                level: "error".to_string(),
+                                window_id,
+                            },
+                        );
+                    }
                 }
             })
             .ok();
@@ -2234,7 +2252,15 @@ impl PluginStore {
     }
 
     /// UI 控件动作 -> 插件 `ui.action` notification；不等待回复。
-    pub fn send_ui_action(&self, plugin_id: &str, surface: &str, panel: Option<String>, element: &str, action: &str, value: Option<String>) -> bool {
+    pub fn send_ui_action(
+        &self,
+        plugin_id: &str,
+        surface: &str,
+        panel: Option<String>,
+        element: &str,
+        action: &str,
+        value: Option<String>,
+    ) -> bool {
         self.send_ui_action_for(plugin_id, surface, panel, None, element, action, value)
     }
 
@@ -2310,10 +2336,7 @@ pub fn window_matches_target(target: Option<u64>, window_id: u64, active: Option
     }
 }
 
-fn take_matching<T>(
-    queue: &Arc<Mutex<VecDeque<T>>>,
-    predicate: impl Fn(&T) -> bool,
-) -> Vec<T> {
+fn take_matching<T>(queue: &Arc<Mutex<VecDeque<T>>>, predicate: impl Fn(&T) -> bool) -> Vec<T> {
     let Ok(mut queue) = queue.lock() else {
         return Vec::new();
     };
@@ -2335,7 +2358,6 @@ impl Drop for PluginStore {
         self.shutdown_processes();
     }
 }
-
 
 // ---------------------------------------------------------------- 事件 payload
 

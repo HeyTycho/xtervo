@@ -21,25 +21,24 @@ pub mod recording;
 pub mod sixel;
 pub mod transport;
 
+pub use bench_support::TermSim;
 pub use event::{
     ClipboardRequest, ClipboardSelection, CoreEvent, EventSink, Notification, PaneStats, Progress,
     ProgressState, ShellMark, WakeSignal,
 };
 pub use frame::{
-    flags, CellData, CursorShape, CursorState, Frame, ImageCrop, ImagePlacementMeta, InlineImage, LineDamage, Span,
+    flags, CellData, CursorShape, CursorState, Frame, ImageCrop, ImagePlacementMeta, InlineImage,
+    LineDamage, Span,
 };
+pub use iip::{IipEvent, IipFilter, IipIgnoreReason, IipImage, IipNotice};
 pub use keyboard::{KeyboardFlags, MODIFY_OTHER_KEYS_MAX_LEVEL};
 pub use link::{is_allowed_uri, Link, LinkKind};
 pub use mouse::{Modifiers, MouseAction, MouseButton, MouseEvent};
-pub use bench_support::TermSim;
 pub use palette::{Palette, PaletteSpec, Theme, UiColors};
-pub use recording::{
-    Recorder, RecordingExport, RecordingStatus, DEFAULT_RECORDING_CAPACITY_BYTES,
-};
 pub use pane::fill_frame;
 pub use pane::{
     spawn, spawn_with_transport, Backend, GridSize, OutputFilter, OutputFilterHandle, PaneConfig,
     PaneHandle, ScrollPosition, SearchHit, SearchOptions, MAX_OUTPUT_FILTER_BYTES,
 };
+pub use recording::{Recorder, RecordingExport, RecordingStatus, DEFAULT_RECORDING_CAPACITY_BYTES};
 pub use sixel::{SixelEvent, SixelFilter, SixelImage};
-pub use iip::{IipEvent, IipFilter, IipIgnoreReason, IipImage, IipNotice};

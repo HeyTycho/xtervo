@@ -15,8 +15,8 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use xtervo_core::{Palette, PaletteSpec, Theme, UiColors};
 use serde::Deserialize;
+use xtervo_core::{Palette, PaletteSpec, Theme, UiColors};
 
 pub const CUSTOM_PREFIX: &str = "custom:";
 
@@ -61,7 +61,11 @@ pub fn builtin(theme: Theme) -> ThemeData {
     ThemeData {
         id: theme.id().to_string(),
         label: theme.label().to_string(),
-        variant: if theme.is_dark() { Variant::Dark } else { Variant::Light },
+        variant: if theme.is_dark() {
+            Variant::Dark
+        } else {
+            Variant::Light
+        },
         spec: theme.spec(),
         ui: theme.ui(),
         pair: None,
@@ -95,8 +99,8 @@ impl ThemeRegistry {
                         Err(e) => errors.push(format!("{}: {e}", path.display())),
                     }
                 }
-            },
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {},
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => errors.push(format!("{}: 无法读取主题目录: {e}", dir.display())),
         }
 
@@ -112,19 +116,28 @@ impl ThemeRegistry {
         });
 
         validate_pairs(&mut customs, &mut errors);
-        Self { builtins, customs, errors }
+        Self {
+            builtins,
+            customs,
+            errors,
+        }
     }
 
     #[allow(dead_code)]
     pub fn from_parts(builtins: Vec<ThemeData>, customs: Vec<ThemeData>) -> Self {
-        Self { builtins, customs, errors: Vec::new() }
+        Self {
+            builtins,
+            customs,
+            errors: Vec::new(),
+        }
     }
 
     /// 加入一个插件声明的主题（id 已加 `plugin-` 前缀）。重复 id 只记录错误，
     /// 不覆盖已有主题；主题坏掉不影响插件本身。
     pub fn add_custom(&mut self, theme: ThemeData) {
         if self.get(&theme.id).is_some() {
-            self.errors.push(format!("{}: 主题 id 重复，已跳过", theme.id));
+            self.errors
+                .push(format!("{}: 主题 id 重复，已跳过", theme.id));
             return;
         }
         self.customs.push(theme);
@@ -132,7 +145,10 @@ impl ThemeRegistry {
     }
 
     pub fn get(&self, id: &str) -> Option<&ThemeData> {
-        self.builtins.iter().chain(self.customs.iter()).find(|t| t.id == id)
+        self.builtins
+            .iter()
+            .chain(self.customs.iter())
+            .find(|t| t.id == id)
     }
 
     pub fn all(&self) -> impl Iterator<Item = &ThemeData> {
@@ -192,7 +208,10 @@ pub fn resolve_auto(
             return data.clone();
         }
     }
-    if let Some(pair_id) = other.and_then(|id| reg.get(id)).and_then(|d| d.pair.as_deref()) {
+    if let Some(pair_id) = other
+        .and_then(|id| reg.get(id))
+        .and_then(|d| d.pair.as_deref())
+    {
         if let Some(data) = reg.get(pair_id) {
             if data.variant == want {
                 return data.clone();
@@ -220,8 +239,18 @@ fn is_theme_file(path: &Path) -> bool {
         .to_ascii_lowercase();
     matches!(
         ext.as_str(),
-        "" | "toml" | "itermcolors" | "json" | "yaml" | "yml" | "conf" | "config" | "kitty"
-            | "xresources" | "txt" | "colors" | "theme"
+        "" | "toml"
+            | "itermcolors"
+            | "json"
+            | "yaml"
+            | "yml"
+            | "conf"
+            | "config"
+            | "kitty"
+            | "xresources"
+            | "txt"
+            | "colors"
+            | "theme"
     )
 }
 
@@ -231,7 +260,8 @@ fn is_theme_file(path: &Path) -> bool {
 /// 里的用户主题撞 id；显示名追加来源，方便在设置页辨认。
 pub fn load_plugin_theme(path: &Path, plugin: &str) -> Result<ThemeData, String> {
     let mut theme = load_one(path)?;
-    let plugin_slug = slugify(plugin).ok_or_else(|| format!("插件名 {plugin:?} 无法生成主题前缀"))?;
+    let plugin_slug =
+        slugify(plugin).ok_or_else(|| format!("插件名 {plugin:?} 无法生成主题前缀"))?;
     let stem = theme
         .id
         .strip_prefix(CUSTOM_PREFIX)
@@ -267,10 +297,16 @@ fn load_one(path: &Path) -> Result<ThemeData, String> {
 }
 
 fn imported(stem: &str, label: Option<String>, spec: PaletteSpec) -> ThemeData {
-    let variant = if is_dark_bg(spec.bg) { Variant::Dark } else { Variant::Light };
+    let variant = if is_dark_bg(spec.bg) {
+        Variant::Dark
+    } else {
+        Variant::Light
+    };
     ThemeData {
         id: format!("{CUSTOM_PREFIX}{stem}"),
-        label: label.filter(|s| !s.trim().is_empty()).unwrap_or_else(|| stem.to_string()),
+        label: label
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| stem.to_string()),
         variant,
         ui: UiColors::derive(&spec),
         spec,
@@ -378,18 +414,26 @@ fn parse_raw(stem: &str, raw: RawTheme) -> Result<ThemeData, String> {
         subtext: parse_hex(&raw.ui.subtext).map_err(|e| format!("ui.subtext: {e}"))?,
         muted: parse_hex(&raw.ui.muted).map_err(|e| format!("ui.muted: {e}"))?,
         accent: parse_hex(&raw.ui.accent).map_err(|e| format!("ui.accent: {e}"))?,
-        accent_text: parse_hex(&raw.ui.accent_text)
-            .map_err(|e| format!("ui.accent-text: {e}"))?,
+        accent_text: parse_hex(&raw.ui.accent_text).map_err(|e| format!("ui.accent-text: {e}"))?,
         danger: parse_hex(&raw.ui.danger).map_err(|e| format!("ui.danger: {e}"))?,
     };
 
-    let pair = raw.pair.map(|p| format!("{CUSTOM_PREFIX}{}", slugify(&p).unwrap_or_default()));
+    let pair = raw
+        .pair
+        .map(|p| format!("{CUSTOM_PREFIX}{}", slugify(&p).unwrap_or_default()));
 
     Ok(ThemeData {
         id: format!("{CUSTOM_PREFIX}{stem}"),
         label: name.to_string(),
         variant,
-        spec: PaletteSpec { fg, bg, cursor, bright_fg, dim_fg, ansi16 },
+        spec: PaletteSpec {
+            fg,
+            bg,
+            cursor,
+            bright_fg,
+            dim_fg,
+            ansi16,
+        },
         ui,
         pair,
     })
@@ -438,15 +482,31 @@ impl AlacrittyFile {
         let c = self.colors;
         let fg = parse_loose(&c.primary.foreground)?;
         let bg = parse_loose(&c.primary.background)?;
-        let cursor = c.cursor.map(|x| parse_loose(&x.cursor)).transpose()?.unwrap_or(fg);
+        let cursor = c
+            .cursor
+            .map(|x| parse_loose(&x.cursor))
+            .transpose()?
+            .unwrap_or(fg);
         let mut ansi16 = [0u32; 16];
         let normal = [
-            c.normal.black, c.normal.red, c.normal.green, c.normal.yellow,
-            c.normal.blue, c.normal.magenta, c.normal.cyan, c.normal.white,
+            c.normal.black,
+            c.normal.red,
+            c.normal.green,
+            c.normal.yellow,
+            c.normal.blue,
+            c.normal.magenta,
+            c.normal.cyan,
+            c.normal.white,
         ];
         let bright = [
-            c.bright.black, c.bright.red, c.bright.green, c.bright.yellow,
-            c.bright.blue, c.bright.magenta, c.bright.cyan, c.bright.white,
+            c.bright.black,
+            c.bright.red,
+            c.bright.green,
+            c.bright.yellow,
+            c.bright.blue,
+            c.bright.magenta,
+            c.bright.cyan,
+            c.bright.white,
         ];
         for (i, s) in normal.iter().enumerate() {
             ansi16[i] = parse_loose(s)?;
@@ -454,14 +514,24 @@ impl AlacrittyFile {
         for (i, s) in bright.iter().enumerate() {
             ansi16[8 + i] = parse_loose(s)?;
         }
-        Ok(PaletteSpec { fg, bg, cursor, bright_fg: fg, dim_fg: fg, ansi16 })
+        Ok(PaletteSpec {
+            fg,
+            bg,
+            cursor,
+            bright_fg: fg,
+            dim_fg: fg,
+            ansi16,
+        })
     }
 }
 
 // ---------------------------------------------------------------- iTerm2
 
 fn load_itermcolors(text: &str, stem: &str, raw_stem: &str) -> Result<ThemeData, String> {
-    let opts = roxmltree::ParsingOptions { allow_dtd: true, ..Default::default() };
+    let opts = roxmltree::ParsingOptions {
+        allow_dtd: true,
+        ..Default::default()
+    };
     let doc = roxmltree::Document::parse_with_options(text, opts)
         .map_err(|e| format!("XML 解析失败: {e}"))?;
     let dict = doc
@@ -474,20 +544,32 @@ fn load_itermcolors(text: &str, stem: &str, raw_stem: &str) -> Result<ThemeData,
         if !node.has_tag_name("key") {
             continue;
         }
-        let Some(color_dict) = node.next_sibling_element() else { continue };
+        let Some(color_dict) = node.next_sibling_element() else {
+            continue;
+        };
         if !color_dict.has_tag_name("dict") {
             continue;
         }
         let mut rgb = [0f32; 3];
         for item in color_dict.children().filter(|n| n.is_element()) {
             if item.has_tag_name("key") {
-                let Some(v) = item.next_sibling_element().and_then(|n| n.text()) else { continue };
-                let Ok(v) = v.trim().parse::<f32>() else { continue };
-                match item.text().unwrap_or("").trim().to_ascii_lowercase().as_str() {
+                let Some(v) = item.next_sibling_element().and_then(|n| n.text()) else {
+                    continue;
+                };
+                let Ok(v) = v.trim().parse::<f32>() else {
+                    continue;
+                };
+                match item
+                    .text()
+                    .unwrap_or("")
+                    .trim()
+                    .to_ascii_lowercase()
+                    .as_str()
+                {
                     "red component" => rgb[0] = v,
                     "green component" => rgb[1] = v,
                     "blue component" => rgb[2] = v,
-                    _ => {},
+                    _ => {}
                 }
             }
         }
@@ -503,13 +585,24 @@ fn load_itermcolors(text: &str, stem: &str, raw_stem: &str) -> Result<ThemeData,
             .get(&format!("ansi {i} color"))
             .ok_or_else(|| format!("缺少 Ansi {i} Color"))?;
     }
-    let fg = *entries.get("foreground color").ok_or("缺少 Foreground Color")?;
-    let bg = *entries.get("background color").ok_or("缺少 Background Color")?;
+    let fg = *entries
+        .get("foreground color")
+        .ok_or("缺少 Foreground Color")?;
+    let bg = *entries
+        .get("background color")
+        .ok_or("缺少 Background Color")?;
     let cursor = entries.get("cursor color").copied().unwrap_or(fg);
     Ok(imported(
         stem,
         Some(raw_stem.to_string()),
-        PaletteSpec { fg, bg, cursor, bright_fg: fg, dim_fg: fg, ansi16 },
+        PaletteSpec {
+            fg,
+            bg,
+            cursor,
+            bright_fg: fg,
+            dim_fg: fg,
+            ansi16,
+        },
     ))
 }
 
@@ -525,9 +618,22 @@ fn load_windows_terminal(text: &str, stem: &str, raw_stem: &str) -> Result<Theme
     let get = |k: &str| scheme.get(k).and_then(|x| x.as_str());
     let need = |k: &str| get(k).ok_or_else(|| format!("缺少 {k}"));
     let keys = [
-        "black", "red", "green", "yellow", "blue", "purple", "cyan", "white",
-        "brightBlack", "brightRed", "brightGreen", "brightYellow", "brightBlue",
-        "brightPurple", "brightCyan", "brightWhite",
+        "black",
+        "red",
+        "green",
+        "yellow",
+        "blue",
+        "purple",
+        "cyan",
+        "white",
+        "brightBlack",
+        "brightRed",
+        "brightGreen",
+        "brightYellow",
+        "brightBlue",
+        "brightPurple",
+        "brightCyan",
+        "brightWhite",
     ];
     let mut ansi16 = [0u32; 16];
     for (i, k) in keys.iter().enumerate() {
@@ -535,12 +641,24 @@ fn load_windows_terminal(text: &str, stem: &str, raw_stem: &str) -> Result<Theme
     }
     let fg = parse_loose(need("foreground")?)?;
     let bg = parse_loose(need("background")?)?;
-    let cursor = get("cursorColor").map(parse_loose).transpose()?.unwrap_or(fg);
-    let label = get("name").map(str::to_string).unwrap_or_else(|| raw_stem.to_string());
+    let cursor = get("cursorColor")
+        .map(parse_loose)
+        .transpose()?
+        .unwrap_or(fg);
+    let label = get("name")
+        .map(str::to_string)
+        .unwrap_or_else(|| raw_stem.to_string());
     Ok(imported(
         stem,
         Some(label),
-        PaletteSpec { fg, bg, cursor, bright_fg: fg, dim_fg: fg, ansi16 },
+        PaletteSpec {
+            fg,
+            bg,
+            cursor,
+            bright_fg: fg,
+            dim_fg: fg,
+            ansi16,
+        },
     ))
 }
 
@@ -569,8 +687,8 @@ fn load_kitty(text: &str, stem: &str, raw_stem: &str) -> Result<ThemeData, Strin
                         ansi16[i] = Some(parse_loose(value)?);
                     }
                 }
-            },
-            _ => {},
+            }
+            _ => {}
         }
     }
     let mut colors = [0u32; 16];
@@ -604,9 +722,13 @@ fn load_xresources(text: &str, stem: &str, raw_stem: &str) -> Result<ThemeData, 
         if line.is_empty() || line.starts_with('!') || line.starts_with("#define") {
             continue;
         }
-        let Some((key, value)) = line.split_once(':') else { continue };
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
         let value = value.split_whitespace().next().unwrap_or("");
-        let Some(color) = parse_xcolor(value) else { continue };
+        let Some(color) = parse_xcolor(value) else {
+            continue;
+        };
         let suffix = key
             .rsplit(['.', '*'])
             .next()
@@ -623,8 +745,8 @@ fn load_xresources(text: &str, stem: &str, raw_stem: &str) -> Result<ThemeData, 
                         ansi16[i] = Some(color);
                     }
                 }
-            },
-            _ => {},
+            }
+            _ => {}
         }
     }
     let mut colors = [0u32; 16];
@@ -689,7 +811,9 @@ fn load_simple_yaml(text: &str, stem: &str, raw_stem: &str) -> Result<ThemeData,
             }
             continue;
         }
-        let Some((key, value)) = line.split_once(':') else { continue };
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
         let key = key.trim();
         let value = unquote(value.trim());
         match key {
@@ -703,7 +827,7 @@ fn load_simple_yaml(text: &str, stem: &str, raw_stem: &str) -> Result<ThemeData,
                         }
                     }
                 }
-            },
+            }
             "name" => name = Some(value),
             "foreground" => fg = Some(value),
             "background" => bg = Some(value),
@@ -729,7 +853,14 @@ fn load_simple_yaml(text: &str, stem: &str, raw_stem: &str) -> Result<ThemeData,
     Ok(imported(
         stem,
         name.or_else(|| Some(raw_stem.to_string())),
-        PaletteSpec { fg, bg, cursor, bright_fg: fg, dim_fg: fg, ansi16 },
+        PaletteSpec {
+            fg,
+            bg,
+            cursor,
+            bright_fg: fg,
+            dim_fg: fg,
+            ansi16,
+        },
     ))
 }
 
@@ -795,8 +926,11 @@ fn unquote(s: &str) -> String {
 
 /// 校验 pair 互指且深浅相反；不合法只清空 pair，主题本身仍可用。
 fn validate_pairs(customs: &mut [ThemeData], errors: &mut Vec<String>) {
-    let index: HashMap<String, usize> =
-        customs.iter().enumerate().map(|(i, t)| (t.id.clone(), i)).collect();
+    let index: HashMap<String, usize> = customs
+        .iter()
+        .enumerate()
+        .map(|(i, t)| (t.id.clone(), i))
+        .collect();
     let snapshot: Vec<(String, Option<String>, Variant)> = customs
         .iter()
         .map(|t| (t.id.clone(), t.pair.clone(), t.variant))
@@ -810,7 +944,7 @@ fn validate_pairs(customs: &mut [ThemeData], errors: &mut Vec<String>) {
             (Some(i), Some(p)) if i != p => {
                 let other = &customs[p];
                 other.variant != variant && other.pair.as_deref() == Some(id.as_str())
-            },
+            }
             _ => false,
         };
         if !ok {
@@ -883,7 +1017,11 @@ danger = "#f38ba8"
     #[test]
     fn rejects_bad_inputs() {
         assert!(parse(&SAMPLE.replace("schema = 1", "schema = 2"), "x").is_err());
-        assert!(parse(&SAMPLE.replace("variant = \"dark\"", "variant = \"dim\""), "x").is_err());
+        assert!(parse(
+            &SAMPLE.replace("variant = \"dark\"", "variant = \"dim\""),
+            "x"
+        )
+        .is_err());
         assert!(parse(&SAMPLE.replace("\"#45475a\", ", ""), "x").is_err());
         assert!(parse(&SAMPLE.replace("#cdd6f4", "#cdd6f"), "x").is_err());
         assert!(parse(&SAMPLE.replace("#cdd6f4", "#00cdd6f4"), "x").is_err());
@@ -895,7 +1033,10 @@ danger = "#f38ba8"
     #[test]
     fn slug_rules() {
         assert_eq!(slugify("My Dark").as_deref(), Some("my-dark"));
-        assert_eq!(slugify("Catppuccin_Mocha").as_deref(), Some("catppuccin-mocha"));
+        assert_eq!(
+            slugify("Catppuccin_Mocha").as_deref(),
+            Some("catppuccin-mocha")
+        );
         assert_eq!(slugify("--bad--").as_deref(), Some("bad"));
         assert_eq!(slugify("..").as_deref(), None);
         assert!(slugify(&"x".repeat(100)).unwrap().chars().count() <= 64);
@@ -922,16 +1063,32 @@ danger = "#f38ba8"
         assert!(errors.is_empty(), "{errors:?}");
 
         let reg = registry_with(customs);
-        let t = resolve_auto(&reg, Variant::Dark, Some("custom:demo-dark"), Some("custom:demo-light"));
+        let t = resolve_auto(
+            &reg,
+            Variant::Dark,
+            Some("custom:demo-dark"),
+            Some("custom:demo-light"),
+        );
         assert_eq!(t.id, "custom:demo-dark");
-        let t = resolve_auto(&reg, Variant::Light, Some("custom:demo-dark"), Some("custom:demo-light"));
+        let t = resolve_auto(
+            &reg,
+            Variant::Light,
+            Some("custom:demo-dark"),
+            Some("custom:demo-light"),
+        );
         assert_eq!(t.id, "custom:demo-light");
         let t = resolve_auto(&reg, Variant::Light, Some("custom:demo-dark"), None);
         assert_eq!(t.id, "custom:demo-light");
         let t = resolve_auto(&reg, Variant::Dark, None, Some("custom:demo-light"));
         assert_eq!(t.id, "custom:demo-dark");
-        assert_eq!(resolve_auto(&reg, Variant::Dark, None, None).id, "yaru-dark");
-        assert_eq!(resolve_auto(&reg, Variant::Light, None, None).id, "yaru-light");
+        assert_eq!(
+            resolve_auto(&reg, Variant::Dark, None, None).id,
+            "yaru-dark"
+        );
+        assert_eq!(
+            resolve_auto(&reg, Variant::Light, None, None).id,
+            "yaru-light"
+        );
         assert_eq!(
             resolve_auto(&reg, Variant::Dark, Some("custom:demo-light"), None).id,
             "yaru-dark"
@@ -952,9 +1109,15 @@ danger = "#f38ba8"
 
     #[test]
     fn imports_xresources() {
-        let mut text = String::from("*.foreground: #f8f8f2\n*.background: #282a36\n*.cursorColor: #f8f8f2\n");
+        let mut text =
+            String::from("*.foreground: #f8f8f2\n*.background: #282a36\n*.cursorColor: #f8f8f2\n");
         for i in 0..16 {
-            text.push_str(&format!("*.color{i}: #{:02x}{:02x}{:02x}\n", i * 10, 20, 30));
+            text.push_str(&format!(
+                "*.color{i}: #{:02x}{:02x}{:02x}\n",
+                i * 10,
+                20,
+                30
+            ));
         }
         let t = load_xresources(&text, "dracula", "Dracula").unwrap();
         assert_eq!(t.id, "custom:dracula");
@@ -979,9 +1142,22 @@ danger = "#f38ba8"
     #[test]
     fn imports_windows_terminal() {
         let keys = [
-            "black", "red", "green", "yellow", "blue", "purple", "cyan", "white",
-            "brightBlack", "brightRed", "brightGreen", "brightYellow", "brightBlue",
-            "brightPurple", "brightCyan", "brightWhite",
+            "black",
+            "red",
+            "green",
+            "yellow",
+            "blue",
+            "purple",
+            "cyan",
+            "white",
+            "brightBlack",
+            "brightRed",
+            "brightGreen",
+            "brightYellow",
+            "brightBlue",
+            "brightPurple",
+            "brightCyan",
+            "brightWhite",
         ];
         let mut obj = serde_json::Map::new();
         obj.insert("name".into(), "Campbell".into());
@@ -1067,7 +1243,8 @@ white = "#a6adc8"
                 0.25,
             ));
         }
-        let xml = format!("<?xml version=\"1.0\"?><plist version=\"1.0\"><dict>{body}</dict></plist>");
+        let xml =
+            format!("<?xml version=\"1.0\"?><plist version=\"1.0\"><dict>{body}</dict></plist>");
         let t = load_itermcolors(&xml, "iterm-test", "iTerm Test").unwrap();
         assert!((t.spec.fg & 0xff) > 240);
         assert_eq!(t.spec.cursor, 0x00ff8000);
@@ -1117,7 +1294,11 @@ white = "#a6adc8"
         std::fs::write(&path, xres).unwrap();
         let theme = load_plugin_theme(&path, "demo.plugin").unwrap();
         assert_eq!(theme.id, "custom:plugin-demo-plugin-ocean");
-        assert!(theme.label.contains("plugin: demo.plugin"), "{}", theme.label);
+        assert!(
+            theme.label.contains("plugin: demo.plugin"),
+            "{}",
+            theme.label
+        );
 
         let mut reg = ThemeRegistry::from_parts(
             Theme::ALL.iter().copied().map(builtin).collect(),
@@ -1128,8 +1309,11 @@ white = "#a6adc8"
         assert_eq!(reg.custom_count(), 1);
         reg.add_custom(theme);
         assert_eq!(reg.custom_count(), 1);
-        assert!(reg.errors.iter().any(|e| e.contains("重复")), "{:?}", reg.errors);
+        assert!(
+            reg.errors.iter().any(|e| e.contains("重复")),
+            "{:?}",
+            reg.errors
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
-
 }

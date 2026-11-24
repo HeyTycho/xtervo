@@ -62,13 +62,9 @@ fn migrate_dir(root: Option<PathBuf>, old_name: &str, new_name: &str) -> Option<
                 use std::os::unix::fs::PermissionsExt;
                 let _ = fs::set_permissions(&new, fs::Permissions::from_mode(0o700));
             }
-            eprintln!(
-                "[migrate] copied {} -> {}",
-                old.display(),
-                new.display()
-            );
+            eprintln!("[migrate] copied {} -> {}", old.display(), new.display());
             Some(new)
-        },
+        }
         Err(error) => {
             let _ = fs::remove_dir_all(&tmp);
             eprintln!(
@@ -77,7 +73,7 @@ fn migrate_dir(root: Option<PathBuf>, old_name: &str, new_name: &str) -> Option<
                 new.display()
             );
             None
-        },
+        }
     }
 }
 
@@ -92,7 +88,9 @@ pub fn alias_legacy_env() {
     let vars: Vec<(std::ffi::OsString, std::ffi::OsString)> = std::env::vars_os().collect();
     for (key, value) in vars {
         let Some(key) = key.to_str() else { continue };
-        let Some(rest) = key.strip_prefix("TERVO_") else { continue };
+        let Some(rest) = key.strip_prefix("TERVO_") else {
+            continue;
+        };
         let new_key = format!("XTERVO_{rest}");
         if std::env::var_os(&new_key).is_none() {
             std::env::set_var(new_key, value);
@@ -117,7 +115,10 @@ mod tests {
         std::fs::write(src.join("config.toml"), "a = 1\n").unwrap();
         std::fs::write(src.join("themes/one.toml"), "b = 2\n").unwrap();
         copy_tree(&src, &dst).unwrap();
-        assert_eq!(std::fs::read_to_string(dst.join("config.toml")).unwrap(), "a = 1\n");
+        assert_eq!(
+            std::fs::read_to_string(dst.join("config.toml")).unwrap(),
+            "a = 1\n"
+        );
         assert_eq!(
             std::fs::read_to_string(dst.join("themes/one.toml")).unwrap(),
             "b = 2\n"

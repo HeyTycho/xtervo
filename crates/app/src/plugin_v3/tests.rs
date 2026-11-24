@@ -89,7 +89,11 @@ fn manifest(
         .iter()
         .map(|command| {
             // "context" 声明为菜单装饰项（UI-TERM-013）：宿主菜单应能看到它。
-            let menu = if *command == "context" { "menu = true\n" } else { "" };
+            let menu = if *command == "context" {
+                "menu = true\n"
+            } else {
+                ""
+            };
             format!("[[commands]]\nid = \"{command}\"\ntitle = \"{command}\"\n{menu}")
         })
         .collect();
@@ -344,12 +348,7 @@ if __name__ == "__main__":
     main()
 "####;
 
-fn install_plugin(
-    root: &Path,
-    dir_name: &str,
-    manifest_body: &str,
-    status_delay: f32,
-) -> PathBuf {
+fn install_plugin(root: &Path, dir_name: &str, manifest_body: &str, status_delay: f32) -> PathBuf {
     let dir = root.join(dir_name);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("plugin.toml"), manifest_body).unwrap();
@@ -370,7 +369,7 @@ fn load(root: &Path, state: &Path, options: SupervisorOptions) -> PluginStore {
 
 fn enable(store: &mut PluginStore, key: &str) {
     match store.request_enable(key).unwrap() {
-        EnableDecision::Approved => {},
+        EnableDecision::Approved => {}
         EnableDecision::NeedsApproval { .. } => store.confirm_enable(key).unwrap(),
     }
 }
@@ -441,16 +440,27 @@ fn docs_example_plugin_runs_full_flow() {
     }
     // fs::copy 在部分平台不保证执行位；显式设置。
     use std::os::unix::fs::PermissionsExt;
-    let mut permissions = std::fs::metadata(dest.join("main.py")).unwrap().permissions();
+    let mut permissions = std::fs::metadata(dest.join("main.py"))
+        .unwrap()
+        .permissions();
     permissions.set_mode(0o755);
     std::fs::set_permissions(dest.join("main.py"), permissions).unwrap();
 
     let state = root.join("state.toml");
     let mut store = load(&root, &state, fast_options());
     enable(&mut store, "dev.xtervo.echo");
-    assert!(wait_phase(&store, "dev.xtervo.echo", Phase::Running, Duration::from_secs(3)));
+    assert!(wait_phase(
+        &store,
+        "dev.xtervo.echo",
+        Phase::Running,
+        Duration::from_secs(3)
+    ));
     assert!(store.spawn_command("plugin.dev.xtervo.echo.greet"));
-    assert!(wait_activity(&store, "Hello from Echo Plugin API v3", Duration::from_secs(3)));
+    assert!(wait_activity(
+        &store,
+        "Hello from Echo Plugin API v3",
+        Duration::from_secs(3)
+    ));
     assert!(wait_until(
         || store
             .status_snapshot()
@@ -467,7 +477,9 @@ fn docs_example_plugin_runs_full_flow() {
             .any(|notice| notice.text.contains("Echo says hi")),
         Duration::from_secs(3)
     ));
-    store.request_surface("dev.xtervo.echo", "settings", None).unwrap();
+    store
+        .request_surface("dev.xtervo.echo", "settings", None)
+        .unwrap();
     assert!(wait_until(
         || {
             store
@@ -488,7 +500,11 @@ fn docs_example_plugin_runs_full_flow() {
         approval.request_id,
         HostOutcome::Ok(json!({"text": "example-tail"})),
     ));
-    assert!(wait_activity(&store, "example-tail", Duration::from_secs(3)));
+    assert!(wait_activity(
+        &store,
+        "example-tail",
+        Duration::from_secs(3)
+    ));
     store.shutdown_processes();
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -557,10 +573,13 @@ fn first_enable_requires_confirmation_and_persists_approval() {
     match store.request_enable("dev.test.approval").unwrap() {
         EnableDecision::NeedsApproval { permissions } => {
             assert!(permissions.contains(&"terminal_context".to_string()));
-        },
+        }
         EnableDecision::Approved => panic!("first enable must ask for confirmation"),
     }
-    assert!(!state_path.exists(), "a pending confirmation must not enable");
+    assert!(
+        !state_path.exists(),
+        "a pending confirmation must not enable"
+    );
     assert!(store.phase("dev.test.approval").is_none());
     let entry_row = row_of(&store, "dev.test.approval");
     assert!(!entry_row.enabled);
@@ -609,7 +628,12 @@ fn lifecycle_command_status_ping_context_and_events() {
     let state = root.join("state.toml");
     let mut store = load(&root, &state, fast_options());
     enable(&mut store, "dev.test.lifecycle");
-    assert!(wait_phase(&store, "dev.test.lifecycle", Phase::Running, Duration::from_secs(3)));
+    assert!(wait_phase(
+        &store,
+        "dev.test.lifecycle",
+        Phase::Running,
+        Duration::from_secs(3)
+    ));
 
     assert!(store.spawn_command("plugin.dev.test.lifecycle.greet"));
     assert!(wait_activity(&store, "hello-v3", Duration::from_secs(3)));
@@ -625,7 +649,10 @@ fn lifecycle_command_status_ping_context_and_events() {
     let status_items = store.status_snapshot().1;
     let status = status_items.first().unwrap();
     assert_eq!(status.text, "status-ready");
-    assert_eq!(status.command.as_deref(), Some("plugin.dev.test.lifecycle.greet"));
+    assert_eq!(
+        status.command.as_deref(),
+        Some("plugin.dev.test.lifecycle.greet")
+    );
 
     assert!(store.spawn_command("plugin.dev.test.lifecycle.push-status"));
     assert!(wait_until(
@@ -657,7 +684,9 @@ fn lifecycle_command_status_ping_context_and_events() {
 
     store.shutdown_processes();
     assert!(wait_until(
-        || store.phase("dev.test.lifecycle").is_none_or(|phase| phase == Phase::Stopped),
+        || store
+            .phase("dev.test.lifecycle")
+            .is_none_or(|phase| phase == Phase::Stopped),
         Duration::from_secs(2)
     ));
     let _ = std::fs::remove_dir_all(&root);
@@ -677,7 +706,12 @@ fn bad_json_triggers_restart_not_terminal_failure() {
     options.max_bad_lines = 1;
     let mut store = load(&root, &state, options);
     enable(&mut store, "dev.test.badjson");
-    assert!(wait_phase(&store, "dev.test.badjson", Phase::Running, Duration::from_secs(3)));
+    assert!(wait_phase(
+        &store,
+        "dev.test.badjson",
+        Phase::Running,
+        Duration::from_secs(3)
+    ));
     assert!(store.spawn_command("plugin.dev.test.badjson.badjson"));
     assert!(wait_until(
         || store
@@ -710,7 +744,12 @@ fn command_timeout_reports_timeout_and_restarts() {
     options.command_timeout = Duration::from_millis(200);
     let mut store = load(&root, &state, options);
     enable(&mut store, "dev.test.timeout");
-    assert!(wait_phase(&store, "dev.test.timeout", Phase::Running, Duration::from_secs(3)));
+    assert!(wait_phase(
+        &store,
+        "dev.test.timeout",
+        Phase::Running,
+        Duration::from_secs(3)
+    ));
     assert!(store.spawn_command("plugin.dev.test.timeout.slow"));
     assert!(wait_activity(&store, "timeout", Duration::from_secs(3)));
     assert!(wait_until(
@@ -738,7 +777,12 @@ fn ping_success_is_quiet_and_consecutive_timeouts_restart() {
     options.ping_timeout = Duration::from_millis(100);
     let mut store = load(&root, &state, options);
     enable(&mut store, "dev.test.pingok");
-    assert!(wait_phase(&store, "dev.test.pingok", Phase::Running, Duration::from_secs(3)));
+    assert!(wait_phase(
+        &store,
+        "dev.test.pingok",
+        Phase::Running,
+        Duration::from_secs(3)
+    ));
     std::thread::sleep(Duration::from_millis(350));
     let info = store.runtime_info("dev.test.pingok").unwrap();
     assert_eq!(info.phase(), Phase::Running);
@@ -754,10 +798,9 @@ fn ping_success_is_quiet_and_consecutive_timeouts_restart() {
         0.0,
     );
     // 让测试插件忽略 ping；连续 2 次超时后 supervisor 必须重启。
-    let script = std::fs::read_to_string(dir.join("main.py")).unwrap().replace(
-        "IGNORE_PING = False",
-        "IGNORE_PING = True",
-    );
+    let script = std::fs::read_to_string(dir.join("main.py"))
+        .unwrap()
+        .replace("IGNORE_PING = False", "IGNORE_PING = True");
     write_executable(&dir.join("main.py"), &script);
     let state = root.join("state.toml");
     let mut options = fast_options();
@@ -765,7 +808,12 @@ fn ping_success_is_quiet_and_consecutive_timeouts_restart() {
     options.ping_timeout = Duration::from_millis(80);
     let mut store = load(&root, &state, options);
     enable(&mut store, "dev.test.pingfail");
-    assert!(wait_phase(&store, "dev.test.pingfail", Phase::Running, Duration::from_secs(3)));
+    assert!(wait_phase(
+        &store,
+        "dev.test.pingfail",
+        Phase::Running,
+        Duration::from_secs(3)
+    ));
     assert!(wait_until(
         || store
             .runtime_info("dev.test.pingfail")
@@ -825,7 +873,12 @@ fn oversized_line_and_output_cap_stop_runaway_plugin() {
     options.max_bad_lines = 0;
     let mut store = load(&root, &state, options);
     enable(&mut store, "dev.test.line");
-    assert!(wait_phase(&store, "dev.test.line", Phase::Running, Duration::from_secs(3)));
+    assert!(wait_phase(
+        &store,
+        "dev.test.line",
+        Phase::Running,
+        Duration::from_secs(3)
+    ));
     assert!(store.spawn_command("plugin.dev.test.line.longline"));
     assert!(wait_until(
         || store
@@ -851,9 +904,19 @@ fn oversized_line_and_output_cap_stop_runaway_plugin() {
     options.max_bad_lines = 5;
     let mut store = load(&root, &state, options);
     enable(&mut store, "dev.test.output");
-    assert!(wait_phase(&store, "dev.test.output", Phase::Running, Duration::from_secs(3)));
+    assert!(wait_phase(
+        &store,
+        "dev.test.output",
+        Phase::Running,
+        Duration::from_secs(3)
+    ));
     assert!(store.spawn_command("plugin.dev.test.output.longline"));
-    assert!(wait_phase(&store, "dev.test.output", Phase::Failed, Duration::from_secs(4)));
+    assert!(wait_phase(
+        &store,
+        "dev.test.output",
+        Phase::Failed,
+        Duration::from_secs(4)
+    ));
     let row = row_of(&store, "dev.test.output");
     assert_eq!(row.status, "failed");
     assert!(
@@ -877,7 +940,12 @@ fn terminal_read_requires_capability_and_per_request_allow() {
     let state = root.join("state.toml");
     let mut store = load(&root, &state, fast_options());
     enable(&mut store, "dev.test.terminal");
-    assert!(wait_phase(&store, "dev.test.terminal", Phase::Running, Duration::from_secs(3)));
+    assert!(wait_phase(
+        &store,
+        "dev.test.terminal",
+        Phase::Running,
+        Duration::from_secs(3)
+    ));
     assert!(store.spawn_command("plugin.dev.test.terminal.terminal-read"));
     assert!(wait_until(
         || !store.pending_approvals().is_empty(),
@@ -892,7 +960,11 @@ fn terminal_read_requires_capability_and_per_request_allow() {
         approval.request_id,
         HostOutcome::Ok(json!({"text": "tail-data"})),
     ));
-    assert!(wait_activity(&store, "READ:tail-data", Duration::from_secs(3)));
+    assert!(wait_activity(
+        &store,
+        "READ:tail-data",
+        Duration::from_secs(3)
+    ));
     assert!(store.pending_approvals().is_empty());
 
     // 拒绝路径：插件收到 denied by user，命令失败但进程继续运行。
@@ -923,7 +995,12 @@ fn terminal_read_requires_capability_and_per_request_allow() {
     let state = root.join("state.toml");
     let mut store = load(&root, &state, fast_options());
     enable(&mut store, "dev.test.noperm");
-    assert!(wait_phase(&store, "dev.test.noperm", Phase::Running, Duration::from_secs(3)));
+    assert!(wait_phase(
+        &store,
+        "dev.test.noperm",
+        Phase::Running,
+        Duration::from_secs(3)
+    ));
     assert!(store.spawn_command("plugin.dev.test.noperm.terminal-read"));
     assert!(wait_activity(&store, "denied", Duration::from_secs(3)));
     assert!(store.pending_approvals().is_empty());
@@ -944,7 +1021,12 @@ fn terminal_write_is_ask_gated_and_credentials_are_never_hosted() {
     let state = root.join("state.toml");
     let mut store = load(&root, &state, fast_options());
     enable(&mut store, "dev.test.write");
-    assert!(wait_phase(&store, "dev.test.write", Phase::Running, Duration::from_secs(3)));
+    assert!(wait_phase(
+        &store,
+        "dev.test.write",
+        Phase::Running,
+        Duration::from_secs(3)
+    ));
     assert!(store.spawn_command("plugin.dev.test.write.terminal-write"));
     assert!(wait_until(
         || !store.pending_approvals().is_empty(),
@@ -958,10 +1040,18 @@ fn terminal_write_is_ask_gated_and_credentials_are_never_hosted() {
         approval.request_id,
         HostOutcome::Ok(json!({})),
     ));
-    assert!(wait_activity(&store, "terminal-write", Duration::from_secs(3)));
+    assert!(wait_activity(
+        &store,
+        "terminal-write",
+        Duration::from_secs(3)
+    ));
 
     assert!(store.spawn_command("plugin.dev.test.write.credentials"));
-    assert!(wait_activity(&store, "credentials.get", Duration::from_secs(3)));
+    assert!(wait_activity(
+        &store,
+        "credentials.get",
+        Duration::from_secs(3)
+    ));
     assert!(activity_contains(&store, "凭据") || activity_contains(&store, "Vault"));
     assert_eq!(store.phase("dev.test.write"), Some(Phase::Running));
     store.shutdown_processes();
@@ -980,7 +1070,12 @@ fn declarative_ui_and_notifications_flow_through_host() {
     let state = root.join("state.toml");
     let mut store = load(&root, &state, fast_options());
     enable(&mut store, "dev.test.ui");
-    assert!(wait_phase(&store, "dev.test.ui", Phase::Running, Duration::from_secs(3)));
+    assert!(wait_phase(
+        &store,
+        "dev.test.ui",
+        Phase::Running,
+        Duration::from_secs(3)
+    ));
 
     assert!(store.spawn_command("plugin.dev.test.ui.notify"));
     assert!(wait_until(
@@ -991,7 +1086,9 @@ fn declarative_ui_and_notifications_flow_through_host() {
         Duration::from_secs(3)
     ));
 
-    store.request_surface("dev.test.ui", "settings", None).unwrap();
+    store
+        .request_surface("dev.test.ui", "settings", None)
+        .unwrap();
     let mut collected: Vec<SurfaceUpdate> = Vec::new();
     assert!(wait_until(
         || {
@@ -1068,7 +1165,12 @@ fn reload_refreshes_manifest_without_restarting_host_and_permission_change_requi
     let state = root.join("state.toml");
     let mut store = load(&root, &state, fast_options());
     enable(&mut store, "dev.test.reload");
-    assert!(wait_phase(&store, "dev.test.reload", Phase::Running, Duration::from_secs(3)));
+    assert!(wait_phase(
+        &store,
+        "dev.test.reload",
+        Phase::Running,
+        Duration::from_secs(3)
+    ));
     let first_pid = store
         .runtime_info("dev.test.reload")
         .and_then(|info| info.pid);
@@ -1087,7 +1189,12 @@ fn reload_refreshes_manifest_without_restarting_host_and_permission_change_requi
         || row_of(&store, "dev.test.reload").version == "1.1.0",
         Duration::from_secs(2)
     ));
-    assert!(wait_phase(&store, "dev.test.reload", Phase::Running, Duration::from_secs(3)));
+    assert!(wait_phase(
+        &store,
+        "dev.test.reload",
+        Phase::Running,
+        Duration::from_secs(3)
+    ));
     let palette = store.palette_commands("reloaded", &CommandContext::default());
     assert!(
         palette
@@ -1121,11 +1228,16 @@ fn reload_refreshes_manifest_without_restarting_host_and_permission_change_requi
     match store.request_enable("dev.test.reload").unwrap() {
         EnableDecision::NeedsApproval { permissions } => {
             assert!(permissions.contains(&"terminal_context".to_string()));
-        },
+        }
         EnableDecision::Approved => panic!("changed permissions must be re-confirmed"),
     }
     store.confirm_enable("dev.test.reload").unwrap();
-    assert!(wait_phase(&store, "dev.test.reload", Phase::Running, Duration::from_secs(3)));
+    assert!(wait_phase(
+        &store,
+        "dev.test.reload",
+        Phase::Running,
+        Duration::from_secs(3)
+    ));
     store.shutdown_processes();
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -1143,7 +1255,12 @@ fn clipboard_is_capability_gated_and_per_request_ask() {
     let state = root.join("state.toml");
     let mut store = load(&root, &state, fast_options());
     enable(&mut store, "dev.test.clipdenied");
-    assert!(wait_phase(&store, "dev.test.clipdenied", Phase::Running, Duration::from_secs(3)));
+    assert!(wait_phase(
+        &store,
+        "dev.test.clipdenied",
+        Phase::Running,
+        Duration::from_secs(3)
+    ));
     assert!(store.spawn_command("plugin.dev.test.clipdenied.clipboard-read"));
     assert!(wait_activity(&store, "denied", Duration::from_secs(3)));
     assert!(store.pending_approvals().is_empty());
@@ -1158,7 +1275,12 @@ fn clipboard_is_capability_gated_and_per_request_ask() {
     let state = root.join("state.toml");
     let mut store = load(&root, &state, fast_options());
     enable(&mut store, "dev.test.clipallow");
-    assert!(wait_phase(&store, "dev.test.clipallow", Phase::Running, Duration::from_secs(3)));
+    assert!(wait_phase(
+        &store,
+        "dev.test.clipallow",
+        Phase::Running,
+        Duration::from_secs(3)
+    ));
     assert!(store.spawn_command("plugin.dev.test.clipallow.clipboard-read"));
     assert!(wait_until(
         || !store.pending_approvals().is_empty(),
@@ -1171,7 +1293,11 @@ fn clipboard_is_capability_gated_and_per_request_ask() {
         approval.request_id,
         HostOutcome::Ok(json!({"text": "clip-data"})),
     ));
-    assert!(wait_activity(&store, "CLIP:clip-data", Duration::from_secs(3)));
+    assert!(wait_activity(
+        &store,
+        "CLIP:clip-data",
+        Duration::from_secs(3)
+    ));
     store.shutdown_processes();
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -1188,7 +1314,12 @@ fn disable_enable_restart_do_not_need_host_restart() {
     let state = root.join("state.toml");
     let mut store = load(&root, &state, fast_options());
     enable(&mut store, "dev.test.restart");
-    assert!(wait_phase(&store, "dev.test.restart", Phase::Running, Duration::from_secs(3)));
+    assert!(wait_phase(
+        &store,
+        "dev.test.restart",
+        Phase::Running,
+        Duration::from_secs(3)
+    ));
     let first = store
         .runtime_info("dev.test.restart")
         .and_then(|info| info.pid)
@@ -1210,7 +1341,12 @@ fn disable_enable_restart_do_not_need_host_restart() {
         store.request_enable("dev.test.restart").unwrap(),
         EnableDecision::Approved
     );
-    assert!(wait_phase(&store, "dev.test.restart", Phase::Running, Duration::from_secs(3)));
+    assert!(wait_phase(
+        &store,
+        "dev.test.restart",
+        Phase::Running,
+        Duration::from_secs(3)
+    ));
     store.shutdown_processes();
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -1325,11 +1461,14 @@ fn wasm_first_enable_needs_confirmation_and_is_visible_in_settings() {
     match store.request_enable("dev.xtervo.wasm-filter").unwrap() {
         EnableDecision::NeedsApproval { permissions } => {
             assert_eq!(permissions, vec!["terminal.output_filter".to_string()]);
-        },
+        }
         EnableDecision::Approved => panic!("WASM output_filter 首次启用必须确认"),
     }
     assert!(store.active_wasm_filters().is_empty());
-    assert!(store.output_filter_handle().is_some(), "发现 wasm 插件即给 pane 句柄");
+    assert!(
+        store.output_filter_handle().is_some(),
+        "发现 wasm 插件即给 pane 句柄"
+    );
 
     store.confirm_enable("dev.xtervo.wasm-filter").unwrap();
     let row = row_of(&store, "dev.xtervo.wasm-filter");
@@ -1354,7 +1493,12 @@ fn wasm_filter_transforms_real_pty_output_and_disable_restores_it() {
     let mut store = load(&root, &state, fast_options());
     enable(&mut store, "dev.xtervo.wasm-filter");
     assert_eq!(
-        store.rows().iter().find(|row| row.key == "dev.xtervo.wasm-filter").unwrap().status,
+        store
+            .rows()
+            .iter()
+            .find(|row| row.key == "dev.xtervo.wasm-filter")
+            .unwrap()
+            .status,
         "running"
     );
     let filter = store.output_filter_handle().expect("filter handle");
@@ -1369,9 +1513,16 @@ fn wasm_filter_transforms_real_pty_output_and_disable_restores_it() {
         "first WASM-FILTER-OK",
         Duration::from_secs(5),
     );
-    assert!(!text.contains("first [xtervo-wasm]"), "第一行应已被过滤:\n{text}");
     assert!(
-        store.wasm_filter_stats("dev.xtervo.wasm-filter").unwrap().calls > 0,
+        !text.contains("first [xtervo-wasm]"),
+        "第一行应已被过滤:\n{text}"
+    );
+    assert!(
+        store
+            .wasm_filter_stats("dev.xtervo.wasm-filter")
+            .unwrap()
+            .calls
+            > 0,
         "WASM 热路径必须被真实调用"
     );
 
@@ -1388,10 +1539,7 @@ fn wasm_filter_transforms_real_pty_output_and_disable_restores_it() {
         !text.contains("second WASM-FILTER-OK"),
         "禁用后不能再过滤:\n{text}"
     );
-    assert_eq!(
-        row_of(&store, "dev.xtervo.wasm-filter").status,
-        "disabled"
-    );
+    assert_eq!(row_of(&store, "dev.xtervo.wasm-filter").status, "disabled");
 
     drop(handle);
     store.shutdown_processes();
@@ -1418,7 +1566,10 @@ fn wasm_enable_takes_effect_on_an_existing_pane() {
         "before [xtervo-wasm]",
         Duration::from_secs(5),
     );
-    assert!(!text.contains("before WASM-FILTER-OK"), "启用前必须原样:\n{text}");
+    assert!(
+        !text.contains("before WASM-FILTER-OK"),
+        "启用前必须原样:\n{text}"
+    );
 
     enable(&mut store, "dev.xtervo.wasm-filter");
     let (_, text) = wait_frame_text(
@@ -1427,8 +1578,17 @@ fn wasm_enable_takes_effect_on_an_existing_pane() {
         "after WASM-FILTER-OK",
         Duration::from_secs(5),
     );
-    assert!(!text.contains("after [xtervo-wasm]"), "启用后必须过滤:\n{text}");
-    assert!(store.wasm_filter_stats("dev.xtervo.wasm-filter").unwrap().calls > 0);
+    assert!(
+        !text.contains("after [xtervo-wasm]"),
+        "启用后必须过滤:\n{text}"
+    );
+    assert!(
+        store
+            .wasm_filter_stats("dev.xtervo.wasm-filter")
+            .unwrap()
+            .calls
+            > 0
+    );
 
     drop(handle);
     store.shutdown_processes();
@@ -1450,10 +1610,7 @@ fn wasm_trap_falls_back_to_original_bytes_in_real_pty() {
     let mut store = load(&root, &state, fast_options());
     enable(&mut store, "dev.xtervo.wasm-filter");
     let filter = store.output_filter_handle().expect("filter handle");
-    let handle = spawn_wasm_test_pane(
-        filter,
-        "printf 'fallback [xtervo-wasm]\\n'; sleep 0.3",
-    );
+    let handle = spawn_wasm_test_pane(filter, "printf 'fallback [xtervo-wasm]\\n'; sleep 0.3");
     let frame = handle.new_frame();
     let (_, text) = wait_frame_text(
         &handle,
@@ -1461,13 +1618,22 @@ fn wasm_trap_falls_back_to_original_bytes_in_real_pty() {
         "fallback [xtervo-wasm]",
         Duration::from_secs(5),
     );
-    assert!(text.contains("fallback [xtervo-wasm]"), "必须原样放行:\n{text}");
-    let stats = store.wasm_filter_stats("dev.xtervo.wasm-filter").expect("stats");
+    assert!(
+        text.contains("fallback [xtervo-wasm]"),
+        "必须原样放行:\n{text}"
+    );
+    let stats = store
+        .wasm_filter_stats("dev.xtervo.wasm-filter")
+        .expect("stats");
     assert_eq!(stats.failures, 1, "trap 只应发生一次（随后熔断）");
     let row = row_of(&store, "dev.xtervo.wasm-filter");
     assert_eq!(row.status, "failed");
     assert!(!row.error.is_empty(), "设置页必须显示陷阱原因");
-    assert!(row.error.contains("unreachable") || row.error.contains("陷阱"), "{}", row.error);
+    assert!(
+        row.error.contains("unreachable") || row.error.contains("陷阱"),
+        "{}",
+        row.error
+    );
 
     drop(handle);
     store.shutdown_processes();
@@ -1482,8 +1648,12 @@ fn wasm_reload_and_broken_module_error_are_reported_without_crash() {
     let mut store = load(&root, &state, fast_options());
     enable(&mut store, "dev.xtervo.wasm-filter");
 
-    store.reload_plugin("dev.xtervo.wasm-filter").expect("valid reload");
-    assert!(store.active_wasm_filters().contains(&"dev.xtervo.wasm-filter".to_string()));
+    store
+        .reload_plugin("dev.xtervo.wasm-filter")
+        .expect("valid reload");
+    assert!(store
+        .active_wasm_filters()
+        .contains(&"dev.xtervo.wasm-filter".to_string()));
     assert_eq!(row_of(&store, "dev.xtervo.wasm-filter").status, "running");
 
     std::fs::write(dir.join("filter.wasm"), b"not a wasm module").unwrap();
@@ -1491,16 +1661,23 @@ fn wasm_reload_and_broken_module_error_are_reported_without_crash() {
         .reload_plugin("dev.xtervo.wasm-filter")
         .expect_err("broken module must fail reload");
     assert!(err.contains("WASM"), "{err}");
-    assert!(store.active_wasm_filters().is_empty(), "坏模块必须停止旧过滤器");
+    assert!(
+        store.active_wasm_filters().is_empty(),
+        "坏模块必须停止旧过滤器"
+    );
     let row = row_of(&store, "dev.xtervo.wasm-filter");
     assert_eq!(row.status, "failed");
     assert!(row.error.contains("WASM"), "{}", row.error);
 
     // 修好后 Restart（不重启 xtervo）恢复。
     std::fs::write(dir.join("filter.wasm"), example_wasm()).unwrap();
-    store.restart_plugin("dev.xtervo.wasm-filter").expect("restart fixed module");
+    store
+        .restart_plugin("dev.xtervo.wasm-filter")
+        .expect("restart fixed module");
     assert_eq!(row_of(&store, "dev.xtervo.wasm-filter").status, "running");
-    assert!(store.active_wasm_filters().contains(&"dev.xtervo.wasm-filter".to_string()));
+    assert!(store
+        .active_wasm_filters()
+        .contains(&"dev.xtervo.wasm-filter".to_string()));
 
     store.shutdown_processes();
     let _ = std::fs::remove_dir_all(&root);
@@ -1533,10 +1710,7 @@ fn window_id_routes_commands_reads_surfaces_status_and_cleanup() {
     store.set_known_windows(&[1, 2]);
 
     // ---- window 1: command.invoke.window_id -> terminal.read ask 记录窗口
-    assert!(store.spawn_command_for(
-        "plugin.dev.test.window.terminal-read-window",
-        Some(1)
-    ));
+    assert!(store.spawn_command_for("plugin.dev.test.window.terminal-read-window", Some(1)));
     assert!(wait_until(
         || store
             .pending_approvals_for(1, Some(1))
@@ -1568,10 +1742,7 @@ fn window_id_routes_commands_reads_surfaces_status_and_cleanup() {
     );
 
     // ---- window 2: 同一插件进程，显式 window_id 路由到另一个窗口
-    assert!(store.spawn_command_for(
-        "plugin.dev.test.window.terminal-read-window",
-        Some(2)
-    ));
+    assert!(store.spawn_command_for("plugin.dev.test.window.terminal-read-window", Some(2)));
     assert!(wait_until(
         || store
             .pending_approvals_for(2, Some(1))
@@ -1611,18 +1782,15 @@ fn window_id_routes_commands_reads_surfaces_status_and_cleanup() {
         .unwrap();
     let window1_surfaces = wait_for_surfaces(&store, 1, Some(1));
     assert!(
-        window1_surfaces.iter().any(|surface| {
-            surface.window_id == Some(1) && surface.surface == "panel:main"
-        }),
+        window1_surfaces
+            .iter()
+            .any(|surface| { surface.window_id == Some(1) && surface.surface == "panel:main" }),
         "{window1_surfaces:?}"
     );
     assert!(store.take_surfaces_for(2, Some(1)).is_empty());
 
     // ---- 插件主动 ui.render：显式 window_id=2，不覆盖 window 1
-    assert!(store.spawn_command_for(
-        "plugin.dev.test.window.panel-window",
-        Some(2)
-    ));
+    assert!(store.spawn_command_for("plugin.dev.test.window.panel-window", Some(2)));
     let window2_surfaces = wait_for_surfaces(&store, 2, Some(1));
     let pushed = window2_surfaces
         .iter()
@@ -1633,10 +1801,7 @@ fn window_id_routes_commands_reads_surfaces_status_and_cleanup() {
     assert!(store.take_surfaces_for(1, Some(1)).is_empty());
 
     // ---- ui.status 按窗口；status.get 的全局状态仍对两个窗口可见
-    assert!(store.spawn_command_for(
-        "plugin.dev.test.window.status-window",
-        Some(1)
-    ));
+    assert!(store.spawn_command_for("plugin.dev.test.window.status-window", Some(1)));
     assert!(wait_until(
         || store
             .status_snapshot_for_window(1)
@@ -1660,21 +1825,18 @@ fn window_id_routes_commands_reads_surfaces_status_and_cleanup() {
         .any(|status| status.text == "status-ready"));
 
     // ---- 关闭窗口 2：清理它的 surface/status/ask
-    assert!(store.spawn_command_for(
-        "plugin.dev.test.window.panel-window",
-        Some(2)
-    ));
+    assert!(store.spawn_command_for("plugin.dev.test.window.panel-window", Some(2)));
     let _ = wait_for_surfaces(&store, 2, Some(1));
-    assert!(store.spawn_command_for(
-        "plugin.dev.test.window.terminal-read-window",
-        Some(2)
-    ));
+    assert!(store.spawn_command_for("plugin.dev.test.window.terminal-read-window", Some(2)));
     assert!(wait_until(
         || !store.pending_approvals_for(2, Some(1)).is_empty(),
         Duration::from_secs(3)
     ));
     let cancelled = store.forget_window(2);
-    assert_eq!(cancelled, 1, "pending ask for the closed window is cancelled");
+    assert_eq!(
+        cancelled, 1,
+        "pending ask for the closed window is cancelled"
+    );
     assert!(store.pending_approvals_for(2, Some(1)).is_empty());
     assert!(store.take_surfaces_for(2, Some(1)).is_empty());
     assert!(!store
@@ -1740,14 +1902,8 @@ fn concurrent_asks_route_back_to_their_own_window() {
     ));
     store.set_active_window(Some(1));
     store.set_known_windows(&[1, 2]);
-    assert!(store.spawn_command_for(
-        "plugin.dev.test.asks.terminal-read-window",
-        Some(1)
-    ));
-    assert!(store.spawn_command_for(
-        "plugin.dev.test.asks.terminal-read-window",
-        Some(2)
-    ));
+    assert!(store.spawn_command_for("plugin.dev.test.asks.terminal-read-window", Some(1)));
+    assert!(store.spawn_command_for("plugin.dev.test.asks.terminal-read-window", Some(2)));
     assert!(wait_until(
         || {
             !store.pending_approvals_for(1, Some(1)).is_empty()
@@ -1820,8 +1976,7 @@ impl Drop for KillOnDrop {
 fn process_gone(pid: u32) -> bool {
     // SAFETY: signal 0 只做存在性检查，不递送信号。
     let result = unsafe { libc::kill(pid as i32, 0) };
-    result == -1
-        && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+    result == -1 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
 }
 
 /// [P1] 插件停读 stdin 时，宿主写线程不能阻塞 supervisor：命令按 deadline 超时，
@@ -1930,7 +2085,11 @@ fn fake_window_asks_do_not_occupy_approval_slots() {
 
     assert!(store.spawn_command("plugin.dev.test.fakeask.terminal-read-fake-windows"));
     // 并行测试会争抢进程/FD，sidecar 可能重启一次；给首次活动更长的窗口。
-    assert!(wait_activity(&store, "fake-windows-sent", Duration::from_secs(15)));
+    assert!(wait_activity(
+        &store,
+        "fake-windows-sent",
+        Duration::from_secs(15)
+    ));
     std::thread::sleep(Duration::from_millis(100));
     let approvals = store.pending_approvals();
     assert!(
@@ -1946,10 +2105,7 @@ fn fake_window_asks_do_not_occupy_approval_slots() {
     );
 
     // 随后的合法 ask 仍必须能排队、能答复。
-    assert!(store.spawn_command_for(
-        "plugin.dev.test.fakeask.terminal-read-window",
-        Some(1)
-    ));
+    assert!(store.spawn_command_for("plugin.dev.test.fakeask.terminal-read-window", Some(1)));
     assert!(wait_until(
         || !store.pending_approvals_for(1, Some(1)).is_empty(),
         Duration::from_secs(3)
@@ -2001,7 +2157,11 @@ fn fake_window_status_ids_do_not_grow_status_map() {
     store.set_active_window(Some(1));
 
     assert!(store.spawn_command("plugin.dev.test.fakestatus.spam-fake-status"));
-    assert!(wait_activity(&store, "spam-status-sent", Duration::from_secs(10)));
+    assert!(wait_activity(
+        &store,
+        "spam-status-sent",
+        Duration::from_secs(10)
+    ));
 
     let statuses = store.shared.statuses.lock().expect("statuses");
     let from_this_plugin: Vec<(Option<u64>, String)> = statuses
@@ -2044,10 +2204,7 @@ fn fake_window_status_ids_do_not_grow_status_map() {
     store.set_known_windows(&[1, 2, 3, 4]);
     store.set_active_window(Some(1));
     for window in [1u64, 2, 3, 4] {
-        assert!(store.spawn_command_for(
-            "plugin.dev.test.fakestatus.status-window",
-            Some(window)
-        ));
+        assert!(store.spawn_command_for("plugin.dev.test.fakestatus.status-window", Some(window)));
     }
     assert!(wait_until(
         || store.shared.statuses.lock().is_ok_and(|statuses| {
@@ -2120,9 +2277,7 @@ fn plugin_stderr_control_bytes_are_stripped_from_ui() {
     );
     let row = row_of(&store, "dev.test.stderr");
     assert!(
-        !row.error.contains('\x1b')
-            && !row.error.contains('\r')
-            && !row.error.contains("[31m"),
+        !row.error.contains('\x1b') && !row.error.contains('\r') && !row.error.contains("[31m"),
         "stderr 的 ESC/CR/ANSI 不能原样进入设置页: {:?}",
         row.error
     );

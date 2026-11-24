@@ -50,12 +50,18 @@ pub fn requested() -> bool {
             return false;
         }
         if let Ok(v) = std::env::var("XTERVO_GPU") {
-            if matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no" | "off") {
+            if matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "0" | "false" | "no" | "off"
+            ) {
                 return false;
             }
         }
         match std::env::var("XTERVO_GPU_NATIVE") {
-            Ok(v) => !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no" | "off"),
+            Ok(v) => !matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "0" | "false" | "no" | "off"
+            ),
             Err(_) => true,
         }
     })
@@ -192,9 +198,7 @@ fn fail(reason: impl std::fmt::Display) {
         }
         *failed = true;
     }
-    eprintln!(
-        "[gpu-native] 失败，自动回退 CPU（本进程不再尝试 GPU Scene）: {reason}"
-    );
+    eprintln!("[gpu-native] 失败，自动回退 CPU（本进程不再尝试 GPU Scene）: {reason}");
     if let Ok(mut guard) = STATE.lock() {
         *guard = None;
     }
@@ -218,9 +222,7 @@ pub fn install_for(window: WindowId, device: &wgpu::Device, _queue: &wgpu::Queue
             if state.device == *device {
                 same_device = true;
             } else {
-                eprintln!(
-                    "[gpu-native] {window} RenderingSetup：device 变化，丢弃旧 atlas/target"
-                );
+                eprintln!("[gpu-native] {window} RenderingSetup：device 变化，丢弃旧 atlas/target");
                 *guard = None;
                 PANE_IMAGES.with(|images| images.borrow_mut().clear());
             }
@@ -280,9 +282,7 @@ pub fn teardown_for(window: WindowId) {
         set.len()
     };
     PANE_IMAGES.with(|images| {
-        images
-            .borrow_mut()
-            .retain(|pane, _| !panes.contains(pane));
+        images.borrow_mut().retain(|pane, _| !panes.contains(pane));
     });
     if remaining == 0 {
         if let Ok(mut guard) = STATE.lock() {
@@ -313,9 +313,7 @@ pub fn retain(active: &[u64]) {
         }
     }
     PANE_IMAGES.with(|images| {
-        images
-            .borrow_mut()
-            .retain(|pane, _| active.contains(pane));
+        images.borrow_mut().retain(|pane, _| active.contains(pane));
     });
 }
 
@@ -336,9 +334,7 @@ pub fn retain_for(window: WindowId, active: &[u64]) {
         }
     }
     PANE_IMAGES.with(|images| {
-        images
-            .borrow_mut()
-            .retain(|pane, _| union.contains(pane));
+        images.borrow_mut().retain(|pane, _| union.contains(pane));
     });
 }
 
@@ -389,12 +385,12 @@ fn ensure_state(input: &PaneFrame<'_>) -> bool {
                     state.font_paths = paths.map(str::to_owned);
                     eprintln!("[gpu-native] 字体切换：已重建 atlas");
                     return true;
-                },
+                }
                 Err(error) => {
                     // 不能在这里调 fail()：它会再次锁 STATE，当前 guard 还活着。
                     eprintln!("[gpu-native] 字体切换重建 atlas 失败: {error}");
                     return false;
-                },
+                }
             }
         }
     }
@@ -573,9 +569,7 @@ fn invalidate_pane(pane: u64) {
     }
     let dropped_image = PANE_IMAGES.with(|images| images.borrow_mut().remove(&pane).is_some());
     if (dropped_target || dropped_image) && debug() {
-        eprintln!(
-            "[gpu-native] pane={pane} 回退 CPU：丢弃过期 GPU target（下一帧强制 full）"
-        );
+        eprintln!("[gpu-native] pane={pane} 回退 CPU：丢弃过期 GPU target（下一帧强制 full）");
     }
 }
 
@@ -685,7 +679,7 @@ fn render_pane_image(input: &PaneFrame<'_>) -> Option<slint::Image> {
             // The image vanished between the check and the lookup; repaint it
             // from scratch instead of partially patching the target.
             true
-        },
+        }
         RenderPlan::Render { force_full } => force_full,
     };
 
@@ -744,7 +738,9 @@ fn render_pane_image(input: &PaneFrame<'_>) -> Option<slint::Image> {
             Ok(target) => target,
             Err(error) => {
                 drop(guard);
-                fail(format!("创建离屏 {width}x{height} Rgba8Unorm target 失败: {error}"));
+                fail(format!(
+                    "创建离屏 {width}x{height} Rgba8Unorm target 失败: {error}"
+                ));
                 return None;
             }
         };
@@ -783,13 +779,10 @@ fn render_pane_image(input: &PaneFrame<'_>) -> Option<slint::Image> {
 
     let stats = {
         let pane = state.panes.get_mut(&input.pane)?;
-        match state.images.render_scene(
-            &mut state.renderer,
-            &pane.target,
-            clear,
-            sections,
-            &scene,
-        ) {
+        match state
+            .images
+            .render_scene(&mut state.renderer, &pane.target, clear, sections, &scene)
+        {
             Ok(stats) => stats,
             Err(error) => {
                 drop(guard);
@@ -933,7 +926,7 @@ fn render_pane_image(input: &PaneFrame<'_>) -> Option<slint::Image> {
                             path.display()
                         ),
                     }
-                },
+                }
                 Err(error) => {
                     eprintln!("[gpu-native] 像素证据回读失败: {error}");
                 }
@@ -984,7 +977,10 @@ mod tests {
     fn damage_contract_reuses_only_clean_non_full_frames() {
         let mut frame = Frame::new(4, 2);
         assert!(!can_reuse_gpu_target(&frame, false), "没有 target 不能复用");
-        assert!(can_reuse_gpu_target(&frame, true), "无 damage 且非 full 应复用");
+        assert!(
+            can_reuse_gpu_target(&frame, true),
+            "无 damage 且非 full 应复用"
+        );
 
         frame.full = true;
         assert!(!can_reuse_gpu_target(&frame, true), "full 必须重绘");
@@ -1110,22 +1106,12 @@ mod tests {
             "the first frame has no previous pixels"
         );
         assert_eq!(
-            plan_render(
-                Some(HighlightSignature::of(&frame)),
-                false,
-                true,
-                &frame
-            ),
+            plan_render(Some(HighlightSignature::of(&frame)), false, true, &frame),
             RenderPlan::Render { force_full: true },
             "a target without an imported image must be rebuilt"
         );
         assert_eq!(
-            plan_render(
-                Some(HighlightSignature::of(&frame)),
-                true,
-                false,
-                &frame
-            ),
+            plan_render(Some(HighlightSignature::of(&frame)), true, false, &frame),
             RenderPlan::Render { force_full: true },
             "resize/font-size change: cached pixels belong to another target"
         );
@@ -1229,7 +1215,12 @@ mod tests {
 
     impl TargetModel {
         fn plan(&self, frame: &Frame, size: PhysicalSize) -> RenderPlan {
-            plan_render(self.highlight, self.has_image, self.size == Some(size), frame)
+            plan_render(
+                self.highlight,
+                self.has_image,
+                self.size == Some(size),
+                frame,
+            )
         }
 
         fn step(&mut self, expected: RenderPlan, frame: &Frame, size: PhysicalSize) {
@@ -1329,7 +1320,9 @@ mod tests {
         let scene = SceneBuilder::from_frame(&frame, viewport)
             .background(BackgroundInstance { color: 0x0011_2233 })
             .build();
-        let batch = scene.text_batch().expect("frame adapter emits one text batch");
+        let batch = scene
+            .text_batch()
+            .expect("frame adapter emits one text batch");
         assert_eq!(batch.cells.len(), 8);
         assert!(batch.cells[0].attributes.wide);
         assert!(batch.cells[1].attributes.wide_spacer);
@@ -1343,7 +1336,9 @@ mod tests {
         assert_eq!(batch.cells[0].background, 0x0000_0000);
         assert_eq!(scene.revision, 42);
         assert_eq!(
-            scene.layer(xtervo_scene::BACKGROUND_LAYER_Z).map(|layer| layer.items.len()),
+            scene
+                .layer(xtervo_scene::BACKGROUND_LAYER_Z)
+                .map(|layer| layer.items.len()),
             Some(1)
         );
         // The cursor is a Scene item; the app keeps its own Slint overlay for it.

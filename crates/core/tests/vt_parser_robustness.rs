@@ -26,7 +26,10 @@ struct Lcg(u64);
 
 impl Lcg {
     fn next(&mut self) -> u64 {
-        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         self.0 >> 33
     }
 
@@ -73,7 +76,11 @@ fn split_csi_every_byte_boundary() {
         s.advance(&seq[..split]);
         s.advance(&seq[split..]);
         let frame = s.pull();
-        assert_eq!((frame.cursor.line, frame.cursor.col), (2, 6), "split={split}");
+        assert_eq!(
+            (frame.cursor.line, frame.cursor.col),
+            (2, 6),
+            "split={split}"
+        );
     }
 }
 
@@ -86,7 +93,10 @@ fn split_sgr_every_byte_boundary() {
         s.advance(&seq[split..]);
         let frame = s.pull();
         assert_eq!(frame.cell(0, 0).char(), 'Z', "split={split}");
-        assert!(frame.cell(0, 0).has(xtervo_core::flags::BOLD), "split={split}");
+        assert!(
+            frame.cell(0, 0).has(xtervo_core::flags::BOLD),
+            "split={split}"
+        );
     }
 }
 
@@ -137,7 +147,10 @@ fn interrupted_osc_is_dropped_and_stream_recovers() {
     s.advance(b"\x1b]9;never-delivered\x1bqafter");
     let text = s.viewport_text();
     assert!(text.contains("after"), "损坏 OSC 后输出被吞: {text:?}");
-    assert!(!text.contains("never-delivered"), "损坏 OSC 正文泄漏: {text:?}");
+    assert!(
+        !text.contains("never-delivered"),
+        "损坏 OSC 正文泄漏: {text:?}"
+    );
     // ESC [ 也能从 OSC 里中止并执行新的 CSI（0m 复位）。
     let mut s = sim();
     s.advance(b"\x1b]9;never-delivered\x1b[0mafter");
@@ -185,7 +198,10 @@ fn megabyte_of_broken_escapes_does_not_panic() {
     s.advance(&[0x9b, b'9', b'9', b'9', b'H']);
     s.advance(b"still-alive");
     let text = s.viewport_text();
-    assert!(text.contains("still-alive"), "长串 ESC 后解析器卡死: {text:?}");
+    assert!(
+        text.contains("still-alive"),
+        "长串 ESC 后解析器卡死: {text:?}"
+    );
 }
 
 #[test]
@@ -227,7 +243,10 @@ fn real_pty_survives_invalid_bytes_and_runs_next_command() {
         if text.contains("PTY-OK") {
             break;
         }
-        assert!(std::time::Instant::now() < deadline, "非法字节后 PTY 解析卡住");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "非法字节后 PTY 解析卡住"
+        );
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
 }

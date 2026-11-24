@@ -29,7 +29,11 @@ pub struct Injector {
 }
 
 fn read_prop(conn: &RustConnection, win: Window, atom: u32) -> Option<String> {
-    let reply = conn.get_property(false, win, atom, AtomEnum::ANY, 0, 1024).ok()?.reply().ok()?;
+    let reply = conn
+        .get_property(false, win, atom, AtomEnum::ANY, 0, 1024)
+        .ok()?
+        .reply()
+        .ok()?;
     if reply.value.is_empty() {
         None
     } else {
@@ -85,7 +89,10 @@ impl Injector {
         let root = setup.roots.get(screen_num)?.root;
         let win = find_window(&conn, root, title, 0)?;
 
-        conn.set_input_focus(InputFocus::PARENT, win, x11rb::CURRENT_TIME).ok()?.check().ok()?;
+        conn.set_input_focus(InputFocus::PARENT, win, x11rb::CURRENT_TIME)
+            .ok()?
+            .check()
+            .ok()?;
         conn.flush().ok()?;
 
         let (min, max) = (setup.min_keycode, setup.max_keycode);
@@ -111,7 +118,13 @@ impl Injector {
         }
         let ctrl = ctrl_kc?;
 
-        Some(Self { conn, win, root, keycodes, ctrl })
+        Some(Self {
+            conn,
+            win,
+            root,
+            keycodes,
+            ctrl,
+        })
     }
 
     #[inline]
@@ -147,7 +160,9 @@ impl Injector {
 
     /// 注入 Ctrl-U（清行），用于下一次测量。
     pub fn ctrl_u(&mut self) -> bool {
-        let Some(kc) = self.keycode('u') else { return false };
+        let Some(kc) = self.keycode('u') else {
+            return false;
+        };
         let _ = self.fake(KEY_PRESS, self.ctrl);
         let _ = self.fake(KEY_PRESS, kc);
         let _ = self.fake(KEY_RELEASE, kc);
@@ -160,7 +175,10 @@ impl Injector {
     }
 
     pub fn focus(&self) -> bool {
-        match self.conn.set_input_focus(InputFocus::PARENT, self.win, x11rb::CURRENT_TIME) {
+        match self
+            .conn
+            .set_input_focus(InputFocus::PARENT, self.win, x11rb::CURRENT_TIME)
+        {
             Ok(cookie) => cookie.check().is_ok(),
             Err(_) => false,
         }
@@ -199,7 +217,11 @@ impl LatencyStats {
         Self {
             n,
             min_us: v.first().copied().unwrap_or(0.0),
-            mean_us: if n == 0 { 0.0 } else { v.iter().sum::<f64>() / n as f64 },
+            mean_us: if n == 0 {
+                0.0
+            } else {
+                v.iter().sum::<f64>() / n as f64
+            },
             median_us: pick(0.5),
             p95_us: pick(0.95),
             p99_us: pick(0.99),
@@ -251,7 +273,10 @@ impl DamageWatcher {
         };
         conn.damage_query_version(1, 1).ok()?.reply().ok()?;
         let damage_id = conn.generate_id().ok()?;
-        conn.damage_create(damage_id, win, ReportLevel::NON_EMPTY).ok()?.check().ok()?;
+        conn.damage_create(damage_id, win, ReportLevel::NON_EMPTY)
+            .ok()?
+            .check()
+            .ok()?;
         conn.flush().ok()?;
 
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -274,12 +299,12 @@ impl DamageWatcher {
                                     // 通道满：丢掉最旧的语义由接收端兜底，这里直接跳过
                                 }
                                 let _ = e;
-                            },
-                            _ => {},
+                            }
+                            _ => {}
                         },
                         Ok(None) => {
                             std::thread::sleep(Duration::from_millis(20));
-                        },
+                        }
                         Err(_) => break,
                     }
                 }
@@ -287,7 +312,11 @@ impl DamageWatcher {
             })
             .ok()?;
 
-        Some(Self { rx, stop, thread: Some(thread) })
+        Some(Self {
+            rx,
+            stop,
+            thread: Some(thread),
+        })
     }
 
     pub fn recv_timeout(&self, timeout: Duration) -> Option<Instant> {

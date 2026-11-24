@@ -115,7 +115,10 @@ impl Theme {
 
     /// 该主题是深色还是浅色（auto 配对、设置面板分组用）。
     pub fn is_dark(self) -> bool {
-        !matches!(self, Theme::CatppuccinLatte | Theme::SolarizedLight | Theme::YaruLight)
+        !matches!(
+            self,
+            Theme::CatppuccinLatte | Theme::SolarizedLight | Theme::YaruLight
+        )
     }
 
     /// 界面（标签栏、菜单、设置面板、搜索框）配色。
@@ -289,9 +292,8 @@ impl Theme {
                 bright_fg: 0x00c0caf5,
                 dim_fg: 0x00a9b1d6,
                 ansi16: [
-                    0x0015161e, 0x00f7768e, 0x009ece6a, 0x00e0af68,
-                    0x007aa2f7, 0x00bb9af7, 0x007dcfff, 0x00a9b1d6,
-                    0x00414868, 0x00f7768e, 0x009ece6a, 0x00e0af68,
+                    0x0015161e, 0x00f7768e, 0x009ece6a, 0x00e0af68, 0x007aa2f7, 0x00bb9af7,
+                    0x007dcfff, 0x00a9b1d6, 0x00414868, 0x00f7768e, 0x009ece6a, 0x00e0af68,
                     0x007aa2f7, 0x00bb9af7, 0x007dcfff, 0x00c0caf5,
                 ],
             },
@@ -302,9 +304,8 @@ impl Theme {
                 bright_fg: 0x00a6adc8,
                 dim_fg: 0x009aa0b8,
                 ansi16: [
-                    0x0045475a, 0x00f38ba8, 0x00a6e3a1, 0x00f9e2af,
-                    0x0089b4fa, 0x00f5c2e7, 0x0094e2d5, 0x00bac2de,
-                    0x00585b70, 0x00f38ba8, 0x00a6e3a1, 0x00f9e2af,
+                    0x0045475a, 0x00f38ba8, 0x00a6e3a1, 0x00f9e2af, 0x0089b4fa, 0x00f5c2e7,
+                    0x0094e2d5, 0x00bac2de, 0x00585b70, 0x00f38ba8, 0x00a6e3a1, 0x00f9e2af,
                     0x0089b4fa, 0x00f5c2e7, 0x0094e2d5, 0x00a6adc8,
                 ],
             },
@@ -315,9 +316,8 @@ impl Theme {
                 bright_fg: 0x00b8c0e0,
                 dim_fg: 0x00a5adcb,
                 ansi16: [
-                    0x00494d64, 0x00ed8796, 0x00a6da95, 0x00eed49f,
-                    0x008aadf4, 0x00c6a0f6, 0x008bd5ca, 0x00b8c0e0,
-                    0x005b6078, 0x00ed8796, 0x00a6da95, 0x00eed49f,
+                    0x00494d64, 0x00ed8796, 0x00a6da95, 0x00eed49f, 0x008aadf4, 0x00c6a0f6,
+                    0x008bd5ca, 0x00b8c0e0, 0x005b6078, 0x00ed8796, 0x00a6da95, 0x00eed49f,
                     0x008aadf4, 0x00c6a0f6, 0x008bd5ca, 0x00cad3f5,
                 ],
             },
@@ -328,9 +328,8 @@ impl Theme {
                 bright_fg: 0x00b5bfe2,
                 dim_fg: 0x00a5adce,
                 ansi16: [
-                    0x0051576d, 0x00e78284, 0x00a6d189, 0x00e5c890,
-                    0x008caaee, 0x00ca9ee6, 0x0081c8be, 0x00b5bfe2,
-                    0x00626880, 0x00e78284, 0x00a6d189, 0x00e5c890,
+                    0x0051576d, 0x00e78284, 0x00a6d189, 0x00e5c890, 0x008caaee, 0x00ca9ee6,
+                    0x0081c8be, 0x00b5bfe2, 0x00626880, 0x00e78284, 0x00a6d189, 0x00e5c890,
                     0x008caaee, 0x00ca9ee6, 0x0081c8be, 0x00c6d0f5,
                 ],
             },
@@ -341,9 +340,8 @@ impl Theme {
                 bright_fg: 0x005c5f77,
                 dim_fg: 0x008c8fa1,
                 ansi16: [
-                    0x005c5f77, 0x00d20f39, 0x0040a02b, 0x00df8e1d,
-                    0x001e66f5, 0x00ea76cb, 0x00179299, 0x009ca0b0,
-                    0x006c6f85, 0x00d20f39, 0x0040a02b, 0x00df8e1d,
+                    0x005c5f77, 0x00d20f39, 0x0040a02b, 0x00df8e1d, 0x001e66f5, 0x00ea76cb,
+                    0x00179299, 0x009ca0b0, 0x006c6f85, 0x00d20f39, 0x0040a02b, 0x00df8e1d,
                     0x001e66f5, 0x00ea76cb, 0x00179299, 0x00bcc0cc,
                 ],
             },
@@ -354,9 +352,8 @@ impl Theme {
                 bright_fg: 0x00ffffff,
                 dim_fg: 0x006272a4,
                 ansi16: [
-                    0x0021222c, 0x00ff5555, 0x0050fa7b, 0x00f1fa8c,
-                    0x00bd93f9, 0x00ff79c6, 0x008be9fd, 0x00f8f8f2,
-                    0x006272a4, 0x00ff6e6e, 0x0069ff94, 0x00ffffa5,
+                    0x0021222c, 0x00ff5555, 0x0050fa7b, 0x00f1fa8c, 0x00bd93f9, 0x00ff79c6,
+                    0x008be9fd, 0x00f8f8f2, 0x006272a4, 0x00ff6e6e, 0x0069ff94, 0x00ffffa5,
                     0x00d6acff, 0x00ff92df, 0x00a4ffff, 0x00ffffff,
                 ],
             },
@@ -367,9 +364,8 @@ impl Theme {
                 bright_fg: 0x00eceff4,
                 dim_fg: 0x00a3abbd,
                 ansi16: [
-                    0x003b4252, 0x00bf616a, 0x00a3be8c, 0x00ebcb8b,
-                    0x0081a1c1, 0x00b48ead, 0x0088c0d0, 0x00e5e9f0,
-                    0x004c566a, 0x00bf616a, 0x00a3be8c, 0x00ebcb8b,
+                    0x003b4252, 0x00bf616a, 0x00a3be8c, 0x00ebcb8b, 0x0081a1c1, 0x00b48ead,
+                    0x0088c0d0, 0x00e5e9f0, 0x004c566a, 0x00bf616a, 0x00a3be8c, 0x00ebcb8b,
                     0x0081a1c1, 0x00b48ead, 0x008fbcbb, 0x00eceff4,
                 ],
             },
@@ -380,9 +376,8 @@ impl Theme {
                 bright_fg: 0x00fbf1c7,
                 dim_fg: 0x00bdae93,
                 ansi16: [
-                    0x00282828, 0x00cc241d, 0x0098971a, 0x00d79921,
-                    0x00458588, 0x00b16286, 0x00689d6a, 0x00a89984,
-                    0x00928374, 0x00fb4934, 0x00b8bb26, 0x00fabd2f,
+                    0x00282828, 0x00cc241d, 0x0098971a, 0x00d79921, 0x00458588, 0x00b16286,
+                    0x00689d6a, 0x00a89984, 0x00928374, 0x00fb4934, 0x00b8bb26, 0x00fabd2f,
                     0x0083a598, 0x00d3869b, 0x008ec07c, 0x00ebdbb2,
                 ],
             },
@@ -393,9 +388,8 @@ impl Theme {
                 bright_fg: 0x00ffffff,
                 dim_fg: 0x007f848e,
                 ansi16: [
-                    0x00282c34, 0x00e06c75, 0x0098c379, 0x00e5c07b,
-                    0x0061afef, 0x00c678dd, 0x0056b6c2, 0x00abb2bf,
-                    0x005c6370, 0x00e06c75, 0x0098c379, 0x00e5c07b,
+                    0x00282c34, 0x00e06c75, 0x0098c379, 0x00e5c07b, 0x0061afef, 0x00c678dd,
+                    0x0056b6c2, 0x00abb2bf, 0x005c6370, 0x00e06c75, 0x0098c379, 0x00e5c07b,
                     0x0061afef, 0x00c678dd, 0x0056b6c2, 0x00ffffff,
                 ],
             },
@@ -406,9 +400,8 @@ impl Theme {
                 bright_fg: 0x00586e75,
                 dim_fg: 0x0093a1a1,
                 ansi16: [
-                    0x00073642, 0x00dc322f, 0x00859900, 0x00b58900,
-                    0x00268bd2, 0x00d33682, 0x002aa198, 0x00eee8d5,
-                    0x00002b36, 0x00cb4b16, 0x00586e75, 0x00657b83,
+                    0x00073642, 0x00dc322f, 0x00859900, 0x00b58900, 0x00268bd2, 0x00d33682,
+                    0x002aa198, 0x00eee8d5, 0x00002b36, 0x00cb4b16, 0x00586e75, 0x00657b83,
                     0x00839496, 0x006c71c4, 0x0093a1a1, 0x00fdf6e3,
                 ],
             },
@@ -419,9 +412,8 @@ impl Theme {
                 bright_fg: 0x00ffffff,
                 dim_fg: 0x00c8c5c0,
                 ansi16: [
-                    0x002e3436, 0x00cc0000, 0x004e9a06, 0x00c4a000,
-                    0x003465a4, 0x0075507b, 0x0006989a, 0x00d3d7cf,
-                    0x00555753, 0x00ef2929, 0x008ae234, 0x00fce94f,
+                    0x002e3436, 0x00cc0000, 0x004e9a06, 0x00c4a000, 0x003465a4, 0x0075507b,
+                    0x0006989a, 0x00d3d7cf, 0x00555753, 0x00ef2929, 0x008ae234, 0x00fce94f,
                     0x00729fcf, 0x00ad7fa8, 0x0034e2e2, 0x00eeeeec,
                 ],
             },
@@ -432,9 +424,8 @@ impl Theme {
                 bright_fg: 0x00000000,
                 dim_fg: 0x005e5e5e,
                 ansi16: [
-                    0x002e3436, 0x00cc0000, 0x004e9a06, 0x00c4a000,
-                    0x003465a4, 0x0075507b, 0x0006989a, 0x00d3d7cf,
-                    0x00555753, 0x00ef2929, 0x008ae234, 0x00fce94f,
+                    0x002e3436, 0x00cc0000, 0x004e9a06, 0x00c4a000, 0x003465a4, 0x0075507b,
+                    0x0006989a, 0x00d3d7cf, 0x00555753, 0x00ef2929, 0x008ae234, 0x00fce94f,
                     0x00729fcf, 0x00ad7fa8, 0x0034e2e2, 0x00eeeeec,
                 ],
             },
@@ -497,7 +488,11 @@ impl UiColors {
                 }
             }
         }
-        let accent_text = if lum(accent) > 0.55 { 0x0011_1111 } else { 0x00ff_ffff };
+        let accent_text = if lum(accent) > 0.55 {
+            0x0011_1111
+        } else {
+            0x00ff_ffff
+        };
         let mut danger = spec.ansi16[1];
         if (lum(danger) - lum(bg)).abs() < 0.10 {
             danger = spec.ansi16[9];
@@ -662,7 +657,7 @@ impl Palette {
                         | NamedColor::White),
                     ) => return self.table[named.to_bright() as usize],
                     Color::Indexed(i) if i < 8 => return self.table[i as usize + 8],
-                    _ => {},
+                    _ => {}
                 }
             }
         }
@@ -714,22 +709,22 @@ impl Palette {
             0..=255 => {
                 self.table[index] = rgb;
                 true
-            },
+            }
             256 => {
                 self.fg = rgb;
                 self.table[NamedColor::Foreground as usize] = rgb;
                 true
-            },
+            }
             257 => {
                 self.bg = rgb;
                 self.table[NamedColor::Background as usize] = rgb;
                 true
-            },
+            }
             258 => {
                 self.cursor = rgb;
                 self.table[NamedColor::Cursor as usize] = rgb;
                 true
-            },
+            }
             _ => false,
         }
     }
@@ -816,7 +811,10 @@ mod tests {
                     + 0.587 * ((c >> 8) & 0xff) as f32
                     + 0.114 * (c & 0xff) as f32
             };
-            assert!((lum(theme.fg()) - lum(bg)).abs() > 60.0, "low contrast in {theme:?}");
+            assert!(
+                (lum(theme.fg()) - lum(bg)).abs() > 60.0,
+                "low contrast in {theme:?}"
+            );
         }
     }
 
@@ -860,8 +858,7 @@ mod tests {
     #[test]
     fn bold_color_only_applies_to_default_foreground_when_enabled() {
         let bold = 0x0012_3456;
-        let palette =
-            Palette::for_theme(Theme::YaruDark).with_bold(true, Some(bold), false);
+        let palette = Palette::for_theme(Theme::YaruDark).with_bold(true, Some(bold), false);
         assert_eq!(
             palette.resolve_fg(Color::Named(NamedColor::Foreground), true),
             bold,

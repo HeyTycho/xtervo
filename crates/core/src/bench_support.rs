@@ -27,7 +27,10 @@ pub struct TermSim {
 impl TermSim {
     pub fn new(cols: usize, rows: usize, scrollback: usize) -> Self {
         let size = GridSize::new(cols, rows);
-        let config = TermConfig { scrolling_history: scrollback, ..TermConfig::default() };
+        let config = TermConfig {
+            scrolling_history: scrollback,
+            ..TermConfig::default()
+        };
         let term = Term::new(config, &size, VoidListener);
         Self {
             term,
@@ -127,7 +130,10 @@ mod tests {
     fn zero_width_detection_matches_combining_and_zwj() {
         use crate::pane::has_zero_width_chars as has_zw;
         assert!(!has_zw(b"plain ascii\r\n"));
-        assert!(!has_zw("中文全角宽字符".as_bytes()), "普通 CJK 不是零宽，不该触发整帧刷新");
+        assert!(
+            !has_zw("中文全角宽字符".as_bytes()),
+            "普通 CJK 不是零宽，不该触发整帧刷新"
+        );
         assert!(has_zw("e\u{301}".as_bytes()), "组合音标应触发刷新");
         assert!(has_zw("👨\u{200D}👩".as_bytes()), "ZWJ 应触发刷新");
         assert!(has_zw("❤\u{FE0F}".as_bytes()), "变体选择符应触发刷新");
@@ -280,7 +286,10 @@ mod tests {
         use crate::frame::flags;
         // 行尾放不下宽字符时，alacritty 先写 LEADING_WIDE_CHAR_SPACER 再换行；
         // 不允许把宽字符拆成两个半格。
-        assert!(f.cell(0, 3).has(0b0000_0100_0000_0000), "行尾应先留 leading spacer");
+        assert!(
+            f.cell(0, 3).has(0b0000_0100_0000_0000),
+            "行尾应先留 leading spacer"
+        );
         assert_eq!(f.cell(1, 0).char(), '中');
         assert!(f.cell(1, 0).has(flags::WIDE_CHAR));
         assert!(f.cell(1, 1).has(flags::WIDE_CHAR_SPACER));

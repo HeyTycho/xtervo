@@ -91,23 +91,23 @@ pub fn parse_line(line: &str) -> Result<LoginStep, String> {
         match key.as_str() {
             "delay" => {
                 step.delay = Duration::from_millis(parse_millis(value, "delay")?);
-            },
+            }
             "wait" => {
                 step.wait_for = (!value.is_empty()).then(|| value.to_string());
-            },
+            }
             "timeout" => {
                 let ms = parse_millis(value, "timeout")?;
                 if ms == 0 {
                     return Err("timeout 必须大于 0 毫秒".into());
                 }
                 step.timeout = Duration::from_millis(ms);
-            },
+            }
             "on_error" => match value.to_ascii_lowercase().as_str() {
                 "stop" => step.continue_on_error = false,
                 "continue" => step.continue_on_error = true,
                 other => {
                     return Err(format!("on_error 只能是 stop/continue，实际: {other}"));
-                },
+                }
             },
             other => return Err(format!("未知字段: {other}")),
         }
@@ -138,12 +138,12 @@ fn split_fields(line: &str) -> Vec<String> {
                 Some(other) => {
                     current.push('\\');
                     current.push(other);
-                },
+                }
                 None => current.push('\\'),
             },
             ';' => {
                 fields.push(std::mem::take(&mut current));
-            },
+            }
             _ => current.push(c),
         }
     }
@@ -167,10 +167,9 @@ mod tests {
 
     #[test]
     fn parses_all_fields_and_escaped_semicolon() {
-        let step = parse_line(
-            "echo a\\;b ; delay=250 ; wait=PROMPT> ; timeout=1500 ; on_error=continue",
-        )
-        .unwrap();
+        let step =
+            parse_line("echo a\\;b ; delay=250 ; wait=PROMPT> ; timeout=1500 ; on_error=continue")
+                .unwrap();
         assert_eq!(step.command, "echo a;b");
         assert_eq!(step.delay, Duration::from_millis(250));
         assert_eq!(step.wait_for.as_deref(), Some("PROMPT>"));
@@ -180,8 +179,8 @@ mod tests {
 
     #[test]
     fn rejects_bad_fields_with_line_number() {
-        let err = parse_lines(&["echo ok".into(), "".into(), "echo x ; nope=1".into()])
-            .unwrap_err();
+        let err =
+            parse_lines(&["echo ok".into(), "".into(), "echo x ; nope=1".into()]).unwrap_err();
         assert!(err.contains("第 3 行"), "{err}");
         assert!(err.contains("未知字段"), "{err}");
         assert!(parse_line("; wait=x").is_err());

@@ -276,7 +276,10 @@ fn load_font(path: &str) -> Option<Font> {
 
 fn load_font_at(path: &str, collection_index: u32) -> Option<Font> {
     let bytes = std::fs::read(path).ok()?;
-    let settings = FontSettings { collection_index, ..Default::default() };
+    let settings = FontSettings {
+        collection_index,
+        ..Default::default()
+    };
     Font::from_bytes(bytes, settings).ok()
 }
 
@@ -301,9 +304,17 @@ fn color_emoji_enabled() -> bool {
 
 /// 彩色位图字体的一个字形图像（借用字体文件，不复制 PNG）。
 enum ColorRaster<'a> {
-    Png { width: usize, height: usize, data: &'a [u8] },
+    Png {
+        width: usize,
+        height: usize,
+        data: &'a [u8],
+    },
     /// CBDT/EBDT 的 32 位 BGRA，通道已按 alpha 预乘（ttf-parser 文档约定）。
-    BgraPremul { width: usize, height: usize, data: &'a [u8] },
+    BgraPremul {
+        width: usize,
+        height: usize,
+        data: &'a [u8],
+    },
 }
 
 /// 彩色位图字体：`OwnedFace` 同时持有文件字节与解析后的 `ttf-parser::Face`，
@@ -322,7 +333,7 @@ impl ColorFace {
                     eprintln!("[font] 彩色字体不可用 {path}#{index}: {err}");
                 }
                 return None;
-            },
+            }
         };
         let face = match OwnedFace::from_vec(bytes, index) {
             Ok(face) => face,
@@ -331,7 +342,7 @@ impl ColorFace {
                     eprintln!("[font] 彩色字体解析失败 {path}#{index}: {err:?}");
                 }
                 return None;
-            },
+            }
         };
         let parsed = face.as_face_ref();
         let tables = parsed.tables();
@@ -364,10 +375,16 @@ impl ColorFace {
         let img = face.glyph_raster_image(gid, px)?;
         let (width, height) = (img.width as usize, img.height as usize);
         match img.format {
-            RasterImageFormat::PNG => Some(ColorRaster::Png { width, height, data: img.data }),
-            RasterImageFormat::BitmapPremulBgra32 => {
-                Some(ColorRaster::BgraPremul { width, height, data: img.data })
-            },
+            RasterImageFormat::PNG => Some(ColorRaster::Png {
+                width,
+                height,
+                data: img.data,
+            }),
+            RasterImageFormat::BitmapPremulBgra32 => Some(ColorRaster::BgraPremul {
+                width,
+                height,
+                data: img.data,
+            }),
             _ => None,
         }
     }
@@ -379,7 +396,11 @@ impl ColorFace {
 fn decode_color_raster(raster: &ColorRaster<'_>) -> Option<(usize, usize, Vec<u32>)> {
     const MAX_DIM: usize = 1024;
     match *raster {
-        ColorRaster::Png { width, height, data } => {
+        ColorRaster::Png {
+            width,
+            height,
+            data,
+        } => {
             if width == 0 || height == 0 || width > MAX_DIM || height > MAX_DIM {
                 return None;
             }
@@ -404,32 +425,36 @@ fn decode_color_raster(raster: &ColorRaster<'_>) -> Option<(usize, usize, Vec<u3
                                 | (px[3] as u32) << 24,
                         );
                     }
-                },
+                }
                 (png::ColorType::Rgb, png::BitDepth::Eight) => {
                     for px in bytes.chunks_exact(3) {
                         pixels.push(
                             px[0] as u32 | (px[1] as u32) << 8 | (px[2] as u32) << 16 | 0xff00_0000,
                         );
                     }
-                },
+                }
                 (png::ColorType::GrayscaleAlpha, png::BitDepth::Eight) => {
                     for px in bytes.chunks_exact(2) {
                         let v = px[0] as u32;
                         pixels.push(v | v << 8 | v << 16 | (px[1] as u32) << 24);
                     }
-                },
+                }
                 (png::ColorType::Grayscale, png::BitDepth::Eight) => {
                     for &v in bytes {
                         let v = v as u32;
                         pixels.push(v | v << 8 | v << 16 | 0xff00_0000);
                     }
-                },
+                }
                 // normalize_to_color8 会把调色板展开成 RGB/RGBA；其它位深不支持。
                 _ => return None,
             }
             Some((w, h, pixels))
-        },
-        ColorRaster::BgraPremul { width, height, data } => {
+        }
+        ColorRaster::BgraPremul {
+            width,
+            height,
+            data,
+        } => {
             if width == 0 || height == 0 || width > MAX_DIM || height > MAX_DIM {
                 return None;
             }
@@ -440,12 +465,16 @@ fn decode_color_raster(raster: &ColorRaster<'_>) -> Option<(usize, usize, Vec<u3
             for px in data.chunks_exact(4) {
                 let a = px[3] as u32;
                 let un = |v: u8| -> u32 {
-                    if a == 0 { 0 } else { ((v as u32 * 255 + a / 2) / a).min(255) }
+                    if a == 0 {
+                        0
+                    } else {
+                        ((v as u32 * 255 + a / 2) / a).min(255)
+                    }
                 };
                 pixels.push(un(px[2]) | un(px[1]) << 8 | un(px[0]) << 16 | a << 24);
             }
             Some((width, height, pixels))
-        },
+        }
     }
 }
 
@@ -454,7 +483,9 @@ fn fit_color_dims(src_w: usize, src_h: usize, max_w: usize, max_h: usize) -> (us
     if src_w == 0 || src_h == 0 || max_w == 0 || max_h == 0 {
         return (0, 0);
     }
-    let scale = (max_w as f64 / src_w as f64).min(max_h as f64 / src_h as f64).min(1.0);
+    let scale = (max_w as f64 / src_w as f64)
+        .min(max_h as f64 / src_h as f64)
+        .min(1.0);
     let w = ((src_w as f64 * scale).round() as usize).clamp(1, max_w);
     let h = ((src_h as f64 * scale).round() as usize).clamp(1, max_h);
     (w, h)
@@ -544,7 +575,9 @@ impl FallbackFace {
             let font = load_font_at(path, index);
             if fontlog() {
                 match &font {
-                    Some(_) => eprintln!("[font] 回退加载 {path}#{index} ({:?})", started.elapsed()),
+                    Some(_) => {
+                        eprintln!("[font] 回退加载 {path}#{index} ({:?})", started.elapsed())
+                    }
                     None => eprintln!(
                         "[font] 回退不可用 {path}#{index}（{} 后放弃）",
                         started.elapsed().as_millis()
@@ -741,7 +774,9 @@ fn font_file_index() -> &'static Vec<(String, String)> {
             if depth > 4 {
                 return;
             }
-            let Ok(entries) = std::fs::read_dir(dir) else { return };
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
             for entry in entries.flatten() {
                 let Ok(meta) = entry.metadata() else { continue };
                 let path = entry.path();
@@ -752,11 +787,15 @@ fn font_file_index() -> &'static Vec<(String, String)> {
                 if !meta.is_file() {
                     continue;
                 }
-                let Some(ext) = path.extension().and_then(|e| e.to_str()) else { continue };
+                let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
+                    continue;
+                };
                 if !matches!(ext.to_ascii_lowercase().as_str(), "ttf" | "otf" | "ttc") {
                     continue;
                 }
-                let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else { continue };
+                let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+                    continue;
+                };
                 let norm = normalize_font_name(stem);
                 if norm.is_empty() {
                     continue;
@@ -870,7 +909,7 @@ impl FontSet {
                         ]
                     })
                     .collect()
-            },
+            }
         };
 
         for paths in candidates {
@@ -878,10 +917,18 @@ impl FontSet {
             // bold_italic 会回退到同样不存在的 JetBrains Bold）时必须继续试下一个
             // 候选，不能 `?` 直接结束整个加载。否则有可用字体的机器也会被判成
             // “没有等宽字体”，像素差分测试全部红。
-            let Some(regular) = load_face(&paths, 0, 0) else { continue };
-            let Some(bold) = load_face(&paths, 1, 0) else { continue };
-            let Some(italic) = load_face(&paths, 2, 0) else { continue };
-            let Some(bold_italic) = load_face(&paths, 3, 1) else { continue };
+            let Some(regular) = load_face(&paths, 0, 0) else {
+                continue;
+            };
+            let Some(bold) = load_face(&paths, 1, 0) else {
+                continue;
+            };
+            let Some(italic) = load_face(&paths, 2, 0) else {
+                continue;
+            };
+            let Some(bold_italic) = load_face(&paths, 3, 1) else {
+                continue;
+            };
 
             let metrics = &regular;
             let adv = metrics.metrics('M', px).advance_width + opts.letter_spacing;
@@ -946,7 +993,9 @@ impl FontSet {
         for group in group_order(ch) {
             for &i in &fallback.groups[*group] {
                 let face = &fallback.faces[i];
-                let Some(font) = face.load(bold) else { continue };
+                let Some(font) = face.load(bold) else {
+                    continue;
+                };
                 if font.has_glyph(ch) {
                     if skip == 0 {
                         return Some(font);
@@ -968,7 +1017,9 @@ impl FontSet {
         }
         let fallback = self.fallback();
         for &i in &fallback.color_candidates {
-            let Some(face) = fallback.faces[i].color_face() else { continue };
+            let Some(face) = fallback.faces[i].color_face() else {
+                continue;
+            };
             if let Some(image) = face.image(ch, px) {
                 return Some(image);
             }
@@ -1028,8 +1079,10 @@ const ICON_FONT_MARKERS: &[&str] = &["nerd", "powerline", "symbols-nerd"];
 /// 只做文件名匹配，不解析字体（解析开销在第 3 步 `Fallback` 建立后按需发生）；
 /// 每次建立回退链只调用一次，且限制目录项预算，避免在巨大的字体目录上卡启动。
 fn discover_icon_fonts() -> Vec<String> {
-    let mut dirs: Vec<std::path::PathBuf> =
-        FONT_SCAN_DIRS.iter().map(std::path::PathBuf::from).collect();
+    let mut dirs: Vec<std::path::PathBuf> = FONT_SCAN_DIRS
+        .iter()
+        .map(std::path::PathBuf::from)
+        .collect();
     if let Some(home) = std::env::var_os("HOME") {
         let home = std::path::PathBuf::from(home);
         dirs.push(home.join(".local/share/fonts"));
@@ -1047,7 +1100,11 @@ fn discover_icon_fonts() -> Vec<String> {
     found.dedup();
     found.truncate(32);
     if fontlog() && !found.is_empty() {
-        eprintln!("[font] 扫描到 {} 个 Nerd/Powerline 图标字体: {:?}", found.len(), found);
+        eprintln!(
+            "[font] 扫描到 {} 个 Nerd/Powerline 图标字体: {:?}",
+            found.len(),
+            found
+        );
     }
     found
 }
@@ -1056,7 +1113,9 @@ fn scan_icon_fonts(dir: &Path, depth: usize, budget: &mut usize, out: &mut Vec<S
     if depth > 3 || *budget == 0 {
         return;
     }
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         if *budget == 0 {
             return;
@@ -1144,7 +1203,9 @@ fn load_fallback() -> Fallback {
     // 先用 3.8 MB 的 Droid 覆盖绝大多数汉字，避免为个别生僻字直接解析最大字体。
     specs.sort_by_key(|s| {
         if s.group == GROUP_CJK {
-            std::fs::metadata(&s.path).map(|m| m.len()).unwrap_or(u64::MAX)
+            std::fs::metadata(&s.path)
+                .map(|m| m.len())
+                .unwrap_or(u64::MAX)
         } else {
             0
         }
@@ -1194,7 +1255,11 @@ fn load_fallback() -> Fallback {
             color_candidates.len()
         );
     }
-    Fallback { faces, groups, color_candidates }
+    Fallback {
+        faces,
+        groups,
+        color_candidates,
+    }
 }
 
 /// 完全缺失时的明确占位类型。渲染层画空框，而不是字体的 .notdef tofu。
@@ -1264,7 +1329,10 @@ pub fn placeholder_kind(ch: char) -> Option<PlaceholderKind> {
 /// U+25FD/U+25FE 默认就是 emoji 呈现，仍走彩色路径。其它区段（❤ 等）
 /// 的既有彩色行为不动，避免扩大改动面。
 fn is_text_presentation_geometric(ch: char) -> bool {
-    matches!(ch as u32, 0x25AA | 0x25AB | 0x25B6 | 0x25C0 | 0x25FB | 0x25FC)
+    matches!(
+        ch as u32,
+        0x25AA | 0x25AB | 0x25B6 | 0x25C0 | 0x25FB | 0x25FC
+    )
 }
 
 /// 该格是否应按彩色 emoji 位图绘制。
@@ -1668,17 +1736,19 @@ fn powerline_inside(shape: PowerlineShape, x: f32, y: f32, w: f32, h: f32) -> bo
         PowerlineShape::LeftSolid => tri > 0.0 && x >= w - tri,
         // 只画斜边：竖边是格子边界，贴上去会和终端背景/相邻块连成一片。
         PowerlineShape::RightThin => {
-            dist_to_seg(0.0, 0.0, w, mid) <= half_line
-                || dist_to_seg(0.0, h, w, mid) <= half_line
-        },
+            dist_to_seg(0.0, 0.0, w, mid) <= half_line || dist_to_seg(0.0, h, w, mid) <= half_line
+        }
         PowerlineShape::LeftThin => {
-            dist_to_seg(w, 0.0, 0.0, mid) <= half_line
-                || dist_to_seg(w, h, 0.0, mid) <= half_line
-        },
+            dist_to_seg(w, 0.0, 0.0, mid) <= half_line || dist_to_seg(w, h, 0.0, mid) <= half_line
+        }
         PowerlineShape::RightRound | PowerlineShape::LeftRound => {
-            let cx = if matches!(shape, PowerlineShape::RightRound) { 0.0 } else { w };
+            let cx = if matches!(shape, PowerlineShape::RightRound) {
+                0.0
+            } else {
+                w
+            };
             ((x - cx).powi(2) + (y - mid).powi(2)).sqrt() <= mid
-        },
+        }
         PowerlineShape::RightRoundThin | PowerlineShape::LeftRoundThin => {
             let cx = if matches!(shape, PowerlineShape::RightRoundThin) {
                 0.0
@@ -1687,7 +1757,7 @@ fn powerline_inside(shape: PowerlineShape, x: f32, y: f32, w: f32, h: f32) -> bo
             };
             let d = ((x - cx).powi(2) + (y - mid).powi(2)).sqrt();
             (mid - 2.0 * half_line..=mid).contains(&d)
-        },
+        }
     }
 }
 
@@ -1706,20 +1776,40 @@ mod tests {
     #[test]
     fn font_options_drive_cell_metrics() {
         let opts = FontOptions::default();
-        let Some(plain) = FontSet::load_with(15.0, &opts) else { return };
+        let Some(plain) = FontSet::load_with(15.0, &opts) else {
+            return;
+        };
 
-        let tall = FontSet::load_with(15.0, &FontOptions { line_height: 1.5, ..opts.clone() })
-            .expect("行距不影响字体加载");
+        let tall = FontSet::load_with(
+            15.0,
+            &FontOptions {
+                line_height: 1.5,
+                ..opts.clone()
+            },
+        )
+        .expect("行距不影响字体加载");
         assert!(tall.cell_h > plain.cell_h, "行距调大必须加高 cell");
         assert_eq!(tall.cell_w, plain.cell_w, "行距不改 cell 宽");
         assert!(tall.baseline > plain.baseline, "多出来的行高应把基线下移");
 
-        let wide = FontSet::load_with(15.0, &FontOptions { letter_spacing: 3.0, ..opts.clone() })
-            .expect("字间距不影响字体加载");
+        let wide = FontSet::load_with(
+            15.0,
+            &FontOptions {
+                letter_spacing: 3.0,
+                ..opts.clone()
+            },
+        )
+        .expect("字间距不影响字体加载");
         assert_eq!(wide.cell_w, plain.cell_w + 3, "字间距直接加在 cell 宽上");
 
-        let scaled = FontSet::load_with(15.0, &FontOptions { render_scale: 2.0, ..opts.clone() })
-            .expect("渲染缩放不影响字体加载");
+        let scaled = FontSet::load_with(
+            15.0,
+            &FontOptions {
+                render_scale: 2.0,
+                ..opts.clone()
+            },
+        )
+        .expect("渲染缩放不影响字体加载");
         assert!(scaled.size > plain.size, "渲染缩放改的是光栅化字号");
         assert!(scaled.cell_w > plain.cell_w, "渲染缩放必须放大 cell");
     }
@@ -1731,7 +1821,10 @@ mod tests {
             eprintln!("跳过：系统没有 DejaVu Sans Mono");
             return;
         }
-        let opts = FontOptions { family: "DejaVu Sans Mono".into(), ..FontOptions::default() };
+        let opts = FontOptions {
+            family: "DejaVu Sans Mono".into(),
+            ..FontOptions::default()
+        };
         let Some(resolved) = FontSet::load_with(15.0, &opts) else {
             panic!("族名 DejaVu Sans Mono 应能解析");
         };
@@ -1741,8 +1834,14 @@ mod tests {
             resolved.font_path
         );
         // 找不到的族名必须回退内置链，而不是加载失败。
-        let missing = FontOptions { family: "No Such Font Family".into(), ..FontOptions::default() };
-        assert!(FontSet::load_with(15.0, &missing).is_some(), "未知族名应回退内置字体链");
+        let missing = FontOptions {
+            family: "No Such Font Family".into(),
+            ..FontOptions::default()
+        };
+        assert!(
+            FontSet::load_with(15.0, &missing).is_some(),
+            "未知族名应回退内置字体链"
+        );
     }
 
     #[test]
@@ -1750,17 +1849,28 @@ mod tests {
         let Some(fonts) = fonts() else { return };
         // 主字体 JetBrains Mono 没有中文字形，必须由回退字体接住。
         assert!(fonts.face(Style::Regular).has_glyph('A'));
-        assert!(!fonts.face(Style::Regular).has_glyph('你'), "预期主字体缺中文");
+        assert!(
+            !fonts.face(Style::Regular).has_glyph('你'),
+            "预期主字体缺中文"
+        );
         assert!(fonts.has_glyph('你'));
         assert!(fonts.has_glyph('好'));
 
         let mut cache = GlyphCache::default();
-        let g = cache.get(&fonts, '你', Style::Regular, 2).expect("中文应能栅格化");
+        let g = cache
+            .get(&fonts, '你', Style::Regular, 2)
+            .expect("中文应能栅格化");
         assert!(g.w >= 8 && g.h >= 8, "中文位图过小: {g:?}");
         assert!(g.advance >= 10, "中文步进异常: {g:?}");
         // 回退字体没有粗体时也必须能画（用常规体顶替，不能掉回主字体变 tofu）
-        assert!(cache.get(&fonts, '你', Style::Bold, 2).is_some(), "粗体中文丢字形");
-        assert!(cache.get(&fonts, '好', Style::Italic, 2).is_some(), "斜体中文丢字形");
+        assert!(
+            cache.get(&fonts, '你', Style::Bold, 2).is_some(),
+            "粗体中文丢字形"
+        );
+        assert!(
+            cache.get(&fonts, '好', Style::Italic, 2).is_some(),
+            "斜体中文丢字形"
+        );
     }
 
     #[test]
@@ -1789,7 +1899,10 @@ mod tests {
     fn fallback_is_lazy() {
         let Some(fonts) = fonts() else { return };
         // 加载主字体时不该建立/解析回退链。
-        assert!(fonts.fallback.get().is_none(), "FontSet::load 不应解析回退字体");
+        assert!(
+            fonts.fallback.get().is_none(),
+            "FontSet::load 不应解析回退字体"
+        );
 
         // ASCII 的查询和栅格化只走主字体，同样不能触发回退加载。
         assert!(fonts.has_glyph('A'));
@@ -1812,7 +1925,7 @@ mod tests {
                 assert!(g.w > 0 && g.h > 0, "emoji 位图为空: {g:?}");
                 // 😀 在 unicode-width 里是 2 格；回退的 DejaVu 轮廓可用时不能只画半格。
                 assert!(g.advance as usize >= fonts.cell_w, "emoji 步进过窄: {g:?}");
-            },
+            }
             None => eprintln!("跳过：系统没有可直接轮廓化的 emoji 回退字体"),
         }
         // 彩色位图 emoji 字体不能崩溃：取不到轮廓时返回 None（渲染层画占位框）；
@@ -1845,7 +1958,9 @@ mod tests {
             return;
         }
         let mut cache = GlyphCache::default();
-        let g = cache.get_color(&fonts, '😀', Style::Regular, 2).expect("😀 应能解出彩色位图");
+        let g = cache
+            .get_color(&fonts, '😀', Style::Regular, 2)
+            .expect("😀 应能解出彩色位图");
         assert!(g.w >= 8 && g.h >= 8, "彩色 emoji 位图过小: {g:?}");
         assert!(
             g.w as usize <= 2 * fonts.cell_w && g.h as usize <= fonts.cell_h,
@@ -1853,7 +1968,10 @@ mod tests {
             fonts.cell_w,
             fonts.cell_h
         );
-        assert!(colored_pixels(&g) > 10, "彩色 emoji 没有彩色像素（解码成了灰度？）");
+        assert!(
+            colored_pixels(&g) > 10,
+            "彩色 emoji 没有彩色像素（解码成了灰度？）"
+        );
         assert_eq!(cache.color_decodes, 1);
 
         // 彩色管线只探测 COLOR/env 候选，不能为了 emoji 解析 CJK 字体。
@@ -1870,16 +1988,26 @@ mod tests {
         }
 
         // 缓存命中：不重新读字体、不重复解 PNG；Rc 指向同一块像素。
-        let again = cache.get_color(&fonts, '😀', Style::Regular, 2).expect("缓存命中");
+        let again = cache
+            .get_color(&fonts, '😀', Style::Regular, 2)
+            .expect("缓存命中");
         assert_eq!(cache.color_decodes, 1, "缓存命中不应重复解码 PNG");
         assert!(cache.color_hits >= 1, "缓存命中计数未增加");
-        assert!(std::rc::Rc::ptr_eq(&g.pixels, &again.pixels), "缓存命中应复用同一 RGBA 缓冲");
+        assert!(
+            std::rc::Rc::ptr_eq(&g.pixels, &again.pixels),
+            "缓存命中应复用同一 RGBA 缓冲"
+        );
         assert_eq!((g.w, g.h), (again.w, again.h));
 
         // 彩色位图没有字重：粗体 emoji 复用同一份像素，不重复解码。
-        let bold = cache.get_color(&fonts, '😀', Style::Bold, 2).expect("粗体复用彩色位图");
+        let bold = cache
+            .get_color(&fonts, '😀', Style::Bold, 2)
+            .expect("粗体复用彩色位图");
         assert_eq!(cache.color_decodes, 1, "粗体 emoji 不应重复解码");
-        assert!(std::rc::Rc::ptr_eq(&g.pixels, &bold.pixels), "粗体应复用同一 RGBA 缓冲");
+        assert!(
+            std::rc::Rc::ptr_eq(&g.pixels, &bold.pixels),
+            "粗体应复用同一 RGBA 缓冲"
+        );
     }
 
     #[test]
@@ -1890,9 +2018,17 @@ mod tests {
             return;
         }
         let mut cache = GlyphCache::default();
-        let g = cache.get_color(&fonts, '❤', Style::Regular, 1).expect("❤ 彩色位图");
-        assert!(g.w as usize <= fonts.cell_w, "1 格彩色 emoji 宽度越界: {g:?}");
-        assert!(g.h as usize <= fonts.cell_h, "1 格彩色 emoji 高度越界: {g:?}");
+        let g = cache
+            .get_color(&fonts, '❤', Style::Regular, 1)
+            .expect("❤ 彩色位图");
+        assert!(
+            g.w as usize <= fonts.cell_w,
+            "1 格彩色 emoji 宽度越界: {g:?}"
+        );
+        assert!(
+            g.h as usize <= fonts.cell_h,
+            "1 格彩色 emoji 高度越界: {g:?}"
+        );
         assert!(colored_pixels(&g) > 0, "❤ 没有彩色像素");
     }
 
@@ -1903,7 +2039,10 @@ mod tests {
         // 普通字符/中文不能触发彩色候选探测，更不能为 emoji 解析 CJK 字体。
         assert!(cache.get_color(&fonts, 'A', Style::Regular, 1).is_none());
         assert!(cache.get_color(&fonts, '你', Style::Regular, 2).is_none());
-        assert!(!fonts.fallback_initialized(), "ASCII/CJK 不应建立彩色回退链");
+        assert!(
+            !fonts.fallback_initialized(),
+            "ASCII/CJK 不应建立彩色回退链"
+        );
         assert_eq!(cache.color_decodes, 0);
     }
 
@@ -1921,7 +2060,11 @@ mod tests {
             cache.map.len(),
             MAX_MONO_GLYPHS
         );
-        assert_eq!((cache.pen_x, cache.pen_y), (0, 0), "清空缓存应同时重置 atlas 游标");
+        assert_eq!(
+            (cache.pen_x, cache.pen_y),
+            (0, 0),
+            "清空缓存应同时重置 atlas 游标"
+        );
 
         for i in 0..(MAX_COLOR_GLYPHS + 10) {
             let ch = char::from_u32(0x1F300 + i as u32).expect("emoji char");
@@ -1960,16 +2103,28 @@ mod tests {
     fn color_raster_decode_handles_premultiplied_bgra() {
         // 半透明纯红：预乘 BGRA = B0 G0 R128 A128 → 直通 RGBA R255。
         let data = [0u8, 0, 128, 128];
-        let raster = ColorRaster::BgraPremul { width: 1, height: 1, data: &data };
+        let raster = ColorRaster::BgraPremul {
+            width: 1,
+            height: 1,
+            data: &data,
+        };
         let (w, h, px) = decode_color_raster(&raster).expect("预乘 BGRA 应能解码");
         assert_eq!((w, h), (1, 1));
         assert_eq!(px[0] & 0xff, 255, "红通道未反预乘: {:#x}", px[0]);
         assert_eq!(px[0] >> 24, 128, "alpha 被改坏: {:#x}", px[0]);
 
         // 损坏 PNG / 0 尺寸不能 panic。
-        let bad = ColorRaster::Png { width: 4, height: 4, data: b"not a png" };
+        let bad = ColorRaster::Png {
+            width: 4,
+            height: 4,
+            data: b"not a png",
+        };
         assert!(decode_color_raster(&bad).is_none());
-        let empty = ColorRaster::BgraPremul { width: 0, height: 0, data: &[] };
+        let empty = ColorRaster::BgraPremul {
+            width: 0,
+            height: 0,
+            data: &[],
+        };
         assert!(decode_color_raster(&empty).is_none());
     }
 
@@ -1981,7 +2136,10 @@ mod tests {
         assert_eq!(out, vec![red], "缩小后颜色/alpha 改变");
 
         let (w, h) = fit_color_dims(136, 128, 18, 20);
-        assert!(w > 0 && h > 0 && w <= 18 && h <= 20, "缩放尺寸越界: {w}x{h}");
+        assert!(
+            w > 0 && h > 0 && w <= 18 && h <= 20,
+            "缩放尺寸越界: {w}x{h}"
+        );
         assert_eq!(fit_color_dims(0, 128, 18, 20), (0, 0), "0 宽源图应拒绝");
 
         // 全透明源图不能除零/panic。
@@ -2040,6 +2198,10 @@ mod tests {
     fn fallback_chain_has_multiple_candidates() {
         let Some(fonts) = fonts() else { return };
         // 建立回退链（只读列表，不解析字体），确认内置链存在。
-        assert!(fonts.fallback_len() >= 4, "回退链候选过少: {}", fonts.fallback_len());
+        assert!(
+            fonts.fallback_len() >= 4,
+            "回退链候选过少: {}",
+            fonts.fallback_len()
+        );
     }
 }

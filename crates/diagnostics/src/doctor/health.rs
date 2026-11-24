@@ -1082,7 +1082,8 @@ impl Checks<'_> {
             self.add_recommendation(
                 "rec.config.path",
                 "修正 config 路径/权限",
-                "确认 `XTERVO_CONFIG` 或默认路径指向可读文件；doctor 不会自动修改配置。".to_string(),
+                "确认 `XTERVO_CONFIG` 或默认路径指向可读文件；doctor 不会自动修改配置。"
+                    .to_string(),
                 RecommendationKind::Config,
                 evidence,
                 None,

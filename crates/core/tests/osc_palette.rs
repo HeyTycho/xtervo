@@ -78,7 +78,10 @@ fn read_exact(path: &Path, count: usize) -> Vec<u8> {
             return got[..count].to_vec();
         }
         if start.elapsed() > Duration::from_secs(5) {
-            panic!("回包未到达 PTY（期望 {count} 字节，收到 {}）: {got:?}", got.len());
+            panic!(
+                "回包未到达 PTY（期望 {count} 字节，收到 {}）: {got:?}",
+                got.len()
+            );
         }
         std::thread::sleep(Duration::from_millis(20));
     }
@@ -91,10 +94,7 @@ fn spawn_capture_chunks(tag: &str, count: usize, chunks: &[&[u8]]) -> (PaneHandl
     let out = dir.join("reply.bin");
     let mut script = String::from("stty raw -echo; ");
     for chunk in chunks {
-        script.push_str(&format!(
-            "printf '{}'; sleep 0.1; ",
-            printf_escape(chunk)
-        ));
+        script.push_str(&format!("printf '{}'; sleep 0.1; ", printf_escape(chunk)));
     }
     script.push_str(&format!(
         "timeout --foreground 5 dd bs=1 count={count} of={} 2>/dev/null",
@@ -109,10 +109,8 @@ fn spawn_capture_chunks(tag: &str, count: usize, chunks: &[&[u8]]) -> (PaneHandl
 fn rgb_reply(prefix: &str, color: u32, bel: bool) -> Vec<u8> {
     let (r, g, b) = ((color >> 16) as u8, (color >> 8) as u8, color as u8);
     let terminator = if bel { "\x07" } else { "\x1b\\" };
-    format!(
-        "\x1b]{prefix};rgb:{r:02x}{r:02x}/{g:02x}{g:02x}/{b:02x}{b:02x}{terminator}"
-    )
-    .into_bytes()
+    format!("\x1b]{prefix};rgb:{r:02x}{r:02x}/{g:02x}{g:02x}/{b:02x}{b:02x}{terminator}")
+        .into_bytes()
 }
 
 fn frame_text(frame: &Frame) -> String {
@@ -144,7 +142,11 @@ fn osc4_query_returns_theme_color() {
     let palette = Palette::default();
     let mut want = Vec::new();
     for index in [0u8, 1, 4, 15] {
-        want.extend(rgb_reply(&format!("4;{index}"), palette.at(index as usize).unwrap(), true));
+        want.extend(rgb_reply(
+            &format!("4;{index}"),
+            palette.at(index as usize).unwrap(),
+            true,
+        ));
     }
     let mut query = Vec::new();
     for index in [0u8, 1, 4, 15] {
@@ -160,9 +162,11 @@ fn osc4_query_returns_theme_color() {
 fn osc10_11_12_query_returns_fg_bg_cursor() {
     let palette = Palette::default();
     let mut want = Vec::new();
-    for (code, color) in
-        [("10", palette.fg), ("11", palette.bg), ("12", palette.cursor)]
-    {
+    for (code, color) in [
+        ("10", palette.fg),
+        ("11", palette.bg),
+        ("12", palette.cursor),
+    ] {
         want.extend(rgb_reply(code, color, true));
     }
     let (_handle, out) = spawn_capture(
@@ -185,7 +189,8 @@ fn osc4_set_is_reflected_in_grid_and_reply() {
     let frame = wait_frame(&handle, "R");
     assert_eq!(frame.cell(0, 0).char(), 'R');
     assert_eq!(
-        frame.cell(0, 0).fg, 0x00ff_0000,
+        frame.cell(0, 0).fg,
+        0x00ff_0000,
         "OSC 4 设置后 ANSI 1 应解析成新颜色，而不是主题色"
     );
     drop(handle);
@@ -244,8 +249,7 @@ fn csi14_and_18_report_text_area_size() {
     // CSI 14 t（像素，core 的 XTWINOPS 扫描回包）→ CSI 4;h;w t
     // CSI 18 t（字符，alacritty 的 TextAreaSizeRequest 等价路径）→ CSI 8;rows;cols t
     let want = b"\x1b[4;384;800t\x1b[8;24;100t";
-    let (_handle, out) =
-        spawn_capture("xtwinops", want.len(), b"\x1b[14t\x1b[18t");
+    let (_handle, out) = spawn_capture("xtwinops", want.len(), b"\x1b[14t\x1b[18t");
     let got = read_exact(&out, want.len());
     assert_eq!(got, want, "CSI 14t/18t 回包错误");
     let _ = std::fs::remove_dir_all(out.parent().unwrap());

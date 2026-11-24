@@ -34,11 +34,17 @@ impl fmt::Display for FrameError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Oversize { len } => {
-                write!(f, "transport frame payload {len} > {MAX_FRAME_PAYLOAD} bytes")
-            },
+                write!(
+                    f,
+                    "transport frame payload {len} > {MAX_FRAME_PAYLOAD} bytes"
+                )
+            }
             Self::ShortDatagram { len } => {
-                write!(f, "transport datagram {len} bytes < {FRAME_HEADER_LEN} byte header")
-            },
+                write!(
+                    f,
+                    "transport datagram {len} bytes < {FRAME_HEADER_LEN} byte header"
+                )
+            }
             Self::LengthMismatch { declared, actual } => write!(
                 f,
                 "transport frame declares {declared} payload bytes but datagram carries {actual}"
@@ -69,7 +75,9 @@ pub fn encode_frame(payload: &[u8]) -> Result<Vec<u8>, FrameError> {
 /// 处理，绝不把相邻帧拼起来，也不接受“半帧等待后续”。
 pub fn decode_frame(datagram: &[u8]) -> Result<&[u8], FrameError> {
     if datagram.len() < FRAME_HEADER_LEN {
-        return Err(FrameError::ShortDatagram { len: datagram.len() });
+        return Err(FrameError::ShortDatagram {
+            len: datagram.len(),
+        });
     }
     let declared =
         u32::from_le_bytes([datagram[0], datagram[1], datagram[2], datagram[3]]) as usize;
@@ -103,7 +111,11 @@ pub enum TransportGateError {
     /// 同一套 transport 同时只能服务一个 pane（不能跨 pane 读写）。
     PaneLimit { max: usize },
     /// 单 pane 读/写缓冲超过 256 KiB。
-    BufferLimit { read: usize, write: usize, max: usize },
+    BufferLimit {
+        read: usize,
+        write: usize,
+        max: usize,
+    },
 }
 
 impl fmt::Display for TransportGateError {
@@ -112,7 +124,7 @@ impl fmt::Display for TransportGateError {
             Self::NotConfirmed => f.write_str("terminal_transport permission not confirmed"),
             Self::PaneLimit { max } => {
                 write!(f, "terminal_transport pane limit reached (max {max})")
-            },
+            }
             Self::BufferLimit { read, write, max } => write!(
                 f,
                 "terminal_transport buffer limit: read {read} / write {write} > {max} bytes"
@@ -208,7 +220,9 @@ impl TerminalTransportPermission {
         }
         if self.pane.is_some_and(|open| open != pane_id) {
             self.record(pane_id, TransportAuditAction::Reject, false, "pane limit");
-            return Err(TransportGateError::PaneLimit { max: Self::MAX_OPEN_PANES });
+            return Err(TransportGateError::PaneLimit {
+                max: Self::MAX_OPEN_PANES,
+            });
         }
         self.pane = Some(pane_id);
         self.record(pane_id, TransportAuditAction::Open, true, "transport open");
@@ -219,7 +233,12 @@ impl TerminalTransportPermission {
     pub fn close(&mut self, pane_id: u64) {
         if self.pane == Some(pane_id) {
             self.pane = None;
-            self.record(pane_id, TransportAuditAction::Close, true, "transport close");
+            self.record(
+                pane_id,
+                TransportAuditAction::Close,
+                true,
+                "transport close",
+            );
         }
     }
 

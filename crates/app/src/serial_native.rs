@@ -10,9 +10,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serialport::{DataBits, FlowControl, Parity, SerialPort, StopBits, TTYPort};
-use xtervo_core::transport::{
-    PaneTransport, TransportControl, TransportHalves, TransportShutdown,
-};
+use xtervo_core::transport::{PaneTransport, TransportControl, TransportHalves, TransportShutdown};
 
 use crate::profile::Profile;
 
@@ -89,7 +87,7 @@ fn convert_newlines(data: &[u8], mode: NewlineMode) -> Vec<u8> {
                     i += 1;
                 }
                 out.extend_from_slice(target);
-            },
+            }
             b'\n' => out.extend_from_slice(target),
             byte => out.push(byte),
         }
@@ -119,7 +117,7 @@ impl InputEncoder {
         match mode {
             InputMode::Text | InputMode::Readline | InputMode::Byte => {
                 convert_newlines(data, newline)
-            },
+            }
             InputMode::Hex => self.encode_hex(data),
         }
     }
@@ -155,7 +153,10 @@ struct LineTimestamper {
 
 impl LineTimestamper {
     fn new() -> Self {
-        Self { at_line_start: true, last_was_cr: false }
+        Self {
+            at_line_start: true,
+            last_was_cr: false,
+        }
     }
 
     fn prefix(&mut self, data: &[u8], prefix: &str) -> Vec<u8> {
@@ -220,7 +221,12 @@ struct OutputFormatter {
 
 impl OutputFormatter {
     fn new(output: OutputMode, timestamp: bool) -> Self {
-        Self { output, timestamp, hex_offset: 0, timestamper: LineTimestamper::new() }
+        Self {
+            output,
+            timestamp,
+            hex_offset: 0,
+            timestamper: LineTimestamper::new(),
+        }
     }
 
     fn format(&mut self, raw: &[u8]) -> Vec<u8> {
@@ -261,7 +267,11 @@ fn format_hexdump(data: &[u8], offset: &mut u64) -> Vec<u8> {
         }
         out.extend_from_slice(b" |");
         for byte in chunk {
-            out.push(if byte.is_ascii_graphic() || *byte == b' ' { *byte } else { b'.' });
+            out.push(if byte.is_ascii_graphic() || *byte == b' ' {
+                *byte
+            } else {
+                b'.'
+            });
         }
         out.extend_from_slice(b"|\r\n");
         *offset += chunk.len() as u64;
@@ -285,14 +295,14 @@ pub fn list_ports() -> Vec<String> {
                 serialport::SerialPortType::PciPort => format!("{}  PCI", port.port_name),
                 serialport::SerialPortType::BluetoothPort => {
                     format!("{}  Bluetooth", port.port_name)
-                },
+                }
                 serialport::SerialPortType::Unknown => port.port_name,
             })
             .collect(),
         Err(error) => {
             eprintln!("[serial-native] 枚举串口失败: {error}");
             Vec::new()
-        },
+        }
     }
 }
 
@@ -359,7 +369,11 @@ fn start_control(
     let _ = std::thread::Builder::new()
         .name("serial-control".into())
         .spawn(move || {
-            let mut current = SerialStatus { dtr, rts, ..Default::default() };
+            let mut current = SerialStatus {
+                dtr,
+                rts,
+                ..Default::default()
+            };
             let _ = port.write_data_terminal_ready(current.dtr);
             let _ = port.write_request_to_send(current.rts);
             loop {
@@ -372,12 +386,12 @@ fn start_control(
                             if let Err(error) = port.send_break(serialport::BreakDuration::Short) {
                                 current.error = Some(format!("send break: {error}"));
                             }
-                        },
+                        }
                         Err(mpsc::TryRecvError::Empty) => break,
                         Err(mpsc::TryRecvError::Disconnected) => {
                             disconnected = true;
                             break;
-                        },
+                        }
                     }
                 }
                 if disconnected {
@@ -417,7 +431,10 @@ impl SerialTransport {
     pub fn open(profile: &Profile) -> io::Result<(Self, SerialControlHandle)> {
         let port = profile.serial_port.trim();
         if port.is_empty() {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "串口设备不能为空"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "串口设备不能为空",
+            ));
         }
         let baud = profile.baud.max(1);
         let data_bits = match profile.data_bits {
@@ -431,7 +448,11 @@ impl SerialTransport {
             "odd" => Parity::Odd,
             _ => Parity::None,
         };
-        let stop_bits = if profile.stop_bits == 2 { StopBits::Two } else { StopBits::One };
+        let stop_bits = if profile.stop_bits == 2 {
+            StopBits::Two
+        } else {
+            StopBits::One
+        };
         let flow = match profile.flow_control.as_str() {
             "software" => FlowControl::Software,
             "hardware" => FlowControl::Hardware,
@@ -446,17 +467,29 @@ impl SerialTransport {
         let native = builder.open_native().map_err(|e| {
             io::Error::new(
                 io::ErrorKind::Other,
-                format!("打开串口 {port}（{baud} {}{}/{}/{}）失败: {e}", profile.data_bits, profile.parity, profile.stop_bits, profile.flow_control),
+                format!(
+                    "打开串口 {port}（{baud} {}{}/{}/{}）失败: {e}",
+                    profile.data_bits, profile.parity, profile.stop_bits, profile.flow_control
+                ),
             )
         })?;
         let reader = native.try_clone().map_err(|e| {
-            io::Error::new(io::ErrorKind::Other, format!("复制串口读句柄 {port} 失败: {e}"))
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("复制串口读句柄 {port} 失败: {e}"),
+            )
         })?;
         let writer = native.try_clone().map_err(|e| {
-            io::Error::new(io::ErrorKind::Other, format!("复制串口写句柄 {port} 失败: {e}"))
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("复制串口写句柄 {port} 失败: {e}"),
+            )
         })?;
         let control_port = native.try_clone_native().map_err(|e| {
-            io::Error::new(io::ErrorKind::Other, format!("复制串口控制句柄 {port} 失败: {e}"))
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("复制串口控制句柄 {port} 失败: {e}"),
+            )
         })?;
         let status = Arc::new(Mutex::new(SerialStatus {
             dtr: profile.dtr,
@@ -465,7 +498,10 @@ impl SerialTransport {
         }));
         let ui_control = start_control(control_port, profile.dtr, profile.rts, status.clone());
         let control = native.try_clone().map_err(|e| {
-            io::Error::new(io::ErrorKind::Other, format!("复制串口控制句柄 {port} 失败: {e}"))
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("复制串口控制句柄 {port} 失败: {e}"),
+            )
         })?;
         Ok((
             Self {
@@ -509,22 +545,22 @@ impl PaneTransport for SerialTransport {
                         &io::Error::new(io::ErrorKind::UnexpectedEof, "serial eof"),
                     );
                     return Ok(0);
-                },
+                }
                 Ok(n) => {
                     self.pending = self.formatter.format(&raw[..n]);
                     self.pos = 0;
                     return self.read(buf);
-                },
+                }
                 Err(e)
                     if e.kind() == io::ErrorKind::TimedOut
                         || e.kind() == io::ErrorKind::WouldBlock =>
                 {
                     continue
-                },
+                }
                 Err(e) => {
                     note_disconnected(&self.status, "读取失败", &e);
                     return Err(e);
-                },
+                }
             }
         }
     }
@@ -575,7 +611,10 @@ impl PaneTransport for SerialTransport {
                 input,
                 encoder,
             }),
-            control: Box::new(SerialControl { port: control, stop: stop.clone() }),
+            control: Box::new(SerialControl {
+                port: control,
+                stop: stop.clone(),
+            }),
             shutdown: TransportShutdown::new(move || {
                 shutdown_stop.store(true, Ordering::Release);
             }),
@@ -612,22 +651,22 @@ impl Read for SerialReader {
                         &io::Error::new(io::ErrorKind::UnexpectedEof, "serial eof"),
                     );
                     return Ok(0);
-                },
+                }
                 Ok(n) => {
                     self.pending = self.formatter.format(&raw[..n]);
                     self.pos = 0;
                     return self.read(buf);
-                },
+                }
                 Err(e)
                     if e.kind() == io::ErrorKind::TimedOut
                         || e.kind() == io::ErrorKind::WouldBlock =>
                 {
                     continue
-                },
+                }
                 Err(e) => {
                     note_disconnected(&self.status, "读取失败", &e);
                     return Err(e);
-                },
+                }
             }
         }
     }
@@ -696,37 +735,62 @@ mod tests {
         // text/readline/byte 都是原样发送，只做显式换行转换；readline 不做本地行编辑。
         for mode in [InputMode::Text, InputMode::Readline, InputMode::Byte] {
             let mut encoder = InputEncoder::default();
-            assert_eq!(encoder.encode(b"hello\r\n", mode, NewlineMode::None), b"hello\r\n");
+            assert_eq!(
+                encoder.encode(b"hello\r\n", mode, NewlineMode::None),
+                b"hello\r\n"
+            );
             assert_eq!(encoder.encode(b"a\r\nb", mode, NewlineMode::Lf), b"a\nb");
             assert_eq!(encoder.encode(b"a\nb", mode, NewlineMode::Crlf), b"a\r\nb");
         }
 
         // Hex：空白可有可无，大小写都接受。
         let mut encoder = InputEncoder::default();
-        assert_eq!(encoder.encode(b"48 65 6C 6c 6f", InputMode::Hex, NewlineMode::Crlf), b"Hello");
+        assert_eq!(
+            encoder.encode(b"48 65 6C 6c 6f", InputMode::Hex, NewlineMode::Crlf),
+            b"Hello"
+        );
         assert_eq!(
             encoder.encode(b"0d0A", InputMode::Hex, NewlineMode::Lf),
             b"\r\n",
             "hex 模式不能再做换行转换"
         );
         // 非法字符忽略；不做 0x 前缀特判（0 与 4 会组成 0x04）。
-        assert_eq!(encoder.encode(b"41 zz 42", InputMode::Hex, NewlineMode::None), b"AB");
+        assert_eq!(
+            encoder.encode(b"41 zz 42", InputMode::Hex, NewlineMode::None),
+            b"AB"
+        );
     }
 
     #[test]
     fn hex_input_holds_odd_nibble_across_writes() {
         let mut encoder = InputEncoder::default();
         // 终端逐键输入：每一次 write 只有一个字节。
-        assert!(encoder.encode(b"4", InputMode::Hex, NewlineMode::None).is_empty());
-        assert!(encoder.encode(b" ", InputMode::Hex, NewlineMode::None).is_empty());
-        assert_eq!(encoder.encode(b"1", InputMode::Hex, NewlineMode::None), b"A");
+        assert!(encoder
+            .encode(b"4", InputMode::Hex, NewlineMode::None)
+            .is_empty());
+        assert!(encoder
+            .encode(b" ", InputMode::Hex, NewlineMode::None)
+            .is_empty());
+        assert_eq!(
+            encoder.encode(b"1", InputMode::Hex, NewlineMode::None),
+            b"A"
+        );
         // 新一次写入的单半字节继续暂存，下一 write 补齐。
         assert_eq!(encoder.encode(b"f", InputMode::Hex, NewlineMode::None), b"");
-        assert_eq!(encoder.encode(b"f", InputMode::Hex, NewlineMode::None), b"\xff");
+        assert_eq!(
+            encoder.encode(b"f", InputMode::Hex, NewlineMode::None),
+            b"\xff"
+        );
         // 奇数半字节保留到下一次，不会在空白处丢失。
         assert_eq!(encoder.encode(b"a", InputMode::Hex, NewlineMode::None), b"");
-        assert_eq!(encoder.encode(b"\n", InputMode::Hex, NewlineMode::None), b"");
-        assert_eq!(encoder.encode(b"b", InputMode::Hex, NewlineMode::None), b"\xab");
+        assert_eq!(
+            encoder.encode(b"\n", InputMode::Hex, NewlineMode::None),
+            b""
+        );
+        assert_eq!(
+            encoder.encode(b"b", InputMode::Hex, NewlineMode::None),
+            b"\xab"
+        );
     }
 
     #[test]
@@ -799,8 +863,7 @@ mod pty_tests {
             baud: 115200,
             ..Profile::default()
         };
-        let (mut transport, control) =
-            SerialTransport::open(&p).expect("open pty via serialport");
+        let (mut transport, control) = SerialTransport::open(&p).expect("open pty via serialport");
         control.set_dtr(false);
         control.set_rts(false);
         std::thread::sleep(Duration::from_millis(120));
@@ -820,7 +883,9 @@ mod pty_tests {
             assert_eq!(written, msg.len() as isize);
         });
         let mut buf = [0u8; 32];
-        let n = transport.read(&mut buf).expect("read native serial after idle timeout");
+        let n = transport
+            .read(&mut buf)
+            .expect("read native serial after idle timeout");
         writer.join().unwrap();
         assert_eq!(&buf[..n], b"NATIVE-SERIAL");
 
@@ -866,7 +931,11 @@ mod pty_tests {
         let mut out = vec![0u8; want];
         let mut off = 0usize;
         while off < want {
-            let mut pfd = libc::pollfd { fd: master, events: libc::POLLIN, revents: 0 };
+            let mut pfd = libc::pollfd {
+                fd: master,
+                events: libc::POLLIN,
+                revents: 0,
+            };
             let rc = unsafe { libc::poll(&mut pfd, 1, 5000) };
             assert!(rc > 0, "master read timeout: {off}/{want}");
             let n = unsafe { libc::read(master, out[off..].as_mut_ptr().cast(), want - off) };
@@ -981,5 +1050,4 @@ mod pty_tests {
         transport.close();
         unsafe { libc::close(slave) };
     }
-
 }

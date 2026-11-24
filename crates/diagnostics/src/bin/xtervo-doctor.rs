@@ -562,11 +562,7 @@ fn exit_code(
         "error" if errors > 0 => 2,
         "error" => 0,
         "none" => 0,
-        other => {
-            return err(format!(
-                "--fail-on 需要 none|warn|error，实际 {other:?}"
-            ))
-        },
+        other => return err(format!("--fail-on 需要 none|warn|error，实际 {other:?}")),
     };
     Ok(code)
 }

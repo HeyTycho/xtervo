@@ -671,7 +671,9 @@ fn placement_metadata_is_paired_by_id_not_vector_index() {
 #[test]
 fn image_source_id_is_namespaced_per_pane() {
     let mut frame = Frame::new(10, 5);
-    frame.images.push(image(1, 70, 700, 0, 0, 40, 20, -1, false));
+    frame
+        .images
+        .push(image(1, 70, 700, 0, 0, 40, 20, -1, false));
 
     // 单 pane/旧路径默认 namespace=0，source id 不变。
     let plain = SceneBuilder::from_frame(&frame, viewport(10, 5)).build();

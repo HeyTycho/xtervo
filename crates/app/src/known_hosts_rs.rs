@@ -36,9 +36,13 @@ pub fn lookup(resolved: &ResolvedSsh) -> Lookup {
         .collect();
     files.dedup();
     for file in files {
-        let Ok(text) = std::fs::read_to_string(file) else { continue };
+        let Ok(text) = std::fs::read_to_string(file) else {
+            continue;
+        };
         for line in text.lines() {
-            let Some(entry) = parse_line(line) else { continue };
+            let Some(entry) = parse_line(line) else {
+                continue;
+            };
             if !hosts_match(&entry.patterns, &candidates) {
                 continue;
             }
@@ -154,8 +158,12 @@ fn hashed_matches(pattern: &str, candidate: &str) -> bool {
     let mut parts = pattern.split('|');
     // "", "1", salt, hash
     let _ = parts.next();
-    let Some(version) = parts.next() else { return false };
-    let (Some(salt), Some(hash)) = (parts.next(), parts.next()) else { return false };
+    let Some(version) = parts.next() else {
+        return false;
+    };
+    let (Some(salt), Some(hash)) = (parts.next(), parts.next()) else {
+        return false;
+    };
     if version != "1" {
         return false;
     }
@@ -165,7 +173,9 @@ fn hashed_matches(pattern: &str, candidate: &str) -> bool {
     ) else {
         return false;
     };
-    let Ok(mut mac) = HmacSha1::new_from_slice(&salt) else { return false };
+    let Ok(mut mac) = HmacSha1::new_from_slice(&salt) else {
+        return false;
+    };
     mac.update(candidate.as_bytes());
     mac.verify_slice(&hash).is_ok()
 }

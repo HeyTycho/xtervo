@@ -141,9 +141,9 @@ fn special(text: &str, bindings: KeyBindings) -> Option<&'static [u8]> {
             BackspaceBinding::AsciiDelete => b"\x7f",
             BackspaceBinding::ControlH => b"\x08",
         },
-        '\u{000a}' => b"\r",            // Enter
-        '\u{0009}' => b"\t",            // Tab
-        '\u{001b}' => b"\x1b",          // Escape
+        '\u{000a}' => b"\r",                 // Enter
+        '\u{0009}' => b"\t",                 // Tab
+        '\u{001b}' => b"\x1b",               // Escape
         '\u{007f}' => bindings.delete_seq(), // Delete
         INSERT => b"\x1b[2~",
         HOME => b"\x1b[H",
@@ -200,7 +200,15 @@ pub fn chord_from_key_event(
     meta: bool,
 ) -> Option<Chord> {
     let key = key_name(text, ctrl)?;
-    Some(Chord { mods: Mods { ctrl, shift, alt, meta }, key })
+    Some(Chord {
+        mods: Mods {
+            ctrl,
+            shift,
+            alt,
+            meta,
+        },
+        key,
+    })
 }
 
 fn key_name(text: &str, ctrl: bool) -> Option<String> {
@@ -224,7 +232,7 @@ fn key_name(text: &str, ctrl: bool) -> Option<String> {
         "\u{F72B}" => return Some("end".into()),
         "\u{F72C}" => return Some("pageup".into()),
         "\u{F72D}" => return Some("pagedown".into()),
-        _ => {},
+        _ => {}
     }
     // 只接受单字符；IME 多字提交不参与快捷键。
     let mut chars = text.chars();
@@ -327,7 +335,11 @@ pub fn encode_mode(
         let mut chars = text.chars();
         if let (Some(c), None) = (chars.next(), chars.next()) {
             if !c.is_control() && (ctrl || alt || shift) {
-                let cp = if c.is_ascii_alphabetic() { c.to_ascii_lowercase() as u32 } else { c as u32 };
+                let cp = if c.is_ascii_alphabetic() {
+                    c.to_ascii_lowercase() as u32
+                } else {
+                    c as u32
+                };
                 let mods = 1 + (shift as u32) + ((alt as u32) << 1) + ((ctrl as u32) << 2);
                 return Some(format!("\x1b[{cp};{mods}u").into_bytes());
             }
@@ -468,7 +480,11 @@ pub fn key_id(text: &str) -> Option<KeyId> {
     if chars.next().is_some() || c.is_control() {
         return None;
     }
-    let code = if c.is_ascii_alphabetic() { c.to_ascii_lowercase() as u32 } else { c as u32 };
+    let code = if c.is_ascii_alphabetic() {
+        c.to_ascii_lowercase() as u32
+    } else {
+        c as u32
+    };
     Some(KeyId::Char(code))
 }
 
@@ -538,14 +554,14 @@ fn parse_key(text: &str, mods: KeyModifiers) -> Option<ParsedKey> {
         (c as u32, None)
     };
     let text = (!mods.ctrl && !mods.alt).then_some(c as u32);
-    Some(ParsedKey::Char { code, shifted, text })
+    Some(ParsedKey::Char {
+        code,
+        shifted,
+        text,
+    })
 }
 
-fn legacy_encode(
-    text: &str,
-    mods: KeyModifiers,
-    bindings: KeyBindings,
-) -> Option<Vec<u8>> {
+fn legacy_encode(text: &str, mods: KeyModifiers, bindings: KeyBindings) -> Option<Vec<u8>> {
     encode_mode(text, mods.ctrl, mods.alt, mods.shift, false, bindings)
 }
 
@@ -715,14 +731,21 @@ fn encode_kitty(
                         _ => unreachable!(),
                     };
                     Some(build_csi_u(code, bits, event, None))
-                },
-                SpecialKey::F(n) if (13..=24).contains(&n) => {
-                    Some(build_csi_u(&kitty_pua_fkey(n).to_string(), bits, event, None))
-                },
+                }
+                SpecialKey::F(n) if (13..=24).contains(&n) => Some(build_csi_u(
+                    &kitty_pua_fkey(n).to_string(),
+                    bits,
+                    event,
+                    None,
+                )),
                 _ => None,
             }
-        },
-        ParsedKey::Char { code, shifted, text: produced } => {
+        }
+        ParsedKey::Char {
+            code,
+            shifted,
+            text: produced,
+        } => {
             let report_all = flags.contains(KeyboardFlags::REPORT_ALL_KEYS_AS_ESC);
             let disambiguate = flags.contains(KeyboardFlags::DISAMBIGUATE_ESC_CODES);
             // kitty: 只有 disambiguate 且带 ctrl/alt（或 report-all）才把可打印键
@@ -747,7 +770,7 @@ fn encode_kitty(
                 None
             };
             Some(build_csi_u(&code_field, bits, event, associated))
-        },
+        }
     }
 }
 
@@ -818,10 +841,7 @@ fn encode_modify_other_keys(
         ParsedKey::Special(sp) => {
             if matches!(
                 sp,
-                SpecialKey::Escape
-                    | SpecialKey::Enter
-                    | SpecialKey::Tab
-                    | SpecialKey::Backspace
+                SpecialKey::Escape | SpecialKey::Enter | SpecialKey::Tab | SpecialKey::Backspace
             ) {
                 if !modify_applies(level, mods) {
                     return legacy_encode(text, mods, bindings);
@@ -843,7 +863,7 @@ fn encode_modify_other_keys(
                 return legacy_encode(text, mods, bindings);
             }
             return Some(build_function(number, trailer, bits, None));
-        },
+        }
         ParsedKey::Char { code, shifted, .. } => {
             // Ctrl+C/D/Z/\ 等控制键必须保留控制字节。modifyOtherKeys 的
             // escaped 形式会把 Ctrl+C 变成 CSI 27;5;99~，不识别该序列的 TUI
@@ -875,7 +895,7 @@ fn encode_modify_other_keys(
                 return legacy_encode(text, mods, bindings);
             }
             Some(format!("\x1b[27;{};{code}~", u16::from(out_bits) + 1).into_bytes())
-        },
+        }
     }
 }
 
@@ -884,7 +904,12 @@ mod tests {
     use super::*;
 
     fn mods(ctrl: bool, alt: bool, shift: bool) -> KeyModifiers {
-        KeyModifiers { ctrl, alt, shift, ..KeyModifiers::default() }
+        KeyModifiers {
+            ctrl,
+            alt,
+            shift,
+            ..KeyModifiers::default()
+        }
     }
 
     fn kitty(bits: u8) -> KeyboardFlags {
@@ -921,12 +946,27 @@ mod tests {
     #[test]
     fn kitty_keyboard_csi_u() {
         let b = KeyBindings::default();
-        assert_eq!(encode_mode("A", false, false, true, true, b).unwrap(), b"\x1b[97;2u");
-        assert_eq!(encode_mode("c", true, false, false, true, b).unwrap(), b"\x1b[99;5u");
-        assert_eq!(encode_mode("c", true, true, true, true, b).unwrap(), b"\x1b[99;8u");
-        assert_eq!(encode_mode("a", false, false, false, true, b).unwrap(), b"a");
+        assert_eq!(
+            encode_mode("A", false, false, true, true, b).unwrap(),
+            b"\x1b[97;2u"
+        );
+        assert_eq!(
+            encode_mode("c", true, false, false, true, b).unwrap(),
+            b"\x1b[99;5u"
+        );
+        assert_eq!(
+            encode_mode("c", true, true, true, true, b).unwrap(),
+            b"\x1b[99;8u"
+        );
+        assert_eq!(
+            encode_mode("a", false, false, false, true, b).unwrap(),
+            b"a"
+        );
         // 非 kitty 模式保持旧控制字节
-        assert_eq!(encode_mode("c", true, false, false, false, b).unwrap(), vec![0x03]);
+        assert_eq!(
+            encode_mode("c", true, false, false, false, b).unwrap(),
+            vec![0x03]
+        );
     }
 
     #[test]
@@ -937,8 +977,10 @@ mod tests {
             vec![0x7f],
             "默认 ascii-delete → 0x7f"
         );
-        let control_h =
-            KeyBindings { backspace: BackspaceBinding::ControlH, ..KeyBindings::default() };
+        let control_h = KeyBindings {
+            backspace: BackspaceBinding::ControlH,
+            ..KeyBindings::default()
+        };
         assert_eq!(
             encode_mode("\u{8}", false, false, false, false, control_h).unwrap(),
             vec![0x08],
@@ -954,10 +996,22 @@ mod tests {
             vec![0x08]
         );
         // 配置字符串解析：大小写/空白不敏感，未知值回退默认。
-        assert_eq!(BackspaceBinding::from_config(" CONTROL-H "), BackspaceBinding::ControlH);
-        assert_eq!(BackspaceBinding::from_config("ascii-delete"), BackspaceBinding::AsciiDelete);
-        assert_eq!(BackspaceBinding::from_config("bogus"), BackspaceBinding::AsciiDelete);
-        assert_eq!(BackspaceBinding::from_config("control-h").as_str(), "control-h");
+        assert_eq!(
+            BackspaceBinding::from_config(" CONTROL-H "),
+            BackspaceBinding::ControlH
+        );
+        assert_eq!(
+            BackspaceBinding::from_config("ascii-delete"),
+            BackspaceBinding::AsciiDelete
+        );
+        assert_eq!(
+            BackspaceBinding::from_config("bogus"),
+            BackspaceBinding::AsciiDelete
+        );
+        assert_eq!(
+            BackspaceBinding::from_config("control-h").as_str(),
+            "control-h"
+        );
     }
 
     #[test]
@@ -1008,21 +1062,43 @@ mod tests {
             b"\x1b[1;5H",
             "Ctrl+Home"
         );
-        let ascii_del =
-            KeyBindings { delete: DeleteBinding::AsciiDel, ..KeyBindings::default() };
-        assert_eq!(encode_mode("\u{7f}", false, false, false, false, ascii_del).unwrap(), vec![0x7f]);
-        let control_h =
-            KeyBindings { delete: DeleteBinding::ControlH, ..KeyBindings::default() };
-        assert_eq!(encode_mode("\u{7f}", false, false, false, false, control_h).unwrap(), vec![0x08]);
+        let ascii_del = KeyBindings {
+            delete: DeleteBinding::AsciiDel,
+            ..KeyBindings::default()
+        };
+        assert_eq!(
+            encode_mode("\u{7f}", false, false, false, false, ascii_del).unwrap(),
+            vec![0x7f]
+        );
+        let control_h = KeyBindings {
+            delete: DeleteBinding::ControlH,
+            ..KeyBindings::default()
+        };
+        assert_eq!(
+            encode_mode("\u{7f}", false, false, false, false, control_h).unwrap(),
+            vec![0x08]
+        );
         assert_eq!(
             encode_mode("\u{7f}", false, true, false, false, ascii_del).unwrap(),
             vec![0x1b, 0x7f],
             "Alt+Delete 仍带 ESC 前缀"
         );
-        assert_eq!(DeleteBinding::from_config(" ASCII-DEL "), DeleteBinding::AsciiDel);
-        assert_eq!(DeleteBinding::from_config("control-h"), DeleteBinding::ControlH);
-        assert_eq!(DeleteBinding::from_config("bogus"), DeleteBinding::DeleteSequence);
-        assert_eq!(DeleteBinding::from_config("delete-sequence").as_str(), "delete-sequence");
+        assert_eq!(
+            DeleteBinding::from_config(" ASCII-DEL "),
+            DeleteBinding::AsciiDel
+        );
+        assert_eq!(
+            DeleteBinding::from_config("control-h"),
+            DeleteBinding::ControlH
+        );
+        assert_eq!(
+            DeleteBinding::from_config("bogus"),
+            DeleteBinding::DeleteSequence
+        );
+        assert_eq!(
+            DeleteBinding::from_config("delete-sequence").as_str(),
+            "delete-sequence"
+        );
     }
 
     #[test]
@@ -1040,9 +1116,24 @@ mod tests {
         assert_eq!(c.canonical(), "ctrl+tab");
         let c = chord_from_key_event(" ", false, true, false, false).unwrap();
         assert_eq!(c.canonical(), "alt+space");
-        assert_eq!(chord_from_key_event("\u{1b}", false, false, false, false).unwrap().key, "escape");
-        assert_eq!(chord_from_key_event("\u{8}", false, false, false, false).unwrap().key, "backspace");
-        assert_eq!(chord_from_key_event("\u{7f}", false, false, false, false).unwrap().key, "delete");
+        assert_eq!(
+            chord_from_key_event("\u{1b}", false, false, false, false)
+                .unwrap()
+                .key,
+            "escape"
+        );
+        assert_eq!(
+            chord_from_key_event("\u{8}", false, false, false, false)
+                .unwrap()
+                .key,
+            "backspace"
+        );
+        assert_eq!(
+            chord_from_key_event("\u{7f}", false, false, false, false)
+                .unwrap()
+                .key,
+            "delete"
+        );
 
         // "+" 的规范格式是 `ctrl++`，和 parser 约定一致
         let c = chord_from_key_event("+", true, false, true, false).unwrap();
@@ -1063,7 +1154,10 @@ mod tests {
         let c = chord_from_key_event("\u{1}", true, false, true, false).unwrap();
         assert_eq!(c.canonical(), "ctrl+shift+a");
         // 没有 ctrl 时控制字符不是快捷键。
-        assert_eq!(chord_from_key_event("\u{1}", false, false, false, false), None);
+        assert_eq!(
+            chord_from_key_event("\u{1}", false, false, false, false),
+            None
+        );
         // Ctrl+C（^C）映射成字母键，但没有任何默认绑定会抢走它。
         let c = chord_from_key_event("\u{3}", true, false, false, false).unwrap();
         assert_eq!(c.canonical(), "ctrl+c");
@@ -1072,15 +1166,24 @@ mod tests {
     #[test]
     fn key_event_rejects_modifiers_and_unsupported_text() {
         for artifact in ["\u{10}", "\u{11}", "\u{12}", "\u{13}", "\u{17}"] {
-            assert_eq!(chord_from_key_event(artifact, true, false, false, false), None);
+            assert_eq!(
+                chord_from_key_event(artifact, true, false, false, false),
+                None
+            );
         }
         assert_eq!(chord_from_key_event("", false, false, false, false), None);
         // IME 多字提交 / 非 ASCII 暂不作为快捷键
-        assert_eq!(chord_from_key_event("你好", false, false, false, false), None);
+        assert_eq!(
+            chord_from_key_event("你好", false, false, false, false),
+            None
+        );
         assert_eq!(chord_from_key_event("ab", false, false, false, false), None);
         assert_eq!(chord_from_key_event("你", false, false, false, false), None);
         // F25 不在支持范围
-        assert_eq!(chord_from_key_event("\u{F71C}", false, false, false, false), None);
+        assert_eq!(
+            chord_from_key_event("\u{F71C}", false, false, false, false),
+            None
+        );
     }
 
     // ------------------------------------------------------------ protocol
@@ -1148,8 +1251,16 @@ mod tests {
         let enc = |text: &str, m: KeyModifiers| {
             encode_key_event(text, m, KeyEventKind::Press, f, 0, b).unwrap()
         };
-        assert_eq!(enc("a", mods(false, false, false)), b"a", "plain text unchanged");
-        assert_eq!(enc("A", mods(false, false, true)), b"A", "shift-only is still text");
+        assert_eq!(
+            enc("a", mods(false, false, false)),
+            b"a",
+            "plain text unchanged"
+        );
+        assert_eq!(
+            enc("A", mods(false, false, true)),
+            b"A",
+            "shift-only is still text"
+        );
         assert_eq!(enc("c", mods(true, false, false)), b"\x1b[99;5u");
         assert_eq!(enc("c", mods(true, false, true)), b"\x1b[99;6u");
         assert_eq!(enc("a", mods(false, true, false)), b"\x1b[97;3u");
@@ -1170,7 +1281,11 @@ mod tests {
         };
         assert_eq!(enc("a", mods(false, false, false)), b"\x1b[97;1;97u");
         assert_eq!(enc("A", mods(false, false, true)), b"\x1b[97:65;2;65u");
-        assert_eq!(enc("c", mods(true, false, false)), b"\x1b[99;5u", "ctrl 不附文本");
+        assert_eq!(
+            enc("c", mods(true, false, false)),
+            b"\x1b[99;5u",
+            "ctrl 不附文本"
+        );
         assert_eq!(enc("!", mods(false, false, true)), b"\x1b[49:33;2;33u");
         // report-all 时 Enter/Tab/Backspace 也变成 CSI u。
         assert_eq!(enc("\n", mods(false, false, false)), b"\x1b[13u");
@@ -1182,11 +1297,13 @@ mod tests {
     fn kitty_event_types_repeat_release() {
         let b = KeyBindings::default();
         let f = kitty(DISAMBIGUATE | EVENT_TYPES);
-        let enc = |text: &str, m: KeyModifiers, kind| {
-            encode_key_event(text, m, kind, f, 0, b).unwrap()
-        };
+        let enc =
+            |text: &str, m: KeyModifiers, kind| encode_key_event(text, m, kind, f, 0, b).unwrap();
         // press 省略事件类型（kitty 默认 1）。
-        assert_eq!(enc("c", mods(true, false, false), KeyEventKind::Press), b"\x1b[99;5u");
+        assert_eq!(
+            enc("c", mods(true, false, false), KeyEventKind::Press),
+            b"\x1b[99;5u"
+        );
         assert_eq!(
             enc("c", mods(true, false, false), KeyEventKind::Repeat),
             b"\x1b[99;5:2u"
@@ -1208,13 +1325,27 @@ mod tests {
             None
         );
         assert_eq!(
-            encode_key_event("\n", mods(false, false, false), KeyEventKind::Press, f, 0, b)
-                .unwrap(),
+            encode_key_event(
+                "\n",
+                mods(false, false, false),
+                KeyEventKind::Press,
+                f,
+                0,
+                b
+            )
+            .unwrap(),
             b"\r"
         );
         // 普通文本键不产生 CSI-u release（避免与 press 文本不配对）。
         assert_eq!(
-            encode_key_event("a", mods(false, false, false), KeyEventKind::Release, f, 0, b),
+            encode_key_event(
+                "a",
+                mods(false, false, false),
+                KeyEventKind::Release,
+                f,
+                0,
+                b
+            ),
             None
         );
     }
@@ -1235,7 +1366,10 @@ mod tests {
         assert_eq!(enc("\u{F727}", mods(false, false, false)), b"\x1b[2~");
         assert_eq!(enc("\u{F72C}", mods(false, false, true)), b"\x1b[5;2~");
         // Delete 在 kitty 模式必须用规范 CSI 3~，不受 DeleteBinding 影响。
-        let ascii_del = KeyBindings { delete: DeleteBinding::AsciiDel, ..b };
+        let ascii_del = KeyBindings {
+            delete: DeleteBinding::AsciiDel,
+            ..b
+        };
         assert_eq!(
             encode_key_event(
                 "\u{7f}",
@@ -1276,28 +1410,12 @@ mod tests {
         let b = KeyBindings::default();
         let f = kitty(DISAMBIGUATE | ALTERNATE);
         assert_eq!(
-            encode_key_event(
-                "A",
-                mods(true, false, true),
-                KeyEventKind::Press,
-                f,
-                0,
-                b
-            )
-            .unwrap(),
+            encode_key_event("A", mods(true, false, true), KeyEventKind::Press, f, 0, b).unwrap(),
             b"\x1b[97:65;6u"
         );
         // Shift+1 的 shifted key 是 '!'（US 布局近似）。
         assert_eq!(
-            encode_key_event(
-                "!",
-                mods(true, false, true),
-                KeyEventKind::Press,
-                f,
-                0,
-                b
-            )
-            .unwrap(),
+            encode_key_event("!", mods(true, false, true), KeyEventKind::Press, f, 0, b).unwrap(),
             b"\x1b[49:33;6u"
         );
     }
@@ -1322,8 +1440,15 @@ mod tests {
     fn modify_other_keys_levels() {
         let b = KeyBindings::default();
         let enc = |text: &str, m: KeyModifiers, level: u8| {
-            encode_key_event(text, m, KeyEventKind::Press, KeyboardFlags::default(), level, b)
-                .unwrap()
+            encode_key_event(
+                text,
+                m,
+                KeyEventKind::Press,
+                KeyboardFlags::default(),
+                level,
+                b,
+            )
+            .unwrap()
         };
         // level 2：所有修饰键。
         // 控制键保留控制字节，避免 CSI 27;5;99~ 被不识别序列的 TUI 打印成 99~。
@@ -1347,8 +1472,15 @@ mod tests {
     fn lock_keys_alone_never_escape_plain_text() {
         let b = KeyBindings::default();
         let enc = |text: &str, m: KeyModifiers, level: u8| {
-            encode_key_event(text, m, KeyEventKind::Press, KeyboardFlags::default(), level, b)
-                .unwrap()
+            encode_key_event(
+                text,
+                m,
+                KeyEventKind::Press,
+                KeyboardFlags::default(),
+                level,
+                b,
+            )
+            .unwrap()
         };
         let mut num = KeyModifiers::default();
         num.num_lock = true;
@@ -1373,8 +1505,15 @@ mod tests {
     fn modify_other_keys_special_keys() {
         let b = KeyBindings::default();
         let enc = |text: &str, m: KeyModifiers, level: u8| {
-            encode_key_event(text, m, KeyEventKind::Press, KeyboardFlags::default(), level, b)
-                .unwrap()
+            encode_key_event(
+                text,
+                m,
+                KeyEventKind::Press,
+                KeyboardFlags::default(),
+                level,
+                b,
+            )
+            .unwrap()
         };
         // xterm level 2：alt/shift Tab 都走 CSI 27。
         assert_eq!(enc("\t", mods(false, true, false), 2), b"\x1b[27;3;9~");
@@ -1407,9 +1546,15 @@ mod tests {
         // 应用请求 alternate keys 时，CSI-u 只带 shifted key（没有 base layout 字段）。
         let b = KeyBindings::default();
         let flags = KeyboardFlags::DISAMBIGUATE_ESC_CODES | KeyboardFlags::REPORT_ALTERNATE_KEYS;
-        let mods = KeyModifiers { ctrl: true, ..KeyModifiers::default() };
+        let mods = KeyModifiers {
+            ctrl: true,
+            ..KeyModifiers::default()
+        };
         let out = encode_key_event("!", mods, KeyEventKind::Press, flags, 0, b).unwrap();
-        assert_eq!(out, b"\x1b[33;5u", "只上报 shifted key，不能编造 base layout key");
+        assert_eq!(
+            out, b"\x1b[33;5u",
+            "只上报 shifted key，不能编造 base layout key"
+        );
         // 记录降级说明是幂等的，可在真实按键路径反复调用。
         note_base_layout_degraded();
         note_base_layout_degraded();
@@ -1428,15 +1573,7 @@ mod tests {
         assert_eq!(m.bits(), 1 | 2 | 4 | 8 | 64 | 128);
         // kitty 要求 +1 编码。
         let b = KeyBindings::default();
-        let out = encode_key_event(
-            "a",
-            m,
-            KeyEventKind::Press,
-            kitty(DISAMBIGUATE),
-            0,
-            b,
-        )
-        .unwrap();
+        let out = encode_key_event("a", m, KeyEventKind::Press, kitty(DISAMBIGUATE), 0, b).unwrap();
         assert_eq!(out, b"\x1b[97;208u");
     }
 }

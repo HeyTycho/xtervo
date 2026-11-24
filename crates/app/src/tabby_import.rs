@@ -106,7 +106,10 @@ impl ImportReport {
         if zh {
             format!("明确不导入 {} 项（{names}）", self.not_imported.len())
         } else {
-            format!("{} item(s) intentionally not imported ({names})", self.not_imported.len())
+            format!(
+                "{} item(s) intentionally not imported ({names})",
+                self.not_imported.len()
+            )
         }
     }
 }
@@ -140,11 +143,16 @@ pub const TABBY_HOTKEY_MAP: &[(&str, &str)] = &[
 ];
 
 fn xtervo_command(tabby_id: &str) -> Option<&'static str> {
-    TABBY_HOTKEY_MAP.iter().find(|(tabby, _)| *tabby == tabby_id).map(|(_, xtervo)| *xtervo)
+    TABBY_HOTKEY_MAP
+        .iter()
+        .find(|(tabby, _)| *tabby == tabby_id)
+        .map(|(_, xtervo)| *xtervo)
 }
 
 fn as_str(v: Option<&Value>) -> Option<&str> {
-    v.and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty())
+    v.and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
 }
 
 fn as_u16(v: Option<&Value>) -> Option<u16> {
@@ -157,12 +165,19 @@ fn as_u16(v: Option<&Value>) -> Option<u16> {
 
 fn as_string_seq(v: Option<&Value>) -> Vec<String> {
     v.and_then(Value::as_sequence)
-        .map(|seq| seq.iter().filter_map(Value::as_str).map(str::to_string).collect())
+        .map(|seq| {
+            seq.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
         .unwrap_or_default()
 }
 
 fn as_env(v: Option<&Value>) -> Vec<(String, String)> {
-    let Some(map) = v.and_then(Value::as_mapping) else { return Vec::new() };
+    let Some(map) = v.and_then(Value::as_mapping) else {
+        return Vec::new();
+    };
     map.iter()
         .filter_map(|(k, val)| {
             let key = k.as_str()?;
@@ -196,15 +211,24 @@ pub fn import_yaml(
     let mut report = ImportReport::default();
     for (idx, item) in profiles.iter().enumerate() {
         let raw_name = as_str(item.get("name")).unwrap_or("").to_string();
-        let name = if raw_name.is_empty() { format!("tabby-{idx}") } else { raw_name };
+        let name = if raw_name.is_empty() {
+            format!("tabby-{idx}")
+        } else {
+            raw_name
+        };
         let ty = as_str(item.get("type")).unwrap_or("");
         let opts = item.get("options");
 
-        let mut p = Profile { name: name.clone(), ..Profile::default() };
+        let mut p = Profile {
+            name: name.clone(),
+            ..Profile::default()
+        };
         match ty {
             "local" => {
                 p.kind = "local".into();
-                p.shell = as_str(opts.and_then(|o| o.get("shell"))).unwrap_or("").to_string();
+                p.shell = as_str(opts.and_then(|o| o.get("shell")))
+                    .unwrap_or("")
+                    .to_string();
                 p.args = as_string_seq(opts.and_then(|o| o.get("args")));
                 if let Some(cwd) = as_str(opts.and_then(|o| o.get("cwd"))) {
                     if cwd != "~" {
@@ -212,12 +236,16 @@ pub fn import_yaml(
                     }
                 }
                 p.env = as_env(opts.and_then(|o| o.get("env")));
-            },
+            }
             "ssh" => {
                 p.kind = "ssh".into();
-                p.host = as_str(opts.and_then(|o| o.get("host"))).unwrap_or("").to_string();
+                p.host = as_str(opts.and_then(|o| o.get("host")))
+                    .unwrap_or("")
+                    .to_string();
                 p.port = as_u16(opts.and_then(|o| o.get("port"))).unwrap_or(22);
-                p.user = as_str(opts.and_then(|o| o.get("user"))).unwrap_or("").to_string();
+                p.user = as_str(opts.and_then(|o| o.get("user")))
+                    .unwrap_or("")
+                    .to_string();
                 p.auth = match as_str(opts.and_then(|o| o.get("auth"))) {
                     Some("key") => "key".into(),
                     Some("password") => "password".into(),
@@ -227,7 +255,7 @@ pub fn import_yaml(
                     .or_else(|| as_str(opts.and_then(|o| o.get("privateKeyPath"))))
                     .unwrap_or("")
                     .to_string();
-            },
+            }
             "serial" => {
                 p.kind = "serial".into();
                 p.serial_port = as_str(opts.and_then(|o| o.get("port")))
@@ -237,19 +265,21 @@ pub fn import_yaml(
                 p.baud = as_u16(opts.and_then(|o| o.get("baudRate")))
                     .map(u32::from)
                     .unwrap_or(115200);
-            },
+            }
             "telnet" => {
                 p.kind = "telnet".into();
-                p.host = as_str(opts.and_then(|o| o.get("host"))).unwrap_or("").to_string();
+                p.host = as_str(opts.and_then(|o| o.get("host")))
+                    .unwrap_or("")
+                    .to_string();
                 p.port = as_u16(opts.and_then(|o| o.get("port"))).unwrap_or(23);
-            },
+            }
             other => {
                 report.skipped.push((
                     name,
                     format!("不支持的 Profile 类型: {other}（只导入 local/ssh/serial/telnet）"),
                 ));
                 continue;
-            },
+            }
         }
 
         // 重名不覆盖已有 Profile：加后缀，报告里计数。
@@ -267,7 +297,7 @@ pub fn import_yaml(
                 if candidate != base {
                     report.renamed += 1;
                 }
-            },
+            }
             Err(e) => report.skipped.push((base, e)),
         }
     }
@@ -352,7 +382,11 @@ fn collect_secret_paths(value: &Value, prefix: String, out: &mut Vec<String>) {
         Value::Mapping(map) => {
             for (k, v) in map {
                 let Some(key) = k.as_str() else { continue };
-                let path = if prefix.is_empty() { key.to_string() } else { format!("{prefix}.{key}") };
+                let path = if prefix.is_empty() {
+                    key.to_string()
+                } else {
+                    format!("{prefix}.{key}")
+                };
                 let lower = key.to_ascii_lowercase();
                 let is_secret = lower.contains("password")
                     || lower.contains("secret")
@@ -364,13 +398,13 @@ fn collect_secret_paths(value: &Value, prefix: String, out: &mut Vec<String>) {
                 }
                 collect_secret_paths(v, path, out);
             }
-        },
+        }
         Value::Sequence(seq) => {
             for (idx, v) in seq.iter().enumerate() {
                 collect_secret_paths(v, format!("{prefix}[{idx}]"), out);
             }
-        },
-        _ => {},
+        }
+        _ => {}
     }
 }
 
@@ -389,7 +423,11 @@ fn flatten_hotkeys<'a>(prefix: &str, value: &'a Value, out: &mut Vec<(String, &'
             if key.starts_with("__") {
                 continue;
             }
-            let id = if prefix.is_empty() { key.to_string() } else { format!("{prefix}.{key}") };
+            let id = if prefix.is_empty() {
+                key.to_string()
+            } else {
+                format!("{prefix}.{key}")
+            };
             flatten_hotkeys(&id, child, out);
         }
     } else if !prefix.is_empty() {
@@ -403,7 +441,9 @@ fn import_hotkeys(value: Option<&Value>, cfg: &mut Config, report: &mut ImportRe
         return;
     }
     if !value.is_mapping() {
-        report.hotkeys_skipped.push(("hotkeys".into(), "不是命令映射".into()));
+        report
+            .hotkeys_skipped
+            .push(("hotkeys".into(), "不是命令映射".into()));
         return;
     }
 
@@ -441,11 +481,12 @@ fn import_one_hotkey(
         Value::Sequence(seq) => seq.iter().collect(),
         Value::Null => Vec::new(),
         _ => {
-            report
-                .hotkeys_skipped
-                .push((tabby_id.to_string(), "值类型不支持（只支持字符串/数组）".into()));
+            report.hotkeys_skipped.push((
+                tabby_id.to_string(),
+                "值类型不支持（只支持字符串/数组）".into(),
+            ));
             return;
-        },
+        }
     };
     if alternatives.is_empty() {
         report.hotkeys_skipped.push((
@@ -462,18 +503,18 @@ fn import_one_hotkey(
             Value::Sequence(_) => {
                 last_error = Some("多段组合键（multi-chord）暂不支持".into());
                 continue;
-            },
+            }
             _ => {
                 last_error = Some("候选键不是字符串".into());
                 continue;
-            },
+            }
         };
         let chord = match tabby_chord(text) {
             Ok(chord) => chord,
             Err(e) => {
                 last_error = Some(e);
                 continue;
-            },
+            }
         };
         if !chord.is_bindable() {
             last_error = Some(format!(
@@ -496,13 +537,14 @@ fn import_one_hotkey(
                 report.hotkeys_added += 1;
                 report.hotkeys_extra_ignored += alternatives.len().saturating_sub(idx + 1);
                 return;
-            },
+            }
             Err(e) => last_error = Some(e),
         }
     }
-    report
-        .hotkeys_skipped
-        .push((tabby_id.to_string(), last_error.unwrap_or_else(|| "没有可用绑定".into())));
+    report.hotkeys_skipped.push((
+        tabby_id.to_string(),
+        last_error.unwrap_or_else(|| "没有可用绑定".into()),
+    ));
 }
 
 /// Tabby chord → xtervo [`Chord`]。
@@ -557,7 +599,11 @@ fn split_tabby_dash(text: &str) -> Result<(Mods, String), String> {
     } else {
         (text, None)
     };
-    let parts: Vec<&str> = if body.is_empty() { Vec::new() } else { body.split('-').collect() };
+    let parts: Vec<&str> = if body.is_empty() {
+        Vec::new()
+    } else {
+        body.split('-').collect()
+    };
     if parts.iter().any(|p| p.is_empty()) {
         return Err(format!("含空段: {text}"));
     }
@@ -664,7 +710,11 @@ fn theme_toml(scheme: &TabbyScheme) -> Result<String, String> {
         ansi16: scheme.ansi16,
     };
     let ui = UiColors::derive(&spec);
-    let variant = if themes::is_dark_bg(spec.bg) { "dark" } else { "light" };
+    let variant = if themes::is_dark_bg(spec.bg) {
+        "dark"
+    } else {
+        "light"
+    };
     let file = ThemeToml {
         schema: 1,
         name: &scheme.name,
@@ -696,7 +746,9 @@ fn import_themes(terminal: Option<&Value>, dir: &Path, report: &mut ImportReport
         return;
     }
     if !terminal.is_mapping() {
-        report.themes_skipped.push(("terminal".into(), "不是映射".into()));
+        report
+            .themes_skipped
+            .push(("terminal".into(), "不是映射".into()));
         return;
     }
 
@@ -705,7 +757,9 @@ fn import_themes(terminal: Option<&Value>, dir: &Path, report: &mut ImportReport
 
     // 当前正在用的深/浅色方案先收，再收用户保存的 customColorSchemes。
     for key in ["colorScheme", "lightColorScheme"] {
-        let Some(raw) = terminal.get(key).filter(|v| !v.is_null()) else { continue };
+        let Some(raw) = terminal.get(key).filter(|v| !v.is_null()) else {
+            continue;
+        };
         match parse_tabby_scheme(raw) {
             Ok(scheme) => schemes.push(scheme),
             Err(e) => errors.push((scheme_label(raw, key), e)),
@@ -716,7 +770,9 @@ fn import_themes(terminal: Option<&Value>, dir: &Path, report: &mut ImportReport
             for (i, raw) in seq.iter().enumerate() {
                 match parse_tabby_scheme(raw) {
                     Ok(scheme) => schemes.push(scheme),
-                    Err(e) => errors.push((scheme_label(raw, &format!("customColorSchemes[{i}]")), e)),
+                    Err(e) => {
+                        errors.push((scheme_label(raw, &format!("customColorSchemes[{i}]")), e))
+                    }
                 }
             }
         } else {
@@ -729,10 +785,9 @@ fn import_themes(terminal: Option<&Value>, dir: &Path, report: &mut ImportReport
         return;
     }
     if let Err(e) = std::fs::create_dir_all(dir) {
-        report.themes_skipped.push((
-            dir.display().to_string(),
-            format!("无法创建主题目录: {e}"),
-        ));
+        report
+            .themes_skipped
+            .push((dir.display().to_string(), format!("无法创建主题目录: {e}")));
         return;
     }
 
@@ -758,7 +813,9 @@ fn import_themes(terminal: Option<&Value>, dir: &Path, report: &mut ImportReport
 
 fn write_theme(dir: &Path, scheme: &TabbyScheme, report: &mut ImportReport) {
     let Some(slug) = themes::slugify(&scheme.name) else {
-        report.themes_skipped.push((scheme.name.clone(), "name 无法生成文件名".into()));
+        report
+            .themes_skipped
+            .push((scheme.name.clone(), "name 无法生成文件名".into()));
         return;
     };
     let body = match theme_toml(scheme) {
@@ -766,7 +823,7 @@ fn write_theme(dir: &Path, scheme: &TabbyScheme, report: &mut ImportReport) {
         Err(e) => {
             report.themes_skipped.push((scheme.name.clone(), e));
             return;
-        },
+        }
     };
     let base = format!("tabby-{slug}");
     let mut suffix = 1u32;
@@ -784,17 +841,16 @@ fn write_theme(dir: &Path, scheme: &TabbyScheme, report: &mut ImportReport) {
                     format!("{file} 已存在且内容相同（未覆盖）"),
                 ));
                 return;
-            },
+            }
             Ok(_) => {
                 suffix += 1;
                 if suffix > 999 {
-                    report.themes_skipped.push((
-                        scheme.name.clone(),
-                        "同名文件过多，放弃写入".into(),
-                    ));
+                    report
+                        .themes_skipped
+                        .push((scheme.name.clone(), "同名文件过多，放弃写入".into()));
                     return;
                 }
-            },
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 match std::fs::write(&path, &body) {
                     Ok(()) => {
@@ -802,25 +858,27 @@ fn write_theme(dir: &Path, scheme: &TabbyScheme, report: &mut ImportReport) {
                         if suffix > 1 {
                             report.themes_renamed += 1;
                         }
-                    },
+                    }
                     Err(e) => report
                         .themes_skipped
                         .push((scheme.name.clone(), format!("写入 {file} 失败: {e}"))),
                 }
                 return;
-            },
+            }
             Err(e) => {
                 report
                     .themes_skipped
                     .push((scheme.name.clone(), format!("检查 {file} 失败: {e}")));
                 return;
-            },
+            }
         }
     }
 }
 
 fn scheme_label(raw: &Value, fallback: &str) -> String {
-    as_str(raw.get("name")).map(str::to_string).unwrap_or_else(|| fallback.to_string())
+    as_str(raw.get("name"))
+        .map(str::to_string)
+        .unwrap_or_else(|| fallback.to_string())
 }
 
 fn parse_tabby_scheme(raw: &Value) -> Result<TabbyScheme, String> {
@@ -843,10 +901,18 @@ fn parse_tabby_scheme(raw: &Value) -> Result<TabbyScheme, String> {
     }
     let mut ansi16 = [0u32; 16];
     for (i, item) in colors.iter().enumerate() {
-        let text = item.as_str().ok_or_else(|| format!("colors[{i}] 不是字符串"))?;
+        let text = item
+            .as_str()
+            .ok_or_else(|| format!("colors[{i}] 不是字符串"))?;
         ansi16[i] = parse_tabby_color(text).map_err(|e| format!("colors[{i}]: {e}"))?;
     }
-    Ok(TabbyScheme { name, fg, bg, cursor, ansi16 })
+    Ok(TabbyScheme {
+        name,
+        fg,
+        bg,
+        cursor,
+        ansi16,
+    })
 }
 
 /// Tabby 配色里的颜色：`#RRGGBB` / `#RGB`；其它 CSS 颜色写法（rgba/named）不支持。
@@ -887,18 +953,21 @@ pub fn export_yaml(store: &ProfileStore) -> String {
                 if !p.key_path.is_empty() {
                     opts.insert("privateKey".into(), p.key_path.clone().into());
                 }
-            },
+            }
             "serial" => {
                 opts.insert("port".into(), p.serial_port.clone().into());
                 opts.insert("baudRate".into(), (p.baud as u64).into());
-            },
+            }
             "telnet" => {
                 opts.insert("host".into(), p.host.clone().into());
                 opts.insert("port".into(), (p.port as u64).into());
-            },
+            }
             _ => {
                 opts.insert("shell".into(), p.shell.clone().into());
-                opts.insert("args".into(), Value::Sequence(p.args.iter().map(|a| a.clone().into()).collect()));
+                opts.insert(
+                    "args".into(),
+                    Value::Sequence(p.args.iter().map(|a| a.clone().into()).collect()),
+                );
                 if let Some(cwd) = &p.cwd {
                     opts.insert("cwd".into(), cwd.clone().into());
                 }
@@ -909,7 +978,7 @@ pub fn export_yaml(store: &ProfileStore) -> String {
                     }
                     opts.insert("env".into(), Value::Mapping(env));
                 }
-            },
+            }
         }
         m.insert("options".into(), Value::Mapping(opts));
         profiles.push(Value::Mapping(m));
@@ -1008,7 +1077,12 @@ terminal:
     fn duplicate_names_are_suffixed() {
         let dir = temp_dir("dup");
         let mut store = ProfileStore::default();
-        store.add(Profile { name: "Local".into(), ..Profile::default() }).unwrap();
+        store
+            .add(Profile {
+                name: "Local".into(),
+                ..Profile::default()
+            })
+            .unwrap();
         let mut cfg = Config::default();
         let r = import_yaml(sample_profiles(), &mut store, &mut cfg, &dir).unwrap();
         assert_eq!(r.added, 4);
@@ -1050,7 +1124,10 @@ terminal:
         assert_eq!(r.added, 2);
         assert_eq!(back.profiles.len(), 2);
         let ssh = back.profiles.iter().find(|p| p.name == "S").unwrap();
-        assert_eq!((ssh.kind.as_str(), ssh.port, ssh.user.as_str()), ("ssh", 2022, "u"));
+        assert_eq!(
+            (ssh.kind.as_str(), ssh.port, ssh.user.as_str()),
+            ("ssh", 2022, "u")
+        );
         let local = back.profiles.iter().find(|p| p.name == "L").unwrap();
         assert_eq!(local.args, vec!["-c".to_string(), "true".to_string()]);
         assert_eq!(local.cwd.as_deref(), Some("/"));
@@ -1081,7 +1158,10 @@ terminal:
         for (tabby, xtervo) in TABBY_HOTKEY_MAP {
             assert!(seen_tabby.insert(*tabby), "重复 Tabby 命令: {tabby}");
             assert!(seen_xtervo.insert(*xtervo), "重复 xtervo 命令: {xtervo}");
-            assert!(registry.get(xtervo).is_some(), "xtervo 命令不存在: {xtervo}");
+            assert!(
+                registry.get(xtervo).is_some(),
+                "xtervo 命令不存在: {xtervo}"
+            );
         }
     }
 
@@ -1150,10 +1230,14 @@ terminal: {}
         assert_eq!(r.hotkeys_skipped.len(), 3, "{:?}", r.hotkeys_skipped);
         assert!(r.hotkeys_skipped.iter().any(|(id, why)| id == "close-tab"
             && (why.contains("未知键名") || why.contains("Ctrl-NoSuchKey"))));
-        assert!(r.hotkeys_skipped.iter().any(|(id, why)| id == "select-all"
-            && why.contains("缺少主键")));
-        assert!(r.hotkeys_skipped.iter().any(|(id, why)| id == "clear"
-            && why.contains("值类型")));
+        assert!(r
+            .hotkeys_skipped
+            .iter()
+            .any(|(id, why)| id == "select-all" && why.contains("缺少主键")));
+        assert!(r
+            .hotkeys_skipped
+            .iter()
+            .any(|(id, why)| id == "clear" && why.contains("值类型")));
 
         let mut unmapped = r.hotkeys_unmapped.clone();
         unmapped.sort();
@@ -1402,13 +1486,19 @@ terminal:
             .collect::<Vec<_>>()
             .join("\n");
         assert!(joined.contains("profiles[0].options.password"), "{joined}");
-        assert!(!joined.contains("hunter2"), "报告不能包含密码明文: {joined}");
+        assert!(
+            !joined.contains("hunter2"),
+            "报告不能包含密码明文: {joined}"
+        );
         assert!(joined.contains("Hype"), "UI 主题名可用于提示: {joined}");
         // 摘要区分中英文，且按类别去重。
         let zh = r.not_imported_summary(true);
         assert!(zh.contains("插件配置") && zh.contains("密码/凭据"), "{zh}");
         let en = r.not_imported_summary(false);
-        assert!(en.contains("plugin configs") && en.contains("passwords"), "{en}");
+        assert!(
+            en.contains("plugin configs") && en.contains("passwords"),
+            "{en}"
+        );
 
         // 干净的 Tabby 配置不应出现“未导入”噪音。
         let mut s2 = ProfileStore::default();

@@ -8,10 +8,10 @@
 use std::time::{Duration, Instant};
 
 use x11rb::connection::Connection;
-use x11rb::protocol::Event;
 use x11rb::protocol::xproto::{
     ChangeWindowAttributesAux, ConnectionExt as XprotoExt, EventMask, GrabMode, ModMask,
 };
+use x11rb::protocol::Event;
 use x11rb::rust_connection::RustConnection;
 
 use crate::xconn;
@@ -37,9 +37,7 @@ impl ToggleGate {
     fn new(now: Instant) -> Self {
         Self {
             held: false,
-            last_toggle: now
-                .checked_sub(Duration::from_secs(2))
-                .unwrap_or(now),
+            last_toggle: now.checked_sub(Duration::from_secs(2)).unwrap_or(now),
             last_release: None,
         }
     }
@@ -74,20 +72,16 @@ impl ToggleGate {
 const REPEAT_PAIR_GAP: Duration = Duration::from_millis(30);
 
 /// 注册全局热键；成功后后台线程一直监听。热键格式：`F12` / `Ctrl+Shift+F12`。
-pub fn spawn_listener(
-    hotkey: &str,
-    on_toggle: impl Fn() + Send + 'static,
-) -> Result<(), String> {
+pub fn spawn_listener(hotkey: &str, on_toggle: impl Fn() + Send + 'static) -> Result<(), String> {
     let (mask, keysym) = parse_hotkey(hotkey)?;
     let (conn, screen_num) = xconn::connect()?;
     let root = conn.setup().roots[screen_num].root;
-    let keycode = keysym_to_keycode(&conn, keysym)
-        .ok_or_else(|| format!("键盘映射里找不到 {hotkey}"))?;
+    let keycode =
+        keysym_to_keycode(&conn, keysym).ok_or_else(|| format!("键盘映射里找不到 {hotkey}"))?;
 
     conn.change_window_attributes(
         root,
-        &ChangeWindowAttributesAux::new()
-            .event_mask(EventMask::KEY_PRESS | EventMask::KEY_RELEASE),
+        &ChangeWindowAttributesAux::new().event_mask(EventMask::KEY_PRESS | EventMask::KEY_RELEASE),
     )
     .map_err(|e| format!("选择 root KeyPress 失败: {e}"))?
     .check()
@@ -95,7 +89,12 @@ pub fn spawn_listener(
 
     // CapsLock/NumLock 打开时修饰位会变，把常见组合都抓一遍。
     let mut grabbed = false;
-    for extra in [ModMask::default(), ModMask::LOCK, ModMask::M2, ModMask::LOCK | ModMask::M2] {
+    for extra in [
+        ModMask::default(),
+        ModMask::LOCK,
+        ModMask::M2,
+        ModMask::LOCK | ModMask::M2,
+    ] {
         if let Ok(cookie) = conn.grab_key(
             false,
             root,
@@ -124,15 +123,15 @@ pub fn spawn_listener(
                     if gate.on_press(Instant::now()) {
                         on_toggle();
                     }
-                },
+                }
                 Ok(Event::KeyRelease(ev)) if ev.detail == keycode => {
                     gate.on_release(Instant::now());
-                },
-                Ok(_) => {},
+                }
+                Ok(_) => {}
                 Err(e) => {
                     eprintln!("[quake] 监听线程退出: {e}");
                     break;
-                },
+                }
             }
         }
     });
@@ -140,7 +139,11 @@ pub fn spawn_listener(
 }
 
 fn parse_hotkey(spec: &str) -> Result<(ModMask, u32), String> {
-    let parts: Vec<&str> = spec.split('+').map(str::trim).filter(|p| !p.is_empty()).collect();
+    let parts: Vec<&str> = spec
+        .split('+')
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .collect();
     let key = parts.last().ok_or_else(|| format!("热键为空: {spec:?}"))?;
     let mut mask = ModMask::default();
     for m in &parts[..parts.len() - 1] {

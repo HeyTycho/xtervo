@@ -28,8 +28,11 @@ pub mod flags {
     pub const HIDDEN: u16 = 0b0000_0001_0000_0000;
     pub const STRIKEOUT: u16 = 0b0000_0010_0000_0000;
     pub const DOUBLE_UNDERLINE: u16 = 0b0000_1000_0000_0000;
-    pub const UNDERLINE_MASK: u16 =
-        UNDERLINE | DOUBLE_UNDERLINE | 0b0001_0000_0000_0000 | 0b0010_0000_0000_0000 | 0b0100_0000_0000_0000;
+    pub const UNDERLINE_MASK: u16 = UNDERLINE
+        | DOUBLE_UNDERLINE
+        | 0b0001_0000_0000_0000
+        | 0b0010_0000_0000_0000
+        | 0b0100_0000_0000_0000;
 }
 
 /// 单个单元格的渲染数据。16 字节，可直接 memcpy。
@@ -49,7 +52,13 @@ pub struct CellData {
 
 impl Default for CellData {
     fn default() -> Self {
-        Self { ch: ' ' as u32, fg: 0, bg: 0, flags: 0, link: 0 }
+        Self {
+            ch: ' ' as u32,
+            fg: 0,
+            bg: 0,
+            flags: 0,
+            link: 0,
+        }
     }
 }
 
@@ -306,7 +315,11 @@ pub struct Frame {
 
 impl Frame {
     pub fn new(cols: usize, rows: usize) -> Self {
-        let mut f = Self { cols, rows, ..Default::default() };
+        let mut f = Self {
+            cols,
+            rows,
+            ..Default::default()
+        };
         f.cells = vec![CellData::default(); cols * rows];
         f.row_ids = vec![0; rows];
         f.reset_links();
@@ -315,7 +328,9 @@ impl Frame {
 
     /// 尺寸变化时重建缓冲（仅此路径分配）。
     pub fn ensure_size(&mut self, cols: usize, rows: usize) -> bool {
-        if self.cols == cols && self.rows == rows && self.cells.len() == cols * rows
+        if self.cols == cols
+            && self.rows == rows
+            && self.cells.len() == cols * rows
             && self.row_ids.len() == rows
         {
             return false;
@@ -419,14 +434,14 @@ impl Frame {
             return;
         }
         match self.zerowidth.get_mut(&index) {
-            Some(existing) if existing.as_slice() == zerowidth => {},
+            Some(existing) if existing.as_slice() == zerowidth => {}
             Some(existing) => {
                 existing.clear();
                 existing.extend_from_slice(zerowidth);
-            },
+            }
             None => {
                 self.zerowidth.insert(index, zerowidth.to_vec());
-            },
+            }
         }
     }
 
@@ -442,7 +457,10 @@ impl Frame {
         if idx == 0 && col > 0 && cell.has(flags::WIDE_CHAR_SPACER) {
             idx = self.cells.get(index - 1)?.link as usize;
         }
-        (idx > 0).then(|| self.hyperlinks.get(idx)).flatten().map(|s| s.as_str())
+        (idx > 0)
+            .then(|| self.hyperlinks.get(idx))
+            .flatten()
+            .map(|s| s.as_str())
     }
 
     /// 取某格上的行内链接（URL / IPv4[:port] / 本地路径）。
@@ -502,7 +520,8 @@ impl Frame {
         let clicked = links
             .iter()
             .find(|l| l.start as usize <= click && click <= l.end as usize);
-        let ends_at_row_end = clicked.is_some_and(|l| l.end as usize + 1 >= last_non_space(&cur_chars));
+        let ends_at_row_end =
+            clicked.is_some_and(|l| l.end as usize + 1 >= last_non_space(&cur_chars));
         let starts_at_row_start = clicked.is_some_and(|l| l.start == 0);
         // 只有链接贴在本行边界、或本行根本没有单行命中时，才值得拼接。
         let worth_joining = single.is_none()
@@ -585,7 +604,9 @@ fn wrap_tail(text: &str) -> Option<&str> {
     if text.chars().last().map_or(true, char::is_whitespace) {
         return None;
     }
-    let tail = text.rsplit_once(|c: char| c.is_whitespace()).map_or(text, |(_, tail)| tail);
+    let tail = text
+        .rsplit_once(|c: char| c.is_whitespace())
+        .map_or(text, |(_, tail)| tail);
     (!tail.is_empty()).then_some(tail)
 }
 
@@ -594,13 +615,18 @@ fn wrap_head(text: &str) -> Option<&str> {
     if text.chars().next().map_or(true, char::is_whitespace) {
         return None;
     }
-    let head = text.split_once(|c: char| c.is_whitespace()).map_or(text, |(head, _)| head);
+    let head = text
+        .split_once(|c: char| c.is_whitespace())
+        .map_or(text, |(head, _)| head);
     (!head.is_empty()).then_some(head)
 }
 
 /// 最后一个非空白字符之后的下标（与字符下标比较用）。
 fn last_non_space(chars: &[char]) -> usize {
-    chars.iter().rposition(|c| !c.is_whitespace()).map_or(0, |i| i + 1)
+    chars
+        .iter()
+        .rposition(|c| !c.is_whitespace())
+        .map_or(0, |i| i + 1)
 }
 
 #[cfg(test)]
@@ -662,10 +688,22 @@ mod tests {
         assert_eq!(f.url_at(0, 5).as_deref(), Some("https://example.com/中文"));
         // 点击最后的中文（宽字符右半边 spacer）也要命中同一个 URL。
         let start = 5 + "https://example.com/".len();
-        assert_eq!(f.url_at(0, start).as_deref(), Some("https://example.com/中文"));
-        assert_eq!(f.url_at(0, start + 1).as_deref(), Some("https://example.com/中文"));
-        assert_eq!(f.url_at(0, start + 2).as_deref(), Some("https://example.com/中文"));
-        assert_eq!(f.url_at(0, start + 3).as_deref(), Some("https://example.com/中文"));
+        assert_eq!(
+            f.url_at(0, start).as_deref(),
+            Some("https://example.com/中文")
+        );
+        assert_eq!(
+            f.url_at(0, start + 1).as_deref(),
+            Some("https://example.com/中文")
+        );
+        assert_eq!(
+            f.url_at(0, start + 2).as_deref(),
+            Some("https://example.com/中文")
+        );
+        assert_eq!(
+            f.url_at(0, start + 3).as_deref(),
+            Some("https://example.com/中文")
+        );
         // 宽字符左半边/空格不属于 URL；下一行也不命中。
         assert_eq!(f.url_at(0, 0), None);
         assert_eq!(f.url_at(0, 4), None);
@@ -752,7 +790,10 @@ mod tests {
         let mut f = Frame::new(20, 3);
         put_text(&mut f, 0, 0, "https://example.com/");
         put_text(&mut f, 1, 0, "very/long/path");
-        let want = Some((LinkKind::Url, "https://example.com/very/long/path".to_string()));
+        let want = Some((
+            LinkKind::Url,
+            "https://example.com/very/long/path".to_string(),
+        ));
         assert_eq!(f.link_at_wrapped(0, 3), want, "点第一行也要拼上续行");
         assert_eq!(f.link_at_wrapped(1, 3), want, "点续行要拼上前缀");
         // 单行 API 行为不变：只返回本行能看到的半截。
@@ -797,7 +838,10 @@ mod tests {
     #[test]
     fn zerowidth_marks_follow_their_base_cell() {
         let mut f = Frame::new(4, 1);
-        let base = CellData { ch: 'e' as u32, ..CellData::default() };
+        let base = CellData {
+            ch: 'e' as u32,
+            ..CellData::default()
+        };
         f.put_zerowidth(0, base, None, &['\u{301}']);
         assert_eq!(f.zerowidth_at(0, 0), &['\u{301}']);
         assert!(f.zerowidth_at(0, 1).is_empty());

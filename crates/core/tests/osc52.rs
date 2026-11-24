@@ -3,9 +3,7 @@
 
 use std::time::{Duration, Instant};
 
-use xtervo_core::{
-    spawn, ClipboardRequest, ClipboardSelection, CoreEvent, PaneConfig, PaneHandle,
-};
+use xtervo_core::{spawn, ClipboardRequest, ClipboardSelection, CoreEvent, PaneConfig, PaneHandle};
 
 fn sh(script: &str) -> PaneConfig {
     PaneConfig {
@@ -18,7 +16,11 @@ fn sh(script: &str) -> PaneConfig {
     }
 }
 
-fn wait_event(handle: &PaneHandle, timeout: Duration, pred: impl Fn(&CoreEvent) -> bool) -> CoreEvent {
+fn wait_event(
+    handle: &PaneHandle,
+    timeout: Duration,
+    pred: impl Fn(&CoreEvent) -> bool,
+) -> CoreEvent {
     let start = Instant::now();
     let mut events = Vec::new();
     loop {

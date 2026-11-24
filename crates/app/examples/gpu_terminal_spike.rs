@@ -136,7 +136,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         slint::TimerMode::Repeated,
         Duration::from_millis(100),
         move || {
-            let Some(ui) = timer_weak.upgrade() else { return };
+            let Some(ui) = timer_weak.upgrade() else {
+                return;
+            };
             let action = {
                 let mut st = timer_state.borrow_mut();
                 if st.done {
@@ -171,13 +173,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     timer_completed.set(true);
                     println!("{summary}");
                     slint::quit_event_loop().ok();
-                },
+                }
                 Some(Err(error)) => {
                     eprintln!("FAIL gpu_terminal_spike: {error}");
                     timer_state.borrow_mut().error = Some(error);
                     slint::quit_event_loop().ok();
-                },
-                None => {},
+                }
+                None => {}
             }
         },
     );
@@ -202,94 +204,95 @@ fn install_rendering_notifier(
     state: Rc<RefCell<GpuState>>,
 ) -> Result<(), slint::SetRenderingNotifierError> {
     let weak = ui.as_weak();
-    ui.window().set_rendering_notifier(move |rendering_state, api| {
-        if !matches!(rendering_state, slint::RenderingState::RenderingSetup) {
-            return;
-        }
-        let mut st = state.borrow_mut();
-        if st.texture.is_some() {
-            return;
-        }
+    ui.window()
+        .set_rendering_notifier(move |rendering_state, api| {
+            if !matches!(rendering_state, slint::RenderingState::RenderingSetup) {
+                return;
+            }
+            let mut st = state.borrow_mut();
+            if st.texture.is_some() {
+                return;
+            }
 
-        // 只接受 Slint 真正的 WGPU30 device/queue；其它 API 明确失败，不能
-        // 退化成 CPU Image 冒充 GPU 链路验证。
-        let slint::GraphicsAPI::WGPU30 { device, queue, .. } = api else {
-            st.error = Some(format!(
-                "expected Slint GraphicsAPI::WGPU30, got {api:?}; \
+            // 只接受 Slint 真正的 WGPU30 device/queue；其它 API 明确失败，不能
+            // 退化成 CPU Image 冒充 GPU 链路验证。
+            let slint::GraphicsAPI::WGPU30 { device, queue, .. } = api else {
+                st.error = Some(format!(
+                    "expected Slint GraphicsAPI::WGPU30, got {api:?}; \
                  run with SLINT_WGPU_CPU=1 and require_wgpu_30 (no fake PASS)"
-            ));
-            st.done = true;
-            slint::quit_event_loop().ok();
-            return;
-        };
-
-        let adapter = device.adapter_info();
-        eprintln!(
-            "gpu: Slint WGPU30 adapter={:?} backend={:?} device_type={:?}",
-            adapter.name, adapter.backend, adapter.device_type
-        );
-
-        let (width, height) = (cpu.width, cpu.height);
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("xtervo-gpu-spike-terminal-frame"),
-            size: wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            // sRGB 变体让 Slint 采样/写回 surface 时与 CPU framebuffer 的
-            // sRGB 字节语义一致；两种格式都满足 Image::try_from 的契约。
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::COPY_DST
-                | wgpu::TextureUsages::COPY_SRC
-                | wgpu::TextureUsages::RENDER_ATTACHMENT,
-            view_formats: &[],
-        });
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            &cpu.rgba,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(width * 4),
-                rows_per_image: Some(height),
-            },
-            wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-        );
-
-        match slint::Image::try_from(texture.clone()) {
-            Ok(image) => {
-                let Some(ui) = weak.upgrade() else { return };
-                let window_size = ui.window().size();
-                eprintln!(
-                    "gpu: uploaded {width}x{height} Rgba8UnormSrgb from PTY framebuffer; \
-                     window={}x{}",
-                    window_size.width, window_size.height
-                );
-                ui.set_frame(image);
-                ui.window().request_redraw();
-                st.texture = Some(texture);
-                st.ready = true;
-            },
-            Err(error) => {
-                st.error = Some(format!("slint::Image::try_from(texture) failed: {error}"));
+                ));
                 st.done = true;
                 slint::quit_event_loop().ok();
-            },
-        }
-    })
+                return;
+            };
+
+            let adapter = device.adapter_info();
+            eprintln!(
+                "gpu: Slint WGPU30 adapter={:?} backend={:?} device_type={:?}",
+                adapter.name, adapter.backend, adapter.device_type
+            );
+
+            let (width, height) = (cpu.width, cpu.height);
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("xtervo-gpu-spike-terminal-frame"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                // sRGB 变体让 Slint 采样/写回 surface 时与 CPU framebuffer 的
+                // sRGB 字节语义一致；两种格式都满足 Image::try_from 的契约。
+                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::COPY_DST
+                    | wgpu::TextureUsages::COPY_SRC
+                    | wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            });
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &cpu.rgba,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(width * 4),
+                    rows_per_image: Some(height),
+                },
+                wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+            );
+
+            match slint::Image::try_from(texture.clone()) {
+                Ok(image) => {
+                    let Some(ui) = weak.upgrade() else { return };
+                    let window_size = ui.window().size();
+                    eprintln!(
+                        "gpu: uploaded {width}x{height} Rgba8UnormSrgb from PTY framebuffer; \
+                     window={}x{}",
+                        window_size.width, window_size.height
+                    );
+                    ui.set_frame(image);
+                    ui.window().request_redraw();
+                    st.texture = Some(texture);
+                    st.ready = true;
+                }
+                Err(error) => {
+                    st.error = Some(format!("slint::Image::try_from(texture) failed: {error}"));
+                    st.done = true;
+                    slint::quit_event_loop().ok();
+                }
+            }
+        })
 }
 
 fn verify_snapshot(ui: &App, cpu: &CpuFrame) -> Result<String, String> {

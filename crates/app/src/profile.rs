@@ -22,15 +22,33 @@ pub const MIN_FONT_SIZE: f32 = 8.0;
 /// 见 [`MIN_FONT_SIZE`]。
 pub const MAX_FONT_SIZE: f32 = 40.0;
 
-fn default_serial_data_bits() -> u8 { 8 }
-fn default_serial_parity() -> String { "none".into() }
-fn default_serial_stop_bits() -> u8 { 1 }
-fn default_serial_flow() -> String { "none".into() }
-fn default_serial_dtr() -> bool { true }
-fn default_serial_rts() -> bool { true }
-fn default_serial_output() -> String { "text".into() }
-fn default_serial_newline() -> String { "none".into() }
-fn default_serial_input() -> String { "text".into() }
+fn default_serial_data_bits() -> u8 {
+    8
+}
+fn default_serial_parity() -> String {
+    "none".into()
+}
+fn default_serial_stop_bits() -> u8 {
+    1
+}
+fn default_serial_flow() -> String {
+    "none".into()
+}
+fn default_serial_dtr() -> bool {
+    true
+}
+fn default_serial_rts() -> bool {
+    true
+}
+fn default_serial_output() -> String {
+    "text".into()
+}
+fn default_serial_newline() -> String {
+    "none".into()
+}
+fn default_serial_input() -> String {
+    "text".into()
+}
 
 /// 一个本地 Profile：决定新 Tab 用什么 shell / 参数 / 起始目录 / 环境变量。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -174,10 +192,20 @@ pub fn validate_forward(spec: &str) -> Result<(), String> {
     if parts.len() < 3 || parts.iter().any(|x| x.trim().is_empty()) {
         return Err(format!("端口转发格式应为 本地端口:主机:端口，实际: {spec}"));
     }
-    if parts[0].trim().parse::<u16>().map(|p| p == 0).unwrap_or(true) {
+    if parts[0]
+        .trim()
+        .parse::<u16>()
+        .map(|p| p == 0)
+        .unwrap_or(true)
+    {
         return Err(format!("端口转发的本地端口无效: {spec}"));
     }
-    if parts[parts.len() - 1].trim().parse::<u16>().map(|p| p == 0).unwrap_or(true) {
+    if parts[parts.len() - 1]
+        .trim()
+        .parse::<u16>()
+        .map(|p| p == 0)
+        .unwrap_or(true)
+    {
         return Err(format!("端口转发的目标端口无效: {spec}"));
     }
     Ok(())
@@ -196,14 +224,26 @@ pub const PLUGIN_TRANSPORT: &str = "plugin";
 pub fn validate_remote_forward(spec: &str) -> Result<(), String> {
     let parts: Vec<&str> = spec.split(':').collect();
     if !(parts.len() == 3 || parts.len() == 4) || parts.iter().any(|x| x.trim().is_empty()) {
-        return Err(format!("远程转发格式应为 [绑定地址:]端口:主机:端口，实际: {spec}"));
+        return Err(format!(
+            "远程转发格式应为 [绑定地址:]端口:主机:端口，实际: {spec}"
+        ));
     }
     let port_index = if parts.len() == 4 { 1 } else { 0 };
     let hostport_index = parts.len() - 1;
-    if parts[port_index].trim().parse::<u16>().map(|p| p == 0).unwrap_or(true) {
+    if parts[port_index]
+        .trim()
+        .parse::<u16>()
+        .map(|p| p == 0)
+        .unwrap_or(true)
+    {
         return Err(format!("远程转发的本地端口无效: {spec}"));
     }
-    if parts[hostport_index].trim().parse::<u16>().map(|p| p == 0).unwrap_or(true) {
+    if parts[hostport_index]
+        .trim()
+        .parse::<u16>()
+        .map(|p| p == 0)
+        .unwrap_or(true)
+    {
         return Err(format!("远程转发的目标端口无效: {spec}"));
     }
     Ok(())
@@ -240,7 +280,6 @@ pub fn validate_proxy_jump(spec: &str) -> Result<(), String> {
     Ok(())
 }
 
-
 /// 校验“起始目录”是否真的可用（LOCAL-003 表单测试按钮）。
 ///
 /// 只做本地文件系统检查：展开 `~`、确认是目录、返回规范化路径。空串表示
@@ -262,9 +301,21 @@ pub fn test_start_dir(raw: &str) -> Result<PathBuf, String> {
 /// 光标形状是否是可识别的别名（与 [`CursorShape::from_name`] 的接受集合同步）。
 fn known_cursor_shape(name: &str) -> bool {
     matches!(
-        name.trim().to_ascii_lowercase().replace(['_', ' '], "-").as_str(),
-        "block" | "underline" | "under-line" | "ibeam" | "i-beam" | "beam" | "bar"
-            | "hollow-block" | "hollow" | "hidden" | "none"
+        name.trim()
+            .to_ascii_lowercase()
+            .replace(['_', ' '], "-")
+            .as_str(),
+        "block"
+            | "underline"
+            | "under-line"
+            | "ibeam"
+            | "i-beam"
+            | "beam"
+            | "bar"
+            | "hollow-block"
+            | "hollow"
+            | "hidden"
+            | "none"
     )
 }
 
@@ -325,7 +376,7 @@ pub fn grouped_indices(profiles: &[Profile], query: &str) -> Vec<GroupBucket> {
                 } else {
                     named.push((name.to_string(), vec![i]));
                 }
-            },
+            }
             None => ungrouped.push(i),
         }
     }
@@ -336,10 +387,16 @@ pub fn grouped_indices(profiles: &[Profile], query: &str) -> Vec<GroupBucket> {
     });
     let mut out: Vec<GroupBucket> = named
         .into_iter()
-        .map(|(name, indices)| GroupBucket { name: Some(name), indices })
+        .map(|(name, indices)| GroupBucket {
+            name: Some(name),
+            indices,
+        })
         .collect();
     if !ungrouped.is_empty() {
-        out.push(GroupBucket { name: None, indices: ungrouped });
+        out.push(GroupBucket {
+            name: None,
+            indices: ungrouped,
+        });
     }
     out
 }
@@ -480,8 +537,7 @@ impl Profile {
 
     /// 串口是否走进程内 serialport：默认 native；`transport = "socat"` 保留旧桥接。
     pub fn is_native_serial(&self) -> bool {
-        self.kind == "serial"
-            && !self.transport.trim().eq_ignore_ascii_case("socat")
+        self.kind == "serial" && !self.transport.trim().eq_ignore_ascii_case("socat")
     }
 
     /// 把旧式 `kind = "plugin-ssh"` 归一化成 `kind = "ssh"` + `transport = "plugin"`。
@@ -495,7 +551,6 @@ impl Profile {
             self.transport = self.transport.trim().to_ascii_lowercase();
         }
     }
-
 
     /// 新开 Tab 使用的标题：自定义标题优先，否则 Profile 名。
     pub fn effective_title(&self) -> &str {
@@ -515,7 +570,10 @@ impl Profile {
 
     /// 有效主题 id；空串/空白视为继承全局。
     pub fn effective_theme(&self) -> Option<&str> {
-        self.theme.as_deref().map(str::trim).filter(|s| !s.is_empty())
+        self.theme
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
     }
 
     /// 有效光标形状；未知别名按 [`CursorShape::from_name`] 回退 block。
@@ -535,7 +593,13 @@ impl Profile {
     /// 有效光标闪烁：`Some(true)` 闪、`Some(false)` 不闪、`None` 继承全局。
     /// `system` 表示交给全局配置（等同 `None`）。
     pub fn effective_cursor_blink(&self) -> Option<bool> {
-        match self.cursor_blink.as_deref().map(str::trim).map(str::to_ascii_lowercase).as_deref() {
+        match self
+            .cursor_blink
+            .as_deref()
+            .map(str::trim)
+            .map(str::to_ascii_lowercase)
+            .as_deref()
+        {
             Some("on" | "true" | "yes" | "1") => Some(true),
             Some("off" | "false" | "no" | "0") => Some(false),
             _ => None,
@@ -555,7 +619,11 @@ impl Profile {
         let mut args = Vec::new();
         if self.auth == "key" && !self.key_path.trim().is_empty() {
             args.push("-i".to_string());
-            args.push(crate::config::expand_tilde(self.key_path.trim()).display().to_string());
+            args.push(
+                crate::config::expand_tilde(self.key_path.trim())
+                    .display()
+                    .to_string(),
+            );
         }
         if self.auth == "password" {
             // auth=password 的语义是「只用密码」：不能让 agent/密钥先认证成功，否则
@@ -615,14 +683,22 @@ impl Profile {
             args.push("-o".into());
             args.push(format!("ProxyCommand={}", self.proxy_command.trim()));
         }
-        args.extend(self.extra_args.iter().filter(|a| !a.trim().is_empty()).cloned());
+        args.extend(
+            self.extra_args
+                .iter()
+                .filter(|a| !a.trim().is_empty())
+                .cloned(),
+        );
         args.push(self.host.trim().to_string());
         ("ssh".to_string(), args)
     }
 
     /// Telnet 启动命令（系统 telnet 客户端）。
     pub fn telnet_command(&self) -> (String, Vec<String>) {
-        ("telnet".to_string(), vec![self.host.trim().to_string(), self.port.max(1).to_string()])
+        (
+            "telnet".to_string(),
+            vec![self.host.trim().to_string(), self.port.max(1).to_string()],
+        )
     }
 
     /// Serial 启动命令（socat 把 PTY 和串口设备桥起来；没有 socat 时启动会失败并提示）。
@@ -631,7 +707,10 @@ impl Profile {
         let baud = self.baud.max(1);
         (
             "socat".to_string(),
-            vec!["-,raw,echo=0".to_string(), format!("{dev},raw,echo=0,b{baud}")],
+            vec![
+                "-,raw,echo=0".to_string(),
+                format!("{dev},raw,echo=0,b{baud}"),
+            ],
         )
     }
 
@@ -718,7 +797,10 @@ impl Profile {
                     ("KexAlgorithms", &self.kex_algorithms),
                     ("ProxyCommand", &self.proxy_command),
                 ] {
-                    if value.chars().any(|c| c.is_control() || c == '\n' || c == '\r') {
+                    if value
+                        .chars()
+                        .any(|c| c.is_control() || c == '\n' || c == '\r')
+                    {
                         return Err(format!("{name} 不能包含换行/控制字符"));
                     }
                 }
@@ -749,7 +831,7 @@ impl Profile {
                         self.transport
                     ));
                 }
-            },
+            }
             "serial" => {
                 if self.serial_port.trim().is_empty() {
                     return Err("串口设备不能为空".into());
@@ -799,7 +881,7 @@ impl Profile {
                         self.transport
                     ));
                 }
-            },
+            }
             "telnet" => {
                 if self.host.trim().is_empty() {
                     return Err("Telnet 主机不能为空".into());
@@ -807,8 +889,8 @@ impl Profile {
                 if self.port == 0 {
                     return Err("Telnet 端口必须在 1-65535".into());
                 }
-            },
-            _ => {},
+            }
+            _ => {}
         }
         Ok(())
     }
@@ -826,13 +908,20 @@ pub struct ProfileStore {
 
 impl Default for ProfileStore {
     fn default() -> Self {
-        Self { version: VERSION, profiles: Vec::new(), next_id: 1 }
+        Self {
+            version: VERSION,
+            profiles: Vec::new(),
+            next_id: 1,
+        }
     }
 }
 
 /// `profiles.toml` + v1 → `profiles.toml.v1.bak`。
 fn backup_path(path: &Path, from: u32) -> PathBuf {
-    let name = path.file_name().map(|s| s.to_string_lossy()).unwrap_or_default();
+    let name = path
+        .file_name()
+        .map(|s| s.to_string_lossy())
+        .unwrap_or_default();
     path.with_file_name(format!("{name}.v{from}.bak"))
 }
 
@@ -860,12 +949,18 @@ impl ProfileStore {
         let mut store: ProfileStore = match toml::from_str(&text) {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("[profile] {} 解析失败，本次用空列表（原文件未改）: {e}", path.display());
+                eprintln!(
+                    "[profile] {} 解析失败，本次用空列表（原文件未改）: {e}",
+                    path.display()
+                );
                 return Self::default();
-            },
+            }
         };
         if store.version > VERSION {
-            eprintln!("[profile] 文件版本 v{} 比程序新（v{VERSION}），忽略", store.version);
+            eprintln!(
+                "[profile] 文件版本 v{} 比程序新（v{VERSION}），忽略",
+                store.version
+            );
             return Self::default();
         }
         if store.version < VERSION {
@@ -921,7 +1016,7 @@ impl ProfileStore {
             Err(e) => {
                 eprintln!("[profile] 序列化失败: {e}");
                 return;
-            },
+            }
         };
         let tmp = path.with_extension("toml.tmp");
         if let Err(e) = std::fs::write(&tmp, text) {
@@ -968,7 +1063,11 @@ impl ProfileStore {
         updated.normalize_group();
         updated.validate()?;
         updated.normalize_appearance();
-        let slot = self.profiles.iter_mut().find(|p| p.id == id).ok_or("Profile 不存在")?;
+        let slot = self
+            .profiles
+            .iter_mut()
+            .find(|p| p.id == id)
+            .ok_or("Profile 不存在")?;
         *slot = updated;
         Ok(())
     }
@@ -1118,10 +1217,7 @@ pub fn export_bundle(store: &ProfileStore) -> Result<String, String> {
 /// - 单条 Profile 校验失败只跳过并记录原因，其余照常导入；
 /// - 重名自动改成 `name (copy N)`，不覆盖已有 Profile；
 /// - 导入的 ID 一律重新分配、`save_password` 强制 false（凭据不随文件走）。
-pub fn import_bundle(
-    text: &str,
-    store: &mut ProfileStore,
-) -> Result<BundleImportReport, String> {
+pub fn import_bundle(text: &str, store: &mut ProfileStore) -> Result<BundleImportReport, String> {
     let mut bundle: ProfileBundle =
         toml::from_str(text).map_err(|e| format!("解析 xtervo Profile 导出文件失败: {e}"))?;
     if bundle.format != BUNDLE_FORMAT {
@@ -1157,7 +1253,7 @@ pub fn import_bundle(
                 if renamed {
                     report.renamed += 1;
                 }
-            },
+            }
             Err(e) => report.skipped.push((display_name, e)),
         }
     }
@@ -1274,7 +1370,10 @@ mod tests {
         assert!(bad.validate().unwrap_err().contains("未知 SSH 后端"));
         let mut wrong_kind = back.profiles[0].clone();
         wrong_kind.kind = "local".into();
-        assert!(!wrong_kind.is_plugin_ssh(), "local Profile 不能走 SSH plugin");
+        assert!(
+            !wrong_kind.is_plugin_ssh(),
+            "local Profile 不能走 SSH plugin"
+        );
     }
 
     #[test]
@@ -1312,7 +1411,11 @@ auth = "agent"
     }
 
     fn sample(name: &str) -> Profile {
-        Profile { name: name.into(), shell: "/bin/bash".into(), ..Profile::default() }
+        Profile {
+            name: name.into(),
+            shell: "/bin/bash".into(),
+            ..Profile::default()
+        }
     }
 
     #[test]
@@ -1348,7 +1451,10 @@ auth = "agent"
         assert_eq!(back.profiles[0].shell, "/bin/zsh");
         assert_eq!(back.profiles[0].args, vec!["-l"]);
         assert_eq!(back.profiles[0].cwd.as_deref(), Some("/home/user/work"));
-        assert_eq!(back.profiles[0].env, vec![("FOO".to_string(), "1".to_string())]);
+        assert_eq!(
+            back.profiles[0].env,
+            vec![("FOO".to_string(), "1".to_string())]
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1367,8 +1473,11 @@ auth = "agent"
             ..Profile::default()
         })
         .unwrap();
-        s.add(Profile { name: "inherit".into(), ..Profile::default() })
-            .unwrap();
+        s.add(Profile {
+            name: "inherit".into(),
+            ..Profile::default()
+        })
+        .unwrap();
         s.save_to(&path);
 
         let back = ProfileStore::load_from(&path);
@@ -1444,7 +1553,11 @@ scrollback = 0
         let p = &store.profiles[0];
         assert_eq!(p.font_size, Some(40.0), "读盘时夹取到安全上限");
         assert_eq!(p.theme, None, "空白主题 = 继承全局");
-        assert_eq!(p.cursor_shape.as_deref(), Some("UNDERLINE"), "trim 保留原始大小写");
+        assert_eq!(
+            p.cursor_shape.as_deref(),
+            Some("UNDERLINE"),
+            "trim 保留原始大小写"
+        );
         assert_eq!(p.cursor_blink.as_deref(), Some("off"));
         assert_eq!(p.scrollback, None, "0 行视为继承全局");
         assert_eq!(p.effective_cursor_shape_name(), Some("UNDERLINE"));
@@ -1455,14 +1568,26 @@ scrollback = 0
     fn appearance_validation_rejects_uninterpretable_values() {
         let base = sample("a");
         for bad in [4.0, 100.0, f32::NAN, 0.0] {
-            let p = Profile { font_size: Some(bad), ..base.clone() };
+            let p = Profile {
+                font_size: Some(bad),
+                ..base.clone()
+            };
             assert!(p.validate().is_err(), "font_size={bad} 必须拒绝");
         }
-        let p = Profile { cursor_shape: Some("diamond".into()), ..base.clone() };
+        let p = Profile {
+            cursor_shape: Some("diamond".into()),
+            ..base.clone()
+        };
         assert!(p.validate().unwrap_err().contains("光标形状"));
-        let p = Profile { cursor_blink: Some("sometimes".into()), ..base.clone() };
+        let p = Profile {
+            cursor_blink: Some("sometimes".into()),
+            ..base.clone()
+        };
         assert!(p.validate().unwrap_err().contains("闪烁"));
-        let p = Profile { scrollback: Some(0), ..base.clone() };
+        let p = Profile {
+            scrollback: Some(0),
+            ..base.clone()
+        };
         assert!(p.validate().unwrap_err().contains("scrollback"));
         // 合法边界/别名可通过
         for (size, shape, blink) in [
@@ -1499,9 +1624,15 @@ scrollback = 0
         assert_eq!(p.effective_cursor_blink(), None, "system 表示交给全局");
         assert_eq!(p.effective_cursor_shape(), Some(CursorShape::Block));
         assert_eq!(p.effective_theme(), Some("auto"));
-        let p = Profile { cursor_shape: Some("beam".into()), ..Profile::default() };
+        let p = Profile {
+            cursor_shape: Some("beam".into()),
+            ..Profile::default()
+        };
         assert_eq!(p.effective_cursor_shape(), Some(CursorShape::Beam));
-        let p = Profile { cursor_blink: Some(" true ".into()), ..Profile::default() };
+        let p = Profile {
+            cursor_blink: Some(" true ".into()),
+            ..Profile::default()
+        };
         assert_eq!(p.effective_cursor_blink(), Some(true));
     }
 
@@ -1583,9 +1714,27 @@ shell = "/bin/sh"
         };
         let (prog, args) = p.ssh_command();
         assert_eq!(prog, "ssh");
-        assert_eq!(args, vec!["-i", "/home/user/.ssh/id_ed25519", "-p", "2222", "-l", "yt", "example.com"]);
+        assert_eq!(
+            args,
+            vec![
+                "-i",
+                "/home/user/.ssh/id_ed25519",
+                "-p",
+                "2222",
+                "-l",
+                "yt",
+                "example.com"
+            ]
+        );
 
-        let agent = Profile { kind: "ssh".into(), host: "h".into(), port: 22, user: "u".into(), auth: "agent".into(), ..Profile::default() };
+        let agent = Profile {
+            kind: "ssh".into(),
+            host: "h".into(),
+            port: 22,
+            user: "u".into(),
+            auth: "agent".into(),
+            ..Profile::default()
+        };
         assert_eq!(agent.ssh_command().1, vec!["-p", "22", "-l", "u", "h"]);
         let mut x11 = agent.clone();
         x11.x11_forward = true;
@@ -1616,7 +1765,15 @@ shell = "/bin/sh"
         };
         assert_eq!(
             with_extra.ssh_command().1,
-            vec!["-p", "22", "-l", "u", "-o", "UserKnownHostsFile=/tmp/kh", "h"]
+            vec![
+                "-p",
+                "22",
+                "-l",
+                "u",
+                "-o",
+                "UserKnownHostsFile=/tmp/kh",
+                "h"
+            ]
         );
     }
 
@@ -1632,7 +1789,9 @@ shell = "/bin/sh"
             ..Profile::default()
         };
         let (_, args) = p.ssh_command();
-        let expected = crate::config::expand_tilde("~/.ssh/id_ed25519").display().to_string();
+        let expected = crate::config::expand_tilde("~/.ssh/id_ed25519")
+            .display()
+            .to_string();
         assert_eq!(args[1], expected);
     }
 
@@ -1671,10 +1830,21 @@ shell = "/bin/sh"
         );
         // 其它认证方式不应被注入。
         for auth in ["agent", "key"] {
-            let other = Profile { auth: auth.into(), ..p.clone() };
+            let other = Profile {
+                auth: auth.into(),
+                ..p.clone()
+            };
             let args = other.ssh_command().1;
-            assert!(!args.iter().any(|a| a == "PubkeyAuthentication=no"), "auth={auth}");
-            assert!(!args.iter().any(|a| a.starts_with("PreferredAuthentications=")), "auth={auth}");
+            assert!(
+                !args.iter().any(|a| a == "PubkeyAuthentication=no"),
+                "auth={auth}"
+            );
+            assert!(
+                !args
+                    .iter()
+                    .any(|a| a.starts_with("PreferredAuthentications=")),
+                "auth={auth}"
+            );
         }
     }
 
@@ -1718,11 +1888,27 @@ shell = "/bin/sh"
         };
         assert_eq!(
             p.ssh_command().1,
-            vec!["-p", "22", "-l", "u", "-L", "8080:localhost:80", "-L", "5432:db.internal:5432", "h"]
+            vec![
+                "-p",
+                "22",
+                "-l",
+                "u",
+                "-L",
+                "8080:localhost:80",
+                "-L",
+                "5432:db.internal:5432",
+                "h"
+            ]
         );
-        let bad = Profile { local_forwards: vec!["8080".into()], ..p.clone() };
+        let bad = Profile {
+            local_forwards: vec!["8080".into()],
+            ..p.clone()
+        };
         assert!(bad.validate().unwrap_err().contains("端口转发"));
-        let bad_port = Profile { local_forwards: vec!["0:h:80".into()], ..p };
+        let bad_port = Profile {
+            local_forwards: vec!["0:h:80".into()],
+            ..p
+        };
         assert!(bad_port.validate().is_err());
     }
 
@@ -1781,27 +1967,45 @@ shell = "/bin/sh"
             ..Profile::default()
         };
         for spec in ["8080:localhost:80", "127.0.0.1:8080:localhost:80"] {
-            let p = Profile { remote_forwards: vec![spec.into()], ..base.clone() };
+            let p = Profile {
+                remote_forwards: vec![spec.into()],
+                ..base.clone()
+            };
             assert!(p.validate().is_ok(), "remote {spec}");
         }
         for spec in ["", "8080", "0:localhost:80", "8080:localhost:0", "a:b"] {
-            let p = Profile { remote_forwards: vec![spec.into()], ..base.clone() };
+            let p = Profile {
+                remote_forwards: vec![spec.into()],
+                ..base.clone()
+            };
             assert!(p.validate().is_err(), "remote 应拒绝 {spec:?}");
         }
         for spec in ["1080", "127.0.0.1:1080"] {
-            let p = Profile { dynamic_forwards: vec![spec.into()], ..base.clone() };
+            let p = Profile {
+                dynamic_forwards: vec![spec.into()],
+                ..base.clone()
+            };
             assert!(p.validate().is_ok(), "dynamic {spec}");
         }
         for spec in ["", "0", "127.0.0.1", "a:b:c"] {
-            let p = Profile { dynamic_forwards: vec![spec.into()], ..base.clone() };
+            let p = Profile {
+                dynamic_forwards: vec![spec.into()],
+                ..base.clone()
+            };
             assert!(p.validate().is_err(), "dynamic 应拒绝 {spec:?}");
         }
         for spec in ["", "user@jump:2222", "jump,jump2", "::1"] {
-            let p = Profile { proxy_jump: spec.into(), ..base.clone() };
+            let p = Profile {
+                proxy_jump: spec.into(),
+                ..base.clone()
+            };
             assert!(p.validate().is_ok(), "jump {spec:?}");
         }
         for spec in ["-oProxyCommand=evil", "jump host"] {
-            let p = Profile { proxy_jump: spec.into(), ..base.clone() };
+            let p = Profile {
+                proxy_jump: spec.into(),
+                ..base.clone()
+            };
             assert!(p.validate().is_err(), "jump 应拒绝 {spec:?}");
         }
     }
@@ -1863,7 +2067,13 @@ local_forwards = ["8080:localhost:80"]
             port: 23,
             ..Profile::default()
         };
-        assert_eq!(t.telnet_command(), ("telnet".to_string(), vec!["10.0.0.1".to_string(), "23".to_string()]));
+        assert_eq!(
+            t.telnet_command(),
+            (
+                "telnet".to_string(),
+                vec!["10.0.0.1".to_string(), "23".to_string()]
+            )
+        );
 
         let s = Profile {
             kind: "serial".into(),
@@ -1873,7 +2083,13 @@ local_forwards = ["8080:localhost:80"]
         };
         assert_eq!(
             s.serial_command(),
-            ("socat".to_string(), vec!["-,raw,echo=0".to_string(), "/dev/ttyUSB0,raw,echo=0,b115200".to_string()])
+            (
+                "socat".to_string(),
+                vec![
+                    "-,raw,echo=0".to_string(),
+                    "/dev/ttyUSB0,raw,echo=0,b115200".to_string()
+                ]
+            )
         );
     }
 
@@ -1919,7 +2135,13 @@ baud = 115200
 
     #[test]
     fn validate_by_kind() {
-        let mut ssh = Profile { name: "s".into(), kind: "ssh".into(), host: String::new(), user: String::new(), ..Profile::default() };
+        let mut ssh = Profile {
+            name: "s".into(),
+            kind: "ssh".into(),
+            host: String::new(),
+            user: String::new(),
+            ..Profile::default()
+        };
         assert!(ssh.validate().unwrap_err().contains("主机"));
         ssh.host = "example.com".into();
         ssh.user = "yt".into();
@@ -1933,17 +2155,28 @@ baud = 115200
         ssh.key_path = "/home/user/.ssh/id_ed25519".into();
         assert!(ssh.validate().is_ok());
 
-        let mut serial = Profile { name: "c".into(), kind: "serial".into(), ..Profile::default() };
+        let mut serial = Profile {
+            name: "c".into(),
+            kind: "serial".into(),
+            ..Profile::default()
+        };
         assert!(serial.validate().is_err());
         serial.serial_port = "/dev/ttyUSB0".into();
         assert!(serial.validate().is_ok());
 
-        let mut telnet = Profile { name: "t".into(), kind: "telnet".into(), ..Profile::default() };
+        let mut telnet = Profile {
+            name: "t".into(),
+            kind: "telnet".into(),
+            ..Profile::default()
+        };
         assert!(telnet.validate().is_err());
         telnet.host = "10.0.0.1".into();
         assert!(telnet.validate().is_ok());
 
-        let mut bogus = Profile { name: "x".into(), ..Profile::default() };
+        let mut bogus = Profile {
+            name: "x".into(),
+            ..Profile::default()
+        };
         bogus.kind = "carrier-pigeon".into();
         assert!(bogus.validate().unwrap_err().contains("未知"));
     }
@@ -2006,7 +2239,10 @@ env = []
             ..Profile::default()
         };
         let text = toml::to_string_pretty(&p).unwrap();
-        assert!(!text.contains("hunter2"), "序列化结果不能含明文密码: {text}");
+        assert!(
+            !text.contains("hunter2"),
+            "序列化结果不能含明文密码: {text}"
+        );
         assert!(text.contains("save_password = true"), "{text}");
         for line in text.lines() {
             if let Some((key, _)) = line.split_once('=') {
@@ -2032,7 +2268,10 @@ env = []
     #[test]
     fn filter_matches_name_host_kind_case_insensitively() {
         let profiles = vec![
-            Profile { name: "Work".into(), ..Profile::default() },
+            Profile {
+                name: "Work".into(),
+                ..Profile::default()
+            },
             Profile {
                 name: "Prod".into(),
                 kind: "ssh".into(),
@@ -2040,7 +2279,11 @@ env = []
                 user: "yt".into(),
                 ..Profile::default()
             },
-            Profile { name: "串口".into(), kind: "serial".into(), ..Profile::default() },
+            Profile {
+                name: "串口".into(),
+                kind: "serial".into(),
+                ..Profile::default()
+            },
         ];
         // 名字大小写不敏感
         assert_eq!(filter_indices(&profiles, "WORK"), vec![0]);
@@ -2077,7 +2320,13 @@ env = []
         let dir = tmpdir("duplicate");
         let path = dir.join("profiles.toml");
         let mut s = ProfileStore::default();
-        let a = s.add(Profile { name: "work".into(), shell: "/bin/zsh".into(), ..Profile::default() }).unwrap();
+        let a = s
+            .add(Profile {
+                name: "work".into(),
+                shell: "/bin/zsh".into(),
+                ..Profile::default()
+            })
+            .unwrap();
         let d1 = s.duplicate(a).unwrap();
         let d2 = s.duplicate(a).unwrap();
         assert_ne!(a, d1);
@@ -2099,8 +2348,14 @@ env = []
     #[test]
     fn duplicate_name_helper_handles_existing_copies() {
         let existing = vec![
-            Profile { name: "work (copy 1)".into(), ..Profile::default() },
-            Profile { name: "work (copy 2)".into(), ..Profile::default() },
+            Profile {
+                name: "work (copy 1)".into(),
+                ..Profile::default()
+            },
+            Profile {
+                name: "work (copy 2)".into(),
+                ..Profile::default()
+            },
         ];
         assert_eq!(duplicate_name("work", &existing), "work (copy 3)");
         assert_eq!(duplicate_name("  work  ", &[]), "work (copy 1)");
@@ -2195,12 +2450,20 @@ kind = "local"
         let store = ProfileStore::load_from(&path);
         assert_eq!(store.profiles[0].group, "");
         assert_eq!(store.profiles[0].effective_group(), None);
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), old, "旧文件不该被改写");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            old,
+            "旧文件不该被改写"
+        );
 
         // 新字段：add/update 去空白，落盘后原样读回。
         let mut s = ProfileStore::default();
         let id = s
-            .add(Profile { name: "work".into(), group: "  Team A  ".into(), ..Profile::default() })
+            .add(Profile {
+                name: "work".into(),
+                group: "  Team A  ".into(),
+                ..Profile::default()
+            })
             .unwrap();
         assert_eq!(s.get(id).unwrap().group, "Team A");
         assert_eq!(s.get(id).unwrap().effective_group(), Some("Team A"));
@@ -2218,11 +2481,30 @@ kind = "local"
     #[test]
     fn grouped_indices_orders_named_groups_then_ungrouped_and_filters() {
         let profiles = vec![
-            Profile { name: "alpha".into(), group: "Work".into(), ..Profile::default() },
-            Profile { name: "beta".into(), ..Profile::default() },
-            Profile { name: "gamma".into(), group: "work".into(), ..Profile::default() },
-            Profile { name: "delta".into(), group: "Lab".into(), ..Profile::default() },
-            Profile { name: "epsilon".into(), group: "Work".into(), ..Profile::default() },
+            Profile {
+                name: "alpha".into(),
+                group: "Work".into(),
+                ..Profile::default()
+            },
+            Profile {
+                name: "beta".into(),
+                ..Profile::default()
+            },
+            Profile {
+                name: "gamma".into(),
+                group: "work".into(),
+                ..Profile::default()
+            },
+            Profile {
+                name: "delta".into(),
+                group: "Lab".into(),
+                ..Profile::default()
+            },
+            Profile {
+                name: "epsilon".into(),
+                group: "Work".into(),
+                ..Profile::default()
+            },
             Profile {
                 name: "prod".into(),
                 group: "Lab".into(),
@@ -2273,7 +2555,12 @@ kind = "local"
                 ..Profile::default()
             })
             .unwrap();
-        store.add(Profile { name: "dev".into(), ..Profile::default() }).unwrap();
+        store
+            .add(Profile {
+                name: "dev".into(),
+                ..Profile::default()
+            })
+            .unwrap();
 
         let text = export_bundle(&store).expect("导出应成功");
         let bundle: ProfileBundle = toml::from_str(&text).expect("导出文件必须可解析");
@@ -2282,10 +2569,16 @@ kind = "local"
         assert_eq!(bundle.profiles.len(), 2);
         assert_eq!(bundle.vault_refs.len(), 1);
         let vault = &bundle.vault_refs[0];
-        assert_eq!((vault.profile.as_str(), vault.field.as_str()), ("prod", "password"));
+        assert_eq!(
+            (vault.profile.as_str(), vault.field.as_str()),
+            ("prod", "password")
+        );
         assert_eq!(vault.vault_key, "profile:1");
         assert!(!vault.exported, "导出文件不含凭据");
-        assert!(bundle.profiles.iter().all(|p| !p.save_password), "save_password 必须写 false");
+        assert!(
+            bundle.profiles.iter().all(|p| !p.save_password),
+            "save_password 必须写 false"
+        );
         assert!(bundle.profiles.iter().any(|p| p.group == "Ops"));
         assert!(
             !text.lines().any(|l| l.trim_start().starts_with("password")),
@@ -2318,14 +2611,23 @@ kind = "local"
         let text = toml::to_string_pretty(&bundle).unwrap();
 
         let mut target = ProfileStore::default();
-        target.add(Profile { name: "work".into(), ..Profile::default() }).unwrap();
+        target
+            .add(Profile {
+                name: "work".into(),
+                ..Profile::default()
+            })
+            .unwrap();
         let report = import_bundle(&text, &mut target).expect("合法导出文件应能导入");
         assert_eq!(report.added, 1);
         assert_eq!(report.renamed, 1);
         assert_eq!(report.skipped.len(), 1);
         assert_eq!(report.skipped[0].0, "broken-ssh");
         assert_eq!(target.profiles.len(), 2);
-        let imported = target.profiles.iter().find(|p| p.name == "work (copy 1)").unwrap();
+        let imported = target
+            .profiles
+            .iter()
+            .find(|p| p.name == "work (copy 1)")
+            .unwrap();
         assert_eq!(imported.group, "Team");
         assert_eq!(imported.shell, "/bin/zsh");
         assert!(!imported.save_password);

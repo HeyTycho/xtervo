@@ -27,7 +27,10 @@ pub fn cpu_forced() -> bool {
     static CPU: OnceLock<bool> = OnceLock::new();
     *CPU.get_or_init(|| {
         std::env::var("XTERVO_CPU").is_ok_and(|v| {
-            matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")
+            matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
         })
     })
 }
@@ -380,13 +383,13 @@ pub fn pane_image(
                 None => {
                     start = Some(row);
                     prev = row;
-                },
+                }
                 Some(_) if row == prev + 1 => prev = row,
                 Some(s) => {
                     ranges.push((s, prev - s + 1));
                     start = Some(row);
                     prev = row;
-                },
+                }
             }
         }
         if let Some(s) = start {
@@ -438,7 +441,10 @@ pub fn pane_image(
     UPLOAD_FRAMES.fetch_add(1, Ordering::Relaxed);
     UPLOAD_ROWS.fetch_add(uploaded_rows as u64, Ordering::Relaxed);
     UPLOAD_BYTES.fetch_add(uploaded_bytes, Ordering::Relaxed);
-    UPLOAD_NS.fetch_add(upload_started.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    UPLOAD_NS.fetch_add(
+        upload_started.elapsed().as_nanos() as u64,
+        Ordering::Relaxed,
+    );
 
     let image = match slint::Image::try_from(slot.texture.clone()) {
         Ok(image) => image,

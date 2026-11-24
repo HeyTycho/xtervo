@@ -108,12 +108,12 @@ impl OscScanner {
                     0x07 => {
                         out.push(CoreEvent::Bell);
                         State::Ground
-                    },
+                    }
                     0x1b => State::Escape,
                     0x9d => {
                         self.begin_osc();
                         State::Osc
-                    },
+                    }
                     0x90 | 0x98 | 0x9e | 0x9f => State::String,
                     0x9b => State::Csi,
                     _ => State::Ground,
@@ -122,7 +122,7 @@ impl OscScanner {
                     b']' => {
                         self.begin_osc();
                         State::Osc
-                    },
+                    }
                     b'[' => State::Csi,
                     b'P' | b'X' | b'^' | b'_' => State::String,
                     0x1b => State::Escape,
@@ -132,25 +132,25 @@ impl OscScanner {
                     0x07 => {
                         self.finish_osc(out);
                         State::Ground
-                    },
+                    }
                     0x1b => {
                         self.utf8_remaining = 0;
                         State::OscEscape
-                    },
+                    }
                     0x9c => {
                         self.finish_osc(out);
                         State::Ground
-                    },
+                    }
                     _ => {
                         self.push(b);
                         State::Osc
-                    },
+                    }
                 },
                 State::OscEscape => match b {
                     b'\\' => {
                         self.finish_osc(out);
                         State::Ground
-                    },
+                    }
                     0x1b => State::OscEscape,
                     // ESC 后面不是 `\`：整条 OSC 视为损坏并丢弃。若 b 是
                     // UTF-8 前导字节，记住后续续字节，别让 0x9B/0x9C 在
@@ -160,7 +160,7 @@ impl OscScanner {
                         self.overflow = false;
                         self.utf8_remaining = utf8_lead_len(b).unwrap_or(0);
                         State::Ground
-                    },
+                    }
                 },
                 State::Csi => {
                     if (0x40..=0x7e).contains(&b) {
@@ -168,7 +168,7 @@ impl OscScanner {
                     } else {
                         State::Csi
                     }
-                },
+                }
                 State::String => match b {
                     0x1b => State::StringEscape,
                     0x9c => State::Ground,
@@ -193,8 +193,11 @@ impl OscScanner {
             return;
         }
         // OSC 52 的内容（base64）允许到 ~1.4 MB；其余 OSC 仍限 16 KiB。
-        let limit =
-            if self.buf.starts_with(b"52;") { MAX_OSC52_OSC_BYTES } else { MAX_OSC_BYTES };
+        let limit = if self.buf.starts_with(b"52;") {
+            MAX_OSC52_OSC_BYTES
+        } else {
+            MAX_OSC_BYTES
+        };
         if self.buf.len() >= limit {
             // 超长序列直接丢弃，但仍继续吃到 terminator，避免污染下一条。
             self.overflow = true;
@@ -226,7 +229,10 @@ pub fn parse_osc(params: &[&[u8]]) -> Option<CoreEvent> {
         b"9" => parse_osc9(params),
         b"52" => parse_osc52(params),
         b"777" => parse_osc777(params),
-        b"7" => params.get(1).and_then(|uri| parse_cwd(uri)).map(CoreEvent::Cwd),
+        b"7" => params
+            .get(1)
+            .and_then(|uri| parse_cwd(uri))
+            .map(CoreEvent::Cwd),
         b"133" => parse_shell_mark(params).map(CoreEvent::Shell),
         _ => None,
     }
@@ -264,7 +270,10 @@ fn parse_osc9(params: &[&[u8]]) -> Option<CoreEvent> {
     if body.trim().is_empty() {
         return None;
     }
-    Some(CoreEvent::Notification(Notification { title: String::new(), body }))
+    Some(CoreEvent::Notification(Notification {
+        title: String::new(),
+        body,
+    }))
 }
 
 /// 解析进度参数，要求完整形态 `[9, 4, state, (percent)]`。
@@ -283,7 +292,10 @@ fn parse_progress(params: &[&[u8]]) -> Option<Progress> {
     // state 0 / 3 没有有意义的值；非法百分比只丢百分比，不丢状态。
     let percent = match state {
         ProgressState::Clear | ProgressState::Indeterminate => None,
-        _ => params.get(3).and_then(|p| parse_u8(p)).filter(|v| *v <= 100),
+        _ => params
+            .get(3)
+            .and_then(|p| parse_u8(p))
+            .filter(|v| *v <= 100),
     };
     Some(Progress { state, percent })
 }
@@ -293,7 +305,10 @@ fn parse_osc777(params: &[&[u8]]) -> Option<CoreEvent> {
     if !params.get(1).is_some_and(|p| *p == b"notify".as_slice()) {
         return None;
     }
-    let title = params.get(2).map(|p| String::from_utf8_lossy(p).into_owned()).unwrap_or_default();
+    let title = params
+        .get(2)
+        .map(|p| String::from_utf8_lossy(p).into_owned())
+        .unwrap_or_default();
     let body = params.get(3..).map(join_lossy).unwrap_or_default();
     if title.trim().is_empty() && body.trim().is_empty() {
         return None;
@@ -424,7 +439,7 @@ pub(crate) fn decode_base64_bounded(
         i += 4;
     }
     match end - i {
-        0 => {},
+        0 => {}
         2 => {
             let a = base64_value(input[i])?;
             let b = base64_value(input[i + 1])?;
@@ -432,7 +447,7 @@ pub(crate) fn decode_base64_bounded(
                 return None;
             }
             out.push((a << 2) | (b >> 4));
-        },
+        }
         3 => {
             let a = base64_value(input[i])?;
             let b = base64_value(input[i + 1])?;
@@ -442,7 +457,7 @@ pub(crate) fn decode_base64_bounded(
             }
             out.push((a << 2) | (b >> 4));
             out.push((b << 4) | (c >> 2));
-        },
+        }
         _ => return None,
     }
     if out.len() > max_bytes {
@@ -465,8 +480,7 @@ fn truncate_utf8(text: &str, max: usize) -> &str {
 
 /// 标准 base64 编码（带 `=` 补位），仅用于 OSC 52 查询响应与测试。
 pub fn encode_base64(input: &[u8]) -> String {
-    const TABLE: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
     for chunk in input.chunks(3) {
         let b0 = chunk[0] as u32;
@@ -589,12 +603,30 @@ mod tests {
 
     #[test]
     fn osc94_missing_and_bad_percent() {
-        assert_eq!(scan(b"\x1b]9;4;1\x07"), vec![progress(ProgressState::Normal, None)]);
-        assert_eq!(scan(b"\x1b]9;4;1;\x07"), vec![progress(ProgressState::Normal, None)]);
-        assert_eq!(scan(b"\x1b]9;4;1;101\x07"), vec![progress(ProgressState::Normal, None)]);
-        assert_eq!(scan(b"\x1b]9;4;1;-1\x07"), vec![progress(ProgressState::Normal, None)]);
-        assert_eq!(scan(b"\x1b]9;4;1;abc\x07"), vec![progress(ProgressState::Normal, None)]);
-        assert_eq!(scan(b"\x1b]9;4;1;1;2;3\x07"), vec![progress(ProgressState::Normal, Some(1))]);
+        assert_eq!(
+            scan(b"\x1b]9;4;1\x07"),
+            vec![progress(ProgressState::Normal, None)]
+        );
+        assert_eq!(
+            scan(b"\x1b]9;4;1;\x07"),
+            vec![progress(ProgressState::Normal, None)]
+        );
+        assert_eq!(
+            scan(b"\x1b]9;4;1;101\x07"),
+            vec![progress(ProgressState::Normal, None)]
+        );
+        assert_eq!(
+            scan(b"\x1b]9;4;1;-1\x07"),
+            vec![progress(ProgressState::Normal, None)]
+        );
+        assert_eq!(
+            scan(b"\x1b]9;4;1;abc\x07"),
+            vec![progress(ProgressState::Normal, None)]
+        );
+        assert_eq!(
+            scan(b"\x1b]9;4;1;1;2;3\x07"),
+            vec![progress(ProgressState::Normal, Some(1))]
+        );
     }
 
     #[test]
@@ -763,29 +795,48 @@ mod tests {
 
     #[test]
     fn osc133_shell_integration_marks() {
-        assert_eq!(scan(b"\x1b]133;A\x07"), vec![CoreEvent::Shell(ShellMark::PromptStart)]);
-        assert_eq!(scan(b"\x1b]133;B\x07"), vec![CoreEvent::Shell(ShellMark::InputStart)]);
-        assert_eq!(scan(b"\x1b]133;C\x07"), vec![CoreEvent::Shell(ShellMark::OutputStart)]);
+        assert_eq!(
+            scan(b"\x1b]133;A\x07"),
+            vec![CoreEvent::Shell(ShellMark::PromptStart)]
+        );
+        assert_eq!(
+            scan(b"\x1b]133;B\x07"),
+            vec![CoreEvent::Shell(ShellMark::InputStart)]
+        );
+        assert_eq!(
+            scan(b"\x1b]133;C\x07"),
+            vec![CoreEvent::Shell(ShellMark::OutputStart)]
+        );
         assert_eq!(
             scan(b"\x1b]133;D;0\x07"),
-            vec![CoreEvent::Shell(ShellMark::CommandFinished { exit_code: Some(0) })]
+            vec![CoreEvent::Shell(ShellMark::CommandFinished {
+                exit_code: Some(0)
+            })]
         );
         assert_eq!(
             scan(b"\x1b]133;D;130\x1b\\"),
-            vec![CoreEvent::Shell(ShellMark::CommandFinished { exit_code: Some(130) })]
+            vec![CoreEvent::Shell(ShellMark::CommandFinished {
+                exit_code: Some(130)
+            })]
         );
         // 没有退出码 / 非法退出码 / 未知子命令：要么 None 要么忽略。
         assert_eq!(
             scan(b"\x1b]133;D\x07"),
-            vec![CoreEvent::Shell(ShellMark::CommandFinished { exit_code: None })]
+            vec![CoreEvent::Shell(ShellMark::CommandFinished {
+                exit_code: None
+            })]
         );
         assert_eq!(
             scan(b"\x1b]133;D;abc\x07"),
-            vec![CoreEvent::Shell(ShellMark::CommandFinished { exit_code: None })]
+            vec![CoreEvent::Shell(ShellMark::CommandFinished {
+                exit_code: None
+            })]
         );
         assert_eq!(
             scan(b"\x1b]133;D;9999\x07"),
-            vec![CoreEvent::Shell(ShellMark::CommandFinished { exit_code: None })]
+            vec![CoreEvent::Shell(ShellMark::CommandFinished {
+                exit_code: None
+            })]
         );
         assert!(scan(b"\x1b]133;P;k=v\x07").is_empty());
         // 跨 chunk 的 133 标记也要拼起来。
@@ -794,14 +845,22 @@ mod tests {
         scanner.feed(b"\x1b]133;D;", &mut out);
         assert!(out.is_empty());
         scanner.feed(b"7\x07", &mut out);
-        assert_eq!(out, vec![CoreEvent::Shell(ShellMark::CommandFinished { exit_code: Some(7) })]);
+        assert_eq!(
+            out,
+            vec![CoreEvent::Shell(ShellMark::CommandFinished {
+                exit_code: Some(7)
+            })]
+        );
     }
 
     #[test]
     fn unrelated_osc_and_invalid_utf8_are_ignored() {
         assert!(scan(b"\x1b]0;window title\x07").is_empty());
         // OSC 133 已接入 shell integration 事件流（本轮行为变更，旧断言为 is_empty）。
-        assert_eq!(scan(b"\x1b]133;A\x07"), vec![CoreEvent::Shell(ShellMark::PromptStart)]);
+        assert_eq!(
+            scan(b"\x1b]133;A\x07"),
+            vec![CoreEvent::Shell(ShellMark::PromptStart)]
+        );
         // 非 UTF-8 正文用替换字符，不 panic
         assert_eq!(
             scan(b"\x1b]9;ok\xff\x07"),
@@ -865,19 +924,27 @@ mod tests {
     fn osc52_query_and_clear() {
         assert_eq!(
             scan(b"\x1b]52;c;?\x07"),
-            vec![clipboard(ClipboardRequest::Load { selection: ClipboardSelection::Clipboard })]
+            vec![clipboard(ClipboardRequest::Load {
+                selection: ClipboardSelection::Clipboard
+            })]
         );
         assert_eq!(
             scan(b"\x1b]52;p;?\x1b\\"),
-            vec![clipboard(ClipboardRequest::Load { selection: ClipboardSelection::Primary })]
+            vec![clipboard(ClipboardRequest::Load {
+                selection: ClipboardSelection::Primary
+            })]
         );
         assert_eq!(
             scan(b"\x1b]52;c;\x07"),
-            vec![clipboard(ClipboardRequest::Clear { selection: ClipboardSelection::Clipboard })]
+            vec![clipboard(ClipboardRequest::Clear {
+                selection: ClipboardSelection::Clipboard
+            })]
         );
         assert_eq!(
             scan(b"\x1b]52;s;\x07"),
-            vec![clipboard(ClipboardRequest::Clear { selection: ClipboardSelection::Primary })]
+            vec![clipboard(ClipboardRequest::Clear {
+                selection: ClipboardSelection::Primary
+            })]
         );
     }
 

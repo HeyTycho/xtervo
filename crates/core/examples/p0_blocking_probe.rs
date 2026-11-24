@@ -59,7 +59,7 @@ fn main() {
         Err(_) => {
             println!("input_not_started=true");
             std::process::exit(0);
-        },
+        }
     }
     std::thread::sleep(Duration::from_secs(1));
 

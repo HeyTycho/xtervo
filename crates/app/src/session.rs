@@ -707,7 +707,10 @@ fn bump_crash_streak_at(path: &Path) -> u8 {
         .map(|text| {
             let mut parts = text.split_whitespace();
             let count = parts.next().and_then(|v| v.parse::<u8>().ok()).unwrap_or(0);
-            let at = parts.next().and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+            let at = parts
+                .next()
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(0);
             (count, at)
         })
         .unwrap_or((0, 0));
@@ -804,19 +807,24 @@ mod tests {
     #[test]
     fn legacy_geometry_without_position_flag_is_position_known() {
         // 旧版本 session 没有 position_known 字段；历史数据来自 X11，必须保留位置。
-        let parsed: WindowGeometry =
-            toml::from_str("x = 10\ny = 20\nw = 800\nh = 600\n").unwrap();
+        let parsed: WindowGeometry = toml::from_str("x = 10\ny = 20\nw = 800\nh = 600\n").unwrap();
         assert!(parsed.position_known);
         assert_eq!(parsed, geometry(10, 20, 800, 600));
     }
 
     #[test]
     fn tab_title_lock_is_additive_and_defaults_false() {
-        let leaf = Tree::Leaf { cwd: None, profile_id: None };
+        let leaf = Tree::Leaf {
+            cwd: None,
+            profile_id: None,
+        };
         let mut t = tab("x", 0, false, leaf.clone());
         assert!(!t.title_locked);
         let plain = toml::to_string(&t).unwrap();
-        assert!(!plain.contains("title_locked"), "false 不写出，保持旧格式: {plain}");
+        assert!(
+            !plain.contains("title_locked"),
+            "false 不写出，保持旧格式: {plain}"
+        );
 
         t.title_locked = true;
         let locked = toml::to_string(&t).unwrap();
@@ -828,10 +836,8 @@ mod tests {
 
     #[test]
     fn wayland_geometry_roundtrips_position_unknown() {
-        let parsed: WindowGeometry = toml::from_str(
-            "x = 0\ny = 0\nw = 800\nh = 600\nposition_known = false\n",
-        )
-        .unwrap();
+        let parsed: WindowGeometry =
+            toml::from_str("x = 0\ny = 0\nw = 800\nh = 600\nposition_known = false\n").unwrap();
         assert!(!parsed.position_known);
         assert!(parsed.is_known());
     }
@@ -1559,15 +1565,13 @@ mod tests {
             save_v2_to(&path, &good).unwrap();
             let before = std::fs::read(&path).unwrap();
 
-            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o500))
-                .unwrap();
+            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o500)).unwrap();
             let newer = SnapshotV2 {
                 version: VERSION,
                 windows: vec![window(2, WindowGeometry::UNKNOWN, false, 0, Vec::new())],
             };
             let error = save_v2_to(&path, &newer).unwrap_err();
-            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))
-                .unwrap();
+            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
 
             assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
             assert_eq!(std::fs::read(&path).unwrap(), before, "旧快照必须原样保留");

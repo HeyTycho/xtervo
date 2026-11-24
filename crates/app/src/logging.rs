@@ -29,8 +29,13 @@ pub fn dir() -> PathBuf {
     if let Some(p) = std::env::var_os("XDG_STATE_HOME") {
         return PathBuf::from(p).join("xtervo").join("logs");
     }
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
-    home.join(".local").join("state").join("xtervo").join("logs")
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    home.join(".local")
+        .join("state")
+        .join("xtervo")
+        .join("logs")
 }
 
 pub fn path() -> Option<PathBuf> {
@@ -88,7 +93,7 @@ pub fn init() {
                 let _ = LOG_PATH.set(path.clone());
                 tee_stderr(&path);
                 eprintln!("[log] 日志文件: {}", path.display());
-            },
+            }
             Err(e) => eprintln!("[log] 打开日志失败 {}: {e}", path.display()),
         }
     });
@@ -108,14 +113,24 @@ pub fn restore_stderr() {
 
 /// 最后 `n` 行（诊断用；文件很小，直接读）。
 pub fn tail(n: usize) -> Vec<String> {
-    let Some(path) = path() else { return Vec::new() };
-    let Ok(text) = fs::read_to_string(path) else { return Vec::new() };
+    let Some(path) = path() else {
+        return Vec::new();
+    };
+    let Ok(text) = fs::read_to_string(path) else {
+        return Vec::new();
+    };
     let lines: Vec<&str> = text.lines().collect();
-    lines[lines.len().saturating_sub(n)..].iter().map(|s| s.to_string()).collect()
+    lines[lines.len().saturating_sub(n)..]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
 }
 
 fn now_secs() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 /// 当前 epoch 毫秒。
@@ -123,7 +138,10 @@ fn now_secs() -> u64 {
 /// 只给“事件到达/UI 处理”这类延迟日志用：测试脚本在同机用
 /// `date +%s%3N` 打点，两边时间戳可直接相减得到端到端延迟。
 pub fn now_ms() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 fn rotate(dir: &Path) {
@@ -133,7 +151,11 @@ fn rotate(dir: &Path) {
         .filter_map(|e| {
             let p = e.path();
             let name = p.file_name()?.to_str()?;
-            let stamp = name.strip_prefix("xtervo-")?.strip_suffix(".log")?.parse().ok()?;
+            let stamp = name
+                .strip_prefix("xtervo-")?
+                .strip_suffix(".log")?
+                .parse()
+                .ok()?;
             Some((stamp, p))
         })
         .collect();
@@ -169,23 +191,29 @@ fn tee_stderr(path: &Path) {
         libc::close(fds[1]);
         let read_fd = fds[0];
         let log_path = path.to_path_buf();
-        let spawned = std::thread::Builder::new().name("log-tee".into()).spawn(move || {
-            let mut pipe = File::from_raw_fd(read_fd);
-            let mut orig = File::from_raw_fd(saved);
-            let mut log = OpenOptions::new().create(true).append(true).open(&log_path).ok();
-            let mut buf = [0u8; 8192];
-            loop {
-                match std::io::Read::read(&mut pipe, &mut buf) {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => {
-                        let _ = orig.write_all(&buf[..n]);
-                        if let Some(f) = log.as_mut() {
-                            let _ = f.write_all(&buf[..n]);
+        let spawned = std::thread::Builder::new()
+            .name("log-tee".into())
+            .spawn(move || {
+                let mut pipe = File::from_raw_fd(read_fd);
+                let mut orig = File::from_raw_fd(saved);
+                let mut log = OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&log_path)
+                    .ok();
+                let mut buf = [0u8; 8192];
+                loop {
+                    match std::io::Read::read(&mut pipe, &mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            let _ = orig.write_all(&buf[..n]);
+                            if let Some(f) = log.as_mut() {
+                                let _ = f.write_all(&buf[..n]);
+                            }
                         }
-                    },
+                    }
                 }
-            }
-        });
+            });
         if let Err(e) = spawned {
             // 线程起不来就恢复 stderr，避免写满 pipe 后卡死。
             eprintln!("[log] tee 线程启动失败: {e}");

@@ -389,7 +389,6 @@ pub struct TextGeometry {
     pub placeholder_quads: u64,
 }
 
-
 /// A text frame that has been built and uploaded, but not yet drawn.
 ///
 /// This is the staging primitive behind [`GpuTextRenderer`]'s normal
@@ -583,10 +582,7 @@ fn push_placeholder(
         [x0, y0, thickness, height],
         [x0 + width - thickness, y0, thickness, height],
     ] {
-        frame.solids.push(SolidInstance {
-            rect,
-            color,
-        });
+        frame.solids.push(SolidInstance { rect, color });
     }
     let _ = (inner_w, inner_h);
 }
@@ -680,13 +676,8 @@ fn build_frame(
                     // Combining mark / VS / ZWJ: no advance, center on the last
                     // base glyph's ink like the CPU renderer.
                     if let Some(center) = base_center {
-                        let ensured = ensure_glyph(
-                            atlas,
-                            ch,
-                            layout.font_size_px,
-                            style,
-                            &mut frame,
-                        )?;
+                        let ensured =
+                            ensure_glyph(atlas, ch, layout.font_size_px, style, &mut frame)?;
                         if let Some(slot) = ensured.slot {
                             let mark_x = center - slot.w as f32 / 2.0;
                             push_glyph_quad(
@@ -717,8 +708,7 @@ fn build_frame(
                 let x = x0 + advance_index as f32 * layout.cell_width;
                 advance_index += cells as i32;
 
-                let ensured =
-                    ensure_glyph(atlas, ch, layout.font_size_px, style, &mut frame)?;
+                let ensured = ensure_glyph(atlas, ch, layout.font_size_px, style, &mut frame)?;
                 match ensured.slot {
                     Some(slot) if !slot.is_empty() => {
                         // Center per-cell glyphs inside their span, matching
@@ -872,9 +862,8 @@ impl GpuTextRenderer {
         bold_italic: Option<&std::path::Path>,
         config: AtlasConfig,
     ) -> Result<Self, AtlasError> {
-        let atlas = GlyphAtlas::from_paths(
-            &device, &queue, regular, bold, italic, bold_italic, config,
-        )?;
+        let atlas =
+            GlyphAtlas::from_paths(&device, &queue, regular, bold, italic, bold_italic, config)?;
         Self::with_atlas(device, queue, atlas)
     }
 

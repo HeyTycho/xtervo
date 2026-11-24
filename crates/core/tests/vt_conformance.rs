@@ -77,9 +77,7 @@ fn sgr_basic_colors_resolve_to_palette() {
 
 #[test]
 fn sgr_256_and_truecolor() {
-    let (_h, f) = run(
-        "printf '\\033[38;5;196mX\\033[38;2;1;2;3mT\\033[0mN'; printf END",
-    );
+    let (_h, f) = run("printf '\\033[38;5;196mX\\033[38;2;1;2;3mT\\033[0mN'; printf END");
     assert_eq!(f.cell(0, 0).fg, 0x00ff0000, "256 色 196 应为纯红");
     assert_eq!(f.cell(0, 1).fg, 0x00010203, "truecolor 应原样透传");
     assert_eq!(f.cell(0, 2).fg, 0x00c0caf5);
@@ -131,7 +129,10 @@ fn alternate_screen_mode_roundtrip() {
         "printf 'MAIN'; printf '\\033[?1049h'; printf 'ALT'; printf '\\033[?1049l'; printf END",
     );
     let mode = TermMode::from_bits_truncate(f.mode);
-    assert!(!mode.contains(TermMode::ALT_SCREEN), "退出备用屏后模式位未清除");
+    assert!(
+        !mode.contains(TermMode::ALT_SCREEN),
+        "退出备用屏后模式位未清除"
+    );
     // 主屏内容仍应该是 MAIN（备用屏期间写的不该留在主屏）
     let line: String = f.row(0).iter().map(|c| c.char()).collect();
     assert!(line.starts_with("MAIN"), "主屏内容丢失: {line:?}");
@@ -142,7 +143,10 @@ fn alternate_screen_mode_roundtrip() {
 fn bracketed_paste_mode_bit() {
     let (_h, f) = run("printf '\\033[?2004h'; printf END");
     let mode = TermMode::from_bits_truncate(f.mode);
-    assert!(mode.contains(TermMode::BRACKETED_PASTE), "bracketed paste 模式未置位");
+    assert!(
+        mode.contains(TermMode::BRACKETED_PASTE),
+        "bracketed paste 模式未置位"
+    );
 }
 
 #[test]
@@ -217,10 +221,19 @@ fn url_at_is_not_shifted_by_wide_or_combining_chars() {
     assert!(frame.cell(0, 3).has(flags::WIDE_CHAR_SPACER));
     assert_eq!(cell_text(&frame, 0, 4), "文");
     assert_eq!(cell_text(&frame, 0, 7), "h");
-    assert_eq!(frame.url_at(0, 7).as_deref(), Some("https://example.com/路径"));
+    assert_eq!(
+        frame.url_at(0, 7).as_deref(),
+        Some("https://example.com/路径")
+    );
     // 宽字符右半边的 spacer 也要映射回 URL 内（URL 路径本身可以是中文）。
-    assert_eq!(frame.url_at(0, 29).as_deref(), Some("https://example.com/路径"));
-    assert_eq!(frame.url_at(0, 30).as_deref(), Some("https://example.com/路径"));
+    assert_eq!(
+        frame.url_at(0, 29).as_deref(),
+        Some("https://example.com/路径")
+    );
+    assert_eq!(
+        frame.url_at(0, 30).as_deref(),
+        Some("https://example.com/路径")
+    );
     // 空格、中文前缀、下一行都不是 URL。
     assert_eq!(frame.url_at(0, 1), None);
     assert_eq!(frame.url_at(0, 6), None);

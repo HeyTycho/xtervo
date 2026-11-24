@@ -74,7 +74,10 @@ pub enum ShellMark {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ClipboardRequest {
     /// `OSC 52;Pc;BASE64`：写入文本。
-    Store { selection: ClipboardSelection, text: String },
+    Store {
+        selection: ClipboardSelection,
+        text: String,
+    },
     /// `OSC 52;Pc;?`：读取剪贴板，UI 需用 `PaneHandle::clipboard_reply` 回写 PTY。
     Load { selection: ClipboardSelection },
     /// `OSC 52;Pc;`：清空。
@@ -124,8 +127,8 @@ impl WakeSignal {
     #[inline]
     pub fn notify(&self) {
         match self.tx.try_send(()) {
-            Ok(()) | Err(TrySendError::Full(())) => {},
-            Err(TrySendError::Disconnected(())) => {},
+            Ok(()) | Err(TrySendError::Full(())) => {}
+            Err(TrySendError::Disconnected(())) => {}
         }
     }
 }
@@ -162,9 +165,7 @@ impl EventSink {
     ///
     /// `wake` 容量 1，事件洪峰只会合并成一次通知；UI 收到唤醒后必须
     /// **drain 到空**（见 `PaneHandle::drain_events`），不能只处理一条。
-    pub fn new_with_wake(
-        capacity: usize,
-    ) -> (Self, Receiver<CoreEvent>, Receiver<()>) {
+    pub fn new_with_wake(capacity: usize) -> (Self, Receiver<CoreEvent>, Receiver<()>) {
         let (wake, wake_rx) = WakeSignal::new();
         let (tx, rx) = bounded(capacity);
         (
@@ -201,11 +202,11 @@ impl EventSink {
                 if let Some(wake) = &self.wake {
                     wake.notify();
                 }
-            },
+            }
             Err(TrySendError::Full(_)) => {
                 self.dropped.fetch_add(1, Ordering::Relaxed);
-            },
-            Err(TrySendError::Disconnected(_)) => {},
+            }
+            Err(TrySendError::Disconnected(_)) => {}
         }
     }
 

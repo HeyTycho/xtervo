@@ -63,7 +63,9 @@ pub struct TransportShutdown {
 
 impl TransportShutdown {
     pub fn new(shutdown: impl Fn() + Send + Sync + 'static) -> Self {
-        Self { shutdown: Box::new(shutdown) }
+        Self {
+            shutdown: Box::new(shutdown),
+        }
     }
 
     /// 关闭底层通道。重复调用必须安全。
@@ -136,7 +138,8 @@ struct SocketPairControl {
 
 impl TransportControl for SocketPairControl {
     fn resize(&mut self, cols: u16, rows: u16) {
-        self.last_resize.store(pack_resize(cols, rows), Ordering::Relaxed);
+        self.last_resize
+            .store(pack_resize(cols, rows), Ordering::Relaxed);
         self.size.store(true, Ordering::Relaxed);
     }
 
@@ -157,7 +160,8 @@ impl PaneTransport for SocketPairTransport {
     }
 
     fn resize(&mut self, cols: u16, rows: u16) {
-        self.last_resize.store(pack_resize(cols, rows), Ordering::Relaxed);
+        self.last_resize
+            .store(pack_resize(cols, rows), Ordering::Relaxed);
         self.size.store(true, Ordering::Relaxed);
     }
 
@@ -168,14 +172,22 @@ impl PaneTransport for SocketPairTransport {
     fn into_halves(self: Box<Self>) -> io::Result<TransportHalves> {
         // 读半边与写半边各持一个 fd；控制半边与独立 shutdown 句柄共享
         // 第三个 fd（Arc），不额外多占一个 fd。
-        let SocketPairTransport { stream, size, last_resize } = *self;
+        let SocketPairTransport {
+            stream,
+            size,
+            last_resize,
+        } = *self;
         let reader = stream.try_clone()?;
         let control_stream = Arc::new(stream.try_clone()?);
         let shutdown_stream = control_stream.clone();
         Ok(TransportHalves {
             reader: Box::new(reader),
             writer: Box::new(stream),
-            control: Box::new(SocketPairControl { stream: control_stream, size, last_resize }),
+            control: Box::new(SocketPairControl {
+                stream: control_stream,
+                size,
+                last_resize,
+            }),
             shutdown: TransportShutdown::new(move || {
                 let _ = shutdown_stream.shutdown(std::net::Shutdown::Both);
             }),
@@ -204,11 +216,7 @@ pub struct SplitTransport<R, W> {
 
 impl<R, W> SplitTransport<R, W> {
     /// `shutdown` 必须真的关闭底层读通道（不能只置标志）。
-    pub fn new(
-        reader: R,
-        writer: W,
-        shutdown: impl Fn() + Send + Sync + 'static,
-    ) -> Self {
+    pub fn new(reader: R, writer: W, shutdown: impl Fn() + Send + Sync + 'static) -> Self {
         Self {
             reader,
             writer,
@@ -271,7 +279,13 @@ impl<R: std::io::Read + Send + 'static, W: std::io::Write + Send + 'static> Pane
     }
 
     fn into_halves(self: Box<Self>) -> io::Result<TransportHalves> {
-        let SplitTransport { reader, writer, size, closed, shutdown } = *self;
+        let SplitTransport {
+            reader,
+            writer,
+            size,
+            closed,
+            shutdown,
+        } = *self;
         let control_shutdown = shutdown.clone();
         Ok(TransportHalves {
             reader: Box::new(reader),
@@ -356,8 +370,12 @@ mod tests {
         let t = SplitTransport::new(ours.try_clone().unwrap(), ours, move || {
             let _ = wake.shutdown(std::net::Shutdown::Both);
         });
-        let TransportHalves { reader, writer, mut control, shutdown: _ } =
-            Box::new(t).into_halves().unwrap();
+        let TransportHalves {
+            reader,
+            writer,
+            mut control,
+            shutdown: _,
+        } = Box::new(t).into_halves().unwrap();
 
         let (tx, rx) = std::sync::mpsc::channel();
         let reader_thread = std::thread::spawn(move || {
@@ -374,7 +392,7 @@ mod tests {
         drop(writer);
         drop(theirs);
         match result {
-            Ok(Ok(0)) | Ok(Err(_)) => {},
+            Ok(Ok(0)) | Ok(Err(_)) => {}
             Ok(Ok(n)) => panic!("阻塞读意外返回 {n} 字节"),
             Err(e) => panic!("control.close() 没有唤醒阻塞中的 read（1s 超时）: {e}"),
         }
@@ -390,8 +408,12 @@ mod tests {
         let t = SplitTransport::new(ours.try_clone().unwrap(), ours, move || {
             let _ = wake.shutdown(std::net::Shutdown::Both);
         });
-        let TransportHalves { reader, writer, control, shutdown } =
-            Box::new(t).into_halves().unwrap();
+        let TransportHalves {
+            reader,
+            writer,
+            control,
+            shutdown,
+        } = Box::new(t).into_halves().unwrap();
 
         let (tx, rx) = std::sync::mpsc::channel();
         let reader_thread = std::thread::spawn(move || {
@@ -409,7 +431,7 @@ mod tests {
         drop(control);
         drop(theirs);
         match result {
-            Ok(Ok(0)) | Ok(Err(_)) => {},
+            Ok(Ok(0)) | Ok(Err(_)) => {}
             Ok(Ok(n)) => panic!("阻塞读意外返回 {n} 字节"),
             Err(e) => panic!("TransportHalves::shutdown 没有唤醒阻塞 read（1s 超时）: {e}"),
         }
@@ -429,7 +451,7 @@ mod tests {
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                     assert!(Instant::now() < deadline, "EOF 应在超时前到达");
                     continue;
-                },
+                }
                 Err(e) => panic!("unexpected read error: {e}"),
             }
         }

@@ -43,7 +43,7 @@ fn main() {
             other => {
                 eprintln!("未知按键: {other}");
                 return;
-            },
+            }
         };
     }
     let ctrl = args.iter().any(|a| a == "--ctrl");
@@ -55,7 +55,11 @@ fn main() {
     let root = setup.roots[screen_num].root;
     let (min, max) = (setup.min_keycode, setup.max_keycode);
     let count = max.wrapping_sub(min).wrapping_add(1);
-    let reply = conn.get_keyboard_mapping(min, count).expect("mapping").reply().expect("reply");
+    let reply = conn
+        .get_keyboard_mapping(min, count)
+        .expect("mapping")
+        .reply()
+        .expect("reply");
     let per = reply.keysyms_per_keycode as usize;
 
     // 返回 (keycode, 是否需要 Shift)；冒号、大写字母等只在 level 1 上。
@@ -63,18 +67,18 @@ fn main() {
         let sym = match ch {
             '\n' | '\r' => 0xff0d, // Return
             '\t' => 0xff09,
-            '\u{8}' => 0xff08,     // BackSpace
-            '\u{7f}' => 0xffff,    // Delete（winit 上报为 U+007F）
-            '\u{1b}' => 0xff1b,    // Escape
-            '\u{F70E}' => 0xffc8,  // F11
-            '\u{F705}' => 0xffbf,  // F2
-            '\u{F70F}' => 0xffc9,  // F12
-            '\u{F72C}' => 0xff55,  // Page_Up
-            '\u{F72D}' => 0xff56,  // Page_Down
-            '\u{F700}' => 0xff52,  // Up
-            '\u{F701}' => 0xff54,  // Down
-            '\u{F702}' => 0xff51,  // Left
-            '\u{F703}' => 0xff53,  // Right
+            '\u{8}' => 0xff08,    // BackSpace
+            '\u{7f}' => 0xffff,   // Delete（winit 上报为 U+007F）
+            '\u{1b}' => 0xff1b,   // Escape
+            '\u{F70E}' => 0xffc8, // F11
+            '\u{F705}' => 0xffbf, // F2
+            '\u{F70F}' => 0xffc9, // F12
+            '\u{F72C}' => 0xff55, // Page_Up
+            '\u{F72D}' => 0xff56, // Page_Down
+            '\u{F700}' => 0xff52, // Up
+            '\u{F701}' => 0xff54, // Down
+            '\u{F702}' => 0xff51, // Left
+            '\u{F703}' => 0xff53, // Right
             _ => ch as u32,
         };
         reply

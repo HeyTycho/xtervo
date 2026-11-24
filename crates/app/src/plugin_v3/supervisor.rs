@@ -296,9 +296,7 @@ impl InstanceExit {
     fn retryable(self) -> bool {
         matches!(
             self,
-            InstanceExit::Crash
-                | InstanceExit::Protocol
-                | InstanceExit::CommandTimeout
+            InstanceExit::Crash | InstanceExit::Protocol | InstanceExit::CommandTimeout
         )
     }
 }
@@ -345,9 +343,9 @@ enum StdinSendError {
 impl StdinSendError {
     fn message(&self, plugin_id: &str) -> String {
         match self {
-            Self::QueueFull => format!(
-                "插件 {plugin_id} 未读取 stdin，写队列已满（{STDIN_QUEUE_CAPACITY} 条）"
-            ),
+            Self::QueueFull => {
+                format!("插件 {plugin_id} 未读取 stdin，写队列已满（{STDIN_QUEUE_CAPACITY} 条）")
+            }
             Self::Closed => format!("插件 {plugin_id} stdin 写线程已退出"),
             Self::TooLarge(reason) => reason.clone(),
         }
@@ -443,10 +441,22 @@ pub fn spawn_supervisor(
     std::thread::Builder::new()
         .name(thread_name)
         .spawn(move || {
-            run_supervisor(config, rx, runtime_thread, stop_thread, shared_for_thread, options);
+            run_supervisor(
+                config,
+                rx,
+                runtime_thread,
+                stop_thread,
+                shared_for_thread,
+                options,
+            );
         })
         .map_err(|e| format!("无法创建插件 supervisor 线程: {e}"))?;
-    Ok(SupervisorHandle { id, tx, runtime, stop })
+    Ok(SupervisorHandle {
+        id,
+        tx,
+        runtime,
+        stop,
+    })
 }
 
 fn run_supervisor(
@@ -461,13 +471,24 @@ fn run_supervisor(
     let mut last_error = String::new();
     loop {
         if stop.load(Ordering::SeqCst) {
-            publish_runtime(&runtime, &shared, Some(Phase::Stopped), "", restart_count, None);
+            publish_runtime(
+                &runtime,
+                &shared,
+                Some(Phase::Stopped),
+                "",
+                restart_count,
+                None,
+            );
             break;
         }
         publish_runtime(
             &runtime,
             &shared,
-            Some(if restart_count == 0 { Phase::Starting } else { Phase::Restarting }),
+            Some(if restart_count == 0 {
+                Phase::Starting
+            } else {
+                Phase::Restarting
+            }),
             if restart_count == 0 { "" } else { &last_error },
             restart_count,
             None,
@@ -483,21 +504,28 @@ fn run_supervisor(
         );
         match exit {
             InstanceExit::Shutdown => {
-                publish_runtime(&runtime, &shared, Some(Phase::Stopped), "", restart_count, None);
+                publish_runtime(
+                    &runtime,
+                    &shared,
+                    Some(Phase::Stopped),
+                    "",
+                    restart_count,
+                    None,
+                );
                 break;
-            },
+            }
             InstanceExit::Reload => {
                 restart_count = 0;
                 last_error.clear();
                 eprintln!("[plugin-v3] {}: reload，重启插件进程", config.id);
                 continue;
-            },
+            }
             InstanceExit::Restart => {
                 restart_count = 0;
                 last_error.clear();
                 eprintln!("[plugin-v3] {}: 手动 restart", config.id);
                 continue;
-            },
+            }
             InstanceExit::SpawnError => {
                 let error = take_runtime_error(&runtime);
                 publish_runtime(
@@ -510,7 +538,7 @@ fn run_supervisor(
                 );
                 drain_unavailable(&rx, "插件启动失败");
                 break;
-            },
+            }
             exit if exit.retryable() => {
                 let error = take_runtime_error(&runtime);
                 last_error = error.clone();
@@ -521,13 +549,7 @@ fn run_supervisor(
                         error, options.max_restarts
                     );
                     eprintln!("[plugin-v3] {}: {message}", config.id);
-                    record_activity(
-                        &shared,
-                        &config.id,
-                        "supervisor",
-                        "failed",
-                        &message,
-                    );
+                    record_activity(&shared, &config.id, "supervisor", "failed", &message);
                     publish_runtime(
                         &runtime,
                         &shared,
@@ -553,7 +575,11 @@ fn run_supervisor(
                     &config.id,
                     "supervisor",
                     "restart",
-                    &format!("{}（{restart_count}/{}）", clip(&error, 120), options.max_restarts),
+                    &format!(
+                        "{}（{restart_count}/{}）",
+                        clip(&error, 120),
+                        options.max_restarts
+                    ),
                 );
                 publish_runtime(
                     &runtime,
@@ -583,11 +609,18 @@ fn run_supervisor(
                     break;
                 }
                 continue;
-            },
+            }
             _ => {
-                publish_runtime(&runtime, &shared, Some(Phase::Stopped), "", restart_count, None);
+                publish_runtime(
+                    &runtime,
+                    &shared,
+                    Some(Phase::Stopped),
+                    "",
+                    restart_count,
+                    None,
+                );
                 break;
-            },
+            }
         }
     }
     let _ = rx; // 线程退出后 sender 自然断开
@@ -619,23 +652,23 @@ fn backoff_or_control(
                 *config = *new_config;
                 *restart_count = 0;
                 return true;
-            },
+            }
             Ok(SupervisorMsg::Restart) => {
                 *restart_count = 0;
                 return true;
-            },
+            }
             Ok(SupervisorMsg::Command { reply, .. }) => {
                 let _ = reply.send(CommandOutcome::Unavailable(
                     "插件正在重启，命令未执行".to_string(),
                 ));
-            },
+            }
             Ok(SupervisorMsg::Render { reply, .. }) => {
                 let _ = reply.send(Err("插件正在重启".to_string()));
-            },
+            }
             Ok(SupervisorMsg::Event { .. })
             | Ok(SupervisorMsg::Action { .. })
-            | Ok(SupervisorMsg::HostReply { .. }) => {},
-            Err(crossbeam_channel::TryRecvError::Empty) => {},
+            | Ok(SupervisorMsg::HostReply { .. }) => {}
+            Err(crossbeam_channel::TryRecvError::Empty) => {}
             Err(crossbeam_channel::TryRecvError::Disconnected) => return false,
         }
         std::thread::sleep(Duration::from_millis(20));
@@ -650,11 +683,11 @@ fn drain_unavailable(rx: &Receiver<SupervisorMsg>, reason: &str) {
         match message {
             SupervisorMsg::Command { reply, .. } => {
                 let _ = reply.send(CommandOutcome::Unavailable(reason.to_string()));
-            },
+            }
             SupervisorMsg::Render { reply, .. } => {
                 let _ = reply.send(Err(reason.to_string()));
-            },
-            _ => {},
+            }
+            _ => {}
         }
     }
 }
@@ -688,10 +721,17 @@ fn run_instance(
             super::notify_wake(&shared.wake);
             record_activity(shared, &config.id, "supervisor", "spawn-error", &message);
             return InstanceExit::SpawnError;
-        },
+        }
     };
     let pid = child.id();
-    publish_runtime(runtime, shared, Some(Phase::Starting), "", restart_count, Some(pid));
+    publish_runtime(
+        runtime,
+        shared,
+        Some(Phase::Starting),
+        "",
+        restart_count,
+        Some(pid),
+    );
 
     let Some(stdin) = child.stdin.take() else {
         let message = "无法获取插件 stdin".to_string();
@@ -1229,14 +1269,19 @@ fn run_instance(
         if initialized && shutting_down.is_none() {
             if config.contributes.status
                 && now >= next_status
-                && !pending.values().any(|p| matches!(p.kind, PendingKind::Status))
+                && !pending
+                    .values()
+                    .any(|p| matches!(p.kind, PendingKind::Status))
             {
                 next_status = now + options.status_interval;
                 let id = next_request_id(&next_id);
-                pending.insert(id, Pending {
-                    kind: PendingKind::Status,
-                    deadline: now + options.status_timeout,
-                });
+                pending.insert(
+                    id,
+                    Pending {
+                        kind: PendingKind::Status,
+                        deadline: now + options.status_timeout,
+                    },
+                );
                 if let Err(e) = writer.send(
                     &protocol::request(id, protocol::M_STATUS_GET, json!({})),
                     options.max_line_bytes,
@@ -1254,10 +1299,13 @@ fn run_instance(
             if now >= next_ping {
                 next_ping = now + options.ping_interval;
                 let id = next_request_id(&next_id);
-                pending.insert(id, Pending {
-                    kind: PendingKind::Ping,
-                    deadline: now + options.ping_timeout,
-                });
+                pending.insert(
+                    id,
+                    Pending {
+                        kind: PendingKind::Ping,
+                        deadline: now + options.ping_timeout,
+                    },
+                );
                 if let Err(e) = writer.send(
                     &protocol::request(id, protocol::M_PING, json!({ "seq": id })),
                     options.max_line_bytes,
@@ -1287,24 +1335,26 @@ fn run_instance(
             .map(|(id, _)| *id)
             .collect();
         for id in expired_ids {
-            let Some(request) = pending.remove(&id) else { continue };
+            let Some(request) = pending.remove(&id) else {
+                continue;
+            };
             match request.kind {
                 PendingKind::Initialize => {
                     expired_init = true;
-                },
+                }
                 PendingKind::Command(reply) => {
                     timed_out_command = true;
                     let _ = reply.send(CommandOutcome::Timeout);
-                },
+                }
                 PendingKind::Status => {
                     expired_status = true;
                     status_failures += 1;
-                },
+                }
                 PendingKind::Ping => {
                     ping_failures += 1;
-                },
+                }
                 PendingKind::Surface(reply) => timed_out_surface.push(reply),
-                PendingKind::Shutdown => {},
+                PendingKind::Shutdown => {}
             }
         }
         for reply in timed_out_surface {
@@ -1379,7 +1429,10 @@ fn run_instance(
     }
     clear_plugin_status(shared, &config.id);
     kill_child(&mut child);
-    let tail = stderr_tail.lock().map(|tail| tail.clone()).unwrap_or_default();
+    let tail = stderr_tail
+        .lock()
+        .map(|tail| tail.clone())
+        .unwrap_or_default();
     if !tail.trim().is_empty() {
         append_runtime_error(runtime, &format!("stderr: {}", clip(&tail, 600)));
     }
@@ -1398,10 +1451,13 @@ fn begin_shutdown(
     }
     let id = next_request_id(next_id);
     // 关闭请求也只入队，不等写线程；1s 后无论是否写成功都走 kill 路径。
-    pending.insert(id, Pending {
-        kind: PendingKind::Shutdown,
-        deadline: Instant::now() + Duration::from_secs(1),
-    });
+    pending.insert(
+        id,
+        Pending {
+            kind: PendingKind::Shutdown,
+            deadline: Instant::now() + Duration::from_secs(1),
+        },
+    );
     let _ = writer.send(
         &protocol::request(id, protocol::M_SHUTDOWN, json!({})),
         max_line,
@@ -1414,14 +1470,14 @@ fn fail_pending(pending: &mut HashMap<u64, Pending>, reason: &str) {
         match request.kind {
             PendingKind::Command(reply) => {
                 let _ = reply.send(CommandOutcome::Unavailable(reason.to_string()));
-            },
+            }
             PendingKind::Surface(reply) => {
                 let _ = reply.send(Err(reason.to_string()));
-            },
+            }
             PendingKind::Initialize
             | PendingKind::Status
             | PendingKind::Ping
-            | PendingKind::Shutdown => {},
+            | PendingKind::Shutdown => {}
         }
     }
 }
@@ -1484,7 +1540,7 @@ fn handle_host_request(
                 &rpc_id,
                 &RpcError::new(error_code::INVALID_PARAMS, format!("{method}.{error}")),
             ));
-        },
+        }
     };
     match method {
         protocol::M_UI_NOTIFY => {
@@ -1495,7 +1551,7 @@ fn handle_host_request(
                         &rpc_id,
                         &RpcError::new(error_code::INVALID_PARAMS, e),
                     ))
-                },
+                }
             };
             if !allow_notify(notify_window) {
                 return HostRequestAction::Respond(protocol::error(
@@ -1503,13 +1559,16 @@ fn handle_host_request(
                     &RpcError::new(error_code::RATE_LIMITED, "ui.notify 频率过高"),
                 ));
             }
-            push_notice(shared, Notice {
-                plugin_id: config.id.clone(),
-                plugin_name: config.name.clone(),
-                text: payload.text.clone(),
-                level: payload.level,
-                window_id,
-            });
+            push_notice(
+                shared,
+                Notice {
+                    plugin_id: config.id.clone(),
+                    plugin_name: config.name.clone(),
+                    text: payload.text.clone(),
+                    level: payload.level,
+                    window_id,
+                },
+            );
             record_activity(
                 shared,
                 &config.id,
@@ -1518,7 +1577,7 @@ fn handle_host_request(
                 &format!("window={window_id:?} {}", payload.text),
             );
             HostRequestAction::Respond(protocol::result(&rpc_id, json!({})))
-        },
+        }
         protocol::M_UI_STATUS => {
             if !config.contributes.status {
                 return deny!(
@@ -1533,7 +1592,7 @@ fn handle_host_request(
                         &rpc_id,
                         &RpcError::new(error_code::INVALID_PARAMS, e),
                     ))
-                },
+                }
             };
             if let Some(command) = &status.command {
                 if !config.command_ids.iter().any(|id| id == command) {
@@ -1555,7 +1614,7 @@ fn handle_host_request(
                 &format!("window={window_id:?}"),
             );
             HostRequestAction::Respond(protocol::result(&rpc_id, json!({})))
-        },
+        }
         protocol::M_UI_RENDER => {
             let (surface_kind, requested_panel, doc_value) = match parse_ui_render_params(params) {
                 Ok(parsed) => parsed,
@@ -1564,7 +1623,7 @@ fn handle_host_request(
                         &rpc_id,
                         &RpcError::new(error_code::INVALID_PARAMS, e),
                     ))
-                },
+                }
             };
             let (surface, panel) = match surface_kind.as_str() {
                 "settings" => {
@@ -1575,10 +1634,10 @@ fn handle_host_request(
                         );
                     }
                     ("settings".to_string(), None)
-                },
+                }
                 "panel" => {
-                    let panel = requested_panel
-                        .or_else(|| config.contributes.panels.first().cloned());
+                    let panel =
+                        requested_panel.or_else(|| config.contributes.panels.first().cloned());
                     let Some(panel) = panel else {
                         return deny!(
                             error_code::PERMISSION_DENIED,
@@ -1592,7 +1651,7 @@ fn handle_host_request(
                         );
                     }
                     (format!("panel:{panel}"), Some(panel))
-                },
+                }
                 other => {
                     return HostRequestAction::Respond(protocol::error(
                         &rpc_id,
@@ -1601,7 +1660,7 @@ fn handle_host_request(
                             format!("不支持的 surface {other:?}"),
                         ),
                     ))
-                },
+                }
             };
             let doc = match parse_surface_doc(&doc_value) {
                 Ok(doc) => doc,
@@ -1610,7 +1669,7 @@ fn handle_host_request(
                         &rpc_id,
                         &RpcError::new(error_code::INVALID_PARAMS, e),
                     ))
-                },
+                }
             };
             push_surface(
                 shared,
@@ -1636,9 +1695,13 @@ fn handle_host_request(
                 config.id
             );
             HostRequestAction::Respond(protocol::result(&rpc_id, json!({"accepted": true})))
-        },
+        }
         protocol::M_CONTEXT_VERSION => {
-            let host = shared.host.lock().map(|host| host.clone()).unwrap_or_default();
+            let host = shared
+                .host
+                .lock()
+                .map(|host| host.clone())
+                .unwrap_or_default();
             HostRequestAction::Respond(protocol::result(
                 &rpc_id,
                 json!({
@@ -1650,7 +1713,7 @@ fn handle_host_request(
                     "transport": "stdio-line-delimited",
                 }),
             ))
-        },
+        }
         protocol::M_CONTEXT_CONFIG_METADATA => {
             let metadata = shared
                 .host
@@ -1658,7 +1721,7 @@ fn handle_host_request(
                 .map(|host| host.config_metadata.clone())
                 .unwrap_or_else(|_| json!({}));
             HostRequestAction::Respond(protocol::result(&rpc_id, metadata))
-        },
+        }
         protocol::M_TERMINAL_READ => {
             if !config.allows(Capability::TerminalContext) {
                 return deny!(
@@ -1673,7 +1736,10 @@ fn handle_host_request(
             {
                 return HostRequestAction::Respond(protocol::error(
                     &rpc_id,
-                    &RpcError::new(error_code::RATE_LIMITED, "该窗口已有 terminal.read 等待确认"),
+                    &RpcError::new(
+                        error_code::RATE_LIMITED,
+                        "该窗口已有 terminal.read 等待确认",
+                    ),
                 ));
             }
             let draft = ApprovalDraft {
@@ -1689,16 +1755,8 @@ fn handle_host_request(
                 }),
                 window_id,
             };
-            queue_approval(
-                shared,
-                config,
-                id_num,
-                rpc_id,
-                pending_host,
-                options,
-                draft,
-            )
-        },
+            queue_approval(shared, config, id_num, rpc_id, pending_host, options, draft)
+        }
         protocol::M_TERMINAL_WRITE => {
             if !config.allows(Capability::TerminalWrite) {
                 return deny!(
@@ -1713,17 +1771,20 @@ fn handle_host_request(
                         &rpc_id,
                         &RpcError::new(error_code::INVALID_PARAMS, e),
                     ))
-                },
+                }
             };
             let draft = ApprovalDraft {
                 method: protocol::M_TERMINAL_WRITE,
                 summary: format!("Write {} bytes to the focused terminal", text.len()),
-                details: format!("Preview (control characters escaped): {}", escape_preview(&text, 300)),
+                details: format!(
+                    "Preview (control characters escaped): {}",
+                    escape_preview(&text, 300)
+                ),
                 params: json!({ "text": text }),
                 window_id,
             };
             queue_approval(shared, config, id_num, rpc_id, pending_host, options, draft)
-        },
+        }
         protocol::M_CLIPBOARD_READ => {
             if !config.allows(Capability::Clipboard) {
                 return deny!(
@@ -1734,12 +1795,13 @@ fn handle_host_request(
             let draft = ApprovalDraft {
                 method: protocol::M_CLIPBOARD_READ,
                 summary: "Read the system clipboard".to_string(),
-                details: "The host returns clipboard text only; images are not exposed.".to_string(),
+                details: "The host returns clipboard text only; images are not exposed."
+                    .to_string(),
                 params: json!({}),
                 window_id,
             };
             queue_approval(shared, config, id_num, rpc_id, pending_host, options, draft)
-        },
+        }
         protocol::M_CLIPBOARD_WRITE => {
             if !config.allows(Capability::Clipboard) {
                 return deny!(
@@ -1754,17 +1816,23 @@ fn handle_host_request(
                         &rpc_id,
                         &RpcError::new(error_code::INVALID_PARAMS, e),
                     ))
-                },
+                }
             };
             let draft = ApprovalDraft {
                 method: protocol::M_CLIPBOARD_WRITE,
-                summary: format!("Write {} characters to the system clipboard", text.chars().count()),
-                details: format!("Preview (control characters escaped): {}", escape_preview(&text, 300)),
+                summary: format!(
+                    "Write {} characters to the system clipboard",
+                    text.chars().count()
+                ),
+                details: format!(
+                    "Preview (control characters escaped): {}",
+                    escape_preview(&text, 300)
+                ),
                 params: json!({ "text": text }),
                 window_id,
             };
             queue_approval(shared, config, id_num, rpc_id, pending_host, options, draft)
-        },
+        }
         protocol::M_CREDENTIALS_GET => deny!(
             error_code::UNSUPPORTED,
             "宿主永不提供 Vault/环境变量中的凭据明文；插件必须自行管理凭据"
@@ -1778,7 +1846,7 @@ fn handle_host_request(
                     format!("宿主不支持方法 {other:?}"),
                 ),
             ))
-        },
+        }
     }
 }
 
@@ -1805,9 +1873,7 @@ fn queue_approval(
     };
     eprintln!(
         "[plugin-v3] {}: ask {} window={:?} request={id_num}",
-        config.id,
-        draft.method,
-        draft.window_id
+        config.id, draft.method, draft.window_id
     );
     let queued = {
         match shared.approvals.lock() {
@@ -1816,13 +1882,14 @@ fn queue_approval(
                     a.plugin_id == config.id
                         && a.method == request.method
                         && a.window_id == request.window_id
-                }) || approvals.len() >= 16 {
+                }) || approvals.len() >= 16
+                {
                     false
                 } else {
                     approvals.push_back(request.clone());
                     true
                 }
-            },
+            }
             Err(_) => false,
         }
     };
@@ -1839,12 +1906,15 @@ fn queue_approval(
             &RpcError::new(error_code::INVALID_REQUEST, "request id 已被占用"),
         ));
     }
-    pending_host.insert(id_num, PendingHost {
-        rpc_id,
-        deadline: request.deadline,
-        method: request.method,
-        window_id: request.window_id,
-    });
+    pending_host.insert(
+        id_num,
+        PendingHost {
+            rpc_id,
+            deadline: request.deadline,
+            method: request.method,
+            window_id: request.window_id,
+        },
+    );
     super::notify_wake(&shared.wake);
     HostRequestAction::Pending
 }
@@ -1872,15 +1942,18 @@ fn handle_host_notification(
             if !allow_notify(notify_window) {
                 return Err("ui.notify 频率过高".to_string());
             }
-            push_notice(shared, Notice {
-                plugin_id: config.id.clone(),
-                plugin_name: config.name.clone(),
-                text: payload.text,
-                level: payload.level,
-                window_id,
-            });
+            push_notice(
+                shared,
+                Notice {
+                    plugin_id: config.id.clone(),
+                    plugin_name: config.name.clone(),
+                    text: payload.text,
+                    level: payload.level,
+                    window_id,
+                },
+            );
             Ok(())
-        },
+        }
         protocol::M_UI_STATUS => {
             if !config.contributes.status {
                 return Err("未声明 contributes.status".to_string());
@@ -1893,12 +1966,12 @@ fn handle_host_notification(
             }
             publish_status(shared, &config.id, window_id, Some(status));
             Ok(())
-        },
+        }
         protocol::M_UI_RENDER => Err("ui.render 必须用 request（带 id）发送".to_string()),
         other => {
             eprintln!("[plugin-v3] {}: 未知 notification {other}", config.id);
             Ok(())
-        },
+        }
     }
 }
 
@@ -1909,7 +1982,10 @@ fn parse_ui_render_params(params: &Value) -> Result<(String, Option<String>, Val
         .and_then(Value::as_str)
         .ok_or("ui.render.surface 必须是 panel/settings")?
         .to_string();
-    let panel = object.get("panel").and_then(Value::as_str).map(str::to_string);
+    let panel = object
+        .get("panel")
+        .and_then(Value::as_str)
+        .map(str::to_string);
     let doc = if object.get("elements").is_some() {
         params.clone()
     } else {
@@ -1962,7 +2038,7 @@ fn clear_plugin_status(shared: &SupervisorShared, plugin_id: &str) {
             let before = statuses.len();
             statuses.retain(|(id, _), _| id != plugin_id);
             statuses.len() != before
-        },
+        }
         Err(_) => false,
     };
     if changed {
@@ -1993,10 +2069,7 @@ fn parse_and_resolve_window(
 /// supervisor 线程不直接持有 `WindowRegistry`；UI 线程通过
 /// [`super::PluginStore::set_known_windows`] 同步窗口集合，所以插件伪造的 id
 /// 在这里被拒绝，而不是进入 status/审批表。
-fn resolve_window_id(
-    shared: &SupervisorShared,
-    raw: Option<u64>,
-) -> Result<Option<u64>, String> {
+fn resolve_window_id(shared: &SupervisorShared, raw: Option<u64>) -> Result<Option<u64>, String> {
     match raw {
         Some(window_id) => {
             if window_known(shared, window_id) {
@@ -2004,7 +2077,7 @@ fn resolve_window_id(
             } else {
                 Err(format!("未知窗口 window_id={window_id}"))
             }
-        },
+        }
         None => {
             let active = shared
                 .host
@@ -2012,7 +2085,7 @@ fn resolve_window_id(
                 .ok()
                 .and_then(|host| host.active_window_id);
             Ok(active.filter(|window_id| window_known(shared, *window_id)))
-        },
+        }
     }
 }
 
@@ -2058,13 +2131,13 @@ fn publish_status(
                     status.tooltip =
                         sanitize_plugin_text(&status.tooltip, protocol::MAX_TOOLTIP_CHARS);
                     statuses.insert(key.clone(), status);
-                },
+                }
                 None => {
                     statuses.remove(&key);
-                },
+                }
             }
             previous != statuses.get(&key).cloned()
-        },
+        }
         Err(_) => false,
     };
     if changed {
@@ -2151,7 +2224,7 @@ fn sanitize_plugin_text(text: &str, max: usize) -> String {
                         break;
                     }
                 }
-            },
+            }
             // OSC: 直到 BEL 或 ESC \。
             Some(']') => {
                 while let Some(c) = chars.next() {
@@ -2165,10 +2238,10 @@ fn sanitize_plugin_text(text: &str, max: usize) -> String {
                         break;
                     }
                 }
-            },
+            }
             // 其它 ESC + 单字节序列。
-            Some(_) => {},
-            None => {},
+            Some(_) => {}
+            None => {}
         }
     }
     super::sanitize_text(&visible, max)
@@ -2192,7 +2265,10 @@ fn spawn_child(config: &PluginRuntimeConfig) -> Result<Child, String> {
         }
     }
     command.env("XTERVO_PLUGIN_ID", &config.id);
-    command.env("XTERVO_PLUGIN_API", super::manifest::PLUGIN_API_VERSION.to_string());
+    command.env(
+        "XTERVO_PLUGIN_API",
+        super::manifest::PLUGIN_API_VERSION.to_string(),
+    );
     command.env("XTERVO_HOST_VERSION", env!("CARGO_PKG_VERSION"));
     #[cfg(unix)]
     {
@@ -2254,15 +2330,15 @@ fn read_stdout(
                 if tx.send(ReaderEvent::Line { line, truncated }).is_err() {
                     return;
                 }
-            },
+            }
             Ok(None) => {
                 let _ = tx.send(ReaderEvent::Eof);
                 return;
-            },
+            }
             Err(e) => {
                 let _ = tx.send(ReaderEvent::ReadError(e.to_string()));
                 return;
-            },
+            }
         }
     }
 }
@@ -2347,7 +2423,7 @@ fn read_stderr(
                     tail.push_str(&line);
                     tail.push('\n');
                 }
-            },
+            }
             Ok(None) => return,
             Err(_) => return,
         }

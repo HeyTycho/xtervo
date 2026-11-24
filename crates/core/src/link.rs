@@ -47,7 +47,14 @@ impl Link {
 
     /// 构造一条链接（插件 [`Linkifier`] 用；位置后缀留空）。
     pub fn new(kind: LinkKind, start: u16, end: u16, text: String) -> Self {
-        Self { kind, start, end, text, line: None, col: None }
+        Self {
+            kind,
+            start,
+            end,
+            text,
+            line: None,
+            col: None,
+        }
     }
 
     /// 去掉 `:line[:col]` 位置后缀后的纯路径；非 Path 返回全文。
@@ -101,8 +108,21 @@ fn is_url_end(c: char) -> bool {
         || c.is_control()
         || matches!(
             c,
-            '<' | '>' | '"' | '`' | '，' | '。' | '；' | '：' | '！' | '？' | '、' | '）'
-                | '】' | '》' | '」' | '』'
+            '<' | '>'
+                | '"'
+                | '`'
+                | '，'
+                | '。'
+                | '；'
+                | '：'
+                | '！'
+                | '？'
+                | '、'
+                | '）'
+                | '】'
+                | '》'
+                | '」'
+                | '』'
         )
 }
 
@@ -132,7 +152,7 @@ pub fn scan(text: &str) -> Vec<Link> {
                 None => {
                     i += 1;
                     continue;
-                },
+                }
             }
         } else {
             (None, None)
@@ -172,7 +192,7 @@ fn is_boundary(chars: &[char], i: usize) -> bool {
                 || prev == '/'
                 || prev == '-'
                 || prev == '.')
-        },
+        }
     }
 }
 
@@ -181,9 +201,10 @@ fn scheme_len(chars: &[char], i: usize) -> Option<usize> {
     // `ftp:` 等不进入识别结果（[`is_allowed_uri`] 还会在打开前再验证一次）。
     const SCHEMES: [&str; 3] = ["https://", "http://", "file://"];
     let rest: String = chars[i..].iter().take(8).collect();
-    let scheme = SCHEMES
-        .iter()
-        .find(|s| rest.get(..s.len()).is_some_and(|p| p.eq_ignore_ascii_case(s)))?;
+    let scheme = SCHEMES.iter().find(|s| {
+        rest.get(..s.len())
+            .is_some_and(|p| p.eq_ignore_ascii_case(s))
+    })?;
     let mut len = scheme.len();
     while i + len < chars.len() && !is_url_end(chars[i + len]) {
         len += 1;
@@ -194,8 +215,14 @@ fn scheme_len(chars: &[char], i: usize) -> Option<usize> {
 
 /// `scheme://` 之后必须还有内容（`file:///` 的 `/` 也算）。
 fn valid_url_text(text: &str) -> bool {
-    let Some((scheme, rest)) = text.split_once("://") else { return false };
-    !rest.is_empty() && matches!(scheme.to_ascii_lowercase().as_str(), "http" | "https" | "file")
+    let Some((scheme, rest)) = text.split_once("://") else {
+        return false;
+    };
+    !rest.is_empty()
+        && matches!(
+            scheme.to_ascii_lowercase().as_str(),
+            "http" | "https" | "file"
+        )
 }
 
 /// 打开前的安全白名单：只允许 `http` / `https` / `file`，且必须带 `://`。
@@ -247,7 +274,7 @@ fn ipv4_len(chars: &[char], i: usize) -> Option<usize> {
     match chars.get(idx) {
         Some(c) if c.is_ascii_digit() => return None,
         Some('.') if chars.get(idx + 1).is_some_and(|c| c.is_ascii_digit()) => return None,
-        _ => {},
+        _ => {}
     }
     Some(idx - i)
 }
@@ -262,7 +289,7 @@ fn is_path_boundary(chars: &[char], i: usize) -> bool {
         None => true,
         Some(prev) => {
             prev.is_whitespace() || matches!(prev, '(' | '[' | '{' | '<' | '"' | '\'' | '`')
-        },
+        }
     }
 }
 
@@ -314,7 +341,7 @@ fn path_len(chars: &[char], i: usize) -> Option<usize> {
                 if c == q || c.is_control() {
                     break;
                 }
-            },
+            }
             None => {
                 if c.is_whitespace()
                     || matches!(
@@ -324,7 +351,7 @@ fn path_len(chars: &[char], i: usize) -> Option<usize> {
                 {
                     break;
                 }
-            },
+            }
         }
         len += 1;
     }
@@ -351,7 +378,9 @@ fn parse_path(text: &str) -> Option<(Option<u32>, Option<u32>)> {
 
 /// `~user[/path]`：用户名非空且只含 [`is_user_char`]。
 fn valid_user_path(path: &str) -> bool {
-    let Some(rest) = path.strip_prefix('~') else { return false };
+    let Some(rest) = path.strip_prefix('~') else {
+        return false;
+    };
     let user = rest.split('/').next().unwrap_or_default();
     !user.is_empty() && user.chars().all(is_user_char)
 }
@@ -367,9 +396,9 @@ fn looks_like_relative_file(path: &str) -> bool {
     });
     let has_alpha = path.chars().any(|c| c.is_alphabetic());
     // 扩展名必须带字母：`v1.2.3:4` 这类版本文本不能被当成“文件第 4 行”。
-    let ext_ok = base
-        .rsplit_once('.')
-        .is_some_and(|(_, ext)| !ext.is_empty() && ext.len() <= 16 && ext.chars().any(|c| c.is_ascii_alphabetic()));
+    let ext_ok = base.rsplit_once('.').is_some_and(|(_, ext)| {
+        !ext.is_empty() && ext.len() <= 16 && ext.chars().any(|c| c.is_ascii_alphabetic())
+    });
     sane && has_alpha && (ext_ok || path.contains('/'))
 }
 
@@ -413,7 +442,9 @@ fn linkifiers() -> &'static Mutex<Vec<Arc<dyn Linkifier>>> {
 
 fn lock_linkifiers() -> std::sync::MutexGuard<'static, Vec<Arc<dyn Linkifier>>> {
     // 插件 Linkifier 里 panic 不应让“识别链接”永久失效。
-    linkifiers().lock().unwrap_or_else(|poison| poison.into_inner())
+    linkifiers()
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
 }
 
 /// 注册插件 Linkifier；同一份 `Arc` 不重复注册。返回是否新增。
@@ -439,7 +470,9 @@ pub fn scan_custom(line: &str) -> Vec<Link> {
         let guard = lock_linkifiers();
         guard.iter().cloned().collect()
     };
-    list.iter().flat_map(|linkifier| linkifier.scan(line)).collect()
+    list.iter()
+        .flat_map(|linkifier| linkifier.scan(line))
+        .collect()
 }
 
 #[cfg(test)]
@@ -489,7 +522,10 @@ mod tests {
 
     #[test]
     fn finds_https_with_trailing_period() {
-        assert_eq!(texts("see https://example.com/a?b=1."), vec!["https://example.com/a?b=1"]);
+        assert_eq!(
+            texts("see https://example.com/a?b=1."),
+            vec!["https://example.com/a?b=1"]
+        );
     }
 
     #[test]
@@ -505,18 +541,51 @@ mod tests {
 
     #[test]
     fn trailing_punctuation_and_wrappers_are_trimmed() {
-        assert_eq!(texts("see https://example.com/a."), vec!["https://example.com/a"]);
-        assert_eq!(texts("see https://example.com/a,"), vec!["https://example.com/a"]);
-        assert_eq!(texts("see https://example.com/a;"), vec!["https://example.com/a"]);
-        assert_eq!(texts("see https://example.com/a!"), vec!["https://example.com/a"]);
-        assert_eq!(texts("url <https://example.com/a>"), vec!["https://example.com/a"]);
-        assert_eq!(texts("\"https://example.com/a\""), vec!["https://example.com/a"]);
-        assert_eq!(texts("https://example.com/a。"), vec!["https://example.com/a"]);
-        assert_eq!(texts("https://example.com/a，"), vec!["https://example.com/a"]);
-        assert_eq!(texts("（https://example.com/a）"), vec!["https://example.com/a"]);
+        assert_eq!(
+            texts("see https://example.com/a."),
+            vec!["https://example.com/a"]
+        );
+        assert_eq!(
+            texts("see https://example.com/a,"),
+            vec!["https://example.com/a"]
+        );
+        assert_eq!(
+            texts("see https://example.com/a;"),
+            vec!["https://example.com/a"]
+        );
+        assert_eq!(
+            texts("see https://example.com/a!"),
+            vec!["https://example.com/a"]
+        );
+        assert_eq!(
+            texts("url <https://example.com/a>"),
+            vec!["https://example.com/a"]
+        );
+        assert_eq!(
+            texts("\"https://example.com/a\""),
+            vec!["https://example.com/a"]
+        );
+        assert_eq!(
+            texts("https://example.com/a。"),
+            vec!["https://example.com/a"]
+        );
+        assert_eq!(
+            texts("https://example.com/a，"),
+            vec!["https://example.com/a"]
+        );
+        assert_eq!(
+            texts("（https://example.com/a）"),
+            vec!["https://example.com/a"]
+        );
         // 中文正文没有空格：CJK 字符不是“词中粘连”，全角句号必须截断 URL。
-        assert_eq!(texts("见https://example.com/a。更多"), vec!["https://example.com/a"]);
-        assert_eq!(texts("链接：https://example.com/a，然后"), vec!["https://example.com/a"]);
+        assert_eq!(
+            texts("见https://example.com/a。更多"),
+            vec!["https://example.com/a"]
+        );
+        assert_eq!(
+            texts("链接：https://example.com/a，然后"),
+            vec!["https://example.com/a"]
+        );
         // 只有标点的空壳不能算链接
         assert!(texts("https://.").is_empty());
         assert!(texts("https://).").is_empty());
@@ -560,7 +629,10 @@ mod tests {
             vec!["https://en.wikipedia.org/wiki/Foo_(bar)"]
         );
         // 外层括号不属于 URL
-        assert_eq!(texts("(https://example.com/x)"), vec!["https://example.com/x"]);
+        assert_eq!(
+            texts("(https://example.com/x)"),
+            vec!["https://example.com/x"]
+        );
     }
 
     #[test]
@@ -580,9 +652,15 @@ mod tests {
 
     #[test]
     fn finds_paths() {
-        assert_eq!(texts("open /usr/share/doc/readme"), vec!["/usr/share/doc/readme"]);
+        assert_eq!(
+            texts("open /usr/share/doc/readme"),
+            vec!["/usr/share/doc/readme"]
+        );
         assert_eq!(texts("cd ~/work/project"), vec!["~/work/project"]);
-        assert_eq!(texts("run ./target/release/app"), vec!["./target/release/app"]);
+        assert_eq!(
+            texts("run ./target/release/app"),
+            vec!["./target/release/app"]
+        );
         assert_eq!(texts("up ../sibling/file.rs"), vec!["../sibling/file.rs"]);
         assert!(texts("main.rs").is_empty());
         assert!(texts("and/or").is_empty(), "普通斜杠不该命中");
@@ -602,14 +680,20 @@ mod tests {
         assert!(texts("--prefix=/usr/local").is_empty());
         assert!(texts("--config=/etc/app.conf").is_empty());
         assert!(texts("PATH=/bin:/usr/bin").is_empty());
-        assert!(texts("user@host:/tmp$ ").is_empty(), "提示符里的 cwd 不该变成链接");
+        assert!(
+            texts("user@host:/tmp$ ").is_empty(),
+            "提示符里的 cwd 不该变成链接"
+        );
         assert!(texts("key=value/with/slash").is_empty());
         // 空格/行首/开引号之后的路径仍然命中。
         assert_eq!(texts("open /tmp/a"), vec!["/tmp/a"]);
         assert_eq!(texts("\"/tmp/b\""), vec!["/tmp/b"]);
         assert_eq!(texts("(/tmp/c)"), vec!["/tmp/c"]);
         // URL 不受路径边界收紧影响：`key=https://…` 仍可点击。
-        assert_eq!(texts("url=https://example.com/x"), vec!["https://example.com/x"]);
+        assert_eq!(
+            texts("url=https://example.com/x"),
+            vec!["https://example.com/x"]
+        );
     }
 
     #[test]
@@ -638,15 +722,25 @@ mod tests {
     fn columns_cover_the_text() {
         let line = "x https://a.io/y z";
         let link = &scan(line)[0];
-        let slice: String = line.chars().skip(link.start as usize).take((link.end - link.start + 1) as usize).collect();
+        let slice: String = line
+            .chars()
+            .skip(link.start as usize)
+            .take((link.end - link.start + 1) as usize)
+            .collect();
         assert_eq!(slice, "https://a.io/y");
         assert!(link.contains(link.start) && link.contains(link.end));
     }
 
     #[test]
     fn quoted_paths_allow_spaces() {
-        assert_eq!(texts(r#"open "/tmp/my notes.txt""#), vec!["/tmp/my notes.txt"]);
-        assert_eq!(texts(r#"see '/home/u/a b/c.log'"#), vec!["/home/u/a b/c.log"]);
+        assert_eq!(
+            texts(r#"open "/tmp/my notes.txt""#),
+            vec!["/tmp/my notes.txt"]
+        );
+        assert_eq!(
+            texts(r#"see '/home/u/a b/c.log'"#),
+            vec!["/home/u/a b/c.log"]
+        );
         // 引号里不是路径的句子不该变成链接。
         assert!(texts(r#""hello world""#).is_empty());
         // 反引号同样按路径壳处理（markdown/日志常见）。
@@ -694,9 +788,17 @@ mod tests {
         struct AtLink;
         impl Linkifier for AtLink {
             fn scan(&self, line: &str) -> Vec<Link> {
-                line.find("@@").map(|i| {
-                    Link::new(LinkKind::Path, i as u16, (i + 1) as u16, "@@plugin".to_string())
-                }).into_iter().collect()
+                line.find("@@")
+                    .map(|i| {
+                        Link::new(
+                            LinkKind::Path,
+                            i as u16,
+                            (i + 1) as u16,
+                            "@@plugin".to_string(),
+                        )
+                    })
+                    .into_iter()
+                    .collect()
             }
         }
         use crate::Frame;

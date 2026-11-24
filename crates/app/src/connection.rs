@@ -83,11 +83,17 @@ pub struct ConnectionStatus {
 
 impl ConnectionStatus {
     pub fn connecting() -> Self {
-        Self { state: ConnectionState::Connecting, ..Self::default() }
+        Self {
+            state: ConnectionState::Connecting,
+            ..Self::default()
+        }
     }
 
     pub fn connected() -> Self {
-        Self { state: ConnectionState::Connected, ..Self::default() }
+        Self {
+            state: ConnectionState::Connected,
+            ..Self::default()
+        }
     }
 
     pub fn disconnected(detail: impl Into<String>) -> Self {
@@ -107,12 +113,7 @@ impl ConnectionStatus {
     }
 
     /// 已安排第 `retries` 次重连：保持 Disconnected，但带上计数与等待信息。
-    pub fn retrying(
-        mut self,
-        retries: u32,
-        max_retries: u32,
-        detail: impl Into<String>,
-    ) -> Self {
+    pub fn retrying(mut self, retries: u32, max_retries: u32, detail: impl Into<String>) -> Self {
         self.state = ConnectionState::Disconnected;
         self.retries = retries;
         self.max_retries = max_retries;
@@ -144,8 +145,10 @@ impl ConnectionStatus {
         if base.is_empty() {
             return String::new();
         }
-        if matches!(self.state, ConnectionState::Disconnected | ConnectionState::Failed)
-            && self.max_retries > 0
+        if matches!(
+            self.state,
+            ConnectionState::Disconnected | ConnectionState::Failed
+        ) && self.max_retries > 0
         {
             if self.retries > 0 {
                 return if zh {
@@ -218,7 +221,10 @@ impl ReconnectPolicy {
                 .map(|ms| (*ms).clamp(MIN_BACKOFF_MS, MAX_BACKOFF_MS))
                 .collect()
         };
-        Self { max_attempts, backoff_ms }
+        Self {
+            max_attempts,
+            backoff_ms,
+        }
     }
 
     /// 第 `attempt` 次（1-based）重连的等待时间；超过次数/关闭时返回 None。
@@ -227,7 +233,9 @@ impl ReconnectPolicy {
             return None;
         }
         let idx = (attempt as usize - 1).min(self.backoff_ms.len().saturating_sub(1));
-        self.backoff_ms.get(idx).map(|ms| Duration::from_millis(*ms))
+        self.backoff_ms
+            .get(idx)
+            .map(|ms| Duration::from_millis(*ms))
     }
 
     /// 策略下是否还有下一次重连（用于文案“第 4 次放弃”）。
@@ -248,7 +256,10 @@ mod tests {
             ConnectionStatus::disconnected("exit 0"),
         ];
         assert_eq!(aggregate(&states), ConnectionState::Disconnected);
-        let with_failed = [ConnectionStatus::disconnected("x"), ConnectionStatus::failed("boom")];
+        let with_failed = [
+            ConnectionStatus::disconnected("x"),
+            ConnectionStatus::failed("boom"),
+        ];
         assert_eq!(aggregate(&with_failed), ConnectionState::Failed);
         let none: [ConnectionStatus; 0] = [];
         assert_eq!(aggregate(&none), ConnectionState::None);

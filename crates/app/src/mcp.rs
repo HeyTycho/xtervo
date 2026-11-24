@@ -89,9 +89,7 @@ pub fn group_for_command(command: &str) -> Option<McpGroup> {
         "capabilities" | "snapshot" | "list" | "output" => Some(McpGroup::Read),
         "send_text" | "send_key" | "run" => Some(McpGroup::Input),
         "new_tab" | "new_window" | "split" | "focus" | "scroll" => Some(McpGroup::Tabs),
-        "close_pane" | "close_tab" | "close_window" | "kill" => {
-            Some(McpGroup::Destructive)
-        },
+        "close_pane" | "close_tab" | "close_window" | "kill" => Some(McpGroup::Destructive),
         _ => None,
     }
 }
@@ -205,20 +203,20 @@ impl McpPermissions {
         match command {
             "capabilities" | "snapshot" | "list" | "output" => {
                 Some("read disabled (enable MCP read)")
-            },
+            }
             "send_text" | "send_key" | "run" => Some("input disabled (enable MCP input)"),
             "new_tab" | "new_window" | "split" | "focus" | "scroll" => {
                 Some("tabs disabled (enable MCP tabs)")
-            },
+            }
             "close_pane" | "close_tab" | "close_window" if !self.tabs => {
                 Some("tabs disabled (destructive close also requires MCP tabs)")
-            },
+            }
             "close_pane" | "close_tab" | "close_window" => {
                 Some("destructive disabled (enable MCP destructive)")
-            },
+            }
             "kill" if !self.input => {
                 Some("input disabled (destructive kill also requires MCP input)")
-            },
+            }
             "kill" => Some("destructive disabled (enable MCP destructive)"),
             _ => Some("unknown control command"),
         }
@@ -258,7 +256,7 @@ impl McpRuntime {
                     eprintln!("[mcp] {message}");
                     last_error = Some(message);
                     None
-                },
+                }
             },
             None => None,
         };
@@ -306,8 +304,7 @@ impl McpRuntime {
     /// 配置热更新：立即换权限；从关闭切到开启时按需补 state token。
     /// token 值绝不写日志/配置。
     pub fn apply_config(&self, cfg: &Config) {
-        let next = McpPermissions::from_config(cfg)
-            .widened(self.env_write, self.env_destructive);
+        let next = McpPermissions::from_config(cfg).widened(self.env_write, self.env_destructive);
         let changed = {
             let mut guard = self
                 .permissions
@@ -336,16 +333,19 @@ impl McpRuntime {
                     if old.as_deref() != Some(token.as_str()) {
                         eprintln!("[mcp] state token 已从磁盘重新加载");
                     }
-                    *self.token_mtime.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                    *self
+                        .token_mtime
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()) =
                         fs::metadata(&self.token_path)
                             .ok()
                             .and_then(|meta| meta.modified().ok());
-                },
+                }
                 Err(error) => {
                     let message = format!("state token 不可用: {error}");
                     eprintln!("[mcp] {message}");
                     self.set_error(Some(message));
-                },
+                }
             }
         }
     }
@@ -546,7 +546,9 @@ pub fn prepare_socket_dir(path: &Path) -> io::Result<()> {
 
 fn ensure_parent_dir(path: &Path) -> io::Result<()> {
     use std::os::unix::fs::MetadataExt;
-    let Some(parent) = path.parent() else { return Ok(()) };
+    let Some(parent) = path.parent() else {
+        return Ok(());
+    };
     if parent.as_os_str().is_empty() {
         return Ok(());
     }
@@ -572,7 +574,9 @@ fn ensure_parent_dir(path: &Path) -> io::Result<()> {
 fn ensure_private_parent_dir(path: &Path) -> io::Result<()> {
     use std::os::unix::fs::MetadataExt;
     ensure_parent_dir(path)?;
-    let Some(parent) = path.parent() else { return Ok(()) };
+    let Some(parent) = path.parent() else {
+        return Ok(());
+    };
     if parent.as_os_str().is_empty() {
         return Ok(());
     }
@@ -637,7 +641,9 @@ fn refresh_state_token(
     seen: &std::sync::Mutex<Option<std::time::SystemTime>>,
     token: &std::sync::Mutex<Option<String>>,
 ) -> bool {
-    let mtime = fs::metadata(path).ok().and_then(|meta| meta.modified().ok());
+    let mtime = fs::metadata(path)
+        .ok()
+        .and_then(|meta| meta.modified().ok());
     {
         let guard = seen.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         if *guard == mtime {
@@ -646,7 +652,9 @@ fn refresh_state_token(
     }
     // token 文件被删除 = 撤销；存在但无效 = None。不要继续用旧 token。
     let next = read_token_file(path);
-    let mut guard = token.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut guard = token
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let changed = *guard != next;
     *guard = next;
     let mut seen_guard = seen.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -683,7 +691,7 @@ pub fn ensure_token_file(path: &Path) -> io::Result<String> {
                 Some(token) => Ok(token),
                 None => recreate_token(path),
             }
-        },
+        }
         Err(error) if error.kind() == io::ErrorKind::NotFound => create_token(path),
         Err(error) => Err(error),
     }
@@ -753,18 +761,18 @@ fn create_token(path: &Path) -> io::Result<String> {
         Ok(()) => {
             let _ = fs::remove_file(&tmp);
             Ok(token)
-        },
+        }
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
             let _ = fs::remove_file(&tmp);
             let file = open_token_for_read(path)?;
             check_token_file(&file)?;
             read_token_reader(&file)
                 .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid token file"))
-        },
+        }
         Err(error) => {
             let _ = fs::remove_file(&tmp);
             Err(error)
-        },
+        }
     }
 }
 
@@ -901,10 +909,7 @@ mod tests {
     #[test]
     fn groups_can_be_enabled_independently() {
         let input_only = perms(false, true, false, false);
-        assert_eq!(
-            input_only.commands(),
-            vec!["send_text", "send_key", "run"]
-        );
+        assert_eq!(input_only.commands(), vec!["send_text", "send_key", "run"]);
         assert!(input_only.allows_command("send_text"));
         assert!(!input_only.allows_command("capabilities"));
         assert!(!input_only.allows_command("list"));
@@ -953,7 +958,10 @@ mod tests {
         for command in ALL_COMMANDS {
             assert!(!disabled.allows_command(command), "{command}");
         }
-        assert!(disabled.denial_reason("list").unwrap().contains("MCP disabled"));
+        assert!(disabled
+            .denial_reason("list")
+            .unwrap()
+            .contains("MCP disabled"));
         assert!(!disabled.allows_probe());
     }
 
@@ -988,7 +996,10 @@ mod tests {
         assert_eq!(value["input_enabled"], true);
         assert_eq!(value["tabs_enabled"], true);
         assert_eq!(value["destructive_enabled"], true);
-        assert_eq!(value["commands"].as_array().unwrap().len(), ALL_COMMANDS.len());
+        assert_eq!(
+            value["commands"].as_array().unwrap().len(),
+            ALL_COMMANDS.len()
+        );
         let text = value.to_string();
         assert!(!text.contains("token"), "{text}");
         assert!(!text.contains(TOKEN_FILE_NAME), "{text}");
@@ -1020,7 +1031,10 @@ mod tests {
             .denial_reason("rename")
             .unwrap()
             .contains("unknown"));
-        assert_eq!(perms(true, true, true, true).denial_reason("close_pane"), None);
+        assert_eq!(
+            perms(true, true, true, true).denial_reason("close_pane"),
+            None
+        );
     }
 
     #[test]
@@ -1047,7 +1061,10 @@ mod tests {
         let xdg = Path::new("/x/state");
         let home = Path::new("/home/user");
         let temp = Path::new("/tmp/xtervo-1000");
-        assert_eq!(state_dir_for(Some(xdg), Some(home), temp), xdg.join("xtervo"));
+        assert_eq!(
+            state_dir_for(Some(xdg), Some(home), temp),
+            xdg.join("xtervo")
+        );
         assert_eq!(
             state_dir_for(None, Some(home), temp),
             PathBuf::from("/home/user/.local/state/xtervo")
@@ -1126,7 +1143,10 @@ mod tests {
             let path = path.clone();
             handles.push(std::thread::spawn(move || ensure_token_file(&path)));
         }
-        let tokens: Vec<String> = handles.into_iter().map(|h| h.join().unwrap().unwrap()).collect();
+        let tokens: Vec<String> = handles
+            .into_iter()
+            .map(|h| h.join().unwrap().unwrap())
+            .collect();
         assert!(tokens.windows(2).all(|w| w[0] == w[1]), "{tokens:?}");
         assert_eq!(read_token_file(&path).as_deref(), Some(tokens[0].as_str()));
         let _ = std::fs::remove_dir_all(&dir);

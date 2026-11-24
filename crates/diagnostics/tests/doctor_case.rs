@@ -467,5 +467,8 @@ fn config_secret_is_reported_but_never_stored() {
         .iter()
         .find(|finding| finding.id == "finding.config.secrets")
         .unwrap();
-    assert_eq!(finding.severity, xtervo_diagnostics::doctor::Severity::Error);
+    assert_eq!(
+        finding.severity,
+        xtervo_diagnostics::doctor::Severity::Error
+    );
 }

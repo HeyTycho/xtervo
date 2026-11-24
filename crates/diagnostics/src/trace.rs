@@ -183,7 +183,13 @@ impl TraceBuffer {
         value: u64,
         message: impl Into<String>,
     ) -> u64 {
-        self.push(kind, context, code, value, Some(bounded_message(message.into())))
+        self.push(
+            kind,
+            context,
+            code,
+            value,
+            Some(bounded_message(message.into())),
+        )
     }
 
     fn push(

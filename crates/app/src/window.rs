@@ -23,7 +23,9 @@ pub fn new_window_command(exe: &Path) -> Command {
     cmd.env(LEGACY_BYPASS_ENV, "0");
     // 新进程启动后会建立自己的日志文件；stdout/stderr 不能继承父进程——
     // 父进程的 stderr 在 logging::init 后是 log tee 的管道，继承会混淆两份日志。
-    cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
     #[cfg(unix)]
     unsafe {
         use std::os::unix::process::CommandExt;
@@ -44,9 +46,11 @@ pub fn spawn_new_window() -> std::io::Result<u32> {
     let exe = std::env::current_exe()?;
     let mut child = new_window_command(&exe).spawn()?;
     let pid = child.id();
-    let reaper = std::thread::Builder::new().name(format!("window-{pid}")).spawn(move || {
-        let _ = child.wait();
-    });
+    let reaper = std::thread::Builder::new()
+        .name(format!("window-{pid}"))
+        .spawn(move || {
+            let _ = child.wait();
+        });
     if let Err(e) = reaper {
         eprintln!("[ui] new window reaper thread failed pid={pid}: {e}");
     }

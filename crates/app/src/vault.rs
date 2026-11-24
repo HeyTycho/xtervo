@@ -41,8 +41,8 @@ use std::time::Duration;
 use argon2::{Algorithm, Argon2, Params, Version};
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
-use chacha20poly1305::aead::{Aead, KeyInit, OsRng, Payload};
 use chacha20poly1305::aead::rand_core::RngCore;
+use chacha20poly1305::aead::{Aead, KeyInit, OsRng, Payload};
 use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
 use xtervo_core::WakeSignal;
 
@@ -233,7 +233,10 @@ impl VaultTask {
         })
     }
 
-    fn start(wake: WakeSignal, work: impl FnOnce() -> Result<Unlocked, VaultError> + Send + 'static) -> Self {
+    fn start(
+        wake: WakeSignal,
+        work: impl FnOnce() -> Result<Unlocked, VaultError> + Send + 'static,
+    ) -> Self {
         let (sender, events) = mpsc::channel();
         let join = thread::Builder::new()
             .name("vault-kdf".into())
@@ -249,7 +252,10 @@ impl VaultTask {
                 }
             });
         match join {
-            Ok(join) => Self { events, join: Some(join) },
+            Ok(join) => Self {
+                events,
+                join: Some(join),
+            },
             Err(e) => {
                 // 线程都起不来时给一个立即失败的结果，UI 状态机不会永远 busy。
                 let (sender, events) = mpsc::channel();
@@ -257,7 +263,7 @@ impl VaultTask {
                     "启动 vault KDF 线程失败: {e}"
                 ))));
                 Self { events, join: None }
-            },
+            }
         }
     }
 
@@ -325,7 +331,11 @@ impl Vault {
     /// 用指定路径打开（测试用）。只判断文件是否存在，不读取内容。
     pub fn new(path: impl Into<PathBuf>) -> Self {
         let path = path.into();
-        let state = if path.exists() { State::Locked } else { State::Uninitialized };
+        let state = if path.exists() {
+            State::Locked
+        } else {
+            State::Uninitialized
+        };
         Self { path, state }
     }
 
@@ -372,11 +382,11 @@ impl Vault {
             Ok(unlocked) => {
                 self.state = State::Unlocked(unlocked);
                 Ok(())
-            },
+            }
             Err(VaultError::NotInitialized) => {
                 self.state = State::Uninitialized;
                 Err(VaultError::NotInitialized)
-            },
+            }
             Err(e) => Err(e),
         }
     }
@@ -386,7 +396,11 @@ impl Vault {
         if matches!(self.state, State::Unlocked(_)) {
             return;
         }
-        self.state = if self.path.exists() { State::Locked } else { State::Uninitialized };
+        self.state = if self.path.exists() {
+            State::Locked
+        } else {
+            State::Uninitialized
+        };
     }
 
     /// 把后台任务成功解锁的会话装回 UI 状态（不重新派生、不落盘）。
@@ -450,7 +464,7 @@ impl Vault {
                     wipe_string(&mut old);
                 }
                 Ok(())
-            },
+            }
             Err(e) => {
                 // 写失败：磁盘未变，内存保持原样；临时合并副本必须擦除。
                 wipe_entries(&mut merged);
@@ -458,14 +472,18 @@ impl Vault {
                     wipe_string(&mut old);
                 }
                 Err(e)
-            },
+            }
         }
     }
 
     /// 加密私钥 passphrase 使用独立 slot，避免和登录密码互相覆盖。
     const KEY_PASSPHRASE_SLOT: u64 = 1 << 63;
 
-    pub fn set_key_passphrase(&mut self, profile_id: u64, passphrase: &str) -> Result<(), VaultError> {
+    pub fn set_key_passphrase(
+        &mut self,
+        profile_id: u64,
+        passphrase: &str,
+    ) -> Result<(), VaultError> {
         self.set(profile_id ^ Self::KEY_PASSPHRASE_SLOT, passphrase)
     }
 
@@ -484,9 +502,11 @@ impl Vault {
     /// 读取密码；锁定/未初始化返回错误。
     pub fn get(&self, profile_id: u64) -> Result<String, VaultError> {
         match &self.state {
-            State::Unlocked(u) => {
-                u.entries.get(&profile_id).cloned().ok_or(VaultError::NotFound(profile_id))
-            },
+            State::Unlocked(u) => u
+                .entries
+                .get(&profile_id)
+                .cloned()
+                .ok_or(VaultError::NotFound(profile_id)),
             State::Uninitialized => Err(VaultError::NotInitialized),
             State::Locked => Err(VaultError::Locked),
         }
@@ -524,12 +544,12 @@ impl Vault {
                 wipe_entries(&mut old_memory);
                 wipe_string(&mut removed);
                 Ok(true)
-            },
+            }
             Err(e) => {
                 wipe_entries(&mut merged);
                 wipe_string(&mut removed);
                 Err(e)
-            },
+            }
         }
     }
 
@@ -541,7 +561,7 @@ impl Vault {
         let _lock = VaultLock::acquire(&self.path)?;
         // 锁内确认没有别的进程换过主密码；解出的条目只用于校验，立即擦除。
         match read_disk_entries(&self.path, &cur.key, &cur.salt)? {
-            DiskState::Missing => {},
+            DiskState::Missing => {}
             DiskState::Stale => return Err(VaultError::Stale),
             DiskState::Current(mut entries) => wipe_entries(&mut entries),
         }
@@ -550,11 +570,11 @@ impl Vault {
             Ok(()) => {
                 wipe_entries(&mut old);
                 Ok(())
-            },
+            }
             Err(e) => {
                 cur.entries = old;
                 Err(e)
-            },
+            }
         }
     }
 }
@@ -579,7 +599,9 @@ fn default_path_from(xtervo_vault: Option<&str>, xdg: Option<&str>, home: Option
 
 fn validate_master(master: &str) -> Result<(), VaultError> {
     if master.chars().count() < MIN_MASTER_LEN {
-        return Err(VaultError::Invalid(format!("主密码至少 {MIN_MASTER_LEN} 个字符")));
+        return Err(VaultError::Invalid(format!(
+            "主密码至少 {MIN_MASTER_LEN} 个字符"
+        )));
     }
     if master.chars().count() > 1024 {
         return Err(VaultError::Invalid("主密码过长".into()));
@@ -639,14 +661,30 @@ fn derive_key_with(
 fn prepare_unlock(path: &Path, master: &str) -> Result<Unlocked, VaultError> {
     let text = read_vault_text(path)?;
     let parsed = ParsedVault::parse(&text)?;
-    let key = derive_key_with(master, &parsed.salt, parsed.m_cost, parsed.t_cost, parsed.p_cost)?;
+    let key = derive_key_with(
+        master,
+        &parsed.salt,
+        parsed.m_cost,
+        parsed.t_cost,
+        parsed.p_cost,
+    )?;
     // key 先放进 Unlocked：后面解密/JSON 任一步失败，Drop 都会把它清零。
-    let mut unlocked = Unlocked { key, salt: parsed.salt, entries: BTreeMap::new() };
+    let mut unlocked = Unlocked {
+        key,
+        salt: parsed.salt,
+        entries: BTreeMap::new(),
+    };
     let cipher = ChaCha20Poly1305::new(Key::from_slice(&unlocked.key));
     let nonce = Nonce::from_slice(&parsed.nonce);
     let plaintext = ZeroizeVec::new(
         cipher
-            .decrypt(nonce, Payload { msg: &parsed.ciphertext, aad: parsed.aad })
+            .decrypt(
+                nonce,
+                Payload {
+                    msg: &parsed.ciphertext,
+                    aad: parsed.aad,
+                },
+            )
             .map_err(|_| VaultError::WrongPassword)?,
     );
     let entries: BTreeMap<u64, String> = serde_json::from_slice(plaintext.as_slice())
@@ -663,7 +701,11 @@ fn prepare_initialize(path: &Path, master: &str) -> Result<Unlocked, VaultError>
     validate_master(master)?;
     let salt = random_array::<SALT_LEN>();
     let key = derive_key(master, &salt)?;
-    let unlocked = Unlocked { key, salt, entries: BTreeMap::new() };
+    let unlocked = Unlocked {
+        key,
+        salt,
+        entries: BTreeMap::new(),
+    };
     // Argon2 在锁外完成；锁内再查一次，避免两个进程同时 initialize 互相覆盖。
     let _lock = VaultLock::acquire(path)?;
     if path.exists() {
@@ -682,7 +724,11 @@ fn prepare_change(
     validate_master(new_master)?;
     let salt = random_array::<SALT_LEN>();
     let key = derive_key(new_master, &salt)?;
-    let mut next = Unlocked { key, salt, entries: BTreeMap::new() };
+    let mut next = Unlocked {
+        key,
+        salt,
+        entries: BTreeMap::new(),
+    };
     // 新 key 在锁外派生；锁内重读旧文件，确认快照没有过期。
     let _lock = VaultLock::acquire(path)?;
     let disk_entries = match read_disk_entries(path, &current.0.key, &current.0.salt)? {
@@ -700,7 +746,6 @@ fn prepare_change(
     write_store_locked(path, &next.key, &next.salt, &next.entries)?;
     Ok(next)
 }
-
 
 struct ParsedVault<'a> {
     m_cost: u32,
@@ -727,11 +772,16 @@ impl<'a> ParsedVault<'a> {
         let aad = &text.as_bytes()[..pos];
         let header = &text[..pos];
         let mut lines = header.lines();
-        let first = lines.next().ok_or_else(|| VaultError::Corrupt("空文件".into()))?;
-        let (magic, ver) =
-            first.split_once(' ').ok_or_else(|| VaultError::Corrupt("缺少 magic".into()))?;
+        let first = lines
+            .next()
+            .ok_or_else(|| VaultError::Corrupt("空文件".into()))?;
+        let (magic, ver) = first
+            .split_once(' ')
+            .ok_or_else(|| VaultError::Corrupt("缺少 magic".into()))?;
         if magic != MAGIC {
-            return Err(VaultError::Corrupt("magic 不匹配，不是 xtervo vault 文件".into()));
+            return Err(VaultError::Corrupt(
+                "magic 不匹配，不是 xtervo vault 文件".into(),
+            ));
         }
         let version: u32 = ver
             .trim()
@@ -762,7 +812,7 @@ impl<'a> ParsedVault<'a> {
                         return Err(VaultError::Corrupt(format!("不支持的 KDF: {value}")));
                     }
                     kdf_seen = true;
-                },
+                }
                 "m" => m_cost = Some(parse_u32(value, "m")?),
                 "t" => t_cost = Some(parse_u32(value, "t")?),
                 "p" => p_cost = Some(parse_u32(value, "p")?),
@@ -770,7 +820,7 @@ impl<'a> ParsedVault<'a> {
                 "nonce" => nonce = Some(decode_exact::<NONCE_LEN>(value, "nonce")?),
                 other => {
                     return Err(VaultError::Corrupt(format!("未知头部字段: {other}")));
-                },
+                }
             }
         }
         if !kdf_seen {
@@ -799,12 +849,23 @@ impl<'a> ParsedVault<'a> {
         if ciphertext.len() < 16 {
             return Err(VaultError::Corrupt("ciphertext 过短".into()));
         }
-        Ok(Self { m_cost, t_cost, p_cost, salt, nonce, ciphertext, aad })
+        Ok(Self {
+            m_cost,
+            t_cost,
+            p_cost,
+            salt,
+            nonce,
+            ciphertext,
+            aad,
+        })
     }
 }
 
 fn parse_u32(value: &str, name: &str) -> Result<u32, VaultError> {
-    value.trim().parse().map_err(|_| VaultError::Corrupt(format!("{name} 参数无效: {value:?}")))
+    value
+        .trim()
+        .parse()
+        .map_err(|_| VaultError::Corrupt(format!("{name} 参数无效: {value:?}")))
 }
 
 fn decode_exact<const N: usize>(value: &str, name: &str) -> Result<[u8; N], VaultError> {
@@ -852,7 +913,9 @@ fn wipe_entries(entries: &mut BTreeMap<u64, String>) {
 }
 
 fn parent_dir(path: &Path) -> &Path {
-    path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."))
+    path.parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."))
 }
 
 fn sibling_path(path: &Path, suffix: &str) -> PathBuf {
@@ -931,7 +994,7 @@ fn read_vault_text(path: &Path) -> Result<String, VaultError> {
         Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             return Err(VaultError::NotInitialized);
-        },
+        }
         Err(e) => return Err(VaultError::Io(e.to_string())),
     };
     let meta = file.metadata().map_err(|e| VaultError::Io(e.to_string()))?;
@@ -983,7 +1046,13 @@ fn read_disk_entries(
     let nonce = Nonce::from_slice(&parsed.nonce);
     let plaintext = ZeroizeVec::new(
         cipher
-            .decrypt(nonce, Payload { msg: &parsed.ciphertext, aad: parsed.aad })
+            .decrypt(
+                nonce,
+                Payload {
+                    msg: &parsed.ciphertext,
+                    aad: parsed.aad,
+                },
+            )
             .map_err(|_| {
                 VaultError::Corrupt("vault 条目无法解密（文件被并发修改或已损坏）".into())
             })?,
@@ -1013,7 +1082,13 @@ fn write_store_locked(
     let cipher = ChaCha20Poly1305::new(Key::from_slice(key));
     let nonce = Nonce::from_slice(&nonce_bytes);
     let ciphertext = cipher
-        .encrypt(nonce, Payload { msg: plaintext.as_slice(), aad: header.as_bytes() })
+        .encrypt(
+            nonce,
+            Payload {
+                msg: plaintext.as_slice(),
+                aad: header.as_bytes(),
+            },
+        )
         .map_err(|_| VaultError::Internal("ChaCha20-Poly1305 加密失败".into()))?;
     let text = format!("{header}ciphertext={}\n", B64.encode(ciphertext));
     if text.len() as u64 > MAX_FILE {
@@ -1066,9 +1141,8 @@ fn write_atomic(path: &Path, data: &[u8]) -> Result<(), VaultError> {
         {
             let dir = fs::File::open(parent)
                 .map_err(|e| VaultError::Io(format!("打开目录 {} 失败: {e}", parent.display())))?;
-            dir.sync_all().map_err(|e| {
-                VaultError::Io(format!("同步目录 {} 失败: {e}", parent.display()))
-            })?;
+            dir.sync_all()
+                .map_err(|e| VaultError::Io(format!("同步目录 {} 失败: {e}", parent.display())))?;
         }
         Ok(())
     })();
@@ -1150,8 +1224,18 @@ mod tests {
             save_password: true,
             ..Profile::default()
         };
-        let first = store.add(Profile { name: "first".into(), ..base.clone() }).unwrap();
-        let second = store.add(Profile { name: "second".into(), ..base }).unwrap();
+        let first = store
+            .add(Profile {
+                name: "first".into(),
+                ..base.clone()
+            })
+            .unwrap();
+        let second = store
+            .add(Profile {
+                name: "second".into(),
+                ..base
+            })
+            .unwrap();
         assert_ne!(first, second, "每个 Profile 必须拿到独立 id");
         v.set(first, secret()).unwrap();
         v.set(second, "second-password").unwrap();
@@ -1201,7 +1285,10 @@ mod tests {
         // 模拟重启：新实例默认锁定，必须重新输入主密码。
         let mut reopened = Vault::new(&path);
         assert_eq!(reopened.status(), VaultStatus::Locked);
-        assert_eq!(reopened.unlock("wrong-password").unwrap_err(), VaultError::WrongPassword);
+        assert_eq!(
+            reopened.unlock("wrong-password").unwrap_err(),
+            VaultError::WrongPassword
+        );
         assert_eq!(reopened.status(), VaultStatus::Locked);
         reopened.unlock(master()).unwrap();
         assert_eq!(reopened.get(1).unwrap(), secret());
@@ -1249,9 +1336,16 @@ mod tests {
         let garbage = dir.join("garbage.enc");
         fs::write(&garbage, b"not a vault at all\n").unwrap();
         let mut g = Vault::new(&garbage);
-        assert!(matches!(g.unlock("whatever").unwrap_err(), VaultError::Corrupt(_)));
+        assert!(matches!(
+            g.unlock("whatever").unwrap_err(),
+            VaultError::Corrupt(_)
+        ));
         assert_eq!(g.status(), VaultStatus::Locked);
-        assert_eq!(fs::read(&garbage).unwrap(), b"not a vault at all\n", "坏文件不能动");
+        assert_eq!(
+            fs::read(&garbage).unwrap(),
+            b"not a vault at all\n",
+            "坏文件不能动"
+        );
 
         // 截断：base64/AEAD 都应报错而不是 panic。
         let before = fs::read_to_string(&path).unwrap();
@@ -1259,7 +1353,11 @@ mod tests {
         fs::write(&path, &before[..cut]).unwrap();
         let mut truncated = Vault::new(&path);
         assert!(truncated.unlock(master()).is_err());
-        assert_eq!(fs::read_to_string(&path).unwrap(), &before[..cut], "损坏文件保持原样");
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            &before[..cut],
+            "损坏文件保持原样"
+        );
 
         // 空文件 / 只有 magic 的文件都不能 panic。
         for body in ["", "XTERVO-VAULT 1\n", "XTERVO-VAULT 999\n"] {
@@ -1312,7 +1410,10 @@ mod tests {
 
         // 锁定时不允许改主密码。
         fresh.lock();
-        assert_eq!(fresh.change_master("third password").unwrap_err(), VaultError::Locked);
+        assert_eq!(
+            fresh.change_master("third password").unwrap_err(),
+            VaultError::Locked
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -1325,7 +1426,10 @@ mod tests {
         v.initialize(master()).unwrap();
         v.set(1, secret()).unwrap();
         v.set(2, "second").unwrap();
-        assert_eq!(v.initialize("another master").unwrap_err(), VaultError::AlreadyInitialized);
+        assert_eq!(
+            v.initialize("another master").unwrap_err(),
+            VaultError::AlreadyInitialized
+        );
         v.clear().unwrap();
         assert_eq!(v.entry_count(), 0);
         v.lock();
@@ -1342,11 +1446,20 @@ mod tests {
 
         let p2 = dir.join("short.enc");
         let mut short = Vault::new(&p2);
-        assert!(matches!(short.initialize("short").unwrap_err(), VaultError::Invalid(_)));
+        assert!(matches!(
+            short.initialize("short").unwrap_err(),
+            VaultError::Invalid(_)
+        ));
         assert_eq!(short.status(), VaultStatus::Uninitialized);
-        assert!(matches!(short.initialize("").unwrap_err(), VaultError::Invalid(_)));
+        assert!(matches!(
+            short.initialize("").unwrap_err(),
+            VaultError::Invalid(_)
+        ));
         short.initialize("long enough").unwrap();
-        assert!(matches!(short.set(1, "").unwrap_err(), VaultError::Invalid(_)));
+        assert!(matches!(
+            short.set(1, "").unwrap_err(),
+            VaultError::Invalid(_)
+        ));
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -1365,7 +1478,10 @@ mod tests {
         let p = dir.join("huge.enc");
         fs::write(&p, bad).unwrap();
         let mut huge = Vault::new(&p);
-        assert!(matches!(huge.unlock(master()).unwrap_err(), VaultError::Corrupt(_)));
+        assert!(matches!(
+            huge.unlock(master()).unwrap_err(),
+            VaultError::Corrupt(_)
+        ));
 
         // 缺少 salt / nonce。
         for needle in ["salt=", "nonce="] {
@@ -1377,7 +1493,10 @@ mod tests {
             let p = dir.join("missing.enc");
             fs::write(&p, broken).unwrap();
             let mut m = Vault::new(&p);
-            assert!(matches!(m.unlock(master()).unwrap_err(), VaultError::Corrupt(_)));
+            assert!(matches!(
+                m.unlock(master()).unwrap_err(),
+                VaultError::Corrupt(_)
+            ));
         }
         let _ = fs::remove_dir_all(&dir);
     }
@@ -1396,7 +1515,8 @@ mod tests {
         let (wake, rx) = xtervo_core::WakeSignal::new();
         let task = VaultTask::unlock(path.clone(), master().to_string(), wake);
         // 任务在独立线程里跑：这里立即返回，不阻塞调用线程。
-        rx.recv_timeout(Duration::from_secs(30)).expect("KDF 完成应唤醒 UI");
+        rx.recv_timeout(Duration::from_secs(30))
+            .expect("KDF 完成应唤醒 UI");
         let outcome = task.wait().expect("应拿到任务结果");
         let VaultTaskOutcome::Ok(session) = outcome else {
             panic!("后台解锁失败: {}", outcome_error(outcome));
@@ -1489,10 +1609,16 @@ mod tests {
             xtervo_core::WakeSignal::new().0,
         );
         match task.wait().unwrap() {
-            VaultTaskOutcome::Err(VaultError::AlreadyInitialized) => {},
+            VaultTaskOutcome::Err(VaultError::AlreadyInitialized) => {}
             other => panic!("期望 AlreadyInitialized，得到 {}", outcome_error(other)),
         }
-        assert_eq!(fs::read_to_string(&path).unwrap().matches("ciphertext=").count(), 1);
+        assert_eq!(
+            fs::read_to_string(&path)
+                .unwrap()
+                .matches("ciphertext=")
+                .count(),
+            1
+        );
 
         // 锁定时 change_snapshot 立即返回 Locked（不启动后台线程）。
         let locked = Vault::new(&path);
@@ -1516,7 +1642,10 @@ mod tests {
             xtervo_core::WakeSignal::new().0,
         );
         drop(task);
-        assert!(started.elapsed() < Duration::from_secs(1), "Drop 不能阻塞 UI");
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "Drop 不能阻塞 UI"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -1528,9 +1657,10 @@ mod tests {
     /// 子进程 helper：正常跑测试套件时环境变量不存在，直接返回。
     #[test]
     fn vault_child_set_helper() {
-        let (Ok(path), Ok(master)) =
-            (std::env::var(CHILD_PATH_ENV), std::env::var(CHILD_MASTER_ENV))
-        else {
+        let (Ok(path), Ok(master)) = (
+            std::env::var(CHILD_PATH_ENV),
+            std::env::var(CHILD_MASTER_ENV),
+        ) else {
             return;
         };
         let mut v = Vault::new(path);
@@ -1541,7 +1671,11 @@ mod tests {
     fn run_child_set(path: &Path) {
         let exe = std::env::current_exe().expect("测试二进制路径");
         let output = std::process::Command::new(exe)
-            .args(["--exact", "vault::tests::vault_child_set_helper", "--nocapture"])
+            .args([
+                "--exact",
+                "vault::tests::vault_child_set_helper",
+                "--nocapture",
+            ])
             .env(CHILD_PATH_ENV, path)
             .env(CHILD_MASTER_ENV, master())
             .output()
@@ -1570,14 +1704,22 @@ mod tests {
 
         // 父进程的 set 必须锁内重读磁盘并合并，不能把子进程的 2 覆盖掉。
         parent.set(3, "parent-secret").unwrap();
-        assert_eq!(parent.get(2).unwrap(), "child-secret", "内存也应合并子进程写入");
+        assert_eq!(
+            parent.get(2).unwrap(),
+            "child-secret",
+            "内存也应合并子进程写入"
+        );
         assert_eq!(parent.get(1).unwrap(), secret());
 
         drop(parent);
         let mut reopened = Vault::new(&path);
         reopened.unlock(master()).unwrap();
         assert_eq!(reopened.get(1).unwrap(), secret());
-        assert_eq!(reopened.get(2).unwrap(), "child-secret", "跨进程更新不能被丢");
+        assert_eq!(
+            reopened.get(2).unwrap(),
+            "child-secret",
+            "跨进程更新不能被丢"
+        );
         assert_eq!(reopened.get(3).unwrap(), "parent-secret");
         let _ = fs::remove_dir_all(&dir);
     }
@@ -1654,7 +1796,10 @@ mod tests {
         assert_eq!(reopened.get(1).unwrap(), secret());
         assert_eq!(reopened.get(2).unwrap(), "newer-entry");
         let mut wrong = Vault::new(&path);
-        assert_eq!(wrong.unlock("stale new master").unwrap_err(), VaultError::WrongPassword);
+        assert_eq!(
+            wrong.unlock("stale new master").unwrap_err(),
+            VaultError::WrongPassword
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -1713,7 +1858,10 @@ mod tests {
             "persist 不得跟随可预测 tmp 路径的符号链接"
         );
         assert!(
-            !fs::symlink_metadata(&path).unwrap().file_type().is_symlink(),
+            !fs::symlink_metadata(&path)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
             "vault 文件本身被替换"
         );
         let mut reopened = Vault::new(&path);
@@ -1753,7 +1901,10 @@ mod tests {
 
         let before = wipe_probe::count();
         v.set(1, "replacement").unwrap();
-        assert!(wipe_probe::count() > before, "覆盖旧凭据时必须擦除被替换的值");
+        assert!(
+            wipe_probe::count() > before,
+            "覆盖旧凭据时必须擦除被替换的值"
+        );
 
         v.set(2, "second").unwrap();
         let before = wipe_probe::count();
@@ -1778,9 +1929,11 @@ mod tests {
         v.lock();
         let good = fs::read_to_string(&path).unwrap();
 
-        for (name, from, to) in
-            [("m", "m=19456", "m=65537"), ("t", "t=2", "t=5"), ("p", "p=1", "p=5")]
-        {
+        for (name, from, to) in [
+            ("m", "m=19456", "m=65537"),
+            ("t", "t=2", "t=5"),
+            ("p", "p=1", "p=5"),
+        ] {
             let bad = good.replace(from, to);
             assert_ne!(bad, good, "{name} fixture 未替换");
             // 直接测 parse：它不会跑 Argon2，返回 Corrupt 就证明超限在派生之前被拒。
@@ -1818,7 +1971,10 @@ mod tests {
         unlocked.wipe();
         assert_eq!(unlocked.key, [0u8; KEY_LEN], "key 必须原地清零");
         let value = unlocked.entries.get(&1).unwrap();
-        assert!(value.as_bytes().iter().all(|b| *b == 0), "凭据字节必须被清零");
+        assert!(
+            value.as_bytes().iter().all(|b| *b == 0),
+            "凭据字节必须被清零"
+        );
     }
 
     #[cfg(unix)]
@@ -1829,12 +1985,20 @@ mod tests {
         let path = dir.join("vault.enc");
         let guard = VaultLock::acquire(&path).unwrap();
         let lock_path = sibling_path(&path, ".lock");
-        let second = OpenOptions::new().read(true).write(true).open(&lock_path).unwrap();
+        let second = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .unwrap();
         // 非阻塞探测：锁被持有时第二个 fd 必须拿不到。
         let rc = unsafe { libc::flock(second.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
         assert_eq!(rc, -1, "第二个 fd 不应在锁释放前获得 flock");
         let err = std::io::Error::last_os_error();
-        assert_eq!(err.raw_os_error(), Some(libc::EWOULDBLOCK), "应返回 EWOULDBLOCK: {err}");
+        assert_eq!(
+            err.raw_os_error(),
+            Some(libc::EWOULDBLOCK),
+            "应返回 EWOULDBLOCK: {err}"
+        );
         drop(guard);
         let rc = unsafe { libc::flock(second.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
         assert_eq!(rc, 0, "释放后第二个 fd 应能获得 flock");

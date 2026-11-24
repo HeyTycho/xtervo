@@ -19,24 +19,24 @@ mod instance;
 mod keys;
 mod known_hosts;
 mod known_hosts_rs;
-mod login_script;
-mod ssh_config;
-mod ssh_forward;
-mod serial_native;
-mod ssh_native;
 mod latency;
 mod logging;
-mod migrate;
+mod login_script;
 mod mcp;
+mod migrate;
+mod serial_native;
+mod ssh_config;
+mod ssh_forward;
+mod ssh_native;
 // Plugin API v3 protocol exposes a few forward-compatible helpers/limits that are
 // intentionally kept (and covered by tests) even when the current UI does not use
 // every one of them.
 #[cfg(test)]
 mod image_layer_diff_tests;
+mod platform;
 #[allow(dead_code)]
 mod plugin_v3;
 mod plugin_wasm;
-mod platform;
 mod profile;
 mod quake;
 mod render;
@@ -77,6 +77,8 @@ use std::time::{Duration, Instant};
 
 use slint::winit_030::{winit, EventResult, WinitWindowAccessor};
 use slint::{Model, ModelRc, VecModel};
+use x11rb::connection::Connection;
+use x11rb::rust_connection::RustConnection;
 use xtervo_core::{
     link::{is_allowed_uri, strip_path_position},
     spawn, spawn_with_transport, Backend, ClipboardRequest, ClipboardSelection, CoreEvent, Frame,
@@ -84,8 +86,6 @@ use xtervo_core::{
     Notification, Palette as TermPalette, PaneConfig, PaneHandle, ProgressState, ScrollPosition,
     SearchHit, SearchOptions, ShellMark, Theme, UiColors, WakeSignal,
 };
-use x11rb::connection::Connection;
-use x11rb::rust_connection::RustConnection;
 
 use crate::config::{
     Config, ScrollbarPolicy, TabbarPos, TerminalMenuItem, UNLIMITED_SCROLLBACK_LINES,
@@ -473,10 +473,10 @@ fn commit_workspace_rename(st: &mut AppState, raw: &str) {
             let saved = st.workspaces.borrow().save();
 
             if let Err(e) = saved {
-        eprintln!("[workspace] 保存失败: {e}");
-        set_workspace_status(st, format!("保存工作区失败: {e}"));
-        return;
-    }
+                eprintln!("[workspace] 保存失败: {e}");
+                set_workspace_status(st, format!("保存工作区失败: {e}"));
+                return;
+            }
             refresh_workspace_rows(st);
             refresh_workspace_rows_elsewhere(st.window_id);
             st.workspace_rename_from = None;
@@ -531,10 +531,10 @@ fn confirm_delete_workspace(st: &mut AppState) {
         let saved = st.workspaces.borrow().save();
 
         if let Err(e) = saved {
-        eprintln!("[workspace] 保存失败: {e}");
-        set_workspace_status(st, format!("保存工作区失败: {e}"));
-        return;
-    }
+            eprintln!("[workspace] 保存失败: {e}");
+            set_workspace_status(st, format!("保存工作区失败: {e}"));
+            return;
+        }
         refresh_workspace_rows(st);
         refresh_workspace_rows_elsewhere(st.window_id);
         let msg = if zh {
@@ -3099,7 +3099,7 @@ fn refresh_plugin_ui(st: &mut AppState) {
             let registry = registry.borrow();
             let ids = registry.ids().iter().map(|id| id.get()).collect::<Vec<_>>();
             (Some(ids), registry.active().map(|id| id.get()))
-        },
+        }
         None => (None, None),
     };
     if let Some(known_windows) = known_windows {
@@ -5190,7 +5190,7 @@ fn create_pane(
                     p.baud
                 );
                 spawn_with_transport(config, Backend::Plugin(Box::new(transport)))?
-            },
+            }
             Err(error) => {
                 // socat 回退只配置了 8N1/no-flow；非默认 framing 回退会静默
                 // 用错参数，必须把 native 错误交给用户。
@@ -5206,7 +5206,7 @@ fn create_pane(
                 }
                 eprintln!("[serial-native] 打开失败，回退 socat: {error}");
                 spawn(config)?
-            },
+            }
         }
     } else if let Some(p) = profile.filter(|p| {
         ssh_native::can_use(p)
@@ -5226,7 +5226,7 @@ fn create_pane(
                     return Err(std::io::Error::other(format!(
                         "native SSH 需要 Vault 中的密码（或设置 transport=system）: {error}"
                     )))
-                },
+                }
             }
         } else {
             None
@@ -5235,9 +5235,7 @@ fn create_pane(
         // 口令只在本函数栈和连接线程里，日志只记来源标记。
         let key_passphrase = native_key_passphrase.or_else(|| {
             if p.auth == "key" && p.save_key_passphrase {
-                st.vault
-                    .with(|vault| vault.get_key_passphrase(p.id))
-                    .ok()
+                st.vault.with(|vault| vault.get_key_passphrase(p.id)).ok()
             } else {
                 None
             }
@@ -6342,7 +6340,12 @@ fn refresh_known_hosts(st: &mut AppState) {
         if keys.is_empty() {
             continue;
         }
-        let shown = keys.iter().take(3).map(|key| key.fingerprint.clone()).collect::<Vec<_>>().join(", ");
+        let shown = keys
+            .iter()
+            .take(3)
+            .map(|key| key.fingerprint.clone())
+            .collect::<Vec<_>>()
+            .join(", ");
         let suffix = if keys.len() > 3 {
             format!(" +{}", keys.len() - 3)
         } else {
@@ -6355,7 +6358,10 @@ fn refresh_known_hosts(st: &mut AppState) {
             keys.len(),
             if zh { "个密钥" } else { "keys" },
         )));
-        rows.push(KnownHostRow { profile_id: p.id, spec: effective.spec });
+        rows.push(KnownHostRow {
+            profile_id: p.id,
+            spec: effective.spec,
+        });
     }
     st.known_hosts_rows = rows;
     let count = st.known_hosts_rows.len();
@@ -6418,7 +6424,7 @@ fn delete_known_host_row(st: &mut AppState, index: usize) {
                     format!("Deleted entries for {} from {} file(s)", row.spec, changed)
                 },
             );
-        },
+        }
         Err(error) => {
             eprintln!("[known_hosts] 管理删除失败 host={}: {error}", row.spec);
             refresh_known_hosts_status(
@@ -6429,7 +6435,7 @@ fn delete_known_host_row(st: &mut AppState, index: usize) {
                     format!("Delete failed: {error}")
                 },
             );
-        },
+        }
     }
 }
 
@@ -6445,9 +6451,7 @@ fn open_profile_tab_now_with_passphrase(
     allow_askpass: bool,
     native_key_passphrase: Option<String>,
 ) {
-    if native_key_passphrase.is_none()
-        && maybe_prompt_key_passphrase(st, index, allow_askpass)
-    {
+    if native_key_passphrase.is_none() && maybe_prompt_key_passphrase(st, index, allow_askpass) {
         return;
     }
     let (spec, askpass) = match build_profile_launch_with(st, index, allow_askpass) {
@@ -6500,7 +6504,7 @@ fn maybe_prompt_key_passphrase(st: &mut AppState, index: usize, allow_askpass: b
                     "Vault 已锁定：请先解锁 Vault（或取消保存口令）后重试该 SSH Profile",
                 );
                 return true;
-            },
+            }
             Err(_) => None,
         }
     } else {
@@ -6508,12 +6512,11 @@ fn maybe_prompt_key_passphrase(st: &mut AppState, index: usize, allow_askpass: b
     };
     let state = ssh_native::key_passphrase_state(&p, saved.as_deref());
     match state {
-        ssh_native::KeyPassphraseState::NotNeeded
-        | ssh_native::KeyPassphraseState::Ready => false,
+        ssh_native::KeyPassphraseState::NotNeeded | ssh_native::KeyPassphraseState::Ready => false,
         ssh_native::KeyPassphraseState::Missing => {
             request_key_passphrase(st, index, KeyPassphraseAction::OpenProfile, None, None);
             true
-        },
+        }
         ssh_native::KeyPassphraseState::Invalid => {
             request_key_passphrase(
                 st,
@@ -6523,7 +6526,7 @@ fn maybe_prompt_key_passphrase(st: &mut AppState, index: usize, allow_askpass: b
                 Some("Vault 中保存的口令无法解密该私钥，请重新输入"),
             );
             true
-        },
+        }
     }
 }
 
@@ -6564,10 +6567,7 @@ fn request_key_passphrase(
             p.key_path.trim()
         )
     };
-    eprintln!(
-        "[ssh-auth] 请求私钥口令 profile={} action={action:?}",
-        p.id
-    );
+    eprintln!("[ssh-auth] 请求私钥口令 profile={} action={action:?}", p.id);
     st.key_passphrase_prompt = Some(KeyPassphrasePrompt {
         profile_index: index,
         profile_id: p.id,
@@ -6606,7 +6606,12 @@ fn submit_key_passphrase(st: &mut AppState) {
     let zh = app_lang(st) == "zh";
     if passphrase.is_empty() {
         st.ui.set_passkey_error(
-            if zh { "口令不能为空" } else { "Passphrase cannot be empty" }.into(),
+            if zh {
+                "口令不能为空"
+            } else {
+                "Passphrase cannot be empty"
+            }
+            .into(),
         );
         refocus_passkey_input(st);
         return;
@@ -6668,7 +6673,11 @@ fn submit_key_passphrase(st: &mut AppState) {
             st.ui.set_passkey_error(
                 format!(
                     "{}: {error}",
-                    if zh { "保存口令失败" } else { "Saving passphrase failed" }
+                    if zh {
+                        "保存口令失败"
+                    } else {
+                        "Saving passphrase failed"
+                    }
                 )
                 .into(),
             );
@@ -6697,13 +6706,8 @@ fn submit_key_passphrase(st: &mut AppState) {
     st.ui.set_passkey_error("".into());
     match prompt.action {
         KeyPassphraseAction::OpenProfile => {
-            open_profile_tab_now_with_passphrase(
-                st,
-                prompt.profile_index,
-                true,
-                Some(passphrase),
-            );
-        },
+            open_profile_tab_now_with_passphrase(st, prompt.profile_index, true, Some(passphrase));
+        }
         KeyPassphraseAction::RetryPane => {
             let Some(pane) = prompt.pane else { return };
             let notice = SshExitNotice {
@@ -6713,7 +6717,7 @@ fn submit_key_passphrase(st: &mut AppState) {
                 retry: RetryAction::RestartPane,
             };
             restart_exited_pane_with_passphrase(st, notice, Some(passphrase));
-        },
+        }
     }
 }
 
@@ -7064,7 +7068,10 @@ fn note_ssh_exit(
                         .position(|candidate| candidate.id == p.id)
                 };
                 if let Some(index) = prompt_index {
-                    eprintln!("[ssh-auth] native 报告私钥口令失败，重新弹窗 profile={}", p.id);
+                    eprintln!(
+                        "[ssh-auth] native 报告私钥口令失败，重新弹窗 profile={}",
+                        p.id
+                    );
                     request_key_passphrase(
                         st,
                         index,
@@ -7108,11 +7115,7 @@ fn auto_reconnect_eligible(profile: &profile::Profile) -> bool {
 /// 真正安排一次自动重连（`note_ssh_exit` 与串口 EOF 共用）。
 ///
 /// 计数按 Profile 在 app 会话内累计；到上限后把 pane 标成 Failed 并清计数。
-fn schedule_auto_reconnect(
-    st: &mut AppState,
-    pane: PaneId,
-    profile: profile::Profile,
-) {
+fn schedule_auto_reconnect(st: &mut AppState, pane: PaneId, profile: profile::Profile) {
     if !auto_reconnect_eligible(&profile) {
         return;
     }
@@ -7228,14 +7231,18 @@ fn note_serial_disconnect(
                 )
             }
         }
-        None if zh => format!(
-            "串口设备已断开（{detail}）。点 Restart 重新连接，或关闭该 Tab 后重开。"
-        ),
+        None if zh => {
+            format!("串口设备已断开（{detail}）。点 Restart 重新连接，或关闭该 Tab 后重开。")
+        }
         None => format!(
             "Serial device disconnected ({detail}). Click Restart to reconnect, or close this tab."
         ),
     };
-    let title = if zh { "串口已断开" } else { "Serial disconnected" };
+    let title = if zh {
+        "串口已断开"
+    } else {
+        "Serial disconnected"
+    };
     show_session_notice(
         st,
         Some(pane),
@@ -7444,9 +7451,12 @@ fn serial_control(st: &AppState, pane: PaneId) -> Option<serial_native::SerialCo
 fn apply_serial_status(st: &mut AppState, status: &serial_native::SerialStatus) {
     st.ui.set_serial_dtr(status.dtr);
     st.ui.set_serial_rts(status.rts);
-    st.ui.set_serial_cts(if status.cts { "on" } else { "off" }.into());
-    st.ui.set_serial_dsr(if status.dsr { "on" } else { "off" }.into());
-    st.ui.set_serial_dcd(if status.dcd { "on" } else { "off" }.into());
+    st.ui
+        .set_serial_cts(if status.cts { "on" } else { "off" }.into());
+    st.ui
+        .set_serial_dsr(if status.dsr { "on" } else { "off" }.into());
+    st.ui
+        .set_serial_dcd(if status.dcd { "on" } else { "off" }.into());
     st.ui
         .set_serial_status_error(status.error.clone().unwrap_or_default().into());
 }
@@ -7662,7 +7672,8 @@ fn edit_profile_form(st: &mut AppState, index: usize) {
     st.ui.set_form_key_passphrase("".into());
     st.ui.set_form_save_key_passphrase(p.save_key_passphrase);
     st.ui.set_form_key_passphrase_saved(
-        st.vault.with(|vault| vault.has_key_passphrase(p.id).unwrap_or(false)),
+        st.vault
+            .with(|vault| vault.has_key_passphrase(p.id).unwrap_or(false)),
     );
     // 密码绝不回填到 UI；勾选状态反映配置，真正密码只在 Vault 解锁时可写入。
     st.ui.set_form_password("".into());
@@ -7679,18 +7690,25 @@ fn edit_profile_form(st: &mut AppState, index: usize) {
     st.ui.set_form_x11_forward(p.x11_forward);
     st.ui.set_form_ciphers(p.ciphers.as_str().into());
     st.ui.set_form_macs(p.macs.as_str().into());
-    st.ui.set_form_kex_algorithms(p.kex_algorithms.as_str().into());
-    st.ui.set_form_proxy_command(p.proxy_command.as_str().into());
+    st.ui
+        .set_form_kex_algorithms(p.kex_algorithms.as_str().into());
+    st.ui
+        .set_form_proxy_command(p.proxy_command.as_str().into());
     st.ui
         .set_form_login_scripts(p.login_scripts.join("\n").as_str().into());
     st.ui.set_form_serial_port(p.serial_port.as_str().into());
     st.ui.set_form_baud(p.baud.to_string().as_str().into());
-    st.ui.set_form_serial_data_bits(p.data_bits.to_string().as_str().into());
+    st.ui
+        .set_form_serial_data_bits(p.data_bits.to_string().as_str().into());
     st.ui.set_form_serial_parity(p.parity.as_str().into());
-    st.ui.set_form_serial_stop_bits(p.stop_bits.to_string().as_str().into());
-    st.ui.set_form_serial_flow_control(p.flow_control.as_str().into());
-    st.ui.set_form_serial_output(p.serial_output.as_str().into());
-    st.ui.set_form_serial_newline(p.serial_newline.as_str().into());
+    st.ui
+        .set_form_serial_stop_bits(p.stop_bits.to_string().as_str().into());
+    st.ui
+        .set_form_serial_flow_control(p.flow_control.as_str().into());
+    st.ui
+        .set_form_serial_output(p.serial_output.as_str().into());
+    st.ui
+        .set_form_serial_newline(p.serial_newline.as_str().into());
     st.ui.set_form_serial_input(p.serial_input.as_str().into());
     st.ui.set_form_serial_timestamp(p.serial_timestamp);
     st.ui.set_form_serial_dtr(p.dtr);
@@ -7822,10 +7840,24 @@ fn save_profile_form(st: &mut AppState) {
         "serial" => {
             p.serial_port = st.ui.get_form_serial_port().to_string();
             p.baud = st.ui.get_form_baud().trim().parse::<u32>().unwrap_or(0);
-            p.data_bits = st.ui.get_form_serial_data_bits().trim().parse::<u8>().unwrap_or(0);
+            p.data_bits = st
+                .ui
+                .get_form_serial_data_bits()
+                .trim()
+                .parse::<u8>()
+                .unwrap_or(0);
             p.parity = st.ui.get_form_serial_parity().trim().to_ascii_lowercase();
-            p.stop_bits = st.ui.get_form_serial_stop_bits().trim().parse::<u8>().unwrap_or(0);
-            p.flow_control = st.ui.get_form_serial_flow_control().trim().to_ascii_lowercase();
+            p.stop_bits = st
+                .ui
+                .get_form_serial_stop_bits()
+                .trim()
+                .parse::<u8>()
+                .unwrap_or(0);
+            p.flow_control = st
+                .ui
+                .get_form_serial_flow_control()
+                .trim()
+                .to_ascii_lowercase();
             p.serial_output = st.ui.get_form_serial_output().trim().to_ascii_lowercase();
             p.serial_newline = st.ui.get_form_serial_newline().trim().to_ascii_lowercase();
             p.serial_input = st.ui.get_form_serial_input().trim().to_ascii_lowercase();
@@ -7986,9 +8018,7 @@ fn save_profile_form(st: &mut AppState) {
     };
     match result {
         Ok(id) => {
-            if save_key_passphrase
-                && st.vault_pending_key_passphrase_remove == Some(id)
-            {
+            if save_key_passphrase && st.vault_pending_key_passphrase_remove == Some(id) {
                 st.vault_pending_key_passphrase_remove = None;
             }
             let mut vault_write_error = None;
@@ -8006,7 +8036,9 @@ fn save_profile_form(st: &mut AppState) {
                     match st.vault.with_mut(|vault| vault.remove_key_passphrase(id)) {
                         Ok(_) => {}
                         Err(vault::VaultError::Locked | vault::VaultError::NotInitialized) => {}
-                        Err(error) => eprintln!("[vault] 删除 Profile {id} 的密钥口令失败: {error}"),
+                        Err(error) => {
+                            eprintln!("[vault] 删除 Profile {id} 的密钥口令失败: {error}")
+                        }
                     }
                 }
             }
@@ -8511,14 +8543,14 @@ fn sftp_confirm_accept(st: &mut AppState) {
     match confirmation {
         sftp::SftpConfirmation::Overwrite { request, .. } => {
             sftp_submit_transfer(st, request);
-        },
+        }
         sftp::SftpConfirmation::RecursiveDelete { target, remote } => {
             sftp_start_op(
                 st,
                 sftp::SftpCommand::RemoveRecursive { target, remote },
                 "递归删除中…（后台，120s 超时/可取消）",
             );
-        },
+        }
     }
 }
 
@@ -8528,17 +8560,24 @@ fn sftp_confirm_cancel(st: &mut AppState) {
     sftp_hide_confirm(st);
     match pending {
         Some(sftp::SftpConfirmation::Overwrite { request, .. }) => {
-            sftp_set_status(st, &format!("已取消{}，未入队，文件未改动", request.direction.verb()));
-        },
+            sftp_set_status(
+                st,
+                &format!("已取消{}，未入队，文件未改动", request.direction.verb()),
+            );
+        }
         Some(sftp::SftpConfirmation::RecursiveDelete { .. }) => {
             sftp_set_status(st, "已取消递归删除，远端文件未改动");
-        },
+        }
         None => sftp_set_status(st, "没有待确认的操作"),
     }
 }
 
 /// 只有目标不存在（或用户确认覆盖）时才把请求交给传输队列。
-fn sftp_offer_transfer(st: &mut AppState, request: sftp::TransferRequest, risk: sftp::OverwriteRisk) {
+fn sftp_offer_transfer(
+    st: &mut AppState,
+    request: sftp::TransferRequest,
+    risk: sftp::OverwriteRisk,
+) {
     let status = match risk {
         sftp::OverwriteRisk::Existing => "目标已存在，请在面板中确认覆盖（尚未入队）",
         sftp::OverwriteRisk::Unknown => "无法确认目标，请在面板中确认（尚未入队）",
@@ -8549,7 +8588,7 @@ fn sftp_offer_transfer(st: &mut AppState, request: sftp::TransferRequest, risk: 
         sftp::SftpSubmit::ConfirmationRequired => {
             sftp_show_confirm(st);
             sftp_set_status(st, status);
-        },
+        }
     }
 }
 
@@ -8961,7 +9000,7 @@ fn sftp_do_upload(st: &mut AppState) {
             } else {
                 st.sftp_pending_upload = None;
             }
-        },
+        }
         // 传输进行中无法再开 list；明确告知“可能覆盖”，让用户决定是否排队。
         _ => sftp_offer_transfer(st, request, risk),
     }
@@ -9227,7 +9266,7 @@ fn forward_state_label(rule: &ssh_forward::ForwardRule) -> (&'static str, &'stat
             } else {
                 ("●", "监听中")
             }
-        },
+        }
         ssh_forward::ForwardState::Stopped => ("○", "已停止"),
         ssh_forward::ForwardState::Failed => ("✕", "失败"),
     }
@@ -9236,11 +9275,7 @@ fn forward_state_label(rule: &ssh_forward::ForwardRule) -> (&'static str, &'stat
 /// 面板里“当前会话”一行：类型、监听地址（remote 显示分配端口）、目标、状态。
 fn format_forward_rule(rule: &ssh_forward::ForwardRule) -> String {
     let (glyph, state) = forward_state_label(rule);
-    let mut text = format!(
-        "{glyph} {} {}",
-        rule.kind.short(),
-        rule.listen()
-    );
+    let mut text = format!("{glyph} {} {}", rule.kind.short(), rule.listen());
     if rule.kind == ssh_forward::ForwardKind::Remote && rule.port == 0 {
         text.push_str(" (请求 0)");
     }
@@ -9260,9 +9295,7 @@ fn format_forward_rule(rule: &ssh_forward::ForwardRule) -> String {
 }
 
 /// 当前聚焦 pane 的 SSH Profile 下标 + native 转发句柄（系统 ssh/插件为 None）。
-fn focused_ssh_context(
-    st: &AppState,
-) -> Option<(usize, Option<ssh_forward::ForwardController>)> {
+fn focused_ssh_context(st: &AppState) -> Option<(usize, Option<ssh_forward::ForwardController>)> {
     let pane = st.panes.get(&focused_pane(st)?)?;
     let profile_id = pane.profile_id?;
     let profiles = st.profiles.borrow();
@@ -9313,7 +9346,7 @@ fn refresh_forwards(st: &mut AppState) {
             if session_items.is_empty() {
                 note.push_str("；该 Profile 没有配置转发");
             }
-        },
+        }
         Some((profile_index, None)) => {
             let name = st
                 .profiles
@@ -9325,10 +9358,10 @@ fn refresh_forwards(st: &mut AppState) {
             note = format!(
                 "当前 SSH pane「{name}」不是 native 后端（系统 ssh/插件），转发状态不可查询；下方只编辑 Profile 规则"
             );
-        },
+        }
         None => {
             note = "当前没有 SSH pane；下方规则保存到 Profile，下次连接生效".into();
-        },
+        }
     }
     update_model_if_changed(&st.fwd_session_model, session_items);
     st.fwd_session_ids = session_ids;
@@ -9493,10 +9526,11 @@ fn fwd_session_start_stop(st: &mut AppState, start: bool) {
                 }
                 .into(),
             );
-        },
+        }
         Err(error) => {
-            st.ui.set_fwd_status(format!("操作失败: {error}").as_str().into());
-        },
+            st.ui
+                .set_fwd_status(format!("操作失败: {error}").as_str().into());
+        }
     }
     refresh_forwards(st);
 }
@@ -10582,7 +10616,8 @@ fn start_maximize_when_window_ready(ui: &MainWindow, window_id: WindowId, attemp
 fn restore_window_geometry(ui: &MainWindow, window_id: WindowId, window: &session::WindowSnapshot) {
     let geometry = window.geometry;
     if geometry.is_known() {
-        ui.window().set_size(slint::PhysicalSize::new(geometry.w, geometry.h));
+        ui.window()
+            .set_size(slint::PhysicalSize::new(geometry.w, geometry.h));
         // Wayland 快照的 position_known=false：只恢复尺寸，位置交给合成器。
         if geometry.position_known {
             ui.window()
@@ -10790,7 +10825,9 @@ fn switch_tab_number(st: &mut AppState, n: usize) {
 /// Ctrl+Shift+PageUp/PageDown：在 pinned/unpinned 组内移动当前 Tab。
 fn move_active_tab(st: &mut AppState, delta: i32) {
     let from = st.ws.active;
-    let Some(to) = from.checked_add_signed(delta as isize) else { return };
+    let Some(to) = from.checked_add_signed(delta as isize) else {
+        return;
+    };
     if to >= st.ws.tabs.len() || !st.ws.move_tab(from, to) {
         return;
     }
@@ -12146,7 +12183,11 @@ fn hidpi_metrics(
     font_size: f32,
     scale: f32,
 ) -> (usize, usize, i32, f32) {
-    let scale = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
     let cw = ((cell_w as f32) * scale).round().max(1.0) as usize;
     let ch = ((cell_h as f32) * scale).round().max(1.0) as usize;
     let bl = ((baseline as f32) * scale).round() as i32;
@@ -14045,12 +14086,7 @@ impl Drop for PasteTempFile {
 
 fn write_clipboard_image_with(
     image: arboard::ImageData,
-    encode: impl FnOnce(
-        &Path,
-        std::fs::File,
-        &arboard::ImageData,
-        usize,
-    ) -> std::io::Result<()>,
+    encode: impl FnOnce(&Path, std::fs::File, &arboard::ImageData, usize) -> std::io::Result<()>,
 ) -> std::io::Result<PathBuf> {
     cleanup_stale_clipboard_images();
     if image.width == 0 || image.height == 0 || image.bytes.len() % 4 != 0 {
@@ -14077,7 +14113,8 @@ fn write_clipboard_image_with(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let path = std::env::temp_dir().join(format!("xtervo-paste-{}-{stamp}.png", std::process::id()));
+    let path =
+        std::env::temp_dir().join(format!("xtervo-paste-{}-{stamp}.png", std::process::id()));
     let file = {
         let mut opts = std::fs::OpenOptions::new();
         opts.write(true).create_new(true);
@@ -14146,7 +14183,7 @@ fn set_primary(st: &mut AppState, text: &str) {
         None => {
             platform::log_clipboard_unavailable_once();
             eprintln!("[clipboard] 不可用");
-        },
+        }
     }
 }
 
@@ -14166,7 +14203,7 @@ fn clear_clipboard(st: &mut AppState) {
         None => {
             platform::log_clipboard_unavailable_once();
             eprintln!("[clipboard] 不可用");
-        },
+        }
     }
 }
 
@@ -14181,7 +14218,7 @@ fn clear_primary(st: &mut AppState) {
         None => {
             platform::log_clipboard_unavailable_once();
             eprintln!("[clipboard] 不可用");
-        },
+        }
     }
 }
 
@@ -14442,7 +14479,7 @@ fn install_native_window_events(ui: &MainWindow, window_id: WindowId) {
                             st.ime_composing_since = None;
                             update_ime_spot(st);
                         });
-                    },
+                    }
                     winit::event::Ime::Disabled => {
                         runtime::with_window(window_id, |st| {
                             st.ime_enabled = false;
@@ -14450,19 +14487,20 @@ fn install_native_window_events(ui: &MainWindow, window_id: WindowId) {
                             st.ui.set_ime_composing(false);
                             st.ime_composing_since = None;
                         });
-                    },
+                    }
                     winit::event::Ime::Commit(_) => {
                         runtime::with_window(window_id, |st| {
                             st.ui.set_ime_composing(false);
                             st.ime_composing_since = None;
                         });
-                    },
+                    }
                     winit::event::Ime::Preedit(text, _) => {
                         let composing = !text.is_empty();
                         runtime::with_window(window_id, |st| {
                             st.ui.set_ime_composing(composing);
                             if composing {
-                                st.ime_composing_since.get_or_insert_with(std::time::Instant::now);
+                                st.ime_composing_since
+                                    .get_or_insert_with(std::time::Instant::now);
                             } else {
                                 st.ime_composing_since = None;
                             }
@@ -14478,17 +14516,14 @@ fn install_native_window_events(ui: &MainWindow, window_id: WindowId) {
                                 update_ime_spot(st);
                             });
                         }
-                    },
-                    _ => {},
+                    }
+                    _ => {}
                 }
             }
             winit::event::WindowEvent::CursorMoved { position, .. } => {
                 runtime::with_window(window_id, |st| {
                     let scale = st.ui.window().scale_factor().max(0.01) as f32;
-                    st.cursor = (
-                        position.x as f32 / scale,
-                        position.y as f32 / scale,
-                    );
+                    st.cursor = (position.x as f32 / scale, position.y as f32 / scale);
                 });
             }
             winit::event::WindowEvent::Moved(_) => {
@@ -14507,7 +14542,8 @@ fn install_native_window_events(ui: &MainWindow, window_id: WindowId) {
                     let scale = st.ui.window().scale_factor().max(0.01) as f32;
                     let h = st.ui.window().size().height as f32 / scale;
                     let (cx, cy) = st.cursor;
-                    let hit = cx >= 0.0 && cy >= 0.0
+                    let hit = cx >= 0.0
+                        && cy >= 0.0
                         && match pos {
                             TabbarPos::Top => cy <= TABBAR_H,
                             TabbarPos::Bottom => cy >= h - TABBAR_H && cy <= h,
@@ -14522,10 +14558,10 @@ fn install_native_window_events(ui: &MainWindow, window_id: WindowId) {
                     let dx = match delta {
                         winit::event::MouseScrollDelta::LineDelta(x, y) => {
                             (*x as f32 + *y as f32) * 40.0
-                        },
+                        }
                         winit::event::MouseScrollDelta::PixelDelta(p) => {
                             ((p.x + p.y) / scale) as f32
-                        },
+                        }
                     };
                     if dx != 0.0 {
                         runtime::with_window(window_id, |st| {
@@ -16795,10 +16831,7 @@ fn poll_connections(st: &mut AppState) {
             if state != rt.agent_forward {
                 rt.agent_forward = state;
                 changed = true;
-                eprintln!(
-                    "[ssh-native] pane={id} agent_forward={:?}",
-                    state
-                );
+                eprintln!("[ssh-native] pane={id} agent_forward={:?}", state);
             }
         }
     }
@@ -19998,7 +20031,9 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
         runtime::with_window(window_id, |st| refresh_known_hosts(st));
     });
     ui.on_known_hosts_delete(move |index| {
-        runtime::with_window(window_id, |st| delete_known_host_row(st, index.max(0) as usize));
+        runtime::with_window(window_id, |st| {
+            delete_known_host_row(st, index.max(0) as usize)
+        });
     });
 
     ui.on_settings_category_changed(move |c| {
@@ -22642,11 +22677,18 @@ mod tests {
         // native 串口没有 child：EOF 的 detail 来自 SerialStatus.error。
         let status = serial_disconnect_status("设备断开（读取失败）: EIO");
         assert_eq!(status.state, connection::ConnectionState::Failed);
-        assert!(status.detail.contains("serial disconnected"), "{}", status.detail);
+        assert!(
+            status.detail.contains("serial disconnected"),
+            "{}",
+            status.detail
+        );
         assert!(status.detail.contains("设备断开"), "{}", status.detail);
 
         // 自动重连开关对 serial 与非本地 Profile 生效；本地/关闭时绝不重连。
-        let mut p = profile::Profile { kind: "serial".into(), ..profile::Profile::default() };
+        let mut p = profile::Profile {
+            kind: "serial".into(),
+            ..profile::Profile::default()
+        };
         assert!(!auto_reconnect_eligible(&p), "默认关闭");
         p.auto_reconnect = true;
         assert!(auto_reconnect_eligible(&p));
@@ -22920,15 +22962,24 @@ mod tests {
         let (x, y) = resize_release_point(1, w, h);
         assert!(y <= 5.0 && (6.0..=w - 6.0).contains(&x), "top: {x},{y}");
         let (x, y) = resize_release_point(5, w, h);
-        assert!(y >= h - 5.0 && (6.0..=w - 6.0).contains(&x), "bottom: {x},{y}");
+        assert!(
+            y >= h - 5.0 && (6.0..=w - 6.0).contains(&x),
+            "bottom: {x},{y}"
+        );
         let (x, y) = resize_release_point(7, w, h);
         assert!(x <= 5.0 && (6.0..=h - 6.0).contains(&y), "left: {x},{y}");
         let (x, y) = resize_release_point(3, w, h);
-        assert!(x >= w - 5.0 && (6.0..=h - 6.0).contains(&y), "right: {x},{y}");
+        assert!(
+            x >= w - 5.0 && (6.0..=h - 6.0).contains(&y),
+            "right: {x},{y}"
+        );
         // 角抓手 8px：四个角都要落在 [0,w]x[0,h] 内。
         for dir in [0, 2, 4, 6] {
             let (x, y) = resize_release_point(dir, w, h);
-            assert!((0.0..w).contains(&x) && (0.0..h).contains(&y), "corner {dir}: {x},{y}");
+            assert!(
+                (0.0..w).contains(&x) && (0.0..h).contains(&y),
+                "corner {dir}: {x},{y}"
+            );
         }
     }
 
@@ -23596,14 +23647,15 @@ mod tests {
     fn stale_clipboard_images_are_cleaned() {
         let dir = std::env::temp_dir();
         let old = dir.join(format!("xtervo-paste-test-old-{}.png", std::process::id()));
-        let fresh = dir.join(format!("xtervo-paste-test-fresh-{}.png", std::process::id()));
+        let fresh = dir.join(format!(
+            "xtervo-paste-test-fresh-{}.png",
+            std::process::id()
+        ));
         std::fs::write(&old, b"old").unwrap();
         std::fs::write(&fresh, b"fresh").unwrap();
         let file = std::fs::OpenOptions::new().write(true).open(&old).unwrap();
-        file.set_modified(
-            std::time::SystemTime::now() - std::time::Duration::from_secs(25 * 3600),
-        )
-        .unwrap();
+        file.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(25 * 3600))
+            .unwrap();
         drop(file);
         cleanup_stale_clipboard_images();
         assert!(!old.exists(), "24h+ clipboard temp must be removed");

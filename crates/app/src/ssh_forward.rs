@@ -145,7 +145,7 @@ impl ForwardController {
                     rule.target_port = spec.target_port;
                     rule.state = ForwardState::Pending;
                     rule.controllable = true;
-                },
+                }
                 None => rule.error = Some("本地转发格式无效".into()),
             }
             rules.push(rule);
@@ -172,7 +172,7 @@ impl ForwardController {
                     rule.target_host = spec.target_host;
                     rule.target_port = spec.target_port;
                     rule.state = ForwardState::Pending;
-                },
+                }
                 None => rule.error = Some("远程转发格式无效".into()),
             }
             rules.push(rule);
@@ -198,21 +198,30 @@ impl ForwardController {
                     rule.port = spec.port;
                     rule.state = ForwardState::Pending;
                     rule.controllable = true;
-                },
+                }
                 None => rule.error = Some("动态转发格式无效".into()),
             }
             rules.push(rule);
         }
 
         (
-            Self { inner: Arc::new(ForwardInner { rules: Mutex::new(rules), commands }) },
+            Self {
+                inner: Arc::new(ForwardInner {
+                    rules: Mutex::new(rules),
+                    commands,
+                }),
+            },
             receiver,
         )
     }
 
     /// 当前全部规则（按 Profile 顺序 L → R → D）。
     pub fn rules(&self) -> Vec<ForwardRule> {
-        self.inner.rules.lock().map(|rules| rules.clone()).unwrap_or_default()
+        self.inner
+            .rules
+            .lock()
+            .map(|rules| rules.clone())
+            .unwrap_or_default()
     }
 
     pub fn rule(&self, id: u64) -> Option<ForwardRule> {
@@ -236,7 +245,11 @@ impl ForwardController {
     }
 
     fn request(&self, id: u64, start: bool) -> Result<(), String> {
-        let mut rules = self.inner.rules.lock().map_err(|_| "转发表锁损坏".to_string())?;
+        let mut rules = self
+            .inner
+            .rules
+            .lock()
+            .map_err(|_| "转发表锁损坏".to_string())?;
         let Some(rule) = rules.iter_mut().find(|rule| rule.id == id) else {
             return Err(format!("转发规则不存在: {id}"));
         };
@@ -334,8 +347,14 @@ pub struct DynamicSpec {
 pub fn parse_dynamic(spec: &str) -> Option<DynamicSpec> {
     let parts: Vec<&str> = spec.split(':').collect();
     match parts.as_slice() {
-        [port] => Some(DynamicSpec { bind: "127.0.0.1".into(), port: port.parse().ok()? }),
-        [bind, port] => Some(DynamicSpec { bind: (*bind).into(), port: port.parse().ok()? }),
+        [port] => Some(DynamicSpec {
+            bind: "127.0.0.1".into(),
+            port: port.parse().ok()?,
+        }),
+        [bind, port] => Some(DynamicSpec {
+            bind: (*bind).into(),
+            port: port.parse().ok()?,
+        }),
         _ => None,
     }
 }
@@ -387,7 +406,9 @@ pub async fn start_local(
     let target_host = target_host.to_string();
     let task = tokio::spawn(async move {
         loop {
-            let Ok((mut tcp, origin)) = listener.accept().await else { break };
+            let Ok((mut tcp, origin)) = listener.accept().await else {
+                break;
+            };
             let session = handle.clone();
             let target_host = target_host.clone();
             tokio::spawn(async move {
@@ -425,10 +446,14 @@ pub async fn start_dynamic(
         .map_err(|error| format!("读取 SOCKS {bind}:{port} 监听地址失败: {error}"))?;
     let task = tokio::spawn(async move {
         loop {
-            let Ok((mut tcp, _)) = listener.accept().await else { break };
+            let Ok((mut tcp, _)) = listener.accept().await else {
+                break;
+            };
             let session = handle.clone();
             tokio::spawn(async move {
-                let Ok((host, port)) = socks5_handshake(&mut tcp).await else { return };
+                let Ok((host, port)) = socks5_handshake(&mut tcp).await else {
+                    return;
+                };
                 let Ok(channel) = session
                     .channel_open_direct_tcpip(&host, port as u32, "127.0.0.1", 0)
                     .await
@@ -469,7 +494,10 @@ pub async fn start_remote(
     }
     {
         let mut map = targets.lock().map_err(|_| "远程转发表锁损坏".to_string())?;
-        map.insert((bind.to_string(), port), (target_host.to_string(), target_port));
+        map.insert(
+            (bind.to_string(), port),
+            (target_host.to_string(), target_port),
+        );
     }
     let assigned = match handle.tcpip_forward(bind, port as u32).await {
         Ok(assigned) => assigned,
@@ -478,7 +506,7 @@ pub async fn start_remote(
                 map.remove(&(bind.to_string(), port));
             }
             return Err(format!("请求远程转发 {bind}:{port} 失败: {error}"));
-        },
+        }
     };
     let assigned = assigned as u16;
     if assigned != port {
@@ -516,19 +544,19 @@ async fn socks5_handshake(stream: &mut TcpStream) -> std::io::Result<(String, u1
             let mut ip = [0u8; 4];
             stream.read_exact(&mut ip).await?;
             std::net::Ipv4Addr::from(ip).to_string()
-        },
+        }
         3 => {
             let mut len = [0u8; 1];
             stream.read_exact(&mut len).await?;
             let mut name = vec![0u8; len[0] as usize];
             stream.read_exact(&mut name).await?;
             String::from_utf8_lossy(&name).into_owned()
-        },
+        }
         4 => {
             let mut ip = [0u8; 16];
             stream.read_exact(&mut ip).await?;
             std::net::Ipv6Addr::from(ip).to_string()
-        },
+        }
         _ => return Err(std::io::Error::other("SOCKS5 atyp")),
     };
     let mut port = [0u8; 2];
@@ -542,11 +570,10 @@ async fn socks5_reply(stream: &mut TcpStream, code: u8) -> std::io::Result<()> {
     stream.flush().await
 }
 
-pub async fn bridge_forwarded(
-    channel: russh::Channel<russh::client::Msg>,
-    target: (String, u16),
-) {
-    let Ok(mut tcp) = TcpStream::connect((target.0.as_str(), target.1)).await else { return };
+pub async fn bridge_forwarded(channel: russh::Channel<russh::client::Msg>, target: (String, u16)) {
+    let Ok(mut tcp) = TcpStream::connect((target.0.as_str(), target.1)).await else {
+        return;
+    };
     let mut stream = channel.into_stream();
     let _ = copy_bidirectional(&mut tcp, &mut stream).await;
 }
@@ -569,7 +596,10 @@ mod tests {
         );
         assert_eq!(parse_dynamic("1080").unwrap().port, 1080);
         assert_eq!(parse_dynamic("127.0.0.1:1080").unwrap().bind, "127.0.0.1");
-        assert_eq!(parse_remote("0.0.0.0:8080:localhost:80").unwrap().port, 8080);
+        assert_eq!(
+            parse_remote("0.0.0.0:8080:localhost:80").unwrap().port,
+            8080
+        );
         assert!(parse_local("bad").is_none());
     }
 
@@ -593,11 +623,20 @@ mod tests {
         assert!(rules[2].controllable);
 
         controller.start(rules[0].id).unwrap();
-        assert_eq!(controller.rule(rules[0].id).unwrap().state, ForwardState::Pending);
+        assert_eq!(
+            controller.rule(rules[0].id).unwrap().state,
+            ForwardState::Pending
+        );
         assert_eq!(commands.try_recv(), Ok(ForwardCommand::Start(rules[0].id)));
         controller.mark_active(rules[0].id, 8080);
-        assert_eq!(controller.rule(rules[0].id).unwrap().state, ForwardState::Active);
-        assert_eq!(controller.rule(rules[0].id).unwrap().listen(), "127.0.0.1:8080");
+        assert_eq!(
+            controller.rule(rules[0].id).unwrap().state,
+            ForwardState::Active
+        );
+        assert_eq!(
+            controller.rule(rules[0].id).unwrap().listen(),
+            "127.0.0.1:8080"
+        );
         controller.stop(rules[0].id).unwrap();
         assert_eq!(commands.try_recv(), Ok(ForwardCommand::Stop(rules[0].id)));
         assert!(controller.start(rules[1].id).is_err());

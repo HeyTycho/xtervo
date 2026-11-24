@@ -57,7 +57,11 @@ impl RecordingStatus {
     /// 已录制时长（秒）：录制中取当前时间，停止后取停止时间。
     pub fn duration_secs(&self) -> Option<u64> {
         let start = self.started_at?;
-        let end = if self.active { now_epoch_secs() } else { self.stopped_at? };
+        let end = if self.active {
+            now_epoch_secs()
+        } else {
+            self.stopped_at?
+        };
         Some(end.saturating_sub(start))
     }
 }
@@ -221,10 +225,8 @@ impl Recorder {
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default();
             let seq = EXPORT_SEQ.fetch_add(1, Ordering::Relaxed);
-            let tmp = path.with_file_name(format!(
-                ".{name}.{}.{seq}.export.tmp",
-                std::process::id()
-            ));
+            let tmp =
+                path.with_file_name(format!(".{name}.{}.{seq}.export.tmp", std::process::id()));
             let mut opts = OpenOptions::new();
             opts.write(true).create_new(true);
             #[cfg(unix)]
@@ -299,7 +301,10 @@ mod tests {
         let exported = recorder.export(&path).expect("export");
         assert_eq!(exported.bytes, status.bytes);
         assert!(!exported.active);
-        assert_eq!(std::fs::read(&path).unwrap(), b"hello \x1b[31mred\x1b[0m\r\n");
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            b"hello \x1b[31mred\x1b[0m\r\n"
+        );
 
         // 再次开始清空上一段录制；导出可发生在录制中（快照）。
         recorder.start();
@@ -344,6 +349,9 @@ fn export_preserves_private_mode() {
     recorder.record(b"new");
     recorder.export(&path).unwrap();
     let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
-    assert_eq!(mode, 0o600, "export must not widen permissions, got {mode:o}");
+    assert_eq!(
+        mode, 0o600,
+        "export must not widen permissions, got {mode:o}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }

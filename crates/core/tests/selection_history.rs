@@ -30,7 +30,13 @@ fn seq_pane(scrollback: usize, count: usize) -> PaneHandle {
 }
 
 fn visible_line(frame: &Frame, row: usize) -> String {
-    frame.row(row).iter().map(|c| c.char()).collect::<String>().trim_end().to_string()
+    frame
+        .row(row)
+        .iter()
+        .map(|c| c.char())
+        .collect::<String>()
+        .trim_end()
+        .to_string()
 }
 
 fn frame_text(frame: &Frame) -> String {
@@ -96,13 +102,20 @@ fn expected_simple_selection(
         // alacritty Simple 选区起止同格视为空。
         return String::new();
     }
-    let ((sr, sc), (er, ec)) =
-        if (r0, c0) <= (r1, c1) { ((r0, c0), (r1, c1)) } else { ((r1, c1), (r0, c0)) };
+    let ((sr, sc), (er, ec)) = if (r0, c0) <= (r1, c1) {
+        ((r0, c0), (r1, c1))
+    } else {
+        ((r1, c1), (r0, c0))
+    };
     let mut lines = Vec::new();
     for row in sr..=er {
         let chars: Vec<char> = visible_line(frame, row).chars().collect();
         let from = if row == sr { sc } else { 0 };
-        let to = if row == er { ec } else { chars.len().saturating_sub(1) };
+        let to = if row == er {
+            ec
+        } else {
+            chars.len().saturating_sub(1)
+        };
         let mut s = String::new();
         for col in from..=to {
             if let Some(ch) = chars.get(col) {
@@ -117,14 +130,23 @@ fn expected_simple_selection(
 #[test]
 fn select_visible_rows_in_history_second_page() {
     let handle = seq_pane(200, 60);
-    wait_for(&handle, handle.new_frame(), |f| frame_text(f).contains("60"));
+    wait_for(&handle, handle.new_frame(), |f| {
+        frame_text(f).contains("60")
+    });
     let history = handle.scroll_position().history;
-    assert!(history >= (ROWS as usize) * 2, "需要至少两页历史，实际 {history}");
+    assert!(
+        history >= (ROWS as usize) * 2,
+        "需要至少两页历史，实际 {history}"
+    );
 
     // 第二页：偏移 = 2 个视口高度，顶部必须是历史内容而不是第 0 行。
     let offset = (ROWS as usize) * 2;
     let frame = scroll_to_and_frame(&handle, offset);
-    assert!(!visible_line(&frame, 0).is_empty(), "第二页顶部为空:\n{}", frame_text(&frame));
+    assert!(
+        !visible_line(&frame, 0).is_empty(),
+        "第二页顶部为空:\n{}",
+        frame_text(&frame)
+    );
 
     // UI：从可见第 0 行第 0 列拖到可见第 2 行第 2 列。
     let expected = expected_simple_selection(&frame, (0, 0), (2, 2));
@@ -137,13 +159,20 @@ fn select_visible_rows_in_history_second_page() {
 #[test]
 fn select_visible_rows_at_history_top_and_bottom() {
     let handle = seq_pane(200, 60);
-    wait_for(&handle, handle.new_frame(), |f| frame_text(f).contains("60"));
+    wait_for(&handle, handle.new_frame(), |f| {
+        frame_text(f).contains("60")
+    });
     let history = handle.scroll_position().history;
     assert!(history >= 12);
 
     // 顶部：最旧一行是 seq 的起点 1（屏幕末行可能只是光标空行）。
     let frame = scroll_to_and_frame(&handle, history);
-    assert_eq!(visible_line(&frame, 0), "1", "历史顶部:\n{}", frame_text(&frame));
+    assert_eq!(
+        visible_line(&frame, 0),
+        "1",
+        "历史顶部:\n{}",
+        frame_text(&frame)
+    );
     let expected = expected_simple_selection(&frame, (0, 0), (1, 0));
     handle.selection_start(0, 0);
     handle.selection_extend(1, 0);
@@ -167,7 +196,9 @@ fn select_visible_rows_at_history_top_and_bottom() {
 #[test]
 fn reverse_drag_in_history_covers_anchor_and_visible_rows() {
     let handle = seq_pane(200, 60);
-    wait_for(&handle, handle.new_frame(), |f| frame_text(f).contains("60"));
+    wait_for(&handle, handle.new_frame(), |f| {
+        frame_text(f).contains("60")
+    });
 
     let offset = (ROWS as usize) * 2;
     let frame = scroll_to_and_frame(&handle, offset);
@@ -183,7 +214,9 @@ fn reverse_drag_in_history_covers_anchor_and_visible_rows() {
 #[test]
 fn selection_span_matches_visible_rows_in_history() {
     let handle = seq_pane(200, 60);
-    wait_for(&handle, handle.new_frame(), |f| frame_text(f).contains("60"));
+    wait_for(&handle, handle.new_frame(), |f| {
+        frame_text(f).contains("60")
+    });
 
     let offset = (ROWS as usize) * 2;
     scroll_to_and_frame(&handle, offset);
@@ -202,7 +235,9 @@ fn selection_span_matches_visible_rows_in_history() {
 #[test]
 fn selection_matrix_matches_visible_frame_at_all_offsets() {
     let handle = seq_pane(200, 80);
-    wait_for(&handle, handle.new_frame(), |f| frame_text(f).contains("80"));
+    wait_for(&handle, handle.new_frame(), |f| {
+        frame_text(f).contains("80")
+    });
     let history = handle.scroll_position().history;
     assert!(history > 20, "需要足够历史: {history}");
 
@@ -221,8 +256,9 @@ fn selection_matrix_matches_visible_frame_at_all_offsets() {
     ];
     for offset in offsets {
         let frame = scroll_to_and_frame(&handle, offset);
-        let non_empty: Vec<usize> =
-            (0..rows).filter(|r| !visible_line(&frame, *r).is_empty()).collect();
+        let non_empty: Vec<usize> = (0..rows)
+            .filter(|r| !visible_line(&frame, *r).is_empty())
+            .collect();
         assert!(!non_empty.is_empty(), "offset={offset} 屏幕全空");
         for &r0 in &non_empty {
             for &r1 in &non_empty {
@@ -234,7 +270,8 @@ fn selection_matrix_matches_visible_frame_at_all_offsets() {
                 let actual = handle.copy_selection().unwrap_or_default();
                 let expected = expected_simple_selection(&frame, (r0, col0), (r1, col1));
                 assert_eq!(
-                    actual, expected,
+                    actual,
+                    expected,
                     "offset={offset} rows={r0}->{r1} cols={col0}->{col1}\n屏幕:\n{}",
                     frame_text(&frame)
                 );
@@ -243,7 +280,10 @@ fn selection_matrix_matches_visible_frame_at_all_offsets() {
                 handle.selection_start(r1 as u16, col1 as u16);
                 handle.selection_extend(r0 as u16, col0 as u16);
                 let actual2 = handle.copy_selection().unwrap_or_default();
-                assert_eq!(actual2, actual, "offset={offset} 反向拖选不一致 rows={r0}->{r1}");
+                assert_eq!(
+                    actual2, actual,
+                    "offset={offset} 反向拖选不一致 rows={r0}->{r1}"
+                );
             }
         }
     }
@@ -254,7 +294,9 @@ fn selection_matrix_matches_visible_frame_at_all_offsets() {
 #[test]
 fn selection_anchor_survives_history_scroll() {
     let handle = seq_pane(200, 80);
-    wait_for(&handle, handle.new_frame(), |f| frame_text(f).contains("80"));
+    wait_for(&handle, handle.new_frame(), |f| {
+        frame_text(f).contains("80")
+    });
 
     let offset = (ROWS as usize) * 2;
     let start_frame = scroll_to_and_frame(&handle, offset);
@@ -271,7 +313,11 @@ fn selection_anchor_survives_history_scroll() {
     );
     handle.selection_extend(5, 1);
     let text = handle.copy_selection().expect("跨滚动选区应有文本");
-    assert_eq!(text, format!("{}\n{}\n{}", lines[0], lines[1], lines[2]), "跨滚动锚点: {text:?}");
+    assert_eq!(
+        text,
+        format!("{}\n{}\n{}", lines[0], lines[1], lines[2]),
+        "跨滚动锚点: {text:?}"
+    );
 }
 
 /// 选区一端滚出视口上方时，可见部分必须从第 0 列开始高亮：
@@ -279,7 +325,9 @@ fn selection_anchor_survives_history_scroll() {
 #[test]
 fn selection_span_keeps_left_edge_when_anchor_is_above_viewport() {
     let handle = seq_pane(200, 80);
-    wait_for(&handle, handle.new_frame(), |f| frame_text(f).contains("80"));
+    wait_for(&handle, handle.new_frame(), |f| {
+        frame_text(f).contains("80")
+    });
 
     // offset 24：可见 52..57。从第 0 行第 30 列拖到第 5 行第 2 列。
     scroll_to_and_frame(&handle, 24);
@@ -288,7 +336,12 @@ fn selection_span_keeps_left_edge_when_anchor_is_above_viewport() {
 
     // 向下滚 5 行：锚点行 52 滚出视口上方，选区末行 57 变成可见第 0 行。
     let frame = scroll_to_and_frame(&handle, 19);
-    assert_eq!(visible_line(&frame, 0), "57", "滚动后顶部行:\n{}", frame_text(&frame));
+    assert_eq!(
+        visible_line(&frame, 0),
+        "57",
+        "滚动后顶部行:\n{}",
+        frame_text(&frame)
+    );
     let span = frame.selection.expect("选区可见部分仍应有 Span");
     assert_eq!(
         (span.start_line, span.start_col, span.end_line, span.end_col),
@@ -301,7 +354,9 @@ fn selection_span_keeps_left_edge_when_anchor_is_above_viewport() {
 #[test]
 fn selection_span_keeps_right_edge_when_end_is_below_viewport() {
     let handle = seq_pane(200, 80);
-    wait_for(&handle, handle.new_frame(), |f| frame_text(f).contains("80"));
+    wait_for(&handle, handle.new_frame(), |f| {
+        frame_text(f).contains("80")
+    });
 
     // offset 19：可见 57..62。从第 0 行第 2 列拖到第 5 行第 30 列。
     scroll_to_and_frame(&handle, 19);
@@ -310,7 +365,12 @@ fn selection_span_keeps_right_edge_when_end_is_below_viewport() {
 
     // 向上滚 5 行：选区末行滚出视口下方，选区首行 57 变成可见第 5 行。
     let frame = scroll_to_and_frame(&handle, 24);
-    assert_eq!(visible_line(&frame, 5), "57", "滚动后底部行:\n{}", frame_text(&frame));
+    assert_eq!(
+        visible_line(&frame, 5),
+        "57",
+        "滚动后底部行:\n{}",
+        frame_text(&frame)
+    );
     let span = frame.selection.expect("选区可见部分仍应有 Span");
     assert_eq!(
         (span.start_line, span.start_col, span.end_line, span.end_col),
@@ -325,14 +385,20 @@ fn selection_span_keeps_right_edge_when_end_is_below_viewport() {
 fn default_scrollback_2000_selects_at_history_limit() {
     assert_eq!(PaneConfig::default().scrollback, 2000);
     let handle = seq_pane(PaneConfig::default().scrollback, 2100);
-    wait_for(&handle, handle.new_frame(), |f| frame_text(f).contains("2100"));
+    wait_for(&handle, handle.new_frame(), |f| {
+        frame_text(f).contains("2100")
+    });
     let pos = handle.scroll_position();
     let history = pos.history;
     assert_eq!(history, 2000, "历史必须被截断到默认上限: {pos:?}");
 
     // 顶部（最旧一页）。
     let frame = scroll_to_and_frame(&handle, history);
-    assert!(!visible_line(&frame, 0).is_empty(), "历史上限顶部为空:\n{}", frame_text(&frame));
+    assert!(
+        !visible_line(&frame, 0).is_empty(),
+        "历史上限顶部为空:\n{}",
+        frame_text(&frame)
+    );
     let expected = expected_simple_selection(&frame, (0, 0), (2, 0));
     handle.selection_start(0, 0);
     handle.selection_extend(2, 0);
@@ -344,7 +410,9 @@ fn default_scrollback_2000_selects_at_history_limit() {
 #[test]
 fn scrollback_unlimited_cap_100k_coordinates_do_not_panic() {
     let handle = seq_pane(100_000, 30);
-    wait_for(&handle, handle.new_frame(), |f| frame_text(f).contains("30"));
+    wait_for(&handle, handle.new_frame(), |f| {
+        frame_text(f).contains("30")
+    });
     let pos = handle.scroll_position();
     assert!(pos.history > 0, "需要历史: {pos:?}");
     assert!(pos.history < 100_000, "不必填满 100k: {pos:?}");
@@ -387,7 +455,9 @@ fn scrollback_unlimited_cap_100k_coordinates_do_not_panic() {
 #[test]
 fn selection_span_covers_viewport_when_selection_crosses_both_edges() {
     let handle = seq_pane(200, 80);
-    wait_for(&handle, handle.new_frame(), |f| frame_text(f).contains("80"));
+    wait_for(&handle, handle.new_frame(), |f| {
+        frame_text(f).contains("80")
+    });
 
     // 底部第 0 行起选（第 76 行），向上滚 20 行后在顶部第 0 行（第 56 行）扩展。
     scroll_to_and_frame(&handle, 0);

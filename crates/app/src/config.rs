@@ -238,7 +238,9 @@ pub fn expand_tilde_with_home(input: &str, home: &Path) -> PathBuf {
 
 /// 用 `$HOME` 展开 `~`；HOME 缺失时按当前目录处理。
 pub fn expand_tilde(input: &str) -> PathBuf {
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
     expand_tilde_with_home(input, &home)
 }
 
@@ -255,7 +257,7 @@ pub fn resolve_background_image(input: &str) -> Result<Option<PathBuf>, String> 
         Ok(_) => Err(format!("不是普通文件：{}", path.display())),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             Err(format!("文件不存在：{}", path.display()))
-        },
+        }
         Err(e) => Err(format!("无法访问 {}：{e}", path.display())),
     }
 }
@@ -436,7 +438,10 @@ pub struct Config {
     pub background_image: String,
     /// 终端默认背景的不透明度（0.0–1.0，默认 1.0）。0 = 完全透出背景图，
     /// 1 = 主题纯色。写入时四舍五入到两位小数。
-    #[serde(deserialize_with = "deserialize_opacity", serialize_with = "serialize_opacity")]
+    #[serde(
+        deserialize_with = "deserialize_opacity",
+        serialize_with = "serialize_opacity"
+    )]
     pub background_opacity: f32,
     /// 背景图之上的暗化遮罩（0.0–0.8，默认 0.6）。只影响背景图，
     /// 让浅色终端文字在纯白/亮色图片区域仍有可读对比度。
@@ -799,9 +804,12 @@ impl Config {
         let mut cfg: Config = match Self::parse_text(&text) {
             Ok(c) => c,
             Err(e) => {
-                eprintln!("[config] {} 解析失败，本次用默认值（原文件未改动）: {e}", path.display());
+                eprintln!(
+                    "[config] {} 解析失败，本次用默认值（原文件未改动）: {e}",
+                    path.display()
+                );
                 return Self::default();
-            },
+            }
         };
 
         if cfg.version < SCHEMA_VERSION {
@@ -809,7 +817,10 @@ impl Config {
             // 迁移前备份：出错还能人工回退
             let backup = backup_path(path, from);
             match std::fs::copy(path, &backup) {
-                Ok(_) => eprintln!("[config] 迁移 v{from} → v{SCHEMA_VERSION} 前已备份 {}", backup.display()),
+                Ok(_) => eprintln!(
+                    "[config] 迁移 v{from} → v{SCHEMA_VERSION} 前已备份 {}",
+                    backup.display()
+                ),
                 Err(e) => eprintln!("[config] 备份失败（继续迁移）: {e}"),
             }
             cfg.migrate(from);
@@ -832,8 +843,7 @@ impl Config {
                     .map_err(|e| format!("创建 {} 失败: {e}", dir.display()))?;
             }
         }
-        let text = toml::to_string_pretty(self)
-            .map_err(|e| format!("序列化失败: {e}"))?;
+        let text = toml::to_string_pretty(self).map_err(|e| format!("序列化失败: {e}"))?;
         // serde/toml 只保证数值精度，不保留末尾 0；这里把两个小数配置固定成两位小数。
         let text = format_float_line(
             text,
@@ -846,8 +856,7 @@ impl Config {
         let text = format_float_line(text, "letter_spacing", self.letter_spacing);
         let text = format_float_line(text, "render_scale", self.render_scale);
         let tmp = path.with_extension("toml.tmp");
-        std::fs::write(&tmp, &text)
-            .map_err(|e| format!("写入 {} 失败: {e}", tmp.display()))?;
+        std::fs::write(&tmp, &text).map_err(|e| format!("写入 {} 失败: {e}", tmp.display()))?;
         if let Err(e) = std::fs::rename(&tmp, path) {
             let _ = std::fs::remove_file(&tmp);
             return Err(format!("替换 {} 失败: {e}", path.display()));
@@ -896,22 +905,37 @@ impl ConfigInspection {
                 format!("Config parse failed (defaults used, file untouched): {err}")
             }),
             (None, Some(v)) if v > self.current_version => parts.push(if zh {
-                format!("配置版本 v{v} 高于程序支持的 v{}，本次忽略", self.current_version)
+                format!(
+                    "配置版本 v{v} 高于程序支持的 v{}，本次忽略",
+                    self.current_version
+                )
             } else {
-                format!("Config v{v} is newer than supported v{}; ignored", self.current_version)
+                format!(
+                    "Config v{v} is newer than supported v{}; ignored",
+                    self.current_version
+                )
             }),
             (None, Some(v)) if v < self.current_version => parts.push(if zh {
-                format!("配置仍为 v{v}（程序 v{}）；下次启动会先备份再迁移", self.current_version)
+                format!(
+                    "配置仍为 v{v}（程序 v{}）；下次启动会先备份再迁移",
+                    self.current_version
+                )
             } else {
-                format!("Config v{v} (program v{}); next start backs up then migrates", self.current_version)
+                format!(
+                    "Config v{v} (program v{}); next start backs up then migrates",
+                    self.current_version
+                )
             }),
-            _ => {},
+            _ => {}
         }
         if let (Some(backup), Some(from)) = (&self.backup, self.backup_version) {
             parts.push(if zh {
                 format!("可回滚：迁移前备份 v{from} → {}", backup.display())
             } else {
-                format!("Rollback available: pre-migration v{from} backup → {}", backup.display())
+                format!(
+                    "Rollback available: pre-migration v{from} backup → {}",
+                    backup.display()
+                )
             });
         }
         parts.join(if zh { "；" } else { "; " })
@@ -935,7 +959,7 @@ impl Config {
             Err(e) => {
                 out.parse_error = Some(e.to_string());
                 return out;
-            },
+            }
         };
         match Self::parse_text(&text) {
             Ok(cfg) => out.version = Some(cfg.version),
@@ -949,9 +973,15 @@ impl Config {
                 for entry in entries.flatten() {
                     let file = entry.file_name();
                     let file = file.to_string_lossy();
-                    let Some(rest) = file.strip_prefix(&prefix) else { continue };
-                    let Some(ver) = rest.strip_suffix(".bak") else { continue };
-                    let Ok(ver) = ver.parse::<u32>() else { continue };
+                    let Some(rest) = file.strip_prefix(&prefix) else {
+                        continue;
+                    };
+                    let Some(ver) = rest.strip_suffix(".bak") else {
+                        continue;
+                    };
+                    let Ok(ver) = ver.parse::<u32>() else {
+                        continue;
+                    };
                     if best.as_ref().map(|(v, _)| ver > *v).unwrap_or(true) {
                         best = Some((ver, entry.path()));
                     }
@@ -981,8 +1011,8 @@ impl Config {
     ///
     /// 版本比程序新时拒绝：避免用未来格式覆盖当前配置（字段会被 serde 丢弃）。
     pub fn import_from(path: &Path) -> Result<Self, String> {
-        let text = std::fs::read_to_string(path)
-            .map_err(|e| format!("读不到 {}: {e}", path.display()))?;
+        let text =
+            std::fs::read_to_string(path).map_err(|e| format!("读不到 {}: {e}", path.display()))?;
         let cfg = Self::parse_text(&text).map_err(|e| format!("配置解析失败: {e}"))?;
         if cfg.version > SCHEMA_VERSION {
             return Err(format!(
@@ -1001,8 +1031,8 @@ impl Config {
         let Some(backup) = inspection.backup else {
             return Err("没有找到迁移前备份（config.toml.v*.bak）".into());
         };
-        let bytes = std::fs::read(&backup)
-            .map_err(|e| format!("读备份 {} 失败: {e}", backup.display()))?;
+        let bytes =
+            std::fs::read(&backup).map_err(|e| format!("读备份 {} 失败: {e}", backup.display()))?;
         // 先确认备份本身是可解析的配置，避免把坏文件盖上去了。
         let text = String::from_utf8_lossy(&bytes);
         Self::parse_text(&text)
@@ -1019,10 +1049,8 @@ impl Config {
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default();
             let seq = RESTORE_SEQ.fetch_add(1, Ordering::Relaxed);
-            let tmp = path.with_file_name(format!(
-                ".{name}.{}.{seq}.restore.tmp",
-                std::process::id()
-            ));
+            let tmp =
+                path.with_file_name(format!(".{name}.{}.{seq}.restore.tmp", std::process::id()));
             let mut opts = std::fs::OpenOptions::new();
             opts.write(true).create_new(true);
             #[cfg(unix)]
@@ -1065,13 +1093,16 @@ fn normalize_color_field(field: &mut String, key: &str) {
         None => {
             eprintln!("[config] {key}={raw:?} 不是合法颜色，已回退为跟随主题");
             field.clear();
-        },
+        }
     }
 }
 
 /// `config.toml` + v0 → `config.toml.v0.bak`。
 fn backup_path(path: &Path, from: u32) -> PathBuf {
-    let name = path.file_name().map(|s| s.to_string_lossy()).unwrap_or_default();
+    let name = path
+        .file_name()
+        .map(|s| s.to_string_lossy())
+        .unwrap_or_default();
     path.with_file_name(format!("{name}.v{from}.bak"))
 }
 
@@ -1126,14 +1157,21 @@ mod tests {
 
     #[test]
     fn default_profile_id_defaults_to_zero_and_survives_roundtrip() {
-        assert_eq!(Config::default().default_profile_id, 0, "默认 Profile 默认未设置");
+        assert_eq!(
+            Config::default().default_profile_id,
+            0,
+            "默认 Profile 默认未设置"
+        );
         // 旧配置没有该字段：serde(default) 补 0，不能解析失败
         let old: Config = toml::from_str("theme = \"nord\"\n").unwrap();
         assert_eq!(old.default_profile_id, 0);
         // 写盘再读回保持一致
         let dir = tmpdir("default-profile");
         let path = dir.join("config.toml");
-        let cfg = Config { default_profile_id: 7, ..Config::default() };
+        let cfg = Config {
+            default_profile_id: 7,
+            ..Config::default()
+        };
         cfg.save_to(&path);
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("default_profile_id = 7"), "{text}");
@@ -1149,7 +1187,10 @@ mod tests {
         );
         let dir = tmpdir("restore-session");
         let path = dir.join("config.toml");
-        let cfg = Config { restore_session_on_startup: true, ..Config::default() };
+        let cfg = Config {
+            restore_session_on_startup: true,
+            ..Config::default()
+        };
         cfg.save_to(&path);
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("restore_session_on_startup = true"), "{text}");
@@ -1178,8 +1219,14 @@ mod tests {
         assert_eq!(back.reconnect_backoff_ms, vec![500, 1500]);
         // 列表短于次数：重复最后一项；第 6 次停止。
         let policy = back.reconnect_policy();
-        assert_eq!(policy.delay(2), Some(std::time::Duration::from_millis(1500)));
-        assert_eq!(policy.delay(5), Some(std::time::Duration::from_millis(1500)));
+        assert_eq!(
+            policy.delay(2),
+            Some(std::time::Duration::from_millis(1500))
+        );
+        assert_eq!(
+            policy.delay(5),
+            Some(std::time::Duration::from_millis(1500))
+        );
         assert_eq!(policy.delay(6), None);
 
         // 旧配置没有这两个键：serde default 必须给出历史 2/5/10 行为。
@@ -1198,12 +1245,21 @@ mod tests {
         assert_eq!(cfg.sidebar_section(), 0);
 
         // 宽度夹取 200–360，NaN 回 240，结果取整
-        for (raw, want) in [(100.0, 200.0), (999.0, 360.0), (240.4, 240.0),
-                            (300.6, 301.0), (f32::NAN, 240.0), (f32::INFINITY, 240.0)] {
+        for (raw, want) in [
+            (100.0, 200.0),
+            (999.0, 360.0),
+            (240.4, 240.0),
+            (300.6, 301.0),
+            (f32::NAN, 240.0),
+            (f32::INFINITY, 240.0),
+        ] {
             let mut c = Config::default();
             c.sidebar_width = raw;
-            assert!((c.sidebar_width() - want).abs() < f32::EPSILON,
-                    "width {raw} -> {} want {want}", c.sidebar_width());
+            assert!(
+                (c.sidebar_width() - want).abs() < f32::EPSILON,
+                "width {raw} -> {} want {want}",
+                c.sidebar_width()
+            );
         }
         // 分区夹取 0–2
         let mut c = Config::default();
@@ -1240,7 +1296,10 @@ mod tests {
         assert!(!Config::default().render_hud, "HUD 默认关闭");
         let dir = tmpdir("render-hud");
         let path = dir.join("config.toml");
-        let cfg = Config { render_hud: true, ..Config::default() };
+        let cfg = Config {
+            render_hud: true,
+            ..Config::default()
+        };
         cfg.save_to(&path);
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("render_hud = true"), "{text}");
@@ -1257,10 +1316,16 @@ mod tests {
         assert_eq!(cfg.theme, "latte");
         assert_eq!(cfg.font_size, 15.0);
         assert_eq!(cfg.scrollback, 2000);
-        assert_eq!(cfg.default_profile_id, 0, "旧配置缺 default_profile_id 时回退系统 shell");
+        assert_eq!(
+            cfg.default_profile_id, 0,
+            "旧配置缺 default_profile_id 时回退系统 shell"
+        );
         assert!(!cfg.restore_session_on_startup, "旧配置默认不自动恢复会话");
         // 新增的桌面通知/视觉铃开关对旧配置也要默认开启
-        assert!(cfg.desktop_notifications, "旧配置缺 desktop_notifications 时默认开");
+        assert!(
+            cfg.desktop_notifications,
+            "旧配置缺 desktop_notifications 时默认开"
+        );
         assert!(cfg.visual_bell, "旧配置缺 visual_bell 时默认为视觉铃");
         // 终端行为新增项：响铃默认关、输出不抢滚动、按键回底、滚动条 auto、GNOME 默认编码
         assert!(!cfg.audible_bell, "旧配置缺 audible_bell 时默认不响铃");
@@ -1293,7 +1358,10 @@ mod tests {
         let cfg: Config = toml::from_str("version = 1\nbackground_opacity = 1\n").unwrap();
         assert!((cfg.background_opacity - 1.0).abs() < f32::EPSILON);
         let cfg: Config = toml::from_str("version = 1\nbackground_opacity = 0.05\n").unwrap();
-        assert!((cfg.background_opacity - 0.05).abs() < f32::EPSILON, "0% 也必须允许");
+        assert!(
+            (cfg.background_opacity - 0.05).abs() < f32::EPSILON,
+            "0% 也必须允许"
+        );
         let cfg: Config = toml::from_str("version = 1\nbackground_opacity = 2.0\n").unwrap();
         assert!((cfg.background_opacity - 1.0).abs() < f32::EPSILON);
     }
@@ -1328,7 +1396,10 @@ mod tests {
         };
         cfg.save_to(&path);
         let text = std::fs::read_to_string(&path).unwrap();
-        assert!(text.contains("background_image = \"~/Pictures/wall.png\""), "{text}");
+        assert!(
+            text.contains("background_image = \"~/Pictures/wall.png\""),
+            "{text}"
+        );
         assert!(text.contains("background_opacity = 0.33"), "{text}");
         assert!(text.contains("background_dim = 0.67"), "{text}");
         let back = Config::load_from(&path);
@@ -1338,8 +1409,12 @@ mod tests {
 
         // 末尾 0 也要保留：0.5 → "0.50"。
         let path2 = dir.join("config2.toml");
-        Config { background_opacity: 0.5, background_dim: 0.5, ..Config::default() }
-            .save_to(&path2);
+        Config {
+            background_opacity: 0.5,
+            background_dim: 0.5,
+            ..Config::default()
+        }
+        .save_to(&path2);
         let text2 = std::fs::read_to_string(&path2).unwrap();
         assert!(text2.contains("background_opacity = 0.50"), "{text2}");
         assert!(text2.contains("background_dim = 0.50"), "{text2}");
@@ -1357,7 +1432,10 @@ mod tests {
 
         assert_eq!(resolve_background_image("").unwrap(), None);
         assert_eq!(resolve_background_image("   ").unwrap(), None);
-        assert_eq!(resolve_background_image(file.to_str().unwrap()).unwrap(), Some(file.clone()));
+        assert_eq!(
+            resolve_background_image(file.to_str().unwrap()).unwrap(),
+            Some(file.clone())
+        );
         let err = resolve_background_image(dir.to_str().unwrap()).unwrap_err();
         assert!(err.contains("不是普通文件"), "{err}");
         let missing = dir.join("missing.png");
@@ -1378,8 +1456,14 @@ mod tests {
             expand_tilde_with_home("~other/wall.png", home),
             PathBuf::from("~other/wall.png")
         );
-        assert_eq!(expand_tilde_with_home("/abs/wall.png", home), PathBuf::from("/abs/wall.png"));
-        assert_eq!(expand_tilde_with_home("  ~/a.png  ", home), home.join("a.png"));
+        assert_eq!(
+            expand_tilde_with_home("/abs/wall.png", home),
+            PathBuf::from("/abs/wall.png")
+        );
+        assert_eq!(
+            expand_tilde_with_home("  ~/a.png  ", home),
+            home.join("a.png")
+        );
     }
 
     #[test]
@@ -1393,7 +1477,11 @@ mod tests {
         assert_eq!(c.effective_right_click(), "menu");
         let mut legacy = Config::default();
         legacy.right_click_paste = true;
-        assert_eq!(legacy.effective_right_click(), "paste", "旧 right_click_paste 迁移为 paste");
+        assert_eq!(
+            legacy.effective_right_click(),
+            "paste",
+            "旧 right_click_paste 迁移为 paste"
+        );
         legacy.right_click = "off".into();
         assert_eq!(legacy.effective_right_click(), "off", "显式模式优先");
         assert!(c.paste_on_middle_click);
@@ -1409,8 +1497,14 @@ mod tests {
         assert_eq!(c.effective_scrollback(), 2000);
         assert_eq!(c.scrollbar_policy, "auto");
         assert_eq!(c.scrollbar_policy(), ScrollbarPolicy::Auto);
-        assert_eq!(c.backspace_binding, "ascii-delete", "GNOME 默认 Backspace = 0x7f");
-        assert_eq!(c.delete_binding, "delete-sequence", "GNOME 默认 Delete = ESC [3~");
+        assert_eq!(
+            c.backspace_binding, "ascii-delete",
+            "GNOME 默认 Backspace = 0x7f"
+        );
+        assert_eq!(
+            c.delete_binding, "delete-sequence",
+            "GNOME 默认 Delete = ESC [3~"
+        );
         assert_eq!(c.keyboard_protocol, "auto", "默认响应应用的键盘协议 query");
         assert!(c.keyboard_protocol_enabled());
         assert_eq!(c.key_bindings().backspace, BackspaceBinding::AsciiDelete);
@@ -1492,8 +1586,14 @@ mod tests {
     #[test]
     fn terminal_behavior_config_parsing_and_roundtrip() {
         // 滚动条策略：三档 + 未知值回退 auto + 大小写/空白不敏感。
-        assert_eq!(ScrollbarPolicy::from_config("always"), ScrollbarPolicy::Always);
-        assert_eq!(ScrollbarPolicy::from_config(" NEVER "), ScrollbarPolicy::Never);
+        assert_eq!(
+            ScrollbarPolicy::from_config("always"),
+            ScrollbarPolicy::Always
+        );
+        assert_eq!(
+            ScrollbarPolicy::from_config(" NEVER "),
+            ScrollbarPolicy::Never
+        );
         assert_eq!(ScrollbarPolicy::from_config("auto"), ScrollbarPolicy::Auto);
         assert_eq!(ScrollbarPolicy::from_config(""), ScrollbarPolicy::Auto);
         assert_eq!(ScrollbarPolicy::from_config("bogus"), ScrollbarPolicy::Auto);
@@ -1520,7 +1620,11 @@ mod tests {
         assert!(!cfg.sixel);
         assert!(!cfg.sixel_scrolling);
         assert!(!cfg.iip);
-        assert_eq!(cfg.effective_scrollback(), UNLIMITED_SCROLLBACK_LINES, "unlimited 必须有明确安全上限");
+        assert_eq!(
+            cfg.effective_scrollback(),
+            UNLIMITED_SCROLLBACK_LINES,
+            "unlimited 必须有明确安全上限"
+        );
         assert_eq!(UNLIMITED_SCROLLBACK_LINES, 100_000);
         assert_eq!(cfg.scrollbar_policy(), ScrollbarPolicy::Never);
         assert_eq!(cfg.key_bindings().backspace, BackspaceBinding::ControlH);
@@ -1552,9 +1656,16 @@ mod tests {
         assert!(old.iip, "旧配置缺 iip 时必须默认开启");
 
         // 固定 scrollback 时忽略 unlimited 上限，保持用户配置的数值。
-        let fixed = Config { scrollback: 1234, ..Config::default() };
+        let fixed = Config {
+            scrollback: 1234,
+            ..Config::default()
+        };
         assert_eq!(fixed.effective_scrollback(), 1234);
-        let unlimited = Config { scrollback: 10, scrollback_unlimited: true, ..Config::default() };
+        let unlimited = Config {
+            scrollback: 10,
+            scrollback_unlimited: true,
+            ..Config::default()
+        };
         assert_eq!(unlimited.effective_scrollback(), UNLIMITED_SCROLLBACK_LINES);
     }
 
@@ -1574,12 +1685,19 @@ mod tests {
         // 写默认可；远端查询默认不可，显式开启后可以；本地查询不受影响。
         assert!(cfg.osc52_read_allowed(false));
         assert!(!cfg.osc52_read_allowed(true));
-        let cfg = Config { osc52_remote_read: true, ..cfg };
+        let cfg = Config {
+            osc52_remote_read: true,
+            ..cfg
+        };
         assert!(cfg.osc52_read_allowed(true));
 
         let dir = tmpdir("osc52");
         let path = dir.join("config.toml");
-        Config { osc52: "deny".into(), ..Config::default() }.save_to(&path);
+        Config {
+            osc52: "deny".into(),
+            ..Config::default()
+        }
+        .save_to(&path);
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("osc52 = \"deny\""), "{text}");
         assert!(!Config::load_from(&path).osc52_allowed());
@@ -1618,7 +1736,10 @@ mod tests {
     fn current_version_is_not_backed_up_again() {
         let dir = tmpdir("nobackup");
         let path = dir.join("config.toml");
-        let cfg = Config { theme: "dracula".into(), ..Config::default() };
+        let cfg = Config {
+            theme: "dracula".into(),
+            ..Config::default()
+        };
         cfg.save_to(&path);
 
         let again = Config::load_from(&path);
@@ -1638,7 +1759,10 @@ mod tests {
         .unwrap();
 
         let cfg = Config::load_from(&path);
-        assert_eq!(cfg.extra.get("future_option").and_then(|v| v.as_integer()), Some(42));
+        assert_eq!(
+            cfg.extra.get("future_option").and_then(|v| v.as_integer()),
+            Some(42)
+        );
 
         cfg.save_to(&path);
         let text = std::fs::read_to_string(&path).unwrap();
@@ -1656,7 +1780,11 @@ mod tests {
 
         let cfg = Config::load_from(&path);
         assert_eq!(cfg.theme, Config::default().theme);
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), broken, "解析失败不能覆盖原文件");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            broken,
+            "解析失败不能覆盖原文件"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1729,8 +1857,14 @@ mod tests {
         let path = dir.join("config.toml");
         let cfg = Config {
             hotkeys: vec![
-                HotkeyOverride { command: "tab.new".into(), chord: "ctrl+shift+n".into() },
-                HotkeyOverride { command: "terminal.paste".into(), chord: "ctrl+shift+v".into() },
+                HotkeyOverride {
+                    command: "tab.new".into(),
+                    chord: "ctrl+shift+n".into(),
+                },
+                HotkeyOverride {
+                    command: "terminal.paste".into(),
+                    chord: "ctrl+shift+v".into(),
+                },
             ],
             ..Config::default()
         };
@@ -1758,12 +1892,21 @@ mod tests {
         let cfg = Config::load_from(&path);
         assert_eq!(cfg.hotkeys.len(), 1);
         assert_eq!(cfg.hotkeys[0].command, "tab.new");
-        assert_eq!(cfg.extra.get("future_option").and_then(|v| v.as_integer()), Some(42));
+        assert_eq!(
+            cfg.extra.get("future_option").and_then(|v| v.as_integer()),
+            Some(42)
+        );
 
         cfg.save_to(&path);
         let again = Config::load_from(&path);
         assert_eq!(again.hotkeys, cfg.hotkeys);
-        assert_eq!(again.extra.get("future_option").and_then(|v| v.as_integer()), Some(42));
+        assert_eq!(
+            again
+                .extra
+                .get("future_option")
+                .and_then(|v| v.as_integer()),
+            Some(42)
+        );
         assert_eq!(
             again.extra.get("future_table").and_then(|v| v.as_table()),
             cfg.extra.get("future_table").and_then(|v| v.as_table())
@@ -1827,7 +1970,10 @@ danger = true
         assert!(c.cursor_text_color.is_empty(), "空 = 跟随主题背景");
         assert!(c.bold_is_bright, "GNOME bold-is-bright 默认 true");
         assert!(c.bold_color.is_empty());
-        assert!(c.bold_color_same_as_fg, "GNOME bold-color-same-as-fg 默认 true");
+        assert!(
+            c.bold_color_same_as_fg,
+            "GNOME bold-color-same-as-fg 默认 true"
+        );
         assert_eq!(c.cursor_color_rgb(), None);
         assert_eq!(c.bold_color_rgb(), None);
     }
@@ -1867,8 +2013,7 @@ danger = true
         assert_eq!(normalize_language("zh-CN"), "zh");
         // 未知/拼错/空值一律回退 en（additive 字段不能因为写错而解析失败）。
         for raw in ["", "fr", "english!", "zho"] {
-            let cfg =
-                Config::parse_text(&format!("version = 1\nlanguage = \"{raw}\"\n")).unwrap();
+            let cfg = Config::parse_text(&format!("version = 1\nlanguage = \"{raw}\"\n")).unwrap();
             assert_eq!(cfg.language, "en", "raw={raw:?}");
             assert_eq!(cfg.lang(), "en");
         }
@@ -1909,8 +2054,11 @@ danger = true
     fn cursor_shape_and_blink_config_normalize() {
         let dir = tmpdir("cursor-shape-blink");
         let path = dir.join("config.toml");
-        std::fs::write(&path, "version = 1\ncursor_shape = \"I-Beam\"\ncursor_blink = \"OFF\"\n")
-            .unwrap();
+        std::fs::write(
+            &path,
+            "version = 1\ncursor_shape = \"I-Beam\"\ncursor_blink = \"OFF\"\n",
+        )
+        .unwrap();
         let cfg = Config::load_from(&path);
         assert_eq!(cfg.cursor_shape, "ibeam");
         assert_eq!(cfg.cursor_shape(), xtervo_core::CursorShape::Beam);
@@ -2111,7 +2259,11 @@ danger = true
         let dir = tmpdir("restore");
         let path = dir.join("config.toml");
         std::fs::write(&path, "version = 1\nlanguage = \"en\"\n").unwrap();
-        std::fs::write(dir.join("config.toml.v0.bak"), "version = 0\nlanguage = \"zh\"\n").unwrap();
+        std::fs::write(
+            dir.join("config.toml.v0.bak"),
+            "version = 0\nlanguage = \"zh\"\n",
+        )
+        .unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

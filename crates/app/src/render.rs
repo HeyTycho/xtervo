@@ -39,7 +39,10 @@ pub(crate) fn fit_inline_image_size(
     let scale = (avail_w / src_w as f32)
         .min(avail_h / src_h as f32)
         .min(1.0);
-    ((src_w as f32 * scale).max(1.0), (src_h as f32 * scale).max(1.0))
+    (
+        (src_w as f32 * scale).max(1.0),
+        (src_h as f32 * scale).max(1.0),
+    )
 }
 
 /// 一帧内不可变的图片层。显示几何在绘制前固定，避免同一帧不同行因浮点
@@ -119,7 +122,11 @@ fn visible_marks<'a>(marks: &'a [char]) -> impl Iterator<Item = char> + 'a {
 /// 纯函数，便于不启动 GUI 验证。0 = 完全透出背景图，1 = 主题纯色。
 /// 非有限值按不透明处理。
 pub fn background_alpha(opacity: f32) -> u32 {
-    let opacity = if opacity.is_finite() { opacity.clamp(0.0, 1.0) } else { 1.0 };
+    let opacity = if opacity.is_finite() {
+        opacity.clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
     (opacity * 255.0).round().clamp(0.0, 255.0) as u32
 }
 
@@ -311,11 +318,15 @@ impl FrameBuffers {
         if self.buffers.len() >= POOL_CAP {
             return false;
         }
-        let (w, h) =
-            (self.buffers[self.active].width(), self.buffers[self.active].height());
+        let (w, h) = (
+            self.buffers[self.active].width(),
+            self.buffers[self.active].height(),
+        );
         let mut fresh = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(w, h);
         // 独享的新块：这次拷贝是扩池的一次性成本，换掉之后每帧的整块 CoW。
-        fresh.make_mut_bytes().copy_from_slice(self.buffers[self.active].as_bytes());
+        fresh
+            .make_mut_bytes()
+            .copy_from_slice(self.buffers[self.active].as_bytes());
         self.buffers.push(fresh);
         let idx = self.buffers.len() - 1;
         self.order.push_front(idx);
@@ -329,7 +340,10 @@ impl FrameBuffers {
     /// 返回上一帧的 active 下标（同步行的来源）。
     fn rotate(&mut self) -> usize {
         let prev = self.active;
-        let target = self.order.pop_front().expect("frame buffer pool is never empty");
+        let target = self
+            .order
+            .pop_front()
+            .expect("frame buffer pool is never empty");
         self.order.push_back(target);
         self.active = target;
         prev
@@ -536,7 +550,11 @@ impl Renderer {
         let cell_h = fonts.cell_h;
         let width = cols * cell_w;
         let height = rows * cell_h;
-        let opacity = if opacity.is_finite() { opacity.clamp(0.0, 1.0) } else { 1.0 };
+        let opacity = if opacity.is_finite() {
+            opacity.clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
         let default_bg = default_background(theme_bg, opacity);
         Self {
             cols,
@@ -592,7 +610,11 @@ impl Renderer {
 
     /// 调整终端默认背景 alpha；文字/光标/cell 彩色背景保持不透明。
     pub fn set_opacity(&mut self, opacity: f32) {
-        let opacity = if opacity.is_finite() { opacity.clamp(0.0, 1.0) } else { 1.0 };
+        let opacity = if opacity.is_finite() {
+            opacity.clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
         self.opacity = opacity;
         self.default_bg = default_background(self.theme_bg, opacity);
         self.buffer.fill_all(self.default_bg);
@@ -956,7 +978,9 @@ impl Renderer {
             if is_zero_width_control(mark) {
                 continue;
             }
-            let Some(g) = self.glyphs.get_mark(&self.fonts, mark, style, span) else { continue };
+            let Some(g) = self.glyphs.get_mark(&self.fonts, mark, style, span) else {
+                continue;
+            };
             let gx = center_x - g.w as i32 / 2;
             let gy = baseline + g.top as i32;
             // 组合标记也裁剪在基字形占的 span/本行内，避免重音压到相邻格/行。
@@ -1057,7 +1081,9 @@ impl Renderer {
             if is_zero_width_control(mark) {
                 continue;
             }
-            let Some(g) = glyphs.get_mark(fonts, mark, style, span) else { continue };
+            let Some(g) = glyphs.get_mark(fonts, mark, style, span) else {
+                continue;
+            };
             let gx = center_x - g.w as i32 / 2;
             let gy = baseline + g.top as i32;
             let atlas = glyphs.atlas();
@@ -1105,9 +1131,7 @@ impl Renderer {
         let baseline = y0 as i32 + fonts.baseline;
         match shape {
             CursorShape::Block => {
-                Self::fill_rect_buf(
-                    pixels, width, height, x0, y0, cell_px, cell_h, color,
-                );
+                Self::fill_rect_buf(pixels, width, height, x0, y0, cell_px, cell_h, color);
                 if let Some(cell) = cell {
                     let ch = cell.char();
                     if ch != ' ' {
@@ -1124,66 +1148,38 @@ impl Renderer {
                         };
                         match color_center.or_else(|| {
                             Self::blit_into(
-                                glyphs,
-                                fonts,
-                                cell_w,
-                                pixels,
-                                width,
-                                height,
-                                x0 as i32,
-                                baseline,
-                                ch,
-                                style,
-                                text_color,
-                                span,
+                                glyphs, fonts, cell_w, pixels, width, height, x0 as i32, baseline,
+                                ch, style, text_color, span,
                             )
                         }) {
                             Some(center) if !marks.is_empty() => {
                                 Self::blit_marks_into(
-                                    glyphs,
-                                    fonts,
-                                    cell_w,
-                                    pixels,
-                                    width,
-                                    height,
-                                    x0 as i32,
-                                    baseline,
-                                    center,
-                                    marks,
-                                    style,
-                                    text_color,
-                                    span,
+                                    glyphs, fonts, cell_w, pixels, width, height, x0 as i32,
+                                    baseline, center, marks, style, text_color, span,
                                 );
-                            },
-                            Some(_) => {},
+                            }
+                            Some(_) => {}
                             None => {
                                 // 缺字：和普通渲染一样画占位框，保证 block 光标
                                 // 不会把“画不出的字符”变成纯色块。
                                 if let Some(kind) = placeholder_kind(ch) {
                                     Self::draw_placeholder_buf(
-                                        pixels,
-                                        width,
-                                        height,
-                                        cell_h,
-                                        x0,
-                                        y0,
-                                        cell_px,
-                                        text_color,
+                                        pixels, width, height, cell_h, x0, y0, cell_px, text_color,
                                         kind,
                                     );
                                 }
-                            },
+                            }
                         }
                     }
                 }
-            },
+            }
             CursorShape::Underline => {
                 let uy = y0 + cell_h.saturating_sub(2);
                 Self::fill_rect_buf(pixels, width, height, x0, uy, cell_px, 2, color);
-            },
+            }
             CursorShape::Beam => {
                 Self::fill_rect_buf(pixels, width, height, x0, y0, 2, cell_h, color);
-            },
+            }
             CursorShape::HollowBlock => {
                 Self::fill_rect_buf(pixels, width, height, x0, y0, cell_px, 1, color);
                 Self::fill_rect_buf(
@@ -1207,8 +1203,8 @@ impl Renderer {
                     cell_h,
                     color,
                 );
-            },
-            CursorShape::Hidden => {},
+            }
+            CursorShape::Hidden => {}
         }
     }
 
@@ -1272,7 +1268,7 @@ impl Renderer {
                     2,
                     color,
                 );
-            },
+            }
             PlaceholderKind::Icon => {
                 Self::fill_rect_buf(
                     pixels,
@@ -1294,7 +1290,7 @@ impl Renderer {
                     1,
                     color,
                 );
-            },
+            }
         }
     }
 
@@ -1327,21 +1323,26 @@ impl Renderer {
         let cp = ch as u32;
         let (fw, fh) = (w as usize, h as usize);
         match cp {
-            0x2588 => { // FULL BLOCK
+            0x2588 => {
+                // FULL BLOCK
                 self.fill_rect(x0, y0, fw, fh, fg);
-            },
-            0x2580 => { // UPPER HALF BLOCK
+            }
+            0x2580 => {
+                // UPPER HALF BLOCK
                 self.fill_rect(x0, y0, fw, fh / 2, fg);
-            },
-            0x2584 => { // LOWER HALF BLOCK
+            }
+            0x2584 => {
+                // LOWER HALF BLOCK
                 self.fill_rect(x0, y0 + fh / 2, fw, fh - fh / 2, fg);
-            },
-            0x258C => { // LEFT HALF BLOCK
+            }
+            0x258C => {
+                // LEFT HALF BLOCK
                 self.fill_rect(x0, y0, fw / 2, fh, fg);
-            },
-            0x2590 => { // RIGHT HALF BLOCK
+            }
+            0x2590 => {
+                // RIGHT HALF BLOCK
                 self.fill_rect(x0 + fw / 2, y0, fw - fw / 2, fh, fg);
-            },
+            }
             0x2591..=0x2593 => {
                 // LIGHT/MEDIUM/DARK SHADE：用前景色和当前背景混合。
                 let alpha = match cp {
@@ -1350,22 +1351,25 @@ impl Renderer {
                     _ => 0xc0,
                 };
                 self.fill_rect(x0, y0, fw, fh, blend(fg, bg, alpha));
-            },
+            }
             0x2581..=0x2587 => {
                 // LOWER ONE EIGHTH ... SEVEN EIGHTHS BLOCK
                 let eighths = (cp - 0x2580) as usize;
                 let bh = (fh * eighths / 8).max(1);
                 self.fill_rect(x0, y0 + fh - bh, fw, bh, fg);
-            },
-            0x2594 => { // UPPER ONE EIGHTH BLOCK
+            }
+            0x2594 => {
+                // UPPER ONE EIGHTH BLOCK
                 self.fill_rect(x0, y0, fw, (fh / 8).max(1), fg);
-            },
-            0x2595 => { // RIGHT ONE EIGHTH BLOCK
+            }
+            0x2595 => {
+                // RIGHT ONE EIGHTH BLOCK
                 self.fill_rect(x0 + fw - (fw / 8).max(1), y0, (fw / 8).max(1), fh, fg);
-            },
-            0x258F => { // LEFT ONE EIGHTH BLOCK
+            }
+            0x258F => {
+                // LEFT ONE EIGHTH BLOCK
                 self.fill_rect(x0, y0, (fw / 8).max(1), fh, fg);
-            },
+            }
             0x2596..=0x259F => {
                 // Quadrants (▖▗▘▙▚▛▜▝▞▟): 由字符位拼出左/右、上/下四个象限。
                 let (left, right, top, bottom) = match cp {
@@ -1382,20 +1386,42 @@ impl Renderer {
                 };
                 let half_w = fw / 2;
                 let half_h = fh / 2;
-                if left { self.fill_rect(x0, y0 + if top { 0 } else { half_h }, half_w, half_h, fg); }
-                if right { self.fill_rect(x0 + half_w, y0 + if top { 0 } else { half_h }, fw - half_w, half_h, fg); }
+                if left {
+                    self.fill_rect(x0, y0 + if top { 0 } else { half_h }, half_w, half_h, fg);
+                }
+                if right {
+                    self.fill_rect(
+                        x0 + half_w,
+                        y0 + if top { 0 } else { half_h },
+                        fw - half_w,
+                        half_h,
+                        fg,
+                    );
+                }
                 if bottom && !top { /* already bottom */ }
                 if top && !bottom { /* top only */ }
                 if bottom && top { /* full */ }
                 if bottom && !top { /* bottom only */ }
-                if left && !top && !bottom { self.fill_rect(x0, y0, half_w, half_h, fg); }
-                if right && !top && !bottom { self.fill_rect(x0 + half_w, y0, fw - half_w, half_h, fg); }
+                if left && !top && !bottom {
+                    self.fill_rect(x0, y0, half_w, half_h, fg);
+                }
+                if right && !top && !bottom {
+                    self.fill_rect(x0 + half_w, y0, fw - half_w, half_h, fg);
+                }
                 // 上面的象限分支已覆盖上下；补 right/left 的上下组合
-                if left && top && !bottom { self.fill_rect(x0, y0, half_w, half_h, fg); }
-                if right && top && !bottom { self.fill_rect(x0 + half_w, y0, fw - half_w, half_h, fg); }
-                if left && bottom && !top { self.fill_rect(x0, y0 + half_h, half_w, half_h, fg); }
-                if right && bottom && !top { self.fill_rect(x0 + half_w, y0 + half_h, fw - half_w, half_h, fg); }
-            },
+                if left && top && !bottom {
+                    self.fill_rect(x0, y0, half_w, half_h, fg);
+                }
+                if right && top && !bottom {
+                    self.fill_rect(x0 + half_w, y0, fw - half_w, half_h, fg);
+                }
+                if left && bottom && !top {
+                    self.fill_rect(x0, y0 + half_h, half_w, half_h, fg);
+                }
+                if right && bottom && !top {
+                    self.fill_rect(x0 + half_w, y0 + half_h, fw - half_w, half_h, fg);
+                }
+            }
             _ => return false,
         }
         true
@@ -1415,7 +1441,7 @@ impl Renderer {
         for img in images {
             let x = img.col as f32 * cell_w;
             let y = img.row as f32 * cell_h;
-        let (dw, dh) = (img.display_w, img.display_h);
+            let (dw, dh) = (img.display_w, img.display_h);
             let top = y;
             let bottom = y + dh;
             if bottom <= row_top || top >= row_bottom {
@@ -1451,8 +1477,8 @@ impl Renderer {
                 if py >= height {
                     break;
                 }
-                let sy = (src_y0 + (out_dy as f32 * scale_y) as usize)
-                    .min(img.source_h as usize - 1);
+                let sy =
+                    (src_y0 + (out_dy as f32 * scale_y) as usize).min(img.source_h as usize - 1);
                 for px in x0..x1 {
                     if px >= width {
                         break;
@@ -1460,8 +1486,8 @@ impl Renderer {
                     let sx = if img.source_w as usize == dw.round() as usize {
                         src_x0 + (px - x0)
                     } else {
-                        (src_x0 as f32 + (px - x0) as f32 * scale_x)
-                            .min(img.source_w - 1.0) as usize
+                        (src_x0 as f32 + (px - x0) as f32 * scale_x).min(img.source_w - 1.0)
+                            as usize
                     }
                     .min(img.source_w as usize - 1);
                     let full_x = img.source_x as usize + sx;
@@ -1481,7 +1507,13 @@ impl Renderer {
         }
     }
 
-    fn draw_row(&mut self, frame: &Frame, below_images: &[ImageLayerEntry], above_images: &[ImageLayerEntry], row: usize) {
+    fn draw_row(
+        &mut self,
+        frame: &Frame,
+        below_images: &[ImageLayerEntry],
+        above_images: &[ImageLayerEntry],
+        row: usize,
+    ) {
         if row >= self.rows || row >= frame.rows {
             return;
         }
@@ -1580,13 +1612,13 @@ impl Renderer {
                                         x0 as i32, baseline, center, marks, style, fg, span,
                                     );
                                 }
-                            },
+                            }
                             // 回退链完全画不出来：emoji/PUA 图标画明确占位框，其它缺字留空。
                             None => {
                                 if let Some(kind) = placeholder_kind(ch) {
                                     self.draw_placeholder(x0, y0, cell_px, fg, kind);
                                 }
-                            },
+                            }
                         }
                     }
                 }
@@ -1620,13 +1652,12 @@ impl Renderer {
             return None;
         }
         let cell = frame.cells.get(row * frame.cols + col);
-        let span = if cell.is_some_and(|c| {
-            c.has(flags::WIDE_CHAR) || c.has(flags::WIDE_CHAR_SPACER)
-        }) {
-            2
-        } else {
-            1
-        };
+        let span =
+            if cell.is_some_and(|c| c.has(flags::WIDE_CHAR) || c.has(flags::WIDE_CHAR_SPACER)) {
+                2
+            } else {
+                1
+            };
         Some((row, col, span))
     }
 
@@ -1676,10 +1707,8 @@ impl Renderer {
         let (row, col, span) = self.cursor_geometry(frame)?;
         let width = span * self.cell_w;
         let height = self.cell_h;
-        let mut buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(
-            width as u32,
-            height as u32,
-        );
+        let mut buffer =
+            slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(width as u32, height as u32);
         {
             let pixels: &mut [u32] = bytemuck::cast_slice_mut(buffer.make_mut_bytes());
             pixels.fill(0); // 透明：Slint 直接按 alpha 叠在终端帧上
@@ -1756,7 +1785,8 @@ impl Renderer {
         // 光标是否要烘焙进帧缓冲。app 走 overlay 路径（with_cursor=false），
         // 光标移动/闪烁不触碰终端帧；`draw` 兼容路径才需要擦旧画新。
         let cursor_target = if with_cursor && self.cursor_blink_on {
-            self.cursor_geometry(frame).map(|(row, col, _)| (row as u16, col as u16))
+            self.cursor_geometry(frame)
+                .map(|(row, col, _)| (row as u16, col as u16))
         } else {
             None
         };
@@ -1771,15 +1801,17 @@ impl Renderer {
                 let x = img.col as f32 * self.cell_w.max(1) as f32;
                 let y = img.row as f32 * self.cell_h.max(1) as f32;
                 let avail_w = (self.width as f32 - x).max(self.cell_w.max(1) as f32);
-                let avail_h = (self.height as f32 - y.max(0.0))
-                    .max(self.cell_h.max(1) as f32);
+                let avail_h = (self.height as f32 - y.max(0.0)).max(self.cell_h.max(1) as f32);
                 let meta = frame
                     .image_placements
                     .iter()
                     .find(|m| m.placement_id == img.id);
-                let crop: ImageCrop = meta
-                    .and_then(|m| m.source_rect)
-                    .unwrap_or(ImageCrop { x: 0, y: 0, w: img.width, h: img.height });
+                let crop: ImageCrop = meta.and_then(|m| m.source_rect).unwrap_or(ImageCrop {
+                    x: 0,
+                    y: 0,
+                    w: img.width,
+                    h: img.height,
+                });
                 let source_w = crop.w.min(img.width).max(1) as f32;
                 let source_h = crop.h.min(img.height).max(1) as f32;
                 // Kitty placement carries an explicit cell rectangle; use it.
@@ -1789,12 +1821,7 @@ impl Renderer {
                         m.cells_w as f32 * self.cell_w.max(1) as f32,
                         m.cells_h as f32 * self.cell_h.max(1) as f32,
                     ),
-                    _ => fit_inline_image_size(
-                        source_w as u32,
-                        source_h as u32,
-                        avail_w,
-                        avail_h,
-                    ),
+                    _ => fit_inline_image_size(source_w as u32, source_h as u32, avail_w, avail_h),
                 };
                 ImageLayerEntry {
                     row: img.row,
@@ -1860,8 +1887,12 @@ impl Renderer {
                 }
             }
             if self.last_selection != frame.selection || self.last_search != frame.search {
-                let marks: [Option<Span>; 4] =
-                    [self.last_selection, frame.selection, self.last_search, frame.search];
+                let marks: [Option<Span>; 4] = [
+                    self.last_selection,
+                    frame.selection,
+                    self.last_search,
+                    frame.search,
+                ];
                 for span in marks.into_iter().flatten() {
                     for line in span.start_line..=span.end_line {
                         if (line as usize) < self.rows {
@@ -1895,7 +1926,8 @@ impl Renderer {
             self.buffer.maybe_grow();
             let prev_active = self.buffer.rotate();
             self.last_copied_rows =
-                self.buffer.copy_rows_from(prev_active, self.cell_h, &self.dirty_flags);
+                self.buffer
+                    .copy_rows_from(prev_active, self.cell_h, &self.dirty_flags);
             for i in 0..self.dirty_rows.len() {
                 let row = self.dirty_rows[i];
                 self.draw_row(frame, &below_images, &above_images, row);
@@ -1942,7 +1974,6 @@ impl Renderer {
         self.last_image_us = started.elapsed().as_secs_f64() * 1000.0;
         image
     }
-
 }
 
 #[cfg(test)]
@@ -2010,20 +2041,38 @@ mod tests {
         let px = default_background(theme_bg, 0.5);
         // 像素是内存序 RGBA（LE），低 24 位与 pack 的 RGB 布局一致。
         // 保持直通 alpha：RGB 不预乘，由 Slint 在合成前统一预乘一次。
-        assert_eq!(px & 0x00ff_ffff, pack(theme_bg) & 0x00ff_ffff, "默认背景 RGB 保持主题色");
+        assert_eq!(
+            px & 0x00ff_ffff,
+            pack(theme_bg) & 0x00ff_ffff,
+            "默认背景 RGB 保持主题色"
+        );
         assert_eq!(px >> 24, 128);
         assert_eq!(default_background(theme_bg, 0.0) >> 24, 0);
-        assert_eq!(default_background(theme_bg, 0.0) & 0x00ff_ffff, pack(theme_bg) & 0x00ff_ffff);
+        assert_eq!(
+            default_background(theme_bg, 0.0) & 0x00ff_ffff,
+            pack(theme_bg) & 0x00ff_ffff
+        );
         assert_eq!(default_background(theme_bg, 1.0) >> 24, 255);
-        assert_eq!(default_background(0x00ff_ffff, 1.0) & 0x00ff_ffff, 0x00ff_ffff);
+        assert_eq!(
+            default_background(0x00ff_ffff, 1.0) & 0x00ff_ffff,
+            0x00ff_ffff
+        );
     }
 
     #[test]
     fn drawn_frame_applies_opacity_only_to_default_background() {
-        let Some(fonts) = FontSet::load(15.0) else { return };
+        let Some(fonts) = FontSet::load(15.0) else {
+            return;
+        };
         let theme_bg = Theme::default().bg();
-        let mut renderer =
-            Renderer::new(Rc::new(fonts), 4, 2, theme_bg, Theme::default().cursor(), 0.5);
+        let mut renderer = Renderer::new(
+            Rc::new(fonts),
+            4,
+            2,
+            theme_bg,
+            Theme::default().cursor(),
+            0.5,
+        );
         let mut frame = blank_frame(4, 2);
         frame.full = true;
         // row 1 / col 0：非默认 cell 背景应保持不透明。
@@ -2032,7 +2081,11 @@ mod tests {
 
         // 取不在光标 (0,0) 上的默认背景像素。
         let bg_idx = renderer.cell_h * renderer.width + renderer.cell_w * 3;
-        assert_eq!(renderer.pixels()[bg_idx] >> 24, 128, "默认背景应带 50% alpha");
+        assert_eq!(
+            renderer.pixels()[bg_idx] >> 24,
+            128,
+            "默认背景应带 50% alpha"
+        );
         assert_eq!(
             renderer.pixels()[bg_idx] & 0x00ff_ffff,
             pack(theme_bg) & 0x00ff_ffff,
@@ -2040,22 +2093,38 @@ mod tests {
         );
         // row 1 / col 0 的像素下标（像素缓冲按像素宽度索引，不是按 cell）。
         let idx = renderer.cell_h * renderer.width;
-        assert_eq!(renderer.pixels()[idx] >> 24, 255, "彩色 cell 背景不能跟着透明");
+        assert_eq!(
+            renderer.pixels()[idx] >> 24,
+            255,
+            "彩色 cell 背景不能跟着透明"
+        );
         assert_eq!(
             renderer.pixels()[idx] & 0x00ff_ffff,
             pack(0x0011_2233) & 0x00ff_ffff
         );
 
         renderer.set_opacity(0.2);
-        assert_eq!(renderer.default_bg >> 24, 51, "即时调整透明度后默认背景 alpha 更新");
+        assert_eq!(
+            renderer.default_bg >> 24,
+            51,
+            "即时调整透明度后默认背景 alpha 更新"
+        );
     }
 
     #[test]
     fn text_stays_opaque_when_default_background_is_transparent() {
-        let Some(fonts) = FontSet::load(15.0) else { return };
+        let Some(fonts) = FontSet::load(15.0) else {
+            return;
+        };
         let theme_bg = Theme::default().bg();
-        let mut renderer =
-            Renderer::new(Rc::new(fonts), 4, 2, theme_bg, Theme::default().cursor(), 0.0);
+        let mut renderer = Renderer::new(
+            Rc::new(fonts),
+            4,
+            2,
+            theme_bg,
+            Theme::default().cursor(),
+            0.0,
+        );
         let mut frame = blank_frame(4, 2);
         frame.full = true;
         let mut cell = CellData::default();
@@ -2083,7 +2152,10 @@ mod tests {
         assert!(transparent > 0, "应有透明的默认背景像素");
         // 不透明字形像素不应被预先压暗：取字形中最亮的白色像素。
         assert!(
-            renderer.pixels().iter().any(|p| *p >> 24 == 255 && p & 0x00ff_ffff == 0x00ff_ffff),
+            renderer
+                .pixels()
+                .iter()
+                .any(|p| *p >> 24 == 255 && p & 0x00ff_ffff == 0x00ff_ffff),
             "白色字形应保持原色"
         );
     }
@@ -2127,14 +2199,19 @@ mod tests {
         // 左右两半都应该有笔画（说明 CJK 字形确实横跨两格）
         let left = ink(&renderer, 0, cell_w, 0, cell_h);
         let right = ink(&renderer, cell_w, 2 * cell_w, 0, cell_h);
-        assert!(left > 0 && right > 0, "宽字符只画了一格: left={left} right={right}");
+        assert!(
+            left > 0 && right > 0,
+            "宽字符只画了一格: left={left} right={right}"
+        );
     }
 
     #[test]
     fn dirty_frame_across_buffer_switch_keeps_previous_cells() {
         // 双缓冲每次 draw 会切到另一块 buffer 并整屏重建；这个回归测试保证
         // 第二帧的脏行更新后，上一帧的字形仍在，不会出现花屏/空白。
-        let Some(fonts) = FontSet::load(15.0) else { return };
+        let Some(fonts) = FontSet::load(15.0) else {
+            return;
+        };
         let cell_w = fonts.cell_w;
         let mut renderer = Renderer::new(
             Rc::new(fonts),
@@ -2149,15 +2226,25 @@ mod tests {
         frame.cells[0].ch = 'A' as u32;
         frame.cells[0].fg = 0x00ff_ffff;
         renderer.draw(&frame);
-        assert!(ink(&renderer, 0, cell_w, 0, renderer.cell_h) > 10, "首帧 A 未画出");
+        assert!(
+            ink(&renderer, 0, cell_w, 0, renderer.cell_h) > 10,
+            "首帧 A 未画出"
+        );
 
         // 第二帧只声明 row 0 脏，并新增 B；A 必须从上一帧保留下来。
         frame.full = false;
-        frame.damage = vec![xtervo_core::LineDamage { line: 0, left: 0, right: 3 }];
+        frame.damage = vec![xtervo_core::LineDamage {
+            line: 0,
+            left: 0,
+            right: 3,
+        }];
         frame.cells[2].ch = 'B' as u32;
         frame.cells[2].fg = 0x00ff_ffff;
         renderer.draw(&frame);
-        assert!(ink(&renderer, 0, cell_w, 0, renderer.cell_h) > 10, "切换 buffer 后 A 丢失");
+        assert!(
+            ink(&renderer, 0, cell_w, 0, renderer.cell_h) > 10,
+            "切换 buffer 后 A 丢失"
+        );
         assert!(
             ink(&renderer, 2 * cell_w, 3 * cell_w, 0, renderer.cell_h) > 10,
             "切换 buffer 后 B 未画出"
@@ -2166,7 +2253,9 @@ mod tests {
 
     #[test]
     fn inline_image_is_composited_below_text_cells() {
-        let Some(fonts) = FontSet::load(15.0) else { return };
+        let Some(fonts) = FontSet::load(15.0) else {
+            return;
+        };
         let cell_w = fonts.cell_w;
         let cell_h = fonts.cell_h;
         let mut renderer = Renderer::new(
@@ -2203,12 +2292,18 @@ mod tests {
         renderer.draw(&frame);
         let px = |x: usize| renderer.pixels()[x];
         assert_eq!(px(1), pack(0x00ff_0000), "空白 cell 应保留图片");
-        assert_ne!(px(cell_w + 1) & 0x00ff_ffff, 0x00ff_0000, "文本应覆盖在图片上");
+        assert_ne!(
+            px(cell_w + 1) & 0x00ff_ffff,
+            0x00ff_0000,
+            "文本应覆盖在图片上"
+        );
     }
 
     #[test]
     fn image_is_above_cell_background_and_below_glyph() {
-        let Some(fonts) = FontSet::load(15.0) else { return };
+        let Some(fonts) = FontSet::load(15.0) else {
+            return;
+        };
         let cell_w = fonts.cell_w;
         let cell_h = fonts.cell_h;
         let mut renderer = Renderer::new(
@@ -2259,7 +2354,13 @@ mod tests {
         );
     }
 
-    fn test_image(id: u64, source_id: u64, row: i32, col: u16, px: [u8; 4]) -> xtervo_core::InlineImage {
+    fn test_image(
+        id: u64,
+        source_id: u64,
+        row: i32,
+        col: u16,
+        px: [u8; 4],
+    ) -> xtervo_core::InlineImage {
         let mut data = vec![0u8; 16 * 16 * 4];
         for pixel in data.chunks_exact_mut(4) {
             pixel.copy_from_slice(&px);
@@ -2280,7 +2381,9 @@ mod tests {
 
     #[test]
     fn transparent_image_preserves_backing_cell() {
-        let Some(fonts) = FontSet::load(15.0) else { return };
+        let Some(fonts) = FontSet::load(15.0) else {
+            return;
+        };
         let mut renderer = Renderer::new(
             Rc::new(fonts),
             4,
@@ -2291,7 +2394,9 @@ mod tests {
         );
         let mut frame = blank_frame(4, 1);
         frame.full = true;
-        frame.images.push(test_image(1, 1, 0, 0, [255, 255, 255, 0]));
+        frame
+            .images
+            .push(test_image(1, 1, 0, 0, [255, 255, 255, 0]));
         renderer.draw_without_cursor(&frame);
         assert_eq!(
             renderer.pixels()[0],
@@ -2302,7 +2407,9 @@ mod tests {
 
     #[test]
     fn above_text_image_covers_block_glyph_and_below_text_does_not() {
-        let Some(fonts) = FontSet::load(15.0) else { return };
+        let Some(fonts) = FontSet::load(15.0) else {
+            return;
+        };
         let cell_w = fonts.cell_w;
         let cell_h = fonts.cell_h;
         let theme_bg = Theme::default().bg();
@@ -2344,7 +2451,9 @@ mod tests {
             "above-text image must cover glyph"
         );
 
-        let Some(fonts_below) = FontSet::load(15.0) else { return };
+        let Some(fonts_below) = FontSet::load(15.0) else {
+            return;
+        };
         let mut below = Renderer::new(
             Rc::new(fonts_below),
             1,
@@ -2363,7 +2472,9 @@ mod tests {
 
     #[test]
     fn same_image_geometry_recomposites_and_removal_clears_pixels() {
-        let Some(fonts) = FontSet::load(15.0) else { return };
+        let Some(fonts) = FontSet::load(15.0) else {
+            return;
+        };
         let cell_w = fonts.cell_w;
         let cell_h = fonts.cell_h;
         let theme_bg = Theme::default().bg();
@@ -2417,7 +2528,9 @@ mod tests {
 
     #[test]
     fn image_scroll_partial_does_not_leave_stale_bands() {
-        let Some(fonts) = FontSet::load(15.0) else { return };
+        let Some(fonts) = FontSet::load(15.0) else {
+            return;
+        };
         let fonts = Rc::new(fonts);
         let mut renderer = Renderer::new(
             fonts.clone(),
@@ -2451,12 +2564,18 @@ mod tests {
         let mut reference = frame.clone();
         reference.full = true;
         fresh.draw_without_cursor(&reference);
-        assert_eq!(renderer.pixels(), fresh.pixels(), "图片局部滚动必须与整屏参考一致");
+        assert_eq!(
+            renderer.pixels(),
+            fresh.pixels(),
+            "图片局部滚动必须与整屏参考一致"
+        );
     }
 
     #[test]
     fn combining_mark_is_overlaid_inside_base_cell() {
-        let Some(fonts) = FontSet::load(15.0) else { return };
+        let Some(fonts) = FontSet::load(15.0) else {
+            return;
+        };
         let cell_w = fonts.cell_w;
         let cell_h = fonts.cell_h;
         let mut renderer = Renderer::new(
@@ -2499,7 +2618,9 @@ mod tests {
 
     #[test]
     fn missing_private_use_icon_draws_placeholder_inside_cell() {
-        let Some(fonts) = FontSet::load(15.0) else { return };
+        let Some(fonts) = FontSet::load(15.0) else {
+            return;
+        };
         let cell_w = fonts.cell_w;
         let cell_h = fonts.cell_h;
         let mut renderer = Renderer::new(
@@ -2513,7 +2634,11 @@ mod tests {
         // 从常见 Nerd Font 图标码位里挑一个当前字体链确实画不出来的。
         let mut missing = None;
         for ch in ['\u{F121}', '\u{E709}', '\u{E796}', '\u{F000}'] {
-            if renderer.glyphs.get(&renderer.fonts, ch, Style::Regular, 1).is_none() {
+            if renderer
+                .glyphs
+                .get(&renderer.fonts, ch, Style::Regular, 1)
+                .is_none()
+            {
                 missing = Some(ch);
                 break;
             }
@@ -2544,7 +2669,9 @@ mod tests {
 
     #[test]
     fn zwj_family_keeps_every_component_inside_grid() {
-        let Some(fonts) = FontSet::load(15.0) else { return };
+        let Some(fonts) = FontSet::load(15.0) else {
+            return;
+        };
         let cell_w = fonts.cell_w;
         let cell_h = fonts.cell_h;
         let mut renderer = Renderer::new(
@@ -2573,13 +2700,22 @@ mod tests {
 
         // 3 个 emoji 网格 = 6 格；无论回退到单色字体还是占位框，都必须有可见内容，
         // 且不能越过第 6 格。
-        assert!(ink(&renderer, 0, 6 * cell_w, 0, cell_h) > 0, "ZWJ 家族没有可见字形");
-        assert_eq!(ink(&renderer, 6 * cell_w, 8 * cell_w, 0, cell_h), 0, "ZWJ 渲染撑破网格");
+        assert!(
+            ink(&renderer, 0, 6 * cell_w, 0, cell_h) > 0,
+            "ZWJ 家族没有可见字形"
+        );
+        assert_eq!(
+            ink(&renderer, 6 * cell_w, 8 * cell_w, 0, cell_h),
+            0,
+            "ZWJ 渲染撑破网格"
+        );
     }
 
     #[test]
     fn zwj_cluster_renders_inside_one_wide_cell() {
-        let Some(fonts) = FontSet::load(15.0) else { return };
+        let Some(fonts) = FontSet::load(15.0) else {
+            return;
+        };
         let cell_w = fonts.cell_w;
         let cell_h = fonts.cell_h;
         let mut renderer = Renderer::new(
@@ -2604,13 +2740,22 @@ mod tests {
         frame.put(1, spacer, None);
         renderer.draw(&frame);
 
-        assert!(ink(&renderer, 0, 2 * cell_w, 0, cell_h) > 0, "簇没有可见字形");
-        assert_eq!(ink(&renderer, 2 * cell_w, 6 * cell_w, 0, cell_h), 0, "簇渲染撑破 2 格");
+        assert!(
+            ink(&renderer, 0, 2 * cell_w, 0, cell_h) > 0,
+            "簇没有可见字形"
+        );
+        assert_eq!(
+            ink(&renderer, 2 * cell_w, 6 * cell_w, 0, cell_h),
+            0,
+            "簇渲染撑破 2 格"
+        );
     }
 
     #[test]
     fn emoji_forced_narrow_does_not_bleed_into_neighbor() {
-        let Some(fonts) = FontSet::load(15.0) else { return };
+        let Some(fonts) = FontSet::load(15.0) else {
+            return;
+        };
         let cell_w = fonts.cell_w;
         let cell_h = fonts.cell_h;
         let mut renderer = Renderer::new(
@@ -2632,12 +2777,18 @@ mod tests {
         frame.put(0, cell, None);
         renderer.draw(&frame);
         assert!(ink(&renderer, 0, cell_w, 0, cell_h) > 0);
-        assert_eq!(ink(&renderer, cell_w, 4 * cell_w, 0, cell_h), 0, "1 格 emoji 撑破网格");
+        assert_eq!(
+            ink(&renderer, cell_w, 4 * cell_w, 0, cell_h),
+            0,
+            "1 格 emoji 撑破网格"
+        );
     }
 
     #[test]
     fn color_emoji_draws_rgb_inside_wide_cell() {
-        let Some(fonts) = FontSet::load(15.0) else { return };
+        let Some(fonts) = FontSet::load(15.0) else {
+            return;
+        };
         let cell_w = fonts.cell_w;
         let cell_h = fonts.cell_h;
         let mut renderer = Renderer::new(
@@ -2648,7 +2799,11 @@ mod tests {
             Theme::default().cursor(),
             1.0,
         );
-        if renderer.glyphs.get_color(&renderer.fonts, '😀', Style::Regular, 2).is_none() {
+        if renderer
+            .glyphs
+            .get_color(&renderer.fonts, '😀', Style::Regular, 2)
+            .is_none()
+        {
             eprintln!("跳过：系统没有彩色 emoji 位图");
             return;
         }
@@ -2665,7 +2820,10 @@ mod tests {
         frame.put(1, spacer, None);
         renderer.draw(&frame);
 
-        assert!(color_ink(&renderer, 0, 2 * cell_w, 0, cell_h) > 10, "😀 没有画出彩色像素");
+        assert!(
+            color_ink(&renderer, 0, 2 * cell_w, 0, cell_h) > 10,
+            "😀 没有画出彩色像素"
+        );
         assert_eq!(
             ink(&renderer, 2 * cell_w, 4 * cell_w, 0, cell_h),
             0,
@@ -2675,12 +2833,13 @@ mod tests {
 
     #[test]
     fn text_default_panel_arrows_render_mono_unless_vs16() {
-        let Some(fonts) = FontSet::load(15.0) else { return };
+        let Some(fonts) = FontSet::load(15.0) else {
+            return;
+        };
         let cell_w = fonts.cell_w;
         let cell_h = fonts.cell_h;
         // 黑底 + 白字：单色轮廓只会产生灰阶像素，彩色 emoji 才会出现 RGB 差异。
-        let mut renderer =
-            Renderer::new(Rc::new(fonts), 4, 1, 0x000000, 0x00ffffff, 1.0);
+        let mut renderer = Renderer::new(Rc::new(fonts), 4, 1, 0x000000, 0x00ffffff, 1.0);
         let color_available = renderer
             .glyphs
             .get_color(&renderer.fonts, '\u{25C0}', Style::Regular, 1)
@@ -2717,7 +2876,9 @@ mod tests {
 
     #[test]
     fn vs16_heart_color_stays_in_one_cell() {
-        let Some(fonts) = FontSet::load(15.0) else { return };
+        let Some(fonts) = FontSet::load(15.0) else {
+            return;
+        };
         let cell_w = fonts.cell_w;
         let cell_h = fonts.cell_h;
         let mut renderer = Renderer::new(
@@ -2728,7 +2889,11 @@ mod tests {
             Theme::default().cursor(),
             1.0,
         );
-        if renderer.glyphs.get_color(&renderer.fonts, '❤', Style::Regular, 1).is_none() {
+        if renderer
+            .glyphs
+            .get_color(&renderer.fonts, '❤', Style::Regular, 1)
+            .is_none()
+        {
             eprintln!("跳过：系统没有 ❤ 彩色位图");
             return;
         }
@@ -2742,13 +2907,22 @@ mod tests {
         frame.put_zerowidth(0, cell, None, &['\u{FE0F}']);
         renderer.draw(&frame);
 
-        assert!(color_ink(&renderer, 0, cell_w, 0, cell_h) > 0, "❤+VS16 没有彩色像素");
-        assert_eq!(ink(&renderer, cell_w, 4 * cell_w, 0, cell_h), 0, "❤+VS16 溢出单格");
+        assert!(
+            color_ink(&renderer, 0, cell_w, 0, cell_h) > 0,
+            "❤+VS16 没有彩色像素"
+        );
+        assert_eq!(
+            ink(&renderer, cell_w, 4 * cell_w, 0, cell_h),
+            0,
+            "❤+VS16 溢出单格"
+        );
     }
 
     #[test]
     fn zwj_family_color_components_stay_inside_grid() {
-        let Some(fonts) = FontSet::load(15.0) else { return };
+        let Some(fonts) = FontSet::load(15.0) else {
+            return;
+        };
         let cell_w = fonts.cell_w;
         let cell_h = fonts.cell_h;
         let mut renderer = Renderer::new(
@@ -2760,9 +2934,12 @@ mod tests {
             1.0,
         );
         // 彩色字体可能只覆盖部分组件；至少一个能画就验证网格，否则跳过。
-        let supported = ['👨', '👩', '👧']
-            .iter()
-            .any(|ch| renderer.glyphs.get_color(&renderer.fonts, *ch, Style::Regular, 2).is_some());
+        let supported = ['👨', '👩', '👧'].iter().any(|ch| {
+            renderer
+                .glyphs
+                .get_color(&renderer.fonts, *ch, Style::Regular, 2)
+                .is_some()
+        });
         if !supported {
             eprintln!("跳过：系统没有 ZWJ 家族组件的彩色位图");
             return;
@@ -2787,12 +2964,18 @@ mod tests {
             color_ink(&renderer, 0, 6 * cell_w, 0, cell_h) > 0,
             "ZWJ 家族没有彩色组件"
         );
-        assert_eq!(ink(&renderer, 6 * cell_w, 8 * cell_w, 0, cell_h), 0, "ZWJ 彩色渲染撑破网格");
+        assert_eq!(
+            ink(&renderer, 6 * cell_w, 8 * cell_w, 0, cell_h),
+            0,
+            "ZWJ 彩色渲染撑破网格"
+        );
     }
 
     #[test]
     fn ascii_does_not_bleed_outside_cell() {
-        let Some(fonts) = FontSet::load(15.0) else { return };
+        let Some(fonts) = FontSet::load(15.0) else {
+            return;
+        };
         let cell_w = fonts.cell_w;
         let cell_h = fonts.cell_h;
         let mut renderer = Renderer::new(
@@ -2833,18 +3016,13 @@ mod tests {
 
     #[test]
     fn cursor_shapes_paint_expected_regions() {
-        let Some(fonts) = FontSet::load(15.0) else { return };
+        let Some(fonts) = FontSet::load(15.0) else {
+            return;
+        };
         let cell_w = fonts.cell_w;
         let cell_h = fonts.cell_h;
         let cursor = 0x00ff_0000;
-        let mut renderer = Renderer::new(
-            Rc::new(fonts),
-            4,
-            2,
-            Theme::default().bg(),
-            cursor,
-            1.0,
-        );
+        let mut renderer = Renderer::new(Rc::new(fonts), 4, 2, Theme::default().bg(), cursor, 1.0);
         let frame = cursor_frame(4, 2, 1, 1);
         let (x, y) = (cell_w, cell_h);
         let red = pack(cursor);
@@ -2852,26 +3030,44 @@ mod tests {
         // 默认 block：整格填充。
         renderer.draw(&frame);
         assert_eq!(pixel(&renderer, x, y), red, "block 左上未填");
-        assert_eq!(pixel(&renderer, x + cell_w - 1, y + cell_h - 1), red, "block 右下未填");
+        assert_eq!(
+            pixel(&renderer, x + cell_w - 1, y + cell_h - 1),
+            red,
+            "block 右下未填"
+        );
 
         // underline：只画底部 2px。
         renderer.set_cursor_style(CursorShape::Underline, None, None);
         renderer.draw(&frame);
-        assert_eq!(pixel(&renderer, x, y + cell_h - 1), red, "underline 底线未画");
-        assert_eq!(pixel(&renderer, x, y + cell_h - 2), red, "underline 第二行未画");
+        assert_eq!(
+            pixel(&renderer, x, y + cell_h - 1),
+            red,
+            "underline 底线未画"
+        );
+        assert_eq!(
+            pixel(&renderer, x, y + cell_h - 2),
+            red,
+            "underline 第二行未画"
+        );
         assert_ne!(pixel(&renderer, x, y), red, "underline 不应填满整格");
 
         // ibeam：只画左侧 2px。
         renderer.set_cursor_style(CursorShape::Beam, None, None);
         renderer.draw(&frame);
         assert_eq!(pixel(&renderer, x, y), red, "ibeam 左列未画");
-        assert_eq!(pixel(&renderer, x + 1, y + cell_h - 1), red, "ibeam 第二列未画");
+        assert_eq!(
+            pixel(&renderer, x + 1, y + cell_h - 1),
+            red,
+            "ibeam 第二列未画"
+        );
         assert_ne!(pixel(&renderer, x + 2, y), red, "ibeam 不应填满整格");
     }
 
     #[test]
     fn cursor_color_and_text_color_overrides_apply() {
-        let Some(fonts) = FontSet::load(15.0) else { return };
+        let Some(fonts) = FontSet::load(15.0) else {
+            return;
+        };
         let cell_w = fonts.cell_w;
         let cell_h = fonts.cell_h;
         let mut renderer = Renderer::new(
@@ -2905,26 +3101,32 @@ mod tests {
     #[test]
     fn app_requested_cursor_shape_wins_over_config_block_default() {
         // vim 等 TUI 用 DECSCUSR 切 beam/underline；frame 的形状应优先于配置。
-        let Some(fonts) = FontSet::load(15.0) else { return };
+        let Some(fonts) = FontSet::load(15.0) else {
+            return;
+        };
         let cell_h = fonts.cell_h;
         let cursor = 0x00ff_0000;
-        let mut renderer =
-            Renderer::new(Rc::new(fonts), 4, 1, Theme::default().bg(), cursor, 1.0);
+        let mut renderer = Renderer::new(Rc::new(fonts), 4, 1, Theme::default().bg(), cursor, 1.0);
         renderer.set_cursor_style(CursorShape::Beam, None, None);
         let mut frame = cursor_frame(4, 1, 0, 0);
         frame.cursor.shape = CursorShape::Underline;
         renderer.draw(&frame);
         let red = pack(cursor);
-        assert_eq!(pixel(&renderer, 0, cell_h - 1), red, "frame 的 underline 未生效");
+        assert_eq!(
+            pixel(&renderer, 0, cell_h - 1),
+            red,
+            "frame 的 underline 未生效"
+        );
         assert_ne!(pixel(&renderer, 0, 0), red, "不应按配置画 beam");
     }
 
     #[test]
     fn cursor_blink_off_does_not_draw_cursor_in_frame() {
-        let Some(fonts) = FontSet::load(15.0) else { return };
+        let Some(fonts) = FontSet::load(15.0) else {
+            return;
+        };
         let cursor = 0x00ff_0000;
-        let mut renderer =
-            Renderer::new(Rc::new(fonts), 4, 1, Theme::default().bg(), cursor, 1.0);
+        let mut renderer = Renderer::new(Rc::new(fonts), 4, 1, Theme::default().bg(), cursor, 1.0);
         let frame = cursor_frame(4, 1, 0, 1);
         renderer.set_cursor_blink_phase(false);
         renderer.draw(&frame);
@@ -2942,19 +3144,22 @@ mod tests {
 
     #[test]
     fn draw_without_cursor_keeps_frame_clean_but_overlay_works() {
-        let Some(fonts) = FontSet::load(15.0) else { return };
+        let Some(fonts) = FontSet::load(15.0) else {
+            return;
+        };
         let cell_w = fonts.cell_w;
         let cell_h = fonts.cell_h;
         let cursor = 0x00ff_0000;
-        let mut renderer =
-            Renderer::new(Rc::new(fonts), 4, 2, Theme::default().bg(), cursor, 1.0);
+        let mut renderer = Renderer::new(Rc::new(fonts), 4, 2, Theme::default().bg(), cursor, 1.0);
         let frame = cursor_frame(4, 2, 1, 2);
         renderer.draw_without_cursor(&frame);
         assert!(
             !renderer.pixels().iter().any(|p| *p == pack(cursor)),
             "终端帧不应包含光标"
         );
-        let (buffer, rect) = renderer.cursor_buffer(&frame).expect("可见光标应有 overlay");
+        let (buffer, rect) = renderer
+            .cursor_buffer(&frame)
+            .expect("可见光标应有 overlay");
         assert_eq!((rect.x, rect.y), ((2 * cell_w) as f32, cell_h as f32));
         assert_eq!((rect.width, rect.height), (cell_w as f32, cell_h as f32));
         let pixels: &[u32] = bytemuck::cast_slice(buffer.as_bytes());
@@ -2964,12 +3169,13 @@ mod tests {
 
     #[test]
     fn cursor_overlay_underline_and_beam_are_transparent_outside_line() {
-        let Some(fonts) = FontSet::load(15.0) else { return };
+        let Some(fonts) = FontSet::load(15.0) else {
+            return;
+        };
         let cell_w = fonts.cell_w;
         let cell_h = fonts.cell_h;
         let cursor = 0x00ff_0000;
-        let mut renderer =
-            Renderer::new(Rc::new(fonts), 4, 1, Theme::default().bg(), cursor, 1.0);
+        let mut renderer = Renderer::new(Rc::new(fonts), 4, 1, Theme::default().bg(), cursor, 1.0);
         let frame = cursor_frame(4, 1, 0, 0);
         let red = pack(cursor);
         let opaque = |buffer: &slint::SharedPixelBuffer<slint::Rgba8Pixel>| {

@@ -23,7 +23,13 @@ fn sim(cols: usize, rows: usize) -> TermSim {
 
 fn line(sim: &mut TermSim, row: usize) -> String {
     let frame = sim.pull();
-    frame.row(row).iter().map(|c| c.char()).collect::<String>().trim_end().to_string()
+    frame
+        .row(row)
+        .iter()
+        .map(|c| c.char())
+        .collect::<String>()
+        .trim_end()
+        .to_string()
 }
 
 fn screen(sim: &mut TermSim) -> Vec<String> {
@@ -155,8 +161,10 @@ fn default_tab_stops_are_every_eight_columns() {
     let mut s = sim(40, 3);
     s.advance(b"a\tb\tc");
     let l = line(&mut s, 0);
-    let positions: Vec<usize> =
-        ['a', 'b', 'c'].iter().map(|c| l.find(*c).expect("char present")).collect();
+    let positions: Vec<usize> = ['a', 'b', 'c']
+        .iter()
+        .map(|c| l.find(*c).expect("char present"))
+        .collect();
     assert_eq!(positions, vec![0, 8, 16], "默认 8 列制表位: {l:?}");
 }
 
@@ -212,7 +220,10 @@ fn ind_ri_nel_behave_like_esc_sequences() {
     let rows = screen(&mut s);
     // A 后在下一行写 B（IND），RI 回上一行写 C（覆盖 B 行），NEL 再下一行行首写 D。
     let text: String = rows.join("|");
-    assert!(text.contains('A') && text.contains('C') && text.contains('D'), "{rows:?}");
+    assert!(
+        text.contains('A') && text.contains('C') && text.contains('D'),
+        "{rows:?}"
+    );
     // row0 = "AC"（RI 回到列 1 写 C），row1 = "DB"（NEL 回到列 0 写 D，B 仍在列 1）。
     assert_eq!(rows[0], "A C");
     assert_eq!(rows[1], "DB", "NEL 必须回到列 0");

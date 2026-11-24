@@ -95,8 +95,11 @@ fn slow_shell_10mb_paste_and_flood_never_block_ui() {
         worst_input = worst_input.max(t.elapsed());
     }
 
-    let (frame, worst_pull) =
-        wait_text_bounded(&handle, &format!("GOT {INPUT_BYTES}"), Duration::from_secs(40));
+    let (frame, worst_pull) = wait_text_bounded(
+        &handle,
+        &format!("GOT {INPUT_BYTES}"),
+        Duration::from_secs(40),
+    );
     assert!(
         frame_text(&frame).contains(&format!("GOT {INPUT_BYTES}")),
         "shell 没读满 10 MiB: {}",
@@ -106,11 +109,7 @@ fn slow_shell_10mb_paste_and_flood_never_block_ui() {
     // shell 已退出 head，文件应逐字节等于粘贴内容（无丢失、无乱序、无 PTY 转换）。
     let written = std::fs::read(&path).expect("read pasted file");
     let _ = std::fs::remove_file(&path);
-    assert_eq!(
-        written.len(),
-        INPUT_BYTES,
-        "写入字节数不一致（丢弃/截断）"
-    );
+    assert_eq!(written.len(), INPUT_BYTES, "写入字节数不一致（丢弃/截断）");
     assert_eq!(written, payload, "10 MiB 粘贴内容被改写或乱序");
 
     eprintln!("[p0] 10MiB paste worst_input={worst_input:?} worst_pull={worst_pull:?}");
@@ -156,7 +155,13 @@ fn backlog_overflow_drops_with_counters_and_keeps_calls_bounded() {
     let handle = spawn(sh("sleep 30")).expect("spawn pane");
     // 让 shell 先起来；sleep 不会读 stdin。
     std::thread::sleep(Duration::from_millis(150));
-    assert_eq!(handle.stats.write_dropped_bytes.load(std::sync::atomic::Ordering::Relaxed), 0);
+    assert_eq!(
+        handle
+            .stats
+            .write_dropped_bytes
+            .load(std::sync::atomic::Ordering::Relaxed),
+        0
+    );
 
     let chunk = vec![b'x'; 1024 * 1024];
     let mut worst_input = Duration::ZERO;

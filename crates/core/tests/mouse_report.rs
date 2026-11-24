@@ -12,7 +12,13 @@ use xtervo_core::mouse::{self, Modifiers, MouseAction, MouseButton, MouseEvent};
 use xtervo_core::{spawn, PaneConfig, PaneHandle};
 
 fn ev(button: MouseButton, action: MouseAction, line: u16, col: u16) -> MouseEvent {
-    MouseEvent { button, action, line, col, modifiers: Modifiers::default() }
+    MouseEvent {
+        button,
+        action,
+        line,
+        col,
+        modifiers: Modifiers::default(),
+    }
 }
 
 fn sgr() -> TermMode {
@@ -57,16 +63,32 @@ fn sgr_hover_motion_uses_button_three() {
 #[test]
 fn sgr_modifiers_are_shift_4_alt_8_ctrl_16() {
     let mut e = ev(MouseButton::Left, MouseAction::Press, 0, 0);
-    e.modifiers = Modifiers { shift: true, alt: false, ctrl: false };
+    e.modifiers = Modifiers {
+        shift: true,
+        alt: false,
+        ctrl: false,
+    };
     assert_eq!(text(&mouse::encode(e, sgr()).unwrap()), "\x1b[<4;1;1M");
 
-    e.modifiers = Modifiers { shift: false, alt: true, ctrl: false };
+    e.modifiers = Modifiers {
+        shift: false,
+        alt: true,
+        ctrl: false,
+    };
     assert_eq!(text(&mouse::encode(e, sgr()).unwrap()), "\x1b[<8;1;1M");
 
-    e.modifiers = Modifiers { shift: false, alt: false, ctrl: true };
+    e.modifiers = Modifiers {
+        shift: false,
+        alt: false,
+        ctrl: true,
+    };
     assert_eq!(text(&mouse::encode(e, sgr()).unwrap()), "\x1b[<16;1;1M");
 
-    e.modifiers = Modifiers { shift: true, alt: true, ctrl: true };
+    e.modifiers = Modifiers {
+        shift: true,
+        alt: true,
+        ctrl: true,
+    };
     assert_eq!(text(&mouse::encode(e, sgr()).unwrap()), "\x1b[<28;1;1M");
 }
 
@@ -100,22 +122,31 @@ fn sgr_wheel_is_press_only() {
 
 #[test]
 fn legacy_encodes_32_offset_bytes() {
-    let out = mouse::encode(ev(MouseButton::Left, MouseAction::Press, 1, 2), TermMode::MOUSE_REPORT_CLICK)
-        .unwrap();
+    let out = mouse::encode(
+        ev(MouseButton::Left, MouseAction::Press, 1, 2),
+        TermMode::MOUSE_REPORT_CLICK,
+    )
+    .unwrap();
     assert_eq!(out, vec![0x1b, b'[', b'M', 32 + 0, 32 + 3, 32 + 2]);
 }
 
 #[test]
 fn legacy_release_reports_button_three() {
-    let out = mouse::encode(ev(MouseButton::Left, MouseAction::Release, 0, 0), TermMode::MOUSE_REPORT_CLICK)
-        .unwrap();
+    let out = mouse::encode(
+        ev(MouseButton::Left, MouseAction::Release, 0, 0),
+        TermMode::MOUSE_REPORT_CLICK,
+    )
+    .unwrap();
     assert_eq!(out, vec![0x1b, b'[', b'M', 32 + 3, 32 + 1, 32 + 1]);
 }
 
 #[test]
 fn legacy_clamps_coordinates_to_223() {
-    let out = mouse::encode(ev(MouseButton::Left, MouseAction::Press, 299, 300), TermMode::MOUSE_REPORT_CLICK)
-        .unwrap();
+    let out = mouse::encode(
+        ev(MouseButton::Left, MouseAction::Press, 299, 300),
+        TermMode::MOUSE_REPORT_CLICK,
+    )
+    .unwrap();
     assert_eq!(out[3..], [32, 255, 255]);
 }
 
@@ -136,9 +167,15 @@ fn utf8_mode_emits_multibyte_codepoint() {
 #[test]
 fn no_mouse_mode_means_no_report() {
     assert!(!mouse::reporting(TermMode::empty()));
-    assert!(mouse::encode(ev(MouseButton::Left, MouseAction::Press, 0, 0), TermMode::empty()).is_none());
+    assert!(mouse::encode(
+        ev(MouseButton::Left, MouseAction::Press, 0, 0),
+        TermMode::empty()
+    )
+    .is_none());
     // 备用屏/光标等无关模式不得误触发
-    assert!(!mouse::reporting(TermMode::ALT_SCREEN | TermMode::SHOW_CURSOR | TermMode::SGR_MOUSE));
+    assert!(!mouse::reporting(
+        TermMode::ALT_SCREEN | TermMode::SHOW_CURSOR | TermMode::SGR_MOUSE
+    ));
 }
 
 #[test]
@@ -393,5 +430,8 @@ fn wait_file(path: &std::path::Path, count: usize) -> Vec<u8> {
         }
         std::thread::sleep(Duration::from_millis(10));
     }
-    panic!("PTY 字节未到齐（期望 {count}，收到 {}）: {got:?}", got.len());
+    panic!(
+        "PTY 字节未到齐（期望 {count}，收到 {}）: {got:?}",
+        got.len()
+    );
 }

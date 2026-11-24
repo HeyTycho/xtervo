@@ -33,7 +33,10 @@ impl Default for Workspace {
     fn default() -> Self {
         Self {
             name: String::new(),
-            tree: Tree::Leaf { cwd: None, profile_id: None },
+            tree: Tree::Leaf {
+                cwd: None,
+                profile_id: None,
+            },
             created_at: 0,
         }
     }
@@ -60,7 +63,10 @@ pub struct WorkspaceStore {
 
 impl Default for WorkspaceStore {
     fn default() -> Self {
-        Self { version: VERSION, workspaces: Vec::new() }
+        Self {
+            version: VERSION,
+            workspaces: Vec::new(),
+        }
     }
 }
 
@@ -96,11 +102,11 @@ impl WorkspaceStore {
                     path.display()
                 );
                 Self::default()
-            },
+            }
             Err(e) => {
                 eprintln!("[workspace] 解析失败 {}: {e}", path.display());
                 Self::default()
-            },
+            }
         }
     }
 
@@ -115,9 +121,11 @@ impl WorkspaceStore {
             std::fs::create_dir_all(dir)
                 .map_err(|e| format!("创建 {} 失败: {e}", dir.display()))?;
         }
-        let ordered = Self { version: VERSION, workspaces: self.workspaces.clone() };
-        let text = toml::to_string_pretty(&ordered)
-            .map_err(|e| format!("序列化失败: {e}"))?;
+        let ordered = Self {
+            version: VERSION,
+            workspaces: self.workspaces.clone(),
+        };
+        let text = toml::to_string_pretty(&ordered).map_err(|e| format!("序列化失败: {e}"))?;
         let tmp = path.with_extension("toml.tmp");
         std::fs::write(&tmp, text.as_bytes())
             .map_err(|e| format!("写 {} 失败: {e}", tmp.display()))?;
@@ -152,13 +160,13 @@ impl WorkspaceStore {
                     workspace.created_at = slot.created_at;
                 }
                 *slot = workspace;
-            },
+            }
             None => {
                 if workspace.created_at == 0 {
                     workspace.created_at = now_secs();
                 }
                 self.workspaces.push(workspace);
-            },
+            }
         }
         Ok(())
     }
@@ -201,20 +209,22 @@ impl WorkspaceStore {
         let workspace = self
             .get(name)
             .ok_or_else(|| format!("工作区「{}」不存在", name.trim()))?;
-        serde_json::to_string_pretty(workspace)
-            .map_err(|e| format!("序列化工作区失败：{e}"))
+        serde_json::to_string_pretty(workspace).map_err(|e| format!("序列化工作区失败：{e}"))
     }
 
     /// 按名字查（不区分大小写）。
     pub fn get(&self, name: &str) -> Option<&Workspace> {
         let name = name.trim();
-        self.workspaces.iter().find(|w| w.name.eq_ignore_ascii_case(name))
+        self.workspaces
+            .iter()
+            .find(|w| w.name.eq_ignore_ascii_case(name))
     }
 
     pub fn remove(&mut self, name: &str) -> bool {
         let name = name.trim();
         let before = self.workspaces.len();
-        self.workspaces.retain(|w| !w.name.eq_ignore_ascii_case(name));
+        self.workspaces
+            .retain(|w| !w.name.eq_ignore_ascii_case(name));
         self.workspaces.len() != before
     }
 }
@@ -226,7 +236,13 @@ pub fn sanitize_name(base: &str) -> String {
     let cleaned: String = base
         .trim()
         .chars()
-        .map(|c| if c.is_whitespace() || c == '/' || c == '\\' { ' ' } else { c })
+        .map(|c| {
+            if c.is_whitespace() || c == '/' || c == '\\' {
+                ' '
+            } else {
+                c
+            }
+        })
         .collect();
     cleaned.trim().to_string()
 }
@@ -236,7 +252,11 @@ pub fn sanitize_name(base: &str) -> String {
 /// 抽成纯函数是为了单测；调用方只需把现有名字列表传进来。
 pub fn unique_name(base: &str, existing: &[String]) -> String {
     let cleaned = sanitize_name(base);
-    let base = if cleaned.is_empty() { "workspace" } else { cleaned.as_str() };
+    let base = if cleaned.is_empty() {
+        "workspace"
+    } else {
+        cleaned.as_str()
+    };
     if !existing.iter().any(|n| n.eq_ignore_ascii_case(base)) {
         return base.to_string();
     }
@@ -303,20 +323,37 @@ mod tests {
     use crate::session::SplitDir;
 
     fn leaf(cwd: &str) -> Tree {
-        Tree::Leaf { cwd: Some(cwd.to_string()), profile_id: None }
+        Tree::Leaf {
+            cwd: Some(cwd.to_string()),
+            profile_id: None,
+        }
     }
 
     #[test]
     fn upsert_get_remove_roundtrip_and_name_rules() {
         let mut store = WorkspaceStore::default();
-        assert!(store.upsert(Workspace { name: "  ".into(), tree: leaf("/"), ..Workspace::default() }).is_err());
+        assert!(store
+            .upsert(Workspace {
+                name: "  ".into(),
+                tree: leaf("/"),
+                ..Workspace::default()
+            })
+            .is_err());
 
         store
-            .upsert(Workspace { name: "dev".into(), tree: leaf("/tmp/a"), ..Workspace::default() })
+            .upsert(Workspace {
+                name: "dev".into(),
+                tree: leaf("/tmp/a"),
+                ..Workspace::default()
+            })
             .unwrap();
         // 同名（大小写不同）覆盖而不是追加
         store
-            .upsert(Workspace { name: "DEV".into(), tree: leaf("/tmp/b"), ..Workspace::default() })
+            .upsert(Workspace {
+                name: "DEV".into(),
+                tree: leaf("/tmp/b"),
+                ..Workspace::default()
+            })
             .unwrap();
         assert_eq!(store.workspaces.len(), 1);
         assert_eq!(store.get("dev").unwrap().tree, leaf("/tmp/b"));
@@ -353,7 +390,13 @@ mod tests {
             }),
         };
         let mut store = WorkspaceStore::default();
-        store.upsert(Workspace { name: "3-pane".into(), tree: tree.clone(), created_at: 1_700_000_000 }).unwrap();
+        store
+            .upsert(Workspace {
+                name: "3-pane".into(),
+                tree: tree.clone(),
+                created_at: 1_700_000_000,
+            })
+            .unwrap();
         store.save_to(&path);
 
         let back = WorkspaceStore::load_from(&path);
@@ -380,7 +423,11 @@ mod tests {
     fn created_at_is_backfilled_and_preserved_on_overwrite() {
         let mut store = WorkspaceStore::default();
         store
-            .upsert(Workspace { name: "dev".into(), tree: leaf("/tmp"), ..Workspace::default() })
+            .upsert(Workspace {
+                name: "dev".into(),
+                tree: leaf("/tmp"),
+                ..Workspace::default()
+            })
             .unwrap();
         let created = store.get("dev").unwrap().created_at;
         assert!(created > 0, "新工作区应自动填创建时间");
@@ -408,7 +455,11 @@ mod tests {
             })
             .unwrap();
         store
-            .upsert(Workspace { name: "b".into(), tree: leaf("/b"), ..Workspace::default() })
+            .upsert(Workspace {
+                name: "b".into(),
+                tree: leaf("/b"),
+                ..Workspace::default()
+            })
             .unwrap();
 
         // 空名/控制字符/重名/旧名不存在都拒绝，且不改动 store。

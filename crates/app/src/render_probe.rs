@@ -80,7 +80,12 @@ struct ProbeState {
 
 /// 在 `ui.show()` 之前安装自检；不会改变渲染行为。
 pub fn install(window: &slint::Window, requested: &str, fell_back: bool) {
-    install_for(crate::runtime::WindowId::FIRST, window, requested, fell_back);
+    install_for(
+        crate::runtime::WindowId::FIRST,
+        window,
+        requested,
+        fell_back,
+    );
 }
 
 /// 多窗口版本：RenderingSetup/Teardown 必须带上 WindowId，GPU 状态才能按窗口
@@ -201,20 +206,24 @@ pub fn install_for(
                     }
                 }
             });
-        },
+        }
         Err(SetRenderingNotifierError::Unsupported) => {
             eprintln!(
                 "[render] requested_backend={requested}{}；actual_renderer=winit-software\
                  （GL/GPU 不可用或已显式回退；headless 不能验证 GPU）",
-                if fell_back { "（已从失败的后端回退）" } else { "" }
+                if fell_back {
+                    "（已从失败的后端回退）"
+                } else {
+                    ""
+                }
             );
-        },
+        }
         Err(SetRenderingNotifierError::AlreadySet) => {
             eprintln!("[render] requested_backend={requested}；notifier 已被其他代码占用");
-        },
+        }
         _ => {
             eprintln!("[render] requested_backend={requested}；notifier 安装失败（未知原因）");
-        },
+        }
     }
 }
 
@@ -238,7 +247,7 @@ fn report_gl(get_proc_address: &dyn Fn(&CStr) -> *const c_void, st: &mut ProbeSt
                      这不是 NVIDIA/真 GPU 的性能证据"
                 );
             }
-        },
+        }
         None => {
             st.gl_reported = true;
             GPU_CONFIRMED.store(true, Ordering::Relaxed);
@@ -246,7 +255,7 @@ fn report_gl(get_proc_address: &dyn Fn(&CStr) -> *const c_void, st: &mut ProbeSt
                 "[render] actual_renderer=skia-opengl（NativeOpenGL 已确认，但 glGetString 不可用，\
                  读不到 GL_RENDERER）"
             );
-        },
+        }
     }
 }
 
@@ -271,7 +280,11 @@ fn query_gl_strings(
         if ptr.is_null() {
             return None;
         }
-        Some(unsafe { CStr::from_ptr(ptr) }.to_string_lossy().into_owned())
+        Some(
+            unsafe { CStr::from_ptr(ptr) }
+                .to_string_lossy()
+                .into_owned(),
+        )
     }
     // SAFETY: 仅调用上面校验过的 glGetString。
     unsafe {

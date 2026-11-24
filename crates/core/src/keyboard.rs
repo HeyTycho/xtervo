@@ -107,7 +107,11 @@ impl ScreenKeyboard {
     const MAX_STACK: usize = 32;
 
     fn new() -> Self {
-        Self { flags: 0, stack: Vec::new(), stack_limit: Self::MAX_STACK }
+        Self {
+            flags: 0,
+            stack: Vec::new(),
+            stack_limit: Self::MAX_STACK,
+        }
     }
 
     fn reset(&mut self) {
@@ -243,7 +247,7 @@ impl KeyboardScanner {
                     0x9b => {
                         self.begin_csi();
                         State::Csi
-                    },
+                    }
                     0x90 | 0x98 | 0x9e | 0x9f => State::String,
                     0x9c => State::Ground,
                     _ => State::Ground,
@@ -252,14 +256,14 @@ impl KeyboardScanner {
                     b'[' => {
                         self.begin_csi();
                         State::Csi
-                    },
+                    }
                     b']' => State::Osc,
                     b'P' | b'X' | b'^' | b'_' => State::String,
                     // RIS：终端复位。
                     b'c' => {
                         self.reset_all(out);
                         State::Ground
-                    },
+                    }
                     0x1b => State::Escape,
                     _ => State::Ground,
                 },
@@ -269,14 +273,14 @@ impl KeyboardScanner {
                             b'm' => self.finish_csi_m(out),
                             b'u' => self.finish_csi_u(out),
                             b'h' | b'l' => self.finish_csi_mode(b, out),
-                            _ => {},
+                            _ => {}
                         }
                         State::Ground
                     } else {
                         self.push_csi_byte(b);
                         State::Csi
                     }
-                },
+                }
                 State::Osc => match b {
                     0x07 => State::Ground,
                     0x1b => State::OscEscape,
@@ -327,7 +331,12 @@ impl KeyboardScanner {
         }
         // xterm 允许参数中间有空格；我们只关心十进制参数。
         let raw = std::mem::take(&mut self.csi);
-        Some(raw.iter().copied().filter(|b| !b.is_ascii_whitespace()).collect())
+        Some(
+            raw.iter()
+                .copied()
+                .filter(|b| !b.is_ascii_whitespace())
+                .collect(),
+        )
     }
 
     fn reset_all(&mut self, out: &mut Vec<KeyboardAction>) {
@@ -374,15 +383,21 @@ impl KeyboardScanner {
     /// `CSI = flags ; mode u`（mode: 1 replace / 2 union / 3 difference）。
     fn finish_csi_u(&mut self, out: &mut Vec<KeyboardAction>) {
         let Some(raw) = self.take_csi() else { return };
-        let Some((&marker, rest)) = raw.split_first() else { return };
+        let Some((&marker, rest)) = raw.split_first() else {
+            return;
+        };
         match marker {
             b'?' => {
                 // kitty query：回当前屏幕的真实 flags（不是栈顶）。
                 let flags = self.screen().flags;
-                out.push(KeyboardAction::Reply(format!("\x1b[?{flags}u").into_bytes()));
-            },
+                out.push(KeyboardAction::Reply(
+                    format!("\x1b[?{flags}u").into_bytes(),
+                ));
+            }
             b'=' => {
-                let Some((flags, mode)) = parse_flags_and_mode(rest) else { return };
+                let Some((flags, mode)) = parse_flags_and_mode(rest) else {
+                    return;
+                };
                 let old = self.screen().flags;
                 let new = match mode {
                     2 => old | flags,
@@ -390,9 +405,11 @@ impl KeyboardScanner {
                     _ => flags,
                 };
                 self.set_current_flags(new, out);
-            },
+            }
             b'>' => {
-                let Some(flags) = parse_flags(rest) else { return };
+                let Some(flags) = parse_flags(rest) else {
+                    return;
+                };
                 let current = self.screen().flags;
                 {
                     let screen = self.screen_mut();
@@ -405,7 +422,7 @@ impl KeyboardScanner {
                 if current != flags {
                     out.push(KeyboardAction::SetKeyboardFlags(flags));
                 }
-            },
+            }
             b'<' => {
                 let count = match rest {
                     b"" => 1,
@@ -422,20 +439,24 @@ impl KeyboardScanner {
                     }
                 }
                 self.set_current_flags(flags, out);
-            },
-            _ => {},
+            }
+            _ => {}
         }
     }
 
     /// `CSI > 4 ; n m` / `CSI ? 4 m`（modifyOtherKeys）。
     fn finish_csi_m(&mut self, out: &mut Vec<KeyboardAction>) {
         let Some(raw) = self.take_csi() else { return };
-        let Some((&marker, rest)) = raw.split_first() else { return };
+        let Some((&marker, rest)) = raw.split_first() else {
+            return;
+        };
         match marker {
             b'>' => {
                 // XTMODKEYS: Pp=4 是 modifyOtherKeys。
                 let mut params = rest.split(|&b| b == b';');
-                let Some(pp) = params.next().and_then(parse_decimal) else { return };
+                let Some(pp) = params.next().and_then(parse_decimal) else {
+                    return;
+                };
                 if pp != 4 {
                     return;
                 }
@@ -453,7 +474,7 @@ impl KeyboardScanner {
                     self.level = level;
                     out.push(KeyboardAction::SetModifyOtherKeys(level));
                 }
-            },
+            }
             b'?' => {
                 // XTQMODKEYS: `CSI ? 4 m` 查询当前等级。
                 let pp = rest.split(|&b| b == b';').next().and_then(parse_decimal);
@@ -462,19 +483,25 @@ impl KeyboardScanner {
                         format!("\x1b[>4;{}m", self.level).into_bytes(),
                     ));
                 }
-            },
-            _ => {},
+            }
+            _ => {}
         }
     }
 
     /// `CSI ? 1049 h/l`（以及 1047/47）切换备用屏；两块屏幕的键盘栈独立。
     fn finish_csi_mode(&mut self, final_byte: u8, out: &mut Vec<KeyboardAction>) {
         let Some(raw) = self.take_csi() else { return };
-        let Some((&marker, rest)) = raw.split_first() else { return };
+        let Some((&marker, rest)) = raw.split_first() else {
+            return;
+        };
         if marker != b'?' {
             return;
         }
-        let Some(first) = rest.split(|&b| b == b';').next().and_then(parse_mode_number) else {
+        let Some(first) = rest
+            .split(|&b| b == b';')
+            .next()
+            .and_then(parse_mode_number)
+        else {
             return;
         };
         if !matches!(first, 47 | 1047 | 1049) {
@@ -524,7 +551,11 @@ fn parse_mode_number(raw: &[u8]) -> Option<u16> {
 /// flags 参数：缺省/空 = 0；非法 = None（忽略整条序列）。
 fn parse_flags(rest: &[u8]) -> Option<u8> {
     let raw = rest.split(|&b| b == b';').next().unwrap_or(b"");
-    let flags = if raw.is_empty() { 0 } else { parse_decimal(raw)? };
+    let flags = if raw.is_empty() {
+        0
+    } else {
+        parse_decimal(raw)?
+    };
     Some(KeyboardFlags::from_bits_truncate(flags).bits())
 }
 
@@ -592,22 +623,19 @@ mod tests {
         assert!(flags.contains(KeyboardFlags::REPORT_EVENT_TYPES));
         assert!(!flags.contains(KeyboardFlags::REPORT_ALL_KEYS_AS_ESC));
         assert!(flags.contains(KeyboardFlags::REPORT_ASSOCIATED_TEXT));
-        assert_eq!(KeyboardFlags::from_bits_truncate(0xff).bits(), KeyboardFlags::ALL.bits());
+        assert_eq!(
+            KeyboardFlags::from_bits_truncate(0xff).bits(),
+            KeyboardFlags::ALL.bits()
+        );
         assert!(KeyboardFlags::default().is_empty());
     }
 
     #[test]
     fn kitty_set_and_query_uses_current_flags_not_stack_top() {
         // set 不 push：query 必须回 3（alacritty 0.26 会错回 0）。
-        assert_eq!(
-            scan(b"\x1b[=3;1u\x1b[?u"),
-            vec![set(3), reply_kitty(3)]
-        );
+        assert_eq!(scan(b"\x1b[=3;1u\x1b[?u"), vec![set(3), reply_kitty(3)]);
         // flags 参数截断到实际支持的 5 bit。
-        assert_eq!(
-            scan(b"\x1b[=255u\x1b[?u"),
-            vec![set(31), reply_kitty(31)]
-        );
+        assert_eq!(scan(b"\x1b[=255u\x1b[?u"), vec![set(31), reply_kitty(31)]);
     }
 
     #[test]
@@ -649,7 +677,10 @@ mod tests {
         out.clear();
         // 连续 pop 到底：栈里最多 MAX_STACK 项，不影响解析/不 panic。
         scanner.feed(b"\x1b[<255u", &mut out);
-        assert!(matches!(out.last(), Some(KeyboardAction::SetKeyboardFlags(_))));
+        assert!(matches!(
+            out.last(),
+            Some(KeyboardAction::SetKeyboardFlags(_))
+        ));
         assert_eq!(scanner.flags(), 0);
     }
 
@@ -672,8 +703,14 @@ mod tests {
             vec![KeyboardAction::SetModifyOtherKeys(2)],
             "标准 level 2"
         );
-        assert_eq!(scan(b"\x1b[>4m"), vec![KeyboardAction::SetModifyOtherKeys(2)]);
-        assert_eq!(scan(b"\x1b[>4;1m"), vec![KeyboardAction::SetModifyOtherKeys(1)]);
+        assert_eq!(
+            scan(b"\x1b[>4m"),
+            vec![KeyboardAction::SetModifyOtherKeys(2)]
+        );
+        assert_eq!(
+            scan(b"\x1b[>4;1m"),
+            vec![KeyboardAction::SetModifyOtherKeys(1)]
+        );
         assert!(scan(b"\x1b[>4;0m").is_empty());
         let mut scanner = KeyboardScanner::new(true);
         let mut out = Vec::new();
@@ -685,13 +722,19 @@ mod tests {
                 KeyboardAction::SetModifyOtherKeys(0)
             ]
         );
-        assert_eq!(scan(b"\x1b[>4;3m"), vec![KeyboardAction::SetModifyOtherKeys(3)]);
+        assert_eq!(
+            scan(b"\x1b[>4;3m"),
+            vec![KeyboardAction::SetModifyOtherKeys(3)]
+        );
         // 非法等级 / 别的资源 / 别的 final：不改变状态。
         assert!(scan(b"\x1b[>4;9m").is_empty());
         assert!(scan(b"\x1b[>4;xm").is_empty());
         assert!(scan(b"\x1b[>2;2m").is_empty());
         assert!(scan(b"\x1b[>4;2H").is_empty());
-        assert_eq!(scan(b"\x1b[> 4 ; 2 m"), vec![KeyboardAction::SetModifyOtherKeys(2)]);
+        assert_eq!(
+            scan(b"\x1b[> 4 ; 2 m"),
+            vec![KeyboardAction::SetModifyOtherKeys(2)]
+        );
     }
 
     #[test]

@@ -125,20 +125,20 @@ impl Default for Permissions {
 impl Permissions {
     pub fn validate(&self) -> Result<(), String> {
         match self.filesystem.trim() {
-            "none" | "plugin" | "home" => {},
+            "none" | "plugin" | "home" => {}
             other => {
                 return Err(format!(
                     "permissions.filesystem 只支持 none/plugin/home（当前 {other:?}）"
                 ))
-            },
+            }
         }
         match self.credentials.trim() {
-            "none" | "own" => {},
+            "none" | "own" => {}
             other => {
                 return Err(format!(
                     "permissions.credentials 只支持 none/own（当前 {other:?}）；宿主不提供凭据明文"
                 ))
-            },
+            }
         }
         Ok(())
     }
@@ -318,7 +318,6 @@ pub struct Contributes {
     pub assistant: Option<AssistantContribution>,
 }
 
-
 impl Contributes {
     pub fn validate(&self, commands: &[CommandDecl]) -> Result<(), String> {
         if self.commands && commands.is_empty() {
@@ -411,9 +410,9 @@ impl CommandDecl {
         if !self.keybinding.trim().is_empty() {
             let shortcut = crate::commands::Shortcut::parse(self.keybinding.trim())
                 .map_err(|e| format!("commands.{} keybinding 非法: {e}", self.id))?;
-            let chord = shortcut.single_chord().ok_or_else(|| {
-                format!("commands.{} keybinding 只支持单段组合键", self.id)
-            })?;
+            let chord = shortcut
+                .single_chord()
+                .ok_or_else(|| format!("commands.{} keybinding 只支持单段组合键", self.id))?;
             if !chord.is_bindable() {
                 return Err(format!(
                     "commands.{} keybinding 需要 Ctrl/Alt/Meta 或 F1–F24（否则会抢走终端输入）",
@@ -502,9 +501,7 @@ impl Manifest {
         validate_relative_path(&self.entry)?;
         if wasm {
             if !self.entry.trim().to_ascii_lowercase().ends_with(".wasm") {
-                return Err(
-                    "runtime = \"wasm\" 的 entry 必须是插件目录内的 .wasm 文件".into(),
-                );
+                return Err("runtime = \"wasm\" 的 entry 必须是插件目录内的 .wasm 文件".into());
             }
         }
         self.permissions.validate()?;
@@ -571,7 +568,9 @@ pub fn validate_id(value: &str, what: &str) -> Result<(), String> {
     let mut chars = value.chars();
     let first = chars.next().unwrap_or(' ');
     if !first.is_ascii_alphanumeric() {
-        return Err(format!("{what} 必须以 ASCII 字母或数字开头（当前 {value:?}）"));
+        return Err(format!(
+            "{what} 必须以 ASCII 字母或数字开头（当前 {value:?}）"
+        ));
     }
     if !value
         .chars()
@@ -602,12 +601,10 @@ pub fn validate_relative_path(value: &str) -> Result<(), String> {
     }
     for component in path.components() {
         match component {
-            Component::Normal(_) => {},
+            Component::Normal(_) => {}
             Component::CurDir => return Err("路径不能包含 . 段".into()),
             Component::ParentDir => return Err("路径不能包含 ..".into()),
-            Component::RootDir | Component::Prefix(_) => {
-                return Err("不允许绝对路径".into())
-            },
+            Component::RootDir | Component::Prefix(_) => return Err("不允许绝对路径".into()),
         }
     }
     Ok(())
@@ -670,7 +667,10 @@ pub fn resolve_entry(plugin_dir: &Path, entry: &str) -> Result<PathBuf, String> 
             .permissions()
             .mode();
         if mode & 0o111 == 0 {
-            return Err(format!("entry 不可执行（缺少执行位）: {}", resolved.display()));
+            return Err(format!(
+                "entry 不可执行（缺少执行位）: {}",
+                resolved.display()
+            ));
         }
     }
     Ok(resolved)
@@ -678,7 +678,10 @@ pub fn resolve_entry(plugin_dir: &Path, entry: &str) -> Result<PathBuf, String> 
 
 /// 从清单文本里只探测 `api`，用于把旧清单归类为 unsupported 而不是 invalid。
 pub fn probe_api(value: &toml::Value) -> Option<u64> {
-    value.get("api").and_then(toml::Value::as_integer).map(|api| api as u64)
+    value
+        .get("api")
+        .and_then(toml::Value::as_integer)
+        .map(|api| api as u64)
 }
 
 /// 从旧清单文本里尽量提取展示用的 name/version。
@@ -745,7 +748,10 @@ title = "Greet"
         assert_eq!(manifest.api, 3);
         assert_eq!(manifest.host_abi, 3);
         assert!(manifest.panel("main"));
-        assert_eq!(manifest.full_command_id("greet"), "plugin.dev.xtervo.echo.greet");
+        assert_eq!(
+            manifest.full_command_id("greet"),
+            "plugin.dev.xtervo.echo.greet"
+        );
         assert_eq!(
             manifest.permission_fingerprint(),
             vec![
@@ -808,7 +814,10 @@ title = "Greet"
 
     #[test]
     fn assistant_accepts_bool_and_table_but_is_placeholder() {
-        let text = GOOD.replace("assistant = false", "assistant = { name = \"Echo Assist\" }");
+        let text = GOOD.replace(
+            "assistant = false",
+            "assistant = { name = \"Echo Assist\" }",
+        );
         let manifest = parse(&text);
         manifest.validate().unwrap();
         assert!(manifest.contributes.assistant_enabled());
@@ -863,7 +872,10 @@ output_filter = true
         manifest.validate().unwrap();
         assert!(manifest.is_wasm());
         assert!(manifest.permissions.terminal.output_filter);
-        assert_eq!(manifest.permission_fingerprint(), vec!["terminal.output_filter"]);
+        assert_eq!(
+            manifest.permission_fingerprint(),
+            vec!["terminal.output_filter"]
+        );
         assert_eq!(manifest.runtime.trim(), RUNTIME_WASM);
 
         // 也接受 TOML 点号写法：`[permissions]` 下 terminal.output_filter = true。

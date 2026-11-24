@@ -477,7 +477,7 @@ mod tests {
         match state.poll() {
             PollOutcome::Reload { config, .. } => {
                 assert!((config.font_size - 19.0).abs() < f32::EPSILON)
-            },
+            }
             other => panic!("expected Reload, got {other:?}"),
         }
 
@@ -486,7 +486,7 @@ mod tests {
         match state.poll() {
             PollOutcome::Reload { config, .. } => {
                 assert!((config.font_size - 15.0).abs() < f32::EPSILON)
-            },
+            }
             other => panic!("expected Reload after external revert, got {other:?}"),
         }
         let _ = std::fs::remove_dir_all(&dir);
@@ -503,14 +503,17 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
         std::fs::create_dir(&path).unwrap();
         assert!(matches!(state.poll(), PollOutcome::ReadError { .. }));
-        assert!(matches!(state.poll(), PollOutcome::NoChange), "同一错误不重复刷屏");
+        assert!(
+            matches!(state.poll(), PollOutcome::NoChange),
+            "同一错误不重复刷屏"
+        );
 
         std::fs::remove_dir(&path).unwrap();
         std::fs::write(&path, "version = 1\nfont_size = 22\n").unwrap();
         match state.poll() {
             PollOutcome::Reload { config, .. } => {
                 assert!((config.font_size - 22.0).abs() < f32::EPSILON)
-            },
+            }
             other => panic!("expected Reload after IO recovery, got {other:?}"),
         }
         let _ = std::fs::remove_dir_all(&dir);
@@ -529,7 +532,7 @@ mod tests {
         match state.poll() {
             PollOutcome::Reload { config, .. } => {
                 assert!((config.font_size - 18.0).abs() < f32::EPSILON)
-            },
+            }
             other => panic!("external change after startup must reload, got {other:?}"),
         }
         let _ = std::fs::remove_dir_all(&dir);

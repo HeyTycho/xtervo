@@ -134,7 +134,11 @@ pub fn encode(ev: MouseEvent, mode: TermMode) -> Option<Vec<u8>> {
     let y = u32::from(ev.line) + 1;
 
     if sgr {
-        let end = if ev.action == MouseAction::Release { 'm' } else { 'M' };
+        let end = if ev.action == MouseAction::Release {
+            'm'
+        } else {
+            'M'
+        };
         return Some(format!("\x1b[<{code};{x};{y}{end}").into_bytes());
     }
 
@@ -167,9 +171,41 @@ mod tests {
     #[test]
     fn modifier_bits_match_xterm() {
         assert_eq!(Modifiers::default().bits(), 0);
-        assert_eq!(Modifiers { shift: true, alt: false, ctrl: false }.bits(), 4);
-        assert_eq!(Modifiers { shift: false, alt: true, ctrl: false }.bits(), 8);
-        assert_eq!(Modifiers { shift: false, alt: false, ctrl: true }.bits(), 16);
-        assert_eq!(Modifiers { shift: true, alt: true, ctrl: true }.bits(), 28);
+        assert_eq!(
+            Modifiers {
+                shift: true,
+                alt: false,
+                ctrl: false
+            }
+            .bits(),
+            4
+        );
+        assert_eq!(
+            Modifiers {
+                shift: false,
+                alt: true,
+                ctrl: false
+            }
+            .bits(),
+            8
+        );
+        assert_eq!(
+            Modifiers {
+                shift: false,
+                alt: false,
+                ctrl: true
+            }
+            .bits(),
+            16
+        );
+        assert_eq!(
+            Modifiers {
+                shift: true,
+                alt: true,
+                ctrl: true
+            }
+            .bits(),
+            28
+        );
     }
 }

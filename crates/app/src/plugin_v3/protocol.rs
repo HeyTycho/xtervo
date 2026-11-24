@@ -111,7 +111,11 @@ pub struct RpcError {
 
 impl RpcError {
     pub fn new(code: i64, message: impl Into<String>) -> Self {
-        Self { code, message: message.into(), data: None }
+        Self {
+            code,
+            message: message.into(),
+            data: None,
+        }
     }
 
     pub fn with_data(mut self, data: Value) -> Self {
@@ -241,16 +245,17 @@ pub fn parse_incoming(line: &str) -> Incoming {
             return Incoming::Invalid("response id 必须是宿主分配的 u64".to_string());
         };
         let result = object.get("result").cloned();
-        let error = object.get("error").map(|error| {
-            RpcError {
-                code: error.get("code").and_then(Value::as_i64).unwrap_or(error_code::INTERNAL_ERROR),
-                message: error
-                    .get("message")
-                    .and_then(Value::as_str)
-                    .unwrap_or("未知错误")
-                    .to_string(),
-                data: error.get("data").cloned(),
-            }
+        let error = object.get("error").map(|error| RpcError {
+            code: error
+                .get("code")
+                .and_then(Value::as_i64)
+                .unwrap_or(error_code::INTERNAL_ERROR),
+            message: error
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("未知错误")
+                .to_string(),
+            data: error.get("data").cloned(),
         });
         if result.is_none() && error.is_none() {
             return Incoming::Invalid("response 缺少 result/error".to_string());
@@ -301,10 +306,13 @@ pub fn format_command_result(value: &Value) -> (bool, String) {
                 .or_else(|| object.get("text").and_then(Value::as_str))
                 .map(|text| clip_chars(text, MAX_RESULT_TEXT_CHARS))
                 .unwrap_or_else(|| {
-                    clip_chars(&Value::Object(object.clone()).to_string(), MAX_RESULT_TEXT_CHARS)
+                    clip_chars(
+                        &Value::Object(object.clone()).to_string(),
+                        MAX_RESULT_TEXT_CHARS,
+                    )
                 });
             (ok, text)
-        },
+        }
         other => (true, clip_chars(&other.to_string(), MAX_RESULT_TEXT_CHARS)),
     }
 }
@@ -366,11 +374,19 @@ pub fn parse_status_payload(value: &Value) -> Result<StatusPayload, String> {
         .map(str::trim)
         .filter(|command| !command.is_empty())
         .map(|command| command.to_string());
-    if command.as_ref().is_some_and(|command| command.chars().count() > 128) {
+    if command
+        .as_ref()
+        .is_some_and(|command| command.chars().count() > 128)
+    {
         return Err("status.command 超过 128 字符".into());
     }
     let window_id = parse_window_id(value)?;
-    Ok(StatusPayload { text: text.to_string(), tooltip, command, window_id })
+    Ok(StatusPayload {
+        text: text.to_string(),
+        tooltip,
+        command,
+        window_id,
+    })
 }
 
 /// `ui.notify` 参数。
@@ -402,7 +418,11 @@ pub fn parse_notify_payload(params: &Value) -> Result<NotifyPayload, String> {
         other => return Err(format!("ui.notify.level 不支持 {other:?}")),
     };
     let window_id = parse_window_id(params)?;
-    Ok(NotifyPayload { text: text.to_string(), level: level.to_string(), window_id })
+    Ok(NotifyPayload {
+        text: text.to_string(),
+        level: level.to_string(),
+        window_id,
+    })
 }
 
 /// `terminal.read` 参数（被宿主 clamp）。
@@ -430,12 +450,17 @@ pub fn parse_terminal_read_params(params: &Value) -> TerminalReadLimits {
         .and_then(Value::as_u64)
         .map(|v| v.clamp(1, MAX_TERMINAL_READ_BYTES as u64) as u32)
         .unwrap_or(defaults.max_bytes);
-    TerminalReadLimits { max_lines, max_bytes }
+    TerminalReadLimits {
+        max_lines,
+        max_bytes,
+    }
 }
 
 /// `terminal.write` 参数。
 pub fn parse_terminal_write_params(params: &Value) -> Result<String, String> {
-    let object = params.as_object().ok_or("terminal.write params 必须是 object")?;
+    let object = params
+        .as_object()
+        .ok_or("terminal.write params 必须是 object")?;
     let text = object
         .get("text")
         .and_then(Value::as_str)
@@ -453,7 +478,9 @@ pub fn parse_terminal_write_params(params: &Value) -> Result<String, String> {
 
 /// `clipboard.write` 参数。
 pub fn parse_clipboard_write_params(params: &Value) -> Result<String, String> {
-    let object = params.as_object().ok_or("clipboard.write params 必须是 object")?;
+    let object = params
+        .as_object()
+        .ok_or("clipboard.write params 必须是 object")?;
     let text = object
         .get("text")
         .and_then(Value::as_str)
@@ -471,13 +498,35 @@ pub fn parse_clipboard_write_params(params: &Value) -> Result<String, String> {
 /// 宿主允许渲染的固定元素类型；插件不能提供布局/样式/任意控件。
 #[derive(Clone, Debug, PartialEq)]
 pub enum SurfaceElement {
-    Text { text: String },
-    Markdown { text: String },
-    List { items: Vec<String> },
-    Input { id: String, label: String, value: String, placeholder: String },
-    Button { id: String, label: String },
-    Select { id: String, label: String, value: String, options: Vec<String> },
-    Progress { label: String, value: f32 },
+    Text {
+        text: String,
+    },
+    Markdown {
+        text: String,
+    },
+    List {
+        items: Vec<String>,
+    },
+    Input {
+        id: String,
+        label: String,
+        value: String,
+        placeholder: String,
+    },
+    Button {
+        id: String,
+        label: String,
+    },
+    Select {
+        id: String,
+        label: String,
+        value: String,
+        options: Vec<String>,
+    },
+    Progress {
+        label: String,
+        value: f32,
+    },
 }
 
 impl SurfaceElement {
@@ -506,7 +555,7 @@ impl SurfaceElement {
         match self {
             SurfaceElement::Input { value, .. } | SurfaceElement::Select { value, .. } => {
                 Some(value)
-            },
+            }
             _ => None,
         }
     }
@@ -521,14 +570,18 @@ pub struct SurfaceDoc {
 
 impl SurfaceDoc {
     pub fn element(&self, id: &str) -> Option<&SurfaceElement> {
-        self.elements.iter().find(|element| element.id() == Some(id))
+        self.elements
+            .iter()
+            .find(|element| element.id() == Some(id))
     }
 
     pub fn input_value(&self, id: &str) -> Option<&str> {
         self.elements.iter().find_map(|element| match element {
-            SurfaceElement::Input { id: element_id, value, .. } if element_id == id => {
-                Some(value.as_str())
-            },
+            SurfaceElement::Input {
+                id: element_id,
+                value,
+                ..
+            } if element_id == id => Some(value.as_str()),
             _ => None,
         })
     }
@@ -536,15 +589,21 @@ impl SurfaceDoc {
     /// 用户切换 select 时宿主计算下一个候选值，再通过 `ui.action` 发给插件。
     pub fn next_select_value(&self, id: &str) -> Option<String> {
         self.elements.iter().find_map(|element| match element {
-            SurfaceElement::Select { id: element_id, value, options, .. }
-                if element_id == id =>
-            {
+            SurfaceElement::Select {
+                id: element_id,
+                value,
+                options,
+                ..
+            } if element_id == id => {
                 if options.is_empty() {
                     return None;
                 }
-                let index = options.iter().position(|option| option == value).unwrap_or(0);
+                let index = options
+                    .iter()
+                    .position(|option| option == value)
+                    .unwrap_or(0);
                 Some(options[(index + 1) % options.len()].clone())
-            },
+            }
             _ => None,
         })
     }
@@ -572,8 +631,7 @@ pub fn parse_surface_doc(value: &Value) -> Result<SurfaceDoc, String> {
     let mut parsed = Vec::with_capacity(elements.len());
     let mut ids: Vec<String> = Vec::new();
     for (index, raw) in elements.iter().enumerate() {
-        let element = parse_surface_element(raw)
-            .map_err(|e| format!("elements[{index}]: {e}"))?;
+        let element = parse_surface_element(raw).map_err(|e| format!("elements[{index}]: {e}"))?;
         if let Some(id) = element.id() {
             if ids.iter().any(|seen| seen == id) {
                 return Err(format!("elements[{index}]: 元素 id 重复 {id:?}"));
@@ -582,7 +640,10 @@ pub fn parse_surface_doc(value: &Value) -> Result<SurfaceDoc, String> {
         }
         parsed.push(element);
     }
-    Ok(SurfaceDoc { title: title.to_string(), elements: parsed })
+    Ok(SurfaceDoc {
+        title: title.to_string(),
+        elements: parsed,
+    })
 }
 
 fn parse_surface_element(value: &Value) -> Result<SurfaceElement, String> {
@@ -609,9 +670,7 @@ fn parse_surface_element(value: &Value) -> Result<SurfaceElement, String> {
             .filter(|id| !id.is_empty())
             .ok_or_else(|| format!("{kind}.id 不能为空"))?;
         if id.chars().count() > MAX_ELEMENT_ID_CHARS {
-            return Err(format!(
-                "{kind}.id 超过 {MAX_ELEMENT_ID_CHARS} 字符"
-            ));
+            return Err(format!("{kind}.id 超过 {MAX_ELEMENT_ID_CHARS} 字符"));
         }
         validate_id(id, &format!("{kind}.id"))?;
         Ok(id.to_string())
@@ -635,14 +694,12 @@ fn parse_surface_element(value: &Value) -> Result<SurfaceElement, String> {
             for item in items {
                 let text = item.as_str().ok_or("list.items 只能是字符串")?;
                 if text.chars().count() > MAX_LIST_ITEM_CHARS {
-                    return Err(format!(
-                        "list 单项超过 {MAX_LIST_ITEM_CHARS} 字符"
-                    ));
+                    return Err(format!("list 单项超过 {MAX_LIST_ITEM_CHARS} 字符"));
                 }
                 parsed.push(text.to_string());
             }
             Ok(SurfaceElement::List { items: parsed })
-        },
+        }
         "input" => {
             let id = element_id(object)?;
             let value = object
@@ -651,9 +708,7 @@ fn parse_surface_element(value: &Value) -> Result<SurfaceElement, String> {
                 .unwrap_or("")
                 .to_string();
             if value.chars().count() > MAX_INPUT_VALUE_CHARS {
-                return Err(format!(
-                    "input.value 超过 {MAX_INPUT_VALUE_CHARS} 字符"
-                ));
+                return Err(format!("input.value 超过 {MAX_INPUT_VALUE_CHARS} 字符"));
             }
             let label = object
                 .get("label")
@@ -668,8 +723,13 @@ fn parse_surface_element(value: &Value) -> Result<SurfaceElement, String> {
             if placeholder.chars().count() > 120 {
                 return Err("input.placeholder 超过 120 字符".into());
             }
-            Ok(SurfaceElement::Input { id, label, value, placeholder })
-        },
+            Ok(SurfaceElement::Input {
+                id,
+                label,
+                value,
+                placeholder,
+            })
+        }
         "button" => {
             let id = element_id(object)?;
             let label = object
@@ -681,8 +741,11 @@ fn parse_surface_element(value: &Value) -> Result<SurfaceElement, String> {
             if label.chars().count() > 120 {
                 return Err("button.label 超过 120 字符".into());
             }
-            Ok(SurfaceElement::Button { id, label: label.to_string() })
-        },
+            Ok(SurfaceElement::Button {
+                id,
+                label: label.to_string(),
+            })
+        }
         "select" => {
             let id = element_id(object)?;
             let options = object
@@ -715,8 +778,13 @@ fn parse_surface_element(value: &Value) -> Result<SurfaceElement, String> {
                 .and_then(Value::as_str)
                 .unwrap_or(&id)
                 .to_string();
-            Ok(SurfaceElement::Select { id, label, value, options: parsed })
-        },
+            Ok(SurfaceElement::Select {
+                id,
+                label,
+                value,
+                options: parsed,
+            })
+        }
         "progress" => {
             let value = object
                 .get("value")
@@ -729,8 +797,11 @@ fn parse_surface_element(value: &Value) -> Result<SurfaceElement, String> {
             if label.chars().count() > 120 {
                 return Err("progress.label 超过 120 字符".into());
             }
-            Ok(SurfaceElement::Progress { label: label.to_string(), value: value as f32 })
-        },
+            Ok(SurfaceElement::Progress {
+                label: label.to_string(),
+                value: value as f32,
+            })
+        }
         other => Err(format!("不支持的 UI 元素 type {other:?}")),
     }
 }
@@ -750,7 +821,10 @@ pub fn render_markdown_plain(markdown: &str) -> String {
         }
         let trimmed = line.trim_start();
         let indent = &line[..line.len() - trimmed.len()];
-        if let Some(rest) = trimmed.strip_prefix("- ").or_else(|| trimmed.strip_prefix("* ")) {
+        if let Some(rest) = trimmed
+            .strip_prefix("- ")
+            .or_else(|| trimmed.strip_prefix("* "))
+        {
             out.push_str(indent);
             out.push_str("• ");
             line = rest;
@@ -843,13 +917,11 @@ mod tests {
 
     #[test]
     fn parse_request_notification_response() {
-        match parse_incoming(
-            r#"{"jsonrpc":"2.0","id":1,"method":"context.version","params":{}}"#,
-        ) {
+        match parse_incoming(r#"{"jsonrpc":"2.0","id":1,"method":"context.version","params":{}}"#) {
             Incoming::Request { id, method, .. } => {
                 assert_eq!(id.as_u64(), Some(1));
                 assert_eq!(method, M_CONTEXT_VERSION);
-            },
+            }
             other => panic!("{other:?}"),
         }
         match parse_incoming(r#"{"jsonrpc":"2.0","method":"ui.notify","params":{"text":"hi"}}"#) {
@@ -860,7 +932,7 @@ mod tests {
             Incoming::Response { id, result, .. } => {
                 assert_eq!(id, 7);
                 assert!(result.is_some());
-            },
+            }
             other => panic!("{other:?}"),
         }
     }
@@ -884,7 +956,10 @@ mod tests {
 
     #[test]
     fn result_formatting_handles_ok_and_errors() {
-        assert_eq!(format_command_result(&json!("hello")), (true, "hello".into()));
+        assert_eq!(
+            format_command_result(&json!("hello")),
+            (true, "hello".into())
+        );
         assert_eq!(
             format_command_result(&json!({"ok":false,"message":"nope"})),
             (false, "nope".into())
@@ -936,7 +1011,10 @@ mod tests {
     #[test]
     fn surface_doc_rejects_unknown_or_oversized() {
         assert!(parse_surface_doc(&json!({"elements":[{"type":"html","text":"x"}]})).is_err());
-        assert!(parse_surface_doc(&json!({"elements":[{"type":"input","id":"x"},{"type":"button","id":"x","label":"Y"}]})).is_err());
+        assert!(parse_surface_doc(
+            &json!({"elements":[{"type":"input","id":"x"},{"type":"button","id":"x","label":"Y"}]})
+        )
+        .is_err());
         let too_many: Vec<Value> = (0..MAX_SURFACE_ELEMENTS + 1)
             .map(|_| json!({"type":"text","text":"x"}))
             .collect();
@@ -945,10 +1023,7 @@ mod tests {
             &json!({"elements":[{"type":"select","id":"s","options":["a"],"value":"b"}]})
         )
         .is_err());
-        assert!(parse_surface_doc(
-            &json!({"elements":[{"type":"progress","value":1.5}]})
-        )
-        .is_err());
+        assert!(parse_surface_doc(&json!({"elements":[{"type":"progress","value":1.5}]})).is_err());
     }
 
     #[test]
@@ -984,7 +1059,10 @@ mod tests {
         assert_eq!(parse_window_id(&json!({})).unwrap(), None);
         assert_eq!(parse_window_id(&json!({"window_id": null})).unwrap(), None);
         assert_eq!(parse_window_id(&json!({"window_id": 1})).unwrap(), Some(1));
-        assert_eq!(parse_window_id(&json!({"window_id": 42})).unwrap(), Some(42));
+        assert_eq!(
+            parse_window_id(&json!({"window_id": 42})).unwrap(),
+            Some(42)
+        );
         assert!(parse_window_id(&json!({"window_id": 0})).is_err());
         assert!(parse_window_id(&json!({"window_id": -1})).is_err());
         assert!(parse_window_id(&json!({"window_id": "2"})).is_err());
@@ -1008,5 +1086,4 @@ mod tests {
             None
         );
     }
-
 }

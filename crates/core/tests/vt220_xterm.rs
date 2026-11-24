@@ -28,7 +28,13 @@ fn sim(cols: usize, rows: usize) -> TermSim {
 
 fn line(sim: &mut TermSim, row: usize) -> String {
     let frame = sim.pull();
-    frame.row(row).iter().map(|c| c.char()).collect::<String>().trim_end().to_string()
+    frame
+        .row(row)
+        .iter()
+        .map(|c| c.char())
+        .collect::<String>()
+        .trim_end()
+        .to_string()
 }
 
 fn cursor(sim: &mut TermSim) -> (u16, u16) {
@@ -101,7 +107,11 @@ fn origin_mode_positions_relative_to_scroll_region() {
     s.advance(b"1\r\n2\r\n3\r\n4\r\n5");
     // 滚动区 3..6，DECOM 开启后 CUP 1;1 = 区内第一行（屏幕第 3 行）。
     s.advance(b"\x1b[3;6r\x1b[?6h\x1b[1;1HX");
-    assert_eq!(s.pull().cell(2, 0).char(), 'X', "DECOM 下 CUP 1;1 应落在滚动区顶");
+    assert_eq!(
+        s.pull().cell(2, 0).char(),
+        'X',
+        "DECOM 下 CUP 1;1 应落在滚动区顶"
+    );
     // 关闭 DECOM 后 CUP 1;1 回到屏幕左上。
     s.advance(b"\x1b[?6l\x1b[1;1HY");
     assert_eq!(s.pull().cell(0, 0).char(), 'Y');
@@ -157,7 +167,10 @@ fn capture_reply(tag: &str, count: usize, query: &[u8]) -> Vec<u8> {
             let _ = std::fs::remove_dir_all(&dir);
             return got[..count].to_vec();
         }
-        assert!(start.elapsed() < Duration::from_secs(5), "查询回包超时: {got:?}");
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "查询回包超时: {got:?}"
+        );
         std::thread::sleep(Duration::from_millis(20));
     }
 }

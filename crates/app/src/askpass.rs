@@ -45,7 +45,9 @@ pub const DEBUG_ENV: &str = "XTERVO_ASKPASS_DEBUG";
 
 /// askpass 诊断是否启用（供启动日志提示；不打印路径以外的东西）。
 pub fn debug_enabled() -> bool {
-    std::env::var_os(DEBUG_ENV).map(|v| !v.is_empty()).unwrap_or(false)
+    std::env::var_os(DEBUG_ENV)
+        .map(|v| !v.is_empty())
+        .unwrap_or(false)
 }
 
 /// 一个活着的 askpass 配置。`Drop` 时删除临时目录（脚本）。
@@ -117,7 +119,10 @@ esac
             std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700))?;
         }
         let envs = vec![
-            ("SSH_ASKPASS".to_string(), script.to_string_lossy().into_owned()),
+            (
+                "SSH_ASKPASS".to_string(),
+                script.to_string_lossy().into_owned(),
+            ),
             ("SSH_ASKPASS_REQUIRE".to_string(), "force".to_string()),
             (SECRET_ENV.to_string(), password.to_string()),
         ];
@@ -177,7 +182,10 @@ impl Drop for Askpass {
 impl std::fmt::Debug for Askpass {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // 永不 Debug 出密码。
-        f.debug_struct("Askpass").field("dir", &self.dir).field("envs", &"[redacted]").finish()
+        f.debug_struct("Askpass")
+            .field("dir", &self.dir)
+            .field("envs", &"[redacted]")
+            .finish()
     }
 }
 
@@ -193,7 +201,11 @@ mod tests {
             .env_remove(DEBUG_ENV)
             .output()
             .unwrap();
-        assert!(out.status.success(), "stderr={:?}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "stderr={:?}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         String::from_utf8(out.stdout).unwrap()
     }
 
@@ -273,7 +285,10 @@ mod tests {
             "no\n"
         );
         let log = std::fs::read_to_string(&debug).unwrap();
-        assert!(log.contains("match=password prompt=test@127.0.0.1's password:"), "log={log:?}");
+        assert!(
+            log.contains("match=password prompt=test@127.0.0.1's password:"),
+            "log={log:?}"
+        );
         assert!(log.contains("match=no prompt=Are you sure"), "log={log:?}");
         assert!(!log.contains(password), "诊断文件不能出现密码: {log:?}");
         let _ = std::fs::remove_dir_all(&dir);
@@ -298,12 +313,20 @@ mod tests {
             cmd.env(k, v);
         }
         let out = cmd.output().unwrap();
-        assert!(out.status.success(), "stderr={:?}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "stderr={:?}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         let text = String::from_utf8(out.stdout).unwrap();
         let script_path = script.to_string_lossy().into_owned();
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines, vec![script_path.as_str(), "force", "child-secret"]);
-        assert!(script.is_file(), "SSH_ASKPASS 指向的脚本必须存在: {}", script.display());
+        assert!(
+            script.is_file(),
+            "SSH_ASKPASS 指向的脚本必须存在: {}",
+            script.display()
+        );
         let _ = std::fs::remove_dir_all(ask.dir.clone());
     }
 
@@ -340,8 +363,10 @@ mod tests {
     }
 
     fn test_dir(label: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("xtervo-askpass-test-{}-{label}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "xtervo-askpass-test-{}-{label}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -387,7 +412,10 @@ mod tests {
             ..Profile::default()
         };
         assert!(host_key_known(&base), "known_hosts 命中时应允许 askpass");
-        let unknown = Profile { host: "unknown.invalid".into(), ..base.clone() };
+        let unknown = Profile {
+            host: "unknown.invalid".into(),
+            ..base.clone()
+        };
         assert!(!host_key_known(&unknown), "未确认的主机应回退到终端交互");
         let auto = Profile {
             host: "unknown.invalid".into(),
@@ -399,7 +427,10 @@ mod tests {
             ],
             ..base
         };
-        assert!(host_key_known(&auto), "accept-new 不会弹确认，可直接 askpass");
+        assert!(
+            host_key_known(&auto),
+            "accept-new 不会弹确认，可直接 askpass"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -427,9 +458,15 @@ mod tests {
             ..Profile::default()
         };
         assert!(host_key_known(&matches), "[host]:2222 条目应命中");
-        let wrong_port = Profile { port: 2223, ..matches.clone() };
+        let wrong_port = Profile {
+            port: 2223,
+            ..matches.clone()
+        };
         assert!(!host_key_known(&wrong_port), "端口不同不能误判为已知");
-        let wrong_host = Profile { host: "127.0.0.2".into(), ..matches };
+        let wrong_host = Profile {
+            host: "127.0.0.2".into(),
+            ..matches
+        };
         assert!(!host_key_known(&wrong_host), "主机不同不能误判为已知");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -528,7 +565,11 @@ mod tests {
     fn script_permissions_are_private() {
         use std::os::unix::fs::PermissionsExt;
         let ask = Askpass::new("pw").unwrap();
-        let mode = std::fs::metadata(ask.script_path()).unwrap().permissions().mode() & 0o777;
+        let mode = std::fs::metadata(ask.script_path())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
         assert_eq!(mode, 0o700);
         let dmode = std::fs::metadata(&ask.dir).unwrap().permissions().mode() & 0o777;
         assert_eq!(dmode, 0o700);

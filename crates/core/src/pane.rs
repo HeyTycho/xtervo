@@ -36,14 +36,14 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use alacritty_terminal::event::{Event, EventListener};
+use alacritty_terminal::grid::Scroll;
 use alacritty_terminal::grid::{Dimensions, Grid};
 use alacritty_terminal::index::{Column, Line, Point};
-use alacritty_terminal::grid::Scroll;
 use alacritty_terminal::index::{Direction, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::cell::{Cell, Flags};
-use alacritty_terminal::term::search::{RegexIter, RegexSearch};
 use alacritty_terminal::term::color::COUNT as COLOR_COUNT;
+use alacritty_terminal::term::search::{RegexIter, RegexSearch};
 use alacritty_terminal::term::{Config as TermConfig, Osc52, Term, TermDamage, TermMode};
 use alacritty_terminal::vte::ansi::{ClearMode, Handler, Processor, Rgb};
 use crossbeam_channel::{bounded, Receiver, SendTimeoutError, Sender, TrySendError};
@@ -192,7 +192,11 @@ impl ScrollPosition {
             return None;
         }
         let total = self.total() as f32;
-        let min_thumb = if min_thumb.is_finite() { min_thumb.clamp(0.0, 1.0) } else { 0.0 };
+        let min_thumb = if min_thumb.is_finite() {
+            min_thumb.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
         let height = (self.rows as f32 / total).max(min_thumb).min(1.0);
         let travel = (1.0 - height).max(0.0);
         // offset=history（顶部）→ top=0；offset=0（底部）→ top=travel。
@@ -209,12 +213,18 @@ impl ScrollPosition {
         if self.history == 0 {
             return 0;
         }
-        let Some((_, height)) = self.thumb(min_thumb) else { return 0 };
+        let Some((_, height)) = self.thumb(min_thumb) else {
+            return 0;
+        };
         let travel = (1.0 - height).max(0.0);
         if travel <= f32::EPSILON {
             return 0;
         }
-        let top = if thumb_top.is_finite() { thumb_top.clamp(0.0, travel) } else { 0.0 };
+        let top = if thumb_top.is_finite() {
+            thumb_top.clamp(0.0, travel)
+        } else {
+            0.0
+        };
         let progress = 1.0 - top / travel;
         ((progress * self.history as f32).round() as usize).min(self.history)
     }
@@ -226,10 +236,15 @@ impl ScrollPosition {
         if self.history == 0 {
             return 0;
         }
-        let Some((_, height)) = self.thumb(min_thumb) else { return 0 };
+        let Some((_, height)) = self.thumb(min_thumb) else {
+            return 0;
+        };
         let travel = (1.0 - height).max(0.0);
-        let fraction =
-            if fraction.is_finite() { fraction.clamp(0.0, 1.0) } else { 1.0 };
+        let fraction = if fraction.is_finite() {
+            fraction.clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
         let top = (fraction - height * 0.5).clamp(0.0, travel);
         self.offset_for_thumb_top(top, min_thumb)
     }
@@ -315,7 +330,11 @@ fn write_queue_fits(
 ) -> bool {
     let reserved_bytes = reservations.saturating_mul(MOUSE_RELEASE_RESERVE_BYTES);
     let reserved_chunks = reservations.saturating_mul(MOUSE_RELEASE_RESERVE_CHUNKS);
-    state.bytes.saturating_add(reserved_bytes).saturating_add(bytes) <= WRITE_BACKLOG_BYTES
+    state
+        .bytes
+        .saturating_add(reserved_bytes)
+        .saturating_add(bytes)
+        <= WRITE_BACKLOG_BYTES
         && state
             .queue
             .len()
@@ -384,11 +403,7 @@ impl WriteQueue {
     /// `press_enqueued` 由 actor 按按键记录：press 因队列满被拒后，即使
     /// writer 随后腾出了空间，release 也必须一起丢弃，不能单独进队列
     /// 产生孤立 release。没有对应 press 的 release 同样丢弃。
-    fn push_mouse_release(
-        &self,
-        bytes: Vec<u8>,
-        press_enqueued: bool,
-    ) -> Result<(), PushError> {
+    fn push_mouse_release(&self, bytes: Vec<u8>, press_enqueued: bool) -> Result<(), PushError> {
         let mut state = self.state.lock();
         if state.closed {
             return Err(PushError::Closed);
@@ -448,7 +463,9 @@ impl WriteQueue {
 /// PTY 写 backlog 到上限时的限频计数+日志。
 fn note_write_drop(stats: &PaneStats, bytes: usize) {
     let chunks = stats.write_dropped_chunks.fetch_add(1, Ordering::Relaxed) + 1;
-    stats.write_dropped_bytes.fetch_add(bytes as u64, Ordering::Relaxed);
+    stats
+        .write_dropped_bytes
+        .fetch_add(bytes as u64, Ordering::Relaxed);
     if chunks == 1 || chunks % 64 == 0 {
         eprintln!(
             "[pty] 写 backlog 已满（{} MiB），丢弃 {bytes} bytes（累计 {chunks} 块）；慢 shell 背压"
@@ -504,7 +521,7 @@ impl EventListener for Listener {
                         note_write_drop(&self.stats, len);
                     }
                 }
-            },
+            }
             Event::Exit | Event::ChildExit(_) => self.events.send(CoreEvent::Exited),
             Event::Wakeup => self.wake.notify(),
             // OSC 4/10/11/12 查询：入队等 actor 用 Term 的运行时颜色回包。
@@ -515,8 +532,8 @@ impl EventListener for Listener {
                 if pending.len() < MAX_PENDING_COLOR_REPLIES {
                     pending.push((index, format));
                 }
-            },
-            _ => {},
+            }
+            _ => {}
         }
     }
 }
@@ -585,7 +602,10 @@ impl Default for PaneConfig {
 }
 
 enum Ctrl {
-    Resize { cols: u16, rows: u16 },
+    Resize {
+        cols: u16,
+        rows: u16,
+    },
     SetTheme(Palette),
     Scroll(i32),
     /// 绝对滚动位置（0 = 底部）；滚动条点击/拖拽用。
@@ -601,11 +621,23 @@ enum Ctrl {
     /// 运行时开关 iTerm2 IIP；关闭时清除已有 IIP 图片（不影响 Sixel）。
     SetIip(bool),
     /// 字号变化后更新 cell 像素尺寸（IIP cell 尺寸换算 + 图片可见性判断）。
-    SetCellSize { width: u16, height: u16 },
+    SetCellSize {
+        width: u16,
+        height: u16,
+    },
     /// 按源 ID 取回不可变 RGBA（灯箱与点击命中不依赖可见缓存）。
-    ImageRgba { source_id: u64, reply: Sender<Option<(u32, u32, Arc<[u8]>)>> },
-    SelectionStart { line: u16, col: u16 },
-    SelectionExtend { line: u16, col: u16 },
+    ImageRgba {
+        source_id: u64,
+        reply: Sender<Option<(u32, u32, Arc<[u8]>)>>,
+    },
+    SelectionStart {
+        line: u16,
+        col: u16,
+    },
+    SelectionExtend {
+        line: u16,
+        col: u16,
+    },
     SelectionClear,
     /// 选中当前视口全部内容。
     SelectAll,
@@ -614,7 +646,10 @@ enum Ctrl {
     /// 选中视口内某一行（双击选行）。
     SelectLine(i32),
     /// 选中视口内某格所在的 Unicode 词（双击选词）。
-    SelectWord { line: u16, col: u16 },
+    SelectWord {
+        line: u16,
+        col: u16,
+    },
     /// 清屏并清回滚（终端“Clear”语义）。
     ClearScreen,
     /// 复位终端状态（RIS 语义：模式/光标/字符集/滚动区/标题栈等）。
@@ -687,7 +722,11 @@ fn pump_reader<R: std::io::Read>(
         // PTY：100ms 超时也要检查前台 pgrp。否则短命子进程退出、shell/TUI
         // 没有新输出时，“回到中间层 TUI”的切换会被漏掉，残留键盘 flags。
         if let Some(fd) = fg_fd {
-            let mut pfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+            let mut pfd = libc::pollfd {
+                fd,
+                events: libc::POLLIN,
+                revents: 0,
+            };
             let rc = unsafe { libc::poll(&mut pfd, 1, 100) };
             if rc == 0 {
                 note_foreground_pgrp(fd, &mut last_pgrp, &pty_tx);
@@ -718,7 +757,7 @@ fn pump_reader<R: std::io::Read>(
                 if pty_tx.send((buf[..n].to_vec(), chunk_pgrp)).is_err() {
                     break;
                 }
-            },
+            }
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(_) => break,
         }
@@ -803,7 +842,7 @@ impl PaneHandle {
             Err(PushError::Full) => {
                 note_write_drop(&self.stats, bytes.len());
                 false
-            },
+            }
             Err(PushError::Closed) => false,
         }
     }
@@ -824,7 +863,11 @@ impl PaneHandle {
         match self.ctrl_tx.send_timeout(ctrl, CTRL_SEND_TIMEOUT) {
             Ok(()) => true,
             Err(SendTimeoutError::Timeout(_)) | Err(SendTimeoutError::Disconnected(_)) => {
-                let n = self.stats.ctrl_send_timeouts.fetch_add(1, Ordering::Relaxed) + 1;
+                let n = self
+                    .stats
+                    .ctrl_send_timeouts
+                    .fetch_add(1, Ordering::Relaxed)
+                    + 1;
                 if n == 1 || n % 128 == 0 {
                     eprintln!(
                         "[pty] ctrl 队列投递超时（{}ms，累计 {} 次）；UI 不阻塞",
@@ -833,13 +876,14 @@ impl PaneHandle {
                     );
                 }
                 false
-            },
+            }
         }
     }
 
     /// 切换 Read Only。actor 侧也会检查同一个原子标志，已入队但未写的输入同样丢弃。
     pub fn set_read_only(&self, on: bool) {
-        self.read_only.store(on, std::sync::atomic::Ordering::Relaxed);
+        self.read_only
+            .store(on, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// 当前是否 Read Only（无锁）。
@@ -945,15 +989,18 @@ impl PaneHandle {
     /// `rows` 取 UI 侧已同步的网格行数，`offset/history` 来自同一份打包值，
     /// 不会出现「新 history 配旧 offset」的撕裂。
     pub fn scroll_position(&self) -> ScrollPosition {
-        let (offset, history) = unpack_scroll(self.scroll.load(std::sync::atomic::Ordering::Relaxed));
-        ScrollPosition { offset, history, rows: self.grid.rows }
+        let (offset, history) =
+            unpack_scroll(self.scroll.load(std::sync::atomic::Ordering::Relaxed));
+        ScrollPosition {
+            offset,
+            history,
+            rows: self.grid.rows,
+        }
     }
 
     /// 当前终端模式位（actor 刷新，无阻塞）。
     pub fn mode(&self) -> TermMode {
-        TermMode::from_bits_truncate(
-            self.mode_bits.load(std::sync::atomic::Ordering::Relaxed),
-        )
+        TermMode::from_bits_truncate(self.mode_bits.load(std::sync::atomic::Ordering::Relaxed))
     }
 
     /// 当前终端光标 (行, 列)，不阻塞；actor 刷新。
@@ -1098,10 +1145,15 @@ impl PaneHandle {
         match rx.recv_timeout(CTRL_REPLY_TIMEOUT) {
             Ok(text) => text,
             Err(_) => {
-                self.stats.ctrl_reply_timeouts.fetch_add(1, Ordering::Relaxed);
-                eprintln!("[pty] copy_selection 回复超时（{}ms），本次跳过", CTRL_REPLY_TIMEOUT.as_millis());
+                self.stats
+                    .ctrl_reply_timeouts
+                    .fetch_add(1, Ordering::Relaxed);
+                eprintln!(
+                    "[pty] copy_selection 回复超时（{}ms），本次跳过",
+                    CTRL_REPLY_TIMEOUT.as_millis()
+                );
                 None
-            },
+            }
         }
     }
 
@@ -1109,15 +1161,20 @@ impl PaneHandle {
     /// actor 忙/超时返回 None，不阻塞 UI。
     pub fn image_rgba(&self, source_id: u64) -> Option<(u32, u32, Arc<[u8]>)> {
         let (tx, rx) = bounded(1);
-        if !self.send_ctrl(Ctrl::ImageRgba { source_id, reply: tx }) {
+        if !self.send_ctrl(Ctrl::ImageRgba {
+            source_id,
+            reply: tx,
+        }) {
             return None;
         }
         match rx.recv_timeout(CTRL_REPLY_TIMEOUT) {
             Ok(value) => value,
             Err(_) => {
-                self.stats.ctrl_reply_timeouts.fetch_add(1, Ordering::Relaxed);
+                self.stats
+                    .ctrl_reply_timeouts
+                    .fetch_add(1, Ordering::Relaxed);
                 None
-            },
+            }
         }
     }
 
@@ -1131,7 +1188,9 @@ impl PaneHandle {
     /// 兼容旧调用：纯文本、大小写不敏感；非法正则返回 `Err` 请用
     /// [`Self::search_with`]。
     pub fn search(&self, query: &str, forward: bool) -> Option<SearchHit> {
-        self.search_with(query, forward, SearchOptions::default()).ok().flatten()
+        self.search_with(query, forward, SearchOptions::default())
+            .ok()
+            .flatten()
     }
 
     /// 带选项搜索；非法 regex 返回可展示的错误字符串（不 panic）。
@@ -1153,10 +1212,15 @@ impl PaneHandle {
         match rx.recv_timeout(CTRL_REPLY_TIMEOUT) {
             Ok(result) => result,
             Err(_) => {
-                self.stats.ctrl_reply_timeouts.fetch_add(1, Ordering::Relaxed);
-                eprintln!("[pty] search 回复超时（{}ms），本次无结果", CTRL_REPLY_TIMEOUT.as_millis());
+                self.stats
+                    .ctrl_reply_timeouts
+                    .fetch_add(1, Ordering::Relaxed);
+                eprintln!(
+                    "[pty] search 回复超时（{}ms），本次无结果",
+                    CTRL_REPLY_TIMEOUT.as_millis()
+                );
                 Ok(None)
-            },
+            }
         }
     }
 
@@ -1169,10 +1233,15 @@ impl PaneHandle {
         match rx.recv_timeout(CTRL_REPLY_TIMEOUT) {
             Ok(text) => text,
             Err(_) => {
-                self.stats.ctrl_reply_timeouts.fetch_add(1, Ordering::Relaxed);
-                eprintln!("[pty] contents 回复超时（{}ms），本次跳过", CTRL_REPLY_TIMEOUT.as_millis());
+                self.stats
+                    .ctrl_reply_timeouts
+                    .fetch_add(1, Ordering::Relaxed);
+                eprintln!(
+                    "[pty] contents 回复超时（{}ms），本次跳过",
+                    CTRL_REPLY_TIMEOUT.as_millis()
+                );
                 None
-            },
+            }
         }
     }
 
@@ -1214,15 +1283,19 @@ impl PaneHandle {
                         return filled;
                     }
                     // 上一帧超时后才回来的响应：丢弃，它的 damage 由 force_full 补回。
-                    self.stats.pull_stale_responses.fetch_add(1, Ordering::Relaxed);
-                },
+                    self.stats
+                        .pull_stale_responses
+                        .fetch_add(1, Ordering::Relaxed);
+                }
                 Err(_) => break,
             }
         }
 
         self.pull_needs_full.store(true, Ordering::SeqCst);
         let timeouts = self.stats.pull_timeouts.fetch_add(1, Ordering::Relaxed) + 1;
-        self.stats.pull_skipped_frames.fetch_add(1, Ordering::Relaxed);
+        self.stats
+            .pull_skipped_frames
+            .fetch_add(1, Ordering::Relaxed);
         if timeouts == 1 || timeouts % 128 == 0 {
             eprintln!(
                 "[pty] 拉帧超时 {}ms，跳过本帧（累计 {} 次）；UI 不阻塞",
@@ -1304,7 +1377,7 @@ impl PaneHandle {
             Ok(Some(status)) => {
                 self.exited = true;
                 Some((status.exit_code(), status.signal().map(str::to_string)))
-            },
+            }
             _ => None,
         }
     }
@@ -1361,10 +1434,7 @@ pub fn spawn(config: PaneConfig) -> std::io::Result<PaneHandle> {
 /// 通道，后面的有界队列、[`pump_reader`]、writer backlog 与 actor 完全共用。
 /// EOF 统一由 [`pump_reader`] 发 `Ctrl::PtyClosed`；插件通道没有子进程，
 /// [`PaneHandle::try_exit_code`] 返回 `None`（退出状态由连接插件自己上报）。
-pub fn spawn_with_transport(
-    config: PaneConfig,
-    backend: Backend,
-) -> std::io::Result<PaneHandle> {
+pub fn spawn_with_transport(config: PaneConfig, backend: Backend) -> std::io::Result<PaneHandle> {
     let size = GridSize::new(config.cols as usize, config.rows as usize);
 
     // 读端/写端/控制半边在两种后端下类型一致，后面的通道与 actor 代码完全共用。
@@ -1373,8 +1443,14 @@ pub fn spawn_with_transport(
     let (reader, mut writer, child, control, transport_shutdown) = match backend {
         Backend::Pty => {
             let (reader, writer, child, master) = spawn_pty_io(&config)?;
-            (reader, writer, Some(child), BackendControl::Pty { master }, None)
-        },
+            (
+                reader,
+                writer,
+                Some(child),
+                BackendControl::Pty { master },
+                None,
+            )
+        }
         Backend::Plugin(transport) => {
             let halves = transport.into_halves()?;
             (
@@ -1384,7 +1460,7 @@ pub fn spawn_with_transport(
                 BackendControl::Plugin(halves.control),
                 Some(halves.shutdown),
             )
-        },
+        }
     };
 
     // PTY 直接子进程是 session leader，其 pid 即 shell 的进程组 id；
@@ -1445,7 +1521,7 @@ pub fn spawn_with_transport(
                 unsafe { libc::close(fd) };
             }
             return Err(error);
-        },
+        }
     };
 
     // ---- 写线程：PTY master writer 或插件 transport 写半边 ----
@@ -1644,7 +1720,11 @@ fn spawn_pty_io(
 /// - `match_case` 用内联组强制（alacritty 默认按“是否含大写”启发式决定，
 ///   不能表达用户显式开关，所以这里始终写 `(?i:...)` / `(?-i:...)`）。
 fn search_pattern(query: &str, options: SearchOptions) -> String {
-    let body = if options.regex { query.to_string() } else { regex_escape(query) };
+    let body = if options.regex {
+        query.to_string()
+    } else {
+        regex_escape(query)
+    };
     if options.match_case {
         format!("(?-i:{body})")
     } else {
@@ -1798,7 +1878,7 @@ impl BackendControl {
                     pixel_width: cols.saturating_mul(cell_width.max(1)),
                     pixel_height: rows.saturating_mul(cell_height.max(1)),
                 });
-            },
+            }
             Self::Plugin(control) => control.resize(cols, rows),
         }
     }
@@ -2096,7 +2176,7 @@ impl ColorQueryScanner {
                     } else {
                         ColorQueryScan::Ground
                     }
-                },
+                }
                 ColorQueryScan::Escape => {
                     if b == b']' {
                         self.code.clear();
@@ -2108,7 +2188,7 @@ impl ColorQueryScanner {
                     } else {
                         ColorQueryScan::Ground
                     }
-                },
+                }
                 ColorQueryScan::Code => {
                     if b == b';' {
                         let palette = !self.code_unknown
@@ -2131,7 +2211,7 @@ impl ColorQueryScanner {
                         self.code_unknown = true;
                         ColorQueryScan::Code
                     }
-                },
+                }
                 ColorQueryScan::CodeEscape => {
                     if b == b'\\' || b == 0x9c {
                         ColorQueryScan::Ground
@@ -2141,17 +2221,17 @@ impl ColorQueryScanner {
                         // 命令码里出现 ESC 内容：不是合法的调色板查询。
                         ColorQueryScan::Other
                     }
-                },
+                }
                 ColorQueryScan::Palette => match b {
                     0x07 => {
                         ends.push(i + 1);
                         ColorQueryScan::Ground
-                    },
+                    }
                     0x1b => ColorQueryScan::PaletteEscape,
                     0x9c => {
                         ends.push(i + 1);
                         ColorQueryScan::Ground
-                    },
+                    }
                     0x18 | 0x1a => ColorQueryScan::Ground,
                     _ => ColorQueryScan::Palette,
                 },
@@ -2170,7 +2250,7 @@ impl ColorQueryScanner {
                     } else {
                         ColorQueryScan::Palette
                     }
-                },
+                }
                 ColorQueryScan::Other => match b {
                     0x07 | 0x9c | 0x18 | 0x1a => ColorQueryScan::Ground,
                     0x1b => ColorQueryScan::OtherEscape,
@@ -2186,7 +2266,7 @@ impl ColorQueryScanner {
                     } else {
                         ColorQueryScan::Other
                     }
-                },
+                }
             };
         }
         ends
@@ -2310,7 +2390,11 @@ impl ImageStore {
         if self.bytes.saturating_add(bytes) > MAX_STORED_IMAGE_BYTES {
             return;
         }
-        let col = if cols == 0 { 0 } else { (cursor.column.0).min(cols - 1) as u16 };
+        let col = if cols == 0 {
+            0
+        } else {
+            (cursor.column.0).min(cols - 1) as u16
+        };
         let fixed_row = if scrolling {
             None
         } else {
@@ -2664,8 +2748,7 @@ impl KittyStore {
 
         if place.placement_id != 0 {
             self.placements.retain(|placement| {
-                !(placement.image_id == place.image_id
-                    && placement.client_id == place.placement_id)
+                !(placement.image_id == place.image_id && placement.client_id == place.placement_id)
             });
         }
 
@@ -2779,7 +2862,12 @@ impl KittyStore {
                 kept.push(placement);
                 continue;
             }
-            visible.push((placement, resource.data.clone(), resource.width, resource.height));
+            visible.push((
+                placement,
+                resource.data.clone(),
+                resource.width,
+                resource.height,
+            ));
         }
 
         visible.sort_by(|a, b| {
@@ -2840,7 +2928,7 @@ impl KittyStore {
                     self.resources.clear();
                     self.bytes = 0;
                 }
-            },
+            }
             DeleteTarget::Image {
                 image_id,
                 placement_id,
@@ -2859,7 +2947,7 @@ impl KittyStore {
                     {
                         removed.push(image_id);
                     }
-                },
+                }
                 None => {
                     if free_data {
                         if self.remove_image(image_id).is_some() {
@@ -2869,11 +2957,11 @@ impl KittyStore {
                         self.placements
                             .retain(|placement| placement.image_id != image_id);
                     }
-                },
+                }
             },
             DeleteTarget::NewestImage { .. } => {
                 // 解析器保留 I/n 语法，但本 slice 不维护 image-number 索引。
-            },
+            }
             DeleteTarget::Cursor { .. } => {
                 self.placements.retain(|placement| {
                     !(placement.row_id == ctx.cursor_row_id
@@ -2882,7 +2970,7 @@ impl KittyStore {
                 if free_data {
                     removed.extend(self.remove_unreferenced());
                 }
-            },
+            }
             DeleteTarget::Cell {
                 x,
                 y,
@@ -2908,7 +2996,7 @@ impl KittyStore {
                 if free_data {
                     removed.extend(self.remove_unreferenced());
                 }
-            },
+            }
             DeleteTarget::Column { x, .. } => {
                 let col = x.saturating_sub(1);
                 self.placements
@@ -2916,7 +3004,7 @@ impl KittyStore {
                 if free_data {
                     removed.extend(self.remove_unreferenced());
                 }
-            },
+            }
             DeleteTarget::Row { y, .. } => {
                 if let Some(row_id) = y
                     .checked_sub(1)
@@ -2929,14 +3017,14 @@ impl KittyStore {
                 if free_data {
                     removed.extend(self.remove_unreferenced());
                 }
-            },
+            }
             DeleteTarget::ZIndex { z_index, .. } => {
                 self.placements
                     .retain(|placement| placement.z_index != z_index);
                 if free_data {
                     removed.extend(self.remove_unreferenced());
                 }
-            },
+            }
             DeleteTarget::ImageRange {
                 min_image_id,
                 max_image_id,
@@ -2956,11 +3044,10 @@ impl KittyStore {
                     }
                 } else {
                     self.placements.retain(|placement| {
-                        placement.image_id < min_image_id
-                            || placement.image_id > max_image_id
+                        placement.image_id < min_image_id || placement.image_id > max_image_id
                     });
                 }
-            },
+            }
         }
         removed
     }
@@ -3177,8 +3264,9 @@ impl Actor {
             }
         } else if ev.action == MouseAction::Release {
             let press_enqueued = self.mouse_presses[slot].take().unwrap_or(false);
-            if let Err(PushError::Full) =
-                self.write_queue.push_mouse_release(bytes.to_vec(), press_enqueued)
+            if let Err(PushError::Full) = self
+                .write_queue
+                .push_mouse_release(bytes.to_vec(), press_enqueued)
             {
                 note_write_drop(&self.stats, bytes.len());
             }
@@ -3193,8 +3281,7 @@ impl Actor {
         if ev.expects_release() {
             // press 没有进入写队列；它的 release 之后也必须丢弃。
             self.mouse_presses[slot] = Some(false);
-        } else if ev.action == MouseAction::Release
-            && self.mouse_presses[slot].take() == Some(true)
+        } else if ev.action == MouseAction::Release && self.mouse_presses[slot].take() == Some(true)
         {
             self.write_queue.cancel_mouse_release_reservation();
         }
@@ -3220,13 +3307,13 @@ impl Actor {
                         self.keyboard_owner_pgid = self.current_pgid;
                     }
                     self.keyboard_flags.store(flags, Ordering::Relaxed);
-                },
+                }
                 KeyboardAction::SetModifyOtherKeys(level) => {
                     if level != 0 {
                         self.keyboard_owner_pgid = self.current_pgid;
                     }
                     self.modify_other_keys.store(level, Ordering::Relaxed);
-                },
+                }
                 KeyboardAction::Reply(reply) => self.write_input(&reply),
             }
         }
@@ -3260,15 +3347,20 @@ impl Actor {
         let start = Instant::now();
         let result = catch_unwind(AssertUnwindSafe(|| filter.0.filter(bytes)));
         self.stats.filter_calls.fetch_add(1, Relaxed);
-        self.stats.filter_input_bytes.fetch_add(bytes.len() as u64, Relaxed);
         self.stats
-            .filter_nanos
-            .fetch_add(start.elapsed().as_nanos().min(u64::MAX as u128) as u64, Relaxed);
+            .filter_input_bytes
+            .fetch_add(bytes.len() as u64, Relaxed);
+        self.stats.filter_nanos.fetch_add(
+            start.elapsed().as_nanos().min(u64::MAX as u128) as u64,
+            Relaxed,
+        );
         match result {
             Ok(Some(output)) if output.len() <= MAX_OUTPUT_FILTER_BYTES => {
-                self.stats.filter_output_bytes.fetch_add(output.len() as u64, Relaxed);
+                self.stats
+                    .filter_output_bytes
+                    .fetch_add(output.len() as u64, Relaxed);
                 self.feed_filtered(&output)
-            },
+            }
             Ok(Some(output)) => {
                 self.stats.filter_oversize.fetch_add(1, Relaxed);
                 self.stats.filter_fallbacks.fetch_add(1, Relaxed);
@@ -3279,17 +3371,20 @@ impl Actor {
                     bytes.len()
                 );
                 self.feed_filtered(bytes)
-            },
+            }
             Ok(None) => {
                 self.stats.filter_fallbacks.fetch_add(1, Relaxed);
                 self.feed_filtered(bytes)
-            },
+            }
             Err(_) => {
                 self.stats.filter_panics.fetch_add(1, Relaxed);
                 self.stats.filter_fallbacks.fetch_add(1, Relaxed);
-                eprintln!("[output-filter] 过滤器 panic，原样放行 {} bytes", bytes.len());
+                eprintln!(
+                    "[output-filter] 过滤器 panic，原样放行 {} bytes",
+                    bytes.len()
+                );
                 self.feed_filtered(bytes)
-            },
+            }
         }
     }
 
@@ -3320,14 +3415,14 @@ impl Actor {
                         let (chunk_changed, chunk_parsed) = self.feed_iip(&chunk, decode_iip);
                         changed |= chunk_changed;
                         parsed += chunk_parsed;
-                    },
+                    }
                     SixelEvent::Image(image) => {
                         self.add_sixel_image(image);
                         // 图片把字节流分成两段，清屏序列不可能跨过它。
                         self.image_clear.tail.clear();
                         self.image_clear_split.tail.clear();
                         changed = true;
-                    },
+                    }
                 }
             }
         } else {
@@ -3379,19 +3474,19 @@ impl Actor {
                     let (chunk_changed, chunk_parsed) = self.process_vte_chunk(&chunk);
                     changed |= chunk_changed;
                     parsed += chunk_parsed;
-                },
+                }
                 IipEvent::Image(image) => {
                     self.add_iip_image(image);
                     // 图片把字节流分成两段，清屏序列不可能跨过它。
                     self.image_clear.tail.clear();
                     self.image_clear_split.tail.clear();
                     changed = true;
-                },
+                }
                 IipEvent::Ignored(notice) => {
                     // 非内联图（inline 缺省/0）：序列已吞掉，不产生帧变化；
                     // 只上报语义事件，UI 负责日志/状态提示且可自行限流。
                     self.events.send(CoreEvent::IipIgnored(notice));
-                },
+                }
             }
         }
         (changed, parsed)
@@ -3416,11 +3511,7 @@ impl Actor {
                 if j < buf.len() && buf[j] == b't' {
                     let param = std::str::from_utf8(&buf[i + 2..j]).unwrap_or("");
                     let (code, reply_h, reply_w) = match param {
-                        "16" => (
-                            6,
-                            self.cell_height.max(1),
-                            self.cell_width.max(1),
-                        ),
+                        "16" => (6, self.cell_height.max(1), self.cell_width.max(1)),
                         "14" => (
                             4,
                             self.size
@@ -3485,8 +3576,7 @@ impl Actor {
             if cut <= start || cut > chunk.len() {
                 continue;
             }
-            let (piece_changed, piece_parsed) =
-                self.process_kitty_segment(&chunk[start..cut]);
+            let (piece_changed, piece_parsed) = self.process_kitty_segment(&chunk[start..cut]);
             changed |= piece_changed;
             parsed += piece_parsed;
             start = cut;
@@ -3516,13 +3606,13 @@ impl Actor {
                     changed = true;
                     parsed += bytes.len();
                     self.process_vte_bytes(&bytes);
-                },
+                }
                 KittyEvent::Command(command) => {
                     changed |= self.handle_kitty_command(command);
-                },
+                }
                 KittyEvent::Error(error) => {
                     self.handle_kitty_error(error);
-                },
+                }
             }
         }
         (changed, parsed)
@@ -3584,11 +3674,7 @@ impl Actor {
             let grid = self.term.grid();
             let off = grid.display_offset() as i64;
             for erase in samples.into_iter().rev() {
-                let (start, end) = ech_erase_range(
-                    cursor.column.0,
-                    erase,
-                    self.term.columns(),
-                );
+                let (start, end) = ech_erase_range(cursor.column.0, erase, self.term.columns());
                 if start >= end {
                     continue;
                 }
@@ -3665,7 +3751,7 @@ impl Actor {
             KittyCommand::Response(bytes) => {
                 self.write_input(&bytes);
                 false
-            },
+            }
             KittyCommand::Transmit(transmit) => {
                 let image_id = transmit.image.id;
                 let (evicted, stored) = self.kitty_store.insert(transmit);
@@ -3679,7 +3765,7 @@ impl Actor {
                     log::debug!("kitty: image {image_id} rejected by image budget");
                 }
                 stored
-            },
+            }
             KittyCommand::Place(place) => self.handle_kitty_place(place),
             KittyCommand::Delete(delete) => self.handle_kitty_delete(delete),
         }
@@ -3690,11 +3776,7 @@ impl Actor {
         let (cursor, row_id, cols) = {
             let grid = self.term.grid();
             let cursor = grid.cursor.point;
-            (
-                cursor,
-                grid.row_id(cursor.line),
-                self.term.columns(),
-            )
+            (cursor, grid.row_id(cursor.line), self.term.columns())
         };
         let Some((cells_w, cells_h)) = self.kitty_store.place(
             place,
@@ -3851,7 +3933,11 @@ impl Actor {
                     text.push(*ch);
                 }
             }
-            let width = if cell.flags.contains(Flags::WIDE_CHAR) { 2 } else { 1 };
+            let width = if cell.flags.contains(Flags::WIDE_CHAR) {
+                2
+            } else {
+                1
+            };
             spans.push((byte, c, width));
         }
         let hit = spans
@@ -3860,14 +3946,14 @@ impl Actor {
         let byte_hit = spans[hit].0;
 
         let mut seg_start = 0;
-        let (seg_start, seg_end, seg_text) = text
-            .split_word_bounds()
-            .find_map(|part| {
-                let start = seg_start;
-                let end = start + part.len();
-                seg_start = end;
-                (start..end).contains(&byte_hit).then_some((start, end, part))
-            })?;
+        let (seg_start, seg_end, seg_text) = text.split_word_bounds().find_map(|part| {
+            let start = seg_start;
+            let end = start + part.len();
+            seg_start = end;
+            (start..end)
+                .contains(&byte_hit)
+                .then_some((start, end, part))
+        })?;
         if seg_text.chars().all(char::is_whitespace) {
             return None;
         }
@@ -3902,9 +3988,13 @@ impl Actor {
                 self.search_span = None;
                 self.wake.notify();
                 return Err(format!("invalid regex: {e}"));
-            },
+            }
         };
-        let direction = if forward { Direction::Right } else { Direction::Left };
+        let direction = if forward {
+            Direction::Right
+        } else {
+            Direction::Left
+        };
         let offset = self.term.grid().display_offset() as i32;
         let origin = match self.search_span {
             Some(span) => {
@@ -3920,12 +4010,13 @@ impl Actor {
                     )
                 };
                 step_search_point(&self.term, point, forward)
-            },
+            }
             None => self.term.grid().cursor.point,
         };
 
-        let Some(found) =
-            self.term.search_next(&mut regex, origin, direction, Side::Left, None)
+        let Some(found) = self
+            .term
+            .search_next(&mut regex, origin, direction, Side::Left, None)
         else {
             return Ok(None);
         };
@@ -4047,14 +4138,16 @@ impl Actor {
                             // UI 拉帧超时后旧响应还占着容量 1；丢弃旧帧，保留最新帧。
                             frame = returned.1;
                             let _ = self.pull_rx.try_recv();
-                            self.stats.pull_stale_responses.fetch_add(1, Ordering::Relaxed);
-                        },
+                            self.stats
+                                .pull_stale_responses
+                                .fetch_add(1, Ordering::Relaxed);
+                        }
                         // UI 已退出：没人收帧，直接丢弃，绝不在 actor 里阻塞。
                         Err(TrySendError::Disconnected(_)) => break,
                     }
                 }
                 true
-            },
+            }
             Ctrl::Scroll(lines) => {
                 if lines != 0 {
                     // 不能把 UI 传来的任意 i32 直接交给 `Grid::scroll_display`：
@@ -4072,7 +4165,7 @@ impl Actor {
                     }
                 }
                 true
-            },
+            }
             Ctrl::ScrollTo(offset) => {
                 let current = self.term.grid().display_offset() as i64;
                 let target = offset.min(self.term.grid().history_size()) as i64;
@@ -4082,11 +4175,11 @@ impl Actor {
                     self.wake.notify();
                 }
                 true
-            },
+            }
             Ctrl::SetScrollOnOutput(enabled) => {
                 self.scroll_on_output = enabled;
                 true
-            },
+            }
             Ctrl::SetSixel(enabled) => {
                 self.sixel_enabled.store(enabled, Ordering::Relaxed);
                 if !enabled {
@@ -4095,7 +4188,7 @@ impl Actor {
                 }
                 self.wake.notify();
                 true
-            },
+            }
             Ctrl::SetSixelScrolling(scrolling) => {
                 self.sixel_scrolling = scrolling;
                 let grid = self.term.grid();
@@ -4103,7 +4196,7 @@ impl Actor {
                 self.images.set_scrolling(scrolling, grid, offset);
                 self.wake.notify();
                 true
-            },
+            }
             Ctrl::SetScrollback(lines) => {
                 let lines = lines.clamp(1, 1_000_000);
                 if self.term_config.scrolling_history != lines {
@@ -4114,7 +4207,7 @@ impl Actor {
                     self.wake.notify();
                 }
                 true
-            },
+            }
             Ctrl::SetIip(enabled) => {
                 self.iip_enabled.store(enabled, Ordering::Relaxed);
                 if !enabled {
@@ -4123,7 +4216,7 @@ impl Actor {
                 }
                 self.wake.notify();
                 true
-            },
+            }
             Ctrl::SetCellSize { width, height } => {
                 self.cell_width = width.max(1);
                 self.cell_height = height.max(1);
@@ -4131,14 +4224,15 @@ impl Actor {
                     .retune_cells(self.cell_width, self.cell_height);
                 self.iip.set_cell_size(width, height);
                 true
-            },
+            }
             Ctrl::SelectionStart { line, col } => {
                 let point = self.viewport_point(line, col);
                 self.sel_anchor = Some(point);
-                self.term.selection = Some(Selection::new(SelectionType::Simple, point, Side::Left));
+                self.term.selection =
+                    Some(Selection::new(SelectionType::Simple, point, Side::Left));
                 self.wake.notify();
                 true
-            },
+            }
             Ctrl::SelectionExtend { line, col } => {
                 let point = self.viewport_point(line, col);
                 let anchor = *self.sel_anchor.get_or_insert(point);
@@ -4146,8 +4240,11 @@ impl Actor {
                 // 谁先谁后由坐标决定。alacritty 的 to_range 在「起点是 Right / 终点是 Left」时
                 // 会把两端各内缩一格——若按拖动方向固定传 Right，反向拖选会同时丢掉行首和锚点格，
                 // 最左边的字母就永远选不上。
-                let (start, end) =
-                    if point <= anchor { (point, anchor) } else { (anchor, point) };
+                let (start, end) = if point <= anchor {
+                    (point, anchor)
+                } else {
+                    (anchor, point)
+                };
                 let mut sel = Selection::new(SelectionType::Simple, start, Side::Left);
                 if start != end {
                     sel.update(end, Side::Right);
@@ -4155,7 +4252,7 @@ impl Actor {
                 self.term.selection = Some(sel);
                 self.wake.notify();
                 true
-            },
+            }
             Ctrl::SelectionClear => {
                 self.sel_anchor = None;
                 if self.term.selection.is_some() {
@@ -4163,7 +4260,7 @@ impl Actor {
                     self.wake.notify();
                 }
                 true
-            },
+            }
             Ctrl::Mouse(ev) => {
                 // 门禁在 actor 里：UI 可能因为模式刚变化而多转发一次，
                 // 这里以解析器最新的模式为准，未启用则静默丢弃（不写 PTY）。
@@ -4175,7 +4272,7 @@ impl Actor {
                     self.note_mouse_skipped(ev);
                 }
                 true
-            },
+            }
             Ctrl::SelectLine(line) => {
                 let rows = self.term.screen_lines();
                 let cols = self.term.columns();
@@ -4206,7 +4303,7 @@ impl Actor {
                 self.force_full = true;
                 self.wake.notify();
                 true
-            },
+            }
             Ctrl::SelectWord { line, col } => {
                 let point = self.viewport_point(line, col);
                 match self.word_range(point) {
@@ -4216,24 +4313,24 @@ impl Actor {
                         sel.update(end, Side::Right);
                         self.term.selection = Some(sel);
                         self.sel_anchor = Some(start);
-                    },
+                    }
                     // 双击空白 = 取消选区，避免旧高亮留在屏幕上。
                     None => {
                         self.term.selection = None;
                         self.sel_anchor = None;
-                    },
+                    }
                 }
                 // 选区高亮要立刻重绘
                 self.force_full = true;
                 self.wake.notify();
                 true
-            },
+            }
             Ctrl::ClearSelection => {
                 self.term.selection = None;
                 self.force_full = true;
                 self.wake.notify();
                 true
-            },
+            }
             Ctrl::SelectAll => {
                 let rows = self.term.screen_lines();
                 let cols = self.term.columns();
@@ -4253,7 +4350,7 @@ impl Actor {
                 self.force_full = true;
                 self.wake.notify();
                 true
-            },
+            }
             Ctrl::ClearScreen => {
                 // All = 清屏，Saved = 清回滚；两刀下去等价于终端里的 Clear
                 self.term.clear_screen(ClearMode::All);
@@ -4265,15 +4362,15 @@ impl Actor {
                 self.force_full = true;
                 self.wake.notify();
                 true
-            },
+            }
             Ctrl::Reset => {
                 self.reset(false);
                 true
-            },
+            }
             Ctrl::ResetAndClear => {
                 self.reset(true);
                 true
-            },
+            }
             Ctrl::ImageRgba { source_id, reply } => {
                 let value = self
                     .images
@@ -4284,42 +4381,48 @@ impl Actor {
                     .or_else(|| self.kitty_store.resource_by_source(source_id));
                 let _ = reply.send(value);
                 true
-            },
+            }
             Ctrl::CopySelection(reply) => {
                 let text = self.term.selection_to_string().filter(|s| !s.is_empty());
                 let _ = reply.send(text);
                 true
-            },
+            }
             Ctrl::SearchClear => {
                 self.search_span = None;
                 self.wake.notify();
                 true
-            },
-            Ctrl::Search { query, forward, options, reply } => {
+            }
+            Ctrl::Search {
+                query,
+                forward,
+                options,
+                reply,
+            } => {
                 let hit = self.search(&query, forward, options);
                 let _ = reply.send(hit);
                 true
-            },
+            }
             Ctrl::Contents(reply) => {
                 let _ = reply.send(Some(self.contents()));
                 true
-            },
+            }
             Ctrl::SetTheme(palette) => {
                 *self.palette.write() = palette;
                 self.force_full = true;
                 self.wake.notify();
                 true
-            },
+            }
             Ctrl::Resize { cols, rows } => {
                 self.size = GridSize::new(cols as usize, rows as usize);
                 self.term.resize(self.size);
                 self.kitty_store
                     .retune_cells(self.cell_width, self.cell_height);
                 self.store_grid_lines();
-                self.control.resize(cols, rows, self.cell_width, self.cell_height);
+                self.control
+                    .resize(cols, rows, self.cell_width, self.cell_height);
                 self.wake.notify();
                 true
-            },
+            }
             Ctrl::PtyClosed => {
                 // 关键：EOF 之后 PTY 队列里可能还压着若干块数据，必须排空再收尾。
                 while let Ok((bytes, chunk_pgid)) = self.pty_rx.try_recv() {
@@ -4332,7 +4435,7 @@ impl Actor {
                 self.pty_closed = true;
                 self.events.send(CoreEvent::Exited);
                 true
-            },
+            }
             Ctrl::Shutdown => false,
         }
     }
@@ -4355,7 +4458,9 @@ impl Actor {
         let nanos = start.elapsed().as_nanos() as u64;
         self.stats.pulls.fetch_add(1, Relaxed);
         self.stats.fill_nanos.fetch_add(nanos, Relaxed);
-        self.stats.cells_copied.fetch_add(frame.copied_cells as u64, Relaxed);
+        self.stats
+            .cells_copied
+            .fetch_add(frame.copied_cells as u64, Relaxed);
     }
 
     /// 按当前滚动位置把图片锚点展开成视口行，写进帧。
@@ -4474,9 +4579,8 @@ pub fn fill_frame<T: EventListener>(
             let mut p = palette.clone();
             for i in 0..COLOR_COUNT {
                 if let Some(rgb) = colors[i] {
-                    let packed = (u32::from(rgb.r) << 16)
-                        | (u32::from(rgb.g) << 8)
-                        | u32::from(rgb.b);
+                    let packed =
+                        (u32::from(rgb.r) << 16) | (u32::from(rgb.g) << 8) | u32::from(rgb.b);
                     p.set_rgb(i, packed);
                 }
             }
@@ -4509,7 +4613,7 @@ pub fn fill_frame<T: EventListener>(
                             }
                         }
                     }
-                },
+                }
             }
         }
         term.reset_damage();
@@ -4640,12 +4744,7 @@ pub fn fill_frame<T: EventListener>(
                 }
             }
             for (row, changed) in reconciled_rows.into_iter().enumerate() {
-                if changed
-                    && !frame
-                        .damage
-                        .iter()
-                        .any(|d| d.line as usize == row)
-                {
+                if changed && !frame.damage.iter().any(|d| d.line as usize == row) {
                     frame.damage.push(LineDamage {
                         line: row as u16,
                         left: 0,
@@ -4720,7 +4819,9 @@ mod tests {
         drop(writer);
         handle.join().unwrap();
         assert!(matches!(
-            ctrl_rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap(),
+            ctrl_rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .unwrap(),
             Ctrl::PtyClosed
         ));
     }
@@ -4728,14 +4829,21 @@ mod tests {
     use super::*;
 
     fn test_image(w: u32, h: u32) -> SixelImage {
-        SixelImage { width: w, height: h, rgba: vec![255; w as usize * h as usize * 4] }
+        SixelImage {
+            width: w,
+            height: h,
+            rgba: vec![255; w as usize * h as usize * 4],
+        }
     }
 
     /// 5 行视口的测试终端；scrollback 可配置。
     fn test_term(rows: usize, scrollback: usize) -> Term<alacritty_terminal::event::VoidListener> {
         use alacritty_terminal::event::VoidListener;
         let size = GridSize::new(80, rows);
-        let config = TermConfig { scrolling_history: scrollback, ..TermConfig::default() };
+        let config = TermConfig {
+            scrolling_history: scrollback,
+            ..TermConfig::default()
+        };
         Term::new(config, &size, VoidListener)
     }
 
@@ -4763,9 +4871,16 @@ mod tests {
             }
         }
         fill_frame(&mut term, &mut frame, &palette, false, None, false);
-        assert_eq!(frame.cell(0, 0).ch, 'x' as u32, "漏标行必须通过对账补进 Frame");
+        assert_eq!(
+            frame.cell(0, 0).ch,
+            'x' as u32,
+            "漏标行必须通过对账补进 Frame"
+        );
         assert_eq!(frame.cell(0, 1).ch, 'y' as u32, "漏标行第二格也必须补");
-        assert!(frame.damage.iter().any(|d| d.line == 0), "补行必须带 damage");
+        assert!(
+            frame.damage.iter().any(|d| d.line == 0),
+            "补行必须带 damage"
+        );
     }
 
     #[test]
@@ -4785,10 +4900,13 @@ mod tests {
                         bounds = Some((d.left, d.right));
                     }
                 }
-            },
+            }
         }
         let (left, right) = bounds.expect("line 0 must be damaged");
-        assert!(left <= 0 && right >= 1, "writes at cols 0..=1 must expand damage: {left}..={right}");
+        assert!(
+            left <= 0 && right >= 1,
+            "writes at cols 0..=1 must expand damage: {left}..={right}"
+        );
     }
 
     #[test]
@@ -4832,7 +4950,10 @@ mod tests {
             "重写后不能残留上一帧的组合字符: {:?}",
             frame.zerowidth_at(0, 0)
         );
-        assert!(frame.damage.iter().any(|d| d.line == 0), "重写行必须标 damage");
+        assert!(
+            frame.damage.iter().any(|d| d.line == 0),
+            "重写行必须标 damage"
+        );
     }
 
     /// 直接在 Frame 上模拟“上一帧有组合字符、本帧网格里没有”的旁路变化，
@@ -4853,7 +4974,10 @@ mod tests {
             frame.zerowidth_at(0, 0).is_empty(),
             "对账必须清掉 Term 里不存在的组合字符"
         );
-        assert!(frame.damage.iter().any(|d| d.line == 0), "补写行必须标 damage");
+        assert!(
+            frame.damage.iter().any(|d| d.line == 0),
+            "补写行必须标 damage"
+        );
     }
 
     #[test]
@@ -4861,7 +4985,10 @@ mod tests {
         let mut scanner = ImageClearScanner::default();
         assert!(!scanner.feed(b"\x1b["));
         assert!(scanner.feed(b"2J"), "跨 chunk 的 2J 必须命中一次");
-        assert!(!scanner.feed(b"plain text"), "已处理的 2J 不能在下一块再次命中");
+        assert!(
+            !scanner.feed(b"plain text"),
+            "已处理的 2J 不能在下一块再次命中"
+        );
         assert!(scanner.feed(b"\x1b[3J"), "新的 3J 仍必须命中");
 
         // ECH 也只在结束于新字节时记录，避免 tail 重复擦除。
@@ -4899,10 +5026,7 @@ mod tests {
         assert!(scanner.feed(b"\x1b]4;1;?").is_empty());
         assert_eq!(scanner.feed(b"\x07rest"), vec![1]);
         // BEL 与 ST 终止都识别。
-        assert_eq!(
-            scanner.feed(b"\x1b]10;?\x1b\\\x1b]11;?\x07"),
-            vec![8, 15]
-        );
+        assert_eq!(scanner.feed(b"\x1b]10;?\x1b\\\x1b]11;?\x07"), vec![8, 15]);
         // OSC 104/110 复位、OSC 52 不是调色板查询，不切分。
         assert!(scanner
             .feed(b"\x1b]104;1\x07\x1b]110\x07\x1b]52;c;SGVsbG8=\x07")
@@ -4968,12 +5092,19 @@ mod tests {
         // CSI 1J：光标移到第 5 行后清上方，被清的 Row 会拿到全新 RowId。
         let mut processor: Processor = Processor::new();
         processor.advance(&mut term, b"\x1b[5;1H\x1b[1J");
-        assert_eq!(term.grid().find_row_id(row_id), None, "reset 后旧 RowId 必须消失");
+        assert_eq!(
+            term.grid().find_row_id(row_id),
+            None,
+            "reset 后旧 RowId 必须消失"
+        );
 
         let mut out = Vec::new();
         store.place(term.grid(), 0, 5, 80, 16, &mut out);
         assert!(out.is_empty());
-        assert!(store.images.is_empty(), "RowId 消失的 placement 必须显式 drop");
+        assert!(
+            store.images.is_empty(),
+            "RowId 消失的 placement 必须显式 drop"
+        );
         assert_eq!(store.bytes, 0);
     }
 
@@ -5235,30 +5366,49 @@ mod tests {
 
     #[test]
     fn scroll_position_requires_history() {
-        let none = ScrollPosition { offset: 0, history: 0, rows: 24 };
+        let none = ScrollPosition {
+            offset: 0,
+            history: 0,
+            rows: 24,
+        };
         assert!(!none.scrollable());
         assert_eq!(none.thumb(0.1), None);
         assert_eq!(none.total(), 24);
         assert_eq!(none.offset_for_track_fraction(0.5, 0.1), 0);
 
-        let empty_view = ScrollPosition { offset: 0, history: 100, rows: 0 };
+        let empty_view = ScrollPosition {
+            offset: 0,
+            history: 100,
+            rows: 0,
+        };
         assert!(!empty_view.scrollable());
         assert_eq!(empty_view.thumb(0.1), None);
     }
 
     #[test]
     fn scroll_thumb_geometry_endpoints_and_min_size() {
-        let pos = ScrollPosition { offset: 0, history: 100, rows: 20 };
+        let pos = ScrollPosition {
+            offset: 0,
+            history: 100,
+            rows: 20,
+        };
         let (top_bottom, h) = pos.thumb(0.0).expect("scrollable");
         // 视口占 20/120，thumb 高 1/6；在底部时 thumb 顶 = 1 - h。
         assert!((h - 20.0 / 120.0).abs() < 1e-6, "thumb height={h}");
-        assert!((top_bottom - (1.0 - h)).abs() < 1e-6, "bottom top={top_bottom}");
+        assert!(
+            (top_bottom - (1.0 - h)).abs() < 1e-6,
+            "bottom top={top_bottom}"
+        );
 
         let (top_top, _) = ScrollPosition { offset: 100, ..pos }.thumb(0.0).unwrap();
         assert!(top_top.abs() < 1e-6, "顶部 thumb 顶必须为 0: {top_top}");
 
         // 长历史下 thumb 被最小高度托底。
-        let long = ScrollPosition { offset: 0, history: 100_000, rows: 20 };
+        let long = ScrollPosition {
+            offset: 0,
+            history: 100_000,
+            rows: 20,
+        };
         let (_, min_h) = long.thumb(0.08).unwrap();
         assert!((min_h - 0.08).abs() < 1e-6, "min thumb={min_h}");
         let (_, tiny) = long.thumb(0.0).unwrap();
@@ -5267,27 +5417,46 @@ mod tests {
 
     #[test]
     fn scroll_track_fraction_maps_to_top_and_bottom() {
-        let pos = ScrollPosition { offset: 10, history: 100, rows: 20 };
+        let pos = ScrollPosition {
+            offset: 10,
+            history: 100,
+            rows: 20,
+        };
         let min = 0.08;
-        assert_eq!(pos.offset_for_track_fraction(0.0, min), 100, "点顶部 = 最旧");
+        assert_eq!(
+            pos.offset_for_track_fraction(0.0, min),
+            100,
+            "点顶部 = 最旧"
+        );
         assert_eq!(pos.offset_for_track_fraction(1.0, min), 0, "点底部 = 最新");
         assert_eq!(pos.offset_for_track_fraction(-5.0, min), 100, "越界夹取");
         assert_eq!(pos.offset_for_track_fraction(5.0, min), 0, "越界夹取");
 
         // thumb 顶 ↔ offset 往返：thumb(top) 后反推应回到原 offset。
         let (top, _) = pos.thumb(min).unwrap();
-        assert_eq!(pos.offset_for_thumb_top(top, min), 10, "thumb 顶 ↔ offset 往返");
+        assert_eq!(
+            pos.offset_for_thumb_top(top, min),
+            10,
+            "thumb 顶 ↔ offset 往返"
+        );
     }
 
     #[test]
     fn scroll_thumb_offset_roundtrip_is_monotonic() {
-        let pos = ScrollPosition { offset: 0, history: 500, rows: 30 };
+        let pos = ScrollPosition {
+            offset: 0,
+            history: 500,
+            rows: 30,
+        };
         let min = 0.05;
         let mut last = usize::MAX;
         for i in 0..=20 {
             let top = i as f32 / 20.0;
             let offset = pos.offset_for_thumb_top(top, min);
-            assert!(offset <= last, "top 增大时 offset 必须单调下降: {offset} > {last}");
+            assert!(
+                offset <= last,
+                "top 增大时 offset 必须单调下降: {offset} > {last}"
+            );
             last = offset;
         }
         assert_eq!(pos.offset_for_thumb_top(0.0, min), 500);
@@ -5348,7 +5517,10 @@ mod tests {
         // (b) 连 press 都放不下：press/release 必须同时失败，不能只进 release。
         let queue = WriteQueue::new();
         assert!(queue.push(vec![3u8; WRITE_BACKLOG_BYTES]).is_ok());
-        assert!(matches!(queue.push_mouse_press(press.clone()), Err(PushError::Full)));
+        assert!(matches!(
+            queue.push_mouse_press(press.clone()),
+            Err(PushError::Full)
+        ));
         assert!(matches!(
             queue.push_mouse_release(release.clone(), true),
             Err(PushError::Full)
@@ -5369,7 +5541,10 @@ mod tests {
 
         let queue = WriteQueue::new();
         assert!(queue.push(vec![4u8; WRITE_BACKLOG_BYTES]).is_ok());
-        assert!(matches!(queue.push_mouse_press(press), Err(PushError::Full)));
+        assert!(matches!(
+            queue.push_mouse_press(press),
+            Err(PushError::Full)
+        ));
         // writer 随后把整块字节写完、腾出了空间；press 已被拒，release
         // 仍不能单独进队列，否则应用会收到没有按下的抬起事件。
         assert_eq!(queue.pop().unwrap().len(), WRITE_BACKLOG_BYTES);
@@ -5409,7 +5584,7 @@ mod tests {
 
     #[test]
     fn mouse_release_reservation_covers_every_protocol_encoding() {
-        use crate::mouse::{MouseButton, Modifiers};
+        use crate::mouse::{Modifiers, MouseButton};
         use alacritty_terminal::term::TermMode;
         let modes = [
             TermMode::MOUSE_REPORT_CLICK,
@@ -5423,7 +5598,11 @@ mod tests {
                 action: MouseAction::Release,
                 line: u16::MAX,
                 col: u16::MAX,
-                modifiers: Modifiers { shift: true, alt: true, ctrl: true },
+                modifiers: Modifiers {
+                    shift: true,
+                    alt: true,
+                    ctrl: true,
+                },
             };
             for mode in modes {
                 let encoded = mouse::encode(ev, mode).expect("release 必须能编码");
@@ -5508,11 +5687,9 @@ mod tests {
             writer: Some(ours.try_clone().unwrap()),
             shutdown_stream: ours,
         };
-        let handle = spawn_with_transport(
-            PaneConfig::default(),
-            Backend::Plugin(Box::new(transport)),
-        )
-        .expect("spawn plugin pane");
+        let handle =
+            spawn_with_transport(PaneConfig::default(), Backend::Plugin(Box::new(transport)))
+                .expect("spawn plugin pane");
 
         let deadline = Instant::now() + Duration::from_secs(2);
         while !entered.load(Ordering::SeqCst) {
@@ -5557,14 +5734,7 @@ mod tests {
             quiet: 0,
         };
         for _ in 0..(MAX_KITTY_PLACEMENTS + 100) {
-            store.place(
-                cmd.clone(),
-                Point::new(Line(0), Column(0)),
-                1,
-                80,
-                8,
-                16,
-            );
+            store.place(cmd.clone(), Point::new(Line(0), Column(0)), 1, 80, 8, 16);
         }
         // 同图/同位置/同 z 的 p=0 只保留一份，根本到不了上限。
         assert_eq!(store.placements.len(), 1);
@@ -5581,5 +5751,4 @@ mod tests {
         }
         assert_eq!(store.placements.len(), MAX_KITTY_PLACEMENTS);
     }
-
 }

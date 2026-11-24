@@ -501,7 +501,11 @@ impl FontFaces {
                         }
                     }
                 }
-                if fallback.font.as_ref().is_some_and(|font| font.has_glyph(ch)) {
+                if fallback
+                    .font
+                    .as_ref()
+                    .is_some_and(|font| font.has_glyph(ch))
+                {
                     return FaceSelection {
                         face: FaceId::Fallback(index),
                         style_fallback,
@@ -533,7 +537,10 @@ impl FontFaces {
     }
 
     fn fallback_paths(&self) -> Vec<PathBuf> {
-        self.fallbacks.iter().map(|face| face.path.clone()).collect()
+        self.fallbacks
+            .iter()
+            .map(|face| face.path.clone())
+            .collect()
     }
 }
 
@@ -582,17 +589,57 @@ fn fallback_group_order(ch: char) -> [u8; 4] {
 /// Extra fonts are treated as icon/symbol faces and probed after the built-ins.
 fn fallback_candidates() -> Vec<(PathBuf, u32, u8)> {
     let mut candidates: Vec<(PathBuf, u32, u8)> = [
-        ("/usr/share/fonts/truetype/wqy/wqy-microhei.ttc", 0, GROUP_CJK),
-        ("/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf", 0, GROUP_CJK),
-        ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", 7, GROUP_CJK),
+        (
+            "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+            0,
+            GROUP_CJK,
+        ),
+        (
+            "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+            0,
+            GROUP_CJK,
+        ),
+        (
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            7,
+            GROUP_CJK,
+        ),
         ("/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc", 1, GROUP_CJK),
-        ("/usr/share/fonts/truetype/noto/NotoSansSymbols2-Regular.ttf", 0, GROUP_SYMBOL),
-        ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 0, GROUP_SYMBOL),
-        ("/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf", 0, GROUP_SYMBOL),
-        ("/usr/share/fonts/truetype/ancient-scripts/Symbola_hint.ttf", 0, GROUP_EMOJI),
-        ("/usr/share/fonts/truetype/noto/NotoEmoji-Regular.ttf", 0, GROUP_EMOJI),
-        ("/usr/share/fonts/truetype/nerd-fonts/SymbolsNerdFontMono-Regular.ttf", 0, GROUP_ICON),
-        ("/usr/share/fonts/TTF/SymbolsNerdFontMono-Regular.ttf", 0, GROUP_ICON),
+        (
+            "/usr/share/fonts/truetype/noto/NotoSansSymbols2-Regular.ttf",
+            0,
+            GROUP_SYMBOL,
+        ),
+        (
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            0,
+            GROUP_SYMBOL,
+        ),
+        (
+            "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf",
+            0,
+            GROUP_SYMBOL,
+        ),
+        (
+            "/usr/share/fonts/truetype/ancient-scripts/Symbola_hint.ttf",
+            0,
+            GROUP_EMOJI,
+        ),
+        (
+            "/usr/share/fonts/truetype/noto/NotoEmoji-Regular.ttf",
+            0,
+            GROUP_EMOJI,
+        ),
+        (
+            "/usr/share/fonts/truetype/nerd-fonts/SymbolsNerdFontMono-Regular.ttf",
+            0,
+            GROUP_ICON,
+        ),
+        (
+            "/usr/share/fonts/TTF/SymbolsNerdFontMono-Regular.ttf",
+            0,
+            GROUP_ICON,
+        ),
     ]
     .into_iter()
     .map(|(path, index, group)| (PathBuf::from(path), index, group))
@@ -883,14 +930,7 @@ impl GlyphAtlas {
                 message: message.to_string(),
             }
         })?;
-        let faces = FontFaces::with_faces(
-            regular,
-            None,
-            None,
-            None,
-            source.to_path_buf(),
-            false,
-        );
+        let faces = FontFaces::with_faces(regular, None, None, None, source.to_path_buf(), false);
         Self::from_faces(device, queue, faces, config)
     }
 

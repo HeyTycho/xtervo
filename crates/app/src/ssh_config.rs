@@ -116,7 +116,8 @@ fn finish(profile: &Profile, raw: Raw, prefer_profile_port: bool) -> ResolvedSsh
     let port = if prefer_profile_port {
         profile.port.max(1)
     } else {
-        raw.port.unwrap_or_else(|| if profile.port == 0 { 22 } else { profile.port })
+        raw.port
+            .unwrap_or_else(|| if profile.port == 0 { 22 } else { profile.port })
     };
     let user = profile
         .user
@@ -125,25 +126,28 @@ fn finish(profile: &Profile, raw: Raw, prefer_profile_port: bool) -> ResolvedSsh
         .or_nonempty(raw.user)
         .or_else(|| std::env::var("USER").ok())
         .unwrap_or_else(|| "root".into());
-    let strict = raw.strict.unwrap_or_else(|| "ask".into()).to_ascii_lowercase();
-    let user_known_hosts = raw.user_known_hosts.unwrap_or_else(default_user_known_hosts);
-    let global_known_hosts =
-        raw.global_known_hosts.unwrap_or_else(default_global_known_hosts);
+    let strict = raw
+        .strict
+        .unwrap_or_else(|| "ask".into())
+        .to_ascii_lowercase();
+    let user_known_hosts = raw
+        .user_known_hosts
+        .unwrap_or_else(default_user_known_hosts);
+    let global_known_hosts = raw
+        .global_known_hosts
+        .unwrap_or_else(default_global_known_hosts);
     let keepalive_interval = raw
         .keepalive_interval
         .filter(|seconds| *seconds > 0)
         .map(std::time::Duration::from_secs);
     let keepalive_max = raw.keepalive_max.unwrap_or(3);
-    let unsupported = raw
-        .unsupported
-        .or_else(|| {
-            if raw.forward_agent == Some(true) {
-                Some("ForwardAgent".into())
-            } else {
-                None
-            }
-        })
-        ;
+    let unsupported = raw.unsupported.or_else(|| {
+        if raw.forward_agent == Some(true) {
+            Some("ForwardAgent".into())
+        } else {
+            None
+        }
+    });
     let proxy_jump = if profile.proxy_jump.trim().is_empty() {
         raw.proxy_jump.unwrap_or_default()
     } else {
@@ -190,7 +194,9 @@ fn default_config_paths() -> Vec<PathBuf> {
 }
 
 fn default_user_known_hosts() -> Vec<PathBuf> {
-    let Some(home) = std::env::var_os("HOME") else { return Vec::new() };
+    let Some(home) = std::env::var_os("HOME") else {
+        return Vec::new();
+    };
     let ssh = PathBuf::from(home).join(".ssh");
     vec![ssh.join("known_hosts"), ssh.join("known_hosts2")]
 }
@@ -212,7 +218,9 @@ fn config_root(path: &Path) -> PathBuf {
     if path.starts_with("/etc/ssh") {
         return PathBuf::from("/etc/ssh");
     }
-    path.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."))
+    path.parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 fn parse_file(
@@ -226,7 +234,9 @@ fn parse_file(
     if depth > 8 {
         return;
     }
-    let Ok(text) = std::fs::read_to_string(path) else { return };
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return;
+    };
     parse_text_inner(&text, alias, raw, active, depth, Some(path), root);
 }
 
@@ -255,19 +265,21 @@ fn parse_text_inner(
         if line.is_empty() {
             continue;
         }
-        let Some((key, value)) = split_directive(line) else { continue };
+        let Some((key, value)) = split_directive(line) else {
+            continue;
+        };
         let key = key.to_ascii_lowercase();
         match key.as_str() {
             "host" => {
                 let patterns = split_words(value);
                 *active = host_matches(alias, &patterns);
-            },
+            }
             "match" => {
                 if *active {
                     raw.unsupported.get_or_insert_with(|| "Match".into());
                 }
                 *active = false;
-            },
+            }
             "include" => {
                 if !*active {
                     continue;
@@ -275,9 +287,9 @@ fn parse_text_inner(
                 for include in expand_includes(value, source, root) {
                     parse_file(&include, alias, raw, active, root, depth + 1);
                 }
-            },
+            }
             _ if *active => apply_option(&key, value, raw),
-            _ => {},
+            _ => {}
         }
     }
 }
@@ -287,23 +299,24 @@ fn apply_option(key: &str, value: &str, raw: &mut Raw) {
     match key {
         "hostname" => {
             if value.contains('%') {
-                raw.unsupported.get_or_insert_with(|| "HostName token".into());
+                raw.unsupported
+                    .get_or_insert_with(|| "HostName token".into());
             } else if raw.hostname.is_none() {
                 raw.hostname = Some(value.to_string());
             }
-        },
+        }
         "port" => {
             if raw.port.is_none() {
                 if let Ok(port) = value.parse::<u16>() {
                     raw.port = Some(port);
                 }
             }
-        },
+        }
         "user" => {
             if raw.user.is_none() {
                 raw.user = Some(value.to_string());
             }
-        },
+        }
         "proxyjump" => {
             if raw.proxy_jump.is_none() {
                 raw.proxy_jump = Some(if value.eq_ignore_ascii_case("none") {
@@ -312,7 +325,7 @@ fn apply_option(key: &str, value: &str, raw: &mut Raw) {
                     value.to_string()
                 });
             }
-        },
+        }
         "proxycommand" => {
             if raw.proxy_command.is_none() {
                 raw.proxy_command = Some(if value.eq_ignore_ascii_case("none") {
@@ -321,55 +334,58 @@ fn apply_option(key: &str, value: &str, raw: &mut Raw) {
                     value.to_string()
                 });
             }
-        },
+        }
         "stricthostkeychecking" => {
             if raw.strict.is_none() {
                 raw.strict = Some(value.to_ascii_lowercase());
             }
-        },
+        }
         "userknownhostsfile" => {
             if raw.user_known_hosts.is_none() {
                 raw.user_known_hosts = Some(parse_paths(&value));
             }
-        },
+        }
         "globalknownhostsfile" => {
             if raw.global_known_hosts.is_none() {
                 raw.global_known_hosts = Some(parse_paths(&value));
             }
-        },
+        }
         "hostkeyalias" => {
             if raw.host_key_alias.is_none() {
                 raw.host_key_alias = Some(value.to_string());
             }
-        },
+        }
         "forwardagent" => {
             if raw.forward_agent.is_none() {
-                raw.forward_agent = Some(matches!(value.to_ascii_lowercase().as_str(), "yes" | "true"));
+                raw.forward_agent = Some(matches!(
+                    value.to_ascii_lowercase().as_str(),
+                    "yes" | "true"
+                ));
             }
-        },
+        }
         "serveraliveinterval" => {
             if raw.keepalive_interval.is_none() {
                 if let Ok(seconds) = value.parse::<u64>() {
                     raw.keepalive_interval = Some(seconds);
                 }
             }
-        },
+        }
         "serveralivecountmax" => {
             if raw.keepalive_max.is_none() {
                 if let Ok(max) = value.parse::<usize>() {
                     raw.keepalive_max = Some(max);
                 }
             }
-        },
+        }
         "identityfile" => {
             if !value.is_empty() {
                 raw.identity_files.push(value.to_string());
             }
-        },
+        }
         "localforward" | "remoteforward" | "dynamicforward" => {
             raw.unsupported.get_or_insert_with(|| key.to_string());
-        },
-        _ => {},
+        }
+        _ => {}
     }
 }
 
@@ -399,11 +415,20 @@ fn expand_includes(value: &str, source: Option<&Path>, root: &Path) -> Vec<PathB
         }
         if token.contains('*') || token.contains('?') {
             let (dir, pattern) = match path.parent() {
-                Some(dir) => (dir.to_path_buf(), path.file_name().unwrap_or_default().to_string_lossy().to_string()),
+                Some(dir) => (
+                    dir.to_path_buf(),
+                    path.file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string(),
+                ),
                 None => (PathBuf::new(), token.clone()),
             };
             let dir = if dir.as_os_str().is_empty() {
-                source.and_then(|s| s.parent()).unwrap_or_else(|| Path::new(".")).to_path_buf()
+                source
+                    .and_then(|s| s.parent())
+                    .unwrap_or_else(|| Path::new("."))
+                    .to_path_buf()
             } else {
                 dir
             };
@@ -434,7 +459,7 @@ fn strip_comment(line: &str) -> &str {
             '"' | '\'' if quote.is_none() => quote = Some(ch),
             c if Some(c) == quote => quote = None,
             '#' if quote.is_none() => return &line[..i],
-            _ => {},
+            _ => {}
         }
     }
     line
@@ -443,7 +468,12 @@ fn strip_comment(line: &str) -> &str {
 fn split_directive(line: &str) -> Option<(&str, &str)> {
     let mut split = line.splitn(2, |c: char| c.is_whitespace() || c == '=');
     let key = split.next()?.trim();
-    let value = split.next().unwrap_or("").trim().trim_start_matches('=').trim();
+    let value = split
+        .next()
+        .unwrap_or("")
+        .trim()
+        .trim_start_matches('=')
+        .trim();
     if key.is_empty() {
         None
     } else {
@@ -470,7 +500,7 @@ fn split_words(value: &str) -> Vec<String> {
                 if !current.is_empty() {
                     out.push(std::mem::take(&mut current));
                 }
-            },
+            }
             _ => current.push(ch),
         }
     }
@@ -533,7 +563,12 @@ mod tests {
     use super::*;
 
     fn profile(host: &str) -> Profile {
-        Profile { kind: "ssh".into(), host: host.into(), port: 22, ..Profile::default() }
+        Profile {
+            kind: "ssh".into(),
+            host: host.into(),
+            port: 22,
+            ..Profile::default()
+        }
     }
 
     #[test]
@@ -564,8 +599,14 @@ mod tests {
     #[test]
     fn match_and_forwards_are_unsupported() {
         let p = profile("h");
-        assert!(resolve_with_text(&p, &["Match all\n Port 22\n"]).unsupported.is_some());
-        assert!(resolve_with_text(&p, &["Host *\n LocalForward 8080 localhost:80\n"]).unsupported.is_some());
+        assert!(resolve_with_text(&p, &["Match all\n Port 22\n"])
+            .unsupported
+            .is_some());
+        assert!(
+            resolve_with_text(&p, &["Host *\n LocalForward 8080 localhost:80\n"])
+                .unsupported
+                .is_some()
+        );
         assert!(resolve_with_text(&p, &["Host *\n ProxyJump jump\n"]).proxy_jump == "jump");
     }
 
@@ -576,7 +617,10 @@ mod tests {
             &p,
             &["Host alias\n ProxyJump none\nHost *\n ProxyJump jump.example\n"],
         );
-        assert!(r.proxy_jump.is_empty(), "explicit none must not be overridden");
+        assert!(
+            r.proxy_jump.is_empty(),
+            "explicit none must not be overridden"
+        );
         let mut p = profile("alias");
         p.proxy_jump = "profile.jump".into();
         let r = resolve_with_text(&p, &["Host *\n ProxyJump config.jump\n"]);
@@ -598,7 +642,10 @@ mod tests {
             &p,
             &["Host *\n ServerAliveInterval 30\n ServerAliveCountMax 5\n"],
         );
-        assert_eq!(r.keepalive_interval, Some(std::time::Duration::from_secs(30)));
+        assert_eq!(
+            r.keepalive_interval,
+            Some(std::time::Duration::from_secs(30))
+        );
         assert_eq!(r.keepalive_max, 5);
         let r = resolve_with_text(&p, &["Host *\n ServerAliveInterval 0\n"]);
         assert_eq!(r.keepalive_interval, None);

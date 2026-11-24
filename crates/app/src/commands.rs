@@ -91,7 +91,14 @@ fn bind(
     category: Category,
     default_shortcut: Option<&'static str>,
 ) -> Command {
-    Command { id, title, category, default_shortcut, extra_shortcuts: &[], global: false }
+    Command {
+        id,
+        title,
+        category,
+        default_shortcut,
+        extra_shortcuts: &[],
+        global: false,
+    }
 }
 
 /// 全局命令：搜索框打开/终端输入时也优先按命令表分发。
@@ -101,7 +108,10 @@ fn global_bind(
     category: Category,
     default_shortcut: Option<&'static str>,
 ) -> Command {
-    Command { global: true, ..bind(id, title, category, default_shortcut) }
+    Command {
+        global: true,
+        ..bind(id, title, category, default_shortcut)
+    }
 }
 
 impl Command {
@@ -239,7 +249,11 @@ impl Registry {
                 continue;
             }
             for shortcut in command.default_shortcuts() {
-                out.push(EffectiveBinding { command_id: command.id, shortcut, custom: false });
+                out.push(EffectiveBinding {
+                    command_id: command.id,
+                    shortcut,
+                    custom: false,
+                });
             }
         }
         out
@@ -276,18 +290,24 @@ impl Registry {
         chord_text: &str,
         overrides: &[HotkeyOverride],
     ) -> Result<Chord, String> {
-        self.get(command_id).ok_or_else(|| format!("未知命令: {command_id}"))?;
+        self.get(command_id)
+            .ok_or_else(|| format!("未知命令: {command_id}"))?;
         let chord = Chord::parse(chord_text)?;
         if !chord.is_bindable() {
             return Err("快捷键需要 Ctrl/Alt/Meta，或使用 F1–F24".to_string());
         }
-        let wanted = Shortcut { chords: vec![chord.clone()] };
+        let wanted = Shortcut {
+            chords: vec![chord.clone()],
+        };
         for binding in self.effective_bindings(overrides) {
             // 命令自己的旧绑定会被这次 override 替换，不算冲突。
             if binding.command_id == command_id || binding.shortcut != wanted {
                 continue;
             }
-            let title = self.get(binding.command_id).map(|c| c.title).unwrap_or(binding.command_id);
+            let title = self
+                .get(binding.command_id)
+                .map(|c| c.title)
+                .unwrap_or(binding.command_id);
             return Err(format!("冲突：{title} 已使用 {}", wanted));
         }
         Ok(chord)
@@ -302,7 +322,8 @@ impl Registry {
         shortcut_text: &str,
         overrides: &[HotkeyOverride],
     ) -> Result<Shortcut, String> {
-        self.get(command_id).ok_or_else(|| format!("未知命令: {command_id}"))?;
+        self.get(command_id)
+            .ok_or_else(|| format!("未知命令: {command_id}"))?;
         let shortcut = Shortcut::parse(shortcut_text)?;
         if !shortcut.is_bindable() {
             return Err("快捷键需要 Ctrl/Alt/Meta，或使用 F1–F24".to_string());
@@ -312,8 +333,10 @@ impl Registry {
                 continue;
             }
             if shortcuts_overlap(&binding.shortcut, &shortcut) {
-                let title =
-                    self.get(binding.command_id).map(|c| c.title).unwrap_or(binding.command_id);
+                let title = self
+                    .get(binding.command_id)
+                    .map(|c| c.title)
+                    .unwrap_or(binding.command_id);
                 return Err(format!("冲突：{title} 已使用 {}", binding.shortcut));
             }
         }
@@ -358,11 +381,11 @@ impl Registry {
             return None;
         }
         for over in overrides.iter().rev() {
-            let Some(command) = self.get(&over.command) else { continue };
+            let Some(command) = self.get(&over.command) else {
+                continue;
+            };
             // 两段快捷键不参与单键分发，由 pending + command_for_sequence 处理。
-            if Shortcut::parse(&over.chord)
-                .is_ok_and(|bound| bound.single_chord() == Some(chord))
-            {
+            if Shortcut::parse(&over.chord).is_ok_and(|bound| bound.single_chord() == Some(chord)) {
                 return Some(command.id);
             }
         }
@@ -393,10 +416,14 @@ impl Registry {
         chords: &[Chord],
         overrides: &[HotkeyOverride],
     ) -> Option<&'static str> {
-        let wanted = Shortcut { chords: chords.to_vec() };
+        let wanted = Shortcut {
+            chords: chords.to_vec(),
+        };
         let bindings = self.effective_bindings(overrides);
-        if let Some(binding) =
-            bindings.iter().rev().find(|binding| binding.custom && binding.shortcut == wanted)
+        if let Some(binding) = bindings
+            .iter()
+            .rev()
+            .find(|binding| binding.custom && binding.shortcut == wanted)
         {
             return Some(binding.command_id);
         }
@@ -422,7 +449,9 @@ impl Registry {
         overrides: &[HotkeyOverride],
     ) -> Option<&'static str> {
         self.commands.iter().find_map(|command| {
-            let default = command.default_shortcut.and_then(|s| Shortcut::parse(s).ok())?;
+            let default = command
+                .default_shortcut
+                .and_then(|s| Shortcut::parse(s).ok())?;
             if default.chords.len() != 1 || default.chords[0] != *chord {
                 return None;
             }
@@ -439,14 +468,20 @@ impl Registry {
             if !command.id.starts_with("plugin.") {
                 return None;
             }
-            let shortcut = command.default_shortcut.and_then(|s| Shortcut::parse(s).ok())?;
+            let shortcut = command
+                .default_shortcut
+                .and_then(|s| Shortcut::parse(s).ok())?;
             (shortcut.chords.len() == 1 && shortcut.chords[0] == *chord).then_some(command.id)
         })
     }
 
     /// Command Palette 的模糊搜索：子序列匹配标题或 ID，连续命中与词首命中加权。
     pub fn search(&self, query: &str) -> Vec<&Command> {
-        let q: Vec<char> = query.to_lowercase().chars().filter(|c| !c.is_whitespace()).collect();
+        let q: Vec<char> = query
+            .to_lowercase()
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
         if q.is_empty() {
             return self.commands.iter().collect();
         }
@@ -515,7 +550,10 @@ impl Shortcut {
     pub fn parse(text: &str) -> Result<Self, String> {
         // 手写配置常见 `Ctrl + K Ctrl + T`：先去掉 `+` 两侧空白，再按空白分段，
         // 否则每个 "Ctrl" 都会被当成一段（缺少主键）。
-        let compact = text.replace(" + ", "+").replace("+ ", "+").replace(" +", "+");
+        let compact = text
+            .replace(" + ", "+")
+            .replace("+ ", "+")
+            .replace(" +", "+");
         let chords: Result<Vec<Chord>, String> =
             compact.split_whitespace().map(Chord::parse).collect();
         let chords = chords?;
@@ -538,7 +576,11 @@ impl Shortcut {
 
     /// 配置/比较用的规范小写格式：`ctrl+shift+t`、`ctrl+k ctrl+t`。
     pub fn canonical(&self) -> String {
-        self.chords.iter().map(Chord::canonical).collect::<Vec<_>>().join(" ")
+        self.chords
+            .iter()
+            .map(Chord::canonical)
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 }
 
@@ -589,7 +631,7 @@ impl Chord {
                         return Err(format!("一个组合里只能有一个主键: {text}"));
                     }
                     key = Some(normalize_key(other)?);
-                },
+                }
             }
         }
         let key = match (key, plus_key) {
@@ -687,7 +729,8 @@ fn normalize_key(key: &str) -> Result<String, String> {
             | "left"
             | "right"
     );
-    let single = lowered.chars().count() == 1 && lowered.chars().next().is_some_and(|c| c.is_ascii_graphic());
+    let single = lowered.chars().count() == 1
+        && lowered.chars().next().is_some_and(|c| c.is_ascii_graphic());
     if named || single || is_function_key(&lowered) {
         Ok(lowered)
     } else {
@@ -704,7 +747,10 @@ fn is_function_key(key: &str) -> bool {
 impl HotkeyOverride {
     /// 新建一条 override，chord 自动转成规范小写格式。
     pub fn new(command: &str, chord: &Chord) -> Self {
-        Self { command: command.to_string(), chord: chord.canonical() }
+        Self {
+            command: command.to_string(),
+            chord: chord.canonical(),
+        }
     }
 }
 
@@ -721,7 +767,10 @@ pub fn set_override_shortcut(
     shortcut: &Shortcut,
 ) {
     overrides.retain(|o| o.command != command);
-    overrides.push(HotkeyOverride { command: command.to_string(), chord: shortcut.canonical() });
+    overrides.push(HotkeyOverride {
+        command: command.to_string(),
+        chord: shortcut.canonical(),
+    });
 }
 
 /// 清除某命令的 override；返回是否真的删掉了。
@@ -770,7 +819,7 @@ pub fn repair_hotkey_overrides(
                         .any(|kept| shortcuts_overlap(kept, shortcut)) =>
                 {
                     Some("conflict")
-                },
+                }
                 Some(_) => None,
             }
         };
@@ -808,30 +857,126 @@ pub struct ReservedShortcut {
 /// 这些键由 DE 在客户端之前截获，绑到 Typer 里通常永远不会触发；录制时给出
 /// 警告，但**不阻止保存**（用户可能用非 GNOME/KDE 环境或改过 DE 设置）。
 pub const PLATFORM_RESERVED: &[ReservedShortcut] = &[
-    ReservedShortcut { chord: "meta+l", owner: "GNOME/KDE", note: "锁屏" },
-    ReservedShortcut { chord: "meta+d", owner: "GNOME", note: "显示桌面" },
-    ReservedShortcut { chord: "meta+tab", owner: "GNOME", note: "切换窗口/活动" },
-    ReservedShortcut { chord: "meta+space", owner: "IBus/fcitx", note: "切换输入法" },
-    ReservedShortcut { chord: "meta+v", owner: "GNOME 扩展", note: "剪贴板历史" },
-    ReservedShortcut { chord: "meta+1", owner: "GNOME", note: "Dock 第 1 个应用" },
-    ReservedShortcut { chord: "meta+2", owner: "GNOME", note: "Dock 第 2 个应用" },
-    ReservedShortcut { chord: "meta+3", owner: "GNOME", note: "Dock 第 3 个应用" },
-    ReservedShortcut { chord: "meta+4", owner: "GNOME", note: "Dock 第 4 个应用" },
-    ReservedShortcut { chord: "meta+5", owner: "GNOME", note: "Dock 第 5 个应用" },
-    ReservedShortcut { chord: "meta+6", owner: "GNOME", note: "Dock 第 6 个应用" },
-    ReservedShortcut { chord: "meta+7", owner: "GNOME", note: "Dock 第 7 个应用" },
-    ReservedShortcut { chord: "meta+8", owner: "GNOME", note: "Dock 第 8 个应用" },
-    ReservedShortcut { chord: "meta+9", owner: "GNOME", note: "Dock 第 9 个应用" },
-    ReservedShortcut { chord: "alt+tab", owner: "桌面环境", note: "切换窗口" },
-    ReservedShortcut { chord: "alt+f4", owner: "桌面环境", note: "关闭窗口" },
-    ReservedShortcut { chord: "alt+space", owner: "桌面环境", note: "窗口菜单" },
-    ReservedShortcut { chord: "ctrl+alt+t", owner: "GNOME/KDE", note: "打开终端" },
-    ReservedShortcut { chord: "ctrl+alt+delete", owner: "桌面环境", note: "注销/锁屏" },
-    ReservedShortcut { chord: "ctrl+alt+left", owner: "桌面环境", note: "切换工作区" },
-    ReservedShortcut { chord: "ctrl+alt+right", owner: "桌面环境", note: "切换工作区" },
-    ReservedShortcut { chord: "ctrl+alt+up", owner: "桌面环境", note: "切换工作区" },
-    ReservedShortcut { chord: "ctrl+alt+down", owner: "桌面环境", note: "切换工作区" },
-    ReservedShortcut { chord: "print", owner: "桌面环境", note: "截图" },
+    ReservedShortcut {
+        chord: "meta+l",
+        owner: "GNOME/KDE",
+        note: "锁屏",
+    },
+    ReservedShortcut {
+        chord: "meta+d",
+        owner: "GNOME",
+        note: "显示桌面",
+    },
+    ReservedShortcut {
+        chord: "meta+tab",
+        owner: "GNOME",
+        note: "切换窗口/活动",
+    },
+    ReservedShortcut {
+        chord: "meta+space",
+        owner: "IBus/fcitx",
+        note: "切换输入法",
+    },
+    ReservedShortcut {
+        chord: "meta+v",
+        owner: "GNOME 扩展",
+        note: "剪贴板历史",
+    },
+    ReservedShortcut {
+        chord: "meta+1",
+        owner: "GNOME",
+        note: "Dock 第 1 个应用",
+    },
+    ReservedShortcut {
+        chord: "meta+2",
+        owner: "GNOME",
+        note: "Dock 第 2 个应用",
+    },
+    ReservedShortcut {
+        chord: "meta+3",
+        owner: "GNOME",
+        note: "Dock 第 3 个应用",
+    },
+    ReservedShortcut {
+        chord: "meta+4",
+        owner: "GNOME",
+        note: "Dock 第 4 个应用",
+    },
+    ReservedShortcut {
+        chord: "meta+5",
+        owner: "GNOME",
+        note: "Dock 第 5 个应用",
+    },
+    ReservedShortcut {
+        chord: "meta+6",
+        owner: "GNOME",
+        note: "Dock 第 6 个应用",
+    },
+    ReservedShortcut {
+        chord: "meta+7",
+        owner: "GNOME",
+        note: "Dock 第 7 个应用",
+    },
+    ReservedShortcut {
+        chord: "meta+8",
+        owner: "GNOME",
+        note: "Dock 第 8 个应用",
+    },
+    ReservedShortcut {
+        chord: "meta+9",
+        owner: "GNOME",
+        note: "Dock 第 9 个应用",
+    },
+    ReservedShortcut {
+        chord: "alt+tab",
+        owner: "桌面环境",
+        note: "切换窗口",
+    },
+    ReservedShortcut {
+        chord: "alt+f4",
+        owner: "桌面环境",
+        note: "关闭窗口",
+    },
+    ReservedShortcut {
+        chord: "alt+space",
+        owner: "桌面环境",
+        note: "窗口菜单",
+    },
+    ReservedShortcut {
+        chord: "ctrl+alt+t",
+        owner: "GNOME/KDE",
+        note: "打开终端",
+    },
+    ReservedShortcut {
+        chord: "ctrl+alt+delete",
+        owner: "桌面环境",
+        note: "注销/锁屏",
+    },
+    ReservedShortcut {
+        chord: "ctrl+alt+left",
+        owner: "桌面环境",
+        note: "切换工作区",
+    },
+    ReservedShortcut {
+        chord: "ctrl+alt+right",
+        owner: "桌面环境",
+        note: "切换工作区",
+    },
+    ReservedShortcut {
+        chord: "ctrl+alt+up",
+        owner: "桌面环境",
+        note: "切换工作区",
+    },
+    ReservedShortcut {
+        chord: "ctrl+alt+down",
+        owner: "桌面环境",
+        note: "切换工作区",
+    },
+    ReservedShortcut {
+        chord: "print",
+        owner: "桌面环境",
+        note: "截图",
+    },
     ReservedShortcut {
         chord: "ctrl+alt+f1..f12",
         owner: "systemd/X11",
@@ -842,12 +987,19 @@ pub const PLATFORM_RESERVED: &[ReservedShortcut] = &[
 /// 某个 chord 是否被桌面环境保留；命中返回清单条目（含占用者与说明）。
 pub fn platform_reserved_for(chord: &Chord) -> Option<&'static ReservedShortcut> {
     let canonical = chord.canonical();
-    if let Some(hit) = PLATFORM_RESERVED.iter().find(|entry| entry.chord == canonical) {
+    if let Some(hit) = PLATFORM_RESERVED
+        .iter()
+        .find(|entry| entry.chord == canonical)
+    {
         return Some(hit);
     }
     // Ctrl+Alt+F1–F12：切 VT，最危险的绑定。
     if chord.mods.ctrl && chord.mods.alt && !chord.mods.shift && !chord.mods.meta {
-        if let Some(n) = chord.key.strip_prefix('f').and_then(|n| n.parse::<u8>().ok()) {
+        if let Some(n) = chord
+            .key
+            .strip_prefix('f')
+            .and_then(|n| n.parse::<u8>().ok())
+        {
             if (1..=12).contains(&n) {
                 return PLATFORM_RESERVED.last();
             }
@@ -870,77 +1022,342 @@ pub fn platform_reserved_for_shortcut(shortcut: &Shortcut) -> Option<&'static Re
 pub fn builtin() -> Registry {
     let mut r = Registry::new();
     let cmds = [
-        bind("window.new", "New Window", Category::Window, Some("ctrl+shift+n")),
-        bind("window.close", "Close Window", Category::Window, Some("ctrl+shift+q")),
+        bind(
+            "window.new",
+            "New Window",
+            Category::Window,
+            Some("ctrl+shift+n"),
+        ),
+        bind(
+            "window.close",
+            "Close Window",
+            Category::Window,
+            Some("ctrl+shift+q"),
+        ),
         // GNOME Terminal：Ctrl+Shift+T 新建 Tab；Ctrl+T 留给 shell 的 transpose。
-        bind("tab.new", "New Tab", Category::Workspace, Some("ctrl+shift+t")),
-        bind("tab.search", "Search Tabs", Category::Workspace, Some("ctrl+shift+a")),
-        bind("tab.close", "Close Tab", Category::Workspace, Some("ctrl+shift+w")),
+        bind(
+            "tab.new",
+            "New Tab",
+            Category::Workspace,
+            Some("ctrl+shift+t"),
+        ),
+        bind(
+            "tab.search",
+            "Search Tabs",
+            Category::Workspace,
+            Some("ctrl+shift+a"),
+        ),
+        bind(
+            "tab.close",
+            "Close Tab",
+            Category::Workspace,
+            Some("ctrl+shift+w"),
+        ),
         Command {
             extra_shortcuts: &["ctrl+tab"],
-            ..global_bind("tab.next", "Next Tab", Category::Workspace, Some("ctrl+pagedown"))
+            ..global_bind(
+                "tab.next",
+                "Next Tab",
+                Category::Workspace,
+                Some("ctrl+pagedown"),
+            )
         },
         Command {
             extra_shortcuts: &["ctrl+shift+tab"],
-            ..global_bind("tab.prev", "Previous Tab", Category::Workspace, Some("ctrl+pageup"))
+            ..global_bind(
+                "tab.prev",
+                "Previous Tab",
+                Category::Workspace,
+                Some("ctrl+pageup"),
+            )
         },
-        bind("tab.move-left", "Move Tab Left", Category::Workspace, Some("ctrl+shift+pageup")),
-        bind("tab.move-right", "Move Tab Right", Category::Workspace, Some("ctrl+shift+pagedown")),
-        bind("tab.last", "Last Used Tab", Category::Workspace, Some("ctrl+shift+l")),
+        bind(
+            "tab.move-left",
+            "Move Tab Left",
+            Category::Workspace,
+            Some("ctrl+shift+pageup"),
+        ),
+        bind(
+            "tab.move-right",
+            "Move Tab Right",
+            Category::Workspace,
+            Some("ctrl+shift+pagedown"),
+        ),
+        bind(
+            "tab.last",
+            "Last Used Tab",
+            Category::Workspace,
+            Some("ctrl+shift+l"),
+        ),
         bind("tab.duplicate", "Duplicate Tab", Category::Workspace, None),
-        bind("tab.reopen-closed", "Reopen Closed Tab", Category::Workspace, Some("ctrl+alt+shift+t")),
+        bind(
+            "tab.reopen-closed",
+            "Reopen Closed Tab",
+            Category::Workspace,
+            Some("ctrl+alt+shift+t"),
+        ),
         global_bind("tab.rename", "Rename Tab", Category::Workspace, Some("f2")),
-        bind("tab.rename-undo", "Undo Tab Rename", Category::Workspace, Some("ctrl+shift+z")),
+        bind(
+            "tab.rename-undo",
+            "Undo Tab Rename",
+            Category::Workspace,
+            Some("ctrl+shift+z"),
+        ),
         // Ctrl+1–9：跳转到第 n 个 Tab。全部是全局命令（搜索框开着也能切 Tab）。
-        global_bind("tab.select-1", "Select Tab 1", Category::Workspace, Some("alt+1")),
-        global_bind("tab.select-2", "Select Tab 2", Category::Workspace, Some("alt+2")),
-        global_bind("tab.select-3", "Select Tab 3", Category::Workspace, Some("alt+3")),
-        global_bind("tab.select-4", "Select Tab 4", Category::Workspace, Some("alt+4")),
-        global_bind("tab.select-5", "Select Tab 5", Category::Workspace, Some("alt+5")),
-        global_bind("tab.select-6", "Select Tab 6", Category::Workspace, Some("alt+6")),
-        global_bind("tab.select-7", "Select Tab 7", Category::Workspace, Some("alt+7")),
-        global_bind("tab.select-8", "Select Tab 8", Category::Workspace, Some("alt+8")),
-        global_bind("tab.select-9", "Select Tab 9", Category::Workspace, Some("alt+9")),
-        global_bind("tab.select-10", "Select Tab 10", Category::Workspace, Some("alt+0")),
-        bind("pane.split-right", "Split Right", Category::Pane, Some("ctrl+shift+e")),
-        bind("pane.split-down", "Split Down", Category::Pane, Some("ctrl+shift+d")),
-        bind("pane.close", "Close Pane", Category::Pane, Some("ctrl+shift+x")),
-        bind("pane.undo-swap", "Undo Pane Move", Category::Pane, Some("ctrl+alt+z")),
+        global_bind(
+            "tab.select-1",
+            "Select Tab 1",
+            Category::Workspace,
+            Some("alt+1"),
+        ),
+        global_bind(
+            "tab.select-2",
+            "Select Tab 2",
+            Category::Workspace,
+            Some("alt+2"),
+        ),
+        global_bind(
+            "tab.select-3",
+            "Select Tab 3",
+            Category::Workspace,
+            Some("alt+3"),
+        ),
+        global_bind(
+            "tab.select-4",
+            "Select Tab 4",
+            Category::Workspace,
+            Some("alt+4"),
+        ),
+        global_bind(
+            "tab.select-5",
+            "Select Tab 5",
+            Category::Workspace,
+            Some("alt+5"),
+        ),
+        global_bind(
+            "tab.select-6",
+            "Select Tab 6",
+            Category::Workspace,
+            Some("alt+6"),
+        ),
+        global_bind(
+            "tab.select-7",
+            "Select Tab 7",
+            Category::Workspace,
+            Some("alt+7"),
+        ),
+        global_bind(
+            "tab.select-8",
+            "Select Tab 8",
+            Category::Workspace,
+            Some("alt+8"),
+        ),
+        global_bind(
+            "tab.select-9",
+            "Select Tab 9",
+            Category::Workspace,
+            Some("alt+9"),
+        ),
+        global_bind(
+            "tab.select-10",
+            "Select Tab 10",
+            Category::Workspace,
+            Some("alt+0"),
+        ),
+        bind(
+            "pane.split-right",
+            "Split Right",
+            Category::Pane,
+            Some("ctrl+shift+e"),
+        ),
+        bind(
+            "pane.split-down",
+            "Split Down",
+            Category::Pane,
+            Some("ctrl+shift+d"),
+        ),
+        bind(
+            "pane.close",
+            "Close Pane",
+            Category::Pane,
+            Some("ctrl+shift+x"),
+        ),
+        bind(
+            "pane.undo-swap",
+            "Undo Pane Move",
+            Category::Pane,
+            Some("ctrl+alt+z"),
+        ),
         // 方向聚焦：旧硬编码 Ctrl+Shift+方向键的等价命令。`pane.focus-next`
         // 作为“循环下一个”保留在命令表里，但不占用默认键（避免与右键冲突）。
         bind("pane.focus-next", "Focus Next Pane", Category::Pane, None),
-        bind("pane.focus-left", "Focus Pane Left", Category::Pane, Some("ctrl+shift+left")),
-        bind("pane.focus-right", "Focus Pane Right", Category::Pane, Some("ctrl+shift+right")),
-        bind("pane.focus-up", "Focus Pane Up", Category::Pane, Some("ctrl+shift+up")),
-        bind("pane.focus-down", "Focus Pane Down", Category::Pane, Some("ctrl+shift+down")),
-        bind("terminal.copy", "Copy", Category::Terminal, Some("ctrl+shift+c")),
-        bind("terminal.paste", "Paste", Category::Terminal, Some("ctrl+shift+v")),
-        bind("terminal.find", "Find", Category::Terminal, Some("ctrl+shift+f")),
+        bind(
+            "pane.focus-left",
+            "Focus Pane Left",
+            Category::Pane,
+            Some("ctrl+shift+left"),
+        ),
+        bind(
+            "pane.focus-right",
+            "Focus Pane Right",
+            Category::Pane,
+            Some("ctrl+shift+right"),
+        ),
+        bind(
+            "pane.focus-up",
+            "Focus Pane Up",
+            Category::Pane,
+            Some("ctrl+shift+up"),
+        ),
+        bind(
+            "pane.focus-down",
+            "Focus Pane Down",
+            Category::Pane,
+            Some("ctrl+shift+down"),
+        ),
+        bind(
+            "terminal.copy",
+            "Copy",
+            Category::Terminal,
+            Some("ctrl+shift+c"),
+        ),
+        bind(
+            "terminal.paste",
+            "Paste",
+            Category::Terminal,
+            Some("ctrl+shift+v"),
+        ),
+        bind(
+            "terminal.find",
+            "Find",
+            Category::Terminal,
+            Some("ctrl+shift+f"),
+        ),
         bind("terminal.clear", "Clear Screen", Category::Terminal, None),
-        bind("terminal.select-all", "Select All", Category::Terminal, None),
-        bind("terminal.toggle-read-only", "Toggle Read Only", Category::Terminal, None),
-        bind("terminal.toggle-broadcast", "Toggle Broadcast Input", Category::Terminal, None),
+        bind(
+            "terminal.select-all",
+            "Select All",
+            Category::Terminal,
+            None,
+        ),
+        bind(
+            "terminal.toggle-read-only",
+            "Toggle Read Only",
+            Category::Terminal,
+            None,
+        ),
+        bind(
+            "terminal.toggle-broadcast",
+            "Toggle Broadcast Input",
+            Category::Terminal,
+            None,
+        ),
         bind("terminal.reset", "Reset Terminal", Category::Terminal, None),
-        bind("terminal.reset-and-clear", "Reset and Clear", Category::Terminal, None),
-        bind("terminal.save-contents", "Save Contents…", Category::Terminal, None),
-        bind("pane.toggle-zoom", "Toggle Pane Zoom", Category::Pane, Some("ctrl+shift+m")),
+        bind(
+            "terminal.reset-and-clear",
+            "Reset and Clear",
+            Category::Terminal,
+            None,
+        ),
+        bind(
+            "terminal.save-contents",
+            "Save Contents…",
+            Category::Terminal,
+            None,
+        ),
+        bind(
+            "pane.toggle-zoom",
+            "Toggle Pane Zoom",
+            Category::Pane,
+            Some("ctrl+shift+m"),
+        ),
         // UI-TAB-006：关闭范围操作的默认键（快捷键/面板/Hotkeys 共用）。
-        bind("tab.close-others", "Close Other Tabs", Category::Workspace, Some("ctrl+alt+w")),
-        bind("tab.close-left", "Close Tabs to the Left", Category::Workspace, Some("ctrl+alt+left")),
-        bind("tab.close-right", "Close Tabs to the Right", Category::Workspace, Some("ctrl+alt+right")),
+        bind(
+            "tab.close-others",
+            "Close Other Tabs",
+            Category::Workspace,
+            Some("ctrl+alt+w"),
+        ),
+        bind(
+            "tab.close-left",
+            "Close Tabs to the Left",
+            Category::Workspace,
+            Some("ctrl+alt+left"),
+        ),
+        bind(
+            "tab.close-right",
+            "Close Tabs to the Right",
+            Category::Workspace,
+            Some("ctrl+alt+right"),
+        ),
         // TERM-015：pane 级会话录制。录制状态/buffer 在 core，UI 只调用。
-        bind("terminal.recording-start", "Start Recording", Category::Terminal, None),
-        bind("terminal.recording-stop", "Stop Recording", Category::Terminal, None),
-        bind("terminal.recording-export", "Export Recording…", Category::Terminal, None),
-        bind("view.command-palette", "Command Palette", Category::View, Some("ctrl+shift+p")),
-        global_bind("view.toggle-fullscreen", "Toggle Fullscreen", Category::View, Some("f11")),
-        bind("view.sidebar", "Toggle Sidebar", Category::View, Some("ctrl+shift+b")),
-        bind("view.toggle-quake", "Toggle Quake Mode", Category::View, None),
-        bind("view.scroll-top", "Scroll to Top", Category::View, Some("ctrl+shift+home")),
-        bind("view.scroll-bottom", "Scroll to Bottom", Category::View, Some("ctrl+shift+end")),
-        bind("workspace.save", "Save Layout as Workspace", Category::View, None),
+        bind(
+            "terminal.recording-start",
+            "Start Recording",
+            Category::Terminal,
+            None,
+        ),
+        bind(
+            "terminal.recording-stop",
+            "Stop Recording",
+            Category::Terminal,
+            None,
+        ),
+        bind(
+            "terminal.recording-export",
+            "Export Recording…",
+            Category::Terminal,
+            None,
+        ),
+        bind(
+            "view.command-palette",
+            "Command Palette",
+            Category::View,
+            Some("ctrl+shift+p"),
+        ),
+        global_bind(
+            "view.toggle-fullscreen",
+            "Toggle Fullscreen",
+            Category::View,
+            Some("f11"),
+        ),
+        bind(
+            "view.sidebar",
+            "Toggle Sidebar",
+            Category::View,
+            Some("ctrl+shift+b"),
+        ),
+        bind(
+            "view.toggle-quake",
+            "Toggle Quake Mode",
+            Category::View,
+            None,
+        ),
+        bind(
+            "view.scroll-top",
+            "Scroll to Top",
+            Category::View,
+            Some("ctrl+shift+home"),
+        ),
+        bind(
+            "view.scroll-bottom",
+            "Scroll to Bottom",
+            Category::View,
+            Some("ctrl+shift+end"),
+        ),
+        bind(
+            "workspace.save",
+            "Save Layout as Workspace",
+            Category::View,
+            None,
+        ),
         bind("workspace.list", "List Workspaces", Category::View, None),
-        bind("workspace.open", "Open Last Workspace", Category::View, None),
+        bind(
+            "workspace.open",
+            "Open Last Workspace",
+            Category::View,
+            None,
+        ),
         // GNOME Terminal 同时支持 Ctrl++ 与 Ctrl+=（有些键盘/布局只送后者）。
         Command {
             // 旧硬编码在 Ctrl+Shift 下也接受“+”（shift+= 的真实文本）。
@@ -949,16 +1366,41 @@ pub fn builtin() -> Registry {
         },
         Command {
             extra_shortcuts: &["ctrl+-"],
-            ..bind("view.zoom-out", "Zoom Out", Category::View, Some("ctrl+minus"))
+            ..bind(
+                "view.zoom-out",
+                "Zoom Out",
+                Category::View,
+                Some("ctrl+minus"),
+            )
         },
-        bind("view.zoom-reset", "Reset Zoom", Category::View, Some("ctrl+0")),
-        bind("session.restart", "Restart Session", Category::Session, None),
-        bind("session.reattach", "Reattach Background Session", Category::Session, None),
+        bind(
+            "view.zoom-reset",
+            "Reset Zoom",
+            Category::View,
+            Some("ctrl+0"),
+        ),
+        bind(
+            "session.restart",
+            "Restart Session",
+            Category::Session,
+            None,
+        ),
+        bind(
+            "session.reattach",
+            "Reattach Background Session",
+            Category::Session,
+            None,
+        ),
         bind("settings.open", "Open Settings", Category::Settings, None),
         // 官方 SSH 插件 POC：ssh.connect 走 Backend::Plugin 打开 Profile 连接。
         // 官方 SSH 插件 POC：`ssh.connect` 开第一个 SSH Profile；调色板里
         // `ssh.connect:<id|name>` 精确指定 Profile（走 Backend::Plugin）。
-        bind("ssh.connect", "Connect SSH (Plugin POC)", Category::Session, None),
+        bind(
+            "ssh.connect",
+            "Connect SSH (Plugin POC)",
+            Category::Session,
+            None,
+        ),
     ];
     for command in cmds {
         r.register(command).expect("内置命令 ID 不能重复");
@@ -977,13 +1419,21 @@ mod tests {
         // ID 唯一、非空、kebab-case
         for c in r.all() {
             assert!(!c.id.is_empty());
-            assert!(c.id.chars().all(|ch| ch.is_ascii_lowercase() || ch == '-' || ch == '.' || ch.is_ascii_digit()), "{}", c.id);
+            assert!(
+                c.id.chars().all(|ch| ch.is_ascii_lowercase()
+                    || ch == '-'
+                    || ch == '.'
+                    || ch.is_ascii_digit()),
+                "{}",
+                c.id
+            );
             assert_eq!(r.get(c.id).map(|x| x.id), Some(c.id));
         }
         // 默认快捷键必须都能解析
         for c in r.all() {
             if let Some(s) = c.default_shortcut {
-                Shortcut::parse(s).unwrap_or_else(|e| panic!("{} 的快捷键 {s} 解析失败: {e}", c.id));
+                Shortcut::parse(s)
+                    .unwrap_or_else(|e| panic!("{} 的快捷键 {s} 解析失败: {e}", c.id));
             }
         }
     }
@@ -992,7 +1442,10 @@ mod tests {
     fn default_command_for_chord_finds_known_bindings() {
         let r = builtin();
         let chord = Chord::parse("ctrl+shift+e").unwrap();
-        assert_eq!(r.default_command_for_chord(&chord), Some("pane.split-right"));
+        assert_eq!(
+            r.default_command_for_chord(&chord),
+            Some("pane.split-right")
+        );
         // 无修饰普通字符不该命中任何命令（也拿不到终端之外的含义）
         let plain = Chord::parse("e").unwrap();
         assert_eq!(r.default_command_for_chord(&plain), None);
@@ -1042,7 +1495,8 @@ mod tests {
         // Ctrl+W 必须留给 shell 的 unix-word-rubout（删除前一个词），
         // 否则终端里“删除”永远失灵；关闭 Tab 改用 Ctrl+Shift+W。
         assert!(
-            r.default_command_for_chord(&Chord::parse("ctrl+w").unwrap()).is_none(),
+            r.default_command_for_chord(&Chord::parse("ctrl+w").unwrap())
+                .is_none(),
             "Ctrl+W 不能绑定 xtervo 命令"
         );
         // 既有 Close Tab / Reopen 仍保留原绑定，改动不能踩到它们。
@@ -1089,7 +1543,10 @@ mod tests {
         assert_eq!(multi.chords.len(), 2);
         assert_eq!(multi.canonical(), "ctrl+k ctrl+t");
         assert_eq!(multi.single_chord(), None);
-        assert_eq!(s.single_chord().map(Chord::canonical).as_deref(), Some("ctrl+shift+p"));
+        assert_eq!(
+            s.single_chord().map(Chord::canonical).as_deref(),
+            Some("ctrl+shift+p")
+        );
 
         assert!(Shortcut::parse("ctrl+").is_err());
         assert!(Shortcut::parse("ctrl+a+b").is_err());
@@ -1119,7 +1576,11 @@ mod tests {
             let chord = Chord::parse(input).unwrap_or_else(|e| panic!("{input}: {e}"));
             assert_eq!(chord.canonical(), canonical, "input={input}");
             // 规范格式必须能解析回同一个 chord
-            assert_eq!(Chord::parse(&chord.canonical()).unwrap(), chord, "input={input}");
+            assert_eq!(
+                Chord::parse(&chord.canonical()).unwrap(),
+                chord,
+                "input={input}"
+            );
         }
 
         for bad in [
@@ -1139,7 +1600,10 @@ mod tests {
 
     #[test]
     fn chord_display_and_bindability() {
-        assert_eq!(Chord::parse("ctrl+shift+t").unwrap().to_string(), "Ctrl+Shift+T");
+        assert_eq!(
+            Chord::parse("ctrl+shift+t").unwrap().to_string(),
+            "Ctrl+Shift+T"
+        );
         assert_eq!(Chord::parse("f12").unwrap().to_string(), "f12");
         // 普通字符不能当全局快捷键；F 键可以
         assert!(!Chord::parse("a").unwrap().is_bindable());
@@ -1151,9 +1615,12 @@ mod tests {
 
     fn test_registry() -> Registry {
         let mut r = Registry::new();
-        r.register(bind("x.one", "One", Category::View, Some("ctrl+1"))).unwrap();
-        r.register(bind("x.two", "Two", Category::View, Some("ctrl+2"))).unwrap();
-        r.register(bind("x.three", "Three", Category::View, None)).unwrap();
+        r.register(bind("x.one", "One", Category::View, Some("ctrl+1")))
+            .unwrap();
+        r.register(bind("x.two", "Two", Category::View, Some("ctrl+2")))
+            .unwrap();
+        r.register(bind("x.three", "Three", Category::View, None))
+            .unwrap();
         r
     }
 
@@ -1165,15 +1632,23 @@ mod tests {
         set_override(&mut overrides, "x.one", &chord);
 
         assert_eq!(
-            r.override_for("x.one", &overrides).map(|o| o.chord.as_str()),
+            r.override_for("x.one", &overrides)
+                .map(|o| o.chord.as_str()),
             Some("ctrl+shift+y")
         );
         assert_eq!(
-            r.effective_shortcut("x.one", &overrides).unwrap().canonical(),
+            r.effective_shortcut("x.one", &overrides)
+                .unwrap()
+                .canonical(),
             "ctrl+shift+y"
         );
         // 未覆盖的命令仍用默认；无默认仍为 None
-        assert_eq!(r.effective_shortcut("x.two", &overrides).unwrap().canonical(), "ctrl+2");
+        assert_eq!(
+            r.effective_shortcut("x.two", &overrides)
+                .unwrap()
+                .canonical(),
+            "ctrl+2"
+        );
         assert!(r.effective_shortcut("x.three", &overrides).is_none());
         // 未知命令的配置被忽略
         assert!(r.override_for("nope", &overrides).is_none());
@@ -1181,15 +1656,28 @@ mod tests {
         assert!(!overrides.iter().any(|o| o.command == "nope"));
 
         // 非法 chord 的 override 回退到默认
-        overrides.push(HotkeyOverride { command: "x.two".into(), chord: "not-a-chord+".into() });
-        assert_eq!(r.effective_shortcut("x.two", &overrides).unwrap().canonical(), "ctrl+2");
+        overrides.push(HotkeyOverride {
+            command: "x.two".into(),
+            chord: "not-a-chord+".into(),
+        });
+        assert_eq!(
+            r.effective_shortcut("x.two", &overrides)
+                .unwrap()
+                .canonical(),
+            "ctrl+2"
+        );
 
         // set 会去重；clear 返回是否删掉
         set_override(&mut overrides, "x.one", &Chord::parse("ctrl+3").unwrap());
         assert_eq!(overrides.iter().filter(|o| o.command == "x.one").count(), 1);
         assert!(clear_override(&mut overrides, "x.one"));
         assert!(!clear_override(&mut overrides, "x.one"));
-        assert_eq!(r.effective_shortcut("x.one", &overrides).unwrap().canonical(), "ctrl+1");
+        assert_eq!(
+            r.effective_shortcut("x.one", &overrides)
+                .unwrap()
+                .canonical(),
+            "ctrl+1"
+        );
     }
 
     #[test]
@@ -1198,25 +1686,36 @@ mod tests {
         let mut overrides = Vec::new();
 
         // 与别的命令默认键冲突
-        let err = r.validate_override("x.one", "ctrl+2", &overrides).unwrap_err();
+        let err = r
+            .validate_override("x.one", "ctrl+2", &overrides)
+            .unwrap_err();
         assert!(err.contains("Two"), "{err}");
         // 未知命令 / 非法 chord / 无修饰普通字符
         assert!(r.validate_override("nope", "ctrl+9", &overrides).is_err());
-        assert!(r.validate_override("x.one", "ctrl+banana", &overrides).is_err());
+        assert!(r
+            .validate_override("x.one", "ctrl+banana", &overrides)
+            .is_err());
         assert!(r.validate_override("x.one", "a", &overrides).is_err());
         // 改自己的键不算冲突
-        let ok = r.validate_override("x.one", "ctrl+shift+y", &overrides).unwrap();
+        let ok = r
+            .validate_override("x.one", "ctrl+shift+y", &overrides)
+            .unwrap();
         assert_eq!(ok.canonical(), "ctrl+shift+y");
         // 填进配置后生效且无冲突
         set_override(&mut overrides, "x.one", &ok);
         assert!(r.effective_conflicts(&overrides).is_empty());
 
         // 把 x.two 也改到同一个键 → 冲突
-        overrides.push(HotkeyOverride { command: "x.two".into(), chord: "ctrl+shift+y".into() });
+        overrides.push(HotkeyOverride {
+            command: "x.two".into(),
+            chord: "ctrl+shift+y".into(),
+        });
         let conflicts = r.effective_conflicts(&overrides);
         assert_eq!(conflicts.len(), 1);
         assert_eq!(conflicts[0].command_ids, vec!["x.one", "x.two"]);
-        assert!(r.validate_override("x.two", "ctrl+shift+y", &overrides).is_err());
+        assert!(r
+            .validate_override("x.two", "ctrl+shift+y", &overrides)
+            .is_err());
 
         // 清除覆盖后冲突消失
         clear_override(&mut overrides, "x.two");
@@ -1226,8 +1725,10 @@ mod tests {
     #[test]
     fn conflict_detection() {
         let mut r = Registry::new();
-        r.register(bind("x.one", "One", Category::View, Some("ctrl+shift+x"))).unwrap();
-        r.register(bind("x.two", "Two", Category::View, Some("ctrl+shift+x"))).unwrap();
+        r.register(bind("x.one", "One", Category::View, Some("ctrl+shift+x")))
+            .unwrap();
+        r.register(bind("x.two", "Two", Category::View, Some("ctrl+shift+x")))
+            .unwrap();
         let conflicts = r.conflicts();
         assert_eq!(conflicts.len(), 1);
         assert_eq!(conflicts[0].command_ids, vec!["x.one", "x.two"]);
@@ -1240,38 +1741,67 @@ mod tests {
     fn dispatch_helpers_ignore_unknown_and_plain_keys() {
         let r = test_registry();
         let mut overrides = Vec::new();
-        set_override(&mut overrides, "x.one", &Chord::parse("ctrl+shift+y").unwrap());
+        set_override(
+            &mut overrides,
+            "x.one",
+            &Chord::parse("ctrl+shift+y").unwrap(),
+        );
 
         let hit = Chord::parse("ctrl+shift+y").unwrap();
-        assert_eq!(r.override_command_for_chord(&hit, &overrides), Some("x.one"));
+        assert_eq!(
+            r.override_command_for_chord(&hit, &overrides),
+            Some("x.one")
+        );
         // 没有 override 的默认键不算 override 命中
         assert_eq!(
             r.override_command_for_chord(&Chord::parse("ctrl+2").unwrap(), &overrides),
             None
         );
         // 未知命令 / 非法 / 无修饰普通字符都不参与分发
-        overrides.push(HotkeyOverride { command: "nope".into(), chord: "ctrl+shift+n".into() });
-        overrides.push(HotkeyOverride { command: "x.two".into(), chord: "oops".into() });
-        overrides.push(HotkeyOverride { command: "x.three".into(), chord: "a".into() });
+        overrides.push(HotkeyOverride {
+            command: "nope".into(),
+            chord: "ctrl+shift+n".into(),
+        });
+        overrides.push(HotkeyOverride {
+            command: "x.two".into(),
+            chord: "oops".into(),
+        });
+        overrides.push(HotkeyOverride {
+            command: "x.three".into(),
+            chord: "a".into(),
+        });
         assert_eq!(
             r.override_command_for_chord(&Chord::parse("ctrl+shift+n").unwrap(), &overrides),
             None
         );
-        assert_eq!(r.override_command_for_chord(&Chord::parse("a").unwrap(), &overrides), None);
+        assert_eq!(
+            r.override_command_for_chord(&Chord::parse("a").unwrap(), &overrides),
+            None
+        );
     }
 
     #[test]
     fn stale_default_is_suppressed_after_rebind() {
         let r = test_registry();
         let mut overrides = Vec::new();
-        set_override(&mut overrides, "x.one", &Chord::parse("ctrl+shift+y").unwrap());
+        set_override(
+            &mut overrides,
+            "x.one",
+            &Chord::parse("ctrl+shift+y").unwrap(),
+        );
 
         // 旧默认键被改走 → 调用方吞掉
         let old = Chord::parse("ctrl+1").unwrap();
         assert_eq!(r.suppressed_default(&old, &overrides), Some("x.one"));
         // 新键 / 未改命令的默认键都不吞
-        assert_eq!(r.suppressed_default(&Chord::parse("ctrl+shift+y").unwrap(), &overrides), None);
-        assert_eq!(r.suppressed_default(&Chord::parse("ctrl+2").unwrap(), &overrides), None);
+        assert_eq!(
+            r.suppressed_default(&Chord::parse("ctrl+shift+y").unwrap(), &overrides),
+            None
+        );
+        assert_eq!(
+            r.suppressed_default(&Chord::parse("ctrl+2").unwrap(), &overrides),
+            None
+        );
         // 覆盖成同一个键：仍按默认路径走，不算“被改走”
         let mut same = Vec::new();
         set_override(&mut same, "x.one", &Chord::parse("ctrl+1").unwrap());
@@ -1286,10 +1816,14 @@ mod tests {
             r.override_command_for_chord(&Chord::parse("ctrl+shift+t").unwrap(), &[]),
             None
         );
-        assert!(r.suppressed_default(&Chord::parse("ctrl+shift+t").unwrap(), &[]).is_none());
+        assert!(r
+            .suppressed_default(&Chord::parse("ctrl+shift+t").unwrap(), &[])
+            .is_none());
 
         let mut overrides = Vec::new();
-        let chord = r.validate_override("tab.new", "ctrl+alt+n", &overrides).unwrap();
+        let chord = r
+            .validate_override("tab.new", "ctrl+alt+n", &overrides)
+            .unwrap();
         set_override(&mut overrides, "tab.new", &chord);
 
         assert_eq!(
@@ -1302,7 +1836,9 @@ mod tests {
             Some("tab.new")
         );
         // 把别的命令绑到 ctrl+alt+n 会与 override 冲突
-        let err = r.validate_override("tab.close", "ctrl+alt+n", &overrides).unwrap_err();
+        let err = r
+            .validate_override("tab.close", "ctrl+alt+n", &overrides)
+            .unwrap_err();
         assert!(err.contains("New Tab"), "{err}");
         assert!(r.effective_conflicts(&overrides).is_empty());
     }
@@ -1417,7 +1953,9 @@ mod tests {
             .collect();
         assert_eq!(effective.len(), 3);
         assert_eq!(
-            r.effective_shortcut("view.zoom-in", &[]).unwrap().canonical(),
+            r.effective_shortcut("view.zoom-in", &[])
+                .unwrap()
+                .canonical(),
             "ctrl++"
         );
     }
@@ -1441,22 +1979,31 @@ mod tests {
             Shortcut::parse("Ctrl + K Ctrl + T").unwrap().canonical(),
             "ctrl+k ctrl+t"
         );
-        assert_eq!(Shortcut::parse("Ctrl + Shift + N").unwrap().canonical(), "ctrl+shift+n");
+        assert_eq!(
+            Shortcut::parse("Ctrl + Shift + N").unwrap().canonical(),
+            "ctrl+shift+n"
+        );
     }
 
     #[test]
     fn multi_chord_validation_storage_and_dispatch() {
         let r = test_registry();
         let mut overrides = Vec::new();
-        let multi = r.validate_override_shortcut("x.two", "ctrl+k ctrl+t", &overrides).unwrap();
+        let multi = r
+            .validate_override_shortcut("x.two", "ctrl+k ctrl+t", &overrides)
+            .unwrap();
         assert_eq!(multi.canonical(), "ctrl+k ctrl+t");
         set_override_shortcut(&mut overrides, "x.two", &multi);
         assert_eq!(
-            r.override_shortcut_for("x.two", &overrides).unwrap().canonical(),
+            r.override_shortcut_for("x.two", &overrides)
+                .unwrap()
+                .canonical(),
             "ctrl+k ctrl+t"
         );
         assert_eq!(
-            r.effective_shortcut("x.two", &overrides).unwrap().canonical(),
+            r.effective_shortcut("x.two", &overrides)
+                .unwrap()
+                .canonical(),
             "ctrl+k ctrl+t"
         );
 
@@ -1476,11 +2023,17 @@ mod tests {
         assert!(!r.multi_chord_prefix(&Chord::parse("ctrl+shift+y").unwrap(), &overrides));
 
         // 相同序列 → 冲突；与已有单段前缀重叠 → 也冲突。
-        assert!(r.validate_override_shortcut("x.one", "ctrl+k ctrl+t", &overrides).is_err());
-        let err = r.validate_override_shortcut("x.one", "ctrl+k", &overrides).unwrap_err();
+        assert!(r
+            .validate_override_shortcut("x.one", "ctrl+k ctrl+t", &overrides)
+            .is_err());
+        let err = r
+            .validate_override_shortcut("x.one", "ctrl+k", &overrides)
+            .unwrap_err();
         assert!(err.contains("冲突"), "{err}");
         // 改自己的键不算冲突（两段换一段）。
-        assert!(r.validate_override_shortcut("x.two", "ctrl+shift+y", &overrides).is_ok());
+        assert!(r
+            .validate_override_shortcut("x.two", "ctrl+shift+y", &overrides)
+            .is_ok());
     }
 
     #[test]
@@ -1499,7 +2052,10 @@ mod tests {
         );
         assert_eq!(
             r.command_for_sequence(
-                &[Chord::parse("ctrl+k").unwrap(), Chord::parse("ctrl+t").unwrap()],
+                &[
+                    Chord::parse("ctrl+k").unwrap(),
+                    Chord::parse("ctrl+t").unwrap()
+                ],
                 &overrides
             ),
             Some("x.one")
@@ -1516,23 +2072,49 @@ mod tests {
         let r = builtin();
         let mut overrides = vec![
             // 后写的重复命令优先（与 override_for 语义一致）。
-            HotkeyOverride { command: "tab.new".into(), chord: "ctrl+alt+n".into() },
-            HotkeyOverride { command: "tab.new".into(), chord: "ctrl+alt+m".into() },
+            HotkeyOverride {
+                command: "tab.new".into(),
+                chord: "ctrl+alt+n".into(),
+            },
+            HotkeyOverride {
+                command: "tab.new".into(),
+                chord: "ctrl+alt+m".into(),
+            },
             // 未知命令 / 非法 / 无修饰普通字符。
-            HotkeyOverride { command: "nope.command".into(), chord: "ctrl+alt+x".into() },
-            HotkeyOverride { command: "tab.close".into(), chord: "ctrl+banana".into() },
-            HotkeyOverride { command: "tab.search".into(), chord: "a".into() },
+            HotkeyOverride {
+                command: "nope.command".into(),
+                chord: "ctrl+alt+x".into(),
+            },
+            HotkeyOverride {
+                command: "tab.close".into(),
+                chord: "ctrl+banana".into(),
+            },
+            HotkeyOverride {
+                command: "tab.search".into(),
+                chord: "a".into(),
+            },
             // 同一命令重复：后写的 tab.rename ctrl+alt+shift+r 优先。
-            HotkeyOverride { command: "tab.rename".into(), chord: "ctrl+alt+r".into() },
-            HotkeyOverride { command: "tab.rename".into(), chord: "ctrl+alt+shift+r".into() },
+            HotkeyOverride {
+                command: "tab.rename".into(),
+                chord: "ctrl+alt+r".into(),
+            },
+            HotkeyOverride {
+                command: "tab.rename".into(),
+                chord: "ctrl+alt+shift+r".into(),
+            },
             // 与保留项冲突（后写的 terminal.copy ctrl+alt+m 优先，tab.new 这条被丢）。
-            HotkeyOverride { command: "terminal.copy".into(), chord: "ctrl+alt+m".into() },
+            HotkeyOverride {
+                command: "terminal.copy".into(),
+                chord: "ctrl+alt+m".into(),
+            },
         ];
         let repairs = repair_hotkey_overrides(&r, &mut overrides);
         // 保留下来的：tab.new(ctrl+alt+n)、tab.rename(ctrl+alt+shift+r)、terminal.copy(ctrl+alt+m)。
         assert_eq!(overrides.len(), 3, "修复结果: {overrides:?}");
-        let kept: Vec<(&str, &str)> =
-            overrides.iter().map(|o| (o.command.as_str(), o.chord.as_str())).collect();
+        let kept: Vec<(&str, &str)> = overrides
+            .iter()
+            .map(|o| (o.command.as_str(), o.chord.as_str()))
+            .collect();
         assert_eq!(
             kept,
             vec![
@@ -1551,14 +2133,23 @@ mod tests {
         assert!(r.effective_conflicts(&overrides).is_empty());
 
         // 健康配置不被改动。
-        let mut clean = vec![HotkeyOverride { command: "tab.new".into(), chord: "ctrl+alt+n".into() }];
+        let mut clean = vec![HotkeyOverride {
+            command: "tab.new".into(),
+            chord: "ctrl+alt+n".into(),
+        }];
         assert!(repair_hotkey_overrides(&r, &mut clean).is_empty());
         assert_eq!(clean.len(), 1);
 
         // 两段绑定：前缀重叠也算冲突。
         let mut prefix = vec![
-            HotkeyOverride { command: "tab.new".into(), chord: "ctrl+k".into() },
-            HotkeyOverride { command: "terminal.copy".into(), chord: "ctrl+k ctrl+t".into() },
+            HotkeyOverride {
+                command: "tab.new".into(),
+                chord: "ctrl+k".into(),
+            },
+            HotkeyOverride {
+                command: "terminal.copy".into(),
+                chord: "ctrl+k ctrl+t".into(),
+            },
         ];
         let repairs = repair_hotkey_overrides(&r, &mut prefix);
         assert_eq!(prefix.len(), 1, "{prefix:?}");
@@ -1599,7 +2190,11 @@ mod tests {
         let r = builtin();
         let hits = r.search("split");
         assert!(!hits.is_empty());
-        assert!(hits[0].title.to_lowercase().contains("split"), "首个命中应是 Split: {}", hits[0].title);
+        assert!(
+            hits[0].title.to_lowercase().contains("split"),
+            "首个命中应是 Split: {}",
+            hits[0].title
+        );
 
         // 子序列也能命中
         let ids: Vec<&str> = r.search("pltt").iter().map(|c| c.id).collect();

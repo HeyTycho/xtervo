@@ -9,8 +9,8 @@
 //! 但 OpenSSH 的 `progress` 表在 stdout 不是 tty 时（本项目的管道场景）**不会输出**，
 //! 此时 UI 退化为「当前文件 + 不确定进度」，不伪造百分比。
 
-use std::io::{Read, Write};
 use std::collections::VecDeque;
+use std::io::{Read, Write};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -59,7 +59,10 @@ pub struct SftpTarget {
 impl SftpTarget {
     pub fn from_profile(p: &Profile) -> Result<Self, String> {
         if p.kind != "ssh" {
-            return Err(format!("只有 SSH Profile 支持 SFTP（当前 kind={}）", p.kind));
+            return Err(format!(
+                "只有 SSH Profile 支持 SFTP（当前 kind={}）",
+                p.kind
+            ));
         }
         if p.host.trim().is_empty() {
             return Err("SFTP 需要 host".into());
@@ -111,7 +114,12 @@ impl SftpTarget {
                 args.push(format!("{name}={value}"));
             }
         }
-        args.extend(self.extra_args.iter().filter(|a| !a.trim().is_empty()).cloned());
+        args.extend(
+            self.extra_args
+                .iter()
+                .filter(|a| !a.trim().is_empty())
+                .cloned(),
+        );
         for option in [
             "ConnectTimeout=10",
             "ServerAliveInterval=5",
@@ -183,10 +191,10 @@ pub fn run_command_with_timeout_cancel(
             Ok(spawned) => {
                 child = Some(spawned);
                 break;
-            },
+            }
             Err(e) if e.raw_os_error() == Some(26) && attempt < 4 => {
                 thread::sleep(Duration::from_millis(20));
-            },
+            }
             Err(e) => return Err(format!("启动 sftp 失败: {e}")),
         }
     }
@@ -237,7 +245,7 @@ pub fn run_command_with_timeout_cancel(
         }
         match child.try_wait() {
             Ok(Some(status)) => break Ok(status),
-            Ok(None) => {},
+            Ok(None) => {}
             Err(e) => break Err(e),
         }
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -255,7 +263,11 @@ pub fn run_command_with_timeout_cancel(
     };
 
     // kill 后给 reader 一个有限宽限；正常退出则允许 2s 把剩余 stdout 读完。
-    let grace = if timed_out || cancelled { KILL_GRACE } else { Duration::from_secs(2) };
+    let grace = if timed_out || cancelled {
+        KILL_GRACE
+    } else {
+        Duration::from_secs(2)
+    };
     let stdout = out_rx.recv_timeout(grace).unwrap_or_default();
     let stderr = err_rx.recv_timeout(grace).unwrap_or_default();
     for reader in readers {
@@ -290,7 +302,7 @@ pub fn run_command_with_timeout_cancel(
                 }
             }
             Err(format!("sftp 失败（{status}）: {msg}"))
-        },
+        }
         Err(e) => Err(format!("等待 sftp 失败: {e}")),
     }
 }
@@ -324,7 +336,7 @@ fn reap_after_kill(child: &mut Child) -> Option<std::process::ExitStatus> {
     loop {
         match child.try_wait() {
             Ok(Some(status)) => return Some(status),
-            Ok(None) => {},
+            Ok(None) => {}
             Err(_) => return None,
         }
         if Instant::now() >= deadline {
@@ -409,8 +421,15 @@ impl RemoteEntry {
         if self.mode.is_empty() {
             return self.name.clone();
         }
-        let size = self.size.map(format_bytes).unwrap_or_else(|| "-".to_string());
-        let mtime = if self.mtime.is_empty() { "-" } else { self.mtime.as_str() };
+        let size = self
+            .size
+            .map(format_bytes)
+            .unwrap_or_else(|| "-".to_string());
+        let mtime = if self.mtime.is_empty() {
+            "-"
+        } else {
+            self.mtime.as_str()
+        };
         let mut text = format!("{} {:>8} {} {}", self.mode, size, mtime, self.name);
         if let Some(target) = &self.link_target {
             text.push_str(" -> ");
@@ -442,7 +461,11 @@ fn split_fields(line: &str) -> Vec<(usize, &str)> {
 /// OpenSSH `ls -l` 的第一个字段：文件类型 + 9 个权限位（可能多一个 ACL 标记）。
 fn looks_like_mode(mode: &str) -> bool {
     let bytes = mode.as_bytes();
-    bytes.len() >= 10 && matches!(bytes[0], b'-' | b'd' | b'l' | b'b' | b'c' | b'p' | b's' | b'?')
+    bytes.len() >= 10
+        && matches!(
+            bytes[0],
+            b'-' | b'd' | b'l' | b'b' | b'c' | b'p' | b's' | b'?'
+        )
 }
 
 /// 是否是长格式行（即使因 `.`/`..` 被过滤，也不应当作纯文件名）。
@@ -495,10 +518,7 @@ pub fn parse_list_long(out: &str) -> Vec<RemoteEntry> {
     let mut entries = Vec::new();
     for raw in out.lines() {
         let line = raw.trim_start();
-        if line.trim().is_empty()
-            || line.starts_with("sftp>")
-            || line.starts_with("Connected to")
-        {
+        if line.trim().is_empty() || line.starts_with("sftp>") || line.starts_with("Connected to") {
             continue;
         }
         if let Some(entry) = parse_long_entry(line) {
@@ -547,7 +567,7 @@ where
             // 空目录也会走到这里；多一次 `ls -1` 是可接受的，换取对旧服务器/
             // 假 sftp 脚本的兼容（它们可能不认识 -l，但会返回纯文件名）。
             run(&ls_short_batch(remote)).map(|out| parse_short_entries(&out))
-        },
+        }
         Err(first) => {
             // 超时/取消已经 kill 子进程，再回退只会重复同一错误并浪费时间。
             if is_terminal_sftp_error(&first) {
@@ -557,7 +577,7 @@ where
                 Ok(out) => Ok(parse_short_entries(&out)),
                 Err(second) => Err(second),
             }
-        },
+        }
     }
 }
 
@@ -624,7 +644,8 @@ pub fn list(t: &SftpTarget, remote: &str) -> Result<Vec<RemoteEntry>, String> {
 }
 
 pub fn mkdir(t: &SftpTarget, remote: &str) -> Result<(), String> {
-    t.run(&format!("mkdir {}\n", quote_batch_path(remote))).map(|_| ())
+    t.run(&format!("mkdir {}\n", quote_batch_path(remote)))
+        .map(|_| ())
 }
 
 pub fn rename(t: &SftpTarget, from: &str, to: &str) -> Result<(), String> {
@@ -641,7 +662,10 @@ pub fn remove(t: &SftpTarget, remote: &str) -> Result<(), String> {
     let quoted = quote_batch_path(remote);
     match t.run(&format!("rm {quoted}\n")) {
         Ok(_) => Ok(()),
-        Err(first) => t.run(&format!("rmdir {quoted}\n")).map(|_| ()).map_err(|_| first),
+        Err(first) => t
+            .run(&format!("rmdir {quoted}\n"))
+            .map(|_| ())
+            .map_err(|_| first),
     }
 }
 
@@ -653,24 +677,61 @@ pub fn remove(t: &SftpTarget, remote: &str) -> Result<(), String> {
 /// 冻死；现在统一进 [`SftpOpJob`] 后台线程 + 硬超时。
 #[derive(Clone, Debug, PartialEq)]
 pub enum SftpCommand {
-    List { target: SftpTarget, remote: String },
-    Mkdir { target: SftpTarget, remote: String },
-    Rename { target: SftpTarget, from: String, to: String },
-    Remove { target: SftpTarget, remote: String },
+    List {
+        target: SftpTarget,
+        remote: String,
+    },
+    Mkdir {
+        target: SftpTarget,
+        remote: String,
+    },
+    Rename {
+        target: SftpTarget,
+        from: String,
+        to: String,
+    },
+    Remove {
+        target: SftpTarget,
+        remote: String,
+    },
     /// 递归删除目录：逐层 list/rm/rmdir，总预算 [`SFTP_RECURSIVE_TIMEOUT`]。
-    RemoveRecursive { target: SftpTarget, remote: String },
+    RemoveRecursive {
+        target: SftpTarget,
+        remote: String,
+    },
     /// `chmod <mode> <remote>`；mode 已由 UI 解析成八进制权限位。
-    Chmod { target: SftpTarget, remote: String, mode: u32 },
+    Chmod {
+        target: SftpTarget,
+        remote: String,
+        mode: u32,
+    },
 }
 
 /// 后台元数据任务的结果：带原始路径，便于 UI 写回状态文案/刷新列表。
 #[derive(Clone, Debug, PartialEq)]
 pub enum SftpOutcome {
-    List { remote: String, items: Result<Vec<RemoteEntry>, String> },
-    Mkdir { remote: String, result: Result<(), String> },
-    Rename { from: String, to: String, result: Result<(), String> },
-    Remove { path: String, result: Result<(), String> },
-    Chmod { path: String, mode: u32, result: Result<(), String> },
+    List {
+        remote: String,
+        items: Result<Vec<RemoteEntry>, String>,
+    },
+    Mkdir {
+        remote: String,
+        result: Result<(), String>,
+    },
+    Rename {
+        from: String,
+        to: String,
+        result: Result<(), String>,
+    },
+    Remove {
+        path: String,
+        result: Result<(), String>,
+    },
+    Chmod {
+        path: String,
+        mode: u32,
+        result: Result<(), String>,
+    },
 }
 
 impl SftpOutcome {
@@ -684,11 +745,11 @@ impl SftpOutcome {
             Self::Mkdir { remote, result } => format_result("mkdir", remote, result),
             Self::Rename { from, to, result } => {
                 format!("rename {from} → {to}: {}", ok_or_err(result))
-            },
+            }
             Self::Remove { path, result } => format_result("remove", path, result),
             Self::Chmod { path, mode, result } => {
                 format!("chmod {mode:04o} {path}: {}", ok_or_err(result))
-            },
+            }
         }
     }
 }
@@ -741,17 +802,11 @@ impl SftpCommand {
                             format_timeout(timeout)
                         ));
                     }
-                    run_program_cancel(
-                        program,
-                        &target,
-                        batch,
-                        remaining.min(SFTP_TIMEOUT),
-                        cancel,
-                    )
+                    run_program_cancel(program, &target, batch, remaining.min(SFTP_TIMEOUT), cancel)
                 };
                 let items = list_entries_with(&remote, &mut run);
                 SftpOutcome::List { remote, items }
-            },
+            }
             Self::Mkdir { target, remote } => {
                 let result = run_program_cancel(
                     program,
@@ -762,7 +817,7 @@ impl SftpCommand {
                 )
                 .map(|_| ());
                 SftpOutcome::Mkdir { remote, result }
-            },
+            }
             Self::Rename { target, from, to } => {
                 let result = run_program_cancel(
                     program,
@@ -777,7 +832,7 @@ impl SftpCommand {
                 )
                 .map(|_| ());
                 SftpOutcome::Rename { from, to, result }
-            },
+            }
             Self::Remove { target, remote } => {
                 let started = Instant::now();
                 let result = match run_program_cancel(
@@ -805,15 +860,25 @@ impl SftpCommand {
                             .map(|_| ())
                             .map_err(|_| first)
                         }
-                    },
+                    }
                 };
-                SftpOutcome::Remove { path: remote, result }
-            },
+                SftpOutcome::Remove {
+                    path: remote,
+                    result,
+                }
+            }
             Self::RemoveRecursive { target, remote } => {
                 let result = remove_tree(program, &target, &remote, timeout, cancel);
-                SftpOutcome::Remove { path: remote, result }
-            },
-            Self::Chmod { target, remote, mode } => {
+                SftpOutcome::Remove {
+                    path: remote,
+                    result,
+                }
+            }
+            Self::Chmod {
+                target,
+                remote,
+                mode,
+            } => {
                 let result = run_program_cancel(
                     program,
                     &target,
@@ -822,8 +887,12 @@ impl SftpCommand {
                     cancel,
                 )
                 .map(|_| ());
-                SftpOutcome::Chmod { path: remote, mode, result }
-            },
+                SftpOutcome::Chmod {
+                    path: remote,
+                    mode,
+                    result,
+                }
+            }
         }
     }
 }
@@ -856,7 +925,9 @@ fn join_remote_path(dir: &str, name: &str) -> String {
 /// 防止服务端返回 `/etc` 或 `../../x` 让删除逃逸用户选中的目录。
 fn child_remote_path(dir: &str, name: &str) -> Result<String, String> {
     if name.is_empty() || name == "." || name == ".." || name.contains('/') {
-        return Err(format!("拒绝可疑远端条目名 {name:?}（目录 {dir}），已中止删除"));
+        return Err(format!(
+            "拒绝可疑远端条目名 {name:?}（目录 {dir}），已中止删除"
+        ));
     }
     Ok(join_remote_path(dir, name))
 }
@@ -870,7 +941,11 @@ struct DeleteBudget<'a> {
 
 impl<'a> DeleteBudget<'a> {
     fn new(total: Duration, cancel: Option<&'a AtomicBool>) -> Self {
-        Self { deadline: Instant::now() + total, total, cancel }
+        Self {
+            deadline: Instant::now() + total,
+            total,
+            cancel,
+        }
     }
 
     fn cancelled(&self) -> bool {
@@ -956,11 +1031,13 @@ where
     match budget.run(run, &format!("rmdir {}\n", quote_batch_path(path))) {
         Ok(_) => return Ok(()),
         Err(error) if is_terminal_sftp_error(&error) => return Err(error),
-        Err(_) => {},
+        Err(_) => {}
     }
     let entries = list_entries_with(path, |batch| budget.run(run, batch))?;
     remove_children(budget, run, path, entries, depth)?;
-    budget.run(run, &format!("rmdir {}\n", quote_batch_path(path))).map(|_| ())
+    budget
+        .run(run, &format!("rmdir {}\n", quote_batch_path(path)))
+        .map(|_| ())
 }
 
 fn remove_children<F>(
@@ -1006,7 +1083,6 @@ where
     budget.run(run, &batch).map(|_| ())
 }
 
-
 /// 把 UI 里的权限输入解析成八进制权限位。
 ///
 /// 接受 `644` / `0644` / `0o644` / `u=rw,go=r` 之外的纯八进制形式；
@@ -1016,7 +1092,9 @@ pub fn parse_mode(input: &str) -> Result<u32, String> {
     let digits = trimmed.strip_prefix("0o").unwrap_or(trimmed);
     if digits.is_empty() || digits.len() > 4 || !digits.bytes().all(|b| (b'0'..=b'7').contains(&b))
     {
-        return Err(format!("权限必须是 0–4 位八进制（如 644），实际: {input:?}"));
+        return Err(format!(
+            "权限必须是 0–4 位八进制（如 644），实际: {input:?}"
+        ));
     }
     let mode = u32::from_str_radix(digits, 8).map_err(|_| format!("权限无效: {input:?}"))?;
     if mode > 0o7777 {
@@ -1047,12 +1125,21 @@ impl SftpOpJob {
     /// 生产入口：结果（含超时）写通道后额外唤醒 UI，把完成延迟从 400ms 降到事件级。
     pub fn start_woken(command: SftpCommand, wake: WakeSignal) -> Self {
         let timeout = command.timeout();
-        Self::start_inner(command, Path::new("sftp").to_path_buf(), timeout, Some(wake))
+        Self::start_inner(
+            command,
+            Path::new("sftp").to_path_buf(),
+            timeout,
+            Some(wake),
+        )
     }
 
     /// 注入程序/超时的启动入口（测试/探针用；生产用 [`Self::start_woken`]）。
     #[allow(dead_code)]
-    pub fn start_with(command: SftpCommand, program: std::path::PathBuf, timeout: Duration) -> Self {
+    pub fn start_with(
+        command: SftpCommand,
+        program: std::path::PathBuf,
+        timeout: Duration,
+    ) -> Self {
         Self::start_inner(command, program, timeout, None)
     }
 
@@ -1075,7 +1162,12 @@ impl SftpOpJob {
                 }
             }
         });
-        Self { events, cancel, timeout, join: Some(join) }
+        Self {
+            events,
+            cancel,
+            timeout,
+            join: Some(join),
+        }
     }
 
     /// UI 线程调用：标记取消并唤醒 worker 的轮询（worker 负责 kill 子进程组）。
@@ -1133,14 +1225,21 @@ pub fn parse_progress_line(line: &str) -> Option<ProgressLine> {
     }
     let tokens: Vec<&str> = line.split_whitespace().collect();
     let index = tokens.iter().rposition(|token| {
-        token.strip_suffix('%').and_then(|v| v.parse::<u8>().ok()).is_some_and(|v| v <= 100)
+        token
+            .strip_suffix('%')
+            .and_then(|v| v.parse::<u8>().ok())
+            .is_some_and(|v| v <= 100)
     })?;
     if index == 0 {
         return None;
     }
     let percent = tokens[index].strip_suffix('%')?.parse::<u8>().ok()?;
     let bytes = parse_size(tokens.get(index + 1)?)?;
-    let rate = tokens.get(index + 2).copied().unwrap_or_default().to_string();
+    let rate = tokens
+        .get(index + 2)
+        .copied()
+        .unwrap_or_default()
+        .to_string();
     let eta = {
         let rest = &tokens[index + 3..];
         if rest.is_empty() {
@@ -1153,12 +1252,21 @@ pub fn parse_progress_line(line: &str) -> Option<ProgressLine> {
     if path.is_empty() {
         return None;
     }
-    Some(ProgressLine { path, percent, bytes, rate, eta })
+    Some(ProgressLine {
+        path,
+        percent,
+        bytes,
+        rate,
+        eta,
+    })
 }
 
 /// 解析一段可能含 `\r` / `\n` 的进度输出（多文件场景返回多条）。
 pub fn parse_progress_output(output: &str) -> Vec<ProgressLine> {
-    output.split(|c| c == '\r' || c == '\n').filter_map(parse_progress_line).collect()
+    output
+        .split(|c| c == '\r' || c == '\n')
+        .filter_map(parse_progress_line)
+        .collect()
 }
 
 /// `1024KB` / `1.2MB` / `0` → 字节数；未知单位返回 `None`。
@@ -1167,7 +1275,9 @@ fn parse_size(token: &str) -> Option<u64> {
     if token.is_empty() {
         return None;
     }
-    let split = token.find(|c: char| !(c.is_ascii_digit() || c == '.')).unwrap_or(token.len());
+    let split = token
+        .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .unwrap_or(token.len());
     let (number, unit) = token.split_at(split);
     let value: f64 = number.parse().ok()?;
     if !value.is_finite() || value < 0.0 {
@@ -1188,7 +1298,10 @@ fn parse_size(token: &str) -> Option<u64> {
 fn take_complete_lines(buffer: &mut Vec<u8>) -> Vec<String> {
     let mut lines = Vec::new();
     loop {
-        let Some(position) = buffer.iter().position(|byte| *byte == b'\r' || *byte == b'\n') else {
+        let Some(position) = buffer
+            .iter()
+            .position(|byte| *byte == b'\r' || *byte == b'\n')
+        else {
             break;
         };
         let mut line: Vec<u8> = buffer.drain(..=position).collect();
@@ -1224,7 +1337,10 @@ pub enum TransferEvent {
     /// sftp 输出了可解析的进度行。
     Progress(ProgressLine),
     /// 任务结束；`cancelled` 优先于 `error`。
-    Finished { cancelled: bool, error: Option<String> },
+    Finished {
+        cancelled: bool,
+        error: Option<String>,
+    },
 }
 
 /// 一次传输请求。下载始终用 `get -R`（对普通文件无副作用，对目录才能递归）；
@@ -1250,14 +1366,14 @@ impl TransferRequest {
                     quote_batch_path(&self.local),
                     quote_batch_path(&self.remote)
                 )
-            },
+            }
             TransferDirection::Download => {
                 format!(
                     "progress\nget -R {} {}\n",
                     quote_batch_path(&self.remote),
                     quote_batch_path(&self.local)
                 )
-            },
+            }
         }
     }
 
@@ -1286,15 +1402,23 @@ pub enum SftpSubmit {
 /// 等待用户显式确认的操作。确认前不启动传输/删除；取消只丢弃该状态。
 #[derive(Clone, Debug, PartialEq)]
 pub enum SftpConfirmation {
-    Overwrite { request: TransferRequest, existing: bool },
-    RecursiveDelete { target: SftpTarget, remote: String },
+    Overwrite {
+        request: TransferRequest,
+        existing: bool,
+    },
+    RecursiveDelete {
+        target: SftpTarget,
+        remote: String,
+    },
 }
 
 impl SftpConfirmation {
     pub fn title(&self) -> &'static str {
         match self {
             Self::Overwrite { existing: true, .. } => "目标已存在，继续覆盖？",
-            Self::Overwrite { existing: false, .. } => "无法确认目标，继续上传？",
+            Self::Overwrite {
+                existing: false, ..
+            } => "无法确认目标，继续上传？",
             Self::RecursiveDelete { .. } => "递归删除目录？",
         }
     }
@@ -1319,7 +1443,7 @@ impl SftpConfirmation {
                         request.remote
                     )
                 }
-            },
+            }
             Self::RecursiveDelete { remote, .. } => format!(
                 "将逐层删除远端目录及其全部内容：\n{remote}\n删除不可恢复；取消不会改动任何文件。"
             ),
@@ -1433,7 +1557,12 @@ impl TransferQueue {
 
     /// 队列展示行（最多 `limit` 条，超出用一行汇总）。
     pub fn labels(&self, limit: usize) -> Vec<String> {
-        let mut out: Vec<String> = self.pending.iter().take(limit).map(|r| r.queue_label()).collect();
+        let mut out: Vec<String> = self
+            .pending
+            .iter()
+            .take(limit)
+            .map(|r| r.queue_label())
+            .collect();
         if self.pending.len() > limit {
             out.push(format!("… 还有 {} 项", self.pending.len() - limit));
         }
@@ -1477,7 +1606,10 @@ impl TransferJob {
         script: String,
         wake: Option<WakeSignal>,
     ) -> Result<Self, String> {
-        command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
         // 临时脚本刚写完时可能 ETXTBSY（测试/某些文件系统）；重试几次。
         let mut child = None;
         for attempt in 0..5 {
@@ -1485,17 +1617,26 @@ impl TransferJob {
                 Ok(spawned) => {
                     child = Some(spawned);
                     break;
-                },
+                }
                 Err(e) if e.raw_os_error() == Some(26) && attempt < 4 => {
                     std::thread::sleep(std::time::Duration::from_millis(20));
-                },
+                }
                 Err(e) => return Err(format!("启动子进程失败: {e}")),
             }
         }
         let mut child = child.ok_or_else(|| "启动子进程失败: 重试后仍失败".to_string())?;
-        let stdin = child.stdin.take().ok_or_else(|| "无法接管子进程 stdin".to_string())?;
-        let stdout = child.stdout.take().ok_or_else(|| "无法读取子进程 stdout".to_string())?;
-        let stderr = child.stderr.take().ok_or_else(|| "无法读取子进程 stderr".to_string())?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| "无法接管子进程 stdin".to_string())?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| "无法读取子进程 stdout".to_string())?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| "无法读取子进程 stderr".to_string())?;
 
         let child = Arc::new(Mutex::new(child));
         let cancel = Arc::new(AtomicBool::new(false));
@@ -1518,7 +1659,10 @@ impl TransferJob {
         let worker_stderr = stderr_text;
         let join = thread::spawn(move || {
             let mut stdin = stdin;
-            let write_error = stdin.write_all(script.as_bytes()).err().map(|e| format!("写入 batch 失败: {e}"));
+            let write_error = stdin
+                .write_all(script.as_bytes())
+                .err()
+                .map(|e| format!("写入 batch 失败: {e}"));
             drop(stdin);
             if write_error.is_some() {
                 terminate(&worker_child);
@@ -1527,16 +1671,25 @@ impl TransferJob {
             let _ = stdout_reader.join();
             let _ = stderr_reader.join();
             let cancelled = worker_cancel.load(Ordering::SeqCst);
-            let stderr = worker_stderr.lock().map(|text| text.trim().to_string()).unwrap_or_default();
+            let stderr = worker_stderr
+                .lock()
+                .map(|text| text.trim().to_string())
+                .unwrap_or_default();
             let event = if cancelled {
-                TransferEvent::Finished { cancelled: true, error: None }
+                TransferEvent::Finished {
+                    cancelled: true,
+                    error: None,
+                }
             } else {
                 match status {
                     Ok(status) if status.success() => {
                         // 子进程已成功：即使写 stdin 时报了 EPIPE（sftp 提前退出），
                         // 也以实际退出码为准，避免把成功报成失败。
-                        TransferEvent::Finished { cancelled: false, error: None }
-                    },
+                        TransferEvent::Finished {
+                            cancelled: false,
+                            error: None,
+                        }
+                    }
                     Ok(status) => {
                         // 连接/认证失败时 sftp 可能很快退出并留下 stderr；
                         // 优先展示真实的 sftp 错误，其次才是写 stdin 失败。
@@ -1547,8 +1700,11 @@ impl TransferJob {
                         } else {
                             format!("sftp 失败（{status}）")
                         };
-                        TransferEvent::Finished { cancelled: false, error: Some(message) }
-                    },
+                        TransferEvent::Finished {
+                            cancelled: false,
+                            error: Some(message),
+                        }
+                    }
                     Err(e) => TransferEvent::Finished {
                         cancelled: false,
                         error: Some(format!("等待 sftp 失败: {e}")),
@@ -1561,7 +1717,12 @@ impl TransferJob {
             }
         });
 
-        Ok(Self { events, cancel, child, join: Some(join) })
+        Ok(Self {
+            events,
+            cancel,
+            child,
+            join: Some(join),
+        })
     }
 
     /// UI 线程调用：记录取消并（Unix）kill 子进程；不等待、不阻塞。
@@ -1598,11 +1759,11 @@ impl TransferJob {
                         "[sftp] 进度 {}% {} {}",
                         progress.percent, progress.rate, progress.path
                     );
-                },
+                }
                 Ok(TransferEvent::Finished { cancelled, error }) => {
                     outcome = Some((cancelled, error));
                     break;
-                },
+                }
                 Err(_) => break,
             }
         }
@@ -1646,7 +1807,7 @@ fn wait_child(child: &Arc<Mutex<Child>>) -> std::io::Result<std::process::ExitSt
         };
         match status {
             Ok(Some(status)) => return Ok(status),
-            Ok(None) => {},
+            Ok(None) => {}
             Err(e) => return Err(e),
         }
         thread::sleep(Duration::from_millis(40));
@@ -1669,7 +1830,7 @@ fn read_stream<R: Read>(
                 for line in take_complete_lines(&mut pending) {
                     dispatch_line(&line, &sender, stderr_sink.as_ref(), wake.as_ref());
                 }
-            },
+            }
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(_) => break,
         }
@@ -1792,7 +1953,7 @@ impl TransferState {
                 self.percent = Some(progress.percent);
                 self.bytes = progress.bytes;
                 self.rate = progress.rate;
-            },
+            }
             TransferEvent::Finished { cancelled, error } => {
                 if cancelled {
                     self.phase = TransferPhase::Cancelled;
@@ -1802,7 +1963,7 @@ impl TransferState {
                 } else {
                     self.phase = TransferPhase::Done;
                 }
-            },
+            }
         }
     }
 
@@ -1829,10 +1990,10 @@ impl TransferState {
             },
             TransferPhase::Cancelled => {
                 format!("已取消{}: {}", self.direction.verb(), self.current)
-            },
+            }
             TransferPhase::Failed => {
                 format!("{}失败: {}", self.direction.verb(), self.message)
-            },
+            }
         }
     }
 
@@ -1924,8 +2085,15 @@ mod tests {
     #[test]
     fn args_bound_network_timeouts_and_allow_user_override() {
         let args = target().args();
-        for option in ["ConnectTimeout=10", "ServerAliveInterval=5", "ServerAliveCountMax=2"] {
-            assert!(args.iter().any(|a| a == option), "缺少网络超时选项 {option}: {args:?}");
+        for option in [
+            "ConnectTimeout=10",
+            "ServerAliveInterval=5",
+            "ServerAliveCountMax=2",
+        ] {
+            assert!(
+                args.iter().any(|a| a == option),
+                "缺少网络超时选项 {option}: {args:?}"
+            );
         }
         // 用户在 extra_args 里写的 ConnectTimeout 必须排在默认值之前。
         let mut t = target();
@@ -1956,14 +2124,26 @@ mod tests {
         ] {
             assert_eq!(parse_mode(input).unwrap(), want, "input={input:?}");
         }
-        for bad in ["", "   ", "8", "9999", "06444", "-644", "rwxr-xr-x", "0x1ff"] {
+        for bad in [
+            "",
+            "   ",
+            "8",
+            "9999",
+            "06444",
+            "-644",
+            "rwxr-xr-x",
+            "0x1ff",
+        ] {
             assert!(parse_mode(bad).is_err(), "应拒绝 {bad:?}");
         }
     }
 
     #[test]
     fn target_requires_ssh_profile_fields() {
-        let mut p = Profile { kind: "local".into(), ..Profile::default() };
+        let mut p = Profile {
+            kind: "local".into(),
+            ..Profile::default()
+        };
         assert!(SftpTarget::from_profile(&p).unwrap_err().contains("SSH"));
         p.kind = "ssh".into();
         p.host = "h".into();
@@ -2035,12 +2215,17 @@ drwxr-xr-x    2 yt   staff        4096 Nov 20 10:00 .
         let entries = parse_list_long("alpha\n\nsftp> ls -l /tmp\nConnected to host.\nbeta\n");
         let names: Vec<&str> = entries.iter().map(|entry| entry.name.as_str()).collect();
         assert_eq!(names, vec!["alpha", "beta"]);
-        assert!(entries.iter().all(|entry| entry.mode.is_empty() && entry.is_dir.is_none()));
+        assert!(entries
+            .iter()
+            .all(|entry| entry.mode.is_empty() && entry.is_dir.is_none()));
     }
 
     #[test]
     fn overwrite_risk_uses_only_fresh_matching_list() {
-        let entries = vec![RemoteEntry::from_name("alpha.txt"), RemoteEntry::from_name("dir1")];
+        let entries = vec![
+            RemoteEntry::from_name("alpha.txt"),
+            RemoteEntry::from_name("dir1"),
+        ];
         assert_eq!(
             overwrite_risk(Some("/work/"), "/work", &entries, "alpha.txt"),
             OverwriteRisk::Existing
@@ -2109,7 +2294,10 @@ drwxr-xr-x    2 yt   staff        4096 Nov 20 10:00 .
 
         // 取消只丢弃状态，不会产出可执行请求。
         let cancelled = gate.cancel().expect("cancel 应取走待确认动作");
-        assert!(matches!(cancelled, SftpConfirmation::Overwrite { existing: true, .. }));
+        assert!(matches!(
+            cancelled,
+            SftpConfirmation::Overwrite { existing: true, .. }
+        ));
         assert!(!gate.is_pending());
         assert!(gate.take().is_none());
     }
@@ -2131,7 +2319,10 @@ drwxr-xr-x    2 yt   staff        4096 Nov 20 10:00 .
         assert!(gate.pending().unwrap().text().contains("无法确认"));
         assert_eq!(
             gate.take(),
-            Some(SftpConfirmation::Overwrite { request, existing: false })
+            Some(SftpConfirmation::Overwrite {
+                request,
+                existing: false
+            })
         );
         assert!(gate.take().is_none(), "确认动作只能执行一次");
     }
@@ -2160,7 +2351,11 @@ drwxr-xr-x    2 yt   staff        4096 Nov 20 10:00 .
         assert!(command.is_recursive_delete());
         assert_eq!(command.timeout(), SFTP_RECURSIVE_TIMEOUT);
         assert_eq!(
-            SftpCommand::List { target: target(), remote: "/".into() }.timeout(),
+            SftpCommand::List {
+                target: target(),
+                remote: "/".into()
+            }
+            .timeout(),
             SFTP_TIMEOUT
         );
     }
@@ -2205,7 +2400,10 @@ drwxr-xr-x    2 yt   staff        4096 Nov 20 10:00 .
             "big.bin 42%",
             "big.bin 42% nope 1MB/s",
         ] {
-            assert!(parse_progress_line(line).is_none(), "should reject: {line:?}");
+            assert!(
+                parse_progress_line(line).is_none(),
+                "should reject: {line:?}"
+            );
         }
     }
 
@@ -2222,7 +2420,10 @@ drwxr-xr-x    2 yt   staff        4096 Nov 20 10:00 .
     #[test]
     fn stream_lines_split_on_cr_or_lf() {
         let mut buffer = b"one\rtwo\r\nthree\npart".to_vec();
-        assert_eq!(take_complete_lines(&mut buffer), vec!["one", "two", "three"]);
+        assert_eq!(
+            take_complete_lines(&mut buffer),
+            vec!["one", "two", "three"]
+        );
         assert_eq!(buffer, b"part");
     }
 
@@ -2247,7 +2448,10 @@ drwxr-xr-x    2 yt   staff        4096 Nov 20 10:00 .
         assert!(state.detail_text().contains("42%"));
         assert!(state.detail_text().contains("1.0 MB"));
 
-        state.apply(TransferEvent::Finished { cancelled: false, error: None });
+        state.apply(TransferEvent::Finished {
+            cancelled: false,
+            error: None,
+        });
         assert!(!state.is_active());
         assert_eq!(state.phase, TransferPhase::Done);
         assert!(state.status_text().contains("已下载"));
@@ -2267,7 +2471,10 @@ drwxr-xr-x    2 yt   staff        4096 Nov 20 10:00 .
     fn state_machine_handles_cancel_and_failure() {
         let mut cancelled =
             TransferState::running(TransferDirection::Upload, "/tmp/a", "/remote/a");
-        cancelled.apply(TransferEvent::Finished { cancelled: true, error: None });
+        cancelled.apply(TransferEvent::Finished {
+            cancelled: true,
+            error: None,
+        });
         assert_eq!(cancelled.phase, TransferPhase::Cancelled);
         assert!(cancelled.status_text().contains("已取消"));
 
@@ -2284,12 +2491,18 @@ drwxr-xr-x    2 yt   staff        4096 Nov 20 10:00 .
     #[test]
     fn upload_done_is_detected_for_list_refresh() {
         let mut state = TransferState::running(TransferDirection::Upload, "/tmp/a", "/remote/a");
-        state.apply(TransferEvent::Finished { cancelled: false, error: None });
+        state.apply(TransferEvent::Finished {
+            cancelled: false,
+            error: None,
+        });
         assert!(state.is_done_upload());
 
         let mut download =
             TransferState::running(TransferDirection::Download, "/tmp/b", "/remote/b");
-        download.apply(TransferEvent::Finished { cancelled: false, error: None });
+        download.apply(TransferEvent::Finished {
+            cancelled: false,
+            error: None,
+        });
         assert!(!download.is_done_upload());
     }
 
@@ -2321,7 +2534,10 @@ drwxr-xr-x    2 yt   staff        4096 Nov 20 10:00 .
             "progress\nput \"/tmp/local.bin\" \"/remote/local.bin\"\n"
         );
 
-        let upload_dir = TransferRequest { recursive: true, ..upload_file };
+        let upload_dir = TransferRequest {
+            recursive: true,
+            ..upload_file
+        };
         assert_eq!(
             upload_dir.batch_script(),
             "progress\nput -R \"/tmp/local.bin\" \"/remote/local.bin\"\n"
@@ -2356,13 +2572,26 @@ drwxr-xr-x    2 yt   staff        4096 Nov 20 10:00 .
         let quoted = quote_batch_path(remote);
         let quoted2 = quote_batch_path(remote2);
 
-        let list = SftpCommand::List { target: target(), remote: remote.into() }
-            .execute_with(&script, Duration::from_secs(2));
-        assert!(matches!(list, SftpOutcome::List { items: Ok(_), .. }), "{list:?}");
-        assert_eq!(read(), format!("ls -la {quoted}\n"), "list 必须转义远端路径");
+        let list = SftpCommand::List {
+            target: target(),
+            remote: remote.into(),
+        }
+        .execute_with(&script, Duration::from_secs(2));
+        assert!(
+            matches!(list, SftpOutcome::List { items: Ok(_), .. }),
+            "{list:?}"
+        );
+        assert_eq!(
+            read(),
+            format!("ls -la {quoted}\n"),
+            "list 必须转义远端路径"
+        );
 
-        let _ = SftpCommand::Mkdir { target: target(), remote: remote.into() }
-            .execute_with(&script, Duration::from_secs(2));
+        let _ = SftpCommand::Mkdir {
+            target: target(),
+            remote: remote.into(),
+        }
+        .execute_with(&script, Duration::from_secs(2));
         assert_eq!(read(), format!("mkdir {quoted}\n"));
 
         let _ = SftpCommand::Rename {
@@ -2373,12 +2602,19 @@ drwxr-xr-x    2 yt   staff        4096 Nov 20 10:00 .
         .execute_with(&script, Duration::from_secs(2));
         assert_eq!(read(), format!("rename {quoted} {quoted2}\n"));
 
-        let _ = SftpCommand::Remove { target: target(), remote: remote.into() }
-            .execute_with(&script, Duration::from_secs(2));
+        let _ = SftpCommand::Remove {
+            target: target(),
+            remote: remote.into(),
+        }
+        .execute_with(&script, Duration::from_secs(2));
         assert_eq!(read(), format!("rm {quoted}\n"));
 
-        let _ = SftpCommand::Chmod { target: target(), remote: remote.into(), mode: 0o640 }
-            .execute_with(&script, Duration::from_secs(2));
+        let _ = SftpCommand::Chmod {
+            target: target(),
+            remote: remote.into(),
+            mode: 0o640,
+        }
+        .execute_with(&script, Duration::from_secs(2));
         assert_eq!(read(), format!("chmod 0640 {quoted}\n"));
 
         // put/get 的 batch 是纯函数，直接断言两个参数都被 quoting。
@@ -2422,14 +2658,19 @@ drwxr-xr-x    2 yt   staff        4096 Nov 20 10:00 .
         );
         let remote = "/tmp/a b\"c";
         let quoted = quote_batch_path(remote);
-        let outcome = SftpCommand::List { target: target(), remote: remote.into() }
-            .execute_with(&script, Duration::from_secs(2));
+        let outcome = SftpCommand::List {
+            target: target(),
+            remote: remote.into(),
+        }
+        .execute_with(&script, Duration::from_secs(2));
         match outcome {
-            SftpOutcome::List { items: Ok(items), .. } => {
+            SftpOutcome::List {
+                items: Ok(items), ..
+            } => {
                 let names: Vec<&str> = items.iter().map(|entry| entry.name.as_str()).collect();
                 assert_eq!(names, vec!["alpha", "beta"]);
                 assert!(items.iter().all(|entry| entry.mode.is_empty()));
-            },
+            }
             other => panic!("期望回退 ls -1 成功，得到 {other:?}"),
         }
         assert_eq!(
@@ -2481,10 +2722,9 @@ drwxr-xr-x    2 yt   staff        4096 Nov 20 10:00 .
             remote: "/remote/file".into(),
             mode: 0o640,
         };
-        let SftpOutcome::Chmod { path, mode, result } = command.execute_with(
-            Path::new("/bin/false"),
-            Duration::from_millis(500),
-        ) else {
+        let SftpOutcome::Chmod { path, mode, result } =
+            command.execute_with(Path::new("/bin/false"), Duration::from_millis(500))
+        else {
             panic!("期望 Chmod outcome");
         };
         assert_eq!(path, "/remote/file");
@@ -2503,9 +2743,12 @@ drwxr-xr-x    2 yt   staff        4096 Nov 20 10:00 .
 
     #[cfg(unix)]
     fn temp_dir(tag: &str) -> PathBuf {
-        let unique = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-        let dir = std::env::temp_dir()
-            .join(format!("xtervo-sftp-{}-{tag}-{unique}", std::process::id()));
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir =
+            std::env::temp_dir().join(format!("xtervo-sftp-{}-{tag}-{unique}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -2527,10 +2770,7 @@ drwxr-xr-x    2 yt   staff        4096 Nov 20 10:00 .
         let capture = dir.join("batch.txt");
         let script = write_script(
             dir,
-            &format!(
-                "#!/bin/sh\ncat > '{}'\nprintf 'ok\\n'\n",
-                capture.display()
-            ),
+            &format!("#!/bin/sh\ncat > '{}'\nprintf 'ok\\n'\n", capture.display()),
         );
         (script, capture)
     }
@@ -2545,7 +2785,10 @@ drwxr-xr-x    2 yt   staff        4096 Nov 20 10:00 .
             "#!/bin/sh\nprintf 'slow.bin 10%% 128KB 1.0MB/s --:-- ETA\\r'\nexec sleep 30\n",
         );
         let job = TransferJob::spawn_with_script(Command::new(&script), String::new()).unwrap();
-        let first = job.events.recv_timeout(Duration::from_secs(5)).expect("应收到进度事件");
+        let first = job
+            .events
+            .recv_timeout(Duration::from_secs(5))
+            .expect("应收到进度事件");
         match first {
             TransferEvent::Progress(progress) => assert_eq!(progress.percent, 10),
             other => panic!("期望进度事件，得到 {other:?}"),
@@ -2559,15 +2802,18 @@ drwxr-xr-x    2 yt   staff        4096 Nov 20 10:00 .
                 Ok(TransferEvent::Finished { cancelled, error }) => {
                     finished = Some((cancelled, error));
                     break;
-                },
-                Ok(TransferEvent::Progress(_)) => {},
+                }
+                Ok(TransferEvent::Progress(_)) => {}
                 Err(_) => break,
             }
         }
         let (cancelled, error) = finished.expect("取消后应收到 Finished 事件");
         assert!(cancelled);
         assert!(error.is_none());
-        assert!(started.elapsed() < Duration::from_secs(5), "取消后应及时回收");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "取消后应及时回收"
+        );
         job.join();
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2581,16 +2827,23 @@ drwxr-xr-x    2 yt   staff        4096 Nov 20 10:00 .
             "#!/bin/sh\nprintf 'done.bin 50%% 512KB 2.0MB/s 00:01 ETA\\rdone.bin 100%% 1024KB 2.0MB/s 00:00\\r'\n",
         );
         let job = TransferJob::spawn_with_script(Command::new(&script), String::new()).unwrap();
-        let mut state =
-            TransferState::running(TransferDirection::Upload, "/tmp/done.bin", "/remote/done.bin");
+        let mut state = TransferState::running(
+            TransferDirection::Upload,
+            "/tmp/done.bin",
+            "/remote/done.bin",
+        );
         let mut done = false;
         while !done {
-            match job.events.recv_timeout(Duration::from_secs(5)).expect("任务应结束") {
+            match job
+                .events
+                .recv_timeout(Duration::from_secs(5))
+                .expect("任务应结束")
+            {
                 TransferEvent::Progress(progress) => state.apply(TransferEvent::Progress(progress)),
                 TransferEvent::Finished { cancelled, error } => {
                     state.apply(TransferEvent::Finished { cancelled, error });
                     done = true;
-                },
+                }
             }
         }
         assert_eq!(state.phase, TransferPhase::Done);
@@ -2616,7 +2869,8 @@ drwxr-xr-x    2 yt   staff        4096 Nov 20 10:00 .
         )
         .unwrap();
         let started = Instant::now();
-        rx.recv_timeout(Duration::from_secs(2)).expect("进度事件应唤醒 UI");
+        rx.recv_timeout(Duration::from_secs(2))
+            .expect("进度事件应唤醒 UI");
         assert!(
             started.elapsed() < Duration::from_millis(400),
             "唤醒不应等 400ms 轮询: {:?}",
@@ -2624,7 +2878,10 @@ drwxr-xr-x    2 yt   staff        4096 Nov 20 10:00 .
         );
         // 唤醒只是一个“去看”的信号：事件必须已经在独立通道里，不能靠唤醒携带。
         let first = job.events.try_recv().expect("唤醒后进度事件必须已在队列");
-        assert!(matches!(first, TransferEvent::Progress(_)), "first={first:?}");
+        assert!(
+            matches!(first, TransferEvent::Progress(_)),
+            "first={first:?}"
+        );
 
         // 等待结束事件（期间可能有合并的进度唤醒）。
         let mut finished = None;
@@ -2652,13 +2909,17 @@ drwxr-xr-x    2 yt   staff        4096 Nov 20 10:00 .
         let script = write_script(&dir, "#!/bin/sh\ncat >/dev/null\nprintf 'one\\ntwo\\n'\n");
         let (wake, rx) = WakeSignal::new();
         let job = SftpOpJob::start_inner(
-            SftpCommand::List { target: target(), remote: "/".into() },
+            SftpCommand::List {
+                target: target(),
+                remote: "/".into(),
+            },
             script,
             SFTP_TIMEOUT,
             Some(wake),
         );
         let started = Instant::now();
-        rx.recv_timeout(Duration::from_secs(2)).expect("后台结果应唤醒 UI");
+        rx.recv_timeout(Duration::from_secs(2))
+            .expect("后台结果应唤醒 UI");
         assert!(
             started.elapsed() < Duration::from_millis(400),
             "结果唤醒不应等 400ms 轮询: {:?}",
@@ -2666,10 +2927,12 @@ drwxr-xr-x    2 yt   staff        4096 Nov 20 10:00 .
         );
         let outcome = job.try_recv().expect("唤醒后结果必须已在队列");
         match outcome {
-            SftpOutcome::List { items: Ok(items), .. } => {
+            SftpOutcome::List {
+                items: Ok(items), ..
+            } => {
                 let names: Vec<&str> = items.iter().map(|entry| entry.name.as_str()).collect();
                 assert_eq!(names, vec!["one", "two"]);
-            },
+            }
             other => panic!("期望 List 成功，得到 {other:?}"),
         }
         let _ = job.wait(); // 已 drain；这里只回收 worker
@@ -2680,19 +2943,26 @@ drwxr-xr-x    2 yt   staff        4096 Nov 20 10:00 .
     #[test]
     fn transfer_job_captures_stderr_failure() {
         let dir = temp_dir("fail");
-        let script =
-            write_script(&dir, "#!/bin/sh\nprintf 'permission denied\\n' >&2\nexit 3\n");
+        let script = write_script(
+            &dir,
+            "#!/bin/sh\nprintf 'permission denied\\n' >&2\nexit 3\n",
+        );
         let job = TransferJob::spawn_with_script(Command::new(&script), String::new()).unwrap();
-        let mut state =
-            TransferState::running(TransferDirection::Download, "/tmp/x", "/remote/x");
-        let event = job.events.recv_timeout(Duration::from_secs(5)).expect("任务应结束");
+        let mut state = TransferState::running(TransferDirection::Download, "/tmp/x", "/remote/x");
+        let event = job
+            .events
+            .recv_timeout(Duration::from_secs(5))
+            .expect("任务应结束");
         match event {
             TransferEvent::Finished { cancelled, error } => {
                 assert!(!cancelled);
                 let error = error.expect("非零退出码应带错误信息");
                 assert!(error.contains("permission denied"), "error={error}");
-                state.apply(TransferEvent::Finished { cancelled, error: Some(error) });
-            },
+                state.apply(TransferEvent::Finished {
+                    cancelled,
+                    error: Some(error),
+                });
+            }
             other => panic!("期望 Finished 事件，得到 {other:?}"),
         }
         assert_eq!(state.phase, TransferPhase::Failed);
@@ -2714,8 +2984,14 @@ drwxr-xr-x    2 yt   staff        4096 Nov 20 10:00 .
         let elapsed = started.elapsed();
         assert!(err.contains("超时"), "error={err}");
         assert!(err.contains("已终止"), "error 应说明已 kill: {err}");
-        assert!(elapsed >= Duration::from_millis(200), "过早返回: {elapsed:?}");
-        assert!(elapsed < Duration::from_secs(3), "超时回收太慢: {elapsed:?}");
+        assert!(
+            elapsed >= Duration::from_millis(200),
+            "过早返回: {elapsed:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(3),
+            "超时回收太慢: {elapsed:?}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2747,7 +3023,7 @@ drwxr-xr-x    2 yt   staff        4096 Nov 20 10:00 .
             SftpOutcome::List { items: Err(e), .. } => {
                 assert!(e.contains("超时"), "error={e}");
                 assert!(e.contains("已终止"), "error 应说明已 kill: {e}");
-            },
+            }
             other => panic!("期望 List 超时结果，得到 {other:?}"),
         }
         assert!(
@@ -2764,7 +3040,10 @@ drwxr-xr-x    2 yt   staff        4096 Nov 20 10:00 .
         let dir = temp_dir("op-cancel");
         let script = write_script(&dir, "#!/bin/sh\nexec sleep 30\n");
         let job = SftpOpJob::start_with(
-            SftpCommand::List { target: target(), remote: "/tmp".into() },
+            SftpCommand::List {
+                target: target(),
+                remote: "/tmp".into(),
+            },
             script,
             Duration::from_secs(10),
         );
@@ -2778,7 +3057,7 @@ drwxr-xr-x    2 yt   staff        4096 Nov 20 10:00 .
         match outcome {
             SftpOutcome::List { items: Err(e), .. } => {
                 assert!(e.contains("已取消"), "error={e}");
-            },
+            }
             other => panic!("期望 List 取消结果，得到 {other:?}"),
         }
         assert!(started.elapsed() < Duration::from_secs(3), "取消回收太慢");
@@ -2789,27 +3068,36 @@ drwxr-xr-x    2 yt   staff        4096 Nov 20 10:00 .
     #[test]
     fn sftp_command_list_and_mkdir_use_fake_program_successfully() {
         let dir = temp_dir("fake-ok");
-        let script = write_script(&dir, "#!/bin/sh\ncat >/dev/null\nprintf 'alpha\\nbeta\\n'\n");
+        let script = write_script(
+            &dir,
+            "#!/bin/sh\ncat >/dev/null\nprintf 'alpha\\nbeta\\n'\n",
+        );
 
-        let list = SftpCommand::List { target: target(), remote: "/tmp".into() }
-            .execute_with(&script, Duration::from_secs(2));
+        let list = SftpCommand::List {
+            target: target(),
+            remote: "/tmp".into(),
+        }
+        .execute_with(&script, Duration::from_secs(2));
         match list {
             SftpOutcome::List { remote, items } => {
                 assert_eq!(remote, "/tmp");
                 let items = items.expect("list 应成功");
                 let names: Vec<&str> = items.iter().map(|entry| entry.name.as_str()).collect();
                 assert_eq!(names, vec!["alpha", "beta"]);
-            },
+            }
             other => panic!("期望 List 结果，得到 {other:?}"),
         }
 
-        let mkdir = SftpCommand::Mkdir { target: target(), remote: "/tmp/new".into() }
-            .execute_with(&script, Duration::from_secs(2));
+        let mkdir = SftpCommand::Mkdir {
+            target: target(),
+            remote: "/tmp/new".into(),
+        }
+        .execute_with(&script, Duration::from_secs(2));
         match mkdir {
             SftpOutcome::Mkdir { remote, result } => {
                 assert_eq!(remote, "/tmp/new");
                 assert_eq!(result, Ok(()));
-            },
+            }
             other => panic!("期望 Mkdir 结果，得到 {other:?}"),
         }
         let _ = std::fs::remove_dir_all(&dir);
@@ -2824,13 +3112,16 @@ drwxr-xr-x    2 yt   staff        4096 Nov 20 10:00 .
             &dir,
             "#!/bin/sh\nscript=$(cat)\ncase \"$script\" in\n  rmdir*) exit 0;;\n  rm*) echo 'rm denied' >&2; exit 1;;\n  *) exit 2;;\nesac\n",
         );
-        let outcome = SftpCommand::Remove { target: target(), remote: "/tmp/dir".into() }
-            .execute_with(&script, Duration::from_secs(2));
+        let outcome = SftpCommand::Remove {
+            target: target(),
+            remote: "/tmp/dir".into(),
+        }
+        .execute_with(&script, Duration::from_secs(2));
         match outcome {
             SftpOutcome::Remove { path, result } => {
                 assert_eq!(path, "/tmp/dir");
                 assert_eq!(result, Ok(()), "rm 失败后应回退 rmdir");
-            },
+            }
             other => panic!("期望 Remove 结果，得到 {other:?}"),
         }
         let _ = std::fs::remove_dir_all(&dir);
@@ -2840,7 +3131,10 @@ drwxr-xr-x    2 yt   staff        4096 Nov 20 10:00 .
 
     #[test]
     fn recursive_child_paths_reject_escape_names() {
-        assert_eq!(child_remote_path("/root", "a b.txt").unwrap(), "/root/a b.txt");
+        assert_eq!(
+            child_remote_path("/root", "a b.txt").unwrap(),
+            "/root/a b.txt"
+        );
         assert_eq!(child_remote_path("/", "a").unwrap(), "/a");
         for bad in ["", ".", "..", "/etc/passwd", "../escape", "sub/child"] {
             assert!(
@@ -2859,7 +3153,10 @@ drwxr-xr-x    2 yt   staff        4096 Nov 20 10:00 .
     }
 
     fn fake_base(path: &str) -> &str {
-        path.trim_end_matches('/').rsplit('/').next().unwrap_or(path)
+        path.trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .unwrap_or(path)
     }
 
     fn unquote_batch_path(input: &str) -> String {
@@ -3021,7 +3318,10 @@ drwxr-xr-x    2 yt   staff        4096 Nov 20 10:00 .
         assert!(!fake.files.contains("/root/link"));
         assert!(fake.dirs.contains("/outside"), "符号链接目标不能被跟随删除");
         assert!(fake.log.iter().any(|line| line == "rm \"/root/a b.txt\""));
-        assert!(fake.log.iter().any(|line| line == "rmdir \"/root/empty dir\""));
+        assert!(fake
+            .log
+            .iter()
+            .any(|line| line == "rmdir \"/root/empty dir\""));
         assert!(fake.log.iter().any(|line| line == "rm \"/root/link\""));
         assert!(!fake.log.iter().any(|line| line.contains("/outside")));
 
@@ -3042,15 +3342,20 @@ drwxr-xr-x    2 yt   staff        4096 Nov 20 10:00 .
     #[cfg(unix)]
     #[test]
     fn recursive_delete_refuses_name_only_fallback_lists() {
-        let mut fake = FakeRemote { short_only: true, ..Default::default() };
+        let mut fake = FakeRemote {
+            short_only: true,
+            ..Default::default()
+        };
         fake.dir("/root");
         fake.dir("/root/sub");
         fake.dir("/root/empty");
         fake.file("/root/a.txt");
         fake.file("/root/sub/b.txt");
 
-        let error = remove_tree_with("/root", Duration::from_secs(5), None, |batch, _| fake.apply(batch))
-            .expect_err("只有 ls -1 时类型未知，必须拒绝递归删除");
+        let error = remove_tree_with("/root", Duration::from_secs(5), None, |batch, _| {
+            fake.apply(batch)
+        })
+        .expect_err("只有 ls -1 时类型未知，必须拒绝递归删除");
         assert!(error.contains("无法确认"), "{error}");
         assert!(fake.dirs.contains("/root"));
         assert!(fake.files.contains("/root/a.txt"), "拒绝后不能删文件");
@@ -3061,15 +3366,10 @@ drwxr-xr-x    2 yt   staff        4096 Nov 20 10:00 .
     fn recursive_delete_cancel_and_timeout_do_not_touch_files() {
         let cancel = AtomicBool::new(true);
         let mut calls = 0;
-        let error = remove_tree_with(
-            "/root",
-            Duration::from_secs(5),
-            Some(&cancel),
-            |_, _| {
-                calls += 1;
-                Ok(String::new())
-            },
-        )
+        let error = remove_tree_with("/root", Duration::from_secs(5), Some(&cancel), |_, _| {
+            calls += 1;
+            Ok(String::new())
+        })
         .expect_err("取消后必须报错");
         assert!(error.contains("已取消"), "{error}");
         assert_eq!(calls, 0, "取消后不能启动任何 sftp 调用");
@@ -3098,6 +3398,9 @@ drwxr-xr-x    2 yt   staff        4096 Nov 20 10:00 .
         })
         .expect_err("文件删除失败时不能报成功");
         assert!(error.contains("blocked.txt"), "{error}");
-        assert!(fake.dirs.contains("/root"), "失败时根目录应保留，便于重试/排查");
+        assert!(
+            fake.dirs.contains("/root"),
+            "失败时根目录应保留，便于重试/排查"
+        );
     }
 }

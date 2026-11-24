@@ -129,7 +129,7 @@ fn prep_one_line(frame: &mut Frame, i: usize, mode: Mode) {
                 left: 0,
                 right: frame.cols.saturating_sub(1) as u16,
             });
-        },
+        }
     }
 }
 
@@ -155,7 +155,7 @@ fn prep_scroll(frame: &mut Frame, i: usize, mode: Mode) {
                     right: frame.cols.saturating_sub(1) as u16,
                 });
             }
-        },
+        }
     }
 }
 
@@ -263,14 +263,7 @@ fn render_damage_benchmark() {
     let cell_w = fonts.cell_w;
     let cell_h = fonts.cell_h;
     let theme = Theme::default();
-    let mut renderer = Renderer::new(
-        Rc::new(fonts),
-        COLS,
-        ROWS,
-        theme.bg(),
-        theme.cursor(),
-        1.0,
-    );
+    let mut renderer = Renderer::new(Rc::new(fonts), COLS, ROWS, theme.bg(), theme.cursor(), 1.0);
     let mut frame = sample_frame(COLS, ROWS, theme);
 
     // 预热：整屏画一次，把所有字形 raster/缓存、分配都排除在计时外。
