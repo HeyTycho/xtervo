@@ -190,14 +190,14 @@ sha256sum -c dist/SHA256SUMS
 
 ### 4.5 发布
 
-1. 上传 `dist/` 三个产物 + `SHA256SUMS`。
-2. 在 release notes 写：
-   - 版本号
-   - commit
-   - 主要变更 / Breaking
-   - 已知限制
-   - 复测清单链接
-3. 保留上一版本产物，不要覆盖同名文件。
+1. 先写 `docs/release-notes/<tag>.md`（例如 `docs/release-notes/v0.6.0.md`）：
+   版本号、commit、主要变更 / Breaking、已知限制、反馈入口。推到 `main` 后再打 tag。
+2. 打 tag 并推送后，`.github/workflows/release.yml` 会自动构建 `dist/` 并把
+   tar.gz / .deb / `SHA256SUMS` 传到 GitHub Release，release body 取
+   `body_path: docs/release-notes/<tag>.md`。
+3. 如果 Actions 不可用，手工上传 `dist/` 三个产物 + `SHA256SUMS`，body 粘贴同一份
+   release notes。
+4. 保留上一版本产物，不要覆盖同名文件。
 
 ---
 
