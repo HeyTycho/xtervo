@@ -27,7 +27,7 @@ if [ "$DISPLAY_NUM" = "$NO_WM_DISPLAY" ]; then
     exit 2
 fi
 
-BIN=${BIN:-$ROOT/target/release/tervo}
+BIN=${BIN:-$ROOT/target/release/xtervo}
 case "$BIN" in
     */release/*) ;;
     *)
@@ -36,7 +36,7 @@ case "$BIN" in
         ;;
 esac
 if [ ! -x "$BIN" ]; then
-    echo "ERROR: release binary 不存在: $BIN（先 cargo build -p tervo-app --release）" >&2
+    echo "ERROR: release binary 不存在: $BIN（先 cargo build -p xtervo-app --release）" >&2
     exit 2
 fi
 
@@ -72,7 +72,7 @@ cat >"$OUT/openbox-home/.config/openbox/rc.xml" <<'XML'
   <keyboard></keyboard>
   <mouse></mouse>
   <applications>
-    <application title="TervoStartMax"><maximized>yes</maximized></application>
+    <application title="xtervoStartMax"><maximized>yes</maximized></application>
   </applications>
 </openbox_config>
 XML
@@ -123,9 +123,9 @@ start_openbox() {
 APP_PID=
 start_app() {  # <slug> <title> <home> <display>
     local slug=$1 title=$2 home=$3 display=$4
-    mkdir -p "$home/.config/tervo"
+    mkdir -p "$home/.config/xtervo"
     DISPLAY="$display" HOME="$home" XDG_CONFIG_HOME="$home/.config" \
-        TERVO_CONFIG="$home/config.toml" \
+        XTERVO_CONFIG="$home/config.toml" \
         "$BIN" --title "$title" --cols 70 --rows 30 \
         --shell /bin/bash -- -c 'sleep 300' >"$OUT/$slug.log" 2>&1 &
     APP_PID=$!
@@ -151,24 +151,24 @@ start_xvfb "$NO_WM_DISPLAY" "1280x800x24" "$OUT/xvfb-nowm.log"
 start_openbox
 
 # ---- A：单屏 / 伪双屏 / 快慢点击 ----
-start_app app-a TervoA "$OUT/home-a" "$DISPLAY_NUM"
+start_app app-a xtervoA "$OUT/home-a" "$DISPLAY_NUM"
 PID_A=$(cat "$OUT/app-a.pid")
-run_on "$DISPLAY_NUM" single --pid "$PID_A" --title TervoA
-run_on "$DISPLAY_NUM" fast --pid "$PID_A" --title TervoA --count 6 --interval 0.05 \
+run_on "$DISPLAY_NUM" single --pid "$PID_A" --title xtervoA
+run_on "$DISPLAY_NUM" fast --pid "$PID_A" --title xtervoA --count 6 --interval 0.05 \
     --log "$OUT/app-a.log"
-run_on "$DISPLAY_NUM" slow --pid "$PID_A" --title TervoA --count 6 --interval 1.2
+run_on "$DISPLAY_NUM" slow --pid "$PID_A" --title xtervoA --count 6 --interval 1.2
 
 # ---- 双实例 ----
-start_app app-b TervoB "$OUT/home-b" "$DISPLAY_NUM"
+start_app app-b xtervoB "$OUT/home-b" "$DISPLAY_NUM"
 PID_B=$(cat "$OUT/app-b.pid")
-run_on "$DISPLAY_NUM" two --pid-a "$PID_A" --title-a TervoA \
-    --pid-b "$PID_B" --title-b TervoB
+run_on "$DISPLAY_NUM" two --pid-a "$PID_A" --title-a xtervoA \
+    --pid-b "$PID_B" --title-b xtervoB
 
 # ---- 外部 WM 改变 _NET_WM_STATE 后点按钮 ----
-run_on "$DISPLAY_NUM" external --pid "$PID_A" --title TervoA
+run_on "$DISPLAY_NUM" external --pid "$PID_A" --title xtervoA
 
 # ---- PropertyNotify 丢失/延迟：SIGSTOP 冻结 WM，请求超时只报错不改 target ----
-run_on "$DISPLAY_NUM" timeout --pid "$PID_A" --title TervoA \
+run_on "$DISPLAY_NUM" timeout --pid "$PID_A" --title xtervoA \
     --openbox-pid "$OPENBOX_PID" --log "$OUT/app-a.log"
 
 # B 不再需要；释放内存/避免窗口干扰。
@@ -176,16 +176,16 @@ kill "$PID_B" 2>/dev/null || true
 wait "$PID_B" 2>/dev/null || true
 
 # ---- 启动时已最大化（Openbox rc.xml 规则）----
-start_app app-startmax TervoStartMax "$OUT/home-startmax" "$DISPLAY_NUM"
+start_app app-startmax xtervoStartMax "$OUT/home-startmax" "$DISPLAY_NUM"
 PID_C=$(cat "$OUT/app-startmax.pid")
-run_on "$DISPLAY_NUM" startup-max --pid "$PID_C" --title TervoStartMax
+run_on "$DISPLAY_NUM" startup-max --pid "$PID_C" --title xtervoStartMax
 kill "$PID_C" 2>/dev/null || true
 wait "$PID_C" 2>/dev/null || true
 
 # ---- 无 WM ----
-start_app app-nowm TervoNoWm "$OUT/home-nowm" "$NO_WM_DISPLAY"
+start_app app-nowm xtervoNoWm "$OUT/home-nowm" "$NO_WM_DISPLAY"
 PID_D=$(cat "$OUT/app-nowm.pid")
-run_on "$NO_WM_DISPLAY" no-wm --pid "$PID_D" --title TervoNoWm \
+run_on "$NO_WM_DISPLAY" no-wm --pid "$PID_D" --title xtervoNoWm \
     --log "$OUT/app-nowm.log"
 kill "$PID_D" 2>/dev/null || true
 wait "$PID_D" 2>/dev/null || true

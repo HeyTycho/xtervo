@@ -1,4 +1,4 @@
-;; Tervo Plugin API v3 WASM output-filter example.
+;; xtervo Plugin API v3 WASM output-filter example.
 ;;
 ;; ABI (see docs/PLUGIN_V3.md):
 ;;   memory exported; max 256 pages
@@ -6,14 +6,14 @@
 ;;   filter(ptr,len: i32) -> out_len: i32
 ;;   output bytes are written at memory[0..out_len]
 ;;
-;; Pattern: literal `[tervo-wasm]` (12 bytes) -> `WASM-FILTER-OK` (14 bytes).
+;; Pattern: literal `[xtervo-wasm]` (13 bytes) -> `WASM-FILTER-OK` (14 bytes).
 ;; Everything else is copied byte-for-byte.
 (module
   ;; 8 pages = 512 KiB initially; alloc grows for large chunks up to 256 pages.
   (memory (export "memory") 8 256)
 
   ;; Pattern + replacement live above the output buffer, below the input base.
-  (data (i32.const 65536) "[tervo-wasm]")
+  (data (i32.const 65536) "[xtervo-wasm]")
   (data (i32.const 65552) "WASM-FILTER-OK")
 
   ;; Input buffer starts at 256 KiB: output (max 256 KiB) can never overwrite
@@ -46,14 +46,14 @@
       (loop $next
         (br_if $done (i32.ge_u (local.get $i) (local.get $len)))
 
-        ;; Is the next 12 bytes exactly [tervo-wasm]?
-        (if (i32.le_u (i32.add (local.get $i) (i32.const 12)) (local.get $len))
+        ;; Is the next 13 bytes exactly [xtervo-wasm]?
+        (if (i32.le_u (i32.add (local.get $i) (i32.const 13)) (local.get $len))
           (then
             (local.set $match (i32.const 1))
             (local.set $b (i32.const 0))
             (block $mismatch
               (loop $cmp
-                (br_if $mismatch (i32.ge_u (local.get $b) (i32.const 12)))
+                (br_if $mismatch (i32.ge_u (local.get $b) (i32.const 13)))
                 (if (i32.ne
                       (i32.load8_u
                         (i32.add
@@ -77,7 +77,7 @@
                       (i32.load8_u (i32.add (i32.const 65552) (local.get $b))))
                     (local.set $b (i32.add (local.get $b) (i32.const 1)))
                     (br $replace)))
-                (local.set $i (i32.add (local.get $i) (i32.const 12)))
+                (local.set $i (i32.add (local.get $i) (i32.const 13)))
                 (local.set $o (i32.add (local.get $o) (i32.const 14)))
                 (br $next)))))
 

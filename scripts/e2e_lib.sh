@@ -2,9 +2,9 @@
 # GUI e2e 辅助：默认在 headless Xvfb 上跑，不占用 :1，也不产生任何宿主窗口。
 # - 每个测试目录一个 headless Xvfb（E2E_DISPLAY，默认 :99）；不创建桌面窗口
 # - 只 kill 自己启动的 app/Xephyr
-# - 默认使用 master 独立构建 .target-master/release/tervo
+# - 默认使用 master 独立构建 .target-master/release/xtervo
 
-E2E_BIN=${E2E_BIN:-$PWD/.target-master/release/tervo}
+E2E_BIN=${E2E_BIN:-$PWD/.target-master/release/xtervo}
 E2E_DISPLAY=${E2E_DISPLAY:-:99}
 HOST_DISPLAY=${HOST_DISPLAY:-:1}
 E2E_AREA_X=${E2E_AREA_X:-20}
@@ -35,7 +35,7 @@ e2e_start() {
         fi
     fi
     export DISPLAY="$E2E_DISPLAY"
-    ( XMODIFIERS=@im=none TERVO_LOG_DIR="$dir" TERVO_CONFIG="$dir/cfg.toml" \
+    ( XMODIFIERS=@im=none XTERVO_LOG_DIR="$dir" XTERVO_CONFIG="$dir/cfg.toml" \
         "$E2E_BIN" "$@" >"$dir/parent.log" 2>&1 & echo $! >"$dir/pid" )
     sleep 2
 }
@@ -44,7 +44,7 @@ e2e_pid() { cat "$1/pid"; }
 
 e2e_win() {
     local pid; pid=$(e2e_pid "$1")
-    for id in $(xwininfo -root -tree 2>/dev/null | grep -iE '"tervo" "tervo"' | awk '{print $1}'); do
+    for id in $(xwininfo -root -tree 2>/dev/null | grep -iE '"xtervo" "xtervo"' | awk '{print $1}'); do
         local p g
         p=$(xprop -id "$id" _NET_WM_PID 2>/dev/null | grep -o '[0-9]*' | tail -1)
         g=$(xwininfo -id "$id" 2>/dev/null | awk '/Width:/{w=$2}/Height:/{h=$2} END{print w"x"h}')
@@ -65,7 +65,7 @@ e2e_pos() {  # <win> -> "x y"
     echo "$x $y"
 }
 
-e2e_log() { ls -t "$1"/tervo-*.log 2>/dev/null | head -1; }
+e2e_log() { ls -t "$1"/xtervo-*.log 2>/dev/null | head -1; }
 
 e2e_stop() {  # <dir>
     local pid; pid=$(e2e_pid "$1" 2>/dev/null) || true

@@ -9,7 +9,7 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 OUT=${E2E_OUT:-$ROOT/target/multi-window-gpu}
 DISPLAY_NUM=${E2E_DISPLAY:-:153}
 TARGET_DIR=${CARGO_TARGET_DIR:-$ROOT/target}
-BIN=${TERVO_BIN:-$TARGET_DIR/debug/tervo}
+BIN=${XTERVO_BIN:-$TARGET_DIR/debug/xtervo}
 TOKEN="mw-gpu-token"
 APP_PID=""
 XVFB_PID=""
@@ -23,7 +23,7 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 if DISPLAY="$DISPLAY_NUM" xdpyinfo >/dev/null 2>&1; then fail "$DISPLAY_NUM 已被占用"; fi
 COMMON=$(git rev-parse --git-common-dir)
 MAIN_ROOT=$(cd "$(dirname "$COMMON")" && pwd)
-PERF=${TERVO_PERF_DIR:-$MAIN_ROOT/.perf}
+PERF=${XTERVO_PERF_DIR:-$MAIN_ROOT/.perf}
 XVFB=${E2E_XVFB:-$PERF/xvfb/usr/bin/Xvfb}
 [ -x "$XVFB" ] || XVFB=$(command -v Xvfb || true)
 [ -x "$XVFB" ] || fail "找不到 Xvfb"
@@ -32,9 +32,9 @@ rm -rf "$OUT"; mkdir -p "$OUT/logs" "$OUT/runtime" "$OUT/config"; chmod 700 "$OU
 XVFB_PID=$!
 for _ in $(seq 1 100); do DISPLAY="$DISPLAY_NUM" xdpyinfo >/dev/null 2>&1 && break; sleep 0.05; done
 export DISPLAY="$DISPLAY_NUM" XDG_RUNTIME_DIR="$OUT/runtime" XDG_CONFIG_HOME="$OUT/config" XDG_STATE_HOME="$OUT/state"
-export TERVO_CONFIG="$OUT/cfg.toml" TERVO_LOG_DIR="$OUT/logs" TERVO_SESSION="$OUT/session.json" TERVO_PROFILES="$OUT/profiles.toml"
-export TERVO_DIAG_SOCKET="$OUT/live.sock" TERVO_DIAG_TOKEN="$TOKEN" TERVO_DIAG_ALLOW_WRITE=1 TERVO_DIAG_ALLOW_DESTRUCTIVE=1
-export TERVO_MULTI_WINDOW_INPROC=1 TERVO_MULTI_WINDOW_SECOND=1 TERVO_GPU=1 SLINT_WGPU_CPU=1 XMODIFIERS=@im=none
+export XTERVO_CONFIG="$OUT/cfg.toml" XTERVO_LOG_DIR="$OUT/logs" XTERVO_SESSION="$OUT/session.json" XTERVO_PROFILES="$OUT/profiles.toml"
+export XTERVO_DIAG_SOCKET="$OUT/live.sock" XTERVO_DIAG_TOKEN="$TOKEN" XTERVO_DIAG_ALLOW_WRITE=1 XTERVO_DIAG_ALLOW_DESTRUCTIVE=1
+export XTERVO_MULTI_WINDOW_INPROC=1 XTERVO_MULTI_WINDOW_SECOND=1 XTERVO_GPU=1 SLINT_WGPU_CPU=1 XMODIFIERS=@im=none
 unset SLINT_BACKEND || true
 "$BIN" --cols 80 --rows 24 --shell /bin/sh >"$OUT/app.log" 2>&1 &
 APP_PID=$!

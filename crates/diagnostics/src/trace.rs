@@ -29,7 +29,7 @@ pub const MAX_TRACE_MESSAGE_CHARS: usize = 512;
 
 /// Correlation ids for one observable update.
 ///
-/// `placement_id` is the numeric `PlacementId` from `tervo-graphics`; the
+/// `placement_id` is the numeric `PlacementId` from `xtervo-graphics`; the
 /// diagnostics crate keeps it as `u64` so it stays dependency-free.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TraceContext {
@@ -228,7 +228,7 @@ impl TraceBuffer {
         }
     }
 
-    /// Additive `tervo.diag.v1` trace object.
+    /// Additive `xtervo.diag.v1` trace object.
     pub fn snapshot_json(&self) -> Value {
         let snapshot = self.snapshot();
         serde_json::to_value(snapshot).unwrap_or(Value::Null)

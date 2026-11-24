@@ -5,7 +5,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use tervo_core::{spawn, Frame, PaneConfig, PaneHandle};
+use xtervo_core::{spawn, Frame, PaneConfig, PaneHandle};
 
 /// PTY 集成测试会同时 fork shell/actor；并行跑时偶发某个 pane 5s 内完全无输出。
 /// 用进程内锁串行化这些用例，避免 CI/全量测试的资源竞争造成假失败。
@@ -53,7 +53,7 @@ fn wait_for<F: Fn(&Frame) -> bool>(
 
 fn temp_payload(name: &str, bytes: &[u8]) -> PathBuf {
     let path = std::env::temp_dir().join(format!(
-        "tervo-sixel-{}-{name}.bin",
+        "xtervo-sixel-{}-{name}.bin",
         std::process::id()
     ));
     std::fs::write(&path, bytes).expect("write payload");
@@ -199,7 +199,7 @@ fn ech_on_other_row_keeps_inline_image() {
 #[test]
 fn xtwinops_reports_cell_and_window_pixels() {
     let _serial = SIXEL_TEST_LOCK.lock().unwrap();
-    let resp = std::env::temp_dir().join(format!("tervo-xtwinops-{}.bin", std::process::id()));
+    let resp = std::env::temp_dir().join(format!("xtervo-xtwinops-{}.bin", std::process::id()));
     let _ = std::fs::remove_file(&resp);
     let script = format!(
         "stty raw -echo; printf '\\033[16t\\033[14t\\033[c'; timeout --foreground 0.8 dd bs=1 count=96 of='{}' 2>/dev/null || true; stty sane; printf '\\r\\nXTDONE\\r\\n'; sleep 0.3",
@@ -223,7 +223,7 @@ fn da1_advertises_sixel_only_when_enabled() {
     let _serial = SIXEL_TEST_LOCK.lock().unwrap();
     fn check(sixel: bool, expect_hex: &str) {
         let resp = std::env::temp_dir().join(format!(
-            "tervo-da1-{}-{}.bin",
+            "xtervo-da1-{}-{}.bin",
             std::process::id(),
             sixel
         ));

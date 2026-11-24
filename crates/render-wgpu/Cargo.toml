@@ -1,5 +1,5 @@
 [package]
-name = "tervo-render-wgpu"
+name = "xtervo-render-wgpu"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,19 +12,19 @@ default = []
 slint-presenter = ["dep:slint"]
 
 [dependencies]
-tervo-render = { path = "../render" }
-tervo-scene = { path = "../scene" }
+xtervo-render = { path = "../render" }
+xtervo-scene = { path = "../scene" }
 # Image sources are keyed by the graphics `SourceId`/`CompositePolicy`; the
 # renderer must not invent a parallel id space.
-tervo-graphics = { path = "../graphics" }
+xtervo-graphics = { path = "../graphics" }
 # Must stay on the exact wgpu major/minor Slint 1.18 unstable-wgpu-30 uses:
 # `slint::Image::try_from(wgpu::Texture)` is only implemented for that type.
 wgpu = { version = "=30.0.1" }
-# fontdue is already used by tervo-app; the atlas prototype shares the exact
+# fontdue is already used by xtervo-app; the atlas prototype shares the exact
 # same version so the rasterized coverage is comparable.
 fontdue = "0.9"
 # Cheap cmap coverage probes for the CJK/emoji fallback chain before paying a
-# fontdue parse. Same version as tervo-app's owned_ttf_parser, so it is already
+# fontdue parse. Same version as xtervo-app's owned_ttf_parser, so it is already
 # in the workspace lockfile and build graph.
 owned_ttf_parser = "0.25"
 # Zero-width/wide classification for combining marks and CJK/emoji cells.
@@ -38,7 +38,7 @@ futures-lite = "2"
 # `Window::take_snapshot()` for headless pixel validation.
 #
 # `renderer-femtovg` (OpenGL) is enabled in addition to the WGPU renderer only
-# for feature unification: `tervo-app` enables `renderer-skia-opengl`, and Slint
+# for feature unification: `xtervo-app` enables `renderer-skia-opengl`, and Slint
 # 1.18.1's winit backend then compiles femtovg's GL context module, which needs
 # glutin. Without the OpenGL femtovg feature, `cargo check --workspace
 # --all-features` fails inside Slint. Runtime renderer selection is unaffected:
@@ -53,10 +53,10 @@ slint = { version = "=1.18.1", optional = true, default-features = false, featur
 ] }
 
 [dev-dependencies]
-# Only the image integration test builds a real `tervo_core::Frame` to prove
+# Only the image integration test builds a real `xtervo_core::Frame` to prove
 # that `Frame.images` RGBA uploads by `source_id` and that the scene adapter's
 # crop/z/above-text/negative-row semantics reach the renderer unchanged.
-tervo-core = { path = "../core" }
+xtervo-core = { path = "../core" }
 
 [[example]]
 name = "two_colors"

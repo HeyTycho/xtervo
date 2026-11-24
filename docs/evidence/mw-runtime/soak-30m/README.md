@@ -3,7 +3,7 @@
 ```bash
 SOAK_SECONDS=1800 SOAK_DISPLAY=:167 \
 SOAK_OUT=$PWD/.logs/soak/mw-30m-clean \
-SOAK_RUNTIME_DIR=/tmp/tervo-mw-soak-clean \
+SOAK_RUNTIME_DIR=/tmp/xtervo-mw-soak-clean \
   bash scripts/soak_multi_window_inproc.sh
 ```
 

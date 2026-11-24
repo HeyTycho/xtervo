@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! 最小验收：真实 PTY -> tervo CPU `Renderer` RGBA framebuffer -> Slint 的
+//! 最小验收：真实 PTY -> xtervo CPU `Renderer` RGBA framebuffer -> Slint 的
 //! WGPU30 `Device/Queue` 上的 `Rgba8UnormSrgb` texture -> `slint::Image` ->
 //! `Window::take_snapshot()` 逐像素对照。
 //!
@@ -15,21 +15,34 @@
 //! Xvfb :77 -screen 0 1280x720x24 -nolisten tcp &
 //! DISPLAY=:77 SLINT_WGPU_CPU=1 \
 //!   CARGO_HOME=$PWD/.cargo CARGO_TARGET_DIR=$PWD/target \
-//!   cargo run -p tervo-app --example gpu_terminal_spike
+//!   cargo run -p xtervo-app --example gpu_terminal_spike
 //! ```
 //!
 //! 失败时不会打印 PASS：非 WGPU30 图形 API、没有字体、PTY 超时、snapshot
 //! 尺寸不符或像素对照失败都会以非零码退出。快照/CPU framebuffer 写成 PPM，
-//! 默认在 `target/agent-gpu-spike/`（可用 `TERVO_GPU_SPIKE_OUT` 覆盖）。
+//! 默认在 `target/agent-gpu-spike/`（可用 `XTERVO_GPU_SPIKE_OUT` 覆盖）。
 
 #![allow(dead_code)]
 
 // 复用 app 的真实终端光栅化器。两个模块之间只有 `crate::glyph` 依赖，因此
-// 直接以 #[path] 编进 example crate，不需要给 tervo-app 增加 lib target。
+// 直接以 #[path] 编进 example crate，不需要给 xtervo-app 增加 lib target。
 #[path = "../src/glyph.rs"]
 mod glyph;
 #[path = "../src/render.rs"]
 mod render;
+
+// `glyph.rs` 的 `FontOptions::from_config` 在主程序里读完整 Config；example
+// 只复用光栅化器，不需要配置模块，提供同字段的最小占位类型即可。
+mod config {
+    #[allow(dead_code)]
+    pub struct Config {
+        pub font_family: String,
+        pub font_weight: u16,
+        pub line_height: f32,
+        pub letter_spacing: f32,
+        pub render_scale: f32,
+    }
+}
 
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
@@ -37,11 +50,11 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use slint::wgpu_30::wgpu;
-use tervo_core::{spawn, Frame, PaneConfig, Theme};
+use xtervo_core::{spawn, Frame, PaneConfig, Theme};
 
 slint::slint! {
     export component App inherits Window {
-        title: "tervo-gpu-terminal-spike";
+        title: "xtervo-gpu-terminal-spike";
         in property <length> frame-w: 320px;
         in property <length> frame-h: 160px;
         width: root.frame-w;
@@ -63,7 +76,7 @@ const FONT_SIZE: f32 = 15.0;
 const TERMINAL_COLS: u16 = 46;
 const TERMINAL_ROWS: u16 = 9;
 /// 固定 PTY 输出：1 行亮白文字 + 红/蓝背景块 + 一行普通文字。
-const PTY_SCRIPT: &str = "printf '\\033[2J\\033[H\\033[1;97mTERVO-GPU-PTY\\033[0m\\n\\033[41m  RED-BG  \\033[0m\\n\\033[44m  BLUE-BG  \\033[0m\\nPTY-FRAME-OK\\n'; exec sleep 300";
+const PTY_SCRIPT: &str = "printf '\\033[2J\\033[H\\033[1;97mXTERVO-GPU-PTY\\033[0m\\n\\033[41m  RED-BG  \\033[0m\\n\\033[44m  BLUE-BG  \\033[0m\\nPTY-FRAME-OK\\n'; exec sleep 300";
 const PTY_TIMEOUT: Duration = Duration::from_secs(8);
 const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -95,7 +108,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // 在创建 Slint 窗口之前把真实终端 framebuffer 准备好；之后不再依赖
-    // tervo-app 的事件循环、Session 或 Workspace。
+    // xtervo-app 的事件循环、Session 或 Workspace。
     slint::BackendSelector::new()
         .require_wgpu_30(slint::wgpu_30::WGPUConfiguration::default())
         .select()?;
@@ -218,7 +231,7 @@ fn install_rendering_notifier(
 
         let (width, height) = (cpu.width, cpu.height);
         let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("tervo-gpu-spike-terminal-frame"),
+            label: Some("xtervo-gpu-spike-terminal-frame"),
             size: wgpu::Extent3d {
                 width,
                 height,
@@ -468,7 +481,7 @@ fn capture_pty_frame() -> Result<CpuFrame, Box<dyn std::error::Error>> {
         frame = pane.pull(frame);
         if !frame.skipped {
             let text = frame_text(&frame);
-            if text.contains("TERVO-GPU-PTY") && text.contains("PTY-FRAME-OK") {
+            if text.contains("XTERVO-GPU-PTY") && text.contains("PTY-FRAME-OK") {
                 break (frame, text);
             }
         }
@@ -531,7 +544,7 @@ fn frame_text(frame: &Frame) -> String {
 }
 
 fn output_dir() -> PathBuf {
-    std::env::var_os("TERVO_GPU_SPIKE_OUT")
+    std::env::var_os("XTERVO_GPU_SPIKE_OUT")
         .map(PathBuf::from)
         .unwrap_or_else(|| Path::new("target/agent-gpu-spike").to_path_buf())
 }

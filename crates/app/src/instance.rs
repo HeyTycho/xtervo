@@ -9,7 +9,7 @@
 //!   [`forward_open_window`]。
 //!
 //! 协议：
-//! - primary 持有 `$XDG_RUNTIME_DIR/tervo/instance.lock` 上的
+//! - primary 持有 `$XDG_RUNTIME_DIR/xtervo/instance.lock` 上的
 //!   `flock(LOCK_EX | LOCK_NB)`；锁随进程退出（fd 关闭）自动释放。
 //! - primary 在 `control.sock`（0600）监听，token 在 `instance.token`（0600）。
 //! - secondary 发送一行 JSON：
@@ -19,8 +19,8 @@
 //!
 //! token 只存在于 0600 文件和进程内存中，本模块不会把它写进日志或错误信息。
 //!
-//! 没有 `XDG_RUNTIME_DIR` 时依次退回 `$XDG_STATE_HOME/tervo`、
-//! `~/.local/state/tervo`、`$TMPDIR/tervo-<uid>`。退回的目录会校验
+//! 没有 `XDG_RUNTIME_DIR` 时依次退回 `$XDG_STATE_HOME/xtervo`、
+//! `~/.local/state/xtervo`、`$TMPDIR/xtervo-<uid>`。退回的目录会校验
 //! owner/类型并收紧到 0700；symlink 或 owner 不符直接报错，而不是盲目使用
 //! 可预测的临时路径。
 
@@ -37,7 +37,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-pub const CONTROL_DIR_NAME: &str = "tervo";
+pub const CONTROL_DIR_NAME: &str = "xtervo";
 pub const LOCK_FILE_NAME: &str = "instance.lock";
 pub const SOCKET_FILE_NAME: &str = "control.sock";
 pub const TOKEN_FILE_NAME: &str = "instance.token";
@@ -161,14 +161,14 @@ impl InstancePaths {
         Self::from_dir(dir)
     }
 
-    /// 读取 `TERVO_INSTANCE_DIR` / `XDG_RUNTIME_DIR` / `XDG_STATE_HOME` /
+    /// 读取 `XTERVO_INSTANCE_DIR` / `XDG_RUNTIME_DIR` / `XDG_STATE_HOME` /
     /// `HOME` / `TMPDIR`。
     ///
-    /// `TERVO_INSTANCE_DIR` 是测试/高级隔离开关：显式指定整个 control 目录
+    /// `XTERVO_INSTANCE_DIR` 是测试/高级隔离开关：显式指定整个 control 目录
     /// （lock/token/socket 都在其中）。相对路径按无效处理，继续走 fallback。
     /// 相对路径的 XDG/HOME 环境变量同样视为无效（XDG spec 要求绝对路径）。
     pub fn from_env() -> Self {
-        if let Some(dir) = env_absolute("TERVO_INSTANCE_DIR") {
+        if let Some(dir) = env_absolute("XTERVO_INSTANCE_DIR") {
             return Self::from_dir(dir);
         }
         let runtime_dir = env_absolute("XDG_RUNTIME_DIR");
@@ -290,7 +290,7 @@ impl PrimaryServer {
             io::Error::new(
                 io::ErrorKind::AlreadyExists,
                 format!(
-                    "another Tervo primary already holds {}",
+                    "another xtervo primary already holds {}",
                     paths.lock_path().display()
                 ),
             )
@@ -318,7 +318,7 @@ impl PrimaryServer {
         let handler: Arc<OpenWindowHandler> = Arc::new(handler);
         let accept_cleanup = cleanup.clone();
         let join = std::thread::Builder::new()
-            .name("tervo-instance".into())
+            .name("xtervo-instance".into())
             .spawn(move || {
                 accept_loop(bound.listener, thread_stop, token, handler, accept_cleanup)
             });
@@ -497,19 +497,19 @@ impl std::fmt::Display for ForwardError {
             Self::InvalidRequest(message) => {
                 write!(f, "invalid open_window request: {message}")
             }
-            Self::Token(error) => write!(f, "Tervo instance token is unavailable: {error}"),
+            Self::Token(error) => write!(f, "xtervo instance token is unavailable: {error}"),
             Self::Unavailable { path, source } => write!(
                 f,
-                "Tervo primary is not running or its control socket is unavailable at {}: {source}",
+                "xtervo primary is not running or its control socket is unavailable at {}: {source}",
                 path.display()
             ),
             Self::Timeout { stage } => {
-                write!(f, "timed out waiting for Tervo primary during {stage}")
+                write!(f, "timed out waiting for xtervo primary during {stage}")
             }
-            Self::Rejected(message) => write!(f, "Tervo primary rejected open_window: {message}"),
-            Self::Protocol(message) => write!(f, "invalid response from Tervo primary: {message}"),
+            Self::Rejected(message) => write!(f, "xtervo primary rejected open_window: {message}"),
+            Self::Protocol(message) => write!(f, "invalid response from xtervo primary: {message}"),
             Self::Io { stage, source } => {
-                write!(f, "Tervo instance IPC {stage} failed: {source}")
+                write!(f, "xtervo instance IPC {stage} failed: {source}")
             }
         }
     }
@@ -598,7 +598,7 @@ fn accept_loop(
                 let token = token.clone();
                 let handler = Arc::clone(&handler);
                 let _ = std::thread::Builder::new()
-                    .name("tervo-instance-conn".into())
+                    .name("xtervo-instance-conn".into())
                     .spawn(move || handle_connection(stream, &token, handler.as_ref()));
             }
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {

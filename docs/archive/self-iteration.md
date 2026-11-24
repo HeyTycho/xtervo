@@ -47,7 +47,7 @@ RUN_IME=1 ./scripts/selfcheck.sh  # 加中文 IME 冒烟（需要 X11 + fcitx/ib
 | 按键 → 上屏延迟 | `--latency N` + `docs/latency-*.json` | 改渲染/输入时 |
 | 全屏 FPS | `--fps SECS` / `scripts/stress_fullscreen.py` | 改渲染时 |
 | 空闲 RSS / CPU | `scripts/measure_startup.py --rss-only` | 每周/改核心时 |
-| VT 解析吞吐 | `cargo bench -p tervo-core --bench pty_throughput` | 改解析/帧时 |
+| VT 解析吞吐 | `cargo bench -p xtervo-core --bench pty_throughput` | 改解析/帧时 |
 | 二进制大小 | `selfcheck.sh` 自动记录 | 每轮 |
 
 原则：**没有基线数据的“优化”不算优化**；没有 before/after 的 PR 不进。
@@ -110,8 +110,8 @@ RUN_IME=1 ./scripts/selfcheck.sh  # 加中文 IME 冒烟（需要 X11 + fcitx/ib
 # 每轮开始前/后各跑一次，比较 history.jsonl
 ./scripts/selfcheck.sh
 # 有明确优化目标时再跑重基准
-cargo bench -p tervo-core --bench pty_throughput
-./target/release/tervo --latency 200
+cargo bench -p xtervo-core --bench pty_throughput
+./target/release/xtervo --latency 200
 ```
 
 只要这条闭环在，终端模拟器就可以持续“自我迭代”，且每次改进都有证据、有回归保护。
@@ -146,7 +146,7 @@ cargo bench -p tervo-core --bench pty_throughput
   - 沙箱里 `/tmp` 每次 bash 调用都会重建：GUI 验证脚本必须和启动写在**同一条命令**里，否则
     `--shell /bin/sh -- /tmp/xxx.sh` 指向不存在的文件，pane 静默退出、模式位当然不生效。
   - 同名窗口会误导 `xwin`：现已支持 `xwin 0x<id> x y` 按 id 激活/移动（id 从 app 日志的
-    `[icon] 写入窗口 0x...` 取）；排查鼠标链路用 `TERVO_MOUSELOG=1`，会打印命中的格与是否上报。
+    `[icon] 写入窗口 0x...` 取）；排查鼠标链路用 `XTERVO_MOUSELOG=1`，会打印命中的格与是否上报。
 - **遗留**：1003 悬停只按格去重、未做时间节流；`--title` 参数目前没真正写到窗口标题（顺手记下，下轮处理）。
 
 ### 2026-11-05 · 第 2 轮：关闭分屏后布局不恢复（幽灵分屏）
@@ -218,7 +218,7 @@ cargo bench -p tervo-core --bench pty_throughput
 
 - **打包**：`SKIP_BUILD=1 ./scripts/package.sh /tmp/dist` → 183.4 MB（带符号）strip 到
   **32.2 MB**（−82.4%），体积门禁 ≤40 MB 通过，strip 后 `--help` 冒烟通过。
-- **安装**：`PREFIX=/tmp/prefix ./scripts/install.sh` → `bin/tervo`（32.2 MB）+
+- **安装**：`PREFIX=/tmp/prefix ./scripts/install.sh` → `bin/xtervo`（32.2 MB）+
   `.desktop` + 图标；安装后的二进制 `--help` 正常。
 - **4 pane**：右键菜单做 2×2（3 条 `[ws] split`），应用 RSS **44 MB**、5 秒空闲 CPU
   **0.2%**、子进程 5 个（4 shell + gsettings）。门禁要求 ≤220 MiB / ≤1%，均通过。
@@ -254,10 +254,10 @@ cargo bench -p tervo-core --bench pty_throughput
 - **结论**：能日常使用的 Slint/X11 终端工作区，但不是官方 Tabby 的完整替代；
   剩余大头（内建 SSH/SFTP、Vault、插件运行时、Quake、连接管理器 UI）未闭环。
 
-### 2026-11-05 · 更名 Tervo + 许可证合规
+### 2026-11-05 · 更名 xtervo + 许可证合规
 
-- **更名**：`rusttabby-*` → `tervo-*`（crate），二进制 `tervo`，配置 `~/.config/tervo`，
-  环境变量 `TERVO_*`，桌面项 `tervo.desktop`；文档/脚本同步。
+- **更名**：`rusttabby-*` → `xtervo-*`（crate），二进制 `xtervo`，配置 `~/.config/xtervo`，
+  环境变量 `XTERVO_*`，桌面项 `xtervo.desktop`；文档/脚本同步。
 - **许可证**：Slint 1.18 是 `GPL-3.0-only`/商业/royalty-free 三选一，本项目选 GPL，
   因此整体定为 **GPL-3.0-only**；新增 `LICENSE`、`THIRD_PARTY_NOTICES.md`
   （369 个运行时 crate / 198 份许可证文本）、`docs/LICENSING.md`。
@@ -265,9 +265,9 @@ cargo bench -p tervo-core --bench pty_throughput
   已替换为由 `scripts/gen_icon.py` 生成的原创几何 “T” 标记（无猫/无红绿灯），
   并在 README 加独立项目声明与更名说明。
 - **可复现**：`python3 scripts/gen_third_party_notices.py` 重新生成依赖声明；
-  `install.sh` 把 LICENSE/THIRD_PARTY_NOTICES/LICENSING 安装到 `share/doc/tervo/`。
-- **验证**：selfcheck PASS；打包 32.1 MB（≤40 MB）；安装后 `tervo --help` 正常；
-  标题栏显示新图标（`.logs/tervo-brand.png`）。
+  `install.sh` 把 LICENSE/THIRD_PARTY_NOTICES/LICENSING 安装到 `share/doc/xtervo/`。
+- **验证**：selfcheck PASS；打包 32.1 MB（≤40 MB）；安装后 `xtervo --help` 正常；
+  标题栏显示新图标（`.logs/xtervo-brand.png`）。
 
 ### 2026-11-05 · 修正 first_damage 测量口径
 
@@ -383,7 +383,7 @@ cargo bench -p tervo-core --bench pty_throughput
 - **真机验证**：Appearance/Terminal/Config 截图；Terminal 页右键粘贴开关点击 →
   `[ui] right_click_paste=true`；搜索 `font` → “Terminal · Font size”。
   截图：.logs/settings-2col.png / -terminal.png / -config.png / -search.png。
-- **排查过程**：测试环境里有旧的 2560×1413 Tervo 窗口（宿主 PID 968901，非本会话）盖住屏幕
+- **排查过程**：测试环境里有旧的 2560×1413 xtervo 窗口（宿主 PID 968901，非本会话）盖住屏幕
   导致点击被吞；改为按 `_NET_WM_PID` 选本进程窗口并 `xwin` 移到空白区，不杀用户窗口。
 
 ### 2026-11-05 · “+” 下拉（Tabby 式新建 Tab 菜单）
@@ -408,12 +408,12 @@ cargo bench -p tervo-core --bench pty_throughput
     F12 恢复，进程/PTY/热键都活着。
   - 真机：5120x1440 屏 → 3584x720 at 768,0；Quake 内右键菜单、hide/show 后再右键都正常。
 - **日志/诊断**：新增 `logging.rs`，用 pipe+dup2 把 stderr（含 panic/backtrace）tee 到
-  `~/.local/state/tervo/logs/tervo-<epoch>.log`（保留 8 个；`TERVO_LOG=0` 关闭）；
-  新增 `tervo --diagnose`：环境、屏幕、指针、活动窗口、本进程/其他 Tervo 实例窗口、
+  `~/.local/state/xtervo/logs/xtervo-<epoch>.log`（保留 8 个；`XTERVO_LOG=0` 关闭）；
+  新增 `xtervo --diagnose`：环境、屏幕、指针、活动窗口、本进程/其他 xtervo 实例窗口、
   最近 40 行日志。
-  - 右键追踪：pane 的 right down/up 加 `[trace]`；日志里没有 trace = 事件没到 Tervo。
-  - 实测发现宿主上有一个旧的 2560x1413 Tervo 窗口（pid 1062405）盖住新窗口；启动日志
-    现在会警告“另一个可见的 Tervo 窗口…可能挡住点击”。
+  - 右键追踪：pane 的 right down/up 加 `[trace]`；日志里没有 trace = 事件没到 xtervo。
+  - 实测发现宿主上有一个旧的 2560x1413 xtervo 窗口（pid 1062405）盖住新窗口；启动日志
+    现在会警告“另一个可见的 xtervo 窗口…可能挡住点击”。
 - **右键关闭模态面板**：设置/Profiles/SFTP/Forwards/Background 面板的遮罩改为**任意键**
   按下即关闭；面板内右键也会关闭（面板内没有右键菜单）。注意：右键落在面板内的按钮
   （ChoiceBtn 等）仍会被按钮的 TouchArea 吃掉，这是 Slint 命中顺序的预期行为。
@@ -421,12 +421,12 @@ cargo bench -p tervo-core --bench pty_throughput
 
 ### 2026-11-05 · 右键在 Agent TUI pane 里失效（鼠标上报）
 
-- **现场日志**（用户 17:33 实例 pid 1270604，`~/.local/state/tervo/logs/tervo-1793871518.log`）：
+- **现场日志**（用户 17:33 实例 pid 1270604，`~/.local/state/xtervo/logs/xtervo-1793871518.log`）：
   `pane-down-right` 12 次，只有 1 次 `right click pane=`（新开的 pane 2），pane 1 的 11 次
   只有 trace、没有菜单。截图显示 pane 1 跑的是 deepseek-flash/Claude Code TUI。
 - **原因**：该 TUI 发送 `ESC[?1000h ESC[?1006h` 开启 SGR 鼠标上报；旧逻辑在 mouse-reporting
-  时把右键转发给 PTY，所以 Tervo 不弹菜单。不是 dshtui 冲突，也不是窗口被挡。
-- **修复**：改为 Tabby 语义——右键**始终**先开 Tervo 菜单（不再被 TUI 吞掉），Shift+右键才
+  时把右键转发给 PTY，所以 xtervo 不弹菜单。不是 dshtui 冲突，也不是窗口被挡。
+- **修复**：改为 Tabby 语义——右键**始终**先开 xtervo 菜单（不再被 TUI 吞掉），Shift+右键才
   转发给 TUI；中键仍转发。trace 保留 `pane-right-forward` 仅用于 Shift 转发路径。
 - 真机：mouse-reporting pane 内普通右键 → `[ui] right click pane=1`，菜单出现
   （.logs/mouse-mode-right-menu.png）。
@@ -450,7 +450,7 @@ cargo bench -p tervo-core --bench pty_throughput
 - **动机**：需求 B1 UI-WIN-009 要求多窗口。单进程多窗口需要重写 Tab 树/渲染/事件循环所有权，
   本轮先交付可用的进程级 MVP（明确不引入单实例锁/共享内存/IPC）。
 - **实现**：新增 `crates/app/src/window.rs`；`window.new`（Category::Window，默认
-  `Ctrl+Shift+N`）→ `std::env::current_exe()` + `--window` 拉起新 Tervo 进程。
+  `Ctrl+Shift+N`）→ `std::env::current_exe()` + `--window` 拉起新 xtervo 进程。
   - `setsid()` 脱离父进程会话，父窗口关闭/Ctrl+C 不连带新窗口；
   - stdin/stdout/stderr 接 `/dev/null`：新进程写自己的日志文件，避免混进父进程的
     log tee 管道；
@@ -460,13 +460,13 @@ cargo bench -p tervo-core --bench pty_throughput
   子进程启动时 `[ui] new window process pid=<pid> (--window)`，仅用于区分。
 - **入口**：TabBar 右键菜单新增 New Window（第 13 项，菜单 396px = 13×28 + 12×2 + 8 正好）；
   命令面板可搜到 New Window；`--help`/README 同步。
-- **测试**：`cargo test -p tervo-app --bin tervo` 全绿（新增 4 个不依赖 GUI 的用例：
+- **测试**：`cargo test -p xtervo-app --bin xtervo` 全绿（新增 4 个不依赖 GUI 的用例：
   命令注册/快捷键、spawn 命令行只带 `--window`、`--window` 不继承父参数）；
-  `cargo build --release -p tervo-app` 通过。未启动 GUI（共享显示器约束）。
+  `cargo build --release -p xtervo-app` 通过。未启动 GUI（共享显示器约束）。
 - **限制**：独立进程，Tab/Pane 不能跨窗口移动/拖拽；配置并发为原子写“最后写入者生效”；
   关闭确认只覆盖当前窗口；每个窗口独立日志，`--diagnose` 默认只报告当前进程。
 - **手工验证（有显示器时）**：启动 release 版 → Ctrl+Shift+N（或右键 TabBar → New Window）
-  → 出现第二个窗口；`ps -o pid,ppid,sid,cmd -C tervo` 可见两个不同 pid、不同 sid；
+  → 出现第二个窗口；`ps -o pid,ppid,sid,cmd -C xtervo` 可见两个不同 pid、不同 sid；
   两个窗口分别 `echo $$` 得到不同 shell pid；在 A 窗口 Ctrl+T 加 Tab，B 窗口 Tab 数不变；
   关掉 A，B 仍可输入；父进程日志有 `[ui] new window pid=`，新进程日志首部有
   `args=[..., "--window"]` 与 `[ui] new window process pid=`。
@@ -489,7 +489,7 @@ cargo bench -p tervo-core --bench pty_throughput
 - **分发**：`handle_input` 在 F11/搜索框/硬编码快捷键之前，把当前事件转成 chord：
   命中 override → `run_command` 并 return；若按键是某命令已被改走的旧默认键 → 吞掉，
   避免“改了 New Tab，Ctrl+T 仍然开 Tab”。没有 override 时完全走原路径。
-- **测试**：`cargo test -p tervo-app --bin tervo` → 108 passed / 0 failed。新增覆盖
+- **测试**：`cargo test -p xtervo-app --bin xtervo` → 108 passed / 0 failed。新增覆盖
   chord 解析/规范化（含 `+`、别名、非法输入）、key event→chord、override 查找/生效绑定/
   冲突/保存校验、旧默认键抑制、config hotkeys roundtrip/旧配置兼容、Hotkeys 行模型。
 - **限制**：无 Hotkeys 搜索；多段键（`Ctrl+K Ctrl+T`）未支持录制/override；录制只有
@@ -513,8 +513,8 @@ cargo bench -p tervo-core --bench pty_throughput
   `notify-send`（参数直传、不经 shell、清洗限长、命令缺失静默失败），配置
   `desktop_notifications`（默认 true，Settings → Terminal）。
 - **测试**：core osc 12 例 + smoke `osc_progress_notification_and_bell_are_delivered`；
-  `cargo test -p tervo-core` 全绿（80：38 lib + 16 mouse_report + 15 smoke + 11 VT），
-  `cargo test -p tervo-app --bin tervo` 102 passed；`cargo build --release -p tervo-app` 通过。
+  `cargo test -p xtervo-core` 全绿（80：38 lib + 16 mouse_report + 15 smoke + 11 VT），
+  `cargo test -p xtervo-app --bin xtervo` 102 passed；`cargo build --release -p xtervo-app` 通过。
 - **未做**：桌面通知点击跳转、命令完成自动检测/静音策略、OSC 633、不确定进度动画；
   共享显示器约束下未启动 GUI，Tab 样式仅编译验证（手工步骤见报告）。
 
@@ -536,10 +536,10 @@ cargo bench -p tervo-core --bench pty_throughput
     错误/提示）；启动时默认锁定；连接已保存密码但 Vault 锁定时跳到该页提示解锁。
   - 文档：新增 [`VAULT.md`](../VAULT.md)，更新 FEATURE_MATRIX 的 SEC-001..006、UI-SET-010、
     UI-SSH-001 与 B7/C12 计数。
-- **测试**：`cargo test -p tervo-app --bin tervo` → **108 passed**。新增 vault 7 例
+- **测试**：`cargo test -p xtervo-app --bin xtervo` → **108 passed**。新增 vault 7 例
   （roundtrip/锁定读写、错密码+损坏/截断/空文件、无明文+0600、改主密码、拒覆盖+Clear、
-  恶意 KDF 参数上限、TERVO_VAULT 覆盖）、askpass 5 例（密码 prompt 原样输出/非密码 prompt 回答 no/force 环境/Debug 脱敏与 0700/真实 ssh+ssh-keygen 的 known_hosts 判定）、
-  Profile 序列化无明文密码 1 例。全部使用临时目录，不碰真实 `$HOME`（`TERVO_VAULT` 路径用例走纯函数，不改进程环境）。
+  恶意 KDF 参数上限、XTERVO_VAULT 覆盖）、askpass 5 例（密码 prompt 原样输出/非密码 prompt 回答 no/force 环境/Debug 脱敏与 0700/真实 ssh+ssh-keygen 的 known_hosts 判定）、
+  Profile 序列化无明文密码 1 例。全部使用临时目录，不碰真实 `$HOME`（`XTERVO_VAULT` 路径用例走纯函数，不改进程环境）。
 - **踩坑（重要）**：最初脚本对任何 askpass prompt 都输出密码。本地用 paramiko 测试服务 +
   `SSH_ASKPASS_REQUIRE=force` 做无 GUI 探针时，OpenSSH 把密码当成 host key 确认的
   yes/no 答案，3 秒内调用 askpass **5044 次**并卡死。修复：
@@ -558,7 +558,7 @@ cargo bench -p tervo-core --bench pty_throughput
     锁定时取消勾选无法立即删除旧密文（Clear 或下次解锁后处理）。
   - 私钥口令/其他 secret 未接 Vault；known_hosts 仍交系统 ssh。
 - **未做**：GUI 真机走查（共享显示器约束，未启动 GUI/xkey/xclick/xwin）；原生 russh；
-  解锁弹窗；凭据列表 UI；Keyring。`cargo build --release -p tervo-app` 通过（见本次提交说明）。
+  解锁弹窗；凭据列表 UI；Keyring。`cargo build --release -p xtervo-app` 通过（见本次提交说明）。
 
 ### 2026-11-05 · Profile 选择器改为独立图标（对齐 Tabby）
 
@@ -595,8 +595,8 @@ cargo bench -p tervo-core --bench pty_throughput
     终端 IME 宿主（避免搜索框吃掉按键）。
   - 文档：更新 FEATURE_MATRIX 的 UI-PROF-001..006/010/013、UI-NAV-004、UI-TAB-001/002
     与 B/B+C 计数。
-- **测试**：`CARGO_HOME=.../.cargo CARGO_TARGET_DIR=$PWD/target cargo test -p tervo-app
-  --bin tervo` → **139 passed, 0 failed**（首次完整编译 1m00s）。新增/改写：
+- **测试**：`CARGO_HOME=.../.cargo CARGO_TARGET_DIR=$PWD/target cargo test -p xtervo-app
+  --bin xtervo` → **139 passed, 0 failed**（首次完整编译 1m00s）。新增/改写：
   - `filter_matches_name_host_kind_case_insensitively`：name/host/kind、大小写不敏感、
     空查询全量、无命中；
   - `default_index_resolves_and_falls_back`：0/失效 ID 回退、删除默认项后解析失败；
@@ -610,7 +610,7 @@ cargo bench -p tervo-core --bench pty_throughput
   编译 + 单测验证，未做截图/e2e；Profile 选择器（`>_` 菜单）本身仍无搜索/键盘导航；
   无 Profile Groups/拖拽排序；启动首 Tab 不套用默认 Profile；删除仍无二次确认。
 - **手工验证步骤（合并后）**：
-  1. 用 `TERVO_CONFIG=/tmp/t/config.toml TERVO_PROFILES=/tmp/t/profiles.toml` 启动，建
+  1. 用 `XTERVO_CONFIG=/tmp/t/config.toml XTERVO_PROFILES=/tmp/t/profiles.toml` 启动，建
      2 个 Local + 1 个 SSH Profile。
   2. 打开 Profiles 面板：输入 `SSH`/host 片段/名字大小写变体 → 列表即时缩小；点击结果
      打开对应 Profile 的新 Tab；点 × 或 Esc → 恢复完整列表。
@@ -651,10 +651,10 @@ cargo bench -p tervo-core --bench pty_throughput
     冲突/非法/空绑定/多段键跳过并记录原因；已有自定义绑定不覆盖；一个命令多个候选键只取
     第一个可用者，其余计数忽略。
   - 主题：校验 name/fg/bg/cursor/16 色，`UiColors::derive` 生成 11 个 UI 色后写出完整
-    Tervo TOML；同内容去重、同名文件加 `-2` 后缀、绝不覆盖；坏色值/缺字段/非 16 色跳过。
+    xtervo TOML；同内容去重、同名文件加 `-2` 后缀、绝不覆盖；坏色值/缺字段/非 16 色跳过。
   - CLI 与设置页均显示新增/未映射/跳过数量及首个原因；设置页导入后重载 `ThemeRegistry`
     并刷新 hotkey 列表。
-- **测试**：`cargo test -p tervo-app --bin tervo` → **139 passed**。`tabby_import.rs` 共
+- **测试**：`cargo test -p xtervo-app --bin xtervo` → **139 passed**。`tabby_import.rs` 共
   11 例（新增 7 例：映射表一致性、chord 归一化、映射+未映射+非法、冲突+空绑定+多段键、
   主题落盘+重名后缀、坏色值、短 hex/深浅 variant），全部使用临时目录；生成的主题再用
   `ThemeRegistry::load` 回读验证。
@@ -666,7 +666,7 @@ cargo bench -p tervo-core --bench pty_throughput
 
 ### 2026-11-05 · 外部进程插件 API MVP（命令注册/执行）
 
-- **问题**：`plugin.rs` 原来只扫描扁平 `~/.config/tervo/plugins/*.toml` 并展示，不加载/
+- **问题**：`plugin.rs` 原来只扫描扁平 `~/.config/xtervo/plugins/*.toml` 并展示，不加载/
   不执行；命令面板只有静态 `commands::builtin()`；需求 C13/PLUG-001..005、B11/UI-PLUG 停在
   not_started/partial。
 - **做法**（不替换旧格式，新增 v1 目录格式可执行）：
@@ -678,12 +678,12 @@ cargo bench -p tervo-core --bench pty_throughput
     以 `plugin.<name>.<id>`、标题 `(plugin: <name>)`、分类 `Plugins` 进入命令表；Palette
     可搜/可执行，Hotkeys 页可见并支持 override；默认 key 在内置硬编码键之后分发。
   - 执行走 `run_command` 的 unknown-id 分支 → `PluginStore::spawn_command` → 后台线程
-    spawn entry（cwd=插件目录，env `TERVO_PLUGIN_NAME/TERVO_PLUGIN_API`）；stdin 写一行
+    spawn entry（cwd=插件目录，env `XTERVO_PLUGIN_NAME/XTERVO_PLUGIN_API`）；stdin 写一行
     JSON `{"event":"command","id":"...","args":[]}` 后关闭；并发捕获 stdout/stderr（各
     64 KiB）、10s 超时 kill，退出码/超时/输出只写 `[plugin]` 日志。UI 线程不等待。
   - `enabled=false` 不注册命令、`spawn_command` 拒绝；设置页沿用模型显示
     名称/版本/状态/api/命令数/说明，并更新底部说明为真实行为（含无沙箱警告）。
-- **测试**：`cargo test -p tervo-app --bin tervo` → **146 passed**（新增 14 例：旧+新共存、
+- **测试**：`cargo test -p xtervo-app --bin xtervo` → **146 passed**（新增 14 例：旧+新共存、
   v1 解析/字段/api/非法 entry/符号链接/重名/命令 id 重复/非法 key、命名空间注册与禁用、
   外部 shell 脚本的 env/stdin JSON/stdout/stderr/cwd/退出码/超时 kill/spawn 错误）。
 - **文档**：新增 [`PLUGIN_API.md`](../PLUGIN_API.md)（目录/清单/协议/权限/限制/手工验证）；
@@ -711,7 +711,7 @@ cargo bench -p tervo-core --bench pty_throughput
   原文；strict/known_hosts 路径解析与“未知 host 不使用 askpass”的保守策略不变。
   未命中时日志打印 lookup 键、strict 与候选 known_hosts 路径（不含密码），便于判断条目是否
   写到了应用进程看不到的位置。
-- **测试**：`cargo test -p tervo-app --bin tervo` → **136 passed**。新增 4 例：
+- **测试**：`cargo test -p xtervo-app --bin xtervo` → **136 passed**。新增 4 例：
   `host_key_known_matches_nonstandard_port_entry`（Profile 级 `[127.0.0.1]:2222` 命中，
   端口/主机不同必须 miss）、`ssh_keygen_matches_bracketed_port_spec`（真实 ssh-keygen
   匹配 `[127.0.0.1]:2222`，且端口/主机不匹配时必须 miss）、
@@ -757,7 +757,7 @@ cargo bench -p tervo-core --bench pty_throughput
   - Slint Plugins 页拆成 Installed + Recent plugin activity 两个列表（各 80/108px
     可滚动）；`poll_events`（400ms）只在 revision 变化时 `set_vec` 刷新，
     后台线程不直接碰 Slint model。完整 stdout/stderr 仍只写日志。
-- **测试**：`cargo test -p tervo-app --bin tervo` → **172 passed**（新增 8 例）：
+- **测试**：`cargo test -p xtervo-app --bin xtervo` → **172 passed**（新增 8 例）：
   `parses_event_subscriptions_and_rejects_unknown_or_duplicate`（事件清单/未知/重复）、
   `event_payloads_carry_only_title_and_kind`（payload JSON/单行/截断/无敏感字段）、
   `event_targets_respect_declaration_and_enabled`（未声明/禁用不触发）、
@@ -785,7 +785,7 @@ cargo bench -p tervo-core --bench pty_throughput
 ### 2026-11-05 · 窗口背景图 + 终端背景透明度（对齐 Tabby Appearance）
 
 - **问题**：`THEME-006`、`UI-SET-002` 只有主题配色，没有背景图/透明度；`config.rs` 也没有
-  对应字段。Tabby 的 Appearance 面板依赖背景图 + 终端不透明度，而 Tervo 的终端帧是软件
+  对应字段。Tabby 的 Appearance 面板依赖背景图 + 终端不透明度，而 xtervo 的终端帧是软件
   光栅化的 RGBA 缓冲，具备直接写 alpha 并用 Slint 混合的条件。
 - **做法**：
   - `config.rs` 新增 `background_image: String`（默认空=关；`~/` 用 `$HOME` 展开；只接受
@@ -804,7 +804,7 @@ cargo bench -p tervo-core --bench pty_throughput
   - `main.rs` 启动时校验/解码配置里的背景图（坏路径回退纯色并保留错误文案）；设置回调
     即时应用：合法路径写盘、非法路径只提示并保留上一背景；滑块拖动只预览重绘、松手才
     写配置，避免每帧原子写。
-- **测试**：`cargo test -p tervo-app --bin tervo` → **171 passed**（新增 7 例：opacity
+- **测试**：`cargo test -p xtervo-app --bin xtervo` → **171 passed**（新增 7 例：opacity
   clamp/两位小数、背景字段 roundtrip、旧配置默认、路径校验、`~` 展开、alpha 纯函数、
   默认背景 alpha 与彩色 cell 背景不透明；不启动 GUI）。`scripts/matrix_stats.py` 复核
   THEME-006 升为 partial 后为 37/99/14/71/7。
@@ -836,10 +836,10 @@ cargo bench -p tervo-core --bench pty_throughput
   - UI：传输区显示当前文件 + 进度条/百分比（无进度行时“不确定进度”）+ Cancel；
     传输中整面板加 shield，完成/失败/取消后自动恢复；400ms `poll_events` 非阻塞收事件；
     上传成功后刷新列表并保留结果文案。
-- **测试**：`cargo test -p tervo-app --bin tervo` → **177 passed**（新增 13 例：
+- **测试**：`cargo test -p xtervo-app --bin xtervo` → **177 passed**（新增 13 例：
   进度解析 5、`\r`/`\n` 切行 1、状态机 3、batch 脚本 1、临时 shell 脚本
   取消 kill/成功/stderr 失败 3）。无 GUI 真实验证：`scripts/ssh_test_server.py`
-  （paramiko SFTP）+ `tervo --sftp-probe` → list、单文件 get/put、目录 get/put 均通过，
+  （paramiko SFTP）+ `xtervo --sftp-probe` → list、单文件 get/put、目录 get/put 均通过，
   1MiB 下载与源文件 `cmp` 字节一致；另用 Python pty 对照确认 OpenSSH 进度行的真实格式与
   “非 tty 不输出”的行为。
 - **限制**：OpenSSH 的 `progress` 表在 stdout 不是 tty（本应用是管道）时**不输出逐文件
@@ -864,7 +864,7 @@ cargo bench -p tervo-core --bench pty_throughput
   2. **测试服务 PTY 回调签名错误**：`scripts/ssh_test_server.py` 的
      `check_channel_pty_request(self, term, width, height, pw, ph, modes)` 与 paramiko 2.x
      的 `(self, channel, term, width, height, pixelwidth, pixelheight, modes)` 不一致。
-     任何请求 PTY 的连接（Tervo 在 PTY 里跑 ssh）即使认证成功也会在 shell 请求前抛
+     任何请求 PTY 的连接（xtervo 在 PTY 里跑 ssh）即使认证成功也会在 shell 请求前抛
      `TypeError` 断链，客户端表现为 `client_loop: send disconnect: Broken pipe`。
      它把真正的认证结果掩盖了，看起来像密码失败。
   3. **成功路径没有诊断**：askpass 创建/注入成功时没有任何日志，脚本也不留调用痕迹，
@@ -876,13 +876,13 @@ cargo bench -p tervo-core --bench pty_throughput
   - 诊断（只记布尔/长度，不记密码）：`[vault] 已取出 Profile <id> 的密码（len=n）`、
     `[askpass] 已启用 profile=<id> require=force debug=<bool>`、
     `[askpass] 注入 ssh 子进程环境: keys=[...] secret_set=true`。
-  - 新增 opt-in `TERVO_ASKPASS_DEBUG=<file>`：askpass 脚本每次被调用追加
+  - 新增 opt-in `XTERVO_ASKPASS_DEBUG=<file>`：askpass 脚本每次被调用追加
     `match=password|no prompt=...`（**绝不写密码**），用于确认调用与 prompt 识别。
   - `ssh_test_server.py` 修正 PTY 回调签名（补 `channel`/`pixelwidth`/`pixelheight`），
     并记录 `pty request WxH`；PTY 连接现在能进 shell。另对“未知 host/超时在握手前断开”
     容错：`start_server` 的 `EOFError/OSError` 只关闭当前 transport，不再让测试服务进程
     整体退出（否则一次未知 host 探针就会杀死后续 e2e 的服务端）。
-- **测试**：`cargo test -p tervo-app --bin tervo` → **168 passed**。新增 4 例：
+- **测试**：`cargo test -p xtervo-app --bin xtervo` → **168 passed**。新增 4 例：
   `vault::tests::credential_is_keyed_by_profile_store_id`（ProfileStore 分配 id → vault.set
   → 用 store 中 Profile.id 取回；两 Profile 不串、未保存 id NotFound、重启后仍可取）、
   `profile::tests::password_auth_ssh_command_is_password_only`（password 注入两种 -o，
@@ -890,7 +890,7 @@ cargo bench -p tervo-core --bench pty_throughput
   （apply 后真 spawn 子进程验证 3 个环境变量与脚本存在）、
   `askpass::tests::debug_file_records_prompt_without_secret`
   （诊断文件记录 prompt/匹配分支且不含密码）。
-- **真机 GUI 验证**（独立 `TERVO_CONFIG/TERVO_VAULT/TERVO_PROFILES/TERVO_LOG_DIR`，
+- **真机 GUI 验证**（独立 `XTERVO_CONFIG/XTERVO_VAULT/XTERVO_PROFILES/XTERVO_LOG_DIR`，
   窗口移到空白区 3400,800，60x20=540x472，只 kill 自己 PID；paramiko 服务
   `--password s3cret` @127.0.0.1:2222，known_hosts 由 Profile `extra_args` 指定）：
   GUI 设置 Vault 主密码 → Profile 表单保存密码 → 关闭设置 → Profile 图标 → `SSH · vaultssh`
@@ -906,7 +906,7 @@ cargo bench -p tervo-core --bench pty_throughput
   已在 `docs/VAULT.md` §5 改为 PTY 探针。
 - **限制**：系统 OpenSSH < 8.4 不支持 `SSH_ASKPASS_REQUIRE=force`；askpass 只识别含
   `password`/`密码` 的 prompt（其它语言/keyboard-interactive 自定义问题仍可能失败）；
-  `TERVO_ASKPASS_DEBUG` 会记录服务器 prompt 原文（无密码）仅供排查；密码仍经 ssh 子进程
+  `XTERVO_ASKPASS_DEBUG` 会记录服务器 prompt 原文（无密码）仅供排查；密码仍经 ssh 子进程
   环境变量传递（`/proc/<pid>/environ` 可观察）；首次连接仍回退终端确认 host key。
   `auth=password` 现在明确不回退公钥（需要公钥请改 Profile Auth）。
 
@@ -932,7 +932,7 @@ cargo bench -p tervo-core --bench pty_throughput
   避免同尺寸切换时角落留缝。
 - **节流/去重**：`resized` 只做 channel send；worker 合并到最新请求，按
   `(win,w,h,radius)` 去重，最快 50ms 一次（≤20 次 SHAPE/s），拖拽 resize 不阻塞 UI。
-- **测试**：`cargo test -p tervo-app --bin tervo` → **172 passed**。新增 8 例（均不依赖
+- **测试**：`cargo test -p xtervo-app --bin xtervo` → **172 passed**。新增 8 例（均不依赖
   X server/GUI）：`corner_radius_is_zero_when_maximized_or_fullscreen`、
   `corner_radius_caps_and_adapts_to_small_windows`、`physical_extent_honours_scale_factor`、
   `radius_uses_physical_pixels_not_logical`、`corner_inset_matches_circle_rows`、
@@ -964,7 +964,7 @@ cargo bench -p tervo-core --bench pty_throughput
   注册 `tab.search`（Ctrl+Shift+A）。
 - **GUI e2e 隔离**：`scripts/e2e_lib.sh` 默认启动 Xephyr 虚拟显示器（`:99`，
   `-no-host-grab`），所有 xkey/xclick/xwin/xwd 只作用于虚拟屏，不再占用用户的 :1 键鼠。
-- 测试：`cargo test -p tervo-app --bin tervo` → 204 passed；Xephyr 真机：10 Tab 自动收缩、
+- 测试：`cargo test -p xtervo-app --bin xtervo` → 204 passed；Xephyr 真机：10 Tab 自动收缩、
   `[ui] tab search open items=10`、pick=4；截图 `.logs/tabs-autoshrink.png`、`.logs/tab-search.png`。
 - 同时修复插件/SFTP 测试在刚写完临时脚本时的 ETXTBSY（exec 重试 5 次）。
 
@@ -977,7 +977,7 @@ cargo bench -p tervo-core --bench pty_throughput
   从尾部关到 `keep+1`，当前 Tab 保持激活。
 - Xephyr 真机（5 Tab，右键第 3 个 → Close Left）：剩 3 个（当前 + 右侧）；
   Close Right 同；`.logs/tab-close-left.png` / `tab-close-right.png`。
-- 测试：`cargo test -p tervo-app --bin tervo` → 204 passed。
+- 测试：`cargo test -p xtervo-app --bin xtervo` → 204 passed。
 
 ### 2026-11-06 · 平台抽象与 GPU 路线文档
 
@@ -988,7 +988,7 @@ cargo bench -p tervo-core --bench pty_throughput
 
 ### 2026-11-06 · resize 卡顿：交给 WM/compositor live resize
 
-- **根因**：Tervo 无边框窗口用自绘 ResizeHandle，每个 pointer move 同步
+- **根因**：xtervo 无边框窗口用自绘 ResizeHandle，每个 pointer move 同步
   `query_pointer` + `Slint set_size/set_position`，触发整窗重排、pane grid resize、
   renderer 缓冲重建/整帧重绘，软件后端下逐事件都做一次昂贵提交。
   GNOME Terminal 走 GTK CSD + Mutter compositor live resize，应用只收 configure
@@ -1008,13 +1008,13 @@ cargo bench -p tervo-core --bench pty_throughput
   BOUNDING mask 在窗口尺寸/WM state 变化时可能保留旧尺寸；部分 WM 的 live
   resize/maximize 组合更明显。`clear_rounded_corners` 已补 INPUT 清理并加 250ms
   geometry 轮询重裁，但 SHAPE 仍不是可靠的原生方案。
-- 决策：**SHAPE 圆角默认关闭**，`TERVO_CORNERS=1` 显式开启实验；默认窗口方角，
+- 决策：**SHAPE 圆角默认关闭**，`XTERVO_CORNERS=1` 显式开启实验；默认窗口方角，
   不再让 mask 干扰 WM 最大化/最小化/live resize。show 后再同步一次 client 尺寸，
   规避 WM 用 preferred size 建 frame 的竞态。
 - 测试隔离：`scripts/e2e_lib.sh` 改为 **headless Xvfb**（`.perf/xvfb` 或系统 Xvfb），
   不再创建 Xephyr 宿主窗口，不占用户 workspace/键鼠；Openbox/Xvfb 仅用于本地
   WM 行为验证。
-- 测试：`cargo test -p tervo-app --bin tervo` → 204 passed。
+- 测试：`cargo test -p xtervo-app --bin xtervo` → 204 passed。
 
 ### 2026-11-06 · 最大化/最小化修复：EWMH 请求 + 默认方角
 
@@ -1024,7 +1024,7 @@ cargo bench -p tervo-core --bench pty_throughput
 - 修复：`xconn::wm_set_maximized`（`_NET_WM_STATE` add/remove HORZ+VERT）、
   `wm_minimize`（`WM_CHANGE_STATE` IconicState），仍保留 winit 作为回退；
   `window_is_maximized` 读 EWMH 真实状态，避免 `is_maximized` 不同步导致只能放大不能还原；
-  SHAPE 圆角默认关闭（`TERVO_CORNERS=1` 才开），先保证 WM 行为正确；
+  SHAPE 圆角默认关闭（`XTERVO_CORNERS=1` 才开），先保证 WM 行为正确；
   show 后再同步一次 client 尺寸。
 - 测试：204 passed；headless Xvfb（不再 Xephyr）验证启动/点击；Openbox 测试中
   回调可触发但 Openbox 不接受 EWMH maximize（测试 WM 限制），GNOME 待用户实测。
@@ -1069,7 +1069,7 @@ cargo bench -p tervo-core --bench pty_throughput
 - **无 WM 回退**（`:108` Xvfb，无窗口管理器）：日志
   `[ui] WM 未声明 _NET_WM_MOVERESIZE，回退自绘 resize` + `[ui] 自绘 resize dir=3`，
   `xclick` 540x472→700x472；右下角 dir=4，700x472→800x572，证明 fallback 真可用。
-- **测试**：`cargo test -p tervo-app --bin tervo` → **207 passed**（新增方向映射 2 例 +
+- **测试**：`cargo test -p xtervo-app --bin xtervo` → **207 passed**（新增方向映射 2 例 +
   fallback 选择 1 例）。
 - **限制**：只在 Openbox 验证，Mutter/GNOME 与真实 GPU 合成器的流畅度仍需用户实测；
   Wayland 路径走 winit `xdg_toplevel.resize`，未实测；若 WM 在 `_NET_SUPPORTED` 里声明
@@ -1113,7 +1113,7 @@ cargo bench -p tervo-core --bench pty_throughput
     非法路径显示为红字并保留上一张背景（坏路径不写配置）；× 清除路径并恢复不透明。
     Opacity 拖动即时重绘预览、松手写盘；Dim 预览由 Slint 直接改属性、松手写盘。
     设置面板 520 高，Opacity 下方提示按“无图/100% 遮住图/正常”三态切换。
-- **测试**：`CARGO_HOME=... CARGO_TARGET_DIR=$PWD/target cargo test -p tervo-app --bin tervo`
+- **测试**：`CARGO_HOME=... CARGO_TARGET_DIR=$PWD/target cargo test -p xtervo-app --bin xtervo`
   → **206 passed**（新增 dim clamp/roundtrip/default、alpha=0、文字不透明等；不启动 GUI）。
 - **GUI 验收（headless Xvfb :106，1280×800×24，winit-software，窗口 1080×736）**：
    - 高对比测试图（纯红/绿/蓝/白四象限 + 文字）截图：`.logs/bg-readability-000/030/060/090.png`；
@@ -1167,7 +1167,7 @@ cargo bench -p tervo-core --bench pty_throughput
   `[ui] run command tab.search`；空态与滚动截图
   `.logs/tab-search-{20,empty,wheel-scroll,wheel-then-down,pick-focus2,click-outside}.png`。
   拖动排序在 Flickable 改造后仍正常（`[ws] reorder tab 0 → 1`）。
-- **测试**：`cargo test -p tervo-app --bin tervo` → **204 passed**。
+- **测试**：`cargo test -p xtervo-app --bin xtervo` → **204 passed**。
 - **限制**：20 Tab/窄窗口必须横向滚动才能看全；活动 Tab 在中部时 `+`/Profile
   可能在视口外（只有末个 Tab 会自动带入），需要滚到末尾；滚动无 snap/惯性参数
   调优，reveal 后可能保留前一个 Tab 的半截；搜索只做子串匹配、无模糊排序/高亮；
@@ -1181,7 +1181,7 @@ cargo bench -p tervo-core --bench pty_throughput
   会卡；先试过“拖动时拉伸旧帧、停下再重排”，但字符会变形再回弹，用户明确拒绝。
 - 最终：configure 先合并到 16ms，只保留最新尺寸；每次 apply 执行完整的
   `refresh_views`（grid/PTY）与 `redraw_visible`，字符始终 1:1；不再有
-  `resize-stretch`。`TERVO_RESIZE_PROFILE=1` 可打印 apply 次数/耗时。
+  `resize-stretch`。`XTERVO_RESIZE_PROFILE=1` 可打印 apply 次数/耗时。
 - 验证：80 步/4ms 快速拖拽 → 约 30 次 apply，app 侧 reflow 0.5ms/次；
   Openbox 540→840；无 WM 回退 540→701；输入/截图确认字符清晰；209 tests。
 - 限制：真实帧率仍取决于 Slint 合成/软件终端帧；这只是去掉重排洪泛，不等于 GPU。
@@ -1271,7 +1271,7 @@ cargo bench -p tervo-core --bench pty_throughput
   - 缩小中途截图 `.logs/shrink-clip/mid.png`：窗口 1017x736 时右上角四个按钮完整，
     证明“缩小立即重绘”路径没有晚一帧裁切。
   - 背景 A/B：2560x1440 持续帧有背景 render 中位 3.53ms，隐藏后 1.49ms/帧。
-  - 测试：`cargo test` 全绿；`cargo test -p tervo-app --bin tervo` → **213 passed**
+  - 测试：`cargo test` 全绿；`cargo test -p xtervo-app --bin xtervo` → **213 passed**
     （新增 3 个 watchdog/redraw 单测 + 1 个双缓冲脏帧回归）。
 - **限制/残余风险**：
   - **没有真 NVIDIA GPU**：所有 Skia 数字来自 llvmpipe，不能声称等同用户机器；用户
@@ -1285,19 +1285,19 @@ cargo bench -p tervo-core --bench pty_throughput
     每帧上传纹理（没有安全的持久 GPU texture API），这是下一步。
   - 背景图仅在 >1.5MP 窗口拖动时隐藏；拖动中会看到背景短暂消失，停止 200ms 恢复。
   - Mutter/GNOME live resize 的“能收到 move 但 configure 晚到”场景无法在 Openbox
-    精确复现；watchdog 逻辑已用单测覆盖，但真机仍需看 `TERVO_RESIZE_PROFILE=1` 日志。
+    精确复现；watchdog 逻辑已用单测覆盖，但真机仍需看 `XTERVO_RESIZE_PROFILE=1` 日志。
   - `xwd -id` 与 live resize 有竞态：窗口在 geometry 查询与 XGetImage 之间继续缩放时，
     会抓到“右侧黑边/错行条纹”的伪帧（软件后端同样有黑边，只是没有背景条纹）。按钮
     验证只用 geometries 前后一致的干净帧，不把伪帧当应用缺陷；真机肉眼复测仍需做。
 
 ### 2026-11-06 · dsh-tui 分屏兼容：右键 contextmenu 优先给 TUI
 
-- dsh-tui 的“分屏”不是 Tervo 分 pane，而是单 PTY 内 Ink 渲染的右侧栏：
+- dsh-tui 的“分屏”不是 xtervo 分 pane，而是单 PTY 内 Ink 渲染的右侧栏：
   `sidePanel.splitEnabled` + `canSplit(columns>=93)` + ratio 0.68 + 1 列 divider。
-- 兼容缺口：dsh-tui 用 SGR button 2（右键 press）实现 ContextMenuEvent；Tervo 原先
+- 兼容缺口：dsh-tui 用 SGR button 2（右键 press）实现 ContextMenuEvent；xtervo 原先
   在 mouse-reporting pane 里把普通右键拦成本地菜单，侧栏右键失效。
-- 修复：mouse-reporting 下普通右键转发给 TUI；Tervo 菜单改为 Shift+右键。
-  非 mouse-reporting 的普通 shell 仍是普通右键开 Tervo 菜单。
+- 修复：mouse-reporting 下普通右键转发给 TUI；xtervo 菜单改为 Shift+右键。
+  非 mouse-reporting 的普通 shell 仍是普通右键开 xtervo 菜单。
 - 测试：伪 mouse-reporting TUI 收到 `<2;col;rowM/m`；非上报右键菜单不受影响。
 
 ### 2026-11-06 · TUI 基础兼容：1004 focus + kitty CSI-u
@@ -1323,7 +1323,7 @@ cargo bench -p tervo-core --bench pty_throughput
 ### 2026-11-06 · IME spot 跟随“只移动光标不重绘”的 TUI
 
 - dsh 侧栏通过声明光标把终端光标停到右侧输入框，但可能不产生内容 damage；
-  Tervo 原来只在 redraw_visible 后更新 IME spot，候选窗就停在左/旧位置。
+  xtervo 原来只在 redraw_visible 后更新 IME spot，候选窗就停在左/旧位置。
 - PaneHandle 增加原子 cursor（actor 每次解析/控制事件后刷新，不依赖 UI 拉帧）；
   IME 用 50ms 定时器读取当前光标并调 winit `set_ime_cursor_area`，按坐标去重。
 - 验证：合成 TUI 发 `CSI 5;80H` 后不再输出，日志 50ms 内出现
@@ -1388,7 +1388,7 @@ cargo bench -p tervo-core --bench pty_throughput
 
 - 字体链按用途分组惰性加载：CJK（wqy-microhei → Droid → Noto CJK → zenhei）、
   SYMBOL（Noto Sans Symbols 2 → DejaVu Sans）、EMOJI（Symbola → Noto Emoji）、
-  ICON（Nerd Font 常见路径 + `TERVO_FALLBACK_FONTS`）、COLOR（Noto Color Emoji）。
+  ICON（Nerd Font 常见路径 + `XTERVO_FALLBACK_FONTS`）、COLOR（Noto Color Emoji）。
   中文只碰 CJK 组；emoji 不会为了找字形解析 18 MB 的 Noto CJK。
 - 渲染层：缺字逐字体回退，字形步进超过 `span*cell_w` 时等比缩小，并横向裁剪到
   该字符占的格子；组合音标（alacritty `Cell::zerowidth`）叠加到基字形墨迹中心，
@@ -1398,7 +1398,7 @@ cargo bench -p tervo-core --bench pty_throughput
 - fontdue 只有轮廓光栅化，Noto Color Emoji（CBDT/CBLC）与 Twemoji（COLR）画不出：
   命中彩色字体后停止扫描，渲染明确占位框（emoji 中心点 / Nerd 图标竖条），
   不崩溃、不画 tofu；彩色 emoji 支持列为已知限制。
-- 测试：`cargo test -p tervo-core` 47 lib / 89 total；app 222 passed（新增
+- 测试：`cargo test -p xtervo-core` 47 lib / 89 total；app 222 passed（新增
   core 宽字符/组合/ZWJ/截断 7 例、app 占位/叠加/裁剪 8 例）。
 - 截图：`.logs/font-emoji/before.png`、`after-default.png`、`after-nerd.png`；
   重新生成用 `scripts/font_glyph_shot.sh`（Xvfb :116，仅 kill 自己的进程）。
@@ -1432,9 +1432,9 @@ cargo bench -p tervo-core --bench pty_throughput
   Bold（bold-is-bright、same-as-fg、bold color）。Appearance 内容改成页内
   Flickable（`content-height: appearance-pane.preferred-height`），小窗口下可滚动；
   回调即时写配置并应用。粗体改动通过 `PaneHandle::set_theme` 重建调色板并重取整帧。
-- **测试**：基线 `cargo test -p tervo-app --bin tervo` 229 → **241 passed**
+- **测试**：基线 `cargo test -p xtervo-app --bin xtervo` 229 → **241 passed**
   （新增 config 外观默认/旧配置/颜色解析/形状闪烁归一/roundtrip 6 例，render
-  光标形状区域/颜色覆盖/闪烁 off/overlay 透明/DECSCUSR 优先 6 例）；`cargo test -p tervo-core`
+  光标形状区域/颜色覆盖/闪烁 off/overlay 透明/DECSCUSR 优先 6 例）；`cargo test -p xtervo-core`
   70 lib + 46 integration（新增 bold-is-bright/bold-color/CursorShape 名 3 例）。
 - **截图（headless Xvfb :117，`scripts/cursor_style_shot.sh`）**：
   `.logs/cursor-style/block-blink-on.png`、`block-blink-off.png`、
@@ -1443,10 +1443,10 @@ cargo bench -p tervo-core --bench pty_throughput
   `.logs/cursor-style/settings.png` 与滚动后的 `settings-scrolled.png`。
   点击设置页 Block / Blink Off 的日志 `[appearance] cursor_shape=block`、
   `cursor_blink=off` 并写回 config（`.logs/cursor-style/live.toml`）。
-- **闪烁不整帧重绘的证据**：`TERVO_RENDER_PROFILE=1` 下空闲 3s，
+- **闪烁不整帧重绘的证据**：`XTERVO_RENDER_PROFILE=1` 下空闲 3s，
   `[render]` 行增量 = 0；同时 0.28s 间隔连拍 6 张，光标红色像素在
   0/166/0/0/166/0 之间切换，说明只切 overlay 可见性。测试钩子
-  `TERVO_CURSOR_BLINK_PHASE=on|off` 可冻结相位用于截图。
+  `XTERVO_CURSOR_BLINK_PHASE=on|off` 可冻结相位用于截图。
 - **限制**：`system` 闪烁当前等同 `on`（未读 gsettings `cursor-blink`）；
   DECSCUSR 的 underline/beam/hollow 优先于配置；frame=Block 时用配置形状（无法
   区分“显式 block”和默认 block），与 GNOME 的“配置只是默认值”仍有细微差别；颜色只接受 #RGB/#RRGGBB；无窗口失焦暂停闪烁；只验证 Xvfb/llvmpipe，
@@ -1461,7 +1461,7 @@ cargo bench -p tervo-core --bench pty_throughput
   Cargo.lock，避免新增两套解码器）。fontdue 继续负责轮廓，彩色位图完全独立。
 - **实现（glyph.rs）**：
   - `FontSet` 回退链新增 `color_candidates`：内置 NotoColorEmoji 的 Debian/Ubuntu/
-    Fedora 常见路径 + `TERVO_FALLBACK_FONTS` 追加项；**CJK 永不进入彩色候选**。
+    Fedora 常见路径 + `XTERVO_FALLBACK_FONTS` 追加项；**CJK 永不进入彩色候选**。
   - `ColorFace` 用 `owned_ttf_parser::OwnedFace` + ttf-parser 的
     `glyph_raster_image` 读 CBDT/CBLC、EBDT/EBLC、sbix；只支持 PNG 与预乘
     BGRA32。文件字节与解析结果由 `OwnedFace` 一起持有，无 unsafe。
@@ -1470,7 +1470,7 @@ cargo bench -p tervo-core --bench pty_throughput
     面积平均，避免透明边缘黑边；水平/垂直居中。
   - `GlyphCache.color_map` 以 `(字符, 样式, 占格数)` 缓存 `Rc<Vec<u32>>`；
     命中只复制指针，不重读字体/不重解 PNG；失败结果也缓存。
-  - `TERVO_COLOR_EMOJI=0/off/false/no` 可关闭；默认开启，配置 schema 不变。
+  - `XTERVO_COLOR_EMOJI=0/off/false/no` 可关闭；默认开启，配置 schema 不变。
   - 只有彩色位图的字体不再进入 fontdue 轮廓链（旧逻辑会为 emoji 解析 10 MB
     字体再放弃），`glyph_face` 返回类型简化为 `Option<&Font>`。
 - **实现（render.rs）**：emoji 码位先查彩色缓存，命中后用独立 RGBA 混合
@@ -1487,8 +1487,8 @@ cargo bench -p tervo-core --bench pty_throughput
 - **截图（headless Xvfb :121，`scripts/font_glyph_shot.sh`，font-size 16）**：
   `.logs/font-emoji/color-after.png`（默认彩色：😀🚀❤️✔️👍⚡🎉 与 👨‍👩‍👧 /
   👩‍💻 / 🏳️‍🌈 组件均为彩色）、`.logs/font-emoji/color-off.png`
-  （`TERVO_COLOR_EMOJI=0` 单色/占位对照）。未使用 Xephyr、未碰 :1、未 pkill。
-- **性能/日志证据**：`TERVO_FONTLOG=1` 下彩色字体只探测一次：
+  （`XTERVO_COLOR_EMOJI=0` 单色/占位对照）。未使用 Xephyr、未碰 :1、未 pkill。
+- **性能/日志证据**：`XTERVO_FONTLOG=1` 下彩色字体只探测一次：
   `[font] 彩色字体 NotoColorEmoji.ttf#0（CBDT/CBLC/sbix, 3976 字形, 4.75ms）`；
   同一次会话中 CJK 只因中文行解析一次（wqy-microhei），没有 Noto CJK 18 MB
   解析记录；emoji 行渲染前也没有额外的 fontdue 回退加载。
@@ -1523,13 +1523,13 @@ cargo bench -p tervo-core --bench pty_throughput
   `U+0015`（含 ctrl=true 的组合前缀）；新增左右 Shift 回归测试，确认真实
   Ctrl+U（text="u"）不被误杀。日志可看到 `[key] "\u{10}"/"\u{15}"` 后紧跟
   `[key] 忽略修饰键伪事件`，PTY 无 0x10/0x15。
-- **测试**：`cargo test -p tervo-app --bin tervo` 249 → **253 passed**
+- **测试**：`cargo test -p xtervo-app --bin xtervo` 249 → **253 passed**
   （新增 IME 坐标/DPR/pane 去重 2 例、点击锚点 1 例、左右 Shift 1 例）；
-  `cargo test -p tervo-core` **70 lib + 53 integration** 全通过（未改 core）。
+  `cargo test -p xtervo-core` **70 lib + 53 integration** 全通过（未改 core）。
 - **真实 dsh 验收（Xvfb :122，1080x912，cell 9x22）**：把 `~/.dsh` 复制到
   `/tmp` 可写 HOME，`DSH_HOME` 指向副本、`onboarding.json` 置
   `completed=true`、假 API key 仅用于进入会话；`dsh --profile dsh-tui` 在
-  Tervo 内启动，先提交 `hello` 建立会话，再 `/btw test` 打开右侧 BtwComposer。
+  xtervo 内启动，先提交 `hello` 建立会话，再 `/btw test` 打开右侧 BtwComposer。
   点击右侧 composer 前后：
   - 点击前硬件光标 `[ime] spot pane=1 cell=35,6 win=54.0,802.0 ... anchor=false`
     （左侧 chat 输入框）；
@@ -1540,7 +1540,7 @@ cargo bench -p tervo-core --bench pty_throughput
   - 仅改窗口宽度（1080→1000→1080，候选坐标不变）后 spot 日志行数 24→26；
     焦点切到 root 再回窗口后 26→28：证明 resize/focus 的 dirty 重发生效，
     不会因坐标去重而停在旧位置。
-- **普通 shell 验收**：独立 Tervo 实例 `--shell /bin/sh`，注入 `echo A` +
+- **普通 shell 验收**：独立 xtervo 实例 `--shell /bin/sh`，注入 `echo A` +
   Shift_L/Shift_R + `CCEPT` + Enter，XTest 发送的字节为 `[65][67][67][69][80][84][13]`，
   Shift 伪字符均被忽略，PTY 无 0x10/0x15；点击普通终端后
   `[ime] spot ... anchor=false`，不会误用点击锚点。
@@ -1577,11 +1577,11 @@ cargo bench -p tervo-core --bench pty_throughput
     Slint 在布局完成后滚到对应卡片并 accent 高亮/标题变色。
   - 关闭：Esc / 标签 × / 页头 × / 点终端 Tab；键盘焦点在设置 FocusScope，
     打开期间按键不会写 PTY（用 `read` shell 做 leak 测试）。
-- **回退**：`TERVO_SETTINGS_LEGACY=1` 启动时设置页回到居中 modal（同一套控件，
+- **回退**：`XTERVO_SETTINGS_LEGACY=1` 启动时设置页回到居中 modal（同一套控件，
   顶部 LEGACY MODAL 标记，标签栏不显示 Settings Tab）。默认新 UI；启动日志
   `[ui] settings ui=tab|legacy-modal`。
 - **测试**：
-  - `cargo test -p tervo-app` **263 passed**（基线 262，+1：搜索命中带 section、
+  - `cargo test -p xtervo-app` **263 passed**（基线 262，+1：搜索命中带 section、
     8 分类均有索引项）。
   - `scripts/e2e_terminal_behavior.sh` 在 Xvfb :124 全通过；设置段改为 120×32
     （1080×736）稳定窗口 + 新坐标，覆盖 Unlimited / Scrollbar Always / Scroll on
@@ -1649,8 +1649,8 @@ cargo bench -p tervo-core --bench pty_throughput
   成功，证明窗口事件循环未冻结。日志摘要
   `[sftp] 后台操作完成: list / 失败: sftp 超时（10s），已终止子进程`。
 - **测试**：
-  - `cargo test -p tervo-core`：**90 lib + 63 integration**（新增 p0_backpressure 4、
-    WriteQueue 2）；`cargo test -p tervo-app --bin tervo`：**281 passed**（基线 277，
+  - `cargo test -p xtervo-core`：**90 lib + 63 integration**（新增 p0_backpressure 4、
+    WriteQueue 2）；`cargo test -p xtervo-app --bin xtervo`：**281 passed**（基线 277，
     新增元数据超时 4 例）。
   - `cargo test --workspace --locked`：**474 passed, 0 failed**（app 281 + core 153 +
     xclick/xdrop/xkey/xwin 40）；Xvfb :133 的 SFTP e2e 全 PASS。
@@ -1689,7 +1689,7 @@ cargo bench -p tervo-core --bench pty_throughput
   `Flickable`（`interactive: false`，滚轮仍可滚动，点击立即交给菜单行）滚动，并在右侧
   画 3px thumb；不再有整块菜单掉到窗口外。
 - **验证**（Xvfb :135，`scripts/e2e_context_menu.sh`）：
-  - `cargo test -p tervo-app --bin tervo`：**281 passed**（基线 281）。
+  - `cargo test -p xtervo-app --bin xtervo`：**281 passed**（基线 281）。
   - 暗色普通菜单面板 bbox 278×488 @ (301,45)，锚点=右键处；菜单外左键关闭日志
     `[ui] menu dismissed`。
   - 有选区：拖选前后区域像素 diff **2750**，选区高亮保留，菜单正常弹出。
@@ -1741,16 +1741,16 @@ cargo bench -p tervo-core --bench pty_throughput
     `[link] cursor=pointer|default`，便于 e2e/排障。
 - **本地路径打开**：
   - `~` 只展开 `$HOME`（不执行 shell、不支持 `~user`）；相对路径以 pane shell 的
-    `/proc/<pid>/cwd` 为基准（取不到回退 Tervo 进程 cwd），避免 `cd` 后点 `./a` 打开错目录。
+    `/proc/<pid>/cwd` 为基准（取不到回退 xtervo 进程 cwd），避免 `cd` 后点 `./a` 打开错目录。
   - 打开前 `metadata` + `access(2)`：不存在/父目录无权限/文件不可读/目录不可读或不可搜索
     都只写日志 + 底部浮层，**不 spawn xdg-open**；打开时 `Command::new("xdg-open").arg(path)`
     单参数传绝对路径，绝不拼 shell。`file://` URL 仍走原白名单 URI 路径，不做本地存在性检查。
   - 右键菜单的 Open Link / Copy Link 现在同时支持 URL 与路径（Copy 复制展示文本；Open 走同一
     校验/远端策略）；TUI 鼠标上报下 Ctrl+click 仍原样转发给应用，未改变 xterm 语义。
 - **测试**：
-  - `cargo test -p tervo-app --bin tervo`：**284 passed**（基线 281；新增裸 IP 不打开/路径解析/
+  - `cargo test -p xtervo-app --bin xtervo`：**284 passed**（基线 281；新增裸 IP 不打开/路径解析/
     不存在与权限 3 例，并更新 OSC 8 优先/不安全 scheme 测试走 `frame_target_at`）。
-  - `cargo test -p tervo-core`：**94 lib + 63 integration** 全绿（新增 link 路径边界/`http://IP:port`
+  - `cargo test -p xtervo-core`：**94 lib + 63 integration** 全绿（新增 link 路径边界/`http://IP:port`
     2 例、frame `link_at` 宽字符/组合字符列映射 2 例）。
   - `scripts/e2e_url_paths.sh`（Xvfb **:128**，140x24，winit-software，fake xdg-open）PASS：
     URL hover 日志 + XFixes 光标图 **16x16 X（hash 8d4475…）→ 24x24 手型（hash ae9be6…）→
@@ -1811,8 +1811,8 @@ cargo bench -p tervo-core --bench pty_throughput
   `keyboard_protocol = "auto"|"off"`（默认 auto，未知值回 auto，旧配置缺字段
   兼容），off 只在新 pane 生效。
 - **验证**：
-  - `cargo test -p tervo-app --bin tervo`：**297 passed**（master 基线 285 + keys 12 例）；
-    `cargo test -p tervo-core`：**177 passed**（107 lib + 6 keyboard_protocol
+  - `cargo test -p xtervo-app --bin xtervo`：**297 passed**（master 基线 285 + keys 12 例）；
+    `cargo test -p xtervo-core`：**177 passed**（107 lib + 6 keyboard_protocol
     集成 + 既有 64），Xvfb 无关。
   - `cargo test --workspace --locked`：**514 passed, 0 failed**。
   - 伪 TUI（真实 PTY，`crates/core/tests/keyboard_protocol.rs`）：query 收
@@ -1857,22 +1857,22 @@ cargo bench -p tervo-core --bench pty_throughput
   - 插件：`ActivityLog::push` 后 `WakeSignal` 通知；SFTP：`TransferJob` 的进度/
     结束事件、`SftpOpJob` 的结果写通道后通知。两类共用一个 app 级
     `app-wake` 桥接线程，UI 回调只做非阻塞 `try_recv` + revision 去重。
-  - 诊断：`TERVO_EVENT_WAKE=0` 关闭事件唤醒回到纯 400ms 轮询（默认开启）；
-    `TERVO_WAKE_STATS=1` 每 5s 打印 `core_event/app_event/periodic_400ms`
+  - 诊断：`XTERVO_EVENT_WAKE=0` 关闭事件唤醒回到纯 400ms 轮询（默认开启）；
+    `XTERVO_WAKE_STATS=1` 每 5s 打印 `core_event/app_event/periodic_400ms`
     计数；事件/完成日志统一加 `ts_ms=<epoch ms>`，可与 shell 的
     `date +%s%3N` 直接对差。
 - **验证（Xvfb :138，`scripts/e2e_event_wake.sh`，同 binary A/B）**：
   - wake：6 个 OSC 标题 0–1ms、BEL 0–1ms、OSC52 query 1–2ms、插件活动 8–9ms、
     SFTP 上传完成 27–33ms；每个事件在日志里恰好一次（不丢/不重复），OSC52
     回包写回 PTY 且 base64 为 `wake-clip`。
-  - before（`TERVO_EVENT_WAKE=0`）：标题 88–390ms、BEL 287–292ms、OSC52
+  - before（`XTERVO_EVENT_WAKE=0`）：标题 88–390ms、BEL 287–292ms、OSC52
     385–388ms、插件 397–400ms、SFTP 82–102ms，确认旧路径确实是 400ms 轮询。
   - 空闲 5s：两遍 `core_delta=0 app_delta=0`，`periodic_400ms=12–13`（只在
     400ms timer 上跑）；空闲 8s CPU before 111–214 / after 103–110 ticks
     （两次运行，系统负载有波动），voluntary context switches before 225–252 /
     after 263，无高频轮询/CPU 退化。
-  - `cargo test -p tervo-app --bin tervo`：**300 passed**（基线 297 + 事件
-    唤醒/插件/SFTP 3 例）；`cargo test -p tervo-core --lib`：**108 passed**
+  - `cargo test -p xtervo-app --bin xtervo`：**300 passed**（基线 297 + 事件
+    唤醒/插件/SFTP 3 例）；`cargo test -p xtervo-core --lib`：**108 passed**
     （基线 107 + EventSink wake 合并/不丢事件 1 例）；workspace **518 passed**。
   - 截图 `.logs/event-wake/event-wake.png`：Tab 标题为 `wake-title-6`，SFTP
     面板可见 fake-ssh 的 `probe-one/probe-two`；日志在 `.logs/event-wake/`。
@@ -1881,14 +1881,14 @@ cargo bench -p tervo-core --bench pty_throughput
   随通道断开自行退出，无额外清理流程。
 - **限制**：`EventSink` 事件队列满仍按既有策略丢弃并计数（`dropped()` 可读），
   唤醒不等于反压；app 级 wake 合并插件/SFTP 通知，回调会同时尝试两类
-  `try_recv`（幂等）；`TERVO_EVENT_WAKE` 只是 A/B 诊断开关，不写配置；
+  `try_recv`（幂等）；`XTERVO_EVENT_WAKE` 只是 A/B 诊断开关，不写配置；
   SFTP/插件延迟实测基于假 sftp/本地插件，真实网络时延另计。
 
 ### 2026-11-06 · 渲染 damage 恢复：单行更新不再整屏重绘（feat/render-damage）
 
 - **问题（Codex P1）**：`crates/app/src/render.rs` 的 `FrameBuffers::rotate()` 恒
   返回 true，`draw_impl` 把 `buffer_switched` 合并进 `full`，导致 `frame.damage`
-  分支实际不可达。`TERVO_RENDER_PROFILE=1` 下每次按键/单行输出都是
+  分支实际不可达。`XTERVO_RENDER_PROFILE=1` 下每次按键/单行输出都是
   `grid=200x50 rows=50`，`full_redraws` 每帧 +1；双缓冲虽然省掉了 image 拷贝，
   但每帧仍整屏 raster/blend。
 - **修复（render.rs）**：
@@ -1916,7 +1916,7 @@ cargo bench -p tervo-core --bench pty_throughput
   - `frame.skipped`（actor 超时）仍直接保留上一帧、不轮换不重绘；下一次 core
     force_full 补全。
 - **测试**：
-  - `cargo test -p tervo-app --bin tervo`：**310 passed, 0 failed, 1 ignored**
+  - `cargo test -p xtervo-app --bin xtervo`：**310 passed, 0 failed, 1 ignored**
     （基线 297 + 12 damage 单测 + 1 字形渗漏像素等价；ignored 是手动基准）。
   - `cargo test --workspace`：**527 passed, 1 ignored**（core 177 不变）。
   - 新增 `crates/app/src/render_damage_tests.rs`：单行只重绘 1 行、连续按键
@@ -1989,7 +1989,7 @@ cargo bench -p tervo-core --bench pty_throughput
   - `duplicate_tab`/`reopen_closed_tab` 也携带 profile_id 与 cwd；关闭 Panel 后
     profile tab 的行为与普通 tab 一致。
 - **测试**：
-  - `cargo test -p tervo-app --bin tervo`：**295 passed**（基线 282；新增 13：
+  - `cargo test -p xtervo-app --bin xtervo`：**295 passed**（基线 282；新增 13：
     Profile 外观 roundtrip/继承/迁移/校验/归一 6、session profile_id/旧快照/坏快照
     fallback 4、app 级 PaneAppearance 映射/闪烁继承 2、config restore 开关 1）。
   - `cargo test --workspace --offline`：**489 passed, 0 failed**（app 295 + core 90
@@ -2050,7 +2050,7 @@ cargo bench -p tervo-core --bench pty_throughput
   离 UI 线程，结束后 `WakeSignal` 唤醒并在 UI 线程 `adopt()`。Vault 页有 busy 状态
   （「正在后台派生密钥」）且保持可重绘；busy 时操作拒绝、job 异常/断连恢复状态；
   worker 主密码、AEAD 明文字节、`Unlocked` key/凭据在 Drop 时尽力清零；日志/错误不出现
-  主密码。`TERVO_VAULT_KDF_DELAY_MS` 仅供 GUI e2e 截 busy 状态（默认 0）。
+  主密码。`XTERVO_VAULT_KDF_DELAY_MS` 仅供 GUI e2e 截 busy 状态（默认 0）。
 - **测试**：
   - app：**351 passed**（基线 326；+25：profile 新字段/校验/旧文件兼容 3、known_hosts 14、
     Vault 后台 5、SFTP queue/chmod/cancel/args 8、askpass 本地化 prompt 1 等）。
@@ -2096,7 +2096,7 @@ cargo bench -p tervo-core --bench pty_throughput
   - **Status Provider**：`[contributes] status = true` 时宿主每 2s 发 `status` 请求，插件也可
     主动推送；状态项 text/tooltip/command 有长度上限，command 必须是本插件命令并归一化为
     完整 ID；主窗口底部新增一行最小状态栏（不改变终端布局），点击执行命令。
-  - **Theme Pack**：`[contributes] theme = "theme.toml"` 声明式 TOML（支持 tervo/Alacritty
+  - **Theme Pack**：`[contributes] theme = "theme.toml"` 声明式 TOML（支持 xtervo/Alacritty
     等既有格式），主题 id 加 `custom:plugin-<slug>-` 前缀并入主题下拉；坏主题只记
     theme-error，插件仍加载。
   - **设置页**：Plugins 行显示 enabled/disabled、id/api/runtime、命令/事件、status/theme、
@@ -2104,7 +2104,7 @@ cargo bench -p tervo-core --bench pty_throughput
   - **安全**：无 shell 拼接（entry 直接 exec，参数 JSON 传 stdin）；不传 Vault 明文；
     事件 payload 仍只含 Tab 标题/类型；行/结果/状态/日志全部限长；超时 kill；插件崩溃/
     坏 JSON/坏 manifest 都在独立进程/加载阶段被隔离。
-- **测试**：`cargo test -p tervo-app --bin tervo` → **341 passed, 0 failed, 1 ignored**
+- **测试**：`cargo test -p xtervo-app --bin xtervo` → **341 passed, 0 failed, 1 ignored**
   （基线 327；新增 14 例）。新增覆盖：Python process 命令（静态 args/返回文本/事件）、
   Node process 命令、status 轮询/command 归一化、崩溃重启上限后禁用、命令超时 kill、
   坏 JSON 禁用、握手超时、api 不匹配、disabled 进程不启动、清单新字段/权限/contributes/
@@ -2148,7 +2148,7 @@ cargo bench -p tervo-core --bench pty_throughput
     搜索索引中英双向匹配、结果行按当前语言生成。
   - Rust 动态状态跟随语言：快捷键 summary/命令标题/状态、插件 summary/状态词/活动词、
     Vault 状态、config 导入导出状态、Profile 默认项、主题 `Auto` 显示名、背景图错误。
-- **测试**：`cargo test -p tervo-app --bin tervo` → **376 passed, 0 failed, 1 ignored**
+- **测试**：`cargo test -p xtervo-app --bin xtervo` → **376 passed, 0 failed, 1 ignored**
   （基线 369；新增 7 例：config 语言默认/迁移/非法值 3 例 + 搜索/命令标题/翻译对/静态包裹 4 例）。
 - **Xvfb e2e**：新增 `scripts/e2e_settings_i18n.sh`（Xvfb :126 + Openbox + winit-software）。
   源码级断言：277 组 `Lang.t`，en 侧无中文、zh 侧无未翻译整句，Settings/右键/TabBar/Profiles
@@ -2180,9 +2180,9 @@ cargo bench -p tervo-core --bench pty_throughput
     `drag_gap_index` 把最终下标换成视觉插入边界；非法/原地返回 None，UI 不亮线不移动。
   - 取消：拖拽中 Esc 或 winit 窗口失焦调用 `cancel-drag()`，清 ghost/插入线/drop 属性并让
     `animate` 复位；松手只按最终 target 排序。
-- **测试**：`cargo test -p tervo-app --bin tervo` → **375 passed, 0 failed, 1 ignored**
+- **测试**：`cargo test -p xtervo-app --bin xtervo` → **375 passed, 0 failed, 1 ignored**
   （基线 369；新增 6 例：pin/unpin 排序、active 跟踪、普通排序不跨组、按组插入+normalize、
-  drag_target 分组、drag_gap_index）。`cargo check -p tervo-app --bin tervo` PASS。
+  drag_target 分组、drag_gap_index）。`cargo check -p xtervo-app --bin xtervo` PASS。
 - **Xvfb :158 e2e**：新增 `scripts/e2e_tab_pin_drag.sh`，PASS，截图
   `.logs/tab-pin-drag/e2e/shots/`：
   - `02-pin-t2.png`/`03-pin-t3.png`/`04-unpin-t2.png`：Pin 追加、Unpin 回第一个 unpinned、
@@ -2207,15 +2207,15 @@ cargo bench -p tervo-core --bench pty_throughput
   - Help 四张卡片：Quick start/Keyboard shortcuts（9 行）、Config file & logs（路径 +
     打开目录 + 复制诊断）、Version information（版本/commit/built/target）、Known
     limitations/Documentation（IME/Wayland/插件沙箱/24h soak + `docs/` 路径）。
-  - 版本信息来自 `build.rs` 注入的 `CARGO_PKG_VERSION`/`TERVO_GIT_COMMIT`/
-    `TERVO_BUILD_TIME`/`TERVO_BUILD_TARGET`，页面与 `--version` 同源；日志
+  - 版本信息来自 `build.rs` 注入的 `CARGO_PKG_VERSION`/`XTERVO_GIT_COMMIT`/
+    `XTERVO_BUILD_TIME`/`XTERVO_BUILD_TARGET`，页面与 `--version` 同源；日志
     `[help] info ...` 便于自动化断言。
   - 打开目录复用 shell-safe `xdg-open <单参数>`；缺 xdg-open/目录不存在/线程失败时把
     错误写入 `help-status`（可见、不 panic）。复制诊断走 arboard helper，成功/失败都写状态；
     文本只含版本/路径/语言，不含密码/环境变量。
   - `SETTINGS_CATALOG` 增加 4 条 cat=8 索引（keywords 同时含 `help`/`帮助`），
     `settings_cat_label` 扩到 9 项；搜索点击沿用现有 jump token/锚点机制。
-- **测试**：`cargo check/test -p tervo-app --bin tervo` → **383 passed / 1 ignored**
+- **测试**：`cargo check/test -p xtervo-app --bin xtervo` → **383 passed / 1 ignored**
   （基线 382；新增 Help 索引/诊断文本单测）。新增 `scripts/e2e_settings_help.sh`
   （Xvfb :147）PASS：源码断言（图标手绘、33 组 Lang.t、9 快捷键、4 索引、shell-safe
   xdg-open）、en/zh 截图、版本/commit 日志、三个按钮与复制状态、搜索 `help`/`帮助`

@@ -9,7 +9,7 @@ members = [
     "crates/render-wgpu",
     "crates/diagnostics",
     "crates/maximize",
-    # Spike only: single-process multi-window feasibility (not shipped in tervo).
+    # Spike only: single-process multi-window feasibility (not shipped in xtervo).
     "crates/mw-spike",
 ]
 

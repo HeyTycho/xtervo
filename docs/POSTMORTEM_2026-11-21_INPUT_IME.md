@@ -122,7 +122,7 @@ dsh-tui 不识别该序列，表现为“dsh-tui 输入/退格全坏”，而普
 
 ```text
 1. 确认二进制 commit + 启动时间。
-2. 开 TERVO_KEYLOG=1 / TERVO_IME_LOG=1，抓第一处分歧：
+2. 开 XTERVO_KEYLOG=1 / XTERVO_IME_LOG=1，抓第一处分歧：
    winit IME 事件 -> Slint key-pressed -> root.key-input -> handle_input -> PTY bytes。
 3. 没有失败测试不改；连续两次无效就停，插桩/二分。
 4. 真实 Wayland IME 证据优先于 X11。

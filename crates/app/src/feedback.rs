@@ -47,7 +47,7 @@ fn read_tail(path: &Path, max: u64) -> String {
 }
 
 fn redact(input: &str) -> String {
-    tervo_diagnostics::doctor::redact_text(input).0
+    xtervo_diagnostics::doctor::redact_text(input).0
 }
 
 /// Create a redacted `.tar.gz` under the state feedback directory.
@@ -63,7 +63,7 @@ pub fn create_bundle(description: &str) -> Result<PathBuf, String> {
     fs::create_dir_all(stage.join("logs")).map_err(|e| format!("create stage: {e}"))?;
 
     let env = json!({
-        "schema": "tervo.feedback.v1",
+        "schema": "xtervo.feedback.v1",
         "version": crate::BUILD_VERSION,
         "commit": crate::BUILD_COMMIT,
         "target": crate::BUILD_TARGET,
@@ -84,7 +84,7 @@ pub fn create_bundle(description: &str) -> Result<PathBuf, String> {
     .map_err(|e| format!("write env: {e}"))?;
 
     let report = format!(
-        "# Tervo feedback\n\n\
+        "# xtervo feedback\n\n\
          Version: {} ({})\n\
          Built: {}\n\
          User description:\n\n{}\n\n\
@@ -121,13 +121,13 @@ pub fn create_bundle(description: &str) -> Result<PathBuf, String> {
         let name = path
             .file_name()
             .and_then(|n| n.to_str())
-            .unwrap_or("tervo.log");
+            .unwrap_or("xtervo.log");
         let text = redact(&read_tail(&path, MAX_LOG_BYTES));
         fs::write(stage.join("logs").join(format!("{index}-{name}")), text)
             .map_err(|e| format!("write log: {e}"))?;
     }
 
-    let bundle = root.join(format!("tervo-feedback-{stamp}.tar.gz"));
+    let bundle = root.join(format!("xtervo-feedback-{stamp}.tar.gz"));
     let file = File::create(&bundle).map_err(|e| format!("create bundle: {e}"))?;
     let encoder = GzEncoder::new(file, Compression::default());
     let mut tar = tar::Builder::new(encoder);
@@ -157,9 +157,9 @@ pub fn open_issue(url: &str, bundle: &Path) -> Result<(), String> {
     if url.is_empty() {
         return Err("feedback issue URL is empty".into());
     }
-    let title = format!("Tervo feedback: {}", crate::BUILD_VERSION);
+    let title = format!("xtervo feedback: {}", crate::BUILD_VERSION);
     let body = format!(
-        "Tervo {} ({})\n\nAttach the generated bundle: {}\n\nPlease describe reproduction steps.",
+        "xtervo {} ({})\n\nAttach the generated bundle: {}\n\nPlease describe reproduction steps.",
         crate::BUILD_VERSION,
         crate::BUILD_COMMIT,
         bundle.display()
@@ -194,11 +194,11 @@ mod tests {
     fn bundle_is_bounded_and_redacts_description() {
         static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
         let _guard = LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let dir = std::env::temp_dir().join(format!("tervo-feedback-test-{}", now_stamp()));
+        let dir = std::env::temp_dir().join(format!("xtervo-feedback-test-{}", now_stamp()));
         let _ = fs::create_dir_all(&dir);
-        let old = std::env::var_os("TERVO_LOG_DIR");
-        std::env::set_var("TERVO_LOG_DIR", &dir);
-        fs::write(dir.join("tervo-1.log"), "api_key=SUPERSECRET\nplain line\n").unwrap();
+        let old = std::env::var_os("XTERVO_LOG_DIR");
+        std::env::set_var("XTERVO_LOG_DIR", &dir);
+        fs::write(dir.join("xtervo-1.log"), "api_key=SUPERSECRET\nplain line\n").unwrap();
         let bundle = create_bundle("my api_key=SUPERSECRET").expect("bundle");
         let file = File::open(&bundle).expect("open bundle");
         let decoder = flate2::read::GzDecoder::new(file);
@@ -219,8 +219,8 @@ mod tests {
         let _ = fs::remove_file(&bundle);
         let _ = fs::remove_dir_all(&dir);
         match old {
-            Some(value) => std::env::set_var("TERVO_LOG_DIR", value),
-            None => std::env::remove_var("TERVO_LOG_DIR"),
+            Some(value) => std::env::set_var("XTERVO_LOG_DIR", value),
+            None => std::env::remove_var("XTERVO_LOG_DIR"),
         }
     }
 }

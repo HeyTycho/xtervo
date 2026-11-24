@@ -12,7 +12,7 @@
 //! - destructive: close_pane / close_tab / kill
 //!
 //! destructive 是**附加**开关：close_* 还要求 tabs，kill 还要求 input。
-//! 旧的 `TERVO_DIAG_ALLOW_WRITE` / `TERVO_DIAG_ALLOW_DESTRUCTIVE` 环境变量
+//! 旧的 `XTERVO_DIAG_ALLOW_WRITE` / `XTERVO_DIAG_ALLOW_DESTRUCTIVE` 环境变量
 //! 仍可放宽对应分组（测试/CI 兼容），但不能绕过 `mcp_enabled=false`。
 
 use std::fs::{self, OpenOptions};
@@ -26,10 +26,10 @@ use serde_json::{json, Value};
 
 use crate::config::Config;
 
-pub const SOCKET_ENV: &str = "TERVO_DIAG_SOCKET";
-pub const TOKEN_ENV: &str = "TERVO_DIAG_TOKEN";
-pub const WRITE_ENV: &str = "TERVO_DIAG_ALLOW_WRITE";
-pub const DESTRUCTIVE_ENV: &str = "TERVO_DIAG_ALLOW_DESTRUCTIVE";
+pub const SOCKET_ENV: &str = "XTERVO_DIAG_SOCKET";
+pub const TOKEN_ENV: &str = "XTERVO_DIAG_TOKEN";
+pub const WRITE_ENV: &str = "XTERVO_DIAG_ALLOW_WRITE";
+pub const DESTRUCTIVE_ENV: &str = "XTERVO_DIAG_ALLOW_DESTRUCTIVE";
 
 pub const SOCKET_FILE_NAME: &str = "mcp.sock";
 pub const TOKEN_FILE_NAME: &str = "mcp.token";
@@ -175,7 +175,7 @@ impl McpPermissions {
     /// `live_capabilities` / `tools/list` 共用的数据结构。绝不包含 token。
     pub fn capabilities_json(&self) -> Value {
         json!({
-            "schema": "tervo.diag.v1",
+            "schema": "xtervo.diag.v1",
             "live": true,
             "enabled": self.enabled,
             "read_only": self.read_only(),
@@ -424,7 +424,7 @@ impl McpRuntime {
 
 static RUNTIME: OnceLock<Arc<McpRuntime>> = OnceLock::new();
 
-/// GUI 启动时调用一次。`tervo diag serve` 不初始化全局 runtime。
+/// GUI 启动时调用一次。`xtervo diag serve` 不初始化全局 runtime。
 pub fn init(cfg: &Config) -> Arc<McpRuntime> {
     let runtime = Arc::new(McpRuntime::new(cfg));
     let _ = RUNTIME.set(runtime.clone());
@@ -456,7 +456,7 @@ fn env_flag(name: &str) -> bool {
 }
 
 /// 配置文件存在且解析成功时返回其 mcp_enabled；缺失/解析失败按默认 true。
-/// 用 `parse_text` 避免 `tervo diag serve` 触发配置迁移写回。
+/// 用 `parse_text` 避免 `xtervo diag serve` 触发配置迁移写回。
 pub fn config_enabled_from_disk() -> bool {
     match fs::read_to_string(Config::path()) {
         Ok(text) => config_enabled_from_text(&text),
@@ -474,9 +474,9 @@ fn config_enabled_from_text(text: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// `$XDG_RUNTIME_DIR/tervo/mcp.sock`；没有 XDG_RUNTIME_DIR 时退回
-/// `$XDG_STATE_HOME/tervo/mcp.sock`（或 `~/.local/state/tervo/mcp.sock`）。
-/// 路径过长时退到 `$TMPDIR/tervo-<uid>/mcp.sock`（Unix socket 108 字节限制）。
+/// `$XDG_RUNTIME_DIR/xtervo/mcp.sock`；没有 XDG_RUNTIME_DIR 时退回
+/// `$XDG_STATE_HOME/xtervo/mcp.sock`（或 `~/.local/state/xtervo/mcp.sock`）。
+/// 路径过长时退到 `$TMPDIR/xtervo-<uid>/mcp.sock`（Unix socket 108 字节限制）。
 pub fn default_socket_path() -> PathBuf {
     socket_path_for(
         env_path("XDG_RUNTIME_DIR").as_deref(),
@@ -487,7 +487,7 @@ pub fn default_socket_path() -> PathBuf {
 
 fn socket_path_for(runtime_dir: Option<&Path>, state_dir: &Path, temp_dir: &Path) -> PathBuf {
     if let Some(runtime_dir) = runtime_dir {
-        let path = runtime_dir.join("tervo").join(SOCKET_FILE_NAME);
+        let path = runtime_dir.join("xtervo").join(SOCKET_FILE_NAME);
         if path.as_os_str().len() <= MAX_SOCKET_PATH_BYTES {
             return path;
         }
@@ -509,14 +509,14 @@ pub fn state_dir() -> PathBuf {
 
 fn state_dir_for(xdg_state_home: Option<&Path>, home: Option<&Path>, temp_dir: &Path) -> PathBuf {
     match (xdg_state_home, home) {
-        (Some(base), _) => base.join("tervo"),
-        (None, Some(home)) => home.join(".local").join("state").join("tervo"),
+        (Some(base), _) => base.join("xtervo"),
+        (None, Some(home)) => home.join(".local").join("state").join("xtervo"),
         (None, None) => temp_dir.to_path_buf(),
     }
 }
 
 fn temp_state_dir() -> PathBuf {
-    std::env::temp_dir().join(format!("tervo-{}", effective_uid()))
+    std::env::temp_dir().join(format!("xtervo-{}", effective_uid()))
 }
 
 pub fn token_file_path() -> PathBuf {
@@ -539,7 +539,7 @@ pub fn socket_path_from_env_or_default() -> PathBuf {
 }
 
 /// 确保 socket/token 的父目录存在。只在**新建**目录时 chmod 0700，
-/// 不擅自改用户已有目录（例如 TERVO_DIAG_SOCKET 指向自己的目录）。
+/// 不擅自改用户已有目录（例如 XTERVO_DIAG_SOCKET 指向自己的目录）。
 pub fn prepare_socket_dir(path: &Path) -> io::Result<()> {
     ensure_parent_dir(path)
 }
@@ -551,7 +551,7 @@ fn ensure_parent_dir(path: &Path) -> io::Result<()> {
         return Ok(());
     }
     if parent.exists() {
-        // 已存在的目录可能是别人预建的（尤其是 /tmp/tervo-<uid> 回退路径）：
+        // 已存在的目录可能是别人预建的（尤其是 /tmp/xtervo-<uid> 回退路径）：
         // 必须是当前用户拥有的真实目录，不能是 symlink。
         let meta = fs::symlink_metadata(parent)?;
         if !meta.file_type().is_dir() || meta.uid() != effective_uid() {
@@ -925,7 +925,7 @@ mod tests {
     fn capabilities_json_tracks_groups_without_token() {
         let permissions = perms(true, true, true, true);
         let value = permissions.capabilities_json();
-        assert_eq!(value["schema"], "tervo.diag.v1");
+        assert_eq!(value["schema"], "xtervo.diag.v1");
         assert_eq!(value["live"], true);
         assert_eq!(value["read_only"], false);
         assert_eq!(value["input_enabled"], true);
@@ -969,19 +969,19 @@ mod tests {
     #[test]
     fn socket_path_prefers_xdg_runtime_and_falls_back_to_state() {
         let runtime = Path::new("/run/user/1000");
-        let state = Path::new("/home/user/.local/state/tervo");
-        let temp = Path::new("/tmp/tervo-1000");
+        let state = Path::new("/home/user/.local/state/xtervo");
+        let temp = Path::new("/tmp/xtervo-1000");
         assert_eq!(
             socket_path_for(Some(runtime), state, temp),
-            PathBuf::from("/run/user/1000/tervo/mcp.sock")
+            PathBuf::from("/run/user/1000/xtervo/mcp.sock")
         );
         assert_eq!(
             socket_path_for(None, state, temp),
-            PathBuf::from("/home/user/.local/state/tervo/mcp.sock")
+            PathBuf::from("/home/user/.local/state/xtervo/mcp.sock")
         );
         assert_eq!(
             token_file_path_in(state),
-            PathBuf::from("/home/user/.local/state/tervo/mcp.token")
+            PathBuf::from("/home/user/.local/state/xtervo/mcp.token")
         );
     }
 
@@ -989,11 +989,11 @@ mod tests {
     fn state_dir_prefers_xdg_state_home_then_home_then_temp() {
         let xdg = Path::new("/x/state");
         let home = Path::new("/home/user");
-        let temp = Path::new("/tmp/tervo-1000");
-        assert_eq!(state_dir_for(Some(xdg), Some(home), temp), xdg.join("tervo"));
+        let temp = Path::new("/tmp/xtervo-1000");
+        assert_eq!(state_dir_for(Some(xdg), Some(home), temp), xdg.join("xtervo"));
         assert_eq!(
             state_dir_for(None, Some(home), temp),
-            PathBuf::from("/home/user/.local/state/tervo")
+            PathBuf::from("/home/user/.local/state/xtervo")
         );
         assert_eq!(state_dir_for(None, None, temp), temp);
     }
@@ -1030,7 +1030,7 @@ mod tests {
     #[test]
     fn runtime_token_reloads_when_file_changes() {
         let dir = std::env::temp_dir().join(format!(
-            "tervo-mcp-token-reload-{}-{}",
+            "xtervo-mcp-token-reload-{}-{}",
             std::process::id(),
             crate::logging::now_ms()
         ));
@@ -1058,7 +1058,7 @@ mod tests {
     #[test]
     fn concurrent_token_creation_sees_one_valid_token() {
         let dir = std::env::temp_dir().join(format!(
-            "tervo-mcp-token-race-{}-{}",
+            "xtervo-mcp-token-race-{}-{}",
             std::process::id(),
             crate::logging::now_ms()
         ));

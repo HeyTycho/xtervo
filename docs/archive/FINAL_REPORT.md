@@ -1,4 +1,4 @@
-# 最终交付报告（Tervo）
+# 最终交付报告（xtervo）
 
 > **2026-11-16 注：本报告是 2026-11-05 的历史快照，数字与“未做”清单已过时**
 > （Vault、Quake、插件运行时、多窗口、MCP 在 0.4/0.5 已落地）。当前状态请看
@@ -15,9 +15,9 @@
 ```bash
 export CARGO_HOME=$PWD/.cargo
 cargo build --release                       # 开发二进制（带符号）
-./target/release/tervo              # 运行
+./target/release/xtervo              # 运行
 ./scripts/selfcheck.sh                      # 构建 + 三套测试 + 启动/RSS 门禁
-SKIP_BUILD=1 ./scripts/package.sh /tmp/dist # strip + ≤40MB 门禁 + --help 冒烟（产物 dist/tervo）
+SKIP_BUILD=1 ./scripts/package.sh /tmp/dist # strip + ≤40MB 门禁 + --help 冒烟（产物 dist/xtervo）
 PREFIX=/tmp/prefix ./scripts/install.sh     # bin + .desktop + 图标
 python3 scripts/matrix_stats.py             # 功能矩阵统计
 ```
@@ -29,7 +29,7 @@ python3 scripts/matrix_stats.py             # 功能矩阵统计
 | `selfcheck.sh` | **PASS**：ready 52.6 ms / first_damage 85.7 ms（口径修正后）/ 空闲 RSS 52.5 MB |
 | 测试 | app **90** / core **66** / VT conformance **11**（共 167） |
 | 打包 | 193 MB（带符号）→ **32.1 MB stripped**（−82.5%），门禁 ≤40 MB ✓ |
-| 安装 | `/tmp/final-prefix/bin/tervo` + `.desktop` + 图标，`--help` 正常 |
+| 安装 | `/tmp/final-prefix/bin/xtervo` + `.desktop` + 图标，`--help` 正常 |
 | 4 pane | RSS **44 MB**、空闲 CPU **0.2%**（`docs/PERFORMANCE.md`） |
 | 功能矩阵 | 228 条：implemented 23 / partial 76 / needs_verification 17 / not_started 105 / unsupported 7，加权 **28.6%** |
 

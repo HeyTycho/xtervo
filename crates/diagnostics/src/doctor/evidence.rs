@@ -14,7 +14,7 @@ use super::hash::sha256_hex;
 use super::redact::{redact_json, redact_text, RedactionReport};
 
 /// Versioned evidence-bundle schema.
-pub const EVIDENCE_BUNDLE_SCHEMA: &str = "tervo.evidence_bundle.v1";
+pub const EVIDENCE_BUNDLE_SCHEMA: &str = "xtervo.evidence_bundle.v1";
 /// Default per-item cap (16 KiB).
 pub const DEFAULT_MAX_ITEM_BYTES: usize = 16 * 1024;
 /// Default total cap (64 KiB).

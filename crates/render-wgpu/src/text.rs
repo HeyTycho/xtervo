@@ -1,4 +1,4 @@
-//! Instanced WGPU text rendering from [`tervo_scene::TextBatch`].
+//! Instanced WGPU text rendering from [`xtervo_scene::TextBatch`].
 //!
 //! Pipeline shape:
 //!
@@ -23,7 +23,7 @@
 use std::fmt;
 use std::time::{Duration, Instant};
 
-use tervo_scene::{PhysicalSize, TextBatch};
+use xtervo_scene::{PhysicalSize, TextBatch};
 
 use crate::atlas::{
     discover_font_path, AtlasConfig, AtlasError, AtlasStats, FontMetrics, FontStyle, GlyphAtlas,
@@ -85,7 +85,7 @@ impl GlyphInstance {
     }
 }
 
-/// Cell grid and font size for one [`tervo_scene::TextBatch`].
+/// Cell grid and font size for one [`xtervo_scene::TextBatch`].
 ///
 /// Positions are rounded to whole pixels before rasterization. That makes a
 /// glyph quad cover exact coverage texels and lets the CUDA-free CPU reference
@@ -318,7 +318,7 @@ impl TextTarget {
     pub fn new(device: &wgpu::Device, size: PhysicalSize) -> Result<Self, BackendError> {
         crate::validate_size(size, device.limits().max_texture_dimension_2d)?;
         let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("tervo-wgpu-text-target"),
+            label: Some("xtervo-wgpu-text-target"),
             size: wgpu::Extent3d {
                 width: size.width,
                 height: size.height,
@@ -896,12 +896,12 @@ impl GpuTextRenderer {
         atlas: GlyphAtlas,
     ) -> Result<Self, AtlasError> {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("tervo-wgpu-text-shader"),
+            label: Some("xtervo-wgpu-text-shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("text.wgsl").into()),
         });
 
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("tervo-wgpu-text-bgl"),
+            label: Some("xtervo-wgpu-text-bgl"),
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
@@ -933,13 +933,13 @@ impl GpuTextRenderer {
         });
 
         let screen_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("tervo-wgpu-text-screen"),
+            label: Some("xtervo-wgpu-text-screen"),
             size: 16,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("tervo-wgpu-text-sampler"),
+            label: Some("xtervo-wgpu-text-sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             address_mode_w: wgpu::AddressMode::ClampToEdge,
@@ -949,7 +949,7 @@ impl GpuTextRenderer {
             ..Default::default()
         });
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("tervo-wgpu-text-bind-group"),
+            label: Some("xtervo-wgpu-text-bind-group"),
             layout: &bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
@@ -967,7 +967,7 @@ impl GpuTextRenderer {
             ],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("tervo-wgpu-text-pipeline-layout"),
+            label: Some("xtervo-wgpu-text-pipeline-layout"),
             bind_group_layouts: &[Some(&bind_group_layout)],
             immediate_size: 0,
         });
@@ -980,7 +980,7 @@ impl GpuTextRenderer {
         let targets = [Some(color_target.clone())];
 
         let solid_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("tervo-wgpu-text-solid-pipeline"),
+            label: Some("xtervo-wgpu-text-solid-pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
@@ -1001,7 +1001,7 @@ impl GpuTextRenderer {
             cache: None,
         });
         let glyph_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("tervo-wgpu-text-glyph-pipeline"),
+            label: Some("xtervo-wgpu-text-glyph-pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
@@ -1023,13 +1023,13 @@ impl GpuTextRenderer {
         });
 
         let solid_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("tervo-wgpu-text-solid-instances"),
+            label: Some("xtervo-wgpu-text-solid-instances"),
             size: 256,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         let glyph_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("tervo-wgpu-text-glyph-instances"),
+            label: Some("xtervo-wgpu-text-glyph-instances"),
             size: 256,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
@@ -1139,7 +1139,7 @@ impl GpuTextRenderer {
             &mut self.solid_buffer,
             &mut self.solid_capacity,
             solid_needed,
-            "tervo-wgpu-text-solid-instances",
+            "xtervo-wgpu-text-solid-instances",
         ) {
             self.buffer_reallocations += 1;
         }
@@ -1148,7 +1148,7 @@ impl GpuTextRenderer {
             &mut self.glyph_buffer,
             &mut self.glyph_capacity,
             glyph_needed,
-            "tervo-wgpu-text-glyph-instances",
+            "xtervo-wgpu-text-glyph-instances",
         ) {
             self.buffer_reallocations += 1;
         }
@@ -1201,12 +1201,12 @@ impl GpuTextRenderer {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("tervo-wgpu-text-backgrounds"),
+                label: Some("xtervo-wgpu-text-backgrounds"),
             });
         let draw_calls = self.encode_pass(
             &mut encoder,
             target,
-            "tervo-wgpu-text-backgrounds-pass",
+            "xtervo-wgpu-text-backgrounds-pass",
             wgpu::LoadOp::Clear(wgpu::Color {
                 r: f64::from(clear[0]) / 255.0,
                 g: f64::from(clear[1]) / 255.0,
@@ -1236,12 +1236,12 @@ impl GpuTextRenderer {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("tervo-wgpu-text-glyphs"),
+                label: Some("xtervo-wgpu-text-glyphs"),
             });
         let draw_calls = self.encode_pass(
             &mut encoder,
             target,
-            "tervo-wgpu-text-glyphs-pass",
+            "xtervo-wgpu-text-glyphs-pass",
             wgpu::LoadOp::Load,
             &[],
             &prepared.geometry.glyphs,
@@ -1289,7 +1289,7 @@ impl GpuTextRenderer {
         let mut clear_bytes = Vec::with_capacity(SolidInstance::BYTES as usize);
         clear_instance.append_bytes(&mut clear_bytes);
         let clear_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("tervo-wgpu-text-damage-clear"),
+            label: Some("xtervo-wgpu-text-damage-clear"),
             size: SolidInstance::BYTES,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
@@ -1298,7 +1298,7 @@ impl GpuTextRenderer {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("tervo-wgpu-text-damage-backgrounds"),
+                label: Some("xtervo-wgpu-text-damage-backgrounds"),
             });
         let mut draw_calls = 0u32;
         {
@@ -1312,7 +1312,7 @@ impl GpuTextRenderer {
                 },
             })];
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("tervo-wgpu-text-damage-backgrounds-pass"),
+                label: Some("xtervo-wgpu-text-damage-backgrounds-pass"),
                 color_attachments: &color_attachments,
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
@@ -1358,12 +1358,12 @@ impl GpuTextRenderer {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("tervo-wgpu-text-damage-glyphs"),
+                label: Some("xtervo-wgpu-text-damage-glyphs"),
             });
         let draw_calls = self.encode_pass(
             &mut encoder,
             target,
-            "tervo-wgpu-text-damage-glyphs-pass",
+            "xtervo-wgpu-text-damage-glyphs-pass",
             wgpu::LoadOp::Load,
             &[],
             &prepared.geometry.glyphs,
@@ -1454,12 +1454,12 @@ impl GpuTextRenderer {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("tervo-wgpu-text-encoder"),
+                label: Some("xtervo-wgpu-text-encoder"),
             });
         let draw_calls = self.encode_pass(
             &mut encoder,
             target,
-            "tervo-wgpu-text-pass",
+            "xtervo-wgpu-text-pass",
             wgpu::LoadOp::Clear(wgpu::Color {
                 r: f64::from(clear[0]) / 255.0,
                 g: f64::from(clear[1]) / 255.0,
@@ -1544,13 +1544,13 @@ pub fn read_target_rgba8(
     let unpadded = size.width * 4;
     let padded = unpadded.div_ceil(COPY_ALIGNMENT) * COPY_ALIGNMENT;
     let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("tervo-wgpu-text-readback"),
+        label: Some("xtervo-wgpu-text-readback"),
         size: u64::from(padded) * u64::from(size.height),
         usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-        label: Some("tervo-wgpu-text-readback-encoder"),
+        label: Some("xtervo-wgpu-text-readback-encoder"),
     });
     encoder.copy_texture_to_buffer(
         wgpu::TexelCopyTextureInfo {

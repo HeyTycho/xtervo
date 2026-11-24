@@ -11,7 +11,7 @@
 #      日志不含主密码；
 #   6. SFTP 上传/下载队列、Cancel、元数据操作 Cancel、Chmod、失败提示 + Retry。
 #
-# 用法：cargo build -p tervo-app --bin tervo --bin xwin --bin xclick --bin xkey
+# 用法：cargo build -p xtervo-app --bin xtervo --bin xwin --bin xclick --bin xkey
 #       ./scripts/e2e_ssh_sftp_vault.sh
 # 依赖 Xvfb/Openbox（仓库 .perf/）、xwd、python3+Pillow、xwin/xclick/xkey。
 set -euo pipefail
@@ -25,19 +25,19 @@ mkdir -p "$OUT/shots" "$OUT/home/.ssh" "$OUT/logs" "$OUT/bin" /tmp/.X11-unix
 
 COMMON=$(git rev-parse --git-common-dir)
 MAIN_ROOT=$(cd "$(dirname "$COMMON")" && pwd)
-PERF=${TERVO_PERF_DIR:-$MAIN_ROOT/.perf}
+PERF=${XTERVO_PERF_DIR:-$MAIN_ROOT/.perf}
 XVFB_BIN=${E2E_XVFB_BIN:-$PERF/xvfb/usr/bin/Xvfb}
 [ -x "$XVFB_BIN" ] || XVFB_BIN=$(command -v Xvfb || true)
 [ -x "$XVFB_BIN" ] || { echo "找不到 Xvfb" >&2; exit 2; }
 OPENBOX=$PERF/openbox/usr/bin/openbox
 OPENBOX_LIB=$PERF/openbox/usr/lib/x86_64-linux-gnu
 
-BIN=${TERVO_BIN:-$MAIN_ROOT/target/debug/tervo}
+BIN=${XTERVO_BIN:-$MAIN_ROOT/target/debug/xtervo}
 XWIN=${XWIN_BIN:-$MAIN_ROOT/target/debug/xwin}
 XCLICK=${XCLICK_BIN:-$MAIN_ROOT/target/debug/xclick}
 XKEY=${XKEY_BIN:-$MAIN_ROOT/target/debug/xkey}
 for f in "$BIN" "$XWIN" "$XCLICK" "$XKEY"; do
-    [ -x "$f" ] || { echo "缺少 $f（先 cargo build -p tervo-app --bin tervo --bin xwin --bin xclick --bin xkey）" >&2; exit 2; }
+    [ -x "$f" ] || { echo "缺少 $f（先 cargo build -p xtervo-app --bin xtervo --bin xwin --bin xclick --bin xkey）" >&2; exit 2; }
 done
 
 if xdpyinfo >/dev/null 2>&1; then
@@ -70,7 +70,7 @@ fi
 export HOME=$OUT/home
 export XMODIFIERS=@im=none
 export SLINT_BACKEND=winit-software
-unset TERVO_SETTINGS_LEGACY
+unset XTERVO_SETTINGS_LEGACY
 
 # ---------------------------------------------------------------- 假 ssh/sftp/keyscan
 ssh-keygen -q -t ed25519 -N '' -C e2e-old -f "$OUT/key_old"
@@ -178,22 +178,22 @@ PROF
 
 LOG=$OUT/app.log
 PATH="$OUT/bin:$PATH" \
-TERVO_CONFIG="$OUT/config.toml" \
-TERVO_PROFILES="$OUT/profiles.toml" \
-TERVO_VAULT="$OUT/vault.enc" \
-TERVO_LOG_DIR="$OUT/logs" \
-TERVO_VAULT_KDF_DELAY_MS=900 \
+XTERVO_CONFIG="$OUT/config.toml" \
+XTERVO_PROFILES="$OUT/profiles.toml" \
+XTERVO_VAULT="$OUT/vault.enc" \
+XTERVO_LOG_DIR="$OUT/logs" \
+XTERVO_VAULT_KDF_DELAY_MS=900 \
     "$BIN" --cols 120 --rows 32 --shell /bin/sh >"$LOG" 2>&1 &
 APP_PID=$!
 
 WIN=""
 for _ in $(seq 1 200); do
-    WIN=$(xwininfo -root -tree 2>/dev/null | grep -i '"tervo"' | head -1 | awk '{print $1}' || true)
+    WIN=$(xwininfo -root -tree 2>/dev/null | grep -i '"xtervo"' | head -1 | awk '{print $1}' || true)
     [ -n "$WIN" ] && break
     sleep 0.05
 done
-[ -n "$WIN" ] || { echo "Tervo 启动失败：$LOG" >&2; exit 2; }
-"$XWIN" Tervo 20 20 >/dev/null 2>&1 || true
+[ -n "$WIN" ] || { echo "xtervo 启动失败：$LOG" >&2; exit 2; }
+"$XWIN" xtervo 20 20 >/dev/null 2>&1 || true
 sleep 1.0
 
 ABS_X=$(xwininfo -id "$WIN" | awk '/Absolute upper-left X/{print $NF}')
@@ -204,11 +204,11 @@ H=$(xwininfo -id "$WIN" | awk '/Height:/{print $2}')
     echo "窗口 ${W}x${H} 与坐标假设 1080x736 不符" >&2
     exit 2
 }
-echo "== Tervo ${W}x${H} at ${ABS_X},${ABS_Y} =="
+echo "== xtervo ${W}x${H} at ${ABS_X},${ABS_Y} =="
 
 click() { "$XCLICK" "$((ABS_X + $1))" "$((ABS_Y + $2))" >/dev/null; sleep "${3:-0.4}"; }
 rclick() { "$XCLICK" "$((ABS_X + $1))" "$((ABS_Y + $2))" 3 >/dev/null; sleep "${3:-0.4}"; }
-key() { "$XWIN" Tervo >/dev/null 2>&1 || true; "$XKEY" "$@" >/dev/null; }
+key() { "$XWIN" xtervo >/dev/null 2>&1 || true; "$XKEY" "$@" >/dev/null; }
 type_text() { key "$1"; }
 type_into() {  # x y text [settle]
     click "$1" "$2" 0.15
@@ -327,7 +327,7 @@ python3 - "$OUT/vault.enc" <<'PY'
 import sys
 data = open(sys.argv[1], "rb").read()
 assert b"e2emasterpass" not in data, "vault 文件泄露主密码"
-assert b"TERVO-VAULT 1" in data
+assert b"XTERVO-VAULT 1" in data
 print(f"  vault file ok bytes={len(data)}")
 PY
 

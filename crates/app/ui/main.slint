@@ -163,7 +163,7 @@ export struct PaneView {
     /// Sixel 图片 overlay（按创建顺序，后创建的画在上面）。图片不进终端
     /// cell 文本/选区，也不触发终端帧重绘。
     images: [PaneImage],
-    /// 调试用行号（TERVO_LINE_NUMBERS=1）。正常为空。
+    /// 调试用行号（XTERVO_LINE_NUMBERS=1）。正常为空。
     line-numbers: [string],
     line-h: length,
 }
@@ -1620,7 +1620,7 @@ export component MainWindow inherits Window {
     // 链接打开失败等短暂提示（底部浮层，Rust 侧 4 秒后清空）。
     in-out property <string> link-status: "";
     // 插件状态提供者的最小状态栏（底部一行文本；空 = 隐藏，不占布局）。
-    /// TERVO_RENDER_HUD=1 时显示的渲染调试 HUD；空 = 不显示。
+    /// XTERVO_RENDER_HUD=1 时显示的渲染调试 HUD；空 = 不显示。
     in-out property <string> render-hud: "";
     in-out property <bool> doctor-open: false;
     in-out property <string> doctor-text: "";
@@ -1992,7 +1992,7 @@ export component MainWindow inherits Window {
     in property <[string]> sftp-items: [];
     in-out property <int> sftp-profile: 0;
     in-out property <string> sftp-remote: "/";
-    in-out property <string> sftp-local: "/tmp/tervo-sftp";
+    in-out property <string> sftp-local: "/tmp/xtervo-sftp";
     in-out property <string> sftp-target: "";
     /// 选中条目的 chmod 权限（八进制，如 644）。
     in-out property <string> sftp-mode: "644";
@@ -2204,7 +2204,7 @@ export component MainWindow inherits Window {
     in-out property <int> settings-refocus-token: 0;
     /// 主题下拉是否展开（面板级浮层，避免 Flickable 裁剪）。
     in-out property <bool> settings-theme-open: false;
-    /// TERVO_SETTINGS_LEGACY=1：退回居中 modal；默认 false = 窗口内 Settings Tab。
+    /// XTERVO_SETTINGS_LEGACY=1：退回居中 modal；默认 false = 窗口内 Settings Tab。
     in property <bool> settings-legacy: false;
     callback settings-filter(string);
     callback settings-open-result(int);
@@ -2505,7 +2505,7 @@ export component MainWindow inherits Window {
     in-out property <bool> ime-composing: false;
 
     /// 窗口标题：CLI --title 覆盖；默认保持原品牌名。
-    in-out property <string> window-title: "Tervo";
+    in-out property <string> window-title: "xtervo";
 
     title: root.window-title;
     // 不让内容（长 Tab 标题/很多 Tab）决定窗口最小宽度：否则加 Tab 会把窗口撑大。
@@ -2514,7 +2514,7 @@ export component MainWindow inherits Window {
     // Slint 1.18 的 Linux 后端只在建窗时决定 visual。按启动时的实际需要
     // 选择 transparent：无图且 opacity=100% 时保持 opaque，避免透明 surface
     // 在部分合成器上出现文字残影；有图/半透明启动才开透明。
-    // 运行中把 opacity 从 100 降到 50 需要重启 Tervo 才切到透明窗口。
+    // 运行中把 opacity 从 100 降到 50 需要重启 xtervo 才切到透明窗口。
     background: root.terminal-transparent ? transparent : Palette.colors.surface;
     no-frame: true;
     always-on-top: root.pinned;
@@ -4261,7 +4261,7 @@ export component MainWindow inherits Window {
                                         (event.modifiers.shift ? 1 : 0) + (event.modifiers.alt ? 2 : 0) + (event.modifiers.control ? 4 : 0));
                                     return EventResult.accept;
                                 }
-                                // 中键：Tabby 语义，始终由 Tervo 处理（配置开启时粘贴），不转发给 TUI。
+                                // 中键：Tabby 语义，始终由 xtervo 处理（配置开启时粘贴），不转发给 TUI。
                                 if (event.button == PointerEventButton.middle) {
                                     root.ime-composing = false;
                                     ime.focus();
@@ -4271,7 +4271,7 @@ export component MainWindow inherits Window {
                                 }
                                 // mouse-reporting TUI 只在 right_click="off" 时接管右键；
                                 // menu/paste/clipboard 是用户显式选择的本地行为，必须优先。
-                                // 否则 dsh-tui 开启鼠标上报后，右键永远进 TUI，Tervo 菜单失效。
+                                // 否则 dsh-tui 开启鼠标上报后，右键永远进 TUI，xtervo 菜单失效。
                                 if (p.mouse-reporting
                                     && event.button == PointerEventButton.right
                                     && !event.modifiers.shift
@@ -4285,7 +4285,7 @@ export component MainWindow inherits Window {
                                         (event.modifiers.shift ? 1 : 0) + (event.modifiers.alt ? 2 : 0) + (event.modifiers.control ? 4 : 0));
                                     return EventResult.accept;
                                 }
-                                // Shift+右键（或非上报模式）打开 Tervo 菜单。
+                                // Shift+右键（或非上报模式）打开 xtervo 菜单。
                                 // 非上报模式：右键在“按下”时开菜单并 accept。
                                 // 之前只在 up 开：down 被 reject 时 Slint 不保证把 up 再送给本 TouchArea，
                                 // 鼠标轻微移动/经过分隔线就会丢事件，表现为“有时候右键唤不出菜单”。
@@ -4968,7 +4968,7 @@ export component MainWindow inherits Window {
 
     // ================= Settings =================
     // 默认：窗口内的 Settings Tab（占满 TabBar 下方内容区，不创建 PTY、不进 workspace）。
-    // TERVO_SETTINGS_LEGACY=1：同一套控件退回居中 modal（顶部有 LEGACY 标记）。
+    // XTERVO_SETTINGS_LEGACY=1：同一套控件退回居中 modal（顶部有 LEGACY 标记）。
     if root.settings-open : Rectangle {
         x: root.chrome-left;
         y: root.chrome-top;
@@ -5369,7 +5369,7 @@ export component MainWindow inherits Window {
 
                         Text {
                             height: 40px;
-                            text: Lang.t("Tervo · changes apply instantly", "Tervo · 更改立即生效");
+                            text: Lang.t("xtervo · changes apply instantly", "xtervo · 更改立即生效");
                             color: Palette.colors.muted;
                             font-size: 9px;
                             vertical-alignment: bottom;
@@ -6078,10 +6078,10 @@ export component MainWindow inherits Window {
                         SettingsCard {
                             title: Lang.t("Settings window", "设置窗口");
                             description: root.settings-legacy
-                                ? Lang.t("Legacy modal mode is active (TERVO_SETTINGS_LEGACY=1).", "传统模态模式已启用（TERVO_SETTINGS_LEGACY=1）。")
+                                ? Lang.t("Legacy modal mode is active (XTERVO_SETTINGS_LEGACY=1).", "传统模态模式已启用（XTERVO_SETTINGS_LEGACY=1）。")
                                 : Lang.t("Settings is a tab inside the main window: close it with ✕, Esc, or by clicking a terminal tab.", "设置是主窗口内的标签页：用 ✕、Esc 或点击终端标签关闭。");
                             Text {
-                                text: Lang.t("Start with TERVO_SETTINGS_LEGACY=1 to use the centered modal fallback.", "启动时设置 TERVO_SETTINGS_LEGACY=1 可使用居中模态回退。");
+                                text: Lang.t("Start with XTERVO_SETTINGS_LEGACY=1 to use the centered modal fallback.", "启动时设置 XTERVO_SETTINGS_LEGACY=1 可使用居中模态回退。");
                                 color: Palette.colors.muted;
                                 font-size: 10px;
                                 wrap: word-wrap;
@@ -6180,7 +6180,7 @@ export component MainWindow inherits Window {
                                 visible: root.config-status != "";
                             }
                             Text {
-                                text: Lang.t("Import/export use config-export.toml next to config.toml and only touch files; restart Tervo to apply. Migrations always keep a config.toml.v<from>.bak.", "导入/导出使用 config.toml 同目录的 config-export.toml，只改文件；重启 Tervo 后生效。迁移始终保留 config.toml.v<旧版本>.bak。");
+                                text: Lang.t("Import/export use config-export.toml next to config.toml and only touch files; restart xtervo to apply. Migrations always keep a config.toml.v<from>.bak.", "导入/导出使用 config.toml 同目录的 config-export.toml，只改文件；重启 xtervo 后生效。迁移始终保留 config.toml.v<旧版本>.bak。");
                                 color: Palette.colors.muted;
                                 font-size: 10px;
                                 wrap: word-wrap;
@@ -6242,8 +6242,8 @@ export component MainWindow inherits Window {
                             description: Lang.t("Settings presentation is selected at startup for safety.", "为安全起见，设置页呈现方式在启动时选定。");
                             Text {
                                 text: root.settings-legacy
-                                    ? Lang.t("Current: legacy centered modal. Remove TERVO_SETTINGS_LEGACY to return to the Settings Tab.", "当前：传统居中模态。移除 TERVO_SETTINGS_LEGACY 可回到设置标签页。")
-                                    : Lang.t("Current: in-window Settings Tab. Set TERVO_SETTINGS_LEGACY=1 before launch to fall back to the centered modal.", "当前：窗口内设置标签页。启动前设置 TERVO_SETTINGS_LEGACY=1 可回退到居中模态。");
+                                    ? Lang.t("Current: legacy centered modal. Remove XTERVO_SETTINGS_LEGACY to return to the Settings Tab.", "当前：传统居中模态。移除 XTERVO_SETTINGS_LEGACY 可回到设置标签页。")
+                                    : Lang.t("Current: in-window Settings Tab. Set XTERVO_SETTINGS_LEGACY=1 before launch to fall back to the centered modal.", "当前：窗口内设置标签页。启动前设置 XTERVO_SETTINGS_LEGACY=1 可回退到居中模态。");
                                 color: Palette.colors.muted;
                                 font-size: 10px;
                                 wrap: word-wrap;
@@ -6590,7 +6590,7 @@ export component MainWindow inherits Window {
                                 wrap: word-wrap;
                             }
                             Text {
-                                text: Lang.t("Export/import uses Tervo's own versioned format (profiles-export.toml). Files never contain passwords: vault-backed credentials are only marked as references and must be re-entered after import.", "导出/导入使用 Tervo 自有版本化格式（profiles-export.toml）。文件绝不含密码：Vault 凭据只标注为引用，导入后需重新输入。");
+                                text: Lang.t("Export/import uses xtervo's own versioned format (profiles-export.toml). Files never contain passwords: vault-backed credentials are only marked as references and must be re-entered after import.", "导出/导入使用 xtervo 自有版本化格式（profiles-export.toml）。文件绝不含密码：Vault 凭据只标注为引用，导入后需重新输入。");
                                 color: Palette.colors.muted;
                                 font-size: 10px;
                                 wrap: word-wrap;
@@ -6758,13 +6758,13 @@ export component MainWindow inherits Window {
                                 wrap: word-wrap;
                             }
                             Text {
-                                text: Lang.t("Plugins are separate processes. They run as your user with your full system permissions. Permissions below are capability gates for host-mediated APIs (terminal.read/write, clipboard) plus a one-time user confirmation — this is NOT an OS sandbox. MCP is built into Tervo and is not a plugin capability. Only api = 3 / host_abi = 3 is loaded; v1/v2 manifests are unsupported and never executed.", "插件是独立进程，以你的用户身份运行并拥有你的全部系统权限。下面的权限是宿主代理 API（terminal.read/write、clipboard）的 capability gate 加首次启用确认——它不是 OS 沙箱。MCP 是 Tervo 内嵌功能，不是插件能力。宿主只加载 api = 3 / host_abi = 3；v1/v2 清单不受支持，永不执行。");
+                                text: Lang.t("Plugins are separate processes. They run as your user with your full system permissions. Permissions below are capability gates for host-mediated APIs (terminal.read/write, clipboard) plus a one-time user confirmation — this is NOT an OS sandbox. MCP is built into xtervo and is not a plugin capability. Only api = 3 / host_abi = 3 is loaded; v1/v2 manifests are unsupported and never executed.", "插件是独立进程，以你的用户身份运行并拥有你的全部系统权限。下面的权限是宿主代理 API（terminal.read/write、clipboard）的 capability gate 加首次启用确认——它不是 OS 沙箱。MCP 是 xtervo 内嵌功能，不是插件能力。宿主只加载 api = 3 / host_abi = 3；v1/v2 清单不受支持，永不执行。");
                                 color: Palette.colors.muted;
                                 font-size: 10px;
                                 wrap: word-wrap;
                             }
                             Text {
-                                text: Lang.t("Enable/Disable/Reload/Restart never restart Tervo. First enable always shows the declared permissions and asks for confirmation; changing permissions invalidates that confirmation.", "启用/禁用/重载/重启都不会重启 Tervo。首次启用一定展示声明的权限并请求确认；权限变化会使旧确认失效。");
+                                text: Lang.t("Enable/Disable/Reload/Restart never restart xtervo. First enable always shows the declared permissions and asks for confirmation; changing permissions invalidates that confirmation.", "启用/禁用/重载/重启都不会重启 xtervo。首次启用一定展示声明的权限并请求确认；权限变化会使旧确认失效。");
                                 color: Palette.colors.muted;
                                 font-size: 10px;
                                 wrap: word-wrap;
@@ -7502,7 +7502,7 @@ export component MainWindow inherits Window {
 
                         mcp-card := SettingsCard {
                             title: Lang.t("MCP live control", "MCP 实时控制");
-                            description: Lang.t("MCP is built into Tervo, not a plugin. The live socket is local-only (Unix socket 0600) and needs a state token. Default: enabled, read-only.", "MCP 内嵌于 Tervo，不是插件。live socket 仅限本机（Unix socket 0600）且需要 state token。默认：开启、只读。");
+                            description: Lang.t("MCP is built into xtervo, not a plugin. The live socket is local-only (Unix socket 0600) and needs a state token. Default: enabled, read-only.", "MCP 内嵌于 xtervo，不是插件。live socket 仅限本机（Unix socket 0600）且需要 state token。默认：开启、只读。");
                             highlighted: root.settings-focus == "mcp";
 
                             SettingRow {
@@ -9885,7 +9885,7 @@ export component MainWindow inherits Window {
             spacing: 10px;
 
             Text {
-                text: "Close Tervo?";
+                text: "Close xtervo?";
                 color: Palette.colors.text;
                 font-size: 15px;
                 font-weight: 600;
@@ -11190,7 +11190,7 @@ export component MainWindow inherits Window {
             TouchArea { width: 100%; height: 100%; }
             Text {
                 x: 18px; y: 12px; width: parent.width - 100px; height: 28px;
-                text: Lang.t("Tervo Doctor · deterministic", "Tervo Doctor · 确定性诊断");
+                text: Lang.t("xtervo Doctor · deterministic", "xtervo Doctor · 确定性诊断");
                 color: Palette.colors.text; font-size: 14px; font-weight: 600;
                 vertical-alignment: center;
             }

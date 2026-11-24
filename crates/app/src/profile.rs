@@ -2,12 +2,12 @@
 //! 连接 Profile：名字 + 启动方式（当前只做 Local，SSH/Serial/Telnet 后续扩展）。
 //!
 //! 与 `config.rs` 同款策略：版本化、原子写、解析失败不覆盖用户文件。
-//! 存到 `~/.config/tervo/profiles.toml`（`TERVO_PROFILES` 可覆盖，便于测试/多实例）。
+//! 存到 `~/.config/xtervo/profiles.toml`（`XTERVO_PROFILES` 可覆盖，便于测试/多实例）。
 
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use tervo_core::CursorShape;
+use xtervo_core::CursorShape;
 
 /// 当前 Profile 结构版本（v2 引入 kind 与连接字段）。
 ///
@@ -838,7 +838,7 @@ fn backup_path(path: &Path, from: u32) -> PathBuf {
 
 impl ProfileStore {
     pub fn path() -> PathBuf {
-        if let Ok(p) = std::env::var("TERVO_PROFILES") {
+        if let Ok(p) = std::env::var("XTERVO_PROFILES") {
             return PathBuf::from(p);
         }
         let base = std::env::var("XDG_CONFIG_HOME")
@@ -846,7 +846,7 @@ impl ProfileStore {
             .unwrap_or_else(|_| {
                 PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into())).join(".config")
             });
-        base.join("tervo").join("profiles.toml")
+        base.join("xtervo").join("profiles.toml")
     }
 
     pub fn load() -> Self {
@@ -1019,7 +1019,7 @@ impl ProfileStore {
 // ---------------------------------------------------------------- 自有导入/导出格式
 
 /// 自有 Profile 交换格式的标识（写在导出文件 `format` 字段）。
-pub const BUNDLE_FORMAT: &str = "tervo.profiles";
+pub const BUNDLE_FORMAT: &str = "xtervo.profiles";
 /// 自有交换格式版本；导入只接受 1..=BUNDLE_VERSION，未来版本明确拒绝。
 pub const BUNDLE_VERSION: u32 = 1;
 
@@ -1073,7 +1073,7 @@ impl Default for ProfileBundle {
         Self {
             format: BUNDLE_FORMAT.to_string(),
             version: BUNDLE_VERSION,
-            exported_by: format!("tervo {}", env!("CARGO_PKG_VERSION")),
+            exported_by: format!("xtervo {}", env!("CARGO_PKG_VERSION")),
             profiles: Vec::new(),
             vault_refs: Vec::new(),
         }
@@ -1094,7 +1094,7 @@ pub struct BundleImportReport {
 
 /// 导出自有格式（含版本号，绝不包含密码）。
 ///
-/// - `format = "tervo.profiles"`、`version = 1`；
+/// - `format = "xtervo.profiles"`、`version = 1`；
 /// - `save_password` 一律写成 false，避免导入方误以为凭据随文件迁移；
 /// - 原本 `save_password = true` 的 Profile 在 `[[vault_refs]]` 单独标注
 ///   （profile id/name + vault 键），只说明“曾保存在本机 Vault”，不含密码。
@@ -1123,10 +1123,10 @@ pub fn import_bundle(
     store: &mut ProfileStore,
 ) -> Result<BundleImportReport, String> {
     let mut bundle: ProfileBundle =
-        toml::from_str(text).map_err(|e| format!("解析 Tervo Profile 导出文件失败: {e}"))?;
+        toml::from_str(text).map_err(|e| format!("解析 xtervo Profile 导出文件失败: {e}"))?;
     if bundle.format != BUNDLE_FORMAT {
         return Err(format!(
-            "不是 Tervo Profile 导出文件（format={:?}，期望 {BUNDLE_FORMAT:?}）",
+            "不是 xtervo Profile 导出文件（format={:?}，期望 {BUNDLE_FORMAT:?}）",
             bundle.format
         ));
     }
@@ -2337,7 +2337,7 @@ kind = "local"
         assert!(err.contains("版本"), "{err}");
         let wrong = text.replace(BUNDLE_FORMAT, "some.other.format");
         let err = import_bundle(&wrong, &mut target).unwrap_err();
-        assert!(err.contains("不是 Tervo"), "{err}");
+        assert!(err.contains("不是 xtervo"), "{err}");
         assert_eq!(target.profiles.len(), before, "拒绝路径不能部分写入");
     }
 }

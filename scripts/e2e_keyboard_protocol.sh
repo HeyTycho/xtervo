@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-only
-# 键盘协议真实 e2e：独立 headless Xvfb :123 + 真实 tervo + 伪 TUI。
+# 键盘协议真实 e2e：独立 headless Xvfb :123 + 真实 xtervo + 伪 TUI。
 #
 # 覆盖：
 #   1. kitty：query → 收 CSI ? 0 u / push flags 后 CSI ? 3 u；
@@ -10,7 +10,7 @@
 #   4. keyboard_protocol="off"：query 不应答，按键仍是旧编码。
 #
 # 只 kill 本脚本启动的 Xvfb/OpenBox/app；不碰 :1 / 其它 display / 不 pkill。
-# 用法：cargo build -p tervo-app --bin tervo --bin xwin --bin xclick --bin xkey
+# 用法：cargo build -p xtervo-app --bin xtervo --bin xwin --bin xclick --bin xkey
 #       ./scripts/e2e_keyboard_protocol.sh
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -19,19 +19,19 @@ OUT=${E2E_OUT:-$ROOT/.logs/keyboard-protocol}
 mkdir -p "$OUT" "$OUT/obhome" /tmp/.X11-unix
 
 BIN_DIR=${E2E_BIN_DIR:-$ROOT/target/debug}
-BIN=${E2E_BIN:-$BIN_DIR/tervo}
+BIN=${E2E_BIN:-$BIN_DIR/xtervo}
 XWIN=${E2E_XWIN:-$BIN_DIR/xwin}
 XCLICK=${E2E_XCLICK:-$BIN_DIR/xclick}
 XKEY=${E2E_XKEY:-$BIN_DIR/xkey}
 for f in "$BIN" "$XWIN" "$XCLICK" "$XKEY"; do
-    [ -x "$f" ] || { echo "缺少 $f；先 cargo build -p tervo-app --bin tervo --bin xwin --bin xclick --bin xkey" >&2; exit 2; }
+    [ -x "$f" ] || { echo "缺少 $f；先 cargo build -p xtervo-app --bin xtervo --bin xwin --bin xclick --bin xkey" >&2; exit 2; }
 done
 PY=${PYTHON:-$(command -v python3)}
 [ -x "$PY" ] || { echo "找不到 python3" >&2; exit 2; }
 
 COMMON=$(git rev-parse --git-common-dir)
 MAIN_ROOT=$(cd "$(dirname "$COMMON")" && pwd)
-PERF=${TERVO_PERF_DIR:-$MAIN_ROOT/.perf}
+PERF=${XTERVO_PERF_DIR:-$MAIN_ROOT/.perf}
 XVFB_BIN=${E2E_XVFB_BIN:-$PERF/xvfb/usr/bin/Xvfb}
 [ -x "$XVFB_BIN" ] || XVFB_BIN=$(command -v Xvfb || true)
 [ -x "$XVFB_BIN" ] || { echo "找不到 Xvfb；不会回退到 Xephyr" >&2; exit 2; }
@@ -85,17 +85,17 @@ run_case() {
     local dir="$OUT/$tag"
     rm -rf "$dir"; mkdir -p "$dir"
     printf 'theme = "tokyo-night"\nfont_size = 14\nkeyboard_protocol = "%s"\n' "$proto" > "$dir/config.toml"
-    TERVO_CONFIG="$dir/config.toml" TERVO_LOG_DIR="$dir/logs" TERVO_KEYLOG=1 \
+    XTERVO_CONFIG="$dir/config.toml" XTERVO_LOG_DIR="$dir/logs" XTERVO_KEYLOG=1 \
         "$BIN" --cols 80 --rows 20 --shell "$PY" -- "$ROOT/scripts/keyboard_protocol_tui.py" "$mode" "$dir" \
         >"$dir/app.log" 2>&1 &
     APP_PID=$!
     for _ in $(seq 1 150); do
-        WIN=$(xwininfo -root -tree 2>/dev/null | grep -i '"tervo"' | head -1 | awk '{print $1}' || true)
+        WIN=$(xwininfo -root -tree 2>/dev/null | grep -i '"xtervo"' | head -1 | awk '{print $1}' || true)
         [ -n "$WIN" ] && [ -s "$dir/ready" ] && break
         sleep 0.05
     done
-    [ -n "$WIN" ] || { echo "[$tag] 找不到 Tervo 窗口 / ready；见 $dir/app.log" >&2; exit 2; }
-    "$XWIN" Tervo 20 20 >/dev/null 2>&1 || true
+    [ -n "$WIN" ] || { echo "[$tag] 找不到 xtervo 窗口 / ready；见 $dir/app.log" >&2; exit 2; }
+    "$XWIN" xtervo 20 20 >/dev/null 2>&1 || true
     # 点击 pane，确保焦点在隐藏 IME TextInput（按键入口）上。
     WIN_X=$(xwininfo -id "$WIN" | awk '/Absolute upper-left X/{print $NF}')
     WIN_Y=$(xwininfo -id "$WIN" | awk '/Absolute upper-left Y/{print $NF}')

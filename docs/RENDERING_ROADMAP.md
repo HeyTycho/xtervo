@@ -1,4 +1,4 @@
-# Tervo 渲染终极目标与路线图
+# xtervo 渲染终极目标与路线图
 
 状态：规划基线（2026-11-11，`feat/image-engine` @ `1435187`）。  
 本文按**终极目标**排序，不按“最快看到 GPU”排序。
@@ -12,7 +12,7 @@
 
 ## 1. 终极目标
 
-Tervo 是一个原生 Rust 终端工作台：
+xtervo 是一个原生 Rust 终端工作台：
 
 ```text
 稳定：不丢字节、不丢行、不丢图、不 panic
@@ -122,7 +122,7 @@ b5c8c6f0fcba
 [ ] FilterAudit：
     filter input/passed/consumed/dropped 计数
     debug 下 dropped != 0 直接失败
-[ ] tervo diag trace-layer：
+[ ] xtervo diag trace-layer：
     bytes -> filter -> Term -> Frame -> framebuffer -> Slint
     输出第一处分歧
 [ ] 15m/30m soak 报告
@@ -177,7 +177,7 @@ CPU Scene 路径与 legacy 路径像素一致
 [ ] instanced glyph quads + WGSL shader
 [ ] damage scissor/局部重绘
 [ ] text texture -> slint::Image::try_from
-[ ] TERVO_GPU=1 可选启用；失败回 CPU
+[ ] XTERVO_GPU=1 可选启用；失败回 CPU
 ```
 
 退出条件：
@@ -217,8 +217,8 @@ dsh 图片预览/滚动无残留
 默认 GPU 不是“后续可选优化”。本 milestone 的发布门禁要求：
 
 ```text
-不设置 TERVO_GPU 时默认选择 GPU
-显式 TERVO_CPU=1 才强制 CPU
+不设置 XTERVO_GPU 时默认选择 GPU
+显式 XTERVO_CPU=1 才强制 CPU
 无 adapter/device lost 自动回 CPU
 默认路径必须是 GPU-native 文字/图片，不是 CPU framebuffer 上传
 ```
@@ -231,7 +231,7 @@ dsh 图片预览/滚动无残留
 [ ] 多 pane texture / presenter 生命周期
 [ ] CPU/WGPU 运行时切换
 [ ] device lost -> CPU fallback + 重建
-[ ] 默认 TERVO_GPU（先可选，后默认）
+[ ] 默认 XTERVO_GPU（先可选，后默认）
 [ ] live metrics：frame/damage/image/atlas/texture
 [ ] 15m/30m soak
 ```

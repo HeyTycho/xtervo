@@ -1,11 +1,11 @@
 # 2026-11-11 渲染残留事故复盘
 
 状态：已修复，当前 release `b5c8c6f0fcba` 干净；本文是排障纪律，不是事后解释。  
-影响：dsh-tui 在 Tervo 中滚动/图片预览后，旧字符或图片像素残留在错误行；用户被迫反复重启验证，定位时间远超实际代码改动量。
+影响：dsh-tui 在 xtervo 中滚动/图片预览后，旧字符或图片像素残留在错误行；用户被迫反复重启验证，定位时间远超实际代码改动量。
 
 ## 1. 一句话结论
 
-这不是一个 bug，而是**三个独立的上游缺陷叠加**，加上 Tervo 在字节过滤、Frame 缓存、图片几何三层都没有“真相校验”，导致我们从像素层反向猜了很多轮。
+这不是一个 bug，而是**三个独立的上游缺陷叠加**，加上 xtervo 在字节过滤、Frame 缓存、图片几何三层都没有“真相校验”，导致我们从像素层反向猜了很多轮。
 
 ```text
 IIP filter 在 Term 之前吞字节
@@ -158,7 +158,7 @@ dsh 鼠标上报/图片预览让操作路径不稳定
 故障现场无法保留
 ```
 
-中途出现的“重复 Tervo 窗口 + background_opacity=0.54”确实是一个假线索；它会造成透出，但不是本次主因。正确做法是先记录窗口数量/Map State，再用单窗口隔离，而不是把假线索当结论。
+中途出现的“重复 xtervo 窗口 + background_opacity=0.54”确实是一个假线索；它会造成透出，但不是本次主因。正确做法是先记录窗口数量/Map State，再用单窗口隔离，而不是把假线索当结论。
 
 ### 3.6 测试金字塔断层
 
@@ -272,7 +272,7 @@ legacy `Frame + CPU Renderer` 与 `Scene/Renderer/WGPU` 骨架同时存在；图
 
 ```text
 raw PTY
-TERVO_FRAME_DUMP
+XTERVO_FRAME_DUMP
 截图（带行号）
 release commit
 窗口数量 + Map State
@@ -311,9 +311,9 @@ presentation: Slint / 窗口合成
   MinimalSoftwareWindow + SwappedBuffers，排除 Slint 纹理缓存。
 - `scripts/e2e_image_scroll_clip.sh`：
   真实 Xvfb + Kitty，裁顶图片 5/5。
-- `TERVO_FRAME_DUMP=/tmp/tervo-frame.txt`：
+- `XTERVO_FRAME_DUMP=/tmp/xtervo-frame.txt`：
   每帧 Frame 文本落盘；只在显式设置时启用。
-- `TERVO_LINE_NUMBERS=1`：
+- `XTERVO_LINE_NUMBERS=1`：
   终端行号 overlay，仅调试；会盖住最左侧约 3 个字符。
 - `b5c8c6f`：
   修复 2J tail 重放；回退没有证据支持的每帧整屏 buffer copy。
@@ -323,14 +323,14 @@ presentation: Slint / 窗口合成
 ### P0
 
 - [ ] `FilterAudit`：每个 filter 的 input/passed/consumed/dropped 计数；debug 下 `dropped != 0` 直接报错。
-- [ ] `tervo diag trace-layer`：一条命令输出上面 6 层的首个分歧和最小字节区间。
+- [ ] `xtervo diag trace-layer`：一条命令输出上面 6 层的首个分歧和最小字节区间。
 - [ ] 把 frame_consistency / image_diff / slint presentation / image-scroll e2e 接进 CI gate。
 - [ ] 图片几何收敛为单一 `PlacementRect`，renderer/app/Slint 不再重复算 dest_y/crop/size。
 
 ### P1
 
 - [ ] Frame partial 契约显式化：`Frame` 增加“上一帧基线”语义或拆成 `TermSnapshot` + `DamageCache`。
-- [ ] live diagnostics 接主渲染循环：frame/row/image/damage/stale 计数进 `tervo.diag.v1`。
+- [ ] live diagnostics 接主渲染循环：frame/row/image/damage/stale 计数进 `xtervo.diag.v1`。
 - [ ] dsh 滚动/预览自动复现脚本进入标准回归，不依赖用户窗口。
 - [ ] legacy CPU 与 Scene 路径二选一/明确 adapter，禁止两套图片合成语义并存。
 

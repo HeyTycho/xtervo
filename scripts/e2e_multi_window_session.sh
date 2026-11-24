@@ -19,7 +19,7 @@ OUT=${E2E_OUT:-$ROOT/target/mw-session-e2e}
 DISPLAY_NUM=${E2E_DISPLAY:-:153}
 SCREEN=${E2E_SCREEN:-1600x1000x24}
 TARGET_DIR=${CARGO_TARGET_DIR:-$ROOT/target}
-BIN=${TERVO_BIN:-$TARGET_DIR/debug/tervo}
+BIN=${XTERVO_BIN:-$TARGET_DIR/debug/xtervo}
 XWIN=${E2E_XWIN:-$TARGET_DIR/debug/xwin}
 
 XVFB_PID=""
@@ -34,7 +34,7 @@ trap cleanup EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
 pass() { echo "PASS: $*"; }
 
-[ -x "$BIN" ] || fail "缺少 $BIN；先 cargo build -p tervo-app --bin tervo --bin xwin"
+[ -x "$BIN" ] || fail "缺少 $BIN；先 cargo build -p xtervo-app --bin xtervo --bin xwin"
 [ -x "$XWIN" ] || fail "缺少 $XWIN"
 command -v xdpyinfo >/dev/null || fail "缺少 xdpyinfo"
 command -v xwininfo >/dev/null || fail "缺少 xwininfo"
@@ -42,12 +42,12 @@ command -v xprop >/dev/null || fail "缺少 xprop"
 
 COMMON=$(git rev-parse --git-common-dir)
 MAIN_ROOT=$(cd "$(dirname "$COMMON")" && pwd)
-PERF=${TERVO_PERF_DIR:-$MAIN_ROOT/.perf}
+PERF=${XTERVO_PERF_DIR:-$MAIN_ROOT/.perf}
 XVFB=${E2E_XVFB:-$PERF/xvfb/usr/bin/Xvfb}
 [ -x "$XVFB" ] || XVFB=$(command -v Xvfb || true)
 [ -x "$XVFB" ] || fail "找不到 Xvfb"
 
-OPENBOX=${TERVO_OPENBOX_BIN:-$PERF/openbox/usr/bin/openbox}
+OPENBOX=${XTERVO_OPENBOX_BIN:-$PERF/openbox/usr/bin/openbox}
 OPENBOX_LIB=$PERF/openbox/usr/lib/x86_64-linux-gnu
 OPENBOX_DATA=$PERF/openbox/usr/share
 if [ ! -x "$OPENBOX" ]; then

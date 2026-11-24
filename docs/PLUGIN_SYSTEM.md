@@ -1,11 +1,11 @@
-> **状态更新**：Tervo Plugin API 已升级到 **v3**（只支持 `api = 3` / `host_abi = 3`）。
+> **状态更新**：xtervo Plugin API 已升级到 **v3**（只支持 `api = 3` / `host_abi = 3`）。
 > v1/v2 不再兼容、不会执行；本文中的 V1/V2 AI/MCP/JSON Lines 设计仅为历史记录。
-> 现行实现见 [`docs/PLUGIN_V3.md`](PLUGIN_V3.md)。MCP 是 Tervo 内嵌功能，不是插件能力。
+> 现行实现见 [`docs/PLUGIN_V3.md`](PLUGIN_V3.md)。MCP 是 xtervo 内嵌功能，不是插件能力。
 > 2026-11-12：v3 新增 **窄 WASM 热路径** `runtime = "wasm"` +
 > `terminal.output_filter`（无 import；无 WIT/组件模型/市场/签名）。本文的
 > 完整 WASM Host API/UI/命令设计仍是未实现的设计稿。
 
-# Tervo 插件系统：目标、运行时、能力类型与市场调研
+# xtervo 插件系统：目标、运行时、能力类型与市场调研
 
 > 状态：设计稿（2026-11-06）  
 > 范围：终端插件/扩展系统，不包含普通主题文件的实现细节。  
@@ -36,16 +36,16 @@ Workspace/Profile Provider、安装/市场/签名、权限强制、任意 UI 面
 
 ## 1. 目标
 
-Tervo 的插件系统要满足四件事：
+xtervo 的插件系统要满足四件事：
 
 1. **可扩展行为**：连接类型、终端输入/输出中间件、输出观察者、命令、工作区、外部集成，而不是只加按钮/面板。
 2. **不拖垮终端**：插件不能出现在 PTY/解析/渲染/IME 的热路径上；不得阻塞 UI。
 3. **可隔离**：插件崩溃、死循环、OOM 不能带崩终端；默认最小权限。
-4. **可长期维护**：不引入 Rust ABI/dylib 地狱，不让插件和 Tervo 编译器版本死绑。
+4. **可长期维护**：不引入 Rust ABI/dylib 地狱，不让插件和 xtervo 编译器版本死绑。
 
 ### 1.1 插件价值排序（UI 不是重点）
 
-Tervo 的插件第一优先级是**改变终端能做什么**，不是**改变终端长什么样**：
+xtervo 的插件第一优先级是**改变终端能做什么**，不是**改变终端长什么样**：
 
 | 优先级 | 扩展点 | 价值 |
 |---|---|---|
@@ -63,7 +63,7 @@ Tervo 的插件第一优先级是**改变终端能做什么**，不是**改变�
 
 ### 非目标
 
-- **不追求完整 Tabby/Electron npm 插件兼容**：Tabby 插件可以直接操作 Angular/Electron/xterm.js，Tervo 的 Rust/Slint 模型不同，只能做能力子集。
+- **不追求完整 Tabby/Electron npm 插件兼容**：Tabby 插件可以直接操作 Angular/Electron/xterm.js，xtervo 的 Rust/Slint 模型不同，只能做能力子集。
 - **不允许插件写任意 Slint UI**：插件通过宿主定义的 schema/slot 扩展 UI，避免 UI 与插件 ABI 耦合。
 - **不把终端核心插件化**：PTY、解析器、渲染、IME、键盘协议、选区、滚动继续内置 Rust。
 - **不做原生 `cdylib`/`dlopen` 插件**：ABI 不稳定、崩溃会带崩主进程、无法安全沙箱。
@@ -73,7 +73,7 @@ Tervo 的插件第一优先级是**改变终端能做什么**，不是**改变�
 
 ```text
 ┌──────────────────────────────────────────────┐
-│ Tervo Core（Rust）                            │
+│ xtervo Core（Rust）                            │
 │  PTY / alacritty / render / input / config   │
 │                                              │
 │  ┌──────────────┐   ┌────────────────────┐  │
@@ -174,7 +174,7 @@ UI，只从清单读取展示元数据，不接受插件提供的 Slint 组件/�
 
 ```toml
 [plugin]
-id = "dev.tervo.linkifier"
+id = "dev.xtervo.linkifier"
 name = "GitHub Linkifier"
 version = "0.1.0"
 api = 1
@@ -249,7 +249,7 @@ runtime = "process"            # AI 仅支持常驻进程
 entry = "plugin.py"
 
 [contributes.ai]
-id = "dev.tervo.ai-echo"       # 可选，缺省回退插件 id/name
+id = "dev.xtervo.ai-echo"       # 可选，缺省回退插件 id/name
 name = "AI Echo"               # 可选，面板展示名
 model = "echo-1"               # 可选，原样进 payload.model
 description = "offline echo"   # 可选，面板说明
@@ -277,7 +277,7 @@ description = "offline echo"   # 可选，面板说明
 - **安全**：插件是普通用户进程，无沙箱；宿主不保存、不读取、不转发 API Key。
   真实插件应在自己的进程内管理凭据（环境变量/自有配置/系统 keyring）。
 - 空状态：没有 AI 插件时面板显示 `docs/examples/ai-echo/` 与
-  `~/.config/tervo/plugins/ai-echo/` 示例路径，不要求联网。
+  `~/.config/xtervo/plugins/ai-echo/` 示例路径，不要求联网。
 - 参考插件：`docs/examples/ai-echo/`（确定性 echo、无网络、无密钥）。
 
 ## 5. 性能契约
@@ -337,15 +337,15 @@ description = "offline echo"   # 可选，面板说明
 → 注册 manifest
 ```
 
-失败不能阻止 Tervo 启动；插件管理器显示禁用原因。
+失败不能阻止 xtervo 启动；插件管理器显示禁用原因。
 
 ## 7. 市场调研：终端插件都在做什么
 
-> 目的不是照抄，而是判断用户期待和 Tervo 的差异化。不同终端的插件模型差异很大。
+> 目的不是照抄，而是判断用户期待和 xtervo 的差异化。不同终端的插件模型差异很大。
 
 ### 7.1 Tabby（Electron + xterm.js，npm 插件）
 
-Tabby 是最接近 Tervo 的对标：插件是 JS/TS 模块，可注册连接类型、命令、UI 组件、设置页、Profile 选项。
+Tabby 是最接近 xtervo 的对标：插件是 JS/TS 模块，可注册连接类型、命令、UI 组件、设置页、Profile 选项。
 
 典型能力：
 
@@ -371,7 +371,7 @@ tabby-rdp（RDP helper）
 tabby-fit-screen
 ```
 
-Tabby 的优势是 Electron 里什么都能做；代价是包体、内存、启动、原生集成弱。Tervo 不应该复制其运行时，而应复制**能力分类**。
+Tabby 的优势是 Electron 里什么都能做；代价是包体、内存、启动、原生集成弱。xtervo 不应该复制其运行时，而应复制**能力分类**。
 
 ### 7.2 Hyper（Electron/JS）
 
@@ -414,7 +414,7 @@ themes
 
 ### 7.5 Zellij（WASM 插件）
 
-Zellij 的 WASM 插件模型最接近 Tervo 想做的方向：
+Zellij 的 WASM 插件模型最接近 xtervo 想做的方向：
 
 ```text
 status bar、tab bar、session manager、strider（文件浏览）、
@@ -436,11 +436,11 @@ compact bar、配置/布局插件
 - GNOME Terminal / Windows Terminal：无第三方代码插件；
 - Warp：workflows/themes，不是开放插件。
 
-这给 Tervo 的机会：**原生性能 + 受控插件 + 自迭代**，而不是再做一个 Electron 插件市场。
+这给 xtervo 的机会：**原生性能 + 受控插件 + 自迭代**，而不是再做一个 Electron 插件市场。
 
 ### 7.8 市场功能归类
 
-| 类别 | 用户期待 | Tervo 策略 |
+| 类别 | 用户期待 | xtervo 策略 |
 |---|---|---|
 | 连接/传输 | SSH/SFTP/串口/RDP/Docker/K8s/端口转发 | sidecar 插件 + 核心连接 API |
 | 会话/工作区 | 恢复 Tab/分屏/cwd、workspace、session manager | 核心功能，不做插件 |
@@ -449,11 +449,11 @@ compact bar、配置/布局插件
 | 外观 | 主题、Tab 颜色、状态栏、透明度、背景 | 声明式 Pack |
 | 集成 | Git、AI/agent 状态、同步、MCP | 状态 provider/sidecar |
 | 自动化 | 登录脚本、post-connect、输出触发 | 声明式规则 + sidecar |
-| 自迭代 | 轮次、测试、截图、批准 | 外部 `tervo-iterate` |
+| 自迭代 | 轮次、测试、截图、批准 | 外部 `xtervo-iterate` |
 
-### 7.9 Tervo 应优先覆盖的 8 个扩展点
+### 7.9 xtervo 应优先覆盖的 8 个扩展点
 
-结合 Tabby/kitty/Zellij/tmux 的市场功能，Tervo 第一版 Plugin API 按以下顺序设计：
+结合 Tabby/kitty/Zellij/tmux 的市场功能，xtervo 第一版 Plugin API 按以下顺序设计：
 
 | API | 典型用途 | 首版 |
 |---|---|---|
@@ -473,9 +473,9 @@ compact bar、配置/布局插件
 3. Docker/K8s Connector（sidecar 连接）
 4. MCP/Integration Provider（外部工具）
 
-**市场判断：主题和 UI 插件数量多，但差异化低；连接管理、终端数据流、命令工作流和外部集成才是 Tervo 值得投入的部分。**
+**市场判断：主题和 UI 插件数量多，但差异化低；连接管理、终端数据流、命令工作流和外部集成才是 xtervo 值得投入的部分。**
 
-## 8. Tervo 分阶段路线
+## 8. xtervo 分阶段路线
 
 ### Phase A：P0 稳定后（V1，行为优先）
 
@@ -517,17 +517,17 @@ compact bar、配置/布局插件
 
 ### 自迭代插件
 
-`tervo-iterate` 是**外部 sidecar**，不是终端内插件：
+`xtervo-iterate` 是**外部 sidecar**，不是终端内插件：
 
 ```text
-tervo-iterate
+xtervo-iterate
   ├─ planner（只读 Codex/DSH）
   ├─ worker（worktree）
   ├─ verifier（不可变测试）
   └─ release/rollback
 ```
 
-Tervo 只提供可选 UI 插件显示轮次/测试/批准，不让 UI 进程改自己的二进制。
+xtervo 只提供可选 UI 插件显示轮次/测试/批准，不让 UI 进程改自己的二进制。
 
 ## 9. 开放问题
 

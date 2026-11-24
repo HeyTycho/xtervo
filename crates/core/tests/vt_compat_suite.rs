@@ -10,7 +10,7 @@
 //! 运行（CI 式命令，退出码非 0 表示有 FAIL）：
 //!
 //! ```text
-//! cargo test -p tervo-core --test vt_compat_suite --offline -- --report
+//! cargo test -p xtervo-core --test vt_compat_suite --offline -- --report
 //! ```
 //!
 //! `--report` 打印全部条目；不带参数只打印汇总和失败条目。套件不依赖
@@ -20,7 +20,7 @@ use std::fmt::Write as _;
 use std::time::{Duration, Instant};
 
 use alacritty_terminal::term::TermMode;
-use tervo_core::{spawn, CursorShape, PaneConfig, TermSim};
+use xtervo_core::{spawn, CursorShape, PaneConfig, TermSim};
 
 // ---------------------------------------------------------------------------
 // 结果模型
@@ -595,7 +595,7 @@ fn printf_escape(bytes: &[u8]) -> String {
 }
 
 fn capture_reply(tag: &str, query: &[u8], min_len: usize) -> Result<Vec<u8>, String> {
-    let dir = std::env::temp_dir().join(format!("tervo-vt-suite-{}-{tag}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("xtervo-vt-suite-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let out = dir.join("reply.bin");

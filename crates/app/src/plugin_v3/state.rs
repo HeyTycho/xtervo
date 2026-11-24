@@ -127,7 +127,7 @@ mod tests {
 
     fn tmpdir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "tervo-plugin-v3-state-{}-{tag}",
+            "xtervo-plugin-v3-state-{}-{tag}",
             std::process::id()
         ));
         let _ = fs::remove_dir_all(&dir);

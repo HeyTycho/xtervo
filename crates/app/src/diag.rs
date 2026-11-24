@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! 内置 harness-neutral 终端诊断 CLI（`tervo diag`）。
+//! 内置 harness-neutral 终端诊断 CLI（`xtervo diag`）。
 //!
-//! 不创建窗口、不初始化 Slint；输出 `tervo.diag.v1` JSON，任何 harness 都可以
+//! 不创建窗口、不初始化 Slint；输出 `xtervo.diag.v1` JSON，任何 harness 都可以
 //! 在 shell 里调用。提供 env / snapshot / replay，以及本地 MCP stdio server
-//! （`tervo diag serve`）。
+//! （`xtervo diag serve`）。
 //!
 //! 安全：不输出环境变量值、API key、Vault 内容或图片 RGBA；只给版本、路径、
 //! frame 文本、cursor/modes 和图片 rect。MCP 的 doctor/issue/metrics 工具只读，
@@ -16,8 +16,8 @@ use std::error::Error;
 use std::time::Duration;
 
 use serde_json::{json, Value};
-use tervo_core::{spawn, Frame, PaneConfig};
-use tervo_diagnostics::{
+use xtervo_core::{spawn, Frame, PaneConfig};
+use xtervo_diagnostics::{
     AtomicResourceTracker, DamageRect, DamageSummary, ImageSummary, MetricsRegistry,
     ResourceTracker, SceneDiff, SceneSummary, TraceBuffer, DEFAULT_TRACE_CAPACITY,
 };
@@ -28,10 +28,10 @@ use crate::mcp;
 use crate::profile;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
-const COMMIT: &str = env!("TERVO_GIT_COMMIT");
-const DIRTY: &str = env!("TERVO_GIT_DIRTY");
-const BUILT: &str = env!("TERVO_BUILD_TIME");
-const TARGET: &str = env!("TERVO_BUILD_TARGET");
+const COMMIT: &str = env!("XTERVO_GIT_COMMIT");
+const DIRTY: &str = env!("XTERVO_GIT_DIRTY");
+const BUILT: &str = env!("XTERVO_BUILD_TIME");
+const TARGET: &str = env!("XTERVO_BUILD_TARGET");
 /// One JSON-RPC line can carry a diagnostic case plus frame text. 1 MiB is
 /// generous for that use and still prevents an accidentally unbounded request.
 const MCP_MAX_REQUEST_BYTES: usize = 1024 * 1024;
@@ -62,12 +62,12 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
             println!("{}", help_text());
             Ok(())
         },
-        other => Err(format!("未知 diag 子命令: {other}（用 tervo diag help）").into()),
+        other => Err(format!("未知 diag 子命令: {other}（用 xtervo diag help）").into()),
     }
 }
 
 fn help_text() -> &'static str {
-    "用法: tervo diag [env|snapshot|replay] [选项]\n\
+    "用法: xtervo diag [env|snapshot|replay] [选项]\n\
      \n\
      env                         环境/版本/路径 JSON（默认）\n\
      snapshot                    启动一次性 pane，抓当前 frame JSON\n\
@@ -88,13 +88,13 @@ fn help_text() -> &'static str {
      doctor [--issue] [--frame FILE] [--metrics FILE]\n\
                                   Doctor 确定性诊断；--issue 输出八节 issue markdown\n\
      serve [--socket PATH] [--token T]  MCP/JSON-RPC stdio server\n\
-       无参数时自动读取 config/state：$XDG_RUNTIME_DIR/tervo/mcp.sock\n\
+       无参数时自动读取 config/state：$XDG_RUNTIME_DIR/xtervo/mcp.sock\n\
        + state token；--socket/--token 与环境变量仍是测试/CI override\n\
-       live tools 按运行中 Tervo 的 MCP 权限分组过滤；app 端二次校验\n\
+       live tools 按运行中 xtervo 的 MCP 权限分组过滤；app 端二次校验\n\
        离线 tools: diag_env/diag_snapshot/diag_replay/\n\
        doctor_check/issue_draft/metrics_read（后 3 个只读、无 shell）\n\
      \n\
-     输出 schema=tervo.diag.v1；不含 API key/环境变量值。"
+     输出 schema=xtervo.diag.v1；不含 API key/环境变量值。"
 }
 
 fn opt(args: &[String], flag: &str) -> Option<String> {
@@ -133,7 +133,7 @@ fn print_json(value: &Value) -> Result<(), Box<dyn Error>> {
 
 fn env_json() -> Value {
     json!({
-        "schema": "tervo.diag.v1",
+        "schema": "xtervo.diag.v1",
         "kind": "env",
         "version": VERSION,
         "commit": COMMIT,
@@ -256,7 +256,7 @@ fn trace(args: &[String]) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// `tervo diag metrics|observability`: schema probe for the additive
+/// `xtervo diag metrics|observability`: schema probe for the additive
 /// observability fields.
 ///
 /// The CLI process has no app frame loop, so the registry here is genuinely
@@ -268,7 +268,7 @@ fn observability_value(kind: &str) -> Value {
     let resources = AtomicResourceTracker::new();
     let trace = TraceBuffer::new(DEFAULT_TRACE_CAPACITY);
     let mut value = json!({
-        "schema": "tervo.diag.v1",
+        "schema": "xtervo.diag.v1",
         "kind": kind,
         "version": VERSION,
         "commit": COMMIT,
@@ -355,7 +355,7 @@ fn read_scene_summary(path: &str) -> Result<SceneSummary, Box<dyn Error>> {
     scene_summary_from_value(&value)
 }
 
-/// Accept both `tervo.diag.v1` frame JSON (`generation`, image `id`) and a
+/// Accept both `xtervo.diag.v1` frame JSON (`generation`, image `id`) and a
 /// plain `SceneSummary` (`revision`, image `placement_id`). Unknown fields are
 /// ignored so the schema stays additive.
 fn scene_summary_from_value(value: &Value) -> Result<SceneSummary, Box<dyn Error>> {
@@ -493,7 +493,7 @@ pub(crate) fn frame_json(frame: &Frame, kind: &str) -> Value {
         })
         .collect();
     json!({
-        "schema": "tervo.diag.v1",
+        "schema": "xtervo.diag.v1",
         "kind": kind,
         "version": VERSION,
         "commit": COMMIT,
@@ -529,7 +529,7 @@ pub(crate) fn doctor_markdown() -> Result<String, String> {
         .ok_or_else(|| "doctor case 缺少 issue_draft.markdown".to_string())
 }
 
-/// `tervo diag doctor`：把已有 Doctor 确定性核心暴露成 app CLI 入口。
+/// `xtervo diag doctor`：把已有 Doctor 确定性核心暴露成 app CLI 入口。
 /// 不联系模型、不读 scrollback；只使用显式传入的 frame/metrics 文件和本进程环境。
 fn doctor_cli(args: &[String]) -> Result<(), Box<dyn Error>> {
     let mut input = json!({});
@@ -590,7 +590,7 @@ impl LiveTarget {
                 .err()
                 .is_some_and(|error| error.contains("unauthorized"))
         {
-            // Tervo 可能刚刚生成/轮换 state token：清缓存重读一次。
+            // xtervo 可能刚刚生成/轮换 state token：清缓存重读一次。
             self.token = None;
             self.resolve_token();
             return live_exchange(
@@ -640,7 +640,7 @@ fn commands_from_capabilities(value: &Value) -> Option<Vec<String>> {
 /// 极简 MCP/JSON-RPC stdio server。非插件；随 CLI 启动，stdin/stdout 通信。
 ///
 /// 只暴露诊断读取；snapshot 会执行调用者给的 command（这是“启动一个 shell
-/// 做诊断”，不是 Tervo 远程控制）。MCP client 应只在本地显式启动本进程。
+/// 做诊断”，不是 xtervo 远程控制）。MCP client 应只在本地显式启动本进程。
 /// live 工具列表以运行中 app 的 `capabilities.commands` 为准，而不是本进程 env。
 fn serve(args: &[String]) -> Result<(), Box<dyn Error>> {
     let explicit_socket = opt(args, "--socket")
@@ -778,7 +778,7 @@ fn mcp_handle_request(
                     "tools": {"listChanged": false},
                     "resources": {"subscribe": false, "listChanged": false}
                 },
-                "serverInfo": {"name": "tervo-diag", "version": VERSION},
+                "serverInfo": {"name": "xtervo-diag", "version": VERSION},
             }),
         )),
         "notifications/initialized" => None,
@@ -823,12 +823,12 @@ fn mcp_tools(commands: &[String]) -> Value {
     let has = |command: &str| commands.iter().any(|allowed| allowed == command);
     let mut tools = json!([
         {
-            "name": "tervo.diag_env",
-            "description": "Tervo version/display/config/log paths; no env values or secrets.",
+            "name": "xtervo.diag_env",
+            "description": "xtervo version/display/config/log paths; no env values or secrets.",
             "inputSchema": {"type": "object", "properties": {}}
         },
         {
-            "name": "tervo.diag_snapshot",
+            "name": "xtervo.diag_snapshot",
             "description": "Run a shell command in a one-shot PTY and return the terminal frame/cursor/images metadata.",
             "inputSchema": {
                 "type": "object",
@@ -843,7 +843,7 @@ fn mcp_tools(commands: &[String]) -> Value {
             }
         },
         {
-            "name": "tervo.diag_replay",
+            "name": "xtervo.diag_replay",
             "description": "Replay raw terminal bytes from a file through the real PTY/core and return a frame.",
             "inputSchema": {
                 "type": "object",
@@ -857,22 +857,22 @@ fn mcp_tools(commands: &[String]) -> Value {
             }
         },
         {
-            "name": "tervo.doctor_check",
-            "description": "Run deterministic, offline Tervo doctor checks and return a tervo.diagnostic_case.v1 JSON document. Read-only; no shell, no writes. Inputs may be inline JSON objects or paths under $HOME or /tmp.",
+            "name": "xtervo.doctor_check",
+            "description": "Run deterministic, offline xtervo doctor checks and return a xtervo.diagnostic_case.v1 JSON document. Read-only; no shell, no writes. Inputs may be inline JSON objects or paths under $HOME or /tmp.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "environment": {
                         "type": ["object", "string"],
-                        "description": "`tervo diag env --json` object or a path to it"
+                        "description": "`xtervo diag env --json` object or a path to it"
                     },
                     "frame": {
                         "type": ["object", "string"],
-                        "description": "`tervo diag snapshot --json` object or a path to it"
+                        "description": "`xtervo diag snapshot --json` object or a path to it"
                     },
                     "metrics": {
                         "type": ["object", "string"],
-                        "description": "`tervo diag metrics` JSON object or a path to it"
+                        "description": "`xtervo diag metrics` JSON object or a path to it"
                     },
                     "symptom": {"type": "string"},
                     "details": {"type": "string"},
@@ -884,14 +884,14 @@ fn mcp_tools(commands: &[String]) -> Value {
             }
         },
         {
-            "name": "tervo.issue_draft",
-            "description": "Render the fixed doctor issue template (markdown) from a complete tervo.diagnostic_case.v1 object. Read-only; no model, no network.",
+            "name": "xtervo.issue_draft",
+            "description": "Render the fixed doctor issue template (markdown) from a complete xtervo.diagnostic_case.v1 object. Read-only; no model, no network.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "case": {
                         "type": "object",
-                        "description": "A complete tervo.diagnostic_case.v1 document, for example the output of tervo.doctor_check"
+                        "description": "A complete xtervo.diagnostic_case.v1 document, for example the output of xtervo.doctor_check"
                     }
                 },
                 "required": ["case"],
@@ -899,14 +899,14 @@ fn mcp_tools(commands: &[String]) -> Value {
             }
         },
         {
-            "name": "tervo.metrics_read",
-            "description": "Bounded read-only summary of Tervo's log directory: file/byte/line counts and recent error-like lines. Only tervo-*.log files under $HOME or /tmp are considered; raw lines and secrets are never returned.",
+            "name": "xtervo.metrics_read",
+            "description": "Bounded read-only summary of xtervo's log directory: file/byte/line counts and recent error-like lines. Only xtervo-*.log files under $HOME or /tmp are considered; raw lines and secrets are never returned.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "log_dir": {
                         "type": "string",
-                        "description": "Optional Tervo log directory under $HOME or /tmp; defaults to TERVO_LOG_DIR/XDG state path"
+                        "description": "Optional xtervo log directory under $HOME or /tmp; defaults to XTERVO_LOG_DIR/XDG state path"
                     }
                 },
                 "additionalProperties": false
@@ -932,22 +932,22 @@ fn mcp_tools(commands: &[String]) -> Value {
 fn live_tool(command: &str) -> Option<Value> {
     let mut tool = match command {
         "capabilities" => json!({
-            "name": "tervo.live_capabilities",
-            "description": "Read the running Tervo MCP permission groups and commands.",
+            "name": "xtervo.live_capabilities",
+            "description": "Read the running xtervo MCP permission groups and commands.",
             "inputSchema": {"type": "object", "properties": {}}
         }),
         "snapshot" => json!({
-            "name": "tervo.live_snapshot",
-            "description": "Read all pane frames/cursor/images metadata from the running Tervo live control socket (read-only).",
+            "name": "xtervo.live_snapshot",
+            "description": "Read all pane frames/cursor/images metadata from the running xtervo live control socket (read-only).",
             "inputSchema": {"type": "object", "properties": {}}
         }),
         "list" => json!({
-            "name": "tervo.live_list",
+            "name": "xtervo.live_list",
             "description": "List live panes, ids, grids, rectangles and focus (read-only).",
             "inputSchema": {"type": "object", "properties": {}}
         }),
         "output" => json!({
-            "name": "tervo.live_output",
+            "name": "xtervo.live_output",
             "description": "Read bounded visible pane text. max_bytes is capped. Requires MCP read.",
             "inputSchema": {"type": "object", "properties": {
                 "pane_id": {"type": "integer"},
@@ -955,7 +955,7 @@ fn live_tool(command: &str) -> Option<Value> {
             }, "required": ["pane_id"], "additionalProperties": false}
         }),
         "send_text" => json!({
-            "name": "tervo.live_send_text",
+            "name": "xtervo.live_send_text",
             "description": "Write text to a pane's PTY without pressing Enter. Requires MCP input.",
             "inputSchema": {"type": "object", "properties": {
                 "pane_id": {"type": "integer"},
@@ -963,7 +963,7 @@ fn live_tool(command: &str) -> Option<Value> {
             }, "required": ["pane_id", "text"], "additionalProperties": false}
         }),
         "send_key" => json!({
-            "name": "tervo.live_send_key",
+            "name": "xtervo.live_send_key",
             "description": "Send a named key/chord (Enter, Escape, Ctrl+C, Ctrl+D, Up/Down/Left/Right, Tab). Requires MCP input.",
             "inputSchema": {"type": "object", "properties": {
                 "pane_id": {"type": "integer"},
@@ -971,25 +971,25 @@ fn live_tool(command: &str) -> Option<Value> {
             }, "required": ["pane_id", "key"], "additionalProperties": false}
         }),
         "run" => json!({
-            "name": "tervo.live_run",
-            "description": "Write one command line plus Enter to a pane. No shell is added by Tervo. Requires MCP input.",
+            "name": "xtervo.live_run",
+            "description": "Write one command line plus Enter to a pane. No shell is added by xtervo. Requires MCP input.",
             "inputSchema": {"type": "object", "properties": {
                 "pane_id": {"type": "integer"},
                 "command": {"type": "string"}
             }, "required": ["pane_id", "command"], "additionalProperties": false}
         }),
         "focus" => json!({
-            "name": "tervo.live_focus",
+            "name": "xtervo.live_focus",
             "description": "Focus a pane. Requires MCP tabs.",
             "inputSchema": {"type": "object", "properties": {"pane_id": {"type": "integer"}}, "required": ["pane_id"]}
         }),
         "new_tab" => json!({
-            "name": "tervo.live_new_tab",
-            "description": "Create a new Tervo tab. Requires MCP tabs.",
+            "name": "xtervo.live_new_tab",
+            "description": "Create a new xtervo tab. Requires MCP tabs.",
             "inputSchema": {"type": "object", "properties": {}}
         }),
         "split" => json!({
-            "name": "tervo.live_split",
+            "name": "xtervo.live_split",
             "description": "Split a pane right/down. Requires MCP tabs.",
             "inputSchema": {"type": "object", "properties": {
                 "pane_id": {"type": "integer"},
@@ -997,7 +997,7 @@ fn live_tool(command: &str) -> Option<Value> {
             }, "required": ["pane_id"], "additionalProperties": false}
         }),
         "scroll" => json!({
-            "name": "tervo.live_scroll",
+            "name": "xtervo.live_scroll",
             "description": "Scroll a pane's scrollback by signed lines. Requires MCP tabs.",
             "inputSchema": {"type": "object", "properties": {
                 "pane_id": {"type": "integer"},
@@ -1005,27 +1005,27 @@ fn live_tool(command: &str) -> Option<Value> {
             }, "required": ["pane_id", "lines"], "additionalProperties": false}
         }),
         "close_pane" => json!({
-            "name": "tervo.live_close_pane",
+            "name": "xtervo.live_close_pane",
             "description": "Close a pane. Requires MCP tabs + destructive.",
             "inputSchema": {"type": "object", "properties": {"pane_id": {"type": "integer"}}, "required": ["pane_id"]}
         }),
         "close_tab" => json!({
-            "name": "tervo.live_close_tab",
+            "name": "xtervo.live_close_tab",
             "description": "Close the tab containing a pane. Requires MCP tabs + destructive.",
             "inputSchema": {"type": "object", "properties": {"pane_id": {"type": "integer"}}, "required": ["pane_id"]}
         }),
         "new_window" => json!({
-            "name": "tervo.live_new_window",
-            "description": "Open a second in-process window (requires TERVO_MULTI_WINDOW_INPROC=1). Requires MCP tabs.",
+            "name": "xtervo.live_new_window",
+            "description": "Open a second in-process window (requires XTERVO_MULTI_WINDOW_INPROC=1). Requires MCP tabs.",
             "inputSchema": {"type": "object", "properties": {}}
         }),
         "close_window" => json!({
-            "name": "tervo.live_close_window",
+            "name": "xtervo.live_close_window",
             "description": "Close a window by window_id; refuses the last window. Requires MCP tabs + destructive.",
             "inputSchema": {"type": "object", "properties": {"window_id": {"type": "integer"}}}
         }),
         "kill" => json!({
-            "name": "tervo.live_kill",
+            "name": "xtervo.live_kill",
             "description": "Send Ctrl+C to a pane. Requires MCP input + destructive.",
             "inputSchema": {"type": "object", "properties": {"pane_id": {"type": "integer"}}, "required": ["pane_id"]}
         }),
@@ -1056,8 +1056,8 @@ fn mcp_call(req: &Value, live: &mut LiveTarget) -> Value {
         return mcp_error(-32602, "arguments must be an object");
     }
     let result: Result<Value, Box<dyn Error>> = match name {
-        "tervo.diag_env" => Ok(env_json()),
-        "tervo.diag_snapshot" => {
+        "xtervo.diag_env" => Ok(env_json()),
+        "xtervo.diag_snapshot" => {
             let command = match args.get("command").and_then(Value::as_str) {
                 Some(c) => c.to_string(),
                 None => return mcp_error(-32602, "command is required"),
@@ -1081,7 +1081,7 @@ fn mcp_call(req: &Value, live: &mut LiveTarget) -> Value {
             ]);
             snapshot_value(&cli)
         },
-        "tervo.diag_replay" => {
+        "xtervo.diag_replay" => {
             let input = match args.get("input").and_then(Value::as_str) {
                 Some(v) => v.to_string(),
                 None => return mcp_error(-32602, "input is required"),
@@ -1098,27 +1098,27 @@ fn mcp_call(req: &Value, live: &mut LiveTarget) -> Value {
             }
             replay_value(&cli)
         },
-        "tervo.doctor_check" => mcp_ext::doctor_check(&args).map_err(|error| error.into()),
-        "tervo.issue_draft" => mcp_ext::issue_draft(&args).map_err(|error| error.into()),
-        "tervo.metrics_read" => mcp_ext::metrics_read(&args).map_err(|error| error.into()),
-        "tervo.live_capabilities" => {
+        "xtervo.doctor_check" => mcp_ext::doctor_check(&args).map_err(|error| error.into()),
+        "xtervo.issue_draft" => mcp_ext::issue_draft(&args).map_err(|error| error.into()),
+        "xtervo.metrics_read" => mcp_ext::metrics_read(&args).map_err(|error| error.into()),
+        "xtervo.live_capabilities" => {
             live.exchange("capabilities", &args, false).map_err(|e| e.into())
         },
-        "tervo.live_snapshot" => live.exchange("snapshot", &args, false).map_err(|e| e.into()),
-        "tervo.live_list" => live.exchange("list", &args, false).map_err(|e| e.into()),
-        "tervo.live_output" => live.exchange("output", &args, false).map_err(|e| e.into()),
-        "tervo.live_send_text" => live.exchange("send_text", &args, false).map_err(|e| e.into()),
-        "tervo.live_send_key" => live.exchange("send_key", &args, false).map_err(|e| e.into()),
-        "tervo.live_run" => live.exchange("run", &args, false).map_err(|e| e.into()),
-        "tervo.live_focus" => live.exchange("focus", &args, false).map_err(|e| e.into()),
-        "tervo.live_new_tab" => live.exchange("new_tab", &args, false).map_err(|e| e.into()),
-        "tervo.live_new_window" => live.exchange("new_window", &args, false).map_err(|e| e.into()),
-        "tervo.live_split" => live.exchange("split", &args, false).map_err(|e| e.into()),
-        "tervo.live_scroll" => live.exchange("scroll", &args, false).map_err(|e| e.into()),
-        "tervo.live_close_pane" => live.exchange("close_pane", &args, false).map_err(|e| e.into()),
-        "tervo.live_close_tab" => live.exchange("close_tab", &args, false).map_err(|e| e.into()),
-        "tervo.live_close_window" => live.exchange("close_window", &args, false).map_err(|e| e.into()),
-        "tervo.live_kill" => live.exchange("kill", &args, false).map_err(|e| e.into()),
+        "xtervo.live_snapshot" => live.exchange("snapshot", &args, false).map_err(|e| e.into()),
+        "xtervo.live_list" => live.exchange("list", &args, false).map_err(|e| e.into()),
+        "xtervo.live_output" => live.exchange("output", &args, false).map_err(|e| e.into()),
+        "xtervo.live_send_text" => live.exchange("send_text", &args, false).map_err(|e| e.into()),
+        "xtervo.live_send_key" => live.exchange("send_key", &args, false).map_err(|e| e.into()),
+        "xtervo.live_run" => live.exchange("run", &args, false).map_err(|e| e.into()),
+        "xtervo.live_focus" => live.exchange("focus", &args, false).map_err(|e| e.into()),
+        "xtervo.live_new_tab" => live.exchange("new_tab", &args, false).map_err(|e| e.into()),
+        "xtervo.live_new_window" => live.exchange("new_window", &args, false).map_err(|e| e.into()),
+        "xtervo.live_split" => live.exchange("split", &args, false).map_err(|e| e.into()),
+        "xtervo.live_scroll" => live.exchange("scroll", &args, false).map_err(|e| e.into()),
+        "xtervo.live_close_pane" => live.exchange("close_pane", &args, false).map_err(|e| e.into()),
+        "xtervo.live_close_tab" => live.exchange("close_tab", &args, false).map_err(|e| e.into()),
+        "xtervo.live_close_window" => live.exchange("close_window", &args, false).map_err(|e| e.into()),
+        "xtervo.live_kill" => live.exchange("kill", &args, false).map_err(|e| e.into()),
         _ => return mcp_error(-32602, "unknown tool"),
     };
     match result {
@@ -1127,7 +1127,7 @@ fn mcp_call(req: &Value, live: &mut LiveTarget) -> Value {
             "isError": false,
         }),
         Err(e) => json!({
-            "content": [{"type": "text", "text": format!("Tervo diag error: {e}")}],
+            "content": [{"type": "text", "text": format!("xtervo diag error: {e}")}],
             "isError": true,
         }),
     }
@@ -1143,7 +1143,7 @@ fn live_exchange(
     probe: bool,
 ) -> Result<Value, String> {
     let socket = socket.ok_or(
-        "live control socket 未配置（MCP 未启用，或 Tervo 未运行）",
+        "live control socket 未配置（MCP 未启用，或 xtervo 未运行）",
     )?;
     let mut stream = std::os::unix::net::UnixStream::connect(socket)
         .map_err(|e| format!("连接 live socket {socket} 失败: {e}"))?;
@@ -1287,11 +1287,11 @@ fn bind_socket(runtime: &mcp::McpRuntime) -> Result<BoundSocket, String> {
     mcp::prepare_socket_dir(&path)
         .map_err(|error| format!("创建 socket 目录失败 {}: {error}", path.display()))?;
     if path.exists() {
-        // 另一个 Tervo 实例正在监听：不要抢/删它的 socket。
+        // 另一个 xtervo 实例正在监听：不要抢/删它的 socket。
         match std::os::unix::net::UnixStream::connect(&path) {
             Ok(_) => {
                 return Err(format!(
-                    "live socket 已被另一个 Tervo 实例占用: {}",
+                    "live socket 已被另一个 xtervo 实例占用: {}",
                     path.display()
                 ))
             },
@@ -1500,7 +1500,7 @@ mod tests {
                 .map(|duration| duration.as_nanos())
                 .unwrap_or(0);
             let path = std::env::temp_dir().join(format!(
-                "tervo-mcp-test-{}-{}-{stamp}",
+                "xtervo-mcp-test-{}-{}-{stamp}",
                 label,
                 std::process::id()
             ));
@@ -1614,12 +1614,12 @@ mod tests {
             .iter()
             .filter_map(|t| t.get("name").and_then(Value::as_str))
             .collect();
-        assert!(names.contains(&"tervo.diag_env"));
-        assert!(names.contains(&"tervo.diag_snapshot"));
-        assert!(names.contains(&"tervo.diag_replay"));
-        assert!(names.contains(&"tervo.doctor_check"));
-        assert!(names.contains(&"tervo.issue_draft"));
-        assert!(names.contains(&"tervo.metrics_read"));
+        assert!(names.contains(&"xtervo.diag_env"));
+        assert!(names.contains(&"xtervo.diag_snapshot"));
+        assert!(names.contains(&"xtervo.diag_replay"));
+        assert!(names.contains(&"xtervo.doctor_check"));
+        assert!(names.contains(&"xtervo.issue_draft"));
+        assert!(names.contains(&"xtervo.metrics_read"));
         for tool in tools.as_array().unwrap() {
             assert_eq!(tool["inputSchema"]["type"], "object");
         }
@@ -1637,10 +1637,10 @@ mod tests {
             .iter()
             .filter_map(|t| t.get("name").and_then(Value::as_str))
             .collect();
-        assert!(live_names.contains(&"tervo.live_snapshot"));
-        assert!(live_names.contains(&"tervo.live_capabilities"));
-        assert!(!live_names.contains(&"tervo.live_send_text"));
-        assert!(!live_names.contains(&"tervo.live_close_pane"));
+        assert!(live_names.contains(&"xtervo.live_snapshot"));
+        assert!(live_names.contains(&"xtervo.live_capabilities"));
+        assert!(!live_names.contains(&"xtervo.live_send_text"));
+        assert!(!live_names.contains(&"xtervo.live_close_pane"));
     }
 
     #[test]
@@ -1653,12 +1653,12 @@ mod tests {
         ];
         let input_tools = mcp_tools(&input);
         let names = tool_names(&input_tools);
-        assert!(names.contains(&"tervo.live_send_text"));
-        assert!(names.contains(&"tervo.live_send_key"));
-        assert!(names.contains(&"tervo.live_run"));
-        assert!(!names.contains(&"tervo.live_list"));
-        assert!(!names.contains(&"tervo.live_capabilities"));
-        assert!(!names.contains(&"tervo.live_close_pane"));
+        assert!(names.contains(&"xtervo.live_send_text"));
+        assert!(names.contains(&"xtervo.live_send_key"));
+        assert!(names.contains(&"xtervo.live_run"));
+        assert!(!names.contains(&"xtervo.live_list"));
+        assert!(!names.contains(&"xtervo.live_capabilities"));
+        assert!(!names.contains(&"xtervo.live_close_pane"));
 
         // tabs + destructive：close 出现，kill（还要 input）不出现。
         let close = vec![
@@ -1671,17 +1671,17 @@ mod tests {
         ];
         let close_tools = mcp_tools(&close);
         let names = tool_names(&close_tools);
-        assert!(names.contains(&"tervo.live_close_pane"));
-        assert!(names.contains(&"tervo.live_close_tab"));
-        assert!(names.contains(&"tervo.live_new_window"));
-        assert!(names.contains(&"tervo.live_close_window"));
-        assert!(!names.contains(&"tervo.live_kill"));
-        assert!(!names.contains(&"tervo.live_send_text"));
+        assert!(names.contains(&"xtervo.live_close_pane"));
+        assert!(names.contains(&"xtervo.live_close_tab"));
+        assert!(names.contains(&"xtervo.live_new_window"));
+        assert!(names.contains(&"xtervo.live_close_window"));
+        assert!(!names.contains(&"xtervo.live_kill"));
+        assert!(!names.contains(&"xtervo.live_send_text"));
 
         // 空 commands = 只保留离线诊断工具。
         let empty_tools = mcp_tools(&[]);
         let names = tool_names(&empty_tools);
-        assert!(!names.iter().any(|name| name.starts_with("tervo.live_")));
+        assert!(!names.iter().any(|name| name.starts_with("xtervo.live_")));
     }
 
     fn tool_names(tools: &Value) -> Vec<&str> {
@@ -1751,10 +1751,10 @@ mod tests {
         server.join().expect("fake server");
         let response: Value = serde_json::from_slice(&output).expect("tools/list json");
         let names = tool_names(&response["result"]["tools"]);
-        assert!(names.contains(&"tervo.live_list"));
-        assert!(names.contains(&"tervo.live_output"));
-        assert!(!names.contains(&"tervo.live_capabilities"));
-        assert!(!names.contains(&"tervo.live_send_text"));
+        assert!(names.contains(&"xtervo.live_list"));
+        assert!(names.contains(&"xtervo.live_output"));
+        assert!(!names.contains(&"xtervo.live_capabilities"));
+        assert!(!names.contains(&"xtervo.live_send_text"));
     }
 
     #[test]
@@ -1765,7 +1765,7 @@ mod tests {
             json!({
                 "protocolVersion": "2024-11-05",
                 "capabilities": {},
-                "clientInfo": {"name": "tervo-test", "version": "0"}
+                "clientInfo": {"name": "xtervo-test", "version": "0"}
             }),
         )]);
         assert_eq!(responses.len(), 1);
@@ -1777,7 +1777,7 @@ mod tests {
             result["capabilities"]["resources"]["listChanged"],
             false
         );
-        assert_eq!(result["serverInfo"]["name"], "tervo-diag");
+        assert_eq!(result["serverInfo"]["name"], "xtervo-diag");
         assert_eq!(result["serverInfo"]["version"], VERSION);
     }
 
@@ -1801,7 +1801,7 @@ mod tests {
             mcp_request(
                 2,
                 "tools/call",
-                json!({"name": "tervo.unknown_tool", "arguments": {}}),
+                json!({"name": "xtervo.unknown_tool", "arguments": {}}),
             ),
         ]);
         assert_eq!(responses.len(), 2);
@@ -1827,10 +1827,10 @@ mod tests {
 
     #[test]
     fn mcp_doctor_check_returns_diagnostic_case() {
-        let response = mcp_call_tool("tervo.doctor_check", json!({}));
+        let response = mcp_call_tool("xtervo.doctor_check", json!({}));
         assert!(!mcp_is_error(&response));
         let case = mcp_tool_value(&response);
-        assert_eq!(case["schema"], "tervo.diagnostic_case.v1");
+        assert_eq!(case["schema"], "xtervo.diagnostic_case.v1");
         assert!(case["case_id"]
             .as_str()
             .unwrap_or_default()
@@ -1845,7 +1845,7 @@ mod tests {
     #[test]
     fn mcp_doctor_check_accepts_inline_frame_and_metrics() {
         let frame = json!({
-            "schema": "tervo.diag.v1",
+            "schema": "xtervo.diag.v1",
             "kind": "snapshot",
             "cols": 80,
             "rows": 2,
@@ -1856,7 +1856,7 @@ mod tests {
             "text": ["hello", "world"]
         });
         let metrics = json!({
-            "schema": "tervo.diag.v1",
+            "schema": "xtervo.diag.v1",
             "kind": "metrics",
             "initialized": false,
             "source": "cli",
@@ -1870,18 +1870,18 @@ mod tests {
             }
         });
         let response = mcp_call_tool(
-            "tervo.doctor_check",
+            "xtervo.doctor_check",
             json!({
                 "frame": frame,
                 "metrics": metrics,
                 "symptom": "scroll residue",
-                "repro_steps": ["open tervo", "scroll"]
+                "repro_steps": ["open xtervo", "scroll"]
             }),
         );
         assert!(!mcp_is_error(&response));
         let case = mcp_tool_value(&response);
         assert_eq!(case["symptom"]["summary"], "scroll residue");
-        assert_eq!(case["symptom"]["repro_steps"][0], "open tervo");
+        assert_eq!(case["symptom"]["repro_steps"][0], "open xtervo");
         assert!(case["probes"]
             .as_array()
             .unwrap()
@@ -1897,7 +1897,7 @@ mod tests {
         let frame_path = dir.write(
             "frame.json",
             &json!({
-                "schema": "tervo.diag.v1",
+                "schema": "xtervo.diag.v1",
                 "kind": "snapshot",
                 "cols": 20,
                 "rows": 1,
@@ -1912,7 +1912,7 @@ mod tests {
         let env_path = dir.write(
             "env.json",
             &json!({
-                "schema": "tervo.diag.v1",
+                "schema": "xtervo.diag.v1",
                 "kind": "env",
                 "version": "0.3.1",
                 "commit": "deadbeef",
@@ -1927,7 +1927,7 @@ mod tests {
             .to_string(),
         );
         let response = mcp_call_tool(
-            "tervo.doctor_check",
+            "xtervo.doctor_check",
             json!({
                 "environment": env_path.to_string_lossy(),
                 "frame": frame_path.to_string_lossy()
@@ -1952,12 +1952,12 @@ mod tests {
         for arguments in [
             json!({"environment": "/etc/passwd"}),
             json!({"environment": {
-                "schema": "tervo.diag.v1",
+                "schema": "xtervo.diag.v1",
                 "kind": "env",
                 "config": "/etc/passwd"
             }}),
         ] {
-            let response = mcp_call_tool("tervo.doctor_check", arguments);
+            let response = mcp_call_tool("xtervo.doctor_check", arguments);
             assert!(mcp_is_error(&response));
             let text = response["result"]["content"][0]["text"]
                 .as_str()
@@ -1971,11 +1971,11 @@ mod tests {
 
     #[test]
     fn mcp_issue_draft_renders_markdown_from_case() {
-        let check = mcp_call_tool("tervo.doctor_check", json!({"symptom": "flicker"}));
+        let check = mcp_call_tool("xtervo.doctor_check", json!({"symptom": "flicker"}));
         assert!(!mcp_is_error(&check));
         let case = mcp_tool_value(&check);
         let case_id = case["case_id"].clone();
-        let response = mcp_call_tool("tervo.issue_draft", json!({"case": case}));
+        let response = mcp_call_tool("xtervo.issue_draft", json!({"case": case}));
         assert!(!mcp_is_error(&response));
         let draft = mcp_tool_value(&response);
         let markdown = draft["markdown"].as_str().unwrap_or_default();
@@ -1988,11 +1988,11 @@ mod tests {
     fn mcp_metrics_read_is_bounded_and_hides_raw_lines() {
         let dir = TestDir::new("metrics");
         let body = "boot\nframe error: boom\nok\n";
-        dir.write("tervo-1.log", body);
+        dir.write("xtervo-1.log", body);
         dir.write("notes.log", "API_KEY=super-secret\n");
-        dir.write("tervo-notlog.txt", "fatal secret\n");
+        dir.write("xtervo-notlog.txt", "fatal secret\n");
 
-        let response = mcp_call_tool("tervo.metrics_read", json!({"log_dir": dir.as_str()}));
+        let response = mcp_call_tool("xtervo.metrics_read", json!({"log_dir": dir.as_str()}));
         assert!(!mcp_is_error(&response));
         let summary = mcp_tool_value(&response);
         assert_eq!(summary["exists"], true);
@@ -2001,7 +2001,7 @@ mod tests {
         assert_eq!(summary["summary"]["lines"], 3);
         assert_eq!(summary["summary"]["recent_errors"], 1);
         assert_eq!(summary["summary"]["bytes"], body.len() as u64);
-        assert_eq!(summary["files"][0]["name"], "tervo-1.log");
+        assert_eq!(summary["files"][0]["name"], "xtervo-1.log");
 
         let text = response["result"]["content"][0]["text"]
             .as_str()
@@ -2014,7 +2014,7 @@ mod tests {
     #[test]
     fn mcp_metrics_read_rejects_outside_paths() {
         for path in ["/etc", "relative/logs"] {
-            let response = mcp_call_tool("tervo.metrics_read", json!({"log_dir": path}));
+            let response = mcp_call_tool("xtervo.metrics_read", json!({"log_dir": path}));
             assert!(mcp_is_error(&response), "{path} should be rejected");
         }
     }
@@ -2026,7 +2026,7 @@ mod tests {
         let link = dir.join("escape");
         std::os::unix::fs::symlink("/etc", &link).expect("create symlink");
         let response = mcp_call_tool(
-            "tervo.metrics_read",
+            "xtervo.metrics_read",
             json!({"log_dir": link.to_string_lossy()}),
         );
         assert!(mcp_is_error(&response));
@@ -2036,19 +2036,19 @@ mod tests {
     fn mcp_resources_expose_version_document() {
         let responses = mcp_run(&[
             mcp_request(1, "resources/list", json!({})),
-            mcp_request(2, "resources/read", json!({"uri": "tervo://version"})),
-            mcp_request(3, "resources/read", json!({"uri": "tervo://missing"})),
+            mcp_request(2, "resources/read", json!({"uri": "xtervo://version"})),
+            mcp_request(3, "resources/read", json!({"uri": "xtervo://missing"})),
         ]);
         assert_eq!(
             responses[0]["result"]["resources"][0]["uri"],
-            "tervo://version"
+            "xtervo://version"
         );
         let content = &responses[1]["result"]["contents"][0];
-        assert_eq!(content["uri"], "tervo://version");
+        assert_eq!(content["uri"], "xtervo://version");
         let version: Value =
             serde_json::from_str(content["text"].as_str().unwrap_or_default()).unwrap();
         assert_eq!(version["version"], VERSION);
-        assert_eq!(version["schema"], "tervo.diag.v1");
+        assert_eq!(version["schema"], "xtervo.diag.v1");
         assert_eq!(responses[2]["error"]["code"], -32002);
     }
 
@@ -2058,11 +2058,11 @@ mod tests {
         let config = dir.write("config.toml", "theme = \"dark\"\n");
         let logs = dir.join("logs");
         std::fs::create_dir_all(&logs).expect("create logs dir");
-        std::fs::write(logs.join("tervo-1.log"), "one\ntwo\n").expect("write log");
+        std::fs::write(logs.join("xtervo-1.log"), "one\ntwo\n").expect("write log");
         let before = dir.snapshot();
 
         let environment = json!({
-            "schema": "tervo.diag.v1",
+            "schema": "xtervo.diag.v1",
             "kind": "env",
             "version": VERSION,
             "commit": COMMIT,
@@ -2073,13 +2073,13 @@ mod tests {
             "config": config.to_string_lossy(),
             "log_dir": logs.to_string_lossy()
         });
-        let check = mcp_call_tool("tervo.doctor_check", json!({"environment": environment}));
+        let check = mcp_call_tool("xtervo.doctor_check", json!({"environment": environment}));
         assert!(!mcp_is_error(&check));
         let case = mcp_tool_value(&check);
-        let draft = mcp_call_tool("tervo.issue_draft", json!({"case": case}));
+        let draft = mcp_call_tool("xtervo.issue_draft", json!({"case": case}));
         assert!(!mcp_is_error(&draft));
         let metrics = mcp_call_tool(
-            "tervo.metrics_read",
+            "xtervo.metrics_read",
             json!({"log_dir": logs.to_string_lossy()}),
         );
         assert!(!mcp_is_error(&metrics));
@@ -2094,7 +2094,7 @@ mod tests {
         frame.cursor.line = 0;
         frame.cursor.col = 1;
         let value = frame_json(&frame, "snapshot");
-        assert_eq!(value["schema"], "tervo.diag.v1");
+        assert_eq!(value["schema"], "xtervo.diag.v1");
         assert_eq!(value["kind"], "snapshot");
         assert_eq!(value["cols"], 4);
         assert_eq!(value["cursor"]["col"], 1);
@@ -2107,7 +2107,7 @@ mod tests {
     #[test]
     fn scene_diff_parses_frame_json_and_reports_counts() {
         let left = json!({
-            "schema": "tervo.diag.v1",
+            "schema": "xtervo.diag.v1",
             "kind": "snapshot",
             "cols": 6,
             "rows": 2,
@@ -2123,7 +2123,7 @@ mod tests {
             }
         });
         let right = json!({
-            "schema": "tervo.diag.v1",
+            "schema": "xtervo.diag.v1",
             "kind": "snapshot",
             "cols": 6,
             "rows": 2,
@@ -2152,7 +2152,7 @@ mod tests {
         assert_eq!(diff.damage.regions_added.len(), 1);
         assert_eq!(diff.damage.regions_removed.len(), 1);
         let value = diff.to_json();
-        assert_eq!(value["schema"], "tervo.diag.v1");
+        assert_eq!(value["schema"], "xtervo.diag.v1");
         assert_eq!(value["kind"], "scene_diff");
         assert_eq!(value["images"]["counts"]["moved"], 1);
     }
@@ -2160,7 +2160,7 @@ mod tests {
     #[test]
     fn observability_document_is_additive_and_marks_unfed_collector() {
         let value = observability_value("observability");
-        assert_eq!(value["schema"], "tervo.diag.v1");
+        assert_eq!(value["schema"], "xtervo.diag.v1");
         assert_eq!(value["kind"], "observability");
         assert_eq!(value["initialized"], false);
         assert_eq!(value["source"], "cli");

@@ -1,4 +1,4 @@
-# 性能与打包基线（Tervo）
+# 性能与打包基线（xtervo）
 
 本文记录**可复现**的性能/体积数据与门禁。所有数字都在本仓库的开发机上测得
 （Ubuntu + X11；2026-11-06 起默认 Skia/GL，无 GPU/GL 失败回退 winit-software）。
@@ -82,7 +82,7 @@ Skia 同轮记录到 35 帧渲染，中位 2.85ms、最大 6.84ms（llvmpipe，�
 
 ## 2.3 事件唤醒延迟 / 空闲开销（2026-11-06，P1-07，headless Xvfb :138）
 
-测试：`scripts/e2e_event_wake.sh`，同一 debug binary 跑两遍（wake 默认 / `TERVO_EVENT_WAKE=0`
+测试：`scripts/e2e_event_wake.sh`，同一 debug binary 跑两遍（wake 默认 / `XTERVO_EVENT_WAKE=0`
 纯 400ms 轮询），shell 在发事件前用 `date +%s%3N` 打点，应用日志 `ts_ms=` 对齐。
 
 | 事件 | 事件唤醒 | 400ms 轮询（对照） |
@@ -93,7 +93,7 @@ Skia 同轮记录到 35 帧渲染，中位 2.85ms、最大 6.84ms（llvmpipe，�
 | 插件活动刷新 | 8–9 ms | 397–400 ms |
 | SFTP 上传完成 | 27–33 ms | 82–102 ms |
 
-空闲（8 秒采样，`TERVO_WAKE_STATS=1`）：两遍 `core_event/app_event` 增量均为 0，
+空闲（8 秒采样，`XTERVO_WAKE_STATS=1`）：两遍 `core_event/app_event` 增量均为 0，
 `periodic_400ms` 每 5 秒 12–13 次；CPU ticks before 111–214 / after 103–110（100 Hz，
 两次运行系统负载有波动），voluntary context switches before 225–252 / after 263——
 事件唤醒没有引入高频轮询。本表是相对 A/B 数据（Xvfb + `winit-software`），不能直接
@@ -174,8 +174,8 @@ CARGO_TARGET_DIR=$PWD/.target-render ./scripts/bench_render.sh
 命令（沙箱里 `/run/user/1000` 只读时需给可写目录）：
 
 ```bash
-DURATION=2m BIN=$PWD/target/release/tervo SOAK_NO_SHOTS=1 \
-  XDG_RUNTIME_DIR=/tmp/soak-rt TERVO_INSTANCE_DIR=/tmp/tervo-inst ./scripts/soak.sh
+DURATION=2m BIN=$PWD/target/release/xtervo SOAK_NO_SHOTS=1 \
+  XDG_RUNTIME_DIR=/tmp/soak-rt XTERVO_INSTANCE_DIR=/tmp/xtervo-inst ./scripts/soak.sh
 ```
 
 结果（commit `ff607db`，22 tabs + 3 splits + 设置/搜索/复制/resize 场景）：
@@ -227,9 +227,9 @@ criterion 提示相对历史基线 +78%（p<0.01），但同日并行/单独两�
 ## 3. 4 pane 测量步骤（可复现）
 
 ```bash
-./target/release/tervo --cols 60 --rows 20 --title PERF &
+./target/release/xtervo --cols 60 --rows 20 --title PERF &
 # 右键 pane → Split Right / Split Down，做成 2x2（日志会出现 3 条 [ws] split）
-APP=$(pgrep -x tervo | head -1)
+APP=$(pgrep -x xtervo | head -1)
 awk '/VmRSS/{print $2/1024 " MB"}' /proc/$APP/status
 # 空闲 CPU：5 秒内 utime+stime 增量 / 500
 ```
@@ -242,12 +242,12 @@ awk '/VmRSS/{print $2/1024 " MB"}' /proc/$APP/status
 ```bash
 SKIP_BUILD=1 ./scripts/package.sh /tmp/dist    # 体积门禁 ≤40 MB + strip 后 --help 冒烟
 PREFIX=/tmp/prefix ./scripts/install.sh        # bin + .desktop + 图标
-/tmp/prefix/bin/tervo --help
+/tmp/prefix/bin/xtervo --help
 ```
 
-实测：`/tmp/dist/tervo` 32.2 MB、`file` 显示 stripped、`--help` 正常；
-安装到 `/tmp/prefix` 后 `bin/tervo` 可执行，桌面项写入
-`share/applications/tervo.desktop`。
+实测：`/tmp/dist/xtervo` 32.2 MB、`file` 显示 stripped、`--help` 正常；
+安装到 `/tmp/prefix` 后 `bin/xtervo` 可执行，桌面项写入
+`share/applications/xtervo.desktop`。
 
 ## 5. 已知成本与未验收项
 

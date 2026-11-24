@@ -2,17 +2,17 @@
 # SPDX-License-Identifier: GPL-3.0-only
 #
 # W-07 稳定性 soak：在独立 Xvfb 上循环施压并采样资源，最后输出 PASS/FAIL
-# 与 CSV/Markdown 报告。只操作本脚本启动的 Xvfb/Openbox/Tervo，绝不碰 :1、
+# 与 CSV/Markdown 报告。只操作本脚本启动的 Xvfb/Openbox/xtervo，绝不碰 :1、
 # Xephyr 或其它进程；不修改 core/UI 行为。
 #
 # 用法：
 #   DURATION=2m  ./scripts/soak.sh                 # 快速门禁（脚本自身验证）
 #   DURATION=30m ./scripts/soak.sh                 # 默认长跑
-#   DURATION=15m BIN=$PWD/target/release/tervo ./scripts/soak.sh
+#   DURATION=15m BIN=$PWD/target/release/xtervo ./scripts/soak.sh
 #
 # 可配置（环境变量）：
 #   DURATION             默认 30m；支持 30s / 2m / 15m / 1h 或纯秒数
-#   BIN                  默认 $ROOT/target/release/tervo
+#   BIN                  默认 $ROOT/target/release/xtervo
 #   SOAK_DISPLAY         默认 :143（被占用则直接失败，不 kill 占用者）
 #   SOAK_SCREEN          默认 1280x800x24
 #   SOAK_OUT             默认 $ROOT/.logs/soak/<时间戳>
@@ -37,13 +37,13 @@ SAMPLE_INTERVAL=${SOAK_SAMPLE_INTERVAL:-10}
 TABS=${SOAK_TABS:-22}
 KEY_DELAY=${SOAK_KEY_DELAY:-0.10}
 NO_SHOTS=${SOAK_NO_SHOTS:-0}
-BIN=${BIN:-$ROOT/target/release/tervo}
+BIN=${BIN:-$ROOT/target/release/xtervo}
 
 OUT=${SOAK_OUT:-"$ROOT/.logs/soak/$(date +%Y%m%d-%H%M%S)"}
 APP_LOG=$OUT/app.log
 CSV=$OUT/samples.csv
-TERVO_LOG_DIR=$OUT/logs
-TERVO_LOG=
+XTERVO_LOG_DIR=$OUT/logs
+XTERVO_LOG=
 REPORT=$OUT/report.md
 SUMMARY=$OUT/summary.json
 START_ISO=$(date -Is)
@@ -109,7 +109,7 @@ find_perf() {
     main=$(cd "$(dirname "$common")" && pwd)
     printf '%s\n' "$main/.perf"
 }
-PERF=${TERVO_PERF_DIR:-$(find_perf)}
+PERF=${XTERVO_PERF_DIR:-$(find_perf)}
 
 find_xvfb() {
     [ -n "${SOAK_XVFB_BIN:-}" ] && [ -x "$SOAK_XVFB_BIN" ] && { printf '%s\n' "$SOAK_XVFB_BIN"; return; }
@@ -138,7 +138,7 @@ XWIN=$(find_helper xwin "${SOAK_XWIN:-}") || die "找不到 xwin（先构建 --b
 XCLICK=$(find_helper xclick "${SOAK_XCLICK:-}") || die "找不到 xclick（先构建 --bin xclick）"
 XKEY=$(find_helper xkey "${SOAK_XKEY:-}") || die "找不到 xkey（先构建 --bin xkey）"
 
-[ -x "$BIN" ] || die "缺少 BIN=$BIN；先 cargo build --release -p tervo-app --bin tervo --bin xwin --bin xclick --bin xkey"
+[ -x "$BIN" ] || die "缺少 BIN=$BIN；先 cargo build --release -p xtervo-app --bin xtervo --bin xwin --bin xclick --bin xkey"
 command -v xdpyinfo >/dev/null 2>&1 || die "缺少 xdpyinfo（x11-utils）"
 command -v xwininfo >/dev/null 2>&1 || die "缺少 xwininfo（x11-utils）"
 command -v xprop >/dev/null 2>&1 || die "缺少 xprop（x11-utils）"
@@ -151,7 +151,7 @@ BIN_SHA=$(sha256sum "$BIN" | awk '{print $1}')
 BIN_SIZE=$(stat -c %s "$BIN" 2>/dev/null || echo 0)
 CLK_TCK=$(getconf CLK_TCK 2>/dev/null || echo 100)
 
-mkdir -p "$OUT" "$OUT/shots" "$OUT/home" "$TERVO_LOG_DIR"
+mkdir -p "$OUT" "$OUT/shots" "$OUT/home" "$XTERVO_LOG_DIR"
 STOP_FILE=$OUT/.stop-sampler
 PHASE_FILE=$OUT/phase
 APP_DEAD_FILE=$OUT/APP-DEAD
@@ -164,7 +164,7 @@ kill_own() {  # <pid> [SIG]
     [ -r "/proc/$pid/cmdline" ] || return 0
     cmd=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)
     case "$cmd" in
-        *tervo*|*Xvfb*|*openbox*|*soak.sh*) kill "-$sig" "$pid" 2>/dev/null || true ;;
+        *xtervo*|*Xvfb*|*openbox*|*soak.sh*) kill "-$sig" "$pid" 2>/dev/null || true ;;
     esac
 }
 
@@ -348,7 +348,7 @@ write_iip(
 PY
 
 # ---------------------------------------------------------------------------
-# 启动 Xvfb / Openbox / Tervo
+# 启动 Xvfb / Openbox / xtervo
 # ---------------------------------------------------------------------------
 cat > "$OUT/config.toml" <<CFG
 version = 1
@@ -369,15 +369,15 @@ export HOME="$OUT/home"
 export XDG_CACHE_HOME="$OUT/home/.cache"
 export XDG_STATE_HOME="$OUT/home/.local/state"
 export XMODIFIERS=@im=none
-# TERVO_GPU=1 时必须让 app 自己 require_wgpu_30；显式 SLINT_BACKEND 会让它
+# XTERVO_GPU=1 时必须让 app 自己 require_wgpu_30；显式 SLINT_BACKEND 会让它
 # 走 Skia/OpenGL 而不是 WGPU，soak 就测错了路径。
-if [ "${TERVO_GPU:-0}" = "1" ]; then
+if [ "${XTERVO_GPU:-0}" = "1" ]; then
     unset SLINT_BACKEND
 else
     export SLINT_BACKEND=${SLINT_BACKEND:-winit-software}
 fi
-export TERVO_CONFIG="$OUT/config.toml"
-export TERVO_LOG_DIR
+export XTERVO_CONFIG="$OUT/config.toml"
+export XTERVO_LOG_DIR
 export TERM=${TERM:-xterm-256color}
 export SOAK_DIR="$OUT"
 mkdir -p "$HOME" "$XDG_CACHE_HOME" "$XDG_STATE_HOME"
@@ -412,16 +412,16 @@ else
     warn "找不到 Openbox；继续运行，但 resize 场景可能失败"
 fi
 
-log "启动 Tervo（title=Tervo-Soak，--shell /bin/sh -- shell.sh）"
+log "启动 xtervo（title=xtervo-Soak，--shell /bin/sh -- shell.sh）"
 APP_START_EPOCH=$(date +%s)
 env DISPLAY="$DISPLAY_NUM" HOME="$HOME" XMODIFIERS=@im=none \
-    TERVO_LOG_DIR="$TERVO_LOG_DIR" TERVO_CONFIG="$TERVO_CONFIG" TERVO_LOG=1 \
-    SOAK_DIR="$OUT" "$BIN" --cols 100 --rows 30 --title Tervo-Soak \
+    XTERVO_LOG_DIR="$XTERVO_LOG_DIR" XTERVO_CONFIG="$XTERVO_CONFIG" XTERVO_LOG=1 \
+    SOAK_DIR="$OUT" "$BIN" --cols 100 --rows 30 --title xtervo-Soak \
     --shell /bin/sh -- "$OUT/shell.sh" >"$APP_LOG" 2>&1 &
 APP_PID=$!
 
 for _ in $(seq 1 300); do
-    for id in $(DISPLAY="$DISPLAY_NUM" xwininfo -root -tree 2>/dev/null | awk '/"Tervo-Soak"/ {print $1}'); do
+    for id in $(DISPLAY="$DISPLAY_NUM" xwininfo -root -tree 2>/dev/null | awk '/"xtervo-Soak"/ {print $1}'); do
         pid=$(DISPLAY="$DISPLAY_NUM" xprop -id "$id" _NET_WM_PID 2>/dev/null | awk '{print $NF}')
         if [ "$pid" = "$APP_PID" ]; then WIN=$id; break; fi
     done
@@ -431,9 +431,9 @@ for _ in $(seq 1 300); do
 done
 if [ -z "$WIN" ]; then
     tail -30 "$APP_LOG" >&2 || true
-    die "30s 内没找到 pid=$APP_PID 的 Tervo-Soak 窗口（见 $APP_LOG）"
+    die "30s 内没找到 pid=$APP_PID 的 xtervo-Soak 窗口（见 $APP_LOG）"
 fi
-log "Tervo pid=$APP_PID win=$WIN"
+log "xtervo pid=$APP_PID win=$WIN"
 
 for _ in $(seq 1 100); do
     [ -f "$OUT/shell-ready" ] && break
@@ -452,12 +452,12 @@ read -r WIN_X WIN_Y WIN_W WIN_H <<<"$(xwininfo -id "$WIN" 2>/dev/null | awk '
     END {print x, y, w, h}')"
 log "窗口初始位置 ${WIN_X:-?},${WIN_Y:-?} 尺寸 ${WIN_W:-?}x${WIN_H:-?}"
 
-TERVO_LOG=$(ls -t "$TERVO_LOG_DIR"/tervo-*.log 2>/dev/null | head -1 || true)
-if [ -z "$TERVO_LOG" ]; then
-    TERVO_LOG=$APP_LOG
+XTERVO_LOG=$(ls -t "$XTERVO_LOG_DIR"/xtervo-*.log 2>/dev/null | head -1 || true)
+if [ -z "$XTERVO_LOG" ]; then
+    XTERVO_LOG=$APP_LOG
     warn "没有按次日志文件，回落到 app.log"
 fi
-log "tervo log: $TERVO_LOG"
+log "xtervo log: $XTERVO_LOG"
 
 geom() {
     DISPLAY="$DISPLAY_NUM" xwininfo -id "$WIN" 2>/dev/null | awk '
@@ -479,7 +479,7 @@ shot() {
 }
 
 max_tabs_log() {
-    grep -ao 'tabs=[0-9]*' "$TERVO_LOG" 2>/dev/null | sed 's/tabs=//' | sort -n | tail -1
+    grep -ao 'tabs=[0-9]*' "$XTERVO_LOG" 2>/dev/null | sed 's/tabs=//' | sort -n | tail -1
 }
 
 # ---------------------------------------------------------------------------
@@ -618,8 +618,8 @@ find_once() {  # 每次打开/关闭搜索；只在首个 cycle 输入，避免�
     sleep 0.2
 }
 
-settings_open_count() { grep -ac 'run command settings.open' "$TERVO_LOG" 2>/dev/null || true; }
-settings_cat_count() { grep -ac 'settings category=' "$TERVO_LOG" 2>/dev/null || true; }
+settings_open_count() { grep -ac 'run command settings.open' "$XTERVO_LOG" 2>/dev/null || true; }
+settings_cat_count() { grep -ac 'settings category=' "$XTERVO_LOG" 2>/dev/null || true; }
 
 open_settings() {
     local before attempt
@@ -691,7 +691,7 @@ sleep 1.5
 
 TABS_OBSERVED=$(max_tabs_log)
 [ -n "${TABS_OBSERVED:-}" ] || TABS_OBSERVED=0
-SPLITS_OBSERVED=$(grep -ac '\[ws\] split pane=' "$TERVO_LOG" 2>/dev/null || true)
+SPLITS_OBSERVED=$(grep -ac '\[ws\] split pane=' "$XTERVO_LOG" 2>/dev/null || true)
 [ -n "$SPLITS_OBSERVED" ] || SPLITS_OBSERVED=0
 log "日志观测: tabs=$TABS_OBSERVED splits=$SPLITS_OBSERVED"
 shot start
@@ -706,7 +706,7 @@ while :; do
     LAST_ELAPSED=$elapsed
     [ "$elapsed" -ge "$DURATION_S" ] && break
     if [ -f "$APP_DEAD_FILE" ] || ! kill -0 "$APP_PID" 2>/dev/null; then
-        warn "Tervo 在 ${elapsed}s 退出/死亡，停止场景循环"
+        warn "xtervo 在 ${elapsed}s 退出/死亡，停止场景循环"
         break
     fi
     if [ -f "$STOP_FILE" ]; then break; fi
@@ -774,7 +774,7 @@ kill -0 "$XVFB_PID" 2>/dev/null && XVFB_ALIVE_AT_END=1
 APP_ALIVE_AT_END=0
 kill -0 "$APP_PID" 2>/dev/null && APP_ALIVE_AT_END=1
 
-log "停止 Tervo（SIGTERM，只 kill pid=$APP_PID）"
+log "停止 xtervo（SIGTERM，只 kill pid=$APP_PID）"
 kill_own "$APP_PID" TERM
 for _ in $(seq 1 50); do
     kill -0 "$APP_PID" 2>/dev/null || break
@@ -790,12 +790,12 @@ XVFB_ERRORS=$(grep -aciE '\(EE\)|fatal|error' "$OUT/xvfb.log" 2>/dev/null || tru
 # 最终动作计数（日志完整后解析）。
 TABS_OBSERVED=$(max_tabs_log)
 [ -n "${TABS_OBSERVED:-}" ] || TABS_OBSERVED=0
-SPLITS_OBSERVED=$(grep -ac '\[ws\] split pane=' "$TERVO_LOG" 2>/dev/null || true)
+SPLITS_OBSERVED=$(grep -ac '\[ws\] split pane=' "$XTERVO_LOG" 2>/dev/null || true)
 [ -n "$SPLITS_OBSERVED" ] || SPLITS_OBSERVED=0
-SETTINGS_OPENS=$(grep -ac 'run command settings.open' "$TERVO_LOG" 2>/dev/null || true)
-SETTINGS_SWITCHES=$(grep -ac 'settings category=' "$TERVO_LOG" 2>/dev/null || true)
-FIND_OPENS=$(grep -ac '\[ui\] find open' "$TERVO_LOG" 2>/dev/null || true)
-COPIES=$(grep -ac '\[clipboard\] 复制' "$TERVO_LOG" 2>/dev/null || true)
+SETTINGS_OPENS=$(grep -ac 'run command settings.open' "$XTERVO_LOG" 2>/dev/null || true)
+SETTINGS_SWITCHES=$(grep -ac 'settings category=' "$XTERVO_LOG" 2>/dev/null || true)
+FIND_OPENS=$(grep -ac '\[ui\] find open' "$XTERVO_LOG" 2>/dev/null || true)
+COPIES=$(grep -ac '\[clipboard\] 复制' "$XTERVO_LOG" 2>/dev/null || true)
 
 export SOAK_OUT="$OUT" SOAK_ROOT="$ROOT" SOAK_DURATION_S="$DURATION_S" SOAK_WARMUP_S="$WARMUP_S" \
     SOAK_COMMIT="$COMMIT" SOAK_BRANCH="$BRANCH" SOAK_BIN="$BIN" SOAK_BIN_SHA="$BIN_SHA" \
@@ -808,7 +808,7 @@ export SOAK_OUT="$OUT" SOAK_ROOT="$ROOT" SOAK_DURATION_S="$DURATION_S" SOAK_WARM
     SOAK_COPIES="$COPIES" SOAK_FATAL="$FATAL_MARKERS" SOAK_LOG_ERRORS="$LOG_ERRORS" \
     SOAK_XVFB_ERRORS="$XVFB_ERRORS" SOAK_INTERRUPTED="$INTERRUPTED" SOAK_LAST_ELAPSED="$LAST_ELAPSED" \
     SOAK_SAMPLE_INTERVAL="$SAMPLE_INTERVAL" SOAK_CYCLES="$CYCLE" \
-    SOAK_TERVO_LOG="$TERVO_LOG"
+    SOAK_XTERVO_LOG="$XTERVO_LOG"
 python3 - <<'PY'
 import csv
 import json
@@ -851,7 +851,7 @@ xvfb_errors = int(os.environ["SOAK_XVFB_ERRORS"] or 0)
 interrupted = os.environ["SOAK_INTERRUPTED"] == "1"
 last_elapsed = int(os.environ["SOAK_LAST_ELAPSED"])
 cycles = int(os.environ["SOAK_CYCLES"])
-tervo_log = os.environ["SOAK_TERVO_LOG"]
+xtervo_log = os.environ["SOAK_XTERVO_LOG"]
 
 try:
     with open(csv_path, newline="", encoding="utf-8") as f:
@@ -940,7 +940,7 @@ if bad_samples:
         % (first_bad.get("elapsed_s"), first_bad.get("app_alive"), first_bad.get("xvfb_alive"))
     )
 if not app_alive:
-    issues.append("结束时 Tervo 已不在运行（APP_ALIVE=0）")
+    issues.append("结束时 xtervo 已不在运行（APP_ALIVE=0）")
 if not xvfb_alive:
     issues.append("结束时 Xvfb 已不在运行（XVFB_ALIVE=0）")
 if fatal > 0:
@@ -1007,7 +1007,7 @@ def fmt_pct(value):
 
 
 lines = []
-lines.append("# Tervo 稳定性 soak 报告（W-07）")
+lines.append("# xtervo 稳定性 soak 报告（W-07）")
 lines.append("")
 lines.append(f"- 结论：**{verdict}**")
 lines.append(f"- 开始：`{start_iso}`")
@@ -1085,20 +1085,20 @@ lines.append("- headless Xvfb + Mesa/llvmpipe + `winit-software`；未验证真�
 lines.append("- 单窗口 22 Tab + 4 pane；未覆盖多窗口、SSH/SFTP/Serial/Telnet、插件、Vault 解锁等外部 I/O。")
 lines.append("- 滚动/复制/搜索通过 XTest 注入；Xvfb 没有真实输入设备/剪贴板管理器，复制只验证应用日志与堆栈，不等价于真机剪贴板体验。")
 lines.append("- 内存判定是启发式阈值（RSS/PSS + 线性斜率 + R²），短跑波动会被标注为 WARN；泄漏最终需更长跑 + 堆分析确认。")
-lines.append("- 整个脚本只 kill 自己记录的 Xvfb/Openbox/Tervo PID；不占用 :1、不启动 Xephyr、不使用 pkill。")
+lines.append("- 整个脚本只 kill 自己记录的 Xvfb/Openbox/xtervo PID；不占用 :1、不启动 Xephyr、不使用 pkill。")
 lines.append("")
 lines.append("## 6. 复现")
 lines.append("")
 lines.append("```bash")
 lines.append(f"cd {root}")
 lines.append(f"DURATION=2m  ./scripts/soak.sh   # 快速门禁")
-lines.append(f"DURATION=30m BIN=$PWD/target/release/tervo ./scripts/soak.sh")
+lines.append(f"DURATION=30m BIN=$PWD/target/release/xtervo ./scripts/soak.sh")
 lines.append("```")
 lines.append("")
 lines.append("## 7. 证据文件")
 lines.append("")
 lines.append(f"- `samples.csv`：逐次采样（RSS/PSS/CPU/线程/FD/存活/日志错误）")
-lines.append(f"- `app.log` / `logs/tervo-*.log`：应用 stderr 与按次日志")
+lines.append(f"- `app.log` / `logs/xtervo-*.log`：应用 stderr 与按次日志")
 lines.append(f"- `xvfb.log` / `openbox.log`：X server / WM")
 lines.append(f"- `shots/`：start/settings/end 截图（如环境有 ffmpeg）")
 lines.append(f"- `summary.json`：机器可读判定")

@@ -1,7 +1,7 @@
-[log] 日志文件: /home/user/AIworkspace/rusttabbyterminal/.worktrees/mw-session-integration/target/mw-session-e2e/run1/logs/tervo-1794579628.log
+[log] 日志文件: /home/user/AIworkspace/rusttabbyterminal/.worktrees/mw-session-integration/target/mw-session-e2e/run1/logs/xtervo-1794579628.log
 [render] requested_backend=winit-software（显式设置 SLINT_BACKEND）
-[mcp] enabled=true read=true input=true tabs=true destructive=true socket=/tmp/tervo-mws-43-run1-1794579628364.sock token=env
-[mcp] env override 生效: TERVO_DIAG_ALLOW_WRITE=true TERVO_DIAG_ALLOW_DESTRUCTIVE=true（配置仍可收紧分组，但 env 会放宽）
+[mcp] enabled=true read=true input=true tabs=true destructive=true socket=/tmp/xtervo-mws-43-run1-1794579628364.sock token=env
+[mcp] env override 生效: XTERVO_DIAG_ALLOW_WRITE=true XTERVO_DIAG_ALLOW_DESTRUCTIVE=true（配置仍可收紧分组，但 env 会放宽）
 [session] 检测到上次异常退出；尝试恢复最近 autosave
 [session] 读取 v2 快照：2 个窗口，其中 2 个可恢复
 [render] requested_backend=winit-software；actual_renderer=winit-software（GL/GPU 不可用或已显式回退；headless 不能验证 GPU）
@@ -19,7 +19,7 @@
 [session] 已按快照恢复 primary：2 个标签 / 2 个 pane
 [session] window-1 恢复 geometry=(60,80 640x480) maximized=false
 READY TIMING font_us=94594 show_us=213780 total_us=213780 cell=9x22
-[mcp] live socket ready path=/tmp/tervo-mws-43-run1-1794579628364.sock token=required
+[mcp] live socket ready path=/tmp/xtervo-mws-43-run1-1794579628364.sock token=required
 [focus] window-1 focused=false
 [focus] window-1 focused=true
 [runtime] active window=window-1
@@ -40,7 +40,7 @@ READY TIMING font_us=94594 show_us=213780 total_us=213780 cell=9x22
 [session] restore tab "Terminal 3" pinned=false index=2
 [session] 窗口 2 恢复完成：3/3 个标签 active=2
 [session] window-2 恢复 geometry=(0,0 1600x1000) maximized=true
-[ui] in-process window created id=window-2 restored=true pid=111 shared_plugins=99932811948240 mcp_socket=/tmp/tervo-mws-43-run1-1794579628364.sock
+[ui] in-process window created id=window-2 restored=true pid=111 shared_plugins=99932811948240 mcp_socket=/tmp/xtervo-mws-43-run1-1794579628364.sock
 [session] 恢复窗口 2 -> window-2
 [session] 多窗口恢复完成：2/2 个窗口
 [mcp] action=list pane=None arg_bytes=0

@@ -4,10 +4,10 @@
 Worktree：`.worktrees/agent-wgpu-text`
 基线：`98bbc2e` (`perf(gpu): 统计纹理上传帧/行/字节/耗时，提供 GPU profile 基线`)
 
-这是 **原型/vertical slice**，不是 `TERVO_GPU=1` 的最终替代，也没有接进
-`tervo-app` 主循环。目标是用证据回答一件事：
+这是 **原型/vertical slice**，不是 `XTERVO_GPU=1` 的最终替代，也没有接进
+`xtervo-app` 主循环。目标是用证据回答一件事：
 
-> 终端文字能否从 `tervo_scene::TextBatch` 直接进入 GPU glyph atlas +
+> 终端文字能否从 `xtervo_scene::TextBatch` 直接进入 GPU glyph atlas +
 > instanced quad 管线，渲染到离屏 `Rgba8Unorm`，且不产生、不上传 CPU 终端
 > framebuffer？
 
@@ -18,7 +18,7 @@ Worktree：`.worktrees/agent-wgpu-text`
 ## 架构
 
 ```text
-tervo_scene::TextBatch
+xtervo_scene::TextBatch
   ├─ 每个 cell → 背景 solid instance（cell.background）
   ├─ underline → 额外 solid instance
   └─ 每个 ASCII 字符
@@ -76,16 +76,16 @@ slint::Image::try_from（同 device/queue）→ Slint 窗口
 
 ```bash
 # 1) 单元 + 端到端 GPU 测试（需要 headless wgpu adapter 和字体）
-cargo test -p tervo-render-wgpu --test gpu_text -- --nocapture
+cargo test -p xtervo-render-wgpu --test gpu_text -- --nocapture
 
 # 2) release 性能 / 像素探针（无窗口，不需 Xvfb）
-TERVO_WGPU_TEXT_FRAMES=300 \
-  cargo run --release -p tervo-render-wgpu --example wgpu_text_bench
+XTERVO_WGPU_TEXT_FRAMES=300 \
+  cargo run --release -p xtervo-render-wgpu --example wgpu_text_bench
 
 # 3) Slint 同 device/queue 显示 + snapshot（隔离 Xvfb，绝不碰用户 :1）
 Xvfb :79 -screen 0 1400x800x24 -nolisten tcp &
 DISPLAY=:79 SLINT_WGPU_CPU=1 env -u SLINT_BACKEND \
-  cargo run -p tervo-render-wgpu --features slint-presenter --example text_atlas
+  cargo run -p xtervo-render-wgpu --features slint-presenter --example text_atlas
 ```
 
 本机实际执行说明：
@@ -95,7 +95,7 @@ DISPLAY=:79 SLINT_WGPU_CPU=1 env -u SLINT_BACKEND \
   其他机器若安装 `xvfb` 包，可直接用上面的标准命令。
 - 字体：`/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf`（另有系统
   `-Bold/-Oblique/-BoldOblique`，bold/italic 是真实字形而非伪粗体）。
-  可用 `TERVO_WGPU_FONT=/path/font.ttf` 覆盖；`TERVO_WGPU_FONT_BOLD` /
+  可用 `XTERVO_WGPU_FONT=/path/font.ttf` 覆盖；`XTERVO_WGPU_FONT_BOLD` /
   `_ITALIC` / `_BOLD_ITALIC` 可单独指定变体。
 - wgpu adapter 只有 `llvmpipe (LLVM 15.0.7) / Vulkan / device_type=Cpu`。
   因此下面的性能数字是 **软件 Vulkan 上的提交侧 CPU 时间**，不是硬件
@@ -138,7 +138,7 @@ Window::take_snapshot matches the offscreen target
 
 ## 性能（release，llvmpipe/Cpu）
 
-`TERVO_WGPU_TEXT_FRAMES=300`，1280×720，主区域 80×24 @16px，另有 24px/12px
+`XTERVO_WGPU_TEXT_FRAMES=300`，1280×720，主区域 80×24 @16px，另有 24px/12px
 section：
 
 ```text
@@ -177,7 +177,7 @@ DIFF mean=0.019493 max=1 pixels_over_1=0 pixels_over_2=0
 
 ## 限制 / 未完成项
 
-1. **未接 app 主路径**：按要求不修改主循环，`TERVO_GPU=1` 仍是原来的
+1. **未接 app 主路径**：按要求不修改主循环，`XTERVO_GPU=1` 仍是原来的
    CPU framebuffer → texture 阶段 0；本原型不默认切 GPU。
 2. **ASCII only**：没有 shaping、组合字符、CJK、emoji；所有非 ASCII 统一
    `?` 并计数。真实终端需要 fallback 字体链和宽字符/组合标记处理。
@@ -199,7 +199,7 @@ DIFF mean=0.019493 max=1 pixels_over_1=0 pixels_over_2=0
 
 ## 约 2.5 分钟 soak / 内存
 
-`TERVO_WGPU_TEXT_FRAMES=130000` release 连续帧（160 s，约 812 fps，适配器
+`XTERVO_WGPU_TEXT_FRAMES=130000` release 连续帧（160 s，约 812 fps，适配器
 llvmpipe CPU）：
 
 ```text
@@ -235,9 +235,9 @@ RSS 台阶来自 llvmpipe/glibc 分配器，而非每帧保留对象。
 
 ```bash
 MODE=static FRAMES=60000 \
-  cargo run --release -p tervo-render-wgpu --example memory_probe
+  cargo run --release -p xtervo-render-wgpu --example memory_probe
 MODE=dynamic FRAMES=60000 \
-  cargo run --release -p tervo-render-wgpu --example memory_probe
+  cargo run --release -p xtervo-render-wgpu --example memory_probe
 ```
 
 说明：这不是 app 的 15m soak，也没有修改任何 app/soak 阈值；原型分支不
@@ -245,7 +245,7 @@ MODE=dynamic FRAMES=60000 \
 
 ## 结论
 
-- vertical slice 可运行、可测试：`cargo test -p tervo-render-wgpu` 10 个
+- vertical slice 可运行、可测试：`cargo test -p xtervo-render-wgpu` 10 个
   unit + 8 个 GPU 测试全绿；release bench PASS；Slint example PASS。
 - 核心目标“不走 CPU 终端 framebuffer”成立：TextBatch → fontdue atlas →
   instanced quads → offscreen texture，CPU 每帧只上传实例数据；atlas 命中后

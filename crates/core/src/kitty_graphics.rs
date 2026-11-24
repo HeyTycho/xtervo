@@ -28,12 +28,12 @@
 //!
 //! # Integration mapping
 //!
-//! The output types intentionally do not depend on `tervo-graphics`, wgpu or
+//! The output types intentionally do not depend on `xtervo-graphics`, wgpu or
 //! Slint. The integrator maps:
 //!
 //! ```text
-//! ImageData        -> tervo_graphics::ImageResource (SourceId belongs to manager)
-//! PlacementCommand -> tervo_graphics::ImagePlacement (attach current RowId)
+//! ImageData        -> xtervo_graphics::ImageResource (SourceId belongs to manager)
+//! PlacementCommand -> xtervo_graphics::ImagePlacement (attach current RowId)
 //! DeleteCommand    -> GraphicsManager removal
 //! Response(bytes)  -> write to the PTY
 //! Error.response   -> write to the PTY when present

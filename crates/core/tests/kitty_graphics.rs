@@ -6,11 +6,11 @@ use std::io::Write;
 use flate2::write::ZlibEncoder;
 use flate2::Compression;
 
-use tervo_core::kitty_graphics::{
+use xtervo_core::kitty_graphics::{
     CompositePolicy, CursorMovement, DeleteTarget, KittyCommand, KittyErrorCode, KittyEvent,
     KittyParser, SourceRect, MAX_APC_BYTES,
 };
-use tervo_core::osc::encode_base64;
+use xtervo_core::osc::encode_base64;
 
 fn apc(control: &str, payload: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(control.len() + payload.len() + 5);
@@ -32,7 +32,7 @@ fn parse_commands(events: &[KittyEvent]) -> Vec<&KittyCommand> {
         .collect()
 }
 
-fn parse_errors(events: &[KittyEvent]) -> Vec<&tervo_core::kitty_graphics::KittyError> {
+fn parse_errors(events: &[KittyEvent]) -> Vec<&xtervo_core::kitty_graphics::KittyError> {
     events
         .iter()
         .filter_map(|event| match event {
@@ -326,7 +326,7 @@ fn delete_placement_and_image_targets() {
     events = parser.feed(&apc("a=d,d=a", b""));
     assert_eq!(
         parse_commands(&events)[0],
-        &KittyCommand::Delete(tervo_core::kitty_graphics::DeleteCommand {
+        &KittyCommand::Delete(xtervo_core::kitty_graphics::DeleteCommand {
             target: DeleteTarget::AllPlacements { free_data: false },
             quiet: 0,
         })
@@ -335,7 +335,7 @@ fn delete_placement_and_image_targets() {
     events = parser.feed(&apc("a=d", b""));
     assert_eq!(
         parse_commands(&events)[0],
-        &KittyCommand::Delete(tervo_core::kitty_graphics::DeleteCommand {
+        &KittyCommand::Delete(xtervo_core::kitty_graphics::DeleteCommand {
             target: DeleteTarget::All,
             quiet: 0,
         })
@@ -344,7 +344,7 @@ fn delete_placement_and_image_targets() {
     events = parser.feed(&apc("a=d,d=Z,z=-1,q=2", b""));
     assert_eq!(
         parse_commands(&events)[0],
-        &KittyCommand::Delete(tervo_core::kitty_graphics::DeleteCommand {
+        &KittyCommand::Delete(xtervo_core::kitty_graphics::DeleteCommand {
             target: DeleteTarget::ZIndex {
                 z_index: -1,
                 free_data: true,

@@ -22,7 +22,7 @@ Product integration of session v2 multi-window save/restore:
 
 ```bash
 CARGO_HOME=$PWD/../../.cargo CARGO_TARGET_DIR=$PWD/../../target \
-CARGO_NET_OFFLINE=true cargo test -p tervo-app --bin tervo
+CARGO_NET_OFFLINE=true cargo test -p xtervo-app --bin xtervo
 # test result: ok. 549 passed; 0 failed; 1 ignored
 ```
 

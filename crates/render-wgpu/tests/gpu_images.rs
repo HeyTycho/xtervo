@@ -6,21 +6,21 @@
 //! geometry the renderer submitted, so a failure points at the WGPU pipeline
 //! (UV, scissor, blend, order), not at image decoding.
 //!
-//! Artifacts go to `$TERVO_WGPU_IMAGE_OUT` or `target/wgpu-image-atlas/`.
+//! Artifacts go to `$XTERVO_WGPU_IMAGE_OUT` or `target/wgpu-image-atlas/`.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
-use tervo_core::{Frame, ImageCrop, ImagePlacementMeta, InlineImage};
-use tervo_graphics::{CompositePolicy, PlacementId, Rect, RowId, SourceId};
-use tervo_render_wgpu::{
+use xtervo_core::{Frame, ImageCrop, ImagePlacementMeta, InlineImage};
+use xtervo_graphics::{CompositePolicy, PlacementId, Rect, RowId, SourceId};
+use xtervo_render_wgpu::{
     collect_image_layers, compare_rgba, diff_rgba, discover_font_path, rasterize_glyphs_into,
     rasterize_image_reference, rasterize_images_into, rasterize_text_backgrounds_into,
     read_target_rgba8, request_headless_gpu, write_ppm, GpuImageRenderer, GpuTextRenderer,
     HeadlessGpu, ImageError, ImageSourceView, PixelDiff, TextLayout, TextSection, TextTarget,
 };
-use tervo_scene::{
+use xtervo_scene::{
     scene_from_frame, DrawItem, ImageInstance, PhysicalSize, Scene, SceneLayer, TextAttributes,
     TextBatch, TextCell, Viewport,
 };
@@ -78,7 +78,7 @@ fn readback(fixture: &Fixture) -> Vec<u8> {
 }
 
 fn output_dir(test: &str) -> PathBuf {
-    let root = std::env::var_os("TERVO_WGPU_IMAGE_OUT")
+    let root = std::env::var_os("XTERVO_WGPU_IMAGE_OUT")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -978,14 +978,14 @@ fn frame_images_upload_and_scene_composition() {
 
     let target_size = fixture.target.size();
     let below_quad =
-        tervo_render_wgpu::build_image_quad(layers.below[0], target_size).expect("below quad");
+        xtervo_render_wgpu::build_image_quad(layers.below[0], target_size).expect("below quad");
     // row -1 projects to y=-16; clip starts at y=0. The source crop is 16x32
     // but explicit cells (2x3) make the destination 16x48.
     assert_eq!(below_quad.rect, [8.0, -16.0, 16.0, 48.0]);
     assert_eq!(below_quad.scissor, [8, 0, 16, 32]);
     assert_eq!(below_quad.uv, [0.0, 0.0, 1.0, 32.0 / 48.0]);
     let above_quad =
-        tervo_render_wgpu::build_image_quad(layers.above[0], target_size).expect("above quad");
+        xtervo_render_wgpu::build_image_quad(layers.above[0], target_size).expect("above quad");
     assert_eq!(above_quad.rect, [32.0, 32.0, 8.0, 8.0]);
 
     let (_, below_geometry) = fixture
@@ -1056,7 +1056,7 @@ fn rss_kib() -> Option<u64> {
 /// because it takes two minutes; run explicitly:
 ///
 /// ```text
-/// cargo test -p tervo-render-wgpu --test gpu_images -- --ignored --nocapture
+/// cargo test -p xtervo-render-wgpu --test gpu_images -- --ignored --nocapture
 /// ```
 #[cfg(target_os = "linux")]
 #[test]
@@ -1166,7 +1166,7 @@ fn image_render_soak_two_minutes() {
 /// silently drawing the wrong vertex buffers.
 #[test]
 fn stale_staged_text_frame_is_rejected() {
-    use tervo_render_wgpu::TextRenderError;
+    use xtervo_render_wgpu::TextRenderError;
 
     let mut fixture = image_fixture(64, 48);
     let mut text = text_renderer(fixture.gpu);

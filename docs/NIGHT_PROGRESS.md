@@ -6,8 +6,8 @@
 ## 1. 验证基线（本轮实测）
 
 ```text
-cargo test -p tervo-app --bin tervo     571 passed / 0 failed / 1 ignored
-cargo test -p tervo-core --lib           144 passed（含 4 条 transport/pump_reader）
+cargo test -p xtervo-app --bin xtervo     571 passed / 0 failed / 1 ignored
+cargo test -p xtervo-core --lib           144 passed（含 4 条 transport/pump_reader）
 DURATION=2m soak（sandbox 需可写目录）   PASS ×4：.logs/soak/20261117-133652 / 135443(HEAD 8ed890f)
                                         / 此前两次；最新 HEAD(e431deb) PASS：RSS 355.6→392.6MiB，线程 112/FD 97 不变，fatal=0）
 DURATION=15m soak                        PASS（RSS +3.15 MiB/min，R²=0.29，线程/FD 不变）
@@ -19,8 +19,8 @@ PTY→可见 10 MiB                          178.35 ms ≈ 56.1 MiB/s
 
 ```bash
 export CARGO_HOME=$PWD/.cargo CARGO_NET_OFFLINE=true
-DURATION=2m BIN=$PWD/target/release/tervo SOAK_NO_SHOTS=1 \
-  XDG_RUNTIME_DIR=/tmp/soak-rt TERVO_INSTANCE_DIR=/tmp/tervo-inst ./scripts/soak.sh
+DURATION=2m BIN=$PWD/target/release/xtervo SOAK_NO_SHOTS=1 \
+  XDG_RUNTIME_DIR=/tmp/soak-rt XTERVO_INSTANCE_DIR=/tmp/xtervo-inst ./scripts/soak.sh
 ```
 
 ## 2. 已交付（按卡片）
@@ -74,7 +74,7 @@ DURATION=2m BIN=$PWD/target/release/tervo SOAK_NO_SHOTS=1 \
    （若没有 empty()，就加一个只返回空 store 的构造函数；不要复用 load_from(不存在路径)，
      那会打一堆 io 错误日志。）
 3. GPU/WASM：WASM 过滤器只由插件注册，插件不加载即自动关闭；GPU 降级可以先不做，
-   等有真实崩溃栈证据再决定要不要强制 `TERVO_GPU_NATIVE=0`。
+   等有真实崩溃栈证据再决定要不要强制 `XTERVO_GPU_NATIVE=0`。
 4. UI：状态区 pill 已有；safe mode 生效时文案改为
    “安全模式：本次未加载插件（连续 N 次异常退出）”。
 5. 验收：伪造 `session.running` + `session.crashes=3` 启动，断言
@@ -85,14 +85,14 @@ DURATION=2m BIN=$PWD/target/release/tervo SOAK_NO_SHOTS=1 \
 
 ## 4. 坑位（都踩过，别再踩）
 
-- **日志只打首帧**：`[gpu-native] pane=…` 只在 `frames == 1` 或 `TERVO_GPU_NATIVE_DEBUG` 时输出，
+- **日志只打首帧**：`[gpu-native] pane=…` 只在 `frames == 1` 或 `XTERVO_GPU_NATIVE_DEBUG` 时输出，
   不能拿“没有新日志行”判断没重绘；要用像素（`scripts/e2e_split_repaint.py`）。
 - **XWD 解码**：`xwd` 头 `byte_order=0` 是 LSBFirst，按大端读会把 R/G 换位、蓝通道拿到 alpha(=255)，
   整屏发蓝。必须按 `byte_order` 选 `'<I'`/`'>I'`，并尊重 `bits_per_pixel`。
 - **后端回退会 exec 自身**：无头/GPU 初始化失败时同一 pid 会重跑一遍启动并再写一次
   启动头，任何“每次启动 +1”的计数都会被算两次；计数需带时间戳去重（`session.crashes`
   现在是 `<次数> <unix 秒>`，10 秒内重复 bump 视为同一次启动）。
-- **沙箱里 `/run/user/1000` 只读**：soak/实例需要 `XDG_RUNTIME_DIR` + `TERVO_INSTANCE_DIR` 指到可写目录。
+- **沙箱里 `/run/user/1000` 只读**：soak/实例需要 `XDG_RUNTIME_DIR` + `XTERVO_INSTANCE_DIR` 指到可写目录。
 - **MCP 参数必须放 `args`**；平铺会被忽略（曾因此收到 `pane_id required`）。
 - **窗口标题累积**：已修（`secondary.rs::base_window_title`），别再往 `WM_NAME` 拼 id。
 - ~~commands 默认键不参与分发~~ 已补兜底分发；`view.sidebar` 已绑 `ctrl+shift+b`，

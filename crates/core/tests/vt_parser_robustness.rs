@@ -15,7 +15,7 @@
 //!
 //! 不覆盖：真 fuzz 目标（cargo-fuzz/libFuzzer）、并发多 PTY 乱序到达。
 
-use tervo_core::{spawn, PaneConfig, TermSim};
+use xtervo_core::{spawn, PaneConfig, TermSim};
 
 fn sim() -> TermSim {
     TermSim::new(40, 8, 200)
@@ -86,7 +86,7 @@ fn split_sgr_every_byte_boundary() {
         s.advance(&seq[split..]);
         let frame = s.pull();
         assert_eq!(frame.cell(0, 0).char(), 'Z', "split={split}");
-        assert!(frame.cell(0, 0).has(tervo_core::flags::BOLD), "split={split}");
+        assert!(frame.cell(0, 0).has(xtervo_core::flags::BOLD), "split={split}");
     }
 }
 

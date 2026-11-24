@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! `TERVO_GPU_NATIVE=1`：真实终端 `Frame` → `tervo_scene::Scene` → WGPU 分层合成。
+//! `XTERVO_GPU_NATIVE=1`：真实终端 `Frame` → `xtervo_scene::Scene` → WGPU 分层合成。
 //!
 //! 这是默认 GPU（Skia/WGPU30）上的核心 vertical slice，**不是**默认路径：
-//! - 只有显式 `TERVO_GPU_NATIVE=1` 才启用；`TERVO_GPU=1` 的 stage 0
+//! - 只有显式 `XTERVO_GPU_NATIVE=1` 才启用；`XTERVO_GPU=1` 的 stage 0
 //!   CPU framebuffer 纹理上传保持原样，两者互不替代。
 //! - Device/Queue 来自 Slint `RenderingSetup` 的 `GraphicsAPI::WGPU30`
 //!   （`render_probe` 安装，和 `gpu_present` 共用同源 device）。
 //! - 文字来源是 `SceneBuilder::from_frame` 产出的 `TextBatch`，由
-//!   `tervo_render_wgpu::GpuTextRenderer` 的 glyph atlas 实例化绘制到离屏
+//!   `xtervo_render_wgpu::GpuTextRenderer` 的 glyph atlas 实例化绘制到离屏
 //!   `Rgba8Unorm`；**绝不读取 CPU 终端 framebuffer 当 GPU 文字源**。
 //! - 图片来自 `Frame.images`：每个 `source_id` 只 `upload_source` 一次，随后
 //!   `retain_sources`；`GpuImageRenderer::render_scene` 按
@@ -18,8 +18,8 @@
 //!   不会把 CPU framebuffer 包装成 GPU 成功。
 //!
 //! 诊断：
-//! - `TERVO_GPU_NATIVE_DEBUG=1`：每帧打印 draw calls/上传统计。
-//! - `TERVO_GPU_NATIVE_DUMP=<prefix>`：每个 pane 首帧做一次只读回读，写 PPM
+//! - `XTERVO_GPU_NATIVE_DEBUG=1`：每帧打印 draw calls/上传统计。
+//! - `XTERVO_GPU_NATIVE_DUMP=<prefix>`：每个 pane 首帧做一次只读回读，写 PPM
 //!   作为像素证据（仅验证用；正常渲染路径不做 GPU→CPU 整帧拷贝）。
 
 use std::cell::RefCell;
@@ -29,32 +29,32 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use slint::wgpu_30::wgpu;
-use tervo_core::{Frame, Span};
+use xtervo_core::{Frame, Span};
 
 use crate::runtime::WindowId;
-use tervo_graphics::SourceId;
-use tervo_render_wgpu::{
+use xtervo_graphics::SourceId;
+use xtervo_render_wgpu::{
     read_target_rgba8, write_ppm, AtlasConfig, GpuImageRenderer, GpuTextRenderer, SceneLayerStats,
     TextLayout, TextSection, TextTarget,
 };
-use tervo_scene::{
+use xtervo_scene::{
     BackgroundInstance, DamageRegion, DrawItem, PhysicalSize, Scene, SceneBuilder, Viewport,
     BACKGROUND_LAYER_Z,
 };
 
-/// GPU-native 默认启用；`TERVO_CPU=1` / `TERVO_GPU=0` / `TERVO_GPU_NATIVE=0` 关闭。
+/// GPU-native 默认启用；`XTERVO_CPU=1` / `XTERVO_GPU=0` / `XTERVO_GPU_NATIVE=0` 关闭。
 pub fn requested() -> bool {
     static REQUESTED: OnceLock<bool> = OnceLock::new();
     *REQUESTED.get_or_init(|| {
         if crate::gpu_present::cpu_forced() {
             return false;
         }
-        if let Ok(v) = std::env::var("TERVO_GPU") {
+        if let Ok(v) = std::env::var("XTERVO_GPU") {
             if matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no" | "off") {
                 return false;
             }
         }
-        match std::env::var("TERVO_GPU_NATIVE") {
+        match std::env::var("XTERVO_GPU_NATIVE") {
             Ok(v) => !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no" | "off"),
             Err(_) => true,
         }
@@ -63,11 +63,11 @@ pub fn requested() -> bool {
 
 fn debug() -> bool {
     static DEBUG: OnceLock<bool> = OnceLock::new();
-    *DEBUG.get_or_init(|| std::env::var_os("TERVO_GPU_NATIVE_DEBUG").is_some())
+    *DEBUG.get_or_init(|| std::env::var_os("XTERVO_GPU_NATIVE_DEBUG").is_some())
 }
 
 fn dump_prefix() -> Option<PathBuf> {
-    std::env::var_os("TERVO_GPU_NATIVE_DUMP").map(PathBuf::from)
+    std::env::var_os("XTERVO_GPU_NATIVE_DUMP").map(PathBuf::from)
 }
 
 /// One offscreen texture per pane.
@@ -244,7 +244,7 @@ pub fn install_for(window: WindowId, device: &wgpu::Device, _queue: &wgpu::Queue
     }
     let info = device.adapter_info();
     eprintln!(
-        "[gpu-native] TERVO_GPU_NATIVE=1：{window} 拿到 Slint WGPU30 同一 device/queue；\
+        "[gpu-native] XTERVO_GPU_NATIVE=1：{window} 拿到 Slint WGPU30 同一 device/queue；\
          adapter={:?} backend={:?} device_type={:?}",
         info.name, info.backend, info.device_type
     );
@@ -956,7 +956,7 @@ pub fn last_stats() -> Option<SceneLayerStats> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tervo_core::{flags, CellData, LineDamage, Span};
+    use xtervo_core::{flags, CellData, LineDamage, Span};
 
     fn span(start_line: u16, start_col: u16, end_line: u16, end_col: u16) -> Span {
         Span {
@@ -1343,7 +1343,7 @@ mod tests {
         assert_eq!(batch.cells[0].background, 0x0000_0000);
         assert_eq!(scene.revision, 42);
         assert_eq!(
-            scene.layer(tervo_scene::BACKGROUND_LAYER_Z).map(|layer| layer.items.len()),
+            scene.layer(xtervo_scene::BACKGROUND_LAYER_Z).map(|layer| layer.items.len()),
             Some(1)
         );
         // The cursor is a Scene item; the app keeps its own Slint overlay for it.

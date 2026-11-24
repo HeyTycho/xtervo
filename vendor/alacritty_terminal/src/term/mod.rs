@@ -332,7 +332,7 @@ pub struct Term<T> {
     /// Config directly for the terminal.
     config: Config,
 
-    /// Tervo: ZWJ grapheme cluster 的锚点。
+    /// xtervo: ZWJ grapheme cluster 的锚点。
     ///
     /// `👨‍👩‍👧` 这类 ZWJ 序列在网格里只占一个簇宽（2 格），但 vte 是按码位
     /// 逐个喂给 [`Term::input`] 的。收到 ZWJ 时先记下它挂到的基准格，随后到的
@@ -722,7 +722,7 @@ impl<T> Term<T> {
         // Reset scrolling region.
         self.scroll_region = Line(0)..Line(self.screen_lines() as i32);
 
-        // Tervo: 行列都变了，ZWJ 簇的锚点可能指向别的格，直接作废。
+        // xtervo: 行列都变了，ZWJ 簇的锚点可能指向别的格，直接作废。
         self.zwj_anchor = None;
 
         // Resize damage information.
@@ -1041,7 +1041,7 @@ impl<T> Term<T> {
         cursor_cell.flags = flags;
         cursor_cell.extra = extra;
 
-        // Tervo: alacritty upstream only marks cursor movement / erase primitives;
+        // xtervo: alacritty upstream only marks cursor movement / erase primitives;
         // a plain printable write through `Term::input` leaves no damage unless the
         // cursor moved. dsh-tui rewrites full lines at fixed CUP positions, so the
         // frame keep-alive cache would retain stale cells. Every cell write is a
@@ -1053,7 +1053,7 @@ impl<T> Term<T> {
         ));
     }
 
-    /// Tervo: ZWJ 簇锚点是否仍然指向簇的基准格。
+    /// xtervo: ZWJ 簇锚点是否仍然指向簇的基准格。
     ///
     /// 滚动/resize/清屏/换行都可能让锚点过期；宁可放弃合并（组件按普通宽字符
     /// 新开格），也不能把组件写进一个已经不属于它的格子。
@@ -1118,7 +1118,7 @@ impl<T: EventListener> Handler for Term<T> {
             None => return,
         };
 
-        // Tervo: 让 ZWJ 序列整体只占一个簇宽（`👨‍👩‍👧` 2 格而不是 6 格）。
+        // xtervo: 让 ZWJ 序列整体只占一个簇宽（`👨‍👩‍👧` 2 格而不是 6 格）。
         //
         // ZWJ 之后的组件码位宽度也是 2，但它是同一个 grapheme cluster 的一部分：
         // 并入 ZWJ 挂到的基准格，不新开宽字格、光标也不前进，因此后续的折行、
@@ -1152,7 +1152,7 @@ impl<T: EventListener> Handler for Term<T> {
             }
 
             self.grid[line][column].push_zerowidth(c);
-            // Tervo: 记住 ZWJ 挂到的基准格，下一个组件码位并入这一格。
+            // xtervo: 记住 ZWJ 挂到的基准格，下一个组件码位并入这一格。
             if c == ZWJ {
                 let base = self.grid[line][column].c;
                 self.zwj_anchor = (!base.is_whitespace()).then_some(ZwjAnchor {

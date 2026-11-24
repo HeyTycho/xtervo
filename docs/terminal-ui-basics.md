@@ -135,7 +135,7 @@ impl PaneHandle {
   通过 `XdndEnter/Position/Drop` + `text/uri-list` 把真实本地路径交给 winit：
   - `.logs/ui-basics/drop_hover.png`：拖入时 pane 出现 accent hover 边框；
   - `.logs/ui-basics/drop_after.png`：bash prompt 中出现
-    `'/tmp/tervo-e2e-drop/file one.txt' '/tmp/tervo-e2e-drop/dir with space' '/tmp/tervo-e2e-drop/it'\''s.txt' `；
+    `'/tmp/xtervo-e2e-drop/file one.txt' '/tmp/xtervo-e2e-drop/dir with space' '/tmp/xtervo-e2e-drop/it'\''s.txt' `；
   - app log：`native drop pane=1`、`drop pane=1 files=1 bracketed=true bytes=43/45/42`。
 
 ## 4. 测试与回归
@@ -152,7 +152,7 @@ CARGO_TARGET_DIR=$PWD/target cargo test --workspace
   xwin/xkey/xclick/xdrop 各 10（共享 `xconn` 测试）。
 - GUI 回归脚本（已提交）：[`scripts/e2e_terminal_ui.sh`](../scripts/e2e_terminal_ui.sh)
   ```bash
-  cargo build -p tervo-app --bin tervo --bin xwin --bin xclick --bin xdrop
+  cargo build -p xtervo-app --bin xtervo --bin xwin --bin xclick --bin xdrop
   ./scripts/e2e_terminal_ui.sh     # 截图/日志 → .logs/ui-basics/
   ```
   依次验证：滚动条点击/拖动/回底、视觉铃（30fps 抓帧 + accent 像素检测）、

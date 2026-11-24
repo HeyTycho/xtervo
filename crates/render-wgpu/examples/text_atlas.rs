@@ -12,26 +12,26 @@
 //! ```text
 //! Xvfb :79 -screen 0 1400x800x24 -nolisten tcp &
 //! DISPLAY=:79 SLINT_WGPU_CPU=1 env -u SLINT_BACKEND \
-//!   cargo run -p tervo-render-wgpu --features slint-presenter --example text_atlas
+//!   cargo run -p xtervo-render-wgpu --features slint-presenter --example text_atlas
 //! ```
 //!
 //! Artifacts are written as PPM to
-//! `$TERVO_WGPU_TEXT_OUT` (default `<workspace>/target/wgpu-text-atlas/slint`).
+//! `$XTERVO_WGPU_TEXT_OUT` (default `<workspace>/target/wgpu-text-atlas/slint`).
 
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use tervo_render_wgpu::{
+use xtervo_render_wgpu::{
     compare_rgba, discover_font_path, read_target_rgba8, write_ppm, AtlasConfig, FontMetrics,
     GpuTextRenderer, SlintTexturePresenter, TextLayout, TextSection, TextTarget,
 };
-use tervo_scene::{PhysicalSize, TextAttributes, TextBatch, TextCell};
+use xtervo_scene::{PhysicalSize, TextAttributes, TextBatch, TextCell};
 
 slint::slint! {
     export component App inherits Window {
-        title: "tervo-wgpu-text-atlas";
+        title: "xtervo-wgpu-text-atlas";
         width: 1280px;
         height: 720px;
         in-out property <image> frame;
@@ -102,7 +102,7 @@ fn build_scene(index: usize, renderer: &GpuTextRenderer) -> BuiltScene {
             push_line(
                 &mut title,
                 0,
-                "TERVO - WGPU GLYPH ATLAS",
+                "XTERVO - WGPU GLYPH ATLAS",
                 0x00ff_ffff,
                 CLEAR_RGB,
                 TextAttributes::default(),
@@ -179,7 +179,7 @@ fn build_scene(index: usize, renderer: &GpuTextRenderer) -> BuiltScene {
             for row in 0..24u16 {
                 let source_row = row + offset as u16;
                 let text = format!(
-                    "{source_row:02} | Tervo WGPU atlas scroll test | row {source_row:02} | \
+                    "{source_row:02} | xtervo WGPU atlas scroll test | row {source_row:02} | \
                      0123456789 ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz"
                 );
                 let fg = if source_row % 7 == 0 {
@@ -270,7 +270,7 @@ fn build_scene(index: usize, renderer: &GpuTextRenderer) -> BuiltScene {
 }
 
 fn output_dir() -> PathBuf {
-    std::env::var_os("TERVO_WGPU_TEXT_OUT")
+    std::env::var_os("XTERVO_WGPU_TEXT_OUT")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))

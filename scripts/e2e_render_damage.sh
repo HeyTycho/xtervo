@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-only
-# P1-06 渲染 damage e2e：真实 GUI（Xvfb :137 + Openbox）截图 + TERVO_RENDER_PROFILE 断言。
+# P1-06 渲染 damage e2e：真实 GUI（Xvfb :137 + Openbox）截图 + XTERVO_RENDER_PROFILE 断言。
 #
 # 覆盖：
 #   1. 单行输出/按键：full=false、rows=1、full_redraws 不增长；
@@ -9,7 +9,7 @@
 #   4. resize：grid 变化触发 full，窗口变宽、内容完整；
 #   5. 主题切换（外置 config 热更新）：full 重绘 + 背景色切到新主题。
 #
-# 只操作自己启动的 Xvfb/Openbox/Tervo；不占用 :1，不 pkill 其他进程。
+# 只操作自己启动的 Xvfb/Openbox/xtervo；不占用 :1，不 pkill 其他进程。
 #
 # 用法：
 #   CARGO_TARGET_DIR=$PWD/target ./scripts/e2e_render_damage.sh
@@ -20,7 +20,7 @@ ROOT=$PWD
 OUT=${E2E_OUT:-$ROOT/.logs/render-damage}
 DISPLAY_NUM=${E2E_DISPLAY:-:137}
 TARGET_DIR=${CARGO_TARGET_DIR:-$ROOT/target}
-BIN=${E2E_BIN:-$TARGET_DIR/debug/tervo}
+BIN=${E2E_BIN:-$TARGET_DIR/debug/xtervo}
 XWIN=${E2E_XWIN:-$TARGET_DIR/debug/xwin}
 XCLICK=${E2E_XCLICK:-$TARGET_DIR/debug/xclick}
 XKEY=${E2E_XKEY:-$TARGET_DIR/debug/xkey}
@@ -28,7 +28,7 @@ XKEY=${E2E_XKEY:-$TARGET_DIR/debug/xkey}
 mkdir -p "$OUT" "$OUT/home" "$OUT/logs"
 for f in "$BIN" "$XWIN" "$XCLICK" "$XKEY"; do
     [ -x "$f" ] || {
-        echo "缺少 $f；先 cargo build -p tervo-app --bin tervo --bin xwin --bin xclick --bin xkey" >&2
+        echo "缺少 $f；先 cargo build -p xtervo-app --bin xtervo --bin xwin --bin xclick --bin xkey" >&2
         exit 2
     }
 done
@@ -38,7 +38,7 @@ command -v xdpyinfo >/dev/null || { echo "缺少 xdpyinfo（x11-utils）" >&2; e
 
 COMMON=$(git rev-parse --git-common-dir)
 MAIN_ROOT=$(cd "$(dirname "$COMMON")" && pwd)
-PERF=${TERVO_PERF_DIR:-$MAIN_ROOT/.perf}
+PERF=${XTERVO_PERF_DIR:-$MAIN_ROOT/.perf}
 XVFB_BIN=${E2E_XVFB_BIN:-$PERF/xvfb/usr/bin/Xvfb}
 [ -x "$XVFB_BIN" ] || XVFB_BIN=$(command -v Xvfb || true)
 [ -x "$XVFB_BIN" ] || { echo "找不到 Xvfb；不会回退到 Xephyr" >&2; exit 2; }
@@ -49,10 +49,10 @@ export DISPLAY=$DISPLAY_NUM
 export HOME=$OUT/home
 export XMODIFIERS=@im=none
 export SLINT_BACKEND=winit-software
-export TERVO_CONFIG=$OUT/config.toml
-export TERVO_LOG_DIR=$OUT/logs
-export TERVO_RENDER_PROFILE=1
-export TERVO_CURSOR_BLINK_PHASE=off
+export XTERVO_CONFIG=$OUT/config.toml
+export XTERVO_LOG_DIR=$OUT/logs
+export XTERVO_RENDER_PROFILE=1
+export XTERVO_CURSOR_BLINK_PHASE=off
 
 if xdpyinfo >/dev/null 2>&1; then
     echo "display $DISPLAY_NUM 已被占用；本脚本退出以避免干扰。" >&2
@@ -71,8 +71,8 @@ trap cleanup EXIT
 
 rm -rf "$OUT/logs" "$OUT"/*.png
 mkdir -p "$OUT/logs"
-export TERVO_E2E_INPUT=$OUT/input.txt
-rm -f "$TERVO_E2E_INPUT"
+export XTERVO_E2E_INPUT=$OUT/input.txt
+rm -f "$XTERVO_E2E_INPUT"
 cat > "$OUT/config.toml" <<'CFG'
 theme = "tokyo-night"
 font_size = 15
@@ -95,7 +95,7 @@ printf 'eta seven\n'
 printf 'theta eight\n'
 printf 'iota nine\n'
 while IFS= read -r line; do
-  printf '%s\n' "\$line" >> "\$TERVO_E2E_INPUT"
+  printf '%s\n' "\$line" >> "\$XTERVO_E2E_INPUT"
   case "\$line" in
     do-scroll)
       i=1
@@ -135,23 +135,23 @@ else
     echo "提示：未找到仓库 .perf/openbox，继续无 WM 运行" >&2
 fi
 
-echo "== 启动 Tervo =="
-"$BIN" --cols 100 --rows 30 --title Tervo --shell /bin/sh -- "$OUT/shell.sh" \
+echo "== 启动 xtervo =="
+"$BIN" --cols 100 --rows 30 --title xtervo --shell /bin/sh -- "$OUT/shell.sh" \
     >"$OUT/app.log" 2>&1 &
 APP_PID=$!
 
 WIN=""
 for _ in $(seq 1 200); do
-    WIN=$(xwininfo -root -tree 2>/dev/null | grep -i '"tervo"' | head -1 | awk '{print $1}' || true)
+    WIN=$(xwininfo -root -tree 2>/dev/null | grep -i '"xtervo"' | head -1 | awk '{print $1}' || true)
     [ -n "$WIN" ] && break
     sleep 0.05
 done
-[ -n "$WIN" ] || { echo "找不到 Tervo 窗口；见 $OUT/app.log" >&2; tail -40 "$OUT/app.log" >&2; exit 2; }
-"$XWIN" Tervo 20 20 >/dev/null 2>&1 || true
+[ -n "$WIN" ] || { echo "找不到 xtervo 窗口；见 $OUT/app.log" >&2; tail -40 "$OUT/app.log" >&2; exit 2; }
+"$XWIN" xtervo 20 20 >/dev/null 2>&1 || true
 sleep 1.5
 
-LOG=$(ls -t "$OUT"/logs/tervo-*.log 2>/dev/null | head -1)
-[ -n "$LOG" ] || { echo "没有 Tervo 日志（$OUT/logs）" >&2; exit 2; }
+LOG=$(ls -t "$OUT"/logs/xtervo-*.log 2>/dev/null | head -1)
+[ -n "$LOG" ] || { echo "没有 xtervo 日志（$OUT/logs）" >&2; exit 2; }
 
 geom() {
     xwininfo -id "$WIN" | awk '
@@ -278,7 +278,7 @@ wait_render_after "$before_count" 80 || fail "滚动后没有新的 render 行"
 sleep 0.3
 # 滚动期间至少有一帧整屏（full=true，rows=面板行数）；允许最后一帧是局部。
 if ! new_render_since "$before_count" | grep -q 'full=true'; then
-    echo "  shell 收到: $(tr '\n' ',' < "$TERVO_E2E_INPUT" 2>/dev/null)" >&2
+    echo "  shell 收到: $(tr '\n' ',' < "$XTERVO_E2E_INPUT" 2>/dev/null)" >&2
     echo "  最新 render 行:" >&2
     new_render_since "$before_count" | tail -8 >&2
     fail "滚动没有产生整屏重绘"

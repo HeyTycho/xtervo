@@ -6,10 +6,10 @@ XVFB=${E2E_XVFB_BIN:-$ROOT/.perf/xvfb/usr/bin/Xvfb}
 OUT=${E2E_OUT:-$ROOT/target/mcp-live-e2e}
 mkdir -p "$OUT"
 # single-instance control.sock 需要短路径 + 可写的 per-test runtime。
-RUNTIME=${E2E_RUNTIME_DIR:-/tmp/tervo-mcp-live-runtime-$$}
+RUNTIME=${E2E_RUNTIME_DIR:-/tmp/xtervo-mcp-live-runtime-$$}
 case "$RUNTIME" in
-  /tmp/tervo-mcp-live-runtime-*) ;;
-  *) echo "E2E_RUNTIME_DIR must be under /tmp/tervo-mcp-live-runtime-*" >&2; exit 2 ;;
+  /tmp/xtervo-mcp-live-runtime-*) ;;
+  *) echo "E2E_RUNTIME_DIR must be under /tmp/xtervo-mcp-live-runtime-*" >&2; exit 2 ;;
 esac
 rm -rf -- "$RUNTIME"
 mkdir -p "$RUNTIME"
@@ -20,6 +20,6 @@ DISPLAY_NUM=${DISPLAY_NUM:-:49}
 XP=$!
 trap 'kill "$XP" 2>/dev/null || true; rm -rf -- "$RUNTIME"' EXIT
 sleep 0.7
-TERVO_BIN=${TERVO_BIN:-$ROOT/target/release/tervo} \
+XTERVO_BIN=${XTERVO_BIN:-$ROOT/target/release/xtervo} \
 DISPLAY="$DISPLAY_NUM" E2E_OUT="$OUT" \
 python3 "$ROOT/scripts/e2e_mcp_live_control.py"

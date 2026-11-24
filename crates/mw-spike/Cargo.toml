@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 publish = false
 
-# Spike only. Do not depend on tervo-app: the point is to prove that the
+# Spike only. Do not depend on xtervo-app: the point is to prove that the
 # unmodified UI markup / Slint runtime supports two windows in one process.
 [dependencies]
 slint.workspace = true

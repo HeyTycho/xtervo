@@ -12,18 +12,18 @@
 //! 用法：
 //!
 //! ```text
-//! cargo test -p tervo-core --test vt_fuzz_target --offline
-//! cargo test -p tervo-core --test vt_fuzz_target --offline -- --seed 7 --iters 200000
+//! cargo test -p xtervo-core --test vt_fuzz_target --offline
+//! cargo test -p xtervo-core --test vt_fuzz_target --offline -- --seed 7 --iters 200000
 //! ```
 //!
-//! 默认参数压到 1–2 秒，`cargo test -p tervo-core` 会直接跑到它；CI/soak
+//! 默认参数压到 1–2 秒，`cargo test -p xtervo-core` 会直接跑到它；CI/soak
 //! 用 `scripts/fuzz_vt.sh` 加种子/轮数（`--long` 约 1 分钟）。
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicIsize, Ordering};
 use std::time::{Duration, Instant};
 
-use tervo_core::TermSim;
+use xtervo_core::TermSim;
 
 // ---------------------------------------------------------------------------
 // 计数分配器：只用于本测试二进制，量 fuzz 期间的 live heap 峰值。
@@ -157,7 +157,7 @@ struct Stats {
     frames: usize,
 }
 
-fn frame_checksum(frame: &tervo_core::Frame) -> u64 {
+fn frame_checksum(frame: &xtervo_core::Frame) -> u64 {
     // FNV-1a：帧内容（字符+颜色+标志）一个字节一个字节地折进去。
     let mut h = 0xcbf2_9ce4_8422_2325u64;
     for cell in &frame.cells {

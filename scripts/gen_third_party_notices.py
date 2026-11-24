@@ -3,7 +3,7 @@
 """重新生成 THIRD_PARTY_NOTICES.md（运行时依赖 + 许可证原文）。
 
 做三件事：
-1. `cargo tree -e normal -p tervo-app` 取实际链接进二进制的 crate；
+1. `cargo tree -e normal -p xtervo-app` 取实际链接进二进制的 crate；
 2. 在本地 `.cargo/registry` 里读取每个 crate 的 license 字段与 LICENSE/NOTICE 文件；
 3. 按内容去重后写出 Markdown（每个 crate 一行 + 去重后的许可证文本）。
 
@@ -16,12 +16,12 @@ import subprocess
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-OURS = {"tervo-app", "tervo-core"}
+OURS = {"xtervo-app", "xtervo-core"}
 
 
 def runtime_deps() -> list[tuple[str, str]]:
     out = subprocess.run(
-        ["cargo", "tree", "-e", "normal", "-p", "tervo-app", "--prefix", "none"],
+        ["cargo", "tree", "-e", "normal", "-p", "xtervo-app", "--prefix", "none"],
         cwd=ROOT,
         capture_output=True,
         text=True,
@@ -84,14 +84,14 @@ def main() -> int:
     lines = [
         "# Third-Party Notices",
         "",
-        "Tervo is licensed under **GPL-3.0-only** (see `LICENSE`). This file lists the",
-        "third-party Rust crates linked into the Tervo binary and reproduces the license",
+        "xtervo is licensed under **GPL-3.0-only** (see `LICENSE`). This file lists the",
+        "third-party Rust crates linked into the xtervo binary and reproduces the license",
         "texts shipped by those crates. It is generated from `cargo tree -e normal`",
         "plus the local cargo registry; regenerate after dependency changes.",
         "",
         "## Why GPL-3.0-only?",
         "",
-        "Tervo's UI uses **Slint 1.18**, offered under",
+        "xtervo's UI uses **Slint 1.18**, offered under",
         "`GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0`.",
         "This project uses the GPL-3.0 option, so the combined work is GPL-3.0-only.",
         "If you need a permissive/closed-source license, obtain a commercial or",
@@ -104,7 +104,7 @@ def main() -> int:
         "",
         "The built-in theme list contains community color palettes (e.g. Tokyo Night,",
         "Dracula, Solarized, Yaru). Color scheme names may be trademarks of their",
-        "respective authors; Tervo is not affiliated with them. Only color values are",
+        "respective authors; xtervo is not affiliated with them. Only color values are",
         "included, no code or artwork from those projects.",
         "",
         "## Dependencies",

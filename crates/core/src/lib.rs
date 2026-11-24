@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! Tervo 终端核心（Phase 0 可行性验证）。
+//! xtervo 终端核心（Phase 0 可行性验证）。
 //!
 //! 架构要点（已冻结）：
 //! - 每个 pane 一个 [`alacritty_terminal::term::Term`]，跑在专属 actor 线程；

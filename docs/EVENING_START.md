@@ -76,7 +76,7 @@ nc          ✓（可以当最简 TCP 回显：nc -lk 127.0.0.1 2324）
 SSH 用**远端机器**（用户已定）。
 
 本机现状（已核对）：
-- `~/.config/tervo/` 下**没有 profiles.toml**（还没有保存过任何 Profile）；
+- `~/.config/xtervo/` 下**没有 profiles.toml**（还没有保存过任何 Profile）；
 - `~/.ssh/config` 里只有一个 Host：`ssh.example.test`；
 - `SSH_AUTH_SOCK=<agent socket>`（agent 可用），`~/.ssh` 有 ed25519/rsa 公钥；
 - known_hosts 已配置。
@@ -86,7 +86,7 @@ F9 步骤前不要动 UI，先用 `ssh` 命令行确认 `BatchMode=yes` 能通�
 
 ## 3. 中断保护
 
-- 每个 commit 前必须 `cargo check -p tervo-app -p tervo-core` 通过；
+- 每个 commit 前必须 `cargo check -p xtervo-app -p xtervo-core` 通过；
 - 若某个功能做不完：**回退未提交改动**（`git checkout -- .`），保证树是绿的再收工；
 - 每完成一项，在本文件表格里打勾并写 commit 号。
 
@@ -111,7 +111,7 @@ F9 步骤前不要动 UI，先用 `ssh` 命令行确认 `BatchMode=yes` 能通�
 
 ## 6. F11 截图功能（已确认列入计划，待做）
 
-用户需求：给 Tervo 加“截图”能力。已核对依赖，**不需要新增 crate**：
+用户需求：给 xtervo 加“截图”能力。已核对依赖，**不需要新增 crate**：
 
 ```text
 png     0.18   （编码 PNG）
@@ -136,7 +136,7 @@ x11rb   0.14   （features: xtest, damage, shape, randr —— 可 get_image 抓
 3. 抓像素：get_image(ZPixmap, x, y, w, h, 0xffffffff)；注意
    - depth 24/32 与 LSBFirst（踩过：byte_order 读反整屏发蓝）
    - BGRX → RGBA 重排
-4. 编码：png crate 写 $XDG_PICTURES_DIR/tervo-YYYYmmdd-HHMMSS.png
+4. 编码：png crate 写 $XDG_PICTURES_DIR/xtervo-YYYYmmdd-HHMMSS.png
    （无 XDG_PICTURES_DIR → ~/Pictures → 退到 XDG_STATE_HOME/screenshots）
 5. 可选：arboard 写入剪贴板（配置项 screenshot_copy，默认 false）
 6. 反馈：状态区 pill 显示保存路径；失败时明确原因（未映射/不可见/Wayland）

@@ -325,7 +325,7 @@ def build_html() -> str:
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Tervo 路标 · 矩阵 · 进展</title>
+<title>xtervo 路标 · 矩阵 · 进展</title>
 <style>
   :root {{ color-scheme: dark; --bg:#0f1115; --panel:#171a21; --line:#262b36; --fg:#e6e8ee;
            --muted:#8b93a3; --ok:#3fb950; --warn:#d29922; --info:#58a6ff; --idle:#6e7681; --bad:#f85149; }}
@@ -381,7 +381,7 @@ def build_html() -> str:
 </head>
 <body>
 <header class="top">
-  <h1>Tervo · 路标 / 产品矩阵 / 工作进展</h1>
+  <h1>xtervo · 路标 / 产品矩阵 / 工作进展</h1>
   <div class="sub">生成时间 {esc(now)} · 分支 <code>{esc(facts['branch'])}</code> ·
     HEAD <code>{esc(facts['head'])}</code> · tag <code>{esc(facts['tag'])}</code> ·
     v0.5.0 之后 <b>{esc(facts['count'])}</b> 个提交 · 工作树 {esc(facts['dirty'])[:60]}</div>

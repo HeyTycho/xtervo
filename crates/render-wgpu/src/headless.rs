@@ -44,7 +44,7 @@ pub fn request_headless_gpu() -> Result<HeadlessGpu, String> {
     })?;
     let info = adapter.get_info();
     let (device, queue) = block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-        label: Some("tervo-wgpu-text-headless"),
+        label: Some("xtervo-wgpu-text-headless"),
         ..Default::default()
     }))
     .map_err(|error| format!("failed to request headless wgpu device: {error}"))?;

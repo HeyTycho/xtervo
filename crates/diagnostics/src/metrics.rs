@@ -189,7 +189,7 @@ impl MetricsRegistry {
                 });
     }
 
-    /// Additive `tervo.diag.v1` metrics object. Callers wrap it with
+    /// Additive `xtervo.diag.v1` metrics object. Callers wrap it with
     /// `schema`/`kind`; the fields here are stable but additive.
     pub fn snapshot(&self) -> Value {
         let samples = self.frame_time_samples.load(Ordering::Relaxed);

@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Record (and optionally inject) the bytes on the two sides of a PTY.
 
-The e2e harness runs dsh-tui *inside* Tervo. This proxy sits between Tervo's
+The e2e harness runs dsh-tui *inside* xtervo. This proxy sits between xtervo's
 PTY slave (our stdin/stdout) and a fresh PTY that dsh-tui owns, so every byte
 in both directions is recorded:
 
   * ``host-to-app.raw`` — keystrokes, bracketed-paste payloads, DA replies
-    (``ESC [ ? 62 ; 4 ; 9 ; 22 c`` proves Tervo advertised Sixel).
+    (``ESC [ ? 62 ; 4 ; 9 ; 22 c`` proves xtervo advertised Sixel).
   * ``app-to-host.raw``  — dsh-tui's UI output, including Sixel DCS frames.
 
 A line-delimited JSON metadata file (``proxy-events.jsonl``) records chunk
@@ -15,7 +15,7 @@ buffering the whole session in memory.
 
 Control socket (``inject.sock`` in the log directory) accepts one JSON object
 per line and lets the harness write bytes directly into dsh-tui's stdin. It is
-used for the transcript-thumbnail click: a physical X click lands on Tervo's
+used for the transcript-thumbnail click: a physical X click lands on xtervo's
 own image lightbox before dsh-tui can see it (documented blocker), so the
 harness injects the equivalent SGR mouse report at the PTY boundary instead.
 Messages:
@@ -210,7 +210,7 @@ def main() -> int:
                     else:
                         raise
                 if not chunk:
-                    # Tervo went away; hang up the child and exit.
+                    # xtervo went away; hang up the child and exit.
                     try:
                         os.kill(pid, signal.SIGHUP)
                     except ProcessLookupError:

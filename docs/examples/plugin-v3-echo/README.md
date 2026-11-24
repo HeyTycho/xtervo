@@ -15,23 +15,23 @@ only the Python standard library and demonstrates:
 ## Install
 
 ```bash
-mkdir -p ~/.config/tervo/plugins
-cp -r docs/examples/plugin-v3-echo ~/.config/tervo/plugins/echo
-chmod +x ~/.config/tervo/plugins/echo/main.py
+mkdir -p ~/.config/xtervo/plugins
+cp -r docs/examples/plugin-v3-echo ~/.config/xtervo/plugins/echo
+chmod +x ~/.config/xtervo/plugins/echo/main.py
 ```
 
-Start Tervo → **Settings → Plugins** → **Enable** → review the permissions
+Start xtervo → **Settings → Plugins** → **Enable** → review the permissions
 (`filesystem=plugin`, `terminal_context`, `credentials=own`) → **Allow and
 enable**. Commands appear in the Command Palette as `Echo: …`.
 
-Or point Tervo at a plugins root:
+Or point xtervo at a plugins root:
 
 ```bash
-TERVO_PLUGINS=$PWD/docs/examples TERVO_CONFIG=/tmp/tervo-v3.toml \
-  cargo run -p tervo-app --bin tervo
+XTERVO_PLUGINS=$PWD/docs/examples XTERVO_CONFIG=/tmp/xtervo-v3.toml \
+  cargo run -p xtervo-app --bin xtervo
 ```
 
-The directory name (`plugin-v3-echo`) does not matter; `id = "dev.tervo.echo"`
+The directory name (`plugin-v3-echo`) does not matter; `id = "dev.xtervo.echo"`
 is the stable plugin ID.
 
 ## Security
@@ -41,7 +41,7 @@ the manifest are capability declarations for host-mediated APIs plus a one-time
 user confirmation — **not an OS sandbox**. The host never provides Vault or
 environment secrets. See [`../../PLUGIN_V3.md`](../../PLUGIN_V3.md).
 
-MCP is a built-in Tervo feature and is **not** available as a plugin
+MCP is a built-in xtervo feature and is **not** available as a plugin
 capability.
 
 ## Protocol notes

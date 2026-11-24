@@ -17,8 +17,8 @@
 ## 1. 验收链路
 
 ```text
-/bin/sh（真实 PTY，tervo_core::spawn）
-  → Frame（tervo-core）
+/bin/sh（真实 PTY，xtervo_core::spawn）
+  → Frame（xtervo-core）
   → app 现有 CPU Renderer（examples/gpu_terminal_spike.rs 以 #[path] 复用
     crates/app/src/render.rs + glyph.rs）
   → RGBA8 framebuffer (414x198)
@@ -30,7 +30,7 @@
   → Window::take_snapshot() 与 CPU framebuffer 逐像素对照
 ```
 
-example **不启动 app 主循环**，不依赖 `tervo-app` 的 Session/Workspace/window
+example **不启动 app 主循环**，不依赖 `xtervo-app` 的 Session/Workspace/window
 事件循环；只复用 app 的软件终端光栅化模块。
 
 ## 2. 启用命令（本机实测）
@@ -51,19 +51,19 @@ cd ..
 CARGO_HOME=$PWD/../../.cargo \
 CARGO_TARGET_DIR=$PWD/../../target \
 CARGO_NET_OFFLINE=true \
-  cargo build -p tervo-app --example gpu_terminal_spike
+  cargo build -p xtervo-app --example gpu_terminal_spike
 
 # 2) 隔离 Xvfb :77 + CPU WGPU adapter 跑验收
 .xvfb-local/usr/bin/Xvfb :77 -screen 0 1280x720x24 -nolisten tcp &
 XPID=$!
 sleep 2
 DISPLAY=:77 SLINT_WGPU_CPU=1 \
-TERVO_GPU_SPIKE_OUT=$PWD/docs/evidence/gpu-spike \
+XTERVO_GPU_SPIKE_OUT=$PWD/docs/evidence/gpu-spike \
   ../../target/debug/examples/gpu_terminal_spike
 kill $XPID
 ```
 
-也可以直接用辅助脚本（要求 PATH 或 `TERVO_XVFB` 里有 Xvfb；拒绝 `:1`）：
+也可以直接用辅助脚本（要求 PATH 或 `XTERVO_XVFB` 里有 Xvfb；拒绝 `:1`）：
 
 ```bash
 DISPLAY_NUM=:77 scripts/gpu-terminal-spike.sh
@@ -78,7 +78,7 @@ DISPLAY_NUM=:77 scripts/gpu-terminal-spike.sh
 实测日志（`docs/evidence/gpu-spike/run1.log`）：
 
 ```text
-pty: generation=2 grid=46x9 text="TERVO-GPU-PTY ... RED-BG ... BLUE-BG ... PTY-FRAME-OK ..."
+pty: generation=2 grid=46x9 text="XTERVO-GPU-PTY ... RED-BG ... BLUE-BG ... PTY-FRAME-OK ..."
 gpu: Slint WGPU30 adapter="llvmpipe (LLVM 15.0.7, 256 bits)" backend=Vulkan device_type=Cpu
 gpu: uploaded 414x198 Rgba8UnormSrgb from PTY framebuffer; window=414x198
 PASS gpu_terminal_spike: real PTY framebuffer 414x198 -> Slint WGPU30 texture -> take_snapshot;
@@ -88,7 +88,7 @@ PASS gpu_terminal_spike: real PTY framebuffer 414x198 -> Slint WGPU30 texture ->
 ```
 
 - snapshot 尺寸：`414x198`，与 CPU framebuffer、窗口尺寸一致（1:1，无缩放）。
-- 真实 PTY 文本：`TERVO-GPU-PTY`、`RED-BG`（红底）、`BLUE-BG`（蓝底）、
+- 真实 PTY 文本：`XTERVO-GPU-PTY`、`RED-BG`（红底）、`BLUE-BG`（蓝底）、
   `PTY-FRAME-OK`。
 - 非背景像素：CPU `5300`，snapshot `5300`，比值 `1.000`。
 - 逐像素对照：`>8` 与 `>32` 通道差的像素均为 `0.000%`；
@@ -140,7 +140,7 @@ example 在以下任一情况**不会**打印 `PASS`，并以非零码退出：
    不等于真实 GPU 驱动/硬件路径也成立。
 7. **环境**：本机无系统 Xvfb、无 root，验收用 worktree 内解包的 `xvfb`
    二进制 + 隔离 `:77`；用户 `:1` 窗口/进程全程未被触碰。
-8. **未接入 app**：`tervo-app` 主程序没有任何代码引用本 example；它只是
+8. **未接入 app**：`xtervo-app` 主程序没有任何代码引用本 example；它只是
    spike/兜底验收工具。
 
 ## 6. 变更文件
@@ -154,6 +154,6 @@ example 在以下任一情况**不会**打印 `PASS`，并以非零码退出：
 
 ## 7. 基线测试
 
-`cargo test -p tervo-app --bin tervo` 结果见
-`docs/evidence/gpu-spike/cargo-test-bin-tervo.log`，不改变 413 基线
+`cargo test -p xtervo-app --bin xtervo` 结果见
+`docs/evidence/gpu-spike/cargo-test-bin-xtervo.log`，不改变 413 基线
 （日志末尾为 `test result: ok. 413 passed; ...`）。

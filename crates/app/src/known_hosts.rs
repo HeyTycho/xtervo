@@ -27,7 +27,7 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use tervo_core::WakeSignal;
+use xtervo_core::WakeSignal;
 
 use crate::profile::Profile;
 
@@ -825,7 +825,7 @@ fn attach_fingerprints(keys: &mut [KnownKey]) {
     }
     let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
     let path = std::env::temp_dir().join(format!(
-        "tervo-kh-{}-{unique}.txt",
+        "xtervo-kh-{}-{unique}.txt",
         std::process::id()
     ));
     if std::fs::write(&path, body.as_bytes()).is_err() {
@@ -1037,7 +1037,7 @@ proxyjump jump@bastion:2200
 
     fn test_dir(label: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "tervo-known-hosts-{}-{label}",
+            "xtervo-known-hosts-{}-{label}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1192,7 +1192,7 @@ proxyjump jump@bastion:2200
             key_path: "/dev/null".into(),
             extra_args: vec![
                 "-o".into(),
-                "UserKnownHostsFile=/tmp/nonexistent-tervo-kh".into(),
+                "UserKnownHostsFile=/tmp/nonexistent-xtervo-kh".into(),
                 "-o".into(),
                 "StrictHostKeyChecking=no".into(),
             ],

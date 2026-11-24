@@ -4,7 +4,7 @@
 # P1-07 事件唤醒 e2e（headless Xvfb :138）：
 #   1. 同一 binary 跑两遍：
 #        wake   = 默认事件唤醒（CoreEvent / 插件活动 / SFTP 结果 → Slint 事件循环）
-#        before = TERVO_EVENT_WAKE=0，纯 400ms 轮询（旧行为，A/B 对照）
+#        before = XTERVO_EVENT_WAKE=0，纯 400ms 轮询（旧行为，A/B 对照）
 #   2. 语义事件延迟：OSC 标题 ×6、BEL、OSC52 query；每项日志带 epoch ms，
 #      与 shell 里 `date +%s%3N` 的发送时间戳直接相减。
 #   3. 插件 startup 活动、SFTP 上传完成：后台线程写结果后唤醒 UI 的延迟。
@@ -15,7 +15,7 @@
 # 安全：只启动/回收本脚本自己的 Xvfb、app、xsel；不 pkill、不碰 :1。
 #
 # 前置构建：
-#   CARGO_HOME=... cargo build -p tervo-app --bin tervo --bin xwin --bin xclick
+#   CARGO_HOME=... cargo build -p xtervo-app --bin xtervo --bin xwin --bin xclick
 # 用法：
 #   ./scripts/e2e_event_wake.sh
 #   E2E_DISPLAY=:138 E2E_OUT=.logs/event-wake ./scripts/e2e_event_wake.sh
@@ -28,16 +28,16 @@ DISPLAY_NUM=${E2E_DISPLAY:-:138}
 SCREEN=${E2E_SCREEN:-1280x900x24}
 
 TARGET_DIR=${CARGO_TARGET_DIR:-$ROOT/target}
-BIN=${E2E_BIN:-$TARGET_DIR/debug/tervo}
+BIN=${E2E_BIN:-$TARGET_DIR/debug/xtervo}
 XWIN=${E2E_XWIN:-$TARGET_DIR/debug/xwin}
 XCLICK=${E2E_XCLICK:-$TARGET_DIR/debug/xclick}
 for f in "$BIN" "$XWIN" "$XCLICK"; do
-    [ -x "$f" ] || { echo "缺少 $f；先 cargo build -p tervo-app --bin tervo --bin xwin --bin xclick" >&2; exit 2; }
+    [ -x "$f" ] || { echo "缺少 $f；先 cargo build -p xtervo-app --bin xtervo --bin xwin --bin xclick" >&2; exit 2; }
 done
 
 COMMON=$(git rev-parse --git-common-dir)
 MAIN_ROOT=$(cd "$(dirname "$COMMON")" && pwd)
-PERF=${TERVO_PERF_DIR:-$MAIN_ROOT/.perf}
+PERF=${XTERVO_PERF_DIR:-$MAIN_ROOT/.perf}
 XVFB_BIN=${E2E_XVFB_BIN:-$PERF/xvfb/usr/bin/Xvfb}
 [ -x "$XVFB_BIN" ] || XVFB_BIN=$(command -v Xvfb || true)
 [ -x "$XVFB_BIN" ] || { echo "找不到 Xvfb" >&2; exit 2; }
@@ -175,21 +175,21 @@ start_app() { # <dir> <wake|before>
     DISPLAY=$DISPLAY_NUM HOME="$dir/home" printf 'wake-clip' | \
         DISPLAY=$DISPLAY_NUM HOME="$dir/home" xsel -b -i
     if [ "$mode" = before ]; then
-        export TERVO_EVENT_WAKE=0
+        export XTERVO_EVENT_WAKE=0
     else
-        unset TERVO_EVENT_WAKE || true
+        unset XTERVO_EVENT_WAKE || true
     fi
     DISPLAY=$DISPLAY_NUM HOME="$dir/home" XMODIFIERS=@im=none SLINT_BACKEND=winit-software \
-        TERVO_LOG_DIR="$dir/logs" TERVO_CONFIG="$dir/config.toml" \
-        TERVO_PROFILES="$dir/profiles.toml" TERVO_PLUGINS="$dir/plugins" \
-        TERVO_WAKE_STATS=1 PATH="$dir/bin:$PATH" \
+        XTERVO_LOG_DIR="$dir/logs" XTERVO_CONFIG="$dir/config.toml" \
+        XTERVO_PROFILES="$dir/profiles.toml" XTERVO_PLUGINS="$dir/plugins" \
+        XTERVO_WAKE_STATS=1 PATH="$dir/bin:$PATH" \
         "$BIN" --cols 100 --rows 28 --shell /bin/sh -- -c "$dir/pane.sh $dir" \
         >"$dir/app.out" 2>&1 &
     APP_PID=$!
     echo "$APP_PID" > "$dir/pid"
     local win=""
     for _ in $(seq 1 100); do
-        win=$(xwininfo -root -tree 2>/dev/null | grep -iE '"tervo" "tervo"' | awk '{print $1}' | head -1 || true)
+        win=$(xwininfo -root -tree 2>/dev/null | grep -iE '"xtervo" "xtervo"' | awk '{print $1}' | head -1 || true)
         [ -n "$win" ] && break
         sleep 0.1
     done
@@ -207,7 +207,7 @@ stop_app() { # <dir>
     APP_PID=""
 }
 
-app_log() { ls -t "$1"/logs/tervo-*.log 2>/dev/null | head -1; }
+app_log() { ls -t "$1"/logs/xtervo-*.log 2>/dev/null | head -1; }
 
 wait_log() { # <log> <grep-pattern> <seconds>
     local log=$1 pat=$2 secs=$3
@@ -385,7 +385,7 @@ for mode in ("wake", "before"):
         )
     ]
     if len(stats) < 2:
-        failures.append(f"{mode}: 唤醒统计不足 2 行（TERVO_WAKE_STATS 未生效）")
+        failures.append(f"{mode}: 唤醒统计不足 2 行（XTERVO_WAKE_STATS 未生效）")
         idle = (0, 0, 0, 0, 0)
     else:
         (c1, a1, p1), (c2, a2, p2) = stats[-2], stats[-1]

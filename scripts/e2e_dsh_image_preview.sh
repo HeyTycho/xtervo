@@ -1,34 +1,34 @@
 #!/usr/bin/env bash
-# dsh-tui image-preview e2e inside Tervo — isolated, reproducible, headless.
+# dsh-tui image-preview e2e inside xtervo — isolated, reproducible, headless.
 #
 # What it proves:
-#   1. Tervo advertises Sixel to the app (DA1 rewrite) and does NOT claim Kitty.
+#   1. xtervo advertises Sixel to the app (DA1 rewrite) and does NOT claim Kitty.
 #   2. A real dsh-tui session (copied from $HOME/.dsh) renders its transcript
-#      image thumbnails as Sixel inside Tervo.
+#      image thumbnails as Sixel inside xtervo.
 #   3. A real `[Image #N]` staging path works end-to-end: a real PNG path placed
-#      on the X11 PRIMARY selection (xsel), pasted through Tervo's middle-click
+#      on the X11 PRIMARY selection (xsel), pasted through xtervo's middle-click
 #      paste as a bracketed paste, is staged by dsh-tui.
 #   4. dsh-tui opens its own image preview: the transcript-thumbnail click is
 #      injected at the PTY boundary (SGR mouse report) because a physical click
-#      is swallowed by Tervo's own image lightbox; the composer `[Image #N]`
-#      peek is opened with real keyboard input through Tervo.
+#      is swallowed by xtervo's own image lightbox; the composer `[Image #N]`
+#      peek is opened with real keyboard input through xtervo.
 #   5. Zoom / pan / close work, and closing the preview leaves no image
 #      residue on the transcript (pixel diff against the pre-open frame).
 #
 # Isolation: a fresh Xvfb on a TCP display (never :1), a private HOME/DSH_HOME
 # copy, and only processes started by this script are killed (process group).
 #
-# Requirements: built Tervo + xwin/xclick/xkey, Xvfb, xdpyinfo/xwininfo/xwd,
+# Requirements: built xtervo + xwin/xclick/xkey, Xvfb, xdpyinfo/xwininfo/xwd,
 # python3 with Pillow, xsel, node (dsh-tui profile), zstd.
 #
 # Env overrides:
 #   E2E_OUT          output directory (default .logs/dsh-image-preview-e2e)
-#   E2E_BIN          tervo binary (default target/debug/tervo)
+#   E2E_BIN          xtervo binary (default target/debug/xtervo)
 #   E2E_XVFB_BIN     Xvfb binary (auto-detected from .perf or PATH)
 #   E2E_SESSION_ID   real dsh session to copy (default below)
 #   E2E_DSH_SRC_HOME source DSH_HOME (default $HOME/.dsh)
 #   E2E_DSH_TUI_SRC  source dsh-tui data dir (default $HOME/.dsh-tui)
-#   E2E_SCRATCH_HOME HOME for Tervo/dsh-tui (default: private copy in $E2E_OUT)
+#   E2E_SCRATCH_HOME HOME for xtervo/dsh-tui (default: private copy in $E2E_OUT)
 #
 # Exit status: 0 only when every check passes.
 set -uo pipefail
@@ -37,7 +37,7 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
 
 OUT=${E2E_OUT:-$ROOT/.logs/dsh-image-preview-e2e}
-BIN=${E2E_BIN:-$ROOT/target/debug/tervo}
+BIN=${E2E_BIN:-$ROOT/target/debug/xtervo}
 XWIN=${E2E_XWIN:-$ROOT/target/debug/xwin}
 XCLICK=${E2E_XCLICK:-$ROOT/target/debug/xclick}
 XKEY=${E2E_XKEY:-$ROOT/target/debug/xkey}
@@ -88,7 +88,7 @@ die() {
 }
 
 for f in "$BIN" "$XWIN" "$XCLICK" "$XKEY" "$PROXY" "$CHECKS"; do
-  [ -e "$f" ] || die "missing $f (build: cargo build -p tervo-app --bin tervo --bin xwin --bin xclick --bin xkey)"
+  [ -e "$f" ] || die "missing $f (build: cargo build -p xtervo-app --bin xtervo --bin xwin --bin xclick --bin xkey)"
 done
 [ -x "$BIN" ] || die "$BIN is not executable"
 command -v xdpyinfo xwininfo xwd xsel node zstd >/dev/null \
@@ -199,20 +199,20 @@ exec python3 "$PROXY" "$OUT/pty" $COLS $ROWS \
 EOF
 chmod +x "$OUT/run_dsh.sh"
 
-TERVO_CFG=$OUT/tervo.toml
-: >"$TERVO_CFG"
-setsid env DISPLAY=$TCP_DISPLAY HOME=$OUT/home TERVO_CONFIG=$TERVO_CFG \
-  TERVO_LOG_DIR=$OUT/logs TERVO_SIXEL_DEBUG=1 \
-  "$BIN" --shell /bin/bash --cols $COLS --rows $ROWS --title Tervo \
-  -- -c "bash $OUT/run_dsh.sh" >"$OUT/tervo.log" 2>&1 &
+XTERVO_CFG=$OUT/xtervo.toml
+: >"$XTERVO_CFG"
+setsid env DISPLAY=$TCP_DISPLAY HOME=$OUT/home XTERVO_CONFIG=$XTERVO_CFG \
+  XTERVO_LOG_DIR=$OUT/logs XTERVO_SIXEL_DEBUG=1 \
+  "$BIN" --shell /bin/bash --cols $COLS --rows $ROWS --title xtervo \
+  -- -c "bash $OUT/run_dsh.sh" >"$OUT/xtervo.log" 2>&1 &
 APP_PID=$!
 
 for _ in $(seq 1 300); do
-  WIN=$(xwininfo -root -tree 2>/dev/null | grep -i '"Tervo"' | head -1 | awk '{print $1}')
+  WIN=$(xwininfo -root -tree 2>/dev/null | grep -i '"xtervo"' | head -1 | awk '{print $1}')
   [ -n "$WIN" ] && break
   sleep 0.05
 done
-[ -n "$WIN" ] || { tail -30 "$OUT/tervo.log"; die "Tervo window did not appear"; }
+[ -n "$WIN" ] || { tail -30 "$OUT/xtervo.log"; die "xtervo window did not appear"; }
 eval "$(xwininfo -id "$WIN" | awk '
   /Absolute upper-left X/{printf "WIN_X=%s\n", $NF}
   /Absolute upper-left Y/{printf "WIN_Y=%s\n", $NF}
@@ -258,7 +258,7 @@ wait_raw() {  # <pattern> <timeout seconds> [start offset]
   return 1
 }
 last_sixel_images() {  # prints "id,row,col;..." from the last [sixel] debug line
-  { cat "$OUT/tervo.log" 2>/dev/null; cat "$OUT"/logs/tervo-*.log 2>/dev/null; } | grep -a '\[sixel\]' | grep -a 'images=' | tail -1 \
+  { cat "$OUT/xtervo.log" 2>/dev/null; cat "$OUT"/logs/xtervo-*.log 2>/dev/null; } | grep -a '\[sixel\]' | grep -a 'images=' | tail -1 \
     | sed -E 's/.*images=\[(.*)\]/\1/' | tr -d '()' | tr -d ' '
 }
 
@@ -274,14 +274,14 @@ sleep 1.5
 shot 01-boot
 
 if grep -a -q -F $'\x1b[?62;4;9;22c' "$OUT/pty/host-to-app.raw"; then
-  ok "Tervo DA1 advertises Sixel (ESC[?62;4;9;22c)"
+  ok "xtervo DA1 advertises Sixel (ESC[?62;4;9;22c)"
 else
-  bad "Tervo DA1 Sixel advertisement missing"
+  bad "xtervo DA1 Sixel advertisement missing"
 fi
 if grep -a -q -F $'Gi=31;OK' "$OUT/pty/host-to-app.raw"; then
-  ok "Tervo answered the Kitty graphics query; dsh uses Kitty"
+  ok "xtervo answered the Kitty graphics query; dsh uses Kitty"
 else
-  bad "Tervo did not answer Kitty graphics query"
+  bad "xtervo did not answer Kitty graphics query"
 fi
 grep -a -q -F $'\x1b[?1006h' "$OUT/pty/app-to-host.raw" \
   && ok "dsh-tui enabled SGR mouse reporting" \
@@ -292,7 +292,7 @@ grep -a -q -F $'\x1b[?2004h' "$OUT/pty/app-to-host.raw" \
 
 # ---------------------------------------------------------------------------
 # Entry A: real copied session, transcript image thumbnails, dsh modal preview.
-# Physical clicks on Sixel placements are consumed by Tervo's lightbox, so the
+# Physical clicks on Sixel placements are consumed by xtervo's lightbox, so the
 # click is injected as the equivalent SGR mouse report at the PTY boundary.
 # ---------------------------------------------------------------------------
 SCROLLED=0
@@ -324,7 +324,7 @@ pick = visible[0] if visible else (anchors[0] if anchors else (0, 4, 4))
 print(pick[1], pick[2])
 PY
 )"
-CELL_LINE=$(grep -a 'READY TIMING' "$OUT/tervo.log" | tail -1)
+CELL_LINE=$(grep -a 'READY TIMING' "$OUT/xtervo.log" | tail -1)
 CELL_W=$(printf '%s' "$CELL_LINE" | sed -n 's/.*cell=\([0-9]*\)x\([0-9]*\).*/\1/p')
 CELL_H=$(printf '%s' "$CELL_LINE" | sed -n 's/.*cell=\([0-9]*\)x\([0-9]*\).*/\2/p')
 [ -n "$CELL_W" ] && [ -n "$CELL_H" ] || die "cannot parse cell size: $CELL_LINE"
@@ -385,20 +385,20 @@ if [ "$OPENED" = 1 ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Entry B: real X11 clipboard -> Tervo bracketed paste -> dsh `[Image #N]` ->
+# Entry B: real X11 clipboard -> xtervo bracketed paste -> dsh `[Image #N]` ->
 # keyboard-opened composer peek preview. Covers the staging pipeline that a
 # fake xclip would not exercise.
 # ---------------------------------------------------------------------------
 TOKEN_OFF=$(raw_size)
-click 600 650 2     # Tervo middle-click paste (below the transcript image area) (PRIMARY = real PNG path)
+click 600 650 2     # xtervo middle-click paste (below the transcript image area) (PRIMARY = real PNG path)
 PASTED=0
 if wait_raw 'Pasted image' 8 "$TOKEN_OFF"; then PASTED=1; fi
 sleep 1.0
 shot 07-clipboard-token
 if grep -a -q -F $'\x1b[200~' "$OUT/pty/host-to-app.raw"; then
-  ok "Tervo forwarded the clipboard as a bracketed paste (ESC[200~)"
+  ok "xtervo forwarded the clipboard as a bracketed paste (ESC[200~)"
 else
-  bad "no bracketed paste bytes from Tervo"
+  bad "no bracketed paste bytes from xtervo"
 fi
 if [ "$PASTED" = 1 ] && tail -c +$((TOKEN_OFF + 1)) "$OUT/pty/app-to-host.raw" | grep -a -q -F '[Image #1]'; then
   ok "dsh-tui staged the real PNG as [Image #1]"
@@ -454,7 +454,7 @@ fi
 if command -v kitty >/dev/null 2>&1; then
   note "kitty found at $(command -v kitty); this harness does not yet drive it as a reference"
 else
-  note "kitty reference unavailable on this host (not installed); Sixel output compared against Tervo's own lightbox screenshots instead"
+  note "kitty reference unavailable on this host (not installed); Sixel output compared against xtervo's own lightbox screenshots instead"
 fi
 
 printf '\n===== dsh-tui image-preview e2e =====\n'

@@ -7,7 +7,7 @@
 //! 1. 主等宽字体（JetBrains Mono / DejaVu Sans Mono）；
 //! 2. CJK 回退（WQY Micro Hei / Droid Sans Fallback / Noto Sans CJK / WQY Zen Hei）；
 //! 3. 符号与单色 emoji（Noto Sans Symbols 2 / DejaVu Sans / Symbola / Noto Emoji）；
-//! 4. 用户用 `TERVO_FALLBACK_FONTS` 追加的字体（常见用途：Nerd Font 图标）；
+//! 4. 用户用 `XTERVO_FALLBACK_FONTS` 追加的字体（常见用途：Nerd Font 图标）；
 //! 5. 彩色位图 emoji（Noto Color Emoji 等）单独走 `ttf-parser` 读 CBDT/CBLC/sbix
 //!    位图，PNG 由 `png` 解码，缩放后缓存在 [`GlyphCache`] 的 RGBA 缓存里。
 //!    找不到彩色字体/字形时保持原单色回退与占位框，绝不画 tofu、也不 panic。
@@ -200,7 +200,7 @@ const FALLBACK_SETS: &[FallbackCandidate] = &[
         group: GROUP_EMOJI,
         color_only: false,
     },
-    // --- Nerd Font 常见系统安装路径（用户目录用 TERVO_FALLBACK_FONTS 追加） ---
+    // --- Nerd Font 常见系统安装路径（用户目录用 XTERVO_FALLBACK_FONTS 追加） ---
     FallbackCandidate {
         regular: "/usr/share/fonts/truetype/nerd-fonts/SymbolsNerdFontMono-Regular.ttf",
         regular_index: 0,
@@ -280,20 +280,20 @@ fn load_font_at(path: &str, collection_index: u32) -> Option<Font> {
     Font::from_bytes(bytes, settings).ok()
 }
 
-/// `TERVO_FONTLOG=1` 时打印字体解析耗时/失败原因，方便现场排查缺字。
+/// `XTERVO_FONTLOG=1` 时打印字体解析耗时/失败原因，方便现场排查缺字。
 fn fontlog() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("TERVO_FONTLOG").is_some())
+    *ON.get_or_init(|| std::env::var_os("XTERVO_FONTLOG").is_some())
 }
 
-/// 彩色 emoji 总开关：默认开启；`TERVO_COLOR_EMOJI=0/off/false` 可退回单色。
+/// 彩色 emoji 总开关：默认开启；`XTERVO_COLOR_EMOJI=0/off/false` 可退回单色。
 ///
 /// 做成环境变量而不是配置项：默认行为要彩色，排障时可一键关掉（配置 schema 不动）。
 fn color_emoji_enabled() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
     *ON.get_or_init(|| {
         !matches!(
-            std::env::var("TERVO_COLOR_EMOJI").ok().as_deref(),
+            std::env::var("XTERVO_COLOR_EMOJI").ok().as_deref(),
             Some("0" | "off" | "false" | "no")
         )
     })
@@ -572,7 +572,7 @@ impl FallbackFace {
         self.load_font(&self.path, self.index, &self.regular)
     }
 
-    /// 彩色位图字体；`TERVO_FALLBACK_FONTS` 追加的字体也会在此探测一次并缓存。
+    /// 彩色位图字体；`XTERVO_FALLBACK_FONTS` 追加的字体也会在此探测一次并缓存。
     fn color_face(&self) -> Option<&ColorFace> {
         self.color
             .get_or_init(|| {
@@ -960,7 +960,7 @@ impl FontSet {
 
     /// 取 emoji 的彩色位图（PNG / 预乘 BGRA 原始数据）。
     ///
-    /// 只在 emoji 码位调用；候选只包含 COLOR 组与 `TERVO_FALLBACK_FONTS`，
+    /// 只在 emoji 码位调用；候选只包含 COLOR 组与 `XTERVO_FALLBACK_FONTS`，
     /// 不会碰 CJK 字体。字体探测结果（含失败）缓存在回退链里。
     fn color_image(&self, ch: char, px: u16) -> Option<ColorRaster<'_>> {
         if !color_emoji_enabled() || !is_emoji(ch as u32) {
@@ -1079,10 +1079,10 @@ fn scan_icon_fonts(dir: &Path, depth: usize, budget: &mut usize, out: &mut Vec<S
     }
 }
 
-/// 建立回退链：内置候选 + `TERVO_FALLBACK_FONTS` 追加项。
+/// 建立回退链：内置候选 + `XTERVO_FALLBACK_FONTS` 追加项。
 ///
 /// 环境变量格式：`:` 分隔的字体路径，可带 `#face_index`（TTC），例如
-/// `TERVO_FALLBACK_FONTS=/path/SymbolsNerdFontMono-Regular.ttf`。
+/// `XTERVO_FALLBACK_FONTS=/path/SymbolsNerdFontMono-Regular.ttf`。
 fn load_fallback() -> Fallback {
     struct Spec {
         path: String,
@@ -1103,7 +1103,7 @@ fn load_fallback() -> Fallback {
             env: false,
         })
         .collect();
-    if let Ok(raw) = std::env::var("TERVO_FALLBACK_FONTS") {
+    if let Ok(raw) = std::env::var("XTERVO_FALLBACK_FONTS") {
         for entry in raw.split(':') {
             let entry = entry.trim();
             if entry.is_empty() {

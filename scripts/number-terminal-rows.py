@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""给 Tervo/X11 终端截图叠加 1-based 行号，便于对照 report。"""
+"""给 xtervo/X11 终端截图叠加 1-based 行号，便于对照 report。"""
 import sys
 from PIL import Image, ImageDraw, ImageFont
 

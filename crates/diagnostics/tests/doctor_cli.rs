@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! Smoke tests for the `tervo-doctor` binary. The process is launched with a
+//! Smoke tests for the `xtervo-doctor` binary. The process is launched with a
 //! cleared environment (no DISPLAY/WAYLAND_DISPLAY), proving the slice never
 //! needs :1 or a window.
 
@@ -16,7 +16,7 @@ struct TempDir {
 impl TempDir {
     fn new(name: &str) -> Self {
         let path =
-            std::env::temp_dir().join(format!("tervo-doctor-cli-{}-{}", name, std::process::id()));
+            std::env::temp_dir().join(format!("xtervo-doctor-cli-{}-{}", name, std::process::id()));
         let _ = fs::remove_dir_all(&path);
         fs::create_dir_all(&path).expect("create temp dir");
         Self { path }
@@ -40,17 +40,17 @@ impl Drop for TempDir {
 }
 
 fn command(dir: &TempDir) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_tervo-doctor"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_xtervo-doctor"));
     command
         .env_clear()
         .env("HOME", dir.path.as_os_str())
-        .env("TERVO_PROFILES", dir.join("profiles.toml"))
-        .env("TERVO_LOG_DIR", dir.join("logs"));
+        .env("XTERVO_PROFILES", dir.join("profiles.toml"))
+        .env("XTERVO_LOG_DIR", dir.join("logs"));
     command
 }
 
 fn run(mut command: Command) -> Output {
-    command.output().expect("spawn tervo-doctor")
+    command.output().expect("spawn xtervo-doctor")
 }
 
 fn stdout_json(output: &Output) -> Value {
@@ -69,7 +69,7 @@ fn check_works_without_display_and_redacts_attachment() {
     let config = dir.write("config.toml", "theme = \"dark\"\n");
     let frame = dir.write(
         "frame.json",
-        r#"{"schema":"tervo.diag.v1","kind":"snapshot","cols":80,"rows":2,"generation":2,"damage":{"full":false,"region_count":1,"rects":[{"x":0,"y":0,"w":10,"h":1}]},"images":[],"text":["hello","world"]}"#,
+        r#"{"schema":"xtervo.diag.v1","kind":"snapshot","cols":80,"rows":2,"generation":2,"damage":{"full":false,"region_count":1,"rects":[{"x":0,"y":0,"w":10,"h":1}]},"images":[],"text":["hello","world"]}"#,
     );
     let profile = dir.write("profile.log", "frame_ms=12.5\ndraw_ms=3.0\n");
     let log = dir.write("app.log", "ready\napi_key=sk-live-1234567890\n");
@@ -90,7 +90,7 @@ fn check_works_without_display_and_redacts_attachment() {
     ]);
     let output = run(cmd);
     let value = stdout_json(&output);
-    assert_eq!(value["schema"], "tervo.diagnostic_case.v1");
+    assert_eq!(value["schema"], "xtervo.diagnostic_case.v1");
     assert!(value["environment"]["display"].is_null());
     assert!(value["environment"]["wayland_display"].is_null());
     assert!(!value["probes"].as_array().unwrap().is_empty());
@@ -98,7 +98,7 @@ fn check_works_without_display_and_redacts_attachment() {
     assert_eq!(value["evidence"]["sha256"].as_str().unwrap().len(), 64);
     let text = String::from_utf8(output.stdout).unwrap();
     assert!(!text.contains("sk-live-1234567890"));
-    assert!(text.contains("tervo.diagnostic_case.v1"));
+    assert!(text.contains("xtervo.diagnostic_case.v1"));
 }
 
 #[test]
@@ -107,7 +107,7 @@ fn schema_and_issue_commands_are_usable() {
     let config = dir.write("config.toml", "theme = \"dark\"\n");
     let frame = dir.write(
         "frame.json",
-        r#"{"schema":"tervo.diag.v1","kind":"snapshot","cols":40,"rows":2,"generation":2,"damage":{"full":false,"region_count":1,"rects":[{"x":0,"y":0,"w":10,"h":1}]},"images":[],"text":["a","b"]}"#,
+        r#"{"schema":"xtervo.diag.v1","kind":"snapshot","cols":40,"rows":2,"generation":2,"damage":{"full":false,"region_count":1,"rects":[{"x":0,"y":0,"w":10,"h":1}]},"images":[],"text":["a","b"]}"#,
     );
     let case_path = dir.join("case.json");
 
@@ -116,11 +116,11 @@ fn schema_and_issue_commands_are_usable() {
     let schema_value = stdout_json(&run(schema_cmd));
     assert_eq!(
         schema_value["$id"],
-        "https://tervo.dev/schemas/tervo.diagnostic_case.v1.json"
+        "https://xtervo.dev/schemas/xtervo.diagnostic_case.v1.json"
     );
     assert_eq!(
         schema_value["properties"]["schema"]["const"],
-        "tervo.diagnostic_case.v1"
+        "xtervo.diagnostic_case.v1"
     );
 
     let mut check = command(&dir);
@@ -182,7 +182,7 @@ fn fail_on_error_uses_exit_code_2() {
     let output = run(cmd);
     assert_eq!(output.status.code(), Some(2));
     let value: Value = serde_json::from_slice(&output.stdout).expect("stdout is JSON");
-    assert_eq!(value["schema"], "tervo.diagnostic_case.v1");
+    assert_eq!(value["schema"], "xtervo.diagnostic_case.v1");
 }
 
 #[test]

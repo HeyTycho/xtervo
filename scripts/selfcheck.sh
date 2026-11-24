@@ -13,7 +13,7 @@ cd "$(dirname "$0")/.."
 
 export CARGO_HOME="${CARGO_HOME:-$PWD/.cargo}"
 PROFILE="${PROFILE:-release}"
-BIN="target/$PROFILE/tervo"
+BIN="target/$PROFILE/xtervo"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 OUT=".logs/selfcheck/$STAMP"
 mkdir -p "$OUT"
@@ -32,13 +32,13 @@ run() {
 }
 
 case "$PROFILE" in
-    release) run build cargo build --release -p tervo-app ;;
-    debug) run build cargo build -p tervo-app ;;
+    release) run build cargo build --release -p xtervo-app ;;
+    debug) run build cargo build -p xtervo-app ;;
     *) echo "PROFILE 只能是 release/debug"; exit 2 ;;
 esac
-run core-tests cargo test -p tervo-core
-run vt-conformance cargo test -p tervo-core --test vt_conformance
-run app-tests cargo test -p tervo-app --bin tervo
+run core-tests cargo test -p xtervo-core
+run vt-conformance cargo test -p xtervo-core --test vt_conformance
+run app-tests cargo test -p xtervo-app --bin xtervo
 
 # ---- 启动预算：3 次冷启动，取中位数 ----
 READY_MED="null"
@@ -50,7 +50,7 @@ if [ -n "${DISPLAY:-}" ] && [ -x "$BIN" ]; then
     for i in 1 2 3; do
         CFG="$OUT/cfg-$i.toml"
         printf 'theme = "auto"\n' >"$CFG"
-        if timeout 30 env TERVO_CONFIG="$CFG" "$BIN" --cols 60 --rows 12 \
+        if timeout 30 env XTERVO_CONFIG="$CFG" "$BIN" --cols 60 --rows 12 \
             --exit-after-first >"$OUT/startup-$i.log" 2>&1; then
             r=$(awk '/READY TIMING/{for (i=1;i<=NF;i++) if ($i ~ /^total_us=/) {split($i,a,"="); print a[2]}}' "$OUT/startup-$i.log")
             f=$(awk '/FIRST_DAMAGE_US/{print $2}' "$OUT/startup-$i.log")
@@ -153,7 +153,7 @@ for path in sorted(glob.glob(os.path.join(out, "*.log"))):
         }
 
 size = 0
-bin_path = os.path.join("target", profile, "tervo")
+bin_path = os.path.join("target", profile, "xtervo")
 if os.path.exists(bin_path):
     size = os.path.getsize(bin_path)
 

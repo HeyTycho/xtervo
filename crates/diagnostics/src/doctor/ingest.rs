@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! Adapters from existing `tervo.diag.v1` JSON and process env.
+//! Adapters from existing `xtervo.diag.v1` JSON and process env.
 //!
 //! These adapters are intentionally strict about types and deliberately do not
 //! fill missing fields. A missing metric is `None`; a CLI placeholder metrics
@@ -75,7 +75,7 @@ pub struct ImageRect {
     pub height: Option<u64>,
 }
 
-/// Bounded viewport summary parsed from a `tervo diag snapshot`/`trace` frame.
+/// Bounded viewport summary parsed from a `xtervo diag snapshot`/`trace` frame.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FrameSummary {
     pub schema: Option<String>,
@@ -301,7 +301,7 @@ impl MetricsSummary {
         })
     }
 
-    /// `tervo diag metrics` is a schema probe with an empty registry, not live
+    /// `xtervo diag metrics` is a schema probe with an empty registry, not live
     /// app telemetry. Never judge health from it.
     pub fn is_placeholder(&self) -> bool {
         self.initialized == Some(false) || self.source.as_deref() == Some("cli")
@@ -488,16 +488,16 @@ impl Environment {
     /// Collect the current process environment without reading arbitrary env
     /// values into evidence. Only specific, documented variables are read.
     pub fn from_process() -> Self {
-        let requested = env_string("SLINT_BACKEND").or_else(|| env_string("TERVO_RENDERER"));
-        let active = env_string("TERVO_ACTIVE_RENDERER");
-        let fallback = env_string("TERVO_RENDERER_FALLBACK").and_then(|value| parse_bool(&value));
-        let reason = env_string("TERVO_FALLBACK_REASON");
+        let requested = env_string("SLINT_BACKEND").or_else(|| env_string("XTERVO_RENDERER"));
+        let active = env_string("XTERVO_ACTIVE_RENDERER");
+        let fallback = env_string("XTERVO_RENDERER_FALLBACK").and_then(|value| parse_bool(&value));
+        let reason = env_string("XTERVO_FALLBACK_REASON");
         let gpu = {
             let adapter =
-                env_string("TERVO_GPU_ADAPTER").or_else(|| env_string("WGPU_ADAPTER_NAME"));
+                env_string("XTERVO_GPU_ADAPTER").or_else(|| env_string("WGPU_ADAPTER_NAME"));
             let backend = env_string("WGPU_BACKEND");
-            let driver = env_string("TERVO_GPU_DRIVER");
-            let device_type = env_string("TERVO_GPU_DEVICE_TYPE");
+            let driver = env_string("XTERVO_GPU_DRIVER");
+            let device_type = env_string("XTERVO_GPU_DEVICE_TYPE");
             (adapter.is_some() || backend.is_some() || driver.is_some() || device_type.is_some())
                 .then_some(GpuInfo {
                     adapter,
@@ -522,10 +522,10 @@ impl Environment {
         Self {
             source: Some("process".to_string()),
             version: Some(clean(env!("CARGO_PKG_VERSION"))),
-            commit: option_env!("TERVO_GIT_COMMIT").map(clean),
-            dirty: option_env!("TERVO_GIT_DIRTY").and_then(parse_bool),
-            build_time: option_env!("TERVO_BUILD_TIME").map(clean),
-            target: option_env!("TERVO_BUILD_TARGET").map(clean),
+            commit: option_env!("XTERVO_GIT_COMMIT").map(clean),
+            dirty: option_env!("XTERVO_GIT_DIRTY").and_then(parse_bool),
+            build_time: option_env!("XTERVO_BUILD_TIME").map(clean),
+            target: option_env!("XTERVO_BUILD_TARGET").map(clean),
             os: Some(format!(
                 "{} ({})",
                 std::env::consts::OS,
@@ -544,7 +544,7 @@ impl Environment {
         }
     }
 
-    /// Parse `tervo diag env --json`. Additive fields for renderer/GPU are
+    /// Parse `xtervo diag env --json`. Additive fields for renderer/GPU are
     /// accepted when present; absent fields stay absent.
     pub fn from_diag_env_json(value: &Value) -> Result<Self, IngestError> {
         require_diag_object(value, "env")?;
@@ -645,7 +645,7 @@ impl Environment {
                     .get("source")
                     .and_then(Value::as_str)
                     .map(clean)
-                    .unwrap_or_else(|| "tervo.diag.v1 env".to_string()),
+                    .unwrap_or_else(|| "xtervo.diag.v1 env".to_string()),
             ),
             version: value.get("version").and_then(Value::as_str).map(clean),
             commit: value.get("commit").and_then(Value::as_str).map(clean),
@@ -674,33 +674,33 @@ impl Environment {
     }
 }
 
-/// `$TERVO_CONFIG` or `$XDG_CONFIG_HOME/tervo/config.toml`.
+/// `$XTERVO_CONFIG` or `$XDG_CONFIG_HOME/xtervo/config.toml`.
 pub fn config_path() -> PathBuf {
-    if let Some(path) = std::env::var_os("TERVO_CONFIG") {
+    if let Some(path) = std::env::var_os("XTERVO_CONFIG") {
         return PathBuf::from(path);
     }
-    config_home().join("tervo").join("config.toml")
+    config_home().join("xtervo").join("config.toml")
 }
 
 pub fn profiles_path() -> PathBuf {
-    if let Some(path) = std::env::var_os("TERVO_PROFILES") {
+    if let Some(path) = std::env::var_os("XTERVO_PROFILES") {
         return PathBuf::from(path);
     }
-    config_home().join("tervo").join("profiles.toml")
+    config_home().join("xtervo").join("profiles.toml")
 }
 
-/// `$TERVO_LOG_DIR` or `$XDG_STATE_HOME/tervo/logs`.
+/// `$XTERVO_LOG_DIR` or `$XDG_STATE_HOME/xtervo/logs`.
 pub fn log_dir() -> PathBuf {
-    if let Some(path) = std::env::var_os("TERVO_LOG_DIR") {
+    if let Some(path) = std::env::var_os("XTERVO_LOG_DIR") {
         return PathBuf::from(path);
     }
     if let Some(path) = std::env::var_os("XDG_STATE_HOME") {
-        return PathBuf::from(path).join("tervo").join("logs");
+        return PathBuf::from(path).join("xtervo").join("logs");
     }
     home()
         .join(".local")
         .join("state")
-        .join("tervo")
+        .join("xtervo")
         .join("logs")
 }
 
@@ -722,7 +722,7 @@ fn require_diag_object(value: &Value, context: &'static str) -> Result<(), Inges
         return Err(IngestError::NotObject(context));
     }
     if let Some(schema) = value.get("schema").and_then(Value::as_str) {
-        if !(schema == "tervo.diag.v1" || schema.starts_with("tervo.diag.v1.")) {
+        if !(schema == "xtervo.diag.v1" || schema.starts_with("xtervo.diag.v1.")) {
             return Err(IngestError::UnsupportedSchema(schema.to_string()));
         }
     }
@@ -783,7 +783,7 @@ mod tests {
 
     fn sample_frame() -> Value {
         json!({
-            "schema": "tervo.diag.v1",
+            "schema": "xtervo.diag.v1",
             "kind": "snapshot",
             "cols": 10,
             "rows": 3,
@@ -843,7 +843,7 @@ mod tests {
     #[test]
     fn rejects_wrong_schema_and_missing_fields() {
         let mut value = sample_frame();
-        value["schema"] = json!("tervo.diag.v2");
+        value["schema"] = json!("xtervo.diag.v2");
         assert!(matches!(
             FrameSummary::from_diag_json(&value),
             Err(IngestError::UnsupportedSchema(_))
@@ -859,7 +859,7 @@ mod tests {
     #[test]
     fn parses_placeholder_metrics_without_promoting_them() {
         let value = json!({
-            "schema": "tervo.diag.v1",
+            "schema": "xtervo.diag.v1",
             "kind": "metrics",
             "initialized": false,
             "source": "cli",
@@ -903,14 +903,14 @@ mod tests {
     #[test]
     fn parses_env_json_and_keeps_missing_fields_missing() {
         let value = json!({
-            "schema": "tervo.diag.v1",
+            "schema": "xtervo.diag.v1",
             "kind": "env",
             "version": "0.3.1",
             "commit": "a6afbd1",
             "dirty": false,
             "backend": "skia",
-            "config": "/home/user/.config/tervo/config.toml",
-            "log": "/home/user/.state/tervo/logs/tervo-1.log",
+            "config": "/home/user/.config/xtervo/config.toml",
+            "log": "/home/user/.state/xtervo/logs/xtervo-1.log",
             "gpu_adapter": "llvmpipe",
             "renderer_fallback": true,
             "renderer_fallback_reason": "wgpu init failed"
@@ -942,7 +942,7 @@ mod tests {
     #[test]
     fn env_json_strings_are_redacted() {
         let value = json!({
-            "schema": "tervo.diag.v1",
+            "schema": "xtervo.diag.v1",
             "kind": "env",
             "backend": "https://user:pass@example.com",
             "display": "token=ghp_abcdefghijklmnop"

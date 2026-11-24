@@ -8,7 +8,7 @@
 
 use std::rc::Rc;
 
-use tervo_core::{flags, CellData, CursorShape, CursorState, Frame, LineDamage, Span, Theme};
+use xtervo_core::{flags, CellData, CursorShape, CursorState, Frame, LineDamage, Span, Theme};
 
 use crate::glyph::FontSet;
 use crate::render::Renderer;
@@ -480,7 +480,7 @@ fn incremental_sequence_matches_fresh_full_redraw_pixel_for_pixel() {
 #[test]
 fn image_partially_above_viewport_does_not_write_outside_its_rows() {
     use std::sync::Arc;
-    use tervo_core::InlineImage;
+    use xtervo_core::InlineImage;
 
     let fonts = fonts();
     let mut renderer = renderer(&fonts, COLS, ROWS);
@@ -513,7 +513,7 @@ fn image_partially_above_viewport_does_not_write_outside_its_rows() {
 #[test]
 fn inline_image_scroll_removal_matches_fresh_full_redraw() {
     use std::sync::Arc;
-    use tervo_core::{ImageCrop, ImagePlacementMeta, InlineImage};
+    use xtervo_core::{ImageCrop, ImagePlacementMeta, InlineImage};
 
     let fonts = fonts();
     let mut renderer = renderer(&fonts, COLS, ROWS);
@@ -809,8 +809,8 @@ fn resize_keeps_learned_pool_depth() {
 // 改动的那一层**做无头 soak：持续单行 damage + 渲染端落后 2 帧 + 周期整屏/
 // resize，采样 RSS/VmHWM/线程/FD，并周期性做逐像素差分。用法：
 //
-//   TERVO_RENDER_SOAK_SECS=120 \
-//     cargo test -p tervo-app --bin tervo --offline soak_damage_pool -- --ignored --nocapture
+//   XTERVO_RENDER_SOAK_SECS=120 \
+//     cargo test -p xtervo-app --bin xtervo --offline soak_damage_pool -- --ignored --nocapture
 // ---------------------------------------------------------------------------
 
 #[cfg(target_os = "linux")]
@@ -830,13 +830,13 @@ fn proc_fd_count() -> usize {
 }
 
 #[test]
-#[ignore = "内存门禁：设置 TERVO_RENDER_SOAK_SECS 后手动跑（--ignored --nocapture）"]
+#[ignore = "内存门禁：设置 XTERVO_RENDER_SOAK_SECS 后手动跑（--ignored --nocapture）"]
 fn soak_damage_pool_memory_is_bounded() {
-    let secs: u64 = match std::env::var("TERVO_RENDER_SOAK_SECS").ok().and_then(|v| v.parse().ok())
+    let secs: u64 = match std::env::var("XTERVO_RENDER_SOAK_SECS").ok().and_then(|v| v.parse().ok())
     {
         Some(s) if s > 0 => s,
         _ => {
-            eprintln!("[soak] TERVO_RENDER_SOAK_SECS 未设置，跳过");
+            eprintln!("[soak] XTERVO_RENDER_SOAK_SECS 未设置，跳过");
             return;
         }
     };
@@ -973,7 +973,7 @@ fn random_damage_sequence_with_frame_hold_matches_fresh_redraw() {
     // resize」，全程模拟渲染端持有 2 帧。每一步都要求与整屏参考逐像素一致：
     // 池轮换 + history 的不变式只要少同步一行就会留下残影。
     use std::sync::Arc;
-    use tervo_core::InlineImage;
+    use xtervo_core::InlineImage;
 
     let fonts = fonts();
     let mut renderer = renderer(&fonts, COLS, ROWS);
@@ -1012,7 +1012,7 @@ fn random_damage_sequence_with_frame_hold_matches_fresh_redraw() {
                         let ch = (b'0' + (lcg(&mut seed) % 10) as u8) as char;
                         put(&mut frame, row, col, ch, 0x00a6e3a1);
                     }
-                    frame.damage.push(tervo_core::LineDamage {
+                    frame.damage.push(xtervo_core::LineDamage {
                         line: row as u16,
                         left: 0,
                         right: frame.cols as u16 - 1,

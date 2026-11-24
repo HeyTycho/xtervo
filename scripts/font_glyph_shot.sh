@@ -8,13 +8,13 @@
 # - 输出 PNG（以及同名 .xwd）到参数指定的路径，通常放 .logs/。
 #
 # 用法：
-#   cargo build -p tervo-app --bin tervo
+#   cargo build -p xtervo-app --bin xtervo
 #   scripts/font_glyph_shot.sh .logs/font-emoji/after-default.png
-#   TERVO_FALLBACK_FONTS=/path/SymbolsNerdFontMono-Regular.ttf \
+#   XTERVO_FALLBACK_FONTS=/path/SymbolsNerdFontMono-Regular.ttf \
 #     scripts/font_glyph_shot.sh .logs/font-emoji/after-nerd.png
 #
 # 环境变量：
-#   FONT_SHOT_BIN      tervo 可执行文件（默认 $ROOT/target/debug/tervo）
+#   FONT_SHOT_BIN      xtervo 可执行文件（默认 $ROOT/target/debug/xtervo）
 #   FONT_SHOT_DISPLAY  X display（默认 :116；已占用则直接失败，绝不复用/ kill）
 #   FONT_SHOT_XVFB     Xvfb 可执行文件（默认 .perf/xvfb/usr/bin/Xvfb，再退回 PATH）
 set -euo pipefail
@@ -27,9 +27,9 @@ OUT_DIR=$(cd "$(dirname "$OUT_ARG")" && pwd)
 OUT="$OUT_DIR/$(basename "${OUT_ARG%.png}").png"
 XWD="${OUT%.png}.xwd"
 
-BIN=${FONT_SHOT_BIN:-${E2E_BIN:-"$ROOT/target/debug/tervo"}}
+BIN=${FONT_SHOT_BIN:-${E2E_BIN:-"$ROOT/target/debug/xtervo"}}
 [ -x "$BIN" ] || {
-    echo "缺少 $BIN；先 cargo build -p tervo-app --bin tervo，或用 FONT_SHOT_BIN 指定" >&2
+    echo "缺少 $BIN；先 cargo build -p xtervo-app --bin xtervo，或用 FONT_SHOT_BIN 指定" >&2
     exit 1
 }
 
@@ -98,7 +98,7 @@ DISPLAY="$DISPLAY_NUM" xdpyinfo >/dev/null 2>&1 || {
     exit 1
 }
 
-DISPLAY="$DISPLAY_NUM" XMODIFIERS=@im=none TERVO_LOG_DIR="$OUT_DIR" TERVO_CONFIG="$CFG" \
+DISPLAY="$DISPLAY_NUM" XMODIFIERS=@im=none XTERVO_LOG_DIR="$OUT_DIR" XTERVO_CONFIG="$CFG" \
     "$BIN" --cols 84 --rows 18 --font-size 16 --shell /bin/bash -- -c "$DEMO" \
     >"$APP_LOG" 2>&1 &
 APID=$!
@@ -107,12 +107,12 @@ WIN=
 for _ in $(seq 1 100); do
     # set -e + pipefail：没找到窗口时 grep 返回 1，必须 `|| true`，否则循环只跑一次。
     WIN=$(DISPLAY="$DISPLAY_NUM" xwininfo -root -tree 2>/dev/null \
-        | grep -iE '"tervo" "tervo"' | awk '{print $1}' | head -1 || true)
+        | grep -iE '"xtervo" "xtervo"' | awk '{print $1}' | head -1 || true)
     [ -n "$WIN" ] && break
     sleep 0.05
 done
 [ -n "$WIN" ] || {
-    echo "没找到 tervo 窗口（$APP_LOG）" >&2
+    echo "没找到 xtervo 窗口（$APP_LOG）" >&2
     DISPLAY="$DISPLAY_NUM" xwininfo -root -tree 2>/dev/null | head -20 >&2
     exit 1
 }

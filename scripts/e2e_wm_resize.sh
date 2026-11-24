@@ -8,7 +8,7 @@
 #   E2E_OPENBOX_BIN=/path/openbox E2E_OPENBOX_LIB=/path/lib \
 #   E2E_OPENBOX_DATA=/path/share scripts/e2e_wm_resize.sh
 #
-# 前置：`cargo build --release -p tervo-app --bin tervo --bin xclick`。
+# 前置：`cargo build --release -p xtervo-app --bin xtervo --bin xclick`。
 # 约束：不占用 :1，不启动 Xephyr，不 pkill；只 kill 本脚本记录的 pid。
 # 若 WM 未声明 _NET_WM_MOVERESIZE，打印 SKIP 并退出 2；不会声称 live resize 通过。
 set -u
@@ -17,7 +17,7 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 DISPLAY_NUM=${E2E_WM_DISPLAY:-:105}
 SCREEN=${E2E_WM_SCREEN:-1280x800x24}
 LOG_DIR=${E2E_WM_LOG_DIR:-"$ROOT/.logs/wm-resize-e2e"}
-TERVO_BIN=${E2E_BIN:-"$ROOT/target/release/tervo"}
+XTERVO_BIN=${E2E_BIN:-"$ROOT/target/release/xtervo"}
 XCLICK_BIN=${E2E_XCLICK:-"$ROOT/target/release/xclick"}
 
 log() { printf '%s\n' "$*"; }
@@ -40,8 +40,8 @@ find_openbox() {
 
 XVFB=$(find_xvfb) || fail "找不到 Xvfb（可用 E2E_XVFB_BIN 指定）"
 OPENBOX=$(find_openbox) || fail "找不到 openbox（可用 E2E_OPENBOX_BIN 指定）"
-[ -x "$TERVO_BIN" ] || fail "缺少 $TERVO_BIN；先跑 cargo build --release -p tervo-app --bin tervo"
-[ -x "$XCLICK_BIN" ] || fail "缺少 $XCLICK_BIN；先跑 cargo build --release -p tervo-app --bin xclick"
+[ -x "$XTERVO_BIN" ] || fail "缺少 $XTERVO_BIN；先跑 cargo build --release -p xtervo-app --bin xtervo"
+[ -x "$XCLICK_BIN" ] || fail "缺少 $XCLICK_BIN；先跑 cargo build --release -p xtervo-app --bin xclick"
 command -v xwininfo >/dev/null 2>&1 || fail "缺少 xwininfo（x11-utils）"
 command -v xprop >/dev/null 2>&1 || fail "缺少 xprop（x11-utils）"
 
@@ -53,7 +53,7 @@ fi
 mkdir -p "$LOG_DIR/app" "$LOG_DIR/ob-home"
 # xclick 等子进程必须指向本脚本的 display，不能继承宿主 DISPLAY。
 export DISPLAY="$DISPLAY_NUM"
-OB_CACHE=${E2E_OB_CACHE:-"/tmp/tervo-obcache-$$"}
+OB_CACHE=${E2E_OB_CACHE:-"/tmp/xtervo-obcache-$$"}
 mkdir -p "$OB_CACHE"
 chmod 700 "$OB_CACHE" 2>/dev/null || true
 
@@ -105,16 +105,16 @@ if ! DISPLAY="$DISPLAY_NUM" xprop -root _NET_SUPPORTED 2>/dev/null | grep -q _NE
     skip "WM 的 _NET_SUPPORTED 不含 _NET_WM_MOVERESIZE；保留自绘回退，不声称 live resize 通过"
 fi
 
-log "启动 Tervo（--cols 60 --rows 20，预期 540x472）"
+log "启动 xtervo（--cols 60 --rows 20，预期 540x472）"
 env DISPLAY="$DISPLAY_NUM" XMODIFIERS=@im=none \
-    TERVO_LOG_DIR="$LOG_DIR/app" TERVO_CONFIG="$LOG_DIR/tervo.toml" \
-    "$TERVO_BIN" --cols 60 --rows 20 >"$LOG_DIR/app.stderr" 2>&1 &
+    XTERVO_LOG_DIR="$LOG_DIR/app" XTERVO_CONFIG="$LOG_DIR/xtervo.toml" \
+    "$XTERVO_BIN" --cols 60 --rows 20 >"$LOG_DIR/app.stderr" 2>&1 &
 APP_PID=$!
 
 WIN=
 for _ in $(seq 1 100); do
     for id in $(DISPLAY="$DISPLAY_NUM" xwininfo -root -tree 2>/dev/null \
-        | awk '/"Tervo"/ {print $1}'); do
+        | awk '/"xtervo"/ {print $1}'); do
         pid=$(DISPLAY="$DISPLAY_NUM" xprop -id "$id" _NET_WM_PID 2>/dev/null \
             | awk '{print $NF}')
         if [ "$pid" = "$APP_PID" ]; then WIN=$id; break; fi
@@ -122,7 +122,7 @@ for _ in $(seq 1 100); do
     [ -n "$WIN" ] && break
     sleep 0.05
 done
-[ -n "$WIN" ] || fail "找不到 pid=$APP_PID 的 Tervo 窗口（$LOG_DIR/app.stderr）"
+[ -n "$WIN" ] || fail "找不到 pid=$APP_PID 的 xtervo 窗口（$LOG_DIR/app.stderr）"
 
 geom() {
     DISPLAY="$DISPLAY_NUM" xwininfo -id "$WIN" | awk '
@@ -147,8 +147,8 @@ read -r x y w h <<<"$(geom)"
 log "初始窗口 win=$WIN ${w}x${h} at $x,$y"
 [ "$w" -ge 400 ] && [ "$h" -ge 300 ] || fail "初始窗口尺寸异常：${w}x${h}"
 
-LOG=$(ls -t "$LOG_DIR/app"/tervo-*.log 2>/dev/null | head -1)
-[ -n "$LOG" ] || fail "没有 Tervo 日志（$LOG_DIR/app）"
+LOG=$(ls -t "$LOG_DIR/app"/xtervo-*.log 2>/dev/null | head -1)
+[ -n "$LOG" ] || fail "没有 xtervo 日志（$LOG_DIR/app）"
 
 # 1) 右边缘：540x472 → 700x472（+160）。
 log "拖右边缘 x=$((x + w - 2)),y=$((y + h / 2)) +160"

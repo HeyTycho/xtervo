@@ -6411,123 +6411,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tervo-app"
-version = "0.5.0"
-dependencies = [
- "arboard",
- "argon2 0.5.3",
- "base64 0.22.1",
- "bytemuck",
- "chacha20poly1305",
- "crossbeam-channel",
- "ed25519-dalek 2.2.0",
- "env_logger",
- "flate2",
- "fontdue",
- "hmac",
- "i-slint-renderer-software",
- "libc",
- "log",
- "owned_ttf_parser",
- "png",
- "rand_core 0.6.4",
- "roxmltree",
- "russh",
- "serde",
- "serde_json",
- "serde_yaml",
- "serialport",
- "sha1",
- "sha2 0.10.9",
- "slint",
- "slint-build",
- "tar",
- "tempfile",
- "tervo-core",
- "tervo-diagnostics",
- "tervo-graphics",
- "tervo-maximize",
- "tervo-render-wgpu",
- "tervo-scene",
- "tokio",
- "toml",
- "wasmtime",
- "wat",
- "x11rb 0.14.0",
- "zip",
-]
-
-[[package]]
-name = "tervo-core"
-version = "0.5.0"
-dependencies = [
- "alacritty_terminal",
- "criterion",
- "crossbeam-channel",
- "env_logger",
- "flate2",
- "libc",
- "log",
- "parking_lot",
- "png",
- "portable-pty",
- "tokio",
- "unicode-segmentation",
- "unicode-width",
- "zune-jpeg",
-]
-
-[[package]]
-name = "tervo-diagnostics"
-version = "0.5.0"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "tervo-graphics"
-version = "0.5.0"
-
-[[package]]
-name = "tervo-maximize"
-version = "0.5.0"
-dependencies = [
- "x11rb 0.14.0",
-]
-
-[[package]]
-name = "tervo-render"
-version = "0.5.0"
-dependencies = [
- "tervo-scene",
-]
-
-[[package]]
-name = "tervo-render-wgpu"
-version = "0.5.0"
-dependencies = [
- "fontdue",
- "futures-lite",
- "owned_ttf_parser",
- "slint",
- "tervo-core",
- "tervo-graphics",
- "tervo-render",
- "tervo-scene",
- "unicode-width",
- "wgpu",
-]
-
-[[package]]
-name = "tervo-scene"
-version = "0.5.0"
-dependencies = [
- "tervo-core",
- "tervo-graphics",
-]
-
-[[package]]
 name = "text-size"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8148,6 +8031,123 @@ name = "xmlwriter"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
+
+[[package]]
+name = "xtervo-app"
+version = "0.5.0"
+dependencies = [
+ "arboard",
+ "argon2 0.5.3",
+ "base64 0.22.1",
+ "bytemuck",
+ "chacha20poly1305",
+ "crossbeam-channel",
+ "ed25519-dalek 2.2.0",
+ "env_logger",
+ "flate2",
+ "fontdue",
+ "hmac",
+ "i-slint-renderer-software",
+ "libc",
+ "log",
+ "owned_ttf_parser",
+ "png",
+ "rand_core 0.6.4",
+ "roxmltree",
+ "russh",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "serialport",
+ "sha1",
+ "sha2 0.10.9",
+ "slint",
+ "slint-build",
+ "tar",
+ "tempfile",
+ "tokio",
+ "toml",
+ "wasmtime",
+ "wat",
+ "x11rb 0.14.0",
+ "xtervo-core",
+ "xtervo-diagnostics",
+ "xtervo-graphics",
+ "xtervo-maximize",
+ "xtervo-render-wgpu",
+ "xtervo-scene",
+ "zip",
+]
+
+[[package]]
+name = "xtervo-core"
+version = "0.5.0"
+dependencies = [
+ "alacritty_terminal",
+ "criterion",
+ "crossbeam-channel",
+ "env_logger",
+ "flate2",
+ "libc",
+ "log",
+ "parking_lot",
+ "png",
+ "portable-pty",
+ "tokio",
+ "unicode-segmentation",
+ "unicode-width",
+ "zune-jpeg",
+]
+
+[[package]]
+name = "xtervo-diagnostics"
+version = "0.5.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "xtervo-graphics"
+version = "0.5.0"
+
+[[package]]
+name = "xtervo-maximize"
+version = "0.5.0"
+dependencies = [
+ "x11rb 0.14.0",
+]
+
+[[package]]
+name = "xtervo-render"
+version = "0.5.0"
+dependencies = [
+ "xtervo-scene",
+]
+
+[[package]]
+name = "xtervo-render-wgpu"
+version = "0.5.0"
+dependencies = [
+ "fontdue",
+ "futures-lite",
+ "owned_ttf_parser",
+ "slint",
+ "unicode-width",
+ "wgpu",
+ "xtervo-core",
+ "xtervo-graphics",
+ "xtervo-render",
+ "xtervo-scene",
+]
+
+[[package]]
+name = "xtervo-scene"
+version = "0.5.0"
+dependencies = [
+ "xtervo-core",
+ "xtervo-graphics",
+]
 
 [[package]]
 name = "yazi"

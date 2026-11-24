@@ -35,7 +35,7 @@ esac
 ROOT=$(git rev-parse --show-toplevel)
 COMMON=$(git rev-parse --git-common-dir)
 MAIN_ROOT=$(cd "$(dirname "$COMMON")" && pwd)
-PERF=${TERVO_PERF_DIR:-$MAIN_ROOT/.perf}
+PERF=${XTERVO_PERF_DIR:-$MAIN_ROOT/.perf}
 TARGET=${CARGO_TARGET_DIR:-$MAIN_ROOT/target}
 CARGO_HOME=${CARGO_HOME:-$MAIN_ROOT/.cargo}
 export CARGO_HOME CARGO_TARGET_DIR="$TARGET" CARGO_NET_OFFLINE=true
@@ -80,7 +80,7 @@ if [ ! -x "$BIN" ]; then
 fi
 if [ ! -x "$XWIN" ]; then
     echo "xwin helper missing; build once with:" >&2
-    echo "  CARGO_HOME=$CARGO_HOME CARGO_TARGET_DIR=$TARGET cargo build -p tervo-app --bin xwin" >&2
+    echo "  CARGO_HOME=$CARGO_HOME CARGO_TARGET_DIR=$TARGET cargo build -p xtervo-app --bin xwin" >&2
     exit 2
 fi
 

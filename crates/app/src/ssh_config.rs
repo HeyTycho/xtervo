@@ -56,9 +56,9 @@ struct Raw {
     unsupported: Option<String>,
 }
 
-/// 生产路径：`TERVO_SSH_CONFIG`（测试/覆盖）或 ~/.ssh/config + /etc/ssh/ssh_config。
+/// 生产路径：`XTERVO_SSH_CONFIG`（测试/覆盖）或 ~/.ssh/config + /etc/ssh/ssh_config。
 pub fn resolve(profile: &Profile) -> ResolvedSsh {
-    let paths = match std::env::var_os("TERVO_SSH_CONFIG") {
+    let paths = match std::env::var_os("XTERVO_SSH_CONFIG") {
         Some(path) if !path.is_empty() => vec![PathBuf::from(path)],
         _ => default_config_paths(),
     };
@@ -77,7 +77,7 @@ pub fn resolve_with_paths(profile: &Profile, paths: &[PathBuf]) -> ResolvedSsh {
 
 /// ProxyJump 主机：未显式给端口时允许 ssh_config 的 Port。
 pub fn resolve_jump(profile: &Profile) -> ResolvedSsh {
-    let paths = match std::env::var_os("TERVO_SSH_CONFIG") {
+    let paths = match std::env::var_os("XTERVO_SSH_CONFIG") {
         Some(path) if !path.is_empty() => vec![PathBuf::from(path)],
         _ => default_config_paths(),
     };

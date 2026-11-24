@@ -3,7 +3,7 @@
 
 use std::time::{Duration, Instant};
 
-use tervo_core::{
+use xtervo_core::{
     spawn, ClipboardRequest, ClipboardSelection, CoreEvent, PaneConfig, PaneHandle,
 };
 
@@ -50,7 +50,7 @@ fn osc52_store_arrives_as_core_event() {
 
 #[test]
 fn clipboard_reply_reaches_child_pty() {
-    let dir = std::env::temp_dir().join(format!("tervo-osc52-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("xtervo-osc52-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let out = dir.join("reply.bin");

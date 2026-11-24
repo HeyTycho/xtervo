@@ -20,7 +20,7 @@ OUT=${E2E_OUT:-$ROOT/target/plugin-window-routing}
 DISPLAY_NUM=${E2E_DISPLAY:-:153}
 SCREEN=${E2E_SCREEN:-1280x800x24}
 TARGET_DIR=${CARGO_TARGET_DIR:-$ROOT/target}
-BIN=${TERVO_BIN:-$TARGET_DIR/debug/tervo}
+BIN=${XTERVO_BIN:-$TARGET_DIR/debug/xtervo}
 XWIN=${E2E_XWIN:-$TARGET_DIR/debug/xwin}
 XCLICK=${E2E_XCLICK:-$TARGET_DIR/debug/xclick}
 XKEY=${E2E_XKEY:-$TARGET_DIR/debug/xkey}
@@ -41,7 +41,7 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 pass() { echo "PASS: $*"; }
 
 for f in "$BIN" "$XWIN" "$XCLICK" "$XKEY"; do
-    [ -x "$f" ] || fail "缺少 $f；先 cargo build -p tervo-app --bin tervo --bin xwin --bin xclick --bin xkey"
+    [ -x "$f" ] || fail "缺少 $f；先 cargo build -p xtervo-app --bin xtervo --bin xwin --bin xclick --bin xkey"
 done
 for tool in xdpyinfo xwininfo xwd ffmpeg xwininfo; do
     command -v "$tool" >/dev/null || fail "缺少依赖：$tool"
@@ -49,11 +49,11 @@ done
 
 COMMON=$(git rev-parse --git-common-dir)
 MAIN_ROOT=$(cd "$(dirname "$COMMON")" && pwd)
-PERF=${TERVO_PERF_DIR:-$MAIN_ROOT/.perf}
+PERF=${XTERVO_PERF_DIR:-$MAIN_ROOT/.perf}
 XVFB=${E2E_XVFB:-$PERF/xvfb/usr/bin/Xvfb}
 [ -x "$XVFB" ] || XVFB=$(command -v Xvfb || true)
 [ -x "$XVFB" ] || fail "找不到 Xvfb"
-OPENBOX=${TERVO_OPENBOX_BIN:-$PERF/openbox/usr/bin/openbox}
+OPENBOX=${XTERVO_OPENBOX_BIN:-$PERF/openbox/usr/bin/openbox}
 OPENBOX_LIB=$PERF/openbox/usr/lib/x86_64-linux-gnu
 
 if DISPLAY="$DISPLAY_NUM" xdpyinfo >/dev/null 2>&1; then
@@ -89,7 +89,7 @@ fi
 cat >"$OUT/plugins/winroute/plugin.toml" <<'TOML'
 api = 3
 host_abi = 3
-id = "dev.tervo.winroute"
+id = "dev.xtervo.winroute"
 name = "Window Route Probe"
 version = "1.0.0"
 runtime = "process"
@@ -271,7 +271,7 @@ chmod +x "$OUT/plugins/winroute/main.py"
 cat >"$OUT/config/plugins-v3-state.toml" <<'TOML'
 version = 1
 
-[plugins."dev.tervo.winroute"]
+[plugins."dev.xtervo.winroute"]
 enabled = true
 permissions_approved = true
 permissions = ["terminal_context"]
@@ -293,18 +293,18 @@ TOML
 export XDG_RUNTIME_DIR="$OUT/runtime"
 export XDG_CONFIG_HOME="$OUT/config"
 export XDG_STATE_HOME="$OUT/state"
-export TERVO_CONFIG="$OUT/config/config.toml"
-export TERVO_LOG_DIR="$OUT/logs"
-export TERVO_SESSION="$OUT/session.json"
-export TERVO_PROFILES="$OUT/profiles.toml"
-export TERVO_PLUGINS="$OUT/plugins"
-export TERVO_DIAG_SOCKET="$OUT/live.sock"
-export TERVO_DIAG_TOKEN="$TOKEN"
+export XTERVO_CONFIG="$OUT/config/config.toml"
+export XTERVO_LOG_DIR="$OUT/logs"
+export XTERVO_SESSION="$OUT/session.json"
+export XTERVO_PROFILES="$OUT/profiles.toml"
+export XTERVO_PLUGINS="$OUT/plugins"
+export XTERVO_DIAG_SOCKET="$OUT/live.sock"
+export XTERVO_DIAG_TOKEN="$TOKEN"
 export SLINT_BACKEND=winit-software
 export XMODIFIERS=@im=none
 export HOME="$OUT/home"
 
-TERVO_MULTI_WINDOW_INPROC=1 TERVO_MULTI_WINDOW_SECOND=1 \
+XTERVO_MULTI_WINDOW_INPROC=1 XTERVO_MULTI_WINDOW_SECOND=1 \
     "$BIN" --cols 100 --rows 30 --shell /bin/sh \
     >"$OUT/app.log" 2>&1 &
 APP_PID=$!

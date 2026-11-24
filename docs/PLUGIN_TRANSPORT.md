@@ -60,9 +60,9 @@ core:
 
 | 插件 | 后端 | 复用 v3 能力 |
 |---|---|---|
-| `tervo-plugin-ssh` | russh（纯 Rust）；可留 system-ssh 回退模式 | 声明式面板做 Connection Manager；settings 做 Host Key/agent/X11/算法；`credentials=own` 存密码；事件做连接状态 |
-| `tervo-plugin-serial` | `serialport` | 设备枚举列表 + 参数编辑面板 + 拔插事件 |
-| `tervo-plugin-telnet`（可并入 ssh 包） | TCP + IAC 协商 | 同一 transport，协商在插件内完成 |
+| `xtervo-plugin-ssh` | russh（纯 Rust）；可留 system-ssh 回退模式 | 声明式面板做 Connection Manager；settings 做 Host Key/agent/X11/算法；`credentials=own` 存密码；事件做连接状态 |
+| `xtervo-plugin-serial` | `serialport` | 设备枚举列表 + 参数编辑面板 + 拔插事件 |
+| `xtervo-plugin-telnet`（可并入 ssh 包） | TCP + IAC 协商 | 同一 transport，协商在插件内完成 |
 
 卸载即“没有 SSH/串口”：核心二进制不链接 russh / serialport，也不走相关启动路径。
 

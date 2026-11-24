@@ -8,7 +8,7 @@
 - 最大化/最小化：使用 Slint `Window::set_maximized` / `set_minimized`，不加 EWMH override。
 - TabBar `+` / Profile 按钮：位于 Tab 条内部、跟随 Tab 移动；不做右侧固定。
 - 窗口控制按钮（设置/最小化/最大化/关闭）：绝对定位于窗口右上角，位置不变。
-- 圆角：X11 SHAPE 默认关闭（`TERVO_CORNERS=1` 才实验开启），避免 mask 影响 WM 行为。
+- 圆角：X11 SHAPE 默认关闭（`XTERVO_CORNERS=1` 才实验开启），避免 mask 影响 WM 行为。
 - 背景图：最底层 cover + dim 遮罩；opacity 直通 RGBA（不双重预乘）；TabBar/设置不透明。
 - 渲染后端：默认请求 `winit-skia`（Skia/GL）；无 `/dev/dri` 时默认 `winit-software`；
   Skia 建窗后 1s 内确认不到 GPU/GL API 自动 exec 回退 `winit-software`，不允许静默黑屏。
@@ -24,7 +24,7 @@
 1. 窗口/resize/TabBar 布局改动必须在独立分支，不直接改 master。
 2. 改动前后各留一张 Xvfb 截图（`.logs/`），并跑：
    ```bash
-   cargo test -p tervo-app --bin tervo
+   cargo test -p xtervo-app --bin xtervo
    ```
 3. 不允许把 Xephyr/测试窗口弹到用户 workspace；GUI 测试用 headless Xvfb。
 

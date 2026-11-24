@@ -1043,7 +1043,7 @@ mod tests {
         // 否则终端里“删除”永远失灵；关闭 Tab 改用 Ctrl+Shift+W。
         assert!(
             r.default_command_for_chord(&Chord::parse("ctrl+w").unwrap()).is_none(),
-            "Ctrl+W 不能绑定 Tervo 命令"
+            "Ctrl+W 不能绑定 xtervo 命令"
         );
         // 既有 Close Tab / Reopen 仍保留原绑定，改动不能踩到它们。
         assert_eq!(

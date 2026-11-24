@@ -20,7 +20,7 @@ set -uo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 OUT=${E2E_OUT:-$ROOT/.logs/image-scroll-clip-e2e}
-BIN=${E2E_BIN:-$ROOT/target/debug/tervo}
+BIN=${E2E_BIN:-$ROOT/target/debug/xtervo}
 XWIN=${E2E_XWIN:-$ROOT/target/debug/xwin}
 XCLICK=${E2E_XCLICK:-$ROOT/target/debug/xclick}
 COLS=40
@@ -143,17 +143,17 @@ done
 DISPLAY=$TCP xdpyinfo >/dev/null 2>&1 || die "Xvfb failed"
 export DISPLAY=$TCP
 
-setsid env DISPLAY=$TCP HOME=$OUT/home TERVO_CONFIG=$OUT/tervo.toml \
-  TERVO_LOG_DIR=$OUT/logs TERVO_SIXEL_DEBUG=1 \
-  "$BIN" --shell /bin/bash --cols $COLS --rows $ROWS --title Tervo \
-  -- -c "bash $OUT/run_image.sh" >"$OUT/tervo.log" 2>&1 &
+setsid env DISPLAY=$TCP HOME=$OUT/home XTERVO_CONFIG=$OUT/xtervo.toml \
+  XTERVO_LOG_DIR=$OUT/logs XTERVO_SIXEL_DEBUG=1 \
+  "$BIN" --shell /bin/bash --cols $COLS --rows $ROWS --title xtervo \
+  -- -c "bash $OUT/run_image.sh" >"$OUT/xtervo.log" 2>&1 &
 APP_PID=$!
 for _ in $(seq 1 300); do
-  WIN=$(xwininfo -root -tree 2>/dev/null | grep -i '"Tervo"' | head -1 | awk '{print $1}')
+  WIN=$(xwininfo -root -tree 2>/dev/null | grep -i '"xtervo"' | head -1 | awk '{print $1}')
   [ -n "$WIN" ] && break
   sleep 0.05
 done
-[ -n "$WIN" ] || { tail -20 "$OUT/tervo.log"; die "Tervo window missing"; }
+[ -n "$WIN" ] || { tail -20 "$OUT/xtervo.log"; die "xtervo window missing"; }
 eval "$(xwininfo -id "$WIN" | awk '
   /Absolute upper-left X/{printf "WIN_X=%s\n", $NF}
   /Absolute upper-left Y/{printf "WIN_Y=%s\n", $NF}
@@ -165,7 +165,7 @@ shot() {
     && python3 "$ROOT/scripts/xwd2png.py" "$OUT/shots/$1.xwd" "$OUT/shots/$1.png" >/dev/null
 }
 
-logs() { cat "$OUT/tervo.log" "$OUT"/logs/tervo-*.log 2>/dev/null; }
+logs() { cat "$OUT/xtervo.log" "$OUT"/logs/xtervo-*.log 2>/dev/null; }
 
 # Wait until the placement is visible with a negative (partially clipped) row.
 deadline=$((SECONDS + 15))
@@ -175,7 +175,7 @@ until logs | grep -a -E '\[sixel\].*images=\[[^]]*,[[:space:]]*-[0-9]+,' >/dev/n
 done
 sleep 1.2
 shot 01-partial
-CELL_LINE=$(grep -a 'READY TIMING' "$OUT/tervo.log" | tail -1)
+CELL_LINE=$(grep -a 'READY TIMING' "$OUT/xtervo.log" | tail -1)
 CELL_W=$(printf '%s' "$CELL_LINE" | sed -n 's/.*cell=\([0-9]*\)x\([0-9]*\).*/\1/p')
 CELL_H=$(printf '%s' "$CELL_LINE" | sed -n 's/.*cell=\([0-9]*\)x\([0-9]*\).*/\2/p')
 [ -n "$CELL_W" ] && [ -n "$CELL_H" ] || die "cannot parse cell size: $CELL_LINE"

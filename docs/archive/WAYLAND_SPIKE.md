@@ -5,7 +5,7 @@
 >
 > 分支：`feat/wayland-spike`，基线 `0902954`（基于 master `0902954`，未合并 master）。
 > 性质：**可行性报告 + 只读探测**。本轮不改默认架构、不新增依赖、不实现半套 IME。
-> 结论先行：Tervo 在原生 Wayland 下能启动、渲染、全屏，resize 代码路径也已接上；
+> 结论先行：xtervo 在原生 Wayland 下能启动、渲染、全屏，resize 代码路径也已接上；
 > 但**剪贴板/PRIMARY、文件拖放、全局快捷键**在原生 Wayland 存在真实阻断，
 > GNOME 42 上目前只能把 **XWayland** 当作可用路径。IME 路径完整但本机无法端到端验证。
 
@@ -55,9 +55,9 @@ XWayland。GNOME 42（Ubuntu 22.04）上，**XWayland 是唯一完整的剪贴�
 - 真实 NVIDIA/AMD/Intel GPU、GNOME/KDE 真机会话、fcitx5/ibus 都未测试。
 
 实测使用了两个二进制：
-- 仓库根 `target/release/tervo`（构建 commit `585fd21`，与基线 `0902954` 只差一个
+- 仓库根 `target/release/xtervo`（构建 commit `585fd21`，与基线 `0902954` 只差一个
   `docs/TASK_BOARD.md`，代码等价）；
-- 本 worktree 自己构建的 `.target-wayland/debug/tervo`，用于确认当前 HEAD 行为一致。
+- 本 worktree 自己构建的 `.target-wayland/debug/xtervo`，用于确认当前 HEAD 行为一致。
 
 日志与临时脚本在 `.logs/`（已 gitignore，不进入提交）。
 
@@ -77,7 +77,7 @@ XWayland。GNOME 42（Ubuntu 22.04）上，**XWayland 是唯一完整的剪贴�
   `DISPLAY`（`winit-0.30.13/src/platform_impl/linux/mod.rs:734-753`）。
   winit 0.30 没有 `WINIT_UNIX_BACKEND` 之类的环境变量强制 X11；**要测 XWayland 路径，
   必须 `env -u WAYLAND_DISPLAY` 让 winit 选 X11**。这是本轮实验的重要操作约束。
-- Tervo 自己不选平台，只在 `main.rs:7289-7305` 选渲染后端（默认 `winit-skia`；
+- xtervo 自己不选平台，只在 `main.rs:7289-7305` 选渲染后端（默认 `winit-skia`；
   无 `/dev/dri` 自动 `winit-software`），并在 `main.rs:7486-7502`/`9938-9954`
   做 Skia→software 的兜底回退。`logging.rs:67-79` 已把
   `DISPLAY`/`WAYLAND_DISPLAY`/`XDG_SESSION_TYPE`/`SLINT_BACKEND` 写进日志。
@@ -105,7 +105,7 @@ XWayland。GNOME 42（Ubuntu 22.04）上，**XWayland 是唯一完整的剪贴�
 
 ### 3.3 IME（text-input-v3 / zwp_text_input / XIM）
 
-- Tervo 的 IME 宿主是 UI 里一个 2×2 的透明 `TextInput`
+- xtervo 的 IME 宿主是 UI 里一个 2×2 的透明 `TextInput`
   （`crates/app/ui/main.slint:2618-2670`），点击 pane 时 `ime.focus()`；
   组合期间 `key-pressed` 直接 reject（回车/退格/Esc 归输入法），提交文本走
   `edited` → `ime-commit`。Rust 侧 `main.rs:7748-7766` 把提交文本交给统一输入分发；
@@ -152,7 +152,7 @@ XWayland。GNOME 42（Ubuntu 22.04）上，**XWayland 是唯一完整的剪贴�
   `zwp_text_input_manager_v3`、`wl_data_device_manager v3`、
   `zwp_primary_selection_device_manager_v1`，但没有
   `ext_data_control_manager_v1` / `zwlr_data_control_manager_v1`。
-  因此纯 Wayland、无 XWayland 时 arboard 返回失败，Tervo 只能打印
+  因此纯 Wayland、无 XWayland 时 arboard 返回失败，xtervo 只能打印
   `[clipboard] 不可用`。这与实机结果一致（见 §4）。
 - XWayland 下 arboard 回退到 X11，Mutter 负责 X11↔Wayland 剪贴板桥接；
   本轮用真正的 Xwayland 验证了 CLIPBOARD 和 PRIMARY 的写入/回读。
@@ -162,7 +162,7 @@ XWayland。GNOME 42（Ubuntu 22.04）上，**XWayland 是唯一完整的剪贴�
 ### 3.5 文件拖放（XDND / wl_data_device）
 
 - Slint UI 有 `DropArea`（`crates/app/ui/main.slint:2871-2882`），但 Slint 1.18 的
-  winit 后端不把外部文件拖放转换成 `DataTransfer`；Tervo 因此用
+  winit 后端不把外部文件拖放转换成 `DataTransfer`；xtervo 因此用
   `on_winit_window_event` 监听 `HoveredFile` / `DroppedFile`
   （`main.rs:5588-5643`），并把路径插入聚焦 pane（`drop_files_into_pane`）。
 - 命中哪个 pane 依赖 `drop_target_at`（`main.rs:5562-5585`）：它明确在
@@ -172,7 +172,7 @@ XWayland。GNOME 42（Ubuntu 22.04）上，**XWayland 是唯一完整的剪贴�
   `winit-0.30.13/src/platform_impl/linux/wayland/` 下搜索不到
   `data_device`/`DroppedFile`/`HoveredFile`；只有 X11 的
   `src/platform_impl/linux/x11/event_processor.rs:473-602` 实现 XDND。
-  因此原生 Wayland 下不会产生 `HoveredFile`/`DroppedFile`，Tervo 的桥接收不到任何事件，
+  因此原生 Wayland 下不会产生 `HoveredFile`/`DroppedFile`，xtervo 的桥接收不到任何事件，
   文件拖放表现为“没反应”。
 - X11 的 XDND 路径已有既有验收（`docs/FEATURE_MATRIX.md:178`）；
   XWayland 下理论上走同一条 X11/XDND 路径，但本轮没有重新注入验证。
@@ -216,15 +216,15 @@ XWayland。GNOME 42（Ubuntu 22.04）上，**XWayland 是唯一完整的剪贴�
   `active_window`（`:517`）、`own_windows`（`:556`）、`find_own_window`（`:322`）、
   `activate_own_window`（`:471`）、`set_window_icon`（`:392`）、
   `wm_supports_moveresize`（`:209`）、`start_wm_resize`（`:269`）、`connect`（`:441`）。
-- 启动时 `main.rs:9958-9979` 用 `own_windows`/`tervo_windows` 打日志、告警；
+- 启动时 `main.rs:9958-9979` 用 `own_windows`/`xtervo_windows` 打日志、告警；
   `main.rs:10002-10015` 用 `_NET_WM_ICON` 设图标；`main.rs:2010` 用
   `activate_own_window` 拉起 Quake。
 - 这些调用在“Wayland + XWayland”下会连上 XWayland，看到的是 **XWayland 的屏幕/其他
   X11 窗口**，而不是本进程的 Wayland surface。本轮实测：
-  - `--diagnose` 报告 `screen=5120x1440`、`pointer=0,0`、其他 Tervo 的 X11 窗口；
+  - `--diagnose` 报告 `screen=5120x1440`、`pointer=0,0`、其他 xtervo 的 X11 窗口；
     而实际虚拟显示器是 1280x800；
   - native Wayland 窗口下 `[ui] 设置窗口图标失败: 找不到本进程的窗口`；
-  - 启动日志把另一个 X11 Tervo 窗口误报为“可能挡住点击”。
+  - 启动日志把另一个 X11 xtervo 窗口误报为“可能挡住点击”。
 - `bell.rs:38-58` 用 X11 `Bell`；`latency.rs`、`xkey/xclick/xdrop/xwin` 都依赖 XTest/
   XDamage/XDND，属于测试工具，不应作为产品 Wayland 能力。
 - 结论：需要“平台能力门控”，而不是让 X11 函数在 Wayland 下“碰巧连上 XWayland”。
@@ -261,19 +261,19 @@ READY TIMING ... cell=9x22
 
 - 应用日志 `[ui] 设置窗口图标失败: 找不到本进程的窗口` → 没有自己的 X11 窗口，
   winit 按优先级选了 Wayland（在另一组“Wayland + host X11”实验中，
-  `xwininfo -root -tree` 也确实找不到 Tervo 的 X11 窗口）；
+  `xwininfo -root -tree` 也确实找不到 xtervo 的 X11 窗口）；
 - `OSC 52 ; c` / `OSC 52 ; p` 写入后日志显示 `复制/PRIMARY 写入` 成功，
   随后的 query/reply 读到 19/20 字节 → arboard 回退 X11 的读写链路是通的；
 - 在“Wayland + host X11（:1）”对照实验中，独立用 `xsel -b -o` / `xsel -p -o`
   读到了 marker，证明确实落到 X11 CLIPBOARD/PRIMARY；
 - 同一进程下 `[quake] 全局热键 F12 已注册`（XWayland grab 误报），
   `[ui] 设置窗口图标失败: 找不到本进程的窗口`。
-- 把 `WAYLAND_DISPLAY` unset、只留 `DISPLAY=:0` 时，Tervo 作为 X11/XWayland 客户端：
+- 把 `WAYLAND_DISPLAY` unset、只留 `DISPLAY=:0` 时，xtervo 作为 X11/XWayland 客户端：
   `xwininfo` 能看到窗口，`_NET_WM_ICON` 设置成功，剪贴板/PRIMARY 正常。
 
 ### 4.3 Skia/EGL 与全屏
 
-- `SLINT_BACKEND=winit-skia TERVO_FORCE_GPU=1`（纯 Wayland、llvmpipe）：
+- `SLINT_BACKEND=winit-skia XTERVO_FORCE_GPU=1`（纯 Wayland、llvmpipe）：
   `actual_renderer=skia-opengl`，`GL_RENDERER="llvmpipe (LLVM 15.0.7, 256 bits)"`，
   `GL_VERSION="OpenGL ES 3.2 Mesa 23.2.1-1ubuntu3.1~22.04.4"`。
 - `--fullscreen` + `WAYLAND_DEBUG=1`：客户端发出
@@ -309,7 +309,7 @@ xdg_activation_v1 v1              zxdg_output_manager_v1 (v3)
 ### B1. 文件拖放：winit 0.30.13 在 Wayland 上没有 DnD（硬阻断）
 
 winit Wayland 后端没有 `wl_data_device` 的 DnD 实现，连 `DroppedFile` 事件都不会产生；
-Tervo 的 X11 bridge 和 `drop_target_at` 都无从触发。要支持，只有两条路：
+xtervo 的 X11 bridge 和 `drop_target_at` 都无从触发。要支持，只有两条路：
 1. 升级到实现 Wayland DnD 的 winit（需确认上游版本/API，`unstable-winit-030` 会受影响）；
 2. 自己维护一条 Wayland 连接，接 `wl_data_device`/`wl_data_offer`，并与 winit/Slint
    的 seat/serial 协调（新增 `wayland-client`/`smithay-client-toolkit` 依赖，复杂度高）。
@@ -405,7 +405,7 @@ Tervo 的 X11 bridge 和 `drop_target_at` 都无从触发。要支持，只有�
    评估 `smithay-clipboard` + `wl_data_device`（新增依赖，且要处理 seat/serial）；
    在此之前保持 XWayland 回退/明示不可用。
 2. **IME**：在真机 GNOME/KDE 上做 fcitx5/ibus 验收；加 preedit/commit 日志
-   （`TERVO_IME_LOG` 已有 spot 日志，可扩展只读事件日志）；确认候选窗位置与焦点归还；
+   （`XTERVO_IME_LOG` 已有 spot 日志，可扩展只读事件日志）；确认候选窗位置与焦点归还；
    评估 `ImePurpose::Terminal`（winit 支持，但 Slint 1.18 固定 `Normal`，需要上游/补丁）。
 3. **DnD**：等待 winit Wayland DnD 或单独接 `wl_data_device`；在实现前不保留
    “拖放已支持”的 UI 文案。
@@ -426,7 +426,7 @@ Tervo 的 X11 bridge 和 `drop_target_at` 都无从触发。要支持，只有�
 ## 7. 最小验收命令
 
 > 以下命令不需要真实 Wayland 桌面；用 headless Mutter 复现。
-> 运行时把 `<worktree>` 替换为仓库路径，二进制可用 `.target-wayland/debug/tervo`。
+> 运行时把 `<worktree>` 替换为仓库路径，二进制可用 `.target-wayland/debug/xtervo`。
 
 ### 7.1 起一个纯 Wayland compositor
 
@@ -445,7 +445,7 @@ dbus-run-session -- gnome-shell --headless --wayland --no-x11 \
 # 另开一个 shell；确认 compositor 的 wayland-0 已出现
 env -u DISPLAY XDG_RUNTIME_DIR="$PWD/.logs/wayland-rt" \
   WAYLAND_DISPLAY=wayland-0 XDG_SESSION_TYPE=wayland \
-  TERVO_LOG=0 ./.target-wayland/debug/tervo --diagnose
+  XTERVO_LOG=0 ./.target-wayland/debug/xtervo --diagnose
 ```
 
 预期：打印 `WAYLAND_DISPLAY=Some(...)`、`DISPLAY=None`；不出现 `screen=`/`pointer=`
@@ -468,8 +468,8 @@ sleep 4
 ```bash
 env -u DISPLAY XDG_RUNTIME_DIR="$PWD/.logs/wayland-rt" \
   WAYLAND_DISPLAY=wayland-0 XDG_SESSION_TYPE=wayland \
-  SLINT_BACKEND=winit-software TERVO_IME_LOG=1 \
-  ./.target-wayland/debug/tervo --title wl-probe --cols 60 --rows 8 \
+  SLINT_BACKEND=winit-software XTERVO_IME_LOG=1 \
+  ./.target-wayland/debug/xtervo --title wl-probe --cols 60 --rows 8 \
   --shell "$PWD/.logs/osc52-probe.sh"
 ```
 
@@ -485,13 +485,13 @@ env -u DISPLAY XDG_RUNTIME_DIR="$PWD/.logs/wayland-rt" \
 # 1) 原生 Wayland 窗口 + XWayland 剪贴板回退
 env XDG_RUNTIME_DIR="$PWD/.logs/wayland-rt" \
   WAYLAND_DISPLAY=wayland-0 DISPLAY=:0 XDG_SESSION_TYPE=wayland \
-  SLINT_BACKEND=winit-software ./.target-wayland/debug/tervo --title wl-xwl ... 
+  SLINT_BACKEND=winit-software ./.target-wayland/debug/xtervo --title wl-xwl ...
 DISPLAY=:0 xsel -b -o    # 应读到探针 marker
 DISPLAY=:0 xsel -p -o
 
 # 2) 强制 winit 走 X11/XWayland
 env -u WAYLAND_DISPLAY XDG_RUNTIME_DIR="$PWD/.logs/wayland-rt" \
-  DISPLAY=:0 ./.target-wayland/debug/tervo --title x11-probe ...
+  DISPLAY=:0 ./.target-wayland/debug/xtervo --title x11-probe ...
 ```
 
 - 1) 预期 `xwininfo -root -tree | grep wl-xwl` **找不到** X11 窗口（winit 仍 Wayland），
@@ -502,13 +502,13 @@ env -u WAYLAND_DISPLAY XDG_RUNTIME_DIR="$PWD/.logs/wayland-rt" \
 
 ```bash
 # 纯 Wayland 下强制 Skia；无 /dev/dri 时 llvmpipe 也能验证 EGL 路径
-env -u DISPLAY ... SLINT_BACKEND=winit-skia TERVO_FORCE_GPU=1 \
-  ./.target-wayland/debug/tervo ...
+env -u DISPLAY ... SLINT_BACKEND=winit-skia XTERVO_FORCE_GPU=1 \
+  ./.target-wayland/debug/xtervo ...
 # 预期日志：actual_renderer=skia-opengl，GL_RENDERER=llvmpipe...
 # 注意：llvmpipe 不是真实 GPU 性能证据。
 
 # 全屏协议路径
-... WAYLAND_DEBUG=1 ./.target-wayland/debug/tervo --fullscreen ...
+... WAYLAND_DEBUG=1 ./.target-wayland/debug/xtervo --fullscreen ...
 # 预期客户端发 xdg_toplevel.set_fullscreen，compositor 回 configure(1280,800)
 ```
 

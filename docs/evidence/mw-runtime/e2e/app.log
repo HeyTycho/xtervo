@@ -1,7 +1,7 @@
-[log] 日志文件: /home/user/AIworkspace/rusttabbyterminal/.worktrees/mw-runtime/target/multi-window-e2e/logs/tervo-1794575231.log
+[log] 日志文件: /home/user/AIworkspace/rusttabbyterminal/.worktrees/mw-runtime/target/multi-window-e2e/logs/xtervo-1794575231.log
 [render] requested_backend=winit-software（显式设置 SLINT_BACKEND）
 [mcp] enabled=true read=true input=true tabs=true destructive=true socket=/home/user/AIworkspace/rusttabbyterminal/.worktrees/mw-runtime/target/multi-window-e2e/live.sock token=env
-[mcp] env override 生效: TERVO_DIAG_ALLOW_WRITE=true TERVO_DIAG_ALLOW_DESTRUCTIVE=true（配置仍可收紧分组，但 env 会放宽）
+[mcp] env override 生效: XTERVO_DIAG_ALLOW_WRITE=true XTERVO_DIAG_ALLOW_DESTRUCTIVE=true（配置仍可收紧分组，但 env 会放宽）
 [render] requested_backend=winit-software；actual_renderer=winit-software（GL/GPU 不可用或已显式回退；headless 不能验证 GPU）
 [ui] settings ui=tab
 [plugin-v3] 已发现 1 个插件（0 unsupported/invalid），启动 0 个已确认插件，0 个等待权限确认

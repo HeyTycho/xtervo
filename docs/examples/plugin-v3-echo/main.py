@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-only
-"""Reference Tervo Plugin API v3 process plugin.
+"""Reference xtervo Plugin API v3 process plugin.
 
 Protocol: JSON-RPC 2.0, one UTF-8 JSON object per line on stdin/stdout.
 The host starts this process, sends initialize/initialized, then commands,
 events, status polls and pings. This file intentionally uses only the Python
-standard library so it can be copied into ~/.config/tervo/plugins/echo/.
+standard library so it can be copied into ~/.config/xtervo/plugins/echo/.
 
 Notes:
 - Permissions are capability gates for host-mediated APIs, not an OS sandbox.

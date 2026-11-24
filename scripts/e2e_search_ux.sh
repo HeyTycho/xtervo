@@ -17,20 +17,20 @@ ROOT=$PWD
 OUT=${E2E_OUT:-$ROOT/.logs/search-ux}
 DISPLAY_NUM=${E2E_DISPLAY:-:127}
 TARGET_DIR=${CARGO_TARGET_DIR:-$ROOT/target}
-BIN=${E2E_BIN:-$TARGET_DIR/debug/tervo}
+BIN=${E2E_BIN:-$TARGET_DIR/debug/xtervo}
 XWIN=${E2E_XWIN:-$TARGET_DIR/debug/xwin}
 XCLICK=${E2E_XCLICK:-$TARGET_DIR/debug/xclick}
 XKEY=${E2E_XKEY:-$TARGET_DIR/debug/xkey}
 mkdir -p "$OUT" "$OUT/home" "$OUT/logs" /tmp/.X11-unix
 
 for f in "$BIN" "$XWIN" "$XCLICK" "$XKEY"; do
-    [ -x "$f" ] || { echo "缺少 $f；先 cargo build -p tervo-app --bin tervo --bin xwin --bin xclick --bin xkey" >&2; exit 2; }
+    [ -x "$f" ] || { echo "缺少 $f；先 cargo build -p xtervo-app --bin xtervo --bin xwin --bin xclick --bin xkey" >&2; exit 2; }
 done
 command -v xsel >/dev/null || { echo "缺少 xsel（Ctrl+C 剪贴板断言需要）" >&2; exit 2; }
 
 COMMON=$(git rev-parse --git-common-dir)
 MAIN_ROOT=$(cd "$(dirname "$COMMON")" && pwd)
-PERF=${TERVO_PERF_DIR:-$MAIN_ROOT/.perf}
+PERF=${XTERVO_PERF_DIR:-$MAIN_ROOT/.perf}
 XVFB_BIN=${E2E_XVFB_BIN:-$PERF/xvfb/usr/bin/Xvfb}
 [ -x "$XVFB_BIN" ] || XVFB_BIN=$(command -v Xvfb || true)
 [ -x "$XVFB_BIN" ] || { echo "找不到 Xvfb；不会回退到 Xephyr" >&2; exit 2; }
@@ -41,8 +41,8 @@ export DISPLAY=$DISPLAY_NUM
 export HOME=$OUT/home
 export XMODIFIERS=@im=none
 export SLINT_BACKEND=winit-software
-export TERVO_CONFIG=$OUT/config.toml
-export TERVO_LOG_DIR=$OUT/logs
+export XTERVO_CONFIG=$OUT/config.toml
+export XTERVO_LOG_DIR=$OUT/logs
 
 if xdpyinfo >/dev/null 2>&1; then
     echo "display $DISPLAY_NUM 已被占用；本脚本退出以避免干扰。" >&2
@@ -93,16 +93,16 @@ else
     echo "提示：未找到仓库 .perf/openbox，继续无 WM 运行" >&2
 fi
 
-"$BIN" --cols 80 --rows 20 --title Tervo --shell /bin/sh -- "$OUT/shell.sh" >"$OUT/app.log" 2>&1 &
+"$BIN" --cols 80 --rows 20 --title xtervo --shell /bin/sh -- "$OUT/shell.sh" >"$OUT/app.log" 2>&1 &
 APP_PID=$!
 WIN=""
 for _ in $(seq 1 200); do
-    WIN=$(xwininfo -root -tree 2>/dev/null | grep -i '"tervo"' | head -1 | awk '{print $1}' || true)
+    WIN=$(xwininfo -root -tree 2>/dev/null | grep -i '"xtervo"' | head -1 | awk '{print $1}' || true)
     [ -n "$WIN" ] && break
     sleep 0.05
 done
-[ -n "$WIN" ] || { echo "找不到 Tervo 窗口；见 $OUT/app.log" >&2; tail -40 "$OUT/app.log" >&2; exit 2; }
-"$XWIN" Tervo 20 20 >/dev/null 2>&1 || true
+[ -n "$WIN" ] || { echo "找不到 xtervo 窗口；见 $OUT/app.log" >&2; tail -40 "$OUT/app.log" >&2; exit 2; }
+"$XWIN" xtervo 20 20 >/dev/null 2>&1 || true
 sleep 1.2
 
 read -r ABS_X ABS_Y W H < <(xwininfo -id "$WIN" | awk '
@@ -146,7 +146,7 @@ PANE_X=$((ABS_X + 300))
 PANE_Y=$((ABS_Y + 32 + 220))
 
 focus_pane() {
-    "$XWIN" Tervo 20 20 >/dev/null 2>&1 || true
+    "$XWIN" xtervo 20 20 >/dev/null 2>&1 || true
     sleep 0.12
     click "$PANE_X" "$PANE_Y"
     sleep 0.15

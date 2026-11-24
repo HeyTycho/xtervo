@@ -229,10 +229,10 @@ def main() -> int:
     ids = sorted(window["window_id"] for window in data["windows"])
     assert ids == [1, 2], ids
     wins = wait_for(
-        lambda: (lambda w: w if "Tervo" in w and "Tervo — 2" in w else None)(x11.windows()),
+        lambda: (lambda w: w if "xtervo" in w and "xtervo — 2" in w else None)(x11.windows()),
         label="two X11 windows",
     )
-    win1, win2 = wins["Tervo"], wins["Tervo — 2"]
+    win1, win2 = wins["xtervo"], wins["xtervo — 2"]
     wait_log("initialize/initialized", timeout=15, label="plugin handshake")
     try:
         plugin_processes = wait_for(
@@ -299,7 +299,7 @@ def main() -> int:
 
     # ---- 窗口 1：命令 → ask 只出现在窗口 1 → Allow → 读取窗口 1 pane
     run_palette(win1, "read window")
-    wait_log("[plugin-v3] dev.tervo.winroute: ask terminal.read window=Some(1)", label="window 1 ask")
+    wait_log("[plugin-v3] dev.xtervo.winroute: ask terminal.read window=Some(1)", label="window 1 ask")
     assert len(live.ok("list")["windows"]) == 2
     approve(win1, "w1")
     wait_plugin(
@@ -318,7 +318,7 @@ def main() -> int:
 
     # ---- 窗口 2：同一插件进程，ask/读取都路由到窗口 2
     run_palette(win2, "read window")
-    wait_log("[plugin-v3] dev.tervo.winroute: ask terminal.read window=Some(2)", label="window 2 ask")
+    wait_log("[plugin-v3] dev.xtervo.winroute: ask terminal.read window=Some(2)", label="window 2 ask")
     approve(win2, "w2")
     wait_plugin(
         lambda entry: entry.get("kind") == "read" and entry.get("window") == 2,
@@ -340,12 +340,12 @@ def main() -> int:
     # ---- 两个窗口各自显示不同 panel；一个窗口的 ui.render 不覆盖另一个
     run_palette(win1, "panel window")
     wait_log(
-        "[plugin-v3] dev.tervo.winroute surface=panel:main window=window-1 opened by ui.render",
+        "[plugin-v3] dev.xtervo.winroute surface=panel:main window=window-1 opened by ui.render",
         label="panel in window 1",
     )
     run_palette(win2, "panel window")
     wait_log(
-        "[plugin-v3] dev.tervo.winroute surface=panel:main window=window-2 opened by ui.render",
+        "[plugin-v3] dev.xtervo.winroute surface=panel:main window=window-2 opened by ui.render",
         label="panel in window 2",
     )
     plugin_panels = {

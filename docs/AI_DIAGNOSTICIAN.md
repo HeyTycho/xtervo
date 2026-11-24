@@ -1,4 +1,4 @@
-# Tervo AI 诊断器（不是聊天框）
+# xtervo AI 诊断器（不是聊天框）
 
 状态：方向文档（2026-11-11）。  
 目标不是“在终端里放一个 ChatGPT 输入框”，而是：
@@ -8,7 +8,7 @@
 -> 生成 issue/回归测试 -> 分析反馈聚类 -> 闭环
 ```
 
-AI 是诊断/推理层，不是事实来源。事实由 Tervo 的确定性诊断工具产生。
+AI 是诊断/推理层，不是事实来源。事实由 xtervo 的确定性诊断工具产生。
 
 ## 1. 用户场景
 
@@ -344,7 +344,7 @@ Issue draft
 ```text
 live metrics/诊断数据接线
 DiagnosticCase schema
-tervo doctor CLI
+xtervo doctor CLI
 环境/渲染/GPU/配置健康检查
 证据 bundle（脱敏）
 ```
@@ -426,11 +426,11 @@ Doctor = 产品主体
 已有：
 
 ```text
-tervo.diag.v1 env/snapshot/replay/trace
+xtervo.diag.v1 env/snapshot/replay/trace
 metrics/observability/scene-diff
 live socket/MCP
-TERVO_FRAME_DUMP / TERVO_LINE_NUMBERS
-TERVO_RENDER_PROFILE
+XTERVO_FRAME_DUMP / XTERVO_LINE_NUMBERS
+XTERVO_RENDER_PROFILE
 soak/e2e/CI gate
 ```
 

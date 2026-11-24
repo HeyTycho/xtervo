@@ -1,4 +1,4 @@
-# Tervo Doctor Core（确定性诊断底座，D0 slice）
+# xtervo Doctor Core（确定性诊断底座，D0 slice）
 
 状态：2026-11-11 晚，worktree `.worktrees/agent-doctor-core`，分支 `agent/doctor-core`。
 范围：只改 `crates/diagnostics`。不接模型、不建窗口、不读整段 scrollback、不访问网络、不改 app UI、不碰 `:1`。
@@ -7,37 +7,37 @@
 
 | 组件 | 位置 | 说明 |
 |---|---|---|
-| 库 API | `tervo_diagnostics::doctor` | `Doctor` / `DoctorInput` / `DoctorConfig` / `DiagnosticCase` |
-| CLI | `cargo run -p tervo-diagnostics --bin tervo-doctor -- ...` | `check` / `issue` / `schema` / `env` / `version` |
-| Schema | `tervo-doctor schema`，常量 `DIAGNOSTIC_CASE_SCHEMA` | `tervo.diagnostic_case.v1` |
-| Issue 模板 | `tervo_diagnostics::doctor::IssueDraft` | 固定八节：现象/环境/复现/证据/第一处分歧/已排除/建议/回归测试 |
+| 库 API | `xtervo_diagnostics::doctor` | `Doctor` / `DoctorInput` / `DoctorConfig` / `DiagnosticCase` |
+| CLI | `cargo run -p xtervo-diagnostics --bin xtervo-doctor -- ...` | `check` / `issue` / `schema` / `env` / `version` |
+| Schema | `xtervo-doctor schema`，常量 `DIAGNOSTIC_CASE_SCHEMA` | `xtervo.diagnostic_case.v1` |
+| Issue 模板 | `xtervo_diagnostics::doctor::IssueDraft` | 固定八节：现象/环境/复现/证据/第一处分歧/已排除/建议/回归测试 |
 | 证据 | `EvidenceBundle` | 脱敏、上限、逐项 SHA-256、bundle SHA-256、`verify()` |
 
-`tervo diag` 的接线方式（本 slice 不改 app）：
+`xtervo diag` 的接线方式（本 slice 不改 app）：
 
 ```rust
-use tervo_diagnostics::doctor::{Doctor, DoctorConfig, DoctorInput, Environment};
+use xtervo_diagnostics::doctor::{Doctor, DoctorConfig, DoctorInput, Environment};
 
 let input = DoctorInput {
-    symptom: tervo_diagnostics::doctor::Symptom::reported("滚动后残影"),
+    symptom: xtervo_diagnostics::doctor::Symptom::reported("滚动后残影"),
     environment: Environment::from_process(),
     frame: None,          // 由 diag snapshot JSON 解析后填入
     metrics: None,        // 由 diag metrics JSON 解析后填入
-    render_profile: None, // 由 TERVO_RENDER_PROFILE 日志解析后填入
+    render_profile: None, // 由 XTERVO_RENDER_PROFILE 日志解析后填入
     attachments: vec![],
 };
 let case = Doctor::new(DoctorConfig::default()).run(&input)?;
 println!("{}", case.to_json_pretty()?);
 ```
 
-现有 `tervo.diag.v1` 适配器：
+现有 `xtervo.diag.v1` 适配器：
 
 ```rust
-use tervo_diagnostics::doctor::{Environment, FrameSummary, MetricsSummary, RenderProfileSummary};
+use xtervo_diagnostics::doctor::{Environment, FrameSummary, MetricsSummary, RenderProfileSummary};
 
-let env = Environment::from_diag_env_json(&tervo_diag_env_value)?;
-let frame = FrameSummary::from_diag_json(&tervo_diag_snapshot_value)?;
-let metrics = MetricsSummary::from_diag_json(&tervo_diag_metrics_value)?;
+let env = Environment::from_diag_env_json(&xtervo_diag_env_value)?;
+let frame = FrameSummary::from_diag_json(&xtervo_diag_snapshot_value)?;
+let metrics = MetricsSummary::from_diag_json(&xtervo_diag_metrics_value)?;
 let profile = RenderProfileSummary::from_text("render.log", &log_text, Some(true), None);
 ```
 
@@ -46,7 +46,7 @@ let profile = RenderProfileSummary::from_text("render.log", &log_text, Some(true
 顶层字段固定为：
 
 ```text
-schema          "tervo.diagnostic_case.v1"
+schema          "xtervo.diagnostic_case.v1"
 case_id         "case-<16 hex>"，输入确定性哈希，无时间戳/随机数
 symptom         reported/summary/details/repro_steps/expected/actual
 environment     version/commit/dirty/build_time/target/os/display/session/renderer/config/log...
@@ -58,13 +58,13 @@ issue_draft     title/markdown/labels
 regression_test status/name/command/expected/evidence/note
 ```
 
-`tervo-doctor schema` 输出完整 JSON Schema（draft 2020-12）。`additionalProperties: true`，后续字段可以增量添加；顶层 `schema` 版本号不变时表示兼容扩展。
+`xtervo-doctor schema` 输出完整 JSON Schema（draft 2020-12）。`additionalProperties: true`，后续字段可以增量添加；顶层 `schema` 版本号不变时表示兼容扩展。
 
 ### 缺失数据规则
 
 - `Option` 字段缺失就是 `null`，不会填 `0`、`unknown`、`false` 或“默认 renderer”。
 - 缺 frame / metrics / profile：对应 probe 为 `unknown` 或 `skipped`，不是 `pass`。
-- CLI `tervo diag metrics` 的 `initialized=false/source=cli` 占位数据会被明确标记并跳过，零值不参与健康判断。
+- CLI `xtervo diag metrics` 的 `initialized=false/source=cli` 占位数据会被明确标记并跳过，零值不参与健康判断。
 - `damage.full` 缺失时不计算整屏覆盖率；`frame.text` 只接受有界视口摘要。
 
 ## 3. 健康检查（固定顺序）
@@ -100,20 +100,20 @@ regression_test status/name/command/expected/evidence/note
 
 ```bash
 # 环境 + 视口帧 + profile + 日志尾（全部只读）
-tervo diag env --json > /tmp/env.json
-tervo diag snapshot --json > /tmp/frame.json
-TERVO_RENDER_PROFILE=1 tervo 2>&1 | tee /tmp/render.log
+xtervo diag env --json > /tmp/env.json
+xtervo diag snapshot --json > /tmp/frame.json
+XTERVO_RENDER_PROFILE=1 xtervo 2>&1 | tee /tmp/render.log
 
-target/debug/tervo-doctor check \
+target/debug/xtervo-doctor check \
   --diag-env /tmp/env.json \
   --frame /tmp/frame.json \
   --render-profile /tmp/render.log \
-  --attach-tail app=/path/to/tervo.log \
+  --attach-tail app=/path/to/xtervo.log \
   --symptom "滚动后残影" \
   --out /tmp/case.json
 
-target/debug/tervo-doctor issue --case /tmp/case.json --out /tmp/issue.md
-target/debug/tervo-doctor schema --out /tmp/tervo.diagnostic_case.v1.json
+target/debug/xtervo-doctor issue --case /tmp/case.json --out /tmp/issue.md
+target/debug/xtervo-doctor schema --out /tmp/xtervo.diagnostic_case.v1.json
 ```
 
 返回码：`0` 正常；`1` 输入/IO 错误；配置 `--fail-on warn|error` 时达到阈值返回 `2`。
@@ -121,11 +121,11 @@ target/debug/tervo-doctor schema --out /tmp/tervo.diagnostic_case.v1.json
 ## 6. 验证命令
 
 ```bash
-CARGO_HOME=.cargo-home-scene-cpu cargo test -p tervo-diagnostics --offline
-CARGO_HOME=.cargo-home-scene-cpu cargo clippy -p tervo-diagnostics --all-targets --offline
+CARGO_HOME=.cargo-home-scene-cpu cargo test -p xtervo-diagnostics --offline
+CARGO_HOME=.cargo-home-scene-cpu cargo clippy -p xtervo-diagnostics --all-targets --offline
 
 # 可选 2 分钟库级内存门禁（不启动窗口，不接 app 主循环）
-CARGO_HOME=.cargo-home-scene-cpu cargo test -p tervo-diagnostics \
+CARGO_HOME=.cargo-home-scene-cpu cargo test -p xtervo-diagnostics \
   --test doctor_soak --offline -- --ignored --nocapture
 ```
 
@@ -133,9 +133,9 @@ CARGO_HOME=.cargo-home-scene-cpu cargo test -p tervo-diagnostics \
 
 ## 7. 明确限制（本 slice）
 
-- 没有 app 内接线：`tervo diag doctor` 子命令尚未添加；本 slice 提供库 API + 独立 CLI。
-- 没有 live renderer/GPU 适配器字段：现有 `tervo.diag.v1 env` 只有 backend 请求；GPU adapter/active/fallback 需调用方补充（CLI flags 或 additive env 字段），缺失就报 Unknown。
-- 没有接 live app metrics：`tervo diag metrics` 是 CLI 占位，doctor 会跳过而不是把 0 当健康。
+- 没有 app 内接线：`xtervo diag doctor` 子命令尚未添加；本 slice 提供库 API + 独立 CLI。
+- 没有 live renderer/GPU 适配器字段：现有 `xtervo.diag.v1 env` 只有 backend 请求；GPU adapter/active/fallback 需调用方补充（CLI flags 或 additive env 字段），缺失就报 Unknown。
+- 没有接 live app metrics：`xtervo diag metrics` 是 CLI 占位，doctor 会跳过而不是把 0 当健康。
 - config 只做可读性/UTF-8/凭据扫描，不做完整 TOML 语义解析；避免在诊断器里重复 app 的迁移逻辑。
 - 不生成/提交 issue，不自动创建回归测试文件；`regression_test` 只是草案/状态，避免伪造测试名。
 - 无网络、无 AI provider、无 shell 执行；不读 scrollback，不创建窗口/PTY。

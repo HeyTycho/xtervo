@@ -1,10 +1,10 @@
-# Tervo 稳定性 soak 报告（W-07）
+# xtervo 稳定性 soak 报告（W-07）
 
 - 结论：**PASS**
 - 开始：`2026-11-12T13:31:10+08:00`
 - worktree：`/home/user/AIworkspace/rusttabbyterminal`
 - 分支 / commit：`master` / `da0a195`
-- 二进制：`/home/user/AIworkspace/rusttabbyterminal/target/release/tervo`
+- 二进制：`/home/user/AIworkspace/rusttabbyterminal/target/release/xtervo`
 - SHA256：`7d1dfa79826f34b165aa4739351386ef11ba298105a447ea352c89c99b072458`（295785864 bytes）
 - 显示：`:143`（Xvfb 1280x800x24，无 :1、无 Xephyr、无 pkill）
 - 配置：22 Tab、4 pane、scrollback=2000、winit-software、Sixel+IIP 开
@@ -85,20 +85,20 @@
 - 单窗口 22 Tab + 4 pane；未覆盖多窗口、SSH/SFTP/Serial/Telnet、插件、Vault 解锁等外部 I/O。
 - 滚动/复制/搜索通过 XTest 注入；Xvfb 没有真实输入设备/剪贴板管理器，复制只验证应用日志与堆栈，不等价于真机剪贴板体验。
 - 内存判定是启发式阈值（RSS/PSS + 线性斜率 + R²），短跑波动会被标注为 WARN；泄漏最终需更长跑 + 堆分析确认。
-- 整个脚本只 kill 自己记录的 Xvfb/Openbox/Tervo PID；不占用 :1、不启动 Xephyr、不使用 pkill。
+- 整个脚本只 kill 自己记录的 Xvfb/Openbox/xtervo PID；不占用 :1、不启动 Xephyr、不使用 pkill。
 
 ## 6. 复现
 
 ```bash
 cd /home/user/AIworkspace/rusttabbyterminal
 DURATION=2m  ./scripts/soak.sh   # 快速门禁
-DURATION=30m BIN=$PWD/target/release/tervo ./scripts/soak.sh
+DURATION=30m BIN=$PWD/target/release/xtervo ./scripts/soak.sh
 ```
 
 ## 7. 证据文件
 
 - `samples.csv`：逐次采样（RSS/PSS/CPU/线程/FD/存活/日志错误）
-- `app.log` / `logs/tervo-*.log`：应用 stderr 与按次日志
+- `app.log` / `logs/xtervo-*.log`：应用 stderr 与按次日志
 - `xvfb.log` / `openbox.log`：X server / WM
 - `shots/`：start/settings/end 截图（如环境有 ffmpeg）
 - `summary.json`：机器可读判定

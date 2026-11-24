@@ -1,6 +1,6 @@
 # Connection backends (native vs fallback)
 
-Tervo's default SSH/serial paths are in-process libraries; system tools remain
+xtervo's default SSH/serial paths are in-process libraries; system tools remain
 explicit fallbacks for configurations the native stack does not cover yet.
 
 ## SSH
@@ -35,7 +35,7 @@ Refresh action; a 1.5s timer refreshes the list while the form is open, so
 plug/unplug is visible without restarting. DTR and RTS can be set per profile
 and are applied when the port opens.
 
-If native serial open fails (permissions/unsupported device), Tervo logs the
+If native serial open fails (permissions/unsupported device), xtervo logs the
 error and falls back to the socat command only for 8N1/no-flow profiles.
 Control-line *status readback* (CTS/DSR/DCD) is not exposed yet.
 
@@ -47,7 +47,7 @@ at runtime for simple SSH/serial profiles.
 
 ## Verification (2026-11-19)
 
-- `cargo test -p tervo-app --bin tervo`: 726 passed, 0 failed, 2 ignored.
+- `cargo test -p xtervo-app --bin xtervo`: 726 passed, 0 failed, 2 ignored.
   - `ssh_native::integration_tests::native_ssh_connects_password_and_echoes`:
     in-process russh server + password auth + temp known_hosts + PTY/shell + echo.
   - `serial_native::pty_tests::native_serial_roundtrips_through_a_pty`:
@@ -57,7 +57,7 @@ at runtime for simple SSH/serial profiles.
 - Release e2e: TabBar, keyboard protocol, tab pin/drag, single-instance multi-window.
 - 15m `SOAK_STRICT=1`: PASS, RSS 574.0→666.8 MiB (+4.06 MiB/min, R²=0.28),
   threads 111→111, fds 121→121, fatal=0.
-- Installed `~/.local/bin/tervo` sha256
+- Installed `~/.local/bin/xtervo` sha256
   `fbbc7d87c668c0d5d0eadfef71e0d3702e6b0cb353d1496aa12b471553355ead`.
 
 The native SSH path is now fully in-process for config parsing, known_hosts

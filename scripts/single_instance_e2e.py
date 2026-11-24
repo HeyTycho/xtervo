@@ -2,7 +2,7 @@
 """Black-box acceptance for the single-instance + in-process multi-window product path.
 
 Driven by ``scripts/e2e_single_instance_multi_window.sh``. The wrapper owns the
-Xvfb and the first ``tervo`` process; this harness makes real second/third CLI
+Xvfb and the first ``xtervo`` process; this harness makes real second/third CLI
 calls, injects Ctrl+Shift+N, closes windows through WM_DELETE_WINDOW and asserts
 there is still exactly one primary process.
 """
@@ -42,7 +42,7 @@ def x11_windows(display: str):
         win, title = match.group(1), match.group(2)
         # tree 里 unmap 的窗口仍存在；关闭一个窗口后必须按 Map State 过滤，
         # 否则会一直把 hide 掉的窗口算进去。
-        if "Tervo" in title and window_viewable(win, display):
+        if "xtervo" in title and window_viewable(win, display):
             found[win] = title
     return found
 
@@ -55,7 +55,7 @@ def wait_windows(display: str, count: int, timeout=12.0):
         if len(last) == count:
             return last
         time.sleep(0.1)
-    fail(f"timeout waiting for {count} Tervo windows; last={last}")
+    fail(f"timeout waiting for {count} xtervo windows; last={last}")
 
 
 def window_pid(win: str, display: str) -> int | None:
@@ -65,7 +65,7 @@ def window_pid(win: str, display: str) -> int | None:
 
 
 def instance_processes(binary: str, runtime_dir: str):
-    """PIDs whose cmdline is this tervo binary and env carries this runtime dir."""
+    """PIDs whose cmdline is this xtervo binary and env carries this runtime dir."""
     binary = os.path.realpath(binary)
     needle = f"XDG_RUNTIME_DIR={runtime_dir}".encode()
     pids = []
@@ -97,7 +97,7 @@ def wait_instance_processes(binary: str, runtime_dir: str, count: int, timeout=8
         if len(last) == count:
             return last
         time.sleep(0.1)
-    fail(f"expected {count} primary tervo process(es), last={last}")
+    fail(f"expected {count} primary xtervo process(es), last={last}")
 
 
 def focused(display: str, win: str) -> None:
@@ -156,24 +156,24 @@ def main() -> int:
     runtime_dir = str(pathlib.Path(args.runtime_dir).resolve())
     env["XDG_RUNTIME_DIR"] = runtime_dir
     for key in (
-        "TERVO_MULTI_WINDOW_INPROC",
-        "TERVO_MULTI_WINDOW_LEGACY",
-        "TERVO_MULTI_WINDOW_SECOND",
-        "TERVO_SINGLE_INSTANCE",
-        "TERVO_INSTANCE_DIR",
+        "XTERVO_MULTI_WINDOW_INPROC",
+        "XTERVO_MULTI_WINDOW_LEGACY",
+        "XTERVO_MULTI_WINDOW_SECOND",
+        "XTERVO_SINGLE_INSTANCE",
+        "XTERVO_INSTANCE_DIR",
     ):
         env.pop(key, None)
 
     binary = os.path.realpath(args.binary)
-    control_sock = pathlib.Path(runtime_dir) / "tervo" / "control.sock"
-    token_path = pathlib.Path(runtime_dir) / "tervo" / "instance.token"
+    control_sock = pathlib.Path(runtime_dir) / "xtervo" / "control.sock"
+    token_path = pathlib.Path(runtime_dir) / "xtervo" / "instance.token"
     deadline = time.time() + 15
     while time.time() < deadline and not (
         control_sock.is_socket() and token_path.is_file()
     ):
         time.sleep(0.05)
     if not control_sock.is_socket() or not token_path.is_file():
-        fail(f"primary control socket/token missing under {runtime_dir}/tervo")
+        fail(f"primary control socket/token missing under {runtime_dir}/xtervo")
     check("primary_control_socket", str(control_sock))
 
     wins = wait_windows(args.display, 1)
@@ -192,15 +192,15 @@ def main() -> int:
     assert_marker_owner()
     check("primary_window", {"id": first, "title": wins[first], "marker": str(marker)})
 
-    # 1) Second plain ``tervo`` call must forward and exit 0 without spawning.
+    # 1) Second plain ``xtervo`` call must forward and exit 0 without spawning.
     second = run(
         [binary, "--cols", "80", "--rows", "24", "--shell", "/bin/sh"],
         env=env,
     )
     if second.returncode != 0:
-        fail(f"second tervo exited {second.returncode}: {second.stderr}")
+        fail(f"second xtervo exited {second.returncode}: {second.stderr}")
     if "secondary: open_window ack" not in (second.stderr + second.stdout):
-        fail(f"second tervo did not log forwarded ack: {second.stderr!r}")
+        fail(f"second xtervo did not log forwarded ack: {second.stderr!r}")
     wins = wait_windows(args.display, 2)
     assert all(
         window_pid(win, args.display) == args.pid for win in wins
@@ -211,7 +211,7 @@ def main() -> int:
     # 2) ``--window`` compatibility shares the same forwarding path.
     third = run([binary, "--window"], env=env)
     if third.returncode != 0:
-        fail(f"--window tervo exited {third.returncode}: {third.stderr}")
+        fail(f"--window xtervo exited {third.returncode}: {third.stderr}")
     if "secondary: open_window ack" not in (third.stderr + third.stdout):
         fail(f"--window did not forward: {third.stderr!r}")
     wins = wait_windows(args.display, 3)
@@ -242,7 +242,7 @@ def main() -> int:
     check("ack_after_ui_window", {"acks": len(acked), "created": len(created)})
 
     # 3) Ctrl+Shift+N creates a same-process window without spawning.
-    # 所有窗口标题统一为 "Tervo"；primary 用启动时拿到的 XID，不能按标题猜。
+    # 所有窗口标题统一为 "xtervo"；primary 用启动时拿到的 XID，不能按标题猜。
     primary_win = first
     if primary_win not in wins:
         fail(f"primary window XID missing: {primary_win} not in {sorted(wins)}")
@@ -282,7 +282,7 @@ def main() -> int:
     check("wrong_token_rejected", {"exit": bad.returncode})
 
     # 5) Close non-primary windows one by one; the primary process must stay alive.
-    # 所有窗口标题都统一为 "Tervo"，不能再用 `Tervo — N` 做键；按 XID 排除 primary。
+    # 所有窗口标题都统一为 "xtervo"，不能再用 `xtervo — N` 做键；按 XID 排除 primary。
     # 留一个非 primary 窗口给步骤 6；其余逐个关闭。
     others = [w for w in wins if w != primary_win]
     for win in others[:-1]:

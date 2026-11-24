@@ -4,7 +4,7 @@ Source: `.logs/review/SUMMARY.md` (9 P0 / 36 P1 / 19 P2), plus the
 plugins/WASM review that was missing from the first pass.
 
 Baseline: `7f260b8`. Fixed in: `bdd0548`, `8af72f7`, `8430583`, `c320a54`.
-**Install policy: no more `~/.local/bin/tervo` updates until every item below is
+**Install policy: no more `~/.local/bin/xtervo` updates until every item below is
 fixed, tested and Codex-reviewed. The final release is installed exactly once.**
 
 ## 1. Status legend
@@ -58,7 +58,7 @@ fixed, tested and Codex-reviewed. The final release is installed exactly once.**
 | A5 | open_window timeout still creates | **open** | cancel queued closure / ack protocol |
 | A6 | X11 corners matched by title | **open** | use XID/`_NET_WM_PID` |
 | A7 | kitty release uses release-time target | **open** | record press target/mods |
-| A8 | multi-window e2e stale title suffix | **open** | `mw_session_e2e.py` still uses `Tervo — 2` |
+| A8 | multi-window e2e stale title suffix | **open** | `mw_session_e2e.py` still uses `xtervo — 2` |
 | P1 | maximize worker exit only flips UI | **open** | reconcile X11 state |
 | P2 | Quake hotkey registered when disabled | **open** | unregister when off |
 | P3 | X11 fast path loses screen/server | **open** | pass screen explicitly |
@@ -114,12 +114,12 @@ fixed, tested and Codex-reviewed. The final release is installed exactly once.**
 ## 6. Useful commands
 
 ```bash
-CARGO_HOME=$PWD/.cargo cargo test -p tervo-app --bin tervo --offline
-CARGO_HOME=$PWD/.cargo cargo test -p tervo-core --offline
-CARGO_HOME=$PWD/.cargo cargo test -p tervo-scene -p tervo-graphics --offline
-TERVO_INSTANCE_DIR=/tmp/tervo-e2e E2E_BIN_DIR=$PWD/target/debug \
-  E2E_OUT=/tmp/tervo-kbd bash scripts/e2e_keyboard_protocol.sh
-TERVO_INSTANCE_DIR=/tmp/tervo-e2e DURATION=2m BIN=$PWD/target/release/tervo \
+CARGO_HOME=$PWD/.cargo cargo test -p xtervo-app --bin xtervo --offline
+CARGO_HOME=$PWD/.cargo cargo test -p xtervo-core --offline
+CARGO_HOME=$PWD/.cargo cargo test -p xtervo-scene -p xtervo-graphics --offline
+XTERVO_INSTANCE_DIR=/tmp/xtervo-e2e E2E_BIN_DIR=$PWD/target/debug \
+  E2E_OUT=/tmp/xtervo-kbd bash scripts/e2e_keyboard_protocol.sh
+XTERVO_INSTANCE_DIR=/tmp/xtervo-e2e DURATION=2m BIN=$PWD/target/release/xtervo \
   bash scripts/soak.sh
 ```
 
@@ -190,7 +190,7 @@ P1 races/limits. All must be fixed before the single final install.
   不变，fatal=0。
 - Codex 最终复审（`864ebd8 → d16ec56`）无 finding；更早复审的 1 P1 + 4 P2
   均已修复。
-- **已安装** `~/.local/bin/tervo`，sha256
+- **已安装** `~/.local/bin/xtervo`，sha256
   `34afe69bead840b6e11e40f2fd5fd738ccf6cc8ff9d9bd4e49517c2411d9eb8c`。
 
 仍记录但不阻塞：
@@ -199,4 +199,4 @@ P1 races/limits. All must be fixed before the single final install.
 - T7 的矩阵逐条重写（当前已修正关键冲突并加过时提示）。
 
 这些项完成并通过最终 e2e/2m soak 后，才执行唯一一次
-`install -m 755 target/release/tervo ~/.local/bin/tervo`。
+`install -m 755 target/release/xtervo ~/.local/bin/xtervo`。

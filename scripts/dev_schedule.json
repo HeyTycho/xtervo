@@ -1,13 +1,13 @@
 [
-  {"id":"fri-1800","at":"2026-11-13T18:00:00+08:00","title":"Tervo 18:00 开工","body":"MCP 配置化：默认开启、默认只读、四组授权"},
-  {"id":"fri-2030","at":"2026-11-13T20:30:00+08:00","title":"Tervo 20:30 检查点","body":"MCP：默认 socket/token、自动发现、Settings UI"},
-  {"id":"fri-2300","at":"2026-11-13T23:00:00+08:00","title":"Tervo 23:00 检查点","body":"MCP e2e：只读/写开关/全部关闭/token"},
-  {"id":"sat-0930","at":"2026-11-14T09:30:00+08:00","title":"Tervo 周六开工","body":"先收尾 MCP；session autosave 开始"},
-  {"id":"sat-1330","at":"2026-11-14T13:30:00+08:00","title":"Tervo 周六下午","body":"unclean shutdown marker + 恢复提示"},
-  {"id":"sat-1900","at":"2026-11-14T19:00:00+08:00","title":"Tervo 周六晚上","body":"session fsync + last-known-good + kill -9 测试"},
-  {"id":"sat-2330","at":"2026-11-14T23:30:00+08:00","title":"Tervo 周六收口","body":"15m soak + commit + checkpoint"},
-  {"id":"sun-0930","at":"2026-11-15T09:30:00+08:00","title":"Tervo 周日开工","body":"panic/backtrace/crash marker + safe mode"},
-  {"id":"sun-1330","at":"2026-11-15T13:30:00+08:00","title":"Tervo 周日下午","body":"支持包升级 + 恢复矩阵"},
-  {"id":"sun-1900","at":"2026-11-15T19:00:00+08:00","title":"Tervo 周日验证","body":"CI + 30m soak + RTX 4060 真机（如可用）"},
-  {"id":"sun-2300","at":"2026-11-15T23:00:00+08:00","title":"Tervo 周日收口","body":"全绿才打 RC3；失败顺延，不包装成功"}
+  {"id":"fri-1800","at":"2026-11-13T18:00:00+08:00","title":"xtervo 18:00 开工","body":"MCP 配置化：默认开启、默认只读、四组授权"},
+  {"id":"fri-2030","at":"2026-11-13T20:30:00+08:00","title":"xtervo 20:30 检查点","body":"MCP：默认 socket/token、自动发现、Settings UI"},
+  {"id":"fri-2300","at":"2026-11-13T23:00:00+08:00","title":"xtervo 23:00 检查点","body":"MCP e2e：只读/写开关/全部关闭/token"},
+  {"id":"sat-0930","at":"2026-11-14T09:30:00+08:00","title":"xtervo 周六开工","body":"先收尾 MCP；session autosave 开始"},
+  {"id":"sat-1330","at":"2026-11-14T13:30:00+08:00","title":"xtervo 周六下午","body":"unclean shutdown marker + 恢复提示"},
+  {"id":"sat-1900","at":"2026-11-14T19:00:00+08:00","title":"xtervo 周六晚上","body":"session fsync + last-known-good + kill -9 测试"},
+  {"id":"sat-2330","at":"2026-11-14T23:30:00+08:00","title":"xtervo 周六收口","body":"15m soak + commit + checkpoint"},
+  {"id":"sun-0930","at":"2026-11-15T09:30:00+08:00","title":"xtervo 周日开工","body":"panic/backtrace/crash marker + safe mode"},
+  {"id":"sun-1330","at":"2026-11-15T13:30:00+08:00","title":"xtervo 周日下午","body":"支持包升级 + 恢复矩阵"},
+  {"id":"sun-1900","at":"2026-11-15T19:00:00+08:00","title":"xtervo 周日验证","body":"CI + 30m soak + RTX 4060 真机（如可用）"},
+  {"id":"sun-2300","at":"2026-11-15T23:00:00+08:00","title":"xtervo 周日收口","body":"全绿才打 RC3；失败顺延，不包装成功"}
 ]

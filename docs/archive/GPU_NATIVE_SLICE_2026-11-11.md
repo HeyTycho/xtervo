@@ -1,11 +1,11 @@
-# TERVO_GPU_NATIVE vertical slice（2026-11-11）
+# XTERVO_GPU_NATIVE vertical slice（2026-11-11）
 
 分支：`agent/gpu-native`（worktree `.worktrees/agent-gpu-native`）
 关键提交：
 
 | commit | 内容 |
 | --- | --- |
-| `5cff84e` | Frame → Scene → WGPU 文字/背景 slice，默认 GPU-native，`TERVO_CPU=1` 关闭 |
+| `5cff84e` | Frame → Scene → WGPU 文字/背景 slice，默认 GPU-native，`XTERVO_CPU=1` 关闭 |
 | `e40f7b8` | Slint 在首次 render 前 import texture 会空白：改为 render 后 import |
 | `6faefdc` | merge B 的 `GpuImageRenderer`/`ImageTextureRegistry`/staged `render_scene`，接图片分层合成 |
 | `762800b` | 隔离 Xvfb CPU/GPU/fallback e2e + raw RGBA alpha 证据 |
@@ -16,8 +16,8 @@
 真实终端 `Frame` **不经过 CPU framebuffer** 直接进入 GPU：
 
 ```text
-tervo_core::Frame
-  -> tervo_scene::SceneBuilder::from_frame   (TextBatch + Background + ImageInstance)
+xtervo_core::Frame
+  -> xtervo_scene::SceneBuilder::from_frame   (TextBatch + Background + ImageInstance)
   -> GpuImageRenderer::render_scene
        background clear
        -> cell backgrounds (wide 2-cell span, hidden 只画背景)
@@ -30,17 +30,17 @@ tervo_core::Frame
 ```
 
 - Device/Queue 来自 Slint `RenderingSetup` 的 `GraphicsAPI::WGPU30`（`render_probe`），
-  与 `TERVO_GPU=1` stage 0 共用同一个 device；不创建第二个 wgpu 实例。
+  与 `XTERVO_GPU=1` stage 0 共用同一个 device；不创建第二个 wgpu 实例。
 - 显式开关：
-  - `TERVO_GPU_NATIVE=1`：本 slice。默认开启；`TERVO_CPU=1` / `TERVO_GPU_NATIVE=0` 关闭。
-  - `TERVO_GPU=1`：原有 stage 0，CPU framebuffer 上传纹理，行为未改。
+  - `XTERVO_GPU_NATIVE=1`：本 slice。默认开启；`XTERVO_CPU=1` / `XTERVO_GPU_NATIVE=0` 关闭。
+  - `XTERVO_GPU=1`：原有 stage 0，CPU framebuffer 上传纹理，行为未改。
   - 两者同时设置时：GPU native 优先；失败才回 CPU，stage 0 不接管。
 - 任何失败（拿不到 device、atlas/target 创建失败、image upload/分层渲染失败、
   `Image::try_from` 失败）只打印一次日志，本进程剩余时间回 CPU；下一次
   `redraw_pane_inner` 会 `force_full_redraw`，避免 GPU 期间旧 damage 历史残影。
   **不会**把 CPU framebuffer 包装成 GPU 成功。
 - 不每帧整屏 copy：文字是 per-cell 实例；图片按 `SourceId` 只上传一次；
-  正常路径没有 GPU→CPU 回读。`TERVO_GPU_NATIVE_DUMP` 只在首帧做一次只读回读
+  正常路径没有 GPU→CPU 回读。`XTERVO_GPU_NATIVE_DUMP` 只在首帧做一次只读回读
   （PPM + raw RGBA）作为像素/alpha 证据。
 
 ## render-wgpu 侧改动
@@ -69,10 +69,10 @@ tervo_core::Frame
 ### 单元/集成测试
 
 ```text
-cargo test -p tervo-app --bin tervo
+cargo test -p xtervo-app --bin xtervo
 # 414 passed, 0 failed, 1 ignored
 
-cargo test -p tervo-render-wgpu
+cargo test -p xtervo-render-wgpu
 # lib 16 + gpu_text 11 + gpu_images 10 passed，2m image soak ignored
 ```
 
@@ -85,12 +85,12 @@ underline/double/strike、Scene background clear、`SceneBuilder::from_frame`
 脚本：
 
 ```bash
-TERVO_BIN=target/debug/tervo scripts/e2e_gpu_native.sh
+XTERVO_BIN=target/debug/xtervo scripts/e2e_gpu_native.sh
 ```
 
 - 拒绝使用 `:1`；默认 `:77`；每个 mode 独立 XDG/config 目录。
-- 跑三路真实 app：CPU baseline、`TERVO_GPU_NATIVE=1`、失败路径
-  （`TERVO_GPU_NATIVE=1` + 显式 software backend，拿不到 WGPU device）。
+- 跑三路真实 app：CPU baseline、`XTERVO_GPU_NATIVE=1`、失败路径
+  （`XTERVO_GPU_NATIVE=1` + 显式 software backend，拿不到 WGPU device）。
 - 只比较 `take_snapshot()` 终端区域（去掉 32px tab bar），并检查
   draw calls / atlas uploads / gpu_native_frames / raw RGBA alpha。
 
@@ -122,7 +122,7 @@ initial GPU frame cpu_us≈1.16s（fallback 分组探测前同一夹具 3.42s）
 `fallback_vs_cpu` 的 0.20% 来自两次 CPU 进程之间 cursor blink 相位/AA；
 fallback 仍是纯 CPU，没有 GPU 帧（快照行 `gpu_native_frames=0`）。
 
-`TERVO_GPU_SNAPSHOT_DELAY_MS` 是测试旋钮：llvmpipe 首次 WGPU present 可能晚于
+`XTERVO_GPU_SNAPSHOT_DELAY_MS` 是测试旋钮：llvmpipe 首次 WGPU present 可能晚于
 2.5s，e2e 用 6000ms，等 import 的 texture 真正被 Slint 采样后再
 `take_snapshot()`。生产路径不依赖这个延迟。
 
@@ -149,7 +149,7 @@ elapsed_s rss_kb pss_kb threads fds
 
 ## 已知限制 / 后续
 
-1. 默认已切换 GPU-native；`TERVO_CPU=1` 强制 CPU；`TERVO_GPU_NATIVE=0` 仅用于显式兼容 stage 0。
+1. 默认已切换 GPU-native；`XTERVO_CPU=1` 强制 CPU；`XTERVO_GPU_NATIVE=0` 仅用于显式兼容 stage 0。
 2. 光标仍走原有 Slint overlay（明确保留）；Scene 里有 cursor 但 GPU 不合成。
 3. 彩色 emoji 不做（fontdue 只支持轮廓）；无字形时显式 `?` + 计数。
 4. 背景透明度：Scene background 使用主题不透明 RGB；`background-opacity < 1`

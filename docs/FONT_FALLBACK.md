@@ -22,7 +22,7 @@
 不同字符只走相关组：
 
 - emoji：**COLOR 彩色位图 → SYMBOL → EMOJI 单色**；彩色字体缺失/不覆盖时自动
-  回落单色。彩色管线只探测 COLOR 组与 `TERVO_FALLBACK_FONTS`，**不会**为了 emoji
+  回落单色。彩色管线只探测 COLOR 组与 `XTERVO_FALLBACK_FONTS`，**不会**为了 emoji
   解析 18 MB 的 Noto CJK；
 - 中文：CJK → SYMBOL → EMOJI（不碰 ICON/COLOR）；
 - Nerd/私用区图标：ICON → SYMBOL；没有 Nerd 字体时直接占位，不去解析 CJK；
@@ -37,18 +37,18 @@
 
 | 变量 | 作用 |
 |---|---|
-| `TERVO_FALLBACK_FONTS` | `:` 分隔的额外字体路径（可写 `/path/font.ttc#7`），优先于内置 SYMBOL 组。典型用途：指向用户目录里的 Nerd Font 或自带彩色 emoji 字体 |
-| `TERVO_COLOR_EMOJI=0` | 关闭彩色 emoji（`0`/`off`/`false`/`no`），退回本轮之前的单色回退/占位行为；默认开启 |
-| `TERVO_FONTLOG=1` | 打印每个回退字体的解析耗时/失败，以及彩色字体探测/解码信息 |
+| `XTERVO_FALLBACK_FONTS` | `:` 分隔的额外字体路径（可写 `/path/font.ttc#7`），优先于内置 SYMBOL 组。典型用途：指向用户目录里的 Nerd Font 或自带彩色 emoji 字体 |
+| `XTERVO_COLOR_EMOJI=0` | 关闭彩色 emoji（`0`/`off`/`false`/`no`），退回本轮之前的单色回退/占位行为；默认开启 |
+| `XTERVO_FONTLOG=1` | 打印每个回退字体的解析耗时/失败，以及彩色字体探测/解码信息 |
 
 示例：
 
 ```bash
-TERVO_FALLBACK_FONTS=$HOME/.local/share/fonts/SymbolsNerdFontMono-Regular.ttf \
-TERVO_FONTLOG=1 tervo
+XTERVO_FALLBACK_FONTS=$HOME/.local/share/fonts/SymbolsNerdFontMono-Regular.ttf \
+XTERVO_FONTLOG=1 xtervo
 
 # 指定用户目录里的彩色 emoji 字体（会被当作彩色候选探测）
-TERVO_FALLBACK_FONTS=$HOME/.local/share/fonts/NotoColorEmoji.ttf \
+XTERVO_FALLBACK_FONTS=$HOME/.local/share/fonts/NotoColorEmoji.ttf \
   scripts/font_glyph_shot.sh .logs/font-emoji/custom-color
 ```
 
@@ -82,7 +82,7 @@ TERVO_FALLBACK_FONTS=$HOME/.local/share/fonts/NotoColorEmoji.ttf \
 
 1. 仅对 emoji 码位（`placeholder_kind == Emoji`）调用 `GlyphCache::get_color`；
    ASCII/中文/私用区图标完全不触碰彩色候选；
-2. 按“`TERVO_FALLBACK_FONTS` 追加字体 → 内置 COLOR 组”顺序，用
+2. 按“`XTERVO_FALLBACK_FONTS` 追加字体 → 内置 COLOR 组”顺序，用
    `owned_ttf_parser`（持有文件所有权，内部是 `ttf-parser`）查 cmap 与
    `glyph_raster_image`；支持 CBDT/CBLC、EBDT/EBLC、sbix 的 PNG 位图，
    以及 CBDT/EBDT 的预乘 BGRA32；
@@ -115,13 +115,13 @@ TERVO_FALLBACK_FONTS=$HOME/.local/share/fonts/NotoColorEmoji.ttf \
 
 ```bash
 # 单元测试（宽字符/组合/emoji 的 cell 宽度、截断、占位、彩色解码/缓存/裁剪）
-cargo test -p tervo-core
-cargo test -p tervo-app --bin tervo
+cargo test -p xtervo-core
+cargo test -p xtervo-app --bin xtervo
 
 # GUI 截图（Xvfb :121，脚本只 kill 自己启动的进程；不碰 :1/Xephyr）
-cargo build -p tervo-app --bin tervo
+cargo build -p xtervo-app --bin xtervo
 FONT_SHOT_DISPLAY=:121 scripts/font_glyph_shot.sh .logs/font-emoji/color-after
-TERVO_COLOR_EMOJI=0 FONT_SHOT_DISPLAY=:121 \
+XTERVO_COLOR_EMOJI=0 FONT_SHOT_DISPLAY=:121 \
   scripts/font_glyph_shot.sh .logs/font-emoji/color-off
 ```
 
@@ -129,7 +129,7 @@ TERVO_COLOR_EMOJI=0 FONT_SHOT_DISPLAY=:121 \
 
 - `color-after.png`：默认开启——😀🚀❤️✔️👍⚡🎉 为彩色，👨‍👩‍👧 / 👩‍💻 / 🏳️‍🌈
   按 3 个/2 个组件分别彩色绘制，仍占 6/4 格；CJK、组合音标、框线不受影响；
-- `color-off.png`：`TERVO_COLOR_EMOJI=0`——退回单色轮廓/占位框，用于对照与排障；
+- `color-off.png`：`XTERVO_COLOR_EMOJI=0`——退回单色轮廓/占位框，用于对照与排障；
 - 旧一轮字体回退截图 `before.png` / `after-default.png` / `after-nerd.png` 仍在
   `.logs/font-emoji/`，记录彩色 emoji 之前的占位行为。
 
@@ -151,7 +151,7 @@ TERVO_COLOR_EMOJI=0 FONT_SHOT_DISPLAY=:121 \
 - 中文：第一次缺字只解析 CJK 组第一个可用字体（本机 wqy-microhei）；
 - emoji：彩色字体文件读取 + `ttf-parser` 解析一次（本机 NotoColorEmoji 约 4.8ms
   debug），每个新 emoji 首次出现时解 PNG + 面积缩放一次，之后 `color_map` 命中
-  只做 RGBA 混合；**不会**为 emoji 解析 18 MB 的 Noto CJK；`TERVO_FONTLOG=1`
+  只做 RGBA 混合；**不会**为 emoji 解析 18 MB 的 Noto CJK；`XTERVO_FONTLOG=1`
   的日志里可看到彩色候选探测与 CJK 加载相互独立；
 - 单色 emoji 仍走原轮廓链；整屏 pull 默认保持无分支热路径；只有“帧里已有零宽
   记录”或“本批输入含零宽码位”时才逐格读 `Cell::zerowidth()`。旧一轮 A/B（debug
@@ -174,7 +174,7 @@ TERVO_COLOR_EMOJI=0 FONT_SHOT_DISPLAY=:121 \
   彩色 emoji。
 - 组合音标用“居中到基字形墨迹中心”的近似，没有 GPOS 锚点；极端字体/多标记叠加
   可能与排版引擎有 1–2px 差异。
-- 内置路径是 Debian/Ubuntu/Fedora 常见位置；其它发行版请用 `TERVO_FALLBACK_FONTS`。
+- 内置路径是 Debian/Ubuntu/Fedora 常见位置；其它发行版请用 `XTERVO_FALLBACK_FONTS`。
 - 回退字体按需解析仍可能占用较大 RSS（wqy-microhei 约 170 MB、Noto CJK 更大）；
   只在真正遇到缺字时发生。彩色 emoji 位图缓存在内存（约几十字节/像素），
   大量不同 emoji 会线性增长。

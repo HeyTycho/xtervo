@@ -103,7 +103,7 @@ single chunk: pass==expected, held=0, kitty cmds=14, errors=0
 
 ## 3. 发现（按严重度）
 
-复现全部失败：`cargo test -p tervo-core --test filter_conservation -- --ignored`，
+复现全部失败：`cargo test -p xtervo-core --test filter_conservation -- --ignored`，
 完整输出见
 [`docs/evidence/filter-audit-2026-11-11/pre-fix-failing-tests.txt`](../evidence/filter-audit-2026-11-11/pre-fix-failing-tests.txt)
 （7 failed）。
@@ -183,11 +183,11 @@ Kitty parser 只认 `ESC _ G`，C1 `0x9F G` 不识别；字节会透传给 vte�
 验证：
 
 ```text
-cargo test -p tervo-core --test filter_conservation
+cargo test -p xtervo-core --test filter_conservation
 => 18 passed; 0 failed; 0 ignored
-cargo test -p tervo-core
+cargo test -p xtervo-core
 => 259 passed, 0 failed（12 个 test binary，含真实 PTY 的 sixel/kitty e2e）
-=> Doc-tests tervo_core: 0 passed, 0 failed
+=> Doc-tests xtervo_core: 0 passed, 0 failed
    （一次全量运行时 doctest 报缺 rlib；同一时刻日志有
     “Blocking waiting for file lock on build directory”，为多 agent 共享
     target 的并发构建竞态，单独重跑/再次全量均通过）
@@ -211,15 +211,15 @@ cargo test -p tervo-core
 cd /home/user/AIworkspace/rusttabbyterminal/.worktrees/agent-filter-audit
 CARGO_HOME=/home/user/AIworkspace/rusttabbyterminal/.cargo CARGO_NET_OFFLINE=true \
   CARGO_TARGET_DIR=/home/user/AIworkspace/rusttabbyterminal/target \
-  cargo test -p tervo-core --test filter_conservation
+  cargo test -p xtervo-core --test filter_conservation
 # 审计基线（本 commit 的 7 个已知缺陷，修复前全失败）：
 CARGO_HOME=/home/user/AIworkspace/rusttabbyterminal/.cargo CARGO_NET_OFFLINE=true \
   CARGO_TARGET_DIR=/home/user/AIworkspace/rusttabbyterminal/target \
-  cargo test -p tervo-core --test filter_conservation -- --ignored
+  cargo test -p xtervo-core --test filter_conservation -- --ignored
 # 全量 core（含真实 PTY 的 sixel/kitty e2e）：
 CARGO_HOME=/home/user/AIworkspace/rusttabbyterminal/.cargo CARGO_NET_OFFLINE=true \
   CARGO_TARGET_DIR=/home/user/AIworkspace/rusttabbyterminal/target \
-  cargo test -p tervo-core
+  cargo test -p xtervo-core
 ```
 
 ## 6. 限制

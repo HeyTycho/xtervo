@@ -17,7 +17,7 @@ DURATION=30m ./scripts/soak.sh
 
 # 指定二进制 / 输出目录 / 显示器
 DURATION=30m \
-  BIN=$PWD/target/release/tervo \
+  BIN=$PWD/target/release/xtervo \
   SOAK_OUT=$PWD/.logs/soak/manual-30m \
   ./scripts/soak.sh
 ```
@@ -26,8 +26,8 @@ DURATION=30m \
 
 ```bash
 CARGO_HOME=/home/user/AIworkspace/rusttabbyterminal/.cargo \
-  cargo build --release --offline -p tervo-app \
-  --bin tervo --bin xwin --bin xclick --bin xkey
+  cargo build --release --offline -p xtervo-app \
+  --bin xtervo --bin xwin --bin xclick --bin xkey
 ```
 
 依赖：`Xvfb`、`openbox`、`x11-utils`（`xdpyinfo`/`xwininfo`/`xprop`）、`python3`、
@@ -38,9 +38,9 @@ CARGO_HOME=/home/user/AIworkspace/rusttabbyterminal/.cargo \
 
 - 固定独立显示 **`:143`**（`SOAK_DISPLAY` 可改）；显示已被占用时**直接失败**，
   绝不 kill 占用者。不碰 `:1`，不启动 Xephyr，不使用 `pkill`。
-- 只 kill 本脚本记录的 Xvfb / Openbox / Tervo PID，并在 kill 前校验
+- 只 kill 本脚本记录的 Xvfb / Openbox / xtervo PID，并在 kill 前校验
   `/proc/<pid>/cmdline`，避免 PID 复用误伤。
-- `HOME`、`XDG_CACHE_HOME`、`XDG_STATE_HOME`、`TERVO_CONFIG`、`TERVO_LOG_DIR`
+- `HOME`、`XDG_CACHE_HOME`、`XDG_STATE_HOME`、`XTERVO_CONFIG`、`XTERVO_LOG_DIR`
   全部指向输出目录，不写用户真实配置。
 - 默认 `SLINT_BACKEND=winit-software`（headless 无 GPU）；截图用 `ffmpeg x11grab`。
 - `DURATION` 支持 `30s` / `2m` / `15m` / `1h` 或纯秒数；默认 `30m`。
@@ -83,8 +83,8 @@ xvfb_alive, win_alive, log_fatal, log_errors, mem_available_kb, phase`
 ├── samples.csv        # 逐次采样
 ├── report.md          # 人读报告（PASS/FAIL）
 ├── summary.json       # 机器可读判定
-├── app.log            # Tervo stderr（含 panic）
-├── logs/tervo-*.log   # 按次日志
+├── app.log            # xtervo stderr（含 panic）
+├── logs/xtervo-*.log   # 按次日志
 ├── xvfb.log / openbox.log
 ├── shots/             # start/settings/end 截图（有 ffmpeg 时）
 └── config.toml        # 本次配置（22 Tab 场景由脚本驱动）
@@ -108,7 +108,7 @@ xvfb_alive, win_alive, log_fatal, log_errors, mem_available_kb, phase`
 
 环境：Linux x86_64，31 GiB 内存，28 线程；headless Xvfb 1280x800x24 +
 Openbox + Mesa llvmpipe + `winit-software`；release 二进制
-`target/release/tervo`（SHA256 `bfb72218…4120a2`）。
+`target/release/xtervo`（SHA256 `bfb72218…4120a2`）。
 
 ### 2m 快速门禁（2026-11-07 00:07–00:10，最终脚本）
 
@@ -163,13 +163,13 @@ RSS 斜率只能作门禁参考，不能外推长时稳定性。
 - 复制通过应用日志 `[clipboard] 复制` 确认；Xvfb 无剪贴板管理器。
 - 内存 PASS 阈值是启发式（RSS/PSS + 斜率 + R²），短跑波动会标 WARN；最终泄漏判定
   仍需更长跑（如 2h/24h）+ heap profile。
-- `TERVO_CONFIG`/日志/home 均在本次输出目录，不污染用户配置。
+- `XTERVO_CONFIG`/日志/home 均在本次输出目录，不污染用户配置。
 
 ## 复现长跑
 
 ```bash
 cd /home/user/AIworkspace/rusttabbyterminal/.worktrees/soak
-DURATION=15m SOAK_OUT=$PWD/.logs/soak/long-15m BIN=$PWD/target/release/tervo \
+DURATION=15m SOAK_OUT=$PWD/.logs/soak/long-15m BIN=$PWD/target/release/xtervo \
   ./scripts/soak.sh 2>&1 | tee .logs/soak-long-15m.out
 ```
 

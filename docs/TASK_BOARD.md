@@ -1,8 +1,8 @@
-# Tervo 任务看板
+# xtervo 任务看板
 
 > 最后更新：2026-11-09 18:25  
 > 规则：每个任务开始/完成/阻塞都要更新本文件；记录 worktree、branch、commit、测试/截图、限制。  
-> 当前 master：图片 v2 + 插件 API v2/AI panel（0.2.0 发布候选）；当前 release：`target/release/tervo` 0.2.0。
+> 当前 master：图片 v2 + 插件 API v2/AI panel（0.2.0 发布候选）；当前 release：`target/release/xtervo` 0.2.0。
 
 ## 1. 状态图例
 
@@ -25,7 +25,7 @@
 | P0-04 | find 外部点击自动收起 + 搜索条防穿透 | done | master | commit `69801cc`；`.logs/find-dismiss/` | app tests；手动 |
 | P0-05 | Codex P0：PTY 输入/写队列背压、pull 无超时导致 UI 冻结 | done | `.worktrees/p0-hardening` / `feat/p0-hardening` | commit `7b6b7ad`；合 master `f3e9e0e`；`.logs/p0-blocking/` | 474 workspace tests；慢 shell/10MiB 粘贴/20MiB 洪峰；UI 调用 <1ms |
 | P0-06 | Codex P0：SFTP 元数据 `wait_with_output()` 无超时阻塞 UI | done | 同上 | `SftpOpJob` 后台化；10s kill 进程组；`.logs/p0-blocking/` | 假 sftp sleep 30：List 10.0s 超时；TabBar/New Tab 仍响应 |
-| P0-07 | Codex P0 修复合并 + 全量回归 + P0 稳定 release | done | master `f3e9e0e` | release `target/release/tervo` 19:51 / `tervo-stripped-new` 50M | 474 tests；6 e2e 全 PASS（WM resize 首次偶发、重跑 PASS）；smoke rc=0 |
+| P0-07 | Codex P0 修复合并 + 全量回归 + P0 稳定 release | done | master `f3e9e0e` | release `target/release/xtervo` 19:51 / `xtervo-stripped-new` 50M | 474 tests；6 e2e 全 PASS（WM resize 首次偶发、重跑 PASS）；smoke rc=0 |
 | P0-08 | Codex 审计报告归档 | done | `.logs/codex-architecture-review.md` | 19k 行原始输出；摘要见本文件 §6 | — |
 | P0-09 | 图片合成 v2：framebuffer 内合成、ECH 行级清理、XTWIN 像素尺寸、块元素几何 | done | master | `0b62596`/`c7f13ac`/`3131ca5`；`.logs/image-compose`、`.logs/scroll-compose`、`.logs/dsh-v2-final` | app 393；core sixel 9；2m/15m PASS；真实 dsh 截图 |
 | P0-10 | 插件 API v2 + AI Chat（process plugin，宿主不存 key） | done | `.worktrees/ai-panel` / `feat/ai-panel` | `f975179`；合并 `9cc2330`；`docs/examples/ai-echo`；`.logs/ai-panel/` | app 393；AI e2e PASS；plugin v1 e2e PASS |
@@ -57,12 +57,12 @@
 | W-01 | Profiles + 会话恢复 | done | `.worktrees/profile-session` / `feat/profile-session` | 每 Profile 外观（font_size/theme/cursor_shape/cursor_blink/scrollback，additive v2，空=继承全局，Profile 显式 > 全局）；Settings→Profiles 表单共用 Appearance 区；session Snapshot 增加可选 profile_id，local Profile 恢复外观/shell/cwd，SSH/Serial/Telnet 不自动建连；`restore_session_on_startup`（默认 false）正常退出写快照，启动恢复 Tab/split/ratio/cwd/网格，失败回退新 Tab。验收：app 295 / workspace 489 tests；Xvfb :136 `scripts/e2e_profile_session.sh` PASS（表单/应用外观/3 Tab+split+cwd 重启恢复/损坏快照 fallback；截图 `.logs/profile-session/e2e/shots`） |
 | W-02 | SSH/SFTP/Vault 产品化 | done | `.worktrees/ssh-sftp` / `feat/ssh-sftp` | **SSH**：Profile 增加 `proxy_jump`/`remote_forwards`/`dynamic_forwards`/`agent_forward`（additive v2，旧 profiles.toml 兼容），表单可编辑，`ssh_command` 生成 `-J/-R/-D/-A`；`auth=password` 显式 kbd-interactive + askpass 识别本地化密码 prompt/排除 OTP；known_hosts 连接前后台预检（10s、可取消）：首次显示 SHA256 指纹、变更并列旧/新指纹，Trust/Update 才写 known_hosts（0600，`ssh-keygen -R` 先删旧条目），否则回退终端确认；SSH 退出状态横幅 + Reconnect（不自动循环重连）。**SFTP**：上传/下载队列（FIFO、Clear queue）、失败 Retry、chmod（八进制校验）、元数据 Cancel、传输 Cancel；`ConnectTimeout=10`+`ServerAliveInterval=5/CountMax=2`，元数据 10s 硬超时；全部后台不阻塞 UI。**Vault**：Argon2/初始化/改密码移出 UI 线程（P1-08）。验收：app 351、core smoke 25；`scripts/e2e_ssh_sftp_vault.sh` Xvfb :139 PASS（19 张截图：SSH 表单/known_hosts 首次+变更/退出横幅/重连/Vault busy+完成/SFTP 队列/取消/chmod/失败+retry）；真实 sshd 不可用，改用假 ssh/sftp/keyscan + 真实 ssh -G/ssh-keygen |
 | W-03 | iTerm2 IIP 图片 | done | `.worktrees/iip-image` / `feat/iip-image` | commit `4968a55`；合 master `b23476a`；core 194/app 327；Xvfb :140 PNG/JPEG 截图；`.logs/iip/` | 跨 chunk/滚动/resize/关闭/热更新；无 Kitty |
-| W-04 | 插件系统 V1 | done | `.worktrees/plugin-v1` / `feat/plugin-v1` | commit 为分支头；外部进程 manifest（id/runtime/permissions/contributes）+ 常驻 process JSON Lines（2s 握手/10s 命令超时/重启上限 2/坏 JSON 禁用）+ Command（静态 args/返回文本浮层）+ Status（2s 轮询/底部状态栏/可点击 command）+ Theme Pack（TOML，可选）；旧 oneshot/旧扁平清单兼容；设置页显示 running/restarting/disabled 原因；UI 不新增复杂面板。测试 341 passed（基线 327）；fake Python/Node 插件覆盖命令/状态/崩溃/超时/坏 JSON/禁用；Xvfb :142 `scripts/e2e_plugin_v1.sh` PASS，截图 `.logs/plugin-v1/{command_result,status,plugins}.png` | 命令/状态/主题闭环；崩溃/超时/坏 JSON/坏 manifest 不拖死 Tervo；无沙箱（权限仅声明）、无安装/UI 开关/热重载，限制见 docs/PLUGIN_API.md |
+| W-04 | 插件系统 V1 | done | `.worktrees/plugin-v1` / `feat/plugin-v1` | commit 为分支头；外部进程 manifest（id/runtime/permissions/contributes）+ 常驻 process JSON Lines（2s 握手/10s 命令超时/重启上限 2/坏 JSON 禁用）+ Command（静态 args/返回文本浮层）+ Status（2s 轮询/底部状态栏/可点击 command）+ Theme Pack（TOML，可选）；旧 oneshot/旧扁平清单兼容；设置页显示 running/restarting/disabled 原因；UI 不新增复杂面板。测试 341 passed（基线 327）；fake Python/Node 插件覆盖命令/状态/崩溃/超时/坏 JSON/禁用；Xvfb :142 `scripts/e2e_plugin_v1.sh` PASS，截图 `.logs/plugin-v1/{command_result,status,plugins}.png` | 命令/状态/主题闭环；崩溃/超时/坏 JSON/坏 manifest 不拖死 xtervo；无沙箱（权限仅声明）、无安装/UI 开关/热重载，限制见 docs/PLUGIN_API.md |
 | W-05 | 打包/自动更新/崩溃报告 | done | `.worktrees/packaging` / `feat/packaging` | commit `2ac3ac6`；合 master `585fd21`；327 tests；packaging 71 项 PASS；`dist/` tar/deb/sha | tar/deb/install/rollback/deb smoke；自动更新/崩溃报告明确未做 |
 | W-06 | Wayland 原生 spike | done | `.worktrees/wayland-spike` / `feat/wayland-spike` | commit `f2e16e4`；合 master `e8ef824`；`docs/WAYLAND_SPIKE.md` 576 行；纯 Wayland/Xwayland headless 实测；DnD/全局快捷键/PRIMARY 硬阻断 | 只 spike，不承诺原生完整 |
 | W-07 | 长时稳定性 soak | done | `.worktrees/soak` / `feat/soak` | `scripts/soak.sh` + `docs/SOAK.md`；2m PASS；30m 修复后 RSS 753.2→817.2 MiB（+64.0MiB，+0.78MiB/min，R²=0.13），6min 后平台；`.worktrees/mem-converge/.logs/soak/fix-30m/` | 30m PASS；不声称 24h |
 | W-08 | 全量 e2e/回归矩阵 | done | 15 个脚本（SSH/SFTP、插件、设置、Sixel/IIP、键盘、事件、渲染、P0、URL/右键等） | 功能 e2e 全 PASS；URL/WM 各一次注入竞态重跑 PASS；内存 30m 单独 PASS | 功能+内存门禁绿 |
-| W-09 | Wayland Phase 1：能力探测 + 优雅降级 | done | `.worktrees/wl-phase1` / `feat/wayland-phase1` | 新增 `platform.rs`（env hint + winit raw handle 二次确认 + Caps 门控）；Quake/图标/圆角/最大化/拖边回退/Bell/own_windows 在 Wayland 明确降级；`set_xdg_app_id=tervo`；`--diagnose` 标注 XWayland 数据；session 几何增加 `position_known` 防污染 X11；隔离 headless Mutter e2e（Wayland + 私有 XWayland）；workspace 1069 tests PASS；2m idle RSS/线程/FD 平稳 | X11 行为不变；纯 Wayland 剪贴板/DnD/全局热键明确不支持，GNOME 46 + fcitx5 IME 实测“你好”；见 `docs/WAYLAND_ADAPTATION.md` |
+| W-09 | Wayland Phase 1：能力探测 + 优雅降级 | done | `.worktrees/wl-phase1` / `feat/wayland-phase1` | 新增 `platform.rs`（env hint + winit raw handle 二次确认 + Caps 门控）；Quake/图标/圆角/最大化/拖边回退/Bell/own_windows 在 Wayland 明确降级；`set_xdg_app_id=xtervo`；`--diagnose` 标注 XWayland 数据；session 几何增加 `position_known` 防污染 X11；隔离 headless Mutter e2e（Wayland + 私有 XWayland）；workspace 1069 tests PASS；2m idle RSS/线程/FD 平稳 | X11 行为不变；纯 Wayland 剪贴板/DnD/全局热键明确不支持，GNOME 46 + fcitx5 IME 实测“你好”；见 `docs/WAYLAND_ADAPTATION.md` |
 | MEM-01 | 长时内存增长修复 | done | `.worktrees/mem-converge` / `feat/mem-converge` | 根因 IIP/Sixel 图片锚点 + scrollback 封顶；`66ae0c6` 合 master `0cb84e8`；30m +64.0MiB（旧 +209.6），6min 平台；app 369/core 127 | 30m PASS；诊断 commit 1bec94f 未合发布 |
 | DOC-01 | 最终人工复测清单 | done | `docs/RETEST_CHECKLIST.md` | 已填版本/哈希/e2e/30m 内存结果，待用户逐项签字 | 文档交付 |
 | DOC-02 | UI/视觉设计规范 | done | `docs/UI_DESIGN.md` | 美学、token、图标、菜单、动效、双语、2m/15m/30m 内存门禁、验收清单 | 设计与验收统一口径 |
@@ -140,7 +140,7 @@
 | 2026-11-06 23:50 | W-06 Wayland spike 报告合入（e8ef824）；W-02/W-04/W-07 继续 |
 | 2026-11-07 00:35 | W-02/W-04/W-07 合入；SSH/SFTP 19 截图 e2e PASS，plugin e2e PASS；soak 15m FAIL 内存，MEM-01 开跑 |
 | 2026-11-07 04:35 | 最终候选 8823311；15 个功能 e2e 全 PASS；30m soak 仍 +209.6MiB 内存未收敛；dist tar/deb 生成；复测清单完成 |
-| 2026-11-09 01:40 | 真实 SSH ssh.example.test 验收：Tervo SSH Profile known_hosts/登录/远程命令 PASS；修首次启动不读 default_profile_id；最终包 3fafbc8 |
+| 2026-11-09 01:40 | 真实 SSH ssh.example.test 验收：xtervo SSH Profile known_hosts/登录/远程命令 PASS；修首次启动不读 default_profile_id；最终包 3fafbc8 |
 | 2026-11-09 11:35 | feat/i18n：Settings/终端右键/TabBar 中英双语 + Appearance 顶部 Language（运行中切换、写回、热更新）；app 376 passed（基线 369）；`scripts/e2e_settings_i18n.sh` PASS；未合 master |
 | 2026-11-09 02:00 | 设置页修复：Dim/Opacity 仅左键拖拽（悬停 0 像素变化）、内容区随窗口放大（1080→1482）；最终包 5dc3c31 |
 | 2026-11-09 12:45 | 内存收敛：IIP/Sixel 图片按单调滚动淘汰（66ae0c6）；30m +64.0MiB PASS；消融 full/noimg 10m +87.4/+60.0；最终包 0cb84e8 |
@@ -153,4 +153,4 @@
 | 2026-11-06 21:35 | W-01 完成（feat/profile-session，未合 master）：每 Profile 外观 + session profile_id/可选启动自动恢复；app 295、workspace 489；Xvfb :136 e2e PASS；限制见 docs/self-iteration.md |
 | 2026-11-06 23:56 | W-02 + P1-08 完成（feat/ssh-sftp，未合 master）：SSH 跳板/远程+动态转发/agent forwarding/known_hosts 预检/重连；SFTP 队列/chmod/retry/cancel/10s 连接超时；Vault 后台 KDF。app 351、core smoke 25；Xvfb :139 e2e 19 张截图 PASS；限制见 docs/self-iteration.md |
 | 2026-11-09 | feat/settings-help：Settings SYSTEM 组新增 Help（第 9 分类，手绘圆形问号）；快捷键表/config+log 路径/诊断复制/编译期版本/已知限制；4 条搜索索引（help/帮助）；app 383 passed（基线 382）；`scripts/e2e_settings_help.sh` Xvfb :147 PASS（16 张截图）；未合 master |
-| 2026-11-19 21:48 | W-09 Wayland Phase 1（feat/wayland-phase1）：平台能力探测 + X11-only 能力门控；app_id=tervo；`--diagnose` 区分 XWayland；session `position_known`；隔离 headless Mutter 下 Wayland/X11/IME/剪贴板 e2e；workspace 1069 tests PASS；2m idle 内存平稳 |
+| 2026-11-19 21:48 | W-09 Wayland Phase 1（feat/wayland-phase1）：平台能力探测 + X11-only 能力门控；app_id=xtervo；`--diagnose` 区分 XWayland；session `position_known`；隔离 headless Mutter 下 Wayland/X11/IME/剪贴板 e2e；workspace 1069 tests PASS；2m idle 内存平稳 |

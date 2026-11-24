@@ -2,7 +2,7 @@
 //! 官方 SSH 连接插件 POC（ACT-052 F5）：把系统 `ssh` 客户端包成 `PaneTransport`。
 //!
 //! 目的不是再做一个“PTY 里跑 ssh”的连接：pane 的字节后端直接是
-//! [`tervo_core::transport::PaneTransport`]（`Backend::Plugin`），核心的 vte
+//! [`xtervo_core::transport::PaneTransport`]（`Backend::Plugin`），核心的 vte
 //! 解析、写队列、EOF/背压路径与本地 PTY 完全共用。
 //!
 //! ```text
@@ -30,7 +30,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use tervo_core::transport::{
+use xtervo_core::transport::{
     PaneTransport, TransportControl, TransportHalves, TransportShutdown,
 };
 
@@ -316,7 +316,7 @@ pub struct SshPluginTransport {
 
 impl SshPluginTransport {
     /// 用 Profile 启动 SSH transport：默认超时 20s，可用
-    /// `TERVO_PLUGIN_SSH_CONNECT_TIMEOUT_MS` 覆盖。
+    /// `XTERVO_PLUGIN_SSH_CONNECT_TIMEOUT_MS` 覆盖。
     pub fn start(profile: &Profile) -> io::Result<Self> {
         Self::start_with_timeout(profile, configured_timeout())
     }
@@ -673,7 +673,7 @@ fn connect_timeout_secs() -> u64 {
 }
 
 fn configured_timeout() -> Duration {
-    std::env::var("TERVO_PLUGIN_SSH_CONNECT_TIMEOUT_MS")
+    std::env::var("XTERVO_PLUGIN_SSH_CONNECT_TIMEOUT_MS")
         .ok()
         .and_then(|v| v.trim().parse::<u64>().ok())
         .filter(|ms| *ms > 0)
@@ -1089,7 +1089,7 @@ impl Read for FrameReader {
     }
 }
 
-/// `tervo --plugin-ssh-probe <profile-id|name> [--duration <secs>]`
+/// `xtervo --plugin-ssh-probe <profile-id|name> [--duration <secs>]`
 ///
 /// 无 GUI 的复现工具：走与 pane 完全相同的 transport，把远端字节原样打到
 /// stdout，最后打印状态。成功显示 banner 时退出码 0，失败/超时为 1。
@@ -1114,7 +1114,7 @@ pub fn run_probe(args: &[String]) -> i32 {
         i += 1;
     }
     let Some(selector) = selector else {
-        eprintln!("用法: tervo --plugin-ssh-probe <profile-id|name> [--duration <secs>]");
+        eprintln!("用法: xtervo --plugin-ssh-probe <profile-id|name> [--duration <secs>]");
         return 2;
     };
     let store = ProfileStore::load();
@@ -1226,7 +1226,7 @@ mod tests {
         fn named(name: &str, body: &str) -> Self {
             static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
             let dir = std::env::temp_dir().join(format!(
-                "tervo-fake-ssh-{}-{}",
+                "xtervo-fake-ssh-{}-{}",
                 std::process::id(),
                 SEQ.fetch_add(1, Ordering::Relaxed)
             ));
@@ -1262,7 +1262,7 @@ mod tests {
     fn temp_path(name: &str) -> std::path::PathBuf {
         static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         std::env::temp_dir().join(format!(
-            "tervo-ssh-test-{}-{}-{name}",
+            "xtervo-ssh-test-{}-{}-{name}",
             std::process::id(),
             SEQ.fetch_add(1, Ordering::Relaxed)
         ))
@@ -1593,7 +1593,7 @@ mod tests {
         let mut p = fake.profile();
         p.args = vec![
             "-o".into(),
-            "SendEnv=TERVO_TEST".into(),
+            "SendEnv=XTERVO_TEST".into(),
             "fake.test".into(),
         ];
         let mut t = start_fake(&p, Duration::from_secs(5))
@@ -1610,7 +1610,7 @@ mod tests {
             .unwrap_or_else(|| panic!("缺少 BatchMode=yes: {args:?}"));
         let extra = args
             .iter()
-            .position(|a| *a == "SendEnv=TERVO_TEST")
+            .position(|a| *a == "SendEnv=XTERVO_TEST")
             .unwrap_or_else(|| panic!("缺少 extra_args: {args:?}"));
         assert!(
             batch < extra,

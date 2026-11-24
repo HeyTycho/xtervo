@@ -4,12 +4,12 @@
 //! 系统 `ssh` 在 PTY 里跑；密码认证时给它设：
 //! - `SSH_ASKPASS` → 临时脚本（0700，随机目录，脚本本身不含密码）
 //! - `SSH_ASKPASS_REQUIRE=force` → 即使 stdin 是 tty 也走 askpass
-//! - `TERVO_ASKPASS_SECRET` → 密码，只存在于 **ssh 子进程**的环境里
-//! - `TERVO_ASKPASS_DEBUG`（可选，Tervo 进程的环境变量）→ 脚本每被调用一次就
+//! - `XTERVO_ASKPASS_SECRET` → 密码，只存在于 **ssh 子进程**的环境里
+//! - `XTERVO_ASKPASS_DEBUG`（可选，xtervo 进程的环境变量）→ 脚本每被调用一次就
 //!   追加一行 prompt/匹配结果到该文件；**不写密码**，仅用于排查 askpass 是否
 //!   被调用、prompt 长什么样。文件由用户显式指定，默认不写。
 //!
-//! 临时脚本**只对密码提示**输出 `TERVO_ASKPASS_SECRET`；主机密钥确认等其它
+//! 临时脚本**只对密码提示**输出 `XTERVO_ASKPASS_SECRET`；主机密钥确认等其它
 //! prompt 一律回答 `no`。这是为了避免 OpenSSH 在 `SSH_ASKPASS_REQUIRE=force`
 //! 下把密码当成主机密钥确认答案，从而无限重试（实测会刷出数千次 askpass 调用）。
 //! 目录随 `Askpass` guard 一起删除（Pane 关闭/ssh 退出后）。
@@ -19,7 +19,7 @@
 //! 密码现在经**子进程环境变量**传递。同一用户（或 root）可以通过
 //! `/proc/<ssh-pid>/environ` 看到它，也可能从进程内存/环境 dump 里拿到。
 //! 这比写明文文件好（不落盘），但**不是最终方案**：后续应改为
-//! 继承 fd/pipe（或由 Tervo 主进程用 Unix socket 按次下发），
+//! 继承 fd/pipe（或由 xtervo 主进程用 Unix socket 按次下发），
 //! 并让 askpass 从 fd 读取，环境里只留 fd 号。见 `docs/VAULT.md`。
 //!
 //! 另一个 MVP 限制：`auth=password` 但未勾选「保存到 Vault」时不用 askpass，
@@ -37,11 +37,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::profile::Profile;
 
 /// 传给 ssh 子进程的密码环境变量名（敏感；不要打印）。
-pub const SECRET_ENV: &str = "TERVO_ASKPASS_SECRET";
+pub const SECRET_ENV: &str = "XTERVO_ASKPASS_SECRET";
 
-/// 可选的 askpass 调用诊断文件（用户从 Tervo 进程环境显式指定才生效）。
+/// 可选的 askpass 调用诊断文件（用户从 xtervo 进程环境显式指定才生效）。
 /// 脚本只写 prompt 与匹配结果，绝不写密码。
-pub const DEBUG_ENV: &str = "TERVO_ASKPASS_DEBUG";
+pub const DEBUG_ENV: &str = "XTERVO_ASKPASS_DEBUG";
 
 /// askpass 诊断是否启用（供启动日志提示；不打印路径以外的东西）。
 pub fn debug_enabled() -> bool {
@@ -59,7 +59,7 @@ impl Askpass {
     pub fn new(password: &str) -> std::io::Result<Self> {
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let dir = std::env::temp_dir().join(format!(
-            "tervo-askpass-{}-{}",
+            "xtervo-askpass-{}-{}",
             std::process::id(),
             COUNTER.fetch_add(1, Ordering::Relaxed)
         ));
@@ -81,7 +81,7 @@ impl Askpass {
         let mut file = opts.open(&script)?;
         // 脚本不含秘密；只对密码 prompt 输出密码，其它确认（host key 等）回答 no，
         // 避免 ssh 在 force 模式下把密码当 yes/no 反复重试。
-        // TERVO_ASKPASS_DEBUG 是可选诊断：只记 prompt/匹配结果，绝不写密码。
+        // XTERVO_ASKPASS_DEBUG 是可选诊断：只记 prompt/匹配结果，绝不写密码。
         let body = r#"#!/bin/sh
 prompt="$1"
 # ASCII 大小写归一；非 ASCII（中文/日文/俄文）原样保留，照样匹配。
@@ -89,20 +89,20 @@ lower=$(printf '%s' "$prompt" | tr '[:upper:]' '[:lower:]')
 case "$lower" in
   # 一次性验证码/OTP 即使包含 "password" 也不能回填账户密码（kbd-int 常见）。
   *verification*|*one-time*|*onetime*|*otp*|*passcode*|*auth\ code*|*验证码*|*ワンタイム*)
-    if [ -n "$TERVO_ASKPASS_DEBUG" ]; then
-      printf '%s\n' "match=no prompt=$prompt" >>"$TERVO_ASKPASS_DEBUG" 2>/dev/null
+    if [ -n "$XTERVO_ASKPASS_DEBUG" ]; then
+      printf '%s\n' "match=no prompt=$prompt" >>"$XTERVO_ASKPASS_DEBUG" 2>/dev/null
     fi
     printf 'no\n'
     ;;
   *password*|*passwd*|*passwort*|*mot\ de\ passe*|*contraseña*|*senha*|*wachtwoord*|*пароль*|*Пароль*|*ПАРОЛЬ*|*パスワード*|*비밀번호*|*密码*|*密碼*|*口令*)
-    if [ -n "$TERVO_ASKPASS_DEBUG" ]; then
-      printf '%s\n' "match=password prompt=$prompt" >>"$TERVO_ASKPASS_DEBUG" 2>/dev/null
+    if [ -n "$XTERVO_ASKPASS_DEBUG" ]; then
+      printf '%s\n' "match=password prompt=$prompt" >>"$XTERVO_ASKPASS_DEBUG" 2>/dev/null
     fi
-    printf '%s\n' "$TERVO_ASKPASS_SECRET"
+    printf '%s\n' "$XTERVO_ASKPASS_SECRET"
     ;;
   *)
-    if [ -n "$TERVO_ASKPASS_DEBUG" ]; then
-      printf '%s\n' "match=no prompt=$prompt" >>"$TERVO_ASKPASS_DEBUG" 2>/dev/null
+    if [ -n "$XTERVO_ASKPASS_DEBUG" ]; then
+      printf '%s\n' "match=no prompt=$prompt" >>"$XTERVO_ASKPASS_DEBUG" 2>/dev/null
     fi
     printf 'no\n'
     ;;
@@ -146,7 +146,7 @@ esac
 /// 无法判断时返回 `false`（保守：先让用户在终端确认）。
 ///
 /// 键的选择必须和 OpenSSH 自己的 `known_hosts` 查找一致，否则会出现
-/// “known_hosts 明明有条目、Tervo 仍判定未确认”：
+/// “known_hosts 明明有条目、xtervo 仍判定未确认”：
 /// - 默认用 `ssh -G` 的 **`hostname`**（`Host` 别名经 `HostName` 解析后的真实主机），
 ///   而不是 Profile 里填的别名；非 22 端口加 `[host]:port` 后缀。
 /// - 配了 `HostKeyAlias` 时，OpenSSH 直接拿 **别名原文** 查表（不附加 `[alias]:port`），
@@ -204,7 +204,7 @@ mod tests {
         let script = ask.script_path();
         let body = std::fs::read_to_string(&script).unwrap();
         assert!(!body.contains(password), "脚本本身不能含密码");
-        assert!(body.contains("TERVO_ASKPASS_SECRET"));
+        assert!(body.contains("XTERVO_ASKPASS_SECRET"));
         assert_eq!(
             run_script(&ask, "user@example.com's password: ", password),
             format!("{password}\n"),
@@ -288,7 +288,7 @@ mod tests {
         ask.apply(&mut env);
         let mut cmd = Command::new("sh");
         cmd.arg("-c").arg(
-            "printf '%s\\n%s\\n%s\\n' \"$SSH_ASKPASS\" \"$SSH_ASKPASS_REQUIRE\" \"$TERVO_ASKPASS_SECRET\"",
+            "printf '%s\\n%s\\n%s\\n' \"$SSH_ASKPASS\" \"$SSH_ASKPASS_REQUIRE\" \"$XTERVO_ASKPASS_SECRET\"",
         );
         // 清掉父进程可能已有的同名变量，只保留 apply 注入的值。
         for key in ["SSH_ASKPASS", "SSH_ASKPASS_REQUIRE", SECRET_ENV] {
@@ -341,7 +341,7 @@ mod tests {
 
     fn test_dir(label: &str) -> PathBuf {
         let dir =
-            std::env::temp_dir().join(format!("tervo-askpass-test-{}-{label}", std::process::id()));
+            std::env::temp_dir().join(format!("xtervo-askpass-test-{}-{label}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir

@@ -12,7 +12,7 @@
 
 use std::time::{Duration, Instant};
 
-use tervo_core::{spawn, Frame, PaneConfig, PaneHandle};
+use xtervo_core::{spawn, Frame, PaneConfig, PaneHandle};
 
 const COLS: u16 = 40;
 const ROWS: u16 = 6;

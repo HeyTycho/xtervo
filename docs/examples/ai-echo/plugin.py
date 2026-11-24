@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-only
-"""Tervo AI Chat reference process plugin.
+"""xtervo AI Chat reference process plugin.
 
 Protocol: JSON Lines V1 over stdin/stdout (same as any runtime="process" plugin).
 AI convention (API v2): host sends

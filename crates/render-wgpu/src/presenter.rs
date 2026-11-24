@@ -14,7 +14,7 @@
 
 use std::fmt;
 
-use tervo_scene::PhysicalSize;
+use xtervo_scene::PhysicalSize;
 
 /// Errors from validating/importing a texture or updating the UI image.
 #[derive(Debug)]
@@ -151,7 +151,7 @@ impl SlintTexturePresenter {
     /// Number of times [`Self::present`] has been called.
     ///
     /// This is a presenter-local counter, distinct from
-    /// [`tervo_render::RenderedFrame::revision`].
+    /// [`xtervo_render::RenderedFrame::revision`].
     pub fn revision(&self) -> u64 {
         self.revision
     }

@@ -1,4 +1,4 @@
-# Tervo 最终人工复测清单
+# xtervo 最终人工复测清单
 
 > 状态：模板，最终 release 后填充实际 commit/版本/截图路径。  
 > 目标：自动化无法覆盖的真机/输入法/GPU/真实网络项，交给用户逐项签字。
@@ -7,9 +7,9 @@
 
 ```text
 commit:    dfdb25bab0c5
-release:   dist/tervo-stripped（40.4 MB，sha256 16d7a477…73321cb）
-tar.gz:    dist/tervo-0.1.0-linux-x86_64.tar.gz（sha256 d88a4479…c76fd3）
-deb:       dist/tervo_0.1.0-1_amd64.deb（sha256 8dc34bf7…a76c604）
+release:   dist/xtervo-stripped（40.4 MB，sha256 16d7a477…73321cb）
+tar.gz:    dist/xtervo-0.1.0-linux-x86_64.tar.gz（sha256 d88a4479…c76fd3）
+deb:       dist/xtervo_0.1.0-1_amd64.deb（sha256 8dc34bf7…a76c604）
 built:     2026-11-06T19:26:31Z（SOURCE_DATE_EPOCH）
 测试:      app 369 passed / 1 ignored；workspace 全绿
 e2e:       15 个脚本全 PASS（SSH/SFTP、插件、设置、图片、键盘、事件、渲染、P0、URL/右键等）
@@ -17,7 +17,7 @@ e2e:       15 个脚本全 PASS（SSH/SFTP、插件、设置、图片、键盘�
 
 ## 1. 必测：中文输入法（最高优先）
 
-- [ ] 启动 Tervo，打开 dsh-tui
+- [ ] 启动 xtervo，打开 dsh-tui
 - [ ] `/btw test` 打开右侧 BtwComposer
 - [ ] 用鼠标点右侧 composer
 - [ ] 输入中文拼音，候选框出现在右侧输入框附近
@@ -25,7 +25,7 @@ e2e:       15 个脚本全 PASS（SSH/SFTP、插件、设置、图片、键盘�
 - [ ] 左 Shift / 右 Shift 不删除 dsh 已输入内容
 - [ ] 切回普通 shell，输入法正常
 
-证据：`TERVO_IME_LOG=1` 日志中 `[ime] spot` 的 `win=` 在右侧；截图。
+证据：`XTERVO_IME_LOG=1` 日志中 `[ime] spot` 的 `win=` 在右侧；截图。
 
 ## 2. 必测：GPU / 高分辨率
 
@@ -47,17 +47,17 @@ e2e:       15 个脚本全 PASS（SSH/SFTP、插件、设置、图片、键盘�
 - [ ] 主题下拉/光标/滚动条/Backspace/Delete 修改即时生效
 - [ ] Dim/Terminal opacity 滑块只有左键按住拖动才变，悬停不跟随
 - [ ] 放大窗口时设置页侧栏/内容卡片跟着变宽
-- [ ] `TERVO_SETTINGS_LEGACY=1` 可回旧 modal
+- [ ] `XTERVO_SETTINGS_LEGACY=1` 可回旧 modal
 - [ ] 搜索 `sixel` 能跳 Terminal/Images
 - [ ] Appearance 顶部 Language 切 English/中文：整页即时切换，无需重启；config 写回 `language`
 - [ ] en 下 Settings 无中文（语言选项“中文”除外），zh 下无整句英文；搜索 `sixel`/`光标` 命中项行跟随语言
 - [ ] 重启后语言保持；外部编辑 config.toml 的 `language` 能热更新
 - [ ] 终端右键菜单（Link/Clipboard/Pane/View/Session）与 TabBar 菜单跟随语言；en/zh 均无混排
-- [ ] 小窗口（约 760×520）与 `TERVO_SETTINGS_LEGACY=1` 下语言卡片/文字不溢出
+- [ ] 小窗口（约 760×520）与 `XTERVO_SETTINGS_LEGACY=1` 下语言卡片/文字不溢出
 - [ ] Settings 齿轮明确可辨（8 齿 + 中心孔），窗口右上角/Tab 图标一致
 - [ ] Settings → SYSTEM → Help：圆形问号图标；快捷键表 9 行（Ctrl+T/W/F、Ctrl+Shift+C/V/E/D、F11、Settings）
 - [ ] Help 显示 config.toml/logs 路径；Open Config/Logs Folder 可用；Copy Diagnostics 有成功/失败状态文案
-- [ ] Help 版本卡片显示 Tervo 版本、commit、构建时间、target（与 `tervo --version` 一致，无硬编码）
+- [ ] Help 版本卡片显示 xtervo 版本、commit、构建时间、target（与 `xtervo --version` 一致，无硬编码）
 - [ ] Help 已知限制含 IME/Wayland/插件沙箱/24h soak，并列出 `docs/` 路径；页面不联网/不发遥测
 - [ ] 搜索 `help` 与 `帮助` 均命中 4 条 Help 索引；点击结果跳到 Help 对应卡片
 - [ ] Help 页窄窗滚动、宽窗铺满且不横向溢出；en/zh 文案无混排
@@ -83,7 +83,7 @@ e2e:       15 个脚本全 PASS（SSH/SFTP、插件、设置、图片、键盘�
 - [ ] 滚动/resize/切 Tab 后图片不跑位
 - [ ] 关闭 `sixel` 后已有图清除，DA1 不再含参数 4
 - [ ] 😀🚀❤️ 显示彩色；👨‍👩‍👧 组件彩色不越界
-- [ ] `TERVO_COLOR_EMOJI=0` 回退单色/占位
+- [ ] `XTERVO_COLOR_EMOJI=0` 回退单色/占位
 
 ## 6. 必测：剪贴板/链接
 

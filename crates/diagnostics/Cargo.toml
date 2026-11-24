@@ -1,6 +1,6 @@
 [package]
-name = "tervo-diagnostics"
-description = "Backend-neutral, bounded observability primitives for Tervo"
+name = "xtervo-diagnostics"
+description = "Backend-neutral, bounded observability primitives for xtervo"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

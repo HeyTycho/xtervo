@@ -6,7 +6,7 @@
 
 use std::time::{Duration, Instant};
 
-use tervo_core::{spawn, PaneConfig};
+use xtervo_core::{spawn, PaneConfig};
 
 #[test]
 fn pane_recording_captures_raw_pty_bytes_and_exports() {
@@ -63,7 +63,7 @@ fn pane_recording_captures_raw_pty_bytes_and_exports() {
     assert_eq!(handle.recording_status().bytes, stopped.bytes);
 
     let path = std::env::temp_dir().join(format!(
-        "tervo-recording-e2e-{}-{}.raw",
+        "xtervo-recording-e2e-{}-{}.raw",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -86,7 +86,7 @@ fn pane_recording_captures_raw_pty_bytes_and_exports() {
 
 #[test]
 fn recording_stops_when_pty_reaches_eof() {
-    use tervo_core::CoreEvent;
+    use xtervo_core::CoreEvent;
     let handle = spawn(PaneConfig {
         cols: 80,
         rows: 24,

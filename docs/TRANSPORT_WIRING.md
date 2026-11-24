@@ -8,7 +8,7 @@
 
 - **PTY 路径行为必须逐字不变**：默认后端仍是 PTY，所有现有 e2e/soak 必须照跑。
 - 每步一个小 commit，编译 + 单测绿才继续；任何一步红了就 `git checkout -- .` 回退。
-- 触及终端核心 → 每步完成后跑 `cargo test -p tervo-core` + 2m soak。
+- 触及终端核心 → 每步完成后跑 `cargo test -p xtervo-core` + 2m soak。
 
 ## 1. 引入后端枚举与 spawn_with_transport（core）
 
@@ -77,7 +77,7 @@ fn create_pane(..., transport: Option<Box<dyn PaneTransport>>) -> ...
 ## 5. 验收顺序
 
 ```text
-1. cargo test -p tervo-core（含新测试）           ← 每步都跑
+1. cargo test -p xtervo-core（含新测试）           ← 每步都跑
 2. app 578 单测                                   ← 每步都跑
 3. DURATION=2m soak                               ← 接线后跑
 4. scripts/e2e_split_repaint.py                   ← 确认 split 仍正常

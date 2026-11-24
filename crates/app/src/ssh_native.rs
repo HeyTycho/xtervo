@@ -15,7 +15,7 @@ use russh::client::{self, Handler};
 use russh::keys::agent::client::AgentClient;
 use russh::keys::{load_secret_key, PrivateKeyWithHashAlg, PublicKeyOrCertificate};
 use russh::{ChannelMsg, Disconnect};
-use tervo_core::transport::{
+use xtervo_core::transport::{
     PaneTransport, TransportControl, TransportHalves, TransportShutdown,
 };
 
@@ -1414,7 +1414,7 @@ mod tests {
 
     #[test]
     fn detects_encrypted_key_and_loads_it_with_passphrase() {
-        let path = test_path("tervo-enc-key");
+        let path = test_path("xtervo-enc-key");
         let status = std::process::Command::new("ssh-keygen")
             .args(["-q", "-t", "ed25519", "-N", "s3cret", "-f"])
             .arg(&path)
@@ -1435,7 +1435,7 @@ mod tests {
 
     #[test]
     fn key_passphrase_state_distinguishes_missing_invalid_and_ready() {
-        let path = test_path("tervo-enc-key-state");
+        let path = test_path("xtervo-enc-key-state");
         let status = std::process::Command::new("ssh-keygen")
             .args(["-q", "-t", "ed25519", "-N", "s3cret", "-f"])
             .arg(&path)
@@ -1461,7 +1461,7 @@ mod tests {
         assert!(validate_key_passphrase(&p, "wrong").is_err());
         assert!(validate_key_passphrase(&p, "s3cret").is_ok());
         // 未加密的私钥不应弹窗；空口令也不应被误判为可用。
-        let plain = test_path("tervo-plain-key-state");
+        let plain = test_path("xtervo-plain-key-state");
         let status = std::process::Command::new("ssh-keygen")
             .args(["-q", "-t", "ed25519", "-N", "", "-f"])
             .arg(&plain)
@@ -1733,7 +1733,7 @@ mod integration_tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let listener = rt.block_on(tokio::net::TcpListener::bind(("127.0.0.1", 0))).unwrap();
         let addr = listener.local_addr().unwrap();
-        let dir = test_path("tervo-native-ssh");
+        let dir = test_path("xtervo-native-ssh");
         std::fs::create_dir_all(&dir).unwrap();
         let key_path = dir.join("hostkey");
         let status = std::process::Command::new("ssh-keygen")
@@ -1901,7 +1901,7 @@ mod integration_tests {
     ) -> (std::net::SocketAddr, String) {
         let listener = rt.block_on(tokio::net::TcpListener::bind(("127.0.0.1", 0))).unwrap();
         let addr = listener.local_addr().unwrap();
-        let dir = test_path("tervo-native-ssh-srv");
+        let dir = test_path("xtervo-native-ssh-srv");
         std::fs::create_dir_all(&dir).unwrap();
         let key_path = dir.join("hostkey");
         let status = std::process::Command::new("ssh-keygen")
@@ -1985,7 +1985,7 @@ mod integration_tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let (target_addr, target_pub) = start_test_server(&rt, None);
         let (jump_addr, jump_pub) = start_test_server(&rt, Some(target_addr.port()));
-        let dir = test_path("tervo-native-ssh-proxy");
+        let dir = test_path("xtervo-native-ssh-proxy");
         std::fs::create_dir_all(&dir).unwrap();
         let known = dir.join("known_hosts");
         let target_key = target_pub.split_whitespace().nth(1).unwrap();
@@ -2008,8 +2008,8 @@ mod integration_tests {
             ),
         )
         .unwrap();
-        let old = std::env::var_os("TERVO_SSH_CONFIG");
-        std::env::set_var("TERVO_SSH_CONFIG", &config);
+        let old = std::env::var_os("XTERVO_SSH_CONFIG");
+        std::env::set_var("XTERVO_SSH_CONFIG", &config);
         let profile = Profile {
             kind: "ssh".into(),
             host: "127.0.0.1".into(),
@@ -2065,8 +2065,8 @@ mod integration_tests {
         }
         transport.close();
         match old {
-            Some(value) => std::env::set_var("TERVO_SSH_CONFIG", value),
-            None => std::env::remove_var("TERVO_SSH_CONFIG"),
+            Some(value) => std::env::set_var("XTERVO_SSH_CONFIG", value),
+            None => std::env::remove_var("XTERVO_SSH_CONFIG"),
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2081,7 +2081,7 @@ mod integration_tests {
             Some(record.clone()),
             Some("PROMPT> ".into()),
         );
-        let dir = test_path("tervo-native-ssh-login");
+        let dir = test_path("xtervo-native-ssh-login");
         std::fs::create_dir_all(&dir).unwrap();
         let known = dir.join("known_hosts");
         let key = public.split_whitespace().nth(1).unwrap();
@@ -2179,7 +2179,7 @@ mod integration_tests {
             }
         });
         let (addr, public) = start_test_server(&rt, Some(echo_port));
-        let dir = test_path("tervo-native-ssh-lf");
+        let dir = test_path("xtervo-native-ssh-lf");
         std::fs::create_dir_all(&dir).unwrap();
         let known = dir.join("known_hosts");
         let key = public.split_whitespace().nth(1).unwrap();
@@ -2267,7 +2267,7 @@ mod integration_tests {
             }
         });
         let (addr, public) = start_test_server(&rt, Some(0));
-        let dir = test_path("tervo-native-ssh-rf");
+        let dir = test_path("xtervo-native-ssh-rf");
         std::fs::create_dir_all(&dir).unwrap();
         let known = dir.join("known_hosts");
         let key = public.split_whitespace().nth(1).unwrap();
@@ -2337,7 +2337,7 @@ mod integration_tests {
     fn native_ssh_uses_identity_file_from_config() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let (addr, public) = start_test_server(&rt, None);
-        let dir = test_path("tervo-native-ssh-idfile");
+        let dir = test_path("xtervo-native-ssh-idfile");
         std::fs::create_dir_all(&dir).unwrap();
         let key_path = dir.join("client_key");
         let status = std::process::Command::new("ssh-keygen")
@@ -2438,7 +2438,7 @@ mod integration_tests {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let rt = tokio::runtime::Runtime::new().unwrap();
         let (addr, public) = start_test_server(&rt, None);
-        let dir = test_path("tervo-native-ssh-passphrase");
+        let dir = test_path("xtervo-native-ssh-passphrase");
         let _home = EnvGuard::set("HOME", &dir);
         // 隔离默认密钥：错误口令必须真的失败，不能碰巧用 ~/.ssh 里的无口令
         // 默认私钥通过测试 server 的“接受任意公钥”。
@@ -2504,7 +2504,7 @@ mod integration_tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let (probe_tx, mut probe_rx) = tokio::sync::mpsc::channel(1);
         let (addr, public) = start_test_server_full(&rt, None, false, Some(probe_tx));
-        let dir = test_path("tervo-native-ssh-agent-denied");
+        let dir = test_path("xtervo-native-ssh-agent-denied");
         let known = write_known_hosts(&dir, addr, &public);
         let profile = Profile {
             kind: "ssh".into(),
@@ -2546,7 +2546,7 @@ mod integration_tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let (probe_tx, mut probe_rx) = tokio::sync::mpsc::channel(1);
         let (addr, public) = start_test_server_full(&rt, None, true, Some(probe_tx));
-        let dir = test_path("tervo-native-ssh-agent-ok");
+        let dir = test_path("xtervo-native-ssh-agent-ok");
         std::fs::create_dir_all(&dir).unwrap();
         let sock = dir.join("agent.sock");
         let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();

@@ -1,13 +1,13 @@
 //! Backend-independent terminal draw scene.
 
-use tervo_graphics::{CompositePolicy, PlacementId, Rect, RowId, SourceId};
+use xtervo_graphics::{CompositePolicy, PlacementId, Rect, RowId, SourceId};
 
 use crate::{DamageRegion, TextBatch};
 
 /// Bottom composition layer. A background item covers everything below it.
 pub const BACKGROUND_LAYER_Z: i32 = i32::MIN;
 /// Text and cell selection layer. Selection is part of [`TextBatch`], not a separate overlay.
-pub const TEXT_LAYER_Z: i32 = tervo_graphics::TEXT_LAYER_Z;
+pub const TEXT_LAYER_Z: i32 = xtervo_graphics::TEXT_LAYER_Z;
 /// Top composition layer. The cursor is always emitted after images.
 pub const CURSOR_LAYER_Z: i32 = i32::MAX;
 

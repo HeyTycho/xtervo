@@ -67,7 +67,7 @@ impl CellData {
     #[inline]
     pub fn from_cell(cell: &Cell, palette: &Palette) -> Self {
         // alacritty 在 HT 跳过的起始格写入字面 `\t`（渲染器自己当空白处理），
-        // 但 Tervo 的 Frame 每格就是一个字形：`\t` 没有字形，直接渲染会出现
+        // 但 xtervo 的 Frame 每格就是一个字形：`\t` 没有字形，直接渲染会出现
         // 占位框/错位。VT 语义里 HT 只移动光标、不打印字符，帧边界统一成空格。
         let ch = if cell.c == '\t' { ' ' } else { cell.c };
         Self {

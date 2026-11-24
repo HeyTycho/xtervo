@@ -4,7 +4,7 @@
 //! watchdog 退出，避免被卡住的线程拖死进程。
 //!
 //! 运行：
-//! `cargo run -p tervo-core --example p0_blocking_probe`
+//! `cargo run -p xtervo-core --example p0_blocking_probe`
 //!
 //! 修复前 master（a82ac52）的同一探针：input/pull 均 >2s 不返回；
 //! 修复后：input ~1ms、pull <1ms。详见 docs/self-iteration.md 的 P0 记录。
@@ -13,7 +13,7 @@ use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tervo_core::{spawn, PaneConfig};
+use xtervo_core::{spawn, PaneConfig};
 
 fn main() {
     let handle = Arc::new(

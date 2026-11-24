@@ -2,11 +2,11 @@
 """Black-box MCP config/permission e2e.
 
 Verifies the scheduled MCP settings work end to end:
-  * default startup creates $XDG_RUNTIME_DIR/tervo/mcp.sock (0600) and
-    $XDG_STATE_HOME/tervo/mcp.token (0600) with no TERVO_DIAG_SOCKET env;
-  * `tervo diag serve` with no args discovers both and lists only read tools;
+  * default startup creates $XDG_RUNTIME_DIR/xtervo/mcp.sock (0600) and
+    $XDG_STATE_HOME/xtervo/mcp.token (0600) with no XTERVO_DIAG_SOCKET env;
+  * `xtervo diag serve` with no args discovers both and lists only read tools;
   * input/tabs/destructive tools are rejected by default;
-  * editing config hot-applies grants/tightening without restarting Tervo;
+  * editing config hot-applies grants/tightening without restarting xtervo;
   * tools/list follows app capabilities (same bridge process);
   * master off removes the socket and all live tools;
   * master on recreates it; wrong token is rejected;
@@ -26,22 +26,22 @@ import sys
 import time
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-BIN = pathlib.Path(os.environ.get("TERVO_BIN", ROOT / "target/release/tervo"))
+BIN = pathlib.Path(os.environ.get("XTERVO_BIN", ROOT / "target/release/xtervo"))
 OUT = pathlib.Path(os.environ.get("E2E_OUT", ROOT / ".logs/mcp-settings-e2e"))
 OUT.mkdir(parents=True, exist_ok=True)
 HOME = OUT / "home"
 # Unix socket paths are limited to ~108 bytes; the worktree artifact path is
 # longer, so keep the runtime dirs on the (short) temp path used by this e2e.
-STATE = pathlib.Path(f"/tmp/tervo-mcp-e2e-state-{os.getpid()}")
-RUN = pathlib.Path(f"/tmp/tervo-mcp-e2e-run-{os.getpid()}")
+STATE = pathlib.Path(f"/tmp/xtervo-mcp-e2e-state-{os.getpid()}")
+RUN = pathlib.Path(f"/tmp/xtervo-mcp-e2e-run-{os.getpid()}")
 LOGS = OUT / "logs"
 CONFIG = OUT / "config.toml"
 for directory in (HOME, STATE, RUN, LOGS):
     directory.mkdir(parents=True, exist_ok=True)
 RUN.chmod(0o700)
 STATE.chmod(0o700)
-SOCKET = RUN / "tervo" / "mcp.sock"
-TOKEN_FILE = STATE / "tervo" / "mcp.token"
+SOCKET = RUN / "xtervo" / "mcp.sock"
+TOKEN_FILE = STATE / "xtervo" / "mcp.token"
 
 
 def write_config(**flags):
@@ -54,7 +54,7 @@ def write_config(**flags):
 def base_env(**extra):
     env = os.environ.copy()
     for key in list(env):
-        if key.startswith("TERVO_DIAG_") or key.startswith("TERVO_GPU"):
+        if key.startswith("XTERVO_DIAG_") or key.startswith("XTERVO_GPU"):
             env.pop(key, None)
     for key in ("SLINT_BACKEND", "XDG_RUNTIME_DIR", "XDG_STATE_HOME", "XDG_CONFIG_HOME"):
         env.pop(key, None)
@@ -66,8 +66,8 @@ def base_env(**extra):
             "XDG_RUNTIME_DIR": str(RUN),
             "XDG_CACHE_HOME": str(OUT / "cache"),
             "XDG_CONFIG_HOME": str(OUT / "xdg"),
-            "TERVO_CONFIG": str(CONFIG),
-            "TERVO_LOG_DIR": str(LOGS),
+            "XTERVO_CONFIG": str(CONFIG),
+            "XTERVO_LOG_DIR": str(LOGS),
         }
     )
     env.update(extra)
@@ -187,7 +187,7 @@ def error_text(result):
 
 
 def tool_names(tools):
-    return sorted(name for name in tools if name.startswith("tervo.live_"))
+    return sorted(name for name in tools if name.startswith("xtervo.live_"))
 
 
 def wait_capabilities(flag, value, timeout=8.0):
@@ -249,33 +249,33 @@ try:
     assert bridge.rpc("initialize", {"protocolVersion": "2024-11-05"})["result"]
     tools = bridge.tools()
     required_read = {
-        "tervo.live_capabilities",
-        "tervo.live_snapshot",
-        "tervo.live_list",
-        "tervo.live_output",
+        "xtervo.live_capabilities",
+        "xtervo.live_snapshot",
+        "xtervo.live_list",
+        "xtervo.live_output",
     }
     assert required_read <= tools, f"missing read tools: {sorted(required_read - tools)}"
     for forbidden in (
-        "tervo.live_send_text",
-        "tervo.live_send_key",
-        "tervo.live_run",
-        "tervo.live_new_tab",
-        "tervo.live_split",
-        "tervo.live_focus",
-        "tervo.live_scroll",
-        "tervo.live_close_pane",
-        "tervo.live_close_tab",
-        "tervo.live_kill",
+        "xtervo.live_send_text",
+        "xtervo.live_send_key",
+        "xtervo.live_run",
+        "xtervo.live_new_tab",
+        "xtervo.live_split",
+        "xtervo.live_focus",
+        "xtervo.live_scroll",
+        "xtervo.live_close_pane",
+        "xtervo.live_close_tab",
+        "xtervo.live_kill",
     ):
         assert forbidden not in tools, f"default tool list leaked {forbidden}"
-    listed = bridge.call("tervo.live_list")
+    listed = bridge.call("xtervo.live_list")
     assert not is_error(listed), listed
     panes = json.loads(listed["content"][0]["text"])["panes"]
     assert panes, "no panes in live_list"
     pane = panes[0]["pane_id"]
-    denied = bridge.call("tervo.live_send_text", {"pane_id": pane, "text": "echo NOPE"})
+    denied = bridge.call("xtervo.live_send_text", {"pane_id": pane, "text": "echo NOPE"})
     assert is_error(denied) and "input disabled" in error_text(denied), denied
-    denied = bridge.call("tervo.live_close_pane", {"pane_id": pane})
+    denied = bridge.call("xtervo.live_close_pane", {"pane_id": pane})
     assert is_error(denied) and "disabled" in error_text(denied), denied
     print("PASS bridge no-arg discovery: read tools only, write calls rejected")
 
@@ -292,34 +292,34 @@ try:
     wait_capabilities("destructive_enabled", True)
     tools = bridge.tools()
     for required in (
-        "tervo.live_send_text",
-        "tervo.live_send_key",
-        "tervo.live_run",
-        "tervo.live_new_tab",
-        "tervo.live_split",
-        "tervo.live_focus",
-        "tervo.live_scroll",
-        "tervo.live_close_pane",
-        "tervo.live_close_tab",
-        "tervo.live_kill",
+        "xtervo.live_send_text",
+        "xtervo.live_send_key",
+        "xtervo.live_run",
+        "xtervo.live_new_tab",
+        "xtervo.live_split",
+        "xtervo.live_focus",
+        "xtervo.live_scroll",
+        "xtervo.live_close_pane",
+        "xtervo.live_close_tab",
+        "xtervo.live_kill",
     ):
         assert required in tools, f"hot grant did not expose {required}"
     run = bridge.call(
-        "tervo.live_run",
+        "xtervo.live_run",
         {"pane_id": pane, "command": "printf MCP_SETTINGS_OK"},
     )
     assert not is_error(run), run
     time.sleep(1.0)
-    output = bridge.call("tervo.live_output", {"pane_id": pane, "max_bytes": 65536})
+    output = bridge.call("xtervo.live_output", {"pane_id": pane, "max_bytes": 65536})
     text = json.loads(output["content"][0]["text"])["text"]
     assert "MCP_SETTINGS_OK" in text, text[-800:]
     before = {item["pane_id"] for item in panes}
-    new_tab = bridge.call("tervo.live_new_tab")
+    new_tab = bridge.call("xtervo.live_new_tab")
     assert not is_error(new_tab), new_tab
     wait_until(
         lambda: {
             item["pane_id"]
-            for item in json.loads(bridge.call("tervo.live_list")["content"][0]["text"])["panes"]
+            for item in json.loads(bridge.call("xtervo.live_list")["content"][0]["text"])["panes"]
         }
         - before,
         "new tab pane",
@@ -329,13 +329,13 @@ try:
             {
                 item["pane_id"]
                 for item in json.loads(
-                    bridge.call("tervo.live_list")["content"][0]["text"]
+                    bridge.call("xtervo.live_list")["content"][0]["text"]
                 )["panes"]
             }
             - before
         )
     )
-    closed = bridge.call("tervo.live_close_tab", {"pane_id": new_pane})
+    closed = bridge.call("xtervo.live_close_tab", {"pane_id": new_pane})
     assert not is_error(closed), closed
     print("PASS hot grant: input/tabs/destructive appear and work without restart")
 
@@ -351,14 +351,14 @@ try:
     wait_capabilities("input_enabled", False)
     tools = bridge.tools()
     for forbidden in (
-        "tervo.live_send_text",
-        "tervo.live_send_key",
-        "tervo.live_run",
-        "tervo.live_kill",
+        "xtervo.live_send_text",
+        "xtervo.live_send_key",
+        "xtervo.live_run",
+        "xtervo.live_kill",
     ):
         assert forbidden not in tools, f"tightened input still lists {forbidden}"
-    assert "tervo.live_close_pane" in tools, "close should remain with tabs+destructive"
-    denied = bridge.call("tervo.live_run", {"pane_id": pane, "command": "echo NOPE"})
+    assert "xtervo.live_close_pane" in tools, "close should remain with tabs+destructive"
+    denied = bridge.call("xtervo.live_run", {"pane_id": pane, "command": "echo NOPE"})
     assert is_error(denied) and "input disabled" in error_text(denied), denied
     print("PASS hot tighten: input tools vanish, kill depends on input, direct call denied")
 
@@ -372,13 +372,13 @@ try:
     )
     wait_capabilities("read_enabled", False)
     tools = bridge.tools()
-    assert "tervo.live_list" not in tools and "tervo.live_capabilities" not in tools, tools
-    assert "tervo.live_send_text" in tools, tools
-    denied = bridge.call("tervo.live_list")
+    assert "xtervo.live_list" not in tools and "xtervo.live_capabilities" not in tools, tools
+    assert "xtervo.live_send_text" in tools, tools
+    denied = bridge.call("xtervo.live_list")
     assert is_error(denied) and "read disabled" in error_text(denied), denied
-    denied = bridge.call("tervo.live_capabilities")
+    denied = bridge.call("xtervo.live_capabilities")
     assert is_error(denied) and "read disabled" in error_text(denied), denied
-    sent = bridge.call("tervo.live_send_text", {"pane_id": pane, "text": "echo READ_OFF"})
+    sent = bridge.call("xtervo.live_send_text", {"pane_id": pane, "text": "echo READ_OFF"})
     assert not is_error(sent), sent
     print("PASS read=false: only input tools exposed, read calls rejected by app")
 
@@ -404,7 +404,7 @@ try:
     assert not connectable(SOCKET), "socket still connectable after master off"
     tools = bridge.tools()
     assert tool_names(tools) == [], f"master off still lists live tools: {tools}"
-    denied = bridge.call("tervo.live_list")
+    denied = bridge.call("xtervo.live_list")
     assert is_error(denied), denied
     assert "socket" in error_text(denied).lower() or "拒绝" in error_text(denied), denied
     print("PASS master off: socket removed, live tools gone, call errors clearly")
@@ -420,13 +420,13 @@ try:
     wait_until(lambda: SOCKET.exists() and connectable(SOCKET), "socket recreated", timeout=8)
     tools = bridge.tools()
     assert required_read <= tools, f"read tools did not return: {sorted(required_read - tools)}"
-    print("PASS master on: socket/tools recreated without restarting Tervo")
+    print("PASS master on: socket/tools recreated without restarting xtervo")
 
     # Wrong token bridge: capability probe fails, live tools stay hidden, calls fail.
     second_bridge = Bridge(["--socket", str(SOCKET), "--token", "wrong-token"])
     second_bridge.rpc("initialize", {})
     assert tool_names(second_bridge.tools()) == [], "wrong token exposed live tools"
-    denied = second_bridge.call("tervo.live_list")
+    denied = second_bridge.call("xtervo.live_list")
     assert is_error(denied) and "unauthorized" in error_text(denied), denied
     print("PASS wrong token bridge: live tools hidden and tools/call rejected")
 
@@ -444,7 +444,7 @@ try:
         SOCKET.unlink()
     except FileNotFoundError:
         pass
-    fallback_socket = STATE / "tervo" / "mcp.sock"
+    fallback_socket = STATE / "xtervo" / "mcp.sock"
     try:
         fallback_socket.unlink()
     except FileNotFoundError:
@@ -470,7 +470,7 @@ try:
         )
         assert fallback_cap["ok"] is True, fallback_cap
         assert stat.S_IMODE(fallback_socket.stat().st_mode) == 0o600
-        print("PASS fallback: no XDG_RUNTIME_DIR -> $XDG_STATE_HOME/tervo/mcp.sock")
+        print("PASS fallback: no XDG_RUNTIME_DIR -> $XDG_STATE_HOME/xtervo/mcp.sock")
     finally:
         fallback_app.terminate()
         try:
@@ -482,7 +482,7 @@ try:
         except FileNotFoundError:
             pass
 
-    # Startup with mcp_enabled=false: no socket even when TERVO_DIAG_SOCKET is set
+    # Startup with mcp_enabled=false: no socket even when XTERVO_DIAG_SOCKET is set
     # by the environment (master switch is authoritative).
     marker = OUT / "must-not-exist.sock"
     try:
@@ -496,7 +496,7 @@ try:
         mcp_tabs=False,
         mcp_destructive=False,
     )
-    disabled_env = base_env(**{"TERVO_DIAG_SOCKET": str(marker)})
+    disabled_env = base_env(**{"XTERVO_DIAG_SOCKET": str(marker)})
     disabled_app = subprocess.Popen(
         [str(BIN), "--cols", "100", "--rows", "24", "--shell", "/bin/bash"],
         env=disabled_env,
@@ -505,11 +505,11 @@ try:
     )
     try:
         time.sleep(1.5)
-        assert not marker.exists(), "mcp_enabled=false still created TERVO_DIAG_SOCKET"
+        assert not marker.exists(), "mcp_enabled=false still created XTERVO_DIAG_SOCKET"
         assert not SOCKET.exists(), "mcp_enabled=false still created default socket"
         disabled_bridge = Bridge([])
         assert tool_names(disabled_bridge.tools()) == [], "disabled startup exposed live tools"
-        denied = disabled_bridge.call("tervo.live_list")
+        denied = disabled_bridge.call("xtervo.live_list")
         assert is_error(denied), denied
         disabled_bridge.close()
         print("PASS startup mcp_enabled=false: no socket, offline-only bridge")

@@ -1,23 +1,23 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! `tervo diag trace-layer` 的 CLI 契约：JSON schema、PASS、以及三种故障
+//! `xtervo diag trace-layer` 的 CLI 契约：JSON schema、PASS、以及三种故障
 //! 注入都必须落到正确的 layer/byte/row/col。用真实二进制而不是直接调
-//! 模块，保证 `tervo diag ...` 的参数解析没有断。
+//! 模块，保证 `xtervo diag ...` 的参数解析没有断。
 
 use std::process::Command;
 
 use serde_json::Value;
 
 fn run(args: &[&str]) -> Value {
-    let bin = env!("CARGO_BIN_EXE_tervo");
+    let bin = env!("CARGO_BIN_EXE_xtervo");
     let output = Command::new(bin)
         .arg("diag")
         .arg("trace-layer")
         .args(args)
         .output()
-        .expect("spawn tervo");
+        .expect("spawn xtervo");
     assert!(
         output.status.success(),
-        "tervo diag trace-layer {args:?} 退出失败: status={:?}\nstderr={}",
+        "xtervo diag trace-layer {args:?} 退出失败: status={:?}\nstderr={}",
         output.status,
         String::from_utf8_lossy(&output.stderr)
     );
@@ -33,7 +33,7 @@ fn run(args: &[&str]) -> Value {
 #[test]
 fn clean_fixture_is_pass_with_stable_schema() {
     let value = run(&["--fixture", "clean", "--json"]);
-    assert_eq!(value["schema"], "tervo.diag.v1");
+    assert_eq!(value["schema"], "xtervo.diag.v1");
     assert_eq!(value["kind"], "trace_layer");
     assert_eq!(value["status"], "PASS");
     assert!(value["first_divergence"].is_null());

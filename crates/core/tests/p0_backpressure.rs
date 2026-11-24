@@ -6,7 +6,7 @@
 
 use std::time::{Duration, Instant};
 
-use tervo_core::{spawn, Frame, PaneConfig, PaneHandle};
+use xtervo_core::{spawn, Frame, PaneConfig, PaneHandle};
 
 const INPUT_BYTES: usize = 10 * 1024 * 1024;
 
@@ -68,12 +68,12 @@ fn patterned_payload() -> Vec<u8> {
 #[test]
 fn slow_shell_10mb_paste_and_flood_never_block_ui() {
     let dir = std::env::temp_dir();
-    let path = dir.join(format!("tervo-p0-paste-{}.bin", std::process::id()));
+    let path = dir.join(format!("xtervo-p0-paste-{}.bin", std::process::id()));
     let _ = std::fs::remove_file(&path);
     let script = format!(
         "stty raw -echo 2>/dev/null || true\n\
          printf 'READY\\r\\n'\n\
-         yes TERVO-FLOOD | head -c 8388608 >/dev/null\n\
+         yes XTERVO-FLOOD | head -c 8388608 >/dev/null\n\
          printf 'BEGIN\\r\\n'\n\
          head -c {INPUT_BYTES} > '{}'\n\
          printf 'GOT %s\\r\\n' \"$(wc -c < '{}')\"\n\
@@ -238,7 +238,7 @@ fn ctrl_replies_stay_bounded_under_write_backpressure() {
     let _ = copy; // 空白屏可能为 None；这里只断言耗时有界。
 
     let t = Instant::now();
-    let search = handle.search_with("x", true, tervo_core::SearchOptions::default());
+    let search = handle.search_with("x", true, xtervo_core::SearchOptions::default());
     let search_cost = t.elapsed();
     let _ = search;
 

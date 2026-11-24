@@ -1,6 +1,6 @@
 # 打包、安装与升级
 
-本文覆盖 W-05 的交付：可复现的 tar.gz / `.deb` / `tervo-stripped`、安装/升级/
+本文覆盖 W-05 的交付：可复现的 tar.gz / `.deb` / `xtervo-stripped`、安装/升级/
 回滚/卸载、版本信息与配置迁移，以及明确列出的未完成项。
 
 ## 产物
@@ -9,18 +9,18 @@
 
 | 产物 | 内容 |
 |---|---|
-| `dist/tervo-stripped` | strip 后的发布二进制；`dist/tervo` 是指向它的兼容软链 |
-| `dist/tervo-stripped.sha256` | 单文件 SHA-256 |
+| `dist/xtervo-stripped` | strip 后的发布二进制；`dist/xtervo` 是指向它的兼容软链 |
+| `dist/xtervo-stripped.sha256` | 单文件 SHA-256 |
 | `dist/SHA256SUMS` | 二进制 + tar.gz + .deb 的 SHA-256 |
-| `dist/tervo-<version>-linux-<arch>.tar.gz` | `tervo`、`install.sh`、`LICENSE`、`README.md`、`THIRD_PARTY_NOTICES.md`、`LICENSING.md`、`BUILD-INFO`、`share/applications/tervo.desktop`、512/64 图标 |
-| `dist/tervo_<version>-1_<arch>.deb` | `/usr/bin/tervo`、desktop、512/64 图标、`/usr/share/doc/tervo/*`；含 `Depends`/`Installed-Size`，`dpkg-deb -x` 无需 root 即可解包 |
+| `dist/xtervo-<version>-linux-<arch>.tar.gz` | `xtervo`、`install.sh`、`LICENSE`、`README.md`、`THIRD_PARTY_NOTICES.md`、`LICENSING.md`、`BUILD-INFO`、`share/applications/xtervo.desktop`、512/64 图标 |
+| `dist/xtervo_<version>-1_<arch>.deb` | `/usr/bin/xtervo`、desktop、512/64 图标、`/usr/share/doc/xtervo/*`；含 `Depends`/`Installed-Size`，`dpkg-deb -x` 无需 root 即可解包 |
 
-`target/release/tervo` 仍是开发/性能分析二进制（`debug = 1`，保留符号），打包只
+`target/release/xtervo` 仍是开发/性能分析二进制（`debug = 1`，保留符号），打包只
 strip 复制出来的一份；`dist/`、`*.stripped` 已在 `.gitignore`。
 
 ### 可复现
 
-同 commit、同工具链、clean worktree 下重复执行 `package.sh`，`tervo-stripped`、
+同 commit、同工具链、clean worktree 下重复执行 `package.sh`，`xtervo-stripped`、
 tar.gz、`.deb` 和 `SHA256SUMS` 逐字节一致（`scripts/test_packaging.sh` 会实测）。
 默认把 `HEAD` 的提交时间设为 `SOURCE_DATE_EPOCH`：
 
@@ -35,9 +35,9 @@ commit 会与内容不符）；临时开发包用 `ALLOW_DIRTY=1`，`--version` 
 
 ```bash
 ./scripts/package.sh                            # → dist/
-TERVO_DIST=/tmp/dist ./scripts/package.sh       # 自定义输出目录（相对仓库根）
+XTERVO_DIST=/tmp/dist ./scripts/package.sh       # 自定义输出目录（相对仓库根）
 ./scripts/package.sh /tmp/dist                  # 同上，位置参数
-SKIP_BUILD=1 ./scripts/package.sh               # 复用 target/release/tervo
+SKIP_BUILD=1 ./scripts/package.sh               # 复用 target/release/xtervo
 SKIP_DEB=1 ./scripts/package.sh                 # 只出 tar.gz/二进制
 SKIP_TAR=1 ./scripts/package.sh                 # 只出 .deb/二进制
 MAX_MB=64 ./scripts/package.sh                  # 二进制体积门禁（默认 64 MiB）
@@ -50,9 +50,9 @@ DEB_VERSION=0.1.0-2 ./scripts/package.sh        # 覆盖 .deb 版本
 ### `.deb`
 
 ```bash
-dpkg-deb -I dist/tervo_0.1.0-1_amd64.deb        # 查看控制字段
-dpkg-deb -x dist/tervo_0.1.0-1_amd64.deb /tmp/root   # 无需 root 解包
-sudo apt install ./dist/tervo_0.1.0-1_amd64.deb      # 真机安装（需 sudo）
+dpkg-deb -I dist/xtervo_0.1.0-1_amd64.deb        # 查看控制字段
+dpkg-deb -x dist/xtervo_0.1.0-1_amd64.deb /tmp/root   # 无需 root 解包
+sudo apt install ./dist/xtervo_0.1.0-1_amd64.deb      # 真机安装（需 sudo）
 ```
 
 `Depends` 由 `dpkg-shlibdeps` 从 ELF 的 `NEEDED` 生成，再补 Slint/winit 运行时
@@ -74,20 +74,20 @@ PREFIX=/tmp/prefix ./scripts/install.sh          # 自定义 prefix
 
 | 路径 | 用途 |
 |---|---|
-| `$PREFIX/bin/tervo` | 当前二进制 |
-| `$PREFIX/lib/tervo/previous/tervo` | **上一版二进制**（`--rollback` 的明确路径） |
-| `$PREFIX/lib/tervo/previous/BUILD-INFO` | 上一版版本/commit/构建时间 |
-| `$PREFIX/lib/tervo/versions/<version>-<commit>/tervo` | 历史版本归档（同一版本只保留首次副本） |
-| `$PREFIX/lib/tervo/manifest` | 安装清单（卸载按此删除） |
-| `$PREFIX/lib/tervo/install.sh` | 生命周期脚本（从安装后的位置回滚/卸载） |
-| `$PREFIX/share/applications/tervo.desktop` | 桌面项（安装时 `Exec/TryExec` 改写为本 prefix 的绝对路径，用户级安装不依赖登录 PATH） |
-| `$PREFIX/share/icons/hicolor/{512x512,64x64}/apps/tervo.png` | 图标 |
-| `$PREFIX/share/doc/tervo/` | LICENSE/README/THIRD_PARTY_NOTICES/LICENSING/BUILD-INFO |
+| `$PREFIX/bin/xtervo` | 当前二进制 |
+| `$PREFIX/lib/xtervo/previous/xtervo` | **上一版二进制**（`--rollback` 的明确路径） |
+| `$PREFIX/lib/xtervo/previous/BUILD-INFO` | 上一版版本/commit/构建时间 |
+| `$PREFIX/lib/xtervo/versions/<version>-<commit>/xtervo` | 历史版本归档（同一版本只保留首次副本） |
+| `$PREFIX/lib/xtervo/manifest` | 安装清单（卸载按此删除） |
+| `$PREFIX/lib/xtervo/install.sh` | 生命周期脚本（从安装后的位置回滚/卸载） |
+| `$PREFIX/share/applications/xtervo.desktop` | 桌面项（安装时 `Exec/TryExec` 改写为本 prefix 的绝对路径，用户级安装不依赖登录 PATH） |
+| `$PREFIX/share/icons/hicolor/{512x512,64x64}/apps/xtervo.png` | 图标 |
+| `$PREFIX/share/doc/xtervo/` | LICENSE/README/THIRD_PARTY_NOTICES/LICENSING/BUILD-INFO |
 
 ### 原子替换
 
-新二进制先写到 `$PREFIX/bin/.tervo.new.XXXXXX`（同一文件系统），strip、冒烟、
-`--version` 探测都通过后才 `mv -f` 覆盖 `$PREFIX/bin/tervo`。Linux 的 rename
+新二进制先写到 `$PREFIX/bin/.xtervo.new.XXXXXX`（同一文件系统），strip、冒烟、
+`--version` 探测都通过后才 `mv -f` 覆盖 `$PREFIX/bin/xtervo`。Linux 的 rename
 不会破坏正在运行的旧进程：它继续持有旧 inode。e2e 会在旧进程运行时升级并检查
 旧 pid 仍存活。桌面项/图标/文档也用同目录临时文件 + rename，不产生半截文件。
 
@@ -95,11 +95,11 @@ PREFIX=/tmp/prefix ./scripts/install.sh          # 自定义 prefix
 
 ```bash
 # 用新 tar 包覆盖安装；旧二进制自动进入 previous/ 与 versions/
-./tervo-0.1.1-linux-x86_64/install.sh --prefix /tmp/prefix
+./xtervo-0.1.1-linux-x86_64/install.sh --prefix /tmp/prefix
 ```
 
-安装器只替换程序文件，**不碰** `~/.config/tervo`（或用 `TERVO_CONFIG`/
-`TERVO_PROFILES` 指定的路径）。升级前后配置/Profile 校验和不变；迁移逻辑只在
+安装器只替换程序文件，**不碰** `~/.config/xtervo`（或用 `XTERVO_CONFIG`/
+`XTERVO_PROFILES` 指定的路径）。升级前后配置/Profile 校验和不变；迁移逻辑只在
 程序启动读配置时发生，且迁移前会写 `.v<旧版本>.bak`：
 
 - `config.toml` → `config.toml.v0.bak`（v0→v1）
@@ -108,30 +108,30 @@ PREFIX=/tmp/prefix ./scripts/install.sh          # 自定义 prefix
 ### 回滚
 
 ```bash
-$PREFIX/lib/tervo/install.sh --rollback --prefix $PREFIX
+$PREFIX/lib/xtervo/install.sh --rollback --prefix $PREFIX
 ```
 
-回滚把 `previous/tervo` 原子换回 `bin/tervo`，同时把被替换的当前版存回
+回滚把 `previous/xtervo` 原子换回 `bin/xtervo`，同时把被替换的当前版存回
 `previous/`，所以再执行一次 `--rollback` 可以切回去。配置/Profile/迁移备份
 完全不动。没有上一版时以非 0 退出并打印缺失路径。
 
 ### 卸载
 
 ```bash
-$PREFIX/lib/tervo/install.sh --uninstall --prefix $PREFIX
+$PREFIX/lib/xtervo/install.sh --uninstall --prefix $PREFIX
 # 或 tar 包内：./install.sh --uninstall --prefix $PREFIX
 ```
 
-只删除 manifest 列出的程序文件与 `$PREFIX/lib/tervo` 状态目录，随后
+只删除 manifest 列出的程序文件与 `$PREFIX/lib/xtervo` 状态目录，随后
 `rmdir --ignore-fail-on-non-empty` 清空目录；不递归删除用户可能放进 prefix 的
-其它文件。`~/.config/tervo` 的配置、Profile、主题与迁移备份全部保留。重复执行
-幂等（退出码 0，打印“未发现已安装的 Tervo”）。
+其它文件。`~/.config/xtervo` 的配置、Profile、主题与迁移备份全部保留。重复执行
+幂等（退出码 0，打印“未发现已安装的 xtervo”）。
 
 ## 版本信息
 
 ```text
-$ tervo --version
-Tervo 0.1.0
+$ xtervo --version
+xtervo 0.1.0
 commit:  4ae1886e8c39
 built:   2026-11-06T14:07:47Z
 target:  x86_64-unknown-linux-gnu
@@ -180,7 +180,7 @@ SKIP_REPRO=1 ./scripts/test_packaging.sh
 - **自动更新**：不检查更新、不下载、不静默替换。升级方式就是重新运行新 tar 的
   `install.sh` 或安装新 `.deb`；回滚走 `--rollback`。整个程序没有新增网络依赖。
 - **崩溃报告/上传**：不收集、不上传崩溃转储，也没有“发送报告”按钮。panic
-  仍只写本地 stderr 与日志（`TERVO_LOG_DIR`，默认 `~/.local/state/tervo/logs`）。
+  仍只写本地 stderr 与日志（`XTERVO_LOG_DIR`，默认 `~/.local/state/xtervo/logs`）。
   日志轮转见 `docs/LOGGING.md`。
 - **AppImage / Flatpak / Snap**：本轮未产出，也没有脚本入口。
 - **发布签名 / 仓库元数据**：`.deb` 未用 GPG 签名，未生成 `Release`/`Packages`
@@ -199,7 +199,7 @@ SKIP_REPRO=1 ./scripts/test_packaging.sh
   `-h`；未知参数退出码 2（旧版会静默忽略）。
 - 发布包内 `install.sh` 已 strip，重复安装不会再次 strip，保证与 `.sha256` 一致；
   仓库内安装默认 strip 复制出的副本，开发二进制不变。
-- 旧版安装（只有 `bin/tervo`、没有 manifest）可被升级/卸载：升级会把它归档到
+- 旧版安装（只有 `bin/xtervo`、没有 manifest）可被升级/卸载：升级会把它归档到
   `previous/`，卸载会按已知路径删除。
 - 运行中的二进制可安全覆盖；但如果正在运行的是**更老、不支持 `--version`** 的
   版本，安装器不会去执行它探测版本（避免拉起 UI），该版在 `versions/` 里以

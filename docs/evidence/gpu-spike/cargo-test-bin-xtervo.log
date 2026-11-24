@@ -11,23 +11,23 @@ help: replace the use of the deprecated method
 187 +                 .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
     |
 
-warning: `tervo-diagnostics` (lib) generated 1 warning (run `cargo fix --lib -p tervo-diagnostics` to apply 1 suggestion)
-warning: tervo-app@0.3.1: warning: Component is neither used nor exported
-warning: tervo-app@0.3.1:     --> /home/user/AIworkspace/rusttabbyterminal/.worktrees/agent-gpu-spike/crates/app/ui/main.slint:174:1
-warning: tervo-app@0.3.1:      |
-warning: tervo-app@0.3.1:  174 | / component MenuGroupLabel inherits Rectangle {
-warning: tervo-app@0.3.1:  175 | |     in property <string> label;
-warning: tervo-app@0.3.1:  176 | |     in property <bool> first: false;
-warning: tervo-app@0.3.1: ...    |
-warning: tervo-app@0.3.1:  203 | | }
-warning: tervo-app@0.3.1:      | |_^
-warning: tervo-app@0.3.1:      |
-warning: tervo-app@0.3.1: warning: The property 'viewport-y' has been deprecated. Please use 'content-y' instead
-warning: tervo-app@0.3.1:     --> /home/user/AIworkspace/rusttabbyterminal/.worktrees/agent-gpu-spike/crates/app/ui/main.slint:7975:42
-warning: tervo-app@0.3.1:      |
-warning: tervo-app@0.3.1: 7975 | ...                   self.viewport-y = Math.max(
-warning: tervo-app@0.3.1:      |                            ^^^^^^^^^^
-   Compiling tervo-app v0.3.1 (/home/user/AIworkspace/rusttabbyterminal/.worktrees/agent-gpu-spike/crates/app)
+warning: `xtervo-diagnostics` (lib) generated 1 warning (run `cargo fix --lib -p xtervo-diagnostics` to apply 1 suggestion)
+warning: xtervo-app@0.3.1: warning: Component is neither used nor exported
+warning: xtervo-app@0.3.1:     --> /home/user/AIworkspace/rusttabbyterminal/.worktrees/agent-gpu-spike/crates/app/ui/main.slint:174:1
+warning: xtervo-app@0.3.1:      |
+warning: xtervo-app@0.3.1:  174 | / component MenuGroupLabel inherits Rectangle {
+warning: xtervo-app@0.3.1:  175 | |     in property <string> label;
+warning: xtervo-app@0.3.1:  176 | |     in property <bool> first: false;
+warning: xtervo-app@0.3.1: ...    |
+warning: xtervo-app@0.3.1:  203 | | }
+warning: xtervo-app@0.3.1:      | |_^
+warning: xtervo-app@0.3.1:      |
+warning: xtervo-app@0.3.1: warning: The property 'viewport-y' has been deprecated. Please use 'content-y' instead
+warning: xtervo-app@0.3.1:     --> /home/user/AIworkspace/rusttabbyterminal/.worktrees/agent-gpu-spike/crates/app/ui/main.slint:7975:42
+warning: xtervo-app@0.3.1:      |
+warning: xtervo-app@0.3.1: 7975 | ...                   self.viewport-y = Math.max(
+warning: xtervo-app@0.3.1:      |                            ^^^^^^^^^^
+   Compiling xtervo-app v0.3.1 (/home/user/AIworkspace/rusttabbyterminal/.worktrees/agent-gpu-spike/crates/app)
 warning: unused import: `x11rb::protocol::xproto::ConnectionExt as _`
    --> crates/app/src/xconn.rs:197:9
     |
@@ -225,9 +225,9 @@ help: use `'_` for type paths
 7177 | fn get_primary_image(st: &mut AppState) -> Option<arboard::ImageData<'_>> {
      |                                                                     ++++
 
-warning: `tervo-app` (bin "tervo" test) generated 23 warnings (run `cargo fix --bin "tervo" -p tervo-app --tests` to apply 9 suggestions)
+warning: `xtervo-app` (bin "xtervo" test) generated 23 warnings (run `cargo fix --bin "xtervo" -p xtervo-app --tests` to apply 9 suggestions)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 27.31s
-     Running unittests src/main.rs (/home/user/AIworkspace/rusttabbyterminal/target/debug/deps/tervo-2a425f8583a3ffe5)
+     Running unittests src/main.rs (/home/user/AIworkspace/rusttabbyterminal/target/debug/deps/xtervo-2a425f8583a3ffe5)
 
 running 414 tests
 test activity::tests::aggregate_ors_attention_and_completion ... ok
@@ -495,7 +495,7 @@ test tabby_import::tests::hotkey_conflicts_empty_bindings_and_multi_chords_are_s
 test tabby_import::tests::imports_all_supported_kinds_and_reports_unknown ... ok
 test tabby_import::tests::imports_color_schemes_writes_theme_toml_and_suffixes_existing ... ok
 test tabby_import::tests::imports_mapped_hotkeys_and_reports_unmapped_and_invalid ... ok
-test tabby_import::tests::tabby_chords_normalize_to_tervo_canonical ... ok
+test tabby_import::tests::tabby_chords_normalize_to_xtervo_canonical ... ok
 test tabby_import::tests::tabby_command_map_targets_exist_and_is_unique ... ok
 test tests::auto_defaults_to_yaru ... ok
 test tests::clipboard_image_is_written_as_valid_png ... ok
@@ -580,7 +580,7 @@ test render_damage_tests::selection_change_redraws_only_old_and_new_spans ... ok
 test sftp::tests::transfer_job_cancel_kills_slow_child ... ok
 test sftp::tests::transfer_job_captures_stderr_failure ... ok
 test sftp::tests::transfer_job_completes_and_reports_success ... ok
-test vault::tests::default_path_respects_tervo_vault_override ... ok
+test vault::tests::default_path_respects_xtervo_vault_override ... ok
 test render_damage_tests::inline_image_scroll_removal_matches_fresh_full_redraw ... ok
 test render_damage_tests::single_row_damage_redraws_only_one_row_and_keeps_others ... ok
 test sftp::tests::sftp_op_job_cancel_kills_child_and_reports_cancelled ... ok

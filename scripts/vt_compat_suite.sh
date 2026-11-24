@@ -11,4 +11,4 @@ cd "$(dirname "$0")/.."
 export CARGO_HOME="${CARGO_HOME:-$PWD/.cargo}"
 export CARGO_NET_OFFLINE=true
 
-exec cargo test -p tervo-core --test vt_compat_suite --offline -- --report "$@"
+exec cargo test -p xtervo-core --test vt_compat_suite --offline -- --report "$@"

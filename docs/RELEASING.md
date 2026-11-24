@@ -1,4 +1,4 @@
-# Tervo 版本与发布管理
+# xtervo 版本与发布管理
 
 > 状态：v1（2026-11-09）
 > 适用：`Cargo.toml`、`scripts/package.sh`、`dist/`、Git tag、CHANGELOG。
@@ -25,8 +25,8 @@ version = "0.2.0"
 
 | 位置 | 来源/行为 |
 |---|---|
-| `tervo --version` | 编译期 `CARGO_PKG_VERSION` |
-| tar.gz 文件名 | `tervo-<version>-linux-<arch>.tar.gz` |
+| `xtervo --version` | 编译期 `CARGO_PKG_VERSION` |
+| tar.gz 文件名 | `xtervo-<version>-linux-<arch>.tar.gz` |
 | .deb 版本 | `<version>-1`，可用 `DEB_VERSION` 覆盖 |
 | BUILD-INFO / SHA256 | `scripts/package.sh` 自动生成 |
 | commit / built | build.rs 写入 `--version`，dirty 时标 `(dirty)` |
@@ -44,7 +44,7 @@ docs/RETEST_CHECKLIST.md  版本/commit/哈希
 
 ## 2. SemVer 规则（0.x 阶段）
 
-Tervo 在 1.0 前采用“0.x 也要可预期”的规则：
+xtervo 在 1.0 前采用“0.x 也要可预期”的规则：
 
 | 变更 | 版本 |
 |---|---|
@@ -98,7 +98,7 @@ v0.3.0-rc.1
 - 必须是 **annotated tag**：
 
 ```bash
-git tag -a v0.2.0 -m "Tervo 0.2.0"
+git tag -a v0.2.0 -m "xtervo 0.2.0"
 ```
 
 - tag 必须指向**实际构建产物的 commit**（release commit）。
@@ -115,7 +115,7 @@ git push origin v0.2.0
 - 可选签名：
 
 ```bash
-git tag -s v0.2.0 -m "Tervo 0.2.0"
+git tag -s v0.2.0 -m "xtervo 0.2.0"
 ```
 
 ### 3.3 当前状态
@@ -170,7 +170,7 @@ git commit -m "chore(release): v0.2.0"
 ### 4.3 打 tag
 
 ```bash
-git tag -a v0.2.0 -m "Tervo 0.2.0"
+git tag -a v0.2.0 -m "xtervo 0.2.0"
 git show v0.2.0 --stat
 git describe --tags --exact-match   # 必须输出 v0.2.0
 ```
@@ -181,7 +181,7 @@ git describe --tags --exact-match   # 必须输出 v0.2.0
 git checkout v0.2.0
 git status --short                  # 必须为空
 ./scripts/package.sh
-./dist/tervo-stripped --version     # 版本/commit/built 必须匹配 tag
+./dist/xtervo-stripped --version     # 版本/commit/built 必须匹配 tag
 sha256sum -c dist/SHA256SUMS
 ```
 
@@ -210,7 +210,7 @@ git checkout -b hotfix/v0.2.1 v0.2.0
 cargo test --workspace --locked
 # 升 PATCH 到 0.2.1，更新 CHANGELOG
 git commit -m "chore(release): v0.2.1"
-git tag -a v0.2.1 -m "Tervo 0.2.1"
+git tag -a v0.2.1 -m "xtervo 0.2.1"
 ./scripts/package.sh
 ```
 
@@ -271,7 +271,7 @@ git tag -a v0.2.1 -m "Tervo 0.2.1"
 
 构建后：
 
-- [ ] `dist/tervo-stripped --version` 版本/commit 正确
+- [ ] `dist/xtervo-stripped --version` 版本/commit 正确
 - [ ] `SHA256SUMS` 可校验
 - [ ] tar.gz/deb 文件名版本一致
 - [ ] 没有 dirty 标记

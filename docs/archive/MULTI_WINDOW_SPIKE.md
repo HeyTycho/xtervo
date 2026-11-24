@@ -21,7 +21,7 @@ worktree：`.worktrees/mw-spike`
 **Gate 判定：PASS（Slint/WGPU 层）→ 有条件 GO（产品集成层）。**
 
 技术本身不需要 broker。上一代架构文档里“多进程 → primary+broker”的备选不是本 spike
-的技术必需项；真正的阻塞点是 Tervo 自己的 GPU 全局状态（见 §5）和
+的技术必需项；真正的阻塞点是 xtervo 自己的 GPU 全局状态（见 §5）和
 `AppState`/WindowRuntime 重构，而不是 Slint/WGPU 能力。
 
 ---
@@ -30,7 +30,7 @@ worktree：`.worktrees/mw-spike`
 
 ```text
 crates/mw-spike/
-  Cargo.toml            独立 spike crate；不依赖 tervo-app
+  Cargo.toml            独立 spike crate；不依赖 xtervo-app
   build.rs              只编译生产 crates/app/ui/main.slint（markup 不变）
   src/main.rs           三个模式：wgpu / software / mainwindow
   run_xvfb.sh           隔离 Xvfb + Openbox，跑模式并收集 X11/截图证据
@@ -45,7 +45,7 @@ docs/evidence/mw-spike/      logs + per-window snapshots + X11 root capture
 
 **没有修改任何生产 Rust / Slint / 构建逻辑。** `crates/app/ui/main.slint` 由
 spike 的 `build.rs` 原样编译，仅用于验证 `MainWindow` 能否多实例，不链接
-`tervo-app`，也没有创建 `AppState`。
+`xtervo-app`，也没有创建 `AppState`。
 
 ### 三个模式
 
@@ -363,7 +363,7 @@ A 的整窗背景红色是 **故意的 Palette 隔离测试**：只改 A 的 `Pa
    Slint `CloseRequested` 默认 `Window::hide()`；最后一个可见窗口 hide 后
    `release_keepalive` 才退出 event loop
    （`i-slint-core-1.18.1/api.rs:753`、`context.rs:314-330`）。
-   Tervo 必须自己监听 `on_close_requested`/窗口关闭，做 `WindowRuntime` 销毁、
+   xtervo 必须自己监听 `on_close_requested`/窗口关闭，做 `WindowRuntime` 销毁、
    PTY 回收、session 更新；不能假设 drop window 会自动清理业务对象。
 
 ### 6.2 生产集成 gate（spike 之外，必须做）

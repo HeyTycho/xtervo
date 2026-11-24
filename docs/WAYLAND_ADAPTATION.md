@@ -54,7 +54,7 @@ xdnd_file_drop / x11_corners / x11_maximize_state
 
 ```text
 ui_backend=wayland (env hint; 窗口未创建，按 winit env 规则推断) ...
-xdg_app_id=tervo
+xdg_app_id=xtervo
 x11/xwayland view (DISPLAY=":0"; 不是本进程 Wayland 窗口，仅供参考):
 screen=...   # XWayland 虚拟屏幕，不是 Wayland 窗口
 x11/xwayland own windows (仅 X11 客户端，不含本进程 Wayland 窗口):
@@ -77,7 +77,7 @@ x11/xwayland own windows (仅 X11 客户端，不含本进程 Wayland 窗口):
 | 文件拖放 | ❌ winit 0.30.13 Wayland 后端无 DnD | ✅ XDND 原路径 | 不伪造 hover；启动只记录能力 |
 | 全局热键 / Quake | ❌ 无协议；XWayland grab 对 Wayland 窗口是假阳性 | ✅ 被动 grab 原路径 | Wayland 不注册；设置里拒绝启用并 toast；菜单触发提示不支持 |
 | 窗口图标 | ❌ 运行时 `_NET_WM_ICON` 无意义 | ✅ `_NET_WM_ICON` 64×64 | Wayland 跳过线程，改由 `.desktop` + app_id |
-| app_id / WM_CLASS | ✅ `app_id=tervo` | ✅ `WM_CLASS=("tervo","tervo")`（保持 winit 默认） | 仅 Wayland 在 show 前 `set_xdg_app_id("tervo")`；X11 不设置，避免改 WM_CLASS |
+| app_id / WM_CLASS | ✅ `app_id=xtervo` | ✅ `WM_CLASS=("xtervo","xtervo")`（保持 winit 默认） | 仅 Wayland 在 show 前 `set_xdg_app_id("xtervo")`；X11 不设置，避免改 WM_CLASS |
 | 窗口定位 / 激活 | ❌ `set_position`/`focus_window` 空实现 | ✅ | 不自称成功；Quake 不支持 |
 | 最大化状态机 | ⚠️ 交给 winit/xdg_toplevel | ✅ `_NET_WM_STATE` 状态机 | Wayland 明确跳过，不再空转 2s |
 | SHAPE 圆角 | ❌ 合成器绘制 | ✅ 原 worker | Wayland 不 spawn、不查询 |
@@ -103,17 +103,17 @@ x11/xwayland own windows (仅 X11 客户端，不含本进程 Wayland 窗口):
 ### 4.1 原生 Wayland
 
 ```text
-[platform] xdg_app_id=tervo
+[platform] xdg_app_id=xtervo
 [platform] ... xwayland=false ui_backend=wayland (env hint)
 [quake] 原生 Wayland 不支持全局热键 F12；Quake 仅能从命令面板/菜单触发...
 READY TIMING ... cell=9x19
 [platform] ui_backend=wayland (winit raw handle confirmed) ...
 [maximize] 原生 Wayland：跳过 X11 最大化状态机，使用 winit
 [ui] 原生 Wayland：跳过 X11 own_windows/遮挡检测（窗口由合成器管理）
-[ui] 原生 Wayland 不设置 _NET_WM_ICON：图标由 .desktop + app_id=tervo 决定
+[ui] 原生 Wayland 不设置 _NET_WM_ICON：图标由 .desktop + app_id=xtervo 决定
 ```
 
-- `WAYLAND_DEBUG=1` 抓到 `xdg_toplevel.set_app_id("tervo")`、`set_fullscreen(nil)`、
+- `WAYLAND_DEBUG=1` 抓到 `xdg_toplevel.set_app_id("xtervo")`、`set_fullscreen(nil)`、
   `zwp_text_input_manager_v3` / `zwp_text_input_v3.enable/set_cursor_rectangle/commit`。
 - IME：fcitx5 + pinyin，注入 `nihao Space` → `[ime] "你好"`、
   `[send] bytes=[228,189,160,229,165,189]`，截图
@@ -133,7 +133,7 @@ READY TIMING ... cell=9x19
 
 ### 4.2 Wayland 窗口 + 私有 XWayland 剪贴板
 
-Tervo 仍以原生 Wayland 窗口运行（`ui_backend=wayland`，`xwayland=true`），
+xtervo 仍以原生 Wayland 窗口运行（`ui_backend=wayland`，`xwayland=true`），
 arboard 回退到私有 `:3`：
 
 ```text
@@ -157,7 +157,7 @@ arboard 回退到私有 `:3`：
 [ui] _NET_WM_ICON 已设置 (win=0x200003)
 ```
 
-- `xwininfo`：`720x412+0+0`，`WM_CLASS ("tervo", "tervo")`（与适配前一致），`_NET_WM_ICON` 64×64；
+- `xwininfo`：`720x412+0+0`，`WM_CLASS ("xtervo", "xtervo")`（与适配前一致），`_NET_WM_ICON` 64×64；
 - OSC52 CLIPBOARD/PRIMARY 在嵌套 `:3` 上写入/回读成功；
 - 截图 `.logs/wl/nested/shots/05-x11-nested.png`。
 
@@ -207,8 +207,8 @@ fds     27 恒定
 2. **DnD**：等待 winit 上游实现，或单独接 `wl_data_device`；实现前 UI 不承诺。
 3. **Quake 全局热键**：等 GNOME/KDE 提供 `GlobalShortcuts` portal 后再评估；
    当前 Wayland 明确禁用，不保留假开关。
-4. **app_id/打包**：验证安装后的 `tervo.desktop`（`Icon=tervo`、
-   `StartupWMClass=tervo`）在 GNOME/KDE Overview 中正确显示图标与分组。
+4. **app_id/打包**：验证安装后的 `xtervo.desktop`（`Icon=xtervo`、
+   `StartupWMClass=xtervo`）在 GNOME/KDE Overview 中正确显示图标与分组。
 5. **真机矩阵**：GNOME 46 / KDE Plasma 6 / 不同 GPU + fcitx5/ibus；30m soak。
 
 ## 7. 证据与复现
@@ -235,7 +235,7 @@ export XDG_CONFIG_HOME=$PWD/.logs/wl/nested/config
 export XDG_CACHE_HOME=$PWD/.logs/wl/nested/cache
 gnome-shell --headless --wayland --virtual-monitor 1280x800
 # 另一个 shell（同一 XDG_RUNTIME_DIR）
-env -u DISPLAY WAYLAND_DISPLAY=wayland-0 target/debug/tervo --diagnose
+env -u DISPLAY WAYLAND_DISPLAY=wayland-0 target/debug/xtervo --diagnose
 ```
 
 注意：`WAYLAND_DISPLAY`/`DISPLAY` 必须显式设置；headless 会话的 XWayland

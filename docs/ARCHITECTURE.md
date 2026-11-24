@@ -1,4 +1,4 @@
-# Tervo 架构
+# xtervo 架构
 
 状态：目标架构 + 当前实现边界。  
 最后更新：2026-11-10（`feat/image-engine`）。
@@ -58,7 +58,7 @@ PTY
  │
  ▼
 VT Parser / Screen Model
-（alacritty_terminal + Tervo 前置扫描器）
+（alacritty_terminal + xtervo 前置扫描器）
  │
  ├─ Cells / Scrollback / Modes / RowId
  ├─ GraphicsCommand
@@ -99,12 +99,12 @@ Tabs / Panes / Menus / Settings
 ### 现有
 
 ```text
-crates/core    tervo-core
+crates/core    xtervo-core
   PTY / actor / VT / Frame / Screen
   Sixel/IIP 前置过滤
   图片 ownership 迁移中
 
-crates/app     tervo-app
+crates/app     xtervo-app
   Slint UI
   PaneRuntime
   CPU Renderer
@@ -114,28 +114,28 @@ crates/app     tervo-app
 ### 新增（目标）
 
 ```text
-crates/graphics   tervo-graphics
+crates/graphics   xtervo-graphics
   ImageId / SourceId / PlacementId / RowId
   ImageResource / ImagePlacement
   GraphicsManager
   Rect / CompositePolicy
   不依赖 wgpu / Slint / alacritty
 
-crates/scene      tervo-scene
+crates/scene      xtervo-scene
   Scene / SceneLayer / DrawItem
   TextBatch / ImageInstance / CursorInstance
   DamageRegion
   不依赖 wgpu / Skia / Slint
 
-crates/render     tervo-render
+crates/render     xtervo-render
   Renderer trait
   RenderedFrame
   后端中立类型
 
-crates/render-cpu tervo-render-cpu（后续）
+crates/render-cpu xtervo-render-cpu（后续）
   CPU/Skia backend
 
-crates/render-wgpu tervo-render-wgpu（后续）
+crates/render-wgpu xtervo-render-wgpu（后续）
   wgpu backend + texture import
 ```
 
@@ -194,7 +194,7 @@ ImagePlacement {
 
 ## 6. RowId / Alacritty 补丁
 
-Tervo 使用 vendored `alacritty_terminal` 0.26.1，补丁位于 `vendor/alacritty_terminal`。
+xtervo 使用 vendored `alacritty_terminal` 0.26.1，补丁位于 `vendor/alacritty_terminal`。
 
 ```text
 Row 有稳定 u64 id
@@ -212,7 +212,7 @@ reflow 合并/历史淘汰：原 id 消失，placement 显式 drop
 alt-screen：两份 screen，各自 RowId 空间
 ```
 
-不允许在 Tervo 侧用 `scroll_total`、文本指纹或空白 damage 重新推断图片行身份。
+不允许在 xtervo 侧用 `scroll_total`、文本指纹或空白 damage 重新推断图片行身份。
 
 ## 7. 场景模型
 

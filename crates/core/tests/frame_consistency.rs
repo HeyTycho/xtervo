@@ -12,15 +12,15 @@
 //! 第 4 步是用户现象的直接模型：旧字符残留 = partial 帧内容不一致，或内容
 //! 一致但 damage 没覆盖变化行（renderer 不重绘）。
 //!
-//! 真实 dsh 原始字节的语料测试通过 `TERVO_DSH_RAW=/path/to/app-to-host.raw`
+//! 真实 dsh 原始字节的语料测试通过 `XTERVO_DSH_RAW=/path/to/app-to-host.raw`
 //! 启用（也可自动探测仓库内 `.logs/dsh-dump-run/pty/app-to-host.raw`）。
 
 use alacritty_terminal::event::VoidListener;
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::term::{Config as TermConfig, Term};
 use alacritty_terminal::vte::ansi::Processor;
-use tervo_core::{fill_frame, CellData, Frame, GridSize, Palette};
-use tervo_core::{spawn, CoreEvent, PaneConfig};
+use xtervo_core::{fill_frame, CellData, Frame, GridSize, Palette};
+use xtervo_core::{spawn, CoreEvent, PaneConfig};
 
 /// 本批字节是否含零宽码位。与 `crate::pane::has_zero_width_chars` 语义一致：
 /// 生产 actor 遇到零宽输入会强制下一帧整屏，这里复刻同样的策略。
@@ -569,7 +569,7 @@ fn deterministic_minimal_rewrites() {
 // ---------------------------------------------------------------------------
 
 fn locate_raw() -> Option<std::path::PathBuf> {
-    if let Some(path) = std::env::var_os("TERVO_DSH_RAW") {
+    if let Some(path) = std::env::var_os("XTERVO_DSH_RAW") {
         let path = std::path::PathBuf::from(path);
         if path.is_file() {
             return Some(path);
@@ -589,7 +589,7 @@ fn locate_raw() -> Option<std::path::PathBuf> {
 fn raw_dsh_replay_matches_force_full() {
     let Some(raw_path) = locate_raw() else {
         eprintln!(
-            "跳过：未找到 app-to-host.raw；设置 TERVO_DSH_RAW 指向 dsh 原始输出后再跑"
+            "跳过：未找到 app-to-host.raw；设置 XTERVO_DSH_RAW 指向 dsh 原始输出后再跑"
         );
         return;
     };
@@ -606,7 +606,7 @@ fn raw_dsh_replay_matches_force_full() {
             eprintln!("raw {raw_path:?} chunk={chunk} 在 step {steps} 失败");
             report_and_panic(&mismatches, bytes.len(), steps);
         }
-        if let Some(out) = std::env::var_os("TERVO_FRAME_DUMP_OUT") {
+        if let Some(out) = std::env::var_os("XTERVO_FRAME_DUMP_OUT") {
             let mut path = std::path::PathBuf::from(out);
             path.set_extension(format!("chunk{chunk}.txt"));
             std::fs::write(&path, frame_text(&replay.full))

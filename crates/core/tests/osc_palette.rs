@@ -15,7 +15,7 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use tervo_core::{spawn, CoreEvent, Frame, Palette, PaneConfig, PaneHandle, ShellMark};
+use xtervo_core::{spawn, CoreEvent, Frame, Palette, PaneConfig, PaneHandle, ShellMark};
 
 fn sh(script: &str) -> PaneConfig {
     PaneConfig {
@@ -29,7 +29,7 @@ fn sh(script: &str) -> PaneConfig {
 }
 
 fn temp_dir(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("tervo-osc-{}-{tag}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("xtervo-osc-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir

@@ -71,8 +71,8 @@ damage_rects
 ## Gates
 
 ```text
-cargo test -p tervo-render-wgpu
-cargo test -p tervo-app --bin tervo
+cargo test -p xtervo-render-wgpu
+cargo test -p xtervo-app --bin xtervo
 GPU native e2e
 image e2e
 15m GPU soak during development

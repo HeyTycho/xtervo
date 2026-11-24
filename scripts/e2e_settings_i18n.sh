@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-only
-# Settings / 右键菜单中英双语 e2e：在 headless Xvfb 上启动 Tervo，覆盖
+# Settings / 右键菜单中英双语 e2e：在 headless Xvfb 上启动 xtervo，覆盖
 #   en/zh Appearance + Terminal、搜索、运行中切换、写回 config、外部热更新、
 #   终端右键菜单、TabBar 菜单、小窗口、重启持久化、legacy modal。
 # 同时做源码级断言：Settings/菜单所有静态文案必须走 Lang.t，en 侧不得含中文，
 # zh 侧必须有中文且不能是未翻译的整句英文。
 #
 # 用法：
-#   cargo build -p tervo-app --bin tervo --bin xwin --bin xclick --bin xkey
+#   cargo build -p xtervo-app --bin xtervo --bin xwin --bin xclick --bin xkey
 #   ./scripts/e2e_settings_i18n.sh
-# 可用 TERVO_BIN_DIR 指定二进制目录（默认 target/debug），TERVO_PERF_DIR 指定
+# 可用 XTERVO_BIN_DIR 指定二进制目录（默认 target/debug），XTERVO_PERF_DIR 指定
 # Xvfb/Openbox 位置，E2E_DISPLAY 指定 display（默认 :126）。
 # 依赖：Xvfb、Openbox、xwd、ffmpeg、xwininfo（仓库 .perf/ 已带前两者）。
 set -euo pipefail
@@ -19,21 +19,21 @@ OUT=${SETTINGS_I18N_OUT:-$ROOT/.logs/settings-i18n}
 SHOTS=$OUT/shots
 mkdir -p "$SHOTS" "$OUT/home" "$OUT/logs" /tmp/.X11-unix
 
-BIN_DIR=${TERVO_BIN_DIR:-$ROOT/target/debug}
-BIN=$BIN_DIR/tervo
+BIN_DIR=${XTERVO_BIN_DIR:-$ROOT/target/debug}
+BIN=$BIN_DIR/xtervo
 XWIN=$BIN_DIR/xwin
 XCLICK=$BIN_DIR/xclick
 XKEY=$BIN_DIR/xkey
 for f in "$BIN" "$XWIN" "$XCLICK" "$XKEY"; do
     [ -x "$f" ] || {
-        echo "缺少 $f；先 cargo build -p tervo-app --bin tervo --bin xwin --bin xclick --bin xkey" >&2
+        echo "缺少 $f；先 cargo build -p xtervo-app --bin xtervo --bin xwin --bin xclick --bin xkey" >&2
         exit 2
     }
 done
 
 COMMON=$(git rev-parse --git-common-dir)
 MAIN_ROOT=$(cd "$(dirname "$COMMON")" && pwd)
-PERF=${TERVO_PERF_DIR:-$MAIN_ROOT/.perf}
+PERF=${XTERVO_PERF_DIR:-$MAIN_ROOT/.perf}
 XVFB_BIN=${E2E_XVFB_BIN:-$PERF/xvfb/usr/bin/Xvfb}
 [ -x "$XVFB_BIN" ] || XVFB_BIN=$(command -v Xvfb || true)
 [ -x "$XVFB_BIN" ] || { echo "找不到 Xvfb；不会回退到 Xephyr" >&2; exit 2; }
@@ -90,29 +90,29 @@ start_app() {  # <tag> <lang> [legacy] [config-dir]
     fi
     local log="$OUT/app_$tag.log"
     : >"$log"
-    TERVO_SETTINGS_LEGACY="$legacy" TERVO_CONFIG="$cfg" TERVO_LOG_DIR="$OUT/logs" \
+    XTERVO_SETTINGS_LEGACY="$legacy" XTERVO_CONFIG="$cfg" XTERVO_LOG_DIR="$OUT/logs" \
         "$BIN" --cols 120 --rows 32 --shell /bin/sh -- -c 'printf "https://example.com\n"; sleep 900' >"$log" 2>&1 &
     APP_PID=$!
     WIN=""
     for _ in $(seq 1 200); do
-        WIN=$(xwininfo -root -tree 2>/dev/null | grep -i '"tervo"' | head -1 | awk '{print $1}' || true)
+        WIN=$(xwininfo -root -tree 2>/dev/null | grep -i '"xtervo"' | head -1 | awk '{print $1}' || true)
         [ -n "$WIN" ] && break
         sleep 0.05
     done
     [ -n "$WIN" ] || { echo "启动失败（$tag）：$log" >&2; cat "$log" >&2; exit 2; }
-    "$XWIN" Tervo 20 20 >/dev/null 2>&1 || true
+    "$XWIN" xtervo 20 20 >/dev/null 2>&1 || true
     sleep 0.8
     refresh_geom
     if [ "$W" != 1080 ] || [ "$H" != 736 ]; then
         echo "截图坐标基于 1080x736（cell 9x22 / 120x32），实际 ${W}x${H}" >&2
         exit 2
     fi
-    LOG=$(ls -t "$OUT/logs"/tervo-*.log 2>/dev/null | head -1 || true)
+    LOG=$(ls -t "$OUT/logs"/xtervo-*.log 2>/dev/null | head -1 || true)
     echo "  app=$tag lang=$lang legacy=${legacy:-none} window=${W}x${H} log=$LOG"
 }
 
 refresh_geom() {
-    WIN=$(xwininfo -root -tree | grep -i '"tervo"' | head -1 | awk '{print $1}')
+    WIN=$(xwininfo -root -tree | grep -i '"xtervo"' | head -1 | awk '{print $1}')
     ABS_X=$(xwininfo -id "$WIN" | awk '/Absolute upper-left X/{print $NF}')
     ABS_Y=$(xwininfo -id "$WIN" | awk '/Absolute upper-left Y/{print $NF}')
     W=$(xwininfo -id "$WIN" | awk '/Width:/{print $2}')
@@ -138,7 +138,7 @@ shot() {
 click_rel() { "$XCLICK" "$((ABS_X + $1))" "$((ABS_Y + $2))" "${3:-1}" >/dev/null; }
 click_abs() { "$XCLICK" "$1" "$2" "${3:-1}" >/dev/null; }
 open_settings() { click_rel "$((W - 118))" 16; sleep 0.7; }
-close_settings() { "$XWIN" Tervo >/dev/null 2>&1 || true; "$XKEY" --key escape >/dev/null 2>&1 || true; sleep 0.5; }
+close_settings() { "$XWIN" xtervo >/dev/null 2>&1 || true; "$XKEY" --key escape >/dev/null 2>&1 || true; sleep 0.5; }
 click_nav() { click_rel 100 "$1"; sleep 0.55; }
 # Appearance 顶部 Language 分段：左 English / 右 中文。
 pick_lang() {  # en | zh（1080 宽）
@@ -158,14 +158,14 @@ menu_shot() {  # <name> <x> <y>
         shot "$name"
         size=$(stat -c%s "$SHOTS/$name.png")
         [ "$size" -ge 20000 ] && return 0
-        "$XWIN" Tervo >/dev/null 2>&1 || true
+        "$XWIN" xtervo >/dev/null 2>&1 || true
         "$XKEY" --key escape >/dev/null 2>&1 || true
         sleep 0.4
     done
     echo "右键菜单截图仍为空（$name, $size bytes）" >&2
     exit 2
 }
-open_search() { "$XWIN" Tervo >/dev/null 2>&1 || true; click_rel 880 56; sleep 0.35; }
+open_search() { "$XWIN" xtervo >/dev/null 2>&1 || true; click_rel 880 56; sleep 0.35; }
 assert_cfg_lang() {  # <file> <lang>
     grep -q "^language = \"$2\"" "$1" || {
         echo "config 未写回 language=$2：$1" >&2
@@ -262,7 +262,7 @@ click_nav 456; shot 03g_zh_advanced
 click_nav 138
 # 主题下拉锚点（Language 卡片新增后仍在 Color scheme 下方）
 click_rel 620 340; sleep 0.9; shot 03h_zh_theme_dropdown
-"$XWIN" Tervo >/dev/null 2>&1 || true
+"$XWIN" xtervo >/dev/null 2>&1 || true
 "$XKEY" --key escape >/dev/null 2>&1 || true
 sleep 0.4
 # 切回英文
@@ -280,7 +280,7 @@ open_search
 "$XKEY" sixel >/dev/null 2>&1 || true
 sleep 0.7
 shot 06_zh_search
-"$XWIN" Tervo >/dev/null 2>&1 || true
+"$XWIN" xtervo >/dev/null 2>&1 || true
 "$XKEY" --key escape >/dev/null 2>&1 || true   # 清空搜索
 sleep 0.3
 # 英文搜索
@@ -289,7 +289,7 @@ open_search
 "$XKEY" sixel >/dev/null 2>&1 || true
 sleep 0.7
 shot 07_en_search
-"$XWIN" Tervo >/dev/null 2>&1 || true
+"$XWIN" xtervo >/dev/null 2>&1 || true
 "$XKEY" --key escape >/dev/null 2>&1 || true
 sleep 0.3
 
@@ -299,26 +299,26 @@ pick_lang en
 click_nav 138
 close_settings
 menu_shot 08_en_context_menu 30 43
-"$XWIN" Tervo >/dev/null 2>&1 || true
+"$XWIN" xtervo >/dev/null 2>&1 || true
 "$XKEY" --key escape >/dev/null 2>&1 || true
 sleep 0.4
 open_settings
 pick_lang zh
 close_settings
 menu_shot 09_zh_context_menu 30 43
-"$XWIN" Tervo >/dev/null 2>&1 || true
+"$XWIN" xtervo >/dev/null 2>&1 || true
 "$XKEY" --key escape >/dev/null 2>&1 || true
 sleep 0.4
 # TabBar 菜单（顺带覆盖）
 menu_shot 10_zh_tab_menu 600 16
-"$XWIN" Tervo >/dev/null 2>&1 || true
+"$XWIN" xtervo >/dev/null 2>&1 || true
 "$XKEY" --key escape >/dev/null 2>&1 || true
 sleep 0.4
 open_settings
 pick_lang en
 close_settings
 menu_shot 11_en_tab_menu 600 16
-"$XWIN" Tervo >/dev/null 2>&1 || true
+"$XWIN" xtervo >/dev/null 2>&1 || true
 "$XKEY" --key escape >/dev/null 2>&1 || true
 sleep 0.4
 

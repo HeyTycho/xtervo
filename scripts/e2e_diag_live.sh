@@ -2,9 +2,9 @@
 # 只读 live diag socket + MCP live tools 验收。
 #
 # 覆盖：
-#   - TERVO_DIAG_SOCKET 创建 0600 Unix socket，未授权请求被拒绝
+#   - XTERVO_DIAG_SOCKET 创建 0600 Unix socket，未授权请求被拒绝
 #   - capabilities / snapshot 经 UI 线程取真实 pane frame/cursor
-#   - `tervo diag serve --socket --token` 暴露 live_capabilities/live_snapshot
+#   - `xtervo diag serve --socket --token` 暴露 live_capabilities/live_snapshot
 #   - MCP tools/list 同时包含静态 env/snapshot/replay 和 live 工具
 #
 # 只使用 headless Xvfb，只 kill 本脚本启动的进程；不碰 :1、不 pkill。
@@ -14,9 +14,9 @@ ROOT=$PWD
 OUT=${E2E_OUT:-$ROOT/.logs/diag-live-e2e}
 DISPLAY_NUM=${E2E_DISPLAY:-:212}
 SCREEN=${E2E_SCREEN:-1280x800x24}
-BIN=${E2E_BIN:-$ROOT/target/debug/tervo}
+BIN=${E2E_BIN:-$ROOT/target/debug/xtervo}
 XVFB=${E2E_XVFB_BIN:-$ROOT/.perf/xvfb/usr/bin/Xvfb}
-[ -x "$BIN" ] || { echo "缺少 $BIN；先 cargo build -p tervo-app --bin tervo" >&2; exit 2; }
+[ -x "$BIN" ] || { echo "缺少 $BIN；先 cargo build -p xtervo-app --bin xtervo" >&2; exit 2; }
 [ -x "$XVFB" ] || { echo "缺少 Xvfb: $XVFB" >&2; exit 2; }
 
 if [ -n "${E2E_OUT:-}" ] && [ -e "$OUT" ]; then
@@ -39,9 +39,9 @@ fi
 XVFB_PID=$!
 for _ in $(seq 1 100); do DISPLAY=$DISPLAY_NUM xdpyinfo >/dev/null 2>&1 && break; sleep 0.05; done
 
-env DISPLAY=$DISPLAY_NUM HOME="$OUT/home" TERVO_CONFIG="$OUT/config.toml" \
-  TERVO_LOG_DIR="$OUT/logs" TERVO_DIAG_SOCKET="$SOCK" TERVO_DIAG_TOKEN="$TOKEN" \
-  "$BIN" --shell /bin/bash --cols 80 --rows 20 --title Tervo >"$OUT/app.log" 2>&1 &
+env DISPLAY=$DISPLAY_NUM HOME="$OUT/home" XTERVO_CONFIG="$OUT/config.toml" \
+  XTERVO_LOG_DIR="$OUT/logs" XTERVO_DIAG_SOCKET="$SOCK" XTERVO_DIAG_TOKEN="$TOKEN" \
+  "$BIN" --shell /bin/bash --cols 80 --rows 20 --title xtervo >"$OUT/app.log" 2>&1 &
 APP_PID=$!
 for _ in $(seq 1 100); do [ -S "$SOCK" ] && break; sleep 0.05; done
 [ -S "$SOCK" ] || { echo "FAIL: diag socket 未创建"; cat "$OUT/app.log"; exit 1; }
@@ -82,7 +82,7 @@ printf '%s\n' \
   '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
   '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
   '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
-  '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"tervo.live_snapshot","arguments":{}}}' \
+  '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"xtervo.live_snapshot","arguments":{}}}' \
   | "$BIN" diag serve --socket "$SOCK" --token "$TOKEN" >"$OUT/mcp.jsonl" 2>"$OUT/mcp.err"
 python3 - "$OUT/mcp.jsonl" <<'PY'
 import json, sys
@@ -91,7 +91,7 @@ tools = None; live = None
 for m in msgs:
     if m.get('id') == 2: tools = [t['name'] for t in m['result']['tools']]
     if m.get('id') == 3: live = m['result']
-for want in ('tervo.diag_env','tervo.diag_snapshot','tervo.diag_replay','tervo.live_snapshot'):
+for want in ('xtervo.diag_env','xtervo.diag_snapshot','xtervo.diag_replay','xtervo.live_snapshot'):
     assert tools and want in tools, (want, tools)
 assert live and live['isError'] is False, live
 data = json.loads(live['content'][0]['text'])

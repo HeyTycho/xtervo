@@ -8,8 +8,8 @@
 use std::time::{Duration, Instant};
 
 use alacritty_terminal::term::TermMode;
-use tervo_core::mouse::{self, Modifiers, MouseAction, MouseButton, MouseEvent};
-use tervo_core::{spawn, PaneConfig, PaneHandle};
+use xtervo_core::mouse::{self, Modifiers, MouseAction, MouseButton, MouseEvent};
+use xtervo_core::{spawn, PaneConfig, PaneHandle};
 
 fn ev(button: MouseButton, action: MouseAction, line: u16, col: u16) -> MouseEvent {
     MouseEvent { button, action, line, col, modifiers: Modifiers::default() }

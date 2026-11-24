@@ -1,9 +1,9 @@
 [package]
-name = "tervo-render"
+name = "xtervo-render"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-tervo-scene = { path = "../scene" }
+xtervo-scene = { path = "../scene" }

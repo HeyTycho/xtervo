@@ -7,7 +7,7 @@
 #
 # 用法：
 #   scripts/gpu-terminal-spike.sh
-#   DISPLAY_NUM=:78 TERVO_XVFB=/path/to/Xvfb scripts/gpu-terminal-spike.sh
+#   DISPLAY_NUM=:78 XTERVO_XVFB=/path/to/Xvfb scripts/gpu-terminal-spike.sh
 #
 # 本机没有系统 Xvfb 时，可先用 apt-get download + dpkg-deb -x 解到
 # `.xvfb-local/`（见 docs/archive/GPU_TERMINAL_SLINT_SPIKE.md），脚本会自动使用它。
@@ -26,14 +26,14 @@ if [[ ! "$display" =~ ^:[0-9]+$ ]]; then
     exit 2
 fi
 
-xvfb="${TERVO_XVFB:-}"
+xvfb="${XTERVO_XVFB:-}"
 if [[ -z "$xvfb" ]]; then
     if command -v Xvfb >/dev/null 2>&1; then
         xvfb="$(command -v Xvfb)"
     elif [[ -x "$root/.xvfb-local/usr/bin/Xvfb" ]]; then
         xvfb="$root/.xvfb-local/usr/bin/Xvfb"
     else
-        echo "Xvfb not found: install it, set TERVO_XVFB, or extract the deb to .xvfb-local/" >&2
+        echo "Xvfb not found: install it, set XTERVO_XVFB, or extract the deb to .xvfb-local/" >&2
         exit 2
     fi
 fi
@@ -43,10 +43,10 @@ if [[ -e "/tmp/.X11-unix/X${display#:}" ]]; then
     exit 2
 fi
 
-out="${TERVO_GPU_SPIKE_OUT:-$root/docs/evidence/gpu-spike}"
+out="${XTERVO_GPU_SPIKE_OUT:-$root/docs/evidence/gpu-spike}"
 mkdir -p "$out"
 
-log="${TERVO_XVFB_LOG:-$out/xvfb.log}"
+log="${XTERVO_XVFB_LOG:-$out/xvfb.log}"
 "$xvfb" "$display" -screen 0 1280x720x24 -nolisten tcp >"$log" 2>&1 &
 xvfb_pid=$!
 cleanup() {
@@ -73,5 +73,5 @@ if [[ "$ready" != 1 ]]; then
 fi
 
 echo "running gpu_terminal_spike on isolated display $display (xvfb=$xvfb)"
-DISPLAY="$display" SLINT_WGPU_CPU=1 TERVO_GPU_SPIKE_OUT="$out" \
-    cargo run -p tervo-app --example gpu_terminal_spike -- "$@"
+DISPLAY="$display" SLINT_WGPU_CPU=1 XTERVO_GPU_SPIKE_OUT="$out" \
+    cargo run -p xtervo-app --example gpu_terminal_spike -- "$@"

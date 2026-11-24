@@ -11,9 +11,9 @@
 #   6. 拖拽中按 Esc：取消并复位，松手不排序。
 #
 # 用法：
-#   cargo build -p tervo-app --bin tervo --bin xwin --bin xclick --bin xkey
+#   cargo build -p xtervo-app --bin xtervo --bin xwin --bin xclick --bin xkey
 #   ./scripts/e2e_tab_pin_drag.sh
-# 环境变量：TERVO_BIN / XWIN_BIN / XCLICK_BIN / XKEY_BIN / TAB_PIN_DRAG_OUT / E2E_DISPLAY。
+# 环境变量：XTERVO_BIN / XWIN_BIN / XCLICK_BIN / XKEY_BIN / TAB_PIN_DRAG_OUT / E2E_DISPLAY。
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT=$PWD
@@ -23,19 +23,19 @@ rm -f "$OUT"/shots/*.png "$OUT"/app_*.log "$OUT/session.json" "$OUT/session.json
 
 COMMON=$(git rev-parse --git-common-dir)
 MAIN_ROOT=$(cd "$(dirname "$COMMON")" && pwd)
-PERF=${TERVO_PERF_DIR:-$MAIN_ROOT/.perf}
+PERF=${XTERVO_PERF_DIR:-$MAIN_ROOT/.perf}
 XVFB_BIN=${E2E_XVFB_BIN:-$PERF/xvfb/usr/bin/Xvfb}
 [ -x "$XVFB_BIN" ] || XVFB_BIN=$(command -v Xvfb || true)
 [ -x "$XVFB_BIN" ] || { echo "找不到 Xvfb；不会回退到 Xephyr" >&2; exit 2; }
 OPENBOX=$PERF/openbox/usr/bin/openbox
 OPENBOX_LIB=$PERF/openbox/usr/lib/x86_64-linux-gnu
 
-BIN=${TERVO_BIN:-$MAIN_ROOT/target/debug/tervo}
+BIN=${XTERVO_BIN:-$MAIN_ROOT/target/debug/xtervo}
 XWIN=${XWIN_BIN:-$MAIN_ROOT/target/debug/xwin}
 XCLICK=${XCLICK_BIN:-$MAIN_ROOT/target/debug/xclick}
 XKEY=${XKEY_BIN:-$MAIN_ROOT/target/debug/xkey}
 for f in "$BIN" "$XWIN" "$XCLICK" "$XKEY"; do
-    [ -x "$f" ] || { echo "缺少 $f（先 cargo build -p tervo-app --bin tervo --bin xwin --bin xclick --bin xkey）" >&2; exit 2; }
+    [ -x "$f" ] || { echo "缺少 $f（先 cargo build -p xtervo-app --bin xtervo --bin xwin --bin xclick --bin xkey）" >&2; exit 2; }
 done
 
 export DISPLAY=${E2E_DISPLAY:-:158}
@@ -76,8 +76,8 @@ W=0
 H=0
 
 refresh_geom() {
-    WIN=$(xwininfo -root -tree 2>/dev/null | grep -i '"tervo"' | head -1 | awk '{print $1}')
-    [ -n "$WIN" ] || { echo "找不到 Tervo 窗口" >&2; exit 2; }
+    WIN=$(xwininfo -root -tree 2>/dev/null | grep -i '"xtervo"' | head -1 | awk '{print $1}')
+    [ -n "$WIN" ] || { echo "找不到 xtervo 窗口" >&2; exit 2; }
     ABS_X=$(xwininfo -id "$WIN" | awk '/Absolute upper-left X/{print $NF}')
     ABS_Y=$(xwininfo -id "$WIN" | awk '/Absolute upper-left Y/{print $NF}')
     W=$(xwininfo -id "$WIN" | awk '/Width:/{print $2}')
@@ -88,19 +88,19 @@ start_app() {  # <tag>
     local tag=$1
     local log="$OUT/app_$tag.log"
     : >"$log"
-    TERVO_CONFIG="$OUT/config.toml" \
-    TERVO_SESSION="$OUT/session.json" \
-    TERVO_LOG_DIR="$OUT/logs" \
-        "$BIN" --cols 120 --rows 32 --title Tervo --shell /bin/sh >"$log" 2>&1 &
+    XTERVO_CONFIG="$OUT/config.toml" \
+    XTERVO_SESSION="$OUT/session.json" \
+    XTERVO_LOG_DIR="$OUT/logs" \
+        "$BIN" --cols 120 --rows 32 --title xtervo --shell /bin/sh >"$log" 2>&1 &
     APP_PID=$!
     WIN=""
     for _ in $(seq 1 240); do
-        WIN=$(xwininfo -root -tree 2>/dev/null | grep -i '"tervo"' | head -1 | awk '{print $1}' || true)
+        WIN=$(xwininfo -root -tree 2>/dev/null | grep -i '"xtervo"' | head -1 | awk '{print $1}' || true)
         [ -n "$WIN" ] && break
         sleep 0.05
     done
     [ -n "$WIN" ] || { echo "启动失败（$tag）：$log" >&2; exit 2; }
-    "$XWIN" Tervo 20 20 >/dev/null 2>&1 || true
+    "$XWIN" xtervo 20 20 >/dev/null 2>&1 || true
     sleep 1.0
     refresh_geom
     if [ "$W" != 1080 ] || [ "$H" != 736 ]; then
@@ -135,7 +135,7 @@ shot() {
 }
 
 click_abs() { "$XCLICK" "$1" "$2" "${3:-1}" >/dev/null 2>&1; sleep 0.3; }
-focus_term() { "$XWIN" Tervo >/dev/null 2>&1 || true; sleep 0.12; }
+focus_term() { "$XWIN" xtervo >/dev/null 2>&1 || true; sleep 0.12; }
 type_text() { focus_term; "$XKEY" "$1" >/dev/null; }
 set_title() {  # <T1>
     focus_term

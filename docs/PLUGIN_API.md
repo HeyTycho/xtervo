@@ -1,9 +1,9 @@
-> **已废弃 / Unsupported**：本文档描述 Plugin API v1/v2。Tervo 自 Plugin API v3 起
+> **已废弃 / Unsupported**：本文档描述 Plugin API v1/v2。xtervo 自 Plugin API v3 起
 > **只加载 `api = 3` 且 `host_abi = 3`** 的清单；v1/v2 清单不会再执行，设置页只显示
 > `unsupported` 与迁移提示，代码中没有双协议兼容层。请使用
 > [`docs/PLUGIN_V3.md`](PLUGIN_V3.md)。以下内容仅作历史参考。
 
-# Tervo 外部进程插件 API（V1 + V2 AI 扩展，api = 1/2）
+# xtervo 外部进程插件 API（V1 + V2 AI 扩展，api = 1/2）
 
 状态：**V1 稳定子集（2026-11-06）+ V2 AI Chat 扩展（2026-11-09）**。本轮在已有
 外部进程 MVP 上增加 API v2 与内置 AI 面板，v1 清单/行为完全保留：
@@ -15,7 +15,7 @@
 - Status Provider：宿主每 2s 轮询或插件主动推送 `text/tooltip/command`，
   主窗口底部显示一行最小状态栏，点击执行声明的插件命令；
 - Theme Pack：`[contributes] theme = "theme.toml"` 声明式主题（可选），
-  插件禁用/主题坏了不影响 Tervo 启动；
+  插件禁用/主题坏了不影响 xtervo 启动；
 - **API v2 / AI Chat（新增）**：`api = 2` 清单可声明 `[contributes.ai]`，内置
   AI 面板经同一 supervisor 发送 `ai.chat` 请求（messages + 可选 model），插件返回
   `text`；宿主不保存/不转发 API Key，凭据由插件自己持有；
@@ -61,11 +61,11 @@ api = 2   0.2.0 固定为“v1 + 可选 [contributes.ai] + ai.chat”基线
 
 ## 1. 目录与启用规则
 
-插件根目录默认 `~/.config/tervo/plugins`（遵循 `XDG_CONFIG_HOME`）；
-环境变量 `TERVO_PLUGINS` 可覆盖（测试/多实例）。
+插件根目录默认 `~/.config/xtervo/plugins`（遵循 `XDG_CONFIG_HOME`）；
+环境变量 `XTERVO_PLUGINS` 可覆盖（测试/多实例）。
 
 ```text
-~/.config/tervo/plugins/
+~/.config/xtervo/plugins/
 ├── legacy.toml                  # 旧扁平清单：只展示，不执行
 ├── status/                      # v1 目录插件；推荐目录名 = 插件 id/name
 │   ├── plugin.toml
@@ -78,7 +78,7 @@ api = 2   0.2.0 固定为“v1 + 可选 [contributes.ai] + ai.chat”基线
 启用规则：
 
 - 清单 `enabled` 缺省 `true`；`enabled = false` 时**不注册命令、不启动进程、不执行事件**。
-- 启动时读取一次清单并启动已启用的 `runtime = "process"` 插件；修改清单后需重启 Tervo。
+- 启动时读取一次清单并启动已启用的 `runtime = "process"` 插件；修改清单后需重启 xtervo。
 - 同名（`name`）或同 `id` 的插件只加载第一个，后续跳过并写日志。
 - 目录下没有 `plugin.toml` 的子目录会被忽略；坏清单写 `skipped`，设置页显示数量，
   `[plugin] 跳过 <path>: <原因>` 写日志。
@@ -106,7 +106,7 @@ key = "ctrl+alt+g"             # 可选；单个可绑定组合
 ### 2.2 常驻进程插件（V1/V2 格式）
 
 ```toml
-id = "dev.tervo.status"        # 可选；稳定 ID/展示/去重，缺省 = name；允许反向域名点号
+id = "dev.xtervo.status"        # 可选；稳定 ID/展示/去重，缺省 = name；允许反向域名点号
 name = "status"                # 必填；命令命名空间仍是 plugin.<name>.<id>
 version = "1.0.0"
 api = 1                        # 必填；1（v1）或 2（v2，可声明 AI）
@@ -138,7 +138,7 @@ args = ["world"]               # 可选；静态参数，最多 16 个、每个 
 ### 2.3 AI Chat 插件（API v2 新增）
 
 ```toml
-id = "dev.tervo.ai-echo"
+id = "dev.xtervo.ai-echo"
 name = "ai-echo"               # 仍用作 supervisor 路由键；AI 面板按 name 定位插件
 version = "1.0.0"
 api = 2                        # 必须 ≥2 才能声明 contributes.ai
@@ -154,7 +154,7 @@ clipboard = false
 credentials = "none"           # 凭据由插件自己管理，宿主不下发
 
 [contributes.ai]
-id = "dev.tervo.ai-echo"       # 可选；AI 面板展示/去重，缺省回退插件 id/name
+id = "dev.xtervo.ai-echo"       # 可选；AI 面板展示/去重，缺省回退插件 id/name
 name = "AI Echo"               # 可选；面板展示名，缺省回退插件 name
 model = "echo-1"               # 可选；作为 ai.chat payload.model 原样下发
 description = "deterministic echo; no API key"
@@ -205,13 +205,13 @@ AI 插件也需被 `enabled = true` 且完成 `ready` 握手才会出现在面�
 - 插件 ID 与内置/其它命令冲突时跳过该命令并写 `[plugin] 命令注册冲突` 日志。
 - 清单未知字段被忽略（前向兼容）；旧扁平清单未知字段原样保留。
 - 设置页插件行示例：
-  `status v1.0.0 — enabled · id=dev.tervo.status · api 1 · process · 1 command(s) · status · theme · running — 构建状态`；
+  `status v1.0.0 — enabled · id=dev.xtervo.status · api 1 · process · 1 command(s) · status · theme · running — 构建状态`；
   崩溃后为 `... · disabled: 达到重启上限（2 次）：...`。
 
 ## 3. 生命周期（runtime = "process"）
 
 ```text
-启动 Tervo
+启动 xtervo
   → 扫描清单（只读）
   → start_process_plugins(): 每个启用的 process 插件一个 supervisor 线程
   → spawn entry（cwd=插件目录，环境变量见 §4）
@@ -231,7 +231,7 @@ AI 插件也需被 `enabled = true` 且完成 `ready` 握手才会出现在面�
 - AI `ai.chat` 超时 120s；超时只回复错误并丢弃该次请求，**不 kill 进程**；用户也可在
   面板点 Cancel，效果相同。
 - 每次新进程都重新握手；未投递的事件/命令在 supervisor 队列中等待 ready 后执行。
-- 无手动重启/禁用按钮；`enabled` 修改需重启 Tervo。
+- 无手动重启/禁用按钮；`enabled` 修改需重启 xtervo。
 
 ## 4. JSON Lines 协议（stdin/stdout，每行一条 JSON）
 
@@ -241,17 +241,17 @@ stderr 不参与协议，逐行写 `[plugin] <name> stderr:` 日志（单行截�
 启动环境变量：
 
 ```text
-TERVO_PLUGIN_NAME=<name>
-TERVO_PLUGIN_ID=<id>
-TERVO_PLUGIN_API=<清单声明版本：1 或 2>
-TERVO_PLUGIN_HOST_API=2
-TERVO_PLUGIN_PROTOCOL=1
+XTERVO_PLUGIN_NAME=<name>
+XTERVO_PLUGIN_ID=<id>
+XTERVO_PLUGIN_API=<清单声明版本：1 或 2>
+XTERVO_PLUGIN_HOST_API=2
+XTERVO_PLUGIN_PROTOCOL=1
 ```
 
 ### 4.1 宿主 → 插件
 
 ```json
-{"type":"init","api":2,"host_api":2,"protocol":1,"plugin":"ai-echo","host":"tervo"}
+{"type":"init","api":2,"host_api":2,"protocol":1,"plugin":"ai-echo","host":"xtervo"}
 {"type":"command","id":7,"command":"greet","args":["world"]}
 {"type":"command","id":8,"command":"ai.chat","args":[],"payload":{"messages":[{"role":"user","content":"hello"}],"model":"echo-1"}}
 {"type":"event","event":"tab-open","payload":{"title":"Build: dev","kind":"local"}}
@@ -315,7 +315,7 @@ Settings → Plugins → Open AI Chat
 ```
 
 - 无 AI 插件时面板显示空状态：示例插件 `docs/examples/ai-echo/` 与真实插件目录
-  `~/.config/tervo/plugins/ai-echo/`，并说明需要 `api = 2`、`runtime = "process"`、
+  `~/.config/xtervo/plugins/ai-echo/`，并说明需要 `api = 2`、`runtime = "process"`、
   `[contributes.ai]`；不联网、不下载。
 - 面板固定由宿主渲染：插件列表、prompt、Send/Cancel/Close、输出、错误与安全声明；
   插件不能提供任意 UI。
@@ -338,12 +338,12 @@ Settings → Plugins → Open AI Chat
 
 - 清单 `[contributes] theme = "theme.toml"`，文件在插件目录内；路径校验同 entry
   （拒绝绝对路径/`..`/逃逸），但**不要求可执行**。
-- 支持 Tervo 完整 TOML 主题或 Alacritty TOML（与 `~/.config/tervo/themes/` 相同格式；
+- 支持 xtervo 完整 TOML 主题或 Alacritty TOML（与 `~/.config/xtervo/themes/` 相同格式；
   也可用现有导入格式的扩展名，如 `.itermcolors`/`.json`/Xresources）。
 - 主题 id 统一加前缀 `custom:plugin-<slug>-<stem>`，显示名追加 `(plugin: <name>)`，
   避免与用户主题撞 id；重复 id 跳过并记录。
 - 主题坏了/文件缺失只在插件行显示 `theme-error` 并写日志，**插件仍加载**；
-  主题是可选贡献，不阻塞 Tervo 启动。
+  主题是可选贡献，不阻塞 xtervo 启动。
 - 主题列表由设置页现有下拉框展示；选择后写 `config.toml` 的 `theme`，无需额外 UI。
 
 ## 7. 事件与 payload（两种 runtime 共用）
@@ -374,7 +374,7 @@ Settings → Plugins → Open AI Chat
 - summary：`N plugins · M enabled · K commands · S skipped`。
 - 「Recent plugin activity」保留最近 8 条命令/事件/AI/生命周期摘要（时间/插件/动作/结果/
   首行），后台写、唤醒 UI 刷新；不持久化，重启清空。AI 只记状态与字符数，不记 prompt/回复正文。
-- 所有完整 stdout/stderr/协议错误写 `~/.local/state/tervo/logs`（`[plugin]` 前缀）；
+- 所有完整 stdout/stderr/协议错误写 `~/.local/state/xtervo/logs`（`[plugin]` 前缀）；
   坏清单在启动日志逐条打印跳过原因。
 - 无 UI 开关/安装/卸载/搜索/详情页；`enabled` 仍用手写 TOML + 重启。
 
@@ -421,7 +421,7 @@ Settings → Plugins → Open AI Chat
 
 ```bash
 CARGO_HOME=$PWD/.cargo CARGO_TARGET_DIR=$PWD/target \
-  cargo test -p tervo-app --bin tervo
+  cargo test -p xtervo-app --bin xtervo
 ```
 
 插件相关单测（`plugin.rs`）：
@@ -439,7 +439,7 @@ GUI 集成/截图（Xvfb :142）：
 
 ```bash
 CARGO_HOME=$PWD/.cargo CARGO_TARGET_DIR=$PWD/target \
-  cargo build -p tervo-app --bin tervo --bin xwin --bin xclick --bin xkey
+  cargo build -p xtervo-app --bin xtervo --bin xwin --bin xclick --bin xkey
 CARGO_TARGET_DIR=$PWD/target ./scripts/e2e_plugin_v1.sh
 ```
 
@@ -450,9 +450,9 @@ CARGO_TARGET_DIR=$PWD/target ./scripts/e2e_plugin_v1.sh
 AI 面板手工/自动验证（无需网络或密钥）：
 
 ```bash
-cp -r docs/examples/ai-echo ~/.config/tervo/plugins/ai-echo
-chmod +x ~/.config/tervo/plugins/ai-echo/plugin.py
-# 重启 Tervo → Settings → Plugins → Open AI Chat → 选 AI Echo → 输入 hello → Send
+cp -r docs/examples/ai-echo ~/.config/xtervo/plugins/ai-echo
+chmod +x ~/.config/xtervo/plugins/ai-echo/plugin.py
+# 重启 xtervo → Settings → Plugins → Open AI Chat → 选 AI Echo → 输入 hello → Send
 ```
 
 Headless Xvfb 冒烟（与 `e2e_plugin_v1.sh` 共用 xwin/xclick/xkey）：
@@ -467,15 +467,15 @@ AI Echo 返回、UI 收到结果、prompt/回复正文不写应用日志、Close
 
 预期日志：`[plugin] ai-echo: 常驻进程就绪`、`[plugin] ai-echo: ai.chat ok (N chars)`；
 面板只追加一次 `AI: ai-echo[echo-1] 1 message(s): hello`，不显示假 token 流。
-`cargo test -p tervo-app --bin tervo` 还覆盖 `ai_chat_routes_payload_and_returns_text` 与
+`cargo test -p xtervo-app --bin xtervo` 还覆盖 `ai_chat_routes_payload_and_returns_text` 与
 `ai_chat_cancel_returns_cancelled_without_killing_plugin`（Python 常驻进程，headless）。
 
 ### 10.2 手工最小插件
 
 ```sh
-export TERVO_PLUGINS="$HOME/.config/tervo/plugins"
-mkdir -p "$TERVO_PLUGINS/demo"
-cat > "$TERVO_PLUGINS/demo/plugin.toml" <<'EOF'
+export XTERVO_PLUGINS="$HOME/.config/xtervo/plugins"
+mkdir -p "$XTERVO_PLUGINS/demo"
+cat > "$XTERVO_PLUGINS/demo/plugin.toml" <<'EOF'
 name = "demo"
 version = "1.0.0"
 api = 1
@@ -493,7 +493,7 @@ title = "Demo: Greet"
 key = "ctrl+alt+g"
 args = ["world"]
 EOF
-cat > "$TERVO_PLUGINS/demo/plugin.py" <<'EOF'
+cat > "$XTERVO_PLUGINS/demo/plugin.py" <<'EOF'
 #!/usr/bin/env python3
 import json, sys
 for line in sys.stdin:
@@ -510,7 +510,7 @@ for line in sys.stdin:
     elif t == "shutdown":
         break
 EOF
-chmod +x "$TERVO_PLUGINS/demo/plugin.py"
+chmod +x "$XTERVO_PLUGINS/demo/plugin.py"
 ```
 
 启动后确认：日志 `[plugin] demo: 常驻进程就绪`；底部状态栏 `demo: demo ok`；

@@ -9,26 +9,26 @@
 # Xvfb/OpenBox/app，不占用 :1、不启动 Xephyr。
 #
 # 用法：
-#   cargo build -p tervo-app --bin tervo --bin xwin --bin xclick --bin xkey
+#   cargo build -p xtervo-app --bin xtervo --bin xwin --bin xclick --bin xkey
 #   ./scripts/e2e_settings_icon.sh
-# 环境变量：E2E_BIN、E2E_OUT、E2E_DISPLAY、TERVO_PERF_DIR、E2E_XVFB_BIN。
+# 环境变量：E2E_BIN、E2E_OUT、E2E_DISPLAY、XTERVO_PERF_DIR、E2E_XVFB_BIN。
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT=$PWD
 OUT=${E2E_OUT:-$ROOT/.logs/settings-icon}
 mkdir -p "$OUT" "$OUT/home" "$OUT/logs" /tmp/.X11-unix
 
-BIN=${E2E_BIN:-$ROOT/target/debug/tervo}
+BIN=${E2E_BIN:-$ROOT/target/debug/xtervo}
 XWIN=$ROOT/target/debug/xwin
 XCLICK=$ROOT/target/debug/xclick
 XKEY=$ROOT/target/debug/xkey
 for f in "$BIN" "$XWIN" "$XCLICK" "$XKEY"; do
-    [ -x "$f" ] || { echo "缺少 $f；先 cargo build -p tervo-app --bin tervo --bin xwin --bin xclick --bin xkey" >&2; exit 2; }
+    [ -x "$f" ] || { echo "缺少 $f；先 cargo build -p xtervo-app --bin xtervo --bin xwin --bin xclick --bin xkey" >&2; exit 2; }
 done
 
 COMMON=$(git rev-parse --git-common-dir)
 MAIN_ROOT=$(cd "$(dirname "$COMMON")" && pwd)
-PERF=${TERVO_PERF_DIR:-$MAIN_ROOT/.perf}
+PERF=${XTERVO_PERF_DIR:-$MAIN_ROOT/.perf}
 XVFB_BIN=${E2E_XVFB_BIN:-$PERF/xvfb/usr/bin/Xvfb}
 [ -x "$XVFB_BIN" ] || XVFB_BIN=$(command -v Xvfb || true)
 [ -x "$XVFB_BIN" ] || { echo "找不到 Xvfb；不会回退到 Xephyr" >&2; exit 2; }
@@ -40,7 +40,7 @@ export DISPLAY=$DISPLAY_NUM
 export HOME=$OUT/home
 export XMODIFIERS=@im=none
 export SLINT_BACKEND=winit-software
-export TERVO_LOG_DIR=$OUT/logs
+export XTERVO_LOG_DIR=$OUT/logs
 
 if xdpyinfo >/dev/null 2>&1; then
     echo "display $DISPLAY_NUM 已被占用；本脚本退出以避免干扰。" >&2
@@ -80,21 +80,21 @@ font_size = 15
 confirm_close = false
 CFG
 
-TERVO_CONFIG="$OUT/cfg.toml" "$BIN" --cols 120 --rows 32 --title Tervo \
+XTERVO_CONFIG="$OUT/cfg.toml" "$BIN" --cols 120 --rows 32 --title xtervo \
     --shell /bin/sh -- -c 'printf "READY\n"; sleep 900' >"$OUT/app.log" 2>&1 &
 APP_PID=$!
 WIN=""
 for _ in $(seq 1 200); do
-    WIN=$(xwininfo -root -tree 2>/dev/null | grep -i '"tervo"' | head -1 | awk '{print $1}' || true)
+    WIN=$(xwininfo -root -tree 2>/dev/null | grep -i '"xtervo"' | head -1 | awk '{print $1}' || true)
     [ -n "$WIN" ] && break
     sleep 0.05
 done
-[ -n "$WIN" ] || fail "找不到 Tervo 窗口"
-"$XWIN" Tervo 20 20 >/dev/null 2>&1 || true
+[ -n "$WIN" ] || fail "找不到 xtervo 窗口"
+"$XWIN" xtervo 20 20 >/dev/null 2>&1 || true
 sleep 1.0
 
 read_geom() {
-    WIN=$(xwininfo -root -tree 2>/dev/null | grep -i '"tervo"' | head -1 | awk '{print $1}')
+    WIN=$(xwininfo -root -tree 2>/dev/null | grep -i '"xtervo"' | head -1 | awk '{print $1}')
     ABS_X=$(xwininfo -id "$WIN" | awk '/Absolute upper-left X/{print $NF}')
     ABS_Y=$(xwininfo -id "$WIN" | awk '/Absolute upper-left Y/{print $NF}')
     W=$(xwininfo -id "$WIN" | awk '/Width:/{print $2}')
@@ -286,7 +286,7 @@ shot 07_context_menu_danger_hover
 key --key escape
 
 echo "== 6) 窄窗口 700x500 =="
-"$XWIN" Tervo 20 20 700 500 >/dev/null 2>&1 || true
+"$XWIN" xtervo 20 20 700 500 >/dev/null 2>&1 || true
 sleep 0.9
 read_geom
 shot 08_narrow_terminal
@@ -302,7 +302,7 @@ check_menu "$OUT/10_narrow_context_menu.png" 276 284 280 502
 key --key escape
 
 echo "== 7) 宽窗口 1400x900 =="
-"$XWIN" Tervo 20 20 1400 900 >/dev/null 2>&1 || true
+"$XWIN" xtervo 20 20 1400 900 >/dev/null 2>&1 || true
 sleep 0.9
 read_geom
 gear_click

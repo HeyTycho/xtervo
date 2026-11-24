@@ -1,13 +1,13 @@
 # Third-Party Notices
 
-Tervo is licensed under **GPL-3.0-only** (see `LICENSE`). This file lists the
-third-party Rust crates linked into the Tervo binary and reproduces the license
+xtervo is licensed under **GPL-3.0-only** (see `LICENSE`). This file lists the
+third-party Rust crates linked into the xtervo binary and reproduces the license
 texts shipped by those crates. It is generated from `cargo tree -e normal`
 plus the local cargo registry; regenerate after dependency changes.
 
 ## Why GPL-3.0-only?
 
-Tervo's UI uses **Slint 1.18**, offered under
+xtervo's UI uses **Slint 1.18**, offered under
 `GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0`.
 This project uses the GPL-3.0 option, so the combined work is GPL-3.0-only.
 If you need a permissive/closed-source license, obtain a commercial or
@@ -20,7 +20,7 @@ compatible with GPL-3.0. Apache-2.0 components remain available under Apache-2.0
 
 The built-in theme list contains community color palettes (e.g. Tokyo Night,
 Dracula, Solarized, Yaru). Color scheme names may be trademarks of their
-respective authors; Tervo is not affiliated with them. Only color values are
+respective authors; xtervo is not affiliated with them. Only color values are
 included, no code or artwork from those projects.
 
 ## Dependencies

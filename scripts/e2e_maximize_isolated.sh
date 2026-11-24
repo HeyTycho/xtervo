@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-only
 # 隔离最大化验收：独立 Xvfb + Openbox + 独立 HOME；拒绝 :1。
-# 启动一个 Tervo 实例，点击最大化/恢复，断言 EWMH 状态和几何改变。
+# 启动一个 xtervo 实例，点击最大化/恢复，断言 EWMH 状态和几何改变。
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -10,7 +10,7 @@ if [ "$DISPLAY_NUM" = ":1" ]; then
     echo "ERROR: 不允许在用户 :1 上测试" >&2
     exit 2
 fi
-BIN=${BIN:-$ROOT/target/release/tervo}
+BIN=${BIN:-$ROOT/target/release/xtervo}
 XVFB=${XVFB:-$ROOT/.perf/xvfb/usr/bin/Xvfb}
 OPENBOX=${OPENBOX:-$ROOT/.perf/openbox/usr/bin/openbox}
 LIB=$ROOT/.perf/openbox/usr/lib/x86_64-linux-gnu
@@ -36,7 +36,7 @@ DISPLAY="$DISPLAY_NUM" HOME="$OUT/home" XDG_DATA_DIRS="$DATA:/usr/share" \
 PIDS+=($!)
 sleep 1
 
-DISPLAY="$DISPLAY_NUM" HOME="$OUT/home" "$BIN" --title "TervoIso" \
+DISPLAY="$DISPLAY_NUM" HOME="$OUT/home" "$BIN" --title "xtervoIso" \
     --cols 60 --rows 20 --shell /bin/bash -- -c 'sleep 30' \
     >"$OUT/app.log" 2>&1 &
 PIDS+=($!)
@@ -77,8 +77,8 @@ def click(wid):
 tree=shell('xwininfo','-display',disp,'-root','-tree')
 ids=[]
 for l in tree.splitlines():
-    if '"TervoIso"' in l:
-        ids.append(('TervoIso',l.split()[0])); break
+    if '"xtervoIso"' in l:
+        ids.append(('xtervoIso',l.split()[0])); break
 print('windows', ids)
 assert len(ids)==1, ids
 for title,wid in ids:

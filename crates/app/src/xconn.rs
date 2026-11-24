@@ -770,8 +770,8 @@ pub fn window_snapshot(id: u32) -> Option<OwnWindow> {
     })
 }
 
-/// 扫描所有 Tervo 类窗口（包括**不是本进程**的旧实例），用于诊断“谁挡在前面”。
-pub fn tervo_windows() -> Vec<OwnWindow> {
+/// 扫描所有 xtervo 类窗口（包括**不是本进程**的旧实例），用于诊断“谁挡在前面”。
+pub fn xtervo_windows() -> Vec<OwnWindow> {
     use x11rb::connection::Connection;
     use x11rb::protocol::xproto::ConnectionExt as _;
 
@@ -783,7 +783,7 @@ pub fn tervo_windows() -> Vec<OwnWindow> {
     };
     for child in tree.children {
         let class = window_class(&conn, child);
-        if !class.to_ascii_lowercase().contains("tervo") {
+        if !class.to_ascii_lowercase().contains("xtervo") {
             continue;
         }
         let viewable = conn

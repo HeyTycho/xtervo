@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# MCP 配置化/分组授权 e2e 包装：独占 Xvfb 上启动 Tervo，再跑 Python harness。
+# MCP 配置化/分组授权 e2e 包装：独占 Xvfb 上启动 xtervo，再跑 Python harness。
 #
 # 覆盖：默认 0600 socket + state token、MCP 默认只读、input/tabs/destructive
 # 默认拒绝、热授权/收紧、master 关闭移除 socket、错误 token、启动关闭、
 # 无 XDG_RUNTIME_DIR 的 state-dir fallback。
 #
 # 用法：
-#   TERVO_BIN=$PWD/.target-scheduled-mcp/debug/tervo ./scripts/e2e_mcp_settings.sh
+#   XTERVO_BIN=$PWD/.target-scheduled-mcp/debug/xtervo ./scripts/e2e_mcp_settings.sh
 set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$ROOT"
@@ -20,8 +20,8 @@ if [ -z "$XVFB" ]; then
 fi
 [ -x "$XVFB" ] || XVFB=$(command -v Xvfb || true)
 [ -x "$XVFB" ] || { echo "Xvfb not found" >&2; exit 2; }
-BIN=${TERVO_BIN:-$ROOT/target/release/tervo}
-[ -x "$BIN" ] || { echo "TERVO_BIN not executable: $BIN" >&2; exit 2; }
+BIN=${XTERVO_BIN:-$ROOT/target/release/xtervo}
+[ -x "$BIN" ] || { echo "XTERVO_BIN not executable: $BIN" >&2; exit 2; }
 DISPLAY_NUM=${E2E_DISPLAY:-:219}
 if DISPLAY=$DISPLAY_NUM xdpyinfo >/dev/null 2>&1; then
   echo "display $DISPLAY_NUM already in use" >&2
@@ -34,5 +34,5 @@ cleanup() {
 }
 trap cleanup EXIT
 for _ in $(seq 1 100); do DISPLAY=$DISPLAY_NUM xdpyinfo >/dev/null 2>&1 && break; sleep 0.05; done
-DISPLAY=$DISPLAY_NUM E2E_OUT="$OUT" TERVO_BIN="$BIN" \
+DISPLAY=$DISPLAY_NUM E2E_OUT="$OUT" XTERVO_BIN="$BIN" \
   python3 "$ROOT/scripts/e2e_mcp_settings.py"

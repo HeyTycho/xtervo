@@ -1,13 +1,13 @@
-//! Adapter from the terminal snapshot ([`tervo_core::Frame`]) to the immutable draw scene.
+//! Adapter from the terminal snapshot ([`xtervo_core::Frame`]) to the immutable draw scene.
 //!
-//! This module is the only place in `tervo-scene` that knows about the terminal core. It is
+//! This module is the only place in `xtervo-scene` that knows about the terminal core. It is
 //! enabled by the default `frame` feature; disable default features to build the pure
 //! graphics/scene contract without a terminal dependency.
 //!
 //! The conversion follows the legacy CPU renderer's *semantics* (selection is an inverse swap,
 //! search uses the documented highlight colors, inverse cells are resolved before selection)
 //! but never copies the full framebuffer and never copies RGBA image data: images are
-//! represented only by [`tervo_graphics::SourceId`], crop/destination geometry and placement
+//! represented only by [`xtervo_graphics::SourceId`], crop/destination geometry and placement
 //! metadata.
 //!
 //! # Layer order
@@ -26,10 +26,10 @@
 
 use std::collections::BTreeMap;
 
-use tervo_core::{
+use xtervo_core::{
     flags, CellData, CursorShape as FrameCursorShape, Frame, InlineImage, Span as FrameSpan,
 };
-use tervo_graphics::{CompositePolicy, PlacementId, Rect, RowId, SourceId};
+use xtervo_graphics::{CompositePolicy, PlacementId, Rect, RowId, SourceId};
 
 use crate::{
     BackgroundInstance, CursorInstance, CursorShape, CursorState, DamageRect, DamageRegion,

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! 同进程多窗口：`tervo --window` / 第二次 `tervo` 调用 / Ctrl+Shift+N /
+//! 同进程多窗口：`xtervo --window` / 第二次 `xtervo` 调用 / Ctrl+Shift+N /
 //! `window.new` 的默认落点。
 //!
 //! 每个窗口复用 primary 的 [`crate::runtime::SharedServices`]，只创建自己的
@@ -9,7 +9,7 @@
 //! [`WindowId`]，通过 `runtime::with_window` 显式路由，不共享任何窗口模型。
 //!
 //! 旧的“每个窗口一个子进程”路径只在显式 fallback 时保留：
-//! `TERVO_MULTI_WINDOW_INPROC=0`（或 `TERVO_MULTI_WINDOW_LEGACY=1`）。
+//! `XTERVO_MULTI_WINDOW_INPROC=0`（或 `XTERVO_MULTI_WINDOW_LEGACY=1`）。
 
 use std::time::Duration;
 
@@ -22,13 +22,13 @@ use crate::{MainWindow, TABBAR_H, TABBAR_W};
 
 /// 旧的多进程窗口路径只是显式 fallback；默认（变量不存在或为真）走同进程。
 ///
-/// `TERVO_MULTI_WINDOW_INPROC=0/false/no/off` 或 `TERVO_MULTI_WINDOW_LEGACY=1`
+/// `XTERVO_MULTI_WINDOW_INPROC=0/false/no/off` 或 `XTERVO_MULTI_WINDOW_LEGACY=1`
 /// 时，`window.new` 才会 `current_exe --window` 起子进程。单实例 IPC 仍默认
 /// 开启；legacy 子进程由 `window::new_window_command` 显式绕过锁。
 pub fn legacy_fallback() -> bool {
     legacy_fallback_from(
-        std::env::var("TERVO_MULTI_WINDOW_LEGACY").ok(),
-        std::env::var("TERVO_MULTI_WINDOW_INPROC").ok(),
+        std::env::var("XTERVO_MULTI_WINDOW_LEGACY").ok(),
+        std::env::var("XTERVO_MULTI_WINDOW_INPROC").ok(),
     )
 }
 
@@ -75,7 +75,7 @@ pub fn create_inproc_window_for(request: OpenWindowRequest) -> Result<WindowId, 
 
 /// 按 v2 快照恢复一个窗口（geometry/maximized/tabs/splits/focus）。
 ///
-/// 恢复路径不依赖 `TERVO_MULTI_WINDOW_INPROC`：产品启动只要有 v2 多窗口
+/// 恢复路径不依赖 `XTERVO_MULTI_WINDOW_INPROC`：产品启动只要有 v2 多窗口
 /// 快照就应恢复全部窗口。单个 Tab 恢复失败由 `crate::restore_window_snapshot`
 /// 跳过；一个都没成功时回退一个普通新 Tab，不让整机启动失败。
 pub fn create_inproc_window_restored(
@@ -86,7 +86,7 @@ pub fn create_inproc_window_restored(
 
 /// 去掉历史累积的 `— <数字>` 后缀，得到窗口的基础标题。
 ///
-/// 只在后缀是纯数字时裁剪，用户自己的 `--title "Tervo — dev"` 不会被误伤。
+/// 只在后缀是纯数字时裁剪，用户自己的 `--title "xtervo — dev"` 不会被误伤。
 fn base_window_title(title: &str) -> &str {
     let mut current = title.trim_end();
     while let Some((head, tail)) = current.rsplit_once(" — ") {
@@ -115,9 +115,9 @@ fn create_inproc_window_impl(
         .ok_or_else(|| "no active window".to_string())?;
     let mut opts = opts;
     opts.window = true;
-    // 多窗口统一标题：`WM_NAME` 只保留基础名（默认 `Tervo`）。旧行为把内部
+    // 多窗口统一标题：`WM_NAME` 只保留基础名（默认 `xtervo`）。旧行为把内部
     // `WindowId` 拼进标题，且每个新窗口又克隆“当前活动窗口”的 opts，于是每开一个
-    // 窗口就自我累积成 `Tervo — 2 — 3 …`，任务栏/Alt-Tab 里很吵。
+    // 窗口就自我累积成 `xtervo — 2 — 3 …`，任务栏/Alt-Tab 里很吵。
     opts.title = base_window_title(&opts.title).to_string();
     let cell = (fonts.cell_w, fonts.cell_h);
     // v2 快照有像素几何时按快照开窗；v1/未知几何回退字符网格默认尺寸。
@@ -161,7 +161,7 @@ fn create_inproc_window_impl(
         .or_else(|| std::env::var("SLINT_BACKEND").ok())
         .unwrap_or_else(|| "winit-software".to_string());
     crate::render_probe::install_for(window_id, &ui.window(), &backend, false);
-    let settings_legacy = std::env::var("TERVO_SETTINGS_LEGACY")
+    let settings_legacy = std::env::var("XTERVO_SETTINGS_LEGACY")
         .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
         .unwrap_or(false);
     ui.set_settings_legacy(settings_legacy);
@@ -325,12 +325,12 @@ mod tests {
 
     #[test]
     fn window_title_drops_accumulated_id_suffixes() {
-        assert_eq!(base_window_title("Tervo"), "Tervo");
-        assert_eq!(base_window_title("Tervo — 2"), "Tervo");
-        assert_eq!(base_window_title("Tervo — 2 — 3"), "Tervo");
+        assert_eq!(base_window_title("xtervo"), "xtervo");
+        assert_eq!(base_window_title("xtervo — 2"), "xtervo");
+        assert_eq!(base_window_title("xtervo — 2 — 3"), "xtervo");
         // 用户自定义标题里的非数字后缀保留
-        assert_eq!(base_window_title("Tervo — dev"), "Tervo — dev");
+        assert_eq!(base_window_title("xtervo — dev"), "xtervo — dev");
         assert_eq!(base_window_title("My — terminal — 12"), "My — terminal");
-        assert_eq!(base_window_title("Tervo — 2 "), "Tervo");
+        assert_eq!(base_window_title("xtervo — 2 "), "xtervo");
     }
 }

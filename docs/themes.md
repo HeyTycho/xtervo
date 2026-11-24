@@ -19,7 +19,7 @@
 也可以把 `auto_dark` / `auto_light` 指向任意主题（内置或自定义）。
 
 ```toml
-# ~/.config/tervo/config.toml
+# ~/.config/xtervo/config.toml
 theme = "auto"
 auto_dark = "custom:my-dark"    # 可选；省略 = Yaru Dark
 auto_light = "custom:my-light"  # 可选；省略时优先用 auto_dark 的 pair，再退回 Yaru Light
@@ -27,7 +27,7 @@ auto_light = "custom:my-light"  # 可选；省略时优先用 auto_dark 的 pair
 
 ## 2. 自定义主题目录
 
-把主题文件放进 `~/.config/tervo/themes/`（`TERVO_THEMES_DIR` 可覆盖目录），重启应用生效。
+把主题文件放进 `~/.config/xtervo/themes/`（`XTERVO_THEMES_DIR` 可覆盖目录），重启应用生效。
 **一个文件 = 一个主题**；id 由文件名生成：`custom:<slug>`，slug = 小写、空格/符号折成 `-`。
 例如 `Dracula.itermcolors` → `theme = "custom:dracula"`。
 
@@ -41,7 +41,7 @@ auto_light = "custom:my-light"  # 可选；省略时优先用 auto_dark 的 pair
 | `.Xresources` / `.txt` / 无后缀 | Xresources | `*.foreground` / `*.background` / `*.color0..15`，Tabby 社区配色同格式 |
 | `.toml` | Alacritty TOML | 含 `[colors.primary]` / `[colors.normal]` / `[colors.bright]` |
 | `.yaml` / `.yml` | 简单配色 YAML | `name` / `foreground` / `background` / `cursor` / `colors:` 16 项列表（Catppuccin、Rosé Pine 的 Tabby 片段） |
-| `.toml` | tervo 完整主题 | 可精确控制 11 个界面颜色 + 声明 `pair` 深浅配对 |
+| `.toml` | xtervo 完整主题 | 可精确控制 11 个界面颜色 + 声明 `pair` 深浅配对 |
 
 导入格式只带终端 16 色 + 前景/背景/光标；**界面 chrome 颜色由应用自动推导**
 （背景分层、边框、accent 取蓝色/青色、危险色取红色），不会出现“终端换了、标签栏没换”。
@@ -56,15 +56,15 @@ auto_light = "custom:my-light"  # 可选；省略时优先用 auto_dark 的 pair
 <https://github.com/mbadolato/iTerm2-Color-Schemes>
 
 ```bash
-mkdir -p ~/.config/tervo/themes
+mkdir -p ~/.config/xtervo/themes
 
 # 单个 iTerm2 主题
-curl -L -o ~/.config/tervo/themes/Dracula.itermcolors \
+curl -L -o ~/.config/xtervo/themes/Dracula.itermcolors \
   https://raw.githubusercontent.com/mbadolato/iTerm2-Color-Schemes/master/schemes/Dracula.itermcolors
 
 # 批量：把整个 kitty 目录拿下来（每个 .conf 一套）
 git clone --depth 1 https://github.com/mbadolato/iTerm2-Color-Schemes /tmp/iterm2-themes
-cp /tmp/iterm2-themes/kitty/*.conf ~/.config/tervo/themes/
+cp /tmp/iterm2-themes/kitty/*.conf ~/.config/xtervo/themes/
 # 也可以把 windowsterminal/*.json、xresources/*、alacritty/*.toml 复制进去
 ```
 
@@ -74,7 +74,7 @@ cp /tmp/iterm2-themes/kitty/*.conf ~/.config/tervo/themes/
 直接把单个 `.yaml` / `.yml` 放进主题目录即可（不要把整个 Tabby `config.yaml` 放进来）：
 
 ```bash
-curl -L -o ~/.config/tervo/themes/catppuccin-mocha.yaml \
+curl -L -o ~/.config/xtervo/themes/catppuccin-mocha.yaml \
   https://raw.githubusercontent.com/catppuccin/tabby/main/themes/catppuccin-mocha.yaml
 ```
 
@@ -86,7 +86,7 @@ curl -L -o ~/.config/tervo/themes/catppuccin-mocha.yaml \
 Gogh 的安装脚本不是主题文件；从它的仓库里拿单个 `.itermcolors`、`.conf` 或 `.Xresources`
 放进主题目录即可。<https://github.com/Gogh-Co/Gogh>
 
-## 4. tervo 完整主题格式（可选，控制界面颜色）
+## 4. xtervo 完整主题格式（可选，控制界面颜色）
 
 只有需要精确控制标签栏/菜单颜色、或声明深浅 `pair` 时才需要手写。完整示例：
 
@@ -130,4 +130,4 @@ danger = "#f38ba8"
 - Windows Terminal 一个 JSON 里有多套 `schemes` 时只取第一套；要全用就拆成多个文件。
 - YAML 只支持简单配色片段；完整的 Tabby `config.yaml` 请先取出 `colorScheme` 部分。
 - 应用启动时若主题文件有错，会在 stderr 打 `[theme] ...`；主题目录默认在
-  `~/.config/tervo/themes/`，也可用 `TERVO_THEMES_DIR` 指向别处。
+  `~/.config/xtervo/themes/`，也可用 `XTERVO_THEMES_DIR` 指向别处。

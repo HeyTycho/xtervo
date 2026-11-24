@@ -3,7 +3,7 @@
 //!
 //! 只保存展示所需字段（Profile 名、host、user、port、时间），**绝不保存**
 //! 密码、私钥口令、Vault 内容或完整命令行。文件默认
-//! `~/.config/tervo/history.toml`，`TERVO_HISTORY` 可覆盖（测试/多实例）。
+//! `~/.config/xtervo/history.toml`，`XTERVO_HISTORY` 可覆盖（测试/多实例）。
 //!
 //! 记录按“同一 Profile 或同一 host/user/port”去重，最新在前，最多
 //! [`MAX_ENTRIES`] 条；读盘失败/文件损坏时返回空历史，不阻塞连接。
@@ -70,7 +70,7 @@ impl Default for ConnectionHistory {
 
 impl ConnectionHistory {
     pub fn path() -> PathBuf {
-        if let Ok(path) = std::env::var("TERVO_HISTORY") {
+        if let Ok(path) = std::env::var("XTERVO_HISTORY") {
             return PathBuf::from(path);
         }
         let base = std::env::var("XDG_CONFIG_HOME")
@@ -78,7 +78,7 @@ impl ConnectionHistory {
             .unwrap_or_else(|_| {
                 PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into())).join(".config")
             });
-        base.join("tervo").join("history.toml")
+        base.join("xtervo").join("history.toml")
     }
 
     pub fn load() -> Self {
@@ -238,7 +238,7 @@ mod tests {
     #[test]
     fn roundtrip_and_no_credentials_in_file() {
         let dir = std::env::temp_dir().join(format!(
-            "tervo-history-test-{}-{}",
+            "xtervo-history-test-{}-{}",
             std::process::id(),
             now_ms()
         ));

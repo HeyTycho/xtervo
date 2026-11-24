@@ -17,7 +17,7 @@ use super::issue::render_issue;
 use super::redact::redact_text;
 
 /// Versioned schema id for the whole case document.
-pub const DIAGNOSTIC_CASE_SCHEMA: &str = "tervo.diagnostic_case.v1";
+pub const DIAGNOSTIC_CASE_SCHEMA: &str = "xtervo.diagnostic_case.v1";
 const MAX_USER_TEXT_CHARS: usize = 2_000;
 const MAX_REPRO_STEPS: usize = 20;
 
@@ -288,7 +288,7 @@ impl Symptom {
     }
 }
 
-/// Environment as supplied by `tervo diag env --json`, process env or explicit
+/// Environment as supplied by `xtervo diag env --json`, process env or explicit
 /// CLI flags. Every field is optional: absent is not the same as default.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Environment {

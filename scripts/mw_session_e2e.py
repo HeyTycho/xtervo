@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Black-box acceptance for multi-window session v2 save/restore.
 
-Driven by ``scripts/e2e_multi_window_session.sh``. Starts the real ``tervo``
+Driven by ``scripts/e2e_multi_window_session.sh``. Starts the real ``xtervo``
 binary under Xvfb (+ Openbox for a real WM), drives it through the existing live
 control socket, moves/maximizes native windows through the ``xwin`` helper, and
 verifies the on-disk v2 snapshot plus the restored windows after kill -9.
@@ -150,7 +150,7 @@ def start_app(
     log_path = run_dir / "logs" / log_name
     # AF_UNIX sun_path 上限 108 字节；worktree 下的 target 路径太长，socket 放 /tmp。
     socket_path = pathlib.Path("/tmp") / (
-        f"tervo-mws-{os.getpid()}-{name}-{int(time.time() * 1000)}.sock"
+        f"xtervo-mws-{os.getpid()}-{name}-{int(time.time() * 1000)}.sock"
     )
     try:
         socket_path.unlink()
@@ -163,24 +163,24 @@ def start_app(
             "XDG_RUNTIME_DIR": str(run_dir / "runtime"),
             "XDG_CONFIG_HOME": str(run_dir / "confighome"),
             "XDG_STATE_HOME": str(run_dir / "state"),
-            "TERVO_CONFIG": str(run_dir / "config.toml"),
-            "TERVO_LOG_DIR": str(run_dir / "logs"),
-            "TERVO_SESSION": str(run_dir / "session.json"),
-            "TERVO_PROFILES": str(run_dir / "profiles.toml"),
-            "TERVO_PLUGINS": str(run_dir / "plugins"),
-            "TERVO_DIAG_SOCKET": str(socket_path),
-            "TERVO_DIAG_TOKEN": TOKEN,
-            "TERVO_DIAG_ALLOW_WRITE": "1",
-            "TERVO_DIAG_ALLOW_DESTRUCTIVE": "1",
+            "XTERVO_CONFIG": str(run_dir / "config.toml"),
+            "XTERVO_LOG_DIR": str(run_dir / "logs"),
+            "XTERVO_SESSION": str(run_dir / "session.json"),
+            "XTERVO_PROFILES": str(run_dir / "profiles.toml"),
+            "XTERVO_PLUGINS": str(run_dir / "plugins"),
+            "XTERVO_DIAG_SOCKET": str(socket_path),
+            "XTERVO_DIAG_TOKEN": TOKEN,
+            "XTERVO_DIAG_ALLOW_WRITE": "1",
+            "XTERVO_DIAG_ALLOW_DESTRUCTIVE": "1",
             "SLINT_BACKEND": "winit-software",
             "XMODIFIERS": "@im=none",
         }
     )
     if inproc:
-        env["TERVO_MULTI_WINDOW_INPROC"] = "1"
+        env["XTERVO_MULTI_WINDOW_INPROC"] = "1"
     else:
-        env.pop("TERVO_MULTI_WINDOW_INPROC", None)
-    env.pop("TERVO_MULTI_WINDOW_SECOND", None)
+        env.pop("XTERVO_MULTI_WINDOW_INPROC", None)
+    env.pop("XTERVO_MULTI_WINDOW_SECOND", None)
     log = open(log_path, "ab", buffering=0)
     cmd = [
         args.bin,
@@ -225,7 +225,7 @@ def x11_windows(display: str, pid: int) -> dict[str, str]:
     candidates = []
     for line in out.splitlines():
         match = re.search(r'(0x[0-9a-f]+) "([^"]*)"', line)
-        if match and "Tervo" in match.group(2):
+        if match and "xtervo" in match.group(2):
             candidates.append((match.group(1), match.group(2)))
     by_title: dict[str, str] = {}
     for win, title in candidates:
@@ -246,7 +246,7 @@ def x11_windows(display: str, pid: int) -> dict[str, str]:
 
 
 def x11_window_ids(display: str, pid: int) -> list[str]:
-    """同进程多窗口标题统一为 Tervo；按 _NET_WM_PID 返回排序后的 XID 列表。"""
+    """同进程多窗口标题统一为 xtervo；按 _NET_WM_PID 返回排序后的 XID 列表。"""
     out = subprocess.check_output(
         ["xwininfo", "-root", "-tree"],
         env={**os.environ, "DISPLAY": display},
@@ -255,7 +255,7 @@ def x11_window_ids(display: str, pid: int) -> list[str]:
     ids: list[str] = []
     for line in out.splitlines():
         match = re.search(r'(0x[0-9a-f]+) "([^"]*)"', line)
-        if not match or "Tervo" not in match.group(2):
+        if not match or "xtervo" not in match.group(2):
             continue
         win = match.group(1)
         prop = subprocess.run(
@@ -444,7 +444,7 @@ def main() -> int:
 
         # 最后一个窗口正常关闭：事件循环退出、最终保存、running marker 清除。
         wins = x11_window_ids(args.display, app.proc.pid)
-        assert wins, "no Tervo window after restore"
+        assert wins, "no xtervo window after restore"
         xwin(args, wins[0], "--close")
         wait_for(
             lambda: app.proc.poll() is not None,

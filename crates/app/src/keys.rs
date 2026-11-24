@@ -23,7 +23,7 @@
 //! - IME：仅 X11/XIM 路径（隐藏 TextInput 宿主），Wayland text-input-v3、
 //!   preedit 候选窗定位、多字符 commit → 快捷键等缺口见限制文档。
 
-use tervo_core::KeyboardFlags;
+use xtervo_core::KeyboardFlags;
 
 use crate::commands::{Chord, Mods};
 

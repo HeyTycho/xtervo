@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-only
 #
 # 单进程多窗口（Phase 2）黑盒验收：
-#   - TERVO_MULTI_WINDOW_INPROC=1 + TERVO_MULTI_WINDOW_SECOND=1 启动两个 MainWindow
+#   - XTERVO_MULTI_WINDOW_INPROC=1 + XTERVO_MULTI_WINDOW_SECOND=1 启动两个 MainWindow
 #   - 两个窗口独立 tabs/panes/focus/models；pane id 全局唯一
 #   - 关掉 B 后 A 继续可用，进程不退出
 #   - 插件进程只有一份、MCP live socket 只有一个
@@ -19,7 +19,7 @@ OUT=${E2E_OUT:-$ROOT/target/multi-window-e2e}
 DISPLAY_NUM=${E2E_DISPLAY:-:151}
 SCREEN=${E2E_SCREEN:-1280x800x24}
 TARGET_DIR=${CARGO_TARGET_DIR:-$ROOT/target}
-BIN=${TERVO_BIN:-$TARGET_DIR/debug/tervo}
+BIN=${XTERVO_BIN:-$TARGET_DIR/debug/xtervo}
 XWIN=${E2E_XWIN:-$TARGET_DIR/debug/xwin}
 TOKEN="mw-e2e-token"
 
@@ -37,14 +37,14 @@ trap cleanup EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
 pass() { echo "PASS: $*"; }
 
-[ -x "$BIN" ] || fail "缺少 $BIN；先 cargo build -p tervo-app --bin tervo --bin xwin"
+[ -x "$BIN" ] || fail "缺少 $BIN；先 cargo build -p xtervo-app --bin xtervo --bin xwin"
 [ -x "$XWIN" ] || fail "缺少 $XWIN"
 command -v xdpyinfo >/dev/null || fail "缺少 xdpyinfo"
 command -v xwininfo >/dev/null || fail "缺少 xwininfo"
 
 COMMON=$(git rev-parse --git-common-dir)
 MAIN_ROOT=$(cd "$(dirname "$COMMON")" && pwd)
-PERF=${TERVO_PERF_DIR:-$MAIN_ROOT/.perf}
+PERF=${XTERVO_PERF_DIR:-$MAIN_ROOT/.perf}
 XVFB=${E2E_XVFB:-$PERF/xvfb/usr/bin/Xvfb}
 [ -x "$XVFB" ] || XVFB=$(command -v Xvfb || true)
 [ -x "$XVFB" ] || fail "找不到 Xvfb"
@@ -69,7 +69,7 @@ DISPLAY="$DISPLAY_NUM" xdpyinfo >/dev/null 2>&1 || fail "Xvfb 启动失败（$OU
 cat >"$OUT/plugins/mwprobe/plugin.toml" <<'TOML'
 api = 3
 host_abi = 3
-id = "dev.tervo.mwprobe"
+id = "dev.xtervo.mwprobe"
 name = "MW Probe"
 version = "1.0.0"
 runtime = "process"
@@ -95,7 +95,7 @@ chmod +x "$OUT/plugins/mwprobe/plugin.py"
 cat >"$OUT/config/plugins-v3-state.toml" <<'TOML'
 version = 1
 
-[plugins."dev.tervo.mwprobe"]
+[plugins."dev.xtervo.mwprobe"]
 enabled = true
 permissions_approved = true
 permissions = []
@@ -105,20 +105,20 @@ export DISPLAY="$DISPLAY_NUM"
 export XDG_RUNTIME_DIR="$OUT/runtime"
 export XDG_CONFIG_HOME="$OUT/config"
 export XDG_STATE_HOME="$OUT/state"
-export TERVO_CONFIG="$OUT/cfg.toml"
-export TERVO_LOG_DIR="$OUT/logs"
-export TERVO_SESSION="$OUT/session.json"
-export TERVO_PROFILES="$OUT/profiles.toml"
-export TERVO_PLUGINS="$OUT/plugins"
-export TERVO_DIAG_SOCKET="$OUT/live.sock"
-export TERVO_DIAG_TOKEN="$TOKEN"
-export TERVO_DIAG_ALLOW_WRITE=1
-export TERVO_DIAG_ALLOW_DESTRUCTIVE=1
+export XTERVO_CONFIG="$OUT/cfg.toml"
+export XTERVO_LOG_DIR="$OUT/logs"
+export XTERVO_SESSION="$OUT/session.json"
+export XTERVO_PROFILES="$OUT/profiles.toml"
+export XTERVO_PLUGINS="$OUT/plugins"
+export XTERVO_DIAG_SOCKET="$OUT/live.sock"
+export XTERVO_DIAG_TOKEN="$TOKEN"
+export XTERVO_DIAG_ALLOW_WRITE=1
+export XTERVO_DIAG_ALLOW_DESTRUCTIVE=1
 export SLINT_BACKEND=winit-software
 export XMODIFIERS=@im=none
 
 # ---------------------------------------------------------------- multi window
-TERVO_MULTI_WINDOW_INPROC=1 TERVO_MULTI_WINDOW_SECOND=1 \
+XTERVO_MULTI_WINDOW_INPROC=1 XTERVO_MULTI_WINDOW_SECOND=1 \
     "$BIN" --cols 80 --rows 24 --shell /bin/sh \
     >"$OUT/app.log" 2>&1 &
 APP_PID=$!
@@ -158,11 +158,11 @@ TOML
 
 export XDG_RUNTIME_DIR="$REC/runtime"
 export XDG_CONFIG_HOME="$REC/config"
-export TERVO_CONFIG="$REC/config/config.toml"
-export TERVO_LOG_DIR="$REC/logs"
-export TERVO_SESSION="$REC/session.json"
-export TERVO_DIAG_SOCKET="$REC/live.sock"
-unset TERVO_MULTI_WINDOW_INPROC TERVO_MULTI_WINDOW_SECOND SLINT_BACKEND
+export XTERVO_CONFIG="$REC/config/config.toml"
+export XTERVO_LOG_DIR="$REC/logs"
+export XTERVO_SESSION="$REC/session.json"
+export XTERVO_DIAG_SOCKET="$REC/live.sock"
+unset XTERVO_MULTI_WINDOW_INPROC XTERVO_MULTI_WINDOW_SECOND SLINT_BACKEND
 
 start_recovery() {
     "$BIN" --cols 80 --rows 24 --shell /bin/sh \

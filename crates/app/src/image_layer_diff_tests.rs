@@ -6,7 +6,7 @@
 //! 整屏参考渲染逐像素比较。任何图片 placement/row/crop 计算的偏差都会表现
 //! 为像素不一致，而不是依赖 dsh 的真实会话才能暴露。
 
-use tervo_core::{CellData, Frame, ImageCrop, ImagePlacementMeta, InlineImage, LineDamage, Theme};
+use xtervo_core::{CellData, Frame, ImageCrop, ImagePlacementMeta, InlineImage, LineDamage, Theme};
 
 use crate::render::Renderer;
 use crate::test_support::require_test_fonts;

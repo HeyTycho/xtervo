@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! Tervo Plugin API v3 manifest。
+//! xtervo Plugin API v3 manifest。
 //!
 //! v3 是唯一受支持的插件协议：`api = 3` 且 `host_abi = 3`。v1/v2 清单不会进入
 //! 任何执行路径，只会在设置页以 `unsupported` 展示并给出迁移提示。
@@ -84,7 +84,7 @@ pub struct TerminalPermissions {
 ///
 /// 宿主能真正 gate 的是宿主 mediated API（terminal_context / terminal_write /
 /// clipboard）。`filesystem`、`network`、`process`、`credentials` 只是声明和
-/// 用户确认时展示的信息，Tervo 没有 OS 级沙箱去阻止插件直接使用这些能力。
+/// 用户确认时展示的信息，xtervo 没有 OS 级沙箱去阻止插件直接使用这些能力。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Permissions {
@@ -705,7 +705,7 @@ mod tests {
     const GOOD: &str = r#"
 api = 3
 host_abi = 3
-id = "dev.tervo.echo"
+id = "dev.xtervo.echo"
 name = "Echo"
 version = "1.0.0"
 runtime = "process"
@@ -745,7 +745,7 @@ title = "Greet"
         assert_eq!(manifest.api, 3);
         assert_eq!(manifest.host_abi, 3);
         assert!(manifest.panel("main"));
-        assert_eq!(manifest.full_command_id("greet"), "plugin.dev.tervo.echo.greet");
+        assert_eq!(manifest.full_command_id("greet"), "plugin.dev.xtervo.echo.greet");
         assert_eq!(
             manifest.permission_fingerprint(),
             vec![
@@ -829,7 +829,7 @@ title = "Greet"
 
     #[test]
     fn id_rejects_unsafe_characters() {
-        assert!(validate_id("dev.tervo.echo-1", "id").is_ok());
+        assert!(validate_id("dev.xtervo.echo-1", "id").is_ok());
         assert!(validate_id("1plugin", "id").is_ok());
         assert!(validate_id("../evil", "id").is_err());
         assert!(validate_id("bad id", "id").is_err());
@@ -847,7 +847,7 @@ title = "Greet"
     const WASM: &str = r#"
 api = 3
 host_abi = 3
-id = "dev.tervo.wasm-filter"
+id = "dev.xtervo.wasm-filter"
 name = "WASM filter"
 version = "1.0.0"
 runtime = "wasm"
@@ -927,7 +927,7 @@ output_filter = true
         assert!(err.contains(".wasm"), "{err}");
 
         let dir = std::env::temp_dir().join(format!(
-            "tervo-wasm-entry-{}-{}",
+            "xtervo-wasm-entry-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

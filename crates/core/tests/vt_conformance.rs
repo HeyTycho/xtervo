@@ -7,7 +7,7 @@
 use std::time::{Duration, Instant};
 
 use alacritty_terminal::term::TermMode;
-use tervo_core::{flags, spawn, Frame, PaneConfig, PaneHandle};
+use xtervo_core::{flags, spawn, Frame, PaneConfig, PaneHandle};
 
 fn run(script: &str) -> (PaneHandle, Box<Frame>) {
     let handle = spawn(PaneConfig {
@@ -175,7 +175,7 @@ fn title_event_and_grid_coexist() {
     assert_eq!(cell_text(&frame, 0, 0), "B");
     let mut got_title = false;
     while let Some(ev) = handle.try_event() {
-        if let tervo_core::CoreEvent::Title(t) = ev {
+        if let xtervo_core::CoreEvent::Title(t) = ev {
             assert_eq!(t, "vt-conformance-title");
             got_title = true;
         }

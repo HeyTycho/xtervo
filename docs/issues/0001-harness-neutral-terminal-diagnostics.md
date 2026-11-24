@@ -2,7 +2,7 @@
 
 ## 背景
 
-Tervo 的终端问题经常只在特定 TUI/harness 下出现：
+xtervo 的终端问题经常只在特定 TUI/harness 下出现：
 
 - Sixel/IIP 图片位置、裁剪、ECH 擦除；
 - cell 像素尺寸查询（`CSI 16t/14t`）导致的低清/错位；
@@ -23,15 +23,15 @@ Tervo 的终端问题经常只在特定 TUI/harness 下出现：
 ### 1. MCP tools
 
 ```text
-tervo.capabilities     版本、只读、限制、截图/trace 能力
-tervo.list_panes       pane id/title/kind/active/尺寸
-tervo.read_pane        文本、光标、模式、scroll offset（限长）
-tervo.snapshot         文本 + cell 属性摘要 + cursor/modes/scroll
-tervo.screenshot       PNG（MCP image content；仅显式请求）
-tervo.image_info       image id/row/col/width/height/协议
-tervo.get_trace        JSONL 事件（PTY/escape/frame/image/damage）
-tervo.search_pane      只读搜索
-tervo.replay_trace     无 UI 回放 trace，输出 frame/图片断言
+xtervo.capabilities     版本、只读、限制、截图/trace 能力
+xtervo.list_panes       pane id/title/kind/active/尺寸
+xtervo.read_pane        文本、光标、模式、scroll offset（限长）
+xtervo.snapshot         文本 + cell 属性摘要 + cursor/modes/scroll
+xtervo.screenshot       PNG（MCP image content；仅显式请求）
+xtervo.image_info       image id/row/col/width/height/协议
+xtervo.get_trace        JSONL 事件（PTY/escape/frame/image/damage）
+xtervo.search_pane      只读搜索
+xtervo.replay_trace     无 UI 回放 trace，输出 frame/图片断言
 ```
 
 第一版 **不做** input/paste/send-key/执行命令，避免把“诊断”变成“远程控制”。
@@ -39,14 +39,14 @@ tervo.replay_trace     无 UI 回放 trace，输出 frame/图片断言
 ### 2. CLI 兜底
 
 ```bash
-tervo diag --json                     # 环境、版本、配置、日志路径、pane 列表
-tervo diag snapshot --pane 0 --json   # frame/cursor/modes/scroll
-tervo diag screenshot --out shot.png
-tervo diag trace --out trace.jsonl    # 限时/限大小
-tervo diag replay trace.jsonl --json  # 确定性回放
+xtervo diag --json                     # 环境、版本、配置、日志路径、pane 列表
+xtervo diag snapshot --pane 0 --json   # frame/cursor/modes/scroll
+xtervo diag screenshot --out shot.png
+xtervo diag trace --out trace.jsonl    # 限时/限大小
+xtervo diag replay trace.jsonl --json  # 确定性回放
 ```
 
-现有 `tervo --diagnose` 只打印环境/最近日志，扩展它而不是再造一套。
+现有 `xtervo --diagnose` 只打印环境/最近日志，扩展它而不是再造一套。
 
 ### 3. Trace schema v1
 
@@ -76,21 +76,21 @@ tervo diag replay trace.jsonl --json  # 确定性回放
 | Claude Code | MCP stdio | `.mcp.json` / `claude mcp add` 配置片段 |
 | Codex CLI | MCP stdio | `~/.codex/config.toml` MCP 配置片段 |
 | DSH / dsh-tui | MCP stdio | 配置片段；不依赖 dsh 私有插件 |
-| 无 MCP 的 harness | CLI | `tervo diag ... --json` 由 harness 调 shell |
+| 无 MCP 的 harness | CLI | `xtervo diag ... --json` 由 harness 调 shell |
 
-每个 harness 只提供“如何启动/授权 Tervo MCP”的文档与 e2e 配置，不复制终端实现。
+每个 harness 只提供“如何启动/授权 xtervo MCP”的文档与 e2e 配置，不复制终端实现。
 
 ## 安全
 
 - 默认关闭；Settings 显式启用“诊断接口（只读）”。
-- 本地 Unix socket（`$XDG_RUNTIME_DIR/tervo/diag.sock`，0600），一次性 token，可撤销。
+- 本地 Unix socket（`$XDG_RUNTIME_DIR/xtervo/diag.sock`，0600），一次性 token，可撤销。
 - MCP server 只读；无 shell/命令/任意文件访问。
 - 截图/trace 可能包含终端内容，UI 明确提示；不自动上传。
 - 输出限长、限速率；日志不写 prompt/凭据/终端正文。
 
 ## 验收
 
-- [ ] `tervo diag --json` 可在任意 harness 的 shell 内运行
+- [ ] `xtervo diag --json` 可在任意 harness 的 shell 内运行
 - [ ] MCP `initialize` / `tools/list` / `tools/call` 通过
 - [ ] `snapshot` 与当前 frame/cursor/modes/scroll 一致
 - [ ] `image_info` 与 Sixel/IIP overlay rect 一致（含滚动 offset）
@@ -110,12 +110,12 @@ tervo diag replay trace.jsonl --json  # 确定性回放
 
 ## 当前进度
 
-- 阶段 A 已落地：CLI env/snapshot/replay/trace、MCP stdio（env/snapshot/replay）、显式 opt-in live control socket + live MCP 工具，`tervo.diag.v1`，见 `docs/DIAGNOSTICS.md`。
+- 阶段 A 已落地：CLI env/snapshot/replay/trace、MCP stdio（env/snapshot/replay）、显式 opt-in live control socket + live MCP 工具，`xtervo.diag.v1`，见 `docs/DIAGNOSTICS.md`。
 - 未完成：真实 PTY 事件级 trace、screenshot、token/权限 e2e、真实 harness 配置 e2e。
 
 ## 实现阶段
 
-1. `tervo diag` CLI + trace schema + snapshot/replay（无 GUI 可测）
+1. `xtervo diag` CLI + trace schema + snapshot/replay（无 GUI 可测）
 2. app 内只读控制 socket + MCP stdio server
 3. harness 配置文档 + e2e（至少 CLI + 一个真实 MCP client）
 4. 可选：截图/trace UI 导出

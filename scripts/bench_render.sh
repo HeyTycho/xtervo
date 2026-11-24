@@ -15,9 +15,9 @@ cd "$(dirname "$0")/.."
 export CARGO_HOME="${CARGO_HOME:-$PWD/.cargo}"
 PROFILE=${PROFILE:-release}
 if [ "$PROFILE" = "release" ]; then
-    cargo test --release --offline -p tervo-app --bin tervo render_damage_benchmark \
+    cargo test --release --offline -p xtervo-app --bin xtervo render_damage_benchmark \
         -- --ignored --nocapture
 else
-    cargo test --offline -p tervo-app --bin tervo render_damage_benchmark \
+    cargo test --offline -p xtervo-app --bin xtervo render_damage_benchmark \
         -- --ignored --nocapture
 fi

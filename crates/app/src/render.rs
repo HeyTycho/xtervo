@@ -19,7 +19,7 @@
 
 use std::rc::Rc;
 
-use tervo_core::{flags, CellData, CursorShape, Frame, ImageCrop, Span};
+use xtervo_core::{flags, CellData, CursorShape, Frame, ImageCrop, Span};
 
 use crate::glyph::{
     is_zero_width_control, placeholder_kind, prefers_color_emoji, ColorGlyph, FontSet, Glyph,
@@ -516,7 +516,7 @@ pub struct Renderer {
     pub buffer_growths: u32,
     /// 写入时仍被共享、被迫整块 CoW 的帧数（应为 0；扩到上限仍不足才 >0）。
     pub buffer_detaches: u64,
-    /// 最近一次 `draw`/`image` 的耗时（毫秒，仅用于 TERVO_RENDER_PROFILE 日志）。
+    /// 最近一次 `draw`/`image` 的耗时（毫秒，仅用于 XTERVO_RENDER_PROFILE 日志）。
     pub last_draw_us: f64,
     pub last_image_us: f64,
     /// 最近一次写帧缓冲时是否因为仍被 Slint 共享而 detach（profile 用）。
@@ -1948,7 +1948,7 @@ impl Renderer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tervo_core::Theme;
+    use xtervo_core::Theme;
 
     fn ink(renderer: &Renderer, x0: usize, x1: usize, y0: usize, y1: usize) -> usize {
         let bg = renderer.default_bg;
@@ -2153,7 +2153,7 @@ mod tests {
 
         // 第二帧只声明 row 0 脏，并新增 B；A 必须从上一帧保留下来。
         frame.full = false;
-        frame.damage = vec![tervo_core::LineDamage { line: 0, left: 0, right: 3 }];
+        frame.damage = vec![xtervo_core::LineDamage { line: 0, left: 0, right: 3 }];
         frame.cells[2].ch = 'B' as u32;
         frame.cells[2].fg = 0x00ff_ffff;
         renderer.draw(&frame);
@@ -2185,7 +2185,7 @@ mod tests {
             px[0] = 255;
             px[3] = 255;
         }
-        frame.images.push(tervo_core::InlineImage {
+        frame.images.push(xtervo_core::InlineImage {
             id: 1,
             source_id: 1,
             row_id: 0,
@@ -2228,7 +2228,7 @@ mod tests {
             px[0] = 255;
             px[3] = 255;
         }
-        frame.images.push(tervo_core::InlineImage {
+        frame.images.push(xtervo_core::InlineImage {
             id: 7,
             source_id: 7,
             row_id: 0,
@@ -2259,12 +2259,12 @@ mod tests {
         );
     }
 
-    fn test_image(id: u64, source_id: u64, row: i32, col: u16, px: [u8; 4]) -> tervo_core::InlineImage {
+    fn test_image(id: u64, source_id: u64, row: i32, col: u16, px: [u8; 4]) -> xtervo_core::InlineImage {
         let mut data = vec![0u8; 16 * 16 * 4];
         for pixel in data.chunks_exact_mut(4) {
             pixel.copy_from_slice(&px);
         }
-        tervo_core::InlineImage {
+        xtervo_core::InlineImage {
             id,
             source_id,
             row_id: 0,
@@ -2314,7 +2314,7 @@ mod tests {
             let pixels: Vec<u8> = (0..cell_w * cell_h)
                 .flat_map(|_| [255, 0, 0, 255])
                 .collect();
-            frame.images.push(tervo_core::InlineImage {
+            frame.images.push(xtervo_core::InlineImage {
                 id: 1,
                 source_id: 1,
                 row_id: 0,
@@ -2381,7 +2381,7 @@ mod tests {
         );
         let mut frame = blank_frame(4, 2);
         frame.full = true;
-        frame.images.push(tervo_core::InlineImage {
+        frame.images.push(xtervo_core::InlineImage {
             id: 3,
             source_id: 10,
             row_id: 0,
@@ -2818,7 +2818,7 @@ mod tests {
     fn cursor_frame(cols: usize, rows: usize, line: u16, col: u16) -> Frame {
         let mut frame = blank_frame(cols, rows);
         frame.full = true;
-        frame.cursor = tervo_core::CursorState {
+        frame.cursor = xtervo_core::CursorState {
             line,
             col,
             shape: CursorShape::Block,

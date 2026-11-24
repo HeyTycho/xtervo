@@ -1,22 +1,22 @@
 [Desktop Entry]
 Type=Application
-Name=Tervo
-Name[zh_CN]=Tervo 终端
+Name=xtervo
+Name[zh_CN]=xtervo 终端
 GenericName=Terminal Emulator
 GenericName[zh_CN]=终端模拟器
 Comment=Native terminal emulator written in Rust + Slint
 Comment[zh_CN]=Rust + Slint 原生终端模拟器
-Exec=tervo
-TryExec=tervo
-Icon=tervo
+Exec=xtervo
+TryExec=xtervo
+Icon=xtervo
 Terminal=false
 Categories=System;TerminalEmulator;
 Keywords=terminal;shell;console;
 Keywords[zh_CN]=终端;命令行;控制台;
-StartupWMClass=tervo
+StartupWMClass=xtervo
 Actions=new-window;
 
 [Desktop Action new-window]
 Name=New Window
 Name[zh_CN]=新建窗口
-Exec=tervo --window
+Exec=xtervo --window

@@ -21,7 +21,7 @@ Profile(kind="ssh", transport="plugin")
   超限/半帧都是错误，不静默截断）。
 - 状态机：`connecting → connected → closed / failed / timeout`，可用
   `SshConnectionStatus` 观察；连接状态只记 host/user/原因，不记 payload/密码。
-- 超时：ssh 侧 `ConnectTimeout` + 20s watchdog（`TERVO_PLUGIN_SSH_CONNECT_TIMEOUT_MS`
+- 超时：ssh 侧 `ConnectTimeout` + 20s watchdog（`XTERVO_PLUGIN_SSH_CONNECT_TIMEOUT_MS`
   可覆盖）。超时会杀掉 ssh 并把黄色错误文本显示在 pane 里。
 - 断开：关闭 pane → transport `close` → kill ssh；重复 close 幂等。
 
@@ -48,12 +48,12 @@ auth = "agent"          # POC 支持 agent/key；password 会被明确拒绝
 export CARGO_HOME=$PWD/.cargo CARGO_NET_OFFLINE=true
 
 # 1) 无 GUI：走与 pane 完全相同的 transport，打印远端字节
-TERVO_PROFILES=$PWD/.logs/ssh-poc/profiles.toml \
-  ./target/debug/tervo --plugin-ssh-probe remote-plugin --duration 8
+XTERVO_PROFILES=$PWD/.logs/ssh-poc/profiles.toml \
+  ./target/debug/xtervo --plugin-ssh-probe remote-plugin --duration 8
 
-# 2) GUI：启动即开一个 plugin SSH pane（Xvfb 下可截图；TERVO_PROFILES 同上）
-DISPLAY=:150 TERVO_PLUGIN_SSH_CONNECT=remote-plugin \
-  ./target/debug/tervo --cols 100 --rows 28
+# 2) GUI：启动即开一个 plugin SSH pane（Xvfb 下可截图；XTERVO_PROFILES 同上）
+DISPLAY=:150 XTERVO_PLUGIN_SSH_CONNECT=remote-plugin \
+  ./target/debug/xtervo --cols 100 --rows 28
 
 # 3) 命令：
 #    ssh.connect:<id|name>   （调色板里的 “SSH (plugin): <name>”）
@@ -65,14 +65,14 @@ DISPLAY=:150 TERVO_PLUGIN_SSH_CONNECT=remote-plugin \
 - 本机 `ssh -o BatchMode=yes ssh.example.test` 可通；插件路径 probe 输出
   `Welcome to Ubuntu LTS …` + 远端提示符，退出码 0。见
   `docs/evidence/ssh-plugin-poc/probe-banner.log`。
-- GUI pane（Xvfb :150，`TERVO_PLUGIN_SSH_CONNECT=remote-plugin`）显示
+- GUI pane（Xvfb :150，`XTERVO_PLUGIN_SSH_CONNECT=remote-plugin`）显示
   `[plugin-ssh] 正在连接 demo@ssh.example.test:22 …`、Ubuntu banner 和提示符：
   `docs/evidence/ssh-plugin-poc/pane-banner.png`。
 - 连不上（`127.0.0.1:1`，Connection refused）时 pane 显示红色
   `[plugin-ssh] 连接失败 …（ssh 退出码 255）` + ssh stderr：
   `docs/evidence/ssh-plugin-poc/pane-error.png` /
   `probe-refused.log`（probe 退出码 1）。
-- 单测：`cargo test -p tervo-app --bin tervo ssh_plugin` 10 例（args/password
+- 单测：`cargo test -p xtervo-app --bin xtervo ssh_plugin` 10 例（args/password
   拒绝/banner/失败可见/超时/close 幂等/resize/帧重组/超限帧/kind 归一化）。
 
 ## 5. POC 边界（下一步）

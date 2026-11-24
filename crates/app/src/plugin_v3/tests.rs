@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use serde_json::json;
-use tervo_core::{PaneConfig, PaneHandle};
+use xtervo_core::{PaneConfig, PaneHandle};
 
 use super::manifest::{HOST_ABI, PLUGIN_API_VERSION};
 use super::*;
@@ -19,7 +19,7 @@ static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 fn tmpdir(tag: &str) -> PathBuf {
     let unique = TEMP_COUNTER.fetch_add(1, Ordering::SeqCst);
     let dir = std::env::temp_dir().join(format!(
-        "tervo-plugin-v3-{}-{tag}-{unique}",
+        "xtervo-plugin-v3-{}-{tag}-{unique}",
         std::process::id()
     ));
     let _ = std::fs::remove_dir_all(&dir);
@@ -447,9 +447,9 @@ fn docs_example_plugin_runs_full_flow() {
 
     let state = root.join("state.toml");
     let mut store = load(&root, &state, fast_options());
-    enable(&mut store, "dev.tervo.echo");
-    assert!(wait_phase(&store, "dev.tervo.echo", Phase::Running, Duration::from_secs(3)));
-    assert!(store.spawn_command("plugin.dev.tervo.echo.greet"));
+    enable(&mut store, "dev.xtervo.echo");
+    assert!(wait_phase(&store, "dev.xtervo.echo", Phase::Running, Duration::from_secs(3)));
+    assert!(store.spawn_command("plugin.dev.xtervo.echo.greet"));
     assert!(wait_activity(&store, "Hello from Echo Plugin API v3", Duration::from_secs(3)));
     assert!(wait_until(
         || store
@@ -459,7 +459,7 @@ fn docs_example_plugin_runs_full_flow() {
             .any(|status| status.text == "Echo v3 ready"),
         Duration::from_secs(3)
     ));
-    assert!(store.spawn_command("plugin.dev.tervo.echo.notify"));
+    assert!(store.spawn_command("plugin.dev.xtervo.echo.notify"));
     assert!(wait_until(
         || store
             .take_notices()
@@ -467,7 +467,7 @@ fn docs_example_plugin_runs_full_flow() {
             .any(|notice| notice.text.contains("Echo says hi")),
         Duration::from_secs(3)
     ));
-    store.request_surface("dev.tervo.echo", "settings", None).unwrap();
+    store.request_surface("dev.xtervo.echo", "settings", None).unwrap();
     assert!(wait_until(
         || {
             store
@@ -477,14 +477,14 @@ fn docs_example_plugin_runs_full_flow() {
         },
         Duration::from_secs(3)
     ));
-    assert!(store.spawn_command("plugin.dev.tervo.echo.read-terminal"));
+    assert!(store.spawn_command("plugin.dev.xtervo.echo.read-terminal"));
     assert!(wait_until(
         || !store.pending_approvals().is_empty(),
         Duration::from_secs(3)
     ));
     let approval = store.pending_approvals().remove(0);
     assert!(store.resolve_host_request(
-        "dev.tervo.echo",
+        "dev.xtervo.echo",
         approval.request_id,
         HostOutcome::Ok(json!({"text": "example-tail"})),
     ));
@@ -1246,7 +1246,7 @@ fn invalid_v3_manifest_is_reported_and_never_executed() {
 
 const WASM_MANIFEST: &str = r#"api = 3
 host_abi = 3
-id = "dev.tervo.wasm-filter"
+id = "dev.xtervo.wasm-filter"
 name = "WASM output filter test"
 version = "1.0.0"
 runtime = "wasm"
@@ -1272,7 +1272,7 @@ fn install_wasm_plugin(root: &Path, wasm: &[u8]) -> PathBuf {
     dir
 }
 
-fn frame_text(frame: &tervo_core::Frame) -> String {
+fn frame_text(frame: &xtervo_core::Frame) -> String {
     let mut out = String::with_capacity(frame.rows * (frame.cols + 1));
     for row in 0..frame.rows {
         let line: String = frame.row(row).iter().map(|cell| cell.char()).collect();
@@ -1284,10 +1284,10 @@ fn frame_text(frame: &tervo_core::Frame) -> String {
 
 fn wait_frame_text(
     handle: &PaneHandle,
-    mut frame: Box<tervo_core::Frame>,
+    mut frame: Box<xtervo_core::Frame>,
     needle: &str,
     timeout: Duration,
-) -> (Box<tervo_core::Frame>, String) {
+) -> (Box<xtervo_core::Frame>, String) {
     let deadline = Instant::now() + timeout;
     loop {
         frame = handle.pull(frame);
@@ -1302,8 +1302,8 @@ fn wait_frame_text(
     }
 }
 
-fn spawn_wasm_test_pane(filter: tervo_core::OutputFilterHandle, script: &str) -> PaneHandle {
-    tervo_core::spawn(PaneConfig {
+fn spawn_wasm_test_pane(filter: xtervo_core::OutputFilterHandle, script: &str) -> PaneHandle {
+    xtervo_core::spawn(PaneConfig {
         cols: 100,
         rows: 24,
         scrollback: 200,
@@ -1322,7 +1322,7 @@ fn wasm_first_enable_needs_confirmation_and_is_visible_in_settings() {
     let state = root.join("state.toml");
     let mut store = load(&root, &state, fast_options());
 
-    match store.request_enable("dev.tervo.wasm-filter").unwrap() {
+    match store.request_enable("dev.xtervo.wasm-filter").unwrap() {
         EnableDecision::NeedsApproval { permissions } => {
             assert_eq!(permissions, vec!["terminal.output_filter".to_string()]);
         },
@@ -1331,15 +1331,15 @@ fn wasm_first_enable_needs_confirmation_and_is_visible_in_settings() {
     assert!(store.active_wasm_filters().is_empty());
     assert!(store.output_filter_handle().is_some(), "发现 wasm 插件即给 pane 句柄");
 
-    store.confirm_enable("dev.tervo.wasm-filter").unwrap();
-    let row = row_of(&store, "dev.tervo.wasm-filter");
+    store.confirm_enable("dev.xtervo.wasm-filter").unwrap();
+    let row = row_of(&store, "dev.xtervo.wasm-filter");
     assert_eq!(row.runtime, "wasm");
     assert_eq!(row.status, "running");
     assert_eq!(row.permissions, "terminal.output_filter");
     assert!(row.error.is_empty(), "running 不应带错误: {}", row.error);
     assert_eq!(
         store.active_wasm_filters(),
-        vec!["dev.tervo.wasm-filter".to_string()]
+        vec!["dev.xtervo.wasm-filter".to_string()]
     );
     store.shutdown_processes();
     assert!(store.active_wasm_filters().is_empty());
@@ -1352,15 +1352,15 @@ fn wasm_filter_transforms_real_pty_output_and_disable_restores_it() {
     install_wasm_plugin(&root, &example_wasm());
     let state = root.join("state.toml");
     let mut store = load(&root, &state, fast_options());
-    enable(&mut store, "dev.tervo.wasm-filter");
+    enable(&mut store, "dev.xtervo.wasm-filter");
     assert_eq!(
-        store.rows().iter().find(|row| row.key == "dev.tervo.wasm-filter").unwrap().status,
+        store.rows().iter().find(|row| row.key == "dev.xtervo.wasm-filter").unwrap().status,
         "running"
     );
     let filter = store.output_filter_handle().expect("filter handle");
     let handle = spawn_wasm_test_pane(
         filter,
-        "printf 'first [tervo-wasm]\\n'; sleep 1.5; printf 'second [tervo-wasm]\\n'; sleep 0.2",
+        "printf 'first [xtervo-wasm]\\n'; sleep 1.5; printf 'second [xtervo-wasm]\\n'; sleep 0.2",
     );
     let frame = handle.new_frame();
     let (frame, text) = wait_frame_text(
@@ -1369,19 +1369,19 @@ fn wasm_filter_transforms_real_pty_output_and_disable_restores_it() {
         "first WASM-FILTER-OK",
         Duration::from_secs(5),
     );
-    assert!(!text.contains("first [tervo-wasm]"), "第一行应已被过滤:\n{text}");
+    assert!(!text.contains("first [xtervo-wasm]"), "第一行应已被过滤:\n{text}");
     assert!(
-        store.wasm_filter_stats("dev.tervo.wasm-filter").unwrap().calls > 0,
+        store.wasm_filter_stats("dev.xtervo.wasm-filter").unwrap().calls > 0,
         "WASM 热路径必须被真实调用"
     );
 
     // 同一个 pane/同一份 PTY：禁用后下一行必须原样透传，不重建 pane。
-    store.disable_plugin("dev.tervo.wasm-filter").unwrap();
+    store.disable_plugin("dev.xtervo.wasm-filter").unwrap();
     assert!(store.active_wasm_filters().is_empty());
     let (_, text) = wait_frame_text(
         &handle,
         frame,
-        "second [tervo-wasm]",
+        "second [xtervo-wasm]",
         Duration::from_secs(5),
     );
     assert!(
@@ -1389,7 +1389,7 @@ fn wasm_filter_transforms_real_pty_output_and_disable_restores_it() {
         "禁用后不能再过滤:\n{text}"
     );
     assert_eq!(
-        row_of(&store, "dev.tervo.wasm-filter").status,
+        row_of(&store, "dev.xtervo.wasm-filter").status,
         "disabled"
     );
 
@@ -1409,26 +1409,26 @@ fn wasm_enable_takes_effect_on_an_existing_pane() {
     let filter = store.output_filter_handle().expect("filter handle");
     let handle = spawn_wasm_test_pane(
         filter,
-        "printf 'before [tervo-wasm]\n'; sleep 1.5; printf 'after [tervo-wasm]\n'; sleep 0.2",
+        "printf 'before [xtervo-wasm]\n'; sleep 1.5; printf 'after [xtervo-wasm]\n'; sleep 0.2",
     );
     let frame = handle.new_frame();
     let (frame, text) = wait_frame_text(
         &handle,
         frame,
-        "before [tervo-wasm]",
+        "before [xtervo-wasm]",
         Duration::from_secs(5),
     );
     assert!(!text.contains("before WASM-FILTER-OK"), "启用前必须原样:\n{text}");
 
-    enable(&mut store, "dev.tervo.wasm-filter");
+    enable(&mut store, "dev.xtervo.wasm-filter");
     let (_, text) = wait_frame_text(
         &handle,
         frame,
         "after WASM-FILTER-OK",
         Duration::from_secs(5),
     );
-    assert!(!text.contains("after [tervo-wasm]"), "启用后必须过滤:\n{text}");
-    assert!(store.wasm_filter_stats("dev.tervo.wasm-filter").unwrap().calls > 0);
+    assert!(!text.contains("after [xtervo-wasm]"), "启用后必须过滤:\n{text}");
+    assert!(store.wasm_filter_stats("dev.xtervo.wasm-filter").unwrap().calls > 0);
 
     drop(handle);
     store.shutdown_processes();
@@ -1448,23 +1448,23 @@ fn wasm_trap_falls_back_to_original_bytes_in_real_pty() {
     install_wasm_plugin(&root, &wasm);
     let state = root.join("state.toml");
     let mut store = load(&root, &state, fast_options());
-    enable(&mut store, "dev.tervo.wasm-filter");
+    enable(&mut store, "dev.xtervo.wasm-filter");
     let filter = store.output_filter_handle().expect("filter handle");
     let handle = spawn_wasm_test_pane(
         filter,
-        "printf 'fallback [tervo-wasm]\\n'; sleep 0.3",
+        "printf 'fallback [xtervo-wasm]\\n'; sleep 0.3",
     );
     let frame = handle.new_frame();
     let (_, text) = wait_frame_text(
         &handle,
         frame,
-        "fallback [tervo-wasm]",
+        "fallback [xtervo-wasm]",
         Duration::from_secs(5),
     );
-    assert!(text.contains("fallback [tervo-wasm]"), "必须原样放行:\n{text}");
-    let stats = store.wasm_filter_stats("dev.tervo.wasm-filter").expect("stats");
+    assert!(text.contains("fallback [xtervo-wasm]"), "必须原样放行:\n{text}");
+    let stats = store.wasm_filter_stats("dev.xtervo.wasm-filter").expect("stats");
     assert_eq!(stats.failures, 1, "trap 只应发生一次（随后熔断）");
-    let row = row_of(&store, "dev.tervo.wasm-filter");
+    let row = row_of(&store, "dev.xtervo.wasm-filter");
     assert_eq!(row.status, "failed");
     assert!(!row.error.is_empty(), "设置页必须显示陷阱原因");
     assert!(row.error.contains("unreachable") || row.error.contains("陷阱"), "{}", row.error);
@@ -1480,27 +1480,27 @@ fn wasm_reload_and_broken_module_error_are_reported_without_crash() {
     let dir = install_wasm_plugin(&root, &example_wasm());
     let state = root.join("state.toml");
     let mut store = load(&root, &state, fast_options());
-    enable(&mut store, "dev.tervo.wasm-filter");
+    enable(&mut store, "dev.xtervo.wasm-filter");
 
-    store.reload_plugin("dev.tervo.wasm-filter").expect("valid reload");
-    assert!(store.active_wasm_filters().contains(&"dev.tervo.wasm-filter".to_string()));
-    assert_eq!(row_of(&store, "dev.tervo.wasm-filter").status, "running");
+    store.reload_plugin("dev.xtervo.wasm-filter").expect("valid reload");
+    assert!(store.active_wasm_filters().contains(&"dev.xtervo.wasm-filter".to_string()));
+    assert_eq!(row_of(&store, "dev.xtervo.wasm-filter").status, "running");
 
     std::fs::write(dir.join("filter.wasm"), b"not a wasm module").unwrap();
     let err = store
-        .reload_plugin("dev.tervo.wasm-filter")
+        .reload_plugin("dev.xtervo.wasm-filter")
         .expect_err("broken module must fail reload");
     assert!(err.contains("WASM"), "{err}");
     assert!(store.active_wasm_filters().is_empty(), "坏模块必须停止旧过滤器");
-    let row = row_of(&store, "dev.tervo.wasm-filter");
+    let row = row_of(&store, "dev.xtervo.wasm-filter");
     assert_eq!(row.status, "failed");
     assert!(row.error.contains("WASM"), "{}", row.error);
 
-    // 修好后 Restart（不重启 Tervo）恢复。
+    // 修好后 Restart（不重启 xtervo）恢复。
     std::fs::write(dir.join("filter.wasm"), example_wasm()).unwrap();
-    store.restart_plugin("dev.tervo.wasm-filter").expect("restart fixed module");
-    assert_eq!(row_of(&store, "dev.tervo.wasm-filter").status, "running");
-    assert!(store.active_wasm_filters().contains(&"dev.tervo.wasm-filter".to_string()));
+    store.restart_plugin("dev.xtervo.wasm-filter").expect("restart fixed module");
+    assert_eq!(row_of(&store, "dev.xtervo.wasm-filter").status, "running");
+    assert!(store.active_wasm_filters().contains(&"dev.xtervo.wasm-filter".to_string()));
 
     store.shutdown_processes();
     let _ = std::fs::remove_dir_all(&root);
@@ -2151,7 +2151,7 @@ fn oversized_wasm_is_rejected_from_metadata_without_reading() {
     std::fs::set_permissions(&wasm_path, std::fs::Permissions::from_mode(0o000)).unwrap();
 
     let error = store
-        .confirm_enable("dev.tervo.wasm-filter")
+        .confirm_enable("dev.xtervo.wasm-filter")
         .expect_err("超限 WASM 必须被拒绝");
     let _ = std::fs::set_permissions(&wasm_path, std::fs::Permissions::from_mode(0o600));
     assert!(

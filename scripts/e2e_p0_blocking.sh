@@ -4,9 +4,9 @@
 #
 # 在独立 headless Xvfb（默认 :133）上运行；只 kill 本脚本启动的 Xvfb/app。
 # 用法：
-#   cargo build -p tervo-app --bin tervo --bin xwin --bin xclick
+#   cargo build -p xtervo-app --bin xtervo --bin xwin --bin xclick
 #   ./scripts/e2e_p0_blocking.sh
-# 环境变量：E2E_BIN、E2E_OUT、E2E_DISPLAY、TERVO_PERF_DIR、E2E_XVFB_BIN。
+# 环境变量：E2E_BIN、E2E_OUT、E2E_DISPLAY、XTERVO_PERF_DIR、E2E_XVFB_BIN。
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT=$PWD
@@ -15,16 +15,16 @@ DISPLAY_NUM=${E2E_DISPLAY:-:133}
 mkdir -p "$OUT" "$OUT/home" "$OUT/bin" "$OUT/logs" "$OUT/sftp-root"
 
 TARGET_DIR=${CARGO_TARGET_DIR:-$ROOT/target}
-BIN=${E2E_BIN:-$TARGET_DIR/debug/tervo}
+BIN=${E2E_BIN:-$TARGET_DIR/debug/xtervo}
 XWIN=${E2E_XWIN:-$TARGET_DIR/debug/xwin}
 XCLICK=${E2E_XCLICK:-$TARGET_DIR/debug/xclick}
 for f in "$BIN" "$XWIN" "$XCLICK"; do
-    [ -x "$f" ] || { echo "缺少 $f；先 cargo build -p tervo-app --bin tervo --bin xwin --bin xclick" >&2; exit 2; }
+    [ -x "$f" ] || { echo "缺少 $f；先 cargo build -p xtervo-app --bin xtervo --bin xwin --bin xclick" >&2; exit 2; }
 done
 
 COMMON=$(git rev-parse --git-common-dir)
 MAIN_ROOT=$(cd "$(dirname "$COMMON")" && pwd)
-PERF=${TERVO_PERF_DIR:-$MAIN_ROOT/.perf}
+PERF=${XTERVO_PERF_DIR:-$MAIN_ROOT/.perf}
 XVFB_BIN=${E2E_XVFB_BIN:-$PERF/xvfb/usr/bin/Xvfb}
 [ -x "$XVFB_BIN" ] || XVFB_BIN=$(command -v Xvfb || true)
 [ -x "$XVFB_BIN" ] || { echo "找不到 Xvfb" >&2; exit 2; }
@@ -33,9 +33,9 @@ export DISPLAY=$DISPLAY_NUM
 export HOME=$OUT/home
 export XMODIFIERS=@im=none
 export SLINT_BACKEND=winit-software
-export TERVO_CONFIG=$OUT/config.toml
-export TERVO_PROFILES=$OUT/profiles.toml
-export TERVO_LOG_DIR=$OUT/logs
+export XTERVO_CONFIG=$OUT/config.toml
+export XTERVO_PROFILES=$OUT/profiles.toml
+export XTERVO_LOG_DIR=$OUT/logs
 
 XVFB_PID=""
 APP_PID=""
@@ -95,7 +95,7 @@ fi
 PATH="$OUT/bin:$PATH" "$BIN" >"$OUT/app.log" 2>&1 &
 APP_PID=$!
 for _ in $(seq 1 100); do
-    win=$(xwininfo -root -tree 2>/dev/null | grep -iE '"tervo" "tervo"' | awk '{print $1}' | head -1 || true)
+    win=$(xwininfo -root -tree 2>/dev/null | grep -iE '"xtervo" "xtervo"' | awk '{print $1}' | head -1 || true)
     [ -n "${win:-}" ] && break
     sleep 0.1
 done

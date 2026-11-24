@@ -17,9 +17,9 @@ use std::sync::atomic::{AtomicU8, Ordering};
 
 use slint::winit_030::winit;
 
-/// Wayland app_id；必须与打包的 `tervo.desktop`（`StartupWMClass`、`Icon=tervo`）
+/// Wayland app_id；必须与打包的 `xtervo.desktop`（`StartupWMClass`、`Icon=xtervo`）
 /// 一致，桌面才能关联图标与启动器。X11 不设置（保持 winit 默认 WM_CLASS）。
-pub const XDG_APP_ID: &str = "tervo";
+pub const XDG_APP_ID: &str = "xtervo";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -307,8 +307,8 @@ mod tests {
 
     #[test]
     fn app_id_matches_desktop_entry() {
-        // packaging/tervo.desktop: StartupWMClass=tervo / Icon=tervo
-        assert_eq!(XDG_APP_ID, "tervo");
+        // packaging/xtervo.desktop: StartupWMClass=xtervo / Icon=xtervo
+        assert_eq!(XDG_APP_ID, "xtervo");
     }
 
     #[test]

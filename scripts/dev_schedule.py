@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local Tervo development reminder timer.
+"""Local xtervo development reminder timer.
 
 This is intentionally not an agent scheduler: it can only log and send a
 desktop notification. It cannot wake an LLM session or run coding tasks.
@@ -44,7 +44,7 @@ def notify(title: str, body: str) -> None:
     print(f"[dev-schedule] {title}: {body}", flush=True)
     try:
         subprocess.run(
-            ["notify-send", "--app-name=Tervo Dev", "--urgency=normal", title, body],
+            ["notify-send", "--app-name=xtervo Dev", "--urgency=normal", title, body],
             check=False,
             timeout=5,
         )

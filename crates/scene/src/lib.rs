@@ -1,8 +1,8 @@
 //! Backend-independent terminal draw scene.
 //!
 //! No wgpu, Skia or Slint types are allowed here. A [`Scene`] is an immutable description built
-//! from [`tervo_graphics::GraphicsManager`] plus a row resolver, or directly from a
-//! [`tervo_core::Frame`] through [`SceneBuilder::from_frame`]. Renderers consume it and own
+//! from [`xtervo_graphics::GraphicsManager`] plus a row resolver, or directly from a
+//! [`xtervo_core::Frame`] through [`SceneBuilder::from_frame`]. Renderers consume it and own
 //! all GPU resources.
 //!
 //! Selection is represented as cell attributes in [`TextBatch`], never as a top overlay. The
@@ -10,11 +10,11 @@
 //!
 //! # Features
 //!
-//! `frame` (default) enables the [`tervo_core::Frame`] adapter. Disable default features to
+//! `frame` (default) enables the [`xtervo_core::Frame`] adapter. Disable default features to
 //! build the pure graphics/scene contract without a terminal-core dependency:
 //!
 //! ```text
-//! cargo check -p tervo-scene --no-default-features
+//! cargo check -p xtervo-scene --no-default-features
 //! ```
 
 #![forbid(unsafe_code)]

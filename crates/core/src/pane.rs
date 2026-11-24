@@ -109,7 +109,7 @@ const CTRL_SEND_TIMEOUT: Duration = Duration::from_millis(50);
 ///   有界通道拉帧，不会被插件卡住。
 ///
 /// core 不关心过滤器是 WASM、脚本还是测试闭包；插件权限/生命周期由 app 层
-/// 负责。过滤 panic 被 `catch_unwind` 截获，Tervo 不会因此崩溃。
+/// 负责。过滤 panic 被 `catch_unwind` 截获，xtervo 不会因此崩溃。
 pub trait OutputFilter: Send + Sync {
     fn filter(&self, bytes: &[u8]) -> Option<Vec<u8>>;
 }
@@ -1763,7 +1763,7 @@ fn selection_span<T: EventListener>(
 
 /// 把一块真正交给 vte 的字节喂给 parser，然后刷新 grid 行数诊断快照。
 ///
-/// RowId 改造后 Tervo 不再自行累计 `scroll_total`：图片锚点只认 alacritty
+/// RowId 改造后 xtervo 不再自行累计 `scroll_total`：图片锚点只认 alacritty
 /// `RowId`，滚动/历史淘汰由 `Grid::find_row_id` 直接判定。
 fn advance_and_publish_grid_lines<T: EventListener>(
     term: &mut Term<T>,
@@ -3648,7 +3648,7 @@ impl Actor {
         }
     }
 
-    /// 把字节交给 vte，并刷新 grid 行数诊断快照（RowId 锚点不再需要 Tervo
+    /// 把字节交给 vte，并刷新 grid 行数诊断快照（RowId 锚点不再需要 xtervo
     /// 侧累计滚动行数）。
     fn advance_vte(&mut self, chunk: &[u8]) {
         advance_and_publish_grid_lines(

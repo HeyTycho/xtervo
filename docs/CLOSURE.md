@@ -93,7 +93,7 @@ GPU-native Scene（Sixel/IIP/Kitty 进 GPU）。逐条状态仍以矩阵行和�
 - **命令 / 设置**：Command Palette、热键录制 + 冲突检测、设置分类与搜索/跳转。
 - **插件**：Plugin API v3（子进程 + JSON-RPC、权限确认、supervisor）、WASM
   `terminal.output_filter` 热路径、本地安装/更新/回滚/签名；v1/v2 明确 unsupported。
-- **MCP / 诊断**：`tervo diag serve`（stdio）与默认 `$XDG_RUNTIME_DIR/tervo/mcp.sock`
+- **MCP / 诊断**：`xtervo diag serve`（stdio）与默认 `$XDG_RUNTIME_DIR/xtervo/mcp.sock`
   （token + read/input/tabs/destructive 分组）；`diag doctor`、metrics、observability、
   Settings → Help → Feedback 脱敏支持包。
 - **连接**：Profiles（local/ssh/serial/telnet）、SFTP（含 mkdir/rename/rm）、

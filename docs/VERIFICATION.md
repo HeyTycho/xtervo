@@ -1,4 +1,4 @@
-# 怎么验证 Tervo（验收手册）
+# 怎么验证 xtervo（验收手册）
 
 > 面向“我要自己确认这些数字/功能是真的”的场景。所有命令都在仓库根目录执行。
 > 约定：`export CARGO_HOME=$PWD/.cargo`（沙箱/CI 里 `~/.cargo` 只读时）。
@@ -27,9 +27,9 @@ check_doc_links:   checked: broken=0
 ## 2. 构建 + 测试门禁
 
 ```bash
-cargo build --release -p tervo-app
-cargo test -p tervo-core                 # 含 VT 兼容套件与 fuzz（约 1s 默认轮次）
-cargo test -p tervo-app --bin tervo      # 期望 666 passed / 2 ignored
+cargo build --release -p xtervo-app
+cargo test -p xtervo-core                 # 含 VT 兼容套件与 fuzz（约 1s 默认轮次）
+cargo test -p xtervo-app --bin xtervo      # 期望 666 passed / 2 ignored
 ./scripts/selfcheck.sh                   # 构建 + 单测 + 启动预算
 RUN_IME=1 ./scripts/selfcheck.sh         # 加中文冒烟
 ```
@@ -40,10 +40,10 @@ RUN_IME=1 ./scripts/selfcheck.sh         # 加中文冒烟
 ## 3. 内存门禁（2m/15m）
 
 ```bash
-env DURATION=2m  BIN=$PWD/target/release/tervo SOAK_NO_SHOTS=1 \
-    XDG_RUNTIME_DIR=/tmp/soak-rt TERVO_INSTANCE_DIR=/tmp/tervo-inst ./scripts/soak.sh
-env DURATION=15m BIN=$PWD/target/release/tervo SOAK_NO_SHOTS=1 \
-    XDG_RUNTIME_DIR=/tmp/soak-rt TERVO_INSTANCE_DIR=/tmp/tervo-inst ./scripts/soak.sh
+env DURATION=2m  BIN=$PWD/target/release/xtervo SOAK_NO_SHOTS=1 \
+    XDG_RUNTIME_DIR=/tmp/soak-rt XTERVO_INSTANCE_DIR=/tmp/xtervo-inst ./scripts/soak.sh
+env DURATION=15m BIN=$PWD/target/release/xtervo SOAK_NO_SHOTS=1 \
+    XDG_RUNTIME_DIR=/tmp/soak-rt XTERVO_INSTANCE_DIR=/tmp/xtervo-inst ./scripts/soak.sh
 ```
 
 判定看报告的 `verdict`、`RSS/PSS`、`threads/fds`、`fatal=0`：
@@ -79,7 +79,7 @@ fcitx5 -d
 export GTK_IM_MODULE=fcitx QT_IM_MODULE=fcitx XMODIFIERS=@im=fcitx
 
 # 2) 跑终端并开键盘日志
-TERVO_KEYLOG=1 SLINT_BACKEND=winit-software ./target/release/tervo --shell /bin/cat
+XTERVO_KEYLOG=1 SLINT_BACKEND=winit-software ./target/release/xtervo --shell /bin/cat
 
 # 3) 点一下 pane，输入 nihao 再按空格
 # 期望日志： [ime] "你好"        ← 提交文本
@@ -101,7 +101,7 @@ TERVO_KEYLOG=1 SLINT_BACKEND=winit-software ./target/release/tervo --shell /bin/
 **需要**：同上环境 + `grim`（Wayland 截图）。
 
 ```bash
-TerVO_KEYLOG=1 SLINT_BACKEND=winit-software ./target/release/tervo --shell /bin/cat
+TerVO_KEYLOG=1 SLINT_BACKEND=winit-software ./target/release/xtervo --shell /bin/cat
 # 点击终端中部 → 输入 nihao（不按空格，先出候选窗）
 grim -g "$(slurp)" /tmp/ime.png        # 或整屏 grim /tmp/ime.png
 ```
@@ -126,16 +126,16 @@ grim -g "$(slurp)" /tmp/ime.png        # 或整屏 grim /tmp/ime.png
 ```
 
 判定阈值：damage 路径 `draw_p95_us < 500`、`full_200x50 total_p50_us < 5000`；
-WGPU 显示链路失败但 Skia GPU 仍生效时只给 WARN（`TERVO_GPU_NATIVE` 属实验路径）。
+WGPU 显示链路失败但 Skia GPU 仍生效时只给 WARN（`XTERVO_GPU_NATIVE` 属实验路径）。
 
 
 **需要**：有可用驱动的 NVIDIA/AMD/Intel GPU 机器（`nvidia-smi -L` 或 `vulkaninfo --summary` 正常）。
 
 ```bash
 nvidia-smi -L                      # 或 glxinfo -B / vulkaninfo --summary
-./target/release/tervo             # 默认 GPU（Skia / wgpu）；日志确认没有 exec 回退
-TERVO_GPU_NATIVE=1 TERVO_GPU_NATIVE_DEBUG=1 ./target/release/tervo   # 帧统计
-TERVO_GPU_NATIVE=1 TERVO_GPU_NATIVE_DUMP=/tmp/frame ./target/release/tervo  # 首帧回读 PPM
+./target/release/xtervo             # 默认 GPU（Skia / wgpu）；日志确认没有 exec 回退
+XTERVO_GPU_NATIVE=1 XTERVO_GPU_NATIVE_DEBUG=1 ./target/release/xtervo   # 帧统计
+XTERVO_GPU_NATIVE=1 XTERVO_GPU_NATIVE_DUMP=/tmp/frame ./target/release/xtervo  # 首帧回读 PPM
 
 ./scripts/bench_render.sh          # 渲染 P95（damage / full）
 ./scripts/bench.sh                 # PTY→可见吞吐
@@ -159,7 +159,7 @@ damage 路径 P95 约 37–40 µs；full 200x50 约 1.66 ms；PTY→可见 10 Mi
 | 竖排 TabBar | 设置 → Window → Left/Right | Tab 竖排、滚动、按钮固定、上/下布局不变 |
 | 录制 | 命令面板 `Start Recording` → 跑点输出 → `Export Recording…` | 导出原始字节，重放能看到颜色/图片序列 |
 | 菜单装饰 | 安装示例插件（`docs/examples/plugin-v3-echo`），清单加 `menu = true` | 右键菜单末尾出现该命令 |
-| 安全模式 | `echo 3 > ~/.local/state/tervo/session.crashes` + 留 `session.running` 后启动 | 日志 `[safe-mode]`，本次不加载插件 |
+| 安全模式 | `echo 3 > ~/.local/state/xtervo/session.crashes` + 留 `session.running` 后启动 | 日志 `[safe-mode]`，本次不加载插件 |
 | 崩溃应用后的键盘 | shell 里跑 `sh -c 'printf "\033[>7u"; kill -9 $$'`，回到提示符后按 `Ctrl+G` | 屏幕不出现 `7;5u`/`9;5:3u` 等 CSI-u 尾巴；日志有 `[keyboard] 前台进程变化：复位 …` |
 | 内联图片 | `img2sixel`/`chafa` 输出图片；点击图片 | 位置正确，灯箱可缩放 |
 
@@ -175,11 +175,11 @@ docs/CLOSURE.md           汇总数字与口径
 ## 7. 如果你想复跑“今晚这批”的全部验证
 
 ```bash
-cargo test -p tervo-core && cargo test -p tervo-app --bin tervo
+cargo test -p xtervo-core && cargo test -p xtervo-app --bin xtervo
 python3 scripts/check_docs_counts.py && python3 scripts/check_doc_links.py
 python3 scripts/scope_tiers.py
-env DURATION=2m BIN=$PWD/target/release/tervo SOAK_NO_SHOTS=1 \
-  XDG_RUNTIME_DIR=/tmp/soak-rt TERVO_INSTANCE_DIR=/tmp/tervo-inst ./scripts/soak.sh
+env DURATION=2m BIN=$PWD/target/release/xtervo SOAK_NO_SHOTS=1 \
+  XDG_RUNTIME_DIR=/tmp/soak-rt XTERVO_INSTANCE_DIR=/tmp/xtervo-inst ./scripts/soak.sh
 ./scripts/e2e_workspace_ui.sh          # 需要 Xvfb + openbox（脚本自带）
 ./scripts/vt_compat_suite.sh           # 32 PASS / 0 FAIL / 9 XFAIL
 ./scripts/fuzz_vt.sh                   # 确定性 fuzz

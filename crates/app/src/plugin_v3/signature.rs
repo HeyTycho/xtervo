@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! Tervo Plugin API v3 本地安装签名格式（Ed25519，无市场/无信任链）。
+//! xtervo Plugin API v3 本地安装签名格式（Ed25519，无市场/无信任链）。
 //!
 //! 只解决“这个本地包是不是由持有对应私钥的人签过，且 plugin.toml 未被改动”。
 //! 不提供 key 分发、key 轮换、证书链或在线验证；公钥来源完全由本机配置决定。
@@ -8,11 +8,11 @@
 //!
 //! ```text
 //! plugin.toml.sig:
-//!   tervo-plugin-signature-v1
+//!   xtervo-plugin-signature-v1
 //!   <base64(64 字节 Ed25519 signature)>
 //!
-//! plugin-signing.pub（或 TERVO_PLUGIN_PUBKEY 内容）:
-//!   tervo-plugin-pubkey-v1
+//! plugin-signing.pub（或 XTERVO_PLUGIN_PUBKEY 内容）:
+//!   xtervo-plugin-pubkey-v1
 //!   <base64(32 字节 Ed25519 public key)>
 //! ```
 //!
@@ -22,10 +22,10 @@
 //!
 //! 公钥查找顺序：
 //! 1. 调用方显式传入（测试 / `--pubkey` 类入口）；
-//! 2. 环境变量 `TERVO_PLUGIN_PUBKEY`（值可以是 key 内容、文件路径或 `@路径`）；
-//! 3. `$XDG_CONFIG_HOME/tervo/plugin-signing.pub`（跟随 `TERVO_PLUGINS` 的同级目录）。
+//! 2. 环境变量 `XTERVO_PLUGIN_PUBKEY`（值可以是 key 内容、文件路径或 `@路径`）；
+//! 3. `$XDG_CONFIG_HOME/xtervo/plugin-signing.pub`（跟随 `XTERVO_PLUGINS` 的同级目录）。
 //!
-//! 是否强制签名由 `TERVO_PLUGIN_REQUIRE_SIGNATURE=1` 或设置页开关
+//! 是否强制签名由 `XTERVO_PLUGIN_REQUIRE_SIGNATURE=1` 或设置页开关
 //! （`plugin_require_signature`）决定。默认不强制；但没有公钥时，带
 //! `plugin.toml.sig` 的包会被拒绝（无法验证的签名不能被当成“通过”）。
 
@@ -40,18 +40,18 @@ use base64::Engine as _;
 /// 安装包内的签名文件名（与 plugin.toml 同目录）。
 pub const SIG_FILE_NAME: &str = "plugin.toml.sig";
 /// 签名文件格式头。
-pub const SIG_HEADER: &str = "tervo-plugin-signature-v1";
+pub const SIG_HEADER: &str = "xtervo-plugin-signature-v1";
 /// 公钥文件格式头。
-pub const PUBKEY_HEADER: &str = "tervo-plugin-pubkey-v1";
-/// 私钥文件格式头（只供 `tervo plugins sign/keygen` 使用）。
-pub const SIGNING_KEY_HEADER: &str = "tervo-plugin-signing-key-v1";
-/// 默认公钥文件名（在 `<config>/tervo/` 下）。
+pub const PUBKEY_HEADER: &str = "xtervo-plugin-pubkey-v1";
+/// 私钥文件格式头（只供 `xtervo plugins sign/keygen` 使用）。
+pub const SIGNING_KEY_HEADER: &str = "xtervo-plugin-signing-key-v1";
+/// 默认公钥文件名（在 `<config>/xtervo/` 下）。
 pub const DEFAULT_PUBKEY_FILE: &str = "plugin-signing.pub";
-/// 默认私钥文件名（在 `<config>/tervo/` 下；只有 keygen/sign 使用）。
+/// 默认私钥文件名（在 `<config>/xtervo/` 下；只有 keygen/sign 使用）。
 pub const DEFAULT_SIGNING_KEY_FILE: &str = "plugin-signing.key";
 
-pub const PUBKEY_ENV: &str = "TERVO_PLUGIN_PUBKEY";
-pub const REQUIRE_SIGNATURE_ENV: &str = "TERVO_PLUGIN_REQUIRE_SIGNATURE";
+pub const PUBKEY_ENV: &str = "XTERVO_PLUGIN_PUBKEY";
+pub const REQUIRE_SIGNATURE_ENV: &str = "XTERVO_PLUGIN_REQUIRE_SIGNATURE";
 
 /// 签名文件读取上限：64 字节签名 + 头，留足注释空间但拒绝滥用。
 pub const MAX_SIG_FILE_BYTES: u64 = 4 * 1024;
@@ -428,12 +428,12 @@ pub fn parse_signature_file(bytes: &[u8]) -> Result<Signature, String> {
     Ok(Signature::from_bytes(&raw))
 }
 
-/// 生成签名文件文本（`tervo plugins sign` 与测试共用）。
+/// 生成签名文件文本（`xtervo plugins sign` 与测试共用）。
 pub fn signature_file_text(signature: &Signature) -> String {
     format!("{SIG_HEADER}\n{}\n", STANDARD.encode(signature.to_bytes()))
 }
 
-/// 生成公钥文件文本（`tervo plugins keygen` 使用；也接受裸 base64）。
+/// 生成公钥文件文本（`xtervo plugins keygen` 使用；也接受裸 base64）。
 pub fn public_key_file_text(key: &VerifyingKey) -> String {
     format!("{PUBKEY_HEADER}\n{}\n", STANDARD.encode(key.to_bytes()))
 }

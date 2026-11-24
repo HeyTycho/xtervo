@@ -6,7 +6,7 @@
 > 验证环境：headless Xvfb `:118`（`1280x800x24`，仓库内 `.perf/xvfb`），
 > 不占用 `:1` / 不启动 Xephyr / 不 pkill 其他进程。
 
-所有设置都在 **Settings → Terminal**，写入 `~/.config/tervo/config.toml` 并即时生效
+所有设置都在 **Settings → Terminal**，写入 `~/.config/xtervo/config.toml` 并即时生效
 （例外：scrollback 容量只能对新 pane 生效，见 §3）。
 
 ## 1. 可听铃（audible bell）
@@ -22,7 +22,7 @@
   - 优先向 X server 发 core `Bell` 请求（`percent = -100` = server 默认音量）。
     GNOME Terminal 走 GDK/X11 bell，声音由桌面声音主题/`xset b` 决定。
   - X11 连接懒建立、成功后在 UI 线程复用；失败清空，下次 BEL 重试。
-  - 无 X11（无 `DISPLAY`）且 stderr 是终端时，写一个 BEL 字节，让启动 Tervo
+  - 无 X11（无 `DISPLAY`）且 stderr 是终端时，写一个 BEL 字节，让启动 xtervo
     的终端模拟器响铃；两者都失败则静默并记日志。
 - 同一轮事件处理里到达的多个 BEL 合并成一次响铃（避免 BEL 风暴刷爆 X server）；
   BEL 走 CoreEvent 事件唤醒立即处理，400ms timer 只兜底，日志：
@@ -42,7 +42,7 @@
 
 用户上滚查看历史时，新输出**只增长历史、不抢视图**。这不是新写的逻辑，而是
 alacritty grid 已有语义：`display_offset != 0` 时 `Grid::scroll_up` 会同步递增
-`display_offset`，视口保持在同一段内容上。Tervo 之前没有配置项，但行为已正确；
+`display_offset`，视口保持在同一段内容上。xtervo 之前没有配置项，但行为已正确；
 本轮补上开关和回归测试，避免以后改坏。
 
 ### scroll_on_output=true
@@ -170,7 +170,7 @@ CARGO_TARGET_DIR=$PWD/target cargo test --workspace
 ### GUI e2e（Xvfb :118）
 
 ```bash
-cargo build -p tervo-app --bin tervo --bin xwin --bin xclick --bin xkey
+cargo build -p xtervo-app --bin xtervo --bin xwin --bin xclick --bin xkey
 ./scripts/e2e_terminal_behavior.sh
 ```
 

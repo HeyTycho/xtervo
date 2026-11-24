@@ -194,14 +194,14 @@
 
 ```bash
 # SSH（注意 ~/.ssh/config accept-new 会让一个预检测试按设计失败）
-cargo test -p tervo-app --bin tervo ssh
-cargo test -p tervo-app --bin tervo ssh_native
-cargo test -p tervo-app --bin tervo known_hosts
+cargo test -p xtervo-app --bin xtervo ssh
+cargo test -p xtervo-app --bin xtervo ssh_native
+cargo test -p xtervo-app --bin xtervo known_hosts
 
 # Serial（PTY；无真实硬件）
-cargo test -p tervo-app --bin tervo serial_native
+cargo test -p xtervo-app --bin xtervo serial_native
 
 # SFTP
-cargo test -p tervo-app --bin tervo sftp
+cargo test -p xtervo-app --bin xtervo sftp
 scripts/e2e_ssh_sftp_vault.sh   # 假 ssh/sftp；需 Xvfb
 ```

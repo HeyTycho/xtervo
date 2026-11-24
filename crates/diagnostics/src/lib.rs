@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! Backend-neutral diagnostics and observability primitives for Tervo.
+//! Backend-neutral diagnostics and observability primitives for xtervo.
 //!
 //! This crate deliberately has no dependency on wgpu, Skia, Slint, the terminal
 //! core or the app. It provides bounded, low-overhead building blocks that the
@@ -18,7 +18,7 @@
 //!   [`SceneSummary`] values without touching wgpu/Slint.
 //!
 //! Diagnostic snapshots are serde_json values whose fields are additive to the
-//! `tervo.diag.v1` schema. There is intentionally no per-character or per-frame
+//! `xtervo.diag.v1` schema. There is intentionally no per-character or per-frame
 //! logging here; callers must only log bounded summaries/errors.
 
 #![forbid(unsafe_code)]

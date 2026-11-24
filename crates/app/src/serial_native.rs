@@ -10,7 +10,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serialport::{DataBits, FlowControl, Parity, SerialPort, StopBits, TTYPort};
-use tervo_core::transport::{
+use xtervo_core::transport::{
     PaneTransport, TransportControl, TransportHalves, TransportShutdown,
 };
 

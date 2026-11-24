@@ -20,7 +20,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::profile::Profile;
-use tervo_core::WakeSignal;
+use xtervo_core::WakeSignal;
 
 /// 单次 SFTP 元数据命令（list/mkdir/rename/rm）的硬超时。
 ///
@@ -2505,7 +2505,7 @@ drwxr-xr-x    2 yt   staff        4096 Nov 20 10:00 .
     fn temp_dir(tag: &str) -> PathBuf {
         let unique = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
         let dir = std::env::temp_dir()
-            .join(format!("tervo-sftp-{}-{tag}-{unique}", std::process::id()));
+            .join(format!("xtervo-sftp-{}-{tag}-{unique}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }

@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! Tab 活动状态聚合与通知文本清洗。
 //!
-//! 刻意不依赖 Slint：这些是纯函数，可在 `cargo test -p tervo-app --bin tervo` 里单测。
+//! 刻意不依赖 Slint：这些是纯函数，可在 `cargo test -p xtervo-app --bin xtervo` 里单测。
 
-use tervo_core::{Notification, Progress, ProgressState};
+use xtervo_core::{Notification, Progress, ProgressState};
 
 /// 桌面通知标题上限（字符数，不是字节）。
 pub const MAX_NOTIFY_TITLE: usize = 120;
@@ -89,14 +89,14 @@ pub fn progress_label(progress: Progress) -> String {
 
 /// 组装桌面通知的 (title, body)。
 ///
-/// OSC 9 没有标题，回退到 Tab 标题；两者都为空时用 "Tervo"。
+/// OSC 9 没有标题，回退到 Tab 标题；两者都为空时用 "xtervo"。
 pub fn notification_content(tab_title: &str, notification: &Notification) -> (String, String) {
     let title = if notification.title.trim().is_empty() {
         tab_title
     } else {
         notification.title.as_str()
     };
-    let title = if title.trim().is_empty() { "Tervo" } else { title };
+    let title = if title.trim().is_empty() { "xtervo" } else { title };
     (
         sanitize_notification_text(title, MAX_NOTIFY_TITLE),
         sanitize_notification_text(&notification.body, MAX_NOTIFY_BODY),
@@ -248,7 +248,7 @@ mod tests {
         );
         let note = Notification { title: "Build".into(), body: String::new() };
         assert_eq!(notification_content("Terminal 2", &note).0, "Build");
-        assert_eq!(notification_content("", &Notification::default()).0, "Tervo");
+        assert_eq!(notification_content("", &Notification::default()).0, "xtervo");
         assert_eq!(bell_notification().body, "Bell");
     }
 }

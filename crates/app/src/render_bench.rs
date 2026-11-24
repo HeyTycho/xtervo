@@ -17,7 +17,7 @@
 //! 运行（release，数字才有意义）：
 //! ```bash
 //! CARGO_TARGET_DIR=$PWD/.target-render \
-//!   cargo test --release -p tervo-app --bin tervo render_damage_benchmark \
+//!   cargo test --release -p xtervo-app --bin xtervo render_damage_benchmark \
 //!   -- --ignored --nocapture
 //! ```
 //! 输出为 `[bench] ...` 行，`docs/self-iteration.md` 记录同机结果。
@@ -28,7 +28,7 @@
 use std::rc::Rc;
 use std::time::Instant;
 
-use tervo_core::{flags, CellData, CursorShape, CursorState, Frame, LineDamage, Theme};
+use xtervo_core::{flags, CellData, CursorShape, CursorState, Frame, LineDamage, Theme};
 
 use crate::glyph::FontSet;
 use crate::render::Renderer;

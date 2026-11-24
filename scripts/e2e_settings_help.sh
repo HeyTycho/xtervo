@@ -5,10 +5,10 @@
 # 搜索 help/帮助 命中、窄窗滚动/宽窗铺满不溢出、缺少 xdg-open 时可见错误不崩溃。
 #
 # 用法：
-#   cargo build -p tervo-app --bin tervo --bin xwin --bin xclick --bin xkey
+#   cargo build -p xtervo-app --bin xtervo --bin xwin --bin xclick --bin xkey
 #   ./scripts/e2e_settings_help.sh
-# 环境变量：TERVO_BIN_DIR（默认 target/debug）、SETTINGS_HELP_OUT、
-# E2E_DISPLAY（默认 :147）、TERVO_PERF_DIR、E2E_XVFB_BIN。
+# 环境变量：XTERVO_BIN_DIR（默认 target/debug）、SETTINGS_HELP_OUT、
+# E2E_DISPLAY（默认 :147）、XTERVO_PERF_DIR、E2E_XVFB_BIN。
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT=$PWD
@@ -16,21 +16,21 @@ OUT=${SETTINGS_HELP_OUT:-$ROOT/.logs/settings-help}
 SHOTS=$OUT/shots
 mkdir -p "$SHOTS" "$OUT/home" "$OUT/logs" "$OUT/nobin" /tmp/.X11-unix
 
-BIN_DIR=${TERVO_BIN_DIR:-$ROOT/target/debug}
-BIN=$BIN_DIR/tervo
+BIN_DIR=${XTERVO_BIN_DIR:-$ROOT/target/debug}
+BIN=$BIN_DIR/xtervo
 XWIN=$BIN_DIR/xwin
 XCLICK=$BIN_DIR/xclick
 XKEY=$BIN_DIR/xkey
 for f in "$BIN" "$XWIN" "$XCLICK" "$XKEY"; do
     [ -x "$f" ] || {
-        echo "缺少 $f；先 cargo build -p tervo-app --bin tervo --bin xwin --bin xclick --bin xkey" >&2
+        echo "缺少 $f；先 cargo build -p xtervo-app --bin xtervo --bin xwin --bin xclick --bin xkey" >&2
         exit 2
     }
 done
 
 COMMON=$(git rev-parse --git-common-dir)
 MAIN_ROOT=$(cd "$(dirname "$COMMON")" && pwd)
-PERF=${TERVO_PERF_DIR:-$MAIN_ROOT/.perf}
+PERF=${XTERVO_PERF_DIR:-$MAIN_ROOT/.perf}
 XVFB_BIN=${E2E_XVFB_BIN:-$PERF/xvfb/usr/bin/Xvfb}
 [ -x "$XVFB_BIN" ] || XVFB_BIN=$(command -v Xvfb || true)
 [ -x "$XVFB_BIN" ] || { echo "找不到 Xvfb；不会回退到 Xephyr" >&2; exit 2; }
@@ -83,33 +83,33 @@ start_app() {  # <tag> <lang> [extra-path]
     local log="$OUT/app_$tag.log"
     : >"$log"
     if [ -n "$path" ]; then
-        PATH="$path" TERVO_CONFIG="$cfg" TERVO_LOG_DIR="$OUT/logs" \
+        PATH="$path" XTERVO_CONFIG="$cfg" XTERVO_LOG_DIR="$OUT/logs" \
             "$BIN" --cols 120 --rows 32 --shell /bin/sh -- -c 'sleep 900' >"$log" 2>&1 &
     else
-        TERVO_CONFIG="$cfg" TERVO_LOG_DIR="$OUT/logs" \
+        XTERVO_CONFIG="$cfg" XTERVO_LOG_DIR="$OUT/logs" \
             "$BIN" --cols 120 --rows 32 --shell /bin/sh -- -c 'sleep 900' >"$log" 2>&1 &
     fi
     APP_PID=$!
     WIN=""
     for _ in $(seq 1 200); do
-        WIN=$(xwininfo -root -tree 2>/dev/null | grep -i '"tervo"' | head -1 | awk '{print $1}' || true)
+        WIN=$(xwininfo -root -tree 2>/dev/null | grep -i '"xtervo"' | head -1 | awk '{print $1}' || true)
         [ -n "$WIN" ] && break
         sleep 0.05
     done
     [ -n "$WIN" ] || { echo "启动失败（$tag）：$log" >&2; cat "$log" >&2; exit 2; }
-    "$XWIN" Tervo 20 20 >/dev/null 2>&1 || true
+    "$XWIN" xtervo 20 20 >/dev/null 2>&1 || true
     sleep 0.9
     refresh_geom
     if [ "$W" != 1080 ] || [ "$H" != 736 ]; then
         echo "截图坐标基于 1080x736（cell 9x22 / 120x32），实际 ${W}x${H}" >&2
         exit 2
     fi
-    LOG=$(ls -t "$OUT/logs"/tervo-*.log 2>/dev/null | head -1 || true)
+    LOG=$(ls -t "$OUT/logs"/xtervo-*.log 2>/dev/null | head -1 || true)
     echo "  app=$tag lang=$lang window=${W}x${H} log=$LOG"
 }
 
 refresh_geom() {
-    WIN=$(xwininfo -root -tree | grep -i '"tervo"' | head -1 | awk '{print $1}')
+    WIN=$(xwininfo -root -tree | grep -i '"xtervo"' | head -1 | awk '{print $1}')
     ABS_X=$(xwininfo -id "$WIN" | awk '/Absolute upper-left X/{print $NF}')
     ABS_Y=$(xwininfo -id "$WIN" | awk '/Absolute upper-left Y/{print $NF}')
     W=$(xwininfo -id "$WIN" | awk '/Width:/{print $2}')
@@ -133,9 +133,9 @@ shot() {
 }
 click_rel() { "$XCLICK" "$((ABS_X + $1))" "$((ABS_Y + $2))" "${3:-1}" >/dev/null; }
 open_settings() { click_rel "$((W - 118))" 16; sleep 0.7; }
-close_settings() { "$XWIN" Tervo >/dev/null 2>&1 || true; "$XKEY" --key escape >/dev/null 2>&1 || true; sleep 0.4; }
+close_settings() { "$XWIN" xtervo >/dev/null 2>&1 || true; "$XKEY" --key escape >/dev/null 2>&1 || true; sleep 0.4; }
 click_nav() { click_rel 100 "$1"; sleep 0.55; }
-open_search() { "$XWIN" Tervo >/dev/null 2>&1 || true; click_rel 880 56; sleep 0.35; }
+open_search() { "$XWIN" xtervo >/dev/null 2>&1 || true; click_rel 880 56; sleep 0.35; }
 click_result() { click_rel 300 152; sleep 0.9; }
 scroll_down() { local n=${1:-5} i; for i in $(seq 1 "$n"); do click_rel 620 420 5; sleep 0.12; done; sleep 0.3; }
 
@@ -339,7 +339,7 @@ shot 06_en_help_version
 grep -q "target=" "$LOG"
 
 # 窄窗：内容随窗口缩放、右边界不溢出、滚动生效。
-"$XWIN" Tervo 20 20 760 520 >/dev/null 2>&1 || true
+"$XWIN" xtervo 20 20 760 520 >/dev/null 2>&1 || true
 sleep 0.9
 refresh_geom
 shot 07_en_help_narrow
@@ -351,7 +351,7 @@ check_scrolled "$SHOTS/07_en_help_narrow.png" "$SHOTS/08_en_help_narrow_scrolled
 }
 
 # 宽窗：卡片撑满内容区。
-"$XWIN" Tervo 20 20 1400 900 >/dev/null 2>&1 || true
+"$XWIN" xtervo 20 20 1400 900 >/dev/null 2>&1 || true
 sleep 0.9
 refresh_geom
 shot 09_en_help_wide

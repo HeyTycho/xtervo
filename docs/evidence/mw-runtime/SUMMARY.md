@@ -16,7 +16,7 @@ No hardware GPU / Wayland / 30m soak coverage.
 ```bash
 CARGO_HOME=/home/user/AIworkspace/rusttabbyterminal/.cargo \
 CARGO_TARGET_DIR=/home/user/AIworkspace/rusttabbyterminal/target \
-CARGO_NET_OFFLINE=true cargo test -p tervo-app --bin tervo
+CARGO_NET_OFFLINE=true cargo test -p xtervo-app --bin xtervo
 ```
 
 ```text
@@ -71,7 +71,7 @@ log:         window-2 rendering teardown：保留共享 device/纹理（1 个窗
              window-1 RenderingSetup：复用同一 WGPU30 device/queue
 ```
 
-`present_frames=0` is expected: `TERVO_GPU_NATIVE=1` uses the GPU Scene path, so
+`present_frames=0` is expected: `XTERVO_GPU_NATIVE=1` uses the GPU Scene path, so
 stage-0 CPU texture uploads are not driven; `native_frames` is the live counter.
 
 ## 4. 2m dual-window soak (`soak/`)
@@ -98,7 +98,7 @@ Implemented and tested:
 ```text
 WindowId / WindowRuntime / WindowRegistry / SharedServices
 one SharedServices (Config/Theme/PluginHost/MCP/Session/Vault)
-feature flag TERVO_MULTI_WINDOW_INPROC=1
+feature flag XTERVO_MULTI_WINDOW_INPROC=1
 two MainWindows, one event loop, independent tabs/panes/focus/models
 close B keeps A; close primary keeps C
 global unique PaneId; PTY redraw routed by PaneId

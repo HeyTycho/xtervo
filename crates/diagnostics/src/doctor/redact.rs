@@ -634,7 +634,7 @@ fine = 42
 
     #[test]
     fn redacts_cli_style_flags() {
-        let (output, report) = redact_text("tervo --token abcdef --verbose");
+        let (output, report) = redact_text("xtervo --token abcdef --verbose");
         assert_clean(&output, &["abcdef"]);
         assert!(output.contains("--verbose"));
         assert!(report.matches >= 1);

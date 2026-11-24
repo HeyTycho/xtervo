@@ -2,9 +2,9 @@
 
 Status (2026-11-13): MCP is enabled by default but **read-only by default**.
 The live socket is created automatically at
-`$XDG_RUNTIME_DIR/tervo/mcp.sock` (0600); the state token lives at
-`$XDG_STATE_HOME/tervo/mcp.token` (0600). Grants are grouped and hot-applied in
-Settings → Privacy. The live socket is embedded in Tervo core; it is not a
+`$XDG_RUNTIME_DIR/xtervo/mcp.sock` (0600); the state token lives at
+`$XDG_STATE_HOME/xtervo/mcp.token` (0600). Grants are grouped and hot-applied in
+Settings → Privacy. The live socket is embedded in xtervo core; it is not a
 plugin and plugins do not host MCP.
 
 Implemented live tools:
@@ -22,21 +22,21 @@ L2:    live_close_pane, live_close_tab, live_kill
 
 ## 1. Architecture
 
-MCP is not embedded in the PTY. Tervo exposes a local live control socket, and
+MCP is not embedded in the PTY. xtervo exposes a local live control socket, and
 the MCP stdio bridge translates JSON-RPC tools into socket commands:
 
 ```text
 external harness
-  -> MCP stdio (tervo diag serve)
+  -> MCP stdio (xtervo diag serve)
      -> local Unix socket (0600, token)
-        -> Tervo UI/event loop
+        -> xtervo UI/event loop
            -> AppState: tabs/panes/PTY
 ```
 
 The socket is the only control boundary. MCP never gets direct filesystem,
 Vault, environment-variable, or host-process access.
 
-`tervo diag serve` uses the app as the authority for `tools/list`:
+`xtervo diag serve` uses the app as the authority for `tools/list`:
 
 ```text
 tools/list
@@ -46,12 +46,12 @@ tools/list
 ```
 
 The server no longer decides tool visibility from its own
-`TERVO_DIAG_ALLOW_WRITE`/`TERVO_DIAG_ALLOW_DESTRUCTIVE`. The app also validates
+`XTERVO_DIAG_ALLOW_WRITE`/`XTERVO_DIAG_ALLOW_DESTRUCTIVE`. The app also validates
 every `tools/call`, so a stale tool list cannot bypass a tightened grant.
 
 ## 2. Permission groups
 
-Config is flat TOML (`~/.config/tervo/config.toml`); defaults keep older config
+Config is flat TOML (`~/.config/xtervo/config.toml`); defaults keep older config
 files compatible (additive fields, no schema bump):
 
 ```toml
@@ -89,8 +89,8 @@ close the last window. The `[mcp]` audit line records the resolved window
 Old env overrides remain for tests/CI:
 
 ```text
-TERVO_DIAG_ALLOW_WRITE=1         -> input + tabs
-TERVO_DIAG_ALLOW_DESTRUCTIVE=1   -> destructive
+XTERVO_DIAG_ALLOW_WRITE=1         -> input + tabs
+XTERVO_DIAG_ALLOW_DESTRUCTIVE=1   -> destructive
 ```
 
 They cannot bypass `mcp_enabled=false`. Do not export them in a normal desktop
@@ -106,29 +106,29 @@ Settings → **Privacy → MCP live control** exposes:
 - enabled/readiness/error status.
 
 Changes are saved to config and applied immediately (socket supervisor and
-per-request app checks); no Tervo restart.
+per-request app checks); no xtervo restart.
 
 ## 3. Default socket and state token
 
 ```text
-socket: $XDG_RUNTIME_DIR/tervo/mcp.sock              (0600)
+socket: $XDG_RUNTIME_DIR/xtervo/mcp.sock              (0600)
         fallback without XDG_RUNTIME_DIR:
-        $XDG_STATE_HOME/tervo/mcp.sock
-        (or ~/.local/state/tervo/mcp.sock / temp fallback)
+        $XDG_STATE_HOME/xtervo/mcp.sock
+        (or ~/.local/state/xtervo/mcp.sock / temp fallback)
         paths longer than ~100 bytes also fall back to the
         state/temp path (Unix socket length limit)
-token:  $XDG_STATE_HOME/tervo/mcp.token              (0600)
-        or ~/.local/state/tervo/mcp.token
+token:  $XDG_STATE_HOME/xtervo/mcp.token              (0600)
+        or ~/.local/state/xtervo/mcp.token
 ```
 
-- Tervo creates the socket automatically when `mcp_enabled=true`.
+- xtervo creates the socket automatically when `mcp_enabled=true`.
 - The token is generated with 32 random bytes (hex) and reused across runs.
 - The token value is never written to config, logs, or feedback bundles.
-- `TERVO_DIAG_SOCKET` / `TERVO_DIAG_TOKEN` are explicit overrides for
+- `XTERVO_DIAG_SOCKET` / `XTERVO_DIAG_TOKEN` are explicit overrides for
   tests/CI; they do not override `mcp_enabled=false`.
-- `tervo diag serve` with no arguments reads config/state and discovers both.
+- `xtervo diag serve` with no arguments reads config/state and discovers both.
 - A stale socket is replaced only after a connection probe fails; an active
-  socket owned by another Tervo instance is left alone.
+  socket owned by another xtervo instance is left alone.
 - Wrong/missing token -> `unauthorized`; connection failures name the socket
   path. `tools/list` hides live tools when the probe fails.
 
@@ -138,10 +138,10 @@ token:  $XDG_STATE_HOME/tervo/mcp.token              (0600)
 
 | Tool | Operation |
 |---|---|
-| `tervo.live_capabilities` | Group switches, allowed commands, limits/version |
-| `tervo.live_snapshot` | Frame summary: cursor, modes, damage, image rectangles |
-| `tervo.live_list` | Pane ids, titles, grids, rectangles, focus (no tab list) |
-| `tervo.live_output` | Bounded visible output tail (not full scrollback) |
+| `xtervo.live_capabilities` | Group switches, allowed commands, limits/version |
+| `xtervo.live_snapshot` | Frame summary: cursor, modes, damage, image rectangles |
+| `xtervo.live_list` | Pane ids, titles, grids, rectangles, focus (no tab list) |
+| `xtervo.live_output` | Bounded visible output tail (not full scrollback) |
 
 Read limits:
 
@@ -156,14 +156,14 @@ no unbounded scrollback dump
 
 | Tool | Operation |
 |---|---|
-| `tervo.live_send_text` | Write text to a pane (no automatic Enter) |
-| `tervo.live_send_key` | Enter/Escape/Ctrl+C/Ctrl+D/arrows/F-keys subset |
-| `tervo.live_run` | Write one command line + Enter; no shell wrapper added |
-| `tervo.live_focus` | Focus a pane |
-| `tervo.live_scroll` | Scroll a pane's scrollback |
-| `tervo.live_new_tab` | Create a tab |
-| `tervo.live_new_window` | Open a second in-process window (flag required) |
-| `tervo.live_split` | Split a pane right/down |
+| `xtervo.live_send_text` | Write text to a pane (no automatic Enter) |
+| `xtervo.live_send_key` | Enter/Escape/Ctrl+C/Ctrl+D/arrows/F-keys subset |
+| `xtervo.live_run` | Write one command line + Enter; no shell wrapper added |
+| `xtervo.live_focus` | Focus a pane |
+| `xtervo.live_scroll` | Scroll a pane's scrollback |
+| `xtervo.live_new_tab` | Create a tab |
+| `xtervo.live_new_window` | Open a second in-process window (flag required) |
+| `xtervo.live_split` | Split a pane right/down |
 
 This is effectively shell execution through the terminal when input is granted.
 Required controls:
@@ -183,10 +183,10 @@ records action/pane/argument bytes (never argument text or secrets).
 
 | Tool | Operation |
 |---|---|
-| `tervo.live_close_pane` | Close a pane |
-| `tervo.live_close_tab` | Close a tab |
-| `tervo.live_close_window` | Close a window by `window_id` (never the last) |
-| `tervo.live_kill` | Send Ctrl+C to a PTY |
+| `xtervo.live_close_pane` | Close a pane |
+| `xtervo.live_close_tab` | Close a tab |
+| `xtervo.live_close_window` | Close a window by `window_id` (never the last) |
+| `xtervo.live_kill` | Send Ctrl+C to a PTY |
 
 All live tools accept an optional `window_id`; `live_list` returns `windows[]`
 and `active_window_id`, and each pane carries its `window_id`. Explicit window
@@ -200,28 +200,28 @@ L2 is disabled by default. `close_*` also needs `mcp_tabs`; `kill` also needs
 
 ```text
 (default read-only)
-tervo.live_list
-tervo.live_output
+xtervo.live_list
+xtervo.live_output
 ```
 
 After granting input+tabs+destructive:
 
 ```text
-tervo.live_list
+xtervo.live_list
   -> find a shell pane
-tervo.live_send_text { pane, text: "cargo test" }
-tervo.live_send_key  { pane, key: "Enter" }
-tervo.live_output    { pane, max_bytes: 65536 }
-tervo.live_split     { pane, direction: "vertical" }
-tervo.live_focus     { pane: original }
-tervo.live_close_pane{ pane: created }
+xtervo.live_send_text { pane, text: "cargo test" }
+xtervo.live_send_key  { pane, key: "Enter" }
+xtervo.live_output    { pane, max_bytes: 65536 }
+xtervo.live_split     { pane, direction: "vertical" }
+xtervo.live_focus     { pane: original }
+xtervo.live_close_pane{ pane: created }
 ```
 
 MCP request shape:
 
 ```json
 {"jsonrpc":"2.0","id":1,"method":"tools/call",
- "params":{"name":"tervo.live_list","arguments":{}}}
+ "params":{"name":"xtervo.live_list","arguments":{}}}
 ```
 
 ## 6. Security model
@@ -265,30 +265,30 @@ Current mainline (implemented and covered by tests/e2e):
 
 ```text
 offline:
-  tervo.diag_env
-  tervo.diag_snapshot
-  tervo.diag_replay
-  tervo.doctor_check
-  tervo.issue_draft
-  tervo.metrics_read
+  xtervo.diag_env
+  xtervo.diag_snapshot
+  xtervo.diag_replay
+  xtervo.doctor_check
+  xtervo.issue_draft
+  xtervo.metrics_read
 live read:
-  tervo.live_capabilities
-  tervo.live_snapshot
-  tervo.live_list
-  tervo.live_output
+  xtervo.live_capabilities
+  xtervo.live_snapshot
+  xtervo.live_list
+  xtervo.live_output
 live input:
-  tervo.live_send_text
-  tervo.live_send_key
-  tervo.live_run
+  xtervo.live_send_text
+  xtervo.live_send_key
+  xtervo.live_run
 live tabs:
-  tervo.live_new_tab
-  tervo.live_split
-  tervo.live_focus
-  tervo.live_scroll
+  xtervo.live_new_tab
+  xtervo.live_split
+  xtervo.live_focus
+  xtervo.live_scroll
 live destructive:
-  tervo.live_close_pane
-  tervo.live_close_tab
-  tervo.live_kill
+  xtervo.live_close_pane
+  xtervo.live_close_tab
+  xtervo.live_kill
 ```
 
 Not exposed yet: `live_paste`, `live_resize`, `live_metrics`, `live_rename`.
@@ -306,12 +306,12 @@ Evidence (2026-11-13):
 
 ```text
 default startup creates 0600 socket + 0600 state token without env
-read-only list/snapshot/output work through no-arg `tervo diag serve`
+read-only list/snapshot/output work through no-arg `xtervo diag serve`
 input/destructive tools absent and their calls rejected by default
 config edit grants input/tabs/destructive; tools appear and work without restart
 tightening config immediately hides/rejects the corresponding calls
 mcp_enabled=false removes the socket and all live tools
-mcp_enabled=false at startup creates no socket, even with TERVO_DIAG_SOCKET
+mcp_enabled=false at startup creates no socket, even with XTERVO_DIAG_SOCKET
 wrong token -> unauthorized; wrong-token bridge hides live tools
 missing socket/connection failure -> explicit error
 no token value in app log/config

@@ -26,6 +26,7 @@ mod serial_native;
 mod ssh_native;
 mod latency;
 mod logging;
+mod migrate;
 mod mcp;
 // Plugin API v3 protocol exposes a few forward-compatible helpers/limits that are
 // intentionally kept (and covered by tests) even when the current UI does not use
@@ -76,7 +77,7 @@ use std::time::{Duration, Instant};
 
 use slint::winit_030::{winit, EventResult, WinitWindowAccessor};
 use slint::{Model, ModelRc, VecModel};
-use tervo_core::{
+use xtervo_core::{
     link::{is_allowed_uri, strip_path_position},
     spawn, spawn_with_transport, Backend, ClipboardRequest, ClipboardSelection, CoreEvent, Frame,
     IipIgnoreReason, IipNotice, LinkKind, Modifiers, MouseAction, MouseButton, MouseEvent,
@@ -101,10 +102,10 @@ use crate::workspace::{Dir, Divider, PaneId, Rect, Tab, Workspace, SPLIT_GAP};
 
 /// 延迟探针使用的高辨识度字符（避免与 shell 提示符冲突）。
 const MARKER: char = 'z';
-const TITLE: &str = "Tervo";
+const TITLE: &str = "xtervo";
 
 /// 显式关闭单实例：仅测试/排障/legacy fallback 使用。默认必须是 true。
-const SINGLE_INSTANCE_ENV: &str = "TERVO_SINGLE_INSTANCE";
+const SINGLE_INSTANCE_ENV: &str = "XTERVO_SINGLE_INSTANCE";
 /// secondary 等 primary 启动 control socket / --restore 等旧 primary 退出的上限。
 const INSTANCE_CLAIM_TIMEOUT: Duration = Duration::from_secs(10);
 /// primary 的 open_window handler 等待 UI 线程真正建完窗口的上限。
@@ -562,7 +563,7 @@ fn cancel_delete_workspace(st: &mut AppState) {
     st.ui.set_workspace_delete_name("".into());
 }
 
-/// 导出工作区 JSON 的默认路径：`$HOME/tervo-workspace-<safe-name>.json`。
+/// 导出工作区 JSON 的默认路径：`$HOME/xtervo-workspace-<safe-name>.json`。
 fn default_workspace_export_path(name: &str) -> PathBuf {
     let safe: String = workspaces::sanitize_name(name)
         .chars()
@@ -579,7 +580,7 @@ fn default_workspace_export_path(name: &str) -> PathBuf {
     } else {
         safe
     };
-    let file = format!("tervo-workspace-{safe}.json");
+    let file = format!("xtervo-workspace-{safe}.json");
     if let Some(home) = std::env::var_os("HOME").filter(|h| !h.is_empty()) {
         PathBuf::from(home).join(file)
     } else {
@@ -698,10 +699,10 @@ impl PaneAppearance {
     }
 
     /// 该 pane 实际使用的光标形状：Profile 值优先，否则全局。
-    fn cursor_shape(&self, cfg: &Config) -> tervo_core::CursorShape {
+    fn cursor_shape(&self, cfg: &Config) -> xtervo_core::CursorShape {
         self.cursor_shape
             .as_deref()
-            .map(tervo_core::CursorShape::from_name)
+            .map(xtervo_core::CursorShape::from_name)
             .unwrap_or_else(|| cfg.cursor_shape())
     }
 
@@ -821,7 +822,7 @@ struct PaneRuntime {
     link_hover: bool,
     /// OSC 7/133 shell integration 状态（cwd、提示符阶段、最近退出码）。
     shell: ShellIntegration,
-    /// 上一帧是否由 `TERVO_GPU_NATIVE` 出图。GPU 失败切回 CPU 时必须强制
+    /// 上一帧是否由 `XTERVO_GPU_NATIVE` 出图。GPU 失败切回 CPU 时必须强制
     /// 整屏重绘，因为 GPU 期间没有维护 CPU 双缓冲的 damage 历史。
     gpu_native_active: bool,
     /// SSH 密码认证用的临时 askpass 脚本；随 pane 一起释放。
@@ -1201,12 +1202,12 @@ struct AppState {
     cursor: (f32, f32),
     /// 当前组合态从何时开始；fcitx 卡死不回调时用于 watchdog 自愈。
     ime_composing_since: Option<std::time::Instant>,
-    /// TERVO_RENDER_HUD 的重复计时器；None = HUD 关闭。
+    /// XTERVO_RENDER_HUD 的重复计时器；None = HUD 关闭。
     render_hud_timer: Option<slint::Timer>,
     /// Rust 侧权威的最大化 desired state；Slint 属性只做图标显示。
     window_maximized: bool,
     /// EWMH 最大化状态机（显式 xid + PropertyNotify）；非 X11 时为 None。
-    maximize: Option<tervo_maximize::MaximizeRuntime>,
+    maximize: Option<xtervo_maximize::MaximizeRuntime>,
     /// 上次同步给输入法的候选点（含 pane/DPR/锚点来源）；None 表示尚未发送。
     ime_spot: Option<ImeSpotKey>,
     /// 强制下一次 IME 同步重新下发（pane/Tab 切换、resize、窗口 focus/DPR 变化）。
@@ -1279,18 +1280,18 @@ static SCHEME_WATCH_CHILD: std::sync::Mutex<Option<std::process::Child>> =
     std::sync::Mutex::new(None);
 static SCHEME_WATCH_STOPPED: AtomicBool = AtomicBool::new(false);
 
-/// `TERVO_RENDER_PROFILE=1`：打印每 pane 的栅格化/帧缓冲耗时与 resize apply 分项。
+/// `XTERVO_RENDER_PROFILE=1`：打印每 pane 的栅格化/帧缓冲耗时与 resize apply 分项。
 fn render_profile() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("TERVO_RENDER_PROFILE").is_some())
+    *ON.get_or_init(|| std::env::var_os("XTERVO_RENDER_PROFILE").is_some())
 }
 
-/// 事件唤醒 A/B 诊断开关：默认开启；`TERVO_EVENT_WAKE=0` 回到纯 400ms 轮询。
+/// 事件唤醒 A/B 诊断开关：默认开启；`XTERVO_EVENT_WAKE=0` 回到纯 400ms 轮询。
 ///
 /// 只用于性能对比/排障，默认路径不读取额外配置；关闭后默认行为与旧版一致。
 fn event_wake_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| match std::env::var("TERVO_EVENT_WAKE") {
+    *ON.get_or_init(|| match std::env::var("XTERVO_EVENT_WAKE") {
         Ok(v) => !matches!(
             v.trim().to_ascii_lowercase().as_str(),
             "0" | "false" | "off"
@@ -1299,7 +1300,7 @@ fn event_wake_enabled() -> bool {
     })
 }
 
-/// 唤醒/轮询计数：`TERVO_WAKE_STATS=1` 时每 5s 打一行。
+/// 唤醒/轮询计数：`XTERVO_WAKE_STATS=1` 时每 5s 打一行。
 ///
 /// 空闲时 core/app 唤醒数应保持不变（没有事件就没有回调），400ms 兜底仍按
 /// 周期跑；这是“不是把轮询改快”的直接证据。
@@ -1365,7 +1366,7 @@ fn live_target_window(args: &serde_json::Value) -> Result<WindowId, String> {
 }
 
 fn live_audit(cmd: &str, window: Option<WindowId>, pane: Option<u64>, bytes: usize) {
-    // Audit sink 是普通 Tervo 日志；绝不记录命令文本/token。
+    // Audit sink 是普通 xtervo 日志；绝不记录命令文本/token。
     match window {
         Some(id) => eprintln!("[mcp] action={cmd} window={id} pane={pane:?} arg_bytes={bytes}"),
         None => eprintln!("[mcp] action={cmd} window=active pane={pane:?} arg_bytes={bytes}"),
@@ -1375,7 +1376,7 @@ fn live_audit(cmd: &str, window: Option<WindowId>, pane: Option<u64>, bytes: usi
 /// live control socket 的写操作入口；只在 UI 线程调用。
 fn live_control(cmd: &str, args: &serde_json::Value) -> Result<serde_json::Value, String> {
     // Audit: never log command text or secrets; only the action, target window
-    // and bounded size/shape metadata. The normal Tervo log file is the audit sink.
+    // and bounded size/shape metadata. The normal xtervo log file is the audit sink.
     let pane = args.get("pane_id").and_then(serde_json::Value::as_u64);
     let bytes = args
         .get("text")
@@ -1393,7 +1394,7 @@ fn live_control(cmd: &str, args: &serde_json::Value) -> Result<serde_json::Value
     if cmd == "new_window" {
         live_audit(cmd, None, None, 0);
         // 默认同进程；只有显式 legacy fallback 时 MCP 也没有子进程语义，
-        // 因此这里始终走 WindowRegistry（不再依赖 TERVO_MULTI_WINDOW_INPROC）。
+        // 因此这里始终走 WindowRegistry（不再依赖 XTERVO_MULTI_WINDOW_INPROC）。
         let id = secondary::create_inproc_window()?;
         eprintln!("[mcp] action=new_window created window={id}");
         return Ok(serde_json::json!({"window_id": id.get()}));
@@ -1440,7 +1441,7 @@ fn live_control(cmd: &str, args: &serde_json::Value) -> Result<serde_json::Value
             let bytes = text.as_bytes();
             let start = bytes.len().saturating_sub(max);
             Ok(serde_json::json!({
-                "schema":"tervo.control.v1",
+                "schema":"xtervo.control.v1",
                 "pane_id": pane,
                 "text": String::from_utf8_lossy(&bytes[start..]).to_string(),
                 "truncated": start > 0,
@@ -1721,7 +1722,7 @@ fn live_list_windows(
         .cloned()
         .unwrap_or_else(|| serde_json::json!([]));
     Ok(serde_json::json!({
-        "schema": "tervo.control.v1",
+        "schema": "xtervo.control.v1",
         "active_window_id": active.map(|id| id.get()),
         "windows": windows,
         "panes": panes,
@@ -1732,7 +1733,7 @@ fn live_list_windows(
 fn live_diag_snapshot() -> serde_json::Value {
     let Some(registry) = runtime::registry() else {
         return serde_json::json!({
-            "schema":"tervo.diag.v1","kind":"live","error":"app unavailable"
+            "schema":"xtervo.diag.v1","kind":"live","error":"app unavailable"
         });
     };
     let active_window = registry.borrow().active();
@@ -1764,7 +1765,7 @@ fn live_diag_snapshot() -> serde_json::Value {
         }));
     }
     serde_json::json!({
-        "schema": "tervo.diag.v1",
+        "schema": "xtervo.diag.v1",
         "kind": "live",
         "version": BUILD_VERSION,
         "commit": BUILD_COMMIT,
@@ -1948,9 +1949,9 @@ fn slint_theme(c: &UiColors) -> ThemeColors {
     }
 }
 
-/// Tabby 的默认配置路径（可用 TERVO_TABBY_CONFIG 覆盖，便于测试/多实例）。
+/// Tabby 的默认配置路径（可用 XTERVO_TABBY_CONFIG 覆盖，便于测试/多实例）。
 fn tabby_config_path() -> std::path::PathBuf {
-    if let Ok(p) = std::env::var("TERVO_TABBY_CONFIG") {
+    if let Ok(p) = std::env::var("XTERVO_TABBY_CONFIG") {
         return std::path::PathBuf::from(p);
     }
     let base = std::env::var("XDG_CONFIG_HOME")
@@ -2571,7 +2572,7 @@ fn sync_plugin_config_metadata(st: &AppState) {
 }
 
 /// Settings → Plugins：本地安装/更新/回滚。安装过程不执行插件；成功后才刷新
-/// store（已启用的插件经 v3 host reload，不重启 Tervo）。
+/// store（已启用的插件经 v3 host reload，不重启 xtervo）。
 fn plugin_install_action(st: &mut AppState, action: &str, key: &str, path: &str) {
     let lang = app_lang(st);
     let keep = plugin_v3::install::DEFAULT_BACKUP_KEEP;
@@ -3278,7 +3279,7 @@ fn dispatch_plugin_event(
     let _ = st.plugins.borrow().spawn_event(event, &payload);
 }
 
-/// Settings → Plugins 的用户操作：生命周期不重启 Tervo。
+/// Settings → Plugins 的用户操作：生命周期不重启 xtervo。
 fn plugin_action(st: &mut AppState, action: &str, key: &str) {
     let lang = app_lang(st);
     match action {
@@ -3896,14 +3897,14 @@ fn apply_background_image(st: &mut AppState, raw: &str) -> Result<(), String> {
 /// - `Ok(None)`：用户取消；
 /// - `Err(msg)`：zenity/kdialog 不可用或启动失败。
 ///
-/// 不拼 shell；只把固定参数传给 picker。`TERVO_FILE_DIALOG` 可覆盖可执行文件，
+/// 不拼 shell；只把固定参数传给 picker。`XTERVO_FILE_DIALOG` 可覆盖可执行文件，
 /// 便于无桌面测试使用 fake picker。
 fn pick_background_image(initial: &str) -> Result<Option<String>, String> {
-    let exe = std::env::var("TERVO_FILE_DIALOG").unwrap_or_else(|_| "zenity".to_string());
+    let exe = std::env::var("XTERVO_FILE_DIALOG").unwrap_or_else(|_| "zenity".to_string());
     let mut cmd = std::process::Command::new(&exe);
     cmd.args([
         "--file-selection",
-        "--title=Tervo — choose a background image",
+        "--title=xtervo — choose a background image",
         "--file-filter=Images | *.png *.jpg *.jpeg *.svg *.webp *.bmp",
     ]);
     let initial = config::expand_tilde(initial.trim());
@@ -3935,19 +3936,19 @@ fn pick_background_image(initial: &str) -> Result<Option<String>, String> {
 }
 
 /// 选择本地插件安装源：`kind = "folder"` 选目录，`"file"` 选 zip/tar 包。
-/// 与背景图选择器一致：只传固定参数给 zenity，不拼 shell；`TERVO_FILE_DIALOG`
+/// 与背景图选择器一致：只传固定参数给 zenity，不拼 shell；`XTERVO_FILE_DIALOG`
 /// 可覆盖可执行文件，便于无桌面测试使用 fake picker。
 fn pick_plugin_source(kind: &str, initial: &str) -> Result<Option<String>, String> {
-    let exe = std::env::var("TERVO_FILE_DIALOG").unwrap_or_else(|_| "zenity".to_string());
+    let exe = std::env::var("XTERVO_FILE_DIALOG").unwrap_or_else(|_| "zenity".to_string());
     let mut cmd = std::process::Command::new(&exe);
     cmd.arg("--file-selection");
     match kind {
         "folder" => {
-            cmd.args(["--directory", "--title=Tervo — choose a plugin folder"]);
+            cmd.args(["--directory", "--title=xtervo — choose a plugin folder"]);
         }
         "file" => {
             cmd.args([
-                "--title=Tervo — choose a plugin package",
+                "--title=xtervo — choose a plugin package",
                 "--file-filter=Plugin packages | *.zip *.tar *.tgz *.tar.gz",
             ]);
         }
@@ -4419,7 +4420,7 @@ fn apply_external_config_from(st: &mut AppState, old: Config, new_cfg: Config) {
     }
     if !summary.restart.is_empty() {
         eprintln!(
-            "[config] 以下字段需要重启 Tervo 才生效: {}",
+            "[config] 以下字段需要重启 xtervo 才生效: {}",
             summary.restart.join(", ")
         );
     }
@@ -4643,7 +4644,7 @@ enum McpSetting {
 }
 
 /// Settings → Privacy：立即写 config 并换运行期权限；socket 由 supervisor
-/// 在 100ms 内创建/移除，不需要重启 Tervo。
+/// 在 100ms 内创建/移除，不需要重启 xtervo。
 fn toggle_mcp_setting(st: &mut AppState, setting: McpSetting) {
     match setting {
         McpSetting::Enabled => st.cfg.borrow_mut().mcp_enabled = !st.cfg.borrow_mut().mcp_enabled,
@@ -5483,7 +5484,7 @@ fn new_tab_inner_with_cwd(st: &mut AppState, cwd: Option<PathBuf>) {
 
 /// 新建窗口：默认在当前 primary 进程内创建（WindowRegistry）。
 ///
-/// 只有显式 `TERVO_MULTI_WINDOW_INPROC=0` / `TERVO_MULTI_WINDOW_LEGACY=1` 时
+/// 只有显式 `XTERVO_MULTI_WINDOW_INPROC=0` / `XTERVO_MULTI_WINDOW_LEGACY=1` 时
 /// 才回退到旧的多进程 `current_exe --window`。旧路径由子进程显式绕过单实例锁。
 /// 在 `with_app` 借用内调用也安全：本函数只排队，不直接碰 AppState。
 fn new_window() {
@@ -5752,7 +5753,7 @@ fn toggle_quake_inner(st: &mut AppState) {
     }
     if st.quake_visible {
         // 不能 hide()：Slint 在“最后一个窗口隐藏”时会退出事件循环，进程直接结束，
-        // 全局热键线程也随之消失（表现为第二次 F12 后整个 Tervo 没了）。
+        // 全局热键线程也随之消失（表现为第二次 F12 后整个 xtervo 没了）。
         // 用最小化：窗口仍存在、事件循环/PTY/热键都活着；再由 F12 恢复。
         st.ui.window().set_minimized(true);
         st.quake_visible = false;
@@ -6729,7 +6730,7 @@ fn cancel_key_passphrase(st: &mut AppState) {
     refocus_after_modal(st);
 }
 
-/// `ssh.connect <profile-id|name>` / `TERVO_PLUGIN_SSH_CONNECT`：
+/// `ssh.connect <profile-id|name>` / `XTERVO_PLUGIN_SSH_CONNECT`：
 /// 强制用官方 SSH 插件后端（`Backend::Plugin`）打开该 Profile。
 ///
 /// 与普通打开的区别只有 `transport = "plugin"`：先按既有逻辑构造 ssh spec，
@@ -10273,7 +10274,7 @@ fn sync_terminal_focus(st: &mut AppState, window_focused: bool) {
         if rt.focus_sent != Some(want) {
             rt.handle.focus_event(want);
             rt.focus_sent = Some(want);
-            if std::env::var_os("TERVO_FOCUS_LOG").is_some() {
+            if std::env::var_os("XTERVO_FOCUS_LOG").is_some() {
                 eprintln!("[focus] pane={id} focused={want} window={window_focused}");
             }
         }
@@ -10529,12 +10530,12 @@ fn start_maximize_when_window_ready(ui: &MainWindow, window_id: WindowId, attemp
     }
     let xid = ui.window().with_winit_window(winit_window_x11_id).flatten();
     if let Some(id) = xid {
-        let on_event = move |_snapshot: tervo_maximize::MaximizeSnapshot| {
+        let on_event = move |_snapshot: xtervo_maximize::MaximizeSnapshot| {
             let _ = slint::invoke_from_event_loop(move || {
                 runtime::with_window(window_id, sync_maximize_from_state_machine);
             });
         };
-        match tervo_maximize::MaximizeRuntime::start(id, on_event) {
+        match xtervo_maximize::MaximizeRuntime::start(id, on_event) {
             Ok(runtime) => {
                 let snapshot = runtime.snapshot();
                 runtime::with_window(window_id, |st| {
@@ -10953,7 +10954,7 @@ fn schedule_resize_finalize(st: &mut AppState) {
                     st.ui.window().request_redraw();
                 }
                 if (was_active || st.resize_applied > 0)
-                    && std::env::var_os("TERVO_RESIZE_PROFILE").is_some()
+                    && std::env::var_os("XTERVO_RESIZE_PROFILE").is_some()
                 {
                     eprintln!(
                         "[ui] resize done applies={} max_apply={:.1}ms content={:.0}x{:.0}",
@@ -11044,11 +11045,11 @@ fn pane_view(
     }
 }
 
-/// 调试行号：仅 TERVO_LINE_NUMBERS=1 时生成 1..N 的字符串模型。
+/// 调试行号：仅 XTERVO_LINE_NUMBERS=1 时生成 1..N 的字符串模型。
 fn line_number_model(rows: usize, _cell_h: usize) -> ModelRc<slint::SharedString> {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     let enabled = *ENABLED.get_or_init(|| {
-        std::env::var("TERVO_LINE_NUMBERS")
+        std::env::var("XTERVO_LINE_NUMBERS")
             .map(|v| v == "1")
             .unwrap_or(false)
     });
@@ -11620,7 +11621,7 @@ fn apply_cursor_settings(st: &mut AppState) {
             .appearance
             .cursor_shape
             .as_deref()
-            .map(tervo_core::CursorShape::from_name)
+            .map(xtervo_core::CursorShape::from_name)
             .unwrap_or(global_shape);
         if rt.renderer.set_cursor_style(shape, color, text_color) {
             refresh_cursor_overlay(rt);
@@ -11671,9 +11672,9 @@ fn needs_cursor_blink(st: &AppState) -> bool {
             .any(|rt| rt.appearance.cursor_blink == Some(true))
 }
 
-/// 截图/自动化冻结相位：`TERVO_CURSOR_BLINK_PHASE=on|off`。
+/// 截图/自动化冻结相位：`XTERVO_CURSOR_BLINK_PHASE=on|off`。
 fn frozen_cursor_blink_phase() -> Option<bool> {
-    let phase = std::env::var_os("TERVO_CURSOR_BLINK_PHASE")?;
+    let phase = std::env::var_os("XTERVO_CURSOR_BLINK_PHASE")?;
     match phase.to_string_lossy().to_ascii_lowercase().as_str() {
         "on" | "1" | "true" => Some(true),
         "off" | "0" | "false" => Some(false),
@@ -11695,7 +11696,7 @@ fn tick_cursor_blink(st: &mut AppState) {
 
 /// 按配置/Profile 启停闪烁计时器；没有 pane 需要闪时停掉，空闲零唤醒。
 ///
-/// `TERVO_CURSOR_BLINK_PHASE=on|off` 用于截图/自动化：冻结相位、不启动计时器。
+/// `XTERVO_CURSOR_BLINK_PHASE=on|off` 用于截图/自动化：冻结相位、不启动计时器。
 fn configure_cursor_blink(st: &mut AppState) {
     if let Some(on) = frozen_cursor_blink_phase() {
         st.cursor_blink_timer.stop();
@@ -11970,7 +11971,7 @@ fn update_ime_spot(st: &mut AppState) {
         // Enable 之前调用会被丢弃；保持 dirty，等 Ime::Enabled 后再发一次。
         st.ime_spot_dirty = false;
     }
-    if std::env::var_os("TERVO_IME_LOG").is_some() {
+    if std::env::var_os("XTERVO_IME_LOG").is_some() {
         eprintln!(
             "[ime] spot pane={focused} cell={line},{col} win={x:.1},{y:.1} \
              phys={},{} scale={:.3} anchor={}",
@@ -12012,7 +12013,7 @@ fn sync_inline_images(rt: &mut PaneRuntime, frame: &Frame) {
     }
     rt.inline_sig = sig;
     rt.inline_geometry = geometry;
-    if std::env::var_os("TERVO_SIXEL_DEBUG").is_some() {
+    if std::env::var_os("XTERVO_SIXEL_DEBUG").is_some() {
         let pos = rt.handle.scroll_position();
         eprintln!(
             "[sixel] offset={} scroll=({},{}) images={:?}",
@@ -12177,8 +12178,8 @@ fn redraw_pane_inner(st: &mut AppState, id: PaneId) {
         return;
     }
     rt.cursor = (frame.cursor.line as usize, frame.cursor.col as usize);
-    // 诊断：TERVO_FRAME_DUMP=/tmp/frame.txt 时，每次重绘前把 Frame 文本落盘。
-    if let Some(path) = std::env::var_os("TERVO_FRAME_DUMP") {
+    // 诊断：XTERVO_FRAME_DUMP=/tmp/frame.txt 时，每次重绘前把 Frame 文本落盘。
+    if let Some(path) = std::env::var_os("XTERVO_FRAME_DUMP") {
         let mut out = String::with_capacity(frame.rows * frame.cols + frame.rows);
         for row in 0..frame.rows {
             for col in 0..frame.cols {
@@ -12188,7 +12189,7 @@ fn redraw_pane_inner(st: &mut AppState, id: PaneId) {
         }
         let _ = std::fs::write(&path, out);
     }
-    // TERVO_GPU_NATIVE=1：真实 Frame -> Scene -> WGPU glyph atlas/背景，先尝试
+    // XTERVO_GPU_NATIVE=1：真实 Frame -> Scene -> WGPU glyph atlas/背景，先尝试
     // GPU 出图。成功时**不**碰 CPU framebuffer，也不走 stage 0 纹理上传。
     // 失败返回 None 才回 CPU，并强制下一帧整屏重绘。
     let native_image = if gpu_native::ready() {
@@ -12227,7 +12228,7 @@ fn redraw_pane_inner(st: &mut AppState, id: PaneId) {
         }
         // 光标不进帧缓冲：用独立 overlay，闪烁时只换 visible。
         rt.renderer.draw_without_cursor(&frame);
-        // stage 0 只作为显式 TERVO_GPU_NATIVE=0 的兼容路径；默认 GPU-native
+        // stage 0 只作为显式 XTERVO_GPU_NATIVE=0 的兼容路径；默认 GPU-native
         // 失败时直接 CPU，绝不偷偷回“CPU framebuffer 上传”冒充 GPU。
         let gpu_image = if gpu_present::ready() && !gpu_native::requested() {
             // dirty_rows 是 cell 行；Stage 0 上传的是像素纹理，必须展开成
@@ -12488,7 +12489,7 @@ fn apply_font_settings(st: &mut AppState) -> bool {
             .appearance
             .cursor_shape
             .as_deref()
-            .map(tervo_core::CursorShape::from_name)
+            .map(xtervo_core::CursorShape::from_name)
             .unwrap_or(global_shape);
         rt.renderer
             .set_cursor_style(shape, cursor_color, cursor_text_color);
@@ -12519,15 +12520,15 @@ fn snapshot_path(base: &Path, suffix: &str) -> PathBuf {
     PathBuf::from(p)
 }
 
-/// 无头验收：`TERVO_GPU_SNAPSHOT=<前缀>` 时用 `Window::take_snapshot()` 读回
+/// 无头验收：`XTERVO_GPU_SNAPSHOT=<前缀>` 时用 `Window::take_snapshot()` 读回
 /// Slint 合成后的像素，写二进制 PPM，并打印非背景像素/颜色统计。
 ///
 /// 可选：
-/// - `TERVO_GPU_SNAPSHOT_RESIZE=1`：首张快照后程序化改窗口尺寸，1.5s 后再拍一张
+/// - `XTERVO_GPU_SNAPSHOT_RESIZE=1`：首张快照后程序化改窗口尺寸，1.5s 后再拍一张
 ///   （验证 resize 不黑；走 Slint `resized` 回调 + PTY resize）。
-/// - `TERVO_GPU_SNAPSHOT_EXIT=1`：拍完退出事件循环，供脚本无头跑。
+/// - `XTERVO_GPU_SNAPSHOT_EXIT=1`：拍完退出事件循环，供脚本无头跑。
 fn render_hud_forced_by_env() -> bool {
-    std::env::var("TERVO_RENDER_HUD").is_ok_and(|v| {
+    std::env::var("XTERVO_RENDER_HUD").is_ok_and(|v| {
         matches!(
             v.trim().to_ascii_lowercase().as_str(),
             "1" | "true" | "yes" | "on"
@@ -12602,16 +12603,16 @@ fn set_render_hud(st: &mut AppState, enabled: bool) {
 }
 
 fn install_gpu_snapshot_hook(ui: &MainWindow) {
-    let Some(base) = std::env::var_os("TERVO_GPU_SNAPSHOT") else {
+    let Some(base) = std::env::var_os("XTERVO_GPU_SNAPSHOT") else {
         return;
     };
     let base = PathBuf::from(base);
     let base_for_log = base.clone();
-    let want_resize = env_flag("TERVO_GPU_SNAPSHOT_RESIZE");
-    let exit_after = env_flag("TERVO_GPU_SNAPSHOT_EXIT");
+    let want_resize = env_flag("XTERVO_GPU_SNAPSHOT_RESIZE");
+    let exit_after = env_flag("XTERVO_GPU_SNAPSHOT_EXIT");
     // llvmpipe first WGPU present can land after 2.5s; tests that need the
     // imported texture to have been presented should pass a larger delay.
-    let first_delay = std::env::var("TERVO_GPU_SNAPSHOT_DELAY_MS")
+    let first_delay = std::env::var("XTERVO_GPU_SNAPSHOT_DELAY_MS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
         .map(Duration::from_millis)
@@ -13590,7 +13591,7 @@ fn home_dir() -> Option<PathBuf> {
 /// 允许空格（引号内路径，例如 `"/tmp/my notes.txt"`）：调用方只接受单参数
 /// `xdg-open`，不拼 shell，所以空格没有注入风险。
 /// 相对路径以 pane 的 shell cwd 为基准（OSC 7 优先，其次 `/proc/<pid>/cwd`），
-/// 不依赖 Tervo 进程自己的 cwd，避免 `cd /tmp` 后点 `./a` 打开到错误目录。
+/// 不依赖 xtervo 进程自己的 cwd，避免 `cd /tmp` 后点 `./a` 打开到错误目录。
 fn resolve_local_path(
     text: &str,
     cwd: Option<&Path>,
@@ -13612,7 +13613,7 @@ fn resolve_local_path(
         return Ok(home.join(rest));
     }
     if let Some(rest) = text.strip_prefix('~') {
-        // `~user/path`：用户不存在时不猜 HOME，直接报错（不落回 Tervo 进程 HOME）。
+        // `~user/path`：用户不存在时不猜 HOME，直接报错（不落回 xtervo 进程 HOME）。
         let (user, tail) = rest.split_once('/').map_or((rest, ""), |(u, t)| (u, t));
         let user_home =
             user_home_dir(user).ok_or_else(|| format!("无法展开 ~{user}：用户不存在"))?;
@@ -13682,7 +13683,7 @@ fn inspect_local_path(path: &Path) -> Result<(), String> {
 /// pane shell 的当前目录。
 ///
 /// 优先用 shell 自己通过 OSC 7 报告的 cwd（`cd` 立刻可见），其次读
-/// `/proc/<pid>/cwd`，都没有才退回 Tervo 进程 cwd。OSC 7 只在本地/远端 shell
+/// `/proc/<pid>/cwd`，都没有才退回 xtervo 进程 cwd。OSC 7 只在本地/远端 shell
 /// 主动发送时更新，不改变没有 integration 的会话行为。
 fn pane_cwd(rt: &PaneRuntime) -> Option<PathBuf> {
     rt.shell
@@ -13916,15 +13917,15 @@ fn show_link_status(msg: String) {
 
 /// 非内联 IIP 的用户可见文案（状态栏 toast；详细原因写 `[iip]` 日志）。
 ///
-/// 与 core 的协议语义对齐：`inline` 缺省/0 是“只下载、不显示”，而 Tervo
+/// 与 core 的协议语义对齐：`inline` 缺省/0 是“只下载、不显示”，而 xtervo
 /// 不实现文件下载，所以明确告诉用户“已忽略”，而不是静默丢图。
 fn iip_ignored_status(notice: &IipNotice) -> String {
     match notice.reason {
         IipIgnoreReason::MissingInline => {
-            "IIP: 图片缺少 inline=1，已忽略（Tervo 不下载文件）".to_string()
+            "IIP: 图片缺少 inline=1，已忽略（xtervo 不下载文件）".to_string()
         }
         IipIgnoreReason::InlineDisabled => {
-            "IIP: 图片 inline=0，已忽略（Tervo 不下载文件）".to_string()
+            "IIP: 图片 inline=0，已忽略（xtervo 不下载文件）".to_string()
         }
     }
 }
@@ -13987,7 +13988,7 @@ fn cleanup_stale_clipboard_images() {
     for entry in entries.flatten() {
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if !name.starts_with("tervo-paste-") || !name.ends_with(".png") {
+        if !name.starts_with("xtervo-paste-") || !name.ends_with(".png") {
             continue;
         }
         let Ok(meta) = entry.metadata() else { continue };
@@ -14031,7 +14032,7 @@ fn write_clipboard_image(image: arboard::ImageData) -> std::io::Result<PathBuf> 
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let path = std::env::temp_dir().join(format!("tervo-paste-{}-{stamp}.png", std::process::id()));
+    let path = std::env::temp_dir().join(format!("xtervo-paste-{}-{stamp}.png", std::process::id()));
     let file = {
         let mut opts = std::fs::OpenOptions::new();
         opts.write(true).create_new(true);
@@ -14815,7 +14816,7 @@ fn tab_search_pick(st: &mut AppState, row: usize) {
 fn refresh_palette(st: &mut AppState) {
     let query = st.ui.get_palette_query().to_string();
     // 内置命令 + 已启用 v3 插件命令；插件命令不进静态 Registry，Enable/Disable
-    // 后下一次打开 Palette 即生效，不需要重启 Tervo。
+    // 后下一次打开 Palette 即生效，不需要重启 xtervo。
     let mut entries: Vec<(String, String)> = st
         .commands
         .search(&query)
@@ -15334,12 +15335,12 @@ fn focused_pane(st: &AppState) -> Option<PaneId> {
     st.ws.active_tab().map(|t| t.focused)
 }
 
-/// 默认保存路径：`$HOME/tervo-save-<epoch>.txt`；无 HOME 时退到临时目录。
+/// 默认保存路径：`$HOME/xtervo-save-<epoch>.txt`；无 HOME 时退到临时目录。
 fn default_save_path(stamp: u64) -> PathBuf {
     if let Some(home) = std::env::var_os("HOME").filter(|h| !h.is_empty()) {
-        PathBuf::from(home).join(format!("tervo-save-{stamp}.txt"))
+        PathBuf::from(home).join(format!("xtervo-save-{stamp}.txt"))
     } else {
-        std::env::temp_dir().join(format!("tervo-save-{stamp}.txt"))
+        std::env::temp_dir().join(format!("xtervo-save-{stamp}.txt"))
     }
 }
 
@@ -15381,12 +15382,12 @@ fn save_contents_file(
     Ok(path)
 }
 
-/// 录制导出的默认路径：`$HOME/tervo-recording-<epoch>.raw`（原始字节）。
+/// 录制导出的默认路径：`$HOME/xtervo-recording-<epoch>.raw`（原始字节）。
 fn default_recording_path(stamp: u64) -> PathBuf {
     if let Some(home) = std::env::var_os("HOME").filter(|h| !h.is_empty()) {
-        PathBuf::from(home).join(format!("tervo-recording-{stamp}.raw"))
+        PathBuf::from(home).join(format!("xtervo-recording-{stamp}.raw"))
     } else {
-        std::env::temp_dir().join(format!("tervo-recording-{stamp}.raw"))
+        std::env::temp_dir().join(format!("xtervo-recording-{stamp}.raw"))
     }
 }
 
@@ -16094,7 +16095,7 @@ fn handle_input(
                 let flags = rt.handle.keyboard_flags();
                 // TERM-016：应用请求 alternate keys 时，base layout key 不可用
                 // （Slint 无 physical key），显式记录一次降级。
-                if flags.contains(tervo_core::KeyboardFlags::REPORT_ALTERNATE_KEYS) {
+                if flags.contains(xtervo_core::KeyboardFlags::REPORT_ALTERNATE_KEYS) {
                     keys::note_base_layout_degraded();
                 }
                 let modify_level = if flags.is_empty() {
@@ -16108,7 +16109,7 @@ fn handle_input(
                     // 只有应用请求 REPORT_EVENT_TYPES、且这次 press/repeat 真的以
                     // 转义序列进入 PTY，才登记 release；普通文本键没有 CSI-u press
                     // 就不配对，避免产生孤立 release。
-                    if flags.contains(tervo_core::KeyboardFlags::REPORT_EVENT_TYPES)
+                    if flags.contains(xtervo_core::KeyboardFlags::REPORT_EVENT_TYPES)
                         && kind != keys::KeyEventKind::Release
                         && bytes.first() == Some(&0x1b)
                     {
@@ -16196,7 +16197,7 @@ fn handle_key_release(
             continue;
         }
         let flags = rt.handle.keyboard_flags();
-        if !flags.contains(tervo_core::KeyboardFlags::REPORT_EVENT_TYPES) {
+        if !flags.contains(xtervo_core::KeyboardFlags::REPORT_EVENT_TYPES) {
             continue;
         }
         if let Some(bytes) = keys::encode_key_event(
@@ -16264,7 +16265,7 @@ fn send_desktop_notification(title: &str, body: &str) {
         .name("notify-send".into())
         .spawn(move || {
             let mut child = match std::process::Command::new("notify-send")
-                .arg("--app-name=Tervo")
+                .arg("--app-name=xtervo")
                 .arg("--")
                 .arg(&title)
                 .arg(&body)
@@ -16439,7 +16440,7 @@ fn drain_core_events(st: &mut AppState) -> (bool, u32) {
         let tab_title = tab
             .and_then(|i| tab_titles.get(i))
             .map(String::as_str)
-            .unwrap_or("Tervo");
+            .unwrap_or("xtervo");
         let is_active = tab == Some(active);
         for ev in events {
             match ev {
@@ -16597,7 +16598,7 @@ fn drain_core_events(st: &mut AppState) -> (bool, u32) {
         }
     }
     if !iip_notices.is_empty() {
-        // 合法但非内联的 IIP（inline 缺省/0）：Tervo 只支持 inline=1，不做
+        // 合法但非内联的 IIP（inline 缺省/0）：xtervo 只支持 inline=1，不做
         // 文件下载。序列已在 core 吞掉；这里给一次用户可见提示 + 诊断日志。
         // 5s 节流：循环发图/恶意输出不会刷爆事件循环或状态栏。
         const IIP_NOTICE_THROTTLE: Duration = Duration::from_secs(5);
@@ -16830,7 +16831,7 @@ fn poll_events() {
 /// 第二窗口的 400ms 轮询：显式按 state 路由，不依赖“当前活动窗口”。
 fn poll_events_for(state: Rc<RefCell<AppState>>) {
     PERIODIC_POLLS.fetch_add(1, Ordering::Relaxed);
-    if std::env::var_os("TERVO_MW_DEBUG").is_some() {
+    if std::env::var_os("XTERVO_MW_DEBUG").is_some() {
         let id = state.borrow().window_id;
         eprintln!("[poll] {id}");
     }
@@ -16968,9 +16969,9 @@ fn parse_args_from(cfg: &Config, args: impl IntoIterator<Item = String>) -> Opti
     o
 }
 
-/// `tervo --diagnose`：不启动 UI，打印环境/窗口/最近日志，便于定位“右键没反应”。
+/// `xtervo --diagnose`：不启动 UI，打印环境/窗口/最近日志，便于定位“右键没反应”。
 fn print_diagnostics() {
-    println!("Tervo {}", env!("CARGO_PKG_VERSION"));
+    println!("xtervo {}", env!("CARGO_PKG_VERSION"));
     println!("pid={}", std::process::id());
     for key in [
         "DISPLAY",
@@ -16980,8 +16981,8 @@ fn print_diagnostics() {
         "XDG_CURRENT_DESKTOP",
         "SLINT_BACKEND",
         "TERM",
-        "TERVO_CONFIG",
-        "TERVO_PROFILES",
+        "XTERVO_CONFIG",
+        "XTERVO_PROFILES",
     ] {
         println!("{key}={:?}", std::env::var(key).ok());
     }
@@ -17062,15 +17063,15 @@ fn print_diagnostics() {
                 w.id, w.pid, w.w, w.h, w.x, w.y, w.viewable, w.title
             );
         }
-        let others: Vec<_> = xconn::tervo_windows()
+        let others: Vec<_> = xconn::xtervo_windows()
             .into_iter()
             .filter(|w| w.pid != std::process::id())
             .collect();
         if !others.is_empty() {
             if wayland_hint {
-                println!("⚠ 其他 X11 Tervo 窗口（不是本进程 Wayland 窗口）:");
+                println!("⚠ 其他 X11 xtervo 窗口（不是本进程 Wayland 窗口）:");
             } else {
-                println!("⚠ 其他 Tervo 实例窗口（可能挡住点击）:");
+                println!("⚠ 其他 xtervo 实例窗口（可能挡住点击）:");
             }
             for w in others {
                 println!(
@@ -17091,16 +17092,16 @@ fn print_diagnostics() {
 /// 编译期注入的发布信息；`scripts/package.sh` 用固定的 `SOURCE_DATE_EPOCH`
 /// 构建以保证同 commit 的产物可复现。
 const BUILD_VERSION: &str = env!("CARGO_PKG_VERSION");
-const BUILD_COMMIT: &str = env!("TERVO_GIT_COMMIT");
-const BUILD_DIRTY: &str = env!("TERVO_GIT_DIRTY");
-const BUILD_TIME: &str = env!("TERVO_BUILD_TIME");
-const BUILD_TARGET: &str = env!("TERVO_BUILD_TARGET");
+const BUILD_COMMIT: &str = env!("XTERVO_GIT_COMMIT");
+const BUILD_DIRTY: &str = env!("XTERVO_GIT_DIRTY");
+const BUILD_TIME: &str = env!("XTERVO_BUILD_TIME");
+const BUILD_TARGET: &str = env!("XTERVO_BUILD_TARGET");
 
 /// `--version` 的完整文本；与打印分离，便于单测。
 fn version_text() -> String {
     let dirty = if BUILD_DIRTY == "1" { " (dirty)" } else { "" };
     format!(
-        "Tervo {BUILD_VERSION}\n\
+        "xtervo {BUILD_VERSION}\n\
          commit:  {BUILD_COMMIT}{dirty}\n\
          built:   {BUILD_TIME}\n\
          target:  {BUILD_TARGET}"
@@ -17150,7 +17151,7 @@ fn refresh_help_info(st: &mut AppState) {
     st.ui
         .set_help_log_path(info.log_dir.display().to_string().as_str().into());
     st.ui
-        .set_help_version(format!("Tervo {}", info.version).as_str().into());
+        .set_help_version(format!("xtervo {}", info.version).as_str().into());
     st.ui.set_help_commit(info.commit.as_str().into());
     st.ui.set_help_built(info.built.into());
     st.ui.set_help_target(info.target.into());
@@ -17168,7 +17169,7 @@ fn refresh_help_info(st: &mut AppState) {
 /// 复制到剪贴板的诊断文本：路径 + 版本，不包含任何密码/密钥/环境变量。
 fn help_diagnostics_text(info: &HelpInfo, lang: &str) -> String {
     format!(
-        "Tervo diagnostics\n\
+        "xtervo diagnostics\n\
          version: {}\n\
          commit:  {}\n\
          built:   {}\n\
@@ -17249,8 +17250,8 @@ fn open_help_directory(dir: PathBuf, kind: &'static str, lang: &'static str) -> 
 
 fn print_help() {
     println!(
-        "Tervo {}\n\n\
-用法: tervo [选项] [-- <shell 参数>...]\n\n\
+        "xtervo {}\n\n\
+用法: xtervo [选项] [-- <shell 参数>...]\n\n\
 选项:\n  \
 --cols N            初始列数 (默认 120)\n  \
 --rows N            初始行数 (默认 32)\n  \
@@ -17272,18 +17273,18 @@ fn print_help() {
 --import-profiles PATH 无 UI：导入自有格式 Profile 后退出\n  \
 --profile-rows [QUERY] 内部探针：打印设置页 Profile 行（分组/折叠）后退出\n  \
 --diagnose          打印环境/窗口/最近日志后退出（排查右键/焦点问题）\n  \
-  diag [env|snapshot|replay|trace|metrics|observability|scene-diff]  harness 可调用 JSON 诊断（tervo diag help）\n  \
+  diag [env|snapshot|replay|trace|metrics|observability|scene-diff]  harness 可调用 JSON 诊断（xtervo diag help）\n  \
 -V, --version       显示版本、git commit 与构建时间\n  \
 -h, --help          显示帮助\n\n\
 快捷键: Ctrl+Shift+T 新建标签 / Ctrl+Shift+N 新建窗口 / Ctrl+Shift+W 关闭 / Ctrl+Shift+F 搜索 / Ctrl+Shift+C 复制 / Ctrl+Shift+V 粘贴\n\
-配置: ~/.config/tervo/config.toml (TERVO_CONFIG 可覆盖)\n\
-主题目录: ~/.config/tervo/themes (TERVO_THEMES_DIR 可覆盖；支持 iTerm2/WT/Alacritty/kitty/Xresources/YAML)",
+配置: ~/.config/xtervo/config.toml (XTERVO_CONFIG 可覆盖)\n\
+主题目录: ~/.config/xtervo/themes (XTERVO_THEMES_DIR 可覆盖；支持 iTerm2/WT/Alacritty/kitty/Xresources/YAML)",
         env!("CARGO_PKG_VERSION")
     );
 }
 
 /// 内部探针：不启动 UI，直接用第一个 SSH Profile 跑一次 SFTP 操作。
-/// 用法：`tervo --sftp-probe <list|get|put> <remote> [local]`
+/// 用法：`xtervo --sftp-probe <list|get|put> <remote> [local]`
 fn run_sftp_probe(args: &[String]) -> i32 {
     let store = profile::ProfileStore::load();
     let Some(p) = store.profiles.iter().find(|p| p.kind == "ssh") else {
@@ -17355,24 +17356,24 @@ fn sftp_probe_transfer(
     Ok(String::new())
 }
 
-/// TERVO_GPU=1 但 WGPU30 backend/adapter/device 初始化失败：exec 重启自己并
-/// `TERVO_GPU=0`，走原来的默认 CPU/Skia 路径。保留参数，日志明确写出原因。
-/// `TERVO_GPU_FALLBACK=1` 只用于标记这次重启，不再请求 GPU（TERVO_GPU=0 已足够）。
+/// XTERVO_GPU=1 但 WGPU30 backend/adapter/device 初始化失败：exec 重启自己并
+/// `XTERVO_GPU=0`，走原来的默认 CPU/Skia 路径。保留参数，日志明确写出原因。
+/// `XTERVO_GPU_FALLBACK=1` 只用于标记这次重启，不再请求 GPU（XTERVO_GPU=0 已足够）。
 fn exec_cpu_fallback(requested: &str, reason: &str) -> ! {
     use std::os::unix::process::CommandExt;
     eprintln!(
         "[gpu] requested_backend={requested} 的 WGPU 显示链路初始化失败：{reason}；\
-         exec 重启并 TERVO_GPU=0 TERVO_GPU_NATIVE=0 自动回退 CPU/Skia（默认路径）"
+         exec 重启并 XTERVO_GPU=0 XTERVO_GPU_NATIVE=0 自动回退 CPU/Skia（默认路径）"
     );
     logging::restore_stderr();
     std::thread::sleep(Duration::from_millis(50));
     let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
-    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("tervo"));
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("xtervo"));
     let err = std::process::Command::new(exe)
         .args(args)
-        .env("TERVO_GPU", "0")
-        .env("TERVO_GPU_NATIVE", "0")
-        .env("TERVO_GPU_FALLBACK", "1")
+        .env("XTERVO_GPU", "0")
+        .env("XTERVO_GPU_NATIVE", "0")
+        .env("XTERVO_GPU_FALLBACK", "1")
         .exec();
     eprintln!("[gpu] exec CPU 回退失败: {err}");
     std::process::exit(3);
@@ -17380,7 +17381,7 @@ fn exec_cpu_fallback(requested: &str, reason: &str) -> ! {
 
 /// Skia 已创建窗口但 1s 内没有拿到 GPU/GL 上下文（software surface 在本机实测
 /// 黑屏），用 exec 换成 winit-software 重新启动；保留原参数/环境，且用
-/// `TERVO_RENDER_FALLBACK=1` 防止循环。`exec` 前恢复 stderr，避免新进程继承
+/// `XTERVO_RENDER_FALLBACK=1` 防止循环。`exec` 前恢复 stderr，避免新进程继承
 /// 旧 tee pipe 导致日志全部丢失。
 fn exec_software_fallback(requested: &str) -> ! {
     use std::os::unix::process::CommandExt;
@@ -17392,14 +17393,14 @@ fn exec_software_fallback(requested: &str) -> ! {
     // 给 tee 线程一点时间把上面这行写进日志。
     std::thread::sleep(Duration::from_millis(50));
     let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
-    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("tervo"));
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("xtervo"));
     let err = std::process::Command::new(exe)
         .args(args)
         .env("SLINT_BACKEND", "winit-software")
-        .env("TERVO_GPU_NATIVE", "0")
-        .env("TERVO_RENDER_FALLBACK", "1")
-        .env_remove("TERVO_TEST_FORCE_UI_INIT_FAIL")
-        .env_remove("TERVO_TEST_SUSPEND_BG")
+        .env("XTERVO_GPU_NATIVE", "0")
+        .env("XTERVO_RENDER_FALLBACK", "1")
+        .env_remove("XTERVO_TEST_FORCE_UI_INIT_FAIL")
+        .env_remove("XTERVO_TEST_SUSPEND_BG")
         .exec();
     eprintln!("[render] exec winit-software 回退失败: {err}");
     std::process::exit(3);
@@ -17476,8 +17477,8 @@ fn build_window_state(
     let command_registry = commands::builtin();
     // 圆角 worker 只依赖 X11；多个窗口各自持有自己的 SHAPE worker（默认关闭）。
     // Wayland 窗口没有 X11 SHAPE，启动它只会连到 XWayland 并等不到本进程窗口。
-    let corners = if std::env::var_os("TERVO_CORNERS").is_none()
-        || std::env::var_os("TERVO_NO_CORNERS").is_some()
+    let corners = if std::env::var_os("XTERVO_CORNERS").is_none()
+        || std::env::var_os("XTERVO_NO_CORNERS").is_some()
         || !platform::caps().x11_corners
     {
         None
@@ -17732,7 +17733,7 @@ fn init_window_ui(st: &mut AppState) {
     refresh_help_info(st);
     init_background(st);
     // 测试/对比用：启动即隐藏背景，测量 cover 缩放成本（不影响正常路径）。
-    if std::env::var_os("TERVO_TEST_SUSPEND_BG").is_some() {
+    if std::env::var_os("XTERVO_TEST_SUSPEND_BG").is_some() {
         st.ui.set_background_suspended(true);
     }
     st.ui.set_language(app_lang(st).into());
@@ -17771,9 +17772,9 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
     eprintln!("[ui] {window_id} register window callbacks");
 
     // ---- 回调 ----
-    let keylog = std::env::var("TERVO_KEYLOG").is_ok();
-    // 鼠标链路排查：TERVO_MOUSELOG=1 打印「命中哪格 / 是否上报」。
-    let mouselog = std::env::var("TERVO_MOUSELOG").is_ok();
+    let keylog = std::env::var("XTERVO_KEYLOG").is_ok();
+    // 鼠标链路排查：XTERVO_MOUSELOG=1 打印「命中哪格 / 是否上报」。
+    let mouselog = std::env::var("XTERVO_MOUSELOG").is_ok();
     ui.on_key_input(move |text, ctrl, alt, shift, meta, repeat| {
         let text = text.to_string();
         if keylog {
@@ -19123,13 +19124,13 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
                     imported.save_to(&Config::path());
                     let msg = if app_lang(st) == "zh" {
                         format!(
-                            "已导入 {} → {}；重启 Tervo 后生效",
+                            "已导入 {} → {}；重启 xtervo 后生效",
                             src.display(),
                             Config::path().display()
                         )
                     } else {
                         format!(
-                            "Imported {} → {}; restart Tervo to apply",
+                            "Imported {} → {}; restart xtervo to apply",
                             src.display(),
                             Config::path().display()
                         )
@@ -19158,12 +19159,12 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
                 Ok(used) => {
                     let msg = if app_lang(st) == "zh" {
                         format!(
-                            "已用迁移前备份 {} 覆盖配置；重启 Tervo 后生效",
+                            "已用迁移前备份 {} 覆盖配置；重启 xtervo 后生效",
                             used.display()
                         )
                     } else {
                         format!(
-                            "Restored {} over config; restart Tervo to apply",
+                            "Restored {} over config; restart xtervo to apply",
                             used.display()
                         )
                     };
@@ -19925,7 +19926,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
             let description = st.ui.get_feedback_text().to_string();
             match feedback::create_bundle(&description) {
                 Ok(bundle) => {
-                    let url = std::env::var("TERVO_FEEDBACK_ISSUE_URL")
+                    let url = std::env::var("XTERVO_FEEDBACK_ISSUE_URL")
                         .ok()
                         .filter(|v| !v.trim().is_empty())
                         .unwrap_or_else(|| st.cfg.borrow().feedback_issue_url.clone());
@@ -19977,7 +19978,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
             if c == 7 {
                 refresh_profiles(st);
             }
-            // Help 每次进入都重取路径（TERVO_CONFIG/TERVO_LOG_DIR 可能变了）。
+            // Help 每次进入都重取路径（XTERVO_CONFIG/XTERVO_LOG_DIR 可能变了）。
             if c == 8 {
                 refresh_help_info(st);
             }
@@ -20979,15 +20980,15 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
             // resize 期间隐藏**大窗口**的背景图，避免 Skia 每帧对整张图做 cover
             // 缩放（2560x1440 llvmpipe 实测每帧省约 2ms）。小窗口收益小、闪一下
             // 不划算，故按面积设阈值；停下 200ms 后自动恢复。字符帧不缩放，仍是 1:1。
-            // TERVO_RESIZE_KEEP_BG=1 可关闭该优化，用于 A/B 性能对比。
+            // XTERVO_RESIZE_KEEP_BG=1 可关闭该优化，用于 A/B 性能对比。
             const RESIZE_BG_SUSPEND_AREA: f32 = 1_500_000.0;
             if live_drag
                 && w * h > RESIZE_BG_SUSPEND_AREA
                 && st.ui.get_has_background_image()
-                && std::env::var_os("TERVO_RESIZE_KEEP_BG").is_none()
+                && std::env::var_os("XTERVO_RESIZE_KEEP_BG").is_none()
             {
                 if !st.ui.get_background_suspended()
-                    && std::env::var_os("TERVO_RESIZE_PROFILE").is_some()
+                    && std::env::var_os("XTERVO_RESIZE_PROFILE").is_some()
                 {
                     eprintln!("[ui] resize 期间隐藏背景图（减少 cover 缩放）");
                 }
@@ -21025,7 +21026,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
                             // apply 更新了 pane 图像，必须安排一次重绘；此时布局
                             // 已是新尺寸，不会出现按钮晚一帧。
                             schedule_resize_redraw(st, false);
-                            if std::env::var_os("TERVO_RESIZE_PROFILE").is_some() {
+                            if std::env::var_os("XTERVO_RESIZE_PROFILE").is_some() {
                                 eprintln!(
                                     "[ui] resize apply events={} cost={:.1}ms layout={:.1}ms redraw={:.1}ms content={:.0}x{:.0}",
                                     st.resize_events,
@@ -21050,7 +21051,7 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
 enum InstanceClaim {
     /// 本进程持有 primary 锁；稍后 UI 平台就绪再启动 control server。
     Primary(InstanceLock),
-    /// 显式 `TERVO_SINGLE_INSTANCE=0`：旧行为，独立进程、无 lock/server。
+    /// 显式 `XTERVO_SINGLE_INSTANCE=0`：旧行为，独立进程、无 lock/server。
     Standalone,
 }
 
@@ -21101,7 +21102,7 @@ fn claim_instance_or_forward(paths: &InstancePaths, restore_requested: bool) -> 
                     crate::logging::restore_stderr();
                     eprintln!(
                         "[instance] --restore 等待现有 primary 退出超时（{}s）；\
-                         另一个 Tervo 仍在运行：{}",
+                         另一个 xtervo 仍在运行：{}",
                         INSTANCE_CLAIM_TIMEOUT.as_secs(),
                         paths.lock_path().display()
                     );
@@ -21143,7 +21144,7 @@ fn claim_instance_or_forward(paths: &InstancePaths, restore_requested: bool) -> 
                     }
                     Err(error) => {
                         crate::logging::restore_stderr();
-                        eprintln!("[instance] 无法把新窗口转发给已运行的 Tervo primary: {error}");
+                        eprintln!("[instance] 无法把新窗口转发给已运行的 xtervo primary: {error}");
                         eprintln!(
                             "[instance] 提示：确认 {} 可访问；仅排障/测试可设置 \
                              {}=0 以独立进程启动",
@@ -21161,7 +21162,7 @@ fn claim_instance_or_forward(paths: &InstancePaths, restore_requested: bool) -> 
                     paths.dir().display()
                 );
                 eprintln!(
-                    "[instance] 提示：设置 TERVO_INSTANCE_DIR 到可写的私有目录，或仅排障/测试时 \
+                    "[instance] 提示：设置 XTERVO_INSTANCE_DIR 到可写的私有目录，或仅排障/测试时 \
                      设置 {SINGLE_INSTANCE_ENV}=0 跳过单实例"
                 );
                 std::process::exit(1);
@@ -21222,17 +21223,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // `SLINT_BACKEND=winit-software` 仍是显式回退开关；显式设置任何值都以用户为准。
     // Skia 初始化失败时由 render_probe/下面的重试自动回退 software，不黑屏、不崩溃。
     let explicit_backend = std::env::var("SLINT_BACKEND").ok();
-    // TERVO_GPU=1 是显式 opt-in：请求 Skia 的 WGPU30 API（require_wgpu_30），
+    // XTERVO_GPU=1 是显式 opt-in：请求 Skia 的 WGPU30 API（require_wgpu_30），
     // 从而在 RenderingSetup 里拿到 WGPU30 device/queue。默认完全不改变原路径。
-    let tervo_gpu = gpu_present::requested();
-    let tervo_gpu_native = gpu_native::requested();
-    // 两个显式开关都需要 Slint 的 WGPU30 device/queue；但只有 TERVO_GPU=1
-    // 走 stage 0 CPU framebuffer 上传，TERVO_GPU_NATIVE=1 走 Scene 文字。
-    let tervo_gpu_any = tervo_gpu || tervo_gpu_native;
+    let xtervo_gpu = gpu_present::requested();
+    let xtervo_gpu_native = gpu_native::requested();
+    // 两个显式开关都需要 Slint 的 WGPU30 device/queue；但只有 XTERVO_GPU=1
+    // 走 stage 0 CPU framebuffer 上传，XTERVO_GPU_NATIVE=1 走 Scene 文字。
+    let xtervo_gpu_any = xtervo_gpu || xtervo_gpu_native;
     let mut requested_backend = explicit_backend
         .clone()
         .unwrap_or_else(|| "winit-skia".to_string());
-    if tervo_gpu_any && explicit_backend.is_none() {
+    if xtervo_gpu_any && explicit_backend.is_none() {
         requested_backend = "winit-skia".to_string();
     }
     let backend_from_env = explicit_backend.is_some();
@@ -21242,9 +21243,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // `SLINT_BACKEND=winit-skia` 强制尝试（headless/llvmpipe 验证用）。
     let mut auto_software_no_drm = false;
     if !backend_from_env
-        && !tervo_gpu_any
+        && !xtervo_gpu_any
         && !std::path::Path::new("/dev/dri").exists()
-        && std::env::var_os("TERVO_FORCE_GPU").is_none()
+        && std::env::var_os("XTERVO_FORCE_GPU").is_none()
     {
         requested_backend = "winit-software".to_string();
         auto_software_no_drm = true;
@@ -21253,11 +21254,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = REQUESTED_BACKEND.set(requested_backend.clone());
     let t_start = Instant::now();
     let argv: Vec<String> = std::env::args().collect();
+    // 进程启动最早期：兼容旧 TERVO_* 环境变量。目录迁移放在 --version/--help
+    // 之后，避免只查版本也写用户目录。
+    migrate::alias_legacy_env();
     if let Some(pos) = argv.iter().position(|a| a == "--sftp-probe") {
         std::process::exit(run_sftp_probe(&argv[pos + 1..]));
     }
     // 官方 SSH 插件 POC 的无 GUI 复现入口：走与 pane 相同的 transport，
-    // 把远端 banner/错误原样打到 stdout。GUI 路径见 TERVO_PLUGIN_SSH_CONNECT。
+    // 把远端 banner/错误原样打到 stdout。GUI 路径见 XTERVO_PLUGIN_SSH_CONNECT。
     if let Some(pos) = argv.iter().position(|a| a == "--plugin-ssh-probe") {
         std::process::exit(ssh_plugin::run_probe(&argv[pos + 1..]));
     }
@@ -21271,6 +21275,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         print_help();
         return Ok(());
     }
+    migrate::migrate_legacy_user_data();
 
     if argv.get(1).map(String::as_str) == Some("diag") {
         return diag::run(&argv[2..]);
@@ -21338,7 +21343,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     // 内部探针：打印设置页 Profile 列表实际下发给 Slint 的行（分组标题/折叠）。
-    // 用法：`tervo --profile-rows [QUERY] [--collapsed GROUP]`
+    // 用法：`xtervo --profile-rows [QUERY] [--collapsed GROUP]`
     if let Some(pos) = argv.iter().position(|a| a == "--profile-rows") {
         let query = argv
             .get(pos + 1)
@@ -21424,7 +21429,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 if report.hotkeys_extra_ignored > 0 {
                     println!(
-                        "  - 多候选键：另有 {} 条未采用（Tervo 每个命令只保留一条）",
+                        "  - 多候选键：另有 {} 条未采用（xtervo 每个命令只保留一条）",
                         report.hotkeys_extra_ignored
                     );
                 }
@@ -21477,19 +21482,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 必须在任何 Slint backend 初始化之前设置；放在 logging::init 之后是为了让
     // 日志里的 SLINT_BACKEND 能区分“程序默认 GPU”与“用户显式设置”。
-    // TERVO_GPU=1 时不能写 SLINT_BACKEND：BackendSelector::select() 会读它，
+    // XTERVO_GPU=1 时不能写 SLINT_BACKEND：BackendSelector::select() 会读它，
     // 而我们要用 require_wgpu_30() 明确选中 Skia 的 WGPU30 API。
-    if !backend_from_env && !tervo_gpu_any {
+    if !backend_from_env && !xtervo_gpu_any {
         std::env::set_var("SLINT_BACKEND", &requested_backend);
     }
-    if tervo_gpu_any && !backend_from_env {
+    if xtervo_gpu_any && !backend_from_env {
         eprintln!(
             "[gpu] {}：请求 Slint WGPU30 显示链路（BackendSelector.require_wgpu_30；\
              失败会自动回退 CPU/Skia，默认路径不受影响）",
-            if tervo_gpu_native {
-                "TERVO_GPU_NATIVE=1（Frame -> Scene -> WGPU 文字/背景）"
+            if xtervo_gpu_native {
+                "XTERVO_GPU_NATIVE=1（Frame -> Scene -> WGPU 文字/背景）"
             } else {
-                "TERVO_GPU=1（stage 0 CPU framebuffer 纹理）"
+                "XTERVO_GPU=1（stage 0 CPU framebuffer 纹理）"
             }
         );
     } else if backend_from_env {
@@ -21674,14 +21679,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 自测钩子（仅 debug）：注入一次 UI 初始化失败，验证“失败→回退 software→
     // 窗口正常”的路径。release 构建里该分支恒为 false。
     #[cfg(debug_assertions)]
-    let force_init_fail = std::env::var_os("TERVO_TEST_FORCE_UI_INIT_FAIL").is_some();
+    let force_init_fail = std::env::var_os("XTERVO_TEST_FORCE_UI_INIT_FAIL").is_some();
     #[cfg(not(debug_assertions))]
     let force_init_fail = false;
 
-    // TERVO_GPU=1 / TERVO_GPU_NATIVE=1：在任何 Slint UI 初始化之前明确要求 WGPU30。
+    // XTERVO_GPU=1 / XTERVO_GPU_NATIVE=1：在任何 Slint UI 初始化之前明确要求 WGPU30。
     // require_wgpu_30 请求 WGPU30 API；adapter/device 不可用时 select() 返回错误，
     // 这里 exec 回退 CPU/Skia（默认路径），不会黑屏硬撑。
-    if tervo_gpu_any && !backend_from_env && !force_init_fail {
+    if xtervo_gpu_any && !backend_from_env && !force_init_fail {
         match slint::BackendSelector::new()
             .require_wgpu_30(slint::wgpu_30::WGPUConfiguration::default())
             .select()
@@ -21696,7 +21701,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     let first_ui = if force_init_fail {
-        eprintln!("[render] 测试注入：强制首次 UI 初始化失败（TERVO_TEST_FORCE_UI_INIT_FAIL）");
+        eprintln!("[render] 测试注入：强制首次 UI 初始化失败（XTERVO_TEST_FORCE_UI_INIT_FAIL）");
         Err(slint::PlatformError::Other(
             "test-injected UI init failure".into(),
         ))
@@ -21706,7 +21711,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (ui, backend_fell_back) = match first_ui {
         Ok(ui) => (ui, false),
-        Err(err) if tervo_gpu_any => {
+        Err(err) if xtervo_gpu_any => {
             // WGPU platform 已经 select；再改 SLINT_BACKEND 重试无效，直接 exec 回退。
             exec_cpu_fallback(&requested_backend, &format!("MainWindow::new: {err}"))
         }
@@ -21736,7 +21741,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let window_id = WindowId::FIRST;
     // Wayland 的 .desktop/图标关联依赖 app_id；Slint 在 show() 建原生窗口时读取，
     // 因此必须在 show() 之前设置。只对 Wayland 设置：X11 上 Slint 会把它写成
-    // WM_CLASS ("", "tervo")，而现有 X11 e2e/WM 习惯是 ("tervo", "tervo")，
+    // WM_CLASS ("", "xtervo")，而现有 X11 e2e/WM 习惯是 ("xtervo", "xtervo")，
     // 保持 winit 默认值（argv[0]）以避免 X11 回归。
     if platform::SessionFacts::from_env().hint() == platform::UiBackend::Wayland {
         match slint::set_xdg_app_id(platform::XDG_APP_ID) {
@@ -21761,9 +21766,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui.set_sidebar_visible(cfg.sidebar_visible);
     ui.set_sidebar_width(sidebar_width_of(&cfg));
     ui.set_cfg_sidebar_visible(cfg.sidebar_visible);
-    // 回退开关：TERVO_SETTINGS_LEGACY=1 时设置页退回居中 modal（同一套控件，
+    // 回退开关：XTERVO_SETTINGS_LEGACY=1 时设置页退回居中 modal（同一套控件，
     // 只是不再占用 Tab/内容区）。默认走新的 Settings Tab。
-    let settings_legacy = std::env::var("TERVO_SETTINGS_LEGACY")
+    let settings_legacy = std::env::var("XTERVO_SETTINGS_LEGACY")
         .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
         .unwrap_or(false);
     ui.set_settings_legacy(settings_legacy);
@@ -21953,7 +21958,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 唤醒计数诊断：空闲时 core/app 唤醒数不应增长（只有 400ms 兜底在跑）。
     // 只在显式设置时启动，正常使用不产生额外 timer/日志。
-    if std::env::var_os("TERVO_WAKE_STATS").is_some() {
+    if std::env::var_os("XTERVO_WAKE_STATS").is_some() {
         let stats_timer = slint::Timer::default();
         stats_timer.start(slint::TimerMode::Repeated, Duration::from_secs(5), || {
             eprintln!(
@@ -22091,7 +22096,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     .unwrap_or(false);
     // 官方 SSH 插件 POC 的 GUI e2e 入口：启动首 Tab 后按 id/name 打开一个
     // `Backend::Plugin` SSH pane（不点 UI 也能复现 banner/错误可见）。
-    if let Ok(selector) = std::env::var("TERVO_PLUGIN_SSH_CONNECT") {
+    if let Ok(selector) = std::env::var("XTERVO_PLUGIN_SSH_CONNECT") {
         with_app(|st| {
             if connect_ssh_plugin(st, &selector) {
                 rebuild_tabs(st);
@@ -22166,12 +22171,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui.set_window_maximized(initial_maximized);
     with_app(|st| st.window_maximized = initial_maximized);
     start_maximize_when_window_ready(&ui, window_id, 0);
-    // 无头验收钩子：TERVO_GPU_SNAPSHOT=<前缀> 时定时 take_snapshot 写 PPM 并打像素统计。
+    // 无头验收钩子：XTERVO_GPU_SNAPSHOT=<前缀> 时定时 take_snapshot 写 PPM 并打像素统计。
     install_gpu_snapshot_hook(&ui);
     // RenderingSetup 可能首帧后才给出 device/queue；GPU 就绪后主动重绘一次。
     // Stage 0 和 Scene 文字链路都需要这一脚，否则首帧以后没有输入时画面
     // 会一直停在 CPU 初帧。
-    if tervo_gpu_any {
+    if xtervo_gpu_any {
         // Slint's first WGPU present can happen after the first terminal frame
         // (PTY output/timer). An imported texture that has not been sampled by
         // a WGPU frame yet used to snapshot as an empty pane until the next
@@ -22184,7 +22189,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             });
         }
     }
-    // 恢复其余窗口。产品恢复路径不依赖 TERVO_MULTI_WINDOW_INPROC：v2 快照里
+    // 恢复其余窗口。产品恢复路径不依赖 XTERVO_MULTI_WINDOW_INPROC：v2 快照里
     // 有几个可恢复窗口就建几个。每个窗口的 Tab 恢复失败只回退该窗口的新 Tab。
     //
     // 延迟 600ms 再建第二个原生窗口：Slint 1.18 的 WinitWindowAccessor 在
@@ -22227,7 +22232,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     // e2e/证据开关：feature flag + 显式 SECOND 时启动即建第二个窗口。
     // 同样延迟 600ms，让 primary 的 maximize 状态机先绑定正确的 X11 handle。
-    if restore_windows.is_empty() && std::env::var_os("TERVO_MULTI_WINDOW_SECOND").is_some() {
+    if restore_windows.is_empty() && std::env::var_os("XTERVO_MULTI_WINDOW_SECOND").is_some() {
         slint::Timer::single_shot(Duration::from_millis(600), move || {
             match secondary::create_inproc_window() {
                 Ok(id) => eprintln!("[ui] startup second window id={id}"),
@@ -22238,7 +22243,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // GPU 自检兜底：Skia 软件 surface 会“窗口正常但全黑”，而 Slint 的
     // set_rendering_notifier 在 software surface 上不会给出 NativeOpenGL/WGPU
     // 回调。给 GPU 首帧 1s 初始化时间，仍无 GPU API 就 exec 回退软件后端。
-    if requested_backend != "winit-software" && std::env::var_os("TERVO_RENDER_FALLBACK").is_none()
+    if requested_backend != "winit-software" && std::env::var_os("XTERVO_RENDER_FALLBACK").is_none()
     {
         let requested = requested_backend.clone();
         slint::Timer::single_shot(Duration::from_millis(1000), move || {
@@ -22268,12 +22273,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
         }
         // 旧实例可能全屏盖住新窗口：日志里明确写出来，右键“没反应”时可直接判断。
-        for other in xconn::tervo_windows()
+        for other in xconn::xtervo_windows()
             .into_iter()
             .filter(|w| w.pid != std::process::id() && w.viewable)
         {
             eprintln!(
-                "[ui] 警告：另一个可见的 Tervo 窗口 0x{:x}（pid={}）{}x{} at {},{}，可能挡住点击",
+                "[ui] 警告：另一个可见的 xtervo 窗口 0x{:x}（pid={}）{}x{} at {},{}，可能挡住点击",
                 other.id, other.pid, other.w, other.h, other.x, other.y
             );
         }
@@ -23481,8 +23486,8 @@ mod tests {
         assert_eq!(apply_title_rules("bash", "[", "]", ""), "[bash]");
         // filter：替换 + 裸规则删除，多条以 ; 分隔
         assert_eq!(
-            apply_title_rules("~/src/tervo - fish", "", "", "~/=>; - fish=>"),
-            "src/tervo"
+            apply_title_rules("~/src/xtervo - fish", "", "", "~/=>; - fish=>"),
+            "src/xtervo"
         );
         assert_eq!(
             apply_title_rules("user@host: ~/proj", "● ", "", "user@host: =>"),
@@ -23552,8 +23557,8 @@ mod tests {
     #[test]
     fn stale_clipboard_images_are_cleaned() {
         let dir = std::env::temp_dir();
-        let old = dir.join(format!("tervo-paste-test-old-{}.png", std::process::id()));
-        let fresh = dir.join(format!("tervo-paste-test-fresh-{}.png", std::process::id()));
+        let old = dir.join(format!("xtervo-paste-test-old-{}.png", std::process::id()));
+        let fresh = dir.join(format!("xtervo-paste-test-fresh-{}.png", std::process::id()));
         std::fs::write(&old, b"old").unwrap();
         std::fs::write(&fresh, b"fresh").unwrap();
         let file = std::fs::OpenOptions::new().write(true).open(&old).unwrap();
@@ -23628,7 +23633,7 @@ mod tests {
     #[test]
     fn bracketed_paste_reaches_child_over_pty_with_201_content() {
         let dir = std::env::temp_dir().join(format!(
-            "tervo-paste-e2e-{}-{}",
+            "xtervo-paste-e2e-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -24114,7 +24119,7 @@ mod tests {
 
     fn put_frame_text(frame: &mut Frame, text: &str) {
         for (col, ch) in text.chars().enumerate() {
-            let mut cell = tervo_core::CellData::default();
+            let mut cell = xtervo_core::CellData::default();
             cell.ch = ch as u32;
             frame.put(col, cell, None);
         }
@@ -24124,7 +24129,7 @@ mod tests {
     fn frame_target_prefers_osc8_over_plain_url() {
         let mut f = Frame::new(40, 1);
         put_frame_text(&mut f, "https://plain.example/x");
-        let mut first = tervo_core::CellData::default();
+        let mut first = xtervo_core::CellData::default();
         first.ch = 'h' as u32;
         f.put(0, first, Some("https://osc.example/x"));
 
@@ -24143,7 +24148,7 @@ mod tests {
     fn unsafe_osc8_is_rejected_and_plain_url_still_wins() {
         let mut f = Frame::new(40, 1);
         put_frame_text(&mut f, "https://plain.example/x");
-        let mut first = tervo_core::CellData::default();
+        let mut first = xtervo_core::CellData::default();
         first.ch = 'h' as u32;
         f.put(0, first, Some("javascript:alert(1)"));
 
@@ -24158,7 +24163,7 @@ mod tests {
     fn frame_target_rejects_unsafe_only_and_out_of_bounds() {
         let mut f = Frame::new(20, 1);
         put_frame_text(&mut f, "hello");
-        let mut first = tervo_core::CellData::default();
+        let mut first = xtervo_core::CellData::default();
         first.ch = 'h' as u32;
         f.put(0, first, Some("data:text/html,<script>alert(1)</script>"));
         assert_eq!(frame_target_at(&f, 0, 0), None);
@@ -24170,16 +24175,16 @@ mod tests {
     #[test]
     fn frame_target_opens_paths_but_not_bare_ipv4() {
         let mut f = Frame::new(64, 2);
-        put_frame_text(&mut f, "see /tmp/tervo-file.txt");
+        put_frame_text(&mut f, "see /tmp/xtervo-file.txt");
         assert_eq!(
             frame_target_at(&f, 0, 6),
-            Some(LinkTarget::Path("/tmp/tervo-file.txt".to_string()))
+            Some(LinkTarget::Path("/tmp/xtervo-file.txt".to_string()))
         );
         // hover 在远端 pane 不把路径伪装成可点；URL 不受影响。
         assert_eq!(hover_target_at(&f, 0, 6, true), None);
         assert_eq!(
             hover_target_at(&f, 0, 6, false),
-            Some(LinkTarget::Path("/tmp/tervo-file.txt".to_string()))
+            Some(LinkTarget::Path("/tmp/xtervo-file.txt".to_string()))
         );
 
         let mut g = Frame::new(64, 2);
@@ -24195,7 +24200,7 @@ mod tests {
 
     #[test]
     fn local_path_resolution_expands_home_and_uses_shell_cwd() {
-        let home = PathBuf::from("/home/tervo");
+        let home = PathBuf::from("/home/xtervo");
         let cwd = PathBuf::from("/work/project");
         assert_eq!(
             resolve_local_path("/var/log/syslog", Some(&cwd), Some(&home)).unwrap(),
@@ -24227,9 +24232,9 @@ mod tests {
         assert!(resolve_local_path("/tmp/a\nb", Some(&cwd), Some(&home))
             .unwrap_err()
             .contains("控制字符"));
-        // `~user` 从 /etc/passwd 展开；未知用户报错而不是回退 Tervo 的 HOME。
+        // `~user` 从 /etc/passwd 展开；未知用户报错而不是回退 xtervo 的 HOME。
         assert!(
-            resolve_local_path("~tervo-nosuch-user/x", Some(&cwd), Some(&home))
+            resolve_local_path("~xtervo-nosuch-user/x", Some(&cwd), Some(&home))
                 .unwrap_err()
                 .contains("用户不存在")
         );
@@ -24243,7 +24248,7 @@ mod tests {
 
     #[test]
     fn local_path_inspection_reports_missing_and_permission_denied() {
-        let dir = std::env::temp_dir().join(format!("tervo-link-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("xtervo-link-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("create temp dir");
 
@@ -24272,7 +24277,7 @@ mod tests {
     #[test]
     fn version_text_has_commit_build_time_and_target() {
         let text = version_text();
-        assert!(text.starts_with("Tervo "), "{text}");
+        assert!(text.starts_with("xtervo "), "{text}");
         assert!(text.contains("\ncommit:  "), "{text}");
         assert!(text.contains("\nbuilt:   "), "{text}");
         assert!(text.contains("\ntarget:  "), "{text}");
@@ -24413,7 +24418,7 @@ mod tests {
 
     #[test]
     fn save_contents_resolves_paths_and_writes_files() {
-        let dir = std::env::temp_dir().join(format!("tervo-save-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("xtervo-save-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("home")).expect("create temp dir");
         let home = dir.join("home");
@@ -24449,7 +24454,7 @@ mod tests {
 
         // 默认路径必须明确到文件名，便于 UI 显示/用户确认。
         let default = default_save_path(42);
-        assert!(default.to_string_lossy().ends_with("tervo-save-42.txt"));
+        assert!(default.to_string_lossy().ends_with("xtervo-save-42.txt"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -24569,7 +24574,7 @@ mod tests {
         assert_eq!(a.cursor_blink, Some(false));
         assert_eq!(a.scrollback, Some(12_000));
         assert!(!a.cursor_blinks(true), "Profile off 覆盖全局 on");
-        assert_eq!(a.cursor_shape(&cfg), tervo_core::CursorShape::Beam);
+        assert_eq!(a.cursor_shape(&cfg), xtervo_core::CursorShape::Beam);
 
         let inherit = PaneAppearance::from_profile(&profile::Profile::default());
         assert_eq!(inherit.font_size, None);
@@ -24657,7 +24662,7 @@ mod tests {
 
     #[test]
     fn iip_ignored_status_distinguishes_missing_and_inline_zero() {
-        // 两种“非内联”都要有用户可见的同一类提示，且说明 Tervo 不下载文件；
+        // 两种“非内联”都要有用户可见的同一类提示，且说明 xtervo 不下载文件；
         // 文案必须能区分缺失 inline=1 与显式 inline=0，方便排查客户端参数。
         let missing = iip_ignored_status(&IipNotice {
             reason: IipIgnoreReason::MissingInline,

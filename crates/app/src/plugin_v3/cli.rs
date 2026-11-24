@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! `tervo plugins ...`：无 UI 的本地安装/更新/回滚/校验/签名工具。
+//! `xtervo plugins ...`：无 UI 的本地安装/更新/回滚/校验/签名工具。
 //!
 //! 不启动窗口、不初始化 Slint、不执行插件代码。方便打包/CI/无桌面环境使用；
 //! 设置页调用的是同一套 [`super::install`] / [`super::signature`] 代码。
@@ -21,13 +21,13 @@ pub fn run_cli(args: &[String]) -> i32 {
     match run_cli_inner(args) {
         Ok(code) => code,
         Err(CliError::Usage(message)) => {
-            eprintln!("tervo plugins: {message}");
+            eprintln!("xtervo plugins: {message}");
             eprintln!();
             eprintln!("{}", usage());
             2
         }
         Err(CliError::Failed(message)) => {
-            eprintln!("tervo plugins: {message}");
+            eprintln!("xtervo plugins: {message}");
             1
         }
     }
@@ -76,7 +76,7 @@ fn run_cli_inner(args: &[String]) -> CliResult<i32> {
 
 fn usage() -> String {
     [
-        "usage: tervo plugins <command> [options]",
+        "usage: xtervo plugins <command> [options]",
         "",
         "commands:",
         "  install <dir|zip|tar|tar.gz>   install a v3 plugin package locally",
@@ -95,9 +95,9 @@ fn usage() -> String {
         "  --pubkey VALUE      explicit public key (base64/hex/PEM; mainly tests)",
         "",
         "signature config:",
-        "  TERVO_PLUGIN_REQUIRE_SIGNATURE=1 or plugin_require_signature = true",
-        "  TERVO_PLUGIN_PUBKEY=<base64|hex|path|@path>",
-        "  default pubkey: <config>/tervo/plugin-signing.pub",
+        "  XTERVO_PLUGIN_REQUIRE_SIGNATURE=1 or plugin_require_signature = true",
+        "  XTERVO_PLUGIN_PUBKEY=<base64|hex|path|@path>",
+        "  default pubkey: <config>/xtervo/plugin-signing.pub",
         "  docs: docs/PLUGIN_INSTALL.md",
     ]
     .join("\n")
@@ -336,7 +336,7 @@ fn cmd_keygen(args: &[String]) -> CliResult<i32> {
         signature::public_key_id(&key.verifying_key())
     );
     println!(
-        "  next:    tervo plugins sign <plugin-dir> --key {}",
+        "  next:    xtervo plugins sign <plugin-dir> --key {}",
         private_path.display()
     );
     Ok(0)

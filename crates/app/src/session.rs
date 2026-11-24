@@ -448,16 +448,16 @@ pub fn restore_boundaries_text(zh: bool) -> String {
     }
 }
 
-/// 快照文件路径：`TERVO_SESSION` 优先（测试/多实例用），否则 XDG 状态目录。
+/// 快照文件路径：`XTERVO_SESSION` 优先（测试/多实例用），否则 XDG 状态目录。
 pub fn snapshot_path() -> PathBuf {
-    if let Some(p) = std::env::var_os("TERVO_SESSION") {
+    if let Some(p) = std::env::var_os("XTERVO_SESSION") {
         return PathBuf::from(p);
     }
     let base = std::env::var_os("XDG_STATE_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/state")))
         .unwrap_or_else(|| PathBuf::from("/tmp"));
-    base.join("tervo").join("session.json")
+    base.join("xtervo").join("session.json")
 }
 
 /// 保存旧单窗口 DTO：兼容包装，实际写 v2（单窗口）。

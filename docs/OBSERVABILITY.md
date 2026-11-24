@@ -1,4 +1,4 @@
-# Tervo Observability（P0）
+# xtervo Observability（P0）
 
 状态：**backend-neutral crate + CLI schema 已落地（2026-11-10）**。  
 分支：`agent/observability`。
@@ -7,9 +7,9 @@
 不改渲染/主循环路径。CLI 输出里的计数器在 CLI 进程内是空的：`initialized=false`、
 `source=cli`，这是真实的“未接线”状态，不是伪造的 app 指标。
 
-## Crate：`crates/diagnostics`（`tervo-diagnostics`）
+## Crate：`crates/diagnostics`（`xtervo-diagnostics`）
 
-不依赖 wgpu / Skia / Slint / `tervo-core`；只有 `serde`/`serde_json`。
+不依赖 wgpu / Skia / Slint / `xtervo-core`；只有 `serde`/`serde_json`。
 
 ```text
 MetricsRegistry   原子指标 + 固定 frame-time 直方图
@@ -42,7 +42,7 @@ stale_frames
 示例：
 
 ```rust
-use tervo_diagnostics::{FrameSample, MetricsRegistry};
+use xtervo_diagnostics::{FrameSample, MetricsRegistry};
 
 let metrics = MetricsRegistry::new();
 metrics.record_frame(FrameSample {
@@ -99,16 +99,16 @@ images  added / removed / moved / resized / source_changed
 damage  region_count / union area / coverage ppm / coverage delta / 新增删除 rect
 ```
 
-`SceneDiff::to_json()` 输出 `kind=scene_diff`（additive `tervo.diag.v1`）；
+`SceneDiff::to_json()` 输出 `kind=scene_diff`（additive `xtervo.diag.v1`）；
 `to_text()` 输出有界文本（行预览和输出大小都有上限）。
 
 ## CLI
 
 ```bash
-tervo diag metrics            # metrics + resources + trace schema
-tervo diag observability      # 同上，kind=observability，含 integration 点
-tervo diag scene-diff --left before.json --right after.json
-tervo diag scene-diff --left before.json --right after.json --json
+xtervo diag metrics            # metrics + resources + trace schema
+xtervo diag observability      # 同上，kind=observability，含 integration 点
+xtervo diag scene-diff --left before.json --right after.json
+xtervo diag scene-diff --left before.json --right after.json --json
 ```
 
 `scene-diff` 同时接受 frame JSON（`generation`、image `id`）和 SceneSummary
@@ -135,13 +135,13 @@ crates/graphics           GraphicsManager
   -> record_texture_created/destroyed + set_gpu_textures
 ```
 
-这些点也可以从 `tervo diag observability` 的 `integration.points` 机器读取。
+这些点也可以从 `xtervo diag observability` 的 `integration.points` 机器读取。
 
 ## 测试
 
 ```bash
-cargo test -p tervo-diagnostics
-cargo check -p tervo-app
+cargo test -p xtervo-diagnostics
+cargo check -p xtervo-app
 ```
 
 覆盖：ring 上限/并发写/无界增长、metrics snapshot 字段、texture bytes 饱和、

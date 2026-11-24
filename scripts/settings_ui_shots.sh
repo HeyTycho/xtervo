@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-only
-# Settings UI 视觉验收：在 headless Xvfb :124 上启动 Tervo，截图覆盖
+# Settings UI 视觉验收：在 headless Xvfb :124 上启动 xtervo，截图覆盖
 #   open / 分类 / 下拉 / 搜索跳转 / 关闭 / 小窗口 / legacy 回退。
 # 只 kill 自己启动的 Xvfb/Openbox/app；display 被占用时直接退出。
 #
 # 用法：
-#   cargo build -p tervo-app --bin tervo --bin xwin --bin xclick --bin xkey
+#   cargo build -p xtervo-app --bin xtervo --bin xwin --bin xclick --bin xkey
 #   ./scripts/settings_ui_shots.sh
 # 依赖：Xvfb、Openbox、xwd、ffmpeg（仓库 .perf/ 已带 Xvfb/Openbox）。
 set -euo pipefail
@@ -14,17 +14,17 @@ ROOT=$PWD
 OUT=${SETTINGS_SHOTS_OUT:-$ROOT/.logs/settings-ui/shots}
 mkdir -p "$OUT/home" "$OUT/logs" /tmp/.X11-unix
 
-BIN=$ROOT/target/debug/tervo
+BIN=$ROOT/target/debug/xtervo
 XWIN=$ROOT/target/debug/xwin
 XCLICK=$ROOT/target/debug/xclick
 XKEY=$ROOT/target/debug/xkey
 for f in "$BIN" "$XWIN" "$XCLICK" "$XKEY"; do
-    [ -x "$f" ] || { echo "缺少 $f；先 cargo build -p tervo-app --bin tervo --bin xwin --bin xclick --bin xkey" >&2; exit 2; }
+    [ -x "$f" ] || { echo "缺少 $f；先 cargo build -p xtervo-app --bin xtervo --bin xwin --bin xclick --bin xkey" >&2; exit 2; }
 done
 
 COMMON=$(git rev-parse --git-common-dir)
 MAIN_ROOT=$(cd "$(dirname "$COMMON")" && pwd)
-PERF=${TERVO_PERF_DIR:-$MAIN_ROOT/.perf}
+PERF=${XTERVO_PERF_DIR:-$MAIN_ROOT/.perf}
 XVFB_BIN=${E2E_XVFB_BIN:-$PERF/xvfb/usr/bin/Xvfb}
 [ -x "$XVFB_BIN" ] || XVFB_BIN=$(command -v Xvfb || true)
 [ -x "$XVFB_BIN" ] || { echo "找不到 Xvfb；不会回退到 Xephyr" >&2; exit 2; }
@@ -67,24 +67,24 @@ ABS_X=0
 ABS_Y=0
 W=0
 H=0
-start_app() {  # <tag> [TERVO_SETTINGS_LEGACY]
+start_app() {  # <tag> [XTERVO_SETTINGS_LEGACY]
     local tag=$1 legacy=${2:-}
     local log="$OUT/app_$tag.log"
     : >"$log"
     printf '%s\n' 'theme = "tokyo-night"' 'font_size = 15' 'confirm_close = false' > "$OUT/$tag.toml"
-    TERVO_SETTINGS_LEGACY="$legacy" TERVO_CONFIG="$OUT/$tag.toml" TERVO_LOG_DIR="$OUT/logs" \
+    XTERVO_SETTINGS_LEGACY="$legacy" XTERVO_CONFIG="$OUT/$tag.toml" XTERVO_LOG_DIR="$OUT/logs" \
         "$BIN" --cols 120 --rows 32 --shell /bin/sh -- -c 'sleep 900' >"$log" 2>&1 &
     APP_PID=$!
     WIN=""
     for _ in $(seq 1 160); do
-        WIN=$(xwininfo -root -tree 2>/dev/null | grep -i '"tervo"' | head -1 | awk '{print $1}' || true)
+        WIN=$(xwininfo -root -tree 2>/dev/null | grep -i '"xtervo"' | head -1 | awk '{print $1}' || true)
         [ -n "$WIN" ] && break
         sleep 0.05
     done
     [ -n "$WIN" ] || { echo "启动失败（$tag）：$log" >&2; exit 2; }
-    "$XWIN" Tervo 20 20 >/dev/null 2>&1 || true
+    "$XWIN" xtervo 20 20 >/dev/null 2>&1 || true
     sleep 0.8
-    WIN=$(xwininfo -root -tree | grep -i '"tervo"' | head -1 | awk '{print $1}')
+    WIN=$(xwininfo -root -tree | grep -i '"xtervo"' | head -1 | awk '{print $1}')
     ABS_X=$(xwininfo -id "$WIN" | awk '/Absolute upper-left X/{print $NF}')
     ABS_Y=$(xwininfo -id "$WIN" | awk '/Absolute upper-left Y/{print $NF}')
     W=$(xwininfo -id "$WIN" | awk '/Width:/{print $2}')
@@ -97,7 +97,7 @@ start_app() {  # <tag> [TERVO_SETTINGS_LEGACY]
 }
 
 refresh_geom() {
-    WIN=$(xwininfo -root -tree | grep -i '"tervo"' | head -1 | awk '{print $1}')
+    WIN=$(xwininfo -root -tree | grep -i '"xtervo"' | head -1 | awk '{print $1}')
     ABS_X=$(xwininfo -id "$WIN" | awk '/Absolute upper-left X/{print $NF}')
     ABS_Y=$(xwininfo -id "$WIN" | awk '/Absolute upper-left Y/{print $NF}')
     W=$(xwininfo -id "$WIN" | awk '/Width:/{print $2}')
@@ -137,7 +137,7 @@ shot settings_dropdown
 sleep 0.6
 shot settings_terminal
 # 搜索 + 跳转（合成键盘前显式激活窗口）
-"$XWIN" Tervo >/dev/null 2>&1 || true
+"$XWIN" xtervo >/dev/null 2>&1 || true
 "$XCLICK" "$((ABS_X + 800))" "$((ABS_Y + 56))" >/dev/null
 sleep 0.3
 "$XKEY" sixel >/dev/null 2>&1 || true
@@ -151,7 +151,7 @@ shot settings_search_jump
 sleep 0.6
 shot settings_profiles
 # Esc 关闭
-"$XWIN" Tervo >/dev/null 2>&1 || true
+"$XWIN" xtervo >/dev/null 2>&1 || true
 "$XKEY" --key escape >/dev/null 2>&1 || true
 sleep 0.6
 shot settings_closed
@@ -174,7 +174,7 @@ refresh_geom
 shot settings_tiny
 stop_app
 
-# legacy 回退：TERVO_SETTINGS_LEGACY=1 -> 居中 modal（同一套控件）
+# legacy 回退：XTERVO_SETTINGS_LEGACY=1 -> 居中 modal（同一套控件）
 start_app legacy 1
 gear
 shot settings_legacy

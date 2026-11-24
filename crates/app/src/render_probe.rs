@@ -64,10 +64,10 @@ const GL_VENDOR: u32 = 0x1F00;
 const GL_RENDERER: u32 = 0x1F01;
 const GL_VERSION: u32 = 0x1F02;
 
-/// `TERVO_RENDER_PROFILE=1`：每帧打印渲染通知器测得的帧间隔/渲染耗时。
+/// `XTERVO_RENDER_PROFILE=1`：每帧打印渲染通知器测得的帧间隔/渲染耗时。
 fn frame_profile() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("TERVO_RENDER_PROFILE").is_some())
+    *ON.get_or_init(|| std::env::var_os("XTERVO_RENDER_PROFILE").is_some())
 }
 
 #[derive(Default)]
@@ -103,7 +103,7 @@ pub fn install_for(
                         report_gl(get_proc_address, &mut st);
                     },
                     GraphicsAPI::WGPU30 { device, queue, .. } => {
-                        // TERVO_GPU=1 / TERVO_GPU_NATIVE=1：Slint 的 WGPU30 API
+                        // XTERVO_GPU=1 / XTERVO_GPU_NATIVE=1：Slint 的 WGPU30 API
                         // 把它实际使用的同一 device/queue 交出来，两个链路共用；
                         // gpu_present 只存 device、gpu_native 惰性建 atlas。
                         st.gl_reported = true;

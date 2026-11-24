@@ -16,8 +16,8 @@ export CARGO_HOME="${CARGO_HOME:-$PWD/.cargo}"
 export SLINT_BACKEND=winit-skia
 mkdir -p docs
 
-BIN=target/release/tervo
-cargo build --release -p tervo-app --bin tervo
+BIN=target/release/xtervo
+cargo build --release -p xtervo-app --bin xtervo
 
 echo "== GPU 后端冒烟：能否在 5s 内产生第一次 Damage =="
 if ! timeout 30 "$BIN" --cols 120 --rows 32 --exit-after-first 2>/dev/null | tee docs/gpu-first-frame.txt | grep -q "FIRST_DAMAGE_US"; then

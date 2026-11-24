@@ -9,7 +9,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use tervo_core::{spawn, PaneConfig, PaneHandle};
+use xtervo_core::{spawn, PaneConfig, PaneHandle};
 
 fn sh(script: &str, keyboard_protocol: bool) -> PaneConfig {
     PaneConfig {
@@ -24,7 +24,7 @@ fn sh(script: &str, keyboard_protocol: bool) -> PaneConfig {
 }
 
 fn out_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("tervo-kbd-{}-{name}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("xtervo-kbd-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
@@ -297,12 +297,12 @@ time.sleep(5)
     })
     .expect("spawn interactive shell");
     // 等 shell 真正可输入，而不是固定 300ms（慢 CI 会在这里 flaky）。
-    handle.input(b"echo __TERVO_READY__\n");
+    handle.input(b"echo __XTERVO_READY__\n");
     let ready_deadline = Instant::now() + Duration::from_secs(5);
     loop {
         if handle
             .contents()
-            .is_some_and(|text| text.contains("__TERVO_READY__"))
+            .is_some_and(|text| text.contains("__XTERVO_READY__"))
         {
             break;
         }

@@ -117,7 +117,7 @@ pub trait Renderer {
 }
 ```
 
-No wgpu/Skia type may appear in `tervo-core` or the logical Scene.
+No wgpu/Skia type may appear in `xtervo-core` or the logical Scene.
 
 ## Slint presenter
 

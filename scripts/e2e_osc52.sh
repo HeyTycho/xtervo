@@ -11,7 +11,7 @@
 #
 # 前置：
 #   CARGO_HOME=... CARGO_TARGET_DIR=$PWD/target \
-#     cargo build -p tervo-app --bin tervo --bin xclick
+#     cargo build -p xtervo-app --bin xtervo --bin xclick
 # 依赖：xsel、xwininfo、Xvfb（或 E2E_XVFB_BIN 指向 .perf/xvfb/usr/bin/Xvfb）。
 #
 # 用法：
@@ -25,7 +25,7 @@ cd "$ROOT" || exit 1
 E2E_DISPLAY=${E2E_DISPLAY:-:113}
 E2E_SCREEN=${E2E_SCREEN:-1280x800x24}
 E2E_OUT=${E2E_OUT:-$ROOT/.logs/osc52-gui}
-E2E_BIN=${E2E_BIN:-$ROOT/target/debug/tervo}
+E2E_BIN=${E2E_BIN:-$ROOT/target/debug/xtervo}
 XCLICK=${XCLICK:-$ROOT/target/debug/xclick}
 XVFB=${E2E_XVFB_BIN:-Xvfb}
 
@@ -37,7 +37,7 @@ fi
 for tool in xsel xwininfo; do
   command -v "$tool" >/dev/null 2>&1 || { echo "缺少依赖：$tool" >&2; exit 2; }
 done
-[ -x "$E2E_BIN" ] || { echo "找不到 $E2E_BIN（先 cargo build --bin tervo）" >&2; exit 2; }
+[ -x "$E2E_BIN" ] || { echo "找不到 $E2E_BIN（先 cargo build --bin xtervo）" >&2; exit 2; }
 [ -x "$XCLICK" ] || { echo "找不到 $XCLICK（先 cargo build --bin xclick）" >&2; exit 2; }
 [ -x "$XVFB" ] || { echo "找不到 Xvfb：$XVFB（用 E2E_XVFB_BIN 指定）" >&2; exit 2; }
 
@@ -93,12 +93,12 @@ version = 1
 osc52 = "$mode"
 EOF
   chmod +x "$script"
-  env "$@" DISPLAY=$E2E_DISPLAY XMODIFIERS=@im=none TERVO_LOG_DIR="$dir" \
-    TERVO_CONFIG="$dir/cfg.toml" SLINT_BACKEND=winit-software \
+  env "$@" DISPLAY=$E2E_DISPLAY XMODIFIERS=@im=none XTERVO_LOG_DIR="$dir" \
+    XTERVO_CONFIG="$dir/cfg.toml" SLINT_BACKEND=winit-software \
     "$E2E_BIN" --shell /bin/sh -- -c "$script $dir" >"$dir/parent.log" 2>&1 &
   APP_PID=$!
   for _ in $(seq 1 100); do
-    DISPLAY=$E2E_DISPLAY xwininfo -root -tree 2>/dev/null | grep -qi '"Tervo"' && return 0
+    DISPLAY=$E2E_DISPLAY xwininfo -root -tree 2>/dev/null | grep -qi '"xtervo"' && return 0
     sleep 0.1
   done
   return 1
@@ -108,10 +108,10 @@ stop_app() {
   wait "$APP_PID" 2>/dev/null
   APP_PID=""
 }
-app_log() { ls -t "$1"/tervo-*.log 2>/dev/null | head -1; }
+app_log() { ls -t "$1"/xtervo-*.log 2>/dev/null | head -1; }
 window_geom() { # -> "x y w h"
   local id
-  id=$(DISPLAY=$E2E_DISPLAY xwininfo -root -tree 2>/dev/null | grep -i '"Tervo"' | awk 'NR==1{print $1}')
+  id=$(DISPLAY=$E2E_DISPLAY xwininfo -root -tree 2>/dev/null | grep -i '"xtervo"' | awk 'NR==1{print $1}')
   [ -z "$id" ] && return 1
   DISPLAY=$E2E_DISPLAY xwininfo -id "$id" 2>/dev/null | awk '
     /Absolute upper-left X/{x=$NF}
@@ -160,7 +160,7 @@ exec 3<>"$1/cmd.fifo"
 while IFS= read -r line <&3; do printf '%s' "$line"; done &
 cat > "$1/pasted.bin"
 EOS
-start_app "$D2" allow "$D2/pane.sh" TERVO_MOUSELOG=1 || { echo "FAIL: app 未启动"; exit 1; }
+start_app "$D2" allow "$D2/pane.sh" XTERVO_MOUSELOG=1 || { echo "FAIL: app 未启动"; exit 1; }
 sleep 3
 LOG2=$(app_log "$D2")
 GEOM=$(window_geom) || { echo "FAIL: 找不到窗口"; exit 1; }

@@ -558,7 +558,7 @@ impl Checks<'_> {
                 self.add_recommendation(
                     "rec.build.clean",
                     "用干净 commit 重新构建",
-                    "提交/清理工作树后重新构建并抓取 `tervo diag env --json`；不要在 dirty 二进制上做 before/after 对比。".to_string(),
+                    "提交/清理工作树后重新构建并抓取 `xtervo diag env --json`；不要在 dirty 二进制上做 before/after 对比。".to_string(),
                     RecommendationKind::CollectEvidence,
                     evidence,
                     None,
@@ -604,15 +604,15 @@ impl Checks<'_> {
                 evidence.clone(),
                 Confidence::Observed,
                 Some("补齐字段后 probe.build 不再为 Unknown".to_string()),
-                Some("tervo diag env --json".to_string()),
+                Some("xtervo diag env --json".to_string()),
             );
             self.add_recommendation(
                 "rec.build.collect",
                 "采集真实构建信息",
-                "从实际运行的二进制执行 `tervo diag env --json`，把输出通过 `--diag-env` 传给 doctor。".to_string(),
+                "从实际运行的二进制执行 `xtervo diag env --json`，把输出通过 `--diag-env` 传给 doctor。".to_string(),
                 RecommendationKind::CollectEvidence,
                 evidence,
-                Some("tervo diag env --json > /tmp/tervo-env.json".to_string()),
+                Some("xtervo diag env --json > /tmp/xtervo-env.json".to_string()),
                 finding.as_deref(),
             );
         }
@@ -639,15 +639,15 @@ impl Checks<'_> {
                 evidence.clone(),
                 Confidence::Observed,
                 Some("environment.renderer.active/fallback 被报告".to_string()),
-                Some("tervo diag env --json".to_string()),
+                Some("xtervo diag env --json".to_string()),
             );
             self.add_recommendation(
                 "rec.renderer.collect",
                 "采集 renderer 状态",
-                "运行 `tervo diag env --json`；若已有 live 诊断，补充 active renderer、fallback 与 GPU adapter 字段。".to_string(),
+                "运行 `xtervo diag env --json`；若已有 live 诊断，补充 active renderer、fallback 与 GPU adapter 字段。".to_string(),
                 RecommendationKind::CollectEvidence,
                 evidence,
-                Some("tervo diag env --json".to_string()),
+                Some("xtervo diag env --json".to_string()),
                 finding.as_deref(),
             );
             return;
@@ -692,7 +692,7 @@ impl Checks<'_> {
                 "抓取启动日志中的 renderer/GPU 初始化错误，并分别用显式 backend 重试；不要在原因未知时归咎于 GPU 性能。".to_string(),
                 RecommendationKind::Probe,
                 evidence,
-                Some("TERVO_RENDER_PROFILE=1 tervo 2>&1 | tee /tmp/tervo-render.log".to_string()),
+                Some("XTERVO_RENDER_PROFILE=1 xtervo 2>&1 | tee /tmp/xtervo-render.log".to_string()),
                 finding.as_deref(),
             );
             return;
@@ -716,7 +716,7 @@ impl Checks<'_> {
                     evidence.clone(),
                     Confidence::Medium,
                     Some("确认 backend 别名或显式 fallback 字段".to_string()),
-                    Some("tervo diag env --json".to_string()),
+                    Some("xtervo diag env --json".to_string()),
                 );
                 self.add_recommendation(
                     "rec.renderer.explicit",
@@ -752,7 +752,7 @@ impl Checks<'_> {
                 evidence.clone(),
                 Confidence::Observed,
                 Some("active 字段出现".to_string()),
-                Some("tervo diag env --json".to_string()),
+                Some("xtervo diag env --json".to_string()),
             );
             return;
         }
@@ -865,7 +865,7 @@ impl Checks<'_> {
                     evidence.clone(),
                     Confidence::Observed,
                     Some("adapter 字段出现".to_string()),
-                    Some("tervo diag env --json（补充 gpu_adapter）".to_string()),
+                    Some("xtervo diag env --json（补充 gpu_adapter）".to_string()),
                 );
                 self.add_recommendation(
                     "rec.gpu.collect",
@@ -1019,12 +1019,12 @@ impl Checks<'_> {
                 evidence.clone(),
                 Confidence::Observed,
                 Some("config 路径出现".to_string()),
-                Some("tervo diag env --json".to_string()),
+                Some("xtervo diag env --json".to_string()),
             );
             self.add_recommendation(
                 "rec.config.collect",
                 "采集 config 路径",
-                "传入 `--config PATH` 或 `tervo diag env --json`；doctor 只读文件元数据/脱敏扫描，不修改配置。".to_string(),
+                "传入 `--config PATH` 或 `xtervo diag env --json`；doctor 只读文件元数据/脱敏扫描，不修改配置。".to_string(),
                 RecommendationKind::CollectEvidence,
                 evidence,
                 None,
@@ -1082,7 +1082,7 @@ impl Checks<'_> {
             self.add_recommendation(
                 "rec.config.path",
                 "修正 config 路径/权限",
-                "确认 `TERVO_CONFIG` 或默认路径指向可读文件；doctor 不会自动修改配置。".to_string(),
+                "确认 `XTERVO_CONFIG` 或默认路径指向可读文件；doctor 不会自动修改配置。".to_string(),
                 RecommendationKind::Config,
                 evidence,
                 None,
@@ -1261,7 +1261,7 @@ impl Checks<'_> {
             self.add_recommendation(
                 "rec.paths.collect",
                 "采集路径",
-                "传入 `--config/--profiles/--log/--log-dir` 或 `tervo diag env --json`。"
+                "传入 `--config/--profiles/--log/--log-dir` 或 `xtervo diag env --json`。"
                     .to_string(),
                 RecommendationKind::CollectEvidence,
                 evidence,
@@ -1419,15 +1419,15 @@ impl Checks<'_> {
                 evidence.clone(),
                 Confidence::Observed,
                 Some("提供 frame JSON 后重跑".to_string()),
-                Some("tervo diag snapshot --json".to_string()),
+                Some("xtervo diag snapshot --json".to_string()),
             );
             self.add_recommendation(
                 "rec.frame.collect",
                 "采集 viewport frame",
-                "用 `tervo diag snapshot --json > /tmp/tervo-frame.json` 抓一次有界视口；不要上传整段 scrollback。".to_string(),
+                "用 `xtervo diag snapshot --json > /tmp/xtervo-frame.json` 抓一次有界视口；不要上传整段 scrollback。".to_string(),
                 RecommendationKind::CollectEvidence,
                 evidence,
-                Some("tervo diag snapshot --json > /tmp/tervo-frame.json".to_string()),
+                Some("xtervo diag snapshot --json > /tmp/xtervo-frame.json".to_string()),
                 finding.as_deref(),
             );
             return;
@@ -1484,7 +1484,7 @@ impl Checks<'_> {
                 evidence.clone(),
                 Confidence::Observed,
                 Some("重新抓帧后行数/尺寸一致".to_string()),
-                Some("tervo diag snapshot --json".to_string()),
+                Some("xtervo diag snapshot --json".to_string()),
             );
             self.add_recommendation(
                 "rec.frame.recapture",
@@ -1493,7 +1493,7 @@ impl Checks<'_> {
                     .to_string(),
                 RecommendationKind::Probe,
                 evidence,
-                Some("tervo diag snapshot --json > /tmp/tervo-frame.json".to_string()),
+                Some("xtervo diag snapshot --json > /tmp/xtervo-frame.json".to_string()),
                 finding.as_deref(),
             );
             return;
@@ -1601,7 +1601,7 @@ impl Checks<'_> {
                 evidence,
                 Confidence::Observed,
                 Some("damage 字段出现".to_string()),
-                Some("tervo diag snapshot --json".to_string()),
+                Some("xtervo diag snapshot --json".to_string()),
             );
             return;
         };
@@ -1624,7 +1624,7 @@ impl Checks<'_> {
                 evidence,
                 Confidence::Observed,
                 Some("damage.full 出现".to_string()),
-                Some("tervo diag snapshot --json".to_string()),
+                Some("xtervo diag snapshot --json".to_string()),
             );
             return;
         };
@@ -1696,7 +1696,7 @@ impl Checks<'_> {
                 evidence.clone(),
                 Confidence::Observed,
                 Some("重新抓帧后 area/coverage/region 一致".to_string()),
-                Some("tervo diag scene-diff --left ... --right ...".to_string()),
+                Some("xtervo diag scene-diff --left ... --right ...".to_string()),
             );
             self.add_recommendation(
                 "rec.damage.diff",
@@ -1705,7 +1705,7 @@ impl Checks<'_> {
                 RecommendationKind::Probe,
                 evidence,
                 Some(
-                    "tervo diag scene-diff --left /tmp/a.json --right /tmp/b.json --json"
+                    "xtervo diag scene-diff --left /tmp/a.json --right /tmp/b.json --json"
                         .to_string(),
                 ),
                 finding.as_deref(),
@@ -1810,15 +1810,15 @@ impl Checks<'_> {
                 evidence.clone(),
                 Confidence::Observed,
                 Some("提供 profile 后重跑".to_string()),
-                Some("TERVO_RENDER_PROFILE=1".to_string()),
+                Some("XTERVO_RENDER_PROFILE=1".to_string()),
             );
             self.add_recommendation(
                 "rec.profile.collect",
                 "采集 render profile",
-                "用 `TERVO_RENDER_PROFILE=1` 复现一次并保存日志，再通过 `--render-profile` 传入；只保留有界摘要。".to_string(),
+                "用 `XTERVO_RENDER_PROFILE=1` 复现一次并保存日志，再通过 `--render-profile` 传入；只保留有界摘要。".to_string(),
                 RecommendationKind::CollectEvidence,
                 evidence,
-                Some("TERVO_RENDER_PROFILE=1 tervo 2>&1 | tee /tmp/tervo-render.log".to_string()),
+                Some("XTERVO_RENDER_PROFILE=1 xtervo 2>&1 | tee /tmp/xtervo-render.log".to_string()),
                 finding.as_deref(),
             );
             return;
@@ -1943,15 +1943,15 @@ impl Checks<'_> {
                 evidence.clone(),
                 Confidence::Observed,
                 Some("提供 live metrics 后重跑".to_string()),
-                Some("tervo diag metrics".to_string()),
+                Some("xtervo diag metrics".to_string()),
             );
             self.add_recommendation(
                 "rec.metrics.collect",
                 "只采集可解释的 metrics",
-                "`tervo diag metrics` 当前是 CLI 占位（initialized=false）；若需要性能判断，先接 live app metrics，否则只用 frame/profile 证据。".to_string(),
+                "`xtervo diag metrics` 当前是 CLI 占位（initialized=false）；若需要性能判断，先接 live app metrics，否则只用 frame/profile 证据。".to_string(),
                 RecommendationKind::CollectEvidence,
                 evidence,
-                Some("tervo diag metrics".to_string()),
+                Some("xtervo diag metrics".to_string()),
                 finding.as_deref(),
             );
             return;
@@ -2429,7 +2429,7 @@ mod tests {
     #[test]
     fn frame_damage_contract_is_checked() {
         let frame = FrameSummary {
-            schema: Some("tervo.diag.v1".to_string()),
+            schema: Some("xtervo.diag.v1".to_string()),
             kind: Some("snapshot".to_string()),
             cols: 10,
             rows: 2,
@@ -2524,7 +2524,7 @@ mod tests {
 
     fn test_dir(name: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "tervo-doctor-test-{}-{}-{}",
+            "xtervo-doctor-test-{}-{}-{}",
             name,
             std::process::id(),
             &sha256_hex(name.as_bytes())[..8]

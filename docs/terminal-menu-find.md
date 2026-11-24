@@ -197,7 +197,7 @@ Slint 1.18 没有原生文件选择器（winit 后端也没有文件对话框桥
 **显式路径 + 错误提示**的最小实现，不放假按钮：
 
 - 右键菜单 `Save Contents…` / 命令 `terminal.save-contents` 打开居中弹窗；
-  默认路径 `$HOME/tervo-save-<epoch>.txt`（无 HOME 时 `/tmp/tervo-save-<epoch>.txt`）。
+  默认路径 `$HOME/xtervo-save-<epoch>.txt`（无 HOME 时 `/tmp/xtervo-save-<epoch>.txt`）。
 - 路径可编辑；支持 `~` 与相对路径（相对路径按进程 cwd 解析），下方显示完整
   路径预览；写入失败在弹窗内用红色文字显示 `写入 <path> 失败：<io error>`，
   成功则关闭弹窗并底部提示 `Saved N bytes to <path>`。
@@ -223,8 +223,8 @@ CARGO_HOME=$PWD/.cargo cargo test --workspace --offline
 # app: 282 passed（基线 281 + search count label 1）
 # core: 90 lib + 64 integration（smoke 24，含新增计数顺序 1）；workspace 476 passed
 
-CARGO_HOME=$PWD/.cargo cargo build -p tervo-app --offline \
-  --bin tervo --bin xwin --bin xclick --bin xkey
+CARGO_HOME=$PWD/.cargo cargo build -p xtervo-app --offline \
+  --bin xtervo --bin xwin --bin xclick --bin xkey
 # P1 查找 UX：独立 Xvfb :127，输出 .logs/search-ux/
 CARGO_TARGET_DIR=$PWD/target ./scripts/e2e_search_ux.sh
 ```

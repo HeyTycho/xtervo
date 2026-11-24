@@ -4,7 +4,7 @@
 
 ## 1. 现状
 
-`TERVO_GPU=1` 当前链路：
+`XTERVO_GPU=1` 当前链路：
 
 ```text
 CPU Renderer 逐像素画终端 framebuffer
@@ -183,8 +183,8 @@ pane texture: 随 pane 释放
 默认行为的目标：
 
 ```text
-不设置 TERVO_GPU -> 自动尝试 GPU
-TERVO_CPU=1      -> 强制 CPU
+不设置 XTERVO_GPU -> 自动尝试 GPU
+XTERVO_CPU=1      -> 强制 CPU
 无 adapter       -> 自动 CPU
 device lost      -> 自动 CPU/恢复
 ```
@@ -194,7 +194,7 @@ device lost      -> 自动 CPU/恢复
 ## 8. 当前判定
 
 ```text
-TERVO_GPU=1 = GPU 显示链路，不是统一 GPU 渲染
+XTERVO_GPU=1 = GPU 显示链路，不是统一 GPU 渲染
 不能作为默认
 不能因为“窗口正常/截图正常”验收性能
 ```

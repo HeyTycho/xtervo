@@ -19,7 +19,7 @@ use super::signature::{self, SignatureConfig, SignatureStatus};
 
 fn tmp(tag: &str) -> tempfile::TempDir {
     tempfile::Builder::new()
-        .prefix(&format!("tervo-plugin-install-{tag}-"))
+        .prefix(&format!("xtervo-plugin-install-{tag}-"))
         .tempdir()
         .expect("tempdir")
 }

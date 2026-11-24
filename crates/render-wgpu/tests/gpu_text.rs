@@ -6,17 +6,17 @@
 //! adapter is printed by every test run.
 //!
 //! Artifacts (GPU, CPU reference, diff, scroll frames) are written as PPM to
-//! `$TERVO_WGPU_TEXT_OUT` or `target/wgpu-text-atlas/`.
+//! `$XTERVO_WGPU_TEXT_OUT` or `target/wgpu-text-atlas/`.
 
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
-use tervo_render_wgpu::{
+use xtervo_render_wgpu::{
     compare_rgba, diff_rgba, discover_font_path, rasterize_reference, read_target_rgba8,
     request_headless_gpu, write_ppm, AtlasConfig, AtlasError, FontStyle, GpuImageRenderer,
     GpuTextRenderer, HeadlessGpu, TextLayout, TextRenderError, TextSection, TextTarget,
 };
-use tervo_scene::{
+use xtervo_scene::{
     BackgroundInstance, CursorState, DrawItem, PhysicalSize, Scene, SceneLayer, TextAttributes,
     TextBatch, TextCell, Viewport, BACKGROUND_LAYER_Z, TEXT_LAYER_Z,
 };
@@ -91,7 +91,7 @@ fn fixture_with_atlas(width: u32, height: u32, atlas_config: AtlasConfig) -> Fix
 }
 
 fn output_dir(test: &str) -> PathBuf {
-    let root = std::env::var_os("TERVO_WGPU_TEXT_OUT")
+    let root = std::env::var_os("XTERVO_WGPU_TEXT_OUT")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -148,7 +148,7 @@ fn render_and_compare(
     test: &str,
     label: &str,
     sections: &[TextSection<'_>],
-) -> tervo_render_wgpu::PixelDiff {
+) -> xtervo_render_wgpu::PixelDiff {
     let (stats, geometry) = fixture
         .renderer
         .render_with_geometry(&fixture.target, CLEAR, sections)
@@ -199,7 +199,7 @@ fn render_and_compare(
     diff
 }
 
-fn assert_tight_match(diff: &tervo_render_wgpu::PixelDiff, label: &str) {
+fn assert_tight_match(diff: &xtervo_render_wgpu::PixelDiff, label: &str) {
     assert!(
         diff.mean_abs <= 0.25,
         "{label}: GPU/CPU mean abs diff {:.6} exceeds 0.25",
@@ -222,7 +222,7 @@ fn sample_scene() -> (TextBatch, TextBatch, TextBatch, TextBatch) {
     push_line(
         &mut main,
         0,
-        "TERVO WGPU TEXT ATLAS",
+        "XTERVO WGPU TEXT ATLAS",
         0x00ff_ffff,
         CLEAR_RGB,
         TextAttributes::default(),
@@ -293,7 +293,7 @@ fn sample_scene() -> (TextBatch, TextBatch, TextBatch, TextBatch) {
 
     let mut scroll = TextBatch::new(1);
     for row in 0..3u16 {
-        let text = format!("scroll row {row}: TERVO-GPU-ATLAS");
+        let text = format!("scroll row {row}: XTERVO-GPU-ATLAS");
         push_line(
             &mut scroll,
             row,
@@ -362,7 +362,7 @@ fn scroll_frames_match_reference_and_do_not_reupload_atlas() {
         let mut batch = TextBatch::new(u64::from(offset) + 1);
         for row in 0..7u16 {
             let letter = char::from(b'A' + ((row + offset) % 7) as u8);
-            let text = format!("scroll line {letter} TERVO");
+            let text = format!("scroll line {letter} XTERVO");
             push_line(
                 &mut batch,
                 row,
@@ -1217,7 +1217,7 @@ fn invalid_layout_is_rejected_before_rendering() {
 
 #[test]
 fn damage_scissor_matches_full_redraw_and_preserves_untouched_rows() {
-    use tervo_scene::{DamageRect, DamageRegion};
+    use xtervo_scene::{DamageRect, DamageRegion};
     let mut fixture = fixture(240, 80);
     let text_layout = layout(&fixture.renderer, 20, 0.0, 0.0);
     let cell_h = text_layout.cell_height;
@@ -1310,7 +1310,7 @@ fn assert_overhanging_glyph_damage_matches_full(
     min_glyphs: usize,
     label: &str,
 ) {
-    use tervo_scene::{DamageRect, DamageRegion};
+    use xtervo_scene::{DamageRect, DamageRegion};
 
     let mut fixture = fixture(160, 120);
     let mut text_layout = layout(&fixture.renderer, 32, 0.0, 0.0);

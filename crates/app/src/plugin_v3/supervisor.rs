@@ -735,7 +735,7 @@ fn run_instance(
     let initialize_params = json!({
         "protocol_version": protocol::HOST_PROTOCOL_VERSION,
         "host": {
-            "name": "tervo",
+            "name": "xtervo",
             "version": env!("CARGO_PKG_VERSION"),
             "abi": super::manifest::HOST_ABI,
         },
@@ -2191,9 +2191,9 @@ fn spawn_child(config: &PluginRuntimeConfig) -> Result<Child, String> {
             command.env(key, value);
         }
     }
-    command.env("TERVO_PLUGIN_ID", &config.id);
-    command.env("TERVO_PLUGIN_API", super::manifest::PLUGIN_API_VERSION.to_string());
-    command.env("TERVO_HOST_VERSION", env!("CARGO_PKG_VERSION"));
+    command.env("XTERVO_PLUGIN_ID", &config.id);
+    command.env("XTERVO_PLUGIN_API", super::manifest::PLUGIN_API_VERSION.to_string());
+    command.env("XTERVO_HOST_VERSION", env!("CARGO_PKG_VERSION"));
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;

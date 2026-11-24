@@ -6,27 +6,27 @@
 # 不占用 :1、不启动 Xephyr、不 pkill 其他进程。
 #
 # 用法：
-#   cargo build -p tervo-app --bin tervo --bin xwin --bin xclick --bin xkey
+#   cargo build -p xtervo-app --bin xtervo --bin xwin --bin xclick --bin xkey
 #   ./scripts/e2e_context_menu.sh
 #
-# 环境变量：E2E_BIN、E2E_OUT、E2E_DISPLAY、TERVO_PERF_DIR、E2E_XVFB_BIN。
+# 环境变量：E2E_BIN、E2E_OUT、E2E_DISPLAY、XTERVO_PERF_DIR、E2E_XVFB_BIN。
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT=$PWD
 OUT=${E2E_OUT:-$ROOT/.logs/context-menu}
 mkdir -p "$OUT" "$OUT/home" "$OUT/logs" /tmp/.X11-unix
 
-BIN=${E2E_BIN:-$ROOT/target/debug/tervo}
+BIN=${E2E_BIN:-$ROOT/target/debug/xtervo}
 XWIN=$ROOT/target/debug/xwin
 XCLICK=$ROOT/target/debug/xclick
 XKEY=$ROOT/target/debug/xkey
 for f in "$BIN" "$XWIN" "$XCLICK" "$XKEY"; do
-    [ -x "$f" ] || { echo "缺少 $f；先 cargo build -p tervo-app --bin tervo --bin xwin --bin xclick --bin xkey" >&2; exit 2; }
+    [ -x "$f" ] || { echo "缺少 $f；先 cargo build -p xtervo-app --bin xtervo --bin xwin --bin xclick --bin xkey" >&2; exit 2; }
 done
 
 COMMON=$(git rev-parse --git-common-dir)
 MAIN_ROOT=$(cd "$(dirname "$COMMON")" && pwd)
-PERF=${TERVO_PERF_DIR:-$MAIN_ROOT/.perf}
+PERF=${XTERVO_PERF_DIR:-$MAIN_ROOT/.perf}
 XVFB_BIN=${E2E_XVFB_BIN:-$PERF/xvfb/usr/bin/Xvfb}
 [ -x "$XVFB_BIN" ] || XVFB_BIN=$(command -v Xvfb || true)
 [ -x "$XVFB_BIN" ] || { echo "找不到 Xvfb；不会回退到 Xephyr" >&2; exit 2; }
@@ -38,7 +38,7 @@ export DISPLAY=$DISPLAY_NUM
 export HOME=$OUT/home
 export XMODIFIERS=@im=none
 export SLINT_BACKEND=winit-software
-export TERVO_LOG_DIR=$OUT/logs
+export XTERVO_LOG_DIR=$OUT/logs
 
 if xdpyinfo >/dev/null 2>&1; then
     echo "display $DISPLAY_NUM 已被占用；本脚本退出以避免干扰。" >&2
@@ -121,31 +121,31 @@ start_app() { # <tag> <theme> <cols> <rows> <x> <y> [w h]
     stop_app
     write_config "$theme" "$OUT/$tag.toml"
     LOG=$OUT/$tag.log
-    TERVO_CONFIG="$OUT/$tag.toml" \
-        "$BIN" --cols "$cols" --rows "$rows" --title Tervo --shell /bin/sh -- "$OUT/shell.sh" >"$LOG" 2>&1 &
+    XTERVO_CONFIG="$OUT/$tag.toml" \
+        "$BIN" --cols "$cols" --rows "$rows" --title xtervo --shell /bin/sh -- "$OUT/shell.sh" >"$LOG" 2>&1 &
     APP_PID=$!
     WIN=""
     for _ in $(seq 1 200); do
-        WIN=$(xwininfo -root -tree 2>/dev/null | grep -i '"tervo"' | head -1 | awk '{print $1}' || true)
+        WIN=$(xwininfo -root -tree 2>/dev/null | grep -i '"xtervo"' | head -1 | awk '{print $1}' || true)
         [ -n "$WIN" ] && break
         sleep 0.05
     done
-    [ -n "$WIN" ] || { echo "找不到 Tervo 窗口（$tag）；见 $LOG" >&2; tail -40 "$LOG" >&2; exit 2; }
+    [ -n "$WIN" ] || { echo "找不到 xtervo 窗口（$tag）；见 $LOG" >&2; tail -40 "$LOG" >&2; exit 2; }
     if [ -n "$w" ]; then
-        "$XWIN" Tervo "$x" "$y" "$w" "$h" >/dev/null 2>&1 || true
+        "$XWIN" xtervo "$x" "$y" "$w" "$h" >/dev/null 2>&1 || true
     else
-        "$XWIN" Tervo "$x" "$y" >/dev/null 2>&1 || true
+        "$XWIN" xtervo "$x" "$y" >/dev/null 2>&1 || true
     fi
     sleep 0.9
-    WIN=$(xwininfo -root -tree 2>/dev/null | grep -i '"tervo"' | head -1 | awk '{print $1}')
+    WIN=$(xwininfo -root -tree 2>/dev/null | grep -i '"xtervo"' | head -1 | awk '{print $1}')
     read_geometry
     echo "  [$tag] window=$WIN at $ABS_X,$ABS_Y ${W}x${H} log=$LOG"
 }
 
 resize_window() { # <w> <h>
-    "$XWIN" Tervo "$ABS_X" "$ABS_Y" "$1" "$2" >/dev/null 2>&1 || true
+    "$XWIN" xtervo "$ABS_X" "$ABS_Y" "$1" "$2" >/dev/null 2>&1 || true
     sleep 1.0
-    WIN=$(xwininfo -root -tree 2>/dev/null | grep -i '"tervo"' | head -1 | awk '{print $1}')
+    WIN=$(xwininfo -root -tree 2>/dev/null | grep -i '"xtervo"' | head -1 | awk '{print $1}')
     read_geometry
     echo "  resize -> ${W}x${H}"
 }

@@ -1,9 +1,9 @@
-# Tervo
+# xtervo
 
 用 Rust + Slint 写的原生终端模拟器：GPU 渲染（Skia / wgpu，无 GPU 自动回退软件光栅化），
 目标是把 Tabby 的日常终端工作流做快、做轻——低内存、低输入延迟、可脚本化控制。
 
-> **独立项目**：Tervo 与 Tabby / Terminus 的作者及项目无隶属、赞助或背书关系。
+> **独立项目**：xtervo 与 Tabby / Terminus 的作者及项目无隶属、赞助或背书关系。
 > “Tabby”是其权利人的商标，本项目仅在功能对比与兼容性说明中提及；不含 Tabby 的代码或美术资源。
 
 ## 主要功能
@@ -40,10 +40,10 @@
 ### 从源码构建
 
 ```bash
-git clone <repo> && cd tervo
+git clone <repo> && cd xtervo
 export CARGO_HOME=$PWD/.cargo        # 沙箱/CI 里 ~/.cargo 只读时
-cargo build --release -p tervo-app
-./target/release/tervo --cols 120 --rows 32
+cargo build --release -p xtervo-app
+./target/release/xtervo --cols 120 --rows 32
 ```
 
 运行环境：Linux（X11；Wayland 通过 XWayland），Rust 1.8x，Slint 1.18。
@@ -63,8 +63,8 @@ cargo build --release -p tervo-app
 
 ## 使用
 
-启动 `tervo`；配置与 Profile 在 `~/.config/tervo/`（`config.toml`、`profiles.toml`、
-`workspaces.toml`），日志与状态在 `~/.local/state/tervo/`。
+启动 `xtervo`；配置与 Profile 在 `~/.config/xtervo/`（`config.toml`、`profiles.toml`、
+`workspaces.toml`），日志与状态在 `~/.local/state/xtervo/`。
 
 常用快捷键（全部可在 设置 → 快捷键 里改）：
 
@@ -83,7 +83,7 @@ cargo build --release -p tervo-app
 | 缩放 / 重置 | `Ctrl+=` `Ctrl+-` / `Ctrl+0` |
 | 全屏 | `F11` |
 
-其他入口：`tervo --restore` 恢复上次布局；`tervo diag env|snapshot|trace` 离线诊断；
+其他入口：`xtervo --restore` 恢复上次布局；`xtervo diag env|snapshot|trace` 离线诊断；
 MCP 控制见 [`docs/MCP.md`](docs/MCP.md)。
 
 ## 文档
@@ -99,8 +99,8 @@ MCP 控制见 [`docs/MCP.md`](docs/MCP.md)。
 ## 开发
 
 ```bash
-cargo test -p tervo-core                 # core 单测 + VT 契约
-cargo test -p tervo-app --bin tervo      # app 单测
+cargo test -p xtervo-core                 # core 单测 + VT 契约
+cargo test -p xtervo-app --bin xtervo      # app 单测
 ./scripts/selfcheck.sh                   # 构建 + 单测 + 启动预算（RUN_IME=1 加中文冒烟）
 ./scripts/soak.sh                        # 2m/15m 内存门禁（DURATION=15m）
 python3 scripts/e2e_split_repaint.py      # 像素级分屏重绘 e2e
@@ -132,9 +132,9 @@ python3 scripts/check_doc_links.py       # 文档相对链接检查
 - 剪贴板/PRIMARY：X11 与“Wayland 窗口 + XWayland”可用；纯 Wayland 需要合成器
   提供 ext-/wlr-data-control，GNOME/Mutter 46 未提供，失败时会打印一次可读原因。
 - 窗口图标：X11 走运行时 `_NET_WM_ICON`；Wayland 由安装后的
-  `tervo.desktop` + `app_id=tervo` 关联，运行时不再尝试写图标。
+  `xtervo.desktop` + `app_id=xtervo` 关联，运行时不再尝试写图标。
 - 字体固定 JetBrains Mono（回退 DejaVu）；中文自动回退 WenQuanYi Micro Hei / Droid / Noto CJK，
-  彩色 emoji 默认开启（Noto Color Emoji CBDT/CBLC/sbix，`TERVO_COLOR_EMOJI=0` 可关），
+  彩色 emoji 默认开启（Noto Color Emoji CBDT/CBLC/sbix，`XTERVO_COLOR_EMOJI=0` 可关），
   暂不支持自选字体、连字，COLR/SVG 彩色 emoji 仍会回落单色/占位。
 - IME：X11 走 winit 的 XIM（fcitx5 / ibus）；原生 Wayland 走 text-input-v3，
   GNOME 46 + fcitx5（pinyin）已实测提交中文；其他合成器/输入法仍需矩阵验证。

@@ -6,7 +6,7 @@
 //! redacted attachment, placeholder metrics and profile summary, then checks
 //! that RSS/threads/FDs stay bounded. Run explicitly:
 //!
-//! `cargo test -p tervo-diagnostics --test doctor_soak -- --ignored --nocapture`
+//! `cargo test -p xtervo-diagnostics --test doctor_soak -- --ignored --nocapture`
 
 #![cfg(target_os = "linux")]
 
@@ -14,7 +14,7 @@ use std::fs;
 use std::time::{Duration, Instant};
 
 use serde_json::json;
-use tervo_diagnostics::doctor::{
+use xtervo_diagnostics::doctor::{
     Attachment, Doctor, DoctorInput, Environment, EvidenceKind, FrameSummary, MetricsSummary,
     RenderProfileSummary, Symptom,
 };
@@ -54,7 +54,7 @@ fn proc_stats() -> ProcStats {
 
 fn fixture() -> DoctorInput {
     let frame = FrameSummary::from_diag_json(&json!({
-        "schema": "tervo.diag.v1",
+        "schema": "xtervo.diag.v1",
         "kind": "snapshot",
         "cols": 160,
         "rows": 40,
@@ -73,7 +73,7 @@ fn fixture() -> DoctorInput {
     }))
     .expect("frame");
     let metrics = MetricsSummary::from_diag_json(&json!({
-        "schema": "tervo.diag.v1",
+        "schema": "xtervo.diag.v1",
         "kind": "metrics",
         "initialized": false,
         "source": "cli",

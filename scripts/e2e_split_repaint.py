@@ -24,7 +24,7 @@ import tempfile
 import time
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-BIN = ROOT / "target" / "release" / "tervo"
+BIN = ROOT / "target" / "release" / "xtervo"
 XVFB = ROOT / ".perf" / "xvfb" / "usr" / "bin" / "Xvfb"
 LIB = ROOT / ".perf" / "xvfb" / "usr" / "lib" / "x86_64-linux-gnu"
 
@@ -44,11 +44,11 @@ def call(sock_path, token, obj, timeout=15.0):
     return json.loads(buf.decode())
 
 
-def tervo_windows(display):
+def xtervo_windows(display):
     out = subprocess.run(["xwininfo", "-root", "-tree"], capture_output=True,
                          text=True, env={**os.environ, "DISPLAY": display}).stdout
     return [l.strip().split()[0] for l in out.splitlines()
-            if '"tervo"' in l and l.strip().startswith("0x")]
+            if '"xtervo"' in l and l.strip().startswith("0x")]
 
 
 def capture(display, win):
@@ -88,8 +88,8 @@ def capture(display, win):
 
 def run(phase: str) -> int:
     display = ":153"
-    state = tempfile.mkdtemp(prefix="tervo-state-")
-    runtime = tempfile.mkdtemp(prefix="tervo-run-")
+    state = tempfile.mkdtemp(prefix="xtervo-state-")
+    runtime = tempfile.mkdtemp(prefix="xtervo-run-")
     xlog = open("/tmp/split_repaint_xvfb.log", "w")
     applog = open("/tmp/split_repaint_app.log", "w")
     xvfb = subprocess.Popen([str(XVFB), display, "-screen", "0", "1600x900x24"],
@@ -100,8 +100,8 @@ def run(phase: str) -> int:
            "LD_LIBRARY_PATH": f"{LIB}:{os.environ.get('LD_LIBRARY_PATH', '')}"}
     app = subprocess.Popen([str(BIN)], env=env, stdout=applog, stderr=applog)
     try:
-        sock = pathlib.Path(runtime) / "tervo" / "mcp.sock"
-        tokf = pathlib.Path(state) / "tervo" / "mcp.token"
+        sock = pathlib.Path(runtime) / "xtervo" / "mcp.sock"
+        tokf = pathlib.Path(state) / "xtervo" / "mcp.token"
         for _ in range(80):
             if sock.exists() and tokf.exists():
                 break
@@ -130,7 +130,7 @@ def run(phase: str) -> int:
         time.sleep(3)
 
         worst = None
-        for wid in tervo_windows(display):
+        for wid in xtervo_windows(display):
             w, hh, n, bg = capture(display, wid)
             print(f"[{phase}] {wid}: {w}x{hh} bg={bg} right_text_px={n}")
             worst = n if worst is None else min(worst, n)

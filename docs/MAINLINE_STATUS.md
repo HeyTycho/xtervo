@@ -1,4 +1,4 @@
-# Tervo Mainline Status / Mainline Audit
+# xtervo Mainline Status / Mainline Audit
 
 Snapshot: 2026-11-16, branch `main`, HEAD `6102bb9` (`v0.5.0`, stable multi-window)
 Purpose: one place for supported features, fixes, and branch merge decisions.
@@ -14,7 +14,7 @@ this file is the current mainline truth.
 
 - Multi-tab, split panes, profiles, crash-safe session autosave, multi-window.
   Default is a single primary process with in-process `WindowRegistry`/`WindowRuntime`
-  and shared Config/Theme/PluginHost/MCP/Vault/Session; second `tervo` calls are
+  and shared Config/Theme/PluginHost/MCP/Vault/Session; second `xtervo` calls are
   forwarded over a 0600 Unix control socket. Session v2 restores all windows.
   Design: [`MULTI_WINDOW_ARCHITECTURE.md`](MULTI_WINDOW_ARCHITECTURE.md) /
   [`MULTI_WINDOW_RUNTIME.md`](MULTI_WINDOW_RUNTIME.md).
@@ -28,7 +28,7 @@ this file is the current mainline truth.
 ### Rendering
 
 - Default path: GPU-native WGPU30 + Scene (`Frame -> Scene -> WGPU`).
-- CPU/Skia fallback, `TERVO_CPU=1`; no adapter/render failure falls back to CPU.
+- CPU/Skia fallback, `XTERVO_CPU=1`; no adapter/render failure falls back to CPU.
 - Glyph atlas text, CJK/symbol fallback, wide/spacer/hidden/dim/selection/search.
 - Sixel, iTerm2 IIP, Kitty graphics; source registry, crop/clip, z-order,
   below/above-text composition; Sixel bytes/2J ordering fixed.
@@ -37,22 +37,22 @@ this file is the current mainline truth.
   redraws reuse the previous GPU target. Partial-vs-full pixel test lives in
   `crates/render-wgpu/tests/gpu_text.rs`; HUD exposes partial/full/reuse counts.
 - Render HUD: Settings -> Terminal -> Images -> Render HUD, or
-  `TERVO_RENDER_HUD=1`; FPS/frame time/renderer/GPU draws/atlas/stage0/grid.
+  `XTERVO_RENDER_HUD=1`; FPS/frame time/renderer/GPU draws/atlas/stage0/grid.
 
 ### Diagnostics / automation
 
-- `tervo diag env|snapshot|replay|trace|metrics|observability|scene-diff|
+- `xtervo diag env|snapshot|replay|trace|metrics|observability|scene-diff|
   trace-layer|doctor`.
-- `tervo diag doctor [--issue]`: deterministic Doctor CLI.
+- `xtervo diag doctor [--issue]`: deterministic Doctor CLI.
 - Settings -> Help -> Run Doctor: deterministic findings/evidence/issue UI.
-- `tervo diag serve`: MCP stdio server. Read-only tools:
+- `xtervo diag serve`: MCP stdio server. Read-only tools:
   `diag_env`, `diag_snapshot`, `diag_replay`, `doctor_check`, `issue_draft`,
   `metrics_read`; live read tools `live_capabilities`, `live_snapshot`, `live_list`,
   `live_output`; write-gated tools `live_send_text`, `live_send_key`, `live_run`,
   `live_focus`, `live_new_tab`, `live_split`, `live_scroll`; destructive-gated
   `live_close_pane`, `live_close_tab`, `live_kill`. MCP is embedded in core, not a plugin.
 - P0 filter byte-conservation audit and trace-layer; real dsh raw replay.
-- Doctor core: `tervo.diagnostic_case.v1`, evidence bundle/hash/redaction,
+- Doctor core: `xtervo.diagnostic_case.v1`, evidence bundle/hash/redaction,
   issue template, status/health checks.
 
 ### Plugins / integrations
@@ -70,7 +70,7 @@ this file is the current mainline truth.
   bytes. Only `permissions.terminal.output_filter` is supported for WASM.
 - Local plugin install/update/rollback: folder/zip/tar/tar.gz, staging + atomic
   swap, path traversal/symlink/size limits, versioned backups, optional Ed25519
-  manifest signature (`TERVO_PLUGIN_PUBKEY`, require-signature switch). No
+  manifest signature (`XTERVO_PLUGIN_PUBKEY`, require-signature switch). No
   marketplace/trust-chain/key distribution.
 - Feedback button: settings → Help → Feedback creates a redacted local
   tar.gz and opens a configured issue page; no auto API/MR.

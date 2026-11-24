@@ -1,7 +1,7 @@
 # 最大化按钮：工业级状态机与验收门禁
 
 状态：**已实现（2026-11-11，agent/max-controller）。** 独立 crate
-`tervo-maximize` 提供纯状态机 + X11 PropertyNotify 运行时；app 只做最小接线，
+`xtervo-maximize` 提供纯状态机 + X11 PropertyNotify 运行时；app 只做最小接线，
 release 隔离 e2e 覆盖单屏/伪双屏/双实例/快慢点击/外部 WM/无 WM/通知丢失。
 
 ## 1. 这次为什么错
@@ -98,7 +98,7 @@ find_own_window(title)
 ```text
 [x] 单屏 maximize -> restore -> maximize（两轮）
 [x] 伪双屏 _NET_WORKAREA（Xvfb 1280x800 上伪造 5120x1413）
-[x] 两个 Tervo 实例同时运行，各自独立 maximize/restore
+[x] 两个 xtervo 实例同时运行，各自独立 maximize/restore
 [x] 快速点击 6 次（实测 <1s 完成，逐次翻转）
 [x] 慢速点击 6 次（>1s 间隔）
 [x] 外部 Super+Up / WM 快捷键最大化后点按钮
@@ -120,9 +120,9 @@ Xvfb + Openbox
 ## 5. 发布门禁
 
 ```text
-1. cargo test -p tervo-app --bin tervo
+1. cargo test -p xtervo-app --bin xtervo
 2. cargo test --workspace
-3. BIN=target/release/tervo scripts/e2e_maximize_isolated_state_machine.sh
+3. BIN=target/release/xtervo scripts/e2e_maximize_isolated_state_machine.sh
 4. 双实例/双屏/外部最大化矩阵全绿（脚本拒绝 debug binary）
 5. 失败时发布延期，不把 debug PASS 当 release PASS
 ```
@@ -130,7 +130,7 @@ Xvfb + Openbox
 ## 6. 实现与验收
 
 ```text
-crates/maximize（crate: tervo-maximize）
+crates/maximize（crate: xtervo-maximize）
   controller.rs  纯状态机：desired / observed / pending / last_error + 超时注入
   x11.rs         worker：持久 X11 连接、显式 xid、PropertyChangeMask、
                  PropertyNotify -> 读取 _NET_WM_STATE -> 状态机事件
@@ -158,14 +158,14 @@ timeout           只写 last_error；pending 保留；desired/target 不变
 门禁结果（2026-11-11，release artifact）：
 
 ```text
-cargo test -p tervo-maximize           17 passed（含 click/pending/observed 顺序、
+cargo test -p xtervo-maximize           17 passed（含 click/pending/observed 顺序、
                                        丢失通知、外部改变、发送失败、超时）
-cargo test -p tervo-maximize --release 17 passed
-cargo test -p tervo-app --bin tervo    413 passed, 1 ignored
+cargo test -p xtervo-maximize --release 17 passed
+cargo test -p xtervo-app --bin xtervo    413 passed, 1 ignored
 cargo test --workspace                 PASS
 2m soak                               PASS（22 tabs/3 splits；见 .logs/soak-maximize-2m）
 release artifact                      sha256=1f672f894bf861c4709c394bd400b7ca6c09428e3f1e39221aa5409de89bb08a
-BIN=target/release/tervo scripts/e2e_maximize_isolated_state_machine.sh
+BIN=target/release/xtervo scripts/e2e_maximize_isolated_state_machine.sh
   PASS single（单屏 max/restore x2 + 伪 _NET_WORKAREA 5120x1413）
   PASS fast（6 连点 <1s，逐次翻转，无吞点击）
   PASS slow（6 连点间隔 >1s）

@@ -7,11 +7,11 @@
 //! ```text
 //! # static batch (no per-frame TextBatch allocation)
 //! MODE=static FRAMES=60000 \
-//!   cargo run --release -p tervo-render-wgpu --example memory_probe
+//!   cargo run --release -p xtervo-render-wgpu --example memory_probe
 //!
 //! # dynamic batch (rebuild cells every frame)
 //! MODE=dynamic FRAMES=60000 \
-//!   cargo run --release -p tervo-render-wgpu --example memory_probe
+//!   cargo run --release -p xtervo-render-wgpu --example memory_probe
 //! ```
 //!
 //! On the llvmpipe adapter both modes plateau after the first few seconds
@@ -21,11 +21,11 @@
 
 use std::time::Instant;
 
-use tervo_render_wgpu::{
+use xtervo_render_wgpu::{
     discover_font_path, request_headless_gpu, AtlasConfig, GpuTextRenderer, TextLayout,
     TextSection, TextTarget,
 };
-use tervo_scene::{PhysicalSize, TextAttributes, TextBatch, TextCell};
+use xtervo_scene::{PhysicalSize, TextAttributes, TextBatch, TextCell};
 
 const FRAMES_DEFAULT: usize = 30_000;
 
@@ -76,7 +76,7 @@ fn build_batch(frame: usize) -> TextBatch {
     let mut batch = TextBatch::new(frame as u64);
     for row in 0..24u16 {
         let text = format!(
-            "{frame:04} row {row:02} Tervo WGPU glyph atlas 0123456789 \
+            "{frame:04} row {row:02} xtervo WGPU glyph atlas 0123456789 \
              ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz"
         );
         push_line(&mut batch, row, &text);

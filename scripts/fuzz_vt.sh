@@ -16,5 +16,5 @@ SEEDS="${SEEDS:-3}"
 ITERS="${ITERS:-600}"
 SCROLLBACK="${SCROLLBACK:-500}"
 
-exec cargo test -p tervo-core --test vt_fuzz_target --offline -- \
+exec cargo test -p xtervo-core --test vt_fuzz_target --offline -- \
     --seed "$SEED" --seeds "$SEEDS" --iters "$ITERS" --scrollback "$SCROLLBACK" "$@"

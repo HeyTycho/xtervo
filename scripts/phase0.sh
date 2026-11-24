@@ -15,10 +15,10 @@ mkdir -p docs
 
 COLS="${COLS:-120}"
 ROWS="${ROWS:-32}"
-BIN=target/release/tervo
+BIN=target/release/xtervo
 
 echo "== 构建 release =="
-cargo build --release -p tervo-app --bin tervo
+cargo build --release -p xtervo-app --bin xtervo
 
 echo "== 资源基线（cold start / idle RSS / idle CPU）=="
 python3 scripts/measure_startup.py --runs 5 --cols "$COLS" --rows "$ROWS" --backend "$SLINT_BACKEND" \

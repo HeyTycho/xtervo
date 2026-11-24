@@ -6,7 +6,7 @@
 //! 无关的模型：本地 shell、插件 transport、未来的 SSH/Serial/Telnet 都写同一份
 //! [`ConnectionStatus`]，Tab 标记与底部状态 pill 只读聚合结果。
 //!
-//! 模块刻意不依赖 Slint，纯函数可在 `cargo test -p tervo-app --bin tervo` 里跑。
+//! 模块刻意不依赖 Slint，纯函数可在 `cargo test -p xtervo-app --bin xtervo` 里跑。
 
 use std::time::Duration;
 

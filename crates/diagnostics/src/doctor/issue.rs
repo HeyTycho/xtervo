@@ -33,7 +33,7 @@ pub fn render_issue(case: &DiagnosticCase) -> IssueDraft {
     writeln!(body, "# {title}\n").expect("String write cannot fail");
     writeln!(
         body,
-        "> 由 `tervo-doctor` 确定性生成；未调用模型或网络。schema `{}`，case `{}`。\n",
+        "> 由 `xtervo-doctor` 确定性生成；未调用模型或网络。schema `{}`，case `{}`。\n",
         case.schema, case.case_id
     )
     .expect("String write cannot fail");
@@ -158,7 +158,7 @@ fn render_repro(body: &mut String, case: &DiagnosticCase) {
     body.push_str("## 复现\n");
     if case.symptom.repro_steps.is_empty() {
         body.push_str("- 未提供复现步骤。\n");
-        body.push_str("- 若问题可复现，请附上 `tervo diag env --json` 与 `tervo diag snapshot --json` 的输出（先脱敏）。\n");
+        body.push_str("- 若问题可复现，请附上 `xtervo diag env --json` 与 `xtervo diag snapshot --json` 的输出（先脱敏）。\n");
     } else {
         for (index, step) in case.symptom.repro_steps.iter().enumerate() {
             writeln!(body, "{}. {}", index + 1, one_line(step)).expect("String write cannot fail");
@@ -455,10 +455,10 @@ mod tests {
         let recommendation = Recommendation {
             id: "rec.frame.profile".to_string(),
             title: "采集 render profile".to_string(),
-            action: "用 TERVO_RENDER_PROFILE=1 复现一次".to_string(),
+            action: "用 XTERVO_RENDER_PROFILE=1 复现一次".to_string(),
             kind: RecommendationKind::Probe,
             evidence: vec![evidence.clone()],
-            command: Some("TERVO_RENDER_PROFILE=1 tervo".to_string()),
+            command: Some("XTERVO_RENDER_PROFILE=1 xtervo".to_string()),
             related_findings: vec![finding.id.clone()],
         };
         let regression = RegressionTest {

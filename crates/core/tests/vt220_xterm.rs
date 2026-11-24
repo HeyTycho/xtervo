@@ -20,7 +20,7 @@
 use std::time::{Duration, Instant};
 
 use alacritty_terminal::term::TermMode;
-use tervo_core::{spawn, CursorShape, PaneConfig, TermSim};
+use xtervo_core::{spawn, CursorShape, PaneConfig, TermSim};
 
 fn sim(cols: usize, rows: usize) -> TermSim {
     TermSim::new(cols, rows, 100)
@@ -132,7 +132,7 @@ fn printf_escape(bytes: &[u8]) -> String {
 }
 
 fn capture_reply(tag: &str, count: usize, query: &[u8]) -> Vec<u8> {
-    let dir = std::env::temp_dir().join(format!("tervo-vt220-{}-{tag}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("xtervo-vt220-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let out = dir.join("reply.bin");

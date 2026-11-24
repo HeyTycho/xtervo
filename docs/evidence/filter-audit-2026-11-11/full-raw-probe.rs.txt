@@ -1,7 +1,7 @@
 // 临时脚本测试（不提交）：把完整 302KB 真实 dsh raw 过一遍守恒账本。
-use tervo_core::iip::{IipEvent, IipFilter};
-use tervo_core::kitty_graphics::{KittyEvent, KittyParser};
-use tervo_core::sixel::{SixelEvent, SixelFilter};
+use xtervo_core::iip::{IipEvent, IipFilter};
+use xtervo_core::kitty_graphics::{KittyEvent, KittyParser};
+use xtervo_core::sixel::{SixelEvent, SixelFilter};
 
 const ESC: u8 = 0x1b;
 

@@ -177,8 +177,8 @@ def main():
     check("shared_services_one_copy", shared[0])
 
     wins = x11_windows(args.display)
-    xwin1 = wins.get("Tervo")
-    xwin2 = wins.get("Tervo — 2")
+    xwin1 = wins.get("xtervo")
+    xwin2 = wins.get("xtervo — 2")
     assert xwin1 and xwin2, wins
     run(args.xwin, xwin1, "0", "0", str(W), str(H))
     run(args.xwin, xwin2, str(GAP), "0", str(W), str(H))

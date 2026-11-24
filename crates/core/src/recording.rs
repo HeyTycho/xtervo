@@ -267,7 +267,7 @@ mod tests {
     #[test]
     fn start_record_stop_export_roundtrip() {
         let dir = std::env::temp_dir().join(format!(
-            "tervo-recording-test-{}-{:?}",
+            "xtervo-recording-test-{}-{:?}",
             std::process::id(),
             std::thread::current().id()
         ));
@@ -331,7 +331,7 @@ mod tests {
 fn export_preserves_private_mode() {
     use std::os::unix::fs::PermissionsExt;
     let dir = std::env::temp_dir().join(format!(
-        "tervo-recording-mode-{}-{:?}",
+        "xtervo-recording-mode-{}-{:?}",
         std::process::id(),
         std::thread::current().id()
     ));

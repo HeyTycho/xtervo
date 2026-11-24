@@ -1,6 +1,6 @@
-//! Renderer boundary. Backends live in separate crates and consume `tervo-scene`.
+//! Renderer boundary. Backends live in separate crates and consume `xtervo-scene`.
 
-use tervo_scene::{DamageRegion, PhysicalSize, Scene};
+use xtervo_scene::{DamageRegion, PhysicalSize, Scene};
 
 #[derive(Clone, Debug)]
 pub struct RenderedFrame {

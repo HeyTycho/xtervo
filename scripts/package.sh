@@ -4,7 +4,7 @@
 #
 #   ./scripts/package.sh                     # → dist/ 全部产物
 #   ./scripts/package.sh /tmp/dist           # 位置参数指定输出目录
-#   TERVO_DIST=/tmp/dist ./scripts/package.sh
+#   XTERVO_DIST=/tmp/dist ./scripts/package.sh
 #   SKIP_BUILD=1 ./scripts/package.sh        # 复用已有 release 二进制
 #   SKIP_DEB=1 ./scripts/package.sh          # 只出 tar.gz / 二进制
 #
@@ -13,7 +13,7 @@
 # tar/deb 内文件 mtime、gzip/deb 时间戳都取它）；也可显式覆盖。
 #
 # 环境变量：
-#   TERVO_DIST      输出目录（默认 dist；位置参数优先）
+#   XTERVO_DIST      输出目录（默认 dist；位置参数优先）
 #   MAX_MB          发布二进制体积上限（默认 64）
 #   SKIP_BUILD      1 = 不构建，直接打包现有 release 二进制
 #   SKIP_SMOKE      1 = 跳过 strip 后的 --help/--version 冒烟（交叉编译时用）
@@ -33,8 +33,8 @@ export CARGO_HOME="${CARGO_HOME:-$ROOT/.cargo}"
 export LC_ALL=C
 export TZ=UTC
 
-DIST="${1:-${TERVO_DIST:-dist}}"
-BIN=target/release/tervo
+DIST="${1:-${XTERVO_DIST:-dist}}"
+BIN=target/release/xtervo
 MAX_MB="${MAX_MB:-64}"
 TARBALL_NAME=""
 DEB_NAME=""
@@ -52,7 +52,7 @@ usage() {
   -h, --help     显示本帮助
 
 环境变量:
-  TERVO_DIST      输出目录（默认 dist；位置参数优先）
+  XTERVO_DIST      输出目录（默认 dist；位置参数优先）
   MAX_MB          发布二进制体积上限（默认 64）
   SKIP_BUILD=1    复用已有 release 二进制
   SKIP_SMOKE=1    跳过 strip 后的 --help/--version 冒烟（交叉编译时用）
@@ -98,7 +98,7 @@ VERSION="$(awk '
 ' Cargo.toml)"
 [[ -n "$VERSION" ]] || die "无法从 Cargo.toml 读取 workspace.package.version"
 
-GIT_COMMIT="${TERVO_GIT_COMMIT:-}"
+GIT_COMMIT="${XTERVO_GIT_COMMIT:-}"
 GIT_DIRTY=0
 GIT_COMMIT_TIME=""
 if git rev-parse --git-dir >/dev/null 2>&1; then
@@ -117,8 +117,8 @@ fi
 SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$GIT_COMMIT_TIME}"
 [[ "$SOURCE_DATE_EPOCH" =~ ^[0-9]+$ ]] || die "SOURCE_DATE_EPOCH 必须是 Unix 秒：$SOURCE_DATE_EPOCH"
 export SOURCE_DATE_EPOCH
-export TERVO_GIT_COMMIT="$GIT_COMMIT"
-export TERVO_GIT_DIRTY="$GIT_DIRTY"
+export XTERVO_GIT_COMMIT="$GIT_COMMIT"
+export XTERVO_GIT_DIRTY="$GIT_DIRTY"
 
 BUILT="$(date -u -d "@$SOURCE_DATE_EPOCH" '+%Y-%m-%dT%H:%M:%SZ')"
 TARGET_TRIPLE="$(rustc -vV 2>/dev/null | sed -n 's/^host: //p')"
@@ -135,7 +135,7 @@ DIRTY_LABEL=""
 if [[ "$GIT_DIRTY" -eq 1 ]]; then
     DIRTY_LABEL=" (dirty)"
 fi
-echo "== Tervo $VERSION =="
+echo "== xtervo $VERSION =="
 printf '  commit      %s%s\n' "$GIT_COMMIT" "$DIRTY_LABEL"
 printf '  built       %s\n' "$BUILT"
 printf '  target      %s\n' "$TARGET_TRIPLE"
@@ -144,9 +144,9 @@ printf '  source date %s\n' "$SOURCE_DATE_EPOCH"
 # ---- 构建 ----------------------------------------------------------------
 if [[ "${SKIP_BUILD:-0}" != 1 ]]; then
     echo "== 构建 release（保留符号，供 perf/flamegraph）=="
-    cargo build --release -p tervo-app --bin tervo
+    cargo build --release -p xtervo-app --bin xtervo
 fi
-[[ -x "$BIN" ]] || die "找不到 $BIN；先 cargo build --release -p tervo"
+[[ -x "$BIN" ]] || die "找不到 $BIN；先 cargo build --release -p xtervo"
 
 # strip 工具：$STRIP > strip > llvm-strip
 STRIP_BIN="${STRIP:-}"
@@ -162,7 +162,7 @@ fi
 
 mkdir -p "$DIST"
 DIST="$(readlink -m "$DIST")"
-BIN_TMP="$DIST/.tervo-stripped.$$"
+BIN_TMP="$DIST/.xtervo-stripped.$$"
 cp -f "$BIN" "$BIN_TMP"
 BEFORE="$(size_of "$BIN")"
 read -r -a STRIP_ARGS <<<"${STRIP_FLAGS:---strip-all}"
@@ -174,7 +174,7 @@ if [[ "${SKIP_SMOKE:-0}" != 1 ]]; then
     echo "== 冒烟：--help / --version =="
     "$BIN_TMP" --help >/dev/null || die "strip 后二进制 --help 失败"
     VERSION_OUT="$("$BIN_TMP" --version)" || die "strip 后二进制 --version 失败"
-    printf '%s\n' "$VERSION_OUT" | grep -qxF "Tervo $VERSION" || die "--version 版本不是 $VERSION：$VERSION_OUT"
+    printf '%s\n' "$VERSION_OUT" | grep -qxF "xtervo $VERSION" || die "--version 版本不是 $VERSION：$VERSION_OUT"
     if [[ "$GIT_DIRTY" -eq 1 ]]; then
         printf '%s\n' "$VERSION_OUT" | grep -qxF "commit:  $GIT_COMMIT (dirty)" \
             || die "--version 未记录 dirty commit $GIT_COMMIT：$VERSION_OUT"
@@ -191,31 +191,31 @@ MAX_BYTES=$((MAX_MB * 1024 * 1024))
 if ((AFTER > MAX_BYTES)); then
     die "发布产物 $AFTER 字节，超过 ${MAX_MB} MB 门禁"
 fi
-mv -f "$BIN_TMP" "$DIST/tervo-stripped"
+mv -f "$BIN_TMP" "$DIST/xtervo-stripped"
 BIN_TMP=""
-chmod 755 "$DIST/tervo-stripped"
-# 兼容旧的 dist/tervo 路径；校验和只针对 tervo-stripped 本体。
-ln -sfn tervo-stripped "$DIST/tervo"
-BINARY="$DIST/tervo-stripped"
+chmod 755 "$DIST/xtervo-stripped"
+# 兼容旧的 dist/xtervo 路径；校验和只针对 xtervo-stripped 本体。
+ln -sfn xtervo-stripped "$DIST/xtervo"
+BINARY="$DIST/xtervo-stripped"
 
 # ---- tar.gz --------------------------------------------------------------
 if [[ "${SKIP_TAR:-0}" != 1 ]]; then
-    STAGE_NAME="tervo-$VERSION-linux-$ARCH"
+    STAGE_NAME="xtervo-$VERSION-linux-$ARCH"
     STAGE_PARENT="$DIST/.stage"
     STAGE="$STAGE_PARENT/$STAGE_NAME"
     rm -rf -- "$STAGE_PARENT"
     mkdir -p -- "$STAGE/share/applications" \
         "$STAGE/share/icons/hicolor/512x512/apps" \
         "$STAGE/share/icons/hicolor/64x64/apps"
-    install -m 755 "$BINARY" "$STAGE/tervo"
+    install -m 755 "$BINARY" "$STAGE/xtervo"
     install -m 755 scripts/install.sh "$STAGE/install.sh"
     install -m 644 LICENSE "$STAGE/LICENSE"
     install -m 644 README.md "$STAGE/README.md"
     install -m 644 THIRD_PARTY_NOTICES.md "$STAGE/THIRD_PARTY_NOTICES.md"
     install -m 644 docs/LICENSING.md "$STAGE/LICENSING.md"
-    install -m 644 packaging/tervo.desktop "$STAGE/share/applications/tervo.desktop"
-    install -m 644 assets/icon.png "$STAGE/share/icons/hicolor/512x512/apps/tervo.png"
-    install -m 644 assets/icon-small.png "$STAGE/share/icons/hicolor/64x64/apps/tervo.png"
+    install -m 644 packaging/xtervo.desktop "$STAGE/share/applications/xtervo.desktop"
+    install -m 644 assets/icon.png "$STAGE/share/icons/hicolor/512x512/apps/xtervo.png"
+    install -m 644 assets/icon-small.png "$STAGE/share/icons/hicolor/64x64/apps/xtervo.png"
     {
         printf 'format=1\n'
         printf 'version=%s\n' "$VERSION"
@@ -251,16 +251,16 @@ if [[ "${SKIP_DEB:-0}" != 1 ]]; then
         "$DEBROOT/usr/share/applications" \
         "$DEBROOT/usr/share/icons/hicolor/512x512/apps" \
         "$DEBROOT/usr/share/icons/hicolor/64x64/apps" \
-        "$DEBROOT/usr/share/doc/tervo"
-    install -m 755 "$BINARY" "$DEBROOT/usr/bin/tervo"
-    install -m 644 packaging/tervo.desktop "$DEBROOT/usr/share/applications/tervo.desktop"
-    install -m 644 assets/icon.png "$DEBROOT/usr/share/icons/hicolor/512x512/apps/tervo.png"
-    install -m 644 assets/icon-small.png "$DEBROOT/usr/share/icons/hicolor/64x64/apps/tervo.png"
-    install -m 644 LICENSE "$DEBROOT/usr/share/doc/tervo/copyright"
-    install -m 644 LICENSE "$DEBROOT/usr/share/doc/tervo/LICENSE"
-    install -m 644 README.md "$DEBROOT/usr/share/doc/tervo/README.md"
-    install -m 644 THIRD_PARTY_NOTICES.md "$DEBROOT/usr/share/doc/tervo/THIRD_PARTY_NOTICES.md"
-    install -m 644 docs/LICENSING.md "$DEBROOT/usr/share/doc/tervo/LICENSING.md"
+        "$DEBROOT/usr/share/doc/xtervo"
+    install -m 755 "$BINARY" "$DEBROOT/usr/bin/xtervo"
+    install -m 644 packaging/xtervo.desktop "$DEBROOT/usr/share/applications/xtervo.desktop"
+    install -m 644 assets/icon.png "$DEBROOT/usr/share/icons/hicolor/512x512/apps/xtervo.png"
+    install -m 644 assets/icon-small.png "$DEBROOT/usr/share/icons/hicolor/64x64/apps/xtervo.png"
+    install -m 644 LICENSE "$DEBROOT/usr/share/doc/xtervo/copyright"
+    install -m 644 LICENSE "$DEBROOT/usr/share/doc/xtervo/LICENSE"
+    install -m 644 README.md "$DEBROOT/usr/share/doc/xtervo/README.md"
+    install -m 644 THIRD_PARTY_NOTICES.md "$DEBROOT/usr/share/doc/xtervo/THIRD_PARTY_NOTICES.md"
+    install -m 644 docs/LICENSING.md "$DEBROOT/usr/share/doc/xtervo/LICENSING.md"
     {
         printf 'format=1\n'
         printf 'version=%s\n' "$VERSION"
@@ -269,8 +269,8 @@ if [[ "${SKIP_DEB:-0}" != 1 ]]; then
         printf 'built=%s\n' "$BUILT"
         printf 'target=%s\n' "$TARGET_TRIPLE"
         printf 'source_date_epoch=%s\n' "$SOURCE_DATE_EPOCH"
-    } >"$DEBROOT/usr/share/doc/tervo/BUILD-INFO"
-    chmod 644 "$DEBROOT/usr/share/doc/tervo/BUILD-INFO"
+    } >"$DEBROOT/usr/share/doc/xtervo/BUILD-INFO"
+    chmod 644 "$DEBROOT/usr/share/doc/xtervo/BUILD-INFO"
 
     # Depends：优先 dpkg-shlibdeps（NEEDED 库），再补 Slint/winit 运行时 dlopen 的库。
     DLOPEN_DEPS="libx11-6, libx11-xcb1, libxkbcommon0, libxkbcommon-x11-0, libxcursor1, libxrandr2, libxi6"
@@ -278,23 +278,23 @@ if [[ "${SKIP_DEB:-0}" != 1 ]]; then
     if command -v dpkg-shlibdeps >/dev/null 2>&1; then
         SHLIBS_DIR="$DIST/.deb-shlibdeps"
         mkdir -p -- "$SHLIBS_DIR/debian"
-        install -m 755 "$BINARY" "$SHLIBS_DIR/tervo"
+        install -m 755 "$BINARY" "$SHLIBS_DIR/xtervo"
         cat >"$SHLIBS_DIR/debian/control" <<'EOF'
-Source: tervo
+Source: xtervo
 Section: x11
 Priority: optional
-Maintainer: Tervo maintainers <tervo@localhost>
+Maintainer: xtervo maintainers <xtervo@localhost>
 Standards-Version: 4.6.2
 
-Package: tervo
+Package: xtervo
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}
-Description: Tervo terminal emulator
+Description: xtervo terminal emulator
  Native terminal emulator.
 EOF
         SHLIB_DEPS="$(
             cd "$SHLIBS_DIR"
-            dpkg-shlibdeps -O -e./tervo 2>/dev/null | sed -n 's/^shlibs:Depends=//p'
+            dpkg-shlibdeps -O -e./xtervo 2>/dev/null | sed -n 's/^shlibs:Depends=//p'
         )" || true
     fi
     if [[ -n "${DEB_DEPENDS:-}" ]]; then
@@ -306,23 +306,23 @@ EOF
     fi
 
     INSTALLED_KB="$(du -sk --apparent-size "$DEBROOT/usr" | awk '{print $1}')"
-    DEB_NAME="tervo_${DEB_VERSION}_${DEB_ARCH}.deb"
+    DEB_NAME="xtervo_${DEB_VERSION}_${DEB_ARCH}.deb"
     cat >"$DEBROOT/DEBIAN/control" <<EOF
-Package: tervo
+Package: xtervo
 Version: $DEB_VERSION
 Architecture: $DEB_ARCH
-Maintainer: Tervo maintainers <tervo@localhost>
+Maintainer: xtervo maintainers <xtervo@localhost>
 Installed-Size: $INSTALLED_KB
 Section: x11
 Priority: optional
 Depends: $DEPENDS
 Recommends: libgl1, fonts-dejavu-core
 Description: Native terminal emulator written in Rust + Slint
- Tervo is a native terminal emulator focused on low memory and input
+ xtervo is a native terminal emulator focused on low memory and input
  latency. It supports tabs, splits, profiles, SSH/SFTP, Sixel images,
  session restore and Tabby configuration import.
  .
- Tervo is an independent open-source project; it is not affiliated with
+ xtervo is an independent open-source project; it is not affiliated with
  Tabby or its authors.
 EOF
 
@@ -348,9 +348,9 @@ fi
 echo "== 校验和 =="
 (
     cd "$DIST"
-    sha256sum tervo-stripped >tervo-stripped.sha256
+    sha256sum xtervo-stripped >xtervo-stripped.sha256
     : >SHA256SUMS
-    sha256sum tervo-stripped >>SHA256SUMS
+    sha256sum xtervo-stripped >>SHA256SUMS
     [[ -z "$TARBALL_NAME" ]] || sha256sum "$TARBALL_NAME" >>SHA256SUMS
     [[ -z "$DEB_NAME" ]] || sha256sum "$DEB_NAME" >>SHA256SUMS
     sort -k2 SHA256SUMS -o SHA256SUMS

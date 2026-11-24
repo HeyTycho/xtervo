@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use tervo_graphics::{GraphicsManager, ImagePlacement, Rect, RowId};
+use xtervo_graphics::{GraphicsManager, ImagePlacement, Rect, RowId};
 
 use crate::{
     BackgroundInstance, CursorInstance, DamageRegion, DrawItem, ImageInstance, Scene, SceneLayer,
@@ -203,7 +203,7 @@ where
 mod tests {
     use std::sync::Arc;
 
-    use tervo_graphics::{
+    use xtervo_graphics::{
         CompositePolicy, GraphicsManager, ImageId, ImagePlacement, ImageProtocol, PlacementId,
         Rect, RowId, SourceId,
     };
@@ -226,7 +226,7 @@ mod tests {
     fn manager() -> GraphicsManager {
         let mut manager = GraphicsManager::new();
         manager
-            .insert_resource(tervo_graphics::ImageResource {
+            .insert_resource(xtervo_graphics::ImageResource {
                 id: ImageId(1),
                 source_id: SourceId(10),
                 width: 32,

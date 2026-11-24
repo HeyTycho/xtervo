@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::io;
 use std::path::Path;
 
-use tervo_graphics::SourceId;
+use xtervo_graphics::SourceId;
 
 use crate::atlas::GlyphAtlas;
 use crate::image::{ImageGeometry, ImageQuad};

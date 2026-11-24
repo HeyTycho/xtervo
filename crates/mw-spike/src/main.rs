@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! Single-process multi-window spike (throw-away evidence crate; **not** a
-//! production dependency and must not be wired into `tervo-app`).
+//! production dependency and must not be wired into `xtervo-app`).
 //!
 //! Three modes:
 //!
@@ -17,7 +17,7 @@
 //!                  callbacks/size/title; checks whether the exported globals
 //!                  (`Palette`, `Lang`) are per-window or process-wide.
 //!
-//! The binary is deliberately self-contained: it does not link `tervo-app`,
+//! The binary is deliberately self-contained: it does not link `xtervo-app`,
 //! touch `AppState`, PTYs, plugins, MCP or the session writer.
 //!
 //! Exit code 0 only on an explicit `PASS`; every failed assertion prints
@@ -42,7 +42,7 @@ mod app_ui {
 }
 
 slint::slint! {
-    // Minimal stand-in for a Tervo window. Deliberately independent of the
+    // Minimal stand-in for a xtervo window. Deliberately independent of the
     // production `MainWindow` so renderer/lifecycle questions are not coupled
     // to the real AppState.
     export component SpikeWindow inherits Window {

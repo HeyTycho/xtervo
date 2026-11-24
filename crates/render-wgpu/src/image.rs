@@ -1,4 +1,4 @@
-//! WGPU textured-quad composition for [`tervo_scene::ImageInstance`]s.
+//! WGPU textured-quad composition for [`xtervo_scene::ImageInstance`]s.
 //!
 //! The terminal scene carries image *metadata* only: a [`SourceId`], crop and
 //! destination geometry, clip, z and composition policy. This module owns the
@@ -41,8 +41,8 @@ use std::collections::HashMap;
 use std::fmt;
 use std::time::{Duration, Instant};
 
-use tervo_graphics::{PlacementId, Rect, SourceId};
-use tervo_scene::{DrawItem, ImageInstance, PhysicalSize, Scene};
+use xtervo_graphics::{PlacementId, Rect, SourceId};
+use xtervo_scene::{DrawItem, ImageInstance, PhysicalSize, Scene};
 
 use crate::text::{FrameStats, GpuTextRenderer, TextRenderError, TextSection, TextTarget};
 use crate::FRAME_FORMAT;
@@ -226,7 +226,7 @@ impl ImageTextureRegistry {
         }
 
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("tervo-wgpu-image-source"),
+            label: Some("xtervo-wgpu-image-source"),
             size: wgpu::Extent3d {
                 width,
                 height,
@@ -682,12 +682,12 @@ impl GpuImageRenderer {
     /// all three must belong to one wgpu device.
     pub fn new(device: wgpu::Device, queue: wgpu::Queue) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("tervo-wgpu-image-shader"),
+            label: Some("xtervo-wgpu-image-shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("image.wgsl").into()),
         });
 
         let screen_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("tervo-wgpu-image-screen-bgl"),
+            label: Some("xtervo-wgpu-image-screen-bgl"),
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
                 visibility: wgpu::ShaderStages::VERTEX,
@@ -700,7 +700,7 @@ impl GpuImageRenderer {
             }],
         });
         let source_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("tervo-wgpu-image-source-bgl"),
+            label: Some("xtervo-wgpu-image-source-bgl"),
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
@@ -721,13 +721,13 @@ impl GpuImageRenderer {
             ],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("tervo-wgpu-image-pipeline-layout"),
+            label: Some("xtervo-wgpu-image-pipeline-layout"),
             bind_group_layouts: &[Some(&screen_layout), Some(&source_layout)],
             immediate_size: 0,
         });
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("tervo-wgpu-image-pipeline"),
+            label: Some("xtervo-wgpu-image-pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
@@ -753,7 +753,7 @@ impl GpuImageRenderer {
         });
 
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("tervo-wgpu-image-sampler"),
+            label: Some("xtervo-wgpu-image-sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             address_mode_w: wgpu::AddressMode::ClampToEdge,
@@ -765,13 +765,13 @@ impl GpuImageRenderer {
             ..Default::default()
         });
         let screen_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("tervo-wgpu-image-screen"),
+            label: Some("xtervo-wgpu-image-screen"),
             size: 16,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         let screen_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("tervo-wgpu-image-screen-bind-group"),
+            label: Some("xtervo-wgpu-image-screen-bind-group"),
             layout: &screen_layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
@@ -779,7 +779,7 @@ impl GpuImageRenderer {
             }],
         });
         let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("tervo-wgpu-image-instances"),
+            label: Some("xtervo-wgpu-image-instances"),
             size: 256,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
@@ -914,7 +914,7 @@ impl GpuImageRenderer {
             &mut self.vertex_buffer,
             &mut self.vertex_capacity,
             needed,
-            "tervo-wgpu-image-instances",
+            "xtervo-wgpu-image-instances",
         );
         if reallocated {
             self.buffer_reallocations += 1;
@@ -938,7 +938,7 @@ impl GpuImageRenderer {
             let mut encoder = self
                 .device
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("tervo-wgpu-image-encoder"),
+                    label: Some("xtervo-wgpu-image-encoder"),
                 });
             {
                 let color_attachments = [Some(wgpu::RenderPassColorAttachment {
@@ -951,7 +951,7 @@ impl GpuImageRenderer {
                     },
                 })];
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("tervo-wgpu-image-pass"),
+                    label: Some("xtervo-wgpu-image-pass"),
                     color_attachments: &color_attachments,
                     depth_stencil_attachment: None,
                     timestamp_writes: None,
@@ -1107,7 +1107,7 @@ impl GpuImageRenderer {
             .map(|source| source.view.clone())
             .ok_or(ImageError::MissingSource { source_id })?;
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("tervo-wgpu-image-source-bind-group"),
+            label: Some("xtervo-wgpu-image-source-bind-group"),
             layout: &self.source_layout,
             entries: &[
                 wgpu::BindGroupEntry {
@@ -1140,8 +1140,8 @@ impl fmt::Debug for GpuImageRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tervo_graphics::{CompositePolicy, RowId};
-    use tervo_scene::{SceneLayer, Viewport};
+    use xtervo_graphics::{CompositePolicy, RowId};
+    use xtervo_scene::{SceneLayer, Viewport};
 
     fn instance(
         placement_id: u64,

@@ -1,5 +1,5 @@
 # 审计基线（a6afbd1 + 审计测试、未修复 filter）
-# 命令: cargo test -p tervo-core --test filter_conservation -- --ignored
+# 命令: cargo test -p xtervo-core --test filter_conservation -- --ignored
 # 时间: 2026-11-11 18:32:19 CST
 
     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.15s
@@ -76,5 +76,5 @@ failures:
 
 test result: FAILED. 0 passed; 7 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.01s
 
-error: test failed, to rerun pass `-p tervo-core --test filter_conservation`
+error: test failed, to rerun pass `-p xtervo-core --test filter_conservation`
 EXIT=101

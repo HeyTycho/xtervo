@@ -66,7 +66,7 @@ OTP/验证码 prompt（回答 `no`，不会把账户密码填给一次性验证�
   `WakeSignal` 唤醒 UI，UI 线程只 `adopt()`。Vault 页 busy 时显示
   「正在后台派生密钥」并保持重绘；busy 时操作被拒绝、job 异常会恢复状态。
 - worker 主密码、AEAD 明文字节、`Unlocked` key/凭据尽力清零；日志/错误/文件不含密码。
-- `TERVO_VAULT_KDF_DELAY_MS` 仅供 GUI e2e 截取 busy 状态（默认 0）。
+- `XTERVO_VAULT_KDF_DELAY_MS` 仅供 GUI e2e 截取 busy 状态（默认 0）。
 
 ## 6. 测试与验收
 
@@ -81,7 +81,7 @@ CARGO_HOME=$PWD/.cargo CARGO_TARGET_DIR=/home/user/AIworkspace/rusttabbyterminal
   退出横幅/Reconnect、Vault busy/完成、SFTP 列表/队列/Cancel/元数据 Cancel/chmod/失败/Retry。
 - 本机无 sshd，未跑真实 sshd 登录；e2e 用假 ssh/sftp/keyscan 驱动 UI，known_hosts 逻辑
   复用真实 `ssh -G`/`ssh-keygen -F`/`ssh-keygen -lf`。真实服务器仍可用既有
-  `scripts/ssh_test_server.py` + `tervo --sftp-probe`。
+  `scripts/ssh_test_server.py` + `xtervo --sftp-probe`。
 
 ## 7. 未完成 / 限制
 

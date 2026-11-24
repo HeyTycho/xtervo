@@ -271,10 +271,10 @@ impl SceneDiff {
             || !self.damage.regions_removed.is_empty()
     }
 
-    /// Additive `tervo.diag.v1` JSON form.
+    /// Additive `xtervo.diag.v1` JSON form.
     pub fn to_json(&self) -> Value {
         json!({
-            "schema": "tervo.diag.v1",
+            "schema": "xtervo.diag.v1",
             "kind": "scene_diff",
             "changed": self.has_changes(),
             "left_revision": self.left_revision,
@@ -818,7 +818,7 @@ mod tests {
         assert_eq!(diff.text.details.len(), MAX_TEXT_DETAIL_ROWS);
         assert!(diff.text.details_truncated);
         let json = diff.to_json();
-        assert_eq!(json["schema"], "tervo.diag.v1");
+        assert_eq!(json["schema"], "xtervo.diag.v1");
         assert_eq!(json["kind"], "scene_diff");
         assert_eq!(
             json["text"]["details"].as_array().unwrap().len(),

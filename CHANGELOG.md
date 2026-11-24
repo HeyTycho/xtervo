@@ -1,6 +1,6 @@
 # Changelog
 
-Tervo 的版本与 tag 规则见 `docs/RELEASING.md`。
+xtervo 的版本与 tag 规则见 `docs/RELEASING.md`。
 
 ## [Unreleased]
 
@@ -43,7 +43,7 @@ Tervo 的版本与 tag 规则见 `docs/RELEASING.md`。
   “zshTerminal 1”）；提交/取消后显式把键盘焦点还给终端。
 - 关 Tab / 关闭右侧 Tab / 切 Tab 后恢复隐藏 IME 输入框焦点，修复“界面还在、
   但终端完全打不进字”；窄 Tab 的 active 项 hover 时仍显示 close，避免关不掉。
-- `Ctrl+W` 不再被 Tervo 抢去关 Tab，原样发给 PTY（readline 的删除前一个词）；
+- `Ctrl+W` 不再被 xtervo 抢去关 Tab，原样发给 PTY（readline 的删除前一个词）；
   关闭 Tab 改为 `Ctrl+Shift+W`，关闭 Pane 改为 `Ctrl+Shift+X`，帮助/README/
   交互矩阵同步。
 - 主窗口在 `show()` 前注册 winit 事件：Wayland 首轮 `Ime::Enabled` 不再丢失；
@@ -116,8 +116,8 @@ Tervo 的版本与 tag 规则见 `docs/RELEASING.md`。
   （`crates/core/src/pane.rs`，真实 PTY 回归测试
   `foreground_command_exit_resets_stale_kitty_flags`）。
 - 多窗口标题不再把内部 window id 拼进 `WM_NAME`：新建窗口的标题曾是
-  `Tervo — 2`，且每个新窗口从“当前活动窗口”克隆 opts，导致继续累积成
-  `Tervo — 2 — 3`。现在所有窗口统一为基础标题（默认 `Tervo`），只裁掉纯数字的
+  `xtervo — 2`，且每个新窗口从“当前活动窗口”克隆 opts，导致继续累积成
+  `xtervo — 2 — 3`。现在所有窗口统一为基础标题（默认 `xtervo`），只裁掉纯数字的
   ` — N` 后缀，用户自定义标题不受影响（`crates/app/src/secondary.rs`，
   单测 `window_title_drops_accumulated_id_suffixes`）。
 
@@ -126,7 +126,7 @@ Tervo 的版本与 tag 规则见 `docs/RELEASING.md`。
 - Wayland Phase 1：新增 `platform` 能力探测（env hint + winit raw handle 二次确认），
   `--diagnose` 区分“本进程 Wayland 窗口”与 XWayland 数据；新增隔离 headless
   Mutter e2e（`scripts/e2e_wayland_phase1.sh`）。GNOME 46 + fcitx5 下
-  text-input-v3 已实测提交中文；Wayland 下 `slint::set_xdg_app_id("tervo")` 让
+  text-input-v3 已实测提交中文；Wayland 下 `slint::set_xdg_app_id("xtervo")` 让
   `.desktop`/图标/窗口分组可关联（X11 不设置，WM_CLASS 保持原值）。
 
 ### Fixed
@@ -138,7 +138,7 @@ Tervo 的版本与 tag 规则见 `docs/RELEASING.md`。
 - IME 候选锚点：鼠标点击 dsh 等 mouse-reporting TUI 后，候选窗会固定在该
   点击格；现在任何键盘输入都会清掉 `ime_override` 并重发 spot，候选窗回到
   真实终端光标位置，不再跟着鼠标箭头。
-- Tervo 中文输入（Wayland text-input-v3）：组合期 `key-pressed` 改为 `accept`
+- xtervo 中文输入（Wayland text-input-v3）：组合期 `key-pressed` 改为 `accept`
   吞掉按键，避免 `reject` 让 Slint TextInput 继续内置编辑、把拼音字母/空格
   写进 PTY；监听 winit `Ime::Enabled` 后才清 `ime_spot_dirty` 并重发
   `set_ime_cursor_area`（此前窗口获焦时 area 在 enable 之前发出被丢弃，且
@@ -149,8 +149,8 @@ Tervo 的版本与 tag 规则见 `docs/RELEASING.md`。
   Slint/compositor 放大 1.5×，文字明显发糊；100% 缩放行为不变。CPU/Skia
   兜底路径仍是逻辑分辨率（见 `docs/WAYLAND_ADAPTATION.md`）。
 - 安装到 `~/.local` 等用户级 prefix 时，桌面项改写成该 prefix 的绝对
-  `Exec/TryExec`。此前 `TryExec=tervo` 在 GNOME 会话 PATH 不含
-  `~/.local/bin` 时会被当成“命令不存在”，Activities 里搜不到 Tervo。
+  `Exec/TryExec`。此前 `TryExec=xtervo` 在 GNOME 会话 PATH 不含
+  `~/.local/bin` 时会被当成“命令不存在”，Activities 里搜不到 xtervo。
 - Wayland 拖边/拖角 resize 后，合成器会吃掉 pointer-up，Slint `ResizeHandle`
   一直保持 pressed，后续鼠标点击被边缘抓手吞掉（典型表现：Ctrl+T 新建 Tab 后
   鼠标不正常）。现在按 resize 方向把补发的 PointerReleased 落到原抓手命中区，
@@ -173,8 +173,8 @@ Stable release: single-instance primary + default in-process multi-window, Windo
 
 ### Added
 
-- 单进程多窗口：单实例 primary + Unix control socket；第二次 `tervo`/`--window` 转发为
-  primary 内新 `MainWindow`，不再启动第二套 Tervo/插件/MCP。`WindowRegistry`/
+- 单进程多窗口：单实例 primary + Unix control socket；第二次 `xtervo`/`--window` 转发为
+  primary 内新 `MainWindow`，不再启动第二套 xtervo/插件/MCP。`WindowRegistry`/
   `WindowRuntime` 每窗口独立 tabs/panes/focus/models，共享 Config/Theme/PluginHost/
   MCP/Vault/Session。179 个 UI 回调抽成共享注册；插件/MCP 增加 window_id 路由；
   GPU 按 WindowId 引用计数，关闭一个窗口不影响其它窗口。session v2 保存/恢复全部
@@ -193,9 +193,9 @@ RC candidate: GPU damage scissor, embedded MCP live terminal control, plugin API
 - Plugin API v3 本地安装/更新/原子回滚/签名校验：目录或 zip/tar/tar.gz → staging →
   manifest/host_abi/entry/路径/大小限制校验 → RENAME_EXCHANGE（不支持时两段 rename
   回退）→ `.backup/<id>/<epoch-ms>-<version>`（默认保留 3 个）。可选 Ed25519
-  `plugin.toml.sig` + `TERVO_PLUGIN_PUBKEY`/默认公钥/设置开关；坏签名始终拒绝。
+  `plugin.toml.sig` + `XTERVO_PLUGIN_PUBKEY`/默认公钥/设置开关；坏签名始终拒绝。
   设置页 Install/Update/Rollback + source/signature 展示，CLI
-  `tervo plugins install|update|rollback|verify|list|backups|keygen|sign`。
+  `xtervo plugins install|update|rollback|verify|list|backups|keygen|sign`。
   不执行插件代码、不做市场/远程更新/在线 key 分发。文档 `docs/PLUGIN_INSTALL.md`。
 - Plugin API v3 完整宿主（`crates/app/src/plugin_v3/`）：只加载 `api = 3` / `host_abi = 3`；
   v1/v2 清单 unsupported 且不执行，无兼容层。独立子进程 + JSON-RPC 2.0 line-delimited
@@ -205,7 +205,7 @@ RC candidate: GPU damage scissor, embedded MCP live terminal control, plugin API
   capability gate + 每次 Allow/Deny）。每插件 supervisor：握手/命令/status/ping 超时、
   坏 JSON/崩溃退避重启、重启上限、256 KiB 行/16 MiB 输出/stderr 尾部上限；Linux
   PR_SET_PDEATHSIG + process group。设置页 Enable/Disable/Reload/Restart/Open folder
-  不重启 Tervo；首次启用展示权限并确认，权限变化要求重新确认。声明式 panel/settings
+  不重启 xtervo；首次启用展示权限并确认，权限变化要求重新确认。声明式 panel/settings
   最小渲染（text/markdown/list/input/button/select/progress）与 startup/tab-open/
   tab-close/pane-focus 事件。示例 `docs/examples/plugin-v3-echo/`，文档
   `docs/PLUGIN_V3.md`。MCP 仍为宿主内嵌功能，不实现插件 MCP。
@@ -213,12 +213,12 @@ RC candidate: GPU damage scissor, embedded MCP live terminal control, plugin API
   wasmtime 34、无 WASI/import，memory/alloc/filter ABI，16 MiB 内存、fuel/epoch、256 KiB
   输入/输出/行上限；trap/超时/越界/超限原样放行并熔断，绝不丢 PTY 字节。示例
   `docs/examples/plugin-wasm-filter/`，文档 `docs/PLUGIN_V3.md` 第 6 章。
-- 默认 GPU-native：不设环境变量即走 Slint WGPU30 + Scene glyph atlas/图片；`TERVO_CPU=1` 强制 CPU，`TERVO_GPU_NATIVE=0` 仅兼容 stage 0；无 adapter/失败自动 CPU。
+- 默认 GPU-native：不设环境变量即走 Slint WGPU30 + Scene glyph atlas/图片；`XTERVO_CPU=1` 强制 CPU，`XTERVO_GPU_NATIVE=0` 仅兼容 stage 0；无 adapter/失败自动 CPU。
 - Sixel/Kitty 图片进入 GPU Scene（source registry、clip、below/above-text z-order）；修复 Sixel `2J` 事件顺序导致刚放置图片被清除。
-- `TERVO_RENDER_HUD=1` / Settings → Images → Render HUD：FPS、frame time、实际 renderer、GPU-native frames/draw calls、atlas/stage0 上传、网格尺寸。
-- `tervo diag doctor [--issue]`：确定性 Doctor 命令入口。
-- `tervo diag serve` MCP 扩展：`tervo.doctor_check`、`tervo.issue_draft`、`tervo.metrics_read`、`resources/list|read`，保留只读边界。
-- `tervo diag serve` live terminal control：list/output/send_text/send_key/run/focus/new_tab/split/scroll；close_pane/close_tab/kill 需 `TERVO_DIAG_ALLOW_DESTRUCTIVE=1`，写操作需 `TERVO_DIAG_ALLOW_WRITE=1` 与 token。
+- `XTERVO_RENDER_HUD=1` / Settings → Images → Render HUD：FPS、frame time、实际 renderer、GPU-native frames/draw calls、atlas/stage0 上传、网格尺寸。
+- `xtervo diag doctor [--issue]`：确定性 Doctor 命令入口。
+- `xtervo diag serve` MCP 扩展：`xtervo.doctor_check`、`xtervo.issue_draft`、`xtervo.metrics_read`、`resources/list|read`，保留只读边界。
+- `xtervo diag serve` live terminal control：list/output/send_text/send_key/run/focus/new_tab/split/scroll；close_pane/close_tab/kill 需 `XTERVO_DIAG_ALLOW_DESTRUCTIVE=1`，写操作需 `XTERVO_DIAG_ALLOW_WRITE=1` 与 token。
 - Settings → Help → Feedback：生成脱敏本地 tar.gz，打开配置的 issue 新建页；不自动提交 issue/MR、不 post 凭据。
 - 工业级 MaximizeController：desired/observed/pending + PropertyNotify、显式 X11 xid、超时只报错不改 target、无 WM 回退。
 
@@ -243,7 +243,7 @@ RC candidate: GPU damage scissor, embedded MCP live terminal control, plugin API
 
 ### Added
 
-- 内置 `tervo diag env/snapshot/replay/trace --json`、MCP stdio、显式 opt-in live control socket（0600/token，只读，`scripts/e2e_diag_live.sh`）；`tervo.diag.v1` schema；不含 API key/图片 RGBA。
+- 内置 `xtervo diag env/snapshot/replay/trace --json`、MCP stdio、显式 opt-in live control socket（0600/token，只读，`scripts/e2e_diag_live.sh`）；`xtervo.diag.v1` schema；不含 API key/图片 RGBA。
 - Settings Help 页面：快捷键、配置/日志路径、诊断复制、版本信息、已知限制。
 - Background image Browse 文件选择器；图片/Cwd/Shell/SSH key 支持 `~`。
 - 无背景图时终端 opacity 也可用（透明窗口；需要合成器）。
@@ -264,7 +264,7 @@ RC candidate: GPU damage scissor, embedded MCP live terminal control, plugin API
 
 - 多显示器：Quake 使用当前 monitor 几何 + EWMH workarea，不再按整个 root 居中。
 - 鼠标上报 TUI（dsh-tui/vim/tmux）中，`right_click = "menu"` 不再被无条件转发给 TUI。
-- GNOME dock/任务栏右键增加 New Window action（`StartupWMClass=tervo`）。
+- GNOME dock/任务栏右键增加 New Window action（`StartupWMClass=xtervo`）。
 - 松开左键后仍能 resize 窗口（尤其上边框）。
 - 内联图片改为 framebuffer 合成（文本覆盖图片、滚动随 cell），移除独立视觉 overlay。
 - XTWINOPS/PTY 像素尺寸、ECH 按光标行清图、块元素几何绘制。

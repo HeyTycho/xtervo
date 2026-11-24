@@ -8,7 +8,7 @@
 //!   -> canonicalize 源
 //!   -> 解到 <plugins>/.staging/<unique>（拒绝 ..、绝对路径、symlink、特殊文件）
 //!   -> 校验 manifest（api=3/host_abi=3/id/version/entry）+ Ed25519 签名
-//!   -> 写 <staging>/.tervo-install.toml
+//!   -> 写 <staging>/.xtervo-install.toml
 //!   -> Linux renameat2(RENAME_EXCHANGE) 原子交换；不支持时两段 rename 并可恢复
 //!   -> 旧版本移到 <plugins>/.backup/<id>/<epoch-ms>-<version>
 //!   -> 只保留最近 N 个备份（默认 3）
@@ -39,7 +39,7 @@ pub const STAGING_DIR: &str = ".staging";
 /// 备份目录名。
 pub const BACKUP_DIR: &str = ".backup";
 /// 安装元数据文件名（放在每个插件目录内，签名文件只覆盖 plugin.toml）。
-pub const META_FILE: &str = ".tervo-install.toml";
+pub const META_FILE: &str = ".xtervo-install.toml";
 /// 安装锁文件名。
 pub const LOCK_FILE: &str = ".install.lock";
 
@@ -226,7 +226,7 @@ impl InstallMeta {
     }
 }
 
-/// 读取插件目录里的 `.tervo-install.toml`；不存在/损坏返回 None。
+/// 读取插件目录里的 `.xtervo-install.toml`；不存在/损坏返回 None。
 pub fn installed_meta(dir: &Path) -> Option<InstallMeta> {
     let bytes = signature::read_limited_file(&dir.join(META_FILE), 64 * 1024).ok()?;
     let text = std::str::from_utf8(&bytes).ok()?;

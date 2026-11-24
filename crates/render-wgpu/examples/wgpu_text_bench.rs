@@ -7,14 +7,14 @@
 //!
 //! ```text
 //! CARGO_HOME=$PWD/.cargo CARGO_TARGET_DIR=$PWD/target \
-//!   cargo run --release -p tervo-render-wgpu --example wgpu_text_bench
+//!   cargo run --release -p xtervo-render-wgpu --example wgpu_text_bench
 //! ```
 //!
 //! Environment:
-//! - `TERVO_WGPU_TEXT_FRAMES` measured frames (default 240)
-//! - `TERVO_WGPU_TEXT_OUT` artifact dir
+//! - `XTERVO_WGPU_TEXT_FRAMES` measured frames (default 240)
+//! - `XTERVO_WGPU_TEXT_OUT` artifact dir
 //!   (default `<workspace>/target/wgpu-text-atlas/bench`)
-//! - `TERVO_WGPU_FONT` font path override
+//! - `XTERVO_WGPU_FONT` font path override
 //!
 //! The adapter is printed. On a machine without a hardware GPU wgpu selects
 //! llvmpipe/lavapipe; the CPU-frame numbers then describe command recording and
@@ -23,12 +23,12 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use tervo_render_wgpu::{
+use xtervo_render_wgpu::{
     compare_rgba, diff_rgba, discover_font_path, rasterize_reference, read_target_rgba8,
     request_headless_gpu, write_ppm, AtlasConfig, FontMetrics, FrameStats, GpuTextRenderer,
     TextLayout, TextSection, TextTarget,
 };
-use tervo_scene::{PhysicalSize, TextAttributes, TextBatch, TextCell};
+use xtervo_scene::{PhysicalSize, TextAttributes, TextBatch, TextCell};
 
 const WIDTH: u32 = 1280;
 const HEIGHT: u32 = 720;
@@ -42,7 +42,7 @@ const CLEAR_RGB: u32 = 0x000c_0e14;
 const DEFAULT_FRAMES: usize = 240;
 
 fn output_dir() -> PathBuf {
-    if let Some(value) = std::env::var_os("TERVO_WGPU_TEXT_OUT") {
+    if let Some(value) = std::env::var_os("XTERVO_WGPU_TEXT_OUT") {
         return PathBuf::from(value);
     }
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -51,7 +51,7 @@ fn output_dir() -> PathBuf {
 }
 
 fn frames_to_run() -> usize {
-    std::env::var("TERVO_WGPU_TEXT_FRAMES")
+    std::env::var("XTERVO_WGPU_TEXT_FRAMES")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|&value| value > 0)
@@ -106,7 +106,7 @@ fn main_batch(frame: usize) -> TextBatch {
     let mut batch = TextBatch::new(frame as u64 + 1000);
     for row in 0..ROWS {
         let text = format!(
-            "{frame:04} row {row:02} Tervo WGPU glyph atlas: \
+            "{frame:04} row {row:02} xtervo WGPU glyph atlas: \
              0123456789 ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz !@#$%^&*()"
         );
         let fg = match row % 4 {
@@ -259,7 +259,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut total_atlas_uploads = 0u64;
     let mut draw_calls = 0u32;
     let mut last_stats: Option<FrameStats> = None;
-    let poll_maintenance = std::env::var_os("TERVO_WGPU_TEXT_POLL").is_some();
+    let poll_maintenance = std::env::var_os("XTERVO_WGPU_TEXT_POLL").is_some();
 
     for frame in 0..frame_count {
         let started = Instant::now();

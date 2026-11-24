@@ -54,7 +54,7 @@ impl ResourceSnapshot {
             .saturating_add(self.gpu_textures.bytes)
     }
 
-    /// Additive `tervo.diag.v1` resource object.
+    /// Additive `xtervo.diag.v1` resource object.
     pub fn to_json(&self) -> Value {
         json!({
             "image_resources": {"count": self.image_resources.count, "bytes": self.image_resources.bytes},

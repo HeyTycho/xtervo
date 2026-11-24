@@ -1,9 +1,9 @@
-# Tervo 多窗口目标架构
+# xtervo 多窗口目标架构
 
-状态：**Phase 1/2 已实现（feature flag）**  
-实现分支：`agent/mw-runtime`；细节/证据见 [`MULTI_WINDOW_RUNTIME.md`](MULTI_WINDOW_RUNTIME.md)。  
-当前默认仍是单窗口；`TERVO_MULTI_WINDOW_INPROC=1` 下支持同进程第二窗口。  
-`--window` 多进程路径保留为兼容/回退。  
+状态：**Phase 1/2 已实现（feature flag）**
+实现分支：`agent/mw-runtime`；细节/证据见 [`MULTI_WINDOW_RUNTIME.md`](MULTI_WINDOW_RUNTIME.md)。
+当前默认仍是单窗口；`XTERVO_MULTI_WINDOW_INPROC=1` 下支持同进程第二窗口。
+`--window` 多进程路径保留为兼容/回退。
 本文回答：如果要把多窗口做成产品能力，最好的方案是什么。
 
 ---
@@ -20,11 +20,11 @@
 + 全局 WindowId / PaneId 路由
 ```
 
-不再把 `tervo --window` 当作产品形态，而是：
+不再把 `xtervo --window` 当作产品形态，而是：
 
 ```text
 第一次启动           → 成为 primary，创建窗口 1
-再次启动 tervo       → 通过 Unix control socket 请求 primary 打开窗口 2
+再次启动 xtervo       → 通过 Unix control socket 请求 primary 打开窗口 2
 Ctrl+Shift+N         → 同一个 primary 内创建窗口
 关闭一个窗口         → 只销毁该窗口的 PTY/UI/GPU surface
 关闭最后一个窗口     → primary 保存 session、关闭插件、退出
@@ -43,7 +43,7 @@ Ctrl+Shift+N         → 同一个 primary 内创建窗口
 当前 `--window` MVP：
 
 ```text
-每个窗口 = 独立 Tervo 进程
+每个窗口 = 独立 xtervo 进程
 每个进程 = 一套 AppState / PTY / 插件宿主 / MCP socket / GPU 资源
 ```
 
@@ -80,7 +80,7 @@ Tab 跨窗口 IPC
 ## 2. 目标架构
 
 ```text
-┌──────────────────────── Tervo primary process ────────────────────────┐
+┌──────────────────────── xtervo primary process ────────────────────────┐
 │                                                                       │
 │  Slint event loop (UI thread)                                         │
 │                                                                       │
@@ -162,7 +162,7 @@ PaneId 全局唯一很重要：
 
 ```text
 plugin terminal.read/write
-MCP live_* 
+MCP live_*
 session
 事件路由
 ```
@@ -212,8 +212,8 @@ with_shared(|&mut SharedServices|)
 ### 4.1 启动
 
 ```text
-tervo
-  ├─ 尝试 flock($XDG_RUNTIME_DIR/tervo/instance.lock)
+xtervo
+  ├─ 尝试 flock($XDG_RUNTIME_DIR/xtervo/instance.lock)
   ├─ 成功 → primary
   │    ├─ 启动 UI/共享服务
   │    ├─ 创建 WindowId(1)
@@ -238,7 +238,7 @@ Ctrl+Shift+N
 `--window` 兼容：
 
 ```text
-tervo --window
+xtervo --window
   → 如果 primary 存在，转发 open_window
   → 如果没有 primary，按普通 primary 启动（只开一个窗口）
 ```
@@ -317,7 +317,7 @@ primary 每 2s autosave 发生变化的窗口集合
 
 ```text
 v1（单窗口）读取 → 包装成 windows[0]
-v2 写出；旧版本 Tervo 不承诺读 v2
+v2 写出；旧版本 xtervo 不承诺读 v2
 ```
 
 不恢复：
@@ -505,7 +505,7 @@ PluginHost         一份
 
 ```text
 单实例 flock
-第二个主实例只提示“已有 Tervo，使用 New Window”
+第二个主实例只提示“已有 xtervo，使用 New Window”
 --window 继续可用但标记为 legacy
 session marker 只由主实例管理
 MCP socket 第二个实例不抢占，明确提示
@@ -535,7 +535,7 @@ with_app → with_window
 
 ```text
 Unix socket 0600 + token
-tervo → open_window
+xtervo → open_window
 --window → 兼容转发
 移除 current_exe().spawn(--window)
 ```
@@ -568,7 +568,7 @@ kill -9 恢复全部窗口
 [ ] 关闭窗口 A，窗口 B 的 PTY/插件/MCP 不受影响
 [ ] 关闭最后一个窗口才退出 primary
 [ ] Ctrl+Shift+N 在 <200ms 内开新窗口，不 spawn 新进程
-[ ] 第二次 `tervo` 不创建第二套插件/ session，只请求 open_window
+[ ] 第二次 `xtervo` 不创建第二套插件/ session，只请求 open_window
 [ ] 一个插件进程只运行一份
 [ ] 插件事件带正确 window_id
 [ ] terminal.read 只读目标窗口
@@ -642,7 +642,7 @@ broker 是“强隔离”方案，不是默认产品方案。
 需要产品确认：
 
 ```text
-1. 默认单实例：第二次 tervo 打开新窗口，还是允许独立实例？推荐前者。
+1. 默认单实例：第二次 xtervo 打开新窗口，还是允许独立实例？推荐前者。
 2. 关闭最后一个窗口是否退出进程？推荐是。
 3. Tab 跨窗口移动是否首发？推荐 Phase 5。
 4. 是否接受“一个窗口 panic 可能影响同进程其它窗口”？推荐用 crash recovery 缓解；
@@ -676,7 +676,7 @@ crates/app/src/gpu_native.rs   每 pane target（未来加 WindowId）
 crates/app/src/main.slint      MainWindow / 菜单 / 窗口回调
 ```
 
-实现时先写 Phase 2 的 **双窗口同进程 spike**，不要先改插件/MCP 协议。  
+实现时先写 Phase 2 的 **双窗口同进程 spike**，不要先改插件/MCP 协议。
 如果 spike 不能稳定跑两个 WGPU surface，再评估 broker；否则按本文路线推进。
 
 ---
@@ -688,7 +688,7 @@ crates/app/src/main.slint      MainWindow / 菜单 / 窗口回调
 ```text
 WindowId / WindowRuntime / WindowRegistry / SharedServices
 单窗口路径进入 registry，行为不变
-TERVO_MULTI_WINDOW_INPROC=1 同 event loop 第二 MainWindow
+XTERVO_MULTI_WINDOW_INPROC=1 同 event loop 第二 MainWindow
 两个窗口独立 tabs/panes/focus/models；PaneId 全进程唯一
 关闭 B 只销毁 B；A 继续渲染
 Config/Theme/PluginHost/MCP/Session/Vault 共享（插件一份、MCP 一个 socket）

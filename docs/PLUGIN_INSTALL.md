@@ -1,4 +1,4 @@
-# Tervo 插件 v3：本地安装 / 更新 / 回滚 / 签名校验
+# xtervo 插件 v3：本地安装 / 更新 / 回滚 / 签名校验
 
 本文只覆盖**本地**插件包管理，不包含托管市场、云同步、在线 key 分发或信任链。
 安装器不会执行插件代码；启用后的权限确认仍由 v3 host 负责。
@@ -9,8 +9,8 @@
 
 - 从本地目录或 `.zip` / `.tar` / `.tar.gz` 安装 v3 插件。
 - 只接受 `api = 3`、`host_abi = 3` 且 manifest 合法的插件。
-- 目标目录 `$XDG_CONFIG_HOME/tervo/plugins/<id>/`（默认 XDG；可用
-  `TERVO_PLUGINS` 覆盖整个插件根目录）。
+- 目标目录 `$XDG_CONFIG_HOME/xtervo/plugins/<id>/`（默认 XDG；可用
+  `XTERVO_PLUGINS` 覆盖整个插件根目录）。
 - 先写 staging，校验通过后原子替换；失败保留旧版本。
 - 更新时保留旧版本目录，默认保留最近 3 个；支持 `rollback`。
 - 可选的 Ed25519 本地签名校验：`plugin.toml.sig` + 本机公钥。
@@ -28,14 +28,14 @@
 ## 2. 目录布局
 
 ```text
-$XDG_CONFIG_HOME/tervo/               # 默认；TERVO_PLUGINS 可覆盖 plugins 根
+$XDG_CONFIG_HOME/xtervo/               # 默认；XTERVO_PLUGINS 可覆盖 plugins 根
 ├── plugin-signing.pub                # 可选默认 Ed25519 公钥
 ├── plugin-signing.key                # keygen 生成的私钥（0600，切勿分发）
 └── plugins/
     ├── <id>/                         # 已安装插件目录
     │   ├── plugin.toml
     │   ├── plugin.toml.sig           # 可选签名
-    │   ├── .tervo-install.toml       # 安装器元数据（来源/版本/签名状态）
+    │   ├── .xtervo-install.toml       # 安装器元数据（来源/版本/签名状态）
     │   └── entry...
     ├── .staging/                     # 安装/校验临时目录（不会被发现为插件）
     ├── .backup/<id>/                 # 旧版本备份
@@ -43,8 +43,8 @@ $XDG_CONFIG_HOME/tervo/               # 默认；TERVO_PLUGINS 可覆盖 plugins
 ```
 
 - 发现插件时会跳过所有以 `.` 开头的目录；`.staging` / `.backup` 不会出现在
-  设置页或 `tervo plugins list`。
-- `.tervo-install.toml` 只用于展示来源/签名/文件数，**不被签名覆盖**。签名
+  设置页或 `xtervo plugins list`。
+- `.xtervo-install.toml` 只用于展示来源/签名/文件数，**不被签名覆盖**。签名
   校验永远重新读取 `plugin.toml` 原始字节；本地元数据被改不会把坏签名变成
   好签名。
 - 备份目录名格式：`<epoch-ms 19 位>-<sanitized-version>`，按目录名从新到旧。
@@ -125,7 +125,7 @@ plugin.toml”，安装会被拒绝。多顶层目录、散落文件不会猜测
 - 规范化后必须留在 staging 内；staging 创建在插件根目录下、权限 0700。
 - 拒绝符号链接和硬链接；解包后再做一次全树扫描，任何 symlink/特殊文件都
   会导致回滚并删除 staging。
-- 拒绝重复路径、文件/目录同名冲突、保留文件名 `.tervo-install.toml`。
+- 拒绝重复路径、文件/目录同名冲突、保留文件名 `.xtervo-install.toml`。
 - 不向插件目录之外写任何内容；失败时删除 staging，不碰旧版本。
 
 ## 4. 安装、更新、回滚
@@ -134,33 +134,33 @@ plugin.toml”，安装会被拒绝。多顶层目录、散落文件不会猜测
 
 ```bash
 # 本地目录
-tervo plugins install /path/to/plugin
+xtervo plugins install /path/to/plugin
 
 # zip / tar / tar.gz
-tervo plugins install /path/to/plugin.zip
-tervo plugins install /path/to/plugin.tar.gz
+xtervo plugins install /path/to/plugin.zip
+xtervo plugins install /path/to/plugin.tar.gz
 
 # 更新：要求同 id 已安装；成功后旧版本进入 .backup/
-tervo plugins update /path/to/new-version.zip
+xtervo plugins update /path/to/new-version.zip
 
 # 只校验，不安装（同样跑 manifest/路径/大小/签名检查）
-tervo plugins verify /path/to/plugin.zip
+xtervo plugins verify /path/to/plugin.zip
 
 # 查看已安装插件、来源、签名状态
-tervo plugins list
+xtervo plugins list
 
 # 查看某插件的回滚备份
-tervo plugins backups dev.example.echo
+xtervo plugins backups dev.example.echo
 
 # 回滚到最新一个“与当前版本不同”的备份
-tervo plugins rollback dev.example.echo
+xtervo plugins rollback dev.example.echo
 
 # 指定版本号或备份目录名
-tervo plugins rollback dev.example.echo --to 1.0.0
-tervo plugins rollback dev.example.echo --to 0000000000000000000-1.0.0
+xtervo plugins rollback dev.example.echo --to 1.0.0
+xtervo plugins rollback dev.example.echo --to 0000000000000000000-1.0.0
 
 # 第一次安装也保留备份；--keep 控制数量（1–10）
-tervo plugins update pkg.zip --keep 2
+xtervo plugins update pkg.zip --keep 2
 ```
 
 `install` 与 `update` 的区别：`update` 要求 `<plugins>/<id>` 已存在，且磁盘上
@@ -212,14 +212,14 @@ Linux 上优先使用 `renameat2(..., RENAME_EXCHANGE)` 原子交换 staging 和
 
 ```text
 plugin.toml.sig
-  tervo-plugin-signature-v1
+  xtervo-plugin-signature-v1
   <base64(64 字节 Ed25519 signature)>
 ```
 
 公钥文件：
 
 ```text
-tervo-plugin-pubkey-v1
+xtervo-plugin-pubkey-v1
 <base64(32 字节 Ed25519 public key)>
 ```
 
@@ -227,21 +227,21 @@ tervo-plugin-pubkey-v1
 （Ed25519 SubjectPublicKeyInfo）。私钥文件由 keygen 生成：
 
 ```text
-tervo-plugin-signing-key-v1
+xtervo-plugin-signing-key-v1
 <base64(32 字节 seed)>
 ```
 
 ### 5.2 生成与签名
 
 ```bash
-# 默认写到 <config>/tervo/plugin-signing.{key,pub}
-tervo plugins keygen
+# 默认写到 <config>/xtervo/plugin-signing.{key,pub}
+xtervo plugins keygen
 
 # 或指定目录；--force 覆盖已有 key
-tervo plugins keygen --out-dir ~/.config/tervo --force
+xtervo plugins keygen --out-dir ~/.config/xtervo --force
 
 # 给插件目录的 plugin.toml 生成 plugin.toml.sig
-tervo plugins sign /path/to/plugin --key ~/.config/tervo/plugin-signing.key
+xtervo plugins sign /path/to/plugin --key ~/.config/xtervo/plugin-signing.key
 
 # 然后再打 zip/tar（签名文件必须在包内与 plugin.toml 同级）
 cd /path/to && zip -r plugin.zip plugin
@@ -252,16 +252,16 @@ cd /path/to && zip -r plugin.zip plugin
 ### 5.3 公钥查找顺序
 
 1. 代码内显式传入（`InstallOptions::signature_config` / `--pubkey` 测试入口）。
-2. 环境变量 `TERVO_PLUGIN_PUBKEY`：可以是 key 内容、文件路径或 `@路径`。
+2. 环境变量 `XTERVO_PLUGIN_PUBKEY`：可以是 key 内容、文件路径或 `@路径`。
 3. 默认文件：`<plugins 根目录的父目录>/plugin-signing.pub`，默认即
-   `$XDG_CONFIG_HOME/tervo/plugin-signing.pub`。使用 `TERVO_PLUGINS` 时，默认
+   `$XDG_CONFIG_HOME/xtervo/plugin-signing.pub`。使用 `XTERVO_PLUGINS` 时，默认
    公钥文件位于该目录的父目录。
 
 ### 5.4 强制签名策略
 
 满足任一即“要求签名”：
 
-- 环境变量 `TERVO_PLUGIN_REQUIRE_SIGNATURE=1`（也接受 true/yes/on；0/false/
+- 环境变量 `XTERVO_PLUGIN_REQUIRE_SIGNATURE=1`（也接受 true/yes/on；0/false/
   no/off 关闭）；设置页 Plugins 的 “Require Ed25519 signature” 开关；
 - `config.toml` 的 `plugin_require_signature = true`。
 
@@ -277,7 +277,7 @@ cd /path/to && zip -r plugin.zip plugin
 | 有 | 无 | 任意 | 拒绝（无法验证的签名不能当通过） |
 
 要求签名但没有配置公钥时，安装/回滚直接报错并提示设置
-`TERVO_PLUGIN_PUBKEY` 或默认公钥文件。
+`XTERVO_PLUGIN_PUBKEY` 或默认公钥文件。
 
 ### 5.5 签名边界
 
@@ -285,7 +285,7 @@ cd /path/to && zip -r plugin.zip plugin
 - 不证明作者身份、不提供撤销、过期、key 轮换或信任链。
 - 不覆盖 entry 二进制、主题文件等其他资源；如需完整性，发布方应把摘要写进
   manifest 或对整个包做外部校验。
-- `.tervo-install.toml` 来源展示只是本地记录，不是签名证据。
+- `.xtervo-install.toml` 来源展示只是本地记录，不是签名证据。
 - 公钥来源完全由本机用户决定；安装器不会联网获取 key。
 
 ## 6. 设置页 Plugins
@@ -294,13 +294,13 @@ Settings → Plugins 现在提供：
 
 - **Require Ed25519 signature** 开关（写入 `plugin_require_signature`）。
 - **Install from folder or package** 路径框 + “Choose file…” / “Choose
-  folder…” + “Install”。文件选择器仍走 zenity（`TERVO_FILE_DIALOG` 可替换），
+  folder…” + “Install”。文件选择器仍走 zenity（`XTERVO_FILE_DIALOG` 可替换），
   无法启动时可手动输入路径。
 - 每个已安装插件行显示 `Source:` 与 `Signature:`（实时校验）。
 - `Update…`：使用路径框中的包，更新同 id 插件；路径为空时提示先选择。
 - `Rollback to <version>`：仅在存在与当前版本不同的备份时显示。
 - `Enable` / `Disable` / `Reload` / `Restart` / `Open folder` 仍走既有 v3 host；
-  安装/更新/回滚不会重启 Tervo。
+  安装/更新/回滚不会重启 xtervo。
 
 安装/更新/回滚在 UI 线程同步执行本地文件操作；不会执行插件代码。启用状态下
 更新成功后，store 只 reload 受影响的插件（权限变化会使旧确认失效并要求重新
@@ -310,13 +310,13 @@ Settings → Plugins 现在提供：
 
 ```bash
 # 安装/签名/逃逸/限额/回滚单元测试（20 个）
-cargo test -p tervo-app --bin tervo plugin_v3::install_tests
+cargo test -p xtervo-app --bin xtervo plugin_v3::install_tests
 
 # v3 host + 安装全部测试
-cargo test -p tervo-app --bin tervo plugin_v3::
+cargo test -p xtervo-app --bin xtervo plugin_v3::
 
 # 全量 app 测试
-cargo test -p tervo-app --bin tervo
+cargo test -p xtervo-app --bin xtervo
 ```
 
 覆盖：目录/zip/tar/tar.gz 安装、坏 manifest、zip slip、tar traversal、
@@ -326,14 +326,14 @@ symlink、超限、更新失败保留旧版本、更新备份、回滚、备份�
 CLI 手工验收（无需 UI）：
 
 ```bash
-export TERVO_PLUGINS=/tmp/tervo-plugins
-tervo plugins keygen --out-dir /tmp/tervo-keys
-tervo plugins sign /path/to/plugin --key /tmp/tervo-keys/plugin-signing.key
-TERVO_PLUGIN_PUBKEY=@/tmp/tervo-keys/plugin-signing.pub \
-  tervo plugins verify /path/to/plugin
-TERVO_PLUGIN_PUBKEY=@/tmp/tervo-keys/plugin-signing.pub \
-  tervo plugins install /path/to/plugin
-tervo plugins list
+export XTERVO_PLUGINS=/tmp/xtervo-plugins
+xtervo plugins keygen --out-dir /tmp/xtervo-keys
+xtervo plugins sign /path/to/plugin --key /tmp/xtervo-keys/plugin-signing.key
+XTERVO_PLUGIN_PUBKEY=@/tmp/xtervo-keys/plugin-signing.pub \
+  xtervo plugins verify /path/to/plugin
+XTERVO_PLUGIN_PUBKEY=@/tmp/xtervo-keys/plugin-signing.pub \
+  xtervo plugins install /path/to/plugin
+xtervo plugins list
 ```
 
 ## 8. 已知限制

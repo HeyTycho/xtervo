@@ -11,8 +11,8 @@ use std::time::{Duration, Instant};
 use flate2::write::ZlibEncoder;
 use flate2::Compression;
 
-use tervo_core::osc::encode_base64;
-use tervo_core::{spawn, Frame, PaneConfig, PaneHandle};
+use xtervo_core::osc::encode_base64;
+use xtervo_core::{spawn, Frame, PaneConfig, PaneHandle};
 
 /// 同一进程里多个 PTY 用例并行会争抢 shell/CPU；串行化，风格与 sixel e2e 一致。
 static KITTY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -59,7 +59,7 @@ fn wait_for<F: Fn(&Frame) -> bool>(
 
 fn temp_payload(name: &str, bytes: &[u8]) -> PathBuf {
     let path = std::env::temp_dir().join(format!(
-        "tervo-kitty-{}-{name}.bin",
+        "xtervo-kitty-{}-{name}.bin",
         std::process::id()
     ));
     std::fs::write(&path, bytes).expect("write payload");
@@ -115,7 +115,7 @@ fn kitty_query_over_pty_returns_apc_response() {
     let query = apc("i=31,s=1,v=1,a=q,t=d,f=32", b"AAAAAA==");
     let request = temp_payload("query", &query);
     let response = std::env::temp_dir().join(format!(
-        "tervo-kitty-{}-query-reply.bin",
+        "xtervo-kitty-{}-query-reply.bin",
         std::process::id()
     ));
     let _ = std::fs::remove_file(&response);
@@ -173,7 +173,7 @@ fn kitty_transmit_place_follows_row_id_and_respects_c1() {
     assert!(!meta.above_text);
     assert_eq!(
         meta.source_rect,
-        Some(tervo_core::frame::ImageCrop {
+        Some(xtervo_core::frame::ImageCrop {
             x: 0,
             y: 0,
             w: 4,
@@ -376,7 +376,7 @@ struct KittyRun {
 /// 抓取终端回包与最终帧里的图片数量。
 fn run_kitty_chunks(tag: &str, chunks: &[Vec<u8>], reply_len: usize) -> KittyRun {
     let dir = std::env::temp_dir().join(format!(
-        "tervo-kitty-order-{}-{tag}",
+        "xtervo-kitty-order-{}-{tag}",
         std::process::id()
     ));
     let _ = std::fs::remove_dir_all(&dir);

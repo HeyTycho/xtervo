@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! Legacy 多进程窗口 fallback。默认路径已经是同进程 WindowRegistry：
-//! `tervo` 的 secondary 转发 `open_window`，`window.new`/Ctrl+Shift+N 在 UI
+//! `xtervo` 的 secondary 转发 `open_window`，`window.new`/Ctrl+Shift+N 在 UI
 //! 线程新建 MainWindow，不再 spawn 子进程。
 //!
-//! 只有显式 `TERVO_MULTI_WINDOW_INPROC=0` / `TERVO_MULTI_WINDOW_LEGACY=1`
-//! 才走这里。子进程带 `TERVO_SINGLE_INSTANCE=0` 绕过 primary 锁，否则它会
+//! 只有显式 `XTERVO_MULTI_WINDOW_INPROC=0` / `XTERVO_MULTI_WINDOW_LEGACY=1`
+//! 才走这里。子进程带 `XTERVO_SINGLE_INSTANCE=0` 绕过 primary 锁，否则它会
 //! 被当成 secondary 转发回父进程、不会开窗。配置并发仍是“最后写入者生效”。
 
 use std::path::Path;
@@ -14,7 +14,7 @@ use std::process::{Command, Stdio};
 pub const WINDOW_FLAG: &str = "--window";
 
 /// legacy 子进程必须绕过单实例锁，否则 `--window` 会被转发回父进程。
-pub const LEGACY_BYPASS_ENV: &str = "TERVO_SINGLE_INSTANCE";
+pub const LEGACY_BYPASS_ENV: &str = "XTERVO_SINGLE_INSTANCE";
 
 /// 构造“新窗口”命令行。纯逻辑，便于单测（测试不真正 spawn）。
 pub fn new_window_command(exe: &Path) -> Command {
@@ -59,7 +59,7 @@ mod tests {
 
     #[test]
     fn command_is_self_with_only_window_marker() {
-        let exe = Path::new("/opt/tervo/bin/tervo");
+        let exe = Path::new("/opt/xtervo/bin/xtervo");
         let cmd = new_window_command(exe);
         assert_eq!(cmd.get_program(), exe.as_os_str());
         let args: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
@@ -69,7 +69,7 @@ mod tests {
 
     #[test]
     fn legacy_child_bypasses_single_instance_lock() {
-        let cmd = new_window_command(Path::new("/opt/tervo/bin/tervo"));
+        let cmd = new_window_command(Path::new("/opt/xtervo/bin/xtervo"));
         let envs: Vec<(String, Option<String>)> = cmd
             .get_envs()
             .map(|(key, value)| {

@@ -3,7 +3,7 @@
 - Branch: `agent/wasm-hotpath`
 - Feature commit: `fab1f2a` (report was generated before test-only `de1bad3`;
   release binary SHA `65aef37738e9ddb17da053380b2156f7553c94dbeeecf4415d2a24abf82158a8`)
-- Binary: `target/release/tervo` (release, debug=1)
+- Binary: `target/release/xtervo` (release, debug=1)
 - Display: isolated Xvfb `:148`, 1280x800x24, Openbox, `winit-software`
 - Duration: requested **2m** (actual sampled 136s; 9 cycles, 14 samples, 40s warmup)
 - Load: 22 tabs, 4 panes, 25 PTY shells, flood/seq/scroll/Sixel/IIP/emoji/
@@ -48,12 +48,12 @@ cp docs/examples/plugin-wasm-filter/{plugin.toml,filter.wasm} "$OUT/plugins/wasm
 cat > "$OUT/plugins-v3-state.toml" <<'TOML'
 version = 1
 
-[plugins."dev.tervo.wasm-filter"]
+[plugins."dev.xtervo.wasm-filter"]
 enabled = true
 permissions_approved = true
 permissions = ["terminal.output_filter"]
 TOML
-export TERVO_PLUGINS="$OUT/plugins"
+export XTERVO_PLUGINS="$OUT/plugins"
 DURATION=2m SOAK_DISPLAY=:148 SOAK_OUT="$OUT" SOAK_NO_SHOTS=1 ./scripts/soak.sh
 ```
 

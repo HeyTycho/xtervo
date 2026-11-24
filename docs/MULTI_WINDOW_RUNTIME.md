@@ -1,4 +1,4 @@
-# Tervo 多窗口 Phase 1/2 实现状态
+# xtervo 多窗口 Phase 1/2 实现状态
 
 状态：**Phase 1/2/3/4 已完成并合入 main：默认单实例、同进程多窗口、session v2、共享完整回调、插件/MCP window_id。**  
 分支：Phase 1/2 `agent/mw-runtime`；Phase 3 `agent/mw-instance-integration`  
@@ -15,7 +15,7 @@ worktree：Phase 3 `.worktrees/mw-instance-integration`
 ```text
 Stage A  WindowId + WindowRuntime + WindowRegistry + SharedServices
          单窗口行为不变；546 个 app 单测全绿
-Stage B  TERVO_MULTI_WINDOW_INPROC=1
+Stage B  XTERVO_MULTI_WINDOW_INPROC=1
          同 event loop 两个 MainWindow，各自 tabs/panes/focus/models
          关闭 B 不影响 A；插件一份；MCP 一个 socket
          WGPU device/queue 共享；关 B 后 A 仍 GPU ready 且继续出帧
@@ -109,24 +109,24 @@ pub struct SharedServices {
 Phase 3 起**默认路径**（不需要任何 env）：
 
 ```bash
-tervo                    # 第一个进程成为 primary，监听 control.sock
-tervo                    # 第二个进程转发 open_window，收到 ack 后退出 0
-tervo --window           # 兼容：同样优先转发 primary
+xtervo                    # 第一个进程成为 primary，监听 control.sock
+xtervo                    # 第二个进程转发 open_window，收到 ack 后退出 0
+xtervo --window           # 兼容：同样优先转发 primary
 # Ctrl+Shift+N / window.new / MCP new_window 默认同进程新建 MainWindow
 ```
 
 旧行为只保留为显式 fallback / 测试：
 
 ```bash
-TERVO_MULTI_WINDOW_INPROC=0 tervo   # window.new 回退到旧子进程（legacy）
-TERVO_MULTI_WINDOW_LEGACY=1 tervo   # 同上，语义更明确
-TERVO_MULTI_WINDOW_SECOND=1 tervo   # 仅 e2e：启动即建第二个同进程窗口
-TERVO_SINGLE_INSTANCE=0 tervo       # 仅排障/测试：跳过 lock/control server
-TERVO_INSTANCE_DIR=/path tervo      # 仅测试/隔离：覆盖 control 目录
+XTERVO_MULTI_WINDOW_INPROC=0 xtervo   # window.new 回退到旧子进程（legacy）
+XTERVO_MULTI_WINDOW_LEGACY=1 xtervo   # 同上，语义更明确
+XTERVO_MULTI_WINDOW_SECOND=1 xtervo   # 仅 e2e：启动即建第二个同进程窗口
+XTERVO_SINGLE_INSTANCE=0 xtervo       # 仅排障/测试：跳过 lock/control server
+XTERVO_INSTANCE_DIR=/path xtervo      # 仅测试/隔离：覆盖 control 目录
 ```
 
-`TERVO_MULTI_WINDOW_INPROC=1` 仍然被接受，但不再是必需开关；默认就是新架构。
-legacy 子进程由 `window::new_window_command` 注入 `TERVO_SINGLE_INSTANCE=0`，
+`XTERVO_MULTI_WINDOW_INPROC=1` 仍然被接受，但不再是必需开关；默认就是新架构。
+legacy 子进程由 `window::new_window_command` 注入 `XTERVO_SINGLE_INSTANCE=0`，
 避免它反过来被 primary 当成 secondary 再转发。
 
 关闭（Phase 3 产品语义）：窗口收到 `CloseRequested` 时，如果 registry 中还有
@@ -230,11 +230,11 @@ autosave Timer / config watcher 都归 SharedServices
 ```text
 - 第二窗口仍只注册终端/tab/split/close/maximize 核心回调；设置页/插件面板
   的完整回调仍是 primary 注册块（见 §6.1）。
-- 第二窗口不启动 tervo-maximize X11 状态机：Slint 1.18 的
+- 第二窗口不启动 xtervo-maximize X11 状态机：Slint 1.18 的
   WinitWindowAccessor 在多窗口启动阶段可能返回另一个窗口的 X11 handle。
   第二窗口用 winit is_maximized 50ms 轮询回写 maximized；primary 仍走状态机。
 - 恢复窗口按快照 id 排序创建；WindowId 是新进程内重新分配的，不复用旧 id。
-- 多窗口恢复路径不依赖 TERVO_MULTI_WINDOW_INPROC（产品路径）；该开关只控制
+- 多窗口恢复路径不依赖 XTERVO_MULTI_WINDOW_INPROC（产品路径）；该开关只控制
   手动“新建窗口”是否走 in-process。
 ```
 
@@ -247,7 +247,7 @@ autosave Timer / config watcher 都归 SharedServices
 ```bash
 CARGO_HOME=$PWD/../../.cargo \
 CARGO_TARGET_DIR=$PWD/../../target \
-CARGO_NET_OFFLINE=true cargo test -p tervo-app --bin tervo
+CARGO_NET_OFFLINE=true cargo test -p xtervo-app --bin xtervo
 # test result: ok. 549 passed; 0 failed; 1 ignored
 ```
 
@@ -299,7 +299,7 @@ CARGO_TARGET_DIR=$PWD/target ./scripts/soak_multi_window_inproc.sh
 CARGO_TARGET_DIR=$PWD/../../target ./scripts/e2e_multi_window_session.sh
 ```
 
-Xvfb + Openbox；真实 `tervo` 进程 + live socket + `xwin` 改窗口几何/最大化：
+Xvfb + Openbox；真实 `xtervo` 进程 + live socket + `xwin` 改窗口几何/最大化：
 
 ```text
 开 2 窗口、2/3 tabs、不同 geometry、窗口 2 最大化
@@ -395,14 +395,14 @@ v1 迁移单窗口；空/坏/部分窗口回退可用窗口；--restore/配置�
 后续（不属于本分支）：
 
 ```text
-第二窗口完整回调注册（§6.1）后，可把 tervo-maximize 状态机也按 WindowId 接入；
+第二窗口完整回调注册（§6.1）后，可把 xtervo-maximize 状态机也按 WindowId 接入；
 当前第二窗口最大化用 winit is_maximized 轮询回写。
 ```
 
 
 ### 6.4 ControlServer / 单实例
 
-已接入产品启动流程（Phase 3）：`tervo` 启动时先 `InstanceLock::try_acquire`；
+已接入产品启动流程（Phase 3）：`xtervo` 启动时先 `InstanceLock::try_acquire`；
 primary 在 Slint 平台/WindowRegistry 就绪后 `PrimaryServer::start_with_lock`；
 secondary 转发 `open_window`，primary 的 handler 用 `invoke_from_event_loop`
 把建窗请求交给 UI 线程，窗口 `show()` 完成后才 ack。`--window` 同路径优先
@@ -436,7 +436,7 @@ feat(plugin/mcp): per-window routing for plugin host calls and live tools
 ### 8.1 启动流程
 
 ```text
-tervo
+xtervo
   -> 无 UI 模式（--version/--help/diag/--diagnose/import/export）先返回
   -> InstanceLock::try_acquire
        Some(lock)  -> primary：继续 Config/MCP/UI/session
@@ -455,7 +455,7 @@ tervo
 ### 8.2 行为
 
 ```text
-第二次 tervo / tervo --window -> 同一进程内新 MainWindow，window_id 递增
+第二次 xtervo / xtervo --window -> 同一进程内新 MainWindow，window_id 递增
 Ctrl+Shift+N / window.new      -> 同进程新窗口；不再 current_exe().spawn
 MCP new_window                 -> 同进程新窗口（不再要求 INPROC）
 关闭非最后窗口                 -> remove_window + hide + GPU teardown
@@ -469,11 +469,11 @@ session running marker         -> 只在 primary 进程存活期间存在
 ```bash
 # 用 worktree 私有 target：共享 target 可能被并行 agent 的二进制覆盖。
 CARGO_HOME=$PWD/../../.cargo CARGO_TARGET_DIR=$PWD/target \
-  CARGO_NET_OFFLINE=true cargo test -p tervo-app --bin tervo
+  CARGO_NET_OFFLINE=true cargo test -p xtervo-app --bin xtervo
 # 551 passed; 0 failed; 1 ignored（546 既有 + 5 新增）
 
 CARGO_TARGET_DIR=$PWD/target ./scripts/e2e_single_instance_multi_window.sh
-# PASS：两次 tervo 调用 1 进程 2 窗口；--window 转发；Ctrl+Shift+N；
+# PASS：两次 xtervo 调用 1 进程 2 窗口；--window 转发；Ctrl+Shift+N；
 #       错误 token 拒绝；关 A 保 B；关 primary 保其它；关最后退出 0；
 #       marker 只属于 primary、退出后清理
 # evidence: target/single-instance-e2e/report.json
@@ -496,7 +496,7 @@ Xvfb）。MCP settings 仍覆盖无 `XDG_RUNTIME_DIR` 的 state-dir fallback。
 ```bash
 # 单测（worktree 私有 target，避免并行 agent 覆盖二进制）
 CARGO_HOME=$PWD/../../.cargo CARGO_TARGET_DIR=$PWD/target \
-  cargo test -p tervo-app --bin tervo
+  cargo test -p xtervo-app --bin xtervo
 # 558 passed; 0 failed; 1 ignored（554 基线 + 4 新增）
 
 # 插件双窗口 e2e：真实 Python v3 子进程 + XTest 点击 Allow
@@ -506,7 +506,7 @@ CARGO_HOME=$PWD/../../.cargo CARGO_TARGET_DIR=$PWD/target \
 #       MCP 显式 window 校验/审计；拒绝关闭最后一个窗口
 
 # 多窗口 MCP e2e（扩展所有 live 工具显式 window 校验 + audit + 默认 active）
-TERVO_INSTANCE_DIR=/tmp/tervo-mw-e2e-test E2E_OUT=/tmp/tervo-mw-e2e-out \
+XTERVO_INSTANCE_DIR=/tmp/xtervo-mw-e2e-test E2E_OUT=/tmp/xtervo-mw-e2e-out \
   CARGO_TARGET_DIR=$PWD/target ./scripts/e2e_multi_window_inproc.sh
 # PASS：input/focus/split/new_tab/close_pane/close_tab + 全部未知 window 拒绝 +
 #       [mcp] audit window=window-N + 缺省 window=active + kill -9 恢复
@@ -533,7 +533,7 @@ SOAK_SECONDS=120 CARGO_TARGET_DIR=$PWD/target ./scripts/soak_multi_window_inproc
 - 设置页/插件面板完整回调仍只在 primary 注册块（第二阶段机械重构未做；
   Phase 3.5 已解决，见 §9）。
 - legacy fallback（INPROC=0/LEGACY=1）会起独立子进程；它通过
-  TERVO_SINGLE_INSTANCE=0 绕过 primary 锁，因此不受单实例约束。只用于
+  XTERVO_SINGLE_INSTANCE=0 绕过 primary 锁，因此不受单实例约束。只用于
   测试/排障，不是默认路径。
 - Xvfb/llvmpipe 环境，不构成硬件 GPU 或真实桌面 WM 证据。
 ```
@@ -651,7 +651,7 @@ MCP `list` 增加 additive 字段：
 
 ```bash
 CARGO_HOME=$PWD/../../.cargo CARGO_TARGET_DIR=$PWD/../../target \
-  CARGO_NET_OFFLINE=true cargo test -p tervo-app --bin tervo
+  CARGO_NET_OFFLINE=true cargo test -p xtervo-app --bin xtervo
 # test result: ok. 553 passed; 0 failed; 1 ignored
 # 551 既有 + 2 新增源码级结构测试
 
@@ -675,11 +675,11 @@ CARGO_TARGET_DIR=$PWD/../../target ./scripts/e2e_multi_window_inproc.sh
 CARGO_TARGET_DIR=$PWD/../../target ./scripts/soak_multi_window_inproc.sh
 # PASS 2m：rss_growth=3628KiB；threads 23->23；fds 31->31
 
-TERVO_BIN_DIR=$PWD/../../target/debug ./scripts/e2e_settings_i18n.sh
+XTERVO_BIN_DIR=$PWD/../../target/debug ./scripts/e2e_settings_i18n.sh
 # PASS：单窗口设置页/搜索/分类/语言/热更新/右键/TabBar 菜单/legacy 未回归
 
 CARGO_TARGET_DIR=$PWD/../../target ./scripts/e2e_single_instance_multi_window.sh
-# PASS：两次 tervo / --window / Ctrl+Shift+N 转发；错误 token 拒绝；
+# PASS：两次 xtervo / --window / Ctrl+Shift+N 转发；错误 token 拒绝；
 #       close A 保 B；close primary 保其它；close 最后一个退出 0；
 #       marker 只属于 primary、退出后清理（未改 instance 协议）
 ```

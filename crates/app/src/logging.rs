@@ -4,8 +4,8 @@
 //! 现有代码大量使用 `eprintln!`，这里不逐一改造，而是在启动时用 pipe + dup2
 //! 把 fd 2 接到一个 tee 线程：原始 stderr 与日志文件各写一份。这样：
 //! - 正常启动/崩溃/panic 的日志都能在文件里看到；
-//! - 用户报问题时只要给出日志路径（`tervo --diagnose` 会打印）；
-//! - `TERVO_LOG=0` 可完全关闭；`TERVO_LOG_DIR` 可改目录。
+//! - 用户报问题时只要给出日志路径（`xtervo --diagnose` 会打印）；
+//! - `XTERVO_LOG=0` 可完全关闭；`XTERVO_LOG_DIR` 可改目录。
 
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
@@ -21,16 +21,16 @@ static SAVED_STDERR: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32
 
 const MAX_FILES: usize = 8;
 
-/// 日志目录：`TERVO_LOG_DIR` > `XDG_STATE_HOME/tervo/logs` > `~/.local/state/tervo/logs`。
+/// 日志目录：`XTERVO_LOG_DIR` > `XDG_STATE_HOME/xtervo/logs` > `~/.local/state/xtervo/logs`。
 pub fn dir() -> PathBuf {
-    if let Some(p) = std::env::var_os("TERVO_LOG_DIR") {
+    if let Some(p) = std::env::var_os("XTERVO_LOG_DIR") {
         return PathBuf::from(p);
     }
     if let Some(p) = std::env::var_os("XDG_STATE_HOME") {
-        return PathBuf::from(p).join("tervo").join("logs");
+        return PathBuf::from(p).join("xtervo").join("logs");
     }
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
-    home.join(".local").join("state").join("tervo").join("logs")
+    home.join(".local").join("state").join("xtervo").join("logs")
 }
 
 pub fn path() -> Option<PathBuf> {
@@ -39,13 +39,13 @@ pub fn path() -> Option<PathBuf> {
 
 pub fn init() {
     INIT.call_once(|| {
-        // panic 始终打印（哪怕 TERVO_LOG=0），便于终端里直接看到。
+        // panic 始终打印（哪怕 XTERVO_LOG=0），便于终端里直接看到。
         std::panic::set_hook(Box::new(|info| {
             let bt = std::backtrace::Backtrace::force_capture();
             eprintln!("\n[panic] {info}\nbacktrace:\n{bt}");
         }));
 
-        if std::env::var("TERVO_LOG").ok().as_deref() == Some("0") {
+        if std::env::var("XTERVO_LOG").ok().as_deref() == Some("0") {
             return;
         }
         let dir = dir();
@@ -54,12 +54,12 @@ pub fn init() {
             return;
         }
         rotate(&dir);
-        let path = dir.join(format!("tervo-{}.log", now_secs()));
+        let path = dir.join(format!("xtervo-{}.log", now_secs()));
         match OpenOptions::new().create(true).append(true).open(&path) {
             Ok(mut f) => {
                 let _ = writeln!(
                     f,
-                    "=== Tervo {} started (epoch {}) ===",
+                    "=== xtervo {} started (epoch {}) ===",
                     env!("CARGO_PKG_VERSION"),
                     now_secs()
                 );
@@ -73,8 +73,8 @@ pub fn init() {
                     "SLINT_BACKEND",
                     "TERM",
                     "SHELL",
-                    "TERVO_CONFIG",
-                    "TERVO_PROFILES",
+                    "XTERVO_CONFIG",
+                    "XTERVO_PROFILES",
                 ] {
                     let _ = writeln!(f, "{key}={:?}", std::env::var(key).ok());
                 }
@@ -133,7 +133,7 @@ fn rotate(dir: &Path) {
         .filter_map(|e| {
             let p = e.path();
             let name = p.file_name()?.to_str()?;
-            let stamp = name.strip_prefix("tervo-")?.strip_suffix(".log")?.parse().ok()?;
+            let stamp = name.strip_prefix("xtervo-")?.strip_suffix(".log")?.parse().ok()?;
             Some((stamp, p))
         })
         .collect();

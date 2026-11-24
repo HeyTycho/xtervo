@@ -1,4 +1,4 @@
-# Tervo Agent Working Rules
+# xtervo Agent Working Rules
 
 这些规则适用于所有在本仓库工作的 agent / Codex / 子 agent。
 
@@ -84,9 +84,9 @@
 调试开关：
 
 ```bash
-TERVO_LINE_NUMBERS=1            # 终端行号 overlay（会盖住最左约 3 字符）
-TERVO_FRAME_DUMP=/tmp/frame.txt # 每帧 Frame 文本落盘
-TERVO_SIXEL_DEBUG=1             # 图片 placement 日志
+XTERVO_LINE_NUMBERS=1            # 终端行号 overlay（会盖住最左约 3 字符）
+XTERVO_FRAME_DUMP=/tmp/frame.txt # 每帧 Frame 文本落盘
+XTERVO_SIXEL_DEBUG=1             # 图片 placement 日志
 ```
 
 ## 输入 / IME 专项（2026-11-21 事故后强制）

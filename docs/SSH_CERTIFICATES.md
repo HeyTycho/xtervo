@@ -1,6 +1,6 @@
 # SSH 证书 / `@cert-authority` 调研（2026-11-20）
 
-结论：**Tervo native SSH 暂不支持主机证书信任链**。使用
+结论：**xtervo native SSH 暂不支持主机证书信任链**。使用
 `@cert-authority` 的 Profile 会继续回退系统 `ssh`；native 不会把证书当作
 普通主机公钥接受，也不会“看起来支持、实际跳过校验”。
 
@@ -16,7 +16,7 @@
     指纹；文档明确要求调用方再校验 principals 与 critical options。
 - 因此密码学原语足够，不需要自己解析证书签名。
 
-## 当前 Tervo 的状态
+## 当前 xtervo 的状态
 
 - `known_hosts_rs::lookup` 明确跳过 `@cert-authority` 行；`Lookup` 只返回
   plain/hashed 主机 key 与 `@revoked` key。

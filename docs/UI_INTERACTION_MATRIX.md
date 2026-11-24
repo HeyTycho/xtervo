@@ -1,4 +1,4 @@
-# Tervo UI 交互矩阵（UI_INTERACTION_MATRIX）
+# xtervo UI 交互矩阵（UI_INTERACTION_MATRIX）
 
 > 审计日期：2026-11-05 ｜ 起始 HEAD `0ea6231`，复核到并发提交 `8327e20` ｜ 依据：`crates/app/ui/main.slint`、`crates/app/src/main.rs`、`workspace.rs`、`pane.rs` 的实际代码。
 > 本轮只读审计，未启动 GUI、未执行构建。表中“当前行为”均可在上述文件定位；“期望行为”来自需求 B 部分，上游未核实处标 `待核`。
@@ -15,7 +15,7 @@
 | TitleBar 空白区 | 左键双击 | `title-hit.double-clicked → toggle-maximize()` | 双击最大化/还原（平台规范） | 已实现；仅空白区，Tab 上双击无效 | 双击空白区在最大化/还原间切换 |
 | TitleBar 空白区 | 右键 | `title-hit` 右键 → `tabbar-context(mouse-x, tabbar-height)` 打开窗口菜单 | 按上游提供窗口/TabBar 菜单 | 仅有窗口级 5 项菜单；Tab 上右键无 per-tab 菜单 | 空白右键出现菜单；Tab 上右键记录实际行为 |
 | 品牌图标 | 无 | 18×18 `Image`，不可点 | 可点/可拖/菜单（按上游） | 无交互；无 tooltip | 点击/右键图标记录无反应 |
-| 设置按钮 ⚙ | 左键单击 | `settings-open = !settings-open`；打开无 PTY 的 Settings Tab（或 `TERVO_SETTINGS_LEGACY=1` 的居中 modal） | 打开可搜索/导航的设置页 | 已实现：8 分类/分组/图标/搜索跳转/下拉/分段/开关 | 点击 ⚙ → 打开 Settings Tab，Esc/Tab ×/终端 Tab 关闭 |
+| 设置按钮 ⚙ | 左键单击 | `settings-open = !settings-open`；打开无 PTY 的 Settings Tab（或 `XTERVO_SETTINGS_LEGACY=1` 的居中 modal） | 打开可搜索/导航的设置页 | 已实现：8 分类/分组/图标/搜索跳转/下拉/分段/开关 | 点击 ⚙ → 打开 Settings Tab，Esc/Tab ×/终端 Tab 关闭 |
 | 最小化 ─ | 左键单击 | `Window.set_minimized(true)` | 最小化，可从任务栏恢复 | 已实现 | 点击后窗口最小化 |
 | 最大化/还原 □/❐ | 左键单击 | `toggle-maximize()`；图标随 `Window.maximized` 切换 | 最大化/还原，图标同步 | 已实现 | 点击两次观察状态/图标 |
 | 关闭 ✕ | 左键单击 | `on_close_window` → `quit_event_loop` | 关闭；有活动任务时确认 | 直接退出，无确认，Drop 全部 PaneHandle 杀 PTY | 开 2 pane 点 ✕，确认无对话框且子进程退出 |
@@ -120,7 +120,7 @@
 | 数值项 | Stepper/Slider | 字号/回滚步进；背景 dim/opacity 滑杆 | slider/stepper | 已实现 | 截图 + 手动拖动；配置即时保存 |
 | Profiles | 侧栏 Profiles | 内嵌列表（打开/星标默认/编辑/删除/新建）+ Manage 全面板 | 设置内可管理 Profile | partial：完整搜索/复制仍在全面板 | 截图 `settings_profiles`；Manage 模态叠在设置页上 |
 | 设置 Tab 与终端 Tab | 点击终端 Tab | 关闭设置并切到该终端 Tab | 不污染 workspace | 已实现 | `[ui] settings open=false` + 继续输入 |
-| 回退 | 启动 `TERVO_SETTINGS_LEGACY=1` | 居中 820×620 modal，同一套控件，TabBar 不显示 Settings Tab | 新 UI 坏了仍能设置 | 已实现 | 截图 `settings_legacy`；日志 `settings ui=legacy-modal` |
+| 回退 | 启动 `XTERVO_SETTINGS_LEGACY=1` | 居中 820×620 modal，同一套控件，TabBar 不显示 Settings Tab | 新 UI 坏了仍能设置 | 已实现 | 截图 `settings_legacy`；日志 `settings ui=legacy-modal` |
 | 小窗口 | 拖角缩到 700×500 / 480×360 | 侧栏 156–164px、内容 Flickable、搜索框保留 | 小窗口可用 | 已实现（480×360 不裁剪分类名） | 截图 `settings_small/tiny` |
 | 键盘导航 | Tab/方向键 | 仅 Esc 处理；控件靠鼠标/搜索 | 完整键盘导航 | 缺失 | Tab 无遍历 |
 
@@ -149,5 +149,5 @@
 2. **Tab**：开 3 Tab→点击切换→Ctrl+T/W→后台 Tab 发 OSC 标题→右键 Tab/空白→尝试拖动/双击重命名。
 3. **分屏**：右键 Split Right→Split Down→拖分隔线到 10%/90%→点击各 pane 输入→Close Pane 到最后一个。
 4. **终端交互**：拖选/反向拖选→自动复制→Ctrl+Shift+C/V→Ctrl+F 搜索/Enter/Shift+Enter/Esc→滚轮回滚→vim 鼠标上报→Shift+点击绕过。
-5. **设置/主题**：⚙→Settings Tab→切分类/主题下拉→搜索 sixel 跳转→Esc 关闭→终端继续输入；`TERVO_SETTINGS_LEGACY=1` 重启验证居中 modal 回退。
+5. **设置/主题**：⚙→Settings Tab→切分类/主题下拉→搜索 sixel 跳转→Esc 关闭→终端继续输入；`XTERVO_SETTINGS_LEGACY=1` 重启验证居中 modal 回退。
 6. **回归记录**：每项保留 before/after 截图到 `.logs/ui-audit/`，与 `docs/FEATURE_MATRIX.md` 的 Test/Result 对应。

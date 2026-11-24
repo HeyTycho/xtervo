@@ -1,6 +1,6 @@
 #!/bin/sh
 # Assemble filter.wat -> filter.wasm with wasm-tools (or wabt's wat2wasm).
-# Tervo intentionally does not parse WAT at runtime.
+# xtervo intentionally does not parse WAT at runtime.
 set -eu
 cd "$(dirname "$0")"
 if command -v wasm-tools >/dev/null 2>&1; then

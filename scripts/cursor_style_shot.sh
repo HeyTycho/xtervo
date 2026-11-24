@@ -5,14 +5,14 @@
 #
 # - 固定 headless Xvfb :117，不占用 :1、不启动 Xephyr、不 pkill；
 # - 只回收本脚本启动的 app 与 Xvfb 进程；
-# - 每个 case 单独写 TERVO_CONFIG 并重启 app，输出 PNG 到 .logs/cursor-style/。
+# - 每个 case 单独写 XTERVO_CONFIG 并重启 app，输出 PNG 到 .logs/cursor-style/。
 #
 # 用法：
-#   cargo build -p tervo-app --bin tervo
+#   cargo build -p xtervo-app --bin xtervo
 #   scripts/cursor_style_shot.sh [输出目录]
 #
 # 环境变量：
-#   CURSOR_SHOT_BIN      tervo 可执行文件（默认 $ROOT/target/debug/tervo）
+#   CURSOR_SHOT_BIN      xtervo 可执行文件（默认 $ROOT/target/debug/xtervo）
 #   CURSOR_SHOT_DISPLAY  X display（默认 :117；已占用则直接失败，绝不复用/ kill）
 #   CURSOR_SHOT_XVFB     Xvfb 可执行文件（默认 .perf/xvfb/usr/bin/Xvfb，再退回 PATH）
 set -euo pipefail
@@ -21,9 +21,9 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 OUT_DIR=${1:-"$ROOT/.logs/cursor-style"}
 mkdir -p "$OUT_DIR"
 OUT_DIR=$(cd "$OUT_DIR" && pwd)
-BIN=${CURSOR_SHOT_BIN:-"$ROOT/target/debug/tervo"}
+BIN=${CURSOR_SHOT_BIN:-"$ROOT/target/debug/xtervo"}
 [ -x "$BIN" ] || {
-    echo "缺少 $BIN；先 cargo build -p tervo-app --bin tervo" >&2
+    echo "缺少 $BIN；先 cargo build -p xtervo-app --bin xtervo" >&2
     exit 1
 }
 
@@ -89,7 +89,7 @@ DISPLAY="$DISPLAY_NUM" xdpyinfo >/dev/null 2>&1 || {
 }
 
 # case 名 | cursor_shape | cursor_blink | 额外配置 | 冻结的闪烁相位
-# 相位冻结由 TERVO_CURSOR_BLINK_PHASE 测试钩子完成，截图不会赌计时器相位。
+# 相位冻结由 XTERVO_CURSOR_BLINK_PHASE 测试钩子完成，截图不会赌计时器相位。
 run_case() {
     local name=$1 shape=$2 blink=$3 extra=$4 phase=${5:-}
     cat >"$CFG" <<EOF
@@ -104,11 +104,11 @@ EOF
     local envs=(
         "DISPLAY=$DISPLAY_NUM"
         "XMODIFIERS=@im=none"
-        "TERVO_LOG_DIR=$OUT_DIR"
-        "TERVO_CONFIG=$CFG"
+        "XTERVO_LOG_DIR=$OUT_DIR"
+        "XTERVO_CONFIG=$CFG"
     )
     if [ -n "$phase" ]; then
-        envs+=("TERVO_CURSOR_BLINK_PHASE=$phase")
+        envs+=("XTERVO_CURSOR_BLINK_PHASE=$phase")
     fi
     env "${envs[@]}" "$BIN" --cols 84 --rows 18 --font-size 16 --shell /bin/bash -- \
         -c "$DEMO" >>"$APP_LOG" 2>&1 &
@@ -117,12 +117,12 @@ EOF
     local win=
     for _ in $(seq 1 120); do
         win=$(DISPLAY="$DISPLAY_NUM" xwininfo -root -tree 2>/dev/null \
-            | grep -iE '"tervo" "tervo"' | awk '{print $1}' | head -1 || true)
+            | grep -iE '"xtervo" "xtervo"' | awk '{print $1}' | head -1 || true)
         [ -n "$win" ] && break
         sleep 0.05
     done
     [ -n "$win" ] || {
-        echo "case $name：没找到 tervo 窗口（$APP_LOG）" >&2
+        echo "case $name：没找到 xtervo 窗口（$APP_LOG）" >&2
         return 1
     }
     sleep 2.2

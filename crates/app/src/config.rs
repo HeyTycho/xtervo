@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! 用户配置：`~/.config/tervo/config.toml`（可用 `TERVO_CONFIG` 覆盖路径）。
+//! 用户配置：`~/.config/xtervo/config.toml`（可用 `XTERVO_CONFIG` 覆盖路径）。
 //!
 //! 两条硬约束（需求 C8）：
 //! - **版本化**：文件里带 `version`；旧文件（没有该字段）读入时视为 v0，
@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use tervo_core::CursorShape;
+use xtervo_core::CursorShape;
 
 use crate::commands::{self, HotkeyOverride};
 use crate::keys::{BackspaceBinding, DeleteBinding, KeyBindings};
@@ -396,18 +396,18 @@ pub struct Config {
     /// 已显示的 IIP 图片立即清除；不影响 Sixel/DA1。
     pub iip: bool,
     /// 设置页可开关的渲染 HUD（FPS/renderer/GPU 计数）；默认关。
-    /// `TERVO_RENDER_HUD=1` 仍可强制开启，便于无配置复现。
+    /// `XTERVO_RENDER_HUD=1` 仍可强制开启，便于无配置复现。
     pub render_hud: bool,
     /// 反馈 issue 的新建页 URL；空 = 只生成本地 bundle，不打开网页。
-    /// 也可以用 `TERVO_FEEDBACK_ISSUE_URL` 覆盖。不会自动上传或创建 MR。
+    /// 也可以用 `XTERVO_FEEDBACK_ISSUE_URL` 覆盖。不会自动上传或创建 MR。
     pub feedback_issue_url: String,
     /// 本地安装插件时要求 Ed25519 签名（设置页 Plugins 开关）。
-    /// `TERVO_PLUGIN_REQUIRE_SIGNATURE=1` 同样会强制；默认 false（允许未签名，
+    /// `XTERVO_PLUGIN_REQUIRE_SIGNATURE=1` 同样会强制；默认 false（允许未签名，
     /// 但仍会拒绝坏签名/带签名却无公钥的包）。见 docs/PLUGIN_INSTALL.md。
     pub plugin_require_signature: bool,
     // ---- MCP（内嵌功能，不是插件；additive 字段不 bump schema）----
     /// MCP 总开关（默认 true）。关闭后不创建 live socket、不暴露 live 工具；
-    /// 离线 `tervo diag` 工具不受影响。
+    /// 离线 `xtervo diag` 工具不受影响。
     pub mcp_enabled: bool,
     /// read 分组：capabilities/snapshot/list/output（默认 true = 默认只读）。
     pub mcp_read: bool,
@@ -576,7 +576,7 @@ impl Default for Config {
 /// TabBar 四向位置（UI-WIN-007）。
 ///
 /// 上游 Tabby 的 `appearance.tabsLocation` 同样是 Top/Bottom/Left/Right 四选一，
-/// 且 `left`/`right` 走竖排 tab-bar（`hasVerticalTabs()`）。Tervo 保持同名语义，
+/// 且 `left`/`right` 走竖排 tab-bar（`hasVerticalTabs()`）。xtervo 保持同名语义，
 /// 但配置键沿用已有的 `tabbar_position`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TabbarPos {
@@ -624,7 +624,7 @@ impl TabbarPos {
 
 impl Config {
     pub fn path() -> PathBuf {
-        if let Ok(p) = std::env::var("TERVO_CONFIG") {
+        if let Ok(p) = std::env::var("XTERVO_CONFIG") {
             return PathBuf::from(p);
         }
         let base = std::env::var("XDG_CONFIG_HOME")
@@ -632,7 +632,7 @@ impl Config {
             .unwrap_or_else(|_| {
                 PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into())).join(".config")
             });
-        base.join("tervo").join("config.toml")
+        base.join("xtervo").join("config.toml")
     }
 
     /// 生效语言：`zh` 或 `en`（未知值回退 en）。UI 热更新/启动都读取它。
@@ -1809,7 +1809,7 @@ danger = true
         assert_eq!(c.cursor_shape, "block", "GNOME cursor-shape 默认 block");
         assert_eq!(c.cursor_blink, "system", "GNOME cursor-blink 默认 system");
         assert!(c.cursor_blinking(), "system 按开处理");
-        assert_eq!(c.cursor_shape(), tervo_core::CursorShape::Block);
+        assert_eq!(c.cursor_shape(), xtervo_core::CursorShape::Block);
         assert!(c.cursor_color.is_empty(), "空 = 跟随主题");
         assert!(c.cursor_text_color.is_empty(), "空 = 跟随主题背景");
         assert!(c.bold_is_bright, "GNOME bold-is-bright 默认 true");
@@ -1900,7 +1900,7 @@ danger = true
             .unwrap();
         let cfg = Config::load_from(&path);
         assert_eq!(cfg.cursor_shape, "ibeam");
-        assert_eq!(cfg.cursor_shape(), tervo_core::CursorShape::Beam);
+        assert_eq!(cfg.cursor_shape(), xtervo_core::CursorShape::Beam);
         assert!(!cfg.cursor_blinking());
         // on/system 都开；未知值按 system。
         let cfg: Config = toml::from_str("version = 1\ncursor_blink = \"on\"\n").unwrap();

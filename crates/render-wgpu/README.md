@@ -1,40 +1,40 @@
-# tervo-render-wgpu
+# xtervo-render-wgpu
 
-Standalone WGPU backend and Slint texture-presenter primitive for Tervo's planned
-image-engine renderer. This crate deliberately does **not** depend on `tervo-core`
-or `tervo-app`; it only consumes `tervo-scene` and implements `tervo-render`'s
+Standalone WGPU backend and Slint texture-presenter primitive for xtervo's planned
+image-engine renderer. This crate deliberately does **not** depend on `xtervo-core`
+or `xtervo-app`; it only consumes `xtervo-scene` and implements `xtervo-render`'s
 `Renderer` trait.
 
 Status: primitive/spike. [`WgpuRenderer`] owns an offscreen frame texture and
 runs only a full-frame clear pass. In addition, the opt-in **text/glyph atlas
-prototype** ([`GpuTextRenderer`]) consumes `tervo_scene::TextBatch` directly and
+prototype** ([`GpuTextRenderer`]) consumes `xtervo_scene::TextBatch` directly and
 draws instanced glyph quads into an `Rgba8Unorm` target with no CPU terminal
 framebuffer. It is not wired into the app main loop, and the clear-only
-`WgpuRenderer` remains the `tervo_render::Renderer` implementation.
+`WgpuRenderer` remains the `xtervo_render::Renderer` implementation.
 
 ## Features
 
 | feature | effect |
 | --- | --- |
-| _(default)_ | Backend only. Depends on `wgpu` (pinned to `=30.0.1`) and the backend-independent `tervo-*` crates. |
+| _(default)_ | Backend only. Depends on `wgpu` (pinned to `=30.0.1`) and the backend-independent `xtervo-*` crates. |
 | `slint-presenter` | Adds `slint = "=1.18.1"` with `std`, `backend-winit`, `compat-1-18`, `unstable-wgpu-30`, `renderer-femtovg-wgpu` and `renderer-femtovg`, plus `SlintTexturePresenter`. |
 
 `renderer-femtovg` (OpenGL) is enabled only because Slint 1.18.1's winit backend
-otherwise fails to compile when `tervo-app`'s `renderer-skia-opengl` is unified in
+otherwise fails to compile when `xtervo-app`'s `renderer-skia-opengl` is unified in
 the same workspace build (`cargo check --workspace --all-features`). Runtime
 renderer selection is unchanged: `require_wgpu_30` selects the WGPU renderer.
 
 The `two_colors` example requires `slint-presenter`:
 
 ```text
-cargo run -p tervo-render-wgpu --features slint-presenter --example two_colors
+cargo run -p xtervo-render-wgpu --features slint-presenter --example two_colors
 ```
 
 ## API
 
 ```rust
-use tervo_scene::PhysicalSize;
-use tervo_render_wgpu::{SlintTexturePresenter, WgpuRenderer};
+use xtervo_scene::PhysicalSize;
+use xtervo_render_wgpu::{SlintTexturePresenter, WgpuRenderer};
 
 // device/queue must be the exact ones Slint renders with (RenderingSetup).
 let mut renderer = WgpuRenderer::new(device, queue, PhysicalSize { width: 320, height: 200 })?;
@@ -50,7 +50,7 @@ renderer.render(&scene, &damage)?;
 presenter.present(ui.window()); // re-sets the image property + request_redraw()
 ```
 
-`WgpuRenderer::render()` implements `tervo_render::Renderer` but currently ignores
+`WgpuRenderer::render()` implements `xtervo_render::Renderer` but currently ignores
 `Scene`/`DamageRegion` and just clears to `set_clear_color()`. `clear()` is exposed
 for tests/examples that only need a solid frame.
 
@@ -88,7 +88,7 @@ TextBatch cells
   returns before a render pass, so the target keeps its previous contents.
 
 ```rust
-use tervo_render_wgpu::{GpuTextRenderer, TextLayout, TextSection, TextTarget};
+use xtervo_render_wgpu::{GpuTextRenderer, TextLayout, TextSection, TextTarget};
 
 let mut renderer = GpuTextRenderer::new(device, queue)?;
 let metrics = renderer.metrics(16);
@@ -105,22 +105,22 @@ Validation commands:
 
 ```text
 # GPU offscreen vs CPU reference, including failure scenarios (needs a headless
-# wgpu adapter and DejaVu Sans Mono; TERVO_WGPU_FONT overrides the font path):
-cargo test -p tervo-render-wgpu --test gpu_text -- --nocapture
+# wgpu adapter and DejaVu Sans Mono; XTERVO_WGPU_FONT overrides the font path):
+cargo test -p xtervo-render-wgpu --test gpu_text -- --nocapture
 
 # Release perf probe, no window:
-TERVO_WGPU_TEXT_FRAMES=300   cargo run --release -p tervo-render-wgpu --example wgpu_text_bench
+XTERVO_WGPU_TEXT_FRAMES=300   cargo run --release -p xtervo-render-wgpu --example wgpu_text_bench
 
 # Slint presentation + take_snapshot (isolated Xvfb, never the user's :1):
 Xvfb :79 -screen 0 1400x800x24 -nolisten tcp &
-DISPLAY=:79 SLINT_WGPU_CPU=1 env -u SLINT_BACKEND   cargo run -p tervo-render-wgpu --features slint-presenter --example text_atlas
+DISPLAY=:79 SLINT_WGPU_CPU=1 env -u SLINT_BACKEND   cargo run -p xtervo-render-wgpu --features slint-presenter --example text_atlas
 ```
 
 Long-run memory probe (no per-frame benchmark sample storage):
 
 ```text
-MODE=static FRAMES=60000 cargo run --release -p tervo-render-wgpu --example memory_probe
-MODE=dynamic FRAMES=60000 cargo run --release -p tervo-render-wgpu --example memory_probe
+MODE=static FRAMES=60000 cargo run --release -p xtervo-render-wgpu --example memory_probe
+MODE=dynamic FRAMES=60000 cargo run --release -p xtervo-render-wgpu --example memory_probe
 ```
 
 The pixel reference is a validation-only CPU compositor over the same atlas
@@ -166,7 +166,7 @@ background (`#404040`) or an old color.
 ```text
 Xvfb :99 -screen 0 1280x720x24 -nolisten tcp &
 DISPLAY=:99 SLINT_WGPU_CPU=1 \
-  cargo run -p tervo-render-wgpu --features slint-presenter --example two_colors
+  cargo run -p xtervo-render-wgpu --features slint-presenter --example two_colors
 ```
 
 Expected key output:
@@ -190,7 +190,7 @@ Environment notes:
   `winit-skia`), Slint warns `unrecognized renderer skia, falling back to
   FemtoVG` and then still uses the WGPU-backed FemtoVG renderer. For deterministic
   logs unset it: `env -u SLINT_BACKEND ...`.
-- Snapshots are written as binary PPM to `$TERVO_WGPU_SNAPSHOT_DIR`, default
+- Snapshots are written as binary PPM to `$XTERVO_WGPU_SNAPSHOT_DIR`, default
   `target/render-wgpu-snapshots`. No absolute/user-specific path is baked into the
   example; run from the crate or workspace root so the relative path lands under
   `target/`.
@@ -200,7 +200,7 @@ Environment notes:
 
 ## Known limitations
 
-- **Not integrated**: nothing in `tervo-app` or `tervo-core` references this
+- **Not integrated**: nothing in `xtervo-app` or `xtervo-core` references this
   crate. It is a standalone primitive.
 - **Clear pass only (WgpuRenderer)**: `Scene` layers/DrawItems and `DamageRegion`
   are not drawn or tracked. Glyph atlas support is a separate opt-in

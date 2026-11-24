@@ -15,7 +15,7 @@
 #   7) 右键菜单仍能识别链接（Open/Copy Link 入口）
 #
 # 用法：
-#   CARGO_TARGET_DIR=$PWD/target cargo build --offline -p tervo-app --bin tervo --bin xclick --bin xwin
+#   CARGO_TARGET_DIR=$PWD/target cargo build --offline -p xtervo-app --bin xtervo --bin xclick --bin xwin
 #   ./scripts/e2e_url_paths.sh
 #
 # 依赖：Xvfb、OpenBox（仓库 .perf/，可选）、xwd、ffmpeg、gcc + libXfixes（光标断言，
@@ -26,19 +26,19 @@ ROOT=$PWD
 OUT=${E2E_OUT:-$ROOT/.logs/url-paths}
 DISPLAY_NUM=${E2E_DISPLAY:-:128}
 TARGET_DIR=${CARGO_TARGET_DIR:-$ROOT/target}
-BIN=${E2E_BIN:-$TARGET_DIR/debug/tervo}
+BIN=${E2E_BIN:-$TARGET_DIR/debug/xtervo}
 XCLICK=${E2E_XCLICK:-$TARGET_DIR/debug/xclick}
 XWIN=${E2E_XWIN:-$TARGET_DIR/debug/xwin}
 
 COMMON=$(git rev-parse --git-common-dir)
 MAIN_ROOT=$(cd "$(dirname "$COMMON")" && pwd)
-PERF=${TERVO_PERF_DIR:-$MAIN_ROOT/.perf}
+PERF=${XTERVO_PERF_DIR:-$MAIN_ROOT/.perf}
 XVFB_BIN=${E2E_XVFB_BIN:-$PERF/xvfb/usr/bin/Xvfb}
 [ -x "$XVFB_BIN" ] || XVFB_BIN=$(command -v Xvfb || true)
 
 for f in "$BIN" "$XCLICK" "$XWIN"; do
     [ -x "$f" ] || {
-        echo "缺少 $f；先 cargo build -p tervo-app --bin tervo --bin xclick --bin xwin" >&2
+        echo "缺少 $f；先 cargo build -p xtervo-app --bin xtervo --bin xclick --bin xwin" >&2
         exit 2
     }
 done
@@ -165,22 +165,22 @@ else
     echo "提示：未找到仓库 .perf/openbox，继续无 WM 运行（窗口位置由 xwin 固定）"
 fi
 
-echo "== 启动 Tervo（140 列，测试输出见 $APP_LOG） =="
+echo "== 启动 xtervo（140 列，测试输出见 $APP_LOG） =="
 HOME=$OUT/obhome PATH="$TMP/fakebin:$PATH" XMODIFIERS=@im=none SLINT_BACKEND=winit-software \
-    TERVO_CONFIG="$OUT/live.toml" TERVO_LOG_DIR="$OUT/logs" TERVO_MOUSELOG=1 \
+    XTERVO_CONFIG="$OUT/live.toml" XTERVO_LOG_DIR="$OUT/logs" XTERVO_MOUSELOG=1 \
     "$BIN" --cols 140 --rows 24 --shell /bin/sh -- "$TMP/run.sh" >"$APP_LOG" 2>&1 &
 APP_PID=$!
 
 WIN=""
 for _ in $(seq 1 150); do
-    WIN=$(xwininfo -root -tree 2>/dev/null | grep -i '"tervo"' | head -1 | awk '{print $1}' || true)
+    WIN=$(xwininfo -root -tree 2>/dev/null | grep -i '"xtervo"' | head -1 | awk '{print $1}' || true)
     [ -n "$WIN" ] && break
     sleep 0.1
 done
-[ -n "$WIN" ] || { echo "找不到 Tervo 窗口；见 $APP_LOG" >&2; tail -60 "$APP_LOG" >&2; exit 2; }
-"$XWIN" Tervo 20 20 >/dev/null 2>&1 || true
+[ -n "$WIN" ] || { echo "找不到 xtervo 窗口；见 $APP_LOG" >&2; tail -60 "$APP_LOG" >&2; exit 2; }
+"$XWIN" xtervo 20 20 >/dev/null 2>&1 || true
 sleep 1.0
-WIN=$(xwininfo -root -tree | grep -i '"tervo"' | head -1 | awk '{print $1}')
+WIN=$(xwininfo -root -tree | grep -i '"xtervo"' | head -1 | awk '{print $1}')
 AX=$(xwininfo -id "$WIN" | awk '/Absolute upper-left X/{print $NF}')
 AY=$(xwininfo -id "$WIN" | awk '/Absolute upper-left Y/{print $NF}')
 W=$(xwininfo -id "$WIN" | awk '/Width:/{print $2}')

@@ -11,7 +11,7 @@
 #   6. 删除 → 二次确认、只删记录、不关闭会话；最终列表只剩另一个工作区。
 #
 # 用法：
-#   cargo build -p tervo-app --bin tervo --bin xwin --bin xclick --bin xkey --offline
+#   cargo build -p xtervo-app --bin xtervo --bin xwin --bin xclick --bin xkey --offline
 #   ./scripts/e2e_workspace_ui.sh
 # 依赖：Xvfb（.perf/ 或系统）、xwd、python3 + Pillow、xwin/xclick/xkey。
 set -euo pipefail
@@ -19,18 +19,18 @@ cd "$(dirname "$0")/.."
 ROOT=$PWD
 OUT=${WORKSPACE_E2E_OUT:-$ROOT/.logs/workspace-ui/e2e}
 mkdir -p "$OUT/shots" "$OUT/home" "$OUT/logs" "$OUT/instance" /tmp/.X11-unix
-rm -f "$OUT"/shots/*.png "$OUT"/app_*.log "$OUT"/tervo-workspace-*.json
+rm -f "$OUT"/shots/*.png "$OUT"/app_*.log "$OUT"/xtervo-workspace-*.json
 
 COMMON=$(git rev-parse --git-common-dir)
 MAIN_ROOT=$(cd "$(dirname "$COMMON")" && pwd)
-PERF=${TERVO_PERF_DIR:-$MAIN_ROOT/.perf}
+PERF=${XTERVO_PERF_DIR:-$MAIN_ROOT/.perf}
 XVFB_BIN=${E2E_XVFB_BIN:-$PERF/xvfb/usr/bin/Xvfb}
 [ -x "$XVFB_BIN" ] || XVFB_BIN=$(command -v Xvfb || true)
 [ -x "$XVFB_BIN" ] || { echo "找不到 Xvfb" >&2; exit 2; }
 OPENBOX=$PERF/openbox/usr/bin/openbox
 OPENBOX_LIB=$PERF/openbox/usr/lib/x86_64-linux-gnu
 
-BIN=${TERVO_BIN:-$ROOT/target/debug/tervo}
+BIN=${XTERVO_BIN:-$ROOT/target/debug/xtervo}
 # 输入工具可以用主工作树已构建的二进制（worktree 不重复编译工具）。
 XWIN=${XWIN_BIN:-$ROOT/target/debug/xwin}
 [ -x "$XWIN" ] || XWIN=$MAIN_ROOT/target/debug/xwin
@@ -39,14 +39,14 @@ XCLICK=${XCLICK_BIN:-$ROOT/target/debug/xclick}
 XKEY=${XKEY_BIN:-$ROOT/target/debug/xkey}
 [ -x "$XKEY" ] || XKEY=$MAIN_ROOT/target/debug/xkey
 for f in "$BIN" "$XWIN" "$XCLICK" "$XKEY"; do
-    [ -x "$f" ] || { echo "缺少 $f（先 cargo build -p tervo-app --bin tervo --bin xwin --bin xclick --bin xkey）" >&2; exit 2; }
+    [ -x "$f" ] || { echo "缺少 $f（先 cargo build -p xtervo-app --bin xtervo --bin xwin --bin xclick --bin xkey）" >&2; exit 2; }
 done
 
 export DISPLAY=${E2E_DISPLAY:-:145}
 export HOME=$OUT/home
 export XMODIFIERS=@im=none
 export SLINT_BACKEND=winit-software
-unset TERVO_SETTINGS_LEGACY
+unset XTERVO_SETTINGS_LEGACY
 if xdpyinfo >/dev/null 2>&1; then
     echo "display $DISPLAY 已被占用；先停掉占用它的会话。" >&2
     exit 2
@@ -79,8 +79,8 @@ W=0
 H=0
 
 refresh_geom() {
-    WIN=$(xwininfo -root -tree 2>/dev/null | grep -i '"tervo"' | head -1 | awk '{print $1}')
-    [ -n "$WIN" ] || { echo "找不到 Tervo 窗口" >&2; exit 2; }
+    WIN=$(xwininfo -root -tree 2>/dev/null | grep -i '"xtervo"' | head -1 | awk '{print $1}')
+    [ -n "$WIN" ] || { echo "找不到 xtervo 窗口" >&2; exit 2; }
     ABS_X=$(xwininfo -id "$WIN" | awk '/Absolute upper-left X/{print $NF}')
     ABS_Y=$(xwininfo -id "$WIN" | awk '/Absolute upper-left Y/{print $NF}')
     W=$(xwininfo -id "$WIN" | awk '/Width:/{print $2}')
@@ -91,23 +91,23 @@ start_app() {  # <tag>
     local tag=$1
     local log="$OUT/app_$tag.log"
     : >"$log"
-    TERVO_CONFIG="$OUT/config.toml" \
-    TERVO_PROFILES="$OUT/profiles.toml" \
-    TERVO_WORKSPACES="$OUT/workspaces.toml" \
-    TERVO_SESSION="$OUT/session.json" \
-    TERVO_INSTANCE_DIR="$OUT/instance" \
-    TERVO_LOG_DIR="$OUT/logs" \
-    TERVO_CURSOR_BLINK_PHASE=on \
+    XTERVO_CONFIG="$OUT/config.toml" \
+    XTERVO_PROFILES="$OUT/profiles.toml" \
+    XTERVO_WORKSPACES="$OUT/workspaces.toml" \
+    XTERVO_SESSION="$OUT/session.json" \
+    XTERVO_INSTANCE_DIR="$OUT/instance" \
+    XTERVO_LOG_DIR="$OUT/logs" \
+    XTERVO_CURSOR_BLINK_PHASE=on \
         "$BIN" --cols 120 --rows 32 --shell /bin/sh >"$log" 2>&1 &
     APP_PID=$!
     WIN=""
     for _ in $(seq 1 200); do
-        WIN=$(xwininfo -root -tree 2>/dev/null | grep -i '"tervo"' | head -1 | awk '{print $1}' || true)
+        WIN=$(xwininfo -root -tree 2>/dev/null | grep -i '"xtervo"' | head -1 | awk '{print $1}' || true)
         [ -n "$WIN" ] && break
         sleep 0.05
     done
     [ -n "$WIN" ] || { echo "启动失败（$tag）：$log" >&2; exit 2; }
-    "$XWIN" Tervo 20 20 >/dev/null 2>&1 || true
+    "$XWIN" xtervo 20 20 >/dev/null 2>&1 || true
     sleep 1.0
     refresh_geom
     if [ "$W" != 1080 ] || [ "$H" != 736 ]; then
@@ -127,7 +127,7 @@ shot() {
 }
 
 click() { "$XCLICK" "$((ABS_X + $1))" "$((ABS_Y + $2))" >/dev/null; sleep "${3:-0.35}"; }
-focus_term() { "$XWIN" Tervo >/dev/null 2>&1 || true; sleep 0.15; }
+focus_term() { "$XWIN" xtervo >/dev/null 2>&1 || true; sleep 0.15; }
 type_text() { focus_term; "$XKEY" "$1" >/dev/null; }
 enter() { "$XKEY" --key enter >/dev/null; }
 escape() { "$XKEY" --key escape >/dev/null; }
@@ -257,7 +257,7 @@ grep -Fq '[workspace] 导出打开 name="renamed"' "$OUT/app_A.log" || fail "导
 shot 08-export-dialog
 enter
 sleep 0.9
-EXPORT="$HOME/tervo-workspace-renamed.json"
+EXPORT="$HOME/xtervo-workspace-renamed.json"
 [ -f "$EXPORT" ] || fail "导出文件不存在：$EXPORT"
 python3 - "$EXPORT" <<'PYJSON'
 import json, sys

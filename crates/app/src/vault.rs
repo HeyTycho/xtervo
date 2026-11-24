@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! Vault：加密凭据存储（MVP）。
 //!
-//! 文件默认 `~/.config/tervo/vault.enc`（`TERVO_VAULT` 可覆盖）。格式是纯文本 +
+//! 文件默认 `~/.config/xtervo/vault.enc`（`XTERVO_VAULT` 可覆盖）。格式是纯文本 +
 //! base64 字段，便于排查损坏（不含明文秘密）：
 //!
 //! ```text
-//! TERVO-VAULT 1
+//! XTERVO-VAULT 1
 //! kdf=argon2id
 //! m=19456
 //! t=2
@@ -44,10 +44,10 @@ use base64::Engine as _;
 use chacha20poly1305::aead::{Aead, KeyInit, OsRng, Payload};
 use chacha20poly1305::aead::rand_core::RngCore;
 use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
-use tervo_core::WakeSignal;
+use xtervo_core::WakeSignal;
 
-/// 文件首行的 magic（与版本分两段：`TERVO-VAULT <version>`）。
-pub const MAGIC: &str = "TERVO-VAULT";
+/// 文件首行的 magic（与版本分两段：`XTERVO-VAULT <version>`）。
+pub const MAGIC: &str = "XTERVO-VAULT";
 /// 当前 vault 文件版本。
 pub const VERSION: u32 = 1;
 const SALT_LEN: usize = 16;
@@ -290,7 +290,7 @@ impl Drop for VaultTask {
 fn maybe_test_kdf_delay() {
     static DELAY: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
     let ms = *DELAY.get_or_init(|| {
-        std::env::var("TERVO_VAULT_KDF_DELAY_MS")
+        std::env::var("XTERVO_VAULT_KDF_DELAY_MS")
             .ok()
             .and_then(|v| v.trim().parse::<u64>().ok())
             .unwrap_or(0)
@@ -308,11 +308,11 @@ pub struct Vault {
 }
 
 impl Vault {
-    /// 默认路径：`$XDG_CONFIG_HOME/tervo/vault.enc` 或 `~/.config/tervo/vault.enc`；
-    /// `TERVO_VAULT` 优先（测试/多实例）。
+    /// 默认路径：`$XDG_CONFIG_HOME/xtervo/vault.enc` 或 `~/.config/xtervo/vault.enc`；
+    /// `XTERVO_VAULT` 优先（测试/多实例）。
     pub fn default_path() -> PathBuf {
         default_path_from(
-            std::env::var("TERVO_VAULT").ok().as_deref(),
+            std::env::var("XTERVO_VAULT").ok().as_deref(),
             std::env::var("XDG_CONFIG_HOME").ok().as_deref(),
             std::env::var("HOME").ok().as_deref(),
         )
@@ -567,14 +567,14 @@ impl Drop for Vault {
 }
 
 /// 纯函数版路径解析（测试不需要改进程环境变量）。
-fn default_path_from(tervo_vault: Option<&str>, xdg: Option<&str>, home: Option<&str>) -> PathBuf {
-    if let Some(p) = tervo_vault.filter(|p| !p.trim().is_empty()) {
+fn default_path_from(xtervo_vault: Option<&str>, xdg: Option<&str>, home: Option<&str>) -> PathBuf {
+    if let Some(p) = xtervo_vault.filter(|p| !p.trim().is_empty()) {
         return PathBuf::from(p);
     }
     let base = xdg
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(home.unwrap_or(".")).join(".config"));
-    base.join("tervo").join("vault.enc")
+    base.join("xtervo").join("vault.enc")
 }
 
 fn validate_master(master: &str) -> Result<(), VaultError> {
@@ -731,7 +731,7 @@ impl<'a> ParsedVault<'a> {
         let (magic, ver) =
             first.split_once(' ').ok_or_else(|| VaultError::Corrupt("缺少 magic".into()))?;
         if magic != MAGIC {
-            return Err(VaultError::Corrupt("magic 不匹配，不是 Tervo vault 文件".into()));
+            return Err(VaultError::Corrupt("magic 不匹配，不是 xtervo vault 文件".into()));
         }
         let version: u32 = ver
             .trim()
@@ -864,7 +864,7 @@ fn sibling_path(path: &Path, suffix: &str) -> PathBuf {
 /// 跨进程写锁：`<vault>.lock` 上的独占 `flock`。
 ///
 /// 所有「读磁盘 → 改内存副本 → 原子写」的入口都必须先拿这把锁，否则两个
-/// Tervo 进程会各自基于旧快照写回，互相丢更新（第二进程 / change_master）。
+/// xtervo 进程会各自基于旧快照写回，互相丢更新（第二进程 / change_master）。
 struct VaultLock {
     file: fs::File,
 }
@@ -1102,7 +1102,7 @@ mod tests {
     use super::*;
 
     fn tmpdir(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("tervo-vault-{}-{tag}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("xtervo-vault-{}-{tag}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
@@ -1214,7 +1214,7 @@ mod tests {
     }
 
     #[test]
-    fn default_path_respects_tervo_vault_override() {
+    fn default_path_respects_xtervo_vault_override() {
         // 纯函数测试：不改进程环境变量，避免与并行测试竞争。
         assert_eq!(
             default_path_from(Some("/tmp/custom-vault.enc"), Some("/xdg"), Some("/home/u")),
@@ -1222,12 +1222,12 @@ mod tests {
         );
         assert_eq!(
             default_path_from(Some("   "), None, Some("/home/u")),
-            PathBuf::from("/home/u/.config/tervo/vault.enc"),
-            "空 TERVO_VAULT 应回退默认路径"
+            PathBuf::from("/home/u/.config/xtervo/vault.enc"),
+            "空 XTERVO_VAULT 应回退默认路径"
         );
         assert_eq!(
             default_path_from(None, Some("/xdg"), Some("/home/u")),
-            PathBuf::from("/xdg/tervo/vault.enc")
+            PathBuf::from("/xdg/xtervo/vault.enc")
         );
     }
 
@@ -1262,7 +1262,7 @@ mod tests {
         assert_eq!(fs::read_to_string(&path).unwrap(), &before[..cut], "损坏文件保持原样");
 
         // 空文件 / 只有 magic 的文件都不能 panic。
-        for body in ["", "TERVO-VAULT 1\n", "TERVO-VAULT 999\n"] {
+        for body in ["", "XTERVO-VAULT 1\n", "XTERVO-VAULT 999\n"] {
             let p = dir.join("edge.enc");
             fs::write(&p, body).unwrap();
             let mut edge = Vault::new(&p);
@@ -1393,7 +1393,7 @@ mod tests {
         v.set(9, secret()).unwrap();
         v.lock();
 
-        let (wake, rx) = tervo_core::WakeSignal::new();
+        let (wake, rx) = xtervo_core::WakeSignal::new();
         let task = VaultTask::unlock(path.clone(), master().to_string(), wake);
         // 任务在独立线程里跑：这里立即返回，不阻塞调用线程。
         rx.recv_timeout(Duration::from_secs(30)).expect("KDF 完成应唤醒 UI");
@@ -1409,7 +1409,7 @@ mod tests {
 
         // 同一个 Vault 的 adopt 路径（UI 实际用法）。
         let mut second = Vault::new(&path);
-        let task = VaultTask::unlock(path, master().to_string(), tervo_core::WakeSignal::new().0);
+        let task = VaultTask::unlock(path, master().to_string(), xtervo_core::WakeSignal::new().0);
         let VaultTaskOutcome::Ok(session) = task.wait().unwrap() else {
             panic!("第二次后台解锁失败");
         };
@@ -1426,7 +1426,7 @@ mod tests {
         let task = VaultTask::unlock(
             path.clone(),
             "wrong-password".into(),
-            tervo_core::WakeSignal::new().0,
+            xtervo_core::WakeSignal::new().0,
         );
         match task.wait().unwrap() {
             VaultTaskOutcome::Err(e) => assert_eq!(e, VaultError::WrongPassword),
@@ -1450,7 +1450,7 @@ mod tests {
             path.clone(),
             snapshot,
             "brand new master".into(),
-            tervo_core::WakeSignal::new().0,
+            xtervo_core::WakeSignal::new().0,
         );
         let VaultTaskOutcome::Ok(session) = task.wait().unwrap() else {
             panic!("后台改密码失败");
@@ -1473,7 +1473,7 @@ mod tests {
         let task = VaultTask::initialize(
             path.clone(),
             master().to_string(),
-            tervo_core::WakeSignal::new().0,
+            xtervo_core::WakeSignal::new().0,
         );
         let VaultTaskOutcome::Ok(session) = task.wait().unwrap() else {
             panic!("后台初始化失败");
@@ -1486,7 +1486,7 @@ mod tests {
         let task = VaultTask::initialize(
             path.clone(),
             "another master".into(),
-            tervo_core::WakeSignal::new().0,
+            xtervo_core::WakeSignal::new().0,
         );
         match task.wait().unwrap() {
             VaultTaskOutcome::Err(VaultError::AlreadyInitialized) => {},
@@ -1513,7 +1513,7 @@ mod tests {
         let task = VaultTask::unlock(
             path.clone(),
             master().to_string(),
-            tervo_core::WakeSignal::new().0,
+            xtervo_core::WakeSignal::new().0,
         );
         drop(task);
         assert!(started.elapsed() < Duration::from_secs(1), "Drop 不能阻塞 UI");
@@ -1522,8 +1522,8 @@ mod tests {
 
     // ---- 并发/跨进程：persist 的 read-modify-write 必须串行化并合并 ----
 
-    const CHILD_PATH_ENV: &str = "TERVO_VAULT_TEST_CHILD_PATH";
-    const CHILD_MASTER_ENV: &str = "TERVO_VAULT_TEST_CHILD_MASTER";
+    const CHILD_PATH_ENV: &str = "XTERVO_VAULT_TEST_CHILD_PATH";
+    const CHILD_MASTER_ENV: &str = "XTERVO_VAULT_TEST_CHILD_MASTER";
 
     /// 子进程 helper：正常跑测试套件时环境变量不存在，直接返回。
     #[test]

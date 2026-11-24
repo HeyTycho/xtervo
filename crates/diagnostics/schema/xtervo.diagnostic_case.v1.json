@@ -230,7 +230,7 @@
           "$ref": "#/$defs/redaction_report"
         },
         "schema": {
-          "const": "tervo.evidence_bundle.v1"
+          "const": "xtervo.evidence_bundle.v1"
         },
         "sha256": {
           "pattern": "^[0-9a-f]{64}$",
@@ -627,10 +627,10 @@
       "type": "object"
     }
   },
-  "$id": "https://tervo.dev/schemas/tervo.diagnostic_case.v1.json",
+  "$id": "https://xtervo.dev/schemas/xtervo.diagnostic_case.v1.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": true,
-  "description": "Deterministic, offline diagnostic case produced by tervo-doctor. Missing data is null, never a fabricated default.",
+  "description": "Deterministic, offline diagnostic case produced by xtervo-doctor. Missing data is null, never a fabricated default.",
   "properties": {
     "case_id": {
       "description": "Deterministic hash-based id; no timestamp/random component.",
@@ -670,7 +670,7 @@
       "$ref": "#/$defs/regression_test"
     },
     "schema": {
-      "const": "tervo.diagnostic_case.v1",
+      "const": "xtervo.diagnostic_case.v1",
       "description": "Versioned document id."
     },
     "symptom": {
@@ -689,6 +689,6 @@
     "issue_draft",
     "regression_test"
   ],
-  "title": "Tervo DiagnosticCase v1",
+  "title": "xtervo DiagnosticCase v1",
   "type": "object"
 }

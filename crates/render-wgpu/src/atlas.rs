@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use fontdue::{Font, FontSettings};
 use owned_ttf_parser::{AsFaceRef, OwnedFace};
 
-use tervo_scene::TextAttributes;
+use xtervo_scene::TextAttributes;
 
 /// Format of the glyph coverage atlas.
 pub const ATLAS_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
@@ -232,7 +232,7 @@ impl fmt::Display for AtlasError {
                     }
                     write!(f, "{}", path.display())?;
                 }
-                f.write_str(" (set TERVO_WGPU_FONT=/path/to/font.ttf)")
+                f.write_str(" (set XTERVO_WGPU_FONT=/path/to/font.ttf)")
             }
             Self::FontIo { path, source } => {
                 write!(f, "failed to read font {}: {source}", path.display())
@@ -577,7 +577,7 @@ fn fallback_group_order(ch: char) -> [u8; 4] {
 /// Fallback outline fonts shared with the CPU renderer's chain. Paths absent on
 /// the host are skipped; the first file that covers a character is parsed.
 ///
-/// `TERVO_FALLBACK_FONTS` may add `path[:path...]`, with an optional
+/// `XTERVO_FALLBACK_FONTS` may add `path[:path...]`, with an optional
 /// `#face_index` for collections, matching the app's CPU fallback syntax.
 /// Extra fonts are treated as icon/symbol faces and probed after the built-ins.
 fn fallback_candidates() -> Vec<(PathBuf, u32, u8)> {
@@ -598,7 +598,7 @@ fn fallback_candidates() -> Vec<(PathBuf, u32, u8)> {
     .map(|(path, index, group)| (PathBuf::from(path), index, group))
     .collect();
 
-    if let Some(value) = std::env::var_os("TERVO_FALLBACK_FONTS") {
+    if let Some(value) = std::env::var_os("XTERVO_FALLBACK_FONTS") {
         for entry in value.to_string_lossy().split(':') {
             let entry = entry.trim();
             if entry.is_empty() {
@@ -620,9 +620,9 @@ fn style_variant_candidates(regular: &Path, style: FontStyle) -> Vec<PathBuf> {
         return vec![regular.to_path_buf()];
     }
     let env_key = match style {
-        FontStyle::Bold => "TERVO_WGPU_FONT_BOLD",
-        FontStyle::Italic => "TERVO_WGPU_FONT_ITALIC",
-        FontStyle::BoldItalic => "TERVO_WGPU_FONT_BOLD_ITALIC",
+        FontStyle::Bold => "XTERVO_WGPU_FONT_BOLD",
+        FontStyle::Italic => "XTERVO_WGPU_FONT_ITALIC",
+        FontStyle::BoldItalic => "XTERVO_WGPU_FONT_BOLD_ITALIC",
         FontStyle::Regular => unreachable!(),
     };
     let mut candidates = Vec::new();
@@ -693,10 +693,10 @@ fn try_load_variant(regular: &Path, style: FontStyle) -> Option<Font> {
 /// repository does not currently bundle a monospace font.
 pub fn default_font_candidates() -> Vec<PathBuf> {
     let mut candidates = Vec::new();
-    if let Some(value) = std::env::var_os("TERVO_WGPU_FONT") {
+    if let Some(value) = std::env::var_os("XTERVO_WGPU_FONT") {
         candidates.push(PathBuf::from(value));
     }
-    if let Some(value) = std::env::var_os("TERVO_FONT_PATH") {
+    if let Some(value) = std::env::var_os("XTERVO_FONT_PATH") {
         candidates.push(PathBuf::from(value));
     }
     candidates.extend(
@@ -716,7 +716,7 @@ pub fn default_font_candidates() -> Vec<PathBuf> {
     candidates
 }
 
-/// Resolves the font used by the atlas: `TERVO_WGPU_FONT` / `TERVO_FONT_PATH`
+/// Resolves the font used by the atlas: `XTERVO_WGPU_FONT` / `XTERVO_FONT_PATH`
 /// first, then DejaVu/JetBrains/Liberation and repository asset candidates.
 pub fn discover_font_path() -> Result<PathBuf, AtlasError> {
     let tried = default_font_candidates();
@@ -916,7 +916,7 @@ impl GlyphAtlas {
         }
 
         let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("tervo-wgpu-glyph-atlas"),
+            label: Some("xtervo-wgpu-glyph-atlas"),
             size: wgpu::Extent3d {
                 width: config.width,
                 height: config.height,

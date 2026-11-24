@@ -5,8 +5,8 @@
 # 所以这一步需要你在自己的终端里跑；脚本只读，不会改配置。
 #
 # 用法：
-#   ./scripts/verify_gpu_host.sh            # 用 target/release/tervo（没有就构建）
-#   BIN=/path/to/tervo ./scripts/verify_gpu_host.sh
+#   ./scripts/verify_gpu_host.sh            # 用 target/release/xtervo（没有就构建）
+#   BIN=/path/to/xtervo ./scripts/verify_gpu_host.sh
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -20,7 +20,7 @@ done
 
 OUT=".logs/gpu-host-verify"
 mkdir -p "$OUT"
-BIN=${BIN:-target/release/tervo}
+BIN=${BIN:-target/release/xtervo}
 
 say() { printf '\n== %s ==\n' "$*"; }
 
@@ -42,14 +42,14 @@ say "环境"
 if [ ! -x "$BIN" ]; then
     say "构建 release"
     export CARGO_HOME="${CARGO_HOME:-$PWD/.cargo}"
-    cargo build --release --offline -p tervo-app
+    cargo build --release --offline -p xtervo-app
 fi
 
 say "GPU-native 运行 20s（采集帧统计）"
 # 只开一个临时实例目录，避免污染你正在用的会话
 timeout 25 env \
-    TERVO_GPU_NATIVE=1 TERVO_GPU_NATIVE_DEBUG=1 \
-    TERVO_INSTANCE_DIR=/tmp/tervo-gpu-verify \
+    XTERVO_GPU_NATIVE=1 XTERVO_GPU_NATIVE_DEBUG=1 \
+    XTERVO_INSTANCE_DIR=/tmp/xtervo-gpu-verify \
     "$BIN" --cols 160 --rows 48 >"$OUT/run.log" 2>&1 || true
 
 echo "-- 后端/回退关键字"
@@ -91,12 +91,12 @@ if [ "$CHECK" = "1" ]; then
     fi
 
     # 3) GPU-native 链路真的建立（adapter/backend）
-    if grep -q "\[gpu-native\] TERVO_GPU_NATIVE=1" "$OUT/run.log" 2>/dev/null; then
-        line=$(grep -m1 "\[gpu-native\] TERVO_GPU_NATIVE=1" "$OUT/run.log")
+    if grep -q "\[gpu-native\] XTERVO_GPU_NATIVE=1" "$OUT/run.log" 2>/dev/null; then
+        line=$(grep -m1 "\[gpu-native\] XTERVO_GPU_NATIVE=1" "$OUT/run.log")
         ok "GPU-native 生效：$(printf '%s' "$line" | sed -E 's/.*device\/queue；//')"
     elif printf '%s' "${renderer:-}" | grep -qiE "skia|wgpu|gl|gpu"; then
         if grep -q "WGPU 显示链路初始化失败" "$OUT/run.log" 2>/dev/null; then
-            echo "WARN  WGPU 显示链路初始化失败，但 Skia GPU renderer 仍生效（TERVO_GPU_NATIVE 属实验路径）"
+            echo "WARN  WGPU 显示链路初始化失败，但 Skia GPU renderer 仍生效（XTERVO_GPU_NATIVE 属实验路径）"
         fi
         ok "GPU 渲染生效：actual_renderer=${renderer}"
     else

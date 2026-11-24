@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 验证 UI-TERM-001（IME 候选框位置）——在**你的桌面会话**里跑，不要 headless。
 #
-# 做的事：起一个独立实例的 Tervo（Tervo 窗口会短暂抢焦点）→ 用 XTEST 注入 "nihao"+空格
+# 做的事：起一个独立实例的 xtervo（xtervo 窗口会短暂抢焦点）→ 用 XTEST 注入 "nihao"+空格
 #         → 抓 [ime] 日志、截图、找 fcitx5 候选窗几何 → 对比候选窗与 ime spot。
 #
 # 用法：
@@ -17,8 +17,8 @@ KEEP=0
 
 OUT=".logs/ime-verify"
 rm -rf "$OUT"; mkdir -p "$OUT"
-BIN=${BIN:-target/release/tervo}
-[ -x "$BIN" ] || { echo "缺少 $BIN，先 cargo build --release -p tervo-app" >&2; exit 2; }
+BIN=${BIN:-target/release/xtervo}
+[ -x "$BIN" ] || { echo "缺少 $BIN，先 cargo build --release -p xtervo-app" >&2; exit 2; }
 
 say() { printf '\n== %s ==\n' "$*"; }
 note() { printf '   %s\n' "$*"; }
@@ -34,7 +34,7 @@ if [ "$HAS_NATIVE" = 0 ] && [ "$HAS_FLATPAK" = 0 ]; then
     echo "没找到 fcitx5（native 或 flatpak），先安装：sudo apt install fcitx5 fcitx5-chinese-addons" >&2
     exit 2
 fi
-# 让 Tervo 走 fcitx
+# 让 xtervo 走 fcitx
 export GTK_IM_MODULE=fcitx QT_IM_MODULE=fcitx XMODIFIERS=@im=fcitx
 
 fcitx_remote() {
@@ -63,27 +63,27 @@ fi
 # 切到中文输入法（Rime/拼音）。失败不致命，后面按 keylog 判定。
 fcitx_remote -o >/dev/null 2>&1 || true
 
-say "启动独立实例 Tervo（会在你桌面上新开一个窗口）"
-BEFORE=$(xwininfo -root -tree 2>/dev/null | awk '/"Tervo"/{print $1}' | tr '\n' ' ')
-TMP_INST=/tmp/tervo-ime-verify
+say "启动独立实例 xtervo（会在你桌面上新开一个窗口）"
+BEFORE=$(xwininfo -root -tree 2>/dev/null | awk '/"xtervo"/{print $1}' | tr '\n' ' ')
+TMP_INST=/tmp/xtervo-ime-verify
 rm -rf "$TMP_INST"; mkdir -p "$TMP_INST"
-TERVO_KEYLOG=1 TERVO_IME_LOG=1 TERVO_INSTANCE_DIR="$TMP_INST" \
+XTERVO_KEYLOG=1 XTERVO_IME_LOG=1 XTERVO_INSTANCE_DIR="$TMP_INST" \
     "$BIN" --cols 100 --rows 30 >"$OUT/keylog.log" 2>&1 &
 APP_PID=$!
 cleanup() { kill "$APP_PID" 2>/dev/null || true; }
 trap 'cleanup' EXIT
 
-# 只认“启动之前不存在”的窗口，避免把输入打进你正在用的 Tervo
+# 只认“启动之前不存在”的窗口，避免把输入打进你正在用的 xtervo
 WID=""
 for _ in $(seq 1 40); do
-    for id in $(xwininfo -root -tree 2>/dev/null | awk '/"Tervo"/{print $1}'); do
+    for id in $(xwininfo -root -tree 2>/dev/null | awk '/"xtervo"/{print $1}'); do
         case " $BEFORE " in *" $id "*) continue ;; esac
         WID=$id; break
     done
     [ -n "$WID" ] && break
     sleep 0.25
 done
-[ -n "$WID" ] || { echo "Tervo 窗口没出现；日志：$OUT/keylog.log" >&2; exit 3; }
+[ -n "$WID" ] || { echo "xtervo 窗口没出现；日志：$OUT/keylog.log" >&2; exit 3; }
 GEO=$(xwininfo -id "$WID" | awk '/Absolute upper-left X/{x=$4} /Absolute upper-left Y/{y=$4} /Width:/{w=$2} /Height:/{h=$2} END{printf "%d %d %d %d", x,y,w,h}')
 read -r WX WY WW WH <<<"$GEO"
 note "window=$WID geometry=${WX},${WY} ${WW}x${WH}"
@@ -194,7 +194,7 @@ if [ "$fail" -gt 0 ]; then
 fi
 echo "截图：$OUT/root.png  日志：$OUT/keylog.log  窗口树：$OUT/windows.txt"
 
-if [ "$KEEP" = 0 ]; then cleanup; trap - EXIT; else echo "（--keep：Tervo 保持打开，pid=$APP_PID）"; trap - EXIT; fi
+if [ "$KEEP" = 0 ]; then cleanup; trap - EXIT; else echo "（--keep：xtervo 保持打开，pid=$APP_PID）"; trap - EXIT; fi
 
 if [ "$fail" -eq 0 ]; then
     echo "RESULT: PASS（UI-TERM-001 可转 implemented）"

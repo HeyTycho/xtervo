@@ -5,7 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
-use tervo_diagnostics::doctor::{
+use xtervo_diagnostics::doctor::{
     diagnostic_case_json_schema, DiagnosticCase, Doctor, DoctorConfig, DoctorInput, Environment,
     EvidenceKind, EvidenceLimits, FrameSummary, GpuInfo, MetricsSummary, RenderProfileSummary,
     RendererInfo, Symptom,
@@ -18,7 +18,7 @@ struct TempDir {
 impl TempDir {
     fn new(name: &str) -> Self {
         let path = std::env::temp_dir().join(format!(
-            "tervo-doctor-integration-{}-{}",
+            "xtervo-doctor-integration-{}-{}",
             name,
             std::process::id()
         ));
@@ -63,7 +63,7 @@ fn base_env(dir: &TempDir, config: &Path) -> Environment {
 
 fn sample_frame() -> FrameSummary {
     FrameSummary::from_diag_json(&json!({
-        "schema": "tervo.diag.v1",
+        "schema": "xtervo.diag.v1",
         "kind": "snapshot",
         "cols": 80,
         "rows": 4,
@@ -82,7 +82,7 @@ fn sample_frame() -> FrameSummary {
 
 fn placeholder_metrics() -> MetricsSummary {
     MetricsSummary::from_diag_json(&json!({
-        "schema": "tervo.diag.v1",
+        "schema": "xtervo.diag.v1",
         "kind": "metrics",
         "initialized": false,
         "source": "cli",
@@ -136,7 +136,7 @@ fn schema_roundtrip_is_deterministic() {
         let key = required.as_str().unwrap();
         assert!(value.get(key).is_some(), "missing top-level key {key}");
     }
-    assert_eq!(value["schema"], "tervo.diagnostic_case.v1");
+    assert_eq!(value["schema"], "xtervo.diagnostic_case.v1");
     assert!(value["case_id"].as_str().unwrap().starts_with("case-"));
     assert!(!value["findings"].as_array().unwrap().is_empty());
 }
@@ -144,7 +144,7 @@ fn schema_roundtrip_is_deterministic() {
 #[test]
 fn embedded_schema_file_matches_generator() {
     let embedded: Value =
-        serde_json::from_str(include_str!("../schema/tervo.diagnostic_case.v1.json"))
+        serde_json::from_str(include_str!("../schema/xtervo.diagnostic_case.v1.json"))
             .expect("embedded schema is JSON");
     assert_eq!(embedded, diagnostic_case_json_schema());
 }
@@ -165,7 +165,7 @@ fn secrets_are_redacted_from_both_case_and_issue() {
         frame: None,
         metrics: None,
         render_profile: None,
-        attachments: vec![tervo_diagnostics::doctor::Attachment {
+        attachments: vec![xtervo_diagnostics::doctor::Attachment {
             label: "log".to_string(),
             content: "fetch https://alice:s3cr3t@example.com/x?token=tok123\n\
                       token=ghp_abcdefghijklmnopqrstuvwxyz0123456789\n\
@@ -333,8 +333,8 @@ fn missing_data_stays_missing_and_is_not_a_healthy_zero() {
         assert!(
             matches!(
                 probe.status,
-                tervo_diagnostics::doctor::ProbeStatus::Unknown
-                    | tervo_diagnostics::doctor::ProbeStatus::Skipped
+                xtervo_diagnostics::doctor::ProbeStatus::Unknown
+                    | xtervo_diagnostics::doctor::ProbeStatus::Skipped
             ),
             "{} should be unknown/skipped, got {:?}",
             probe.id,
@@ -356,7 +356,7 @@ fn evidence_caps_are_enforced_and_still_validate() {
     let input = DoctorInput {
         symptom: Symptom::reported("大附件"),
         environment: base_env(&dir, &config),
-        attachments: vec![tervo_diagnostics::doctor::Attachment {
+        attachments: vec![xtervo_diagnostics::doctor::Attachment {
             label: "huge log".to_string(),
             content: "x".repeat(100_000),
             kind: EvidenceKind::Logs,
@@ -397,7 +397,7 @@ fn wrong_path_kind_is_reported_as_a_file_failure() {
     let config = dir.write("config.toml", "theme = \"dark\"\n");
     let profiles_dir = dir.join("profiles-as-dir");
     fs::create_dir_all(&profiles_dir).unwrap();
-    let log = dir.write("tervo.log", "ready\n");
+    let log = dir.write("xtervo.log", "ready\n");
     let input = DoctorInput {
         environment: Environment {
             profiles_path: Some(profiles_dir.display().to_string()),
@@ -412,7 +412,7 @@ fn wrong_path_kind_is_reported_as_a_file_failure() {
         .iter()
         .find(|probe| probe.id == "probe.paths")
         .unwrap();
-    assert_eq!(probe.status, tervo_diagnostics::doctor::ProbeStatus::Fail);
+    assert_eq!(probe.status, xtervo_diagnostics::doctor::ProbeStatus::Fail);
     assert!(case
         .findings
         .iter()
@@ -423,7 +423,7 @@ fn wrong_path_kind_is_reported_as_a_file_failure() {
 fn readable_log_path_is_checked_without_reading_it_into_the_case() {
     let dir = TempDir::new("log-readable");
     let config = dir.write("config.toml", "theme = \"dark\"\n");
-    let log = dir.write("tervo.log", "api_key=sk-live-log-secret\nready\n");
+    let log = dir.write("xtervo.log", "api_key=sk-live-log-secret\nready\n");
     let input = DoctorInput {
         environment: Environment {
             log_path: Some(log.display().to_string()),
@@ -437,7 +437,7 @@ fn readable_log_path_is_checked_without_reading_it_into_the_case() {
         .iter()
         .find(|probe| probe.id == "probe.paths")
         .unwrap();
-    assert_eq!(probe.status, tervo_diagnostics::doctor::ProbeStatus::Pass);
+    assert_eq!(probe.status, xtervo_diagnostics::doctor::ProbeStatus::Pass);
     assert!(!case
         .to_json_pretty()
         .unwrap()
@@ -467,5 +467,5 @@ fn config_secret_is_reported_but_never_stored() {
         .iter()
         .find(|finding| finding.id == "finding.config.secrets")
         .unwrap();
-    assert_eq!(finding.severity, tervo_diagnostics::doctor::Severity::Error);
+    assert_eq!(finding.severity, xtervo_diagnostics::doctor::Severity::Error);
 }

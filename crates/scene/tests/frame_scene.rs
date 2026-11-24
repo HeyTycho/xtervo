@@ -1,6 +1,6 @@
 //! Frame -> Scene semantic contract tests.
 //!
-//! These tests use a real `tervo_core::Frame` value and assert the scene preserves the frame's
+//! These tests use a real `xtervo_core::Frame` value and assert the scene preserves the frame's
 //! cells, attributes, selection/search, cursor, damage and image metadata. They never start a
 //! GUI, Xvfb, Slint or a GPU device.
 
@@ -8,12 +8,12 @@
 
 use std::sync::Arc;
 
-use tervo_core::{
+use xtervo_core::{
     flags, CellData, CursorShape as FrameCursorShape, CursorState, Frame, ImageCrop,
     ImagePlacementMeta, InlineImage, LineDamage, Span,
 };
-use tervo_graphics::{CompositePolicy, PlacementId, Rect, RowId, SourceId};
-use tervo_scene::{
+use xtervo_graphics::{CompositePolicy, PlacementId, Rect, RowId, SourceId};
+use xtervo_scene::{
     CursorShape, DamageRect, DrawItem, ImageInstance, Scene, SceneBuilder, SelectionSpan,
     SelectionStyle, TextBatch, TextCell, Viewport, CURSOR_LAYER_Z, TEXT_LAYER_Z,
 };

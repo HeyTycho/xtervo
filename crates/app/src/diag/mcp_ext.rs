@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! Read-only MCP tools layered on the existing `tervo diag serve` server.
+//! Read-only MCP tools layered on the existing `xtervo diag serve` server.
 //!
 //! Everything here is deliberately boring: bounded file reads, no process
 //! spawning, no writes, and no raw log lines or terminal content in the output.
 //! JSON inputs may be inline objects or paths to files under `$HOME`/`/tmp`;
-//! paths outside those roots are rejected. The existing `tervo.diag_snapshot`
+//! paths outside those roots are rejected. The existing `xtervo.diag_snapshot`
 //! tool is the only MCP tool that starts a shell, and that behavior is
 //! unchanged.
 
@@ -14,7 +14,7 @@ use std::path::{Component, Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 use serde_json::{json, Value};
-use tervo_diagnostics::doctor::{
+use xtervo_diagnostics::doctor::{
     issue::render_issue, DiagnosticCase, Doctor, DoctorConfig, DoctorInput, Environment,
     FrameSummary, MetricsSummary, Symptom,
 };
@@ -28,7 +28,7 @@ const MAX_LOG_SCAN_BYTES: u64 = 256 * 1024;
 
 /// Run the deterministic doctor over optional environment/frame/metrics input.
 ///
-/// The output is the versioned `tervo.diagnostic_case.v1` document, including
+/// The output is the versioned `xtervo.diagnostic_case.v1` document, including
 /// its issue draft. Missing inputs stay absent; the doctor never invents a
 /// healthy zero. Only files under `$HOME` or `/tmp` may be referenced by path.
 pub(super) fn doctor_check(args: &Value) -> Result<Value, String> {
@@ -80,8 +80,8 @@ pub(super) fn doctor_check(args: &Value) -> Result<Value, String> {
 
 /// Render the fixed doctor issue template from a full diagnostic case.
 ///
-/// The case must already be a validated `tervo.diagnostic_case.v1` document
-/// (for example the output of `tervo.doctor_check`). No model or network is
+/// The case must already be a validated `xtervo.diagnostic_case.v1` document
+/// (for example the output of `xtervo.doctor_check`). No model or network is
 /// involved; the markdown is deterministic.
 pub(super) fn issue_draft(args: &Value) -> Result<Value, String> {
     let args = args
@@ -99,7 +99,7 @@ pub(super) fn issue_draft(args: &Value) -> Result<Value, String> {
         .map_err(|error| format!("invalid diagnostic case: {error}"))?;
     let draft = render_issue(&case);
     Ok(json!({
-        "schema": "tervo.diag.v1",
+        "schema": "xtervo.diag.v1",
         "kind": "issue_draft",
         "read_only": true,
         "case_id": case.case_id,
@@ -109,9 +109,9 @@ pub(super) fn issue_draft(args: &Value) -> Result<Value, String> {
     }))
 }
 
-/// Bounded summary of the Tervo log directory.
+/// Bounded summary of the xtervo log directory.
 ///
-/// Only regular `tervo-*.log` files are considered. At most eight files are
+/// Only regular `xtervo-*.log` files are considered. At most eight files are
 /// reported, and each file is scanned only at its tail (256 KiB) for line and
 /// error-marker counts. Raw lines are never returned, so terminal output or
 /// accidental secrets in a log do not leave this process.
@@ -162,7 +162,7 @@ pub(super) fn metrics_read(args: &Value) -> Result<Value, String> {
             let Some(name) = name.to_str() else {
                 continue;
             };
-            if !(name.starts_with("tervo-") && name.ends_with(".log")) {
+            if !(name.starts_with("xtervo-") && name.ends_with(".log")) {
                 continue;
             }
             let Ok(file_type) = entry.file_type() else {
@@ -223,7 +223,7 @@ pub(super) fn metrics_read(args: &Value) -> Result<Value, String> {
     }
 
     Ok(json!({
-        "schema": "tervo.diag.v1",
+        "schema": "xtervo.diag.v1",
         "kind": "metrics_read",
         "read_only": true,
         "log_dir": log_dir.display().to_string(),
@@ -254,9 +254,9 @@ pub(super) fn resources_list() -> Value {
     json!({
         "resources": [
             {
-                "uri": "tervo://version",
-                "name": "Tervo version and build metadata",
-                "description": "Version, commit, build time, target and renderer environment for this tervo diag process. Read-only; no secrets.",
+                "uri": "xtervo://version",
+                "name": "xtervo version and build metadata",
+                "description": "Version, commit, build time, target and renderer environment for this xtervo diag process. Read-only; no secrets.",
                 "mimeType": "application/json"
             }
         ]
@@ -267,7 +267,7 @@ pub(super) fn resources_list() -> Value {
 /// success, so a client can tell the difference between "missing" and "empty".
 pub(super) fn read_resource(uri: &str) -> Result<Value, String> {
     match uri {
-        "tervo://version" => {
+        "xtervo://version" => {
             let text = serde_json::to_string_pretty(&super::env_json())
                 .map_err(|error| format!("serialize version resource: {error}"))?;
             Ok(json!({
@@ -287,7 +287,7 @@ fn parse_environment(value: &Value) -> Result<Environment, String> {
     let object = value
         .as_object()
         .ok_or_else(|| "environment must be a JSON object or a path to one".to_string())?;
-    // Accept both the app's `tervo diag env --json` document and the
+    // Accept both the app's `xtervo diag env --json` document and the
     // doctor-internal Environment shape. Prefer the documented diag form when
     // either marker is present.
     let structured = object.contains_key("config_path")

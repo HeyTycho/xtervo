@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! Machine-readable JSON Schema for `tervo.diagnostic_case.v1`.
+//! Machine-readable JSON Schema for `xtervo.diagnostic_case.v1`.
 //!
 //! The Rust structs are the source of truth; this document gives front-ends,
 //! issue tooling and future language bindings a stable versioned contract. It
@@ -14,9 +14,9 @@ use super::model::DIAGNOSTIC_CASE_SCHEMA;
 pub fn diagnostic_case_json_schema() -> Value {
     json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "$id": "https://tervo.dev/schemas/tervo.diagnostic_case.v1.json",
-        "title": "Tervo DiagnosticCase v1",
-        "description": "Deterministic, offline diagnostic case produced by tervo-doctor. Missing data is null, never a fabricated default.",
+        "$id": "https://xtervo.dev/schemas/xtervo.diagnostic_case.v1.json",
+        "title": "xtervo DiagnosticCase v1",
+        "description": "Deterministic, offline diagnostic case produced by xtervo-doctor. Missing data is null, never a fabricated default.",
         "type": "object",
         "additionalProperties": true,
         "required": [
@@ -154,7 +154,7 @@ pub fn diagnostic_case_json_schema() -> Value {
                 "additionalProperties": true,
                 "required": ["schema", "limits", "items", "total_bytes", "sha256", "redaction", "omissions"],
                 "properties": {
-                    "schema": {"const": "tervo.evidence_bundle.v1"},
+                    "schema": {"const": "xtervo.evidence_bundle.v1"},
                     "limits": {
                         "type": "object",
                         "required": ["max_item_bytes", "max_total_bytes", "max_items"],
@@ -299,7 +299,7 @@ mod tests {
         );
         assert_eq!(
             schema["$id"],
-            "https://tervo.dev/schemas/tervo.diagnostic_case.v1.json"
+            "https://xtervo.dev/schemas/xtervo.diagnostic_case.v1.json"
         );
     }
 

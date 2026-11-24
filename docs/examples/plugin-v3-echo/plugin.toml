@@ -1,6 +1,6 @@
 api = 3
 host_abi = 3
-id = "dev.tervo.echo"
+id = "dev.xtervo.echo"
 name = "Echo (v3 example)"
 version = "1.0.0"
 runtime = "process"

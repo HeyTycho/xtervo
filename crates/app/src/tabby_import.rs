@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 use serde_yaml::{Mapping, Value};
-use tervo_core::{PaletteSpec, UiColors};
+use xtervo_core::{PaletteSpec, UiColors};
 
 use crate::commands::{self, Chord, Mods, Registry};
 use crate::config::Config;
@@ -59,7 +59,7 @@ pub struct ImportReport {
     pub themes_skipped: Vec<(String, String)>,
     /// 明确**不导入**的类别（插件配置 / UI 主题 CSS / 密码凭据）。
     ///
-    /// 与 `skipped`（想导但失败了）不同：这些内容在当前 Tervo 里没有对应模型，
+    /// 与 `skipped`（想导但失败了）不同：这些内容在当前 xtervo 里没有对应模型，
     /// 报告出来是为了不让用户以为“导入成功 = 全都搬过来了”。
     pub not_imported: Vec<NotImported>,
 }
@@ -111,9 +111,9 @@ impl ImportReport {
     }
 }
 
-/// Tabby 命令 id → Tervo 命令 id。
+/// Tabby 命令 id → xtervo 命令 id。
 ///
-/// 只收语义能一一对应、且 Tervo 确实实现了的命令；Tabby 的 profile/group
+/// 只收语义能一一对应、且 xtervo 确实实现了的命令；Tabby 的 profile/group
 /// 选择器、tab 序号、pane 导航方向、滚动、MRU 切换等没有等价命令，保持未映射。
 pub const TABBY_HOTKEY_MAP: &[(&str, &str)] = &[
     ("new-tab", "tab.new"),
@@ -139,8 +139,8 @@ pub const TABBY_HOTKEY_MAP: &[(&str, &str)] = &[
     ("settings", "settings.open"),
 ];
 
-fn tervo_command(tabby_id: &str) -> Option<&'static str> {
-    TABBY_HOTKEY_MAP.iter().find(|(tabby, _)| *tabby == tabby_id).map(|(_, tervo)| *tervo)
+fn xtervo_command(tabby_id: &str) -> Option<&'static str> {
+    TABBY_HOTKEY_MAP.iter().find(|(tabby, _)| *tabby == tabby_id).map(|(_, xtervo)| *xtervo)
 }
 
 fn as_str(v: Option<&Value>) -> Option<&str> {
@@ -298,7 +298,7 @@ fn detect_not_imported(root: &Value) -> Vec<NotImported> {
                 out.push(NotImported {
                     category: "plugin-config".into(),
                     detail: format!(
-                        "{key}: Tabby 插件配置依赖插件自身 schema，Tervo 无对应插件模型"
+                        "{key}: Tabby 插件配置依赖插件自身 schema，xtervo 无对应插件模型"
                     ),
                 });
             }
@@ -334,7 +334,7 @@ fn detect_not_imported(root: &Value) -> Vec<NotImported> {
             });
         }
     }
-    // 4) 密码/凭据字段：Tervo 只接受 Vault 加密保存，绝不会把明文搬进 profiles.toml。
+    // 4) 密码/凭据字段：xtervo 只接受 Vault 加密保存，绝不会把明文搬进 profiles.toml。
     let mut secrets = Vec::new();
     collect_secret_paths(root, String::new(), &mut secrets);
     for path in secrets.into_iter().take(8) {
@@ -411,27 +411,27 @@ fn import_hotkeys(value: Option<&Value>, cfg: &mut Config, report: &mut ImportRe
     flatten_hotkeys("", value, &mut leaves);
     let registry = commands::builtin();
     for (tabby_id, raw) in leaves {
-        let Some(tervo_id) = tervo_command(&tabby_id) else {
+        let Some(xtervo_id) = xtervo_command(&tabby_id) else {
             report.hotkeys_unmapped.push(tabby_id);
             continue;
         };
-        import_one_hotkey(&tabby_id, tervo_id, raw, &registry, cfg, report);
+        import_one_hotkey(&tabby_id, xtervo_id, raw, &registry, cfg, report);
     }
 }
 
 fn import_one_hotkey(
     tabby_id: &str,
-    tervo_id: &str,
+    xtervo_id: &str,
     raw: &Value,
     registry: &Registry,
     cfg: &mut Config,
     report: &mut ImportReport,
 ) {
     // 已有自定义绑定绝不静默覆盖：报告跳过，保留用户现有选择。
-    if let Some(existing) = cfg.hotkeys.iter().rev().find(|o| o.command == tervo_id) {
+    if let Some(existing) = cfg.hotkeys.iter().rev().find(|o| o.command == xtervo_id) {
         report.hotkeys_skipped.push((
             tabby_id.to_string(),
-            format!("Tervo 已有自定义绑定 {}（未覆盖）", existing.chord),
+            format!("xtervo 已有自定义绑定 {}（未覆盖）", existing.chord),
         ));
         return;
     }
@@ -450,7 +450,7 @@ fn import_one_hotkey(
     if alternatives.is_empty() {
         report.hotkeys_skipped.push((
             tabby_id.to_string(),
-            "空绑定（Tabby 中禁用），Tervo 无法表达“取消默认键”".into(),
+            "空绑定（Tabby 中禁用），xtervo 无法表达“取消默认键”".into(),
         ));
         return;
     }
@@ -482,7 +482,7 @@ fn import_one_hotkey(
             continue;
         }
         let current_same = registry
-            .effective_shortcut(tervo_id, &cfg.hotkeys)
+            .effective_shortcut(xtervo_id, &cfg.hotkeys)
             .and_then(|s| s.single_chord().cloned())
             .is_some_and(|current| current == chord);
         if current_same {
@@ -490,9 +490,9 @@ fn import_one_hotkey(
             report.hotkeys_extra_ignored += alternatives.len().saturating_sub(idx + 1);
             return;
         }
-        match registry.validate_override(tervo_id, &chord.canonical(), &cfg.hotkeys) {
+        match registry.validate_override(xtervo_id, &chord.canonical(), &cfg.hotkeys) {
             Ok(chord) => {
-                commands::set_override(&mut cfg.hotkeys, tervo_id, &chord);
+                commands::set_override(&mut cfg.hotkeys, xtervo_id, &chord);
                 report.hotkeys_added += 1;
                 report.hotkeys_extra_ignored += alternatives.len().saturating_sub(idx + 1);
                 return;
@@ -505,11 +505,11 @@ fn import_one_hotkey(
         .push((tabby_id.to_string(), last_error.unwrap_or_else(|| "没有可用绑定".into())));
 }
 
-/// Tabby chord → Tervo [`Chord`]。
+/// Tabby chord → xtervo [`Chord`]。
 ///
 /// Tabby 用 `-` 连接（`Ctrl-Shift-P`，字面 `-` 键写成 `Ctrl--`），macOS 默认
 /// 配置里还混有 `Ctrl+⌘+F` 这种 `+` 写法，因此两种分隔符都接受；修饰键别名
-/// （Super/⌘/Option…）与键名交给 Tervo 的解析器归一化。
+/// （Super/⌘/Option…）与键名交给 xtervo 的解析器归一化。
 fn tabby_chord(text: &str) -> Result<Chord, String> {
     let text = text.trim();
     if text.is_empty() {
@@ -538,7 +538,7 @@ fn tabby_chord(text: &str) -> Result<Chord, String> {
     if mods.meta {
         out.push_str("meta+");
     }
-    // Tervo 用 `+` 作分隔符；主键 `-` / `+` 走别名，避免歧义。
+    // xtervo 用 `+` 作分隔符；主键 `-` / `+` 走别名，避免歧义。
     match key.as_str() {
         "-" => out.push_str("minus"),
         "+" => out.push_str("plus"),
@@ -621,7 +621,7 @@ struct TabbyScheme {
     ansi16: [u32; 16],
 }
 
-/// 写主题用的完整 Tervo TOML（结构与 `themes::RawTheme` 一致）。
+/// 写主题用的完整 xtervo TOML（结构与 `themes::RawTheme` 一致）。
 #[derive(Serialize)]
 struct ThemeToml<'a> {
     schema: u32,
@@ -926,7 +926,7 @@ mod tests {
 
     fn temp_dir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "tervo-tabby-{}-{tag}-{}",
+            "xtervo-tabby-{}-{tag}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -1077,16 +1077,16 @@ terminal:
     fn tabby_command_map_targets_exist_and_is_unique() {
         let registry = commands::builtin();
         let mut seen_tabby = HashSet::new();
-        let mut seen_tervo = HashSet::new();
-        for (tabby, tervo) in TABBY_HOTKEY_MAP {
+        let mut seen_xtervo = HashSet::new();
+        for (tabby, xtervo) in TABBY_HOTKEY_MAP {
             assert!(seen_tabby.insert(*tabby), "重复 Tabby 命令: {tabby}");
-            assert!(seen_tervo.insert(*tervo), "重复 Tervo 命令: {tervo}");
-            assert!(registry.get(tervo).is_some(), "Tervo 命令不存在: {tervo}");
+            assert!(seen_xtervo.insert(*xtervo), "重复 xtervo 命令: {xtervo}");
+            assert!(registry.get(xtervo).is_some(), "xtervo 命令不存在: {xtervo}");
         }
     }
 
     #[test]
-    fn tabby_chords_normalize_to_tervo_canonical() {
+    fn tabby_chords_normalize_to_xtervo_canonical() {
         let cases = [
             ("Ctrl-Shift-P", "ctrl+shift+p"),
             ("F11", "f11"),
@@ -1178,7 +1178,7 @@ hotkeys:
   paste: Ctrl-Alt-J      # 与上一条冲突
   duplicate-tab: [[Ctrl-K, Ctrl-D]]  # multi-chord
   reset-zoom: []         # Tabby 里禁用
-  toggle-fullscreen: F11 # 与 Tervo 默认相同
+  toggle-fullscreen: F11 # 与 xtervo 默认相同
 terminal: {}
 "#;
         let mut store = ProfileStore::default();
@@ -1276,7 +1276,7 @@ terminal:
         assert!(text.contains("[ui]"), "{text}");
         assert!(text.contains("ansi"), "{text}");
 
-        // 用真实注册表再解析一遍，确认生成文件能被 Tervo 加载。
+        // 用真实注册表再解析一遍，确认生成文件能被 xtervo 加载。
         let reg = themes::ThemeRegistry::load(&dir);
         assert_eq!(reg.custom_count(), 2, "{:?}", reg.errors);
         assert!(reg.get("custom:tabby-tabby-test-dark-2").is_some());

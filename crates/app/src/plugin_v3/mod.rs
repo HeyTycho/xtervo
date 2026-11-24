@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! Tervo Plugin API v3 宿主（唯一受支持的插件协议）。
+//! xtervo Plugin API v3 宿主（唯一受支持的插件协议）。
 //!
 //! 设计约束（与 `docs/PLUGIN_V3.md` 一致）：
 //!
@@ -10,7 +10,7 @@
 //! - 权限 = **capability gate + 用户确认**，不是 OS 沙箱。宿主只 gate 自己
 //!   代理的 API（terminal.read/write、clipboard），物理上插件仍拥有当前用户
 //!   的系统权限。
-//! - **MCP 是 Tervo 内嵌功能，不是插件能力**：这里没有、也不会实现插件 MCP
+//! - **MCP 是 xtervo 内嵌功能，不是插件能力**：这里没有、也不会实现插件 MCP
 //!   server/代理。插件只能声明固定贡献点（commands/status/events/theme/
 //!   panels/settings/assistant 占位）。
 //! - 所有 UI 由宿主渲染。插件只能提供声明式文档，不能注入 Slint/WASM/HTML。
@@ -38,7 +38,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
-use tervo_core::{OutputFilterHandle, WakeSignal};
+use xtervo_core::{OutputFilterHandle, WakeSignal};
 
 use crate::plugin_wasm::{
     WasmFilterRuntime, WasmFilterStatsSnapshot, WasmOutputHost,
@@ -435,7 +435,7 @@ fn parse_package_dir(dir: &Path) -> PluginEntry {
     if api != Some(manifest::PLUGIN_API_VERSION as u64) {
         entry.legacy = true;
         entry.reason = format!(
-            "Unsupported Plugin API v{}; Tervo v3 only loads api = 3 / host_abi = 3. {}",
+            "Unsupported Plugin API v{}; xtervo v3 only loads api = 3 / host_abi = 3. {}",
             entry.api_label,
             reason_migration()
         );
@@ -632,7 +632,7 @@ pub struct PluginStore {
 
 impl PluginStore {
     pub fn dir() -> PathBuf {
-        if let Ok(path) = std::env::var("TERVO_PLUGINS") {
+        if let Ok(path) = std::env::var("XTERVO_PLUGINS") {
             return PathBuf::from(path);
         }
         let base = std::env::var("XDG_CONFIG_HOME")
@@ -641,7 +641,7 @@ impl PluginStore {
                 PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into()))
                     .join(".config")
             });
-        base.join("tervo").join("plugins")
+        base.join("xtervo").join("plugins")
     }
 
     pub fn state_path() -> PathBuf {
@@ -738,7 +738,7 @@ impl PluginStore {
 
     /// 发现过至少一个 WASM 插件时返回共享热路径句柄。即使当前全部禁用也返回
     /// 句柄：之后 Enable 会原地替换内部实例，已创建的 pane 立即生效，不需要
-    /// 重建 PTY 或重启 Tervo。
+    /// 重建 PTY 或重启 xtervo。
     pub fn output_filter_handle(&self) -> Option<OutputFilterHandle> {
         self.has_wasm_plugins()
             .then(|| OutputFilterHandle::new(self.wasm_host.clone()))
@@ -1034,7 +1034,7 @@ impl PluginStore {
                     .install_meta
                     .as_ref()
                     .map(|meta| meta.source.clone())
-                    .unwrap_or_else(|| "manual (not installed by Tervo)".to_string());
+                    .unwrap_or_else(|| "manual (not installed by xtervo)".to_string());
                 let signature_label = match (&entry.signature_status, &entry.install_meta) {
                     (signature::SignatureStatus::Unsigned, Some(meta)) => meta.signature_label(),
                     (signature::SignatureStatus::Unsigned, None) => {
@@ -1324,7 +1324,7 @@ impl PluginStore {
 
     /// 读取、编译并激活一个 WASM 输出过滤器。同步执行（仅 Enable/Reload 用户
     /// 动作），热路径调用不在 UI 线程。失败时停止旧实例并记录错误；输出原样
-    /// 放行，Tervo 继续运行。
+    /// 放行，xtervo 继续运行。
     fn start_wasm_at(&mut self, position: usize) -> Result<(), String> {
         let entry = self
             .entries
@@ -1477,7 +1477,7 @@ impl PluginStore {
             approvals.retain(|approval| approval.plugin_id != manifest.id);
         }
         self.bump_runtime();
-        eprintln!("[plugin-v3] {}: disabled（Tervo 不重启）", manifest.id);
+        eprintln!("[plugin-v3] {}: disabled（xtervo 不重启）", manifest.id);
         Ok(())
     }
 
@@ -1533,7 +1533,7 @@ impl PluginStore {
                 // 编译器会同步重新读盘/实例化；失败时输出原样放行并在设置页显示错误。
                 self.start_wasm_at(position)?;
                 self.bump_runtime();
-                eprintln!("[plugin-v3] {new_id}: WASM reload 完成（Tervo 未重启）");
+                eprintln!("[plugin-v3] {new_id}: WASM reload 完成（xtervo 未重启）");
                 return Ok(());
             }
             // process：先移除可能存在的旧 wasm 实例（runtime 类型变化）。
@@ -1547,7 +1547,7 @@ impl PluginStore {
                         Ok(config) => {
                             handle.reload(Box::new(config));
                             self.bump_runtime();
-                            eprintln!("[plugin-v3] {new_id}: reload 已提交（不重启 Tervo）");
+                            eprintln!("[plugin-v3] {new_id}: reload 已提交（不重启 xtervo）");
                             return Ok(());
                         },
                         Err(error) => {
@@ -1563,7 +1563,7 @@ impl PluginStore {
             self.stop_runtime(&new_id);
         }
         self.bump_runtime();
-        eprintln!("[plugin-v3] {new_id}: reload 完成（Tervo 未重启）");
+        eprintln!("[plugin-v3] {new_id}: reload 完成（xtervo 未重启）");
         Ok(())
     }
 
@@ -1582,7 +1582,7 @@ impl PluginStore {
             self.start_wasm_at(position)?;
             self.bump_runtime();
             eprintln!(
-                "[plugin-v3] {}: WASM filter 重新加载（不重启 Tervo）",
+                "[plugin-v3] {}: WASM filter 重新加载（不重启 xtervo）",
                 manifest.id
             );
             return Ok(());
@@ -1594,13 +1594,13 @@ impl PluginStore {
             ) {
                 handle.restart();
                 self.bump_runtime();
-                eprintln!("[plugin-v3] {}: manual restart（不重启 Tervo）", manifest.id);
+                eprintln!("[plugin-v3] {}: manual restart（不重启 xtervo）", manifest.id);
                 return Ok(());
             }
         }
         self.start_supervisor_at(position)?;
         self.bump_runtime();
-        eprintln!("[plugin-v3] {}: restart 新 supervisor（不重启 Tervo）", manifest.id);
+        eprintln!("[plugin-v3] {}: restart 新 supervisor（不重启 xtervo）", manifest.id);
         Ok(())
     }
 

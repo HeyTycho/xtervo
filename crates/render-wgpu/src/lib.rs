@@ -1,7 +1,7 @@
-//! Standalone WGPU backend and Slint texture-presenter primitives for Tervo.
+//! Standalone WGPU backend and Slint texture-presenter primitives for xtervo.
 //!
-//! This crate intentionally has no dependency on `tervo-core` or `tervo-app`.
-//! It consumes a backend-independent [`tervo_scene::Scene`] and produces an
+//! This crate intentionally has no dependency on `xtervo-core` or `xtervo-app`.
+//! It consumes a backend-independent [`xtervo_scene::Scene`] and produces an
 //! offscreen RGBA8 texture that can be imported into Slint.
 //!
 //! # Scope
@@ -10,15 +10,15 @@
 //!
 //! - [`WgpuRenderer`] is the original frame-target skeleton: offscreen texture,
 //!   resize/recreation and a single clear pass implementing
-//!   [`tervo_render::Renderer`].
+//!   [`xtervo_render::Renderer`].
 //! - [`GpuTextRenderer`] is the glyph-atlas prototype. It consumes
-//!   [`tervo_scene::TextBatch`] directly, rasterizes ASCII glyphs with fontdue
+//!   [`xtervo_scene::TextBatch`] directly, rasterizes ASCII glyphs with fontdue
 //!   into an `R8Unorm` GPU atlas, and draws instanced quads into an offscreen
 //!   `Rgba8Unorm` target in one render pass. No CPU terminal framebuffer is
 //!   produced or uploaded.
 //!
 //! The text prototype is opt-in and is not wired into the app main loop. The
-//! clear-only backend remains the [`tervo_render::Renderer`] implementation so
+//! clear-only backend remains the [`xtervo_render::Renderer`] implementation so
 //! existing callers are unaffected.
 //!
 //! The Slint presenter lives behind the `slint-presenter` feature so that the
@@ -39,8 +39,8 @@
 
 use std::fmt;
 
-use tervo_render::{RenderedFrame, Renderer};
-use tervo_scene::{DamageRegion, PhysicalSize, Scene};
+use xtervo_render::{RenderedFrame, Renderer};
+use xtervo_scene::{DamageRegion, PhysicalSize, Scene};
 
 pub mod atlas;
 pub mod headless;
@@ -146,7 +146,7 @@ pub struct FrameTexture {
 impl FrameTexture {
     fn new(device: &wgpu::Device, size: PhysicalSize) -> Self {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("tervo-render-wgpu-frame"),
+            label: Some("xtervo-render-wgpu-frame"),
             size: wgpu::Extent3d {
                 width: size.width,
                 height: size.height,
@@ -194,7 +194,7 @@ impl fmt::Debug for FrameTexture {
 
 /// Minimal WGPU renderer that owns an offscreen terminal frame texture.
 ///
-/// The renderer implements [`tervo_render::Renderer`] but currently only runs a
+/// The renderer implements [`xtervo_render::Renderer`] but currently only runs a
 /// clear pass. The clear color is configured with [`Self::set_clear_color`];
 /// the scene and damage arguments are accepted for API compatibility and
 /// intentionally not inspected yet.
@@ -240,12 +240,12 @@ impl WgpuRenderer {
         self.frame.texture()
     }
 
-    /// Color used by [`tervo_render::Renderer::render`].
+    /// Color used by [`xtervo_render::Renderer::render`].
     pub fn clear_color(&self) -> [u8; 4] {
         self.clear_color
     }
 
-    /// Sets the color used by [`tervo_render::Renderer::render`].
+    /// Sets the color used by [`xtervo_render::Renderer::render`].
     pub fn set_clear_color(&mut self, color: [u8; 4]) {
         self.clear_color = color;
     }
@@ -259,7 +259,7 @@ impl WgpuRenderer {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("tervo-render-wgpu-clear"),
+                label: Some("xtervo-render-wgpu-clear"),
             });
 
         {
@@ -273,7 +273,7 @@ impl WgpuRenderer {
                 },
             })];
             let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("tervo-render-wgpu-clear-pass"),
+                label: Some("xtervo-render-wgpu-clear-pass"),
                 color_attachments: &color_attachments,
                 depth_stencil_attachment: None,
                 timestamp_writes: None,

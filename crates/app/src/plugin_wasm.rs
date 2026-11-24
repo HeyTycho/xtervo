@@ -20,7 +20,7 @@
 //! - 输入/输出各 256 KiB；`alloc` 指针、越界、陷阱、超时、输出超限都回退到
 //!   原始 bytes，并把该插件标记为 faulted（后续调用直接 passthrough，直到
 //!   Reload/Re-enable）；
-//! - 任何错误都不会 panic/abort Tervo；调用发生在 pane actor，不阻塞 UI。
+//! - 任何错误都不会 panic/abort xtervo；调用发生在 pane actor，不阻塞 UI。
 //!
 //! 这不是“信任插件”模型：WASM 是内存/执行沙箱，但宿主仍然只加载用户显式
 //! 启用并确认过 `terminal.output_filter = true` 的插件；没有市场/签名。
@@ -36,7 +36,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use tervo_core::{OutputFilter, MAX_OUTPUT_FILTER_BYTES};
+use xtervo_core::{OutputFilter, MAX_OUTPUT_FILTER_BYTES};
 use wasmtime::{
     Config, Engine, ExternType, Instance, Memory, Module, OptLevel, Store, StoreLimits,
     StoreLimitsBuilder, TypedFunc, ValType,
@@ -555,7 +555,7 @@ fn read_capped<R: Read>(reader: R, max: usize) -> Result<Vec<u8>, String> {
 /// 已启用 WASM 输出过滤器的有序链（按插件 id 排序，保证确定性）。
 ///
 /// `Arc<WasmOutputHost>` 在创建 pane 时交给 core；Enable/Disable/Reload 只替换
-/// 内部 runtime，不重建 pane，也不重启 Tervo。
+/// 内部 runtime，不重建 pane，也不重启 xtervo。
 #[derive(Default)]
 pub struct WasmOutputHost {
     filters: RwLock<BTreeMap<String, Arc<WasmFilterRuntime>>>,
@@ -989,9 +989,9 @@ mod tests {
             .join("../../docs/examples/plugin-wasm-filter/filter.wat");
         let text = std::fs::read_to_string(&path).expect("example WAT exists");
         let wasm = wat::parse_str(&text).expect("example WAT parses");
-        let runtime = WasmFilterRuntime::load("dev.tervo.wasm-filter", &wasm).expect("loads");
+        let runtime = WasmFilterRuntime::load("dev.xtervo.wasm-filter", &wasm).expect("loads");
         assert_eq!(
-            runtime.filter(b"hello [tervo-wasm] world\n"),
+            runtime.filter(b"hello [xtervo-wasm] world\n"),
             Some(b"hello WASM-FILTER-OK world\n".to_vec())
         );
         assert_eq!(
@@ -1006,17 +1006,17 @@ mod tests {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../docs/examples/plugin-wasm-filter");
         let wasm = std::fs::read(dir.join("filter.wasm")).expect("committed filter.wasm exists");
-        let runtime = WasmFilterRuntime::load("dev.tervo.wasm-filter", &wasm).expect("loads");
+        let runtime = WasmFilterRuntime::load("dev.xtervo.wasm-filter", &wasm).expect("loads");
         assert_eq!(
-            runtime.filter(b"[tervo-wasm]"),
+            runtime.filter(b"[xtervo-wasm]"),
             Some(b"WASM-FILTER-OK".to_vec())
         );
         // 相同 WAT 汇编结果只要求行为一致，不要求字节完全一致（工具版本不同）。
         let wat_text = std::fs::read_to_string(dir.join("filter.wat")).unwrap();
         let from_wat = wat::parse_str(&wat_text).unwrap();
-        let wat_runtime = WasmFilterRuntime::load("dev.tervo.wasm-filter", &from_wat).unwrap();
+        let wat_runtime = WasmFilterRuntime::load("dev.xtervo.wasm-filter", &from_wat).unwrap();
         assert_eq!(
-            wat_runtime.filter(b"[tervo-wasm]"),
+            wat_runtime.filter(b"[xtervo-wasm]"),
             Some(b"WASM-FILTER-OK".to_vec())
         );
     }

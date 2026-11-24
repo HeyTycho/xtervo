@@ -1,15 +1,15 @@
 [soak 21:20:03] worktree=/home/user/AIworkspace/rusttabbyterminal/.worktrees/agent-wasm-hotpath
 [soak 21:20:03] branch=agent/wasm-hotpath commit=fab1f2a
-[soak 21:20:03] BIN=/home/user/AIworkspace/rusttabbyterminal/.worktrees/agent-wasm-hotpath/target/release/tervo
+[soak 21:20:03] BIN=/home/user/AIworkspace/rusttabbyterminal/.worktrees/agent-wasm-hotpath/target/release/xtervo
 [soak 21:20:03] BIN_SHA256=65aef37738e9ddb17da053380b2156f7553c94dbeeecf4415d2a24abf82158a8 size=361947088
 [soak 21:20:03] duration=120s warmup=40s sample=10s display=:148 screen=1280x800x24 tabs=22
 [soak 21:20:03] 输出目录: /home/user/AIworkspace/rusttabbyterminal/.worktrees/agent-wasm-hotpath/.logs/soak/wasm-2m-head
 [soak 21:20:03] 启动 Xvfb :148 (1280x800x24)
 [soak 21:20:03] Openbox pid=63
-[soak 21:20:03] 启动 Tervo（title=Tervo-Soak，--shell /bin/sh -- shell.sh）
-[soak 21:20:03] Tervo pid=83 win=0x200003
+[soak 21:20:03] 启动 xtervo（title=xtervo-Soak，--shell /bin/sh -- shell.sh）
+[soak 21:20:03] xtervo pid=83 win=0x200003
 [soak 21:20:04] 窗口初始位置 0,0 尺寸 1100x700
-[soak 21:20:04] tervo log: /home/user/AIworkspace/rusttabbyterminal/.worktrees/agent-wasm-hotpath/.logs/soak/wasm-2m-head/logs/tervo-1794489603.log
+[soak 21:20:04] xtervo log: /home/user/AIworkspace/rusttabbyterminal/.worktrees/agent-wasm-hotpath/.logs/soak/wasm-2m-head/logs/xtervo-1794489603.log
 [soak]    1s rss=  57.9MB pss=  49.4MB cpu=  0.0% thr=  15 fd= 23 child= 1 fatal=0 err=1 alive=1 x=1 phase=setup
 [soak 21:20:05] 创建 22 个 Tab（含初始 1 个）...
 [soak 21:20:11] 在活动 Tab 内分屏 3 次（2 右 + 1 下）...
@@ -36,7 +36,7 @@
 [soak 21:22:01] cycle=8 elapsed=118s
 [soak]  122s rss= 407.4MB pss= 399.3MB cpu= 10.8% thr= 111 fd= 95 child=25 fatal=0 err=1 alive=1 x=1 phase=scroll
 [soak]  132s rss= 413.7MB pss= 405.6MB cpu=  6.8% thr= 111 fd= 95 child=25 fatal=0 err=1 alive=1 x=1 phase=settings
-[soak 21:22:25] 停止 Tervo（SIGTERM，只 kill pid=83）
+[soak 21:22:25] 停止 xtervo（SIGTERM，只 kill pid=83）
 
 ================ soak summary ================
 verdict       : PASS

@@ -29,9 +29,9 @@ CARGO_HOME=$PWD/.cargo cargo test --workspace --offline
 
 | target | 通过 |
 |---|---|
-| `tervo`（app 主二进制） | **249** |
+| `xtervo`（app 主二进制） | **249** |
 | `xclick` / `xdrop` / `xkey` / `xwin` | 各 10 |
-| `tervo_core` lib | 70 |
+| `xtervo_core` lib | 70 |
 | `tests/mouse_report.rs` | 16 |
 | `tests/osc52.rs` | 2 |
 | `tests/smoke.rs` | 23 |
@@ -45,18 +45,18 @@ CARGO_HOME=$PWD/.cargo cargo test --workspace --offline
 统一前置（debug 二进制）：
 
 ```bash
-CARGO_HOME=$PWD/.cargo cargo build --offline -p tervo-app \
-  --bin tervo --bin xwin --bin xclick --bin xkey --bin xdrop
-export E2E_BIN=$PWD/target/debug/tervo
+CARGO_HOME=$PWD/.cargo cargo build --offline -p xtervo-app \
+  --bin xtervo --bin xwin --bin xclick --bin xkey --bin xdrop
+export E2E_BIN=$PWD/target/debug/xtervo
 export E2E_XVFB_BIN=/home/user/AIworkspace/rusttabbyterminal/.perf/xvfb/usr/bin/Xvfb
 ```
 
 | 脚本 | display | 命令要点 | 结果 |
 |---|---|---|---|
 | `scripts/e2e_osc52.sh` | `:113` | `E2E_OUT=.logs/osc52` | **PASS**（ALL PASS） |
-| `scripts/e2e_term_menu.sh` | `:119` | `TERVO_PERF_DIR=<主仓>/.perf` | **PASS**（exit 0） |
-| `scripts/e2e_terminal_behavior.sh` | `:118` | `TERVO_PERF_DIR=<主仓>/.perf` | **PASS**（exit 0；修 xclick 后复跑仍 PASS） |
-| `scripts/e2e_terminal_ui.sh` | `:115` | `TERVO_PERF_DIR=<主仓>/.perf` | **PASS**（exit 0） |
+| `scripts/e2e_term_menu.sh` | `:119` | `XTERVO_PERF_DIR=<主仓>/.perf` | **PASS**（exit 0） |
+| `scripts/e2e_terminal_behavior.sh` | `:118` | `XTERVO_PERF_DIR=<主仓>/.perf` | **PASS**（exit 0；修 xclick 后复跑仍 PASS） |
+| `scripts/e2e_terminal_ui.sh` | `:115` | `XTERVO_PERF_DIR=<主仓>/.perf` | **PASS**（exit 0） |
 | `scripts/e2e_wm_resize.sh` | `:105` | `E2E_XVFB_BIN`、`E2E_OPENBOX_BIN/LIB/DATA`、`E2E_BIN/E2E_XCLICK` 指向 debug | **PASS**（exit 0） |
 
 `e2e_wm_resize.sh` 实测：初始 540x472 → 右边缘 700x472 → 右下角 800x572；
@@ -82,7 +82,7 @@ Xvfb 路径重复、未显式 `env -u SLINT_BACKEND`），修正命令后通过�
 
 ### 3.2 启动
 
-- 全新 `TERVO_CONFIG`/`TERVO_LOG_DIR` + `SLINT_BACKEND=winit-software` 启动：
+- 全新 `XTERVO_CONFIG`/`XTERVO_LOG_DIR` + `SLINT_BACKEND=winit-software` 启动：
   窗口 720x560 出现，`[ws] new tab: tabs=1`，`READY TIMING`/`FIRST_DAMAGE_US` 正常，
   **无 panic**。
 - `--exit-after-first`：**exit=0**。
@@ -95,7 +95,7 @@ Xvfb 路径重复、未显式 `env -u SLINT_BACKEND`），修正命令后通过�
   `actual_renderer=winit-software`。
 - `SLINT_BACKEND=winit-skia` 在 Xvfb 下走 Mesa **llvmpipe**（`skia-opengl`），
   日志正确提示「CPU 光栅，不是 NVIDIA/真 GPU 的性能证据」；未把它当 GPU 结论。
-- 用 debug 钩子 `TERVO_TEST_FORCE_UI_INIT_FAIL=1` 注入首次 UI 初始化失败：
+- 用 debug 钩子 `XTERVO_TEST_FORCE_UI_INIT_FAIL=1` 注入首次 UI 初始化失败：
   自动回退 `winit-software` 并成功开窗，日志包含
   「初始化失败……自动回退 SLINT_BACKEND=winit-software」。
 - 结论：无 DRM 自动软件路径 + 初始化失败回退路径均通过；**真实 GPU 性能不可验**。
@@ -110,7 +110,7 @@ Xvfb 路径重复、未显式 `env -u SLINT_BACKEND`），修正命令后通过�
 
 ### 3.5 Tab 20
 
-- 空 pane 中依次 `xwin Tervo`（设置 X 焦点）+ 19 次 `xkey t --ctrl`：
+- 空 pane 中依次 `xwin xtervo`（设置 X 焦点）+ 19 次 `xkey t --ctrl`：
   日志出现 `[ws] new tab: tabs=20`，app 存活且无 panic；
   `pgrep -P` 显示 20 个 shell 子进程；截图 `.logs/manual/tabs20/tabs20.png`。
 - 注：裸 Xvfb 无 WM 时若不做 `xwin` 聚焦，合成按键可能不进入应用；
@@ -156,13 +156,13 @@ Xvfb 路径重复、未显式 `env -u SLINT_BACKEND`），修正命令后通过�
   只验证 live resize 行为，不作为性能数据。
 - worktree 内没有 `.perf`；运行 e2e 需显式传入主仓 `.perf` 的
   `E2E_XVFB_BIN`/`E2E_OPENBOX_*`（脚本本身的默认路径只适用于主仓）。
-- 观察项（未修，低风险）：`tervo --diagnose` 的 `requested_backend` 提示只按
-  `/dev/dri` 判断，未考虑 `TERVO_FORCE_GPU=1`；正常启动逻辑是正确的，
+- 观察项（未修，低风险）：`xtervo --diagnose` 的 `requested_backend` 提示只按
+  `/dev/dri` 判断，未考虑 `XTERVO_FORCE_GPU=1`；正常启动逻辑是正确的，
   但 diagnose 输出在强制 GPU 场景下可能与实际请求不一致。
 - 本次未复测 Wayland、IME、真实桌面 WM 与长时间压力；这些不在本轮验收范围。
 
 ## 6. 失败清单
 
 - 阻塞/高风险失败：**无**。
-- 非阻塞、未修观察项：`--diagnose` 后端提示与 `TERVO_FORCE_GPU` 的边界不一致（见上）。
+- 非阻塞、未修观察项：`--diagnose` 后端提示与 `XTERVO_FORCE_GPU` 的边界不一致（见上）。
 - 测试脚本首轮人为调用错误已修正，不计入失败。

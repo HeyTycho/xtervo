@@ -1,26 +1,26 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-only
-# Tervo 安装器：安装 / 升级 / 回滚 / 卸载。
+# xtervo 安装器：安装 / 升级 / 回滚 / 卸载。
 #
 # 两种运行方式：
-#   1. 仓库内：./scripts/install.sh [--prefix DIR]，按需构建 target/release/tervo；
-#   2. 发布包内：tar 解压后 ./install.sh [--prefix DIR]，直接安装旁边的 tervo。
+#   1. 仓库内：./scripts/install.sh [--prefix DIR]，按需构建 target/release/xtervo；
+#   2. 发布包内：tar 解压后 ./install.sh [--prefix DIR]，直接安装旁边的 xtervo。
 #
 # 升级/回滚约定（明确路径）：
-#   - 当前二进制      $PREFIX/bin/tervo
-#   - 上一版二进制    $PREFIX/lib/tervo/previous/tervo
-#   - 历史版本归档    $PREFIX/lib/tervo/versions/<version>-<commit>/tervo
-#   - 安装清单        $PREFIX/lib/tervo/manifest
-#   - 卸载/回滚脚本   $PREFIX/lib/tervo/install.sh
+#   - 当前二进制      $PREFIX/bin/xtervo
+#   - 上一版二进制    $PREFIX/lib/xtervo/previous/xtervo
+#   - 历史版本归档    $PREFIX/lib/xtervo/versions/<version>-<commit>/xtervo
+#   - 安装清单        $PREFIX/lib/xtervo/manifest
+#   - 卸载/回滚脚本   $PREFIX/lib/xtervo/install.sh
 # 新二进制先在同一文件系统内写临时文件、strip/冒烟，再 rename 覆盖；
 # 运行中的旧进程持有旧 inode，不会被写坏（Linux rename 语义）。
-# 卸载/回滚绝不触碰 ~/.config/tervo 下的配置、Profile、主题与日志。
+# 卸载/回滚绝不触碰 ~/.config/xtervo 下的配置、Profile、主题与日志。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 CALLER_PWD="$PWD"
 PAYLOAD_MODE=0
-if [[ -x "$SCRIPT_DIR/tervo" ]]; then
+if [[ -x "$SCRIPT_DIR/xtervo" ]]; then
     PAYLOAD_MODE=1
 fi
 REPO_ROOT=""
@@ -30,7 +30,7 @@ if [[ "$PAYLOAD_MODE" -eq 0 && -f "$SCRIPT_DIR/../Cargo.toml" ]]; then
 fi
 
 PREFIX="${PREFIX:-$HOME/.local}"
-DO_STRIP="${TERVO_STRIP:-1}"
+DO_STRIP="${XTERVO_STRIP:-1}"
 case "$DO_STRIP" in
     1 | true | yes | on) DO_STRIP=1 ;;
     *) DO_STRIP=0 ;;
@@ -43,13 +43,13 @@ usage() {
   --prefix DIR   安装根目录（默认 $PREFIX，即 ~/.local）
   --no-strip     安装未 strip 的二进制（调试用；发布包已 strip，忽略）
   --rollback     用上一版替换当前版（当前版会留在上一版路径，可再次回滚）
-  --uninstall    卸载安装的文件（保留 ~/.config/tervo 下的配置/Profile）
+  --uninstall    卸载安装的文件（保留 ~/.config/xtervo 下的配置/Profile）
   -h, --help     显示本帮助
 
 环境变量:
   PREFIX          安装根目录
-  TERVO_STRIP     设为 0 等同于 --no-strip
-  TERVO_BIN       指定待安装二进制（测试用；默认用发布包/仓库产物）
+  XTERVO_STRIP     设为 0 等同于 --no-strip
+  XTERVO_BIN       指定待安装二进制（测试用；默认用发布包/仓库产物）
   SKIP_SMOKE      1 = 跳过安装前冒烟
   STRIP           strip 命令（默认自动探测 strip / llvm-strip）
   STRIP_FLAGS     strip 参数（默认 --strip-all）
@@ -100,16 +100,16 @@ PREFIX="$(readlink -m -- "$PREFIX")"
 [[ "$PREFIX" != "/" ]] || die "拒绝以 / 作为 prefix；请用 --prefix /usr 或默认 ~/.local"
 
 BIN_DIR="$PREFIX/bin"
-CUR="$BIN_DIR/tervo"
-STATE_DIR="$PREFIX/lib/tervo"
+CUR="$BIN_DIR/xtervo"
+STATE_DIR="$PREFIX/lib/xtervo"
 PREV_DIR="$STATE_DIR/previous"
 VERSIONS_DIR="$STATE_DIR/versions"
 MANIFEST="$STATE_DIR/manifest"
 MANAGER="$STATE_DIR/install.sh"
-DOC_DIR="$PREFIX/share/doc/tervo"
-DESKTOP="$PREFIX/share/applications/tervo.desktop"
-ICON512="$PREFIX/share/icons/hicolor/512x512/apps/tervo.png"
-ICON64="$PREFIX/share/icons/hicolor/64x64/apps/tervo.png"
+DOC_DIR="$PREFIX/share/doc/xtervo"
+DESKTOP="$PREFIX/share/applications/xtervo.desktop"
+ICON512="$PREFIX/share/icons/hicolor/512x512/apps/xtervo.png"
+ICON64="$PREFIX/share/icons/hicolor/64x64/apps/xtervo.png"
 
 TMP_FILES=()
 cleanup() {
@@ -157,7 +157,7 @@ probe_binary() { # <path> -> PROBE_VERSION/COMMIT/BUILT/TARGET
     local out
     out="$(timeout 5 "$1" --version 2>/dev/null || true)"
     [[ -n "$out" ]] || return 0
-    PROBE_VERSION="$(printf '%s\n' "$out" | sed -n '1s/^Tervo  *//p' | awk '{print $1}')"
+    PROBE_VERSION="$(printf '%s\n' "$out" | sed -n '1s/^xtervo  *//p' | awk '{print $1}')"
     PROBE_COMMIT="$(printf '%s\n' "$out" | sed -n 's/^commit:  *//p' | awk '{print $1}')"
     PROBE_BUILT="$(printf '%s\n' "$out" | sed -n 's/^built:  *//p' | head -n 1)"
     PROBE_TARGET="$(printf '%s\n' "$out" | sed -n 's/^target:  *//p' | head -n 1)"
@@ -226,29 +226,29 @@ smoke_binary() { # <path>
 resolve_payload() {
     SRC=""
     PAYLOAD_DIR=""
-    if [[ -n "${TERVO_BIN:-}" ]]; then
-        local bin_path="$TERVO_BIN"
+    if [[ -n "${XTERVO_BIN:-}" ]]; then
+        local bin_path="$XTERVO_BIN"
         [[ "$bin_path" == /* ]] || bin_path="$CALLER_PWD/$bin_path"
         SRC="$(readlink -f -- "$bin_path")"
-        [[ -f "$SRC" ]] || die "TERVO_BIN 不存在：$TERVO_BIN"
+        [[ -f "$SRC" ]] || die "XTERVO_BIN 不存在：$XTERVO_BIN"
         PAYLOAD_DIR=""
         return
     fi
     if [[ "$PAYLOAD_MODE" -eq 1 ]]; then
-        SRC="$SCRIPT_DIR/tervo"
+        SRC="$SCRIPT_DIR/xtervo"
         PAYLOAD_DIR="$SCRIPT_DIR"
         return
     fi
-    [[ -n "$REPO_ROOT" ]] || die "找不到发布包里的 tervo，也不在仓库内；无法安装"
-    if [[ ! -x "$REPO_ROOT/target/release/tervo" ]]; then
+    [[ -n "$REPO_ROOT" ]] || die "找不到发布包里的 xtervo，也不在仓库内；无法安装"
+    if [[ ! -x "$REPO_ROOT/target/release/xtervo" ]]; then
         echo "== 构建 release =="
         (
             cd "$REPO_ROOT"
             CARGO_HOME="${CARGO_HOME:-$REPO_ROOT/.cargo}" \
-                cargo build --release -p tervo-app --bin tervo
+                cargo build --release -p xtervo-app --bin xtervo
         )
     fi
-    SRC="$REPO_ROOT/target/release/tervo"
+    SRC="$REPO_ROOT/target/release/xtervo"
 }
 
 install_assets() { # <version> <commit> <built> <target>
@@ -256,15 +256,15 @@ install_assets() { # <version> <commit> <built> <target>
     local desktop_src license_src readme_src notices_src licensing_src icon512_src icon64_src
     if [[ "$PAYLOAD_MODE" -eq 1 ]]; then
         [[ -n "$PAYLOAD_DIR" ]] || die "内部错误：发布包路径为空"
-        desktop_src="$PAYLOAD_DIR/share/applications/tervo.desktop"
+        desktop_src="$PAYLOAD_DIR/share/applications/xtervo.desktop"
         license_src="$PAYLOAD_DIR/LICENSE"
         readme_src="$PAYLOAD_DIR/README.md"
         notices_src="$PAYLOAD_DIR/THIRD_PARTY_NOTICES.md"
         licensing_src="$PAYLOAD_DIR/LICENSING.md"
-        icon512_src="$PAYLOAD_DIR/share/icons/hicolor/512x512/apps/tervo.png"
-        icon64_src="$PAYLOAD_DIR/share/icons/hicolor/64x64/apps/tervo.png"
+        icon512_src="$PAYLOAD_DIR/share/icons/hicolor/512x512/apps/xtervo.png"
+        icon64_src="$PAYLOAD_DIR/share/icons/hicolor/64x64/apps/xtervo.png"
     else
-        desktop_src="$REPO_ROOT/packaging/tervo.desktop"
+        desktop_src="$REPO_ROOT/packaging/xtervo.desktop"
         license_src="$REPO_ROOT/LICENSE"
         readme_src="$REPO_ROOT/README.md"
         notices_src="$REPO_ROOT/THIRD_PARTY_NOTICES.md"
@@ -279,18 +279,18 @@ install_assets() { # <version> <commit> <built> <target>
     [[ -f "$icon64_src" ]] || die "缺少 64 图标：$icon64_src"
 
     # 用户级安装（默认 ~/.local）不一定在 GNOME/桌面会话的 PATH 里：
-    # desktop 里写 `TryExec=tervo` 会被 GNOME 当成“命令不存在”而隐藏，
+    # desktop 里写 `TryExec=xtervo` 会被 GNOME 当成“命令不存在”而隐藏，
     # Activities 里搜不到。安装时把 Exec/TryExec 固化为本 prefix 的绝对路径；
     # 系统级安装同样适用，且不依赖登录 PATH。
     local desktop_dir desktop_tmp cur_escaped
     desktop_dir="$(dirname -- "$DESKTOP")"
     mkdir -p -- "$desktop_dir"
-    desktop_tmp="$(make_tmp "$desktop_dir" tervo.desktop)"
+    desktop_tmp="$(make_tmp "$desktop_dir" xtervo.desktop)"
     TMP_FILES+=("$desktop_tmp")
     cur_escaped="${CUR//&/\\&}"
-    sed -e "s|^TryExec=tervo$|TryExec=$cur_escaped|" \
-        -e "s|^Exec=tervo$|Exec=$cur_escaped|" \
-        -e "s|^Exec=tervo --window$|Exec=$cur_escaped --window|" \
+    sed -e "s|^TryExec=xtervo$|TryExec=$cur_escaped|" \
+        -e "s|^Exec=xtervo$|Exec=$cur_escaped|" \
+        -e "s|^Exec=xtervo --window$|Exec=$cur_escaped --window|" \
         "$desktop_src" >"$desktop_tmp"
     atomic_install "$desktop_tmp" 644 "$DESKTOP"
     atomic_install "$icon512_src" 644 "$ICON512"
@@ -300,19 +300,19 @@ install_assets() { # <version> <commit> <built> <target>
     if [[ -f "$notices_src" ]]; then
         atomic_install "$notices_src" 644 "$DOC_DIR/THIRD_PARTY_NOTICES.md"
     fi
-    FILES+=("bin/tervo" "share/applications/tervo.desktop")
-    FILES+=("share/icons/hicolor/512x512/apps/tervo.png")
-    FILES+=("share/icons/hicolor/64x64/apps/tervo.png")
-    FILES+=("share/doc/tervo/LICENSE" "share/doc/tervo/README.md")
+    FILES+=("bin/xtervo" "share/applications/xtervo.desktop")
+    FILES+=("share/icons/hicolor/512x512/apps/xtervo.png")
+    FILES+=("share/icons/hicolor/64x64/apps/xtervo.png")
+    FILES+=("share/doc/xtervo/LICENSE" "share/doc/xtervo/README.md")
     if [[ -f "$DOC_DIR/THIRD_PARTY_NOTICES.md" ]]; then
-        FILES+=("share/doc/tervo/THIRD_PARTY_NOTICES.md")
+        FILES+=("share/doc/xtervo/THIRD_PARTY_NOTICES.md")
     fi
     if [[ -f "$licensing_src" ]]; then
         atomic_install "$licensing_src" 644 "$DOC_DIR/LICENSING.md"
-        FILES+=("share/doc/tervo/LICENSING.md")
+        FILES+=("share/doc/xtervo/LICENSING.md")
     fi
     write_buildinfo "$DOC_DIR/BUILD-INFO" "$version" "$commit" "$built" "$target" install
-    FILES+=("share/doc/tervo/BUILD-INFO")
+    FILES+=("share/doc/xtervo/BUILD-INFO")
 }
 
 archive_current() {
@@ -328,14 +328,14 @@ archive_current() {
     tag="$(version_tag "$version" "$commit")"
     vdir="$VERSIONS_DIR/$tag"
     # 同一版本重复安装不覆盖已有归档，保留第一次安装的完整副本。
-    if [[ ! -f "$vdir/tervo" ]]; then
-        atomic_install "$CUR" 755 "$vdir/tervo"
+    if [[ ! -f "$vdir/xtervo" ]]; then
+        atomic_install "$CUR" 755 "$vdir/xtervo"
         if [[ -f "$DOC_DIR/BUILD-INFO" ]]; then
             atomic_install "$DOC_DIR/BUILD-INFO" 644 "$vdir/BUILD-INFO"
         fi
     fi
     # 稳定路径：始终是“当前版被替换前的那一版”。
-    atomic_install "$CUR" 755 "$PREV_DIR/tervo"
+    atomic_install "$CUR" 755 "$PREV_DIR/xtervo"
     if [[ -f "$DOC_DIR/BUILD-INFO" ]]; then
         atomic_install "$DOC_DIR/BUILD-INFO" 644 "$PREV_DIR/BUILD-INFO"
     else
@@ -372,6 +372,24 @@ update_caches() {
     fi
 }
 
+migrate_legacy_install() {
+    # 从旧 `tervo` 安装迁移：不删除用户文件，而是移到 xtervo 的 legacy 备份目录，
+    # 避免旧菜单项/旧命令继续启动旧二进制。
+    local legacy="$STATE_DIR/legacy"
+    local moved=0
+    local item
+    for item in "$BIN_DIR/tervo" "$PREFIX/share/applications/tervo.desktop"; do
+        if [[ -e "$item" ]]; then
+            mkdir -p -- "$legacy"
+            mv -f -- "$item" "$legacy/$(basename -- "$item")"
+            moved=1
+        fi
+    done
+    if [[ "$moved" -eq 1 ]]; then
+        echo "已备份旧 tervo 安装文件到 $legacy"
+    fi
+}
+
 do_install() {
     local FILES=()
     resolve_payload
@@ -379,7 +397,7 @@ do_install() {
     mkdir -p -- "$BIN_DIR"
 
     local staged
-    staged="$(make_tmp "$BIN_DIR" tervo.new)"
+    staged="$(make_tmp "$BIN_DIR" xtervo.new)"
     TMP_FILES+=("$staged")
     install -m 755 -- "$SRC" "$staged"
     maybe_strip "$staged"
@@ -400,22 +418,23 @@ do_install() {
     version="${version:-unknown}"
     commit="${commit:-unknown}"
 
-    echo "== 安装 Tervo $version（commit ${commit}）到 $PREFIX =="
+    echo "== 安装 xtervo $version（commit ${commit}）到 $PREFIX =="
     # 必须在覆盖 docs/BUILD-INFO 之前归档旧版，否则上一版二进制与元数据会错配。
     archive_current
+    migrate_legacy_install
     install_assets "$version" "$commit" "$built" "$target"
     atomic_install "$SCRIPT_DIR/install.sh" 755 "$MANAGER"
-    FILES+=("lib/tervo/install.sh")
+    FILES+=("lib/xtervo/install.sh")
 
     mv -f -- "$staged" "$CUR"
 
-    FILES+=("lib/tervo/manifest")
+    FILES+=("lib/xtervo/manifest")
     write_manifest "$version" "$commit" "$built" "$target"
     update_caches
 
     local previous_note="（首次安装，暂无上一版）"
-    if [[ -f "$PREV_DIR/tervo" ]]; then
-        previous_note="$PREV_DIR/tervo"
+    if [[ -f "$PREV_DIR/xtervo" ]]; then
+        previous_note="$PREV_DIR/xtervo"
     fi
     echo
     echo "已安装："
@@ -430,18 +449,18 @@ do_install() {
     echo
     echo "  回滚：      $MANAGER --rollback --prefix $PREFIX"
     echo "  卸载：      $MANAGER --uninstall --prefix $PREFIX"
-    echo "  （只移除程序文件；~/.config/tervo 的配置/Profile 保留）"
+    echo "  （只移除程序文件；~/.config/xtervo 的配置/Profile 保留）"
 }
 
 do_rollback() {
     local FILES=()
-    [[ -f "$PREV_DIR/tervo" ]] || die "没有上一版：$PREV_DIR/tervo；先安装一次新版本后再回滚"
+    [[ -f "$PREV_DIR/xtervo" ]] || die "没有上一版：$PREV_DIR/xtervo；先安装一次新版本后再回滚"
     mkdir -p -- "$BIN_DIR" "$DOC_DIR"
 
     local staged
-    staged="$(make_tmp "$BIN_DIR" tervo.rollback)"
+    staged="$(make_tmp "$BIN_DIR" xtervo.rollback)"
     TMP_FILES+=("$staged")
-    install -m 755 -- "$PREV_DIR/tervo" "$staged"
+    install -m 755 -- "$PREV_DIR/xtervo" "$staged"
     smoke_binary "$staged"
 
     local version commit built target
@@ -472,10 +491,10 @@ do_rollback() {
         fi
     fi
 
-    echo "== 回滚到 Tervo $version（commit ${commit}）=="
+    echo "== 回滚到 xtervo $version（commit ${commit}）=="
     mv -f -- "$staged" "$CUR"
     if [[ -n "$save_bin" ]]; then
-        mv -f -- "$save_bin" "$PREV_DIR/tervo"
+        mv -f -- "$save_bin" "$PREV_DIR/xtervo"
         if [[ -n "$save_info" ]]; then
             mv -f -- "$save_info" "$PREV_DIR/BUILD-INFO"
         else
@@ -487,12 +506,12 @@ do_rollback() {
         old_version="$(sed -n 's/^version=//p' "$PREV_DIR/BUILD-INFO" 2>/dev/null | head -n 1)"
         old_commit="$(sed -n 's/^commit=//p' "$PREV_DIR/BUILD-INFO" 2>/dev/null | head -n 1)"
         old_tag="$(version_tag "${old_version:-unknown}" "${old_commit:-unknown}")"
-        if [[ ! -f "$VERSIONS_DIR/$old_tag/tervo" ]]; then
-            atomic_install "$PREV_DIR/tervo" 755 "$VERSIONS_DIR/$old_tag/tervo"
+        if [[ ! -f "$VERSIONS_DIR/$old_tag/xtervo" ]]; then
+            atomic_install "$PREV_DIR/xtervo" 755 "$VERSIONS_DIR/$old_tag/xtervo"
             atomic_install "$PREV_DIR/BUILD-INFO" 644 "$VERSIONS_DIR/$old_tag/BUILD-INFO"
         fi
     else
-        rm -f -- "$PREV_DIR/tervo" "$PREV_DIR/BUILD-INFO"
+        rm -f -- "$PREV_DIR/xtervo" "$PREV_DIR/BUILD-INFO"
     fi
 
     write_buildinfo "$DOC_DIR/BUILD-INFO" "$version" "$commit" "$built" "$target" rollback
@@ -501,20 +520,20 @@ do_rollback() {
     if [[ -f "$MANIFEST" ]]; then
         mapfile -t FILES < <(sed -n '/^files:$/,$p' "$MANIFEST" | tail -n +2)
     else
-        FILES=("bin/tervo" "share/applications/tervo.desktop")
-        FILES+=("share/icons/hicolor/512x512/apps/tervo.png")
-        FILES+=("share/icons/hicolor/64x64/apps/tervo.png")
-        FILES+=("share/doc/tervo/LICENSE" "share/doc/tervo/README.md")
-        FILES+=("share/doc/tervo/BUILD-INFO" "lib/tervo/install.sh")
+        FILES=("bin/xtervo" "share/applications/xtervo.desktop")
+        FILES+=("share/icons/hicolor/512x512/apps/xtervo.png")
+        FILES+=("share/icons/hicolor/64x64/apps/xtervo.png")
+        FILES+=("share/doc/xtervo/LICENSE" "share/doc/xtervo/README.md")
+        FILES+=("share/doc/xtervo/BUILD-INFO" "lib/xtervo/install.sh")
     fi
     if [[ ${#FILES[@]} -eq 0 ]]; then
-        FILES=("bin/tervo")
+        FILES=("bin/xtervo")
     fi
     write_manifest "$version" "$commit" "$built" "$target"
     update_caches
     echo
     echo "已回滚： $CUR（$version）"
-    echo "上一版： $PREV_DIR/tervo（再执行 --rollback 可切回）"
+    echo "上一版： $PREV_DIR/xtervo（再执行 --rollback 可切回）"
 }
 
 do_uninstall() {
@@ -535,15 +554,15 @@ do_uninstall() {
         done < <(sed -n '/^files:$/,$p' "$MANIFEST" | tail -n +2)
     else
         for rel in \
-            "bin/tervo" \
-            "share/applications/tervo.desktop" \
-            "share/icons/hicolor/512x512/apps/tervo.png" \
-            "share/icons/hicolor/64x64/apps/tervo.png" \
-            "share/doc/tervo/LICENSE" \
-            "share/doc/tervo/README.md" \
-            "share/doc/tervo/THIRD_PARTY_NOTICES.md" \
-            "share/doc/tervo/LICENSING.md" \
-            "share/doc/tervo/BUILD-INFO"; do
+            "bin/xtervo" \
+            "share/applications/xtervo.desktop" \
+            "share/icons/hicolor/512x512/apps/xtervo.png" \
+            "share/icons/hicolor/64x64/apps/xtervo.png" \
+            "share/doc/xtervo/LICENSE" \
+            "share/doc/xtervo/README.md" \
+            "share/doc/xtervo/THIRD_PARTY_NOTICES.md" \
+            "share/doc/xtervo/LICENSING.md" \
+            "share/doc/xtervo/BUILD-INFO"; do
             if [[ -e "$PREFIX/$rel" ]]; then
                 rm -f -- "$PREFIX/$rel"
                 removed=1
@@ -551,7 +570,7 @@ do_uninstall() {
         done
     fi
     # 只删除安装器自己的状态目录；pre/post 都校验路径，绝不 rm -rf 用户 prefix。
-    if [[ "$STATE_DIR" == "$PREFIX/lib/tervo" && -d "$STATE_DIR" ]]; then
+    if [[ "$STATE_DIR" == "$PREFIX/lib/xtervo" && -d "$STATE_DIR" ]]; then
         rm -rf -- "$STATE_DIR"
         removed=1
     fi
@@ -563,7 +582,7 @@ do_uninstall() {
         "share/icons/hicolor/512x512" \
         "share/icons/hicolor" \
         "share/applications" \
-        "share/doc/tervo" \
+        "share/doc/xtervo" \
         "bin"; do
         if [[ -d "$PREFIX/$rel" ]]; then
             rmdir --ignore-fail-on-non-empty -- "$PREFIX/$rel" 2>/dev/null || true
@@ -571,12 +590,12 @@ do_uninstall() {
     done
     update_caches
     if [[ "$removed" -eq 1 ]]; then
-        echo "已卸载 Tervo（$PREFIX）"
+        echo "已卸载 xtervo（$PREFIX）"
     else
-        echo "未发现已安装的 Tervo（$PREFIX），无需卸载"
+        echo "未发现已安装的 xtervo（$PREFIX），无需卸载"
     fi
-    echo "配置/Profile/主题未改动：~/.config/tervo（或 TERVO_CONFIG/TERVO_PROFILES 指定路径）"
-    echo "日志未改动：默认 ~/.local/state/tervo/logs（TERVO_LOG_DIR 可覆盖）"
+    echo "配置/Profile/主题未改动：~/.config/xtervo（或 XTERVO_CONFIG/XTERVO_PROFILES 指定路径）"
+    echo "日志未改动：默认 ~/.local/state/xtervo/logs（XTERVO_LOG_DIR 可覆盖）"
 }
 
 case "$MODE" in

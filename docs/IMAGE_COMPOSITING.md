@@ -57,7 +57,7 @@ v2 改成：
 | iTerm2 IIP | inline/width/height/preserveAspectRatio 语义 | 上传/文件流扩展 |
 | Tabby | 灯箱/缩放/设置/视觉交互 | Electron/xterm.js 实现 |
 
-许可证：借鉴架构与协议语义；如复制代码，按原项目许可证保留声明。Tervo 自身 GPL-3.0-only。
+许可证：借鉴架构与协议语义；如复制代码，按原项目许可证保留声明。xtervo 自身 GPL-3.0-only。
 
 ## 3. 数据模型
 
@@ -181,7 +181,7 @@ ImageDamage { row, col_start, col_end }
 新增环境开关：
 
 ```text
-TERVO_IMAGE_LAYER=v2   # 默认 v2；v1 用于回退对照
+XTERVO_IMAGE_LAYER=v2   # 默认 v2；v1 用于回退对照
 ```
 
 阶段：

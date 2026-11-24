@@ -14,7 +14,7 @@
 //! - **尺寸参数**：`inline=1`、`name`、`width`/`height`（cell 数、`px`、`auto`）、
 //!   `preserveAspectRatio`。
 //! - **非内联图策略**：iTerm2 协议里 `inline` 缺省为 0，`inline=0`/缺省表示
-//!   “只下载、不显示”。Tervo 不实现文件下载，因此这类 `File=` 一律忽略
+//!   “只下载、不显示”。xtervo 不实现文件下载，因此这类 `File=` 一律忽略
 //!   （序列仍被吞掉，绝不进入网格），但会发一条 [`IipEvent::Ignored`] 让 UI
 //!   提示/记录，避免客户端参数写错时静默丢图。参数语法非法、base64/图片损坏、
 //!   超限等仍按防御策略静默丢弃（不属于“合法但非内联”这一可解释分支）。
@@ -74,7 +74,7 @@ impl std::fmt::Debug for IipImage {
 
 /// 忽略一条合法 `OSC 1337;File=` 的原因。
 ///
-/// 两者都表示 iTerm2 语义下的“只下载不显示”；Tervo 不下载文件，所以只提示。
+/// 两者都表示 iTerm2 语义下的“只下载不显示”；xtervo 不下载文件，所以只提示。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IipIgnoreReason {
     /// 参数里完全没有 `inline`：协议缺省为 0。

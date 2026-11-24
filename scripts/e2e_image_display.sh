@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
 # 图片显示 GUI e2e：Sixel 可见性、黑底 cell 图层、滚动部分越界、灯箱首次点击/Fit/100%。
-# 只使用隔离 Xvfb；只 kill 本脚本启动的 Xvfb/Tervo；不碰 :1。
+# 只使用隔离 Xvfb；只 kill 本脚本启动的 Xvfb/xtervo；不碰 :1。
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT=$PWD
 OUT=${E2E_OUT:-$ROOT/.logs/image-display-e2e}
 DISPLAY_NUM=${E2E_DISPLAY:-:$((240 + $$ % 10))}
 SCREEN=${E2E_SCREEN:-1280x900x24}
-BIN=${E2E_BIN:-$ROOT/target/debug/tervo}
+BIN=${E2E_BIN:-$ROOT/target/debug/xtervo}
 XVFB=${E2E_XVFB_BIN:-$ROOT/.perf/xvfb/usr/bin/Xvfb}
 XWIN=${E2E_XWIN:-$ROOT/target/debug/xwin}
 XCLICK=${E2E_XCLICK:-$ROOT/target/debug/xclick}
 XKEY=${E2E_XKEY:-$ROOT/target/debug/xkey}
 for f in "$BIN" "$XWIN" "$XCLICK" "$XKEY"; do
-  [ -x "$f" ] || { echo "缺少 $f；先 cargo build -p tervo-app --bin tervo --bin xwin --bin xclick --bin xkey" >&2; exit 2; }
+  [ -x "$f" ] || { echo "缺少 $f；先 cargo build -p xtervo-app --bin xtervo --bin xwin --bin xclick --bin xkey" >&2; exit 2; }
 done
 [ -x "$XVFB" ] || { echo "缺少 Xvfb: $XVFB" >&2; exit 2; }
 command -v xdpyinfo xwininfo xwd >/dev/null || { echo "缺少 xdpyinfo/xwininfo/xwd" >&2; exit 2; }
@@ -76,17 +76,17 @@ start_app() { # <script>
   local script=$1
   [ -n "$APP_PID" ] && kill "$APP_PID" 2>/dev/null || true
   sleep 0.25
-  ( HOME="$OUT/home" TERVO_CONFIG="$OUT/config.toml" TERVO_LOG_DIR="$OUT/logs" \
-    TERVO_SIXEL_DEBUG=1 "$BIN" --shell /bin/bash --cols 100 --rows 28 --title Tervo \
+  ( HOME="$OUT/home" XTERVO_CONFIG="$OUT/config.toml" XTERVO_LOG_DIR="$OUT/logs" \
+    XTERVO_SIXEL_DEBUG=1 "$BIN" --shell /bin/bash --cols 100 --rows 28 --title xtervo \
     -- -c "bash '$script'" >"$OUT/app.log" 2>&1 & echo $! >"$OUT/app.pid" )
   APP_PID=$(cat "$OUT/app.pid")
   WIN=""
   for _ in $(seq 1 200); do
-    WIN=$(xwininfo -root -tree 2>/dev/null | grep -i '"Tervo"' | head -1 | awk '{print $1}' || true)
+    WIN=$(xwininfo -root -tree 2>/dev/null | grep -i '"xtervo"' | head -1 | awk '{print $1}' || true)
     [ -n "$WIN" ] && break
     sleep 0.05
   done
-  [ -n "$WIN" ] || { echo "FAIL: Tervo 窗口未出现（display=$DISPLAY）"; tail -20 "$OUT/app.log"; exit 1; }
+  [ -n "$WIN" ] || { echo "FAIL: xtervo 窗口未出现（display=$DISPLAY）"; tail -20 "$OUT/app.log"; exit 1; }
   sleep 0.8
   ABS_X=$(xwininfo -id "$WIN" | awk '/Absolute upper-left X/{print $NF}')
   ABS_Y=$(xwininfo -id "$WIN" | awk '/Absolute upper-left Y/{print $NF}')
@@ -153,7 +153,7 @@ click "$IX" "$IY"
 sleep 0.8
 shot 03-lightbox-fit
 assert_img "$OUT/03-lightbox-fit.png" 15000 15000 "lightbox Fit first click"
-grep -q '\[image\] preview open id=' "$OUT/logs/"tervo-*.log || { echo "FAIL: 没有 image preview 日志"; exit 1; }
+grep -q '\[image\] preview open id=' "$OUT/logs/"xtervo-*.log || { echo "FAIL: 没有 image preview 日志"; exit 1; }
 FIT_RED=$(count_colors "$OUT/03-lightbox-fit.png" | awk '{print $1}')
 
 # 4) 100% 应缩小到原图
@@ -177,6 +177,6 @@ click "$IX" "$IY"
 sleep 0.8
 shot 06-lightbox-partial
 assert_img "$OUT/06-lightbox-partial.png" 15000 15000 "lightbox partial first click"
-grep -q '\[image\] preview open id=' "$OUT/logs/"tervo-*.log || { echo "FAIL: partial 点击没有 source"; exit 1; }
+grep -q '\[image\] preview open id=' "$OUT/logs/"xtervo-*.log || { echo "FAIL: partial 点击没有 source"; exit 1; }
 
 echo "PASS: image display e2e; shots=$OUT"

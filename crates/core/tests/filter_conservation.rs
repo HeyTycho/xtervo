@@ -16,10 +16,10 @@
 //! 不复制解码逻辑。管线镜像与 `pane.rs` 的分派顺序一一对应，`pane.rs`
 //! 改动后本文件需要同步（见文末 `pipeline_mirror_matches_pane_source`）。
 
-use tervo_core::iip::{IipEvent, IipFilter};
-use tervo_core::kitty_graphics::{KittyEvent, KittyParser};
-use tervo_core::osc::encode_base64;
-use tervo_core::sixel::{SixelEvent, SixelFilter};
+use xtervo_core::iip::{IipEvent, IipFilter};
+use xtervo_core::kitty_graphics::{KittyEvent, KittyParser};
+use xtervo_core::osc::encode_base64;
+use xtervo_core::sixel::{SixelEvent, SixelFilter};
 
 const ESC: u8 = 0x1b;
 const BEL: u8 = 0x07;

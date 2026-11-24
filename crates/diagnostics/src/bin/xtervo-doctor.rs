@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! Thin CLI over `tervo_diagnostics::doctor`.
+//! Thin CLI over `xtervo_diagnostics::doctor`.
 //!
 //! No window, no Slint, no PTY, no network, no AI provider. It reads only the
 //! files explicitly passed plus documented environment variables, then prints
-//! a versioned `tervo.diagnostic_case.v1` JSON document or its issue draft.
+//! a versioned `xtervo.diagnostic_case.v1` JSON document or its issue draft.
 //!
-//! The same library API is what `tervo diag` should call; this binary exists so
+//! The same library API is what `xtervo diag` should call; this binary exists so
 //! the slice can be exercised end-to-end before app wiring.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -15,25 +15,25 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use serde_json::Value;
-use tervo_diagnostics::doctor::{
+use xtervo_diagnostics::doctor::{
     diagnostic_case_json_schema, Attachment, DiagnosticCase, Doctor, DoctorConfig, DoctorInput,
     Environment, EvidenceKind, FrameSummary, MetricsSummary, RenderProfileSummary, Symptom,
 };
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
-const COMMIT: &str = match option_env!("TERVO_GIT_COMMIT") {
+const COMMIT: &str = match option_env!("XTERVO_GIT_COMMIT") {
     Some(value) => value,
     None => "unknown",
 };
-const DIRTY: &str = match option_env!("TERVO_GIT_DIRTY") {
+const DIRTY: &str = match option_env!("XTERVO_GIT_DIRTY") {
     Some(value) => value,
     None => "0",
 };
-const BUILT: &str = match option_env!("TERVO_BUILD_TIME") {
+const BUILT: &str = match option_env!("XTERVO_BUILD_TIME") {
     Some(value) => value,
     None => "unknown",
 };
-const TARGET: &str = match option_env!("TERVO_BUILD_TARGET") {
+const TARGET: &str = match option_env!("XTERVO_BUILD_TARGET") {
     Some(value) => value,
     None => "unknown",
 };
@@ -85,7 +85,7 @@ fn main() -> ExitCode {
     match run() {
         Ok(code) => ExitCode::from(code),
         Err(error) => {
-            eprintln!("[tervo-doctor] {error}");
+            eprintln!("[xtervo-doctor] {error}");
             ExitCode::from(1)
         }
     }
@@ -107,7 +107,7 @@ fn run() -> Result<u8, Box<dyn std::error::Error>> {
         "env" => command_env(&args),
         "issue" => command_issue(&args),
         "check" | "doctor" => command_check(&args),
-        other => err(format!("未知子命令: {other}（用 `tervo-doctor help`）")),
+        other => err(format!("未知子命令: {other}（用 `xtervo-doctor help`）")),
     }
 }
 
@@ -319,7 +319,7 @@ fn build_input(args: &Args) -> Result<DoctorInput, Box<dyn std::error::Error>> {
     let render_profile = match args.value("render-profile") {
         Some(path) => {
             let text = read_text_path(path, MAX_PROFILE_BYTES as u64)?;
-            let enabled = std::env::var_os("TERVO_RENDER_PROFILE").is_some();
+            let enabled = std::env::var_os("XTERVO_RENDER_PROFILE").is_some();
             Some(RenderProfileSummary::from_text(
                 path,
                 &text,
@@ -588,29 +588,29 @@ fn parse_usize(
 
 fn print_version() {
     println!(
-        "tervo-doctor {VERSION}\ncommit: {COMMIT}{}\nbuilt:  {BUILT}\ntarget: {TARGET}\nschema: tervo.diagnostic_case.v1",
+        "xtervo-doctor {VERSION}\ncommit: {COMMIT}{}\nbuilt:  {BUILT}\ntarget: {TARGET}\nschema: xtervo.diagnostic_case.v1",
         if DIRTY == "1" { " (dirty)" } else { "" }
     );
 }
 
 fn print_help() {
     print!(
-        "tervo-doctor {VERSION} — 确定性、离线诊断器（不接模型/网络）\n\
+        "xtervo-doctor {VERSION} — 确定性、离线诊断器（不接模型/网络）\n\
          \n\
          用法:\n\
-           tervo-doctor [check] [选项]        输出 tervo.diagnostic_case.v1 JSON\n\
-           tervo-doctor issue [选项]          输出 issue draft markdown\n\
-           tervo-doctor issue --case FILE     从已有 case 重新渲染 issue\n\
-           tervo-doctor schema                输出 JSON Schema\n\
-           tervo-doctor env                   输出采集到的 environment（脱敏）\n\
-           tervo-doctor version | help\n\
+           xtervo-doctor [check] [选项]        输出 xtervo.diagnostic_case.v1 JSON\n\
+           xtervo-doctor issue [选项]          输出 issue draft markdown\n\
+           xtervo-doctor issue --case FILE     从已有 case 重新渲染 issue\n\
+           xtervo-doctor schema                输出 JSON Schema\n\
+           xtervo-doctor env                   输出采集到的 environment（脱敏）\n\
+           xtervo-doctor version | help\n\
          \n\
          输入:\n\
            --symptom TEXT  --details TEXT  --repro STEP  --expected TEXT  --actual TEXT\n\
-           --diag-env FILE      `tervo diag env --json`（- 读 stdin）\n\
-           --frame FILE         `tervo diag snapshot --json`\n\
-           --metrics FILE       `tervo diag metrics` JSON（占位数据会被明确跳过）\n\
-           --render-profile F   TERVO_RENDER_PROFILE 日志（有界解析）\n\
+           --diag-env FILE      `xtervo diag env --json`（- 读 stdin）\n\
+           --frame FILE         `xtervo diag snapshot --json`\n\
+           --metrics FILE       `xtervo diag metrics` JSON（占位数据会被明确跳过）\n\
+           --render-profile F   XTERVO_RENDER_PROFILE 日志（有界解析）\n\
            --config/--profiles/--log/--log-dir PATH\n\
            --active-renderer/--requested-renderer/--fallback-reason/--no-fallback\n\
            --gpu-adapter/--gpu-backend/--gpu-driver/--gpu-device-type\n\
@@ -624,7 +624,7 @@ fn print_help() {
          \n\
          安全边界：不创建窗口/PTY，不读整段 scrollback，不访问网络，不调用 AI provider；\n\
          证据默认 16 KiB/项、64 KiB 总量，全部脱敏并 SHA-256 哈希；缺数据保持 null/Unknown。\n\
-         库 API: tervo_diagnostics::doctor::{{Doctor, DoctorInput, DoctorConfig}}"
+         库 API: xtervo_diagnostics::doctor::{{Doctor, DoctorInput, DoctorConfig}}"
     );
     println!();
 }

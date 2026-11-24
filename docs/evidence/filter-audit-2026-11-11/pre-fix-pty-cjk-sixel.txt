@@ -1,8 +1,8 @@
 # 新 PTY 回归测试在修复前（10df3dd 的 sixel.rs）的失败证据
-# 命令: cargo test -p tervo-core --test sixel cjk_before_bel_sixel_keeps_following_text
+# 命令: cargo test -p xtervo-core --test sixel cjk_before_bel_sixel_keeps_following_text
 # 时间: 2026-11-11 18:52:47 CST
 
-   Compiling tervo-core v0.3.1 (/home/user/AIworkspace/rusttabbyterminal/.worktrees/agent-filter-audit/crates/core)
+   Compiling xtervo-core v0.3.1 (/home/user/AIworkspace/rusttabbyterminal/.worktrees/agent-filter-audit/crates/core)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.40s
      Running tests/sixel.rs (/home/user/AIworkspace/rusttabbyterminal/target/debug/deps/sixel-933e0cb5b8069b52)
 
@@ -48,5 +48,5 @@ failures:
 
 test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 16 filtered out; finished in 8.00s
 
-error: test failed, to rerun pass `-p tervo-core --test sixel`
+error: test failed, to rerun pass `-p xtervo-core --test sixel`
 EXIT=101

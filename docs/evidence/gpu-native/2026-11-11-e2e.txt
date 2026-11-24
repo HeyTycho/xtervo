@@ -2,7 +2,7 @@
 
 ## summary
 display=:77
-bin=/home/user/AIworkspace/rusttabbyterminal/.worktrees/agent-gpu-native/.bin/tervo-gpu-native
+bin=/home/user/AIworkspace/rusttabbyterminal/.worktrees/agent-gpu-native/.bin/xtervo-gpu-native
 gpu_snapshot=[gpu-snapshot] path=/home/user/AIworkspace/rusttabbyterminal/.worktrees/agent-gpu-native/.e2e-gpu-native/final-14/gpu/snap.before.ppm size=720x560 gpu_ready=false gpu_native_ready=true gpu_native_frames=7 draw_calls=21 atlas_uploads=76 atlas_bytes=7515 vertex_bytes=51888 image_uploads=1 image_sources=1 last(fallback=10 missing=0 wide=7 spacer=7 hidden=6 dim=3 selected=0 searched=0 images_skipped=1 cursor_skipped=true background_from_scene=true) total=403200 nonbg=35763 distinct=708 top=#fffafafa center=#fafafaff
 native_frames=7 native_draw_calls=21 nonbg=35763
 artifacts=/home/user/AIworkspace/rusttabbyterminal/.worktrees/agent-gpu-native/.e2e-gpu-native/final-14

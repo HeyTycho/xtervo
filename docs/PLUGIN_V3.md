@@ -1,6 +1,6 @@
-# Tervo Plugin API v3
+# xtervo Plugin API v3
 
-状态：**v3 是 Tervo 唯一受支持的插件协议**。宿主只加载 `api = 3` 且
+状态：**v3 是 xtervo 唯一受支持的插件协议**。宿主只加载 `api = 3` 且
 `host_abi = 3` 的清单；v1/v2 清单**不兼容、不会执行**，设置页只显示
 `unsupported` 和迁移提示。代码里没有双协议兼容层。
 
@@ -12,7 +12,7 @@
 - wasm：无 import 的 Wasmtime 实例，只允许 `terminal.output_filter` 热路径。
 - UI：全部由宿主渲染；插件只能给声明式文档。
 - 权限：capability gate + 用户确认；process 不是 OS 沙箱，wasm 是窄沙箱。
-- MCP：Tervo 内嵌功能，**不是插件能力**；本协议没有插件 MCP server/代理。
+- MCP：xtervo 内嵌功能，**不是插件能力**；本协议没有插件 MCP server/代理。
 
 ---
 
@@ -36,12 +36,12 @@
    自己管理（`credentials = "own"` 只是声明）。
 4. **环境变量白名单**：spawn 插件时 `env_clear()`，只透传
    `PATH` / `HOME` / `LANG` / `LC_ALL` / `TMPDIR`，再设置
-   `TERVO_PLUGIN_ID` / `TERVO_PLUGIN_API` / `TERVO_HOST_VERSION`。
+   `XTERVO_PLUGIN_ID` / `XTERVO_PLUGIN_API` / `XTERVO_HOST_VERSION`。
 5. **输入/输出上限**：单行 256 KiB；stdout 总量 16 MiB；stderr 尾部 8 KiB；
    超限按协议错误重启/停止。
 6. **生命周期隔离**：每个插件独立 supervisor；崩溃、坏 JSON、超时只影响
    该插件。Linux 上子进程设置 `PR_SET_PDEATHSIG=SIGKILL` 且独立 process
-   group，Tervo 被 SIGKILL 时不会留下孤儿插件。
+   group，xtervo 被 SIGKILL 时不会留下孤儿插件。
 
 **WASM 插件额外边界**（详见第 6 节）：模块加载时拒绝任何 import；没有
 WASI/文件/网络/进程/时钟/随机数宿主；线性内存最多 16 MiB，单文件最多
@@ -51,7 +51,7 @@ WASI/文件/网络/进程/时钟/随机数宿主；线性内存最多 16 MiB，�
 **宿主对 process 插件不做的事**：不阻止插件直接读写文件、访问网络、启动子
 进程、读取它能访问的环境/配置。`filesystem` / `network` / `process` /
 `credentials` 权限只是“声明 + 确认时展示 + 诊断记录”，不是内核级强制。
-需要强隔离请用容器/专用用户；Tervo 不提供 process 的 OS 沙箱。
+需要强隔离请用容器/专用用户；xtervo 不提供 process 的 OS 沙箱。
 
 ---
 
@@ -60,10 +60,10 @@ WASI/文件/网络/进程/时钟/随机数宿主；线性内存最多 16 MiB，�
 插件目录默认：
 
 ```text
-$XDG_CONFIG_HOME/tervo/plugins/          # 或 ~/.config/tervo/plugins/
+$XDG_CONFIG_HOME/xtervo/plugins/          # 或 ~/.config/xtervo/plugins/
 ```
 
-可用 `TERVO_PLUGINS=/path/to/plugins` 覆盖。每个 v3 插件必须是子目录：
+可用 `XTERVO_PLUGINS=/path/to/plugins` 覆盖。每个 v3 插件必须是子目录：
 
 ```text
 <plugins>/<dir>/
@@ -103,7 +103,7 @@ $XDG_CONFIG_HOME/tervo/plugins/          # 或 ~/.config/tervo/plugins/
 ```toml
 api = 3
 host_abi = 3
-id = "dev.tervo.echo"
+id = "dev.xtervo.echo"
 name = "Echo (v3 example)"
 version = "1.0.0"
 runtime = "process"          # process | wasm；oneshot 属于已移除的 v1
@@ -161,7 +161,7 @@ menu = true                  # 可选：作为终端右键菜单装饰项追加�
 
 未知字段会导致整份清单 `invalid`（严格模式，防止拼写错误静默生效）。
 命令完整 ID 是 `plugin.<plugin id>.<command id>`，例如
-`plugin.dev.tervo.echo.greet`。
+`plugin.dev.xtervo.echo.greet`。
 
 ### 3.2 `assistant` 占位
 
@@ -182,8 +182,8 @@ API Key**。声明 assistant 不会让插件获得任何 AI 能力。
 ### 3.3 主题
 
 `contributes.theme` 是插件目录内相对 TOML 主题。启用且权限已确认的插件
-主题会在 Tervo 启动时并入主题列表；enable/reload 后不会在运行中热换主题
-（重启 Tervo 才生效）。主题缺失只记录 `theme` 错误，不阻止命令运行。
+主题会在 xtervo 启动时并入主题列表；enable/reload 后不会在运行中热换主题
+（重启 xtervo 才生效）。主题缺失只记录 `theme` 错误，不阻止命令运行。
 
 ---
 
@@ -208,8 +208,8 @@ API Key**。声明 assistant 不会让插件获得任何 AI 能力。
 ```json
 {"jsonrpc":"2.0","id":1,"method":"initialize","params":{
   "protocol_version":3,
-  "host":{"name":"tervo","version":"0.3.1","abi":3},
-  "plugin":{"id":"dev.tervo.echo","name":"Echo (v3 example)"},
+  "host":{"name":"xtervo","version":"0.3.1","abi":3},
+  "plugin":{"id":"dev.xtervo.echo","name":"Echo (v3 example)"},
   "permissions":{
     "granted":["filesystem=plugin","terminal_context","credentials=own"],
     "terminal_read":"ask",
@@ -412,7 +412,7 @@ WASM 是 v3 的**新增 runtime**，不是 process 的替代：现有 process v3
 ```toml
 api = 3
 host_abi = 3
-id = "dev.tervo.wasm-filter"
+id = "dev.xtervo.wasm-filter"
 name = "WASM output filter"
 version = "1.0.0"
 runtime = "wasm"
@@ -437,7 +437,7 @@ output_filter = true            # 唯一允许的 WASM 权限
 
 设置页 Plugins 行会显示 `runtime`（`process` / `wasm`）、状态、错误和通用
 `Enable` / `Disable` / `Reload` / `Restart` / `Open folder` 操作；WASM 失败
-原因显示在 `error`。所有操作不重启 Tervo。
+原因显示在 `error`。所有操作不重启 xtervo。
 
 ### 6.2 窄 ABI
 
@@ -495,7 +495,7 @@ UI/渲染线程从不等待 WASM；它仍只通过有界唤醒/拉帧通道取�
 | 实例/表/内存数 | 1 / 1 / 1 |
 | 表元素 | 1024 |
 
-失败处理（全部**不得崩溃 Tervo、不得丢字节**）：
+失败处理（全部**不得崩溃 xtervo、不得丢字节**）：
 
 1. filter 返回 `None`、trap、fuel/epoch 超时、负长度、输出超限、alloc 指针
    越界/落在输出保留区、`memory.grow` 超过限制；
@@ -545,7 +545,7 @@ WASM 提供的是**内存/执行沙箱**，不是“插件已被信任”：
 
 `docs/examples/plugin-wasm-filter/`：
 
-- `filter.wat`：把字面量 `[tervo-wasm]`（12 bytes）替换为
+- `filter.wat`：把字面量 `[xtervo-wasm]`（12 bytes）替换为
   `WASM-FILTER-OK`（14 bytes），其余字节逐字节复制；
 - `filter.wasm`：已汇编的示例（463 bytes）；
 - `build.sh`：用 `wasm-tools parse` 或 `wat2wasm` 从 WAT 重新生成；
@@ -554,21 +554,21 @@ WASM 提供的是**内存/执行沙箱**，不是“插件已被信任”：
 ```bash
 cd docs/examples/plugin-wasm-filter
 ./build.sh
-mkdir -p ~/.config/tervo/plugins
-cp -r . ~/.config/tervo/plugins/wasm-filter
+mkdir -p ~/.config/xtervo/plugins
+cp -r . ~/.config/xtervo/plugins/wasm-filter
 # Settings → Plugins → Enable → Allow and enable
-printf 'hello [tervo-wasm]\n'
+printf 'hello [xtervo-wasm]\n'
 # 显示 hello WASM-FILTER-OK
 ```
 
-同样可用 `TERVO_PLUGINS=$PWD/docs/examples ...` 指向示例根目录。目录名不
-重要，稳定标识是 `id = "dev.tervo.wasm-filter"`。
+同样可用 `XTERVO_PLUGINS=$PWD/docs/examples ...` 指向示例根目录。目录名不
+重要，稳定标识是 `id = "dev.xtervo.wasm-filter"`。
 
 自动化真实 PTY e2e（不是 mock）：
 
 - `wasm_filter_transforms_real_pty_output_and_disable_restores_it`：真实
   `/bin/sh` + PTY + pane actor，启用后第一行变成 `WASM-FILTER-OK`；对同一个
-  pane 禁用后，第二行原样出现 `[tervo-wasm]`，不重建 pane；
+  pane 禁用后，第二行原样出现 `[xtervo-wasm]`，不重建 pane；
 - `wasm_trap_falls_back_to_original_bytes_in_real_pty`：真实 trap 后原始
   bytes 继续显示，设置页 `failed` 且带错误；
 - `wasm_reload_and_broken_module_error_are_reported_without_crash`：reload
@@ -582,10 +582,10 @@ printf 'hello [tervo-wasm]\n'
 ### 6.7 测试与命令
 
 ```bash
-cargo test -p tervo-app --bin tervo plugin_wasm
-cargo test -p tervo-app --bin tervo plugin_v3::tests::wasm
-cargo test -p tervo-core --test output_filter
-cargo test -p tervo-app --bin tervo
+cargo test -p xtervo-app --bin xtervo plugin_wasm
+cargo test -p xtervo-app --bin xtervo plugin_v3::tests::wasm
+cargo test -p xtervo-core --test output_filter
+cargo test -p xtervo-app --bin xtervo
 ```
 
 覆盖：manifest/权限/ABI、缺导出/错签名/import 拒绝、uppercase 示例、
@@ -603,8 +603,8 @@ release 二进制 SHA256
 
 | 项目 | 结果 |
 |---|---|
-| `cargo test -p tervo-app --bin tervo` | **468 passed / 0 failed / 1 ignored** |
-| `cargo test -p tervo-core` | **265 passed / 0 failed**（含 4 个 output_filter 真实 PTY） |
+| `cargo test -p xtervo-app --bin xtervo` | **468 passed / 0 failed / 1 ignored** |
+| `cargo test -p xtervo-core` | **265 passed / 0 failed**（含 4 个 output_filter 真实 PTY） |
 | 过滤器 32 KiB 延迟（debug） | avg **25.9 µs** / max **85.2 µs**（500 次） |
 | 2m soak | **PASS**：22 tabs / 4 panes / 25 PTY、9 cycles、72 commands、shell_lag=0 |
 | soak RSS/PSS | 360.7→396.4 MiB（**+35.7 MiB, +9.9%**）/ 352.4→388.3 MiB（+36.0） |
@@ -726,10 +726,10 @@ cwd、命令行、环境变量、终端内容或凭据。事件是 notification�
 仍由本节描述的 v3 host 负责。
 
 v1/v2 行：`unsupported`，`api` 显示原版本，`error` 说明
-“Unsupported Plugin API vX; Tervo v3 only loads api = 3 / host_abi = 3 …”，
+“Unsupported Plugin API vX; xtervo v3 only loads api = 3 / host_abi = 3 …”，
 `Open folder` 仍可用，但不会执行任何旧插件。
 
-所有操作**不重启 Tervo**：
+所有操作**不重启 xtervo**：
 
 - Enable：确认后启动 supervisor；
 - Disable：关闭进程，保留权限确认；再次 Enable 不再询问（权限未变时）；
@@ -763,7 +763,7 @@ v1/v2 行：`unsupported`，`api` 显示原版本，`error` 说明
 - 握手失败 / 进程退出 / 坏 JSON 超限 / 命令超时 / 输出超限 → 自动重启；
 - 超过重启上限 → `Failed` + 原因，命令立即 `unavailable`；
 - 任一插件故障不影响终端或其它插件；
-- reload/restart/disable 由 supervisor 消息驱动，不 restart Tervo。
+- reload/restart/disable 由 supervisor 消息驱动，不 restart xtervo。
 
 ---
 
@@ -772,10 +772,10 @@ v1/v2 行：`unsupported`，`api` 显示原版本，`error` 说明
 `docs/examples/plugin-v3-echo/`：
 
 ```bash
-mkdir -p ~/.config/tervo/plugins
-cp -r docs/examples/plugin-v3-echo ~/.config/tervo/plugins/echo
-chmod +x ~/.config/tervo/plugins/echo/main.py
-# 启动 Tervo → Settings → Plugins → Enable → Allow and enable
+mkdir -p ~/.config/xtervo/plugins
+cp -r docs/examples/plugin-v3-echo ~/.config/xtervo/plugins/echo
+chmod +x ~/.config/xtervo/plugins/echo/main.py
+# 启动 xtervo → Settings → Plugins → Enable → Allow and enable
 ```
 
 可用命令（Palette）：
@@ -789,21 +789,21 @@ chmod +x ~/.config/tervo/plugins/echo/main.py
 例子还实现 `status.get`、`ui.status`、`surface.render(settings)`、
 `ui.action` 和事件日志（`events.txt`）。它只用 Python 标准库。
 
-也可以把 `TERVO_PLUGINS` 指向包含该示例的目录：
+也可以把 `XTERVO_PLUGINS` 指向包含该示例的目录：
 
 ```bash
-TERVO_PLUGINS=$PWD/docs/examples TERVO_CONFIG=/tmp/tervo-config.toml cargo run -p tervo-app --bin tervo
+XTERVO_PLUGINS=$PWD/docs/examples XTERVO_CONFIG=/tmp/xtervo-config.toml cargo run -p xtervo-app --bin xtervo
 ```
 
-（示例目录名是 `plugin-v3-echo`；插件 id 是 `dev.tervo.echo`。）
+（示例目录名是 `plugin-v3-echo`；插件 id 是 `dev.xtervo.echo`。）
 
 WASM 示例 `docs/examples/plugin-wasm-filter/`（见第 6.6 节）：
 
 ```bash
 cd docs/examples/plugin-wasm-filter
 ./build.sh                      # 需要 wasm-tools 或 wat2wasm；仓库也提交了 filter.wasm
-mkdir -p ~/.config/tervo/plugins
-cp -r . ~/.config/tervo/plugins/wasm-filter
+mkdir -p ~/.config/xtervo/plugins
+cp -r . ~/.config/xtervo/plugins/wasm-filter
 # Settings → Plugins → Enable → Allow and enable
 ```
 
@@ -812,10 +812,10 @@ cp -r . ~/.config/tervo/plugins/wasm-filter
 ## 12. 测试
 
 ```bash
-cargo test -p tervo-app --bin tervo plugin_wasm
-cargo test -p tervo-app --bin tervo plugin_v3::tests::wasm
-cargo test -p tervo-core --test output_filter
-cargo test -p tervo-app --bin tervo
+cargo test -p xtervo-app --bin xtervo plugin_wasm
+cargo test -p xtervo-app --bin xtervo plugin_v3::tests::wasm
+cargo test -p xtervo-core --test output_filter
+cargo test -p xtervo-app --bin xtervo
 cargo check --workspace
 ```
 
@@ -846,26 +846,26 @@ v3 测试使用真实 Python 子进程覆盖：
   排队，单次最多受 20 ms epoch 上限约束；UI/渲染线程不参与，但极端并发下
   终端吞吐会下降。
 - WASM 过滤器按 PTY 读块调用（当前约 32 KiB/次）；跨 chunk 的 pattern 需要
-  插件自己在持久线性内存里保留状态。示例只匹配单块内的 `[tervo-wasm]`。
+  插件自己在持久线性内存里保留状态。示例只匹配单块内的 `[xtervo-wasm]`。
 - 过滤器可以改写/删除终端输出（这是功能本身），因此显示内容不再可信；
   只启用你信任的模块。没有签名验证。
 - 插件命令没有独立快捷键绑定，也不支持命令参数（`args` 恒为空）。
   命令只从 Palette 与状态栏点击触发。
-- 插件主题只在 Tervo 启动时加载；运行中 enable/reload 不热换主题。
+- 插件主题只在 xtervo 启动时加载；运行中 enable/reload 不热换主题。
 - 多个 panel 只显示第一个 panel 入口；`contributes.panels` 其余 ID 会校验
   但当前 UI 无选择器。
 - markdown 是极简纯文本渲染，不执行链接/HTML/图片。
 - 状态栏每插件只显示一行；`status.get` 结果超长会被拒绝。
-- `assistant` 只是占位，**没有 AI provider**；Tervo 不保存/转发 API Key。
+- `assistant` 只是占位，**没有 AI provider**；xtervo 不保存/转发 API Key。
 - 没有插件市场、签名、任意 Slint UI；WASM 不是任意插件运行时。
-- **没有插件 MCP**：MCP 是 Tervo 内嵌、由宿主拥有的功能；插件不能提供/
+- **没有插件 MCP**：MCP 是 xtervo 内嵌、由宿主拥有的功能；插件不能提供/
   代理 MCP server，也不能通过本协议拿到 MCP 工具。
 - terminal.read 只读焦点终端尾部；不提供 cwd/env/Vault/历史全文。
 - clipboard 只代理文本（不代理图片）。
 - 自动重启上限后需要用户 Restart/Reload；不会无限重启。
 - 子进程环境变量被清空为白名单；依赖其它环境变量的插件需要自行配置
   启动包装脚本（注意白名单仍不改变“非沙箱”事实）。
-- 没有跨 Tervo 实例的插件锁：同时运行多个 Tervo 实例时，每个实例都可能启动
+- 没有跨 xtervo 实例的插件锁：同时运行多个 xtervo 实例时，每个实例都可能启动
   同一个插件进程并写同一份状态文件（last writer wins）。生产使用建议单实例。
 - 非 Linux 平台的进程组/PDEATHSIG 清理未做同等验收；当前主要验证平台是 Linux。
 
@@ -881,7 +881,7 @@ v1/v2 不会加载；迁移步骤：
    `[[commands]]` 只保留 `id` / `title` / `description`。
 3. 新增 `[permissions]`（字段见第 3 节）；旧的 `fs=... net=...` 声明需要
    改写。首次启用会要求用户重新确认。
-4. 协议从旧 Tervo JSON Lines 改成 **JSON-RPC 2.0**：
+4. 协议从旧 xtervo JSON Lines 改成 **JSON-RPC 2.0**：
    - 旧 `ready` 握手 → `initialize` request/response + `initialized`；
    - 旧 `{"event":"command",...}` → `command.invoke` request；
    - 旧 `{"event":"...","payload":...}` → `event.deliver` notification；
@@ -890,7 +890,7 @@ v1/v2 不会加载；迁移步骤：
 5. 旧 `oneshot` 形态不再支持；必须改成常驻进程。
 6. UI 只能通过声明式文档提供，不能自带 Slint/WASM/HTML。
 
-迁移后 v1/v2 目录可以保留，Tervo 会显示 `unsupported`，不会执行；确认不再
+迁移后 v1/v2 目录可以保留，xtervo 会显示 `unsupported`，不会执行；确认不再
 需要后手动删除。
 
 ---

@@ -5,8 +5,8 @@
 //! Profile 关联），因此“保存布局”不需要另造一套树结构；恢复端把 Tree 交给
 //! 现有的 tab 恢复路径即可。
 //!
-//! 落盘位置与 `profiles.toml` 同级（`$XDG_CONFIG_HOME/tervo/workspaces.toml`，
-//! `TERVO_WORKSPACES` 可覆盖），独立文件避免为新增字段升 `profiles.toml` 版本。
+//! 落盘位置与 `profiles.toml` 同级（`$XDG_CONFIG_HOME/xtervo/workspaces.toml`，
+//! `XTERVO_WORKSPACES` 可覆盖），独立文件避免为新增字段升 `profiles.toml` 版本。
 
 use std::path::{Path, PathBuf};
 
@@ -65,9 +65,9 @@ impl Default for WorkspaceStore {
 }
 
 impl WorkspaceStore {
-    /// `TERVO_WORKSPACES` 覆盖，否则 `$XDG_CONFIG_HOME/tervo/workspaces.toml`。
+    /// `XTERVO_WORKSPACES` 覆盖，否则 `$XDG_CONFIG_HOME/xtervo/workspaces.toml`。
     pub fn path() -> PathBuf {
-        if let Ok(p) = std::env::var("TERVO_WORKSPACES") {
+        if let Ok(p) = std::env::var("XTERVO_WORKSPACES") {
             return PathBuf::from(p);
         }
         let base = std::env::var("XDG_CONFIG_HOME")
@@ -75,7 +75,7 @@ impl WorkspaceStore {
             .unwrap_or_else(|_| {
                 PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into())).join(".config")
             });
-        base.join("tervo").join("workspaces.toml")
+        base.join("xtervo").join("workspaces.toml")
     }
 
     pub fn load() -> Self {

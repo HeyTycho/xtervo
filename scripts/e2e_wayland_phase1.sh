@@ -6,7 +6,7 @@
 #
 # 用法：
 #   ./scripts/e2e_wayland_phase1.sh
-#   TERVO_BIN=target/debug/tervo TERVO_E2E_OUT=/tmp/tervo-wl ./scripts/e2e_wayland_phase1.sh
+#   XTERVO_BIN=target/debug/xtervo XTERVO_E2E_OUT=/tmp/xtervo-wl ./scripts/e2e_wayland_phase1.sh
 #
 # 依赖：gnome-shell(46+)、dbus-run-session、gnome-screenshot、xclip（可选）、
 #       xwd/ffmpeg（可选）、python3-dbus（IME/快捷键注入，可选）。
@@ -19,10 +19,10 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 ROOT=$PWD
-BIN=${TERVO_BIN:-target/debug/tervo}
-OUT=${TERVO_E2E_OUT:-.logs/e2e-wayland-phase1}
-VIRTUAL=${TERVO_E2E_MONITOR:-1280x800}
-[ -x "$BIN" ] || { echo "缺少可执行文件 $BIN（先 cargo build -p tervo-app --bin tervo）"; exit 1; }
+BIN=${XTERVO_BIN:-target/debug/xtervo}
+OUT=${XTERVO_E2E_OUT:-.logs/e2e-wayland-phase1}
+VIRTUAL=${XTERVO_E2E_MONITOR:-1280x800}
+[ -x "$BIN" ] || { echo "缺少可执行文件 $BIN（先 cargo build -p xtervo-app --bin xtervo）"; exit 1; }
 BIN=$ROOT/$BIN
 
 rm -rf "$OUT"
@@ -294,7 +294,7 @@ echo "== 7. Quake 启用时仍不注册（Wayland）=="
 printf 'quake_enabled = true\n' >"$OUT/quake.toml"
 env -u DISPLAY HOME="$OUT/home" XDG_RUNTIME_DIR="$OUT/rt" WAYLAND_DISPLAY=wayland-0 \
     DBUS_SESSION_BUS_ADDRESS="$BUS" XDG_CONFIG_HOME="$OUT/config" GSETTINGS_BACKEND=memory \
-    TERVO_CONFIG="$OUT/quake.toml" TERVO_LOG_DIR="$OUT/logs" \
+    XTERVO_CONFIG="$OUT/quake.toml" XTERVO_LOG_DIR="$OUT/logs" \
     "$BIN" --title e2e-wl-quake --cols 60 --rows 12 --shell /bin/cat \
     >"$OUT/app-wl-quake.log" 2>&1 &
 APP_PID=$!

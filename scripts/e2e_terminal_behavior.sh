@@ -6,28 +6,28 @@
 # 不占用 :1 / 其它 display，也不 pkill 其他进程。
 #
 # 用法：
-#   cargo build -p tervo-app --bin tervo --bin xwin --bin xclick --bin xkey
+#   cargo build -p xtervo-app --bin xtervo --bin xwin --bin xclick --bin xkey
 #   ./scripts/e2e_terminal_behavior.sh
 #
 # 依赖：Xvfb、OpenBox（仓库 .perf/）、xwd、ffmpeg、python3 + Pillow。
-# 环境变量：E2E_BIN、E2E_DISPLAY、TERVO_PERF_DIR、E2E_XVFB_BIN。
+# 环境变量：E2E_BIN、E2E_DISPLAY、XTERVO_PERF_DIR、E2E_XVFB_BIN。
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT=$PWD
 OUT=${E2E_OUT:-$ROOT/.logs/term-behavior}
 mkdir -p "$OUT" "$OUT/obhome" /tmp/.X11-unix
 
-BIN=${E2E_BIN:-$ROOT/target/debug/tervo}
+BIN=${E2E_BIN:-$ROOT/target/debug/xtervo}
 XWIN=$ROOT/target/debug/xwin
 XCLICK=$ROOT/target/debug/xclick
 XKEY=$ROOT/target/debug/xkey
 for f in "$BIN" "$XWIN" "$XCLICK" "$XKEY"; do
-    [ -x "$f" ] || { echo "缺少 $f；先 cargo build -p tervo-app --bin tervo --bin xwin --bin xclick --bin xkey" >&2; exit 2; }
+    [ -x "$f" ] || { echo "缺少 $f；先 cargo build -p xtervo-app --bin xtervo --bin xwin --bin xclick --bin xkey" >&2; exit 2; }
 done
 
 COMMON=$(git rev-parse --git-common-dir)
 MAIN_ROOT=$(cd "$(dirname "$COMMON")" && pwd)
-PERF=${TERVO_PERF_DIR:-$MAIN_ROOT/.perf}
+PERF=${XTERVO_PERF_DIR:-$MAIN_ROOT/.perf}
 XVFB_BIN=${E2E_XVFB_BIN:-$PERF/xvfb/usr/bin/Xvfb}
 [ -x "$XVFB_BIN" ] || XVFB_BIN=$(command -v Xvfb || true)
 [ -x "$XVFB_BIN" ] || { echo "找不到 Xvfb；不会回退到 Xephyr" >&2; exit 2; }
@@ -87,19 +87,19 @@ start_app() {
         shift
     fi
     printf '%s\n' "$cfg" > "$OUT/$tag.toml"
-    TERVO_CONFIG="$OUT/$tag.toml" TERVO_LOG_DIR="$OUT/logs" TERVO_KEYLOG=1 \
+    XTERVO_CONFIG="$OUT/$tag.toml" XTERVO_LOG_DIR="$OUT/logs" XTERVO_KEYLOG=1 \
         "$BIN" --cols "$cols" --rows "$rows" --shell /bin/sh -- "$@" >"$OUT/app_$tag.log" 2>&1 &
     APP_PID=$!
     WIN=""
     for _ in $(seq 1 120); do
-        WIN=$(xwininfo -root -tree 2>/dev/null | grep -i '"tervo"' | head -1 | awk '{print $1}' || true)
+        WIN=$(xwininfo -root -tree 2>/dev/null | grep -i '"xtervo"' | head -1 | awk '{print $1}' || true)
         [ -n "$WIN" ] && break
         sleep 0.05
     done
-    [ -n "$WIN" ] || { echo "找不到 Tervo 窗口（$tag）；见 $OUT/app_$tag.log" >&2; exit 2; }
-    "$XWIN" Tervo 20 20 >/dev/null 2>&1 || true
+    [ -n "$WIN" ] || { echo "找不到 xtervo 窗口（$tag）；见 $OUT/app_$tag.log" >&2; exit 2; }
+    "$XWIN" xtervo 20 20 >/dev/null 2>&1 || true
     sleep 0.5
-    WIN=$(xwininfo -root -tree | grep -i '"tervo"' | head -1 | awk '{print $1}')
+    WIN=$(xwininfo -root -tree | grep -i '"xtervo"' | head -1 | awk '{print $1}')
     ABS_X=$(xwininfo -id "$WIN" | awk '/Absolute upper-left X/{print $NF}')
     ABS_Y=$(xwininfo -id "$WIN" | awk '/Absolute upper-left Y/{print $NF}')
     W=$(xwininfo -id "$WIN" | awk '/Width:/{print $2}')
@@ -117,7 +117,7 @@ shot() {
 focus_pane() {
     # OpenBox 激活窗口 + 点击 pane；确认 _NET_ACTIVE_WINDOW 已切到本窗口再发键，
     # 避免 Xvfb/OpenBox 启动较慢时按键落到 root/上个进程。
-    "$XWIN" Tervo >/dev/null 2>&1 || true
+    "$XWIN" xtervo >/dev/null 2>&1 || true
     "$XCLICK" "$((ABS_X + W / 2))" "$((ABS_Y + 32 + (H - 32) / 2))" >/dev/null
     for _ in $(seq 1 40); do
         local active
@@ -239,7 +239,7 @@ sleep 0.5
     exit 2
 }
 # 齿轮：root 右上角 x = W-132+14，y = 4+12
-"$XWIN" Tervo >/dev/null 2>&1 || true
+"$XWIN" xtervo >/dev/null 2>&1 || true
 "$XCLICK" "$((ABS_X + W - 118))" "$((ABS_Y + 16))" >/dev/null
 sleep 0.8
 grep -q '\[ui\] settings open=true' "$OUT/app_settings.log" || { echo "齿轮没有打开设置" >&2; exit 1; }
@@ -281,7 +281,7 @@ grep -q '\[ui\] scroll_on_output=true' "$OUT/app_settings.log" || { echo "设置
 shot settings_terminal_mid
 
 # 滚到底：Bell / Images / Key encoding 的相对位置固定
-"$XWIN" Tervo >/dev/null 2>&1 || true
+"$XWIN" xtervo >/dev/null 2>&1 || true
 for _ in $(seq 1 12); do
     "$XCLICK" "$((ABS_X + 600))" "$((ABS_Y + 400))" 5 >/dev/null
     sleep 0.05

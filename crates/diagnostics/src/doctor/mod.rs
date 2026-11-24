@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! Deterministic, offline doctor primitives.
 //!
-//! This module turns existing `tervo.diag.v1` data and explicit user input into
+//! This module turns existing `xtervo.diag.v1` data and explicit user input into
 //! a versioned [`DiagnosticCase`]. It never contacts the network, never calls a
 //! model, never reads scrollback and never invents measurements: absent data is
 //! represented as absent (or `Skipped`/`Unknown`), not as a healthy zero.
 //!
-//! The public surface is intentionally small so `tervo diag` (or another
-//! front-end) can call it as a library; `src/bin/tervo-doctor.rs` is a thin CLI
+//! The public surface is intentionally small so `xtervo diag` (or another
+//! front-end) can call it as a library; `src/bin/xtervo-doctor.rs` is a thin CLI
 //! over the same API.
 
 pub mod evidence;

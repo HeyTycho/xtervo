@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! Tervo 最大化状态机。
+//! xtervo 最大化状态机。
 //!
 //! 设计契约见 `docs/MAXIMIZE_ENGINEERING.md`：
 //!

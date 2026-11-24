@@ -100,7 +100,7 @@ pub enum CoreEvent {
     Clipboard(ClipboardRequest),
     /// OSC 1337 File 语法合法但不是内联图（`inline` 缺省/0）。
     ///
-    /// iTerm2 语义是“只下载、不显示”；Tervo 不实现文件下载，因此忽略该图，
+    /// iTerm2 语义是“只下载、不显示”；xtervo 不实现文件下载，因此忽略该图，
     /// 由 UI 记录/提示，避免客户端参数写错时静默丢图。序列本身已在 core 吞掉。
     IipIgnored(crate::iip::IipNotice),
     /// PTY 读到 EOF / 子进程退出。

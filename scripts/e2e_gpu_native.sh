@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-only
-# TERVO_GPU_NATIVE=1 vertical-slice acceptance on an isolated Xvfb display.
+# XTERVO_GPU_NATIVE=1 vertical-slice acceptance on an isolated Xvfb display.
 #
 # Runs three real app processes:
 #   1. cpu      - SLINT_BACKEND=winit-software, CPU terminal framebuffer
-#   2. gpu      - TERVO_GPU_NATIVE=1 + SLINT_WGPU_CPU=1 (Slint WGPU30)
-#   3. fallback - TERVO_GPU_NATIVE=1 but no WGPU device (software backend),
+#   2. gpu      - XTERVO_GPU_NATIVE=1 + SLINT_WGPU_CPU=1 (Slint WGPU30)
+#   3. fallback - XTERVO_GPU_NATIVE=1 but no WGPU device (software backend),
 #                 must stay on the CPU path without claiming GPU frames
 #
 # Then diffs the terminal region of take_snapshot() between CPU and GPU,
@@ -15,10 +15,10 @@
 # Never uses the user's :1 display. Defaults to :77 and refuses a busy display.
 #
 # Usage:
-#   TERVO_BIN=target/debug/tervo scripts/e2e_gpu_native.sh
-#   TERVO_BIN=/abs/path/tervo DISPLAY_NUM=:78 scripts/e2e_gpu_native.sh
+#   XTERVO_BIN=target/debug/xtervo scripts/e2e_gpu_native.sh
+#   XTERVO_BIN=/abs/path/xtervo DISPLAY_NUM=:78 scripts/e2e_gpu_native.sh
 #
-# Output: $TERVO_GPU_NATIVE_OUT (default <workspace>/target/gpu-native-e2e)
+# Output: $XTERVO_GPU_NATIVE_OUT (default <workspace>/target/gpu-native-e2e)
 #   cpu/ gpu/ fallback/  app.log + snap.before.ppm
 #   gpu/offscreen-*.ppm + .rgba   direct GPU target readback (alpha evidence)
 #   summary.txt / diff.txt / *.png
@@ -41,20 +41,20 @@ if [[ -e "/tmp/.X11-unix/X${display#:}" ]]; then
     exit 2
 fi
 
-out="${TERVO_GPU_NATIVE_OUT:-$root/target/gpu-native-e2e}"
+out="${XTERVO_GPU_NATIVE_OUT:-$root/target/gpu-native-e2e}"
 rm -rf "$out"
 mkdir -p "$out"/{cpu,gpu,fallback,config,cache}
 
-bin="${TERVO_BIN:-$root/target/debug/tervo}"
+bin="${XTERVO_BIN:-$root/target/debug/xtervo}"
 if [[ ! -x "$bin" ]]; then
-    echo "TERVO_BIN=$bin is not executable; build it first (cargo build -p tervo-app --bin tervo)" >&2
+    echo "XTERVO_BIN=$bin is not executable; build it first (cargo build -p xtervo-app --bin xtervo)" >&2
     exit 2
 fi
 
 # Worktrees do not carry the gitignored .tmp-gpu-agent/.perf downloads;
 # resolve them from the main worktree root as well.
 common_root="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"
-xvfb="${TERVO_XVFB:-}"
+xvfb="${XTERVO_XVFB:-}"
 if [[ -z "$xvfb" ]]; then
     for candidate in \
         "$(command -v Xvfb 2>/dev/null || true)" \
@@ -71,14 +71,14 @@ if [[ -z "$xvfb" ]]; then
     done
 fi
 if [[ -z "$xvfb" ]]; then
-    echo "Xvfb not found: install it or set TERVO_XVFB" >&2
+    echo "Xvfb not found: install it or set XTERVO_XVFB" >&2
     exit 2
 fi
 
 cat >"$out/fixture.sh" <<'FIXTURE'
 #!/bin/sh
 printf '\033[2J\033[H\033[?25l'
-printf '\033[1;97mTERVO GPU NATIVE FIXTURE\033[0m\n'
+printf '\033[1;97mXTERVO GPU NATIVE FIXTURE\033[0m\n'
 printf 'ascii: The quick brown fox 0123456789\n'
 printf '\033[31mred\033[0m \033[42mgreen-bg\033[0m \033[4munderline\033[0m \033[2mdim\033[0m \033[8mhidden\033[0m\n'
 printf 'CJK: \344\275\240\345\245\275\344\270\226\347\225\214 \346\227\245\346\234\254\350\252\236\n'
@@ -117,10 +117,10 @@ DISPLAY="$display" xdpyinfo >/dev/null 2>&1 || {
 run_app() {
     local mode="$1"
     shift
-    env -u SLINT_BACKEND -u TERVO_GPU -u TERVO_GPU_NATIVE \
+    env -u SLINT_BACKEND -u XTERVO_GPU -u XTERVO_GPU_NATIVE \
         DISPLAY="$display" SLINT_WGPU_CPU=1 \
-        TERVO_CONFIG="$out/config/cfg-$mode.toml" \
-        TERVO_LOG_DIR="$out/$mode" \
+        XTERVO_CONFIG="$out/config/cfg-$mode.toml" \
+        XTERVO_LOG_DIR="$out/$mode" \
         XDG_CONFIG_HOME="$out/config" \
         XDG_DATA_HOME="$out/config" \
         XDG_CACHE_HOME="$out/cache" \
@@ -136,19 +136,19 @@ run_app() {
 
 echo "running CPU baseline on isolated display $display"
 run_app cpu SLINT_BACKEND=winit-software \
-    TERVO_GPU_SNAPSHOT="$out/cpu/snap" TERVO_GPU_SNAPSHOT_EXIT=1
+    XTERVO_GPU_SNAPSHOT="$out/cpu/snap" XTERVO_GPU_SNAPSHOT_EXIT=1
 
-echo "running TERVO_GPU_NATIVE=1 (WGPU30)"
+echo "running XTERVO_GPU_NATIVE=1 (WGPU30)"
 # llvmpipe can take ~2.5s to present its first WGPU frame; give the imported
 # texture time to be sampled before take_snapshot.
-run_app gpu TERVO_GPU_NATIVE=1 TERVO_GPU_NATIVE_DEBUG=1 \
-    TERVO_GPU_SNAPSHOT_DELAY_MS=15000 \
-    TERVO_GPU_NATIVE_DUMP="$out/gpu/offscreen" \
-    TERVO_GPU_SNAPSHOT="$out/gpu/snap" TERVO_GPU_SNAPSHOT_EXIT=1
+run_app gpu XTERVO_GPU_NATIVE=1 XTERVO_GPU_NATIVE_DEBUG=1 \
+    XTERVO_GPU_SNAPSHOT_DELAY_MS=15000 \
+    XTERVO_GPU_NATIVE_DUMP="$out/gpu/offscreen" \
+    XTERVO_GPU_SNAPSHOT="$out/gpu/snap" XTERVO_GPU_SNAPSHOT_EXIT=1
 
 echo "running failure path (GPU requested, no WGPU device)"
-run_app fallback TERVO_GPU_NATIVE=1 SLINT_BACKEND=winit-software \
-    TERVO_GPU_SNAPSHOT="$out/fallback/snap" TERVO_GPU_SNAPSHOT_EXIT=1
+run_app fallback XTERVO_GPU_NATIVE=1 SLINT_BACKEND=winit-software \
+    XTERVO_GPU_SNAPSHOT="$out/fallback/snap" XTERVO_GPU_SNAPSHOT_EXIT=1
 
 fail=0
 fail_msg() { echo "FAIL: $*" >&2; fail=1; }
@@ -188,7 +188,7 @@ grep -q "gpu-native\] 失败" "$out/gpu/app.log" && \
 # Direct offscreen readback: PPM + raw RGBA (alpha proof)
 rgba=$(find "$out/gpu" -maxdepth 1 -name 'offscreen-*.ppm.rgba' | head -1)
 if [[ -z "$rgba" ]]; then
-    fail_msg "no raw RGBA readback artifact (TERVO_GPU_NATIVE_DUMP)"
+    fail_msg "no raw RGBA readback artifact (XTERVO_GPU_NATIVE_DUMP)"
 else
     alpha=$(python3 - "$rgba" <<'PY'
 import sys

@@ -26,7 +26,7 @@ Image/row ownership
   Frame partial 逐 cell 对账
 
 GPU 显示链路（opt-in，不是统一 GPU）
-  TERVO_GPU=1
+  XTERVO_GPU=1
   CPU framebuffer -> Slint 同一 Skia WGPU30 Device/Queue
   per-pane Rgba8Unorm texture
   slint::Image::try_from
@@ -36,8 +36,8 @@ GPU 显示链路（opt-in，不是统一 GPU）
   fps/femtovg 误判修正
 
 观测/文档
-  tervo.diag.v1 metrics/observability/scene-diff
-  TERVO_FRAME_DUMP / TERVO_LINE_NUMBERS
+  xtervo.diag.v1 metrics/observability/scene-diff
+  XTERVO_FRAME_DUMP / XTERVO_LINE_NUMBERS
   POSTMORTEM_2026-11-11_RENDER_RESIDUE.md
   RENDERING_ROADMAP.md
   scripts/ci_gate.sh
@@ -47,8 +47,8 @@ GPU 显示链路（opt-in，不是统一 GPU）
 
 ```text
 cargo test --workspace                          PASS
-cargo test -p tervo-app --bin tervo             413 passed / 1 ignored
-cargo test -p tervo-core                        139 lib + 4 frame_consistency
+cargo test -p xtervo-app --bin xtervo             413 passed / 1 ignored
+cargo test -p xtervo-core                        139 lib + 4 frame_consistency
 scripts/ci_gate.sh                              PASS
 scripts/e2e_image_scroll_clip.sh                5/5 PASS
 15m CPU soak                                    PASS
@@ -61,16 +61,16 @@ scripts/e2e_image_scroll_clip.sh                5/5 PASS
 
 ```bash
 # 默认 CPU/Skia
-./target/release/tervo
+./target/release/xtervo
 
 # 可选 GPU 显示链路
-TERVO_GPU=1 ./target/release/tervo
+XTERVO_GPU=1 ./target/release/xtervo
 
 # 无 GPU adapter 的 headless 验证
-SLINT_WGPU_CPU=1 TERVO_GPU=1 ./target/release/tervo
+SLINT_WGPU_CPU=1 XTERVO_GPU=1 ./target/release/xtervo
 
 # 显式回退
-TERVO_GPU=0 ./target/release/tervo
+XTERVO_GPU=0 ./target/release/xtervo
 ```
 
 ## 明确未完成

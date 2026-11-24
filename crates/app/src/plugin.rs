@@ -35,7 +35,7 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{Receiver, Sender};
 use serde::{Deserialize, Serialize};
 
-use tervo_core::WakeSignal;
+use xtervo_core::WakeSignal;
 
 use crate::commands::{self, Command, Registry, Shortcut};
 
@@ -97,7 +97,7 @@ pub const PROCESS_STATUS_INTERVAL: Duration = Duration::from_secs(2);
 /// 单次状态请求超时；超时只丢弃该次请求，不 kill 进程。
 pub const PROCESS_STATUS_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// 同一插件在本次 Tervo 运行内允许的自动重启次数；超过后禁用并显示原因。
+/// 同一插件在本次 xtervo 运行内允许的自动重启次数；超过后禁用并显示原因。
 pub const PROCESS_MAX_RESTARTS: u32 = 2;
 
 /// 连续坏 JSON/超长行达到该数量后禁用插件，避免坏插件空转拖日志。
@@ -1836,7 +1836,7 @@ fn run_instance(
         "host_api": PLUGIN_API_VERSION,
         "protocol": PLUGIN_PROTOCOL_VERSION,
         "plugin": plugin,
-        "host": "tervo",
+        "host": "xtervo",
     });
     if let Err(e) = send_json_line(&mut stdin, &init) {
         kill_child(&mut child);
@@ -2276,18 +2276,18 @@ fn spawn_plugin_child(package: &PluginPackage) -> Result<SpawnedChild, String> {
     let mut command = ProcessCommand::new(&package.entry);
     command
         .current_dir(&package.dir)
-        .env("TERVO_PLUGIN_NAME", &package.manifest.name)
-        .env("TERVO_PLUGIN_ID", package.manifest.plugin_id())
-        .env("TERVO_PLUGIN_API", package.manifest.api.to_string())
-        .env("TERVO_PLUGIN_HOST_API", PLUGIN_API_VERSION.to_string())
-        .env("TERVO_PLUGIN_PROTOCOL", PLUGIN_PROTOCOL_VERSION.to_string())
+        .env("XTERVO_PLUGIN_NAME", &package.manifest.name)
+        .env("XTERVO_PLUGIN_ID", package.manifest.plugin_id())
+        .env("XTERVO_PLUGIN_API", package.manifest.api.to_string())
+        .env("XTERVO_PLUGIN_HOST_API", PLUGIN_API_VERSION.to_string())
+        .env("XTERVO_PLUGIN_PROTOCOL", PLUGIN_PROTOCOL_VERSION.to_string())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     #[cfg(unix)]
     unsafe {
         use std::os::unix::process::CommandExt;
-        // 父进程（Tervo）退出时内核给插件发 SIGTERM，避免留下孤儿进程。
+        // 父进程（xtervo）退出时内核给插件发 SIGTERM，避免留下孤儿进程。
         command.pre_exec(|| {
             libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
             Ok(())
@@ -2553,7 +2553,7 @@ fn shutdown_child(child: &mut Child, stdin: &mut std::process::ChildStdin) {
 
 impl PluginStore {
     pub fn dir() -> PathBuf {
-        if let Ok(p) = std::env::var("TERVO_PLUGINS") {
+        if let Ok(p) = std::env::var("XTERVO_PLUGINS") {
             return PathBuf::from(p);
         }
         let base = std::env::var("XDG_CONFIG_HOME")
@@ -2561,7 +2561,7 @@ impl PluginStore {
             .unwrap_or_else(|_| {
                 PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into())).join(".config")
             });
-        base.join("tervo").join("plugins")
+        base.join("xtervo").join("plugins")
     }
 
     pub fn load() -> Self {
@@ -3089,9 +3089,9 @@ fn execute_message(
     for attempt in 0..5 {
         let spawned = ProcessCommand::new(entry)
             .current_dir(plugin_dir)
-            .env("TERVO_PLUGIN_NAME", plugin_name)
-            .env("TERVO_PLUGIN_API", api.to_string())
-            .env("TERVO_PLUGIN_HOST_API", PLUGIN_API_VERSION.to_string())
+            .env("XTERVO_PLUGIN_NAME", plugin_name)
+            .env("XTERVO_PLUGIN_API", api.to_string())
+            .env("XTERVO_PLUGIN_HOST_API", PLUGIN_API_VERSION.to_string())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -3465,7 +3465,7 @@ enabled = false
             .replace("api = 1", "api = 2\nruntime = \"process\"")
             + r#"
 [contributes.ai]
-id = "dev.tervo.ai-echo"
+id = "dev.xtervo.ai-echo"
 name = "AI Echo"
 model = "echo-1"
 description = "deterministic local echo"
@@ -3475,7 +3475,7 @@ description = "deterministic local echo"
         assert!(store.skipped.is_empty(), "{:?}", store.skipped);
         let package = &store.packages[0];
         let ai = package.manifest.ai_info().expect("ai info");
-        assert_eq!(ai.id, "dev.tervo.ai-echo");
+        assert_eq!(ai.id, "dev.xtervo.ai-echo");
         assert_eq!(ai.name, "AI Echo");
         assert_eq!(ai.model, "echo-1");
         assert_eq!(ai.plugin, "ai-echo");
@@ -3484,7 +3484,7 @@ description = "deterministic local echo"
 
         // 空 [contributes.ai]：serde 默认值 + 回退到插件 id/name，不拒绝清单。
         let default_manifest = manifest.replace(
-            "id = \"dev.tervo.ai-echo\"\nname = \"AI Echo\"\nmodel = \"echo-1\"\ndescription = \"deterministic local echo\"\n",
+            "id = \"dev.xtervo.ai-echo\"\nname = \"AI Echo\"\nmodel = \"echo-1\"\ndescription = \"deterministic local echo\"\n",
             "",
         );
         let dir2 = tmpdir("ai-manifest-defaults");
@@ -3714,8 +3714,8 @@ description = "deterministic local echo"
     fn execute_captures_env_protocol_and_streams() {
         let dir = tmpdir("exec-ok");
         let script = r#"#!/bin/sh
-printf 'name=%s\n' "$TERVO_PLUGIN_NAME"
-printf 'api=%s\n' "$TERVO_PLUGIN_API"
+printf 'name=%s\n' "$XTERVO_PLUGIN_NAME"
+printf 'api=%s\n' "$XTERVO_PLUGIN_API"
 if IFS= read -r line; then
   printf 'stdin=%s\n' "$line"
 fi
@@ -4247,7 +4247,7 @@ exit 0
     // ---------------------------------------------------------- 常驻进程插件（V1）
 
     const PROCESS_MANIFEST: &str = r#"
-id = "dev.tervo.fake"
+id = "dev.xtervo.fake"
 name = "fake"
 version = "1.0.0"
 api = 1
@@ -4686,7 +4686,7 @@ title = "Dumb: Ping"
         let store = PluginStore::load_from(&dir);
         assert!(store.skipped.is_empty(), "{:?}", store.skipped);
         let package = &store.packages[0];
-        assert_eq!(package.manifest.plugin_id(), "dev.tervo.fake");
+        assert_eq!(package.manifest.plugin_id(), "dev.xtervo.fake");
         assert_eq!(package.manifest.runtime_kind(), Ok(PluginRuntimeKind::Process));
         assert!(package.manifest.contributes.status);
         assert_eq!(package.manifest.commands[0].args, vec!["world".to_string()]);
@@ -4866,7 +4866,7 @@ time.sleep(30)
     #[test]
     fn ai_chat_routes_payload_and_returns_text() {
         let manifest = r#"
-id = "dev.tervo.ai-echo"
+id = "dev.xtervo.ai-echo"
 name = "ai-echo"
 version = "1.0.0"
 api = 2
@@ -4874,7 +4874,7 @@ runtime = "process"
 entry = "plugin.py"
 
 [contributes.ai]
-id = "dev.tervo.ai-echo"
+id = "dev.xtervo.ai-echo"
 name = "AI Echo"
 model = "echo-1"
 description = "deterministic local echo"
@@ -4911,7 +4911,7 @@ for line in sys.stdin:
         let mut store = PluginStore::load_from(&dir);
         assert!(store.skipped.is_empty(), "{:?}", store.skipped);
         assert_eq!(store.ai_plugins().len(), 1);
-        assert_eq!(store.ai_plugins()[0].id, "dev.tervo.ai-echo");
+        assert_eq!(store.ai_plugins()[0].id, "dev.xtervo.ai-echo");
         store.start_process_plugins_with_timeout(Duration::from_secs(2));
         assert!(
             wait_phase(&store, "ai-echo", RuntimePhase::Running, Duration::from_secs(4)),

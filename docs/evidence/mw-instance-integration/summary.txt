@@ -2,10 +2,10 @@
 
 Branch: agent/mw-instance-integration
 Base: 85a4994 (main)
-Binary: worktree-private target/debug/tervo (debug, winit-software, Xvfb)
+Binary: worktree-private target/debug/xtervo (debug, winit-software, Xvfb)
 
 ## Unit
-cargo test -p tervo-app --bin tervo
+cargo test -p xtervo-app --bin xtervo
 => 551 passed; 0 failed; 1 ignored (546 baseline + 5 new)
 
 ## Single-instance / multi-window e2e
@@ -15,13 +15,13 @@ checks=11
 [
   {
     "name": "primary_control_socket",
-    "detail": "/tmp/tervo-si-e2e-3/tervo/control.sock"
+    "detail": "/tmp/xtervo-si-e2e-3/xtervo/control.sock"
   },
   {
     "name": "primary_window",
     "detail": {
       "id": "0x200003",
-      "title": "Tervo",
+      "title": "xtervo",
       "marker": "/home/user/AIworkspace/rusttabbyterminal/.worktrees/mw-instance-integration/target/single-instance-e2e/session.running"
     }
   },
@@ -73,21 +73,21 @@ checks=11
   {
     "name": "close_keeps_primary",
     "detail": {
-      "closed": "Tervo — 2",
+      "closed": "xtervo — 2",
       "remaining": [
-        "Tervo",
-        "Tervo — 3",
-        "Tervo — 4"
+        "xtervo",
+        "xtervo — 3",
+        "xtervo — 4"
       ]
     }
   },
   {
     "name": "close_keeps_primary",
     "detail": {
-      "closed": "Tervo — 3",
+      "closed": "xtervo — 3",
       "remaining": [
-        "Tervo",
-        "Tervo — 4"
+        "xtervo",
+        "xtervo — 4"
       ]
     }
   },
@@ -110,7 +110,7 @@ scripts/e2e_multi_window_inproc.sh  => PASS (incl. close primary keeps other, ki
 scripts/e2e_mcp_live_control.sh     => PASS
 scripts/e2e_mcp_settings.sh         => PASS (all 12 checks)
 
-## 2m soak (default in-process path, TERVO_MULTI_WINDOW_SECOND only)
+## 2m soak (default in-process path, XTERVO_MULTI_WINDOW_SECOND only)
 scripts/soak_multi_window_inproc.sh
 seconds=120
 rss_growth_kb=2028

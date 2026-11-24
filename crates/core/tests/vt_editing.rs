@@ -15,7 +15,7 @@
 //! 不覆盖：DECCOLM 132 列切换（alacritty 忽略）、双向/竖排终端、滚动区内的
 //! DECOM 原点模式组合（另见 vt220_xterm.rs 的边界断言）。
 
-use tervo_core::TermSim;
+use xtervo_core::TermSim;
 
 fn sim(cols: usize, rows: usize) -> TermSim {
     TermSim::new(cols, rows, 100)

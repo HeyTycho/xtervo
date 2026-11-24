@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! `tervo diag trace-layer`：按层定位“第一个不一致的字节 / cell / 行”。
+//! `xtervo diag trace-layer`：按层定位“第一个不一致的字节 / cell / 行”。
 //!
 //! 分层顺序（与 `docs/POSTMORTEM_2026-11-11_RENDER_RESIDUE.md` §5.1 对齐）：
 //!
@@ -25,8 +25,8 @@ use std::error::Error;
 use std::io::Read;
 
 use serde_json::{json, Value};
-use tervo_core::kitty_graphics::{KittyCommand, KittyEvent, KittyParser};
-use tervo_core::{Frame, IipEvent, IipFilter, SixelEvent, SixelFilter, TermSim};
+use xtervo_core::kitty_graphics::{KittyCommand, KittyEvent, KittyParser};
+use xtervo_core::{Frame, IipEvent, IipFilter, SixelEvent, SixelFilter, TermSim};
 
 use super::{opt, print_json, COMMIT, TARGET, VERSION};
 
@@ -48,7 +48,7 @@ pub(crate) fn cli(args: &[String]) -> Result<(), Box<dyn Error>> {
     let fixture = opt(args, "--fixture");
     if input.is_none() && fixture.is_none() {
         return Err(
-            "trace-layer 需要 --input FILE 或 --fixture NAME（见 tervo diag trace-layer --help）"
+            "trace-layer 需要 --input FILE 或 --fixture NAME（见 xtervo diag trace-layer --help）"
                 .into(),
         );
     }
@@ -136,7 +136,7 @@ pub(crate) fn cli(args: &[String]) -> Result<(), Box<dyn Error>> {
 }
 
 fn help_text() -> &'static str {
-    "用法: tervo diag trace-layer --input FILE [选项]\n\
+    "用法: xtervo diag trace-layer --input FILE [选项]\n\
      \n\
      按 raw -> filter -> Term -> 增量/整屏 Frame -> cell framebuffer -> 图片裁剪\n\
      逐层比较，输出第一处分歧（PASS 表示所有已比较层一致）。\n\
@@ -149,7 +149,7 @@ fn help_text() -> &'static str {
      --cell-width N        图片裁剪审计用 cell 宽（默认 10）\n\
      --cell-height N       图片裁剪审计用 cell 高（默认 20）\n\
      --no-images           不解码图片（仍会过滤图片协议，跳过图片层）\n\
-     --json                输出 tervo.diag.v1 JSON（默认人类可读）\n\
+     --json                输出 xtervo.diag.v1 JSON（默认人类可读）\n\
      --fault SPEC          仅自测定位器：filter-drop=N | frame-residue=R:C[@STEP] | damage-drop=R\n\
      \n\
      退出码始终为 0；脚本请读 JSON 的 status=FAIL。完整像素 framebuffer 不在本命令范围。"
@@ -674,7 +674,7 @@ pub(crate) fn run_pipeline(
 // Frame / Term 比较
 // ---------------------------------------------------------------------------
 
-fn uri_of<'a>(frame: &'a Frame, cell: &tervo_core::CellData) -> Option<&'a str> {
+fn uri_of<'a>(frame: &'a Frame, cell: &xtervo_core::CellData) -> Option<&'a str> {
     if cell.link == 0 {
         None
     } else {
@@ -803,7 +803,7 @@ fn frame_diff(partial: &Frame, full: &Frame) -> Option<FrameDiff> {
     None
 }
 
-fn screen_cell_repr(cell: &tervo_core::CellData) -> String {
+fn screen_cell_repr(cell: &xtervo_core::CellData) -> String {
     format!(
         "{:?} U+{:04X} fg={:#08x} bg={:#08x} flags={:#06x}",
         cell.char(),
@@ -814,7 +814,7 @@ fn screen_cell_repr(cell: &tervo_core::CellData) -> String {
     )
 }
 
-fn same_screen_cell(a: &tervo_core::CellData, b: &tervo_core::CellData) -> bool {
+fn same_screen_cell(a: &xtervo_core::CellData, b: &xtervo_core::CellData) -> bool {
     a.ch == b.ch && a.fg == b.fg && a.bg == b.bg && a.flags == b.flags
 }
 
@@ -1553,7 +1553,7 @@ pub(crate) fn analyze(
 
     // ---- Term / Frame / framebuffer ----
     let mut prod = TermSim::new(options.cols, options.rows, options.scrollback);
-    let mut screen: Vec<tervo_core::CellData> = Vec::new();
+    let mut screen: Vec<xtervo_core::CellData> = Vec::new();
     let mut screen_valid = false;
     let mut pulls = 0usize;
     let mut full_pulls = 0usize;
@@ -1929,7 +1929,7 @@ impl TraceReport {
     pub(crate) fn to_json(&self) -> Value {
         let layers: Vec<Value> = self.layers.iter().map(LayerSummary::to_json).collect();
         json!({
-            "schema": "tervo.diag.v1",
+            "schema": "xtervo.diag.v1",
             "kind": "trace_layer",
             "version": VERSION,
             "commit": COMMIT,
@@ -1956,7 +1956,7 @@ impl TraceReport {
     pub(crate) fn to_text(&self) -> String {
         let mut out = String::new();
         out.push_str(&format!(
-            "tervo diag trace-layer: {}\n",
+            "xtervo diag trace-layer: {}\n",
             self.status.as_str()
         ));
         out.push_str(&format!(
@@ -2227,19 +2227,19 @@ mod tests {
     #[test]
     fn pty_image_with_negative_row_is_clipped_and_audited() {
         let path =
-            std::env::temp_dir().join(format!("tervo-trace-layer-img-{}.bin", std::process::id()));
+            std::env::temp_dir().join(format!("xtervo-trace-layer-img-{}.bin", std::process::id()));
         std::fs::write(&path, tall_sixel()).expect("write sixel");
         let script = format!(
             "printf '\\033[1;1H'; cat '{}'; printf '\\033[2;1H\\r\\n'; sleep 0.5",
             path.display()
         );
-        let handle = tervo_core::spawn(tervo_core::PaneConfig {
+        let handle = xtervo_core::spawn(xtervo_core::PaneConfig {
             cols: 20,
             rows: 2,
             scrollback: 100,
             shell: Some("/bin/bash".to_string()),
             args: vec!["-c".to_string(), script],
-            ..tervo_core::PaneConfig::default()
+            ..xtervo_core::PaneConfig::default()
         })
         .expect("spawn pane");
         let mut frame = handle.new_frame();
@@ -2283,7 +2283,7 @@ mod tests {
     #[test]
     fn audit_frame_images_flags_fully_outside_placement() {
         let mut frame = Frame::new(10, 2);
-        frame.images.push(tervo_core::InlineImage {
+        frame.images.push(xtervo_core::InlineImage {
             id: 1,
             source_id: 1,
             row_id: 1,
@@ -2349,7 +2349,7 @@ mod tests {
     }
 
     fn locate_dsh_raw() -> Option<std::path::PathBuf> {
-        if let Some(path) = std::env::var_os("TERVO_DSH_RAW") {
+        if let Some(path) = std::env::var_os("XTERVO_DSH_RAW") {
             let path = std::path::PathBuf::from(path);
             if path.is_file() {
                 return Some(path);

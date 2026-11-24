@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! Build metadata for the `tervo-doctor` CLI (version/commit/build/target).
+//! Build metadata for the `xtervo-doctor` CLI (version/commit/build/target).
 //!
 //! This mirrors the app's build.rs contract: `SOURCE_DATE_EPOCH` wins, then
-//! `TERVO_BUILD_TIME`, then the current UTC time. The build script only runs
+//! `XTERVO_BUILD_TIME`, then the current UTC time. The build script only runs
 //! local `git` commands; it performs no network access.
 
 use std::path::{Path, PathBuf};
@@ -94,13 +94,13 @@ fn main() {
         .expect("crates/diagnostics 应位于 workspace 根下")
         .to_path_buf();
 
-    let commit = std::env::var("TERVO_GIT_COMMIT")
+    let commit = std::env::var("XTERVO_GIT_COMMIT")
         .ok()
         .filter(|value| !value.trim().is_empty())
         .map(|value| one_line(&value))
         .or_else(|| git(&root, &["rev-parse", "--short=12", "HEAD"]))
         .unwrap_or_else(|| "unknown".to_string());
-    let dirty = match std::env::var("TERVO_GIT_DIRTY") {
+    let dirty = match std::env::var("XTERVO_GIT_DIRTY") {
         Ok(value) => matches!(value.trim(), "1" | "true" | "yes"),
         Err(_) => git(&root, &["status", "--porcelain", "--untracked-files=no"]).is_some(),
     };
@@ -110,7 +110,7 @@ fn main() {
     let built = if let Some(epoch) = source_date {
         format_utc(epoch)
     } else {
-        std::env::var("TERVO_BUILD_TIME")
+        std::env::var("XTERVO_BUILD_TIME")
             .ok()
             .filter(|value| !value.trim().is_empty())
             .map(|value| one_line(&value))
@@ -119,16 +119,16 @@ fn main() {
     let target = std::env::var("TARGET")
         .unwrap_or_else(|_| format!("{}-{}", std::env::consts::ARCH, std::env::consts::OS));
 
-    println!("cargo:rustc-env=TERVO_GIT_COMMIT={commit}");
-    println!("cargo:rustc-env=TERVO_GIT_DIRTY={}", u8::from(dirty));
-    println!("cargo:rustc-env=TERVO_BUILD_TIME={built}");
-    println!("cargo:rustc-env=TERVO_BUILD_TARGET={target}");
+    println!("cargo:rustc-env=XTERVO_GIT_COMMIT={commit}");
+    println!("cargo:rustc-env=XTERVO_GIT_DIRTY={}", u8::from(dirty));
+    println!("cargo:rustc-env=XTERVO_BUILD_TIME={built}");
+    println!("cargo:rustc-env=XTERVO_BUILD_TARGET={target}");
 
     for key in [
         "SOURCE_DATE_EPOCH",
-        "TERVO_BUILD_TIME",
-        "TERVO_GIT_COMMIT",
-        "TERVO_GIT_DIRTY",
+        "XTERVO_BUILD_TIME",
+        "XTERVO_GIT_COMMIT",
+        "XTERVO_GIT_DIRTY",
     ] {
         println!("cargo:rerun-if-env-changed={key}");
     }

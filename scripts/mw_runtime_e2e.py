@@ -252,8 +252,8 @@ def main() -> int:
     check("mcp_audit_has_window_id", {"commands": 11})
 
     wins = x11_windows(args.display)
-    win_a = wins.get("Tervo")
-    win_b = wins.get("Tervo — 2")
+    win_a = wins.get("xtervo")
+    win_b = wins.get("xtervo — 2")
     assert win_a and win_b, wins
     def active():
         try:

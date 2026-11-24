@@ -5,7 +5,7 @@
 用法：
     python3 scripts/measure_startup.py --runs 5
     python3 scripts/measure_startup.py --rss-only
-    python3 scripts/measure_startup.py --rss-only --bin target/debug/tervo
+    python3 scripts/measure_startup.py --rss-only --bin target/debug/xtervo
 
 冷启动定义：spawn 进程 → X11 Damage 事件首次到达（像素真的进了 X server）。
 应用内部同时打印 FIRST_DAMAGE_US（main 入口起算），两者之差就是 exec/动态链接开销。
@@ -19,7 +19,7 @@ import subprocess
 import sys
 import time
 
-BIN = "target/release/tervo"
+BIN = "target/release/xtervo"
 
 
 def read_vm_rss_kb(pid: int) -> int:

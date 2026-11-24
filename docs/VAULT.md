@@ -2,12 +2,12 @@
 
 > 实现：`crates/app/src/vault.rs`、`crates/app/src/askpass.rs`；设置页在 `main.slint` 的 **Vault**
 > 分类。本文同时是安全限制说明与手工验证步骤。GUI 真机验证已在本轮完成（独立
-> `TERVO_CONFIG/TERVO_VAULT/TERVO_PROFILES/TERVO_LOG_DIR` + 窗口移到空白区）：
+> `XTERVO_CONFIG/XTERVO_VAULT/XTERVO_PROFILES/XTERVO_LOG_DIR` + 窗口移到空白区）：
 > 服务端记录 `password auth ok`，pane 出现 `SSH-TEST-OK` / `remote$ `。
 
 ## 1. 能力
 
-- 加密文件 `~/.config/tervo/vault.enc`（`XDG_CONFIG_HOME` 生效；`TERVO_VAULT=/path` 可覆盖）。
+- 加密文件 `~/.config/xtervo/vault.enc`（`XDG_CONFIG_HOME` 生效；`XTERVO_VAULT=/path` 可覆盖）。
 - 主密码 → **Argon2id**（19 MiB / t=2 / p=1，16B 随机 salt，32B key）。
 - **ChaCha20-Poly1305** AEAD 加密；nonce 12B 随机；文件头（magic/version/KDF 参数/salt/nonce）
   作为 AAD 一并认证，篡改头会解密失败。
@@ -17,7 +17,7 @@
   加载/写入时把既有过宽权限收紧为 0600；`<vault>.lock` 上的 `flock` 串行化跨进程
   read-modify-write（`set/remove/clear/change_master` 锁内重读并合并/校验），文件里不含
   主密码/明文密码。
-- 并发：多个 Tervo 进程同时写同一 vault 时不会互相丢更新；另一个进程换过主密码后，
+- 并发：多个 xtervo 进程同时写同一 vault 时不会互相丢更新；另一个进程换过主密码后，
   旧会话的写操作返回「已被其他进程修改」，需要重新解锁，不会把新文件覆盖回旧档。
 - 设置 → Vault 页：状态、路径、Master 密码输入（masked）、Set/Change、Unlock、Lock、
   Clear（两次点击确认）、错误/提示。
@@ -32,7 +32,7 @@
 ## 2. 文件格式（版本 1）
 
 ```text
-TERVO-VAULT 1
+XTERVO-VAULT 1
 kdf=argon2id
 m=19456
 t=2
@@ -79,7 +79,7 @@ m≤65536、t≤4、p≤4；超限文件在 Argon2 派生之前快速返回 Corr
    否则 ssh 会先尝试 agent/密钥：只要服务器接受某个公钥，就根本不会出现密码 prompt，
    Vault 密码和 askpass 都不会被用到（GUI 实测表现为服务端 `password auth ok` 为 0、
    askpass 调试文件为空）。`auth=agent/key` 不注入这些参数。
-5. 创建临时目录（`$TMPDIR/tervo-askpass-<pid>-<n>/`，0700）与脚本（0700），脚本内容：
+5. 创建临时目录（`$TMPDIR/xtervo-askpass-<pid>-<n>/`，0700）与脚本（0700），脚本内容：
 
    ```sh
    #!/bin/sh
@@ -90,13 +90,13 @@ m≤65536、t≤4、p≤4；超限文件在 Argon2 派生之前快速返回 Corr
      *verification*|*one-time*|*onetime*|*otp*|*passcode*|*auth\ code*|*验证码*|*ワンタイム*)
        printf 'no\n' ;;
      *password*|*passwd*|*passwort*|*mot\ de\ passe*|*contraseña*|*senha*|*wachtwoord*|*пароль*|*Пароль*|*ПАРОЛЬ*|*パスワード*|*비밀번호*|*密码*|*密碼*|*口令*)
-       if [ -n "$TERVO_ASKPASS_DEBUG" ]; then
-         printf '%s\n' "match=password prompt=$prompt" >>"$TERVO_ASKPASS_DEBUG" 2>/dev/null
+       if [ -n "$XTERVO_ASKPASS_DEBUG" ]; then
+         printf '%s\n' "match=password prompt=$prompt" >>"$XTERVO_ASKPASS_DEBUG" 2>/dev/null
        fi
-       printf '%s\n' "$TERVO_ASKPASS_SECRET" ;;
+       printf '%s\n' "$XTERVO_ASKPASS_SECRET" ;;
      *)
-       if [ -n "$TERVO_ASKPASS_DEBUG" ]; then
-         printf '%s\n' "match=no prompt=$prompt" >>"$TERVO_ASKPASS_DEBUG" 2>/dev/null
+       if [ -n "$XTERVO_ASKPASS_DEBUG" ]; then
+         printf '%s\n' "match=no prompt=$prompt" >>"$XTERVO_ASKPASS_DEBUG" 2>/dev/null
        fi
        printf 'no\n' ;;
    esac
@@ -105,9 +105,9 @@ m≤65536、t≤4、p≤4；超限文件在 Argon2 派生之前快速返回 Corr
    给 ssh 子进程设置：
    - `SSH_ASKPASS=<临时脚本路径>`
    - `SSH_ASKPASS_REQUIRE=force`
-   - `TERVO_ASKPASS_SECRET=<密码>`
+   - `XTERVO_ASKPASS_SECRET=<密码>`
 
-   可选诊断：Tervo 进程环境里设置 `TERVO_ASKPASS_DEBUG=<文件>` 后，脚本每次被调用都会
+   可选诊断：xtervo 进程环境里设置 `XTERVO_ASKPASS_DEBUG=<文件>` 后，脚本每次被调用都会
    追加一行 `match=password|no prompt=...`（**不含密码**），用于确认 askpass 是否真的
    被 ssh 调用、prompt 是否被识别。生产环境不要长期开启。
 
@@ -120,7 +120,7 @@ m≤65536、t≤4、p≤4；超限文件在 Argon2 派生之前快速返回 Corr
    - `[askpass] 已启用 profile=<id> require=force debug=<bool>`
    - `[askpass] 注入 ssh 子进程环境: keys=["SSH_ASKPASS","SSH_ASKPASS_REQUIRE", ...] secret_set=true`
    - known_hosts 未命中时的 lookup/strict/候选路径。
-   结合 `TERVO_ASKPASS_DEBUG` 可以区分「askpass 没启用」「脚本没被调用」「prompt 未识别」
+   结合 `XTERVO_ASKPASS_DEBUG` 可以区分「askpass 没启用」「脚本没被调用」「prompt 未识别」
    「SSH 环境没传到」四类问题。
 8. Pane 关闭时 `Askpass` guard 删除临时目录并尽力清零环境变量副本。
 9. 未勾选保存：不创建 askpass，由 ssh 在终端里正常交互式询问（不经过 Vault）。
@@ -134,9 +134,9 @@ m≤65536、t≤4、p≤4；超限文件在 Argon2 派生之前快速返回 Corr
 1. **askpass 密码经子进程环境变量传递**。同一用户（以及 root）可通过
    `/proc/<ssh-pid>/environ` 看到明文密码，也可能从进程内存/core dump 获得。这比写明文
    文件好（不落盘），但**不是最终方案**。
-   - 后续：Tervo 主进程把密码放进继承 fd/pipe（memfd 或 pipe），askpass 从 fd 读取；
+   - 后续：xtervo 主进程把密码放进继承 fd/pipe（memfd 或 pipe），askpass 从 fd 读取；
      环境只留 fd 号。注意当前 PTY 启动链（portable-pty）会在 `pre_exec` 里关闭所有
-     `fd > 2`，需要给 `spawn` 增加 fd 白名单或改由 Tervo 主进程用 Unix socket 按次下发。
+     `fd > 2`，需要给 `spawn` 增加 fd 白名单或改由 xtervo 主进程用 Unix socket 按次下发。
 2. **解锁后主密码/凭据在进程内存**。本 MVP 未引入 `mlock`/完整 `zeroize`；后台 KDF
    线程会覆盖自己持有的主密码副本，`Unlocked` 的 Drop 以及 set/remove/clear 会覆盖 key
    与被替换/删除的密码字符串，AEAD 明文 JSON 放在 Drop 时清零的缓冲区里；但分配器/
@@ -151,7 +151,7 @@ m≤65536、t≤4、p≤4；超限文件在 Argon2 派生之前快速返回 Corr
 9. 文件 `vault.enc` 写入/加载时强制 0600（既有 0644 会在解锁/写入时收紧）；配置目录/
    `profiles.toml` 的权限没有统一收紧（Linux 默认受 `umask` 影响）。
 10. **known_hosts 预检是 best-effort，不是第二套 SSH 实现**：最终认证/主机密钥握手仍由
-    系统 ssh 完成。Tervo 在连接前额外做一次 `ssh-keyscan` 预检，首次连接/密钥变更时弹窗，
+    系统 ssh 完成。xtervo 在连接前额外做一次 `ssh-keyscan` 预检，首次连接/密钥变更时弹窗，
     用户必须显式选择「Trust & connect / Update key & connect / Once in terminal」，没有
     静默信任。限制：
     - 配置了 `ProxyJump` 时 `ssh-keyscan` 无法穿透跳板机 → 判为 Unverifiable，回退到
@@ -167,8 +167,8 @@ m≤65536、t≤4、p≤4；超限文件在 Argon2 派生之前快速返回 Corr
     senha/wachtwoord/пароль/パスワード/비밀번호/密码/密碼/口令）并显式排除 OTP/验证码/
     one-time code 等 keyboard-interactive 问题；未识别的自定义问题回答 `no`，认证会快速
     失败而不会把账户密码回填给验证码。此时可取消勾选保存、按终端提示交互式输入。
-12. `TERVO_ASKPASS_DEBUG` 诊断文件会记录服务器发来的 prompt 原文（通常含用户名/主机名，
-    **不含密码**）。只在排查时临时开启；文件路径由用户环境变量指定，Tervo 不自动创建。
+12. `XTERVO_ASKPASS_DEBUG` 诊断文件会记录服务器发来的 prompt 原文（通常含用户名/主机名，
+    **不含密码**）。只在排查时临时开启；文件路径由用户环境变量指定，xtervo 不自动创建。
 13. `auth=password` 会禁用公钥认证。若服务器实际只接受公钥、或用户想回退到 agent，
     应把 Profile 的 Auth 改成 `agent`/`key`，而不是依赖密码 Profile 的隐式回退。
 
@@ -177,7 +177,7 @@ m≤65536、t≤4、p≤4；超限文件在 Argon2 派生之前快速返回 Corr
 ```bash
 export CARGO_HOME=/home/user/AIworkspace/rusttabbyterminal/.cargo
 export CARGO_TARGET_DIR=$PWD/target
-cargo test -p tervo-app --bin tervo
+cargo test -p xtervo-app --bin xtervo
 ```
 
 覆盖（W-02 后 app 351 例；Vault/askpass/known_hosts 相关节选）：
@@ -208,9 +208,9 @@ cargo test -p tervo-app --bin tervo
   0700 权限、真实 `ssh -G`/`ssh-keygen -F` known_hosts 判定）
 - `askpass::tests::applied_envs_reach_real_child_process`
   （`apply()` 后真的 spawn 子进程，验证 `SSH_ASKPASS`/`SSH_ASKPASS_REQUIRE=force`/
-  `TERVO_ASKPASS_SECRET` 到达子进程，脚本路径存在）
+  `XTERVO_ASKPASS_SECRET` 到达子进程，脚本路径存在）
 - `askpass::tests::debug_file_records_prompt_without_secret`
-  （`TERVO_ASKPASS_DEBUG` 记录 prompt/匹配分支，但文件里没有密码）
+  （`XTERVO_ASKPASS_DEBUG` 记录 prompt/匹配分支，但文件里没有密码）
 - `askpass::tests::host_key_known_matches_nonstandard_port_entry`
   （Profile 级 `[127.0.0.1]:2222` 命中，端口/主机不同必须 miss）
 - `askpass::tests::host_key_known_uses_resolved_hostname_from_ssh_config`
@@ -222,7 +222,7 @@ cargo test -p tervo-app --bin tervo
 
 所有 Vault 测试使用 `std::env::temp_dir()` 下独立目录，不读写真实 `$HOME`。
 
-无 GUI 的密码自动登录探针（不启动 Tervo）。**必须在 PTY 里跑**：GUI 里的 ssh 有 tty，
+无 GUI 的密码自动登录探针（不启动 xtervo）。**必须在 PTY 里跑**：GUI 里的 ssh 有 tty，
 只有 `SSH_ASKPASS_REQUIRE=force` 才会走 askpass；`</dev/null` 的旧探针会因 stdin 不是
 tty 而“碰巧”走 askpass，无法覆盖真实 GUI 路径。
 
@@ -240,10 +240,10 @@ cat > "$d/askpass.sh" <<'EOF'
 prompt="$1"
 case "$prompt" in
   *[Pp]assword*|*密码*)
-    [ -n "$TERVO_ASKPASS_DEBUG" ] && printf '%s\n' "match=password prompt=$prompt" >>"$TERVO_ASKPASS_DEBUG"
-    printf '%s\n' "$TERVO_ASKPASS_SECRET" ;;
+    [ -n "$XTERVO_ASKPASS_DEBUG" ] && printf '%s\n' "match=password prompt=$prompt" >>"$XTERVO_ASKPASS_DEBUG"
+    printf '%s\n' "$XTERVO_ASKPASS_SECRET" ;;
   *)
-    [ -n "$TERVO_ASKPASS_DEBUG" ] && printf '%s\n' "match=no prompt=$prompt" >>"$TERVO_ASKPASS_DEBUG"
+    [ -n "$XTERVO_ASKPASS_DEBUG" ] && printf '%s\n' "match=no prompt=$prompt" >>"$XTERVO_ASKPASS_DEBUG"
     printf 'no\n' ;;
 esac
 EOF
@@ -252,8 +252,8 @@ chmod 700 "$d/askpass.sh"
 # 已知 host：在 PTY 里跑真实 ssh（与 GUI 相同：stdin 是 tty，靠 REQUIRE=force 走 askpass）。
 # 期望 server.log 有 "password auth ok" + "pty request"，终端出现 SSH-TEST-OK；
 # timeout 退出是因为测试服务不会主动关闭 shell，不是认证失败。
-SSH_ASKPASS="$d/askpass.sh" SSH_ASKPASS_REQUIRE=force TERVO_ASKPASS_SECRET=s3cret \
-  TERVO_ASKPASS_DEBUG="$d/askpass-debug.log" \
+SSH_ASKPASS="$d/askpass.sh" SSH_ASKPASS_REQUIRE=force XTERVO_ASKPASS_SECRET=s3cret \
+  XTERVO_ASKPASS_DEBUG="$d/askpass-debug.log" \
   timeout 10 script -qec "ssh -o PubkeyAuthentication=no \
     -o PreferredAuthentications=password,keyboard-interactive \
     -o UserKnownHostsFile=$d/known_hosts -o StrictHostKeyChecking=yes \
@@ -265,7 +265,7 @@ cat "$d/askpass-debug.log"          # match=password prompt=test@127.0.0.1's pas
 # 未知 host（空 known_hosts）：即使强制 askpass 也只回答一次 no，快速
 # "Host key verification failed."（rc=255），不会把密码当 yes/密码重试。
 : > "$d/unknown_known_hosts"
-SSH_ASKPASS="$d/askpass.sh" SSH_ASKPASS_REQUIRE=force TERVO_ASKPASS_SECRET=s3cret \
+SSH_ASKPASS="$d/askpass.sh" SSH_ASKPASS_REQUIRE=force XTERVO_ASKPASS_SECRET=s3cret \
   timeout 10 script -qec "ssh -o PubkeyAuthentication=no \
     -o PreferredAuthentications=password,keyboard-interactive \
     -o UserKnownHostsFile=$d/unknown_known_hosts -p 2222 -l test 127.0.0.1" /dev/null
@@ -277,8 +277,8 @@ kill "$srv" 2>/dev/null
 
 前置：系统有 `ssh` 服务端/账号；`ssh -V` ≥ 8.4。
 
-1. 启动：`./target/release/tervo`（共享显示器环境请让有权限的 agent 操作；独立
-   `TERVO_CONFIG/TERVO_VAULT/TERVO_PROFILES/TERVO_LOG_DIR`，窗口移到空白区）。
+1. 启动：`./target/release/xtervo`（共享显示器环境请让有权限的 agent 操作；独立
+   `XTERVO_CONFIG/XTERVO_VAULT/XTERVO_PROFILES/XTERVO_LOG_DIR`，窗口移到空白区）。
 2. 打开齿轮 → 左侧 **Vault**：
    - 状态应显示「未初始化」；输入 ≥8 字符主密码 → **Set/Change** → 状态「已解锁 · 0 条凭据」。
    - 点 **Lock** → 状态「已锁定」；再输入主密码 → **Unlock** 恢复。
@@ -295,10 +295,10 @@ kill "$srv" 2>/dev/null
    - 若终端出现 `Host key verification failed.` 而不是指纹确认，说明 known_hosts 判定
      与 askpass 兜底生效（未自动接受新 key）；先在终端手动 `ssh` 一次确认 host key。
 5. 安全核对：
-   - `grep -a '你的密码' ~/.config/tervo/vault.enc` 应无结果；
-   - `stat -c '%a' ~/.config/tervo/vault.enc` 应为 `600`；
-   - `grep -a '你的密码' ~/.config/tervo/profiles.toml` 应无结果（只有 `save_password = true`）；
-   - 进程日志（`~/.local/state/tervo/logs/`）不得出现密码；`TERVO_ASKPASS_DEBUG`
+   - `grep -a '你的密码' ~/.config/xtervo/vault.enc` 应无结果；
+   - `stat -c '%a' ~/.config/xtervo/vault.enc` 应为 `600`；
+   - `grep -a '你的密码' ~/.config/xtervo/profiles.toml` 应无结果（只有 `save_password = true`）；
+   - 进程日志（`~/.local/state/xtervo/logs/`）不得出现密码；`XTERVO_ASKPASS_DEBUG`
      文件也不得出现密码。
 6. 错误路径：错主密码 → 错误提示且保持锁定；截断 vault.enc → 报损坏且原文件不被覆盖；
    Clear 第一次点提示确认，第二次清空且主密码/文件保留。
@@ -317,11 +317,11 @@ kill "$srv" 2>/dev/null
   [profile] ssh 命令: ssh -o PubkeyAuthentication=no \
     -o PreferredAuthentications=password,keyboard-interactive -p 2222 -l test \
     -o UserKnownHostsFile=.../known_hosts -o StrictHostKeyChecking=yes 127.0.0.1
-  [askpass] 注入 ssh 子进程环境: keys=["SSH_ASKPASS", "SSH_ASKPASS_REQUIRE", "TERVO_ASKPASS_SECRET"] secret_set=true
+  [askpass] 注入 ssh 子进程环境: keys=["SSH_ASKPASS", "SSH_ASKPASS_REQUIRE", "XTERVO_ASKPASS_SECRET"] secret_set=true
   [profile] open "vaultssh" kind=ssh
   ```
 
-- `TERVO_ASKPASS_DEBUG`：`match=password prompt=test@127.0.0.1's password:`（脚本确实被调用）。
+- `XTERVO_ASKPASS_DEBUG`：`match=password prompt=test@127.0.0.1's password:`（脚本确实被调用）。
 - 服务端日志：`[ssh-test] password auth ok` + `[ssh-test] pty request 60x20 term=b'xterm-256color'`。
 - pane 内容：`SSH-TEST-OK` / `remote$ `（远端 shell 提示符出现）。
 - 安全检查：app 日志、askpass 调试文件、profiles.toml、vault.enc 中均搜不到明文密码；

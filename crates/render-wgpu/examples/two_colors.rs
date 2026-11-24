@@ -16,11 +16,11 @@
 //! ```text
 //! Xvfb :99 -screen 0 1280x720x24 &
 //! DISPLAY=:99 SLINT_WGPU_CPU=1 \
-//!   cargo run -p tervo-render-wgpu --features slint-presenter --example two_colors
+//!   cargo run -p xtervo-render-wgpu --features slint-presenter --example two_colors
 //! ```
 //!
 //! Snapshots are written as binary PPM files to
-//! `$TERVO_WGPU_SNAPSHOT_DIR` (default: `target/render-wgpu-snapshots`), so the
+//! `$XTERVO_WGPU_SNAPSHOT_DIR` (default: `target/render-wgpu-snapshots`), so the
 //! example never depends on a user-specific absolute path.
 
 use std::cell::{Cell, RefCell};
@@ -28,13 +28,13 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use tervo_render::Renderer as _;
-use tervo_render_wgpu::{SlintTexturePresenter, WgpuRenderer};
-use tervo_scene::{DamageRegion, PhysicalSize, Scene};
+use xtervo_render::Renderer as _;
+use xtervo_render_wgpu::{SlintTexturePresenter, WgpuRenderer};
+use xtervo_scene::{DamageRegion, PhysicalSize, Scene};
 
 slint::slint! {
     export component App inherits Window {
-        title: "tervo-render-wgpu-two-colors";
+        title: "xtervo-render-wgpu-two-colors";
         width: 320px;
         height: 200px;
         in-out property <image> frame;
@@ -124,7 +124,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         "two_colors: imported {}x{} {:?} texture on Slint's device",
                         presenter.size().width,
                         presenter.size().height,
-                        tervo_render_wgpu::FRAME_FORMAT,
+                        xtervo_render_wgpu::FRAME_FORMAT,
                     );
                     *setup_state.borrow_mut() = Some(PresenterState {
                         renderer,
@@ -276,7 +276,7 @@ fn write_ppm(
     snapshot: &slint::SharedPixelBuffer<slint::Rgba8Pixel>,
     label: &str,
 ) -> std::io::Result<PathBuf> {
-    let directory = std::env::var_os("TERVO_WGPU_SNAPSHOT_DIR")
+    let directory = std::env::var_os("XTERVO_WGPU_SNAPSHOT_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("target/render-wgpu-snapshots"));
     std::fs::create_dir_all(&directory)?;

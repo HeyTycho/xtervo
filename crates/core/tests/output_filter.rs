@@ -7,7 +7,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tervo_core::{
+use xtervo_core::{
     spawn, Frame, OutputFilter, OutputFilterHandle, PaneConfig, PaneHandle, MAX_OUTPUT_FILTER_BYTES,
 };
 
@@ -43,7 +43,7 @@ impl OutputFilter for AlwaysNone {
 struct Panics;
 impl OutputFilter for Panics {
     fn filter(&self, _bytes: &[u8]) -> Option<Vec<u8>> {
-        panic!("test filter panic must not crash Tervo");
+        panic!("test filter panic must not crash xtervo");
     }
 }
 

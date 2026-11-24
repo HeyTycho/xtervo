@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! `TERVO_GPU=1` 可选显示链路（spike / 非默认）。
+//! `XTERVO_GPU=1` 可选显示链路（spike / 非默认）。
 //!
 //! 把 CPU 终端 framebuffer 用 `queue.write_texture` 写进一张 **Slint 渲染器同一个
 //! wgpu Device/Queue** 上的 `Rgba8Unorm` 纹理，再用 `slint::Image::try_from(texture)`
@@ -8,7 +8,7 @@
 //!
 //! 边界（刻意不做的事）：
 //! - 不做 GPU Scene / glyph atlas / 图片 GPU 合成：终端栅格化仍在 CPU（`Renderer`）。
-//! - 不是默认路径：只有 `TERVO_GPU=1` 且 WGPU30 后端选中有 device/queue 才启用；
+//! - 不是默认路径：只有 `XTERVO_GPU=1` 且 WGPU30 后端选中有 device/queue 才启用；
 //!   其余情况返回 `None`，调用方继续用原来的 CPU/Skia `Image::from_rgba8`。
 //! - 不做整屏重绘兜底：只上传本帧实际重绘的行（`Renderer::dirty_rows`）；首帧/
 //!   resize 后纹理新建时上传整帧。
@@ -22,25 +22,25 @@ use slint::wgpu_30::wgpu;
 
 use crate::runtime::WindowId;
 
-/// `TERVO_CPU=1`：强制 CPU/Skia，关闭所有 GPU 路径。
+/// `XTERVO_CPU=1`：强制 CPU/Skia，关闭所有 GPU 路径。
 pub fn cpu_forced() -> bool {
     static CPU: OnceLock<bool> = OnceLock::new();
     *CPU.get_or_init(|| {
-        std::env::var("TERVO_CPU").is_ok_and(|v| {
+        std::env::var("XTERVO_CPU").is_ok_and(|v| {
             matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")
         })
     })
 }
 
-/// `TERVO_GPU` 是否请求 GPU 显示链路（默认 true）。
+/// `XTERVO_GPU` 是否请求 GPU 显示链路（默认 true）。
 pub fn requested() -> bool {
     static REQUESTED: OnceLock<bool> = OnceLock::new();
     *REQUESTED.get_or_init(|| {
-        // GPU-native 时代默认请求 WGPU；显式 TERVO_CPU=1 / TERVO_GPU=0 才关闭。
+        // GPU-native 时代默认请求 WGPU；显式 XTERVO_CPU=1 / XTERVO_GPU=0 才关闭。
         if cpu_forced() {
             return false;
         }
-        match std::env::var("TERVO_GPU") {
+        match std::env::var("XTERVO_GPU") {
             Ok(v) => !matches!(
                 v.trim().to_ascii_lowercase().as_str(),
                 "0" | "false" | "no" | "off"
@@ -53,7 +53,7 @@ pub fn requested() -> bool {
 /// 是否每帧打印上传明细（默认只打首帧/错误）。
 fn debug() -> bool {
     static DEBUG: OnceLock<bool> = OnceLock::new();
-    *DEBUG.get_or_init(|| std::env::var_os("TERVO_GPU_DEBUG").is_some())
+    *DEBUG.get_or_init(|| std::env::var_os("XTERVO_GPU_DEBUG").is_some())
 }
 
 struct FrameSlot {
@@ -127,7 +127,7 @@ pub fn install(device: &wgpu::Device, queue: &wgpu::Queue) {
 /// Slint 已经保证多窗口复用同一 WGPU device/queue；这里只在 device 真正变化
 /// （后端重建）时丢弃旧纹理。第二个窗口 setup 不得清掉第一个窗口的 frames。
 pub fn install_for(window: WindowId, device: &wgpu::Device, queue: &wgpu::Queue) {
-    // Stage 0 (`TERVO_GPU=1`) 和 Stage 1 (`TERVO_GPU_NATIVE=1`) 共用 Slint 的
+    // Stage 0 (`XTERVO_GPU=1`) 和 Stage 1 (`XTERVO_GPU_NATIVE=1`) 共用 Slint 的
     // 同一个 WGPU30 device/queue；是否启用各自链路由各自 ready() 决定。
     if !requested() && !crate::gpu_native::requested() {
         return;
@@ -156,7 +156,7 @@ pub fn install_for(window: WindowId, device: &wgpu::Device, queue: &wgpu::Queue)
     let limits = device.limits();
     eprintln!(
         "[gpu] {window} 拿到 Slint WGPU30 同一 device/queue；max_texture_dimension_2d={} \
-         max_buffer_size={}（TERVO_GPU={} stage0 CPU 纹理; TERVO_GPU_NATIVE={} Scene 文字）",
+         max_buffer_size={}（XTERVO_GPU={} stage0 CPU 纹理; XTERVO_GPU_NATIVE={} Scene 文字）",
         limits.max_texture_dimension_2d,
         limits.max_buffer_size,
         requested(),
@@ -331,7 +331,7 @@ pub fn pane_image(
     }
     if recreate {
         let texture = state.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("tervo-terminal-frame"),
+            label: Some("xtervo-terminal-frame"),
             size: wgpu::Extent3d {
                 width,
                 height,
