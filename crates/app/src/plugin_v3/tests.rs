@@ -135,6 +135,7 @@ import sys
 import time
 
 STATUS_DELAY = __STATUS_DELAY__
+HANDSHAKE_DELAY = __HANDSHAKE_DELAY__
 IGNORE_PING = False
 FREEZE_AFTER_INIT = False
 PROTOCOL = 3
@@ -190,6 +191,9 @@ def handle(msg):
     rid = msg.get("id")
     params = msg.get("params") or {}
     if method == "initialize":
+        if HANDSHAKE_DELAY:
+            # 模拟慢握手：宿主启动早期派发的 startup 事件会先到 supervisor 队列。
+            time.sleep(HANDSHAKE_DELAY)
         respond(rid, {"protocol_version": PROTOCOL})
         if FREEZE_AFTER_INIT:
             # 模拟停读 stdin 的插件：握手后不再消费宿主写入。
@@ -349,10 +353,22 @@ if __name__ == "__main__":
 "####;
 
 fn install_plugin(root: &Path, dir_name: &str, manifest_body: &str, status_delay: f32) -> PathBuf {
+    install_plugin_with_handshake_delay(root, dir_name, manifest_body, status_delay, 0.0)
+}
+
+fn install_plugin_with_handshake_delay(
+    root: &Path,
+    dir_name: &str,
+    manifest_body: &str,
+    status_delay: f32,
+    handshake_delay: f32,
+) -> PathBuf {
     let dir = root.join(dir_name);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("plugin.toml"), manifest_body).unwrap();
-    let script = PLUGIN_SCRIPT.replace("__STATUS_DELAY__", &status_delay.to_string());
+    let script = PLUGIN_SCRIPT
+        .replace("__STATUS_DELAY__", &status_delay.to_string())
+        .replace("__HANDSHAKE_DELAY__", &handshake_delay.to_string());
     write_executable(&dir.join("main.py"), &script);
     dir
 }
@@ -612,6 +628,36 @@ fn first_enable_requires_confirmation_and_persists_approval() {
     ));
     store.disable_plugin("dev.test.approval").unwrap();
     assert_eq!(row_of(&store, "dev.test.approval").status, "disabled");
+    store.shutdown_processes();
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn startup_event_dispatched_before_handshake_is_queued_until_initialized() {
+    let root = tmpdir("startup-before-handshake");
+    install_plugin_with_handshake_delay(
+        &root,
+        "plugin",
+        &manifest("dev.test.startup", "1.0.0", false, false, false),
+        0.0,
+        0.4,
+    );
+    let state = root.join("state.toml");
+    let mut store = load(&root, &state, fast_options());
+    enable(&mut store, "dev.test.startup");
+    // main.rs 在 supervisor 还处于 Starting 时就派发 startup；旧实现因
+    // initialized=false 直接丢弃，插件永远收不到 startup（docs §7 要求排队）。
+    assert!(store.spawn_event(PluginEvent::Startup, &json!({})) > 0);
+    let events = root.join("plugin/events.txt");
+    assert!(
+        wait_until(
+            || std::fs::read_to_string(&events)
+                .map(|text| text.lines().any(|line| line == "startup"))
+                .unwrap_or(false),
+            Duration::from_secs(3)
+        ),
+        "startup 事件必须在 initialized 之后补发，不能因握手竞态丢失"
+    );
     store.shutdown_processes();
     let _ = std::fs::remove_dir_all(&root);
 }
