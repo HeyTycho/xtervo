@@ -2,9 +2,9 @@
 # 命令: cargo test -p xtervo-core --test sixel cjk_before_bel_sixel_keeps_following_text
 # 时间: 2026-11-11 18:52:47 CST
 
-   Compiling xtervo-core v0.3.1 (/home/user/AIworkspace/rusttabbyterminal/.worktrees/agent-filter-audit/crates/core)
+   Compiling xtervo-core v0.3.1 (/home/user/AIworkspace/xtervo/.worktrees/agent-filter-audit/crates/core)
     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.40s
-     Running tests/sixel.rs (/home/user/AIworkspace/rusttabbyterminal/target/debug/deps/sixel-933e0cb5b8069b52)
+     Running tests/sixel.rs (/home/user/AIworkspace/xtervo/target/debug/deps/sixel-933e0cb5b8069b52)
 
 running 1 test
 test cjk_before_bel_sixel_keeps_following_text ... FAILED

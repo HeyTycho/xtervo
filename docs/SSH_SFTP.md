@@ -71,7 +71,7 @@ OTP/验证码 prompt（回答 `no`，不会把账户密码填给一次性验证�
 ## 6. 测试与验收
 
 ```bash
-CARGO_HOME=$PWD/.cargo CARGO_TARGET_DIR=/home/user/AIworkspace/rusttabbyterminal/target \
+CARGO_HOME=$PWD/.cargo CARGO_TARGET_DIR=/home/user/AIworkspace/xtervo/target \
   cargo test --offline --workspace
 ./scripts/e2e_ssh_sftp_vault.sh   # Xvfb :139
 ```

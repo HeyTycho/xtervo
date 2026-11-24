@@ -1,13 +1,13 @@
-[mw-spike] mode=software out=/home/user/AIworkspace/rusttabbyterminal/.worktrees/mw-spike/docs/evidence/mw-spike/software hold_ms=12000 display=Some(":88")
+[mw-spike] mode=software out=/home/user/AIworkspace/xtervo/.worktrees/mw-spike/docs/evidence/mw-spike/software hold_ms=12000 display=Some(":88")
 [software] set_rendering_notifier returned Unsupported (expected Unsupported)
 [focus:B] focused=false
 [focus:A] focused=false
 [software] two windows created without a rendering notifier
 [focus:A] focused=true
-[shot] /home/user/AIworkspace/rusttabbyterminal/.worktrees/mw-spike/docs/evidence/mw-spike/software/A_initial.png (520x340)
+[shot] /home/user/AIworkspace/xtervo/.worktrees/mw-spike/docs/evidence/mw-spike/software/A_initial.png (520x340)
 [pixel] A background (3,3)=[122, 162, 247, 255] ok
 [snapshot] A_initial 520x340
-[shot] /home/user/AIworkspace/rusttabbyterminal/.worktrees/mw-spike/docs/evidence/mw-spike/software/B_initial.png (640x400)
+[shot] /home/user/AIworkspace/xtervo/.worktrees/mw-spike/docs/evidence/mw-spike/software/B_initial.png (640x400)
 [pixel] B background (3,3)=[247, 118, 142, 255] ok
 [snapshot] B_initial 640x400
 [facts] A: slint_size=520x340 visible=true winit_id=WindowId(2097160) title="" inner=520x340 has_focus=true visible=Some(true)
@@ -20,8 +20,8 @@
 [focus:B] focused=true
 [resize:B] winit inner_size=640x400
 [resize:B] winit inner_size=600x360
-[shot] /home/user/AIworkspace/rusttabbyterminal/.worktrees/mw-spike/docs/evidence/mw-spike/software/A_after_resize.png (480x300)
-[shot] /home/user/AIworkspace/rusttabbyterminal/.worktrees/mw-spike/docs/evidence/mw-spike/software/B_after_resize.png (600x360)
+[shot] /home/user/AIworkspace/xtervo/.worktrees/mw-spike/docs/evidence/mw-spike/software/A_after_resize.png (480x300)
+[shot] /home/user/AIworkspace/xtervo/.worktrees/mw-spike/docs/evidence/mw-spike/software/B_after_resize.png (600x360)
 [pixel] A resized bg (3,3)=[122, 162, 247, 255] ok
 [pixel] B resized bg (3,3)=[247, 118, 142, 255] ok
 [snapshot] A_after_resize 480x300
@@ -31,11 +31,11 @@
 [close] closing B (A frames before close=0)
 [close] after B closed: A frames=0 (was 0), B teardowns=0
 [focus:C] focused=false
-[shot] /home/user/AIworkspace/rusttabbyterminal/.worktrees/mw-spike/docs/evidence/mw-spike/software/A_after_B_closed.png (480x300)
+[shot] /home/user/AIworkspace/xtervo/.worktrees/mw-spike/docs/evidence/mw-spike/software/A_after_B_closed.png (480x300)
 [pixel] A bg after B close (3,3)=[122, 162, 247, 255] ok
 [snapshot] A_after_B_closed 480x300
 [facts] A after B close: winit_id=WindowId(2097160) title="" inner=480x300 has_focus=false visible=Some(true)
-[shot] /home/user/AIworkspace/rusttabbyterminal/.worktrees/mw-spike/docs/evidence/mw-spike/software/C_after_B_closed.png (500x320)
+[shot] /home/user/AIworkspace/xtervo/.worktrees/mw-spike/docs/evidence/mw-spike/software/C_after_B_closed.png (500x320)
 [pixel] C bg (3,3)=[158, 206, 106, 255] ok
 [snapshot] C_after_B_closed 500x320
 [facts] C: slint_size=500x320 visible=true winit_id=WindowId(2097165) title="" inner=500x320 has_focus=false visible=Some(true)
@@ -78,4 +78,4 @@
 [hold] A: winit_id=WindowId(2097160) title="" inner=480x300 has_focus=false visible=Some(true)
 [hold] C: winit_id=WindowId(2097165) title="" inner=500x320 has_focus=false visible=Some(true)
 [hold] frames A=0 C=0 teardown B=0
-PASS mw_spike mode=software out=/home/user/AIworkspace/rusttabbyterminal/.worktrees/mw-spike/docs/evidence/mw-spike/software
+PASS mw_spike mode=software out=/home/user/AIworkspace/xtervo/.worktrees/mw-spike/docs/evidence/mw-spike/software

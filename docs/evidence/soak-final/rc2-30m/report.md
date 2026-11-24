@@ -2,9 +2,9 @@
 
 - 结论：**PASS**
 - 开始：`2026-11-12T21:35:51+08:00`
-- worktree：`/home/user/AIworkspace/rusttabbyterminal`
+- worktree：`/home/user/AIworkspace/xtervo`
 - 分支 / commit：`master` / `9799f03`
-- 二进制：`/home/user/AIworkspace/rusttabbyterminal/target/release/xtervo`
+- 二进制：`/home/user/AIworkspace/xtervo/target/release/xtervo`
 - SHA256：`6b833573a83cbbbbcdc9a14c26c475782ad4d7c47136258bb5951829c4ace13a`（366194960 bytes）
 - 显示：`:143`（Xvfb 1280x800x24，无 :1、无 Xephyr、无 pkill）
 - 配置：22 Tab、4 pane、scrollback=2000、winit-software、Sixel+IIP 开
@@ -90,7 +90,7 @@
 ## 6. 复现
 
 ```bash
-cd /home/user/AIworkspace/rusttabbyterminal
+cd /home/user/AIworkspace/xtervo
 DURATION=2m  ./scripts/soak.sh   # 快速门禁
 DURATION=30m BIN=$PWD/target/release/xtervo ./scripts/soak.sh
 ```

@@ -12,7 +12,7 @@
 | rustc / cargo | 1.99.0 / 1.99.0 |
 | 离线依赖 | `CARGO_HOME=$PWD/.cargo`（worktree 内指向主仓缓存，未写 master） |
 | 显示 | 每个脚本独立 Xvfb；`osc52=:113`、`term_menu=:119`、`behavior=:118`、`ui=:115`、`wm_resize=:105`；手动项 `:121/:122/:123/:124/:125` |
-| Xvfb | `/home/user/AIworkspace/rusttabbyterminal/.perf/xvfb/usr/bin/Xvfb` |
+| Xvfb | `/home/user/AIworkspace/xtervo/.perf/xvfb/usr/bin/Xvfb` |
 | WM / 资源 | 主仓 `.perf/openbox`、`.perf/xvfb`（e2e 脚本按 git common dir 定位） |
 | GPU | 本机 `/dev/dri` 不存在；headless 下仅 Mesa llvmpipe |
 | 约束 | 未使用 `:1`、未用 Xephyr、未 `pkill`；脚本/手动只 kill 自己记录的 PID |
@@ -48,7 +48,7 @@ CARGO_HOME=$PWD/.cargo cargo test --workspace --offline
 CARGO_HOME=$PWD/.cargo cargo build --offline -p xtervo-app \
   --bin xtervo --bin xwin --bin xclick --bin xkey --bin xdrop
 export E2E_BIN=$PWD/target/debug/xtervo
-export E2E_XVFB_BIN=/home/user/AIworkspace/rusttabbyterminal/.perf/xvfb/usr/bin/Xvfb
+export E2E_XVFB_BIN=/home/user/AIworkspace/xtervo/.perf/xvfb/usr/bin/Xvfb
 ```
 
 | 脚本 | display | 命令要点 | 结果 |

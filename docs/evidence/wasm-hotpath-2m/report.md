@@ -2,9 +2,9 @@
 
 - 结论：**PASS**
 - 开始：`2026-11-12T21:20:02+08:00`
-- worktree：`/home/user/AIworkspace/rusttabbyterminal/.worktrees/agent-wasm-hotpath`
+- worktree：`/home/user/AIworkspace/xtervo/.worktrees/agent-wasm-hotpath`
 - 分支 / commit：`agent/wasm-hotpath` / `fab1f2a`
-- 二进制：`/home/user/AIworkspace/rusttabbyterminal/.worktrees/agent-wasm-hotpath/target/release/xtervo`
+- 二进制：`/home/user/AIworkspace/xtervo/.worktrees/agent-wasm-hotpath/target/release/xtervo`
 - SHA256：`65aef37738e9ddb17da053380b2156f7553c94dbeeecf4415d2a24abf82158a8`（361947088 bytes）
 - 显示：`:148`（Xvfb 1280x800x24，无 :1、无 Xephyr、无 pkill）
 - 配置：22 Tab、4 pane、scrollback=2000、winit-software、Sixel+IIP 开
@@ -80,7 +80,7 @@
 ## 6. 复现
 
 ```bash
-cd /home/user/AIworkspace/rusttabbyterminal/.worktrees/agent-wasm-hotpath
+cd /home/user/AIworkspace/xtervo/.worktrees/agent-wasm-hotpath
 DURATION=2m  ./scripts/soak.sh   # 快速门禁
 DURATION=30m BIN=$PWD/target/release/xtervo ./scripts/soak.sh
 ```

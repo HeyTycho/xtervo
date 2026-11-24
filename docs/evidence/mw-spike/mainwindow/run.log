@@ -1,8 +1,8 @@
-[mw-spike] mode=mainwindow out=/home/user/AIworkspace/rusttabbyterminal/.worktrees/mw-spike/docs/evidence/mw-spike/mainwindow hold_ms=12000 display=Some(":88")
+[mw-spike] mode=mainwindow out=/home/user/AIworkspace/xtervo/.worktrees/mw-spike/docs/evidence/mw-spike/mainwindow hold_ms=12000 display=Some(":88")
 [globals] Palette before A=Color { red: 26, green: 27, blue: 38, alpha: 255 } B=Color { red: 26, green: 27, blue: 38, alpha: 255 }; after write A=Color { red: 255, green: 0, blue: 0, alpha: 255 } B=Color { red: 26, green: 27, blue: 38, alpha: 255 }; shared=false
 [globals] Lang A="en" B="zh" shared=false
-[shot] /home/user/AIworkspace/rusttabbyterminal/.worktrees/mw-spike/docs/evidence/mw-spike/mainwindow/MainWindow_A.png (820x560)
-[shot] /home/user/AIworkspace/rusttabbyterminal/.worktrees/mw-spike/docs/evidence/mw-spike/mainwindow/MainWindow_B.png (700x480)
+[shot] /home/user/AIworkspace/xtervo/.worktrees/mw-spike/docs/evidence/mw-spike/mainwindow/MainWindow_A.png (820x560)
+[shot] /home/user/AIworkspace/xtervo/.worktrees/mw-spike/docs/evidence/mw-spike/mainwindow/MainWindow_B.png (700x480)
 [snapshot] MainWindow_A 820x560
 [snapshot] MainWindow_B 700x480
 [facts] MainWindow A: winit_id=WindowId(2097160) title="" inner=820x560 has_focus=false visible=Some(true)
@@ -34,4 +34,4 @@
 [hold] MainWindow B: winit_id=WindowId(2097155) title="" inner=700x480 has_focus=true visible=Some(true)
 [hold] MainWindow A: winit_id=WindowId(2097160) title="" inner=820x560 has_focus=false visible=Some(true)
 [hold] MainWindow B: winit_id=WindowId(2097155) title="" inner=700x480 has_focus=true visible=Some(true)
-PASS mw_spike mode=mainwindow out=/home/user/AIworkspace/rusttabbyterminal/.worktrees/mw-spike/docs/evidence/mw-spike/mainwindow
+PASS mw_spike mode=mainwindow out=/home/user/AIworkspace/xtervo/.worktrees/mw-spike/docs/evidence/mw-spike/mainwindow

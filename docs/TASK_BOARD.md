@@ -106,7 +106,7 @@
 
 ## 6. Codex 审计摘要与修复映射
 
-完整报告：`/home/user/AIworkspace/rusttabbyterminal/.logs/codex-architecture-review.md`
+完整报告：`/home/user/AIworkspace/xtervo/.logs/codex-architecture-review.md`
 
 | 优先级 | 问题 | 修复任务 |
 |---|---|---|

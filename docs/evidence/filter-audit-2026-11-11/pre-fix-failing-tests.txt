@@ -3,7 +3,7 @@
 # 时间: 2026-11-11 18:32:19 CST
 
     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.15s
-     Running tests/filter_conservation.rs (/home/user/AIworkspace/rusttabbyterminal/target/debug/deps/filter_conservation-87e2f9a5267424d8)
+     Running tests/filter_conservation.rs (/home/user/AIworkspace/xtervo/target/debug/deps/filter_conservation-87e2f9a5267424d8)
 
 running 7 tests
 test known_deficit_sixel_lone_esc_must_not_be_passed ... FAILED

@@ -515,7 +515,7 @@ env -u DISPLAY ... SLINT_BACKEND=winit-skia XTERVO_FORCE_GPU=1 \
 ### 7.6 构建/测试
 
 ```bash
-CARGO_HOME=/home/user/AIworkspace/rusttabbyterminal/.cargo \
+CARGO_HOME=/home/user/AIworkspace/xtervo/.cargo \
 CARGO_TARGET_DIR="$PWD/.target-wayland" \
 cargo test --offline --workspace
 ```

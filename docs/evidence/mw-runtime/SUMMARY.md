@@ -14,8 +14,8 @@ No hardware GPU / Wayland / 30m soak coverage.
 ## 1. Unit tests (single-window regression)
 
 ```bash
-CARGO_HOME=/home/user/AIworkspace/rusttabbyterminal/.cargo \
-CARGO_TARGET_DIR=/home/user/AIworkspace/rusttabbyterminal/target \
+CARGO_HOME=/home/user/AIworkspace/xtervo/.cargo \
+CARGO_TARGET_DIR=/home/user/AIworkspace/xtervo/target \
 CARGO_NET_OFFLINE=true cargo test -p xtervo-app --bin xtervo
 ```
 
@@ -26,7 +26,7 @@ test result: ok. 546 passed; 0 failed; 1 ignored
 ## 2. In-process two windows (`e2e/`)
 
 ```bash
-CARGO_TARGET_DIR=/home/user/AIworkspace/rusttabbyterminal/target \
+CARGO_TARGET_DIR=/home/user/AIworkspace/xtervo/target \
   ./scripts/e2e_multi_window_inproc.sh
 ```
 
@@ -57,7 +57,7 @@ restored_tabs=3
 ## 3. GPU isolation (`gpu/`)
 
 ```bash
-CARGO_TARGET_DIR=/home/user/AIworkspace/rusttabbyterminal/target \
+CARGO_TARGET_DIR=/home/user/AIworkspace/xtervo/target \
   ./scripts/e2e_multi_window_gpu.sh
 ```
 
@@ -77,7 +77,7 @@ stage-0 CPU texture uploads are not driven; `native_frames` is the live counter.
 ## 4. 2m dual-window soak (`soak/`)
 
 ```bash
-CARGO_TARGET_DIR=/home/user/AIworkspace/rusttabbyterminal/target \
+CARGO_TARGET_DIR=/home/user/AIworkspace/xtervo/target \
   ./scripts/soak_multi_window_inproc.sh
 ```
 

@@ -1,4 +1,4 @@
-[log] 日志文件: /home/user/AIworkspace/rusttabbyterminal/.worktrees/agent-wasm-hotpath/.logs/soak/wasm-2m-head/logs/xtervo-1794489603.log
+[log] 日志文件: /home/user/AIworkspace/xtervo/.worktrees/agent-wasm-hotpath/.logs/soak/wasm-2m-head/logs/xtervo-1794489603.log
 [render] requested_backend=winit-software（显式设置 SLINT_BACKEND）
 [render] requested_backend=winit-software；actual_renderer=winit-software（GL/GPU 不可用或已显式回退；headless 不能验证 GPU）
 [ui] settings ui=tab
@@ -7,10 +7,10 @@
 [plugin-v3] 发现 1 个插件（0 unsupported/invalid，0 条启用命令）
 [corners] 默认关闭（XTERVO_CORNERS=1 可开启 SHAPE 圆角）
 [quake] 全局热键 F12 已注册
-[help] info version=0.4.0-rc.1 commit=4e1aa1d43a65 (dirty) built=2026-11-12T13:01:34Z target=x86_64-unknown-linux-gnu config=/home/user/AIworkspace/rusttabbyterminal/.worktrees/agent-wasm-hotpath/.logs/soak/wasm-2m-head logs=/home/user/AIworkspace/rusttabbyterminal/.worktrees/agent-wasm-hotpath/.logs/soak/wasm-2m-head/logs
+[help] info version=0.4.0-rc.1 commit=4e1aa1d43a65 (dirty) built=2026-11-12T13:01:34Z target=x86_64-unknown-linux-gnu config=/home/user/AIworkspace/xtervo/.worktrees/agent-wasm-hotpath/.logs/soak/wasm-2m-head logs=/home/user/AIworkspace/xtervo/.worktrees/agent-wasm-hotpath/.logs/soak/wasm-2m-head/logs
 [plugin-v3] 设置页 1 个插件，1 个启用，0 条启用命令，0 unsupported/invalid
 [ui] 启动 tabbar_position=top
-[config] 热更新监听已启动: /home/user/AIworkspace/rusttabbyterminal/.worktrees/agent-wasm-hotpath/.logs/soak/wasm-2m-head/config.toml (500ms 轮询，mtime/hash)
+[config] 热更新监听已启动: /home/user/AIworkspace/xtervo/.worktrees/agent-wasm-hotpath/.logs/soak/wasm-2m-head/config.toml (500ms 轮询，mtime/hash)
 [ws] new tab: tabs=1
 READY TIMING font_us=12450 show_us=52563 total_us=52564 cell=8x19
 [maximize] controller start win=0x200003 observed=false timeout=2000ms

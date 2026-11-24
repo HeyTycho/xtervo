@@ -1,4 +1,4 @@
-[log] 日志文件: /home/user/AIworkspace/rusttabbyterminal/.worktrees/mw-session-integration/target/mw-session-e2e/run1/logs/xtervo-1794579628.log
+[log] 日志文件: /home/user/AIworkspace/xtervo/.worktrees/mw-session-integration/target/mw-session-e2e/run1/logs/xtervo-1794579628.log
 [render] requested_backend=winit-software（显式设置 SLINT_BACKEND）
 [mcp] enabled=true read=true input=true tabs=true destructive=true socket=/tmp/xtervo-mws-43-run1-1794579628364.sock token=env
 [mcp] env override 生效: XTERVO_DIAG_ALLOW_WRITE=true XTERVO_DIAG_ALLOW_DESTRUCTIVE=true（配置仍可收紧分组，但 env 会放宽）
@@ -9,10 +9,10 @@
 [session] autosave 已启动（SharedServices，2s）
 [plugin-v3] 已发现 0 个插件（0 unsupported/invalid），启动 0 个已确认插件，0 个等待权限确认
 [quake] 全局热键 F12 已注册
-[help] info version=0.4.0-rc.2 commit=04e2b6fea0a2 (dirty) built=2026-11-13T14:18:15Z target=x86_64-unknown-linux-gnu config=/home/user/AIworkspace/rusttabbyterminal/.worktrees/mw-session-integration/target/mw-session-e2e/run1 logs=/home/user/AIworkspace/rusttabbyterminal/.worktrees/mw-session-integration/target/mw-session-e2e/run1/logs
+[help] info version=0.4.0-rc.2 commit=04e2b6fea0a2 (dirty) built=2026-11-13T14:18:15Z target=x86_64-unknown-linux-gnu config=/home/user/AIworkspace/xtervo/.worktrees/mw-session-integration/target/mw-session-e2e/run1 logs=/home/user/AIworkspace/xtervo/.worktrees/mw-session-integration/target/mw-session-e2e/run1/logs
 [plugin-v3] 设置页 0 个插件，0 个启用，0 条启用命令，0 unsupported/invalid
 [ui] 启动 tabbar_position=top
-[config] 热更新监听已启动: /home/user/AIworkspace/rusttabbyterminal/.worktrees/mw-session-integration/target/mw-session-e2e/run1/config.toml (500ms 轮询，mtime/hash)
+[config] 热更新监听已启动: /home/user/AIworkspace/xtervo/.worktrees/mw-session-integration/target/mw-session-e2e/run1/config.toml (500ms 轮询，mtime/hash)
 [session] restore tab "Terminal 1" pinned=false index=0
 [session] restore tab "Terminal 2" pinned=false index=1
 [session] 窗口 1 恢复完成：2/2 个标签 active=1
@@ -30,7 +30,7 @@ READY TIMING font_us=94594 show_us=213780 total_us=213780 cell=9x22
 [mcp] action=list pane=None arg_bytes=0
 [mcp] action=list pane=None arg_bytes=0
 [render] requested_backend=winit-software；actual_renderer=winit-software（GL/GPU 不可用或已显式回退；headless 不能验证 GPU）
-[help] info version=0.4.0-rc.2 commit=04e2b6fea0a2 (dirty) built=2026-11-13T14:18:15Z target=x86_64-unknown-linux-gnu config=/home/user/AIworkspace/rusttabbyterminal/.worktrees/mw-session-integration/target/mw-session-e2e/run1 logs=/home/user/AIworkspace/rusttabbyterminal/.worktrees/mw-session-integration/target/mw-session-e2e/run1/logs
+[help] info version=0.4.0-rc.2 commit=04e2b6fea0a2 (dirty) built=2026-11-13T14:18:15Z target=x86_64-unknown-linux-gnu config=/home/user/AIworkspace/xtervo/.worktrees/mw-session-integration/target/mw-session-e2e/run1 logs=/home/user/AIworkspace/xtervo/.worktrees/mw-session-integration/target/mw-session-e2e/run1/logs
 [plugin-v3] 设置页 0 个插件，0 个启用，0 条启用命令，0 unsupported/invalid
 [ui] 启动 tabbar_position=top
 [session] restore tab "Terminal 1" pinned=false index=0
@@ -52,12 +52,12 @@ READY TIMING font_us=94594 show_us=213780 total_us=213780 cell=9x22
 [mcp] action=close_window pane=None arg_bytes=0
 [runtime] closed window-1（remaining=1）
 [maximize] property-notify observed=false outcome=Unchanged
-[session] mcp-close: 已保存 /home/user/AIworkspace/rusttabbyterminal/.worktrees/mw-session-integration/target/mw-session-e2e/run1/session.json（1 个窗口 / 3 个标签）
+[session] mcp-close: 已保存 /home/user/AIworkspace/xtervo/.worktrees/mw-session-integration/target/mw-session-e2e/run1/session.json（1 个窗口 / 3 个标签）
 [ui] window-1 closed（mcp-close，remaining=1）
 [mcp] action=list pane=None arg_bytes=0
 [mcp] action=new_tab pane=None arg_bytes=0
 [ws] new tab: tabs=4
 [mcp] action=list pane=None arg_bytes=0
-[session] autosave: 已保存 /home/user/AIworkspace/rusttabbyterminal/.worktrees/mw-session-integration/target/mw-session-e2e/run1/session.json（1 个窗口 / 4 个标签）
+[session] autosave: 已保存 /home/user/AIworkspace/xtervo/.worktrees/mw-session-integration/target/mw-session-e2e/run1/session.json（1 个窗口 / 4 个标签）
 [config] 检测到外部修改，应用热更新
 [config] 已套用外部热更新: scroll_on_output

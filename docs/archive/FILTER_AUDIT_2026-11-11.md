@@ -208,17 +208,17 @@ cargo test -p xtervo-core
 ## 5. 测试命令
 
 ```bash
-cd /home/user/AIworkspace/rusttabbyterminal/.worktrees/agent-filter-audit
-CARGO_HOME=/home/user/AIworkspace/rusttabbyterminal/.cargo CARGO_NET_OFFLINE=true \
-  CARGO_TARGET_DIR=/home/user/AIworkspace/rusttabbyterminal/target \
+cd /home/user/AIworkspace/xtervo/.worktrees/agent-filter-audit
+CARGO_HOME=/home/user/AIworkspace/xtervo/.cargo CARGO_NET_OFFLINE=true \
+  CARGO_TARGET_DIR=/home/user/AIworkspace/xtervo/target \
   cargo test -p xtervo-core --test filter_conservation
 # 审计基线（本 commit 的 7 个已知缺陷，修复前全失败）：
-CARGO_HOME=/home/user/AIworkspace/rusttabbyterminal/.cargo CARGO_NET_OFFLINE=true \
-  CARGO_TARGET_DIR=/home/user/AIworkspace/rusttabbyterminal/target \
+CARGO_HOME=/home/user/AIworkspace/xtervo/.cargo CARGO_NET_OFFLINE=true \
+  CARGO_TARGET_DIR=/home/user/AIworkspace/xtervo/target \
   cargo test -p xtervo-core --test filter_conservation -- --ignored
 # 全量 core（含真实 PTY 的 sixel/kitty e2e）：
-CARGO_HOME=/home/user/AIworkspace/rusttabbyterminal/.cargo CARGO_NET_OFFLINE=true \
-  CARGO_TARGET_DIR=/home/user/AIworkspace/rusttabbyterminal/target \
+CARGO_HOME=/home/user/AIworkspace/xtervo/.cargo CARGO_NET_OFFLINE=true \
+  CARGO_TARGET_DIR=/home/user/AIworkspace/xtervo/target \
   cargo test -p xtervo-core
 ```
 

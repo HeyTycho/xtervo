@@ -148,7 +148,7 @@ Unlimited scrollback / Scrollbar policy / Backspace / Delete binding），
 ### 单元/集成测试
 
 ```bash
-CARGO_HOME=/home/user/AIworkspace/rusttabbyterminal/.cargo \
+CARGO_HOME=/home/user/AIworkspace/xtervo/.cargo \
 CARGO_TARGET_DIR=$PWD/target cargo test --workspace
 ```
 

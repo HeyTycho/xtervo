@@ -34,7 +34,7 @@
 原始 capture 存在时：
 
 ```bash
-cd /home/user/AIworkspace/rusttabbyterminal
+cd /home/user/AIworkspace/xtervo
 python3 - <<'EOF'
 src='.worktrees/agent-e2e/.logs/dsh-image-preview-e2e/pty/app-to-host.raw'
 raw=open(src,'rb').read()

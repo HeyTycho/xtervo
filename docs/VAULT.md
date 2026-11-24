@@ -175,7 +175,7 @@ m≤65536、t≤4、p≤4；超限文件在 Argon2 派生之前快速返回 Corr
 ## 5. 测试
 
 ```bash
-export CARGO_HOME=/home/user/AIworkspace/rusttabbyterminal/.cargo
+export CARGO_HOME=/home/user/AIworkspace/xtervo/.cargo
 export CARGO_TARGET_DIR=$PWD/target
 cargo test -p xtervo-app --bin xtervo
 ```

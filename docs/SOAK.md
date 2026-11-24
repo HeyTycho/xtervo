@@ -25,7 +25,7 @@ DURATION=30m \
 前置：release 二进制与调试 X 工具（同一次构建）：
 
 ```bash
-CARGO_HOME=/home/user/AIworkspace/rusttabbyterminal/.cargo \
+CARGO_HOME=/home/user/AIworkspace/xtervo/.cargo \
   cargo build --release --offline -p xtervo-app \
   --bin xtervo --bin xwin --bin xclick --bin xkey
 ```
@@ -168,7 +168,7 @@ RSS 斜率只能作门禁参考，不能外推长时稳定性。
 ## 复现长跑
 
 ```bash
-cd /home/user/AIworkspace/rusttabbyterminal/.worktrees/soak
+cd /home/user/AIworkspace/xtervo/.worktrees/soak
 DURATION=15m SOAK_OUT=$PWD/.logs/soak/long-15m BIN=$PWD/target/release/xtervo \
   ./scripts/soak.sh 2>&1 | tee .logs/soak-long-15m.out
 ```

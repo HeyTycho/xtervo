@@ -16,7 +16,7 @@
   "screen": "1280x800x24",
   "commit": "fab1f2a",
   "branch": "agent/wasm-hotpath",
-  "bin": "/home/user/AIworkspace/rusttabbyterminal/.worktrees/agent-wasm-hotpath/target/release/xtervo",
+  "bin": "/home/user/AIworkspace/xtervo/.worktrees/agent-wasm-hotpath/target/release/xtervo",
   "bin_sha256": "65aef37738e9ddb17da053380b2156f7553c94dbeeecf4415d2a24abf82158a8",
   "rss_base_mib": 360.66,
   "rss_end_mib": 396.402,

@@ -63,7 +63,7 @@ spike 的 `build.rs` 原样编译，仅用于验证 `MainWindow` 能否多实例
 `Xvfb` 时用仓库 `.perf/xvfb`。脚本拒绝 `:1` 和已被占用的 display。
 
 ```bash
-cd /home/user/AIworkspace/rusttabbyterminal/.worktrees/mw-spike
+cd /home/user/AIworkspace/xtervo/.worktrees/mw-spike
 
 export CARGO_HOME=$PWD/../../.cargo
 export CARGO_TARGET_DIR=$PWD/../../target

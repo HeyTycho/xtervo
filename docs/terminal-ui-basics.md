@@ -142,7 +142,7 @@ impl PaneHandle {
 
 ```bash
 # 仅本轮相关（工作树内共享 target）
-CARGO_HOME=/home/user/AIworkspace/rusttabbyterminal/.cargo \
+CARGO_HOME=/home/user/AIworkspace/xtervo/.cargo \
 CARGO_TARGET_DIR=$PWD/target cargo test --workspace
 ```
 

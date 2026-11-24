@@ -111,7 +111,7 @@ fn run(_input: &[u8], chunks: &[&[u8]]) -> (Vec<u8>, usize, usize) {
 
 #[test]
 fn full_dsh_raw_conservation() {
-    let path = "/home/user/AIworkspace/rusttabbyterminal/.worktrees/agent-e2e/.logs/dsh-image-preview-e2e/pty/app-to-host.raw";
+    let path = "/home/user/AIworkspace/xtervo/.worktrees/agent-e2e/.logs/dsh-image-preview-e2e/pty/app-to-host.raw";
     let input = std::fs::read(path).expect("raw");
     let spans = apc_spans(&input);
     let swallowed: usize = spans.iter().map(|(s, e)| e - s).sum();

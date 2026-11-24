@@ -55,7 +55,7 @@
     {
       "name": "one_plugin_process",
       "detail": {
-        "path": "/home/user/AIworkspace/rusttabbyterminal/.worktrees/mw-runtime/target/multi-window-e2e/plugins/mwprobe/plugin.py",
+        "path": "/home/user/AIworkspace/xtervo/.worktrees/mw-runtime/target/multi-window-e2e/plugins/mwprobe/plugin.py",
         "count": 1
       }
     },
@@ -64,7 +64,7 @@
       "detail": {
         "ready_log_lines": 1,
         "sockets": [
-          "/home/user/AIworkspace/rusttabbyterminal/.worktrees/mw-runtime/target/multi-window-e2e/live.sock"
+          "/home/user/AIworkspace/xtervo/.worktrees/mw-runtime/target/multi-window-e2e/live.sock"
         ]
       }
     }

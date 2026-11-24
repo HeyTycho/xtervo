@@ -15,7 +15,7 @@
   "screen": "1280x800x24",
   "commit": "9799f03",
   "branch": "master",
-  "bin": "/home/user/AIworkspace/rusttabbyterminal/target/release/xtervo",
+  "bin": "/home/user/AIworkspace/xtervo/target/release/xtervo",
   "bin_sha256": "6b833573a83cbbbbcdc9a14c26c475782ad4d7c47136258bb5951829c4ace13a",
   "rss_base_mib": 884.578,
   "rss_end_mib": 940.598,
