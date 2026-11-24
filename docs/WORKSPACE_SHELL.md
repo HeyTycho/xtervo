@@ -5,7 +5,7 @@
 ⑤ 状态区 ⑥ Connection Manager ⑦ 插件注入点。目标是把“入口”从 TabBar 菜单
 升级成常驻壳，并让 Connection Manager / 插件条目有地方挂。
 
-## 1. 验收（摘自 ACTION_ITEMS §8）
+## 1. 验收（摘自 `docs/internal/ACTION_ITEMS.md` §8）
 
 ```text
 Sidebar 显隐 + 宽度可调；Toolbar 按钮分组/禁用态；状态区显示连接/进度/完成；

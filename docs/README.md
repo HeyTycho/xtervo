@@ -72,15 +72,17 @@
 |---|---|
 | [xtervo 功能矩阵（FEATURE_MATRIX）](FEATURE_MATRIX.md) | - 并发说明：审计期间另一 Agent 提交了 b80e265（config schema/迁移/备份、字体惰性加载等），本矩阵已按该提交复核 config 相关行；此后 94baefb/99… |
 | [功能矩阵闭环报告](CLOSURE.md) | 加权分 = (implemented + partial×0.5 + needs_verification×0.25) / 条目数， |
-| [行动清单（ACTION_ITEMS）](ACTION_ITEMS.md) | 以下功能代码已存在且有部分记录，不要重写；先按验收步骤补证据，缺口用最小补丁修（标“需小修”的才动代码）。 |
-| [xtervo Mainline Status / Mainline Audit](MAINLINE_STATUS.md) | Snapshot: 2026-11-16, branch main, HEAD 6102bb9 (v0.5.0, stable multi-window) |
+| [xtervo Mainline Status / Mainline Audit](MAINLINE_STATUS.md) | Snapshot: 2026-11-24, branch main, v0.6.0 发布线 |
 | [性能与打包基线（xtervo）](PERFORMANCE.md) | 本文记录可复现的性能/体积数据与门禁。所有数字都在本仓库的开发机上测得 |
 | [稳定性验收报告（feat/stability）](STABILITY_REPORT.md) | - 日期：2026-11-06（截止 18:00） |
 | [范围审视：什么算核心，什么可以不做](SCOPE_REVIEW.md) | TERM / UI-TERM / KEY / UI-PANE / UI-TAB / UI-WIN / LOCAL / SESS |
 | [核心终端从 69% 到 80%：17 条清单与今晚排班](CORE_TO_80.md) | text |
-| [本轮夜班进度与续跑指引（2026-11-17）](NIGHT_PROGRESS.md) | 目的：把这几天连续推进的状态、证据、待办和坑位写在一处，换 session / 换人也能接着做。 |
-| [今晚开工单（功能优先，测试后置）](EVENING_START.md) | 用户决定：先把功能堆叠完成，测试/门禁后补。本文件是 18:00（或即刻开工）后的执行顺序。 |
-| [xtervo 任务看板](TASK_BOARD.md) | 用户已授权：周末任务不再中途确认。 |
+
+## 内部过程记录
+
+| 文档 | 说明 |
+|---|---|
+| [内部过程记录（不是用户文档）](internal/README.md) | 开工单、夜班进度、任务看板、行动清单与 review backlog 的历史快照；当前事实以 `MAINLINE_STATUS.md` / `FEATURE_MATRIX.md` 为准。 |
 
 ## 归档（历史/一次性报告）
 

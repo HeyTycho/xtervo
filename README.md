@@ -12,6 +12,10 @@
 > **独立项目**：xtervo 与 Tabby / Terminus 的作者及项目无隶属、赞助或背书关系。
 > “Tabby”是其权利人的商标，本项目仅在功能参考与互操作说明中提及；不含 Tabby 的代码或美术资源。
 
+| 浅色 | 深色 |
+|---|---|
+| ![xtervo 浅色主题：标签栏、终端与右键菜单](docs/images/screenshot-light.png) | ![xtervo 深色主题：标签栏、终端与右键菜单](docs/images/screenshot-dark.png) |
+
 ## 主要功能
 
 **终端核心**
@@ -43,23 +47,61 @@
 
 ## 安装
 
-### 从源码构建
+### 从 Release 安装
+
+预编译产物发布在 [GitHub Releases](https://github.com/HeyTycho/xtervo/releases)：
+
+| 产物 | 用途 |
+|---|---|
+| `xtervo-<version>-linux-x86_64.tar.gz` | 解压后运行 `install.sh`；默认装到 `~/.local`，`--prefix` 可改 |
+| `xtervo_<version>-1_amd64.deb` | Debian / Ubuntu 安装包；`apt install ./...deb` 会自动处理依赖 |
+| `SHA256SUMS` | 下载产物的 SHA-256 校验和 |
 
 ```bash
-git clone <repo> && cd xtervo
-export CARGO_HOME=$PWD/.cargo        # 沙箱/CI 里 ~/.cargo 只读时
+# 在下载目录里先校验（只校验已下载的产物）
+sha256sum -c --ignore-missing SHA256SUMS
+
+# 方式一：tar.gz（默认 prefix ~/.local）
+tar xzf xtervo-<version>-linux-x86_64.tar.gz
+./xtervo-<version>-linux-x86_64/install.sh
+
+# 方式二：.deb
+sudo apt install ./xtervo_<version>-1_amd64.deb
+```
+
+Release 产物按构建机架构命名：x86_64 对应 `.deb` 的 `amd64`，aarch64 对应 `arm64`。
+
+### 从源码构建
+
+Ubuntu / Debian 构建依赖：
+
+```bash
+sudo apt install libxkbcommon-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev \
+  libgl1-mesa-dev libegl1-mesa-dev libfontconfig1-dev libfreetype6-dev \
+  pkg-config cmake ninja-build
+```
+
+```bash
+git clone https://github.com/HeyTycho/xtervo.git
+cd xtervo
 cargo build --release -p xtervo-app
 ./target/release/xtervo --cols 120 --rows 32
 ```
 
-运行环境：Linux（X11；Wayland 通过 XWayland），Rust 1.8x，Slint 1.18。
+默认使用 `~/.cargo`。沙箱 / CI 里 `~/.cargo` 只读时，可改用仓库内目录：
+
+```bash
+export CARGO_HOME=$PWD/.cargo
+```
+
+运行环境：Linux（X11；Wayland 通过 XWayland），Rust 1.85+，Slint 1.18。
 有 `/dev/dri` 时默认 GPU（Skia），否则自动回退 `winit-software`。
 
 ### 打包与安装
 
 ```bash
 ./scripts/package.sh                  # → dist/（二进制 + tar.gz + .deb + SHA256）
-./scripts/install.sh                  # 安装到 $PREFIX（默认 /usr/local）
+./scripts/install.sh                  # 安装到 $PREFIX（默认 ~/.local）
 ./scripts/install.sh --rollback       # 回滚到上一版
 ./scripts/test_packaging.sh           # 打包 + 干净 prefix 安装 + 升级/回滚/卸载验证
 ```
@@ -99,7 +141,7 @@ MCP 控制见 [`docs/MCP.md`](docs/MCP.md)。
 - 开始使用：[架构](docs/ARCHITECTURE.md) · [产品原则与路标](docs/PRODUCT_PRINCIPLES.md) · [UI 规范](docs/UI_DESIGN.md)
 - 使用指南：[插件安装](docs/PLUGIN_INSTALL.md) · [插件 API v3](docs/PLUGIN_V3.md) · [SSH/SFTP](docs/SSH_SFTP.md) · [Vault](docs/VAULT.md) · [MCP](docs/MCP.md) · [诊断](docs/DIAGNOSTICS.md) · [soak](docs/SOAK.md)
 - 设计与内部：[传输插件](docs/PLUGIN_TRANSPORT.md) · [工作区壳](docs/WORKSPACE_SHELL.md) · [图片合成](docs/IMAGE_COMPOSITING.md) · [多窗口](docs/MULTI_WINDOW_ARCHITECTURE.md)
-- 状态与报告：[功能矩阵](docs/FEATURE_MATRIX.md) · [闭环报告](docs/CLOSURE.md) · [范围审视](docs/SCOPE_REVIEW.md) · [性能](docs/PERFORMANCE.md) · [行动清单](docs/ACTION_ITEMS.md)
+- 状态与报告：[功能矩阵](docs/FEATURE_MATRIX.md) · [闭环报告](docs/CLOSURE.md) · [范围审视](docs/SCOPE_REVIEW.md) · [性能](docs/PERFORMANCE.md) · [主线状态](docs/MAINLINE_STATUS.md)
 - 归档：[docs/archive/](docs/archive/)（历史报告与一次性分析）
 
 ## 开发
@@ -115,7 +157,9 @@ python3 scripts/check_doc_links.py       # 文档相对链接检查
 ```
 
 开发规则见 [`AGENTS.md`](AGENTS.md)（大任务 18:00 后；改动必须有失败测试/证据；
-长门禁 2m/15m/30m）。变更记录见 [`CHANGELOG.md`](CHANGELOG.md)。
+长门禁 2m/15m/30m）。贡献流程见
+[CONTRIBUTING.md](https://github.com/HeyTycho/xtervo/blob/main/CONTRIBUTING.md)，
+变更记录见 [`CHANGELOG.md`](CHANGELOG.md)。
 
 - 应用内：标签栏左侧品牌图标、设置面板标题图标（`assets/icon-small.png`）。
 - 窗口/任务栏图标：`_NET_WM_ICON` 由 Rust 侧直接写入（`assets/icon-64.rgba`），
@@ -167,6 +211,8 @@ python3 scripts/check_doc_links.py       # 文档相对链接检查
 
 - 遇到 bug、想要的功能（Feature request / 许愿）、使用体验建议，都欢迎提
   [Issue](https://github.com/HeyTycho/xtervo/issues)。
+- 安全问题不要公开提 Issue，请按
+  [SECURITY.md](https://github.com/HeyTycho/xtervo/blob/main/SECURITY.md) 里的方式私下报告。
 - 提问题时请附：`xtervo --version`、发行版与桌面（X11 / Wayland）、复现步骤、相关日志
   （`~/.local/state/xtervo/logs/`）。能稳定复现的问题优先修。
 - 本项目目前只在 Ubuntu 22.04 / 24.04 实测；其他系统的报告同样欢迎，修复会按可复现性排期。

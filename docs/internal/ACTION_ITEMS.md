@@ -1,8 +1,8 @@
 # 行动清单（ACTION_ITEMS）
 
 > **2026-11-16 对账**：本清单是 2026-11-05 的计划快照，**没有逐条重审**。已交付项以
-> [`MAINLINE_STATUS.md`](MAINLINE_STATUS.md) 与 [`CHANGELOG.md`](../CHANGELOG.md) 为准，
-> 条目状态以 [`FEATURE_MATRIX.md`](FEATURE_MATRIX.md) 为准。当前矩阵：244 条
+> [`MAINLINE_STATUS.md`](../MAINLINE_STATUS.md) 与 [`CHANGELOG.md`](../../CHANGELOG.md) 为准，
+> 条目状态以 [`FEATURE_MATRIX.md`](../FEATURE_MATRIX.md) 为准。当前矩阵：244 条
 > （implemented 57 / partial 115 / needs_verification 14 / not_started 51 / unsupported 7，
 > 加权 48.4%，`python3 scripts/matrix_stats.py`）。对账见 §0，新增待办见 §8。
 
@@ -10,7 +10,7 @@
 > 本清单里与“Tabby 插件兼容”绑定的历史条目（如 ACT-030 旧插件 sidecar）不再执行；
 > 只保留对日常使用有价值的借鉴与互操作（主题/配置导入）。
 
-> 生成日期：2026-11-05（v0.5.0 后对账 2026-11-16）｜ 依据：[`FEATURE_MATRIX.md`](FEATURE_MATRIX.md)（244 条，48.4% 加权覆盖）、[`UI_INTERACTION_MATRIX.md`](UI_INTERACTION_MATRIX.md)、[`TABBY_UPSTREAM_AUDIT.md`](TABBY_UPSTREAM_AUDIT.md)、[`archive/TABBY_COMPAT_MATRIX_2026-11-05.md`](archive/TABBY_COMPAT_MATRIX_2026-11-05.md)。
+> 生成日期：2026-11-05（v0.5.0 后对账 2026-11-16）｜ 依据：[`FEATURE_MATRIX.md`](../FEATURE_MATRIX.md)（244 条，48.4% 加权覆盖）、[`UI_INTERACTION_MATRIX.md`](../UI_INTERACTION_MATRIX.md)、[`TABBY_UPSTREAM_AUDIT.md`](../TABBY_UPSTREAM_AUDIT.md)、[`archive/TABBY_COMPAT_MATRIX_2026-11-05.md`](../archive/TABBY_COMPAT_MATRIX_2026-11-05.md)。
 > 排序原则：需求 D 部分的实施顺序（UI 壳 → 工作区 → 终端 → 连接 → 设置/插件/平台），同层按“用户每天可感知 + 是否阻塞后续”排序。预估：S ≤ 0.5 天，M 1–3 天，L > 3 天（单人熟手）。
 > **P0 前 10 项以 UI 壳/工作区交互为主**（仅 ACT-002 是为解除 UI 行为待核而插入的上游审计）；连接、插件、安全排在后面。每项验收标准均可执行/可观察，不以“代码写完”作为完成。
 
@@ -146,7 +146,7 @@ ACT-002 上游审计 ──（解除 21 条 needs_verification 的决策阻塞�
 ## 8. 0.6 待办（按轨道归并，2026-11-16）
 
 > 归并口径：**传输后端 + 它的 UI 归一条轨**，跨后端共享的壳/配置/插件/可靠性归“通用”。
-> 方向（2026-11-16）：SSH / Serial / Telnet 按 [`PLUGIN_TRANSPORT.md`](PLUGIN_TRANSPORT.md)
+> 方向（2026-11-16）：SSH / Serial / Telnet 按 [`PLUGIN_TRANSPORT.md`](../PLUGIN_TRANSPORT.md)
 > 做**官方可卸载插件**，核心只留 transport seam（ACT-052）。
 > 51 条 `not_started` + 关键 `partial` + 6 条矩阵外缺口（可靠性/平台/流程）→ **18 张卡**：
 > SSH 轨 4、串口/Telnet 轨 3、通用轨 11。
@@ -174,7 +174,7 @@ ACT-002 上游审计 ──（解除 21 条 needs_verification 的决策阻塞�
 
 | ID | 任务 | 覆盖条目 | 现状 | 验收标准 | 规模 |
 |---|---|---|---|---|---|
-| ACT-046 | 工作区 UI 壳：Sidebar / Toolbar / 状态区 / Tooltip（设计见 [`WORKSPACE_SHELL.md`](WORKSPACE_SHELL.md)） | UI-NAV-001/002/006/007/008 | 分步：① config 字段（`sidebar_visible/width/section` + 夹取，默认关）② 侧栏骨架（240px 栏 + 内容区让位 + 启动/热更新接线，截图 `.logs/sidebar_on/off.png`）。待做：独立顶部 Toolbar（v1 已在侧栏顶部）、Connection Manager、插件注入点 | 关闭时与 0.5.0 像素一致（已截图对比）；打开时内容区右移且 pane 网格重算 | M |
+| ACT-046 | 工作区 UI 壳：Sidebar / Toolbar / 状态区 / Tooltip（设计见 [`WORKSPACE_SHELL.md`](../WORKSPACE_SHELL.md)） | UI-NAV-001/002/006/007/008 | 分步：① config 字段（`sidebar_visible/width/section` + 夹取，默认关）② 侧栏骨架（240px 栏 + 内容区让位 + 启动/热更新接线，截图 `.logs/sidebar_on/off.png`）。待做：独立顶部 Toolbar（v1 已在侧栏顶部）、Connection Manager、插件注入点 | 关闭时与 0.5.0 像素一致（已截图对比）；打开时内容区右移且 pane 网格重算 | M |
 | ACT-047 | Profile 快捷键 + 布局存成 Workspace + 断线重连策略 | SESS-002/003/007、KEY-004、UI-PROF-009 | Profile 模型已有；**热键模型+分发已完成**（`hotkey` 字段、单段 chord 解析、必须带 Ctrl/Alt、按键优先级在命令 override 之后/默认键之前，单测通过）；冲突提示已做（`default_command_for_chord` + 加载时告警）；缺设置页绑定输入框、Workspace 布局保存、断线重连策略 | Profile 可绑热键；分裂布局存为 workspace 并可恢复；断开后的状态提示与重连策略可配置 | M |
 | ACT-048 | 设置页收尾：Config Sync、SSH 高级项、插件动态设置页；**已补**：`default_shortcut` 现在在“硬编码键与插件默认键都没接走”之后兜底分发（`handle_input` 里 PTY 写入之前），快捷键列表与实际行为一致；新增命令绑默认键即可生效 | UI-SET-006/009/013 | 设置页 15 条里 12 条 partial | 三块各有入口，即时生效或明确“重启后生效”；插件卸载后的配置清理策略写明 | M |
 | ACT-049 | 插件生态：旧插件 sidecar + 插件注册点 | PLUG-007..012、KEY-006、NOTIFY-006、SEC-005、UI-TERM-013 | 只有 v3 宿主，v1/v2 unsupported | sidecar 起停/超时/崩溃隔离；`tabby-core`/`tabby-terminal`/`tabby-local` 最小 shim；插件注册的命令/设置/进度在 UI 可见；凭据默认不可读 | L |

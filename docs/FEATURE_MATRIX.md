@@ -1,4 +1,4 @@
-> **2026-11-19 审查提示**：本矩阵部分“限制/未实现”列已落后于代码（例如四向 TabBar、插件 Linkifier、录制导出、多窗口 session v2）。以 `docs/REVIEW_BACKLOG_2026-11-18.md` 的修复状态和当前源码/测试为准；下列已修正的冲突行随本轮更新。
+> **2026-11-19 审查提示**：本矩阵部分“限制/未实现”列已落后于代码（例如四向 TabBar、插件 Linkifier、录制导出、多窗口 session v2）。以 `docs/internal/REVIEW_BACKLOG_2026-11-18.md` 的修复状态和当前源码/测试为准；下列已修正的冲突行随本轮更新。
 
 # xtervo 功能矩阵（FEATURE_MATRIX）
 

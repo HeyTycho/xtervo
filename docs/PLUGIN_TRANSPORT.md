@@ -85,7 +85,7 @@ ssh（L）   先 system-ssh 薄模式跑通 UX，再换 russh；Connection Manag
 serial（M）+ telnet（S）
 ```
 
-## 6. 对 ACTION_ITEMS 的影响
+## 6. 对内部行动清单（`docs/internal/ACTION_ITEMS.md`）的影响
 
 - `ACT-039/042` → 改为“官方 ssh 插件”（核心只负责 seam 与权限）。
 - `ACT-043/044/045` → 改为“官方 serial / telnet 插件”。

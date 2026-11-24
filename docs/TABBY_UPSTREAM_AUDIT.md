@@ -12,7 +12,7 @@
 | 1 | `https://raw.githubusercontent.com/Eugeny/tabby/master/README.md` | 2026-11-05 | 失败：`URL hostname "raw.githubusercontent.com" resolves to a non-public IP address` |
 | 2 | `https://docs.tabby.sh/` | 2026-11-05 | 失败：`URL hostname "docs.tabby.sh" resolves to a non-public IP address` |
 | 3 | `https://api.github.com/repos/Eugeny/tabby/commits/master` | 2026-11-05 | 失败：`URL hostname "api.github.com" resolves to a non-public IP address` |
-| 4 | `getent hosts github.com` / `docs.tabby.sh` | 2026-11-05 | 返回 `198.19.0.30` / `198.19.0.51`（非公网地址，DNS 被环境接管） |
+| 4 | `getent hosts github.com` / `docs.tabby.sh` | 2026-11-05 | 返回非公网地址（已脱敏）；DNS 被环境接管 |
 | 5 | 查找本地只读上游镜像 `reference/tabby-upstream/` | 2026-11-05 | 不存在；仓库内无上游克隆 |
 
 **因此：**
