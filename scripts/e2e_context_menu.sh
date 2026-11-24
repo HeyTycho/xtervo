@@ -262,6 +262,24 @@ PY
 RAISE_DARK=#24283b
 RAISE_LIGHT=#e5ddc7
 
+# 状态 pill 底色（Tokyo Night ui.surface=#16161e，渲染后约 #16161f）在右下
+# pill 区域里的像素数。菜单打开时 pill 必须让位，不能盖住菜单最后几行。
+pill_pixels() { # <png>
+    python3 - "$1" <<'PY'
+from PIL import Image
+import sys
+im = Image.open(sys.argv[1]).convert('RGB')
+w, h = im.size
+target = (0x16, 0x16, 0x1e)
+def near(c, tol=3):
+    return all(abs(a - b) <= tol for a, b in zip(c, target))
+x0, x1 = w - 128, w - 8
+y0, y1 = h - 56, h - 24
+print(sum(1 for y in range(y0, y1) for x in range(x0, x1)
+          if near(im.getpixel((x, y)))))
+PY
+}
+
 # ================================================================ 暗色：普通/选区/链接
 echo "== 1) 普通菜单（暗色 Tokyo Night，96x32） =="
 start_app dark tokyo-night 96 32 10 10
@@ -324,6 +342,11 @@ echo "  clipboard=$CLIP"
 echo "== 4) 窄窗 480x360：菜单不溢出 + 可滚动 =="
 resize_window 480 360
 click_content 240 150 1
+# 基线：菜单关闭时“● Connected” pill 必须可见，避免下面的隐藏断言空转。
+shot narrow_pill_closed
+PILL_CLOSED=$(pill_pixels "$OUT/narrow_pill_closed.png")
+[ "$PILL_CLOSED" -ge 800 ] \
+    || fail "菜单关闭时状态 pill 不可见（surface 像素 $PILL_CLOSED）"
 click_content 240 150 3
 sleep 0.35
 expect_log '[ui] right click pane=1 at 240,150 link=false'
@@ -338,7 +361,16 @@ sleep 0.3
 shot menu_narrow_scrolled
 diff_pixels "$OUT/menu_narrow_480x360.png" "$OUT/menu_narrow_scrolled.png" 190 38 475 360 300 \
     || fail "窄窗菜单滚轮没有滚动内容"
+# 回归：菜单打开时窗口级 pill 不能画在菜单上面（Slint 里 pill 绘制顺序更晚）。
+PILL_OPEN=$(pill_pixels "$OUT/menu_narrow_scrolled.png")
+[ "$PILL_OPEN" -lt 50 ] \
+    || fail "菜单打开时状态 pill 仍盖住菜单（surface 像素 $PILL_OPEN）"
 close_menu
+# 关闭菜单后 pill 必须恢复（visible 绑定不能把 pill 永久藏掉）。
+shot narrow_pill_restored
+PILL_RESTORED=$(pill_pixels "$OUT/narrow_pill_restored.png")
+[ "$PILL_RESTORED" -ge 800 ] \
+    || fail "菜单关闭后状态 pill 没有恢复（surface 像素 $PILL_RESTORED）"
 
 # ================================================================ 靠右下翻转（864x700）
 echo "== 5) 靠右下右键：菜单向左上翻转且不溢出 =="
@@ -372,4 +404,4 @@ assert_bbox "$OUT/menu_light.png" "$RAISE_LIGHT" 270 284 540 570 $W $H
 close_menu
 
 echo "OK: $OUT"
-echo "截图：menu_normal.png menu_selection.png menu_link.png menu_narrow_480x360.png menu_narrow_scrolled.png menu_bottom_right.png menu_light.png"
+echo "截图：menu_normal.png menu_selection.png menu_link.png menu_narrow_480x360.png menu_narrow_scrolled.png menu_bottom_right.png menu_light.png narrow_pill_closed.png narrow_pill_restored.png"

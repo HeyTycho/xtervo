@@ -33,6 +33,10 @@ xtervo 的版本与 tag 规则见 `docs/RELEASING.md`。
 
 ### Fixed
 
+- 右键菜单打开时隐藏右下角状态 pill（“● Connected”/agent forwarding），关闭
+  菜单后自动恢复。pill 是窗口级 overlay、菜单画在 pane 内，绘制顺序更晚的 pill
+  此前会盖住窄窗口菜单的最后几行（“Reset Zoom”被挡）。`e2e_context_menu.sh`
+  新增像素回归：菜单关闭 1436 / 打开 0 / 关闭后 1436 个 pill 底色像素。
 - TabBar 多标签布局：Tab 收缩下限从 52px 降到 32px（Chrome 同量级），
   并给 HorizontalLayout 槽位加 min/max 约束，Tab 不会再被压到十几像素、
   标题挤成 “Te…”；放不下后改为横向滚动。`+` / Profile 固定在 TabBar 右侧，

@@ -1594,6 +1594,10 @@ export component MainWindow inherits Window {
     /// 窗口最大化状态（由 Rust 同步，避免按钮直接读异步 WM 状态）。
     in-out property <bool> window-maximized: false;
     in-out property <bool> menu-open: false;
+    /// 任意浮层菜单打开。菜单画在 pane 内，而状态 pill 是窗口级、绘制顺序更晚；
+    /// 窄窗口里 pill 会盖住菜单最后几行，所以菜单打开时让 pill 先隐藏。
+    property <bool> menu-overlay-open: root.menu-open || root.profilemenu-open
+        || root.tabmenu-open || root.tabctx-open;
     in property <length> menu-x: 0px;
     in property <length> menu-y: 0px;
     /// 菜单作用的目标 pane（回调时原样带回 Rust）。
@@ -10236,6 +10240,7 @@ export component MainWindow inherits Window {
     // 活动 Tab 的连接状态 pill（SESS-007）：右下角，非纯颜色字形 + 文案。
     // Connected 用 ●，Connecting 用 …，Disconnected 用 ○，Failed 用 ✕。
     if root.connection-label != "" : Rectangle {
+        visible: !root.menu-overlay-open;
         x: root.width - self.width - 8px;
         y: (root.tabbar-bottom ? root.height - root.tabbar-height - 24px : root.height - 24px)
            - 26px;
@@ -10266,6 +10271,7 @@ export component MainWindow inherits Window {
 
     // agent forwarding 状态：连接 pill 上方单独一行，成功/拒绝都可见。
     if root.forward-status != "" : Rectangle {
+        visible: !root.menu-overlay-open;
         x: root.width - self.width - 8px;
         y: (root.tabbar-bottom ? root.height - root.tabbar-height - 24px : root.height - 24px)
            - 52px;
