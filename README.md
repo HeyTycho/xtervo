@@ -4,6 +4,11 @@
 目标是把日常终端做得顺滑、快、轻——低内存、低输入延迟、可脚本化控制。
 交互和产品取舍参考过 Tabby 等现代终端；xtervo 不追求替代、像素级复刻或插件兼容。
 
+> **开发方式**：本项目完全由 **DeepSeek + DeepSeek Harness** 完成（代码、测试与文档）。
+> **测试范围**：目前只在 **Ubuntu 22.04 / 24.04** 上做过实机测试，其他发行版/桌面环境尚未验证。
+> **欢迎试用**：用着不顺手、发现 bug，或有想要的功能（许愿），都欢迎到
+> [Issues](https://github.com/HeyTycho/xtervo/issues) 反馈。
+
 > **独立项目**：xtervo 与 Tabby / Terminus 的作者及项目无隶属、赞助或背书关系。
 > “Tabby”是其权利人的商标，本项目仅在功能参考与互操作说明中提及；不含 Tabby 的代码或美术资源。
 
@@ -157,6 +162,16 @@ python3 scripts/check_doc_links.py       # 文档相对链接检查
 - 打包/发布：自动更新、崩溃报告/上传、AppImage/Flatpak/Snap、发布签名与 APT 仓库
   本轮均未实现，也没有对应按钮；升级靠新 tar 的 `install.sh` 或新 `.deb`，回滚用
   `install.sh --rollback`。详见 [`packaging/README.md`](packaging/README.md)。
+
+## 反馈与许愿
+
+- 遇到 bug、想要的功能（Feature request / 许愿）、使用体验建议，都欢迎提
+  [Issue](https://github.com/HeyTycho/xtervo/issues)。
+- 提问题时请附：`xtervo --version`、发行版与桌面（X11 / Wayland）、复现步骤、相关日志
+  （`~/.local/state/xtervo/logs/`）。能稳定复现的问题优先修。
+- 本项目目前只在 Ubuntu 22.04 / 24.04 实测；其他系统的报告同样欢迎，修复会按可复现性排期。
+- 如果你愿意帮忙验证，最有用的反馈是：真实 Wayland + fcitx5/RIME 输入法、非 GNOME 桌面、
+  不同 GPU/驱动下的渲染与内存数据。
 
 ## 许可证
 
