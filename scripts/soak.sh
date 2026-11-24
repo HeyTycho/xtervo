@@ -608,7 +608,7 @@ copy_once() {
 }
 
 find_once() {  # 每次打开/关闭搜索；只在首个 cycle 输入，避免查询串累积
-    press f --ctrl
+    press f --ctrl --shift
     sleep 0.2
     if [ "${1:-0}" -eq 0 ]; then
         "$XKEY" scroll >/dev/null 2>&1 || true
@@ -678,7 +678,7 @@ sleep 0.3
 
 log "创建 $TABS 个 Tab（含初始 1 个）..."
 for _ in $(seq 2 "$TABS"); do
-    press t --ctrl
+    press t --ctrl --shift
     sleep 0.06
 done
 sleep 2
