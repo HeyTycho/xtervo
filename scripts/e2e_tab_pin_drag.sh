@@ -169,7 +169,7 @@ echo "== 1. 启动并构造 4 个有标题的 Tab =="
 start_app A
 set_title T1
 for t in T2 T3 T4; do
-    "$XKEY" t --ctrl >/dev/null
+    "$XKEY" t --ctrl --shift >/dev/null
     sleep 0.9
     set_title "$t"
 done

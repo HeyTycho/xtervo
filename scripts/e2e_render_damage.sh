@@ -239,7 +239,7 @@ sleep 0.5
 # ---------------------------------------------------------------- 2. 搜索高亮
 echo "== 2) 搜索高亮 =="
 before_count=$(render_log | wc -l)
-key --ctrl f
+key f --ctrl --shift
 sleep 0.3
 "$XKEY" target >/dev/null 2>&1
 sleep 0.2

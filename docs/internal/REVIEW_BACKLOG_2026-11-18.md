@@ -7,6 +7,11 @@ Baseline: `7f260b8`. Fixed in: `bdd0548`, `8af72f7`, `8430583`, `c320a54`.
 **Install policy: no more `~/.local/bin/xtervo` updates until every item below is
 fixed, tested and Codex-reviewed. The final release is installed exactly once.**
 
+> **2026-11-24 对账**：S7、C3、C5、O2–O7、A1/A5–A8、P1–P5、M1 等已由后续提交修复，
+> 表格 Note 里写了文件/测试证据；M1/P4/P5 另做了本次加固。仍 open 的只有 T7（矩阵
+> 逐行重写）、W1/W2（WASM 共享 ticker / 后台编译，属架构改动）。
+> 本文件已移入 `docs/internal/`，上面的 install policy 是当时的过程约定，不再适用。
+
 ## 1. Status legend
 
 - `fixed` — code + regression + relevant e2e/soak evidence in the commit.
