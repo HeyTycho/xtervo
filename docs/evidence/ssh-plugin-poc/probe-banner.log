@@ -1,27 +1,12 @@
 [plugin-ssh-probe] profile=remote-plugin id=1 host=ssh.example.test user=demo auth=agent transport=plugin
 [2m[plugin-ssh] 正在连接 demo@ssh.example.test:22 …[0m
-Welcome to Ubuntu LTS (GNU/Linux generic x86_64)
+Welcome to Ubuntu LTS
 
- * Documentation:  https://help.ubuntu.com
- * Management:     https://landscape.canonical.com
- * Support:        https://ubuntu.com/pro
+[remote banner body redacted]
+Last login: <redacted>
 
-Expanded Security Maintenance for Applications is not enabled.
+%                                                                              
+ 
 
-334 updates can be applied immediately.
-8 of these updates are standard security updates.
-To see these additional updates run: apt list --upgradable
-
-97 additional security updates can be applied with ESM Apps.
-Learn more about enabling ESM Apps service at https://ubuntu.com/esm
-
-New release '24.04.5 LTS' available.
-Run 'do-release-upgrade' to upgrade to it.
-
-
-21 updates could not be installed automatically. For more details,
-see /var/log/unattended-upgrades/unattended-upgrades.log
-*** System restart required ***
-Last login: <redacted> from 198.51.100.5
-%                                                                               [01;32m?➜  [36m~[00m [?2004h
+[01;32m?➜  [36m~[00m [?2004h
 [plugin-ssh-probe] bytes=1045 phase=connected detail=remote output received

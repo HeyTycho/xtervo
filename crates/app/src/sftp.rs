@@ -1887,7 +1887,7 @@ mod tests {
         SftpTarget {
             host: "example.com".into(),
             port: 2222,
-            user: "yt".into(),
+            user: "demo".into(),
             key_path: "/home/user/.ssh/id_ed25519".into(),
             proxy_jump: String::new(),
             extra_args: vec!["-o".into(), "StrictHostKeyChecking=yes".into()],
@@ -1916,7 +1916,7 @@ mod tests {
                 "ServerAliveInterval=5",
                 "-o",
                 "ServerAliveCountMax=2",
-                "user@example.com"
+                "demo@example.com"
             ]
         );
     }
@@ -1934,14 +1934,14 @@ mod tests {
         let user = args.iter().position(|a| a == "ConnectTimeout=30").unwrap();
         let default = args.iter().position(|a| a == "ConnectTimeout=10").unwrap();
         assert!(user < default, "用户选项应先出现: {args:?}");
-        assert!(args.last().is_some_and(|a| a == "user@example.com"));
+        assert!(args.last().is_some_and(|a| a == "demo@example.com"));
 
         let mut jump = target();
         jump.proxy_jump = "ops@bastion:2222".into();
         let args = jump.args();
         let j = args.iter().position(|a| a == "-J").expect("-J 缺失");
         assert_eq!(args[j + 1], "ops@bastion:2222");
-        assert!(j < args.iter().position(|a| a == "user@example.com").unwrap());
+        assert!(j < args.iter().position(|a| a == "demo@example.com").unwrap());
     }
 
     #[test]

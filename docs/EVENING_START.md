@@ -78,7 +78,7 @@ SSH 用**远端机器**（用户已定）。
 本机现状（已核对）：
 - `~/.config/xtervo/` 下**没有 profiles.toml**（还没有保存过任何 Profile）；
 - `~/.ssh/config` 里只有一个 Host：`ssh.example.test`；
-- `SSH_AUTH_SOCK=<agent socket>`（agent 可用），`~/.ssh` 有 ed25519/rsa 公钥；
+- `SSH_AUTH_SOCK=<agent socket>`（agent 可用），`~/.ssh` 已有密钥（不列出具体类型）；
 - known_hosts 已配置。
 
 F5 联调就用 `ssh.example.test`（或你临时指定的主机）建 Profile：
