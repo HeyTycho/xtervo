@@ -1,3 +1,6 @@
+# LEGACY（Plugin API v2）：当前宿主只加载 api = 3 / host_abi = 3 的清单，
+# 本示例不会被加载或执行，仅作历史参考。可运行的 v3 示例见 ../plugin-v3-echo/。
+#
 # xtervo AI Chat 参考插件（API v2）。
 #
 # 安装：把整个 ai-echo/ 目录复制到 ~/.config/xtervo/plugins/ai-echo/，
