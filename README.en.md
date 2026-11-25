@@ -7,6 +7,9 @@
 
 [简体中文](README.md) | **English**
 
+> **Documentation**: [English](https://heytycho.github.io/xtervo/en/) · [简体中文](https://heytycho.github.io/xtervo/)
+> (searchable, light/dark, per-page language switch)
+
 A native terminal emulator written in Rust + Slint: GPU rendering (Skia / wgpu with
 automatic software fallback), built to make everyday terminal work smooth, fast and
 light — low memory, low input latency, scriptable control.

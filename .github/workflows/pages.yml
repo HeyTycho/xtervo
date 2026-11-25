@@ -6,6 +6,8 @@ on:
     paths:
       - "docs/**"
       - "mkdocs.yml"
+      - "mkdocs.en.yml"
+      - "overrides/**"
       - "requirements-docs.txt"
       - "scripts/mkdocs_hooks.py"
       - ".github/workflows/pages.yml"
@@ -39,8 +41,11 @@ jobs:
       - name: Configure Pages
         uses: actions/configure-pages@v5
 
-      - name: Build
+      - name: Build (Chinese)
         run: mkdocs build --strict
+
+      - name: Build (English)
+        run: mkdocs build --strict -f mkdocs.en.yml
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3

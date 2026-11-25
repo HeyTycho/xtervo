@@ -4,6 +4,12 @@ xtervo 的版本与 tag 规则见 `docs/RELEASING.md`。
 
 ## [Unreleased]
 
+### Added
+
+- MkDocs Material 文档站（GitHub Pages）与英文子站 `/en/`：中英两套独立导航/主题语言，
+  用户文档逐页语言切换；英文子站覆盖安装、快捷键、终端行为、主题、SSH/SFTP、Vault、
+  MCP、诊断、日志、插件与 Plugin API v3。
+
 ### Changed
 
 - 品牌标记扁平化：保留 T + 琥珀光标，去掉渐变/发光；新增
