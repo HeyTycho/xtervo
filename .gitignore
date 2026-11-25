@@ -26,3 +26,6 @@ scripts/__pycache__/
 
 # 一次性 SSH/Vault e2e 截图（含桌面隐私，不提交）
 /.vaultssh2-e2e/
+
+# MkDocs build output
+/site/

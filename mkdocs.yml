@@ -1,0 +1,101 @@
+site_name: xtervo
+site_description: A fast, light native terminal for Linux, written in Rust + Slint.
+site_url: https://heytycho.github.io/xtervo/
+repo_url: https://github.com/HeyTycho/xtervo
+repo_name: HeyTycho/xtervo
+edit_uri: edit/main/docs/
+docs_dir: docs
+site_dir: site
+use_directory_urls: true
+
+theme:
+  name: material
+  language: zh
+  logo: images/icon.png
+  favicon: images/icon.png
+  font: false
+  palette:
+    - scheme: default
+      primary: black
+      accent: amber
+      toggle:
+        icon: material/weather-night
+        name: 切换到深色
+    - scheme: slate
+      primary: black
+      accent: amber
+      toggle:
+        icon: material/weather-sunny
+        name: 切换到浅色
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.indexes
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.action.edit
+
+extra_css:
+  - stylesheets/extra.css
+
+hooks:
+  - scripts/mkdocs_hooks.py
+
+plugins:
+  - search
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+
+nav:
+  - 首页: README.md
+  - 安装与使用:
+      - 终端基础行为: terminal-behavior.md
+      - 终端菜单与查找: terminal-menu-find.md
+      - 终端 UI 基础: terminal-ui-basics.md
+      - 主题: themes.md
+      - 验收手册: VERIFICATION.md
+  - 连接与安全:
+      - SSH / SFTP / Vault: SSH_SFTP.md
+      - Vault: VAULT.md
+      - MCP: MCP.md
+      - 诊断 CLI: DIAGNOSTICS.md
+      - 日志: LOGGING.md
+  - 插件:
+      - 插件安装: PLUGIN_INSTALL.md
+      - Plugin API v3: PLUGIN_V3.md
+      - 插件系统设计: PLUGIN_SYSTEM.md
+      - Transport 插件: PLUGIN_TRANSPORT.md
+  - 设计与内部:
+      - 架构: ARCHITECTURE.md
+      - UI 设计: UI_DESIGN.md
+      - 图片合成: IMAGE_COMPOSITING.md
+      - 字体回退: FONT_FALLBACK.md
+      - 多窗口: MULTI_WINDOW_ARCHITECTURE.md
+      - GPU 性能: GPU_PERFORMANCE.md
+      - 渲染路线: RENDERING_ROADMAP.md
+  - 状态与报告:
+      - Mainline 状态: MAINLINE_STATUS.md
+      - 功能矩阵: FEATURE_MATRIX.md
+      - 闭环报告: CLOSURE.md
+      - 稳定性报告: STABILITY_REPORT.md
+      - Soak: SOAK.md
+      - 发布流程: RELEASING.md
+  - English: README.en.md
+
+copyright: GPL-3.0-only · xtervo contributors

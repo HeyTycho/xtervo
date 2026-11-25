@@ -1,6 +1,48 @@
-# xtervo 文档
+# xtervo
 
-[English index](README.en.md) | **简体中文**
+[English](README.en.md) | **简体中文**
+
+**A fast, light native terminal for Linux — Rust + Slint, GPU with software fallback.**
+
+[安装](#install) · [快速开始](#quickstart) · [架构](ARCHITECTURE.md) · [GitHub](https://github.com/HeyTycho/xtervo)
+
+![xtervo：标签栏、终端与右键菜单](images/screenshot-dark.png)
+
+> **开发方式**：本项目完全由 **DeepSeek + DeepSeek Harness** 完成（代码、测试与文档）。
+> **测试范围**：目前只在 **Ubuntu 22.04 / 24.04** 实机测试，其他发行版/桌面环境尚未验证。
+> **欢迎试用**：bug、许愿功能和使用建议都欢迎到
+> [Issues](https://github.com/HeyTycho/xtervo/issues) 反馈。
+
+## 安装 {#install}
+
+预编译产物发布在 [GitHub Releases](https://github.com/HeyTycho/xtervo/releases)：
+
+```bash
+# tar.gz（默认安装到 ~/.local）
+tar xzf xtervo-<version>-linux-x86_64.tar.gz
+./xtervo-<version>-linux-x86_64/install.sh
+
+# 或 .deb
+sudo apt install ./xtervo_<version>-1_amd64.deb
+
+# 校验下载产物
+sha256sum -c --ignore-missing SHA256SUMS
+```
+
+从源码构建需要 Rust 1.92+ 与 X11 开发库，完整步骤见
+[根 README 的构建章节](../README.md#从源码构建)。
+
+## 从这里开始 {#quickstart}
+
+- [终端基础行为：铃 / 滚动 / Backspace / Delete](terminal-behavior.md)
+- [终端右键菜单与查找](terminal-menu-find.md)
+- [主题：内置、自定义与导入现成配色](themes.md)
+- [SSH / SFTP / Vault](SSH_SFTP.md)
+- [插件安装](PLUGIN_INSTALL.md) 与 [Plugin API v3](PLUGIN_V3.md)
+- [MCP 控制](MCP.md) 与 [诊断 CLI](DIAGNOSTICS.md)
+- [验收手册](VERIFICATION.md) · [Soak 稳定性](SOAK.md)
+
+## 文档索引
 
 > 这里是详细文档的入口。根目录 [`../README.md`](../README.md) 只保留简介、主要功能与安装使用；
 > 设计、矩阵、报告、历史归档都在本目录。
