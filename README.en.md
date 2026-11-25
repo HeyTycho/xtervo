@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/icon.png" width="120" alt="xtervo logo">
+</p>
+
 # xtervo
 
 [简体中文](README.md) | **English**
