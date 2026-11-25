@@ -70,7 +70,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential pkg-config cmake ninja-build python3 \
-            ca-certificates curl libudev-dev \
+            ca-certificates curl libudev-dev openssh-client \
+            fonts-dejavu-core fonts-noto-cjk \
             libxkbcommon-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev \
             libgl1-mesa-dev libegl1-mesa-dev libfontconfig1-dev libfreetype6-dev
 

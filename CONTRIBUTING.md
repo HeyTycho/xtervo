@@ -45,7 +45,8 @@ sudo apt-get install -y \
 跑 e2e / soak 还需要：
 
 ```bash
-sudo apt-get install -y xvfb openbox x11-utils ffmpeg
+sudo apt-get install -y xvfb openbox x11-utils ffmpeg openssh-client \
+  fonts-dejavu-core fonts-noto-cjk
 ```
 
 Rust 使用 stable，最低版本见根 `Cargo.toml` 的 `rust-version`（当前 1.92）：
