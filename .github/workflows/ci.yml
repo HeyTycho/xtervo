@@ -87,4 +87,16 @@ jobs:
         run: cargo test -p xtervo-core
 
       - name: Test application
-        run: cargo test -p xtervo-app --bin xtervo
+        run: |
+          set +e
+          cargo test -p xtervo-app --bin xtervo -- --test-threads=4 2>&1 | tee "$RUNNER_TEMP/app-test.log"
+          rc=${PIPESTATUS[0]}
+          if [ "$rc" -ne 0 ]; then
+            {
+              echo "### app tests failed (rc=$rc)"
+              echo '```'
+              grep -E '^failures:|^    [A-Za-z0-9_:]+$|panicked at|test result:' "$RUNNER_TEMP/app-test.log" | head -80
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$rc"
