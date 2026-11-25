@@ -96,6 +96,14 @@ nav:
       - 稳定性报告: STABILITY_REPORT.md
       - Soak: SOAK.md
       - 发布流程: RELEASING.md
-  - English: README.en.md
+
+extra:
+  alternate:
+    - name: 简体中文
+      link: https://heytycho.github.io/xtervo/
+      lang: zh
+    - name: English
+      link: https://heytycho.github.io/xtervo/README.en/
+      lang: en
 
 copyright: GPL-3.0-only · xtervo contributors
