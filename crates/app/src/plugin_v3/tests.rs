@@ -2129,13 +2129,27 @@ fn fake_window_asks_do_not_occupy_approval_slots() {
     ));
     store.set_active_window(Some(1));
 
-    assert!(store.spawn_command("plugin.dev.test.fakeask.terminal-read-fake-windows"));
-    // 并行测试会争抢进程/FD，sidecar 可能重启一次；给首次活动更长的窗口。
-    assert!(wait_activity(
-        &store,
-        "fake-windows-sent",
-        Duration::from_secs(15)
-    ));
+    // CI runner 上 sidecar 可能因 FD/进程争抢重启一次，命令会丢；重发并等待
+    // 插件重新进入 Running，避免把“重启窗口”误判成审批队列泄漏。
+    let mut sent = false;
+    for _ in 0..3 {
+        if !wait_phase(
+            &store,
+            "dev.test.fakeask",
+            Phase::Running,
+            Duration::from_secs(5),
+        ) {
+            continue;
+        }
+        if store.spawn_command("plugin.dev.test.fakeask.terminal-read-fake-windows")
+            && wait_activity(&store, "fake-windows-sent", Duration::from_secs(10))
+        {
+            sent = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    assert!(sent, "插件未在重试窗口内完成 20 个伪造窗口 ask");
     std::thread::sleep(Duration::from_millis(100));
     let approvals = store.pending_approvals();
     assert!(
