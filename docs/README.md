@@ -1,5 +1,7 @@
 # xtervo 文档
 
+[English index](README.en.md) | **简体中文**
+
 > 这里是详细文档的入口。根目录 [`../README.md`](../README.md) 只保留简介、主要功能与安装使用；
 > 设计、矩阵、报告、历史归档都在本目录。
 

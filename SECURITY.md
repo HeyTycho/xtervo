@@ -1,5 +1,7 @@
 # 安全策略
 
+[English](SECURITY.en.md) | **简体中文**
+
 xtervo 是运行在本机的终端模拟器，会接触 shell、SSH 凭据、Vault、插件进程和 MCP
 控制通道。安全问题请**私下报告**，不要在公开 issue 里贴利用细节或敏感数据。
 

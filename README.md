@@ -1,5 +1,7 @@
 # xtervo
 
+[English](README.en.md) | **简体中文**
+
 用 Rust + Slint 写的原生终端模拟器：GPU 渲染（Skia / wgpu，无 GPU 自动回退软件光栅化），
 目标是把日常终端做得顺滑、快、轻——低内存、低输入延迟、可脚本化控制。
 交互和产品取舍参考过 Tabby 等现代终端；xtervo 不追求替代、像素级复刻或插件兼容。
