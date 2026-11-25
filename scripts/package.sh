@@ -42,6 +42,9 @@ STAGE=""
 DEBROOT=""
 
 die() { echo "!! $*" >&2; exit 1; }
+if [[ "${SKIP_BUILD:-0}" != 1 ]]; then
+    command -v cargo >/dev/null 2>&1 || die "找不到 cargo（PATH=$PATH）"
+fi
 size_of() { wc -c <"$1" | tr -d '[:space:]'; }
 human() { awk -v b="$1" 'BEGIN { printf "%.1f MB", b / 1048576 }'; }
 
@@ -121,7 +124,7 @@ export XTERVO_GIT_COMMIT="$GIT_COMMIT"
 export XTERVO_GIT_DIRTY="$GIT_DIRTY"
 
 BUILT="$(date -u -d "@$SOURCE_DATE_EPOCH" '+%Y-%m-%dT%H:%M:%SZ')"
-TARGET_TRIPLE="$(rustc -vV 2>/dev/null | sed -n 's/^host: //p')"
+TARGET_TRIPLE="$(rustc -vV 2>/dev/null | sed -n 's/^host: //p' || true)"
 [[ -n "$TARGET_TRIPLE" ]] || TARGET_TRIPLE="$(uname -m)-unknown-linux-gnu"
 ARCH="$(uname -m)"
 case "$TARGET_TRIPLE" in

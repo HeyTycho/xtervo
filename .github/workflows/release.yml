@@ -45,10 +45,20 @@ jobs:
         with:
           shared-key: release
 
+      - name: Diagnostics
+        run: |
+          set -euo pipefail
+          echo "PATH=$PATH"
+          command -v cargo rustc git strip dpkg-deb
+          git status --porcelain=v1 --untracked-files=normal
+          git describe --tags --always
+
       - name: Build and package
         # scripts/package.sh 默认把 CARGO_HOME 指到仓库内；显式使用
         # runner 的 ~/.cargo，复用 rust-cache 缓存，并保持 checkout 干净。
-        run: CARGO_HOME="$HOME/.cargo" MAX_MB=70 ./scripts/package.sh dist
+        run: |
+          export PATH="$HOME/.cargo/bin:/usr/local/cargo/bin:$PATH"
+          CARGO_HOME="$HOME/.cargo" MAX_MB=70 ./scripts/package.sh dist
 
       - name: Verify artifacts and checksums
         run: |
