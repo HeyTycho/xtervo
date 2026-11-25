@@ -118,6 +118,12 @@ sleep 0.5
 CELL=$(spot_cell)
 echo "spot after output: cell=$CELL"
 [ "$CELL" = "0,3" ] || { echo "FAIL: 输出后 spot 应为 0,3，实际 $CELL"; exit 1; }
+# X11 无 cursor area：spot y 应在光标格底边（content_y 32 + (0+1)*cell_h 22）。
+XY=$(spot_xy)
+case "$XY" in
+    *,54.0) ;;
+    *) echo "FAIL: X11 spot y 应为 54.0（格底边），实际 $XY"; exit 1 ;;
+esac
 
 # 窗口绝对位置 + 内容区偏移（top tabbar 32px）：点击远处格。
 AX=$(xwininfo -id "$WIN" | awk '/Absolute upper-left X/{print $NF}')
@@ -150,4 +156,16 @@ echo "spot x before=$BEFORE after=$AFTER"
 CELL=$(spot_cell)
 [ "$CELL" = "0,3" ] || { echo "FAIL: 侧栏开合后 spot 漂移：$CELL"; exit 1; }
 [ "$AFTER" != "$BEFORE" ] || { echo "FAIL: 侧栏开合后 spot 没有重发（$BEFORE）"; exit 1; }
-echo "PASS: IME spot 只跟随终端光标（cell=0,3，点击不改变，侧栏位移 $BEFORE -> $AFTER）"
+echo "== 滚动历史（Ctrl+Shift+Home/End）=="
+BEFORE_SCROLL=$(spot_cell)
+"$XKEY" --key home --ctrl --shift >/dev/null 2>&1
+sleep 0.6
+TOP=$(spot_cell)
+"$XKEY" --key end --ctrl --shift >/dev/null 2>&1
+sleep 0.6
+BOTTOM=$(spot_cell)
+echo "spot before=$BEFORE_SCROLL top=$TOP bottom=$BOTTOM"
+[ "$TOP" != "$BEFORE_SCROLL" ] || { echo "FAIL: 上滚后 spot 没跟 Frame 视口光标走"; exit 1; }
+[ "$BOTTOM" = "$BEFORE_SCROLL" ] || { echo "FAIL: 回底后 spot 没恢复：$BOTTOM"; exit 1; }
+
+echo "PASS: IME spot 只跟随终端光标（cell=0,3，X11 y=54，点击不改变，侧栏 $BEFORE -> $AFTER，滚动 $BEFORE_SCROLL -> $TOP -> $BOTTOM）"

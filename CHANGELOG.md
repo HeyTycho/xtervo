@@ -12,11 +12,15 @@ xtervo 的版本与 tag 规则见 `docs/RELEASING.md`。
 
 ### Fixed
 
-- IME 候选框定位只取聚焦 pane 的终端光标格，不再把鼠标点击格当锚点；
-  mouse-reporting TUI 里点击后候选框不会再黏在点击处。`content_x`（侧栏/竖排
-  TabBar）纳入 spot 去重键，侧栏开合会重发而不是等到下次光标移动才跳。
-  新增 `scripts/e2e_ime_cursor.sh` 回归测试（点击前后 spot 同为终端光标格，
-  侧栏开合 x 位移 240px）。
+- IME 候选框定位改为聚焦 pane 的 **Frame 视口光标**（grid row + `display_offset`，
+  clamp 到可见行），不再使用绝对 grid 行；滚动历史时光标点跟着视口走。
+- 删除鼠标点击锚点：mouse-reporting TUI 里点击后候选框不会再黏在点击处。
+- X11 后端把 spot 放到光标格底边（Alacritty 同款：X11 不支持 cursor area）；
+  Wayland 保持左上角完整矩形。
+- 只有前台窗口可以更新 IME anchor（kitty 同款），后台窗口的子进程输出不再抢候选窗。
+- `content_x`/`content_y`（侧栏/竖排/顶部 TabBar）纳入 spot 去重键；侧栏开合立即重发。
+- 新增 `scripts/e2e_ime_cursor.sh`：点击不改变 spot、X11 y 在格底边、侧栏开合
+  x 位移 240px，均纳入回归。
 
 ### Changed
 

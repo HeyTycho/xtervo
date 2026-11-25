@@ -160,3 +160,38 @@ dsh-tui 不识别该序列，表现为“dsh-tui 输入/退格全坏”，而普
 
 **验收边界**：Xvfb/X11 只验证 xtervo 自己计算的 spot，不能验证真实 Wayland
 `text-input-v3` 的候选窗像素位置；Wayland + fcitx5 仍需人工验收。
+
+## 7. 对照其他终端（2026-11-25）
+
+这次不再只改 xtervo 自己的状态，先对照了四个成熟实现：
+
+| 终端 | 候选点来源 | 重发时机 | 特殊处理 |
+|---|---|---|---|
+| Alacritty | `cursor.point` × cell + padding | 光标/显示更新时 `update_ime_position` | X11 无 area，spot 用 `line + 1` 放到格底边；Wayland 用完整矩形，宽 2 cells |
+| kitty | 活跃 screen 的 cursor | 子进程输出导致光标移动、render pass | 只有 active window 能移动共享 anchor；跳过隐藏光标；滚动历史不重发 |
+| VTE | cursor col/row × cell + padding + preedit 宽 | 每批 PTY 数据、preedit 变化、滚动 | `row_to_pixel` 计入 display offset；X11/Wayland 的 IM 几何由 GTK 处理 |
+| Windows Terminal | cursor cell × font size + window bounds | 光标位置回调 | TSF 输入控件跟随 cursor；宽度按字体 |
+
+参考：
+- Alacritty IME popup positioning：<https://github.com/alacritty/alacritty/commit/6017326d8293b67eff952ebba2310ea070537f55>
+- kitty“Keep IME anchor following cursor on child output”：<https://github.com/kovidgoyal/kitty/pull/10644>
+- VTE `Terminal::im_update_cursor`（`vte.cc`，`row_to_pixel` + `padding`）：<https://sources.debian.org/src/vte2.91/0.54.2-2/src/vte.cc>
+- Windows Terminal IME follow-cursor PR：<https://github.com/microsoft/terminal/pull/1919>
+
+xtervo 本轮采纳：
+
+1. 光标来源改为 **Frame 视口坐标**（grid row + `display_offset`，clamp 到可见行），
+   与渲染/overlay 用的 `frame.cursor` 一致；滚动历史时 spot 跟着变。
+2. X11 后端把 spot 放到光标格**底边**（同 Alacritty），Wayland 保持左上角完整矩形。
+3. 只有**前台窗口**能更新 anchor（同 kitty）；后台窗口的光标输出不再抢候选窗。
+4. 保留 50ms 轮询（覆盖子进程输出导致的光标移动）+ pane/Tab/resize/sidebar/
+   preedit 的置脏重发；`content_x`/`content_y` 入去重键。
+
+仍然不同/未验证：
+
+- xtervo 没有 text padding；pane rect 即 cell 起点。
+- preedit 不渲染到终端画面，因此 x 不随 preedit 宽度移动（VTE/Alacritty 会）。
+- 隐藏光标仍会更新 spot（VTE 同；kitty 跳过）。dsh 这类自绘 caret 的 TUI 必须
+  把终端光标同步到 caret，否则终端无从得知自绘位置。
+- 真实 Wayland + fcitx5 的 `set_cursor_rectangle` 像素效果仍需真机验收；Xvfb 只能
+  验证 xtervo 计算的 spot。

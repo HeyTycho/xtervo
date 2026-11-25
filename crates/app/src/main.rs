@@ -11828,11 +11828,22 @@ struct ImeSpotKey {
     scale_milli: u32,
 }
 
+/// 终端光标格 → 视口行。Frame 的 cursor 也用同样公式：grid row + display_offset，
+/// 再 clamp 到可见行；滚动历史时候选点必须跟 Frame 光标走，而不是绝对 grid 行。
+fn ime_viewport_row(cursor_line: u16, display_offset: usize, rows: usize) -> usize {
+    let max = rows.saturating_sub(1) as i32;
+    (cursor_line as i32 + display_offset as i32).clamp(0, max) as usize
+}
+
 /// 纯函数：由 pane 矩形、字符尺寸、光标格算出 IME 候选点。
 ///
 /// `rect`/`cell_w`/`cell_h` 都是 Slint 内容区局部像素；`content_x`/`content_y`
 /// 是内容区在窗口内的偏移（竖排 TabBar、侧栏、顶部 TabBar）。窗口坐标必须一起
 /// 入键：侧栏开合只改 origin、不改 pane 矩形，漏掉 origin 就不会重发 spot。
+///
+/// `x11`：winit 的 X11 后端不支持 cursor area，只接受一个 spot 点；和 Alacritty
+/// 一样把点放在光标格底边，避免候选窗盖住光标格。Wayland text-input-v3 用
+/// 完整矩形，保持左上角。
 fn ime_spot_key(
     pane: PaneId,
     rect: Rect,
@@ -11841,12 +11852,13 @@ fn ime_spot_key(
     cell: (usize, usize),
     content_x: f32,
     content_y: f32,
+    x11: bool,
     scale: f64,
 ) -> ImeSpotKey {
     let cw = cell_w.max(1.0);
     let ch = cell_h.max(1.0);
     let x = content_x + rect.x + cell.1 as f32 * cw;
-    let y = content_y + rect.y + cell.0 as f32 * ch;
+    let y = content_y + rect.y + (cell.0 as f32 + if x11 { 1.0 } else { 0.0 }) * ch;
     let dpr = if scale.is_finite() && scale > 0.0 {
         scale
     } else {
@@ -11907,6 +11919,11 @@ fn restore_terminal_focus_after_tab_change(st: &mut AppState) {
 fn update_ime_spot(st: &mut AppState) {
     use slint::winit_030::winit::dpi::{LogicalPosition, LogicalSize};
 
+    // Kitty 的经验：IME anchor 是共享的，只有前台窗口可以移动它；否则后台
+    // 窗口的光标输出会把候选窗拽到别的窗口。焦点恢复时由 focus 路径置 dirty。
+    if !st.window_focused {
+        return;
+    }
     let Some(tab) = st.ws.active_tab() else {
         return;
     };
@@ -11914,11 +11931,15 @@ fn update_ime_spot(st: &mut AppState) {
     let Some(rt) = st.panes.get(&focused) else {
         return;
     };
-    // 唯一来源：聚焦 pane 的终端光标格。鼠标点击只负责终端选择/鼠标上报，
-    // 不再参与候选框定位；否则 mouse-reporting TUI 里光标不动时，候选框会
-    // 永远黏在最后一次点击处。
-    let (line, col) = rt.handle.cursor_pos();
-    let (line, col) = (line as usize, col as usize);
+    // 唯一来源：聚焦 pane 的**视口**光标格。滚动历史时 Frame 光标会加
+    // display_offset 并 clamp 到可见行（见 frame::CursorState）；这里必须
+    // 用同一套坐标，否则候选窗会停在绝对 grid 行上。
+    let (cursor_line, cursor_col) = rt.handle.cursor_pos();
+    let scroll = rt.handle.scroll_position();
+    let rows = rt.grid.1.max(1);
+    let cols = rt.grid.0.max(1);
+    let line = ime_viewport_row(cursor_line, scroll.offset, rows);
+    let col = (cursor_col as usize).min(cols - 1);
     let tabbar = st.cfg.borrow().tabbar_pos();
     // 内容区在窗口内的纵向偏移：上=TabBar 高度；下/左/右=0。
     let content_y = if tabbar == TabbarPos::Top {
@@ -11934,6 +11955,11 @@ fn update_ime_spot(st: &mut AppState) {
         0.0
     } + sidebar_width_of(&st.cfg.borrow());
     let scale = st.ui.window().scale_factor() as f64;
+    let is_x11 = st
+        .ui
+        .window()
+        .with_winit_window(winit_window_is_x11)
+        .unwrap_or(false);
     let key = ime_spot_key(
         focused,
         rt.rect,
@@ -11942,6 +11968,7 @@ fn update_ime_spot(st: &mut AppState) {
         (line, col),
         content_x,
         content_y,
+        is_x11,
         scale,
     );
     // 普通 50ms 轮询按完整键去重；pane/Tab/resize/focus 变化由 dirty 强制重发。
@@ -11973,7 +12000,7 @@ fn update_ime_spot(st: &mut AppState) {
     if std::env::var_os("XTERVO_IME_LOG").is_some() {
         eprintln!(
             "[ime] spot pane={focused} cell={line},{col} win={x:.1},{y:.1} \
-             phys={},{} scale={:.3}",
+             phys={},{} scale={:.3} x11={is_x11}",
             key.physical_x, key.physical_y, scale
         );
     }
@@ -24540,7 +24567,7 @@ mod tests {
     fn ime_spot_maps_cursor_cell_to_window_pixels() {
         // 120x40 终端、cell 9x22、顶部 tabbar 32px；光标格 (37,94) 的窗口坐标。
         let rect = Rect::new(0.0, 0.0, 1080.0, 848.0);
-        let a = ime_spot_key(1, rect, 9.0, 22.0, (37, 94), 0.0, TABBAR_H, 1.0);
+        let a = ime_spot_key(1, rect, 9.0, 22.0, (37, 94), 0.0, TABBAR_H, false, 1.0);
         assert_eq!((a.logical_x_milli, a.logical_y_milli), (846_000, 846_000));
         assert_eq!((a.physical_x, a.physical_y), (846, 846));
         assert_eq!((a.logical_w_milli, a.logical_h_milli), (9_000, 22_000));
@@ -24549,25 +24576,25 @@ mod tests {
         assert_eq!(a.pane, 1);
 
         // 同一格但 tabbar 在底部：y 少一个 tabbar 高度。
-        let bottom = ime_spot_key(1, rect, 9.0, 22.0, (37, 94), 0.0, 0.0, 1.0);
+        let bottom = ime_spot_key(1, rect, 9.0, 22.0, (37, 94), 0.0, 0.0, false, 1.0);
         assert_eq!(bottom.logical_y_milli, 814_000);
 
         // pane 切换 / 光标格前进都必须产生不同的键（否则会误去重）。
         assert_ne!(
             a,
-            ime_spot_key(2, rect, 9.0, 22.0, (37, 94), 0.0, TABBAR_H, 1.0)
+            ime_spot_key(2, rect, 9.0, 22.0, (37, 94), 0.0, TABBAR_H, false, 1.0)
         );
         assert_ne!(
             a,
-            ime_spot_key(1, rect, 9.0, 22.0, (37, 93), 0.0, TABBAR_H, 1.0)
+            ime_spot_key(1, rect, 9.0, 22.0, (37, 93), 0.0, TABBAR_H, false, 1.0)
         );
         assert_eq!(
             a,
-            ime_spot_key(1, rect, 9.0, 22.0, (37, 94), 0.0, TABBAR_H, 1.0)
+            ime_spot_key(1, rect, 9.0, 22.0, (37, 94), 0.0, TABBAR_H, false, 1.0)
         );
 
         // 侧栏/内容原点变化会平移 pane rect，候选点必须跟着窗口坐标走。
-        let shifted = ime_spot_key(1, rect, 9.0, 22.0, (37, 94), 240.0, TABBAR_H, 1.0);
+        let shifted = ime_spot_key(1, rect, 9.0, 22.0, (37, 94), 240.0, TABBAR_H, false, 1.0);
         assert_eq!(shifted.logical_x_milli - a.logical_x_milli, 240_000);
 
         // 防回归：候选点代码里不允许再出现鼠标锚点状态（用 concat! 避免
@@ -24580,8 +24607,8 @@ mod tests {
     #[test]
     fn ime_spot_keys_include_dpr_and_physical_pixels() {
         let rect = Rect::new(0.0, 0.0, 1080.0, 848.0);
-        let base = ime_spot_key(1, rect, 9.0, 22.0, (37, 94), 0.0, TABBAR_H, 1.0);
-        let hidpi = ime_spot_key(1, rect, 9.0, 22.0, (37, 94), 0.0, TABBAR_H, 1.25);
+        let base = ime_spot_key(1, rect, 9.0, 22.0, (37, 94), 0.0, TABBAR_H, false, 1.0);
+        let hidpi = ime_spot_key(1, rect, 9.0, 22.0, (37, 94), 0.0, TABBAR_H, false, 1.25);
         // winit 收逻辑坐标；物理像素按 DPR 四舍五入后只用于去重/日志。
         assert_eq!(
             (hidpi.logical_x_milli, hidpi.logical_y_milli),
@@ -24593,7 +24620,7 @@ mod tests {
         assert_ne!(base, hidpi, "DPR 改变必须重发 spot");
 
         // 非法/零 DPR 回退 1.0，不能出现除零或饱和垃圾坐标。
-        let bad = ime_spot_key(1, rect, 9.0, 22.0, (37, 94), 0.0, TABBAR_H, 0.0);
+        let bad = ime_spot_key(1, rect, 9.0, 22.0, (37, 94), 0.0, TABBAR_H, false, 0.0);
         assert_eq!(bad.scale_milli, 1000);
         assert_eq!(bad, base);
     }

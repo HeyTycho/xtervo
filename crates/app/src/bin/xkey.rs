@@ -40,6 +40,8 @@ fn main() {
             "down" => "\u{F701}".to_string(),
             "left" => "\u{F702}".to_string(),
             "right" => "\u{F703}".to_string(),
+            "home" => "\u{F750}".to_string(),
+            "end" => "\u{F751}".to_string(),
             other => {
                 eprintln!("未知按键: {other}");
                 return;
@@ -79,6 +81,8 @@ fn main() {
             '\u{F701}' => 0xff54, // Down
             '\u{F702}' => 0xff51, // Left
             '\u{F703}' => 0xff53, // Right
+            '\u{F750}' => 0xff50, // Home
+            '\u{F751}' => 0xff57, // End
             _ => ch as u32,
         };
         reply
