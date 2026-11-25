@@ -89,14 +89,18 @@ jobs:
       - name: Test application
         run: |
           set +e
-          cargo test -p xtervo-app --bin xtervo -- --test-threads=4 2>&1 | tee "$RUNNER_TEMP/app-test.log"
+          # runner 只有 2-4 核，SSH/PTY 集成测试并行时容易端口/超时竞态；
+          # 串行跑仍只需几十秒，换取稳定。
+          cargo test -p xtervo-app --bin xtervo -- --test-threads=1 2>&1 | tee "$RUNNER_TEMP/app-test.log"
           rc=${PIPESTATUS[0]}
           if [ "$rc" -ne 0 ]; then
+            summary=$(grep -E '^failures:|^    [A-Za-z0-9_:]+$|panicked at|test result:' "$RUNNER_TEMP/app-test.log" | head -40 | tr '\n' ' ' | cut -c1-900)
             {
               echo "### app tests failed (rc=$rc)"
               echo '```'
               grep -E '^failures:|^    [A-Za-z0-9_:]+$|panicked at|test result:' "$RUNNER_TEMP/app-test.log" | head -80
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error title=app tests failed::$summary"
           fi
           exit "$rc"
