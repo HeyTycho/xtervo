@@ -28,17 +28,19 @@
 
 ## 3. IME 缺口
 
-已做的（X11/XIM）：
+已做的（X11/XIM 与 winit text-input-v3）：
 
 - Slint `TextInput` 隐藏宿主（2×2px、transparent）承接 XIM/fcitx/ibus 输入，
   `edited` 提交整段文本进 PTY；preedit 非空时键盘事件 `reject` 给输入法，
   避免候选拼音漏进终端。
-- 隐藏宿主锚到光标格（`ime_anchor_cell`），候选窗不会固定在左上角。
+- 隐藏宿主与 `set_ime_cursor_area` 都锚到聚焦 pane 的终端光标格（`update_ime_spot`）；
+  鼠标点击只做选择/鼠标上报，不再改变候选定位。
 
 未做/不可验（不伪造成已支持）：
 
-- **Wayland text-input-v3**：无原生路径；Wayland 会话里靠 XWayland/XIM，
-  候选窗位置、提交时序未验收（见矩阵 UI-TERM-001/UI-WIN-001 同一环境依赖）。
+- **Wayland text-input-v3**：winit 统一转发 Enable/Preedit/Commit，候选矩形走
+  `set_cursor_rectangle`；候选窗位置/提交时序仍必须用真实 Wayland + fcitx5 验收，
+  Xvfb/XWayland 不能替代（见矩阵 UI-TERM-001/UI-WIN-001）。
 - **候选窗像素位置**：只能通过隐藏宿主位置近似，无法读取输入法窗口几何；
   多屏/缩放下的偏移不做保证。
 - **preedit 内容**：不渲染到终端画面（交给输入法候选窗），因此终端里没有

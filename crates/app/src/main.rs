@@ -1216,10 +1216,6 @@ struct AppState {
     /// 原生窗口是否已真正 Enable text-input（winit `Ime::Enabled`）。
     /// `set_ime_cursor_area` 在 enable 之前会被 winit 静默丢弃，不能据此清 dirty。
     ime_enabled: bool,
-    /// mouse-reporting TUI（dsh 侧栏等）不移动硬件光标时，用最近一次点击的格子
-    /// 作为 IME 候选锚点；同时记住点击时的硬件光标，光标一动就作废（见
-    /// `ime_anchor_cell`），否则候选框会黏在点击处、不跟真实输入位置。
-    ime_override: Option<(PaneId, (u16, u16), (u16, u16))>,
     /// 本次边/角拖动已交给 WM/compositor（winit drag_resize）。
     /// true 时 drag 回调不再每帧 query_pointer + set_size；若 150ms 内 WM 没有
     /// 产生尺寸变化，drag 回调会解除它并回退自绘，保证 resize 不会“按了没反应”。
@@ -10729,7 +10725,6 @@ fn set_active_tab_inner(st: &mut AppState, index: usize) {
         return;
     }
     st.ws.active = index;
-    st.ime_override = None;
     st.ime_spot_dirty = true;
     // 获得焦点的 Tab：清除未读通知点 / 完成标记（Tabby 的 unread 语义）。
     let ids = st.ws.tabs[index].panes();
@@ -11831,28 +11826,27 @@ struct ImeSpotKey {
     physical_w: i32,
     physical_h: i32,
     scale_milli: u32,
-    /// 候选点来自 mouse-reporting 点击锚点而非硬件光标；来源变化也要重发。
-    anchored: bool,
 }
 
 /// 纯函数：由 pane 矩形、字符尺寸、光标格算出 IME 候选点。
 ///
-/// `rect`/`cell_w`/`cell_h` 都是 Slint 逻辑像素；`tabbar_offset` 是内容区在
-/// 窗口内的纵向偏移。物理值只用于去重与日志，真正下发给 winit 的仍是逻辑值。
+/// `rect`/`cell_w`/`cell_h` 都是 Slint 内容区局部像素；`content_x`/`content_y`
+/// 是内容区在窗口内的偏移（竖排 TabBar、侧栏、顶部 TabBar）。窗口坐标必须一起
+/// 入键：侧栏开合只改 origin、不改 pane 矩形，漏掉 origin 就不会重发 spot。
 fn ime_spot_key(
     pane: PaneId,
     rect: Rect,
     cell_w: f32,
     cell_h: f32,
     cell: (usize, usize),
-    tabbar_offset: f32,
+    content_x: f32,
+    content_y: f32,
     scale: f64,
-    anchored: bool,
 ) -> ImeSpotKey {
     let cw = cell_w.max(1.0);
     let ch = cell_h.max(1.0);
-    let x = rect.x + cell.1 as f32 * cw;
-    let y = tabbar_offset + rect.y + cell.0 as f32 * ch;
+    let x = content_x + rect.x + cell.1 as f32 * cw;
+    let y = content_y + rect.y + cell.0 as f32 * ch;
     let dpr = if scale.is_finite() && scale > 0.0 {
         scale
     } else {
@@ -11870,37 +11864,6 @@ fn ime_spot_key(
         physical_w: phys(cw),
         physical_h: phys(ch),
         scale_milli: (dpr * 1000.0).round() as u32,
-        anchored,
-    }
-}
-
-/// 左键在 mouse-reporting TUI 里才记录 IME 锚点；Shift 是本地选择逃生门。
-fn ime_click_anchor(button: i32, wants_mouse: bool, shift: bool) -> bool {
-    button == 0 && wants_mouse && !shift
-}
-
-/// 非空 preedit 表示输入法已进入组合。此时必须丢掉鼠标点击锚点、重发终端
-/// 光标 spot；否则组合期间（按键被 Slint 吞掉、走不到 handle_input）候选窗
-/// 会一直停在鼠标位置。空 preedit 是组合结束/取消，不改变锚点。
-fn ime_preedit_clears_anchor(text: &str) -> bool {
-    !text.is_empty()
-}
-
-/// 把聚焦 pane 的终端光标同步给输入法候选窗。
-///
-/// Slint 只在 TextInput 文本变化时发 IME Update，移动隐藏 TextInput 不会更新
-/// preedit spot；这里直接调 winit `set_ime_cursor_area`，使用**窗口坐标**
-/// （内容区 + tabbar 偏移）。逻辑像素交给 winit，由它按 DPR 转物理像素；
-/// 去重键同时记录物理坐标与 DPR，缩放变化不会被误判成“没动”。
-/// IME 候选锚点：点击格只在“硬件光标自点击以来没动过”时有效，否则跟真实光标。
-///
-/// 背景：普通应用（编辑器/终端里的 TUI 输入框）点击后光标会随输入移动，候选框必须
-/// 跟着光标；只有像 dsh 侧栏 composer 这种“自绘 caret、从不移动硬件光标”的 TUI
-/// 才需要退回点击格。之前无条件优先点击格，导致候选框黏在鼠标位置。
-fn ime_anchor_cell(click: Option<((u16, u16), (u16, u16))>, cursor: (u16, u16)) -> (u16, u16) {
-    match click {
-        Some((cell, cursor_at_click)) if cursor_at_click == cursor => cell,
-        _ => cursor,
     }
 }
 
@@ -11930,14 +11893,13 @@ fn restore_terminal_ime_focus_if_idle(st: &mut AppState) {
 ///
 /// 这些路径可能经过 Tab 右键菜单、Tab 搜索或内联改名 TextInput；控件销毁后
 /// Slint 不会自动把键盘焦点还给隐藏 IME 输入框，表现为“终端还能看、但完全
-/// 打不进字”。切 Tab 本身还可能留下鼠标点击锚点，一并向真实光标收回。
+/// 打不进字”。
 fn restore_terminal_focus_after_tab_change(st: &mut AppState) {
     if st.ws.active_tab().is_none() || overlay_owns_ime_focus(st) {
         return;
     }
     st.ui.set_ime_composing(false);
     st.ui.invoke_focus_terminal();
-    st.ime_override = None;
     st.ime_spot_dirty = true;
     update_ime_spot(st);
 }
@@ -11952,19 +11914,11 @@ fn update_ime_spot(st: &mut AppState) {
     let Some(rt) = st.panes.get(&focused) else {
         return;
     };
-    if !rt.handle.wants_mouse() {
-        // TUI 已关闭鼠标上报：点击锚点不应再压过真实硬件光标。
-        st.ime_override = None;
-    }
-    let cursor = rt.handle.cursor_pos();
-    let click = st
-        .ime_override
-        .filter(|(pid, _, _)| *pid == focused)
-        .map(|(_, cell, at)| (cell, at));
-    let (line, col) = ime_anchor_cell(click, cursor);
+    // 唯一来源：聚焦 pane 的终端光标格。鼠标点击只负责终端选择/鼠标上报，
+    // 不再参与候选框定位；否则 mouse-reporting TUI 里光标不动时，候选框会
+    // 永远黏在最后一次点击处。
+    let (line, col) = rt.handle.cursor_pos();
     let (line, col) = (line as usize, col as usize);
-    // 光标已经动过：点击锚点作废，别让它一直压着真实光标（用户反馈的正是这个）。
-    let stale_click = matches!(click, Some((_, at)) if at != cursor);
     let tabbar = st.cfg.borrow().tabbar_pos();
     // 内容区在窗口内的纵向偏移：上=TabBar 高度；下/左/右=0。
     let content_y = if tabbar == TabbarPos::Top {
@@ -11986,18 +11940,15 @@ fn update_ime_spot(st: &mut AppState) {
         rt.renderer.cell_w as f32,
         rt.renderer.cell_h as f32,
         (line, col),
+        content_x,
         content_y,
         scale,
-        click.is_some() && !stale_click,
     );
     // 普通 50ms 轮询按完整键去重；pane/Tab/resize/focus 变化由 dirty 强制重发。
     if !st.ime_spot_dirty && st.ime_spot == Some(key) {
         return;
     }
     st.ime_spot = Some(key);
-    if stale_click {
-        st.ime_override = None;
-    }
 
     let x = key.logical_x_milli as f64 / 1000.0;
     let y = key.logical_y_milli as f64 / 1000.0;
@@ -12005,9 +11956,9 @@ fn update_ime_spot(st: &mut AppState) {
     let h = key.logical_h_milli as f64 / 1000.0;
     // 隐藏 TextInput 继续跟随**内容坐标**（tabbar 偏移由 Slint 布局负责）；
     // 真正的候选窗位置由 winit 直接设置。
-    st.ui.set_ime_x(x as f32);
+    st.ui.set_ime_x((x - content_x as f64) as f32);
     st.ui.set_ime_y((y - content_y as f64) as f32);
-    let pos = LogicalPosition::new(x + content_x as f64, y);
+    let pos = LogicalPosition::new(x, y);
     let size = LogicalSize::new(w, h);
     let sent = st
         .ui
@@ -12022,8 +11973,8 @@ fn update_ime_spot(st: &mut AppState) {
     if std::env::var_os("XTERVO_IME_LOG").is_some() {
         eprintln!(
             "[ime] spot pane={focused} cell={line},{col} win={x:.1},{y:.1} \
-             phys={},{} scale={:.3} anchor={}",
-            key.physical_x, key.physical_y, scale, key.anchored
+             phys={},{} scale={:.3}",
+            key.physical_x, key.physical_y, scale
         );
     }
 }
@@ -14516,13 +14467,11 @@ fn install_native_window_events(ui: &MainWindow, window_id: WindowId) {
                                 st.ime_composing_since = None;
                             }
                         });
-                        // 组合一开始就重发候选锚点：拼音按键在 Slint 里被 accept
-                        // 吞掉，不会走 handle_input，所以不能等 commit 才清
-                        // ime_override。否则鼠标点过 dsh 后，整个组合期间候选窗
-                        // 都停在鼠标点击格，而不是终端光标。
-                        if ime_preedit_clears_anchor(&text) {
+                        // 组合一开始强制重发一次：拼音按键会被 Slint 吞掉，
+                        // 不走 handle_input；即使终端光标没动，输入法也可能
+                        // 丢弃了旧 spot。位置仍只来自聚焦 pane 的光标格。
+                        if composing {
                             runtime::with_window(window_id, |st| {
-                                st.ime_override = None;
                                 st.ime_spot_dirty = true;
                                 update_ime_spot(st);
                             });
@@ -15895,14 +15844,6 @@ fn handle_input(
             eprintln!("[key] 忽略修饰键伪事件 {text:?}");
         }
         return;
-    }
-
-    // 鼠标点击 dsh 等 mouse-reporting TUI 时，会把候选锚点临时设成点击格
-    // （TUI 侧栏只画反色 caret，不移动硬件光标）。用户一旦开始键盘输入，
-    // 候选窗就应回到真实终端光标，否则会一直停在鼠标箭头位置。
-    if st.ime_override.take().is_some() {
-        st.ime_spot_dirty = true;
-        update_ime_spot(st);
     }
 
     // 快捷键录制优先于一切分发：录制中按键只用于录制，不能触发原快捷键或写入 PTY。
@@ -17706,7 +17647,6 @@ fn build_window_state(
         ime_spot: None,
         ime_spot_dirty: true,
         ime_enabled: false,
-        ime_override: None,
         wm_resize: false,
         wm_resize_dir: None,
         wm_release_pending: false,
@@ -17916,25 +17856,13 @@ fn register_window_callbacks(ui: &MainWindow, state: Rc<RefCell<AppState>>, wind
             if st.search_open {
                 close_search(st);
             }
-            let (cell, wants_mouse, cursor_at_click) = {
+            let (cell, wants_mouse) = {
                 let Some(rt) = st.panes.get(&id) else { return };
-                (
-                    cell_at(rt, x, y),
-                    rt.handle.wants_mouse(),
-                    rt.handle.cursor_pos(),
-                )
+                (cell_at(rt, x, y), rt.handle.wants_mouse())
             };
             let modifiers = mouse_mods(mods);
             // Shift 是「绕过鼠标上报、改成本地选词」的惯例逃生门（xterm/gnome-terminal 同款）。
             let reporting = wants_mouse && !modifiers.shift;
-            if ime_click_anchor(button, wants_mouse, modifiers.shift) {
-                // dsh 的 Btw 侧栏 composer 只画反色 caret，不移动硬件光标；
-                // 记住点击格，IME 候选才会贴到右侧输入框。
-                st.ime_override = Some((id, cell, cursor_at_click));
-                // 每次点击都强制重发：输入法可能已丢弃旧 spot（例如刚从别的窗口回来）。
-                st.ime_spot_dirty = true;
-                update_ime_spot(st);
-            }
             let Some(rt) = st.panes.get(&id) else { return };
             if mouselog {
                 eprintln!(
@@ -22737,16 +22665,6 @@ mod tests {
     }
 
     #[test]
-    fn ime_anchor_follows_cursor_once_it_moves() {
-        // 没有点击：跟真实光标
-        assert_eq!(ime_anchor_cell(None, (3, 7)), (3, 7));
-        // 点击后光标没动（自绘 caret 的 TUI）：用点击格
-        assert_eq!(ime_anchor_cell(Some(((10, 2), (3, 7))), (3, 7)), (10, 2));
-        // 光标动过：点击锚点作废，跟光标（用户反馈的 bug）
-        assert_eq!(ime_anchor_cell(Some(((10, 2), (3, 7))), (4, 0)), (4, 0));
-    }
-
-    #[test]
     fn profile_choice_label_shows_hotkey_only_when_bound() {
         assert_eq!(profile_choice_label("Local", "zsh", ""), "Local · zsh");
         assert_eq!(profile_choice_label("Local", "zsh", "   "), "Local · zsh");
@@ -24619,46 +24537,51 @@ mod tests {
     }
 
     #[test]
-    fn ime_spot_maps_click_anchor_to_window_pixels() {
-        // 复刻 dsh /btw 的实测：120x40 终端、cell 9x22、顶部 tabbar 32px；
-        // 右击记录到的 composer 格是 (37, 94)，候选点应落在 win=846,846。
+    fn ime_spot_maps_cursor_cell_to_window_pixels() {
+        // 120x40 终端、cell 9x22、顶部 tabbar 32px；光标格 (37,94) 的窗口坐标。
         let rect = Rect::new(0.0, 0.0, 1080.0, 848.0);
-        let a = ime_spot_key(1, rect, 9.0, 22.0, (37, 94), TABBAR_H, 1.0, true);
+        let a = ime_spot_key(1, rect, 9.0, 22.0, (37, 94), 0.0, TABBAR_H, 1.0);
         assert_eq!((a.logical_x_milli, a.logical_y_milli), (846_000, 846_000));
         assert_eq!((a.physical_x, a.physical_y), (846, 846));
         assert_eq!((a.logical_w_milli, a.logical_h_milli), (9_000, 22_000));
         assert_eq!((a.physical_w, a.physical_h), (9, 22));
         assert_eq!(a.scale_milli, 1000);
-        assert_eq!((a.pane, a.anchored), (1, true));
+        assert_eq!(a.pane, 1);
 
         // 同一格但 tabbar 在底部：y 少一个 tabbar 高度。
-        let bottom = ime_spot_key(1, rect, 9.0, 22.0, (37, 94), 0.0, 1.0, true);
+        let bottom = ime_spot_key(1, rect, 9.0, 22.0, (37, 94), 0.0, 0.0, 1.0);
         assert_eq!(bottom.logical_y_milli, 814_000);
 
-        // pane 切换 / 锚点来源 / 光标格变化都必须产生不同的键（否则会误去重）。
+        // pane 切换 / 光标格前进都必须产生不同的键（否则会误去重）。
         assert_ne!(
             a,
-            ime_spot_key(2, rect, 9.0, 22.0, (37, 94), TABBAR_H, 1.0, true)
+            ime_spot_key(2, rect, 9.0, 22.0, (37, 94), 0.0, TABBAR_H, 1.0)
         );
         assert_ne!(
             a,
-            ime_spot_key(1, rect, 9.0, 22.0, (37, 94), TABBAR_H, 1.0, false)
-        );
-        assert_ne!(
-            a,
-            ime_spot_key(1, rect, 9.0, 22.0, (37, 93), TABBAR_H, 1.0, true)
+            ime_spot_key(1, rect, 9.0, 22.0, (37, 93), 0.0, TABBAR_H, 1.0)
         );
         assert_eq!(
             a,
-            ime_spot_key(1, rect, 9.0, 22.0, (37, 94), TABBAR_H, 1.0, true)
+            ime_spot_key(1, rect, 9.0, 22.0, (37, 94), 0.0, TABBAR_H, 1.0)
         );
+
+        // 侧栏/内容原点变化会平移 pane rect，候选点必须跟着窗口坐标走。
+        let shifted = ime_spot_key(1, rect, 9.0, 22.0, (37, 94), 240.0, TABBAR_H, 1.0);
+        assert_eq!(shifted.logical_x_milli - a.logical_x_milli, 240_000);
+
+        // 防回归：候选点代码里不允许再出现鼠标锚点状态（用 concat! 避免
+        // 测试源码自己命中字符串）。
+        let src = include_str!("main.rs");
+        assert!(!src.contains(concat!("ime_", "override")));
+        assert!(!src.contains(concat!("ime_click_", "anchor")));
     }
 
     #[test]
     fn ime_spot_keys_include_dpr_and_physical_pixels() {
         let rect = Rect::new(0.0, 0.0, 1080.0, 848.0);
-        let base = ime_spot_key(1, rect, 9.0, 22.0, (37, 94), TABBAR_H, 1.0, false);
-        let hidpi = ime_spot_key(1, rect, 9.0, 22.0, (37, 94), TABBAR_H, 1.25, false);
+        let base = ime_spot_key(1, rect, 9.0, 22.0, (37, 94), 0.0, TABBAR_H, 1.0);
+        let hidpi = ime_spot_key(1, rect, 9.0, 22.0, (37, 94), 0.0, TABBAR_H, 1.25);
         // winit 收逻辑坐标；物理像素按 DPR 四舍五入后只用于去重/日志。
         assert_eq!(
             (hidpi.logical_x_milli, hidpi.logical_y_milli),
@@ -24670,34 +24593,9 @@ mod tests {
         assert_ne!(base, hidpi, "DPR 改变必须重发 spot");
 
         // 非法/零 DPR 回退 1.0，不能出现除零或饱和垃圾坐标。
-        let bad = ime_spot_key(1, rect, 9.0, 22.0, (37, 94), TABBAR_H, 0.0, false);
+        let bad = ime_spot_key(1, rect, 9.0, 22.0, (37, 94), 0.0, TABBAR_H, 0.0);
         assert_eq!(bad.scale_milli, 1000);
         assert_eq!(bad, base);
-    }
-
-    #[test]
-    fn ime_click_anchor_only_for_plain_left_click_on_mouse_reporting_tui() {
-        assert!(
-            ime_click_anchor(0, true, false),
-            "dsh composer 左键应记录锚点"
-        );
-        assert!(!ime_click_anchor(0, false, false), "普通 shell 不记录锚点");
-        assert!(
-            !ime_click_anchor(0, true, true),
-            "Shift+左键是本地选择，不锚定 IME"
-        );
-        assert!(!ime_click_anchor(2, true, false), "右键不改变候选点");
-        assert!(!ime_click_anchor(1, true, false), "中键不改变候选点");
-    }
-
-    #[test]
-    fn ime_preedit_clears_mouse_anchor_only_while_composing() {
-        // 组合中的拼音字母会让 preedit 非空：必须清掉鼠标锚点。
-        assert!(ime_preedit_clears_anchor("n"));
-        assert!(ime_preedit_clears_anchor("nihao"));
-        assert!(ime_preedit_clears_anchor("你好"));
-        // 组合结束/取消（空 preedit）不能把后续真实鼠标锚点又清掉。
-        assert!(!ime_preedit_clears_anchor(""));
     }
 
     #[test]

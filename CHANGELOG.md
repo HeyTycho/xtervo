@@ -10,6 +10,14 @@ xtervo 的版本与 tag 规则见 `docs/RELEASING.md`。
   用户文档逐页语言切换；英文子站覆盖安装、快捷键、终端行为、主题、SSH/SFTP、Vault、
   MCP、诊断、日志、插件与 Plugin API v3。
 
+### Fixed
+
+- IME 候选框定位只取聚焦 pane 的终端光标格，不再把鼠标点击格当锚点；
+  mouse-reporting TUI 里点击后候选框不会再黏在点击处。`content_x`（侧栏/竖排
+  TabBar）纳入 spot 去重键，侧栏开合会重发而不是等到下次光标移动才跳。
+  新增 `scripts/e2e_ime_cursor.sh` 回归测试（点击前后 spot 同为终端光标格，
+  侧栏开合 x 位移 240px）。
+
 ### Changed
 
 - 品牌标记扁平化：保留 T + 琥珀光标，去掉渐变/发光；新增

@@ -81,9 +81,9 @@ export GTK_IM_MODULE=fcitx QT_IM_MODULE=fcitx XMODIFIERS=@im=fcitx
 # 2) 跑终端并开键盘日志
 XTERVO_KEYLOG=1 SLINT_BACKEND=winit-software ./target/release/xtervo --shell /bin/cat
 
-# 3) 点一下 pane，输入 nihao 再按空格
+# 3) 先点击 pane 远处，再把光标移到目标格，输入 nihao 再按空格
 # 期望日志： [ime] "你好"        ← 提交文本
-#          [ime] spot pane=… cell=r,c win=x,y …   ← 候选锚点跟着光标
+#          [ime] spot pane=… cell=r,c win=x,y …   ← 候选锚点跟着终端光标，不是点击处
 
 # 4) 组合键：在终端里跑 cat -v，依次按 Shift+Tab / Ctrl+Shift+J / Super 组合
 #    默认模式期望： ^[[Z（Shift+Tab）
@@ -95,14 +95,20 @@ XTERVO_KEYLOG=1 SLINT_BACKEND=winit-software ./target/release/xtervo --shell /bi
 ```
 
 判定：候选窗贴住光标格（不是鼠标旧位置）、切 pane/Tab 后输入不丢、`[ime] spot` 随之更新。
+可先用 headless X11 抓“点击不改变 spot / 侧栏开合会重发”的回归：
+
+```bash
+./scripts/e2e_ime_cursor.sh
+```
+
 
 ### 4.2 UI-TERM-001：候选窗像素位置
 
 **需要**：同上环境 + `grim`（Wayland 截图）。
 
 ```bash
-TerVO_KEYLOG=1 SLINT_BACKEND=winit-software ./target/release/xtervo --shell /bin/cat
-# 点击终端中部 → 输入 nihao（不按空格，先出候选窗）
+XTERVO_KEYLOG=1 SLINT_BACKEND=winit-software ./target/release/xtervo --shell /bin/cat
+# 先点击终端远处 → 再把光标移到目标格 → 输入 nihao（不按空格，先出候选窗）
 grim -g "$(slurp)" /tmp/ime.png        # 或整屏 grim /tmp/ime.png
 ```
 

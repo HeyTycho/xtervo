@@ -134,3 +134,29 @@ dsh-tui 不识别该序列，表现为“dsh-tui 输入/退格全坏”，而普
 - `/tmp/ime-audit/gdb*.log`：583 次 key_event、0 条 `[key]`；
 - `.logs/dshtui-repro*/`：`CSI 27;129;8~` -> `[127]` 前后对比；
 - `.logs/tabbar-audit/`、`.logs/middle-click-test/`、`.logs/title-lock-test/`。
+
+## 6. 2026-11-25 复发：候选窗黏在鼠标点击格
+
+**现象**：mouse-reporting TUI 里点击后，输入法候选窗停在点击格；光标继续前进也不再移动；
+开侧栏后窗体位置还会整体偏一段。
+
+**根因**（两个叠加）：
+
+1. 上一轮为 dsh 侧栏 composer 引入的 `ime_override` 点击锚点，在“硬件光标没有移动”
+   的 TUI 里永远不会失效；候选窗位置实际由 pointer press 决定，而不是终端光标。
+2. `ImeSpotKey` 只含 pane 矩形和光标格，不含 `content_x`（侧栏/竖排 TabBar 的内容原点）。
+   侧栏开合只改原点、不改 pane 矩形，spot 键不变，于是既不重发也继续用旧窗口坐标；
+   等下一次光标移动时才突然跳过去。
+
+**修复**：
+
+- 删除 `ime_override` / `ime_click_anchor` / `ime_anchor_cell`，候选点的唯一来源改为
+  聚焦 pane 的 `cursor_pos()`；点击只做选择/鼠标上报。
+- `ime_spot_key` 接收 `content_x`/`content_y`，把窗口坐标纳入去重键；侧栏、竖排 TabBar、
+  顶部 TabBar 变化都会触发重发。
+- 50ms 轮询仍覆盖普通光标前进；pane/Tab/resize/focus/preedit 继续置脏强制重发。
+- 回归：`scripts/e2e_ime_cursor.sh`（旧代码点击后 spot 变成 `9,33`，修复后保持 `0,3`；
+  侧栏开合 `content_x` 从 27 变 267）。
+
+**验收边界**：Xvfb/X11 只验证 xtervo 自己计算的 spot，不能验证真实 Wayland
+`text-input-v3` 的候选窗像素位置；Wayland + fcitx5 仍需人工验收。
