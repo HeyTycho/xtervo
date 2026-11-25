@@ -89,7 +89,9 @@ esac
 [[ "$MAX_MB" =~ ^[0-9]+$ ]] || die "MAX_MB 必须是整数：$MAX_MB"
 
 # 防止把发布副本写回开发目录，意外 strip 掉 perf 依赖的符号。
-BIN_DIR="$(readlink -f "$(dirname "$BIN")")"
+# 用 -m：全新 checkout 里 target/ 还不存在，`readlink -f` 会直接失败
+# （CI 首次打包就死在这里，且 set -e 下没有错误输出）。
+BIN_DIR="$(readlink -m "$(dirname "$BIN")")"
 DIST_DIR="$(readlink -m "$DIST")"
 [[ "$DIST_DIR" != "$BIN_DIR" ]] || die "输出目录不能是 $BIN_DIR（会覆盖开发二进制）"
 

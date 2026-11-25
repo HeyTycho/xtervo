@@ -121,9 +121,9 @@ git tag -s v0.6.0 -m "xtervo 0.6.0"
 ### 3.3 当前状态
 
 ```text
-当前版本：0.6.0 发布线
-预发布 tag：v0.6.0-dev.N / v0.6.0-rc.N
-正式 tag：v0.6.0（发布 commit 以 BUILD-INFO 为准）
+当前版本：0.6.1 发布线
+预发布 tag：v0.6.0-dev.N（历史）
+正式 tag：v0.6.1（发布 commit 以 BUILD-INFO 为准；v0.6.0 为流水线失败的空发布）
 历史 tag：v0.5.0 / v0.3.1 / v0.1.0 / final-2026-11-09 / stable-*-2026-11-06（legacy，不再使用）
 下一个功能版本：0.7.0
 ```

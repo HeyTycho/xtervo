@@ -3918,7 +3918,7 @@ dependencies = [
 
 [[package]]
 name = "mw-spike"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "png",
  "slint",
@@ -8034,7 +8034,7 @@ checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
 
 [[package]]
 name = "xtervo-app"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "arboard",
  "argon2 0.5.3",
@@ -8081,7 +8081,7 @@ dependencies = [
 
 [[package]]
 name = "xtervo-core"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "alacritty_terminal",
  "criterion",
@@ -8101,7 +8101,7 @@ dependencies = [
 
 [[package]]
 name = "xtervo-diagnostics"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -8109,25 +8109,25 @@ dependencies = [
 
 [[package]]
 name = "xtervo-graphics"
-version = "0.6.0"
+version = "0.6.1"
 
 [[package]]
 name = "xtervo-maximize"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "x11rb 0.14.0",
 ]
 
 [[package]]
 name = "xtervo-render"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "xtervo-scene",
 ]
 
 [[package]]
 name = "xtervo-render-wgpu"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "fontdue",
  "futures-lite",
@@ -8143,7 +8143,7 @@ dependencies = [
 
 [[package]]
 name = "xtervo-scene"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "xtervo-core",
  "xtervo-graphics",

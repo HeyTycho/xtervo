@@ -4,6 +4,24 @@ xtervo 的版本与 tag 规则见 `docs/RELEASING.md`。
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-11-25
+
+### Fixed
+
+- `scripts/package.sh` 在全新 checkout（`target/` 还不存在）时用 `readlink -f`
+  解析 `target/release` 会直接失败，`set -e` 下没有任何输出，导致首次 Release
+  workflow 打包秒失败；改用 `readlink -m`，并在缺少 `cargo` 时给出明确错误。
+- Release workflow 显式 `export PATH="$HOME/.cargo/bin:/usr/local/cargo/bin:$PATH"`，
+  打包前打印 PATH、工具路径、`git status` 与 `git describe`，便于定位环境问题。
+- CI 测试补装 `openssh-client`、`fonts-dejavu-core`、`fonts-noto-cjk`：
+  `ssh-keygen` 与 CJK 字形单测在干净 runner 上需要它们。
+- release job 补装 `ca-certificates`、`curl`、`libudev-dev`、`libfontconfig1`、
+  `libfreetype6`，并通过 `MAX_MB=70` 打包。
+
+### Changed
+
+- MSRV 从 1.85 提升到 **1.92**（Slint 1.18 依赖要求）；README/CONTRIBUTING 同步。
+
 ## [0.6.0] - 2026-11-24
 
 ### Added
