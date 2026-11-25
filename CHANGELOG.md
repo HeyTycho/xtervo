@@ -4,13 +4,6 @@ xtervo 的版本与 tag 规则见 `docs/RELEASING.md`。
 
 ## [Unreleased]
 
-### Changed
-
-- 新品牌标记：扁平单色 “x” + 琥珀光标线，替换旧的渐变 “T”；新增
-  `assets/icon-light.png`、`assets/wordmark-{dark,light}.png` 与
-  `assets/lockup-{dark,light}.png`，分别由 `scripts/gen_icon.py` 和
-  `scripts/gen_wordmark.py` 生成。README 头部改用深/浅色自动切换的 lockup。
-
 ## [0.6.1] - 2026-11-25
 
 ### Fixed

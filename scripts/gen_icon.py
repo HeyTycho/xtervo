@@ -1,16 +1,12 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-only
-"""生成 xtervo 的项目图标。
+"""生成 xtervo 的项目图标（原创几何标记，无任何猫/终端窗口品牌元素）。
 
-设计（2026-11 改版）：扁平单色，无渐变/发光。
-深色圆角方块 + 细描边 + 白色几何 "x" + 琥珀色光标线；
-另生成浅色版本供字标拼版使用。字标由 scripts/gen_wordmark.py 生成。
-
+设计：深色圆角方块 + 圆角描边 + 青→蓝渐变的 "T" 字母 + 琥珀色光标块。
 输出：
-    assets/icon.png        512x512 RGBA（深色）
-    assets/icon-light.png  512x512 RGBA（浅色）
-    assets/icon-small.png   64x64  RGBA（深色，Slint 标题栏）
-    assets/icon-64.rgba     64x64  原始 RGBA（X11 _NET_WM_ICON）
+    assets/icon.png       512x512 RGBA
+    assets/icon-small.png  64x64  RGBA（Slint 标题栏）
+    assets/icon-64.rgba    64x64  原始 RGBA（X11 _NET_WM_ICON）
 """
 import pathlib
 import struct
@@ -21,14 +17,6 @@ import numpy as np
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SS = 4  # 超采样倍数
 
-DARK_PLATE = (0x0B, 0x0D, 0x10)
-DARK_BORDER = (0x25, 0x2A, 0x31)
-DARK_MARK = (0xF4, 0xF6, 0xF8)
-LIGHT_PLATE = (0xF6, 0xF7, 0xF8)
-LIGHT_BORDER = (0xD9, 0xDD, 0xE2)
-LIGHT_MARK = (0x10, 0x13, 0x17)
-AMBER = (0xE8, 0xA3, 0x3D)
-
 
 def rounded_rect(x, y, x0, y0, x1, y1, r):
     cx = np.clip(x, x0 + r, x1 - r)
@@ -36,48 +24,47 @@ def rounded_rect(x, y, x0, y0, x1, y1, r):
     return np.hypot(x - cx, y - cy) <= r
 
 
-def segment_distance(x, y, x0, y0, x1, y1):
-    dx, dy = x1 - x0, y1 - y0
-    t = np.clip(((x - x0) * dx + (y - y0) * dy) / (dx * dx + dy * dy), 0.0, 1.0)
-    return np.hypot(x - (x0 + t * dx), y - (y0 + t * dy))
+def lerp(a, b, t):
+    return np.asarray(a, np.float32) + (np.asarray(b, np.float32) - np.asarray(a, np.float32)) * t
 
 
-def render(size: int, light: bool = False) -> np.ndarray:
+def render(size: int) -> np.ndarray:
     n = size * SS
     ys, xs = np.mgrid[0:n, 0:n].astype(np.float32)
     x = xs / SS
     y = ys / SS
     s = float(size)
 
-    plate = LIGHT_PLATE if light else DARK_PLATE
-    border = LIGHT_BORDER if light else DARK_BORDER
-    mark = LIGHT_MARK if light else DARK_MARK
+    # 背景：深色圆角方块 + 垂直渐变
+    bg_mask = rounded_rect(x, y, 0, 0, s, s, s * 0.22)
+    t = (y / s)[..., None]
+    top = np.array([0x12, 0x17, 0x1F], np.float32)
+    bottom = np.array([0x0A, 0x0D, 0x12], np.float32)
+    color = top + (bottom - top) * t
 
-    # 扁平底板 + 细描边（无渐变）
-    bg_mask = rounded_rect(x, y, 0, 0, s, s, s * 0.16)
-    color = np.zeros((n, n, 3), np.float32)
-    color[:] = plate
-    bw = max(s * 0.006, 0.35)
-    inner = rounded_rect(x, y, bw, bw, s - bw, s - bw, s * 0.16 - bw)
-    color[bg_mask & ~inner] = border
+    # 内描边（细线，增加层次）
+    outer = rounded_rect(x, y, s * 0.02, s * 0.02, s * 0.98, s * 0.98, s * 0.21)
+    inner = rounded_rect(x, y, s * 0.045, s * 0.045, s * 0.955, s * 0.955, s * 0.195)
+    border = outer & ~inner
+    color[border] = np.array([0x2A, 0x35, 0x42], np.float32)
 
-    # 几何 "x"：两条等粗线段，端点留白一致
-    a0, a1 = s * 0.30, s * 0.64
-    half = s * 0.0525
-    d = np.minimum(
-        segment_distance(x, y, a0, a0, a1, a1),
-        segment_distance(x, y, a1, a0, a0, a1),
-    )
-    color[d <= half] = mark
+    # "T"：横杠 + 竖干，青→蓝渐变
+    bar = rounded_rect(x, y, s * 0.265, s * 0.275, s * 0.735, s * 0.375, s * 0.05)
+    stem = rounded_rect(x, y, s * 0.448, s * 0.345, s * 0.552, s * 0.675, s * 0.05)
+    tmask = bar | stem
+    gt = ((x - s * 0.265) / (s * 0.47))[..., None]
+    grad = lerp((0x37, 0xE0, 0xC9), (0x3B, 0x82, 0xF6), np.clip(gt, 0, 1))
+    color[tmask] = grad[tmask]
 
-    # 琥珀色光标线，和 x 留出呼吸空间
-    caret = rounded_rect(x, y, s * 0.345, s * 0.735, s * 0.655, s * 0.785, s * 0.024)
-    color[caret] = AMBER
+    # 光标块（琥珀色），放在 T 脚右侧，像终端里的 caret
+    caret = rounded_rect(x, y, s * 0.60, s * 0.72, s * 0.735, s * 0.795, s * 0.035)
+    color[caret] = np.array([0xFF, 0xB4, 0x54], np.float32)
 
     rgba = np.zeros((n, n, 4), np.float32)
     rgba[..., :3] = color
     rgba[..., 3] = np.where(bg_mask, 255.0, 0.0)
 
+    # 超采样平均
     rgba = rgba.reshape(size, SS, size, SS, 4).mean(axis=(1, 3))
     return np.clip(rgba, 0, 255).astype(np.uint8)
 
@@ -101,17 +88,12 @@ def png_bytes(rgba: np.ndarray) -> bytes:
 def main() -> None:
     assets = ROOT / "assets"
     assets.mkdir(exist_ok=True)
-    dark = render(512)
-    light = render(512, light=True)
+    big = render(512)
     small = render(64)
-    (assets / "icon.png").write_bytes(png_bytes(dark))
-    (assets / "icon-light.png").write_bytes(png_bytes(light))
+    (assets / "icon.png").write_bytes(png_bytes(big))
     (assets / "icon-small.png").write_bytes(png_bytes(small))
     (assets / "icon-64.rgba").write_bytes(small.tobytes())
-    print(
-        "wrote assets/icon.png (512), icon-light.png (512), "
-        "icon-small.png (64), icon-64.rgba (64)"
-    )
+    print("wrote assets/icon.png (512), icon-small.png (64), icon-64.rgba (64)")
 
 
 if __name__ == "__main__":

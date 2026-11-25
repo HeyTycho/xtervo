@@ -1,9 +1,8 @@
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/lockup-dark.png">
-    <img src="assets/lockup-light.png" width="360" alt="xtervo">
-  </picture>
+  <img src="assets/icon.png" width="120" alt="xtervo logo">
 </p>
+
+# xtervo
 
 [简体中文](README.md) | **English**
 
