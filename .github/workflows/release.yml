@@ -73,6 +73,7 @@ jobs:
           files: |
             dist/*.tar.gz
             dist/*.deb
+            dist/xtervo-stripped
             dist/SHA256SUMS
           fail_on_unmatched_files: true
           generate_release_notes: true
